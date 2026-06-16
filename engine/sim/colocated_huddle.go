@@ -200,26 +200,36 @@ func colocatedConversationalActors(w *World, self *Actor, structureID StructureI
 	return out
 }
 
-// colocatedConversational reports whether a can be pulled into a co-located
-// huddle: a conversational kind (stateful/shared NPC or PC) that is not asleep,
-// and — for a PC — not stale/absent (a closed-tab player whose presence stamp
-// has gone stale must not be resurrected into a conversation, ZBBS-WORK-326 /
-// code_review).
-func colocatedConversational(a *Actor, now time.Time, staleAfter time.Duration) bool {
+// colocatedConversationalKind reports whether a is a conversational kind that is
+// present enough to converse — a stateful/shared NPC, or a PC whose presence
+// stamp is still fresh (a closed-tab player whose stamp has gone stale must not
+// be resurrected into a conversation, ZBBS-WORK-326 / code_review). Sleep state
+// is deliberately NOT considered here: the awake-audience scan and the
+// asleep-co-presence scan share this kind/presence rule and each adds its own
+// sleep test, so the two can't drift on who counts as a conversational peer
+// (ZBBS-WORK-426).
+func colocatedConversationalKind(a *Actor, now time.Time, staleAfter time.Duration) bool {
 	if a == nil {
 		return false
 	}
 	switch a.Kind {
 	case KindNPCStateful, KindNPCShared:
-		// conversational NPC kinds
+		return true
 	case KindPC:
-		if PCPresenceStale(a.LastPCSeenAt, now, staleAfter) {
-			return false // absent player — do not pull into a huddle
-		}
+		return !PCPresenceStale(a.LastPCSeenAt, now, staleAfter) // absent player — do not pull into a huddle
 	default:
 		return false // decorative / unknown
 	}
-	return a.State != StateSleeping
+}
+
+// colocatedConversational reports whether a can be pulled into a co-located
+// huddle: a conversational, present actor (colocatedConversationalKind) that is
+// also awake. A sleeper is excluded from the audience — it can't hold up its end
+// of a conversation — and is surfaced separately by colocatedSleeperIDs so
+// perception can mark it "(asleep)" rather than dropping it entirely
+// (ZBBS-WORK-426).
+func colocatedConversational(a *Actor, now time.Time, staleAfter time.Duration) bool {
+	return colocatedConversationalKind(a, now, staleAfter) && a.State != StateSleeping
 }
 
 // pcBystanders (ZBBS-HOME-437) returns the ids (sorted) of PCs within earshot
@@ -397,6 +407,52 @@ func colocatedAudienceIDs(w *World, speaker *Actor, now time.Time) []ActorID {
 		for id := range w.actorsByHuddle[hid] {
 			add(id)
 		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+// colocatedSleeperIDs returns the ids (sorted, self-excluded) of co-present
+// SLEEPING conversational actors in the speaker's structure scope — the asleep
+// counterpart to colocatedAudienceIDs. The audience scan omits sleepers (not a
+// valid speak target, and they don't count toward the no-audience gate), which
+// used to make a sleeping co-present actor vanish from the speaker's
+// "## Around you" entirely: the speaker couldn't tell anyone was there and
+// addressed them anyway, reading the silence as rudeness (ZBBS-WORK-426,
+// residual of HOME-436). This surfaces them so perception can mark them
+// "(asleep)"; they stay OUT of colocatedAudienceIDs, so the speak audience and
+// its no-audience gate are unchanged.
+//
+// Same scope rule as colocatedAudienceIDs (conversationalScopeStructure) and the
+// same kind/presence gate (colocatedConversationalKind), so a sleeper is surfaced
+// exactly where an awake peer would have been a valid audience member.
+// Already-huddled actors are skipped to match the audience scan (a sleeper has
+// left its huddle on bedding, HOME-435, so this is belt-and-suspenders). MUST run
+// on the world goroutine.
+func colocatedSleeperIDs(w *World, speaker *Actor, now time.Time) []ActorID {
+	structureID := conversationalScopeStructure(w, speaker)
+	if structureID == "" {
+		return nil
+	}
+	staleAfter := PCPresenceStaleAfter(w)
+	var out []ActorID
+	for id, a := range w.Actors {
+		if id == speaker.ID || a == nil {
+			continue
+		}
+		if a.InsideStructureID != structureID {
+			continue
+		}
+		if a.CurrentHuddleID != "" {
+			continue
+		}
+		if a.State != StateSleeping {
+			continue
+		}
+		if !colocatedConversationalKind(a, now, staleAfter) {
+			continue
+		}
+		out = append(out, id)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
 	return out

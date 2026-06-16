@@ -1579,6 +1579,11 @@ func (w *World) republish() {
 			switch a.Kind {
 			case KindNPCStateful, KindNPCShared:
 				sa.ColocatedAudienceIDs = colocatedAudienceIDs(w, a, now)
+				// Co-present sleepers in the same scope (ZBBS-WORK-426): surfaced
+				// for perception to mark "(asleep)" but kept out of the audience
+				// above, so a visible sleeper no longer vanishes from the speaker's
+				// "## Around you" while staying a non-target for the speak gate.
+				sa.ColocatedSleeperIDs = colocatedSleeperIDs(w, a, now)
 			}
 		}
 		snap.Actors[id] = sa

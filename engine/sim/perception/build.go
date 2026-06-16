@@ -640,6 +640,12 @@ func buildSurroundings(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnap
 			m.JustArrived = coPresentJustArrived(snap, id)
 			s.CoPresent = append(s.CoPresent, m)
 		}
+		// Co-present sleepers (ZBBS-WORK-426): visible but not addressable. Kept in
+		// a separate list from CoPresent so Render marks them "(asleep)" rather than
+		// inviting the actor to "speak to start talking" to someone who's out.
+		for _, id := range a.ColocatedSleeperIDs {
+			s.CoPresentAsleep = append(s.CoPresentAsleep, resolveCoPresentMember(snap, a, id))
+		}
 	}
 	return s
 }

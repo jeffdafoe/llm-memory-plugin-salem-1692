@@ -684,10 +684,28 @@ func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 	default:
 		location = "outdoors"
 	}
+	// Co-present sleepers are visible but not addressable; render them in a
+	// distinct clause so the actor doesn't try to talk to someone who's out
+	// (ZBBS-WORK-426). Built once and appended to whichever presence line applies.
+	asleepClause := ""
+	if len(s.CoPresentAsleep) > 0 {
+		asleepNames := make([]string, len(s.CoPresentAsleep))
+		for i, m := range s.CoPresentAsleep {
+			asleepNames[i] = descriptorLabel(m.DisplayName, m.Role, m.Acquainted)
+		}
+		verb := "is"
+		if len(asleepNames) > 1 {
+			verb = "are"
+		}
+		asleepClause = fmt.Sprintf(" %s %s asleep here and won't respond if addressed.",
+			joinNames(asleepNames), verb)
+	}
 	switch {
 	case len(s.HuddleMembers) > 0:
 		// A huddle is a conversational cluster, so "with" names who the actor
 		// is gathered with — the speak tool reaches exactly these people.
+		// (CoPresentAsleep is only populated for an unhuddled actor, so there is
+		// no asleep clause to append in this case.)
 		fmt.Fprintf(b, "You are %s, with %s.\n", location, joinHuddleMembers(s.HuddleMembers))
 	case len(s.CoPresent) > 0:
 		// Not conversing, but others are within earshot. Name them (every turn) so
@@ -710,8 +728,15 @@ func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 		if len(names) > 1 {
 			verb = "are"
 		}
-		fmt.Fprintf(b, "You are %s. %s %s here with you — speak to start talking.\n",
-			location, joinNames(names), verb)
+		fmt.Fprintf(b, "You are %s. %s %s here with you — speak to start talking.%s\n",
+			location, joinNames(names), verb, asleepClause)
+	case len(s.CoPresentAsleep) > 0:
+		// No one awake within earshot, but someone is here asleep. Name them so the
+		// actor knows the room isn't empty, while making clear there's no one to
+		// talk to — the speak gate would still reject a speak (sleepers aren't in
+		// the audience), so don't invite one (ZBBS-WORK-426).
+		fmt.Fprintf(b, "You are %s.%s There is no one awake here to hear you speak.\n",
+			location, asleepClause)
 	default:
 		// No one within earshot. State it plainly, every turn, so the actor turns
 		// to a solo task or moves to find company rather than speaking to an empty
