@@ -90,7 +90,7 @@ func TestRenderSurroundings_CoPresentNamesThemPlural(t *testing.T) {
 	if !strings.Contains(out, "Hannah Boggs and John Ellis are here with you") {
 		t.Errorf("co-present plural line missing in:\n%s", out)
 	}
-	if !strings.Contains(out, "speak to start talking") {
+	if !strings.Contains(out, "speak to start conversing with them") {
 		t.Errorf("co-present speak nudge missing in:\n%s", out)
 	}
 }
@@ -250,10 +250,10 @@ func TestRenderSurroundings_AsleepClauseAlongsideAwake(t *testing.T) {
 		CoPresentAsleep:   []HuddleMember{{ID: "prudence", DisplayName: "Prudence Ward", Acquainted: true}},
 	})
 	out := b.String()
-	if !strings.Contains(out, "Hannah Boggs is here with you") || !strings.Contains(out, "speak to start talking") {
+	if !strings.Contains(out, "Hannah Boggs is here with you") || !strings.Contains(out, "speak to start conversing with them") {
 		t.Errorf("awake co-present line missing in:\n%s", out)
 	}
-	if !strings.Contains(out, "Prudence Ward is asleep here and won't respond if addressed") {
+	if !strings.Contains(out, "Prudence Ward is asleep and won't respond if you speak to them") {
 		t.Errorf("asleep clause missing in:\n%s", out)
 	}
 }
@@ -266,7 +266,7 @@ func TestRenderSurroundings_OnlyAsleepNoAwakeAudience(t *testing.T) {
 		CoPresentAsleep:   []HuddleMember{{ID: "prudence", DisplayName: "Prudence Ward", Acquainted: true}},
 	})
 	out := b.String()
-	if !strings.Contains(out, "Prudence Ward is asleep here and won't respond if addressed") {
+	if !strings.Contains(out, "Prudence Ward is asleep and won't respond if you speak to them") {
 		t.Errorf("asleep clause missing in:\n%s", out)
 	}
 	if !strings.Contains(out, "no one awake here to hear you speak") {
@@ -288,7 +288,67 @@ func TestRenderSurroundings_AsleepPluralAndDescriptor(t *testing.T) {
 			{ID: "b", DisplayName: "Goodman Stark", Role: "farmer", Acquainted: false},
 		},
 	})
-	if out := b.String(); !strings.Contains(out, "Prudence Ward and the farmer are asleep here") {
+	if out := b.String(); !strings.Contains(out, "Prudence Ward and the farmer are asleep; neither will respond if you speak to them") {
 		t.Errorf("asleep plural + descriptor wrong in:\n%s", out)
+	}
+}
+
+// ZBBS-WORK-426: a co-present RESTING actor is partitioned out of the awake
+// audience and rendered in the not-addressable clause — an NPC can't rouse a
+// rester by speaking (only a PC can), so it'd sit silent if addressed.
+func TestBuild_CoPresentRestingPartitionedFromAudience(t *testing.T) {
+	subj := &sim.ActorSnapshot{
+		Kind:                 sim.KindNPCShared,
+		InsideStructureID:    "inn",
+		ColocatedAudienceIDs: []sim.ActorID{"hannah", "rester"},
+	}
+	snap := &sim.Snapshot{
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			"prudence": subj,
+			"hannah":   {DisplayName: "Hannah Boggs"},
+			"rester":   {DisplayName: "Goodman Stark", State: sim.StateResting},
+		},
+	}
+	p := Build(snap, "prudence", nil)
+	if len(p.Surroundings.CoPresent) != 1 || p.Surroundings.CoPresent[0].ID != "hannah" {
+		t.Fatalf("CoPresent = %v, want [hannah] (rester partitioned out)", p.Surroundings.CoPresent)
+	}
+	if len(p.Surroundings.CoPresentResting) != 1 || p.Surroundings.CoPresentResting[0].ID != "rester" {
+		t.Fatalf("CoPresentResting = %v, want [rester]", p.Surroundings.CoPresentResting)
+	}
+}
+
+func TestRenderSurroundings_RestingNotAddressableAlongsideAwake(t *testing.T) {
+	var b strings.Builder
+	renderSurroundings(&b, SurroundingsView{
+		InsideStructureID: "inn",
+		StructureName:     "the Inn",
+		CoPresent:         []HuddleMember{{ID: "hannah", DisplayName: "Hannah Boggs", Acquainted: true}},
+		CoPresentResting:  []HuddleMember{{ID: "stark", DisplayName: "Goodman Stark", Acquainted: true}},
+	})
+	out := b.String()
+	if !strings.Contains(out, "Hannah Boggs is here with you — speak to start conversing with them") {
+		t.Errorf("awake line missing in:\n%s", out)
+	}
+	if !strings.Contains(out, "Goodman Stark is resting and won't respond if you speak to them") {
+		t.Errorf("resting clause missing in:\n%s", out)
+	}
+}
+
+// Jeff's combined example: one asleep + one resting render in a single clause.
+func TestRenderSurroundings_AsleepAndRestingCombined(t *testing.T) {
+	var b strings.Builder
+	renderSurroundings(&b, SurroundingsView{
+		InsideStructureID: "inn",
+		StructureName:     "the Inn",
+		CoPresentAsleep:   []HuddleMember{{ID: "prudence", DisplayName: "Prudence Ward", Acquainted: true}},
+		CoPresentResting:  []HuddleMember{{ID: "stark", DisplayName: "Goodman Stark", Acquainted: true}},
+	})
+	out := b.String()
+	if !strings.Contains(out, "Prudence Ward is asleep and Goodman Stark is resting; neither will respond if you speak to them") {
+		t.Errorf("combined asleep+resting clause wrong in:\n%s", out)
+	}
+	if !strings.Contains(out, "no one awake here to hear you speak") {
+		t.Errorf("only-dormant should note there's no awake audience, got:\n%s", out)
 	}
 }
