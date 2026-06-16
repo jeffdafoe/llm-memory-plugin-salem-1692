@@ -26,6 +26,17 @@ func TestResolveObjectByName_InRangeRefreshSource(t *testing.T) {
 	}
 }
 
+// ZBBS-WORK-417: a free source whose canonical name has no article ("Well")
+// resolves from "the well" — the asymmetric article case on the object path.
+func TestResolveObjectByName_LeadingArticleOnQuery(t *testing.T) {
+	w := bnWorld(3)
+	bnObject(w, "well", "Well", 2, "thirst", -8) // canonical name has no leading article
+	got, ok := resolveObjectByPerceivableName(w, bnActor("", ""), "the well", nil)
+	if !ok || got != "well" {
+		t.Fatalf("a leading article on the query must still resolve, got %q ok=%v, want well", got, ok)
+	}
+}
+
 func TestResolveObjectByName_OutOfRangeMiss(t *testing.T) {
 	w := bnWorld(3)
 	bnObject(w, "well", "Village Well", 9, "thirst", -8) // beyond radius 3
