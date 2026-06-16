@@ -38,10 +38,13 @@ var current_phase: String = "day"
 var _light_gradient_texture: Texture2D = null
 
 const DAY_COLOR := Color(1.0, 1.0, 1.0, 1.0)
-const GOLDEN_COLOR := Color(1.00, 0.85, 0.70, 1.0)
-const DUSK_COLOR := Color(0.95, 0.55, 0.50, 1.0)
-const BLUE_HOUR_COLOR := Color(0.55, 0.50, 0.70, 1.0)
-const NIGHT_COLOR := Color(0.42, 0.46, 0.68, 1.0)
+# Salem 1692 sundown palette (designer-tuned 2026-06-16): cold, damp, color-drained
+# New England dusk rather than a warm desert sunset. Warmth comes only from local
+# PointLight2D pools (lamps/hearths) carved out of the cold tint, not the ambient.
+const GOLDEN_COLOR := Color(0.788, 0.753, 0.663, 1.0)  # #C9C0A9 — weak low sun through cloud, not golden
+const DUSK_COLOR := Color(0.561, 0.510, 0.463, 1.0)    # #8F8276 — smoky brown-grey, color draining (no salmon)
+const BLUE_HOUR_COLOR := Color(0.314, 0.365, 0.408, 1.0)  # #505D68 — cold slate, not fantasy violet
+const NIGHT_COLOR := Color(0.184, 0.227, 0.271, 1.0)   # #2F3A45 — cold damp dark, still navigable unlit (#202A35 is the darker dramatic option)
 const PHASE_TRANSITION_DURATION := 3600.0  # 60 minutes — chained tween through golden/dusk/blue-hour stops, mid-latitude sunset pace
 
 var _phase_tween: Tween = null
