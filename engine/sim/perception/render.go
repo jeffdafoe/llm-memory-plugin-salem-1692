@@ -906,6 +906,11 @@ func renderVendorOperating(b *strings.Builder, atOwnBusiness bool) {
 // but the decision stays with the model — it judges interest (the vendor
 // block's "don't pitch unless they show interest" rule still governs) and sets
 // the price, and the buyer keeps full accept/decline agency via pay_with_item.
+// ZBBS-HOME-467 sharpens the in-cue trigger: scene_quote is for a ware the
+// buyer has actually named (or asked the price of); a generic opener ("I'm
+// hungry" / "what do you have") should get the menu, not a guessed-item quote.
+// The constraint sits next to the tool here because the distant vendor-block
+// "don't pitch unless they show interest" rule wasn't biting on a 70B keeper.
 // Content-gated: a nil/empty view skips the section. Build guarantees both
 // slices are non-empty when the view is non-nil.
 func renderOfferableCustomers(b *strings.Builder, v *OfferableCustomersView) {
@@ -931,7 +936,7 @@ func renderOfferableCustomers(b *strings.Builder, v *OfferableCustomersView) {
 		// down to empty — render nothing rather than an empty goods list.
 		return
 	}
-	fmt.Fprintf(b, "%s %s here with you. If interest is shown in your wares, name a fair price and offer it — call scene_quote with the item, the quantity, and your price in coins. Use target_buyer only for a named person you know; for a stranger or someone known only by trade, omit target_buyer to offer the whole room. The buyer is then free to take it or leave it.\n", who, verb)
+	fmt.Fprintf(b, "%s %s here with you. If one of them names a specific good they want, or asks the price of a specific good, name a fair price and call scene_quote with that named item, the quantity, and your price in coins. If they speak only in general — that they are hungry, ask what you have, or ask the cost of a meal without naming a dish — tell them what is for sale and let them choose; do not scene_quote unless the buyer has named the good. Use target_buyer only for a named person you know; for a stranger or someone known only by trade, omit target_buyer to offer the whole room. The buyer is then free to take it or leave it.\n", who, verb)
 	// ZBBS-HOME-407: the barter counterpart to the coin-sale cue above. When a
 	// customer is carrying goods the keeper would rather have than coin, point
 	// at offer_trade so a goods-for-goods swap has a legible execution path
