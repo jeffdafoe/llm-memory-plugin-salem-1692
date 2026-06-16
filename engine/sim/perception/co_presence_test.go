@@ -3,6 +3,7 @@ package perception
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
@@ -123,5 +124,64 @@ func TestRenderSurroundings_AloneStatesItPlainly(t *testing.T) {
 	renderSurroundings(&b, SurroundingsView{InsideStructureID: "inn", StructureName: "the Inn"})
 	if out := b.String(); !strings.Contains(out, "no one else here to hear you speak") {
 		t.Errorf("alone line missing in:\n%s", out)
+	}
+}
+
+// ZBBS-WORK-422 build layer: a co-present member whose most recent
+// ActionTypeWalked is within coPresentJustArrivedWindow is flagged JustArrived;
+// one that arrived long ago (settled in) is not. The arrival is read from the
+// snapshot action log, so no per-actor arrival state is needed.
+func TestBuild_CoPresentJustArrivedFromActionLog(t *testing.T) {
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	subj := &sim.ActorSnapshot{
+		Kind:                 sim.KindNPCShared,
+		InsideStructureID:    "inn",
+		ColocatedAudienceIDs: []sim.ActorID{"hannah", "newcomer"},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt: now,
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			"prudence": subj,
+			"hannah":   {DisplayName: "Hannah Boggs"},
+			"newcomer": {DisplayName: "Goodman Stark"},
+		},
+		ActionLog: []sim.ActionLogEntry{
+			// Hannah arrived 10 min ago — settled in, not "just arrived".
+			{ActorID: "hannah", ActionType: sim.ActionTypeWalked, OccurredAt: now.Add(-10 * time.Minute)},
+			// Newcomer arrived 15s ago — inside the window.
+			{ActorID: "newcomer", ActionType: sim.ActionTypeWalked, OccurredAt: now.Add(-15 * time.Second)},
+		},
+	}
+	p := Build(snap, "prudence", nil)
+	byID := make(map[sim.ActorID]HuddleMember, 2)
+	for _, m := range p.Surroundings.CoPresent {
+		byID[m.ID] = m
+	}
+	if !byID["newcomer"].JustArrived {
+		t.Errorf("newcomer arrived 15s ago — want JustArrived=true")
+	}
+	if byID["hannah"].JustArrived {
+		t.Errorf("Hannah arrived 10 min ago — want JustArrived=false")
+	}
+}
+
+// ZBBS-WORK-422 render layer: a JustArrived co-present member is tagged
+// "(just arrived)"; a settled member is not.
+func TestRenderSurroundings_JustArrivedTagged(t *testing.T) {
+	var b strings.Builder
+	renderSurroundings(&b, SurroundingsView{
+		InsideStructureID: "inn",
+		StructureName:     "the Inn",
+		CoPresent: []HuddleMember{
+			{ID: "hannah", DisplayName: "Hannah Boggs", Acquainted: true},
+			{ID: "ezekiel", DisplayName: "Ezekiel Cheever", Acquainted: true, JustArrived: true},
+		},
+	})
+	out := b.String()
+	if !strings.Contains(out, "Ezekiel Cheever (just arrived)") {
+		t.Errorf("just-arrived member should be tagged, got:\n%s", out)
+	}
+	if strings.Contains(out, "Hannah Boggs (just arrived)") {
+		t.Errorf("settled member should NOT be tagged, got:\n%s", out)
 	}
 }

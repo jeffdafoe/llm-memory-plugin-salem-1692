@@ -802,6 +802,58 @@ func finishArrival(w *World, actor *Actor, dest MoveDestination, attemptID Movem
 			},
 		}, now)
 	}
+
+	// ZBBS-WORK-422: surface this arrival to co-present PCs as a live talk-panel
+	// narration line ("X arrives at Y"), so a player in the room sees someone
+	// walk in rather than only noticing a sprite move.
+	emitArrivalNarration(w, actor, arrivedEvt, now)
+}
+
+// emitArrivalNarration emits the observer-facing arrival narration to co-present
+// PCs (ZBBS-WORK-422) as a non-private room_event via ActorArrivalNarrated. It
+// fires only when a player is actually present to read it, never for
+// decoratives, and only where the structure-scoped (room_id-less) wire frame
+// delivers correctly:
+//
+//   - conversational arriver only (a decorative NPC walking in is scenery);
+//   - a public structure or loiter scope — open ground has no nameable place and
+//     the backload doesn't cover it either; a private/staff room is left to the
+//     backload, since a room_id-less frame would otherwise leak the line to
+//     common-room observers who can't see into the back room;
+//   - at least one PC in earshot (pcBystanders) — no point narrating to no one.
+//
+// The narration text mirrors the action-log backload phrasing so a live line and
+// a later panel-open backload read identically.
+func emitArrivalNarration(w *World, actor *Actor, arrivedEvt *ActorArrived, now time.Time) {
+	switch actor.Kind {
+	case KindPC, KindNPCStateful, KindNPCShared:
+	default:
+		return
+	}
+	structureID := conversationalScopeStructure(w, actor)
+	if structureID == "" {
+		return
+	}
+	if audienceRoomScope(w, actor) != 0 {
+		return
+	}
+	if len(pcBystanders(w, actor, nil)) == 0 {
+		return
+	}
+	destName := ArrivalDestinationName(w, arrivedEvt)
+	// Mirrors renderActionLogEntry's "<name> arrives at <place>." (httpapi/pc_me.go)
+	// so the live line matches the panel backload of the same arrival — keep in sync.
+	text := actor.DisplayName + " arrives."
+	if destName != "" {
+		text = actor.DisplayName + " arrives at " + destName + "."
+	}
+	w.emit(&ActorArrivalNarrated{
+		ActorID:     actor.ID,
+		ActorName:   actor.DisplayName,
+		StructureID: structureID,
+		Text:        text,
+		At:          now,
+	})
 }
 
 // emitMoveStopped emits ActorMoveStopped for an accepted-but-failed

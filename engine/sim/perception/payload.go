@@ -664,6 +664,13 @@ type HuddleMember struct {
 	DisplayName string
 	Role        string
 	Acquainted  bool
+
+	// JustArrived marks a co-present actor that reached its current spot within
+	// the last coPresentJustArrivedWindow (ZBBS-WORK-422). Only meaningful for
+	// CoPresent members — render surfaces the newcomer-greet beat a stateless
+	// NPC can't infer from a bare co-presence list. Left false on HuddleMembers
+	// (a huddle peer's arrival is already conveyed by the huddle-join).
+	JustArrived bool
 }
 
 // AnchorsView carries the actor's own home and work structures as standing

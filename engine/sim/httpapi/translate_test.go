@@ -743,6 +743,53 @@ func TestTranslateEvent_PCRelocatedToCommonEmptyTextDropped(t *testing.T) {
 	}
 }
 
+// TestTranslateEvent_ActorArrivalNarrated (ZBBS-WORK-422): a peer arrival renders
+// as a NON-private, structure-scoped room_event so the talk panel surfaces it to
+// co-present PCs as a narration line.
+func TestTranslateEvent_ActorArrivalNarrated(t *testing.T) {
+	at := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	frame, ok := TranslateEvent(&sim.ActorArrivalNarrated{
+		ActorID:     "ezekiel",
+		ActorName:   "Ezekiel Cheever",
+		StructureID: "tavern",
+		Text:        "Ezekiel Cheever arrives at the Tavern.",
+		At:          at,
+	})
+	if !ok {
+		t.Fatal("ActorArrivalNarrated should translate")
+	}
+	if frame.Type != "room_event" {
+		t.Fatalf("type = %q, want room_event", frame.Type)
+	}
+	d, isType := frame.Data.(roomEventWireDTO)
+	if !isType {
+		t.Fatalf("data type = %T, want roomEventWireDTO", frame.Data)
+	}
+	want := roomEventWireDTO{
+		ActorID:     "ezekiel",
+		ActorName:   "Ezekiel Cheever",
+		Kind:        "peer_arrival",
+		Text:        "Ezekiel Cheever arrives at the Tavern.",
+		Private:     false,
+		StructureID: "tavern",
+		At:          at.UTC().Format(time.RFC3339),
+	}
+	if d != want {
+		t.Errorf("room_event payload = %+v, want %+v", d, want)
+	}
+	// private MUST marshal false: a true would route this through the client's
+	// actor_id-scoped private path and never reach co-present peers.
+	b, err := json.Marshal(d)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, key := range []string{`"actor_name":"Ezekiel Cheever"`, `"kind":"peer_arrival"`, `"private":false`, `"structure_id":"tavern"`} {
+		if !strings.Contains(string(b), key) {
+			t.Errorf("room_event json missing %s: %s", key, b)
+		}
+	}
+}
+
 // TestTranslateEvent_UnmappedDropped covers the default case: per-tile
 // ActorMoved is engine-internal and must not reach the client.
 func TestTranslateEvent_UnmappedDropped(t *testing.T) {

@@ -636,7 +636,9 @@ func buildSurroundings(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnap
 		// rule). Same acquaintance gating as the huddle roster; the IDs arrive
 		// pre-sorted from the world-side helper. ZBBS-WORK-407.
 		for _, id := range a.ColocatedAudienceIDs {
-			s.CoPresent = append(s.CoPresent, resolveCoPresentMember(snap, a, id))
+			m := resolveCoPresentMember(snap, a, id)
+			m.JustArrived = coPresentJustArrived(snap, id)
+			s.CoPresent = append(s.CoPresent, m)
 		}
 	}
 	return s
@@ -656,6 +658,35 @@ func resolveCoPresentMember(snap *sim.Snapshot, subj *sim.ActorSnapshot, memberI
 		_, m.Acquainted = subj.Acquaintances[m.DisplayName]
 	}
 	return m
+}
+
+// coPresentJustArrivedWindow bounds how long after an actor's arrival a
+// co-present observer still reads it as "just arrived" in "## Around you"
+// (ZBBS-WORK-422). The window trades catch-rate against staleness: a peer
+// arrival stamps NO warrant on observers (the deliberate no-force-wake choice —
+// greet/encounter huddles already cover the must-react cases), so an unhuddled
+// observer only sees the tag when it ticks for its own reasons. The window must
+// comfortably exceed the gap to that next organic tick, yet stay short enough
+// that "just arrived" doesn't linger on someone who has clearly settled in.
+const coPresentJustArrivedWindow = 90 * time.Second
+
+// coPresentJustArrived reports whether memberID reached its current spot within
+// coPresentJustArrivedWindow of the snapshot's publish time. It reads the
+// arrival straight from the snapshot action log (every arrival is recorded as
+// an ActionTypeWalked entry — see the action-log substrate), so it needs no new
+// per-actor state and no checkpoint column for what is a transient signal. A
+// member's most recent ActionTypeWalked IS its arrival at the current spot
+// (moving away mints a fresh entry), so any such entry within the window means
+// it just got here. O(log) per member; the log is small (capped retention).
+func coPresentJustArrived(snap *sim.Snapshot, memberID sim.ActorID) bool {
+	cutoff := snap.PublishedAt.Add(-coPresentJustArrivedWindow)
+	for i := range snap.ActionLog {
+		e := snap.ActionLog[i]
+		if e.ActorID == memberID && e.ActionType == sim.ActionTypeWalked && !e.OccurredAt.Before(cutoff) {
+			return true
+		}
+	}
+	return false
 }
 
 // buildTurnState derives the subject's conversation turn-state (ZBBS-WORK-370)

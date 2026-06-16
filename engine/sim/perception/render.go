@@ -696,7 +696,15 @@ func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 		// set the speak path would reach (ZBBS-WORK-407).
 		names := make([]string, len(s.CoPresent))
 		for i, m := range s.CoPresent {
-			names[i] = descriptorLabel(m.DisplayName, m.Role, m.Acquainted)
+			label := descriptorLabel(m.DisplayName, m.Role, m.Acquainted)
+			if m.JustArrived {
+				// ZBBS-WORK-422: flag a newcomer so a stateless NPC reads the
+				// "someone just walked up — greet them" beat. Without it a fresh
+				// arrival is indistinguishable from someone who has stood here a
+				// while, since "## Around you" only lists standing presence.
+				label += " (just arrived)"
+			}
+			names[i] = label
 		}
 		verb := "is"
 		if len(names) > 1 {
