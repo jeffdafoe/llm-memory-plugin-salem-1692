@@ -429,6 +429,75 @@ func TestTownCrierToursAtBothBoundaries(t *testing.T) {
 	}
 }
 
+// TestNextNoticeboardStateHonorsAlgo: the crier's board flip picks per the
+// asset's RotationAlgo — the v1 "vary the board" setting the pre-446
+// sequential-only path dropped. Deterministic cycles in ID order; a random
+// algo lands on a varied non-current state (including the empty variant)
+// instead of the predictable sequential next.
+func TestNextNoticeboardStateHonorsAlgo(t *testing.T) {
+	// Production-shaped pool sorted by ID: variant-1 is the empty
+	// (zero-capacity) board, variant-2..5 carry content. The deterministic
+	// next after v4 is v5, and v5 wraps to v1.
+	pool := []*sim.AssetState{
+		{ID: 1, State: "v1"},
+		{ID: 2, State: "v2"},
+		{ID: 3, State: "v3"},
+		{ID: 4, State: "v4"},
+		{ID: 5, State: "v5"},
+	}
+	rng := newDeterministicRand()
+
+	// Deterministic: strict sequential wrap.
+	if got := nextNoticeboardState(sim.RotationAlgoDeterministic, pool, "v4", rng); got != "v5" {
+		t.Errorf("deterministic v4 -> %q, want v5", got)
+	}
+	if got := nextNoticeboardState(sim.RotationAlgoDeterministic, pool, "v5", rng); got != "v1" {
+		t.Errorf("deterministic v5 -> %q, want wrap to v1", got)
+	}
+
+	// Unset / unknown algo falls back to the same sequential wrap — an
+	// intentional difference from the bulk rotation path (which opts a
+	// blank-algo asset OUT of rotation entirely); the crier must never
+	// freeze a board it can't flip.
+	if got := nextNoticeboardState("", pool, "v4", rng); got != "v5" {
+		t.Errorf("unset algo v4 -> %q, want sequential v5", got)
+	}
+	if got := nextNoticeboardState("bogus", pool, "v5", rng); got != "v1" {
+		t.Errorf("unknown algo v5 -> %q, want sequential wrap v1", got)
+	}
+
+	// Random: never returns current, and across many draws from a fixed
+	// state visits a spread of the pool — proving the pick is genuinely
+	// random, not collapsed to the sequential next. The empty variant (v1)
+	// must be reachable from a non-adjacent state (acceptable landing).
+	seen := map[string]bool{}
+	for i := 0; i < 500; i++ {
+		got := nextNoticeboardState(sim.RotationAlgoRandomPerObject, pool, "v3", rng)
+		if got == "v3" {
+			t.Fatalf("random pick returned the current state %q", got)
+		}
+		seen[got] = true
+	}
+	if len(seen) < 3 {
+		t.Errorf("random pick from v3 reached only %d distinct states (%v) — expected a spread, not a fixed sequential next", len(seen), seen)
+	}
+	if !seen["v1"] {
+		t.Error("random pick never reached the empty variant v1 — it should be a possible (acceptable) landing state")
+	}
+
+	// random_per_asset collapses to the same per-board random behavior.
+	if got := nextNoticeboardState(sim.RotationAlgoRandomPerAsset, pool, "v3", rng); got == "v3" {
+		t.Errorf("random_per_asset returned the current state %q", got)
+	}
+
+	// Single-state pool: no alternative — returns that state (the caller
+	// then drops the resulting no-op flip).
+	single := []*sim.AssetState{{ID: 1, State: "only"}}
+	if got := nextNoticeboardState(sim.RotationAlgoRandomPerObject, single, "only", rng); got != "only" {
+		t.Errorf("single-state random pick -> %q, want only", got)
+	}
+}
+
 // TestRouteScheduleWrapMidnightWindow: the stamp comparison stays sound
 // across a wrap-midnight window (22:00–02:00). The start boundary
 // resolves to YESTERDAY's 22:00 for an early-morning tick; the stamp
