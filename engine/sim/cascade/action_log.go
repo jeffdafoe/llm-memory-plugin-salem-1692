@@ -339,24 +339,9 @@ func handleActorArrivedActionLog(w *sim.World, evt sim.Event) {
 	if !ok {
 		return
 	}
-	text := ""
-	switch {
-	case arrived.DestStructureID != "":
-		if s, ok := w.Structures[arrived.DestStructureID]; ok {
-			text = s.DisplayName
-		}
-	case arrived.DestObjectID != "":
-		if o, ok := w.VillageObjects[arrived.DestObjectID]; ok {
-			text = o.DisplayName
-		}
-	}
-	// Bare Position arrival that nonetheless ended inside a structure footprint:
-	// name that structure (the destination union named no place).
-	if text == "" && arrived.FinalStructureID != "" {
-		if s, ok := w.Structures[arrived.FinalStructureID]; ok {
-			text = s.DisplayName
-		}
-	}
+	// Destination DisplayName, resolved by the shared helper so this backload
+	// entry and the live arrival narration (ZBBS-WORK-422) name the same place.
+	text := sim.ArrivalDestinationName(w, arrived)
 	entry := sim.ActionLogEntry{
 		ActorID:    arrived.ActorID,
 		OccurredAt: arrived.At,
