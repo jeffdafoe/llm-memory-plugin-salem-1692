@@ -383,17 +383,18 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 		}}, true
 	case *sim.PayWithItemResolved:
 		return WireFrame{Type: "pay_resolved", Data: payResolvedWireDTO{
-			LedgerID:      uint64(e.LedgerID),
-			BuyerID:       string(e.BuyerID),
-			SellerID:      string(e.SellerID),
-			Item:          string(e.ItemKind),
-			Qty:           e.QtyPerConsumer,
-			Amount:        e.Amount,
-			TerminalState: string(e.TerminalState),
-			Message:       e.Message,
-			HuddleID:      string(e.HuddleID),
-			SceneID:       string(e.SceneID),
-			At:            e.At.UTC().Format(time.RFC3339),
+			LedgerID:       uint64(e.LedgerID),
+			BuyerID:        string(e.BuyerID),
+			SellerID:       string(e.SellerID),
+			Item:           string(e.ItemKind),
+			Qty:            e.QtyPerConsumer,
+			Amount:         e.Amount,
+			TerminalState:  string(e.TerminalState),
+			BuyerTookQuote: e.BuyerTookQuote,
+			Message:        e.Message,
+			HuddleID:       string(e.HuddleID),
+			SceneID:        string(e.SceneID),
+			At:             e.At.UTC().Format(time.RFC3339),
 		}}, true
 	case *sim.PCSleepStarted:
 		return WireFrame{Type: "pc_sleep_started", Data: pcSleepStartedWireDTO{
@@ -809,18 +810,22 @@ type payCounteredWireDTO struct {
 // note (empty otherwise). On accepted, this is the frame that confirms the
 // transfer; the goods themselves move at deliver_order time for a
 // take-home order. ledger_id correlates with the originating pay_offer.
+// buyer_took_quote is true only on an instant quote-take (the seller posted
+// the offer, the buyer took it); the client uses it to word the accepted line
+// ("you took their offer" vs the backwards "they accepted your offer").
 type payResolvedWireDTO struct {
-	LedgerID      uint64 `json:"ledger_id"`
-	BuyerID       string `json:"buyer_id"`
-	SellerID      string `json:"seller_id"`
-	Item          string `json:"item"`
-	Qty           int    `json:"qty"`
-	Amount        int    `json:"amount"`
-	TerminalState string `json:"terminal_state"`
-	Message       string `json:"message,omitempty"`
-	HuddleID      string `json:"huddle_id,omitempty"`
-	SceneID       string `json:"scene_id,omitempty"`
-	At            string `json:"at"`
+	LedgerID       uint64 `json:"ledger_id"`
+	BuyerID        string `json:"buyer_id"`
+	SellerID       string `json:"seller_id"`
+	Item           string `json:"item"`
+	Qty            int    `json:"qty"`
+	Amount         int    `json:"amount"`
+	TerminalState  string `json:"terminal_state"`
+	BuyerTookQuote bool   `json:"buyer_took_quote,omitempty"`
+	Message        string `json:"message,omitempty"`
+	HuddleID       string `json:"huddle_id,omitempty"`
+	SceneID        string `json:"scene_id,omitempty"`
+	At             string `json:"at"`
 }
 
 // pcSleepStartedWireDTO is the pc_sleep_started payload — a PC bedded down

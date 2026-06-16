@@ -2908,12 +2908,25 @@ func _on_pay_resolved(data: Dictionary) -> void:
     var state := str(data.get("terminal_state", ""))
     var msg := str(data.get("message", ""))
     var at := str(data.get("at", ""))
+    # ZBBS-WORK-420: true only when this resolved via the instant quote-take
+    # fast-path (the seller posted a scene_quote and the PC took it). Lets the
+    # "accepted" copy say "you took their offer" instead of the backwards "they
+    # accepted your offer". Absent/false for a buyer-initiated offer the seller
+    # later accepts.
+    var buyer_took_quote := bool(data.get("buyer_took_quote", false))
     var text := ""
     match state:
         "accepted":
             if pc_is_buyer:
-                text = "%s accepted your offer — %s for %s." % [seller_name, coins, item_phrase]
+                if buyer_took_quote:
+                    text = "You took %s's offer — %s for %s." % [seller_name, coins, item_phrase]
+                else:
+                    text = "%s accepted your offer — %s for %s." % [seller_name, coins, item_phrase]
             else:
+                # Seller side: the PC accepted a buyer's pending offer. A
+                # PC-posted quote an NPC took would also land here with
+                # buyer_took_quote true, but PCs don't post scene_quotes today,
+                # so that case can't occur — revisit this copy if they ever do.
                 text = "You accepted %s's offer — %s for %s." % [buyer_name, coins, item_phrase]
         "declined":
             if pc_is_buyer:

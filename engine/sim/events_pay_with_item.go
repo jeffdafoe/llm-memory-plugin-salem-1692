@@ -208,6 +208,17 @@ type PayWithItemResolved struct {
 	TerminalState PayTerminalState
 	Message       string
 
+	// BuyerTookQuote is true only on an instant quote-take fast-path accept:
+	// the buyer's pay_with_item referenced a posted scene_quote and every
+	// fast-path predicate passed, so the entry was minted already-accepted
+	// (runPayWithItemFastPath) without ever sitting pending. It is the
+	// initiation-direction discriminator the client needs — a take means the
+	// SELLER posted the offer and the buyer took it, distinct from the
+	// slow-path Accepted where the seller accepts the buyer's pending offer.
+	// False on every other terminal (slow-path accept, decline, withdraw,
+	// expire, fail). ZBBS-WORK-420.
+	BuyerTookQuote bool
+
 	SceneID  SceneID
 	HuddleID HuddleID
 	At       time.Time
