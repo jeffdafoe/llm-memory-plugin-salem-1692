@@ -378,13 +378,52 @@ func TestSubscriber_ServeHandover_NotStampedOnSlowPathAccept(t *testing.T) {
 	})
 	defer stop()
 	now := time.Now().UTC()
-	res, _ := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, nil, 0, 0, "", now))
+	res, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, nil, 0, 0, "", now))
+	if err != nil {
+		t.Fatalf("PayWithItem slow-path: %v", err)
+	}
 	ledgerID := res.(sim.PayWithItemResult).LedgerID
 	if _, err := w.Send(sim.AcceptPay("bob", ledgerID, now)); err != nil {
 		t.Fatalf("AcceptPay: %v", err)
 	}
 	if meta, ok := firstByKind(readWarrants(t, w, "bob"), sim.WarrantKindServeHandover); ok {
 		t.Errorf("seller got a ServeHandover warrant on a slow-path accept: %+v", meta)
+	}
+}
+
+// Locks the dedup claim: with the handlers registered twice, every subscriber
+// fires twice per event, so the serve-handover stamp would double up unless
+// tryStampWarrant's (Kind, DedupDiscriminator) key collapses it. Exactly one
+// warrant must survive.
+func TestSubscriber_ServeHandover_DedupsOnDoubleRegistration(t *testing.T) {
+	w, stop := buildReactorWorld(t, []reactorActor{
+		{id: "alice", displayName: "Alice", kind: sim.KindNPCShared, huddleID: "h1", coins: 50},
+		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1", inventory: map[sim.ItemKind]int{"stew": 5}},
+	})
+	defer stop()
+	now := time.Now().UTC()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		handlers.RegisterPayWithItemHandlers(world) // second registration
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("second RegisterPayWithItemHandlers: %v", err)
+	}
+	seedActiveQuote(t, w, sim.SceneQuote{
+		ID: 10, SceneID: "sc1", SellerID: "bob", ItemKind: "stew",
+		Qty: 1, Amount: 4, ConsumeNow: true, State: sim.SceneQuoteStateActive,
+		CreatedAt: now, ExpiresAt: now.Add(10 * time.Minute),
+	})
+	if _, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, true, nil, nil, 10, 0, "", now)); err != nil {
+		t.Fatalf("PayWithItem fast-path: %v", err)
+	}
+	count := 0
+	for _, m := range readWarrants(t, w, "bob") {
+		if m.Kind() == sim.WarrantKindServeHandover {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("ServeHandover warrant count = %d, want exactly 1 (dedup on double registration)", count)
 	}
 }
 
