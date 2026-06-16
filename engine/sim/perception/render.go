@@ -1660,12 +1660,17 @@ func renderBasicWarrantLine(n int, kind sim.WarrantKind, who string) string {
 	case sim.WarrantKindHuddleConcluded:
 		return fmt.Sprintf("%d. Your conversation has broken up.\n", n)
 	default:
-		// A kind with no felt template and a real other actor — name them;
-		// otherwise (self-triggered, or unresolvable) keep it vague.
+		// A kind with no felt template lands here — an unhandled warrant kind, or
+		// a narration warrant (dwell/consumed) whose text came back empty and fell
+		// through renderNarrationWarrantLine. The line is useless to the model
+		// either way; we tag it with the originating warrant kind (ZBBS-WORK-417)
+		// so an operator who spots a vague "something happened" can trace its
+		// source from the prompt alone — the kind is otherwise consumed by this
+		// switch and never shown, and the engine's per-tick ring resets on restart.
 		if who != "" && who != "someone" && who != "you" {
-			return fmt.Sprintf("%d. Something happened involving %s.\n", n, who)
+			return fmt.Sprintf("%d. Something happened involving %s. [debug: unrendered warrant kind=%q]\n", n, who, kind)
 		}
-		return fmt.Sprintf("%d. Something happened nearby.\n", n)
+		return fmt.Sprintf("%d. Something happened nearby. [debug: unrendered warrant kind=%q]\n", n, kind)
 	}
 }
 
