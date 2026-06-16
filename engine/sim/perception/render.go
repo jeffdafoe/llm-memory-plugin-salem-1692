@@ -1534,7 +1534,10 @@ func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(
 		renderable = append(renderable, wm)
 	}
 	warrants = renderable
-	b.WriteString("## What just happened — address these\n")
+	// Neutral event log, not an imperative: a self-caused beat (you arrived where
+	// you walked to) is nothing to "address", and the act-now coda already carries
+	// the "respond to this" weight, so "— address these" over-claimed (ZBBS-WORK-419).
+	b.WriteString("## What just happened\n")
 	if len(warrants) == 0 {
 		b.WriteString("(nothing specific — this is a routine check-in)\n")
 		return
