@@ -1631,6 +1631,8 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 		return renderQuoteWarrantLine(n, nameOf(r.SellerID), r, eatHereKind(r.ItemKind)), false
 	case sim.PayResolvedWarrantReason:
 		return renderPayResolvedWarrantLine(n, nameOf(r.Seller), r, maxTextBytes), false
+	case sim.ServeHandoverWarrantReason:
+		return renderServeHandoverWarrantLine(n, nameOf(r.Buyer), r), false
 	default:
 		return renderBasicWarrantLine(n, w.Kind(), nameOf(w.TriggerActorID)), false
 	}
@@ -1763,6 +1765,38 @@ func renderPayResolvedWarrantLine(n int, seller string, r sim.PayResolvedWarrant
 	default:
 		return fmt.Sprintf("%d. Your offer to %s for %s fell through.\n", n, seller, qty)
 	}
+}
+
+// renderServeHandoverWarrantLine renders, to the SELLER, the moment a buyer
+// instantly took their posted quote (ZBBS-WORK-423). The settle already
+// happened — coins and goods have changed hands — so this isn't a decision
+// cue; it states the sale and steers the handover BEAT. The instant quote-take
+// is the one serving path that never ticks the seller, so unlike deliver_order
+// (whose tool description steers "pair with a brief speak") there's nothing
+// else asking the keeper to acknowledge the customer. "Hand it over with a
+// word" is that steer, kept to a greeting beat — not a re-pitch (a greeting is
+// not a sale). The model voices the line in character; the engine doesn't
+// supply the words. buyer is pre-resolved by the caller.
+func renderServeHandoverWarrantLine(n int, buyer string, r sim.ServeHandoverWarrantReason) string {
+	if buyer == "" {
+		buyer = "someone"
+	}
+	unit := "coins"
+	if r.Amount == 1 {
+		unit = "coin"
+	}
+	item := sanitizeInline(string(r.ItemKind))
+	qty := item
+	if r.Qty > 1 {
+		qty = fmt.Sprintf("%d %s", r.Qty, item)
+	}
+	// ConsumeNow is the buyer's disposition term (ZBBS-WORK-402): when they're
+	// eating on the spot, say so, so the keeper's line fits a sit-down serve
+	// rather than a counter handoff.
+	if r.ConsumeNow {
+		return fmt.Sprintf("%d. %s paid you %d %s for %s, to eat here now. Hand it over with a word.\n", n, buyer, r.Amount, unit, qty)
+	}
+	return fmt.Sprintf("%d. %s paid you %d %s for %s. Hand it over with a word.\n", n, buyer, r.Amount, unit, qty)
 }
 
 // renderNarrationWarrantLine renders a felt-language self-perception beat

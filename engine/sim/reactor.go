@@ -62,10 +62,11 @@ const (
 	WarrantKindDwellStarted       WarrantKind = "dwell_started"
 	WarrantKindDwellTickApplied   WarrantKind = "dwell_tick_applied"
 	WarrantKindDwellEnded         WarrantKind = "dwell_ended"
-	WarrantKindConsumed           WarrantKind = "consumed" // immediate consume self-narration beat
-	WarrantKindAdmin              WarrantKind = "admin"    // operator forced a bare tick
-	WarrantKindImpulse            WarrantKind = "impulse"  // operator-injected in-world felt impulse (umbilical directive nudge)
-	WarrantKindStranded           WarrantKind = "stranded" // anomalous-position backstop: standing in the open at no anchor (ZBBS-HOME-450)
+	WarrantKindConsumed           WarrantKind = "consumed"       // immediate consume self-narration beat
+	WarrantKindAdmin              WarrantKind = "admin"          // operator forced a bare tick
+	WarrantKindImpulse            WarrantKind = "impulse"        // operator-injected in-world felt impulse (umbilical directive nudge)
+	WarrantKindStranded           WarrantKind = "stranded"       // anomalous-position backstop: standing in the open at no anchor (ZBBS-HOME-450)
+	WarrantKindServeHandover      WarrantKind = "serve_handover" // a buyer instantly took the seller's posted quote — wake the seller to hand over with a word (ZBBS-WORK-423)
 )
 
 // WarrantReason is the marker interface for kind-specific warrant payloads.
@@ -379,6 +380,45 @@ type PayResolvedWarrantReason struct {
 func (PayResolvedWarrantReason) isWarrantReason()             {}
 func (PayResolvedWarrantReason) Kind() WarrantKind            { return WarrantKindPayResolved }
 func (r PayResolvedWarrantReason) DedupDiscriminator() uint64 { return uint64(r.ResolvedEventID) }
+
+// ServeHandoverWarrantReason captures the SELLER side of an instant
+// quote-take (ZBBS-WORK-423). When a buyer takes a keeper's posted scene
+// quote, runPayWithItemFastPath mints the entry already-accepted and emits
+// PayWithItemResolved{Accepted, BuyerTookQuote} — but it never ticks the
+// seller (the offer never sat pending, so there's no PayOfferReceived → no
+// seller warrant, and pay_with_item emits no Paid event either). The keeper
+// therefore stays silent at the most player-facing serving moment, unlike the
+// deliver_order path where the seller IS ticked and the tool steers a handover
+// speak. This reason wakes the seller's next reactor tick so the model voices
+// the handover in character (perception/render.go steers "hand it over with a
+// word" — the model speaks, no engine phrase pool).
+//
+// Stamped only on Accepted && BuyerTookQuote (the fast-path take). A slow-path
+// Accepted means the seller ran accept_pay on their own tick and already had
+// the floor, so it gets no serve warrant. Co-presence is structural: a
+// fast-path take requires buyer + seller share a huddle (fast-path gate 3).
+//
+// Buyer is the taker (PC or NPC — both run the fast path); surfaces as the
+// addressee in the seller's cue. ConsumeNow rides so the cue can say "to eat
+// here now" when the buyer is consuming on the spot (the buyer's disposition
+// term, ZBBS-WORK-402) versus a plain take-home handover.
+//
+// Dedup key is uint64(ResolvedEventID), same event as the buyer's
+// PayResolvedWarrantReason — but a distinct WarrantKind, so the two stamps off
+// the one event don't collide.
+type ServeHandoverWarrantReason struct {
+	LedgerID        LedgerID
+	Buyer           ActorID
+	ItemKind        ItemKind
+	Qty             int
+	Amount          int
+	ConsumeNow      bool
+	ResolvedEventID EventID
+}
+
+func (ServeHandoverWarrantReason) isWarrantReason()             {}
+func (ServeHandoverWarrantReason) Kind() WarrantKind            { return WarrantKindServeHandover }
+func (r ServeHandoverWarrantReason) DedupDiscriminator() uint64 { return uint64(r.ResolvedEventID) }
 
 // IdleBackstopWarrantReason captures an engine-injected liveness tick —
 // the actor has been quiet for longer than WorldSettings.IdleBackstopThreshold

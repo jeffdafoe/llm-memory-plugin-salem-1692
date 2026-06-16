@@ -770,3 +770,61 @@ func TestRenderWarrantLine_Stranded(t *testing.T) {
 		t.Error("stranded line reported truncation — it has no free-text payload")
 	}
 }
+
+// --- serve-handover warrant (ZBBS-WORK-423) -------------------------------
+
+func serveHandoverWarrant(eventID sim.EventID, buyer sim.ActorID, item sim.ItemKind, qty, amount int, consumeNow bool) sim.WarrantMeta {
+	return sim.WarrantMeta{
+		TriggerActorID: buyer,
+		Reason: sim.ServeHandoverWarrantReason{
+			Buyer: buyer, ItemKind: item, Qty: qty, Amount: amount,
+			ConsumeNow: consumeNow, ResolvedEventID: eventID,
+		},
+		SourceEventID: eventID,
+	}
+}
+
+// The seller's cue states the settle and steers the handover speak. Eat-here
+// takes name the on-the-spot disposition; take-home omits it. Coin singular/
+// plural and qty follow the rest of the warrant lines.
+func TestRender_ServeHandoverWarrantLine(t *testing.T) {
+	cases := []struct {
+		name       string
+		qty        int
+		amount     int
+		consumeNow bool
+		want       []string
+		notWant    []string
+	}{
+		{"eat_here", 1, 8, true,
+			[]string{"Jefferey paid you 8 coins for stew, to eat here now.", "Hand it over with a word."}, nil},
+		{"take_home", 1, 8, false,
+			[]string{"Jefferey paid you 8 coins for stew.", "Hand it over with a word."},
+			[]string{"to eat here now"}},
+		{"plural_qty_singular_coin", 2, 1, true,
+			[]string{"Jefferey paid you 1 coin for 2 stew, to eat here now."},
+			[]string{"1 coins"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := Payload{
+				ActorID:           "bob", // the seller reads this cue
+				Actor:             ActorView{State: sim.StateIdle},
+				Warrants:          []sim.WarrantMeta{serveHandoverWarrant(7, "alice", "stew", tc.qty, tc.amount, tc.consumeNow)},
+				WarrantActorNames: map[sim.ActorID]string{"alice": "Jefferey"},
+				Baseline:          BaselinePresent,
+			}
+			out := Render(p, DefaultRenderConfig())
+			for _, w := range tc.want {
+				if !strings.Contains(out.Text, w) {
+					t.Errorf("missing %q\nOutput:\n%s", w, out.Text)
+				}
+			}
+			for _, nw := range tc.notWant {
+				if strings.Contains(out.Text, nw) {
+					t.Errorf("unexpected %q\nOutput:\n%s", nw, out.Text)
+				}
+			}
+		})
+	}
+}

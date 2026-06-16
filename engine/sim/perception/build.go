@@ -988,6 +988,8 @@ func buildWarrantActorNames(snap *sim.Snapshot, subject *sim.ActorSnapshot, subj
 			add(r.SellerID)
 		case sim.PayResolvedWarrantReason:
 			add(r.Seller)
+		case sim.ServeHandoverWarrantReason:
+			add(r.Buyer)
 		}
 	}
 	// The standing offer view renders buyers on ticks that carry no offer
