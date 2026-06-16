@@ -11,7 +11,7 @@ import (
 // that turn pay-with-item lifecycle events into reactor warrants on
 // the affected NPCs.
 //
-// Three subscribers ship together because the offer state machine is
+// Four subscribers ship together because the offer state machine is
 // one logical unit (architecture note § 11):
 //
 //   - PayOfferReceived  → stamps PayOfferWarrantReason on the seller.
@@ -33,6 +33,16 @@ import (
 //                    because the commerce isn't ENDED — the buyer's
 //                    optional response is a fresh
 //                    pay_with_item(in_response_to=parent_id, ...).
+//
+//   - PayWithItemResolved → ALSO stamps ServeHandoverWarrantReason on the
+//                           SELLER, but only on Accepted && BuyerTookQuote
+//                           (the instant quote-take). That fast path never
+//                           ticks the seller, so the keeper would otherwise
+//                           stay silent while handing the goods over
+//                           (ZBBS-WORK-423). A separate subscriber, not a
+//                           branch in the buyer one, because the buyer
+//                           subscriber returns early for PC buyers — and a
+//                           PC taking a keeper's quote is the headline case.
 //
 // All three skip non-NPC targets (PCs don't deliberate via the
 // reactor; PC perception of pay-ledger resolutions surfaces via the
@@ -212,26 +222,96 @@ func handlePayCounteredWarrants(w *sim.World, evt sim.Event) {
 	}
 }
 
-// RegisterPayWithItemHandlers wires all three pay-with-item event
-// subscribers into the world (PayOfferReceived, PayWithItemResolved,
-// PayCountered). Separate from RegisterPayHandlers /
-// RegisterSpeechHandlers / RegisterSceneQuoteHandlers for the same
-// opt-in-piecewise reason — a build that wants speech + pay but not
-// the item-commerce flow can omit this. Must run on the world
-// goroutine — call before World.Run or from inside a Command.Fn.
+// handleServeHandoverWarrants is the SELLER-side PayWithItemResolved
+// subscriber. It stamps ServeHandoverWarrantReason on the seller when a buyer
+// instantly took their posted quote (Accepted && BuyerTookQuote), so the
+// keeper's next reactor tick voices the handover. The fast-path take mints the
+// entry already-accepted and never ticks the seller — and pay_with_item emits
+// no Paid event — so without this the keeper is silent at the serving moment
+// (ZBBS-WORK-423).
+//
+// Gating differs from handlePayResolvedWarrants on purpose:
+//   - Only Accepted && BuyerTookQuote. A slow-path Accepted means the seller
+//     ran accept_pay on its own tick and already had the floor; a fresh
+//     warrant would be redundant (and risk a double beat).
+//   - Does NOT gate on BUYER kind. A PC taking a keeper's quote is the
+//     headline case, and the buyer subscriber returns early for PC buyers —
+//     which is exactly why this is a separate subscriber, not a branch there.
+//   - Skips a non-NPC SELLER (PC / decorative): PCs don't deliberate via the
+//     reactor, and a decorative actor can't speak. PC-as-seller commerce isn't
+//     shipped yet (see PayOfferWarrantReason).
+//
+// Co-presence is structural — runPayWithItemFastPath gate 3 requires buyer and
+// seller share a huddle — so the seller is always within earshot at stamp time.
+func handleServeHandoverWarrants(w *sim.World, evt sim.Event) {
+	resolved, ok := evt.(*sim.PayWithItemResolved)
+	if !ok {
+		return
+	}
+	if resolved.TerminalState != sim.PayTerminalStateAccepted || !resolved.BuyerTookQuote {
+		return
+	}
+	if resolved.SellerID == "" {
+		return
+	}
+	seller, ok := w.Actors[resolved.SellerID]
+	if !ok || seller == nil {
+		return
+	}
+	if seller.Kind != sim.KindNPCStateful && seller.Kind != sim.KindNPCShared {
+		return // PC / decorative seller — no reactor deliberation
+	}
+
+	now := time.Now().UTC()
+	meta := sim.WarrantMeta{
+		TriggerActorID: resolved.BuyerID,
+		Force:          false,
+		Reason: sim.ServeHandoverWarrantReason{
+			LedgerID:        resolved.LedgerID,
+			Buyer:           resolved.BuyerID,
+			ItemKind:        resolved.ItemKind,
+			Qty:             resolved.QtyPerConsumer,
+			Amount:          resolved.Amount,
+			ConsumeNow:      resolved.ConsumeNow,
+			ResolvedEventID: resolved.EventID(),
+		},
+		SourceEventID: resolved.EventID(),
+		RootEventID:   resolved.RootEventID(),
+		SourceActorID: resolved.BuyerID,
+		HuddleID:      resolved.HuddleID,
+		SceneID:       resolved.SceneID,
+		OccurredAt:    resolved.At,
+	}
+	if _, err := sim.StampWarrant(resolved.SellerID, meta, now).Fn(w); err != nil {
+		log.Printf(
+			"handlers: pay-with-item-reactor serve-handover StampWarrant for seller %q (ledger %d, event %d): %v",
+			resolved.SellerID, resolved.LedgerID, resolved.EventID(), err,
+		)
+	}
+}
+
+// RegisterPayWithItemHandlers wires all four pay-with-item event
+// subscribers into the world (PayOfferReceived, PayWithItemResolved ×2 —
+// buyer resolution + seller serve-handover — and PayCountered). Separate from
+// RegisterPayHandlers / RegisterSpeechHandlers / RegisterSceneQuoteHandlers
+// for the same opt-in-piecewise reason — a build that wants speech + pay but
+// not the item-commerce flow can omit this. Must run on the world goroutine —
+// call before World.Run or from inside a Command.Fn.
 //
 // Idempotency: registering twice would invoke each subscriber twice
 // per event, but tryStampWarrant's source-aware dedup catches the
 // duplicate. For PayOfferReceived: (WarrantKindPayOffer, LedgerID) is
-// the key — same key both times, second drop. For
-// PayWithItemResolved / PayCountered: (WarrantKindPayResolved,
-// ResolvedEventID) — same.
+// the key — same key both times, second drop. For the buyer resolution /
+// PayCountered: (WarrantKindPayResolved, ResolvedEventID). For the seller
+// serve-handover: (WarrantKindServeHandover, ResolvedEventID) — a distinct
+// kind, so it never collides with the buyer warrant off the same event.
 func RegisterPayWithItemHandlers(w *sim.World) {
 	if w == nil {
 		panic("handlers: RegisterPayWithItemHandlers requires a non-nil world")
 	}
 	w.Subscribe(sim.SubscriberFunc(handlePayOfferReceivedWarrants))
 	w.Subscribe(sim.SubscriberFunc(handlePayResolvedWarrants))
+	w.Subscribe(sim.SubscriberFunc(handleServeHandoverWarrants))
 	w.Subscribe(sim.SubscriberFunc(handlePayCounteredWarrants))
 }
 

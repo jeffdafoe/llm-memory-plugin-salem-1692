@@ -282,6 +282,113 @@ func TestSubscriber_PayCountered_StampsBuyerWithCounterTerms(t *testing.T) {
 }
 
 // ====================================================================
+// ServeHandover subscriber (ZBBS-WORK-423) — seller-side wake on an
+// instant quote-take so the keeper voices the handover.
+// ====================================================================
+
+// seedActiveQuote installs an active scene quote so a pay_with_item with a
+// matching quote_id hits runPayWithItemFastPath (the instant take). Mirrors
+// the sim-package seedQuote helper, inlined because that one is unexported in
+// a different package.
+func seedActiveQuote(t *testing.T, w *sim.World, q sim.SceneQuote) {
+	t.Helper()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		cp := q
+		world.Quotes[q.ID] = &cp
+		if scene := world.Scenes[q.SceneID]; scene != nil {
+			scene.QuoteIDs = append(scene.QuoteIDs, q.ID)
+		}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seedActiveQuote: %v", err)
+	}
+}
+
+func TestSubscriber_ServeHandover_StampsSellerOnQuoteTake(t *testing.T) {
+	w, stop := buildReactorWorld(t, []reactorActor{
+		{id: "alice", displayName: "Alice", kind: sim.KindNPCShared, huddleID: "h1", coins: 50},
+		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1", inventory: map[sim.ItemKind]int{"stew": 5}},
+	})
+	defer stop()
+	now := time.Now().UTC()
+	seedActiveQuote(t, w, sim.SceneQuote{
+		ID: 8, SceneID: "sc1", SellerID: "bob", ItemKind: "stew",
+		Qty: 1, Amount: 4, ConsumeNow: true, State: sim.SceneQuoteStateActive,
+		CreatedAt: now, ExpiresAt: now.Add(10 * time.Minute),
+	})
+	res, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, true, nil, nil, 8, 0, "", now))
+	if err != nil {
+		t.Fatalf("PayWithItem fast-path: %v", err)
+	}
+	result := res.(sim.PayWithItemResult)
+	if !result.FastPath {
+		t.Fatalf("expected a fast-path take, got %+v", result)
+	}
+	meta, ok := firstByKind(readWarrants(t, w, "bob"), sim.WarrantKindServeHandover)
+	if !ok {
+		t.Fatalf("no ServeHandover warrant on seller bob; warrants = %+v", readWarrants(t, w, "bob"))
+	}
+	reason := meta.Reason.(sim.ServeHandoverWarrantReason)
+	if reason.Buyer != "alice" || reason.ItemKind != "stew" || reason.Qty != 1 || reason.Amount != 4 {
+		t.Errorf("payload = %+v", reason)
+	}
+	if !reason.ConsumeNow {
+		t.Error("ConsumeNow = false, want true (eat-here take)")
+	}
+	if reason.LedgerID != result.LedgerID {
+		t.Errorf("LedgerID = %d, want %d", reason.LedgerID, result.LedgerID)
+	}
+	if reason.DedupDiscriminator() != uint64(meta.SourceEventID) {
+		t.Errorf("DedupDiscriminator = %d, want SourceEventID %d", reason.DedupDiscriminator(), meta.SourceEventID)
+	}
+}
+
+// The headline case + the reason this is a separate subscriber: a PC takes the
+// keeper's quote. The buyer subscriber returns early for PC buyers, but the
+// seller must STILL be warranted to acknowledge the customer.
+func TestSubscriber_ServeHandover_StampsSellerWhenPCBuyerTakes(t *testing.T) {
+	w, stop := buildReactorWorld(t, []reactorActor{
+		{id: "pc-jeff", displayName: "Jefferey", kind: sim.KindPC, huddleID: "h1", coins: 50},
+		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1", inventory: map[sim.ItemKind]int{"stew": 5}},
+	})
+	defer stop()
+	now := time.Now().UTC()
+	seedActiveQuote(t, w, sim.SceneQuote{
+		ID: 9, SceneID: "sc1", SellerID: "bob", ItemKind: "stew",
+		Qty: 1, Amount: 4, ConsumeNow: true, State: sim.SceneQuoteStateActive,
+		CreatedAt: now, ExpiresAt: now.Add(10 * time.Minute),
+	})
+	if _, err := w.Send(sim.PayWithItem("pc-jeff", "Bob", "stew", 1, 4, true, nil, nil, 9, 0, "", now)); err != nil {
+		t.Fatalf("PayWithItem fast-path: %v", err)
+	}
+	if _, ok := firstByKind(readWarrants(t, w, "bob"), sim.WarrantKindServeHandover); !ok {
+		t.Fatal("seller bob got no ServeHandover warrant on a PC quote-take")
+	}
+	if got := readWarrants(t, w, "pc-jeff"); len(got) != 0 {
+		t.Errorf("PC buyer got warrants (buyer subscriber should skip PCs): %+v", got)
+	}
+}
+
+// A slow-path accept must NOT serve-handover-warrant the seller: the seller
+// ran accept_pay on its own tick and already had the floor to speak.
+func TestSubscriber_ServeHandover_NotStampedOnSlowPathAccept(t *testing.T) {
+	w, stop := buildReactorWorld(t, []reactorActor{
+		{id: "alice", displayName: "Alice", kind: sim.KindNPCShared, huddleID: "h1", coins: 50},
+		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1", inventory: map[sim.ItemKind]int{"stew": 5}},
+	})
+	defer stop()
+	now := time.Now().UTC()
+	res, _ := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, nil, 0, 0, "", now))
+	ledgerID := res.(sim.PayWithItemResult).LedgerID
+	if _, err := w.Send(sim.AcceptPay("bob", ledgerID, now)); err != nil {
+		t.Fatalf("AcceptPay: %v", err)
+	}
+	if meta, ok := firstByKind(readWarrants(t, w, "bob"), sim.WarrantKindServeHandover); ok {
+		t.Errorf("seller got a ServeHandover warrant on a slow-path accept: %+v", meta)
+	}
+}
+
+// ====================================================================
 // RegisterPayWithItemHandlers
 // ====================================================================
 
