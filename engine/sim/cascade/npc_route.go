@@ -140,7 +140,7 @@ func RouteScheduleTick(now time.Time, rng *rand.Rand) sim.Command {
 				return buildLaundryCandidates(w, isStart, rng)
 			})
 			runScheduledRoute(w, sim.AttrTownCrier, now, func(w *sim.World, _ bool) []sim.RouteCandidate {
-				return buildNoticeboardCandidates(w)
+				return buildNoticeboardCandidates(w, rng)
 			})
 			return nil, nil
 		},
@@ -550,7 +550,10 @@ func buildLamplighterCandidates(w *sim.World, targetTag string) []sim.RouteCandi
 // Note the pre-446 builder gated on RotationAlgo == deterministic —
 // which silently excluded EVERY production laundry and notice-board
 // asset (all random_per_object), so the routes never built a stop.
-// The directional/cycling builders don't consult the algo at all.
+// This laundry builder is directional (keyed on DefaultState, not the
+// algo); the noticeboard builder honors the algo for its random vs
+// sequential pick (see nextNoticeboardState) but likewise never gates
+// stop-building on it.
 func buildLaundryCandidates(w *sim.World, hangOut bool, rng *rand.Rand) []sim.RouteCandidate {
 	var out []sim.RouteCandidate
 	for id, obj := range w.VillageObjects {
@@ -602,11 +605,12 @@ func buildLaundryCandidates(w *sim.World, hangOut bool, rng *rand.Rand) []sim.Ro
 
 // buildNoticeboardCandidates collects the notice boards the town crier
 // visits. Every board whose current state carries TagNoticeBoard +
-// TagRotatable advances to the next rotatable-pool state (wrapping) —
-// the flip is what triggers fresh prose authoring for the next visit,
-// so WHICH state it lands on doesn't matter, only that it changes.
-// Same tour at both window boundaries.
-func buildNoticeboardCandidates(w *sim.World) []sim.RouteCandidate {
+// TagRotatable advances to a new rotatable-pool state — the flip is what
+// triggers fresh prose authoring for the next visit. The new state is
+// picked per the asset's RotationAlgo (see nextNoticeboardState): a random
+// algo lands on a varied pool state each cycle, deterministic cycles in
+// ID order. Same tour at both window boundaries.
+func buildNoticeboardCandidates(w *sim.World, rng *rand.Rand) []sim.RouteCandidate {
 	var out []sim.RouteCandidate
 	for id, obj := range w.VillageObjects {
 		if obj == nil {
@@ -624,7 +628,7 @@ func buildNoticeboardCandidates(w *sim.World) []sim.RouteCandidate {
 		if len(pool) == 0 {
 			continue
 		}
-		next := nextPoolState(pool, obj.CurrentState)
+		next := nextNoticeboardState(asset.RotationAlgo, pool, obj.CurrentState, rng)
 		if next == "" || next == obj.CurrentState {
 			continue
 		}
@@ -635,6 +639,57 @@ func buildNoticeboardCandidates(w *sim.World) []sim.RouteCandidate {
 		})
 	}
 	return sortCandidatesByID(out)
+}
+
+// nextNoticeboardState picks the crier's next state for a board, honoring
+// the asset's RotationAlgo — the setting v1 used to vary boards that the
+// pre-446 sequential-only crier path dropped (the bulk rotation in
+// world_rotation.go still honors it; boards are carved out of that path, so
+// without this the configured algo had no effect on them).
+//
+// A random algo picks a random pool state OTHER than the current one, so a
+// board lands on a varied state each cycle — including, by design, the empty
+// (zero-capacity) variant, which is an acceptable "nothing posted today"
+// resting state — instead of marching predictably through the pool in ID
+// order. Deterministic (and any unset/unrecognized algo, as a never-freeze
+// fallback so the crier always has a flip to make) keeps the sequential wrap.
+//
+// random_per_asset collapses to a per-board random pick here: unlike laundry
+// lines, each board authors its own content on flip, so the shared-target
+// uniformity the bulk path gives random_per_asset buys nothing — only the
+// slip count (capacity) would match across boards.
+func nextNoticeboardState(algo string, pool []*sim.AssetState, current string, rng *rand.Rand) string {
+	switch algo {
+	case sim.RotationAlgoRandomPerObject, sim.RotationAlgoRandomPerAsset:
+		return pickPoolStateExcluding(pool, current, rng)
+	default:
+		return nextPoolState(pool, current)
+	}
+}
+
+// pickPoolStateExcluding returns a random pool state other than current.
+// A single-state pool (no alternative) returns that state — the caller drops
+// the resulting no-op flip. Mirrors world_rotation.go's pickRandomExcluding
+// (unexported in package sim, so re-stated here): bounded retries guard a
+// degenerate all-equal pool before the linear fallback.
+func pickPoolStateExcluding(pool []*sim.AssetState, current string, rng *rand.Rand) string {
+	if len(pool) == 0 {
+		return current
+	}
+	if len(pool) == 1 {
+		return pool[0].State
+	}
+	for attempt := 0; attempt < len(pool)*4; attempt++ {
+		if s := pool[rng.Intn(len(pool))].State; s != current {
+			return s
+		}
+	}
+	for _, s := range pool {
+		if s.State != current {
+			return s.State
+		}
+	}
+	return pool[0].State
 }
 
 // nextPoolState returns the pool entry after current, wrapping past the
