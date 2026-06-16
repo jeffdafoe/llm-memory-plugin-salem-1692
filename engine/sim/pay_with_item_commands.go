@@ -976,6 +976,7 @@ func runPayWithItemFastPath(
 		ConsumerIDs:    cloneActorIDs(consumerIDs),
 		Amount:         amount,
 		TerminalState:  PayTerminalStateAccepted,
+		BuyerTookQuote: true, // ZBBS-WORK-420: this IS the instant quote-take path
 		SceneID:        sceneID,
 		HuddleID:       buyer.CurrentHuddleID,
 		At:             at,

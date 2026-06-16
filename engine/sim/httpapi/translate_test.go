@@ -594,6 +594,36 @@ func TestTranslateEvent_PayResolved(t *testing.T) {
 	}
 }
 
+// ZBBS-WORK-420: an instant quote-take fast-path accept carries
+// BuyerTookQuote=true through to the wire so the client words it "you took
+// their offer" rather than the backwards "they accepted your offer".
+func TestTranslateEvent_PayResolved_BuyerTookQuote(t *testing.T) {
+	at := time.Date(1692, 5, 14, 12, 30, 0, 0, time.FixedZone("local", -4*3600))
+	frame, ok := TranslateEvent(&sim.PayWithItemResolved{
+		LedgerID:       7,
+		BuyerID:        "alice",
+		SellerID:       "bob",
+		ItemKind:       "stew",
+		QtyPerConsumer: 1,
+		Amount:         8,
+		TerminalState:  sim.PayTerminalStateAccepted,
+		BuyerTookQuote: true,
+		HuddleID:       "huddle-1",
+		SceneID:        "sc1",
+		At:             at,
+	})
+	if !ok {
+		t.Fatal("PayWithItemResolved should translate")
+	}
+	d := frame.Data.(payResolvedWireDTO)
+	if !d.BuyerTookQuote {
+		t.Errorf("buyer_took_quote = false, want true (fast-path take)")
+	}
+	if d.TerminalState != string(sim.PayTerminalStateAccepted) {
+		t.Errorf("terminal_state = %q, want accepted", d.TerminalState)
+	}
+}
+
 func TestTranslateEvent_PCSleepStarted(t *testing.T) {
 	at := time.Date(2026, 5, 25, 22, 0, 0, 0, time.UTC)
 	wakeAt := at.Add(12 * time.Hour)

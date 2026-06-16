@@ -871,6 +871,11 @@ func TestPayWithItem_FastPath_HappyPath_Takeaway(t *testing.T) {
 	if events.Resolved[0].TerminalState != sim.PayTerminalStateAccepted {
 		t.Errorf("TerminalState = %q, want accepted", events.Resolved[0].TerminalState)
 	}
+	// ZBBS-WORK-420: the fast path IS the instant quote-take, so the resolution
+	// flags it for the client's "you took their offer" copy.
+	if !events.Resolved[0].BuyerTookQuote {
+		t.Errorf("BuyerTookQuote = false, want true (fast-path quote-take)")
+	}
 
 	// Coin transfer landed. ZBBS-HOME-398: physical takeaway is delivered to
 	// the buyer at accept — the goods move now, and the Order is minted then
@@ -1170,6 +1175,11 @@ func TestAcceptPay_HappyPath(t *testing.T) {
 	}
 	if len(events.Resolved) != 1 || events.Resolved[0].TerminalState != sim.PayTerminalStateAccepted {
 		t.Errorf("PayWithItemResolved = %+v", events.Resolved)
+	}
+	// ZBBS-WORK-420: a slow-path seller-accept of a buyer's pending offer is NOT
+	// a quote-take, so the flag stays false (client keeps "they accepted your offer").
+	if len(events.Resolved) == 1 && events.Resolved[0].BuyerTookQuote {
+		t.Errorf("BuyerTookQuote = true on slow-path AcceptPay, want false")
 	}
 	snap := w.Published()
 	if got := snap.Actors["alice"].Coins; got != 46 {
