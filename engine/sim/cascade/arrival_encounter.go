@@ -26,6 +26,16 @@ import (
 //     stationary NPC in silence instead of being yelled at, and is the
 //     replacement for the removed locomotion "bilateral pause" — a mover is
 //     never joined to a huddle in the first place, so a walk is never frozen.
+//   - A sleeping or resting actor is bedded down or has stepped away
+//     (take_break / dwelling at a rest object) and is not available to be
+//     pulled into a conversation. Mirrors the keeper-side gate in
+//     businessowner.go, which already skips a StateSleeping/StateResting
+//     keeper — without the same gate here, a villager arriving near an NPC
+//     resting under a shade tree formed a huddle that greeted a sleeper, who
+//     read the silence as rudeness (ZBBS-WORK-425, residual of HOME-436).
+//     StateSleeping is bedded-down indoors, so outdoors this is reached by
+//     StateResting in practice; both are excluded for parity with the keeper
+//     gate and so a future outdoor sleep state is covered too.
 //   - An actor with an active scheduled route (ZBBS-HOME-452) is mid-task in
 //     exactly the HOME-340 sense, but invisibly to the MoveIntent check:
 //     finishArrival clears the intent BEFORE emitting ActorArrived, so at an
@@ -48,6 +58,9 @@ import (
 // would silently skip route-awareness on a caller bug instead of surfacing it.
 func outdoorEncounterExcludesActor(w *sim.World, a *sim.Actor, now time.Time, staleAfter time.Duration) bool {
 	if a.MoveIntent != nil {
+		return true
+	}
+	if a.State == sim.StateSleeping || a.State == sim.StateResting {
 		return true
 	}
 	if _, onRoute := w.ActiveRoutes[a.ID]; onRoute {
