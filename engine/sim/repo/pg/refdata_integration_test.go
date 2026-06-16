@@ -109,6 +109,21 @@ func TestIntegration_Terrain_LengthMismatchErrors(t *testing.T) {
 	}
 }
 
+// clearCatalog empties the reference-data catalog tables so a refdata test
+// sees only the rows it inserts. The shared test template applies the prod
+// baseline + every migration, which now seed catalog rows (ZBBS-HOME-465 adds
+// porridge: one item_kind, one item_recipe, one item_satisfies). Without this
+// reset the exact-count assertions below drift each time a new catalog seed
+// migration lands. CASCADE covers anything else FK'd to item_kind (e.g.
+// actor_inventory), which is empty in the fresh template.
+func clearCatalog(t *testing.T, f *integrationFixture) {
+	t.Helper()
+	if _, err := f.Pool.Exec(t.Context(),
+		`TRUNCATE item_satisfies, item_recipe, item_kind CASCADE`); err != nil {
+		t.Fatalf("clear catalog: %v", err)
+	}
+}
+
 // --- Recipes --------------------------------------------------------------
 
 // R1 happy path — JSONB inputs unmarshal; NULL wholesale/retail map to 0;
@@ -116,6 +131,7 @@ func TestIntegration_Terrain_LengthMismatchErrors(t *testing.T) {
 func TestIntegration_Recipes_LoadAllHappyPath(t *testing.T) {
 	f := newFixture(t)
 	ctx := t.Context()
+	clearCatalog(t, f)
 
 	// output_item FKs item_kind(name) — seed the parents first.
 	if _, err := f.Pool.Exec(ctx, `
@@ -168,6 +184,7 @@ func TestIntegration_Recipes_LoadAllHappyPath(t *testing.T) {
 func TestIntegration_Recipes_InvalidInputQtyErrors(t *testing.T) {
 	f := newFixture(t)
 	ctx := t.Context()
+	clearCatalog(t, f)
 
 	if _, err := f.Pool.Exec(ctx,
 		`INSERT INTO item_kind (name, display_label, category) VALUES ('bread','Bread','food')`); err != nil {
@@ -192,6 +209,7 @@ func TestIntegration_Recipes_InvalidInputQtyErrors(t *testing.T) {
 func TestIntegration_ItemKinds_LoadAllHappyPath(t *testing.T) {
 	f := newFixture(t)
 	ctx := t.Context()
+	clearCatalog(t, f)
 
 	if _, err := f.Pool.Exec(ctx, `
 		INSERT INTO item_kind (name, display_label, category, sort_order, consume_dwell_narration)
