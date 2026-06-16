@@ -148,14 +148,20 @@ func TestRender_NarrationWarrants(t *testing.T) {
 	if strings.Contains(tickOut, "Something happened") {
 		t.Errorf("dwell-tick should render its felt line, not the vague fallback\n%s", tickOut)
 	}
-	// Empty narration (catalog-unknown dwell end) falls back to the generic line —
-	// no engine kind tag, no raw actor id.
+	// Empty narration (catalog-unknown dwell end) falls back to the generic line.
+	// ZBBS-WORK-417: that fallback now carries a DEBUG tag naming the unrendered
+	// warrant kind so an operator can trace a vague "something happened" to its
+	// source (useless to the model, harmless). A self-triggered beat must still
+	// not be misattributed to another actor ("involving <name>").
 	emptyOut := render(sim.DwellEndedWarrantReason{Attribute: "hunger", NarrationText: ""})
 	if !strings.Contains(emptyOut, "1. Something happened") {
 		t.Errorf("empty-narration dwell-ended did not fall back to the generic line\n%s", emptyOut)
 	}
-	if strings.Contains(emptyOut, "dwell_ended") || strings.Contains(emptyOut, "involving alice") {
-		t.Errorf("fallback line still leaks the kind tag or raw actor id\n%s", emptyOut)
+	if !strings.Contains(emptyOut, `kind="dwell_ended"`) {
+		t.Errorf("fallback should carry the debug kind tag (kind=\"dwell_ended\")\n%s", emptyOut)
+	}
+	if strings.Contains(emptyOut, "involving") {
+		t.Errorf("self-triggered dwell beat must not be misattributed to another actor\n%s", emptyOut)
 	}
 }
 
