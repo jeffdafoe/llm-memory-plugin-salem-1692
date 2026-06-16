@@ -41,6 +41,20 @@ func TestResolveStructureByName_InRangeMatch(t *testing.T) {
 	}
 }
 
+// The live ZBBS-WORK-417 case: the structure's canonical name has NO article
+// ("Tavern") and the model emits "the tavern". The existing InRangeMatch test
+// only covers article-on-both-sides ("The Tavern" <- "the tavern"), which the
+// old exact case-insensitive match already passed; this is the asymmetric case
+// that used to bounce.
+func TestResolveStructureByName_LeadingArticleOnQuery(t *testing.T) {
+	w := bnWorld(3)
+	bnPlace(w, "tavern", "Tavern", 2) // canonical name has no leading article
+	got, ok := resolveStructureByPerceivableName(w, bnActor("", ""), "the tavern", nil)
+	if !ok || got != "tavern" {
+		t.Fatalf("a leading article on the query must still resolve, got %q ok=%v, want tavern", got, ok)
+	}
+}
+
 func TestResolveStructureByName_OutOfRangeMiss(t *testing.T) {
 	w := bnWorld(3)
 	bnPlace(w, "tavern", "The Tavern", 9) // beyond radius 3, NOT an anchor

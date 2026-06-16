@@ -47,7 +47,9 @@ import (
 // the village — a villager doesn't know a place exists just because the engine
 // does): its own home/work anchors (always, any distance) PLUS any named
 // structure within its scene radius (DefaultOutdoorSceneRadius — the same "what
-// is around me" radius perception uses). Matches are case-insensitive.
+// is around me" radius perception uses). Matches are case-insensitive and
+// tolerate a leading article on either side, so move_to("the Tavern") resolves
+// the structure named "Tavern" (placeNameMatches). ZBBS-WORK-417.
 //
 // DUPLICATE NAMES resolve to the NEAREST match (Chebyshev), not an ambiguity
 // reject — unlike the pay path's findHuddlePeerByDisplayName. Places legitimately
@@ -96,11 +98,40 @@ func MoveToStructureByName(actorID ActorID, name string, shownStructures []Struc
 	}
 }
 
+// stripLeadingArticle removes a single leading article ("the"/"a"/"an") from a
+// place name, case-insensitively and only at a whole-word boundary (the article
+// must be followed by more text), never stripping to empty. So "the Tavern" ->
+// "Tavern", while "Theater" and "Anvil" are untouched. An NPC (or PC) names a
+// place the way a person would; the resolver shouldn't punish the article.
+func stripLeadingArticle(s string) string {
+	for _, art := range []string{"the ", "an ", "a "} {
+		if len(s) > len(art) && strings.EqualFold(s[:len(art)], art) {
+			rest := strings.TrimSpace(s[len(art):])
+			if rest != "" {
+				return rest
+			}
+		}
+	}
+	return s
+}
+
+// placeNameMatches reports whether a place's display name matches a query name,
+// case-insensitively and tolerant of a leading article on either side
+// ("the Tavern" <-> "Tavern"). Used by both move_to name resolvers so a structure
+// and a bare refresh-source object resolve a name the same forgiving way.
+func placeNameMatches(displayName, query string) bool {
+	return strings.EqualFold(
+		stripLeadingArticle(strings.TrimSpace(displayName)),
+		stripLeadingArticle(strings.TrimSpace(query)),
+	)
+}
+
 // resolveStructureByPerceivableName resolves a place name to a structure_id the
 // actor a could plausibly know — its home/work anchors (any distance), named
 // structures within DefaultOutdoorSceneRadius, AND any id in `shown` (the move
 // targets this tick's perception surfaced, ZBBS-HOME-389; any distance) —
-// case-insensitively, nearest-wins on duplicate names (Chebyshev to the actor;
+// case-insensitively and tolerant of a leading article (placeNameMatches),
+// nearest-wins on duplicate names (Chebyshev to the actor;
 // ties break by structure_id for determinism). ok=false when no perceivable
 // structure matches. MUST be called from inside a Command.Fn. ZBBS-HOME-356.
 func resolveStructureByPerceivableName(w *World, a *Actor, name string, shown []StructureID) (StructureID, bool) {
@@ -116,7 +147,7 @@ func resolveStructureByPerceivableName(w *World, a *Actor, name string, shown []
 	bestDist := -1
 	consider := func(structureID StructureID) {
 		st := w.Structures[structureID]
-		if st == nil || !strings.EqualFold(strings.TrimSpace(st.DisplayName), name) {
+		if st == nil || !placeNameMatches(st.DisplayName, name) {
 			return
 		}
 		vobj, ok := villageObjectForStructureOnly(w, structureID)
@@ -167,8 +198,9 @@ func resolveStructureByPerceivableName(w *World, a *Actor, name string, shown []
 
 // resolveObjectByPerceivableName resolves a place name to a bare refresh-source
 // VillageObject the actor could plausibly reach — a free public source (a well,
-// a fruit tree) within DefaultOutdoorSceneRadius — case-insensitively,
-// nearest-wins on duplicate names (Chebyshev to the actor; ties break by object
+// a fruit tree) within DefaultOutdoorSceneRadius — case-insensitively and
+// tolerant of a leading article (placeNameMatches), nearest-wins on duplicate
+// names (Chebyshev to the actor; ties break by object
 // id for determinism). The object-keyed sibling of
 // resolveStructureByPerceivableName and the move_to name path's fallthrough when
 // no structure matches. ZBBS-HOME-359.
@@ -194,7 +226,7 @@ func resolveObjectByPerceivableName(w *World, a *Actor, name string, shown []Vil
 		if obj == nil || !objectIsRefreshSource(obj) {
 			return
 		}
-		if !strings.EqualFold(strings.TrimSpace(obj.DisplayName), name) {
+		if !placeNameMatches(obj.DisplayName, name) {
 			return
 		}
 		if _, isStructure := w.Structures[StructureID(id)]; isStructure {
