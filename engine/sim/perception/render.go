@@ -1490,16 +1490,23 @@ func renderPendingOffersFromMe(b *strings.Builder, offers []PendingOfferView) {
 	b.WriteString("Bide for their answer; make no second offer for the same goods while this one stands. Should you think better of it, withdraw_pay recalls it.\n")
 }
 
-// isSectionSurfacedKind reports whether a warrant kind is already surfaced by a
-// dedicated perception section, so renderWarrants must NOT also emit a generic
-// "what just happened" line for it — that produced the vague "something happened
-// nearby" catch-all (ZBBS-WORK-407). These warrants still wake the actor; their
-// content lives in their own section:
+// isSectionSurfacedKind reports whether a warrant kind wakes the actor for a
+// tick but must NOT emit a generic "## What just happened" line — rendering one
+// produced the vague "something happened nearby" catch-all (ZBBS-WORK-407).
+// These warrants are still consumed to wake the actor (that is how it ticks to
+// read the rest of the prompt); they just have no standalone event line. Most
+// carry their content in a dedicated section; the bare operator nudge has no
+// in-world content at all:
 //   - pay_offer  -> "## Offers awaiting your decision" (PayOffersForMe)
 //   - shift_duty -> the return-to-post steer (DutySteer)
+//   - admin      -> a bare operator force-tick (umbilical /nudge with no
+//     message). Not an in-world event, so it falls to the routine
+//     check-in line rather than a fabricated "something happened"
+//     (ZBBS-WORK-418). A nudge WITH a message keeps its felt-
+//     impulse line (WarrantKindImpulse) — that is real content.
 func isSectionSurfacedKind(k sim.WarrantKind) bool {
 	switch k {
-	case sim.WarrantKindPayOffer, sim.WarrantKindShiftDuty:
+	case sim.WarrantKindPayOffer, sim.WarrantKindShiftDuty, sim.WarrantKindAdmin:
 		return true
 	default:
 		return false
