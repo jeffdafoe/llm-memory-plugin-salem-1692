@@ -117,11 +117,10 @@ func sceneQuoteWarrantMeta(created *sim.SceneQuoteCreated, overheard bool) sim.W
 
 // fanOutPublicQuoteWarrants stamps the quote warrant on the seller's NPC
 // huddle peers when a PUBLIC quote (no TargetBuyer) is posted from inside an
-// active huddle (ZBBS-HOME-431). Speak parity: the client renders the posted
-// quote as the seller's speech (httpapi sceneQuoteOfferLine), so the actors
-// standing in that conversation must hear it the way they hear a Spoke event
-// — otherwise an idle NPC buyer never learns the offer exists and the deal
-// stalls until something else happens to warrant them.
+// active huddle (ZBBS-HOME-431). Without it an idle NPC buyer standing in the
+// conversation only learns the offer exists on its next perception tick, so
+// the deal stalls until something else happens to warrant them — the stamp
+// makes them react to the quote the way they react to a Spoke event.
 //
 // Peer gates, mirroring the speech reactor (handleSpokeWarrants):
 //   - NPC kinds only (stateful / shared) — PCs see quotes client-side,

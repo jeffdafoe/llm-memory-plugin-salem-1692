@@ -798,101 +798,22 @@ func TestTranslateEvent_UnmappedDropped(t *testing.T) {
 	}
 }
 
-// TestTranslateEvent_SceneQuoteCreated: a posted vendor quote with a PC in its
-// scene surfaces as an npc_spoke frame carrying the engine-authored offer line
-// plus the structured item + unit price (mentions / mention_prices) the
-// client's Pay modal reads. ZBBS-HOME-408.
-func TestTranslateEvent_SceneQuoteCreated(t *testing.T) {
-	at := time.Date(1692, 5, 14, 11, 11, 0, 0, time.FixedZone("local", -4*3600))
-	frame, ok := TranslateEvent(&sim.SceneQuoteCreated{
-		QuoteID:        7,
-		SceneID:        "sc1",
-		SellerID:       "josiah",
-		HuddleID:       "h1",
-		ItemKind:       "Bread",
-		Qty:            1,
-		Amount:         1,
-		ConsumeNow:     false,
-		PCRecipientIDs: []sim.ActorID{"jefferey"},
-		At:             at,
-	})
-	if !ok {
-		t.Fatal("SceneQuoteCreated with a PC audience should translate")
-	}
-	if frame.Type != "npc_spoke" {
-		t.Fatalf("type = %q, want npc_spoke", frame.Type)
-	}
-	d, isType := frame.Data.(spokeWireDTO)
-	if !isType {
-		t.Fatalf("data type = %T, want spokeWireDTO", frame.Data)
-	}
-	if d.ID != "josiah" || d.HuddleID != "h1" {
-		t.Errorf("speaker/huddle = %+v, want josiah/h1", d)
-	}
-	if !reflect.DeepEqual(d.RecipientIDs, []string{"jefferey"}) {
-		t.Errorf("recipients = %+v, want [jefferey]", d.RecipientIDs)
-	}
-	if !reflect.DeepEqual(d.Mentions, []string{"Bread"}) {
-		t.Errorf("mentions = %+v, want [Bread]", d.Mentions)
-	}
-	if !reflect.DeepEqual(d.MentionPrices, map[string]int{"Bread": 1}) {
-		t.Errorf("mention_prices = %+v, want {Bread:1}", d.MentionPrices)
-	}
-	// Takeaway phrasing + singular "coin" for amount 1.
-	wantText := "I can let you take 1 bread for 1 coin."
-	if d.Text != wantText {
-		t.Errorf("text = %q, want %q", d.Text, wantText)
-	}
-	if d.At != at.UTC().Format(time.RFC3339) {
-		t.Errorf("at = %q, want %q", d.At, at.UTC().Format(time.RFC3339))
-	}
-}
-
-// TestTranslateEvent_SceneQuoteCreated_NoPCAudience: a quote with no PC
-// recipients (an NPC-only scene, or a no-op re-post) is dropped — only a human
-// player's client needs the offer frame, and an empty audience must not spam
-// the talk panel. ZBBS-HOME-408.
-func TestTranslateEvent_SceneQuoteCreated_NoPCAudience(t *testing.T) {
+// TestTranslateEvent_SceneQuoteCreated_NoFrame: a posted quote produces NO
+// client wire frame (ZBBS-HOME-470). A PC learns the offer from the seller's
+// own spoken price and the Pay modal's /pc/quotes read; the old buyer-facing
+// npc_spoke (ZBBS-HOME-408) duplicated the seller's speech and was removed.
+func TestTranslateEvent_SceneQuoteCreated_NoFrame(t *testing.T) {
 	if _, ok := TranslateEvent(&sim.SceneQuoteCreated{
-		QuoteID:  8,
+		QuoteID:  7,
 		SceneID:  "sc1",
 		SellerID: "josiah",
+		HuddleID: "h1",
 		ItemKind: "Bread",
 		Qty:      1,
 		Amount:   1,
 		At:       time.Now().UTC(),
 	}); ok {
-		t.Error("SceneQuoteCreated with no PC audience should be dropped, not translated")
-	}
-}
-
-// TestTranslateEvent_SceneQuoteCreated_ConsumeNowGroupUnitPrice: eat-here
-// phrasing, and the unit price divides the bundle total across qty × consumers
-// (6 coins / (1 × 2) = 3 each). ZBBS-HOME-408.
-func TestTranslateEvent_SceneQuoteCreated_ConsumeNowGroupUnitPrice(t *testing.T) {
-	frame, ok := TranslateEvent(&sim.SceneQuoteCreated{
-		QuoteID:        9,
-		SceneID:        "sc1",
-		SellerID:       "josiah",
-		HuddleID:       "h1",
-		ItemKind:       "Ale",
-		Qty:            1,
-		Amount:         6,
-		ConsumeNow:     true,
-		ConsumerIDs:    []sim.ActorID{"jefferey", "bram"},
-		PCRecipientIDs: []sim.ActorID{"jefferey"},
-		At:             time.Now().UTC(),
-	})
-	if !ok {
-		t.Fatal("should translate")
-	}
-	d := frame.Data.(spokeWireDTO)
-	if d.MentionPrices["Ale"] != 3 {
-		t.Errorf("mention_prices = %+v, want {Ale:3}", d.MentionPrices)
-	}
-	wantText := "I can serve you 1 ale here for 6 coins."
-	if d.Text != wantText {
-		t.Errorf("text = %q, want %q", d.Text, wantText)
+		t.Error("SceneQuoteCreated should produce no wire frame (ZBBS-HOME-470)")
 	}
 }
 
