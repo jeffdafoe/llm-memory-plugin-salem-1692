@@ -241,6 +241,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderPendingDeliveriesFromMe(&ephemeral, p.PendingDeliveriesFromMe, p.LocalDateUTC)
 	renderPendingDeliveriesToMe(&ephemeral, p.PendingDeliveriesToMe, p.LocalDateUTC)
 	renderPendingOffersFromMe(&ephemeral, p.PendingOffersFromMe)
+	renderRecentlyResolvedOffersFromMe(&ephemeral, p.RecentlyResolvedOffersFromMe)
 	renderRecoveryOptions(&ephemeral, p.RecoveryOptions)
 	renderSatiation(&ephemeral, p.Satiation)
 	renderRestocking(&ephemeral, p.Restocking)
@@ -1555,6 +1556,47 @@ func renderPendingOffersFromMe(b *strings.Builder, offers []PendingOfferView) {
 			i+1, seller, o.Qty, item, payment, o.LedgerID)
 	}
 	b.WriteString("Bide for their answer; make no second offer for the same goods while this one stands. Should you think better of it, withdraw_pay recalls it.\n")
+}
+
+// renderRecentlyResolvedOffersFromMe renders the buyer-side "## Recently settled
+// offers" section — the subject's OWN offers that JUST resolved (built by
+// buildRecentlyResolvedOffersFromMe). It is the reliable, snapshot-scanned
+// counterpart to the PayResolvedWarrantReason event line, which can arrive a
+// tick late (the warrant opens a fresh cycle when the seller accepts mid-tick),
+// leaving the buyer to re-perceive "the seller has it for sale" and re-buy a
+// need already met. An accepted line says the deal is done (and, for an eat-here
+// deal, that the goods were used on the spot) and tells the buyer not to offer
+// for it again; a close-without-a-deal line tells the buyer to stop waiting.
+// Copy is plain modern English on purpose — the weak stateful models parse it
+// more reliably than period voice. Item kinds are sanitized inline. Uncapped —
+// bounded by the buyer's own recent offers and the short resolution window.
+func renderRecentlyResolvedOffersFromMe(b *strings.Builder, offers []ResolvedOfferView) {
+	if len(offers) == 0 {
+		return
+	}
+	b.WriteString("## Recently settled offers\n")
+	for i, o := range offers {
+		seller := sanitizeInline(o.SellerName)
+		if seller == "" {
+			seller = "someone"
+		}
+		item := sanitizeInline(string(o.Item))
+		if item == "" {
+			item = "item"
+		}
+		if o.Accepted {
+			payment := formatOfferPayment(o.Amount, o.PayItems)
+			gotIt := "it's in your pack now"
+			if o.ConsumeNow {
+				gotIt = "you had it right away"
+			}
+			fmt.Fprintf(b, "%d. %s accepted your offer — you paid %s for %d %s; %s. That deal is done — don't offer for it again (offer id %d).\n",
+				i+1, seller, payment, o.Qty, item, gotIt, o.LedgerID)
+			continue
+		}
+		fmt.Fprintf(b, "%d. Your offer to %s for %d %s didn't go through — it's closed, so stop waiting on it (offer id %d).\n",
+			i+1, seller, o.Qty, item, o.LedgerID)
+	}
 }
 
 // isSectionSurfacedKind reports whether a warrant kind wakes the actor for a

@@ -1,0 +1,136 @@
+package perception
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
+)
+
+// pay_offer_resolved_test.go — ZBBS-WORK-432. The buyer-side "## Offers lately
+// settled" view (buildRecentlyResolvedOffersFromMe + renderRecentlyResolvedOffersFromMe).
+// It closes the blind window in which the buyer re-buys a need already met
+// because the offer left the pending scan (PendingOffersFromMe) but the
+// PayResolvedWarrantReason event hasn't surfaced yet — it can ride a tick behind
+// an in-flight deliberation (design: shared/tasks/salem-buyer-reoffer-late-acceptance-warrant).
+// The build function takes NO warrant input, so the resolution is legible from
+// the SNAPSHOT alone — warrant-independent by construction.
+//
+// Reuses offerSnap (pay_offer_pending_test.go); resolvedSnap stamps PublishedAt,
+// the wall clock buildRecentlyResolvedOffersFromMe measures the recency window against.
+
+func resolvedEntry(id sim.LedgerID, buyer, seller sim.ActorID, item sim.ItemKind, qty, amount int, state sim.PayLedgerState, consumeNow bool, resolvedAt time.Time) *sim.PayLedgerEntry {
+	return &sim.PayLedgerEntry{
+		ID:         id,
+		BuyerID:    buyer,
+		SellerID:   seller,
+		ItemKind:   item,
+		Qty:        qty,
+		Amount:     amount,
+		State:      state,
+		ConsumeNow: consumeNow,
+		ResolvedAt: resolvedAt,
+	}
+}
+
+func resolvedSnap(now time.Time, ledger map[sim.LedgerID]*sim.PayLedgerEntry) *sim.Snapshot {
+	s := offerSnap(ledger)
+	s.PublishedAt = now
+	return s
+}
+
+// A just-accepted consume_now offer is surfaced — this is the exact 270 case
+// (Hannah's water): the buyer must see it was bought so it doesn't re-offer.
+func TestBuildRecentlyResolvedOffersFromMe_AcceptedWithinWindow(t *testing.T) {
+	now := time.Now().UTC()
+	snap := resolvedSnap(now, map[sim.LedgerID]*sim.PayLedgerEntry{
+		270: resolvedEntry(270, "prudence", "elizabeth", "water", 1, 10, sim.PayLedgerStateAccepted, true, now.Add(-30*time.Second)),
+	})
+	views := buildRecentlyResolvedOffersFromMe(snap, "prudence", snap.Actors["prudence"])
+	if len(views) != 1 {
+		t.Fatalf("views = %v, want one recently-resolved offer", views)
+	}
+	v := views[0]
+	if v.LedgerID != 270 || v.Item != "water" || v.Qty != 1 || v.Amount != 10 || !v.Accepted || !v.ConsumeNow {
+		t.Errorf("view = %+v, want ledger 270 / water / qty 1 / amount 10 / accepted / consume_now", v)
+	}
+}
+
+// An offer resolved before the recency window is dropped — the view is a brief
+// bridge, not a purchase log (terminal entries linger up to 1h in the ledger).
+func TestBuildRecentlyResolvedOffersFromMe_StaleExcluded(t *testing.T) {
+	now := time.Now().UTC()
+	snap := resolvedSnap(now, map[sim.LedgerID]*sim.PayLedgerEntry{
+		270: resolvedEntry(270, "prudence", "elizabeth", "water", 1, 10, sim.PayLedgerStateAccepted, true, now.Add(-30*time.Minute)),
+	})
+	if got := buildRecentlyResolvedOffersFromMe(snap, "prudence", snap.Actors["prudence"]); got != nil {
+		t.Errorf("resolved 30m ago (> window) must be excluded; got %v", got)
+	}
+}
+
+// Pending offers belong to the pending view; countered offers are an active
+// response flow (a fresh pending entry the buyer answers) — neither belongs here.
+func TestBuildRecentlyResolvedOffersFromMe_PendingAndCounteredExcluded(t *testing.T) {
+	now := time.Now().UTC()
+	snap := resolvedSnap(now, map[sim.LedgerID]*sim.PayLedgerEntry{
+		270: resolvedEntry(270, "prudence", "elizabeth", "water", 1, 10, sim.PayLedgerStatePending, false, time.Time{}),
+		271: resolvedEntry(271, "prudence", "elizabeth", "meat", 1, 5, sim.PayLedgerStateCountered, false, now.Add(-10*time.Second)),
+	})
+	if got := buildRecentlyResolvedOffersFromMe(snap, "prudence", snap.Actors["prudence"]); got != nil {
+		t.Errorf("pending + countered must be excluded; got %v", got)
+	}
+}
+
+// A close-without-a-deal terminal (here insufficient stock) surfaces too, as a
+// "stop waiting" signal for the buyer.
+func TestBuildRecentlyResolvedOffersFromMe_FailedSurfacesAsClosed(t *testing.T) {
+	now := time.Now().UTC()
+	snap := resolvedSnap(now, map[sim.LedgerID]*sim.PayLedgerEntry{
+		271: resolvedEntry(271, "prudence", "elizabeth", "water", 1, 10, sim.PayLedgerStateFailedInsufficientStock, true, now.Add(-15*time.Second)),
+	})
+	views := buildRecentlyResolvedOffersFromMe(snap, "prudence", snap.Actors["prudence"])
+	if len(views) != 1 || views[0].Accepted {
+		t.Fatalf("views = %+v, want one non-accepted (closed) view", views)
+	}
+}
+
+func TestBuildRecentlyResolvedOffersFromMe_NilAndEmpty(t *testing.T) {
+	if got := buildRecentlyResolvedOffersFromMe(nil, "prudence", nil); got != nil {
+		t.Errorf("nil snap: got %v, want nil", got)
+	}
+	snap := resolvedSnap(time.Now().UTC(), nil)
+	if got := buildRecentlyResolvedOffersFromMe(snap, "prudence", snap.Actors["prudence"]); got != nil {
+		t.Errorf("empty ledger: got %v, want nil", got)
+	}
+}
+
+// Render: the accepted line states the bargain is struck (eat-here → taken on
+// the spot) and the closed line tells the buyer to stop waiting.
+func TestRenderRecentlyResolvedOffersFromMe_AcceptedAndClosed(t *testing.T) {
+	var b strings.Builder
+	renderRecentlyResolvedOffersFromMe(&b, []ResolvedOfferView{
+		{LedgerID: 270, SellerName: "Josiah Thorne", Item: "water", Qty: 1, Amount: 10, Accepted: true, ConsumeNow: true},
+		{LedgerID: 271, SellerName: "the storekeeper", Item: "bread", Qty: 2, Amount: 4, Accepted: false},
+	})
+	out := b.String()
+	if !strings.Contains(out, "## Recently settled offers") {
+		t.Fatalf("missing section header; got:\n%s", out)
+	}
+	for _, want := range []string{
+		"Josiah Thorne accepted your offer", "you had it right away", "don't offer for it again", "offer id 270",
+		"didn't go through", "the storekeeper", "stop waiting on it", "offer id 271",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rendered text missing %q; got:\n%s", want, out)
+		}
+	}
+}
+
+func TestRenderRecentlyResolvedOffersFromMe_EmptyGated(t *testing.T) {
+	var b strings.Builder
+	renderRecentlyResolvedOffersFromMe(&b, nil)
+	if b.Len() != 0 {
+		t.Errorf("empty input must render nothing; got %q", b.String())
+	}
+}

@@ -928,6 +928,30 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 			)
 		}
 	}
+	// accept_pay: a gate-fail resolution (no stock, buyer short of coins/goods,
+	// either party moved on, offer already lapsed) is NOT a tool error —
+	// sim.AcceptPay returns the terminal PayLedgerState with a nil error, so a
+	// bare "[ok]" told the seller "accepted" when the sale actually fell through
+	// (ZBBS-WORK-432, the 271 dry-seller case: Josiah "accepted" water he no
+	// longer had, got [ok], learned nothing). Report the real outcome in plain
+	// modern English. A genuine Accepted falls through to the generic [ok] — the
+	// transfer happened and next-tick perception reflects it.
+	if vc.Name == "accept_pay" {
+		if state, ok := cmdResult.(sim.PayLedgerState); ok {
+			switch state {
+			case sim.PayLedgerStateFailedInsufficientStock:
+				return "[ok] You agreed, but you don't have enough stock to fill it — the sale fell through."
+			case sim.PayLedgerStateFailedInsufficientFunds:
+				return "[ok] You agreed, but the buyer couldn't cover the price — the sale fell through."
+			case sim.PayLedgerStateFailedInsufficientGoods:
+				return "[ok] You agreed, but the buyer no longer had the goods they offered — the sale fell through."
+			case sim.PayLedgerStateFailedUnavailable:
+				return "[ok] That sale couldn't be completed — you or the buyer had moved on."
+			case sim.PayLedgerStateExpired:
+				return "[ok] That offer had already expired — too late to accept it."
+			}
+		}
+	}
 	if vc.Name == "speak" {
 		if args, ok := vc.DecodedArgs.(SpeakArgs); ok {
 			text := strings.TrimSpace(args.Text)

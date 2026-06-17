@@ -86,6 +86,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	p.OfferableCustomers = buildOfferableCustomers(snap, actorID, p.AtOwnBusiness, p.Surroundings.HuddleMembers, p.Actor.Inventory)
 	p.PendingDeliveriesFromMe, p.PendingDeliveriesToMe = buildPendingOrderViews(snap, actorID)
 	p.PendingOffersFromMe = buildPendingOffersFromMe(snap, actorID, actorSnap)
+	p.RecentlyResolvedOffersFromMe = buildRecentlyResolvedOffersFromMe(snap, actorID, actorSnap)
 	p.LocalDateUTC = snap.LocalDateUTC // world "today" for the order-book date split (ZBBS-HOME-403)
 	p.RecoveryOptions = buildRecoveryOptions(snap, actorID, actorSnap)
 	p.Satiation = buildSatiation(snap, actorID, actorSnap)
@@ -1697,6 +1698,80 @@ func absentRecipientNames(snap *sim.Snapshot, seller *sim.ActorSnapshot, o *sim.
 	}
 	sort.Strings(absent)
 	return absent
+}
+
+// recentlyResolvedOfferWindow bounds how long a just-settled offer stays in the
+// buyer's "## Recently settled offers" view. Short — the view bridges the gap
+// until the buyer's next deliberation registers the resolution, it is not a
+// purchase log. ~3 min matches the pending-offer TTL scale (the conversational
+// moment); the terminal ledger entry itself lingers up to
+// PayLedgerTerminalRetention (1h), far longer than we want to keep narrating it.
+const recentlyResolvedOfferWindow = 3 * time.Minute
+
+// buildRecentlyResolvedOffersFromMe scans snap.PayLedger for the subject's OWN
+// offers that left Pending within recentlyResolvedOfferWindow of
+// snap.PublishedAt — entries where the subject is the BUYER and the state is a
+// terminal resolution (Countered excluded: it spawns a fresh pending entry the
+// buyer responds to, an active flow, not a closed deal). It is the buyer-side
+// resolution companion to buildPendingOffersFromMe: it closes the blind window
+// between an offer leaving the pending scan and the PayResolvedWarrantReason
+// event surfacing, which can lag a tick behind the buyer's in-flight
+// deliberation and let the buyer re-buy a need already met. Sourced from the
+// ledger, not a warrant, so it is robust to warrant emit timing. Seller name is
+// acquaintance-gated like the pending view. Returns nil for none. Ordering: by
+// LedgerID ascending, deterministic.
+func buildRecentlyResolvedOffersFromMe(snap *sim.Snapshot, subject sim.ActorID, subjectSnap *sim.ActorSnapshot) []ResolvedOfferView {
+	if snap == nil || len(snap.PayLedger) == 0 {
+		return nil
+	}
+	var ids []sim.LedgerID
+	for id, e := range snap.PayLedger {
+		if e == nil || e.BuyerID != subject {
+			continue
+		}
+		if e.State == sim.PayLedgerStatePending || e.State == sim.PayLedgerStateCountered {
+			continue
+		}
+		if e.ResolvedAt.IsZero() {
+			continue
+		}
+		if snap.PublishedAt.Sub(e.ResolvedAt) > recentlyResolvedOfferWindow {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+
+	resolveSeller := func(id sim.ActorID) string {
+		seller := snap.Actors[id]
+		if seller == nil {
+			return string(id)
+		}
+		acquainted := false
+		if subjectSnap != nil && seller.DisplayName != "" {
+			_, acquainted = subjectSnap.Acquaintances[seller.DisplayName]
+		}
+		return descriptorLabel(seller.DisplayName, seller.Role, acquainted)
+	}
+
+	views := make([]ResolvedOfferView, 0, len(ids))
+	for _, id := range ids {
+		e := snap.PayLedger[id]
+		views = append(views, ResolvedOfferView{
+			LedgerID:   e.ID,
+			SellerName: resolveSeller(e.SellerID),
+			Item:       e.ItemKind,
+			Qty:        e.Qty,
+			Amount:     e.Amount,
+			PayItems:   e.PayItems,
+			Accepted:   e.State == sim.PayLedgerStateAccepted,
+			ConsumeNow: e.ConsumeNow,
+		})
+	}
+	return views
 }
 
 // buildPendingOffersFromMe scans snap.PayLedger for the subject's OWN still-
