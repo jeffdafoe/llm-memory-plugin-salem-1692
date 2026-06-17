@@ -72,6 +72,12 @@ type UmbilicalStateDTO struct {
 	// (not just on /checkpoint-health) because /state is the daily check-in
 	// route, and consecutive_failures is the at-a-glance durability signal.
 	Checkpoint sim.CheckpointHealthSnapshot `json:"checkpoint"`
+	// WS is the event-hub delivery accounting (WORK-434) — frame-drop /
+	// slow-consumer / connected-client health. Surfaced here because /state is
+	// the daily check-in route and a silent live-frame drop (the suspected cause
+	// of stale-on-client noticeboards) is otherwise invisible off the box. Zero
+	// when no event hub is attached (headless/test).
+	WS WSDeliveryStatsDTO `json:"ws"`
 }
 
 // UmbilicalCountsDTO is the size of each published entity table — a cheap
@@ -117,6 +123,9 @@ func (s *Server) handleUmbilicalTelemetry(w http.ResponseWriter, _ *http.Request
 func (s *Server) handleUmbilicalState(w http.ResponseWriter, _ *http.Request) {
 	out := umbilicalStateFromSnapshot(s.world.Published(), s.telemetry.Stats())
 	out.Checkpoint = s.checkpointHealth.Snapshot()
+	if s.hub != nil {
+		out.WS = s.hub.Stats()
+	}
 	writeJSON(w, out)
 }
 
