@@ -47,7 +47,14 @@ const (
 type rawTurnsUpstreamRequest struct {
 	SceneID string `json:"scene_id,omitempty"`
 	Agent   string `json:"agent,omitempty"`
-	Since   string `json:"since,omitempty"`
+	// Conversation filters to one huddle's whole conversation: the engine threads
+	// the huddle id (hud-<hex>) onto virtual_agent_calls.conversation_id via
+	// /v1/chat/send (ZBBS-HOME-397), stable across every tick and participant of
+	// the conversation. Indexed upstream (idx_va_calls_conversation). This is the
+	// single-call "what happened in this huddle" lookup (ZBBS-WORK-431) that
+	// otherwise needed a cross-DB dig; durable, so it answers for a PAST huddle.
+	Conversation string `json:"conversation,omitempty"`
+	Since        string `json:"since,omitempty"`
 	// Until is the EXCLUSIVE created_at upper bound (ZBBS-WORK-391) — the
 	// walk-back cursor for episodes buried behind newer turns, since
 	// memory-api returns newest-first with no offset pagination. Exclusive so
@@ -59,8 +66,9 @@ type rawTurnsUpstreamRequest struct {
 }
 
 // handleUmbilicalTurns proxies a raw-LLM-turn query to memory-api, forwarding the
-// operator's bearer token. Query params (all optional): scene, agent, since,
-// until, status, limit. memory-api owns the response contract (it returns the
+// operator's bearer token. Query params (all optional): scene, agent, conversation
+// (a hud-<hex> huddle id — every turn in that conversation), since, until, status,
+// limit. memory-api owns the response contract (it returns the
 // virtual_agent_calls rows), so the engine relays its status + body verbatim
 // rather than re-modeling the row schema — deliberately the one umbilical read
 // that doesn't wrap its payload in a contract_version DTO.
@@ -76,11 +84,12 @@ func (s *Server) handleUmbilicalTurns(w http.ResponseWriter, r *http.Request) {
 
 	q := r.URL.Query()
 	reqBody := rawTurnsUpstreamRequest{
-		SceneID: q.Get("scene"),
-		Agent:   q.Get("agent"),
-		Since:   q.Get("since"),
-		Until:   q.Get("until"),
-		Status:  q.Get("status"),
+		SceneID:      q.Get("scene"),
+		Agent:        q.Get("agent"),
+		Conversation: q.Get("conversation"),
+		Since:        q.Get("since"),
+		Until:        q.Get("until"),
+		Status:       q.Get("status"),
 	}
 	// Parse limit leniently — a valid positive int is forwarded; anything else
 	// is omitted so memory-api applies its own default/cap.
