@@ -226,7 +226,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderNarrativeState(&ephemeral, p.NarrativeState)
 	renderVendorOperating(&ephemeral, p.AtOwnBusiness)
 	renderSurroundings(&ephemeral, p.Surroundings)
-	renderAnchors(&ephemeral, p.Anchors)
+	renderAnchors(&ephemeral, p.Anchors, p.DutySteer != nil && p.DutySteer.AtPost)
 	renderDutySteer(&ephemeral, p.DutySteer)
 	renderRelationships(&ephemeral, p.Relationships)
 	renderRecentConversation(&ephemeral, p.RecentConversation)
@@ -821,7 +821,7 @@ func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 // The "(structure_id: …)" form matches the satiation / restock / shift-duty
 // cues — it's the load-bearing token the model echoes into move_to.
 // ZBBS-HOME-349.
-func renderAnchors(b *strings.Builder, v *AnchorsView) {
+func renderAnchors(b *strings.Builder, v *AnchorsView, atPost bool) {
 	if v == nil {
 		return
 	}
@@ -831,7 +831,16 @@ func renderAnchors(b *strings.Builder, v *AnchorsView) {
 	case v.SamePlace:
 		fmt.Fprintf(b, "Your home and your trade are both at %s (structure_id: %s) — you can head back there whenever you wish.\n\n", work, v.WorkID)
 	case v.WorkID != "" && v.HomeID != "":
-		fmt.Fprintf(b, "You keep your trade at %s (structure_id: %s), and your home is at %s (structure_id: %s) — you can head to either whenever you wish.\n\n", work, v.WorkID, home, v.HomeID)
+		// On-shift AT its own post, the open "head to either whenever you wish"
+		// invitation actively pulls an idle owner home (the Prudence shop↔house
+		// oscillation, ZBBS-WORK-431). Keep both structure_ids — they are the
+		// load-bearing move_to tokens (HOME-349) — but frame home as after-hours
+		// rather than an open door; the at-post duty steer carries "stay put".
+		if atPost {
+			fmt.Fprintf(b, "You keep your trade at %s (structure_id: %s); your home is at %s (structure_id: %s) — head home once your work is done.\n\n", work, v.WorkID, home, v.HomeID)
+		} else {
+			fmt.Fprintf(b, "You keep your trade at %s (structure_id: %s), and your home is at %s (structure_id: %s) — you can head to either whenever you wish.\n\n", work, v.WorkID, home, v.HomeID)
+		}
 	case v.WorkID != "":
 		fmt.Fprintf(b, "You keep your trade at %s (structure_id: %s) — you can head back there whenever you wish.\n\n", work, v.WorkID)
 	case v.HomeID != "":
@@ -857,6 +866,15 @@ func anchorPlace(label, fallback string) string {
 // on another section rendering the id (code_review).
 func renderDutySteer(b *strings.Builder, v *DutySteerView) {
 	if v == nil {
+		return
+	}
+	// At-post stabilizer (ZBBS-WORK-431): on-shift, standing at your own post.
+	// The symmetric complement to the to-work line — without it an idle owner
+	// with no custom wanders off and the away-from-post arm drags it back
+	// (Prudence shop↔house). The anchors line is reframed in tandem (renderAnchors
+	// atPost) so the two cues agree: you belong here right now.
+	if v.AtPost {
+		b.WriteString("It is your working hours and you are at your post — stay and look after your work. If no one needs you right now, wait here for customers rather than wandering off.\n\n")
 		return
 	}
 	if v.ToWork {

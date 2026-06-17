@@ -705,7 +705,8 @@ type AnchorsView struct {
 }
 
 // DutySteerView is the standing return-to-post / wind-down cue (ZBBS-HOME-352,
-// reframed by ZBBS-WORK-387). ToWork distinguishes the two directions. On the
+// reframed by ZBBS-WORK-387, AtPost added ZBBS-WORK-431). ToWork / AtPost / the
+// off-shift wind-down are the three mutually-exclusive shapes. On the
 // off-shift wind-down side the target is housing-dependent: the actor's own home,
 // a lodger's rented inn room (Lodging), or — for a homeless keeper — no fixed
 // place at all (TargetID == "", a directionless "find your rest" nudge;
@@ -715,6 +716,16 @@ type DutySteerView struct {
 	ToWork      bool // true = on-shift, head to work; false = off-shift, wind down for the night
 	TargetID    sim.StructureID
 	TargetLabel string // resolved DisplayName; may be empty (render falls back). Empty TargetID on an off-shift cue = homeless (no fixed place).
+
+	// AtPost is the symmetric complement to the to-work yank (ZBBS-WORK-431):
+	// on-shift and standing at your own work post. It renders the "stay put,
+	// don't wander" stabilizer and reframes the anchors departure-invite, but is
+	// RENDER-ONLY — deliberately excluded from the noop-skip gate
+	// (shouldSkipNoop) so an idle at-post NPC with no stimulus still skips its
+	// idle-backstops (HOME-441); the line only renders on ticks that already run.
+	// No target: the actor is already there. Mutually exclusive with ToWork and
+	// the off-shift wind-down fields.
+	AtPost bool
 
 	// Lodging marks the off-shift target as the actor's RENTED room at an inn
 	// (a lodger) rather than its own home — render says "head to your rented room

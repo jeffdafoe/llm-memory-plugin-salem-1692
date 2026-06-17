@@ -71,9 +71,10 @@ func TestBuildDutySteer(t *testing.T) {
 			t.Fatalf("want toWork=tavern, got %+v", v)
 		}
 	})
-	t.Run("on shift, at work -> nil", func(t *testing.T) {
-		if v := dutySteer(dutySnap(1100, 420, 1140), agentSched("tavern"), dutyAnchors); v != nil {
-			t.Fatalf("want nil (at post), got %+v", v)
+	t.Run("on shift, at work -> atPost stabilizer (ZBBS-WORK-431)", func(t *testing.T) {
+		v := dutySteer(dutySnap(1100, 420, 1140), agentSched("tavern"), dutyAnchors)
+		if v == nil || !v.AtPost || v.ToWork {
+			t.Fatalf("want atPost stabilizer at post, got %+v", v)
 		}
 	})
 	t.Run("off shift, away from home -> home", func(t *testing.T) {
@@ -360,6 +361,46 @@ func TestBuildDutySteer_OptionBSuppression(t *testing.T) {
 			t.Fatalf("want nil (pending offer suppresses to-work), got %+v", v)
 		}
 	})
+	// ZBBS-WORK-431: a seller's active scene_quote addressed to the buyer is an
+	// in-progress purchase — the buyer-side complement to the pending-outgoing-offer
+	// suppressor — so the to-work yank holds off rather than dragging the buyer out
+	// of the deal (the Prudence shop↔General-Store bounce).
+	t.Run("offered quote to buyer suppresses toWork", func(t *testing.T) {
+		snap, a := onShiftAway()
+		snap.Quotes = map[sim.QuoteID]*sim.SceneQuote{
+			2: {ID: 2, SellerID: "josiah", TargetBuyer: "moses", State: sim.SceneQuoteStateActive},
+		}
+		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false); v != nil {
+			t.Fatalf("want nil (an offered quote suppresses to-work), got %+v", v)
+		}
+	})
+	t.Run("a quote to SOMEONE ELSE does not suppress", func(t *testing.T) {
+		snap, a := onShiftAway()
+		snap.Quotes = map[sim.QuoteID]*sim.SceneQuote{
+			2: {ID: 2, SellerID: "josiah", TargetBuyer: "hannah", State: sim.SceneQuoteStateActive},
+		}
+		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false); v == nil || !v.ToWork {
+			t.Fatalf("want toWork (another buyer's quote is irrelevant), got %+v", v)
+		}
+	})
+	t.Run("a public (untargeted) quote does not suppress", func(t *testing.T) {
+		snap, a := onShiftAway()
+		snap.Quotes = map[sim.QuoteID]*sim.SceneQuote{
+			2: {ID: 2, SellerID: "josiah", TargetBuyer: "", State: sim.SceneQuoteStateActive},
+		}
+		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false); v == nil || !v.ToWork {
+			t.Fatalf("want toWork (a public quote pins no particular buyer), got %+v", v)
+		}
+	})
+	t.Run("a terminal (expired) quote does not suppress", func(t *testing.T) {
+		snap, a := onShiftAway()
+		snap.Quotes = map[sim.QuoteID]*sim.SceneQuote{
+			2: {ID: 2, SellerID: "josiah", TargetBuyer: "moses", State: sim.SceneQuoteStateExpired},
+		}
+		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false); v == nil || !v.ToWork {
+			t.Fatalf("want toWork (an expired quote is irrelevant), got %+v", v)
+		}
+	})
 	t.Run("a pending offer by SOMEONE ELSE does not suppress", func(t *testing.T) {
 		snap, a := onShiftAway()
 		snap.PayLedger = map[sim.LedgerID]*sim.PayLedgerEntry{
@@ -435,6 +476,16 @@ func TestRenderDutySteer(t *testing.T) {
 	homeNoLabel := render(&DutySteerView{ToWork: false, TargetID: "cottage"})
 	if !strings.Contains(homeNoLabel, "head home (structure_id: cottage)") {
 		t.Errorf("home no-label fallback missing id, got %q", homeNoLabel)
+	}
+
+	// ZBBS-WORK-431: the at-post stabilizer is placeless (the actor is already
+	// there) and tells it to stay put rather than wander.
+	atPost := render(&DutySteerView{AtPost: true})
+	if !strings.Contains(atPost, "at your post") || !strings.Contains(atPost, "wandering off") {
+		t.Errorf("atPost prose missing pieces, got %q", atPost)
+	}
+	if strings.Contains(atPost, "structure_id") {
+		t.Errorf("atPost prose should be placeless (no structure_id), got %q", atPost)
 	}
 }
 

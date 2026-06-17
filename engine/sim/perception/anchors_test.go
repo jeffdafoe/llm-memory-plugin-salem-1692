@@ -67,7 +67,7 @@ func TestBuildAnchors_MissingStructure_dropped(t *testing.T) {
 
 func TestRenderAnchors_SamePlace_carriesProseAndId(t *testing.T) {
 	var b strings.Builder
-	renderAnchors(&b, &AnchorsView{WorkLabel: "Tavern", WorkID: "019dbcd2", HomeLabel: "Tavern", HomeID: "019dbcd2", SamePlace: true})
+	renderAnchors(&b, &AnchorsView{WorkLabel: "Tavern", WorkID: "019dbcd2", HomeLabel: "Tavern", HomeID: "019dbcd2", SamePlace: true}, false)
 	out := b.String()
 	if !strings.Contains(out, "structure_id: 019dbcd2") {
 		t.Errorf("missing structure_id; got %q", out)
@@ -80,17 +80,40 @@ func TestRenderAnchors_SamePlace_carriesProseAndId(t *testing.T) {
 
 func TestRenderAnchors_Different_bothIds(t *testing.T) {
 	var b strings.Builder
-	renderAnchors(&b, &AnchorsView{WorkLabel: "General Store", WorkID: "gstore", HomeLabel: "Thorne Residence", HomeID: "thorne"})
+	renderAnchors(&b, &AnchorsView{WorkLabel: "General Store", WorkID: "gstore", HomeLabel: "Thorne Residence", HomeID: "thorne"}, false)
 	out := b.String()
 	if !strings.Contains(out, "structure_id: gstore") || !strings.Contains(out, "structure_id: thorne") {
 		t.Errorf("missing one of the ids; got %q", out)
 	}
+	if !strings.Contains(out, "whenever you wish") {
+		t.Errorf("off-post anchors should carry the open invite; got %q", out)
+	}
 	t.Logf("RENDERED (different): %s", strings.TrimSpace(out))
+}
+
+// ZBBS-WORK-431: on-shift AT its own post, the anchors line keeps BOTH
+// structure_ids (still navigable) but drops the "head ... whenever you wish"
+// invite that pulled an idle owner home — home is reframed as after-hours. The
+// at-post duty steer (renderDutySteer) carries the "stay put" cue in tandem.
+func TestRenderAnchors_AtPost_reframesDeparture(t *testing.T) {
+	var b strings.Builder
+	renderAnchors(&b, &AnchorsView{WorkLabel: "General Store", WorkID: "gstore", HomeLabel: "Thorne Residence", HomeID: "thorne"}, true)
+	out := b.String()
+	if !strings.Contains(out, "structure_id: gstore") || !strings.Contains(out, "structure_id: thorne") {
+		t.Errorf("at-post anchors must still carry both ids (move_to tokens); got %q", out)
+	}
+	if strings.Contains(out, "whenever you wish") {
+		t.Errorf("at-post anchors must NOT invite departure; got %q", out)
+	}
+	if !strings.Contains(out, "once your work is done") {
+		t.Errorf("at-post anchors should frame home as after-hours; got %q", out)
+	}
+	t.Logf("RENDERED (at post): %s", strings.TrimSpace(out))
 }
 
 func TestRenderAnchors_WorkOnly_emptyLabelFallback(t *testing.T) {
 	var b strings.Builder
-	renderAnchors(&b, &AnchorsView{WorkID: "x"})
+	renderAnchors(&b, &AnchorsView{WorkID: "x"}, false)
 	out := b.String()
 	if !strings.Contains(out, "your workplace") || !strings.Contains(out, "structure_id: x") {
 		t.Errorf("expected generic fallback + id; got %q", out)
@@ -99,7 +122,7 @@ func TestRenderAnchors_WorkOnly_emptyLabelFallback(t *testing.T) {
 
 func TestRenderAnchors_Nil_noOutput(t *testing.T) {
 	var b strings.Builder
-	renderAnchors(&b, nil)
+	renderAnchors(&b, nil, false)
 	if b.String() != "" {
 		t.Errorf("expected no output for nil anchors, got %q", b.String())
 	}

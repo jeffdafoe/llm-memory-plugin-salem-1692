@@ -110,7 +110,13 @@ func shouldSkipNoop(payload perception.Payload, thresholds sim.NeedThresholds, w
 			return false
 		}
 	}
-	if payload.DutySteer != nil || payload.DutyPending {
+	// An AtPost steer (ZBBS-WORK-431) is render-only: it stabilizes an at-post
+	// NPC's prompt on ticks that already run, but is NOT a reason to force a tick
+	// — an idle owner standing at its post with no stimulus should still skip its
+	// idle-backstops (HOME-441), or this gate would re-open and the constant
+	// deliberation it caused is exactly what made the actor wander. The to-work /
+	// wind-down arms remain standing actionable signals that hold the gate open.
+	if (payload.DutySteer != nil && !payload.DutySteer.AtPost) || payload.DutyPending {
 		return false
 	}
 	return true

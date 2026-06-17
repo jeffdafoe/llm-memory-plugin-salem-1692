@@ -101,7 +101,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	// gate — an owed order, a co-present buyer, or a pending offer; the same class
 	// of "unfinished business" signal the HOME-400 to-work gate reads). Computed
 	// here, after buildDutySteer, off the already-built order/offer/customer views.
-	if p.DutySteer != nil && !p.DutySteer.ToWork && p.AtOwnBusiness {
+	if p.DutySteer != nil && !p.DutySteer.ToWork && !p.DutySteer.AtPost && p.AtOwnBusiness {
 		p.DutySteer.OfferStayOpen = true
 		p.DutySteer.StayOpenReason = stayOpenReason(
 			len(p.PendingDeliveriesFromMe) > 0,
@@ -1099,10 +1099,21 @@ func buildDutySteer(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapsho
 		// needy NPCs (blocked from work yet not red enough to be driven to resolve —
 		// e.g. a homeless blacksmith parked at the inn all shift). Scope: the to-work
 		// arm ONLY — the go-home arm stays unsuppressed (going home is how an NPC rests).
-		if hasRestockErrand || hasPendingOutgoingOffer(snap, actorID) {
+		if hasRestockErrand || hasPendingOutgoingOffer(snap, actorID) || hasOfferedQuote(snap, actorID) {
 			return nil
 		}
 		return &DutySteerView{ToWork: true, TargetID: anchors.WorkID, TargetLabel: anchors.WorkLabel}
+	case onShift && anchors.WorkID != "" && atWork:
+		// At-post stabilizer (ZBBS-WORK-431): the symmetric complement to the
+		// to-work yank above. On-shift and standing at its own post, an agent
+		// previously got NO duty cue at all — and an idle owner with no custom
+		// then read the anchors "head home whenever you wish" line as license to
+		// wander, whereupon the away-from-post arm dragged it back, and it
+		// oscillated (Prudence shop↔house, 2026-06-17). This view renders the
+		// "stay put, don't wander" line and reframes the anchors invite. It is
+		// render-only — excluded from shouldSkipNoop (AtPost), so an idle at-post
+		// NPC with nothing happening still skips its idle-backstops (HOME-441).
+		return &DutySteerView{AtPost: true}
 	case !onShift:
 		// Off-shift wind-down (ZBBS-WORK-387) — housing-dependent target. The
 		// suppressors (windDownSuppressed: a mid-meal item dwell — WORK-386; an
@@ -1316,6 +1327,30 @@ func hasPendingOutgoingOffer(snap *sim.Snapshot, actorID sim.ActorID) bool {
 	}
 	for _, e := range snap.PayLedger {
 		if e != nil && e.BuyerID == actorID && e.State == sim.PayLedgerStatePending {
+			return true
+		}
+	}
+	return false
+}
+
+// hasOfferedQuote reports whether a seller has an active scene_quote addressed to
+// actorID (as buyer) still standing. The buyer-side complement to
+// hasPendingOutgoingOffer: a quote a seller has put in front of the buyer is an
+// in-progress purchase, so the return-to-post cue is suppressed rather than
+// yanking the buyer out of the deal before they can take it — pay_with_item
+// re-checks co-presence, so walking off to the post loses the trade (the
+// Prudence shop↔General-Store bounce, 2026-06-17, where the to-work yank fired
+// every tick she stood at the stall mid-purchase because her mild hunger wasn't
+// red and a settling consume_now buy never sits pending). Targeted quotes only
+// (TargetBuyer == actorID): a public quote (TargetBuyer == "") isn't addressed to
+// this buyer in particular, so it shouldn't pin a passer-by to the stall. Scans
+// the published quote map, bounded by the TTL sweep (RunSceneQuoteSweep). Nil-safe.
+func hasOfferedQuote(snap *sim.Snapshot, actorID sim.ActorID) bool {
+	if snap == nil {
+		return false
+	}
+	for _, q := range snap.Quotes {
+		if q != nil && q.TargetBuyer == actorID && q.State == sim.SceneQuoteStateActive {
 			return true
 		}
 	}
