@@ -122,6 +122,21 @@ func minuteInShiftWindow(start, end, nowMinute int) bool {
 	return nowMinute >= start || nowMinute < end
 }
 
+// OnShiftAtMinute reports whether an actor with the given (possibly nil) schedule
+// bounds is on shift at nowMinute (local minute-of-day, 0..1439), with the same
+// semantics as the sleep machine's isActorOnShift: unscheduled (either bound nil)
+// is always off shift, and the window is the half-open wrap-aware [start, end) of
+// minuteInShiftWindow. Exported so the read surface (the umbilical structures
+// roster) can compute a keeper's on_shift off the published snapshot's
+// ScheduleStartMin/EndMin + LocalMinuteOfDay without reaching into the live world
+// or restating the window logic.
+func OnShiftAtMinute(startMin, endMin *int, nowMinute int) bool {
+	if startMin == nil || endMin == nil {
+		return false
+	}
+	return minuteInShiftWindow(*startMin, *endMin, nowMinute)
+}
+
 // effectiveShiftWindow returns the actor's [start, end) minute-of-day shift
 // window: its own schedule when both bounds are set, else the world's dawn/dusk
 // day window (decision B — unscheduled NPCs are day-active). ok=false only when
