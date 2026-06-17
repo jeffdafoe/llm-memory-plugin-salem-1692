@@ -257,6 +257,12 @@ var pc_actor_id := ""
 var structure_name := ""
 var home_name := ""
 var huddle_members: Array = []
+# Co-present sleepers (pc/me dormant_members) rendered as passive "(asleep)" chips
+# so an indoor sleeper with no visible map sprite is still legible. Kept SEPARATE
+# from huddle_members on purpose — these are NOT talk/pay targets (a sleeper is
+# out of the audience, server pcDormantRoster), so they must never feed
+# pay_modal_recipients.
+var dormant_members: Array = []
 # Self position from the latest /pc/me snapshot — used to filter outdoor
 # npc_spoke broadcasts by Chebyshev distance (drop speech from PCs more
 # than OUTDOOR_SPEECH_RANGE tiles away when we're both outside).
@@ -1028,10 +1034,13 @@ func get_launcher_control() -> Control:
 func open() -> void:
     if not pc_exists:
         return
-    if huddle_members.is_empty():
+    if huddle_members.is_empty() and dormant_members.is_empty():
         # ZBBS-WORK-399: alone in the village there's no room conversation
         # to show, but an admin still gets the panel — the Village activity
         # tab is its troubleshooting purpose. Land directly on Village.
+        # A co-present sleeper (dormant_members, ZBBS-WORK-427) counts as
+        # not-alone: fall through so the panel opens on the conversation tab
+        # and shows the "(asleep)" chip even with no one awake to address.
         if not Auth.can_edit:
             return
         _set_active_tab(true)
@@ -1150,6 +1159,11 @@ func _apply_pc_state(data: Dictionary) -> void:
         huddle_members = members
     else:
         huddle_members = []
+    var dormant = data.get("dormant_members", [])
+    if typeof(dormant) == TYPE_ARRAY:
+        dormant_members = dormant
+    else:
+        dormant_members = []
 
     _maybe_apply_recent_speech(data)
     _update_context_labels()
@@ -1291,6 +1305,7 @@ func _set_no_pc_state() -> void:
     pc_exists = false
     pc_actor_id = ""
     huddle_members = []
+    dormant_members = []
     pc_coins = 0
     pc_inventory = []
     pc_needs = {}
@@ -1338,12 +1353,13 @@ func _update_visibility_from_state() -> void:
         talk_launcher.visible = false
     else:
         sheet_anchor.visible = false
-        # Launcher chip is only useful when there's a huddle to enter
-        # — if the player is alone in the open village, hide the chip
-        # rather than offer a no-op tap target. Exception (ZBBS-WORK-399):
-        # admins keep the chip while alone, because open() lands them on
-        # the Village activity tab.
-        talk_launcher.visible = not huddle_members.is_empty() or Auth.can_edit
+        # Launcher chip is useful when there's someone to see — a huddle to
+        # enter, OR a co-present sleeper to mark (ZBBS-WORK-427: an indoor
+        # sleeper has no map sprite, so the (asleep) chip is the only sign a
+        # lone sleeper is even there). Otherwise hide it rather than offer a
+        # no-op tap target. Exception (ZBBS-WORK-399): admins keep the chip
+        # while alone, because open() lands them on the Village activity tab.
+        talk_launcher.visible = not huddle_members.is_empty() or not dormant_members.is_empty() or Auth.can_edit
 
 
 func _update_context_labels() -> void:
@@ -1363,24 +1379,36 @@ func _update_context_labels() -> void:
 func _update_nearby_chips() -> void:
     _clear_nearby_chips()
 
+    # Addressable members first, then the passive dormant (asleep) chips
+    # (ZBBS-WORK-427). Both render identically; only dormant_members carries a
+    # sleeper, and it is deliberately NOT in the talk/pay roster.
     for member in huddle_members:
-        if typeof(member) != TYPE_DICTIONARY:
-            continue
+        _append_member_chip(member)
+    for member in dormant_members:
+        _append_member_chip(member)
 
-        var member_name := str(member.get("name", "Unknown"))
-        var role := str(member.get("role", ""))
-        var chip_text := member_name
-        if not role.is_empty():
-            chip_text = "%s · %s" % [member_name, role]
-        # Rest-state suffix so the player can see a keeper is winding down
-        # (on break — still answers) or has turned in (asleep) instead of
-        # typing into silence. Server sends status on pc/me huddle members.
-        var status := str(member.get("status", ""))
-        if status == "on_break":
-            chip_text = "%s (on break)" % chip_text
-        elif status == "asleep":
-            chip_text = "%s (asleep)" % chip_text
-        nearby_flow.add_child(_make_chip(chip_text))
+
+## Render one roster member as a nearby chip, with a rest-state suffix
+## ((on break) / (asleep)) when the server tagged a status. Shared by the
+## addressable huddle_members and the passive dormant_members lists.
+func _append_member_chip(member) -> void:
+    if typeof(member) != TYPE_DICTIONARY:
+        return
+
+    var member_name := str(member.get("name", "Unknown"))
+    var role := str(member.get("role", ""))
+    var chip_text := member_name
+    if not role.is_empty():
+        chip_text = "%s · %s" % [member_name, role]
+    # Rest-state suffix so the player can see a keeper is winding down
+    # (on break — still answers) or has turned in (asleep) instead of
+    # typing into silence. Server sends status on pc/me members.
+    var status := str(member.get("status", ""))
+    if status == "on_break":
+        chip_text = "%s (on break)" % chip_text
+    elif status == "asleep":
+        chip_text = "%s (asleep)" % chip_text
+    nearby_flow.add_child(_make_chip(chip_text))
 
 
 func _clear_nearby_chips() -> void:

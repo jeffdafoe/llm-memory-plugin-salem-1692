@@ -595,6 +595,28 @@ type NPCNeedsChanged struct {
 
 func (NPCNeedsChanged) isSimEvent() {}
 
+// NPCDormancyChanged — an agent NPC crossed the dormant boundary: it entered or
+// left a sleep/rest macro-state, or switched between the two. State carries the
+// dormant kind the client renders a sleep marker for ("sleeping" or "resting")
+// or "" when the NPC is no longer dormant (awake). Emitted by
+// World.emitDormancyDeltas at the command-loop publish boundary — a
+// change-detection diff against the prior published snapshot, the same per-publish
+// posture as NPCNeedsChanged — so every State-mutation path is covered without
+// per-site emits. That matters here because sleep is centralized
+// (executeNPCSleep/wakeNPC) but rest is set in scattered spots (take_break,
+// RouteHomelessToRest, ExpireEndedBreaks, HealOrphanedRestStates, the umbilical
+// rest control); diffing the published state covers all of them. The diff only
+// fires on dormancy-boundary crossings, never on the frequent idle↔walking churn.
+// Frame: npc_dormancy_changed.
+type NPCDormancyChanged struct {
+	EventBase
+	ActorID ActorID
+	State   string // "sleeping" | "resting" | "" (awake)
+	At      time.Time
+}
+
+func (NPCDormancyChanged) isSimEvent() {}
+
 // NPCSpriteChanged is emitted by SetActorSprite when an NPC's sprite actually
 // changes. Carries the resolved *Sprite inline (same posture as NPCCreated) so
 // the hub builds an npc_sprite_changed frame with the full render data the

@@ -761,6 +761,12 @@ func _render_npc(npc: Dictionary) -> void:
 
     objects_node.add_child(container)
     placed_npcs[npc_id] = container
+    # Initial sleep/rest visual for an NPC already dormant at render time (a
+    # snapshot load or re-render of a sleeper). Live transitions after this
+    # arrive via apply_npc_dormancy_changed.
+    var dormant_token := _dormant_token(str(npc.get("state", "")))
+    if dormant_token != "":
+        _apply_dormant_visual(container, dormant_token)
     npc_list_changed.emit()
 
 ## Facing direction from a movement vector. |dx| vs |dy| picks the dominant
@@ -2299,6 +2305,78 @@ func apply_npc_needs_changed(data: Dictionary) -> void:
     if data.has("tiredness"):
         container.set_meta("tiredness", int(data.get("tiredness", 0)))
     npc_metadata_changed.emit(npc_id)
+
+# Sleeping/resting NPCs read as a dimmed sprite with a "Zzz" marker above the
+# head (ZBBS-WORK-427). The dim lands on the AnimatedSprite2D, not the container,
+# so the marker label stays legible.
+const DORMANT_DIM := Color(0.58, 0.62, 0.75, 1.0)
+const ZZZ_MARKER_NAME := "ZzzMarker"
+
+## WS event — an NPC entered or left a sleep/rest state (npc_dormancy_changed,
+## engine emitDormancyDeltas). data.state is "sleeping"/"resting" while dormant or
+## "" when awake; dim the sprite + show a Zzz marker, or clear both on wake.
+func apply_npc_dormancy_changed(data: Dictionary) -> void:
+    var npc_id: String = str(data.get("id", ""))
+    if npc_id == "":
+        return
+    var container: Node2D = placed_npcs.get(npc_id, null)
+    if container == null:
+        return
+    _apply_dormant_visual(container, _dormant_token(str(data.get("state", ""))))
+
+## Map a server macro-state to the dormancy token the map renders a sleep marker
+## for — "sleeping"/"resting" while dormant, "" otherwise. Mirrors the engine's
+## dormantDisplayState so client and server agree on what counts as dormant.
+func _dormant_token(state: String) -> String:
+    if state == "sleeping" or state == "resting":
+        return state
+    return ""
+
+## Apply or clear the sleep/rest visual on an NPC container: a dimmed sprite plus
+## a "Zzz" marker while dormant (token non-empty), both cleared on wake. The dim
+## is applied to the AnimatedSprite2D so the marker label is unaffected; the
+## marker is a sibling node added/removed by name. Idempotent.
+func _apply_dormant_visual(container: Node2D, token: String) -> void:
+    container.set_meta("dormant", token)
+    var dormant := token != ""
+    var spr := _npc_sprite(container)
+    if spr != null:
+        spr.modulate = DORMANT_DIM if dormant else Color.WHITE
+    var marker: Label = container.get_node_or_null(ZZZ_MARKER_NAME)
+    if dormant:
+        if marker == null:
+            marker = Label.new()
+            marker.name = ZZZ_MARKER_NAME
+            marker.text = "Zzz"
+            marker.z_index = 1
+            marker.add_theme_font_size_override("font_size", 14)
+            marker.add_theme_color_override("font_color", Color(0.85, 0.9, 1.0))
+            marker.position = _zzz_marker_position(spr)
+            container.add_child(marker)
+    elif marker != null:
+        marker.queue_free()
+
+## Center the Zzz marker just above an NPC sprite's head. Reads the frame width
+## off the sprite so it centers regardless of per-character frame size; falls back
+## to a fixed offset when the sprite/frames aren't resolvable yet.
+func _zzz_marker_position(spr: AnimatedSprite2D) -> Vector2:
+    if spr == null:
+        return Vector2(-8, -72)
+    var half_w := 16.0
+    if spr.sprite_frames != null and spr.sprite_frames.has_animation(spr.animation):
+        if spr.sprite_frames.get_frame_count(spr.animation) > 0:
+            var tex := spr.sprite_frames.get_frame_texture(spr.animation, 0)
+            if tex != null:
+                half_w = tex.get_width() * spr.scale.x * 0.5
+    return spr.position + Vector2(half_w - 12.0, -16.0)
+
+## The AnimatedSprite2D child of an NPC container, or null — the same child
+## play_npc_animation walks to drive animations.
+func _npc_sprite(container: Node2D) -> AnimatedSprite2D:
+    for child in container.get_children():
+        if child is AnimatedSprite2D:
+            return child
+    return null
 
 ## WS event — another admin edited the social-hour schedule. Update our
 ## container meta and tell the panel to refresh if it's the selected NPC.

@@ -84,15 +84,21 @@ type pcMeResponse struct {
 	// AudienceRoomID pairs with AudienceStructureID to scope the talk panel to
 	// one subspace: set to the PC's room id only when in a private/staff room,
 	// nil for common-room or outdoor PCs (public scope).
-	AudienceRoomID  *string            `json:"audience_room_id,omitempty"`
-	StructureName   string             `json:"structure_name,omitempty"`
-	HomeStructureID *string            `json:"home_structure_id,omitempty"`
-	HomeName        string             `json:"home_name,omitempty"`
-	CurrentHuddleID *string            `json:"current_huddle_id,omitempty"`
-	HuddleMembers   []pcHuddleMember   `json:"huddle_members"`
-	RecentSpeech    []pcRecentSpeech   `json:"recent_speech,omitempty"`
-	Coins           int                `json:"coins"`
-	Inventory       []pcInventoryEntry `json:"inventory"`
+	AudienceRoomID  *string          `json:"audience_room_id,omitempty"`
+	StructureName   string           `json:"structure_name,omitempty"`
+	HomeStructureID *string          `json:"home_structure_id,omitempty"`
+	HomeName        string           `json:"home_name,omitempty"`
+	CurrentHuddleID *string          `json:"current_huddle_id,omitempty"`
+	HuddleMembers   []pcHuddleMember `json:"huddle_members"`
+	// DormantMembers lists co-present actors that are asleep (ZBBS-WORK-427) —
+	// the talk panel renders them as passive "(asleep)" chips so an indoor
+	// sleeper, whose map sprite is hidden behind the structure, is still legible.
+	// SEPARATE from HuddleMembers on purpose: a sleeper is out of the audience
+	// (scope 1), so it must never enter the talk/pay target roster.
+	DormantMembers []pcHuddleMember   `json:"dormant_members,omitempty"`
+	RecentSpeech   []pcRecentSpeech   `json:"recent_speech,omitempty"`
+	Coins          int                `json:"coins"`
+	Inventory      []pcInventoryEntry `json:"inventory"`
 	// Needs is the PC's current need snapshot (keys hunger/thirst/tiredness).
 	// Always a non-nil map so it serializes as {} (not null) for a PC with no
 	// need rows yet.
@@ -132,6 +138,10 @@ type pcHuddleMember struct {
 	Name        string  `json:"name"`
 	Role        *string `json:"role,omitempty"`
 	TargetAgent *string `json:"target_agent,omitempty"`
+	// Status marks a non-addressable rest state for the chip suffix — "asleep"
+	// for a co-present sleeper carried in DormantMembers. Empty for ordinary
+	// (addressable) HuddleMembers; the client renders the "(asleep)" suffix off it.
+	Status string `json:"status,omitempty"`
 }
 
 // pcRecentSpeech is one historical entry backloaded into the talk panel. Kind
@@ -220,6 +230,7 @@ func (s *Server) handlePCMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp.HuddleMembers = pcHuddleRoster(snap, pc, pcID, audienceStructureID, snap.PublishedAt, sim.PCPresenceStaleAfter(s.world))
+	resp.DormantMembers = pcDormantRoster(snap, pc, pcID, audienceStructureID)
 	resp.RecentSpeech = pcRecentSpeechBackload(snap, pc, audienceStructureID)
 	resp.Inventory = pcInventoryEntries(pc.Inventory, s.world.ItemKinds)
 
@@ -379,6 +390,52 @@ func pcHuddleRoster(snap *sim.Snapshot, pc *sim.ActorSnapshot, selfID sim.ActorI
 	}
 
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// pcDormantRoster returns the co-present actors in the PC's conversational scope
+// that are ASLEEP — surfaced to the talk panel as passive "(asleep)" chips
+// (ZBBS-WORK-427) so an indoor sleeper, whose map sprite is hidden behind the
+// structure, is still legible. Deliberately distinct from pcHuddleRoster: a
+// sleeper is out of the audience (scope 1) and feeds neither the talk nor the pay
+// target list, so it must NOT appear in HuddleMembers. Sleeping is an indoor
+// state (StateSleeping is bedded-down indoors; outdoors the dormant state is
+// StateResting, which stays an addressable, map-visible member), so only the
+// structure-scoped cases can hold one: the PC's own structure and a loitered
+// owner-only stall (audienceStructureID, deduped against InsideStructureID).
+func pcDormantRoster(snap *sim.Snapshot, pc *sim.ActorSnapshot, selfID sim.ActorID, audienceStructureID string) []pcHuddleMember {
+	out := []pcHuddleMember{}
+	if pc.InsideStructureID != "" {
+		out = append(out, structureSleepingOccupants(snap, string(pc.InsideStructureID), selfID)...)
+	}
+	if audienceStructureID != "" && audienceStructureID != string(pc.InsideStructureID) {
+		out = append(out, structureSleepingOccupants(snap, audienceStructureID, selfID)...)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// structureSleepingOccupants returns the actors asleep inside structureID
+// (excluding selfID) as roster members tagged Status "asleep" — the sleeping
+// counterpart of structureConversationalOccupants: same structure-membership
+// scoping, opposite state selection. A sleeper has already left any huddle on
+// bed-down, so no huddle-membership filter is needed.
+func structureSleepingOccupants(snap *sim.Snapshot, structureID string, selfID sim.ActorID) []pcHuddleMember {
+	var out []pcHuddleMember
+	for id, a := range snap.Actors {
+		if a == nil || id == selfID {
+			continue
+		}
+		if string(a.InsideStructureID) != structureID {
+			continue
+		}
+		if a.State != sim.StateSleeping {
+			continue
+		}
+		m := pcHuddleMemberOf(a)
+		m.Status = "asleep"
+		out = append(out, m)
+	}
 	return out
 }
 
