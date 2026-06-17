@@ -214,6 +214,56 @@ func TestBuildSatiation_VendorEatHereFact(t *testing.T) {
 	}
 }
 
+// TestBuildSatiation_ClosedVendorDemoted: a vendor whose keeper is asleep sorts
+// BELOW an open vendor even when the closed one is nearer — open-before-closed is
+// the primary sort key (applied before the cap), so the model leads with a shop
+// it can actually buy at (the Ezekiel blacksmith↔tavern cycle: the closed Tavern
+// sat nearest the forge and led the open Inn). The demoted closed straggler still
+// renders, marked "(currently closed)".
+func TestBuildSatiation_ClosedVendorDemoted(t *testing.T) {
+	origin := sim.WorldToTile(0, 0)
+	subj := &sim.ActorSnapshot{Pos: origin, Needs: map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold}}
+	// Tavern: nearer, keeper ASLEEP (closed). Inn: farther, keeper awake (open).
+	tavernCook := &sim.ActorSnapshot{State: sim.StateSleeping, WorkStructureID: "tavern", Inventory: map[sim.ItemKind]int{"stew": 5}}
+	innCook := &sim.ActorSnapshot{State: sim.StateIdle, WorkStructureID: "inn", Inventory: map[sim.ItemKind]int{"stew": 5}}
+	snap := &sim.Snapshot{
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj, "john": tavernCook, "hannah": innCook},
+		Structures: map[sim.StructureID]*sim.Structure{
+			"tavern": {ID: "tavern", DisplayName: "The Tavern"},
+			"inn":    {ID: "inn", DisplayName: "The Inn"},
+		},
+		// Structures share their id with their village_object placement; the
+		// nearer (closed) Tavern would lead under distance-only ordering.
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"tavern": {ID: "tavern", Pos: sim.WorldPos{X: 32, Y: 0}}, // ~1 tile away
+			"inn":    {ID: "inn", Pos: sim.WorldPos{X: 320, Y: 0}},   // ~10 tiles away
+		},
+		ItemKinds: foodDrinkCatalog(),
+	}
+	v := buildSatiation(snap, "ezekiel", subj)
+	if v == nil || len(v.Needs) != 1 || len(v.Needs[0].Vendors) != 2 {
+		t.Fatalf("want 2 vendor cues (tavern + inn), got %+v", v)
+	}
+	vds := v.Needs[0].Vendors
+	if vds[0].StructureID != "inn" || vds[0].ClosedNow {
+		t.Errorf("open Inn must lead the nearer closed Tavern, got first = %+v", vds[0])
+	}
+	if vds[1].StructureID != "tavern" || !vds[1].ClosedNow {
+		t.Errorf("closed Tavern must be demoted to the tail and flagged ClosedNow, got second = %+v", vds[1])
+	}
+	var b strings.Builder
+	renderSatiation(&b, v)
+	out := b.String()
+	if !strings.Contains(out, "The Tavern (currently closed)") {
+		t.Errorf("demoted closed vendor should still render with the (currently closed) marker:\n%s", out)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "The Inn") && strings.Contains(line, "(currently closed)") {
+			t.Errorf("the open Inn must not be marked closed:\n%s", line)
+		}
+	}
+}
+
 func TestBuildSatiation_VendorPriceFromPriceBook(t *testing.T) {
 	subj := &sim.ActorSnapshot{Needs: map[sim.NeedKey]int{"thirst": sim.DefaultThirstRedThreshold}}
 	vendor := &sim.ActorSnapshot{WorkStructureID: "well_house", Inventory: map[sim.ItemKind]int{"water": 9}}

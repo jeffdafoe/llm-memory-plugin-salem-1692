@@ -360,6 +360,16 @@ func businessRememberedShut(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, st
 // live state beats stale memory.
 const closedNowAnnotation = " — but no one is tending it just now"
 
+// closedNowMarker is the blunt "(currently closed)" tag rendered right after a
+// vendor's NAME in the satiation buy menu when its backing keeper is asleep —
+// the same live read as closedNowAnnotation, but stated up front in plain
+// English. The weak NPC models skimmed past the trailing "no one is tending it
+// just now" clause and still walked to the closed shop (the Ezekiel
+// blacksmith↔tavern cycle), so satiation states the closed state bluntly and
+// before the buy text. closedNowAnnotation is retained for the recovery-options
+// and restock surfaces, which still trail it.
+const closedNowMarker = " (currently closed)"
+
 // vendorKeeperAsleep reports whether the actor backing a vendor offer is asleep
 // at snapshot time — i.e. not open for business, so the cue should read closed.
 // The snapshot-side proxy for sim.actorIsResting (the predicate occupancy uses

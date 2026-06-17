@@ -254,8 +254,16 @@ func gatherSatiationVendors(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *
 	for _, c := range byStructure {
 		cands = append(cands, c)
 	}
-	// Nearest first; ties by label then structure_id for deterministic output.
+	// Open vendors lead closed ones, THEN nearest-first; ties by label then
+	// structure_id for deterministic output. The open-before-closed key is
+	// primary and applied BEFORE the maxSatiationVendors cap below, so a vendor
+	// whose keeper is asleep can neither outrank nor crowd out an open one the
+	// weak model would otherwise walk to first (the Ezekiel blacksmith↔tavern
+	// cycle: the closed Tavern sat nearest the forge and so led the open Inn).
 	sort.Slice(cands, func(i, j int) bool {
+		if cands[i].sv.ClosedNow != cands[j].sv.ClosedNow {
+			return !cands[i].sv.ClosedNow
+		}
 		if cands[i].distTiles != cands[j].distTiles {
 			return cands[i].distTiles < cands[j].distTiles
 		}
@@ -566,6 +574,16 @@ func renderSatiation(b *strings.Builder, v *SatiationView) {
 			for _, vd := range n.Vendors {
 				b.WriteString("- ")
 				b.WriteString(sanitizeInline(vd.StructureLabel))
+				// A vendor whose keeper is asleep can't transact now — state it
+				// bluntly as "(currently closed)" right after the name, not a
+				// soft trailing clause. The weak model read top-down and walked
+				// to the closed shop anyway when this was the trailing "no one is
+				// tending it just now" (the Ezekiel blacksmith↔tavern cycle);
+				// gatherSatiationVendors also sinks closed vendors below open
+				// ones, so this only marks the demoted straggler.
+				if vd.ClosedNow {
+					b.WriteString(closedNowMarker)
+				}
 				fmt.Fprintf(b, " — buy %s", sanitizeInline(vd.ItemLabel))
 				if vd.Magnitude > 0 {
 					fmt.Fprintf(b, " (%s)", feltAmountWithSufficiency(vd.Magnitude, n.Need, n.Level))
@@ -585,12 +603,11 @@ func renderSatiation(b *strings.Builder, v *SatiationView) {
 				if vd.StructureID != "" {
 					fmt.Fprintf(b, " (structure_id: %s)", vd.StructureID)
 				}
-				// Live "closed now" (keeper asleep) takes precedence over the
-				// stale experiential Shut memory — a present-tense read beats a
+				// Live "closed now" is shown as the (currently closed) name
+				// marker above; the stale experiential Shut memory only annotates
+				// when the vendor isn't live-closed — a present-tense read beats a
 				// decaying recollection when both point at the same shop.
-				if vd.ClosedNow {
-					b.WriteString(closedNowAnnotation)
-				} else if vd.Shut {
+				if !vd.ClosedNow && vd.Shut {
 					b.WriteString(closedBusinessAnnotation)
 				}
 				if vd.OutOfStock {
