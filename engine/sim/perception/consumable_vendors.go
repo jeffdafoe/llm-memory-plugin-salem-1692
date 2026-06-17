@@ -351,23 +351,16 @@ func businessRememberedShut(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, st
 	return age >= 0 && age < sim.ClosedBusinessMemoryTTL
 }
 
-// closedNowAnnotation is the in-world suffix appended to a buy cue whose backing
-// vendor is asleep right now — the live off-shift-night-shift-keeper-abed case
-// (ZBBS-HOME-387). Unlike closedBusinessAnnotation (the buyer's DECAYING memory
-// of once finding a shop shut), this is a LIVE read off the published snapshot,
-// so it is stated present-tense and definitively: the shop is unstaffed at this
-// instant. Render prefers it over the experiential Shut suffix when both apply —
-// live state beats stale memory.
-const closedNowAnnotation = " — but no one is tending it just now"
-
 // closedNowMarker is the blunt "(currently closed)" tag rendered right after a
-// vendor's NAME in the satiation buy menu when its backing keeper is asleep —
-// the same live read as closedNowAnnotation, but stated up front in plain
-// English. The weak NPC models skimmed past the trailing "no one is tending it
-// just now" clause and still walked to the closed shop (the Ezekiel
-// blacksmith↔tavern cycle), so satiation states the closed state bluntly and
-// before the buy text. closedNowAnnotation is retained for the recovery-options
-// and restock surfaces, which still trail it.
+// vendor / inn / supplier's NAME — in the satiation buy menu, the recovery-
+// options rest list, and the restock cue — when its backing keeper is asleep at
+// snapshot time (the live ZBBS-HOME-387/406, WORK-416 read). It replaced the
+// older soft trailing clause ("— but no one is tending it just now"): the weak
+// NPC models skimmed past that and still walked to the closed shop (the Ezekiel
+// blacksmith↔tavern cycle), so the closed state is now stated plainly and up
+// front. All three surfaces also sink closed entries below open ones, so the
+// marker only flags a demoted straggler. The live read takes precedence over the
+// experiential closedBusinessAnnotation (Shut) memory when both point at a shop.
 const closedNowMarker = " (currently closed)"
 
 // vendorKeeperAsleep reports whether the actor backing a vendor offer is asleep

@@ -192,7 +192,7 @@ func TestBuildRecoveryOptions_KeeperlessInnSkipped(t *testing.T) {
 
 // TestBuildRecoveryOptions_InnClosedWhenKeeperAsleep — ZBBS-WORK-416. An inn whose
 // keeper is asleep can't take a booking right now, so the rest cue is flagged
-// ClosedNow and the render appends the "no one is tending it just now" caveat
+// ClosedNow and the render marks it "(currently closed)" right after the name
 // instead of advertising it as freely bookable.
 func TestBuildRecoveryOptions_InnClosedWhenKeeperAsleep(t *testing.T) {
 	subj := &sim.ActorSnapshot{Needs: map[sim.NeedKey]int{"tiredness": 1}, HomeStructureID: ""} // homeless → fires
@@ -209,8 +209,37 @@ func TestBuildRecoveryOptions_InnClosedWhenKeeperAsleep(t *testing.T) {
 	}
 	var b strings.Builder
 	renderRecoveryOptions(&b, v)
-	if !strings.Contains(b.String(), closedNowAnnotation) {
-		t.Errorf("rendered rest section missing the closed-now caveat:\n%s", b.String())
+	if !strings.Contains(b.String(), "Hannah's Inn"+closedNowMarker) {
+		t.Errorf("rendered rest section missing the (currently closed) name marker:\n%s", b.String())
+	}
+}
+
+// TestBuildRecoveryOptions_ClosedInnDemoted: a closed inn (keeper asleep) sorts
+// BELOW an open one even when its name sorts first alphabetically — open-before-
+// closed is the primary sort key (mirrors the satiation buy menu), so a weak
+// model doesn't lead with a booking it can't make.
+func TestBuildRecoveryOptions_ClosedInnDemoted(t *testing.T) {
+	subj := &sim.ActorSnapshot{Needs: map[sim.NeedKey]int{"tiredness": 1}, HomeStructureID: ""} // homeless → inns fire
+	snap := &sim.Snapshot{
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			"ezekiel": subj,
+			"amos":    {WorkStructureID: "anchor", State: sim.StateSleeping}, // closed; "Anchor" sorts first
+			"boggs":   {WorkStructureID: "boggs", State: sim.StateIdle},      // open
+		},
+		Structures: map[sim.StructureID]*sim.Structure{
+			"anchor": innStructure("anchor", "Anchor Inn"),
+			"boggs":  innStructure("boggs", "Boggs Inn"),
+		},
+	}
+	v := buildRecoveryOptions(snap, "ezekiel", subj)
+	if v == nil || len(v.Options) != 2 {
+		t.Fatalf("want 2 inn options, got %+v", v)
+	}
+	if v.Options[0].StructureID != "boggs" || v.Options[0].ClosedNow {
+		t.Errorf("open inn must lead the alphabetically-earlier closed one, got first = %+v", v.Options[0])
+	}
+	if v.Options[1].StructureID != "anchor" || !v.Options[1].ClosedNow {
+		t.Errorf("closed inn must be demoted to the tail, got second = %+v", v.Options[1])
 	}
 }
 
