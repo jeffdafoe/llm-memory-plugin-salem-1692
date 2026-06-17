@@ -662,6 +662,15 @@ func _on_npc_arrived(data: Dictionary) -> void:
     if not world.placed_npcs.has(npc_id):
         return
     var container: Node2D = world.placed_npcs[npc_id]
+    # Stale-arrival guard (ZBBS-HOME-472). A route dispatches the next leg's
+    # npc_walking in the SAME engine tick as the previous leg's npc_arrived, and
+    # the two frames can reach the client with the arrival LAST. Clearing the
+    # "walking" meta unconditionally below would then wipe the freshly-installed
+    # next-leg walk, so the sprite teleports stop-to-stop (and "vanishes" on the
+    # final home leg, since its walk never animates before the inside-flip hides
+    # it) instead of walking. Ignore an arrival older than the in-flight walk.
+    if _is_superseded_terminal(container, data):
+        return
     # v2 npc_arrived carries TILE coords (internal-grid); convert to world pixels.
     var final_pos: Vector2 = VillageApi.tile_to_world(int(data.get("x", 0)), int(data.get("y", 0)))
     var final_x: float = final_pos.x
@@ -724,6 +733,10 @@ func _on_npc_move_stopped(data: Dictionary) -> void:
     if not world.placed_npcs.has(npc_id):
         return
     var container: Node2D = world.placed_npcs[npc_id]
+    # Same stale-terminal guard as _on_npc_arrived: a move_stopped for a leg the
+    # client has already superseded must not snap/clear the live walk.
+    if _is_superseded_terminal(container, data):
+        return
     var stop_pos: Vector2 = VillageApi.tile_to_world(int(data.get("x", 0)), int(data.get("y", 0)))
     # Same discontinuous-snap class as arrival/supersede: the render position can
     # have drifted a tile+ from where the engine halted, so route through the
@@ -734,6 +747,28 @@ func _on_npc_move_stopped(data: Dictionary) -> void:
     if facing == "":
         facing = "south"
     world.play_npc_animation(container, facing, "idle")
+
+## True when a terminal walk frame (npc_arrived / npc_move_stopped) belongs to a
+## leg the client has already superseded with a newer npc_walking. attempt_id
+## increments once per dispatched leg (engine MoveActor), and _on_npc_walking
+## stores the attempt_id of the walk it installed; a terminal frame whose
+## attempt_id is strictly lower concludes a leg that no longer owns the sprite,
+## so acting on it (snap to its endpoint + remove the "walking" meta) would
+## cancel the live walk and freeze the sprite until the next snap. attempt_id 0
+## (absent on either side) disables the check, falling back to the old
+## unconditional behavior for any pre-attempt_id frame.
+func _is_superseded_terminal(container: Node2D, data: Dictionary) -> bool:
+    if not container.has_meta("walking"):
+        return false
+    var walking_meta = container.get_meta("walking")
+    # The walk meta is always a Dictionary (see _on_npc_walking), but this helper
+    # now gates BOTH terminal handlers, so a malformed value must not throw and
+    # break arrival handling — treat anything non-Dictionary as "not superseded".
+    if not walking_meta is Dictionary:
+        return false
+    var frame_attempt: int = int(data.get("attempt_id", 0))
+    var walk_attempt: int = int(walking_meta.get("attempt_id", 0))
+    return frame_attempt != 0 and walk_attempt != 0 and frame_attempt < walk_attempt
 
 ## Snap an NPC container to an authoritative position, wrapping the write in the
 ## HTML5/WebGL y-sort ghost workaround (visible=false; move; visible=true — the
