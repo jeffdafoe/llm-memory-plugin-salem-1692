@@ -29,7 +29,10 @@ import (
 // felt line via sim.ConsumeNarration and stamps ConsumedWarrantReason on the
 // consumer. Skips when no need moved AND nothing was kept, when only
 // unhandled needs moved (no felt fragment → empty narration, unless Kept
-// supplies the fallback line), or when the consumer has vanished.
+// supplies the fallback line), when the consumer has vanished, or — ZBBS-HOME-471
+// — when the consumer is mid-conversation and nothing was kept (the atmosphere
+// beat would just give the model a turn to re-pitch; the Kept buyer-notification
+// is exempt).
 func handleConsumedNarrationWarrants(w *sim.World, evt sim.Event) {
 	consumed, ok := evt.(*sim.ItemConsumed)
 	if !ok {
@@ -59,6 +62,20 @@ func handleConsumedNarrationWarrants(w *sim.World, evt sim.Event) {
 	if !ok || actor == nil {
 		return
 	}
+	// ZBBS-HOME-471: this beat is Force:false atmosphere. When the consumer is
+	// mid-conversation (a live, non-concluded huddle with another participant),
+	// stamping it hands the weak stateful model a fresh speak-turn that it
+	// tends to spend re-pitching the standing sell-cue rather than narrating
+	// the sip — John Ellis answered "I'm so hungry" with the menu, drank his
+	// own water, then the consume wake fired a redundant "shall I prepare a
+	// serving?". Suppress the wake mid-conversation: the need still moved and
+	// the drink still happened, we just don't spend a turn announcing it. The
+	// Kept > 0 case is EXEMPT — that beat is a buyer's only notification that a
+	// pocketed consume_now surplus is in their pack (see above), and a purchase
+	// is itself a conversation, so suppressing there would drop the signal.
+	if consumed.Kept == 0 && actorInLiveConversation(w, actor) {
+		return
+	}
 	now := time.Now().UTC()
 	meta := sim.WarrantMeta{
 		TriggerActorID: consumed.ActorID,
@@ -78,6 +95,28 @@ func handleConsumedNarrationWarrants(w *sim.World, evt sim.Event) {
 			consumed.ActorID, consumed.EventID(), err,
 		)
 	}
+}
+
+// actorInLiveConversation reports whether the actor is currently in an active
+// conversation — a huddle that exists, is not concluded, actually contains the
+// actor, and holds at least one OTHER participant (Members includes the actor,
+// so >= 2 means company). Mirrors the seller huddle-liveness check in
+// scene_quote_reactor.go. The explicit membership check matches the function's
+// meaning exactly ("the actor is in this conversation") rather than trusting
+// the CurrentHuddleID ⇄ Members invariant (huddle.go) — a stale back-reference
+// to a huddle of two OTHER members must not suppress this actor's narration.
+func actorInLiveConversation(w *sim.World, actor *sim.Actor) bool {
+	if actor.CurrentHuddleID == "" {
+		return false
+	}
+	huddle, ok := w.Huddles[actor.CurrentHuddleID]
+	if !ok || huddle.ConcludedAt != nil {
+		return false
+	}
+	if _, isMember := huddle.Members[actor.ID]; !isMember {
+		return false
+	}
+	return len(huddle.Members) >= 2
 }
 
 // RegisterConsumeHandlers wires the ItemConsumed self-narration subscriber into

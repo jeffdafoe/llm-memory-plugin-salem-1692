@@ -68,6 +68,120 @@ func consumeWarrantReason(t *testing.T, w *sim.World, id sim.ActorID) (sim.Consu
 	return sim.ConsumedWarrantReason{}, false
 }
 
+// putActorInHuddle places an actor in a test huddle on the world goroutine,
+// keeping the Members ⇄ CurrentHuddleID invariant. memberCount >= 2 adds a
+// second peer so the huddle reads as a live conversation; concluded stamps
+// ConcludedAt. StartedAt/LastActivityAt are set to now so a silence sweep, if
+// running, won't conclude it under the test.
+func putActorInHuddle(t *testing.T, w *sim.World, primary sim.ActorID, memberCount int, concluded bool) {
+	t.Helper()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		now := time.Now().UTC()
+		members := map[sim.ActorID]struct{}{primary: {}}
+		if memberCount >= 2 {
+			members["test-peer"] = struct{}{}
+		}
+		hud := &sim.Huddle{
+			ID:             "h-test",
+			Members:        members,
+			StartedAt:      now,
+			LastActivityAt: now,
+		}
+		if concluded {
+			hud.ConcludedAt = &now
+		}
+		world.Huddles[hud.ID] = hud
+		world.Actors[primary].CurrentHuddleID = hud.ID
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("put %s in huddle: %v", primary, err)
+	}
+}
+
+// TestConsumeSubscriberSuppressedMidConversation — ZBBS-HOME-471. A need-moving
+// consume while the actor is in a live, two-party huddle stamps NO warrant: the
+// atmosphere beat would otherwise hand the model a turn it spends re-pitching
+// the standing sell-cue (the John Ellis "shall I prepare a serving?" double-offer).
+func TestConsumeSubscriberSuppressedMidConversation(t *testing.T) {
+	w, stop := buildConsumeReactorWorld(t, 20)
+	defer stop()
+
+	putActorInHuddle(t, w, "hannah", 2, false)
+	if _, err := w.Send(sim.Consume("hannah", "stew", 1, time.Now().UTC())); err != nil {
+		t.Fatalf("Consume: %v", err)
+	}
+	if _, ok := consumeWarrantReason(t, w, "hannah"); ok {
+		t.Error("ConsumedWarrantReason stamped while mid-conversation; want suppressed")
+	}
+}
+
+// TestConsumeSubscriberKeptBeatSurvivesMidConversation — the Kept > 0 buyer
+// notification is EXEMPT from the mid-conversation suppression: a pocketed
+// consume_now surplus reaches the buyer only through this beat, and a purchase
+// is itself a conversation, so it must still fire inside a live huddle.
+func TestConsumeSubscriberKeptBeatSurvivesMidConversation(t *testing.T) {
+	w, stop := buildConsumeReactorWorld(t, 0) // sated → qty 2 all kept (Kept > 0)
+	defer stop()
+
+	putActorInHuddle(t, w, "hannah", 2, false)
+	if _, err := w.Send(sim.Consume("hannah", "stew", 2, time.Now().UTC())); err != nil {
+		t.Fatalf("Consume: %v", err)
+	}
+	got, ok := consumeWarrantReason(t, w, "hannah")
+	if !ok {
+		t.Fatal("Kept-surplus beat suppressed mid-conversation; want it to survive (buyer notification)")
+	}
+	if got.NarrationText != "You eat your fill; the rest you tuck away for later." {
+		t.Errorf("NarrationText = %q, want the kept-fallback line", got.NarrationText)
+	}
+}
+
+// TestConsumeSubscriberNotSuppressedInConcludedHuddle — a concluded huddle is
+// not a live conversation, so the suppression does not apply and the felt beat
+// stamps as usual. Guards the ConcludedAt branch of actorInLiveConversation.
+func TestConsumeSubscriberNotSuppressedInConcludedHuddle(t *testing.T) {
+	w, stop := buildConsumeReactorWorld(t, 20)
+	defer stop()
+
+	putActorInHuddle(t, w, "hannah", 2, true)
+	if _, err := w.Send(sim.Consume("hannah", "stew", 1, time.Now().UTC())); err != nil {
+		t.Fatalf("Consume: %v", err)
+	}
+	if _, ok := consumeWarrantReason(t, w, "hannah"); !ok {
+		t.Error("ConsumedWarrantReason suppressed in a concluded huddle; want it stamped")
+	}
+}
+
+// TestConsumeSubscriberNotSuppressedWhenHuddleExcludesActor — defensive: if a
+// stale CurrentHuddleID points at a live two-member huddle that does NOT
+// contain the actor, the actor is not actually in that conversation, so the
+// felt beat must still stamp. Guards the membership check in
+// actorInLiveConversation against a CurrentHuddleID ⇄ Members invariant slip.
+func TestConsumeSubscriberNotSuppressedWhenHuddleExcludesActor(t *testing.T) {
+	w, stop := buildConsumeReactorWorld(t, 20)
+	defer stop()
+
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		now := time.Now().UTC()
+		world.Huddles["h-other"] = &sim.Huddle{
+			ID:             "h-other",
+			Members:        map[sim.ActorID]struct{}{"peer-a": {}, "peer-b": {}},
+			StartedAt:      now,
+			LastActivityAt: now,
+		}
+		world.Actors["hannah"].CurrentHuddleID = "h-other" // stale: hannah not a member
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed stale huddle: %v", err)
+	}
+	if _, err := w.Send(sim.Consume("hannah", "stew", 1, time.Now().UTC())); err != nil {
+		t.Fatalf("Consume: %v", err)
+	}
+	if _, ok := consumeWarrantReason(t, w, "hannah"); !ok {
+		t.Error("ConsumedWarrantReason suppressed though the actor is not in the huddle; want it stamped")
+	}
+}
+
 // TestConsumeSubscriberStampsWarrant — consuming stew while hungry moves
 // hunger, so the subscriber stamps a ConsumedWarrantReason with the felt line.
 func TestConsumeSubscriberStampsWarrant(t *testing.T) {
