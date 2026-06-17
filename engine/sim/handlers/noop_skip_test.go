@@ -158,6 +158,19 @@ func TestShouldSkipNoop_DutySteerPresent_DoesNotSkip(t *testing.T) {
 	// quietPayload carries no DutySteer.
 }
 
+func TestShouldSkipNoop_AtPostSteer_StillSkips(t *testing.T) {
+	// ZBBS-WORK-431: the at-post stabilizer is render-only. Unlike the to-work /
+	// go-home arms it must NOT hold the gate open — an idle owner standing at its
+	// post with no stimulus should still skip its idle-backstops (HOME-441). If it
+	// forced a tick, the constant deliberation it caused is exactly the churn that
+	// drove the wandering this cue exists to stop.
+	pl := quietPayload()
+	pl.DutySteer = &perception.DutySteerView{AtPost: true}
+	if !shouldSkipNoop(pl, defaultThresholds(), []sim.WarrantMeta{idleBackstopWarrant()}) {
+		t.Fatalf("expected skip=true with an at-post (render-only) duty steer")
+	}
+}
+
 func TestShouldSkipNoop_DutyPending_DoesNotSkip(t *testing.T) {
 	// ZBBS-HOME-442: an off-post on-shift keeper whose to-work steer is
 	// Option-B-suppressed by a MILD need carries DutyPending instead of a
