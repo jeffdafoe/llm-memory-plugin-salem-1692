@@ -243,6 +243,21 @@ type Payload struct {
 	// offers outstanding. Ordering: by LedgerID ascending for determinism.
 	PendingOffersFromMe []PendingOfferView
 
+	// RecentlyResolvedOffersFromMe lists the subject's OWN pay-with-item offers
+	// that left Pending very recently — the buyer-side resolution view that
+	// closes the blind window between an offer leaving the pending scan
+	// (PendingOffersFromMe) and the timing-fragile PayResolvedWarrantReason event
+	// surfacing. The resolution warrant can ride a tick BEHIND the buyer's
+	// in-flight deliberation (it opens a fresh cycle when stamped mid-tick), so a
+	// buyer whose offer was just accepted re-perceives "the seller has it for
+	// sale" and re-buys a need already met (the Hannah×Josiah water 270→271
+	// re-offer). Sourced from snap.PayLedger (terminal entries where BuyerID ==
+	// subject, resolved within recentlyResolvedOfferWindow of snap.PublishedAt) —
+	// robust to warrant timing because it is a per-tick scan, not a warrant. nil
+	// (render content-gates) when nothing resolved recently. Ordering: by
+	// LedgerID ascending for determinism.
+	RecentlyResolvedOffersFromMe []ResolvedOfferView
+
 	// PayOffersForMe lists the still-pending pay-with-item offers staked
 	// AGAINST the subject (entries where SellerID == subject and State ==
 	// Pending) — the standing seller-side decision view that drives the
@@ -414,6 +429,22 @@ type PendingOfferView struct {
 	Qty        int
 	Amount     int
 	PayItems   []sim.ItemKindQty
+}
+
+// ResolvedOfferView is one entry in RecentlyResolvedOffersFromMe — a
+// just-settled offer the subject placed as buyer. Accepted distinguishes "the
+// seller took it" (suppress any re-buy of the same need) from a close without a
+// deal (declined / expired / failed — stop waiting). ConsumeNow marks an
+// accepted eat-here / drink-now deal whose goods were taken on the spot.
+type ResolvedOfferView struct {
+	LedgerID   sim.LedgerID
+	SellerName string
+	Item       sim.ItemKind
+	Qty        int
+	Amount     int
+	PayItems   []sim.ItemKindQty
+	Accepted   bool
+	ConsumeNow bool
 }
 
 // OfferableCustomersView is the seller-side "offer your wares" cue's content
