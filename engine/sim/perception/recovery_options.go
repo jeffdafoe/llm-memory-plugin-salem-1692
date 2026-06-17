@@ -409,14 +409,21 @@ func buyerLastPaidText(snap *sim.Snapshot, buyerID, sellerID sim.ActorID, item s
 	return fallback
 }
 
-// qualitativeDistance maps a tile distance to a benefit-first walk phrase.
+// qualitativeDistance maps a tile distance to a benefit-first walk phrase. The
+// bands are calibrated to the live village's scale — the town spans ~50 tiles
+// (blacksmith→inn) and the outlying farms sit ~90 tiles out — so an in-town
+// errand doesn't read as "a long walk": under 5 tiles is right nearby, under 25
+// a short walk, under 60 a fair walk, and only beyond that a long walk. The old
+// 3/8/20 bands were calibrated for a far smaller map and flagged a 20-tile
+// central well (nearer than the tavern an NPC was cycling to) as a long walk.
+// ZBBS-WORK-430.
 func qualitativeDistance(tiles float64) string {
 	switch {
-	case tiles < 3:
+	case tiles < 5:
 		return "right nearby"
-	case tiles < 8:
+	case tiles < 25:
 		return "a short walk"
-	case tiles < 20:
+	case tiles < 60:
 		return "a fair walk"
 	default:
 		return "a long walk"

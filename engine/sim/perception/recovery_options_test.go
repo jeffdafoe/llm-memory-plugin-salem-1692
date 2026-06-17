@@ -115,10 +115,10 @@ func TestBuildRecoveryOptions_FreeRestSpot(t *testing.T) {
 	if o.Kind != "rest" || o.Label != "the old oak" || o.Magnitude != 12 || o.CostText != "free" {
 		t.Errorf("unexpected rest option: %+v", o)
 	}
-	// 96px = 3 tiles east → "a short walk" (3–8 tiles), bearing east. Wrong
+	// 96px = 3 tiles east → "right nearby" (<5 tiles), bearing east. Wrong
 	// units would land in a different bucket / direction.
-	if o.Distance != "a short walk" || o.Direction != "east" {
-		t.Errorf("want 3-tiles-east (a short walk / east), got dist=%q dir=%q", o.Distance, o.Direction)
+	if o.Distance != "right nearby" || o.Direction != "east" {
+		t.Errorf("want 3-tiles-east (right nearby / east), got dist=%q dir=%q", o.Distance, o.Direction)
 	}
 }
 
