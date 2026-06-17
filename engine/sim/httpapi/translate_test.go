@@ -379,6 +379,23 @@ func TestTranslateEvent_VillageObjectStateChanged(t *testing.T) {
 	}
 }
 
+func TestTranslateEvent_NPCDormancyChanged(t *testing.T) {
+	frame, ok := TranslateEvent(&sim.NPCDormancyChanged{ActorID: "ezekiel", State: "sleeping"})
+	if !ok {
+		t.Fatal("NPCDormancyChanged should translate")
+	}
+	if frame.Type != "npc_dormancy_changed" {
+		t.Fatalf("type = %q, want npc_dormancy_changed", frame.Type)
+	}
+	d, isType := frame.Data.(npcDormancyChangedWireDTO)
+	if !isType {
+		t.Fatalf("data type = %T, want npcDormancyChangedWireDTO", frame.Data)
+	}
+	if d.ID != "ezekiel" || d.State != "sleeping" {
+		t.Errorf("dormancy fields = %+v, want {ezekiel sleeping}", d)
+	}
+}
+
 func TestTranslateEvent_VillageObjectDisplayNameChanged(t *testing.T) {
 	frame, ok := TranslateEvent(&sim.VillageObjectDisplayNameChanged{
 		ObjectID:    "tavern",

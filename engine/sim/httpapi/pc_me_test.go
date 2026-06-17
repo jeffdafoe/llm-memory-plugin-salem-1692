@@ -568,6 +568,29 @@ func TestHandlePCMe_IndoorNoHuddleRoster(t *testing.T) {
 	}
 }
 
+// TestHandlePCMe_IndoorDormantMembers covers ZBBS-WORK-427: a co-present sleeper
+// inside the PC's structure stays out of the talk/pay roster (HuddleMembers) but
+// surfaces in DormantMembers tagged "asleep", so the panel can show an "(asleep)"
+// chip for an indoor sleeper that has no visible map sprite. Reuses the indoor
+// harness, whose only sleeping occupant is Dozer (Statue/Crosser/Ghost/Distant
+// are awake, so none of them leak into the dormant list).
+func TestHandlePCMe_IndoorDormantMembers(t *testing.T) {
+	srv := NewServer(indoorNoHuddlePCMeWorld(t), okAuth{})
+	resp := pcMe(t, srv)
+
+	for _, m := range resp.HuddleMembers {
+		if m.Name == "Dozer" {
+			t.Fatalf("asleep NPC Dozer must not be in huddle_members: %+v", resp.HuddleMembers)
+		}
+	}
+	if len(resp.DormantMembers) != 1 {
+		t.Fatalf("len(dormant_members) = %d, want 1; got %+v", len(resp.DormantMembers), resp.DormantMembers)
+	}
+	if d := resp.DormantMembers[0]; d.Kind != "npc" || d.Name != "Dozer" || d.Status != "asleep" {
+		t.Errorf("dormant_members[0] = %+v, want NPC Dozer tagged asleep", d)
+	}
+}
+
 func TestHandlePCMe_InTransit(t *testing.T) {
 	// PC outdoors with no loiter object in range → no audience structure.
 	w := seededWorld(t)

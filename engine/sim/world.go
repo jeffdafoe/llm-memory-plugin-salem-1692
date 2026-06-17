@@ -1291,6 +1291,7 @@ func (w *World) Run(ctx context.Context) {
 			prevSnap := w.published.Load()
 			w.republish()
 			w.emitNeedsDeltas(prevSnap)
+			w.emitDormancyDeltas(prevSnap)
 			if cmd.Reply != nil {
 				cmd.Reply <- CommandResult{Value: value, Err: err}
 			}
@@ -1660,6 +1661,63 @@ func (w *World) emitNeedsDeltas(prev *Snapshot) {
 			Thirst:    thirst,
 			Tiredness: tiredness,
 			At:        now,
+		})
+	}
+}
+
+// dormantDisplayState projects an actor's macro-state to the dormancy token the
+// client renders a sleep marker for: "sleeping" or "resting" for the two dormant
+// states, "" for everything else (awake). Both sleeping and resting get the same
+// Zzz + dim treatment client-side (resting is a short sleep), but the specific
+// token is carried so a later build can distinguish them without a wire change.
+func dormantDisplayState(s ActorState) string {
+	switch s {
+	case StateSleeping:
+		return "sleeping"
+	case StateResting:
+		return "resting"
+	default:
+		return ""
+	}
+}
+
+// emitDormancyDeltas broadcasts an NPCDormancyChanged for every agent NPC whose
+// dormancy token (dormantDisplayState) changed between the prior published
+// snapshot (prev) and the one republish just stored. Called once per command from
+// the command loop, immediately after emitNeedsDeltas — the same single
+// change-detection point, which is what lets one diff cover both the centralized
+// sleep transitions and the scattered rest transitions without per-site emits.
+//
+// Gated to agent NPCs (stateful + shared): PCs carry their own
+// pc_sleep_started/pc_sleep_ended frames and a distinct client render path, and
+// decoratives never sleep. A newly created actor is absent from prev; its
+// baseline token is "" (awake), so a spawn straight into a dormant state emits a
+// correcting frame while the common fresh-awake case stays silent.
+func (w *World) emitDormancyDeltas(prev *Snapshot) {
+	if prev == nil {
+		return
+	}
+	cur := w.published.Load()
+	if cur == nil {
+		return
+	}
+	now := time.Now().UTC()
+	for id, a := range cur.Actors {
+		if a.Kind != KindNPCStateful && a.Kind != KindNPCShared {
+			continue
+		}
+		token := dormantDisplayState(a.State)
+		var prevToken string
+		if prevActor, ok := prev.Actors[id]; ok {
+			prevToken = dormantDisplayState(prevActor.State)
+		}
+		if prevToken == token {
+			continue
+		}
+		w.emit(&NPCDormancyChanged{
+			ActorID: id,
+			State:   token,
+			At:      now,
 		})
 	}
 }

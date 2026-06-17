@@ -335,6 +335,14 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			Thirst:    e.Thirst,
 			Tiredness: e.Tiredness,
 		}}, true
+	case *sim.NPCDormancyChanged:
+		// state is "sleeping"/"resting" while dormant (client shows a Zzz marker +
+		// dims the sprite) or "" when the NPC woke (clear). Same dormancy vocabulary
+		// AgentDTO.State sends on the REST snapshot. See World.emitDormancyDeltas.
+		return WireFrame{Type: "npc_dormancy_changed", Data: npcDormancyChangedWireDTO{
+			ID:    string(e.ActorID),
+			State: e.State,
+		}}, true
 	case *sim.PayOfferReceived:
 		return WireFrame{Type: "pay_offer", Data: payOfferWireDTO{
 			LedgerID:   uint64(e.LedgerID),
@@ -692,6 +700,14 @@ type npcNeedsChangedWireDTO struct {
 type npcSpriteChangedWireDTO struct {
 	ID     string          `json:"id"`
 	Sprite *AgentSpriteDTO `json:"sprite"`
+}
+
+// npcDormancyChangedWireDTO is the npc_dormancy_changed payload — an agent NPC
+// entered or left a sleep/rest state. state is "sleeping"/"resting" while dormant
+// (the client renders a Zzz marker + dims the sprite) or "" when awake (clear it).
+type npcDormancyChangedWireDTO struct {
+	ID    string `json:"id"`
+	State string `json:"state"`
 }
 
 // strPtrOrNil returns nil for an empty string, else a pointer to it — so a
