@@ -269,7 +269,13 @@ func findItemVendors(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *sim.Act
 			ClosedNow: !anyAwake[structureID],
 		})
 	}
+	// Open suppliers lead closed ones (a structure whose every vendor of the item
+	// is asleep can't sell now), then alphabetical for deterministic output —
+	// mirrors the satiation buy menu so a closed supplier doesn't lead the cue.
 	sort.Slice(out, func(i, j int) bool {
+		if out[i].ClosedNow != out[j].ClosedNow {
+			return !out[i].ClosedNow
+		}
 		if out[i].StructureLabel != out[j].StructureLabel {
 			return out[i].StructureLabel < out[j].StructureLabel
 		}
@@ -372,19 +378,22 @@ func renderRestocking(b *strings.Builder, v *RestockingView) {
 		for _, vd := range it.Vendors {
 			b.WriteString("  - buy from ")
 			b.WriteString(sanitizeInline(vd.StructureLabel))
+			// A supplier whose every vendor of the item is asleep can't sell now
+			// — mark it "(currently closed)" right after the name, not a soft
+			// trailing clause the weak model skims (mirrors satiation,
+			// ZBBS-HOME-387/406).
+			if vd.ClosedNow {
+				b.WriteString(closedNowMarker)
+			}
 			if vd.StructureID != "" {
 				fmt.Fprintf(b, " (structure_id: %s)", vd.StructureID)
 			}
 			if vd.CostText != "" {
 				fmt.Fprintf(b, ", %s", vd.CostText)
 			}
-			// Live "closed now" (keeper asleep) takes precedence over the stale
-			// experiential Shut memory — a present-tense read beats a decaying
-			// recollection when both point at the same shop (mirrors satiation,
-			// ZBBS-HOME-387/406).
-			if vd.ClosedNow {
-				b.WriteString(closedNowAnnotation)
-			} else if vd.Shut {
+			// The stale experiential Shut memory only annotates when the supplier
+			// isn't live-closed — a present-tense read beats a decaying recollection.
+			if !vd.ClosedNow && vd.Shut {
 				b.WriteString(closedBusinessAnnotation)
 			}
 			b.WriteString("\n")

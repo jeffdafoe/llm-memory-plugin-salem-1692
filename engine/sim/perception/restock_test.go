@@ -568,10 +568,40 @@ func TestBuildRestocking_NotClosedWhenAnotherKeeperAwake(t *testing.T) {
 	}
 }
 
+// TestBuildRestocking_ClosedSupplierDemoted: a closed supplier (every vendor of
+// the item asleep) sorts BELOW an open one even when its name sorts first
+// alphabetically — open-before-closed is the primary sort key (mirrors the
+// satiation buy menu), so the restock cue leads with a supplier that can sell.
+func TestBuildRestocking_ClosedSupplierDemoted(t *testing.T) {
+	subj := &sim.ActorSnapshot{Inventory: map[sim.ItemKind]int{"ale": 2}, RestockPolicy: buyPolicy("ale", 20)}
+	amos := &sim.ActorSnapshot{WorkStructureID: "abbey", Inventory: map[sim.ItemKind]int{"ale": 40}, State: sim.StateSleeping} // closed; "Abbey" sorts first
+	bram := &sim.ActorSnapshot{WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}, State: sim.StateIdle}   // open
+	snap := &sim.Snapshot{
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj, "amos": amos, "bram": bram},
+		Structures: map[sim.StructureID]*sim.Structure{
+			"abbey":   {ID: "abbey", DisplayName: "Abbey Brewhouse"},
+			"brewery": {ID: "brewery", DisplayName: "The Brewery"},
+		},
+		ItemKinds:         restockCatalog(),
+		RestockReorderPct: 25,
+	}
+	v := buildRestocking(snap, "merchant", subj)
+	if v == nil || len(v.Items) != 1 || len(v.Items[0].Vendors) != 2 {
+		t.Fatalf("want 2 supplier cues, got %+v", v)
+	}
+	vds := v.Items[0].Vendors
+	if vds[0].StructureID != "brewery" || vds[0].ClosedNow {
+		t.Errorf("open supplier must lead the alphabetically-earlier closed one, got first = %+v", vds[0])
+	}
+	if vds[1].StructureID != "abbey" || !vds[1].ClosedNow {
+		t.Errorf("closed supplier must be demoted to the tail, got second = %+v", vds[1])
+	}
+}
+
 // TestRenderRestocking_ClosedNowPreferredOverShut: when both the live ClosedNow
 // and the stale Shut memory point at the same supplier, render emits the
-// present-tense "no one tending it just now" and NOT the decaying "found it shut"
-// recollection — live state beats stale memory (mirrors satiation, HOME-387/406).
+// present-tense "(currently closed)" name marker and NOT the decaying "found it
+// shut" recollection — live state beats stale memory (mirrors satiation, HOME-387/406).
 func TestRenderRestocking_ClosedNowPreferredOverShut(t *testing.T) {
 	v := &RestockingView{Items: []RestockItemView{
 		{
@@ -582,8 +612,8 @@ func TestRenderRestocking_ClosedNowPreferredOverShut(t *testing.T) {
 	var b strings.Builder
 	renderRestocking(&b, v)
 	out := b.String()
-	if !strings.Contains(out, closedNowAnnotation) {
-		t.Errorf("expected live closed-now annotation:\n%s", out)
+	if !strings.Contains(out, "The Brewery"+closedNowMarker) {
+		t.Errorf("expected the live (currently closed) name marker:\n%s", out)
 	}
 	if strings.Contains(out, closedBusinessAnnotation) {
 		t.Errorf("live ClosedNow should suppress the stale Shut annotation:\n%s", out)

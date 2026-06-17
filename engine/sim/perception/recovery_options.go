@@ -157,9 +157,15 @@ func buildRecoveryOptions(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *si
 		return nil
 	}
 
-	// Nearest first; ties (and the no-distance inns/remedies/home) broken by
-	// label for deterministic output.
+	// Open options lead closed ones (an inn whose keeper is asleep can't take a
+	// booking now), THEN nearest first; ties (and the no-distance
+	// inns/remedies/home) broken by label for deterministic output. The
+	// open-before-closed key mirrors the satiation buy menu — a closed inn must
+	// not lead a weak model to walk to a booking it can't make.
 	sort.SliceStable(opts, func(i, j int) bool {
+		if opts[i].ClosedNow != opts[j].ClosedNow {
+			return !opts[i].ClosedNow
+		}
 		if opts[i].sortKey != opts[j].sortKey {
 			return opts[i].sortKey < opts[j].sortKey
 		}
@@ -453,6 +459,13 @@ func renderRecoveryOptions(b *strings.Builder, v *RecoveryOptionsView) {
 	for _, o := range v.Options {
 		b.WriteString("- ")
 		b.WriteString(sanitizeInline(o.Label))
+		// An asleep keeper can't take a booking right now — mark the inn
+		// "(currently closed)" right after the name (a weak model skims a soft
+		// trailing caveat), the same blunt marker the eat/drink buy cues use.
+		// ZBBS-WORK-416.
+		if o.ClosedNow {
+			b.WriteString(closedNowMarker)
+		}
 		switch o.Kind {
 		case "inn":
 			b.WriteString(" — rent a room")
@@ -476,11 +489,6 @@ func renderRecoveryOptions(b *strings.Builder, v *RecoveryOptionsView) {
 			if o.Direction != "" {
 				fmt.Fprintf(b, " %s", o.Direction)
 			}
-		}
-		// An asleep keeper can't take a booking right now — say so, the same live
-		// caveat the buy cues use (ZBBS-WORK-416).
-		if o.ClosedNow {
-			b.WriteString(closedNowAnnotation)
 		}
 		// The id is what makes the cue actionable: move_to(structure_id) walks the
 		// actor here, and the tool rejects a bare name. Keyed on Kind so each kind
