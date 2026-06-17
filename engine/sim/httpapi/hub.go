@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"sync/atomic"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
@@ -63,6 +64,17 @@ type Hub struct {
 	// disconnecting during shutdown doesn't block forever sending to
 	// unregister after the hub goroutine has already exited.
 	done chan struct{}
+
+	// Delivery counters (WORK-434), surfaced via Stats() on /umbilical/state.
+	// framesBroadcast / framesDropped are touched on the WORLD goroutine (Handle);
+	// clientsEvicted / clientsConnected on the HUB goroutine (Run). Stats() reads
+	// them from an HTTP-handler goroutine, so all four are atomic. Cumulative
+	// since engine start (clientsConnected is the live count), reset on restart —
+	// in-memory, no durability need, same posture as the telemetry/error rings.
+	framesBroadcast  atomic.Uint64
+	framesDropped    atomic.Uint64
+	clientsEvicted   atomic.Uint64
+	clientsConnected atomic.Int64
 }
 
 // NewHub builds a hub that translates events via translate. Panics on a nil
@@ -107,7 +119,9 @@ func (h *Hub) Handle(_ *sim.World, evt sim.Event) {
 	}
 	select {
 	case h.broadcast <- data:
+		h.framesBroadcast.Add(1)
 	default:
+		h.framesDropped.Add(1)
 		log.Printf("httpapi: WS broadcast buffer full, dropping frame (type=%q)", frame.Type)
 	}
 }
@@ -141,14 +155,17 @@ func (h *Hub) Run(ctx context.Context) {
 			return
 		case c := <-h.register:
 			clients[c] = struct{}{}
+			h.clientsConnected.Store(int64(len(clients)))
 		case c := <-h.unregister:
 			// Guarded so an already-evicted client (slow-consumer path below)
 			// isn't closed twice when its read pump later unregisters it.
 			if _, ok := clients[c]; ok {
 				delete(clients, c)
 				close(c.send)
+				h.clientsConnected.Store(int64(len(clients)))
 			}
 		case data := <-h.broadcast:
+			evicted := false
 			for c := range clients {
 				select {
 				case c.send <- data:
@@ -158,9 +175,50 @@ func (h *Hub) Run(ctx context.Context) {
 					// tries to unregister, which is a no-op (already deleted).
 					delete(clients, c)
 					close(c.send)
+					h.clientsEvicted.Add(1)
+					evicted = true
 				}
 			}
+			if evicted {
+				h.clientsConnected.Store(int64(len(clients)))
+			}
 		}
+	}
+}
+
+// WSDeliveryStatsDTO is the WS event-hub delivery accounting, surfaced on
+// /umbilical/state (UmbilicalStateDTO.ws). It gives an operator remote
+// visibility into frame-drop / slow-consumer health without SSH to the box.
+//
+//   - frames_broadcast: client-facing frames the hub accepted onto the broadcast
+//     queue (cumulative).
+//   - frames_dropped: client-facing frames dropped because the broadcast queue
+//     was full. The world goroutine never blocks on delivery, so an overrun is a
+//     silent drop recovered only by the client's REST resync on reconnect. A
+//     nonzero value after a stale-client report (e.g. a noticeboard not updating
+//     live) is the confirming signal — low-frequency frames (a board flips ~twice
+//     daily) don't self-heal from a drop the way frequent ones (lamp phase flips)
+//     do.
+//   - clients_evicted: slow-consumer evictions — a client whose own send buffer
+//     filled and was dropped (cumulative).
+//   - clients_connected: WS clients connected right now.
+type WSDeliveryStatsDTO struct {
+	FramesBroadcast  uint64 `json:"frames_broadcast"`
+	FramesDropped    uint64 `json:"frames_dropped"`
+	ClientsEvicted   uint64 `json:"clients_evicted"`
+	ClientsConnected int64  `json:"clients_connected"`
+}
+
+// Stats snapshots the hub's delivery counters. Safe to call from any goroutine
+// (all fields atomic). The four loads are independent, so the snapshot is
+// near-consistent rather than a single atomic instant — fine for an operator
+// health read.
+func (h *Hub) Stats() WSDeliveryStatsDTO {
+	return WSDeliveryStatsDTO{
+		FramesBroadcast:  h.framesBroadcast.Load(),
+		FramesDropped:    h.framesDropped.Load(),
+		ClientsEvicted:   h.clientsEvicted.Load(),
+		ClientsConnected: h.clientsConnected.Load(),
 	}
 }
 

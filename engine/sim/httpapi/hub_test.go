@@ -194,3 +194,61 @@ func TestHubClientDisconnectDoesNotWedge(t *testing.T) {
 	_ = c1.Close()
 	broadcastUntilReceived(t, c2, hub, "test_event")
 }
+
+// waitConnected polls the hub's live connected count until it reaches want or a
+// deadline lapses. Registration/unregistration travel on channels serviced by
+// Run, so the count updates asynchronously after a dial/close.
+func waitConnected(t *testing.T, hub *Hub, want int64) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if hub.Stats().ClientsConnected == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("clients_connected did not reach %d within deadline (last=%d)", want, hub.Stats().ClientsConnected)
+}
+
+func TestHubStatsCountsBroadcastAndDrops(t *testing.T) {
+	// No Run goroutine: nothing drains the broadcast channel, so it fills at
+	// exactly broadcastBuffer and every Handle past that is a counted drop.
+	hub := NewHub(fixedTranslator)
+	const extra = 10
+	for i := 0; i < broadcastBuffer+extra; i++ {
+		hub.Handle(nil, nil)
+	}
+	st := hub.Stats()
+	if st.FramesBroadcast != broadcastBuffer {
+		t.Errorf("frames_broadcast = %d, want %d", st.FramesBroadcast, broadcastBuffer)
+	}
+	if st.FramesDropped != extra {
+		t.Errorf("frames_dropped = %d, want %d", st.FramesDropped, extra)
+	}
+}
+
+func TestHubStatsIgnoresUntranslatedEvents(t *testing.T) {
+	// A dropTranslator returns ok=false, so Handle never enqueues a frame —
+	// neither the broadcast nor the drop counter should move.
+	hub := NewHub(dropTranslator)
+	for i := 0; i < 5; i++ {
+		hub.Handle(nil, nil)
+	}
+	st := hub.Stats()
+	if st.FramesBroadcast != 0 || st.FramesDropped != 0 {
+		t.Errorf("untranslated events counted: broadcast=%d dropped=%d, want 0/0", st.FramesBroadcast, st.FramesDropped)
+	}
+}
+
+func TestHubStatsConnectedCount(t *testing.T) {
+	ts, hub := newHubServer(t, fixedTranslator)
+	conn := dialEvents(t, ts)
+	if f := readFrame(t, conn); f.Type != "hello" {
+		t.Fatalf("expected hello first, got %q", f.Type)
+	}
+	// Run records the registration asynchronously; poll until it lands.
+	waitConnected(t, hub, 1)
+	// A clean disconnect unregisters via the read pump → connected returns to 0.
+	_ = conn.Close()
+	waitConnected(t, hub, 0)
+}
