@@ -38,11 +38,18 @@ func TestCommitResultContent_AcceptPay_FailedTerminalsReported(t *testing.T) {
 	}
 }
 
-// A genuine acceptance falls through to the generic [ok] — the transfer happened
-// and next-tick perception (+ the buyer's "## Recently settled offers" view)
-// reflects it.
-func TestCommitResultContent_AcceptPay_AcceptedIsGenericOk(t *testing.T) {
-	if got := commitResultContent(&ValidatedCall{Name: "accept_pay"}, sim.PayLedgerStateAccepted); got != "[ok]" {
-		t.Errorf("accepted accept_pay = %q, want generic [ok]", got)
+// A genuine acceptance (ZBBS-HOME-473) steers the seller to voice a brief
+// handover then done(), and forbids re-accepting — a bare [ok] left the weak
+// model re-firing accept_pay to the budget and closing the sale mute (live:
+// Josiah×Prudence bread, the seller accepted then walked off without a word).
+func TestCommitResultContent_AcceptPay_AcceptedSteersHandover(t *testing.T) {
+	got := commitResultContent(&ValidatedCall{Name: "accept_pay"}, sim.PayLedgerStateAccepted)
+	if got == "[ok]" {
+		t.Fatalf("accepted accept_pay returned a bare [ok] with no handover steer")
+	}
+	for _, want := range []string{"settled", "Say a brief word", "done()", "Do not accept again"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("accepted accept_pay result %q missing %q", got, want)
+		}
 	}
 }
