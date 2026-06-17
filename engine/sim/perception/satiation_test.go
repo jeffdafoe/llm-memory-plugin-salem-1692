@@ -509,10 +509,10 @@ func TestBuildSatiation_FreeSourceThirst(t *testing.T) {
 	if fs.Label != "Well" || fs.ObjectID != "well" || fs.Magnitude != 8 {
 		t.Errorf("free source = %+v, want Well/well/8", fs)
 	}
-	// 96px = 3 tiles east → "a short walk" (3–8 tiles), bearing east. Wrong units
+	// 96px = 3 tiles east → "right nearby" (<5 tiles), bearing east. Wrong units
 	// would land in a different bucket / direction (the HOME-297 unit bug).
-	if fs.Distance != "a short walk" || fs.Direction != "east" {
-		t.Errorf("want 3-tiles-east (a short walk / east), got dist=%q dir=%q", fs.Distance, fs.Direction)
+	if fs.Distance != "right nearby" || fs.Direction != "east" {
+		t.Errorf("want 3-tiles-east (right nearby / east), got dist=%q dir=%q", fs.Distance, fs.Direction)
 	}
 	// Render carries the object id as a structure_id so move_to can reach it.
 	var b strings.Builder
@@ -521,7 +521,7 @@ func TestBuildSatiation_FreeSourceThirst(t *testing.T) {
 	if !strings.Contains(out, "Free to drink nearby:") {
 		t.Errorf("missing free-source header:\n%s", out)
 	}
-	if !strings.Contains(out, "- Well — a deep drink, free, a short walk east (structure_id: well)") {
+	if !strings.Contains(out, "- Well — a deep drink, free, right nearby east (structure_id: well)") {
 		t.Errorf("free-source bullet missing/!exact:\n%s", out)
 	}
 }
