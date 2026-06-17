@@ -934,11 +934,23 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 	// bare "[ok]" told the seller "accepted" when the sale actually fell through
 	// (ZBBS-WORK-432, the 271 dry-seller case: Josiah "accepted" water he no
 	// longer had, got [ok], learned nothing). Report the real outcome in plain
-	// modern English. A genuine Accepted falls through to the generic [ok] — the
-	// transfer happened and next-tick perception reflects it.
+	// modern English.
+	//
+	// A genuine Accepted (ZBBS-HOME-473) no longer falls through to a bare
+	// [ok] either: the pay response itself passes in silence (the perception's
+	// "## Offers awaiting your decision" block tells the seller to accept then
+	// ALSO speak), but a bare [ok] gave the weak seller model no within-result
+	// reason to voice the handover — so it re-fired accept_pay to the iteration
+	// budget (already_did_that-guarded no-ops) and closed the sale mute, the
+	// buyer walking off with no word exchanged (observed live: Josiah×Prudence
+	// bread). Echo the settle + steer to a brief handover line + done(), and
+	// forbid the re-accept — the same soft-steer / hard-guard pairing speak and
+	// scene_quote carry.
 	if vc.Name == "accept_pay" {
 		if state, ok := cmdResult.(sim.PayLedgerState); ok {
 			switch state {
+			case sim.PayLedgerStateAccepted:
+				return "[ok] The sale is settled. Say a brief word to them as you settle it, then call done(). Do not accept again."
 			case sim.PayLedgerStateFailedInsufficientStock:
 				return "[ok] You agreed, but you don't have enough stock to fill it — the sale fell through."
 			case sim.PayLedgerStateFailedInsufficientFunds:
