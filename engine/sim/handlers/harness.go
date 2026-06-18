@@ -916,16 +916,43 @@ func (h *Harness) dispatch(ctx context.Context, w *sim.World, job tickJob, vc *V
 // needs the result because the ZBBS-WORK-391 needs-clamp decides the
 // eaten/kept split on the world goroutine, after the args are fixed.
 func commitResultContent(vc *ValidatedCall, cmdResult any) string {
-	// A clamped consume must tell the model what actually happened: a bare
-	// [ok] after "consume 10" reads as ten eaten, and the model either
-	// re-consumes the surplus it doesn't know it holds or distrusts its
-	// inventory. Unclamped consumes (Kept == 0) keep the generic [ok].
+	// A consume must tell the model what actually happened. A clamped consume
+	// (Kept > 0) reports the eaten/kept split so a "consume 10" answered by a
+	// bare [ok] isn't read as ten eaten. A need-moving consume with no surplus
+	// (Kept == 0) voices the honest post-consume felt state (LLM-7) — without it
+	// the stale within-tick eat-affordance furniture primed the weak model to
+	// re-fire consume until the dedup guard or a stochastic break (live: Josiah
+	// ate one loaf, bounced four more consumes, then greeted an empty room).
 	if vc.Name == "consume" {
-		if r, ok := cmdResult.(sim.ConsumeResult); ok && r.Kept > 0 {
-			return fmt.Sprintf(
-				"[ok] You consume %d %s — that satisfies you; the remaining %d stay in your pack. Do not consume more now.",
-				r.Consumed, r.Kind, r.Kept,
-			)
+		if r, ok := cmdResult.(sim.ConsumeResult); ok {
+			if r.Kept > 0 {
+				return fmt.Sprintf(
+					"[ok] You consume %d %s — that satisfies you; the remaining %d stay in your pack. Do not consume more now.",
+					r.Consumed, r.Kind, r.Kept,
+				)
+			}
+			// Honest post-consume state for the no-surplus case, mirroring the
+			// pay_with_item eat feedback (buyerFeltAfterConsume): sated → an
+			// explicit stop steer; still in need → the plain felt label with no
+			// stop (the actor may legitimately act again; identical repeats are
+			// still caught by the ZBBS-HOME-414 dedup guard).
+			if r.Consumed > 0 && r.SatisfiesNeed != "" {
+				var b strings.Builder
+				fmt.Fprintf(&b, "[ok] You consume %d %s.", r.Consumed, r.Kind)
+				if r.FeltAfter != "" {
+					fmt.Fprintf(&b, " You still feel %s.", r.FeltAfter)
+				} else {
+					switch r.SatisfiesNeed {
+					case "hunger":
+						b.WriteString(" Your hunger is met — eat no more now.")
+					case "thirst":
+						b.WriteString(" Your thirst is met — drink no more now.")
+					default:
+						b.WriteString(" That need is met — consume no more now.")
+					}
+				}
+				return b.String()
+			}
 		}
 	}
 	// accept_pay: a gate-fail resolution (no stock, buyer short of coins/goods,

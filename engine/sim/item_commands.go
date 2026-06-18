@@ -310,7 +310,15 @@ func Consume(actorID ActorID, itemName string, qty int, at time.Time) Command {
 					At:            at,
 				})
 			}
-			return ConsumeResult{Kind: kind, Requested: qty, Consumed: eat, Kept: qty - eat}, nil
+			// LLM-7: surface the post-consume felt state (the same helper the
+			// pay_with_item eat path uses) so the harness can steer a sated NPC to
+			// stop, instead of a bare [ok] that the stale eat-affordance furniture
+			// overrides into a re-eat loop. Only meaningful when something was eaten.
+			res := ConsumeResult{Kind: kind, Requested: qty, Consumed: eat, Kept: qty - eat}
+			if eat > 0 {
+				res.SatisfiesNeed, res.FeltAfter = buyerFeltAfterConsume(actor, def, w.Settings.NeedThresholds)
+			}
+			return res, nil
 		},
 	}
 }
@@ -327,4 +335,11 @@ type ConsumeResult struct {
 	Requested int
 	Consumed  int
 	Kept      int
+	// SatisfiesNeed / FeltAfter mirror PayWithItemResult: the primary need the
+	// consumed item eases and the eater's post-consume felt label ("" = sated).
+	// LLM-7: lets commitResultContent voice "your hunger is met — eat no more
+	// now" / "you still feel peckish" after a need-moving consume, so the stale
+	// within-tick eat-affordance furniture stops priming a re-eat loop.
+	SatisfiesNeed NeedKey
+	FeltAfter     string
 }
