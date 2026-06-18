@@ -189,10 +189,12 @@ func actorIsLodgerAt(w *World, actor *Actor, structureID StructureID, now time.T
 // Actor.InsideRoomID to this at the actual bed-down (executePCSleep /
 // executeNPCSleep), NOT at check-in, so "InsideRoomID names a private room"
 // means "asleep in it" — the invariant the speech-audience scoper
-// (audienceRoomScope) assumes. Returns the lowest matching RoomID for
-// determinism across RoomAccess's randomized map iteration (a lodger normally
-// holds exactly one grant per structure, so the tie-break almost never bites).
-// MUST be called from inside a Command.Fn (findRoom reads w.Structures).
+// (audienceRoomScope) assumes. A lodger holds at most one private grant per
+// structure (AssignBedroomForLodger EXTENDS an existing one rather than adding a
+// second), so the lowest-RoomID tie-break below is an arbitrary-but-deterministic
+// guard for the can't-normally-happen multi-grant case, not aligned with
+// assignment's Name-ASC order. MUST be called from inside a Command.Fn (findRoom
+// reads w.Structures).
 func lodgerRoomAt(w *World, actor *Actor, structureID StructureID, now time.Time) (RoomID, bool) {
 	if actor == nil || structureID == "" {
 		return 0, false
@@ -201,6 +203,9 @@ func lodgerRoomAt(w *World, actor *Actor, structureID StructureID, now time.Time
 	for key, ra := range actor.RoomAccess {
 		if !IsActiveLedgerGrant(ra, now) {
 			continue
+		}
+		if ra.RoomID != key.RoomID {
+			continue // defensive: a malformed grant must not bed into the wrong room
 		}
 		room := findRoom(w, key.RoomID)
 		if room == nil || room.Kind != RoomKindPrivate || room.StructureID != structureID {

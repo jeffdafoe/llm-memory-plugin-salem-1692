@@ -41,9 +41,12 @@ import (
 const DefaultNPCSleepMaxDurationHours = 12
 
 // DefaultLodgingBedtimeHour is the wall-clock hour a lodger retires for the
-// night when LodgingBedtimeHour is unset or out of range. 22:00 — later than
-// the village's default dusk (19:00) because a guest at an inn keeps later
-// hours, and decoupled from any work shift (LLM-14).
+// night. 22:00 — later than the village's default dusk (19:00) because a guest
+// at an inn keeps later hours, and decoupled from any work shift (LLM-14). The
+// environment loaders default a MISSING lodging_bedtime_hour to this; an explicit
+// 0 means midnight (honored), and lodgerNightWindow only falls back here for an
+// out-of-range value (<0 or >23). A literal-built World leaves the field at its
+// zero value (midnight), so tests that bed lodgers set it.
 const DefaultLodgingBedtimeHour = 22
 
 // lodgerNightWindow returns the [start, end) minute-of-day window during which a
@@ -60,7 +63,7 @@ const DefaultLodgingBedtimeHour = 22
 // DawnTime fails to parse (logged at load by the phase system).
 func lodgerNightWindow(w *World) (start, end int, ok bool) {
 	bedtimeHour := w.Settings.LodgingBedtimeHour
-	if bedtimeHour <= 0 || bedtimeHour > 23 {
+	if bedtimeHour < 0 || bedtimeHour > 23 {
 		bedtimeHour = DefaultLodgingBedtimeHour
 	}
 	dawnH, dawnM, err := ParseHM(w.Settings.DawnTime)

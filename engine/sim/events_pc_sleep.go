@@ -34,12 +34,18 @@ func (PCSleepStarted) isSimEvent() {}
 //   - "input"  — the player took an action while asleep (touchPCInput), so the
 //     action both wakes them and proceeds.
 //
-// At is the wake instant (UTC).
+// At is the wake instant (UTC). FromRoomID is the room the PC was sleeping in
+// (its bed-down InsideRoomID), captured BEFORE the wake clears it: the
+// morning-descent subscriber relocates the PC from this room to the common room
+// off the event rather than live actor state, because the wake clears
+// InsideRoomID immediately (LLM-14: an awake PC must never be bedroom-scoped). 0
+// when the PC held no room scope.
 type PCSleepEnded struct {
 	EventBase
-	ActorID ActorID
-	Reason  string
-	At      time.Time
+	ActorID    ActorID
+	Reason     string
+	FromRoomID RoomID
+	At         time.Time
 }
 
 func (PCSleepEnded) isSimEvent() {}

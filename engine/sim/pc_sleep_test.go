@@ -369,6 +369,12 @@ func TestWakeExpiredPCSleepers(t *testing.T) {
 		if a.SleepingUntil != nil {
 			t.Error("a rested PC should wake")
 		}
+		// LLM-14: the normal (non-checkout) wake clears the room scope immediately,
+		// independent of any morning-descent subscriber (none registered here), so
+		// an awake PC is never left bedroom-scoped.
+		if a.InsideRoomID != 0 {
+			t.Errorf("InsideRoomID = %d, want 0 (non-checkout wake clears the room scope)", a.InsideRoomID)
+		}
 		if len(rec.events) != 1 || rec.events[0].(*PCSleepEnded).Reason != "auto" {
 			t.Errorf("want one PCSleepEnded(auto), got %v", rec.events)
 		}
@@ -393,6 +399,22 @@ func TestWakeExpiredPCSleepers(t *testing.T) {
 		WakeExpiredPCSleepers(now.Add(time.Hour)).Fn(w)
 		if a.SleepingUntil == nil {
 			t.Error("a tired PC within the cap should stay asleep")
+		}
+	})
+
+	t.Run("moved out of its bedroom while sleeping (active grant) -> woken + cleared", func(t *testing.T) {
+		a := lodgerPC("p", now.Add(72*time.Hour))
+		w := pcSleepWorld(a)
+		executePCSleep(w, a, 1, now) // asleep in bedroom 1
+		// Something moved the sleeper out of its granted room while the grant is
+		// still active — an inconsistent state the wake sweep repairs (movedOut).
+		a.InsideRoomID = 2                              // tavern floor
+		WakeExpiredPCSleepers(now.Add(time.Hour)).Fn(w) // not rested, within cap
+		if a.SleepingUntil != nil {
+			t.Error("a sleeper inconsistent with its granted room should be woken")
+		}
+		if a.InsideRoomID != 0 {
+			t.Errorf("InsideRoomID = %d, want 0 (non-checkout wake clears the room scope)", a.InsideRoomID)
 		}
 	})
 
