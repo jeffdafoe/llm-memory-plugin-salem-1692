@@ -523,52 +523,49 @@ func advanceActorViaReroute(w *World, actor *Actor, dest MoveDestination, attemp
 		return
 	}
 
-	// Last-resort door walk-through (ZBBS-HOME-348). The reroute has
-	// exhausted with no advanceable detour. If the tile we're blocked on is
-	// the StructureEnter goal ITSELF (the door), step onto it anyway even
-	// though another actor occupies it.
+	// Single-file door walk-through (ZBBS-HOME-348, generalized by LLM-9). The
+	// reroute exhausted with replanFailed — masking the immediate blocker left no
+	// path to the goal AT ALL: the sole-approach / sleeper-in-the-only-doorway
+	// shape. For a StructureEnter that means the door (the single reachable
+	// interior tile under the shared-identity bridge) is reachable by exactly one
+	// file of tiles, and the blocker is a non-yielding actor (a housemate sleeping
+	// on the doorway, a keeper standing on their shop's entry) that won't be routed
+	// around. The stuck window accomplishes nothing here — no alternate route can
+	// appear — so step THROUGH the immediate blocker NOW rather than freezing for
+	// DeadlockStuckThreshold ticks and emitting a spurious /deadlocks record before
+	// HOME-327 below does the identical walk-through.
 	//
-	// Why this case and no other: structureEntryTile resolves a
-	// StructureEnter to exactly one tile — the single reachable interior
-	// tile under the shared-identity bridge (the door). A whole household
-	// shares one HomeStructureID and funnels through that one tile, so a
-	// resident parked or sleeping ON the door locks every other family
-	// member out of their own home permanently (replanFailed: masking the
-	// sole goal tile leaves no path). v1 never hit this — it had no
-	// actor-actor collision at all, so actors freely overlapped on the door.
-	// v2's soft-block collision (ZBBS-WORK-340) regressed exactly this
-	// interaction. We recover the v1 invariant narrowly: overlap is allowed,
-	// but only on the door tile, only for a member's own StructureEnter, and
-	// only as a true last resort after the reroute fails. Corridor /
-	// visitor-slot / Position deadlocks keep v2's collision untouched.
+	// Step onto occupiedNext (the one-tile-toward-goal blocker), not target: when
+	// the mover is adjacent to the door, occupiedNext IS the door and this enters;
+	// when a deeper stack occupies the approach too, this advances one tile and the
+	// next tick faces the door directly. occupiedNext was soft-classified by
+	// advanceActorLocomotion — walkable terrain with an actor on it, never a wall or
+	// footprint.
 	//
-	// Three conjuncts gate it:
-	//   - occupiedNext.Equal(target): occupiedNext is the soft-blocked next
-	//     tile, target is the resolved goal. Equality means the mover is
-	//     adjacent to the door and the door itself is what's occupied — a
-	//     single legal step onto walkable terrain (the soft classification
-	//     already proved it's an actor block, not a wall/footprint).
-	//   - structureMembershipAllows: the SAME predicate behind the owner-only
-	//     gate in resolvePathTarget. Re-checking it here keeps the "member's
-	//     own door" scope LOCAL and self-evident instead of leaning on an
-	//     upstream resolve 150 lines away — defense-in-depth against a future
-	//     routing change that hands a non-member a StructureEnter target. A
-	//     non-member targeting an OPEN structure whose single door is occupied
-	//     still deadlocks; that's out of scope (the bug is household lockout,
-	//     not public-building contention).
-	if dest.Kind == MoveDestinationStructureEnter && dest.StructureID != nil &&
-		occupiedNext.Equal(target) &&
-		structureMembershipAllows(w, actor, *dest.StructureID, now) {
+	// No local membership re-check: authorization is enforced upstream AND re-run
+	// every tick. advanceActorLocomotion calls resolvePathTarget at the top of each
+	// tick, which returns ok=false (→ MoveStoppedInvalidated, never reaching here)
+	// for a closed structure or a non-member at an owner-only one. So any mover here
+	// with a StructureEnter target is authorized to be inside — which scopes this to
+	// a member entering their own home/work AND any actor entering an OPEN structure
+	// (the buyer-past-keeper case: a keeper on their own shop's door no longer locks
+	// customers out). This is the same upstream-authorization reasoning HOME-327's
+	// post-window walk-through already relies on; HOME-348's narrower local
+	// membership re-check is dropped precisely because it excluded the open-structure
+	// case this fix exists to cover. replanFailed=false blocks (a detourable mutual
+	// block or clogged corridor, where waiting lets the other mover step) keep the
+	// stuck-window + record path below.
+	if replanFailed && dest.Kind == MoveDestinationStructureEnter && dest.StructureID != nil {
 		from := actor.Pos
 		fromStructure := actor.InsideStructureID
-		actor.Pos = target
+		actor.Pos = occupiedNext
 		updateInsideStructureIDFromTileOwnership(w, actor)
 		actor.MoveIntent.StuckTicks = 0
 
 		w.emit(&ActorMoved{
 			ActorID:           actor.ID,
 			FromPosition:      from,
-			ToPosition:        target,
+			ToPosition:        occupiedNext,
 			FromStructureID:   fromStructure,
 			ToStructureID:     actor.InsideStructureID,
 			MovementAttemptID: attemptID,
