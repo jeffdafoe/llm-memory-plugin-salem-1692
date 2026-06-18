@@ -619,3 +619,186 @@ func TestRenderRestocking_ClosedNowPreferredOverShut(t *testing.T) {
 		t.Errorf("live ClosedNow should suppress the stale Shut annotation:\n%s", out)
 	}
 }
+
+// --- LLM-10: offer anchor + purse reserve nudge ----------------------------
+
+// TestBuildRestocking_FillCostFromBundleRatio (LLM-10): FillCost is the headroom
+// priced at the last-paid bundle ratio (rounded), not a floored unit price; and a
+// single-buy-item policy reports HasOtherBuyGoods=false.
+func TestBuildRestocking_FillCostFromBundleRatio(t *testing.T) {
+	// Coins comfortably cover the headroom (so the anchor, not the HOME-459 fact,
+	// is the relevant path). ale 2/20 → headroom 18; last paid 5 coins for 2 ale →
+	// rate 2.5/unit → fill 18 ≈ 45 coins (NOT 18*floor(5/2)=36).
+	subj := &sim.ActorSnapshot{Coins: 1000, Inventory: map[sim.ItemKind]int{"ale": 2}, RestockPolicy: buyPolicy("ale", 20)}
+	pb := sim.NewRingBuffer[sim.PriceObservation](4)
+	pb.Push(sim.PriceObservation{BuyerID: "merchant", Amount: 5, Qty: 2, Consumers: 1, At: time.Now().UTC()})
+	snap := &sim.Snapshot{
+		Actors:    map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj},
+		ItemKinds: restockCatalog(),
+		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+			{SellerID: "brewer", Item: "ale"}: pb,
+		},
+		RestockReorderPct: 25,
+	}
+	v := buildRestocking(snap, "merchant", subj)
+	if v == nil || len(v.Items) != 1 {
+		t.Fatalf("want 1 item, got %+v", v)
+	}
+	if got := v.Items[0].FillCost; got != 45 {
+		t.Errorf("FillCost = %d, want 45 (18 at the 5-for-2 bundle rate, rounded)", got)
+	}
+	if v.HasOtherBuyGoods {
+		t.Error("single-buy-item policy should report HasOtherBuyGoods=false")
+	}
+}
+
+// TestBuildRestocking_HasOtherBuyGoods: a policy with more than one `buy` entry
+// reports HasOtherBuyGoods=true (so the reserve nudge can name "your other goods").
+func TestBuildRestocking_HasOtherBuyGoods(t *testing.T) {
+	subj := &sim.ActorSnapshot{
+		Inventory: map[sim.ItemKind]int{"ale": 1, "salt": 8},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "ale", Source: sim.RestockSourceBuy, Max: 20},
+			{Item: "salt", Source: sim.RestockSourceBuy, Max: 20},
+		}},
+	}
+	snap := &sim.Snapshot{
+		Actors:            map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj},
+		ItemKinds:         restockCatalog(),
+		RestockReorderPct: 25,
+	}
+	v := buildRestocking(snap, "merchant", subj)
+	if v == nil {
+		t.Fatal("want a view")
+	}
+	if !v.HasOtherBuyGoods {
+		t.Error("multi-buy-item policy should report HasOtherBuyGoods=true")
+	}
+}
+
+// TestRenderRestocking_OfferAnchor (LLM-10 A): when the purse comfortably covers
+// the headroom and a fill cost is known, render anchors the offer to the fair fill
+// cost and invites a lower offer — carrying no ask/price/cost token (HOME-386).
+func TestRenderRestocking_OfferAnchor(t *testing.T) {
+	var b strings.Builder
+	// headroom 15; AffordableQty 18 (> headroom, so coins don't bind → not the 459
+	// path); FillCost 40 (< half of 150, so the reserve nudge stays silent).
+	renderRestocking(&b, &RestockingView{
+		BuyerCoins: 150,
+		Items:      []RestockItemView{{ItemLabel: "milk", CurrentQty: 4, Cap: 19, AffordableQty: 18, FillCost: 40}},
+	})
+	out := b.String()
+	if !strings.Contains(out, "Filling to cap is about 40 coins at what you last paid, though you might offer less and see if they take it.") {
+		t.Errorf("missing offer anchor + haggle line:\n%s", out)
+	}
+	if strings.Contains(out, "cover about") {
+		t.Errorf("coins covering the headroom should not render the HOME-459 fact:\n%s", out)
+	}
+	if strings.Contains(out, "buy fewer") {
+		t.Errorf("a small fill (< trigger %% of purse) should not render the reserve nudge:\n%s", out)
+	}
+	lower := strings.ToLower(out)
+	if strings.Contains(lower, "ask") || strings.Contains(lower, "price") || strings.Contains(lower, "cost") {
+		t.Errorf("anchor must carry no ask/price/cost token (HOME-386):\n%s", out)
+	}
+}
+
+// TestRenderRestocking_ReserveNudge (LLM-10 B): a fill that would take a big share
+// of the purse adds the partial-buy nudge, naming "your other goods" only when the
+// reseller has them, and stays silent for a cheap fill.
+func TestRenderRestocking_ReserveNudge(t *testing.T) {
+	// Big share of purse (120 of 150 = 80% >= 50%) + other goods → full nudge.
+	var other strings.Builder
+	renderRestocking(&other, &RestockingView{
+		BuyerCoins:       150,
+		HasOtherBuyGoods: true,
+		Items:            []RestockItemView{{ItemLabel: "milk", CurrentQty: 4, Cap: 19, AffordableQty: 18, FillCost: 120}},
+	})
+	if out := other.String(); !strings.Contains(out, "That is a big share of your 150 coins — buy fewer to keep some back for your other goods.") {
+		t.Errorf("missing reserve nudge with other-goods wording:\n%s", out)
+	}
+
+	// Big share of purse but no other buy goods → generic "keep some coins back".
+	var solo strings.Builder
+	renderRestocking(&solo, &RestockingView{
+		BuyerCoins:       150,
+		HasOtherBuyGoods: false,
+		Items:            []RestockItemView{{ItemLabel: "milk", CurrentQty: 4, Cap: 19, AffordableQty: 18, FillCost: 120}},
+	})
+	if out := solo.String(); !strings.Contains(out, "buy fewer to keep some coins back.") {
+		t.Errorf("missing generic reserve nudge:\n%s", out)
+	}
+
+	// Below the trigger (60 of 150 = 40% < 50%) → no nudge.
+	var cheap strings.Builder
+	renderRestocking(&cheap, &RestockingView{
+		BuyerCoins:       150,
+		HasOtherBuyGoods: true,
+		Items:            []RestockItemView{{ItemLabel: "milk", CurrentQty: 4, Cap: 19, AffordableQty: 18, FillCost: 60}},
+	})
+	if out := cheap.String(); strings.Contains(out, "buy fewer") {
+		t.Errorf("a fill below the reserve trigger should add no nudge:\n%s", out)
+	}
+}
+
+// TestRenderRestocking_AnchorSuppressedWhenCoinsBind: when coins bind before the
+// cap, the HOME-459 fact renders and the LLM-10 anchor/reserve lines do NOT (they
+// are the coins-comfortably-cover-it case).
+func TestRenderRestocking_AnchorSuppressedWhenCoinsBind(t *testing.T) {
+	var b strings.Builder
+	// headroom 15; AffordableQty 6 (< headroom) → coins bind → 459 path.
+	renderRestocking(&b, &RestockingView{
+		BuyerCoins: 50,
+		Items:      []RestockItemView{{ItemLabel: "milk", CurrentQty: 4, Cap: 19, AffordableQty: 6, FillCost: 120}},
+	})
+	out := b.String()
+	if !strings.Contains(out, "Your 50 coins cover about 6 at what you last paid.") {
+		t.Errorf("binding-purse fact should render:\n%s", out)
+	}
+	if strings.Contains(out, "Filling to cap") || strings.Contains(out, "buy fewer") {
+		t.Errorf("anchor/reserve lines should be suppressed when coins bind:\n%s", out)
+	}
+}
+
+// TestRenderRestocking_WalkToInstruction (LLM-10): a walk-to item (a vendor, no
+// co-present seller) names the actual no-seller-here situation and the two-step
+// move_to → pay_with_item buy; the co-present item does not.
+func TestRenderRestocking_WalkToInstruction(t *testing.T) {
+	var walk strings.Builder
+	renderRestocking(&walk, &RestockingView{Items: []RestockItemView{
+		{ItemLabel: "milk", CurrentQty: 4, Cap: 19,
+			Vendors: []RestockVendor{{StructureLabel: "Ellis Farm", StructureID: "ellis"}}},
+	}})
+	if out := walk.String(); !strings.Contains(out, "No seller is here now — use move_to to reach a supplier below, then pay_with_item once you arrive.") {
+		t.Errorf("walk-to item should name the no-seller situation + the two-step buy:\n%s", out)
+	}
+
+	var here strings.Builder
+	renderRestocking(&here, &RestockingView{Items: []RestockItemView{
+		{ItemLabel: "milk", CurrentQty: 4, Cap: 19, kind: "milk",
+			CoPresentSeller: "Elizabeth Ellis",
+			Vendors:         []RestockVendor{{StructureLabel: "Ellis Farm", StructureID: "ellis"}}},
+	}})
+	out := here.String()
+	if strings.Contains(out, "No seller is here now") {
+		t.Errorf("co-present item must NOT carry the no-seller walk-to instruction:\n%s", out)
+	}
+	if !strings.Contains(out, "Elizabeth Ellis is here with you") {
+		t.Errorf("co-present item should carry the buy-here imperative:\n%s", out)
+	}
+}
+
+// TestRenderRestocking_HeaderNeutral (LLM-10): the section header no longer hedges
+// "if a seller is here / otherwise" nor invites filling to cap — the per-item lines
+// carry the situational instruction now.
+func TestRenderRestocking_HeaderNeutral(t *testing.T) {
+	var b strings.Builder
+	renderRestocking(&b, &RestockingView{Items: []RestockItemView{{ItemLabel: "milk", CurrentQty: 4, Cap: 19}}})
+	out := b.String()
+	if !strings.Contains(out, "Your shop stock of these bought-in goods is running low. You choose how much to buy.") {
+		t.Errorf("missing neutral header:\n%s", out)
+	}
+	if strings.Contains(out, "If a seller is here") || strings.Contains(out, "up to your cap") {
+		t.Errorf("header should no longer hedge seller-presence or invite filling to cap:\n%s", out)
+	}
+}

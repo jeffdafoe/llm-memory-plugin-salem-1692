@@ -38,6 +38,13 @@ type RestockingView struct {
 	// per-item affordability fact (ZBBS-HOME-459) when coins are the binding
 	// limit — see RestockItemView.AffordableQty.
 	BuyerCoins int
+
+	// HasOtherBuyGoods is true when the reseller restocks more than one bought-in
+	// good (its RestockPolicy holds >1 `buy` entry). The LLM-10 reserve nudge uses
+	// it to phrase "keep some back for your other goods" only when there really are
+	// other goods to keep coins for; otherwise it falls back to "keep some coins
+	// back."
+	HasOtherBuyGoods bool
 }
 
 // RestockItemView is one low `buy` item the reseller could replenish: its label,
@@ -70,6 +77,16 @@ type RestockItemView struct {
 	// the cap (AffordableQty < headroom), so a purse that comfortably covers the
 	// headroom adds no line.
 	AffordableQty int
+
+	// FillCost is the approximate coins to buy the full headroom (cap − current) at
+	// the rate the reseller last paid for this item — the same newest price-book
+	// observation AffordableQty reads. -1 when no price is on record. LLM-10: render
+	// surfaces it as the offer anchor ("Filling to cap is about N coins…") so the
+	// weak model sizes the payment to fair cost instead of its whole purse, and the
+	// reserve nudge compares it against BuyerCoins to decide whether one fill would
+	// take a big share of the purse. Surfaced only when coins comfortably cover the
+	// headroom (the AffordableQty-binding case renders the HOME-459 fact instead).
+	FillCost int
 
 	// kind is the final sort tie-break so two item kinds sharing a display label
 	// order deterministically (BuyEntries order is stable, but the sort makes the
@@ -113,8 +130,9 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 	if pct <= 0 {
 		return nil // producer/feature disabled
 	}
+	buyEntries := actorSnap.RestockPolicy.BuyEntries()
 	var items []RestockItemView
-	for _, e := range actorSnap.RestockPolicy.BuyEntries() {
+	for _, e := range buyEntries {
 		cap := e.Cap()
 		current := actorSnap.Inventory[e.Item]
 		if !sim.RestockReorderThresholdMet(current, cap, pct) {
@@ -127,6 +145,17 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 		if qty, ok := buyerLastPaidAffordableQty(snap, actorID, e.Item, actorSnap.Coins); ok {
 			affordable = qty
 		}
+		// Approximate coins to fill the headroom at the last-paid rate (LLM-10) —
+		// the offer anchor + the input to the reserve nudge. Same newest observation
+		// AffordableQty reads; -1 (no price) leaves both silent.
+		headroom := cap - current
+		if headroom < 0 {
+			headroom = 0
+		}
+		fillCost := -1
+		if c, ok := buyerLastPaidFillCost(snap, actorID, e.Item, headroom); ok {
+			fillCost = c
+		}
 		items = append(items, RestockItemView{
 			ItemLabel:       itemDisplayLabel(snap, e.Item),
 			CurrentQty:      current,
@@ -134,6 +163,7 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 			Vendors:         findItemVendors(snap, actorID, actorSnap, e.Item),
 			CoPresentSeller: coPresentSellerForItem(snap, actorID, actorSnap, e.Item),
 			AffordableQty:   affordable,
+			FillCost:        fillCost,
 			kind:            e.Item,
 		})
 	}
@@ -149,29 +179,26 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 		}
 		return items[i].kind < items[j].kind
 	})
-	return &RestockingView{Items: items, BuyerCoins: actorSnap.Coins}
+	return &RestockingView{
+		Items:            items,
+		BuyerCoins:       actorSnap.Coins,
+		HasOtherBuyGoods: len(buyEntries) > 1,
+	}
 }
 
-// buyerLastPaidAffordableQty returns how many units `coins` covers at the
-// buyer's most recent accepted purchase RATE for `item` (across all sellers) in
-// the snapshot's PriceBook, and whether any such observation exists. The numeric
-// sibling of buyerLastPaidText (recovery_options.go): that renders a per-seller
-// bundle "~N coins" hint; this answers "how many can my purse cover" for the
-// restock affordability fact. Price knowledge is per-buyer — a buyer who has
-// never bought the item gets ok=false and the fact stays silent. Perception runs
-// off the world goroutine, so it reads Snapshot.PriceBook, not the live World
-// accessor.
-//
-// The affordable count is computed straight from the observed bundle ratio
-// (coins * units / bundlePrice), NOT via an intermediate floored unit price —
-// flooring the unit price first OVERSTATES the count (last paid 5 coins for 2
-// units floors to 2/unit, so 9 coins reads as 4 affordable when the true ratio
-// covers only 3), which is exactly the over-promise this cue exists to prevent
-// (code_review). int64 throughout guards the multiply-before-divide on a 32-bit
-// int build; the result is clamped into int range.
-func buyerLastPaidAffordableQty(snap *sim.Snapshot, buyerID sim.ActorID, item sim.ItemKind, coins int) (int, bool) {
+// buyerLatestPriceObs returns the buyer's newest accepted purchase observation
+// for `item` across every seller's PriceBook ring, and whether one exists. The
+// shared lookup behind both the affordability fact and the fill-cost anchor.
+// Price knowledge is per-buyer — a buyer who has never bought the item gets
+// ok=false. Snapshot() is oldest-first; the globally newest match across all
+// sellers wins, with the lowest seller id breaking an exact-timestamp tie so the
+// pick is deterministic regardless of map-iteration order (code_review). A
+// returned observation always has Amount >= 1 (a zero-amount record carries no
+// usable rate). Perception runs off the world goroutine, so it reads
+// Snapshot.PriceBook, not the live World accessor.
+func buyerLatestPriceObs(snap *sim.Snapshot, buyerID sim.ActorID, item sim.ItemKind) (sim.PriceObservation, bool) {
 	if snap == nil || snap.PriceBook == nil {
-		return 0, false
+		return sim.PriceObservation{}, false
 	}
 	var newest sim.PriceObservation
 	var newestSeller sim.ActorID
@@ -180,10 +207,6 @@ func buyerLastPaidAffordableQty(snap *sim.Snapshot, buyerID sim.ActorID, item si
 		if key.Item != item || buf == nil || buf.Len() == 0 {
 			continue
 		}
-		// Snapshot() is oldest-first; keep the globally newest match for the buyer
-		// across every seller's ring. On an exact-timestamp tie, the lowest seller
-		// id wins so the pick is deterministic regardless of map-iteration order
-		// (code_review).
 		for _, obs := range buf.Snapshot() {
 			if obs.BuyerID != buyerID {
 				continue
@@ -197,21 +220,81 @@ func buyerLastPaidAffordableQty(snap *sim.Snapshot, buyerID sim.ActorID, item si
 		}
 	}
 	if !found || newest.Amount < 1 {
-		return 0, false
+		return sim.PriceObservation{}, false
 	}
-	consumers := newest.Consumers
+	return newest, true
+}
+
+// observationUnits is the total units in an observation's bundle (qty × consumers,
+// with the consumer count floored at 1). 0 means the bundle carried no units, so
+// any rate derived from it is meaningless — callers treat 0 as "no usable rate".
+func observationUnits(obs sim.PriceObservation) int64 {
+	consumers := obs.Consumers
 	if consumers < 1 {
 		consumers = 1
 	}
-	units := int64(newest.Qty) * int64(consumers)
+	units := int64(obs.Qty) * int64(consumers)
+	if units < 1 {
+		return 0
+	}
+	return units
+}
+
+// buyerLastPaidAffordableQty returns how many units `coins` covers at the buyer's
+// most recent accepted purchase RATE for `item` (across all sellers), and whether
+// any such observation exists. The numeric sibling of buyerLastPaidText
+// (recovery_options.go): that renders a per-seller bundle "~N coins" hint; this
+// answers "how many can my purse cover" for the restock affordability fact.
+//
+// The affordable count is computed straight from the observed bundle ratio
+// (coins * units / bundlePrice), NOT via an intermediate floored unit price —
+// flooring the unit price first OVERSTATES the count (last paid 5 coins for 2
+// units floors to 2/unit, so 9 coins reads as 4 affordable when the true ratio
+// covers only 3), which is exactly the over-promise this cue exists to prevent
+// (code_review). int64 throughout guards the multiply-before-divide on a 32-bit
+// int build; the result is clamped into int range.
+func buyerLastPaidAffordableQty(snap *sim.Snapshot, buyerID sim.ActorID, item sim.ItemKind, coins int) (int, bool) {
+	obs, ok := buyerLatestPriceObs(snap, buyerID, item)
+	if !ok {
+		return 0, false
+	}
+	units := observationUnits(obs)
 	if units < 1 {
 		return 0, false
 	}
-	affordable := int64(coins) * units / int64(newest.Amount)
+	affordable := int64(coins) * units / int64(obs.Amount)
 	if affordable > int64(math.MaxInt32) {
 		affordable = int64(math.MaxInt32)
 	}
 	return int(affordable), true
+}
+
+// buyerLastPaidFillCost returns the approximate coins to buy `qty` units at the
+// buyer's most recent rate for `item`, and whether a price is on record. The cost
+// sibling of buyerLastPaidAffordableQty: that answers "how many can my purse
+// cover", this answers "what would buying this many cost" — the LLM-10 offer
+// anchor. Computed from the same observed bundle ratio (qty * bundlePrice / units)
+// and rounded to the nearest coin so the anchor reads as a fair round total. A
+// non-positive qty has nothing to cost. int64 throughout guards the
+// multiply-before-divide; the result is clamped into int range.
+func buyerLastPaidFillCost(snap *sim.Snapshot, buyerID sim.ActorID, item sim.ItemKind, qty int) (int, bool) {
+	if qty <= 0 {
+		return 0, false
+	}
+	obs, ok := buyerLatestPriceObs(snap, buyerID, item)
+	if !ok {
+		return 0, false
+	}
+	units := observationUnits(obs)
+	if units < 1 {
+		return 0, false
+	}
+	// Round to the nearest coin: (qty*bundlePrice + units/2) / units.
+	cost := (int64(qty)*int64(obs.Amount) + units/2) / units
+	if cost > int64(math.MaxInt32) {
+		cost = int64(math.MaxInt32)
+	}
+	return int(cost), true
 }
 
 // findItemVendors resolves the suppliers selling itemKind, ONE cue per workplace
@@ -317,6 +400,14 @@ func coPresentSellerForItem(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *
 	return bestName
 }
 
+// restockReserveTriggerPct is the share of the reseller's purse a single
+// fill-to-cap must reach before the LLM-10 reserve nudge fires ("buy fewer to keep
+// some back…"). A cheap top-up that costs less than this fraction of the purse
+// adds no nag. A tuning knob — start conservative; raise to nag sooner, lower to
+// nag only on near-total drains. Kept a constant (not a world setting) for now;
+// promote to RestockReorderPct's setting pattern if it needs live tuning.
+const restockReserveTriggerPct = 50
+
 // renderRestocking writes the "## Restocking" section. Content-gated: a
 // nil/empty view writes nothing. Each low item leads with its on-hand/cap so the
 // reseller can size the buy (it picks its own quantity — the line hints the
@@ -340,7 +431,7 @@ func renderRestocking(b *strings.Builder, v *RestockingView) {
 		return
 	}
 	b.WriteString("## Restocking\n")
-	b.WriteString("Your shop stock of these bought-in goods is running low. If a seller is here with you, use pay_with_item now to buy from them. Otherwise use move_to to reach a listed supplier, then use pay_with_item when you arrive. You choose how much, up to your cap.\n")
+	b.WriteString("Your shop stock of these bought-in goods is running low. You choose how much to buy.\n")
 	for _, it := range v.Items {
 		headroom := it.Cap - it.CurrentQty
 		if headroom < 0 {
@@ -348,19 +439,36 @@ func renderRestocking(b *strings.Builder, v *RestockingView) {
 		}
 		fmt.Fprintf(b, "- %s: %d on hand of %d cap (room for %d more).",
 			sanitizeInline(it.ItemLabel), it.CurrentQty, it.Cap, headroom)
-		// ZBBS-HOME-459: when the reseller's purse covers fewer units than the cap
-		// leaves room for, coins are the binding limit — state it as a fact so the
-		// model sizes the buy to the purse instead of the headroom and then
-		// over-offers (the John Ellis 25-meat-on-248-coins case). Gated to a known
-		// unit price (AffordableQty >= 0) AND coins binding before the cap
-		// (AffordableQty < headroom); a purse that covers the headroom adds
-		// nothing. The wording carries no "ask"/"price"/"cost" token, staying
-		// clear of the HOME-386 speaking-loop trap — and the walk-to vendor list
-		// below already prints a numeric "~N coins" hint, so a bare purse fact is
-		// consistent with the cue. The "can't afford even one" case (AffordableQty
-		// 0) stays silent; the pay_with_item rejection steer catches an attempt.
-		if it.AffordableQty >= 1 && it.AffordableQty < headroom {
+		switch {
+		case it.AffordableQty >= 1 && it.AffordableQty < headroom:
+			// ZBBS-HOME-459: the purse covers fewer units than the cap leaves room
+			// for, so coins are the binding limit — state it as a fact so the model
+			// sizes the buy to the purse instead of the headroom and then over-offers
+			// (the John Ellis 25-meat-on-248-coins case). Gated to a known unit price
+			// AND coins binding before the cap; a purse that covers the headroom is
+			// the LLM-10 anchor case below, not this one. No "ask"/"price"/"cost"
+			// token — stays clear of the HOME-386 speaking-loop trap. "Can't afford
+			// even one" (AffordableQty 0) stays silent; the pay_with_item rejection
+			// steer catches an attempt.
 			fmt.Fprintf(b, " Your %d coins cover about %d at what you last paid.", v.BuyerCoins, it.AffordableQty)
+		case it.FillCost >= 1:
+			// LLM-10 (A): the purse comfortably covers the headroom, so the weak
+			// model otherwise anchors its pay_with_item amount to the bare purse
+			// balance ("Coins in your purse: N") and offers the lot. Surface the fair
+			// fill cost as the anchor instead, and invite a lower OFFER (the
+			// pay_with_item amount, not a spoken price question — HOME-386-safe).
+			fmt.Fprintf(b, " Filling to cap is about %d coins at what you last paid, though you might offer less and see if they take it.", it.FillCost)
+			// LLM-10 (B): when filling to cap would take a big share of the purse,
+			// nudge a partial buy so the reseller keeps coins for its other bought-in
+			// goods. Soft — the headroom stays visible and the model picks the qty.
+			// Gated on the fill being >= restockReserveTriggerPct of the purse.
+			if v.BuyerCoins > 0 && int64(it.FillCost)*100 >= int64(v.BuyerCoins)*restockReserveTriggerPct {
+				if v.HasOtherBuyGoods {
+					fmt.Fprintf(b, " That is a big share of your %d coins — buy fewer to keep some back for your other goods.", v.BuyerCoins)
+				} else {
+					fmt.Fprintf(b, " That is a big share of your %d coins — buy fewer to keep some coins back.", v.BuyerCoins)
+				}
+			}
 		}
 		// A seller of this item is in the conversation right now: give the exact
 		// pay_with_item call and skip the walk-to list — he is already there.
@@ -374,7 +482,11 @@ func renderRestocking(b *strings.Builder, v *RestockingView) {
 			b.WriteString(" No supplier nearby is currently holding stock.\n")
 			continue
 		}
-		b.WriteString("\n")
+		// No co-present seller — name the actual situation and the two-step buy
+		// (move_to then pay_with_item). This instruction used to live in the section
+		// header; LLM-10 moved it here so the header no longer hedges "if a seller is
+		// here / otherwise" and each item line reflects whether a seller is present.
+		b.WriteString(" No seller is here now — use move_to to reach a supplier below, then pay_with_item once you arrive.\n")
 		for _, vd := range it.Vendors {
 			b.WriteString("  - buy from ")
 			b.WriteString(sanitizeInline(vd.StructureLabel))
