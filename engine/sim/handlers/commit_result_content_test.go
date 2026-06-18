@@ -404,10 +404,49 @@ func TestCommitResultContent_ConsumeClamp(t *testing.T) {
 		t.Errorf("clamped consume content:\n got %q\nwant %q", got, want)
 	}
 
+	// No SatisfiesNeed on the result (a consume that moved no tracked need) →
+	// bare [ok]; LLM-7 gates the felt-state steer on SatisfiesNeed != "".
 	if got := commitResultContent(&vc, sim.ConsumeResult{Kind: "meat", Requested: 1, Consumed: 1, Kept: 0}); got != "[ok]" {
-		t.Errorf("unclamped consume = %q, want [ok]", got)
+		t.Errorf("unclamped consume, no need info = %q, want [ok]", got)
 	}
 	if got := commitResultContent(&vc, nil); got != "[ok]" {
 		t.Errorf("nil result = %q, want [ok]", got)
+	}
+}
+
+// LLM-7: a need-moving consume with no surplus voices honest post-consume felt
+// state (mirrors the pay_with_item eat feedback) so a sated NPC is steered to
+// stop instead of a bare [ok] that the stale eat-affordance furniture overrides
+// into a re-eat loop.
+func TestCommitResultContent_ConsumeNeedFeedback(t *testing.T) {
+	vc := ValidatedCall{Name: "consume", DecodedArgs: ConsumeArgs{Item: "bread", Qty: 1}}
+
+	cases := []struct {
+		name   string
+		result sim.ConsumeResult
+		want   string
+	}{
+		{
+			name:   "hunger sated → stop steer",
+			result: sim.ConsumeResult{Kind: "bread", Requested: 1, Consumed: 1, Kept: 0, SatisfiesNeed: "hunger"},
+			want:   "[ok] You consume 1 bread. Your hunger is met — eat no more now.",
+		},
+		{
+			name:   "still hungry → honest felt, no stop steer",
+			result: sim.ConsumeResult{Kind: "bread", Requested: 1, Consumed: 1, Kept: 0, SatisfiesNeed: "hunger", FeltAfter: "peckish"},
+			want:   "[ok] You consume 1 bread. You still feel peckish.",
+		},
+		{
+			name:   "thirst sated → drink wording",
+			result: sim.ConsumeResult{Kind: "water", Requested: 1, Consumed: 1, Kept: 0, SatisfiesNeed: "thirst"},
+			want:   "[ok] You consume 1 water. Your thirst is met — drink no more now.",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := commitResultContent(&vc, tc.result); got != tc.want {
+				t.Errorf("consume need feedback:\n got %q\nwant %q", got, tc.want)
+			}
+		})
 	}
 }
