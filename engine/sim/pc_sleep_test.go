@@ -11,8 +11,9 @@ import (
 // (touchPCInput → input-wake), the recovery/cap wake sweep, and the idle
 // auto-bed sweep that is the primary way a lodger PC falls asleep.
 
-// pcSleepWorld builds a test world with an inn holding one private bedroom
-// (room id 1) — what pcCanSleepHere resolves the PC's InsideRoomID against.
+// pcSleepWorld builds a test world with an inn holding two private bedrooms
+// (rooms 1, 3) and a common tavern floor (room 2) — pcCanSleepHere resolves the
+// PC's lodging GRANT against these (LLM-14: grant-based, not InsideRoomID-based).
 func pcSleepWorld(actors ...*Actor) *World {
 	w := sleepTestWorld(actors...)
 	w.Structures = map[StructureID]*Structure{
@@ -25,16 +26,17 @@ func pcSleepWorld(actors ...*Actor) *World {
 	return w
 }
 
-// lodgerPC is a player standing in the inn's private bedroom (room 1) holding an
-// active ledger grant for it — the can-sleep-here baseline. tiredness defaults
-// to 20 (above the idle-auto-bed floor of 10).
+// lodgerPC is a player present in the inn (common area — InsideRoomID 0, awake
+// and public-scoped) holding an active ledger grant for private bedroom 1. The
+// can-sleep-here baseline: the standing grant, not a check-in-stamped room, is
+// what beds them (LLM-14). tiredness defaults to 20 (above the idle-auto-bed
+// floor of 10).
 func lodgerPC(id ActorID, expires time.Time) *Actor {
 	return &Actor{
 		ID:                id,
 		Kind:              KindPC,
 		LoginUsername:     string(id),
 		InsideStructureID: "inn",
-		InsideRoomID:      1,
 		Needs:             map[NeedKey]int{"tiredness": 20},
 		RoomAccess: map[RoomAccessKey]*RoomAccess{
 			{RoomID: 1, Source: AccessSourceLedger}: {
@@ -54,80 +56,87 @@ func TestPCCanSleepHere(t *testing.T) {
 	future := now.Add(72 * time.Hour)
 
 	cases := []struct {
-		name  string
-		build func() (*World, *Actor)
-		want  bool
+		name     string
+		build    func() (*World, *Actor)
+		wantRoom RoomID
+		wantOK   bool
 	}{
 		{
-			name:  "in paid private bedroom -> can sleep",
-			build: func() (*World, *Actor) { a := lodgerPC("p", future); return pcSleepWorld(a), a },
-			want:  true,
+			name:     "active grant for a private bedroom here -> can sleep (room 1)",
+			build:    func() (*World, *Actor) { a := lodgerPC("p", future); return pcSleepWorld(a), a },
+			wantRoom: 1,
+			wantOK:   true,
 		},
 		{
-			name: "in the common room -> cannot sleep",
+			// LLM-14 headline: a lodger awake at the bar (common floor) still
+			// resolves its granted bedroom — the grant, not where it stands, beds it.
+			name: "awake in the common area, grant for the bedroom -> can sleep (room 1)",
 			build: func() (*World, *Actor) {
 				a := lodgerPC("p", future)
-				a.InsideRoomID = 2 // tavern (common)
+				a.InsideRoomID = 2 // standing on the tavern floor, not the bedroom
 				return pcSleepWorld(a), a
 			},
-			want: false,
+			wantRoom: 1,
+			wantOK:   true,
 		},
 		{
 			name: "outdoors (no structure) -> cannot sleep",
 			build: func() (*World, *Actor) {
 				a := lodgerPC("p", future)
 				a.InsideStructureID = ""
-				a.InsideRoomID = 0
 				return pcSleepWorld(a), a
 			},
-			want: false,
+			wantOK: false,
 		},
 		{
-			name: "private room but no ledger grant -> cannot sleep",
+			name: "no ledger grant -> cannot sleep",
 			build: func() (*World, *Actor) {
 				a := lodgerPC("p", future)
 				a.RoomAccess = nil
 				return pcSleepWorld(a), a
 			},
-			want: false,
+			wantOK: false,
 		},
 		{
-			name:  "grant expired -> cannot sleep",
-			build: func() (*World, *Actor) { a := lodgerPC("p", now.Add(-time.Hour)); return pcSleepWorld(a), a },
-			want:  false,
+			name:   "grant expired -> cannot sleep",
+			build:  func() (*World, *Actor) { a := lodgerPC("p", now.Add(-time.Hour)); return pcSleepWorld(a), a },
+			wantOK: false,
 		},
 		{
-			name: "grant is for a different room than the PC stands in -> cannot sleep",
+			// The grant's room is in the inn, but the PC stands in a different
+			// structure — lodgerRoomAt requires the granted room to belong to the
+			// PC's CURRENT structure.
+			name: "grant is for a room in another structure -> cannot sleep",
 			build: func() (*World, *Actor) {
 				a := lodgerPC("p", future)
-				// Hold the grant on room 1 but stand in room 2.
-				a.InsideRoomID = 2
+				a.InsideStructureID = "market"
 				return pcSleepWorld(a), a
 			},
-			want: false,
+			wantOK: false,
 		},
 		{
-			// Standing in a private room (1) but the only grant is for a
-			// DIFFERENT private room (3) — the exact-room gate must reject.
-			name: "grant for another private room while in a private room -> cannot sleep",
+			// A grant on the common (non-private) room never beds — only private
+			// bedrooms qualify.
+			name: "grant is for a common (non-private) room -> cannot sleep",
 			build: func() (*World, *Actor) {
-				a := lodgerPC("p", future) // grant + InsideRoomID = room 1
+				a := lodgerPC("p", future)
 				expires := future
 				a.RoomAccess = map[RoomAccessKey]*RoomAccess{
-					{RoomID: 3, Source: AccessSourceLedger}: {
-						RoomID: 3, Source: AccessSourceLedger, Active: true, ExpiresAt: &expires,
+					{RoomID: 2, Source: AccessSourceLedger}: {
+						RoomID: 2, Source: AccessSourceLedger, Active: true, ExpiresAt: &expires,
 					},
 				}
-				return pcSleepWorld(a), a // still standing in room 1
+				return pcSleepWorld(a), a
 			},
-			want: false,
+			wantOK: false,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w, a := tc.build()
-			if got := pcCanSleepHere(w, a, now); got != tc.want {
-				t.Errorf("pcCanSleepHere = %v, want %v", got, tc.want)
+			gotRoom, gotOK := pcCanSleepHere(w, a, now)
+			if gotOK != tc.wantOK || gotRoom != tc.wantRoom {
+				t.Errorf("pcCanSleepHere = (%d, %v), want (%d, %v)", gotRoom, gotOK, tc.wantRoom, tc.wantOK)
 			}
 		})
 	}
@@ -140,8 +149,11 @@ func TestExecutePCSleep(t *testing.T) {
 	rec := &pcEventRecorder{}
 	w.Subscribe(SubscriberFunc(rec.handle))
 
-	if !executePCSleep(w, a, now) {
+	if !executePCSleep(w, a, 1, now) {
 		t.Fatal("executePCSleep should bed an awake PC")
+	}
+	if a.InsideRoomID != 1 {
+		t.Errorf("InsideRoomID = %d, want 1 (bed-down stamps the granted bedroom, LLM-14)", a.InsideRoomID)
 	}
 	wantWake := now.Add(DefaultPCSleepMaxDurationHours * time.Hour)
 	if a.SleepingUntil == nil || !a.SleepingUntil.Equal(wantWake) {
@@ -165,7 +177,7 @@ func TestExecutePCSleep(t *testing.T) {
 	}
 
 	// Idempotent: a second call on a sleeping PC is a no-op and emits nothing.
-	if executePCSleep(w, a, now) {
+	if executePCSleep(w, a, 1, now) {
 		t.Error("executePCSleep on an already-sleeping PC should return false")
 	}
 	if len(rec.events) != 1 {
@@ -190,9 +202,9 @@ func TestSleepPCCommand(t *testing.T) {
 		}
 	})
 
-	t.Run("not in a paid bedroom -> ErrPCCannotSleepHere", func(t *testing.T) {
+	t.Run("no paid bedroom grant -> ErrPCCannotSleepHere", func(t *testing.T) {
 		a := lodgerPC("p", future)
-		a.InsideRoomID = 2 // common room
+		a.RoomAccess = nil // no standing grant -> nothing to bed into
 		w := pcSleepWorld(a)
 		_, err := SleepPC("p", now).Fn(w)
 		if !errors.Is(err, ErrPCCannotSleepHere) {
@@ -243,7 +255,7 @@ func TestWakePCCommand(t *testing.T) {
 	t.Run("sleeping PC -> woken with manual reason", func(t *testing.T) {
 		a := lodgerPC("p", now.Add(72*time.Hour))
 		w := pcSleepWorld(a)
-		executePCSleep(w, a, now)
+		executePCSleep(w, a, 1, now)
 		rec := &pcEventRecorder{}
 		w.Subscribe(SubscriberFunc(rec.handle))
 
@@ -253,6 +265,9 @@ func TestWakePCCommand(t *testing.T) {
 		}
 		if a.SleepingUntil != nil {
 			t.Error("WakePC should clear SleepingUntil")
+		}
+		if a.InsideRoomID != 0 {
+			t.Errorf("WakePC should clear InsideRoomID (player-driven wake drops the room scope, LLM-14); got %d", a.InsideRoomID)
 		}
 		if len(rec.events) != 1 {
 			t.Fatalf("emitted %d events, want 1", len(rec.events))
@@ -298,7 +313,7 @@ func TestTouchPCInput(t *testing.T) {
 	t.Run("input-wakes a sleeping PC", func(t *testing.T) {
 		a := lodgerPC("p", now.Add(72*time.Hour))
 		w := pcSleepWorld(a)
-		executePCSleep(w, a, now)
+		executePCSleep(w, a, 1, now)
 		rec := &pcEventRecorder{}
 		w.Subscribe(SubscriberFunc(rec.handle))
 
@@ -306,6 +321,9 @@ func TestTouchPCInput(t *testing.T) {
 		TouchPCInput(w, "p", later)
 		if a.SleepingUntil != nil {
 			t.Error("acting while asleep should clear SleepingUntil")
+		}
+		if a.InsideRoomID != 0 {
+			t.Errorf("input-wake should clear InsideRoomID (LLM-14); got %d", a.InsideRoomID)
 		}
 		if a.LastPCInputAt == nil || !a.LastPCInputAt.Equal(later) {
 			t.Errorf("LastPCInputAt = %v, want %v", a.LastPCInputAt, later)
@@ -342,7 +360,7 @@ func TestWakeExpiredPCSleepers(t *testing.T) {
 	t.Run("fully rested PC wakes (auto)", func(t *testing.T) {
 		a := lodgerPC("p", now.Add(72*time.Hour))
 		w := pcSleepWorld(a)
-		executePCSleep(w, a, now)
+		executePCSleep(w, a, 1, now)
 		a.Needs["tiredness"] = 0 // recovery has brought them to rested
 		rec := &pcEventRecorder{}
 		w.Subscribe(SubscriberFunc(rec.handle))
@@ -359,7 +377,7 @@ func TestWakeExpiredPCSleepers(t *testing.T) {
 	t.Run("safety cap fires", func(t *testing.T) {
 		a := lodgerPC("p", now.Add(72*time.Hour))
 		w := pcSleepWorld(a)
-		executePCSleep(w, a, now)
+		executePCSleep(w, a, 1, now)
 		// Still tired, but the cap instant has passed.
 		past := now.Add(DefaultPCSleepMaxDurationHours*time.Hour + time.Minute)
 		WakeExpiredPCSleepers(past).Fn(w)
@@ -371,17 +389,17 @@ func TestWakeExpiredPCSleepers(t *testing.T) {
 	t.Run("still tired and within cap -> stays asleep", func(t *testing.T) {
 		a := lodgerPC("p", now.Add(72*time.Hour))
 		w := pcSleepWorld(a)
-		executePCSleep(w, a, now)
+		executePCSleep(w, a, 1, now)
 		WakeExpiredPCSleepers(now.Add(time.Hour)).Fn(w)
 		if a.SleepingUntil == nil {
 			t.Error("a tired PC within the cap should stay asleep")
 		}
 	})
 
-	t.Run("checkout: grant lapsed while sleeping -> woken (auto)", func(t *testing.T) {
+	t.Run("checkout: grant lapsed while sleeping -> woken (auto), room kept for eviction", func(t *testing.T) {
 		a := lodgerPC("p", now.Add(72*time.Hour))
 		w := pcSleepWorld(a)
-		executePCSleep(w, a, now)
+		executePCSleep(w, a, 1, now)
 		// Night's up: the ledger grant for the room the PC sleeps in lapses.
 		a.RoomAccess[RoomAccessKey{RoomID: 1, Source: AccessSourceLedger}].Active = false
 		rec := &pcEventRecorder{}
@@ -394,17 +412,11 @@ func TestWakeExpiredPCSleepers(t *testing.T) {
 		if len(rec.events) != 1 || rec.events[0].(*PCSleepEnded).Reason != "auto" {
 			t.Errorf("want one PCSleepEnded(auto), got %v", rec.events)
 		}
-	})
-
-	t.Run("checkout: relocated to common while sleeping -> woken", func(t *testing.T) {
-		a := lodgerPC("p", now.Add(72*time.Hour))
-		w := pcSleepWorld(a)
-		executePCSleep(w, a, now)
-		// Home's EvictExpiredOccupants moved the still-sleeping PC to the common room.
-		a.InsideRoomID = 2
-		WakeExpiredPCSleepers(now.Add(time.Hour)).Fn(w)
-		if a.SleepingUntil != nil {
-			t.Error("a PC relocated out of its bedroom while asleep should wake")
+		// LLM-14: the auto/checkout wake does NOT clear InsideRoomID — the separate
+		// EvictExpiredOccupants sweep relocates the PC bedroom->common and narrates
+		// the checkout off this still-set room scope.
+		if a.InsideRoomID != 1 {
+			t.Errorf("InsideRoomID = %d, want 1 kept after the checkout wake (eviction relocates it)", a.InsideRoomID)
 		}
 	})
 
@@ -426,7 +438,7 @@ func TestAutoBedIdleLodgerPCs(t *testing.T) {
 	future := now.Add(72 * time.Hour)
 	idleEnough := now.Add(-(DefaultPCIdleSleepMinutes + 1) * time.Minute)
 
-	t.Run("idle tired lodger in its bedroom is bedded", func(t *testing.T) {
+	t.Run("idle tired lodger is bedded into its granted room", func(t *testing.T) {
 		a := lodgerPC("p", future)
 		a.LastPCInputAt = &idleEnough
 		w := pcSleepWorld(a)
@@ -436,6 +448,9 @@ func TestAutoBedIdleLodgerPCs(t *testing.T) {
 		res, _ := AutoBedIdleLodgerPCs(now).Fn(w)
 		if res.(int) != 1 || a.SleepingUntil == nil {
 			t.Fatalf("idle lodger should be bedded; bedded=%v sleeping=%v", res, a.SleepingUntil)
+		}
+		if a.InsideRoomID != 1 {
+			t.Errorf("auto-bed should stamp the granted bedroom; InsideRoomID = %d, want 1", a.InsideRoomID)
 		}
 		if len(rec.events) != 1 || rec.events[0].(*PCSleepStarted).ActorID != "p" {
 			t.Errorf("want one PCSleepStarted for p, got %v", rec.events)
@@ -484,14 +499,17 @@ func TestAutoBedIdleLodgerPCs(t *testing.T) {
 		}
 	})
 
-	t.Run("idle in the common room (not a bedroom) is not bedded", func(t *testing.T) {
+	t.Run("idle tired lodger awake at the bar is bedded into its granted room (LLM-14)", func(t *testing.T) {
 		a := lodgerPC("p", future)
-		a.InsideRoomID = 2 // tavern
+		a.InsideRoomID = 2 // on the tavern floor, not yet in the bedroom
 		a.LastPCInputAt = &idleEnough
 		w := pcSleepWorld(a)
 		AutoBedIdleLodgerPCs(now).Fn(w)
-		if a.SleepingUntil != nil {
-			t.Error("a PC idling in the common room should not be auto-bedded")
+		if a.SleepingUntil == nil {
+			t.Error("an idle tired lodger with a standing grant should be auto-bedded off the grant")
+		}
+		if a.InsideRoomID != 1 {
+			t.Errorf("auto-bed should stamp the granted bedroom; InsideRoomID = %d, want 1", a.InsideRoomID)
 		}
 	})
 }

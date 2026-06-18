@@ -136,3 +136,39 @@ func TestColocatedAudienceIDs_JoinsActiveHuddleMembers(t *testing.T) {
 		t.Errorf("got %v, want [ezekiel john] (joins active-huddle members)", got)
 	}
 }
+
+// LLM-14 / LLM-11 regression: a checked-in but AWAKE lodger speaking in the
+// inn's common area must reach a co-present PC bystander, not have its speech
+// scoped to the empty bedroom it booked. The fix is that check-in grants the
+// room WITHOUT stamping InsideRoomID (bed-down does that, cleared on wake), so an
+// awake lodger stays public-scoped (InsideRoomID 0) and the bystander is in the
+// audience. The old bug — an awake lodger still scoped to the private bedroom —
+// dropped that bystander.
+func TestPCBystanders_AwakeCheckedInLodgerIsPublic(t *testing.T) {
+	w := audienceTestWorld()
+	w.Structures = map[StructureID]*Structure{
+		"inn": {ID: "inn", Rooms: []*Room{
+			{ID: 1, StructureID: "inn", Kind: RoomKindPrivate, Name: "bedroom_1"},
+			{ID: 2, StructureID: "inn", Kind: RoomKindCommon, Name: "tavern"},
+		}},
+	}
+	lodger := &Actor{ID: "wendy", Kind: KindPC, InsideStructureID: "inn"} // InsideRoomID 0 = awake, public
+	bystander := &Actor{ID: "jefferey", Kind: KindPC, InsideStructureID: "inn"}
+	w.Actors["wendy"] = lodger
+	w.Actors["jefferey"] = bystander
+
+	if got := audienceRoomScope(w, lodger); got != 0 {
+		t.Errorf("awake checked-in lodger audienceRoomScope = %d, want 0 (public)", got)
+	}
+	if got := pcBystanders(w, lodger, nil); !sameIDs(got, "jefferey") {
+		t.Errorf("pcBystanders = %v, want [jefferey] (a common-area PC overhears the awake lodger)", got)
+	}
+
+	// Contrast — the LLM-11 bug state: an AWAKE lodger still scoped to the
+	// private bedroom drops the common-area bystander. The fix keeps InsideRoomID
+	// 0 at check-in, so the case above holds instead of this one.
+	lodger.InsideRoomID = 1
+	if got := pcBystanders(w, lodger, nil); len(got) != 0 {
+		t.Errorf("pcBystanders = %v, want [] for a bedroom-scoped speaker (the dropped-line bug)", got)
+	}
+}

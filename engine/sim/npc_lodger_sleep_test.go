@@ -5,18 +5,23 @@ import (
 	"time"
 )
 
-// npc_lodger_sleep_test.go — ZBBS-HOME-296 2c. The lodger arm of the NPC
+// npc_lodger_sleep_test.go — ZBBS-HOME-296 2c, LLM-14. The lodger arm of the NPC
 // auto-sleep machine: a boarder (no HomeStructureID, active ledger RoomAccess)
-// beds at the inn it rents, but only at bedtime (off the dawn/dusk-fallback
-// window) so a midday visit to the inn's tavern floor doesn't sleep-dart it,
-// and wakes on the morning boundary. Homed NPCs are unchanged.
+// beds at the inn it rents, but only at its night bedtime (inside the
+// [LodgingBedtimeHour, DawnTime) lodger night window) so a midday visit to the
+// inn's tavern floor doesn't sleep-dart it, and wakes when the window closes at
+// dawn. The night window is decoupled from the work shift, so a SCHEDULED lodger
+// no longer beds at its shift-end (the LLM-14 force-sleep root). Homed NPCs are
+// unchanged.
 
 // lodgerSleepWorld extends sleepTestWorld with the inn structure (one private
-// bedroom) and a 07:00–19:00 day window — what the bedtime gate reads.
+// bedroom), a 07:00 dawn, and a 22:00 lodger bedtime — so the lodger night
+// window the bed/wake gates read is [22:00, 07:00).
 func lodgerSleepWorld(actors ...*Actor) *World {
 	w := sleepTestWorld(actors...)
 	w.Settings.DawnTime = "07:00"
 	w.Settings.DuskTime = "19:00"
+	w.Settings.LodgingBedtimeHour = 22
 	w.Structures = map[StructureID]*Structure{
 		"inn": {ID: "inn", DisplayName: "Inn", Rooms: []*Room{
 			{ID: 1, StructureID: "inn", Kind: RoomKindPrivate, Name: "bedroom_1"},
@@ -42,11 +47,25 @@ func lodgerNPC(id ActorID, expires time.Time) *Actor {
 	}
 }
 
+// scheduledLodgerNPC is a boarder that ALSO works a day shift — the LLM-14 case.
+// Ezekiel the blacksmith: shift 07:00–16:00 (minutes 420–960), lodging at the
+// tavern. Before LLM-14 the bed gate read his WORK shift and force-slept him at
+// 16:00 forge-close; now it reads the lodger night window like any other lodger.
+func scheduledLodgerNPC(id ActorID, expires time.Time) *Actor {
+	a := lodgerNPC(id, expires)
+	start, end := 7*60, 16*60
+	a.ScheduleStartMin = &start
+	a.ScheduleEndMin = &end
+	return a
+}
+
 // TestNpcSleepHere is the unified sleep-target resolution table: home vs lodger,
 // and the bedtime window that is the whole point of the lodger arm.
 func TestNpcSleepHere(t *testing.T) {
-	night := time.Date(2026, 5, 22, 22, 0, 0, 0, time.UTC)  // minute 1320 — off the day window
-	midday := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC) // minute 720 — inside the day window
+	night := time.Date(2026, 5, 22, 22, 0, 0, 0, time.UTC)      // minute 1320 — the lodger bedtime
+	midday := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)     // minute 720 — inside the awake day
+	forgeClose := time.Date(2026, 5, 22, 16, 0, 0, 0, time.UTC) // minute 960 — a scheduled lodger's shift-end
+	evening := time.Date(2026, 5, 22, 20, 0, 0, 0, time.UTC)    // minute 1200 — after dusk, before bedtime
 	future := night.Add(72 * time.Hour)
 
 	cases := []struct {
@@ -82,6 +101,28 @@ func TestNpcSleepHere(t *testing.T) {
 			name:  "lodger at its inn, midday tavern visit -> NOT bedded",
 			build: func() (*World, *Actor) { a := lodgerNPC("l", future); return lodgerSleepWorld(a), a },
 			at:    midday,
+			want:  false,
+		},
+		{
+			// LLM-14 regression: a scheduled lodger must NOT be bedded when its
+			// work shift ends (16:00 forge-close) — that was the force-sleep root.
+			name:  "scheduled lodger at its shift-end (16:00) -> NOT bedded (LLM-14)",
+			build: func() (*World, *Actor) { a := scheduledLodgerNPC("l", future); return lodgerSleepWorld(a), a },
+			at:    forgeClose,
+			want:  false,
+		},
+		{
+			name:  "scheduled lodger at bedtime (22:00) -> beds (LLM-14)",
+			build: func() (*World, *Actor) { a := scheduledLodgerNPC("l", future); return lodgerSleepWorld(a), a },
+			at:    night,
+			want:  true,
+		},
+		{
+			// A lodger keeps later hours than the village: bedded at the 22:00
+			// night window, not the moment dusk (19:00) passes.
+			name:  "lodger in the evening before bedtime (20:00) -> NOT bedded",
+			build: func() (*World, *Actor) { a := lodgerNPC("l", future); return lodgerSleepWorld(a), a },
+			at:    evening,
 			want:  false,
 		},
 		{
@@ -165,6 +206,19 @@ func TestLodgerWakeAtDawn(t *testing.T) {
 		WakeExpiredNPCSleepers(dawn).Fn(w)
 		if a.SleepingUntil != nil {
 			t.Error("lodger should wake at the dawn boundary")
+		}
+	})
+	t.Run("scheduled lodger wakes at dawn, not its later shift-start (LLM-14)", func(t *testing.T) {
+		a := scheduledLodgerNPC("l", dawn.Add(72*time.Hour))
+		start, end := 10*60, 18*60 // a 10:00 shift — starts AFTER the 08:00 dawn wake
+		a.ScheduleStartMin = &start
+		a.ScheduleEndMin = &end
+		capAt := dawn.Add(6 * time.Hour)
+		a.SleepingUntil = &capAt
+		w := lodgerSleepWorld(a)
+		WakeExpiredNPCSleepers(dawn).Fn(w) // dawn = 08:00, before the 10:00 shift
+		if a.SleepingUntil != nil {
+			t.Error("scheduled lodger should wake at dawn (night-window close), not wait for its 10:00 shift-start")
 		}
 	})
 	t.Run("lodger stays asleep at night before the cap", func(t *testing.T) {

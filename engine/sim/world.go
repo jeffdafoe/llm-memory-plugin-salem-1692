@@ -66,6 +66,17 @@ type WorldSettings struct {
 	// gate only added friction + a dead checkout→checkin window.
 	LodgingCheckOutHour int
 
+	// LodgingBedtimeHour is the wall-clock hour (in WorldSettings.Location) a
+	// lodger retires for the night at the inn it rents — the civil night bedtime
+	// that decouples a lodger's bed-down from any work shift. A scheduled lodger
+	// (e.g. a blacksmith boarding at the tavern) was previously force-slept the
+	// moment its day-job shift ended; the lodger night window is
+	// [LodgingBedtimeHour, DawnTime), kept later than the village's dusk so a
+	// guest keeps later hours (LLM-14). Settings key: lodging_bedtime_hour.
+	// Default 22 (DefaultLodgingBedtimeHour); an out-of-range value falls back to
+	// the default in lodgerNightWindow.
+	LodgingBedtimeHour int
+
 	// LodgingDefaultWeeklyRate is the operator-set rent for a private room,
 	// stored weekly (the booking/cadence unit) but billed and quoted per
 	// night as LodgingNightlyRate(rate) = rate/7 — "4 a night" reads better

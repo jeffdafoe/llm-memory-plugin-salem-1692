@@ -13,7 +13,7 @@ import (
 // wakes at shift-start, a human player's sleep is a PASSIVE lodging mechanic
 // keyed off a last-input cursor:
 //
-//	pay for a night → placed in a private bedroom (AssignBedroomForLodger)
+//	pay for a night → granted a private bedroom (AssignBedroomForLodger)
 //	  → stop acting → the idle-auto-bed sweep beds them once idle + tired
 //	  → RecoverTiredness (no Kind gate) restores tiredness while they sleep
 //	  → WakeExpiredPCSleepers wakes them when fully rested (or the cap fires)
@@ -36,8 +36,9 @@ import (
 // to the common room but doesn't yet surface it over WS); (2) morning-descent —
 // walking a naturally-woken lodger down to the common room. The widened auto-bed
 // gate that WALKED a lodger up from the common room is also dropped: v2 has no
-// voluntary room-move, and AssignBedroomForLodger already places a paying lodger
-// IN their private room, so the narrow "already in your bedroom" gate suffices.
+// voluntary room-move, and a lodger holds a standing private-room grant, so the
+// grant-based pcCanSleepHere gate (LLM-14) beds them off that grant — it no
+// longer needs the lodger to already be "in" the bedroom.
 
 const (
 	// DefaultPCSleepMaxDurationHours caps a bedded PC's sleep when recovery
@@ -65,43 +66,48 @@ const (
 // rather than erroring.
 var ErrPCCannotSleepHere = errors.New("you need to be in a paid bedroom to sleep")
 
-// pcCanSleepHere reports whether PC may bed down where it currently stands: it
-// must be inside a structure, in a PRIVATE room that belongs to that structure,
-// and hold an active ledger RoomAccess for THAT specific room (the paid-bedroom
-// proof). v2 port of v1 handlePCSleep's gate — rejects sleeping from the common
-// room/bar (no private room) or without a paid night (no active ledger grant).
-// Tying it to the exact InsideRoomID (not just any private room in the
-// structure) matches v1's room_access join on inside_room_id. MUST be called
-// from inside a Command.Fn (reads w.Structures via findRoom).
-func pcCanSleepHere(w *World, pc *Actor, now time.Time) bool {
-	if pc.InsideStructureID == "" || pc.InsideRoomID == 0 {
-		return false
+// pcCanSleepHere reports whether PC may bed down where it currently stands and,
+// if so, the private bedroom it beds into. It must be inside a structure where
+// it holds an active ledger RoomAccess for a PRIVATE room of that structure (the
+// paid-bedroom proof). v2 port of v1 handlePCSleep's gate — rejects sleeping
+// from the common room/bar or without a paid night.
+//
+// LLM-14: keyed off the GRANT, not the live InsideRoomID. Check-in no longer
+// stamps InsideRoomID (an awake checked-in lodger stays public-scoped), so the
+// gate can't require InsideRoomID to already be the bedroom — and a PC that
+// manual-wakes (InsideRoomID cleared) must still be able to re-bed off its
+// standing grant. The resolved room is what executePCSleep stamps as
+// InsideRoomID at bed-down. MUST be called from inside a Command.Fn (reads
+// w.Structures via findRoom).
+func pcCanSleepHere(w *World, pc *Actor, now time.Time) (RoomID, bool) {
+	if pc.InsideStructureID == "" {
+		return 0, false
 	}
-	room := findRoom(w, pc.InsideRoomID)
-	if room == nil || room.Kind != RoomKindPrivate || room.StructureID != pc.InsideStructureID {
-		return false
-	}
-	for key, ra := range pc.RoomAccess {
-		if key.RoomID == pc.InsideRoomID && IsActiveLedgerGrant(ra, now) {
-			return true
-		}
-	}
-	return false
+	return lodgerRoomAt(w, pc, pc.InsideStructureID, now)
 }
 
-// executePCSleep beds a PC at now: sets SleepingUntil = now + the safety cap,
-// stamps the tiredness-recovery cursor at bed-down (so RecoverTiredness credits
-// from this moment rather than its next lazy-init pass), soft-sets State to
-// StateSleeping, and emits PCSleepStarted carrying the wake-cap instant.
-// Idempotent — a no-op (returns false, emits nothing) if already sleeping.
+// executePCSleep beds a PC at now into roomID (the private bedroom resolved by
+// pcCanSleepHere): stamps InsideRoomID = roomID — the bed-down moment is where a
+// lodger's physical room scope is set (LLM-14), not check-in — sets
+// SleepingUntil = now + the safety cap, stamps the tiredness-recovery cursor at
+// bed-down (so RecoverTiredness credits from this moment rather than its next
+// lazy-init pass), soft-sets State to StateSleeping, and emits PCSleepStarted
+// carrying the wake-cap instant. Idempotent — a no-op (returns false, emits
+// nothing) if already sleeping.
+//
+// InsideRoomID is cleared on wake: the morning-descent subscriber and the
+// checkout eviction both move it bedroom→common off live state (they read it
+// after the auto/checkout wake, which deliberately leaves it set), and the
+// player-driven manual/input wakes clear it themselves.
 //
 // Unlike executeNPCSleep this does NOT refresh structure occupancy (a sleeping
 // player doesn't close a shop) and does not excuse the PC from a huddle (a
 // player's social state is theirs to manage). Runs on the world goroutine.
-func executePCSleep(w *World, pc *Actor, now time.Time) bool {
+func executePCSleep(w *World, pc *Actor, roomID RoomID, now time.Time) bool {
 	if pc.SleepingUntil != nil {
 		return false
 	}
+	pc.InsideRoomID = roomID
 	wakeAt := now.Add(DefaultPCSleepMaxDurationHours * time.Hour)
 	pc.SleepingUntil = &wakeAt
 	stamp := now
@@ -113,7 +119,11 @@ func executePCSleep(w *World, pc *Actor, now time.Time) bool {
 
 // wakePCActor clears a PC's sleep and resets the recovery cursor. Does NOT emit
 // — the caller emits PCSleepEnded with the right reason. Mirrors wakeNPC minus
-// the occupancy refresh. State only resets to Idle when it is actually
+// the occupancy refresh, and — unlike wakeNPC — does NOT clear InsideRoomID
+// (LLM-14): the bedroom→common move is owned by the morning-descent subscriber
+// and the checkout eviction (auto/checkout wake, read off live InsideRoomID) or
+// by the manual/input wake callers (WakePC / TouchPCInput). State only resets to
+// Idle when it is actually
 // StateSleeping: an action that input-wakes a PC runs its own command right
 // after this and re-sets State (Walking/Conversing/…), so guarding here avoids
 // clobbering a macro-state another command set, and leaves a non-sleeping State
@@ -153,10 +163,11 @@ func SleepPC(actorID ActorID, now time.Time) Command {
 			if pc.SleepingUntil != nil {
 				return PCSleepResult{Bedded: false}, nil
 			}
-			if !pcCanSleepHere(w, pc, now) {
+			room, ok := pcCanSleepHere(w, pc, now)
+			if !ok {
 				return PCSleepResult{}, ErrPCCannotSleepHere
 			}
-			executePCSleep(w, pc, now)
+			executePCSleep(w, pc, room, now)
 			return PCSleepResult{Bedded: true, WakeAt: *pc.SleepingUntil}, nil
 		},
 	}
@@ -174,6 +185,11 @@ func WakePC(actorID ActorID, now time.Time) Command {
 				return false, nil
 			}
 			wakePCActor(pc)
+			// LLM-14: a player-driven wake drops the private-room scope itself
+			// (no morning-descent runs for "manual"/"input"), so an awake PC in
+			// the inn is public-scoped rather than stuck addressing its empty
+			// bedroom.
+			pc.InsideRoomID = 0
 			w.emit(&PCSleepEnded{ActorID: actorID, Reason: "manual", At: now})
 			return true, nil
 		},
@@ -197,6 +213,7 @@ func TouchPCInput(w *World, actorID ActorID, now time.Time) {
 	pc.LastPCInputAt = &stamp
 	if pc.SleepingUntil != nil {
 		wakePCActor(pc)
+		pc.InsideRoomID = 0 // LLM-14: player-driven wake drops the private-room scope (see WakePC)
 		w.emit(&PCSleepEnded{ActorID: actorID, Reason: "input", At: now})
 	}
 }
@@ -230,7 +247,8 @@ func WakeExpiredPCSleepers(now time.Time) Command {
 				}
 				rested := a.Needs["tiredness"] <= 0
 				capped := !a.SleepingUntil.After(now)
-				checkedOut := !pcCanSleepHere(w, a, now)
+				_, canSleepHere := pcCanSleepHere(w, a, now)
+				checkedOut := !canSleepHere
 				if !rested && !capped && !checkedOut {
 					continue
 				}
@@ -252,10 +270,11 @@ func WakeExpiredPCSleepers(now time.Time) Command {
 // ledger grant). executePCSleep emits PCSleepStarted, which drives the client's
 // sleep overlay + Wake button.
 //
-// Narrow gate (already in the private room): v2's AssignBedroomForLodger places
-// a paying lodger IN their bedroom, and v2 has no voluntary room-move to walk a
-// PC up from the common room, so the widened v1 gate (walk-from-common) is not
-// ported. Run from the sleep ticker, after the wake pass.
+// Grant-based gate (LLM-14): a lodger holds a private-room grant but is bedded
+// into the room only at this sweep (or /pc/sleep), so pcCanSleepHere keys off
+// the standing grant in the current structure, not a check-in-stamped
+// InsideRoomID; the bedroom it resolves is stamped as InsideRoomID at bed-down.
+// Run from the sleep ticker, after the wake pass.
 func AutoBedIdleLodgerPCs(now time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
@@ -271,10 +290,11 @@ func AutoBedIdleLodgerPCs(now time.Time) Command {
 				if a.Needs["tiredness"] < DefaultPCIdleSleepMinTiredness {
 					continue // not tired enough to be knocked out
 				}
-				if !pcCanSleepHere(w, a, now) {
-					continue // not in a paid private bedroom
+				room, ok := pcCanSleepHere(w, a, now)
+				if !ok {
+					continue // no active grant for a private bedroom here
 				}
-				if executePCSleep(w, a, now) {
+				if executePCSleep(w, a, room, now) {
 					bedded++
 				}
 			}

@@ -200,6 +200,7 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.AgentTicksPaused = parseBoolSetting(values, "agent_ticks_paused", false)
 
 	s.LodgingCheckOutHour = parseIntSetting(values, "lodging_check_out_hour", 11)
+	s.LodgingBedtimeHour = parseIntSetting(values, "lodging_bedtime_hour", sim.DefaultLodgingBedtimeHour)
 	s.LodgingDefaultWeeklyRate = parseIntSetting(values, "lodging_default_weekly_rate", 28)
 	s.ShiftLatenessWindowMinutes = parseIntSetting(values, "shift_lateness_window_minutes", sim.DefaultShiftLatenessWindowMinutes)
 	s.NPCSleepMaxDurationHours = parseIntSetting(values, "npc_sleep_max_duration_hours", sim.DefaultNPCSleepMaxDurationHours)

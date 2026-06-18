@@ -279,7 +279,8 @@ func TestAssignBedroomForLodgerHappy(t *testing.T) {
 		t.Error("WasReassigned = true on fresh assignment")
 	}
 
-	// Actor InsideRoomID updated + RoomAccess stamped.
+	// LLM-14: check-in grants the RoomAccess only — it must NOT stamp
+	// InsideRoomID (the lodger is bedded into the room later, at bed-down).
 	state, _ := w.Send(sim.Command{
 		Fn: func(world *sim.World) (any, error) {
 			return struct {
@@ -295,8 +296,8 @@ func TestAssignBedroomForLodgerHappy(t *testing.T) {
 		InsideRoom sim.RoomID
 		HasAccess  bool
 	})
-	if s.InsideRoom != 2 {
-		t.Errorf("InsideRoomID = %d, want 2", s.InsideRoom)
+	if s.InsideRoom == 2 {
+		t.Error("check-in must NOT stamp InsideRoomID to the assigned bedroom (LLM-14: bedded at bed-down, not check-in)")
 	}
 	if !s.HasAccess {
 		t.Error("RoomAccess row not stamped")

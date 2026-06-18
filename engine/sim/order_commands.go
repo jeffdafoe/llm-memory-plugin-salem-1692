@@ -346,8 +346,9 @@ func transferOrderGoods(w *World, o *Order, seller *Actor, consumers []*Actor) e
 		return fmt.Errorf("order %d: item %q has the lodging capability without service — misconfigured catalog", o.ID, o.Item)
 	}
 	if isLodging {
-		// Lodging grants the room — and physically beds the lodger via
-		// InsideRoomID — to the BUYER. The caller validated co-presence of the
+		// Lodging grants the room to the BUYER; the lodger is bedded into it
+		// (InsideRoomID) at the actual bed-down, NOT here at check-in (LLM-14).
+		// The caller validated co-presence of the
 		// CONSUMERS, so enforce the single-self-consumer scope: a
 		// buyer-not-in-consumers (or multi-consumer) order would grant +
 		// teleport an actor whose co-presence was never checked and strand the

@@ -40,6 +40,7 @@ func NewEnvironmentRepo() *EnvironmentRepo {
 			MovementFatiguePerTileX100: sim.DefaultMovementFatiguePerTileX100,
 			RestockReorderPct:          sim.DefaultRestockReorderPct,
 			LodgingCheckOutHour:        11,
+			LodgingBedtimeHour:         sim.DefaultLodgingBedtimeHour,
 			ShiftLatenessWindowMinutes: sim.DefaultShiftLatenessWindowMinutes,
 		},
 		phase: sim.PhaseDay,
