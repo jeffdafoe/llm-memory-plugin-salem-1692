@@ -17,10 +17,11 @@ import (
 // (the contention canary) and then walks THROUGH the blocking actor and
 // continues. The ring is therefore a "stable block resolved by walk-through"
 // log, not a "mover is stuck forever" log — a non-empty ring means contention
-// happened and was forced past, not that anyone is wedged. (Member-own-door
-// blocks resolve earlier via ZBBS-HOME-348's immediate walk-through and never
-// reach this record, so the ring skews toward corridor / mutual-block /
-// non-member-door contention.)
+// happened and was forced past, not that anyone is wedged. (Single-file door
+// approaches — the sole-reachable-door shape, replanFailed — resolve immediately
+// via the door walk-through (ZBBS-HOME-348, generalized by LLM-9) and never reach
+// this record, member or not, so the ring skews toward detourable mutual-block /
+// clogged-corridor contention, where waiting can let the other mover step.)
 //
 // In-memory + lossy-on-restart: transient diagnostics, no durability need,
 // so no Postgres (see shared GUIDELINES). Same shape as the server-observed

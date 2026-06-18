@@ -334,17 +334,17 @@ func TestLocomotion_StructureEnter_WalkThroughOccupiedDoor(t *testing.T) {
 	}
 }
 
-// TestLocomotion_StructureEnter_NonMemberWalksThroughOpenDoorAfterWindow covers
-// the generalized walk-through (ZBBS-HOME-327): a NON-member entering an OPEN
-// structure whose single door tile is occupied no longer deadlocks. HOME-348's
-// immediate walk-through is still member-gated and does not fire, so the
-// non-member instead waits out the stuck window and then forces through the
-// blocker onto the door — arriving inside. This is the live Josiah→Tavern
-// shape: a customer (non-member) at an open business whose keeper sleeps across
-// the door. Entry policy is NOT bypassed: the cottage is open, so the entrant is
-// authorized (see TestLocomotion_StructureEnter_NonMemberCannotWalkThroughOwnerOnly
+// TestLocomotion_StructureEnter_NonMemberWalksThroughOpenDoor covers the
+// generalized door walk-through (ZBBS-HOME-348 generalized by LLM-9): a NON-member
+// entering an OPEN structure whose single door tile is occupied walks through
+// IMMEDIATELY — the door approach is single-file (replanFailed: masking the sole
+// goal tile leaves no path), so the stuck window can't help and is skipped, and no
+// canary /deadlocks record is emitted. This is the live Josiah→Tavern / buyer→Inn
+// shape: a customer at an open business whose keeper stands on the door. Entry
+// policy is NOT bypassed: the cottage is open, so the entrant is authorized
+// upstream (see TestLocomotion_StructureEnter_NonMemberCannotWalkThroughOwnerOnly
 // for the owner-only guard).
-func TestLocomotion_StructureEnter_NonMemberWalksThroughOpenDoorAfterWindow(t *testing.T) {
+func TestLocomotion_StructureEnter_NonMemberWalksThroughOpenDoor(t *testing.T) {
 	w, cancel, rec := buildLocomotionTestWorld(t)
 	defer cancel()
 	now := time.Now().UTC()
@@ -393,9 +393,11 @@ func TestLocomotion_StructureEnter_NonMemberWalksThroughOpenDoorAfterWindow(t *t
 	if stopped != 0 {
 		t.Errorf("ActorMoveStopped{deadlocked} count = %d, want 0 (walks through, does not give up)", stopped)
 	}
-	// The stable block was recorded as the contention canary before the walk-through.
-	if got := w.DeadlockSnapshot(); len(got) == 0 {
-		t.Error("expected a DeadlockSnapshot canary entry for the stable door block")
+	// LLM-9: the single-file door walk-through fires immediately (replanFailed),
+	// so the stuck window is never reached and NO canary /deadlocks entry is
+	// recorded — unlike the pre-fix behavior that waited out the window first.
+	if got := w.DeadlockSnapshot(); len(got) != 0 {
+		t.Errorf("DeadlockSnapshot = %d entries, want 0 (open-door walk-through is immediate, no stuck-window canary)", len(got))
 	}
 }
 
