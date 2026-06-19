@@ -100,8 +100,8 @@ func TestCreatePC_FullLodged(t *testing.T) {
 	if a.InsideStructureID != "inn" {
 		t.Errorf("InsideStructureID = %q, want inn", a.InsideStructureID)
 	}
-	if a.InsideRoomID != 2 {
-		t.Errorf("InsideRoomID = %d, want 2 (the private bedroom)", a.InsideRoomID)
+	if a.InsideRoomID != 0 {
+		t.Errorf("InsideRoomID = %d, want 0 (LLM-14: a fresh lodger is created awake in the common area with a room grant, not bedded into the bedroom)", a.InsideRoomID)
 	}
 	ra, ok := a.RoomAccess[sim.RoomAccessKey{RoomID: 2, Source: sim.AccessSourceLedger}]
 	if !ok || ra == nil || !ra.Active {

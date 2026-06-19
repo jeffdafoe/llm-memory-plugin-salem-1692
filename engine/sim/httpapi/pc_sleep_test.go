@@ -74,12 +74,14 @@ func TestHandlePCSleep_Bedded(t *testing.T) {
 	}
 }
 
-func TestHandlePCSleep_NotInBedroom(t *testing.T) {
+func TestHandlePCSleep_NoGrant(t *testing.T) {
 	w := seededWorld(t)
 	seedLodgerPC(t, w, "tester")
-	// Move the PC out of the private room → gate fails.
+	// Drop the PC's lodging grant → no private room to bed into → gate fails
+	// (LLM-14: the gate is grant-based, not physical-InsideRoomID-based, so an
+	// awake lodger at the bar can still bed — but a PC with NO grant cannot).
 	_, _ = w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		world.Actors["pc-lodger"].InsideRoomID = 0
+		world.Actors["pc-lodger"].RoomAccess = nil
 		return nil, nil
 	}})
 	srv := NewServer(w, okAuth{})

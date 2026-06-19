@@ -39,8 +39,11 @@ type AssignBedroomResult struct {
 //  2. Otherwise pick the first private room without an active access,
 //     deterministically by Name ASC.
 //
-// On success, also stamps Actor.InsideRoomID so the lodger is in their
-// room immediately after the keeper's deliver_order.
+// Grants/extends the RoomAccess only — it does NOT stamp Actor.InsideRoomID.
+// The lodger's InsideRoomID is set later, at the actual bed-down (executePCSleep
+// / executeNPCSleep), not at check-in (LLM-14): an awake checked-in lodger
+// standing at the bar must stay public-scoped, so InsideRoomID names a private
+// room only while the actor is asleep in it.
 //
 // Returns (0, ErrNoPrivateRooms) when the structure has no private
 // rooms at all. Returns (0, nil) — RoomID=0 — when all private rooms
@@ -86,7 +89,6 @@ func AssignBedroomForLodger(structureID StructureID, buyerID ActorID, ledgerID i
 					if !roomOccupiedByOther(w, r.ID, buyerID) {
 						existing.ExpiresAt = &expiresAt
 						existing.LedgerID = ledgerID
-						actor.InsideRoomID = r.ID
 						return AssignBedroomResult{
 							RoomID:        r.ID,
 							PreviousRoom:  previousRoom,
@@ -110,7 +112,6 @@ func AssignBedroomForLodger(structureID StructureID, buyerID ActorID, ledgerID i
 					Active:    true,
 					CreatedAt: now,
 				}
-				actor.InsideRoomID = r.ID
 				return AssignBedroomResult{
 					RoomID:       r.ID,
 					PreviousRoom: previousRoom,

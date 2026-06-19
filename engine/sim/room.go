@@ -184,6 +184,40 @@ func actorIsLodgerAt(w *World, actor *Actor, structureID StructureID, now time.T
 	return false
 }
 
+// lodgerRoomAt returns the id of the private room in structureID for which actor
+// holds an active ledger grant — the room it beds down into. LLM-14 sets
+// Actor.InsideRoomID to this at the actual bed-down (executePCSleep /
+// executeNPCSleep), NOT at check-in, so "InsideRoomID names a private room"
+// means "asleep in it" — the invariant the speech-audience scoper
+// (audienceRoomScope) assumes. A lodger holds at most one private grant per
+// structure (AssignBedroomForLodger EXTENDS an existing one rather than adding a
+// second), so the lowest-RoomID tie-break below is an arbitrary-but-deterministic
+// guard for the can't-normally-happen multi-grant case, not aligned with
+// assignment's Name-ASC order. MUST be called from inside a Command.Fn (findRoom
+// reads w.Structures).
+func lodgerRoomAt(w *World, actor *Actor, structureID StructureID, now time.Time) (RoomID, bool) {
+	if actor == nil || structureID == "" {
+		return 0, false
+	}
+	best := RoomID(0)
+	for key, ra := range actor.RoomAccess {
+		if !IsActiveLedgerGrant(ra, now) {
+			continue
+		}
+		if ra.RoomID != key.RoomID {
+			continue // defensive: a malformed grant must not bed into the wrong room
+		}
+		room := findRoom(w, key.RoomID)
+		if room == nil || room.Kind != RoomKindPrivate || room.StructureID != structureID {
+			continue
+		}
+		if best == 0 || room.ID < best {
+			best = room.ID
+		}
+	}
+	return best, best != 0
+}
+
 // actorHoldsActiveLodging reports whether actor holds ANY active, unexpired
 // ledger RoomAccess at now — the structure-agnostic counterpart to
 // actorIsLodgerAt. The homeless rest-fallback floor (npc_rest_fallback.go)
