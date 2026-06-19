@@ -280,11 +280,16 @@ func handleActorArrivedAdvanceRoute(ctx context.Context, w *sim.World, evt sim.E
 	if route.Label == sim.AttrTownCrier &&
 		route.Phase == sim.RoutePhaseActive &&
 		route.StopIdx < len(route.Stops) {
+		if route.Authoring {
+			// An author call is already in flight for this stop — ignore a
+			// duplicate arrival so we don't double-author / double-read (LLM-44).
+			return
+		}
 		stop := route.Stops[route.StopIdx]
 		actor, ok := w.Actors[arrived.ActorID]
 		atExpected := ok && actor.Pos.X == stop.WalkTo.X && actor.Pos.Y == stop.WalkTo.Y
 		if atExpected {
-			beginCrierBoardStop(ctx, w, client, arrived.ActorID, route.StopIdx, stop)
+			beginCrierBoardStop(ctx, w, client, route, route.StopIdx, stop)
 			return
 		}
 		// Stale arrival — run the route's re-walk/abandon machinery (the

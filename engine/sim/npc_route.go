@@ -147,6 +147,12 @@ type NPCRoute struct {
 	// transient (re-triggered at the next phase/rotation boundary), so this is
 	// never persisted.
 	StaleRetries int
+	// Authoring is set true while the town crier has an off-world noticeboard
+	// author call in flight for the current stop, so a duplicate ActorArrived
+	// for the same stop doesn't start a second author/read (LLM-44). Cleared
+	// when the author callback completes. Set/read/cleared only on the world
+	// goroutine; in-memory only, never persisted.
+	Authoring bool
 }
 
 // RouteCandidate is one input to StartNPCRoute's route builder: an

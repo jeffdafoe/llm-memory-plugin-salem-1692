@@ -14,13 +14,21 @@ import (
 
 // noticeboard.go — engine-authored noticeboard content cascade.
 //
-// Triggered by VillageObjectStateChanged for any object whose new
-// state carries both TagRotatable + TagNoticeBoard. The subscriber
-// runs synchronously on the world goroutine (per the Subscribe
-// contract); the LLM call must run off-world (it blocks for
-// seconds) so the subscriber spawns a goroutine.
+// Authoring is initiated explicitly, never reactively off a board flip
+// (LLM-44):
 //
-// Goroutine flow:
+//   - KickstartNoticeboards seeds every blank board once at boot.
+//   - The town-crier route authors a board on arrival (beginCrierBoardStop),
+//     posts it with the variant matched to the authored count, reads it, then
+//     advances. See cascade/npc_route.go.
+//
+// The VillageObjectStateChanged subscriber (handleNoticeboardStateChange) does
+// NOT author — it only clears content when a board rotates to a zero-capacity
+// (empty) state, enforcing the "empty board holds no content" invariant. A
+// reactive author here would fire on the crier's own count-matched flip and
+// overwrite the notices she just posted and read.
+//
+// Author flow (authorNoticeboardText, off-world goroutine):
 //
 //  1. SendContext FetchVillageContext to snapshot world state
 //     (visitors, business catalog, recent atmosphere) atomically.
@@ -28,20 +36,17 @@ import (
 //     set; salem-generic VA has no persona, no startup_instructions,
 //     no prompt cache — see atmosphere cascade for the same pattern).
 //  3. Call llm.Complete with Model="salem-generic".
-//  4. Trim response.Content; SendContext SaveNoticeboardContent gated
-//     on the object's CurrentState still matching the new-state
-//     captured at trigger time (stale-guard, mirrors v1's ZBBS-112
-//     R1 fix).
+//  4. Trim + clamp to the board's line capacity. The caller then stores it via
+//     SaveNoticeboardContent, gated on the object's CurrentState matching the
+//     atState the save is for (stale-guard, mirrors v1's ZBBS-112 R1 fix).
 //
 // Failure modes (per atmosphere cascade's posture):
 //
-//   - World SendContext error → log + return. Sweep dead; nothing
-//     to retry.
-//   - LLM call error → log + return. Next rotation cycle retries.
-//   - Empty / whitespace reply → log + return.
-//   - SaveNoticeboardContent stale_state → log + return. The board
-//     rotated again before we landed; next cycle handles the new
-//     state.
+//   - World SendContext error → log + return. Nothing to retry.
+//   - LLM call error → log + return ("" content). Next visit retries.
+//   - Empty / whitespace reply → log + return "".
+//   - SaveNoticeboardContent stale_state → log + skip. A later visit handles
+//     the board's current state.
 //
 // Curation principle (v1 anti-fabrication lesson): the prompt is
 // engine-pushed in full, narrowly curated. Personal-state data
@@ -284,7 +289,7 @@ func authorNoticeboardText(ctx context.Context, w *sim.World, client llm.Client,
 		Temperature: 0.7,
 		// Scale the budget to the board's line capacity — up to 4 short
 		// notices need more room than one. ~100 tokens/line plus a base.
-		MaxTokens:   noticeboardMaxTokens(capacity),
+		MaxTokens: noticeboardMaxTokens(capacity),
 		// Fresh scene per authoring call: memory-api's chat_messages
 		// history loader filters by scene_id when set, so each notice
 		// authoring is its own isolated conversation — without this,
@@ -333,9 +338,14 @@ func runNoticeboardAuthor(ctx context.Context, w *sim.World, client llm.Client, 
 	if text == "" {
 		return
 	}
-	saveRes, err := w.SendContext(ctx, sim.SaveNoticeboardContent(objectID, text, atState, time.Now()))
+	// Bound the save like the fetch/LLM call (authorNoticeboardText owns its own
+	// timeout context and cancels it on return), so a wedged world command queue
+	// can't block this goroutine indefinitely.
+	saveCtx, cancel := context.WithTimeout(ctx, noticeboardLLMTimeout)
+	defer cancel()
+	saveRes, err := w.SendContext(saveCtx, sim.SaveNoticeboardContent(objectID, text, atState, time.Now()))
 	if err != nil {
-		if ctx.Err() == nil {
+		if saveCtx.Err() == nil {
 			log.Printf("cascade/noticeboard: SaveNoticeboardContent (%q, state=%q): %v", objectID, atState, err)
 		}
 		return
@@ -365,7 +375,8 @@ func runNoticeboardAuthor(ctx context.Context, w *sim.World, client llm.Client, 
 // capacity>0 case the LLM author runs off-world, so this kicks a goroutine and
 // returns; the post/read/route-advance happen back on the world goroutine in
 // finishCrierBoardStop. The empty-day case is fully synchronous here.
-func beginCrierBoardStop(ctx context.Context, w *sim.World, client llm.Client, crierID sim.ActorID, stopIdx int, stop sim.RouteStop) {
+func beginCrierBoardStop(ctx context.Context, w *sim.World, client llm.Client, route *sim.NPCRoute, stopIdx int, stop sim.RouteStop) {
+	crierID := route.NPCID
 	obj, hasObj := w.VillageObjects[stop.ObjectID]
 	if !hasObj || obj == nil {
 		advanceCrierWalk(w, crierID, stop.ObjectID)
@@ -380,9 +391,10 @@ func beginCrierBoardStop(ctx context.Context, w *sim.World, client llm.Client, c
 	capacity := sim.ContentCapacityForState(asset.FindState(stop.NewState))
 	if capacity <= 0 {
 		// No-news day: post the empty variant, clear prior content, say nothing.
-		if _, err := sim.SetVillageObjectState(stop.ObjectID, stop.NewState).Fn(w); err != nil {
-			log.Printf("cascade/noticeboard: crier empty-flip (%q -> %q): %v", stop.ObjectID, stop.NewState, err)
-		}
+		// SetVillageObjectState never returns an error (it no-ops on not_found /
+		// already_at_target); the empty variant is a valid state, so the flip
+		// always lands and ClearNoticeboardContent's stale-guard then matches.
+		sim.SetVillageObjectState(stop.ObjectID, stop.NewState).Fn(w)
 		sim.ClearNoticeboardContent(stop.ObjectID, stop.NewState, time.Now()).Fn(w)
 		advanceCrierWalk(w, crierID, stop.ObjectID)
 		return
@@ -397,10 +409,13 @@ func beginCrierBoardStop(ctx context.Context, w *sim.World, client llm.Client, c
 	}
 	objectID := stop.ObjectID
 	targetState := stop.NewState
+	// Mark the stop as authoring so a duplicate arrival is ignored until the
+	// callback completes (set/cleared only on the world goroutine).
+	route.Authoring = true
 	go func() {
 		text := authorNoticeboardText(ctx, w, client, objectID, targetState, boardLabel, priorText, capacity)
 		post := sim.Command{Fn: func(world *sim.World) (any, error) {
-			finishCrierBoardStop(world, crierID, stopIdx, objectID, text)
+			finishCrierBoardStop(world, route, stopIdx, objectID, text)
 			return nil, nil
 		}}
 		if _, err := w.SendContext(ctx, post); err != nil && ctx.Err() == nil {
@@ -413,9 +428,15 @@ func beginCrierBoardStop(ctx context.Context, w *sim.World, client llm.Client, c
 // route advance. Runs on the world goroutine (the author goroutine marshals
 // back here via SendContext). Guards against a fresh tour having superseded
 // this route while the author LLM call was in flight.
-func finishCrierBoardStop(w *sim.World, crierID sim.ActorID, stopIdx int, objectID sim.VillageObjectID, text string) {
-	if !crierStillAtStop(w, crierID, stopIdx, objectID) {
-		return // a fresh tour superseded this route during the author call
+func finishCrierBoardStop(w *sim.World, route *sim.NPCRoute, stopIdx int, objectID sim.VillageObjectID, text string) {
+	// Clear the in-flight marker on the captured route. If a fresh tour
+	// superseded us, this route object is now orphaned and clearing it is
+	// harmless; the guard below drops the post against the new route.
+	route.Authoring = false
+	crierID := route.NPCID
+
+	if !crierStillAtStop(w, route, stopIdx, objectID) {
+		return // a fresh tour superseded this exact route during the author call
 	}
 
 	if strings.TrimSpace(text) == "" {
@@ -439,13 +460,21 @@ func finishCrierBoardStop(w *sim.World, crierID sim.ActorID, stopIdx int, object
 		}
 		log.Printf("cascade/noticeboard: no board state for capacity %d (object %q) — content kept, variant unmatched", len(lines), objectID)
 	}
-	if matchState != "" {
-		if _, err := sim.SetVillageObjectState(objectID, matchState).Fn(w); err != nil {
-			log.Printf("cascade/noticeboard: crier post-flip (%q -> %q): %v", objectID, matchState, err)
+
+	// SetVillageObjectState never errors (no-ops on not_found / already_at_target),
+	// so the success signal is the SAVE result: only read aloud once the content
+	// is actually stored, so a stale-dropped save never leaves her reading what
+	// the board doesn't show.
+	sim.SetVillageObjectState(objectID, matchState).Fn(w)
+	saveRes, err := sim.SaveNoticeboardContent(objectID, text, matchState, time.Now()).Fn(w)
+	if r, ok := saveRes.(sim.SaveNoticeboardContentResult); err != nil || !ok || !r.Applied {
+		reason := "send_error"
+		if r, ok := saveRes.(sim.SaveNoticeboardContentResult); ok {
+			reason = r.SkipReason
 		}
-		if _, err := sim.SaveNoticeboardContent(objectID, text, matchState, time.Now()).Fn(w); err != nil {
-			log.Printf("cascade/noticeboard: crier save (%q state=%q): %v", objectID, matchState, err)
-		}
+		log.Printf("cascade/noticeboard: crier save not applied (%q state=%q reason=%s) — skipping read", objectID, matchState, reason)
+		advanceCrierWalk(w, crierID, objectID)
+		return
 	}
 
 	// Read the notices she just posted — one bubble per beat — then advance the
@@ -457,7 +486,7 @@ func finishCrierBoardStop(w *sim.World, crierID sim.ActorID, stopIdx int, object
 	if voiced < 1 {
 		voiced = 1
 	}
-	scheduleCrierAdvance(w, crierID, stopIdx, objectID, time.Duration(voiced)*crierNoticeBeatDelay)
+	scheduleCrierAdvance(w, route, stopIdx, objectID, time.Duration(voiced)*crierNoticeBeatDelay)
 }
 
 // noticeboardStateForCapacity returns the asset's rotatable notice-board state
@@ -481,13 +510,17 @@ func noticeboardStateForCapacity(w *sim.World, objectID sim.VillageObjectID, cap
 	return ""
 }
 
-// crierStillAtStop reports whether the crier is still on the same active
-// town_crier route at the same stop reading the same board — the guard a
+// crierStillAtStop reports whether `route` is STILL the crier's installed
+// active route, parked at the same stop on the same board — the guard a
 // deferred post/advance must pass so it doesn't act on a route a fresh tour
-// superseded mid-dwell.
-func crierStillAtStop(w *sim.World, crierID sim.ActorID, stopIdx int, objectID sim.VillageObjectID) bool {
-	r, ok := w.ActiveRoutes[crierID]
-	return ok && r != nil && r.Label == sim.AttrTownCrier && r.Phase == sim.RoutePhaseActive &&
+// superseded mid-author/mid-dwell. The pointer compare (w.ActiveRoutes[crier]
+// == route) proves identity: StartNPCRoute installs a fresh *NPCRoute on
+// supersede, so a superseding tour replaces the map entry and the captured
+// pointer no longer matches — even if the new route happens to sit at the same
+// stop index / board.
+func crierStillAtStop(w *sim.World, route *sim.NPCRoute, stopIdx int, objectID sim.VillageObjectID) bool {
+	r, ok := w.ActiveRoutes[route.NPCID]
+	return ok && r == route && r.Phase == sim.RoutePhaseActive &&
 		r.StopIdx == stopIdx && r.StopIdx < len(r.Stops) && r.Stops[r.StopIdx].ObjectID == objectID
 }
 
@@ -504,14 +537,15 @@ func advanceCrierWalk(w *sim.World, crierID sim.ActorID, objectID sim.VillageObj
 // length) so she finishes reading before walking on. Guarded against a fresh
 // tour superseding this route during the dwell. Mirrors the AfterFunc +
 // SendContext + LifecycleContext pattern the silence / pay-ledger sweeps use.
-func scheduleCrierAdvance(w *sim.World, crierID sim.ActorID, stopIdx int, objectID sim.VillageObjectID, dwell time.Duration) {
+func scheduleCrierAdvance(w *sim.World, route *sim.NPCRoute, stopIdx int, objectID sim.VillageObjectID, dwell time.Duration) {
+	crierID := route.NPCID
 	time.AfterFunc(dwell, func() {
 		ctx := w.LifecycleContext()
 		if ctx.Err() != nil {
 			return // shutdown raced the dwell
 		}
 		guarded := sim.Command{Fn: func(world *sim.World) (any, error) {
-			if !crierStillAtStop(world, crierID, stopIdx, objectID) {
+			if !crierStillAtStop(world, route, stopIdx, objectID) {
 				return nil, nil // route changed during the dwell — drop the advance
 			}
 			return sim.AdvanceNPCRouteSkipFlip(crierID).Fn(world)
