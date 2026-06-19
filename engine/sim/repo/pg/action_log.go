@@ -322,3 +322,73 @@ func queryDayEvents(ctx context.Context, pool Pool, actorID sim.ActorID, dayStar
 	}
 	return events, nil
 }
+
+// loadHuddleTranscriptSQL pulls every committed (result='ok') agent_action_log
+// row for one huddle, oldest-first — the durable, COMPLETE transcript of a single
+// conversation (LLM-35). Keyed on huddle_id, TEXT since ZBBS-WORK-239 §4b dropped
+// its scene_huddle FK + retyped it, and backed by idx_agent_action_log_huddle.
+// Returns every participant's rows (agent + player + engine), unlike
+// loadDayEventsSQL which scopes to one actor's day via presence intervals.
+const loadHuddleTranscriptSQL = `
+SELECT occurred_at, source, action_type, payload, speaker_name
+  FROM agent_action_log
+ WHERE huddle_id = $1
+   AND result = 'ok'
+ ORDER BY occurred_at ASC, id ASC
+ LIMIT $2`
+
+// LoadHuddleTranscript returns up to `limit` committed action rows for huddleID,
+// oldest-first across all participants — the durable companion to the live
+// /huddle ring (LLM-35). The caller over-fetches by one row to turn a full LIMIT
+// into a has_more truncation signal. payload.text is extracted into Text here so
+// the read model stays lean; a malformed payload degrades to empty Text rather
+// than failing the whole read, matching queryDayEvents.
+func (r *ActionLogRepo) LoadHuddleTranscript(ctx context.Context, huddleID string, limit int) ([]sim.HuddleTranscriptRow, error) {
+	rows, err := r.pool.Query(ctx, loadHuddleTranscriptSQL, huddleID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query huddle transcript for %q: %w", huddleID, err)
+	}
+	defer rows.Close()
+
+	out := []sim.HuddleTranscriptRow{}
+	for rows.Next() {
+		var (
+			occurredAt time.Time
+			source     string
+			actionType string
+			payloadRaw []byte
+			speaker    string
+		)
+		if err := rows.Scan(&occurredAt, &source, &actionType, &payloadRaw, &speaker); err != nil {
+			return nil, fmt.Errorf("scan huddle transcript row for %q: %w", huddleID, err)
+		}
+		out = append(out, sim.HuddleTranscriptRow{
+			OccurredAt:  occurredAt,
+			Source:      source,
+			SpeakerName: speaker,
+			ActionType:  sim.ActionType(actionType),
+			Text:        huddleTranscriptText(payloadRaw, actionType, huddleID),
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate huddle transcript for %q: %w", huddleID, err)
+	}
+	return out, nil
+}
+
+// huddleTranscriptText extracts the "text" field from a raw jsonb payload,
+// returning "" for an absent/non-string text or a malformed payload. A bad
+// payload logs and degrades rather than sinking the whole transcript — the same
+// posture queryDayEvents takes on a malformed day-event row.
+func huddleTranscriptText(raw []byte, actionType, huddleID string) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		log.Printf("pg action_log: malformed payload on action_type=%s huddle=%q: %v", actionType, huddleID, err)
+		return ""
+	}
+	text, _ := payload["text"].(string)
+	return text
+}
