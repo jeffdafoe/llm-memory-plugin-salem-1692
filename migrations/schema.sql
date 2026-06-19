@@ -1,26 +1,29 @@
 -- ============================================================================
 -- Salem (zbbs) production schema baseline
 --
--- Generated 2026-05-19 via:
+-- Generated 2026-06-19 via:
 --   pg_dump --schema-only --no-owner --no-privileges zbbs
 -- Source: production VPS, database "zbbs" (the authoritative live copy).
 --
 -- WHY THIS FILE EXISTS:
--- The migration files in this directory drifted from production over time and
--- can no longer reconstruct the database from scratch. This dump is the
--- authoritative schema as it ACTUALLY EXISTS in production. Treat it as the
--- baseline: rebuild from this file, then layer any new migrations on top.
--- Migrations dated before this snapshot are historical, not reproducible.
+-- This is the authoritative schema as it ACTUALLY EXISTS in production. The
+-- fresh-install path (infrastructure/playbooks/deploy.yml) loads this baseline
+-- first, then layers any NEWER *_up.sql migrations on top; the pg integration
+-- harness (engine/sim/repo/pg/integration_test.go) does the same. On 2026-06-19
+-- (LLM-43) the prior 2026-05-19 baseline plus its 24 post-baseline migrations
+-- were folded into this fresh dump and those migration files deleted, so this
+-- file alone now reproduces production.
 --
 -- Schema only -- no row data. Asset/NPC/catalog seed data is NOT included.
--- Regenerate by re-running the pg_dump command above against production.
+-- Regenerate by re-running the pg_dump command above against production, then
+-- delete the now-folded *_up.sql / *_down.sql files.
 -- ============================================================================
 
 --
 -- PostgreSQL database dump
 --
 
-\restrict apYxLrF54dxtMtQpYmbmeheAjBzKIAbxukvb6MyqlNTCQy1t7loAq4UHssxrm6t
+\restrict b8FeRKxG7OGNF1plKr1MguXZbgfTr1amgP9YtJij9e6eUJyGemQbPVKUsMFaKF1
 
 -- Dumped from database version 17.10 (Debian 17.10-0+deb13u1)
 -- Dumped by pg_dump version 17.10 (Debian 17.10-0+deb13u1)
@@ -111,45 +114,34 @@ CREATE TABLE public.actor (
     current_x double precision NOT NULL,
     current_y double precision NOT NULL,
     facing character varying(5) DEFAULT 'south'::character varying NOT NULL,
-    inside boolean DEFAULT false NOT NULL,
-    inside_structure_id uuid,
-    current_huddle_id uuid,
-    home_structure_id uuid,
+    inside_structure_id text,
+    current_huddle_id text,
+    home_structure_id text,
     coins integer DEFAULT 20 NOT NULL,
     llm_memory_agent character varying(100),
-    llm_memory_api_key character varying(255),
     role character varying(50),
-    work_structure_id uuid,
-    home_x double precision,
-    home_y double precision,
+    work_structure_id text,
     schedule_start_minute smallint,
     schedule_end_minute smallint,
-    lateness_window_minutes integer DEFAULT 0 NOT NULL,
-    last_shift_tick_at timestamp with time zone,
     social_tag character varying(64),
     social_start_minute smallint,
     social_end_minute smallint,
     social_last_boundary_at timestamp with time zone,
-    agent_override_until timestamp with time zone,
     last_agent_tick_at timestamp with time zone,
     login_username character varying(100),
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     last_seen_at timestamp with time zone DEFAULT now() NOT NULL,
     break_until timestamp with time zone,
-    next_self_tick_at timestamp without time zone,
-    next_self_tick_reason text,
     sleeping_until timestamp with time zone,
-    last_pc_input_at timestamp with time zone,
-    last_tiredness_recovery_at timestamp with time zone,
     inside_room_id bigint,
-    visitor_expires_at timestamp with time zone,
-    visitor_archetype character varying(50),
-    visitor_origin character varying(100),
-    visitor_disposition character varying(50),
-    last_pc_seen_at timestamp with time zone,
+    snapshot_gen bigint DEFAULT 0 NOT NULL,
+    move_attempt_counter bigint DEFAULT 0 NOT NULL,
+    sim_state character varying(32) DEFAULT 'idle'::character varying NOT NULL,
+    sim_state_entered_at timestamp with time zone DEFAULT now() NOT NULL,
+    admin boolean DEFAULT false NOT NULL,
+    move_destination jsonb,
     CONSTRAINT actor_driver_not_both CHECK ((NOT ((llm_memory_agent IS NOT NULL) AND (login_username IS NOT NULL)))),
     CONSTRAINT actor_facing_check CHECK (((facing)::text = ANY ((ARRAY['north'::character varying, 'south'::character varying, 'east'::character varying, 'west'::character varying])::text[]))),
-    CONSTRAINT actor_lateness_window_minutes_check CHECK (((lateness_window_minutes >= 0) AND (lateness_window_minutes <= 180))),
     CONSTRAINT actor_schedule_end_minute_check CHECK (((schedule_end_minute IS NULL) OR ((schedule_end_minute >= 0) AND (schedule_end_minute <= 1439)))),
     CONSTRAINT actor_schedule_start_minute_check CHECK (((schedule_start_minute IS NULL) OR ((schedule_start_minute >= 0) AND (schedule_start_minute <= 1439)))),
     CONSTRAINT actor_schedule_window_all_or_none CHECK ((((schedule_start_minute IS NULL) AND (schedule_end_minute IS NULL)) OR ((schedule_start_minute IS NOT NULL) AND (schedule_end_minute IS NOT NULL)))),
@@ -167,8 +159,21 @@ CREATE TABLE public.actor_attribute (
     actor_id uuid NOT NULL,
     slug character varying(64) NOT NULL,
     params jsonb DEFAULT '{}'::jsonb NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    snapshot_gen bigint DEFAULT 0 NOT NULL
 );
+
+
+--
+-- Name: actor_attribute_snapshot_gen_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.actor_attribute_snapshot_gen_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
 
 
 --
@@ -218,12 +223,25 @@ CREATE TABLE public.actor_dwell_credit (
     remaining_ticks integer,
     dwell_delta smallint NOT NULL,
     dwell_period_minutes integer NOT NULL,
+    snapshot_gen bigint DEFAULT 0 NOT NULL,
     CONSTRAINT actor_dwell_credit_dwell_delta_check CHECK ((dwell_delta < 0)),
     CONSTRAINT actor_dwell_credit_dwell_period_minutes_check CHECK ((dwell_period_minutes > 0)),
     CONSTRAINT actor_dwell_credit_remaining_matches_source CHECK (((((source)::text = 'item'::text) AND (remaining_ticks IS NOT NULL)) OR (((source)::text = 'object'::text) AND (remaining_ticks IS NULL)))),
     CONSTRAINT actor_dwell_credit_remaining_ticks_check CHECK (((remaining_ticks IS NULL) OR (remaining_ticks > 0))),
     CONSTRAINT actor_dwell_credit_source_check CHECK (((source)::text = ANY ((ARRAY['object'::character varying, 'item'::character varying])::text[])))
 );
+
+
+--
+-- Name: actor_dwell_credit_snapshot_gen_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.actor_dwell_credit_snapshot_gen_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
 
 
 --
@@ -246,8 +264,21 @@ CREATE TABLE public.actor_inventory (
     actor_id uuid NOT NULL,
     item_kind character varying(32) NOT NULL,
     quantity smallint NOT NULL,
+    snapshot_gen bigint DEFAULT 0 NOT NULL,
     CONSTRAINT actor_inventory_quantity_check CHECK ((quantity > 0))
 );
+
+
+--
+-- Name: actor_inventory_snapshot_gen_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.actor_inventory_snapshot_gen_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
 
 
 --
@@ -260,8 +291,21 @@ CREATE TABLE public.actor_narrative_state (
     evolving_summary text DEFAULT ''::text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    last_consolidated_at timestamp with time zone
+    last_consolidated_at timestamp with time zone,
+    snapshot_gen bigint DEFAULT 0 NOT NULL
 );
+
+
+--
+-- Name: actor_narrative_state_snapshot_gen_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.actor_narrative_state_snapshot_gen_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
 
 
 --
@@ -272,9 +316,22 @@ CREATE TABLE public.actor_need (
     actor_id uuid NOT NULL,
     key character varying(32) NOT NULL,
     value smallint DEFAULT 0 NOT NULL,
+    snapshot_gen bigint DEFAULT 0 NOT NULL,
     CONSTRAINT actor_need_key_check CHECK (((key)::text = ANY ((ARRAY['hunger'::character varying, 'thirst'::character varying, 'tiredness'::character varying])::text[]))),
     CONSTRAINT actor_need_value_check CHECK (((value >= 0) AND (value <= 24)))
 );
+
+
+--
+-- Name: actor_need_snapshot_gen_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.actor_need_snapshot_gen_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
 
 
 --
@@ -284,8 +341,21 @@ CREATE TABLE public.actor_need (
 CREATE TABLE public.actor_produce_state (
     actor_id uuid NOT NULL,
     item_kind character varying(32) NOT NULL,
-    last_produced_at timestamp with time zone
+    last_produced_at timestamp with time zone,
+    snapshot_gen bigint DEFAULT 0 NOT NULL
 );
+
+
+--
+-- Name: actor_produce_state_snapshot_gen_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.actor_produce_state_snapshot_gen_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
 
 
 --
@@ -302,8 +372,22 @@ CREATE TABLE public.actor_relationship (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     last_consolidated_at timestamp with time zone,
+    dropped_fact_count integer DEFAULT 0 NOT NULL,
+    snapshot_gen bigint DEFAULT 0 NOT NULL,
     CONSTRAINT actor_relationship_no_self CHECK ((actor_id <> other_actor_id))
 );
+
+
+--
+-- Name: actor_relationship_snapshot_gen_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.actor_relationship_snapshot_gen_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
 
 
 --
@@ -324,6 +408,18 @@ CREATE TABLE public.actor_restock_in_progress (
 
 
 --
+-- Name: actor_snapshot_gen_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.actor_snapshot_gen_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
 -- Name: agent_action_log; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -337,7 +433,7 @@ CREATE TABLE public.agent_action_log (
     result text NOT NULL,
     error text,
     speaker_name character varying(100) NOT NULL,
-    huddle_id uuid,
+    huddle_id text,
     CONSTRAINT agent_action_log_result_check CHECK ((result = ANY (ARRAY['ok'::text, 'rejected'::text, 'failed'::text, 'declined'::text, 'countered'::text]))),
     CONSTRAINT agent_action_log_source_check CHECK ((source = ANY (ARRAY['agent'::text, 'magistrate'::text, 'player'::text, 'engine'::text])))
 );
@@ -559,6 +655,43 @@ ALTER SEQUENCE public.gatherable_node_id_seq OWNED BY public.gatherable_node.id;
 
 
 --
+-- Name: huddle_member; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.huddle_member (
+    huddle_id text NOT NULL,
+    actor_id text NOT NULL,
+    snapshot_gen bigint DEFAULT 0 NOT NULL,
+    CONSTRAINT huddle_member_actor_id_nonempty CHECK ((actor_id <> ''::text)),
+    CONSTRAINT huddle_member_huddle_id_nonempty CHECK ((huddle_id <> ''::text))
+);
+
+
+--
+-- Name: huddle_member_snapshot_gen_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.huddle_member_snapshot_gen_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: huddle_snapshot_gen_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.huddle_snapshot_gen_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
 -- Name: item_kind; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -654,57 +787,39 @@ CREATE TABLE public.migrations_applied (
 
 
 --
+-- Name: narration_pool_expansion; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.narration_pool_expansion (
+    pool_key character varying(64) NOT NULL,
+    phrase text NOT NULL,
+    generated_by character varying(64) NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
 -- Name: npc_acquaintance; Type: TABLE; Schema: public; Owner: -
 --
 
 CREATE TABLE public.npc_acquaintance (
     actor_id uuid NOT NULL,
     other_name character varying(100) NOT NULL,
-    first_interacted_at timestamp with time zone DEFAULT now() NOT NULL
+    first_interacted_at timestamp with time zone DEFAULT now() NOT NULL,
+    snapshot_gen bigint DEFAULT 0 NOT NULL
 );
 
 
 --
--- Name: npc_errand_offer; Type: TABLE; Schema: public; Owner: -
+-- Name: npc_acquaintance_snapshot_gen_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
-CREATE TABLE public.npc_errand_offer (
-    id bigint NOT NULL,
-    requester_actor_id uuid NOT NULL,
-    target_pc_actor_id uuid,
-    fetch_item_kind character varying(32) NOT NULL,
-    fetch_qty integer DEFAULT 1 NOT NULL,
-    source_actor_id uuid,
-    source_structure_id uuid,
-    reward_coins integer NOT NULL,
-    state character varying(16) NOT NULL,
-    offered_at timestamp with time zone DEFAULT now() NOT NULL,
-    accepted_at timestamp with time zone,
-    completed_at timestamp with time zone,
-    expires_at timestamp with time zone,
-    CONSTRAINT npc_errand_offer_fetch_qty_check CHECK ((fetch_qty > 0)),
-    CONSTRAINT npc_errand_offer_reward_coins_check CHECK ((reward_coins > 0)),
-    CONSTRAINT npc_errand_offer_state_check CHECK (((state)::text = ANY ((ARRAY['offered'::character varying, 'accepted'::character varying, 'completed'::character varying, 'expired'::character varying, 'rejected'::character varying])::text[])))
-);
-
-
---
--- Name: npc_errand_offer_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public.npc_errand_offer_id_seq
+CREATE SEQUENCE public.npc_acquaintance_snapshot_gen_seq
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
     NO MAXVALUE
     CACHE 1;
-
-
---
--- Name: npc_errand_offer_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public.npc_errand_offer_id_seq OWNED BY public.npc_errand_offer.id;
 
 
 --
@@ -752,6 +867,8 @@ CREATE TABLE public.object_refresh (
     last_refresh_at timestamp with time zone,
     dwell_amount smallint,
     dwell_period_minutes integer,
+    snapshot_gen bigint DEFAULT 0 NOT NULL,
+    gather_item character varying(32),
     CONSTRAINT object_refresh_amount_negative CHECK ((amount < 0)),
     CONSTRAINT object_refresh_available_le_max CHECK (((available_quantity IS NULL) OR (available_quantity <= max_quantity))),
     CONSTRAINT object_refresh_dwell_amount_negative CHECK (((dwell_amount IS NULL) OR (dwell_amount < 0))),
@@ -766,15 +883,27 @@ CREATE TABLE public.object_refresh (
 
 
 --
+-- Name: object_refresh_snapshot_gen_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.object_refresh_snapshot_gen_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
 -- Name: pay_ledger; Type: TABLE; Schema: public; Owner: -
 --
 
 CREATE TABLE public.pay_ledger (
     id bigint NOT NULL,
-    huddle_id uuid,
+    huddle_id text,
     scene_id uuid,
-    buyer_id uuid NOT NULL,
-    seller_id uuid NOT NULL,
+    buyer_id text NOT NULL,
+    seller_id text NOT NULL,
     item_kind character varying(32),
     qty integer,
     offered_amount integer NOT NULL,
@@ -790,11 +919,12 @@ CREATE TABLE public.pay_ledger (
     ready_by date NOT NULL,
     delivered_on timestamp with time zone,
     fulfillment_status character varying(16) NOT NULL,
-    consumer_actor_ids uuid[],
+    consumer_actor_ids text[],
+    expires_at timestamp with time zone,
     CONSTRAINT pay_ledger_check CHECK ((((state)::text = 'pending'::text) = (resolved_at IS NULL))),
     CONSTRAINT pay_ledger_counter_amount_check CHECK (((counter_amount IS NULL) OR (counter_amount >= 0))),
     CONSTRAINT pay_ledger_depth_check CHECK ((depth >= 0)),
-    CONSTRAINT pay_ledger_fulfillment_status_check CHECK (((fulfillment_status)::text = ANY ((ARRAY['pending'::character varying, 'ready'::character varying, 'delivered'::character varying])::text[]))),
+    CONSTRAINT pay_ledger_fulfillment_status_check CHECK (((fulfillment_status)::text = ANY ((ARRAY['pending'::character varying, 'ready'::character varying, 'delivered'::character varying, 'expired'::character varying])::text[]))),
     CONSTRAINT pay_ledger_offered_amount_check CHECK ((offered_amount >= 0)),
     CONSTRAINT pay_ledger_qty_check CHECK (((qty IS NULL) OR (qty > 0))),
     CONSTRAINT pay_ledger_quoted_unit_amount_check CHECK (((quoted_unit_amount IS NULL) OR (quoted_unit_amount >= 0))),
@@ -843,7 +973,43 @@ CREATE TABLE public.room_access (
     granted_at timestamp with time zone DEFAULT now() NOT NULL,
     expires_at timestamp with time zone,
     kind public.room_kind NOT NULL,
-    active boolean DEFAULT true NOT NULL
+    active boolean DEFAULT true NOT NULL,
+    snapshot_gen bigint DEFAULT 0 NOT NULL
+);
+
+
+--
+-- Name: room_access_snapshot_gen_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.room_access_snapshot_gen_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: scene; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.scene (
+    id text NOT NULL,
+    origin_at timestamp with time zone NOT NULL,
+    origin_kind text NOT NULL,
+    bound_kind text NOT NULL,
+    bound_structure_id text,
+    bound_anchor_x integer,
+    bound_anchor_y integer,
+    bound_radius integer,
+    origin_position_x integer NOT NULL,
+    origin_position_y integer NOT NULL,
+    snapshot_gen bigint DEFAULT 0 NOT NULL,
+    CONSTRAINT scene_bound_shape_valid CHECK ((((bound_kind = 'structure'::text) AND (bound_structure_id IS NOT NULL) AND (bound_anchor_x IS NULL) AND (bound_anchor_y IS NULL) AND (bound_radius IS NULL)) OR ((bound_kind = 'area'::text) AND (bound_structure_id IS NULL) AND (bound_anchor_x IS NOT NULL) AND (bound_anchor_y IS NOT NULL) AND (bound_radius IS NOT NULL) AND (bound_radius >= 0)))),
+    CONSTRAINT scene_bound_structure_id_nonempty CHECK (((bound_structure_id IS NULL) OR (btrim(bound_structure_id) <> ''::text))),
+    CONSTRAINT scene_id_nonempty CHECK ((btrim(id) <> ''::text)),
+    CONSTRAINT scene_origin_kind_nonempty CHECK ((btrim(origin_kind) <> ''::text))
 );
 
 
@@ -852,11 +1018,40 @@ CREATE TABLE public.room_access (
 --
 
 CREATE TABLE public.scene_huddle (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    structure_id uuid NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    concluded_at timestamp with time zone
+    id text NOT NULL,
+    structure_id text,
+    started_at timestamp with time zone DEFAULT now() NOT NULL,
+    concluded_at timestamp with time zone,
+    snapshot_gen bigint DEFAULT 0 NOT NULL,
+    CONSTRAINT scene_huddle_id_format CHECK ((id ~ '^hud-[0-9a-f]{32}$'::text)),
+    CONSTRAINT scene_huddle_id_nonempty CHECK ((id <> ''::text)),
+    CONSTRAINT scene_huddle_structure_id_nonempty CHECK (((structure_id IS NULL) OR (structure_id <> ''::text)))
 );
+
+
+--
+-- Name: scene_huddle_ref; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.scene_huddle_ref (
+    scene_id text NOT NULL,
+    huddle_id text NOT NULL,
+    snapshot_gen bigint DEFAULT 0 NOT NULL,
+    CONSTRAINT scene_huddle_ref_huddle_id_nonempty CHECK ((btrim(huddle_id) <> ''::text)),
+    CONSTRAINT scene_huddle_ref_scene_id_nonempty CHECK ((btrim(scene_id) <> ''::text))
+);
+
+
+--
+-- Name: scene_huddle_ref_snapshot_gen_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.scene_huddle_ref_snapshot_gen_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
 
 
 --
@@ -864,13 +1059,25 @@ CREATE TABLE public.scene_huddle (
 --
 
 CREATE TABLE public.scene_quote (
-    huddle_id uuid NOT NULL,
+    huddle_id text NOT NULL,
     from_actor_id uuid NOT NULL,
     item_kind character varying(32) NOT NULL,
     unit_price integer NOT NULL,
     quoted_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT scene_quote_unit_price_check CHECK ((unit_price >= 0))
 );
+
+
+--
+-- Name: scene_snapshot_gen_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.scene_snapshot_gen_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
 
 
 --
@@ -882,42 +1089,6 @@ CREATE TABLE public.scenes (
     structure_id uuid,
     started_at timestamp with time zone DEFAULT now() NOT NULL
 );
-
-
---
--- Name: sealed_note; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.sealed_note (
-    id bigint NOT NULL,
-    author_actor_id uuid NOT NULL,
-    recipient_actor_id uuid NOT NULL,
-    courier_actor_id uuid,
-    body_text text NOT NULL,
-    sealed boolean DEFAULT true NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    delivered_at timestamp with time zone,
-    CONSTRAINT sealed_note_body_text_check CHECK ((length(TRIM(BOTH FROM body_text)) > 0))
-);
-
-
---
--- Name: sealed_note_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public.sealed_note_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: sealed_note_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public.sealed_note_id_seq OWNED BY public.sealed_note.id;
 
 
 --
@@ -933,16 +1104,59 @@ CREATE TABLE public.setting (
 
 
 --
+-- Name: structure; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.structure (
+    id text NOT NULL,
+    display_name text NOT NULL,
+    tags text[] DEFAULT '{}'::text[] NOT NULL,
+    leads_to_realm text DEFAULT ''::text NOT NULL,
+    snapshot_gen bigint DEFAULT 0 NOT NULL,
+    CONSTRAINT structure_display_name_nonempty CHECK ((btrim(display_name) <> ''::text)),
+    CONSTRAINT structure_id_nonempty CHECK ((btrim(id) <> ''::text))
+);
+
+
+--
 -- Name: structure_room; Type: TABLE; Schema: public; Owner: -
 --
 
 CREATE TABLE public.structure_room (
     id bigint NOT NULL,
-    structure_id uuid NOT NULL,
+    structure_id text NOT NULL,
     name text NOT NULL,
     kind public.room_kind NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    snapshot_gen bigint DEFAULT 0 NOT NULL,
+    CONSTRAINT structure_room_id_positive CHECK ((id > 0)),
+    CONSTRAINT structure_room_name_nonempty CHECK ((btrim(name) <> ''::text)),
+    CONSTRAINT structure_room_structure_id_nonempty CHECK ((btrim(structure_id) <> ''::text))
 );
+
+
+--
+-- Name: structure_room_snapshot_gen_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.structure_room_snapshot_gen_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: structure_snapshot_gen_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.structure_snapshot_gen_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
 
 
 --
@@ -1182,22 +1396,27 @@ CREATE TABLE public.village_object (
     asset_id uuid,
     loiter_offset_x integer,
     loiter_offset_y integer,
-    entry_policy text DEFAULT 'none'::text NOT NULL,
-    content_text text,
-    content_posted_at timestamp without time zone,
+    entry_policy text DEFAULT 'closed'::text NOT NULL,
     content_generation integer DEFAULT 0 NOT NULL,
-    CONSTRAINT village_object_entry_policy_check CHECK ((entry_policy = ANY (ARRAY['none'::text, 'owner'::text, 'anyone'::text])))
+    snapshot_gen bigint DEFAULT 0 NOT NULL,
+    available_quantity integer DEFAULT 0 NOT NULL,
+    tags text[] DEFAULT '{}'::text[] NOT NULL,
+    owner_actor_id text,
+    CONSTRAINT village_object_entry_policy_check CHECK ((entry_policy = ANY (ARRAY[''::text, 'open'::text, 'owner-only'::text, 'closed'::text]))),
+    CONSTRAINT village_object_tags_no_nulls CHECK ((array_position(tags, NULL::text) IS NULL))
 );
 
 
 --
--- Name: village_object_tag; Type: TABLE; Schema: public; Owner: -
+-- Name: village_object_snapshot_gen_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
-CREATE TABLE public.village_object_tag (
-    object_id uuid NOT NULL,
-    tag character varying(64) NOT NULL
-);
+CREATE SEQUENCE public.village_object_snapshot_gen_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
 
 
 --
@@ -1281,16 +1500,19 @@ ALTER SEQUENCE public.world_events_id_seq OWNED BY public.world_events.id;
 
 
 --
--- Name: world_phase; Type: TABLE; Schema: public; Owner: -
+-- Name: world_state; Type: TABLE; Schema: public; Owner: -
 --
 
-CREATE TABLE public.world_phase (
+CREATE TABLE public.world_state (
     id integer DEFAULT 1 NOT NULL,
     phase character varying(20) NOT NULL,
     last_transition_at timestamp with time zone DEFAULT now() NOT NULL,
     last_rotation_at timestamp with time zone DEFAULT now() NOT NULL,
+    weather text DEFAULT ''::text NOT NULL,
+    atmosphere text DEFAULT ''::text NOT NULL,
+    last_needs_tick_at timestamp with time zone,
     CONSTRAINT world_phase_phase_check CHECK (((phase)::text = ANY ((ARRAY['day'::character varying, 'night'::character varying])::text[]))),
-    CONSTRAINT world_phase_singleton CHECK ((id = 1))
+    CONSTRAINT world_state_singleton CHECK ((id = 1))
 );
 
 
@@ -1503,24 +1725,10 @@ ALTER TABLE ONLY public.gatherable_node ALTER COLUMN id SET DEFAULT nextval('pub
 
 
 --
--- Name: npc_errand_offer id; Type: DEFAULT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.npc_errand_offer ALTER COLUMN id SET DEFAULT nextval('public.npc_errand_offer_id_seq'::regclass);
-
-
---
 -- Name: pay_ledger id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.pay_ledger ALTER COLUMN id SET DEFAULT nextval('public.pay_ledger_id_seq'::regclass);
-
-
---
--- Name: sealed_note id; Type: DEFAULT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.sealed_note ALTER COLUMN id SET DEFAULT nextval('public.sealed_note_id_seq'::regclass);
 
 
 --
@@ -1758,6 +1966,14 @@ ALTER TABLE ONLY public.gatherable_node
 
 
 --
+-- Name: huddle_member huddle_member_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.huddle_member
+    ADD CONSTRAINT huddle_member_pkey PRIMARY KEY (huddle_id, actor_id);
+
+
+--
 -- Name: item_kind item_kind_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1798,19 +2014,19 @@ ALTER TABLE ONLY public.migrations_applied
 
 
 --
+-- Name: narration_pool_expansion narration_pool_expansion_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.narration_pool_expansion
+    ADD CONSTRAINT narration_pool_expansion_pkey PRIMARY KEY (pool_key, phrase);
+
+
+--
 -- Name: npc_acquaintance npc_acquaintance_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.npc_acquaintance
     ADD CONSTRAINT npc_acquaintance_pkey PRIMARY KEY (actor_id, other_name);
-
-
---
--- Name: npc_errand_offer npc_errand_offer_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.npc_errand_offer
-    ADD CONSTRAINT npc_errand_offer_pkey PRIMARY KEY (id);
 
 
 --
@@ -1862,6 +2078,22 @@ ALTER TABLE ONLY public.scene_huddle
 
 
 --
+-- Name: scene_huddle_ref scene_huddle_ref_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scene_huddle_ref
+    ADD CONSTRAINT scene_huddle_ref_pkey PRIMARY KEY (scene_id, huddle_id);
+
+
+--
+-- Name: scene scene_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scene
+    ADD CONSTRAINT scene_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: scene_quote scene_quote_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1878,19 +2110,19 @@ ALTER TABLE ONLY public.scenes
 
 
 --
--- Name: sealed_note sealed_note_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.sealed_note
-    ADD CONSTRAINT sealed_note_pkey PRIMARY KEY (id);
-
-
---
 -- Name: setting setting_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.setting
     ADD CONSTRAINT setting_pkey PRIMARY KEY (key);
+
+
+--
+-- Name: structure structure_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.structure
+    ADD CONSTRAINT structure_pkey PRIMARY KEY (id);
 
 
 --
@@ -1990,14 +2222,6 @@ ALTER TABLE ONLY public.village_object
 
 
 --
--- Name: village_object_tag village_object_tag_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.village_object_tag
-    ADD CONSTRAINT village_object_tag_pkey PRIMARY KEY (object_id, tag);
-
-
---
 -- Name: village_terrain village_terrain_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2022,10 +2246,10 @@ ALTER TABLE ONLY public.world_events
 
 
 --
--- Name: world_phase world_phase_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: world_state world_phase_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.world_phase
+ALTER TABLE ONLY public.world_state
     ADD CONSTRAINT world_phase_pkey PRIMARY KEY (id);
 
 
@@ -2230,6 +2454,13 @@ CREATE INDEX idx_actor_attribute_slug ON public.actor_attribute USING btree (slu
 
 
 --
+-- Name: idx_actor_attribute_snapshot_gen; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_actor_attribute_snapshot_gen ON public.actor_attribute USING btree (snapshot_gen);
+
+
+--
 -- Name: idx_actor_delivery_in_progress_customer_structure; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2241,6 +2472,13 @@ CREATE INDEX idx_actor_delivery_in_progress_customer_structure ON public.actor_d
 --
 
 CREATE UNIQUE INDEX idx_actor_delivery_in_progress_pay_ledger ON public.actor_delivery_in_progress USING btree (pay_ledger_id);
+
+
+--
+-- Name: idx_actor_dwell_credit_snapshot_gen; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_actor_dwell_credit_snapshot_gen ON public.actor_dwell_credit USING btree (snapshot_gen);
 
 
 --
@@ -2258,6 +2496,13 @@ CREATE INDEX idx_actor_inside ON public.actor USING btree (inside_structure_id) 
 
 
 --
+-- Name: idx_actor_inventory_snapshot_gen; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_actor_inventory_snapshot_gen ON public.actor_inventory USING btree (snapshot_gen);
+
+
+--
 -- Name: idx_actor_llm_memory_agent; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2272,10 +2517,24 @@ CREATE INDEX idx_actor_narrative_state_consolidation ON public.actor_narrative_s
 
 
 --
--- Name: idx_actor_next_self_tick_at; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_actor_narrative_state_snapshot_gen; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX idx_actor_next_self_tick_at ON public.actor USING btree (next_self_tick_at) WHERE (next_self_tick_at IS NOT NULL);
+CREATE INDEX idx_actor_narrative_state_snapshot_gen ON public.actor_narrative_state USING btree (snapshot_gen);
+
+
+--
+-- Name: idx_actor_need_snapshot_gen; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_actor_need_snapshot_gen ON public.actor_need USING btree (snapshot_gen);
+
+
+--
+-- Name: idx_actor_produce_state_snapshot_gen; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_actor_produce_state_snapshot_gen ON public.actor_produce_state USING btree (snapshot_gen);
 
 
 --
@@ -2293,6 +2552,13 @@ CREATE INDEX idx_actor_relationship_other ON public.actor_relationship USING btr
 
 
 --
+-- Name: idx_actor_relationship_snapshot_gen; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_actor_relationship_snapshot_gen ON public.actor_relationship USING btree (snapshot_gen);
+
+
+--
 -- Name: idx_actor_restock_in_progress_seller_structure; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2300,10 +2566,10 @@ CREATE INDEX idx_actor_restock_in_progress_seller_structure ON public.actor_rest
 
 
 --
--- Name: idx_actor_visitor_expires; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_actor_snapshot_gen; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX idx_actor_visitor_expires ON public.actor USING btree (visitor_expires_at) WHERE (visitor_expires_at IS NOT NULL);
+CREATE INDEX idx_actor_snapshot_gen ON public.actor USING btree (snapshot_gen);
 
 
 --
@@ -2370,10 +2636,31 @@ CREATE INDEX idx_eb96659f624b39d ON public.zchat_message USING btree (sender_id)
 
 
 --
+-- Name: idx_huddle_member_snapshot_gen; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_huddle_member_snapshot_gen ON public.huddle_member USING btree (snapshot_gen);
+
+
+--
 -- Name: idx_npc_acquaintance_other; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_npc_acquaintance_other ON public.npc_acquaintance USING btree (other_name);
+
+
+--
+-- Name: idx_npc_acquaintance_snapshot_gen; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_npc_acquaintance_snapshot_gen ON public.npc_acquaintance USING btree (snapshot_gen);
+
+
+--
+-- Name: idx_object_refresh_snapshot_gen; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_object_refresh_snapshot_gen ON public.object_refresh USING btree (snapshot_gen);
 
 
 --
@@ -2384,6 +2671,13 @@ CREATE UNIQUE INDEX idx_pay_ledger_pending_order_once ON public.pay_ledger USING
 
 
 --
+-- Name: idx_room_access_snapshot_gen; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_room_access_snapshot_gen ON public.room_access USING btree (snapshot_gen);
+
+
+--
 -- Name: idx_scene_huddle_active_structure; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2391,10 +2685,45 @@ CREATE INDEX idx_scene_huddle_active_structure ON public.scene_huddle USING btre
 
 
 --
+-- Name: idx_scene_huddle_ref_snapshot_gen; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_scene_huddle_ref_snapshot_gen ON public.scene_huddle_ref USING btree (snapshot_gen);
+
+
+--
+-- Name: idx_scene_huddle_snapshot_gen; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_scene_huddle_snapshot_gen ON public.scene_huddle USING btree (snapshot_gen);
+
+
+--
+-- Name: idx_scene_snapshot_gen; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_scene_snapshot_gen ON public.scene USING btree (snapshot_gen);
+
+
+--
 -- Name: idx_setting_public; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_setting_public ON public.setting USING btree (is_public);
+
+
+--
+-- Name: idx_structure_room_snapshot_gen; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_structure_room_snapshot_gen ON public.structure_room USING btree (snapshot_gen);
+
+
+--
+-- Name: idx_structure_snapshot_gen; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_structure_snapshot_gen ON public.structure USING btree (snapshot_gen);
 
 
 --
@@ -2447,10 +2776,10 @@ CREATE INDEX idx_village_object_owner ON public.village_object USING btree (owne
 
 
 --
--- Name: idx_village_object_tag_tag; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_village_object_snapshot_gen; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX idx_village_object_tag_tag ON public.village_object_tag USING btree (tag);
+CREATE INDEX idx_village_object_snapshot_gen ON public.village_object USING btree (snapshot_gen);
 
 
 --
@@ -2566,13 +2895,6 @@ CREATE INDEX ix_gatherable_node_xy ON public.gatherable_node USING btree (x, y);
 
 
 --
--- Name: ix_npc_errand_offer_target_active; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX ix_npc_errand_offer_target_active ON public.npc_errand_offer USING btree (target_pc_actor_id) WHERE ((state)::text = ANY ((ARRAY['offered'::character varying, 'accepted'::character varying])::text[]));
-
-
---
 -- Name: ix_pay_ledger_buyer_seller; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2601,6 +2923,13 @@ CREATE INDEX ix_pay_ledger_scene_at ON public.pay_ledger USING btree (scene_id, 
 
 
 --
+-- Name: ix_pay_ledger_v2_in_flight; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX ix_pay_ledger_v2_in_flight ON public.pay_ledger USING btree (id) WHERE (((state)::text = 'accepted'::text) AND ((fulfillment_status)::text = ANY ((ARRAY['ready'::character varying, 'pending'::character varying])::text[])));
+
+
+--
 -- Name: ix_room_access_actor; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2619,20 +2948,6 @@ CREATE INDEX ix_scene_quote_huddle ON public.scene_quote USING btree (huddle_id)
 --
 
 CREATE INDEX ix_scenes_structure ON public.scenes USING btree (structure_id) WHERE (structure_id IS NOT NULL);
-
-
---
--- Name: ix_sealed_note_courier; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX ix_sealed_note_courier ON public.sealed_note USING btree (courier_actor_id) WHERE (sealed = true);
-
-
---
--- Name: ix_sealed_note_delivered; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX ix_sealed_note_delivered ON public.sealed_note USING btree (recipient_actor_id, delivered_at DESC) WHERE (sealed = false);
 
 
 --
@@ -2720,6 +3035,13 @@ CREATE UNIQUE INDEX uniq_d95ab405a76ed395 ON public.user_profile USING btree (us
 
 
 --
+-- Name: uniq_huddle_member_actor; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uniq_huddle_member_actor ON public.huddle_member USING btree (actor_id);
+
+
+--
 -- Name: ux_room_access_one_private_active; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2802,14 +3124,6 @@ ALTER TABLE ONLY public.actor_buy_state
 
 
 --
--- Name: actor actor_current_huddle_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.actor
-    ADD CONSTRAINT actor_current_huddle_id_fkey FOREIGN KEY (current_huddle_id) REFERENCES public.scene_huddle(id) ON DELETE SET NULL;
-
-
---
 -- Name: actor_delivery_in_progress actor_delivery_in_progress_actor_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2871,30 +3185,6 @@ ALTER TABLE ONLY public.actor_dwell_credit
 
 ALTER TABLE ONLY public.actor_dwell_credit
     ADD CONSTRAINT actor_dwell_credit_object_id_fkey FOREIGN KEY (object_id) REFERENCES public.village_object(id) ON DELETE CASCADE;
-
-
---
--- Name: actor actor_home_structure_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.actor
-    ADD CONSTRAINT actor_home_structure_id_fkey FOREIGN KEY (home_structure_id) REFERENCES public.village_object(id) ON DELETE SET NULL;
-
-
---
--- Name: actor actor_inside_structure_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.actor
-    ADD CONSTRAINT actor_inside_structure_id_fkey FOREIGN KEY (inside_structure_id) REFERENCES public.village_object(id) ON DELETE SET NULL;
-
-
---
--- Name: actor actor_inside_subspace_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.actor
-    ADD CONSTRAINT actor_inside_subspace_id_fkey FOREIGN KEY (inside_room_id) REFERENCES public.structure_room(id);
 
 
 --
@@ -3018,27 +3308,11 @@ ALTER TABLE ONLY public.actor
 
 
 --
--- Name: actor actor_work_structure_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.actor
-    ADD CONSTRAINT actor_work_structure_id_fkey FOREIGN KEY (work_structure_id) REFERENCES public.village_object(id) ON DELETE SET NULL;
-
-
---
 -- Name: agent_action_log agent_action_log_actor_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.agent_action_log
     ADD CONSTRAINT agent_action_log_actor_id_fkey FOREIGN KEY (actor_id) REFERENCES public.actor(id) ON DELETE CASCADE;
-
-
---
--- Name: agent_action_log agent_action_log_huddle_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.agent_action_log
-    ADD CONSTRAINT agent_action_log_huddle_id_fkey FOREIGN KEY (huddle_id) REFERENCES public.scene_huddle(id) ON DELETE SET NULL;
 
 
 --
@@ -3226,6 +3500,14 @@ ALTER TABLE ONLY public.gatherable_node
 
 
 --
+-- Name: huddle_member huddle_member_huddle_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.huddle_member
+    ADD CONSTRAINT huddle_member_huddle_id_fkey FOREIGN KEY (huddle_id) REFERENCES public.scene_huddle(id) ON DELETE CASCADE;
+
+
+--
 -- Name: item_recipe item_recipe_output_item_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3247,46 +3529,6 @@ ALTER TABLE ONLY public.item_satisfies
 
 ALTER TABLE ONLY public.npc_acquaintance
     ADD CONSTRAINT npc_acquaintance_actor_id_fkey FOREIGN KEY (actor_id) REFERENCES public.actor(id) ON DELETE CASCADE;
-
-
---
--- Name: npc_errand_offer npc_errand_offer_fetch_item_kind_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.npc_errand_offer
-    ADD CONSTRAINT npc_errand_offer_fetch_item_kind_fkey FOREIGN KEY (fetch_item_kind) REFERENCES public.item_kind(name) ON UPDATE CASCADE;
-
-
---
--- Name: npc_errand_offer npc_errand_offer_requester_actor_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.npc_errand_offer
-    ADD CONSTRAINT npc_errand_offer_requester_actor_id_fkey FOREIGN KEY (requester_actor_id) REFERENCES public.actor(id) ON DELETE CASCADE;
-
-
---
--- Name: npc_errand_offer npc_errand_offer_source_actor_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.npc_errand_offer
-    ADD CONSTRAINT npc_errand_offer_source_actor_id_fkey FOREIGN KEY (source_actor_id) REFERENCES public.actor(id) ON DELETE SET NULL;
-
-
---
--- Name: npc_errand_offer npc_errand_offer_source_structure_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.npc_errand_offer
-    ADD CONSTRAINT npc_errand_offer_source_structure_id_fkey FOREIGN KEY (source_structure_id) REFERENCES public.village_object(id) ON DELETE SET NULL;
-
-
---
--- Name: npc_errand_offer npc_errand_offer_target_pc_actor_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.npc_errand_offer
-    ADD CONSTRAINT npc_errand_offer_target_pc_actor_id_fkey FOREIGN KEY (target_pc_actor_id) REFERENCES public.actor(id) ON DELETE SET NULL;
 
 
 --
@@ -3322,22 +3564,6 @@ ALTER TABLE ONLY public.object_refresh
 
 
 --
--- Name: pay_ledger pay_ledger_buyer_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.pay_ledger
-    ADD CONSTRAINT pay_ledger_buyer_id_fkey FOREIGN KEY (buyer_id) REFERENCES public.actor(id) ON DELETE CASCADE;
-
-
---
--- Name: pay_ledger pay_ledger_huddle_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.pay_ledger
-    ADD CONSTRAINT pay_ledger_huddle_id_fkey FOREIGN KEY (huddle_id) REFERENCES public.scene_huddle(id) ON DELETE SET NULL;
-
-
---
 -- Name: pay_ledger pay_ledger_item_kind_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3354,19 +3580,11 @@ ALTER TABLE ONLY public.pay_ledger
 
 
 --
--- Name: pay_ledger pay_ledger_seller_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: scene_huddle_ref scene_huddle_ref_scene_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.pay_ledger
-    ADD CONSTRAINT pay_ledger_seller_id_fkey FOREIGN KEY (seller_id) REFERENCES public.actor(id) ON DELETE CASCADE;
-
-
---
--- Name: scene_huddle scene_huddle_structure_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.scene_huddle
-    ADD CONSTRAINT scene_huddle_structure_id_fkey FOREIGN KEY (structure_id) REFERENCES public.village_object(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.scene_huddle_ref
+    ADD CONSTRAINT scene_huddle_ref_scene_id_fkey FOREIGN KEY (scene_id) REFERENCES public.scene(id) ON DELETE CASCADE;
 
 
 --
@@ -3375,14 +3593,6 @@ ALTER TABLE ONLY public.scene_huddle
 
 ALTER TABLE ONLY public.scene_quote
     ADD CONSTRAINT scene_quote_from_actor_id_fkey FOREIGN KEY (from_actor_id) REFERENCES public.actor(id) ON DELETE CASCADE;
-
-
---
--- Name: scene_quote scene_quote_huddle_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.scene_quote
-    ADD CONSTRAINT scene_quote_huddle_id_fkey FOREIGN KEY (huddle_id) REFERENCES public.scene_huddle(id) ON DELETE CASCADE;
 
 
 --
@@ -3402,35 +3612,11 @@ ALTER TABLE ONLY public.scenes
 
 
 --
--- Name: sealed_note sealed_note_author_actor_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.sealed_note
-    ADD CONSTRAINT sealed_note_author_actor_id_fkey FOREIGN KEY (author_actor_id) REFERENCES public.actor(id) ON DELETE CASCADE;
-
-
---
--- Name: sealed_note sealed_note_courier_actor_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.sealed_note
-    ADD CONSTRAINT sealed_note_courier_actor_id_fkey FOREIGN KEY (courier_actor_id) REFERENCES public.actor(id) ON DELETE SET NULL;
-
-
---
--- Name: sealed_note sealed_note_recipient_actor_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.sealed_note
-    ADD CONSTRAINT sealed_note_recipient_actor_id_fkey FOREIGN KEY (recipient_actor_id) REFERENCES public.actor(id) ON DELETE CASCADE;
-
-
---
--- Name: structure_room structure_subspace_structure_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: structure_room structure_room_structure_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.structure_room
-    ADD CONSTRAINT structure_subspace_structure_id_fkey FOREIGN KEY (structure_id) REFERENCES public.village_object(id) ON DELETE CASCADE;
+    ADD CONSTRAINT structure_room_structure_id_fkey FOREIGN KEY (structure_id) REFERENCES public.structure(id) ON DELETE CASCADE;
 
 
 --
@@ -3526,20 +3712,12 @@ ALTER TABLE ONLY public.village_gossip
 --
 
 ALTER TABLE ONLY public.village_object
-    ADD CONSTRAINT village_object_attached_to_fkey FOREIGN KEY (attached_to) REFERENCES public.village_object(id) ON DELETE CASCADE;
-
-
---
--- Name: village_object_tag village_object_tag_object_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.village_object_tag
-    ADD CONSTRAINT village_object_tag_object_id_fkey FOREIGN KEY (object_id) REFERENCES public.village_object(id) ON DELETE CASCADE;
+    ADD CONSTRAINT village_object_attached_to_fkey FOREIGN KEY (attached_to) REFERENCES public.village_object(id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
 
 
 --
 -- PostgreSQL database dump complete
 --
 
-\unrestrict apYxLrF54dxtMtQpYmbmeheAjBzKIAbxukvb6MyqlNTCQy1t7loAq4UHssxrm6t
+\unrestrict b8FeRKxG7OGNF1plKr1MguXZbgfTr1amgP9YtJij9e6eUJyGemQbPVKUsMFaKF1
 

@@ -314,9 +314,12 @@ func applyAllMigrations(ctx context.Context, pool *pgxpool.Pool) error {
 	return nil
 }
 
-// upMigrations returns the sorted list of *_up.sql filenames in dir.
-// Fails loudly if none are found (a wrong migrations dir would otherwise
-// silently produce an empty schema and confusing downstream failures).
+// upMigrations returns the sorted list of *_up.sql filenames in dir — empty
+// when the baseline has folded them all in (after a re-snapshot the migration
+// files are deleted and schema.sql alone is the whole schema, LLM-43). The
+// wrong-dir guard lives in applyAllMigrations' schema.sql read, which fails
+// loudly if the dir is wrong or the baseline is missing, so an empty list here
+// no longer needs to be treated as an error.
 func upMigrations(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -327,9 +330,6 @@ func upMigrations(dir string) ([]string, error) {
 		if !e.IsDir() && strings.HasSuffix(e.Name(), "_up.sql") {
 			ups = append(ups, e.Name())
 		}
-	}
-	if len(ups) == 0 {
-		return nil, fmt.Errorf("no *_up.sql migrations found in %s", dir)
 	}
 	sort.Strings(ups)
 	return ups, nil
