@@ -17,16 +17,23 @@ import (
 //     w.Actors for the soonest active ledger grant in the renewal window —
 //     no SQL CTE, no location gate (v1 gated on "physically inside the inn",
 //     a pay_ledger-era heuristic; in v2 holding an active grant IS being a
-//     lodger, and PCs aren't in the engine yet).
+//     lodger). The sweep is gated to PCs (LLM-37): only a human player's grant
+//     auto-renews. An NPC's grant lapses at checkout and relies on the keeper-
+//     LLM renewal negotiation (or the NPC finds another bed) — Ezekiel Crane is
+//     the live NPC lapse-path case.
 //   - The renewal is an in-place extension of that grant's ExpiresAt plus a
 //     direct coin transfer (lodger -> keeper), exactly how pay_commands.go /
 //     pay_with_item_commands.go move coins.
-//   - The audit is an ActionLog entry (ActionTypePaid), NOT a fabricated
+//   - The audit is an ActionLog row (ActionTypePaid) written to BOTH the in-
+//     memory ring (umbilical /actions + PC talk panel) and the durable
+//     agent_action_log sink (AppendActionLogDurable, LLM-37) — NOT a fabricated
 //     delivered pay_ledger row. World.PayLedger models buyer-initiated pay
 //     OFFERS (offer -> accept -> deliver); an engine-auto rebook is not an
 //     offer, so it stays off that substrate and uses the action-log audit
-//     funnel instead. (ZBBS-HOME-296 §5 predates this v2 pivot; cleared with
-//     Jeff 2026-05-23.)
+//     funnel instead. The durable row matters because the in-memory ring is
+//     wiped each boot, so before LLM-37 a renewal across a restart left no
+//     visible record at all. (ZBBS-HOME-296 §5 predates this v2 pivot; cleared
+//     with Jeff 2026-05-23.)
 //
 // The whole sweep runs as one Command on the world goroutine, so it's
 // atomic and naturally consistent — no cross-command race, no partial debit.
@@ -93,6 +100,13 @@ func RebookLodgersDue(now time.Time) Command {
 				if lodger == nil {
 					continue
 				}
+				if lodger.Kind != KindPC {
+					// Only PCs auto-rebook (LLM-37). An NPC's grant lapses at
+					// checkout and relies on the keeper-LLM renewal negotiation
+					// (or the NPC finds another bed) — the engine no longer
+					// silently keeps NPC lodgers housed.
+					continue
+				}
 				grant := soonestActiveLedgerGrant(lodger, now)
 				if grant == nil {
 					continue
@@ -143,19 +157,63 @@ func RebookLodgersDue(now time.Time) Command {
 				keeper.Coins += nightly
 				grant.ExpiresAt = &newExpires
 
-				structLabel := structureLabel(w, room.StructureID)
+				// Fall back to the id for the durable row's speaker_name and
+				// recipient so the persisted audit never carries a blank — mirrors
+				// actorDisplayName on the pay path. The lean ring keeps the raw
+				// keeper DisplayName, so a nameless keeper degrades to
+				// renderActionLogEntry's counterparty-less phrasing (matching
+				// actorDisplayNameOrEmpty); in practice a keeper always has a name.
+				speakerName := lodger.DisplayName
+				if speakerName == "" {
+					speakerName = string(lodgerID)
+				}
+				keeperName := keeper.DisplayName
+				if keeperName == "" {
+					keeperName = string(keeperID)
+				}
+				const lodgingForText = "a night's lodging"
+
+				// Lean in-memory ring entry (umbilical /actions + PC talk panel).
+				// CounterpartyName + Amount let renderActionLogEntry narrate it as
+				// "<lodger> pays <keeper> N coins for a night's lodging" rather
+				// than a bare "makes a payment"; Text is the short for-phrase,
+				// mirroring how a normal pay sets ForText (cascade/action_log.go).
 				if _, err := AppendActionLogEntry(ActionLogEntry{
+					ActorID:          lodgerID,
+					OccurredAt:       now,
+					ActionType:       ActionTypePaid,
+					Text:             lodgingForText,
+					HuddleID:         lodger.CurrentHuddleID,
+					CounterpartyName: keeper.DisplayName,
+					Amount:           nightly,
+				}).Fn(w); err != nil {
+					// Append failed (empty ActorID / zero time — caller bug). The
+					// coin transfer + extension already happened; log loudly rather
+					// than roll back, so the lodger stays housed.
+					log.Printf("sim/lodger_rebook: action-log append failed for lodger %q: %v", lodgerID, err)
+				}
+
+				// Durable mirror to agent_action_log (LLM-37). The in-memory ring
+				// above is wiped every boot, so without this the renewal left no
+				// record a player/operator could see after a restart — coins moved
+				// silently. Same shape as handlePaidActionLog's durable row. Source
+				// is "engine" (not player/agent): the engine auto-charged this, so
+				// it stays distinguishable from a real player pay in operator reads.
+				// A PC carries no llm_memory_agent, so this row is audit-only —
+				// never pulled into NPC day-note distillation.
+				w.AppendActionLogDurable(DurableActionLogRow{
 					ActorID:    lodgerID,
 					OccurredAt: now,
 					ActionType: ActionTypePaid,
-					Text: fmt.Sprintf("Lodging at %s renewed with %s for %d coins; room paid through %s.",
-						structLabel, keeper.DisplayName, nightly, newExpires.In(loc).Format("Mon 15:04")),
-				}).Fn(w); err != nil {
-					// Audit append failed (empty ActorID / zero time — caller
-					// bug). The coin transfer + extension already happened; log
-					// loudly rather than roll back, so the lodger stays housed.
-					log.Printf("sim/lodger_rebook: action-log append failed for lodger %q: %v", lodgerID, err)
-				}
+					Payload: map[string]any{
+						"recipient": keeperName,
+						"amount":    nightly,
+						"for":       lodgingForText,
+					},
+					SpeakerName: speakerName,
+					HuddleID:    lodger.CurrentHuddleID,
+					Source:      "engine",
+				})
 
 				result.Renewals = append(result.Renewals, RebookLodgerRecord{
 					LodgerID:     lodgerID,
@@ -228,12 +286,4 @@ func keeperForStructure(w *World, structureID StructureID) (ActorID, *Actor) {
 		}
 	}
 	return bestID, best
-}
-
-// structureLabel returns the structure's display name, or a generic fallback.
-func structureLabel(w *World, structureID StructureID) string {
-	if s, ok := w.Structures[structureID]; ok && s.DisplayName != "" {
-		return s.DisplayName
-	}
-	return "the inn"
 }

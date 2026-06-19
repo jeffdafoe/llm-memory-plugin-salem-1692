@@ -1,6 +1,7 @@
 package sim
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -35,6 +36,7 @@ func rebookLodger(id ActorID, coins int, roomID RoomID, expiresAt time.Time) *Ac
 	exp := expiresAt
 	return &Actor{
 		ID:    id,
+		Kind:  KindPC, // only PCs auto-rebook (LLM-37)
 		Coins: coins,
 		RoomAccess: map[RoomAccessKey]*RoomAccess{
 			{RoomID: roomID, Source: AccessSourceLedger}: {
@@ -184,8 +186,11 @@ func TestRebook_NilActorSkipped(t *testing.T) {
 }
 
 func TestRebook_KeeperNotChargedAsOwnLodger(t *testing.T) {
-	// The keeper holds a ledger grant for a room in their own structure.
+	// The keeper holds a ledger grant for a room in their own structure. Mark the
+	// keeper a PC so it clears the LLM-37 kind gate — this keeps the self-keeper
+	// guard (keeperID == lodgerID) the reason it's skipped, not the kind gate.
 	keeper := rebookKeeper("hannah")
+	keeper.Kind = KindPC
 	keeper.Coins = 100
 	exp := rebookNow.Add(3 * time.Hour)
 	keeper.RoomAccess = map[RoomAccessKey]*RoomAccess{
@@ -197,6 +202,76 @@ func TestRebook_KeeperNotChargedAsOwnLodger(t *testing.T) {
 	if keeper.Coins != 100 || len(res.Renewals) != 0 || len(w.ActionLog) != 0 {
 		t.Errorf("keeper must not be auto-rebooked as their own lodger: coins=%d renewals=%d log=%d",
 			keeper.Coins, len(res.Renewals), len(w.ActionLog))
+	}
+}
+
+func TestRebook_NPCLodgerNotRenewed(t *testing.T) {
+	// An NPC lodger in the renewal window with coins to spare must NOT be
+	// auto-rebooked (LLM-37) — its grant lapses and relies on the keeper-LLM
+	// renewal path. Ezekiel Crane is the live case.
+	lodger := rebookLodger("ezekiel", 100, 2, rebookNow.Add(3*time.Hour))
+	lodger.Kind = KindNPCStateful
+	keeper := rebookKeeper("hannah")
+	w := rebookTestWorld(28, 11, lodger, keeper)
+
+	res := runRebook(t, w)
+
+	if lodger.Coins != 100 || keeper.Coins != 0 || len(res.Renewals) != 0 || len(w.ActionLog) != 0 {
+		t.Errorf("NPC lodger must not auto-rebook: lodger=%d keeper=%d renewals=%d log=%d",
+			lodger.Coins, keeper.Coins, len(res.Renewals), len(w.ActionLog))
+	}
+}
+
+// recordingActionLogSink captures durable rows so a test can assert the rebook
+// wrote a visible audit record (the production sink is async PG; this is sync).
+type recordingActionLogSink struct{ rows []DurableActionLogRow }
+
+func (s *recordingActionLogSink) Append(_ context.Context, row DurableActionLogRow) error {
+	s.rows = append(s.rows, row)
+	return nil
+}
+
+func TestRebook_WritesDurableAudit(t *testing.T) {
+	lodger := rebookLodger("jefferey", 10, 2, rebookNow.Add(3*time.Hour))
+	lodger.CurrentHuddleID = "huddle-1" // the audit shape carries the lodger's huddle
+	keeper := rebookKeeper("hannah")
+	w := rebookTestWorld(28, 11, lodger, keeper) // nightly = 4
+	sink := &recordingActionLogSink{}
+	w.SetActionLogSink(sink)
+
+	runRebook(t, w)
+
+	// Lean ring entry carries the counterparty + amount so the talk panel /
+	// umbilical narrate "<lodger> pays Hannah 4 coins for a night's lodging".
+	if len(w.ActionLog) != 1 {
+		t.Fatalf("want 1 lean ring entry, got %d", len(w.ActionLog))
+	}
+	e := w.ActionLog[0]
+	if e.ActionType != ActionTypePaid || e.CounterpartyName != "Hannah" || e.Amount != 4 || e.Text != "a night's lodging" {
+		t.Errorf("lean entry = %+v, want paid / Hannah / 4 / 'a night's lodging'", e)
+	}
+	if e.HuddleID != "huddle-1" {
+		t.Errorf("lean HuddleID = %q, want huddle-1", e.HuddleID)
+	}
+
+	// Durable mirror to agent_action_log — the persistent, restart-surviving audit.
+	if len(sink.rows) != 1 {
+		t.Fatalf("want 1 durable row, got %d", len(sink.rows))
+	}
+	r := sink.rows[0]
+	if r.ActorID != "jefferey" || r.ActionType != ActionTypePaid || r.Source != "engine" {
+		t.Errorf("durable row = %+v, want actor jefferey / paid / source engine", r)
+	}
+	if r.HuddleID != "huddle-1" {
+		t.Errorf("durable HuddleID = %q, want huddle-1", r.HuddleID)
+	}
+	// No DisplayName on the test lodger → speaker_name falls back to the id (the
+	// NOT NULL column must never be blank).
+	if r.SpeakerName != "jefferey" {
+		t.Errorf("SpeakerName = %q, want id fallback 'jefferey'", r.SpeakerName)
+	}
+	if r.Payload["recipient"] != "Hannah" || r.Payload["amount"] != 4 || r.Payload["for"] != "a night's lodging" {
+		t.Errorf("durable payload = %+v, want recipient Hannah / amount 4 / for 'a night's lodging'", r.Payload)
 	}
 }
 
