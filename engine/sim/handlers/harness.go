@@ -991,6 +991,36 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 			}
 		}
 	}
+	// decline_pay / counter_pay: the two sibling seller pay-responses pass in
+	// silence the same way accept_pay did before ZBBS-HOME-473 (LLM-13). Both
+	// resolve to a bare sim.PayLedgerState as cmdResult and otherwise fall
+	// through to the plain "[ok]" below — a declined or countered offer with no
+	// spoken word reads to the buyer as being ignored. Echo the resolution and
+	// steer to a brief spoken beat + done(), forbidding the re-fire (the same
+	// soft-steer / hard-guard pairing accept_pay carries).
+	if vc.Name == "decline_pay" {
+		if state, ok := cmdResult.(sim.PayLedgerState); ok {
+			switch state {
+			case sim.PayLedgerStateDeclined:
+				return "[ok] You declined. Say a brief word of refusal, then call done(). Do not decline again."
+			}
+		}
+	}
+	if vc.Name == "counter_pay" {
+		if state, ok := cmdResult.(sim.PayLedgerState); ok {
+			switch state {
+			case sim.PayLedgerStateCountered:
+				return "[ok] Your counter stands. Say a brief word with the counter, then call done() and wait for their answer. Do not counter again."
+			// A non-increasing pure-coin counter coerces to an accept in
+			// sim.CounterPay (the "I'll let it go at your price" path), so the
+			// sale settles under the counter_pay name and would otherwise miss
+			// the handover steer accept_pay earns — the gap the HOME-473 ticket
+			// glossed (LLM-13). Voice the settle and steer the handover.
+			case sim.PayLedgerStateAccepted:
+				return "[ok] The sale is settled. Say a brief word as you settle it, then call done(). Do not counter again."
+			}
+		}
+	}
 	if vc.Name == "speak" {
 		if args, ok := vc.DecodedArgs.(SpeakArgs); ok {
 			text := strings.TrimSpace(args.Text)
