@@ -112,6 +112,12 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	}
 	p.Lodging = buildLodgingView(snap, actorSnap)
 	p.KeeperLodging = buildKeeperLodgingView(snap, actorSnap, p.Surroundings.HuddleMembers)
+	// The held-lodger signal is informational, like "## Your inn" — ungated by
+	// location so a keeper affirms a settled guest wherever they meet (LLM-38).
+	// It keys off KeeperLodging, so it inherits the LLM-22 awake-peer gate: a
+	// co-present held lodger conversing IS an awake peer, so the cue still fires
+	// exactly when there's someone to affirm to.
+	p.KeeperHeldLodgers = buildKeeperHeldLodgers(snap, actorID, p.KeeperLodging, p.Surroundings.HuddleMembers)
 	// The offer cue is location-bound the way vendor cues are (ZBBS-WORK-385's
 	// at-own-post principle): a keeper drinking at someone ELSE's
 	// establishment must not be steered to sell their own rooms into that

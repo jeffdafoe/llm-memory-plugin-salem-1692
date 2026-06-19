@@ -333,6 +333,12 @@ type Payload struct {
 	// co-present. Built by buildLodgingOfferCue. ZBBS-WORK-382.
 	LodgingOffer *LodgingOfferView
 
+	// KeeperHeldLodgers names co-present guests who already hold a room at the
+	// subject keeper's inn, so the keeper affirms rather than re-offering off the
+	// passive "## Your inn" vacancy line (LLM-38). nil when the subject isn't a
+	// keeper or no held lodger is co-present. Built by buildKeeperHeldLodgers.
+	KeeperHeldLodgers *KeeperHeldLodgersView
+
 	// SummonsForYou surfaces a pending summons delivered to the subject by a
 	// messenger — "<summoner> asks you to come to <place>" — driving them to
 	// move_to. nil when the actor has no pending summons. Fades after the

@@ -452,6 +452,10 @@ func _build_ui() -> void:
     # falling back to the login when no PC exists (empty payload).
     if talk_panel_layer.has_signal("character_name_changed") and top_bar != null:
         talk_panel_layer.character_name_changed.connect(_on_pc_character_name_changed)
+    # Lodging → top bar's "Lodged at …" chip (LLM-38). Talk panel emits the
+    # PC's active lodging from /pc/me; top bar shows/hides the chip.
+    if talk_panel_layer.has_signal("lodging_changed") and top_bar != null:
+        talk_panel_layer.lodging_changed.connect(_on_pc_lodging_changed)
     # Pay modal blocks world input. Without this, a click on the
     # Confirm button propagates into the world's PC-walk handler and
     # the character starts walking under the open modal.
@@ -647,6 +651,11 @@ func _on_pc_character_name_changed(name: String) -> void:
     if top_bar == null or not top_bar.has_method("set_character_name"):
         return
     top_bar.set_character_name(name)
+
+func _on_pc_lodging_changed(inn_name: String, until_label: String) -> void:
+    if top_bar == null or not top_bar.has_method("set_lodging"):
+        return
+    top_bar.set_lodging(inn_name, until_label)
 
 func _on_edit_toggled(active: bool) -> void:
     editor_panel.visible = active

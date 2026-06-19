@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 	"sort"
@@ -117,6 +118,30 @@ type pcMeResponse struct {
 	// can render the PC without a follow-up catalog fetch.
 	SpriteID *string         `json:"sprite_id,omitempty"`
 	Sprite   *AgentSpriteDTO `json:"sprite,omitempty"`
+	// Lodging is the PC's active lodging when it holds a room (LLM-38) — so the
+	// client can show a "lodged here" indicator and the Pay modal can explain an
+	// empty quote list ("you already have a room…") instead of dead-ending.
+	// Absent (omitempty) when the PC holds no active ledger grant.
+	Lodging *pcLodgingDTO `json:"lodging,omitempty"`
+}
+
+// pcLodgingDTO is the PC's active-lodging surface (LLM-38).
+type pcLodgingDTO struct {
+	// InnName is the display name of the structure the held room is in.
+	InnName string `json:"inn_name"`
+	// KeeperName is the display name of the inn's keeper, when one works there —
+	// so the client can tell whether the PC's own innkeeper is the co-present
+	// pay recipient and scope the held-room empty-state to that case. Empty when
+	// the inn has no resolvable keeper.
+	KeeperName string `json:"keeper_name,omitempty"`
+	// UntilLabel is a duration-voiced phrase for the time left on the stay
+	// ("for about 2 more nights"), computed engine-side so the client needs no
+	// timezone math — the snapshot carries no Location (perception is
+	// duration-based for the same reason).
+	UntilLabel string `json:"until_label"`
+	// ExpiresAt is the held grant's expiry instant, surfaced raw (RFC3339) for
+	// any future precise client use; the human-facing string is UntilLabel.
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 // pcInventoryEntry is one stack of items the PC carries, enriched from the
@@ -252,7 +277,101 @@ func (s *Server) handlePCMe(w http.ResponseWriter, r *http.Request) {
 		resp.Sprite = resolveAgentSprite(pc.SpriteID, s.world.Sprites)
 	}
 
+	resp.Lodging = pcLodgingSurface(snap, pc)
+
 	writeJSON(w, resp)
+}
+
+// pcLodgingSurface returns the PC's active-lodging surface, or nil when the PC
+// holds no active ledger grant. Selects the soonest-expiring grant (the stay
+// the PC would renew first), resolves the inn via the room's structure, and
+// voices the remaining time as a duration phrase. Mirrors the perception
+// buildLodgingView grant selection on the httpapi side. LLM-38.
+func pcLodgingSurface(snap *sim.Snapshot, pc *sim.ActorSnapshot) *pcLodgingDTO {
+	if snap == nil || pc == nil {
+		return nil
+	}
+	now := snap.PublishedAt
+	var best *sim.RoomAccess
+	for _, ra := range pc.RoomAccess {
+		if !sim.IsActiveLedgerGrant(ra, now) {
+			continue
+		}
+		if best == nil || ra.ExpiresAt.Before(*best.ExpiresAt) {
+			best = ra
+		}
+	}
+	if best == nil {
+		return nil
+	}
+	innName := "the inn"
+	keeperName := ""
+	if sid, ok := structureIDForRoom(snap, best.RoomID); ok {
+		if name := objectDisplayName(snap, sid); name != "" {
+			innName = name
+		}
+		keeperName = lodgingKeeperName(snap, sid)
+	}
+	return &pcLodgingDTO{
+		InnName:    innName,
+		KeeperName: keeperName,
+		UntilLabel: pcLodgingUntilLabel(best.ExpiresAt.Sub(now)),
+		ExpiresAt:  *best.ExpiresAt,
+	}
+}
+
+// lodgingKeeperName returns the display name of the actor working at
+// structureID (its keeper), or "" when none. Deterministic smallest-id tiebreak
+// for the rare multi-worker case, mirroring sim.keeperForStructure on the
+// snapshot.
+func lodgingKeeperName(snap *sim.Snapshot, structureID sim.StructureID) string {
+	var bestID sim.ActorID
+	var best *sim.ActorSnapshot
+	for id, a := range snap.Actors {
+		if a == nil || a.WorkStructureID != structureID {
+			continue
+		}
+		if best == nil || id < bestID {
+			bestID = id
+			best = a
+		}
+	}
+	if best == nil {
+		return ""
+	}
+	return best.DisplayName
+}
+
+// structureIDForRoom finds the structure that declares roomID. RoomID is a
+// globally unique per-instance id, so the first match is authoritative;
+// ok=false when no structure declares it.
+func structureIDForRoom(snap *sim.Snapshot, roomID sim.RoomID) (sim.StructureID, bool) {
+	for id, s := range snap.Structures {
+		if s == nil {
+			continue
+		}
+		for _, r := range s.Rooms {
+			if r != nil && r.ID == roomID {
+				return id, true
+			}
+		}
+	}
+	return "", false
+}
+
+// pcLodgingUntilLabel voices the time left on a lodging grant as a duration
+// phrase — no timezone, since the snapshot carries no Location. Three tiers
+// matching the perception lodging cue (lodgingStatusLine).
+func pcLodgingUntilLabel(d time.Duration) string {
+	switch {
+	case d <= 24*time.Hour:
+		return "through the day"
+	case d <= 48*time.Hour:
+		return "through tomorrow"
+	default:
+		nights := int(d / (24 * time.Hour))
+		return fmt.Sprintf("for about %d more nights", nights)
+	}
 }
 
 // findPCSnapshotByLogin returns the PC actor (id + snapshot) whose LoginUsername
