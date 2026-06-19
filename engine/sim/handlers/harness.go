@@ -1043,7 +1043,7 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 	// stop and re-posted the identical quote to the iteration budget. The
 	// steer is the soft half; quotedThisTick's already_quoted reject is the
 	// teeth.
-	if vc.Name == "scene_quote" {
+	if vc.Name == "sell" {
 		const quoteSteer = "The room has heard your offer — await an answer or call done(). Do not post the same offer again."
 		// "Your offer now stands" only when the result proves a quote was
 		// actually created (code_review #415) — an unexpected result shape
@@ -1344,7 +1344,7 @@ func payOfferKey(vc *ValidatedCall) (string, bool) {
 // legal and rides the supersede path. Returns ("", false) for non-quote calls
 // or undecodable args.
 func sceneQuoteKey(vc *ValidatedCall) (string, bool) {
-	if vc == nil || vc.Name != "scene_quote" {
+	if vc == nil || vc.Name != "sell" {
 		return "", false
 	}
 	args, ok := vc.DecodedArgs.(SceneQuoteArgs)

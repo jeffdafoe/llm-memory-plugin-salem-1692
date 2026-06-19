@@ -43,7 +43,7 @@ package handlers
 // schema bytes — both startup bugs the caller should panic/exit on).
 func RegisterSceneQuote(r *Registry) error {
 	return r.RegisterCommit(
-		"scene_quote",
+		"sell",
 		sceneQuoteSchema,
 		DecodeSceneQuoteArgs,
 		HandleSceneQuote,

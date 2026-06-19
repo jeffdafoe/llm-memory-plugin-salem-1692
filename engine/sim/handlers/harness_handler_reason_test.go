@@ -78,7 +78,7 @@ func TestHarness_HandlerModelSafeError_RealSceneQuoteSurfaced(t *testing.T) {
 	}
 	client := llm.NewFakeClient(
 		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{
-			newToolCall("c1", 0, "scene_quote", `{"item_kind":"   ","qty":1,"amount":4}`),
+			newToolCall("c1", 0, "sell", `{"item_kind":"   ","qty":1,"amount":4}`),
 		}}},
 		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c2", 0, "done", `{}`)}}},
 	)

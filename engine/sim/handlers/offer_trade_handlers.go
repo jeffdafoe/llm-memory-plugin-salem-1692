@@ -122,7 +122,7 @@ var offerTradeSchema = json.RawMessage(`{
 const offerTradeDescription = "Propose a direct trade (barter) with someone in your current conversation: hand over goods you carry — and/or coins — in exchange for goods they have. " +
 	"Set `with` (their name), `give` (the goods you hand over), optional `coins`, and `want_item` + `want_qty` (what you want from them). " +
 	"This places a pending offer they can accept, decline, or counter; when they accept, both sides' goods change hands at once. " +
-	"Use this whenever you want something another villager is carrying. To sell your own wares to a buyer for coins, use scene_quote instead."
+	"Use this whenever you want something another villager is carrying. To sell your own wares to a buyer for coins, use sell instead."
 
 // DecodeOfferTradeArgs parses the raw offer_trade tool-call arguments,
 // validates them (mirroring DecodePayWithItemArgs's bounds + rune caps),

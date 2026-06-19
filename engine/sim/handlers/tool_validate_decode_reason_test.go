@@ -39,7 +39,7 @@ func TestValidator_Validate_SurfacesModelSafeDecodeReason(t *testing.T) {
 			// amount:0 four times in one tick, each getting only the opaque
 			// "argument decode failed", and kept retrying.
 			name:    "scene_quote amount below minimum",
-			tool:    "scene_quote",
+			tool:    "sell",
 			args:    `{"item_kind":"Porridge","qty":1,"amount":0}`,
 			wantSub: "amount",
 		},
@@ -90,7 +90,7 @@ func TestValidator_Validate_RawDecodeStaysGeneric(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, verr := v.Validate(llm.RawToolCall{Name: "scene_quote", Arguments: json.RawMessage(tc.args)})
+			_, verr := v.Validate(llm.RawToolCall{Name: "sell", Arguments: json.RawMessage(tc.args)})
 			if verr == nil || verr.Kind != ValidationErrorMalformedArgs {
 				t.Fatalf("expected malformed_args, got %v", verr)
 			}
