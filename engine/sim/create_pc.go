@@ -84,16 +84,15 @@ func CreatePC(loginUsername, characterName, spriteID string, now time.Time) Comm
 				return CreatePCResult{}, fmt.Errorf("sim: CreatePC: actor-ID minting exhausted retries")
 			}
 			actor := &Actor{
-				ID:             id,
-				DisplayName:    characterName,
-				Kind:           KindPC,
-				LoginUsername:  loginUsername,
-				SpriteID:       SpriteID(spriteID), // "" when not yet picked
-				Needs:          seedVisitorNeeds(),
-				Inventory:      map[ItemKind]int{},
-				Coins:          PCStarterCoins,
-				State:          StateIdle,
-				StateEnteredAt: now,
+				ID:            id,
+				DisplayName:   characterName,
+				Kind:          KindPC,
+				LoginUsername: loginUsername,
+				SpriteID:      SpriteID(spriteID), // "" when not yet picked
+				Needs:         seedVisitorNeeds(),
+				Inventory:     map[ItemKind]int{},
+				Coins:         PCStarterCoins,
+				State:         StateIdle,
 			}
 			w.Actors[id] = actor
 			w.outdoorActors[id] = struct{}{}

@@ -46,16 +46,14 @@ func buildReactorWorld(t *testing.T, actors []reactorActor) (*sim.World, func())
 	members := make(map[sim.ActorID]struct{}, len(actors))
 	for _, a := range actors {
 		seed[a.id] = &sim.Actor{
-			ID:               a.id,
-			DisplayName:      a.displayName,
-			Kind:             a.kind,
-			State:            sim.StateIdle,
-			StateEnteredAt:   now,
-			Coins:            a.coins,
-			Inventory:        a.inventory,
-			CurrentHuddleID:  a.huddleID,
-			RecentActions:    sim.NewRingBuffer[sim.Action](4),
-			RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
+			ID:              a.id,
+			DisplayName:     a.displayName,
+			Kind:            a.kind,
+			State:           sim.StateIdle,
+			Coins:           a.coins,
+			Inventory:       a.inventory,
+			CurrentHuddleID: a.huddleID,
+			RecentActions:   sim.NewRingBuffer[sim.Action](4),
 		}
 		if a.huddleID == "h1" {
 			members[a.id] = struct{}{}

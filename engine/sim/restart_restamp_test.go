@@ -30,17 +30,14 @@ type rstActor struct {
 func buildRestampWorld(t *testing.T, actors []rstActor) *sim.World {
 	t.Helper()
 	repo, handles := mem.NewRepository()
-	now := time.Now().UTC()
 	seed := make(map[sim.ActorID]*sim.Actor, len(actors))
 	for _, a := range actors {
 		seed[a.id] = &sim.Actor{
-			ID:               a.id,
-			DisplayName:      a.displayName,
-			Kind:             a.kind,
-			State:            sim.StateIdle,
-			StateEnteredAt:   now,
-			RecentActions:    sim.NewRingBuffer[sim.Action](4),
-			RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
+			ID:            a.id,
+			DisplayName:   a.displayName,
+			Kind:          a.kind,
+			State:         sim.StateIdle,
+			RecentActions: sim.NewRingBuffer[sim.Action](4),
 		}
 	}
 	handles.Actors.Seed(seed)

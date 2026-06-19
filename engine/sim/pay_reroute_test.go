@@ -49,16 +49,14 @@ func buildRerouteWorld(t *testing.T, huddleID sim.HuddleID, sceneID sim.SceneID,
 	members := make(map[sim.ActorID]struct{}, len(specs))
 	for _, s := range specs {
 		a := &sim.Actor{
-			ID:               s.id,
-			DisplayName:      s.displayName,
-			Kind:             sim.KindNPCShared,
-			State:            sim.StateIdle,
-			StateEnteredAt:   now,
-			CurrentHuddleID:  s.huddleID,
-			Coins:            s.coins,
-			WorkStructureID:  s.work,
-			RecentActions:    sim.NewRingBuffer[sim.Action](4),
-			RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
+			ID:              s.id,
+			DisplayName:     s.displayName,
+			Kind:            sim.KindNPCShared,
+			State:           sim.StateIdle,
+			CurrentHuddleID: s.huddleID,
+			Coins:           s.coins,
+			WorkStructureID: s.work,
+			RecentActions:   sim.NewRingBuffer[sim.Action](4),
 		}
 		if s.owner {
 			a.BusinessownerState = &sim.BusinessownerState{}

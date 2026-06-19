@@ -74,15 +74,13 @@ func TestLoadWorldAndActorSnapshot(t *testing.T) {
 	repo, handles := mem.NewRepository()
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
 		"elizabeth": {
-			ID:               "elizabeth",
-			DisplayName:      "Elizabeth Ellis",
-			Kind:             sim.KindNPCStateful,
-			State:            sim.StateWalking,
-			StateEnteredAt:   time.Now(),
-			RecentActions:    sim.NewRingBuffer[sim.Action](16),
-			RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](16),
-			Needs:            map[sim.NeedKey]int{},
-			Inventory:        map[sim.ItemKind]int{},
+			ID:            "elizabeth",
+			DisplayName:   "Elizabeth Ellis",
+			Kind:          sim.KindNPCStateful,
+			State:         sim.StateWalking,
+			RecentActions: sim.NewRingBuffer[sim.Action](16),
+			Needs:         map[sim.NeedKey]int{},
+			Inventory:     map[sim.ItemKind]int{},
 		},
 	})
 

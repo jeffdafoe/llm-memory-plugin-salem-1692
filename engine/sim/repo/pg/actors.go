@@ -106,7 +106,6 @@ SELECT
     sleeping_until,
     move_attempt_counter,
     sim_state,
-    sim_state_entered_at,
     sprite_id::text,
     facing,
     social_tag,
@@ -148,7 +147,7 @@ INSERT INTO actor (
     coins, llm_memory_agent, role, login_username,
     schedule_start_minute, schedule_end_minute,
     last_agent_tick_at, break_until, sleeping_until,
-    move_attempt_counter, sim_state, sim_state_entered_at,
+    move_attempt_counter, sim_state,
     sprite_id, facing,
     social_tag, social_start_minute, social_end_minute, social_last_boundary_at,
     snapshot_gen, move_destination
@@ -159,10 +158,10 @@ INSERT INTO actor (
     $10, $11, $12, $13,
     $14, $15,
     $16, $17, $18,
-    $19, $20, $21,
-    $22, $23,
-    $24, $25, $26, $27,
-    $28, $29
+    $19, $20,
+    $21, $22,
+    $23, $24, $25, $26,
+    $27, $28
 )
 ON CONFLICT (id) DO UPDATE SET
     display_name           = EXCLUDED.display_name,
@@ -184,7 +183,6 @@ ON CONFLICT (id) DO UPDATE SET
     sleeping_until         = EXCLUDED.sleeping_until,
     move_attempt_counter   = EXCLUDED.move_attempt_counter,
     sim_state              = EXCLUDED.sim_state,
-    sim_state_entered_at   = EXCLUDED.sim_state_entered_at,
     sprite_id              = EXCLUDED.sprite_id,
     facing                 = EXCLUDED.facing,
     social_tag             = EXCLUDED.social_tag,
@@ -506,7 +504,6 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			sleepingUntil        *time.Time
 			moveAttemptCounter   int64
 			simState             string
-			simStateEnteredAt    time.Time
 			spriteID             *string
 			facing               string
 			socialTag            *string
@@ -523,7 +520,7 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			&coins, &llmMemoryAgent, &role, &loginUsername,
 			&scheduleStartMinute, &scheduleEndMinute,
 			&lastAgentTickAt, &breakUntil, &sleepingUntil,
-			&moveAttemptCounter, &simState, &simStateEnteredAt,
+			&moveAttemptCounter, &simState,
 			&spriteID, &facing,
 			&socialTag, &socialStartMinute, &socialEndMinute, &socialLastBoundaryAt,
 			&isAdmin, &moveDestination,
@@ -565,7 +562,6 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			SleepingUntil:        sleepingUntil,
 			MoveAttemptCounter:   sim.MovementAttemptID(moveAttemptCounter),
 			State:                sim.ActorState(simState),
-			StateEnteredAt:       simStateEnteredAt,
 			SpriteID:             sim.SpriteID(deref(spriteID)),
 			Facing:               facing,
 			SocialTag:            deref(socialTag),
@@ -1074,7 +1070,7 @@ func (r *ActorsRepo) loadAllAttributes(ctx context.Context, actors map[sim.Actor
 // all ten share the one advisory lock:
 //
 //  0. Pre-pass validation: nil entries, empty/whitespace IDs, map-key
-//     vs a.ID mismatch, empty DisplayName/State, zero StateEnteredAt,
+//     vs a.ID mismatch, empty DisplayName/State,
 //     half-set / out-of-range schedule, need values out of range,
 //     empty need-key / inventory-kind, negative inventory, empty
 //     relationship peer key, self-relationship, negative relationship
@@ -1153,9 +1149,6 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 		}
 		if strings.TrimSpace(string(a.State)) == "" {
 			return fmt.Errorf("pg actors SaveSnapshot: id=%s has empty State (FSM bug — every actor must be in a named state)", a.ID)
-		}
-		if a.StateEnteredAt.IsZero() {
-			return fmt.Errorf("pg actors SaveSnapshot: id=%s has zero StateEnteredAt", a.ID)
 		}
 		// Schedule fields are all-or-none on the DB side
 		// (actor_schedule_window_all_or_none CHECK).
@@ -1381,15 +1374,14 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 			a.SleepingUntil,                         // $18 sleeping_until
 			int64(a.MoveAttemptCounter),             // $19 move_attempt_counter
 			string(a.State),                         // $20 sim_state
-			a.StateEnteredAt,                        // $21 sim_state_entered_at
-			nilOnEmpty(string(a.SpriteID)),          // $22 sprite_id (nullable uuid)
-			facing,                                  // $23 facing (validated above)
-			nilOnEmpty(a.SocialTag),                 // $24 social_tag
-			intPtrToSQL(a.SocialStartMin),           // $25 social_start_minute
-			intPtrToSQL(a.SocialEndMin),             // $26 social_end_minute
-			a.SocialLastBoundaryAt,                  // $27 social_last_boundary_at
-			actorGen,                                // $28 snapshot_gen
-			encodeMoveDestination(a.MoveIntent),     // $29 move_destination
+			nilOnEmpty(string(a.SpriteID)),          // $21 sprite_id (nullable uuid)
+			facing,                                  // $22 facing (validated above)
+			nilOnEmpty(a.SocialTag),                 // $23 social_tag
+			intPtrToSQL(a.SocialStartMin),           // $24 social_start_minute
+			intPtrToSQL(a.SocialEndMin),             // $25 social_end_minute
+			a.SocialLastBoundaryAt,                  // $26 social_last_boundary_at
+			actorGen,                                // $27 snapshot_gen
+			encodeMoveDestination(a.MoveIntent),     // $28 move_destination
 		); err != nil {
 			return fmt.Errorf("pg actors SaveSnapshot: upsert actor id=%s: %w", a.ID, err)
 		}

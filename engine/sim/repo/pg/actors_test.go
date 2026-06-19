@@ -97,7 +97,7 @@ func actorParentColumns() []string {
 		"coins", "llm_memory_agent", "role", "login_username",
 		"schedule_start_minute", "schedule_end_minute",
 		"last_agent_tick_at", "break_until", "sleeping_until",
-		"move_attempt_counter", "sim_state", "sim_state_entered_at",
+		"move_attempt_counter", "sim_state",
 		"sprite_id", "facing",
 		"social_tag", "social_start_minute", "social_end_minute", "social_last_boundary_at",
 		"admin", "move_destination",
@@ -150,7 +150,7 @@ func oneBareActorRows() *pgxmock.Rows {
 		20, (*string)(nil), (*string)(nil), (*string)(nil),
 		(*int16)(nil), (*int16)(nil),
 		(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
-		int64(0), "idle", tsEntered,
+		int64(0), "idle",
 		(*string)(nil), "south",
 		(*string)(nil), (*int16)(nil), (*int16)(nil), (*time.Time)(nil),
 		false, []byte(nil),
@@ -314,7 +314,7 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 				20, ptrStr("mira-agent"), ptrStr("tavernkeeper"), (*string)(nil),
 				&startMin, &endMin,
 				&tsTickedAt, &tsBreak, &tsSleep,
-				int64(7), "working", tsEntered,
+				int64(7), "working",
 				ptrStr("00000000-0000-0000-0000-5555eeeeeeee"), "east",
 				&socialTag, &socialStartM, &socialEndM, &tsBreak,
 				true, []byte(`{"kind":"structure_enter","structure_id":"00000000-0000-0000-0000-3333cccccccc"}`),
@@ -326,7 +326,7 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 				20, (*string)(nil), (*string)(nil), (*string)(nil),
 				(*int16)(nil), (*int16)(nil),
 				(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
-				int64(0), "idle", tsEntered,
+				int64(0), "idle",
 				(*string)(nil), "south",
 				(*string)(nil), (*int16)(nil), (*int16)(nil), (*time.Time)(nil),
 				false, []byte(nil),
@@ -407,9 +407,6 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 	}
 	if string(a.State) != "working" {
 		t.Errorf("State = %q", a.State)
-	}
-	if !a.StateEnteredAt.Equal(tsEntered) {
-		t.Errorf("StateEnteredAt = %v", a.StateEnteredAt)
 	}
 	if string(a.SpriteID) != "00000000-0000-0000-0000-5555eeeeeeee" {
 		t.Errorf("SpriteID = %q", a.SpriteID)
@@ -590,7 +587,7 @@ func TestActorsRepo_SaveSnapshot_FullActor(t *testing.T) {
 			20, "mira-agent", "tavernkeeper", nil,
 			int16(540), int16(1020),
 			&tsTickedAt, &tsBreak, &tsSleep,
-			int64(7), "working", tsEntered,
+			int64(7), "working",
 			"00000000-0000-0000-0000-5555eeeeeeee", "east",
 			"tavern_evening", int16(1080), int16(1320), &tsBreak,
 			int64(101),
@@ -644,7 +641,6 @@ func TestActorsRepo_SaveSnapshot_FullActor(t *testing.T) {
 			SleepingUntil:        &tsSleep,
 			MoveAttemptCounter:   7,
 			State:                "working",
-			StateEnteredAt:       tsEntered,
 			SpriteID:             "00000000-0000-0000-0000-5555eeeeeeee",
 			Facing:               "east",
 			SocialTag:            "tavern_evening",
@@ -680,7 +676,7 @@ func TestActorsRepo_SaveSnapshot_BareActor(t *testing.T) {
 			20, nil, nil, nil, // Coins, LLMAgent, Role, LoginUsername
 			nil, nil, // schedule
 			(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil), // LastTickedAt, BreakUntil, SleepingUntil
-			int64(0), "idle", tsEntered, // counter, state, entered
+			int64(0), "idle", // counter, state
 			nil, "south", // sprite_id (empty→NULL), facing (empty→default 'south')
 			nil, nil, nil, (*time.Time)(nil), // social (all NULL)
 			int64(102),
@@ -697,11 +693,10 @@ func TestActorsRepo_SaveSnapshot_BareActor(t *testing.T) {
 
 	actors := map[sim.ActorID]*sim.Actor{
 		actB: {
-			ID:             actB,
-			DisplayName:    "Bare",
-			Coins:          20,
-			State:          "idle",
-			StateEnteredAt: tsEntered,
+			ID:          actB,
+			DisplayName: "Bare",
+			Coins:       20,
+			State:       "idle",
 			// All other fields are zero values — empty strings, nil pointers,
 			// zero RoomID, zero MoveAttemptCounter.
 		},
@@ -735,11 +730,10 @@ func TestActorsRepo_SaveSnapshot_VisitorFiltered(t *testing.T) {
 
 	actors := map[sim.ActorID]*sim.Actor{
 		actV: {
-			ID:             actV,
-			DisplayName:    "Visitor Vince",
-			State:          "idle",
-			StateEnteredAt: tsEntered,
-			VisitorState:   &sim.VisitorState{Archetype: "scholar"},
+			ID:           actV,
+			DisplayName:  "Visitor Vince",
+			State:        "idle",
+			VisitorState: &sim.VisitorState{Archetype: "scholar"},
 		},
 	}
 
@@ -790,7 +784,7 @@ func TestActorsRepo_SaveSnapshot_ZeroQtyInventoryDropped(t *testing.T) {
 			20, nil, nil, nil,
 			nil, nil,
 			(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
-			int64(0), "idle", tsEntered,
+			int64(0), "idle",
 			nil, "south",
 			nil, nil, nil, (*time.Time)(nil), // social (all NULL)
 			int64(105),
@@ -822,11 +816,10 @@ func TestActorsRepo_SaveSnapshot_ZeroQtyInventoryDropped(t *testing.T) {
 
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
-			ID:             actA,
-			DisplayName:    "Mira",
-			Coins:          20,
-			State:          "idle",
-			StateEnteredAt: tsEntered,
+			ID:          actA,
+			DisplayName: "Mira",
+			Coins:       20,
+			State:       "idle",
 			Inventory: map[sim.ItemKind]int{
 				"ale":   3,
 				"bread": 0, // zero qty → skip UPSERT, swept by DELETE
@@ -868,7 +861,7 @@ func TestActorsRepo_SaveSnapshot_NilEntry(t *testing.T) {
 func TestActorsRepo_SaveSnapshot_EmptyID(t *testing.T) {
 	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
-		"   ": {ID: "   ", DisplayName: "X", State: "idle", StateEnteredAt: tsEntered},
+		"   ": {ID: "   ", DisplayName: "X", State: "idle"},
 	}
 	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
 	assertValidationOnly(t, mock, err, "empty ActorID")
@@ -877,7 +870,7 @@ func TestActorsRepo_SaveSnapshot_EmptyID(t *testing.T) {
 func TestActorsRepo_SaveSnapshot_KeyMismatch(t *testing.T) {
 	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
-		actA: {ID: actB, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered},
+		actA: {ID: actB, DisplayName: "X", State: "idle"},
 	}
 	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
 	assertValidationOnly(t, mock, err, "does not match a.ID")
@@ -886,7 +879,7 @@ func TestActorsRepo_SaveSnapshot_KeyMismatch(t *testing.T) {
 func TestActorsRepo_SaveSnapshot_EmptyDisplayName(t *testing.T) {
 	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
-		actA: {ID: actA, DisplayName: "  ", State: "idle", StateEnteredAt: tsEntered},
+		actA: {ID: actA, DisplayName: "  ", State: "idle"},
 	}
 	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
 	assertValidationOnly(t, mock, err, "empty DisplayName")
@@ -895,19 +888,10 @@ func TestActorsRepo_SaveSnapshot_EmptyDisplayName(t *testing.T) {
 func TestActorsRepo_SaveSnapshot_EmptyState(t *testing.T) {
 	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
-		actA: {ID: actA, DisplayName: "X", State: "", StateEnteredAt: tsEntered},
+		actA: {ID: actA, DisplayName: "X", State: ""},
 	}
 	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
 	assertValidationOnly(t, mock, err, "empty State")
-}
-
-func TestActorsRepo_SaveSnapshot_ZeroStateEnteredAt(t *testing.T) {
-	mock, repo := newMockPoolA(t)
-	actors := map[sim.ActorID]*sim.Actor{
-		actA: {ID: actA, DisplayName: "X", State: "idle"}, // zero StateEnteredAt
-	}
-	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
-	assertValidationOnly(t, mock, err, "zero StateEnteredAt")
 }
 
 func TestActorsRepo_SaveSnapshot_HalfSetSchedule(t *testing.T) {
@@ -915,7 +899,7 @@ func TestActorsRepo_SaveSnapshot_HalfSetSchedule(t *testing.T) {
 	start := 540
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
-			ID: actA, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered,
+			ID: actA, DisplayName: "X", State: "idle",
 			ScheduleStartMin: &start, // ScheduleEndMin: nil
 		},
 	}
@@ -963,7 +947,7 @@ func TestActorsRepo_SaveSnapshot_ScheduleOutOfRange(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			mock, repo := newMockPoolA(t)
-			a := &sim.Actor{ID: actA, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered}
+			a := &sim.Actor{ID: actA, DisplayName: "X", State: "idle"}
 			tc.mut(a)
 			err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, map[sim.ActorID]*sim.Actor{actA: a})
 			assertValidationOnly(t, mock, err, tc.want)
@@ -975,7 +959,7 @@ func TestActorsRepo_SaveSnapshot_HalfSetSocial(t *testing.T) {
 	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
-			ID: actA, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered,
+			ID: actA, DisplayName: "X", State: "idle",
 			SocialTag: "tavern", // SocialStartMin/EndMin: nil — half-set
 		},
 	}
@@ -1015,7 +999,7 @@ func TestActorsRepo_SaveSnapshot_SocialInvalid(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			mock, repo := newMockPoolA(t)
-			a := &sim.Actor{ID: actA, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered}
+			a := &sim.Actor{ID: actA, DisplayName: "X", State: "idle"}
 			tc.mut(a)
 			err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, map[sim.ActorID]*sim.Actor{actA: a})
 			assertValidationOnly(t, mock, err, tc.want)
@@ -1027,7 +1011,7 @@ func TestActorsRepo_SaveSnapshot_NeedOutOfRange(t *testing.T) {
 	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
-			ID: actA, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered,
+			ID: actA, DisplayName: "X", State: "idle",
 			Needs: map[sim.NeedKey]int{"hunger": 99}, // > 24
 		},
 	}
@@ -1041,7 +1025,7 @@ func TestActorsRepo_SaveSnapshot_EmptyNeedKey(t *testing.T) {
 	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
-			ID: actA, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered,
+			ID: actA, DisplayName: "X", State: "idle",
 			Needs: map[sim.NeedKey]int{"  ": 4},
 		},
 	}
@@ -1056,7 +1040,7 @@ func TestActorsRepo_SaveSnapshot_NegativeInventoryQuantity(t *testing.T) {
 	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
-			ID: actA, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered,
+			ID: actA, DisplayName: "X", State: "idle",
 			Inventory: map[sim.ItemKind]int{"ale": -1},
 		},
 	}
@@ -1070,7 +1054,7 @@ func TestActorsRepo_SaveSnapshot_EmptyInventoryKind(t *testing.T) {
 	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
-			ID: actA, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered,
+			ID: actA, DisplayName: "X", State: "idle",
 			Inventory: map[sim.ItemKind]int{"   ": 3},
 		},
 	}
@@ -1159,7 +1143,7 @@ func TestActorsRepo_LoadAll_Continuity(t *testing.T) {
 				20, (*string)(nil), (*string)(nil), (*string)(nil),
 				(*int16)(nil), (*int16)(nil),
 				(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
-				int64(0), "idle", tsEntered,
+				int64(0), "idle",
 				(*string)(nil), "south",
 				(*string)(nil), (*int16)(nil), (*int16)(nil), (*time.Time)(nil),
 				false, []byte(nil),
@@ -1357,7 +1341,7 @@ func TestActorsRepo_SaveSnapshot_Continuity(t *testing.T) {
 			20, nil, nil, nil,
 			nil, nil,
 			(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
-			int64(0), "idle", tsEntered,
+			int64(0), "idle",
 			nil, "south",
 			nil, nil, nil, (*time.Time)(nil), // social (all NULL)
 			int64(701),
@@ -1411,7 +1395,7 @@ func TestActorsRepo_SaveSnapshot_Continuity(t *testing.T) {
 
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
-			ID: actA, DisplayName: "Hannah", Coins: 20, State: "idle", StateEnteredAt: tsEntered,
+			ID: actA, DisplayName: "Hannah", Coins: 20, State: "idle",
 			Relationships: map[sim.ActorID]*sim.Relationship{
 				actB: {
 					SummaryText:        "John runs the tavern",
@@ -1459,7 +1443,7 @@ func TestActorsRepo_SaveSnapshot_EmptySalientFacts(t *testing.T) {
 			20, nil, nil, nil,
 			nil, nil,
 			(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
-			int64(0), "idle", tsEntered,
+			int64(0), "idle",
 			nil, "south",
 			nil, nil, nil, (*time.Time)(nil), // social (all NULL)
 			int64(702),
@@ -1499,7 +1483,7 @@ func TestActorsRepo_SaveSnapshot_EmptySalientFacts(t *testing.T) {
 
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
-			ID: actA, DisplayName: "Hannah", Coins: 20, State: "idle", StateEnteredAt: tsEntered,
+			ID: actA, DisplayName: "Hannah", Coins: 20, State: "idle",
 			Relationships: map[sim.ActorID]*sim.Relationship{
 				actB: {CreatedAt: tsEntered, UpdatedAt: tsEntered}, // no facts
 			},
@@ -1519,7 +1503,7 @@ func TestActorsRepo_SaveSnapshot_SelfRelationship(t *testing.T) {
 	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
-			ID: actA, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered,
+			ID: actA, DisplayName: "X", State: "idle",
 			Relationships: map[sim.ActorID]*sim.Relationship{actA: {}},
 		},
 	}
@@ -1531,7 +1515,7 @@ func TestActorsRepo_SaveSnapshot_EmptyRelationshipPeer(t *testing.T) {
 	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
-			ID: actA, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered,
+			ID: actA, DisplayName: "X", State: "idle",
 			Relationships: map[sim.ActorID]*sim.Relationship{"  ": {}},
 		},
 	}
@@ -1553,7 +1537,7 @@ func TestActorsRepo_SaveSnapshot_NegativeRelationshipCounts(t *testing.T) {
 			mock, repo := newMockPoolA(t)
 			actors := map[sim.ActorID]*sim.Actor{
 				actA: {
-					ID: actA, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered,
+					ID: actA, DisplayName: "X", State: "idle",
 					Relationships: map[sim.ActorID]*sim.Relationship{actB: tc.rel},
 				},
 			}
@@ -1567,7 +1551,7 @@ func TestActorsRepo_SaveSnapshot_EmptyAcquaintanceName(t *testing.T) {
 	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
-			ID: actA, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered,
+			ID: actA, DisplayName: "X", State: "idle",
 			Acquaintances: map[string]sim.Acquaintance{"   ": {FirstInteractedAt: tsEntered}},
 		},
 	}
@@ -1579,7 +1563,7 @@ func TestActorsRepo_SaveSnapshot_OverLongAcquaintanceName(t *testing.T) {
 	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
-			ID: actA, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered,
+			ID: actA, DisplayName: "X", State: "idle",
 			Acquaintances: map[string]sim.Acquaintance{strings.Repeat("x", 101): {FirstInteractedAt: tsEntered}},
 		},
 	}
@@ -1602,7 +1586,7 @@ func TestActorsRepo_SaveSnapshot_AcquaintanceMultibyteWithinLimit(t *testing.T) 
 			20, nil, nil, nil,
 			nil, nil,
 			(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
-			int64(0), "idle", tsEntered,
+			int64(0), "idle",
 			nil, "south",
 			nil, nil, nil, (*time.Time)(nil), // social (all NULL)
 			int64(706),
@@ -1639,7 +1623,7 @@ func TestActorsRepo_SaveSnapshot_AcquaintanceMultibyteWithinLimit(t *testing.T) 
 
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
-			ID: actA, DisplayName: "Hannah", Coins: 20, State: "idle", StateEnteredAt: tsEntered,
+			ID: actA, DisplayName: "Hannah", Coins: 20, State: "idle",
 			Acquaintances: map[string]sim.Acquaintance{name: {FirstInteractedAt: tsTickedAt}},
 		},
 	}
@@ -1658,7 +1642,7 @@ func TestActorsRepo_SaveSnapshot_AcquaintanceOverLongRunes(t *testing.T) {
 	name := strings.Repeat("é", 101) // 101 runes
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
-			ID: actA, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered,
+			ID: actA, DisplayName: "X", State: "idle",
 			Acquaintances: map[string]sim.Acquaintance{name: {FirstInteractedAt: tsEntered}},
 		},
 	}
@@ -1872,7 +1856,7 @@ func TestActorsRepo_SaveSnapshot_Slice3(t *testing.T) {
 			20, nil, nil, nil,
 			nil, nil,
 			(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
-			int64(0), "idle", tsEntered,
+			int64(0), "idle",
 			nil, "south",
 			nil, nil, nil, (*time.Time)(nil), // social (all NULL)
 			int64(710),
@@ -1928,7 +1912,7 @@ func TestActorsRepo_SaveSnapshot_Slice3(t *testing.T) {
 
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
-			ID: actA, DisplayName: "Hannah", Coins: 20, State: "idle", StateEnteredAt: tsEntered,
+			ID: actA, DisplayName: "Hannah", Coins: 20, State: "idle",
 			DwellCredits: map[sim.DwellCreditKey]*sim.DwellCredit{
 				{ObjectID: objX, Attribute: "hunger", Source: sim.DwellSourceItem}: {
 					ObjectID: objX, Attribute: "hunger", Source: sim.DwellSourceItem,
@@ -1965,7 +1949,7 @@ func TestActorsRepo_SaveSnapshot_DwellCreditItemNilRemaining(t *testing.T) {
 	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
-			ID: actA, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered,
+			ID: actA, DisplayName: "X", State: "idle",
 			DwellCredits: map[sim.DwellCreditKey]*sim.DwellCredit{
 				{ObjectID: objX, Attribute: "hunger", Source: sim.DwellSourceItem}: {
 					ObjectID: objX, Attribute: "hunger", Source: sim.DwellSourceItem,
@@ -1985,7 +1969,7 @@ func TestActorsRepo_SaveSnapshot_RoomAccessNonPositiveRoom(t *testing.T) {
 	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
-			ID: actA, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered,
+			ID: actA, DisplayName: "X", State: "idle",
 			RoomAccess: map[sim.RoomAccessKey]*sim.RoomAccess{
 				{RoomID: 0, Source: sim.AccessSourceLedger}: {
 					RoomID: 0, Source: sim.AccessSourceLedger, LedgerID: 1, CreatedAt: tsEntered,
@@ -2004,7 +1988,7 @@ func TestActorsRepo_SaveSnapshot_RoomAccessLedgerMissingLedgerID(t *testing.T) {
 	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
-			ID: actA, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered,
+			ID: actA, DisplayName: "X", State: "idle",
 			RoomAccess: map[sim.RoomAccessKey]*sim.RoomAccess{
 				{RoomID: 42, Source: sim.AccessSourceLedger}: {
 					RoomID: 42, Source: sim.AccessSourceLedger, LedgerID: 0, CreatedAt: tsEntered,
@@ -2024,7 +2008,7 @@ func TestActorsRepo_SaveSnapshot_RoomAccessDuplicateActivePrivate(t *testing.T) 
 	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
-			ID: actA, DisplayName: "A", State: "idle", StateEnteredAt: tsEntered,
+			ID: actA, DisplayName: "A", State: "idle",
 			RoomAccess: map[sim.RoomAccessKey]*sim.RoomAccess{
 				{RoomID: 42, Source: sim.AccessSourceLedger}: {
 					RoomID: 42, Source: sim.AccessSourceLedger, LedgerID: 77, Active: true, CreatedAt: tsEntered,
@@ -2032,7 +2016,7 @@ func TestActorsRepo_SaveSnapshot_RoomAccessDuplicateActivePrivate(t *testing.T) 
 			},
 		},
 		actB: {
-			ID: actB, DisplayName: "B", State: "idle", StateEnteredAt: tsEntered,
+			ID: actB, DisplayName: "B", State: "idle",
 			RoomAccess: map[sim.RoomAccessKey]*sim.RoomAccess{
 				{RoomID: 42, Source: sim.AccessSourceLedger}: {
 					RoomID: 42, Source: sim.AccessSourceLedger, LedgerID: 88, Active: true, CreatedAt: tsEntered,
@@ -2051,7 +2035,7 @@ func TestActorsRepo_SaveSnapshot_RoomAccessDuplicateRoom(t *testing.T) {
 	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
-			ID: actA, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered,
+			ID: actA, DisplayName: "X", State: "idle",
 			RoomAccess: map[sim.RoomAccessKey]*sim.RoomAccess{
 				{RoomID: 42, Source: sim.AccessSourceLedger}: {
 					RoomID: 42, Source: sim.AccessSourceLedger, LedgerID: 77, CreatedAt: tsEntered,
@@ -2073,7 +2057,7 @@ func TestActorsRepo_SaveSnapshot_AttributeInvalidJSON(t *testing.T) {
 	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
-			ID: actA, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered,
+			ID: actA, DisplayName: "X", State: "idle",
 			Attributes: map[string][]byte{"businessowner": []byte("{not json")},
 		},
 	}
@@ -2087,7 +2071,7 @@ func TestActorsRepo_SaveSnapshot_AttributeOverLongSlug(t *testing.T) {
 	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
-			ID: actA, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered,
+			ID: actA, DisplayName: "X", State: "idle",
 			Attributes: map[string][]byte{strings.Repeat("a", 65): []byte(`{}`)},
 		},
 	}

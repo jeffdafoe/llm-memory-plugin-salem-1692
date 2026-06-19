@@ -24,17 +24,15 @@ func TestRoundTrip_ActorClonesBreakAliasing(t *testing.T) {
 
 	seed := map[sim.ActorID]*sim.Actor{
 		"elizabeth": {
-			ID:               "elizabeth",
-			DisplayName:      "Elizabeth Ellis",
-			Kind:             sim.KindNPCStateful,
-			State:            sim.StateWalking,
-			StateEnteredAt:   now,
-			Needs:            map[sim.NeedKey]int{"hunger": 5, "tiredness": 3},
-			Inventory:        map[sim.ItemKind]int{"bread": 2},
-			Coins:            42,
-			LastTickedAt:     &now,
-			RecentActions:    sim.NewRingBuffer[sim.Action](4),
-			RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
+			ID:            "elizabeth",
+			DisplayName:   "Elizabeth Ellis",
+			Kind:          sim.KindNPCStateful,
+			State:         sim.StateWalking,
+			Needs:         map[sim.NeedKey]int{"hunger": 5, "tiredness": 3},
+			Inventory:     map[sim.ItemKind]int{"bread": 2},
+			Coins:         42,
+			LastTickedAt:  &now,
+			RecentActions: sim.NewRingBuffer[sim.Action](4),
 			DwellCredits: map[sim.DwellCreditKey]*sim.DwellCredit{
 				{ObjectID: "oak-1", Attribute: "tiredness", Source: sim.DwellSourceObject}: {
 					ObjectID:           "oak-1",

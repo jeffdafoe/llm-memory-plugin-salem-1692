@@ -4,7 +4,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/handlers"
@@ -42,23 +41,20 @@ func buildArrivalWorld(t *testing.T) (*sim.World, func()) {
 	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
 		"farm": {ID: "farm", AssetID: "bldg-asset", Pos: sim.WorldPos{X: 160, Y: 160}},
 	})
-	now := time.Now().UTC()
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
 		"buyer": {
 			ID: "buyer", DisplayName: "Josiah", Kind: sim.KindNPCStateful,
-			State: sim.StateIdle, StateEnteredAt: now,
+			State:             sim.StateIdle,
 			Coins:             50,
 			InsideStructureID: "farm", // co-located with the seller, NO huddle
 			RecentActions:     sim.NewRingBuffer[sim.Action](4),
-			RecentStateTrans:  sim.NewRingBuffer[sim.StateTransition](4),
 		},
 		"seller": {
 			ID: "seller", DisplayName: "Elizabeth", Kind: sim.KindNPCShared,
-			State: sim.StateIdle, StateEnteredAt: now,
+			State:             sim.StateIdle,
 			Inventory:         map[sim.ItemKind]int{"stew": 5},
 			InsideStructureID: "farm",
 			RecentActions:     sim.NewRingBuffer[sim.Action](4),
-			RecentStateTrans:  sim.NewRingBuffer[sim.StateTransition](4),
 		},
 	})
 	w, err := sim.LoadWorld(context.Background(), repo)

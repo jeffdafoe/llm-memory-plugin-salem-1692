@@ -5,8 +5,8 @@ package sim
 // first), which is what loop-detection and diff-against-previous want.
 //
 // Generic over T so the same primitive backs RecentActions (Action) and
-// RecentStateTrans (StateTransition) on each Actor, and any future per-
-// actor history channels we add.
+// RecentReactorTicks (time.Time) on each Actor, PriceBook
+// (PriceObservation), and any future per-actor history channels we add.
 type RingBuffer[T any] struct {
 	buf  []T
 	head int  // index of next write

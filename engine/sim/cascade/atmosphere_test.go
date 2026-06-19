@@ -21,16 +21,13 @@ import (
 func buildAtmosphereDriverWorld(t *testing.T) (*sim.World, func()) {
 	t.Helper()
 	repo, handles := mem.NewRepository()
-	now := time.Now().UTC()
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
 		"hannah": {
-			ID:               "hannah",
-			DisplayName:      "Hannah",
-			Kind:             sim.KindNPCShared,
-			State:            sim.StateIdle,
-			StateEnteredAt:   now,
-			RecentActions:    sim.NewRingBuffer[sim.Action](4),
-			RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
+			ID:            "hannah",
+			DisplayName:   "Hannah",
+			Kind:          sim.KindNPCShared,
+			State:         sim.StateIdle,
+			RecentActions: sim.NewRingBuffer[sim.Action](4),
 		},
 	})
 

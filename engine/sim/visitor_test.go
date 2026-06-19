@@ -349,8 +349,7 @@ func TestTickVisitorCascade_DespawnDispatches(t *testing.T) {
 				Disposition: "weary",
 				ExpiresAt:   now.Add(-1 * time.Minute),
 			},
-			State:          sim.StateIdle,
-			StateEnteredAt: now,
+			State: sim.StateIdle,
 		}
 		world.Actors["test-visitor"] = v
 		return nil, nil

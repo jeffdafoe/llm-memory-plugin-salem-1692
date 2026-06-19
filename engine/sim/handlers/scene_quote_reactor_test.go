@@ -49,15 +49,13 @@ func buildSceneQuoteReactorWorld(t *testing.T, specs ...sceneQuoteReactorActor) 
 	seed := make(map[sim.ActorID]*sim.Actor, len(specs))
 	for _, s := range specs {
 		seed[s.id] = &sim.Actor{
-			ID:               s.id,
-			DisplayName:      s.displayName,
-			Kind:             s.kind,
-			State:            sim.StateIdle,
-			StateEnteredAt:   now,
-			Inventory:        s.inventory,
-			CurrentHuddleID:  s.huddleID,
-			RecentActions:    sim.NewRingBuffer[sim.Action](4),
-			RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
+			ID:              s.id,
+			DisplayName:     s.displayName,
+			Kind:            s.kind,
+			State:           sim.StateIdle,
+			Inventory:       s.inventory,
+			CurrentHuddleID: s.huddleID,
+			RecentActions:   sim.NewRingBuffer[sim.Action](4),
 		}
 	}
 	h.Actors.Seed(seed)

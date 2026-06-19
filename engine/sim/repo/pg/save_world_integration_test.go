@@ -197,14 +197,14 @@ func TestIntegration_SaveWorld_SameWindowOrderAndRoomGrant(t *testing.T) {
 		}},
 	}
 	w.Actors = map[sim.ActorID]*sim.Actor{
-		lodgerID: {ID: lodgerID, DisplayName: "Lodger", State: sim.StateIdle, StateEnteredAt: ts, Coins: 65,
+		lodgerID: {ID: lodgerID, DisplayName: "Lodger", State: sim.StateIdle, Coins: 65,
 			RoomAccess: map[sim.RoomAccessKey]*sim.RoomAccess{
 				{RoomID: roomID, Source: sim.AccessSourceLedger}: {
 					RoomID: roomID, Source: sim.AccessSourceLedger,
 					LedgerID: ledgerID, ExpiresAt: &checkout, Active: true, CreatedAt: ts,
 				},
 			}},
-		keeperID: {ID: keeperID, DisplayName: "Keeper", State: sim.StateIdle, StateEnteredAt: ts, Coins: 85},
+		keeperID: {ID: keeperID, DisplayName: "Keeper", State: sim.StateIdle, Coins: 85},
 	}
 	delivered := ts.Add(3 * time.Second)
 	w.Orders = map[sim.OrderID]*sim.Order{

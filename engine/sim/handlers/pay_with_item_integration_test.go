@@ -62,18 +62,16 @@ func buildIntegrationWorld(t *testing.T) (*sim.World, func()) {
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
 		"alice": {
 			ID: "alice", DisplayName: "Alice", Kind: sim.KindNPCShared,
-			State: sim.StateIdle, StateEnteredAt: now,
+			State: sim.StateIdle,
 			Coins: 50, CurrentHuddleID: "h1",
-			RecentActions:    sim.NewRingBuffer[sim.Action](4),
-			RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
+			RecentActions: sim.NewRingBuffer[sim.Action](4),
 		},
 		"bob": {
 			ID: "bob", DisplayName: "Bob", Kind: sim.KindNPCShared,
-			State: sim.StateIdle, StateEnteredAt: now,
-			Inventory:        map[sim.ItemKind]int{"bread": 5},
-			CurrentHuddleID:  "h1",
-			RecentActions:    sim.NewRingBuffer[sim.Action](4),
-			RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
+			State:           sim.StateIdle,
+			Inventory:       map[sim.ItemKind]int{"bread": 5},
+			CurrentHuddleID: "h1",
+			RecentActions:   sim.NewRingBuffer[sim.Action](4),
 		},
 	})
 	w, err := sim.LoadWorld(context.Background(), repo)

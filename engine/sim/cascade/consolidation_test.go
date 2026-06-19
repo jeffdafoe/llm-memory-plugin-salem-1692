@@ -20,26 +20,21 @@ import (
 func buildConsolidationHandlerWorld(t *testing.T) (*sim.World, func()) {
 	t.Helper()
 	repo, handles := mem.NewRepository()
-	now := time.Now().UTC()
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
 		"hannah": {
-			ID:               "hannah",
-			DisplayName:      "Hannah",
-			Kind:             sim.KindNPCShared,
-			LLMAgent:         "salem-vendor",
-			State:            sim.StateIdle,
-			StateEnteredAt:   now,
-			RecentActions:    sim.NewRingBuffer[sim.Action](4),
-			RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
+			ID:            "hannah",
+			DisplayName:   "Hannah",
+			Kind:          sim.KindNPCShared,
+			LLMAgent:      "salem-vendor",
+			State:         sim.StateIdle,
+			RecentActions: sim.NewRingBuffer[sim.Action](4),
 		},
 		"ezekiel": {
-			ID:               "ezekiel",
-			DisplayName:      "Ezekiel Crane",
-			Kind:             sim.KindNPCStateful,
-			State:            sim.StateIdle,
-			StateEnteredAt:   now,
-			RecentActions:    sim.NewRingBuffer[sim.Action](4),
-			RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
+			ID:            "ezekiel",
+			DisplayName:   "Ezekiel Crane",
+			Kind:          sim.KindNPCStateful,
+			State:         sim.StateIdle,
+			RecentActions: sim.NewRingBuffer[sim.Action](4),
 		},
 	})
 
@@ -281,13 +276,11 @@ func TestRunOneSweep_RateLimitedToCap(t *testing.T) {
 		peerID := sim.ActorID("peer-" + string(rune('A'+i)))
 		if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 			world.Actors[peerID] = &sim.Actor{
-				ID:               peerID,
-				DisplayName:      string(peerID),
-				Kind:             sim.KindNPCStateful,
-				State:            sim.StateIdle,
-				StateEnteredAt:   at,
-				RecentActions:    sim.NewRingBuffer[sim.Action](4),
-				RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
+				ID:            peerID,
+				DisplayName:   string(peerID),
+				Kind:          sim.KindNPCStateful,
+				State:         sim.StateIdle,
+				RecentActions: sim.NewRingBuffer[sim.Action](4),
 			}
 			return nil, nil
 		}}); err != nil {
