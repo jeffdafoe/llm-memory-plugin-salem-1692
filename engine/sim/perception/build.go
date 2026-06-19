@@ -87,6 +87,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	p.PendingDeliveriesFromMe, p.PendingDeliveriesToMe = buildPendingOrderViews(snap, actorID)
 	p.PendingOffersFromMe = buildPendingOffersFromMe(snap, actorID, actorSnap)
 	p.RecentlyResolvedOffersFromMe = buildRecentlyResolvedOffersFromMe(snap, actorID, actorSnap)
+	p.CountersAwaitingMyResponse = buildCountersAwaitingMyResponse(snap, actorID, actorSnap)
 	p.LocalDateUTC = snap.LocalDateUTC // world "today" for the order-book date split (ZBBS-HOME-403)
 	p.RecoveryOptions = buildRecoveryOptions(snap, actorID, actorSnap)
 	p.Satiation = buildSatiation(snap, actorID, actorSnap)
@@ -1754,8 +1755,9 @@ const recentlyResolvedOfferWindow = 3 * time.Minute
 // buildRecentlyResolvedOffersFromMe scans snap.PayLedger for the subject's OWN
 // offers that left Pending within recentlyResolvedOfferWindow of
 // snap.PublishedAt — entries where the subject is the BUYER and the state is a
-// terminal resolution (Countered excluded: it spawns a fresh pending entry the
-// buyer responds to, an active flow, not a closed deal). It is the buyer-side
+// terminal resolution (Countered excluded: it is an active flow the buyer must
+// still answer, not a closed deal — surfaced separately by
+// buildCountersAwaitingMyResponse). It is the buyer-side
 // resolution companion to buildPendingOffersFromMe: it closes the blind window
 // between an offer leaving the pending scan and the PayResolvedWarrantReason
 // event surfacing, which can lag a tick behind the buyer's in-flight
@@ -1812,6 +1814,106 @@ func buildRecentlyResolvedOffersFromMe(snap *sim.Snapshot, subject sim.ActorID, 
 			PayItems:   e.PayItems,
 			Accepted:   e.State == sim.PayLedgerStateAccepted,
 			ConsumeNow: e.ConsumeNow,
+		})
+	}
+	return views
+}
+
+// counterResponseWindow bounds how long a seller's counter is surfaced to the
+// buyer as awaiting a response. A countered parent entry is terminal and lingers
+// in the ledger up to PayLedgerTerminalRetention (1h); without a window the buyer
+// would be nagged about a stale counter long after the moment passed. Matched to
+// the pending-offer TTL scale (the window an un-acted offer would have expired
+// in) so a counter stops reading as "live" on the same cadence.
+const counterResponseWindow = 3 * time.Minute
+
+// buildCountersAwaitingMyResponse scans snap.PayLedger for a seller's counter the
+// subject (as buyer) has not yet answered: terminal Countered entries where the
+// subject is the BUYER, resolved within counterResponseWindow of
+// snap.PublishedAt, still below the counter-chain depth cap (validateInResponseTo
+// rejects a response once parent.Depth reaches MaxPayCounterChainDepth, so a
+// capped counter can't be taken — don't steer one), and with no child entry
+// chained via ParentID (a buyer's response creates such a child, so a counter
+// with one has been answered).
+//
+// It is the buyer-side standing decision view of a counter — the counterpart to
+// the seller's buildPayOffersForMe standing scan (ZBBS-HOME-453). It reads the
+// ledger rather than the PayResolvedWarrantReason{Countered} event because of
+// LLM-21: that warrant can ride a tick behind the buyer's in-flight deliberation
+// (a counter stamped mid-tick opens a fresh cycle the in-flight tick never
+// carries), and unlike an accept/decline the recently-settled scan deliberately
+// excludes Countered, so the warrant is the ONLY thing that surfaces a counter —
+// a buyer could re-offer a need already in negotiation, or miss the counter
+// entirely if the warrant is evicted while the buyer is shelved. The per-tick
+// ledger scan is robust to that timing.
+//
+// Seller name acquaintance-gated like the pending view. Returns nil for none.
+// Ordering: by LedgerID ascending, deterministic across runs.
+func buildCountersAwaitingMyResponse(snap *sim.Snapshot, subject sim.ActorID, subjectSnap *sim.ActorSnapshot) []CounterOfferView {
+	if snap == nil || len(snap.PayLedger) == 0 {
+		return nil
+	}
+	// A buyer's response to a counter is a fresh entry chained via ParentID, so a
+	// countered entry that already has such a child has been answered and must
+	// not be re-surfaced. Collect answered parents in one pass.
+	answered := make(map[sim.LedgerID]struct{})
+	for _, e := range snap.PayLedger {
+		if e != nil && e.ParentID != 0 {
+			answered[e.ParentID] = struct{}{}
+		}
+	}
+	var ids []sim.LedgerID
+	for id, e := range snap.PayLedger {
+		if e == nil || e.BuyerID != subject {
+			continue
+		}
+		if e.State != sim.PayLedgerStateCountered {
+			continue
+		}
+		if e.Depth >= sim.MaxPayCounterChainDepth {
+			continue
+		}
+		if e.ResolvedAt.IsZero() {
+			continue
+		}
+		if snap.PublishedAt.Sub(e.ResolvedAt) > counterResponseWindow {
+			continue
+		}
+		if _, done := answered[id]; done {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+
+	resolveSeller := func(id sim.ActorID) string {
+		seller := snap.Actors[id]
+		if seller == nil {
+			return string(id)
+		}
+		acquainted := false
+		if subjectSnap != nil && seller.DisplayName != "" {
+			_, acquainted = subjectSnap.Acquaintances[seller.DisplayName]
+		}
+		return descriptorLabel(seller.DisplayName, seller.Role, acquainted)
+	}
+
+	views := make([]CounterOfferView, 0, len(ids))
+	for _, id := range ids {
+		e := snap.PayLedger[id]
+		views = append(views, CounterOfferView{
+			LedgerID:      e.ID,
+			SellerName:    resolveSeller(e.SellerID),
+			Item:          e.ItemKind,
+			Qty:           e.Qty,
+			CounterAmount: e.CounterAmount,
+			// snap.PayLedger entries are deep-cloned at publish, so aliasing the
+			// snapshot's CounterPayItems slice into the read-only, per-tick view
+			// is safe — same posture as buildPendingOffersFromMe's PayItems.
+			CounterPayItems: e.CounterPayItems,
 		})
 	}
 	return views

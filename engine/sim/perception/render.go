@@ -242,6 +242,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderPendingDeliveriesToMe(&ephemeral, p.PendingDeliveriesToMe, p.LocalDateUTC)
 	renderPendingOffersFromMe(&ephemeral, p.PendingOffersFromMe)
 	renderRecentlyResolvedOffersFromMe(&ephemeral, p.RecentlyResolvedOffersFromMe)
+	renderCountersAwaitingMyResponse(&ephemeral, p.CountersAwaitingMyResponse)
 	renderRecoveryOptions(&ephemeral, p.RecoveryOptions)
 	renderSatiation(&ephemeral, p.Satiation)
 	renderRestocking(&ephemeral, p.Restocking)
@@ -1616,6 +1617,41 @@ func renderRecentlyResolvedOffersFromMe(b *strings.Builder, offers []ResolvedOff
 		fmt.Fprintf(b, "%d. Your offer to %s for %d %s didn't go through — it's closed, so stop waiting on it (offer id %d).\n",
 			i+1, seller, o.Qty, item, o.LedgerID)
 	}
+}
+
+// renderCountersAwaitingMyResponse renders the buyer-side "## A counter to your
+// offer" section — a seller's counter to an offer the buyer placed that the
+// buyer has not yet answered, surfaced from the standing ledger scan
+// (buildCountersAwaitingMyResponse) rather than the timing-fragile
+// PayResolvedWarrantReason{Countered} event so it cannot ride a tick late or
+// vanish if the warrant is evicted while the buyer is shelved (LLM-21). It is the
+// buyer-side mirror of renderPayOffers (the seller's "offers awaiting your
+// decision"): the buyer learns the seller wants different terms and how to act on
+// them. Copy is plain modern English, like its settled-offers sibling, for the
+// weak stateful models — it tells the buyer to answer with a fresh pay_with_item
+// carrying in_response_to, or let the counter go. Payment terms reuse
+// formatOfferPayment so the buyer reads the same "5 nails and 3 coins" shape the
+// seller proposed. Item kinds sanitized inline. Uncapped — bounded by the buyer's
+// own recent counters and the short response window.
+func renderCountersAwaitingMyResponse(b *strings.Builder, counters []CounterOfferView) {
+	if len(counters) == 0 {
+		return
+	}
+	b.WriteString("## A counter to your offer\n")
+	for i, c := range counters {
+		seller := sanitizeInline(c.SellerName)
+		if seller == "" {
+			seller = "someone"
+		}
+		item := sanitizeInline(string(c.Item))
+		if item == "" {
+			item = "item"
+		}
+		terms := formatOfferPayment(c.CounterAmount, c.CounterPayItems)
+		fmt.Fprintf(b, "%d. %s countered your offer for %d %s — they now want %s (offer id %d).\n",
+			i+1, seller, c.Qty, item, terms, c.LedgerID)
+	}
+	b.WriteString("To take a counter, make a fresh offer at their terms with pay_with_item, setting in_response_to to the offer id above. If the new terms don't suit you, you may simply let it go.\n")
 }
 
 // isSectionSurfacedKind reports whether a warrant kind wakes the actor for a
