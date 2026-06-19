@@ -39,17 +39,15 @@ func buildDwellReactorWorld(t *testing.T) (*sim.World, func()) {
 	})
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
 		"hannah": {
-			ID:               "hannah",
-			DisplayName:      "Hannah",
-			LLMAgent:         "hannah-innkeeper",
-			Kind:             sim.KindNPCStateful,
-			State:            sim.StateIdle,
-			StateEnteredAt:   time.Now().UTC(),
-			Pos:              sim.TilePos{X: 105, Y: 100},
-			Needs:            map[sim.NeedKey]int{"hunger": 20},
-			Inventory:        map[sim.ItemKind]int{"stew": 2},
-			RecentActions:    sim.NewRingBuffer[sim.Action](4),
-			RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
+			ID:            "hannah",
+			DisplayName:   "Hannah",
+			LLMAgent:      "hannah-innkeeper",
+			Kind:          sim.KindNPCStateful,
+			State:         sim.StateIdle,
+			Pos:           sim.TilePos{X: 105, Y: 100},
+			Needs:         map[sim.NeedKey]int{"hunger": 20},
+			Inventory:     map[sim.ItemKind]int{"stew": 2},
+			RecentActions: sim.NewRingBuffer[sim.Action](4),
 		},
 	})
 	w, err := sim.LoadWorld(context.Background(), repo)

@@ -19,35 +19,28 @@ func buildNarrativeTestWorld(t *testing.T) (*sim.World, func()) {
 	t.Helper()
 	repo, handles := mem.NewRepository()
 
-	now := time.Now().UTC()
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
 		"hannah": {
-			ID:               "hannah",
-			DisplayName:      "Hannah",
-			Kind:             sim.KindNPCShared,
-			LLMAgent:         "salem-vendor",
-			State:            sim.StateIdle,
-			StateEnteredAt:   now,
-			RecentActions:    sim.NewRingBuffer[sim.Action](4),
-			RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
+			ID:            "hannah",
+			DisplayName:   "Hannah",
+			Kind:          sim.KindNPCShared,
+			LLMAgent:      "salem-vendor",
+			State:         sim.StateIdle,
+			RecentActions: sim.NewRingBuffer[sim.Action](4),
 		},
 		"ezekiel": {
-			ID:               "ezekiel",
-			DisplayName:      "Ezekiel Crane",
-			Kind:             sim.KindNPCStateful,
-			State:            sim.StateIdle,
-			StateEnteredAt:   now,
-			RecentActions:    sim.NewRingBuffer[sim.Action](4),
-			RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
+			ID:            "ezekiel",
+			DisplayName:   "Ezekiel Crane",
+			Kind:          sim.KindNPCStateful,
+			State:         sim.StateIdle,
+			RecentActions: sim.NewRingBuffer[sim.Action](4),
 		},
 		"player": {
-			ID:               "player",
-			DisplayName:      "Wanderer",
-			Kind:             sim.KindPC,
-			State:            sim.StateIdle,
-			StateEnteredAt:   now,
-			RecentActions:    sim.NewRingBuffer[sim.Action](4),
-			RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
+			ID:            "player",
+			DisplayName:   "Wanderer",
+			Kind:          sim.KindPC,
+			State:         sim.StateIdle,
+			RecentActions: sim.NewRingBuffer[sim.Action](4),
 		},
 	})
 
@@ -216,14 +209,12 @@ func TestFindNarrativeCandidates_LimitRespected(t *testing.T) {
 	// Seed a second KindNPCShared actor to get 2 candidates.
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		world.Actors["mara"] = &sim.Actor{
-			ID:               "mara",
-			DisplayName:      "Mara",
-			Kind:             sim.KindNPCShared,
-			LLMAgent:         "salem-vendor",
-			State:            sim.StateIdle,
-			StateEnteredAt:   at,
-			RecentActions:    sim.NewRingBuffer[sim.Action](4),
-			RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
+			ID:            "mara",
+			DisplayName:   "Mara",
+			Kind:          sim.KindNPCShared,
+			LLMAgent:      "salem-vendor",
+			State:         sim.StateIdle,
+			RecentActions: sim.NewRingBuffer[sim.Action](4),
 		}
 		return nil, nil
 	}}); err != nil {
@@ -252,14 +243,12 @@ func TestFindNarrativeCandidates_OrderingNullsFirst(t *testing.T) {
 	// hannah. Mara should rank first via NULLS-first.
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		world.Actors["mara"] = &sim.Actor{
-			ID:               "mara",
-			DisplayName:      "Mara",
-			Kind:             sim.KindNPCShared,
-			LLMAgent:         "salem-vendor",
-			State:            sim.StateIdle,
-			StateEnteredAt:   at,
-			RecentActions:    sim.NewRingBuffer[sim.Action](4),
-			RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
+			ID:            "mara",
+			DisplayName:   "Mara",
+			Kind:          sim.KindNPCShared,
+			LLMAgent:      "salem-vendor",
+			State:         sim.StateIdle,
+			RecentActions: sim.NewRingBuffer[sim.Action](4),
 		}
 		return nil, nil
 	}}); err != nil {
@@ -294,14 +283,12 @@ func TestFindNarrativeCandidates_DeterministicOrder(t *testing.T) {
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		for _, id := range []sim.ActorID{"mara", "abigail"} {
 			world.Actors[id] = &sim.Actor{
-				ID:               id,
-				DisplayName:      string(id),
-				Kind:             sim.KindNPCShared,
-				LLMAgent:         "salem-vendor",
-				State:            sim.StateIdle,
-				StateEnteredAt:   at,
-				RecentActions:    sim.NewRingBuffer[sim.Action](4),
-				RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
+				ID:            id,
+				DisplayName:   string(id),
+				Kind:          sim.KindNPCShared,
+				LLMAgent:      "salem-vendor",
+				State:         sim.StateIdle,
+				RecentActions: sim.NewRingBuffer[sim.Action](4),
 			}
 		}
 		return nil, nil
@@ -446,13 +433,11 @@ func TestFindNarrativeCandidates_PeerSummariesDistinctIDsSameName(t *testing.T) 
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		for _, id := range []sim.ActorID{"mary-1", "mary-2"} {
 			world.Actors[id] = &sim.Actor{
-				ID:               id,
-				DisplayName:      "Mary",
-				Kind:             sim.KindNPCStateful,
-				State:            sim.StateIdle,
-				StateEnteredAt:   at,
-				RecentActions:    sim.NewRingBuffer[sim.Action](4),
-				RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
+				ID:            id,
+				DisplayName:   "Mary",
+				Kind:          sim.KindNPCStateful,
+				State:         sim.StateIdle,
+				RecentActions: sim.NewRingBuffer[sim.Action](4),
 			}
 		}
 		world.Actors["hannah"].Relationships = map[sim.ActorID]*sim.Relationship{

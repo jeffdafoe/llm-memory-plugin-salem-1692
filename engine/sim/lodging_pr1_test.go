@@ -79,7 +79,6 @@ func TestAcceptPay_ServiceItem_SkipsStockGate(t *testing.T) {
 func buildLodgingDeliverWorld(t *testing.T, innRooms []*sim.Room) (*sim.World, func()) {
 	t.Helper()
 	repo, handles := mem.NewRepository()
-	now := time.Now().UTC()
 
 	handles.Structures.Seed(map[sim.StructureID]*sim.Structure{
 		"inn": {ID: "inn", DisplayName: "Hannah's Inn", Rooms: innRooms},
@@ -93,29 +92,26 @@ func buildLodgingDeliverWorld(t *testing.T, innRooms []*sim.Room) (*sim.World, f
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
 		"hannah": {
 			ID: "hannah", DisplayName: "Hannah", Kind: sim.KindNPCShared,
-			State: sim.StateIdle, StateEnteredAt: now,
-			WorkStructureID:  "inn",
-			CurrentHuddleID:  "h1",
-			Inventory:        map[sim.ItemKind]int{},
-			RecentActions:    sim.NewRingBuffer[sim.Action](4),
-			RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
+			State:           sim.StateIdle,
+			WorkStructureID: "inn",
+			CurrentHuddleID: "h1",
+			Inventory:       map[sim.ItemKind]int{},
+			RecentActions:   sim.NewRingBuffer[sim.Action](4),
 		},
 		"jefferey": {
 			ID: "jefferey", DisplayName: "Jefferey", Kind: sim.KindNPCStateful,
-			State: sim.StateIdle, StateEnteredAt: now,
-			CurrentHuddleID:  "h1",
-			Inventory:        map[sim.ItemKind]int{},
-			RecentActions:    sim.NewRingBuffer[sim.Action](4),
-			RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
+			State:           sim.StateIdle,
+			CurrentHuddleID: "h1",
+			Inventory:       map[sim.ItemKind]int{},
+			RecentActions:   sim.NewRingBuffer[sim.Action](4),
 		},
 		// A second co-present actor, for the multi-consumer guard test.
 		"mary": {
 			ID: "mary", DisplayName: "Mary", Kind: sim.KindNPCStateful,
-			State: sim.StateIdle, StateEnteredAt: now,
-			CurrentHuddleID:  "h1",
-			Inventory:        map[sim.ItemKind]int{},
-			RecentActions:    sim.NewRingBuffer[sim.Action](4),
-			RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
+			State:           sim.StateIdle,
+			CurrentHuddleID: "h1",
+			Inventory:       map[sim.ItemKind]int{},
+			RecentActions:   sim.NewRingBuffer[sim.Action](4),
 		},
 	})
 

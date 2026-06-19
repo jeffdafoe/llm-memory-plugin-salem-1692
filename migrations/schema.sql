@@ -137,7 +137,6 @@ CREATE TABLE public.actor (
     snapshot_gen bigint DEFAULT 0 NOT NULL,
     move_attempt_counter bigint DEFAULT 0 NOT NULL,
     sim_state character varying(32) DEFAULT 'idle'::character varying NOT NULL,
-    sim_state_entered_at timestamp with time zone DEFAULT now() NOT NULL,
     admin boolean DEFAULT false NOT NULL,
     move_destination jsonb,
     CONSTRAINT actor_driver_not_both CHECK ((NOT ((llm_memory_agent IS NOT NULL) AND (login_username IS NOT NULL)))),

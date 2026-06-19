@@ -16,25 +16,21 @@ func buildAcquaintanceTestWorld(t *testing.T) (*sim.World, func()) {
 	t.Helper()
 	repo, handles := mem.NewRepository()
 
-	now := time.Now().UTC()
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
 		"hannah": {
 			ID: "hannah", DisplayName: "Hannah",
-			Kind: sim.KindNPCShared, State: sim.StateIdle, StateEnteredAt: now,
-			RecentActions:    sim.NewRingBuffer[sim.Action](4),
-			RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
+			Kind: sim.KindNPCShared, State: sim.StateIdle,
+			RecentActions: sim.NewRingBuffer[sim.Action](4),
 		},
 		"ezekiel": {
 			ID: "ezekiel", DisplayName: "Ezekiel Crane",
-			Kind: sim.KindNPCStateful, State: sim.StateIdle, StateEnteredAt: now,
-			RecentActions:    sim.NewRingBuffer[sim.Action](4),
-			RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
+			Kind: sim.KindNPCStateful, State: sim.StateIdle,
+			RecentActions: sim.NewRingBuffer[sim.Action](4),
 		},
 		"pc-jeff": {
 			ID: "pc-jeff", DisplayName: "Jeff",
-			Kind: sim.KindPC, State: sim.StateIdle, StateEnteredAt: now,
-			RecentActions:    sim.NewRingBuffer[sim.Action](4),
-			RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
+			Kind: sim.KindPC, State: sim.StateIdle,
+			RecentActions: sim.NewRingBuffer[sim.Action](4),
 		},
 	})
 

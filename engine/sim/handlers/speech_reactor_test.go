@@ -30,18 +30,15 @@ type speakActor struct {
 func buildSpeechReactorWorld(t *testing.T, specs ...speakActor) (*sim.World, func()) {
 	t.Helper()
 	repo, handles := mem.NewRepository()
-	now := time.Now().UTC()
 	seed := make(map[sim.ActorID]*sim.Actor, len(specs))
 	for _, s := range specs {
 		seed[s.id] = &sim.Actor{
-			ID:               s.id,
-			DisplayName:      s.displayName,
-			Kind:             s.kind,
-			State:            sim.StateIdle,
-			StateEnteredAt:   now,
-			CurrentHuddleID:  s.huddleID,
-			RecentActions:    sim.NewRingBuffer[sim.Action](4),
-			RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
+			ID:              s.id,
+			DisplayName:     s.displayName,
+			Kind:            s.kind,
+			State:           sim.StateIdle,
+			CurrentHuddleID: s.huddleID,
+			RecentActions:   sim.NewRingBuffer[sim.Action](4),
 		}
 	}
 	handles.Actors.Seed(seed)

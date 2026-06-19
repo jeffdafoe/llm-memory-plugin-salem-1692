@@ -22,27 +22,22 @@ import (
 func buildActionLogCascadeWorld(t *testing.T) (*sim.World, func()) {
 	t.Helper()
 	repo, handles := mem.NewRepository()
-	now := time.Now().UTC()
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
 		"hannah": {
-			ID:               "hannah",
-			DisplayName:      "Hannah",
-			Kind:             sim.KindNPCShared,
-			State:            sim.StateIdle,
-			StateEnteredAt:   now,
-			CurrentHuddleID:  "h1",
-			RecentActions:    sim.NewRingBuffer[sim.Action](4),
-			RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
+			ID:              "hannah",
+			DisplayName:     "Hannah",
+			Kind:            sim.KindNPCShared,
+			State:           sim.StateIdle,
+			CurrentHuddleID: "h1",
+			RecentActions:   sim.NewRingBuffer[sim.Action](4),
 		},
 		"bob": {
-			ID:               "bob",
-			DisplayName:      "Bob",
-			Kind:             sim.KindNPCShared,
-			State:            sim.StateIdle,
-			StateEnteredAt:   now,
-			CurrentHuddleID:  "h1",
-			RecentActions:    sim.NewRingBuffer[sim.Action](4),
-			RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
+			ID:              "bob",
+			DisplayName:     "Bob",
+			Kind:            sim.KindNPCShared,
+			State:           sim.StateIdle,
+			CurrentHuddleID: "h1",
+			RecentActions:   sim.NewRingBuffer[sim.Action](4),
 		},
 	})
 	handles.Structures.Seed(map[sim.StructureID]*sim.Structure{
@@ -701,14 +696,13 @@ func TestSubscribers_EmitDurableRows(t *testing.T) {
 		// A PC (LoginUsername set) to exercise source="player". The source
 		// derivation keys on LoginUsername, not Kind.
 		world.Actors["jeff"] = &sim.Actor{
-			ID:               "jeff",
-			DisplayName:      "Jefferey",
-			LoginUsername:    "jeff",
-			Kind:             sim.KindNPCShared,
-			State:            sim.StateIdle,
-			CurrentHuddleID:  "h1",
-			RecentActions:    sim.NewRingBuffer[sim.Action](4),
-			RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
+			ID:              "jeff",
+			DisplayName:     "Jefferey",
+			LoginUsername:   "jeff",
+			Kind:            sim.KindNPCShared,
+			State:           sim.StateIdle,
+			CurrentHuddleID: "h1",
+			RecentActions:   sim.NewRingBuffer[sim.Action](4),
 		}
 	})
 

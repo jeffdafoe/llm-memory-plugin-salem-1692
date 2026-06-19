@@ -60,17 +60,15 @@ func buildQuoteTestWorld(
 		// Tests that need PC explicitly set Kind=KindPC.
 		_ = kind
 		a := &sim.Actor{
-			ID:               s.id,
-			DisplayName:      s.displayName,
-			Kind:             s.kind,
-			State:            sim.StateIdle,
-			StateEnteredAt:   now,
-			Inventory:        s.inventory,
-			CurrentHuddleID:  s.huddleID,
-			BreakUntil:       s.breakUntil,
-			LastPCSeenAt:     s.lastPCSeenAt,
-			RecentActions:    sim.NewRingBuffer[sim.Action](4),
-			RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
+			ID:              s.id,
+			DisplayName:     s.displayName,
+			Kind:            s.kind,
+			State:           sim.StateIdle,
+			Inventory:       s.inventory,
+			CurrentHuddleID: s.huddleID,
+			BreakUntil:      s.breakUntil,
+			LastPCSeenAt:    s.lastPCSeenAt,
+			RecentActions:   sim.NewRingBuffer[sim.Action](4),
 		}
 		actorSeed[s.id] = a
 		if s.huddleID == huddleID && huddleID != "" {

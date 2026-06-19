@@ -22,16 +22,14 @@ func buildConsumeReactorWorld(t *testing.T, hunger int) (*sim.World, func()) {
 	handles.ItemKinds.Seed(mem.SeedItemKinds())
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
 		"hannah": {
-			ID:               "hannah",
-			DisplayName:      "Hannah",
-			Kind:             sim.KindNPCStateful,
-			State:            sim.StateIdle,
-			StateEnteredAt:   time.Now().UTC(),
-			Pos:              sim.TilePos{X: 105, Y: 100},
-			Needs:            map[sim.NeedKey]int{"hunger": hunger},
-			Inventory:        map[sim.ItemKind]int{"stew": 2},
-			RecentActions:    sim.NewRingBuffer[sim.Action](4),
-			RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
+			ID:            "hannah",
+			DisplayName:   "Hannah",
+			Kind:          sim.KindNPCStateful,
+			State:         sim.StateIdle,
+			Pos:           sim.TilePos{X: 105, Y: 100},
+			Needs:         map[sim.NeedKey]int{"hunger": hunger},
+			Inventory:     map[sim.ItemKind]int{"stew": 2},
+			RecentActions: sim.NewRingBuffer[sim.Action](4),
 		},
 	})
 	w, err := sim.LoadWorld(context.Background(), repo)

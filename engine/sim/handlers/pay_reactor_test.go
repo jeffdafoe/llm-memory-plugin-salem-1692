@@ -31,19 +31,16 @@ type payReactorActor struct {
 func buildPayReactorWorld(t *testing.T, specs ...payReactorActor) (*sim.World, func()) {
 	t.Helper()
 	repo, handles := mem.NewRepository()
-	now := time.Now().UTC()
 	seed := make(map[sim.ActorID]*sim.Actor, len(specs))
 	for _, s := range specs {
 		seed[s.id] = &sim.Actor{
-			ID:               s.id,
-			DisplayName:      s.displayName,
-			Kind:             s.kind,
-			State:            sim.StateIdle,
-			StateEnteredAt:   now,
-			CurrentHuddleID:  s.huddleID,
-			Coins:            s.coins,
-			RecentActions:    sim.NewRingBuffer[sim.Action](4),
-			RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
+			ID:              s.id,
+			DisplayName:     s.displayName,
+			Kind:            s.kind,
+			State:           sim.StateIdle,
+			CurrentHuddleID: s.huddleID,
+			Coins:           s.coins,
+			RecentActions:   sim.NewRingBuffer[sim.Action](4),
 		}
 	}
 	handles.Actors.Seed(seed)

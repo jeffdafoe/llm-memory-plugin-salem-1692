@@ -22,17 +22,14 @@ import (
 func buildNarrativeDriverWorld(t *testing.T) (*sim.World, func()) {
 	t.Helper()
 	repo, handles := mem.NewRepository()
-	now := time.Now().UTC()
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
 		"hannah": {
-			ID:               "hannah",
-			DisplayName:      "Hannah",
-			Kind:             sim.KindNPCShared,
-			LLMAgent:         "salem-vendor",
-			State:            sim.StateIdle,
-			StateEnteredAt:   now,
-			RecentActions:    sim.NewRingBuffer[sim.Action](4),
-			RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
+			ID:            "hannah",
+			DisplayName:   "Hannah",
+			Kind:          sim.KindNPCShared,
+			LLMAgent:      "salem-vendor",
+			State:         sim.StateIdle,
+			RecentActions: sim.NewRingBuffer[sim.Action](4),
 		},
 	})
 
@@ -68,13 +65,11 @@ func seedHannahWithSourceMaterial(t *testing.T, w *sim.World, at time.Time) {
 	}
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		world.Actors["wendy"] = &sim.Actor{
-			ID:               "wendy",
-			DisplayName:      "Wendy",
-			Kind:             sim.KindNPCStateful,
-			State:            sim.StateIdle,
-			StateEnteredAt:   at,
-			RecentActions:    sim.NewRingBuffer[sim.Action](4),
-			RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
+			ID:            "wendy",
+			DisplayName:   "Wendy",
+			Kind:          sim.KindNPCStateful,
+			State:         sim.StateIdle,
+			RecentActions: sim.NewRingBuffer[sim.Action](4),
 		}
 		world.Actors["hannah"].Relationships = map[sim.ActorID]*sim.Relationship{
 			"wendy": {SummaryText: "She visits the tavern most evenings."},
@@ -263,14 +258,12 @@ func TestRunOneNarrativeSweep_RateLimitedToCap(t *testing.T) {
 		actorName := string(actorID)
 		if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 			world.Actors[actorID] = &sim.Actor{
-				ID:               actorID,
-				DisplayName:      actorName,
-				Kind:             sim.KindNPCShared,
-				LLMAgent:         "salem-vendor",
-				State:            sim.StateIdle,
-				StateEnteredAt:   at,
-				RecentActions:    sim.NewRingBuffer[sim.Action](4),
-				RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
+				ID:            actorID,
+				DisplayName:   actorName,
+				Kind:          sim.KindNPCShared,
+				LLMAgent:      "salem-vendor",
+				State:         sim.StateIdle,
+				RecentActions: sim.NewRingBuffer[sim.Action](4),
 			}
 			return nil, nil
 		}}); err != nil {

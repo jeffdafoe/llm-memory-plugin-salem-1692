@@ -96,17 +96,6 @@ type Action struct {
 	SceneID SceneID
 }
 
-// StateTransition records a single move from one macro-state to another.
-// Stored in the actor's RecentStateTrans ring buffer for loop detection
-// ("Walking → Idle → Walking 5 times in 18 min — you're stuck") and admin-
-// side debuggability.
-type StateTransition struct {
-	At     time.Time
-	From   ActorState
-	To     ActorState
-	Reason string // "arrived at structure", "joined huddle", "started walk_to", ...
-}
-
 // NeedKey identifies a kind of need: "hunger", "thirst", "tiredness", etc.
 type NeedKey string
 
@@ -663,16 +652,14 @@ type Actor struct {
 	// Behavior history — load-bearing for diff-against-previous and loop
 	// detection. RecentActions and LastSnapshot are in-memory only (not
 	// checkpointed); post-restart blind spot for the first few ticks is
-	// acceptable, mirrors RecentStateTrans.
+	// acceptable.
 	RecentActions *RingBuffer[Action]
 	LastSnapshot  *ActorSnapshot
 
 	// Macro-state — soft transitions, engine sets on observation (no strict
-	// FSM validation). RecentStateTrans is in-memory only (not checkpointed);
-	// State itself is checkpointed so restart resumes in the same state.
-	State            ActorState
-	StateEnteredAt   time.Time
-	RecentStateTrans *RingBuffer[StateTransition]
+	// FSM validation). State is checkpointed so restart resumes in the same
+	// state.
+	State ActorState
 
 	DwellCredits map[DwellCreditKey]*DwellCredit
 
@@ -788,8 +775,8 @@ func cloneSummonRefusal(r *SummonRefusal) *SummonRefusal {
 // and pointer fields commands rebind (BreakUntil, SleepingUntil,
 // LastTickedAt, SocialLastBoundaryAt, Narrative) are cloned.
 // Attributes is
-// deep-cloned including each []byte payload. The two RingBuffers are
-// cloned via RingBuffer.Clone. MoveIntent is deep-cloned via
+// deep-cloned including each []byte payload. RecentActions is cloned
+// via RingBuffer.Clone. MoveIntent is deep-cloned via
 // cloneMoveIntent (its MoveDestination carries StructureID / Position
 // pointer fields that would otherwise alias across the boundary).
 //
@@ -913,9 +900,6 @@ func CloneActor(a *Actor) *Actor {
 	}
 	if a.RecentActions != nil {
 		cp.RecentActions = a.RecentActions.Clone()
-	}
-	if a.RecentStateTrans != nil {
-		cp.RecentStateTrans = a.RecentStateTrans.Clone()
 	}
 	if a.DwellCredits != nil {
 		cp.DwellCredits = cloneDwellCredits(a.DwellCredits)

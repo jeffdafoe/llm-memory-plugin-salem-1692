@@ -16,31 +16,26 @@ import (
 func buildBusinessownerCascadeWorld(t *testing.T) (*sim.World, func()) {
 	t.Helper()
 	repo, handles := mem.NewRepository()
-	now := time.Now().UTC()
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
 		"hannah": {
 			ID:                 "hannah",
 			DisplayName:        "Hannah",
 			Kind:               sim.KindNPCShared,
 			State:              sim.StateIdle,
-			StateEnteredAt:     now,
 			CurrentHuddleID:    "h1",
 			WorkStructureID:    "tavern",
 			InsideStructureID:  "tavern",
 			BusinessownerState: &sim.BusinessownerState{Flavor: "flamboyant"},
 			RecentActions:      sim.NewRingBuffer[sim.Action](4),
-			RecentStateTrans:   sim.NewRingBuffer[sim.StateTransition](4),
 		},
 		"jefferey": {
 			ID:                "jefferey",
 			DisplayName:       "Jefferey",
 			Kind:              sim.KindPC,
 			State:             sim.StateIdle,
-			StateEnteredAt:    now,
 			CurrentHuddleID:   "h1",
 			InsideStructureID: "tavern",
 			RecentActions:     sim.NewRingBuffer[sim.Action](4),
-			RecentStateTrans:  sim.NewRingBuffer[sim.StateTransition](4),
 		},
 	})
 	handles.Structures.Seed(map[sim.StructureID]*sim.Structure{

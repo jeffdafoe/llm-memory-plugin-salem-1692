@@ -249,7 +249,6 @@ func TestLoadWorld_HappyPath(t *testing.T) {
 	// "missing actor referenced by huddle member".
 	actA1 := &sim.Actor{
 		ID: "act-1", DisplayName: "Anya", State: "working",
-		StateEnteredAt: startedAt,
 	}
 
 	repo := fakeRepoOpts{
@@ -640,7 +639,6 @@ func TestLoadWorld_ActorHuddleReconciliation_StampsAndClears(t *testing.T) {
 		ID:              "act-member",
 		DisplayName:     "M",
 		State:           "idle",
-		StateEnteredAt:  startedAt,
 		CurrentHuddleID: "old-stale-huddle-from-actor-row",
 	}
 	// act-stale claims membership in a huddle but isn't in any
@@ -649,7 +647,6 @@ func TestLoadWorld_ActorHuddleReconciliation_StampsAndClears(t *testing.T) {
 		ID:              "act-stale",
 		DisplayName:     "S",
 		State:           "idle",
-		StateEnteredAt:  startedAt,
 		CurrentHuddleID: "h-a", // stale — Members doesn't include it
 	}
 
@@ -699,7 +696,7 @@ func TestLoadWorld_ActorHuddleReconciliation_DoubleMembership_HardFails(t *testi
 	startedAt := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
 	h1 := &sim.Huddle{ID: "h-1", Members: map[sim.ActorID]struct{}{"act-doubled": {}}, StartedAt: startedAt}
 	h2 := &sim.Huddle{ID: "h-2", Members: map[sim.ActorID]struct{}{"act-doubled": {}}, StartedAt: startedAt}
-	actor := &sim.Actor{ID: "act-doubled", DisplayName: "D", State: "idle", StateEnteredAt: startedAt}
+	actor := &sim.Actor{ID: "act-doubled", DisplayName: "D", State: "idle"}
 
 	repo := fakeRepoOpts{
 		actors:  fakeActors{out: map[sim.ActorID]*sim.Actor{"act-doubled": actor}},
@@ -715,7 +712,6 @@ func TestLoadWorld_ActorHuddleReconciliation_DoubleMembership_HardFails(t *testi
 // TestLoadWorld_ActorStructureRefs_HappyPath — actor with all three
 // structure refs + a room ref to a loaded room loads cleanly.
 func TestLoadWorld_ActorStructureRefs_HappyPath(t *testing.T) {
-	startedAt := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
 	structA := &sim.Structure{
 		ID: bldgA, DisplayName: "Tavern",
 		Tags: []string{},
@@ -725,7 +721,7 @@ func TestLoadWorld_ActorStructureRefs_HappyPath(t *testing.T) {
 	}
 	voA := &sim.VillageObject{ID: bldgA}
 	actor := &sim.Actor{
-		ID: "act-1", DisplayName: "A", State: "idle", StateEnteredAt: startedAt,
+		ID: "act-1", DisplayName: "A", State: "idle",
 		HomeStructureID:   bldgA,
 		WorkStructureID:   bldgA,
 		InsideStructureID: bldgA,
@@ -747,7 +743,6 @@ func TestLoadWorld_ActorStructureRefs_HappyPath(t *testing.T) {
 // structure that didn't load — hard error per substrate invariant.
 // Drives all four ref columns through table-driven cases.
 func TestLoadWorld_ActorStructureRefs_MissingStructure(t *testing.T) {
-	startedAt := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
 	bogusStr := sim.StructureID("11111111-1111-1111-1111-deadbeefdead")
 	structA := &sim.Structure{
 		ID: bldgA, DisplayName: "Tavern", Tags: []string{},
@@ -783,7 +778,7 @@ func TestLoadWorld_ActorStructureRefs_MissingStructure(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			actor := &sim.Actor{
-				ID: "act-1", DisplayName: "A", State: "idle", StateEnteredAt: startedAt,
+				ID: "act-1", DisplayName: "A", State: "idle",
 			}
 			tc.mut(actor)
 
@@ -808,7 +803,6 @@ func TestLoadWorld_ActorStructureRefs_MissingStructure(t *testing.T) {
 // resolves to a room that belongs to structure X, but InsideStructureID
 // is Y. Locomotion / room-access invariant violated — hard error.
 func TestLoadWorld_ActorStructureRefs_RoomStructureMismatch(t *testing.T) {
-	startedAt := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
 	structA := &sim.Structure{
 		ID: bldgA, DisplayName: "Tavern", Tags: []string{},
 		Rooms: []*sim.Room{
@@ -821,7 +815,7 @@ func TestLoadWorld_ActorStructureRefs_RoomStructureMismatch(t *testing.T) {
 	voA := &sim.VillageObject{ID: bldgA}
 	voB := &sim.VillageObject{ID: bldgB}
 	actor := &sim.Actor{
-		ID: "act-1", DisplayName: "A", State: "idle", StateEnteredAt: startedAt,
+		ID: "act-1", DisplayName: "A", State: "idle",
 		InsideStructureID: bldgB, // wrong — room 42 is in bldgA
 		InsideRoomID:      42,
 	}
@@ -844,7 +838,6 @@ func TestLoadWorld_ActorStructureRefs_RoomStructureMismatch(t *testing.T) {
 // detects RoomID collisions across structures (last-writer-wins would
 // silently misroute actor refs).
 func TestLoadWorld_ActorStructureRefs_DuplicateRoomID(t *testing.T) {
-	startedAt := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
 	structA := &sim.Structure{
 		ID: bldgA, DisplayName: "Tavern", Tags: []string{},
 		Rooms: []*sim.Room{{ID: 42, StructureID: bldgA, Kind: "common", Name: "common"}},
@@ -856,7 +849,7 @@ func TestLoadWorld_ActorStructureRefs_DuplicateRoomID(t *testing.T) {
 	voA := &sim.VillageObject{ID: bldgA}
 	voB := &sim.VillageObject{ID: bldgB}
 	actor := &sim.Actor{
-		ID: "act-1", DisplayName: "A", State: "idle", StateEnteredAt: startedAt,
+		ID: "act-1", DisplayName: "A", State: "idle",
 	}
 
 	repo := fakeRepoOpts{
@@ -877,7 +870,6 @@ func TestLoadWorld_ActorStructureRefs_DuplicateRoomID(t *testing.T) {
 // rejects rooms whose own StructureID disagrees with the parent
 // structure they're nested under in the loaded map.
 func TestLoadWorld_ActorStructureRefs_RoomNestingMismatch(t *testing.T) {
-	startedAt := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
 	structA := &sim.Structure{
 		ID: bldgA, DisplayName: "Tavern", Tags: []string{},
 		// Room claims to belong to bldgB but is nested under bldgA in the map.
@@ -885,7 +877,7 @@ func TestLoadWorld_ActorStructureRefs_RoomNestingMismatch(t *testing.T) {
 	}
 	voA := &sim.VillageObject{ID: bldgA}
 	actor := &sim.Actor{
-		ID: "act-1", DisplayName: "A", State: "idle", StateEnteredAt: startedAt,
+		ID: "act-1", DisplayName: "A", State: "idle",
 	}
 
 	repo := fakeRepoOpts{
@@ -905,9 +897,8 @@ func TestLoadWorld_ActorStructureRefs_RoomNestingMismatch(t *testing.T) {
 // load via notImpl tolerance. Without the peer gating, the
 // reconciliation would silently wipe every actor's huddle cache.
 func TestLoadWorld_ActorHuddleReconciliation_SkippedWhenHuddlesNotImpl(t *testing.T) {
-	startedAt := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
 	actor := &sim.Actor{
-		ID: "act-1", DisplayName: "A", State: "idle", StateEnteredAt: startedAt,
+		ID: "act-1", DisplayName: "A", State: "idle",
 		CurrentHuddleID: "h-prev", // cached from previous run; Huddles can't be loaded
 	}
 	repo := sim.Repository{
@@ -942,9 +933,8 @@ func TestLoadWorld_ActorHuddleReconciliation_SkippedWhenHuddlesNotImpl(t *testin
 // otherwise hard-error any actor with structure refs the moment
 // Structures was tolerated empty.
 func TestLoadWorld_ActorStructureRefs_SkippedWhenStructuresNotImpl(t *testing.T) {
-	startedAt := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
 	actor := &sim.Actor{
-		ID: "act-1", DisplayName: "A", State: "idle", StateEnteredAt: startedAt,
+		ID: "act-1", DisplayName: "A", State: "idle",
 		HomeStructureID:   bldgA,
 		WorkStructureID:   bldgA,
 		InsideStructureID: bldgA,

@@ -515,8 +515,7 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 			Disposition: profile.Disposition,
 			ExpiresAt:   expiresAt,
 		},
-		State:          StateIdle,
-		StateEnteredAt: inputs.Now,
+		State: StateIdle,
 	}
 	w.Actors[id] = visitor
 	w.outdoorActors[id] = struct{}{}

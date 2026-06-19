@@ -45,20 +45,17 @@ func buildConsumeTestWorld(t *testing.T, actors []consumeActorSpec, objects []co
 	repo, handles := mem.NewRepository()
 	handles.ItemKinds.Seed(mem.SeedItemKinds())
 
-	now := time.Now().UTC()
 	actorSeed := make(map[sim.ActorID]*sim.Actor, len(actors))
 	for _, s := range actors {
 		a := &sim.Actor{
-			ID:               s.id,
-			DisplayName:      s.displayName,
-			Kind:             sim.KindNPCShared,
-			State:            sim.StateIdle,
-			StateEnteredAt:   now,
-			Inventory:        s.inventory,
-			Needs:            s.needs,
-			Pos:              sim.TilePos{X: s.x, Y: s.y},
-			RecentActions:    sim.NewRingBuffer[sim.Action](4),
-			RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
+			ID:            s.id,
+			DisplayName:   s.displayName,
+			Kind:          sim.KindNPCShared,
+			State:         sim.StateIdle,
+			Inventory:     s.inventory,
+			Needs:         s.needs,
+			Pos:           sim.TilePos{X: s.x, Y: s.y},
+			RecentActions: sim.NewRingBuffer[sim.Action](4),
 		}
 		if s.moveInFlight {
 			a.MoveIntent = &sim.MoveIntent{AttemptID: sim.MovementAttemptID(1)}

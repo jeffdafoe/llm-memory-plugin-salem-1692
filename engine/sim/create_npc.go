@@ -63,17 +63,16 @@ func CreateNPC(name, spriteID string, pos WorldPos, now time.Time) Command {
 			}
 			tile := pos.Tile()
 			actor := &Actor{
-				ID:             id,
-				DisplayName:    name,
-				Kind:           KindNPCStateful,
-				SpriteID:       SpriteID(spriteID),
-				Facing:         "south",
-				Pos:            tile,
-				Needs:          seedVisitorNeeds(),
-				Inventory:      map[ItemKind]int{},
-				Attributes:     map[string][]byte{},
-				State:          StateIdle,
-				StateEnteredAt: now,
+				ID:          id,
+				DisplayName: name,
+				Kind:        KindNPCStateful,
+				SpriteID:    SpriteID(spriteID),
+				Facing:      "south",
+				Pos:         tile,
+				Needs:       seedVisitorNeeds(),
+				Inventory:   map[ItemKind]int{},
+				Attributes:  map[string][]byte{},
+				State:       StateIdle,
 			}
 			w.Actors[id] = actor
 			w.outdoorActors[id] = struct{}{}

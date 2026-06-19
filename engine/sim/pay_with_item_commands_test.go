@@ -49,17 +49,15 @@ func buildPayWithItemWorld(t *testing.T, huddleID sim.HuddleID, sceneID sim.Scen
 	members := make(map[sim.ActorID]struct{}, len(actors))
 	for _, s := range actors {
 		a := &sim.Actor{
-			ID:               s.id,
-			DisplayName:      s.displayName,
-			Kind:             s.kind,
-			State:            sim.StateIdle,
-			StateEnteredAt:   now,
-			Coins:            s.coins,
-			Inventory:        s.inventory,
-			CurrentHuddleID:  s.huddleID,
-			BreakUntil:       s.breakUntil,
-			RecentActions:    sim.NewRingBuffer[sim.Action](4),
-			RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
+			ID:              s.id,
+			DisplayName:     s.displayName,
+			Kind:            s.kind,
+			State:           sim.StateIdle,
+			Coins:           s.coins,
+			Inventory:       s.inventory,
+			CurrentHuddleID: s.huddleID,
+			BreakUntil:      s.breakUntil,
+			RecentActions:   sim.NewRingBuffer[sim.Action](4),
 		}
 		if s.moveInFlight {
 			a.MoveIntent = &sim.MoveIntent{AttemptID: sim.MovementAttemptID(1)}
