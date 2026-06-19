@@ -195,13 +195,13 @@ func TestRenderOfferableCustomers_SingleCustomer(t *testing.T) {
 	for _, want := range []string{
 		"## Custom at hand",
 		"Goodwife Mary is here with you",
-		"scene_quote",
+		"call sell with",
 		"target_buyer",
 		// ZBBS-HOME-467: quote trigger gated on a named good; a generic opener
 		// gets the menu (present wares + let them choose), not a guessed-item quote.
 		"names a specific good they want",
 		"let them choose",
-		"do not scene_quote unless the buyer has named the good",
+		"do not sell unless the buyer has named the good",
 		"Your goods to sell: Stew (5 on hand), Ale (20 on hand).",
 	} {
 		if !strings.Contains(out, want) {

@@ -165,7 +165,7 @@ func DecodeSceneQuoteArgs(raw json.RawMessage) (any, error) {
 	// values, producing misleading downstream errors.
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return nil, modelSafef("scene_quote: arguments must be a JSON object")
+		return nil, modelSafef("sell: arguments must be a JSON object")
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
@@ -177,48 +177,48 @@ func DecodeSceneQuoteArgs(raw json.RawMessage) (any, error) {
 	var extra any
 	if err := dec.Decode(&extra); err != io.EOF {
 		if err == nil {
-			return nil, modelSafef("scene_quote: trailing data after JSON object")
+			return nil, modelSafef("sell: trailing data after JSON object")
 		}
 		return nil, fmt.Errorf("scene_quote: malformed trailing data: %w", err)
 	}
 
 	if args.ItemKind == "" {
-		return nil, modelSafef("scene_quote: item_kind is required")
+		return nil, modelSafef("sell: item_kind is required")
 	}
 	if n := utf8.RuneCountInString(args.ItemKind); n > MaxSceneQuoteItemChars {
 		return nil, modelSafef(
-			"scene_quote: item_kind exceeds %d-character cap (got %d characters)",
+			"sell: item_kind exceeds %d-character cap (got %d characters)",
 			MaxSceneQuoteItemChars, n,
 		)
 	}
 	if args.Qty < 1 {
-		return nil, modelSafef("scene_quote: qty must be at least 1 (got %d)", args.Qty)
+		return nil, modelSafef("sell: qty must be at least 1 (got %d)", args.Qty)
 	}
 	if args.Qty > sim.MaxSceneQuoteQty {
-		return nil, modelSafef("scene_quote: qty exceeds maximum (got %d, max %d)", args.Qty, sim.MaxSceneQuoteQty)
+		return nil, modelSafef("sell: qty exceeds maximum (got %d, max %d)", args.Qty, sim.MaxSceneQuoteQty)
 	}
 	if args.Amount < 1 {
-		return nil, modelSafef("scene_quote: amount must be at least 1 (got %d)", args.Amount)
+		return nil, modelSafef("sell: amount must be at least 1 (got %d)", args.Amount)
 	}
 	if args.Amount > sim.MaxSceneQuoteAmount {
-		return nil, modelSafef("scene_quote: amount exceeds maximum (got %d, max %d)", args.Amount, sim.MaxSceneQuoteAmount)
+		return nil, modelSafef("sell: amount exceeds maximum (got %d, max %d)", args.Amount, sim.MaxSceneQuoteAmount)
 	}
 	if n := utf8.RuneCountInString(args.TargetBuyer); n > MaxSceneQuoteNameChars {
 		return nil, modelSafef(
-			"scene_quote: target_buyer exceeds %d-character cap (got %d characters)",
+			"sell: target_buyer exceeds %d-character cap (got %d characters)",
 			MaxSceneQuoteNameChars, n,
 		)
 	}
 	if len(args.Consumers) > MaxSceneQuoteConsumers {
 		return nil, modelSafef(
-			"scene_quote: consumers exceeds %d-entry cap (got %d)",
+			"sell: consumers exceeds %d-entry cap (got %d)",
 			MaxSceneQuoteConsumers, len(args.Consumers),
 		)
 	}
 	for i, c := range args.Consumers {
 		if n := utf8.RuneCountInString(c); n > MaxSceneQuoteNameChars {
 			return nil, modelSafef(
-				"scene_quote: consumers[%d] exceeds %d-character cap (got %d characters)",
+				"sell: consumers[%d] exceeds %d-character cap (got %d characters)",
 				i, MaxSceneQuoteNameChars, n,
 			)
 		}
@@ -251,11 +251,11 @@ func HandleSceneQuote(in HandlerInput) (sim.Command, error) {
 	// legitimate \n/\r/\t.
 	itemKind := strings.TrimSpace(args.ItemKind)
 	if itemKind == "" {
-		return sim.Command{}, modelSafef("scene_quote: item_kind is empty after trim")
+		return sim.Command{}, modelSafef("sell: item_kind is empty after trim")
 	}
 	if i := indexStrictControlChar(itemKind); i >= 0 {
 		return sim.Command{}, modelSafef(
-			"scene_quote: item_kind contains a disallowed control character at byte offset %d", i)
+			"sell: item_kind contains a disallowed control character at byte offset %d", i)
 	}
 
 	// Normalize target_buyer (optional). Empty after trim is fine —
@@ -266,7 +266,7 @@ func HandleSceneQuote(in HandlerInput) (sim.Command, error) {
 	if targetBuyer != "" {
 		if i := indexStrictControlChar(targetBuyer); i >= 0 {
 			return sim.Command{}, modelSafef(
-				"scene_quote: target_buyer contains a disallowed control character at byte offset %d", i)
+				"sell: target_buyer contains a disallowed control character at byte offset %d", i)
 		}
 	}
 
@@ -285,16 +285,16 @@ func HandleSceneQuote(in HandlerInput) (sim.Command, error) {
 			trimmed := strings.TrimSpace(raw)
 			if trimmed == "" {
 				return sim.Command{}, modelSafef(
-					"scene_quote: consumers[%d] is empty after trim — every consumer must have a name.", i)
+					"sell: consumers[%d] is empty after trim — every consumer must have a name.", i)
 			}
 			if idx := indexStrictControlChar(trimmed); idx >= 0 {
 				return sim.Command{}, modelSafef(
-					"scene_quote: consumers[%d] contains a disallowed control character at byte offset %d", i, idx)
+					"sell: consumers[%d] contains a disallowed control character at byte offset %d", i, idx)
 			}
 			key := strings.ToLower(trimmed)
 			if _, dup := seen[key]; dup {
 				return sim.Command{}, modelSafef(
-					"scene_quote: %q appears more than once in the consumer list — list each person only once.", trimmed)
+					"sell: %q appears more than once in the consumer list — list each person only once.", trimmed)
 			}
 			seen[key] = struct{}{}
 			consumers = append(consumers, trimmed)

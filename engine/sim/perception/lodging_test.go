@@ -518,7 +518,7 @@ func TestRenderLodgingOffer_NamesActionAndNights(t *testing.T) {
 		NightlyRate:    4,
 	})
 	out := b.String()
-	for _, want := range []string{"## A room to let", "Ezekiel Crane", "nights_stay", "scene_quote", "number of nights", "consume_now false", "target_buyer only if you know"} {
+	for _, want := range []string{"## A room to let", "Ezekiel Crane", "nights_stay", "call sell", "number of nights", "consume_now false", "target_buyer only if you know"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("offer cue missing %q, got %q", want, out)
 		}

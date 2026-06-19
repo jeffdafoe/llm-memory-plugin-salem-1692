@@ -555,7 +555,7 @@ func registerTools(r *handlers.Registry, searcher llm.MemorySearcher) error {
 		// settled ledger purchase, e.g. the 2026-06-11 Hannah ale buy). PCs
 		// pay via /pc/pay; RegisterPay stays available for composition.
 		{"consume", handlers.RegisterConsume},
-		{"scene_quote", handlers.RegisterSceneQuote},
+		{"sell", handlers.RegisterSceneQuote},
 		{"deliver_order", handlers.RegisterDeliverOrder},
 		{"pay_with_item_family", handlers.RegisterPayWithItemFamily},
 		{"offer_trade", handlers.RegisterOfferTrade}, // ZBBS-HOME-407
