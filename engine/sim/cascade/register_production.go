@@ -75,7 +75,7 @@ func RegisterProductionCascades(ctx context.Context, w *sim.World, client llm.Cl
 	RegisterIdleBackstop(ctx, w)
 	RegisterRedNeedBackstop(ctx, w)
 	RegisterPriceBook(w)
-	RegisterNPCRoutes(ctx, w)
+	RegisterNPCRoutes(ctx, w, client)
 
 	// Single-subscriber engine cascades that drive engine-authored
 	// speech / state, no LLM call but a richer-than-substrate role.
