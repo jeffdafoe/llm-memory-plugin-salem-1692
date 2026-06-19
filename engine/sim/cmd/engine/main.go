@@ -434,6 +434,12 @@ func run(rt runtime, stop <-chan struct{}) error {
 			server.SetPrompts(rt.PromptRing)                // backs /umbilical/agent/prompts (ZBBS-HOME-360)
 			server.SetChat(rt.ChatRing)                     // backs /umbilical/chat (ZBBS-HOME-382)
 			server.SetMemoryAPIBaseURL(rt.MemoryAPIBaseURL) // backs /umbilical/turns (ZBBS-HOME-396)
+			// Backs /umbilical/transcript (LLM-35). Guarded: a typed-nil
+			// *pg.ActionLogRepo stored into the interface would read as non-nil and
+			// defeat the handler's nil-store 503 guard, so only wire a real one.
+			if rt.ActionLog != nil {
+				server.SetTranscriptStore(rt.ActionLog)
+			}
 			server.SetCheckpointHealth(checkpointHealth)
 			if rt.UmbilicalControl {
 				server.SetControlEnabled(true)

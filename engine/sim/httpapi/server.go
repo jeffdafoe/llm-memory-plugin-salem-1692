@@ -43,6 +43,11 @@ type Server struct {
 	// memory-api. Owned by the Server (initialized in NewServer) so it has a
 	// bounded timeout and tests can reach an httptest upstream via the same path.
 	turnsClient *http.Client
+	// transcript reads the durable, complete agent_action_log transcript for one
+	// huddle, backing the operator-gated GET /umbilical/transcript route (LLM-35).
+	// nil → that route answers 503 (store not wired), the same posture as an unset
+	// /turns upstream. Wired by SetTranscriptStore under UMBILICAL_ENABLED.
+	transcript HuddleTranscriptStore
 }
 
 // NewServer builds a Server for w, authenticating every route via auth. Panics
@@ -129,6 +134,19 @@ func (s *Server) SetChat(ring *chatlog.RingSink) {
 // SetTelemetry — call before Handler, never concurrently with serving.
 func (s *Server) SetMemoryAPIBaseURL(baseURL string) {
 	s.memoryAPIBaseURL = strings.TrimRight(baseURL, "/")
+}
+
+// SetTranscriptStore attaches the durable huddle-transcript reader backing the
+// operator-gated GET /umbilical/transcript route (LLM-35) — the complete
+// committed-action trail of one conversation from agent_action_log, the durable
+// companion to the retention-bounded /huddle ring. Optional and independent of
+// SetTelemetry: when nil, that route still registers (it's in the umbilical
+// table, gated on SetTelemetry like the rest) but answers 503. cmd/engine wires
+// the same *pg.ActionLogRepo it installed as the durable action-log sink. Same
+// wiring-time-only contract as SetTelemetry — call before Handler, never
+// concurrently with serving.
+func (s *Server) SetTranscriptStore(store HuddleTranscriptStore) {
+	s.transcript = store
 }
 
 // SetCheckpointHealth attaches the durable-checkpoint health recorder so the

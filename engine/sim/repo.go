@@ -231,6 +231,21 @@ type SimDayEvent struct {
 	Speaker string         // agent_action_log.speaker_name — acting actor's display name; labels the distilled line
 }
 
+// HuddleTranscriptRow is one agent_action_log row pulled for the umbilical's
+// durable conversation transcript (LLM-35). Where SimDayEvent is the daily-push
+// shape — scoped to one actor's day with cross-actor presence intervals — this is
+// the COMPLETE committed-action trail of a single huddle: every participant's
+// rows, oldest-first, the durable companion to the live, retention-bounded
+// /huddle ring. Source distinguishes the actor's origin (agent NPC vs human
+// player vs engine), which the lean in-memory action-log ring doesn't carry.
+type HuddleTranscriptRow struct {
+	OccurredAt  time.Time
+	Source      string     // agent_action_log.source: "agent" | "player" | "engine"
+	SpeakerName string     // acting actor's display name
+	ActionType  ActionType // spoke / paid / delivered / consumed / …
+	Text        string     // payload.text — the spoken/narrated line; "" for textless actions
+}
+
 // AgentActor pairs an actor's id with the llm-memory agent slug backing it.
 // The daily sim-conversation push (ZBBS-WORK-376) enumerates these to know
 // which actors to build a day-note for and under which agent namespace to POST
