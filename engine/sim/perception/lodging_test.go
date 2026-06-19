@@ -378,6 +378,17 @@ func TestBuildKeeperLodgingView_AwakePeer_View(t *testing.T) {
 	}
 }
 
+// A huddle member whose ID is absent from the snapshot (stale membership) is
+// not an audience — fail closed, same as an all-asleep room. LLM-22.
+func TestBuildKeeperLodgingView_MissingHuddleMember_Nil(t *testing.T) {
+	keeper := &sim.ActorSnapshot{WorkStructureID: "inn"}
+	structs := map[sim.StructureID]*sim.Structure{"inn": innStructureN("inn", "Hannah's Inn", 2)}
+	members := []HuddleMember{{ID: "missing"}}
+	if v := buildKeeperLodgingView(lodgingSnap(keeper, structs), keeper, members); v != nil {
+		t.Errorf("want nil when the huddle member is absent from the snapshot, got %+v", v)
+	}
+}
+
 func TestRenderKeeperLodging_Gated(t *testing.T) {
 	var b strings.Builder
 	renderKeeperLodging(&b, nil)
