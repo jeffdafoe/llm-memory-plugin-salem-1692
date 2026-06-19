@@ -147,6 +147,12 @@ type NPCRoute struct {
 	// transient (re-triggered at the next phase/rotation boundary), so this is
 	// never persisted.
 	StaleRetries int
+	// Authoring is set true while the town crier has an off-world noticeboard
+	// author call in flight for the current stop, so a duplicate ActorArrived
+	// for the same stop doesn't start a second author/read (LLM-44). Cleared
+	// when the author callback completes. Set/read/cleared only on the world
+	// goroutine; in-memory only, never persisted.
+	Authoring bool
 }
 
 // RouteCandidate is one input to StartNPCRoute's route builder: an
@@ -338,6 +344,24 @@ type AdvanceNPCRouteResult struct {
 // converged case (object already at NewState — happens when a fresher
 // bulk pass overwrote the same object).
 func AdvanceNPCRoute(actorID ActorID) Command {
+	return advanceNPCRoute(actorID, true)
+}
+
+// AdvanceNPCRouteSkipFlip is AdvanceNPCRoute without the active-phase
+// per-stop village_object state flip. The town crier owns its board's
+// state mutation itself — it sets the board variant to match the number
+// of notices it actually authored (LLM-44) — so its route advance must
+// NOT also flip the stop to the route candidate's pre-decided NewState.
+// Every other behavior (stale-arrival re-walk + abandon, returning-home
+// transition, route clearing) is identical to AdvanceNPCRoute.
+func AdvanceNPCRouteSkipFlip(actorID ActorID) Command {
+	return advanceNPCRoute(actorID, false)
+}
+
+// advanceNPCRoute is the shared body of AdvanceNPCRoute (flip=true) and
+// AdvanceNPCRouteSkipFlip (flip=false). flip gates only the active-phase
+// per-stop SetVillageObjectState; the walk machinery is identical.
+func advanceNPCRoute(actorID ActorID, flip bool) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
 			route, ok := w.ActiveRoutes[actorID]
@@ -347,7 +371,7 @@ func AdvanceNPCRoute(actorID ActorID) Command {
 
 			switch route.Phase {
 			case RoutePhaseActive:
-				return advanceActiveRoute(w, route)
+				return advanceActiveRoute(w, route, flip)
 			case RoutePhaseReturning:
 				return advanceReturningRoute(w, route)
 			default:
@@ -373,7 +397,7 @@ func AdvanceNPCRoute(actorID ActorID) Command {
 // actor isn't at; instead we re-walk to the current stop (bounded by
 // maxStaleRouteRetries) so a single bump no longer strands the stop, and
 // abandon the route once the budget is spent. See the stale branch below.
-func advanceActiveRoute(w *World, route *NPCRoute) (AdvanceNPCRouteResult, error) {
+func advanceActiveRoute(w *World, route *NPCRoute, flip bool) (AdvanceNPCRouteResult, error) {
 	if route.StopIdx >= len(route.Stops) {
 		// Defensive — StopIdx should never exceed len(Stops) in active
 		// phase. Clear and return.
@@ -441,13 +465,18 @@ func advanceActiveRoute(w *World, route *NPCRoute) (AdvanceNPCRouteResult, error
 	// Per-stop flip. guardGen=0 disables the gen check — a fresher
 	// rotation/transition that overwrote the same object since route
 	// start would just bounce off SetVillageObjectState's
-	// "already_at_target" path (no-op).
-	flipCmd := SetVillageObjectState(stop.ObjectID, stop.NewState)
-	if _, err := flipCmd.Fn(w); err != nil {
-		log.Printf("sim/npc_route: %q stop %d (%q -> %q): flip failed: %v",
-			route.NPCID, route.StopIdx, stop.ObjectID, stop.NewState, err)
-		// Fall through — a flip failure shouldn't abort the route, the
-		// next walk should still dispatch.
+	// "already_at_target" path (no-op). Skipped for the town crier
+	// (flip=false): she sets the board variant herself to match the
+	// notices she authored (LLM-44), so a route flip here would clobber
+	// that with the candidate's pre-decided NewState.
+	if flip {
+		flipCmd := SetVillageObjectState(stop.ObjectID, stop.NewState)
+		if _, err := flipCmd.Fn(w); err != nil {
+			log.Printf("sim/npc_route: %q stop %d (%q -> %q): flip failed: %v",
+				route.NPCID, route.StopIdx, stop.ObjectID, stop.NewState, err)
+			// Fall through — a flip failure shouldn't abort the route, the
+			// next walk should still dispatch.
+		}
 	}
 
 	// Clean visit — clear the per-stop stale budget so the next stop starts

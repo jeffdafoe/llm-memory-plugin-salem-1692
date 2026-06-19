@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/llm"
 )
 
 // npc_route.go — Phase 3 Group A scheduled-route cascade driver.
@@ -67,12 +68,20 @@ import (
 // The ctx parameter is kept for signature symmetry with other cascade
 // Register* helpers; today it's unused (this slice is purely
 // event-driven with no goroutine).
-func RegisterNPCRoutes(_ context.Context, w *sim.World) {
+func RegisterNPCRoutes(ctx context.Context, w *sim.World, client llm.Client) {
 	if w == nil {
 		panic("cascade: RegisterNPCRoutes requires a non-nil world")
 	}
+	if client == nil {
+		// The town-crier arrival branch authors the day's notices via the
+		// LLM before reading them (LLM-44), so the client is required —
+		// fail fast at wiring time (mirrors RegisterNoticeboard).
+		panic("cascade: RegisterNPCRoutes requires a non-nil LLM client")
+	}
 	w.Subscribe(sim.SubscriberFunc(handlePhaseAppliedLamplighter))
-	w.Subscribe(sim.SubscriberFunc(handleActorArrivedAdvanceRoute))
+	w.Subscribe(sim.SubscriberFunc(func(world *sim.World, evt sim.Event) {
+		handleActorArrivedAdvanceRoute(ctx, world, evt, client)
+	}))
 	w.Subscribe(sim.SubscriberFunc(handleActorMoveStoppedAdvanceRoute))
 }
 
@@ -241,22 +250,21 @@ func handlePhaseAppliedLamplighter(w *sim.World, evt sim.Event) {
 // NPC routes. Most arrivals match no entry in World.ActiveRoutes and
 // the AdvanceNPCRoute command no-ops cheaply.
 //
-// Town crier branch: BEFORE dispatching AdvanceNPCRoute (which flips
-// the noticeboard state), read the board's NoticeboardContent for
-// the current stop's object and emit a Spoke via
-// EmitTownCrierAnnouncement. The crier "reads what's currently
-// posted" — which was authored by the previous visit's flip-triggered
-// authoring (or the boot kickstart). After the read, AdvanceNPCRoute
-// flips the state; that flip emits VillageObjectStateChanged which the
-// noticeboard cascade subscribes to, spawning fresh authoring for
-// the NEW state (consumed next time the board is read).
+// Town crier branch (LLM-44): on arrival at a board stop she authors
+// today's notices, posts them (the board variant is set to match the
+// number actually authored), reads those notices aloud, and only then
+// advances the route — so she reads exactly what she is posting, not the
+// prior cycle's stale notice. The author LLM call runs off-world, so
+// beginCrierBoardStop kicks it and the post/read/advance happen later in
+// the author callback; the route's own per-stop flip is skipped because
+// the crier owns the board's state. A no-news day (the stop's target is
+// the empty, zero-capacity variant) posts the empty board and passes by
+// silently.
 //
-// Cold-start: a freshly-loaded world has no NoticeboardContent
-// stamped — KickstartNoticeboards authors it shortly after boot. A
-// crier arrival that beats the kickstart's LLM call reads nothing
-// (silent stop); the flip-triggered authoring lands content for the
-// next visit either way.
-func handleActorArrivedAdvanceRoute(w *sim.World, evt sim.Event) {
+// Cold-start: a freshly-loaded world has no NoticeboardContent stamped —
+// KickstartNoticeboards seeds it shortly after boot so the boards aren't
+// blank before the crier's first tour.
+func handleActorArrivedAdvanceRoute(ctx context.Context, w *sim.World, evt sim.Event, client llm.Client) {
 	arrived, ok := evt.(*sim.ActorArrived)
 	if !ok {
 		return
@@ -269,86 +277,31 @@ func handleActorArrivedAdvanceRoute(w *sim.World, evt sim.Event) {
 		return
 	}
 
-	// Town crier branch: emit existing board content before the
-	// flip. Two guards:
-	//
-	//  - Active-phase stale-arrival (actor must be at expected
-	//    WalkTo; mirrors AdvanceNPCRoute's check).
-	//
-	//  - AtState parity (content.AtState must match the board's
-	//    current CurrentState). The save path's stale-guard
-	//    rejects writes whose captured state no longer matches,
-	//    but content can still sit on the board across an
-	//    out-of-band state change (admin direct flip, future
-	//    code mutating CurrentState without clearing content).
-	//    The crier must not voice content authored for a
-	//    different state.
-	voicedNotices := 0
-	crierStopIdx := -1
-	var crierBoardID sim.VillageObjectID
 	if route.Label == sim.AttrTownCrier &&
 		route.Phase == sim.RoutePhaseActive &&
 		route.StopIdx < len(route.Stops) {
+		if route.Authoring {
+			// An author call is already in flight for this stop — ignore a
+			// duplicate arrival so we don't double-author / double-read (LLM-44).
+			return
+		}
 		stop := route.Stops[route.StopIdx]
 		actor, ok := w.Actors[arrived.ActorID]
 		atExpected := ok && actor.Pos.X == stop.WalkTo.X && actor.Pos.Y == stop.WalkTo.Y
-		if atExpected && w.NoticeboardContent != nil {
-			content, present := w.NoticeboardContent[stop.ObjectID]
-			obj, hasObj := w.VillageObjects[stop.ObjectID]
-			if present && content != nil && content.Text != "" && hasObj && obj != nil && content.AtState == obj.CurrentState {
-				voicedNotices = voiceCrierNotices(w, arrived.ActorID, content.Text, arrived.At)
-				crierStopIdx = route.StopIdx
-				crierBoardID = stop.ObjectID
-			}
+		if atExpected {
+			beginCrierBoardStop(ctx, w, client, route, route.StopIdx, stop)
+			return
 		}
-	}
-
-	// Advance the route (flip the board to its next state + dispatch the next
-	// walk). For a MULTI-notice crier read the flip/advance is DEFERRED until the
-	// crier has voiced every notice (ZBBS-HOME-457): the staggered beats run over
-	// crierNoticeBeatDelay each, and AdvanceNPCRoute flips the board's sprite (and
-	// clears/re-authors its content) — so advancing immediately rotated the board
-	// out from under the crier mid-spiel (the "reading at an empty board" bug).
-	// The crier now dwells at the stop for the full voicing, then flips and walks
-	// on. Single-notice and non-crier arrivals advance inline as before — a single
-	// read is synchronous, so there is nothing pending to rotate past.
-	//
-	// Dwell = voicedNotices * crierNoticeBeatDelay. The last notice is voiced at
-	// (voicedNotices-1)*delay; the trailing beat gives that final bubble the same
-	// one-beat on-screen window every earlier notice gets before being replaced —
-	// so the board never rotates while a notice is still displayed. Noticeboards
-	// are excluded from the bulk rotation ticker (main.go RotationScope.ExcludeTags
-	// = {TagLaundry, TagNoticeBoard}), so the crier's own flip is the ONLY thing
-	// that rotates a board — nothing external can flip it during the dwell.
-	if voicedNotices > 1 {
-		actorID := arrived.ActorID
-		stopIdx := crierStopIdx
-		boardID := crierBoardID
-		dwell := time.Duration(voicedNotices) * crierNoticeBeatDelay
-		time.AfterFunc(dwell, func() {
-			ctx := w.LifecycleContext()
-			if ctx.Err() != nil {
-				return // shutdown raced the dwell
-			}
-			// Stale-guard: only advance if the crier is STILL on the same active
-			// route at the same stop reading the same board. The dwell window could
-			// in principle outlive a route re-dispatch (a fresh tour), and the
-			// deferred advance must not act on the new route.
-			guarded := sim.Command{Fn: func(world *sim.World) (any, error) {
-				r, ok := world.ActiveRoutes[actorID]
-				if !ok || r == nil || r.Label != sim.AttrTownCrier || r.Phase != sim.RoutePhaseActive ||
-					r.StopIdx != stopIdx || r.StopIdx >= len(r.Stops) || r.Stops[r.StopIdx].ObjectID != boardID {
-					return nil, nil // route changed during the dwell — drop the advance
-				}
-				return sim.AdvanceNPCRoute(actorID).Fn(world)
-			}}
-			if _, err := w.SendContext(ctx, guarded); err != nil && ctx.Err() == nil {
-				log.Printf("cascade/npc_route: deferred crier advance (actor %q): %v", actorID, err)
-			}
-		})
+		// Stale arrival — run the route's re-walk/abandon machinery (the
+		// crier never flips via the substrate, so skip-flip).
+		if _, err := sim.AdvanceNPCRouteSkipFlip(arrived.ActorID).Fn(w); err != nil {
+			log.Printf("cascade/npc_route: crier stale advance (actor %q event %d): %v",
+				arrived.ActorID, arrived.EventID(), err)
+		}
 		return
 	}
 
+	// Non-crier routes (lamplighter / washerwoman) flip the stop inline.
 	cmd := sim.AdvanceNPCRoute(arrived.ActorID)
 	if _, err := cmd.Fn(w); err != nil {
 		log.Printf("cascade/npc_route: advance (actor %q event %d): %v",
