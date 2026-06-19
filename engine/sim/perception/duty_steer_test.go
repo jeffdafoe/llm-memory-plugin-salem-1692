@@ -76,6 +76,10 @@ func TestBuildDutySteer(t *testing.T) {
 		if v == nil || !v.AtPost || v.ToWork {
 			t.Fatalf("want atPost stabilizer at post, got %+v", v)
 		}
+		// LLM-40: the stabilizer carries the effective close time (schedule end).
+		if v.ShiftEndMin == nil || *v.ShiftEndMin != 180 {
+			t.Fatalf("want ShiftEndMin=180 (03:00 schedule end), got %v", v.ShiftEndMin)
+		}
 	})
 	t.Run("off shift, away from home -> home", func(t *testing.T) {
 		v := dutySteer(dutySnap(600, 420, 1140), agentSched("tavern"), dutyAnchors)
@@ -486,6 +490,16 @@ func TestRenderDutySteer(t *testing.T) {
 	}
 	if strings.Contains(atPost, "structure_id") {
 		t.Errorf("atPost prose should be placeless (no structure_id), got %q", atPost)
+	}
+	if strings.Contains(atPost, "you close at") {
+		t.Errorf("atPost without ShiftEndMin should omit the close clause, got %q", atPost)
+	}
+
+	// LLM-40: with the effective close time set, the stabilizer states it
+	// (period-voiced) so "stay open later" is a bounded decision.
+	atPostClose := render(&DutySteerView{AtPost: true, ShiftEndMin: dutyMinPtr(1260)})
+	if !strings.Contains(atPostClose, "you close at 9 in the evening") {
+		t.Errorf("atPost with ShiftEndMin should state the close time, got %q", atPostClose)
 	}
 }
 

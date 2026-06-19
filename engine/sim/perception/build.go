@@ -1123,7 +1123,10 @@ func buildDutySteer(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapsho
 		// "stay put, don't wander" line and reframes the anchors invite. It is
 		// render-only — excluded from shouldSkipNoop (AtPost), so an idle at-post
 		// NPC with nothing happening still skips its idle-backstops (HOME-441).
-		return &DutySteerView{AtPost: true}
+		// Carry the effective close time (schedule end, else dusk fallback) so the
+		// stabilizer can state when the shift ends — LLM-40.
+		endMin := end
+		return &DutySteerView{AtPost: true, ShiftEndMin: &endMin}
 	case !onShift:
 		// Off-shift wind-down (ZBBS-WORK-387) — housing-dependent target. The
 		// suppressors (windDownSuppressed: a mid-meal item dwell — WORK-386; an
