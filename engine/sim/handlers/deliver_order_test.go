@@ -38,6 +38,28 @@ func TestDecodeDeliverOrderArgs_RejectsZeroOrderID(t *testing.T) {
 	}
 }
 
+// TestDecodeDeliverOrderArgs_LenientOrderID guards the LenientID coercion on
+// order_id (LLM-42): the weak-model string "null" / "" coerces to 0 and trips
+// the existing `< 1` reject (model-safe), and a stringified real id is honored.
+func TestDecodeDeliverOrderArgs_LenientOrderID(t *testing.T) {
+	for _, raw := range []string{`{"order_id":"null"}`, `{"order_id":""}`} {
+		_, err := DecodeDeliverOrderArgs(json.RawMessage(raw))
+		if err == nil {
+			t.Fatalf("%s: want model-safe 'at least 1' error, got nil", raw)
+		}
+		if !strings.Contains(err.Error(), "at least 1") {
+			t.Errorf("%s: err = %v, want 'at least 1'", raw, err)
+		}
+	}
+	got, err := DecodeDeliverOrderArgs(json.RawMessage(`{"order_id":"7"}`))
+	if err != nil {
+		t.Fatalf("numeric-string order_id should decode: %v", err)
+	}
+	if id := got.(DeliverOrderArgs).OrderID; id != 7 {
+		t.Errorf("OrderID = %d, want 7", id)
+	}
+}
+
 func TestDecodeDeliverOrderArgs_RejectsNonObject(t *testing.T) {
 	for _, raw := range []string{`null`, `[]`, `"123"`, `42`} {
 		t.Run(raw, func(t *testing.T) {

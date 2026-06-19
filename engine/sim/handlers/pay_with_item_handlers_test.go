@@ -227,6 +227,37 @@ func TestDecodeAcceptPay_LenientLedgerID(t *testing.T) {
 	}
 }
 
+// TestDecodeLedgerFamily_LenientLedgerID guards the LenientID coercion on the
+// non-accept ledger decoders (decline / counter / withdraw share the same
+// field type but have their own decode bodies). A string "null" ledger_id
+// coerces to 0 and trips each decoder's `< 1` model-safe reject — protecting
+// against future drift if one decoder's field type is changed back in isolation.
+func TestDecodeLedgerFamily_LenientLedgerID(t *testing.T) {
+	decoders := map[string]func(json.RawMessage) (any, error){
+		"decline_pay":  DecodeDeclinePayArgs,
+		"counter_pay":  DecodeCounterPayArgs,
+		"withdraw_pay": DecodeWithdrawPayArgs,
+	}
+	// counter_pay additionally requires coins or goods; include amount so the
+	// only failure under test is the coerced-zero ledger_id.
+	raws := map[string]string{
+		"decline_pay":  `{"ledger_id":"null"}`,
+		"counter_pay":  `{"ledger_id":"null","amount":5}`,
+		"withdraw_pay": `{"ledger_id":"null"}`,
+	}
+	for name, decode := range decoders {
+		t.Run(name, func(t *testing.T) {
+			_, err := decode(json.RawMessage(raws[name]))
+			if err == nil {
+				t.Fatal("want model-safe 'at least 1' error, got nil")
+			}
+			if !strings.Contains(err.Error(), "at least 1") {
+				t.Errorf("err = %v, want substring 'at least 1'", err)
+			}
+		})
+	}
+}
+
 func TestDecodePayWithItem_RejectsShapeErrors(t *testing.T) {
 	cases := []struct {
 		name string
