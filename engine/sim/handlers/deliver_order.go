@@ -25,7 +25,7 @@ import (
 // DeliverOrderArgs is the decoded shape of the deliver_order tool's
 // arguments. Single field — the OrderID the seller is finalizing.
 type DeliverOrderArgs struct {
-	OrderID uint64 `json:"order_id"`
+	OrderID LenientID `json:"order_id"`
 }
 
 // deliverOrderSchema is the JSON Schema bytes shipped to the LLM

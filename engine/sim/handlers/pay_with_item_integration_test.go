@@ -142,7 +142,7 @@ func TestIntegration_SlowPathAcceptedHappyPath(t *testing.T) {
 	bobAccept, err := handlers.HandleAcceptPay(handlers.HandlerInput{
 		ActorID:   "bob",
 		AttemptID: "tk-2",
-		Args:      handlers.AcceptPayArgs{LedgerID: uint64(result.LedgerID)},
+		Args:      handlers.AcceptPayArgs{LedgerID: handlers.LenientID(result.LedgerID)},
 	})
 	if err != nil {
 		t.Fatalf("HandleAcceptPay: %v", err)
@@ -227,7 +227,7 @@ func TestIntegration_CounterChain(t *testing.T) {
 	// Round 2: bob counters at 6.
 	counter, err := handlers.HandleCounterPay(handlers.HandlerInput{
 		ActorID: "bob", AttemptID: "tk-2",
-		Args: handlers.CounterPayArgs{LedgerID: uint64(parentID), Amount: 6, Message: "how about six"},
+		Args: handlers.CounterPayArgs{LedgerID: handlers.LenientID(parentID), Amount: 6, Message: "how about six"},
 	})
 	if err != nil {
 		t.Fatalf("HandleCounterPay: %v", err)
@@ -241,7 +241,7 @@ func TestIntegration_CounterChain(t *testing.T) {
 		ActorID: "alice", AttemptID: "tk-3",
 		Args: handlers.PayWithItemArgs{
 			Seller: "Bob", Item: "bread", Qty: 1, Amount: 6,
-			ConsumeNow: false, InResponseTo: uint64(parentID),
+			ConsumeNow: false, InResponseTo: handlers.LenientID(parentID),
 		},
 	})
 	if err != nil {
@@ -274,7 +274,7 @@ func TestIntegration_CounterChain(t *testing.T) {
 	// Round 4: bob accepts the child.
 	accept, err := handlers.HandleAcceptPay(handlers.HandlerInput{
 		ActorID: "bob", AttemptID: "tk-4",
-		Args: handlers.AcceptPayArgs{LedgerID: uint64(childID)},
+		Args: handlers.AcceptPayArgs{LedgerID: handlers.LenientID(childID)},
 	})
 	if err != nil {
 		t.Fatalf("HandleAcceptPay: %v", err)
@@ -410,7 +410,7 @@ func TestIntegration_QuoteFastPath(t *testing.T) {
 		ActorID: "alice", AttemptID: "tk-2",
 		Args: handlers.PayWithItemArgs{
 			Seller: "Bob", Item: "bread", Qty: 1, Amount: 4,
-			ConsumeNow: false, QuoteID: uint64(quoteID),
+			ConsumeNow: false, QuoteID: handlers.LenientID(quoteID),
 		},
 	})
 	if err != nil {

@@ -133,6 +133,131 @@ func TestDecodeCounterPay_StringifiedPayItems(t *testing.T) {
 	}
 }
 
+// TestDecodePayWithItem_LenientNullStringIDs is the LLM-42 regression guard.
+// llama-3.3 emits the STRING "null" for an absent optional id; the bare uint64
+// fields hard-failed the whole decode and the model reject-retry-looped for
+// ~7.5 min of dead air (Ezekiel/Josiah horseshoe-for-cheese barter,
+// 2026-06-19). LenientID coerces "null" → 0 (unset), landing the offer in the
+// plain-barter path. Args mirror the live repro payload verbatim.
+func TestDecodePayWithItem_LenientNullStringIDs(t *testing.T) {
+	args, err := DecodePayWithItemArgs(json.RawMessage(`{
+        "for":"","qty":1,"item":"Cheese","amount":0,"seller":"Josiah Thorne",
+        "quote_id":"null","consumers":[],"pay_items":[{"qty":1,"item":"Horseshoe"}],
+        "consume_now":true,"ready_in_days":0,"in_response_to":"null"
+    }`))
+	if err != nil {
+		t.Fatalf("LLM-42 repro args should decode, got: %v", err)
+	}
+	got := args.(PayWithItemArgs)
+	if got.QuoteID != 0 || got.InResponseTo != 0 {
+		t.Errorf("QuoteID=%d InResponseTo=%d, want 0/0 (coerced unset)", got.QuoteID, got.InResponseTo)
+	}
+	if len(got.PayItems) != 1 || got.PayItems[0].Item != "Horseshoe" || got.PayItems[0].Qty != 1 {
+		t.Errorf("PayItems = %+v, want [{Horseshoe 1}]", got.PayItems)
+	}
+}
+
+// TestDecodePayWithItem_LenientIDForms exercises the LenientID decode surface
+// on an OPTIONAL id (quote_id): the weak-model string forms ("null", "", a
+// bare numeric string) coerce to 0 / the value, a real JSON number is
+// unaffected, and genuinely malformed input is still rejected.
+func TestDecodePayWithItem_LenientIDForms(t *testing.T) {
+	base := `{"seller":"Aldous","item":"stew","qty":1,"amount":4,"consume_now":false,%s}`
+	cases := []struct {
+		name     string
+		fragment string // the optional key/value injected into the payload
+		wantID   LenientID
+		wantErr  string // empty = success
+	}{
+		{"number", `"quote_id":5`, 5, ""},
+		{"numeric_string", `"quote_id":"5"`, 5, ""},
+		{"string_null", `"quote_id":"null"`, 0, ""},
+		{"json_null", `"quote_id":null`, 0, ""},
+		{"empty_string", `"quote_id":""`, 0, ""},
+		{"omitted", `"ready_in_days":0`, 0, ""},
+		{"non_numeric_string", `"quote_id":"abc"`, 0, "not a non-negative integer"},
+		{"float", `"quote_id":1.5`, 0, "malformed arguments"},
+		{"negative", `"quote_id":-3`, 0, "malformed arguments"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := json.RawMessage(strings.Replace(base, "%s", tc.fragment, 1))
+			args, err := DecodePayWithItemArgs(raw)
+			if tc.wantErr != "" {
+				if err == nil {
+					t.Fatalf("want error %q, got nil", tc.wantErr)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Errorf("err = %v, want substring %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("want success, got %v", err)
+			}
+			if got := args.(PayWithItemArgs).QuoteID; got != tc.wantID {
+				t.Errorf("QuoteID = %d, want %d", got, tc.wantID)
+			}
+		})
+	}
+}
+
+// TestDecodeAcceptPay_LenientLedgerID — a REQUIRED ledger id sent as the
+// weak-model string "null" / "" now coerces to 0 and trips the existing `< 1`
+// check, surfacing the model-safe "must be at least 1" reason instead of the
+// opaque "argument decode failed" the bare uint64 produced (the same loop
+// class as LLM-42, on the seller's accept side). A stringified real id is
+// honored.
+func TestDecodeAcceptPay_LenientLedgerID(t *testing.T) {
+	for _, raw := range []string{`{"ledger_id":"null"}`, `{"ledger_id":""}`} {
+		_, err := DecodeAcceptPayArgs(json.RawMessage(raw))
+		if err == nil {
+			t.Fatalf("%s: want model-safe 'at least 1' error, got nil", raw)
+		}
+		if !strings.Contains(err.Error(), "at least 1") {
+			t.Errorf("%s: err = %v, want substring 'at least 1'", raw, err)
+		}
+	}
+	args, err := DecodeAcceptPayArgs(json.RawMessage(`{"ledger_id":"42"}`))
+	if err != nil {
+		t.Fatalf("numeric-string ledger_id should decode: %v", err)
+	}
+	if got := args.(AcceptPayArgs).LedgerID; got != 42 {
+		t.Errorf("LedgerID = %d, want 42", got)
+	}
+}
+
+// TestDecodeLedgerFamily_LenientLedgerID guards the LenientID coercion on the
+// non-accept ledger decoders (decline / counter / withdraw share the same
+// field type but have their own decode bodies). A string "null" ledger_id
+// coerces to 0 and trips each decoder's `< 1` model-safe reject — protecting
+// against future drift if one decoder's field type is changed back in isolation.
+func TestDecodeLedgerFamily_LenientLedgerID(t *testing.T) {
+	decoders := map[string]func(json.RawMessage) (any, error){
+		"decline_pay":  DecodeDeclinePayArgs,
+		"counter_pay":  DecodeCounterPayArgs,
+		"withdraw_pay": DecodeWithdrawPayArgs,
+	}
+	// counter_pay additionally requires coins or goods; include amount so the
+	// only failure under test is the coerced-zero ledger_id.
+	raws := map[string]string{
+		"decline_pay":  `{"ledger_id":"null"}`,
+		"counter_pay":  `{"ledger_id":"null","amount":5}`,
+		"withdraw_pay": `{"ledger_id":"null"}`,
+	}
+	for name, decode := range decoders {
+		t.Run(name, func(t *testing.T) {
+			_, err := decode(json.RawMessage(raws[name]))
+			if err == nil {
+				t.Fatal("want model-safe 'at least 1' error, got nil")
+			}
+			if !strings.Contains(err.Error(), "at least 1") {
+				t.Errorf("err = %v, want substring 'at least 1'", err)
+			}
+		})
+	}
+}
+
 func TestDecodePayWithItem_RejectsShapeErrors(t *testing.T) {
 	cases := []struct {
 		name string
