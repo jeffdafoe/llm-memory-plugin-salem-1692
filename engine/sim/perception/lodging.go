@@ -407,3 +407,133 @@ func renderLodgingOffer(b *strings.Builder, v *LodgingOfferView) {
 	}
 	fmt.Fprintf(b, "You have %d %s free at %s.\n\n", v.RoomsAvailable, roomWord, sanitizeInline(v.InnName))
 }
+
+// KeeperHeldLodgersView is the keeper-side "this guest already lodges here"
+// signal (LLM-38). The offer cue (buildLodgingOfferCue) is correctly suppressed
+// for an actor who already holds a grant — actorSnapIsLodgingSeeker returns
+// false — but suppression alone leaves the keeper free-forming an offer off the
+// passive "## Your inn" vacancy line ("1 of 4 rooms available…"), so the keeper
+// re-offers a room the guest is already in. This is the positive counter-signal:
+// it names each co-present actor holding an active ledger grant at THIS inn so
+// the keeper LLM affirms ("you're already settled") instead of re-pitching.
+// nil/empty skips the section. Pure over the snapshot.
+type KeeperHeldLodgersView struct {
+	// Lodgers are the co-present actors already holding a room at this inn.
+	Lodgers []HeldLodger
+}
+
+// HeldLodger is one co-present actor already lodging at the keeper's inn.
+type HeldLodger struct {
+	// Name is the acquaintance-gated label (descriptorLabel).
+	Name string
+
+	// TenureLabel voices the time left on the stay ("paid for about 2 more
+	// nights"). Computed at build time against snap.PublishedAt so the rendered
+	// cue is deterministic against the snapshot rather than a render-time clock.
+	TenureLabel string
+}
+
+// buildKeeperHeldLodgers builds the keeper-side held-lodger signal (LLM-38). It
+// reuses the already-computed KeeperLodgingView (so the subject is confirmed a
+// keeper of a lodging structure) and scans the keeper's co-present huddle for
+// actors holding an active ledger grant at a private room IN the keeper's own
+// structure — the guests the keeper must NOT re-offer a room to. Unlike the
+// offer cue this is informational, not an act-now instruction, so it is NOT
+// location-gated (it mirrors the ungated "## Your inn" status): a keeper who
+// runs into their lodger should affirm rather than re-pitch wherever they meet.
+// Returns nil (Render content-gates) when the subject isn't a keeper or no held
+// lodger is co-present. Pure over the snapshot.
+func buildKeeperHeldLodgers(snap *sim.Snapshot, subject sim.ActorID, keeper *KeeperLodgingView, members []HuddleMember) *KeeperHeldLodgersView {
+	if snap == nil || keeper == nil {
+		return nil
+	}
+	subj := snap.Actors[subject]
+	if subj == nil || subj.WorkStructureID == "" {
+		return nil
+	}
+	s := snap.Structures[subj.WorkStructureID]
+	if s == nil {
+		return nil
+	}
+	// The keeper's own private rooms — the held-grant rooms that count as
+	// "lodging here". Same room set buildKeeperLodgingView scans for occupancy.
+	privateRooms := make(map[sim.RoomID]bool)
+	for _, r := range s.Rooms {
+		if r != nil && r.Kind == sim.RoomKindPrivate {
+			privateRooms[r.ID] = true
+		}
+	}
+	if len(privateRooms) == 0 {
+		return nil
+	}
+
+	now := snap.PublishedAt
+	var held []HeldLodger
+	for _, m := range members {
+		if m.ID == subject {
+			continue
+		}
+		as := snap.Actors[m.ID]
+		if as == nil {
+			continue
+		}
+		// The soonest-expiring active grant this peer holds at THIS inn (a guest
+		// could in principle hold more than one; the nearest expiry is the one
+		// that speaks to "how long are they settled").
+		var best *sim.RoomAccess
+		for _, ra := range as.RoomAccess {
+			if !sim.IsActiveLedgerGrant(ra, now) || !privateRooms[ra.RoomID] {
+				continue
+			}
+			if best == nil || ra.ExpiresAt.Before(*best.ExpiresAt) {
+				best = ra
+			}
+		}
+		if best == nil {
+			continue
+		}
+		held = append(held, HeldLodger{
+			Name:        descriptorLabel(m.DisplayName, m.Role, m.Acquainted),
+			TenureLabel: heldLodgerTenure(*best.ExpiresAt, now),
+		})
+	}
+	if len(held) == 0 {
+		return nil
+	}
+	return &KeeperHeldLodgersView{Lodgers: held}
+}
+
+// renderKeeperHeldLodgers writes the "## Already lodging here" section: each
+// co-present guest who already holds a room at the keeper's inn, the time left
+// on their stay, and an explicit "do not offer another" steer so the keeper
+// affirms instead of re-pitching off the "## Your inn" vacancy line. Content-
+// gated: a nil/empty view writes nothing. The tenure phrase is precomputed at
+// build time (TenureLabel) so this stays deterministic against the snapshot.
+func renderKeeperHeldLodgers(b *strings.Builder, v *KeeperHeldLodgersView) {
+	if v == nil || len(v.Lodgers) == 0 {
+		return
+	}
+	b.WriteString("## Already lodging here\n")
+	for _, l := range v.Lodgers {
+		fmt.Fprintf(b, "%s already holds a room here, %s. Do not offer another — if they ask about lodging, tell them they are already settled.\n",
+			sanitizeInline(l.Name), l.TenureLabel)
+	}
+	b.WriteString("\n")
+}
+
+// heldLodgerTenure phrases the time left on a held grant for the keeper cue.
+// Three tiers mirroring lodgingStatusLine, voiced from the keeper's side. A
+// just-expired grant (clock drift past the snapshot gate) falls into the first
+// tier — "paid through the day" — which is harmless.
+func heldLodgerTenure(expiresAt, now time.Time) string {
+	d := expiresAt.Sub(now)
+	switch {
+	case d <= 24*time.Hour:
+		return "paid through the day"
+	case d <= 48*time.Hour:
+		return "paid through tomorrow"
+	default:
+		nights := int(d / (24 * time.Hour))
+		return fmt.Sprintf("paid for about %d more nights", nights)
+	}
+}

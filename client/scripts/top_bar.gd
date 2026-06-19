@@ -38,6 +38,11 @@ var cursor_tile_label: Label = null
 ## inventory. Hidden until /pc/me reports an existing PC; talk panel
 ## calls set_purse() each time it polls.
 var coins_label: Label = null
+## Lodging chip (LLM-38). Shows "Lodged at <inn>" when the PC holds a room,
+## so the player knows they already have lodging and doesn't ask a keeper for
+## another. Hidden when the PC holds no room, and (like the coin chip) while
+## sleeping. set_lodging() drives it off /pc/me's lodging field.
+var lodging_label: Label = null
 ## Sleep marker chip (ZBBS-WORK-204 Stage B). Shown only while the
 ## local PC is sleeping. While visible, the purse / needs / inventory
 ## chips are hidden — they read oddly mid-dream, and the sleep
@@ -237,6 +242,19 @@ func _ready() -> void:
     coins_label.mouse_filter = Control.MOUSE_FILTER_PASS
     right_box.add_child(coins_label)
 
+    # Lodging chip (LLM-38) — "Lodged at <inn>" when the PC holds a room. Hidden
+    # until set_lodging() reports active lodging; the full "paid through …" detail
+    # lives in the tooltip to keep the bar compact.
+    lodging_label = Label.new()
+    lodging_label.text = ""
+    lodging_label.visible = false
+    lodging_label.add_theme_color_override("font_color", Color(0.72, 0.86, 0.74, 1.0))
+    lodging_label.add_theme_font_override("font", _font)
+    lodging_label.add_theme_font_size_override("font_size", 16)
+    lodging_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+    lodging_label.mouse_filter = Control.MOUSE_FILTER_PASS
+    right_box.add_child(lodging_label)
+
     # Inventory icon — Lucide "package" glyph, clickable Label rather
     # than a Button so it sits flush in the bar (Buttons drag in their
     # own border / padding / focus rect; Labels look like part of the
@@ -391,6 +409,26 @@ func set_purse(coins: int, _inventory_lines: Array) -> void:
     coins_label.visible = true
     if inventory_icon != null:
         inventory_icon.visible = true
+
+
+## Drive the lodging chip from /pc/me's lodging field (LLM-38). An empty
+## inn_name means the PC holds no room — clear and hide the chip. Hidden while
+## sleeping like the other per-PC chips; set_sleep_state restores it on wake.
+func set_lodging(inn_name: String, until_label: String) -> void:
+    if lodging_label == null:
+        return
+    if inn_name == "":
+        # Clear so a stale value can't reappear when set_sleep_state restores
+        # chips on wake.
+        lodging_label.text = ""
+        lodging_label.visible = false
+        return
+    lodging_label.text = "Lodged at %s" % inn_name
+    if until_label != "":
+        lodging_label.tooltip_text = "You have a room at %s, paid %s." % [inn_name, until_label]
+    else:
+        lodging_label.tooltip_text = "You have a room at %s." % inn_name
+    lodging_label.visible = not _sleeping
 
 
 ## gui_input handler on the inventory icon. Treat any left-click as a
@@ -644,6 +682,8 @@ func set_sleep_state(sleeping: bool, structure_label: String, wake_at_iso: Strin
             inventory_icon.visible = true
         if needs_label != null and not _need_segments.is_empty():
             needs_label.visible = true
+        if lodging_label != null and lodging_label.text != "":
+            lodging_label.visible = true
         return
     var wake_str := _format_wake_time(wake_at_iso)
     var subject := "Sleeping"
@@ -664,6 +704,8 @@ func set_sleep_state(sleeping: bool, structure_label: String, wake_at_iso: Strin
         inventory_icon.visible = false
     if needs_label != null:
         needs_label.visible = false
+    if lodging_label != null:
+        lodging_label.visible = false
 
 
 ## Parse a wake-at ISO-8601 timestamp into "HH:MM" wall-clock.

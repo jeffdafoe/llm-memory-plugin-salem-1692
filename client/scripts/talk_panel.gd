@@ -192,6 +192,10 @@ var pay_modal_recipients: Array = []
 ## show the player what they can afford.
 var pc_coins: int = 0
 var pc_inventory: Array = []
+## Last /pc/me snapshot of the PC's lodging (LLM-38): {inn_name, until_label,
+## expires_at}, or empty when the PC holds no room. Drives the top-bar chip and
+## the pay modal's empty-state copy.
+var pc_lodging: Dictionary = {}
 ## Last /pc/me snapshot of needs (hunger / thirst / tiredness, each 0..24).
 ## Forwarded to the top-bar's HUD readout. Empty when no PC.
 var pc_needs: Dictionary = {}
@@ -229,6 +233,11 @@ signal needs_changed(needs: Dictionary)
 ## client-side, so the visual signal is present immediately on a fresh
 ## page load.
 signal dwelling_attributes_changed(attrs: PackedStringArray)
+
+## Emitted whenever /pc/me reports the PC's lodging (LLM-38). inn_name +
+## until_label are empty when the PC holds no room. main.gd forwards to the top
+## bar's "Lodged at …" chip.
+signal lodging_changed(inn_name: String, until_label: String)
 
 ## Emitted when the pay modal opens/closes. main.gd forwards to
 ## camera.modal_open so world clicks (PC walk, pan, zoom) don't fire
@@ -1153,6 +1162,12 @@ func _apply_pc_state(data: Dictionary) -> void:
             dwelling.append(str(entry))
     dwelling_attributes_changed.emit(dwelling)
 
+    # Active lodging (LLM-38) — surfaced as the top-bar "Lodged at …" chip and
+    # used for the pay modal's empty-state copy. Absent when the PC holds no room.
+    var lodging_data = data.get("lodging", {})
+    pc_lodging = lodging_data if typeof(lodging_data) == TYPE_DICTIONARY else {}
+    _push_lodging_to_top_bar()
+
     var prev_huddle_size: int = huddle_members.size()
     var members = data.get("huddle_members", [])
     if typeof(members) == TYPE_ARRAY:
@@ -1309,6 +1324,7 @@ func _set_no_pc_state() -> void:
     pc_coins = 0
     pc_inventory = []
     pc_needs = {}
+    pc_lodging = {}
     is_open = false
     sheet_anchor.visible = false
     talk_launcher.visible = false
@@ -1319,6 +1335,7 @@ func _set_no_pc_state() -> void:
     _clear_nearby_chips()
     _push_purse_to_top_bar()
     _push_needs_to_top_bar()
+    _push_lodging_to_top_bar()
 
 
 ## Public: collapse the talk panel to its launcher chip without
@@ -1526,6 +1543,12 @@ func _push_purse_to_top_bar() -> void:
     purse_changed.emit(pc_coins, lines)
     inventory_changed.emit(structured)
     character_name_changed.emit(character_name)
+
+
+## Emit lodging_changed so main.gd can update the top bar's "Lodged at …" chip
+## (LLM-38). Empty strings (no PC, or an empty pc_lodging) hide the chip.
+func _push_lodging_to_top_bar() -> void:
+    lodging_changed.emit(str(pc_lodging.get("inn_name", "")), str(pc_lodging.get("until_label", "")))
 
 
 ## Emit needs_changed so main.gd can update the top bar's HUD readout.
@@ -2202,17 +2225,54 @@ func _refresh_pay_quote_rows() -> void:
             pay_quote_rows_box.add_child(row)
             shown += 1
     var any := shown > 0
+    # No takeable quotes or mentions — explain why instead of a blank gap
+    # (LLM-38). The held-room case is the common dead-end: the player reopens
+    # Pay expecting a room row after a keeper "offered" them a room they already
+    # hold. _pay_empty_state_text() returns "" when the compose form is the right
+    # path (recipients present, no lodging), leaving the prior hide-when-empty
+    # behavior. Added into the rows box so the top-of-function clear removes it.
+    var empty_text := "" if any else _pay_empty_state_text()
+    if empty_text != "":
+        var empty := Label.new()
+        empty.text = empty_text
+        empty.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+        empty.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+        empty.add_theme_font_size_override("font_size", 12)
+        empty.add_theme_color_override("font_color", Color(0.78, 0.70, 0.55))
+        pay_quote_rows_box.add_child(empty)
+    var show_box := any or empty_text != ""
     if pay_quotes_header != null:
-        pay_quotes_header.visible = any
-    pay_quote_rows_box.visible = any
+        pay_quotes_header.visible = any  # "Offers on the table" titles real offers only
+    pay_quote_rows_box.visible = show_box
     if pay_quotes_separator != null:
-        pay_quotes_separator.visible = any
+        pay_quotes_separator.visible = show_box
     # The disposition toggle shows only when it can actually govern
     # something — at least one visible Take row with a choice-class item.
     # Mention rows don't count: they route through compose, where the
     # checkbox stays authoritative. (ZBBS-WORK-402)
     if pay_disposition_row != null:
         pay_disposition_row.visible = any and choice_rows > 0
+
+
+## Empty-state copy for the pay modal when no quotes or mentions are takeable
+## (LLM-38). The held-room note shows only when the PC's own innkeeper is the
+## co-present recipient (the keeper-re-offers dead-end this fixes) or when there
+## is no one to pay at all — not while composing a payment to a DIFFERENT vendor,
+## where "you already have a room" would be a non-sequitur. Returns "" when the
+## compose form below is the natural path.
+func _pay_empty_state_text() -> String:
+    if not pc_lodging.is_empty():
+        var keeper := str(pc_lodging.get("keeper_name", ""))
+        var keeper_present: bool = keeper != "" and pay_modal_recipients.has(keeper)
+        if keeper_present or pay_modal_recipients.is_empty():
+            var inn := str(pc_lodging.get("inn_name", "your inn"))
+            var until := str(pc_lodging.get("until_label", ""))
+            if until != "":
+                return "You already have a room at %s, paid %s — nothing to pay for it." % [inn, until]
+            return "You already have a room at %s — nothing to pay for it." % inn
+    if pay_modal_recipients.is_empty():
+        return "Nothing to pay for right now."
+    return ""
 
 
 ## One-line PROSE description of a mention row. "Spoke of" (vs the quote

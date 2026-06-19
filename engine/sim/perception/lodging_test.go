@@ -524,3 +524,112 @@ func TestRenderLodgingOffer_NamesActionAndNights(t *testing.T) {
 		}
 	}
 }
+
+// --- keeper held-lodger signal (LLM-38) ---
+
+// heldLodgerSnap builds a snapshot with a keeper working at "inn" and one
+// co-present member holding memberAccess (may be nil). Actor ids are explicit so
+// buildKeeperHeldLodgers can resolve the keeper's WorkStructureID and the
+// member's RoomAccess by the ids the members slice references.
+func heldLodgerSnap(memberAccess map[sim.RoomAccessKey]*sim.RoomAccess) *sim.Snapshot {
+	return &sim.Snapshot{
+		PublishedAt: lodgingNow,
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			"keeper": {WorkStructureID: "inn"},
+			"guest":  {RoomAccess: memberAccess},
+		},
+		Structures: map[sim.StructureID]*sim.Structure{"inn": innStructureN("inn", "Hannah's Inn", 3)},
+	}
+}
+
+var heldLodgerKeeperView = &KeeperLodgingView{InnName: "Hannah's Inn", RoomsTotal: 3, RoomsAvailable: 2}
+var heldLodgerMembers = []HuddleMember{{ID: "guest", DisplayName: "Goodman Jefferey", Acquainted: true}}
+
+func TestBuildKeeperHeldLodgers_CoPresentHeldLodger(t *testing.T) {
+	snap := heldLodgerSnap(map[sim.RoomAccessKey]*sim.RoomAccess{
+		{RoomID: 2, Source: sim.AccessSourceLedger}: ledgerAccess(2, 72*time.Hour),
+	})
+	v := buildKeeperHeldLodgers(snap, "keeper", heldLodgerKeeperView, heldLodgerMembers)
+	if v == nil {
+		t.Fatal("want a held-lodger view for a co-present guest holding a grant here, got nil")
+	}
+	if len(v.Lodgers) != 1 || v.Lodgers[0].Name != "Goodman Jefferey" {
+		t.Fatalf("Lodgers = %+v, want one named Goodman Jefferey", v.Lodgers)
+	}
+	// Tenure is precomputed against snap.PublishedAt (lodgingNow), so a +72h grant
+	// is deterministically "about 3 more nights".
+	if v.Lodgers[0].TenureLabel != "paid for about 3 more nights" {
+		t.Errorf("TenureLabel = %q, want 'paid for about 3 more nights'", v.Lodgers[0].TenureLabel)
+	}
+}
+
+func TestBuildKeeperHeldLodgers_NoGrant_Nil(t *testing.T) {
+	snap := heldLodgerSnap(nil) // the co-present guest holds no grant
+	if v := buildKeeperHeldLodgers(snap, "keeper", heldLodgerKeeperView, heldLodgerMembers); v != nil {
+		t.Errorf("a guest with no grant is a seeker, not a held lodger — want nil, got %+v", v)
+	}
+}
+
+func TestBuildKeeperHeldLodgers_GrantAtAnotherInn_Nil(t *testing.T) {
+	// Room 50 belongs to no room in "inn" (private rooms are 2..4), so the grant
+	// is at another inn and must not register as lodging here.
+	snap := heldLodgerSnap(map[sim.RoomAccessKey]*sim.RoomAccess{
+		{RoomID: 50, Source: sim.AccessSourceLedger}: ledgerAccess(50, 72*time.Hour),
+	})
+	if v := buildKeeperHeldLodgers(snap, "keeper", heldLodgerKeeperView, heldLodgerMembers); v != nil {
+		t.Errorf("a grant at a foreign inn must not count — want nil, got %+v", v)
+	}
+}
+
+func TestBuildKeeperHeldLodgers_ExpiredGrant_Nil(t *testing.T) {
+	snap := heldLodgerSnap(map[sim.RoomAccessKey]*sim.RoomAccess{
+		{RoomID: 2, Source: sim.AccessSourceLedger}: ledgerAccess(2, -time.Hour),
+	})
+	if v := buildKeeperHeldLodgers(snap, "keeper", heldLodgerKeeperView, heldLodgerMembers); v != nil {
+		t.Errorf("an expired grant is not active lodging — want nil, got %+v", v)
+	}
+}
+
+func TestBuildKeeperHeldLodgers_NonKeeper_Nil(t *testing.T) {
+	snap := heldLodgerSnap(map[sim.RoomAccessKey]*sim.RoomAccess{
+		{RoomID: 2, Source: sim.AccessSourceLedger}: ledgerAccess(2, 72*time.Hour),
+	})
+	if v := buildKeeperHeldLodgers(snap, "keeper", nil, heldLodgerMembers); v != nil {
+		t.Errorf("a non-keeper (nil KeeperLodgingView) must not surface lodgers — want nil, got %+v", v)
+	}
+}
+
+func TestRenderKeeperHeldLodgers_Gated(t *testing.T) {
+	var b strings.Builder
+	renderKeeperHeldLodgers(&b, nil)
+	if b.String() != "" {
+		t.Errorf("nil view must render nothing, got %q", b.String())
+	}
+	b.Reset()
+	renderKeeperHeldLodgers(&b, &KeeperHeldLodgersView{Lodgers: []HeldLodger{
+		{Name: "Goodman Jefferey", TenureLabel: "paid for about 3 more nights"},
+	}})
+	out := b.String()
+	for _, want := range []string{"## Already lodging here", "Goodman Jefferey", "paid for about 3 more nights", "Do not offer another", "already settled"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("held-lodger render missing %q, got %q", want, out)
+		}
+	}
+}
+
+func TestHeldLodgerTenure_Tiers(t *testing.T) {
+	now := lodgingNow
+	cases := []struct {
+		d    time.Duration
+		want string
+	}{
+		{72 * time.Hour, "paid for about 3 more nights"},
+		{30 * time.Hour, "paid through tomorrow"},
+		{2 * time.Hour, "paid through the day"},
+	}
+	for _, c := range cases {
+		if got := heldLodgerTenure(now.Add(c.d), now); got != c.want {
+			t.Errorf("heldLodgerTenure(+%s) = %q, want %q", c.d, got, c.want)
+		}
+	}
+}
