@@ -105,11 +105,19 @@ type KeeperLodgingView struct {
 }
 
 // buildKeeperLodgingView returns the keeper occupancy view when actorSnap
-// works at a structure that has private bedrooms (an inn), or nil otherwise.
-// RoomsAvailable = private rooms in the structure minus the distinct rooms
-// currently held by an active ledger grant (any actor's). Pure over the
-// snapshot. ZBBS-HOME-296 PR2.
-func buildKeeperLodgingView(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) *KeeperLodgingView {
+// works at a structure that has private bedrooms (an inn) AND has an awake
+// huddle peer present to hear about it, or nil otherwise. RoomsAvailable =
+// private rooms in the structure minus the distinct rooms currently held by an
+// active ledger grant (any actor's). Pure over the snapshot. ZBBS-HOME-296 PR2.
+//
+// The awake-peer gate is LLM-22: the "## Your inn" line is a standing,
+// every-tick sell cue, and with no awake listener it drove keepers to re-pitch
+// rooms into an empty or all-asleep huddle (John Ellis pitching a sleeping
+// Ezekiel a room six times). Gating the whole view here also keeps the
+// downstream "## A room to let" offer cue correct: that cue only fires on an
+// awake co-present seeker, which is a strict subset of "an awake peer is here,"
+// so suppressing the shared view when no one is awake never starves it.
+func buildKeeperLodgingView(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, members []HuddleMember) *KeeperLodgingView {
 	if snap == nil || actorSnap == nil || actorSnap.WorkStructureID == "" {
 		return nil
 	}
@@ -127,6 +135,9 @@ func buildKeeperLodgingView(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) *K
 	total := len(privateRooms)
 	if total == 0 {
 		return nil // not a lodging structure — no keeper section
+	}
+	if !anyHuddlePeerAwake(snap, members) {
+		return nil // no awake listener — don't cue a pitch into a dead room (LLM-22)
 	}
 
 	now := snap.PublishedAt
@@ -240,6 +251,25 @@ func actorSnapIsLodgingSeeker(as *sim.ActorSnapshot, now time.Time) bool {
 		}
 	}
 	return true
+}
+
+// anyHuddlePeerAwake reports whether at least one of the subject's huddle peers
+// is awake at snapshot time. members already excludes the subject
+// (buildSurroundings), so any awake member is a co-present listener. Sleepers
+// stay in the huddle roster (membership doesn't drop on bed-down), so the
+// per-member State check is what separates an empty/all-asleep room from a live
+// audience. StateSleeping is the snapshot-side asleep proxy (mirrors
+// vendorKeeperAsleep); a resting/on-break peer still counts as a listener. LLM-22.
+func anyHuddlePeerAwake(snap *sim.Snapshot, members []HuddleMember) bool {
+	if snap == nil {
+		return false
+	}
+	for _, m := range members {
+		if a := snap.Actors[m.ID]; a != nil && a.State != sim.StateSleeping {
+			return true
+		}
+	}
+	return false
 }
 
 // structureForRoom returns the structure that contains roomID, or nil when

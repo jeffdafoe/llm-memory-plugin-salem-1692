@@ -284,7 +284,7 @@ func innStructureN(id sim.StructureID, name string, n int) *sim.Structure {
 
 func TestBuildKeeperLodgingView_NonKeeper_Nil(t *testing.T) {
 	subj := &sim.ActorSnapshot{} // no WorkStructureID
-	if v := buildKeeperLodgingView(lodgingSnap(subj, nil), subj); v != nil {
+	if v := buildKeeperLodgingView(lodgingSnap(subj, nil), subj, nil); v != nil {
 		t.Errorf("want nil for a non-keeper, got %+v", v)
 	}
 }
@@ -294,7 +294,7 @@ func TestBuildKeeperLodgingView_WorkStructureHasNoPrivateRooms_Nil(t *testing.T)
 	structs := map[sim.StructureID]*sim.Structure{
 		"smithy": {ID: "smithy", DisplayName: "The Smithy", Rooms: []*sim.Room{{ID: 1, StructureID: "smithy", Kind: sim.RoomKindCommon}}},
 	}
-	if v := buildKeeperLodgingView(lodgingSnap(subj, structs), subj); v != nil {
+	if v := buildKeeperLodgingView(lodgingSnap(subj, structs), subj, nil); v != nil {
 		t.Errorf("want nil when the work structure has no private rooms, got %+v", v)
 	}
 }
@@ -309,7 +309,9 @@ func TestBuildKeeperLodgingView_CountsOccupancy(t *testing.T) {
 	lodgerB := &sim.ActorSnapshot{RoomAccess: map[sim.RoomAccessKey]*sim.RoomAccess{
 		{RoomID: 3, Source: sim.AccessSourceLedger}: ledgerAccess(3, 72*time.Hour),
 	}}
-	v := buildKeeperLodgingView(lodgingSnap(keeper, structs, lodgerA, lodgerB), keeper)
+	// lodgerA ("other0") is an awake huddle peer, satisfying the LLM-22 audience gate.
+	members := []HuddleMember{{ID: "other0"}}
+	v := buildKeeperLodgingView(lodgingSnap(keeper, structs, lodgerA, lodgerB), keeper, members)
 	if v == nil {
 		t.Fatal("want a keeper view, got nil")
 	}
@@ -328,12 +330,51 @@ func TestBuildKeeperLodgingView_IgnoresExpiredAndOtherStructures(t *testing.T) {
 		{RoomID: 2, Source: sim.AccessSourceLedger}:  expired,
 		{RoomID: 50, Source: sim.AccessSourceLedger}: ledgerAccess(50, 72*time.Hour),
 	}}
-	v := buildKeeperLodgingView(lodgingSnap(keeper, structs, lodger), keeper)
+	members := []HuddleMember{{ID: "other0"}} // awake huddle peer (LLM-22 gate)
+	v := buildKeeperLodgingView(lodgingSnap(keeper, structs, lodger), keeper, members)
 	if v == nil {
 		t.Fatal("want a keeper view, got nil")
 	}
 	if v.RoomsAvailable != 2 {
 		t.Errorf("RoomsAvailable = %d, want 2 (expired + foreign-room grants ignored)", v.RoomsAvailable)
+	}
+}
+
+// --- keeper audience gate (LLM-22) ---
+
+func TestBuildKeeperLodgingView_NoAwakePeer_Nil(t *testing.T) {
+	keeper := &sim.ActorSnapshot{WorkStructureID: "inn"}
+	structs := map[sim.StructureID]*sim.Structure{"inn": innStructureN("inn", "Hannah's Inn", 2)}
+	// An innkeeper alone in his inn has no one to be cued to pitch a room to.
+	if v := buildKeeperLodgingView(lodgingSnap(keeper, structs), keeper, nil); v != nil {
+		t.Errorf("want nil for a keeper with no awake huddle peer, got %+v", v)
+	}
+}
+
+func TestBuildKeeperLodgingView_OnlySleepingPeer_Nil(t *testing.T) {
+	keeper := &sim.ActorSnapshot{WorkStructureID: "inn"}
+	structs := map[sim.StructureID]*sim.Structure{"inn": innStructureN("inn", "Hannah's Inn", 2)}
+	// The only huddle peer ("other0") is asleep — the live John-Ellis-pitches-a-
+	// sleeping-Ezekiel bug. A sleeper stays in the huddle roster but is no audience.
+	sleeper := &sim.ActorSnapshot{State: sim.StateSleeping}
+	members := []HuddleMember{{ID: "other0"}}
+	if v := buildKeeperLodgingView(lodgingSnap(keeper, structs, sleeper), keeper, members); v != nil {
+		t.Errorf("want nil when the only huddle peer is asleep, got %+v", v)
+	}
+}
+
+func TestBuildKeeperLodgingView_AwakePeer_View(t *testing.T) {
+	keeper := &sim.ActorSnapshot{WorkStructureID: "inn"}
+	structs := map[sim.StructureID]*sim.Structure{"inn": innStructureN("inn", "Hannah's Inn", 2)}
+	// An awake bystander ("other0", State unset) is present — the section renders.
+	bystander := &sim.ActorSnapshot{}
+	members := []HuddleMember{{ID: "other0"}}
+	v := buildKeeperLodgingView(lodgingSnap(keeper, structs, bystander), keeper, members)
+	if v == nil {
+		t.Fatal("want a keeper view when an awake huddle peer is present, got nil")
+	}
+	if v.RoomsTotal != 2 || v.RoomsAvailable != 2 {
+		t.Errorf("occupancy = %d/%d, want 2/2", v.RoomsAvailable, v.RoomsTotal)
 	}
 }
 
