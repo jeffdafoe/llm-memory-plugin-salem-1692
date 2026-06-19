@@ -1,6 +1,7 @@
 package sim
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -76,6 +77,104 @@ func TestStayOpen_StampsAndRejectsRepeat(t *testing.T) {
 	if _, err := StayOpen("ezekiel", "again", 22, at).Fn(w); err == nil {
 		t.Error("second stay_open while committed should be rejected")
 	}
+}
+
+// TestStayOpen_NoOpReject — LLM-40. A stay_open that does not reach past the
+// keeper's regular close is the diligence-reflex misfire (commit to "open until
+// 9" when you already close at 9). It is rejected while still before close, but
+// a genuine extension is honored, an after-close commitment is honored (close
+// already passed), and a keeper with no explicit schedule is unaffected.
+func TestStayOpen_NoOpReject(t *testing.T) {
+	const closeMin = 1260 // 21:00 — "9 in the evening"
+
+	newKeeper := func(schedEnd *int) (*Actor, *World) {
+		a := shiftNPC("ezekiel", KindNPCStateful, "smithy", "home", "smithy")
+		a.ScheduleStartMin = intptr(540) // 09:00
+		a.ScheduleEndMin = schedEnd
+		return a, sleepTestWorld(a)
+	}
+
+	t.Run("until_hour == close while on shift is rejected", func(t *testing.T) {
+		a, w := newKeeper(intptr(closeMin))
+		at := time.Date(2026, 6, 18, 20, 1, 0, 0, time.UTC) // an hour before close
+		_, err := StayOpen("ezekiel", "ensure customers can still buy", 21, at).Fn(w)
+		if err == nil {
+			t.Fatal("staying open until the regular close hour should be rejected as a no-op")
+		}
+		if !strings.Contains(err.Error(), "9 in the evening") {
+			t.Errorf("reject should voice the close time, got: %v", err)
+		}
+		if a.OpenUntil != nil {
+			t.Errorf("OpenUntil should be unset on a no-op reject, got %v", a.OpenUntil)
+		}
+	})
+
+	t.Run("genuine extension past close is honored", func(t *testing.T) {
+		a, w := newKeeper(intptr(closeMin))
+		at := time.Date(2026, 6, 18, 20, 1, 0, 0, time.UTC)
+		if _, err := StayOpen("ezekiel", "an order I still owe", 22, at).Fn(w); err != nil {
+			t.Fatalf("staying open an hour past close should succeed: %v", err)
+		}
+		want := time.Date(2026, 6, 18, 22, 0, 0, 0, time.UTC)
+		if a.OpenUntil == nil || !a.OpenUntil.Equal(want) {
+			t.Errorf("OpenUntil = %v, want %v", a.OpenUntil, want)
+		}
+	})
+
+	t.Run("commitment after close has passed is honored", func(t *testing.T) {
+		a, w := newKeeper(intptr(closeMin))
+		at := time.Date(2026, 6, 18, 22, 0, 0, 0, time.UTC) // already past close
+		if _, err := StayOpen("ezekiel", "a customer is still here", 23, at).Fn(w); err != nil {
+			t.Fatalf("staying open past an already-passed close should succeed: %v", err)
+		}
+		want := time.Date(2026, 6, 18, 23, 0, 0, 0, time.UTC)
+		if a.OpenUntil == nil || !a.OpenUntil.Equal(want) {
+			t.Errorf("OpenUntil = %v, want %v", a.OpenUntil, want)
+		}
+	})
+
+	t.Run("overnight schedule rejects no-op on the pre-midnight side", func(t *testing.T) {
+		// Shift 18:00–03:00 (ScheduleEndMin < ScheduleStartMin). At 22:00 the active
+		// close is 03:00 TOMORROW, not today's already-past 03:00 — so committing to
+		// the regular 03:00 close is still a no-op (code_review edge case).
+		a := shiftNPC("ezekiel", KindNPCStateful, "smithy", "home", "smithy")
+		a.ScheduleStartMin = intptr(1080) // 18:00
+		a.ScheduleEndMin = intptr(180)    // 03:00 (wraps midnight)
+		w := sleepTestWorld(a)
+		at := time.Date(2026, 6, 18, 22, 0, 0, 0, time.UTC)
+
+		_, err := StayOpen("ezekiel", "ensure customers can still buy", 3, at).Fn(w)
+		if err == nil {
+			t.Fatal("until the regular overnight close (03:00) should be rejected as a no-op")
+		}
+		if !strings.Contains(err.Error(), "3 in the morning") {
+			t.Errorf("reject should voice the overnight close, got: %v", err)
+		}
+		if a.OpenUntil != nil {
+			t.Errorf("OpenUntil should be unset on a no-op reject, got %v", a.OpenUntil)
+		}
+
+		// One hour past the overnight close is a genuine extension.
+		if _, err := StayOpen("ezekiel", "an order I still owe", 4, at).Fn(w); err != nil {
+			t.Fatalf("staying open until 04:00 (past the 03:00 close) should succeed: %v", err)
+		}
+		want := time.Date(2026, 6, 19, 4, 0, 0, 0, time.UTC) // tomorrow 04:00
+		if a.OpenUntil == nil || !a.OpenUntil.Equal(want) {
+			t.Errorf("OpenUntil = %v, want %v", a.OpenUntil, want)
+		}
+	})
+
+	t.Run("no explicit schedule skips the no-op check", func(t *testing.T) {
+		a, w := newKeeper(nil) // dawn/dusk-window keeper, no precise close to compare
+		at := time.Date(2026, 6, 18, 20, 1, 0, 0, time.UTC)
+		if _, err := StayOpen("ezekiel", "keeping the lamp lit", 21, at).Fn(w); err != nil {
+			t.Fatalf("unscheduled keeper should not hit the no-op reject: %v", err)
+		}
+		want := time.Date(2026, 6, 18, 21, 0, 0, 0, time.UTC)
+		if a.OpenUntil == nil || !a.OpenUntil.Equal(want) {
+			t.Errorf("OpenUntil = %v, want %v", a.OpenUntil, want)
+		}
+	})
 }
 
 // TestShiftDutyTarget_OpenUntilSuppressesWindDown — the core ZBBS-WORK-387

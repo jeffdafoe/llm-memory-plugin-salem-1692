@@ -797,6 +797,16 @@ type DutySteerView struct {
 	// the off-shift wind-down fields.
 	AtPost bool
 
+	// ShiftEndMin is the keeper's effective close time as a wall-clock
+	// minute-of-day (0–1439) — its own schedule end, else the day-active dusk
+	// fallback (shiftWindowBounds). Set only on the AtPost cue (LLM-40): the
+	// at-post stabilizer states when the shift ends so "stay open later" is a
+	// bounded decision rather than a vague diligence reflex (the model otherwise
+	// reached for stay_open with no customer to serve and no sense of how near
+	// close was). nil → render omits the close-time clause. Render voices it via
+	// sim.ClockHourProse.
+	ShiftEndMin *int
+
 	// Lodging marks the off-shift target as the actor's RENTED room at an inn
 	// (a lodger) rather than its own home — render says "head to your rented room
 	// at X". Only meaningful when !ToWork && TargetID != "". ZBBS-WORK-387.

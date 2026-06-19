@@ -143,6 +143,38 @@ func StayOpen(actorID ActorID, reason string, untilHour int, at time.Time) Comma
 			if err != nil {
 				return nil, err
 			}
+			// No-op reject (LLM-40): a stay_open that does not actually reach past
+			// the keeper's regular close is the diligence-reflex misfire — committing
+			// to "open until 9" when you already close at 9, with no customer to
+			// serve. Only meaningful while still BEFORE the active close: once the
+			// scheduled close has passed, any future window resolveOpenUntil produced
+			// is a genuine extension. Scoped to keepers with an explicit schedule (a
+			// dawn/dusk-window keeper has no precise close to compare against).
+			if a.ScheduleEndMin != nil {
+				endMin := *a.ScheduleEndMin
+				nowLocal := at.In(loc)
+				y, mo, d := nowLocal.Date()
+				closeAt := time.Date(y, mo, d, endMin/60, endMin%60, 0, 0, loc)
+				// Overnight schedule (close hour before start hour, e.g. 18:00–03:00):
+				// while on the pre-midnight side of the shift the active close is
+				// TOMORROW's end, not today's already-past one — otherwise the reject
+				// is skipped and the keeper can no-op stay_open until its own close
+				// (code_review). Schedule bounds are both-set-or-both-nil (repo
+				// validation), so the nil guard is defensive.
+				if a.ScheduleStartMin != nil {
+					startMin := *a.ScheduleStartMin
+					nowMin := nowLocal.Hour()*60 + nowLocal.Minute()
+					if endMin < startMin && nowMin >= startMin {
+						closeAt = closeAt.AddDate(0, 0, 1)
+					}
+				}
+				if nowLocal.Before(closeAt) && !openUntil.After(closeAt) {
+					return nil, fmt.Errorf(
+						"you are already open until %s — stay_open is for keeping shop PAST your usual close, not until it. Name a later hour if you mean to stay late, or simply close on schedule.",
+						ClockHourProse(endMin),
+					)
+				}
+			}
 			executeStayOpen(a, openUntil)
 			w.emit(&StayingOpen{
 				ActorID:   actorID,

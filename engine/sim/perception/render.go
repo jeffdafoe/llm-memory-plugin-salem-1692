@@ -877,7 +877,18 @@ func renderDutySteer(b *strings.Builder, v *DutySteerView) {
 	// (Prudence shop↔house). The anchors line is reframed in tandem (renderAnchors
 	// atPost) so the two cues agree: you belong here right now.
 	if v.AtPost {
-		b.WriteString("It is your working hours and you are at your post — stay and look after your work. If no one needs you right now, wait here for customers rather than wandering off.\n\n")
+		// State the close time (LLM-40) so "stay open later" is a bounded
+		// decision — the model otherwise read the diligence cues as license to
+		// extend with no customer present and no sense of how near close was.
+		closeAt := ""
+		if v.ShiftEndMin != nil {
+			closeAt = sim.ClockHourProse(*v.ShiftEndMin)
+		}
+		if closeAt != "" {
+			fmt.Fprintf(b, "It is your working hours and you are at your post — stay and look after your work; you close at %s. If no one needs you right now, wait here for customers rather than wandering off.\n\n", closeAt)
+		} else {
+			b.WriteString("It is your working hours and you are at your post — stay and look after your work. If no one needs you right now, wait here for customers rather than wandering off.\n\n")
+		}
 		return
 	}
 	if v.ToWork {
