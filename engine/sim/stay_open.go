@@ -5,6 +5,15 @@ import (
 	"time"
 )
 
+// maxStayOpenWindow bounds a stay_open commitment: a keeper may extend at most
+// this far past "now". stay_open is for keeping a business open a few hours past
+// close — including across midnight — not for a full-day commitment. Without the
+// bound a model that names the CURRENT or a just-past hour rolls forward a full
+// day (LLM-39: until_hour=20 named at 20:01 resolved to 20:00 the NEXT day, an
+// ~24h all-nighter). A genuine cross-midnight commit ("until 1am" at 9pm = +4h)
+// sits well inside this window.
+const maxStayOpenWindow = 8 * time.Hour
+
 // stay_open.go — the stay_open tool's substrate half (ZBBS-WORK-387).
 //
 // What stay_open is: the overnight wind-down-side twin of take_break. A keeper
@@ -42,11 +51,13 @@ import (
 //   - untilHour < 0 or > 23: rejected. StayOpen is exported and callable directly
 //     (tests, future in-engine paths), so an out-of-range hour must fail loudly.
 //
-// The result is clamped to now + 25h as a defensive invariant — 25h (not 24h) so
-// a legitimate fall-back-DST "same hour tomorrow" is not clipped to the wrong
-// local hour. `loc` anchors the wall-clock hour to the timezone the perception
-// header advertised; nil falls back to UTC (matches localMinuteOfDay). `at` is
-// the commit instant (UTC).
+// The resolved window is bounded to maxStayOpenWindow past `at`: a commitment
+// that lands further out — because the model named the current or a just-past
+// hour, which rolls a full day forward — is REJECTED so the keeper falls back to
+// closing on schedule rather than committing to an all-nighter (LLM-39). `loc`
+// anchors the wall-clock hour to the timezone the perception header advertised;
+// nil falls back to UTC (matches localMinuteOfDay). `at` is the commit instant
+// (UTC).
 func resolveOpenUntil(loc *time.Location, untilHour int, at time.Time) (time.Time, error) {
 	if untilHour < 0 || untilHour > 23 {
 		return time.Time{}, fmt.Errorf(
@@ -67,12 +78,18 @@ func resolveOpenUntil(loc *time.Location, untilHour int, at time.Time) (time.Tim
 	if !candidate.After(now) {
 		candidate = time.Date(y, mo, d+1, untilHour, 0, 0, 0, loc)
 	}
-	// Defensive upper bound: never resolve more than ~a day out. 25h (not 24h) so a
-	// legitimate fall-back-DST "same hour tomorrow" (25h of elapsed time) is not
-	// clipped to the wrong local hour; a normal next-occurrence is <= 25h out by
-	// construction (untilHour is bounded 0..23 and only rolls one day).
-	if maxUntil := now.Add(25 * time.Hour); candidate.After(maxUntil) {
-		candidate = maxUntil
+	// Bound the commitment to maxStayOpenWindow. A model that names the CURRENT or
+	// a just-past hour (until_hour=20 at 20:01) rolled forward a full ~24h above;
+	// reject it so the keeper closes on schedule instead of standing at the post
+	// all night (LLM-39). A real cross-midnight commit is well inside the window.
+	if candidate.Sub(now) > maxStayOpenWindow {
+		// Name the resolved DAY (weekday) and the elapsed hours so the message
+		// reveals the all-nighter — "resolves to Fri 20:00, about 23 hours from
+		// now" — rather than a bare "20:00" that hides the next-day rollover.
+		return time.Time{}, fmt.Errorf(
+			"until_hour=%d resolves to %s, about %d hours from now — staying open is for extending a few hours past your close, not a full day. Choose an hour within the next %d hours, or simply close up for the night.",
+			untilHour, candidate.Format("Mon 15:04"), int(candidate.Sub(now).Hours()), int(maxStayOpenWindow.Hours()),
+		)
 	}
 	// Normalize to UTC for storage consistency with BreakUntil/SleepingUntil. The
 	// instant is unchanged — .After/.Equal are zone-agnostic — but it keeps a

@@ -12,23 +12,36 @@ import (
 // shift_duty_test.go / lodger_rebook_test.go.
 
 func TestResolveOpenUntil(t *testing.T) {
-	at := time.Date(2026, 6, 9, 21, 30, 0, 0, time.UTC) // 21:30 local (UTC test loc)
+	base := time.Date(2026, 6, 9, 21, 30, 0, 0, time.UTC) // 21:30 local (UTC test loc)
 	cases := []struct {
 		name      string
+		at        time.Time
 		untilHour int
 		want      time.Time
 		wantErr   bool
 	}{
-		{"later today", 23, time.Date(2026, 6, 9, 23, 0, 0, 0, time.UTC), false},
-		{"past hour rolls to tomorrow", 21, time.Date(2026, 6, 10, 21, 0, 0, 0, time.UTC), false},
-		{"after midnight", 1, time.Date(2026, 6, 10, 1, 0, 0, 0, time.UTC), false},
-		{"midnight is valid", 0, time.Date(2026, 6, 10, 0, 0, 0, 0, time.UTC), false},
-		{"out of range high", 24, time.Time{}, true},
-		{"out of range low", -1, time.Time{}, true},
+		{"later today", base, 23, time.Date(2026, 6, 9, 23, 0, 0, 0, time.UTC), false},
+		{"after midnight (within window)", base, 1, time.Date(2026, 6, 10, 1, 0, 0, 0, time.UTC), false},
+		{"midnight is valid", base, 0, time.Date(2026, 6, 10, 0, 0, 0, 0, time.UTC), false},
+		// LLM-39: naming an hour that has just passed rolls a full ~24h forward.
+		// That degenerate window is now rejected, not honored as an all-nighter.
+		{"just-past hour (~24h roll) rejected", base, 21, time.Time{}, true},
+		// Window boundary at maxStayOpenWindow (8h): 05:00 is +7.5h (ok), 06:00 is +8.5h (reject).
+		{"window edge +7.5h ok", base, 5, time.Date(2026, 6, 10, 5, 0, 0, 0, time.UTC), false},
+		{"beyond window +8.5h rejected", base, 6, time.Time{}, true},
+		// Exact maxStayOpenWindow boundary: from 21:00, hour 5 is precisely +8h —
+		// allowed (the bound is `> 8h`). Guards against a future flip to `>=`.
+		{"window exact +8h ok", time.Date(2026, 6, 9, 21, 0, 0, 0, time.UTC), 5, time.Date(2026, 6, 10, 5, 0, 0, 0, time.UTC), false},
+		// The exact LLM-39 specimen: until_hour=20 named at 20:01 → rejected.
+		{"LLM-39 current hour at HH:01 rejected", time.Date(2026, 6, 18, 20, 1, 0, 0, time.UTC), 20, time.Time{}, true},
+		// A genuine cross-midnight commit ("until 1am" at 9pm = +4h) still resolves.
+		{"legit cross-midnight from 21:00", time.Date(2026, 6, 18, 21, 0, 0, 0, time.UTC), 1, time.Date(2026, 6, 19, 1, 0, 0, 0, time.UTC), false},
+		{"out of range high", base, 24, time.Time{}, true},
+		{"out of range low", base, -1, time.Time{}, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, err := resolveOpenUntil(time.UTC, c.untilHour, at)
+			got, err := resolveOpenUntil(time.UTC, c.untilHour, c.at)
 			if c.wantErr {
 				if err == nil {
 					t.Fatalf("want error, got nil (result %v)", got)
