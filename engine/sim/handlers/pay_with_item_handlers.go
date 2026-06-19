@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -150,6 +151,82 @@ func (p *payItemList) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// LenientID is the decode type for a uint64 tool-arg identifier:
+// quote_id / in_response_to on pay_with_item, ledger_id on the accept /
+// decline / counter / withdraw family, and order_id on deliver_order. It
+// exists to tolerate the same weak stateful-NPC model (llama-3.3-70b) that
+// payItemList does — here, the model INTERMITTENTLY emits the STRING
+// "null" (or "", or a bare numeric string like "42") for an identifier
+// instead of a JSON number, a real JSON null, or omission. A plain uint64
+// field hard-fails the WHOLE argument decode on any of those, and because
+// that failure is a raw encoding/json error (not a hand-authored
+// modelSafeError) it surfaces to the model as an opaque "argument decode
+// failed" rather than a correctable reason — so the model retries the same
+// payload and loops. LLM-42: a horseshoe-for-cheese barter reject-retried
+// for ~7.5 minutes of dead air because every pay_with_item carried
+// quote_id:"null" / in_response_to:"null".
+//
+// UnmarshalJSON coerces null / "null" / "" → 0 (the unset sentinel the pay
+// path already gates on) and parses a bare numeric string as the id. For an
+// OPTIONAL id (quote_id, in_response_to) a coerced 0 means "no quote / no
+// parent" — the correct plain-offer path. For a REQUIRED id the downstream
+// `< 1` checks (decodeLedgerOnly, the counter / withdraw / decline /
+// deliver decoders) now fire on the coerced 0 and return a model-safe
+// "ledger_id must be at least 1" instead of the opaque decode failure. A
+// real integer is unaffected; the schemas still advertise integer /
+// minimum-1 — this is a tolerance layer, not a contract change (mirrors
+// payItemList, ZBBS-HOME-407).
+type LenientID uint64
+
+// UnmarshalJSON decodes an identifier that may arrive as a JSON number, a
+// real JSON null, or — the weak-model cases — the string "null", an empty
+// string, or a numeric string. Genuinely malformed input (a non-numeric
+// string, a float, a negative, a boolean/object/array) is still rejected;
+// the non-numeric-string case returns a model-safe reason so the model can
+// self-correct rather than loop on an opaque failure.
+func (id *LenientID) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	// encoding/json never hands UnmarshalJSON empty bytes during normal
+	// struct decoding, but a direct call might — and silently accepting it
+	// would be more lenient than JSON itself.
+	if len(trimmed) == 0 {
+		return io.ErrUnexpectedEOF
+	}
+	// json calls UnmarshalJSON for null too — treat it as "unset".
+	if string(trimmed) == "null" {
+		*id = 0
+		return nil
+	}
+	// String forms: the weak model wraps the value (or the literal word
+	// "null") in quotes. Unwrap exactly one JSON-string layer, then treat
+	// empty / "null" as unset and a numeric string as the id.
+	if trimmed[0] == '"' {
+		var s string
+		if err := json.Unmarshal(trimmed, &s); err != nil {
+			return err
+		}
+		s = strings.TrimSpace(s)
+		if s == "" || s == "null" {
+			*id = 0
+			return nil
+		}
+		n, err := strconv.ParseUint(s, 10, 64)
+		if err != nil {
+			return modelSafef("id %q is not a non-negative integer", s)
+		}
+		*id = LenientID(n)
+		return nil
+	}
+	// Real JSON number — decode strictly into uint64, which rejects floats,
+	// negatives, and overflow exactly as the bare field did.
+	var n uint64
+	if err := json.Unmarshal(trimmed, &n); err != nil {
+		return err
+	}
+	*id = LenientID(n)
+	return nil
+}
+
 // payItemsSchemaFragment is the shared JSON-schema fragment for a
 // pay_items array — embedded into both the pay_with_item and counter_pay
 // schemas so the two stay identical. maxItems mirrors
@@ -198,8 +275,8 @@ type PayWithItemArgs struct {
 	ConsumeNow   bool        `json:"consume_now"`
 	Consumers    []string    `json:"consumers"`
 	PayItems     payItemList `json:"pay_items"`
-	QuoteID      uint64      `json:"quote_id"`
-	InResponseTo uint64      `json:"in_response_to"`
+	QuoteID      LenientID   `json:"quote_id"`
+	InResponseTo LenientID   `json:"in_response_to"`
 	For          string      `json:"for"`
 	ReadyInDays  int         `json:"ready_in_days"`
 }
@@ -487,7 +564,7 @@ func HandlePayWithItem(in HandlerInput) (sim.Command, error) {
 
 // AcceptPayArgs is the decoded shape of the accept_pay tool's arguments.
 type AcceptPayArgs struct {
-	LedgerID uint64 `json:"ledger_id"`
+	LedgerID LenientID `json:"ledger_id"`
 }
 
 var acceptPaySchema = json.RawMessage(`{
@@ -533,8 +610,8 @@ func HandleAcceptPay(in HandlerInput) (sim.Command, error) {
 
 // DeclinePayArgs is the decoded shape of the decline_pay tool's arguments.
 type DeclinePayArgs struct {
-	LedgerID uint64 `json:"ledger_id"`
-	Reason   string `json:"reason"`
+	LedgerID LenientID `json:"ledger_id"`
+	Reason   string    `json:"reason"`
 }
 
 var declinePaySchema = json.RawMessage(`{
@@ -611,7 +688,7 @@ func HandleDeclinePay(in HandlerInput) (sim.Command, error) {
 
 // CounterPayArgs is the decoded shape of the counter_pay tool's arguments.
 type CounterPayArgs struct {
-	LedgerID uint64      `json:"ledger_id"`
+	LedgerID LenientID   `json:"ledger_id"`
 	Amount   int         `json:"amount"`
 	PayItems payItemList `json:"pay_items"`
 	Message  string      `json:"message"`
@@ -717,8 +794,8 @@ func HandleCounterPay(in HandlerInput) (sim.Command, error) {
 // WithdrawPayArgs is the decoded shape of the withdraw_pay tool's
 // arguments.
 type WithdrawPayArgs struct {
-	LedgerID uint64 `json:"ledger_id"`
-	Message  string `json:"message"`
+	LedgerID LenientID `json:"ledger_id"`
+	Message  string    `json:"message"`
 }
 
 var withdrawPaySchema = json.RawMessage(`{
@@ -795,7 +872,7 @@ func HandleWithdrawPay(in HandlerInput) (sim.Command, error) {
 // shared prelude of decline / counter / withdraw). Kept private — the
 // public AcceptPayArgs / DeclinePayArgs / etc. carry the per-tool fields.
 type ledgerOnlyArgs struct {
-	LedgerID uint64 `json:"ledger_id"`
+	LedgerID LenientID `json:"ledger_id"`
 }
 
 // decodeLedgerOnly handles the strict-object / no-trailing / unknown-
