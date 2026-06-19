@@ -258,6 +258,21 @@ type Payload struct {
 	// LedgerID ascending for determinism.
 	RecentlyResolvedOffersFromMe []ResolvedOfferView
 
+	// CountersAwaitingMyResponse lists a seller's counter to an offer the
+	// subject placed as buyer that the subject has NOT yet answered — the
+	// buyer-side standing decision view, counterpart to the seller's
+	// PayOffersForMe (the seller's "## Offers awaiting your decision"). Sourced
+	// from snap.PayLedger (terminal Countered entries where BuyerID == subject,
+	// un-answered, below the chain depth cap, within counterResponseWindow of
+	// snap.PublishedAt) — NOT the PayResolvedWarrantReason{Countered} event,
+	// which can ride a tick behind the buyer's in-flight deliberation and is the
+	// ONLY thing that surfaces a counter (the recently-settled scan excludes
+	// Countered), so a buyer could re-offer a need already in negotiation or
+	// miss the counter if the warrant is evicted (LLM-21). Robust to warrant
+	// timing because it is a per-tick scan. nil (render content-gates) when no
+	// counter awaits. Ordering: by LedgerID ascending for determinism.
+	CountersAwaitingMyResponse []CounterOfferView
+
 	// PayOffersForMe lists the still-pending pay-with-item offers staked
 	// AGAINST the subject (entries where SellerID == subject and State ==
 	// Pending) — the standing seller-side decision view that drives the
@@ -451,6 +466,24 @@ type ResolvedOfferView struct {
 	PayItems   []sim.ItemKindQty
 	Accepted   bool
 	ConsumeNow bool
+}
+
+// CounterOfferView is one entry in CountersAwaitingMyResponse — a seller's
+// counter to an offer the subject placed as buyer, not yet answered. SellerName
+// is the acquaintance-gated label (descriptorLabel), the same gating the
+// pending/resolved buyer views use. Item/Qty are the goods being bought;
+// CounterAmount + CounterPayItems are the seller's proposed terms (coins, goods,
+// or both). The seller's free-text counter Message is deliberately not carried —
+// the warrant render line omits it too, and keeping untrusted text out of the
+// section avoids a cross-actor prompt-injection surface. LedgerID is the parent
+// offer's id: the buyer answers with pay_with_item(in_response_to=LedgerID).
+type CounterOfferView struct {
+	LedgerID        sim.LedgerID
+	SellerName      string
+	Item            sim.ItemKind
+	Qty             int
+	CounterAmount   int
+	CounterPayItems []sim.ItemKindQty
 }
 
 // OfferableCustomersView is the seller-side "offer your wares" cue's content
