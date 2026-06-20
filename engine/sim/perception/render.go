@@ -1628,7 +1628,13 @@ func renderStandingQuotesFromMe(b *strings.Builder, quotes []StandingQuoteView) 
 		fmt.Fprintf(b, "%d. You have offered %d %s for %s to anyone here — none has yet taken it.\n",
 			i+1, q.Qty, item, price)
 	}
-	b.WriteString("Bide for an answer; make no second offer for the same goods while this one stands.\n")
+	// Steer against re-posting a STANDING offer (the already_quoted thrash), not
+	// against making a fresh offer to a different buyer — a keeper with rooms or
+	// stock to spare can legitimately offer the same kind to a second seeker
+	// (the two-room scene this fixes). So the close names the listed offers, not
+	// "the same goods" (which the buyer-side close uses, where double-buying a
+	// single need IS wrong).
+	b.WriteString("Bide for an answer; an offer listed above already stands — do not post it again.\n")
 }
 
 // renderRecentlyResolvedOffersFromMe renders the buyer-side "## Recently settled

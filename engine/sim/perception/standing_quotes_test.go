@@ -96,6 +96,25 @@ func TestBuildStandingQuotesFromMe_UnacquaintedBuyerGetsDescriptor(t *testing.T)
 	}
 }
 
+// A nil quote entry is skipped, and a targeted buyer missing from the snapshot
+// falls back to a generic descriptor rather than leaking the raw actor id.
+func TestBuildStandingQuotesFromMe_NilQuoteAndMissingBuyerSafe(t *testing.T) {
+	snap := quoteSnap(map[sim.QuoteID]*sim.SceneQuote{
+		1: nil,
+		2: activeQuote(2, "john", "missing", "nights_stay", 1, 4),
+	})
+	views := buildStandingQuotesFromMe(snap, "john", snap.Actors["john"])
+	if len(views) != 1 {
+		t.Fatalf("views = %d, want 1 (nil entry skipped)", len(views))
+	}
+	if views[0].BuyerName == "missing" {
+		t.Fatalf("leaked raw actor id: %+v", views[0])
+	}
+	if views[0].BuyerName != "someone" {
+		t.Errorf("missing buyer BuyerName = %q, want \"someone\"", views[0].BuyerName)
+	}
+}
+
 func TestRenderStandingQuotesFromMe_TargetedLine(t *testing.T) {
 	var b strings.Builder
 	renderStandingQuotesFromMe(&b, []StandingQuoteView{
@@ -106,7 +125,7 @@ func TestRenderStandingQuotesFromMe_TargetedLine(t *testing.T) {
 		"## Offers you've put out",
 		"You have offered Jefferey 1 nights_stay for 4 coins",
 		"they have yet to answer",
-		"make no second offer",
+		"do not post it again",
 	} {
 		if !strings.Contains(out, must) {
 			t.Errorf("missing %q\n--- output ---\n%s", must, out)

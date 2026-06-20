@@ -2032,7 +2032,10 @@ func buildStandingQuotesFromMe(snap *sim.Snapshot, subject sim.ActorID, subjectS
 	resolveBuyer := func(id sim.ActorID) string {
 		buyer := snap.Actors[id]
 		if buyer == nil {
-			return string(id)
+			// A targeted buyer who has left the snapshot (rare) falls back to a
+			// generic descriptor rather than leaking the raw internal actor id
+			// into the prompt — the same "someone" token the render layer uses.
+			return "someone"
 		}
 		acquainted := false
 		if subjectSnap != nil && buyer.DisplayName != "" {
