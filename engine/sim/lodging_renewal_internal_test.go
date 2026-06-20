@@ -113,13 +113,19 @@ func TestAdvancePastHeldLodging_MultiNightQty(t *testing.T) {
 	}
 }
 
-// excludeID skips the order being delivered so it doesn't count itself — the
-// deliver-time backstop must not advance an order off its own night.
+// excludeOrderID skips the order being delivered so it doesn't count itself —
+// the deliver-time backstop must not advance an order off its own night.
+// Order.ID and LedgerID deliberately differ here to prove exclusion is by
+// OrderID, not LedgerID (in production they coincide, but the helper iterates
+// orders, so it must key on the order's own id).
 func TestAdvancePastHeldLodging_ExcludeSelf(t *testing.T) {
 	jun19 := time.Date(2026, 6, 19, 0, 0, 0, 0, time.UTC)
-	w := renewalWorld(renewalOrder(297, "ezekiel", "john", jun19, 1, OrderStateDelivered))
-	if got := advancePastHeldLodging(w, "ezekiel", "john", jun19, 297); !got.Equal(jun19) {
-		t.Errorf("excluded self should not bump: got %s, want 2026-06-19", ymd(got))
+	w := renewalWorld(&Order{
+		ID: 999, LedgerID: 297, BuyerID: "ezekiel", SellerID: "john",
+		Item: "nights_stay", Qty: 1, State: OrderStateDelivered, ReadyBy: jun19,
+	})
+	if got := advancePastHeldLodging(w, "ezekiel", "john", jun19, 999); !got.Equal(jun19) {
+		t.Errorf("excluded self (by OrderID) should not bump: got %s, want 2026-06-19", ymd(got))
 	}
 }
 

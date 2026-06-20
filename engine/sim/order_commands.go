@@ -107,13 +107,13 @@ func lodgingNightKey(t time.Time) string { return t.UTC().Format("2006-01-02") }
 // resolves any residual same-night overlap when the second one delivers. The walk
 // starts at the requested night and returns the first uncovered night; a night
 // already past all coverage is returned unchanged (an explicit future booking is
-// never pushed further out). excludeID skips one order — the one being delivered,
-// so it doesn't count itself; pass 0 at accept time. MUST run on the world
-// goroutine (reads w.Orders).
-func advancePastHeldLodging(w *World, buyerID, sellerID ActorID, readyBy time.Time, excludeID LedgerID) time.Time {
+// never pushed further out). excludeOrderID skips one order — the one being
+// delivered, so it doesn't count itself; pass 0 at accept time (no order exists
+// yet). MUST run on the world goroutine (reads w.Orders).
+func advancePastHeldLodging(w *World, buyerID, sellerID ActorID, readyBy time.Time, excludeOrderID OrderID) time.Time {
 	covered := make(map[string]struct{})
 	for _, o := range w.Orders {
-		if o == nil || o.LedgerID == excludeID || o.State != OrderStateDelivered {
+		if o == nil || o.ID == excludeOrderID || o.State != OrderStateDelivered {
 			continue
 		}
 		if o.BuyerID != buyerID || o.SellerID != sellerID || o.ReadyBy.IsZero() {
@@ -425,7 +425,7 @@ func transferOrderGoods(w *World, o *Order, seller *Actor, consumers []*Actor) e
 		// unchanged; this is defense-in-depth against any other path that mints a
 		// same-night booking. excludeID o.LedgerID so the order doesn't count
 		// itself.
-		if adjusted := advancePastHeldLodging(w, o.BuyerID, o.SellerID, o.ReadyBy, o.LedgerID); !adjusted.Equal(o.ReadyBy) {
+		if adjusted := advancePastHeldLodging(w, o.BuyerID, o.SellerID, o.ReadyBy, o.ID); !adjusted.Equal(o.ReadyBy) {
 			log.Printf("sim/lodging: order %d ready_by advanced %s → %s to avoid double-booking a night %s already holds at %s",
 				o.ID, o.ReadyBy.Format("2006-01-02"), adjusted.Format("2006-01-02"), o.BuyerID, seller.DisplayName)
 			o.ReadyBy = adjusted
