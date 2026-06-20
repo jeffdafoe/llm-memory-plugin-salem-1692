@@ -84,6 +84,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	p.Relationships = buildRelationships(actorSnap, p.Surroundings.HuddleMembers, heardNow)
 	p.RecentConversation = buildRecentConversation(snap, actorID, actorSnap, heardNow)
 	p.OfferableCustomers = buildOfferableCustomers(snap, actorID, p.AtOwnBusiness, p.Surroundings.HuddleMembers, p.Actor.Inventory)
+	p.StandingQuotesFromMe = buildStandingQuotesFromMe(snap, actorID, actorSnap)
 	p.PendingDeliveriesFromMe, p.PendingDeliveriesToMe = buildPendingOrderViews(snap, actorID)
 	p.PendingOffersFromMe = buildPendingOffersFromMe(snap, actorID, actorSnap)
 	p.RecentlyResolvedOffersFromMe = buildRecentlyResolvedOffersFromMe(snap, actorID, actorSnap)
@@ -1983,6 +1984,76 @@ func buildPendingOffersFromMe(snap *sim.Snapshot, subject sim.ActorID, subjectSn
 			// snapshot's PayItems slice is already isolated from world state;
 			// aliasing it into the (read-only, per-tick) view is safe.
 			PayItems: e.PayItems,
+		})
+	}
+	return views
+}
+
+// buildStandingQuotesFromMe scans snap.Quotes for the subject's OWN still-active
+// scene-quotes — the offers-to-sell it posted as SELLER (sell / scene_quote) —
+// and projects each to a StandingQuoteView for the seller-side "## Offers you've
+// put out" cue (LLM-45).
+//
+// This is the seller/scene_quote counterpart to buildPendingOffersFromMe (the
+// buyer/pay_with_item HOME-413 scan), and it exists for the identical reason: a
+// seller has NO cross-tick memory of an offer it posted. buildOfferableCustomers
+// already suppresses a re-pitch once a quote stands (sellerHasActiveQuoteToBuyer),
+// but nothing then tells the seller WHAT it offered to WHOM — so a weak model
+// loses the thread, re-posts the same quote (the already_quoted thrash), and
+// confabulates a queue between two co-present seekers ("I offered Ezekiel, you
+// must wait") even as its own offer to the asker stands. The data comes from the
+// live quote map (bounded by RunSceneQuoteSweep's TTL), not a warrant, for
+// exactly that reason.
+//
+// Both targeted (TargetBuyer set) and public (TargetBuyer == "") quotes surface:
+// sellerHasActiveQuoteToBuyer only tracks targeted quotes, so a public offer is
+// otherwise invisible to its own author. The buyer's name is acquaintance-gated
+// (descriptorLabel) like the buyer-side scan. Returns nil for none so render
+// content-gates cheaply. Ordering: by QuoteID ascending, deterministic.
+func buildStandingQuotesFromMe(snap *sim.Snapshot, subject sim.ActorID, subjectSnap *sim.ActorSnapshot) []StandingQuoteView {
+	if snap == nil || len(snap.Quotes) == 0 {
+		return nil
+	}
+	var ids []sim.QuoteID
+	for id, q := range snap.Quotes {
+		if q == nil || q.State != sim.SceneQuoteStateActive {
+			continue
+		}
+		if q.SellerID != subject {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+
+	resolveBuyer := func(id sim.ActorID) string {
+		buyer := snap.Actors[id]
+		if buyer == nil {
+			return string(id)
+		}
+		acquainted := false
+		if subjectSnap != nil && buyer.DisplayName != "" {
+			_, acquainted = subjectSnap.Acquaintances[buyer.DisplayName]
+		}
+		return descriptorLabel(buyer.DisplayName, buyer.Role, acquainted)
+	}
+
+	views := make([]StandingQuoteView, 0, len(ids))
+	for _, id := range ids {
+		q := snap.Quotes[id]
+		buyerName := ""
+		if q.TargetBuyer != "" {
+			buyerName = resolveBuyer(q.TargetBuyer)
+		}
+		views = append(views, StandingQuoteView{
+			QuoteID:   q.ID,
+			BuyerName: buyerName,
+			Item:      q.ItemKind,
+			Qty:       q.Qty,
+			Amount:    q.Amount,
 		})
 	}
 	return views
