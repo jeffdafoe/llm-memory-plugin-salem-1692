@@ -146,6 +146,9 @@ func Gather(actorID ActorID, qty int, at time.Time) Command {
 			if row.IsFinite() {
 				next := *row.AvailableQuantity - actual
 				row.AvailableQuantity = &next
+				// Picking may have emptied a finite bush — recompute its
+				// berries/bare visual so it goes bare.
+				refreshObjectBerryState(w, obj)
 			}
 			if actor.Inventory == nil {
 				actor.Inventory = make(map[ItemKind]int)
