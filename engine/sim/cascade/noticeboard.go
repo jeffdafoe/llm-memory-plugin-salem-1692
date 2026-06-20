@@ -450,15 +450,33 @@ func finishCrierBoardStop(w *sim.World, route *sim.NPCRoute, stopIdx int, object
 	// Set the board variant to match the number of notices actually authored
 	// (LLM-44: drawn = read = shown), then save the content at that state.
 	lines := splitNoticeLines(text)
-	matchState := noticeboardStateForCapacity(w, objectID, len(lines))
+	matchState, matchCap := noticeboardStateForCapacity(w, objectID, len(lines))
 	if matchState == "" {
-		// No state declares this capacity (misconfigured asset) — save against
-		// the current state so the stale-guard doesn't drop the content; the
-		// variant just won't match the count (the pre-LLM-44 status quo).
+		// No notice-board state at all (misconfigured asset) — save against the
+		// current state so the stale-guard doesn't drop the content; the variant
+		// just won't match the count (the pre-LLM-44 status quo).
 		if obj, ok := w.VillageObjects[objectID]; ok && obj != nil {
 			matchState = obj.CurrentState
 		}
-		log.Printf("cascade/noticeboard: no board state for capacity %d (object %q) — content kept, variant unmatched", len(lines), objectID)
+		matchCap = len(lines)
+		log.Printf("cascade/noticeboard: no notice-board state for object %q — content kept, variant unmatched", objectID)
+	}
+
+	// The sprite sheet may not have a frame for every count (the live board has
+	// no 1-slip art), so matchCap can be < the authored count. Snap the stored
+	// content + spiel DOWN to the matched frame's capacity so the slips drawn
+	// equal the lines she voices.
+	if matchCap < len(lines) {
+		text = sim.ClampNoticeboardContent(text, matchCap, sim.MaxNoticeboardLineLen)
+	}
+	if strings.TrimSpace(text) == "" {
+		// Snapped down to the empty board (a lone authored notice with no 1-slip
+		// frame): post the empty variant, clear it, say nothing, advance — the
+		// no-news-day shape.
+		sim.SetVillageObjectState(objectID, matchState).Fn(w)
+		sim.ClearNoticeboardContent(objectID, matchState, time.Now()).Fn(w)
+		advanceCrierWalk(w, crierID, objectID)
+		return
 	}
 
 	// SetVillageObjectState never errors (no-ops on not_found / already_at_target),
@@ -489,25 +507,38 @@ func finishCrierBoardStop(w *sim.World, route *sim.NPCRoute, stopIdx int, object
 	scheduleCrierAdvance(w, route, stopIdx, objectID, time.Duration(voiced)*crierNoticeBeatDelay)
 }
 
-// noticeboardStateForCapacity returns the asset's rotatable notice-board state
-// whose content-capacity tag equals `capacity` (lowest AssetStateID first, via
-// RotatablePool's stable order), or "" if none. The crier uses it to set a
-// board's variant to match the number of notices it authored.
-func noticeboardStateForCapacity(w *sim.World, objectID sim.VillageObjectID, capacity int) string {
+// noticeboardStateForCapacity returns the rotatable notice-board state best
+// suited to display `want` notices, plus that state's actual declared capacity.
+// It prefers an exact-capacity frame but snaps DOWN to the largest available
+// capacity <= want when none exists: a board's sprite sheet has no frame for
+// every integer (the live Notice Board provides 0,2,3,4,5 slips — no 1-slip
+// art), and drawing more slips than notices voiced is the exact mismatch this
+// guards against. The caller clamps its saved content + spiel to the returned
+// capacity so slips-drawn == lines-voiced. Returns ("", 0) only when the asset
+// declares no notice-board state at all (every rotatable board has at least the
+// empty, capacity-0 state).
+func noticeboardStateForCapacity(w *sim.World, objectID sim.VillageObjectID, want int) (string, int) {
 	obj, ok := w.VillageObjects[objectID]
 	if !ok || obj == nil {
-		return ""
+		return "", 0
 	}
 	asset, ok := w.Assets[obj.AssetID]
 	if !ok || asset == nil {
-		return ""
+		return "", 0
 	}
+	bestState, bestCap := "", -1
 	for _, s := range asset.RotatablePool() {
-		if s.HasTag(sim.TagNoticeBoard) && sim.ContentCapacityForState(s) == capacity {
-			return s.State
+		if !s.HasTag(sim.TagNoticeBoard) {
+			continue
+		}
+		if c := sim.ContentCapacityForState(s); c <= want && c > bestCap {
+			bestState, bestCap = s.State, c
 		}
 	}
-	return ""
+	if bestCap < 0 {
+		return "", 0
+	}
+	return bestState, bestCap
 }
 
 // crierStillAtStop reports whether `route` is STILL the crier's installed

@@ -66,12 +66,12 @@ const objectContentCapacityTagPrefix = "content-capacity-"
 const MaxNoticeboardLineLen = 240
 
 // MaxNoticeboardContentLen caps the total stored content (all lines joined
-// with newlines). Sized to hold the maximum board capacity (4) of
+// with newlines). Sized to hold the maximum board capacity (5) of
 // MaxNoticeboardLineLen lines plus separators, with headroom. The authoring
 // cascade already clamps to the state's exact capacity via
 // ClampNoticeboardContent; this is the substrate's defensive backstop against
 // a caller that skips that clamp.
-const MaxNoticeboardContentLen = 1024
+const MaxNoticeboardContentLen = 1280
 
 // ContentCapacityForState returns the notice-line capacity declared by the
 // state's content-capacity-N tag, or 0 when the state carries no such tag (an
