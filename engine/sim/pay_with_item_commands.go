@@ -544,9 +544,11 @@ func PayWithItem(
 				// night, so it extends the stay rather than double-booking a
 				// night — a duplicate (buyer, seller, ready_by) would later
 				// collide on pay_ledger_lodging_active_once at delivery and wedge
-				// checkpointing. excludeID 0: the new entry is not staked yet here.
+				// checkpointing. "Held" is read from the buyer's durable RoomAccess
+				// grants (advancePastHeldLodging), so it survives the order pruning +
+				// restart-load filter that made a w.Orders scan a no-op in prod.
 				if itemHasCapability(w, kind, "lodging") {
-					readyBy = advancePastHeldLodging(w, buyerID, sellerID, readyBy, 0)
+					readyBy = advancePastHeldLodging(w, buyerID, sellerID, readyBy, at)
 				}
 			}
 
