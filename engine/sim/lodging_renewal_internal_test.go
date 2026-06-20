@@ -123,3 +123,18 @@ func TestAdvancePastHeldLodging_LatestGrantWins(t *testing.T) {
 		t.Errorf("latest grant should win: got %s, want 2026-06-23", renewalYMD(got))
 	}
 }
+
+// The checkout instant is mapped to a calendar date through w.Settings.Location, so
+// a grant whose UTC date differs from its local date resolves to the LOCAL checkout
+// date (materialized as UTC midnight). FixedZone keeps this off the host tz db.
+func TestAdvancePastHeldLodging_NonUTCLocation(t *testing.T) {
+	loc := time.FixedZone("test-edt", -4*3600) // UTC-4
+	now := time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC)
+	// 2026-06-20 02:00 UTC == 2026-06-19 22:00 local → the local checkout date is 06-19.
+	checkout := time.Date(2026, 6, 20, 2, 0, 0, 0, time.UTC)
+	w := grantWorld(ledgerGrant(2, checkout, true))
+	w.Settings.Location = loc
+	if got := advancePastHeldLodging(w, "ezekiel", "john", night(2026, 6, 18), now); renewalYMD(got) != "2026-06-19" {
+		t.Errorf("non-UTC checkout date = %s, want 2026-06-19 (local date, not the 06-20 UTC date)", renewalYMD(got))
+	}
+}

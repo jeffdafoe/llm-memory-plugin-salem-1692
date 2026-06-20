@@ -84,27 +84,36 @@ func resolveOrderReadyBy(w *World, kind ItemKind, parentID LedgerID, days int, a
 	return today.AddDate(0, 0, days), nil
 }
 
-// advancePastHeldLodging advances a lodging booking's ready_by to the first night
-// the buyer does NOT already hold from this seller, so a "renewal" extends the
-// stay by a night instead of re-booking a night already held (LLM-47). A renew
-// for tonight when the buyer already has tonight would otherwise mint a second
-// nights_stay for the same (buyer, seller, ready_by); delivering it violates the
+// advancePastHeldLodging advances a lodging booking's ready_by PAST the buyer's
+// latest active lodging coverage at this seller, so a "renewal" extends the stay
+// instead of re-booking a night already held (LLM-47). A renew for tonight when
+// the buyer already has tonight would otherwise mint a second nights_stay for the
+// same (buyer, seller, ready_by); delivering it violates the
 // pay_ledger_lodging_active_once unique index and wedges every checkpoint (the
 // 2026-06-19 Ezekiel↔John Ellis incident).
 //
-// "Held" is read from the buyer's durable RoomAccess grants — NOT w.Orders. A
+// Coverage is read from the buyer's durable RoomAccess grants — NOT w.Orders. A
 // delivered lodging order is pruned from w.Orders at delivery (finalizeOrderTerminal
 // + the terminal sink, cmd/engine/main.go) and is never reloaded after a restart
 // (pg LoadAll filters to ready/pending), so it is absent from w.Orders exactly when
 // a renewal needs to see it — an earlier w.Orders scan here was a no-op in
 // production. The RoomAccess ledger grant is the persistent lodging relationship
-// and is present. Coverage = the latest ExpiresAt across the buyer's active ledger
-// grants at one of THIS seller's own private rooms (RoomID-scoped, so a grant at
-// another inn doesn't count — the same room-set scoping buildKeeperHeldLodgers
-// uses); the first un-held night is that checkout date (a grant runs through the
-// night before its check-out morning). Returns readyBy unchanged when the buyer
-// holds nothing here or the requested night is already past coverage (an explicit
-// future booking is never pushed further out). MUST run on the world goroutine.
+// and is present.
+//
+// Target = the latest ExpiresAt across the buyer's active ledger grants at one of
+// THIS seller's own private rooms, mapped to its calendar checkout date (a grant
+// runs through the night before its check-out morning, so that date is the first
+// night past the held block). This is "append after the latest held checkout", NOT
+// a gap-filling "first free night" walk: lodging coverage is contiguous in practice
+// (AssignBedroomForLodger EXTENDS a single grant in place rather than adding
+// per-night rows), and RoomAccess carries only ExpiresAt, no per-night spans to
+// walk. That contract is sufficient for the invariant this protects — the new
+// ready_by is strictly past every existing delivered (buyer, seller, ready_by) for
+// this seller, so it can never duplicate one (it may, harmlessly, skip a free gap
+// night in the rare non-contiguous case). Matches work's lodgingRenewalReadyBy, the
+// sibling shipped in #505. Returns readyBy unchanged when the buyer holds nothing
+// here or the requested night is already past coverage (an explicit future booking
+// is never pushed further out). MUST run on the world goroutine.
 func advancePastHeldLodging(w *World, buyerID, sellerID ActorID, readyBy, at time.Time) time.Time {
 	seller := w.Actors[sellerID]
 	if seller == nil || seller.WorkStructureID == "" {
@@ -118,6 +127,10 @@ func advancePastHeldLodging(w *World, buyerID, sellerID ActorID, readyBy, at tim
 	if buyer == nil {
 		return readyBy
 	}
+	// RoomID is globally unique (legacy BIGSERIAL; ux_room_access_one_private_active
+	// keys on room_id alone), so membership in THIS structure's private-room set
+	// correctly scopes a grant to this seller's inn — a grant the buyer holds at
+	// another inn has a RoomID absent from the set. (Same scoping buildKeeperHeldLodgers uses.)
 	privateRooms := make(map[RoomID]bool)
 	for _, r := range structure.Rooms {
 		if r != nil && r.Kind == RoomKindPrivate {
@@ -424,9 +437,14 @@ func transferOrderGoods(w *World, o *Order, seller *Actor, consumers []*Actor, a
 		// checkpoint. The accept-time advance (advancePastHeldLodging in
 		// PayWithItem) normally prevents this, so in the common path the night is
 		// unchanged; this is defense-in-depth against any other path that mints a
-		// same-night booking. (At deliver time the buyer's RoomAccess reflects
-		// only PRIOR grants — this order's own grant is created just below by
-		// AssignBedroomForLodger — so the order never counts itself.)
+		// same-night booking. No self-exclusion is needed: this order's own grant
+		// is created just below by AssignBedroomForLodger, so at backstop time the
+		// buyer's RoomAccess reflects only PRIOR grants. And it can't sneak in on a
+		// retry — once transferOrderGoods succeeds (grant created) nothing fallible
+		// runs before finalizeOrderTerminal (the RecordInteraction errors are
+		// logged, not returned), so a granted order always terminalizes and is
+		// never re-delivered. The advance also targets a FIXED checkout date, so it
+		// is idempotent (no relative +1 night to double-apply).
 		if adjusted := advancePastHeldLodging(w, o.BuyerID, o.SellerID, o.ReadyBy, at); !adjusted.Equal(o.ReadyBy) {
 			log.Printf("sim/lodging: order %d ready_by advanced %s → %s to avoid double-booking a night %s already holds at %s",
 				o.ID, o.ReadyBy.Format("2006-01-02"), adjusted.Format("2006-01-02"), o.BuyerID, seller.DisplayName)
