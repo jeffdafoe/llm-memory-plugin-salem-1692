@@ -234,6 +234,14 @@ func runScheduledRoute(w *sim.World, attrSlug string, now time.Time, build func(
 func ForceRouteCommand(attrSlug string, start bool) sim.Command {
 	return sim.Command{
 		Fn: func(w *sim.World) (any, error) {
+			// Validate the attr BEFORE the carrier lookup so the error is
+			// deterministic regardless of world contents — an unsupported attr
+			// must report "not schedule-driven", not "no actor carries…".
+			switch attrSlug {
+			case sim.AttrTownCrier, sim.AttrWasherwoman:
+			default:
+				return nil, fmt.Errorf("%q is not a schedule-driven route attribute", attrSlug)
+			}
 			actor := findActorWithAttribute(w, attrSlug)
 			if actor == nil {
 				return nil, fmt.Errorf("no actor carries the %q attribute", attrSlug)
@@ -246,8 +254,6 @@ func ForceRouteCommand(attrSlug string, start bool) sim.Command {
 				candidates = buildNoticeboardCandidates(w, rng)
 			case sim.AttrWasherwoman:
 				candidates = buildLaundryCandidates(w, start, rng)
-			default:
-				return nil, fmt.Errorf("%q is not a schedule-driven route attribute", attrSlug)
 			}
 			res, err := sim.StartNPCRoute(actor.ID, attrSlug, homeDestinationFor(actor), candidates, now).Fn(w)
 			if err != nil {

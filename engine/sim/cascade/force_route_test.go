@@ -67,3 +67,48 @@ func TestForceRouteCommand_UnknownAttrErrors(t *testing.T) {
 		t.Fatal("ForceRouteCommand for a non-scheduled attribute: want error, got nil")
 	}
 }
+
+// TestForceRouteCommand_DoesNotConsumeScheduleBoundary proves the central
+// guarantee of the operator lever: forcing a tour dispatches the route but does
+// NOT stamp the schedule-window boundary, so the real schedule ticker still
+// fires that boundary afterward (the umbilical /route contract: "Does NOT consume
+// the real schedule boundary"). Without this, forcing a tour for monitoring would
+// silently suppress the day's genuine scheduled tour.
+func TestForceRouteCommand_DoesNotConsumeScheduleBoundary(t *testing.T) {
+	w, _ := buildRouteCascadeWorld(t)
+	seedActorAttribute(w, sim.AttrTownCrier)
+	seedRunnerSchedule(w, 540, 1080) // 9:00–18:00
+	RegisterNPCRoutes(context.Background(), w, llm.NewFakeClient())
+	cancel := runRouteCascadeWorld(t, w)
+	defer cancel()
+
+	if _, err := w.Send(ForceRouteCommand(sim.AttrTownCrier, false)); err != nil {
+		t.Fatalf("ForceRouteCommand: %v", err)
+	}
+	if townCrierBoundaryStamped(t, w) {
+		t.Fatal("force stamped the schedule boundary — it must not consume it")
+	}
+
+	// The 9:00 start boundary is still unstamped, so a scheduled tick at 10:00
+	// fires and stamps it — proving the force left the real boundary intact.
+	if _, err := w.Send(RouteScheduleTick(at(10, 0), newDeterministicRand())); err != nil {
+		t.Fatalf("scheduled tick: %v", err)
+	}
+	if !townCrierBoundaryStamped(t, w) {
+		t.Error("scheduled boundary did not fire after a force — the force consumed the real boundary")
+	}
+}
+
+// townCrierBoundaryStamped reads RouteBoundaryStamps on the world goroutine
+// (mirrors the inline stamp read in npc_route_test.go's boundary tests).
+func townCrierBoundaryStamped(t *testing.T, w *sim.World) bool {
+	t.Helper()
+	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		_, stamped := world.RouteBoundaryStamps[sim.AttrTownCrier]
+		return stamped, nil
+	}})
+	if err != nil {
+		t.Fatalf("read town_crier boundary stamp: %v", err)
+	}
+	return res.(bool)
+}
