@@ -84,6 +84,12 @@ func resolveOrderReadyBy(w *World, kind ItemKind, parentID LedgerID, days int, a
 	return today.AddDate(0, 0, days), nil
 }
 
+// lodgingNightKey normalizes a booking date to its UTC calendar day so coverage
+// comparison is location-independent: ReadyBy is materialized as midnight UTC of
+// the booked date (orderDateUTC / the repo/pg/orders.go DATE round-trip), and
+// this guards against any value that isn't exactly UTC-midnight.
+func lodgingNightKey(t time.Time) string { return t.UTC().Format("2006-01-02") }
+
 // advancePastHeldLodging advances a lodging booking's ready_by to the first
 // night the buyer does NOT already hold from this seller, so a "renewal" extends
 // the stay by a night instead of re-booking a night already held (LLM-47). A
@@ -92,38 +98,43 @@ func resolveOrderReadyBy(w *World, kind ItemKind, parentID LedgerID, days int, a
 // violates the pay_ledger_lodging_active_once unique index and wedges every
 // checkpoint (the 2026-06-19 Ezekiel↔John Ellis incident).
 //
-// Coverage is read from w.PayLedger: each accepted lodging entry from this seller
-// to this buyer covers [ReadyBy, ReadyBy+Qty) nights. The walk starts at the
-// requested night and returns the first night not in that covered set; a
-// requested night already past all coverage is returned unchanged (so an explicit
-// future booking is never pushed further out). excludeID skips one entry — the
-// one being delivered, so it doesn't count itself; pass 0 at accept time, before
-// the new entry is staked. MUST run on the world goroutine (reads w.PayLedger).
+// "Held" is a DELIVERED lodging grant, matching the unique index's predicate
+// (state='accepted' AND fulfillment_status='delivered') — so coverage is read
+// from w.Orders (fulfillment lives on the Order, not the PayLedger entry), where
+// each delivered lodging order covers [ReadyBy, ReadyBy+Qty) nights. A
+// not-yet-delivered booking (OrderStateReady) is deliberately NOT counted: it
+// isn't a real grant yet, and the deliver-time backstop in transferOrderGoods
+// resolves any residual same-night overlap when the second one delivers. The walk
+// starts at the requested night and returns the first uncovered night; a night
+// already past all coverage is returned unchanged (an explicit future booking is
+// never pushed further out). excludeID skips one order — the one being delivered,
+// so it doesn't count itself; pass 0 at accept time. MUST run on the world
+// goroutine (reads w.Orders).
 func advancePastHeldLodging(w *World, buyerID, sellerID ActorID, readyBy time.Time, excludeID LedgerID) time.Time {
 	covered := make(map[string]struct{})
-	for id, e := range w.PayLedger {
-		if e == nil || id == excludeID || e.State != PayLedgerStateAccepted {
+	for _, o := range w.Orders {
+		if o == nil || o.LedgerID == excludeID || o.State != OrderStateDelivered {
 			continue
 		}
-		if e.BuyerID != buyerID || e.SellerID != sellerID || e.ReadyBy.IsZero() {
+		if o.BuyerID != buyerID || o.SellerID != sellerID || o.ReadyBy.IsZero() {
 			continue
 		}
-		if !itemHasCapability(w, e.ItemKind, "lodging") {
+		if !itemHasCapability(w, o.Item, "lodging") {
 			continue
 		}
-		nights := e.Qty
+		nights := o.Qty
 		if nights < 1 {
 			nights = 1
 		}
 		for n := 0; n < nights; n++ {
-			covered[e.ReadyBy.AddDate(0, 0, n).Format("2006-01-02")] = struct{}{}
+			covered[lodgingNightKey(o.ReadyBy.AddDate(0, 0, n))] = struct{}{}
 		}
 	}
 	// At most len(covered) nights are occupied, so walking len(covered)+1
 	// consecutive nights must reach a free one — a tight, guaranteed bound.
 	out := readyBy
 	for i := 0; i <= len(covered); i++ {
-		if _, held := covered[out.Format("2006-01-02")]; !held {
+		if _, held := covered[lodgingNightKey(out)]; !held {
 			return out
 		}
 		out = out.AddDate(0, 0, 1)
@@ -418,6 +429,12 @@ func transferOrderGoods(w *World, o *Order, seller *Actor, consumers []*Actor) e
 			log.Printf("sim/lodging: order %d ready_by advanced %s → %s to avoid double-booking a night %s already holds at %s",
 				o.ID, o.ReadyBy.Format("2006-01-02"), adjusted.Format("2006-01-02"), o.BuyerID, seller.DisplayName)
 			o.ReadyBy = adjusted
+			// The checkpoint persists pay_ledger.ready_by from the Order
+			// (repo/pg/orders.go), so o.ReadyBy is the value that reaches the DB;
+			// keep the PayLedger read-model (perception, ledger readers) in step.
+			if le := w.PayLedger[o.LedgerID]; le != nil {
+				le.ReadyBy = adjusted
+			}
 		}
 		// The grant runs for o.Qty nights from the booked date (ReadyBy), not
 		// from the check-in instant — an advance booking checked in on its
