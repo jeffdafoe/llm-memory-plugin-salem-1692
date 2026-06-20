@@ -48,6 +48,13 @@ type Server struct {
 	// nil → that route answers 503 (store not wired), the same posture as an unset
 	// /turns upstream. Wired by SetTranscriptStore under UMBILICAL_ENABLED.
 	transcript HuddleTranscriptStore
+	// routeForcer backs the operator-gated POST /umbilical/route control route.
+	// It returns a sim.Command that dispatches a schedule-driven NPC route
+	// (crier / washerwoman) immediately, bypassing the schedule-window gate. Held
+	// as an injected func (set by cmd/engine via SetRouteForcer) so httpapi does
+	// not import the cascade package that owns the route builders. Nil when
+	// unwired → the /route handler answers 503.
+	routeForcer func(attrSlug string, start bool) sim.Command
 }
 
 // NewServer builds a Server for w, authenticating every route via auth. Panics
@@ -172,6 +179,19 @@ func (s *Server) SetCheckpointHealth(h *sim.CheckpointHealth) {
 // Handler, never concurrently with serving.
 func (s *Server) SetControlEnabled(enabled bool) {
 	s.controlEnabled = enabled
+}
+
+// SetRouteForcer wires the cascade-backed forcer behind the operator-gated POST
+// /umbilical/route control route. The func returns a sim.Command that dispatches
+// a schedule-driven NPC route (town_crier / washerwoman) immediately, bypassing
+// the schedule-window gate — letting an operator reproduce a tour on demand
+// instead of waiting for a boundary or restarting. Injected (rather than
+// imported) so httpapi stays free of the cascade dependency that owns the route
+// builders. Optional: when unset the /route handler answers 503. Same
+// wiring-time-only contract as SetTelemetry — call before Handler, never
+// concurrently with serving.
+func (s *Server) SetRouteForcer(f func(attrSlug string, start bool) sim.Command) {
+	s.routeForcer = f
 }
 
 // Handler returns the read-surface routes: the static-render read set

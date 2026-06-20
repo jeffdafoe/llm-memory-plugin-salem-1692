@@ -443,6 +443,7 @@ func run(rt runtime, stop <-chan struct{}) error {
 			server.SetCheckpointHealth(checkpointHealth)
 			if rt.UmbilicalControl {
 				server.SetControlEnabled(true)
+				server.SetRouteForcer(cascade.ForceRouteCommand) // backs /umbilical/route (force a crier/washerwoman tour on demand)
 			}
 		}
 		httpServer = &http.Server{
