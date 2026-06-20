@@ -17,6 +17,13 @@ import (
 func buildBerryBushWorld(t *testing.T, available int, currentState string, lastRefresh *time.Time) (*sim.World, context.CancelFunc) {
 	t.Helper()
 	repo, handles := mem.NewRepository()
+	handles.ItemKinds.Seed(map[sim.ItemKind]*sim.ItemKindDef{
+		"berries": {
+			Name:      "berries",
+			Category:  sim.ItemCategoryFood,
+			Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 4}},
+		},
+	})
 	handles.Assets.Seed(map[sim.AssetID]*sim.Asset{
 		"bush-2state": {
 			ID:           "bush-2state",
@@ -129,5 +136,21 @@ func TestBerryStateRegrowGoesBerries(t *testing.T) {
 	}
 	if got := bushState(t, w); got != "berries" {
 		t.Errorf("after regrowth, bush state = %q, want berries", got)
+	}
+}
+
+// TestBerryStateGatheringLastBerryGoesBare: picking the last unit via the
+// gather verb drains the bush, so its visual flips berries -> bare. Covers the
+// gather hook (distinct from the arrival-eat hook).
+func TestBerryStateGatheringLastBerryGoesBare(t *testing.T) {
+	w, cancel := buildBerryBushWorld(t, 1, "berries", nil)
+	defer cancel()
+
+	placeAtObjectPin(t, w, "forager", "bush")
+	if _, err := w.Send(sim.Gather("forager", 1, time.Now().UTC())); err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	if got := bushState(t, w); got != "bare" {
+		t.Errorf("after gathering the last berry, bush state = %q, want bare", got)
 	}
 }
