@@ -112,6 +112,9 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 		)
 	}
 	p.Lodging = buildLodgingView(snap, actorSnap)
+	// LLM-36: the lodger bedtime nudge — fires for a lodger that has wound down
+	// to its rented inn once the night window opens, so it retires deliberately.
+	p.Retire = buildRetireCue(snap, actorSnap)
 	p.KeeperLodging = buildKeeperLodgingView(snap, actorSnap, p.Surroundings.HuddleMembers)
 	// The held-lodger signal is informational, like "## Your inn" — ungated by
 	// location so a keeper affirms a settled guest wherever they meet (LLM-38).

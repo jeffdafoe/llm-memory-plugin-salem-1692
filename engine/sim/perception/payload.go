@@ -354,6 +354,12 @@ type Payload struct {
 	// keeper or no held lodger is co-present. Built by buildKeeperHeldLodgers.
 	KeeperHeldLodgers *KeeperHeldLodgersView
 
+	// Retire is the lodger bedtime "turn in for the night" nudge: a lodger that
+	// has wound down to its rented inn at the lodger night hour. nil when the
+	// actor isn't a lodger at its inn within the night window. Built by
+	// buildRetireCue. LLM-36.
+	Retire *RetireView
+
 	// SummonsForYou surfaces a pending summons delivered to the subject by a
 	// messenger — "<summoner> asks you to come to <place>" — driving them to
 	// move_to. nil when the actor has no pending summons. Fades after the

@@ -633,3 +633,100 @@ func TestHeldLodgerTenure_Tiers(t *testing.T) {
 		}
 	}
 }
+
+// --- retire cue (LLM-36) ---
+
+// retireSnap builds a snapshot carrying the village clock + night-window fields
+// the retire cue reads: dawn 07:00, bedtime 22:00, and a caller-supplied local
+// minute-of-day. Subject keyed "ezekiel" like lodgingSnap.
+func retireSnap(subj *sim.ActorSnapshot, localMin int, structures map[sim.StructureID]*sim.Structure) *sim.Snapshot {
+	s := lodgingSnap(subj, structures)
+	s.LocalMinuteOfDay = &localMin
+	s.DawnMinute = 7 * 60
+	s.DuskMinute = 19 * 60
+	s.DawnDuskMinuteOK = true
+	s.LodgingBedtimeMinute = 22 * 60
+	return s
+}
+
+// retireLodger is an awake boarder standing inside the inn it rents (room 2 of
+// innStructure), holding a grant that expires well in the future.
+func retireLodger() *sim.ActorSnapshot {
+	return &sim.ActorSnapshot{
+		InsideStructureID: "inn",
+		State:             sim.StateIdle,
+		RoomAccess: map[sim.RoomAccessKey]*sim.RoomAccess{
+			{RoomID: 2, Source: sim.AccessSourceLedger}: ledgerAccess(2, 72*time.Hour),
+		},
+	}
+}
+
+func retireStructs() map[sim.StructureID]*sim.Structure {
+	return map[sim.StructureID]*sim.Structure{"inn": innStructure("inn", "Hannah's Inn")}
+}
+
+func TestBuildRetireCue_LodgerAtInnInWindow_Fires(t *testing.T) {
+	subj := retireLodger()
+	v := buildRetireCue(retireSnap(subj, 22*60, retireStructs()), subj) // 22:00 — window open
+	if v == nil {
+		t.Fatal("want a retire cue for a lodger at its inn within the night window, got nil")
+	}
+	if v.InnName != "Hannah's Inn" {
+		t.Errorf("InnName = %q, want %q", v.InnName, "Hannah's Inn")
+	}
+}
+
+func TestBuildRetireCue_OutsideWindow_Nil(t *testing.T) {
+	subj := retireLodger()
+	if v := buildRetireCue(retireSnap(subj, 12*60, retireStructs()), subj); v != nil { // noon
+		t.Errorf("want nil outside the night window, got %+v", v)
+	}
+}
+
+func TestBuildRetireCue_NotInsideItsInn_Nil(t *testing.T) {
+	subj := retireLodger()
+	subj.InsideStructureID = "market" // grant is for the inn, but it's standing elsewhere
+	if v := buildRetireCue(retireSnap(subj, 22*60, retireStructs()), subj); v != nil {
+		t.Errorf("want nil when the lodger isn't inside its rented inn, got %+v", v)
+	}
+}
+
+func TestBuildRetireCue_NotALodger_Nil(t *testing.T) {
+	subj := &sim.ActorSnapshot{InsideStructureID: "inn", State: sim.StateIdle} // no grant
+	if v := buildRetireCue(retireSnap(subj, 22*60, retireStructs()), subj); v != nil {
+		t.Errorf("want nil for a non-lodger, got %+v", v)
+	}
+}
+
+func TestBuildRetireCue_AlreadySleeping_Nil(t *testing.T) {
+	subj := retireLodger()
+	subj.State = sim.StateSleeping
+	if v := buildRetireCue(retireSnap(subj, 22*60, retireStructs()), subj); v != nil {
+		t.Errorf("want nil for an already-sleeping lodger, got %+v", v)
+	}
+}
+
+func TestBuildRetireCue_NoDawnBoundary_Nil(t *testing.T) {
+	subj := retireLodger()
+	snap := retireSnap(subj, 22*60, retireStructs())
+	snap.DawnDuskMinuteOK = false // dawn unparsed → can't bound the window
+	if v := buildRetireCue(snap, subj); v != nil {
+		t.Errorf("want nil when the dawn boundary is unavailable, got %+v", v)
+	}
+}
+
+func TestRenderRetire_GatedAndSectioned(t *testing.T) {
+	var b strings.Builder
+	renderRetire(&b, nil)
+	if b.Len() != 0 {
+		t.Errorf("nil view should render nothing, got %q", b.String())
+	}
+	renderRetire(&b, &RetireView{InnName: "Hannah's Inn"})
+	out := b.String()
+	if !strings.Contains(out, "## Turn in for the night") {
+		t.Errorf("missing section header: %q", out)
+	}
+	if !strings.Contains(out, "Hannah's Inn") {
+		t.Errorf("missing inn name: %q", out)
+	}
+}
