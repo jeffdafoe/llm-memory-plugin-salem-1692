@@ -49,6 +49,15 @@ const DefaultNPCSleepMaxDurationHours = 12
 // zero value (midnight), so tests that bed lodgers set it.
 const DefaultLodgingBedtimeHour = 22
 
+// lodgerRetireGraceMinutes is how long past bedtime AutoBedAtHomeNPCs holds off
+// engine-bedding a still-conversing lodger, to give the model time to voice a
+// deliberate goodnight and turn in itself (LLM-36). Past this margin the
+// backstop beds the lodger regardless (executeNPCSleep's engine retire line then
+// fires as the deterministic fallback), so an endlessly-chatty lodger can never
+// re-create the never-sleep / constant-tired equilibrium the sleep lifecycle
+// exists to break. In-world minutes, measured from the night window's open.
+const lodgerRetireGraceMinutes = 45
+
 // lodgerNightWindow returns the [start, end) minute-of-day window during which a
 // lodger is bedded at the inn it rents: [LodgingBedtimeHour, DawnTime). It wraps
 // past midnight (bedtime > dawn), which minuteInShiftWindow handles. A lodger
@@ -62,15 +71,24 @@ const DefaultLodgingBedtimeHour = 22
 // LodgingBedtimeHour falls back to DefaultLodgingBedtimeHour. ok=false only when
 // DawnTime fails to parse (logged at load by the phase system).
 func lodgerNightWindow(w *World) (start, end int, ok bool) {
-	bedtimeHour := w.Settings.LodgingBedtimeHour
-	if bedtimeHour < 0 || bedtimeHour > 23 {
-		bedtimeHour = DefaultLodgingBedtimeHour
-	}
 	dawnH, dawnM, err := ParseHM(w.Settings.DawnTime)
 	if err != nil {
 		return 0, 0, false
 	}
-	return bedtimeHour * 60, dawnH*60 + dawnM, true
+	return lodgerBedtimeMinute(w), dawnH*60 + dawnM, true
+}
+
+// lodgerBedtimeMinute returns the lodger bedtime as minute-of-day in the world
+// timezone, applying the DefaultLodgingBedtimeHour fallback for an out-of-range
+// setting. Shared by lodgerNightWindow (the sim-side bed gate) and the snapshot
+// publish, so the perception retire cue (LLM-36) bounds the SAME night window
+// the bed/wake gates use rather than re-deriving it from a raw setting.
+func lodgerBedtimeMinute(w *World) int {
+	bedtimeHour := w.Settings.LodgingBedtimeHour
+	if bedtimeHour < 0 || bedtimeHour > 23 {
+		bedtimeHour = DefaultLodgingBedtimeHour
+	}
+	return bedtimeHour * 60
 }
 
 // actorIsResting reports whether the actor is currently asleep or on break —
@@ -389,6 +407,13 @@ func AutoBedAtHomeNPCs(now time.Time) Command {
 				if !npcSleepHere(w, a, now) {
 					continue
 				}
+				// LLM-36: hold the backstop briefly for a lodger still mid-
+				// conversation at bedtime, so the model can voice a deliberate
+				// goodnight and turn in itself rather than being silently
+				// engine-bedded. Idle lodgers (and all homed NPCs) bed now.
+				if lodgerAwaitingDeliberateRetire(w, a, now) {
+					continue
+				}
 				if executeNPCSleep(w, a, now) {
 					bedded++
 				}
@@ -396,6 +421,71 @@ func AutoBedAtHomeNPCs(now time.Time) Command {
 			return bedded, nil
 		},
 	}
+}
+
+// lodgerAwaitingDeliberateRetire reports whether AutoBedAtHomeNPCs should hold
+// off bedding actor a this sweep, to let the model voice a deliberate goodnight
+// and turn in itself (LLM-36). The caller has already confirmed npcSleepHere, so
+// a is beddable right now; this only DEFERS that for a lodger that is:
+//
+//   - in the lodger flow, not the home flow — a homed NPC inside its home is
+//     governed by the home branch of npcSleepHere and is never held; the
+//     deliberate-retire flow is lodger-only.
+//   - mid-conversation with a companion — an active huddle holding at least one
+//     OTHER member is an audience to bid goodnight to. A lodger that is idle (or
+//     in a degenerate sole-member huddle) has no goodnight to voice, so it beds
+//     now. This MATCHES the buildRetireCue audience gate (a co-present huddle
+//     peer), so the "## Turn in for the night" cue is shown exactly when the
+//     backstop holds — cue and gate never disagree.
+//   - within lodgerRetireGraceMinutes of the night window's open — past that
+//     margin (or once it leaves the huddle) the normal backstop beds it, so a
+//     chatty or distracted lodger never never-sleeps.
+//
+// MUST be called from inside a Command.Fn (actorIsLodgerAt / lodgerNightWindow
+// read world state).
+func lodgerAwaitingDeliberateRetire(w *World, a *Actor, now time.Time) bool {
+	if a.HomeStructureID != "" && a.InsideStructureID == a.HomeStructureID {
+		return false // home flow — not a lodger retire
+	}
+	if !actorIsLodgerAt(w, a, a.InsideStructureID, now) {
+		return false
+	}
+	if !huddleWithCompanion(w, a) {
+		return false // idle / no companion to bid goodnight to — bed it now
+	}
+	start, _, ok := lodgerNightWindow(w)
+	if !ok {
+		return false
+	}
+	// Minutes since the window opened, wrap-aware for a window that crosses
+	// midnight (bedtime 22:00 → dawn 06:00). npcSleepHere already confirmed we
+	// are inside the window, so this is in [0, window length).
+	sinceBedtime := (localMinuteOfDay(w, now) - start + 1440) % 1440
+	return sinceBedtime < lodgerRetireGraceMinutes
+}
+
+// huddleWithCompanion reports whether a is in an active (un-concluded) huddle
+// that holds at least one OTHER member — someone co-present to bid goodnight to.
+// A bare active huddle isn't enough: huddles conclude only at zero members, so
+// one can transiently hold just a (the same edge speakRetireFarewell guards),
+// and bedding a lodger that has no one to address shouldn't wait on a deliberate
+// goodnight it can't voice. The snapshot mirror of this gate is a non-empty
+// Surroundings.HuddleMembers (which already excludes the subject), so the retire
+// cue and this backstop hold agree.
+func huddleWithCompanion(w *World, a *Actor) bool {
+	if a.CurrentHuddleID == "" {
+		return false
+	}
+	h, ok := w.Huddles[a.CurrentHuddleID]
+	if !ok || h.ConcludedAt != nil {
+		return false
+	}
+	for id := range h.Members {
+		if id != a.ID {
+			return true
+		}
+	}
+	return false
 }
 
 // WakeExpiredNPCSleepers clears SleepingUntil on any NPC whose wake condition

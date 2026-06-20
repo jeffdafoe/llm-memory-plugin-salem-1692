@@ -1569,6 +1569,7 @@ func (w *World) republish() {
 		DawnDuskMinuteOK:         dawnOK && duskOK,
 		NeedThresholds:           w.Settings.NeedThresholds.Clone(),
 		LodgingDefaultWeeklyRate: w.Settings.LodgingDefaultWeeklyRate,
+		LodgingBedtimeMinute:     lodgerBedtimeMinute(w),
 		RestockReorderPct:        w.Settings.RestockReorderPct,
 		ZoomMinAdmin:             w.Settings.ZoomMinAdmin,
 		ZoomMinRegular:           w.Settings.ZoomMinRegular,

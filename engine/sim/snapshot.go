@@ -115,6 +115,15 @@ type Snapshot struct {
 	// sim.LodgingNightlyRate. Plain int, copied at publish.
 	LodgingDefaultWeeklyRate int
 
+	// LodgingBedtimeMinute is the lodger bedtime as minute-of-day in the village
+	// timezone (LodgingBedtimeHour*60, with the DefaultLodgingBedtimeHour fallback
+	// already applied), computed once at publish via lodgerBedtimeMinute. It is
+	// the OPEN of the lodger night window [LodgingBedtimeMinute, DawnMinute) — the
+	// same window the sim bed/wake gates use — so the LLM-36 retire cue, pure over
+	// the snapshot, fires exactly when the engine would bed the lodger. Plain int,
+	// copied at publish.
+	LodgingBedtimeMinute int
+
 	// RestockReorderPct mirrors WorldSettings.RestockReorderPct — the reorder
 	// threshold (whole percent of cap) for buy-side restock. Carried so the
 	// "## Restocking" perception section can gate on the same boundary the

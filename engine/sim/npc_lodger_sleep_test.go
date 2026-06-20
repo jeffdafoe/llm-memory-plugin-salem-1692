@@ -258,3 +258,105 @@ func TestLodgerWakeAtDawn(t *testing.T) {
 		}
 	})
 }
+
+// withActiveHuddle attaches an active (un-concluded) huddle to the named actors
+// so actorInActiveHuddle reads true — the "mid-conversation" condition the
+// deliberate-retire backstop holds for (LLM-36). Populates both Huddles and
+// actorsByHuddle (separate maps) so LeaveHuddle on bed-down has its index.
+func withActiveHuddle(w *World, id HuddleID, members ...ActorID) {
+	mem := make(map[ActorID]struct{}, len(members))
+	idx := make(map[ActorID]struct{}, len(members))
+	for _, m := range members {
+		mem[m] = struct{}{}
+		idx[m] = struct{}{}
+		if a := w.Actors[m]; a != nil {
+			a.CurrentHuddleID = id
+		}
+	}
+	if w.Huddles == nil {
+		w.Huddles = map[HuddleID]*Huddle{}
+	}
+	if w.actorsByHuddle == nil {
+		w.actorsByHuddle = map[HuddleID]map[ActorID]struct{}{}
+	}
+	w.Huddles[id] = &Huddle{ID: id, Members: mem}
+	w.actorsByHuddle[id] = idx
+}
+
+// TestAutoBedAtHomeNPCs_DeliberateRetire covers the LLM-36 backstop demotion: a
+// lodger still conversing at bedtime is given a grace margin to voice a goodnight
+// and turn in itself before the engine beds it; an idle lodger beds at once (no
+// goodnight to voice), and a lodger still talking PAST the grace margin is bedded
+// regardless so it can never never-sleep. The hold is lodger-only — a homed NPC
+// in a huddle at bedtime still beds.
+func TestAutoBedAtHomeNPCs_DeliberateRetire(t *testing.T) {
+	bedtime := time.Date(2026, 5, 22, 22, 0, 0, 0, time.UTC)    // minute 1320 — window open, grace fresh (0 < 45)
+	pastGrace := time.Date(2026, 5, 22, 22, 50, 0, 0, time.UTC) // minute 1370 — 50 min in, past the 45 grace
+	future := bedtime.Add(72 * time.Hour)
+
+	t.Run("conversing lodger within grace -> held (not bedded)", func(t *testing.T) {
+		l := lodgerNPC("l", future)
+		player := npc("p", KindPC) // a co-present peer to bid goodnight to; PCs aren't auto-bedded
+		w := lodgerSleepWorld(l, player)
+		withActiveHuddle(w, "h1", "l", "p")
+		res, _ := AutoBedAtHomeNPCs(bedtime).Fn(w)
+		if n := res.(int); n != 0 {
+			t.Fatalf("bedded = %d, want 0 (held for deliberate retire)", n)
+		}
+		if l.SleepingUntil != nil {
+			t.Error("a conversing lodger within the grace margin should be held, not engine-bedded")
+		}
+	})
+
+	t.Run("idle lodger at bedtime -> bedded at once", func(t *testing.T) {
+		l := lodgerNPC("l", future)
+		w := lodgerSleepWorld(l) // no huddle — nothing to wind down
+		res, _ := AutoBedAtHomeNPCs(bedtime).Fn(w)
+		if n := res.(int); n != 1 {
+			t.Fatalf("bedded = %d, want 1 (idle lodger beds at once)", n)
+		}
+		if l.SleepingUntil == nil {
+			t.Error("an idle lodger at bedtime should be bedded by the backstop")
+		}
+	})
+
+	t.Run("lodger in a companionless huddle -> bedded (no one to bid goodnight)", func(t *testing.T) {
+		l := lodgerNPC("l", future)
+		w := lodgerSleepWorld(l)
+		withActiveHuddle(w, "h1", "l") // sole member — no companion present
+		res, _ := AutoBedAtHomeNPCs(bedtime).Fn(w)
+		if n := res.(int); n != 1 {
+			t.Fatalf("bedded = %d, want 1 (a sole-member huddle has no companion — bed now)", n)
+		}
+		if l.SleepingUntil == nil {
+			t.Error("a lodger with no co-present companion should be bedded, not held")
+		}
+	})
+
+	t.Run("conversing lodger past the grace margin -> bedded regardless", func(t *testing.T) {
+		l := lodgerNPC("l", future)
+		player := npc("p", KindPC)
+		w := lodgerSleepWorld(l, player)
+		withActiveHuddle(w, "h1", "l", "p")
+		res, _ := AutoBedAtHomeNPCs(pastGrace).Fn(w)
+		if n := res.(int); n != 1 {
+			t.Fatalf("bedded = %d, want 1 (past grace — hard backstop)", n)
+		}
+		if l.SleepingUntil == nil {
+			t.Error("a lodger still conversing past the grace margin must be bedded so it never never-sleeps")
+		}
+	})
+
+	t.Run("homed NPC conversing at bedtime -> bedded (demotion is lodger-only)", func(t *testing.T) {
+		h := npc("h", KindNPCStateful) // homed, inside its home, unscheduled
+		w := lodgerSleepWorld(h)
+		withActiveHuddle(w, "h1", "h")
+		res, _ := AutoBedAtHomeNPCs(bedtime).Fn(w)
+		if n := res.(int); n != 1 {
+			t.Fatalf("bedded = %d, want 1 (homed NPC is not subject to the lodger retire grace)", n)
+		}
+		if h.SleepingUntil == nil {
+			t.Error("a homed NPC should bed at once — the deliberate-retire hold is lodger-only")
+		}
+	})
+}
