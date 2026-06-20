@@ -665,9 +665,13 @@ func retireStructs() map[sim.StructureID]*sim.Structure {
 	return map[sim.StructureID]*sim.Structure{"inn": innStructure("inn", "Hannah's Inn")}
 }
 
+// retireMembers is a single co-present huddle companion — the audience the cue
+// requires (members excludes the subject).
+func retireMembers() []HuddleMember { return []HuddleMember{{ID: "companion"}} }
+
 func TestBuildRetireCue_LodgerAtInnInWindow_Fires(t *testing.T) {
 	subj := retireLodger()
-	v := buildRetireCue(retireSnap(subj, 22*60, retireStructs()), subj) // 22:00 — window open
+	v := buildRetireCue(retireSnap(subj, 22*60, retireStructs()), subj, retireMembers()) // 22:00 — window open
 	if v == nil {
 		t.Fatal("want a retire cue for a lodger at its inn within the night window, got nil")
 	}
@@ -676,9 +680,18 @@ func TestBuildRetireCue_LodgerAtInnInWindow_Fires(t *testing.T) {
 	}
 }
 
+func TestBuildRetireCue_NoCompanion_Nil(t *testing.T) {
+	subj := retireLodger()
+	// All other gates pass; the empty members slice (no one to bid goodnight to)
+	// is the sole reason for nil — the lodger is bedded silently by the backstop.
+	if v := buildRetireCue(retireSnap(subj, 22*60, retireStructs()), subj, nil); v != nil {
+		t.Errorf("want nil for a lodger with no co-present companion, got %+v", v)
+	}
+}
+
 func TestBuildRetireCue_OutsideWindow_Nil(t *testing.T) {
 	subj := retireLodger()
-	if v := buildRetireCue(retireSnap(subj, 12*60, retireStructs()), subj); v != nil { // noon
+	if v := buildRetireCue(retireSnap(subj, 12*60, retireStructs()), subj, retireMembers()); v != nil { // noon
 		t.Errorf("want nil outside the night window, got %+v", v)
 	}
 }
@@ -686,14 +699,14 @@ func TestBuildRetireCue_OutsideWindow_Nil(t *testing.T) {
 func TestBuildRetireCue_NotInsideItsInn_Nil(t *testing.T) {
 	subj := retireLodger()
 	subj.InsideStructureID = "market" // grant is for the inn, but it's standing elsewhere
-	if v := buildRetireCue(retireSnap(subj, 22*60, retireStructs()), subj); v != nil {
+	if v := buildRetireCue(retireSnap(subj, 22*60, retireStructs()), subj, retireMembers()); v != nil {
 		t.Errorf("want nil when the lodger isn't inside its rented inn, got %+v", v)
 	}
 }
 
 func TestBuildRetireCue_NotALodger_Nil(t *testing.T) {
 	subj := &sim.ActorSnapshot{InsideStructureID: "inn", State: sim.StateIdle} // no grant
-	if v := buildRetireCue(retireSnap(subj, 22*60, retireStructs()), subj); v != nil {
+	if v := buildRetireCue(retireSnap(subj, 22*60, retireStructs()), subj, retireMembers()); v != nil {
 		t.Errorf("want nil for a non-lodger, got %+v", v)
 	}
 }
@@ -701,7 +714,7 @@ func TestBuildRetireCue_NotALodger_Nil(t *testing.T) {
 func TestBuildRetireCue_AlreadySleeping_Nil(t *testing.T) {
 	subj := retireLodger()
 	subj.State = sim.StateSleeping
-	if v := buildRetireCue(retireSnap(subj, 22*60, retireStructs()), subj); v != nil {
+	if v := buildRetireCue(retireSnap(subj, 22*60, retireStructs()), subj, retireMembers()); v != nil {
 		t.Errorf("want nil for an already-sleeping lodger, got %+v", v)
 	}
 }
@@ -710,7 +723,7 @@ func TestBuildRetireCue_NoDawnBoundary_Nil(t *testing.T) {
 	subj := retireLodger()
 	snap := retireSnap(subj, 22*60, retireStructs())
 	snap.DawnDuskMinuteOK = false // dawn unparsed → can't bound the window
-	if v := buildRetireCue(snap, subj); v != nil {
+	if v := buildRetireCue(snap, subj, retireMembers()); v != nil {
 		t.Errorf("want nil when the dawn boundary is unavailable, got %+v", v)
 	}
 }

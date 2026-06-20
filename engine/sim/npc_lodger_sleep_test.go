@@ -320,6 +320,19 @@ func TestAutoBedAtHomeNPCs_DeliberateRetire(t *testing.T) {
 		}
 	})
 
+	t.Run("lodger in a companionless huddle -> bedded (no one to bid goodnight)", func(t *testing.T) {
+		l := lodgerNPC("l", future)
+		w := lodgerSleepWorld(l)
+		withActiveHuddle(w, "h1", "l") // sole member — no companion present
+		res, _ := AutoBedAtHomeNPCs(bedtime).Fn(w)
+		if n := res.(int); n != 1 {
+			t.Fatalf("bedded = %d, want 1 (a sole-member huddle has no companion — bed now)", n)
+		}
+		if l.SleepingUntil == nil {
+			t.Error("a lodger with no co-present companion should be bedded, not held")
+		}
+	})
+
 	t.Run("conversing lodger past the grace margin -> bedded regardless", func(t *testing.T) {
 		l := lodgerNPC("l", future)
 		player := npc("p", KindPC)

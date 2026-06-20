@@ -559,11 +559,20 @@ type RetireView struct {
 // window [LodgingBedtimeMinute, DawnMinute) — the same window the sim bed/wake
 // gates use, so the cue fires exactly when the engine would otherwise bed it.
 // Awake-only, and suppressed mid-business by windDownSuppressed (the inn doubles
-// as the tavern — a lodger still eating dinner isn't told to go to bed). Pure
-// over the snapshot. LLM-36.
-func buildRetireCue(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) *RetireView {
+// as the tavern — a lodger still eating dinner isn't told to go to bed).
+//
+// Gated on a co-present huddle companion (members non-empty — members already
+// excludes the subject): a lodger alone has no goodnight to voice and is bedded
+// silently by the backstop, so prompting it to "turn in" would be a cue it can't
+// act on. This mirrors the engine hold (npc_sleep.go huddleWithCompanion), so
+// the cue is shown exactly when AutoBedAtHomeNPCs defers the bed-down. Pure over
+// the snapshot. LLM-36.
+func buildRetireCue(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, members []HuddleMember) *RetireView {
 	if snap == nil || actorSnap == nil || snap.LocalMinuteOfDay == nil {
 		return nil
+	}
+	if len(members) == 0 {
+		return nil // no companion to bid goodnight to — the backstop beds it silently
 	}
 	if !snap.DawnDuskMinuteOK {
 		return nil // no usable dawn boundary — can't bound the night window

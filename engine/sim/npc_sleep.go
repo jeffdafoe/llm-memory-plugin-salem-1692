@@ -431,8 +431,12 @@ func AutoBedAtHomeNPCs(now time.Time) Command {
 //   - in the lodger flow, not the home flow — a homed NPC inside its home is
 //     governed by the home branch of npcSleepHere and is never held; the
 //     deliberate-retire flow is lodger-only.
-//   - mid-conversation — an active huddle is an audience to bid goodnight to.
-//     A lodger standing idle has no goodnight to voice, so it beds now.
+//   - mid-conversation with a companion — an active huddle holding at least one
+//     OTHER member is an audience to bid goodnight to. A lodger that is idle (or
+//     in a degenerate sole-member huddle) has no goodnight to voice, so it beds
+//     now. This MATCHES the buildRetireCue audience gate (a co-present huddle
+//     peer), so the "## Turn in for the night" cue is shown exactly when the
+//     backstop holds — cue and gate never disagree.
 //   - within lodgerRetireGraceMinutes of the night window's open — past that
 //     margin (or once it leaves the huddle) the normal backstop beds it, so a
 //     chatty or distracted lodger never never-sleeps.
@@ -446,8 +450,8 @@ func lodgerAwaitingDeliberateRetire(w *World, a *Actor, now time.Time) bool {
 	if !actorIsLodgerAt(w, a, a.InsideStructureID, now) {
 		return false
 	}
-	if !actorInActiveHuddle(w, a) {
-		return false // idle — no goodnight to voice; bed it now
+	if !huddleWithCompanion(w, a) {
+		return false // idle / no companion to bid goodnight to — bed it now
 	}
 	start, _, ok := lodgerNightWindow(w)
 	if !ok {
@@ -458,6 +462,30 @@ func lodgerAwaitingDeliberateRetire(w *World, a *Actor, now time.Time) bool {
 	// are inside the window, so this is in [0, window length).
 	sinceBedtime := (localMinuteOfDay(w, now) - start + 1440) % 1440
 	return sinceBedtime < lodgerRetireGraceMinutes
+}
+
+// huddleWithCompanion reports whether a is in an active (un-concluded) huddle
+// that holds at least one OTHER member — someone co-present to bid goodnight to.
+// A bare active huddle isn't enough: huddles conclude only at zero members, so
+// one can transiently hold just a (the same edge speakRetireFarewell guards),
+// and bedding a lodger that has no one to address shouldn't wait on a deliberate
+// goodnight it can't voice. The snapshot mirror of this gate is a non-empty
+// Surroundings.HuddleMembers (which already excludes the subject), so the retire
+// cue and this backstop hold agree.
+func huddleWithCompanion(w *World, a *Actor) bool {
+	if a.CurrentHuddleID == "" {
+		return false
+	}
+	h, ok := w.Huddles[a.CurrentHuddleID]
+	if !ok || h.ConcludedAt != nil {
+		return false
+	}
+	for id := range h.Members {
+		if id != a.ID {
+			return true
+		}
+	}
+	return false
 }
 
 // WakeExpiredNPCSleepers clears SleepingUntil on any NPC whose wake condition
