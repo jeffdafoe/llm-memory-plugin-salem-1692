@@ -539,6 +539,15 @@ func PayWithItem(
 				if err != nil {
 					return nil, err
 				}
+				// LLM-47: a lodging booking for a night the buyer already holds
+				// from this seller (a "renewal") advances to the next un-held
+				// night, so it extends the stay rather than double-booking a
+				// night — a duplicate (buyer, seller, ready_by) would later
+				// collide on pay_ledger_lodging_active_once at delivery and wedge
+				// checkpointing. excludeID 0: the new entry is not staked yet here.
+				if itemHasCapability(w, kind, "lodging") {
+					readyBy = advancePastHeldLodging(w, buyerID, sellerID, readyBy, 0)
+				}
 			}
 
 			// Overflow guard on qty * effectiveConsumers — Inventory[kind]
