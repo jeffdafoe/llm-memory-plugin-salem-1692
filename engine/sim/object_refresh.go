@@ -362,6 +362,9 @@ func ApplyObjectRefreshAtArrival(actorID ActorID) Command {
 					}
 				}
 			}
+			// Eating in place may have drained a finite bush — recompute its
+			// berries/bare visual so a picked-clean bush goes bare.
+			refreshObjectBerryState(w, obj)
 			return ArrivalRefreshResult{ObjectID: objID, Hits: hits}, nil
 		},
 	}
@@ -460,6 +463,9 @@ func regenObjectRefresh(w *World, now time.Time) int {
 					r.RefreshMode, r.Attribute)
 			}
 		}
+		// Regrowth may have restocked a bush from empty — recompute its
+		// berries/bare visual so berries reappear once supply is back.
+		refreshObjectBerryState(w, obj)
 	}
 	return touched
 }
