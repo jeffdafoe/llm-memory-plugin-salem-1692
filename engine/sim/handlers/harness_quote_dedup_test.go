@@ -38,7 +38,7 @@ func newQuoteDedupHarness(t *testing.T, client llm.Client) (*Harness, *[]string)
 		quoteLog = append(quoteLog, args.ItemKind)
 		return "[quote: ok]", nil
 	}
-	if err := r.RegisterObservation("scene_quote", sceneQuoteSchema, DecodeSceneQuoteArgs, quoteFn, WithDescription(sceneQuoteDescription)); err != nil {
+	if err := r.RegisterObservation("sell", sceneQuoteSchema, DecodeSceneQuoteArgs, quoteFn, WithDescription(sceneQuoteDescription)); err != nil {
 		t.Fatalf("register scene_quote: %v", err)
 	}
 	if err := r.RegisterTerminal("done"); err != nil {
@@ -66,7 +66,7 @@ func TestSceneQuoteKey_ProductionDecoderShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeSceneQuoteArgs: %v", err)
 	}
-	key, ok := sceneQuoteKey(&ValidatedCall{Name: "scene_quote", DecodedArgs: decoded})
+	key, ok := sceneQuoteKey(&ValidatedCall{Name: "sell", DecodedArgs: decoded})
 	if !ok {
 		t.Fatal("sceneQuoteKey ok=false for a production-decoded quote — dedup would be silently disabled in production")
 	}
@@ -81,7 +81,7 @@ func TestSceneQuoteKey_ProductionDecoderShape(t *testing.T) {
 func TestSceneQuoteKey_TargetAndDisposition(t *testing.T) {
 	base := SceneQuoteArgs{ItemKind: "Bread", Qty: 1, Amount: 4}
 	key := func(a SceneQuoteArgs) string {
-		k, ok := sceneQuoteKey(&ValidatedCall{Name: "scene_quote", DecodedArgs: a})
+		k, ok := sceneQuoteKey(&ValidatedCall{Name: "sell", DecodedArgs: a})
 		if !ok {
 			t.Fatalf("sceneQuoteKey ok=false for %+v", a)
 		}
@@ -129,8 +129,8 @@ func TestHarness_QuoteDedup_RejectsRepeatQuoteAcrossRoundsDespitePriceDrift(t *t
 	defer cancel()
 
 	client := llm.NewFakeClient(
-		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c1", 0, "scene_quote", sceneQuoteJSON("Bread", 1, 4, false))}}},
-		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c2", 0, "scene_quote", sceneQuoteJSON("Bread", 1, 5, false))}}},
+		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c1", 0, "sell", sceneQuoteJSON("Bread", 1, 4, false))}}},
+		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c2", 0, "sell", sceneQuoteJSON("Bread", 1, 5, false))}}},
 		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c3", 0, "done", `{}`)}}},
 	)
 	h, quoteLog := newQuoteDedupHarness(t, client)
@@ -143,10 +143,10 @@ func TestHarness_QuoteDedup_RejectsRepeatQuoteAcrossRoundsDespitePriceDrift(t *t
 	if got := *quoteLog; len(got) != 1 {
 		t.Errorf("quotes posted: got %d %q, want exactly 1 (price-drift repeat blocked)", len(got), got)
 	}
-	if !contains(result.ToolsSucceeded, "scene_quote") {
+	if !contains(result.ToolsSucceeded, "sell") {
 		t.Errorf("ToolsSucceeded should include the first quote, got %v", result.ToolsSucceeded)
 	}
-	if !contains(result.ToolsFailedRejected, "scene_quote") {
+	if !contains(result.ToolsFailedRejected, "sell") {
 		t.Errorf("ToolsFailedRejected should include the blocked repeat, got %v", result.ToolsFailedRejected)
 	}
 }
@@ -158,8 +158,8 @@ func TestHarness_QuoteDedup_AllowsDistinctItemQuote(t *testing.T) {
 	defer cancel()
 
 	client := llm.NewFakeClient(llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{
-		newToolCall("c1", 0, "scene_quote", sceneQuoteJSON("Bread", 1, 4, false)),
-		newToolCall("c2", 1, "scene_quote", sceneQuoteJSON("Ale", 1, 2, true)),
+		newToolCall("c1", 0, "sell", sceneQuoteJSON("Bread", 1, 4, false)),
+		newToolCall("c2", 1, "sell", sceneQuoteJSON("Ale", 1, 2, true)),
 		newToolCall("c3", 2, "done", `{}`),
 	}}})
 	h, quoteLog := newQuoteDedupHarness(t, client)

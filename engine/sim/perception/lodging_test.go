@@ -518,7 +518,7 @@ func TestRenderLodgingOffer_NamesActionAndNights(t *testing.T) {
 		NightlyRate:    4,
 	})
 	out := b.String()
-	for _, want := range []string{"## A room to let", "Ezekiel Crane", "nights_stay", "scene_quote", "number of nights", "consume_now false", "target_buyer only if you know"} {
+	for _, want := range []string{"## A room to let", "Ezekiel Crane", "nights_stay", "call sell", "number of nights", "consume_now false", "target_buyer only if you know"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("offer cue missing %q, got %q", want, out)
 		}
@@ -741,5 +741,94 @@ func TestRenderRetire_GatedAndSectioned(t *testing.T) {
 	}
 	if !strings.Contains(out, "Hannah's Inn") {
 		t.Errorf("missing inn name: %q", out)
+	}
+}
+
+// --- keeper renewal-due flip (LLM-46) ---
+
+// heldLodgerKeeperRated mirrors heldLodgerKeeperView but with a live nightly
+// rate, so the renewal-due branch (which can't price a renewal without one) can
+// fire.
+var heldLodgerKeeperRated = &KeeperLodgingView{InnName: "Hannah's Inn", RoomsTotal: 3, RoomsAvailable: 2, NightlyRate: 4}
+
+func TestBuildKeeperHeldLodgers_RenewalDue_Offers(t *testing.T) {
+	// A grant 12h from expiry is inside the 48h renewal window.
+	snap := heldLodgerSnap(map[sim.RoomAccessKey]*sim.RoomAccess{
+		{RoomID: 2, Source: sim.AccessSourceLedger}: ledgerAccess(2, 12*time.Hour),
+	})
+	v := buildKeeperHeldLodgers(snap, "keeper", heldLodgerKeeperRated, heldLodgerMembers)
+	if v == nil || len(v.Lodgers) != 1 {
+		t.Fatalf("want one held lodger, got %+v", v)
+	}
+	if !v.Lodgers[0].RenewalDue || !v.Lodgers[0].OfferRenewal {
+		t.Errorf("a grant in the renewal window with a rate should offer a renewal; got RenewalDue=%v OfferRenewal=%v",
+			v.Lodgers[0].RenewalDue, v.Lodgers[0].OfferRenewal)
+	}
+	if v.NightlyRate != 4 {
+		t.Errorf("view NightlyRate = %d, want 4 (so the render can price the quote)", v.NightlyRate)
+	}
+}
+
+func TestBuildKeeperHeldLodgers_RenewalDue_NoRate_Settled(t *testing.T) {
+	// In the window, but heldLodgerKeeperView has no nightly rate (0) — a renewal
+	// can't be priced, so fall back to the settled affirm.
+	snap := heldLodgerSnap(map[sim.RoomAccessKey]*sim.RoomAccess{
+		{RoomID: 2, Source: sim.AccessSourceLedger}: ledgerAccess(2, 12*time.Hour),
+	})
+	v := buildKeeperHeldLodgers(snap, "keeper", heldLodgerKeeperView, heldLodgerMembers)
+	if v == nil || len(v.Lodgers) != 1 {
+		t.Fatalf("want one held lodger, got %+v", v)
+	}
+	if v.Lodgers[0].RenewalDue || v.Lodgers[0].OfferRenewal {
+		t.Errorf("no nightly rate → no renewal offer; got RenewalDue=%v OfferRenewal=%v",
+			v.Lodgers[0].RenewalDue, v.Lodgers[0].OfferRenewal)
+	}
+}
+
+func TestBuildKeeperHeldLodgers_OutsideWindow_Settled(t *testing.T) {
+	// 72h out is beyond the 48h window — still settled, no renewal pressure.
+	snap := heldLodgerSnap(map[sim.RoomAccessKey]*sim.RoomAccess{
+		{RoomID: 2, Source: sim.AccessSourceLedger}: ledgerAccess(2, 72*time.Hour),
+	})
+	v := buildKeeperHeldLodgers(snap, "keeper", heldLodgerKeeperRated, heldLodgerMembers)
+	if v == nil || len(v.Lodgers) != 1 {
+		t.Fatalf("want one held lodger, got %+v", v)
+	}
+	if v.Lodgers[0].RenewalDue {
+		t.Errorf("a 72h grant is outside the 48h renewal window — want settled, got RenewalDue=true")
+	}
+}
+
+func TestRenderKeeperHeldLodgers_RenewalOffer(t *testing.T) {
+	var b strings.Builder
+	renderKeeperHeldLodgers(&b, &KeeperHeldLodgersView{
+		NightlyRate: 4,
+		Lodgers:     []HeldLodger{{Name: "Ezekiel Crane", TenureLabel: "paid through the day", RenewalDue: true, OfferRenewal: true}},
+	})
+	out := b.String()
+	for _, want := range []string{"## Already lodging here", "Ezekiel Crane", "stay is ending", "scene_quote", "nights_stay", "4 coins", "target_buyer"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("renewal-offer render missing %q, got %q", want, out)
+		}
+	}
+	if strings.Contains(out, "Do not offer another") {
+		t.Errorf("a renewal-due guest must not get the 'do not offer' steer; got %q", out)
+	}
+}
+
+func TestRenderKeeperHeldLodgers_RenewalAwait(t *testing.T) {
+	var b strings.Builder
+	renderKeeperHeldLodgers(&b, &KeeperHeldLodgersView{
+		NightlyRate: 4,
+		Lodgers:     []HeldLodger{{Name: "Ezekiel Crane", TenureLabel: "paid through the day", RenewalDue: true, OfferRenewal: false}},
+	})
+	out := b.String()
+	if !strings.Contains(out, "Await their answer") {
+		t.Errorf("a renewal in flight should steer to await; got %q", out)
+	}
+	for _, notWant := range []string{"scene_quote", "Do not offer another"} {
+		if strings.Contains(out, notWant) {
+			t.Errorf("the await render should not contain %q; got %q", notWant, out)
+		}
 	}
 }
