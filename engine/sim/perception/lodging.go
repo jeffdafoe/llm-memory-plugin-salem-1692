@@ -408,6 +408,13 @@ func renderLodgingOffer(b *strings.Builder, v *LodgingOfferView) {
 	fmt.Fprintf(b, "You have %d %s free at %s.\n\n", v.RoomsAvailable, roomWord, sanitizeInline(v.InnName))
 }
 
+// lodgingRenewalWindow is how close a held grant must be to expiry before the
+// keeper's "## Already lodging here" cue flips from "already settled, don't
+// offer" to offering a renewal. It matches the window in which the lodger's own
+// "## Your lodging" cue tells them to go see the keeper to renew, so the two
+// sides can't disagree about whether it's renewal time (LLM-46).
+const lodgingRenewalWindow = 48 * time.Hour
+
 // KeeperHeldLodgersView is the keeper-side "this guest already lodges here"
 // signal (LLM-38). The offer cue (buildLodgingOfferCue) is correctly suppressed
 // for an actor who already holds a grant — actorSnapIsLodgingSeeker returns
@@ -416,10 +423,20 @@ func renderLodgingOffer(b *strings.Builder, v *LodgingOfferView) {
 // re-offers a room the guest is already in. This is the positive counter-signal:
 // it names each co-present actor holding an active ledger grant at THIS inn so
 // the keeper LLM affirms ("you're already settled") instead of re-pitching.
+//
+// When a held grant is within lodgingRenewalWindow of expiry the cue flips for
+// that guest (LLM-46): the stay is ending, so the keeper is steered to OFFER a
+// renewal (posting a nights_stay quote) rather than wave it off as settled —
+// closing the gap where a renewing NPC lodger could not get the keeper to act.
 // nil/empty skips the section. Pure over the snapshot.
 type KeeperHeldLodgersView struct {
 	// Lodgers are the co-present actors already holding a room at this inn.
 	Lodgers []HeldLodger
+
+	// NightlyRate is the keeper's per-night rent, surfaced so a renewal-due
+	// guest's cue can spell out the scene_quote amount. 0 when the lodging rate
+	// is unset/disabled — no renewal is offered in that case.
+	NightlyRate int
 }
 
 // HeldLodger is one co-present actor already lodging at the keeper's inn.
@@ -431,6 +448,18 @@ type HeldLodger struct {
 	// nights"). Computed at build time against snap.PublishedAt so the rendered
 	// cue is deterministic against the snapshot rather than a render-time clock.
 	TenureLabel string
+
+	// RenewalDue is true when this guest's grant is within lodgingRenewalWindow:
+	// the stay is ending, so the keeper should renew it rather than wave it off
+	// as settled (LLM-46). Requires a live nightly rate — a renewal can't be
+	// priced without one.
+	RenewalDue bool
+
+	// OfferRenewal is true when the keeper should POST the renewal quote this
+	// turn: RenewalDue and no renewal already in flight (no standing quote to
+	// this guest, no pending pay from them). Once a quote stands it goes false
+	// and the cue switches to "await their answer" so the keeper doesn't re-post.
+	OfferRenewal bool
 }
 
 // buildKeeperHeldLodgers builds the keeper-side held-lodger signal (LLM-38). It
@@ -441,8 +470,12 @@ type HeldLodger struct {
 // offer cue this is informational, not an act-now instruction, so it is NOT
 // location-gated (it mirrors the ungated "## Your inn" status): a keeper who
 // runs into their lodger should affirm rather than re-pitch wherever they meet.
-// Returns nil (Render content-gates) when the subject isn't a keeper or no held
-// lodger is co-present. Pure over the snapshot.
+// Per-lodger it also computes the renewal-due flip (LLM-46): a grant inside
+// lodgingRenewalWindow turns the "already settled" affirm into a renewal offer,
+// gated by the same two storm guards the offer cue uses so a standing quote or
+// in-flight pay suppresses a re-post. Returns nil (Render content-gates) when
+// the subject isn't a keeper or no held lodger is co-present. Pure over the
+// snapshot.
 func buildKeeperHeldLodgers(snap *sim.Snapshot, subject sim.ActorID, keeper *KeeperLodgingView, members []HuddleMember) *KeeperHeldLodgersView {
 	if snap == nil || keeper == nil {
 		return nil
@@ -492,31 +525,60 @@ func buildKeeperHeldLodgers(snap *sim.Snapshot, subject sim.ActorID, keeper *Kee
 		if best == nil {
 			continue
 		}
+		// Renewal-due flip (LLM-46): a grant within the renewal window means the
+		// stay is ending. OfferRenewal also requires no renewal already in flight
+		// — a pending pay from the guest (the accept/decline path owns it) or a
+		// standing quote already out to them (await the answer; reuses the offer
+		// cue's two storm guards so the keeper can't re-post every tick).
+		renewalDue := keeper.NightlyRate > 0 && best.ExpiresAt.Sub(now) <= lodgingRenewalWindow
+		offerRenewal := renewalDue &&
+			!customerHasPendingOfferWithSeller(snap, m.ID, subject) &&
+			!sellerHasActiveQuoteToBuyer(snap, subject, m.ID)
 		held = append(held, HeldLodger{
-			Name:        descriptorLabel(m.DisplayName, m.Role, m.Acquainted),
-			TenureLabel: heldLodgerTenure(*best.ExpiresAt, now),
+			Name:         descriptorLabel(m.DisplayName, m.Role, m.Acquainted),
+			TenureLabel:  heldLodgerTenure(*best.ExpiresAt, now),
+			RenewalDue:   renewalDue,
+			OfferRenewal: offerRenewal,
 		})
 	}
 	if len(held) == 0 {
 		return nil
 	}
-	return &KeeperHeldLodgersView{Lodgers: held}
+	return &KeeperHeldLodgersView{Lodgers: held, NightlyRate: keeper.NightlyRate}
 }
 
 // renderKeeperHeldLodgers writes the "## Already lodging here" section: each
-// co-present guest who already holds a room at the keeper's inn, the time left
-// on their stay, and an explicit "do not offer another" steer so the keeper
-// affirms instead of re-pitching off the "## Your inn" vacancy line. Content-
-// gated: a nil/empty view writes nothing. The tenure phrase is precomputed at
-// build time (TenureLabel) so this stays deterministic against the snapshot.
+// co-present guest who already holds a room at the keeper's inn and the time
+// left on their stay. A settled guest gets a "do not offer another" steer so the
+// keeper affirms instead of re-pitching off the "## Your inn" vacancy line; a
+// guest whose stay is ending (RenewalDue) gets a renewal steer instead — the
+// spelled-out scene_quote call when the keeper should post it (OfferRenewal),
+// otherwise an "await their answer" line while a renewal is in flight (LLM-46).
+// Content-gated: a nil/empty view writes nothing. The tenure phrase is
+// precomputed at build time (TenureLabel) so this stays deterministic against
+// the snapshot.
 func renderKeeperHeldLodgers(b *strings.Builder, v *KeeperHeldLodgersView) {
 	if v == nil || len(v.Lodgers) == 0 {
 		return
 	}
 	b.WriteString("## Already lodging here\n")
 	for _, l := range v.Lodgers {
-		fmt.Fprintf(b, "%s already holds a room here, %s. Do not offer another — if they ask about lodging, tell them they are already settled.\n",
-			sanitizeInline(l.Name), l.TenureLabel)
+		name := sanitizeInline(l.Name)
+		switch {
+		case l.OfferRenewal:
+			// The renewal rides the same scene_quote → take path as a fresh room
+			// (renderLodgingOffer), with the args spelled out — qty is the number
+			// of NIGHTS, not goods. AssignBedroomForLodger extends the existing
+			// grant on take, so no vacancy is needed.
+			fmt.Fprintf(b, "%s already holds a room here, %s — their stay is ending. If they wish to stay on, offer a renewal: call scene_quote with item \"nights_stay\", consume_now false, qty set to the number of nights, amount set to nights × %d coins (your nightly rate), and target_buyer %s. They are then free to take it or leave it.\n",
+				name, l.TenureLabel, v.NightlyRate, name)
+		case l.RenewalDue:
+			fmt.Fprintf(b, "%s already holds a room here, %s — their stay is ending and you have offered them a renewal. Await their answer rather than offering again.\n",
+				name, l.TenureLabel)
+		default:
+			fmt.Fprintf(b, "%s already holds a room here, %s. Do not offer another — if they ask about lodging, tell them they are already settled.\n",
+				name, l.TenureLabel)
+		}
 	}
 	b.WriteString("\n")
 }
