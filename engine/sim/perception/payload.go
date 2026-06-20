@@ -201,6 +201,21 @@ type Payload struct {
 	// co-present customer, or carries nothing to sell. Built by buildOfferableCustomers.
 	OfferableCustomers *OfferableCustomersView
 
+	// StandingQuotesFromMe lists the subject's OWN still-active scene-quotes —
+	// the offers-to-sell it posted as SELLER via sell/scene_quote — driving the
+	// "## Offers you've put out" section (renderStandingQuotesFromMe). It is the
+	// seller/scene_quote mirror of PendingOffersFromMe (the buyer/pay_with_item
+	// HOME-413 view): buildOfferableCustomers suppresses a re-pitch once a quote
+	// stands (sellerHasActiveQuoteToBuyer), but without this the seller has no
+	// record of WHAT it offered to WHOM, so a weak model re-posts the quote and
+	// confabulates a queue between co-present seekers even as its offer to the
+	// asker stands (LLM-45, the John Ellis two-room scene). Sourced from
+	// snap.Quotes (active quotes where SellerID == subject), both targeted and
+	// public; NOT a warrant, since a scene-quote warrants only the targeted
+	// buyer. nil (render content-gates) when the subject has no active quotes
+	// out. Ordering: by QuoteID ascending for determinism.
+	StandingQuotesFromMe []StandingQuoteView
+
 	// PendingDeliveriesFromMe lists open Orders where the subject is
 	// the seller — items they owe to a buyer/consumers from a previously
 	// accepted pay-with-item offer that hasn't been delivered yet.
@@ -450,6 +465,24 @@ type PendingOfferView struct {
 	Qty        int
 	Amount     int
 	PayItems   []sim.ItemKindQty
+}
+
+// StandingQuoteView is the seller-side projection of one of the subject's own
+// active scene-quotes — an offer-to-sell it posted via sell/scene_quote
+// (LLM-45). Renders in "## Offers you've put out" as a "you already offered X to
+// Y — await their answer, don't re-post" cue: the seller/scene_quote mirror of
+// the buyer/pay_with_item PendingOfferView (HOME-413). BuyerName is the
+// acquaintance-gated label (descriptorLabel), empty for a public (untargeted)
+// quote heard by the whole room. QuoteID is carried for trace parity (the
+// section's job is suppression, not driving a tool call, so it isn't rendered).
+// Item/Qty/Amount are the good, count, and coin price quoted. Built from
+// snap.Quotes; item kinds are sanitized inline at render time.
+type StandingQuoteView struct {
+	QuoteID   sim.QuoteID
+	BuyerName string
+	Item      sim.ItemKind
+	Qty       int
+	Amount    int
 }
 
 // ResolvedOfferView is one entry in RecentlyResolvedOffersFromMe — a

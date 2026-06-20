@@ -238,6 +238,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// same priority at the decision point.
 	renderPayOffers(&ephemeral, payOffers, nameOf, stockOf)
 	renderOfferableCustomers(&ephemeral, p.OfferableCustomers)
+	renderStandingQuotesFromMe(&ephemeral, p.StandingQuotesFromMe)
 	renderPendingDeliveriesFromMe(&ephemeral, p.PendingDeliveriesFromMe, p.LocalDateUTC)
 	renderPendingDeliveriesToMe(&ephemeral, p.PendingDeliveriesToMe, p.LocalDateUTC)
 	renderPendingOffersFromMe(&ephemeral, p.PendingOffersFromMe)
@@ -1587,6 +1588,53 @@ func renderPendingOffersFromMe(b *strings.Builder, offers []PendingOfferView) {
 			i+1, seller, o.Qty, item, payment, o.LedgerID)
 	}
 	b.WriteString("Bide for their answer; make no second offer for the same goods while this one stands. Should you think better of it, withdraw_pay recalls it.\n")
+}
+
+// renderStandingQuotesFromMe renders the seller-side "## Offers you've put out"
+// section — the subject's OWN active scene-quotes still awaiting a buyer's answer
+// (LLM-45). It is the seller/scene_quote mirror of renderPendingOffersFromMe (the
+// buyer/pay_with_item "## Offers you have standing"): there the buyer sees offers
+// it staked; here the seller sees the wares it has offered. The job is the same —
+// give cross-tick memory so the seller neither re-posts a standing quote (the
+// already_quoted thrash) nor invents a queue between two co-present askers because
+// it can't recall whom it already served (the John Ellis two-room scene). One line
+// per quote, targeted or public; the closing line is an explicit "await, don't
+// re-offer".
+//
+// Distinct header from the buyer-side "## Offers you have standing": a keeper can
+// hold both at once — its own quotes here AND pending pay offers it must answer
+// under "## Offers awaiting your decision". Uncapped, like its buyer twin:
+// standing quotes are bounded by the seller's own tool calls, and every open offer
+// must stay visible so none gets re-posted. BuyerName is acquaintance-gated at
+// build time; item kinds sanitized inline. Price reuses formatOfferPayment (coins
+// only — a scene-quote names a coin price; any barter leg rides the buyer's
+// pay_with_item) for the shape the other offer sections use.
+func renderStandingQuotesFromMe(b *strings.Builder, quotes []StandingQuoteView) {
+	if len(quotes) == 0 {
+		return
+	}
+	b.WriteString("## Offers you've put out\n")
+	for i, q := range quotes {
+		item := sanitizeInline(string(q.Item))
+		if item == "" {
+			item = "item"
+		}
+		price := formatOfferPayment(q.Amount, nil)
+		if q.BuyerName != "" {
+			fmt.Fprintf(b, "%d. You have offered %s %d %s for %s — they have yet to answer.\n",
+				i+1, sanitizeInline(q.BuyerName), q.Qty, item, price)
+			continue
+		}
+		fmt.Fprintf(b, "%d. You have offered %d %s for %s to anyone here — none has yet taken it.\n",
+			i+1, q.Qty, item, price)
+	}
+	// Steer against re-posting a STANDING offer (the already_quoted thrash), not
+	// against making a fresh offer to a different buyer — a keeper with rooms or
+	// stock to spare can legitimately offer the same kind to a second seeker
+	// (the two-room scene this fixes). So the close names the listed offers, not
+	// "the same goods" (which the buyer-side close uses, where double-buying a
+	// single need IS wrong).
+	b.WriteString("Bide for an answer; an offer listed above already stands — do not post it again.\n")
 }
 
 // renderRecentlyResolvedOffersFromMe renders the buyer-side "## Recently settled
