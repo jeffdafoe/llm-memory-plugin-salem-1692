@@ -2,6 +2,7 @@ package cascade
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"math/rand"
 	"sort"
@@ -209,6 +210,61 @@ func runScheduledRoute(w *sim.World, attrSlug string, now time.Time, build func(
 	log.Printf("cascade/npc_route: %s boundary fired (start=%v, boundary=%s) — %d candidate(s), %d stop(s), replaced=%v",
 		attrSlug, isStart, boundary.Format(time.RFC3339), len(candidates), started.Stops, started.Replaced)
 	sim.StampRouteBoundary(w, attrSlug, boundary)
+}
+
+// ForceRouteCommand returns a Command that dispatches a schedule-driven NPC
+// route (town_crier / washerwoman) IMMEDIATELY, bypassing the schedule-window
+// boundary gate runScheduledRoute honors. It is the operator lever behind the
+// umbilical POST /route endpoint: reproduce a crier tour (or laundry run) on
+// demand instead of waiting for the next 9am/6pm boundary or restarting the
+// engine.
+//
+// Unlike runScheduledRoute it deliberately does NOT stamp the route boundary —
+// a forced dispatch is an extra, out-of-band tour and must not consume the real
+// schedule boundary (consuming it would suppress the next legitimate one).
+// `start` picks the washerwoman's direction (true = hang washing out, false =
+// bring it in); it is ignored for the crier, whose board candidates are
+// direction-agnostic. The Fn returns the StartNPCRouteResult so the caller can
+// report the stop count; it errors when no actor carries attrSlug or attrSlug
+// is not a schedule-driven route.
+//
+// MUST run on the world goroutine (issue it via SendContext) — it reads world
+// state to build candidates and dispatches the first MoveActor inline, exactly
+// like runScheduledRoute.
+func ForceRouteCommand(attrSlug string, start bool) sim.Command {
+	return sim.Command{
+		Fn: func(w *sim.World) (any, error) {
+			// Validate the attr BEFORE the carrier lookup so the error is
+			// deterministic regardless of world contents — an unsupported attr
+			// must report "not schedule-driven", not "no actor carries…".
+			switch attrSlug {
+			case sim.AttrTownCrier, sim.AttrWasherwoman:
+			default:
+				return nil, fmt.Errorf("%q is not a schedule-driven route attribute", attrSlug)
+			}
+			actor := findActorWithAttribute(w, attrSlug)
+			if actor == nil {
+				return nil, fmt.Errorf("no actor carries the %q attribute", attrSlug)
+			}
+			now := time.Now().UTC()
+			rng := rand.New(rand.NewSource(now.UnixNano()))
+			var candidates []sim.RouteCandidate
+			switch attrSlug {
+			case sim.AttrTownCrier:
+				candidates = buildNoticeboardCandidates(w, rng)
+			case sim.AttrWasherwoman:
+				candidates = buildLaundryCandidates(w, start, rng)
+			}
+			res, err := sim.StartNPCRoute(actor.ID, attrSlug, homeDestinationFor(actor), candidates, now).Fn(w)
+			if err != nil {
+				return nil, err
+			}
+			started, _ := res.(sim.StartNPCRouteResult)
+			log.Printf("cascade/npc_route: FORCED %s route (actor %q) — %d candidate(s), %d stop(s), replaced=%v",
+				attrSlug, actor.ID, len(candidates), started.Stops, started.Replaced)
+			return started, nil
+		},
+	}
 }
 
 // handlePhaseAppliedLamplighter starts the lamplighter route on each

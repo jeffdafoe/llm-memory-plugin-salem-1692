@@ -743,6 +743,80 @@ func (s *Server) handleUmbilicalSetPosition(w http.ResponseWriter, r *http.Reque
 	})
 }
 
+// umbilicalRouteRequest is the POST /api/village/umbilical/route body: which
+// schedule-driven route to force NOW. Attr is the carrier attribute
+// (town_crier | washerwoman). Start picks the washerwoman's direction (true =
+// take washing out, false = bring it in); ignored for the crier.
+type umbilicalRouteRequest struct {
+	Attr  string `json:"attr"`
+	Start bool   `json:"start,omitempty"`
+}
+
+// umbilicalRouteResponse reports the dispatched route: the carrier actor and how
+// many stops the route built (0 = nothing reachable — itself the diagnostic
+// shape that says the route fired but had no walkable destinations).
+type umbilicalRouteResponse struct {
+	Attr     string `json:"attr"`
+	NPCID    string `json:"npc_id"`
+	Stops    int    `json:"stops"`
+	Replaced bool   `json:"replaced"`
+}
+
+// handleUmbilicalRoute forces a schedule-driven NPC route (town crier /
+// washerwoman) to dispatch immediately, bypassing the 9am/6pm schedule-window
+// gate the route ticker normally honors. It exists to reproduce a crier tour on
+// demand — instead of waiting for a boundary or restarting the engine — so the
+// "crier did nothing / the boards didn't update" symptom can be observed live.
+// The forced dispatch does NOT consume the real schedule boundary (the cascade
+// forcer skips the stamp), so it can't suppress the next legitimate tour.
+//
+// The cascade-owned forcer is injected (SetRouteForcer) so httpapi stays free of
+// the cascade import. 400 unknown attr; 503 when the forcer is not wired on this
+// deploy; 422 on a command error (e.g. no actor carries the attribute); 200 with
+// the dispatched route's stop count.
+func (s *Server) handleUmbilicalRoute(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	if user == nil {
+		writeAuthError(w, "invalid")
+		return
+	}
+	var req umbilicalRouteRequest
+	if !decodeUmbilicalBody(w, r, &req) {
+		return
+	}
+	if req.Attr != sim.AttrTownCrier && req.Attr != sim.AttrWasherwoman {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("attr must be %q or %q", sim.AttrTownCrier, sim.AttrWasherwoman))
+		return
+	}
+	if s.routeForcer == nil {
+		writeError(w, http.StatusServiceUnavailable, "route forcing is not wired on this deploy")
+		return
+	}
+
+	// Audit the attempt up front so a later rejection is still on the record.
+	auditUmbilical(user.Username, "route", fmt.Sprintf("attr=%s start=%v", req.Attr, req.Start))
+
+	res, err := s.world.SendContext(r.Context(), s.routeForcer(req.Attr, req.Start))
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	out, ok := res.(sim.StartNPCRouteResult)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "unexpected route result")
+		return
+	}
+	writeJSON(w, umbilicalRouteResponse{
+		Attr:     req.Attr,
+		NPCID:    string(out.NPCID),
+		Stops:    out.Stops,
+		Replaced: out.Replaced,
+	})
+}
+
 // validateNeedValues converts the request need map to canonical NeedKeys with
 // range-checked values: each key must be in the canonical needs registry
 // (sim.FindNeed) and each value in [0, NeedMax], else a 400-worthy error. An
