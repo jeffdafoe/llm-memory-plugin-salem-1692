@@ -10,9 +10,9 @@ import (
 // backstop (transferOrderGoods). "Held" is read from the buyer's durable
 // RoomAccess grants (NOT w.Orders, which drops delivered lodging orders at the
 // prune + the restart-load filter), scoped to the seller's own private rooms; the
-// helper advances a same-night booking to the first un-held night so a renewal
-// can't mint a second delivered nights_stay for a held night and wedge
-// checkpointing (the Ezekiel↔John incident, 2026-06-19).
+// helper advances a same-night booking PAST the buyer's latest active lodging
+// coverage at this seller, so a renewal can't mint a second delivered nights_stay
+// for a held night and wedge checkpointing (the Ezekiel↔John incident, 2026-06-19).
 
 func ledgerGrant(roomID RoomID, expiresAt time.Time, active bool) *RoomAccess {
 	exp := expiresAt
