@@ -84,6 +84,53 @@ func resolveOrderReadyBy(w *World, kind ItemKind, parentID LedgerID, days int, a
 	return today.AddDate(0, 0, days), nil
 }
 
+// advancePastHeldLodging advances a lodging booking's ready_by to the first
+// night the buyer does NOT already hold from this seller, so a "renewal" extends
+// the stay by a night instead of re-booking a night already held (LLM-47). A
+// renew for tonight when the buyer already has tonight would otherwise mint a
+// second nights_stay for the same (buyer, seller, ready_by); delivering it
+// violates the pay_ledger_lodging_active_once unique index and wedges every
+// checkpoint (the 2026-06-19 Ezekiel↔John Ellis incident).
+//
+// Coverage is read from w.PayLedger: each accepted lodging entry from this seller
+// to this buyer covers [ReadyBy, ReadyBy+Qty) nights. The walk starts at the
+// requested night and returns the first night not in that covered set; a
+// requested night already past all coverage is returned unchanged (so an explicit
+// future booking is never pushed further out). excludeID skips one entry — the
+// one being delivered, so it doesn't count itself; pass 0 at accept time, before
+// the new entry is staked. MUST run on the world goroutine (reads w.PayLedger).
+func advancePastHeldLodging(w *World, buyerID, sellerID ActorID, readyBy time.Time, excludeID LedgerID) time.Time {
+	covered := make(map[string]struct{})
+	for id, e := range w.PayLedger {
+		if e == nil || id == excludeID || e.State != PayLedgerStateAccepted {
+			continue
+		}
+		if e.BuyerID != buyerID || e.SellerID != sellerID || e.ReadyBy.IsZero() {
+			continue
+		}
+		if !itemHasCapability(w, e.ItemKind, "lodging") {
+			continue
+		}
+		nights := e.Qty
+		if nights < 1 {
+			nights = 1
+		}
+		for n := 0; n < nights; n++ {
+			covered[e.ReadyBy.AddDate(0, 0, n).Format("2006-01-02")] = struct{}{}
+		}
+	}
+	// At most len(covered) nights are occupied, so walking len(covered)+1
+	// consecutive nights must reach a free one — a tight, guaranteed bound.
+	out := readyBy
+	for i := 0; i <= len(covered); i++ {
+		if _, held := covered[out.Format("2006-01-02")]; !held {
+			return out
+		}
+		out = out.AddDate(0, 0, 1)
+	}
+	return out
+}
+
 // createOrderForPayWithItem mints a new Order for a !ConsumeNow
 // pay-with-item acceptance. Called from commitPayTransfer on the
 // world goroutine. Returns the new OrderID.
@@ -358,6 +405,19 @@ func transferOrderGoods(w *World, o *Order, seller *Actor, consumers []*Actor) e
 		}
 		if seller.WorkStructureID == "" {
 			return fmt.Errorf("order %d: keeper %q has no work structure to lodge in", o.ID, seller.ID)
+		}
+		// LLM-47 backstop: never deliver a nights_stay onto a night the buyer
+		// already holds from this seller — a second delivered (buyer, seller,
+		// ready_by) row violates pay_ledger_lodging_active_once and wedges every
+		// checkpoint. The accept-time advance (advancePastHeldLodging in
+		// PayWithItem) normally prevents this, so in the common path the night is
+		// unchanged; this is defense-in-depth against any other path that mints a
+		// same-night booking. excludeID o.LedgerID so the order doesn't count
+		// itself.
+		if adjusted := advancePastHeldLodging(w, o.BuyerID, o.SellerID, o.ReadyBy, o.LedgerID); !adjusted.Equal(o.ReadyBy) {
+			log.Printf("sim/lodging: order %d ready_by advanced %s → %s to avoid double-booking a night %s already holds at %s",
+				o.ID, o.ReadyBy.Format("2006-01-02"), adjusted.Format("2006-01-02"), o.BuyerID, seller.DisplayName)
+			o.ReadyBy = adjusted
 		}
 		// The grant runs for o.Qty nights from the booked date (ReadyBy), not
 		// from the check-in instant — an advance booking checked in on its
