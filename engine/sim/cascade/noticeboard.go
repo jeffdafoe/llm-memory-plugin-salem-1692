@@ -472,9 +472,13 @@ func finishCrierBoardStop(w *sim.World, route *sim.NPCRoute, stopIdx int, object
 	if strings.TrimSpace(text) == "" {
 		// Snapped down to the empty board (a lone authored notice with no 1-slip
 		// frame): post the empty variant, clear it, say nothing, advance — the
-		// no-news-day shape.
-		sim.SetVillageObjectState(objectID, matchState).Fn(w)
-		sim.ClearNoticeboardContent(objectID, matchState, time.Now()).Fn(w)
+		// no-news-day shape. Guard on a real state: noticeboardStateForCapacity +
+		// the obj fallback above can both miss on a missing/misconfigured object,
+		// and posting/clearing against "" would be a bogus mutation.
+		if matchState != "" {
+			sim.SetVillageObjectState(objectID, matchState).Fn(w)
+			sim.ClearNoticeboardContent(objectID, matchState, time.Now()).Fn(w)
+		}
 		advanceCrierWalk(w, crierID, objectID)
 		return
 	}

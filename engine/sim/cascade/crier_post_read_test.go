@@ -27,7 +27,22 @@ var crierBoardWalkTo = sim.Position{X: sim.PadX + 30, Y: sim.PadY + 21}
 // (empty=0, one=1, two=2, three=3), one board object, and a town-crier actor
 // standing at the board. The new crier tests install routes directly, so this
 // fixture deliberately does NOT wire RegisterNPCRoutes/RegisterNoticeboard.
+// defaultCrierBoardStates is the contiguous capacity ladder (empty=0,1,2,3) the
+// original crier tests assert against.
+func defaultCrierBoardStates() []sim.AssetState {
+	return []sim.AssetState{
+		{ID: 50, State: "empty", Tags: []string{"rotatable", "notice-board"}},
+		{ID: 51, State: "one", Tags: []string{"rotatable", "notice-board", "content-capacity-1"}},
+		{ID: 52, State: "two", Tags: []string{"rotatable", "notice-board", "content-capacity-2"}},
+		{ID: 53, State: "three", Tags: []string{"rotatable", "notice-board", "content-capacity-3"}},
+	}
+}
+
 func buildCrierBoardWorld(t *testing.T) *sim.World {
+	return buildCrierBoardWorldWithBoardStates(t, defaultCrierBoardStates())
+}
+
+func buildCrierBoardWorldWithBoardStates(t *testing.T, boardStates []sim.AssetState) *sim.World {
 	t.Helper()
 	repo, handles := mem.NewRepository()
 	handles.Terrain.Seed(allGrassTerrain())
@@ -40,12 +55,7 @@ func buildCrierBoardWorld(t *testing.T) *sim.World {
 		"notice-board": {
 			ID: "notice-board", Category: "prop", DefaultState: "empty",
 			RotationAlgo: sim.RotationAlgoRandomPerObject,
-			States: []sim.AssetState{
-				{ID: 50, State: "empty", Tags: []string{"rotatable", "notice-board"}},
-				{ID: 51, State: "one", Tags: []string{"rotatable", "notice-board", "content-capacity-1"}},
-				{ID: 52, State: "two", Tags: []string{"rotatable", "notice-board", "content-capacity-2"}},
-				{ID: 53, State: "three", Tags: []string{"rotatable", "notice-board", "content-capacity-3"}},
-			},
+			States: boardStates,
 		},
 	})
 	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
@@ -307,5 +317,60 @@ func TestCrierAdvancesAfterReading(t *testing.T) {
 			t.Fatal("route did not advance after the crier finished reading")
 		case <-time.After(3 * time.Millisecond):
 		}
+	}
+}
+
+// TestCrierLoneNoticeWithNoOneSlipFrameSnapsToEmpty (LLM-49): on a board whose
+// sheet has no 1-slip frame {0,2,3}, an authoring round that yields a single
+// notice snaps DOWN to the empty board — prior content cleared, no speech,
+// route advances — rather than drawing a slip count that disagrees with the
+// lone notice. She still authored (one LLM call), unlike a no-news day.
+func TestCrierLoneNoticeWithNoOneSlipFrameSnapsToEmpty(t *testing.T) {
+	w := buildCrierBoardWorldWithBoardStates(t, []sim.AssetState{
+		{ID: 50, State: "empty", Tags: []string{"rotatable", "notice-board"}},
+		{ID: 52, State: "two", Tags: []string{"rotatable", "notice-board", "content-capacity-2"}},
+		{ID: 53, State: "three", Tags: []string{"rotatable", "notice-board", "content-capacity-3"}},
+	})
+	// A prior posting the lone-notice snap must clear.
+	w.NoticeboardContent = map[sim.VillageObjectID]*sim.NoticeboardContent{
+		"notice": {Text: "Old news.", PostedAt: time.Now(), AtState: "empty"},
+	}
+	installCrierRoute(w, "three") // target 3 slots, but the model yields only 1
+	spokeRec := &cascadeSpokeRecorder{}
+	w.Subscribe(sim.SubscriberFunc(spokeRec.handle))
+	cancel := runRouteCascadeWorld(t, w)
+	defer cancel()
+
+	client := llm.NewFakeClient(llm.ScriptedTurn{Response: llm.Response{Content: "A lone proclamation."}})
+	crierArrives(t, w, client)
+
+	// Snap-to-empty advances the route inline (no spiel dwell); wait for it to
+	// leave the board stop.
+	deadline := time.After(2 * time.Second)
+	advanced := false
+	for !advanced {
+		switch routePhaseOf(t, w, "crier") {
+		case string(sim.RoutePhaseReturning), "":
+			advanced = true
+		default:
+			select {
+			case <-deadline:
+				t.Fatalf("route did not advance off the lone-notice stop (phase %q)", routePhaseOf(t, w, "crier"))
+			case <-time.After(3 * time.Millisecond):
+			}
+		}
+	}
+
+	if st := boardState(t, w, "notice"); st != "empty" {
+		t.Errorf("board state = %q, want empty (lone notice with no 1-slip frame snaps to empty)", st)
+	}
+	if c := readBoardContent(t, w, "notice"); c != nil && strings.TrimSpace(c.Text) != "" {
+		t.Errorf("content = %q, want cleared", c.Text)
+	}
+	if spokes := spokeRec.collect(); len(spokes) != 0 {
+		t.Errorf("voiced %d notice(s), want 0 (no speech on the empty snap)", len(spokes))
+	}
+	if calls := client.CallCount(); calls != 1 {
+		t.Errorf("client.CallCount = %d, want 1 (she authored, then snapped to empty)", calls)
 	}
 }
