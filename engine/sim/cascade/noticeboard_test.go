@@ -67,6 +67,66 @@ func runNoticeboardCascadeWorld(t *testing.T, w *sim.World) func() {
 	return func() { cancel(); <-done }
 }
 
+// buildGappedCapacityBoardWorld seeds a notice board whose content-capacity
+// frames skip 1 — the live Notice Board's actual slip set {0,2,3,4,5} (LLM-49,
+// the sheet has no single-slip art). Used to exercise noticeboardStateForCapacity's
+// snap-DOWN behaviour for counts with no exact frame.
+func buildGappedCapacityBoardWorld(t *testing.T) *sim.World {
+	t.Helper()
+	repo, handles := mem.NewRepository()
+	handles.Assets.Seed(map[sim.AssetID]*sim.Asset{
+		"notice-board": {
+			ID: "notice-board", Category: "prop", DefaultState: "empty",
+			RotationAlgo: sim.RotationAlgoDeterministic,
+			States: []sim.AssetState{
+				{ID: 60, State: "empty", Tags: []string{"rotatable", "notice-board"}},                      // capacity 0
+				{ID: 62, State: "two", Tags: []string{"rotatable", "notice-board", "content-capacity-2"}},   // 2
+				{ID: 63, State: "three", Tags: []string{"rotatable", "notice-board", "content-capacity-3"}}, // 3
+				{ID: 64, State: "four", Tags: []string{"rotatable", "notice-board", "content-capacity-4"}},  // 4
+				{ID: 65, State: "five", Tags: []string{"rotatable", "notice-board", "content-capacity-5"}},  // 5
+			},
+		},
+	})
+	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
+		"board": {ID: "board", AssetID: "notice-board", CurrentState: "empty", Pos: sim.WorldPos{X: 320, Y: 320}},
+	})
+	w, err := sim.LoadWorld(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	return w
+}
+
+// TestNoticeboardStateForCapacity_SnapsDownToAvailableFrame is the LLM-49 core:
+// with a sheet that has no 1-slip frame, a requested count resolves to the
+// largest available capacity <= it (so slips drawn never exceed notices voiced),
+// a lone notice falls to the empty board, and an over-large count clamps to the
+// fullest frame.
+func TestNoticeboardStateForCapacity_SnapsDownToAvailableFrame(t *testing.T) {
+	w := buildGappedCapacityBoardWorld(t)
+	cases := []struct {
+		want      int
+		wantState string
+		wantCap   int
+	}{
+		{0, "empty", 0},
+		{1, "empty", 0}, // no 1-slip frame -> snap down to the empty board
+		{2, "two", 2},
+		{3, "three", 3},
+		{4, "four", 4},
+		{5, "five", 5},
+		{6, "five", 5}, // over the fullest frame -> clamp to it
+		{9, "five", 5},
+	}
+	for _, c := range cases {
+		gotState, gotCap := noticeboardStateForCapacity(w, "board", c.want)
+		if gotState != c.wantState || gotCap != c.wantCap {
+			t.Errorf("noticeboardStateForCapacity(want=%d) = (%q, %d), want (%q, %d)",
+				c.want, gotState, gotCap, c.wantState, c.wantCap)
+		}
+	}
+}
+
 // TestRegisterNoticeboard_NilWorldPanics is a wiring guard regression.
 func TestRegisterNoticeboard_NilWorldPanics(t *testing.T) {
 	defer func() {
