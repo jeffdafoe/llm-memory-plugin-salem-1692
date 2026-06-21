@@ -61,16 +61,29 @@ INSERT INTO llm58_wild (id) VALUES
     ('019d98b9-0ad3-725a-9aaa-cb11ef87a152'),
     ('019d98b9-1bb9-77e9-ae7b-6b061aa64e1f');
 
+-- Fail loud if an id set was accidentally truncated when editing this file.
+DO $$
+BEGIN
+    IF (SELECT count(*) FROM llm58_clusters) <> 18 THEN
+        RAISE EXCEPTION 'LLM-58 down: cluster id set has %, expected 18', (SELECT count(*) FROM llm58_clusters);
+    END IF;
+    IF (SELECT count(*) FROM llm58_westblue) <> 14 THEN
+        RAISE EXCEPTION 'LLM-58 down: westblue id set has %, expected 14', (SELECT count(*) FROM llm58_westblue);
+    END IF;
+    IF (SELECT count(*) FROM llm58_wild) <> 8 THEN
+        RAISE EXCEPTION 'LLM-58 down: wild id set has %, expected 8', (SELECT count(*) FROM llm58_wild);
+    END IF;
+END $$;
+
 -- 5. Undo the far-SE wild blueberry bushes: drop the wild refresh rows (matched
 --    by id + exact migrated shape, so a later-added row is never collaterally
 --    removed) and return them to the unfruited 'default' state.
+-- ids are already pinned, so match by id + attribute + gather_item (not the full
+-- structural shape) -- a later tweak to amount/period must not strand the row and
+-- leave a dangling 'blueberries' reference when the item kind is dropped below.
 DELETE FROM object_refresh
 WHERE object_id IN (SELECT id FROM llm58_wild)
   AND attribute = 'hunger'
-  AND amount = -8
-  AND max_quantity = 3
-  AND refresh_mode = 'periodic'
-  AND refresh_period_hours = 6
   AND gather_item = 'blueberries';
 
 UPDATE village_object
@@ -83,10 +96,6 @@ WHERE id IN (SELECT id FROM llm58_wild);
 DELETE FROM object_refresh
 WHERE object_id IN (SELECT id FROM llm58_clusters UNION SELECT id FROM llm58_westblue)
   AND attribute = 'hunger'
-  AND amount = 0
-  AND max_quantity = 10
-  AND refresh_mode = 'periodic'
-  AND refresh_period_hours = 168
   AND gather_item = 'blueberries';
 
 UPDATE village_object
@@ -128,6 +137,16 @@ SET state = 'default'
 WHERE asset_id = '630909ca-df4f-43ac-9fc4-5192ca44da73'
   AND state = 'berries'
   AND NOT EXISTS (
+      SELECT 1 FROM asset_state
+      WHERE asset_id = '630909ca-df4f-43ac-9fc4-5192ca44da73' AND state = 'default'
+  );
+
+-- Converge: if 'default' now exists, drop any leftover 'berries' so the asset
+-- ends as exactly its original single 'default' state.
+DELETE FROM asset_state
+WHERE asset_id = '630909ca-df4f-43ac-9fc4-5192ca44da73'
+  AND state = 'berries'
+  AND EXISTS (
       SELECT 1 FROM asset_state
       WHERE asset_id = '630909ca-df4f-43ac-9fc4-5192ca44da73' AND state = 'default'
   );

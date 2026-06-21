@@ -80,6 +80,29 @@ INSERT INTO llm58_wild (id) VALUES
     ('019d98b9-0ad3-725a-9aaa-cb11ef87a152'),
     ('019d98b9-1bb9-77e9-ae7b-6b061aa64e1f');
 
+-- Fail loud if a pinned id is stale/deleted -- otherwise a missing id would just
+-- shrink the migrated set silently. Existence counts only (not pre-migration
+-- asset split), so the assertion stays rerun-safe: the objects still exist after
+-- a prior apply even though their asset/owner changed.
+DO $$
+DECLARE n int;
+BEGIN
+    IF (SELECT count(*) FROM llm58_farm) <> 32 THEN
+        RAISE EXCEPTION 'LLM-58: farm id set has %, expected 32', (SELECT count(*) FROM llm58_farm);
+    END IF;
+    IF (SELECT count(*) FROM llm58_wild) <> 8 THEN
+        RAISE EXCEPTION 'LLM-58: wild id set has %, expected 8', (SELECT count(*) FROM llm58_wild);
+    END IF;
+    SELECT count(*) INTO n FROM village_object WHERE id IN (SELECT id FROM llm58_farm);
+    IF n <> 32 THEN
+        RAISE EXCEPTION 'LLM-58: expected 32 farm bushes present, found %', n;
+    END IF;
+    SELECT count(*) INTO n FROM village_object WHERE id IN (SELECT id FROM llm58_wild);
+    IF n <> 8 THEN
+        RAISE EXCEPTION 'LLM-58: expected 8 wild bushes present, found %', n;
+    END IF;
+END $$;
+
 -- 1. Blueberry asset (630909ca) -> 2-state bush.
 --    Re-tag its lone 'default' state (the fruited blue-berry sprite) as
 --    'berries', and add a 'bare' state pointing at the Cluster's sprite (the
@@ -103,6 +126,16 @@ WHERE NOT EXISTS (
     SELECT 1 FROM asset_state
     WHERE asset_id = '630909ca-df4f-43ac-9fc4-5192ca44da73' AND state = 'bare'
 );
+
+-- Converge: if 'berries' now exists, drop any leftover 'default' from a prior
+-- partial run so the asset ends as exactly {berries, bare}.
+DELETE FROM asset_state
+WHERE asset_id = '630909ca-df4f-43ac-9fc4-5192ca44da73'
+  AND state = 'default'
+  AND EXISTS (
+      SELECT 1 FROM asset_state
+      WHERE asset_id = '630909ca-df4f-43ac-9fc4-5192ca44da73' AND state = 'berries'
+  );
 
 UPDATE asset
 SET default_state = 'berries'
