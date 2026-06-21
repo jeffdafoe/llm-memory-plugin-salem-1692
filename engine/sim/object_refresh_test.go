@@ -19,6 +19,8 @@ func tp(t time.Time) *time.Time { return &t }
 //     continuous regen 24h, dwell config (thirst -2 every 30 min)
 //   - oak:  multi-attribute (tiredness, hunger), infinite supply
 //   - dry_bush: hunger refresh, depleted (available=0)
+//   - sell_bush: yield-only gather (amount=0, gather_item=berries), finite
+//     supply — the forage-to-sell row (LLM-24)
 //
 // Plus one actor at the world origin with mid-range needs.
 func buildRefreshTestWorld(t *testing.T) (*sim.World, context.CancelFunc) {
@@ -76,6 +78,23 @@ func buildRefreshTestWorld(t *testing.T) (*sim.World, context.CancelFunc) {
 					MaxQuantity:        ip(4),
 					RefreshMode:        sim.RefreshModePeriodic,
 					RefreshPeriodHours: ip(8),
+				},
+			},
+		},
+		"sell_bush": {
+			ID: "sell_bush", DisplayName: "Berry Patch", AssetID: "bush-berries", CurrentState: "default",
+			LoiterOffsetX: &zero, LoiterOffsetY: &zero,
+			Pos: sim.WorldPos{X: 1500, Y: 1500},
+			Refreshes: []*sim.ObjectRefresh{
+				{
+					Attribute:          "hunger",
+					Amount:             0, // yield-only: forage-to-sell, no consume-in-place need
+					AvailableQuantity:  ip(3),
+					MaxQuantity:        ip(3), // full at seed → continuous regen skips it (keeps the regen-count tests stable)
+					RefreshMode:        sim.RefreshModeContinuous,
+					RefreshPeriodHours: ip(6),
+					LastRefreshAt:      tp(time.Now().UTC()),
+					GatherItem:         "berries",
 				},
 			},
 		},
@@ -222,6 +241,120 @@ func TestApplyObjectRefreshAtArrivalDepletedSkipped(t *testing.T) {
 	snap := w.Published().Actors["hannah"]
 	if snap.Needs["hunger"] != 10 {
 		t.Errorf("hunger changed: %d, want 10 (unchanged)", snap.Needs["hunger"])
+	}
+}
+
+// TestApplyObjectRefreshAtArrivalYieldOnlySkipped covers the forage-to-sell row
+// (LLM-24): arriving at a yield-only bush (amount=0, gatherable) applies NO
+// need, stamps NO dwell credit, and does NOT decrement the gather supply — the
+// stock is reserved for Gather (and refilled by the regen tick), not consumed
+// in place.
+func TestApplyObjectRefreshAtArrivalYieldOnlySkipped(t *testing.T) {
+	w, cancel := buildRefreshTestWorld(t)
+	defer cancel()
+
+	placeAtObjectPin(t, w, "hannah", "sell_bush")
+	res, err := w.Send(sim.ApplyObjectRefreshAtArrival("hannah"))
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	r := res.(sim.ArrivalRefreshResult)
+	if len(r.Hits) != 0 {
+		t.Errorf("yield-only bush produced hits: %+v, want empty", r.Hits)
+	}
+
+	snap := w.Published().Actors["hannah"]
+	if snap.Needs["hunger"] != 10 {
+		t.Errorf("hunger changed: %d, want 10 (unchanged — no consume-in-place)", snap.Needs["hunger"])
+	}
+
+	// Supply untouched — arrival must not draw down a forage-to-sell row.
+	avail, _ := w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			return *world.VillageObjects["sell_bush"].Refreshes[0].AvailableQuantity, nil
+		},
+	})
+	if avail.(int) != 3 {
+		t.Errorf("sell_bush supply = %d, want 3 (unchanged on arrival)", avail.(int))
+	}
+
+	// No dwell credit — a yield-only row never stamps the eat-to-recover dwell.
+	dwell, _ := w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			key := sim.DwellCreditKey{ObjectID: "sell_bush", Attribute: "hunger", Source: sim.DwellSourceObject}
+			return world.Actors["hannah"].DwellCredits[key], nil
+		},
+	})
+	if dwell.(*sim.DwellCredit) != nil {
+		t.Errorf("yield-only bush stamped a dwell credit: %+v, want none", dwell)
+	}
+}
+
+// TestObjectRefreshIsYieldOnly locks the mode readout (LLM-24): amount=0 +
+// gatherable is yield-only; a need-bearing gather row (amount<0) is not; an
+// amount=0 row that isn't gatherable is not (it's a misconfiguration).
+func TestObjectRefreshIsYieldOnly(t *testing.T) {
+	cases := []struct {
+		name string
+		row  sim.ObjectRefresh
+		want bool
+	}{
+		{"forage-to-sell", sim.ObjectRefresh{Attribute: "hunger", Amount: 0, GatherItem: "berries"}, true},
+		{"eat+pick", sim.ObjectRefresh{Attribute: "hunger", Amount: -8, GatherItem: "berries"}, false},
+		{"zero-amount non-gather", sim.ObjectRefresh{Attribute: "hunger", Amount: 0}, false},
+		{"need-only", sim.ObjectRefresh{Attribute: "hunger", Amount: -8}, false},
+	}
+	for _, c := range cases {
+		if got := c.row.IsYieldOnly(); got != c.want {
+			t.Errorf("%s: IsYieldOnly() = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestValidateObjectRefreshesYieldOnly covers the amount-rule relaxation
+// (LLM-24): amount=0 is valid only on a gather source with no dwell; amount>0
+// is always invalid; eat+pick (amount<0) stays valid.
+func TestValidateObjectRefreshesYieldOnly(t *testing.T) {
+	ip := func(v int) *int { return &v }
+	cases := []struct {
+		name    string
+		rows    []*sim.ObjectRefresh
+		wantErr bool
+	}{
+		{
+			name:    "yield-only valid",
+			rows:    []*sim.ObjectRefresh{{Attribute: "hunger", Amount: 0, GatherItem: "berries"}},
+			wantErr: false,
+		},
+		{
+			name:    "eat+pick valid",
+			rows:    []*sim.ObjectRefresh{{Attribute: "hunger", Amount: -8, GatherItem: "berries"}},
+			wantErr: false,
+		},
+		{
+			name:    "zero amount without gather rejected",
+			rows:    []*sim.ObjectRefresh{{Attribute: "hunger", Amount: 0}},
+			wantErr: true,
+		},
+		{
+			name:    "positive amount rejected",
+			rows:    []*sim.ObjectRefresh{{Attribute: "hunger", Amount: 4, GatherItem: "berries"}},
+			wantErr: true,
+		},
+		{
+			name: "yield-only with dwell rejected",
+			rows: []*sim.ObjectRefresh{{
+				Attribute: "hunger", Amount: 0, GatherItem: "berries",
+				DwellDelta: ip(-2), DwellPeriodMinutes: ip(30),
+			}},
+			wantErr: true,
+		},
+	}
+	for _, c := range cases {
+		err := sim.ValidateObjectRefreshes(c.rows)
+		if (err != nil) != c.wantErr {
+			t.Errorf("%s: err = %v, wantErr = %v", c.name, err, c.wantErr)
+		}
 	}
 }
 

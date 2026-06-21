@@ -17,6 +17,9 @@ import (
 //   - bush: hunger refresh, FINITE supply (available=2 of max=4), continuous
 //     regen, GatherItem="berries" (bounded — depletes and refills)
 //   - dry_bush: hunger refresh, FINITE depleted (available=0), GatherItem="berries"
+//   - sell_bush: YIELD-ONLY (amount=0) FINITE (available=2 of max=4),
+//     GatherItem="berries" — the forage-to-sell row (LLM-24): harvestable with
+//     no consume-in-place need
 //   - oak: hunger refresh, infinite, NO GatherItem (consume-in-place only —
 //     proves a refresh row without GatherItem isn't gatherable)
 //   - bench: no refreshes (decorative — proves resolve-then-check)
@@ -90,6 +93,23 @@ func buildGatherTestWorld(t *testing.T) (*sim.World, context.CancelFunc) {
 					MaxQuantity:        ip(4),
 					RefreshMode:        sim.RefreshModePeriodic,
 					RefreshPeriodHours: ip(8),
+					GatherItem:         "berries",
+				},
+			},
+		},
+		"sell_bush": {
+			ID: "sell_bush", DisplayName: "Berry Patch", AssetID: "bush-berries", CurrentState: "default",
+			LoiterOffsetX: &zero, LoiterOffsetY: &zero,
+			Pos: sim.WorldPos{X: 1250, Y: 1250},
+			Refreshes: []*sim.ObjectRefresh{
+				{
+					Attribute:          "hunger",
+					Amount:             0, // yield-only: forage-to-sell, no need drop
+					AvailableQuantity:  ip(2),
+					MaxQuantity:        ip(4),
+					RefreshMode:        sim.RefreshModeContinuous,
+					RefreshPeriodHours: ip(6),
+					LastRefreshAt:      tp(time.Now().UTC()),
 					GatherItem:         "berries",
 				},
 			},
@@ -211,6 +231,34 @@ func TestGather_DepletedBush_Rejects(t *testing.T) {
 	_, err := w.Send(sim.Gather("hannah", 1, time.Now().UTC()))
 	if !errors.Is(err, sim.ErrGatherableDepleted) {
 		t.Errorf("err=%v, want ErrGatherableDepleted", err)
+	}
+}
+
+// TestGather_YieldOnlyBush_HarvestsAndDecrements covers the forage-to-sell row
+// (LLM-24): a yield-only (amount=0) finite gatherable harvests into inventory
+// and draws its supply down exactly like an eat+pick bush — the decoupling
+// only removes the consume-in-place need, not the harvest.
+func TestGather_YieldOnlyBush_HarvestsAndDecrements(t *testing.T) {
+	w, cancel := buildGatherTestWorld(t)
+	defer cancel()
+	placeAt(t, w, "hannah", "sell_bush")
+
+	res, err := w.Send(sim.Gather("hannah", 2, time.Now().UTC()))
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	gr := res.(sim.GatherResult)
+	if gr.Item != "berries" || gr.Qty != 2 {
+		t.Errorf("got Item=%q Qty=%d, want berries/2", gr.Item, gr.Qty)
+	}
+	if got := inventoryOf(t, w, "hannah", "berries"); got != 2 {
+		t.Errorf("inventory berries=%d, want 2", got)
+	}
+
+	// Supply drawn down from 2 to 0; a follow-up gather rejects as depleted.
+	_, err = w.Send(sim.Gather("hannah", 1, time.Now().UTC()))
+	if !errors.Is(err, sim.ErrGatherableDepleted) {
+		t.Errorf("second gather err=%v, want ErrGatherableDepleted", err)
 	}
 }
 

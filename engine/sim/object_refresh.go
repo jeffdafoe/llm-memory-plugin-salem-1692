@@ -79,12 +79,14 @@ type ObjectRefresh struct {
 	// source) and the regen tick refills it. Empty = not gatherable (the
 	// common case; most refresh rows are consume-in-place only).
 	//
-	// The yield rides on the arrival-need-drop row by design: a well or a
-	// bush is one shared stock — drinking in place and filling a pail both
-	// deplete it. Limitation: because the yield lives on a refresh row, a
-	// gatherable source must also be a need-bearing source (well=thirst,
-	// bush=hunger). A pure-material gatherable with no consume-in-place need
-	// (e.g. a wheat field) doesn't fit this row cleanly — revisit if wanted.
+	// The yield rides on the same refresh row as the arrival need-drop: a well
+	// or an eat+pick bush is one shared stock — drinking in place and filling a
+	// pail both deplete it. A gather row MAY also be PURE-MATERIAL (yield-only):
+	// it carries Amount == 0 (see IsYieldOnly), so arrival applies no need and
+	// stamps no dwell, while Gather still harvests it and the regen tick still
+	// refills its finite supply — the forage-to-sell mode (LLM-24). The row's
+	// Amount is the mode readout: < 0 = eat+pick (well=thirst, bush=hunger),
+	// == 0 = forage-to-sell.
 	GatherItem ItemKind
 }
 
@@ -100,6 +102,18 @@ func (r *ObjectRefresh) IsGatherable() bool {
 // IsFinite reports whether this refresh row has a tracked supply.
 func (r *ObjectRefresh) IsFinite() bool {
 	return r.AvailableQuantity != nil
+}
+
+// IsYieldOnly reports whether this is a pure-material gather source — a row
+// that mints GatherItem into inventory with NO consume-in-place need drop and
+// no dwell. Such a row carries Amount == 0: ApplyObjectRefreshAtArrival skips
+// it (no need applied, no dwell credit, no arrival supply decrement) while
+// Gather still harvests it and the regen tick still refills its finite supply.
+// This is the forage-to-sell mode (LLM-24); a need-bearing gather row
+// (Amount < 0) is eat+pick. The DB CHECK and ValidateObjectRefreshes both
+// enforce that a zero-amount row is legal only when it is gatherable.
+func (r *ObjectRefresh) IsYieldOnly() bool {
+	return r.Amount == 0 && r.IsGatherable()
 }
 
 // MaxRefreshAttributeLen caps a refresh row's attribute name, matching the
@@ -163,8 +177,22 @@ func ValidateObjectRefreshes(rows []*ObjectRefresh) error {
 		}
 		seen[r.Attribute] = true
 
-		if r.Amount >= 0 {
+		// A need-bearing row decrements the actor on arrival, so amount < 0.
+		// LLM-24 carves one exception: a yield-only (forage-to-sell) gather row
+		// carries amount = 0 — it applies no need at the source, so it must be
+		// gatherable and must not also configure a dwell (arrival skips the row,
+		// so a dwell credit could never be stamped). amount > 0 is never valid
+		// (it would RAISE a need).
+		if r.Amount > 0 {
 			return fmt.Errorf("%w: amount for %q must be negative", ErrInvalidRefresh, r.Attribute)
+		}
+		if r.Amount == 0 {
+			if !r.IsGatherable() {
+				return fmt.Errorf("%w: amount for %q may be zero only on a gather source (set gather_item)", ErrInvalidRefresh, r.Attribute)
+			}
+			if r.DwellDelta != nil || r.DwellPeriodMinutes != nil {
+				return fmt.Errorf("%w: yield-only gather source %q must not configure a dwell", ErrInvalidRefresh, r.Attribute)
+			}
 		}
 
 		if (r.AvailableQuantity == nil) != (r.MaxQuantity == nil) {
@@ -328,7 +356,14 @@ func ApplyObjectRefreshAtArrival(actorID ActorID) Command {
 					continue
 				}
 				if r.Amount == 0 {
-					continue // misconfigured zero-amount row; silent skip
+					// Yield-only (forage-to-sell) gather source (LLM-24): no
+					// consume-in-place need to apply, so skip the need drop, the
+					// dwell upsert, and the arrival supply decrement — Gather
+					// draws the stock down and the regen tick refills it. (A
+					// non-gatherable zero-amount row is a misconfiguration the
+					// editor validation rejects; skipping it here is the safe
+					// no-op if one ever slips in.)
+					continue
 				}
 				newValue := ClampNeed(actor.Needs[r.Attribute] + r.Amount)
 				actor.Needs[r.Attribute] = newValue

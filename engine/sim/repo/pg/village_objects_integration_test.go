@@ -576,6 +576,106 @@ func TestIntegration_VillageObjects_OverlayRoundTrip(t *testing.T) {
 	}
 }
 
+// Yield-only (forage-to-sell) refresh round-trip (LLM-24) — a gather row with
+// amount=0 and gather_item set persists through the relaxed
+// object_refresh_amount_negative CHECK and threads back via LoadAll with its
+// finite supply intact. Proves the DB admits the decoupled row and
+// IsYieldOnly() reads it back correctly (a unit test can't catch a DB CHECK).
+func TestIntegration_VillageObjects_YieldOnlyRefreshRoundTrip(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	repo := voRepo(f)
+
+	if _, err := f.Pool.Exec(ctx, `
+		INSERT INTO refresh_attribute (name, display_label) VALUES ('hunger', 'Hunger')`); err != nil {
+		t.Fatalf("seed refresh_attribute: %v", err)
+	}
+
+	max5, avail5, period6 := 5, 5, 6
+	anchor := time.Date(2026, 6, 21, 8, 0, 0, 0, time.UTC)
+	objects := map[sim.VillageObjectID]*sim.VillageObject{
+		sim.VillageObjectID(uuidObj1): {
+			ID:           sim.VillageObjectID(uuidObj1),
+			AssetID:      sim.AssetID(uuidAssetWell),
+			CurrentState: "default",
+			EntryPolicy:  sim.EntryPolicyOpen,
+			Refreshes: []*sim.ObjectRefresh{
+				{
+					Attribute:          "hunger",
+					Amount:             0, // yield-only — forage-to-sell, no consume-in-place need
+					MaxQuantity:        &max5,
+					AvailableQuantity:  &avail5,
+					RefreshMode:        sim.RefreshModeContinuous,
+					RefreshPeriodHours: &period6,
+					LastRefreshAt:      &anchor,
+					GatherItem:         "berries",
+				},
+			},
+		},
+	}
+	if err := saveSnapshotVO(t, f, repo, objects); err != nil {
+		t.Fatalf("SaveSnapshot yield-only refresh: %v", err)
+	}
+
+	got, err := repo.LoadAll(ctx)
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	obj := got[sim.VillageObjectID(uuidObj1)]
+	if obj == nil || len(obj.Refreshes) != 1 {
+		t.Fatalf("obj1 refreshes = %+v, want 1 row", obj)
+	}
+	r := obj.Refreshes[0]
+	if r.Amount != 0 || r.GatherItem != "berries" || !r.IsGatherable() || !r.IsYieldOnly() {
+		t.Errorf("yield-only refresh round-trip mismatch: %+v (IsYieldOnly=%v)", r, r.IsYieldOnly())
+	}
+	if !r.IsFinite() || r.AvailableQuantity == nil || *r.AvailableQuantity != 5 {
+		t.Errorf("yield-only supply round-trip mismatch: %+v", r)
+	}
+}
+
+// The relaxed amount CHECK still guards misconfiguration (LLM-24): a
+// zero-amount row is admitted only when gather_item is set; amount=0 with a
+// NULL gather_item is a check_violation, and amount>0 stays rejected.
+func TestIntegration_VillageObjects_YieldOnlyAmountCheck(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+
+	if _, err := f.Pool.Exec(ctx, `
+		INSERT INTO refresh_attribute (name, display_label)
+		VALUES ('hunger', 'Hunger'), ('thirst', 'Thirst'), ('tiredness', 'Tiredness')`); err != nil {
+		t.Fatalf("seed refresh_attribute: %v", err)
+	}
+	if _, err := f.Pool.Exec(ctx, `
+		INSERT INTO village_object (id, asset_id, current_state, x, y, placed_by, entry_policy, tags)
+		VALUES ($1, $2, 'default', 0, 0, '', 'open', '{}')`, uuidObj1, uuidAssetWell); err != nil {
+		t.Fatalf("seed parent: %v", err)
+	}
+
+	// amount=0 + gather_item set → accepted (the forage-to-sell row).
+	if _, err := f.Pool.Exec(ctx, `
+		INSERT INTO object_refresh (object_id, attribute, amount, gather_item)
+		VALUES ($1, 'hunger', 0, 'berries')`, uuidObj1); err != nil {
+		t.Fatalf("amount=0 + gather_item should be accepted: %v", err)
+	}
+
+	// amount=0 + NULL gather_item → check_violation (a needless, yield-less row).
+	_, err := f.Pool.Exec(ctx, `
+		INSERT INTO object_refresh (object_id, attribute, amount)
+		VALUES ($1, 'thirst', 0)`, uuidObj1)
+	if got := pgErrCode(err); got != "23514" {
+		t.Errorf("amount=0 + NULL gather_item: got err=%v (code %q), want check_violation 23514", err, got)
+	}
+
+	// amount>0 → still rejected (would RAISE a need), gather_item or not.
+	_, err = f.Pool.Exec(ctx, `
+		INSERT INTO object_refresh (object_id, attribute, amount, gather_item)
+		VALUES ($1, 'tiredness', 5, 'berries')`, uuidObj1)
+	if got := pgErrCode(err); got != "23514" {
+		t.Errorf("amount>0: got err=%v (code %q), want check_violation 23514", err, got)
+	}
+}
+
 // LoadAll refuses to start with a precise reason when a required-but-
 // nullable column is NULL (legacy/external data). Validates the hardened
 // error path; the data fixup is handled out-of-band (home mail 2026-05-20).
