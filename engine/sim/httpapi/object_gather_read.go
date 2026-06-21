@@ -28,8 +28,7 @@ type objectGatherResponse struct {
 // handleObjectGather answers GET /api/village/object/gather?id=<objectID>. Reads
 // the published snapshot (no command-channel round trip) and returns the first
 // gatherable refresh row's stock — resolve-then-check mirrors the gather command
-// (the first IsGatherable row owns the source). IsFinite guarantees the
-// Available/Max derefs are safe.
+// (the first IsGatherable row owns the source).
 func (s *Server) handleObjectGather(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("id")
 	if id == "" {
@@ -47,7 +46,10 @@ func (s *Server) handleObjectGather(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		resp := objectGatherResponse{Gatherable: true, Item: strings.TrimSpace(string(row.GatherItem))}
-		if row.IsFinite() {
+		// IsFinite only guarantees AvailableQuantity != nil; guard MaxQuantity
+		// too so a malformed row (one nil pointer) omits the count rather than
+		// panicking — it degrades to "gatherable, no count" like an infinite well.
+		if row.IsFinite() && row.MaxQuantity != nil {
 			avail := *row.AvailableQuantity
 			max := *row.MaxQuantity
 			resp.Available = &avail

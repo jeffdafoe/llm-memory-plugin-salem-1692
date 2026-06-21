@@ -145,6 +145,7 @@ func _show_tooltip(node: Node2D) -> void:
 
     # The berry line is async (filled by the gather-count fetch); reset it each
     # hover so a prior object's count never lingers.
+    _berry_label.text = ""
     _berry_label.visible = false
 
     # Pull-on-hover (LLM-52): ask the server for this object's gatherable count.
@@ -256,6 +257,10 @@ func _hide_tooltip() -> void:
     if _tooltip_panel.visible:
         _tooltip_panel.visible = false
         _hovered_node = null
+        # Clear the async berry line too, so it can never linger if some other
+        # path reveals the panel without going through _show_tooltip's reset.
+        _berry_label.text = ""
+        _berry_label.visible = false
 
 ## Find the object at a screen position using bounding box hit detection.
 ## Same logic as editor.gd:_find_object_at.
