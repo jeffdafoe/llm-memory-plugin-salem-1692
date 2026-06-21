@@ -2,6 +2,8 @@ package sim_test
 
 import (
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -481,5 +483,105 @@ func TestRefresh_EmptyStopsEvenWhileHungry(t *testing.T) {
 	}
 	if sa := liveActivity(t, w, "hannah"); sa != nil {
 		t.Errorf("activity = %+v, want nil (empty stops the loop even while hungry)", sa)
+	}
+}
+
+// pcNeedsRecorder captures PCNeedsChanged events for the LLM-56 emit tests.
+type pcNeedsRecorder struct {
+	mu     sync.Mutex
+	events []*sim.PCNeedsChanged
+}
+
+func (r *pcNeedsRecorder) record(_ *sim.World, evt sim.Event) {
+	if e, ok := evt.(*sim.PCNeedsChanged); ok {
+		r.mu.Lock()
+		r.events = append(r.events, e)
+		r.mu.Unlock()
+	}
+}
+
+func (r *pcNeedsRecorder) snapshot() []*sim.PCNeedsChanged {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]*sim.PCNeedsChanged, len(r.events))
+	copy(out, r.events)
+	return out
+}
+
+func subscribeNeedsRecorder(t *testing.T, w *sim.World) *pcNeedsRecorder {
+	t.Helper()
+	rec := &pcNeedsRecorder{}
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Subscribe(sim.SubscriberFunc(rec.record))
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("subscribe recorder: %v", err)
+	}
+	return rec
+}
+
+func setActorKind(t *testing.T, w *sim.World, actorID sim.ActorID, kind sim.ActorKind) {
+	t.Helper()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Actors[actorID]
+		if a == nil {
+			return nil, fmt.Errorf("setActorKind: actor %q not found", actorID)
+		}
+		a.Kind = kind
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("setActorKind: %v", err)
+	}
+}
+
+// TestRefresh_PCEmitsNeedsChanged (LLM-56): a PC eating emits PCNeedsChanged
+// carrying its post-bite needs — the realtime HUD push the hub turns into a
+// pc_needs_changed frame.
+func TestRefresh_PCEmitsNeedsChanged(t *testing.T) {
+	w, cancel := buildGatherTestWorld(t)
+	defer cancel()
+	setActorKind(t, w, "hannah", sim.KindPC)
+	setNeed(t, w, "hannah", "hunger", 14)
+	placeAt(t, w, "hannah", "bush")
+	rec := subscribeNeedsRecorder(t, w)
+
+	if _, err := w.Send(sim.ApplyObjectRefreshAtArrival("hannah")); err != nil {
+		t.Fatalf("ApplyObjectRefreshAtArrival: %v", err)
+	}
+	got := rec.snapshot()
+	if len(got) != 1 {
+		t.Fatalf("PCNeedsChanged count = %d, want 1", len(got))
+	}
+	if got[0].ActorID != "hannah" || got[0].Needs["hunger"] != 6 {
+		t.Errorf("event = {%s, %v}, want hannah hunger 6", got[0].ActorID, got[0].Needs)
+	}
+	// Non-aliasing: mutating the actor's needs after the emit must not change the
+	// captured snapshot — the event copies the map.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["hannah"].Needs["hunger"] = 99
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("mutate actor need: %v", err)
+	}
+	if got[0].Needs["hunger"] != 6 {
+		t.Errorf("event needs aliased actor needs: hunger = %d, want 6 (must be a copy)", got[0].Needs["hunger"])
+	}
+}
+
+// TestRefresh_NPCDoesNotEmitNeedsChanged (LLM-56): an NPC eating does NOT emit
+// the HUD push — NPC needs aren't client-rendered, so the wire stays quiet.
+func TestRefresh_NPCDoesNotEmitNeedsChanged(t *testing.T) {
+	w, cancel := buildGatherTestWorld(t)
+	defer cancel()
+	// hannah stays an NPC (seeded with LLMAgent, default non-PC kind).
+	setNeed(t, w, "hannah", "hunger", 14)
+	placeAt(t, w, "hannah", "bush")
+	rec := subscribeNeedsRecorder(t, w)
+
+	if _, err := w.Send(sim.ApplyObjectRefreshAtArrival("hannah")); err != nil {
+		t.Fatalf("ApplyObjectRefreshAtArrival: %v", err)
+	}
+	if got := rec.snapshot(); len(got) != 0 {
+		t.Errorf("PCNeedsChanged count = %d, want 0 (NPC needs not pushed)", len(got))
 	}
 }

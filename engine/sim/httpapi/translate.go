@@ -62,6 +62,15 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			ObjectID:    string(e.ObjectID),
 			AttemptID:   uint64(e.MovementAttemptID),
 		}}, true
+	case *sim.PCNeedsChanged:
+		needs := make(map[string]int, len(e.Needs))
+		for k, v := range e.Needs {
+			needs[string(k)] = v
+		}
+		return WireFrame{Type: "pc_needs_changed", Data: pcNeedsChangedWireDTO{
+			ActorID: string(e.ActorID),
+			Needs:   needs,
+		}}, true
 	case *sim.ActorArrived:
 		return WireFrame{Type: "npc_arrived", Data: arrivedWireDTO{
 			ID:          string(e.ActorID),
@@ -441,6 +450,16 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 	default:
 		return WireFrame{}, false
 	}
+}
+
+// pcNeedsChangedWireDTO is the pc_needs_changed frame payload (LLM-56): the PC
+// whose needs changed and its full post-bite need snapshot (hunger/thirst/
+// tiredness). The client matches ActorID against its own PC and feeds Needs
+// straight into top_bar.set_needs, so a bite ticks the HUD without waiting on
+// the ~10s /pc/me poll.
+type pcNeedsChangedWireDTO struct {
+	ActorID string         `json:"actor_id"`
+	Needs   map[string]int `json:"needs"`
 }
 
 // walkWireDTO is the npc_walking payload — the engine's full cost-weighted tile

@@ -239,6 +239,7 @@ func _on_authenticated() -> void:
         event_client.npc_arrived.connect(_on_event_npc_arrived)
         event_client.pc_sleep_started.connect(_on_pc_sleep_started)
         event_client.pc_sleep_ended.connect(_on_pc_sleep_ended)
+        event_client.pc_needs_changed.connect(_on_event_pc_needs_changed)
     event_client.world = world
     world.event_client = event_client
     event_client.connect_to_server()
@@ -632,6 +633,15 @@ func _on_pc_needs_changed(needs: Dictionary) -> void:
     if top_bar == null or not top_bar.has_method("set_needs"):
         return
     top_bar.set_needs(needs)
+
+## LLM-56: realtime per-bite need push. The engine broadcasts pc_needs_changed
+## on every eat/drink bite (auto-repeat included); filter to the local PC and
+## reuse the /pc/me path so the hunger segment ticks + flashes in time with the
+## eating instead of waiting on the ~10s poll.
+func _on_event_pc_needs_changed(actor_id: String, needs: Dictionary) -> void:
+    if _pc_actor_id == "" or actor_id != _pc_actor_id:
+        return
+    _on_pc_needs_changed(needs)
 
 ## ZBBS-HOME-218: forward server-reported dwelling attributes to top
 ## bar so the HUD recovery pulse engages immediately on /pc/me, even

@@ -423,6 +423,18 @@ func applyObjectRefreshEffect(w *World, actorID ActorID, objID VillageObjectID, 
 	// Eating in place may have drained a finite bush — recompute its
 	// berries/bare visual so a picked-clean bush goes bare.
 	refreshObjectBerryState(w, obj)
+	// LLM-56: push the PC's updated needs to its HUD immediately (the hub turns
+	// this into a pc_needs_changed WS frame), so each bite ticks the bar down in
+	// real time instead of waiting for the next ~10s /pc/me poll — smooth
+	// per-bite eating during the LLM-55 auto-repeat. PC-only (NPC needs aren't
+	// client-rendered) and only when a need actually moved (hits non-empty).
+	if len(hits) > 0 && actor.Kind == KindPC {
+		needs := make(map[NeedKey]int, len(actor.Needs))
+		for k, v := range actor.Needs {
+			needs[k] = v
+		}
+		w.emit(&PCNeedsChanged{ActorID: actorID, Needs: needs})
+	}
 	return ArrivalRefreshResult{ObjectID: objID, Hits: hits}
 }
 
