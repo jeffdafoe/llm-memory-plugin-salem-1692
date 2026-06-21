@@ -81,10 +81,28 @@ func tirednessOf(w *sim.World, actorID sim.ActorID) int {
 	return w.Published().Actors[actorID].Needs["tiredness"]
 }
 
-// TestObjectRefreshArrival_AppliesOnArrival: a fresh ActorArrived whose
-// FinalPosition matches the actor's tile on the oak pin applies the refresh
-// through the subscriber.
-func TestObjectRefreshArrival_AppliesOnArrival(t *testing.T) {
+// sourceActivityOf reads the actor's live SourceActivity on the world goroutine
+// (it's deliberately not on the published snapshot, so it can't be read through
+// w.Published()).
+func sourceActivityOf(t *testing.T, w *sim.World, actorID sim.ActorID) *sim.SourceActivity {
+	t.Helper()
+	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return world.Actors[actorID].SourceActivity, nil
+	}})
+	if err != nil {
+		t.Fatalf("sourceActivityOf: %v", err)
+	}
+	sa, _ := res.(*sim.SourceActivity)
+	return sa
+}
+
+// TestObjectRefreshArrival_StartsActivityOnArrival: a fresh ActorArrived whose
+// FinalPosition matches the actor's tile on the oak pin STARTS a timed eat/drink
+// (LLM-54) — it no longer applies the refresh instantly. The need is untouched
+// until the completion sweep lands it; the full start→complete→effect path is
+// covered in the sim package (source_activity_test.go), where the unexported
+// completion command is reachable.
+func TestObjectRefreshArrival_StartsActivityOnArrival(t *testing.T) {
 	w, cancel := buildArrivalRefreshWorld(t)
 	defer cancel()
 
@@ -95,8 +113,18 @@ func TestObjectRefreshArrival_AppliesOnArrival(t *testing.T) {
 		At:            time.Now(),
 	})
 
-	if got := tirednessOf(w, "weary"); got != 6 { // 14 - 8
-		t.Errorf("tiredness = %d, want 6 (refresh applied on arrival)", got)
+	if got := tirednessOf(w, "weary"); got != 14 {
+		t.Errorf("tiredness = %d, want 14 (effect deferred to completion, not applied on arrival)", got)
+	}
+	sa := sourceActivityOf(t, w, "weary")
+	if sa == nil {
+		t.Fatal("arrival did not start a source activity")
+	}
+	if sa.Kind != sim.SourceActivityRefresh {
+		t.Errorf("activity kind = %q, want %q", sa.Kind, sim.SourceActivityRefresh)
+	}
+	if sa.ObjectID != "oak" {
+		t.Errorf("activity object = %q, want \"oak\"", sa.ObjectID)
 	}
 }
 

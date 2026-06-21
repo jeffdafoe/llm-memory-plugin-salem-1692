@@ -337,79 +337,93 @@ func ApplyObjectRefreshAtArrival(actorID ActorID) Command {
 				return ArrivalRefreshResult{}, nil
 			}
 			// Strict owner-gate (LLM-50 D2): no passive eat/refresh at an object
-			// owned by someone else. A yield-only farm bush already no-ops here
-			// via the amount==0 branch below; this also covers an owned
-			// eat-in-place source (e.g. a future owned fruit tree).
+			// owned by someone else. A yield-only farm bush already no-ops via
+			// the amount==0 branch in applyObjectRefreshEffect; this also covers
+			// an owned eat-in-place source (e.g. a future owned fruit tree).
 			if obj.OwnedByOther(actorID) {
 				return ArrivalRefreshResult{}, nil
 			}
-
-			if actor.Needs == nil {
-				actor.Needs = make(map[NeedKey]int)
-			}
-			if actor.DwellCredits == nil {
-				actor.DwellCredits = make(map[DwellCreditKey]*DwellCredit)
-			}
-
-			var hits []RefreshHit
-			now := time.Now().UTC()
-			for _, r := range obj.Refreshes {
-				if r.IsFinite() && *r.AvailableQuantity <= 0 {
-					continue // dry well, empty bush
-				}
-				if _, known := FindNeed(r.Attribute); !known {
-					log.Printf("sim/object_refresh: %s has unknown attribute %q (skipped)",
-						objID, r.Attribute)
-					continue
-				}
-				if r.Amount == 0 {
-					// Yield-only (forage-to-sell) gather source (LLM-24): no
-					// consume-in-place need to apply, so skip the need drop, the
-					// dwell upsert, and the arrival supply decrement — Gather
-					// draws the stock down and the regen tick refills it. (A
-					// non-gatherable zero-amount row is a misconfiguration the
-					// editor validation rejects; skipping it here is the safe
-					// no-op if one ever slips in.)
-					continue
-				}
-				newValue := ClampNeed(actor.Needs[r.Attribute] + r.Amount)
-				actor.Needs[r.Attribute] = newValue
-
-				if r.IsFinite() {
-					next := *r.AvailableQuantity - 1
-					r.AvailableQuantity = &next
-				}
-
-				hits = append(hits, RefreshHit{
-					ObjectID:  objID,
-					Attribute: r.Attribute,
-					Amount:    r.Amount,
-					NewValue:  newValue,
-				})
-
-				if r.HasDwell() {
-					key := DwellCreditKey{
-						ObjectID:  objID,
-						Attribute: r.Attribute,
-						Source:    DwellSourceObject,
-					}
-					actor.DwellCredits[key] = &DwellCredit{
-						ObjectID:           objID,
-						Attribute:          r.Attribute,
-						Source:             DwellSourceObject,
-						LastCreditedAt:     now,
-						RemainingTicks:     nil, // source=object: open-ended
-						DwellDelta:         *r.DwellDelta,
-						DwellPeriodMinutes: *r.DwellPeriodMinutes,
-					}
-				}
-			}
-			// Eating in place may have drained a finite bush — recompute its
-			// berries/bare visual so a picked-clean bush goes bare.
-			refreshObjectBerryState(w, obj)
-			return ArrivalRefreshResult{ObjectID: objID, Hits: hits}, nil
+			return applyObjectRefreshEffect(w, actorID, objID, obj, time.Now().UTC()), nil
 		},
 	}
+}
+
+// applyObjectRefreshEffect applies obj's refresh rows to the actor's needs,
+// decrements finite supplies, upserts dwell credits (stamped at now), and
+// recomputes the bush's berry/bare visual — the EFFECT half of an eat/drink in
+// place. Caller has already resolved the loitering object and passed the owner
+// gate. Shared by the instant ApplyObjectRefreshAtArrival primitive (now = wall
+// clock) and the timed completion sweep (now = the sweep's instant, so dwell
+// credits agree with the harvest path's ItemGathered.At). Returns the hits
+// applied (empty when every row was depleted / yield-only / unknown-attribute).
+func applyObjectRefreshEffect(w *World, actorID ActorID, objID VillageObjectID, obj *VillageObject, now time.Time) ArrivalRefreshResult {
+	actor, ok := w.Actors[actorID]
+	if !ok {
+		return ArrivalRefreshResult{}
+	}
+	if actor.Needs == nil {
+		actor.Needs = make(map[NeedKey]int)
+	}
+	if actor.DwellCredits == nil {
+		actor.DwellCredits = make(map[DwellCreditKey]*DwellCredit)
+	}
+
+	var hits []RefreshHit
+	for _, r := range obj.Refreshes {
+		if r.IsFinite() && *r.AvailableQuantity <= 0 {
+			continue // dry well, empty bush
+		}
+		if _, known := FindNeed(r.Attribute); !known {
+			log.Printf("sim/object_refresh: %s has unknown attribute %q (skipped)",
+				objID, r.Attribute)
+			continue
+		}
+		if r.Amount == 0 {
+			// Yield-only (forage-to-sell) gather source (LLM-24): no
+			// consume-in-place need to apply, so skip the need drop, the
+			// dwell upsert, and the arrival supply decrement — Gather
+			// draws the stock down and the regen tick refills it. (A
+			// non-gatherable zero-amount row is a misconfiguration the
+			// editor validation rejects; skipping it here is the safe
+			// no-op if one ever slips in.)
+			continue
+		}
+		newValue := ClampNeed(actor.Needs[r.Attribute] + r.Amount)
+		actor.Needs[r.Attribute] = newValue
+
+		if r.IsFinite() {
+			next := *r.AvailableQuantity - 1
+			r.AvailableQuantity = &next
+		}
+
+		hits = append(hits, RefreshHit{
+			ObjectID:  objID,
+			Attribute: r.Attribute,
+			Amount:    r.Amount,
+			NewValue:  newValue,
+		})
+
+		if r.HasDwell() {
+			key := DwellCreditKey{
+				ObjectID:  objID,
+				Attribute: r.Attribute,
+				Source:    DwellSourceObject,
+			}
+			actor.DwellCredits[key] = &DwellCredit{
+				ObjectID:           objID,
+				Attribute:          r.Attribute,
+				Source:             DwellSourceObject,
+				LastCreditedAt:     now,
+				RemainingTicks:     nil, // source=object: open-ended
+				DwellDelta:         *r.DwellDelta,
+				DwellPeriodMinutes: *r.DwellPeriodMinutes,
+			}
+		}
+	}
+	// Eating in place may have drained a finite bush — recompute its
+	// berries/bare visual so a picked-clean bush goes bare.
+	refreshObjectBerryState(w, obj)
+	return ArrivalRefreshResult{ObjectID: objID, Hits: hits}
 }
 
 // findRefreshObjectNear resolves the named village object the actor is

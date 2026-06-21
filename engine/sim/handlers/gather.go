@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
@@ -103,16 +102,22 @@ func DecodeGatherArgs(raw json.RawMessage) (any, error) {
 
 // HandleGather is the CommitFn for the gather tool. Pure builder — does NOT
 // touch the world. All world-state validation (resolve the loitering source,
-// gatherable check, finite-supply / depletion gate, inventory credit, emit)
-// runs inside the returned sim.Gather Command on the world goroutine.
+// gatherable check, finite-supply / depletion gate, not-already-busy) runs
+// inside the returned sim.StartHarvest Command on the world goroutine.
+//
+// LLM-54: harvesting now takes time. StartHarvest validates and OCCUPIES the
+// actor for HarvestActivityDuration; the mint (inventory credit + ItemGathered)
+// lands at completion via the source-activity sweep, surfaced to the model in
+// its next perception. The tool result steers the model to wait (see
+// commitResultContent's gather branch).
 func HandleGather(in HandlerInput) (sim.Command, error) {
 	args, ok := in.Args.(GatherArgs)
 	if !ok {
 		return sim.Command{}, fmt.Errorf("gather: handler received unexpected args type %T", in.Args)
 	}
-	qty := 0 // omitted → 0; sim.Gather treats < 1 as the default 1.
+	qty := 0 // omitted → 0; sim.StartHarvest treats < 1 as the default 1.
 	if args.Qty != nil {
 		qty = *args.Qty
 	}
-	return sim.Gather(in.ActorID, qty, time.Now().UTC()), nil
+	return sim.StartHarvest(in.ActorID, qty), nil
 }

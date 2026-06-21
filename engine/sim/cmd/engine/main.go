@@ -606,6 +606,7 @@ func startTickers(ctx context.Context, w *sim.World) {
 	go sim.RunProduceTicker(ctx, w)
 	go sim.RunRestockTicker(ctx, w) // ZBBS-WORK-322: buy-side restock producer
 	go sim.RunObjectRefreshRegen(ctx, w)
+	go sim.RunSourceActivityTicker(ctx, w) // LLM-54: completes timed eat/drink/harvest
 	go sim.RunOrderSweep(ctx, w)
 	go sim.RunPayLedgerSweep(ctx, w)
 	go sim.RunHuddleSilenceSweep(ctx, w) // ZBBS-HOME-417: conclude dormant huddles
