@@ -216,8 +216,13 @@ func _on_count_loaded(result: int, response_code: int, _headers: PackedStringArr
     var item: String = str(json.get("item", "berries"))
     if n <= 0:
         _berry_label.text = "Picked clean"
-    elif n == 1 and item == "berries":
-        _berry_label.text = "1 berry"
+    elif n == 1:
+        # Singularize the berry family for the "1 X" case:
+        # berries -> berry, raspberries -> raspberry, blueberries -> blueberry.
+        var singular: String = item
+        if item.ends_with("berries"):
+            singular = item.trim_suffix("berries") + "berry"
+        _berry_label.text = "1 " + singular
     else:
         _berry_label.text = str(n) + " " + item
     _berry_label.visible = true
