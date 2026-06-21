@@ -42,6 +42,29 @@ func TestTranslateEvent_MoveStarted(t *testing.T) {
 	}
 }
 
+func TestTranslateEvent_PCNeedsChanged(t *testing.T) {
+	frame, ok := TranslateEvent(&sim.PCNeedsChanged{
+		ActorID: "jeff",
+		Needs:   map[sim.NeedKey]int{"hunger": 8, "thirst": 12},
+	})
+	if !ok {
+		t.Fatal("PCNeedsChanged should translate")
+	}
+	if frame.Type != "pc_needs_changed" {
+		t.Fatalf("type = %q, want pc_needs_changed", frame.Type)
+	}
+	d, isType := frame.Data.(pcNeedsChangedWireDTO)
+	if !isType {
+		t.Fatalf("data type = %T, want pcNeedsChangedWireDTO", frame.Data)
+	}
+	if d.ActorID != "jeff" {
+		t.Errorf("actor_id = %q, want jeff", d.ActorID)
+	}
+	if d.Needs["hunger"] != 8 || d.Needs["thirst"] != 12 {
+		t.Errorf("needs = %v, want hunger 8 / thirst 12", d.Needs)
+	}
+}
+
 func TestTranslateEvent_ObjectMoved(t *testing.T) {
 	frame, ok := TranslateEvent(&sim.VillageObjectMoved{
 		ObjectID: "bench-1",

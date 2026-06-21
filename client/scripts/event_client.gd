@@ -24,6 +24,11 @@ signal npc_arrived(npc_id: String, x: float, y: float, facing: String)
 signal pc_sleep_started(actor_id: String, wake_at_iso: String)
 signal pc_sleep_ended(actor_id: String, reason: String)
 
+## LLM-56: realtime per-bite need push. Emitted with the changed PC's actor_id
+## and full need snapshot so main.gd can filter to its own PC and feed the top
+## bar immediately, instead of waiting on the ~10s /pc/me poll.
+signal pc_needs_changed(actor_id: String, needs: Dictionary)
+
 var _socket: WebSocketPeer = null
 var _connected: bool = false
 var _url: String = ""
@@ -262,6 +267,11 @@ func _handle_message(data: String) -> void:
             pc_sleep_ended.emit(
                 str(event_data.get("actor_id", "")),
                 str(event_data.get("reason", ""))
+            )
+        "pc_needs_changed":
+            pc_needs_changed.emit(
+                str(event_data.get("actor_id", "")),
+                event_data.get("needs", {})
             )
         "pay_offer":
             # pay-with-item lifecycle (ZBBS-WORK-296). Routed through world
