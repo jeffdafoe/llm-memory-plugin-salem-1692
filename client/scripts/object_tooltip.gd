@@ -14,6 +14,7 @@ const COLOR_TEXT_DIM = Color(0.63, 0.56, 0.44, 1.0)
 var _tooltip_panel: PanelContainer = null
 var _name_label: Label = null
 var _owner_label: Label = null
+var _berry_label: Label = null
 var _inside_label: Label = null
 var _font: Font = null
 
@@ -64,6 +65,15 @@ func _ready() -> void:
     _owner_label.add_theme_font_size_override("font_size", 12)
     _owner_label.visible = false
     vbox.add_child(_owner_label)
+
+    # Live berry count for a gatherable bush (LLM-52) — filled asynchronously by
+    # the pull-on-hover gather-count fetch, so it sits between owner and inside.
+    _berry_label = Label.new()
+    _berry_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+    _berry_label.add_theme_font_override("font", _font)
+    _berry_label.add_theme_font_size_override("font_size", 12)
+    _berry_label.visible = false
+    vbox.add_child(_berry_label)
 
     # Lists current occupants — the placed NPCs whose
     # inside_structure_id matches this object. Wraps so the line can
@@ -133,13 +143,20 @@ func _show_tooltip(node: Node2D) -> void:
     var object_id: String = node.get_meta("object_id", "")
     var inside_names: String = _format_inside_occupants(object_id)
 
-    # In viewer mode, show the tooltip if anything informative would
-    # appear: owner, custom display name, or current occupants.
-    if not is_editing and owner == "" and display_name_meta == "" and inside_names == "":
-        _hide_tooltip()
-        return
+    # The berry line is async (filled by the gather-count fetch); reset it each
+    # hover so a prior object's count never lingers.
+    _berry_label.text = ""
+    _berry_label.visible = false
 
-    # Show display_name if set, otherwise fall back to catalog asset name
+    # Pull-on-hover (LLM-52): ask the server for this object's gatherable count.
+    # Fired for every hovered object; _on_count_loaded shows a line only for a
+    # gatherable source and discards a stale response if the cursor moved on.
+    if object_id != "":
+        _fetch_count(object_id)
+
+    # Set the name now (display_name override, else catalog asset name) even when
+    # the sync content isn't yet informative, so the async berry handler can
+    # reveal a name-bearing tooltip for a bare, unowned wild bush.
     if display_name_meta != "":
         _name_label.text = display_name_meta
     else:
@@ -159,6 +176,51 @@ func _show_tooltip(node: Node2D) -> void:
     else:
         _inside_label.visible = false
 
+    # Show now if the sync content is informative (owner / custom name /
+    # occupants, or the editor is open); otherwise stay hidden and let the count
+    # fetch reveal it for a gatherable bush. Visibility is decoupled from
+    # _hovered_node so a pending fetch can still resolve.
+    var informative: bool = is_editing or owner != "" or display_name_meta != "" or inside_names != ""
+    _tooltip_panel.visible = informative
+
+## Pull-on-hover gather count (LLM-52). Fetches the hovered object's live
+## gatherable stock so the tooltip can show "N berries" / "Picked clean". A
+## fresh HTTPRequest per hover-enter; _on_count_loaded race-guards against the
+## cursor having moved on. Deliberately not pushed via ObjectDTO/WS — the count
+## changes on every gather + regen tick and is only needed under the cursor.
+func _fetch_count(object_id: String) -> void:
+    var http := HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(_on_count_loaded.bind(http, object_id))
+    var headers: PackedStringArray = Auth.auth_headers(false)
+    var url: String = VillageApi.api_base + "/api/village/object/gather?id=" + object_id.uri_encode()
+    if http.request(url, headers) != OK:
+        http.queue_free()
+
+func _on_count_loaded(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest, object_id: String) -> void:
+    http.queue_free()
+    # Race guard: ignore if the cursor has left this object since the fetch
+    # (covers a null or freed _hovered_node too).
+    if not is_instance_valid(_hovered_node) or str(_hovered_node.get_meta("object_id", "")) != object_id:
+        return
+    if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
+        return
+    var json = JSON.parse_string(body.get_string_from_utf8())
+    if typeof(json) != TYPE_DICTIONARY or not bool(json.get("gatherable", false)):
+        return
+    # Infinite sources (a well) report no count — nothing to show.
+    if json.get("available", null) == null:
+        return
+    var n: int = int(json.get("available", 0))
+    var item: String = str(json.get("item", "berries"))
+    if n <= 0:
+        _berry_label.text = "Picked clean"
+    elif n == 1 and item == "berries":
+        _berry_label.text = "1 berry"
+    else:
+        _berry_label.text = str(n) + " " + item
+    _berry_label.visible = true
     _tooltip_panel.visible = true
 
 ## Build a comma-and-grammar-joined list of NPC display names whose
@@ -195,6 +257,10 @@ func _hide_tooltip() -> void:
     if _tooltip_panel.visible:
         _tooltip_panel.visible = false
         _hovered_node = null
+        # Clear the async berry line too, so it can never linger if some other
+        # path reveals the panel without going through _show_tooltip's reset.
+        _berry_label.text = ""
+        _berry_label.visible = false
 
 ## Find the object at a screen position using bounding box hit detection.
 ## Same logic as editor.gd:_find_object_at.
