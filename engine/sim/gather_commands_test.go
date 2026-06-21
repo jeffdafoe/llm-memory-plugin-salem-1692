@@ -240,6 +240,50 @@ func TestGather_Unowned_IsCommons(t *testing.T) {
 	}
 }
 
+// TestGather_NearestOwned_RejectsDespiteFartherCommons — the command-side half of
+// the cue/command parity (pairs with the perception-side
+// TestBuild_GatherableCue_NearestOwnedSuppresses_NoFallthrough). With an OWNED
+// bush on the actor's tile (nearest) and an UNOWNED bush one tile away (farther,
+// still in range), Gather resolves the SINGLE nearest object (findRefreshObjectNear
+// does not skip past it) and rejects with ErrNotYourSource — it does not fall
+// through to the farther commons. So suppressing the cue entirely is correct.
+func TestGather_NearestOwned_RejectsDespiteFartherCommons(t *testing.T) {
+	w, cancel := buildGatherTestWorld(t)
+	defer cancel()
+	ip := func(v int) *int { return &v }
+	_, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		base := sim.WorldPos{X: 3000, Y: 3000}
+		world.Actors["hannah"].Pos = base.Tile()
+		zero, east := 0, 1
+		world.VillageObjects["owned_bush"] = &sim.VillageObject{
+			ID: "owned_bush", DisplayName: "Prudence's Bush", AssetID: "bush-berries", CurrentState: "default",
+			Pos: base, LoiterOffsetX: &zero, LoiterOffsetY: &zero, // cheb 0 from the actor
+			OwnerActorID: "prudence",
+			Refreshes: []*sim.ObjectRefresh{{
+				Attribute: "hunger", Amount: 0, AvailableQuantity: ip(5), MaxQuantity: ip(5),
+				RefreshMode: sim.RefreshModeContinuous, RefreshPeriodHours: ip(6), GatherItem: "berries",
+			}},
+		}
+		world.VillageObjects["commons_bush"] = &sim.VillageObject{
+			ID: "commons_bush", DisplayName: "Wild Bush", AssetID: "bush-berries", CurrentState: "default",
+			Pos: base, LoiterOffsetX: &east, LoiterOffsetY: &zero, // cheb 1 → farther, still in range
+			Refreshes: []*sim.ObjectRefresh{{
+				Attribute: "hunger", Amount: 0, AvailableQuantity: ip(5), MaxQuantity: ip(5),
+				RefreshMode: sim.RefreshModeContinuous, RefreshPeriodHours: ip(6), GatherItem: "berries",
+			}},
+		}
+		return nil, nil
+	}})
+	if err != nil {
+		t.Fatalf("inject: %v", err)
+	}
+
+	_, err = w.Send(sim.Gather("hannah", 1, time.Now().UTC()))
+	if !errors.Is(err, sim.ErrNotYourSource) {
+		t.Errorf("err=%v, want ErrNotYourSource (nearest owned bush, not the farther commons)", err)
+	}
+}
+
 func TestGather_InfiniteWell_AlwaysSucceeds(t *testing.T) {
 	w, cancel := buildGatherTestWorld(t)
 	defer cancel()
