@@ -209,6 +209,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/village/world", s.requireAuth(s.handleWorld))
 	mux.HandleFunc("GET /api/village/agents", s.requireAuth(s.handleAgents))
 	mux.HandleFunc("GET /api/village/objects", s.requireAuth(s.handleObjects))
+	mux.HandleFunc("GET /api/village/object/gather", s.requireAuth(s.handleObjectGather)) // LLM-52: hover berry count
 	mux.HandleFunc("GET /api/village/terrain", s.requireAuth(s.handleTerrain))
 	mux.HandleFunc("GET /api/village/assets", s.requireAuth(s.handleAssets))
 	mux.HandleFunc("GET /api/village/sprites", s.requireAuth(s.handleSprites))
