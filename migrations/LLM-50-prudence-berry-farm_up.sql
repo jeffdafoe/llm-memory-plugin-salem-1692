@@ -67,7 +67,8 @@ WHERE asset_id = '3d3a2147-08cb-4409-8c81-06ef4a59a420'       -- the "Berry Bush
 -- One yield-only forage-to-sell refresh row per just-migrated farm bush. Sourced
 -- from the rows the UPDATE above produced (Bush asset + Prudence-owned), so the
 -- two steps can never diverge. last_refresh_at / dwell_* stay NULL; the regen
--- tick stamps last_refresh_at on its first pass.
+-- tick stamps last_refresh_at on its first pass. ON CONFLICT makes a re-run a
+-- no-op (object_refresh PK is (object_id, attribute)).
 INSERT INTO object_refresh
     (object_id, attribute, amount, max_quantity, available_quantity,
      refresh_mode, refresh_period_hours, gather_item)
@@ -92,6 +93,7 @@ WHERE asset_id = 'db4b428c-9ab6-4457-85fb-3f85fe86c946'
     '019da6a2-8bfc-7951-adf7-a4c05c3813cb',
     '019da6a2-c17f-7c0b-9485-32fe984a21db',
     '019da6a2-a94a-7721-9c67-3cc3e23711c0'
-  );
+  )
+ON CONFLICT (object_id, attribute) DO NOTHING;
 
 COMMIT;

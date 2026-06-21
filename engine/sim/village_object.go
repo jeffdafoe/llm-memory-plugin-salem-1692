@@ -101,7 +101,14 @@ type VillageObject struct {
 // residency/staff/lodging concept, so harvesting at an owned object is
 // owner-only. Used by the four gather/eat touch-points (Gather command,
 // ApplyObjectRefreshAtArrival, the gatherable cue, and the free-source list).
+//
+// Nil-safe: a nil object is treated as not-owned-by-anyone (commons), so a
+// stray nil from a future caller degrades to "allowed" rather than panicking —
+// consistent with the unowned-is-commons rule.
 func (o *VillageObject) OwnedByOther(actorID ActorID) bool {
+	if o == nil {
+		return false
+	}
 	return o.OwnerActorID != "" && o.OwnerActorID != actorID
 }
 

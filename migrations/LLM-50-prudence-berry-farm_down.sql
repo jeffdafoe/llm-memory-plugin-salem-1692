@@ -3,17 +3,30 @@
 --
 -- The 16 instances are identified by id (they were the only "Berry Bush" rows;
 -- after the up-migration they are the Bush-asset, Prudence-owned plot). Their
--- object_refresh rows are deleted first -- the 16 had no refresh rows before
--- LLM-50, so any refresh row on them is this migration's -- then the placement
--- reverts to the original asset / unowned / 'default' state.
+-- forage-to-sell refresh rows are deleted first, then the placement reverts to
+-- the original asset / unowned / 'default' state.
 --
 -- Apply with the engine STOPPED, same as the up-migration (these are
 -- checkpoint-written engine-owned tables).
 
 BEGIN;
 
-DELETE FROM object_refresh
-WHERE object_id IN (
+-- Delete only the LLM-50 forage-to-sell rows: match the exact migrated shape
+-- (NOT available_quantity, which legitimately changes as Prudence harvests) and
+-- the migrated object state, so a later-added or repurposed refresh row on these
+-- ids is never collaterally removed.
+DELETE FROM object_refresh r
+USING village_object v
+WHERE r.object_id = v.id
+  AND v.asset_id = 'db4b428c-9ab6-4457-85fb-3f85fe86c946'
+  AND v.owner_actor_id = '019dbcec-1149-7149-8a49-2cdb54680b86'
+  AND r.attribute = 'hunger'
+  AND r.amount = 0
+  AND r.max_quantity = 10
+  AND r.refresh_mode = 'periodic'
+  AND r.refresh_period_hours = 168
+  AND r.gather_item = 'berries'
+  AND v.id IN (
     '019da6a1-3007-7822-a266-1257bc65f3a6',
     '019da6a1-19f9-7ae8-90cf-6856a6c6cdb6',
     '019da6a1-675b-783d-ae03-29ece5fe5ced',

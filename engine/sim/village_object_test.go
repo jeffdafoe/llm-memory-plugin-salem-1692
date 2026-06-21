@@ -11,6 +11,10 @@ import (
 // TestOwnedByOther covers the strict-owner gather/eat gate (LLM-50 D2): unowned
 // is commons, the owner is allowed, only a non-owner at an owned object is gated.
 func TestOwnedByOther(t *testing.T) {
+	var nilObj *sim.VillageObject
+	if nilObj.OwnedByOther("anyone") {
+		t.Error("nil object should be treated as commons (OwnedByOther=false), not panic")
+	}
 	if (&sim.VillageObject{}).OwnedByOther("anyone") {
 		t.Error("unowned object should be commons (OwnedByOther=false)")
 	}
