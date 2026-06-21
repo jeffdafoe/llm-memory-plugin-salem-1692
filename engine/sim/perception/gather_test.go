@@ -113,3 +113,63 @@ func TestRenderSurroundings_GatherableLine(t *testing.T) {
 		t.Errorf("render emitted a gatherable line with no cue:\n%s", b2.String())
 	}
 }
+
+// TestBuild_GatherableCue_OwnedByOther_Suppressed — LLM-50 D2: the gatherable
+// cue (and thus the gather tool advertisement, which reads the same
+// SurroundingsView field) is suppressed for a non-owner at an owned source.
+func TestBuild_GatherableCue_OwnedByOther_Suppressed(t *testing.T) {
+	wellPin := sim.WorldPos{X: 100, Y: 100}.Tile()
+	snap := gatherCueSnapshot(wellPin)
+	snap.VillageObjects["well"].OwnerActorID = "prudence" // owned by someone other than hannah
+	p := Build(snap, "hannah", nil)
+
+	if p.Surroundings.GatherableItem != "" {
+		t.Errorf("GatherableItem=%q, want empty (owned by another actor)", p.Surroundings.GatherableItem)
+	}
+}
+
+// TestBuild_GatherableCue_OwnedBySelf_Shows — the owner still sees their own
+// source cued.
+func TestBuild_GatherableCue_OwnedBySelf_Shows(t *testing.T) {
+	wellPin := sim.WorldPos{X: 100, Y: 100}.Tile()
+	snap := gatherCueSnapshot(wellPin)
+	snap.VillageObjects["well"].OwnerActorID = "hannah" // the subject owns it
+	p := Build(snap, "hannah", nil)
+
+	if p.Surroundings.GatherableItem != "water" {
+		t.Errorf("GatherableItem=%q, want water (owner sees own source)", p.Surroundings.GatherableItem)
+	}
+}
+
+// TestBuild_GatherableCue_NearestOwnedSuppresses_NoFallthrough locks cue/command
+// parity: when the NEAREST gatherable is owned-by-other, the cue is suppressed
+// even though a farther UNOWNED gatherable is also in range. Falling through to
+// the farther source would advertise a gather the command refuses — Gather
+// resolves the nearer owned object and returns ErrNotYourSource. Pairs with the
+// sim-side TestGather_NearestOwned_RejectsDespiteFartherCommons.
+func TestBuild_GatherableCue_NearestOwnedSuppresses_NoFallthrough(t *testing.T) {
+	zero := 0
+	actorTile := sim.WorldPos{X: 100, Y: 100}.Tile()
+	snap := &sim.Snapshot{
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{"hannah": {Pos: actorTile}},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"owned": { // nearest (actor's tile, cheb 0), owned by another actor
+				ID: "owned", DisplayName: "Prudence's Bush",
+				Pos:           sim.WorldPos{X: 100, Y: 100},
+				LoiterOffsetX: &zero, LoiterOffsetY: &zero,
+				OwnerActorID:  "prudence",
+				Refreshes:     []*sim.ObjectRefresh{{Attribute: "hunger", Amount: 0, GatherItem: "berries"}},
+			},
+			"commons": { // farther (cheb 1, still in range), unowned, also gatherable
+				ID: "commons", DisplayName: "Wild Bush",
+				Pos:           sim.WorldPos{X: 100, Y: 100},
+				LoiterOffsetX: intp(1), LoiterOffsetY: &zero, // pin one tile east → cheb 1
+				Refreshes:     []*sim.ObjectRefresh{{Attribute: "hunger", Amount: 0, GatherItem: "berries"}},
+			},
+		},
+	}
+	p := Build(snap, "hannah", nil)
+	if p.Surroundings.GatherableItem != "" {
+		t.Errorf("GatherableItem=%q, want empty (nearest is owned — must NOT fall through to the farther commons)", p.Surroundings.GatherableItem)
+	}
+}

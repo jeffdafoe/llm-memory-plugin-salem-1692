@@ -619,7 +619,7 @@ func buildSurroundings(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnap
 		Atmosphere:        snap.Environment.Atmosphere,
 		LocalMinuteOfDay:  snap.LocalMinuteOfDay,
 	}
-	if item, source, ok := findGatherableCue(snap, a); ok {
+	if item, source, ok := findGatherableCue(snap, actorID, a); ok {
 		s.GatherableItem = item
 		s.GatherableSource = source
 	}
@@ -818,7 +818,7 @@ func awaitEdgeLive(edges map[sim.ActorID]time.Time, key sim.ActorID, now time.Ti
 //
 // The gate and the rendered cue read the SAME SurroundingsView fields, so those
 // two never drift; only this heuristic vs. the command can, per the above.
-func findGatherableCue(snap *sim.Snapshot, a *sim.ActorSnapshot) (sim.ItemKind, string, bool) {
+func findGatherableCue(snap *sim.Snapshot, subjectID sim.ActorID, a *sim.ActorSnapshot) (sim.ItemKind, string, bool) {
 	bestCheb := -1
 	var bestObj *sim.VillageObject
 	var bestID sim.VillageObjectID
@@ -851,6 +851,14 @@ func findGatherableCue(snap *sim.Snapshot, a *sim.ActorSnapshot) (sim.ItemKind, 
 	}
 	for _, r := range bestObj.Refreshes {
 		if r.IsGatherable() {
+			// Strict owner-gate (LLM-50 D2): don't dangle an owned source to a
+			// non-owner — the Gather command rejects it (ErrNotYourSource), and
+			// suppressing the cue here also keeps the gather tool unadvertised
+			// (gateTools reads this same SurroundingsView field). The owner
+			// still sees their own bush.
+			if bestObj.OwnedByOther(subjectID) {
+				return "", "", false
+			}
 			return sim.ItemKind(strings.TrimSpace(string(r.GatherItem))), bestObj.DisplayName, true
 		}
 	}

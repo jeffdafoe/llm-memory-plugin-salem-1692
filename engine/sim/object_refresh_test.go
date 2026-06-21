@@ -141,6 +141,42 @@ func placeAtObjectPin(t *testing.T, w *sim.World, actorID sim.ActorID, objID sim
 	}
 }
 
+// TestApplyObjectRefreshAtArrivalOwnedByOtherSkipped — LLM-50 D2: a non-owner
+// arriving at an OWNED eat-in-place source gets no need drop, no hits, and no
+// supply decrement. (The well is owned by someone other than hannah.)
+func TestApplyObjectRefreshAtArrivalOwnedByOtherSkipped(t *testing.T) {
+	w, cancel := buildRefreshTestWorld(t)
+	defer cancel()
+
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.VillageObjects["well"].OwnerActorID = "prudence"
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("set owner: %v", err)
+	}
+
+	placeAtObjectPin(t, w, "hannah", "well")
+	res, err := w.Send(sim.ApplyObjectRefreshAtArrival("hannah"))
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if r := res.(sim.ArrivalRefreshResult); len(r.Hits) != 0 {
+		t.Errorf("owned-by-other well produced hits: %+v, want empty", r.Hits)
+	}
+
+	// Thirst unchanged (seeded 18); supply unchanged (seeded 3) — neither the
+	// need drop nor the arrival decrement runs for a non-owner.
+	if snap := w.Published().Actors["hannah"]; snap.Needs["thirst"] != 18 {
+		t.Errorf("thirst=%d, want 18 (unchanged — not the owner)", snap.Needs["thirst"])
+	}
+	avail, _ := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return *world.VillageObjects["well"].Refreshes[0].AvailableQuantity, nil
+	}})
+	if avail.(int) != 3 {
+		t.Errorf("well supply=%d, want 3 (untouched)", avail.(int))
+	}
+}
+
 // TestApplyObjectRefreshAtArrivalWell covers the happy path: actor arrives
 // at well, thirst drops, supply decrements by one, dwell credit stamped.
 func TestApplyObjectRefreshAtArrivalWell(t *testing.T) {

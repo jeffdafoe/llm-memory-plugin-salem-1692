@@ -576,6 +576,25 @@ func TestBuildSatiation_FreeSourceThirst(t *testing.T) {
 	}
 }
 
+// TestBuildSatiation_FreeSource_OwnedByOtherSkipped — LLM-50 D2: an owned
+// free-eat/drink source is not surfaced to a non-owner. The well is the only
+// source here and it's owned by someone else, so the thirst need yields no
+// satiation section at all.
+func TestBuildSatiation_FreeSource_OwnedByOtherSkipped(t *testing.T) {
+	origin := sim.WorldToTile(0, 0)
+	subj := &sim.ActorSnapshot{Pos: origin, Needs: map[sim.NeedKey]int{"thirst": sim.DefaultThirstRedThreshold}}
+	well := thirstWell("well", "Well", 96, 0, -8)
+	well.OwnerActorID = "prudence" // owned by someone other than ezekiel
+	snap := &sim.Snapshot{
+		Actors:         map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{"well": well},
+		ItemKinds:      foodDrinkCatalog(),
+	}
+	if v := buildSatiation(snap, "ezekiel", subj); v != nil {
+		t.Errorf("an owned well should not surface to a non-owner; got %+v", v)
+	}
+}
+
 // TestBuildSatiation_FreeSource_SkipsNonNeedAndDepleted: a hunger source must
 // not surface for thirst, and a depleted (dry) thirst source is skipped — so a
 // thirst-only actor near just those two gets no satiation section at all.

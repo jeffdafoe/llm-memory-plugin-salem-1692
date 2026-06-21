@@ -177,6 +177,113 @@ func inventoryOf(t *testing.T, w *sim.World, actorID sim.ActorID, kind sim.ItemK
 	return res.(int)
 }
 
+// setObjectOwner stamps objID's OwnerActorID on the live world. The owner-gate
+// under test (VillageObject.OwnedByOther) compares ids, so the owner needn't be
+// a seeded actor — this bypasses SetVillageObjectOwner's actor-existence check.
+func setObjectOwner(t *testing.T, w *sim.World, objID sim.VillageObjectID, owner sim.ActorID) {
+	t.Helper()
+	_, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		obj := world.VillageObjects[objID]
+		if obj == nil {
+			return nil, fmt.Errorf("setObjectOwner: no object %q", objID)
+		}
+		obj.OwnerActorID = owner
+		return nil, nil
+	}})
+	if err != nil {
+		t.Fatalf("setObjectOwner(%s): %v", objID, err)
+	}
+}
+
+// TestGather_OwnedByOther_Rejects — LLM-50 D2: an owned gatherable is owner-only.
+// A non-owner standing at it is rejected with ErrNotYourSource (the source
+// exists, so it is NOT ErrNoGatherSource), and no stock is drawn down.
+func TestGather_OwnedByOther_Rejects(t *testing.T) {
+	w, cancel := buildGatherTestWorld(t)
+	defer cancel()
+	setObjectOwner(t, w, "bush", "prudence") // owned by someone other than hannah
+	placeAt(t, w, "hannah", "bush")
+
+	_, err := w.Send(sim.Gather("hannah", 1, time.Now().UTC()))
+	if !errors.Is(err, sim.ErrNotYourSource) {
+		t.Errorf("err=%v, want ErrNotYourSource", err)
+	}
+	if got := inventoryOf(t, w, "hannah", "berries"); got != 0 {
+		t.Errorf("inventory berries=%d, want 0 (rejected before harvest)", got)
+	}
+}
+
+// TestGather_OwnedBySelf_Succeeds — the owner harvests their own source.
+func TestGather_OwnedBySelf_Succeeds(t *testing.T) {
+	w, cancel := buildGatherTestWorld(t)
+	defer cancel()
+	setObjectOwner(t, w, "bush", "hannah")
+	placeAt(t, w, "hannah", "bush")
+
+	res, err := w.Send(sim.Gather("hannah", 1, time.Now().UTC()))
+	if err != nil {
+		t.Fatalf("owner gather: %v", err)
+	}
+	if gr := res.(sim.GatherResult); gr.Item != "berries" || gr.Qty != 1 {
+		t.Errorf("got Item=%q Qty=%d, want berries/1", gr.Item, gr.Qty)
+	}
+}
+
+// TestGather_Unowned_IsCommons — an unowned ("" owner) gatherable stays commons:
+// anyone may harvest it (pre-LLM-50 behavior preserved).
+func TestGather_Unowned_IsCommons(t *testing.T) {
+	w, cancel := buildGatherTestWorld(t)
+	defer cancel()
+	placeAt(t, w, "hannah", "bush") // bush seeded with no owner
+	if _, err := w.Send(sim.Gather("hannah", 1, time.Now().UTC())); err != nil {
+		t.Fatalf("commons gather: %v", err)
+	}
+}
+
+// TestGather_NearestOwned_RejectsDespiteFartherCommons — the command-side half of
+// the cue/command parity (pairs with the perception-side
+// TestBuild_GatherableCue_NearestOwnedSuppresses_NoFallthrough). With an OWNED
+// bush on the actor's tile (nearest) and an UNOWNED bush one tile away (farther,
+// still in range), Gather resolves the SINGLE nearest object (findRefreshObjectNear
+// does not skip past it) and rejects with ErrNotYourSource — it does not fall
+// through to the farther commons. So suppressing the cue entirely is correct.
+func TestGather_NearestOwned_RejectsDespiteFartherCommons(t *testing.T) {
+	w, cancel := buildGatherTestWorld(t)
+	defer cancel()
+	ip := func(v int) *int { return &v }
+	_, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		base := sim.WorldPos{X: 3000, Y: 3000}
+		world.Actors["hannah"].Pos = base.Tile()
+		zero, east := 0, 1
+		world.VillageObjects["owned_bush"] = &sim.VillageObject{
+			ID: "owned_bush", DisplayName: "Prudence's Bush", AssetID: "bush-berries", CurrentState: "default",
+			Pos: base, LoiterOffsetX: &zero, LoiterOffsetY: &zero, // cheb 0 from the actor
+			OwnerActorID: "prudence",
+			Refreshes: []*sim.ObjectRefresh{{
+				Attribute: "hunger", Amount: 0, AvailableQuantity: ip(5), MaxQuantity: ip(5),
+				RefreshMode: sim.RefreshModeContinuous, RefreshPeriodHours: ip(6), GatherItem: "berries",
+			}},
+		}
+		world.VillageObjects["commons_bush"] = &sim.VillageObject{
+			ID: "commons_bush", DisplayName: "Wild Bush", AssetID: "bush-berries", CurrentState: "default",
+			Pos: base, LoiterOffsetX: &east, LoiterOffsetY: &zero, // cheb 1 → farther, still in range
+			Refreshes: []*sim.ObjectRefresh{{
+				Attribute: "hunger", Amount: 0, AvailableQuantity: ip(5), MaxQuantity: ip(5),
+				RefreshMode: sim.RefreshModeContinuous, RefreshPeriodHours: ip(6), GatherItem: "berries",
+			}},
+		}
+		return nil, nil
+	}})
+	if err != nil {
+		t.Fatalf("inject: %v", err)
+	}
+
+	_, err = w.Send(sim.Gather("hannah", 1, time.Now().UTC()))
+	if !errors.Is(err, sim.ErrNotYourSource) {
+		t.Errorf("err=%v, want ErrNotYourSource (nearest owned bush, not the farther commons)", err)
+	}
+}
+
 func TestGather_InfiniteWell_AlwaysSucceeds(t *testing.T) {
 	w, cancel := buildGatherTestWorld(t)
 	defer cancel()
