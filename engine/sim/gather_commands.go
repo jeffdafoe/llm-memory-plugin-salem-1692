@@ -34,6 +34,13 @@ var (
 	// refills over time via the regen tick; this is a transient reject, not a
 	// permanent one.
 	ErrGatherableDepleted = errors.New("the source is depleted right now")
+
+	// ErrNotYourSource — the gatherable source is OWNED by another actor.
+	// Gather + eat at an owned village object are owner-only (LLM-50 D2,
+	// VillageObject.OwnedByOther); unowned sources are commons. A permanent
+	// reject for this actor — LLM-facing signal: it belongs to someone else,
+	// look for a wild source instead.
+	ErrNotYourSource = errors.New("that source belongs to someone else — find a wild one")
 )
 
 // GatherResult is the Command reply — what was harvested, for the handler /
@@ -113,6 +120,13 @@ func Gather(actorID ActorID, qty int, at time.Time) Command {
 			objID, obj, row := findGatherableObjectNear(w, actor.Pos)
 			if row == nil {
 				return nil, fmt.Errorf("Gather: %w", ErrNoGatherSource)
+			}
+			// Strict owner-gate (LLM-50 D2): an owned source is owner-only.
+			// Same resolve-then-check posture the cue + arrival paths use; the
+			// PC route (pc_gather.go) delegates to this Command, so gating here
+			// covers both the NPC tool and the PC verb.
+			if obj.OwnedByOther(actorID) {
+				return nil, fmt.Errorf("Gather: %w", ErrNotYourSource)
 			}
 
 			// gather_item is stored canonical, but resolve case-insensitively

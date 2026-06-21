@@ -8,6 +8,24 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/repo/mem"
 )
 
+// TestOwnedByOther covers the strict-owner gather/eat gate (LLM-50 D2): unowned
+// is commons, the owner is allowed, only a non-owner at an owned object is gated.
+func TestOwnedByOther(t *testing.T) {
+	if (&sim.VillageObject{}).OwnedByOther("anyone") {
+		t.Error("unowned object should be commons (OwnedByOther=false)")
+	}
+	owned := &sim.VillageObject{OwnerActorID: "prudence"}
+	if owned.OwnedByOther("prudence") {
+		t.Error("owner should not be gated from their own object")
+	}
+	if !owned.OwnedByOther("hannah") {
+		t.Error("a non-owner should be gated from an owned object")
+	}
+	if !owned.OwnedByOther("") {
+		t.Error("an empty/unknown actor id should be gated from an owned object")
+	}
+}
+
 // TestAssetFindState exercises the per-state lookup.
 func TestAssetFindState(t *testing.T) {
 	a := &sim.Asset{

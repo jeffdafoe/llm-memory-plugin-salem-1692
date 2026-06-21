@@ -336,6 +336,13 @@ func ApplyObjectRefreshAtArrival(actorID ActorID) Command {
 			if obj == nil {
 				return ArrivalRefreshResult{}, nil
 			}
+			// Strict owner-gate (LLM-50 D2): no passive eat/refresh at an object
+			// owned by someone else. A yield-only farm bush already no-ops here
+			// via the amount==0 branch below; this also covers an owned
+			// eat-in-place source (e.g. a future owned fruit tree).
+			if obj.OwnedByOther(actorID) {
+				return ArrivalRefreshResult{}, nil
+			}
 
 			if actor.Needs == nil {
 				actor.Needs = make(map[NeedKey]int)

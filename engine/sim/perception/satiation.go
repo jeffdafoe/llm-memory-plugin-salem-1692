@@ -170,7 +170,7 @@ func buildSatiation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Acto
 		}
 		own := gatherOwnStock(snap, actorSnap, need)
 		peers := gatherCoPresentPeerOffers(snap, actorID, actorSnap, need)
-		free := gatherFreeSatiationSources(snap, actorSnap, need)
+		free := gatherFreeSatiationSources(snap, actorID, actorSnap, need)
 		vendors := gatherSatiationVendors(snap, actorID, actorSnap, need)
 		if len(own) == 0 && len(peers) == 0 && len(free) == 0 && len(vendors) == 0 {
 			continue
@@ -320,7 +320,7 @@ func vendorStructureDistanceTiles(snap *sim.Snapshot, actorSnap *sim.ActorSnapsh
 // padded tile; an object's Pos is world pixels, converted via obj.Pos.Tile()
 // before measuring) and same nearest-first ordering. Each source carries its
 // object id so the rendered cue is actionable through move_to. ZBBS-HOME-359.
-func gatherFreeSatiationSources(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, need sim.NeedKey) []SatiationFreeSource {
+func gatherFreeSatiationSources(snap *sim.Snapshot, subjectID sim.ActorID, actorSnap *sim.ActorSnapshot, need sim.NeedKey) []SatiationFreeSource {
 	if snap == nil || actorSnap == nil {
 		return nil
 	}
@@ -333,6 +333,11 @@ func gatherFreeSatiationSources(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot
 		}
 		mag := objectRefreshMagnitude(obj, need)
 		if mag <= 0 {
+			continue
+		}
+		// Strict owner-gate (LLM-50 D2): an owned source isn't free food for a
+		// non-owner — don't surface it (the eat-on-arrival path skips it too).
+		if obj.OwnedByOther(subjectID) {
 			continue
 		}
 		objTile := obj.Pos.Tile()

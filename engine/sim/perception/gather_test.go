@@ -113,3 +113,30 @@ func TestRenderSurroundings_GatherableLine(t *testing.T) {
 		t.Errorf("render emitted a gatherable line with no cue:\n%s", b2.String())
 	}
 }
+
+// TestBuild_GatherableCue_OwnedByOther_Suppressed — LLM-50 D2: the gatherable
+// cue (and thus the gather tool advertisement, which reads the same
+// SurroundingsView field) is suppressed for a non-owner at an owned source.
+func TestBuild_GatherableCue_OwnedByOther_Suppressed(t *testing.T) {
+	wellPin := sim.WorldPos{X: 100, Y: 100}.Tile()
+	snap := gatherCueSnapshot(wellPin)
+	snap.VillageObjects["well"].OwnerActorID = "prudence" // owned by someone other than hannah
+	p := Build(snap, "hannah", nil)
+
+	if p.Surroundings.GatherableItem != "" {
+		t.Errorf("GatherableItem=%q, want empty (owned by another actor)", p.Surroundings.GatherableItem)
+	}
+}
+
+// TestBuild_GatherableCue_OwnedBySelf_Shows — the owner still sees their own
+// source cued.
+func TestBuild_GatherableCue_OwnedBySelf_Shows(t *testing.T) {
+	wellPin := sim.WorldPos{X: 100, Y: 100}.Tile()
+	snap := gatherCueSnapshot(wellPin)
+	snap.VillageObjects["well"].OwnerActorID = "hannah" // the subject owns it
+	p := Build(snap, "hannah", nil)
+
+	if p.Surroundings.GatherableItem != "water" {
+		t.Errorf("GatherableItem=%q, want water (owner sees own source)", p.Surroundings.GatherableItem)
+	}
+}

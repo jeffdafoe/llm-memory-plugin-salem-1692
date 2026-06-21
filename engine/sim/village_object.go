@@ -51,14 +51,16 @@ type VillageObject struct {
 	DisplayName string // override for the catalog name; "" = use Asset.Name
 	EntryPolicy EntryPolicy
 
-	// OwnerActorID is the single owning actor of this structure ("" if
+	// OwnerActorID is the single owning actor of this object ("" if
 	// unowned). A typed reference into World.Actors, not a stringly-typed
-	// slug — ownership is one input to entry access, not the whole story.
-	// Entry for an EntryPolicyOwner structure is a MEMBERSHIP check
+	// slug — ownership is one input to access, not the whole story.
+	// For a STRUCTURE, entry under EntryPolicyOwner is a MEMBERSHIP check
 	// (owner OR resident OR staff OR lodger — see structureMembershipAllows),
 	// which is why a single owner suffices and co-ownership isn't needed:
-	// a family enters their home by being residents (shared
-	// HomeStructureID), not by co-owning it.
+	// a family enters their home by being residents (shared HomeStructureID),
+	// not by co-owning it. For a gatherable/refreshable object (a berry bush),
+	// it instead drives the strict owner-only gather/eat gate (LLM-50 D2 —
+	// see OwnedByOther): owned ⇒ owner-only, unowned ⇒ commons.
 	OwnerActorID ActorID
 
 	// AttachedTo links overlay objects (lamp on a wagon, etc.) to their
@@ -86,6 +88,21 @@ type VillageObject struct {
 	// Multi-attribute objects (a shaded oak refreshing both tiredness from
 	// shade and hunger from acorns) carry one entry per attribute.
 	Refreshes []*ObjectRefresh
+}
+
+// OwnedByOther reports whether this object has an owner other than actorID —
+// the strict-owner gate (LLM-50 decision D2) for gather/eat on a placed
+// VillageObject. An unowned object ("" owner) is commons (anyone may gather/
+// eat), and the owner is always allowed; only a non-owner standing at an OWNED
+// object is gated out.
+//
+// Deliberately NARROWER than the EntryPolicyOwner structure-entry rule (owner
+// OR resident OR staff OR lodger — structureMembershipAllows): a bush has no
+// residency/staff/lodging concept, so harvesting at an owned object is
+// owner-only. Used by the four gather/eat touch-points (Gather command,
+// ApplyObjectRefreshAtArrival, the gatherable cue, and the free-source list).
+func (o *VillageObject) OwnedByOther(actorID ActorID) bool {
+	return o.OwnerActorID != "" && o.OwnerActorID != actorID
 }
 
 // CloneVillageObject returns a deep copy suitable for publication via
