@@ -289,6 +289,30 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 			return
 		}
 		applyObjectRefreshEffect(w, actorID, objID, obj, now)
+		w.emit(&SourceActivityCompleted{ActorID: actorID, ObjectID: act.ObjectID, Kind: act.Kind, At: now})
+		// Auto-repeat (LLM-55): keep eating a FINITE source while the actor is
+		// still in need and stock remains, so a bush is eaten berry-by-berry
+		// until full or picked clean — at which point applyObjectRefreshEffect
+		// above has already flipped it to its bare state. Re-arm a fresh window;
+		// the next completion sweep lands the next bite. Deliberately finite-only:
+		// an INFINITE source (the well) is never re-armed, so it keeps its
+		// arrival + dwell-drip behavior untouched (continuous drinking there is
+		// the dwell tick's job, not this loop).
+		if shouldRepeatRefresh(actor, obj) {
+			actor.SourceActivity = &SourceActivity{
+				Kind:      SourceActivityRefresh,
+				ObjectID:  objID,
+				StartedAt: now,
+				Until:     now.Add(RefreshActivityDuration),
+			}
+			w.emit(&SourceActivityStarted{
+				ActorID:  actorID,
+				ObjectID: objID,
+				Kind:     SourceActivityRefresh,
+				Until:    actor.SourceActivity.Until,
+				At:       now,
+			})
+		}
 	case SourceActivityHarvest:
 		objID, obj, row := findGatherableObjectNear(w, actor.Pos)
 		if row == nil || objID != act.ObjectID || obj.OwnedByOther(actorID) {
@@ -301,23 +325,52 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 		// Stock may have drained during the window: ErrGatherableDepleted is a
 		// benign nothing-harvested completion (clamped to empty), so swallow it
 		// — but surface any OTHER failure (e.g. inventory overflow) rather than
-		// losing it silently. Either way no effect landed, so don't emit
-		// completion below.
+		// losing it silently. Either way no effect landed, so don't emit completion.
 		if _, err := applyGatherMint(w, actor, objID, obj, row, kind, act.Qty, now); err != nil {
 			if !errors.Is(err, ErrGatherableDepleted) {
 				log.Printf("sim/source_activity: harvest completion failed for %q at %q: %v", actorID, objID, err)
 			}
 			return
 		}
-	default:
-		return
+		w.emit(&SourceActivityCompleted{ActorID: actorID, ObjectID: act.ObjectID, Kind: act.Kind, At: now})
 	}
-	w.emit(&SourceActivityCompleted{
-		ActorID:  actorID,
-		ObjectID: act.ObjectID,
-		Kind:     act.Kind,
-		At:       now,
-	})
+}
+
+// shouldRepeatRefresh reports whether an eat/drink in place should immediately
+// continue: the source carries a FINITE, need-bearing, in-stock row whose need
+// the actor still feels. This is the "keep eating until full or empty" loop
+// (LLM-55) — a bush is eaten berry-by-berry while the eater stays put. Finite by
+// design: an infinite source (a well) is never re-armed here, so it keeps its
+// arrival + dwell behavior; continuous drinking there is the dwell tick's job.
+func shouldRepeatRefresh(actor *Actor, obj *VillageObject) bool {
+	if actor == nil || obj == nil {
+		return false
+	}
+	// Object-level: a bite applies the WHOLE object's refresh (every row) and
+	// decrements each finite supply, so the eat repeats while ANY finite,
+	// need-bearing row still has stock and a need the actor still feels.
+	for _, r := range obj.Refreshes {
+		if r == nil {
+			continue
+		}
+		// >= 0 skips need-increasing rows AND yield-only (Amount == 0); the
+		// schema forbids Amount > 0, but the predicate states the contract
+		// (need-bearing = Amount < 0) outright. Infinite rows (a well) never
+		// auto-repeat — continuous drinking there is the dwell tick's job.
+		if r.Amount >= 0 || !r.IsFinite() {
+			continue
+		}
+		if *r.AvailableQuantity <= 0 { // IsFinite guarantees AvailableQuantity != nil
+			continue // picked clean
+		}
+		if _, known := FindNeed(r.Attribute); !known {
+			continue
+		}
+		if actor.Needs[r.Attribute] > 0 {
+			return true // still in need and stock remains → eat again
+		}
+	}
+	return false
 }
 
 // completeDueSourceActivities lands every activity whose Until has passed as of

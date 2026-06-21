@@ -100,11 +100,13 @@ func teleport(t *testing.T, w *sim.World, actorID sim.ActorID, x, y int) {
 
 // TestStartRefresh_DefersThenCompletes: arriving at an edible bush STARTS a
 // timed eat — the hunger drop and supply decrement do not land until the
-// completion sweep, and then exactly once.
+// completion sweep, and then exactly once. Hunger 8 here is fully sated by the
+// single -8 bite, so the LLM-55 auto-repeat does NOT re-arm (covered separately
+// in TestRefresh_AutoRepeatsUntilFullOrEmpty).
 func TestStartRefresh_DefersThenCompletes(t *testing.T) {
 	w, cancel := buildGatherTestWorld(t)
 	defer cancel()
-	setNeed(t, w, "hannah", "hunger", 14)
+	setNeed(t, w, "hannah", "hunger", 8)
 	placeAt(t, w, "hannah", "bush")
 
 	res, err := w.Send(sim.StartRefreshAtArrival("hannah"))
@@ -116,8 +118,8 @@ func TestStartRefresh_DefersThenCompletes(t *testing.T) {
 		t.Fatalf("start result = %+v, want Started refresh @ bush", sr)
 	}
 	// Deferred: nothing applied yet.
-	if got := needOf(t, w, "hannah", "hunger"); got != 14 {
-		t.Errorf("hunger = %d, want 14 (effect deferred, not applied at start)", got)
+	if got := needOf(t, w, "hannah", "hunger"); got != 8 {
+		t.Errorf("hunger = %d, want 8 (effect deferred, not applied at start)", got)
 	}
 	if got := availOf(t, w, "bush"); got != 2 {
 		t.Errorf("supply = %d, want 2 (not decremented at start)", got)
@@ -126,21 +128,21 @@ func TestStartRefresh_DefersThenCompletes(t *testing.T) {
 	if n := forceComplete(t, w); n != 1 {
 		t.Fatalf("completed = %d, want 1", n)
 	}
-	if got := needOf(t, w, "hannah", "hunger"); got != 6 { // 14 - 8
-		t.Errorf("hunger = %d, want 6 (eased at completion)", got)
+	if got := needOf(t, w, "hannah", "hunger"); got != 0 { // 8 - 8, fully sated
+		t.Errorf("hunger = %d, want 0 (eased at completion)", got)
 	}
 	if got := availOf(t, w, "bush"); got != 1 {
 		t.Errorf("supply = %d, want 1 (decremented at completion)", got)
 	}
 	if sa := liveActivity(t, w, "hannah"); sa != nil {
-		t.Errorf("activity = %+v, want nil (cleared at completion)", sa)
+		t.Errorf("activity = %+v, want nil (sated, no auto-repeat)", sa)
 	}
 	// No double-application: a second sweep finds nothing and changes nothing.
 	if n := forceComplete(t, w); n != 0 {
 		t.Errorf("second sweep completed = %d, want 0", n)
 	}
-	if got := needOf(t, w, "hannah", "hunger"); got != 6 {
-		t.Errorf("hunger = %d after second sweep, want 6 (no double-apply)", got)
+	if got := needOf(t, w, "hannah", "hunger"); got != 0 {
+		t.Errorf("hunger = %d after second sweep, want 0 (no double-apply)", got)
 	}
 }
 
@@ -158,9 +160,10 @@ func backdateActivity(t *testing.T, w *sim.World, actorID sim.ActorID) {
 }
 
 // TestStartRefresh_SelfHealsStaleWindow: a window that has expired but the ~1s
-// sweep hasn't yet landed must NOT block a fresh start. The next arrival lands
-// the stale bite (eases hunger once, draws the bush down) and starts anew,
-// instead of reading as "still busy" and no-op'ing.
+// sweep hasn't yet landed must NOT permanently block. The next start lands the
+// stale bite (eases hunger, draws the bush down); since the eater is still
+// hungry with stock left, that completion auto-re-arms (LLM-55), so the eat
+// continues rather than the stale window reading as "still busy" forever.
 func TestStartRefresh_SelfHealsStaleWindow(t *testing.T) {
 	w, cancel := buildGatherTestWorld(t)
 	defer cancel()
@@ -176,14 +179,21 @@ func TestStartRefresh_SelfHealsStaleWindow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second StartRefreshAtArrival: %v", err)
 	}
-	if sr := res.(sim.SourceActivityStartResult); !sr.Started {
-		t.Error("did not start a fresh window after self-healing the stale one")
-	}
+	// The stale bite landed during self-heal: hunger eased, the bush drawn down.
 	if got := needOf(t, w, "hannah", "hunger"); got != 6 {
 		t.Errorf("hunger = %d, want 6 (the stale bite landed during self-heal)", got)
 	}
 	if got := availOf(t, w, "bush"); got != 1 {
 		t.Errorf("supply = %d, want 1 (decremented by the landed stale bite)", got)
+	}
+	// Still hungry with stock left, so the self-heal's completion auto-re-armed
+	// (LLM-55): the explicit start correctly reads "busy" rather than stacking a
+	// second window, and the eat carries on.
+	if sr := res.(sim.SourceActivityStartResult); sr.Started {
+		t.Error("start stacked a second window on top of the auto-repeat one")
+	}
+	if sa := liveActivity(t, w, "hannah"); sa == nil {
+		t.Error("no activity after self-heal — the eat should continue via auto-repeat")
 	}
 }
 
@@ -367,5 +377,109 @@ func TestBusyAtSource_TracksWindow(t *testing.T) {
 	}
 	if got[1] {
 		t.Error("BusyAtSource(now+1h) = true, want false past the window")
+	}
+}
+
+// TestRefresh_AutoRepeatsUntilFullOrEmpty (LLM-55): standing at a finite bush
+// eats berry-by-berry — each completion re-arms a fresh window while the actor
+// is still hungry and stock remains, and stops once sated (or empty). Hunger 14
+// against a 2-berry bush (−8 each) takes exactly two bites: 14→6 (re-armed),
+// then 6→0 (sated, not re-armed); supply 2→1→0.
+func TestRefresh_AutoRepeatsUntilFullOrEmpty(t *testing.T) {
+	w, cancel := buildGatherTestWorld(t)
+	defer cancel()
+	setNeed(t, w, "hannah", "hunger", 14)
+	placeAt(t, w, "hannah", "bush")
+
+	if _, err := w.Send(sim.StartRefreshAtArrival("hannah")); err != nil {
+		t.Fatalf("StartRefreshAtArrival: %v", err)
+	}
+
+	// Bite 1: eases hunger, draws the bush down, and RE-ARMS (still hungry + stock).
+	if n := forceComplete(t, w); n != 1 {
+		t.Fatalf("first completion = %d, want 1", n)
+	}
+	if got := needOf(t, w, "hannah", "hunger"); got != 6 {
+		t.Errorf("hunger after bite 1 = %d, want 6", got)
+	}
+	if got := availOf(t, w, "bush"); got != 1 {
+		t.Errorf("supply after bite 1 = %d, want 1", got)
+	}
+	if sa := liveActivity(t, w, "hannah"); sa == nil || sa.Kind != sim.SourceActivityRefresh {
+		t.Fatalf("activity after bite 1 = %+v, want a re-armed refresh window", sa)
+	}
+
+	// Bite 2: sates (6−8 clamps to 0) and empties the bush — no re-arm. (The
+	// re-armed window's Until was stamped from forceComplete's +1h clock, so
+	// backdate it to be due for the next sweep — the production ticker just waits.)
+	backdateActivity(t, w, "hannah")
+	if n := forceComplete(t, w); n != 1 {
+		t.Fatalf("second completion = %d, want 1", n)
+	}
+	if got := needOf(t, w, "hannah", "hunger"); got != 0 {
+		t.Errorf("hunger after bite 2 = %d, want 0 (sated)", got)
+	}
+	if got := availOf(t, w, "bush"); got != 0 {
+		t.Errorf("supply after bite 2 = %d, want 0 (picked clean)", got)
+	}
+	if sa := liveActivity(t, w, "hannah"); sa != nil {
+		t.Errorf("activity after bite 2 = %+v, want nil (sated + empty, no re-arm)", sa)
+	}
+}
+
+// TestRefresh_InfiniteSource_NoAutoRepeat (LLM-55): an INFINITE source (the well)
+// is never auto-repeated — it drinks once on arrival and stops, keeping its
+// arrival + dwell behavior, even though the actor is still thirsty afterward.
+func TestRefresh_InfiniteSource_NoAutoRepeat(t *testing.T) {
+	w, cancel := buildGatherTestWorld(t)
+	defer cancel()
+	setNeed(t, w, "hannah", "thirst", 14)
+	placeAt(t, w, "hannah", "well")
+
+	if _, err := w.Send(sim.StartRefreshAtArrival("hannah")); err != nil {
+		t.Fatalf("StartRefreshAtArrival: %v", err)
+	}
+	if n := forceComplete(t, w); n != 1 {
+		t.Fatalf("completion = %d, want 1", n)
+	}
+	if got := needOf(t, w, "hannah", "thirst"); got != 2 { // 14 - 12
+		t.Errorf("thirst = %d, want 2 (one drink applied)", got)
+	}
+	if sa := liveActivity(t, w, "hannah"); sa != nil {
+		t.Errorf("activity = %+v, want nil (infinite source not auto-repeated, despite still being thirsty)", sa)
+	}
+}
+
+// TestRefresh_EmptyStopsEvenWhileHungry (LLM-55): termination is "sated OR
+// empty", not "sated" — a bush that runs out stops the loop even while the eater
+// is still hungry. Hunger 24 against a 2-berry bush (−8 each) empties it after
+// two bites (24→16→8, supply 2→1→0); the eater is still hungry (8 > 0) but the
+// loop ends because there's no stock left.
+func TestRefresh_EmptyStopsEvenWhileHungry(t *testing.T) {
+	w, cancel := buildGatherTestWorld(t)
+	defer cancel()
+	setNeed(t, w, "hannah", "hunger", 24) // more than two berries can clear
+	placeAt(t, w, "hannah", "bush")
+
+	if _, err := w.Send(sim.StartRefreshAtArrival("hannah")); err != nil {
+		t.Fatalf("StartRefreshAtArrival: %v", err)
+	}
+	// Bite 1: 24→16, supply 2→1, re-armed (still hungry + stock).
+	if n := forceComplete(t, w); n != 1 {
+		t.Fatalf("bite 1 = %d, want 1", n)
+	}
+	backdateActivity(t, w, "hannah")
+	// Bite 2: 16→8, supply 1→0 — bush empty, so NO re-arm despite hunger 8 > 0.
+	if n := forceComplete(t, w); n != 1 {
+		t.Fatalf("bite 2 = %d, want 1", n)
+	}
+	if got := needOf(t, w, "hannah", "hunger"); got != 8 {
+		t.Errorf("hunger = %d, want 8 (still hungry after the bush emptied)", got)
+	}
+	if got := availOf(t, w, "bush"); got != 0 {
+		t.Errorf("supply = %d, want 0 (picked clean)", got)
+	}
+	if sa := liveActivity(t, w, "hannah"); sa != nil {
+		t.Errorf("activity = %+v, want nil (empty stops the loop even while hungry)", sa)
 	}
 }
