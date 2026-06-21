@@ -667,6 +667,18 @@ func TestIntegration_VillageObjects_YieldOnlyAmountCheck(t *testing.T) {
 		t.Errorf("amount=0 + NULL gather_item: got err=%v (code %q), want check_violation 23514", err, got)
 	}
 
+	// amount=0 + empty/whitespace gather_item → check_violation: the CHECK
+	// mirrors Go's trim-aware IsGatherable(), so a blank gather_item is not a
+	// legal yield-only row even though it is non-NULL.
+	for _, blank := range []string{"", "   "} {
+		_, err := f.Pool.Exec(ctx, `
+			INSERT INTO object_refresh (object_id, attribute, amount, gather_item)
+			VALUES ($1, 'thirst', 0, $2)`, uuidObj1, blank)
+		if got := pgErrCode(err); got != "23514" {
+			t.Errorf("amount=0 + gather_item=%q: got err=%v (code %q), want check_violation 23514", blank, err, got)
+		}
+	}
+
 	// amount>0 → still rejected (would RAISE a need), gather_item or not.
 	_, err = f.Pool.Exec(ctx, `
 		INSERT INTO object_refresh (object_id, attribute, amount, gather_item)

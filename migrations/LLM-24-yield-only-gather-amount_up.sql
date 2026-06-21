@@ -17,10 +17,16 @@
 -- Engine-owned table, but a CHECK swap is checkpoint-safe (the running binary
 -- writes only amount < 0 rows, which the new constraint still admits), so this
 -- applies cleanly via the normal deploy path.
+--
+-- The zero-amount branch mirrors Go's trim-aware ObjectRefresh.IsGatherable()
+-- (gather_item with surrounding whitespace stripped must be non-empty), so the
+-- DB never admits a yield-only row the engine would treat as non-gatherable —
+-- NULLIF(btrim(...), '') rejects '' and whitespace-only gather_item alongside
+-- NULL. btrim/NULLIF are immutable, so this is valid in a CHECK.
 BEGIN;
 
 ALTER TABLE object_refresh DROP CONSTRAINT object_refresh_amount_negative;
 ALTER TABLE object_refresh ADD CONSTRAINT object_refresh_amount_negative
-    CHECK ((amount < 0) OR (amount = 0 AND gather_item IS NOT NULL));
+    CHECK ((amount < 0) OR (amount = 0 AND NULLIF(btrim(gather_item), '') IS NOT NULL));
 
 COMMIT;
