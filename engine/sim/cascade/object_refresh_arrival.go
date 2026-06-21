@@ -56,9 +56,15 @@ func handleObjectRefreshArrival(w *sim.World, evt sim.Event) {
 		return
 	}
 
-	if _, err := sim.ApplyObjectRefreshAtArrival(arrived.ActorID).Fn(w); err != nil {
+	// LLM-54: arrival no longer applies the refresh instantly — it STARTS a
+	// timed eat/drink (StartRefreshAtArrival sets Actor.SourceActivity; the
+	// completion sweep applies the need-drop a few seconds later). It
+	// self-filters the same way the old instant apply did: arriving somewhere
+	// that is not an applicable refresh source no-ops (Started=false), so a
+	// blanket subscribe to every ActorArrived stays correct.
+	if _, err := sim.StartRefreshAtArrival(arrived.ActorID).Fn(w); err != nil {
 		log.Printf(
-			"sim/cascade: object-refresh-on-arrival failed for %q: %v",
+			"sim/cascade: start-refresh-on-arrival failed for %q: %v",
 			arrived.ActorID, err,
 		)
 	}

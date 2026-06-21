@@ -940,6 +940,16 @@ func actorCanReactNow(w *World, a *Actor, now time.Time) (eligible bool, stale b
 	if a.SleepingUntil != nil && a.SleepingUntil.After(now) {
 		return false, false
 	}
+	// A timed source activity (eat/drink/harvest in flight, LLM-54) shelves the
+	// tick like a very short sleep: the actor deliberately engaged the source and
+	// is occupied for a few seconds. Back off (eligible=false, stale=false) and
+	// resume on the next scan once the completion sweep clears the window. The
+	// activity is seconds-scale, so this never strands a warrant the way a long
+	// sleep could; it just stops the model being yanked off mid-bite into a move
+	// that would abandon the activity (commands_move.go clears it on any move).
+	if a.SourceActivity != nil && a.SourceActivity.Until.After(now) {
+		return false, false
+	}
 	// A scheduled break (StateResting / BreakUntil) shelves the tick too — EXCEPT
 	// a red-tier need warrant (ZBBS-HOME-329 #3), an operator nudge — a bare
 	// admin force-tick or a directive impulse (#4) — or a PC speaking into this

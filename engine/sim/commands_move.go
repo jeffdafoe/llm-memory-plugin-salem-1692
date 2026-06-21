@@ -212,6 +212,24 @@ func MoveActor(actorID ActorID, dest MoveDestination, leaveHuddleFirst bool, now
 				wakeNPC(w, actor)
 			}
 
+			// LLM-54: committing a move ABANDONS any in-flight eat/drink/harvest
+			// at a source — the actor got up and walked off, so the bite/pick
+			// never lands (the effect applies only at completion, never mid-
+			// window, so there is nothing to roll back). Cleared for PC and NPC
+			// alike, here after the validation gates so a rejected move leaves a
+			// running activity undisturbed. Emit the abandon so a surfacing
+			// consumer (LLM-56 PC HUD) gets a terminal event for a start it saw.
+			if actor.SourceActivity != nil {
+				cancelled := actor.SourceActivity
+				actor.SourceActivity = nil
+				w.emit(&SourceActivityCancelled{
+					ActorID:  actor.ID,
+					ObjectID: cancelled.ObjectID,
+					Kind:     cancelled.Kind,
+					At:       time.Now().UTC(),
+				})
+			}
+
 			// Step 6 — supersede any in-flight intent. The old attempt
 			// dies silently; no ActorMoveStopped is emitted.
 			var superseded MovementAttemptID

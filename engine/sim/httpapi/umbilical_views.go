@@ -117,6 +117,11 @@ type UmbilicalAgentDTO struct {
 	BreakUntil    *time.Time `json:"break_until,omitempty"`
 	SleepingUntil *time.Time `json:"sleeping_until,omitempty"`
 
+	// Source activity — an in-flight timed eat/drink/harvest at a village object
+	// (LLM-54; nil = not engaged). Like the rest windows, deliberately not on the
+	// published snapshot — surfaced here for operator inspection only.
+	SourceActivity *SourceActivityDTO `json:"source_activity,omitempty"`
+
 	// Tick scheduling + reactor-evaluator state — the "is this agent queued /
 	// mid-tick / idle" picture that's NOT on the published snapshot.
 	LastTickedAt   *time.Time `json:"last_ticked_at,omitempty"`
@@ -182,6 +187,7 @@ func (s *Server) handleUmbilicalAgent(w http.ResponseWriter, r *http.Request) {
 			Coins:             a.Coins,
 			BreakUntil:        clonePtrTime(a.BreakUntil),
 			SleepingUntil:     clonePtrTime(a.SleepingUntil),
+			SourceActivity:    sourceActivityDTO(a.SourceActivity),
 			LastTickedAt:      clonePtrTime(a.LastTickedAt),
 			WarrantedSince:    clonePtrTime(a.WarrantedSince),
 			WarrantDueAt:      clonePtrTime(a.WarrantDueAt),
@@ -437,6 +443,30 @@ func (s *Server) handleUmbilicalActors(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, dto)
+}
+
+// SourceActivityDTO is the operator-view projection of an in-flight
+// Actor.SourceActivity (LLM-54): which timed action (eat/drink/harvest), at
+// which object, finishing when. Plain values copied on the world goroutine.
+type SourceActivityDTO struct {
+	Kind     string     `json:"kind"`
+	ObjectID string     `json:"object_id,omitempty"`
+	Until    *time.Time `json:"until,omitempty"`
+}
+
+// sourceActivityDTO projects a live *sim.SourceActivity into the DTO, copying
+// the Until timestamp so the result never aliases live world state. nil → nil
+// (not engaged), which the omitempty JSON tag drops from the payload.
+func sourceActivityDTO(sa *sim.SourceActivity) *SourceActivityDTO {
+	if sa == nil {
+		return nil
+	}
+	until := sa.Until
+	return &SourceActivityDTO{
+		Kind:     string(sa.Kind),
+		ObjectID: string(sa.ObjectID),
+		Until:    &until,
+	}
 }
 
 // clonePtrTime copies a *time.Time so the returned DTO never aliases a live

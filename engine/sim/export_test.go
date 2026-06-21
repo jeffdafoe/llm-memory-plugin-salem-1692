@@ -12,13 +12,14 @@ import "time"
 // If you find yourself wanting one of these in a non-test production
 // caller, that's a signal you should be issuing a Command instead.
 var (
-	BuildWalkGrid            = buildWalkGrid
-	MaxDwellMinutes          = maxDwellMinutes
-	CommonRoomForStructure   = commonRoomForStructure
-	CanEnterRoom             = canEnterRoom
-	DetermineTransitionFlips = determineTransitionFlips
-	ScheduleFlips            = scheduleFlips
-	RegenObjectRefresh       = regenObjectRefresh
+	BuildWalkGrid               = buildWalkGrid
+	MaxDwellMinutes             = maxDwellMinutes
+	CommonRoomForStructure      = commonRoomForStructure
+	CanEnterRoom                = canEnterRoom
+	DetermineTransitionFlips    = determineTransitionFlips
+	ScheduleFlips               = scheduleFlips
+	RegenObjectRefresh          = regenObjectRefresh
+	CompleteDueSourceActivities = completeDueSourceActivities
 
 	// FireScheduledFlip exposes the post-AfterFunc callback body so the
 	// shutdown test can run it synchronously after cancelling the world.

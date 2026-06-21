@@ -439,6 +439,22 @@ type Actor struct {
 	BreakUntil    *time.Time
 	SleepingUntil *time.Time
 
+	// SourceActivity is an in-flight, timed action AT a village object — eating
+	// or drinking in place at a refresh source, or harvesting a gatherable
+	// source (LLM-54). The actor is occupied until SourceActivity.Until; the
+	// completion sweep (RunSourceActivityTicker) applies the effect then. nil
+	// when not engaged at a source.
+	//
+	// TRANSIENT — deliberately NOT checkpointed (unlike BreakUntil/SleepingUntil),
+	// like OpenUntil. The window is seconds-scale, so restart-loss is wholly
+	// benign: a lost in-flight bite/harvest just never applied its effect (the
+	// persistent need/inventory/supply mutation lands atomically at completion,
+	// never mid-window), so there is no torn state to recover and the actor
+	// simply re-engages on its next arrival/tool call. A durable column for a
+	// 3-second timer would be exactly the "Postgres as cadence store" the
+	// architecture avoids.
+	SourceActivity *SourceActivity
+
 	// OpenUntil is a keeper's commitment to stay open past the end of its shift,
 	// until this instant (ZBBS-WORK-387 stay_open). The inverse of BreakUntil:
 	// while set it SUPPRESSES the off-shift wind-down (the go-home / to-inn duty
@@ -815,6 +831,11 @@ func CloneActor(a *Actor) *Actor {
 	if a.SleepingUntil != nil {
 		t := *a.SleepingUntil
 		cp.SleepingUntil = &t
+	}
+	if a.SourceActivity != nil {
+		// Value struct with no nested pointers — a shallow copy breaks aliasing.
+		sa := *a.SourceActivity
+		cp.SourceActivity = &sa
 	}
 	if a.OpenUntil != nil {
 		t := *a.OpenUntil

@@ -137,58 +137,71 @@ func Gather(actorID ActorID, qty int, at time.Time) Command {
 				return nil, fmt.Errorf("Gather: %w %q (source %s gather_item)", ErrUnknownItemKind, row.GatherItem, objID)
 			}
 
-			// Resolve the actual amount (clamped to a finite source's stock) and
-			// validate fully BEFORE any mutation — an early return after
-			// decrementing supply would lose stock with no inventory credited.
-			actual := requested
-			if row.IsFinite() {
-				avail := *row.AvailableQuantity
-				if avail <= 0 {
-					return nil, fmt.Errorf("Gather: %w", ErrGatherableDepleted)
-				}
-				if actual > avail {
-					actual = avail
-				}
-			}
-			cur := actor.Inventory[kind]
-			if cur > math.MaxInt-actual {
-				// Pathological accumulated stock — refuse rather than wrap negative.
-				return nil, fmt.Errorf("Gather: inventory quantity overflow for %q (have %d, +%d)", kind, cur, actual)
-			}
-
-			// Mutations (post-validation): decrement finite supply, credit inventory.
-			if row.IsFinite() {
-				next := *row.AvailableQuantity - actual
-				row.AvailableQuantity = &next
-				// Picking may have emptied a finite bush — recompute its
-				// berries/bare visual so it goes bare.
-				refreshObjectBerryState(w, obj)
-			}
-			if actor.Inventory == nil {
-				actor.Inventory = make(map[ItemKind]int)
-			}
-			actor.Inventory[kind] = cur + actual
-
-			catalogName := ""
-			if a := w.Assets[obj.AssetID]; a != nil {
-				catalogName = a.Name
-			}
-			name := obj.EffectiveDisplayName(catalogName)
-
-			w.emit(&ItemGathered{
-				ActorID:  actorID,
-				ObjectID: objID,
-				Item:     kind,
-				Qty:      actual,
-				At:       at,
-			})
-
-			return GatherResult{
-				ObjectID:   objID,
-				SourceName: name,
-				Item:       kind,
-				Qty:        actual,
-			}, nil
+			return applyGatherMint(w, actor, objID, obj, row, kind, requested, at)
 		},
 	}
+}
+
+// applyGatherMint is the EFFECT half of a harvest: clamp the requested qty to a
+// finite source's remaining stock, decrement that supply, credit the actor's
+// inventory, recompute the bush's berry/bare visual, and emit ItemGathered.
+// Shared by the instant Gather command and the timed harvest completion
+// (source_activity.go). Caller has resolved the gatherable object + row, passed
+// the owner gate, and resolved kind; requested is the validated amount (>= 1).
+// Returns the harvested GatherResult, or ErrGatherableDepleted when a finite
+// source has run dry by the time the mint lands — a transient reject for the
+// instant caller, a benign nothing-harvested completion for the timed one.
+func applyGatherMint(w *World, actor *Actor, objID VillageObjectID, obj *VillageObject, row *ObjectRefresh, kind ItemKind, requested int, at time.Time) (GatherResult, error) {
+	// Resolve the actual amount (clamped to a finite source's stock) and
+	// validate fully BEFORE any mutation — an early return after decrementing
+	// supply would lose stock with no inventory credited.
+	actual := requested
+	if row.IsFinite() {
+		avail := *row.AvailableQuantity
+		if avail <= 0 {
+			return GatherResult{}, fmt.Errorf("Gather: %w", ErrGatherableDepleted)
+		}
+		if actual > avail {
+			actual = avail
+		}
+	}
+	cur := actor.Inventory[kind]
+	if cur > math.MaxInt-actual {
+		// Pathological accumulated stock — refuse rather than wrap negative.
+		return GatherResult{}, fmt.Errorf("Gather: inventory quantity overflow for %q (have %d, +%d)", kind, cur, actual)
+	}
+
+	// Mutations (post-validation): decrement finite supply, credit inventory.
+	if row.IsFinite() {
+		next := *row.AvailableQuantity - actual
+		row.AvailableQuantity = &next
+		// Picking may have emptied a finite bush — recompute its
+		// berries/bare visual so it goes bare.
+		refreshObjectBerryState(w, obj)
+	}
+	if actor.Inventory == nil {
+		actor.Inventory = make(map[ItemKind]int)
+	}
+	actor.Inventory[kind] = cur + actual
+
+	catalogName := ""
+	if a := w.Assets[obj.AssetID]; a != nil {
+		catalogName = a.Name
+	}
+	name := obj.EffectiveDisplayName(catalogName)
+
+	w.emit(&ItemGathered{
+		ActorID:  actor.ID,
+		ObjectID: objID,
+		Item:     kind,
+		Qty:      actual,
+		At:       at,
+	})
+
+	return GatherResult{
+		ObjectID:   objID,
+		SourceName: name,
+		Item:       kind,
+		Qty:        actual,
+	}, nil
 }

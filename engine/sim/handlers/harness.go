@@ -1021,6 +1021,17 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 			}
 		}
 	}
+	// gather: harvesting now takes time (LLM-54). The commit STARTS a timed pick
+	// — the yield lands in the actor's pack a few seconds later, surfaced in its
+	// next perception — so a bare "[ok]" would read as "done, nothing happened"
+	// and bait an immediate re-gather. The actor is occupied for the window (the
+	// reactor won't re-tick it mid-pick); this is the model-facing half that
+	// steers it to wait rather than re-fire.
+	if vc.Name == "gather" {
+		if r, ok := cmdResult.(sim.SourceActivityStartResult); ok && r.Started {
+			return "[ok] You set to picking — it takes a little while. What you gather will be in your pack shortly; you needn't gather again. Carry on with something else, or call done()."
+		}
+	}
 	if vc.Name == "speak" {
 		if args, ok := vc.DecodedArgs.(SpeakArgs); ok {
 			text := strings.TrimSpace(args.Text)
