@@ -307,6 +307,27 @@ func TestAutoSleepOnArrival(t *testing.T) {
 	}
 }
 
+// TestExecuteNPCSleep_ClearsBreak: LLM-62 — bedding supersedes an open break.
+// executeNPCSleep now owns the "never both rest windows" invariant directly: it
+// clears BreakUntil and stamps SleepingUntil, so the auto-bed paths (which dropped
+// their break-skip) can bed an on-break actor without it ever holding both windows.
+func TestExecuteNPCSleep_ClearsBreak(t *testing.T) {
+	now := time.Now().UTC()
+	a := npc("k", KindNPCStateful)
+	bu := now.Add(2 * time.Hour)
+	a.BreakUntil = &bu
+	w := sleepTestWorld(a)
+	if !executeNPCSleep(w, a, now) {
+		t.Fatal("executeNPCSleep returned false (awake actor should bed)")
+	}
+	if a.SleepingUntil == nil {
+		t.Error("SleepingUntil not stamped")
+	}
+	if a.BreakUntil != nil {
+		t.Errorf("BreakUntil not cleared on sleep: %v", a.BreakUntil)
+	}
+}
+
 func TestAutoSleepOnArrivalNotAtHome(t *testing.T) {
 	now := time.Date(2026, 5, 22, 22, 0, 0, 0, time.UTC)
 	a := npc("a", KindNPCStateful)

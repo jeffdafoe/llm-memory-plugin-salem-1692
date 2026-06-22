@@ -237,6 +237,54 @@ func TestShiftDutyTarget_OffShiftBreakStillWindsDown(t *testing.T) {
 	}
 }
 
+// TestShiftDutyTarget_ExpiredBreakOnShiftNotSuppressed: only a LIVE break (After
+// now) suppresses the duty — the shift-aware guard checks .After(now), not just
+// non-nil. An on-shift actor with an EXPIRED break still gets its normal to-work
+// duty. LLM-62.
+func TestShiftDutyTarget_ExpiredBreakOnShiftNotSuppressed(t *testing.T) {
+	now := time.Now()
+	past := now.Add(-time.Hour)
+	a := shiftNPC("n", KindNPCStateful, "shop", "home", "home") // on shift, at home (not at work)
+	a.ScheduleStartMin = intptr(420)
+	a.ScheduleEndMin = intptr(960)
+	a.BreakUntil = &past // expired — must not suppress
+	w := sleepTestWorld(a)
+	target, toWork, ok := shiftDutyTarget(w, a, 600, now) // 10:00, on shift
+	if !ok || target != "shop" || !toWork {
+		t.Errorf("on-shift actor with expired break should get to-work duty; got (%q,%v,%v), want (shop,true,true)", target, toWork, ok)
+	}
+}
+
+// TestShiftDutyTarget_OvernightShiftBreakSuppression: the shift-aware break guard
+// runs through minuteInShiftWindow, so it must honor wraparound (overnight)
+// schedules. For a 22:00–06:00 keeper, a live break at 23:00 (inside the window →
+// on shift) suppresses the duty; the same break at 07:00 (daytime gap → off shift)
+// does not, so the keeper winds down home. LLM-62.
+func TestShiftDutyTarget_OvernightShiftBreakSuppression(t *testing.T) {
+	now := time.Now()
+	future := now.Add(time.Hour)
+	mk := func(inside StructureID) *Actor {
+		a := shiftNPC("n", KindNPCStateful, "shop", "home", inside)
+		a.ScheduleStartMin = intptr(1320) // 22:00
+		a.ScheduleEndMin = intptr(360)    // 06:00 — wraps midnight
+		a.BreakUntil = &future
+		return a
+	}
+	// 23:00 (minute 1380), not at work → would get a to-work duty, but the on-shift
+	// break suppresses it.
+	onShift := mk("home")
+	if _, _, ok := shiftDutyTarget(sleepTestWorld(onShift), onShift, 1380, now); ok {
+		t.Error("overnight on-shift (23:00) on-break keeper should be suppressed")
+	}
+	// 07:00 (minute 420), at work and away from home → off-shift wind-down; the
+	// break no longer shields it.
+	offShift := mk("shop")
+	target, toWork, ok := shiftDutyTarget(sleepTestWorld(offShift), offShift, 420, now)
+	if !ok || target != "home" || toWork {
+		t.Errorf("overnight off-shift (07:00) on-break keeper should wind down home; got (%q,%v,%v), want (home,false,true)", target, toWork, ok)
+	}
+}
+
 // TestShiftDutyTarget_MidMealSuppressesGoHome — ZBBS-WORK-386. The off-shift
 // go-home duty yields while the NPC holds a live item-source dwell credit
 // (mid-meal), so the engine doesn't drive it home off its meal. Object-source
