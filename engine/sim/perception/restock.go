@@ -69,6 +69,17 @@ type RestockItemView struct {
 	// is co-present (then the walk-to list renders as before).
 	CoPresentSeller string
 
+	// PendingOfferToCoPresentSeller is true when CoPresentSeller is set AND the
+	// reseller already has a still-pending pay_with_item offer to that seller for
+	// this item (via hasPendingOfferTo — the same still-pending check the satiation
+	// co-present cue uses, narrowed to this seller+item — so it can't disagree with
+	// the "## Offers you have standing" cue). When set, render drops the headroom/cost lines and
+	// the "buy it now" imperative for a stay-and-wait steer, so the reseller bides
+	// for the answer instead of re-staking the offer and churning (the
+	// Josiah↔Elizabeth milk loop). Auto-clears once the offer leaves Pending
+	// (expired/accepted → RecentlyResolvedOffersFromMe), restoring the buy cue. LLM-64.
+	PendingOfferToCoPresentSeller bool
+
 	// AffordableQty is how many units the reseller's purse covers at the rate
 	// they last paid for this item (newest price-book observation, across all
 	// sellers). -1 when no price is on record, in which case the
@@ -156,15 +167,17 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 		if c, ok := buyerLastPaidFillCost(snap, actorID, e.Item, headroom); ok {
 			fillCost = c
 		}
+		coName, coID := coPresentSellerForItem(snap, actorID, actorSnap, e.Item)
 		items = append(items, RestockItemView{
-			ItemLabel:       itemDisplayLabel(snap, e.Item),
-			CurrentQty:      current,
-			Cap:             cap,
-			Vendors:         findItemVendors(snap, actorID, actorSnap, e.Item),
-			CoPresentSeller: coPresentSellerForItem(snap, actorID, actorSnap, e.Item),
-			AffordableQty:   affordable,
-			FillCost:        fillCost,
-			kind:            e.Item,
+			ItemLabel:                     itemDisplayLabel(snap, e.Item),
+			CurrentQty:                    current,
+			Cap:                           cap,
+			Vendors:                       findItemVendors(snap, actorID, actorSnap, e.Item),
+			CoPresentSeller:               coName,
+			PendingOfferToCoPresentSeller: coID != "" && hasPendingOfferTo(snap, actorID, coID, e.Item),
+			AffordableQty:                 affordable,
+			FillCost:                      fillCost,
+			kind:                          e.Item,
 		})
 	}
 	if len(items) == 0 {
@@ -374,13 +387,15 @@ func findItemVendors(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *sim.Act
 // exact precondition for the buy-here imperative (and the same co-presence test
 // deliver_order's gate uses — see absentRecipientNames in build.go). Runs over
 // the shared structural-vendorship scan (eachVendorOffer), like findItemVendors.
-// Returns "" when the reseller is in no huddle, or no co-present seller of
+// Returns ("", "") when the reseller is in no huddle, or no co-present seller of
 // itemKind has a usable display name. Deterministic: lowest VendorID among the
-// co-present sellers, so the named seller is stable across snapshots. ZBBS-HOME-388.
-func coPresentSellerForItem(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *sim.ActorSnapshot, itemKind sim.ItemKind) string {
+// co-present sellers, so the named seller is stable across snapshots. The id is
+// returned alongside the name so the caller can check for a standing offer to
+// this exact seller (hasPendingOfferTo, LLM-64). ZBBS-HOME-388.
+func coPresentSellerForItem(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *sim.ActorSnapshot, itemKind sim.ItemKind) (string, sim.ActorID) {
 	huddle := buyerSnap.CurrentHuddleID
 	if huddle == "" {
-		return ""
+		return "", ""
 	}
 	var bestID sim.ActorID
 	var bestName string
@@ -397,7 +412,7 @@ func coPresentSellerForItem(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *
 			bestName = seller.DisplayName
 		}
 	})
-	return bestName
+	return bestName, bestID
 }
 
 // restockReserveTriggerPct is the share of the reseller's purse a single
@@ -433,6 +448,21 @@ func renderRestocking(b *strings.Builder, v *RestockingView) {
 	b.WriteString("## Restocking\n")
 	b.WriteString("Your shop stock of these bought-in goods is running low. You choose how much to buy.\n")
 	for _, it := range v.Items {
+		// LLM-64: the reseller already has a standing pay_with_item offer to a
+		// co-present seller for this item. Drop the headroom/cost lines and the
+		// "buy it now" imperative — they fight the "## Offers you have standing"
+		// bide-and-wait cue — and render a positive stay-steer instead, so the model
+		// waits for the answer rather than re-staking the offer or walking off
+		// (delivery needs co-presence, so leaving would strand the standing offer).
+		if it.PendingOfferToCoPresentSeller {
+			seller := sanitizeInline(it.CoPresentSeller)
+			if seller == "" {
+				seller = "the seller"
+			}
+			fmt.Fprintf(b, "- %s is here with you, and your offer for %s is still with them (see Offers you have standing). Wait here for their answer — do not re-offer or leave.\n",
+				seller, sanitizeInline(string(it.kind)))
+			continue
+		}
 		headroom := it.Cap - it.CurrentQty
 		if headroom < 0 {
 			headroom = 0
