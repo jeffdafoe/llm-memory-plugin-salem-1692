@@ -166,6 +166,17 @@ func main() {
 		log.Fatalf("engine: load world: %v", err)
 	}
 
+	// LLM-60: non-fatal config audit of the loaded world. A refresh-bearing
+	// (gather/eat) object with no display_name is silently unreachable — the
+	// command resolver (resolveLoiteringObject) skips nameless objects, so neither
+	// the gather verb nor eat-on-arrival can resolve it, though the perception cue
+	// still advertises it. Logged here so a boot-time defect (e.g. a migration that
+	// forgot a name) lands in journalctl, and also surfaced live on /umbilical/state.
+	// NEVER fatal — a mislabeled bush must not stop the village from booting.
+	for _, warning := range sim.ConfigWarnings(world.VillageObjects) {
+		log.Printf("engine: config warning: %s", warning)
+	}
+
 	// ZBBS-HOME-417: drop every checkpoint-reloaded huddle before the world
 	// goroutine starts. A conversation is transient state — a standing huddle
 	// "resuming" hours later across a restart is meaningless, and reloading them

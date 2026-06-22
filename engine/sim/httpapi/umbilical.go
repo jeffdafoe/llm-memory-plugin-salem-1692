@@ -78,6 +78,12 @@ type UmbilicalStateDTO struct {
 	// of stale-on-client noticeboards) is otherwise invisible off the box. Zero
 	// when no event hub is attached (headless/test).
 	WS WSDeliveryStatsDTO `json:"ws"`
+	// ConfigWarnings (LLM-60) is the live data-config audit: one line per village
+	// object that is misconfigured in a tolerated-but-wrong way (today: a gather/
+	// eat source with no display_name, which the resolver silently can't reach).
+	// Computed off the snapshot on every read via sim.ConfigWarnings, so it
+	// reflects live edits, not just boot state. Omitted when clean.
+	ConfigWarnings []string `json:"config_warnings,omitempty"`
 }
 
 // UmbilicalCountsDTO is the size of each published entity table — a cheap
@@ -155,6 +161,7 @@ func umbilicalStateFromSnapshot(s *sim.Snapshot, st telemetry.Stats) UmbilicalSt
 		ActionLog:      len(s.ActionLog),
 		PriceBook:      len(s.PriceBook),
 	}
+	out.ConfigWarnings = sim.ConfigWarnings(s.VillageObjects)
 	return out
 }
 

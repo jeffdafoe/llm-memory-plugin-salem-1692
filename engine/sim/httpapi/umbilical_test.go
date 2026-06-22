@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -497,5 +498,24 @@ func TestUmbilical_State(t *testing.T) {
 	}
 	if out.Telemetry.Capacity != 8 {
 		t.Errorf("telemetry.capacity = %d, want 8", out.Telemetry.Capacity)
+	}
+}
+
+// TestUmbilical_State_ConfigWarnings: /state surfaces the LLM-60 data-config
+// audit — a nameless gather/eat source is flagged (the resolver can't reach it),
+// a named one is not. Exercises the pure snapshot→DTO mapper directly.
+func TestUmbilical_State_ConfigWarnings(t *testing.T) {
+	snap := &sim.Snapshot{
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"nameless-bush": {ID: "nameless-bush", Refreshes: []*sim.ObjectRefresh{{GatherItem: "blueberries"}}},
+			"named-bush":    {ID: "named-bush", DisplayName: "Raspberry Bush", Refreshes: []*sim.ObjectRefresh{{GatherItem: "raspberries"}}},
+		},
+	}
+	out := umbilicalStateFromSnapshot(snap, telemetry.Stats{})
+	if len(out.ConfigWarnings) != 1 {
+		t.Fatalf("config_warnings = %v, want exactly 1 (the nameless gatherable bush)", out.ConfigWarnings)
+	}
+	if !strings.Contains(out.ConfigWarnings[0], "nameless-bush") {
+		t.Errorf("config_warnings[0] = %q, want it to name nameless-bush", out.ConfigWarnings[0])
 	}
 }
