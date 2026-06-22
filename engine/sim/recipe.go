@@ -31,6 +31,12 @@ type RestockSource string
 const (
 	RestockSourceProduce RestockSource = "produce"
 	RestockSourceBuy     RestockSource = "buy"
+	// RestockSourceForage marks an item the actor restocks by HARVESTING their
+	// own owned forage-to-sell bushes (LLM-59) — the produce/harvest-side mirror
+	// of `buy`. The replenish destination is the actor's own gatherable objects,
+	// not a supplier. Consumed by the "## Your bushes to harvest" perception
+	// section (perception/forage.go).
+	RestockSourceForage RestockSource = "forage"
 )
 
 // RestockEntry is one item the role manages — either by producing it
@@ -89,6 +95,24 @@ func (p *RestockPolicy) BuyEntries() []RestockEntry {
 	out := make([]RestockEntry, 0, len(p.Restock))
 	for _, e := range p.Restock {
 		if e.Source == RestockSourceBuy {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// ForageEntries filters the policy to just the forage-source entries — the
+// items a grower-seller restocks by HARVESTING their own owned forage-to-sell
+// bushes rather than buying or auto-producing them. Mirror of BuyEntries;
+// consumed by the "## Your bushes to harvest" perception section
+// (perception/forage.go). LLM-59.
+func (p *RestockPolicy) ForageEntries() []RestockEntry {
+	if p == nil {
+		return nil
+	}
+	out := make([]RestockEntry, 0, len(p.Restock))
+	for _, e := range p.Restock {
+		if e.Source == RestockSourceForage {
 			out = append(out, e)
 		}
 	}

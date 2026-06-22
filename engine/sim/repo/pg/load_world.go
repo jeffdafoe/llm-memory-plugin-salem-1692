@@ -702,7 +702,8 @@ func rebuildActorAttributeProjections(actors map[sim.ActorID]*sim.Actor) {
 					continue
 				}
 				source := sim.RestockSource(e.Source)
-				if source != sim.RestockSourceProduce && source != sim.RestockSourceBuy {
+				if source != sim.RestockSourceProduce && source != sim.RestockSourceBuy &&
+					source != sim.RestockSourceForage {
 					continue // unknown source mode — skip (v1 parity)
 				}
 				seen[item] = true
