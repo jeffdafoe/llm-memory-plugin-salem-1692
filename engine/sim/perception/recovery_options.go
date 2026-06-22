@@ -547,6 +547,13 @@ func renderRecoveryOptions(b *strings.Builder, v *RecoveryOptionsView) {
 				fmt.Fprintf(b, " (structure_id: %s)", o.ObjectID)
 			}
 		}
+		// On-shift home bed: the structure_id keeps the bed a real move_to target
+		// (mark-don't-hide), but a weak model can still walk off mid-shift on the id
+		// alone despite the "once your shift ends" qualifier. Close the bullet with
+		// an explicit stay-put directive — the last thing read on the line. LLM-62.
+		if o.Kind == "home" && o.AfterShiftOnly {
+			b.WriteString(" — stay at your post until then")
+		}
 		b.WriteString("\n")
 	}
 	if len(v.OwnStock) > 0 {

@@ -561,6 +561,35 @@ func TestBuildRecoveryOptions_HomeBedNotAfterShiftOffShift(t *testing.T) {
 	}
 }
 
+// An overnight (wraparound) shift marks AfterShiftOnly correctly: OnShiftAtMinute
+// → minuteInShiftWindow handles start > end (on shift = now >= start OR now < end),
+// so a night-shift actor at 01:00 is on shift and must be marked, while a point in
+// the daytime gap is off shift and unmarked. Guards the wraparound path the
+// snapshot clock can produce. LLM-62.
+func TestBuildRecoveryOptions_HomeBedAfterShiftOnlyWraparoundShift(t *testing.T) {
+	start, end := 1320, 360 // overnight shift 22:00–06:00
+	homeAtMinute := func(nowMin int) *RecoveryOption {
+		subj := &sim.ActorSnapshot{
+			Needs:            map[sim.NeedKey]int{"tiredness": sim.DefaultTirednessRedThreshold},
+			HomeStructureID:  "cottage",
+			ScheduleStartMin: &start,
+			ScheduleEndMin:   &end,
+		}
+		snap := &sim.Snapshot{
+			Actors:           map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj},
+			Structures:       map[sim.StructureID]*sim.Structure{"cottage": plainStructure("cottage", "Thorne Cottage")},
+			LocalMinuteOfDay: &nowMin,
+		}
+		return findHomeOption(t, buildRecoveryOptions(snap, "ezekiel", subj))
+	}
+	if h := homeAtMinute(60); !h.AfterShiftOnly { // 01:00 → inside the overnight window
+		t.Errorf("overnight on-shift (01:00) home bed must be marked AfterShiftOnly, got %+v", h)
+	}
+	if h := homeAtMinute(720); h.AfterShiftOnly { // 12:00 → daytime gap of an overnight shift
+		t.Errorf("overnight off-shift (12:00) home bed must not be marked AfterShiftOnly, got %+v", h)
+	}
+}
+
 // A home structure that doesn't resolve in the snapshot is skipped — the "sleep
 // in your own bed" cue would name an unactionable destination.
 func TestBuildRecoveryOptions_HomeBedUnresolvedSkipped(t *testing.T) {
@@ -665,7 +694,7 @@ func TestRenderRecoveryOptions_HomeBedAfterShiftOnly(t *testing.T) {
 		Options: []RecoveryOption{{Kind: "home", Label: "Thorne Cottage", CostText: "free", StructureID: "cottage", AfterShiftOnly: true}},
 	})
 	out := b.String()
-	if !strings.Contains(out, "Thorne Cottage — sleep in your own bed once your shift ends, free (structure_id: cottage)") {
+	if !strings.Contains(out, "Thorne Cottage — sleep in your own bed once your shift ends, free (structure_id: cottage) — stay at your post until then") {
 		t.Errorf("on-shift home bullet wrong: %q", out)
 	}
 }
