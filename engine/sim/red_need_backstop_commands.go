@@ -60,7 +60,9 @@ type RedNeedBackstopTelemetry struct {
 // made progress since the last stamp). Reuses NeedThresholdWarrantReason —
 // the stimulus IS the same standing red need; only the producer (fast,
 // backoff-paced) differs from the hourly needs tick — so perception renders
-// it identically and hasNeedWarrant (break interrupt) recognizes it.
+// it identically and the break-interrupt rest gate (actorCanReactNow) treats it
+// the same, including the LLM-62 carve-out where a red-tiredness warrant does NOT
+// cut a break short (a break recovers tiredness, so interrupting cancels the cure).
 //
 // Runs on the world goroutine via SendContext from the cascade driver. The
 // whole scan + stamp + backoff-state update happens inside the single Fn,

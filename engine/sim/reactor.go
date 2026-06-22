@@ -884,12 +884,15 @@ func actorReactorDue(a *Actor, now time.Time) bool {
 //     off and resumes it on the next scan after wake.
 //   - Resting / on-break (StateResting enum OR BreakUntil timestamp): also
 //     eligible=false BY DEFAULT, same back-off posture — EXCEPT a red-tier
-//     need warrant (ZBBS-HOME-329 #3) or an operator nudge — admin force-tick
-//     or directive impulse (#4) — makes the break interruptible (eligible=true,
-//     matched by KIND, not the broad Force flag). The interrupting
-//     tick's emit path (EvaluateReactors) calls endBreak so the actor actually
-//     leaves rest. Without the exception an actor that beds down while already
-//     starving never wakes to eat, and the operator /nudge couldn't rescue it.
+//     hunger/thirst need warrant (ZBBS-HOME-329 #3) or an operator nudge — admin
+//     force-tick or directive impulse (#4) — makes the break interruptible
+//     (eligible=true, matched by KIND, not the broad Force flag). A red-TIREDNESS
+//     warrant deliberately does NOT interrupt: a break is what recovers tiredness,
+//     so cutting it would cancel the cure (the on-shift exhaustion loop, LLM-62).
+//     The interrupting tick's emit path (EvaluateReactors) calls endBreak so the
+//     actor actually leaves rest. Without the exception an actor that beds down
+//     while already starving never wakes to eat, and the operator /nudge couldn't
+//     rescue it.
 //     The ZBBS-HOME-284 sleep lifecycle drives both enum and timestamp; the
 //     enum can lag an auto-bedded NPC, so both are checked.
 //   - Businessowner engine-speech suppression: if the actor engine-spoke
@@ -951,9 +954,11 @@ func actorCanReactNow(w *World, a *Actor, now time.Time) (eligible bool, stale b
 		return false, false
 	}
 	// A scheduled break (StateResting / BreakUntil) shelves the tick too — EXCEPT
-	// a red-tier need warrant (ZBBS-HOME-329 #3), an operator nudge — a bare
-	// admin force-tick or a directive impulse (#4) — or a PC speaking into this
-	// actor's huddle (ZBBS-HOME-377): any of these cuts the break short. The PC
+	// a red-tier hunger/thirst need warrant (ZBBS-HOME-329 #3; a red-TIREDNESS
+	// warrant does NOT, because a break recovers tiredness — interrupting it
+	// cancels the cure, the on-shift exhaustion loop in LLM-62), an operator nudge
+	// — a bare admin force-tick or a directive impulse (#4) — or a PC speaking into
+	// this actor's huddle (ZBBS-HOME-377): any of these cuts the break short. The PC
 	// case warrants every recipient of the player's utterance, not just a parsed
 	// vocative addressee — narrowing to the named person is the deferred fix B.
 	// It is the conversational counterpart of the need case — a player addressing
@@ -971,7 +976,7 @@ func actorCanReactNow(w *World, a *Actor, now time.Time) (eligible bool, stale b
 	// keeping village chatter from yanking a rester out. Sleep (above) yields to
 	// none of these — only a break is interruptible.
 	onBreak := a.State == StateResting || (a.BreakUntil != nil && a.BreakUntil.After(now))
-	if onBreak && !hasNeedWarrant(a.Warrants) && !hasOperatorNudgeWarrant(a.Warrants) && !hasPCSpeechWarrant(a.Warrants) {
+	if onBreak && !hasBreakInterruptingNeedWarrant(a.Warrants) && !hasOperatorNudgeWarrant(a.Warrants) && !hasPCSpeechWarrant(a.Warrants) {
 		return false, false
 	}
 	if businessownerEngineSpeechRecent(w, a.ID, now) {

@@ -302,3 +302,57 @@ func TestRedNeedBackoffDelay_CapsAtMax(t *testing.T) {
 		t.Errorf("maxDelay<base: got %v, want base 90s", got)
 	}
 }
+
+// TestNeedProducers_OpenTirednessWarrantNotRestamped pins the LLM-62
+// cost-discipline invariant that slice 2 relies on. A red-tiredness warrant no
+// longer interrupts a break (the break is the cure), so it sits OPEN + shelved on
+// the actor for the whole break. Every warrant becomes an LLM deliberation, so
+// that shelved warrant must NOT be re-stamped on a loop. Both need-warrant
+// producers gate on the actor having no open warrant cycle — the hourly needs
+// tick via warrantEligible (WarrantedSince==nil) and the fast backstop sweep via
+// its explicit SkippedWarranted guard — so neither re-stamps an actor that
+// already carries one. This drives BOTH against an on-shift exhausted vendor on
+// break with an already-open tiredness warrant and asserts no second warrant is
+// appended by either.
+func TestNeedProducers_OpenTirednessWarrantNotRestamped(t *testing.T) {
+	allDayStart, allDayEnd := 0, 1440          // on shift at any minute-of-day (covers the wall-clock hourly tick)
+	a := agentNPCWithNeeds("vendor", 5, 5, 23) // only tiredness red (≥ red 20)
+	a.ScheduleStartMin, a.ScheduleEndMin = &allDayStart, &allDayEnd
+	a.State = StateResting // on a break — the slice-2 scenario
+
+	now := time.Now().UTC()
+	future := now.Add(4 * time.Hour)
+	a.BreakUntil = &future
+	// Already holding an OPEN tiredness warrant cycle — the shelved warrant the
+	// reactor refuses to act on while on break.
+	a.WarrantedSince = &now
+	a.WarrantDueAt = &now
+	a.Warrants = []WarrantMeta{{Reason: NeedThresholdWarrantReason{Need: "tiredness"}}}
+
+	w := needsTickWorld(1, a) // NeedsTickAmount=1 so the hourly tick actually runs
+
+	// Producer 1 — fast red-need backstop sweep. The actor HAS an actionable red
+	// need (on-shift tiredness), so it clears the actionable check; the open
+	// warrant cycle is what must short-circuit it.
+	if tm := evalRedNeed(t, w, now); tm.Stamped != 0 || tm.SkippedWarranted != 1 {
+		t.Fatalf("backstop sweep: Stamped=%d SkippedWarranted=%d, want 0/1; telemetry=%+v", tm.Stamped, tm.SkippedWarranted, tm)
+	}
+
+	// Producer 2 — hourly needs tick. Increments needs but must not stamp a
+	// second warrant while a cycle is open.
+	if _, err := IncrementNeedsTick(1).Fn(w); err != nil {
+		t.Fatalf("IncrementNeedsTick: %v", err)
+	}
+
+	// Exactly the one original shelved tiredness warrant survives, and the cycle
+	// marker is untouched — no re-stamp spam from either producer.
+	if len(a.Warrants) != 1 {
+		t.Fatalf("want exactly 1 warrant (the shelved tiredness one), got %d: %+v", len(a.Warrants), a.Warrants)
+	}
+	if r, ok := a.Warrants[0].Reason.(NeedThresholdWarrantReason); !ok || r.Need != "tiredness" {
+		t.Errorf("surviving warrant = %+v, want a tiredness need_threshold warrant", a.Warrants[0].Reason)
+	}
+	if a.WarrantedSince == nil || !a.WarrantedSince.Equal(now) {
+		t.Errorf("WarrantedSince changed: got %v, want unchanged %v", a.WarrantedSince, now)
+	}
+}
