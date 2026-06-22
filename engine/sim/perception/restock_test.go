@@ -211,6 +211,114 @@ func TestRenderRestocking_BuyHereImperative(t *testing.T) {
 	}
 }
 
+// TestBuildRestocking_PendingOfferToCoPresentSeller: when the reseller already has
+// a still-pending pay_with_item offer to the co-present seller for the low item,
+// PendingOfferToCoPresentSeller is set so render can defer to the standing offer
+// instead of re-prompting the buy. LLM-64.
+func TestBuildRestocking_PendingOfferToCoPresentSeller(t *testing.T) {
+	subj := &sim.ActorSnapshot{
+		Inventory:       map[sim.ItemKind]int{"ale": 1},
+		RestockPolicy:   buyPolicy("ale", 20),
+		CurrentHuddleID: "h1",
+	}
+	supplier := &sim.ActorSnapshot{
+		DisplayName:     "Anders Brewer",
+		WorkStructureID: "brewery",
+		Inventory:       map[sim.ItemKind]int{"ale": 40},
+		CurrentHuddleID: "h1",
+	}
+	snap := &sim.Snapshot{
+		Actors:            map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj, "brewer": supplier},
+		Structures:        map[sim.StructureID]*sim.Structure{"brewery": {ID: "brewery", DisplayName: "The Brewery"}},
+		ItemKinds:         restockCatalog(),
+		RestockReorderPct: 25,
+		PayLedger: map[sim.LedgerID]*sim.PayLedgerEntry{
+			1: offerEntry(1, "merchant", "brewer", "ale", 10, 30, sim.PayLedgerStatePending),
+		},
+	}
+	v := buildRestocking(snap, "merchant", subj)
+	if v == nil || len(v.Items) != 1 {
+		t.Fatalf("want 1 item, got %+v", v)
+	}
+	if !v.Items[0].PendingOfferToCoPresentSeller {
+		t.Errorf("PendingOfferToCoPresentSeller = false, want true (standing offer to the co-present seller)")
+	}
+}
+
+// TestBuildRestocking_PendingOfferToOtherSeller_FlagUnset: a pending offer for the
+// item to a DIFFERENT seller than the co-present one must NOT set the flag — the
+// reseller can still buy from the seller in front of them. Guards the seller-id
+// narrowing of the hasPendingOfferTo check. LLM-64.
+func TestBuildRestocking_PendingOfferToOtherSeller_FlagUnset(t *testing.T) {
+	subj := &sim.ActorSnapshot{
+		Inventory:       map[sim.ItemKind]int{"ale": 1},
+		RestockPolicy:   buyPolicy("ale", 20),
+		CurrentHuddleID: "h1",
+	}
+	supplier := &sim.ActorSnapshot{
+		DisplayName:     "Anders Brewer",
+		WorkStructureID: "brewery",
+		Inventory:       map[sim.ItemKind]int{"ale": 40},
+		CurrentHuddleID: "h1",
+	}
+	snap := &sim.Snapshot{
+		Actors:            map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj, "brewer": supplier},
+		Structures:        map[sim.StructureID]*sim.Structure{"brewery": {ID: "brewery", DisplayName: "The Brewery"}},
+		ItemKinds:         restockCatalog(),
+		RestockReorderPct: 25,
+		PayLedger: map[sim.LedgerID]*sim.PayLedgerEntry{
+			1: offerEntry(1, "merchant", "someone_else", "ale", 10, 30, sim.PayLedgerStatePending),
+		},
+	}
+	v := buildRestocking(snap, "merchant", subj)
+	if v == nil || len(v.Items) != 1 {
+		t.Fatalf("want 1 item, got %+v", v)
+	}
+	if v.Items[0].CoPresentSeller != "Anders Brewer" {
+		t.Fatalf("CoPresentSeller = %q, want 'Anders Brewer'", v.Items[0].CoPresentSeller)
+	}
+	if v.Items[0].PendingOfferToCoPresentSeller {
+		t.Errorf("PendingOfferToCoPresentSeller = true, want false (offer is to a different seller)")
+	}
+}
+
+// TestRenderRestocking_PendingOfferWaitLine: with the pending-offer flag set, the
+// item renders a stay-and-wait steer and DROPS the headroom/cost lines, the "buy
+// it now" imperative, and the walk-to list — so the reseller bides instead of
+// re-staking the offer or walking off. LLM-64.
+func TestRenderRestocking_PendingOfferWaitLine(t *testing.T) {
+	v := &RestockingView{
+		Items: []RestockItemView{
+			{
+				ItemLabel: "milk", CurrentQty: 4, Cap: 20, kind: "milk",
+				CoPresentSeller:               "Elizabeth Ellis",
+				PendingOfferToCoPresentSeller: true,
+				FillCost:                      128,
+				Vendors:                       []RestockVendor{{StructureLabel: "Ellis Farm", StructureID: "ellis"}},
+			},
+		},
+		BuyerCoins: 172,
+	}
+	var b strings.Builder
+	renderRestocking(&b, v)
+	out := b.String()
+	if !strings.Contains(out, "Elizabeth Ellis is here with you, and your offer for milk is still with them") {
+		t.Errorf("missing stay-and-wait line:\n%s", out)
+	}
+	if !strings.Contains(out, "Wait here for their answer") {
+		t.Errorf("missing wait steer:\n%s", out)
+	}
+	if strings.Contains(out, "Buy it now") || strings.Contains(out, "pay_with_item") {
+		t.Errorf("pending offer must suppress the buy imperative:\n%s", out)
+	}
+	if strings.Contains(out, "room for") || strings.Contains(out, "Filling to cap") {
+		t.Errorf("pending offer must suppress the headroom/cost lines:\n%s", out)
+	}
+	if strings.Contains(out, "buy from Ellis Farm") {
+		t.Errorf("pending offer must suppress the walk-to list:\n%s", out)
+	}
+}
+
 // TestBuildRestocking_CoPresentSeller_Deterministic: with two co-present sellers
 // of the item, the imperative names the lowest-VendorID one deterministically so
 // the cue is stable regardless of snapshot map-iteration order. Looped to catch
