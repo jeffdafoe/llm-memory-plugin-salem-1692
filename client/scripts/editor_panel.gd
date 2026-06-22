@@ -45,6 +45,7 @@ const COLOR_BTN_ACTIVE_BORDER = Color(0.54, 0.48, 0.31, 1.0)
 const COLOR_ITEM_HOVER = Color(0.17, 0.17, 0.10, 1.0)
 const COLOR_ITEM_SELECTED = Color(0.23, 0.23, 0.16, 1.0)
 const COLOR_ITEM_BORDER = Color(0.42, 0.42, 0.25, 1.0)
+const COLOR_COIN = Color(0.92, 0.78, 0.42, 1.0)  # gold, matches the coin chip
 
 const PANEL_WIDTH: float = 240.0
 const TOP_BAR_HEIGHT: float = 40.0
@@ -2277,12 +2278,19 @@ func _make_villager_row(npc_id: String, display_name: String, container: Node2D)
     needs_tiredness_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
     needs_row.add_child(needs_tiredness_label)
 
+    var needs_coins_label := Label.new()
+    needs_coins_label.add_theme_font_override("font", _font)
+    needs_coins_label.add_theme_font_size_override("font_size", 12)
+    needs_coins_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    needs_row.add_child(needs_coins_label)
+
     row.set_meta("name_label", name_label)
     row.set_meta("behavior_inline_label", behavior_inline_label)
     row.set_meta("location_label", location_label)
     row.set_meta("needs_hunger_label", needs_hunger_label)
     row.set_meta("needs_thirst_label", needs_thirst_label)
     row.set_meta("needs_tiredness_label", needs_tiredness_label)
+    row.set_meta("needs_coins_label", needs_coins_label)
 
     _update_villager_row_text(row, container)
 
@@ -2326,6 +2334,8 @@ func _update_villager_row_text(row: PanelContainer, container: Node2D) -> void:
     _set_villager_need_label(row.get_meta("needs_hunger_label"), "Hunger", hunger_val, 18)
     _set_villager_need_label(row.get_meta("needs_thirst_label"), "Thirst", thirst_val, 12)
     _set_villager_need_label(row.get_meta("needs_tiredness_label"), "Tiredness", tiredness_val, 20)
+    var coins_val: int = int(container.get_meta("coins", 0))
+    _set_villager_coins_label(row.get_meta("needs_coins_label"), coins_val)
 
 ## Render one need on the villager-list row. Same red-threshold cue as
 ## the selection panel — the value crossing red recolors the whole "Name N"
@@ -2338,6 +2348,15 @@ func _set_villager_need_label(label: Label, name: String, value: int, red_thresh
         label.add_theme_color_override("font_color", Color(0.95, 0.45, 0.45))
     else:
         label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+
+## Render the coin balance on the villager-list row. Coins is not a need, so
+## there's no distress threshold — it always draws in coin-chip gold so the
+## value reads as money rather than something to worry about.
+func _set_villager_coins_label(label: Label, value: int) -> void:
+    if label == null:
+        return
+    label.text = "Coins %d" % value
+    label.add_theme_color_override("font_color", COLOR_COIN)
 
 ## Timer-driven in-place refresh of every villager row's location + needs
 ## text (ZBBS-HOME-374). Structural changes (rename / attribute / create /

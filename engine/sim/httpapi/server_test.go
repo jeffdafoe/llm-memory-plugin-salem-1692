@@ -55,6 +55,8 @@ func seededWorld(t *testing.T) *sim.World {
 			SocialEndMin:     intPtr(1320),
 			// Live needs (ZBBS-HOME-462) — asserted on the wire by TestHandleAgents.
 			Needs: map[sim.NeedKey]int{"hunger": 14, "thirst": 9, "tiredness": 3},
+			// Coins (LLM-70) — purse balance carried on the wire for the editor row.
+			Coins: 25,
 		}
 		world.Actors["bram"] = &sim.Actor{
 			ID: "bram", DisplayName: "Bram", Kind: sim.KindPC,
@@ -227,6 +229,14 @@ func TestHandleAgents(t *testing.T) {
 	// omitempty, so a fresh actor reports zeros rather than omitting the keys.
 	if bram.Hunger != 0 || bram.Thirst != 0 || bram.Tiredness != 0 {
 		t.Errorf("bram needs = %d/%d/%d, want 0/0/0", bram.Hunger, bram.Thirst, bram.Tiredness)
+	}
+	// Coins (LLM-70) — hannah's purse rides the wire; bram (no balance) reports 0.
+	// Not omitempty, so a zero balance is emitted, not dropped.
+	if hannah.Coins != 25 {
+		t.Errorf("hannah.coins = %d, want 25", hannah.Coins)
+	}
+	if bram.Coins != 0 {
+		t.Errorf("bram.coins = %d, want 0", bram.Coins)
 	}
 	// hannah has a sprite_id that resolves against the seeded catalog: the
 	// inline sprite carries the render subset (no pack) and the animation rows.

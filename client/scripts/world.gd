@@ -730,6 +730,10 @@ func _render_npc(npc: Dictionary) -> void:
     container.set_meta("hunger", int(npc.get("hunger", 0)))
     container.set_meta("thirst", int(npc.get("thirst", 0)))
     container.set_meta("tiredness", int(npc.get("tiredness", 0)))
+    # Coins (LLM-70) — purse balance shown beside the needs on the villager
+    # list row. No live-delta frame like needs have; refreshes on the next
+    # full /api/village/agents fetch.
+    container.set_meta("coins", int(npc.get("coins", 0)))
     var inside_structure_id_val = npc.get("inside_structure_id", null)
     var inside_structure_id: String = str(inside_structure_id_val) if inside_structure_id_val != null else ""
     # The AgentDTO publishes inside_structure_id but no `inside` bool — derive it

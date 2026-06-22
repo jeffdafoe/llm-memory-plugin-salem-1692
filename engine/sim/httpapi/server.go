@@ -428,6 +428,7 @@ func agentsFromSnapshot(s *sim.Snapshot, sprites map[sim.SpriteID]*sim.Sprite) [
 			Hunger:            hunger,
 			Thirst:            thirst,
 			Tiredness:         tiredness,
+			Coins:             a.Coins,
 			Attributes:        a.AttributeSlugs,
 			HomeStructureID:   string(a.HomeStructureID),
 			WorkStructureID:   string(a.WorkStructureID),
