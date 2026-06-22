@@ -10,6 +10,6 @@ USING asset_state s
 WHERE t.state_id = s.id
   AND s.asset_id = '630909ca-df4f-43ac-9fc4-5192ca44da73'
   AND s.state IN ('berries', 'bare')
-  AND t.tag IN ('berries', 'bare');
+  AND t.tag = s.state;
 
 COMMIT;

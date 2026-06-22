@@ -20,6 +20,18 @@
 
 BEGIN;
 
+-- Fail loud if the Blueberry asset isn't in the expected 2-state shape (LLM-58),
+-- so a bad/partial catalog can't silently tag only one state.
+DO $$
+DECLARE n integer;
+BEGIN
+    SELECT count(*) INTO n FROM asset_state
+    WHERE asset_id = '630909ca-df4f-43ac-9fc4-5192ca44da73' AND state IN ('berries', 'bare');
+    IF n <> 2 THEN
+        RAISE EXCEPTION 'LLM-58b: expected 2 Blueberry Bush states (berries, bare), found %', n;
+    END IF;
+END $$;
+
 INSERT INTO asset_state_tag (state_id, tag)
 SELECT s.id, s.state
 FROM asset_state s
