@@ -113,6 +113,12 @@ type AgentDTO struct {
 	Thirst    int `json:"thirst"`
 	Tiredness int `json:"tiredness"`
 
+	// Coins (LLM-70) — the actor's current purse balance, rendered beside the
+	// needs on the editor's villager-list row. NOT omitempty (0 is a real
+	// balance). Unlike needs there is no live-delta frame, so the row's value
+	// refreshes on the next full /api/village/agents fetch, not per-transaction.
+	Coins int `json:"coins"`
+
 	// Editor metadata (ZBBS-HOME-290) — the NPC config the Godot editor/HUD
 	// shows + edits, ported from v1. Additive, no contract_version bump.
 	// Attributes is the sorted slug set the editor renders as behavior chips
