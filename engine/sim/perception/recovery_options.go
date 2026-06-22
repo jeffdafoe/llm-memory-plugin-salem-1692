@@ -124,7 +124,18 @@ func buildRecoveryOptions(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *si
 	// tiredness_red_threshold, the warrant and the rest options stay in sync
 	// rather than leaving a gap where the NPC is told "you're tired" with no
 	// options.
-	tired := actorSnap.Needs[recoveryTirednessNeed] >= snap.NeedThresholds.Get(recoveryTirednessNeed)
+	// LLM-67: an actor already on a take_break (StateResting) is recovering
+	// tiredness — surfacing the whole tiredness-recovery menu (rest spots,
+	// RestInPlace's "call take_break", remedies, the home bed) is the same
+	// redundant re-stimulus as the "Address now: tiredness" cue, and re-invites
+	// take_break (or worse, invites walking off and abandoning the break).
+	// Excluding resting from `tired` quiets the tired arm; a homed actor on
+	// break then falls through to nil (not tired, not homeless). The homeless
+	// arm still fires — its room-booking bootstrap is long-term shelter,
+	// orthogonal to the current break (gatherFreeRestSpots is separately gated
+	// on !resting below so it doesn't re-list "rest here" to a resting actor).
+	resting := actorSnap.State == sim.StateResting
+	tired := actorSnap.Needs[recoveryTirednessNeed] >= snap.NeedThresholds.Get(recoveryTirednessNeed) && !resting
 	// "Homeless" for the bootstrap means no place to sleep — which a renter
 	// holding an active lodging grant is NOT. Keying purely on HomeStructureID
 	// (ownership) left a renter permanently "homeless", so the every-tick "go
@@ -137,7 +148,14 @@ func buildRecoveryOptions(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *si
 	}
 
 	var opts []RecoveryOption
-	opts = append(opts, gatherFreeRestSpots(snap, actorSnap)...)
+	// Free tiredness-recovery spots are a "rest here" affordance — redundant for
+	// an actor already on a break (LLM-67). The homeless arm still reaches this,
+	// so gate the finder on !resting rather than relying on the `tired` exclusion
+	// above. Inns stay: for a homeless rester that's the room-booking shelter
+	// bootstrap, not a rest-now cue.
+	if !resting {
+		opts = append(opts, gatherFreeRestSpots(snap, actorSnap)...)
+	}
 	opts = append(opts, gatherInnRestSpots(snap, actorID)...)
 	// Consumable remedies, the own-bed option, and the own-stock line are all
 	// tiredness-gated, NOT homeless-gated: a not-yet-tired homeless actor
