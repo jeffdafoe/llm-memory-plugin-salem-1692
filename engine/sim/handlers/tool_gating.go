@@ -95,6 +95,16 @@ const stopToolName = "stop"
 // triggering perception" invariant.
 const deliverOrderToolName = "deliver_order"
 
+// stayOpenToolName — the keeper's keep-shop-open-past-close tool. Advertised
+// ONLY when the off-shift wind-down cue offers it: payload.DutySteer.OfferStayOpen,
+// set in perception build on `!ToWork && !AtPost && AtOwnBusiness`
+// (engine/sim/perception/build.go). Reading the SAME signal the stay-open prose
+// renders from keeps the tool and its cue from drifting — the discussion-109
+// "advertise a tool only with its triggering perception" invariant. Before
+// LLM-66 stay_open had no gate and fell through to every actor every tick,
+// offered off-post and to non-keepers.
+const stayOpenToolName = "stay_open"
+
 // actorIsMoving reports whether the subject has an in-flight move at snapshot
 // time, read from the ZBBS-HOME-336 read-path projection (MoveDestKind is
 // empty when the actor is not moving). False when the actor can't be resolved
@@ -168,6 +178,7 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 	dedicatedVA := actorHasDedicatedVA(payload.ActorID, snap)
 	atGatherableSource := payload.Surroundings.GatherableItem != ""
 	moving := actorIsMoving(payload.ActorID, snap)
+	offerStayOpen := payload.DutySteer != nil && payload.DutySteer.OfferStayOpen
 
 	// Single pass over the Available set so each gated group is evaluated
 	// against its OWN condition. We deliberately avoid a "pending offer →
@@ -209,6 +220,12 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 		// view that also drives the "Orders to deliver" perception section, so
 		// the tool and its cue can't drift.
 		if spec.Name == deliverOrderToolName && len(payload.PendingDeliveriesFromMe) == 0 {
+			continue
+		}
+		// stay_open consumer (LLM-66): advertise only on the off-shift wind-down
+		// cue's own OfferStayOpen signal — the same field the stay-open prose
+		// renders from — so the tool and its cue can't drift (discussion-109).
+		if spec.Name == stayOpenToolName && !offerStayOpen {
 			continue
 		}
 		if _, gated := payOfferResponseTools[spec.Name]; gated {
