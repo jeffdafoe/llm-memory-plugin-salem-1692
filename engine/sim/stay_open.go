@@ -129,6 +129,23 @@ func StayOpen(actorID ActorID, reason string, untilHour int, at time.Time) Comma
 			if !ok {
 				return nil, fmt.Errorf("StayOpen: actor %q not in world", actorID)
 			}
+			// At-own-post precondition (LLM-66): staying open is only coherent at
+			// your own work post. Presence is the open/closed signal, so an
+			// OpenUntil stamped while away would suppress the keeper's go-home
+			// wind-down (shiftDutyTarget) while they stand nowhere near an open
+			// shop — observed live as a blacksmith calling stay_open from under a
+			// Shade Tree. The advertising gate (handlers/tool_gating.go) keeps the
+			// tool off the menu off-post; this is the dispatch-side backstop, since
+			// that gating is advertising-only and the command stays directly
+			// dispatchable. Same at-own-post predicate the wind-down keys the
+			// OpenUntil suppression on (shift_duty.go `atWork`) — unlike accept_pay,
+			// an off-post stay_open is never valid, so it is rejected, not merely
+			// un-advertised.
+			if a.WorkStructureID == "" || a.InsideStructureID != a.WorkStructureID {
+				return nil, fmt.Errorf(
+					"you can only keep your business open while you are there — stay_open is for a keeper at their own post, and you are away from it right now. Return to your business to stay open, or simply close on schedule.",
+				)
+			}
 			loc := w.Settings.Location
 			if loc == nil {
 				loc = time.UTC

@@ -79,6 +79,26 @@ func TestStayOpen_StampsAndRejectsRepeat(t *testing.T) {
 	}
 }
 
+// TestStayOpen_AwayFromPostRejected — LLM-66. stay_open is incoherent away from
+// the keeper's own work post (presence is the open/closed signal), so a call
+// that arrives while the keeper is elsewhere is rejected at dispatch — the
+// backstop behind the advertising gate (handlers/tool_gating.go), which keeps
+// the tool off the off-post menu in the first place. Specimen: a blacksmith
+// calling stay_open while resting under a Shade Tree (InsideStructureID != WorkStructureID).
+func TestStayOpen_AwayFromPostRejected(t *testing.T) {
+	at := time.Date(2026, 6, 9, 21, 30, 0, 0, time.UTC)
+	a := shiftNPC("ezekiel", KindNPCStateful, "smithy", "home", "shade_tree") // away from the smithy
+	w := sleepTestWorld(a)
+
+	_, err := StayOpen("ezekiel", "weariness", 23, at).Fn(w)
+	if err == nil {
+		t.Fatal("stay_open while away from the work post should be rejected")
+	}
+	if a.OpenUntil != nil {
+		t.Errorf("OpenUntil should be unset on an away-from-post reject, got %v", a.OpenUntil)
+	}
+}
+
 // TestStayOpen_NoOpReject — LLM-40. A stay_open that does not reach past the
 // keeper's regular close is the diligence-reflex misfire (commit to "open until
 // 9" when you already close at 9). It is rejected while still before close, but

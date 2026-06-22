@@ -283,3 +283,46 @@ func TestGateTools_DeliverOrder_AdvertisedOnlyWithReadyOrder(t *testing.T) {
 		t.Errorf("deliver_order should be advertised when a Ready order is pending; count %d", got[deliverOrderToolName])
 	}
 }
+
+// gatingRegistryWithStayOpen extends the gating test registry with the
+// stay_open tool, for the LLM-66 cue-driven advertising gate.
+func gatingRegistryWithStayOpen(t *testing.T) *Registry {
+	t.Helper()
+	r := gatingTestRegistry(t)
+	if err := RegisterStayOpen(r); err != nil {
+		t.Fatalf("RegisterStayOpen: %v", err)
+	}
+	return r
+}
+
+// TestGateTools_StayOpen_AdvertisedOnlyWithOfferCue — LLM-66: stay_open is
+// advertised only when the off-shift wind-down cue offers it
+// (DutySteer.OfferStayOpen, built on !ToWork && !AtPost && AtOwnBusiness). With
+// no DutySteer, or one whose OfferStayOpen is false, the tool is dropped — so a
+// keeper off-post, on-shift, or a non-keeper never sees it. Reading the same
+// signal the prose renders from keeps tool and cue from drifting. Before LLM-66
+// stay_open had no gate and was advertised to every actor every tick.
+func TestGateTools_StayOpen_AdvertisedOnlyWithOfferCue(t *testing.T) {
+	r := gatingRegistryWithStayOpen(t)
+
+	noSteer := specNameSet(gateTools(r, perception.Payload{ActorID: "keeper"}, nil))
+	if noSteer[stayOpenToolName] != 0 {
+		t.Errorf("stay_open advertised with no DutySteer; count %d", noSteer[stayOpenToolName])
+	}
+
+	notOffered := specNameSet(gateTools(r, perception.Payload{
+		ActorID:   "keeper",
+		DutySteer: &perception.DutySteerView{OfferStayOpen: false},
+	}, nil))
+	if notOffered[stayOpenToolName] != 0 {
+		t.Errorf("stay_open advertised when OfferStayOpen is false; count %d", notOffered[stayOpenToolName])
+	}
+
+	offered := specNameSet(gateTools(r, perception.Payload{
+		ActorID:   "keeper",
+		DutySteer: &perception.DutySteerView{OfferStayOpen: true},
+	}, nil))
+	if offered[stayOpenToolName] != 1 {
+		t.Errorf("stay_open should be advertised when the wind-down cue offers it; count %d", offered[stayOpenToolName])
+	}
+}
