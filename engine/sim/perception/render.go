@@ -477,7 +477,7 @@ func deepFatigueDominatesNeeds(needs map[sim.NeedKey]int, thresholds sim.NeedThr
 
 func renderActor(b *strings.Builder, a ActorView) {
 	b.WriteString("## You\n")
-	if line := renderFeltNeeds(a.Needs, a.NeedThresholds); line != "" {
+	if line := renderFeltNeeds(a.Needs, a.NeedThresholds, a.State == sim.StateResting); line != "" {
 		b.WriteString(line)
 		b.WriteString("\n")
 	}
@@ -526,7 +526,7 @@ func renderActor(b *strings.Builder, a ActorView) {
 // couldn't calibrate (the original "needs: hunger=24" dump gave the model no
 // sense that 24 is peak starvation). Returns "" when nothing is surfaced.
 // ZBBS-HOME-339.
-func renderFeltNeeds(needs map[sim.NeedKey]int, thresholds sim.NeedThresholds) string {
+func renderFeltNeeds(needs map[sim.NeedKey]int, thresholds sim.NeedThresholds, resting bool) string {
 	if len(needs) == 0 {
 		return ""
 	}
@@ -547,6 +547,17 @@ func renderFeltNeeds(needs map[sim.NeedKey]int, thresholds sim.NeedThresholds) s
 		}
 		felt = append(felt, label)
 		if tier >= sim.NeedRed {
+			// LLM-67: while on a take_break (StateResting) tiredness is already
+			// being recovered, so don't surface it as an "Address now" imperative —
+			// that cue is the entire stimulus for the re-take_break loop (the actor
+			// reads an unmet tiredness need and reaches for the tool it is already
+			// using). It stays in the felt list ("you feel weary") — mark-don't-hide,
+			// and the "You are taking a rest." state line conveys the recovery.
+			// Hunger/thirst stay actionable: a break doesn't feed or water you, and
+			// LLM-62 deliberately lets them interrupt a break.
+			if resting && key == recoveryTirednessNeed {
+				continue
+			}
 			pressing = append(pressing, string(key))
 		}
 	}
