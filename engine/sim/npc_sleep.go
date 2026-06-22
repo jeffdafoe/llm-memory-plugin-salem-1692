@@ -192,6 +192,15 @@ func executeNPCSleep(w *World, a *Actor, now time.Time) bool {
 	if a.SleepingUntil != nil {
 		return false
 	}
+	// Bedding down supersedes any open take_break window. An actor must never hold
+	// both a break and a sleep window at once — the two auto-bed callers used to
+	// guard against an on-break actor to preserve that. Clearing it here makes the
+	// invariant hold centrally at the one sleep entry point, so an off-shift
+	// exhausted actor on a self-renewing break is bedded for the overnight reset
+	// instead of evading it (the LLM-62 triple-suppressor). The sleep stamps below
+	// re-derive State / LastTirednessRecoveryAt / occupancy, so no further break
+	// teardown (endBreak) is needed.
+	a.BreakUntil = nil
 	// Excuse out of any active huddle BEFORE bedding down: speak a
 	// deterministic retire line (so the huddle partners perceive the farewell)
 	// then leave the huddle. Gated on an ACTIVE huddle — an NPC bedding alone
@@ -330,14 +339,12 @@ func handleAutoSleepOnArrival(w *World, evt Event) {
 	if a == nil || !isAgentNPC(a) || a.SleepingUntil != nil {
 		return
 	}
-	// On break → awake by choice; don't also bed them (ZBBS-HOME-284 #4 review,
-	// work). Mirrors the same skip in AutoBedAtHomeNPCs: enforcing "an actor
-	// never holds both BreakUntil and SleepingUntil at once" at BOTH auto-sleep
-	// entry points keeps endBreak's SleepingUntil guard purely defensive and
-	// avoids wakeNPC clearing a still-open break's cursor/state on shift-start.
-	if a.BreakUntil != nil && a.BreakUntil.After(arr.At) {
-		return
-	}
+	// An on-break actor is intentionally NOT skipped here (it was, pre-LLM-62).
+	// npcSleepHere below still requires off-shift, so an on-shift mid-shift stop
+	// home is never sleep-darted; an OFF-shift actor on a self-renewing break is
+	// now bedded for the night rather than letting the break evade the overnight
+	// reset. executeNPCSleep clears BreakUntil, so the "never both rest windows"
+	// invariant still holds. (Auto-bed arm of the LLM-62 triple-suppressor fix.)
 	// Event-freshness: only act if the actor's current structure still matches
 	// the arrival event (a later move could have superseded it).
 	if a.InsideStructureID != arr.FinalStructureID {
@@ -381,9 +388,13 @@ func RegisterSleepSubscriber(w *World) {
 // the bedtime window that gates them), and no fresh arrival event fires at dusk
 // — so this sweep is what beds a lodger once its bedtime window opens.
 //
-// On-break actors are skipped (BreakUntil > now) — a vendor on break is awake
-// off-shift by choice and recovers via the tiredness sweep without being
-// bedded. This is the v2 replacement for v1's agent_override_until exclusion.
+// An on-break actor is NOT skipped (it was, pre-LLM-62): npcSleepHere still gates
+// the bed-down to off-shift / in-window, so an on-shift break is never bedded,
+// while an off-shift actor on a self-renewing break is bedded for the night
+// instead of letting the break evade the overnight reset. executeNPCSleep clears
+// BreakUntil so the "never both rest windows" invariant holds. (The stationary
+// auto-bed arm of the LLM-62 triple-suppressor fix; the arrival subscriber is the
+// other.)
 func AutoBedAtHomeNPCs(now time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
@@ -391,9 +402,6 @@ func AutoBedAtHomeNPCs(now time.Time) Command {
 			for _, a := range w.Actors {
 				if !isAgentNPC(a) || a.SleepingUntil != nil {
 					continue
-				}
-				if a.BreakUntil != nil && a.BreakUntil.After(now) {
-					continue // on break — awake by choice
 				}
 				// ZBBS-HOME-435: never bed an actor mid-deliberation or
 				// mid-walk. A bed-stamp racing an in-flight tick produced the

@@ -218,6 +218,73 @@ func TestShiftDutyTarget_RestingSkipped(t *testing.T) {
 	}
 }
 
+// TestShiftDutyTarget_OffShiftBreakStillWindsDown: LLM-62 — the break suppressor is
+// shift-aware. An OFF-shift on-break actor away from home still gets the wind-down
+// go-home duty, so a self-renewing break can no longer shield an exhausted vendor
+// from being routed home to bed. (On-shift on-break stays skipped — see
+// TestShiftDutyTarget_RestingSkipped; sleep stays skipped regardless of shift.)
+func TestShiftDutyTarget_OffShiftBreakStillWindsDown(t *testing.T) {
+	now := time.Now()
+	future := now.Add(time.Hour)
+	a := shiftNPC("b", KindNPCStateful, "shop", "home", "shop") // off-shift, at work → away from home
+	a.ScheduleStartMin = intptr(420)
+	a.ScheduleEndMin = intptr(960)
+	a.BreakUntil = &future
+	w := sleepTestWorld(a)
+	target, toWork, ok := shiftDutyTarget(w, a, 1300, now) // 21:40 → off shift
+	if !ok || target != "home" || toWork {
+		t.Errorf("off-shift on-break NPC should get the wind-down go-home duty; got target=%q toWork=%v ok=%v", target, toWork, ok)
+	}
+}
+
+// TestShiftDutyTarget_ExpiredBreakOnShiftNotSuppressed: only a LIVE break (After
+// now) suppresses the duty — the shift-aware guard checks .After(now), not just
+// non-nil. An on-shift actor with an EXPIRED break still gets its normal to-work
+// duty. LLM-62.
+func TestShiftDutyTarget_ExpiredBreakOnShiftNotSuppressed(t *testing.T) {
+	now := time.Now()
+	past := now.Add(-time.Hour)
+	a := shiftNPC("n", KindNPCStateful, "shop", "home", "home") // on shift, at home (not at work)
+	a.ScheduleStartMin = intptr(420)
+	a.ScheduleEndMin = intptr(960)
+	a.BreakUntil = &past // expired — must not suppress
+	w := sleepTestWorld(a)
+	target, toWork, ok := shiftDutyTarget(w, a, 600, now) // 10:00, on shift
+	if !ok || target != "shop" || !toWork {
+		t.Errorf("on-shift actor with expired break should get to-work duty; got (%q,%v,%v), want (shop,true,true)", target, toWork, ok)
+	}
+}
+
+// TestShiftDutyTarget_OvernightShiftBreakSuppression: the shift-aware break guard
+// runs through minuteInShiftWindow, so it must honor wraparound (overnight)
+// schedules. For a 22:00–06:00 keeper, a live break at 23:00 (inside the window →
+// on shift) suppresses the duty; the same break at 07:00 (daytime gap → off shift)
+// does not, so the keeper winds down home. LLM-62.
+func TestShiftDutyTarget_OvernightShiftBreakSuppression(t *testing.T) {
+	now := time.Now()
+	future := now.Add(time.Hour)
+	mk := func(inside StructureID) *Actor {
+		a := shiftNPC("n", KindNPCStateful, "shop", "home", inside)
+		a.ScheduleStartMin = intptr(1320) // 22:00
+		a.ScheduleEndMin = intptr(360)    // 06:00 — wraps midnight
+		a.BreakUntil = &future
+		return a
+	}
+	// 23:00 (minute 1380), not at work → would get a to-work duty, but the on-shift
+	// break suppresses it.
+	onShift := mk("home")
+	if _, _, ok := shiftDutyTarget(sleepTestWorld(onShift), onShift, 1380, now); ok {
+		t.Error("overnight on-shift (23:00) on-break keeper should be suppressed")
+	}
+	// 07:00 (minute 420), at work and away from home → off-shift wind-down; the
+	// break no longer shields it.
+	offShift := mk("shop")
+	target, toWork, ok := shiftDutyTarget(sleepTestWorld(offShift), offShift, 420, now)
+	if !ok || target != "home" || toWork {
+		t.Errorf("overnight off-shift (07:00) on-break keeper should wind down home; got (%q,%v,%v), want (home,false,true)", target, toWork, ok)
+	}
+}
+
 // TestShiftDutyTarget_MidMealSuppressesGoHome — ZBBS-WORK-386. The off-shift
 // go-home duty yields while the NPC holds a live item-source dwell credit
 // (mid-meal), so the engine doesn't drive it home off its meal. Object-source
@@ -413,8 +480,9 @@ func TestAlreadyEnRouteTo(t *testing.T) {
 // decision (march home vs warrant vs skip); these drive it directly on the light
 // sleepTestWorld. The mechanical MoveActor march itself (which needs a fully
 // placed structure + terrain) is left to live observation, the same way the
-// decorative shift-walk dispatch is. tiredness == 24 is NeedPeak unconditionally;
-// 23 is the just-below-peak boundary (Red, never Peak).
+// decorative shift-walk dispatch is. LLM-62 lowered the march trigger to RED: a
+// red-or-worse off-shift agent (tiredness >= 20, peak 24 included) is marched home;
+// a below-red one still warrants. 24 is NeedPeak; 23 is Red (never Peak); 13 is mild.
 
 func TestClassifyAgentDuty_PeakOffShiftMarchesHome(t *testing.T) {
 	a := shiftNPC("n", KindNPCStateful, "shop", "home", "shop") // off shift, away from home
@@ -425,12 +493,27 @@ func TestClassifyAgentDuty_PeakOffShiftMarchesHome(t *testing.T) {
 	}
 }
 
-func TestClassifyAgentDuty_BelowPeakWarrants(t *testing.T) {
+func TestClassifyAgentDuty_RedOffShiftMarchesHome(t *testing.T) {
+	// LLM-62 dead-zone fix: a red-but-not-peak (20–23) off-shift agent away from home
+	// is now marched, not merely warranted — the band Elizabeth Ellis sat in, where
+	// the LLM ignored the go-home cue and tiredness never climbed to peak.
 	a := shiftNPC("n", KindNPCStateful, "shop", "home", "shop")
-	a.Needs["tiredness"] = 23 // Red, one below peak — must still deliberate, not march
+	a.Needs["tiredness"] = 23 // Red, one below peak
+	w := sleepTestWorld(a)
+	if got := classifyAgentDuty(w, a, "home", false); got != agentDutyMarchHome {
+		t.Errorf("red off-shift agent: got %v, want agentDutyMarchHome (LLM-62)", got)
+	}
+}
+
+func TestClassifyAgentDuty_BelowRedWarrants(t *testing.T) {
+	// Below red the agent still deliberates (warrant + recovery_options), preserving
+	// the normal wind-down beat: a rested keeper that ends its shift mild heads home
+	// on its own rather than being mechanically marched.
+	a := shiftNPC("n", KindNPCStateful, "shop", "home", "shop")
+	a.Needs["tiredness"] = 13 // mild, below the red 20 threshold
 	w := sleepTestWorld(a)
 	if got := classifyAgentDuty(w, a, "home", false); got != agentDutyWarrant {
-		t.Errorf("below-peak off-shift agent: got %v, want agentDutyWarrant", got)
+		t.Errorf("below-red off-shift agent: got %v, want agentDutyWarrant", got)
 	}
 }
 
@@ -492,9 +575,9 @@ func TestClassifyAgentDuty_PeakNonHomeTargetNotMarched(t *testing.T) {
 
 func TestClassifyAgentDuty_MissingTirednessNotMarched(t *testing.T) {
 	// Missing need keys read as zero in this codebase, so an actor with no
-	// tiredness entry is below peak and is NOT marched — it deliberates via the
-	// warrant like any non-exhausted agent. (Pins the "missing reads below peak"
-	// claim in atPeakTiredness's comment.)
+	// tiredness entry is below red and is NOT marched — it deliberates via the
+	// warrant like any non-exhausted agent. (Pins the "missing reads below red"
+	// claim in atRedTiredness's comment.)
 	a := shiftNPC("n", KindNPCStateful, "shop", "home", "shop")
 	delete(a.Needs, "tiredness")
 	w := sleepTestWorld(a)

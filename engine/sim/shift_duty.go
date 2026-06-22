@@ -189,6 +189,17 @@ func atPeakTiredness(w *World, a *Actor) bool {
 	return NeedLabelTier(a.Needs["tiredness"], w.Settings.NeedThresholds.Get("tiredness")) >= NeedPeak
 }
 
+// atRedTiredness reports whether the actor's tiredness is at the red tier or worse
+// (value >= the tiredness red threshold, i.e. NeedRed or NeedPeak). LLM-62 lowered
+// the last-resort home march trigger from peak-only to this: a homed agent stranded
+// off-shift in the red-but-not-maxed band (20–23 on the default 24 scale) otherwise
+// got neither the go-home warrant (which needs the LLM to act on the cue) nor the
+// mechanical march — the dead zone Elizabeth Ellis sat in. Same NeedLabelTier the
+// perception render uses; a missing tiredness entry reads as 0 → below red.
+func atRedTiredness(w *World, a *Actor) bool {
+	return NeedLabelTier(a.Needs["tiredness"], w.Settings.NeedThresholds.Get("tiredness")) >= NeedRed
+}
+
 // agentDutyAction is what ShiftTick should do for an agent NPC that has a
 // standing duty (target/toWork already resolved by shiftDutyTarget).
 type agentDutyAction int
@@ -206,13 +217,17 @@ const (
 
 // classifyAgentDuty decides ShiftTick's dispatch for an agent NPC (ZBBS-WORK-355).
 //
-// The last-resort rest floor: a peak-exhausted agent on a standing GO-HOME duty
-// (toWork == false) is marched home mechanically rather than left to the LLM —
-// the deterministic catch a homed NPC otherwise lacks (npc_rest_fallback's
-// RouteHomelessToRest only covers home-LESS NPCs). The duty cue + recovery_options
-// remain the path while merely red, so this fires only once those have failed to
-// land the NPC home. On arrival handleAutoSleepOnArrival beds it and the tiredness
-// recovery sweep restores it.
+// The last-resort rest floor: an agent at red-or-worse tiredness on a standing
+// GO-HOME duty (toWork == false, which shiftDutyTarget only returns off-shift) is
+// marched home mechanically rather than left to the LLM — the deterministic catch a
+// homed NPC otherwise lacks (npc_rest_fallback's RouteHomelessToRest only covers
+// home-LESS NPCs). LLM-62 lowered the trigger from peak-only to red: a homed NPC
+// stranded off-shift in the red-but-not-maxed band (20–23) got neither the go-home
+// warrant (it needs the LLM to act on the cue) nor the march. A BELOW-red off-shift
+// agent still falls through to the warrant arm, so a rested keeper that ends its
+// shift mild winds down via the LLM cue + recovery_options; only an already-red one
+// is marched. On arrival handleAutoSleepOnArrival beds it and the tiredness recovery
+// sweep restores it.
 //
 // HOME-ONLY, enforced locally (target == HomeStructureID) rather than trusting the
 // caller, so the helper can't be reused to mechanically move an exhausted actor to
@@ -220,7 +235,7 @@ const (
 // is already need-suppressed out of the to-work nudge in shiftDutyTarget anyway.
 //
 // The march is DEFERRED while a tick is pending or in flight (WarrantedSince /
-// TickInFlight) so it never races the reactor over this actor's move, and the peak
+// TickInFlight) so it never races the reactor over this actor's move, and the march
 // branch never stamps a fresh warrant. Liveness therefore depends on the reactor
 // eventually clearing those flags — which it does: actorCanReactNow clears a stale
 // warrant, a consumed tick clears both, and resetReactorStateOnLoad wipes in-flight
@@ -230,7 +245,7 @@ const (
 // next minute — it never needs to override an open warrant. Idempotent via
 // alreadyEnRouteTo.
 func classifyAgentDuty(w *World, a *Actor, target StructureID, toWork bool) agentDutyAction {
-	if !toWork && target == a.HomeStructureID && atPeakTiredness(w, a) {
+	if !toWork && target == a.HomeStructureID && atRedTiredness(w, a) {
 		if a.WarrantedSince != nil || a.TickInFlight {
 			return agentDutySkip
 		}
@@ -294,7 +309,19 @@ func shiftDutyTarget(w *World, a *Actor, nowMinute int, now time.Time) (target S
 	if a.SleepingUntil != nil && a.SleepingUntil.After(now) {
 		return "", false, false
 	}
-	if a.BreakUntil != nil && a.BreakUntil.After(now) {
+	// The shift window is resolved up front because the break suppressor below is
+	// shift-aware (LLM-62).
+	start, end, winOK := effectiveShiftWindow(w, a)
+	if !winOK {
+		return "", false, false
+	}
+	onShift := minuteInShiftWindow(start, end, nowMinute)
+	// A break suppresses the duty only while ON shift: an on-shift break is the
+	// actor's chosen rest and must not be cut by a to-work nudge (slice 2). OFF
+	// shift, a break must NOT shield the actor from the wind-down go-home duty — a
+	// self-renewing break was the LLM-62 suppressor that left an exhausted vendor
+	// never routed home to bed. Sleep (above) still suppresses unconditionally.
+	if onShift && a.BreakUntil != nil && a.BreakUntil.After(now) {
 		return "", false, false
 	}
 	// An actor mid scheduled-route (lamplighter / washerwoman / town_crier) is
@@ -311,12 +338,6 @@ func shiftDutyTarget(w *World, a *Actor, nowMinute int, now time.Time) (target S
 	if w.ActiveRoutes[a.ID] != nil {
 		return "", false, false
 	}
-
-	start, end, winOK := effectiveShiftWindow(w, a)
-	if !winOK {
-		return "", false, false
-	}
-	onShift := minuteInShiftWindow(start, end, nowMinute)
 
 	atWork := a.WorkStructureID != "" && a.InsideStructureID == a.WorkStructureID
 
