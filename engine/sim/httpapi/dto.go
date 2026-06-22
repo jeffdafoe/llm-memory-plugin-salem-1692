@@ -115,8 +115,9 @@ type AgentDTO struct {
 
 	// Coins (LLM-70) — the actor's current purse balance, rendered beside the
 	// needs on the editor's villager-list row. NOT omitempty (0 is a real
-	// balance). Unlike needs there is no live-delta frame, so the row's value
-	// refreshes on the next full /api/village/agents fetch, not per-transaction.
+	// balance). This is the load-time / refresh value; live updates ride the
+	// npc_coins_changed frame (World.emitCoinsDeltas, LLM-71), same posture as
+	// needs.
 	Coins int `json:"coins"`
 
 	// Editor metadata (ZBBS-HOME-290) — the NPC config the Godot editor/HUD

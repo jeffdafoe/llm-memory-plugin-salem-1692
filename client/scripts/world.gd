@@ -731,8 +731,8 @@ func _render_npc(npc: Dictionary) -> void:
     container.set_meta("thirst", int(npc.get("thirst", 0)))
     container.set_meta("tiredness", int(npc.get("tiredness", 0)))
     # Coins (LLM-70) — purse balance shown beside the needs on the villager
-    # list row. No live-delta frame like needs have; refreshes on the next
-    # full /api/village/agents fetch.
+    # list row. Load-time / refresh value; live updates ride the
+    # npc_coins_changed frame (apply_npc_coins_changed, LLM-71).
     container.set_meta("coins", int(npc.get("coins", 0)))
     var inside_structure_id_val = npc.get("inside_structure_id", null)
     var inside_structure_id: String = str(inside_structure_id_val) if inside_structure_id_val != null else ""
@@ -2308,6 +2308,22 @@ func apply_npc_needs_changed(data: Dictionary) -> void:
         container.set_meta("thirst", int(data.get("thirst", 0)))
     if data.has("tiredness"):
         container.set_meta("tiredness", int(data.get("tiredness", 0)))
+    npc_metadata_changed.emit(npc_id)
+
+## WS event — an NPC's coin balance changed (a pay / sell / order / grant
+## transaction). Patch the container's coins meta and emit npc_metadata_changed so
+## the editor villager row re-renders its "Coins N" readout in place — the same
+## patch-and-refresh path as apply_npc_needs_changed. coins is the full post-change
+## value, not a delta.
+func apply_npc_coins_changed(data: Dictionary) -> void:
+    var npc_id: String = str(data.get("id", ""))
+    if npc_id == "":
+        return
+    var container: Node2D = placed_npcs.get(npc_id, null)
+    if container == null:
+        return
+    if data.has("coins"):
+        container.set_meta("coins", int(data.get("coins", 0)))
     npc_metadata_changed.emit(npc_id)
 
 # Sleeping/resting NPCs read as a dimmed sprite with a "Zzz" marker above the

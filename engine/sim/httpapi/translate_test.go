@@ -419,6 +419,23 @@ func TestTranslateEvent_NPCDormancyChanged(t *testing.T) {
 	}
 }
 
+func TestTranslateEvent_NPCCoinsChanged(t *testing.T) {
+	frame, ok := TranslateEvent(&sim.NPCCoinsChanged{ActorID: "prudence", Coins: 247})
+	if !ok {
+		t.Fatal("NPCCoinsChanged should translate")
+	}
+	if frame.Type != "npc_coins_changed" {
+		t.Fatalf("type = %q, want npc_coins_changed", frame.Type)
+	}
+	d, isType := frame.Data.(npcCoinsChangedWireDTO)
+	if !isType {
+		t.Fatalf("data type = %T, want npcCoinsChangedWireDTO", frame.Data)
+	}
+	if d.ID != "prudence" || d.Coins != 247 {
+		t.Errorf("coins fields = %+v, want {prudence 247}", d)
+	}
+}
+
 func TestTranslateEvent_VillageObjectDisplayNameChanged(t *testing.T) {
 	frame, ok := TranslateEvent(&sim.VillageObjectDisplayNameChanged{
 		ObjectID:    "tavern",

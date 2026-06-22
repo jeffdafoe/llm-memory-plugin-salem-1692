@@ -154,7 +154,8 @@ func TestUmbilicalNudge_BadInput(t *testing.T) {
 func TestUmbilicalGrant(t *testing.T) {
 	srv, h := controlServer(t, operatorPerms)
 
-	// Coin credit to an NPC, echoed back as the post-mutation balance.
+	// Coin credit to an NPC, echoed back as the post-mutation balance. Grant is a
+	// delta: hannah seeds with 25 coins (seededWorld, LLM-70), so +25 lands at 50.
 	rec := postReq(t, h, "/api/village/umbilical/grant", "tok", `{"actor_id":"hannah","coins":25}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("grant coins = %d, want 200; body=%s", rec.Code, rec.Body.String())
@@ -163,15 +164,15 @@ func TestUmbilicalGrant(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if out.Coins != 25 {
-		t.Errorf("response coins=%d, want 25", out.Coins)
+	if out.Coins != 50 {
+		t.Errorf("response coins=%d, want 50 (25 seed + 25 grant)", out.Coins)
 	}
 	// Confirm it landed on the live actor.
 	res, _ := srv.world.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		return world.Actors["hannah"].Coins, nil
 	}})
-	if coins, _ := res.(int); coins != 25 {
-		t.Errorf("live hannah coins=%d after grant, want 25", coins)
+	if coins, _ := res.(int); coins != 50 {
+		t.Errorf("live hannah coins=%d after grant, want 50 (25 seed + 25 grant)", coins)
 	}
 
 	// PC target works — the thing the editor's SetActorInventory can't do.

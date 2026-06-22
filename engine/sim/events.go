@@ -617,6 +617,23 @@ type NPCDormancyChanged struct {
 
 func (NPCDormancyChanged) isSimEvent() {}
 
+// NPCCoinsChanged — an actor's purse balance AFTER a change (the full post-change
+// value, never a delta, same authoritative-full-state posture as NPCNeedsChanged)
+// so the client's editor villager-row coin readout converges on one source of
+// truth regardless of which transaction produced it (pay, pay-with-item, order
+// settlement, lodger rebook, the umbilical grant). Emitted by World.emitCoinsDeltas
+// at the command-loop publish boundary — a change-detection diff against the prior
+// published snapshot, the same per-publish posture as NPCNeedsChanged — so every
+// coin-mutation path is covered without per-site emits. Frame: npc_coins_changed.
+type NPCCoinsChanged struct {
+	EventBase
+	ActorID ActorID
+	Coins   int
+	At      time.Time
+}
+
+func (NPCCoinsChanged) isSimEvent() {}
+
 // NPCSpriteChanged is emitted by SetActorSprite when an NPC's sprite actually
 // changes. Carries the resolved *Sprite inline (same posture as NPCCreated) so
 // the hub builds an npc_sprite_changed frame with the full render data the
