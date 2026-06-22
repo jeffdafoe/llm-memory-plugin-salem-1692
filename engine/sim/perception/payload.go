@@ -624,6 +624,15 @@ type ActorView struct {
 	// analogue of ActiveDwellCredits. ZBBS-HOME-336.
 	InFlightMove *InFlightMoveView
 
+	// InFlightSourceActivity is the subject's in-flight timed eat/drink/harvest
+	// at a source, nil when not engaged. Rendered as a STANDING "you are
+	// gathering at the bush — stay put, walking off abandons it" self-state line
+	// so a reactor tick that fires mid-activity (a PC speaking, a red need —
+	// LLM-69 relaxed the reactor shelve for those) reads its own state and holds
+	// rather than re-deciding. The source-activity analogue of InFlightMove /
+	// ActiveDwellCredits. LLM-69.
+	InFlightSourceActivity *InFlightSourceActivityView
+
 	// Inventory is the actor's carried goods — the STANDING "what you're
 	// carrying" readout (ZBBS-HOME-361), restored after the v2 rewrite dropped
 	// v1's inventory line and left NPCs blind to their own pockets (a hungry
@@ -656,6 +665,19 @@ type InventoryItem struct {
 type InFlightMoveView struct {
 	Kind             sim.MoveDestinationKind
 	DestinationLabel string
+}
+
+// InFlightSourceActivityView is the perception-side projection of the subject's
+// in-flight SourceActivity (LLM-69). Kind drives the verb ("gathering" for a
+// harvest; eat/drink/rest for a refresh, picked from Attribute). SourceLabel is
+// resolved at build time (the source object's DisplayName, the same
+// resolveDwellPinLabel path dwell pins and move destinations use); empty when it
+// can't be resolved. Attribute is the primary need a refresh eases (empty for a
+// harvest, where the verb is need-independent).
+type InFlightSourceActivityView struct {
+	Kind        sim.SourceActivityKind
+	SourceLabel string
+	Attribute   sim.NeedKey
 }
 
 // DwellCreditView is the perception-side projection of one

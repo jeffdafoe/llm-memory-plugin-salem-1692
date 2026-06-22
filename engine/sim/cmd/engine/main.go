@@ -327,6 +327,7 @@ func run(rt runtime, stop <-chan struct{}) error {
 	handlers.RegisterSpeechHandlers(rt.World)
 	handlers.RegisterPayHandlers(rt.World)
 	handlers.RegisterDwellHandlers(rt.World)
+	handlers.RegisterSourceActivityHandlers(rt.World) // LLM-69: NPC completion beat for timed eat/drink/harvest
 	handlers.RegisterConsumeHandlers(rt.World)
 	handlers.RegisterSceneQuoteHandlers(rt.World)
 	handlers.RegisterPayWithItemHandlers(rt.World)

@@ -421,16 +421,33 @@ func buildActorView(snap *sim.Snapshot, a *sim.ActorSnapshot) ActorView {
 		}
 	}
 	return ActorView{
-		State:              a.State,
-		InsideStructureID:  a.InsideStructureID,
-		Position:           sim.Position{X: a.Pos.X, Y: a.Pos.Y},
-		CurrentHuddleID:    a.CurrentHuddleID,
-		Coins:              a.Coins,
-		Needs:              needs,
-		NeedThresholds:     snap.NeedThresholds,
-		ActiveDwellCredits: buildActiveDwellCredits(snap, a),
-		InFlightMove:       buildInFlightMove(snap, a),
-		Inventory:          buildInventoryView(snap, a),
+		State:                  a.State,
+		InsideStructureID:      a.InsideStructureID,
+		Position:               sim.Position{X: a.Pos.X, Y: a.Pos.Y},
+		CurrentHuddleID:        a.CurrentHuddleID,
+		Coins:                  a.Coins,
+		Needs:                  needs,
+		NeedThresholds:         snap.NeedThresholds,
+		ActiveDwellCredits:     buildActiveDwellCredits(snap, a),
+		InFlightMove:           buildInFlightMove(snap, a),
+		InFlightSourceActivity: buildInFlightSourceActivity(snap, a),
+		Inventory:              buildInventoryView(snap, a),
+	}
+}
+
+// buildInFlightSourceActivity projects the subject's in-flight SourceActivity
+// (the read-path Kind/ObjectID/Attribute fields the snapshot carries while the
+// window is live) into a render-ready view, or nil when the actor isn't engaged
+// at a source. SourceLabel resolves the same way dwell-pin and move labels do
+// (resolveDwellPinLabel against snap.Structures / snap.VillageObjects). LLM-69.
+func buildInFlightSourceActivity(snap *sim.Snapshot, a *sim.ActorSnapshot) *InFlightSourceActivityView {
+	if a.SourceActivityKind == "" {
+		return nil
+	}
+	return &InFlightSourceActivityView{
+		Kind:        a.SourceActivityKind,
+		SourceLabel: resolveDwellPinLabel(snap, a.SourceActivityObjectID),
+		Attribute:   a.SourceActivityAttribute,
 	}
 }
 

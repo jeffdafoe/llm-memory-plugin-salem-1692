@@ -1126,6 +1126,25 @@ type ActorSnapshot struct {
 	// ColocatedAudienceIDs — NOT checkpointed, recomputed each republish.
 	CurrentLoiterObjectID VillageObjectID
 
+	// SourceActivityKind / SourceActivityObjectID / SourceActivityAttribute are
+	// the read-path projection of an in-flight timed eat/drink/harvest at a
+	// source (Actor.SourceActivity, LLM-54). Kind == "" when the actor is not
+	// engaged. Surfaced so perception renders a STANDING "you are picking at the
+	// bush — stay put, walking off abandons it" self-state line (the source-
+	// activity analogue of the MoveDest* in-progress-walk cue): whatever ticks
+	// the actor mid-window — a PC speaking, a red need — it reads its own state
+	// and holds rather than re-deciding from scratch (LLM-69). Attribute is the
+	// primary need a refresh eases (drives the eat/drink verb); empty for a
+	// harvest. ObjectID resolves the source's display label in perception
+	// (resolveDwellPinLabel), the same way MoveDest* / dwell pins do. Projected
+	// only while the window is live (BusyAtSource) — an expired-but-unswept
+	// window, cleared by the next completion sweep, reads as not-engaged. Same
+	// per-publish projection posture as ColocatedAudienceIDs — NOT checkpointed,
+	// recomputed each republish.
+	SourceActivityKind      SourceActivityKind
+	SourceActivityObjectID  VillageObjectID
+	SourceActivityAttribute NeedKey
+
 	// VisitorState mirrors the live Actor's transient-visitor state at
 	// snapshot time. Non-nil marks the actor as a salem-visitor; the
 	// perception "Visitors here" block reads Archetype/Origin/Disposition

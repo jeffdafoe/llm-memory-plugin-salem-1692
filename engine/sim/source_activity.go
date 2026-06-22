@@ -93,12 +93,27 @@ type SourceActivityStarted struct {
 
 func (SourceActivityStarted) isSimEvent() {}
 
+// SourceActivityCompleted carries, beyond the bare seam fields, enough to
+// narrate the NPC completion beat without a subscriber re-reading world state
+// (LLM-69) — the same self-contained-payload posture as the dwell-lifecycle
+// events. Item/Qty are the harvest yield (the forage-to-sell closing signal);
+// Attribute is the primary need a refresh eased (drives the eat/drink verb);
+// SourceName is the resolved object display name. Continues marks a non-terminal
+// auto-repeat bite (LLM-55): a finite refresh re-arms a fresh window after the
+// emit, so only the terminal (Continues=false) completion mints a perception
+// warrant — the repeat bites would otherwise stamp a redundant beat per bite
+// while the actor is still shelved mid-meal.
 type SourceActivityCompleted struct {
 	EventBase
-	ActorID  ActorID
-	ObjectID VillageObjectID
-	Kind     SourceActivityKind
-	At       time.Time
+	ActorID    ActorID
+	ObjectID   VillageObjectID
+	Kind       SourceActivityKind
+	Item       ItemKind // harvest only: the kind credited
+	Qty        int      // harvest only: units actually gathered
+	Attribute  NeedKey  // refresh only: the primary need eased
+	SourceName string   // resolved object display name (both kinds)
+	Continues  bool     // true when a refresh auto-repeat re-arms after this emit
+	At         time.Time
 }
 
 func (SourceActivityCompleted) isSimEvent() {}
@@ -288,8 +303,26 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 		if obj == nil || objID != act.ObjectID || obj.OwnedByOther(actorID) {
 			return
 		}
-		applyObjectRefreshEffect(w, actorID, objID, obj, now)
-		w.emit(&SourceActivityCompleted{ActorID: actorID, ObjectID: act.ObjectID, Kind: act.Kind, At: now})
+		res := applyObjectRefreshEffect(w, actorID, objID, obj, now)
+		// Compute the repeat decision BEFORE emitting so the completion event
+		// can flag a non-terminal bite (Continues): the perception subscriber
+		// only narrates the terminal completion, not each auto-repeat bite the
+		// re-arm below schedules (LLM-69). Attribute is the primary need eased
+		// (drives the eat/drink verb); SourceName the resolved display name.
+		willRepeat := shouldRepeatRefresh(actor, obj)
+		var refreshAttr NeedKey
+		if len(res.Hits) > 0 {
+			refreshAttr = res.Hits[0].Attribute
+		}
+		w.emit(&SourceActivityCompleted{
+			ActorID:    actorID,
+			ObjectID:   act.ObjectID,
+			Kind:       act.Kind,
+			Attribute:  refreshAttr,
+			SourceName: sourceActivityObjectName(w, obj),
+			Continues:  willRepeat,
+			At:         now,
+		})
 		// Auto-repeat (LLM-55): keep eating a FINITE source while the actor is
 		// still in need and stock remains, so a bush is eaten berry-by-berry
 		// until full or picked clean — at which point applyObjectRefreshEffect
@@ -298,7 +331,7 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 		// an INFINITE source (the well) is never re-armed, so it keeps its
 		// arrival + dwell-drip behavior untouched (continuous drinking there is
 		// the dwell tick's job, not this loop).
-		if shouldRepeatRefresh(actor, obj) {
+		if willRepeat {
 			actor.SourceActivity = &SourceActivity{
 				Kind:      SourceActivityRefresh,
 				ObjectID:  objID,
@@ -326,13 +359,23 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 		// benign nothing-harvested completion (clamped to empty), so swallow it
 		// — but surface any OTHER failure (e.g. inventory overflow) rather than
 		// losing it silently. Either way no effect landed, so don't emit completion.
-		if _, err := applyGatherMint(w, actor, objID, obj, row, kind, act.Qty, now); err != nil {
+		res, err := applyGatherMint(w, actor, objID, obj, row, kind, act.Qty, now)
+		if err != nil {
 			if !errors.Is(err, ErrGatherableDepleted) {
 				log.Printf("sim/source_activity: harvest completion failed for %q at %q: %v", actorID, objID, err)
 			}
 			return
 		}
-		w.emit(&SourceActivityCompleted{ActorID: actorID, ObjectID: act.ObjectID, Kind: act.Kind, At: now})
+		w.emit(&SourceActivityCompleted{
+			ActorID:    actorID,
+			ObjectID:   act.ObjectID,
+			Kind:       act.Kind,
+			Item:       res.Item,
+			Qty:        res.Qty,
+			SourceName: res.SourceName,
+			Continues:  false, // harvest never auto-repeats
+			At:         now,
+		})
 	}
 }
 
@@ -416,6 +459,103 @@ func completeIfDue(w *World, actorID ActorID, actor *Actor, now time.Time) bool 
 // completion lands within a second of its target — and a once-per-second scan of
 // the actor set is trivially cheap.
 const SourceActivityTickerInterval = time.Second
+
+// SourceActivityCompletedWarrantReason captures the NPC completion beat for a
+// finished timed eat/drink/harvest (LLM-69). Minted by the handlers-side
+// SourceActivityCompleted subscriber onto the actor's reactor warrant list so
+// the next-tick perception surfaces the cue — "you finish gathering; you now
+// have 3 blueberries in your pack" — closing the loop the consume-at-source
+// feature (LLM-54..57) left open on the NPC side. Mirrors DwellEndedWarrantReason:
+// NarrationText is pre-rendered at the subscriber so render-time work stays
+// cheap, and DedupDiscriminator returns 0 (lifecycle-stamp posture — each
+// completion is 1:1 with its triggering sweep, so there's nothing to dedup, and
+// (Kind, 0) bypass keeps unrelated completions from collapsing).
+type SourceActivityCompletedWarrantReason struct {
+	ActivityKind  SourceActivityKind
+	Item          ItemKind
+	Qty           int
+	Attribute     NeedKey
+	SourceName    string
+	NarrationText string
+}
+
+func (SourceActivityCompletedWarrantReason) isWarrantReason()           {}
+func (SourceActivityCompletedWarrantReason) Kind() WarrantKind          { return WarrantKindSourceActivityDone }
+func (SourceActivityCompletedWarrantReason) DedupDiscriminator() uint64 { return 0 }
+
+// SourceActivityCompletionNarration returns the felt-language self-perception
+// line for a finished source activity (LLM-69), the SourceActivity sibling of
+// DwellCompletionNarration. Harvest names the yield (the forage-to-sell closing
+// signal); refresh reads the eased need. sourceName is the resolved object
+// display name; an empty name drops the "at X" clause. Returns "" for an
+// unhandled combination so the subscriber skips the warrant (matching the dwell
+// empty-narration posture) rather than minting the vague fallback line.
+func SourceActivityCompletionNarration(kind SourceActivityKind, item ItemKind, qty int, attribute NeedKey, sourceName string) string {
+	at := ""
+	if sourceName != "" {
+		at = " at " + sourceName
+	}
+	switch kind {
+	case SourceActivityHarvest:
+		if qty <= 0 {
+			return ""
+		}
+		yield := string(item)
+		if yield == "" {
+			yield = "what you gathered"
+		}
+		return fmt.Sprintf("You finish gathering%s; you now have %d %s in your pack.", at, qty, yield)
+	case SourceActivityRefresh:
+		switch attribute {
+		case "hunger":
+			return fmt.Sprintf("You finish eating%s; the gnawing eases.", at)
+		case "thirst":
+			return fmt.Sprintf("You finish drinking%s; the dryness fades.", at)
+		case "tiredness":
+			return fmt.Sprintf("You finish resting%s; the weariness eases.", at)
+		}
+	}
+	return ""
+}
+
+// sourceActivityObjectName resolves obj's display name for a completion beat —
+// the object's own override, falling back to the asset catalog name. Mirrors the
+// name resolution in StartHarvest / applyGatherMint so every source-activity
+// surface names a source the same way.
+func sourceActivityObjectName(w *World, obj *VillageObject) string {
+	if obj == nil {
+		return ""
+	}
+	catalogName := ""
+	if a := w.Assets[obj.AssetID]; a != nil {
+		catalogName = a.Name
+	}
+	return obj.EffectiveDisplayName(catalogName)
+}
+
+// primaryRefreshNeed returns the first need-bearing, applicable refresh need an
+// in-place eat/drink at obj eases — the attribute that drives the standing
+// busy-state verb ("eating" vs "drinking") in perception (LLM-69). Mirrors the
+// per-row skips in hasApplicableRefreshRow (yield-only Amount==0, unknown
+// attribute, depleted finite stock). Returns "" when none applies.
+func primaryRefreshNeed(obj *VillageObject) NeedKey {
+	if obj == nil {
+		return ""
+	}
+	for _, r := range obj.Refreshes {
+		if r == nil || r.Amount == 0 {
+			continue
+		}
+		if _, known := FindNeed(r.Attribute); !known {
+			continue
+		}
+		if r.IsFinite() && *r.AvailableQuantity <= 0 {
+			continue
+		}
+		return r.Attribute
+	}
+	return ""
+}
 
 // RunSourceActivityTicker owns the completion-sweep goroutine. Wakes every
 // SourceActivityTickerInterval and submits completeDueSourceActivities. Same

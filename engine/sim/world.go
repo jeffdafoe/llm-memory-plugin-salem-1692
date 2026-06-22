@@ -1612,6 +1612,22 @@ func (w *World) republish() {
 				sa.CurrentLoiterObjectID = objID
 			}
 		}
+		// In-flight timed source activity (LLM-69): project the live window so
+		// perception renders a standing "you are picking/eating at X — stay put,
+		// walking off abandons it" self-state line, whatever ticks the actor
+		// mid-window. Gate on BusyAtSource so an expired-but-unswept window (the
+		// next completion sweep clears it) reads as not-engaged rather than
+		// still-in-progress. Resolve the refresh primary need world-side for the
+		// eat/drink verb; harvest needs none.
+		if a.BusyAtSource(now) {
+			sa.SourceActivityKind = a.SourceActivity.Kind
+			sa.SourceActivityObjectID = a.SourceActivity.ObjectID
+			if a.SourceActivity.Kind == SourceActivityRefresh {
+				if obj := w.VillageObjects[a.SourceActivity.ObjectID]; obj != nil {
+					sa.SourceActivityAttribute = primaryRefreshNeed(obj)
+				}
+			}
+		}
 		snap.Actors[id] = sa
 	}
 	for id, h := range w.Huddles {

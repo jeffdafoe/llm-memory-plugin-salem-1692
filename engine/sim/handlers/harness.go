@@ -1029,7 +1029,14 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 	// steers it to wait rather than re-fire.
 	if vc.Name == "gather" {
 		if r, ok := cmdResult.(sim.SourceActivityStartResult); ok && r.Started {
-			return "[ok] You set to picking — it takes a little while. What you gather will be in your pack shortly; you needn't gather again. Carry on with something else, or call done()."
+			// LLM-69: frame STAYING, not leaving. The old "carry on with something
+			// else" copy actively invited a move, and a move abandons the in-flight
+			// pick (commands_move.go) — the live forage→walk-off bug. Tell the model
+			// the pick is under way, that walking off forfeits it, and that it need
+			// not re-gather (the within-turn re-gather spam that hit the "already
+			// busy" reject). The yield lands in its pack a few seconds later, surfaced
+			// as a completion beat in its next perception.
+			return "[ok] You set to gathering — it takes a few seconds, then what you gather lands in your pack. Stay where you are: if you walk off now you abandon the pick and gather nothing. You needn't gather again — just wait, or call done()."
 		}
 	}
 	if vc.Name == "speak" {
