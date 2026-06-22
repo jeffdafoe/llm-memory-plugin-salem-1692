@@ -83,7 +83,10 @@ INSERT INTO llm58_wild (id) VALUES
 -- Fail loud if a pinned id is stale/deleted -- otherwise a missing id would just
 -- shrink the migrated set silently. Existence counts only (not pre-migration
 -- asset split), so the assertion stays rerun-safe: the objects still exist after
--- a prior apply even though their asset/owner changed.
+-- a prior apply even though their asset/owner changed. A count of 0 is the
+-- UNSEEDED case (a fresh schema-only DB -- the test harness, a new environment):
+-- the migration no-ops there, so 0 is allowed; a partial count (some but not all)
+-- is the real stale-id failure this guards.
 DO $$
 DECLARE n int;
 BEGIN
@@ -94,12 +97,12 @@ BEGIN
         RAISE EXCEPTION 'LLM-58: wild id set has %, expected 8', (SELECT count(*) FROM llm58_wild);
     END IF;
     SELECT count(*) INTO n FROM village_object WHERE id IN (SELECT id FROM llm58_farm);
-    IF n <> 32 THEN
-        RAISE EXCEPTION 'LLM-58: expected 32 farm bushes present, found %', n;
+    IF n <> 0 AND n <> 32 THEN
+        RAISE EXCEPTION 'LLM-58: expected 32 (or 0 on an unseeded DB) farm bushes, found %', n;
     END IF;
     SELECT count(*) INTO n FROM village_object WHERE id IN (SELECT id FROM llm58_wild);
-    IF n <> 8 THEN
-        RAISE EXCEPTION 'LLM-58: expected 8 wild bushes present, found %', n;
+    IF n <> 0 AND n <> 8 THEN
+        RAISE EXCEPTION 'LLM-58: expected 8 (or 0 on an unseeded DB) wild bushes, found %', n;
     END IF;
 END $$;
 

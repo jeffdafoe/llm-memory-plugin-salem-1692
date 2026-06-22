@@ -21,14 +21,22 @@
 BEGIN;
 
 -- Fail loud if the Blueberry asset isn't in the expected 2-state shape (LLM-58),
--- so a bad/partial catalog can't silently tag only one state.
+-- so a bad/partial catalog can't silently tag only one state. Gated on the
+-- SEEDED marker (a 'berries' state, which LLM-58 can only produce by retagging a
+-- pre-existing seeded 'default'): on a fresh schema-only DB (the test harness, a
+-- new environment) the Blueberry asset isn't seeded, LLM-58 leaves only a 'bare'
+-- state, and there's nothing real to tag — so skip the assertion there (the
+-- INSERT below stays a harmless no-op).
 DO $$
 DECLARE n integer;
 BEGIN
-    SELECT count(*) INTO n FROM asset_state
-    WHERE asset_id = '630909ca-df4f-43ac-9fc4-5192ca44da73' AND state IN ('berries', 'bare');
-    IF n <> 2 THEN
-        RAISE EXCEPTION 'LLM-58b: expected 2 Blueberry Bush states (berries, bare), found %', n;
+    IF EXISTS (SELECT 1 FROM asset_state
+               WHERE asset_id = '630909ca-df4f-43ac-9fc4-5192ca44da73' AND state = 'berries') THEN
+        SELECT count(*) INTO n FROM asset_state
+        WHERE asset_id = '630909ca-df4f-43ac-9fc4-5192ca44da73' AND state IN ('berries', 'bare');
+        IF n <> 2 THEN
+            RAISE EXCEPTION 'LLM-58b: expected 2 Blueberry Bush states (berries, bare), found %', n;
+        END IF;
     END IF;
 END $$;
 
