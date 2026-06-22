@@ -10,18 +10,31 @@ extends Camera2D
 ## reapplied on the zoom_settings_changed broadcast so admins can retune
 ## the floor without a client restart.
 var ZOOM_MIN: float = 0.3
-const ZOOM_MAX: float = 6.0
+## Maximum zoom-in. Capped low because the map is pixel art — past ~3x a
+## 32px tile blows up into a handful of giant blocks.
+const ZOOM_MAX: float = 3.0
 const ZOOM_STEP: float = 0.1
 
 ## Called from world.gd after the world config is loaded (and from the
 ## zoom_settings_changed WS handler) with the floor appropriate for the
-## viewing user. If the new floor would leave the camera too close, clamp
-## down to match. Too-far case is naturally fine.
+## viewing user. When the camera is parked at the zoomed-out extreme, the
+## view follows a retuned floor both ways so the change is immediately
+## visible: a tighter floor snaps the view in, a looser floor pulls it out.
+## A camera sitting at an interior zoom is left where the user put it.
 func set_zoom_floor(value: float) -> void:
     if value <= 0:
         return
+    # A misconfigured floor above the zoom-in cap would invert the valid zoom
+    # interval (ZOOM_MIN > ZOOM_MAX); clamp so the hand-tuned floor can never
+    # cross it (e.g. an admin typing 6 instead of 0.6).
+    value = minf(value, ZOOM_MAX)
+    # Captured before ZOOM_MIN changes: true when the camera is already as
+    # far out as the old floor allowed. Without this, lowering the floor only
+    # unlocks range for the next scroll — the parked-at-floor camera doesn't
+    # move, so a loosened floor reads as "did nothing."
+    var at_floor: bool = zoom.x <= ZOOM_MIN + 0.0001
     ZOOM_MIN = value
-    if zoom.x < ZOOM_MIN:
+    if zoom.x < ZOOM_MIN or at_floor:
         zoom = Vector2(ZOOM_MIN, ZOOM_MIN)
         _clamp_position()
 
