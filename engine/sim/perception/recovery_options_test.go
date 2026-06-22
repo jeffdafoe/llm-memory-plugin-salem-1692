@@ -497,6 +497,97 @@ func TestBuildRecoveryOptions_HomeBedSurfaced(t *testing.T) {
 	if home.Label != "Thorne Cottage" || home.CostText != "free" {
 		t.Errorf("unexpected home option: %+v", home)
 	}
+	if home.AfterShiftOnly {
+		t.Errorf("unscheduled actor (always off-shift) must not be AfterShiftOnly, got %+v", home)
+	}
+}
+
+// findHomeOption pulls the single "home" rest option out of a view, failing the
+// test if the view is nil or carries no home option.
+func findHomeOption(t *testing.T, v *RecoveryOptionsView) *RecoveryOption {
+	t.Helper()
+	if v == nil {
+		t.Fatal("want a recovery-options view, got nil")
+	}
+	for i := range v.Options {
+		if v.Options[i].Kind == "home" {
+			return &v.Options[i]
+		}
+	}
+	t.Fatalf("want a 'home' option, got %+v", v.Options)
+	return nil
+}
+
+// On shift, the home-bed option is marked AfterShiftOnly: the engine refuses to
+// bed a homed NPC at home while it is on shift (npcSleepHere → !isActorOnShift),
+// so offering "sleep in your own bed" as a now-action mid-shift was a false
+// affordance that drove the home↔post oscillation. LLM-62.
+func TestBuildRecoveryOptions_HomeBedAfterShiftOnlyOnShift(t *testing.T) {
+	start, end, onShiftMin := 360, 1140, 600 // shift 06:00–19:00; now 10:00 → on shift
+	subj := &sim.ActorSnapshot{
+		Needs:            map[sim.NeedKey]int{"tiredness": sim.DefaultTirednessRedThreshold},
+		HomeStructureID:  "cottage",
+		ScheduleStartMin: &start,
+		ScheduleEndMin:   &end,
+	}
+	snap := &sim.Snapshot{
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj},
+		Structures:       map[sim.StructureID]*sim.Structure{"cottage": plainStructure("cottage", "Thorne Cottage")},
+		LocalMinuteOfDay: &onShiftMin,
+	}
+	home := findHomeOption(t, buildRecoveryOptions(snap, "ezekiel", subj))
+	if !home.AfterShiftOnly {
+		t.Errorf("on-shift home bed must be marked AfterShiftOnly, got %+v", home)
+	}
+}
+
+// Off shift, the home bed is a real now-action and stays unmarked. LLM-62.
+func TestBuildRecoveryOptions_HomeBedNotAfterShiftOffShift(t *testing.T) {
+	start, end, offShiftMin := 360, 1140, 1300 // shift 06:00–19:00; now 21:40 → off shift
+	subj := &sim.ActorSnapshot{
+		Needs:            map[sim.NeedKey]int{"tiredness": sim.DefaultTirednessRedThreshold},
+		HomeStructureID:  "cottage",
+		ScheduleStartMin: &start,
+		ScheduleEndMin:   &end,
+	}
+	snap := &sim.Snapshot{
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj},
+		Structures:       map[sim.StructureID]*sim.Structure{"cottage": plainStructure("cottage", "Thorne Cottage")},
+		LocalMinuteOfDay: &offShiftMin,
+	}
+	home := findHomeOption(t, buildRecoveryOptions(snap, "ezekiel", subj))
+	if home.AfterShiftOnly {
+		t.Errorf("off-shift home bed must not be marked AfterShiftOnly, got %+v", home)
+	}
+}
+
+// An overnight (wraparound) shift marks AfterShiftOnly correctly: OnShiftAtMinute
+// → minuteInShiftWindow handles start > end (on shift = now >= start OR now < end),
+// so a night-shift actor at 01:00 is on shift and must be marked, while a point in
+// the daytime gap is off shift and unmarked. Guards the wraparound path the
+// snapshot clock can produce. LLM-62.
+func TestBuildRecoveryOptions_HomeBedAfterShiftOnlyWraparoundShift(t *testing.T) {
+	start, end := 1320, 360 // overnight shift 22:00–06:00
+	homeAtMinute := func(nowMin int) *RecoveryOption {
+		subj := &sim.ActorSnapshot{
+			Needs:            map[sim.NeedKey]int{"tiredness": sim.DefaultTirednessRedThreshold},
+			HomeStructureID:  "cottage",
+			ScheduleStartMin: &start,
+			ScheduleEndMin:   &end,
+		}
+		snap := &sim.Snapshot{
+			Actors:           map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj},
+			Structures:       map[sim.StructureID]*sim.Structure{"cottage": plainStructure("cottage", "Thorne Cottage")},
+			LocalMinuteOfDay: &nowMin,
+		}
+		return findHomeOption(t, buildRecoveryOptions(snap, "ezekiel", subj))
+	}
+	if h := homeAtMinute(60); !h.AfterShiftOnly { // 01:00 → inside the overnight window
+		t.Errorf("overnight on-shift (01:00) home bed must be marked AfterShiftOnly, got %+v", h)
+	}
+	if h := homeAtMinute(720); h.AfterShiftOnly { // 12:00 → daytime gap of an overnight shift
+		t.Errorf("overnight off-shift (12:00) home bed must not be marked AfterShiftOnly, got %+v", h)
+	}
 }
 
 // A home structure that doesn't resolve in the snapshot is skipped — the "sleep
@@ -592,6 +683,19 @@ func TestRenderRecoveryOptions_HomeAndOwnStock(t *testing.T) {
 	}
 	if !strings.Contains(out, "You have coca tea (a thorough waking) on hand — consume to recover.") {
 		t.Errorf("own-stock line wrong: %q", out)
+	}
+}
+
+// An on-shift home bed renders with the "once your shift ends" qualifier instead
+// of as a now-action. LLM-62.
+func TestRenderRecoveryOptions_HomeBedAfterShiftOnly(t *testing.T) {
+	var b strings.Builder
+	renderRecoveryOptions(&b, &RecoveryOptionsView{
+		Options: []RecoveryOption{{Kind: "home", Label: "Thorne Cottage", CostText: "free", StructureID: "cottage", AfterShiftOnly: true}},
+	})
+	out := b.String()
+	if !strings.Contains(out, "Thorne Cottage — sleep in your own bed once your shift ends, free (structure_id: cottage) — stay at your post until then") {
+		t.Errorf("on-shift home bullet wrong: %q", out)
 	}
 }
 
