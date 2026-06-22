@@ -132,7 +132,7 @@ func TestRenderTriage_CodaSwap(t *testing.T) {
 	thresholds := sim.NeedThresholds{}
 
 	var awaiting strings.Builder
-	renderTriage(&awaiting, needs, thresholds, true, false, nil)
+	renderTriage(&awaiting, needs, thresholds, true, false, nil, nil)
 	got := awaiting.String()
 	if strings.Contains(got, "Choose one action") {
 		t.Errorf("awaiting coda must not command an action:\n%s", got)
@@ -145,7 +145,7 @@ func TestRenderTriage_CodaSwap(t *testing.T) {
 	// command ("Choose one action") — but now pairs it with the yield-after-speak
 	// turn discipline.
 	var normal strings.Builder
-	renderTriage(&normal, needs, thresholds, false, false, nil)
+	renderTriage(&normal, needs, thresholds, false, false, nil, nil)
 	if !strings.Contains(normal.String(), "Choose one action") {
 		t.Errorf("non-awaiting coda should keep the act-now imperative:\n%s", normal.String())
 	}
@@ -162,7 +162,7 @@ func TestRenderTriage_MidWalkCoda(t *testing.T) {
 	move := &InFlightMoveView{DestinationLabel: "General Store", Kind: sim.MoveDestinationStructureEnter}
 
 	var b strings.Builder
-	renderTriage(&b, needs, thresholds, false, false, move)
+	renderTriage(&b, needs, thresholds, false, false, move, nil)
 	got := b.String()
 	if !strings.Contains(got, "You are already walking to enter General Store.") {
 		t.Errorf("mid-walk coda should name the committed walk:\n%s", got)
@@ -176,14 +176,14 @@ func TestRenderTriage_MidWalkCoda(t *testing.T) {
 
 	// Mid-walk wins over awaiting-reply.
 	var both strings.Builder
-	renderTriage(&both, needs, thresholds, true, false, move)
+	renderTriage(&both, needs, thresholds, true, false, move, nil)
 	if !strings.Contains(both.String(), "keep walking") {
 		t.Errorf("mid-walk should outrank awaiting-reply:\n%s", both.String())
 	}
 
 	// Pay-offers line still leads.
 	var offers strings.Builder
-	renderTriage(&offers, needs, thresholds, false, true, move)
+	renderTriage(&offers, needs, thresholds, false, true, move, nil)
 	if !strings.HasPrefix(offers.String(), "A buyer's offer awaits your answer") {
 		t.Errorf("offer-first line must still lead the mid-walk coda:\n%s", offers.String())
 	}
@@ -198,7 +198,7 @@ func TestRenderTriage_PayOffersFirst(t *testing.T) {
 
 	for _, awaiting := range []bool{false, true} {
 		var b strings.Builder
-		renderTriage(&b, needs, thresholds, awaiting, true, nil)
+		renderTriage(&b, needs, thresholds, awaiting, true, nil, nil)
 		got := b.String()
 		if !strings.Contains(got, "settle it first with accept_pay") {
 			t.Errorf("awaiting=%v: coda should lead with the offer decision:\n%s", awaiting, got)
@@ -210,7 +210,7 @@ func TestRenderTriage_PayOffersFirst(t *testing.T) {
 
 	// And absent offers, the line must not render.
 	var b strings.Builder
-	renderTriage(&b, needs, thresholds, false, false, nil)
+	renderTriage(&b, needs, thresholds, false, false, nil, nil)
 	if strings.Contains(b.String(), "accept_pay") {
 		t.Errorf("no-offers coda must not mention accept_pay:\n%s", b.String())
 	}

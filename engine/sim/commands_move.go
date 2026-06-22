@@ -212,9 +212,20 @@ func MoveActor(actorID ActorID, dest MoveDestination, leaveHuddleFirst bool, now
 				wakeNPC(w, actor)
 			}
 
-			// LLM-54: committing a move ABANDONS any in-flight eat/drink/harvest
-			// at a source — the actor got up and walked off, so the bite/pick
-			// never lands (the effect applies only at completion, never mid-
+			// LLM-69: land a finished-but-not-yet-swept window FIRST, so a move in
+			// the ~1s gap between the window expiring and the completion sweep
+			// commits the pick/bite (mint + completion beat) instead of discarding
+			// it as an abandon below. completeIfDue applies + clears only an EXPIRED
+			// window (re-resolving off the still-current tile — the move hasn't
+			// changed Pos yet, it only stamps MoveIntent); a genuinely in-flight one
+			// is left for the cancel. Covers the PC path too (PCs aren't reactor-
+			// shelved, so they can reach a move in that gap). Uses the command's
+			// `now` (not wall clock) so a sim-time / deterministic-test caller lands
+			// the same completions the rest of MoveActor keys off.
+			completeIfDue(w, actor.ID, actor, now)
+			// LLM-54: committing a move ABANDONS any STILL-in-flight eat/drink/
+			// harvest at a source — the actor got up and walked off, so the bite/
+			// pick never lands (the effect applies only at completion, never mid-
 			// window, so there is nothing to roll back). Cleared for PC and NPC
 			// alike, here after the validation gates so a rejected move leaves a
 			// running activity undisturbed. Emit the abandon so a surfacing

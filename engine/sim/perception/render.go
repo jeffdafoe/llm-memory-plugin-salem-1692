@@ -284,7 +284,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// before the coda so the coda's "weigh everything above" sees it; the coda
 	// itself swaps to a wait-framing when the actor is awaiting a reply.
 	renderTurnState(&ephemeral, p.TurnState)
-	renderTriage(&ephemeral, p.Actor.Needs, p.Actor.NeedThresholds, p.TurnState.AwaitingReply(), len(payOffers) > 0, p.Actor.InFlightMove)
+	renderTriage(&ephemeral, p.Actor.Needs, p.Actor.NeedThresholds, p.TurnState.AwaitingReply(), len(payOffers) > 0, p.Actor.InFlightMove, p.Actor.InFlightSourceActivity)
 
 	out.Text = durable.String()
 	out.EphemeralText = ephemeral.String()
@@ -389,7 +389,7 @@ func stateGroup(members []HuddleMember, state string) string {
 // wandering exposed: obligations to others and pressing needs over idle drift.
 // Rendered unconditionally — Render is only called on the NPC reactor-tick path
 // (handlers.Harness.RunTick), never for a PC.
-func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.NeedThresholds, awaitingReply bool, hasPayOffers bool, inFlightMove *InFlightMoveView) {
+func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.NeedThresholds, awaitingReply bool, hasPayOffers bool, inFlightMove *InFlightMoveView, inFlightSourceActivity *InFlightSourceActivityView) {
 	// A buyer's offer awaiting this actor's answer outranks everything below —
 	// including the actor's own felt needs, which the coda's "pressing needs"
 	// phrasing otherwise licenses to win. Without this, a starving seller read
@@ -399,6 +399,18 @@ func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.
 		b.WriteString("A buyer's offer awaits your answer — settle it first with accept_pay, decline_pay, or counter_pay, before tending to your own needs.\n")
 	}
 	switch {
+	case inFlightSourceActivity != nil:
+		// Mid-activity coda (LLM-69) — the source-activity analogue of the mid-walk
+		// coda below. A tick that fires while the actor is mid eat/drink/harvest
+		// (a PC speaking, a red need — the interrupts the reactor now lets through)
+		// must not render the act-now coda and steer the model into a move that
+		// abandons the pick. Make finishing the legible default; responding stays
+		// available when what the tick surfaced gives real cause.
+		fmt.Fprintf(b,
+			"You are %s and it will finish on its own shortly. Weigh what's above — "+
+				"answer anyone who needs you, but do not walk away without real cause: "+
+				"leaving now abandons it. Otherwise call done() and let it finish.\n",
+			sourceActivityPhrase(*inFlightSourceActivity))
 	case inFlightMove != nil:
 		// Mid-walk coda (ZBBS-HOME-439) — the walking analogue of WORK-370's
 		// awaiting-reply swap. A tick that fires while the actor has a
@@ -502,6 +514,14 @@ func renderActor(b *strings.Builder, a ActorView) {
 	// also cover the resting/walking macro-states, so the bare state line only
 	// fires when nothing else already conveys what the actor is doing.
 	activity := false
+	// A timed source activity (eat/drink/harvest in flight, LLM-69) leads — it is
+	// the most occupied state, and the reactor now lets high-value interrupts tick
+	// the actor mid-window, so this standing line is what tells it to hold rather
+	// than walk off (the live forage→walk-off bug).
+	if a.InFlightSourceActivity != nil {
+		fmt.Fprintf(b, "You are %s.\n", renderInFlightSourceActivity(*a.InFlightSourceActivity))
+		activity = true
+	}
 	for _, c := range a.ActiveDwellCredits {
 		fmt.Fprintf(b, "You are %s.\n", renderActiveDwellCredit(c))
 		activity = true
@@ -612,6 +632,50 @@ func renderInFlightMove(m InFlightMoveView) string {
 		return fmt.Sprintf("walking to enter %s", sanitizeInline(dest))
 	}
 	return fmt.Sprintf("walking to %s", sanitizeInline(dest))
+}
+
+// sourceActivityVerb picks the second-person verb for an in-flight source
+// activity: "gathering" for a harvest, and eat/drink/rest for a refresh keyed on
+// the eased need (falling back to "busy" for an unknown attribute). LLM-69.
+func sourceActivityVerb(v InFlightSourceActivityView) string {
+	if v.Kind == sim.SourceActivityHarvest {
+		return "gathering"
+	}
+	switch v.Attribute {
+	case "hunger":
+		return "eating"
+	case "thirst":
+		return "drinking"
+	case "tiredness":
+		return "resting"
+	}
+	return "busy"
+}
+
+// sourceActivityPhrase is the bare "<verb> at <source>" clause shared by the
+// standing self-state line and the mid-activity triage coda, so both name the
+// activity identically. Drops the "at <source>" when the label didn't resolve.
+func sourceActivityPhrase(v InFlightSourceActivityView) string {
+	verb := sourceActivityVerb(v)
+	if v.SourceLabel != "" {
+		return verb + " at " + sanitizeInline(v.SourceLabel)
+	}
+	return verb
+}
+
+// renderInFlightSourceActivity produces the standing self-perception line for an
+// actor mid eat/drink/harvest ("gathering at the bush — stay where you are; if
+// you walk off now you abandon the pick"). The source-activity analogue of
+// renderInFlightMove: present on every perception build while the window is live,
+// so a reactor tick that fires mid-activity (a PC speaking, a red need) shows the
+// LLM it is occupied and holds it in place rather than re-deciding into a move
+// that abandons the pick (LLM-69). The caller prepends "You are ".
+func renderInFlightSourceActivity(v InFlightSourceActivityView) string {
+	tail := "if you walk off now you won't finish"
+	if v.Kind == sim.SourceActivityHarvest {
+		tail = "if you walk off now you abandon the pick and gather nothing"
+	}
+	return fmt.Sprintf("%s — stay where you are; %s", sourceActivityPhrase(v), tail)
 }
 
 // renderActiveDwellCredit produces the felt-language self-perception
@@ -1848,6 +1912,10 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 		// The wake is now cadenced to the red-tier boundary (handlers/dwell_reactor.go),
 		// so this fires at most once per dwell — render its felt line like its
 		// DwellStarted / DwellEnded siblings.
+		return renderNarrationWarrantLine(n, w.Kind(), r.NarrationText, nameOf(w.TriggerActorID), maxTextBytes)
+	case sim.SourceActivityCompletedWarrantReason:
+		// LLM-69: the NPC completion beat for a finished eat/drink/harvest, pre-
+		// rendered at the subscriber — same narration-line path as the dwell beats.
 		return renderNarrationWarrantLine(n, w.Kind(), r.NarrationText, nameOf(w.TriggerActorID), maxTextBytes)
 	case sim.AdminDirectiveWarrantReason:
 		return renderImpulseWarrantLine(n, r.Message, maxTextBytes)

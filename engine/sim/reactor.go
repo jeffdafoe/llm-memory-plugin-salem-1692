@@ -62,11 +62,12 @@ const (
 	WarrantKindDwellStarted       WarrantKind = "dwell_started"
 	WarrantKindDwellTickApplied   WarrantKind = "dwell_tick_applied"
 	WarrantKindDwellEnded         WarrantKind = "dwell_ended"
-	WarrantKindConsumed           WarrantKind = "consumed"       // immediate consume self-narration beat
-	WarrantKindAdmin              WarrantKind = "admin"          // operator forced a bare tick
-	WarrantKindImpulse            WarrantKind = "impulse"        // operator-injected in-world felt impulse (umbilical directive nudge)
-	WarrantKindStranded           WarrantKind = "stranded"       // anomalous-position backstop: standing in the open at no anchor (ZBBS-HOME-450)
-	WarrantKindServeHandover      WarrantKind = "serve_handover" // a buyer instantly took the seller's posted quote — wake the seller to hand over with a word (ZBBS-WORK-423)
+	WarrantKindConsumed           WarrantKind = "consumed"             // immediate consume self-narration beat
+	WarrantKindSourceActivityDone WarrantKind = "source_activity_done" // a timed eat/drink/harvest finished — completion beat (LLM-69)
+	WarrantKindAdmin              WarrantKind = "admin"                // operator forced a bare tick
+	WarrantKindImpulse            WarrantKind = "impulse"              // operator-injected in-world felt impulse (umbilical directive nudge)
+	WarrantKindStranded           WarrantKind = "stranded"             // anomalous-position backstop: standing in the open at no anchor (ZBBS-HOME-450)
+	WarrantKindServeHandover      WarrantKind = "serve_handover"       // a buyer instantly took the seller's posted quote — wake the seller to hand over with a word (ZBBS-WORK-423)
 )
 
 // WarrantReason is the marker interface for kind-specific warrant payloads.
@@ -944,13 +945,25 @@ func actorCanReactNow(w *World, a *Actor, now time.Time) (eligible bool, stale b
 		return false, false
 	}
 	// A timed source activity (eat/drink/harvest in flight, LLM-54) shelves the
-	// tick like a very short sleep: the actor deliberately engaged the source and
-	// is occupied for a few seconds. Back off (eligible=false, stale=false) and
-	// resume on the next scan once the completion sweep clears the window. The
-	// activity is seconds-scale, so this never strands a warrant the way a long
-	// sleep could; it just stops the model being yanked off mid-bite into a move
-	// that would abandon the activity (commands_move.go clears it on any move).
-	if a.SourceActivity != nil && a.SourceActivity.Until.After(now) {
+	// tick: the actor deliberately engaged the source and is occupied for a few
+	// seconds, so a passer-by / huddle / idle warrant should not yank it off
+	// mid-bite into a move that abandons the activity (commands_move.go clears it
+	// on any move). EXCEPT the same high-value interrupts that cut a break short —
+	// a red-tier hunger/thirst need, an operator nudge, or a PC speaking to this
+	// actor: those tick it so it can respond, and the standing busy-state
+	// perception line (LLM-69) tells it it is mid-activity so it answers WITHOUT
+	// walking off. Unlike a break, the interrupting tick does NOT clear the window
+	// (no endBreak analogue) — the activity keeps running to completion unless the
+	// model itself commits a move. Shelve while the window EXISTS (SourceActivity
+	// != nil), not merely until Until: the completion sweep clears it within ~1s,
+	// and releasing at Until opened a gap where the actor ticked on a stale need
+	// (the live LLM-69 move-after-pick) and a move in that gap discarded a pick
+	// that had actually finished. Low-value warrants (NPC chatter, arrivals, idle)
+	// still shelve — nothing to respond to mid-activity, so don't burn a tick.
+	if a.SourceActivity != nil &&
+		!hasBreakInterruptingNeedWarrant(a.Warrants) &&
+		!hasOperatorNudgeWarrant(a.Warrants) &&
+		!hasPCSpeechWarrant(a.Warrants) {
 		return false, false
 	}
 	// A scheduled break (StateResting / BreakUntil) shelves the tick too — EXCEPT
