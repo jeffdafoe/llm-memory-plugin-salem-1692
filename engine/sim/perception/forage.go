@@ -89,7 +89,7 @@ func buildForage(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSn
 			}
 			bushCount++
 			ripeUnits += stock
-			if stock > 0 && (stock > bestStock || (stock == bestStock && id < moveHandle)) {
+			if stock > 0 && (moveHandle == "" || stock > bestStock || (stock == bestStock && id < moveHandle)) {
 				bestStock = stock
 				moveHandle = id
 			}
@@ -122,21 +122,32 @@ func buildForage(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSn
 	return &ForageView{Items: items}
 }
 
-// forageStockForItem returns the gatherable stock of `item` on obj's finite
-// forage-to-sell refresh row (Amount == 0 — a yield-only harvest source), and
-// whether obj carries such a row for the item. A non-forage owned object (the
-// grower's house, an eat+pick bush) returns ok=false.
+// forageStockForItem returns the total gatherable stock of `item` across obj's
+// finite forage-to-sell refresh rows (Amount == 0 — yield-only harvest sources),
+// and whether obj carries any such row for the item. A non-forage owned object
+// (the grower's house, an eat+pick bush) returns ok=false. Aggregates rather than
+// taking the first match so the count never depends on Refreshes slice order if
+// an object ever carries more than one matching row.
 func forageStockForItem(obj *sim.VillageObject, item sim.ItemKind) (int, bool) {
+	total := 0
+	found := false
 	for _, r := range obj.Refreshes {
 		if r == nil || !r.IsFinite() || !r.IsGatherable() {
 			continue
 		}
-		if r.Amount != 0 || r.GatherItem != item {
+		// IsFinite already implies AvailableQuantity != nil; the explicit nil
+		// check keeps the deref safe against a partial/corrupt row regardless.
+		if r.Amount != 0 || r.GatherItem != item || r.AvailableQuantity == nil {
 			continue
 		}
-		return *r.AvailableQuantity, true // IsFinite guarantees AvailableQuantity != nil
+		stock := *r.AvailableQuantity
+		if stock < 0 {
+			stock = 0 // a stock counter is never negative; clamp a corrupt row
+		}
+		total += stock
+		found = true
 	}
-	return 0, false
+	return total, found
 }
 
 // renderForage writes the "## Your bushes to harvest" section. Mirrors

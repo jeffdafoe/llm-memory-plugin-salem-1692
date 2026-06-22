@@ -1071,3 +1071,39 @@ func TestRebuildActorAttributeProjections(t *testing.T) {
 		t.Errorf("unknown-source RestockPolicy = %+v, want nil (entry dropped)", rp)
 	}
 }
+
+func TestRebuildActorAttributeProjections_Forage(t *testing.T) {
+	const aGrower = "00000000-0000-0000-0000-00000000f00d"
+	actors := map[sim.ActorID]*sim.Actor{
+		// A grower-seller: `forage` entries must survive the projection (LLM-59 —
+		// the source validation used to accept only produce/buy and would silently
+		// drop these, the DB-to-runtime link the perception tests can't catch).
+		aGrower: {ID: aGrower, Attributes: map[string][]byte{
+			"herbalist": []byte(`{"restock":[{"item":"raspberries","source":"forage","max":10},{"item":"blueberries","source":"forage","max":10}]}`),
+		}},
+	}
+
+	rebuildActorAttributeProjections(actors)
+
+	rp := actors[aGrower].RestockPolicy
+	if rp == nil {
+		t.Fatal("grower RestockPolicy nil — forage entries were dropped")
+	}
+	forage := rp.ForageEntries()
+	if len(forage) != 2 {
+		t.Fatalf("ForageEntries = %d, want 2", len(forage))
+	}
+	byItem := map[sim.ItemKind]sim.RestockEntry{}
+	for _, e := range forage {
+		byItem[e.Item] = e
+	}
+	for _, item := range []sim.ItemKind{"raspberries", "blueberries"} {
+		if e := byItem[item]; e.Source != sim.RestockSourceForage || e.Cap() != 10 {
+			t.Errorf("%s entry = %+v, want forage/cap10", item, e)
+		}
+	}
+	// ForageEntries must not leak buy/produce entries (filter correctness).
+	if len(rp.BuyEntries()) != 0 || len(rp.ProduceEntries()) != 0 {
+		t.Errorf("forage-only policy leaked buy=%d produce=%d", len(rp.BuyEntries()), len(rp.ProduceEntries()))
+	}
+}

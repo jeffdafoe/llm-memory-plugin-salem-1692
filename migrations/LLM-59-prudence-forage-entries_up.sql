@@ -22,9 +22,20 @@
 
 BEGIN;
 
-UPDATE actor_attribute
-SET params = '{"restock": [{"item": "raspberries", "source": "forage", "max": 10}, {"item": "blueberries", "source": "forage", "max": 10}]}'::jsonb
-WHERE actor_id = '019dbcec-1149-7149-8a49-2cdb54680b86'  -- Prudence Ward
-  AND slug = 'herbalist';
+DO $$
+DECLARE n int;
+BEGIN
+    UPDATE actor_attribute
+    SET params = '{"restock": [{"item": "raspberries", "source": "forage", "max": 10}, {"item": "blueberries", "source": "forage", "max": 10}]}'::jsonb
+    WHERE actor_id = '019dbcec-1149-7149-8a49-2cdb54680b86'  -- Prudence Ward
+      AND slug = 'herbalist';
+    GET DIAGNOSTICS n = ROW_COUNT;
+    -- 0 rows is the unseeded case (fresh schema-only DB) — fine. But if Prudence
+    -- exists yet has no herbalist row, the feature would silently stay inactive;
+    -- fail loud so a stale actor id / missing role row is caught at deploy.
+    IF n = 0 AND EXISTS (SELECT 1 FROM actor WHERE id = '019dbcec-1149-7149-8a49-2cdb54680b86') THEN
+        RAISE EXCEPTION 'LLM-59: Prudence exists but her herbalist actor_attribute row was not found';
+    END IF;
+END $$;
 
 COMMIT;

@@ -22,16 +22,17 @@ BEGIN;
 
 -- Fail loud if the Blueberry asset isn't in the expected 2-state shape (LLM-58),
 -- so a bad/partial catalog can't silently tag only one state. Gated on the
--- SEEDED marker (a 'berries' state, which LLM-58 can only produce by retagging a
--- pre-existing seeded 'default'): on a fresh schema-only DB (the test harness, a
--- new environment) the Blueberry asset isn't seeded, LLM-58 leaves only a 'bare'
--- state, and there's nothing real to tag — so skip the assertion there (the
--- INSERT below stays a harmless no-op).
+-- Blueberry `asset` row EXISTING — seeded content that neither LLM-58 nor this
+-- migration creates (both only touch asset_state). On a fresh schema-only DB the
+-- asset isn't seeded, so skip the assertion (the INSERT below no-ops). On a
+-- seeded DB, require exactly the 2 states — this also catches a bad bare-only
+-- partial (asset present but missing 'berries'), which a 'berries'-gated check
+-- would have skipped.
 DO $$
 DECLARE n integer;
 BEGIN
-    IF EXISTS (SELECT 1 FROM asset_state
-               WHERE asset_id = '630909ca-df4f-43ac-9fc4-5192ca44da73' AND state = 'berries') THEN
+    IF EXISTS (SELECT 1 FROM asset
+               WHERE id = '630909ca-df4f-43ac-9fc4-5192ca44da73') THEN
         SELECT count(*) INTO n FROM asset_state
         WHERE asset_id = '630909ca-df4f-43ac-9fc4-5192ca44da73' AND state IN ('berries', 'bare');
         IF n <> 2 THEN

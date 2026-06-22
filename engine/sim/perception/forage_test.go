@@ -161,3 +161,24 @@ func TestRenderForage_Nil_NoOutput(t *testing.T) {
 		t.Fatalf("expected empty render for nil view, got %q", b.String())
 	}
 }
+
+func TestBuildForage_MoveHandleTieLowestID(t *testing.T) {
+	// Two owned bushes with equal positive stock: the move handle must be the
+	// lower object id deterministically, regardless of map iteration order.
+	subj := &sim.ActorSnapshot{Inventory: map[sim.ItemKind]int{"raspberries": 0}, RestockPolicy: foragePolicy("raspberries", 10)}
+	snap := &sim.Snapshot{
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{"prudence": subj},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"bushB": forageBush("prudence", "raspberries", 5),
+			"bushA": forageBush("prudence", "raspberries", 5),
+		},
+		RestockReorderPct: 25,
+	}
+	v := buildForage(snap, "prudence", subj)
+	if v == nil || len(v.Items) != 1 {
+		t.Fatalf("expected one item, got %+v", v)
+	}
+	if v.Items[0].MoveHandle != "bushA" {
+		t.Fatalf("MoveHandle on equal stock: got %q want \"bushA\" (lowest id)", v.Items[0].MoveHandle)
+	}
+}
