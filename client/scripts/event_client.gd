@@ -209,6 +209,9 @@ func _handle_message(data: String) -> void:
         "npc_dormancy_changed":
             if world != null:
                 world.apply_npc_dormancy_changed(event_data)
+        "npc_coins_changed":
+            if world != null:
+                world.apply_npc_coins_changed(event_data)
         "asset_state_tags_updated":
             var asset_id: String = str(event_data.get("asset_id", ""))
             var state: String = str(event_data.get("state", ""))

@@ -1303,6 +1303,7 @@ func (w *World) Run(ctx context.Context) {
 			w.republish()
 			w.emitNeedsDeltas(prevSnap)
 			w.emitDormancyDeltas(prevSnap)
+			w.emitCoinsDeltas(prevSnap)
 			if cmd.Reply != nil {
 				cmd.Reply <- CommandResult{Value: value, Err: err}
 			}
@@ -1758,6 +1759,45 @@ func (w *World) emitDormancyDeltas(prev *Snapshot) {
 		w.emit(&NPCDormancyChanged{
 			ActorID: id,
 			State:   token,
+			At:      now,
+		})
+	}
+}
+
+// emitCoinsDeltas broadcasts an NPCCoinsChanged for every actor whose purse
+// balance changed between the prior published snapshot (prev) and the one
+// republish just stored. Called once per command from the command loop,
+// immediately after emitDormancyDeltas — the same single change-detection point,
+// which is what lets one diff cover every coin-mutation path (pay, pay-with-item,
+// order settlement, lodger rebook, the umbilical grant) without per-site emits.
+// Coins move on transactions rather than the needs tick, but every transaction
+// runs as a command and republishes here, so the per-publish diff catches them all.
+//
+// Not kind-gated: the editor villager row shows coins for PCs and agent NPCs alike,
+// and decoratives never transact so their balance never changes (no emit). A newly
+// created actor is absent from prev; its baseline is treated as 0, so a spawn with a
+// non-zero starting purse emits one correcting frame while the common fresh-at-zero
+// case stays silent.
+func (w *World) emitCoinsDeltas(prev *Snapshot) {
+	if prev == nil {
+		return
+	}
+	cur := w.published.Load()
+	if cur == nil {
+		return
+	}
+	now := time.Now().UTC()
+	for id, a := range cur.Actors {
+		var prevCoins int
+		if prevActor, ok := prev.Actors[id]; ok {
+			prevCoins = prevActor.Coins
+		}
+		if prevCoins == a.Coins {
+			continue
+		}
+		w.emit(&NPCCoinsChanged{
+			ActorID: id,
+			Coins:   a.Coins,
 			At:      now,
 		})
 	}

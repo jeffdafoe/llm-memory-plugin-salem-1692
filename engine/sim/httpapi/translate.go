@@ -352,6 +352,15 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			ID:    string(e.ActorID),
 			State: e.State,
 		}}, true
+	case *sim.NPCCoinsChanged:
+		// Full post-change balance (not a delta); the client's
+		// apply_npc_coins_changed patches the coins meta and refreshes the editor
+		// villager-row readout. See World.emitCoinsDeltas for the change-detection
+		// source.
+		return WireFrame{Type: "npc_coins_changed", Data: npcCoinsChangedWireDTO{
+			ID:    string(e.ActorID),
+			Coins: e.Coins,
+		}}, true
 	case *sim.PayOfferReceived:
 		return WireFrame{Type: "pay_offer", Data: payOfferWireDTO{
 			LedgerID:   uint64(e.LedgerID),
@@ -727,6 +736,14 @@ type npcSpriteChangedWireDTO struct {
 type npcDormancyChangedWireDTO struct {
 	ID    string `json:"id"`
 	State string `json:"state"`
+}
+
+// npcCoinsChangedWireDTO is the npc_coins_changed payload — an actor's purse
+// balance after a transaction. coins is the full post-change value (not a delta);
+// the client patches the villager-row "Coins N" readout in place.
+type npcCoinsChangedWireDTO struct {
+	ID    string `json:"id"`
+	Coins int    `json:"coins"`
 }
 
 // strPtrOrNil returns nil for an empty string, else a pointer to it — so a
