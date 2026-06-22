@@ -234,23 +234,41 @@ func TestExecuteNPCSleep_SilentWhenSoleHuddleMember(t *testing.T) {
 	}
 }
 
-// TestAutoSleepOnArrival_SkipsOnBreak guards the no-both-windows invariant
-// (ZBBS-HOME-284 #4 review): an on-break NPC arriving home off-shift — which
-// would otherwise be bedded — must NOT also get a SleepingUntil window.
-func TestAutoSleepOnArrival_SkipsOnBreak(t *testing.T) {
+// TestAutoSleepOnArrival_OnBreak: LLM-62 — an OFF-shift actor arriving home on a
+// (self-renewing) break is now bedded for the night, with its break cleared so the
+// "never both rest windows" invariant still holds (executeNPCSleep clears it). The
+// break no longer shields it from the overnight reset. An ON-shift actor's break is
+// still respected: npcSleepHere requires off-shift, so a mid-shift stop home is not
+// sleep-darted.
+func TestAutoSleepOnArrival_OnBreak(t *testing.T) {
+	// Off-shift (unscheduled → always off-shift) + home + on break → bedded, break cleared.
 	offShift := time.Date(2026, 5, 22, 22, 0, 0, 0, time.UTC)
-	a := npc("k", KindNPCStateful) // unscheduled + home → would normally bed
+	a := npc("k", KindNPCStateful)
 	bu := offShift.Add(2 * time.Hour)
 	a.BreakUntil = &bu
 	w := sleepTestWorld(a)
-
 	handleAutoSleepOnArrival(w, &ActorArrived{ActorID: a.ID, FinalStructureID: "home", At: offShift})
-
-	if a.SleepingUntil != nil {
-		t.Errorf("on-break NPC was bedded on arrival: SleepingUntil = %v", a.SleepingUntil)
+	if a.SleepingUntil == nil {
+		t.Error("off-shift on-break NPC arriving home should now be bedded (LLM-62)")
 	}
-	if a.BreakUntil == nil || !a.BreakUntil.Equal(bu) {
-		t.Errorf("BreakUntil disturbed: %v", a.BreakUntil)
+	if a.BreakUntil != nil {
+		t.Errorf("break should be cleared when bedded, got %v", a.BreakUntil)
+	}
+
+	// On-shift + home + on break → NOT bedded (npcSleepHere off-shift gate), break intact.
+	onShift := time.Date(2026, 5, 22, 10, 0, 0, 0, time.UTC) // 10:00 → minute 600
+	b := npc("v", KindNPCStateful)
+	b.ScheduleStartMin = intptr(420) // 07:00
+	b.ScheduleEndMin = intptr(960)   // 16:00 → on shift at 10:00
+	bbu := onShift.Add(2 * time.Hour)
+	b.BreakUntil = &bbu
+	w2 := sleepTestWorld(b)
+	handleAutoSleepOnArrival(w2, &ActorArrived{ActorID: b.ID, FinalStructureID: "home", At: onShift})
+	if b.SleepingUntil != nil {
+		t.Errorf("on-shift on-break NPC must not be bedded mid-shift: %v", b.SleepingUntil)
+	}
+	if b.BreakUntil == nil || !b.BreakUntil.Equal(bbu) {
+		t.Errorf("on-shift break disturbed: %v", b.BreakUntil)
 	}
 }
 
@@ -316,23 +334,41 @@ func TestAutoBedAtHomeNPCs(t *testing.T) {
 	now := time.Date(2026, 5, 22, 22, 0, 0, 0, time.UTC) // off-shift for a day worker
 
 	atHome := npc("farmer", KindNPCShared) // home==work, stationary
-	onBreak := npc("vendor", KindNPCStateful)
+	// Off-shift (unscheduled) on-break vendor → now bedded for the night, break
+	// cleared (LLM-62): the break no longer evades the stationary auto-bed.
+	onBreakOffShift := npc("vendor", KindNPCStateful)
 	breakEnd := now.Add(30 * time.Minute)
-	onBreak.BreakUntil = &breakEnd
+	onBreakOffShift.BreakUntil = &breakEnd
+	// On-shift on-break keeper → NOT bedded: npcSleepHere requires off-shift.
+	// Scheduled 18:00–23:59 so it is on shift at the 22:00 sweep.
+	onBreakOnShift := npc("nightkeeper", KindNPCStateful)
+	onBreakOnShift.ScheduleStartMin = intptr(1080)
+	onBreakOnShift.ScheduleEndMin = intptr(1439)
+	onShiftBreakEnd := now.Add(30 * time.Minute)
+	onBreakOnShift.BreakUntil = &onShiftBreakEnd
 	away := npc("wanderer", KindNPCStateful)
 	away.InsideStructureID = "market"
 	pc := npc("player", KindPC)
 
-	w := sleepTestWorld(atHome, onBreak, away, pc)
+	w := sleepTestWorld(atHome, onBreakOffShift, onBreakOnShift, away, pc)
 	res, _ := AutoBedAtHomeNPCs(now).Fn(w)
-	if n := res.(int); n != 1 {
-		t.Fatalf("bedded = %d, want 1 (only the stationary at-home NPC)", n)
+	if n := res.(int); n != 2 {
+		t.Fatalf("bedded = %d, want 2 (stationary at-home + off-shift on-break, LLM-62)", n)
 	}
 	if atHome.SleepingUntil == nil {
 		t.Error("at-home off-shift NPC should be bedded")
 	}
-	if onBreak.SleepingUntil != nil {
-		t.Error("on-break NPC should stay awake")
+	if onBreakOffShift.SleepingUntil == nil {
+		t.Error("off-shift on-break NPC should now be bedded (LLM-62)")
+	}
+	if onBreakOffShift.BreakUntil != nil {
+		t.Errorf("off-shift on-break NPC's break should be cleared when bedded, got %v", onBreakOffShift.BreakUntil)
+	}
+	if onBreakOnShift.SleepingUntil != nil {
+		t.Error("on-shift on-break keeper must not be bedded (npcSleepHere off-shift gate)")
+	}
+	if onBreakOnShift.BreakUntil == nil {
+		t.Error("on-shift on-break keeper's break should be left intact")
 	}
 	if away.SleepingUntil != nil {
 		t.Error("NPC away from home should not be bedded")
