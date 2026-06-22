@@ -129,21 +129,32 @@ func StayOpen(actorID ActorID, reason string, untilHour int, at time.Time) Comma
 			if !ok {
 				return nil, fmt.Errorf("StayOpen: actor %q not in world", actorID)
 			}
-			// At-own-post precondition (LLM-66): staying open is only coherent at
-			// your own work post. Presence is the open/closed signal, so an
-			// OpenUntil stamped while away would suppress the keeper's go-home
-			// wind-down (shiftDutyTarget) while they stand nowhere near an open
-			// shop — observed live as a blacksmith calling stay_open from under a
-			// Shade Tree. The advertising gate (handlers/tool_gating.go) keeps the
-			// tool off the menu off-post; this is the dispatch-side backstop, since
+			// At-own-business precondition (LLM-66): stay_open is a keeper-only
+			// commitment, coherent only for the owner of a business while
+			// physically inside it — presence is the open/closed signal, so an
+			// OpenUntil stamped by a non-keeper, or by a keeper who is away, would
+			// suppress that actor's go-home wind-down (shiftDutyTarget) while
+			// nothing of theirs is actually open. Observed live as a blacksmith
+			// calling stay_open from under a Shade Tree. The advertising gate
+			// (handlers/tool_gating.go) keeps the tool off the menu unless the
+			// off-shift cue offers it; this is the dispatch-side backstop, since
 			// that gating is advertising-only and the command stays directly
-			// dispatchable. Same at-own-post predicate the wind-down keys the
-			// OpenUntil suppression on (shift_duty.go `atWork`) — unlike accept_pay,
-			// an off-post stay_open is never valid, so it is rejected, not merely
+			// dispatchable. Mirrors the cue's own AtOwnBusiness predicate
+			// (perception/build.go) and the canonical keeper-at-post identity used
+			// across the cascade (BusinessownerState != nil AND inside the work
+			// structure): WorkStructureID alone marks an assigned workplace, not
+			// ownership, so a non-owner worker (staff/apprentice) is excluded too.
+			// Unlike accept_pay (legitimately dispatchable unadvertised), an
+			// off-business stay_open is never valid, so it is rejected, not merely
 			// un-advertised.
+			if a.BusinessownerState == nil {
+				return nil, fmt.Errorf(
+					"stay_open is for a keeper of their own business — you do not keep one, so there is nothing for you to keep open; pick a different action this turn",
+				)
+			}
 			if a.WorkStructureID == "" || a.InsideStructureID != a.WorkStructureID {
 				return nil, fmt.Errorf(
-					"you can only keep your business open while you are there — stay_open is for a keeper at their own post, and you are away from it right now. Return to your business to stay open, or simply close on schedule.",
+					"you can only keep your business open while you are there — you are away from it right now. Return to your business to stay open, or simply close on schedule.",
 				)
 			}
 			loc := w.Settings.Location

@@ -62,6 +62,7 @@ func TestResolveOpenUntil(t *testing.T) {
 func TestStayOpen_StampsAndRejectsRepeat(t *testing.T) {
 	at := time.Date(2026, 6, 9, 21, 30, 0, 0, time.UTC)
 	a := shiftNPC("ezekiel", KindNPCStateful, "smithy", "home", "smithy")
+	a.BusinessownerState = &BusinessownerState{} // a keeper of the smithy
 	w := sleepTestWorld(a)
 
 	if _, err := StayOpen("ezekiel", "an order I still owe", 23, at).Fn(w); err != nil {
@@ -87,7 +88,8 @@ func TestStayOpen_StampsAndRejectsRepeat(t *testing.T) {
 // calling stay_open while resting under a Shade Tree (InsideStructureID != WorkStructureID).
 func TestStayOpen_AwayFromPostRejected(t *testing.T) {
 	at := time.Date(2026, 6, 9, 21, 30, 0, 0, time.UTC)
-	a := shiftNPC("ezekiel", KindNPCStateful, "smithy", "home", "shade_tree") // away from the smithy
+	a := shiftNPC("ezekiel", KindNPCStateful, "smithy", "home", "shade_tree") // keeper, but away from the smithy
+	a.BusinessownerState = &BusinessownerState{}                              // a keeper — so the reject is for location, not non-ownership
 	w := sleepTestWorld(a)
 
 	_, err := StayOpen("ezekiel", "weariness", 23, at).Fn(w)
@@ -96,6 +98,26 @@ func TestStayOpen_AwayFromPostRejected(t *testing.T) {
 	}
 	if a.OpenUntil != nil {
 		t.Errorf("OpenUntil should be unset on an away-from-post reject, got %v", a.OpenUntil)
+	}
+}
+
+// TestStayOpen_NonKeeperRejected — LLM-66. stay_open is keeper-only. An actor
+// physically inside its assigned work structure but with no BusinessownerState
+// (a non-owner worker — staff/apprentice — never offered the cue) is rejected at
+// dispatch. This is the admit-direction backstop the location floor alone would
+// miss: WorkStructureID marks an assigned workplace, not ownership, so without
+// the keeper check a worker could stamp OpenUntil via a hallucinated call.
+func TestStayOpen_NonKeeperRejected(t *testing.T) {
+	at := time.Date(2026, 6, 9, 21, 30, 0, 0, time.UTC)
+	a := shiftNPC("apprentice", KindNPCStateful, "smithy", "home", "smithy") // at the smithy, but not its owner
+	w := sleepTestWorld(a)
+
+	_, err := StayOpen("apprentice", "keeping the forge lit", 23, at).Fn(w)
+	if err == nil {
+		t.Fatal("stay_open from a non-keeper (no BusinessownerState) should be rejected")
+	}
+	if a.OpenUntil != nil {
+		t.Errorf("OpenUntil should be unset on a non-keeper reject, got %v", a.OpenUntil)
 	}
 }
 
@@ -109,7 +131,8 @@ func TestStayOpen_NoOpReject(t *testing.T) {
 
 	newKeeper := func(schedEnd *int) (*Actor, *World) {
 		a := shiftNPC("ezekiel", KindNPCStateful, "smithy", "home", "smithy")
-		a.ScheduleStartMin = intptr(540) // 09:00
+		a.BusinessownerState = &BusinessownerState{} // a keeper of the smithy
+		a.ScheduleStartMin = intptr(540)             // 09:00
 		a.ScheduleEndMin = schedEnd
 		return a, sleepTestWorld(a)
 	}
@@ -158,8 +181,9 @@ func TestStayOpen_NoOpReject(t *testing.T) {
 		// close is 03:00 TOMORROW, not today's already-past 03:00 — so committing to
 		// the regular 03:00 close is still a no-op (code_review edge case).
 		a := shiftNPC("ezekiel", KindNPCStateful, "smithy", "home", "smithy")
-		a.ScheduleStartMin = intptr(1080) // 18:00
-		a.ScheduleEndMin = intptr(180)    // 03:00 (wraps midnight)
+		a.BusinessownerState = &BusinessownerState{} // a keeper of the smithy
+		a.ScheduleStartMin = intptr(1080)            // 18:00
+		a.ScheduleEndMin = intptr(180)               // 03:00 (wraps midnight)
 		w := sleepTestWorld(a)
 		at := time.Date(2026, 6, 18, 22, 0, 0, 0, time.UTC)
 
