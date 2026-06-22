@@ -651,7 +651,8 @@ func TestDwellCompletionNarrationVocab(t *testing.T) {
 		{"hunger", sim.DwellSourceItem, true, true, false, "You finish the last bite, satisfied."}, // exhausted wins
 		{"hunger", sim.DwellSourceItem, false, false, true, "You walk away from your meal, leaving it half-eaten."},
 		{"thirst", sim.DwellSourceItem, false, false, true, "You walk away from your drink."},
-		{"tiredness", sim.DwellSourceObject, false, false, true, "You stop resting and move on."},
+		{"tiredness", sim.DwellSourceObject, false, false, true, ""},                  // object rest is free/resumable → silent (LLM-65)
+		{"tiredness", sim.DwellSourceItem, false, false, true, ""},                    // no item-source tiredness dwell; no dormant copy (LLM-65)
 		{"hunger", sim.DwellSourceObject, false, false, true, ""},                     // object+walked+hunger has no line
 		{"hunger", sim.DwellSourceObject, false, false, false, ""},                    // no event
 		{"mood", sim.DwellSourceItem, true, false, false, "You finish what you had."}, // unknown attr fallback

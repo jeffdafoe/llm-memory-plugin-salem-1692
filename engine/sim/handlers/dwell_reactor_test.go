@@ -333,6 +333,62 @@ func TestDwellEndedSubscriberStampsWarrant(t *testing.T) {
 	}
 }
 
+// TestDwellEndedSubscriberSkipsEmptyNarration — LLM-65. An object-source
+// walk-away (free, resumable, no resource lost) produces an empty terminal
+// narration, so the subscriber must NOT stamp a DwellEndedWarrantReason — an
+// empty-text warrant would render the vague "Something happened nearby"
+// fallback. The DwellEnded event still fires (the credit is torn down); only
+// the perception warrant is suppressed.
+func TestDwellEndedSubscriberSkipsEmptyNarration(t *testing.T) {
+	w, stop := buildDwellReactorWorld(t)
+	defer stop()
+
+	// Seed a ripe object-source thirst credit pinned to "well". hannah stands
+	// on the tavern pin (105,100), so she is NOT co-located with the well —
+	// ApplyDwellTick reads this as a walk-away (DwellEndWalkedAway), and
+	// object-source thirst walk-aways have no narration by design.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["hannah"].DwellCredits = map[sim.DwellCreditKey]*sim.DwellCredit{
+			{ObjectID: "well", Attribute: "thirst", Source: sim.DwellSourceObject}: {
+				ObjectID:           "well",
+				Attribute:          "thirst",
+				Source:             sim.DwellSourceObject,
+				LastCreditedAt:     time.Now().UTC().Add(-5 * time.Minute),
+				DwellDelta:         -1,
+				DwellPeriodMinutes: 2,
+			},
+		}
+		world.Actors["hannah"].Warrants = nil
+		world.Actors["hannah"].WarrantedSince = nil
+		world.Actors["hannah"].WarrantDueAt = nil
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if _, err := w.Send(sim.ApplyDwellTick(time.Now().UTC())); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+
+	// The walk-away path tears the credit down — proves the tick actually took
+	// the walk-away branch, so the absence of a warrant below is meaningful.
+	gone, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return len(world.Actors["hannah"].DwellCredits) == 0, nil
+	}})
+	if err != nil {
+		t.Fatalf("credit check: %v", err)
+	}
+	if !gone.(bool) {
+		t.Fatalf("walked-away credit not torn down — tick didn't take the walk-away path; test is moot")
+	}
+
+	for _, m := range peekDwellActorWarrants(t, w, "hannah") {
+		if _, ok := m.Reason.(sim.DwellEndedWarrantReason); ok {
+			t.Errorf("object-source walk-away stamped a DwellEndedWarrantReason; an empty narration must be silent (LLM-65)")
+		}
+	}
+}
+
 // TestDwellSubscribersBypassDedup — each dwell Reason returns
 // DedupDiscriminator=0, so the warrant infrastructure routes them
 // through the bypass path (same as BasicWarrantReason). This locks the
