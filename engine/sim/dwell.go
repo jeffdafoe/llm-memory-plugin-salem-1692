@@ -165,6 +165,13 @@ func DwellCompletionNarration(attribute NeedKey, source DwellCreditSource, itemE
 		}
 	}
 	if walkedAway {
+		// Only item-source walk-aways narrate — abandoning a meal/drink is a
+		// real resource loss. Object-source walk-aways (Well, Shade Tree, bench)
+		// are free and resumable with nothing lost, and the standing perception
+		// surface still carries the unmet need + affordance, so they are silent
+		// by design (LLM-65). Tiredness is object-only in practice, hence no
+		// case; an item-source rest, if ever added, would surface via the
+		// dwell-reactor empty-narration breadcrumb.
 		switch attribute {
 		case "hunger":
 			if source == DwellSourceItem {
@@ -174,8 +181,6 @@ func DwellCompletionNarration(attribute NeedKey, source DwellCreditSource, itemE
 			if source == DwellSourceItem {
 				return "You walk away from your drink."
 			}
-		case "tiredness":
-			return "You stop resting and move on."
 		}
 	}
 	return ""

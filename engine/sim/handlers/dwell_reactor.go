@@ -146,9 +146,11 @@ func handleDwellTickAppliedWarrants(w *sim.World, evt sim.Event) {
 
 // handleDwellEndedWarrants is the DwellEnded subscriber. Stamps
 // DwellEndedWarrantReason on the eater/rester with the pre-rendered
-// terminal narration (item-exhausted / floor-hit / walked-away).
-// CatalogUnknown produces a warrant with empty NarrationText — the
-// event remains for audit/replay but no perception line is rendered.
+// terminal narration (item-exhausted / floor-hit / item-source walk-away).
+// When the narration is empty — object-source walk-aways and the defensive
+// Unknown/CatalogUnknown reasons — no warrant is stamped (the DwellEnded
+// event still stands for audit/replay); an empty-text warrant would render
+// the vague "Something happened nearby" fallback (LLM-65).
 func handleDwellEndedWarrants(w *sim.World, evt sim.Event) {
 	ended, ok := evt.(*sim.DwellEnded)
 	if !ok {
@@ -168,6 +170,28 @@ func handleDwellEndedWarrants(w *sim.World, evt sim.Event) {
 		ended.Reason == sim.DwellEndFloorHit,
 		ended.Reason == sim.DwellEndWalkedAway,
 	)
+	// LLM-65: an empty terminal narration means this DwellEnded is silent —
+	// keep the event for audit/replay, but don't mint a perception warrant (an
+	// empty-text DwellEndedWarrantReason renders the vague "Something happened
+	// nearby" fallback). Breadcrumb only for an *unintended* empty so a real
+	// narration-coverage gap stays observable. By-design silent (no log): the
+	// defensive Unknown/CatalogUnknown reasons, and object-source walk-aways
+	// (free, resumable — the common live case, so logging it would be noise).
+	// Anything else empty is an unhandled combination worth flagging — e.g. a
+	// future item-source rest's walk-away, or a new attribute with no
+	// exhausted/floor line.
+	if narration == "" {
+		byDesignSilent := ended.Reason == sim.DwellEndUnknown ||
+			ended.Reason == sim.DwellEndCatalogUnknown ||
+			(ended.Reason == sim.DwellEndWalkedAway && ended.Source == sim.DwellSourceObject)
+		if !byDesignSilent {
+			log.Printf(
+				"handlers: dwell-reactor skipping empty-narration DwellEnded for actor %q (event %d, reason %s, attr %q, source %q) — no narration coverage",
+				ended.ActorID, ended.EventID(), ended.Reason, ended.Attribute, ended.Source,
+			)
+		}
+		return
+	}
 	meta := sim.WarrantMeta{
 		TriggerActorID: ended.ActorID,
 		Force:          false,
