@@ -513,6 +513,17 @@ func buildActiveDwellCredits(snap *sim.Snapshot, a *sim.ActorSnapshot) []DwellCr
 		if c == nil {
 			continue
 		}
+		// Co-location gate (LLM-68): render a credit as an active dwell only
+		// while the actor is still at its pin. The credit lingers in the map
+		// until the next dwell-tick walk-away sweep deletes it; without this
+		// gate perception keeps asserting "you are resting at X" after the actor
+		// has walked off, steering the model to stay put and do nothing. Mirrors
+		// the dwell-tick walk-away check actorAtCreditObject (ok && id ==
+		// credit.ObjectID): an empty CurrentLoiterObjectID means the actor
+		// stands at no pin (resolver returned !ok), so every credit drops.
+		if a.CurrentLoiterObjectID == "" || c.ObjectID != a.CurrentLoiterObjectID {
+			continue
+		}
 		view := DwellCreditView{
 			ObjectID:       c.ObjectID,
 			StructureLabel: resolveDwellPinLabel(snap, c.ObjectID),
@@ -528,6 +539,12 @@ func buildActiveDwellCredits(snap *sim.Snapshot, a *sim.ActorSnapshot) []DwellCr
 			view.RemainingTicks = &rt
 		}
 		out = append(out, view)
+	}
+	// Every credit may have been co-location-gated out (the actor walked off
+	// all its pins) — return nil so this renders identically to the no-credits
+	// case and Render omits the line, matching buildInventoryView's posture.
+	if len(out) == 0 {
+		return nil
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Source != out[j].Source {

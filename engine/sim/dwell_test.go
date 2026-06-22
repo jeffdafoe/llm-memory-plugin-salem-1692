@@ -56,6 +56,52 @@ func buildDwellTestWorld(t *testing.T, lastCreditedAt time.Time, actorX, actorY 
 	return w, cancel
 }
 
+// TestRepublish_StampsCurrentLoiterObjectID is the LLM-68 wiring test. The
+// perception co-location gate (buildActiveDwellCredits) depends on republish()
+// stamping ActorSnapshot.CurrentLoiterObjectID from the actor's tile using the
+// SAME resolver + radius the dwell-tick walk-away check (actorAtCreditObject)
+// uses. The perception unit tests cover the builder in isolation; this drives
+// the real publish path so a missed stamp or a resolver/radius drift is caught.
+// A no-op command is the barrier: republish() runs after every command, so when
+// Send returns, Published() reflects the post-command stamp.
+func TestRepublish_StampsCurrentLoiterObjectID(t *testing.T) {
+	now := time.Now().UTC()
+	anchor := now.Add(-5 * time.Minute) // credit present, not yet swept
+
+	barrier := func(t *testing.T, w *sim.World) {
+		t.Helper()
+		if _, err := w.Send(sim.Command{Fn: func(*sim.World) (any, error) { return nil, nil }}); err != nil {
+			t.Fatalf("barrier command: %v", err)
+		}
+	}
+
+	// On the Shade Tree's pin (200,200): the live credit's pin is stamped, so
+	// perception keeps rendering "you are resting at Shade Tree."
+	t.Run("at the pin", func(t *testing.T) {
+		w, cancel := buildDwellTestWorld(t, anchor, 200, 200)
+		defer cancel()
+		barrier(t, w)
+		snap := w.Published().Actors["hannah"]
+		if snap.CurrentLoiterObjectID != "shade_tree" {
+			t.Errorf("CurrentLoiterObjectID = %q, want \"shade_tree\"", snap.CurrentLoiterObjectID)
+		}
+	})
+
+	// Walked off the pin (999,999) before the next dwell-tick sweep deletes the
+	// lingering credit: no pin owns the tile, so the stamp is empty and
+	// perception's gate drops the credit instead of rendering a stale "you are
+	// resting" line (LLM-68, the live Prudence Ward case).
+	t.Run("walked off the pin", func(t *testing.T) {
+		w, cancel := buildDwellTestWorld(t, anchor, 999, 999)
+		defer cancel()
+		barrier(t, w)
+		snap := w.Published().Actors["hannah"]
+		if snap.CurrentLoiterObjectID != "" {
+			t.Errorf("CurrentLoiterObjectID = %q, want \"\" (actor off the pin)", snap.CurrentLoiterObjectID)
+		}
+	})
+}
+
 // TestApplyDwellTickRipeObjectCredit covers the happy path — credit is
 // ripe, actor at object, need decrements, anchor advances by exactly
 // the period.

@@ -1111,6 +1111,21 @@ type ActorSnapshot struct {
 	// republish.
 	ColocatedSleeperIDs []ActorID
 
+	// CurrentLoiterObjectID is the named village object whose loiter pin owns
+	// the actor's current tile (resolveLoiteringObject, Chebyshev <=
+	// LoiterAttributionTiles), or "" when the actor stands at no pin. It is the
+	// co-location signal perception's buildActiveDwellCredits gates on: a
+	// DwellCredit renders as an active "you are <verb> at X" self-state line
+	// only while its ObjectID matches this — so a credit that lingers in the
+	// map after a walk-away (until the next dwell-tick sweep deletes it) stops
+	// being asserted as live the instant the actor leaves the pin (LLM-68).
+	// Resolved world-side with the SAME resolver/radius the dwell-tick
+	// walk-away check uses (actorAtCreditObject), so perception and the engine
+	// agree on keep-vs-drop. Stamped only when the actor holds a dwell credit
+	// (the sole consumer). Same per-publish projection posture as
+	// ColocatedAudienceIDs — NOT checkpointed, recomputed each republish.
+	CurrentLoiterObjectID VillageObjectID
+
 	// VisitorState mirrors the live Actor's transient-visitor state at
 	// snapshot time. Non-nil marks the actor as a salem-visitor; the
 	// perception "Visitors here" block reads Archetype/Origin/Disposition

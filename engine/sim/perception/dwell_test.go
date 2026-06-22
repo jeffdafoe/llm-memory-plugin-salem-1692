@@ -13,15 +13,19 @@ import (
 // LoadWorld / world goroutine plumbing.
 
 // dwellSnap builds a minimal *sim.Snapshot with one actor carrying the
-// supplied DwellCredits, plus optional structures and village objects
-// for label resolution. Used by the perception-dwell tests below.
-func dwellSnap(credits map[sim.DwellCreditKey]*sim.DwellCredit, structures map[sim.StructureID]*sim.Structure, objects map[sim.VillageObjectID]*sim.VillageObject) *sim.Snapshot {
+// supplied DwellCredits, plus optional structures and village objects for
+// label resolution. loiterObjID is the actor's CurrentLoiterObjectID — the pin
+// it is co-located with — which buildActiveDwellCredits gates each credit on
+// (LLM-68); pass the credit's ObjectID to have it render, "" or a different id
+// to exercise the walk-away gate. Used by the perception-dwell tests below.
+func dwellSnap(credits map[sim.DwellCreditKey]*sim.DwellCredit, structures map[sim.StructureID]*sim.Structure, objects map[sim.VillageObjectID]*sim.VillageObject, loiterObjID sim.VillageObjectID) *sim.Snapshot {
 	return &sim.Snapshot{
 		Actors: map[sim.ActorID]*sim.ActorSnapshot{
 			"hannah": {
-				State:        sim.StateEating,
-				Needs:        map[sim.NeedKey]int{"hunger": 12},
-				DwellCredits: credits,
+				State:                 sim.StateEating,
+				Needs:                 map[sim.NeedKey]int{"hunger": 12},
+				DwellCredits:          credits,
+				CurrentLoiterObjectID: loiterObjID,
 			},
 		},
 		Structures:     structures,
@@ -32,11 +36,65 @@ func dwellSnap(credits map[sim.DwellCreditKey]*sim.DwellCredit, structures map[s
 }
 
 func TestBuildActorView_EmptyDwellCredits(t *testing.T) {
-	snap := dwellSnap(nil, nil, nil)
+	snap := dwellSnap(nil, nil, nil, "")
 	av := buildActorView(snap, snap.Actors["hannah"])
 	if av.ActiveDwellCredits != nil {
 		t.Errorf("ActiveDwellCredits = %v, want nil for empty credits", av.ActiveDwellCredits)
 	}
+}
+
+// TestBuildActorView_StaleCreditGatedByColocation is the LLM-68 regression:
+// a DwellCredit lingers in the map between the actor's walk-away and the next
+// dwell-tick sweep that deletes it. During that window perception must NOT keep
+// rendering "you are resting at X" — that stale cue tells the actor to stay put
+// and do nothing. buildActiveDwellCredits gates each credit on
+// CurrentLoiterObjectID (the pin the actor is actually at), so a credit whose
+// pin no longer matches drops immediately.
+func TestBuildActorView_StaleCreditGatedByColocation(t *testing.T) {
+	shadeOakCredit := func() map[sim.DwellCreditKey]*sim.DwellCredit {
+		return map[sim.DwellCreditKey]*sim.DwellCredit{
+			{ObjectID: "shade_oak", Attribute: "tiredness", Source: sim.DwellSourceObject}: {
+				ObjectID:           "shade_oak",
+				Attribute:          "tiredness",
+				Source:             sim.DwellSourceObject,
+				LastCreditedAt:     time.Now().UTC(),
+				DwellDelta:         -2,
+				DwellPeriodMinutes: 10,
+			},
+		}
+	}
+	objects := map[sim.VillageObjectID]*sim.VillageObject{
+		"shade_oak": {ID: "shade_oak", AssetID: "tree-oak", DisplayName: "the old oak"},
+	}
+
+	// Walked off the pin entirely (the live Prudence case: idle inside her
+	// residence, no pin owns her tile → resolver returned !ok → "").
+	t.Run("walked away, at no pin", func(t *testing.T) {
+		snap := dwellSnap(shadeOakCredit(), nil, objects, "")
+		av := buildActorView(snap, snap.Actors["hannah"])
+		if av.ActiveDwellCredits != nil {
+			t.Errorf("ActiveDwellCredits = %v, want nil (credit gated: actor at no pin)", av.ActiveDwellCredits)
+		}
+	})
+
+	// Walked to a DIFFERENT pin — the stale shade-oak credit must still drop.
+	t.Run("walked away, now at a different pin", func(t *testing.T) {
+		snap := dwellSnap(shadeOakCredit(), nil, objects, "well")
+		av := buildActorView(snap, snap.Actors["hannah"])
+		if av.ActiveDwellCredits != nil {
+			t.Errorf("ActiveDwellCredits = %v, want nil (credit gated: actor at a different pin)", av.ActiveDwellCredits)
+		}
+	})
+
+	// Still at the pin — the credit renders (the gate doesn't over-suppress a
+	// live dwell, which would regress the meal/rest-parking cue WORK-409/411).
+	t.Run("still at the pin", func(t *testing.T) {
+		snap := dwellSnap(shadeOakCredit(), nil, objects, "shade_oak")
+		av := buildActorView(snap, snap.Actors["hannah"])
+		if len(av.ActiveDwellCredits) != 1 {
+			t.Fatalf("ActiveDwellCredits = %d, want 1 (credit live: actor still at pin)", len(av.ActiveDwellCredits))
+		}
+	})
 }
 
 func TestBuildActorView_ItemCreditWithStructureLabel(t *testing.T) {
@@ -56,7 +114,7 @@ func TestBuildActorView_ItemCreditWithStructureLabel(t *testing.T) {
 	structs := map[sim.StructureID]*sim.Structure{
 		"tavern": {ID: "tavern", DisplayName: "The Drunken Hare"},
 	}
-	snap := dwellSnap(credits, structs, nil)
+	snap := dwellSnap(credits, structs, nil, "tavern")
 
 	av := buildActorView(snap, snap.Actors["hannah"])
 	if len(av.ActiveDwellCredits) != 1 {
@@ -91,7 +149,7 @@ func TestBuildActorView_ObjectCreditFallsBackToVillageObjectLabel(t *testing.T) 
 	objects := map[sim.VillageObjectID]*sim.VillageObject{
 		"shade_oak": {ID: "shade_oak", AssetID: "tree-oak", DisplayName: "the old oak"},
 	}
-	snap := dwellSnap(credits, nil, objects)
+	snap := dwellSnap(credits, nil, objects, "shade_oak")
 
 	av := buildActorView(snap, snap.Actors["hannah"])
 	if len(av.ActiveDwellCredits) != 1 {
@@ -123,11 +181,14 @@ func TestBuildActorView_MultipleCreditsSortedDeterministically(t *testing.T) {
 			ObjectID: "tavern", Kind: "stew", Attribute: "hunger",
 			Source: sim.DwellSourceItem, RemainingTicks: &rt,
 		},
-		{ObjectID: "well", Attribute: "thirst", Source: sim.DwellSourceObject}: {
-			ObjectID: "well", Attribute: "thirst", Source: sim.DwellSourceObject,
+		// Same pin as the two item credits — an actor is co-located with at
+		// most one pin, so a multi-credit render is all-at-one-pin (e.g. ate
+		// stew, drank ale, and is resting, all at the tavern). LLM-68.
+		{ObjectID: "tavern", Attribute: "thirst", Source: sim.DwellSourceObject}: {
+			ObjectID: "tavern", Attribute: "thirst", Source: sim.DwellSourceObject,
 		},
 	}
-	snap := dwellSnap(credits, nil, nil)
+	snap := dwellSnap(credits, nil, nil, "tavern")
 	av := buildActorView(snap, snap.Actors["hannah"])
 
 	if len(av.ActiveDwellCredits) != 3 {
@@ -162,7 +223,7 @@ func TestBuildActorView_AliasIsolatedFromWorld(t *testing.T) {
 			Source: sim.DwellSourceItem, RemainingTicks: &rt,
 		},
 	}
-	snap := dwellSnap(credits, nil, nil)
+	snap := dwellSnap(credits, nil, nil, "tavern")
 	av := buildActorView(snap, snap.Actors["hannah"])
 	*av.ActiveDwellCredits[0].RemainingTicks = 99
 	if rt != 4 {
