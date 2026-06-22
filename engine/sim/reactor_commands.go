@@ -633,12 +633,33 @@ func nextRateAllowedAt(a *Actor, now time.Time, cap int, window time.Duration) t
 	return inWindow[idx].Add(window).Add(rateBackoffJitter())
 }
 
-// hasNeedWarrant reports whether any meta in the list is a need-threshold
-// warrant — a red-tier need pressing the actor to act. ZBBS-HOME-329 #3 uses it
-// to let a critical need interrupt a scheduled break (never sleep).
-func hasNeedWarrant(list []WarrantMeta) bool {
+// hasBreakInterruptingNeedWarrant reports whether any meta is a need-threshold
+// warrant for a need that a BREAK does not itself resolve — i.e. any red need
+// other than tiredness. ZBBS-HOME-329 #3 lets a critical need cut a scheduled
+// break short (never sleep), so a resting-but-starving actor wakes to eat — but
+// a break RECOVERS tiredness (the tiredness sweep credits while BreakUntil is
+// open), so a red-TIREDNESS warrant must NOT interrupt one: doing so cancels the
+// very rest that is curing the need. That was the on-shift exhaustion loop in
+// LLM-62 — the need producers only stamp a tiredness warrant while ON shift
+// (actorActionableRedNeed, needs_tick.go), so every break an on-shift tired
+// vendor took was immediately cut, leaving it stuck red and its post unmanned.
+// Hunger/thirst are not eased by resting, so those still interrupt. Kind-aware
+// counterpart of the other has*Warrant predicates; the warrant's Need field
+// (NeedThresholdWarrantReason) is what makes the carve-out possible.
+func hasBreakInterruptingNeedWarrant(list []WarrantMeta) bool {
 	for _, m := range list {
-		if m.Reason != nil && m.Reason.Kind() == WarrantKindNeedThreshold {
+		if m.Reason == nil || m.Reason.Kind() != WarrantKindNeedThreshold {
+			continue
+		}
+		r, ok := m.Reason.(NeedThresholdWarrantReason)
+		if !ok {
+			// Kind claims need-threshold but the concrete type doesn't match —
+			// only NeedThresholdWarrantReason returns that kind, so this is
+			// unreachable; treat an unexpected shape as interrupting (the prior
+			// behavior) rather than silently swallowing it.
+			return true
+		}
+		if r.Need != "tiredness" {
 			return true
 		}
 	}

@@ -370,6 +370,59 @@ func TestActorCanReactNow_RestingInterruptedByNeed(t *testing.T) {
 	})
 }
 
+// TestActorCanReactNow_RestingNotInterruptedByTirednessNeed: LLM-62 — a red
+// TIREDNESS need warrant does NOT cut a break short, because a break is what
+// recovers tiredness; interrupting it would cancel the cure (the on-shift
+// exhaustion loop where every break an exhausted vendor took was immediately
+// ended). Contrast the hunger case above, which a break cannot resolve.
+func TestActorCanReactNow_RestingNotInterruptedByTirednessNeed(t *testing.T) {
+	w, cancel := buildReactorTestWorld(t)
+	defer cancel()
+	if _, err := w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			a := world.Actors["alice"]
+			a.State = sim.StateResting
+			a.Warrants = []sim.WarrantMeta{{Reason: sim.NeedThresholdWarrantReason{Need: "tiredness"}}}
+			eligible, stale := sim.ActorCanReactNow(world, a)
+			if eligible {
+				t.Errorf("resting + tiredness warrant: eligible=true, want false (break recovers tiredness — must not be cut)")
+			}
+			if stale {
+				t.Errorf("resting + tiredness warrant: stale=true, want false (warrant stays open)")
+			}
+			return nil, nil
+		},
+	}); err != nil {
+		t.Fatalf("send command: %v", err)
+	}
+}
+
+// TestActorCanReactNow_RestingInterruptedByHungerEvenWithTiredness: the carve-out
+// is need-specific, not a blanket "ignore need warrants while resting". A red
+// HUNGER warrant still cuts the break — a break can't feed the actor — even when
+// a red tiredness warrant is also present. LLM-62.
+func TestActorCanReactNow_RestingInterruptedByHungerEvenWithTiredness(t *testing.T) {
+	w, cancel := buildReactorTestWorld(t)
+	defer cancel()
+	if _, err := w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			a := world.Actors["alice"]
+			a.State = sim.StateResting
+			a.Warrants = []sim.WarrantMeta{
+				{Reason: sim.NeedThresholdWarrantReason{Need: "tiredness"}},
+				{Reason: sim.NeedThresholdWarrantReason{Need: "hunger"}},
+			}
+			eligible, stale := sim.ActorCanReactNow(world, a)
+			if !eligible || stale {
+				t.Errorf("resting + hunger(+tiredness) warrant: eligible=%v stale=%v; want true,false", eligible, stale)
+			}
+			return nil, nil
+		},
+	}); err != nil {
+		t.Fatalf("send command: %v", err)
+	}
+}
+
 // TestActorCanReactNow_RestingInterruptedByForce: ZBBS-HOME-329 #4 — an operator
 // force / admin warrant also breaks a rester out, so /nudge can rescue a stuck
 // on-break actor (the eligibility gate used to run before the pacing Force-
