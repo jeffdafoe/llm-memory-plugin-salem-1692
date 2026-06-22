@@ -555,7 +555,7 @@ func renderFeltNeeds(needs map[sim.NeedKey]int, thresholds sim.NeedThresholds, r
 			// and the "You are taking a rest." state line conveys the recovery.
 			// Hunger/thirst stay actionable: a break doesn't feed or water you, and
 			// LLM-62 deliberately lets them interrupt a break.
-			if resting && key == "tiredness" {
+			if resting && key == recoveryTirednessNeed {
 				continue
 			}
 			pressing = append(pressing, string(key))

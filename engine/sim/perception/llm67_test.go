@@ -41,6 +41,12 @@ func TestRenderFeltNeeds_OnBreakSuppressesTiredness(t *testing.T) {
 		if strings.Contains(line, "tiredness") {
 			t.Errorf("tiredness key must not appear in the Address-now list while resting: %q", line)
 		}
+		// Tiredness stays VISIBLE in the felt clause (mark-don't-hide) — resting
+		// suppresses the imperative, not the actor's awareness of the need. With
+		// both hunger and tiredness felt, the "You feel …" clause lists two items.
+		if i := strings.Index(line, "You feel "); i < 0 || !strings.Contains(line[i:], ", ") {
+			t.Errorf("tiredness should remain visible in the felt clause alongside hunger: %q", line)
+		}
 	})
 
 	t.Run("not resting — tiredness is actionable (baseline unchanged)", func(t *testing.T) {
