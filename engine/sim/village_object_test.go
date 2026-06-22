@@ -2,6 +2,7 @@ package sim_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
@@ -27,6 +28,50 @@ func TestOwnedByOther(t *testing.T) {
 	}
 	if !owned.OwnedByOther("") {
 		t.Error("an empty/unknown actor id should be gated from an owned object")
+	}
+}
+
+// TestConfigWarnings covers the LLM-60 advisory audit: a refresh-bearing
+// (gather/eat) object with no display_name is flagged (the resolver can't reach
+// it), a named one is not, and a nameless object with no refresh rows (a plain
+// decorative prop) is left alone. nil entries are skipped, output is sorted by id.
+func TestConfigWarnings(t *testing.T) {
+	objects := map[sim.VillageObjectID]*sim.VillageObject{
+		// nameless gatherable source → flagged ("gatherable source")
+		"obj-a-gather": {ID: "obj-a-gather", Refreshes: []*sim.ObjectRefresh{{GatherItem: "blueberries"}}},
+		// nameless eat-on-arrival source (refresh, no gather_item) → flagged
+		"obj-b-eat": {ID: "obj-b-eat", Refreshes: []*sim.ObjectRefresh{{Attribute: "hunger", Amount: -8}}},
+		// named gatherable source → NOT flagged
+		"obj-c-named": {ID: "obj-c-named", DisplayName: "Raspberry Bush", Refreshes: []*sim.ObjectRefresh{{GatherItem: "raspberries"}}},
+		// nameless but no refresh rows (decorative prop) → NOT flagged
+		"obj-d-prop": {ID: "obj-d-prop"},
+		// whitespace-only name is treated as empty → flagged
+		"obj-e-blank": {ID: "obj-e-blank", DisplayName: "   ", Refreshes: []*sim.ObjectRefresh{{GatherItem: "blueberries"}}},
+		"obj-f-nil":   nil,
+	}
+
+	warnings := sim.ConfigWarnings(objects)
+
+	if len(warnings) != 3 {
+		t.Fatalf("got %d warnings, want 3: %v", len(warnings), warnings)
+	}
+	// Sorted by id: obj-a-gather, obj-b-eat, obj-e-blank.
+	if !strings.Contains(warnings[0], "obj-a-gather") || !strings.Contains(warnings[0], "gatherable source") {
+		t.Errorf("warnings[0] = %q, want obj-a-gather / gatherable source", warnings[0])
+	}
+	if !strings.Contains(warnings[1], "obj-b-eat") || !strings.Contains(warnings[1], "eat-on-arrival source") {
+		t.Errorf("warnings[1] = %q, want obj-b-eat / eat-on-arrival source", warnings[1])
+	}
+	if !strings.Contains(warnings[2], "obj-e-blank") {
+		t.Errorf("warnings[2] = %q, want obj-e-blank", warnings[2])
+	}
+	for _, w := range warnings {
+		if strings.Contains(w, "obj-c-named") || strings.Contains(w, "obj-d-prop") {
+			t.Errorf("warning should not flag a named object or a refresh-less prop: %q", w)
+		}
+	}
+	if len(sim.ConfigWarnings(nil)) != 0 {
+		t.Error("ConfigWarnings(nil) should be empty")
 	}
 }
 

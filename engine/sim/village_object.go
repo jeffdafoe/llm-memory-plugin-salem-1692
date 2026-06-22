@@ -2,6 +2,7 @@ package sim
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"sort"
 	"strings"
@@ -110,6 +111,46 @@ func (o *VillageObject) OwnedByOther(actorID ActorID) bool {
 		return false
 	}
 	return o.OwnerActorID != "" && o.OwnerActorID != actorID
+}
+
+// ConfigWarnings returns one human-readable warning per village object that is
+// misconfigured in a way the engine TOLERATES but an operator should fix. It is
+// advisory only — never fatal — and is surfaced both at boot (logged) and on the
+// umbilical /state read (so a defect introduced by a migration is visible without
+// SSH access).
+//
+// Sole check today (LLM-60): a refresh-bearing object (a gather/eat source) with
+// an empty DisplayName. The command-side resolver resolveLoiteringObject skips
+// nameless objects, so neither the gather verb (Gather/StartHarvest) nor passive
+// eat-on-arrival (ApplyObjectRefreshAtArrival) can resolve it — yet the perception
+// cue (findGatherableCue) and the free-food list (gatherFreeSatiationSources) do
+// NOT apply that name filter, so they keep advertising a source the engine then
+// refuses, trapping an NPC in a gather/eat loop. Naming the object is the fix; the
+// name requirement in the resolver is intentional (v1 "you are at X" attribution).
+//
+// Sorted by object id for a stable order across reads.
+func ConfigWarnings(objects map[VillageObjectID]*VillageObject) []string {
+	var warnings []string
+	for id, obj := range objects {
+		if obj == nil || len(obj.Refreshes) == 0 {
+			continue
+		}
+		if strings.TrimSpace(obj.DisplayName) != "" {
+			continue
+		}
+		kind := "eat-on-arrival source"
+		for _, r := range obj.Refreshes {
+			if r.IsGatherable() {
+				kind = "gatherable source"
+				break
+			}
+		}
+		warnings = append(warnings, fmt.Sprintf(
+			"village_object %s is a %s with no display_name — gather/eat-on-arrival cannot resolve it (resolveLoiteringObject skips nameless objects)",
+			id, kind))
+	}
+	sort.Strings(warnings)
+	return warnings
 }
 
 // CloneVillageObject returns a deep copy suitable for publication via
