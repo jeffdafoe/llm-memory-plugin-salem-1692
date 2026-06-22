@@ -61,6 +61,17 @@ type RecoveryOption struct {
 	// the "inn" kind. ZBBS-WORK-416.
 	ClosedNow bool
 
+	// AfterShiftOnly marks the "home" bed option for an actor who is currently
+	// ON shift: the engine only beds a homed NPC at home when it is OFF shift
+	// (npcSleepHere → !isActorOnShift), so walking home mid-shift does NOT put it
+	// to bed. Rendering "sleep in your own bed" unqualified to an on-shift actor
+	// was a false now-action — it sent an exhausted keeper home, the bed-down
+	// silently refused, and it walked back (the home↔post oscillation, LLM-62).
+	// When set, render marks the option as available once the shift ends rather
+	// than dropping it (mark-don't-hide: the bed is still the real fix, just not
+	// yet). Set only for the "home" kind. LLM-62.
+	AfterShiftOnly bool
+
 	// StructureID is the move_to target for the structure-backed kinds (inn,
 	// home, remedy vendor's workplace). It is what the model passes to
 	// move_to(structure_id) to actually walk here — the tool rejects a bare
@@ -193,11 +204,14 @@ func hasActiveLodgingGrant(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) boo
 
 // gatherHomeRestSpot returns the actor's own home as a "sleep in your own bed"
 // rest option, or nil when the actor has no home or it doesn't resolve to a
-// structure in the snapshot. Un-shift-gated, consistent with the inn arm — the
-// shift-duty producer separately issues the directive "head home, your shift
-// ended" warrant; this is the affordance-menu entry. No distance (a Structure's
-// position is grid space, not the actor's tile space), so it parks after the
-// distance-bearing free rest spots like inns and remedies.
+// structure in the snapshot. The option is always surfaced (the shift-duty
+// producer separately issues the "head home, your shift ended" warrant; this is
+// the affordance-menu entry), but it is MARKED AfterShiftOnly while the actor is
+// on shift — the engine only beds a homed NPC at home when off shift
+// (npcSleepHere → !isActorOnShift), so an unqualified "sleep in your own bed"
+// mid-shift was a false now-action that drove the home↔post oscillation (LLM-62).
+// No distance (a Structure's position is grid space, not the actor's tile space),
+// so it parks after the distance-bearing free rest spots like inns and remedies.
 func gatherHomeRestSpot(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) *RecoveryOption {
 	if snap == nil || actorSnap == nil || actorSnap.HomeStructureID == "" {
 		return nil
@@ -210,13 +224,23 @@ func gatherHomeRestSpot(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) *Recov
 	if st.DisplayName != "" {
 		label = st.DisplayName
 	}
+	// On shift → the bed-down would be refused (npcSleepHere requires off-shift),
+	// so mark the option as available once the shift ends rather than offering it
+	// as a now-action. A nil clock leaves it unmarked (treated off-shift, the
+	// permissive default); an unscheduled actor is always off-shift per
+	// OnShiftAtMinute, so it keeps the plain "sleep in your own bed". LLM-62.
+	afterShiftOnly := false
+	if snap.LocalMinuteOfDay != nil {
+		afterShiftOnly = sim.OnShiftAtMinute(actorSnap.ScheduleStartMin, actorSnap.ScheduleEndMin, *snap.LocalMinuteOfDay)
+	}
 	return &RecoveryOption{
-		Kind:        "home",
-		Label:       label,
-		CostText:    "free",
-		StructureID: actorSnap.HomeStructureID,
-		sortKey:     innSortKey,
-		sourceKey:   string(actorSnap.HomeStructureID),
+		Kind:           "home",
+		Label:          label,
+		CostText:       "free",
+		StructureID:    actorSnap.HomeStructureID,
+		AfterShiftOnly: afterShiftOnly,
+		sortKey:        innSortKey,
+		sourceKey:      string(actorSnap.HomeStructureID),
 	}
 }
 
@@ -477,7 +501,13 @@ func renderRecoveryOptions(b *strings.Builder, v *RecoveryOptionsView) {
 		case "inn":
 			b.WriteString(" — rent a room")
 		case "home":
-			b.WriteString(" — sleep in your own bed")
+			if o.AfterShiftOnly {
+				// On shift the bed-down is refused until off-shift, so name when it
+				// is actually available rather than offer it as a now-action (LLM-62).
+				b.WriteString(" — sleep in your own bed once your shift ends")
+			} else {
+				b.WriteString(" — sleep in your own bed")
+			}
 		case "remedy":
 			fmt.Fprintf(b, " — buy %s", sanitizeInline(o.ItemLabel))
 			if o.Magnitude > 0 {
