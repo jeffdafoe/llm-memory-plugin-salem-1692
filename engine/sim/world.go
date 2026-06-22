@@ -1599,6 +1599,19 @@ func (w *World) republish() {
 				sa.ColocatedSleeperIDs = colocatedSleeperIDs(w, a, now)
 			}
 		}
+		// Co-location for active dwell credits (LLM-68): resolve the named
+		// object whose loiter pin owns the actor's tile so perception renders a
+		// "you are <verb> at X" self-state line only while the actor is still at
+		// the pin — not after a walk-away, when the credit lingers in the map
+		// until the next dwell-tick sweep deletes it. Same resolver + radius as
+		// the dwell-tick walk-away check (actorAtCreditObject) so the two agree.
+		// Only for credit-holders — the sole consumer — to skip the resolve for
+		// everyone else.
+		if len(a.DwellCredits) > 0 {
+			if objID, ok := resolveLoiteringObject(w, a.Pos, LoiterAttributionTiles); ok {
+				sa.CurrentLoiterObjectID = objID
+			}
+		}
 		snap.Actors[id] = sa
 	}
 	for id, h := range w.Huddles {
