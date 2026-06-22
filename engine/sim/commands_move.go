@@ -219,8 +219,10 @@ func MoveActor(actorID ActorID, dest MoveDestination, leaveHuddleFirst bool, now
 			// window (re-resolving off the still-current tile — the move hasn't
 			// changed Pos yet, it only stamps MoveIntent); a genuinely in-flight one
 			// is left for the cancel. Covers the PC path too (PCs aren't reactor-
-			// shelved, so they can reach a move in that gap).
-			completeIfDue(w, actor.ID, actor, time.Now().UTC())
+			// shelved, so they can reach a move in that gap). Uses the command's
+			// `now` (not wall clock) so a sim-time / deterministic-test caller lands
+			// the same completions the rest of MoveActor keys off.
+			completeIfDue(w, actor.ID, actor, now)
 			// LLM-54: committing a move ABANDONS any STILL-in-flight eat/drink/
 			// harvest at a source — the actor got up and walked off, so the bite/
 			// pick never lands (the effect applies only at completion, never mid-

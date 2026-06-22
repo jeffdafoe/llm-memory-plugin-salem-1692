@@ -1619,11 +1619,11 @@ func (w *World) republish() {
 		// next completion sweep clears it) reads as not-engaged rather than
 		// still-in-progress. Resolve the refresh primary need world-side for the
 		// eat/drink verb; harvest needs none.
-		if a.BusyAtSource(now) {
-			sa.SourceActivityKind = a.SourceActivity.Kind
-			sa.SourceActivityObjectID = a.SourceActivity.ObjectID
-			if a.SourceActivity.Kind == SourceActivityRefresh {
-				if obj := w.VillageObjects[a.SourceActivity.ObjectID]; obj != nil {
+		if act := a.SourceActivity; act != nil && a.BusyAtSource(now) {
+			sa.SourceActivityKind = act.Kind
+			sa.SourceActivityObjectID = act.ObjectID
+			if act.Kind == SourceActivityRefresh {
+				if obj := w.VillageObjects[act.ObjectID]; obj != nil {
 					sa.SourceActivityAttribute = primaryRefreshNeed(obj)
 				}
 			}
