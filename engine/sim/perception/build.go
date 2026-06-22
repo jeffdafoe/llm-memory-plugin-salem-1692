@@ -93,6 +93,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	p.RecoveryOptions = buildRecoveryOptions(snap, actorID, actorSnap)
 	p.Satiation = buildSatiation(snap, actorID, actorSnap)
 	p.Restocking = buildRestocking(snap, actorID, actorSnap)
+	p.Forage = buildForage(snap, actorID, actorSnap)
 	// DutySteer is built AFTER Restocking (ZBBS-HOME-400 Option B) because the
 	// return-to-post cue is now suppressed while a restock errand is active —
 	// p.Restocking != nil is exactly that signal.

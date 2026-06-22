@@ -247,6 +247,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderRecoveryOptions(&ephemeral, p.RecoveryOptions)
 	renderSatiation(&ephemeral, p.Satiation)
 	renderRestocking(&ephemeral, p.Restocking)
+	renderForage(&ephemeral, p.Forage)
 	renderLodging(&ephemeral, p.Lodging)
 	renderRetire(&ephemeral, p.Retire)
 	renderKeeperLodging(&ephemeral, p.KeeperLodging)

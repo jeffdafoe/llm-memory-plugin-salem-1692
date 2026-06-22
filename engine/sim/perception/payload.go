@@ -339,6 +339,15 @@ type Payload struct {
 	// and acts via move_to + pay_with_item. ZBBS-WORK-322.
 	Restocking *RestockingView
 
+	// Forage surfaces a grower-seller's own forage-to-sell bushes when their
+	// harvested stock of an item is low (< RestockReorderPct of cap) — each low
+	// `forage` RestockEntry, the on-hand/cap, the ripe count across the actor's
+	// owned bushes for that item, and a move_to handle to the ripest bush. nil
+	// when no forage entry is below threshold or restock is disabled. The
+	// produce/harvest-side mirror of Restocking; owner-only and distance-
+	// independent (unlike the wild-bush proximity cue, findGatherableCue). LLM-59.
+	Forage *ForageView
+
 	// Lodging surfaces the subject's own active lodging — the inn their room
 	// is at and when the grant expires — so a lodger NPC can renew before it
 	// lapses. nil when the actor holds no active ledger RoomAccess (not a
