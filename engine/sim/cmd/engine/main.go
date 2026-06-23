@@ -336,6 +336,7 @@ func run(rt runtime, stop <-chan struct{}) error {
 	sim.RegisterSleepSubscriber(rt.World)                 // ZBBS-HOME-284 #2: auto-sleep NPCs on arrival home
 	sim.RegisterClosedBusinessSubscriber(rt.World)        // ZBBS-HOME-353: remember a business found shut on arrival
 	sim.RegisterOutOfStockSubscriber(rt.World)            // ZBBS-HOME-363: remember a vendor-item found out of stock on a failed buy
+	sim.RegisterKnownPlaceSubscriber(rt.World)            // LLM-77: remember a place's affordance on gather/purchase (durable world-memory)
 	sim.RegisterLodgingMorningDescentSubscriber(rt.World) // ZBBS-HOME-312 #2: walk a naturally-woken lodger PC down to the common room
 	cascade.RegisterProductionCascades(worldCtx, rt.World, rt.LLMClient)
 

@@ -247,6 +247,33 @@ CREATE SEQUENCE public.actor_inventory_snapshot_gen_seq
 
 
 --
+-- Name: actor_known_place; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.actor_known_place (
+    actor_id uuid NOT NULL,
+    place_ref uuid NOT NULL,
+    place_kind text NOT NULL,
+    affordances jsonb DEFAULT '[]'::jsonb NOT NULL,
+    first_learned_at timestamp with time zone DEFAULT now() NOT NULL,
+    last_experienced_at timestamp with time zone DEFAULT now() NOT NULL,
+    snapshot_gen bigint DEFAULT 0 NOT NULL
+);
+
+
+--
+-- Name: actor_known_place_snapshot_gen_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.actor_known_place_snapshot_gen_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
 -- Name: actor_narrative_state; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1495,6 +1522,14 @@ ALTER TABLE ONLY public.actor_inventory
 
 
 --
+-- Name: actor_known_place actor_known_place_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.actor_known_place
+    ADD CONSTRAINT actor_known_place_pkey PRIMARY KEY (actor_id, place_ref);
+
+
+--
 -- Name: actor actor_login_username_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2090,6 +2125,13 @@ CREATE INDEX idx_actor_inventory_snapshot_gen ON public.actor_inventory USING bt
 
 
 --
+-- Name: idx_actor_known_place_snapshot_gen; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_actor_known_place_snapshot_gen ON public.actor_known_place USING btree (snapshot_gen);
+
+
+--
 -- Name: idx_actor_llm_memory_agent; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2677,6 +2719,14 @@ ALTER TABLE ONLY public.actor_inventory
 
 ALTER TABLE ONLY public.actor_inventory
     ADD CONSTRAINT actor_inventory_item_kind_fkey FOREIGN KEY (item_kind) REFERENCES public.item_kind(name) ON UPDATE CASCADE;
+
+
+--
+-- Name: actor_known_place actor_known_place_actor_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.actor_known_place
+    ADD CONSTRAINT actor_known_place_actor_id_fkey FOREIGN KEY (actor_id) REFERENCES public.actor(id) ON DELETE CASCADE;
 
 
 --

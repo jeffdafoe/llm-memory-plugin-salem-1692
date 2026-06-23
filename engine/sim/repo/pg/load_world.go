@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
@@ -307,6 +308,13 @@ func LoadWorld(ctx context.Context, repo sim.Repository, requireAllImpl bool) (*
 		// No peer aggregate needed (works from each actor's own Attributes);
 		// best-effort by design — never fails the load.
 		rebuildActorAttributeProjections(w.Actors)
+
+		// LLM-77 carry-forward: seed each NPC owner's a-priori known places
+		// (owned gatherable sources + home/work anchors) into the durable
+		// world-memory loaded by Actors.LoadAll above. Merges onto loaded rows
+		// (never clobbers); ownership is re-derived from live state each load,
+		// so an owner knows its sources even on a fresh DB with no rows yet.
+		sim.SeedOwnedKnownPlaces(w.Actors, w.VillageObjects, time.Now().UTC())
 	}
 
 	// Post-load housekeeping shared with sim.LoadWorld (index rebuild,

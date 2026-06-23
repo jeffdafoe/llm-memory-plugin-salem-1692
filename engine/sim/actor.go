@@ -708,6 +708,20 @@ type Actor struct {
 	// out-of-stock observation.
 	OutOfStockObs map[OutOfStockKey]time.Time
 
+	// KnownPlaces is this actor's DURABLE world-memory: the places/sources it
+	// knows and what each is good for (its Affordances). Unlike the decaying,
+	// in-memory ClosedBusinessObs/OutOfStockObs above (negative "found it
+	// shut/dry just now" observations), a known place is PERMANENT positive
+	// knowledge — a location doesn't move, you don't un-know your own farm — and
+	// is checkpointed to actor_known_place (same durability tier as
+	// salient_facts). Populated on affordance-bearing experience
+	// (gather/purchase/consume-at-source) by the known_place.go capture path, and
+	// seeded a-priori for owned sources + home/work anchors at LoadWorld.
+	// nil/empty when the actor knows no places yet — a loaded actor carries an
+	// empty (non-nil) map like the other child collections. LLM-77 (epic
+	// LLM-76); ships inert — no resolver/cue reads it yet (LLM-78/79).
+	KnownPlaces map[PlaceRef]*KnownPlace
+
 	// RestockPolicy carries this actor's produce/buy entries, unioned
 	// across their role attributes (tavernkeeper + worker, etc.). Read
 	// from actor_attribute.params.restock in legacy; nil for actors
@@ -930,6 +944,9 @@ func CloneActor(a *Actor) *Actor {
 	}
 	if a.OutOfStockObs != nil {
 		cp.OutOfStockObs = cloneOutOfStockObs(a.OutOfStockObs)
+	}
+	if a.KnownPlaces != nil {
+		cp.KnownPlaces = cloneKnownPlaces(a.KnownPlaces)
 	}
 	if a.ProduceState != nil {
 		cp.ProduceState = make(map[ItemKind]*ProduceState, len(a.ProduceState))
@@ -1184,6 +1201,14 @@ type ActorSnapshot struct {
 	// Actor.OutOfStockObs. ZBBS-HOME-363.
 	OutOfStockObs map[OutOfStockKey]time.Time
 
+	// KnownPlaces mirrors the live Actor's durable world-memory at snapshot time
+	// so the (future LLM-78/79) move_to resolver + perception cues can read
+	// remembered places off the published Snapshot. Deep-cloned by snapshotActor
+	// (via cloneKnownPlaces) so published snapshots don't alias the world's
+	// mutable map. nil/empty when the actor knows no places. See
+	// Actor.KnownPlaces. LLM-77.
+	KnownPlaces map[PlaceRef]*KnownPlace
+
 	// RoomAccess mirrors the live Actor's private/staff-room grants at
 	// snapshot time so perception build can surface the lodger view ("your
 	// room at the inn is paid through <day>") and compute keeper-side room
@@ -1280,6 +1305,9 @@ func CloneActorSnapshot(s *ActorSnapshot) *ActorSnapshot {
 	if s.OutOfStockObs != nil {
 		cp.OutOfStockObs = cloneOutOfStockObs(s.OutOfStockObs)
 	}
+	if s.KnownPlaces != nil {
+		cp.KnownPlaces = cloneKnownPlaces(s.KnownPlaces)
+	}
 	if s.AttributeSlugs != nil {
 		cp.AttributeSlugs = append([]string(nil), s.AttributeSlugs...)
 	}
@@ -1317,6 +1345,28 @@ func cloneOutOfStockObs(src map[OutOfStockKey]time.Time) map[OutOfStockKey]time.
 	dst := make(map[OutOfStockKey]time.Time, len(src))
 	for k, v := range src {
 		dst[k] = v
+	}
+	return dst
+}
+
+// cloneKnownPlaces deep-copies a KnownPlaces map. The value is a *KnownPlace,
+// so the struct is cloned (not aliased) and its Affordances slice is copied —
+// mutating the snapshot copy's affordances must not touch the live actor.
+// Returns nil for a nil source; skips nil entries. LLM-77.
+func cloneKnownPlaces(src map[PlaceRef]*KnownPlace) map[PlaceRef]*KnownPlace {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[PlaceRef]*KnownPlace, len(src))
+	for k, v := range src {
+		if v == nil {
+			continue
+		}
+		vc := *v
+		if v.Affordances != nil {
+			vc.Affordances = append([]string(nil), v.Affordances...)
+		}
+		dst[k] = &vc
 	}
 	return dst
 }
