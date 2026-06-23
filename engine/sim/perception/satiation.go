@@ -18,13 +18,17 @@ import (
 // the same structural-vendorship + workplace surface the recovery-options
 // remedy arm uses.
 //
-// Free-source arm (ZBBS-HOME-359): hunger/thirst had no analogue to the
-// recovery section's free rest spots (gatherFreeRestSpots), so a thirsty NPC
-// away from the well never saw it — the only path was the gather cue, which
-// fires only once already standing at the source. This scans VillageObjects
-// for free need-easing placements the same way rest spots are surfaced, and
-// carries each source's object id so move_to can walk there (the id / name
-// paths now resolve a bare refresh source to an object visit — sim/move_to.go).
+// Free-source arm (ZBBS-HOME-359; re-based on memory by LLM-79): hunger/thirst
+// had no analogue to the recovery section's free rest spots (gatherFreeRestSpots),
+// so a thirsty NPC away from the well never saw it — the only path was the gather
+// cue, which fires only once already standing at the source. It carries each
+// source's object id so move_to can walk there (the id / name paths resolve a
+// bare refresh source to an object visit — sim/move_to.go). LLM-79 retired the
+// omniscient all-wells-in-the-village scan: gatherFreeSatiationSources now
+// surfaces the UNION of sources the actor REMEMBERS using (known-places, any
+// distance) and sources within the scene radius (newly-seen) — so an NPC
+// remembers the well it drank at yesterday but is no longer god-shown a well it
+// has never visited across the map.
 //
 // Why the own-stock line is the load-bearing half (v1's ZBBS-123 diagnosis): a
 // herbalist hungry on shift while holding 50 berries walked to a store instead
@@ -312,34 +316,61 @@ func vendorStructureDistanceTiles(snap *sim.Snapshot, actorSnap *sim.ActorSnapsh
 	return math.Sqrt(dx*dx + dy*dy)
 }
 
-// gatherFreeSatiationSources returns a free-source bullet for each village
-// object that eases `need` on arrival (a well's thirst refresh, a fruit tree's
-// hunger refresh), skipping objects whose finite supply is exhausted. The
-// hunger/thirst analogue of recovery_options' gatherFreeRestSpots — same
-// distance/direction derivation in INTERNAL-GRID TILE space (actor Pos is a
-// padded tile; an object's Pos is world pixels, converted via obj.Pos.Tile()
-// before measuring) and same nearest-first ordering. Each source carries its
-// object id so the rendered cue is actionable through move_to. ZBBS-HOME-359.
+// gatherFreeSatiationSources returns a free-source bullet for each free, public
+// village object that eases `need` on arrival (a well's thirst refresh, a fruit
+// tree's hunger refresh) the actor could plausibly know about, skipping objects
+// whose finite supply is exhausted. The hunger/thirst analogue of
+// recovery_options' gatherFreeRestSpots — same distance/direction derivation in
+// INTERNAL-GRID TILE space (actor Pos is a padded tile; an object's Pos is world
+// pixels, converted via obj.Pos.Tile() before measuring) and same nearest-first
+// ordering. Each source carries its object id so the rendered cue is actionable
+// through move_to. ZBBS-HOME-359.
+//
+// NO LONGER OMNISCIENT (LLM-79): instead of every free source in the village,
+// this is the UNION of two arms, so an NPC sees only sources it could know —
+//   - MEMORY (any distance): sources the actor has personally used, from the
+//     known-places set (the "free_source:<need>" affordance recordFreeSourceExperience
+//     stamps). The "remembers the well it drank at yesterday" half the epic adds —
+//     a remembered source surfaces wherever the actor now stands.
+//   - PROXIMITY (within the scene radius): sources within DefaultOutdoorSceneRadius
+//     (Chebyshev — the same "what is around me" bound move_to and the scene use),
+//     the newly-seen ones it has not used yet but can see from here.
+//
+// Deduped by object id (a source both remembered and nearby appears once).
+// Liveness is implicit: both arms re-read the live object for its current refresh
+// magnitude, so a remembered well since gone dry or removed drops out. A distant
+// source the actor has NEVER used and is NOT near no longer shows — the
+// no-omniscience posture (and move_to would not resolve such a name either, post-
+// LLM-78).
 func gatherFreeSatiationSources(snap *sim.Snapshot, subjectID sim.ActorID, actorSnap *sim.ActorSnapshot, need sim.NeedKey) []SatiationFreeSource {
 	if snap == nil || actorSnap == nil {
 		return nil
 	}
+	radius := snap.DefaultOutdoorSceneRadius
+	if radius <= 0 {
+		radius = sim.DefaultOutdoorSceneRadiusValue
+	}
 	ax := float64(actorSnap.Pos.X)
 	ay := float64(actorSnap.Pos.Y)
 	var out []SatiationFreeSource
-	for id, obj := range snap.VillageObjects {
+	seen := map[sim.VillageObjectID]struct{}{}
+	consider := func(id sim.VillageObjectID, obj *sim.VillageObject) {
 		if obj == nil {
-			continue
+			return
+		}
+		if _, dup := seen[id]; dup {
+			return
 		}
 		mag := objectRefreshMagnitude(obj, need)
 		if mag <= 0 {
-			continue
+			return // doesn't ease this need, or its finite supply is exhausted (liveness)
 		}
 		// Strict owner-gate (LLM-50 D2): an owned source isn't free food for a
 		// non-owner — don't surface it (the eat-on-arrival path skips it too).
 		if obj.OwnedByOther(subjectID) {
-			continue
+			return
 		}
+		seen[id] = struct{}{}
 		objTile := obj.Pos.Tile()
 		tx := float64(objTile.X)
 		ty := float64(objTile.Y)
@@ -360,8 +391,28 @@ func gatherFreeSatiationSources(snap *sim.Snapshot, subjectID sim.ActorID, actor
 			sourceKey: string(id),
 		})
 	}
+	// Memory arm: free sources the actor has personally used, at any distance.
+	affordance := "free_source:" + string(need)
+	for ref, kp := range actorSnap.KnownPlaces {
+		if !kp.HasAffordance(affordance) {
+			continue
+		}
+		id := sim.VillageObjectID(ref)
+		consider(id, snap.VillageObjects[id])
+	}
+	// Proximity arm: free sources within the scene radius — newly-seen ones the
+	// actor has not used yet. Chebyshev matches the move_to / scene "around me" bound.
+	for id, obj := range snap.VillageObjects {
+		if obj == nil {
+			continue
+		}
+		if actorSnap.Pos.Chebyshev(obj.Pos.Tile()) > radius {
+			continue
+		}
+		consider(id, obj)
+	}
 	// Nearest first; ties broken by label then object id for deterministic output
-	// (VillageObjects is a map). Mirrors gatherFreeRestSpots' ordering.
+	// (VillageObjects + KnownPlaces are maps). Mirrors gatherFreeRestSpots' ordering.
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].sortKey != out[j].sortKey {
 			return out[i].sortKey < out[j].sortKey

@@ -26,6 +26,22 @@ func forageBush(owner sim.ActorID, item sim.ItemKind, avail int) *sim.VillageObj
 	}
 }
 
+// remembersGather builds the KnownPlaces map marking each id as a remembered
+// gather source for item — what LLM-77 ownership-seeding records for an owner's
+// own bushes, and what buildForage now reads to source the section (LLM-79). An
+// owner only sees a bush in "## Your bushes to harvest" if they remember it here.
+func remembersGather(item sim.ItemKind, ids ...sim.VillageObjectID) map[sim.PlaceRef]*sim.KnownPlace {
+	m := make(map[sim.PlaceRef]*sim.KnownPlace, len(ids))
+	for _, id := range ids {
+		m[sim.PlaceRef(id)] = &sim.KnownPlace{
+			Ref:         sim.PlaceRef(id),
+			Kind:        sim.PlaceKindObject,
+			Affordances: []string{"gather:" + string(item)},
+		}
+	}
+	return m
+}
+
 func TestBuildForage_NoPolicy_Nil(t *testing.T) {
 	subj := &sim.ActorSnapshot{Inventory: map[sim.ItemKind]int{"raspberries": 0}}
 	snap := &sim.Snapshot{
@@ -68,8 +84,12 @@ func TestBuildForage_AboveThreshold_Nil(t *testing.T) {
 
 func TestBuildForage_LowStock_SurfacesOwnedBushes(t *testing.T) {
 	// 2 of 10 = 20%, below 25% → low. Owns two raspberry bushes (4 + 10 ripe);
-	// a third raspberry bush belongs to someone else and must be excluded.
-	subj := &sim.ActorSnapshot{Inventory: map[sim.ItemKind]int{"raspberries": 2}, RestockPolicy: foragePolicy("raspberries", 10)}
+	// a third raspberry bush belongs to someone else and must be excluded. She
+	// REMEMBERS all three (incl. the other's, e.g. gathered there once), so the
+	// exclusion is the ownership liveness gate inside the remembered scan, not
+	// just an absence-from-memory.
+	subj := &sim.ActorSnapshot{Inventory: map[sim.ItemKind]int{"raspberries": 2}, RestockPolicy: foragePolicy("raspberries", 10),
+		KnownPlaces: remembersGather("raspberries", "bushA", "bushB", "bushC")}
 	snap := &sim.Snapshot{
 		Actors: map[sim.ActorID]*sim.ActorSnapshot{"prudence": subj},
 		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
@@ -117,7 +137,8 @@ func TestBuildForage_LowStock_NoOwnedBushes_Nil(t *testing.T) {
 func TestBuildForage_NoneRipe_NoMoveHandle(t *testing.T) {
 	// Owns bushes but all picked clean (0 ripe): still surface the section (she
 	// knows it's low + she has a farm) but with no move handle.
-	subj := &sim.ActorSnapshot{Inventory: map[sim.ItemKind]int{"raspberries": 0}, RestockPolicy: foragePolicy("raspberries", 10)}
+	subj := &sim.ActorSnapshot{Inventory: map[sim.ItemKind]int{"raspberries": 0}, RestockPolicy: foragePolicy("raspberries", 10),
+		KnownPlaces: remembersGather("raspberries", "bushA")}
 	snap := &sim.Snapshot{
 		Actors: map[sim.ActorID]*sim.ActorSnapshot{"prudence": subj},
 		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
@@ -165,7 +186,8 @@ func TestRenderForage_Nil_NoOutput(t *testing.T) {
 func TestBuildForage_MoveHandleTieLowestID(t *testing.T) {
 	// Two owned bushes with equal positive stock: the move handle must be the
 	// lower object id deterministically, regardless of map iteration order.
-	subj := &sim.ActorSnapshot{Inventory: map[sim.ItemKind]int{"raspberries": 0}, RestockPolicy: foragePolicy("raspberries", 10)}
+	subj := &sim.ActorSnapshot{Inventory: map[sim.ItemKind]int{"raspberries": 0}, RestockPolicy: foragePolicy("raspberries", 10),
+		KnownPlaces: remembersGather("raspberries", "bushA", "bushB")}
 	snap := &sim.Snapshot{
 		Actors: map[sim.ActorID]*sim.ActorSnapshot{"prudence": subj},
 		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
@@ -180,5 +202,45 @@ func TestBuildForage_MoveHandleTieLowestID(t *testing.T) {
 	}
 	if v.Items[0].MoveHandle != "bushA" {
 		t.Fatalf("MoveHandle on equal stock: got %q want \"bushA\" (lowest id)", v.Items[0].MoveHandle)
+	}
+}
+
+// TestBuildForage_OwnedButNotRemembered_Nil is the no-god-injection guarantee
+// (LLM-79): the section is sourced from EARNED MEMORY, not an ownership world
+// scan. An owner who owns a low-stock-triggering bush but has no memory of it
+// (empty known-places) gets no section — the engine no longer injects the farm.
+func TestBuildForage_OwnedButNotRemembered_Nil(t *testing.T) {
+	subj := &sim.ActorSnapshot{Inventory: map[sim.ItemKind]int{"raspberries": 2}, RestockPolicy: foragePolicy("raspberries", 10)}
+	// No KnownPlaces — she owns the bush but doesn't "remember" it.
+	snap := &sim.Snapshot{
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{"prudence": subj},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"bushA": forageBush("prudence", "raspberries", 10),
+		},
+		RestockReorderPct: 25,
+	}
+	if v := buildForage(snap, "prudence", subj); v != nil {
+		t.Fatalf("an owned-but-unremembered bush must not surface (no god-injection), got %+v", v)
+	}
+}
+
+// TestRenderForage_NoGatherMention_MoveToOnly pins the LLM-59/LLM-79 steering
+// fix: the distant cue steers move_to ONLY and never names the `gather` tool
+// (which isn't callable until the grower is adjacent — the at-bush proximity cue
+// advertises it then). Naming it here drove the weak model to fixate on gather
+// and skip the walk (the prod reject-retry loop).
+func TestRenderForage_NoGatherMention_MoveToOnly(t *testing.T) {
+	v := &ForageView{Items: []ForageItemView{
+		{ItemLabel: "raspberries", CurrentQty: 2, Cap: 10, BushCount: 2, RipeUnits: 14, MoveHandle: "bushB"},
+		{ItemLabel: "blueberries", CurrentQty: 0, Cap: 10, BushCount: 1, RipeUnits: 0, MoveHandle: ""}, // none-ripe arm
+	}}
+	var b strings.Builder
+	renderForage(&b, v)
+	out := b.String()
+	if strings.Contains(out, "gather") {
+		t.Errorf("forage cue must not name the gather tool (LLM-79 steering fix):\n%s", out)
+	}
+	if !strings.Contains(out, `Use move_to with structure_id "bushB" to walk out to them.`) {
+		t.Errorf("forage cue must steer move_to:\n%s", out)
 	}
 }
