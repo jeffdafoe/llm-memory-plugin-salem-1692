@@ -73,7 +73,19 @@ import (
 // has no Structure shell (ZBBS-HOME-359). Structures win on a name collision:
 // the structure resolver runs first, so "the Tavern" still enters rather than
 // stops outside its placement.
-func MoveToStructureByName(actorID ActorID, name string, shownStructures []StructureID, shownObjects []VillageObjectID, now time.Time) Command {
+//
+// PLUS — LLM-78 — the actor's DURABLE known places (LLM-77's experiential
+// world-memory: places it has gathered at, bought from, drank at, or owns) as a
+// FOURTH name-resolution source, threaded in as `remembered` the same way the
+// shown set is. This is the no-omniscience guard widened from "shown this tick"
+// to "shown this tick OR personally experienced" — still not omniscient (a place
+// never visited and not owned stays unresolvable). It is tried ONLY after the
+// live sources (anchors + scene-radius + shown) miss, so a live cue always wins a
+// name it shares with a remembered place: prefer live, fall back to memory. The
+// remembered resolvers enforce liveness against the live world, so a remembered
+// place since removed is skipped and falls through to the steer below — a clean
+// reject, never a walk to a ghost.
+func MoveToStructureByName(actorID ActorID, name string, shownStructures []StructureID, shownObjects []VillageObjectID, remembered RememberedPlaces, now time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
 			a, ok := w.Actors[actorID]
@@ -84,6 +96,9 @@ func MoveToStructureByName(actorID ActorID, name string, shownStructures []Struc
 			if target == "" {
 				return MoveActorResult{}, fmt.Errorf("move_to: structure_name is required")
 			}
+			// Live sources first — anchors + scene-radius + shown-this-tick
+			// (ZBBS-HOME-356/389). A structure wins a name it shares with a bare
+			// object: the structure resolver runs first.
 			if structureID, ok := resolveStructureByPerceivableName(w, a, target, shownStructures); ok {
 				return MoveToStructure(actorID, structureID, now).Fn(w)
 			}
@@ -92,8 +107,18 @@ func MoveToStructureByName(actorID ActorID, name string, shownStructures []Struc
 			if objID, ok := resolveObjectByPerceivableName(w, a, target, shownObjects); ok {
 				return MoveToObject(actorID, objID, now).Fn(w)
 			}
+			// Memory fallback (LLM-78) — a place the actor has personally
+			// experienced but that THIS tick's perception did not surface. Same
+			// structure-before-object precedence; tried only because the live
+			// sources missed, so live always wins a shared name.
+			if structureID, ok := resolveStructureByRememberedName(w, a, target, remembered.StructureIDs); ok {
+				return MoveToStructure(actorID, structureID, now).Fn(w)
+			}
+			if objID, ok := resolveObjectByRememberedName(w, a, target, remembered.ObjectIDs); ok {
+				return MoveToObject(actorID, objID, now).Fn(w)
+			}
 			return MoveActorResult{}, fmt.Errorf(
-				"there is no place called %q that you can see from here — use a structure_id shown in your perception, or name a place closer to you", target)
+				"there is no place called %q that you can see or remember — use a structure_id from your perception, or name a place you were shown this tick or have been to before", target)
 		},
 	}
 }
@@ -251,6 +276,85 @@ func resolveObjectByPerceivableName(w *World, a *Actor, name string, shown []Vil
 	// cue named) — at any distance. ZBBS-HOME-389.
 	for _, id := range shown {
 		consider(id)
+	}
+	if bestDist == -1 {
+		return "", false
+	}
+	return bestID, true
+}
+
+// resolveStructureByRememberedName resolves a place name against the actor's
+// DURABLE known-places set (LLM-78) — a structure it has personally experienced
+// (a vendor it bought from, its own anchors) but that THIS tick's perception did
+// not surface. The memory-backed counterpart to resolveStructureByPerceivableName
+// and the move_to name path's FALLBACK when the live structure resolver misses,
+// so a live cue always wins a name shared with a remembered place (prefer live,
+// fall back to memory). Considers ONLY the threaded remembered ids, at any
+// distance (like an anchor); liveness is enforced here — a remembered structure
+// since removed from the world, or one with no placement to walk to, is skipped
+// (it falls through to a clean steer, never a walk to a ghost). Case-insensitive
+// + article-tolerant (placeNameMatches), nearest-wins on duplicate names
+// (Chebyshev to the actor; ties break by structure_id for determinism, so the
+// result is stable regardless of the remembered slice's order). ok=false when no
+// live remembered structure matches. MUST be called from inside a Command.Fn.
+func resolveStructureByRememberedName(w *World, a *Actor, name string, remembered []StructureID) (StructureID, bool) {
+	bestID := StructureID("")
+	bestDist := -1
+	for _, structureID := range remembered {
+		st := w.Structures[structureID]
+		if st == nil || !placeNameMatches(st.DisplayName, name) {
+			continue
+		}
+		vobj, ok := villageObjectForStructureOnly(w, structureID)
+		if !ok {
+			continue // no placement → can't walk there (and can't measure distance)
+		}
+		dist := a.Pos.Chebyshev(vobj.Pos.Tile())
+		if bestDist == -1 || dist < bestDist || (dist == bestDist && structureID < bestID) {
+			bestID, bestDist = structureID, dist
+		}
+	}
+	if bestDist == -1 {
+		return "", false
+	}
+	return bestID, true
+}
+
+// resolveObjectByRememberedName resolves a place name against the actor's DURABLE
+// known-places set (LLM-78) — a bare placement it has personally experienced (a
+// berry patch it gathered, a well it drank at) that THIS tick's perception did
+// not surface. The object-keyed sibling of resolveStructureByRememberedName and
+// move_to's memory fallthrough when no remembered structure matches. Considers
+// ONLY the threaded remembered ids, at any distance; liveness = the placement
+// still exists (w.VillageObjects), so a remembered source since removed is
+// skipped and the model gets a steer, not a crash.
+//
+// UNLIKE the live resolveObjectByPerceivableName this does NOT gate on
+// objectIsRefreshSource. The live path is scoped to free refresh sources a
+// satiation cue surfaced this tick; the memory path covers ANY personally-
+// experienced placement — a gather patch (which is not a dwell-refresh source at
+// all) included. The affordance that earned the memory is the warrant to walk
+// back, not a this-tick refresh cue; the only liveness question is whether the
+// placement still exists. Structure-backed ids are excluded (they route via the
+// structure path so a shared name never skips the enter-vs-visit derivation),
+// matching the live resolver's invariant. Case-insensitive + article-tolerant,
+// nearest-wins on duplicates (ties break by object id). ok=false when no live
+// remembered object matches. MUST be called from inside a Command.Fn.
+func resolveObjectByRememberedName(w *World, a *Actor, name string, remembered []VillageObjectID) (VillageObjectID, bool) {
+	bestID := VillageObjectID("")
+	bestDist := -1
+	for _, id := range remembered {
+		obj := w.VillageObjects[id]
+		if obj == nil || !placeNameMatches(obj.DisplayName, name) {
+			continue
+		}
+		if _, isStructure := w.Structures[StructureID(id)]; isStructure {
+			continue
+		}
+		dist := a.Pos.Chebyshev(obj.Pos.Tile())
+		if bestDist == -1 || dist < bestDist || (dist == bestDist && id < bestID) {
+			bestID, bestDist = id, dist
+		}
 	}
 	if bestDist == -1 {
 		return "", false

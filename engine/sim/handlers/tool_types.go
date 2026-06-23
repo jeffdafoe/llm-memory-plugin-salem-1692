@@ -152,6 +152,16 @@ type HandlerInput struct {
 	PerceivedStructureIDs []sim.StructureID
 	PerceivedObjectIDs    []sim.VillageObjectID
 
+	// RememberedPlaces is the actor's DURABLE known-places set (LLM-77) split by
+	// kind — the places it has personally experienced across its life, threaded as
+	// the move_to name-resolver's memory-backed FALLBACK source (LLM-78). Distinct
+	// from Perceived* above (what THIS tick showed): the resolver tries Perceived*
+	// first and falls back to these, so a live cue wins a name shared with a
+	// remembered place. Empty when the actor knows no places. Threaded from the
+	// harness off the published snapshot, like Perceived*; the move_to Command
+	// consults it on the world goroutine (and re-validates liveness there).
+	RememberedPlaces sim.RememberedPlaces
+
 	// HasNewNews is the turn-state gate's new-news signal (ZBBS-WORK-370): true
 	// when the tick's consumed warrant batch carries any fresh stimulus (a Force
 	// warrant or any high-information kind), false when it is only low-info

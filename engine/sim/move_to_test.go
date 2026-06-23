@@ -153,7 +153,7 @@ func TestMoveToStructureByName_RejectsUnresolvableName(t *testing.T) {
 	w, cancel, _ := buildMoveTestWorld(t)
 	defer cancel()
 
-	_, err := w.Send(sim.MoveToStructureByName("walker", "The Nonexistent Place", nil, nil, time.Now().UTC()))
+	_, err := w.Send(sim.MoveToStructureByName("walker", "The Nonexistent Place", nil, nil, sim.RememberedPlaces{}, time.Now().UTC()))
 	if err == nil {
 		t.Fatal("want error for an unresolvable place name, got nil")
 	}
