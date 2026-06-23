@@ -7,52 +7,32 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
 
-// llm67_test.go — LLM-67. An actor on a take_break (State == StateResting) is
-// already recovering tiredness, so perception must not keep surfacing tiredness
-// as something to address: that cue is the entire stimulus for the re-take_break
-// loop. Two seams are gated: the "Address now" need line (renderFeltNeeds) and
-// the "## How you can rest" menu (buildRecoveryOptions). Need-aware throughout —
-// hunger/thirst stay actionable (a break doesn't feed or water you, and LLM-62
-// lets them interrupt a break).
+// llm67_test.go — LLM-67 + LLM-85. Tiredness must never be surfaced as an
+// "address this" imperative — that cue was the entire stimulus for the
+// re-take_break loop. LLM-67 suppressed the imperative only while resting;
+// LLM-85 moved tiredness out of renderFeltNeeds entirely onto its own
+// descriptive line (renderTiredness, covered in llm85_test.go), so the
+// imperative is gone at every tier, resting or not. renderFeltNeeds now handles
+// hunger/thirst only; those stay actionable (a break doesn't feed or water you,
+// and LLM-62 lets them interrupt a break). The "## How you can rest" menu
+// (buildRecoveryOptions) remains the gated, actionable rest surface.
 
-func TestRenderFeltNeeds_OnBreakSuppressesTiredness(t *testing.T) {
-	th := sim.NeedThresholds{} // Get falls back to registry defaults (tiredness red = 20)
+func TestRenderFeltNeeds_ExcludesTiredness(t *testing.T) {
+	th := sim.NeedThresholds{} // Get falls back to registry defaults
 
-	t.Run("resting, tiredness only — no Address now, still felt", func(t *testing.T) {
-		line := renderFeltNeeds(map[sim.NeedKey]int{"tiredness": 24}, th, true)
-		if line == "" {
-			t.Fatal("want a felt line, got empty")
-		}
-		if strings.Contains(line, "Address now") {
-			t.Errorf("on-break tiredness must not be an Address-now imperative: %q", line)
-		}
-		if !strings.HasPrefix(line, "You feel") {
-			t.Errorf("tiredness must stay legible as a felt state (mark-don't-hide): %q", line)
+	t.Run("tiredness only — renderFeltNeeds surfaces nothing", func(t *testing.T) {
+		if line := renderFeltNeeds(map[sim.NeedKey]int{"tiredness": 24}, th); line != "" {
+			t.Errorf("tiredness must not appear in the hunger/thirst felt line: %q", line)
 		}
 	})
 
-	t.Run("resting, tiredness + hunger — hunger stays actionable, tiredness does not", func(t *testing.T) {
-		line := renderFeltNeeds(map[sim.NeedKey]int{"hunger": 24, "tiredness": 24}, th, true)
+	t.Run("tiredness + hunger — only hunger surfaces, still actionable", func(t *testing.T) {
+		line := renderFeltNeeds(map[sim.NeedKey]int{"hunger": 24, "tiredness": 24}, th)
 		if !strings.Contains(line, "Address now: hunger.") {
-			t.Errorf("hunger must stay actionable on a break (it doesn't feed you): %q", line)
+			t.Errorf("hunger must stay actionable: %q", line)
 		}
-		// `pressing` is keyed by the need name; tiredness must be absent from it.
-		// (The felt clause uses adjectives like "weary"/"exhausted", not the key.)
-		if strings.Contains(line, "tiredness") {
-			t.Errorf("tiredness key must not appear in the Address-now list while resting: %q", line)
-		}
-		// Tiredness stays VISIBLE in the felt clause (mark-don't-hide) — resting
-		// suppresses the imperative, not the actor's awareness of the need. With
-		// both hunger and tiredness felt, the "You feel …" clause lists two items.
-		if i := strings.Index(line, "You feel "); i < 0 || !strings.Contains(line[i:], ", ") {
-			t.Errorf("tiredness should remain visible in the felt clause alongside hunger: %q", line)
-		}
-	})
-
-	t.Run("not resting — tiredness is actionable (baseline unchanged)", func(t *testing.T) {
-		line := renderFeltNeeds(map[sim.NeedKey]int{"tiredness": 24}, th, false)
-		if !strings.Contains(line, "Address now: tiredness.") {
-			t.Errorf("off-break tiredness must still surface as Address now: %q", line)
+		if strings.Contains(line, "tiredness") || strings.Contains(line, "weary") || strings.Contains(line, "exhausted") {
+			t.Errorf("no tiredness vocabulary belongs in renderFeltNeeds: %q", line)
 		}
 	})
 }

@@ -29,11 +29,13 @@ const (
 	// least this far below red. Mirrors the legacy needsHysteresisMargin.
 	NeedsHysteresisMargin = 2
 
-	// Default red thresholds when settings rows are missing. Match the
-	// values seeded by ZBBS-083.
+	// Default red thresholds when settings rows are missing. Hunger/thirst match
+	// the values seeded by ZBBS-083; tiredness's "weary" line was pulled down to
+	// 16 (LLM-85) so the mild "a little tired" band doesn't cover most of a long
+	// working day (at NeedsTickAmount=1 the value tracks hours awake).
 	DefaultHungerRedThreshold    = 18
 	DefaultThirstRedThreshold    = 12
-	DefaultTirednessRedThreshold = 20
+	DefaultTirednessRedThreshold = 16
 
 	// DefaultTirednessCriticalThresholdPct is the % of NeedMax at which
 	// recovery-options perception lifts the on-shift gate that hides
@@ -61,8 +63,10 @@ const (
 	// tiredness_recovery_per_minute_x100 setting.
 	DefaultTirednessRecoveryPerMinuteX100 = 4
 
-	// needSilentFloor — values below this are not surfaced in perception.
-	needSilentFloor = 8
+	// needSilentFloor — values below this are not surfaced in perception. Raised
+	// to 10 (LLM-85): on the 0–24 scale a need at 8–9 (~a third) isn't worth a
+	// cue, and surfacing mild tiredness that low drove over-eager rest.
+	needSilentFloor = 10
 )
 
 // Need describes one graduated quantity an actor carries. The registry

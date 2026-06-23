@@ -14,9 +14,9 @@ import (
 //
 // Reuses dutySnap/dutyAnchors from duty_steer_test.go (same package). The
 // tiredness need key uses the canonical "tiredness" string; with empty
-// NeedThresholds, Get falls back to the registry default (20), so 24 is red and
-// 10 is not. recoveryTirednessNeed is the production tiredness key (shared with
-// recovery_options.go in this package).
+// NeedThresholds, Get falls back to the registry default (16, LLM-85), so 24 is
+// red-or-worse and 10 is not. recoveryTirednessNeed is the production tiredness
+// key (shared with recovery_options.go in this package).
 
 // home362OnShiftAwayActor is an unscheduled NPC standing away from its post;
 // with the dawn/dusk window 06:00–18:00 and a 10:00 clock it is on-shift, so it
@@ -49,7 +49,7 @@ func TestBuildDutySteer_RedNeed_Suppressed(t *testing.T) {
 // offer suppressors and the go-home arm are covered by TestBuildDutySteer_OptionBSuppression.
 func TestBuildDutySteer_MildNeed_DoesNotSuppressToWork(t *testing.T) {
 	snap := dutySnap(600, 360, 1080) // 10:00, on shift via dawn/dusk window
-	a := home362OnShiftAwayActor(10) // mild tiredness ([8,20)), not red
+	a := home362OnShiftAwayActor(10) // mild tiredness ([10,16), LLM-85), not red
 	steer := dutySteer(snap, a, dutyAnchors)
 	if steer == nil || !steer.ToWork {
 		t.Fatalf("want a to-work steer — a mild need must NOT suppress it (HOME-463), got %+v", steer)

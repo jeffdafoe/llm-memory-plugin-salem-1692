@@ -489,9 +489,19 @@ func deepFatigueDominatesNeeds(needs map[sim.NeedKey]int, thresholds sim.NeedThr
 
 func renderActor(b *strings.Builder, a ActorView) {
 	b.WriteString("## You\n")
-	if line := renderFeltNeeds(a.Needs, a.NeedThresholds, a.State == sim.StateResting); line != "" {
+	if line := renderFeltNeeds(a.Needs, a.NeedThresholds); line != "" {
 		b.WriteString(line)
 		b.WriteString("\n")
+	}
+	// Tiredness renders on its own situated line (LLM-85), separate from the
+	// hunger/thirst felt line above: a descriptive tier phrase anchored to hours
+	// awake, with NO "address this" imperative — the actionable rest affordances
+	// live in the "## How you can rest" menu (buildRecoveryOptions).
+	if v, ok := a.Needs[recoveryTirednessNeed]; ok {
+		if line := renderTiredness(v, a.NeedThresholds.Get(recoveryTirednessNeed), a.HoursAwake); line != "" {
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
 	}
 	fmt.Fprintf(b, "Coins in your purse: %d.\n", a.Coins)
 	// Standing inventory readout (ZBBS-HOME-361): neutral statement of what the
@@ -539,19 +549,20 @@ func renderActor(b *strings.Builder, a ActorView) {
 	b.WriteString("\n")
 }
 
-// renderFeltNeeds turns the raw need values into felt language in the fixed
-// hunger→thirst→tiredness order. Needs below the awareness floor stay silent.
+// renderFeltNeeds turns the hunger/thirst need values into felt language in the
+// fixed hunger→thirst order. Needs below the awareness floor stay silent.
 // Red/peak needs lead with an "Address now:" imperative — v1's 2026-05-02 fix
 // that made NPCs act on distress instead of reading a flat integer they
 // couldn't calibrate (the original "needs: hunger=24" dump gave the model no
-// sense that 24 is peak starvation). Returns "" when nothing is surfaced.
-// ZBBS-HOME-339.
-func renderFeltNeeds(needs map[sim.NeedKey]int, thresholds sim.NeedThresholds, resting bool) string {
+// sense that 24 is peak starvation). Tiredness is intentionally NOT handled here
+// (LLM-85) — it renders as its own situated, descriptive line, renderTiredness.
+// Returns "" when nothing is surfaced. ZBBS-HOME-339.
+func renderFeltNeeds(needs map[sim.NeedKey]int, thresholds sim.NeedThresholds) string {
 	if len(needs) == 0 {
 		return ""
 	}
 	var felt, pressing []string
-	for _, key := range []sim.NeedKey{"hunger", "thirst", "tiredness"} {
+	for _, key := range []sim.NeedKey{"hunger", "thirst"} {
 		value, ok := needs[key]
 		if !ok {
 			continue
@@ -567,17 +578,6 @@ func renderFeltNeeds(needs map[sim.NeedKey]int, thresholds sim.NeedThresholds, r
 		}
 		felt = append(felt, label)
 		if tier >= sim.NeedRed {
-			// LLM-67: while on a take_break (StateResting) tiredness is already
-			// being recovered, so don't surface it as an "Address now" imperative —
-			// that cue is the entire stimulus for the re-take_break loop (the actor
-			// reads an unmet tiredness need and reaches for the tool it is already
-			// using). It stays in the felt list ("you feel weary") — mark-don't-hide,
-			// and the "You are taking a rest." state line conveys the recovery.
-			// Hunger/thirst stay actionable: a break doesn't feed or water you, and
-			// LLM-62 deliberately lets them interrupt a break.
-			if resting && key == recoveryTirednessNeed {
-				continue
-			}
 			pressing = append(pressing, string(key))
 		}
 	}
@@ -589,6 +589,43 @@ func renderFeltNeeds(needs map[sim.NeedKey]int, thresholds sim.NeedThresholds, r
 			strings.Join(pressing, ", "), strings.Join(felt, ", "))
 	}
 	return fmt.Sprintf("You feel %s.", strings.Join(felt, ", "))
+}
+
+// renderTiredness renders the actor's tiredness as its own situated, descriptive
+// line: the qualitative tier (a little tired / weary / exhausted) anchored to how
+// long the actor has been awake, so the model weighs rest against real elapsed
+// time instead of over-reacting to a bare adjective (LLM-85 — a merchant closed
+// his shop 4h on a mild "tired"). It deliberately carries NO "address this"
+// imperative at any tier: the concrete rest affordances live in the "## How you
+// can rest" menu (buildRecoveryOptions), and dropping the imperative everywhere
+// completes LLM-67 (the felt imperative was the stimulus for the re-take_break
+// loop). hoursAwake is nil for an unscheduled NPC or a clock-less snapshot — then
+// the awake-hours tail is dropped and only the tier phrase renders. Returns ""
+// below the awareness floor.
+func renderTiredness(value, threshold int, hoursAwake *int) string {
+	n, ok := sim.FindNeed(recoveryTirednessNeed)
+	if !ok {
+		return ""
+	}
+	var lead string
+	switch n.Tier(value, threshold) {
+	case sim.NeedMild:
+		lead = "You're starting to feel a little tired"
+	case sim.NeedRed:
+		lead = "You're weary"
+	case sim.NeedPeak:
+		lead = "You're exhausted"
+	default:
+		return "" // NeedSilent — below the awareness floor
+	}
+	if hoursAwake != nil && *hoursAwake >= 1 {
+		unit := "hours"
+		if *hoursAwake == 1 {
+			unit = "hour"
+		}
+		return fmt.Sprintf("%s — you've been awake for %d %s.", lead, *hoursAwake, unit)
+	}
+	return lead + "."
 }
 
 // renderFeltState renders a macro-state as a felt line, or "" for states that

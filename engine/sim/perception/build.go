@@ -432,7 +432,23 @@ func buildActorView(snap *sim.Snapshot, a *sim.ActorSnapshot) ActorView {
 		InFlightMove:           buildInFlightMove(snap, a),
 		InFlightSourceActivity: buildInFlightSourceActivity(snap, a),
 		Inventory:              buildInventoryView(snap, a),
+		HoursAwake:             computeHoursAwake(snap.LocalMinuteOfDay, a.ScheduleStartMin),
 	}
+}
+
+// computeHoursAwake returns whole hours since the actor woke at shift-start —
+// the snapshot's local minute-of-day minus the actor's ScheduleStartMin, taken
+// modulo a day so a wrap-midnight shift (e.g. start 16:00, now 02:00) still
+// reads as elapsed-since-wake. Returns nil when either input is absent (an
+// unscheduled NPC, or a hand-built snapshot before the clock is established),
+// which renderTiredness reads as "drop the awake-hours tail". LLM-85.
+func computeHoursAwake(nowMin, startMin *int) *int {
+	if nowMin == nil || startMin == nil {
+		return nil
+	}
+	minutesAwake := ((*nowMin-*startMin)%1440 + 1440) % 1440
+	hours := minutesAwake / 60
+	return &hours
 }
 
 // buildInFlightSourceActivity projects the subject's in-flight SourceActivity
