@@ -83,15 +83,21 @@ type RestockItemView struct {
 	// headroom adds no line.
 	AffordableQty int
 
-	// RecentSalesUnits is how many units of this item the reseller has SOLD within
-	// the trailing restockSalesWindow (Qty×Consumers per accepted sale, read from
-	// the seller view of the price book). 0 when no sale is on record in the window.
-	// LLM-63: render surfaces it as the empirical demand signal ("you've sold about
-	// N over the past week") the reseller sizes its restock against — replacing the
-	// cap/fill-to-cap anchor that biased the weak model into filling straight to cap
-	// and draining its working capital. Silent at 0 so a new or dormant good asserts
-	// no rate rather than a misleading zero.
+	// RecentSalesUnits / RecentSalesCoins / RecentBuyCost are this item's trailing-
+	// restockSalesWindow economics, read off the price book (LLM-63):
+	//   - RecentSalesUnits: units SOLD (Qty×Consumers per accepted sale, seller view).
+	//   - RecentSalesCoins: coins taken IN on those sales (seller view, sum of amount).
+	//   - RecentBuyCost: coins the reseller PAID restocking this item this window
+	//     (buyer view, sum of amount across every seller it bought from).
+	// Render surfaces them as the demand + weekly-P&L signal the reseller sizes its
+	// restock against ("you've sold about N over the past week, at a cost of X coins
+	// and sales of Y coins"), in place of the fill-to-cap PRICE anchor that biased the
+	// weak model into a copy-paste max offer and drained its working capital. The
+	// whole sentence is silent when RecentSalesUnits is 0, so a new or dormant good
+	// asserts no rate rather than a misleading zero.
 	RecentSalesUnits int
+	RecentSalesCoins int
+	RecentBuyCost    int
 
 	// kind is the final sort tie-break so two item kinds sharing a display label
 	// order deterministically (BuyEntries order is stable, but the sort makes the
@@ -150,9 +156,11 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 		if qty, ok := buyerLastPaidAffordableQty(snap, actorID, e.Item, actorSnap.Coins); ok {
 			affordable = qty
 		}
-		// Recent sell-through is the empirical demand signal the reseller sizes its
-		// restock against (LLM-63). 0 (no sale in the window) leaves the line silent.
-		recentSold := sellerRecentSalesUnits(snap, actorID, e.Item, restockSalesWindow)
+		// Recent demand + weekly P&L the reseller sizes its restock against (LLM-63):
+		// units sold + coins taken in (seller view), coins paid restocking (buyer
+		// view). 0 units sold leaves the whole sentence silent at render.
+		salesUnits, salesCoins := sellerRecentSales(snap, actorID, e.Item, restockSalesWindow)
+		buyCost := buyerRecentSpend(snap, actorID, e.Item, restockSalesWindow)
 		coName, coID := coPresentSellerForItem(snap, actorID, actorSnap, e.Item)
 		items = append(items, RestockItemView{
 			ItemLabel:                     itemDisplayLabel(snap, e.Item),
@@ -162,7 +170,9 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 			CoPresentSeller:               coName,
 			PendingOfferToCoPresentSeller: coID != "" && hasPendingOfferTo(snap, actorID, coID, e.Item),
 			AffordableQty:                 affordable,
-			RecentSalesUnits:              recentSold,
+			RecentSalesUnits:              salesUnits,
+			RecentSalesCoins:              salesCoins,
+			RecentBuyCost:                 buyCost,
 			kind:                          e.Item,
 		})
 	}
@@ -267,31 +277,64 @@ func buyerLastPaidAffordableQty(snap *sim.Snapshot, buyerID sim.ActorID, item si
 	return int(affordable), true
 }
 
-// sellerRecentSalesUnits totals the units the actor has SOLD of `item` within the
-// trailing `window`, read from the seller view of the price book (snap.PriceBook,
-// keyed by (seller, item)). Units are Qty×Consumers per accepted sale — the
-// bundle's true unit count, the same measure observationUnits gives the buyer side
-// — summed over observations no older than snap.PublishedAt − window. Returns 0
-// when no sale is on record in the window, so a new or dormant good asserts no rate
-// rather than a misleading zero. This is the empirical demand signal the restock
-// cue surfaces in place of the cap anchor (LLM-63). Per-seller by construction: the
-// ring is keyed by seller, so this reads only this actor's own sales. int64 guards
-// the sum; the result is clamped into int range.
-func sellerRecentSalesUnits(snap *sim.Snapshot, sellerID sim.ActorID, item sim.ItemKind, window time.Duration) int {
+// sellerRecentSales totals what the actor has SOLD of `item` within the trailing
+// `window`, read from the seller view of the price book (snap.PriceBook, keyed by
+// (seller, item)): units = Qty×Consumers per accepted sale (the bundle's true unit
+// count, as observationUnits gives the buyer side), coins = the amounts taken in.
+// Summed over observations no older than snap.PublishedAt − window; both 0 when no
+// sale is on record in the window. The empirical demand + revenue half of the
+// restock cue's weekly P&L (LLM-63). Per-seller by construction — the ring is keyed
+// by seller, so this reads only this actor's own sales. int64 guards the sums; the
+// results clamp into int range.
+func sellerRecentSales(snap *sim.Snapshot, sellerID sim.ActorID, item sim.ItemKind, window time.Duration) (units int, coins int) {
 	if snap == nil || snap.PriceBook == nil {
-		return 0
+		return 0, 0
 	}
 	buf, ok := snap.PriceBook[sim.PriceBookKey{SellerID: sellerID, Item: item}]
 	if !ok || buf == nil || buf.Len() == 0 {
-		return 0
+		return 0, 0
 	}
 	cutoff := snap.PublishedAt.Add(-window)
-	var total int64
+	var u, c int64
 	for _, obs := range buf.Snapshot() {
 		if obs.At.Before(cutoff) {
 			continue
 		}
-		total += observationUnits(obs)
+		u += observationUnits(obs)
+		c += int64(obs.Amount)
+	}
+	if u > int64(math.MaxInt32) {
+		u = int64(math.MaxInt32)
+	}
+	if c > int64(math.MaxInt32) {
+		c = int64(math.MaxInt32)
+	}
+	return int(u), int(c)
+}
+
+// buyerRecentSpend totals the coins the actor has PAID restocking `item` within the
+// trailing `window` — the cost half of the restock cue's weekly P&L (LLM-63). Price
+// knowledge is per-buyer, so this scans every (seller, item) ring for observations
+// the actor BOUGHT (obs.BuyerID == buyerID) no older than snap.PublishedAt − window
+// and sums the amounts — its purchases across all the sellers it restocked from. 0
+// when it has bought none in the window. int64 guards the sum; the result clamps
+// into int range.
+func buyerRecentSpend(snap *sim.Snapshot, buyerID sim.ActorID, item sim.ItemKind, window time.Duration) int {
+	if snap == nil || snap.PriceBook == nil {
+		return 0
+	}
+	cutoff := snap.PublishedAt.Add(-window)
+	var total int64
+	for key, buf := range snap.PriceBook {
+		if key.Item != item || buf == nil || buf.Len() == 0 {
+			continue
+		}
+		for _, obs := range buf.Snapshot() {
+			if obs.BuyerID != buyerID || obs.At.Before(cutoff) {
+				continue
+			}
+			total += int64(obs.Amount)
+		}
 	}
 	if total > int64(math.MaxInt32) {
 		total = int64(math.MaxInt32)
@@ -414,12 +457,13 @@ func coPresentSellerForItem(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *
 const restockSalesWindow = 7 * 24 * time.Hour
 
 // renderRestocking writes the "## Restocking" section. Content-gated: a
-// nil/empty view writes nothing. Each low item leads with its on-hand count, then —
-// when on record — the recent sell-through line (LLM-63: the empirical demand
-// signal the reseller sizes the buy against, in place of the cap/fill-to-cap anchor
-// that biased the weak model into filling straight to cap and draining its working
-// capital). The cap is deliberately NOT surfaced; it still bounds the buy at the
-// command layer. Then EITHER a "buy it here now" imperative when a seller of that
+// nil/empty view writes nothing. Each low item leads with on-hand + the headroom as
+// a capacity ceiling, then — when a sale is on record — the week's demand and coin
+// in/out (LLM-63: the empirical signal the reseller sizes the buy against). What was
+// removed is the fill-to-cap PRICE — the concrete fill total that anchored the weak
+// model into a copy-paste max offer and drained its working capital; the cap is
+// shown as a ceiling, not a target, and is advisory (not enforced — coins are the
+// only hard limit). Then EITHER a "buy it here now" imperative when a seller of that
 // item shares the reseller's huddle (CoPresentSeller set), OR the generic list of
 // where to walk to buy (structure_id for move_to) — pay now if a seller is here,
 // else walk then pay, without ordering movement first (ZBBS-HOME-388). The cue
@@ -459,17 +503,22 @@ func renderRestocking(b *strings.Builder, v *RestockingView) {
 		if headroom < 0 {
 			headroom = 0
 		}
-		// Lead with on-hand only — the cap/headroom is deliberately NOT surfaced
-		// (LLM-63): "room for N more" + a fill-to-cap price anchored the weak model
-		// to fill straight to cap and drain its working capital. The cap still bounds
-		// the buy at the command layer; headroom remains the co-present imperative's
-		// "qty up to N" ceiling below.
-		fmt.Fprintf(b, "- %s: %d on hand.", sanitizeInline(it.ItemLabel), it.CurrentQty)
-		// LLM-63: recent sell-through is the demand fact the reseller sizes its
-		// restock against, in place of the removed cap anchor. Silent at 0 (no sale
-		// on record in the window) so a new or dormant good asserts no rate.
+		// Lead with on-hand + the headroom as a capacity ceiling ("at the most"),
+		// then the week's demand + coin in/out (LLM-63). What was removed is the
+		// fill-to-cap PRICE — the concrete "fill is N coins" total that anchored the
+		// weak model into a copy-paste max offer and drained its working capital. The
+		// cap itself is advisory: it is NOT enforced on a buy (MaxPayWithItemQty is
+		// unbounded), so coins are the only hard limit — the ceiling just tells the
+		// reseller how much room it has, and the co-present imperative's "qty up to N"
+		// restates it at the buy moment.
+		fmt.Fprintf(b, "- You have %d %s on hand and room for %d more at the most.",
+			it.CurrentQty, sanitizeInline(it.ItemLabel), headroom)
+		// The week's demand + P&L the reseller sizes its restock against: units sold,
+		// coins paid restocking, coins taken in selling. Silent at 0 units sold (no
+		// sale on record in the window) so a new or dormant good asserts no rate.
 		if it.RecentSalesUnits > 0 {
-			fmt.Fprintf(b, " You've sold about %d over the past week.", it.RecentSalesUnits)
+			fmt.Fprintf(b, " You've sold about %d over the past week, at a cost of %d coins and sales of %d coins.",
+				it.RecentSalesUnits, it.RecentBuyCost, it.RecentSalesCoins)
 		}
 		// ZBBS-HOME-459: the purse covers fewer units than the cap leaves room for,
 		// so coins are the binding limit — state it as a fact so the model sizes the

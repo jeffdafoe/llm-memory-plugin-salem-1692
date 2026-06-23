@@ -577,16 +577,16 @@ func TestRenderRestocking_Shape(t *testing.T) {
 	if !strings.Contains(out, "## Restocking") {
 		t.Error("missing section header")
 	}
-	if !strings.Contains(out, "ale: 2 on hand.") {
-		t.Errorf("missing ale on-hand line:\n%s", out)
+	if !strings.Contains(out, "You have 2 ale on hand and room for 18 more at the most.") {
+		t.Errorf("missing ale on-hand + capacity line:\n%s", out)
 	}
-	if strings.Contains(out, "cap (room for") {
-		t.Errorf("LLM-63: cap/headroom must not be surfaced in the lead:\n%s", out)
+	if strings.Contains(out, "Filling to cap") || strings.Contains(out, "of 20 cap") {
+		t.Errorf("LLM-63: the fill-to-cap price anchor must be gone:\n%s", out)
 	}
 	if !strings.Contains(out, "buy from The Brewery (structure_id: brewery), ~2 coins") {
 		t.Errorf("missing vendor line:\n%s", out)
 	}
-	if !strings.Contains(out, "salt: 0 on hand.") {
+	if !strings.Contains(out, "You have 0 salt on hand and room for 10 more at the most.") {
 		t.Errorf("missing salt line:\n%s", out)
 	}
 	if !strings.Contains(out, "No supplier nearby is currently holding stock.") {
@@ -775,24 +775,31 @@ func TestRenderRestocking_HeaderNeutral(t *testing.T) {
 
 // --- LLM-63: recent sell-through demand signal -----------------------------
 
-// TestBuildRestocking_RecentSalesUnits: the reseller's own recent sales of the low
-// item (the seller view of the price book) are summed as Qty×Consumers over the
-// trailing window into RecentSalesUnits. Sales older than the window are excluded.
+// TestBuildRestocking_RecentSalesUnits: the reseller's weekly economics for the low
+// item — units sold + coins taken in (seller view), and coins paid restocking
+// (buyer view) — are summed over the trailing window, with stale observations
+// excluded from all three.
 func TestBuildRestocking_RecentSalesUnits(t *testing.T) {
 	now := time.Date(2026, 6, 23, 12, 0, 0, 0, time.UTC)
 	subj := &sim.ActorSnapshot{Inventory: map[sim.ItemKind]int{"ale": 2}, RestockPolicy: buyPolicy("ale", 20)}
-	// merchant-as-SELLER ring for ale: a 2×3 = 6-unit sale and a solo 4-unit sale in
-	// window, plus a stale 99-unit sale 10 days back (outside the 7-day window).
+	// merchant-as-SELLER ring for ale: a 2×3 = 6-unit sale (12 coins) and a solo
+	// 4-unit sale (8 coins) in window, plus a stale 99-unit sale 10 days back.
 	pb := sim.NewRingBuffer[sim.PriceObservation](20)
 	pb.Push(sim.PriceObservation{BuyerID: "old", Amount: 99, Qty: 99, Consumers: 1, At: now.Add(-10 * 24 * time.Hour)})
 	pb.Push(sim.PriceObservation{BuyerID: "b1", Amount: 12, Qty: 2, Consumers: 3, At: now.Add(-2 * 24 * time.Hour)})
 	pb.Push(sim.PriceObservation{BuyerID: "b2", Amount: 8, Qty: 4, Consumers: 1, At: now.Add(-1 * time.Hour)})
+	// merchant-as-BUYER ring (a supplier it restocks ale from): one in-window
+	// purchase (7 coins) and one stale purchase (50 coins, excluded from the cost).
+	buyPB := sim.NewRingBuffer[sim.PriceObservation](20)
+	buyPB.Push(sim.PriceObservation{BuyerID: "merchant", Amount: 50, Qty: 6, Consumers: 1, At: now.Add(-9 * 24 * time.Hour)})
+	buyPB.Push(sim.PriceObservation{BuyerID: "merchant", Amount: 7, Qty: 1, Consumers: 1, At: now.Add(-3 * time.Hour)})
 	snap := &sim.Snapshot{
 		PublishedAt: now,
 		Actors:      map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj},
 		ItemKinds:   restockCatalog(),
 		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
 			{SellerID: "merchant", Item: "ale"}: pb,
+			{SellerID: "supplier", Item: "ale"}: buyPB,
 		},
 		RestockReorderPct: 25,
 	}
@@ -803,6 +810,12 @@ func TestBuildRestocking_RecentSalesUnits(t *testing.T) {
 	// 6 (2×3) + 4 (4×1) = 10 in-window units; the 10-day-old 99 is excluded.
 	if got := v.Items[0].RecentSalesUnits; got != 10 {
 		t.Errorf("RecentSalesUnits = %d, want 10 (6+4 in-window, stale 99 excluded)", got)
+	}
+	if got := v.Items[0].RecentSalesCoins; got != 20 {
+		t.Errorf("RecentSalesCoins = %d, want 20 (12+8 in-window sale amounts)", got)
+	}
+	if got := v.Items[0].RecentBuyCost; got != 7 {
+		t.Errorf("RecentBuyCost = %d, want 7 (in-window purchase only; stale 50 excluded)", got)
 	}
 }
 
@@ -838,21 +851,23 @@ func TestBuildRestocking_RecentSalesUnits_NoSellerHistory(t *testing.T) {
 func TestRenderRestocking_SellThroughLine(t *testing.T) {
 	var sold strings.Builder
 	renderRestocking(&sold, &RestockingView{Items: []RestockItemView{
-		{ItemLabel: "milk", CurrentQty: 4, Cap: 20, RecentSalesUnits: 18},
+		{ItemLabel: "milk", CurrentQty: 4, Cap: 20, RecentSalesUnits: 18, RecentBuyCost: 130, RecentSalesCoins: 150},
 	}})
 	out := sold.String()
-	if !strings.Contains(out, "milk: 4 on hand.") {
-		t.Errorf("missing on-hand lead:\n%s", out)
+	if !strings.Contains(out, "You have 4 milk on hand and room for 16 more at the most.") {
+		t.Errorf("missing on-hand + capacity lead:\n%s", out)
 	}
-	if !strings.Contains(out, "You've sold about 18 over the past week.") {
-		t.Errorf("missing sell-through demand line:\n%s", out)
+	if !strings.Contains(out, "You've sold about 18 over the past week, at a cost of 130 coins and sales of 150 coins.") {
+		t.Errorf("missing sell-through + P&L line:\n%s", out)
 	}
 
+	// Zero units sold suppresses the whole demand/P&L sentence (no rate to assert),
+	// even if a buy cost happens to be on record.
 	var silent strings.Builder
 	renderRestocking(&silent, &RestockingView{Items: []RestockItemView{
-		{ItemLabel: "milk", CurrentQty: 4, Cap: 20, RecentSalesUnits: 0},
+		{ItemLabel: "milk", CurrentQty: 4, Cap: 20, RecentSalesUnits: 0, RecentBuyCost: 5, RecentSalesCoins: 0},
 	}})
 	if out := silent.String(); strings.Contains(out, "over the past week") {
-		t.Errorf("zero recent sales should render no sell-through line:\n%s", out)
+		t.Errorf("zero recent sales should render no sell-through/P&L line:\n%s", out)
 	}
 }

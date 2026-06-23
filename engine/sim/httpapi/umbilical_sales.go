@@ -28,13 +28,17 @@ import (
 // SellThroughRowDTO is one (seller, item) bucket's in-window aggregate. UnitsSold
 // is Qty×Consumers summed over the window — the bundle's true unit count (a
 // group order moves Qty per consumer), matching the price-book doc's "Total units
-// sold = Qty * Consumers" and perception.observationUnits.
+// sold = Qty * Consumers" and perception.observationUnits. Coins is the sales
+// revenue (coins taken in); BuyCost is the same actor's spend BUYING this item over
+// the window (its restocking cost) — together a per-(actor, item) weekly P&L,
+// matching the in-world restock cue (perception/restock.go, LLM-63).
 type SellThroughRowDTO struct {
 	SellerID       string    `json:"seller_id"`
 	ItemKind       string    `json:"item_kind"`
 	UnitsSold      int       `json:"units_sold"`
 	SalesCount     int       `json:"sales_count"`
 	Coins          int       `json:"coins"`
+	BuyCost        int       `json:"buy_cost"`
 	DistinctBuyers int       `json:"distinct_buyers"`
 	OldestAt       time.Time `json:"oldest_at"`
 	NewestAt       time.Time `json:"newest_at"`
@@ -141,6 +145,9 @@ func umbilicalSellThroughFromSnapshot(snap *sim.Snapshot, sellerFilter, itemFilt
 			continue
 		}
 		row.DistinctBuyers = len(buyers)
+		// Buyer side: what this same actor PAID restocking this item over the window
+		// (its purchases across every seller), so the row carries a weekly P&L.
+		row.BuyCost = buyerWindowSpend(snap.PriceBook, key.SellerID, key.Item, cutoff)
 		out.Rows = append(out.Rows, row)
 	}
 	// Highest recent throughput first, then (seller, item) for a deterministic
@@ -156,4 +163,23 @@ func umbilicalSellThroughFromSnapshot(snap *sim.Snapshot, sellerFilter, itemFilt
 	})
 	out.Total = len(out.Rows)
 	return out
+}
+
+// buyerWindowSpend totals the coins `buyer` paid buying `item` across every seller's
+// ring within the window (observations no older than cutoff). The buyer-side cost
+// companion to a row's seller-side sales — price knowledge is per-buyer, so this
+// scans all (seller, item) rings for the buyer's own purchases.
+func buyerWindowSpend(book map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation], buyer sim.ActorID, item sim.ItemKind, cutoff time.Time) int {
+	total := 0
+	for key, buf := range book {
+		if key.Item != item || buf == nil || buf.Len() == 0 {
+			continue
+		}
+		for _, obs := range buf.Snapshot() {
+			if obs.BuyerID == buyer && !obs.At.Before(cutoff) {
+				total += obs.Amount
+			}
+		}
+	}
+	return total
 }

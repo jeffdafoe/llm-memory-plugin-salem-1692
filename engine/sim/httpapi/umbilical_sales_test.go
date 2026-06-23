@@ -43,7 +43,8 @@ func TestUmbilicalSellThroughFromSnapshot_Aggregates(t *testing.T) {
 				sim.PriceObservation{BuyerID: "b2", Amount: 8, Qty: 4, Consumers: 1, At: now.Add(-1 * time.Hour)},          // 4 units
 			),
 			{SellerID: "elizabeth", Item: "milk"}: sellThroughRing(
-				sim.PriceObservation{BuyerID: "b3", Amount: 5, Qty: 1, Consumers: 1, At: now.Add(-3 * time.Hour)}, // 1 unit
+				sim.PriceObservation{BuyerID: "b3", Amount: 5, Qty: 1, Consumers: 1, At: now.Add(-3 * time.Hour)},     // elizabeth sells 1
+				sim.PriceObservation{BuyerID: "josiah", Amount: 9, Qty: 1, Consumers: 1, At: now.Add(-2 * time.Hour)}, // josiah restocks 1 from elizabeth
 			),
 		},
 	}
@@ -70,6 +71,9 @@ func TestUmbilicalSellThroughFromSnapshot_Aggregates(t *testing.T) {
 	}
 	if j.DistinctBuyers != 2 {
 		t.Errorf("DistinctBuyers = %d, want 2 (b1, b2)", j.DistinctBuyers)
+	}
+	if j.BuyCost != 9 {
+		t.Errorf("BuyCost = %d, want 9 (josiah restocked 1 milk from elizabeth for 9)", j.BuyCost)
 	}
 	if !j.NewestAt.Equal(now.Add(-1*time.Hour)) || !j.OldestAt.Equal(now.Add(-2*24*time.Hour)) {
 		t.Errorf("span = [%s..%s], want [-2d..-1h]", j.OldestAt, j.NewestAt)
