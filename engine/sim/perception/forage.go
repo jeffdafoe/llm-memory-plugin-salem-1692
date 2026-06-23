@@ -101,7 +101,12 @@ func buildForage(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSn
 		var moveHandle sim.VillageObjectID
 		bestStock := -1
 		for ref, kp := range actorSnap.KnownPlaces {
-			if !kp.HasAffordance(affordance) {
+			// Object-kind only: the VillageObjectID cast is sound only for an object
+			// ref — a structure ref shares its id with its placement object, so an
+			// unchecked cast could resolve a different object. gather:<item> is only
+			// ever recorded for object places, so this also guards a future
+			// cross-kind affordance vocabulary (code_review).
+			if kp == nil || kp.Kind != sim.PlaceKindObject || !kp.HasAffordance(affordance) {
 				continue
 			}
 			id := sim.VillageObjectID(ref)

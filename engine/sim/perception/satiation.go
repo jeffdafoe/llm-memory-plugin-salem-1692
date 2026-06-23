@@ -394,7 +394,9 @@ func gatherFreeSatiationSources(snap *sim.Snapshot, subjectID sim.ActorID, actor
 	// Memory arm: free sources the actor has personally used, at any distance.
 	affordance := "free_source:" + string(need)
 	for ref, kp := range actorSnap.KnownPlaces {
-		if !kp.HasAffordance(affordance) {
+		// Object-kind only — the VillageObjectID cast is sound only for an object
+		// ref (a structure ref shares its id with its placement object). (code_review)
+		if kp == nil || kp.Kind != sim.PlaceKindObject || !kp.HasAffordance(affordance) {
 			continue
 		}
 		id := sim.VillageObjectID(ref)

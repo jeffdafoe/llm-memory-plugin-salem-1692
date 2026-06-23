@@ -692,6 +692,32 @@ func TestBuildSatiation_FreeSource_DistantUnremembered_NotSurfaced(t *testing.T)
 	}
 }
 
+// TestBuildSatiation_FreeSource_StructureKindIgnored locks the code_review fix:
+// the memory scan resolves ONLY object-kind known places. A structure-kind memory
+// is never cast to a VillageObjectID — even if (by data drift) it carried a
+// free_source affordance and its ref collided with a real free-source object's id.
+func TestBuildSatiation_FreeSource_StructureKindIgnored(t *testing.T) {
+	origin := sim.WorldToTile(0, 0)
+	subj := &sim.ActorSnapshot{
+		Pos:   origin,
+		Needs: map[sim.NeedKey]int{"thirst": sim.DefaultThirstRedThreshold},
+		KnownPlaces: map[sim.PlaceRef]*sim.KnownPlace{
+			// Structure-kind, but tagged free_source and sharing the well's id.
+			"well": {Ref: "well", Kind: sim.PlaceKindStructure, Affordances: []string{"free_source:thirst"}},
+		},
+	}
+	snap := &sim.Snapshot{
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj},
+		// Far (20 tiles) so proximity can't surface it — only a wrongly-honored
+		// structure-kind memory could.
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{"well": thirstWell("well", "Well", 640, 0, -8)},
+		ItemKinds:      foodDrinkCatalog(),
+	}
+	if v := buildSatiation(snap, "ezekiel", subj); v != nil {
+		t.Errorf("a structure-kind memory must not resolve as an object free source, got %+v", v)
+	}
+}
+
 // TestBuildSatiation_FreeSource_RememberedAndNearbyDeduped: a source that is BOTH
 // remembered and within the scene radius appears exactly once, not twice.
 func TestBuildSatiation_FreeSource_RememberedAndNearbyDeduped(t *testing.T) {
