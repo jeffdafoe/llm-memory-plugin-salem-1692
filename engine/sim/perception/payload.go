@@ -644,6 +644,14 @@ type ActorView struct {
 	// sees its sellable stock regardless of its own needs. Resolved + sorted at
 	// build time; empty (render omits the line) when carrying nothing.
 	Inventory []InventoryItem
+
+	// HoursAwake is whole hours since the actor woke at its shift-start, used to
+	// anchor the tiredness line ("you've been awake for X hours") so the model
+	// weighs rest against real elapsed time, not a bare adjective (LLM-85).
+	// Resolved at build time and populated only while the actor is on-shift
+	// (where wakefulness-since-shift-start holds); nil off-shift, unscheduled, or
+	// with no clock, which the renderer reads as "drop the awake-hours tail".
+	HoursAwake *int
 }
 
 // InventoryItem is one carried item kind in the standing inventory readout —

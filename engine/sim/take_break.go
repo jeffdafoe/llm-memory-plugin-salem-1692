@@ -41,9 +41,12 @@ import (
 //     up front, so early-end is a later refinement.
 
 // DefaultTakeBreakHours is the break length when the model omits until_hour.
-// Matches v1's "NOW + 4h" default — long enough to be a real breather, short
-// enough to reopen the same working day.
-const DefaultTakeBreakHours = 4
+// 2h is a genuine top-up (~4.8 tiredness recovered at the 0.04/min rate) without
+// shuttering the shop a third of the working day — the daytime break is a
+// breather, not a half-reset (LLM-85, was 4h; a 4h default closed a merchant's
+// shop on a mild "tired" cue). The model can still pass until_hour for a longer
+// rest when it has a concrete reason.
+const DefaultTakeBreakHours = 2
 
 // resolveBreakUntil computes the break-window end from a target hour.
 //

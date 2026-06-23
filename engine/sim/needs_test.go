@@ -20,8 +20,8 @@ func TestNeedTier(t *testing.T) {
 		label string
 	}{
 		{0, sim.NeedSilent, ""},
-		{7, sim.NeedSilent, ""},
-		{8, sim.NeedMild, "peckish"},
+		{9, sim.NeedSilent, ""},       // below the awareness floor (10, LLM-85)
+		{10, sim.NeedMild, "peckish"}, // at the floor — first surfaced value
 		{17, sim.NeedMild, "peckish"},
 		{18, sim.NeedRed, "hungry"},
 		{23, sim.NeedRed, "hungry"},

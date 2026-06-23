@@ -432,7 +432,32 @@ func buildActorView(snap *sim.Snapshot, a *sim.ActorSnapshot) ActorView {
 		InFlightMove:           buildInFlightMove(snap, a),
 		InFlightSourceActivity: buildInFlightSourceActivity(snap, a),
 		Inventory:              buildInventoryView(snap, a),
+		HoursAwake:             computeHoursAwake(snap.LocalMinuteOfDay, a.ScheduleStartMin, a.ScheduleEndMin),
 	}
+}
+
+// computeHoursAwake returns whole hours the actor has been awake, measured from
+// its shift-start — but ONLY while it is on-shift. On-shift guarantees
+// continuous wakefulness since shift-start: NPCs wake at shift-start
+// (ZBBS-HOME-435) and only auto-sleep off-shift, so the elapsed-since-start is
+// true hours-awake. Off-shift the schedule alone can't tell "still up since this
+// morning" from "slept, now awake before the next shift" — the modular elapsed
+// would overstate (e.g. ~23h for a day-shift NPC awake before dawn) — so the
+// tail is dropped and renderTiredness falls back to the bare tier phrase. The
+// modulo handles wrap-midnight shifts (start 16:00, now 02:00 → 10h on-shift).
+// Returns nil off-shift, unscheduled (nil bounds), or with no clock. LLM-85.
+func computeHoursAwake(nowMin, startMin, endMin *int) *int {
+	if nowMin == nil {
+		return nil
+	}
+	// OnShiftAtMinute returns false for nil bounds, so a true result also
+	// guarantees startMin is non-nil for the deref below.
+	if !sim.OnShiftAtMinute(startMin, endMin, *nowMin) {
+		return nil
+	}
+	minutesAwake := ((*nowMin-*startMin)%1440 + 1440) % 1440
+	hours := minutesAwake / 60
+	return &hours
 }
 
 // buildInFlightSourceActivity projects the subject's in-flight SourceActivity
