@@ -411,6 +411,13 @@ func (s *Server) umbilicalRoutes() []umbilicalRoute {
 		{http.MethodPost, umbilicalBasePath + "/object/move", "Reposition a placed village object to a new world-pixel anchor. Body: {object_id, x, y}.", true, s.handleUmbilicalObjectMove},
 		{http.MethodPost, umbilicalBasePath + "/object/delete", "Remove a placed village object and its attached overlays (refused for a structure-backed object). Body: {object_id}.", true, s.handleUmbilicalObjectDelete},
 		{http.MethodPost, umbilicalBasePath + "/object/set-display-name", "Set or clear a placed object's display-name override (e.g. name a nameless gather/eat source live). Body: {object_id, display_name}.", true, s.handleUmbilicalObjectSetDisplayName},
+		{http.MethodPost, umbilicalBasePath + "/object/set-state", "Set a placed object's current_state (free-form catalog state; unknown renders as the asset fallback). Body: {object_id, state}.", true, s.handleUmbilicalObjectSetState},
+		{http.MethodPost, umbilicalBasePath + "/object/set-owner", "Set or clear a placed object's owning actor (empty owner_actor_id clears). Body: {object_id, owner_actor_id}.", true, s.handleUmbilicalObjectSetOwner},
+		{http.MethodPost, umbilicalBasePath + "/object/set-loiter-offset", "Set or clear a placed object's loiter offset (both x,y or neither). Body: {object_id, x?, y?}.", true, s.handleUmbilicalObjectSetLoiterOffset},
+		{http.MethodPost, umbilicalBasePath + "/object/set-entry-policy", "Set a placed object's entry policy (\"\", open, owner-only, closed). Body: {object_id, entry_policy}.", true, s.handleUmbilicalObjectSetEntryPolicy},
+		{http.MethodPost, umbilicalBasePath + "/object/add-tag", "Add a per-instance tag to a placed object (idempotent). Body: {object_id, tag}.", true, s.handleUmbilicalObjectAddTag},
+		{http.MethodPost, umbilicalBasePath + "/object/remove-tag", "Remove a per-instance tag from a placed object (idempotent). Body: {object_id, tag}.", true, s.handleUmbilicalObjectRemoveTag},
+		{http.MethodPost, umbilicalBasePath + "/object/set-refresh", "Replace a placed object's refresh-policy set wholesale (empty rows clears; the partner to set-display-name for fixing a gather/eat source live). Body: {object_id, rows}.", true, s.handleUmbilicalObjectSetRefresh},
 	}
 }
 
