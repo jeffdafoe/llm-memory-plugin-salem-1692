@@ -403,6 +403,14 @@ func (s *Server) umbilicalRoutes() []umbilicalRoute {
 		{http.MethodPost, umbilicalBasePath + "/set-needs", "Set an actor's needs to ABSOLUTE values [0..24]. Body: {actor_id} or {all:true}, plus {needs:{\"hunger\":20,\"tiredness\":0}} (unlisted needs untouched). Omit needs to set every need to 0 (back-to-0 shortcut). Setting tiredness to 0 also clears the actor's rest window.", true, s.handleUmbilicalSetNeeds},
 		{http.MethodPost, umbilicalBasePath + "/set-position", "Teleport an actor to a walkable TILE coordinate (the units /actors reports). Cancels any in-flight walk, reconciles inside-structure attribution, and removes the actor from a huddle it was displaced away from. Unwalkable/out-of-bounds targets are refused. Body: {actor_id, x, y}.", true, s.handleUmbilicalSetPosition},
 		{http.MethodPost, umbilicalBasePath + "/route", "Force a schedule-driven NPC route (town crier / washerwoman) to dispatch NOW, bypassing the schedule-window gate — reproduce a crier tour on demand instead of waiting for a boundary or restart. Does NOT consume the real schedule boundary. Body: {attr, start?}.", true, s.handleUmbilicalRoute},
+
+		// Object lifecycle (LLM-61) — live add/edit/remove of placed village objects.
+		// The operator-gated counterparts to /admin/object/* (same sim Commands,
+		// without the in-world admin-actor gate operators can't pass).
+		{http.MethodPost, umbilicalBasePath + "/object/create", "Place a new village object (operator live-ops). World-pixel position. Body: {asset_id, x, y, attached_to?}.", true, s.handleUmbilicalObjectCreate},
+		{http.MethodPost, umbilicalBasePath + "/object/move", "Reposition a placed village object to a new world-pixel anchor. Body: {object_id, x, y}.", true, s.handleUmbilicalObjectMove},
+		{http.MethodPost, umbilicalBasePath + "/object/delete", "Remove a placed village object and its attached overlays (refused for a structure-backed object). Body: {object_id}.", true, s.handleUmbilicalObjectDelete},
+		{http.MethodPost, umbilicalBasePath + "/object/set-display-name", "Set or clear a placed object's display-name override (e.g. name a nameless gather/eat source live). Body: {object_id, display_name}.", true, s.handleUmbilicalObjectSetDisplayName},
 	}
 }
 
