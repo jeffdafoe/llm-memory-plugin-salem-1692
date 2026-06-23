@@ -118,7 +118,7 @@ func MoveToStructureByName(actorID ActorID, name string, shownStructures []Struc
 				return MoveToObject(actorID, objID, now).Fn(w)
 			}
 			return MoveActorResult{}, fmt.Errorf(
-				"there is no place called %q that you can see from here — use a structure_id shown in your perception, or name a place closer to you", target)
+				"there is no place called %q that you can see or remember — use a structure_id from your perception, or name a place you were shown this tick or have been to before", target)
 		},
 	}
 }
