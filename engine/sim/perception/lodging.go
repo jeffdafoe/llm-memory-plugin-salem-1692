@@ -50,6 +50,14 @@ type LodgingView struct {
 	// (within the renewal window) so the lodger waits rather than walking to a
 	// sleeping keeper. ZBBS-WORK-416.
 	KeeperAsleep bool
+
+	// RenewalInFlight is true when the lodger already has a renewal moving to the
+	// keeper of this inn — a still-pending pay_with_item offer, or an accepted
+	// order awaiting hand-over (OrderStateReady). The grant only extends on
+	// delivery, so in the accept→deliver window the expiry-driven renewal cue is
+	// stale-by-construction; render replaces it with a wait-steer so the lodger
+	// doesn't pay a second time. Clears once the order delivers. LLM-81.
+	RenewalInFlight bool
 }
 
 // buildLodgingView returns the lodging view for actorSnap, or nil when the
@@ -57,7 +65,7 @@ type LodgingView struct {
 // the snapshot. The gate is sim.IsActiveLedgerGrant (active, ledger source,
 // future ExpiresAt); it also selects the soonest-expiring grant so the
 // rendered cue points at the most urgent renewal. ZBBS-HOME-296 PR2.
-func buildLodgingView(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) *LodgingView {
+func buildLodgingView(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSnapshot) *LodgingView {
 	if snap == nil || actorSnap == nil {
 		return nil
 	}
@@ -78,16 +86,21 @@ func buildLodgingView(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) *Lodging
 
 	innName := "the inn"
 	keeperAsleep := false
+	renewalInFlight := false
 	if s := structureForRoom(snap, best.RoomID); s != nil {
 		innName = innLabel(s) // shared with the recovery-options inn finder
-		keeperAsleep = vendorKeeperAsleep(snap, keeperOf(snap, s.ID))
+		keeper := keeperOf(snap, s.ID)
+		keeperAsleep = vendorKeeperAsleep(snap, keeper)
+		// LLM-81: defer the renewal cue when a renewal is already moving to this keeper.
+		renewalInFlight = lodgingRenewalInFlight(snap, actorID, keeper)
 	}
 	return &LodgingView{
-		InnName:      innName,
-		ExpiresAt:    *best.ExpiresAt,
-		NightlyRate:  sim.LodgingNightlyRate(snap.LodgingDefaultWeeklyRate),
-		Coins:        actorSnap.Coins,
-		KeeperAsleep: keeperAsleep,
+		InnName:         innName,
+		ExpiresAt:       *best.ExpiresAt,
+		NightlyRate:     sim.LodgingNightlyRate(snap.LodgingDefaultWeeklyRate),
+		Coins:           actorSnap.Coins,
+		KeeperAsleep:    keeperAsleep,
+		RenewalInFlight: renewalInFlight,
 	}
 }
 
@@ -347,6 +360,16 @@ func renderLodging(b *strings.Builder, v *LodgingView) {
 	}
 	now := time.Now()
 	b.WriteString("## Your lodging\n")
+	// LLM-81: a renewal is already in flight to the keeper (a pending offer, or an
+	// accepted order awaiting hand-over). The grant only extends on delivery, so the
+	// expiry-driven "renew before sundown" line below is stale-by-construction in
+	// this window and fights the in-flight order — drop it, the rate hint, and the
+	// shortfall cue for a positive wait-steer, so the lodger bides instead of paying
+	// twice. Clears once the order delivers and the grant extends. Mirrors LLM-64.
+	if v.RenewalInFlight {
+		fmt.Fprintf(b, "Your renewal at %s is paid and with the keeper — they will bring you the room shortly. Do not pay for it again; wait here for them.\n\n", sanitizeInline(v.InnName))
+		return
+	}
 	b.WriteString(lodgingStatusLine(v.InnName, v.ExpiresAt, now))
 	if v.NightlyRate > 0 {
 		fmt.Fprintf(b, " Renewing is %d coins a night.", v.NightlyRate)
@@ -363,6 +386,60 @@ func renderLodging(b *strings.Builder, v *LodgingView) {
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
+}
+
+// lodgingRenewalInFlight reports whether `lodger` already has a room renewal at
+// this inn moving — either a still-pending pay_with_item offer to `keeper` for a
+// lodging-capability item, or an accepted-but-undelivered order (OrderStateReady)
+// from `keeper` for one. The lodging grant only extends on delivery, so between
+// accept and deliver the expiry-driven "## Your lodging" cue is stale-by-
+// construction; this is the signal renderLodging uses to defer that cue rather
+// than let a weak model pay twice. Mirrors the LLM-64 buy-cue deferral, but spans
+// the whole accept→deliver window (not just the Pending state, since the duplicate
+// fires after accept). Pure over the snapshot. LLM-81.
+func lodgingRenewalInFlight(snap *sim.Snapshot, lodger, keeper sim.ActorID) bool {
+	if snap == nil || lodger == "" || keeper == "" {
+		return false
+	}
+	now := snap.PublishedAt
+	for _, e := range snap.PayLedger {
+		if e == nil || e.State != sim.PayLedgerStatePending {
+			continue
+		}
+		if e.BuyerID != lodger || e.SellerID != keeper {
+			continue
+		}
+		// Skip an expired-but-unswept offer (mirrors hasPendingOfferTo).
+		if !e.ExpiresAt.IsZero() && !now.Before(e.ExpiresAt) {
+			continue
+		}
+		if itemGrantsLodging(snap, e.ItemKind) {
+			return true
+		}
+	}
+	for _, o := range snap.Orders {
+		if o == nil || o.State != sim.OrderStateReady || o.SellerID != keeper {
+			continue
+		}
+		consumes := o.BuyerID == lodger
+		for _, cid := range o.ConsumerIDs {
+			if cid == lodger {
+				consumes = true
+				break
+			}
+		}
+		if consumes && itemGrantsLodging(snap, o.Item) {
+			return true
+		}
+	}
+	return false
+}
+
+// itemGrantsLodging reports whether an item kind carries the "lodging" capability
+// in the world catalog — the marker for a room-granting service (item_kind.go).
+func itemGrantsLodging(snap *sim.Snapshot, kind sim.ItemKind) bool {
+	def := snap.ItemKinds[kind]
+	return def != nil && def.HasCapability("lodging")
 }
 
 // renderKeeperLodging writes the "## Your inn" section for an inn-keeper.

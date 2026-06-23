@@ -40,11 +40,112 @@ func lodgingSnap(subj *sim.ActorSnapshot, structures map[sim.StructureID]*sim.St
 	}
 }
 
+// renewalSnap builds a lodger holding an active room grant at "inn", a keeper
+// working that inn (keyed "other0" by lodgingSnap), and the item catalog with a
+// lodging-capability nights_stay. The LLM-81 in-flight tests wire their offer /
+// order with SellerID "other0" (the resolved keeper).
+func renewalSnap() (*sim.Snapshot, *sim.ActorSnapshot) {
+	subj := &sim.ActorSnapshot{
+		RoomAccess: map[sim.RoomAccessKey]*sim.RoomAccess{
+			{RoomID: 2, Source: sim.AccessSourceLedger}: ledgerAccess(2, 20*time.Hour),
+		},
+	}
+	structs := map[sim.StructureID]*sim.Structure{"inn": innStructure("inn", "Hannah's Inn")}
+	keeper := &sim.ActorSnapshot{WorkStructureID: "inn"}
+	snap := lodgingSnap(subj, structs, keeper)
+	snap.ItemKinds = map[sim.ItemKind]*sim.ItemKindDef{
+		"nights_stay": {Name: "nights_stay", Capabilities: []string{"lodging"}},
+	}
+	return snap, subj
+}
+
+// TestBuildLodgingView_RenewalInFlight_PendingOffer: a still-pending nights_stay
+// offer to the inn keeper sets RenewalInFlight, so render can defer the renewal
+// cue instead of re-prompting payment. LLM-81.
+func TestBuildLodgingView_RenewalInFlight_PendingOffer(t *testing.T) {
+	snap, subj := renewalSnap()
+	snap.PayLedger = map[sim.LedgerID]*sim.PayLedgerEntry{
+		1: {ID: 1, BuyerID: "ezekiel", SellerID: "other0", ItemKind: "nights_stay", State: sim.PayLedgerStatePending},
+	}
+	v := buildLodgingView(snap, "ezekiel", subj)
+	if v == nil || !v.RenewalInFlight {
+		t.Fatalf("want RenewalInFlight for a pending nights_stay offer to the keeper, got %+v", v)
+	}
+}
+
+// TestBuildLodgingView_RenewalInFlight_AcceptedOrder: an accepted-but-undelivered
+// nights_stay order (OrderStateReady) from the keeper sets RenewalInFlight — the
+// case that actually drove the double-pay, since the duplicate fired AFTER accept,
+// when the pending offer is already gone. LLM-81.
+func TestBuildLodgingView_RenewalInFlight_AcceptedOrder(t *testing.T) {
+	snap, subj := renewalSnap()
+	snap.Orders = map[sim.OrderID]*sim.Order{
+		5: {ID: 5, State: sim.OrderStateReady, BuyerID: "ezekiel", SellerID: "other0", Item: "nights_stay"},
+	}
+	v := buildLodgingView(snap, "ezekiel", subj)
+	if v == nil || !v.RenewalInFlight {
+		t.Fatalf("want RenewalInFlight for an accepted-but-undelivered nights_stay order, got %+v", v)
+	}
+}
+
+// TestBuildLodgingView_RenewalToOtherSeller_NotInFlight: a pending nights_stay
+// offer to a DIFFERENT seller than the inn keeper must NOT set the flag — the
+// renewal cue for THIS inn still applies. Guards the keeper narrowing. LLM-81.
+func TestBuildLodgingView_RenewalToOtherSeller_NotInFlight(t *testing.T) {
+	snap, subj := renewalSnap()
+	snap.PayLedger = map[sim.LedgerID]*sim.PayLedgerEntry{
+		1: {ID: 1, BuyerID: "ezekiel", SellerID: "someone_else", ItemKind: "nights_stay", State: sim.PayLedgerStatePending},
+	}
+	v := buildLodgingView(snap, "ezekiel", subj)
+	if v == nil || v.RenewalInFlight {
+		t.Fatalf("RenewalInFlight must be false for an offer to a non-keeper seller, got %+v", v)
+	}
+}
+
+// TestBuildLodgingView_DeliveredOrder_NotInFlight: a Delivered (terminal) order
+// must NOT keep the cue suppressed — once the grant has extended the renewal cue
+// should return on the next window. LLM-81.
+func TestBuildLodgingView_DeliveredOrder_NotInFlight(t *testing.T) {
+	snap, subj := renewalSnap()
+	snap.Orders = map[sim.OrderID]*sim.Order{
+		5: {ID: 5, State: sim.OrderStateDelivered, BuyerID: "ezekiel", SellerID: "other0", Item: "nights_stay"},
+	}
+	v := buildLodgingView(snap, "ezekiel", subj)
+	if v == nil || v.RenewalInFlight {
+		t.Fatalf("RenewalInFlight must be false for a delivered order, got %+v", v)
+	}
+}
+
+// TestRenderLodging_RenewalInFlight_WaitSteer: with RenewalInFlight set, render
+// drops the expiry/renew line, the rate hint, and the shortfall cue for a
+// stay-and-wait steer — so the lodger bides instead of paying twice. LLM-81.
+func TestRenderLodging_RenewalInFlight_WaitSteer(t *testing.T) {
+	v := &LodgingView{
+		InnName:         "Hannah's Inn",
+		ExpiresAt:       lodgingNow.Add(20 * time.Hour),
+		NightlyRate:     4,
+		Coins:           0,
+		RenewalInFlight: true,
+	}
+	var b strings.Builder
+	renderLodging(&b, v)
+	out := b.String()
+	if !strings.Contains(out, "paid and with the keeper") || !strings.Contains(out, "Do not pay for it again") {
+		t.Errorf("missing the in-flight wait-steer:\n%s", out)
+	}
+	if strings.Contains(out, "expires within the day") || strings.Contains(out, "Renewing is") {
+		t.Errorf("in-flight render must suppress the renew cue + rate hint:\n%s", out)
+	}
+	if strings.Contains(out, "short of the") {
+		t.Errorf("in-flight render must suppress the affordability shortfall cue:\n%s", out)
+	}
+}
+
 // --- lodger view gating ---
 
 func TestBuildLodgingView_NoAccess_Nil(t *testing.T) {
 	subj := &sim.ActorSnapshot{}
-	if v := buildLodgingView(lodgingSnap(subj, nil), subj); v != nil {
+	if v := buildLodgingView(lodgingSnap(subj, nil), "ezekiel", subj); v != nil {
 		t.Errorf("want nil for an actor with no room access, got %+v", v)
 	}
 }
@@ -56,7 +157,7 @@ func TestBuildLodgingView_ActiveLedger_View(t *testing.T) {
 		},
 	}
 	structs := map[sim.StructureID]*sim.Structure{"inn": innStructure("inn", "Hannah's Inn")}
-	v := buildLodgingView(lodgingSnap(subj, structs), subj)
+	v := buildLodgingView(lodgingSnap(subj, structs), "ezekiel", subj)
 	if v == nil {
 		t.Fatal("want a lodging view for an active ledger grant, got nil")
 	}
@@ -75,7 +176,7 @@ func TestBuildLodgingView_ExpiredLedger_Nil(t *testing.T) {
 		},
 	}
 	structs := map[sim.StructureID]*sim.Structure{"inn": innStructure("inn", "Hannah's Inn")}
-	if v := buildLodgingView(lodgingSnap(subj, structs), subj); v != nil {
+	if v := buildLodgingView(lodgingSnap(subj, structs), "ezekiel", subj); v != nil {
 		t.Errorf("want nil for an expired grant, got %+v", v)
 	}
 }
@@ -89,7 +190,7 @@ func TestBuildLodgingView_InactiveLedger_Nil(t *testing.T) {
 		},
 	}
 	structs := map[sim.StructureID]*sim.Structure{"inn": innStructure("inn", "Hannah's Inn")}
-	if v := buildLodgingView(lodgingSnap(subj, structs), subj); v != nil {
+	if v := buildLodgingView(lodgingSnap(subj, structs), "ezekiel", subj); v != nil {
 		t.Errorf("want nil for an inactive grant, got %+v", v)
 	}
 }
@@ -102,7 +203,7 @@ func TestBuildLodgingView_StaffAccess_Nil(t *testing.T) {
 		},
 	}
 	structs := map[sim.StructureID]*sim.Structure{"inn": innStructure("inn", "Hannah's Inn")}
-	if v := buildLodgingView(lodgingSnap(subj, structs), subj); v != nil {
+	if v := buildLodgingView(lodgingSnap(subj, structs), "ezekiel", subj); v != nil {
 		t.Errorf("want nil for a staff grant, got %+v", v)
 	}
 }
@@ -115,7 +216,7 @@ func TestBuildLodgingView_PicksSoonestExpiry(t *testing.T) {
 		},
 	}
 	structs := map[sim.StructureID]*sim.Structure{"inn": innStructure("inn", "Hannah's Inn")}
-	v := buildLodgingView(lodgingSnap(subj, structs), subj)
+	v := buildLodgingView(lodgingSnap(subj, structs), "ezekiel", subj)
 	if v == nil {
 		t.Fatal("want a view, got nil")
 	}
@@ -131,7 +232,7 @@ func TestBuildLodgingView_UnknownStructure_GenericName(t *testing.T) {
 		},
 	}
 	// No structure declares room 99 → generic fallback name.
-	v := buildLodgingView(lodgingSnap(subj, nil), subj)
+	v := buildLodgingView(lodgingSnap(subj, nil), "ezekiel", subj)
 	if v == nil || v.InnName != "the inn" {
 		t.Fatalf("want generic fallback name, got %+v", v)
 	}
@@ -149,7 +250,7 @@ func TestBuildLodgingView_KeeperAsleepFlagged(t *testing.T) {
 	}
 	structs := map[sim.StructureID]*sim.Structure{"inn": innStructure("inn", "Hannah's Inn")}
 	keeper := &sim.ActorSnapshot{WorkStructureID: "inn", State: sim.StateSleeping}
-	v := buildLodgingView(lodgingSnap(subj, structs, keeper), subj)
+	v := buildLodgingView(lodgingSnap(subj, structs, keeper), "ezekiel", subj)
 	if v == nil || !v.KeeperAsleep {
 		t.Fatalf("want KeeperAsleep set when the inn keeper sleeps, got %+v", v)
 	}
@@ -210,7 +311,7 @@ func TestBuildLodgingView_CarriesRateAndCoins(t *testing.T) {
 	structs := map[sim.StructureID]*sim.Structure{"inn": innStructure("inn", "Hannah's Inn")}
 	snap := lodgingSnap(subj, structs)
 	snap.LodgingDefaultWeeklyRate = 28 // nightly 4
-	v := buildLodgingView(snap, subj)
+	v := buildLodgingView(snap, "ezekiel", subj)
 	if v == nil || v.NightlyRate != 4 || v.Coins != 11 {
 		t.Fatalf("want NightlyRate=4 Coins=11, got %+v", v)
 	}

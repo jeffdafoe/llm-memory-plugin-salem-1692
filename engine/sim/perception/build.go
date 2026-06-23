@@ -113,7 +113,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 			len(p.PendingOffersFromMe) > 0,
 		)
 	}
-	p.Lodging = buildLodgingView(snap, actorSnap)
+	p.Lodging = buildLodgingView(snap, actorID, actorSnap)
 	// LLM-36: the lodger bedtime nudge — fires for a lodger that has wound down
 	// to its rented inn once the night window opens, with a co-present companion
 	// to bid goodnight to, so it retires deliberately. Gated on the same audience
