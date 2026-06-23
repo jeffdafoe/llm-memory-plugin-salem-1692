@@ -83,6 +83,24 @@ func (kp *KnownPlace) addAffordance(affordance string) {
 	sort.Strings(kp.Affordances)
 }
 
+// HasAffordance reports whether the entry carries the exact capability token
+// (e.g. "gather:raspberries", "free_source:thirst"). The read-side counterpart
+// to addAffordance, used by the perception cues that re-source from earned
+// memory (LLM-79: the forage cue's owned gather bushes, the satiation free-source
+// cue's remembered wells/trees). nil-safe; the set is small, so a linear scan is
+// fine. Tokens are sorted, but exact membership doesn't need that.
+func (kp *KnownPlace) HasAffordance(affordance string) bool {
+	if kp == nil {
+		return false
+	}
+	for _, a := range kp.Affordances {
+		if a == affordance {
+			return true
+		}
+	}
+	return false
+}
+
 // recordKnownPlace upserts the actor's memory that it EXPERIENCED the place at
 // ref (of kind) with the given affordance, stamped at `at`. Idempotent:
 // re-experiencing an already-known place refreshes LastExperiencedAt and unions

@@ -131,6 +131,14 @@ type Snapshot struct {
 	// on w.Settings. Plain int, copied at publish. 0 = restock disabled.
 	RestockReorderPct int
 
+	// DefaultOutdoorSceneRadius mirrors WorldSettings.DefaultOutdoorSceneRadius —
+	// the "what is around me" tile radius the move_to name-resolver and scene
+	// bound use. Carried so perception can bound a proximity scan to the SAME
+	// radius without racing on w.Settings (LLM-79: the satiation free-source cue
+	// surfaces remembered sources at any distance UNION sources within this
+	// radius). Plain int, copied at publish; <= 0 means use DefaultOutdoorSceneRadiusValue.
+	DefaultOutdoorSceneRadius int
+
 	// ZoomMinAdmin / ZoomMinRegular mirror WorldSettings.ZoomMin* — the
 	// client-side camera zoom floors (admin vs regular user). Carried on the
 	// snapshot because the public GET /api/village/world read (handleWorld) is
