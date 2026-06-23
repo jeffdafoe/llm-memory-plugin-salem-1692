@@ -31,8 +31,10 @@ import (
 //     named this tick). The engine resolves the name to a structure it could
 //     plausibly reach — anchors + structures within scene radius + the move
 //     targets this tick's perception surfaced (PerceivedStructureIDs/ObjectIDs,
-//     ZBBS-HOME-389), nearest-wins on duplicates (ZBBS-HOME-356). Exactly one of
-//     structure_id / structure_name is required (decode rejects both).
+//     ZBBS-HOME-389) + the actor's durable known places (RememberedPlaces, the
+//     memory-backed fallback, LLM-78) — nearest-wins on duplicates
+//     (ZBBS-HOME-356). Exactly one of structure_id / structure_name is required
+//     (decode rejects both).
 type MoveToArgs struct {
 	StructureID   string `json:"structure_id"`
 	StructureName string `json:"structure_name"`
@@ -176,7 +178,7 @@ func HandleMoveTo(in HandlerInput) (sim.Command, error) {
 			return sim.Command{}, modelSafef(
 				"move_to: structure_name contains a disallowed control character at byte offset %d", i)
 		}
-		return sim.MoveToStructureByName(in.ActorID, name, in.PerceivedStructureIDs, in.PerceivedObjectIDs, time.Now().UTC()), nil
+		return sim.MoveToStructureByName(in.ActorID, name, in.PerceivedStructureIDs, in.PerceivedObjectIDs, in.RememberedPlaces, time.Now().UTC()), nil
 	}
 
 	structureID := strings.TrimSpace(args.StructureID)

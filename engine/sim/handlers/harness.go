@@ -327,6 +327,13 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 	// radius. ZBBS-HOME-389.
 	perceivedPlaces := perception.CollectPerceivedPlaces(payload)
 
+	// The actor's DURABLE known places (LLM-77) — split by kind and threaded to
+	// move_to as the name-resolver's memory-backed FALLBACK source (LLM-78), so
+	// the model can walk by name to a place it has personally experienced even
+	// when this tick's cues don't name it. Collected off the published snapshot,
+	// like perceivedPlaces; the live (shown) sources still win a shared name.
+	rememberedPlaces := sim.CollectRememberedPlaces(actor.KnownPlaces)
+
 	// Scene + VA-routing context for every Complete + persist call this
 	// tick. SceneID is minted once and reused so the API's per-scene
 	// history loader (chat_messages.scene_id filter) sees a coherent
@@ -604,7 +611,7 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 			}
 
 			// Dispatch by class.
-			content, outcome := h.dispatch(ctx, w, job, vc, actor.LLMAgent, perceivedPlaces)
+			content, outcome := h.dispatch(ctx, w, job, vc, actor.LLMAgent, perceivedPlaces, rememberedPlaces)
 			transcript = append(transcript, toolResultMsg(call.ID, content))
 
 			if outcome.stale {
@@ -764,7 +771,7 @@ type dispatchOutcome struct {
 //     World.SendContext. A successful submission with
 //     TerminalPolicy=TerminalOnSuccess ends the tick.
 //   - ClassTerminal → no handler; the tick ends.
-func (h *Harness) dispatch(ctx context.Context, w *sim.World, job tickJob, vc *ValidatedCall, llmMemoryAgent string, perceivedPlaces perception.PerceivedPlaces) (string, dispatchOutcome) {
+func (h *Harness) dispatch(ctx context.Context, w *sim.World, job tickJob, vc *ValidatedCall, llmMemoryAgent string, perceivedPlaces perception.PerceivedPlaces, rememberedPlaces sim.RememberedPlaces) (string, dispatchOutcome) {
 	in := HandlerInput{
 		ActorID:        job.actorID,
 		AttemptID:      job.attemptID,
@@ -775,6 +782,9 @@ func (h *Harness) dispatch(ctx context.Context, w *sim.World, job tickJob, vc *V
 		// commit resolves a structure_name against these. Empty for non-move ticks.
 		PerceivedStructureIDs: perceivedPlaces.StructureIDs,
 		PerceivedObjectIDs:    perceivedPlaces.ObjectIDs,
+		// The actor's durable known places (LLM-78) — move_to's memory-backed
+		// name-resolution fallback, tried after the perceived sources miss.
+		RememberedPlaces: rememberedPlaces,
 		// New-news signal for the turn-state gate (ZBBS-WORK-370). Computed from
 		// the tick's consumed warrant batch; only the speak commit consumes it.
 		HasNewNews: batchHasNewNews(job.warrants),

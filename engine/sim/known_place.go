@@ -237,3 +237,53 @@ func RegisterKnownPlaceSubscriber(w *World) {
 	w.Subscribe(SubscriberFunc(handleKnownPlaceOnGather))
 	w.Subscribe(SubscriberFunc(handleKnownPlaceOnPurchase))
 }
+
+// RememberedPlaces is an actor's durable known-places set split BY KIND into the
+// structure ids and object ids the move_to name-resolver can fall back on
+// (LLM-78). It is the memory-backed counterpart to perception.PerceivedPlaces:
+// PerceivedPlaces is what a tick SHOWED the actor; RememberedPlaces is what the
+// actor has personally experienced across its life (LLM-77). Both are threaded
+// to the move_to name-resolver off the world goroutine — live (shown) sources
+// win a shared name, memory is the fallback. Deterministically ordered so
+// resolution is stable.
+type RememberedPlaces struct {
+	StructureIDs []StructureID
+	ObjectIDs    []VillageObjectID
+}
+
+// CollectRememberedPlaces splits an actor's known-places set by Kind into the
+// sorted, de-duplicated structure-id and object-id slices the move_to
+// name-resolver consults as its memory-backed FALLBACK source (LLM-78). Pure
+// over the map; the harness calls it once per tick (off the world goroutine,
+// from the published ActorSnapshot) and threads the result to the move_to
+// handler, mirroring perception.CollectPerceivedPlaces. nil slices when the
+// actor knows no places of a kind. The map key already de-dups by ref and a ref
+// is exactly one kind, so no id repeats. An empty ref or an unrecognized kind is
+// dropped (defense-in-depth — the repo already validates both on load, LLM-77).
+func CollectRememberedPlaces(known map[PlaceRef]*KnownPlace) RememberedPlaces {
+	if len(known) == 0 {
+		return RememberedPlaces{}
+	}
+	structures := make([]StructureID, 0, len(known))
+	objects := make([]VillageObjectID, 0, len(known))
+	for ref, kp := range known {
+		if kp == nil || ref == "" {
+			continue
+		}
+		switch kp.Kind {
+		case PlaceKindStructure:
+			structures = append(structures, StructureID(ref))
+		case PlaceKindObject:
+			objects = append(objects, VillageObjectID(ref))
+		}
+	}
+	sort.Slice(structures, func(i, j int) bool { return structures[i] < structures[j] })
+	sort.Slice(objects, func(i, j int) bool { return objects[i] < objects[j] })
+	if len(structures) == 0 {
+		structures = nil
+	}
+	if len(objects) == 0 {
+		objects = nil
+	}
+	return RememberedPlaces{StructureIDs: structures, ObjectIDs: objects}
+}
