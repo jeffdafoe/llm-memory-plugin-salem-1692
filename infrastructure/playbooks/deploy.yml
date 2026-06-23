@@ -68,6 +68,29 @@
         owner: root
         group: "{{ app_user }}"
 
+    # Stop the engine before migrations run. village_object, actor, structure,
+    # scene, huddle, order and environment rows are held in memory by the running
+    # engine and written back to Postgres by its periodic/shutdown SaveWorld
+    # checkpoint (engine/sim/repo/pg/save_world.go). A migration that UPDATEs one
+    # of those rows while the engine is live is silently reverted: the old
+    # binary's next checkpoint upserts its stale in-memory copy back over the
+    # migrated value (LLM-73, surfaced live by LLM-60). Stopping first sends
+    # SIGTERM, which the engine traps to take a final checkpoint before exiting
+    # (engine/sim/cmd/engine/main.go), so migrations apply to a quiesced
+    # database. systemd's default TimeoutStopSec (90s) comfortably covers the
+    # checkpoint. Skipped on a fresh machine where the unit does not exist yet;
+    # nothing is running to clobber.
+    - name: Check whether the salem-engine unit is installed
+      stat:
+        path: /etc/systemd/system/salem-engine.service
+      register: salem_engine_unit
+
+    - name: Stop the engine before migrations (avoid checkpoint clobber, LLM-73)
+      systemd:
+        name: salem-engine
+        state: stopped
+      when: salem_engine_unit.stat.exists
+
     # Migrations
     # On a fresh database, load the schema baseline (schema.sql) before running
     # migrations. The migration runner below assumes migrations_applied already
@@ -124,6 +147,31 @@
         label: "{{ item.path | basename }}"
       when: run_migrations | default(false) | bool
 
+    # Bring the engine back up immediately after migrations. The new binary was
+    # built above and the schema is now migrated, so it boots clean. This block
+    # sits here rather than at the end of the play to cap engine downtime at the
+    # stop-checkpoint + migration window; nothing below (client tileset copy,
+    # Godot export, nginx) needs the engine down. A failed migration aborts the
+    # play before this task, so the engine deliberately stays down until the
+    # migration is fixed and the deploy re-run, rather than booting onto a
+    # half-migrated schema (LLM-73).
+    - name: Deploy systemd service
+      template:
+        src: ../templates/salem-engine.service.j2
+        dest: /etc/systemd/system/salem-engine.service
+      register: service_file
+
+    - name: Reload systemd
+      systemd:
+        daemon_reload: yes
+      when: service_file.changed
+
+    - name: Enable and restart engine
+      systemd:
+        name: salem-engine
+        enabled: yes
+        state: restarted
+
     # Copy persistent commercial tilesets into client project before Godot export.
     # These files are gitignored and deployed manually via scp.
     # The Godot export packs them into the .pck file.
@@ -150,24 +198,6 @@
       environment:
         GODOT_SILENCE_ROOT_WARNING: "1"
       when: deploy_environment == 'production'
-
-    # Systemd service
-    - name: Deploy systemd service
-      template:
-        src: ../templates/salem-engine.service.j2
-        dest: /etc/systemd/system/salem-engine.service
-      register: service_file
-
-    - name: Reload systemd
-      systemd:
-        daemon_reload: yes
-      when: service_file.changed
-
-    - name: Enable and restart engine
-      systemd:
-        name: salem-engine
-        enabled: yes
-        state: restarted
 
     # Sync repo tilesets to persistent tilesets directory (no --delete so purchased assets survive)
     - name: Create persistent tilesets directory
