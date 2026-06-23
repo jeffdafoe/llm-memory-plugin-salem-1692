@@ -1687,7 +1687,6 @@ func (w *World) emitNeedsDeltas(prev *Snapshot) {
 	if cur == nil {
 		return
 	}
-	now := time.Now().UTC()
 	for id, a := range cur.Actors {
 		hunger, thirst, tiredness := DisplayNeeds(a.Needs)
 		var prevHunger, prevThirst, prevTiredness int
@@ -1702,7 +1701,6 @@ func (w *World) emitNeedsDeltas(prev *Snapshot) {
 			Hunger:    hunger,
 			Thirst:    thirst,
 			Tiredness: tiredness,
-			At:        now,
 		})
 	}
 }
@@ -1743,7 +1741,6 @@ func (w *World) emitDormancyDeltas(prev *Snapshot) {
 	if cur == nil {
 		return
 	}
-	now := time.Now().UTC()
 	for id, a := range cur.Actors {
 		if a.Kind != KindNPCStateful && a.Kind != KindNPCShared {
 			continue
@@ -1759,7 +1756,6 @@ func (w *World) emitDormancyDeltas(prev *Snapshot) {
 		w.emit(&NPCDormancyChanged{
 			ActorID: id,
 			State:   token,
-			At:      now,
 		})
 	}
 }
@@ -1786,7 +1782,6 @@ func (w *World) emitCoinsDeltas(prev *Snapshot) {
 	if cur == nil {
 		return
 	}
-	now := time.Now().UTC()
 	for id, a := range cur.Actors {
 		var prevCoins int
 		if prevActor, ok := prev.Actors[id]; ok {
@@ -1798,7 +1793,6 @@ func (w *World) emitCoinsDeltas(prev *Snapshot) {
 		w.emit(&NPCCoinsChanged{
 			ActorID: id,
 			Coins:   a.Coins,
-			At:      now,
 		})
 	}
 }

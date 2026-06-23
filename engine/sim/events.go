@@ -590,7 +590,6 @@ type NPCNeedsChanged struct {
 	Hunger    int
 	Thirst    int
 	Tiredness int
-	At        time.Time
 }
 
 func (NPCNeedsChanged) isSimEvent() {}
@@ -612,7 +611,6 @@ type NPCDormancyChanged struct {
 	EventBase
 	ActorID ActorID
 	State   string // "sleeping" | "resting" | "" (awake)
-	At      time.Time
 }
 
 func (NPCDormancyChanged) isSimEvent() {}
@@ -629,7 +627,6 @@ type NPCCoinsChanged struct {
 	EventBase
 	ActorID ActorID
 	Coins   int
-	At      time.Time
 }
 
 func (NPCCoinsChanged) isSimEvent() {}
