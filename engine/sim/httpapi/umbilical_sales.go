@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -116,6 +117,10 @@ func umbilicalSellThroughFromSnapshot(snap *sim.Snapshot, sellerFilter, itemFilt
 		}
 		row := SellThroughRowDTO{SellerID: string(key.SellerID), ItemKind: string(key.Item)}
 		buyers := map[sim.ActorID]struct{}{}
+		// Accumulate in int64 (clamped into the int DTO fields below) so the
+		// Qty×Consumers multiply and the sums can't overflow before narrowing —
+		// mirroring perception.sellerRecentSales (code_review).
+		var unitsSold, coins int64
 		for _, obs := range buf.Snapshot() {
 			if obs.At.Before(cutoff) {
 				continue
@@ -126,13 +131,13 @@ func umbilicalSellThroughFromSnapshot(snap *sim.Snapshot, sellerFilter, itemFilt
 			if consumers < 1 {
 				consumers = 1
 			}
-			units := obs.Qty * consumers
+			units := int64(obs.Qty) * int64(consumers)
 			if units < 1 {
 				continue
 			}
-			row.UnitsSold += units
+			unitsSold += units
+			coins += int64(obs.Amount)
 			row.SalesCount++
-			row.Coins += obs.Amount
 			buyers[obs.BuyerID] = struct{}{}
 			if row.NewestAt.IsZero() || obs.At.After(row.NewestAt) {
 				row.NewestAt = obs.At
@@ -144,6 +149,8 @@ func umbilicalSellThroughFromSnapshot(snap *sim.Snapshot, sellerFilter, itemFilt
 		if row.SalesCount == 0 {
 			continue
 		}
+		row.UnitsSold = clampInt32(unitsSold)
+		row.Coins = clampInt32(coins)
 		row.DistinctBuyers = len(buyers)
 		// Buyer side: what this same actor PAID restocking this item over the window
 		// (its purchases across every seller), so the row carries a weekly P&L.
@@ -170,16 +177,30 @@ func umbilicalSellThroughFromSnapshot(snap *sim.Snapshot, sellerFilter, itemFilt
 // companion to a row's seller-side sales — price knowledge is per-buyer, so this
 // scans all (seller, item) rings for the buyer's own purchases.
 func buyerWindowSpend(book map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation], buyer sim.ActorID, item sim.ItemKind, cutoff time.Time) int {
-	total := 0
+	var total int64
 	for key, buf := range book {
 		if key.Item != item || buf == nil || buf.Len() == 0 {
 			continue
 		}
 		for _, obs := range buf.Snapshot() {
 			if obs.BuyerID == buyer && !obs.At.Before(cutoff) {
-				total += obs.Amount
+				total += int64(obs.Amount)
 			}
 		}
 	}
-	return total
+	return clampInt32(total)
+}
+
+// clampInt32 narrows an int64 accumulator into the int DTO fields, saturating at the
+// int32 bounds. Accumulation stays in int64 so the multiply/sum can't overflow
+// before this narrowing — a corrupt or outsized observation saturates rather than
+// wraps. Matches the clamp posture of the perception-side aggregators.
+func clampInt32(v int64) int {
+	if v > int64(math.MaxInt32) {
+		return math.MaxInt32
+	}
+	if v < int64(math.MinInt32) {
+		return math.MinInt32
+	}
+	return int(v)
 }
