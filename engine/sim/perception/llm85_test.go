@@ -77,20 +77,23 @@ func TestRenderTiredness_HoursAwakeTail(t *testing.T) {
 }
 
 func TestComputeHoursAwake(t *testing.T) {
+	// Shifts: day = [08:00, 18:00); wrap = [16:00, 03:00).
 	cases := []struct {
-		name       string
-		now, start *int
-		want       *int
+		name            string
+		now, start, end *int
+		want            *int
 	}{
-		{"daytime shift", intPtr(20 * 60), intPtr(8 * 60), intPtr(12)},
-		{"wrap-midnight shift", intPtr(2 * 60), intPtr(16 * 60), intPtr(10)},
-		{"just woke", intPtr(8 * 60), intPtr(8 * 60), intPtr(0)},
-		{"nil clock", nil, intPtr(8 * 60), nil},
-		{"unscheduled actor", intPtr(8 * 60), nil, nil},
+		{"on-shift day, 8h in", intPtr(16 * 60), intPtr(8 * 60), intPtr(18 * 60), intPtr(8)},
+		{"on-shift wrap past midnight, 10h in", intPtr(2 * 60), intPtr(16 * 60), intPtr(3 * 60), intPtr(10)},
+		{"just woke at shift-start", intPtr(8 * 60), intPtr(8 * 60), intPtr(18 * 60), intPtr(0)},
+		{"off-shift evening drops tail", intPtr(20 * 60), intPtr(8 * 60), intPtr(18 * 60), nil},
+		{"off-shift pre-dawn drops tail (the wrap bug)", intPtr(6 * 60), intPtr(8 * 60), intPtr(18 * 60), nil},
+		{"nil clock", nil, intPtr(8 * 60), intPtr(18 * 60), nil},
+		{"unscheduled actor", intPtr(8 * 60), nil, nil, nil},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := computeHoursAwake(c.now, c.start)
+			got := computeHoursAwake(c.now, c.start, c.end)
 			switch {
 			case c.want == nil && got != nil:
 				t.Errorf("want nil, got %d", *got)

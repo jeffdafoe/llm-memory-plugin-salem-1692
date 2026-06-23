@@ -648,9 +648,9 @@ type ActorView struct {
 	// HoursAwake is whole hours since the actor woke at its shift-start, used to
 	// anchor the tiredness line ("you've been awake for X hours") so the model
 	// weighs rest against real elapsed time, not a bare adjective (LLM-85).
-	// Resolved at build time from the snapshot clock + the actor's shift-start;
-	// nil for an unscheduled NPC or a hand-built snapshot with no clock, which
-	// the renderer reads as "drop the awake-hours tail".
+	// Resolved at build time and populated only while the actor is on-shift
+	// (where wakefulness-since-shift-start holds); nil off-shift, unscheduled, or
+	// with no clock, which the renderer reads as "drop the awake-hours tail".
 	HoursAwake *int
 }
 

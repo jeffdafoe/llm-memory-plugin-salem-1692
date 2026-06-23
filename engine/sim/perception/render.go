@@ -599,9 +599,9 @@ func renderFeltNeeds(needs map[sim.NeedKey]int, thresholds sim.NeedThresholds) s
 // imperative at any tier: the concrete rest affordances live in the "## How you
 // can rest" menu (buildRecoveryOptions), and dropping the imperative everywhere
 // completes LLM-67 (the felt imperative was the stimulus for the re-take_break
-// loop). hoursAwake is nil for an unscheduled NPC or a clock-less snapshot — then
-// the awake-hours tail is dropped and only the tier phrase renders. Returns ""
-// below the awareness floor.
+// loop). hoursAwake is nil off-shift, for an unscheduled NPC, or a clock-less
+// snapshot — then the awake-hours tail is dropped and only the tier phrase
+// renders. Returns "" below the awareness floor.
 func renderTiredness(value, threshold int, hoursAwake *int) string {
 	n, ok := sim.FindNeed(recoveryTirednessNeed)
 	if !ok {
