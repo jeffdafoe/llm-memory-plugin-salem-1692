@@ -15,10 +15,10 @@ import (
 func TestBusinessRememberedShut_Decay(t *testing.T) {
 	now := time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)
 	subj := &sim.ActorSnapshot{
-		ClosedBusinessObs: map[sim.StructureID]time.Time{
-			"fresh": now.Add(-1 * time.Hour),                             // within 4h
-			"stale": now.Add(-sim.ClosedBusinessMemoryTTL - time.Minute), // expired
-		},
+		Observed: sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
+			{StructureID: "fresh", Condition: sim.ObservedClosed}: now.Add(-1 * time.Hour),                             // within 4h
+			{StructureID: "stale", Condition: sim.ObservedClosed}: now.Add(-sim.ClosedBusinessMemoryTTL - time.Minute), // expired
+		}),
 	}
 	snap := &sim.Snapshot{PublishedAt: now}
 
@@ -37,7 +37,9 @@ func TestBusinessRememberedShut_Decay(t *testing.T) {
 
 	// A future-stamped observation (clock skew) must NOT read as fresh-forever.
 	future := &sim.ActorSnapshot{
-		ClosedBusinessObs: map[sim.StructureID]time.Time{"skew": now.Add(time.Hour)},
+		Observed: sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
+			{StructureID: "skew", Condition: sim.ObservedClosed}: now.Add(time.Hour),
+		}),
 	}
 	if businessRememberedShut(snap, future, "skew") {
 		t.Error("a future-stamped observation must not be treated as a live shut memory")
@@ -49,9 +51,11 @@ func TestBusinessRememberedShut_Decay(t *testing.T) {
 func TestRenderRestocking_ShutAnnotation(t *testing.T) {
 	now := time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)
 	subj := &sim.ActorSnapshot{
-		Inventory:         map[sim.ItemKind]int{"ale": 2},
-		RestockPolicy:     buyPolicy("ale", 20),
-		ClosedBusinessObs: map[sim.StructureID]time.Time{"brewery": now.Add(-time.Hour)},
+		Inventory:     map[sim.ItemKind]int{"ale": 2},
+		RestockPolicy: buyPolicy("ale", 20),
+		Observed: sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
+			{StructureID: "brewery", Condition: sim.ObservedClosed}: now.Add(-time.Hour),
+		}),
 	}
 	supplier := &sim.ActorSnapshot{WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}}
 	snap := &sim.Snapshot{
@@ -73,7 +77,7 @@ func TestRenderRestocking_ShutAnnotation(t *testing.T) {
 	}
 
 	// Same setup without the memory → no annotation.
-	subj.ClosedBusinessObs = nil
+	subj.Observed = sim.ObservedStates{}
 	v2 := buildRestocking(snap, "merchant", subj)
 	var b2 strings.Builder
 	renderRestocking(&b2, v2)
@@ -87,8 +91,10 @@ func TestRenderRestocking_ShutAnnotation(t *testing.T) {
 func TestRenderSatiation_ShutAnnotation(t *testing.T) {
 	now := time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)
 	subj := &sim.ActorSnapshot{
-		Needs:             map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold},
-		ClosedBusinessObs: map[sim.StructureID]time.Time{"tavern": now.Add(-time.Hour)},
+		Needs: map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold},
+		Observed: sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
+			{StructureID: "tavern", Condition: sim.ObservedClosed}: now.Add(-time.Hour),
+		}),
 	}
 	cook := &sim.ActorSnapshot{WorkStructureID: "tavern", Inventory: map[sim.ItemKind]int{"stew": 5}}
 	snap := &sim.Snapshot{
@@ -165,7 +171,9 @@ func TestRenderSatiation_KeeperAsleepAnnotation(t *testing.T) {
 	// Live closed-now wins over the stale experiential Shut memory: only the
 	// present-tense marker shows, not "found it shut up".
 	cook.State = sim.StateSleeping
-	subj.ClosedBusinessObs = map[sim.StructureID]time.Time{"tavern": now.Add(-time.Hour)}
+	subj.Observed = sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
+		{StructureID: "tavern", Condition: sim.ObservedClosed}: now.Add(-time.Hour),
+	})
 	out := render()
 	if !strings.Contains(out, "(currently closed)") {
 		t.Errorf("expected the closed marker to win, got:\n%s", out)
@@ -177,10 +185,9 @@ func TestRenderSatiation_KeeperAsleepAnnotation(t *testing.T) {
 	// The ClosedNow marker and the OutOfStock suffix are independent and both
 	// render — the (currently closed) name marker necessarily precedes the
 	// trailing out-of-stock suffix.
-	subj.ClosedBusinessObs = nil
-	subj.OutOfStockObs = map[sim.OutOfStockKey]time.Time{
-		{StructureID: "tavern", ItemKind: "stew"}: now.Add(-time.Hour),
-	}
+	subj.Observed = sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
+		{StructureID: "tavern", ItemKind: "stew", Condition: sim.ObservedOutOfStock}: now.Add(-time.Hour),
+	})
 	out = render()
 	closedIdx := strings.Index(out, "(currently closed)")
 	stockIdx := strings.Index(out, "found them out")

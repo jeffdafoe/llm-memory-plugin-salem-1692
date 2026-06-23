@@ -679,40 +679,25 @@ type Actor struct {
 
 	DwellCredits map[DwellCreditKey]*DwellCredit
 
-	// ClosedBusinessObs is this actor's experiential memory of businesses it
-	// arrived at and found shut (no keeper present), keyed by the business's
-	// structure_id and stamped with the wall-clock time of the observation. It
-	// is how a wandering NPC learns NOT to keep walking to an unattended shop —
-	// perception annotates a restock/vendor cue pointing at a remembered-shut
-	// business so the model deprioritizes it. The memory is experiential (only
-	// learned by going there, never map-wide omniscience), self-clears when the
-	// actor later finds the business attended, and DECAYS: perception ignores an
-	// entry older than ClosedBusinessMemoryTTL (4h) so the NPC retries rather
-	// than believing it shut forever. In-memory + restart-lossy by design
-	// (transient knowledge, not durable state). Populated by the ActorArrived
-	// subscriber in closed_business.go. nil until the actor's first shut
-	// observation. ZBBS-HOME-353.
-	ClosedBusinessObs map[StructureID]time.Time
-
-	// OutOfStockObs is this actor's experiential memory of a (business, item) it
-	// tried to buy and found out of stock, keyed by (structure_id, item_kind) and
-	// stamped with the observation time. The out-of-stock sibling of
-	// ClosedBusinessObs (ZBBS-HOME-363): vendors are allowed to run dry (a farm
-	// off-post regenerates nothing; advertised water is finite seed stock), so a
-	// buy that fails on stock is remembered, and perception deprioritizes that
-	// vendor-item in the buy menu so the NPC stops re-walking to a dry vendor.
-	// Experiential (learned only by trying), self-clears on a later successful
-	// buy of the same (structure, item), and DECAYS after OutOfStockMemoryTTL so
-	// the NPC retries. In-memory + restart-lossy by design. Populated by the
-	// PayWithItemResolved subscriber in out_of_stock.go. nil until the first
-	// out-of-stock observation.
-	OutOfStockObs map[OutOfStockKey]time.Time
+	// Observed is this actor's decaying, in-memory experiential memory of volatile
+	// place conditions — businesses found shut (ObservedClosed, HOME-353) and
+	// (vendor, item) pairs found out of stock (ObservedOutOfStock, HOME-363) —
+	// folded into one store keyed by (structure, item, condition). Perception
+	// deprioritizes a cue pointing at a remembered-shut/dry place; the memory
+	// self-clears when the place is re-observed otherwise; each condition DECAYS
+	// after its TTL so the NPC retries rather than believing it shut/dry forever.
+	// Experiential (learned only by going / trying, never map-wide omniscience)
+	// and restart-lossy by design — contrast KnownPlaces below, which is durable
+	// positive knowledge. Written by the capture subscribers in closed_business.go
+	// / out_of_stock.go; the zero value is an empty store. LLM-80 (epic LLM-76).
+	// See observed_state.go.
+	Observed ObservedStates
 
 	// KnownPlaces is this actor's DURABLE world-memory: the places/sources it
 	// knows and what each is good for (its Affordances). Unlike the decaying,
-	// in-memory ClosedBusinessObs/OutOfStockObs above (negative "found it
-	// shut/dry just now" observations), a known place is PERMANENT positive
-	// knowledge — a location doesn't move, you don't un-know your own farm — and
+	// in-memory Observed store above (negative "found it shut/dry just now"
+	// observations), a known place is PERMANENT positive knowledge — a location
+	// doesn't move, you don't un-know your own farm — and
 	// is checkpointed to actor_known_place (same durability tier as
 	// salient_facts). Populated on affordance-bearing experience
 	// (gather/purchase/consume-at-source) by the known_place.go capture path, and
@@ -939,12 +924,9 @@ func CloneActor(a *Actor) *Actor {
 	if a.DwellCredits != nil {
 		cp.DwellCredits = cloneDwellCredits(a.DwellCredits)
 	}
-	if a.ClosedBusinessObs != nil {
-		cp.ClosedBusinessObs = cloneClosedBusinessObs(a.ClosedBusinessObs)
-	}
-	if a.OutOfStockObs != nil {
-		cp.OutOfStockObs = cloneOutOfStockObs(a.OutOfStockObs)
-	}
+	// cp := *a aliased the backing map; Clone breaks the alias (cheap no-op when
+	// the store is empty).
+	cp.Observed = a.Observed.Clone()
 	if a.KnownPlaces != nil {
 		cp.KnownPlaces = cloneKnownPlaces(a.KnownPlaces)
 	}
@@ -1185,21 +1167,13 @@ type ActorSnapshot struct {
 	// the world's mutable credit map.
 	DwellCredits map[DwellCreditKey]*DwellCredit
 
-	// ClosedBusinessObs mirrors the live Actor's experiential shut-business
-	// memory at snapshot time (structure_id -> observed-shut wall-clock), so
-	// perception can annotate a restock/vendor cue pointing at a
-	// remembered-shut business. Deep-cloned by snapshotActor so published
-	// snapshots don't alias the world's mutable map. nil until the actor's
-	// first shut observation. See Actor.ClosedBusinessObs. ZBBS-HOME-353.
-	ClosedBusinessObs map[StructureID]time.Time
-
-	// OutOfStockObs mirrors the live Actor's experiential out-of-stock memory at
-	// snapshot time ((structure_id, item_kind) -> observed wall-clock), so
-	// perception can deprioritize a remembered-dry vendor-item in the buy menu.
+	// Observed mirrors the live Actor's decaying experiential observed-state
+	// memory (shut businesses, out-of-stock vendor-items) at snapshot time, so
+	// perception can deprioritize a cue pointing at a remembered-shut/dry place.
 	// Deep-cloned by snapshotActor so published snapshots don't alias the world's
-	// mutable map. nil until the first out-of-stock observation. See
-	// Actor.OutOfStockObs. ZBBS-HOME-363.
-	OutOfStockObs map[OutOfStockKey]time.Time
+	// mutable store. The zero value is an empty store. See Actor.Observed and
+	// observed_state.go. LLM-80 (epic LLM-76).
+	Observed ObservedStates
 
 	// KnownPlaces mirrors the live Actor's durable world-memory at snapshot time
 	// so the (future LLM-78/79) move_to resolver + perception cues can read
@@ -1299,12 +1273,7 @@ func CloneActorSnapshot(s *ActorSnapshot) *ActorSnapshot {
 	if s.DwellCredits != nil {
 		cp.DwellCredits = cloneDwellCredits(s.DwellCredits)
 	}
-	if s.ClosedBusinessObs != nil {
-		cp.ClosedBusinessObs = cloneClosedBusinessObs(s.ClosedBusinessObs)
-	}
-	if s.OutOfStockObs != nil {
-		cp.OutOfStockObs = cloneOutOfStockObs(s.OutOfStockObs)
-	}
+	cp.Observed = s.Observed.Clone()
 	if s.KnownPlaces != nil {
 		cp.KnownPlaces = cloneKnownPlaces(s.KnownPlaces)
 	}
@@ -1318,35 +1287,6 @@ func CloneActorSnapshot(s *ActorSnapshot) *ActorSnapshot {
 	cp.PendingSummon = clonePendingSummon(s.PendingSummon)
 	cp.SummonRefusal = cloneSummonRefusal(s.SummonRefusal)
 	return &cp
-}
-
-// cloneClosedBusinessObs copies a ClosedBusinessObs map (structure_id ->
-// observed-shut time). time.Time is a value type, so a shallow per-entry copy
-// is a full clone. Returns nil for a nil source. ZBBS-HOME-353.
-func cloneClosedBusinessObs(src map[StructureID]time.Time) map[StructureID]time.Time {
-	if src == nil {
-		return nil
-	}
-	dst := make(map[StructureID]time.Time, len(src))
-	for k, v := range src {
-		dst[k] = v
-	}
-	return dst
-}
-
-// cloneOutOfStockObs copies an OutOfStockObs map ((structure_id, item_kind) ->
-// observed time). The key is a value struct and time.Time is a value, so a
-// shallow per-entry copy is a full clone. Returns nil for a nil source.
-// ZBBS-HOME-363.
-func cloneOutOfStockObs(src map[OutOfStockKey]time.Time) map[OutOfStockKey]time.Time {
-	if src == nil {
-		return nil
-	}
-	dst := make(map[OutOfStockKey]time.Time, len(src))
-	for k, v := range src {
-		dst[k] = v
-	}
-	return dst
 }
 
 // cloneKnownPlaces deep-copies a KnownPlaces map. The value is a *KnownPlace,

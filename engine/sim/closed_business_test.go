@@ -40,8 +40,8 @@ func TestClosedBusiness_RecordsWhenKeeperAbsent(t *testing.T) {
 
 	handleClosedBusinessOnArrival(w, arrivedInside("john", "farm", now))
 
-	if _, ok := john.ClosedBusinessObs["farm"]; !ok {
-		t.Fatalf("expected john to remember Ellis Farm shut, got %v", john.ClosedBusinessObs)
+	if _, ok := john.Observed.At(ObservedStateKey{StructureID: "farm", Condition: ObservedClosed}); !ok {
+		t.Fatalf("expected john to remember Ellis Farm shut, got %v", john.Observed)
 	}
 }
 
@@ -56,8 +56,8 @@ func TestClosedBusiness_NoRecordWhenKeeperPresent(t *testing.T) {
 
 	handleClosedBusinessOnArrival(w, arrivedInside("john", "farm", now))
 
-	if len(john.ClosedBusinessObs) != 0 {
-		t.Fatalf("keeper present → no shut memory, got %v", john.ClosedBusinessObs)
+	if john.Observed.Len() != 0 {
+		t.Fatalf("keeper present → no shut memory, got %v", john.Observed)
 	}
 }
 
@@ -67,13 +67,15 @@ func TestClosedBusiness_KeeperPresentClearsStaleMemory(t *testing.T) {
 	w.Structures["farm"] = &Structure{ID: "farm", DisplayName: "Ellis Farm"}
 	w.Actors["dairyer"] = cbAgent("dairyer", "farm", "farm") // present this time
 	john := cbAgent("john", "tavern", "farm")
-	john.ClosedBusinessObs = map[StructureID]time.Time{"farm": now.Add(-time.Hour)} // stale memory
+	john.Observed = NewObservedStates(map[ObservedStateKey]time.Time{
+		{StructureID: "farm", Condition: ObservedClosed}: now.Add(-time.Hour),
+	}) // stale memory
 	w.Actors["john"] = john
 
 	handleClosedBusinessOnArrival(w, arrivedInside("john", "farm", now))
 
-	if _, ok := john.ClosedBusinessObs["farm"]; ok {
-		t.Fatalf("re-observing the farm attended must clear the stale shut memory, got %v", john.ClosedBusinessObs)
+	if _, ok := john.Observed.At(ObservedStateKey{StructureID: "farm", Condition: ObservedClosed}); ok {
+		t.Fatalf("re-observing the farm attended must clear the stale shut memory, got %v", john.Observed)
 	}
 }
 
@@ -86,8 +88,8 @@ func TestClosedBusiness_OwnWorkplaceExcluded(t *testing.T) {
 
 	handleClosedBusinessOnArrival(w, arrivedInside("john", "tavern", now))
 
-	if len(john.ClosedBusinessObs) != 0 {
-		t.Fatalf("an actor never records its own workplace as shut, got %v", john.ClosedBusinessObs)
+	if john.Observed.Len() != 0 {
+		t.Fatalf("an actor never records its own workplace as shut, got %v", john.Observed)
 	}
 }
 
@@ -101,8 +103,8 @@ func TestClosedBusiness_NonBusinessIgnored(t *testing.T) {
 
 	handleClosedBusinessOnArrival(w, arrivedInside("john", "cottage", now))
 
-	if len(john.ClosedBusinessObs) != 0 {
-		t.Fatalf("a workerless residence is not a business, got %v", john.ClosedBusinessObs)
+	if john.Observed.Len() != 0 {
+		t.Fatalf("a workerless residence is not a business, got %v", john.Observed)
 	}
 }
 
@@ -116,8 +118,8 @@ func TestClosedBusiness_NonAgentIgnored(t *testing.T) {
 
 	handleClosedBusinessOnArrival(w, arrivedInside("pc", "farm", now))
 
-	if len(pc.ClosedBusinessObs) != 0 {
-		t.Fatalf("PCs don't accrue shut memory, got %v", pc.ClosedBusinessObs)
+	if pc.Observed.Len() != 0 {
+		t.Fatalf("PCs don't accrue shut memory, got %v", pc.Observed)
 	}
 }
 
@@ -132,8 +134,8 @@ func TestClosedBusiness_StaleArrivalIgnored(t *testing.T) {
 
 	handleClosedBusinessOnArrival(w, arrivedInside("john", "farm", now))
 
-	if len(john.ClosedBusinessObs) != 0 {
-		t.Fatalf("a superseded arrival (current structure != event) must not record, got %v", john.ClosedBusinessObs)
+	if john.Observed.Len() != 0 {
+		t.Fatalf("a superseded arrival (current structure != event) must not record, got %v", john.Observed)
 	}
 }
 
@@ -160,8 +162,8 @@ func TestClosedBusiness_VisitPathResolvesViaLoiter(t *testing.T) {
 	// Visit arrival: FinalStructureID empty, FinalPosition at the loiter slot.
 	handleClosedBusinessOnArrival(w, &ActorArrived{ActorID: "john", FinalPosition: at, At: now})
 
-	if _, ok := john.ClosedBusinessObs["farm"]; !ok {
-		t.Fatalf("visit to the keeperless farm (via loiter resolution) must record shut, got %v", john.ClosedBusinessObs)
+	if _, ok := john.Observed.At(ObservedStateKey{StructureID: "farm", Condition: ObservedClosed}); !ok {
+		t.Fatalf("visit to the keeperless farm (via loiter resolution) must record shut, got %v", john.Observed)
 	}
 }
 
@@ -187,7 +189,7 @@ func TestClosedBusiness_StaleVisitArrivalIgnored(t *testing.T) {
 	// The stale event still carries the old farm-slot position.
 	handleClosedBusinessOnArrival(w, &ActorArrived{ActorID: "john", FinalPosition: at, At: now})
 
-	if len(john.ClosedBusinessObs) != 0 {
-		t.Fatalf("a superseded visit arrival (actor moved away) must not record, got %v", john.ClosedBusinessObs)
+	if john.Observed.Len() != 0 {
+		t.Fatalf("a superseded visit arrival (actor moved away) must not record, got %v", john.Observed)
 	}
 }

@@ -26,24 +26,24 @@ func TestOutOfStock_RecordsOnInsufficientStock(t *testing.T) {
 
 	handleOutOfStockOnResolved(w, resolved("prudence", "moses", "carrots", PayTerminalStateFailedInsufficientStock, now))
 
-	if _, ok := buyer.OutOfStockObs[OutOfStockKey{StructureID: "james_farm", ItemKind: "carrots"}]; !ok {
-		t.Fatalf("expected out-of-stock memory for (james_farm, carrots), got %v", buyer.OutOfStockObs)
+	if _, ok := buyer.Observed.At(ObservedStateKey{StructureID: "james_farm", ItemKind: "carrots", Condition: ObservedOutOfStock}); !ok {
+		t.Fatalf("expected out-of-stock memory for (james_farm, carrots), got %v", buyer.Observed)
 	}
 }
 
 func TestOutOfStock_ClearsOnAccepted(t *testing.T) {
 	w := oosWorld()
 	now := time.Now()
-	buyer := &Actor{ID: "prudence", Kind: KindNPCStateful, OutOfStockObs: map[OutOfStockKey]time.Time{
-		{StructureID: "james_farm", ItemKind: "carrots"}: now.Add(-time.Hour),
-	}}
+	buyer := &Actor{ID: "prudence", Kind: KindNPCStateful, Observed: NewObservedStates(map[ObservedStateKey]time.Time{
+		{StructureID: "james_farm", ItemKind: "carrots", Condition: ObservedOutOfStock}: now.Add(-time.Hour),
+	})}
 	w.Actors["prudence"] = buyer
 	w.Actors["moses"] = &Actor{ID: "moses", Kind: KindNPCStateful, WorkStructureID: "james_farm"}
 
 	handleOutOfStockOnResolved(w, resolved("prudence", "moses", "carrots", PayTerminalStateAccepted, now))
 
-	if _, ok := buyer.OutOfStockObs[OutOfStockKey{StructureID: "james_farm", ItemKind: "carrots"}]; ok {
-		t.Fatalf("successful buy should clear the out-of-stock memory, got %v", buyer.OutOfStockObs)
+	if _, ok := buyer.Observed.At(ObservedStateKey{StructureID: "james_farm", ItemKind: "carrots", Condition: ObservedOutOfStock}); ok {
+		t.Fatalf("successful buy should clear the out-of-stock memory, got %v", buyer.Observed)
 	}
 }
 
@@ -57,8 +57,8 @@ func TestOutOfStock_SkipsCoPresentPeer(t *testing.T) {
 
 	handleOutOfStockOnResolved(w, resolved("prudence", "peer", "carrots", PayTerminalStateFailedInsufficientStock, now))
 
-	if len(buyer.OutOfStockObs) != 0 {
-		t.Fatalf("no-workplace seller should record nothing, got %v", buyer.OutOfStockObs)
+	if buyer.Observed.Len() != 0 {
+		t.Fatalf("no-workplace seller should record nothing, got %v", buyer.Observed)
 	}
 }
 
@@ -71,8 +71,8 @@ func TestOutOfStock_SkipsNonAgentBuyer(t *testing.T) {
 
 	handleOutOfStockOnResolved(w, resolved("player", "moses", "carrots", PayTerminalStateFailedInsufficientStock, now))
 
-	if len(buyer.OutOfStockObs) != 0 {
-		t.Fatalf("PC buyer should record nothing, got %v", buyer.OutOfStockObs)
+	if buyer.Observed.Len() != 0 {
+		t.Fatalf("PC buyer should record nothing, got %v", buyer.Observed)
 	}
 }
 
@@ -86,7 +86,7 @@ func TestOutOfStock_IgnoresUnrelatedTerminal(t *testing.T) {
 	// Insufficient FUNDS is not a stock signal → neither record nor clear.
 	handleOutOfStockOnResolved(w, resolved("prudence", "moses", "carrots", PayTerminalStateFailedInsufficientFunds, now))
 
-	if len(buyer.OutOfStockObs) != 0 {
-		t.Fatalf("non-stock terminal should record nothing, got %v", buyer.OutOfStockObs)
+	if buyer.Observed.Len() != 0 {
+		t.Fatalf("non-stock terminal should record nothing, got %v", buyer.Observed)
 	}
 }

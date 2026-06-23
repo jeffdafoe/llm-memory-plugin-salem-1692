@@ -114,9 +114,9 @@ func TestGatherSatiation_OutOfStockPrefersInStockRepresentative(t *testing.T) {
 	subj := &sim.ActorSnapshot{
 		Needs: map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold},
 		// Remembers the tavern out of STEW (the stronger item) recently.
-		OutOfStockObs: map[sim.OutOfStockKey]time.Time{
-			{StructureID: "tavern", ItemKind: "stew"}: now.Add(-time.Hour),
-		},
+		Observed: sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
+			{StructureID: "tavern", ItemKind: "stew", Condition: sim.ObservedOutOfStock}: now.Add(-time.Hour),
+		}),
 	}
 	keeper := &sim.ActorSnapshot{WorkStructureID: "tavern", Inventory: map[sim.ItemKind]int{"bread": 9, "stew": 4}}
 	snap := &sim.Snapshot{
@@ -142,9 +142,9 @@ func TestRenderSatiation_OutOfStockAnnotation(t *testing.T) {
 	now := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
 	subj := &sim.ActorSnapshot{
 		Needs: map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold},
-		OutOfStockObs: map[sim.OutOfStockKey]time.Time{
-			{StructureID: "farm", ItemKind: "bread"}: now.Add(-time.Hour),
-		},
+		Observed: sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
+			{StructureID: "farm", ItemKind: "bread", Condition: sim.ObservedOutOfStock}: now.Add(-time.Hour),
+		}),
 	}
 	keeper := &sim.ActorSnapshot{WorkStructureID: "farm", Inventory: map[sim.ItemKind]int{"bread": 9}}
 	snap := &sim.Snapshot{
