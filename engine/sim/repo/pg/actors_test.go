@@ -244,6 +244,11 @@ func emptyProduceRows() *pgxmock.Rows    { return pgxmock.NewRows(produceStateCo
 func emptyRoomAccessRows() *pgxmock.Rows { return pgxmock.NewRows(roomAccessColumns()) }
 func emptyAttrRows() *pgxmock.Rows       { return pgxmock.NewRows(attributeColumns()) }
 
+func knownPlaceColumns() []string {
+	return []string{"actor_id", "place_ref", "place_kind", "affordances", "first_learned_at", "last_experienced_at"}
+}
+func emptyKnownPlaceRows() *pgxmock.Rows { return pgxmock.NewRows(knownPlaceColumns()) }
+
 // expectLoadAllSlice3Empty programs empty result sets for the four Slice 3
 // child queries (dwell credit / produce state / room access / attribute),
 // in LoadAll order. Pairs with expectLoadAllContinuityEmpty for the full
@@ -253,6 +258,7 @@ func expectLoadAllSlice3Empty(mock pgxmock.PgxPoolIface) {
 	mock.ExpectQuery(`FROM actor_produce_state\b`).WillReturnRows(emptyProduceRows())
 	mock.ExpectQuery(`FROM room_access\b`).WillReturnRows(emptyRoomAccessRows())
 	mock.ExpectQuery(`FROM actor_attribute\b`).WillReturnRows(emptyAttrRows())
+	mock.ExpectQuery(`FROM actor_known_place\b`).WillReturnRows(emptyKnownPlaceRows())
 }
 
 // expectActorSlice3TailsEmpty programs the dwell-credit + produce-state +
@@ -279,6 +285,14 @@ func expectActorSlice3TailsEmpty(mock pgxmock.PgxPoolIface, dwellGen, produceGen
 		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(attrGen))
 	mock.ExpectExec(`DELETE FROM actor_attribute .*WHERE snapshot_gen < \$1`).
 		WithArgs(attrGen).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+	// LLM-77 known-place tier — the last tier, no UPSERTs in the empty case.
+	// Gen derived from attrGen so callers need not thread another argument.
+	knownPlaceGen := attrGen + 1
+	mock.ExpectQuery(`SELECT nextval\('actor_known_place_snapshot_gen_seq`).
+		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(knownPlaceGen))
+	mock.ExpectExec(`DELETE FROM actor_known_place .*WHERE snapshot_gen < \$1`).
+		WithArgs(knownPlaceGen).
 		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
 }
 
@@ -1523,6 +1537,38 @@ func TestActorsRepo_SaveSnapshot_EmptyRelationshipPeer(t *testing.T) {
 	assertValidationOnly(t, mock, err, "empty relationship peer key")
 }
 
+// LLM-77: a known-place whose kp.Ref disagrees with its map key is malformed —
+// the map key is the authoritative place_ref. Rejected before any SQL.
+func TestActorsRepo_SaveSnapshot_KnownPlaceRefMismatch(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+	actors := map[sim.ActorID]*sim.Actor{
+		actA: {
+			ID: actA, DisplayName: "X", State: "idle",
+			KnownPlaces: map[sim.PlaceRef]*sim.KnownPlace{
+				objX: {Ref: "a-different-ref", Kind: sim.PlaceKindObject},
+			},
+		},
+	}
+	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
+	assertValidationOnly(t, mock, err, "mismatched Ref")
+}
+
+// LLM-77: place_kind has no DB CHECK (Go owns the allowlist), so the pre-pass
+// rejects an unknown kind before it can wedge the checkpoint Tx.
+func TestActorsRepo_SaveSnapshot_KnownPlaceInvalidKind(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+	actors := map[sim.ActorID]*sim.Actor{
+		actA: {
+			ID: actA, DisplayName: "X", State: "idle",
+			KnownPlaces: map[sim.PlaceRef]*sim.KnownPlace{
+				objX: {Ref: objX, Kind: "bogus"},
+			},
+		},
+	}
+	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
+	assertValidationOnly(t, mock, err, "unknown place_kind")
+}
+
 func TestActorsRepo_SaveSnapshot_NegativeRelationshipCounts(t *testing.T) {
 	cases := []struct {
 		name string
@@ -1681,6 +1727,7 @@ func TestActorsRepo_LoadAll_Slice3(t *testing.T) {
 	mock.ExpectQuery(`FROM actor_attribute\b`).
 		WillReturnRows(pgxmock.NewRows(attributeColumns()).
 			AddRow(actA, "businessowner", []byte(`{"flavor":"flamboyant"}`)))
+	mock.ExpectQuery(`FROM actor_known_place\b`).WillReturnRows(emptyKnownPlaceRows())
 
 	actors, err := repo.LoadAll(context.Background())
 	if err != nil {
@@ -1908,6 +1955,13 @@ func TestActorsRepo_SaveSnapshot_Slice3(t *testing.T) {
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor_attribute .*WHERE snapshot_gen < \$1`).
 		WithArgs(int64(1410)).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+
+	// Known-place tier (LLM-77) — this actor has no known places, nextval + delete only.
+	mock.ExpectQuery(`SELECT nextval\('actor_known_place_snapshot_gen_seq`).
+		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(int64(1510)))
+	mock.ExpectExec(`DELETE FROM actor_known_place .*WHERE snapshot_gen < \$1`).
+		WithArgs(int64(1510)).
 		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
 
 	actors := map[sim.ActorID]*sim.Actor{

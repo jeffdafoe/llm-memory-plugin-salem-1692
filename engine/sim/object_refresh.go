@@ -435,6 +435,12 @@ func applyObjectRefreshEffect(w *World, actorID ActorID, objID VillageObjectID, 
 		}
 		w.emit(&PCNeedsChanged{ActorID: actorID, Needs: needs})
 	}
+	// LLM-77: an NPC that just ate/drank in place here now KNOWS this is a free
+	// source for each need it satisfied — durable world-memory (known_place.go).
+	// This path emits no event, so capture is an inline call. Yield-only farm
+	// bushes produce no hits (the amount==0 branch above), so they are never
+	// recorded as a free source; the NPC gate is inside the recorder.
+	recordFreeSourceExperience(actor, objID, hits, now)
 	return ArrivalRefreshResult{ObjectID: objID, Hits: hits}
 }
 

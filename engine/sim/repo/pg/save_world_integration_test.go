@@ -12,6 +12,7 @@ package pg
 // real LoadWorld. This is the end-to-end checkpoint roundtrip.
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -244,5 +245,71 @@ func TestIntegration_SaveWorld_SameWindowOrderAndRoomGrant(t *testing.T) {
 	}
 	if ledgerState != "accepted" {
 		t.Errorf("pay_ledger state = %q, want accepted", ledgerState)
+	}
+}
+
+// TestIntegration_SaveWorld_KnownPlaceRoundTrip — LLM-77. An actor's durable
+// world-memory (actor_known_place) survives a real checkpoint → cold-load: the
+// place_ref (uuid), place_kind, the JSONB affordance array, and both
+// timestamps round-trip through Postgres and the gen-marker tier. Exercises the
+// real upsert (step 33) + loadAllKnownPlaces scan/unmarshal against the schema
+// the LLM-77 migration produced.
+func TestIntegration_SaveWorld_KnownPlaceRoundTrip(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	repo := NewRepository(f.Pool)
+
+	const (
+		actorID = sim.ActorID("dddddddd-0000-0000-0000-00000000d077")
+		bushRef = sim.PlaceRef("eeeeeeee-0000-0000-0000-00000000e077")
+		shopRef = sim.PlaceRef("ffffffff-0000-0000-0000-00000000f077")
+	)
+	learned := time.Date(2026, 6, 12, 9, 0, 0, 0, time.UTC)
+	visited := time.Date(2026, 6, 12, 14, 30, 0, 0, time.UTC)
+
+	w := checkpointableWorld(repo)
+	w.Actors = map[sim.ActorID]*sim.Actor{
+		actorID: {ID: actorID, DisplayName: "Prudence", State: sim.StateIdle, Kind: sim.KindNPCStateful,
+			KnownPlaces: map[sim.PlaceRef]*sim.KnownPlace{
+				bushRef: {Ref: bushRef, Kind: sim.PlaceKindObject,
+					Affordances:    []string{"free_source:thirst", "gather:raspberries"},
+					FirstLearnedAt: learned, LastExperiencedAt: visited},
+				shopRef: {Ref: shopRef, Kind: sim.PlaceKindStructure,
+					Affordances:    []string{"vendor:bread"},
+					FirstLearnedAt: learned, LastExperiencedAt: learned},
+			}},
+	}
+
+	if err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
+		t.Fatalf("SaveWorld (known places): %v", err)
+	}
+
+	loaded, err := LoadWorld(ctx, repo, true /*requireAllImpl*/)
+	if err != nil {
+		t.Fatalf("LoadWorld after known-place checkpoint: %v", err)
+	}
+	a := loaded.Actors[actorID]
+	if a == nil {
+		t.Fatal("actor did not round-trip")
+	}
+	if len(a.KnownPlaces) != 2 {
+		t.Fatalf("KnownPlaces = %d, want 2", len(a.KnownPlaces))
+	}
+	bush := a.KnownPlaces[bushRef]
+	if bush == nil {
+		t.Fatal("bush known-place did not round-trip")
+	}
+	if bush.Kind != sim.PlaceKindObject {
+		t.Errorf("bush kind = %q, want object", bush.Kind)
+	}
+	if !reflect.DeepEqual(bush.Affordances, []string{"free_source:thirst", "gather:raspberries"}) {
+		t.Errorf("bush affordances = %v, want [free_source:thirst gather:raspberries]", bush.Affordances)
+	}
+	if !bush.FirstLearnedAt.Equal(learned) || !bush.LastExperiencedAt.Equal(visited) {
+		t.Errorf("bush timestamps = (%v, %v), want (%v, %v)", bush.FirstLearnedAt, bush.LastExperiencedAt, learned, visited)
+	}
+	if shop := a.KnownPlaces[shopRef]; shop == nil || shop.Kind != sim.PlaceKindStructure ||
+		len(shop.Affordances) != 1 || shop.Affordances[0] != "vendor:bread" {
+		t.Errorf("shop known-place round-trip wrong: %+v", a.KnownPlaces[shopRef])
 	}
 }

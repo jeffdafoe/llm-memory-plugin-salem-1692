@@ -459,6 +459,41 @@ const nextGenProduceStateSQLA = `SELECT nextval('actor_produce_state_snapshot_ge
 const nextGenRoomAccessSQLA = `SELECT nextval('room_access_snapshot_gen_seq')`
 const nextGenAttributeSQLA = `SELECT nextval('actor_attribute_snapshot_gen_seq')`
 
+// --- LLM-77 known-places tier (durable world-memory) ---
+
+// loadAllKnownPlacesSQLA selects every actor_known_place row. affordances
+// comes back as raw JSONB bytes (a JSON array of capability-token strings),
+// unmarshalled in Go. place_ref is a uuid; ::text so it scans straight into
+// the PlaceRef string (same posture as actor_id and the structure refs).
+const loadAllKnownPlacesSQLA = `
+SELECT
+    actor_id::text, place_ref::text, place_kind, affordances,
+    first_learned_at, last_experienced_at
+  FROM actor_known_place`
+
+// upsertKnownPlaceSQLA writes one actor_known_place row. PK is
+// (actor_id, place_ref). affordances is bound as text + cast to jsonb (same
+// posture as salient_facts). first_learned_at / last_experienced_at are
+// written verbatim from the in-memory values — pg stays a faithful mirror.
+const upsertKnownPlaceSQLA = `
+INSERT INTO actor_known_place (
+    actor_id, place_ref, place_kind, affordances,
+    first_learned_at, last_experienced_at, snapshot_gen
+) VALUES (
+    $1, $2, $3, $4::jsonb,
+    $5, $6, $7
+)
+ON CONFLICT (actor_id, place_ref) DO UPDATE SET
+    place_kind          = EXCLUDED.place_kind,
+    affordances         = EXCLUDED.affordances,
+    first_learned_at    = EXCLUDED.first_learned_at,
+    last_experienced_at = EXCLUDED.last_experienced_at,
+    snapshot_gen        = EXCLUDED.snapshot_gen`
+
+const deleteStaleKnownPlaceSQLA = `DELETE FROM actor_known_place   WHERE snapshot_gen < $1`
+
+const nextGenKnownPlaceSQLA = `SELECT nextval('actor_known_place_snapshot_gen_seq')`
+
 // LoadAll loads every actor row plus its needs and inventory children.
 //
 // Runs against the pool directly (no Tx — read-only restart path).
@@ -578,6 +613,7 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			ProduceState:         make(map[sim.ItemKind]*sim.ProduceState),
 			RoomAccess:           make(map[sim.RoomAccessKey]*sim.RoomAccess),
 			Attributes:           make(map[string][]byte),
+			KnownPlaces:          make(map[sim.PlaceRef]*sim.KnownPlace),
 		}
 		out[a.ID] = a
 	}
@@ -610,6 +646,9 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 		return nil, err
 	}
 	if err := r.loadAllAttributes(ctx, out); err != nil {
+		return nil, err
+	}
+	if err := r.loadAllKnownPlaces(ctx, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -1054,7 +1093,78 @@ func (r *ActorsRepo) loadAllAttributes(ctx context.Context, actors map[sim.Actor
 	return nil
 }
 
-// SaveSnapshot writes the full actor aggregate (ten tiers) durably
+// loadAllKnownPlaces reads every actor_known_place row and attaches it to the
+// owning actor's KnownPlaces map (keyed by PlaceRef). affordances arrives as
+// raw JSONB bytes (a JSON array of capability tokens). Orphan rows (owning
+// actor missing) return an error. Load-side shape validation is symmetric with
+// SaveSnapshot's pre-pass — v2's posture is "Go owns the invariants" (the
+// schema deliberately omits a place_kind CHECK, see sim_state), so Load is the
+// enforcement layer for the kind allowlist + non-empty ref against out-of-band
+// / legacy rows. LLM-77.
+func (r *ActorsRepo) loadAllKnownPlaces(ctx context.Context, actors map[sim.ActorID]*sim.Actor) error {
+	rows, err := r.pool.Query(ctx, loadAllKnownPlacesSQLA)
+	if err != nil {
+		return fmt.Errorf("pg actors LoadAll known_places query: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			actorID           string
+			placeRef          string
+			placeKind         string
+			affordancesJSON   []byte
+			firstLearnedAt    time.Time
+			lastExperiencedAt time.Time
+		)
+		if err := rows.Scan(
+			&actorID, &placeRef, &placeKind, &affordancesJSON,
+			&firstLearnedAt, &lastExperiencedAt,
+		); err != nil {
+			return fmt.Errorf("pg actors LoadAll known_places scan: %w", err)
+		}
+		parent, ok := actors[sim.ActorID(actorID)]
+		if !ok {
+			return fmt.Errorf("pg actors LoadAll: orphan known_place row actor_id=%s place_ref=%s (parent missing — schema drift or out-of-band write)",
+				actorID, placeRef)
+		}
+		if strings.TrimSpace(placeRef) == "" {
+			return fmt.Errorf("pg actors LoadAll: known_place actor_id=%s has empty place_ref", actorID)
+		}
+		if !sim.PlaceKind(placeKind).Valid() {
+			return fmt.Errorf("pg actors LoadAll: known_place actor_id=%s place_ref=%s has unknown place_kind %q", actorID, placeRef, placeKind)
+		}
+		affordances, err := unmarshalAffordances(affordancesJSON)
+		if err != nil {
+			return fmt.Errorf("pg actors LoadAll: known_place actor_id=%s place_ref=%s affordances unmarshal: %w",
+				actorID, placeRef, err)
+		}
+		// Affordance-token shape, symmetric with SaveSnapshot's pre-pass: reject
+		// empty/whitespace tokens from out-of-band / legacy rows. Token FORMAT
+		// (the "<cap>:<detail>" convention) and sortedness are recorder
+		// niceties, deliberately NOT enforced here — the vocabulary grows with
+		// later consumers (LLM-78/79) and a hard format CHECK would wedge every
+		// checkpoint the moment a new token shape lands (the sim_state posture).
+		for _, aff := range affordances {
+			if strings.TrimSpace(aff) == "" {
+				return fmt.Errorf("pg actors LoadAll: known_place actor_id=%s place_ref=%s has an empty affordance token", actorID, placeRef)
+			}
+		}
+		parent.KnownPlaces[sim.PlaceRef(placeRef)] = &sim.KnownPlace{
+			Ref:               sim.PlaceRef(placeRef),
+			Kind:              sim.PlaceKind(placeKind),
+			Affordances:       affordances,
+			FirstLearnedAt:    firstLearnedAt,
+			LastExperiencedAt: lastExperiencedAt,
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("pg actors LoadAll known_places iter: %w", err)
+	}
+	return nil
+}
+
+// SaveSnapshot writes the full actor aggregate (eleven tiers) durably
 // using the generation-marker pattern (Slice 9/10/11/12/13 standard).
 //
 // Visitor actors (VisitorState != nil) are filtered out entirely —
@@ -1330,6 +1440,33 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 			}
 			if len(params) > 0 && !json.Valid(params) {
 				return fmt.Errorf("pg actors SaveSnapshot: id=%s attribute slug=%q has invalid JSON params", a.ID, slug)
+			}
+		}
+		// KnownPlaces: place_ref non-empty (PK column), place_kind in the
+		// allowlist (the schema has no CHECK — Go owns it, sim_state posture),
+		// affordance tokens non-empty. nil entries skipped at the write step.
+		// LLM-77.
+		for ref, kp := range a.KnownPlaces {
+			if kp == nil {
+				continue
+			}
+			if strings.TrimSpace(string(ref)) == "" {
+				return fmt.Errorf("pg actors SaveSnapshot: id=%s has empty known-place ref", a.ID)
+			}
+			// The map key is the authoritative place_ref (what gets persisted +
+			// reloaded as the PK); a non-empty kp.Ref that disagrees is a
+			// malformed entry that would read differently before vs after a
+			// checkpoint. Reject it (mirrors the parent map-key vs a.ID check).
+			if kp.Ref != "" && kp.Ref != ref {
+				return fmt.Errorf("pg actors SaveSnapshot: id=%s known-place key=%s has mismatched Ref=%s", a.ID, ref, kp.Ref)
+			}
+			if !kp.Kind.Valid() {
+				return fmt.Errorf("pg actors SaveSnapshot: id=%s known-place ref=%s has unknown place_kind %q", a.ID, ref, kp.Kind)
+			}
+			for _, aff := range kp.Affordances {
+				if strings.TrimSpace(aff) == "" {
+					return fmt.Errorf("pg actors SaveSnapshot: id=%s known-place ref=%s has an empty affordance token", a.ID, ref)
+				}
 			}
 		}
 		persisted = append(persisted, a)
@@ -1683,6 +1820,42 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 	if _, err := tx.Exec(ctx, deleteStaleAttributeSQLA, attrGen); err != nil {
 		return fmt.Errorf("pg actors SaveSnapshot: delete stale attribute: %w", err)
 	}
+
+	// Step 32: known-place gen — independent tier (LLM-77).
+	var knownPlaceGen int64
+	if err := tx.QueryRow(ctx, nextGenKnownPlaceSQLA).Scan(&knownPlaceGen); err != nil {
+		return fmt.Errorf("pg actors SaveSnapshot: nextval known_place: %w", err)
+	}
+
+	// Step 33: upsert each known place. nil entries skipped (cloneKnownPlaces
+	// precedent). affordances marshalled to a JSON array of capability tokens.
+	for _, a := range persisted {
+		for ref, kp := range a.KnownPlaces {
+			if kp == nil {
+				continue
+			}
+			affJSON, err := marshalAffordances(kp.Affordances)
+			if err != nil {
+				return fmt.Errorf("pg actors SaveSnapshot: marshal affordances actor=%s ref=%s: %w", a.ID, ref, err)
+			}
+			if _, err := tx.Exec(ctx, upsertKnownPlaceSQLA,
+				string(a.ID),         // $1 actor_id
+				string(ref),          // $2 place_ref
+				string(kp.Kind),      // $3 place_kind
+				affJSON,              // $4 affordances (::jsonb)
+				kp.FirstLearnedAt,    // $5 first_learned_at
+				kp.LastExperiencedAt, // $6 last_experienced_at
+				knownPlaceGen,        // $7 snapshot_gen
+			); err != nil {
+				return fmt.Errorf("pg actors SaveSnapshot: upsert known_place actor=%s ref=%s: %w", a.ID, ref, err)
+			}
+		}
+	}
+
+	// Step 34: prune absent known-place rows.
+	if _, err := tx.Exec(ctx, deleteStaleKnownPlaceSQLA, knownPlaceGen); err != nil {
+		return fmt.Errorf("pg actors SaveSnapshot: delete stale known_place: %w", err)
+	}
 	return nil
 }
 
@@ -1995,4 +2168,38 @@ func unmarshalSalientFacts(b []byte) ([]sim.SalientFact, error) {
 		facts[i] = sim.SalientFact{At: r.At, Kind: sim.InteractionKind(r.Kind), Text: r.Text}
 	}
 	return facts, nil
+}
+
+// marshalAffordances serializes a known place's affordance tokens to a JSON
+// array string for the affordances JSONB column. A nil/empty slice marshals to
+// `[]`, matching the column DEFAULT. Returned as a string so pgx binds it as
+// text for the `$N::jsonb` cast. LLM-77.
+func marshalAffordances(affordances []string) (string, error) {
+	if len(affordances) == 0 {
+		return "[]", nil
+	}
+	b, err := json.Marshal(affordances)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+// unmarshalAffordances parses the affordances JSONB bytes back into a token
+// slice. The column is NOT NULL (DEFAULT '[]'), so input is normally a JSON
+// array; an empty byte slice or `[]` yields a nil slice so a place with no
+// affordances round-trips to the Go zero value rather than an allocated empty
+// slice. LLM-77.
+func unmarshalAffordances(b []byte) ([]string, error) {
+	if len(b) == 0 {
+		return nil, nil
+	}
+	var tokens []string
+	if err := json.Unmarshal(b, &tokens); err != nil {
+		return nil, err
+	}
+	if len(tokens) == 0 {
+		return nil, nil
+	}
+	return tokens, nil
 }
