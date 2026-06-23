@@ -330,25 +330,18 @@ const closedBusinessAnnotation = " — though you went there not long ago and fo
 
 // businessRememberedShut reports whether the subject has an experiential memory
 // (ZBBS-HOME-353) of arriving at structureID and finding it shut, still within
-// sim.ClosedBusinessMemoryTTL of the snapshot clock. Perception uses it to
-// annotate a supplier cue pointing at a remembered-shut business so the model
-// deprioritizes the trip. The memory is stamped + self-cleared by the arrival
-// subscriber (sim/closed_business.go); the TTL decay is applied HERE at read
+// its TTL of the snapshot clock. Perception uses it to annotate a supplier cue
+// pointing at a remembered-shut business so the model deprioritizes the trip.
+// The memory is stamped + self-cleared by the arrival subscriber
+// (sim/closed_business.go); the TTL decay is applied by Observed.Active at read
 // time so a stale "shut" naturally fades (the NPC retries) without the world
-// goroutine sweeping the map. False when the subject has no such memory, the
+// goroutine sweeping the store. False when the subject has no such memory, the
 // snapshot has no clock baseline, or the memory has expired.
 func businessRememberedShut(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, structureID sim.StructureID) bool {
-	if snap == nil || actorSnap == nil || len(actorSnap.ClosedBusinessObs) == 0 {
+	if snap == nil || actorSnap == nil {
 		return false
 	}
-	observedAt, ok := actorSnap.ClosedBusinessObs[structureID]
-	if !ok {
-		return false
-	}
-	// age >= 0 guards a future-stamped observation (clock skew / test setup):
-	// a negative age would otherwise read as "< TTL" → fresh forever.
-	age := snap.PublishedAt.Sub(observedAt)
-	return age >= 0 && age < sim.ClosedBusinessMemoryTTL
+	return actorSnap.Observed.Active(sim.ObservedStateKey{StructureID: structureID, Condition: sim.ObservedClosed}, snap.PublishedAt)
 }
 
 // closedNowMarker is the blunt "(currently closed)" tag rendered right after a
@@ -387,19 +380,14 @@ func vendorKeeperAsleep(snap *sim.Snapshot, vendorID sim.ActorID) bool {
 const outOfStockAnnotation = " — though you went there for it not long ago and found them out"
 
 // businessRememberedOutOfStock reports whether the subject has a live
-// experiential memory (ZBBS-HOME-363, within sim.OutOfStockMemoryTTL of the
-// snapshot clock) of trying to buy itemKind at structureID and finding it out of
-// stock. The per-(structure,item) sibling of businessRememberedShut: stamped +
-// self-cleared by the PayWithItemResolved subscriber (sim/out_of_stock.go), TTL
-// decay applied HERE at read time so a stale "dry" fades (the NPC retries).
+// experiential memory (ZBBS-HOME-363, within its TTL of the snapshot clock) of
+// trying to buy itemKind at structureID and finding it out of stock. The
+// per-(structure,item) sibling of businessRememberedShut: stamped + self-cleared
+// by the PayWithItemResolved subscriber (sim/out_of_stock.go), TTL decay applied
+// by Observed.Active at read time so a stale "dry" fades (the NPC retries).
 func businessRememberedOutOfStock(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, structureID sim.StructureID, itemKind sim.ItemKind) bool {
-	if snap == nil || actorSnap == nil || len(actorSnap.OutOfStockObs) == 0 {
+	if snap == nil || actorSnap == nil {
 		return false
 	}
-	observedAt, ok := actorSnap.OutOfStockObs[sim.OutOfStockKey{StructureID: structureID, ItemKind: itemKind}]
-	if !ok {
-		return false
-	}
-	age := snap.PublishedAt.Sub(observedAt)
-	return age >= 0 && age < sim.OutOfStockMemoryTTL
+	return actorSnap.Observed.Active(sim.ObservedStateKey{StructureID: structureID, ItemKind: itemKind, Condition: sim.ObservedOutOfStock}, snap.PublishedAt)
 }

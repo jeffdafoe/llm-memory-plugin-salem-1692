@@ -8,12 +8,12 @@ import (
 // known_place.go — LLM-77 (epic LLM-76, World-memory Half A — foundation).
 //
 // Durable, per-actor memory of WHICH places/sources an actor knows and WHAT
-// each is good for. Unlike the experiential ClosedBusinessObs / OutOfStockObs
-// (closed_business.go / out_of_stock.go) — in-memory, decaying NEGATIVE
-// observations ("this was shut / dry just now") — a known place is PERMANENT
-// POSITIVE knowledge: a location doesn't move and you don't un-know your own
-// farm. It is checkpointed to actor_known_place at the same durability tier as
-// actor_relationship.salient_facts.
+// each is good for. Unlike the experiential Observed store (observed_state.go,
+// captured in closed_business.go / out_of_stock.go) — in-memory, decaying
+// NEGATIVE observations ("this was shut / dry just now") — a known place is
+// PERMANENT POSITIVE knowledge: a location doesn't move and you don't un-know
+// your own farm. It is checkpointed to actor_known_place at the same durability
+// tier as actor_relationship.salient_facts.
 //
 // This file is the CAPTURE half plus the in-world recorder. It ships INERT: the
 // snapshot carries the known-places set (actor.go), the repo persists it

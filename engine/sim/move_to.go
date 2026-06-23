@@ -520,10 +520,10 @@ func MoveToStructure(actorID ActorID, structureID StructureID, now time.Time) Co
 	}
 }
 
-// forgetSupplierStaleMemory drops the actor's experiential "found it shut"
-// (ClosedBusinessObs, ZBBS-HOME-353) and "found it dry" (OutOfStockObs,
-// ZBBS-HOME-363) memories for structureID — the destination the actor is now
-// committing to walk to (ZBBS-HOME-405).
+// forgetSupplierStaleMemory drops every observed-state memory the actor holds
+// about structureID — "found it shut" (ObservedClosed, ZBBS-HOME-353) and "found
+// it dry" (ObservedOutOfStock, ZBBS-HOME-363), across all items — for the
+// destination the actor is now committing to walk to (ZBBS-HOME-405).
 //
 // Deciding to GO somewhere supersedes a stale belief about it. Without this, a
 // mid-walk reactor tick re-reads the old "shut" annotation and steers the actor
@@ -537,15 +537,9 @@ func MoveToStructure(actorID ActorID, structureID StructureID, now time.Time) Co
 //
 // Destination-scoped on purpose (Jeff, 2026-06-06): clearing memory for OTHER
 // businesses would make the actor re-attempt shops it legitimately knows are
-// shut. nil-safe — delete on a nil map is a no-op, and ranging a nil map yields
-// nothing. Deleting keys mid-range is permitted by the Go spec.
+// shut. nil-safe (ForgetStructure ranges a possibly-empty store).
 func forgetSupplierStaleMemory(a *Actor, structureID StructureID) {
-	delete(a.ClosedBusinessObs, structureID)
-	for key := range a.OutOfStockObs {
-		if key.StructureID == structureID {
-			delete(a.OutOfStockObs, key)
-		}
-	}
+	a.Observed.ForgetStructure(structureID)
 }
 
 // moveToDestinationFor derives the MoveDestination for a move_to: a

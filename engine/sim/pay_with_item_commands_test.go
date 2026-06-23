@@ -815,10 +815,10 @@ func TestPayWithItem_FastPath_InsufficientStock_RecordsOutOfStock(t *testing.T) 
 
 	var recorded bool
 	mustSend(t, w, func(world *sim.World) {
-		_, recorded = world.Actors["alice"].OutOfStockObs[sim.OutOfStockKey{StructureID: "tavern", ItemKind: "stew"}]
+		_, recorded = world.Actors["alice"].Observed.At(sim.ObservedStateKey{StructureID: "tavern", ItemKind: "stew", Condition: sim.ObservedOutOfStock})
 	})
 	if !recorded {
-		t.Fatal("fast-path insufficient stock should record OutOfStockObs on the buyer")
+		t.Fatal("fast-path insufficient stock should record an out-of-stock observation on the buyer")
 	}
 }
 

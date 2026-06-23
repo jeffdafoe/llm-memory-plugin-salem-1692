@@ -23,16 +23,11 @@ import "time"
 // entry points that funnel through the same noteOutOfStock recorder: the event
 // subscriber here, and an inline call at the fast-path stock reject
 // (pay_with_item_commands.go). The SURFACE half lives in perception
-// (consumable_vendors.go / satiation.go) and reads Snapshot actor OutOfStockObs.
-
-// OutOfStockKey identifies a remembered (business, item) the buyer found dry.
-// Keyed by the vendor's WORKPLACE structure (what the buy-menu cue names and the
-// buyer's move_to walks to), not the vendor actor — so the memory lines up with
-// the structure-keyed buy cue. Comparable value type → usable as a map key.
-type OutOfStockKey struct {
-	StructureID StructureID
-	ItemKind    ItemKind
-}
+// (consumable_vendors.go / satiation.go) and reads the actor's Observed store
+// (ObservedOutOfStock). The store itself is the unified observed-state memory in
+// observed_state.go (LLM-80); the (structure, item) identity is carried by an
+// ObservedStateKey keyed on the vendor's WORKPLACE (what the buy-menu cue names
+// and the buyer's move_to walks to), not the vendor actor.
 
 // OutOfStockMemoryTTL is how long an out-of-stock observation stays actionable
 // before perception ignores it — matched to ClosedBusinessMemoryTTL (4 game-
@@ -68,7 +63,7 @@ func handleOutOfStockOnResolved(w *World, evt Event) {
 	case PayTerminalStateAccepted:
 		// Bought it successfully — they have it after all; clear any stale "dry"
 		// memory for this exact (structure, item).
-		delete(buyer.OutOfStockObs, OutOfStockKey{StructureID: seller.WorkStructureID, ItemKind: res.ItemKind})
+		buyer.Observed.Clear(ObservedStateKey{StructureID: seller.WorkStructureID, ItemKind: res.ItemKind, Condition: ObservedOutOfStock})
 	}
 }
 
@@ -90,10 +85,7 @@ func noteOutOfStock(w *World, buyerID, sellerID ActorID, itemKind ItemKind, at t
 	if seller == nil || seller.WorkStructureID == "" {
 		return
 	}
-	if buyer.OutOfStockObs == nil {
-		buyer.OutOfStockObs = make(map[OutOfStockKey]time.Time)
-	}
-	buyer.OutOfStockObs[OutOfStockKey{StructureID: seller.WorkStructureID, ItemKind: itemKind}] = at
+	buyer.Observed.Observe(ObservedStateKey{StructureID: seller.WorkStructureID, ItemKind: itemKind, Condition: ObservedOutOfStock}, at)
 }
 
 // RegisterOutOfStockSubscriber wires the out-of-stock-memory subscriber. Call

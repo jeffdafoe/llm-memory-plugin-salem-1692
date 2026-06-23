@@ -14,7 +14,8 @@ import "time"
 //
 // This is the CAPTURE half (an ActorArrived subscriber, additive — it does not
 // touch the locomotion ticker). The SURFACE half lives in perception
-// (build/render) and reads Snapshot actor ClosedBusinessObs.
+// (build/render) and reads the actor's Observed store (ObservedClosed). The
+// store itself is the unified observed-state memory in observed_state.go (LLM-80).
 
 // ClosedBusinessMemoryTTL is how long a "found it shut" observation stays
 // actionable before perception ignores it (ZBBS-HOME-353). After this the NPC
@@ -52,16 +53,13 @@ func handleClosedBusinessOnArrival(w *World, evt Event) {
 
 	if keeperPresentAt(w, structureID) {
 		// Found it attended — clear any stale "shut" memory for this business.
-		delete(a.ClosedBusinessObs, structureID)
+		a.Observed.Clear(ObservedStateKey{StructureID: structureID, Condition: ObservedClosed})
 		return
 	}
 
 	// Found it shut — remember it (stamped with the arrival time so perception
-	// can decay the memory). Allocate lazily; nil until the first observation.
-	if a.ClosedBusinessObs == nil {
-		a.ClosedBusinessObs = make(map[StructureID]time.Time)
-	}
-	a.ClosedBusinessObs[structureID] = arr.At
+	// can decay the memory).
+	a.Observed.Observe(ObservedStateKey{StructureID: structureID, Condition: ObservedClosed}, arr.At)
 }
 
 // businessArrivedAt resolves the worked structure the actor just arrived at, or
