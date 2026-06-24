@@ -124,6 +124,14 @@ type Snapshot struct {
 	// copied at publish.
 	LodgingBedtimeMinute int
 
+	// LodgingCheckOutMinute is the lodging check-out hour as minute-of-day in the
+	// village timezone (LodgingCheckOutHour*60), copied at publish. With
+	// LodgingBedtimeMinute it lets perception derive the renewal-due window — the
+	// span from the lodger bedtime on the final night to check-out the next
+	// morning — without the village *time.Location (not on the snapshot). See
+	// perception.lodgingRenewalWindow (LLM-96).
+	LodgingCheckOutMinute int
+
 	// RestockReorderPct mirrors WorldSettings.RestockReorderPct — the reorder
 	// threshold (whole percent of cap) for buy-side restock. Carried so the
 	// "## Restocking" perception section can gate on the same boundary the

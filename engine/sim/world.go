@@ -1571,6 +1571,7 @@ func (w *World) republish() {
 		NeedThresholds:            w.Settings.NeedThresholds.Clone(),
 		LodgingDefaultWeeklyRate:  w.Settings.LodgingDefaultWeeklyRate,
 		LodgingBedtimeMinute:      lodgerBedtimeMinute(w),
+		LodgingCheckOutMinute:     w.Settings.LodgingCheckOutHour * 60,
 		RestockReorderPct:         w.Settings.RestockReorderPct,
 		DefaultOutdoorSceneRadius: w.Settings.DefaultOutdoorSceneRadius,
 		Assets:                    w.Assets,

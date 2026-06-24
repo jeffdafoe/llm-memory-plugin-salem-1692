@@ -37,6 +37,11 @@ func lodgingSnap(subj *sim.ActorSnapshot, structures map[sim.StructureID]*sim.St
 		PublishedAt: lodgingNow,
 		Actors:      actors,
 		Structures:  structures,
+		// Bedtime 22:00 + checkout 11:00 → a 13h renewal window (LLM-96), so a
+		// grant expiring more than 13h out is settled and one expiring within it is
+		// renewal-due. Without these the window falls back to 48h.
+		LodgingBedtimeMinute:  22 * 60,
+		LodgingCheckOutMinute: 11 * 60,
 	}
 }
 
@@ -133,8 +138,8 @@ func TestRenderLodging_RenewalInFlight_WaitSteer(t *testing.T) {
 	if !strings.Contains(out, "paid and with the keeper") || !strings.Contains(out, "Do not pay for it again") {
 		t.Errorf("missing the in-flight wait-steer:\n%s", out)
 	}
-	if strings.Contains(out, "expires within the day") || strings.Contains(out, "Renewing is") {
-		t.Errorf("in-flight render must suppress the renew cue + rate hint:\n%s", out)
+	if strings.Contains(out, "settled here") || strings.Contains(out, "nearly up") || strings.Contains(out, "Renewing is") {
+		t.Errorf("in-flight render must suppress the settled/renew lines + rate hint:\n%s", out)
 	}
 	if strings.Contains(out, "short of the") {
 		t.Errorf("in-flight render must suppress the affordability shortfall cue:\n%s", out)
@@ -244,15 +249,17 @@ func TestBuildLodgingView_UnknownStructure_GenericName(t *testing.T) {
 // keeper.
 func TestBuildLodgingView_KeeperAsleepFlagged(t *testing.T) {
 	subj := &sim.ActorSnapshot{
+		// Renewal-due (within the 13h window) so the renewal cue — and thus the
+		// asleep-keeper caveat that rides it — actually renders.
 		RoomAccess: map[sim.RoomAccessKey]*sim.RoomAccess{
-			{RoomID: 2, Source: sim.AccessSourceLedger}: ledgerAccess(2, 30*time.Hour),
+			{RoomID: 2, Source: sim.AccessSourceLedger}: ledgerAccess(2, 8*time.Hour),
 		},
 	}
 	structs := map[sim.StructureID]*sim.Structure{"inn": innStructure("inn", "Hannah's Inn")}
 	keeper := &sim.ActorSnapshot{WorkStructureID: "inn", State: sim.StateSleeping}
 	v := buildLodgingView(lodgingSnap(subj, structs, keeper), "ezekiel", subj)
-	if v == nil || !v.KeeperAsleep {
-		t.Fatalf("want KeeperAsleep set when the inn keeper sleeps, got %+v", v)
+	if v == nil || !v.KeeperAsleep || !v.RenewalDue {
+		t.Fatalf("want KeeperAsleep + RenewalDue set when the inn keeper sleeps near checkout, got %+v", v)
 	}
 	var b strings.Builder
 	renderLodging(&b, v)
@@ -263,26 +270,22 @@ func TestBuildLodgingView_KeeperAsleepFlagged(t *testing.T) {
 
 // --- escalation tiers ---
 
-func TestLodgingStatusLine_Tiers(t *testing.T) {
-	cases := []struct {
-		name string
-		d    time.Duration
-		want string
-	}{
-		{"calm", 72 * time.Hour, "is paid for about 3 more nights"},
-		{"soon", 36 * time.Hour, "expires in about a day"},
-		{"urgent", 6 * time.Hour, "expires within the day"},
+func TestLodgingStatusLine_TwoState(t *testing.T) {
+	// Settled: confirm the room, do NOT nudge a renewal (the LLM-96 fix — a
+	// settled lodger re-told to renew is what drove the double-buy).
+	settled := lodgingStatusLine("Hannah's Inn", false)
+	if !strings.Contains(settled, "settled here") || strings.Contains(settled, "renew") {
+		t.Errorf("settled line = %q, want a settled confirmation with no renew nudge", settled)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := lodgingStatusLine("Hannah's Inn", lodgingNow.Add(tc.d), lodgingNow)
-			if !strings.Contains(got, tc.want) {
-				t.Errorf("line = %q, want substring %q", got, tc.want)
-			}
-			if !strings.Contains(got, "Hannah's Inn") {
-				t.Errorf("line = %q, want inn name", got)
-			}
-		})
+	// Renewal-due (final night before checkout): steer to renew.
+	due := lodgingStatusLine("Hannah's Inn", true)
+	if !strings.Contains(due, "nearly up") || !strings.Contains(due, "renew") {
+		t.Errorf("renewal-due line = %q, want a renew steer", due)
+	}
+	for _, l := range []string{settled, due} {
+		if !strings.Contains(l, "Hannah's Inn") {
+			t.Errorf("line %q missing inn name", l)
+		}
 	}
 }
 
@@ -318,42 +321,91 @@ func TestBuildLodgingView_CarriesRateAndCoins(t *testing.T) {
 }
 
 func TestLodgingAffordabilityCue(t *testing.T) {
-	near := &LodgingView{InnName: "Hannah's Inn", ExpiresAt: lodgingNow.Add(30 * time.Hour), NightlyRate: 4, Coins: 1}
-	if cue := lodgingAffordabilityCue(near, lodgingNow); cue == "" {
-		t.Error("near-expiry + broke must produce the affordability cue")
+	// renewal-due + broke → cue
+	due := &LodgingView{InnName: "Hannah's Inn", RenewalDue: true, NightlyRate: 4, Coins: 1}
+	if cue := lodgingAffordabilityCue(due); cue == "" {
+		t.Error("renewal-due + broke must produce the affordability cue")
 	}
-	// affordable → no cue
-	flush := &LodgingView{InnName: "Hannah's Inn", ExpiresAt: lodgingNow.Add(30 * time.Hour), NightlyRate: 4, Coins: 10}
-	if cue := lodgingAffordabilityCue(flush, lodgingNow); cue != "" {
+	// renewal-due + affordable → no cue
+	flush := &LodgingView{InnName: "Hannah's Inn", RenewalDue: true, NightlyRate: 4, Coins: 10}
+	if cue := lodgingAffordabilityCue(flush); cue != "" {
 		t.Errorf("affordable lodger must get no cue, got %q", cue)
 	}
-	// calm (>48h) → no cue even when broke
-	calm := &LodgingView{InnName: "Hannah's Inn", ExpiresAt: lodgingNow.Add(120 * time.Hour), NightlyRate: 4, Coins: 1}
-	if cue := lodgingAffordabilityCue(calm, lodgingNow); cue != "" {
-		t.Errorf("calm window must suppress the cue, got %q", cue)
+	// settled (not renewal-due) → no cue even when broke (LLM-96: don't nag a
+	// lodger about rent the moment it pays for the room)
+	settled := &LodgingView{InnName: "Hannah's Inn", RenewalDue: false, NightlyRate: 4, Coins: 1}
+	if cue := lodgingAffordabilityCue(settled); cue != "" {
+		t.Errorf("a settled lodger must not be nagged about rent, got %q", cue)
 	}
 	// rate disabled → no cue
-	off := &LodgingView{InnName: "Hannah's Inn", ExpiresAt: lodgingNow.Add(30 * time.Hour), NightlyRate: 0, Coins: 0}
-	if cue := lodgingAffordabilityCue(off, lodgingNow); cue != "" {
+	off := &LodgingView{InnName: "Hannah's Inn", RenewalDue: true, NightlyRate: 0, Coins: 0}
+	if cue := lodgingAffordabilityCue(off); cue != "" {
 		t.Errorf("disabled rate must suppress the cue, got %q", cue)
-	}
-	// already expired (negative remaining) → no cue ("before your room lapses"
-	// would be wrong after it already lapsed)
-	expired := &LodgingView{InnName: "Hannah's Inn", ExpiresAt: lodgingNow.Add(-time.Hour), NightlyRate: 4, Coins: 1}
-	if cue := lodgingAffordabilityCue(expired, lodgingNow); cue != "" {
-		t.Errorf("expired grant must suppress the cue, got %q", cue)
 	}
 }
 
 func TestRenderLodging_RateHintAndCue(t *testing.T) {
 	var b strings.Builder
-	renderLodging(&b, &LodgingView{InnName: "Hannah's Inn", ExpiresAt: time.Now().Add(30 * time.Hour), NightlyRate: 4, Coins: 1})
+	// Renewal-due (final night): the renew branch carries the rate hint + cue.
+	renderLodging(&b, &LodgingView{InnName: "Hannah's Inn", RenewalDue: true, NightlyRate: 4, Coins: 1})
 	out := b.String()
 	if !strings.Contains(out, "4 coins a night") {
 		t.Errorf("want nightly-rate hint, got %q", out)
 	}
 	if !strings.Contains(out, "only 1 coins") {
 		t.Errorf("want affordability cue, got %q", out)
+	}
+}
+
+func TestLodgingRenewalWindow(t *testing.T) {
+	// bedtime 22:00 → checkout 11:00 next morning = 13h.
+	got := lodgingRenewalWindow(&sim.Snapshot{LodgingBedtimeMinute: 22 * 60, LodgingCheckOutMinute: 11 * 60})
+	if got != 13*time.Hour {
+		t.Errorf("window = %s, want 13h (bedtime 22:00 → checkout 11:00)", got)
+	}
+	// No clock on the snapshot → 48h fallback (a hand-built snapshot leaves the
+	// minutes at 0, which the guard catches).
+	if got := lodgingRenewalWindow(&sim.Snapshot{}); got != 48*time.Hour {
+		t.Errorf("hand-built snapshot must fall back to 48h, got %s", got)
+	}
+	if got := lodgingRenewalWindow(nil); got != 48*time.Hour {
+		t.Errorf("nil snapshot must fall back to 48h, got %s", got)
+	}
+}
+
+// TestBuildLodgingView_RenewalDue_FinalNightOnly is the LLM-96 regression: a
+// freshly-bought single-night room (expiring ~20h out, beyond the 13h
+// bedtime-to-checkout window) is NOT renewal-due — the lodger is told it is
+// settled rather than nudged to renew the room it just paid for. It flips to
+// renewal-due only once the grant is within the final-night window.
+func TestBuildLodgingView_RenewalDue_FinalNightOnly(t *testing.T) {
+	structs := map[sim.StructureID]*sim.Structure{"inn": innStructure("inn", "Hannah's Inn")}
+
+	settledSubj := &sim.ActorSnapshot{RoomAccess: map[sim.RoomAccessKey]*sim.RoomAccess{
+		{RoomID: 2, Source: sim.AccessSourceLedger}: ledgerAccess(2, 20*time.Hour),
+	}}
+	sv := buildLodgingView(lodgingSnap(settledSubj, structs), "ezekiel", settledSubj)
+	if sv == nil || sv.RenewalDue {
+		t.Fatalf("a room expiring ~20h out must be settled, not renewal-due, got %+v", sv)
+	}
+
+	dueSubj := &sim.ActorSnapshot{RoomAccess: map[sim.RoomAccessKey]*sim.RoomAccess{
+		{RoomID: 2, Source: sim.AccessSourceLedger}: ledgerAccess(2, 8*time.Hour),
+	}}
+	dv := buildLodgingView(lodgingSnap(dueSubj, structs), "ezekiel", dueSubj)
+	if dv == nil || !dv.RenewalDue {
+		t.Fatalf("a room expiring within the final-night window (8h) must be renewal-due, got %+v", dv)
+	}
+
+	// The settled render must confirm the room without inviting a re-buy.
+	var b strings.Builder
+	renderLodging(&b, sv)
+	out := b.String()
+	if strings.Contains(out, "renew") || strings.Contains(out, "Renewing is") {
+		t.Errorf("settled lodger render must not nudge renewal, got %q", out)
+	}
+	if !strings.Contains(out, "settled here") {
+		t.Errorf("settled lodger render must confirm the room, got %q", out)
 	}
 }
 
@@ -640,6 +692,9 @@ func heldLodgerSnap(memberAccess map[sim.RoomAccessKey]*sim.RoomAccess) *sim.Sna
 			"guest":  {RoomAccess: memberAccess},
 		},
 		Structures: map[sim.StructureID]*sim.Structure{"inn": innStructureN("inn", "Hannah's Inn", 3)},
+		// 13h renewal window (LLM-96); see lodgingSnap.
+		LodgingBedtimeMinute:  22 * 60,
+		LodgingCheckOutMinute: 11 * 60,
 	}
 }
 
@@ -661,6 +716,30 @@ func TestBuildKeeperHeldLodgers_CoPresentHeldLodger(t *testing.T) {
 	// is deterministically "about 3 more nights".
 	if v.Lodgers[0].TenureLabel != "paid for about 3 more nights" {
 		t.Errorf("TenureLabel = %q, want 'paid for about 3 more nights'", v.Lodgers[0].TenureLabel)
+	}
+}
+
+// TestBuildKeeperHeldLodgers_RenewalDueFinalNight is the keeper side of the
+// LLM-96 fix: a guest with plenty of stay left is "settled" (the keeper must not
+// re-offer), and only once the guest is into its final night before checkout
+// does the cue flip to a renewal offer.
+func TestBuildKeeperHeldLodgers_RenewalDueFinalNight(t *testing.T) {
+	keeperView := &KeeperLodgingView{InnName: "Hannah's Inn", RoomsTotal: 3, RoomsAvailable: 2, NightlyRate: 4}
+
+	settled := heldLodgerSnap(map[sim.RoomAccessKey]*sim.RoomAccess{
+		{RoomID: 2, Source: sim.AccessSourceLedger}: ledgerAccess(2, 72*time.Hour),
+	})
+	sv := buildKeeperHeldLodgers(settled, "keeper", keeperView, heldLodgerMembers)
+	if sv == nil || sv.Lodgers[0].RenewalDue {
+		t.Fatalf("a guest with 72h left must be settled, not renewal-due, got %+v", sv)
+	}
+
+	due := heldLodgerSnap(map[sim.RoomAccessKey]*sim.RoomAccess{
+		{RoomID: 2, Source: sim.AccessSourceLedger}: ledgerAccess(2, 8*time.Hour),
+	})
+	dv := buildKeeperHeldLodgers(due, "keeper", keeperView, heldLodgerMembers)
+	if dv == nil || !dv.Lodgers[0].RenewalDue || !dv.Lodgers[0].OfferRenewal {
+		t.Fatalf("a guest into its final night must be renewal-due with an offer, got %+v", dv)
 	}
 }
 
