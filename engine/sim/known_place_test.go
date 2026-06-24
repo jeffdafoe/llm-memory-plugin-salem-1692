@@ -245,7 +245,7 @@ func TestSnapshotActor_CarriesKnownPlaces(t *testing.T) {
 	a := &Actor{ID: "prudence", Kind: KindNPCStateful}
 	recordKnownPlace(a, "bush1", PlaceKindObject, "gather:raspberries", time.Now())
 
-	snap := snapshotActor(a, 0)
+	snap := snapshotActor(a, 0, false)
 	if snap.KnownPlaces == nil || snap.KnownPlaces["bush1"] == nil {
 		t.Fatalf("published snapshot must carry KnownPlaces, got %v", snap.KnownPlaces)
 	}

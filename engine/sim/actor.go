@@ -587,6 +587,25 @@ type Actor struct {
 	RedNeedLastKey       NeedKey
 	RedNeedLastValue     int
 
+	// Degeneracy observer (LLM-94). Per-actor tracking of consecutive
+	// "zero-yield" reactor ticks — substantive (LLM-deliberated) ticks that
+	// accomplished nothing (a present scene baseline showing no change, no
+	// successful world-mutating commit, and either every tool rejected or no
+	// audience to perceive the act). A sustained streak of obviously-futile
+	// ticks is the signal that an agent is stuck in a loop (the live Prudence
+	// shop-bounce); the observer surfaces it via telemetry and, in later
+	// stages, damps the waste. See engine/sim/degeneracy.go.
+	//
+	//   - DegenStreak: consecutive obviously-futile scored ticks. 0 = none.
+	//   - DegenStreakSince: wall-clock start of the current streak; nil = none.
+	//   - DegenStage: escalation level (none / flagged / throttled).
+	//
+	// All ephemeral — wiped on LoadWorld with the rest of the reactor pacing
+	// state, so a fresh-loaded actor starts unflagged.
+	DegenStreak      int
+	DegenStreakSince *time.Time
+	DegenStage       DegeneracyStage
+
 	// inFlightSourceKeys is the set of WarrantSourceKeys consumed into the
 	// actor's current in-flight tick attempt — recorded at ReactorTickDue
 	// emit, consulted by tryStampWarrant's in-flight dedup path, and
@@ -894,6 +913,10 @@ func CloneActor(a *Actor) *Actor {
 	}
 	if a.RecentReactorTicks != nil {
 		cp.RecentReactorTicks = a.RecentReactorTicks.Clone()
+	}
+	if a.DegenStreakSince != nil {
+		t := *a.DegenStreakSince
+		cp.DegenStreakSince = &t
 	}
 	if a.inFlightSourceKeys != nil {
 		cp.inFlightSourceKeys = make(map[WarrantSourceKey]struct{}, len(a.inFlightSourceKeys))
@@ -1246,6 +1269,18 @@ type ActorSnapshot struct {
 	// they appear here only for the snapshot-time view the harness needs.
 	TickInFlight  bool
 	TickAttemptID TickAttemptID
+
+	// DegenStage is the EFFECTIVE degeneracy-observer stage (LLM-94) at snapshot
+	// time, projected by snapshotActor so the two snapshot-only readers of it —
+	// perception.Build (Stage-1 steer thinning) and handlers.gateTools (the
+	// move_to gate) — can see it without a world-goroutine round trip, the same
+	// posture as the movement projection above. "Effective" = forced to
+	// DegeneracyNone when the observer is disabled (so disabling lifts Stage-1
+	// immediately, not on the actor's next scored tick); otherwise mirrors the
+	// live Actor.DegenStage. DegeneracyNone for the overwhelming majority of
+	// actors. Ephemeral on the live Actor (reset on LoadWorld); this is the
+	// read-path copy. Value type, so CloneActorSnapshot's struct copy carries it.
+	DegenStage DegeneracyStage
 
 	// PendingSummon / SummonRefusal mirror the live Actor's summon cues at
 	// snapshot time so perception build (which reads only the snapshot) can

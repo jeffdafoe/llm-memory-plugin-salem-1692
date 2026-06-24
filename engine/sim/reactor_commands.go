@@ -181,6 +181,24 @@ type TickResult struct {
 	// failed at handler execution (handler error or command failure).
 	ToolsFailedRejected []string
 
+	// Degeneracy observer yield facts (LLM-94). The harness derives these
+	// from this tick's perception so CompleteReactorTick can score the tick's
+	// yield without re-perceiving. All have a meaningful zero value, so older
+	// callers passing TickResult{} are unaffected.
+	//
+	//   - BaselinePresent: a scene baseline resolved this tick
+	//     (Payload.Baseline == BaselinePresent). The observer only treats a
+	//     tick as "no change" when this is true — a missing baseline is
+	//     inconclusive, never evidence of a stuck loop.
+	//   - StateChanged: the loop-detection diff (Payload.Primary.Diff.AnyChange)
+	//     — any change since the actor arrived. Meaningful only when
+	//     BaselinePresent.
+	//   - HadAudience: any awake, addressable peer was co-present (a huddle
+	//     peer or a co-present conversational actor).
+	BaselinePresent bool
+	StateChanged    bool
+	HadAudience     bool
+
 	// StaleStage names where staleness was detected, when it was.
 	// StaleStageNone for non-stale completions; one of the other
 	// stages for TerminalStatus == TickStatusStale.
@@ -259,6 +277,10 @@ func CompleteReactorTick(actorID ActorID, attemptID TickAttemptID, result TickRe
 			actor.TickInFlight = false
 			actor.TickAttemptID = ""
 			actor.inFlightSourceKeys = nil
+
+			// Degeneracy observer (LLM-94): fold this completion's yield into
+			// the actor's futility streak. No-op unless explicitly enabled.
+			updateDegeneracy(w, actor, result, now)
 
 			// ZBBS-HOME-413: a noop-skipped tick is the moment to dissolve a dead
 			// solo huddle. The skip gate (shouldSkipNoop) only fires when the actor
@@ -527,6 +549,39 @@ func EvaluateReactors(now time.Time) Command {
 					!checkRateGate(actor, now, rateCap, window) {
 					next := nextRateAllowedAt(actor, now, rateCap, window)
 					actor.WarrantDueAt = &next
+					continue
+				}
+
+				// Degeneracy Stage-2 throttle (LLM-94). A throttled actor — one
+				// the observer has watched burn an obviously-futile tick every
+				// cadence cycle past the Stage-2 threshold — has its AMBIENT-only
+				// wake cycles pushed out by the backoff, so the engine stops
+				// paying to wake it every minute for nothing. A cycle carrying any
+				// SALIENT warrant (speech, an economic event, a need threshold, an
+				// operator nudge) is never throttled — the throttle slows the
+				// engine's own poking, never a real interaction. Gated on
+				// degeneracyEnabled so that turning the observer OFF lifts the
+				// throttle immediately (otherwise a throttled actor would never
+				// tick, never reach updateDegeneracy, and stay deferred forever);
+				// Force bypasses it like the other pacing gates. Self-recovering:
+				// a productive tick clears DegenStage, so the throttle simply
+				// stops applying — no separate un-throttle step. A `deferred`
+				// record (gate=degeneracy) makes each suppression visible, the
+				// same posture as the admission deferral below.
+				if w.Settings.degeneracyEnabled() &&
+					actor.DegenStage >= DegeneracyThrottled &&
+					!hasForcedWarrant(actor.Warrants) &&
+					warrantCycleAllAmbient(actor.Warrants) {
+					next := now.Add(w.Settings.degeneracyThrottleBackoff())
+					actor.WarrantDueAt = &next
+					if w.repo.TickTelemetry != nil {
+						w.repo.TickTelemetry.WriteTickTelemetry(TickTelemetryRecord{
+							At:      now,
+							ActorID: actor.ID,
+							Kind:    "deferred",
+							Detail:  map[string]string{"gate": "degeneracy"},
+						})
+					}
 					continue
 				}
 

@@ -273,6 +273,19 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 	// --- perception build (cheap; no rendering yet) ---
 	payload := perception.Build(snap, job.actorID, job.warrants)
 
+	// Degeneracy observer yield facts (LLM-94). Derived from this tick's
+	// perception so CompleteReactorTick can score the tick without
+	// re-perceiving. Set unconditionally here (cheap field reads); harmless on
+	// the skip path below, since CompleteReactorTick only scores substantive
+	// ticks. The loop-detection Diff (Primary.Diff) is non-nil only when the
+	// baseline is present.
+	result.BaselinePresent = payload.Baseline == perception.BaselinePresent
+	if payload.Primary != nil && payload.Primary.Diff != nil {
+		result.StateChanged = payload.Primary.Diff.AnyChange
+	}
+	result.HadAudience = len(payload.Surroundings.HuddleMembers) > 0 ||
+		len(payload.Surroundings.CoPresent) > 0
+
 	// --- noop-skip preflight (pre-LLM gate) ---
 	// If perception has nothing actionable (no co-present peer, no need
 	// at red) AND the consumed batch carries only low-information warrant

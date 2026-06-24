@@ -105,6 +105,16 @@ const deliverOrderToolName = "deliver_order"
 // offered off-post and to non-keepers.
 const stayOpenToolName = "stay_open"
 
+// moveToToolName — the locomotion tool. Dropped from a degeneracy-flagged
+// actor's advertised set (LLM-94 Stage-1): a flagged actor is in a sustained
+// futile loop whose live signature is move_to rejected every tick. Perception
+// build already thinned the steering cues that name the unreachable target
+// (perception.thinDegenerateSteer); gating the tool removes the matching
+// affordance so a lingering place reference plus an advertised move tool can't
+// re-drive the walk. Advertising-only, like every other gate here — the
+// substrate stays authoritative, and the gate lifts the moment the flag clears.
+const moveToToolName = "move_to"
+
 // actorIsMoving reports whether the subject has an in-flight move at snapshot
 // time, read from the ZBBS-HOME-336 read-path projection (MoveDestKind is
 // empty when the actor is not moving). False when the actor can't be resolved
@@ -135,6 +145,23 @@ func actorHasDedicatedVA(actorID sim.ActorID, snap *sim.Snapshot) bool {
 		return false
 	}
 	return a.Kind == sim.KindNPCStateful
+}
+
+// actorIsFlaggedDegenerate reports whether the degeneracy observer (LLM-94) has
+// the acting actor at Stage 1 or higher (sim.DegeneracyFlagged / …Throttled),
+// read off the snapshot projection. The observer is OFF by default, so this is
+// false for every actor unless an operator enabled it and the actor sustained a
+// futile streak. False when the actor can't be resolved — conservative: don't
+// strip locomotion from an actor we can't confirm is stuck.
+func actorIsFlaggedDegenerate(actorID sim.ActorID, snap *sim.Snapshot) bool {
+	if snap == nil {
+		return false
+	}
+	a, ok := snap.Actors[actorID]
+	if !ok || a == nil {
+		return false
+	}
+	return a.DegenStage >= sim.DegeneracyFlagged
 }
 
 // gateTools computes the per-tick advertised tool set from the registry's
@@ -179,6 +206,7 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 	atGatherableSource := payload.Surroundings.GatherableItem != ""
 	moving := actorIsMoving(payload.ActorID, snap)
 	offerStayOpen := payload.DutySteer != nil && payload.DutySteer.OfferStayOpen
+	flaggedDegenerate := actorIsFlaggedDegenerate(payload.ActorID, snap)
 
 	// Single pass over the Available set so each gated group is evaluated
 	// against its OWN condition. We deliberately avoid a "pending offer →
@@ -226,6 +254,13 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 		// cue's own OfferStayOpen signal — the same field the stay-open prose
 		// renders from — so the tool and its cue can't drift (discussion-109).
 		if spec.Name == stayOpenToolName && !offerStayOpen {
+			continue
+		}
+		// degeneracy Stage-1 gate (LLM-94): drop move_to from a flagged actor's
+		// set, in lockstep with the steering cues perception build thinned for
+		// the same actor. Removes the futile-walk affordance until a productive
+		// tick clears the flag.
+		if spec.Name == moveToToolName && flaggedDegenerate {
 			continue
 		}
 		if _, gated := payOfferResponseTools[spec.Name]; gated {

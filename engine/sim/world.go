@@ -183,6 +183,30 @@ type WorldSettings struct {
 	AdmissionBackoff                 time.Duration
 	TickWorkerCount                  int
 
+	// Degeneracy observer (LLM-94, engine/sim/degeneracy.go). Detects an
+	// agent stuck burning LLM ticks that accomplish nothing and damps the
+	// waste. Deliberately OFF by default and tuned conservatively — it only
+	// acts on obviously-egregious SUSTAINED futility.
+	//
+	// DegeneracyThinAfterTicks is the MASTER ENABLE plus the Stage-1
+	// threshold: consecutive obviously-futile scored ticks before the actor
+	// is flagged (and its driving perception thinned). <= 0 disables the
+	// whole observer — the safe default, since the observer can suppress an
+	// agent's ticks. The remaining three are Stage-2 (surgical wake-threshold
+	// throttle) sub-knobs; each falls back to a safe default when unset.
+	//
+	//   - DegeneracyThrottleAfterTicks: consecutive futile ticks before the
+	//     throttle (default 20).
+	//   - DegeneracyThrottleMinDuration: the streak must ALSO span at least
+	//     this wall-clock duration before throttling — so a fast tick burst
+	//     can't trip the clamp early (default 15m).
+	//   - DegeneracyThrottleBackoff: how far a throttled actor's ambient
+	//     wake is pushed out (default 5m).
+	DegeneracyThinAfterTicks      int
+	DegeneracyThrottleAfterTicks  int
+	DegeneracyThrottleMinDuration time.Duration
+	DegeneracyThrottleBackoff     time.Duration
+
 	// Conversation turn-state liveness windows (ZBBS-WORK-370). How long an
 	// actor's outgoing "I addressed X, awaiting their reply" edge stays live
 	// before the turn-taking backstop stops suppressing a re-initiation and
@@ -1586,7 +1610,7 @@ func (w *World) republish() {
 		Recipes:   w.Recipes,
 	}
 	for id, a := range w.Actors {
-		sa := snapshotActor(a, w.TickCounter)
+		sa := snapshotActor(a, w.TickCounter, w.Settings.degeneracyEnabled())
 		// Co-presence for the unhuddled (ZBBS-WORK-407): precompute who an
 		// unhuddled conversational NPC would reach if it spoke now, so perception's
 		// "## Around you" line and the speak no-audience gate share one scope rule
@@ -1807,7 +1831,17 @@ func (w *World) emitCoinsDeltas(prev *Snapshot) {
 // InventoryHash is a v1 stub (sum of quantities). Future change to a real
 // hash (xxhash over sorted kind+qty) is a contained change behind the same
 // type.
-func snapshotActor(a *Actor, atTick uint64) *ActorSnapshot {
+func snapshotActor(a *Actor, atTick uint64, degeneracyEnabled bool) *ActorSnapshot {
+	// Project the EFFECTIVE degeneracy stage (LLM-94): force None when the
+	// observer is disabled, so the snapshot-only Stage-1 readers (perception
+	// thinning, the move_to gate) lift the moment an operator turns it off —
+	// without waiting for the actor's next scored tick to clear the live stage
+	// via updateDegeneracy. The live Actor.DegenStage is left as-is; this is the
+	// read-path projection only, the same posture as the movement fields.
+	degenStage := a.DegenStage
+	if !degeneracyEnabled {
+		degenStage = DegeneracyNone
+	}
 	var hash uint64
 	var inventoryCopy map[ItemKind]int
 	if len(a.Inventory) > 0 {
@@ -1907,6 +1941,7 @@ func snapshotActor(a *Actor, atTick uint64) *ActorSnapshot {
 		RestockPolicy:        a.RestockPolicy,
 		TickInFlight:         a.TickInFlight,
 		TickAttemptID:        a.TickAttemptID,
+		DegenStage:           degenStage,
 		PendingSummon:        clonePendingSummon(a.PendingSummon),
 		SummonRefusal:        cloneSummonRefusal(a.SummonRefusal),
 	}
