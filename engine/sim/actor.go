@@ -587,6 +587,25 @@ type Actor struct {
 	RedNeedLastKey       NeedKey
 	RedNeedLastValue     int
 
+	// Degeneracy observer (LLM-94). Per-actor tracking of consecutive
+	// "zero-yield" reactor ticks — substantive (LLM-deliberated) ticks that
+	// accomplished nothing (a present scene baseline showing no change, no
+	// successful world-mutating commit, and either every tool rejected or no
+	// audience to perceive the act). A sustained streak of obviously-futile
+	// ticks is the signal that an agent is stuck in a loop (the live Prudence
+	// shop-bounce); the observer surfaces it via telemetry and, in later
+	// stages, damps the waste. See engine/sim/degeneracy.go.
+	//
+	//   - DegenStreak: consecutive obviously-futile scored ticks. 0 = none.
+	//   - DegenStreakSince: wall-clock start of the current streak; nil = none.
+	//   - DegenStage: escalation level (none / flagged / throttled).
+	//
+	// All ephemeral — wiped on LoadWorld with the rest of the reactor pacing
+	// state, so a fresh-loaded actor starts unflagged.
+	DegenStreak      int
+	DegenStreakSince *time.Time
+	DegenStage       DegeneracyStage
+
 	// inFlightSourceKeys is the set of WarrantSourceKeys consumed into the
 	// actor's current in-flight tick attempt — recorded at ReactorTickDue
 	// emit, consulted by tryStampWarrant's in-flight dedup path, and
@@ -884,6 +903,10 @@ func CloneActor(a *Actor) *Actor {
 	}
 	if a.RecentReactorTicks != nil {
 		cp.RecentReactorTicks = a.RecentReactorTicks.Clone()
+	}
+	if a.DegenStreakSince != nil {
+		t := *a.DegenStreakSince
+		cp.DegenStreakSince = &t
 	}
 	if a.inFlightSourceKeys != nil {
 		cp.inFlightSourceKeys = make(map[WarrantSourceKey]struct{}, len(a.inFlightSourceKeys))

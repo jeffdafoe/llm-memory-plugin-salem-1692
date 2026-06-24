@@ -224,6 +224,15 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.AdmissionBackoff = parseDurationSetting(values, "admission_backoff_ms", 250*time.Millisecond)
 	s.TickWorkerCount = parseIntSetting(values, "tick_worker_count", 1)
 
+	// Degeneracy observer (LLM-94, engine/sim/degeneracy.go). OFF by default —
+	// set degeneracy_thin_after_ticks to a positive value to enable it. The
+	// three Stage-2 sub-knobs fall back to safe defaults (20 ticks / 15m / 5m,
+	// owned by the resolvers in degeneracy.go) when left 0.
+	s.DegeneracyThinAfterTicks = parseIntSetting(values, "degeneracy_thin_after_ticks", 0)
+	s.DegeneracyThrottleAfterTicks = parseIntSetting(values, "degeneracy_throttle_after_ticks", 0)
+	s.DegeneracyThrottleMinDuration = parseDurationSetting(values, "degeneracy_throttle_min_duration_minutes", 0)
+	s.DegeneracyThrottleBackoff = parseDurationSetting(values, "degeneracy_throttle_backoff_minutes", 0)
+
 	// Idle backstop.
 	s.IdleBackstopThreshold = parseDurationSetting(values, "idle_backstop_threshold_minutes", 30*time.Minute)
 	s.IdleBackstopSweepInterval = parseDurationSetting(values, "idle_backstop_sweep_interval_minutes", 5*time.Minute)

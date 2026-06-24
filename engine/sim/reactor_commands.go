@@ -181,6 +181,24 @@ type TickResult struct {
 	// failed at handler execution (handler error or command failure).
 	ToolsFailedRejected []string
 
+	// Degeneracy observer yield facts (LLM-94). The harness derives these
+	// from this tick's perception so CompleteReactorTick can score the tick's
+	// yield without re-perceiving. All have a meaningful zero value, so older
+	// callers passing TickResult{} are unaffected.
+	//
+	//   - BaselinePresent: a scene baseline resolved this tick
+	//     (Payload.Baseline == BaselinePresent). The observer only treats a
+	//     tick as "no change" when this is true — a missing baseline is
+	//     inconclusive, never evidence of a stuck loop.
+	//   - StateChanged: the loop-detection diff (Payload.Primary.Diff.AnyChange)
+	//     — any change since the actor arrived. Meaningful only when
+	//     BaselinePresent.
+	//   - HadAudience: any awake, addressable peer was co-present (a huddle
+	//     peer or a co-present conversational actor).
+	BaselinePresent bool
+	StateChanged    bool
+	HadAudience     bool
+
 	// StaleStage names where staleness was detected, when it was.
 	// StaleStageNone for non-stale completions; one of the other
 	// stages for TerminalStatus == TickStatusStale.
@@ -259,6 +277,10 @@ func CompleteReactorTick(actorID ActorID, attemptID TickAttemptID, result TickRe
 			actor.TickInFlight = false
 			actor.TickAttemptID = ""
 			actor.inFlightSourceKeys = nil
+
+			// Degeneracy observer (LLM-94): fold this completion's yield into
+			// the actor's futility streak. No-op unless explicitly enabled.
+			updateDegeneracy(w, actor, result, now)
 
 			// ZBBS-HOME-413: a noop-skipped tick is the moment to dissolve a dead
 			// solo huddle. The skip gate (shouldSkipNoop) only fires when the actor

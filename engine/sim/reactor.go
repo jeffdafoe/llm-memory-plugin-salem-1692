@@ -837,6 +837,12 @@ func resetReactorStateOnLoad(a *Actor) {
 	// red need re-engages promptly after restart rather than inheriting a
 	// stale backoff timer.
 	clearRedNeedBackstop(a)
+	// Degeneracy observer streak (LLM-94) — ephemeral, same rationale: a
+	// fresh-loaded actor starts unflagged rather than inheriting a stale
+	// futility streak from before the restart.
+	a.DegenStreak = 0
+	a.DegenStreakSince = nil
+	a.DegenStage = DegeneracyNone
 }
 
 // actorReactorDue is the cheap pre-check the evaluator runs against every
