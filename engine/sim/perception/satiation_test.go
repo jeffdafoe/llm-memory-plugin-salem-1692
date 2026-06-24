@@ -627,59 +627,29 @@ func TestBuildSatiation_FreeSourceNearestFirst(t *testing.T) {
 	subj := &sim.ActorSnapshot{
 		Pos:   origin,
 		Needs: map[sim.NeedKey]int{"thirst": sim.DefaultThirstRedThreshold},
-		// Remembers the far well only; the near one is found by proximity.
-		KnownPlaces: map[sim.PlaceRef]*sim.KnownPlace{
-			"far": {Ref: "far", Kind: sim.PlaceKindObject, Affordances: []string{"free_source:thirst"}},
-		},
 	}
 	snap := &sim.Snapshot{
 		Actors: map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj},
 		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
-			"far":  thirstWell("far", "far well", 640, 0, -8),  // 20 tiles east (memory)
-			"near": thirstWell("near", "near well", 64, 0, -8), // 2 tiles east (proximity)
+			"far":  thirstWell("far", "far well", 640, 0, -8),  // 20 tiles east
+			"near": thirstWell("near", "near well", 64, 0, -8), // 2 tiles east
 		},
 		ItemKinds: foodDrinkCatalog(),
 	}
 	v := buildSatiation(snap, "ezekiel", subj)
 	if v == nil || len(v.Needs) != 1 || len(v.Needs[0].FreeSources) != 2 {
-		t.Fatalf("want 2 free sources (memory far + proximity near), got %+v", v)
+		t.Fatalf("want both free sources (common knowledge), got %+v", v)
 	}
 	if v.Needs[0].FreeSources[0].ObjectID != "near" {
 		t.Errorf("nearest free source must come first, got %+v", v.Needs[0].FreeSources)
 	}
 }
 
-// TestBuildSatiation_FreeSource_RememberedAtDistance — the ticket's core add: a
-// well the actor has personally used surfaces by MEMORY wherever it now stands,
-// far beyond the scene radius (20 tiles), with no proximity to it.
-func TestBuildSatiation_FreeSource_RememberedAtDistance(t *testing.T) {
-	origin := sim.WorldToTile(0, 0)
-	subj := &sim.ActorSnapshot{
-		Pos:   origin,
-		Needs: map[sim.NeedKey]int{"thirst": sim.DefaultThirstRedThreshold},
-		KnownPlaces: map[sim.PlaceRef]*sim.KnownPlace{
-			"farwell": {Ref: "farwell", Kind: sim.PlaceKindObject, Affordances: []string{"free_source:thirst"}},
-		},
-	}
-	snap := &sim.Snapshot{
-		Actors:         map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj},
-		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{"farwell": thirstWell("farwell", "Old Well", 640, 0, -8)},
-		ItemKinds:      foodDrinkCatalog(),
-	}
-	v := buildSatiation(snap, "ezekiel", subj)
-	if v == nil || len(v.Needs) != 1 || len(v.Needs[0].FreeSources) != 1 {
-		t.Fatalf("a remembered distant well must surface via memory, got %+v", v)
-	}
-	if v.Needs[0].FreeSources[0].ObjectID != "farwell" {
-		t.Errorf("free source = %+v, want farwell (via memory)", v.Needs[0].FreeSources[0])
-	}
-}
-
-// TestBuildSatiation_FreeSource_DistantUnremembered_NotSurfaced — the
-// no-omniscience half: a far well (20 tiles) the actor has never used and is not
-// near is no longer god-shown (LLM-79). It is the only source, so the thirst
-// section is empty → nil.
-func TestBuildSatiation_FreeSource_DistantUnremembered_NotSurfaced(t *testing.T) {
+// TestBuildSatiation_FreeSource_DistantSurfaces_CommonKnowledge: free public
+// sources are common knowledge (Jeff, 2026-06-24), so a far well (20 tiles) the
+// actor has never used and does not remember still surfaces — no discovery gate.
+// (Replaces the LLM-79 memory/no-omniscience pair, reversed by that decision.)
+func TestBuildSatiation_FreeSource_DistantSurfaces_CommonKnowledge(t *testing.T) {
 	origin := sim.WorldToTile(0, 0)
 	subj := &sim.ActorSnapshot{Pos: origin, Needs: map[sim.NeedKey]int{"thirst": sim.DefaultThirstRedThreshold}}
 	snap := &sim.Snapshot{
@@ -687,56 +657,31 @@ func TestBuildSatiation_FreeSource_DistantUnremembered_NotSurfaced(t *testing.T)
 		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{"farwell": thirstWell("farwell", "Old Well", 640, 0, -8)},
 		ItemKinds:      foodDrinkCatalog(),
 	}
-	if v := buildSatiation(snap, "ezekiel", subj); v != nil {
-		t.Errorf("a distant unremembered well must not surface (no omniscience), got %+v", v)
+	v := buildSatiation(snap, "ezekiel", subj)
+	if v == nil || len(v.Needs) != 1 || len(v.Needs[0].FreeSources) != 1 {
+		t.Fatalf("a distant free public source must surface (common knowledge), got %+v", v)
+	}
+	if v.Needs[0].FreeSources[0].ObjectID != "farwell" {
+		t.Errorf("free source = %+v, want farwell", v.Needs[0].FreeSources[0])
 	}
 }
 
-// TestBuildSatiation_FreeSource_StructureKindIgnored locks the code_review fix:
-// the memory scan resolves ONLY object-kind known places. A structure-kind memory
-// is never cast to a VillageObjectID — even if (by data drift) it carried a
-// free_source affordance and its ref collided with a real free-source object's id.
-func TestBuildSatiation_FreeSource_StructureKindIgnored(t *testing.T) {
+// TestBuildSatiation_FreeSource_SingleSourceOnce: a free source appears exactly
+// once (the scan must not double-count an object).
+func TestBuildSatiation_FreeSource_SingleSourceOnce(t *testing.T) {
 	origin := sim.WorldToTile(0, 0)
 	subj := &sim.ActorSnapshot{
 		Pos:   origin,
 		Needs: map[sim.NeedKey]int{"thirst": sim.DefaultThirstRedThreshold},
-		KnownPlaces: map[sim.PlaceRef]*sim.KnownPlace{
-			// Structure-kind, but tagged free_source and sharing the well's id.
-			"well": {Ref: "well", Kind: sim.PlaceKindStructure, Affordances: []string{"free_source:thirst"}},
-		},
-	}
-	snap := &sim.Snapshot{
-		Actors: map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj},
-		// Far (20 tiles) so proximity can't surface it — only a wrongly-honored
-		// structure-kind memory could.
-		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{"well": thirstWell("well", "Well", 640, 0, -8)},
-		ItemKinds:      foodDrinkCatalog(),
-	}
-	if v := buildSatiation(snap, "ezekiel", subj); v != nil {
-		t.Errorf("a structure-kind memory must not resolve as an object free source, got %+v", v)
-	}
-}
-
-// TestBuildSatiation_FreeSource_RememberedAndNearbyDeduped: a source that is BOTH
-// remembered and within the scene radius appears exactly once, not twice.
-func TestBuildSatiation_FreeSource_RememberedAndNearbyDeduped(t *testing.T) {
-	origin := sim.WorldToTile(0, 0)
-	subj := &sim.ActorSnapshot{
-		Pos:   origin,
-		Needs: map[sim.NeedKey]int{"thirst": sim.DefaultThirstRedThreshold},
-		KnownPlaces: map[sim.PlaceRef]*sim.KnownPlace{
-			"well": {Ref: "well", Kind: sim.PlaceKindObject, Affordances: []string{"free_source:thirst"}},
-		},
 	}
 	snap := &sim.Snapshot{
 		Actors:         map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj},
-		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{"well": thirstWell("well", "Well", 64, 0, -8)}, // 2 tiles → also in proximity
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{"well": thirstWell("well", "Well", 64, 0, -8)},
 		ItemKinds:      foodDrinkCatalog(),
 	}
 	v := buildSatiation(snap, "ezekiel", subj)
 	if v == nil || len(v.Needs) != 1 || len(v.Needs[0].FreeSources) != 1 {
-		t.Fatalf("a source both remembered and nearby must appear exactly once, got %+v", v)
+		t.Fatalf("a free source must appear exactly once, got %+v", v)
 	}
 }
 

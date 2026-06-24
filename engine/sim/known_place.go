@@ -198,6 +198,13 @@ func handleKnownPlaceOnPurchase(w *World, evt Event) {
 // that path emits no event — for the hits it just applied. No-op for a non-
 // agent actor or empty hits (a yield-only farm bush produces no hits, so it is
 // never recorded as a free source here). MUST run on the world goroutine.
+//
+// NOTE: the "free_source:<need>" affordance is currently WRITTEN but no longer
+// READ. Its only reader was perception's free-source satiation arm, which became
+// omniscient (free public sources are common knowledge, 2026-06-24), so it no
+// longer consults memory. Retained as durable substrate (the row also records
+// experience/recency, useful to a future memory-aware reader); not dead by
+// accident. Drop this capture if no such reader materializes.
 func recordFreeSourceExperience(a *Actor, objID VillageObjectID, hits []RefreshHit, at time.Time) {
 	if a == nil || !isAgentNPC(a) || len(hits) == 0 {
 		return
