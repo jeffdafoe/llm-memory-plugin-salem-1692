@@ -1084,6 +1084,30 @@ func AcceptPay(callerID ActorID, ledgerID LedgerID, at time.Time) Command {
 				)
 			}
 
+			// Gate 4b: no duplicate undelivered room (LLM-89). A nights_stay
+			// grant is created only at deliver_order, so between accept and
+			// deliver the buyer holds no grant and nothing else stops the
+			// keeper accepting a SECOND room offer from the same buyer —
+			// minting a duplicate order that double-charges them for one stay
+			// (gate 10's stock reservation is skipped for service items, so it
+			// can't catch this). Reject while an undelivered room from this
+			// keeper to this buyer is still outstanding; hand that one over
+			// first. Idempotent reject (NO transition) — the offer stays
+			// pending so it can be accepted once the prior is delivered (a
+			// genuine next night).
+			if itemHasCapability(w, entry.ItemKind, "lodging") {
+				if priorID, dup := undeliveredLodgingOrderFor(w, callerID, entry.BuyerID); dup {
+					who := string(entry.BuyerID)
+					if b := w.Actors[entry.BuyerID]; b != nil && b.DisplayName != "" {
+						who = b.DisplayName
+					}
+					return nil, fmt.Errorf(
+						"AcceptPay: %s already holds an undelivered room from you (order #%d) — hand that over with deliver_order before selling another night.",
+						who, priorID,
+					)
+				}
+			}
+
 			// Gates 5-11 + the atomic transfer / flip / emit live in
 			// acceptPendingOffer, shared with CounterPay's
 			// non-increasing-counter coercion (a seller counter at or

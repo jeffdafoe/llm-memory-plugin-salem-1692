@@ -479,6 +479,42 @@ func outstandingReadyOrderQty(w *World, sellerID ActorID, item ItemKind) int {
 	return total
 }
 
+// undeliveredLodgingOrderFor returns the ID of a Ready (accepted but
+// not-yet-delivered) lodging order this seller owes this buyer, and true, or
+// (0, false) when none. A nights_stay grant is created only at the keeper's
+// deliver_order; between accept and deliver the buyer holds no grant, so nothing
+// in the world stops the keeper accepting a SECOND room offer from the same
+// buyer and minting a duplicate order that double-charges them for one stay
+// (LLM-89). The gate-10 stock reservation that catches this for goods is skipped
+// for service items like nights_stay, so lodging needs its own guard. The buyer
+// counts when they are the order's BuyerID or appear in ConsumerIDs; only
+// "lodging"-capability orders qualify.
+//
+// MUST be called from inside a Command.Fn (world goroutine) — iterates
+// w.Orders without coordination.
+func undeliveredLodgingOrderFor(w *World, sellerID, buyerID ActorID) (OrderID, bool) {
+	if w == nil {
+		return 0, false
+	}
+	for _, o := range w.Orders {
+		if o == nil || o.State != OrderStateReady || o.SellerID != sellerID {
+			continue
+		}
+		if !itemHasCapability(w, o.Item, "lodging") {
+			continue
+		}
+		if o.BuyerID == buyerID {
+			return o.ID, true
+		}
+		for _, cid := range o.ConsumerIDs {
+			if cid == buyerID {
+				return o.ID, true
+			}
+		}
+	}
+	return 0, false
+}
+
 // restartExpirePendingOrders walks World.Orders at LoadWorld time and
 // flips any Ready Order whose ExpiresAt has already elapsed to Expired
 // in-band. Mirrors restartExpirePendingEntries for the pay-ledger side

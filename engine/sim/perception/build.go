@@ -63,6 +63,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	// Pending, so a seller who speaks through the warranted tick instead of
 	// resolving can still settle the offer on any later tick.
 	p.PayOffersForMe = buildPayOffersForMe(snap, actorID)
+	p.RoomAlreadySoldOrderByLedger = buildRoomAlreadySold(snap, actorID, p.PayOffersForMe)
 
 	p.Actor = buildActorView(snap, actorSnap)
 	p.WarrantActorNames = buildWarrantActorNames(snap, actorSnap, actorID, p.Warrants, p.PayOffersForMe)
@@ -2287,6 +2288,58 @@ func buildPayOffersForMe(snap *sim.Snapshot, subject sim.ActorID) []sim.PayOffer
 		})
 	}
 	return offers
+}
+
+// buildRoomAlreadySold maps each pending lodging offer (by its LedgerID) to an
+// existing Ready lodging order this keeper already owes the SAME buyer — the
+// duplicate-room situation LLM-89's AcceptPay gate rejects (a nights_stay grant
+// lands only at deliver_order, so accepting a second room before handing over
+// the first double-charges the guest). renderPayOffers reads it to steer the
+// keeper to deliver the room already sold rather than accept another. nil when
+// no pending offer overlaps an undelivered room.
+func buildRoomAlreadySold(snap *sim.Snapshot, keeper sim.ActorID, offers []sim.PayOfferWarrantReason) map[sim.LedgerID]sim.OrderID {
+	if snap == nil || len(offers) == 0 || len(snap.Orders) == 0 {
+		return nil
+	}
+	var out map[sim.LedgerID]sim.OrderID
+	for _, o := range offers {
+		if !itemGrantsLodging(snap, o.Item) {
+			continue
+		}
+		oid, ok := readyLodgingOrderFor(snap, keeper, o.Buyer)
+		if !ok {
+			continue
+		}
+		if out == nil {
+			out = make(map[sim.LedgerID]sim.OrderID)
+		}
+		out[o.LedgerID] = oid
+	}
+	return out
+}
+
+// readyLodgingOrderFor returns the ID of a Ready (undelivered) lodging order
+// from keeper to buyer, and true, or (0, false) when none. The seller-side
+// mirror of the engine's undeliveredLodgingOrderFor, read off the snapshot;
+// buyer matches as the order's BuyerID or any of its ConsumerIDs.
+func readyLodgingOrderFor(snap *sim.Snapshot, keeper, buyer sim.ActorID) (sim.OrderID, bool) {
+	for _, o := range snap.Orders {
+		if o == nil || o.State != sim.OrderStateReady || o.SellerID != keeper {
+			continue
+		}
+		if !itemGrantsLodging(snap, o.Item) {
+			continue
+		}
+		if o.BuyerID == buyer {
+			return o.ID, true
+		}
+		for _, cid := range o.ConsumerIDs {
+			if cid == buyer {
+				return o.ID, true
+			}
+		}
+	}
+	return 0, false
 }
 
 // filterStalePayOfferWarrants removes PayOfferWarrantReason warrants whose

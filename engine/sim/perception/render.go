@@ -236,7 +236,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// seller's own mild needs outrank a waiting customer for whole minutes
 	// (conversation hud-6c849d…, ZBBS-HOME-424). renderTriage reinforces the
 	// same priority at the decision point.
-	renderPayOffers(&ephemeral, payOffers, nameOf, stockOf)
+	renderPayOffers(&ephemeral, payOffers, nameOf, stockOf, p.RoomAlreadySoldOrderByLedger)
 	renderOfferableCustomers(&ephemeral, p.OfferableCustomers)
 	renderStandingQuotesFromMe(&ephemeral, p.StandingQuotesFromMe)
 	renderPendingDeliveriesFromMe(&ephemeral, p.PendingDeliveriesFromMe, p.LocalDateUTC)
@@ -1620,7 +1620,7 @@ func formatOfferPayment(amount int, payItems []sim.ItemKindQty) string {
 	}
 }
 
-func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason, nameOf func(sim.ActorID) string, stockOf func(sim.ItemKind) (int, bool)) {
+func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason, nameOf func(sim.ActorID) string, stockOf func(sim.ItemKind) (int, bool), roomAlreadySold map[sim.LedgerID]sim.OrderID) {
 	if len(offers) == 0 {
 		return
 	}
@@ -1651,6 +1651,13 @@ func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason, nam
 			if have, stocked := stockOf(o.Item); stocked && o.Qty > have {
 				fmt.Fprintf(b, " — you hold only %d %s", have, item)
 			}
+		}
+		// LLM-89: this buyer already holds a room from you that you have not
+		// handed over. Accepting a second mints a duplicate order (and the
+		// AcceptPay gate now rejects it), so steer to deliver the one already
+		// sold rather than sell another night.
+		if oid, ok := roomAlreadySold[o.LedgerID]; ok {
+			fmt.Fprintf(b, " — you already sold %s a room (order #%d) you have not handed over; deliver that with deliver_order before accepting another", buyer, oid)
 		}
 		b.WriteString("\n")
 	}
