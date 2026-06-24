@@ -55,7 +55,7 @@ func buildCrierBoardWorldWithBoardStates(t *testing.T, boardStates []sim.AssetSt
 		"notice-board": {
 			ID: "notice-board", Category: "prop", DefaultState: "empty",
 			RotationAlgo: sim.RotationAlgoRandomPerObject,
-			States: boardStates,
+			States:       boardStates,
 		},
 	})
 	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
