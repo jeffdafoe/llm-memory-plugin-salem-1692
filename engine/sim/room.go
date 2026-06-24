@@ -218,6 +218,37 @@ func lodgerRoomAt(w *World, actor *Actor, structureID StructureID, now time.Time
 	return best, best != 0
 }
 
+// keeperStaffRoomAt returns the id of a staff room in structureID that actor may
+// bed down in as the establishment's own keeper — its private quarters off the
+// public floor. A keeper holds staff access to its workplace by WorkStructureID
+// (the canEnterRoom staff branch reads it directly; AccessSourceStaff is never a
+// stored row), so this matches only when structureID IS actor.WorkStructureID and
+// the structure declares a staff room. The keeper counterpart to lodgerRoomAt (a
+// paying lodger's private room): executeNPCSleep beds a home==work keeper here so
+// it vacates the common storefront instead of sleeping at the counter (LLM-29).
+// Lowest-RoomID tie-break for the can't-normally-happen multi-staff-room case —
+// arbitrary but deterministic. MUST be called from inside a Command.Fn (reads
+// w.Structures).
+func keeperStaffRoomAt(w *World, actor *Actor, structureID StructureID) (RoomID, bool) {
+	if actor == nil || structureID == "" || actor.WorkStructureID != structureID {
+		return 0, false
+	}
+	s, ok := w.Structures[structureID]
+	if !ok {
+		return 0, false
+	}
+	best := RoomID(0)
+	for _, r := range s.Rooms {
+		if r == nil || r.Kind != RoomKindStaff {
+			continue
+		}
+		if best == 0 || r.ID < best {
+			best = r.ID
+		}
+	}
+	return best, best != 0
+}
+
 // actorHoldsActiveLodging reports whether actor holds ANY active, unexpired
 // ledger RoomAccess at now — the structure-agnostic counterpart to
 // actorIsLodgerAt. The homeless rest-fallback floor (npc_rest_fallback.go)

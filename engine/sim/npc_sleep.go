@@ -179,6 +179,29 @@ func npcSleepHere(w *World, a *Actor, now time.Time) bool {
 	return false
 }
 
+// npcSleepRoomAt resolves the private room an auto-sleeping NPC beds into when it
+// sleeps inside structureID, or (0, false) to sleep in place (the common floor).
+// Two mutually-exclusive resting relationships, checked in order:
+//
+//   - lodger: the private room it holds an active ledger grant on (lodgerRoomAt),
+//     LLM-14.
+//   - keeper: a staff room of its own workplace, occupied as the establishment's
+//     keeper (keeperStaffRoomAt) — a home==work keeper vacating the storefront for
+//     its quarters, LLM-29. A homed keeper holds no lodging grant and a lodger is
+//     not its own structure's keeper, so the two never both match.
+//
+// executeNPCSleep stamps Actor.InsideRoomID to this at the actual bed-down (not at
+// check-in/arrival) and wakeNPC clears it, so a private InsideRoomID always means
+// "asleep in it" — the invariant audienceRoomScope assumes. A homed NPC whose
+// structure has no staff room (a plain cottage) resolves to (0, false) and sleeps
+// in place, unchanged. MUST be called from inside a Command.Fn (reads w.Structures).
+func npcSleepRoomAt(w *World, a *Actor, structureID StructureID, now time.Time) (RoomID, bool) {
+	if room, ok := lodgerRoomAt(w, a, structureID, now); ok {
+		return room, true
+	}
+	return keeperStaffRoomAt(w, a, structureID)
+}
+
 // executeNPCSleep beds an NPC: sets SleepingUntil = now + the configured cap,
 // stamps the tiredness-recovery cursor at the window's open so the recovery
 // sweep (#1) counts from bed-down rather than its next lazy-init pass, soft-sets
@@ -211,11 +234,13 @@ func executeNPCSleep(w *World, a *Actor, now time.Time) bool {
 	if actorInActiveHuddle(w, a) {
 		speakRetireFarewell(w, a, now)
 	}
-	// LLM-14: a lodger beds into its private room — stamp InsideRoomID at the
-	// actual bed-down (not at check-in) so audience-scoping treats the lodger as
-	// public while awake at the bar and private only while asleep. Homed NPCs
-	// hold no lodging grant (lodgerRoomAt false), so InsideRoomID stays 0.
-	if room, ok := lodgerRoomAt(w, a, a.InsideStructureID, now); ok {
+	// Bed the sleeper into a private room — stamp InsideRoomID at the actual
+	// bed-down (not at check-in/arrival) so audience-scoping treats it as public
+	// while awake on the floor and private only while asleep (audienceRoomScope).
+	// A lodger beds into its granted private room (LLM-14); a home==work keeper
+	// beds into its own staff quarters off the storefront (LLM-29). A homed NPC
+	// with no staff room (a plain cottage) sleeps in place — InsideRoomID stays 0.
+	if room, ok := npcSleepRoomAt(w, a, a.InsideStructureID, now); ok {
 		a.InsideRoomID = room
 	}
 	maxHours := w.Settings.NPCSleepMaxDurationHours
@@ -308,10 +333,10 @@ func speakRetireFarewell(w *World, a *Actor, now time.Time) {
 }
 
 // wakeNPC clears an NPC's sleep, drops the recovery cursor (window closed),
-// clears the bed-down room scope (InsideRoomID — a lodger wakes into the common
-// area, LLM-14), resets the macro-state to idle (no prior-state restore — the
-// next thing the NPC does re-sets it), and refreshes occupancy (a darkened
-// home==work tavern re-lights when its keeper wakes).
+// clears the bed-down room scope (InsideRoomID — a lodger or live-in keeper wakes
+// into the common area; LLM-14, LLM-29), resets the macro-state to idle (no
+// prior-state restore — the next thing the NPC does re-sets it), and refreshes
+// occupancy (a darkened home==work tavern re-lights when its keeper wakes).
 func wakeNPC(w *World, a *Actor) {
 	a.SleepingUntil = nil
 	a.LastTirednessRecoveryAt = nil
