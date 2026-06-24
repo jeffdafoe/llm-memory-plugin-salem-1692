@@ -1579,8 +1579,9 @@ func (w *World) republish() {
 		// perception build reads the same expiry the sim.Speak backstop uses.
 		PCAwaitReplyWindow:  w.awaitReplyWindow(KindPC),
 		NPCAwaitReplyWindow: w.awaitReplyWindow(KindNPCShared),
-		// Aliased, not cloned — immutable post-startup catalog. See Snapshot.ItemKinds.
+		// Aliased, not cloned — immutable post-startup catalogs. See Snapshot.ItemKinds / Snapshot.Recipes.
 		ItemKinds: w.ItemKinds,
+		Recipes:   w.Recipes,
 	}
 	for id, a := range w.Actors {
 		sa := snapshotActor(a, w.TickCounter)

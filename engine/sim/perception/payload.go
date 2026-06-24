@@ -349,6 +349,15 @@ type Payload struct {
 	// and acts via move_to + pay_with_item. ZBBS-WORK-322.
 	Restocking *RestockingView
 
+	// ProductionInputs surfaces, to a producer, the inputs it BUYS that are also
+	// consumed by a recipe it produces and are below the reorder threshold — the
+	// production dependency and how many more of the output good its input stock
+	// backs ("you use skillet to make stew … enough for about 30 more"). The
+	// producer-side WHY behind a restock trip; the WHERE/HOW stays in Restocking,
+	// which fires on the same threshold for the same item (the LLM-64 split). nil
+	// when no produced recipe has a low bought input, or restock is disabled. LLM-82.
+	ProductionInputs *ProductionInputsView
+
 	// Forage surfaces a grower-seller's own forage-to-sell bushes when their
 	// harvested stock of an item is low (< RestockReorderPct of cap) — each low
 	// `forage` RestockEntry, the on-hand/cap, the ripe count across the actor's
