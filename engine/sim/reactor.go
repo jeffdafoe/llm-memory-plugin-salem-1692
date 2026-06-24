@@ -626,7 +626,10 @@ func (m WarrantMeta) Kind() WarrantKind {
 //   - Already-warranted: appends meta to Warrants (capped at
 //     Settings.MaxWarrantsPerActor; oldest dropped). Preserves earliest
 //     WarrantedSince and WarrantDueAt — merge by accumulation, not
-//     replacement.
+//     replacement — EXCEPT a salient append re-arms a far-out due time
+//     (LLM-94 salient re-arm below): it may pull WarrantDueAt earlier (never
+//     later) so a fresh stimulus isn't stranded behind a Stage-2 throttle's
+//     minutes-out backoff.
 //   - Not warranted: stamps WarrantedSince=now, picks a jitter from
 //     Settings.ReactorJitterMin..Max, stamps WarrantDueAt=now+jitter,
 //     initializes Warrants with [meta].
@@ -704,6 +707,23 @@ func tryStampWarrant(w *World, actor *Actor, meta WarrantMeta, now time.Time) bo
 
 	if actor.WarrantedSince != nil {
 		actor.Warrants = appendCappedWarrant(actor.Warrants, meta, w.Settings.MaxWarrantsPerActor)
+		// Salient re-arm (LLM-94). A SALIENT signal arriving on an actor whose
+		// due time was pushed far out by a deferral gate — notably the Stage-2
+		// degeneracy throttle, which parks an ambient-only cycle minutes out —
+		// pulls WarrantDueAt back toward now+jitter so the actor is re-examined
+		// promptly (a player speaking to a throttled NPC is answered without
+		// waiting out the backoff). Only ever moves the due time EARLIER, and the
+		// emit-time pacing gates (min-gap, rate, throttle, admission) re-check and
+		// re-defer if their condition still holds — so this accelerates a fresh
+		// salient signal without bypassing pacing. An ambient append never pulls
+		// in (an idle backstop must not undo a throttle). No-op for the common
+		// case where the existing due time is already at/inside now+jitter.
+		if actor.WarrantDueAt != nil && !isAmbientWarrantKind(meta.Kind()) {
+			soon := now.Add(pickWarrantJitter(w.Settings, now))
+			if actor.WarrantDueAt.After(soon) {
+				actor.WarrantDueAt = &soon
+			}
+		}
 		return true
 	}
 	t := now

@@ -552,6 +552,39 @@ func EvaluateReactors(now time.Time) Command {
 					continue
 				}
 
+				// Degeneracy Stage-2 throttle (LLM-94). A throttled actor — one
+				// the observer has watched burn an obviously-futile tick every
+				// cadence cycle past the Stage-2 threshold — has its AMBIENT-only
+				// wake cycles pushed out by the backoff, so the engine stops
+				// paying to wake it every minute for nothing. A cycle carrying any
+				// SALIENT warrant (speech, an economic event, a need threshold, an
+				// operator nudge) is never throttled — the throttle slows the
+				// engine's own poking, never a real interaction. Gated on
+				// degeneracyEnabled so that turning the observer OFF lifts the
+				// throttle immediately (otherwise a throttled actor would never
+				// tick, never reach updateDegeneracy, and stay deferred forever);
+				// Force bypasses it like the other pacing gates. Self-recovering:
+				// a productive tick clears DegenStage, so the throttle simply
+				// stops applying — no separate un-throttle step. A `deferred`
+				// record (gate=degeneracy) makes each suppression visible, the
+				// same posture as the admission deferral below.
+				if w.Settings.degeneracyEnabled() &&
+					actor.DegenStage >= DegeneracyThrottled &&
+					!hasForcedWarrant(actor.Warrants) &&
+					warrantCycleAllAmbient(actor.Warrants) {
+					next := now.Add(w.Settings.degeneracyThrottleBackoff())
+					actor.WarrantDueAt = &next
+					if w.repo.TickTelemetry != nil {
+						w.repo.TickTelemetry.WriteTickTelemetry(TickTelemetryRecord{
+							At:      now,
+							ActorID: actor.ID,
+							Kind:    "deferred",
+							Detail:  map[string]string{"gate": "degeneracy"},
+						})
+					}
+					continue
+				}
+
 				// Tick admission control (Option A — admit before consume).
 				// If downstream capacity is unavailable, push the warrant
 				// out by AdmissionBackoff and emit nothing — the warrants

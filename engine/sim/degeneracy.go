@@ -117,6 +117,14 @@ func (s WorldSettings) degeneracyThrottleBackoff() time.Duration {
 // evidence of degeneracy.
 func updateDegeneracy(w *World, a *Actor, result TickResult, now time.Time) {
 	if !w.Settings.degeneracyEnabled() {
+		// Observer disabled. Actively unwind any stage left over from when it
+		// was enabled so turning it off lifts the Stage-1 thinning and the
+		// Stage-2 throttle rather than leaving them stuck. The Stage-2 throttle
+		// gate also checks degeneracyEnabled, so a throttled actor still reaches
+		// a scored tick here and clears on its own.
+		if a.DegenStage != DegeneracyNone || a.DegenStreak != 0 {
+			clearDegeneracy(w, a, now)
+		}
 		return
 	}
 	if !degeneracyTickScored(result.TerminalStatus) {
@@ -252,4 +260,48 @@ func writeDegeneracyTelemetry(w *World, a *Actor, now time.Time, prev Degeneracy
 			"streak":     strconv.Itoa(a.DegenStreak),
 		},
 	})
+}
+
+// isAmbientWarrantKind reports whether a warrant kind is AMBIENT for the
+// Stage-2 throttle: engine-injected liveness or self-narration with no external
+// counterparty — the wakeups it is safe to defer for a known-degenerate actor.
+// The default is SALIENT (return false): every speech, huddle-join, economic,
+// need-threshold, arrival, or operator warrant passes through, so the throttle
+// only ever slows the engine's own poking of a stuck actor, never a real
+// interaction. Default-is-salient is the safe direction — a newly added kind is
+// never deferred by accident (the same posture as handlers.isLowInfoWarrantKind,
+// which this deliberately does NOT reuse: that classifier answers a different
+// question ["nothing to react to THIS tick", which also covers huddle-departure
+// kinds] and lives in handlers, which imports sim — the throttle runs inside
+// sim's EvaluateReactors and cannot call back into it).
+func isAmbientWarrantKind(k WarrantKind) bool {
+	switch k {
+	case WarrantKindIdleBackstop,
+		WarrantKindStranded,
+		WarrantKindShiftDuty,
+		WarrantKindRestock,
+		WarrantKindDwellStarted,
+		WarrantKindDwellTickApplied,
+		WarrantKindDwellEnded:
+		return true
+	default:
+		return false
+	}
+}
+
+// warrantCycleAllAmbient reports whether every warrant in a pending cycle is
+// ambient — the condition under which the Stage-2 throttle defers the actor's
+// wake. A single salient warrant makes the whole cycle salient and the throttle
+// steps aside. An empty cycle returns false (defensive: never defer a cycle the
+// evaluator somehow reached with nothing in it).
+func warrantCycleAllAmbient(list []WarrantMeta) bool {
+	if len(list) == 0 {
+		return false
+	}
+	for _, m := range list {
+		if !isAmbientWarrantKind(m.Kind()) {
+			return false
+		}
+	}
+	return true
 }
