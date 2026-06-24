@@ -48,7 +48,7 @@ func TestBuildForage_NoPolicy_Nil(t *testing.T) {
 		Actors:            map[sim.ActorID]*sim.ActorSnapshot{"prudence": subj},
 		RestockReorderPct: 25,
 	}
-	if v := buildForage(snap, "prudence", subj); v != nil {
+	if v := buildForage(snap, "prudence", subj, false); v != nil {
 		t.Fatalf("expected nil view with no RestockPolicy, got %+v", v)
 	}
 }
@@ -62,7 +62,7 @@ func TestBuildForage_DisabledPct_Nil(t *testing.T) {
 		},
 		RestockReorderPct: 0, // feature disabled
 	}
-	if v := buildForage(snap, "prudence", subj); v != nil {
+	if v := buildForage(snap, "prudence", subj, false); v != nil {
 		t.Fatalf("expected nil view when RestockReorderPct==0, got %+v", v)
 	}
 }
@@ -77,7 +77,7 @@ func TestBuildForage_AboveThreshold_Nil(t *testing.T) {
 		},
 		RestockReorderPct: 25,
 	}
-	if v := buildForage(snap, "prudence", subj); v != nil {
+	if v := buildForage(snap, "prudence", subj, false); v != nil {
 		t.Fatalf("expected nil view above reorder threshold, got %+v", v)
 	}
 }
@@ -99,7 +99,7 @@ func TestBuildForage_LowStock_SurfacesOwnedBushes(t *testing.T) {
 		},
 		RestockReorderPct: 25,
 	}
-	v := buildForage(snap, "prudence", subj)
+	v := buildForage(snap, "prudence", subj, false)
 	if v == nil || len(v.Items) != 1 {
 		t.Fatalf("expected one low item, got %+v", v)
 	}
@@ -118,6 +118,31 @@ func TestBuildForage_LowStock_SurfacesOwnedBushes(t *testing.T) {
 	}
 }
 
+// TestBuildForage_CustomerEngaged_Defers is the don't-abandon-a-customer guard
+// (LLM-90): the harvest cue steers the grower to WALK OFF to her bushes, so while
+// a sale is live at the stall (Build passes customerEngaged=true for a pending
+// offer to her, a co-present customer, or a quote she has standing out) the whole
+// section defers — she finishes the deal before stepping out. Same low-stock,
+// ripe-bush setup as the surfacing test; only customerEngaged flips the result.
+func TestBuildForage_CustomerEngaged_Defers(t *testing.T) {
+	subj := &sim.ActorSnapshot{Inventory: map[sim.ItemKind]int{"raspberries": 2}, RestockPolicy: foragePolicy("raspberries", 10),
+		KnownPlaces: remembersGather("raspberries", "bushA")}
+	snap := &sim.Snapshot{
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{"prudence": subj},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"bushA": forageBush("prudence", "raspberries", 10),
+		},
+		RestockReorderPct: 25,
+	}
+	// Without engagement the section surfaces (guards the test setup is otherwise live).
+	if v := buildForage(snap, "prudence", subj, false); v == nil {
+		t.Fatal("expected the section to surface when no customer is engaged")
+	}
+	if v := buildForage(snap, "prudence", subj, true); v != nil {
+		t.Fatalf("expected nil view while a customer is engaged at the stall, got %+v", v)
+	}
+}
+
 func TestBuildForage_LowStock_NoOwnedBushes_Nil(t *testing.T) {
 	// Low on raspberries but owns no raspberry bushes (only a blueberry one) →
 	// nothing to point at, so no cue for raspberries.
@@ -129,7 +154,7 @@ func TestBuildForage_LowStock_NoOwnedBushes_Nil(t *testing.T) {
 		},
 		RestockReorderPct: 25,
 	}
-	if v := buildForage(snap, "prudence", subj); v != nil {
+	if v := buildForage(snap, "prudence", subj, false); v != nil {
 		t.Fatalf("expected nil view when no owned bushes for the low item, got %+v", v)
 	}
 }
@@ -146,7 +171,7 @@ func TestBuildForage_NoneRipe_NoMoveHandle(t *testing.T) {
 		},
 		RestockReorderPct: 25,
 	}
-	v := buildForage(snap, "prudence", subj)
+	v := buildForage(snap, "prudence", subj, false)
 	if v == nil || len(v.Items) != 1 {
 		t.Fatalf("expected one item, got %+v", v)
 	}
@@ -175,6 +200,115 @@ func TestRenderForage_LowStock(t *testing.T) {
 	}
 }
 
+// TestBuild_ForageErrandWiring locks the LLM-90 composition that the parameter-
+// level buildForage / buildDutySteer tests can't: Build must wire customerEngaged
+// -> p.Forage -> DutySteer.ForageErrand. A future refactor of the Build wiring
+// would slip past the unit tests but fail here. base() is Prudence on-shift at her
+// own apothecary, berry shelf low (1 of 10), remembering her own still-owned
+// raspberry bush — the actionable harvest setup; each subtest mutates it.
+func TestBuild_ForageErrandWiring(t *testing.T) {
+	base := func() (*sim.Snapshot, *sim.ActorSnapshot) {
+		seller := &sim.ActorSnapshot{
+			DisplayName:        "Prudence Ward",
+			Kind:               sim.KindNPCStateful,
+			BusinessownerState: &sim.BusinessownerState{},
+			WorkStructureID:    "apothecary",
+			InsideStructureID:  "apothecary",
+			ScheduleStartMin:   dutyMinPtr(480),                        // 08:00
+			ScheduleEndMin:     dutyMinPtr(1080),                       // 18:00
+			Inventory:          map[sim.ItemKind]int{"raspberries": 1}, // 10% of 10 < 25%
+			RestockPolicy:      &sim.RestockPolicy{Restock: []sim.RestockEntry{{Item: "raspberries", Source: sim.RestockSourceForage, Max: 10}}},
+			KnownPlaces: map[sim.PlaceRef]*sim.KnownPlace{
+				"bushA": {Ref: "bushA", Kind: sim.PlaceKindObject, Affordances: []string{"gather:raspberries"}},
+			},
+		}
+		snap := &sim.Snapshot{
+			Actors:     map[sim.ActorID]*sim.ActorSnapshot{"prudence": seller},
+			Structures: map[sim.StructureID]*sim.Structure{"apothecary": {ID: "apothecary", DisplayName: "PW Apothecary"}},
+			VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+				"bushA": {OwnerActorID: "prudence", Refreshes: []*sim.ObjectRefresh{
+					{Amount: 0, GatherItem: "raspberries", AvailableQuantity: dutyMinPtr(10)},
+				}},
+			},
+			RestockReorderPct: 25,
+			LocalMinuteOfDay:  dutyMinPtr(600), // 10:00, within shift
+		}
+		return snap, seller
+	}
+
+	t.Run("no customer -> Forage set, at-post ForageErrand", func(t *testing.T) {
+		snap, _ := base()
+		p := Build(snap, "prudence", nil)
+		if p.Forage == nil {
+			t.Fatal("expected the forage cue (low shelf + remembered owned bush, no customer)")
+		}
+		if p.DutySteer == nil || !p.DutySteer.AtPost || !p.DutySteer.ForageErrand {
+			t.Fatalf("expected at-post steer with ForageErrand, got %+v", p.DutySteer)
+		}
+	})
+
+	t.Run("pending offer to seller -> Forage deferred, normal stabilizer", func(t *testing.T) {
+		snap, _ := base()
+		snap.PayLedger = map[sim.LedgerID]*sim.PayLedgerEntry{
+			1: {ID: 1, BuyerID: "mary", SellerID: "prudence", State: sim.PayLedgerStatePending},
+		}
+		p := Build(snap, "prudence", nil)
+		if p.Forage != nil {
+			t.Fatal("expected forage deferred while a buyer's offer is pending")
+		}
+		if p.DutySteer == nil || !p.DutySteer.AtPost || p.DutySteer.ForageErrand {
+			t.Fatalf("expected the normal at-post stabilizer (no ForageErrand), got %+v", p.DutySteer)
+		}
+	})
+
+	t.Run("standing quote from seller -> Forage deferred", func(t *testing.T) {
+		snap, _ := base()
+		snap.Quotes = map[sim.QuoteID]*sim.SceneQuote{
+			1: {ID: 1, SellerID: "prudence", TargetBuyer: "mary", ItemKind: "raspberries", State: sim.SceneQuoteStateActive},
+		}
+		p := Build(snap, "prudence", nil)
+		if p.Forage != nil {
+			t.Fatal("expected forage deferred while a quote she extended is still live")
+		}
+		if p.DutySteer == nil || p.DutySteer.ForageErrand {
+			t.Fatalf("expected no ForageErrand while engaged, got %+v", p.DutySteer)
+		}
+	})
+
+	t.Run("co-present customer in huddle at own post -> Forage deferred (broad guard)", func(t *testing.T) {
+		snap, seller := base()
+		seller.CurrentHuddleID = "h1"
+		snap.Actors["mary"] = &sim.ActorSnapshot{DisplayName: "Goodwife Mary", Kind: sim.KindNPCStateful, CurrentHuddleID: "h1"}
+		snap.Huddles = map[sim.HuddleID]*sim.Huddle{
+			"h1": {ID: "h1", Members: map[sim.ActorID]struct{}{"prudence": {}, "mary": {}}},
+		}
+		p := Build(snap, "prudence", nil)
+		if p.Forage != nil {
+			t.Fatal("expected forage deferred while a companion shares her huddle at her post (broad abandon guard)")
+		}
+		if p.DutySteer == nil || p.DutySteer.ForageErrand {
+			t.Fatalf("expected no ForageErrand while a customer is present, got %+v", p.DutySteer)
+		}
+	})
+}
+
+// TestRenderRestockWarrantLine_ForageRoutesToBushes: a forage-sourced restock
+// warrant line points the grower at "## Your bushes to harvest", not the buy-side
+// "## Restocking" section she has no entries in (LLM-90).
+func TestRenderRestockWarrantLine_ForageRoutesToBushes(t *testing.T) {
+	buy := renderRestockWarrantLine(1, "milk", sim.RestockSourceBuy)
+	if !strings.Contains(buy, "see Restocking.") {
+		t.Errorf("buy warrant line should point at Restocking, got %q", buy)
+	}
+	forage := renderRestockWarrantLine(2, "raspberries", sim.RestockSourceForage)
+	if !strings.Contains(forage, "see Your bushes to harvest.") {
+		t.Errorf("forage warrant line should point at the bushes, got %q", forage)
+	}
+	if strings.Contains(forage, "Restocking") {
+		t.Errorf("forage warrant line must not mention Restocking, got %q", forage)
+	}
+}
+
 func TestRenderForage_Nil_NoOutput(t *testing.T) {
 	var b strings.Builder
 	renderForage(&b, nil)
@@ -196,7 +330,7 @@ func TestBuildForage_MoveHandleTieLowestID(t *testing.T) {
 		},
 		RestockReorderPct: 25,
 	}
-	v := buildForage(snap, "prudence", subj)
+	v := buildForage(snap, "prudence", subj, false)
 	if v == nil || len(v.Items) != 1 {
 		t.Fatalf("expected one item, got %+v", v)
 	}
@@ -219,7 +353,7 @@ func TestBuildForage_OwnedButNotRemembered_Nil(t *testing.T) {
 		},
 		RestockReorderPct: 25,
 	}
-	if v := buildForage(snap, "prudence", subj); v != nil {
+	if v := buildForage(snap, "prudence", subj, false); v != nil {
 		t.Fatalf("an owned-but-unremembered bush must not surface (no god-injection), got %+v", v)
 	}
 }

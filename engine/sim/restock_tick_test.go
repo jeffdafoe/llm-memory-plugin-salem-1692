@@ -33,6 +33,32 @@ func restockWorld(actors ...*Actor) *World {
 	return w
 }
 
+// forageBushObj builds an owned forage-to-sell bush: a finite, yield-only
+// (Amount 0) gather row for item with `avail` ripe units.
+func forageBushObj(owner ActorID, item ItemKind, avail int) *VillageObject {
+	q := avail
+	return &VillageObject{
+		OwnerActorID: owner,
+		Refreshes: []*ObjectRefresh{
+			{Attribute: "hunger", Amount: 0, GatherItem: item, AvailableQuantity: &q},
+		},
+	}
+}
+
+// rememberForageBush marks bushID as a remembered gather:<item> source on the
+// actor's known-places — what LLM-77 ownership-seeding records for an owner's own
+// bushes, and the precondition the forage warrant's actionability gate reads.
+func rememberForageBush(a *Actor, item ItemKind, bushID VillageObjectID) {
+	if a.KnownPlaces == nil {
+		a.KnownPlaces = map[PlaceRef]*KnownPlace{}
+	}
+	a.KnownPlaces[PlaceRef(bushID)] = &KnownPlace{
+		Ref:         PlaceRef(bushID),
+		Kind:        PlaceKindObject,
+		Affordances: []string{"gather:" + string(item)},
+	}
+}
+
 func TestRestockReorderThresholdMet(t *testing.T) {
 	cases := []struct {
 		current, cap, pct int
@@ -106,6 +132,69 @@ func TestEvaluateRestock_LowStockStamps(t *testing.T) {
 	}
 	if !found {
 		t.Error("no RestockWarrantReason on the actor")
+	}
+}
+
+// TestEvaluateRestock_LowForageStockStamps: a grower whose own HARVESTED sell-
+// stock runs low warrants restock the same way a buy-side reseller does (LLM-90),
+// with the forage Source so the cue line routes to "## Your bushes to harvest".
+// The forage warrant is gated on an ACTIONABLE bush — a remembered, still-owned
+// forage source for the item — so here she remembers her own raspberry bush.
+func TestEvaluateRestock_LowForageStockStamps(t *testing.T) {
+	a := &Actor{
+		ID:        "prudence",
+		Kind:      KindNPCStateful,
+		LLMAgent:  "prudence-agent",
+		Inventory: map[ItemKind]int{"raspberries": 1}, // 10% of cap 10 < 25%
+		RestockPolicy: &RestockPolicy{Restock: []RestockEntry{
+			{Item: "raspberries", Source: RestockSourceForage, Max: 10},
+		}},
+	}
+	rememberForageBush(a, "raspberries", "bushA")
+	w := restockWorld(a)
+	w.VillageObjects = map[VillageObjectID]*VillageObject{
+		"bushA": forageBushObj("prudence", "raspberries", 10),
+	}
+	if res, _ := EvaluateRestock(time.Now().UTC()).Fn(w); res.(int) != 1 {
+		t.Fatalf("stamped = %d for a low forage entry, want 1", res.(int))
+	}
+	var found bool
+	for _, m := range a.Warrants {
+		if r, ok := m.Reason.(RestockWarrantReason); ok {
+			found = true
+			if r.Item != "raspberries" || r.Source != RestockSourceForage {
+				t.Errorf("warrant = {%q, %q}, want {raspberries, forage}", r.Item, r.Source)
+			}
+		}
+	}
+	if !found {
+		t.Error("no RestockWarrantReason on the grower")
+	}
+}
+
+// TestEvaluateRestock_ForageNoRememberedBush_NoStamp: the actionability gate
+// (code_review LLM-90). A low forage entry with NO remembered, still-owned bush
+// for the item must NOT warrant — buildForage would render no "## Your bushes to
+// harvest" section, so a high-information warrant (bypasses noop-skip) would wake
+// the grower every scan pointing at a section that isn't there (a wake loop on
+// forgotten / sold / deleted / never-seeded bushes).
+func TestEvaluateRestock_ForageNoRememberedBush_NoStamp(t *testing.T) {
+	a := &Actor{
+		ID:        "prudence",
+		Kind:      KindNPCStateful,
+		LLMAgent:  "prudence-agent",
+		Inventory: map[ItemKind]int{"raspberries": 0}, // empty, below threshold
+		RestockPolicy: &RestockPolicy{Restock: []RestockEntry{
+			{Item: "raspberries", Source: RestockSourceForage, Max: 10},
+		}},
+	}
+	// No KnownPlaces, no village objects — she remembers no bush.
+	w := restockWorld(a)
+	if res, _ := EvaluateRestock(time.Now().UTC()).Fn(w); res.(int) != 0 {
+		t.Fatalf("stamped = %d for a low forage entry with no actionable bush, want 0", res.(int))
+	}
+	if hasWarrantKind(a, WarrantKindRestock) {
+		t.Error("a forage entry with no remembered bush must not warrant (wake-loop guard)")
 	}
 }
 
@@ -260,20 +349,74 @@ func TestEvaluateRestock_WalkingSkipped(t *testing.T) {
 	}
 }
 
-// TestFirstLowBuyEntry_DeterministicOrder: the first low buy entry in policy
-// order is the one chosen, and entries above threshold are passed over.
-func TestFirstLowBuyEntry_DeterministicOrder(t *testing.T) {
-	policy := &RestockPolicy{Restock: []RestockEntry{
-		{Item: "flour", Source: RestockSourceBuy, Max: 10}, // stocked, above threshold
-		{Item: "salt", Source: RestockSourceBuy, Max: 10},  // low
-		{Item: "ale", Source: RestockSourceBuy, Max: 10},   // also low, but later
-	}}
-	inv := map[ItemKind]int{"flour": 9, "salt": 1, "ale": 0}
-	e, ok := firstLowBuyEntry(policy, inv, 25)
-	if !ok {
-		t.Fatal("expected a low entry")
+// TestFirstActionableLowEntry_BuyDeterministicOrder: the first low buy entry in
+// policy order is the one chosen, entries above threshold are passed over, and the
+// buy source is reported. Buy entries are always actionable (no bush gate).
+func TestFirstActionableLowEntry_BuyDeterministicOrder(t *testing.T) {
+	a := &Actor{
+		ID:        "merchant",
+		Inventory: map[ItemKind]int{"flour": 9, "salt": 1, "ale": 0},
+		RestockPolicy: &RestockPolicy{Restock: []RestockEntry{
+			{Item: "flour", Source: RestockSourceBuy, Max: 10}, // stocked, above threshold
+			{Item: "salt", Source: RestockSourceBuy, Max: 10},  // low
+			{Item: "ale", Source: RestockSourceBuy, Max: 10},   // also low, but later
+		}},
 	}
-	if e.Item != "salt" {
-		t.Errorf("first low = %q, want salt (flour is stocked, salt precedes ale)", e.Item)
+	if e, src, ok := firstActionableLowEntry(a, restockWorld(a), 25); !ok || e.Item != "salt" || src != RestockSourceBuy {
+		t.Errorf("first actionable low = (%q, %q, %v), want (salt, buy, true)", e.Item, src, ok)
+	}
+}
+
+// TestFirstActionableLowEntry_BuyBeforeForageAndActionability: buy is chosen
+// before forage (LLM-90 keeps the buy-side reseller's representative Item
+// unchanged); a forage-only low reports the forage source ONLY when an actionable
+// bush is remembered, and is skipped otherwise (the wake-loop guard).
+func TestFirstActionableLowEntry_BuyBeforeForageAndActionability(t *testing.T) {
+	bushWorld := func(owner ActorID) map[VillageObjectID]*VillageObject {
+		return map[VillageObjectID]*VillageObject{"bushA": forageBushObj(owner, "raspberries", 10)}
+	}
+
+	// Both a low buy and a low (actionable) forage entry → buy wins.
+	both := &Actor{
+		ID:        "prudence",
+		Inventory: map[ItemKind]int{"raspberries": 0, "milk": 1},
+		RestockPolicy: &RestockPolicy{Restock: []RestockEntry{
+			{Item: "raspberries", Source: RestockSourceForage, Max: 10},
+			{Item: "milk", Source: RestockSourceBuy, Max: 10},
+		}},
+	}
+	rememberForageBush(both, "raspberries", "bushA")
+	wBoth := restockWorld(both)
+	wBoth.VillageObjects = bushWorld("prudence")
+	if e, src, ok := firstActionableLowEntry(both, wBoth, 25); !ok || e.Item != "milk" || src != RestockSourceBuy {
+		t.Errorf("mixed low set: got (%q, %q, %v), want (milk, buy, true)", e.Item, src, ok)
+	}
+
+	// Forage-only low WITH an actionable remembered bush → forage source returned.
+	forageOnly := &Actor{
+		ID:        "prudence",
+		Inventory: map[ItemKind]int{"milk": 9, "raspberries": 1},
+		RestockPolicy: &RestockPolicy{Restock: []RestockEntry{
+			{Item: "milk", Source: RestockSourceBuy, Max: 10},           // stocked
+			{Item: "raspberries", Source: RestockSourceForage, Max: 10}, // low
+		}},
+	}
+	rememberForageBush(forageOnly, "raspberries", "bushA")
+	wForage := restockWorld(forageOnly)
+	wForage.VillageObjects = bushWorld("prudence")
+	if e, src, ok := firstActionableLowEntry(forageOnly, wForage, 25); !ok || e.Item != "raspberries" || src != RestockSourceForage {
+		t.Errorf("forage-only low: got (%q, %q, %v), want (raspberries, forage, true)", e.Item, src, ok)
+	}
+
+	// Forage-only low WITHOUT a remembered bush → not actionable, no entry.
+	noBush := &Actor{
+		ID:        "prudence",
+		Inventory: map[ItemKind]int{"raspberries": 1},
+		RestockPolicy: &RestockPolicy{Restock: []RestockEntry{
+			{Item: "raspberries", Source: RestockSourceForage, Max: 10},
+		}},
+	}
+	if _, _, ok := firstActionableLowEntry(noBush, restockWorld(noBush), 25); ok {
+		t.Error("a low forage entry with no remembered bush must not be actionable")
 	}
 }

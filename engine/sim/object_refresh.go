@@ -116,6 +116,18 @@ func (r *ObjectRefresh) IsYieldOnly() bool {
 	return r.Amount == 0 && r.IsGatherable()
 }
 
+// IsForageToSellFor reports whether this row is a forage-to-sell source for item:
+// a finite (tracked-supply) yield-only gather row whose GatherItem is item. This
+// is the single row-shape predicate behind BOTH the forage WARRANT's actionability
+// gate (sim — VillageObject.HasForageSourceFor → actorRemembersForageSource) and
+// the forage CUE's bush scan (perception — forageStockForItem), so the wake and
+// the "## Your bushes to harvest" section can never disagree on what counts as a
+// harvestable own-bush (a forage warrant must not fire against a section that
+// won't render — code_review LLM-90). Nil-safe.
+func (r *ObjectRefresh) IsForageToSellFor(item ItemKind) bool {
+	return r != nil && r.IsFinite() && r.IsYieldOnly() && r.GatherItem == item
+}
+
 // MaxRefreshAttributeLen caps a refresh row's attribute name, matching the
 // object_refresh.attribute varchar(32) column in the prod baseline.
 const MaxRefreshAttributeLen = 32

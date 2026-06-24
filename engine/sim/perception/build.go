@@ -94,11 +94,26 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	p.RecoveryOptions = buildRecoveryOptions(snap, actorID, actorSnap)
 	p.Satiation = buildSatiation(snap, actorID, actorSnap)
 	p.Restocking = buildRestocking(snap, actorID, actorSnap)
-	p.Forage = buildForage(snap, actorID, actorSnap)
-	// DutySteer is built AFTER Restocking (ZBBS-HOME-400 Option B) because the
-	// return-to-post cue is now suppressed while a restock errand is active —
-	// p.Restocking != nil is exactly that signal.
-	p.DutySteer = buildDutySteer(snap, actorID, actorSnap, p.Anchors, p.Restocking != nil)
+	// customerEngaged (LLM-90): the seller-side "someone's at my stall right now"
+	// signal — a buyer's pending offer awaiting my decision (PayOffersForMe), a
+	// quote I have standing out to a buyer (StandingQuotesFromMe), or simply a
+	// co-present companion while I'm at my own post (a live interaction at the
+	// stall). buildForage defers the harvest cue on it so a grower finishes the
+	// encounter before walking off to her bushes, rather than abandoning someone
+	// mid-transaction. The co-presence arm is the raw at-own-post huddle check, NOT
+	// p.OfferableCustomers — that view needs goods on hand to fire, so an empty-
+	// shelf grower (exactly when the harvest cue triggers) with a customer in front
+	// of her would slip through it.
+	customerEngaged := len(p.PayOffersForMe) > 0 ||
+		len(p.StandingQuotesFromMe) > 0 ||
+		(p.AtOwnBusiness && len(p.Surroundings.HuddleMembers) > 0)
+	p.Forage = buildForage(snap, actorID, actorSnap, customerEngaged)
+	// DutySteer is built AFTER Restocking + Forage (ZBBS-HOME-400 Option B /
+	// LLM-90): the return-to-post cue is suppressed while a restock OR forage
+	// errand is active, and the at-post stabilizer flips to a step-out line under a
+	// forage errand — p.Restocking != nil and p.Forage != nil are exactly those
+	// signals. (p.Forage already encodes "not mid-customer" via customerEngaged.)
+	p.DutySteer = buildDutySteer(snap, actorID, actorSnap, p.Anchors, p.Restocking != nil, p.Forage != nil)
 	p.DutyPending = buildDutyPending(snap, actorSnap, p.Anchors)
 	// Stay-open choice (ZBBS-WORK-387): a keeper standing at its own post on an
 	// off-shift wind-down may keep its business open instead of closing up. Surface
@@ -1135,7 +1150,7 @@ func minuteInWindow(start, end, now int) bool {
 //
 // a is guaranteed non-nil by Build's early return on a missing actor snapshot —
 // the same invariant buildAnchors and the other sub-builders rely on.
-func buildDutySteer(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapshot, anchors *AnchorsView, hasRestockErrand bool) *DutySteerView {
+func buildDutySteer(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapshot, anchors *AnchorsView, hasRestockErrand, hasForageErrand bool) *DutySteerView {
 	// Nil guard FIRST, so the a.Kind / clock dereferences below are safe even
 	// when buildDutySteer is called directly (Build never passes a nil actor
 	// snapshot, but the unit tests do). No anchors → no work/home to steer
@@ -1185,6 +1200,13 @@ func buildDutySteer(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapsho
 		// e.g. a homeless blacksmith parked at the inn all shift). Scope: the to-work
 		// arm ONLY — the go-home arm stays unsuppressed (going home is how an NPC rests).
 		//
+		// hasForageErrand (LLM-90): a grower stepping out to her OWN bushes to
+		// restock a bare sell-shelf is the harvest-side twin of the restock errand —
+		// the trip away from post IS the errand, so the to-work yank must defer it
+		// too or it drags her back before she reaches the bushes (the buy-side
+		// Josiah-Thorne oscillation, on the forage side). p.Forage is nil while a
+		// customer is engaged (buildForage), so this never pulls her off a live sale.
+		//
 		// atResolvableSatiationSource (Moses James cycle, 2026-06-24): also don't
 		// yank an agent that left its post for a felt hunger/thirst and has ARRIVED
 		// at a source it can use right here — let it finish, or it ping-pongs
@@ -1193,7 +1215,7 @@ func buildDutySteer(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapsho
 		// usable source) and coins-gated for paid vendors, so it can't re-strand the
 		// homeless-blacksmith case — that NPC, broke and not yet at a free source,
 		// still gets marched to work.
-		if hasRestockErrand || hasPendingOutgoingOffer(snap, actorID) || hasOfferedQuote(snap, actorID) || atResolvableSatiationSource(snap, actorID, a) {
+		if hasRestockErrand || hasForageErrand || hasPendingOutgoingOffer(snap, actorID) || hasOfferedQuote(snap, actorID) || atResolvableSatiationSource(snap, actorID, a) {
 			return nil
 		}
 		return &DutySteerView{ToWork: true, TargetID: anchors.WorkID, TargetLabel: anchors.WorkLabel}
@@ -1209,8 +1231,16 @@ func buildDutySteer(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapsho
 		// NPC with nothing happening still skips its idle-backstops (HOME-441).
 		// Carry the effective close time (schedule end, else dusk fallback) so the
 		// stabilizer can state when the shift ends — LLM-40.
+		//
+		// ForageErrand (LLM-90): when this same at-post grower has a bare sell-shelf
+		// and ripe own bushes (hasForageErrand → p.Forage != nil, which already
+		// excludes the mid-customer case), render flips the "wait here rather than
+		// wandering off" line for a "step out to your bushes and return" line, so the
+		// stabilizer agrees with the "## Your bushes to harvest" cue instead of
+		// contradicting it. She's woken by the (now forage-aware) restock warrant,
+		// so this still renders only on a tick that already runs.
 		endMin := end
-		return &DutySteerView{AtPost: true, ShiftEndMin: &endMin}
+		return &DutySteerView{AtPost: true, ShiftEndMin: &endMin, ForageErrand: hasForageErrand}
 	case !onShift:
 		// Off-shift wind-down (ZBBS-WORK-387) — housing-dependent target. The
 		// suppressors (windDownSuppressed: a mid-meal item dwell — WORK-386; an

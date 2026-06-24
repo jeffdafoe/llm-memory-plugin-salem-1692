@@ -6,13 +6,20 @@ import (
 	"time"
 )
 
-// restock_tick.go — tick-driver producer (ZBBS-WORK-322): the buy-side restock
-// producer. The missing half of the two-sided economy. produce_tick.go refills
-// actors that MAKE their stock (`produce` RestockEntries); resellers that BUY
-// their stock (`buy` RestockEntries) deplete through sales (pay_with_item) and,
-// without this producer, never restock — any shop stocking bought goods empties
-// over game-days. v1 had buy_walker.go (an engine-forced walker); v2 reserved
-// the substrate (StateShopping, RestockSourceBuy) but never built the executor.
+// restock_tick.go — tick-driver producer (ZBBS-WORK-322): the reorder producer.
+// The missing half of the two-sided economy. produce_tick.go refills actors that
+// MAKE their stock (`produce` RestockEntries); resellers that BUY their stock
+// (`buy` RestockEntries) deplete through sales (pay_with_item) and, without this
+// producer, never restock — any shop stocking bought goods empties over game-
+// days. v1 had buy_walker.go (an engine-forced walker); v2 reserved the substrate
+// (StateShopping, RestockSourceBuy) but never built the executor.
+//
+// LLM-90 folds the `forage` source into the same producer: a grower-seller whose
+// own harvested sell-stock runs low (Prudence Ward's empty berry shelf) is woken
+// the same way, and the "## Your bushes to harvest" cue (perception/forage.go)
+// renders on that tick instead of "## Restocking". One ticker, one warrant kind,
+// one eligibility gate — the warrant's Source field is the only thing that
+// distinguishes the two so the right section is pointed at.
 //
 // LLM-DECIDED, not engine-forced (Jeff's call). This producer does NOT walk the
 // reseller or force a purchase. It mirrors the need→satiation pattern: the
@@ -49,18 +56,23 @@ import (
 const DefaultRestockReorderPct = 25
 
 // RestockWarrantReason is the WarrantReason stamped when an agent-backed
-// reseller holds a `buy` RestockEntry below the reorder threshold (ZBBS-WORK-
-// 322). Item is the first low item found (deterministic by RestockEntry order)
-// — carried for telemetry / admin replay and to render the warrant cue line;
-// the deliberation reads the FULL low-stock set + suppliers from the
-// "## Restocking" perception section, not this single field. Zero-sourced (a
-// stock level is not an event), so DedupDiscriminator returns 0 and the
-// substrate's source-key dedup paths are bypassed — the per-actor
-// WarrantedSince gate in the producer is what prevents double-stamp. Mirrors
-// NeedThresholdWarrantReason / ShiftDutyWarrantReason — the other condition-
-// driven, zero-sourced reasons.
+// reseller holds a reorderable RestockEntry below the reorder threshold (ZBBS-
+// WORK-322; forage source added LLM-90). Item is the first low item found
+// (deterministic by RestockEntry order) — carried for telemetry / admin replay
+// and to render the warrant cue line; the deliberation reads the FULL low-stock
+// set + suppliers from the perception section, not this single field. Source is
+// the supply mode of that low item — `buy` (restock by purchasing → the
+// "## Restocking" section) or `forage` (restock by harvesting one's own bushes →
+// the "## Your bushes to harvest" section, LLM-90); it routes the warrant cue
+// line to the matching section and distinguishes the two in telemetry while
+// keeping a single WarrantKindRestock / wake path. Zero-sourced (a stock level
+// is not an event), so DedupDiscriminator returns 0 and the substrate's
+// source-key dedup paths are bypassed — the per-actor WarrantedSince gate in the
+// producer is what prevents double-stamp. Mirrors NeedThresholdWarrantReason /
+// ShiftDutyWarrantReason — the other condition-driven, zero-sourced reasons.
 type RestockWarrantReason struct {
-	Item ItemKind
+	Item   ItemKind
+	Source RestockSource
 }
 
 func (RestockWarrantReason) isWarrantReason()           {}
@@ -83,28 +95,72 @@ func RestockReorderThresholdMet(currentQty, cap, pct int) bool {
 	return int64(currentQty)*100 < int64(cap)*int64(pct)
 }
 
-// firstLowBuyEntry returns the first `buy` RestockEntry on the policy whose
-// on-hand quantity is below the reorder threshold, and whether one was found.
-// Order follows RestockPolicy.Restock (first-listed wins), so the choice is
-// deterministic. Used by the producer to pick the warrant's representative
-// Item; perception surfaces the full set.
-func firstLowBuyEntry(policy *RestockPolicy, inventory map[ItemKind]int, pct int) (RestockEntry, bool) {
+// firstActionableLowEntry returns the first reorderable RestockEntry below the
+// threshold for which an actionable restock cue will actually render this tick,
+// that entry's supply source, and whether one was found. It spans both engine-
+// surfaced reorder modes — `buy` ("## Restocking") and `forage` ("## Your bushes
+// to harvest", LLM-90); `produce` is excluded (produce_tick refills it on its own
+// cadence). Buy entries are checked first so a buy-side reseller's representative
+// Item is unchanged from before forage existed.
+//
+// The actionability gate is the asymmetry between the two cues (code_review):
+// "## Restocking" renders for ANY low buy item (the supplier is resolved in
+// perception, vendor present or not), so a low buy entry is always actionable. The
+// forage cue, by contrast, renders only when the grower remembers a still-owned
+// forage bush for the item — so a low forage entry warrants ONLY when
+// actorRemembersForageSource holds. Without this gate a high-information forage
+// warrant (WarrantKindRestock bypasses noop-skip) would wake the actor every scan
+// with a cue line pointing at a "## Your bushes to harvest" section buildForage
+// declines to render — a wake loop on forgotten / sold / deleted / never-seeded
+// bushes. Order within each source follows RestockPolicy.Restock (first wins).
+func firstActionableLowEntry(a *Actor, w *World, pct int) (RestockEntry, RestockSource, bool) {
+	policy := a.RestockPolicy
 	if policy == nil {
-		return RestockEntry{}, false
+		return RestockEntry{}, "", false
 	}
 	for _, e := range policy.BuyEntries() {
-		if RestockReorderThresholdMet(inventory[e.Item], e.Cap(), pct) {
-			return e, true
+		if RestockReorderThresholdMet(a.Inventory[e.Item], e.Cap(), pct) {
+			return e, RestockSourceBuy, true
 		}
 	}
-	return RestockEntry{}, false
+	for _, e := range policy.ForageEntries() {
+		if RestockReorderThresholdMet(a.Inventory[e.Item], e.Cap(), pct) && actorRemembersForageSource(a, w, e.Item) {
+			return e, RestockSourceForage, true
+		}
+	}
+	return RestockEntry{}, "", false
+}
+
+// actorRemembersForageSource reports whether the actor remembers a still-owned
+// forage-to-sell bush for item — the minimum precondition buildForage
+// (perception/forage.go) needs to render "## Your bushes to harvest". Mirrors that
+// scan exactly: a known place tagged gather:<item> (LLM-77 ownership-seeding),
+// object kind, still present in the world, still owned by the actor, still a
+// forage source. Sharing VillageObject.HasForageSourceFor /
+// ObjectRefresh.IsForageToSellFor with the cue keeps the warrant and the section
+// in lockstep on what's actionable.
+func actorRemembersForageSource(a *Actor, w *World, item ItemKind) bool {
+	affordance := "gather:" + string(item)
+	for ref, kp := range a.KnownPlaces {
+		if kp == nil || kp.Kind != PlaceKindObject || !kp.HasAffordance(affordance) {
+			continue
+		}
+		obj := w.VillageObjects[VillageObjectID(ref)]
+		if obj == nil || obj.OwnerActorID != a.ID {
+			continue
+		}
+		if obj.HasForageSourceFor(item) {
+			return true
+		}
+	}
+	return false
 }
 
 // restockEligible reports whether an actor is a candidate for a restock warrant
 // this scan: an agent-backed NPC (stateful or shared VA), not a transient
 // visitor, not already pending / mid-tick, not already walking somewhere, and
-// not resting (asleep / on break). Pure read of actor state. The low-stock check
-// is separate (firstLowBuyEntry).
+// not resting (asleep / on break). Pure read of actor state. The low-stock +
+// actionability check is separate (firstActionableLowEntry).
 func restockEligible(a *Actor, now time.Time) bool {
 	if a.Kind != KindNPCStateful && a.Kind != KindNPCShared {
 		return false
@@ -138,10 +194,14 @@ func restockEligible(a *Actor, now time.Time) bool {
 	return true
 }
 
-// EvaluateRestock returns a Command that applies one pass of the buy-side
-// restock producer: stamp a restock warrant on every eligible reseller holding
-// a `buy` entry below the reorder threshold. Runs on the world goroutine, so
-// the tryStampWarrant calls are serialized. No-op when RestockReorderPct is 0.
+// EvaluateRestock returns a Command that applies one pass of the restock
+// producer: stamp a restock warrant on every eligible actor holding a `buy` or
+// `forage` entry below the reorder threshold (LLM-90 folded forage into the same
+// wake path — a bare sell-shelf a grower replenishes from her own bushes is the
+// same "an item I'm responsible for ran low" fact as a reseller's empty buy-in
+// shelf, with the same downstream "the matching section renders this tick"
+// action). Runs on the world goroutine, so the tryStampWarrant calls are
+// serialized. No-op when RestockReorderPct is 0.
 func EvaluateRestock(now time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
@@ -157,7 +217,7 @@ func EvaluateRestock(now time.Time) Command {
 				if !restockEligible(a, now) {
 					continue
 				}
-				low, ok := firstLowBuyEntry(a.RestockPolicy, a.Inventory, pct)
+				low, src, ok := firstActionableLowEntry(a, w, pct)
 				if !ok {
 					continue
 				}
@@ -168,7 +228,7 @@ func EvaluateRestock(now time.Time) Command {
 				// "eligible" (code_review).
 				tryStampWarrant(w, a, WarrantMeta{
 					TriggerActorID: a.ID,
-					Reason:         RestockWarrantReason{Item: low.Item},
+					Reason:         RestockWarrantReason{Item: low.Item, Source: src},
 				}, now)
 				stamped++
 			}
