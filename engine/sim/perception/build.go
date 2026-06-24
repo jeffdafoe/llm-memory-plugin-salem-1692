@@ -130,6 +130,20 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 			len(p.PendingOffersFromMe) > 0,
 		)
 	}
+	// Degeneracy Stage-1 thinning (LLM-94). A flagged actor is in a sustained
+	// futile loop — the live case is move_to the substrate rejects every tick,
+	// driven by a steering cue that names a place the actor cannot reach. The
+	// weak-model lesson (telling it NOT to move while a "go to X" cue still
+	// stands makes it move anyway) makes the response SUBTRACTIVE: drop the
+	// place-naming movement steers outright so nothing prompts the walk, rather
+	// than adding a counter-instruction. The move_to TOOL is gated in lockstep
+	// (handlers.gateTools, same DegenStage signal) so the affordance goes too.
+	// Self-reversing: a productive tick clears the flag (DegenStage→None) and
+	// the steers return next tick. Placed before every return path below so a
+	// flagged actor is thinned even when no scene resolves.
+	if degeneracyFlagged(actorSnap) {
+		thinDegenerateSteer(&p)
+	}
 	p.Lodging = buildLodgingView(snap, actorID, actorSnap)
 	// LLM-36: the lodger bedtime nudge — fires for a lodger that has wound down
 	// to its rented inn once the night window opens, with a co-present companion
@@ -192,6 +206,49 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	p.Baseline, p.Primary = buildPrimaryScene(scene, actorID, actorSnap, sceneGroups[primarySceneID])
 	p.Secondary = buildSecondary(snap, sceneGroups, primarySceneID)
 	return p
+}
+
+// degeneracyFlagged reports whether the degeneracy observer (LLM-94) has the
+// actor at Stage 1 or higher (sim.DegeneracyFlagged / …Throttled) — the signal
+// the Stage-1 steer thinning engages on, read off the snapshot projection. The
+// observer is OFF by default, so this is DegeneracyNone for every actor unless
+// an operator has enabled it and the actor has sustained a futile streak. False
+// for a nil actor (conservative: don't thin perception we can't attribute).
+func degeneracyFlagged(a *sim.ActorSnapshot) bool {
+	if a == nil {
+		return false
+	}
+	return a.DegenStage >= sim.DegeneracyFlagged
+}
+
+// thinDegenerateSteer removes the place-naming MOVEMENT cues from a flagged
+// actor's payload — the "return to your post" / "go home" / "go to your inn"
+// steers, the restock errand, and the forage errand that drive the futile
+// move_to loop. Everything that does not point the actor at a place to walk to
+// is left intact: the at-post stabilizer (a DutySteer with no TargetID — a
+// "stay put" cue) and the placeless wander nudge both survive, as does every
+// non-movement section. An audience-bearing or need-driven cue still gets
+// through and can produce the productive tick that clears the flag.
+//
+// Two surgical details:
+//   - A DutySteer carrying a TargetID is a "go to X" arm (to-work, go-home,
+//     lodging) — dropped whole; the stay-open / lodging modifiers ride with it.
+//   - The at-post stabilizer survives, but its ForageErrand modifier (the
+//     "step out to your bushes and return" reframe) is cleared in lockstep with
+//     p.Forage — otherwise the actor would read a step-out line with no forage
+//     cue behind it, the exact "told to move" residue the thinning exists to
+//     remove (the live Prudence-at-her-apothecary forage-loop shape).
+func thinDegenerateSteer(p *Payload) {
+	p.Restocking = nil
+	p.Forage = nil
+	if p.DutySteer == nil {
+		return
+	}
+	if p.DutySteer.TargetID != "" {
+		p.DutySteer = nil
+		return
+	}
+	p.DutySteer.ForageErrand = false
 }
 
 // orderWarrants returns a copy of the batch ordered by SourceEventID

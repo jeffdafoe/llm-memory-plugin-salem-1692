@@ -1928,6 +1928,7 @@ func snapshotActor(a *Actor, atTick uint64) *ActorSnapshot {
 		RestockPolicy:       a.RestockPolicy,
 		TickInFlight:        a.TickInFlight,
 		TickAttemptID:       a.TickAttemptID,
+		DegenStage:          a.DegenStage,
 		PendingSummon:       clonePendingSummon(a.PendingSummon),
 		SummonRefusal:       cloneSummonRefusal(a.SummonRefusal),
 	}
