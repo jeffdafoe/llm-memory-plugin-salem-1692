@@ -42,7 +42,7 @@ var gatherSchema = json.RawMessage(`{
             "type": "integer",
             "minimum": 1,
             "maximum": 2147483647,
-            "description": "Whole-number quantity to gather. Omit to gather 1. A finite source yields at most what it has left."
+            "description": "Ignored (LLM-87): gather always picks the source clean — it takes all ripe units at once. Kept for backward compatibility; you need not supply it."
         }
     },
     "required": [],
@@ -52,10 +52,10 @@ var gatherSchema = json.RawMessage(`{
 // gatherDescription is the tool description advertised to the model. The gate
 // (gateTools) only advertises this tool when the actor is actually loitering
 // at a gatherable source, so the description can assume that context.
-const gatherDescription = "Gather a portable item from the natural source you're standing at — " +
-	"draw water from a well, pick berries from a bush. Fills your inventory with what the source " +
-	"yields (the source decides the item). You must have ARRIVED at the source first. Some sources " +
-	"are finite and refill over time; a well never runs dry."
+const gatherDescription = "Gather from the natural source you're standing at — draw water from a well, " +
+	"pick berries from a bush — filling your inventory with what it yields (the source decides the item). " +
+	"A bush is picked CLEAN in one call: you take all its ripe units at once (you don't choose an amount). " +
+	"You must have ARRIVED at the source first. Some sources are finite and refill over time; a well never runs dry."
 
 // DecodeGatherArgs parses the raw tool-call arguments into a GatherArgs.
 //
