@@ -44,15 +44,13 @@ func TestAcceptPay_ServiceItem_SkipsStockGate(t *testing.T) {
 	defer stop()
 
 	at := time.Now().UTC()
-	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		world.ItemKinds["nights_stay"] = &sim.ItemKindDef{
-			Name: "nights_stay", DisplayLabel: "a night's stay",
-			Capabilities: []string{"service", "lodging"},
-		}
-		return nil, nil
-	}}); err != nil {
-		t.Fatalf("inject service item: %v", err)
-	}
+	// nights_stay is service (no stock) + lodging. Seed the inn with a free
+	// bedroom so the same-day room can be granted (LLM-84 gate 10b); bob still
+	// holds zero nights_stay stock, so the accept succeeding proves the service
+	// stock-skip is what let it through.
+	seedLodgingFixture(t, w, "bob", []*sim.Room{
+		{ID: 2, StructureID: "inn", Kind: sim.RoomKindPrivate, Name: "bedroom_1"},
+	})
 
 	seedLedgerEntry(t, w, sim.PayLedgerEntry{
 		ID: 1, BuyerID: "alice", SellerID: "bob", ItemKind: "nights_stay",

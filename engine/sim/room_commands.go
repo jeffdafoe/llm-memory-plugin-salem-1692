@@ -149,6 +149,45 @@ func roomOccupiedByOther(w *World, roomID RoomID, exceptID ActorID) bool {
 	return false
 }
 
+// lodgingRoomGrantable reports whether AssignBedroomForLodger would succeed for
+// buyerID at seller's work structure right now, WITHOUT mutating anything. It is
+// the pre-commit availability gate for same-day walk-in lodging (LLM-84): the
+// room is assigned at the pay accept, so an accept must not take payment for a
+// room it can't grant. True when the buyer already holds an active grant on a
+// private room here (a renewal — AssignBedroomForLodger branch 1) OR at least one
+// private room is unoccupied (branch 2). False when the seller has no work
+// structure, the structure is missing, it has no private rooms, or every private
+// room is occupied by another actor. Read-only mirror of AssignBedroomForLodger's
+// two branches — keep the two in step.
+func lodgingRoomGrantable(w *World, seller *Actor, buyerID ActorID) bool {
+	if seller == nil || seller.WorkStructureID == "" {
+		return false
+	}
+	structure, ok := w.Structures[seller.WorkStructureID]
+	if !ok {
+		return false
+	}
+	buyer := w.Actors[buyerID]
+	for _, r := range structure.Rooms {
+		if r == nil || r.Kind != RoomKindPrivate {
+			continue
+		}
+		// Branch 1: the buyer already holds this room (a renewal extends it in
+		// place) and no other actor holds it.
+		if buyer != nil {
+			key := RoomAccessKey{RoomID: r.ID, Source: AccessSourceLedger}
+			if existing, held := buyer.RoomAccess[key]; held && existing.Active && !roomOccupiedByOther(w, r.ID, buyerID) {
+				return true
+			}
+		}
+		// Branch 2: an unoccupied private room is assignable to a fresh lodger.
+		if !roomOccupiedByAny(w, r.ID) {
+			return true
+		}
+	}
+	return false
+}
+
 // ExpireRoomAccessResult is the count of access rows flipped to
 // inactive on this sweep.
 type ExpireRoomAccessResult struct {

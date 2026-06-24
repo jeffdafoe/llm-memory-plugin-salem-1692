@@ -515,32 +515,35 @@ func transferOrderGoods(w *World, o *Order, seller *Actor, consumers []*Actor, a
 	return nil
 }
 
-// mintAndTransferTakeHomeOrder mints the take-home Order for an accepted
-// PHYSICAL !ConsumeNow offer and moves the goods to the buyer in the same tick
-// (ZBBS-HOME-398), returning the still-Ready Order. The caller (commitPayTransfer)
-// flips it to Delivered AFTER writing the Paid/PaidBy facts, so OrderDelivered
-// fires after the payment facts exist (a subscriber on OrderDelivered can
-// assume the Paid facts are already present). Lodging is routed elsewhere by
-// the caller — it keeps the deferred book→check-in flow — so this path only
-// ever sees ordinary goods.
+// mintAndFulfillOrderNow mints the Order for an accepted !ConsumeNow offer and
+// fulfills it in the SAME tick (ZBBS-HOME-398), returning the still-Ready Order
+// for the caller (commitPayTransfer) to flip to Delivered AFTER writing the
+// Paid/PaidBy facts — so OrderDelivered fires after the payment facts exist (a
+// subscriber on OrderDelivered can assume the Paid facts are present).
+// transferOrderGoods does the fulfillment and branches by capability: physical
+// goods are handed to the buyer; a same-day walk-in room is granted via
+// AssignBedroomForLodger (LLM-84). A FUTURE lodging reservation does NOT use this
+// path — it stays a deferred book→check-in flow (createOrderForPayWithItem) — so
+// the only lodging this sees is a same-day walk-in.
 //
-// The order is handed over at accept (no deferred deliver_order beat, no
-// buyer-seller rendezvous), so the buyer can never be charged for goods that
-// then fail to be delivered. The Order is still MINTED (not skipped) so that,
-// once the caller flips it to Delivered, its durable pay_ledger row persists at
-// the next checkpoint — that row is what the price-book restart seed reads
+// Fulfilling at accept (no deferred deliver_order beat, no buyer-seller
+// rendezvous) means the buyer can never be charged for goods or a room that then
+// fail to materialize. The Order is still MINTED (not skipped) so that, once the
+// caller flips it to Delivered, its durable pay_ledger row persists at the next
+// checkpoint — that row is what the price-book restart seed reads
 // (OrdersRepo.LoadRecentPrices, state='accepted' regardless of
 // fulfillment_status). Skipping the Order entirely would silently drop
-// cross-restart price memory for every purchase. (A crash between accept and
-// the next checkpoint loses this tick whole — the coin debit, the goods move,
-// and the price observation together — so the durability matches the engine's
-// transient-state-lossy / persistent-state-consistent crash model.)
+// cross-restart price memory. (A crash between accept and the next checkpoint
+// loses this tick whole — the coin debit, the goods/room move, and the price
+// observation together — matching the engine's transient-state-lossy /
+// persistent-state-consistent crash model.)
 //
-// The accept gate matrix already validated co-presence and aggregate stock, so
-// transferOrderGoods cannot fail in practice; a non-nil return is a substrate
-// invariant violation surfaced to the caller, consistent with its other
-// defensive-error returns. MUST run on the world goroutine.
-func mintAndTransferTakeHomeOrder(w *World, entry *PayLedgerEntry, seller *Actor, at time.Time) (*Order, error) {
+// The accept gate matrix already validated co-presence, aggregate stock, and
+// (for same-day lodging) room availability, so transferOrderGoods cannot fail in
+// practice; a non-nil return is a substrate invariant violation surfaced to the
+// caller, consistent with its other defensive-error returns. MUST run on the
+// world goroutine.
+func mintAndFulfillOrderNow(w *World, entry *PayLedgerEntry, seller *Actor, at time.Time) (*Order, error) {
 	id := createOrderForPayWithItem(w, entry, at)
 	o := w.Orders[id]
 	if o == nil {
