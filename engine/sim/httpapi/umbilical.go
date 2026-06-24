@@ -419,6 +419,13 @@ func (s *Server) umbilicalRoutes() []umbilicalRoute {
 		{http.MethodPost, umbilicalBasePath + "/object/add-tag", "Add a per-instance tag to a placed object (idempotent). Body: {object_id, tag}.", true, s.handleUmbilicalObjectAddTag},
 		{http.MethodPost, umbilicalBasePath + "/object/remove-tag", "Remove a per-instance tag from a placed object (idempotent). Body: {object_id, tag}.", true, s.handleUmbilicalObjectRemoveTag},
 		{http.MethodPost, umbilicalBasePath + "/object/set-refresh", "Replace a placed object's refresh-policy set wholesale (empty rows clears; the partner to set-display-name for fixing a gather/eat source live). Body: {object_id, rows}.", true, s.handleUmbilicalObjectSetRefresh},
+
+		// Restock policy (LLM-95) — live per-entry edit of what an NPC
+		// produces / restocks / forages at work. Mutates the actor's attribute
+		// params and re-projects RestockPolicy; durability rides the attribute
+		// checkpoint.
+		{http.MethodPost, umbilicalBasePath + "/restock/set", "Add or update one restock entry on an actor (produce/buy/forage). Validates the item exists; a produce entry requires a recipe. Body: {actor_id, item, source, cap}.", true, s.handleUmbilicalRestockSet},
+		{http.MethodPost, umbilicalBasePath + "/restock/remove", "Remove one restock entry (by item) from an actor. Body: {actor_id, item}.", true, s.handleUmbilicalRestockRemove},
 	}
 }
 
