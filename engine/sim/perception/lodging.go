@@ -58,6 +58,14 @@ type LodgingView struct {
 	// stale-by-construction; render replaces it with a wait-steer so the lodger
 	// doesn't pay a second time. Clears once the order delivers. LLM-81.
 	RenewalInFlight bool
+
+	// RenewalDue is true when the stay is into its final night before checkout
+	// (snapshot clock >= ExpiresAt - lodgingRenewalWindow). While false the lodger
+	// is settled and the cue must not invite a re-buy — confirm the room and stop;
+	// while true the lodger is steered to renew. Computed at build against
+	// snap.PublishedAt (like TenureLabel) so the rendered cue is deterministic and
+	// render needs no village TZ. LLM-96.
+	RenewalDue bool
 }
 
 // buildLodgingView returns the lodging view for actorSnap, or nil when the
@@ -94,6 +102,7 @@ func buildLodgingView(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 		// LLM-81: defer the renewal cue when a renewal is already moving to this keeper.
 		renewalInFlight = lodgingRenewalInFlight(snap, actorID, keeper)
 	}
+	renewalDue := !now.Before(best.ExpiresAt.Add(-lodgingRenewalWindow(snap)))
 	return &LodgingView{
 		InnName:         innName,
 		ExpiresAt:       *best.ExpiresAt,
@@ -101,6 +110,7 @@ func buildLodgingView(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 		Coins:           actorSnap.Coins,
 		KeeperAsleep:    keeperAsleep,
 		RenewalInFlight: renewalInFlight,
+		RenewalDue:      renewalDue,
 	}
 }
 
@@ -305,41 +315,33 @@ func structureForRoom(snap *sim.Snapshot, roomID sim.RoomID) *sim.Structure {
 	return nil
 }
 
-// lodgingStatusLine renders the escalating renewal cue from the time left on
-// the grant. Three tiers (calm → soon → urgent), driven by duration so no
-// timezone is needed: paid-for-nights, expires-in-about-a-day, expires-today.
-// Pure; `now` is a parameter so callers control the clock for tests.
-func lodgingStatusLine(innName string, expiresAt, now time.Time) string {
+// lodgingStatusLine renders the "## Your lodging" headline in one of two states.
+// renewalDue is false while the lodger is settled — it holds a paid room and is
+// not yet into its final night, so the line confirms the room and explicitly
+// does NOT invite paying for another (the LLM-96 double-buy was a settled lodger
+// re-told to "renew" the room it had just bought). renewalDue flips true once the
+// stay is into its final night before checkout (now >= RenewalDueAt), where the
+// line steers the lodger to renew. The caller decides renewalDue against
+// RenewalDueAt; this stays a pure formatter. Pre-LLM-96 this tiered by raw
+// time-to-expiry (24h/48h), which fired the renewal cue on a one-night stay from
+// purchase since such a stay expires inside 24h.
+func lodgingStatusLine(innName string, renewalDue bool) string {
 	inn := sanitizeInline(innName)
-	d := expiresAt.Sub(now)
-	switch {
-	case d <= 24*time.Hour:
-		return fmt.Sprintf("Your room at %s expires within the day — see the keeper before sundown to renew.", inn)
-	case d <= 48*time.Hour:
-		return fmt.Sprintf("Your room at %s expires in about a day — see the keeper soon to renew.", inn)
-	default:
-		nights := int(d / (24 * time.Hour))
-		return fmt.Sprintf("Your room at %s is paid for about %d more nights.", inn, nights)
+	if renewalDue {
+		return fmt.Sprintf("Your room at %s is nearly up — if you wish to stay on, see the keeper to renew.", inn)
 	}
+	return fmt.Sprintf("Your room at %s is paid — you are settled here for now, no need to arrange another.", inn)
 }
 
 // lodgingAffordabilityCue returns the rent-shortfall warning, or "" when it
-// shouldn't fire. The lever of HOME-296 §6: it only fires inside the renewal
-// window (<= 48h to expiry, while there's still runway to earn before the 6h
-// engine-auto backstop) and only when the lodger can't cover a night
-// (Coins < NightlyRate). Suppressed entirely when the rate is disabled. Pure;
-// `now` is a parameter for tests.
-func lodgingAffordabilityCue(v *LodgingView, now time.Time) string {
-	if v.NightlyRate <= 0 {
-		return ""
-	}
-	remaining := v.ExpiresAt.Sub(now)
-	// Fire only inside the renewal window: > 0 (an expired-but-unswept grant
-	// has negative remaining — don't warn "before your room lapses" after it
-	// already lapsed) and within 48h (runway before the 6h backstop). The <=0
-	// guard matters because render uses time.Now() while the build gate used
-	// the snapshot clock — staleness can briefly push remaining negative.
-	if remaining <= 0 || remaining > 48*time.Hour {
+// shouldn't fire. The lever of HOME-296 §6, retargeted by LLM-96: it fires only
+// once the stay is renewal-due (into its final night before checkout) and the
+// lodger can't cover a night (Coins < NightlyRate). Gating on RenewalDue rather
+// than a flat 48h window stops it nagging a settled lodger that it is "short for
+// another night" the moment it pays — the same premature framing that drove the
+// double-buy. Suppressed entirely when the rate is disabled. Pure.
+func lodgingAffordabilityCue(v *LodgingView) string {
+	if v.NightlyRate <= 0 || !v.RenewalDue {
 		return ""
 	}
 	if v.Coins >= v.NightlyRate {
@@ -358,30 +360,35 @@ func renderLodging(b *strings.Builder, v *LodgingView) {
 	if v == nil {
 		return
 	}
-	now := time.Now()
 	b.WriteString("## Your lodging\n")
 	// LLM-81: a renewal is already in flight to the keeper (a pending offer, or an
 	// accepted order awaiting hand-over). The grant only extends on delivery, so the
-	// expiry-driven "renew before sundown" line below is stale-by-construction in
-	// this window and fights the in-flight order — drop it, the rate hint, and the
-	// shortfall cue for a positive wait-steer, so the lodger bides instead of paying
-	// twice. Clears once the order delivers and the grant extends. Mirrors LLM-64.
+	// renewal line below is stale-by-construction in this window and fights the
+	// in-flight order — drop it, the rate hint, and the shortfall cue for a positive
+	// wait-steer, so the lodger bides instead of paying twice. Clears once the order
+	// delivers and the grant extends. Mirrors LLM-64.
 	if v.RenewalInFlight {
 		fmt.Fprintf(b, "Your renewal at %s is paid and with the keeper — they will bring you the room shortly. Do not pay for it again; wait here for them.\n\n", sanitizeInline(v.InnName))
 		return
 	}
-	b.WriteString(lodgingStatusLine(v.InnName, v.ExpiresAt, now))
+	b.WriteString(lodgingStatusLine(v.InnName, v.RenewalDue))
+	// Settled (not yet the final night): confirm the room and stop — the rate
+	// hint, asleep-keeper note, and shortfall cue all push toward renewing, which
+	// a settled lodger must not be nudged to do (LLM-96).
+	if !v.RenewalDue {
+		b.WriteString("\n\n")
+		return
+	}
 	if v.NightlyRate > 0 {
 		fmt.Fprintf(b, " Renewing is %d coins a night.", v.NightlyRate)
 	}
-	// An asleep keeper can't take the renewal right now — within the renewal
-	// window, flag it so the lodger waits rather than walking to a sleeping
-	// keeper (ZBBS-WORK-416).
-	if v.KeeperAsleep && v.ExpiresAt.Sub(now) <= 48*time.Hour {
+	// An asleep keeper can't take the renewal right now — flag it so the lodger
+	// waits rather than walking to a sleeping keeper (ZBBS-WORK-416).
+	if v.KeeperAsleep {
 		b.WriteString(" The keeper is abed just now — renew once they are next tending the desk.")
 	}
 	b.WriteString("\n")
-	if cue := lodgingAffordabilityCue(v, now); cue != "" {
+	if cue := lodgingAffordabilityCue(v); cue != "" {
 		b.WriteString(cue)
 		b.WriteString("\n")
 	}
@@ -485,12 +492,33 @@ func renderLodgingOffer(b *strings.Builder, v *LodgingOfferView) {
 	fmt.Fprintf(b, "You have %d %s free at %s.\n\n", v.RoomsAvailable, roomWord, sanitizeInline(v.InnName))
 }
 
-// lodgingRenewalWindow is how close a held grant must be to expiry before the
-// keeper's "## Already lodging here" cue flips from "already settled, don't
-// offer" to offering a renewal. It matches the window in which the lodger's own
-// "## Your lodging" cue tells them to go see the keeper to renew, so the two
-// sides can't disagree about whether it's renewal time (LLM-46).
-const lodgingRenewalWindow = 48 * time.Hour
+// lodgingRenewalWindow is the lead time before a grant's checkout instant at
+// which the stay becomes "renewal-due" — the span from the lodger bedtime on the
+// final night to checkout the next morning, derived from the village bedtime and
+// checkout hour (both minute-of-day on the snapshot). The lodger's "## Your
+// lodging" cue and the keeper's "## Already lodging here" cue both subtract it
+// from ExpiresAt, so the two sides agree on when it is renewal time (LLM-46).
+//
+// LLM-96: this replaces a flat 48h constant. A nights_stay expires at checkout
+// the morning after the last paid night (ComputeLodgerUntil = readyBy + qty days
+// at checkout hour), so a one-night stay's whole life is under 24h — the old 48h
+// window was wider than the stay and flagged it renewal-due from the instant it
+// was bought, driving an immediate second booking on both sides. Anchoring the
+// window to bedtime-of-final-night keeps a freshly-bought room settled until its
+// last night. Falls back to 48h when the snapshot has no usable clock (a
+// hand-built snapshot leaves the minutes at 0).
+func lodgingRenewalWindow(snap *sim.Snapshot) time.Duration {
+	if snap == nil {
+		return 48 * time.Hour
+	}
+	// bedtime on day D-1 → checkout on day D, in minutes:
+	// (midnight - bedtime) carries to the next day, then + checkout hour.
+	mins := (1440 - snap.LodgingBedtimeMinute) + snap.LodgingCheckOutMinute
+	if mins <= 0 || mins >= 1440 {
+		return 48 * time.Hour
+	}
+	return time.Duration(mins) * time.Minute
+}
 
 // KeeperHeldLodgersView is the keeper-side "this guest already lodges here"
 // signal (LLM-38). The offer cue (buildLodgingOfferCue) is correctly suppressed
@@ -501,7 +529,8 @@ const lodgingRenewalWindow = 48 * time.Hour
 // it names each co-present actor holding an active ledger grant at THIS inn so
 // the keeper LLM affirms ("you're already settled") instead of re-pitching.
 //
-// When a held grant is within lodgingRenewalWindow of expiry the cue flips for
+// Once a held grant is into its final night before checkout (within
+// lodgingRenewalWindow of expiry) the cue flips for
 // that guest (LLM-46): the stay is ending, so the keeper is steered to OFFER a
 // renewal (posting a nights_stay quote) rather than wave it off as settled —
 // closing the gap where a renewing NPC lodger could not get the keeper to act.
@@ -526,10 +555,10 @@ type HeldLodger struct {
 	// cue is deterministic against the snapshot rather than a render-time clock.
 	TenureLabel string
 
-	// RenewalDue is true when this guest's grant is within lodgingRenewalWindow:
-	// the stay is ending, so the keeper should renew it rather than wave it off
-	// as settled (LLM-46). Requires a live nightly rate — a renewal can't be
-	// priced without one.
+	// RenewalDue is true when this guest's grant is into its final night before
+	// checkout (within lodgingRenewalWindow of expiry): the stay is ending, so the
+	// keeper should renew it rather than wave it off as settled (LLM-46). Requires
+	// a live nightly rate — a renewal can't be priced without one.
 	RenewalDue bool
 
 	// OfferRenewal is true when the keeper should POST the renewal quote this
@@ -547,9 +576,9 @@ type HeldLodger struct {
 // offer cue this is informational, not an act-now instruction, so it is NOT
 // location-gated (it mirrors the ungated "## Your inn" status): a keeper who
 // runs into their lodger should affirm rather than re-pitch wherever they meet.
-// Per-lodger it also computes the renewal-due flip (LLM-46): a grant inside
-// lodgingRenewalWindow turns the "already settled" affirm into a renewal offer,
-// gated by the same two storm guards the offer cue uses so a standing quote or
+// Per-lodger it also computes the renewal-due flip (LLM-46): a grant into its
+// final night before checkout turns the "already settled" affirm into a renewal
+// offer, gated by the same two storm guards the offer cue uses so a standing quote or
 // in-flight pay suppresses a re-post. Returns nil (Render content-gates) when
 // the subject isn't a keeper or no held lodger is co-present. Pure over the
 // snapshot.
@@ -602,12 +631,15 @@ func buildKeeperHeldLodgers(snap *sim.Snapshot, subject sim.ActorID, keeper *Kee
 		if best == nil {
 			continue
 		}
-		// Renewal-due flip (LLM-46): a grant within the renewal window means the
-		// stay is ending. OfferRenewal also requires no renewal already in flight
-		// — a pending pay from the guest (the accept/decline path owns it) or a
-		// standing quote already out to them (await the answer; reuses the offer
-		// cue's two storm guards so the keeper can't re-post every tick).
-		renewalDue := keeper.NightlyRate > 0 && best.ExpiresAt.Sub(now) <= lodgingRenewalWindow
+		// Renewal-due flip (LLM-46): the stay is into its final night before
+		// checkout (now >= ExpiresAt - lodgingRenewalWindow). Before that the guest
+		// is settled and the keeper must NOT offer another room — the LLM-96 fix, so
+		// the keeper doesn't re-sell a guest the room it just bought. OfferRenewal
+		// also requires no renewal already in flight — a pending pay from the guest
+		// (the accept/decline path owns it) or a standing quote already out to them
+		// (await the answer; reuses the offer cue's two storm guards so the keeper
+		// can't re-post every tick).
+		renewalDue := keeper.NightlyRate > 0 && !now.Before(best.ExpiresAt.Add(-lodgingRenewalWindow(snap)))
 		offerRenewal := renewalDue &&
 			!customerHasPendingOfferWithSeller(snap, m.ID, subject) &&
 			!sellerHasActiveQuoteToBuyer(snap, subject, m.ID)
