@@ -105,6 +105,11 @@ type runtime struct {
 	// goroutine (bound to worldCtx, waited at shutdown before the pool closes).
 	// Nil in the headless lifecycle test (mem-backed, no pg).
 	SimPush *simpush.Dispatcher
+	// RecipeWriter is the durable item_recipe upsert behind the operator-gated
+	// /umbilical/recipe/set route (LLM-97). run wires it via SetRecipeWriter when
+	// the umbilical control surface is enabled. Nil in the headless lifecycle
+	// test (mem-backed, no pg) → the route answers 503.
+	RecipeWriter *pg.RecipesRepo
 }
 
 func main() {
@@ -240,6 +245,7 @@ func main() {
 		Auth:             httpapi.NewTokenVerifier(llmMemoryURL, 0),
 		Umbilical:        umbilical,
 		UmbilicalControl: umbilicalControl,
+		RecipeWriter:     pg.NewRecipesRepo(pool),
 		PromptRing:       promptRing,
 		ChatRing:         chatRing,
 		MemoryAPIBaseURL: llmMemoryURL,
@@ -458,6 +464,9 @@ func run(rt runtime, stop <-chan struct{}) error {
 			if rt.UmbilicalControl {
 				server.SetControlEnabled(true)
 				server.SetRouteForcer(cascade.ForceRouteCommand) // backs /umbilical/route (force a crier/washerwoman tour on demand)
+				if rt.RecipeWriter != nil {
+					server.SetRecipeWriter(rt.RecipeWriter) // backs /umbilical/recipe/set (LLM-97) — durable item_recipe upsert
+				}
 			}
 		}
 		httpServer = &http.Server{
