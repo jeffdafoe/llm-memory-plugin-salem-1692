@@ -16,13 +16,14 @@ func (r *degenRecordingTelemetry) WriteTickTelemetry(rec TickTelemetryRecord) {
 }
 
 // futileResult is a scored tick that accomplished nothing (arm A: requested a
-// tool, nothing succeeded, present baseline, no change).
+// tool, every requested call failed, present baseline, no change).
 func futileResult() TickResult {
 	return TickResult{
-		TerminalStatus:  TickStatusBudgetForced,
-		BaselinePresent: true,
-		StateChanged:    false,
-		ToolsRequested:  []string{"move_to"},
+		TerminalStatus:      TickStatusBudgetForced,
+		BaselinePresent:     true,
+		StateChanged:        false,
+		ToolsRequested:      []string{"move_to"},
+		ToolsFailedRejected: []string{"move_to"},
 	}
 }
 
@@ -33,9 +34,20 @@ func TestDegeneracyTickWasFutile(t *testing.T) {
 		want bool
 	}{
 		{
-			name: "arm A — requested, all rejected, no change",
-			r:    TickResult{BaselinePresent: true, ToolsRequested: []string{"move_to"}},
+			name: "arm A — requested, all failed, no change",
+			r:    TickResult{BaselinePresent: true, ToolsRequested: []string{"move_to"}, ToolsFailedRejected: []string{"move_to"}},
 			want: true,
+		},
+		{
+			name: "not futile — only SOME requested calls failed (one succeeded)",
+			r: TickResult{
+				BaselinePresent:     true,
+				HadAudience:         true, // exclude arm B so this isolates arm A
+				ToolsRequested:      []string{"speak", "move_to"},
+				ToolsSucceeded:      []string{"speak"},
+				ToolsFailedRejected: []string{"move_to"},
+			},
+			want: false,
 		},
 		{
 			name: "arm B — no audience, only speech succeeded, no change",

@@ -126,7 +126,7 @@ func CreateScene(originKind string, bound SceneBound, now time.Time) Command {
 				if !ok {
 					return
 				}
-				scene.ParticipantStateAtOrigin[actorID] = snapshotActor(a, w.TickCounter)
+				scene.ParticipantStateAtOrigin[actorID] = snapshotActor(a, w.TickCounter, w.Settings.degeneracyEnabled())
 				captured[actorID] = struct{}{}
 			}
 

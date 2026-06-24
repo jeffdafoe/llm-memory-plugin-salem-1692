@@ -118,3 +118,22 @@ func TestUpdateDegeneracy_DisabledUnwindsStage(t *testing.T) {
 		t.Errorf("expected a `recovered` record on the disabled unwind, got %+v", sink.records)
 	}
 }
+
+func TestSnapshotActor_ProjectsEffectiveDegenStage(t *testing.T) {
+	a := &Actor{ID: "a1", Kind: KindNPCStateful, DegenStage: DegeneracyThrottled}
+
+	// Observer enabled → the real stage shows through to the snapshot readers.
+	if got := snapshotActor(a, 0, true).DegenStage; got != DegeneracyThrottled {
+		t.Errorf("enabled: snapshot DegenStage = %v, want throttled", got)
+	}
+	// Observer disabled → forced to None so the snapshot-only Stage-1 readers
+	// (perception thinning, the move_to gate) lift immediately, without waiting
+	// for the actor's next scored tick to clear the live stage.
+	if got := snapshotActor(a, 0, false).DegenStage; got != DegeneracyNone {
+		t.Errorf("disabled: snapshot DegenStage = %v, want none (effective projection)", got)
+	}
+	// The projection must not mutate the live actor's stage.
+	if a.DegenStage != DegeneracyThrottled {
+		t.Errorf("projection mutated the live actor stage: %v", a.DegenStage)
+	}
+}

@@ -160,13 +160,26 @@ func degeneracyTickScored(s TickTerminalStatus) bool {
 // no change since the actor arrived AND no successful world-mutating commit
 // beyond speech. On top of that, one of two obviously-futile signatures:
 //
-//	(A) futile-action loop — the model requested tools and every one was
-//	    rejected (the live Prudence all-move_to-rejected case).
+//	(A) futile-action loop — the model requested tools and EVERY ONE failed,
+//	    with none succeeding (the live Prudence all-move_to-rejected case).
 //	(B) no-audience theater — nothing changed and there was no one present to
 //	    perceive the act (ticking with no one near it).
 //
 // Anything else — any state change, any material commit, or a productive
 // interaction with an audience — is treated as productive (generous default).
+//
+// Arm A keys on ToolsFailedRejected (every requested call landed in the failed
+// set) rather than the looser "nothing succeeded": this is the failed-call
+// signal the harness actually records, robust to any future tick-bookkeeping
+// that could leave a requested call in neither bucket. NOTE the failed set is
+// not exclusively MODEL rejections — a validator/command rejection (Prudence's
+// move_to), a same-tick dedup bounce, AND a handler/command error all land
+// here. Counting a SUSTAINED all-fail tick as futile regardless of the failure
+// cause is deliberate: a tool path that errors every tick for the whole streak
+// is still a zero-yield loop worth damping (cost) and surfacing to the operator
+// (a `stuck` actor whose tools keep erroring IS a finding), and the
+// consecutive-streak requirement plus the auto-recovering, OFF-by-default
+// response bound any false escalation off a transient bug.
 func degeneracyTickWasFutile(r TickResult) bool {
 	// No-yield core. A missing baseline is inconclusive, never "stuck."
 	if !r.BaselinePresent || r.StateChanged {
@@ -175,8 +188,10 @@ func degeneracyTickWasFutile(r TickResult) bool {
 	if hasMaterialSuccess(r.ToolsSucceeded) {
 		return false
 	}
-	// (A) futile-action loop.
-	if len(r.ToolsRequested) > 0 && len(r.ToolsSucceeded) == 0 {
+	// (A) futile-action loop — the model tried to act and every requested call
+	// failed (ToolsFailedRejected is a subset of ToolsRequested by contract, so
+	// equal lengths means none succeeded).
+	if len(r.ToolsRequested) > 0 && len(r.ToolsFailedRejected) == len(r.ToolsRequested) {
 		return true
 	}
 	// (B) no-audience theater.

@@ -97,7 +97,7 @@ func RunTickToolCommand(actorID ActorID, attemptID TickAttemptID, rootEventID Ev
 		// case the command replaced or removed the entry.
 		var post *ActorSnapshot
 		if a, ok := w.Actors[actorID]; ok {
-			post = snapshotActor(a, w.TickCounter)
+			post = snapshotActor(a, w.TickCounter, w.Settings.degeneracyEnabled())
 		}
 		return TickToolResult{Result: res, PostActorSnapshot: post}, nil
 	})

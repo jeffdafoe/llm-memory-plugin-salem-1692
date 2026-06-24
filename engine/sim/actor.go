@@ -1270,11 +1270,14 @@ type ActorSnapshot struct {
 	TickInFlight  bool
 	TickAttemptID TickAttemptID
 
-	// DegenStage mirrors the live Actor's degeneracy-observer stage (LLM-94) at
-	// snapshot time so the two snapshot-only readers of it — perception.Build
-	// (Stage-1 steer thinning) and handlers.gateTools (the move_to gate) — can
-	// see it without a world-goroutine round trip, the same posture as the
-	// movement projection above. DegeneracyNone for the overwhelming majority of
+	// DegenStage is the EFFECTIVE degeneracy-observer stage (LLM-94) at snapshot
+	// time, projected by snapshotActor so the two snapshot-only readers of it —
+	// perception.Build (Stage-1 steer thinning) and handlers.gateTools (the
+	// move_to gate) — can see it without a world-goroutine round trip, the same
+	// posture as the movement projection above. "Effective" = forced to
+	// DegeneracyNone when the observer is disabled (so disabling lifts Stage-1
+	// immediately, not on the actor's next scored tick); otherwise mirrors the
+	// live Actor.DegenStage. DegeneracyNone for the overwhelming majority of
 	// actors. Ephemeral on the live Actor (reset on LoadWorld); this is the
 	// read-path copy. Value type, so CloneActorSnapshot's struct copy carries it.
 	DegenStage DegeneracyStage
