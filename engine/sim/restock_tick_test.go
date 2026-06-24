@@ -73,6 +73,12 @@ func TestRestockReorderThresholdMet(t *testing.T) {
 		{0, 0, 25, false},    // cap 0 — nothing to reorder against
 		{0, 10, 0, false},    // both off
 		{100, 10, 25, false}, // over cap
+		// Sub-one-unit fraction (cap*pct < 100) rounds up: reorder at the last
+		// unit, not only when empty. cap 2 @ 25% = 0.5 (the skillet case, LLM-82).
+		{0, 2, 25, true},  // empty
+		{1, 2, 25, true},  // down to the last unit — now reorders (was the bug: fired only at 0)
+		{2, 2, 25, false}, // at full cap — does not reorder
+		{1, 3, 25, true},  // cap 3 @ 25% = 0.75, also sub-one-unit → fires at the last unit
 	}
 	for _, c := range cases {
 		if got := RestockReorderThresholdMet(c.current, c.cap, c.pct); got != c.want {

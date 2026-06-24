@@ -173,6 +173,15 @@ type Snapshot struct {
 	// satiation cues. nil only before the first LoadWorld (hand-built test
 	// snapshots that don't exercise item perception leave it nil).
 	ItemKinds map[ItemKind]*ItemKindDef
+
+	// Recipes is an ALIASED reference to World.Recipes — the item_recipe catalog
+	// (how each item is produced, at what rate, with what inputs). Same posture as
+	// ItemKinds: reference state loaded once at startup, hot-reload swaps the whole
+	// map (never mutated in place), so sharing the reference is race-free and not
+	// cloned at publish. Perception reads it to answer "what does making this good
+	// consume, and how long will my inputs last?" for the producer-input runway cue
+	// (perception/production_inputs.go). nil only before the first LoadWorld.
+	Recipes map[ItemKind]*ItemRecipe
 }
 
 // WithActor returns a shallow copy of the snapshot with one actor's entry

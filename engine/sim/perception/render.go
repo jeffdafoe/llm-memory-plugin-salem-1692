@@ -246,6 +246,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderCountersAwaitingMyResponse(&ephemeral, p.CountersAwaitingMyResponse)
 	renderRecoveryOptions(&ephemeral, p.RecoveryOptions)
 	renderSatiation(&ephemeral, p.Satiation)
+	renderProductionInputs(&ephemeral, p.ProductionInputs)
 	renderRestocking(&ephemeral, p.Restocking)
 	renderForage(&ephemeral, p.Forage)
 	renderLodging(&ephemeral, p.Lodging)

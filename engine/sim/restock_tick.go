@@ -35,9 +35,11 @@ import (
 // disables the producer. The per-actor WarrantedSince / TickInFlight gate keeps
 // it from double-stamping an already-pending or mid-tick reseller.
 //
-// REORDER THRESHOLD: a `buy` entry is "low" when its on-hand quantity is
-// strictly below cap * RestockReorderPct / 100 (default 25%). cap==0 (no cap
-// configured) is skipped — there's no fraction to take. RestockReorderPct==0
+// REORDER THRESHOLD: a `buy` entry is "low" when its on-hand quantity is below
+// cap * RestockReorderPct / 100 (default 25%) — strictly below that fraction,
+// except a sub-one-unit fraction rounds up so a small cap reorders at its last
+// unit rather than only when empty (see RestockReorderThresholdMet). cap==0 (no
+// cap configured) is skipped — there's no fraction to take. RestockReorderPct==0
 // disables the producer entirely (the operator off-switch).
 //
 // SUPPRESSION mirrors the other producers: PCs and transient visitors are out
@@ -79,18 +81,27 @@ func (RestockWarrantReason) isWarrantReason()           {}
 func (RestockWarrantReason) Kind() WarrantKind          { return WarrantKindRestock }
 func (RestockWarrantReason) DedupDiscriminator() uint64 { return 0 }
 
-// RestockReorderThresholdMet reports whether currentQty sits strictly below
-// the reorder threshold for an entry with the given cap, at the given percent.
-// Shared by the producer and the perception gate so the warrant and the
-// "## Restocking" section can never disagree on what counts as "low". A
-// non-positive cap or pct yields false (nothing to reorder against / producer
-// disabled). The comparison is done in integer cross-multiplied form
-// (currentQty*100 < cap*pct) to avoid any float rounding at the boundary; the
-// multiplications widen to int64 so a pathological cap/pct from a corrupt config
-// or import can't overflow int and flip the comparison (code_review).
+// RestockReorderThresholdMet reports whether currentQty is low enough to warrant
+// a reorder for an entry with the given cap, at the given percent. Shared by the
+// producer and the perception gate so the warrant and the "## Restocking" section
+// can never disagree on what counts as "low". A non-positive cap or pct yields
+// false (nothing to reorder against / producer disabled).
+//
+// Normally the test is strictly below the cap*pct/100 fraction, in integer
+// cross-multiplied form (currentQty*100 < cap*pct) to avoid float rounding at the
+// boundary. But when that fraction is below one whole unit (cap*pct < 100, e.g. a
+// skillet cap of 2 at 25% = 0.5) strict-below floors the trigger to "only when
+// empty" — the reseller never rebuys until it is completely out. In that case the
+// fraction rounds up to one unit and the reorder fires when down to the last unit
+// (currentQty <= 1), so a small cap still gets a proactive trigger. Caps large
+// enough that cap*pct >= 100 are unaffected; the int64 widening keeps a
+// pathological cap/pct from a corrupt config or import from overflowing.
 func RestockReorderThresholdMet(currentQty, cap, pct int) bool {
 	if cap <= 0 || pct <= 0 {
 		return false
+	}
+	if int64(cap)*int64(pct) < 100 {
+		return currentQty <= 1
 	}
 	return int64(currentQty)*100 < int64(cap)*int64(pct)
 }
