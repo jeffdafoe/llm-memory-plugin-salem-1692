@@ -12,11 +12,13 @@ import (
 
 // harness_generic_dedup_test.go — ZBBS-HOME-414: the same-tick identical-call
 // guard for an explicit allowlist of action tools (accept_pay / decline_pay /
-// counter_pay / deliver_order / withdraw_pay / consume / move_to). The weak model
-// re-fires a byte-identical call until the iteration budget — accept_pay(234)
-// after it's already accepted, consume(Milk x1) six times — and every attempt +
-// result bloats the durable transcript later ticks replay. speak and the offer
-// family keep their own (broader, success-only) guards.
+// counter_pay / deliver_order / withdraw_pay / move_to). The weak model re-fires
+// a byte-identical call until the iteration budget — accept_pay(234) after it's
+// already accepted — and every attempt + result bloats the durable transcript
+// later ticks replay. speak and the offer family keep their own (broader,
+// success-only) guards; consume left this list in LLM-91 for a result-aware guard
+// (a repeat consume while still in need is productive, not a no-op) — see
+// harness_consume_dedup_test.go.
 
 // newActionDedupHarness builds a harness whose registry has a single NON-terminal
 // commit tool on the HOME-414 allowlist (deliver_order), logging each dispatch,
@@ -64,11 +66,11 @@ func TestGenericCallKey(t *testing.T) {
 		t.Error("different ledger ids must key differently")
 	}
 
-	// Arg-sensitive across fields: a different consume item is a different key.
-	cMilk, _ := genericCallKey(&ValidatedCall{Name: "consume", Entry: commit, DecodedArgs: ConsumeArgs{Item: "Milk", Qty: 1}})
-	cBread, _ := genericCallKey(&ValidatedCall{Name: "consume", Entry: commit, DecodedArgs: ConsumeArgs{Item: "Bread", Qty: 1}})
-	if cMilk == cBread {
-		t.Error("different consume items must key differently")
+	// Excluded: consume (LLM-91). A byte-identical repeat consume while still in
+	// need is productive (eats another unit, eases the need further), so consume
+	// owns a result-aware guard (consumeItemKey) instead of this syntactic one.
+	if _, ok := genericCallKey(&ValidatedCall{Name: "consume", Entry: commit, DecodedArgs: ConsumeArgs{Item: "Milk", Qty: 1}}); ok {
+		t.Error("consume must be excluded — its result-aware guard owns it")
 	}
 
 	// Excluded: speak (owned by speakUtteranceKey).
@@ -161,10 +163,11 @@ func TestHarness_GenericDedup_AllowsDistinctArgs(t *testing.T) {
 // attempt, NOT on success. A commit whose dispatch FAILS, re-issued identically,
 // is still rejected — record-on-success would have let it through. Models the
 // live accept_pay(234) re-fired after "no longer pending". The tool is the
-// allowlisted `consume` (the live consume-Milk spam) and its command always fails
-// on the world goroutine; the CommitFn (which logs) runs only when a call is
-// actually dispatched, so a log length of 1 proves the round-2 identical call was
-// blocked.
+// allowlisted `deliver_order` and its command always fails on the world goroutine;
+// the CommitFn (which logs) runs only when a call is actually dispatched, so a log
+// length of 1 proves the round-2 identical call was blocked. (consume used to play
+// this role but left the allowlist in LLM-91 — its guard records on a no-op
+// RESULT, which a never-succeeding command never produces.)
 func TestHarness_GenericDedup_RecordsOnAttemptNotSuccess(t *testing.T) {
 	w, cancel := newHarnessWorld(t, "attempt-A")
 	defer cancel()
@@ -172,22 +175,22 @@ func TestHarness_GenericDedup_RecordsOnAttemptNotSuccess(t *testing.T) {
 	r := NewRegistry()
 	var actLog []string
 	failFn := func(in HandlerInput) (sim.Command, error) {
-		actLog = append(actLog, "consume")
+		actLog = append(actLog, "deliver_order")
 		return sim.Command{Fn: func(*sim.World) (any, error) {
-			return nil, errors.New("consume always fails in this test")
+			return nil, errors.New("deliver_order always fails in this test")
 		}}, nil
 	}
-	if err := r.RegisterCommit("consume", json.RawMessage(`{"type":"object"}`), passthroughDecode, failFn, false); err != nil {
-		t.Fatalf("register consume: %v", err)
+	if err := r.RegisterCommit("deliver_order", json.RawMessage(`{"type":"object"}`), passthroughDecode, failFn, false); err != nil {
+		t.Fatalf("register deliver_order: %v", err)
 	}
 	if err := r.RegisterTerminal("done"); err != nil {
 		t.Fatalf("register done: %v", err)
 	}
 
-	const args = `{"item":"Milk","qty":1}`
+	const args = `{"order_id":7}`
 	client := llm.NewFakeClient(
-		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c1", 0, "consume", args)}}},
-		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c2", 0, "consume", args)}}},
+		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c1", 0, "deliver_order", args)}}},
+		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c2", 0, "deliver_order", args)}}},
 		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c3", 0, "done", `{}`)}}},
 	)
 	h, err := NewHarness(HarnessConfig{Client: client, Registry: r})
@@ -203,7 +206,7 @@ func TestHarness_GenericDedup_RecordsOnAttemptNotSuccess(t *testing.T) {
 	if len(actLog) != 1 {
 		t.Errorf("CommitFn invocations: got %d, want 1 — the round-2 identical call must be blocked even though round-1 FAILED (proves record-on-attempt, not on-success)", len(actLog))
 	}
-	if !contains(result.ToolsFailedRejected, "consume") {
+	if !contains(result.ToolsFailedRejected, "deliver_order") {
 		t.Errorf("ToolsFailedRejected should include the failed first call and the blocked repeat, got %v", result.ToolsFailedRejected)
 	}
 }

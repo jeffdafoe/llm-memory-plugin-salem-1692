@@ -425,6 +425,17 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 	// case is precisely accept_pay(234) re-fired after "no longer pending". See the
 	// guard in the dispatch loop and genericCallKey for what is in/out of scope.
 	triedThisTick := map[string]struct{}{}
+	// consumedNothingThisTick holds the item key of every consume this actor has
+	// made this tick that fed it NOTHING — the satiation clamp absorbed zero units
+	// (ConsumeResult.Consumed == 0: already sated for what that item eases). This
+	// is the LLM-91 semantic replacement for keeping consume on the ZBBS-HOME-414
+	// general guard. consume is OFF that guard (see genericCallKey) because a
+	// byte-identical repeat while still in need is PRODUCTIVE — it eats another
+	// unit and eases the need further. The only senseless consume is one that can
+	// absorb nothing; the first such attempt still dispatches so the model gets the
+	// honest "you're full" feedback, and a REPEAT of it is rejected here. Keyed by
+	// consumeItemKey (normalized item), recorded after dispatch on a no-op result.
+	consumedNothingThisTick := map[string]struct{}{}
 	// speaksThisTick counts SUCCESSFUL speaks this tick (ZBBS-HOME-402). When it
 	// reaches maxSpeaksPerTick the loop ends the tick — teeth for the post-speak
 	// done() nudge the weak model ignores. Counts committed speaks only (a
@@ -601,17 +612,19 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 
 			// ZBBS-HOME-414: tool-agnostic same-tick identical-call guard for the
 			// action tools that lack their own (accept_pay / decline_pay /
-			// counter_pay / deliver_order / withdraw_pay / consume / move_to). The
-			// weak model re-fires a byte-identical call until the iteration budget —
-			// accept_pay(234) after it is already accepted, consume(Milk x1) six
-			// times, move_to(here) again — burning rounds and bloating the durable
-			// transcript later ticks replay. Unlike the speak/offer guards above
-			// (record on SUCCESS, so a bounced line may be retried after the
-			// situation changes), this records on the FIRST attempt regardless of
-			// outcome: the degenerate case IS the identical retry of a call that
-			// FAILED, which a record-on-success guard would never catch. An identical
-			// repeat is provably useless for these tools, so rejecting it model-facing
-			// costs nothing and steers the model to a different action or done().
+			// counter_pay / deliver_order / withdraw_pay / move_to). The weak model
+			// re-fires a byte-identical call until the iteration budget —
+			// accept_pay(234) after it is already accepted, move_to(here) again —
+			// burning rounds and bloating the durable transcript later ticks replay.
+			// Unlike the speak/offer guards above (record on SUCCESS, so a bounced
+			// line may be retried after the situation changes), this records on the
+			// FIRST attempt regardless of outcome: the degenerate case IS the
+			// identical retry of a call that FAILED, which a record-on-success guard
+			// would never catch. An identical repeat is provably useless for these
+			// tools, so rejecting it model-facing costs nothing and steers the model
+			// to a different action or done(). consume is deliberately NOT on this
+			// list (LLM-91): an identical repeat consume while still in need is
+			// productive, so it earns the result-aware guard below instead.
 			if key, ok := genericCallKey(vc); ok {
 				if _, dup := triedThisTick[key]; dup {
 					observationOnly = false
@@ -620,6 +633,24 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 					continue
 				}
 				triedThisTick[key] = struct{}{}
+			}
+
+			// LLM-91: semantic same-tick guard for consume. A consume only fails to
+			// make sense when it feeds the actor nothing — the satiation clamp can
+			// absorb zero more units of what that item eases (already sated). That is
+			// detectable only AFTER the command runs (consumedNothingThisTick is
+			// recorded post-dispatch), so the FIRST no-op consume still dispatches and
+			// earns the honest "you're full" feedback; only a REPEAT of an item that
+			// already fed the actor nothing this tick is rejected here. A productive
+			// repeat (still peckish, ate another bite) is never blocked — that is the
+			// behavior the byte-identical ZBBS-HOME-414 guard wrongly suppressed.
+			if key, isConsume := consumeItemKey(vc); isConsume {
+				if _, full := consumedNothingThisTick[key]; full {
+					observationOnly = false
+					result.ToolsFailedRejected = append(result.ToolsFailedRejected, call.Name)
+					transcript = append(transcript, toolResultMsg(call.ID, "[error: already_full] you have eaten your fill of that this turn — it will not ease you further; eat something else or call done()."))
+					continue
+				}
 			}
 
 			// Dispatch by class.
@@ -650,6 +681,15 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 
 			if outcome.success {
 				result.ToolsSucceeded = append(result.ToolsSucceeded, call.Name)
+				// LLM-91: a consume that absorbed nothing (already sated) is the only
+				// senseless consume. Record the item so a REPEAT this tick is rejected
+				// by the result-aware guard above; the productive consumes that ran
+				// before it stay un-recorded and therefore re-runnable.
+				if outcome.consumedNothing {
+					if key, isConsume := consumeItemKey(vc); isConsume {
+						consumedNothingThisTick[key] = struct{}{}
+					}
+				}
 				// ZBBS-WORK-375: record the committed utterance so a later
 				// round (or a later call in this same batch) that repeats it
 				// verbatim is rejected by the dedup guard above. Only a
@@ -801,6 +841,12 @@ type dispatchOutcome struct {
 	// re-perceive own-state mid-tick when a commit changed needs/coins/goods
 	// (LLM-88).
 	postSelfState *sim.ActorSnapshot
+	// consumedNothing is true when this was a consume whose satiation clamp
+	// absorbed zero units (sim.ConsumeResult.Consumed == 0 — the actor is already
+	// sated for what the item eases). The loop uses it to arm the LLM-91 semantic
+	// repeat-consume guard: the first no-op consume runs (and earns its "you're
+	// full" feedback); a repeat of it this tick is then rejected.
+	consumedNothing bool
 }
 
 // dispatch executes one validated call. Returns the content string for
@@ -924,6 +970,10 @@ func (h *Harness) dispatch(ctx context.Context, w *sim.World, job tickJob, vc *V
 		// always returns a TickToolResult, so the assertion holds.
 		wrapped, _ := cmdResult.(sim.TickToolResult)
 		out.postSelfState = wrapped.PostActorSnapshot
+		// LLM-91: flag a consume that absorbed nothing so the loop can arm the
+		// semantic repeat-consume guard (consumeNoop: a ConsumeResult whose
+		// satiation clamp took zero units — the actor is already sated).
+		out.consumedNothing = consumeNoop(wrapped.Result)
 		return commitResultContent(vc, wrapped.Result), out
 
 	case ClassTerminal:
@@ -1398,6 +1448,42 @@ func speakUtteranceKey(vc *ValidatedCall) (string, bool) {
 	return norm, true
 }
 
+// consumeItemKey returns the normalized same-tick key for a consume call and
+// true, or ("", false) for any non-consume tool or a consume whose item is empty
+// after normalization (the decode/handler layer rejects empty anyway). The key
+// is the item name lowercased + inner-whitespace-collapsed, mirroring
+// speakUtteranceKey, so "Cheese" and "cheese" collapse to one key. Used by the
+// LLM-91 result-aware repeat-consume guard. Unlike genericCallKey, the key is the
+// ITEM only — qty is deliberately excluded: once an item has fed the actor
+// nothing this tick (already sated), re-eating it at ANY quantity is the
+// senseless repeat, so a key that included qty would let a re-eat at a different
+// amount slip through.
+func consumeItemKey(vc *ValidatedCall) (string, bool) {
+	if vc == nil || vc.Name != "consume" {
+		return "", false
+	}
+	args, ok := vc.DecodedArgs.(ConsumeArgs)
+	if !ok {
+		return "", false
+	}
+	item := strings.ToLower(strings.Join(strings.Fields(args.Item), " "))
+	if item == "" {
+		return "", false
+	}
+	return item, true
+}
+
+// consumeNoop reports whether a dispatched command result is a consume that
+// absorbed nothing — a sim.ConsumeResult whose satiation clamp took zero units
+// (Consumed == 0: the actor is already sated for what that item eases). This is
+// the senseless-repeat signal the LLM-91 guard arms on. Any other result type,
+// including a nil/absent result or a productive consume (Consumed > 0), is not a
+// no-op.
+func consumeNoop(result any) bool {
+	cr, ok := result.(sim.ConsumeResult)
+	return ok && cr.Consumed == 0
+}
+
 // payOfferKey returns the normalized same-tick dedup key for a pay_with_item
 // call and true, or ("", false) for any other tool or a pay call that is NOT a
 // plain new offer. The key is (seller, item, disposition) — the offer's identity
@@ -1487,7 +1573,11 @@ func sceneQuoteKey(vc *ValidatedCall) (string, bool) {
 // boundary this comment documents (code_review HOME-414). speak and the offer
 // family are also excluded — they own their own broader, success-only same-tick
 // guards (speakUtteranceKey / payOfferKey) — as are observation-class calls
-// (pure thinking is not penalized, ZBBS-WORK-321).
+// (pure thinking is not penalized, ZBBS-WORK-321). consume is also excluded
+// (LLM-91): a byte-identical repeat consume while still in need is PRODUCTIVE
+// (it eats another unit and eases the need further), so the syntactic "identical
+// = useless" premise is false for it. It has its own result-aware guard keyed on
+// a no-op outcome (consumeItemKey + dispatchOutcome.consumedNothing).
 //
 // The key is canonical JSON (json.Marshal), not %#v: for structs encoding/json
 // preserves field order and for maps it sorts keys, so the "canonical decoded
@@ -1507,10 +1597,12 @@ func genericCallKey(vc *ValidatedCall) (string, bool) {
 		return "", false
 	}
 	switch vc.Name {
-	case "accept_pay", "decline_pay", "counter_pay", "deliver_order", "withdraw_pay", "consume", "move_to":
+	case "accept_pay", "decline_pay", "counter_pay", "deliver_order", "withdraw_pay", "move_to":
 		// The action tools where a byte-identical repeat in one tick is provably
-		// useless: a resolve-by-id call cannot resolve the same id twice, consume
-		// should pass a larger qty, move_to to your current place is a no-op.
+		// useless: a resolve-by-id call cannot resolve the same id twice, and
+		// move_to to your current place (or a re-fire of the same destination) is a
+		// no-op. consume is NOT here — a repeat consume while still in need is
+		// productive; see consumeItemKey for its result-aware guard.
 	default:
 		return "", false
 	}
