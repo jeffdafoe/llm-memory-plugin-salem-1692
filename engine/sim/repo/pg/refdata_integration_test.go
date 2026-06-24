@@ -201,6 +201,60 @@ func TestIntegration_Recipes_InvalidInputQtyErrors(t *testing.T) {
 	}
 }
 
+// R3 UpsertRecipe inserts a new recipe and updates an existing one in place
+// (LLM-97 — the operator recipe-edit durable write). Round-trips via LoadAll.
+func TestIntegration_Recipes_UpsertRecipe(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	clearCatalog(t, f)
+
+	// output_item FKs item_kind(name) — seed the parents first.
+	if _, err := f.Pool.Exec(ctx, `
+		INSERT INTO item_kind (name, display_label, category)
+		VALUES ('cheese','Cheese','food'), ('milk','Milk','material')`); err != nil {
+		t.Fatalf("seed item_kind: %v", err)
+	}
+
+	repo := NewRecipesRepo(f.Pool)
+
+	// Insert a new recipe.
+	if err := repo.UpsertRecipe(ctx, sim.ItemRecipe{
+		OutputItem: "cheese", OutputQty: 1, RateQty: 1, RatePerHours: 2,
+		Inputs: []sim.RecipeInput{{Item: "milk", Qty: 3}}, WholesalePrice: 4, RetailPrice: 7,
+	}); err != nil {
+		t.Fatalf("UpsertRecipe insert: %v", err)
+	}
+	got, err := repo.LoadAll(ctx)
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	c := got["cheese"]
+	if c == nil || c.RatePerHours != 2 || c.RetailPrice != 7 ||
+		len(c.Inputs) != 1 || c.Inputs[0].Item != "milk" || c.Inputs[0].Qty != 3 {
+		t.Fatalf("after insert: %+v", c)
+	}
+
+	// Update in place (same output_item) — change rate, drop inputs, new prices.
+	if err := repo.UpsertRecipe(ctx, sim.ItemRecipe{
+		OutputItem: "cheese", OutputQty: 2, RateQty: 5, RatePerHours: 1,
+		Inputs: nil, WholesalePrice: 6, RetailPrice: 11,
+	}); err != nil {
+		t.Fatalf("UpsertRecipe update: %v", err)
+	}
+	got, err = repo.LoadAll(ctx)
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("recipe count = %d, want 1 (update, not a second insert)", len(got))
+	}
+	c = got["cheese"]
+	if c.OutputQty != 2 || c.RateQty != 5 || c.RatePerHours != 1 ||
+		c.WholesalePrice != 6 || c.RetailPrice != 11 || len(c.Inputs) != 0 {
+		t.Fatalf("after update: %+v", c)
+	}
+}
+
 // --- ItemKinds ------------------------------------------------------------
 
 // I1 happy path — defs join their item_satisfies effects (amount-DESC

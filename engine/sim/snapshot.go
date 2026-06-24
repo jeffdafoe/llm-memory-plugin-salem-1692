@@ -139,6 +139,13 @@ type Snapshot struct {
 	// radius). Plain int, copied at publish; <= 0 means use DefaultOutdoorSceneRadiusValue.
 	DefaultOutdoorSceneRadius int
 
+	// Assets aliases World.Assets (reference data, read-only post-load) so the
+	// perception gather cue can resolve a loiter pin via the SAME asset-aware
+	// computeLoiterTile the gather command uses (ResolveGatherSource) — keeping cue
+	// and command in exact lockstep on which bush is harvested (LLM-93). The map is
+	// aliased, not deep-copied, like RestockPolicy: assets never mutate after load.
+	Assets map[AssetID]*Asset
+
 	// ZoomMinAdmin / ZoomMinRegular mirror WorldSettings.ZoomMin* — the
 	// client-side camera zoom floors (admin vs regular user). Carried on the
 	// snapshot because the public GET /api/village/world read (handleWorld) is

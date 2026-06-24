@@ -254,7 +254,7 @@ func StartHarvest(actorID ActorID, qty int) Command {
 					"you are already busy at the source — wait until you finish before gathering again.",
 				)
 			}
-			objID, obj, row := findGatherableObjectNear(w, actor.Pos)
+			objID, obj, row := findGatherableObjectNear(w, actor)
 			if row == nil {
 				return nil, fmt.Errorf("StartHarvest: %w", ErrNoGatherSource)
 			}
@@ -369,7 +369,7 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 			})
 		}
 	case SourceActivityHarvest:
-		objID, obj, row := findGatherableObjectNear(w, actor.Pos)
+		objID, obj, row := findGatherableObjectNear(w, actor)
 		if row == nil || objID != act.ObjectID || obj.OwnedByOther(actorID) {
 			return
 		}

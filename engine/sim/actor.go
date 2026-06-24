@@ -732,6 +732,16 @@ type Actor struct {
 	// without a restock-bearing attribute.
 	RestockPolicy *RestockPolicy
 
+	// GatherTargetObjectID is the village object an agent NPC deliberately
+	// walked to (ActorArrived.DestObjectID, stamped by handleGatherTargetOnArrival),
+	// so a later gather / StartHarvest prefers THAT bush over the nearest one.
+	// The fix for a dense interleaved plot where nearest-wins resolution handed
+	// her a depleted or wrong-item bush (LLM-93). An arrival at a structure or a
+	// bare position carries an empty DestObjectID, which clears a stale bush
+	// target. Transient (not checkpointed); validity (in reach + stocked) is
+	// re-checked at gather time, so a lingering id is harmless.
+	GatherTargetObjectID VillageObjectID
+
 	// ProduceState carries the per-item production anchor — used by
 	// produce_tick to compute units owed since the last execution.
 	// One entry per item the actor produces; populated lazily on first
@@ -1147,6 +1157,13 @@ type ActorSnapshot struct {
 	// (the sole consumer). Same per-publish projection posture as
 	// ColocatedAudienceIDs — NOT checkpointed, recomputed each republish.
 	CurrentLoiterObjectID VillageObjectID
+
+	// GatherTargetObjectID mirrors Actor.GatherTargetObjectID onto the published
+	// snapshot so the at-bush gather cue (findGatherableCue) can prefer the bush
+	// the actor walked to, in lockstep with the gather command (LLM-93). Stamped
+	// in snapshotActor from the live actor (not recomputed at republish like
+	// CurrentLoiterObjectID).
+	GatherTargetObjectID VillageObjectID
 
 	// SourceActivityKind / SourceActivityObjectID / SourceActivityAttribute are
 	// the read-path projection of an in-flight timed eat/drink/harvest at a

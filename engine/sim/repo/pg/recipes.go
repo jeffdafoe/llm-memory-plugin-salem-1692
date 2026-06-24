@@ -83,6 +83,57 @@ func (r *RecipesRepo) LoadAll(ctx context.Context) (map[sim.ItemKind]*sim.ItemRe
 	return out, nil
 }
 
+// upsertRecipeSQL writes one item_recipe row (the operator recipe-edit path,
+// LLM-97). PK is output_item; ON CONFLICT updates every field. inputs is bound
+// as text + cast ::jsonb (same posture as the actor_attribute params write).
+const upsertRecipeSQL = `
+INSERT INTO item_recipe (
+    output_item, output_qty, rate_qty, rate_per_hours, inputs, wholesale_price, retail_price
+) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)
+ON CONFLICT (output_item) DO UPDATE SET
+    output_qty      = EXCLUDED.output_qty,
+    rate_qty        = EXCLUDED.rate_qty,
+    rate_per_hours  = EXCLUDED.rate_per_hours,
+    inputs          = EXCLUDED.inputs,
+    wholesale_price = EXCLUDED.wholesale_price,
+    retail_price    = EXCLUDED.retail_price`
+
+// UpsertRecipe inserts or updates one recipe in item_recipe — the durable half
+// of the umbilical recipe-edit route (LLM-97). The catalog has no checkpoint
+// path (reference data), so this is a direct, standalone write; the in-memory
+// World.Recipes update is the caller's separate step. output_item must already
+// exist in item_kind (FK enforced by the DB); inputs are validated Go-side
+// (validateRecipeInputs — there's no DB CHECK inside the JSONB array). A nil
+// inputs slice persists as '[]'.
+func (r *RecipesRepo) UpsertRecipe(ctx context.Context, rec sim.ItemRecipe) error {
+	if rec.OutputItem == "" {
+		return fmt.Errorf("pg recipes UpsertRecipe: empty output_item")
+	}
+	if err := validateRecipeInputs(rec.OutputItem, rec.Inputs); err != nil {
+		return fmt.Errorf("pg recipes UpsertRecipe: %w", err)
+	}
+	inputs := rec.Inputs
+	if inputs == nil {
+		inputs = []sim.RecipeInput{}
+	}
+	inputsJSON, err := json.Marshal(inputs)
+	if err != nil {
+		return fmt.Errorf("pg recipes UpsertRecipe: marshal inputs: %w", err)
+	}
+	if _, err := r.pool.Exec(ctx, upsertRecipeSQL,
+		string(rec.OutputItem),
+		rec.OutputQty,
+		rec.RateQty,
+		rec.RatePerHours,
+		string(inputsJSON),
+		rec.WholesalePrice,
+		rec.RetailPrice,
+	); err != nil {
+		return fmt.Errorf("pg recipes UpsertRecipe: exec: %w", err)
+	}
+	return nil
+}
+
 // validateRecipeInputs enforces whole-positive-qty, non-empty-item
 // inputs — belt-and-suspenders against a hand-edited JSONB row sneaking
 // in a 0/fractional qty or empty item before the engine touches it.

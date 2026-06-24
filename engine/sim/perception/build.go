@@ -928,75 +928,24 @@ func awaitEdgeLive(edges map[sim.ActorID]time.Time, key sim.ActorID, now time.Ti
 	return now.Sub(stamp) < window
 }
 
-// findGatherableCue resolves the nearest refresh-bearing VillageObject the
-// subject is loitering at (within sim.LoiterAttributionTiles, Chebyshev) and,
-// if THAT object is gatherable, returns (item, sourceName, true). Resolve-then-
-// check, mirroring the sim.Gather Command's findRefreshObjectNear: only the
-// nearest refresh object owns the tile, so a closer non-gatherable refresh
-// object (e.g. a shade oak nearer than a well) correctly suppresses the cue.
-// Returns ("", "", false) when no refresh object is in range or the nearest one
-// isn't gatherable.
+// findGatherableCue resolves the gatherable bush the subject is loitering at and
+// returns (item, sourceName, true), or ("", "", false) to suppress. It calls the
+// SAME sim.ResolveGatherSource the gather command uses (LLM-93) — identical gate,
+// loiter-pin math (computeLoiterTile, via snap.Assets), and candidate ranking — so
+// the cue advertises exactly the bush gather will harvest, never a different one.
 //
-// ASSET-FREE by necessity (perception builds off the snapshot, no asset
-// catalog), so two divergences from the authoritative resolver remain — both
-// acceptable because the Command is the real gate and rejects cleanly:
-//   - FALSE-POSITIVE: a closer NON-refresh named object (a bench) would own the
-//     tile in the asset-aware command, which then rejects with ErrNoGatherSource
-//     — but this scan only sees refresh objects, so it may still cue. The model
-//     calls gather and gets a clean reject.
-//   - FALSE-NEGATIVE: an offset-less gatherable object whose authoritative pin
-//     is asset-footprint-derived (computeLoiterTile) may fall outside this
-//     anchor-based pin; the cue won't show though the command would accept.
-//     Gatherable props (wells, bushes) carry explicit loiter offsets, so this is
-//     rare in practice.
-//
-// The gate and the rendered cue read the SAME SurroundingsView fields, so those
-// two never drift; only this heuristic vs. the command can, per the above.
+// The resolver returns an owned-by-other nearest so the COMMAND can raise
+// ErrNotYourSource; the CUE instead SUPPRESSES it (don't dangle another's bush) and
+// suppresses a non-gatherable nearest (obj/row nil). The gather tool advertisement
+// (gateTools) reads this same SurroundingsView field, so suppressing un-advertises
+// gather. Owner-gate: LLM-50 D2.
 func findGatherableCue(snap *sim.Snapshot, subjectID sim.ActorID, a *sim.ActorSnapshot) (sim.ItemKind, string, bool) {
-	bestCheb := -1
-	var bestObj *sim.VillageObject
-	var bestID sim.VillageObjectID
-	for id, obj := range snap.VillageObjects {
-		if obj == nil || len(obj.Refreshes) == 0 {
-			continue
-		}
-		pin := obj.Pos.Tile()
-		off := sim.TileOffset{}
-		if obj.LoiterOffsetX != nil {
-			off.DX = *obj.LoiterOffsetX
-		}
-		if obj.LoiterOffsetY != nil {
-			off.DY = *obj.LoiterOffsetY
-		}
-		pin = pin.Add(off)
-		cheb := a.Pos.Chebyshev(pin)
-		if cheb > sim.LoiterAttributionTiles {
-			continue
-		}
-		// Nearest refresh object wins; tie-break by ID for determinism.
-		if bestCheb == -1 || cheb < bestCheb || (cheb == bestCheb && id < bestID) {
-			bestCheb = cheb
-			bestObj = obj
-			bestID = id
-		}
-	}
-	if bestObj == nil {
+	low := sim.LowForageItems(a.RestockPolicy, a.Inventory, snap.RestockReorderPct)
+	_, obj, row := sim.ResolveGatherSource(snap.VillageObjects, snap.Assets, a.Pos, subjectID, a.GatherTargetObjectID, low)
+	if obj == nil || row == nil || obj.OwnedByOther(subjectID) {
 		return "", "", false
 	}
-	for _, r := range bestObj.Refreshes {
-		if r.IsGatherable() {
-			// Strict owner-gate (LLM-50 D2): don't dangle an owned source to a
-			// non-owner — the Gather command rejects it (ErrNotYourSource), and
-			// suppressing the cue here also keeps the gather tool unadvertised
-			// (gateTools reads this same SurroundingsView field). The owner
-			// still sees their own bush.
-			if bestObj.OwnedByOther(subjectID) {
-				return "", "", false
-			}
-			return sim.ItemKind(strings.TrimSpace(string(r.GatherItem))), bestObj.DisplayName, true
-		}
-	}
-	return "", "", false
+	return sim.ItemKind(strings.TrimSpace(string(row.GatherItem))), obj.DisplayName, true
 }
 
 // findLoiterStructure returns the DisplayName of the structure whose loiter
