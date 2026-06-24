@@ -53,25 +53,13 @@ type GatherResult struct {
 	Qty        int // units actually gathered (<= requested when finite ran low)
 }
 
-// findGatherableObjectNear resolves the named VillageObject the actor is
-// loitering at (resolveLoiteringObject → the v1 attribution radius) and
-// returns it with its first gatherable refresh row, or (.., nil, nil) when no
-// object owns the tile or the resolved one has no GatherItem row.
-//
-// Resolve-then-check, faithful to ApplyObjectRefreshAtArrival: a single
-// loitering object owns the tile; the resolver does NOT skip past a
-// non-gatherable object to a gatherable one farther away.
-func findGatherableObjectNear(w *World, actorTile TilePos) (VillageObjectID, *VillageObject, *ObjectRefresh) {
-	id, obj := findRefreshObjectNear(w, actorTile)
-	if obj == nil {
-		return "", nil, nil
-	}
-	for _, r := range obj.Refreshes {
-		if r.IsGatherable() {
-			return id, obj, r
-		}
-	}
-	return "", nil, nil
+// findGatherableObjectNear resolves the village object the actor should harvest
+// from and its first gatherable row via the shared ResolveGatherSource (the same
+// resolver the perception cue uses, so cue and command agree). lowItems is the
+// actor's below-threshold forage set, the item bias for the dense-plot fallback.
+func findGatherableObjectNear(w *World, actor *Actor) (VillageObjectID, *VillageObject, *ObjectRefresh) {
+	low := LowForageItems(actor.RestockPolicy, actor.Inventory, w.Settings.RestockReorderPct)
+	return ResolveGatherSource(w.VillageObjects, w.Assets, actor.Pos, actor.ID, actor.GatherTargetObjectID, low)
 }
 
 // Gather returns a Command that harvests qty units of the gatherable source
@@ -117,7 +105,7 @@ func Gather(actorID ActorID, qty int, at time.Time) Command {
 				)
 			}
 
-			objID, obj, row := findGatherableObjectNear(w, actor.Pos)
+			objID, obj, row := findGatherableObjectNear(w, actor)
 			if row == nil {
 				return nil, fmt.Errorf("Gather: %w", ErrNoGatherSource)
 			}

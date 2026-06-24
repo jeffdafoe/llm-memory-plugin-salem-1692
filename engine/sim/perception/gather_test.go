@@ -7,12 +7,19 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
 
+// emptyAssetSet lets these fixtures' objects (no AssetID, explicit loiter offsets)
+// resolve through ResolveLoiteringObject, which requires a known asset entry — the
+// "" key matches their unset AssetID. LLM-93 made the gather cue asset-aware (it now
+// shares sim.ResolveGatherSource with the command).
+var emptyAssetSet = map[sim.AssetID]*sim.Asset{"": {}}
+
 // gatherCueSnapshot builds a snapshot with one gatherable well at world (100,100)
 // and the actor placed at actorTile. The well has zero loiter offset, so its
 // pin is the well's anchor tile.
 func gatherCueSnapshot(actorTile sim.TilePos) *sim.Snapshot {
 	zero := 0
 	return &sim.Snapshot{
+		Assets: emptyAssetSet,
 		Actors: map[sim.ActorID]*sim.ActorSnapshot{
 			"hannah": {Pos: actorTile},
 		},
@@ -70,6 +77,7 @@ func TestBuild_GatherableCue_CloserNonGatherableSuppresses(t *testing.T) {
 	wellPin := sim.WorldPos{X: 100, Y: 100}.Tile()
 	// Actor stands on the oak (cheb 0); the well is one tile away (cheb 1).
 	snap := &sim.Snapshot{
+		Assets: emptyAssetSet,
 		Actors: map[sim.ActorID]*sim.ActorSnapshot{
 			"hannah": {Pos: wellPin},
 		},
@@ -151,6 +159,7 @@ func TestBuild_GatherableCue_NearestOwnedSuppresses_NoFallthrough(t *testing.T) 
 	zero := 0
 	actorTile := sim.WorldPos{X: 100, Y: 100}.Tile()
 	snap := &sim.Snapshot{
+		Assets: emptyAssetSet,
 		Actors: map[sim.ActorID]*sim.ActorSnapshot{"hannah": {Pos: actorTile}},
 		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
 			"owned": { // nearest (actor's tile, cheb 0), owned by another actor
