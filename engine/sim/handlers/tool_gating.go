@@ -68,15 +68,15 @@ const gatherToolName = "gather"
 // reappear once the actor is stationary (arrived, or halted via the stop
 // tool). Kept in sync with the command-side gates — consume
 // (item_commands.go), speak (speak_commands.go), gather (gather_commands.go),
-// pay_with_item (pay_with_item_commands.go). The bare `pay` tool is no longer
-// registered in production (ZBBS-HOME-430) so it has no entry here; its
-// command-side gate in pay_commands.go remains for composed registries.
+// pay_with_item (pay_with_item_commands.go), and bare pay (pay_commands.go,
+// which rejects on MoveIntent != nil).
 var walkIncompatibleTools = map[string]struct{}{
 	"consume":       {},
 	"speak":         {},
 	"gather":        {},
 	"pay_with_item": {},
 	"offer_trade":   {}, // ZBBS-HOME-407: same substrate as pay_with_item (walk-in-flight reject)
+	"pay":           {}, // LLM-99: bare-coin pay re-registered; same walk-in-flight reject
 }
 
 // stopToolName — the voluntary-halt tool (ZBBS-HOME-338). The inverse of the
