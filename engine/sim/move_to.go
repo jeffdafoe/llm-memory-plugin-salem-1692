@@ -472,11 +472,17 @@ func MoveToStructure(actorID ActorID, structureID StructureID, now time.Time) Co
 				return MoveActorResult{}, fmt.Errorf("move_to: structure_id is required")
 			}
 			if _, ok := w.Structures[structureID]; !ok {
-				// Not a structure — it may be a bare refresh-bearing placement (a
-				// well, a fruit tree) the actor saw in a free-source cue, whose id
-				// rides the same structure_id field. Fall through to an object visit
-				// so move_to(structure_id=<well>) reaches it. ZBBS-HOME-359.
-				if obj := w.VillageObjects[VillageObjectID(structureID)]; obj != nil && objectIsRefreshSource(obj) {
+				// Not a structure — it may be a bare placement the actor saw in a cue,
+				// whose id rides the same structure_id field: a need-easing refresh
+				// source (a well, a fruit tree — a free-source cue) OR a forage-to-sell
+				// bush (the "## Your bushes to harvest" cue). Fall through to an object
+				// visit so move_to(structure_id=<source>) reaches it. The forage bush is
+				// gatherable but NOT need-easing (Amount 0, no dwell → not an
+				// objectIsRefreshSource), so it needs the IsFiniteGatherableSource arm —
+				// the by-id parity with the name path, which already walks to a
+				// remembered gather patch ungated (LLM-78/92). ZBBS-HOME-359.
+				if obj := w.VillageObjects[VillageObjectID(structureID)]; obj != nil &&
+					(objectIsRefreshSource(obj) || obj.IsFiniteGatherableSource()) {
 					return MoveToObject(actorID, VillageObjectID(structureID), now).Fn(w)
 				}
 				return MoveActorResult{}, fmt.Errorf(

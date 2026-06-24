@@ -26,7 +26,9 @@ func buildMoveToObjectTestWorld(t *testing.T) (*sim.World, context.CancelFunc) {
 	handles.Assets.Seed(map[sim.AssetID]*sim.Asset{
 		"well": {ID: "well", Category: "prop"},
 		"lamp": {ID: "lamp", Category: "prop"},
+		"bush": {ID: "bush", Category: "prop"},
 	})
+	berryStock := 10
 	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
 		// 3 tiles east of the pad origin — within the default name-resolution
 		// scene radius (3) and outside LoiterAttributionTiles (1, so not
@@ -34,6 +36,12 @@ func buildMoveToObjectTestWorld(t *testing.T) (*sim.World, context.CancelFunc) {
 		"village_well": {ID: "village_well", AssetID: "well", Pos: sim.WorldPos{X: 96, Y: 0},
 			DisplayName: "Village Well", EntryPolicy: sim.EntryPolicyClosed,
 			Refreshes: []*sim.ObjectRefresh{{Attribute: "thirst", Amount: -8}}},
+		// A forage-to-sell bush: finite + yield-only (Amount 0) gather source. No
+		// row eases a need, so objectIsRefreshSource is false — it's reachable by id
+		// only via the IsFiniteGatherableSource arm (LLM-92).
+		"berry_bush": {ID: "berry_bush", AssetID: "bush", Pos: sim.WorldPos{X: 96, Y: 32},
+			DisplayName: "Berry Bush", EntryPolicy: sim.EntryPolicyClosed,
+			Refreshes: []*sim.ObjectRefresh{{Attribute: "hunger", Amount: 0, GatherItem: "berries", AvailableQuantity: &berryStock}}},
 		"lamp": {ID: "lamp", AssetID: "lamp", Pos: sim.WorldPos{X: 640, Y: 320}, DisplayName: "Lamp Post"},
 	})
 	// No Structures seeded — both placements are bare.
@@ -89,6 +97,24 @@ func TestMoveToStructure_IDFallthroughToObject(t *testing.T) {
 	kind, oid := objDestOf(t, w, "walker")
 	if kind != sim.MoveDestinationObjectVisit || oid != "village_well" {
 		t.Errorf("dest = %q/%q, want object_visit/village_well (id fallthrough)", kind, oid)
+	}
+}
+
+// A forage-to-sell bush carries its id in the structure_id field of the
+// "## Your bushes to harvest" cue (renderForage). It is gatherable but NOT
+// need-easing, so the by-id fallthrough must accept it via IsFiniteGatherableSource
+// (LLM-92) — without that arm move_to(structure_id=<bush>) errored "no structure to
+// walk to" and the grower looped (the Prudence harvest stall LLM-90 surfaced).
+func TestMoveToStructure_IDFallthroughToForageBush(t *testing.T) {
+	w, cancel := buildMoveToObjectTestWorld(t)
+	defer cancel()
+
+	if _, err := w.Send(sim.MoveToStructure("walker", "berry_bush", time.Now().UTC())); err != nil {
+		t.Fatalf("MoveToStructure(berry_bush) fallthrough: %v", err)
+	}
+	kind, oid := objDestOf(t, w, "walker")
+	if kind != sim.MoveDestinationObjectVisit || oid != "berry_bush" {
+		t.Errorf("dest = %q/%q, want object_visit/berry_bush (forage bush id fallthrough)", kind, oid)
 	}
 }
 
