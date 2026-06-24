@@ -113,6 +113,24 @@ func (o *VillageObject) OwnedByOther(actorID ActorID) bool {
 	return o.OwnerActorID != "" && o.OwnerActorID != actorID
 }
 
+// IsFiniteGatherableSource reports whether the object is a FINITE gatherable
+// source — a bush: you pick an exhaustible yield (a finite gather_item row) from
+// it (LLM-87). This distinguishes a bush from a WELL, which is gatherable too
+// (you can draw water) but INFINITE — no stock to exhaust. An NPC eats a bush via
+// gather -> consume (so it does not auto-eat there on arrival), while a well keeps
+// its arrival + dwell drink path. Nil-safe, mirroring OwnedByOther.
+func (o *VillageObject) IsFiniteGatherableSource() bool {
+	if o == nil {
+		return false
+	}
+	for _, r := range o.Refreshes {
+		if r != nil && r.IsGatherable() && r.IsFinite() {
+			return true
+		}
+	}
+	return false
+}
+
 // ConfigWarnings returns one human-readable warning per village object that is
 // misconfigured in a way the engine TOLERATES but an operator should fix. It is
 // advisory only — never fatal — and is surfaced both at boot (logged) and on the

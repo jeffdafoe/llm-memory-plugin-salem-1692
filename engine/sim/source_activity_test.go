@@ -100,14 +100,16 @@ func teleport(t *testing.T, w *sim.World, actorID sim.ActorID, x, y int) {
 	}
 }
 
-// TestStartRefresh_DefersThenCompletes: arriving at an edible bush STARTS a
+// TestStartRefresh_DefersThenCompletes: a PC arriving at an edible bush STARTS a
 // timed eat — the hunger drop and supply decrement do not land until the
 // completion sweep, and then exactly once. Hunger 8 here is fully sated by the
 // single -8 bite, so the LLM-55 auto-repeat does NOT re-arm (covered separately
-// in TestRefresh_AutoRepeatsUntilFullOrEmpty).
+// in TestRefresh_AutoRepeatsUntilFullOrEmpty). The actor is a PC because
+// eat-on-arrival at a bush is PC-only since LLM-87 (NPCs gather->consume).
 func TestStartRefresh_DefersThenCompletes(t *testing.T) {
 	w, cancel := buildGatherTestWorld(t)
 	defer cancel()
+	setActorKind(t, w, "hannah", sim.KindPC) // eat-on-arrival at a bush is PC-only (LLM-87)
 	setNeed(t, w, "hannah", "hunger", 8)
 	placeAt(t, w, "hannah", "bush")
 
@@ -165,10 +167,12 @@ func backdateActivity(t *testing.T, w *sim.World, actorID sim.ActorID) {
 // sweep hasn't yet landed must NOT permanently block. The next start lands the
 // stale bite (eases hunger, draws the bush down); since the eater is still
 // hungry with stock left, that completion auto-re-arms (LLM-55), so the eat
-// continues rather than the stale window reading as "still busy" forever.
+// continues rather than the stale window reading as "still busy" forever. The
+// actor is a PC because auto-graze is PC-only since LLM-87 (the re-arm under test).
 func TestStartRefresh_SelfHealsStaleWindow(t *testing.T) {
 	w, cancel := buildGatherTestWorld(t)
 	defer cancel()
+	setActorKind(t, w, "hannah", sim.KindPC) // auto-graze is PC-only (LLM-87)
 	setNeed(t, w, "hannah", "hunger", 14)
 	placeAt(t, w, "hannah", "bush")
 
@@ -225,6 +229,7 @@ func TestStartRefresh_OwnedByOther_NoStart(t *testing.T) {
 func TestStartRefresh_YieldOnly_NoStart(t *testing.T) {
 	w, cancel := buildGatherTestWorld(t)
 	defer cancel()
+	setActorKind(t, w, "hannah", sim.KindPC) // PC, so the yield-only gate is the reason — not the LLM-87 NPC-at-bush suppression
 	setNeed(t, w, "hannah", "hunger", 14)
 	placeAt(t, w, "hannah", "sell_bush")
 
@@ -239,6 +244,7 @@ func TestStartRefresh_YieldOnly_NoStart(t *testing.T) {
 func TestStartRefresh_Depleted_NoStart(t *testing.T) {
 	w, cancel := buildGatherTestWorld(t)
 	defer cancel()
+	setActorKind(t, w, "hannah", sim.KindPC) // PC, so the depleted gate is the reason — not the LLM-87 NPC-at-bush suppression
 	setNeed(t, w, "hannah", "hunger", 14)
 	placeAt(t, w, "hannah", "dry_bush")
 
@@ -285,6 +291,29 @@ func TestStartHarvest_DefersThenMints(t *testing.T) {
 	}
 }
 
+// TestGather_PicksSourceClean (LLM-87): a gather takes ALL ripe units in one go,
+// ignoring the requested qty. A bush with 2 ripe, gathered with qty=1, mints 2 and
+// leaves the bush bare — so an NPC empties a bush in a single gather.
+func TestGather_PicksSourceClean(t *testing.T) {
+	w, cancel := buildGatherTestWorld(t)
+	defer cancel()
+	placeAt(t, w, "hannah", "bush")
+
+	// Ask for 1, but the bush has 2 ripe — pick-clean takes both.
+	if _, err := w.Send(sim.StartHarvest("hannah", 1)); err != nil {
+		t.Fatalf("StartHarvest: %v", err)
+	}
+	if n := forceComplete(t, w); n != 1 {
+		t.Fatalf("completed = %d, want 1", n)
+	}
+	if got := inventoryOf(t, w, "hannah", "berries"); got != 2 {
+		t.Errorf("berries = %d, want 2 (qty=1 ignored; the bush was picked clean)", got)
+	}
+	if got := availOf(t, w, "bush"); got != 0 {
+		t.Errorf("supply = %d, want 0 (bush picked clean)", got)
+	}
+}
+
 // TestStartHarvest_OwnedByOther_Rejects: harvesting an owned source is refused
 // up front (LLM-50 D2), the same ErrNotYourSource the instant Gather raised.
 func TestStartHarvest_OwnedByOther_Rejects(t *testing.T) {
@@ -316,16 +345,17 @@ func TestStartHarvest_Depleted_Rejects(t *testing.T) {
 }
 
 // TestStartHarvest_AlreadyBusy_Rejects: an actor already mid-activity can't
-// start another at the same source.
+// start another at the same source. The busy state is set up with a first gather
+// (a timed harvest window) — eat-on-arrival no longer occupies an NPC at a bush.
 func TestStartHarvest_AlreadyBusy_Rejects(t *testing.T) {
 	w, cancel := buildGatherTestWorld(t)
 	defer cancel()
-	setNeed(t, w, "hannah", "hunger", 14)
 	placeAt(t, w, "hannah", "bush")
 
-	if _, err := w.Send(sim.StartRefreshAtArrival("hannah")); err != nil {
-		t.Fatalf("StartRefreshAtArrival: %v", err)
+	if _, err := w.Send(sim.StartHarvest("hannah", 1)); err != nil {
+		t.Fatalf("first StartHarvest: %v", err)
 	}
+	// A second gather while that window is still in flight is rejected.
 	_, err := w.Send(sim.StartHarvest("hannah", 1))
 	if err == nil {
 		t.Fatal("StartHarvest while busy returned nil, want a busy error")
@@ -338,6 +368,7 @@ func TestStartHarvest_AlreadyBusy_Rejects(t *testing.T) {
 func TestComplete_MovedAway_NoEffect(t *testing.T) {
 	w, cancel := buildGatherTestWorld(t)
 	defer cancel()
+	setActorKind(t, w, "hannah", sim.KindPC) // eat-on-arrival at a bush is PC-only (LLM-87)
 	setNeed(t, w, "hannah", "hunger", 14)
 	placeAt(t, w, "hannah", "bush")
 
@@ -362,6 +393,7 @@ func TestComplete_MovedAway_NoEffect(t *testing.T) {
 func TestBusyAtSource_TracksWindow(t *testing.T) {
 	w, cancel := buildGatherTestWorld(t)
 	defer cancel()
+	setActorKind(t, w, "hannah", sim.KindPC) // eat-on-arrival at a bush is PC-only (LLM-87)
 	setNeed(t, w, "hannah", "hunger", 14)
 	placeAt(t, w, "hannah", "bush")
 	if _, err := w.Send(sim.StartRefreshAtArrival("hannah")); err != nil {
@@ -382,14 +414,16 @@ func TestBusyAtSource_TracksWindow(t *testing.T) {
 	}
 }
 
-// TestRefresh_AutoRepeatsUntilFullOrEmpty (LLM-55): standing at a finite bush
-// eats berry-by-berry — each completion re-arms a fresh window while the actor
-// is still hungry and stock remains, and stops once sated (or empty). Hunger 14
-// against a 2-berry bush (−8 each) takes exactly two bites: 14→6 (re-armed),
-// then 6→0 (sated, not re-armed); supply 2→1→0.
+// TestRefresh_AutoRepeatsUntilFullOrEmpty (LLM-55; PC-only since LLM-87): the PC
+// standing at a finite bush eats berry-by-berry — each completion re-arms a fresh
+// window while still hungry and stock remains, and stops once sated (or empty).
+// Hunger 14 against a 2-berry bush (−8 each) takes exactly two bites: 14→6
+// (re-armed), then 6→0 (sated, not re-armed); supply 2→1→0. NPCs are NOT
+// auto-re-armed — see TestRefresh_NPCEatsOneBiteNoAutoRepeat.
 func TestRefresh_AutoRepeatsUntilFullOrEmpty(t *testing.T) {
 	w, cancel := buildGatherTestWorld(t)
 	defer cancel()
+	setActorKind(t, w, "hannah", sim.KindPC) // auto-graze is PC-only (LLM-87)
 	setNeed(t, w, "hannah", "hunger", 14)
 	placeAt(t, w, "hannah", "bush")
 
@@ -429,12 +463,63 @@ func TestRefresh_AutoRepeatsUntilFullOrEmpty(t *testing.T) {
 	}
 }
 
+// TestRefresh_NPCNoEatOnArrivalAtBush (LLM-87): an NPC does NOT auto-eat on
+// arrival at a bush (a finite gatherable source) — it eats via gather->consume
+// instead. StartRefreshAtArrival no-ops for it, applying nothing, even though the
+// bush is edible and the NPC is hungry.
+func TestRefresh_NPCNoEatOnArrivalAtBush(t *testing.T) {
+	w, cancel := buildGatherTestWorld(t)
+	defer cancel()
+	setActorKind(t, w, "hannah", sim.KindNPCStateful)
+	setNeed(t, w, "hannah", "hunger", 14)
+	placeAt(t, w, "hannah", "bush")
+
+	res, err := w.Send(sim.StartRefreshAtArrival("hannah"))
+	if err != nil {
+		t.Fatalf("StartRefreshAtArrival: %v", err)
+	}
+	if sr := res.(sim.SourceActivityStartResult); sr.Started {
+		t.Error("NPC auto-started an eat at a bush — it should gather->consume, not eat on arrival")
+	}
+	if sa := liveActivity(t, w, "hannah"); sa != nil {
+		t.Errorf("activity = %+v, want nil (NPC does not eat-on-arrival at a bush)", sa)
+	}
+	if got := needOf(t, w, "hannah", "hunger"); got != 14 {
+		t.Errorf("hunger = %d, want 14 (no bite landed)", got)
+	}
+	if got := availOf(t, w, "bush"); got != 2 {
+		t.Errorf("supply = %d, want 2 (bush untouched)", got)
+	}
+}
+
+// TestRefresh_NPCDrinksAtWellOnArrival (LLM-87): a well is gatherable but INFINITE
+// — not a bush — so the NPC-at-bush eat-on-arrival suppression does NOT apply. An
+// NPC still drinks on arrival at a well, preserving its arrival + dwell drink path.
+func TestRefresh_NPCDrinksAtWellOnArrival(t *testing.T) {
+	w, cancel := buildGatherTestWorld(t)
+	defer cancel()
+	setActorKind(t, w, "hannah", sim.KindNPCStateful)
+	setNeed(t, w, "hannah", "thirst", 14)
+	placeAt(t, w, "hannah", "well")
+
+	res, err := w.Send(sim.StartRefreshAtArrival("hannah"))
+	if err != nil {
+		t.Fatalf("StartRefreshAtArrival: %v", err)
+	}
+	if sr := res.(sim.SourceActivityStartResult); !sr.Started {
+		t.Error("NPC did not start drinking at a well on arrival — a well is not a bush, so eat-on-arrival should fire")
+	}
+}
+
 // TestRefresh_InfiniteSource_NoAutoRepeat (LLM-55): an INFINITE source (the well)
 // is never auto-repeated — it drinks once on arrival and stops, keeping its
-// arrival + dwell behavior, even though the actor is still thirsty afterward.
+// arrival + dwell behavior, even though the actor is still thirsty afterward. The
+// actor is a PC so the only thing suppressing the re-arm is the infinite source,
+// not the LLM-87 NPC gate.
 func TestRefresh_InfiniteSource_NoAutoRepeat(t *testing.T) {
 	w, cancel := buildGatherTestWorld(t)
 	defer cancel()
+	setActorKind(t, w, "hannah", sim.KindPC) // isolate infinite-source as the no-repeat reason (LLM-87)
 	setNeed(t, w, "hannah", "thirst", 14)
 	placeAt(t, w, "hannah", "well")
 
@@ -452,15 +537,16 @@ func TestRefresh_InfiniteSource_NoAutoRepeat(t *testing.T) {
 	}
 }
 
-// TestRefresh_EmptyStopsEvenWhileHungry (LLM-55): termination is "sated OR
-// empty", not "sated" — a bush that runs out stops the loop even while the eater
-// is still hungry. Hunger 24 against a 2-berry bush (−8 each) empties it after
-// two bites (24→16→8, supply 2→1→0); the eater is still hungry (8 > 0) but the
-// loop ends because there's no stock left.
+// TestRefresh_EmptyStopsEvenWhileHungry (LLM-55; PC-only since LLM-87):
+// termination is "sated OR empty", not "sated" — a bush that runs out stops the
+// PC's auto-graze even while still hungry. Hunger 24 against a 2-berry bush (−8
+// each) empties it after two bites (24→16→8, supply 2→1→0); the eater is still
+// hungry (8 > 0) but the loop ends because there's no stock left.
 func TestRefresh_EmptyStopsEvenWhileHungry(t *testing.T) {
 	w, cancel := buildGatherTestWorld(t)
 	defer cancel()
-	setNeed(t, w, "hannah", "hunger", 24) // more than two berries can clear
+	setActorKind(t, w, "hannah", sim.KindPC) // auto-graze is PC-only (LLM-87)
+	setNeed(t, w, "hannah", "hunger", 24)    // more than two berries can clear
 	placeAt(t, w, "hannah", "bush")
 
 	if _, err := w.Send(sim.StartRefreshAtArrival("hannah")); err != nil {

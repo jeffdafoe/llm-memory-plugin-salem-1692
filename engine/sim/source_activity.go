@@ -187,6 +187,15 @@ func StartRefreshAtArrival(actorID ActorID) Command {
 			if obj.OwnedByOther(actorID) {
 				return SourceActivityStartResult{}, nil
 			}
+			// LLM-87: an NPC at a BUSH (a finite gatherable source) eats it via
+			// gather -> consume — it has the tools and decides for itself how much to
+			// take — so it does NOT auto-eat on arrival. The PC (no tools) still eats
+			// on arrival here. A WELL is gatherable too but INFINITE, so it's NOT a
+			// bush: NPCs keep their arrival + dwell drink path there. This is the
+			// "unify NPC eating to gather->consume" decision, scoped to bushes.
+			if actor.Kind != KindPC && obj.IsFiniteGatherableSource() {
+				return SourceActivityStartResult{}, nil
+			}
 			if !hasApplicableRefreshRow(obj) {
 				return SourceActivityStartResult{}, nil
 			}
@@ -219,16 +228,13 @@ func StartRefreshAtArrival(actorID ActorID) Command {
 // and sets the window; the mint lands at completion (applyGatherMint). Errors
 // are the same family Gather raised so the gather tool / pc route narrate them
 // unchanged.
+//
+// Picks the source CLEAN (LLM-87): the harvest takes ALL ripe units in one go,
+// so the qty argument is ignored. This makes an NPC's eat loop move_to -> gather
+// -> consume rather than a per-berry chain.
 func StartHarvest(actorID ActorID, qty int) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
-			requested := qty
-			if requested < 1 {
-				requested = 1
-			}
-			if requested > MaxGatherQty {
-				return nil, fmt.Errorf("StartHarvest: qty exceeds maximum (got %d, max %d)", requested, MaxGatherQty)
-			}
 			actor, ok := w.Actors[actorID]
 			if !ok {
 				return nil, fmt.Errorf("StartHarvest: actor %q not in world", actorID)
@@ -260,6 +266,15 @@ func StartHarvest(actorID ActorID, qty int) Command {
 			}
 			if row.IsFinite() && *row.AvailableQuantity <= 0 {
 				return nil, fmt.Errorf("StartHarvest: %w", ErrGatherableDepleted)
+			}
+			// LLM-87: gather picks the source CLEAN — one gather takes ALL ripe
+			// units, so an NPC's eat loop is move_to -> gather -> consume rather than
+			// a per-berry chain, and the bush flips to its bare sprite in one go. The
+			// qty argument is ignored. An infinite gatherable source (none today) has
+			// no "all" to take, so it falls back to a single unit.
+			requested := 1
+			if row.IsFinite() {
+				requested = *row.AvailableQuantity
 			}
 			catalogName := ""
 			if a := w.Assets[obj.AssetID]; a != nil {
@@ -309,7 +324,14 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 		// only narrates the terminal completion, not each auto-repeat bite the
 		// re-arm below schedules (LLM-69). Attribute is the primary need eased
 		// (drives the eat/drink verb); SourceName the resolved display name.
-		willRepeat := shouldRepeatRefresh(actor, obj)
+		//
+		// Auto-graze (LLM-55) is PC-ONLY (LLM-87): the human player has no
+		// gather/consume tools, so the engine grazes a finite source down on its
+		// behalf. An NPC HAS those tools, so it eats one bite and decides for
+		// itself whether to gather more — it is never auto-re-armed. Its
+		// completion beat (rendered from this event) surfaces the remaining stock
+		// so that choice is informed.
+		willRepeat := actor.Kind == KindPC && shouldRepeatRefresh(actor, obj)
 		var refreshAttr NeedKey
 		if len(res.Hits) > 0 {
 			refreshAttr = res.Hits[0].Attribute
