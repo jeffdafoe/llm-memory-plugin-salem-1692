@@ -309,6 +309,16 @@ type Payload struct {
 	// LedgerID ascending for determinism.
 	PayOffersForMe []sim.PayOfferWarrantReason
 
+	// RoomAlreadySoldOrderByLedger maps a pending lodging offer (by its
+	// LedgerID in PayOffersForMe) to an existing Ready lodging order this
+	// keeper already owes the SAME buyer. It marks the duplicate-room
+	// situation LLM-89's AcceptPay gate rejects: a nights_stay grant lands
+	// only at deliver_order, so a keeper who accepts a second room offer
+	// before handing over the first double-charges the guest. renderPayOffers
+	// uses it to steer "deliver the room you already sold, don't sell
+	// another." nil when no pending offer overlaps an undelivered room.
+	RoomAlreadySoldOrderByLedger map[sim.LedgerID]sim.OrderID
+
 	// LocalDateUTC is midnight UTC of the village's current calendar date,
 	// copied from Snapshot.LocalDateUTC. Render's order-book split
 	// (renderPendingDeliveries*) compares it against each OrderView.ReadyBy so
