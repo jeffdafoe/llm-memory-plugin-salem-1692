@@ -70,11 +70,24 @@ type ForageItemView struct {
 // buildForage builds the forage view for actorSnap, or nil when the actor holds
 // no `forage` entry below the reorder threshold, remembers no still-owned forage
 // bush for a low item (LLM-79 — sourced from the known-places set, not a world
-// scan), restock is disabled (RestockReorderPct == 0), or it carries no
-// RestockPolicy. Pure over the snapshot.
-func buildForage(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSnapshot) *ForageView {
+// scan), restock is disabled (RestockReorderPct == 0), a customer is engaged at
+// the stall (customerEngaged — see below), or it carries no RestockPolicy. Pure
+// over the snapshot.
+//
+// customerEngaged defers the whole harvest cue while a sale is live at the stall
+// — a buyer's pending offer awaiting her decision, a co-present customer in the
+// huddle, or a quote she has standing out to a buyer (LLM-90). The harvest cue
+// steers her to WALK OFF to her bushes; firing it mid-sale would invite the weak
+// model to abandon a customer mid-transaction. Deferring keeps the at-post
+// stabilizer in force (it isn't flipped to the step-out line, since that keys on
+// p.Forage != nil), so she finishes the deal; the errand is level-triggered and
+// the cue returns the moment the stall is clear.
+func buildForage(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSnapshot, customerEngaged bool) *ForageView {
 	if snap == nil || actorSnap == nil || actorSnap.RestockPolicy == nil {
 		return nil
+	}
+	if customerEngaged {
+		return nil // don't pull a grower off a live sale to go harvest
 	}
 	pct := snap.RestockReorderPct
 	if pct <= 0 {
@@ -163,12 +176,11 @@ func forageStockForItem(obj *sim.VillageObject, item sim.ItemKind) (int, bool) {
 	total := 0
 	found := false
 	for _, r := range obj.Refreshes {
-		if r == nil || !r.IsFinite() || !r.IsGatherable() {
-			continue
-		}
-		// IsFinite already implies AvailableQuantity != nil; the explicit nil
-		// check keeps the deref safe against a partial/corrupt row regardless.
-		if r.Amount != 0 || r.GatherItem != item || r.AvailableQuantity == nil {
+		// IsForageToSellFor is the shared row predicate (finite + yield-only +
+		// matching gather item) the forage WARRANT's actionability gate also uses,
+		// so the cue and the wake agree on what's a harvestable own-bush (LLM-90).
+		// It implies IsFinite (AvailableQuantity != nil), so the deref below is safe.
+		if !r.IsForageToSellFor(item) {
 			continue
 		}
 		stock := *r.AvailableQuantity

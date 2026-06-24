@@ -999,6 +999,23 @@ func renderDutySteer(b *strings.Builder, v *DutySteerView) {
 		if v.ShiftEndMin != nil {
 			closeAt = sim.ClockHourProse(*v.ShiftEndMin)
 		}
+		if v.ForageErrand {
+			// LLM-90: a bare sell-shelf plus ripe own bushes, and NOT mid-customer
+			// (buildForage defers the harvest cue while a customer is engaged at the
+			// stall). The default stabilizer's "wait here rather than wandering off"
+			// line directly contradicts the "## Your bushes to harvest" cue's
+			// "walk out to your bushes" — so swap it for a step-out-and-return line
+			// the two cues agree on. Stepping out to one's OWN bushes to restock an
+			// empty shelf is tending the trade, not wandering off; the post stays the
+			// home base she returns to. The to-work arm defers a forage errand
+			// (buildDutySteer), so she isn't yanked back once she sets off.
+			if closeAt != "" {
+				fmt.Fprintf(b, "It is your working hours and you are at your post (you close at %s), but your shelves are bare — step out to your own bushes to restock, then return to your post.\n\n", closeAt)
+			} else {
+				b.WriteString("It is your working hours and you are at your post, but your shelves are bare — step out to your own bushes to restock, then return to your post.\n\n")
+			}
+			return
+		}
 		if closeAt != "" {
 			fmt.Fprintf(b, "It is your working hours and you are at your post — stay and look after your work; you close at %s. If no one needs you right now, wait here for customers rather than wandering off.\n\n", closeAt)
 		} else {
@@ -1943,7 +1960,7 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 	case sim.StrandedWarrantReason:
 		return renderStrandedWarrantLine(n), false
 	case sim.RestockWarrantReason:
-		return renderRestockWarrantLine(n, r.Item), false
+		return renderRestockWarrantLine(n, r.Item, r.Source), false
 	case sim.ConsumedWarrantReason:
 		return renderNarrationWarrantLine(n, w.Kind(), r.NarrationText, nameOf(w.TriggerActorID), maxTextBytes)
 	case sim.DwellStartedWarrantReason:
@@ -2235,21 +2252,28 @@ func renderStrandedWarrantLine(n int) string {
 }
 
 // renderRestockWarrantLine renders the warrant line for a RestockWarrantReason —
-// the buy-side restock producer's nudge to a reseller whose bought-in stock has
-// dropped below the reorder threshold. It names the representative low item; the
-// actionable detail (current/cap, suppliers, structure_ids) is in the
-// "## Restocking" section, so the line stays a short pointer to it.
+// the reorder producer's nudge to an actor whose sell-stock has dropped below the
+// reorder threshold. It names the representative low item; the actionable detail
+// (current/cap, suppliers or bushes, structure_ids) is in the section the line
+// points to, so the line stays a short pointer. The Source routes the pointer:
+// a `forage` low (LLM-90) points at "## Your bushes to harvest", everything else
+// at "## Restocking" — so the cue line never sends a grower to a buy-side section
+// she has no entries in.
 //
-// Form: `N. Your stock of <item> is running low — see Restocking.`
-// Form (no item): `N. Your shop stock is running low — see Restocking.`
+// Form: `N. Your stock of <item> is running low — see <section>.`
+// Form (no item): `N. Your shop stock is running low — see <section>.`
 //
 // Rendered without truncation: the item is an engine-controlled catalog key,
 // not model- or user-supplied text.
-func renderRestockWarrantLine(n int, item sim.ItemKind) string {
-	if item == "" {
-		return fmt.Sprintf("%d. Your shop stock is running low — see Restocking.\n", n)
+func renderRestockWarrantLine(n int, item sim.ItemKind, source sim.RestockSource) string {
+	section := "Restocking"
+	if source == sim.RestockSourceForage {
+		section = "Your bushes to harvest"
 	}
-	return fmt.Sprintf("%d. Your stock of %s is running low — see Restocking.\n", n, item)
+	if item == "" {
+		return fmt.Sprintf("%d. Your shop stock is running low — see %s.\n", n, section)
+	}
+	return fmt.Sprintf("%d. Your stock of %s is running low — see %s.\n", n, item, section)
 }
 
 // renderImpulseWarrantLine renders the warrant line for an

@@ -131,6 +131,24 @@ func (o *VillageObject) IsFiniteGatherableSource() bool {
 	return false
 }
 
+// HasForageSourceFor reports whether the object carries a forage-to-sell refresh
+// row for item — the object-side half of the forage warrant's actionability gate
+// (actorRemembersForageSource, restock_tick.go). Shares ObjectRefresh.
+// IsForageToSellFor with the perception cue so the warrant and the
+// "## Your bushes to harvest" section agree on what's harvestable (LLM-90).
+// Nil-safe, mirroring OwnedByOther / IsFiniteGatherableSource.
+func (o *VillageObject) HasForageSourceFor(item ItemKind) bool {
+	if o == nil {
+		return false
+	}
+	for _, r := range o.Refreshes {
+		if r.IsForageToSellFor(item) {
+			return true
+		}
+	}
+	return false
+}
+
 // ConfigWarnings returns one human-readable warning per village object that is
 // misconfigured in a way the engine TOLERATES but an operator should fix. It is
 // advisory only — never fatal — and is surfaced both at boot (logged) and on the

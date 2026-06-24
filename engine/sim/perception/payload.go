@@ -895,6 +895,17 @@ type DutySteerView struct {
 	// sim.ClockHourProse.
 	ShiftEndMin *int
 
+	// ForageErrand modifies the AtPost stabilizer for a grower-seller who also has
+	// an active forage errand this tick (p.Forage != nil — a bare sell-shelf plus
+	// ripe owned bushes, and NOT mid-customer, since buildForage defers the harvest
+	// cue while a customer is engaged at the stall). It flips the stabilizer's
+	// "wait here rather than wandering off" line for a "step out to your bushes and
+	// return" line, so the at-post cue AGREES with the "## Your bushes to harvest"
+	// section instead of pinning her against it (LLM-90). Only meaningful when
+	// AtPost; the to-work arm separately defers a forage errand so she isn't yanked
+	// back mid-trip.
+	ForageErrand bool
+
 	// Lodging marks the off-shift target as the actor's RENTED room at an inn
 	// (a lodger) rather than its own home — render says "head to your rented room
 	// at X". Only meaningful when !ToWork && TargetID != "". ZBBS-WORK-387.
