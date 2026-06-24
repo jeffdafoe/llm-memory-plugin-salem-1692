@@ -511,7 +511,7 @@ type KeeperHeldLodgersView struct {
 	Lodgers []HeldLodger
 
 	// NightlyRate is the keeper's per-night rent, surfaced so a renewal-due
-	// guest's cue can spell out the scene_quote amount. 0 when the lodging rate
+	// guest's cue can spell out the sell amount. 0 when the lodging rate
 	// is unset/disabled — no renewal is offered in that case.
 	NightlyRate int
 }
@@ -629,7 +629,7 @@ func buildKeeperHeldLodgers(snap *sim.Snapshot, subject sim.ActorID, keeper *Kee
 // left on their stay. A settled guest gets a "do not offer another" steer so the
 // keeper affirms instead of re-pitching off the "## Your inn" vacancy line; a
 // guest whose stay is ending (RenewalDue) gets a renewal steer instead — the
-// spelled-out scene_quote call when the keeper should post it (OfferRenewal),
+// spelled-out sell call when the keeper should post it (OfferRenewal),
 // otherwise an "await their answer" line while a renewal is in flight (LLM-46).
 // Content-gated: a nil/empty view writes nothing. The tenure phrase is
 // precomputed at build time (TenureLabel) so this stays deterministic against
@@ -643,11 +643,11 @@ func renderKeeperHeldLodgers(b *strings.Builder, v *KeeperHeldLodgersView) {
 		name := sanitizeInline(l.Name)
 		switch {
 		case l.OfferRenewal:
-			// The renewal rides the same scene_quote → take path as a fresh room
+			// The renewal rides the same sell → take path as a fresh room
 			// (renderLodgingOffer), with the args spelled out — qty is the number
 			// of NIGHTS, not goods. AssignBedroomForLodger extends the existing
 			// grant on take, so no vacancy is needed.
-			fmt.Fprintf(b, "%s already holds a room here, %s — their stay is ending. If they wish to stay on, offer a renewal: call scene_quote with item \"nights_stay\", consume_now false, qty set to the number of nights, amount set to nights × %d coins (your nightly rate), and target_buyer %s. They are then free to take it or leave it.\n",
+			fmt.Fprintf(b, "%s already holds a room here, %s — their stay is ending. If they wish to stay on, offer a renewal: call sell with item \"nights_stay\", consume_now false, qty set to the number of nights, amount set to nights × %d coins (your nightly rate), and target_buyer %s. They are then free to take it or leave it.\n",
 				name, l.TenureLabel, v.NightlyRate, name)
 		case l.RenewalDue:
 			fmt.Fprintf(b, "%s already holds a room here, %s — their stay is ending and you have offered them a renewal. Await their answer rather than offering again.\n",

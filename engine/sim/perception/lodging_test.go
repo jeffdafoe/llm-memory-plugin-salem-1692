@@ -907,7 +907,7 @@ func TestRenderKeeperHeldLodgers_RenewalOffer(t *testing.T) {
 		Lodgers:     []HeldLodger{{Name: "Ezekiel Crane", TenureLabel: "paid through the day", RenewalDue: true, OfferRenewal: true}},
 	})
 	out := b.String()
-	for _, want := range []string{"## Already lodging here", "Ezekiel Crane", "stay is ending", "scene_quote", "nights_stay", "4 coins", "target_buyer"} {
+	for _, want := range []string{"## Already lodging here", "Ezekiel Crane", "stay is ending", "call sell", "nights_stay", "4 coins", "target_buyer"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("renewal-offer render missing %q, got %q", want, out)
 		}
@@ -927,7 +927,7 @@ func TestRenderKeeperHeldLodgers_RenewalAwait(t *testing.T) {
 	if !strings.Contains(out, "Await their answer") {
 		t.Errorf("a renewal in flight should steer to await; got %q", out)
 	}
-	for _, notWant := range []string{"scene_quote", "Do not offer another"} {
+	for _, notWant := range []string{"call sell", "Do not offer another"} {
 		if strings.Contains(out, notWant) {
 			t.Errorf("the await render should not contain %q; got %q", notWant, out)
 		}
