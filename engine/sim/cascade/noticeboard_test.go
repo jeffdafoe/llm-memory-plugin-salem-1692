@@ -79,7 +79,7 @@ func buildGappedCapacityBoardWorld(t *testing.T) *sim.World {
 			ID: "notice-board", Category: "prop", DefaultState: "empty",
 			RotationAlgo: sim.RotationAlgoDeterministic,
 			States: []sim.AssetState{
-				{ID: 60, State: "empty", Tags: []string{"rotatable", "notice-board"}},                      // capacity 0
+				{ID: 60, State: "empty", Tags: []string{"rotatable", "notice-board"}},                       // capacity 0
 				{ID: 62, State: "two", Tags: []string{"rotatable", "notice-board", "content-capacity-2"}},   // 2
 				{ID: 63, State: "three", Tags: []string{"rotatable", "notice-board", "content-capacity-3"}}, // 3
 				{ID: 64, State: "four", Tags: []string{"rotatable", "notice-board", "content-capacity-4"}},  // 4

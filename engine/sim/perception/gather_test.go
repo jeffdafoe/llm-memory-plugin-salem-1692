@@ -157,14 +157,14 @@ func TestBuild_GatherableCue_NearestOwnedSuppresses_NoFallthrough(t *testing.T) 
 				ID: "owned", DisplayName: "Prudence's Bush",
 				Pos:           sim.WorldPos{X: 100, Y: 100},
 				LoiterOffsetX: &zero, LoiterOffsetY: &zero,
-				OwnerActorID:  "prudence",
-				Refreshes:     []*sim.ObjectRefresh{{Attribute: "hunger", Amount: 0, GatherItem: "berries"}},
+				OwnerActorID: "prudence",
+				Refreshes:    []*sim.ObjectRefresh{{Attribute: "hunger", Amount: 0, GatherItem: "berries"}},
 			},
 			"commons": { // farther (cheb 1, still in range), unowned, also gatherable
 				ID: "commons", DisplayName: "Wild Bush",
 				Pos:           sim.WorldPos{X: 100, Y: 100},
 				LoiterOffsetX: intp(1), LoiterOffsetY: &zero, // pin one tile east → cheb 1
-				Refreshes:     []*sim.ObjectRefresh{{Attribute: "hunger", Amount: 0, GatherItem: "berries"}},
+				Refreshes: []*sim.ObjectRefresh{{Attribute: "hunger", Amount: 0, GatherItem: "berries"}},
 			},
 		},
 	}
