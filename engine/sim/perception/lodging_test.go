@@ -423,6 +423,36 @@ func TestRenderKeeperLodging_RateWhenAvailable(t *testing.T) {
 	}
 }
 
+// TestRenderKeeperLodging_SellMechanic covers the how-to-let-a-room cue: a
+// keeper with vacancy and a rate is told the nights_stay sell call, so a guest
+// who asks for a room but is neither a homeless seeker (renderLodgingOffer) nor
+// an existing resident (renderKeeperHeldLodgers) can still be sold one. Without
+// it the weak keeper model invents item_kind "room" and the sale fails.
+func TestRenderKeeperLodging_SellMechanic(t *testing.T) {
+	var b strings.Builder
+	renderKeeperLodging(&b, &KeeperLodgingView{InnName: "Hannah's Inn", RoomsAvailable: 2, RoomsTotal: 3, NightlyRate: 4})
+	out := b.String()
+	for _, want := range []string{"If a guest asks to lodge", "nights_stay", "consume_now false"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("keeper with a free room must spell out the nights_stay sell mechanic; missing %q in %q", want, out)
+		}
+	}
+
+	// No vacancy: nothing to sell, so no sell mechanic.
+	b.Reset()
+	renderKeeperLodging(&b, &KeeperLodgingView{InnName: "Hannah's Inn", RoomsAvailable: 0, RoomsTotal: 3, NightlyRate: 4})
+	if strings.Contains(b.String(), "nights_stay") {
+		t.Errorf("full inn must not show the sell mechanic, got %q", b.String())
+	}
+
+	// No rate (lodging pricing disabled): can't price a room, so no sell mechanic.
+	b.Reset()
+	renderKeeperLodging(&b, &KeeperLodgingView{InnName: "Hannah's Inn", RoomsAvailable: 2, RoomsTotal: 3, NightlyRate: 0})
+	if strings.Contains(b.String(), "nights_stay") {
+		t.Errorf("disabled rate must not show the sell mechanic, got %q", b.String())
+	}
+}
+
 // --- keeper occupancy ---
 
 // innStructureN builds an inn with n private bedrooms (room IDs 2..n+1) plus a

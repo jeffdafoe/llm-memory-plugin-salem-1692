@@ -452,6 +452,20 @@ func itemGrantsLodging(snap *sim.Snapshot, kind sim.ItemKind) bool {
 // renderKeeperLodging writes the "## Your inn" section for an inn-keeper.
 // Content-gated: a nil view writes nothing. The nightly rate is appended only
 // when a room is free to sell and the rate is set.
+//
+// When there's a room to sell and a rate to price it, the passive vacancy line
+// is followed by the how-to-let-a-room mechanic. The two act-now offer cues —
+// renderLodgingOffer ("## A room to let") and renderKeeperHeldLodgers ("##
+// Already lodging here") — only name the nights_stay sell call for a homeless
+// seeker or an existing resident respectively. A guest who asks for a room but
+// is neither (e.g. a traveler already lodging at ANOTHER inn — so not a
+// "seeker", and not held HERE) otherwise leaves the keeper with no cue for the
+// nights_stay item kind, so the weak model invents "room" and the sale fails
+// (item discovery mints a 0-stock "room", insufficient-stock rejects). This
+// states the mechanic generally so any room request can be filled. Conditional
+// ("if a guest asks") so it's a mechanic, not an unsolicited pitch; the args
+// mirror renderLodgingOffer (qty is NIGHTS, consume_now false, single guest so
+// no consumers).
 func renderKeeperLodging(b *strings.Builder, v *KeeperLodgingView) {
 	if v == nil {
 		return
@@ -462,7 +476,11 @@ func renderKeeperLodging(b *strings.Builder, v *KeeperLodgingView) {
 	if v.RoomsAvailable > 0 && v.NightlyRate > 0 {
 		fmt.Fprintf(b, ", %d coins a night", v.NightlyRate)
 	}
-	b.WriteString(".\n\n")
+	b.WriteString(".\n")
+	if v.RoomsAvailable > 0 && v.NightlyRate > 0 {
+		fmt.Fprintf(b, "If a guest asks to lodge, call sell with item \"nights_stay\", consume_now false, qty set to the number of nights, and amount set to nights × %d coins (your nightly rate). A room is for the one guest, so leave consumers empty; use target_buyer only if you know the guest's name.\n", v.NightlyRate)
+	}
+	b.WriteString("\n")
 }
 
 // renderLodgingOffer writes the seller-side "offer a room" cue (ZBBS-WORK-382):
