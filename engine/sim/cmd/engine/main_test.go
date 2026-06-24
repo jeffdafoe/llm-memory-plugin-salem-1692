@@ -148,22 +148,43 @@ func TestRegisterTools_RegistersDoneTerminal(t *testing.T) {
 	}
 }
 
-// TestRegisterTools_NoBareCoinPay guards ZBBS-HOME-430: the bare-coin `pay`
-// tool must stay OUT of the production registry. Every production bare pay
-// was an item/lodging purchase that belongs to the pay_with_item ledger flow
-// — bare pay moved coins without moving goods (double-charges, phantom
-// lodging). RegisterPay remains a library helper for composed registries;
-// this test catches an accidental re-registration in registerTools.
-func TestRegisterTools_NoBareCoinPay(t *testing.T) {
+// TestRegisterTools_RegistersBareCoinPay guards LLM-99: the bare-coin `pay`
+// tool is registered AND advertised to the model. It was pulled in
+// ZBBS-HOME-430 back when it was the only coin tool — NPCs reached for it to
+// settle purchases and double-charged on buy-then-pay. pay_with_item is now
+// the registered purchase path, so bare pay is back for the non-purchase coin
+// movement it was always meant for (wages/tips/gifts), which otherwise lands
+// as empty speech. pay_with_item must stay registered alongside it as the
+// commerce path.
+func TestRegisterTools_RegistersBareCoinPay(t *testing.T) {
 	r := handlers.NewRegistry()
 	if err := registerTools(r, stubSearcher{}); err != nil {
 		t.Fatalf("registerTools: %v", err)
 	}
-	if _, ok := r.Lookup("pay"); ok {
-		t.Error("registerTools registered the bare-coin `pay` tool — removed by ZBBS-HOME-430, NPC commerce goes through pay_with_item")
+	if _, ok := r.Lookup("pay"); !ok {
+		t.Error("registerTools did not register the bare-coin `pay` tool — re-introduced in LLM-99 for wages/tips/gifts")
 	}
 	if _, ok := r.Lookup("pay_with_item"); !ok {
 		t.Error("registerTools did not register `pay_with_item` — the ledger flow must remain the NPC commerce path")
+	}
+	// Both must be ADVERTISED, not just registered: the safety argument for
+	// re-introducing bare `pay` is that the model sees the dedicated purchase
+	// path (pay_with_item) alongside it, so it routes goods/lodging there
+	// rather than double-paying with bare coins.
+	var advertisedPay, advertisedPayWithItem bool
+	for _, spec := range r.AdvertisedSpecs() {
+		switch spec.Name {
+		case "pay":
+			advertisedPay = true
+		case "pay_with_item":
+			advertisedPayWithItem = true
+		}
+	}
+	if !advertisedPay {
+		t.Error("`pay` registered but not advertised to the model (AdvertisedSpecs omits it)")
+	}
+	if !advertisedPayWithItem {
+		t.Error("`pay_with_item` registered but not advertised to the model — the model needs the commerce path alongside bare pay")
 	}
 }
 

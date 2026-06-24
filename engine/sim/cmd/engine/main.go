@@ -572,12 +572,14 @@ func registerTools(r *handlers.Registry, searcher llm.MemorySearcher) error {
 		fn   func(*handlers.Registry) error
 	}{
 		{"speak", handlers.RegisterSpeak},
-		// `pay` (bare-coin transfer) is deliberately NOT registered
-		// (ZBBS-HOME-430). Every production use was an item/lodging purchase
-		// that belongs to the pay_with_item ledger flow — bare pay moved
-		// coins without moving goods (and double-charged when it followed a
-		// settled ledger purchase, e.g. the 2026-06-11 Hannah ale buy). PCs
-		// pay via /pc/pay; RegisterPay stays available for composition.
+		// `pay` (bare-coin transfer) — wages, tips, gifts (LLM-99). Pulled in
+		// ZBBS-HOME-430 because it was then the only coin tool, so NPCs reached
+		// for it to settle purchases and double-charged on buy-then-pay.
+		// pay_with_item is now the registered purchase path, so bare pay is back
+		// for the non-purchase coin movement it was always meant for — the
+		// John→Ezekiel wages-for-chores case that otherwise lands as empty
+		// speech. PCs pay via /pc/pay.
+		{"pay", handlers.RegisterPay},
 		{"consume", handlers.RegisterConsume},
 		{"sell", handlers.RegisterSceneQuote},
 		{"deliver_order", handlers.RegisterDeliverOrder},

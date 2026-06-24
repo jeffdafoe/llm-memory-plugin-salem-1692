@@ -88,9 +88,11 @@ var paySchema = json.RawMessage(`{
 
 // payDescription is the tool description advertised to the model. Terse —
 // the schema's per-field descriptions carry the detailed guidance.
-const payDescription = "Pay another villager coins. Use for tips, gifts, " +
-	"and news payments. The recipient must be in your current conversation. " +
-	"Item purchases come later — for now this is coin-only."
+const payDescription = "Pay another villager coins directly — for wages, " +
+	"tips, gifts, or news payments. The recipient must be in your current " +
+	"conversation. This moves coins only, with nothing given in return: to " +
+	"BUY goods or lodging, use pay_with_item instead so the goods change " +
+	"hands too."
 
 // DecodePayArgs parses the raw tool-call arguments into a PayArgs. Errors
 // are typed validation failures the harness surfaces to the model as tool
