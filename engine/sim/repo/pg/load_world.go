@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"sort"
 	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
@@ -634,20 +633,6 @@ type businessownerParamsRow struct {
 	Flavor string `json:"flavor"`
 }
 
-// restockParamsRow / restockEntryRow mirror the v1 stored shape of an
-// actor_attribute.params blob's restock array ({item, source, max,
-// target}) so a v1-written or hand-seeded row round-trips. Repo-local.
-type restockParamsRow struct {
-	Restock []restockEntryRow `json:"restock"`
-}
-
-type restockEntryRow struct {
-	Item   string `json:"item"`
-	Source string `json:"source"`
-	Max    int    `json:"max,omitempty"`
-	Target int    `json:"target,omitempty"`
-}
-
 // rebuildActorAttributeProjections reconstructs the two derived views that
 // Slice 3 deliberately keeps OUT of the pg layer: Actor.BusinessownerState
 // (from the `businessowner` attribute's params.flavor) and
@@ -691,52 +676,9 @@ func rebuildActorAttributeProjections(actors map[sim.ActorID]*sim.Actor) {
 				a.BusinessownerState = &sim.BusinessownerState{Flavor: bo.Flavor}
 			}
 		}
-		// RestockPolicy — union across all attributes in slug order so the
-		// first-listed-wins tiebreak is deterministic (v1's ORDER BY slug).
-		var entries []sim.RestockEntry
-		seen := make(map[sim.ItemKind]bool)
-		for _, slug := range sortedAttributeSlugs(a.Attributes) {
-			raw := a.Attributes[slug]
-			if len(raw) == 0 {
-				continue
-			}
-			var params restockParamsRow
-			if err := json.Unmarshal(raw, &params); err != nil {
-				continue // unparseable — other roles may still be valid (v1 parity)
-			}
-			for _, e := range params.Restock {
-				item := sim.ItemKind(e.Item)
-				if item == "" || seen[item] {
-					continue
-				}
-				source := sim.RestockSource(e.Source)
-				if source != sim.RestockSourceProduce && source != sim.RestockSourceBuy &&
-					source != sim.RestockSourceForage {
-					continue // unknown source mode — skip (v1 parity)
-				}
-				seen[item] = true
-				entries = append(entries, sim.RestockEntry{
-					Item:   item,
-					Source: source,
-					Max:    e.Max,
-					Target: e.Target,
-				})
-			}
-		}
-		if len(entries) > 0 {
-			a.RestockPolicy = &sim.RestockPolicy{Restock: entries}
-		}
+		// RestockPolicy — union across every attribute's params.restock.
+		// Lifted into sim (LLM-95) so this load-side projection and the live
+		// umbilical restock-edit command share one implementation.
+		sim.RebuildRestockPolicy(a)
 	}
-}
-
-// sortedAttributeSlugs returns the attribute slugs in deterministic
-// ascending order, matching v1's `ORDER BY slug` so the restock union's
-// first-listed-wins tiebreak is stable across loads.
-func sortedAttributeSlugs(attrs map[string][]byte) []string {
-	slugs := make([]string, 0, len(attrs))
-	for slug := range attrs {
-		slugs = append(slugs, slug)
-	}
-	sort.Strings(slugs)
-	return slugs
 }
