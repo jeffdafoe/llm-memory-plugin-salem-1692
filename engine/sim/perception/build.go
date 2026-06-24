@@ -1183,7 +1183,16 @@ func buildDutySteer(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapsho
 		// needy NPCs (blocked from work yet not red enough to be driven to resolve —
 		// e.g. a homeless blacksmith parked at the inn all shift). Scope: the to-work
 		// arm ONLY — the go-home arm stays unsuppressed (going home is how an NPC rests).
-		if hasRestockErrand || hasPendingOutgoingOffer(snap, actorID) || hasOfferedQuote(snap, actorID) {
+		//
+		// atResolvableSatiationSource (Moses James cycle, 2026-06-24): also don't
+		// yank an agent that left its post for a felt hunger/thirst and has ARRIVED
+		// at a source it can use right here — let it finish, or it ping-pongs
+		// post<->source without ever consuming until the need goes red. Unlike the
+		// removed HOME-463 mild gate this is LOCATION-gated (fires only once AT a
+		// usable source) and coins-gated for paid vendors, so it can't re-strand the
+		// homeless-blacksmith case — that NPC, broke and not yet at a free source,
+		// still gets marched to work.
+		if hasRestockErrand || hasPendingOutgoingOffer(snap, actorID) || hasOfferedQuote(snap, actorID) || atResolvableSatiationSource(snap, actorID, a) {
 			return nil
 		}
 		return &DutySteerView{ToWork: true, TargetID: anchors.WorkID, TargetLabel: anchors.WorkLabel}
@@ -1244,6 +1253,92 @@ func buildDutySteer(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapsho
 	default:
 		return nil
 	}
+}
+
+// atResolvableSatiationSource reports whether the actor is standing AT a source
+// that can satisfy a currently-felt hunger/thirst need right here — a co-present
+// peer holding a satisfier, a free public source at its tile, or a vendor
+// structure it is at and has coins to pay. It gates the to-work duty yank so an
+// on-shift NPC that left its post to slake a need and has arrived at the source
+// is allowed to finish (the Moses James post<->stall cycle). The felt-need gate
+// matches buildSatiation's (NeedSilent floor), so the suppressor fires exactly
+// when the eat/drink cue is offering a usable option here.
+//
+// Why this doesn't reopen ZBBS-HOME-463 (the removed mild gate that stranded the
+// homeless blacksmith at the inn): it is LOCATION-gated — it fires only once the
+// NPC is AT a usable source, never while it merely feels peckish somewhere with
+// no resolution — and the paid-vendor arm is coins-gated, so a broke NPC at a
+// stall it can't transact at is still marched to work. It self-clears the instant
+// the need eases.
+func atResolvableSatiationSource(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapshot) bool {
+	if snap == nil || a == nil {
+		return false
+	}
+	for _, need := range satiationNeeds {
+		if sim.NeedLabelTier(a.Needs[need], snap.NeedThresholds.Get(need)) == sim.NeedSilent {
+			continue
+		}
+		// A co-present huddle peer carrying a satisfier — already beside the actor.
+		if len(gatherCoPresentPeerOffers(snap, actorID, a, need)) > 0 {
+			return true
+		}
+		// A free public source the actor is standing at (its loiter pin — the tile
+		// locomotion parks a visitor on, which may be offset from the base tile).
+		for _, obj := range snap.VillageObjects {
+			if obj == nil || objectRefreshMagnitude(obj, need) <= 0 || obj.OwnedByOther(actorID) {
+				continue
+			}
+			if a.Pos.Chebyshev(objectLoiterPin(obj)) <= sim.LoiterAttributionTiles {
+				return true
+			}
+		}
+		// A vendor structure the actor is standing at and can pay for (coins>0).
+		// Pricing in v2 is negotiated per-transaction with no fixed retail price,
+		// so coins>0 is the affordability proxy — it cleanly excludes the broke
+		// homeless-blacksmith case while admitting the ordinary "I have money, let
+		// me buy a drink" one.
+		if a.Coins > 0 {
+			for _, vc := range findVendorConsumables(snap, actorID, need, "") {
+				if vc.StructureID != "" && actorAtStructure(snap, a, vc.StructureID) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// actorAtStructure reports whether the actor is at a structure: inside it, or
+// standing within LoiterAttributionTiles of its loiter pin (the same "outdoors
+// by X" attribution findLoiterStructure uses for the location line).
+func actorAtStructure(snap *sim.Snapshot, a *sim.ActorSnapshot, stID sim.StructureID) bool {
+	if snap == nil || a == nil || stID == "" {
+		return false
+	}
+	if a.InsideStructureID == stID {
+		return true
+	}
+	vobj := snap.VillageObjects[sim.VillageObjectID(stID)]
+	if vobj == nil {
+		return false
+	}
+	return a.Pos.Chebyshev(objectLoiterPin(vobj)) <= sim.LoiterAttributionTiles
+}
+
+// objectLoiterPin returns the tile an actor stands on when "at" obj — its base
+// tile plus any loiter offset. This is the pin locomotion parks visitors on and
+// the pin findLoiterStructure attributes "outdoors by X" to, so co-location
+// checks must measure to it, not the bare base tile.
+func objectLoiterPin(vobj *sim.VillageObject) sim.TilePos {
+	pin := vobj.Pos.Tile()
+	off := sim.TileOffset{}
+	if vobj.LoiterOffsetX != nil {
+		off.DX = *vobj.LoiterOffsetX
+	}
+	if vobj.LoiterOffsetY != nil {
+		off.DY = *vobj.LoiterOffsetY
+	}
+	return pin.Add(off)
 }
 
 // shiftWindowBounds resolves the actor's effective shift window: its own

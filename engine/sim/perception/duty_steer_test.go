@@ -347,6 +347,93 @@ func TestBuildDutySteer_OptionBSuppression(t *testing.T) {
 			t.Fatalf("want toWork (mild need must NOT suppress since HOME-463), got %+v", v)
 		}
 	})
+	// Moses James cycle (2026-06-24): a felt (sub-red) need ALONE doesn't suppress
+	// (above), but once the NPC has walked to a source it can use right here, the
+	// to-work yank must hold off so it can finish — else it ping-pongs post<->source
+	// without ever consuming until the need goes red. atResolvableSatiationSource.
+	t.Run("at a free source for a felt need suppresses toWork", func(t *testing.T) {
+		snap, a := onShiftAway()
+		a.Pos = sim.WorldToTile(0, 0)
+		a.Needs = map[sim.NeedKey]int{"thirst": 11} // felt (>= floor 10), not red (< 12)
+		snap.VillageObjects = map[sim.VillageObjectID]*sim.VillageObject{
+			"well": thirstWell("well", "Well", 0, 0, -8), // at the actor's tile
+		}
+		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false); v != nil {
+			t.Fatalf("want nil (at a free water source — finish the errand), got %+v", v)
+		}
+	})
+	t.Run("at a vendor for a felt need WITH coins suppresses toWork", func(t *testing.T) {
+		snap, a := onShiftAway() // a.InsideStructureID = "general_store"
+		a.Needs = map[sim.NeedKey]int{"thirst": 11}
+		a.Coins = 20
+		seller := &sim.ActorSnapshot{WorkStructureID: "general_store", Inventory: map[sim.ItemKind]int{"water": 9}}
+		snap.Actors = map[sim.ActorID]*sim.ActorSnapshot{"moses": a, "wally": seller}
+		snap.Structures = map[sim.StructureID]*sim.Structure{"general_store": {ID: "general_store", DisplayName: "General Store"}}
+		snap.ItemKinds = foodDrinkCatalog()
+		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false); v != nil {
+			t.Fatalf("want nil (standing at a stall he can pay — finish the buy), got %+v", v)
+		}
+	})
+	t.Run("at a paid vendor but BROKE does NOT suppress (HOME-463 guard)", func(t *testing.T) {
+		snap, a := onShiftAway()
+		a.Needs = map[sim.NeedKey]int{"thirst": 11}
+		a.Coins = 0 // can't transact → march to work, don't park at the stall
+		seller := &sim.ActorSnapshot{WorkStructureID: "general_store", Inventory: map[sim.ItemKind]int{"water": 9}}
+		snap.Actors = map[sim.ActorID]*sim.ActorSnapshot{"moses": a, "wally": seller}
+		snap.Structures = map[sim.StructureID]*sim.Structure{"general_store": {ID: "general_store", DisplayName: "General Store"}}
+		snap.ItemKinds = foodDrinkCatalog()
+		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false); v == nil || !v.ToWork {
+			t.Fatalf("want toWork (broke NPC at a paid stall still marches to work), got %+v", v)
+		}
+	})
+	t.Run("a SILENT (sub-floor) need at a source does NOT suppress", func(t *testing.T) {
+		snap, a := onShiftAway()
+		a.Pos = sim.WorldToTile(0, 0)
+		a.Needs = map[sim.NeedKey]int{"thirst": 9} // below the silent floor (10) → not felt
+		snap.VillageObjects = map[sim.VillageObjectID]*sim.VillageObject{
+			"well": thirstWell("well", "Well", 0, 0, -8),
+		}
+		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false); v == nil || !v.ToWork {
+			t.Fatalf("want toWork (need below floor isn't felt — no errand to finish), got %+v", v)
+		}
+	})
+	t.Run("own vendorship does NOT self-suppress (no other seller)", func(t *testing.T) {
+		// The actor itself holds a satisfier and has a work structure, so it would
+		// look like a vendor — but findVendorConsumables excludes the buyer as a
+		// seller, so there is no buy path here and the yank must hold. Locks
+		// eachVendorOffer's self-exclusion (the dutyAnchors work is "tavern", so
+		// the actor at general_store is still away from its post).
+		snap, a := onShiftAway()
+		a.Needs = map[sim.NeedKey]int{"thirst": 11}
+		a.Coins = 20
+		a.WorkStructureID = "general_store"
+		a.Inventory = map[sim.ItemKind]int{"water": 9}
+		snap.Actors = map[sim.ActorID]*sim.ActorSnapshot{"moses": a}
+		snap.Structures = map[sim.StructureID]*sim.Structure{"general_store": {ID: "general_store", DisplayName: "General Store"}}
+		snap.ItemKinds = foodDrinkCatalog()
+		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false); v == nil || !v.ToWork {
+			t.Fatalf("want toWork (own vendorship must not self-suppress), got %+v", v)
+		}
+	})
+	t.Run("integration: buildSatiation offers the vendor AND buildDutySteer suppresses", func(t *testing.T) {
+		// The actual Moses shape: on-shift, away from post, felt thirst, standing
+		// at a paid vendor it can afford. The buy cue offers it and the duty steer
+		// holds — locking the cue<->suppressor interaction, not buildDutySteer alone.
+		snap, a := onShiftAway() // InsideStructureID = "general_store"
+		a.Needs = map[sim.NeedKey]int{"thirst": 11}
+		a.Coins = 20
+		seller := &sim.ActorSnapshot{WorkStructureID: "general_store", Inventory: map[sim.ItemKind]int{"water": 9}}
+		snap.Actors = map[sim.ActorID]*sim.ActorSnapshot{"moses": a, "wally": seller}
+		snap.Structures = map[sim.StructureID]*sim.Structure{"general_store": {ID: "general_store", DisplayName: "General Store"}}
+		snap.ItemKinds = foodDrinkCatalog()
+		sat := buildSatiation(snap, "moses", a)
+		if sat == nil || len(sat.Needs) != 1 || len(sat.Needs[0].Vendors) != 1 {
+			t.Fatalf("precondition: want the thirst vendor cue, got %+v", sat)
+		}
+		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false); v != nil {
+			t.Fatalf("want nil (cue offers the buy here; duty must not yank him off it), got %+v", v)
+		}
+	})
 	t.Run("red need suppresses toWork", func(t *testing.T) {
 		snap, a := onShiftAway()
 		// hunger 22 >= the red threshold (20) → caught by the red-need gate
