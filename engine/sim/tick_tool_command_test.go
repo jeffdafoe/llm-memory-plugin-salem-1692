@@ -65,8 +65,18 @@ func TestRunTickToolCommandRunsToolForCurrentAttempt(t *testing.T) {
 	if !ran {
 		t.Fatal("tool.Fn was not run for the current attempt")
 	}
-	if val != "tool-ran" {
-		t.Fatalf("expected tool's value to pass through, got %v", val)
+	// LLM-88: the result is wrapped in a TickToolResult — the tool's own value
+	// plus the acting actor's post-commit snapshot (used for mid-tick own-state
+	// re-perception).
+	res, ok := val.(sim.TickToolResult)
+	if !ok {
+		t.Fatalf("expected a sim.TickToolResult envelope, got %T", val)
+	}
+	if res.Result != "tool-ran" {
+		t.Fatalf("expected tool's value to pass through, got %v", res.Result)
+	}
+	if res.PostActorSnapshot == nil {
+		t.Fatal("expected PostActorSnapshot to be captured for the acting actor")
 	}
 }
 

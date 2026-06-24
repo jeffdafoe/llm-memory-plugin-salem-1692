@@ -174,3 +174,26 @@ type Snapshot struct {
 	// snapshots that don't exercise item perception leave it nil).
 	ItemKinds map[ItemKind]*ItemKindDef
 }
+
+// WithActor returns a shallow copy of the snapshot with one actor's entry
+// overridden. The Actors map is rebuilt (its values are pointers, so the copy
+// is cheap) so the override never mutates the shared published snapshot —
+// preserving the lock-free read contract. Every other field (other actors,
+// ledger, objects, settings, catalogs) is shared by reference: it is immutable
+// for the snapshot's lifetime.
+//
+// The tick harness uses this to re-perceive an actor's own-state sections
+// mid-tick from a post-commit ActorSnapshot (LLM-88) without forcing a fresh
+// world snapshot: only the subject's entry changes, so every perception section
+// derived from other actors / world state re-renders byte-identical, and only
+// the self-state (## You, eat/drink/buy affordances, since-you-got-here diff)
+// moves.
+func (s *Snapshot) WithActor(id ActorID, a *ActorSnapshot) *Snapshot {
+	cp := *s
+	cp.Actors = make(map[ActorID]*ActorSnapshot, len(s.Actors))
+	for k, v := range s.Actors {
+		cp.Actors[k] = v
+	}
+	cp.Actors[id] = a
+	return &cp
+}

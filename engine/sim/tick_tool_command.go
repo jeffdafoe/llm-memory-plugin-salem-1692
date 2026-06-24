@@ -12,6 +12,25 @@ import (
 // with errors.Is and terminate the tick stale.
 var ErrTickAttemptStale = errors.New("sim: tick attempt is stale; tool command not run")
 
+// TickToolResult is the envelope RunTickToolCommand returns to the off-world
+// tick harness: the inner tool command's own result, plus a fresh snapshot of
+// the acting actor taken right after the command's Fn ran on the world
+// goroutine.
+//
+// PostActorSnapshot exists so the harness can re-perceive an actor's OWN-state
+// perception mid-tick when a non-terminal commit changed it — a consume that
+// eased a need and spent stock, a buy that moved coins/goods. Without it the
+// tick-open `## You` block and the eat/drink/buy affordances are rendered once
+// and re-sent verbatim on every within-tick round, so they keep priming the
+// already-satisfied action and the weak model re-fires it (LLM-88: Josiah ate,
+// then re-consumed against a still-"you feel thirsty / consume to drink"
+// furniture). It is nil when the command failed (no mutation) or the actor
+// vanished mid-command; the harness treats nil as "nothing to refresh".
+type TickToolResult struct {
+	Result            any
+	PostActorSnapshot *ActorSnapshot
+}
+
 // RunTickToolCommand wraps a world-mutating tool command produced by PR 3's
 // off-world tick worker so it (a) runs under the originating tick's cascade
 // root and (b) is rejected if the attempt has gone stale.
@@ -64,9 +83,23 @@ func RunTickToolCommand(actorID ActorID, attemptID TickAttemptID, rootEventID Ev
 			// newRootedCommand's root-validation error stay UNtagged, so internal
 			// dispatch detail never leaks into the prompt — those surface to the
 			// model as a generic label instead.
-			return res, ModelFacingError{Msg: err.Error()}
+			//
+			// A failed command made no mutation, so PostActorSnapshot stays nil
+			// (and the harness ignores the result on the error path anyway); the
+			// envelope just keeps the success/error returns one type.
+			return TickToolResult{Result: res}, ModelFacingError{Msg: err.Error()}
 		}
-		return res, nil
+		// LLM-88: capture the acting actor's post-commit self-state alongside the
+		// tool's result. The Fn just ran on the world goroutine, so a re-read of
+		// the actor reflects any need/inventory/coin change it made; snapshotActor
+		// is the same builder the published snapshot uses, so perception consumes
+		// it unchanged. Re-read rather than reuse the pre-Fn `actor` pointer in
+		// case the command replaced or removed the entry.
+		var post *ActorSnapshot
+		if a, ok := w.Actors[actorID]; ok {
+			post = snapshotActor(a, w.TickCounter)
+		}
+		return TickToolResult{Result: res, PostActorSnapshot: post}, nil
 	})
 }
 
