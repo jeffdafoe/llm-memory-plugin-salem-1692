@@ -24,6 +24,11 @@ import (
 // the fast-path/slow-path split. Tests reuse buildPayWithItemWorld /
 // readPayLedger / pwiActor from pay_with_item_commands_test.go (same
 // package).
+//
+// LLM-84 extends this file with same-day-vs-advance lodging ACCEPT tests: a
+// same-day walk-in grants the room at accept (coin or barter), a future
+// reservation stays a deferred deliver_order check-in (coin-only), and the
+// same-day availability gate fails the accept (no charge) when the inn is full.
 
 // seedLodgingFixture installs the nights_stay item kind (service +
 // lodging capabilities), an inn Structure with the supplied rooms, and
@@ -140,13 +145,12 @@ func TestPayWithItem_Lodging_OnePrivateRoom_Passes(t *testing.T) {
 	}
 }
 
-// TestAcceptPay_Lodging_StaysDeferred — accepting a nights_stay (lodging)
-// offer mints a Ready Order for the keeper to check the guest in via
-// deliver_order; it is NOT handed over at accept like physical takeaway
-// (ZBBS-HOME-398). The room grant (AssignBedroomForLodger) happens at the
-// deliver_order check-in, so the buyer holds no RoomAccess yet — this is the
-// designed two-phase booking flow, preserved.
-func TestAcceptPay_Lodging_StaysDeferred(t *testing.T) {
+// TestAcceptPay_Lodging_SameDay_GrantsEagerly — LLM-84: accepting a SAME-DAY
+// nights_stay grants the room on the spot (like a physical-goods handover), NOT a
+// deferred deliver_order check-in. After accept the Order is Delivered and the
+// buyer holds the RoomAccess; the guest beds into it at night via the sleep
+// machine, with no separate keeper check-in.
+func TestAcceptPay_Lodging_SameDay_GrantsEagerly(t *testing.T) {
 	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
 		{id: "alice", displayName: "Alice", kind: sim.KindNPCStateful, huddleID: "h1", coins: 100},
 		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1"},
@@ -185,14 +189,205 @@ func TestAcceptPay_Lodging_StaysDeferred(t *testing.T) {
 	if orderCount != 1 {
 		t.Fatalf("lodging order count = %d, want 1", orderCount)
 	}
+	if orderState != sim.OrderStateDelivered {
+		t.Errorf("lodging order State = %q, want delivered (same-day eager grant)", orderState)
+	}
+	if aliceRooms != 1 {
+		t.Errorf("alice holds %d RoomAccess after accept, want 1 (room granted on the spot)", aliceRooms)
+	}
+	if aliceCoins != 96 {
+		t.Errorf("alice.Coins = %d, want 96 (paid at accept)", aliceCoins)
+	}
+}
+
+// TestAcceptPay_Lodging_AdvanceBooking_StaysDeferred — LLM-84: a FUTURE booking
+// (ready_in_days > 0) keeps the deferred two-phase flow — accept mints a Ready
+// Order and the keeper checks the guest in via deliver_order on the booked day.
+// The room is NOT granted at accept; the buyer holds no RoomAccess yet.
+func TestAcceptPay_Lodging_AdvanceBooking_StaysDeferred(t *testing.T) {
+	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
+		{id: "alice", displayName: "Alice", kind: sim.KindNPCStateful, huddleID: "h1", coins: 100},
+		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1"},
+	})
+	defer stop()
+	seedLodgingFixture(t, w, "bob", []*sim.Room{
+		{ID: 1, StructureID: "inn", Kind: sim.RoomKindCommon, Name: "common"},
+		{ID: 2, StructureID: "inn", Kind: sim.RoomKindPrivate, Name: "bedroom_1"},
+	})
+	at := time.Now().UTC()
+
+	// ready_in_days = 3 → a reservation for a future night.
+	res, err := w.Send(sim.PayWithItem("alice", "Bob", "nights_stay", 1, 4, false, nil, nil, 0, 0, "", at, 3))
+	if err != nil {
+		t.Fatalf("PayWithItem: %v", err)
+	}
+	ledgerID := res.(sim.PayWithItemResult).LedgerID
+	if _, err := w.Send(sim.AcceptPay("bob", ledgerID, at)); err != nil {
+		t.Fatalf("AcceptPay: %v", err)
+	}
+
+	var orderState sim.OrderState
+	var orderCount, aliceRooms, aliceCoins int
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		aliceRooms = len(world.Actors["alice"].RoomAccess)
+		aliceCoins = world.Actors["alice"].Coins
+		for _, o := range world.Orders {
+			if o != nil && o.SellerID == "bob" && o.BuyerID == "alice" {
+				orderState = o.State
+				orderCount++
+			}
+		}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("read world: %v", err)
+	}
+	if orderCount != 1 {
+		t.Fatalf("lodging order count = %d, want 1", orderCount)
+	}
 	if orderState != sim.OrderStateReady {
-		t.Errorf("lodging order State = %q, want ready (deferred check-in, not immediate handover)", orderState)
+		t.Errorf("advance-booking order State = %q, want ready (deferred check-in)", orderState)
 	}
 	if aliceRooms != 0 {
-		t.Errorf("alice holds %d RoomAccess at accept, want 0 (room granted at deliver_order check-in)", aliceRooms)
+		t.Errorf("alice holds %d RoomAccess at accept, want 0 (granted at deliver_order)", aliceRooms)
 	}
 	if aliceCoins != 96 {
 		t.Errorf("alice.Coins = %d, want 96 (booking paid at accept)", aliceCoins)
+	}
+}
+
+// TestPayWithItem_Lodging_SameDayBarter_Allowed — LLM-84: a SAME-DAY walk-in room
+// may be paid with goods (barter). The HOME-403 coin-only rule now scopes to
+// FUTURE bookings only — a same-day room is granted at accept with no un-occupied
+// window to refund. This is Ezekiel's 2-skillets-for-a-night case made to settle.
+func TestPayWithItem_Lodging_SameDayBarter_Allowed(t *testing.T) {
+	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
+		{id: "alice", displayName: "Alice", kind: sim.KindNPCStateful, huddleID: "h1"},
+		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1"},
+	})
+	defer stop()
+	seedLodgingFixture(t, w, "bob", []*sim.Room{
+		{ID: 2, StructureID: "inn", Kind: sim.RoomKindPrivate, Name: "bedroom_1"},
+	})
+	// alice carries 2 skillets to barter (no coins).
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.ItemKinds["skillet"] = &sim.ItemKindDef{Name: "skillet", DisplayLabel: "skillet"}
+		world.Actors["alice"].Inventory = map[sim.ItemKind]int{"skillet": 2}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed skillets: %v", err)
+	}
+	at := time.Now().UTC()
+
+	res, err := w.Send(sim.PayWithItem("alice", "Bob", "nights_stay", 1, 0, false, nil, []sim.PayItemInput{{Item: "skillet", Qty: 2}}, 0, 0, "", at))
+	if err != nil {
+		t.Fatalf("same-day barter lodging should be allowed: %v", err)
+	}
+	ledgerID := res.(sim.PayWithItemResult).LedgerID
+	if _, err := w.Send(sim.AcceptPay("bob", ledgerID, at)); err != nil {
+		t.Fatalf("AcceptPay: %v", err)
+	}
+
+	var aliceRooms, aliceSkillets, bobSkillets int
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		aliceRooms = len(world.Actors["alice"].RoomAccess)
+		aliceSkillets = world.Actors["alice"].Inventory["skillet"]
+		bobSkillets = world.Actors["bob"].Inventory["skillet"]
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("read world: %v", err)
+	}
+	if aliceRooms != 1 {
+		t.Errorf("alice holds %d RoomAccess after barter accept, want 1", aliceRooms)
+	}
+	if aliceSkillets != 0 || bobSkillets != 2 {
+		t.Errorf("skillets after barter: alice=%d bob=%d, want alice=0 bob=2", aliceSkillets, bobSkillets)
+	}
+}
+
+// TestPayWithItem_Lodging_AdvanceBarter_Rejected — LLM-84: a FUTURE room booking
+// (ready_in_days > 0) must still be paid in coins. A deferred booking can expire
+// un-occupied and only coins can be refunded — the Order carries no goods leg.
+func TestPayWithItem_Lodging_AdvanceBarter_Rejected(t *testing.T) {
+	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
+		{id: "alice", displayName: "Alice", kind: sim.KindNPCStateful, huddleID: "h1"},
+		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1"},
+	})
+	defer stop()
+	seedLodgingFixture(t, w, "bob", []*sim.Room{
+		{ID: 2, StructureID: "inn", Kind: sim.RoomKindPrivate, Name: "bedroom_1"},
+	})
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.ItemKinds["skillet"] = &sim.ItemKindDef{Name: "skillet", DisplayLabel: "skillet"}
+		world.Actors["alice"].Inventory = map[sim.ItemKind]int{"skillet": 2}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed skillets: %v", err)
+	}
+
+	_, err := w.Send(sim.PayWithItem("alice", "Bob", "nights_stay", 1, 0, false, nil, []sim.PayItemInput{{Item: "skillet", Qty: 2}}, 0, 0, "", time.Now().UTC(), 3))
+	if err == nil || !strings.Contains(err.Error(), "future night must be paid in coins") {
+		t.Fatalf("want future-barter reject, got %v", err)
+	}
+	if ledger := readPayLedger(t, w); len(ledger) != 0 {
+		t.Errorf("ledger has %d entries after rejected intake, want 0", len(ledger))
+	}
+}
+
+// TestAcceptPay_Lodging_SameDay_InnFull_FailsUnavailable — LLM-84: the same-day
+// availability gate (gate 10b) fails the accept when no private room is grantable
+// (the only bedroom is held by another lodger), so the buyer is never charged for
+// a room that can't be granted. The offer flips to failed_unavailable.
+func TestAcceptPay_Lodging_SameDay_InnFull_FailsUnavailable(t *testing.T) {
+	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
+		{id: "alice", displayName: "Alice", kind: sim.KindNPCStateful, huddleID: "h1", coins: 100},
+		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1"},
+		{id: "carol", displayName: "Carol", kind: sim.KindNPCStateful, huddleID: "h1"},
+	})
+	defer stop()
+	seedLodgingFixture(t, w, "bob", []*sim.Room{
+		{ID: 2, StructureID: "inn", Kind: sim.RoomKindPrivate, Name: "bedroom_1"},
+	})
+	// carol holds the only bedroom, so no room is grantable to alice.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		key := sim.RoomAccessKey{RoomID: 2, Source: sim.AccessSourceLedger}
+		world.Actors["carol"].RoomAccess = map[sim.RoomAccessKey]*sim.RoomAccess{
+			key: {RoomID: 2, Source: sim.AccessSourceLedger, Active: true},
+		}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed occupancy: %v", err)
+	}
+	at := time.Now().UTC()
+
+	res, err := w.Send(sim.PayWithItem("alice", "Bob", "nights_stay", 1, 4, false, nil, nil, 0, 0, "", at))
+	if err != nil {
+		t.Fatalf("PayWithItem (intake should pass — availability is an accept-time gate): %v", err)
+	}
+	ledgerID := res.(sim.PayWithItemResult).LedgerID
+	if _, err := w.Send(sim.AcceptPay("bob", ledgerID, at)); err != nil {
+		t.Fatalf("AcceptPay: %v", err)
+	}
+
+	var state sim.PayLedgerState
+	var aliceCoins, aliceRooms int
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		aliceCoins = world.Actors["alice"].Coins
+		aliceRooms = len(world.Actors["alice"].RoomAccess)
+		if e := world.PayLedger[ledgerID]; e != nil {
+			state = e.State
+		}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("read world: %v", err)
+	}
+	if state != sim.PayLedgerStateFailedUnavailable {
+		t.Errorf("ledger state = %q, want failed_unavailable (inn full)", state)
+	}
+	if aliceCoins != 100 {
+		t.Errorf("alice.Coins = %d, want 100 (not charged for an ungrantable room)", aliceCoins)
+	}
+	if aliceRooms != 0 {
+		t.Errorf("alice holds %d RoomAccess, want 0 (grant failed)", aliceRooms)
 	}
 }
 

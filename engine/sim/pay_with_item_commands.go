@@ -169,7 +169,8 @@ type PayWithItemResult struct {
 	BuyerAte        int     // units the buyer themself ate now
 	KeptToInventory int     // surplus units pocketed into the buyer's pack (needs-clamp)
 	TookHome        bool    // physical goods handed over at accept
-	Booked          bool    // lodging Order minted, awaiting keeper check-in
+	Booked          bool    // future-night lodging Order minted, awaiting keeper check-in
+	LodgedNow       bool    // same-day walk-in room granted on the spot (LLM-84)
 	SatisfiesNeed   NeedKey // primary need the consumed item satisfies ("" when n/a)
 	FeltAfter       string  // buyer's post-meal felt label(s) for the item's needs; "" = sated
 	// MealMinutes is the buyer's eat-here dwell duration in minutes when this
@@ -492,18 +493,6 @@ func PayWithItem(
 							)
 						}
 					}
-
-					// ZBBS-HOME-403: a deferred lodging booking must be paid in
-					// coins. A barter (pay_items) leg can't be reversed on expiry —
-					// the Order carries only the coin Amount, not the goods — so an
-					// expired goods-paid booking couldn't refund them. Reject up
-					// front rather than mint an unrefundable order. Mixed coin+goods
-					// is rejected too: the goods leg would still be lost.
-					if len(resolvedPayItems) > 0 {
-						return nil, errors.New(
-							"a room booking must be paid in coins — set an amount instead of offering goods (pay_items).",
-						)
-					}
 				}
 			}
 
@@ -549,6 +538,18 @@ func PayWithItem(
 				// restart-load filter that made a w.Orders scan a no-op in prod.
 				if itemHasCapability(w, kind, "lodging") {
 					readyBy = advancePastHeldLodging(w, buyerID, sellerID, readyBy, at)
+					// LLM-84: a SAME-DAY walk-in room may be paid with goods
+					// (barter) — it is granted at accept (commitPayTransfer) with
+					// no un-occupied booking window that could expire, so there is
+					// nothing to refund. A FUTURE booking stays coin-only: it sits
+					// as a deferred Order until check-in, and an expired advance
+					// booking refunds only the coin Amount (the Order carries no
+					// goods leg). ZBBS-HOME-403, narrowed by LLM-84.
+					if len(resolvedPayItems) > 0 && readyBy.After(orderDateUTC(at, w.Settings.Location)) {
+						return nil, errors.New(
+							"a room booked for a future night must be paid in coins — set an amount, or book it for tonight to pay with goods.",
+						)
+					}
 				}
 			}
 
@@ -914,6 +915,20 @@ func runPayWithItemFastPath(
 			)
 		}
 	}
+	// LLM-84: a same-day lodging quote-take grants the room at this accept (the
+	// service stock-skip above leaves no inventory gate to catch a full inn), so
+	// reject up front when no room is grantable — mirrors the slow-path gate 10b.
+	// A quote carries no future ready_by, so a fast-path lodging take is always
+	// same-day; the readyBy guard is belt-and-suspenders for any future advance
+	// quote shape.
+	if itemHasCapability(w, kind, "lodging") && !readyBy.After(orderDateUTC(at, w.Settings.Location)) {
+		if !lodgingRoomGrantable(w, seller, buyer.ID) {
+			return nil, fmt.Errorf(
+				"%s has no room free right now — try again shortly.",
+				seller.DisplayName,
+			)
+		}
+	}
 	if !buyerCanAfford(buyer, amount) {
 		return nil, fmt.Errorf(
 			"insufficient coins (have %d, need %d) — quote a smaller offer.",
@@ -1004,6 +1019,7 @@ func runPayWithItemFastPath(
 		KeptToInventory: out.keptToInventory,
 		TookHome:        out.tookHome,
 		Booked:          out.booked,
+		LodgedNow:       out.lodgedNow,
 		SatisfiesNeed:   out.satisfiesNeed,
 		FeltAfter:       out.feltAfter,
 		MealMinutes:     out.mealMinutes,
@@ -1197,6 +1213,20 @@ func acceptPendingOffer(w *World, seller *Actor, entry *PayLedgerEntry, at time.
 		reserved := outstandingReadyOrderQty(w, seller.ID, entry.ItemKind)
 		if seller.Inventory[entry.ItemKind]-reserved < needed {
 			return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedInsufficientStock, "", at), nil
+		}
+	}
+
+	// Gate 10b (LLM-84): same-day walk-in lodging. A room is assigned at
+	// THIS accept (commitPayTransfer grants it eagerly, like physical goods),
+	// not deferred to a keeper check-in — so if no private room is grantable
+	// right now (none at all, or every one occupied by another), fail BEFORE
+	// the commit takes payment rather than charge for a room we can't grant.
+	// A FUTURE reservation skips this: it mints a deferred Order and the room
+	// is assigned at deliver_order on the booked day. This is the lodging
+	// analog of the (service-skipped) stock gate above.
+	if itemHasCapability(w, entry.ItemKind, "lodging") && !isAdvanceLodgingBooking(w, entry, at) {
+		if !lodgingRoomGrantable(w, seller, entry.BuyerID) {
+			return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedUnavailable, "", at), nil
 		}
 	}
 
@@ -2000,10 +2030,24 @@ type payTransferOutcome struct {
 	buyerAte        int     // units the buyer themself consumed now
 	keptToInventory int     // surplus units pocketed into the buyer's pack
 	tookHome        bool    // physical take-home handed over at accept
-	booked          bool    // lodging Order minted for keeper check-in
+	booked          bool    // future-night lodging Order minted for keeper check-in
+	lodgedNow       bool    // same-day walk-in room granted on the spot (LLM-84)
 	satisfiesNeed   NeedKey // primary need the consumed item satisfies
 	feltAfter       string  // buyer's post-consume felt label(s); "" = sated
 	mealMinutes     int     // buyer's eat-here dwell duration in minutes; 0 = no ongoing meal/drink (ZBBS-WORK-409)
+}
+
+// isAdvanceLodgingBooking reports whether a lodging entry is booked for a FUTURE
+// night (ready_by past today) rather than a same-day walk-in. A same-day room is
+// granted at the pay accept (LLM-84); a future reservation stays a deferred Order
+// that the keeper fulfills via deliver_order on the booked day. Non-lodging
+// entries are never advance bookings. Uses the world timezone for the day
+// boundary, matching createOrderForPayWithItem / orderDateUTC.
+func isAdvanceLodgingBooking(w *World, entry *PayLedgerEntry, at time.Time) bool {
+	if entry == nil || !itemHasCapability(w, entry.ItemKind, "lodging") {
+		return false
+	}
+	return entry.ReadyBy.After(orderDateUTC(at, w.Settings.Location))
 }
 
 // maxDwellMinutes returns the longest remaining dwell duration in minutes across
@@ -2181,11 +2225,12 @@ func commitPayTransfer(
 		consumers = []ActorID{entry.BuyerID}
 	}
 
-	// deliveredTakeHome holds a physical take-home Order that was minted +
-	// goods-transferred this tick but NOT yet flipped to Delivered — the flip
-	// is deferred until after the Paid/PaidBy facts below so OrderDelivered
-	// fires after the payment facts exist (ZBBS-HOME-398; code_review).
-	var deliveredTakeHome *Order
+	// eagerlyDelivered holds an Order that was minted + fulfilled THIS tick
+	// (physical goods handed to the buyer, or a same-day walk-in room granted —
+	// LLM-84) but NOT yet flipped to Delivered: the flip is deferred until after
+	// the Paid/PaidBy facts below so OrderDelivered fires after the payment facts
+	// exist (ZBBS-HOME-398; code_review).
+	var eagerlyDelivered *Order
 
 	def := w.ItemKinds[entry.ItemKind]
 	if entry.ConsumeNow {
@@ -2309,16 +2354,31 @@ func commitPayTransfer(
 			out.satisfiesNeed, out.feltAfter = buyerFeltAfterConsume(buyer, def, w.Settings.NeedThresholds)
 		}
 	} else if itemHasCapability(w, entry.ItemKind, "lodging") {
-		// Lodging is a deferred booking, NOT an immediate handover: mint the
-		// Order at Ready and leave it for the keeper to check the guest in via
-		// deliver_order. That check-in is the designed mechanic — the room
-		// grant (AssignBedroomForLodger) happens there, and the eviction
-		// exemption is gated on it ("the keeper has to do their job"). See the
-		// salem-engine-v2/lodging codebase note. Restoring the rest of the v1
-		// order book (ready_by advance booking, future-bookings perception,
-		// overdue cues) is tracked separately (ZBBS-HOME-399).
-		createOrderForPayWithItem(w, entry, at)
-		out.booked = true
+		if isAdvanceLodgingBooking(w, entry, at) {
+			// FUTURE reservation: a deferred booking, NOT an immediate handover.
+			// Mint the Order at Ready and leave it for the keeper to check the
+			// guest in via deliver_order on the booked day — the room grant
+			// (AssignBedroomForLodger) happens there, and the eviction exemption
+			// is gated on it. ZBBS-HOME-403 advance booking; see the
+			// salem-engine-v2/lodging codebase note.
+			createOrderForPayWithItem(w, entry, at)
+			out.booked = true
+		} else {
+			// SAME-DAY walk-in (LLM-84): grant the room NOW, at accept, the same
+			// way physical goods are handed over eagerly. mintAndFulfillOrderNow
+			// runs transferOrderGoods, whose lodging branch calls
+			// AssignBedroomForLodger; the Order is flipped Delivered after the
+			// Paid facts below. The pre-commit availability gate (gate 10b /
+			// fast-path) guarantees a room is grantable, so this can't fail for
+			// contention. The guest holds the room immediately and beds into it
+			// at night via the sleep machine — no separate keeper check-in.
+			o, err := mintAndFulfillOrderNow(w, entry, seller, at)
+			if err != nil {
+				return payTransferOutcome{}, err
+			}
+			eagerlyDelivered = o
+			out.lodgedNow = true
+		}
 	} else {
 		// Physical take-home (ZBBS-HOME-398): mint the Order and move the goods
 		// to the buyer right now, at accept, while the parties are co-present and
@@ -2328,11 +2388,11 @@ func commitPayTransfer(
 		// Delivered is held until after the Paid/PaidBy facts below. A non-nil
 		// return is a substrate invariant violation (gates guaranteed
 		// fulfillment), handled like the ConsumeNow drift errors above.
-		o, err := mintAndTransferTakeHomeOrder(w, entry, seller, at)
+		o, err := mintAndFulfillOrderNow(w, entry, seller, at)
 		if err != nil {
 			return payTransferOutcome{}, err
 		}
-		deliveredTakeHome = o
+		eagerlyDelivered = o
 		out.tookHome = true
 	}
 
@@ -2354,14 +2414,14 @@ func commitPayTransfer(
 	}
 
 	// ZBBS-HOME-398: now that the Paid/PaidBy facts exist, flip the
-	// immediately-delivered physical take-home Order to Delivered — so
-	// OrderDelivered fires AFTER the payment facts (code_review). The
-	// Delivered/Received facts are intentionally NOT written: paid and received
-	// coincide in this same instant, so the Paid/PaidBy pair above already
-	// records the exchange (unlike the deferred deliver_order path, where the
-	// handover is a separate later beat with its own facts).
-	if deliveredTakeHome != nil {
-		flipOrderTerminal(w, deliveredTakeHome, OrderStateDelivered, at)
+	// eagerly-fulfilled Order (take-home goods, or a same-day room — LLM-84) to
+	// Delivered — so OrderDelivered fires AFTER the payment facts (code_review).
+	// The Delivered/Received facts are intentionally NOT written: paid and
+	// received coincide in this same instant, so the Paid/PaidBy pair above
+	// already records the exchange (unlike the deferred deliver_order path, where
+	// the handover is a separate later beat with its own facts).
+	if eagerlyDelivered != nil {
+		flipOrderTerminal(w, eagerlyDelivered, OrderStateDelivered, at)
 	}
 	return out, nil
 }
