@@ -1,0 +1,179 @@
+package httpapi
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"net/http"
+
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
+)
+
+// umbilical_recipe.go — the recipe-edit control route (LLM-97): live add/edit of
+// an item recipe (the rate / inputs / output-batch a produce entry feeds off).
+// Operator-gated, audited, armed only when control is enabled. Existing item
+// kinds only — output and every input must already be in the catalog.
+//
+// Recipes are reference data with NO checkpoint path, so durability is a direct
+// item_recipe write (the injected RecipeWriter) followed by an in-memory
+// World.Recipes update (sim.SetRecipe). The DB write is the source of truth (the
+// catalog rebuilds from item_recipe on restart), so it runs FIRST; the in-memory
+// update only happens once it succeeds.
+
+// RecipeWriter is the durable item_recipe upsert, injected by cmd/engine
+// (Server.SetRecipeWriter) so httpapi doesn't import the pg package. nil on a
+// deploy without it wired → the route answers 503. pg.RecipesRepo satisfies it.
+type RecipeWriter interface {
+	UpsertRecipe(ctx context.Context, recipe sim.ItemRecipe) error
+}
+
+// umbilicalRecipeInput is one recipe input on the wire.
+type umbilicalRecipeInput struct {
+	Item string `json:"item"`
+	Qty  int    `json:"qty"`
+}
+
+// umbilicalRecipeSetRequest is the POST /api/village/umbilical/recipe/set body:
+// upsert one recipe. cap-free; an existing output_item is updated in place.
+type umbilicalRecipeSetRequest struct {
+	OutputItem     string                 `json:"output_item"`
+	OutputQty      int                    `json:"output_qty"`
+	RateQty        int                    `json:"rate_qty"`
+	RatePerHours   int                    `json:"rate_per_hours"`
+	Inputs         []umbilicalRecipeInput `json:"inputs"`
+	WholesalePrice int                    `json:"wholesale_price"`
+	RetailPrice    int                    `json:"retail_price"`
+}
+
+// umbilicalRecipeResponse echoes the applied recipe (item kinds canonicalized to
+// their catalog keys).
+type umbilicalRecipeResponse struct {
+	OutputItem     string                 `json:"output_item"`
+	OutputQty      int                    `json:"output_qty"`
+	RateQty        int                    `json:"rate_qty"`
+	RatePerHours   int                    `json:"rate_per_hours"`
+	Inputs         []umbilicalRecipeInput `json:"inputs"`
+	WholesalePrice int                    `json:"wholesale_price"`
+	RetailPrice    int                    `json:"retail_price"`
+}
+
+// handleUmbilicalRecipeSet upserts one item recipe. Numeric validation is
+// handler-side (400); item-kind existence is validated against the live catalog
+// (422); the durable item_recipe write runs before the in-memory catalog update.
+// 400 missing output_item / non-positive qty/rate/output / negative price / bad
+// input; 422 unknown output or input item; 503 when the writer isn't wired; 500
+// on a write failure; 200 with the applied recipe.
+func (s *Server) handleUmbilicalRecipeSet(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	if user == nil {
+		writeAuthError(w, "invalid")
+		return
+	}
+	var req umbilicalRecipeSetRequest
+	if !decodeUmbilicalBody(w, r, &req) {
+		return
+	}
+	if req.OutputItem == "" {
+		writeError(w, http.StatusBadRequest, "output_item is required")
+		return
+	}
+	if req.OutputQty < 1 || req.RateQty < 1 || req.RatePerHours < 1 {
+		writeError(w, http.StatusBadRequest, "output_qty, rate_qty, and rate_per_hours must be >= 1")
+		return
+	}
+	if req.WholesalePrice < 0 || req.RetailPrice < 0 {
+		writeError(w, http.StatusBadRequest, "wholesale_price and retail_price must be >= 0")
+		return
+	}
+	inputs := make([]sim.RecipeInput, 0, len(req.Inputs))
+	for _, in := range req.Inputs {
+		if in.Item == "" {
+			writeError(w, http.StatusBadRequest, "input item is required")
+			return
+		}
+		if in.Qty < 1 {
+			writeError(w, http.StatusBadRequest, "input qty must be >= 1")
+			return
+		}
+		inputs = append(inputs, sim.RecipeInput{Item: sim.ItemKind(in.Item), Qty: in.Qty})
+	}
+	if s.recipeWriter == nil {
+		writeError(w, http.StatusServiceUnavailable, "recipe editing is not wired on this deploy")
+		return
+	}
+
+	auditUmbilical(user.Username, "recipe.set",
+		fmt.Sprintf("output=%s output_qty=%d rate=%d/%dh inputs=%d", req.OutputItem, req.OutputQty, req.RateQty, req.RatePerHours, len(inputs)))
+
+	requested := sim.ItemRecipe{
+		OutputItem:     sim.ItemKind(req.OutputItem),
+		OutputQty:      req.OutputQty,
+		RateQty:        req.RateQty,
+		RatePerHours:   req.RatePerHours,
+		Inputs:         inputs,
+		WholesalePrice: req.WholesalePrice,
+		RetailPrice:    req.RetailPrice,
+	}
+
+	// 1) Validate item references against the live catalog (output + every input
+	//    must already exist) and canonicalize to catalog keys.
+	res, err := s.world.SendContext(r.Context(), sim.Command{Fn: func(world *sim.World) (any, error) {
+		return sim.ResolveRecipe(world, requested)
+	}})
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
+		// Unknown output/input item — client-correctable; the message names it.
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	recipe, ok := res.(sim.ItemRecipe)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "unexpected recipe resolve result")
+		return
+	}
+
+	// 2) Durable write FIRST — item_recipe is the source of truth (the catalog
+	//    rebuilds from it on restart), so memory is only touched once it lands.
+	if err := s.recipeWriter.UpsertRecipe(r.Context(), recipe); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
+		log.Printf("umbilical recipe.set: output=%s: %v", recipe.OutputItem, err)
+		writeError(w, http.StatusInternalServerError, "recipe write failed")
+		return
+	}
+
+	// 3) In-memory catalog update so the produce tick sees it immediately.
+	if _, err := s.world.SendContext(r.Context(), sim.SetRecipe(recipe)); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
+		// The durable write already landed; the live catalog will catch up on the
+		// next reload. Don't imply nothing persisted.
+		log.Printf("umbilical recipe.set: output=%s persisted but live-catalog update failed: %v", recipe.OutputItem, err)
+		writeError(w, http.StatusInternalServerError, "recipe persisted but live update failed; applies on next reload")
+		return
+	}
+
+	writeJSON(w, recipeResponse(recipe))
+}
+
+// recipeResponse builds the wire response from the applied recipe.
+func recipeResponse(r sim.ItemRecipe) umbilicalRecipeResponse {
+	out := umbilicalRecipeResponse{
+		OutputItem:     string(r.OutputItem),
+		OutputQty:      r.OutputQty,
+		RateQty:        r.RateQty,
+		RatePerHours:   r.RatePerHours,
+		Inputs:         make([]umbilicalRecipeInput, 0, len(r.Inputs)),
+		WholesalePrice: r.WholesalePrice,
+		RetailPrice:    r.RetailPrice,
+	}
+	for _, in := range r.Inputs {
+		out.Inputs = append(out.Inputs, umbilicalRecipeInput{Item: string(in.Item), Qty: in.Qty})
+	}
+	return out
+}

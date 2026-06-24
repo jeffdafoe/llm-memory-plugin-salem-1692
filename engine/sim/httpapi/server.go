@@ -55,6 +55,13 @@ type Server struct {
 	// not import the cascade package that owns the route builders. Nil when
 	// unwired → the /route handler answers 503.
 	routeForcer func(attrSlug string, start bool) sim.Command
+	// recipeWriter backs the operator-gated POST /umbilical/recipe/set control
+	// route (LLM-97) — the durable item_recipe upsert. Injected (set by
+	// cmd/engine via SetRecipeWriter) so httpapi does not import the pg package.
+	// Recipes are reference data with no checkpoint path, so this direct write is
+	// the edit's durable half. Nil when unwired → the /recipe/set handler answers
+	// 503.
+	recipeWriter RecipeWriter
 }
 
 // NewServer builds a Server for w, authenticating every route via auth. Panics
@@ -192,6 +199,16 @@ func (s *Server) SetControlEnabled(enabled bool) {
 // concurrently with serving.
 func (s *Server) SetRouteForcer(f func(attrSlug string, start bool) sim.Command) {
 	s.routeForcer = f
+}
+
+// SetRecipeWriter wires the durable item_recipe upsert behind the operator-gated
+// POST /umbilical/recipe/set control route (LLM-97). Recipes are reference data
+// with no checkpoint path, so the edit's durable half is this direct write (the
+// in-memory World.Recipes update is a separate sim Command in the handler).
+// Optional: unset → the handler answers 503. Same wiring-time-only contract as
+// SetRouteForcer — call before Handler, never concurrently with serving.
+func (s *Server) SetRecipeWriter(wr RecipeWriter) {
+	s.recipeWriter = wr
 }
 
 // Handler returns the read-surface routes: the static-render read set

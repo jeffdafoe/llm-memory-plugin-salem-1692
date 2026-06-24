@@ -426,6 +426,11 @@ func (s *Server) umbilicalRoutes() []umbilicalRoute {
 		// checkpoint.
 		{http.MethodPost, umbilicalBasePath + "/restock/set", "Add or update one restock entry on an actor (produce/buy/forage). Validates the item exists; a produce entry requires a recipe. Body: {actor_id, item, source, cap}.", true, s.handleUmbilicalRestockSet},
 		{http.MethodPost, umbilicalBasePath + "/restock/remove", "Remove one restock entry (by item) from an actor. Body: {actor_id, item}.", true, s.handleUmbilicalRestockRemove},
+
+		// Recipe (LLM-97) — live edit/add of an item recipe (existing items
+		// only). Durable write to item_recipe + in-memory catalog update; needs
+		// SetRecipeWriter wired (else 503).
+		{http.MethodPost, umbilicalBasePath + "/recipe/set", "Add or update one item recipe (upsert; output + input items must already exist). Body: {output_item, output_qty, rate_qty, rate_per_hours, inputs:[{item,qty}], wholesale_price, retail_price}.", true, s.handleUmbilicalRecipeSet},
 	}
 }
 
