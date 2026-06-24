@@ -437,6 +437,18 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 	// spoken reads a stop-biased decision instead of the affordances that prime a
 	// re-pitch. See perception.RenderedPrompt.ContinuationText.
 	ephemeralText := rendered.EphemeralText
+	// continuationText is the lean post-speak body the speak swap installs. Held
+	// in its own var (rather than read straight off `rendered`) so a mid-tick
+	// self-state refresh (LLM-88) can update it too: a consume after a speak must
+	// drop the now-stale eat/drink affordances from the continuation body the
+	// model keeps reading.
+	continuationText := rendered.ContinuationText
+	// lastSelf is the self-state the current ephemeral/continuation body reflects.
+	// The LLM-88 refresh re-renders only when a commit actually moved
+	// needs/coins/goods vs this — not on a speak or a no-op commit. Seeded with
+	// the tick-open snapshot (actor presence checked in preflight); advanced on
+	// each refresh.
+	lastSelf := snap.Actors[job.actorID]
 	for round := 0; round < maxTotalRounds; round++ {
 		result.IterationCount = round + 1
 
@@ -650,8 +662,10 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 					// ZBBS-HOME-411: after the first committed speak, swap the
 					// recency-dominant ephemeral to the lean continuation body —
 					// dropping the affordances (inn/food/rest cues, act-now coda)
-					// that prime a re-pitch. Idempotent on later speaks.
-					ephemeralText = rendered.ContinuationText
+					// that prime a re-pitch. Idempotent on later speaks. Uses
+					// continuationText (not rendered.ContinuationText directly) so a
+					// prior LLM-88 self-state refresh this tick is reflected.
+					ephemeralText = continuationText
 				}
 				// ZBBS-HOME-395: record a placed offer so a later round (or a
 				// later call in this same batch) re-offering the same (seller,
@@ -669,6 +683,30 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 				// and may be retried.
 				if key, isQuote := sceneQuoteKey(vc); isQuote {
 					quotedThisTick[key] = struct{}{}
+				}
+				// LLM-88: a non-terminal commit that moved the actor's own material
+				// state (a consume that eased a need and spent stock, a buy that moved
+				// coins/goods) makes the tick-open `## You` block and the eat/drink/buy
+				// affordances stale — they were rendered once and are re-sent verbatim
+				// each round, priming a re-fire loop (live: Josiah ate, then re-consumed
+				// against a still-"you feel thirsty / consume to drink" furniture). When
+				// the post-commit self-state actually changed, re-perceive from it so the
+				// furniture reflects reality. Only the subject's snapshot entry is
+				// patched, so every external section (surroundings, warrants, scene)
+				// re-renders byte-identical; only the self-state sections move. Composes
+				// with the post-speak swap above via continuationText.
+				if outcome.postSelfState != nil && selfStateChanged(lastSelf, outcome.postSelfState) {
+					refreshed := perception.Render(
+						perception.Build(snap.WithActor(job.actorID, outcome.postSelfState), job.actorID, job.warrants),
+						h.renderConfig,
+					)
+					continuationText = refreshed.ContinuationText
+					if speaksThisTick > 0 {
+						ephemeralText = refreshed.ContinuationText
+					} else {
+						ephemeralText = refreshed.EphemeralText
+					}
+					lastSelf = outcome.postSelfState
 				}
 			} else {
 				result.ToolsFailedRejected = append(result.ToolsFailedRejected, call.Name)
@@ -757,6 +795,12 @@ type dispatchOutcome struct {
 	ended          bool                   // tick ends after this call
 	stale          bool                   // commit dispatch returned ErrTickAttemptStale
 	terminalStatus sim.TickTerminalStatus // populated when ended
+	// postSelfState is the acting actor's snapshot taken right after a commit ran
+	// (sim.TickToolResult.PostActorSnapshot); nil for observations, terminal
+	// classes, failures, and commits that returned no result. The loop uses it to
+	// re-perceive own-state mid-tick when a commit changed needs/coins/goods
+	// (LLM-88).
+	postSelfState *sim.ActorSnapshot
 }
 
 // dispatch executes one validated call. Returns the content string for
@@ -873,7 +917,14 @@ func (h *Harness) dispatch(ctx context.Context, w *sim.World, job tickJob, vc *V
 		if ended {
 			out.terminalStatus = sim.TickStatusSuccess
 		}
-		return commitResultContent(vc, cmdResult), out
+		// LLM-88: RunTickToolCommand wraps the tool's result with the actor's
+		// post-commit self-state. Unwrap so commitResultContent still sees the
+		// inner domain result, and carry the snapshot up for the loop's own-state
+		// re-perception. Reachable only on the err==nil path, where the wrapper
+		// always returns a TickToolResult, so the assertion holds.
+		wrapped, _ := cmdResult.(sim.TickToolResult)
+		out.postSelfState = wrapped.PostActorSnapshot
+		return commitResultContent(vc, wrapped.Result), out
 
 	case ClassTerminal:
 		return "[done]", dispatchOutcome{
@@ -886,6 +937,36 @@ func (h *Harness) dispatch(ctx context.Context, w *sim.World, job tickJob, vc *V
 		log.Printf("handlers: dispatch %q: unknown class %v (typed-constructor invariant violated)", vc.Name, vc.Entry.Class)
 		return "[error: unknown_class] tool dispatch encountered an unknown class", dispatchOutcome{}
 	}
+}
+
+// selfStateChanged reports whether a commit moved the actor's own MATERIAL
+// state in a way the ## You block and the eat/drink/buy affordances reflect:
+// needs (a consume / eat-in-place eases them), coins, or carried goods (a buy
+// or sale moves them). These are the three axes the LLM-88 mid-tick refresh
+// targets — the affordance-staleness re-fire loop is driven by them. Position /
+// huddle / rest-state changes are deliberately out of scope (a move_to is
+// terminal and never loops; take_break's resting line is not an action primer).
+//
+// InventoryHash is the snapshot's own per-actor quantity sum, so it catches any
+// net stock change a single commit makes (consume/buy/sale never swap two kinds
+// to an equal total). Needs are compared key-by-key because a missing vs zero
+// key is itself a real change.
+func selfStateChanged(pre, post *sim.ActorSnapshot) bool {
+	if pre == nil || post == nil {
+		return post != nil
+	}
+	if pre.Coins != post.Coins || pre.InventoryHash != post.InventoryHash {
+		return true
+	}
+	if len(pre.Needs) != len(post.Needs) {
+		return true
+	}
+	for k, v := range post.Needs {
+		if pv, ok := pre.Needs[k]; !ok || pv != v {
+			return true
+		}
+	}
+	return false
 }
 
 // --- helpers --------------------------------------------------------------
