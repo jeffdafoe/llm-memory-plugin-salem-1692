@@ -434,3 +434,35 @@ func TestUmbilicalObjectSetRefresh(t *testing.T) {
 		t.Errorf("unknown object = %d, want 404", rec.Code)
 	}
 }
+
+// TestUmbilicalObjectSetRefresh_GatherItem is the LLM-109 regression on the
+// operator route: a set-refresh must carry gather_item through (wire -> sim ->
+// wire) so live-tuning a gather/eat source no longer wipes its harvestable yield.
+func TestUmbilicalObjectSetRefresh_GatherItem(t *testing.T) {
+	srv, h := controlServer(t, operatorPerms)
+
+	body := `{"object_id":"obj1","rows":[` +
+		`{"attribute":"hunger","amount":-2,"available_quantity":3,"max_quantity":3,"refresh_mode":"periodic","refresh_period_hours":6,"gather_item":"berries"}` +
+		`]}`
+	rec := postReq(t, h, "/api/village/umbilical/object/set-refresh", "tok", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("set-refresh = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var out adminObjectRefreshResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out.Rows) != 1 || out.Rows[0].GatherItem != "berries" {
+		t.Fatalf("rows = %+v, want one row with gather_item berries", out.Rows)
+	}
+	// The live object retains the yield item (not stripped to "").
+	got, err := srv.world.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return string(world.VillageObjects["obj1"].Refreshes[0].GatherItem), nil
+	}})
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+	if got.(string) != "berries" {
+		t.Errorf("live GatherItem = %q, want berries", got)
+	}
+}
