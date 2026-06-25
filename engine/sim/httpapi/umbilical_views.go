@@ -143,8 +143,24 @@ type UmbilicalAgentDTO struct {
 	MoveTargetTileY     *int   `json:"move_target_tile_y,omitempty"`
 	MoveAttemptID       uint64 `json:"move_attempt_id,omitempty"`
 
+	// Restock policy + produce anchors — the actor's economic-supply config
+	// (LLM-111), the read counterpart to the /restock/set control route.
+	// RestockPolicy is every entry (produce/buy/forage) with its effective cap;
+	// ProduceState is the per-item last-production anchor the produce tick
+	// advances. Both omitted for an actor with no policy.
+	RestockPolicy []umbilicalRestockEntry       `json:"restock_policy,omitempty"`
+	ProduceState  []UmbilicalProduceStateRowDTO `json:"produce_state,omitempty"`
+
 	RecentTicks   []TelemetryRecordDTO `json:"recent_ticks"`
 	RecentActions []ActionLogEntryDTO  `json:"recent_actions"`
+}
+
+// UmbilicalProduceStateRowDTO is one per-item production anchor in the agent
+// view's produce_state list: the item plus when the produce tick last minted
+// it. Plain values copied on the world goroutine (LLM-111).
+type UmbilicalProduceStateRowDTO struct {
+	Item           string    `json:"item"`
+	LastProducedAt time.Time `json:"last_produced_at"`
 }
 
 // errAgentNotFound is returned by the agent-view command when the id is unknown.
@@ -219,6 +235,32 @@ func (s *Server) handleUmbilicalAgent(w http.ResponseWriter, r *http.Request) {
 				dto.MoveTargetTileX = &tx
 				dto.MoveTargetTileY = &ty
 			}
+		}
+		if a.RestockPolicy != nil && len(a.RestockPolicy.Restock) > 0 {
+			dto.RestockPolicy = make([]umbilicalRestockEntry, 0, len(a.RestockPolicy.Restock))
+			for _, e := range a.RestockPolicy.Restock {
+				dto.RestockPolicy = append(dto.RestockPolicy, umbilicalRestockEntry{
+					Item:   string(e.Item),
+					Source: string(e.Source),
+					Cap:    e.Cap(),
+				})
+			}
+		}
+		if len(a.ProduceState) > 0 {
+			dto.ProduceState = make([]UmbilicalProduceStateRowDTO, 0, len(a.ProduceState))
+			for _, ps := range a.ProduceState {
+				if ps == nil {
+					continue
+				}
+				dto.ProduceState = append(dto.ProduceState, UmbilicalProduceStateRowDTO{
+					Item:           string(ps.Item),
+					LastProducedAt: ps.LastProducedAt,
+				})
+			}
+			// Map iteration is unordered; sort by item for a stable read.
+			sort.Slice(dto.ProduceState, func(i, j int) bool {
+				return dto.ProduceState[i].Item < dto.ProduceState[j].Item
+			})
 		}
 		return dto, nil
 	}})
