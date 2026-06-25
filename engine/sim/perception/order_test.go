@@ -167,7 +167,7 @@ func TestRenderPendingDeliveriesFromMe_HappyPath(t *testing.T) {
 			ExpiresAt:     now.Add(5 * time.Minute),
 		},
 	}
-	renderPendingDeliveriesFromMe(&b, views, startOfUTCDay(time.Now()))
+	renderPendingDeliveriesFromMe(&b, views, startOfUTCDay(now), now)
 	out := b.String()
 	for _, must := range []string{
 		"## Orders to deliver",
@@ -196,7 +196,7 @@ func TestRenderPendingDeliveriesToMe_HappyPath(t *testing.T) {
 			ExpiresAt: now.Add(5 * time.Minute),
 		},
 	}
-	renderPendingDeliveriesToMe(&b, views, startOfUTCDay(time.Now()))
+	renderPendingDeliveriesToMe(&b, views, startOfUTCDay(now), now)
 	out := b.String()
 	for _, must := range []string{
 		"## Orders you're waiting on",
@@ -214,8 +214,8 @@ func TestRenderPendingDeliveriesToMe_HappyPath(t *testing.T) {
 // TestRenderPendingOrders_EmptyListSkipsSection — content-gated.
 func TestRenderPendingOrders_EmptyListSkipsSection(t *testing.T) {
 	var b strings.Builder
-	renderPendingDeliveriesFromMe(&b, nil, time.Time{})
-	renderPendingDeliveriesToMe(&b, nil, time.Time{})
+	renderPendingDeliveriesFromMe(&b, nil, time.Time{}, time.Time{})
+	renderPendingDeliveriesToMe(&b, nil, time.Time{}, time.Time{})
 	if b.Len() != 0 {
 		t.Errorf("empty list produced output: %q", b.String())
 	}
@@ -310,7 +310,7 @@ func TestRenderPendingDeliveriesFromMe_DeliverableShowsInstruction(t *testing.T)
 	var b strings.Builder
 	renderPendingDeliveriesFromMe(&b, []OrderView{
 		{ID: 1, Item: "stew", Qty: 1, BuyerName: "Jefferey", ExpiresAt: time.Now().Add(time.Hour)},
-	}, startOfUTCDay(time.Now()))
+	}, startOfUTCDay(time.Now()), time.Time{})
 	out := b.String()
 	if !strings.Contains(out, "call deliver_order") {
 		t.Errorf("deliverable order should surface the instruction; got:\n%s", out)
@@ -330,7 +330,7 @@ func TestRenderPendingDeliveriesFromMe_AbsentRendersPassive(t *testing.T) {
 	var b strings.Builder
 	renderPendingDeliveriesFromMe(&b, []OrderView{
 		{ID: 1, Item: "stew", Qty: 1, BuyerName: "Jefferey", AbsentRecipientNames: []string{"Jefferey"}, ExpiresAt: time.Now().Add(time.Hour)},
-	}, startOfUTCDay(time.Now()))
+	}, startOfUTCDay(time.Now()), time.Time{})
 	out := b.String()
 	if !strings.Contains(out, "waiting for Jefferey to return") {
 		t.Errorf("absent recipient should render a waiting clause; got:\n%s", out)
@@ -348,7 +348,7 @@ func TestRenderPendingDeliveriesFromMe_MixedSurfacesInstruction(t *testing.T) {
 	renderPendingDeliveriesFromMe(&b, []OrderView{
 		{ID: 1, Item: "stew", Qty: 1, BuyerName: "Jefferey", ExpiresAt: time.Now().Add(time.Hour)},
 		{ID: 2, Item: "bread", Qty: 1, BuyerName: "Mary", AbsentRecipientNames: []string{"Mary"}, ExpiresAt: time.Now().Add(time.Hour)},
-	}, startOfUTCDay(time.Now()))
+	}, startOfUTCDay(time.Now()), time.Time{})
 	out := b.String()
 	if !strings.Contains(out, "call deliver_order") {
 		t.Errorf("a deliverable order exists; instruction must surface; got:\n%s", out)
@@ -368,7 +368,7 @@ func TestRenderPendingDeliveriesFromMe_FutureBooking(t *testing.T) {
 	future := startOfUTCDay(time.Now()).AddDate(0, 0, 2)
 	renderPendingDeliveriesFromMe(&b, []OrderView{
 		{ID: 9, Item: "nights_stay", Qty: 2, BuyerName: "Jefferey", ReadyBy: future, ExpiresAt: future.Add(24 * time.Hour)},
-	}, startOfUTCDay(time.Now()))
+	}, startOfUTCDay(time.Now()), time.Time{})
 	out := b.String()
 	for _, must := range []string{"## Upcoming bookings", "#9:", "2 nights_stay", "for Jefferey", "booked for", "don't hand them over"} {
 		if !strings.Contains(out, must) {
@@ -391,7 +391,7 @@ func TestRenderPendingDeliveriesFromMe_SplitsReadyAndFuture(t *testing.T) {
 	renderPendingDeliveriesFromMe(&b, []OrderView{
 		{ID: 1, Item: "stew", Qty: 1, BuyerName: "Jefferey", ReadyBy: today, ExpiresAt: time.Now().Add(time.Hour)},
 		{ID: 2, Item: "nights_stay", Qty: 1, BuyerName: "Mary", ReadyBy: today.AddDate(0, 0, 3), ExpiresAt: today.AddDate(0, 0, 4)},
-	}, today)
+	}, today, time.Time{})
 	out := b.String()
 	if !strings.Contains(out, "## Orders to deliver") || !strings.Contains(out, "## Upcoming bookings") {
 		t.Errorf("expected both sections; got:\n%s", out)
@@ -410,7 +410,7 @@ func TestRenderPendingDeliveriesToMe_OverdueSplit(t *testing.T) {
 	renderPendingDeliveriesToMe(&b, []OrderView{
 		{ID: 5, Item: "nights_stay", Qty: 1, SellerName: "Hannah", ReadyBy: today.AddDate(0, 0, -1)},
 		{ID: 6, Item: "stew", Qty: 1, SellerName: "Hannah", ReadyBy: today},
-	}, today)
+	}, today, time.Time{})
 	out := b.String()
 	for _, must := range []string{"## Overdue — paid but not delivered", "#5:", "was due", "## Orders you're waiting on", "#6:"} {
 		if !strings.Contains(out, must) {

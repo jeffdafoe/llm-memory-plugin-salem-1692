@@ -239,8 +239,8 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderPayOffers(&ephemeral, payOffers, nameOf, stockOf, p.RoomAlreadySoldOrderByLedger)
 	renderOfferableCustomers(&ephemeral, p.OfferableCustomers)
 	renderStandingQuotesFromMe(&ephemeral, p.StandingQuotesFromMe)
-	renderPendingDeliveriesFromMe(&ephemeral, p.PendingDeliveriesFromMe, p.LocalDateUTC)
-	renderPendingDeliveriesToMe(&ephemeral, p.PendingDeliveriesToMe, p.LocalDateUTC)
+	renderPendingDeliveriesFromMe(&ephemeral, p.PendingDeliveriesFromMe, p.LocalDateUTC, p.RenderedAt)
+	renderPendingDeliveriesToMe(&ephemeral, p.PendingDeliveriesToMe, p.LocalDateUTC, p.RenderedAt)
 	renderPendingOffersFromMe(&ephemeral, p.PendingOffersFromMe)
 	renderRecentlyResolvedOffersFromMe(&ephemeral, p.RecentlyResolvedOffersFromMe)
 	renderCountersAwaitingMyResponse(&ephemeral, p.CountersAwaitingMyResponse)
@@ -1237,6 +1237,19 @@ func renderRecentConversation(b *strings.Builder, lines []UtteranceView) {
 	b.WriteString("\n")
 }
 
+// fallbackToday derives the order-book "today" for a hand-built payload that
+// supplied no village calendar date (LocalDateUTC zero): the UTC day of the
+// render instant (now) when present, else the host UTC day. A real snapshot
+// always supplies LocalDateUTC, so this is only reached by hand-built test
+// payloads — deriving from `now` keeps such a fixture deterministic when it sets
+// a clock, and only a fully clockless payload touches the wall clock. LLM-106.
+func fallbackToday(now time.Time) time.Time {
+	if now.IsZero() {
+		return startOfUTCDay(time.Now())
+	}
+	return startOfUTCDay(now)
+}
+
 // renderPendingDeliveriesFromMe writes the seller-side order book, split by the
 // order's ReadyBy date (ZBBS-HOME-403): orders due today (or earlier) render as
 // "## Orders to deliver" — the actionable hand-over section — and orders booked
@@ -1247,14 +1260,12 @@ func renderRecentConversation(b *strings.Builder, lines []UtteranceView) {
 // is the load-bearing perception mechanism (no warrant kind for
 // Order state; the seller relies on baseline perception to remember
 // to call deliver_order).
-func renderPendingDeliveriesFromMe(b *strings.Builder, orders []OrderView, today time.Time) {
+func renderPendingDeliveriesFromMe(b *strings.Builder, orders []OrderView, today, now time.Time) {
 	if len(orders) == 0 {
 		return
 	}
 	if today.IsZero() {
-		// Hand-built payload with no world clock — fall back to the host UTC
-		// day. A running engine always supplies Payload.LocalDateUTC.
-		today = startOfUTCDay(time.Now())
+		today = fallbackToday(now)
 	}
 	var ready, future []OrderView
 	for _, o := range orders {
@@ -1266,7 +1277,7 @@ func renderPendingDeliveriesFromMe(b *strings.Builder, orders []OrderView, today
 			ready = append(ready, o)
 		}
 	}
-	renderOrdersReadyToHandOver(b, ready)
+	renderOrdersReadyToHandOver(b, ready, now)
 	renderFutureReservations(b, future)
 }
 
@@ -1284,7 +1295,7 @@ func renderPendingDeliveriesFromMe(b *strings.Builder, orders []OrderView, today
 // stepped away renders passively ("waiting for X to return"), and the actionable
 // instruction is suppressed unless at least one order is deliverable now — the
 // keeper isn't cued to chase an absent buyer (boot-collapse Finding 6 bundle).
-func renderOrdersReadyToHandOver(b *strings.Builder, orders []OrderView) {
+func renderOrdersReadyToHandOver(b *strings.Builder, orders []OrderView, now time.Time) {
 	if len(orders) == 0 {
 		return
 	}
@@ -1309,7 +1320,7 @@ func renderOrdersReadyToHandOver(b *strings.Builder, orders []OrderView) {
 		} else {
 			anyDeliverable = true
 		}
-		if clause, ok := expiryClause(o.ExpiresAt, time.Now()); ok {
+		if clause, ok := expiryClause(o.ExpiresAt, now); ok {
 			b.WriteString(clause)
 		}
 		b.WriteString("\n")
@@ -1361,12 +1372,12 @@ func renderFutureReservations(b *strings.Builder, orders []OrderView) {
 // Phase 3 PR S6 — gives the buyer's LLM a structured "I'm waiting
 // for X from Y" cue so they can speak follow-ups ("Hannah, where's
 // my stew?") or make wait/depart decisions.
-func renderPendingDeliveriesToMe(b *strings.Builder, orders []OrderView, today time.Time) {
+func renderPendingDeliveriesToMe(b *strings.Builder, orders []OrderView, today, now time.Time) {
 	if len(orders) == 0 {
 		return
 	}
 	if today.IsZero() {
-		today = startOfUTCDay(time.Now())
+		today = fallbackToday(now)
 	}
 	var waiting, overdue []OrderView
 	for _, o := range orders {
@@ -1376,13 +1387,13 @@ func renderPendingDeliveriesToMe(b *strings.Builder, orders []OrderView, today t
 			waiting = append(waiting, o)
 		}
 	}
-	renderOrdersWaitingOn(b, waiting)
+	renderOrdersWaitingOn(b, waiting, now)
 	renderOverdueOrders(b, overdue)
 }
 
 // renderOrdersWaitingOn writes the buyer's "## Orders you're waiting on"
 // section — one line per order still within its delivery window.
-func renderOrdersWaitingOn(b *strings.Builder, orders []OrderView) {
+func renderOrdersWaitingOn(b *strings.Builder, orders []OrderView, now time.Time) {
 	if len(orders) == 0 {
 		return
 	}
@@ -1394,7 +1405,7 @@ func renderOrdersWaitingOn(b *strings.Builder, orders []OrderView) {
 		}
 		seller := sanitizeInline(o.SellerName)
 		fmt.Fprintf(b, "- #%d: %s from %s", uint64(o.ID), itemDesc, seller)
-		if clause, ok := expiryClause(o.ExpiresAt, time.Now()); ok {
+		if clause, ok := expiryClause(o.ExpiresAt, now); ok {
 			b.WriteString(clause)
 		}
 		b.WriteString("\n")
@@ -1451,7 +1462,12 @@ const maxRenderableExpiryHorizon = 24 * time.Hour
 // boundary, fixes the garbage duration regardless of which upstream sentinel or
 // overflow produced the far-future time. ZBBS-HOME-357.
 func expiryClause(deadline, now time.Time) (string, bool) {
-	if deadline.IsZero() {
+	// No deadline, or no render clock (a hand-built payload that supplied no
+	// PublishedAt → RenderedAt): nothing meaningful to render. The explicit
+	// now-zero guard keeps "no clock omits expiry" obvious here rather than
+	// leaning on the far-future-horizon check below to swallow deadline.Sub(zero).
+	// LLM-106.
+	if deadline.IsZero() || now.IsZero() {
 		return "", false
 	}
 	if deadline.Sub(now) > maxRenderableExpiryHorizon {
