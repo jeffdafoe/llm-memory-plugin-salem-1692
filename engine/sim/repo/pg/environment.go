@@ -248,6 +248,13 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	// Atmosphere refresh cascade.
 	s.AtmosphereRefreshInterval = parseDurationSetting(values, "atmosphere_refresh_interval_hours", 4*time.Hour)
 
+	// Storm weather cascade (LLM-117). Minute-granularity keys so dev /
+	// staging can tune the auto-cadence right down for testing without a
+	// rebuild (the umbilical /weather force-path is the instant test tool;
+	// these govern the unattended cadence).
+	s.StormInterval = parseDurationSetting(values, "storm_interval_minutes", 180*time.Minute)
+	s.StormDuration = parseDurationSetting(values, "storm_duration_minutes", 15*time.Minute)
+
 	// Action-log substrate.
 	s.ActionLogRetention = parseDurationSetting(values, "action_log_retention_hours", 48*time.Hour)
 	s.ActionLogSweepInterval = parseDurationSetting(values, "action_log_sweep_interval_hours", 1*time.Hour)

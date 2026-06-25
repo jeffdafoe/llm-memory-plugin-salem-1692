@@ -15,6 +15,7 @@ const NoticePanelScript = preload("res://scripts/notice_panel.gd")
 const InventoryPanelScript = preload("res://scripts/inventory_panel.gd")
 const VillageTickerScript = preload("res://scripts/village_ticker.gd")
 const SleepFadeScript = preload("res://scripts/sleep_fade.gd")
+const StormFXScript = preload("res://scripts/storm_fx.gd")
 
 @onready var world: Node2D = $World
 @onready var camera: Camera2D = $Camera
@@ -37,6 +38,10 @@ var village_ticker: PanelContainer = null
 ## ColorRect that tweens to twilight while the local PC sleeps and
 ## back to transparent on wake. See client/scripts/sleep_fade.gd.
 var sleep_fade: CanvasLayer = null
+## Storm FX overlay (LLM-117). CanvasLayer with rain + darkening tint +
+## lightning, raised while the world weather is "storm". See
+## client/scripts/storm_fx.gd; driven via world.set_weather.
+var storm_fx: CanvasLayer = null
 ## Dream-snippet rotator. While the local PC is sleeping, fires every
 ## DREAM_SNIPPET_INTERVAL_SEC and pushes one of DREAM_SNIPPETS into
 ## the village ticker so the top scroller carries flavor instead of
@@ -549,6 +554,19 @@ func _build_ui() -> void:
     sleep_fade = CanvasLayer.new()
     sleep_fade.set_script(SleepFadeScript)
     add_child(sleep_fade)
+
+    # Storm FX overlay (LLM-117). Same layer=0 posture as sleep_fade — paints
+    # over the world but under the UI. Injected into world so set_weather (WS
+    # weather_changed + the world DTO on connect/reconnect) can drive it.
+    storm_fx = CanvasLayer.new()
+    storm_fx.set_script(StormFXScript)
+    add_child(storm_fx)
+    world.storm_layer = storm_fx
+    # Replay the last-known weather onto the freshly-injected layer: a
+    # weather_changed frame or the world-DTO sync can land before this wiring
+    # runs, leaving current_weather set but the overlay never raised. Instant
+    # (no tween) so a mid-storm load shows the storm at once.
+    world.set_weather(world.current_weather, false)
 
     # Wake-up button on the top bar emits wake_pressed; route to the
     # /pc/wake endpoint. The engine clears sleeping_until and

@@ -37,6 +37,16 @@ var canvas_modulate: CanvasModulate = null
 var current_phase: String = "day"
 var _light_gradient_texture: Texture2D = null
 
+# Storm weather (LLM-117). The storm FX overlay is a screen-space CanvasLayer
+# (rain + darkening tint + lightning) mounted and owned by main.gd, injected
+# here so set_weather can drive it — keeping the WS/DTO routing symmetric with
+# set_phase (every weather change funnels through world.gd). Null until main.gd
+# wires it; an early weather frame is recorded in current_weather and main.gd
+# replays it onto the layer right after injection, so a frame that races world
+# setup is not lost.
+var storm_layer: CanvasLayer = null
+var current_weather: String = "clear"
+
 const DAY_COLOR := Color(1.0, 1.0, 1.0, 1.0)
 # Salem 1692 sundown palette (designer-tuned 2026-06-16): cold, damp, color-drained
 # New England dusk rather than a warm desert sunset. Warmth comes only from local
@@ -974,6 +984,19 @@ func set_phase(phase: String, tween: bool = true) -> void:
         t.tween_property(canvas_modulate, "color", c, segment)
     _phase_tween = t
 
+## Apply a world weather change (LLM-117). "storm" raises the storm FX overlay
+## (rain + darkening + lightning); anything else ("clear") tweens it back out.
+## Delegates to the storm_layer CanvasLayer main.gd injected. Null-guarded for a
+## frame that races world setup — current_weather still records it, and main.gd
+## replays it onto the layer right after injection, so it isn't lost. Pass
+## tween=false for the initial DTO sync so a mid-storm connect renders the storm
+## without a fade-in from clear.
+func set_weather(weather: String, tween: bool = true) -> void:
+    current_weather = weather
+    if storm_layer == null:
+        return
+    storm_layer.set_storm(weather == "storm", tween)
+
 ## Fetch the server's current world phase and sync CanvasModulate to match.
 ## Called once at build_terrain so clients opening the page at night don't
 ## start in bright day before the first WS event lands.
@@ -1000,6 +1023,12 @@ func _on_world_phase_loaded(result: int, response_code: int, headers: PackedStri
         return
     var phase: String = json.get("phase", "day")
     set_phase(phase, false)  # instant — no tween on first load
+
+    # Weather (LLM-117) rides the same DTO + load path as phase, so a client
+    # connecting or reconnecting mid-storm renders the storm instead of clear.
+    # Instant (no tween) for the same reason set_phase is.
+    var weather: String = json.get("weather", "clear")
+    set_weather(weather, false)
 
     # Cache dawn/dusk so the editor panel can prepopulate empty NPC
     # schedule windows from the global defaults. Format is "HH:MM".

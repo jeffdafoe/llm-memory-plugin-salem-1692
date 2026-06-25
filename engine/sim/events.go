@@ -421,6 +421,27 @@ type ZoomSettingsChanged struct {
 
 func (ZoomSettingsChanged) isSimEvent() {}
 
+// WeatherChanged is emitted by ApplyWeatherChange on every real weather
+// transition (LLM-117 Half A). The httpapi hub translates it to the
+// weather_changed client frame so connected clients raise / tween out the
+// storm FX layer (rain + scene darkening + lightning). Weather is the
+// post-transition value ("clear" | "storm"; a free string so later states
+// drop in additively); At is the wall-clock instant the change landed
+// (matches World.Environment.LastWeatherChangeAt). A no-op dedup'd apply
+// (forcing the current weather) does NOT emit — only real transitions do.
+//
+// Pure cosmetic: no subscriber in Half A consumes this on the engine side
+// (storm has no gameplay consequence — that's Half B). It exists for the
+// transport translate case alone, mirroring the day/night PhaseApplied →
+// world_phase_changed shape.
+type WeatherChanged struct {
+	EventBase
+	Weather string
+	At      time.Time
+}
+
+func (WeatherChanged) isSimEvent() {}
+
 // AgentTicksPausedChanged is emitted by SetAgentTicksPaused when an admin
 // toggles the global LLM-agent-activity pause from the config panel. The hub
 // translates it to the agent_ticks_paused_changed frame so the config panel's
