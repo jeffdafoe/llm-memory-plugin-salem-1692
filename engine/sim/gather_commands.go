@@ -161,8 +161,7 @@ func applyGatherMint(w *World, actor *Actor, objID VillageObjectID, obj *Village
 
 	// Mutations (post-validation): decrement finite supply, credit inventory.
 	if row.IsFinite() {
-		next := *row.AvailableQuantity - actual
-		row.AvailableQuantity = &next
+		drawDownStock(row, actual, at)
 		// Picking may have emptied a finite bush — recompute its
 		// berries/bare visual so it goes bare.
 		refreshObjectBerryState(w, obj)

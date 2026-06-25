@@ -404,8 +404,7 @@ func applyObjectRefreshEffect(w *World, actorID ActorID, objID VillageObjectID, 
 		actor.Needs[r.Attribute] = newValue
 
 		if r.IsFinite() {
-			next := *r.AvailableQuantity - 1
-			r.AvailableQuantity = &next
+			drawDownStock(r, 1, now)
 		}
 
 		hits = append(hits, RefreshHit{
@@ -475,6 +474,34 @@ func findRefreshObjectNear(w *World, actorTile TilePos) (VillageObjectID, *Villa
 	return id, obj
 }
 
+// drawDownStock reduces a finite source's supply by n (clamped at 0). If the
+// source was FULL before this draw, it anchors the regrow clock to now — so a
+// periodic source regrows a full period AFTER the harvest rather than snapping
+// straight back on the next regen tick. Without this, a long-idle full source
+// carries a regen anchor many periods in the past, so the first regen tick after
+// any draw sees elapsed >= period and refills it instantly (LLM-103). No-op for
+// an infinite source or a non-positive n. Callers pass the command's wall clock.
+// Pairs with the keep-anchor-current-while-full step in regenObjectRefresh,
+// which also covers a draw-down path that bypasses this helper.
+func drawDownStock(r *ObjectRefresh, n int, now time.Time) {
+	// Self-contained nil guards rather than leaning on IsFinite()'s contract: a
+	// nil AvailableQuantity is an infinite source (nothing to draw), matching the
+	// belt-and-suspenders posture elsewhere in this file.
+	if r == nil || n <= 0 || r.AvailableQuantity == nil {
+		return
+	}
+	wasFull := r.MaxQuantity != nil && *r.AvailableQuantity >= *r.MaxQuantity
+	next := *r.AvailableQuantity - n
+	if next < 0 {
+		next = 0
+	}
+	r.AvailableQuantity = &next
+	if wasFull && r.MaxQuantity != nil && next < *r.MaxQuantity {
+		t := now
+		r.LastRefreshAt = &t
+	}
+}
+
 // regenObjectRefresh applies one regen step to all refresh rows in the
 // world. Continuous-mode rows accrue units since LastRefreshAt; periodic-
 // mode rows jump to MaxQuantity once enough time has elapsed. Returns the
@@ -503,6 +530,13 @@ func regenObjectRefresh(w *World, now time.Time) int {
 				continue
 			}
 			if *r.AvailableQuantity >= *r.MaxQuantity {
+				// Keep the anchor current while the source sits full so a later
+				// draw-down starts a fresh full-period regrow. Freezing it here let
+				// a long-idle finite source (anchor many periods in the past) refill
+				// straight to max on the FIRST tick after any harvest — a 6h wild
+				// bush, idle for days, never appeared to deplete (LLM-103).
+				t := now
+				r.LastRefreshAt = &t
 				continue // already full
 			}
 			elapsed := now.Sub(*r.LastRefreshAt)
