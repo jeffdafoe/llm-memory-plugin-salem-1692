@@ -15,8 +15,9 @@ import (
 // syntactic guard wrongly rejected it as a no-op (live: Elizabeth Ellis ate one
 // cheese, was still peckish, then bounced four identical consume-Cheese calls off
 // `already_did_that` to the loop cap). consume now owns a result-aware guard: only
-// a consume that fed the actor NOTHING (sim.ConsumeResult.Consumed == 0 — already
-// sated) is the senseless action, and only a REPEAT of that is blocked.
+// a consume that EASED NO NEED (sim.ConsumeResult.EasedNeed == false — already
+// sated; it still ate and wasted a unit, since consuming while full wastes a unit
+// by design) is the senseless action, and only a REPEAT of that is blocked.
 //
 // The end-to-end no-op-records-then-blocks path needs a commit that SUCCEEDS on the
 // world goroutine (to produce a ConsumeResult), which the handlers unit harness
@@ -60,16 +61,18 @@ func TestConsumeItemKey(t *testing.T) {
 	}
 }
 
-// consumeNoop is the predicate dispatch uses to flag a consume that absorbed
-// nothing (the senseless-repeat signal the guard arms on).
+// consumeNoop is the predicate dispatch uses to flag a consume that eased no
+// need (the senseless-repeat signal the guard arms on). NOTE it keys on
+// EasedNeed, not Consumed: a sated consume still eats and wastes a unit
+// (Consumed >= 1) by design, so Consumed == 0 never happens (LLM-107).
 func TestConsumeNoop(t *testing.T) {
-	// Fully sated: clamp took zero units even though the model asked for some.
-	if !consumeNoop(sim.ConsumeResult{Kind: "cheese", Requested: 5, Consumed: 0, Kept: 5}) {
-		t.Error("Consumed==0 must be a no-op")
+	// Fully sated: the unit was eaten and wasted (Consumed==1), but no need moved.
+	if !consumeNoop(sim.ConsumeResult{Kind: "cheese", Requested: 5, Consumed: 1, Kept: 4, EasedNeed: false}) {
+		t.Error("EasedNeed==false must be a no-op (sated consume wasted a unit, eased nothing)")
 	}
-	// Productive: at least one unit eased the need.
-	if consumeNoop(sim.ConsumeResult{Kind: "cheese", Requested: 5, Consumed: 1, Kept: 4}) {
-		t.Error("Consumed>0 must NOT be a no-op")
+	// Productive: the consume eased a need.
+	if consumeNoop(sim.ConsumeResult{Kind: "cheese", Requested: 5, Consumed: 1, Kept: 4, EasedNeed: true}) {
+		t.Error("EasedNeed==true must NOT be a no-op")
 	}
 	// Non-consume result types and absent results are never no-op consumes.
 	if consumeNoop("some-other-result") {

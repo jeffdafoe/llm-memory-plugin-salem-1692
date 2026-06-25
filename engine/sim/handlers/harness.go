@@ -454,13 +454,14 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 	// triedThisTick. The four tools therefore leave genericCallKey's allowlist.
 	resolvedLedgerThisTick := map[LenientID]struct{}{}
 	// consumedNothingThisTick holds the item key of every consume this actor has
-	// made this tick that fed it NOTHING — the satiation clamp absorbed zero units
-	// (ConsumeResult.Consumed == 0: already sated for what that item eases). This
-	// is the LLM-91 semantic replacement for keeping consume on the ZBBS-HOME-414
+	// made this tick that EASED NO NEED — the actor was already sated for what that
+	// item eases (ConsumeResult.EasedNeed == false; it still ate and wasted a unit,
+	// since consuming while full wastes a unit by design — ZBBS-WORK-391). This is
+	// the LLM-91 semantic replacement for keeping consume on the ZBBS-HOME-414
 	// general guard. consume is OFF that guard (see genericCallKey) because a
 	// byte-identical repeat while still in need is PRODUCTIVE — it eats another
-	// unit and eases the need further. The only senseless consume is one that can
-	// absorb nothing; the first such attempt still dispatches so the model gets the
+	// unit and eases the need further. The only senseless consume is one that eases
+	// nothing; the first such attempt still dispatches so the model gets the
 	// honest "you're full" feedback, and a REPEAT of it is rejected here. Keyed by
 	// consumeItemKey (normalized item), recorded after dispatch on a no-op result.
 	consumedNothingThisTick := map[string]struct{}{}
@@ -685,12 +686,12 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 			}
 
 			// LLM-91: semantic same-tick guard for consume. A consume only fails to
-			// make sense when it feeds the actor nothing — the satiation clamp can
-			// absorb zero more units of what that item eases (already sated). That is
-			// detectable only AFTER the command runs (consumedNothingThisTick is
-			// recorded post-dispatch), so the FIRST no-op consume still dispatches and
-			// earns the honest "you're full" feedback; only a REPEAT of an item that
-			// already fed the actor nothing this tick is rejected here. A productive
+			// make sense when it eases no need — the actor is already sated for what
+			// that item eases (it still ate and wasted a unit). That is detectable
+			// only AFTER the command runs (consumedNothingThisTick is recorded
+			// post-dispatch), so the FIRST no-op consume still dispatches and earns
+			// the honest "you're full" feedback; only a REPEAT of an item that
+			// already eased the actor nothing this tick is rejected here. A productive
 			// repeat (still peckish, ate another bite) is never blocked — that is the
 			// behavior the byte-identical ZBBS-HOME-414 guard wrongly suppressed.
 			if key, isConsume := consumeItemKey(vc); isConsume {
@@ -890,11 +891,11 @@ type dispatchOutcome struct {
 	// re-perceive own-state mid-tick when a commit changed needs/coins/goods
 	// (LLM-88).
 	postSelfState *sim.ActorSnapshot
-	// consumedNothing is true when this was a consume whose satiation clamp
-	// absorbed zero units (sim.ConsumeResult.Consumed == 0 — the actor is already
-	// sated for what the item eases). The loop uses it to arm the LLM-91 semantic
-	// repeat-consume guard: the first no-op consume runs (and earns its "you're
-	// full" feedback); a repeat of it this tick is then rejected.
+	// consumedNothing is true when this was a consume that eased no need
+	// (sim.ConsumeResult.EasedNeed == false — the actor is already sated for what
+	// the item eases; it still ate and wasted a unit). The loop uses it to arm the
+	// LLM-91 semantic repeat-consume guard: the first such consume runs (and earns
+	// its "you're full" feedback); a repeat of it this tick is then rejected.
 	consumedNothing bool
 }
 
@@ -1019,9 +1020,9 @@ func (h *Harness) dispatch(ctx context.Context, w *sim.World, job tickJob, vc *V
 		// always returns a TickToolResult, so the assertion holds.
 		wrapped, _ := cmdResult.(sim.TickToolResult)
 		out.postSelfState = wrapped.PostActorSnapshot
-		// LLM-91: flag a consume that absorbed nothing so the loop can arm the
-		// semantic repeat-consume guard (consumeNoop: a ConsumeResult whose
-		// satiation clamp took zero units — the actor is already sated).
+		// LLM-91: flag a consume that eased no need so the loop can arm the
+		// semantic repeat-consume guard (consumeNoop: a ConsumeResult with
+		// EasedNeed == false — the actor is already sated; it still wasted a unit).
 		out.consumedNothing = consumeNoop(wrapped.Result)
 		return commitResultContent(vc, wrapped.Result), out
 
@@ -1523,14 +1524,17 @@ func consumeItemKey(vc *ValidatedCall) (string, bool) {
 }
 
 // consumeNoop reports whether a dispatched command result is a consume that
-// absorbed nothing — a sim.ConsumeResult whose satiation clamp took zero units
-// (Consumed == 0: the actor is already sated for what that item eases). This is
-// the senseless-repeat signal the LLM-91 guard arms on. Any other result type,
-// including a nil/absent result or a productive consume (Consumed > 0), is not a
-// no-op.
+// eased no need — a sim.ConsumeResult with EasedNeed == false (the actor was
+// already sated for what that item eases). This is the senseless-repeat signal
+// the LLM-91 guard arms on. It is deliberately NOT keyed on Consumed == 0: a
+// sated consume still eats and wastes a unit (Consumed >= 1) by design
+// (ZBBS-WORK-391 — consuming while full wastes a unit), so "absorbed zero units"
+// never happens and would make this guard dead (LLM-107). Any other result type,
+// including a nil/absent result or a productive consume (EasedNeed == true), is
+// not a no-op.
 func consumeNoop(result any) bool {
 	cr, ok := result.(sim.ConsumeResult)
-	return ok && cr.Consumed == 0
+	return ok && !cr.EasedNeed
 }
 
 // payOfferKey returns the normalized same-tick dedup key for a pay_with_item
