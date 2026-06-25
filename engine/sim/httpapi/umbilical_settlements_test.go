@@ -86,9 +86,10 @@ func TestUmbilicalSettlements_MapsRowsAndFlags(t *testing.T) {
 	if c := out.Settlements[2]; c.Free || c.Amount != 5 || c.SellerName != "John Ellis" {
 		t.Errorf("row[2] (coin sale) = %+v, want NOT free, 5 coins", c)
 	}
-	// legacy
-	if l := out.Settlements[3]; !l.HasLegacy {
-		t.Errorf("row[3] (legacy) = %+v, want has_legacy", l)
+	// legacy — has_legacy, and free is forced false: a 0-coin legacy barter must NOT
+	// read as a give-away just because the goods leg was never recorded.
+	if l := out.Settlements[3]; !l.HasLegacy || l.Free {
+		t.Errorf("row[3] (legacy) = %+v, want has_legacy AND free=false", l)
 	}
 }
 
@@ -116,7 +117,7 @@ func TestUmbilicalSettlements_ParsesFilters(t *testing.T) {
 // TestUmbilicalSettlements_BadFilters: an unparseable since/until/ledger is a 400
 // before the store is touched.
 func TestUmbilicalSettlements_BadFilters(t *testing.T) {
-	for _, q := range []string{"since=nope", "until=nope", "ledger=abc", "ledger=-1"} {
+	for _, q := range []string{"since=nope", "until=nope", "ledger=abc", "ledger=-1", "ledger=0"} {
 		store := &fakeSettlementStore{}
 		h := settlementsServer(t, store)
 		rec := req(t, h, "/api/village/umbilical/settlements?"+q, "tok")

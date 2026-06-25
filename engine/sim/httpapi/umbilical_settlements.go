@@ -38,10 +38,11 @@ type SettlementPayItemDTO struct {
 }
 
 // SettlementEntryDTO is one accepted settlement: who paid whom, the coins + goods,
-// and the at-a-glance `free` flag (a give-away — amount 0 AND no goods). ledger_id /
-// consume_now / free are only trustworthy when has_legacy is false; a has_legacy row
-// predates the LLM-105 payload enrichment, so its goods leg was never recorded and a
-// 0-coin barter there is indistinguishable from a give-away.
+// and the at-a-glance `free` flag (a give-away — amount 0 AND no goods). On a
+// has_legacy row (pre-LLM-105: no goods leg recorded) `free` is forced false — a
+// 0-coin legacy barter is indistinguishable from a give-away, so the route never
+// claims `free` without the goods leg; ledger_id / consume_now are likewise absent
+// on legacy rows.
 type SettlementEntryDTO struct {
 	OccurredAt time.Time              `json:"occurred_at"`
 	BuyerID    string                 `json:"buyer_id"`
@@ -98,7 +99,10 @@ func (s *Server) handleUmbilicalSettlements(w http.ResponseWriter, r *http.Reque
 	}
 	if raw := q.Get("ledger"); raw != "" {
 		id, err := strconv.ParseUint(raw, 10, 64)
-		if err != nil {
+		if err != nil || id == 0 {
+			// ledger 0 is not a real id (they start at 1) and LoadSettlements treats a
+			// zero LedgerID as "no filter", so accepting it would silently widen the
+			// query to all rows — reject it instead of surprising the operator.
 			writeError(w, http.StatusBadRequest, "ledger must be a positive integer")
 			return
 		}
@@ -123,6 +127,12 @@ func (s *Server) handleUmbilicalSettlements(w http.ResponseWriter, r *http.Reque
 		Settlements:     make([]SettlementEntryDTO, 0, len(rows)),
 	}
 	for _, row := range rows {
+		// A pre-LLM-105 row never recorded a goods leg (ledger ids start at 1, so 0 ⇒
+		// legacy). Its pay_items is therefore always empty, which would make `free` a
+		// false positive on a 0-coin barter — the very ambiguity this route exists to
+		// remove — so `free` is suppressed for legacy rows. has_legacy tells the
+		// operator the goods leg is unknown, not absent.
+		hasLegacy := row.LedgerID == 0
 		entry := SettlementEntryDTO{
 			OccurredAt: row.OccurredAt,
 			BuyerID:    string(row.BuyerID),
@@ -133,8 +143,8 @@ func (s *Server) handleUmbilicalSettlements(w http.ResponseWriter, r *http.Reque
 			ConsumeNow: row.ConsumeNow,
 			LedgerID:   uint64(row.LedgerID),
 			HuddleID:   row.HuddleID,
-			Free:       row.Amount == 0 && len(row.PayItems) == 0,
-			HasLegacy:  row.LedgerID == 0, // ledger ids start at 1; 0 ⇒ a pre-LLM-105 row
+			Free:       !hasLegacy && row.Amount == 0 && len(row.PayItems) == 0,
+			HasLegacy:  hasLegacy,
 		}
 		for _, pi := range row.PayItems {
 			entry.PayItems = append(entry.PayItems, SettlementPayItemDTO{Item: string(pi.Kind), Qty: pi.Qty})

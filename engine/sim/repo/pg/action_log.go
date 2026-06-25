@@ -411,6 +411,12 @@ SELECT occurred_at, actor_id, speaker_name, payload, huddle_id
 // malformed payload on a row degrades that row to its bare columns rather than
 // failing the whole read, matching queryDayEvents.
 func (r *ActionLogRepo) LoadSettlements(ctx context.Context, filter sim.SettlementFilter, limit int) ([]sim.SettlementRow, error) {
+	if limit <= 0 {
+		// A non-positive limit asks for nothing — return empty rather than emit a
+		// LIMIT 0 (or a query-time error on a negative LIMIT). The HTTP path always
+		// passes >= 1 via parseActionsLimit, but this method is callable directly.
+		return []sim.SettlementRow{}, nil
+	}
 	q := loadSettlementsBaseSQL
 	args := []any{}
 	add := func(clause string, val any) {
