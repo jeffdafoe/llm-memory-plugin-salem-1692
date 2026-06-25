@@ -115,11 +115,12 @@ type UmbilicalAgentDTO struct {
 
 	// What the actor produces / restocks at work — the read counterpart to the
 	// restock/set control route (LLM-111). RestockPolicy lists the managed items
-	// + supply mode (produce/buy/forage) + personal-carry cap; ProduceState
-	// carries the per-item last-produced anchor the produce tick advances. Both
-	// empty when the actor manages nothing.
-	RestockPolicy []RestockEntryDTO `json:"restock_policy,omitempty"`
-	ProduceState  []ProduceStateDTO `json:"produce_state,omitempty"`
+	// + supply mode (produce/buy/forage) + personal-carry cap; it reuses the
+	// control route's umbilicalRestockEntry wire type so the read and write sides
+	// can't drift. ProduceState carries the per-item last-produced anchor the
+	// produce tick advances. Both empty when the actor manages nothing.
+	RestockPolicy []umbilicalRestockEntry `json:"restock_policy,omitempty"`
+	ProduceState  []ProduceStateDTO       `json:"produce_state,omitempty"`
 
 	// Rest windows (nil = not resting).
 	BreakUntil    *time.Time `json:"break_until,omitempty"`
@@ -153,15 +154,6 @@ type UmbilicalAgentDTO struct {
 
 	RecentTicks   []TelemetryRecordDTO `json:"recent_ticks"`
 	RecentActions []ActionLogEntryDTO  `json:"recent_actions"`
-}
-
-// RestockEntryDTO is one entry in an actor's restock policy on the agent view:
-// the item it manages, the supply mode (produce/buy/forage), and the
-// personal-carry cap. The read counterpart to the restock/set control route.
-type RestockEntryDTO struct {
-	Item   string `json:"item"`
-	Source string `json:"source"`
-	Cap    int    `json:"cap"`
 }
 
 // ProduceStateDTO is one per-item production anchor: the item and when the actor
@@ -234,9 +226,9 @@ func (s *Server) handleUmbilicalAgent(w http.ResponseWriter, r *http.Request) {
 		}
 		if a.RestockPolicy != nil && len(a.RestockPolicy.Restock) > 0 {
 			// Preserve policy order (first-listed wins on ties — recipe.go).
-			dto.RestockPolicy = make([]RestockEntryDTO, 0, len(a.RestockPolicy.Restock))
+			dto.RestockPolicy = make([]umbilicalRestockEntry, 0, len(a.RestockPolicy.Restock))
 			for _, e := range a.RestockPolicy.Restock {
-				dto.RestockPolicy = append(dto.RestockPolicy, RestockEntryDTO{
+				dto.RestockPolicy = append(dto.RestockPolicy, umbilicalRestockEntry{
 					Item:   string(e.Item),
 					Source: string(e.Source),
 					Cap:    e.Cap(),
