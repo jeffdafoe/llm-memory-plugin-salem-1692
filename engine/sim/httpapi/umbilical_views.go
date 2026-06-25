@@ -113,6 +113,14 @@ type UmbilicalAgentDTO struct {
 	Inventory map[string]int `json:"inventory,omitempty"`
 	Coins     int            `json:"coins"`
 
+	// What the actor produces / restocks at work — the read counterpart to the
+	// restock/set control route (LLM-111). RestockPolicy lists the managed items
+	// + supply mode (produce/buy/forage) + personal-carry cap; ProduceState
+	// carries the per-item last-produced anchor the produce tick advances. Both
+	// empty when the actor manages nothing.
+	RestockPolicy []RestockEntryDTO `json:"restock_policy,omitempty"`
+	ProduceState  []ProduceStateDTO `json:"produce_state,omitempty"`
+
 	// Rest windows (nil = not resting).
 	BreakUntil    *time.Time `json:"break_until,omitempty"`
 	SleepingUntil *time.Time `json:"sleeping_until,omitempty"`
@@ -145,6 +153,23 @@ type UmbilicalAgentDTO struct {
 
 	RecentTicks   []TelemetryRecordDTO `json:"recent_ticks"`
 	RecentActions []ActionLogEntryDTO  `json:"recent_actions"`
+}
+
+// RestockEntryDTO is one entry in an actor's restock policy on the agent view:
+// the item it manages, the supply mode (produce/buy/forage), and the
+// personal-carry cap. The read counterpart to the restock/set control route.
+type RestockEntryDTO struct {
+	Item   string `json:"item"`
+	Source string `json:"source"`
+	Cap    int    `json:"cap"`
+}
+
+// ProduceStateDTO is one per-item production anchor: the item and when the actor
+// last minted it (the produce-tick carry-forward clock). last_produced_at is
+// omitted when unset.
+type ProduceStateDTO struct {
+	Item           string     `json:"item"`
+	LastProducedAt *time.Time `json:"last_produced_at,omitempty"`
 }
 
 // errAgentNotFound is returned by the agent-view command when the id is unknown.
@@ -206,6 +231,33 @@ func (s *Server) handleUmbilicalAgent(w http.ResponseWriter, r *http.Request) {
 			for k, v := range a.Inventory {
 				dto.Inventory[string(k)] = v
 			}
+		}
+		if a.RestockPolicy != nil && len(a.RestockPolicy.Restock) > 0 {
+			// Preserve policy order (first-listed wins on ties — recipe.go).
+			dto.RestockPolicy = make([]RestockEntryDTO, 0, len(a.RestockPolicy.Restock))
+			for _, e := range a.RestockPolicy.Restock {
+				dto.RestockPolicy = append(dto.RestockPolicy, RestockEntryDTO{
+					Item:   string(e.Item),
+					Source: string(e.Source),
+					Cap:    e.Cap(),
+				})
+			}
+		}
+		if len(a.ProduceState) > 0 {
+			dto.ProduceState = make([]ProduceStateDTO, 0, len(a.ProduceState))
+			for _, ps := range a.ProduceState {
+				if ps == nil {
+					continue
+				}
+				dto.ProduceState = append(dto.ProduceState, ProduceStateDTO{
+					Item:           string(ps.Item),
+					LastProducedAt: ptrTimeIfSet(ps.LastProducedAt),
+				})
+			}
+			// Map iteration is unordered — sort by item for a stable read.
+			sort.Slice(dto.ProduceState, func(i, j int) bool {
+				return dto.ProduceState[i].Item < dto.ProduceState[j].Item
+			})
 		}
 		if a.MoveIntent != nil {
 			dto.Moving = true
@@ -477,5 +529,16 @@ func clonePtrTime(t *time.Time) *time.Time {
 		return nil
 	}
 	c := *t
+	return &c
+}
+
+// ptrTimeIfSet returns a pointer to a copy of t, or nil when t is the zero time —
+// so a zero LastProducedAt renders as an omitted field rather than the Go zero
+// date. The copy keeps the DTO from aliasing live world state.
+func ptrTimeIfSet(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	c := t
 	return &c
 }
