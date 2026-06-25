@@ -1675,25 +1675,36 @@ func genericCallKey(vc *ValidatedCall) (string, bool) {
 // apply. Each of these four tools answers a single pending pay-offer addressed by
 // `ledger_id`, and the first answer this tick moves that ledger out of `pending`,
 // so the guard keys on the id alone (shared across the family) to reject a second
-// answer — see the guard in the dispatch loop. The match is on the decoded-arg
-// TYPE, not the tool-name string, so a renamed tool cannot silently slip the guard
-// while still decoding to one of these arg shapes.
+// answer — see the guard in the dispatch loop. The match binds BOTH the tool name
+// and the decoded-arg shape and fails closed on a mismatch: name alone would miss a
+// future arg-struct reuse, while shape alone would wrongly guard any other tool that
+// happens to decode to one of these structs (or a test / custom registry that pairs
+// a different name with these decoders). Over-blocking a dispatch guard is worse
+// than under-blocking — under it, the command's own "no longer pending" check still
+// applies — so when the name is right but the shape is wrong we return (0, false).
 func ledgerResolutionID(vc *ValidatedCall) (LenientID, bool) {
 	if vc == nil {
 		return 0, false
 	}
-	switch a := vc.DecodedArgs.(type) {
-	case AcceptPayArgs:
-		return a.LedgerID, true
-	case DeclinePayArgs:
-		return a.LedgerID, true
-	case CounterPayArgs:
-		return a.LedgerID, true
-	case WithdrawPayArgs:
-		return a.LedgerID, true
-	default:
-		return 0, false
+	switch vc.Name {
+	case "accept_pay":
+		if a, ok := vc.DecodedArgs.(AcceptPayArgs); ok {
+			return a.LedgerID, true
+		}
+	case "decline_pay":
+		if a, ok := vc.DecodedArgs.(DeclinePayArgs); ok {
+			return a.LedgerID, true
+		}
+	case "counter_pay":
+		if a, ok := vc.DecodedArgs.(CounterPayArgs); ok {
+			return a.LedgerID, true
+		}
+	case "withdraw_pay":
+		if a, ok := vc.DecodedArgs.(WithdrawPayArgs); ok {
+			return a.LedgerID, true
+		}
 	}
+	return 0, false
 }
 
 // conversationIDFromPayload returns the narrative-beat scene id the perception

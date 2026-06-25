@@ -21,9 +21,9 @@ import (
 // (different args) and a counter then an accept of the same ledger (different tool
 // name) both slipped through. These tests pin both gaps + the per-ledger scope.
 
-// TestLedgerResolutionID covers the predicate: each resolution-family arg shape
-// yields its ledger id + true; everything else yields (0, false). The match is on
-// the decoded-arg TYPE, so it is robust to a tool rename.
+// TestLedgerResolutionID covers the predicate: each resolution-family (name, arg
+// shape) pair yields its ledger id + true; everything else yields (0, false). The
+// match binds the tool NAME and the arg shape and fails closed on a mismatch.
 func TestLedgerResolutionID(t *testing.T) {
 	cases := []struct {
 		name string
@@ -49,6 +49,16 @@ func TestLedgerResolutionID(t *testing.T) {
 	// payOfferKey owns it, not this guard.
 	if _, ok := ledgerResolutionID(&ValidatedCall{Name: "pay_with_item", DecodedArgs: PayWithItemArgs{Seller: "Moses", Item: "carrots", Qty: 1, Amount: 5}}); ok {
 		t.Error("pay_with_item must not be a ledger-resolution call")
+	}
+	// Name binding: a non-resolution tool name carrying a resolution arg struct must
+	// NOT be treated as a resolution (over-blocking a dispatch guard is worse than
+	// under-blocking).
+	if _, ok := ledgerResolutionID(&ValidatedCall{Name: "not_counter_pay", DecodedArgs: CounterPayArgs{LedgerID: 9}}); ok {
+		t.Error("a non-resolution tool name must not be treated as ledger resolution")
+	}
+	// Shape binding: a resolution name with a mismatched arg shape fails closed.
+	if _, ok := ledgerResolutionID(&ValidatedCall{Name: "counter_pay", DecodedArgs: SpeakArgs{Text: "hi"}}); ok {
+		t.Error("counter_pay with a non-CounterPayArgs shape must fail closed")
 	}
 	// Nil safety.
 	if _, ok := ledgerResolutionID(nil); ok {
@@ -78,6 +88,7 @@ func newLedgerResolutionHarness(t *testing.T, client llm.Client) (*Harness, *[]s
 	reg("counter_pay", DecodeCounterPayArgs)
 	reg("accept_pay", DecodeAcceptPayArgs)
 	reg("decline_pay", DecodeDeclinePayArgs)
+	reg("withdraw_pay", DecodeWithdrawPayArgs)
 	if err := r.RegisterTerminal("done"); err != nil {
 		t.Fatalf("register done: %v", err)
 	}
@@ -139,6 +150,30 @@ func TestHarness_LedgerResolution_RejectsMessageDecoratedRecounter(t *testing.T)
 	}
 	if !contains(result.ToolsFailedRejected, "counter_pay") {
 		t.Errorf("ToolsFailedRejected should include the blocked re-counter, got %v", result.ToolsFailedRejected)
+	}
+}
+
+// withdraw_pay is part of the guarded family and left genericCallKey too: a withdraw
+// of a ledger already answered this tick (here, just countered) is blocked before
+// dispatch — the cross-family shared-ledger key in action.
+func TestHarness_LedgerResolution_RejectsWithdrawOfAlreadyAnsweredLedger(t *testing.T) {
+	w, cancel := newHarnessWorld(t, "attempt-A")
+	defer cancel()
+
+	client := llm.NewFakeClient(
+		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c1", 0, "counter_pay", `{"ledger_id":332,"amount":2}`)}}},
+		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c2", 0, "withdraw_pay", `{"ledger_id":332}`)}}},
+		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c3", 0, "done", `{}`)}}},
+	)
+	h, log := newLedgerResolutionHarness(t, client)
+
+	result := h.RunTick(context.Background(), w, newTestJob("attempt-A", nil))
+
+	if got := *log; len(got) != 1 || got[0] != "counter_pay" {
+		t.Errorf("dispatched: got %v, want [counter_pay] (withdraw of the already-answered ledger blocked before dispatch)", got)
+	}
+	if !contains(result.ToolsFailedRejected, "withdraw_pay") {
+		t.Errorf("ToolsFailedRejected should include the blocked withdraw_pay, got %v", result.ToolsFailedRejected)
 	}
 }
 
