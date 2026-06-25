@@ -36,6 +36,13 @@ func SetProductionFocus(id ActorID, itemName string) Command {
 			if !producesItem(a, kind) {
 				return nil, ModelFacingError{Msg: fmt.Sprintf("you don't make %s at your workplace — focus only on what you produce", kind)}
 			}
+			// Must be MAKEABLE (recipe with positive rate), not just on the produce
+			// policy — else focus would set to a good produce_tick can never make.
+			// Same gate the forge cue and the wake producer use. (Inputs are NOT
+			// required — an origin producer like nail is makeable from nothing.)
+			if !makeableRecipe(w, kind) {
+				return nil, ModelFacingError{Msg: fmt.Sprintf("you can't make %s right now", kind)}
+			}
 			a.ProductionFocus = kind
 			return ProductionFocusResult{ID: id, Focus: kind}, nil
 		},

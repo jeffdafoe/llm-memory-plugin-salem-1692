@@ -87,6 +87,29 @@ type ProduceTickResult struct {
 	Changes    []ProduceTickInventoryChange
 }
 
+// makeableRecipe reports whether item has a recipe that can actually produce —
+// it exists with a positive rate. The single definition of "makeable" shared by
+// produce_tick (the multi-output count), SetProductionFocus (the craft gate), and
+// shouldChooseProduction (the wake gate), so all three agree on the choice set.
+// (It does NOT require recipe inputs — an origin producer like nail makes its good
+// from an empty inputs list and is fully makeable.)
+func makeableRecipe(w *World, item ItemKind) bool {
+	r, ok := w.Recipes[item]
+	return ok && r != nil && r.RateQty > 0 && r.RatePerHours > 0
+}
+
+// makeableProduceCount counts how many of the produce entries are makeable
+// (recipe-backed with positive rate).
+func makeableProduceCount(w *World, entries []RestockEntry) int {
+	n := 0
+	for _, e := range entries {
+		if makeableRecipe(w, e.Item) {
+			n++
+		}
+	}
+	return n
+}
+
 // ApplyProduceTick walks every actor with a produce-source restock
 // entry and applies units owed.
 //
@@ -117,8 +140,12 @@ func ApplyProduceTick(now time.Time) Command {
 				// only its chosen ProductionFocus, not every entry in parallel
 				// (LLM-116). An empty focus → it produces nothing until it picks
 				// one at its forge. A single-output producer ignores focus and
-				// keeps auto-producing its one good.
-				multiOutput := len(produceEntries) > 1
+				// keeps auto-producing its one good. "Multi-output" counts only
+				// MAKEABLE (recipe-backed) entries — matching the forge cue and the
+				// production-choice producer — so a no-recipe entry never makes an
+				// actor a chooser (which would otherwise stall it on a focus it
+				// can't produce).
+				multiOutput := makeableProduceCount(w, produceEntries) > 1
 				for _, entry := range produceEntries {
 					if multiOutput && actor.ProductionFocus != entry.Item {
 						continue

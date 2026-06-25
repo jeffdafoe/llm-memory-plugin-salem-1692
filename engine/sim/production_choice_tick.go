@@ -51,14 +51,14 @@ func shouldChooseProduction(a *Actor, w *World) bool {
 		return false // only at the forge
 	}
 	produce := a.RestockPolicy.ProduceEntries()
-	if len(produce) <= 1 {
-		return false // single-output producer — no choice to make
+	if makeableProduceCount(w, produce) <= 1 {
+		return false // 0-or-1 makeable goods — no choice to make (matches produce_tick)
 	}
 	anyBelowCap := false
 	focusProductive := false
 	for _, e := range produce {
-		if _, ok := w.Recipes[e.Item]; !ok {
-			continue // no recipe — not actually makeable, skip
+		if !makeableRecipe(w, e.Item) {
+			continue // not makeable — skip
 		}
 		cap := e.Cap()
 		belowCap := cap <= 0 || a.Inventory[e.Item] < cap
