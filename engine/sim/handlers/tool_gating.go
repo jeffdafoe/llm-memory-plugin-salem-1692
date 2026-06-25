@@ -105,6 +105,17 @@ const deliverOrderToolName = "deliver_order"
 // offered off-post and to non-keepers.
 const stayOpenToolName = "stay_open"
 
+// takeBreakToolName — the keeper's rest-at-post tool. Advertised ONLY when the
+// recovery cue offers in-place rest: payload.RecoveryOptions.RestInPlace, set in
+// perception build on tired + at-own-post + on-shift (recovery_options.go). Reading
+// the SAME field the "Close up and rest where you are — call take_break" prose
+// renders from keeps the tool and its cue from drifting — the discussion-109
+// "advertise a tool only with its triggering perception" invariant. Before LLM-100
+// take_break had no gate and fell through to every actor every tick, so an
+// off-shift wanderer standing in its own closed shop was both told to rest in place
+// and handed the tool.
+const takeBreakToolName = "take_break"
+
 // moveToToolName — the locomotion tool. Dropped from a degeneracy-flagged
 // actor's advertised set (LLM-94 Stage-1): a flagged actor is in a sustained
 // futile loop whose live signature is move_to rejected every tick. Perception
@@ -206,6 +217,7 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 	atGatherableSource := payload.Surroundings.GatherableItem != ""
 	moving := actorIsMoving(payload.ActorID, snap)
 	offerStayOpen := payload.DutySteer != nil && payload.DutySteer.OfferStayOpen
+	offerRestInPlace := payload.RecoveryOptions != nil && payload.RecoveryOptions.RestInPlace
 	flaggedDegenerate := actorIsFlaggedDegenerate(payload.ActorID, snap)
 
 	// Single pass over the Available set so each gated group is evaluated
@@ -254,6 +266,14 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 		// cue's own OfferStayOpen signal — the same field the stay-open prose
 		// renders from — so the tool and its cue can't drift (discussion-109).
 		if spec.Name == stayOpenToolName && !offerStayOpen {
+			continue
+		}
+		// take_break consumer (LLM-100): advertise only on the recovery cue's own
+		// RestInPlace signal — the same field the "rest where you are" prose renders
+		// from — so the tool and its cue can't drift (discussion-109). Keeps
+		// take_break out of the prompt for an off-shift actor with no shift to step
+		// away from (the LLM-100 phantom-take_break case).
+		if spec.Name == takeBreakToolName && !offerRestInPlace {
 			continue
 		}
 		// degeneracy Stage-1 gate (LLM-94): drop move_to from a flagged actor's

@@ -172,15 +172,22 @@ func buildRecoveryOptions(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *si
 		ownStock = gatherOwnStock(snap, actorSnap, recoveryTirednessNeed)
 	}
 
-	// A tired keeper standing at its own work structure can recover in place via
-	// take_break rather than walking off to a bed — which, for a stall, leaves
-	// the post (and its supply) unmanned. take_break is unconditionally
-	// advertised (no location/shift gate; see handlers/tool_gating.go), so this
-	// is purely the perceptual cue that surfaces the option. Gated on tired so
-	// it doesn't appear to a homeless-but-rested actor scoping shelter.
-	// ZBBS-HOME-362.
+	// A tired keeper standing at its own work structure AND currently on shift can
+	// recover in place via take_break rather than walking off to a bed — which, for
+	// a stall, leaves the post (and its supply) unmanned. The on-shift clause is the
+	// LLM-100 fix: take_break is "step away from the shift you're working", so an
+	// off-shift wanderer who has merely walked back into its own (now-closed) shop
+	// has no shift to step away from and must not get the cue. Uses the same
+	// OnShiftAtMinute helper as the LLM-62 home-bed sibling: an unscheduled actor is
+	// always off-shift (so never offered take_break), and a nil clock suppresses the
+	// cue (can't confirm on shift → don't advertise stepping away). Gated on tired
+	// so it doesn't appear to a homeless-but-rested actor scoping shelter. take_break
+	// is advertised off this SAME RestInPlace field in handlers/tool_gating.go, so
+	// the cue and the offered tool can't drift. ZBBS-HOME-362 / LLM-100.
 	restInPlace := tired && actorSnap.WorkStructureID != "" &&
-		actorSnap.InsideStructureID == actorSnap.WorkStructureID
+		actorSnap.InsideStructureID == actorSnap.WorkStructureID &&
+		snap.LocalMinuteOfDay != nil &&
+		sim.OnShiftAtMinute(actorSnap.ScheduleStartMin, actorSnap.ScheduleEndMin, *snap.LocalMinuteOfDay)
 
 	if len(opts) == 0 && len(ownStock) == 0 && !restInPlace {
 		return nil

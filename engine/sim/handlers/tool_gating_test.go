@@ -326,3 +326,46 @@ func TestGateTools_StayOpen_AdvertisedOnlyWithOfferCue(t *testing.T) {
 		t.Errorf("stay_open should be advertised when the wind-down cue offers it; count %d", offered[stayOpenToolName])
 	}
 }
+
+// gatingRegistryWithTakeBreak extends the gating test registry with the
+// take_break tool, for the LLM-100 cue-driven advertising gate.
+func gatingRegistryWithTakeBreak(t *testing.T) *Registry {
+	t.Helper()
+	r := gatingTestRegistry(t)
+	if err := RegisterTakeBreak(r); err != nil {
+		t.Fatalf("RegisterTakeBreak: %v", err)
+	}
+	return r
+}
+
+// TestGateTools_TakeBreak_AdvertisedOnlyWithRestInPlaceCue — LLM-100: take_break is
+// advertised only when the recovery cue offers in-place rest
+// (RecoveryOptions.RestInPlace, built on tired + at-own-post + on-shift). With no
+// RecoveryOptions view, or one whose RestInPlace is false, the tool is dropped — so
+// an off-shift actor with no shift to step away from never sees it. Reading the same
+// field the "rest where you are" prose renders from keeps tool and cue from
+// drifting. Before LLM-100 take_break had no gate and was advertised every tick.
+func TestGateTools_TakeBreak_AdvertisedOnlyWithRestInPlaceCue(t *testing.T) {
+	r := gatingRegistryWithTakeBreak(t)
+
+	noView := specNameSet(gateTools(r, perception.Payload{ActorID: "keeper"}, nil))
+	if noView[takeBreakToolName] != 0 {
+		t.Errorf("take_break advertised with no RecoveryOptions view; count %d", noView[takeBreakToolName])
+	}
+
+	notOffered := specNameSet(gateTools(r, perception.Payload{
+		ActorID:         "keeper",
+		RecoveryOptions: &perception.RecoveryOptionsView{RestInPlace: false},
+	}, nil))
+	if notOffered[takeBreakToolName] != 0 {
+		t.Errorf("take_break advertised when RestInPlace is false; count %d", notOffered[takeBreakToolName])
+	}
+
+	offered := specNameSet(gateTools(r, perception.Payload{
+		ActorID:         "keeper",
+		RecoveryOptions: &perception.RecoveryOptionsView{RestInPlace: true},
+	}, nil))
+	if offered[takeBreakToolName] != 1 {
+		t.Errorf("take_break should be advertised when the recovery cue offers in-place rest; count %d", offered[takeBreakToolName])
+	}
+}
