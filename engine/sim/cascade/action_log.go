@@ -223,6 +223,25 @@ func handlePayResolvedActionLog(w *sim.World, evt sim.Event) {
 		"amount":    resolved.Amount,
 		"for":       forText,
 	}
+	// LLM-105: record the FULL settlement terms so the durable audit trail can tell a
+	// paid sale from a barter from a zero-value give-away. `amount` alone is ambiguous
+	// — a 0-coin barter and a 0-coin free gift both read amount:0; only the goods leg
+	// distinguishes them. pay_items is the barter goods the buyer paid WITH (omitted
+	// for a pure-coin pay); ledger_id joins the row back to its pay-ledger entry;
+	// consume_now marks an eat-here settlement (mints no Order, so it is otherwise
+	// invisible in the deliverable-Order tables). These are audit-only additions — the
+	// narration keys (recipient/amount/for) the renderer + dream distiller read are
+	// unchanged, so the bare-pay and pay-with-item rows still narrate identically.
+	// ItemKindQty has no json tags, so write the goods in an explicit {item,qty} shape.
+	if len(resolved.PayItems) > 0 {
+		goods := make([]map[string]any, 0, len(resolved.PayItems))
+		for _, pi := range resolved.PayItems {
+			goods = append(goods, map[string]any{"item": string(pi.Kind), "qty": pi.Qty})
+		}
+		payload["pay_items"] = goods
+	}
+	payload["ledger_id"] = resolved.LedgerID
+	payload["consume_now"] = resolved.ConsumeNow
 	w.AppendActionLogDurable(sim.DurableActionLogRow{
 		ActorID:     resolved.BuyerID,
 		OccurredAt:  resolved.At,

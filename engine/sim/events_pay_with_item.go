@@ -184,7 +184,7 @@ func (PayCountered) isSimEvent() {}
 //   - failed_*        → empty (failure cause is encoded in TerminalState)
 //
 // ItemKind / QtyPerConsumer / ConsumeNow / ConsumerIDs / Amount /
-// SceneID / HuddleID are snapshotted from the entry. Admin projection,
+// PayItems / SceneID / HuddleID are snapshotted from the entry. Admin projection,
 // telemetry, and the resolution warrant subscriber all consume the
 // event with these fields populated so neither has to chase live
 // ledger state at handle time.
@@ -204,6 +204,17 @@ type PayWithItemResolved struct {
 	ConsumeNow     bool
 	ConsumerIDs    []ActorID
 	Amount         int
+
+	// PayItems are the goods the buyer paid WITH in the settled barter leg
+	// (LLM-105). Empty for a pure-coin pay. Snapshotted from the accepted entry
+	// (entry.PayItems) so the durable settlement audit row can tell a paid sale
+	// from a barter from a zero-value give-away without a ledger lookup — amount
+	// alone is ambiguous (a 0-coin barter and a 0-coin free gift both read 0). A
+	// counter never settles its own leg: a counter-response is a fresh pending
+	// entry with its own PayItems, so the accepted entry's PayItems is always the
+	// goods that actually moved. Mirrored on every terminal; only Accepted drives
+	// the audit row.
+	PayItems []ItemKindQty
 
 	TerminalState PayTerminalState
 	Message       string

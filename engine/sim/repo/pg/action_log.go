@@ -2,6 +2,7 @@ package pg
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -391,4 +392,109 @@ func huddleTranscriptText(raw []byte, actionType, huddleID string) string {
 	}
 	text, _ := payload["text"].(string)
 	return text
+}
+
+// loadSettlementsBaseSQL is the durable settlements read (LLM-105): every accepted
+// pay-with-item settlement off the `paid` audit beat, most-recent first. The WHERE
+// is extended with optional bound filters in LoadSettlements. result='ok' is the
+// always-true v2 invariant (insertActionLogSQL writes only committed rows), kept for
+// parity with loadHuddleTranscriptSQL.
+const loadSettlementsBaseSQL = `
+SELECT occurred_at, actor_id, speaker_name, payload, huddle_id
+  FROM agent_action_log
+ WHERE action_type = 'paid'
+   AND result = 'ok'`
+
+// LoadSettlements returns up to `limit` accepted settlements, most-recent first,
+// narrowed by filter (all fields optional). It reuses the bound-param incremental-
+// WHERE shape of the raw-turns route so a value is never interpolated into SQL. A
+// malformed payload on a row degrades that row to its bare columns rather than
+// failing the whole read, matching queryDayEvents.
+func (r *ActionLogRepo) LoadSettlements(ctx context.Context, filter sim.SettlementFilter, limit int) ([]sim.SettlementRow, error) {
+	q := loadSettlementsBaseSQL
+	args := []any{}
+	add := func(clause string, val any) {
+		args = append(args, val)
+		q += fmt.Sprintf(clause, len(args))
+	}
+	if filter.ActorID != "" {
+		add(" AND actor_id = $%d", string(filter.ActorID))
+	}
+	if !filter.Since.IsZero() {
+		add(" AND occurred_at >= $%d", filter.Since)
+	}
+	if !filter.Until.IsZero() {
+		add(" AND occurred_at < $%d", filter.Until)
+	}
+	if filter.LedgerID != 0 {
+		// ledger_id is a JSON number in the payload; ->> yields its text form, so
+		// match against the decimal string of the filter id.
+		add(" AND payload->>'ledger_id' = $%d", fmt.Sprintf("%d", uint64(filter.LedgerID)))
+	}
+	args = append(args, limit)
+	q += fmt.Sprintf(" ORDER BY occurred_at DESC, id DESC LIMIT $%d", len(args))
+
+	rows, err := r.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query settlements: %w", err)
+	}
+	defer rows.Close()
+
+	out := []sim.SettlementRow{}
+	for rows.Next() {
+		var (
+			occurredAt time.Time
+			actorID    string
+			speaker    string
+			payloadRaw []byte
+			huddle     sql.NullString // huddle_id is nullable (outdoor / pre-huddle)
+		)
+		if err := rows.Scan(&occurredAt, &actorID, &speaker, &payloadRaw, &huddle); err != nil {
+			return nil, fmt.Errorf("scan settlement row: %w", err)
+		}
+		row := sim.SettlementRow{
+			OccurredAt: occurredAt,
+			BuyerID:    sim.ActorID(actorID),
+			BuyerName:  speaker,
+			HuddleID:   huddle.String, // "" when NULL (Valid == false)
+		}
+		fillSettlementPayload(payloadRaw, &row, actorID)
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate settlements: %w", err)
+	}
+	return out, nil
+}
+
+// fillSettlementPayload decodes the `paid` row's jsonb payload onto row. Tolerant of
+// pre-LLM-105 rows that lack pay_items/ledger_id/consume_now (those stay zero) and
+// degrades a malformed payload to the bare row, matching huddleTranscriptText.
+func fillSettlementPayload(raw []byte, row *sim.SettlementRow, actorID string) {
+	if len(raw) == 0 {
+		return
+	}
+	var p struct {
+		Recipient  string `json:"recipient"`
+		Amount     int    `json:"amount"`
+		For        string `json:"for"`
+		ConsumeNow bool   `json:"consume_now"`
+		LedgerID   uint64 `json:"ledger_id"`
+		PayItems   []struct {
+			Item string `json:"item"`
+			Qty  int    `json:"qty"`
+		} `json:"pay_items"`
+	}
+	if err := json.Unmarshal(raw, &p); err != nil {
+		log.Printf("pg action_log: malformed paid payload for actor %q: %v", actorID, err)
+		return
+	}
+	row.SellerName = p.Recipient
+	row.Amount = p.Amount
+	row.Item = p.For
+	row.ConsumeNow = p.ConsumeNow
+	row.LedgerID = sim.LedgerID(p.LedgerID)
+	for _, pi := range p.PayItems {
+		row.PayItems = append(row.PayItems, sim.ItemKindQty{Kind: sim.ItemKind(pi.Item), Qty: pi.Qty})
+	}
 }

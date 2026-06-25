@@ -246,6 +246,39 @@ type HuddleTranscriptRow struct {
 	Text        string     // payload.text — the spoken/narrated line; "" for textless actions
 }
 
+// SettlementRow is one accepted pay-with-item settlement read back from the durable
+// agent_action_log `paid` audit beat (LLM-105) — the read model for the operator
+// settlements lens. Buyer{ID,Name} is the actor who paid (pay is buyer-initiated,
+// so actor_id is the buyer); SellerName the recipient; Amount the coins; Item the
+// "1 stew" for-text; PayItems the barter goods the buyer paid WITH (nil for a
+// pure-coin pay). LedgerID joins back to the pay-ledger entry and ConsumeNow marks
+// an eat-here sale; both are zero/false on pre-LLM-105 rows that predate the payload
+// enrichment (whose goods leg is unrecoverable). A give-away (free food) is
+// Amount==0 AND no PayItems.
+type SettlementRow struct {
+	OccurredAt time.Time
+	BuyerID    ActorID
+	BuyerName  string
+	SellerName string
+	Amount     int
+	Item       string
+	PayItems   []ItemKindQty
+	LedgerID   LedgerID
+	ConsumeNow bool
+	HuddleID   string
+}
+
+// SettlementFilter narrows a LoadSettlements read. Every field is optional — a zero
+// value means "no filter on this dimension". ActorID scopes to one buyer; Since and
+// Until bound occurred_at to [Since, Until); LedgerID pins one settlement (matches
+// only post-LLM-105 rows, which carry ledger_id in the payload).
+type SettlementFilter struct {
+	ActorID  ActorID
+	Since    time.Time
+	Until    time.Time
+	LedgerID LedgerID
+}
+
 // AgentActor pairs an actor's id with the llm-memory agent slug backing it.
 // The daily sim-conversation push (ZBBS-WORK-376) enumerates these to know
 // which actors to build a day-note for and under which agent namespace to POST
