@@ -102,9 +102,9 @@ const RouteScheduleTickerInterval = time.Minute
 // no boundary stamps, so the most recent window boundary fires right
 // away — the boot catch-up that re-hangs (or brings in) laundry and
 // re-tours the boards for the current time of day instead of waiting
-// for the next boundary. Pairs with KickstartNoticeboards: the
-// kickstart authors content for the boards' current states, and the
-// crier's catch-up tour then reads it aloud.
+// for the next boundary. For the town crier this catch-up tour is the
+// sole boot seeder of board content (board content is in-memory and
+// lost on restart): she authors and reads each board on arrival.
 //
 // The *rand.Rand is seeded once at goroutine entry and threaded into
 // every pass (same idiom as RunRotationTicker) — it feeds the
@@ -317,9 +317,11 @@ func handlePhaseAppliedLamplighter(w *sim.World, evt sim.Event) {
 // the empty, zero-capacity variant) posts the empty board and passes by
 // silently.
 //
-// Cold-start: a freshly-loaded world has no NoticeboardContent stamped —
-// KickstartNoticeboards seeds it shortly after boot so the boards aren't
-// blank before the crier's first tour.
+// Cold-start: a freshly-loaded world has no NoticeboardContent stamped
+// (it is in-memory and lost on restart). The route-schedule ticker's
+// first post-boot fire (RunRouteScheduleTicker) catch-up-tours the crier,
+// who authors each board on arrival — so boards are blank only until that
+// tour reaches each one.
 func handleActorArrivedAdvanceRoute(ctx context.Context, w *sim.World, evt sim.Event, client llm.Client) {
 	arrived, ok := evt.(*sim.ActorArrived)
 	if !ok {

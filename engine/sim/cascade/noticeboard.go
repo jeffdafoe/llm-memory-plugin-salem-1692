@@ -14,13 +14,10 @@ import (
 
 // noticeboard.go — engine-authored noticeboard content cascade.
 //
-// Authoring is initiated explicitly, never reactively off a board flip
-// (LLM-44):
-//
-//   - KickstartNoticeboards seeds every blank board once at boot.
-//   - The town-crier route authors a board on arrival (beginCrierBoardStop),
-//     posts it with the variant matched to the authored count, reads it, then
-//     advances. See cascade/npc_route.go.
+// Authoring is initiated explicitly by the town-crier route, never
+// reactively off a board flip (LLM-44): on arrival the crier authors a
+// board (beginCrierBoardStop), posts it with the variant matched to the
+// authored count, reads it, then advances. See cascade/npc_route.go.
 //
 // The VillageObjectStateChanged subscriber (handleNoticeboardStateChange) does
 // NOT author — it only clears content when a board rotates to a zero-capacity
@@ -73,14 +70,14 @@ const noticeboardLLMTimeout = 90 * time.Second
 // RegisterNoticeboard wires the VillageObjectStateChanged subscriber that
 // enforces the empty-board invariant (a zero-capacity board holds no
 // content). It does NOT author content reactively off a flip — authoring
-// is initiated explicitly by KickstartNoticeboards (boot seeding) and the
-// town-crier route (runtime, LLM-44). Must run on the world goroutine —
-// call before World.Run, or from inside a Command.Fn.
+// is initiated explicitly by the town-crier route (runtime, LLM-44). Must
+// run on the world goroutine — call before World.Run, or from inside a
+// Command.Fn.
 //
 // Panics on nil w or nil client to fail fast at wiring time. The client is
 // not consumed by the subscriber itself (the clear path is LLM-free) but a
 // non-nil client is the noticeboard subsystem's wiring contract — its
-// authoring paths (KickstartNoticeboards, the crier) require one.
+// authoring path (the crier) requires one.
 func RegisterNoticeboard(_ context.Context, w *sim.World, client llm.Client) {
 	if w == nil {
 		panic("cascade: RegisterNoticeboard requires a non-nil world")
@@ -89,126 +86,6 @@ func RegisterNoticeboard(_ context.Context, w *sim.World, client llm.Client) {
 		panic("cascade: RegisterNoticeboard requires a non-nil LLM client")
 	}
 	w.Subscribe(sim.SubscriberFunc(handleNoticeboardStateChange))
-}
-
-// kickstartBoard is one blank board found by KickstartNoticeboards'
-// world-goroutine enumeration — the trigger-time capture (id, state,
-// label) runNoticeboardAuthor needs, mirroring what the state-change
-// subscriber captures.
-type kickstartBoard struct {
-	id       sim.VillageObjectID
-	atState  string
-	label    string
-	capacity int
-}
-
-// kickstartClear is a board sitting in a zero-capacity (empty) state that still
-// holds stored content — collected during the enumeration and cleared after, so
-// the "an empty board holds no content" invariant the runtime rotation path
-// enforces also holds at boot.
-type kickstartClear struct {
-	id      sim.VillageObjectID
-	atState string
-}
-
-// kickstartScan is the enumeration result: blank capacity>0 boards to author
-// and zero-capacity boards with stale content to clear.
-type kickstartScan struct {
-	blanks []kickstartBoard
-	clears []kickstartClear
-}
-
-// KickstartNoticeboards authors content for every noticeboard that has
-// none — the restart-gap closer (ZBBS-HOME-443). World.NoticeboardContent
-// is transient by design ("first cycle after restart authors fresh"), but
-// the daily rotation that triggers authoring won't re-fire until the next
-// midnight boundary, so a mid-day engine restart left every board blank —
-// and unreadable in the client, which gates the read modal on non-empty
-// content — for the rest of the day. It also closes the designed
-// cold-start gap: the crier's first stop of the day now has content to
-// read instead of a silent first cycle.
-//
-// Call once in a goroutine after World.Run starts (it needs the command
-// loop). Enumerates boards on the world goroutine, then spawns one
-// runNoticeboardAuthor per blank board. A same-boot rotation flip racing
-// this is benign: SaveNoticeboardContent's atState stale-guard drops
-// whichever save lost, and the flip-triggered author re-runs for the new
-// state.
-//
-// Panics on nil w or nil client to fail fast at wiring time (same posture
-// as RegisterNoticeboard).
-func KickstartNoticeboards(ctx context.Context, w *sim.World, client llm.Client) {
-	if w == nil {
-		panic("cascade: KickstartNoticeboards requires a non-nil world")
-	}
-	if client == nil {
-		panic("cascade: KickstartNoticeboards requires a non-nil LLM client")
-	}
-	res, err := w.SendContext(ctx, sim.Command{Fn: func(world *sim.World) (any, error) {
-		scan := kickstartScan{}
-		for id, obj := range world.VillageObjects {
-			if obj == nil {
-				continue
-			}
-			asset, ok := world.Assets[obj.AssetID]
-			if !ok {
-				continue
-			}
-			state := asset.FindState(obj.CurrentState)
-			if state == nil || !state.HasTag(sim.TagRotatable) || !state.HasTag(sim.TagNoticeBoard) {
-				continue
-			}
-			capacity := sim.ContentCapacityForState(state)
-			if capacity <= 0 {
-				// Empty board: nothing to author. Clear any stale content
-				// left on it (e.g. by an older binary that authored for this
-				// state) so the "a zero-capacity board holds no content"
-				// invariant holds at boot, not just on a runtime rotation
-				// into the empty state. NoticeboardContent is transient
-				// today, so this is normally a no-op — it fails closed if
-				// that changes.
-				if nc := world.NoticeboardContent[id]; nc != nil {
-					scan.clears = append(scan.clears, kickstartClear{id: id, atState: obj.CurrentState})
-				}
-				continue
-			}
-			if nc := world.NoticeboardContent[id]; nc != nil {
-				continue
-			}
-			scan.blanks = append(scan.blanks, kickstartBoard{
-				id:       id,
-				atState:  obj.CurrentState,
-				label:    obj.EffectiveDisplayName(asset.Name),
-				capacity: capacity,
-			})
-		}
-		return scan, nil
-	}})
-	if err != nil {
-		if ctx.Err() == nil {
-			log.Printf("cascade/noticeboard: kickstart enumerate: %v", err)
-		}
-		return
-	}
-	scan, ok := res.(kickstartScan)
-	if !ok {
-		log.Printf("cascade/noticeboard: unexpected kickstart result type %T", res)
-		return
-	}
-	// Clear stale content on empty boards first (cheap, world-goroutine
-	// Commands), then author the blanks.
-	for _, c := range scan.clears {
-		if _, err := w.SendContext(ctx, sim.ClearNoticeboardContent(c.id, c.atState, time.Now())); err != nil && ctx.Err() == nil {
-			log.Printf("cascade/noticeboard: kickstart clear board %q state=%q: %v", c.id, c.atState, err)
-		}
-	}
-	if len(scan.blanks) == 0 {
-		return
-	}
-	log.Printf("cascade/noticeboard: kickstart authoring %d blank board(s)", len(scan.blanks))
-	for _, b := range scan.blanks {
-		go runNoticeboardAuthor(ctx, w, client, b.id, b.atState, b.label, "", b.capacity)
-	}
 }
 
 // handleNoticeboardStateChange is the VillageObjectStateChanged
@@ -327,41 +204,6 @@ func authorNoticeboardText(ctx context.Context, w *sim.World, client llm.Client,
 		return ""
 	}
 	return text
-}
-
-// runNoticeboardAuthor is KickstartNoticeboards' off-world goroutine body:
-// author content for a blank board and save it at the board's boot state.
-// (The crier's runtime path does NOT go through here — it sets the board
-// variant to match the authored count before saving; see finishCrierBoardStop.)
-func runNoticeboardAuthor(ctx context.Context, w *sim.World, client llm.Client, objectID sim.VillageObjectID, atState, boardLabel, priorText string, capacity int) {
-	text := authorNoticeboardText(ctx, w, client, objectID, atState, boardLabel, priorText, capacity)
-	if text == "" {
-		return
-	}
-	// Bound the save like the fetch/LLM call (authorNoticeboardText owns its own
-	// timeout context and cancels it on return), so a wedged world command queue
-	// can't block this goroutine indefinitely.
-	saveCtx, cancel := context.WithTimeout(ctx, noticeboardLLMTimeout)
-	defer cancel()
-	saveRes, err := w.SendContext(saveCtx, sim.SaveNoticeboardContent(objectID, text, atState, time.Now()))
-	if err != nil {
-		if saveCtx.Err() == nil {
-			log.Printf("cascade/noticeboard: SaveNoticeboardContent (%q, state=%q): %v", objectID, atState, err)
-		}
-		return
-	}
-	r, ok := saveRes.(sim.SaveNoticeboardContentResult)
-	if !ok {
-		log.Printf("cascade/noticeboard: unexpected SaveNoticeboardContent result type %T", saveRes)
-		return
-	}
-	if !r.Applied && r.SkipReason != "stale_state" {
-		// stale_state is expected (rotation overtook us); other
-		// reasons are worth logging at info-level so admin tools
-		// can see odd skips.
-		log.Printf("cascade/noticeboard: save skipped %q state=%q reason=%s",
-			objectID, atState, r.SkipReason)
-	}
 }
 
 // beginCrierBoardStop drives one town-crier board visit (LLM-44). Author-first:

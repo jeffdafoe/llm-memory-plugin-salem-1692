@@ -16,7 +16,7 @@ import (
 // SaveNoticeboardContent + EmitTownCrierAnnouncement) have their own
 // test coverage in engine/sim/{village_context_test.go,noticeboard_test.go};
 // these tests cover the subscriber gates, prompt construction, and
-// the full author-and-save cycle via FakeClient.
+// the shared author helper (authorNoticeboardText) via FakeClient.
 
 func buildNoticeboardCascadeWorld(t *testing.T) (*sim.World, func()) {
 	t.Helper()
@@ -149,103 +149,12 @@ func TestRegisterNoticeboard_NilClientPanics(t *testing.T) {
 	RegisterNoticeboard(context.Background(), w, nil)
 }
 
-// TestKickstartNoticeboards_AuthorsBlankBoards — ZBBS-HOME-443. A board in a
-// rotatable+notice-board state with no in-memory content gets one authoring
-// cycle at kickstart; non-board objects don't. (The restart-gap closer:
-// content is transient and the daily rotation won't re-fire until the next
-// midnight boundary.)
-func TestKickstartNoticeboards_AuthorsBlankBoards(t *testing.T) {
-	w, _ := buildNoticeboardCascadeWorld(t)
-	stop := runNoticeboardCascadeWorld(t, w)
-	defer stop()
-
-	client := llm.NewFakeClient(llm.ScriptedTurn{
-		Response: llm.Response{Content: "A town meeting is called for Friday next."},
-	})
-
-	KickstartNoticeboards(context.Background(), w, client)
-
-	// The author runs on a spawned goroutine — poll for the save to land.
-	deadline := time.After(2 * time.Second)
-	for readBoardContent(t, w, "board") == nil {
-		select {
-		case <-deadline:
-			t.Fatal("timed out waiting for kickstart authoring to save")
-		case <-time.After(10 * time.Millisecond):
-		}
-	}
-
-	got := readBoardContent(t, w, "board")
-	if got.Text != "A town meeting is called for Friday next." {
-		t.Errorf("Text = %q, want the scripted reply", got.Text)
-	}
-	if got.AtState != "blank" {
-		t.Errorf("AtState = %q, want blank (the state captured at kickstart)", got.AtState)
-	}
-	if calls := client.CallCount(); calls != 1 {
-		t.Errorf("client.CallCount = %d, want 1 (the board only, not the non-board)", calls)
-	}
-}
-
-// TestKickstartNoticeboards_SkipsBoardsWithContent — a board that already
-// has content (e.g. the rotation flip's author won the same-boot race) is
-// left alone: kickstart must not burn an LLM call or overwrite it.
-func TestKickstartNoticeboards_SkipsBoardsWithContent(t *testing.T) {
-	w, _ := buildNoticeboardCascadeWorld(t)
-	stop := runNoticeboardCascadeWorld(t, w)
-	defer stop()
-
-	if _, err := w.Send(sim.SaveNoticeboardContent("board", "Wares offered at the Ordinary.", "blank", time.Now())); err != nil {
-		t.Fatalf("seed content: %v", err)
-	}
-
-	client := llm.NewFakeClient()
-	KickstartNoticeboards(context.Background(), w, client)
-
-	// KickstartNoticeboards is synchronous through enumeration (its
-	// SendContext command completes before it returns) and spawns no
-	// author goroutines when every board has content — so nothing is
-	// legitimately in flight here. The short sleep only gives a BUGGY
-	// stray goroutine a beat to surface in CallCount before the assert
-	// (code_review, HOME-443).
-	time.Sleep(50 * time.Millisecond)
-	if calls := client.CallCount(); calls != 0 {
-		t.Errorf("client.CallCount = %d, want 0 (board already has content)", calls)
-	}
-	got := readBoardContent(t, w, "board")
-	if got == nil || got.Text != "Wares offered at the Ordinary." {
-		t.Errorf("content = %+v, want the seeded text untouched", got)
-	}
-}
-
-// TestKickstartNoticeboards_NilGuards — wiring-time panics, same posture
-// as RegisterNoticeboard.
-func TestKickstartNoticeboards_NilGuards(t *testing.T) {
-	t.Run("nil world", func(t *testing.T) {
-		defer func() {
-			if r := recover(); r == nil {
-				t.Error("KickstartNoticeboards(nil world) did not panic")
-			}
-		}()
-		KickstartNoticeboards(context.Background(), nil, llm.NewFakeClient())
-	})
-	t.Run("nil client", func(t *testing.T) {
-		w, _ := buildNoticeboardCascadeWorld(t)
-		defer func() {
-			if r := recover(); r == nil {
-				t.Error("KickstartNoticeboards(nil client) did not panic")
-			}
-		}()
-		KickstartNoticeboards(context.Background(), w, nil)
-	})
-}
-
-// TestRunNoticeboardAuthor_HappyPath: drives one authoring cycle
-// directly via runNoticeboardAuthor (bypassing the goroutine spawn
-// for deterministic test timing). Verifies FakeClient.Complete is
-// called with model salem-generic + the saved content matches the
-// reply (trimmed).
-func TestRunNoticeboardAuthor_HappyPath(t *testing.T) {
+// TestAuthorNoticeboardText_HappyPath: drives one authoring cycle via
+// authorNoticeboardText (the shared author helper the crier uses).
+// Verifies FakeClient.Complete is called with model salem-generic, a
+// [system, user] message pair, no tools, and the returned content is the
+// trimmed reply.
+func TestAuthorNoticeboardText_HappyPath(t *testing.T) {
 	w, _ := buildNoticeboardCascadeWorld(t)
 	stop := runNoticeboardCascadeWorld(t, w)
 	defer stop()
@@ -254,14 +163,12 @@ func TestRunNoticeboardAuthor_HappyPath(t *testing.T) {
 		Response: llm.Response{Content: "  A travelling cobbler lodges at the Ordinary.  "},
 	})
 
-	// Move the board to "posted" so the authoring is for that state.
-	// (Authoring is invoked directly; we just want a non-blank state
-	// to capture as atState.)
-	if _, err := w.Send(sim.SetVillageObjectState("board", "posted")); err != nil {
-		t.Fatalf("set state: %v", err)
+	// capacity/atState pass straight through; authorNoticeboardText returns
+	// the clamped text and does not itself store anything.
+	got := authorNoticeboardText(context.Background(), w, client, "board", "posted", "Notice Board", "", 1)
+	if got != "A travelling cobbler lodges at the Ordinary." {
+		t.Errorf("returned text = %q, want the trimmed reply", got)
 	}
-
-	runNoticeboardAuthor(context.Background(), w, client, "board", "posted", "Notice Board", "", 1)
 
 	if got := client.CallCount(); got != 1 {
 		t.Errorf("client.CallCount = %d, want 1", got)
@@ -283,24 +190,12 @@ func TestRunNoticeboardAuthor_HappyPath(t *testing.T) {
 		t.Errorf("Message roles = [%s, %s], want [system, user]",
 			reqs[0].Messages[0].Role, reqs[0].Messages[1].Role)
 	}
-
-	// Saved content should be the trimmed reply.
-	got := readBoardContent(t, w, "board")
-	if got == nil {
-		t.Fatal("NoticeboardContent[board] missing after authoring")
-	}
-	if got.Text != "A travelling cobbler lodges at the Ordinary." {
-		t.Errorf("Text = %q, want trimmed reply", got.Text)
-	}
-	if got.AtState != "posted" {
-		t.Errorf("AtState = %q, want posted", got.AtState)
-	}
 }
 
-// TestRunNoticeboardAuthor_MintsFreshSceneID — each authoring cycle
+// TestAuthorNoticeboardText_MintsFreshSceneID — each authoring cycle
 // issues its own scene_id so memory-api's chat_messages history loader
 // isolates one cycle's conversation from the next.
-func TestRunNoticeboardAuthor_MintsFreshSceneID(t *testing.T) {
+func TestAuthorNoticeboardText_MintsFreshSceneID(t *testing.T) {
 	w, _ := buildNoticeboardCascadeWorld(t)
 	stop := runNoticeboardCascadeWorld(t, w)
 	defer stop()
@@ -309,12 +204,9 @@ func TestRunNoticeboardAuthor_MintsFreshSceneID(t *testing.T) {
 		llm.ScriptedTurn{Response: llm.Response{Content: "first notice"}},
 		llm.ScriptedTurn{Response: llm.Response{Content: "second notice"}},
 	)
-	if _, err := w.Send(sim.SetVillageObjectState("board", "posted")); err != nil {
-		t.Fatalf("set state: %v", err)
-	}
 
-	runNoticeboardAuthor(context.Background(), w, client, "board", "posted", "Notice Board", "", 1)
-	runNoticeboardAuthor(context.Background(), w, client, "board", "posted", "Notice Board", "", 1)
+	authorNoticeboardText(context.Background(), w, client, "board", "posted", "Notice Board", "", 1)
+	authorNoticeboardText(context.Background(), w, client, "board", "posted", "Notice Board", "", 1)
 
 	reqs := client.Requests()
 	if len(reqs) != 2 {
@@ -328,9 +220,9 @@ func TestRunNoticeboardAuthor_MintsFreshSceneID(t *testing.T) {
 	}
 }
 
-// TestRunNoticeboardAuthor_EmptyReply: FakeClient returns empty →
-// nothing saved.
-func TestRunNoticeboardAuthor_EmptyReply(t *testing.T) {
+// TestAuthorNoticeboardText_EmptyReply: FakeClient returns whitespace →
+// the helper returns "" (nothing for the caller to store).
+func TestAuthorNoticeboardText_EmptyReply(t *testing.T) {
 	w, _ := buildNoticeboardCascadeWorld(t)
 	stop := runNoticeboardCascadeWorld(t, w)
 	defer stop()
@@ -338,39 +230,8 @@ func TestRunNoticeboardAuthor_EmptyReply(t *testing.T) {
 	client := llm.NewFakeClient(llm.ScriptedTurn{
 		Response: llm.Response{Content: "   \n  "},
 	})
-	if _, err := w.Send(sim.SetVillageObjectState("board", "posted")); err != nil {
-		t.Fatalf("set state: %v", err)
-	}
-	runNoticeboardAuthor(context.Background(), w, client, "board", "posted", "Notice Board", "", 1)
-
-	if got := readBoardContent(t, w, "board"); got != nil {
-		t.Errorf("content saved despite empty reply: %+v", got)
-	}
-}
-
-// TestRunNoticeboardAuthor_StaleStateDropsSave: the goroutine
-// completes the LLM call but the board's state has flipped again
-// before save → SkipReason=stale_state, content not stored.
-func TestRunNoticeboardAuthor_StaleStateDropsSave(t *testing.T) {
-	w, _ := buildNoticeboardCascadeWorld(t)
-	stop := runNoticeboardCascadeWorld(t, w)
-	defer stop()
-
-	client := llm.NewFakeClient(llm.ScriptedTurn{
-		Response: llm.Response{Content: "stale text"},
-	})
-	// Set state to "posted"; authoring captures "posted" as atState.
-	if _, err := w.Send(sim.SetVillageObjectState("board", "posted")); err != nil {
-		t.Fatalf("set state: %v", err)
-	}
-	// But before the goroutine runs, rotate again to "blank".
-	if _, err := w.Send(sim.SetVillageObjectState("board", "blank")); err != nil {
-		t.Fatalf("rotate: %v", err)
-	}
-	runNoticeboardAuthor(context.Background(), w, client, "board", "posted", "Notice Board", "", 1)
-
-	if got := readBoardContent(t, w, "board"); got != nil {
-		t.Errorf("content saved despite stale state: %+v", got)
+	if got := authorNoticeboardText(context.Background(), w, client, "board", "posted", "Notice Board", "", 1); got != "" {
+		t.Errorf("returned %q, want empty string on empty reply", got)
 	}
 }
 
@@ -472,10 +333,10 @@ func TestNoticeboardSystemPrompt_AntiSurveillance(t *testing.T) {
 	}
 }
 
-// TestRunNoticeboardAuthor_MultiLineCapacity (ZBBS-HOME-456): a board in a
-// capacity-3 state is authored as up to 3 newline-separated notices, the prompt
-// asks for 3, and an over-producing model is clamped down to 3.
-func TestRunNoticeboardAuthor_MultiLineCapacity(t *testing.T) {
+// TestAuthorNoticeboardText_MultiLineCapacity (ZBBS-HOME-456): a capacity-3
+// board is authored as up to 3 newline-separated notices, the prompt asks for
+// 3, and an over-producing model is clamped down to 3.
+func TestAuthorNoticeboardText_MultiLineCapacity(t *testing.T) {
 	w, _ := buildNoticeboardCascadeWorld(t)
 	stop := runNoticeboardCascadeWorld(t, w)
 	defer stop()
@@ -484,19 +345,11 @@ func TestRunNoticeboardAuthor_MultiLineCapacity(t *testing.T) {
 	client := llm.NewFakeClient(llm.ScriptedTurn{
 		Response: llm.Response{Content: "A town meeting is called for Friday next.\nWolves are seen upon the Andover road.\nA plain shawl was left at the meeting house.\nThe surgeon lodges at the Ordinary.\nHands are wanted at the Whittredge raising."},
 	})
-	if _, err := w.Send(sim.SetVillageObjectState("board", "three")); err != nil {
-		t.Fatalf("set state: %v", err)
-	}
 
-	runNoticeboardAuthor(context.Background(), w, client, "board", "three", "Notice Board", "", 3)
-
-	got := readBoardContent(t, w, "board")
-	if got == nil {
-		t.Fatal("content missing after multi-line authoring")
-	}
-	lines := strings.Split(got.Text, "\n")
+	got := authorNoticeboardText(context.Background(), w, client, "board", "three", "Notice Board", "", 3)
+	lines := strings.Split(got, "\n")
 	if len(lines) != 3 {
-		t.Fatalf("stored %d lines, want 3 (capacity clamp):\n%s", len(lines), got.Text)
+		t.Fatalf("returned %d lines, want 3 (capacity clamp):\n%s", len(lines), got)
 	}
 	for i, ln := range lines {
 		if strings.TrimSpace(ln) == "" {
@@ -543,34 +396,6 @@ func TestNoticeboardSubscriber_ClearsOnZeroCapacityState(t *testing.T) {
 	time.Sleep(50 * time.Millisecond) // give any (buggy) author goroutine a beat
 	if got := client.CallCount(); got != 0 {
 		t.Errorf("CallCount = %d, want 0 (zero-capacity flip must not author)", got)
-	}
-}
-
-// TestKickstartNoticeboards_ClearsZeroCapacityBoard (ZBBS-HOME-456): a board
-// sitting in a zero-capacity state that still holds stale content has it cleared
-// at kickstart, with no authoring call — the boot-time half of the empty-board
-// invariant.
-func TestKickstartNoticeboards_ClearsZeroCapacityBoard(t *testing.T) {
-	w, _ := buildNoticeboardCascadeWorld(t)
-	stop := runNoticeboardCascadeWorld(t, w)
-	defer stop()
-
-	if _, err := w.Send(sim.SetVillageObjectState("board", "empty")); err != nil {
-		t.Fatalf("set empty state: %v", err)
-	}
-	if _, err := w.Send(sim.SaveNoticeboardContent("board", "A stale notice.", "empty", time.Now())); err != nil {
-		t.Fatalf("seed stale content: %v", err)
-	}
-
-	client := llm.NewFakeClient() // empty script — must not author
-	KickstartNoticeboards(context.Background(), w, client)
-
-	if got := readBoardContent(t, w, "board"); got != nil {
-		t.Errorf("content present after kickstart on zero-capacity board: %+v", got)
-	}
-	time.Sleep(50 * time.Millisecond) // surface any stray author goroutine
-	if calls := client.CallCount(); calls != 0 {
-		t.Errorf("CallCount = %d, want 0 (no authoring for empty board)", calls)
 	}
 }
 
