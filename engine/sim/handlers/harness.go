@@ -283,8 +283,7 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 	if payload.Primary != nil && payload.Primary.Diff != nil {
 		result.StateChanged = payload.Primary.Diff.AnyChange
 	}
-	result.HadAudience = len(payload.Surroundings.HuddleMembers) > 0 ||
-		len(payload.Surroundings.CoPresent) > 0
+	result.HadAudience = payload.Surroundings.HasAudience()
 
 	// --- noop-skip preflight (pre-LLM gate) ---
 	// If perception has nothing actionable (no co-present peer, no need

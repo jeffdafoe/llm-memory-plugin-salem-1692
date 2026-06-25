@@ -51,7 +51,7 @@ func movingSnap(actorID sim.ActorID, moving bool) *sim.Snapshot {
 
 func TestGateTools_Moving_DropsWalkIncompatible_AdvertisesStop(t *testing.T) {
 	r := walkGatingRegistry(t)
-	payload := perception.Payload{ActorID: "walker"}
+	payload := perception.Payload{ActorID: "walker", Surroundings: speakAudience()}
 	specs := gateTools(r, payload, movingSnap("walker", true))
 	names := specNameSet(specs)
 
@@ -71,7 +71,7 @@ func TestGateTools_Moving_DropsWalkIncompatible_AdvertisesStop(t *testing.T) {
 
 func TestGateTools_Stationary_AdvertisesWalkTools_DropsStop(t *testing.T) {
 	r := walkGatingRegistry(t)
-	payload := perception.Payload{ActorID: "walker"}
+	payload := perception.Payload{ActorID: "walker", Surroundings: speakAudience()}
 	specs := gateTools(r, payload, movingSnap("walker", false))
 	names := specNameSet(specs)
 
@@ -90,7 +90,7 @@ func TestGateTools_Stationary_AdvertisesWalkTools_DropsStop(t *testing.T) {
 // actorIsMoving's nil handling.
 func TestGateTools_NilSnapshot_TreatedAsStationary(t *testing.T) {
 	r := walkGatingRegistry(t)
-	specs := gateTools(r, perception.Payload{ActorID: "walker"}, nil)
+	specs := gateTools(r, perception.Payload{ActorID: "walker", Surroundings: speakAudience()}, nil)
 	names := specNameSet(specs)
 	if names["consume"] != 1 || names["speak"] != 1 {
 		t.Errorf("walk tools should stay advertised under a nil snapshot; got consume=%d speak=%d", names["consume"], names["speak"])

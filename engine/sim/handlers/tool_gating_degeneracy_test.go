@@ -24,7 +24,7 @@ func degenSnap(actorID sim.ActorID, stage sim.DegeneracyStage) *sim.Snapshot {
 
 func TestGateTools_Flagged_DropsMoveTo(t *testing.T) {
 	r := walkGatingRegistry(t)
-	payload := perception.Payload{ActorID: "stuck"}
+	payload := perception.Payload{ActorID: "stuck", Surroundings: speakAudience()}
 	for _, stage := range []sim.DegeneracyStage{sim.DegeneracyFlagged, sim.DegeneracyThrottled} {
 		specs := gateTools(r, payload, degenSnap("stuck", stage))
 		names := specNameSet(specs)
