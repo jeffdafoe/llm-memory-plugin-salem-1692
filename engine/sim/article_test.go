@@ -17,6 +17,15 @@ func TestWithDefiniteArticle(t *testing.T) {
 		{"the-prefixed word is not an article", "Theater", "the Theater"},
 		{"an-prefixed word is not an article", "Anvil", "the Anvil"},
 		{"a-prefixed word is not an article", "Apple", "the Apple"},
+		{"singular possessive proper name", "Hannah's Inn", "Hannah's Inn"},
+		{"singular possessive, another", "John's Tavern", "John's Tavern"},
+		{"possessive, apostrophe in owner name", "O'Brien's Inn", "O'Brien's Inn"},
+		{"plural possessive, bare apostrophe", "Travelers' Rest", "Travelers' Rest"},
+		{"plural possessive, typographic apostrophe", "Farmers’ Market", "Farmers’ Market"},
+		{"singular possessive, typographic apostrophe", "Maria’s Bakery", "Maria’s Bakery"},
+		{"non-possessive proper name still gets the", "Thorne Residence", "the Thorne Residence"},
+		{"apostrophe but not possessive still gets the", "O'Malley Hall", "the O'Malley Hall"},
+		{"trailing s without apostrophe still gets the", "Oats Market", "the Oats Market"},
 		{"empty stays empty", "", ""},
 	}
 	for _, tc := range cases {

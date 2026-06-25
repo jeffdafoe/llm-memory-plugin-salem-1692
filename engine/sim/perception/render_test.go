@@ -54,8 +54,8 @@ func TestRenderSurroundings_InsideHuddleLinesOmitIDs(t *testing.T) {
 	insideOut := render(SurroundingsView{
 		InsideStructureID: "tavern", StructureName: "Tavern",
 	})
-	if !strings.Contains(insideOut, "You are inside Tavern, with no one else here to hear you speak.\n") {
-		t.Errorf("inside (alone) line should read 'You are inside Tavern, with no one else here to hear you speak.':\n%s", insideOut)
+	if !strings.Contains(insideOut, "You are inside the Tavern, with no one else here to hear you speak.\n") {
+		t.Errorf("inside (alone) line should read 'You are inside the Tavern, with no one else here to hear you speak.':\n%s", insideOut)
 	}
 	if strings.Contains(insideOut, "[tavern]") || strings.Contains(insideOut, "tavern\n") {
 		t.Errorf("inside line still leaks the StructureID:\n%s", insideOut)

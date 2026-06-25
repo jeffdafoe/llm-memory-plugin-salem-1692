@@ -841,13 +841,13 @@ func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 		if name == "" {
 			name = "a building"
 		}
-		location = "inside " + sanitizeInline(name)
+		location = "inside " + sim.WithDefiniteArticle(sanitizeInline(name))
 	case s.NearbyStructureName != "":
 		// Standing at a structure's loiter slot while outdoors — a keeper at
 		// their own stall, a customer outside a shop. Names where they are so
 		// the model doesn't read raw coordinates and re-walk to a place it is
 		// already standing at.
-		location = "outdoors by " + sanitizeInline(s.NearbyStructureName)
+		location = "outdoors by " + sim.WithDefiniteArticle(sanitizeInline(s.NearbyStructureName))
 	default:
 		location = "outdoors"
 	}
@@ -985,7 +985,7 @@ func anchorPlace(label, fallback string) string {
 	if label == "" {
 		return fallback
 	}
-	return sanitizeInline(label)
+	return sim.WithDefiniteArticle(sanitizeInline(label))
 }
 
 // renderDutySteer writes the standing return-to-post cue (ZBBS-HOME-352) — the
