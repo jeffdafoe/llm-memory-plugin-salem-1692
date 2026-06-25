@@ -113,7 +113,7 @@ func TestBuildOfferableCustomers_SuppressActiveTargetedQuote(t *testing.T) {
 	inv := []InventoryItem{{Label: "Stew", Qty: 5}}
 	snap := &sim.Snapshot{
 		Quotes: map[sim.QuoteID]*sim.SceneQuote{
-			1: {ID: 1, SellerID: "seller", TargetBuyer: "buyerA", ItemKind: "stew", State: sim.SceneQuoteStateActive},
+			1: {ID: 1, SellerID: "seller", TargetBuyer: "buyerA", Lines: []sim.QuoteLine{{ItemKind: "stew", Qty: 1}}, State: sim.SceneQuoteStateActive},
 		},
 	}
 	v := buildOfferableCustomers(snap, "seller", true, members, inv)
@@ -131,7 +131,7 @@ func TestBuildOfferableCustomers_PublicQuoteDoesNotSuppress(t *testing.T) {
 	// An untargeted (public) quote isn't directed at this customer — no suppression.
 	snap := &sim.Snapshot{
 		Quotes: map[sim.QuoteID]*sim.SceneQuote{
-			1: {ID: 1, SellerID: "seller", TargetBuyer: "", ItemKind: "stew", State: sim.SceneQuoteStateActive},
+			1: {ID: 1, SellerID: "seller", TargetBuyer: "", Lines: []sim.QuoteLine{{ItemKind: "stew", Qty: 1}}, State: sim.SceneQuoteStateActive},
 		},
 	}
 	v := buildOfferableCustomers(snap, "seller", true, members, inv)

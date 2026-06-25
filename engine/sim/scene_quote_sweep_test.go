@@ -27,7 +27,7 @@ func TestEvaluateSceneQuoteSweep_ExpiresPastTTL(t *testing.T) {
 
 	// Create at a fixed past time so the sweep "now" puts us past expiry.
 	created := time.Now().UTC().Add(-15 * time.Minute) // past the 10-min default TTL
-	res, err := w.Send(sim.SceneQuoteCreate("aldous", "ale", 1, 2, false, "", nil, created))
+	res, err := w.Send(sim.SceneQuoteCreate("aldous", []sim.QuoteLineInput{{ItemName: "ale", Qty: 1}}, 2, false, "", nil, created))
 	if err != nil {
 		t.Fatalf("SceneQuoteCreate: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestEvaluateSceneQuoteSweep_SkipsActive(t *testing.T) {
 
 	expired := captureSceneQuoteExpired(t, w)
 
-	res, err := w.Send(sim.SceneQuoteCreate("aldous", "ale", 1, 2, false, "", nil, time.Now().UTC()))
+	res, err := w.Send(sim.SceneQuoteCreate("aldous", []sim.QuoteLineInput{{ItemName: "ale", Qty: 1}}, 2, false, "", nil, time.Now().UTC()))
 	if err != nil {
 		t.Fatalf("SceneQuoteCreate: %v", err)
 	}
@@ -105,12 +105,12 @@ func TestEvaluateSceneQuoteSweep_SkipsNonActive(t *testing.T) {
 	// "sweep skips non-active" behavior from "sweep also expires
 	// stale active quotes."
 	staleAt := time.Now().UTC().Add(-15 * time.Minute)
-	res1, _ := w.Send(sim.SceneQuoteCreate("aldous", "ale", 1, 2, true, "", nil, staleAt))
+	res1, _ := w.Send(sim.SceneQuoteCreate("aldous", []sim.QuoteLineInput{{ItemName: "ale", Qty: 1}}, 2, true, "", nil, staleAt))
 	q1 := res1.(sim.SceneQuoteCreateResult).QuoteID
 
 	// Supersede with different amount → q1 enters Superseded terminal.
 	freshAt := time.Now().UTC()
-	if _, err := w.Send(sim.SceneQuoteCreate("aldous", "ale", 1, 5, true, "", nil, freshAt)); err != nil {
+	if _, err := w.Send(sim.SceneQuoteCreate("aldous", []sim.QuoteLineInput{{ItemName: "ale", Qty: 1}}, 5, true, "", nil, freshAt)); err != nil {
 		t.Fatalf("supersede: %v", err)
 	}
 
@@ -148,8 +148,8 @@ func TestEvaluateSceneQuoteSweep_MultipleInOneSweep(t *testing.T) {
 
 	staleAt := time.Now().UTC().Add(-15 * time.Minute)
 	// Different qty so no supersede fires between them.
-	res1, _ := w.Send(sim.SceneQuoteCreate("aldous", "ale", 1, 2, false, "", nil, staleAt))
-	res2, _ := w.Send(sim.SceneQuoteCreate("aldous", "ale", 2, 5, false, "", nil, staleAt))
+	res1, _ := w.Send(sim.SceneQuoteCreate("aldous", []sim.QuoteLineInput{{ItemName: "ale", Qty: 1}}, 2, false, "", nil, staleAt))
+	res2, _ := w.Send(sim.SceneQuoteCreate("aldous", []sim.QuoteLineInput{{ItemName: "ale", Qty: 2}}, 5, false, "", nil, staleAt))
 	q1 := res1.(sim.SceneQuoteCreateResult).QuoteID
 	q2 := res2.(sim.SceneQuoteCreateResult).QuoteID
 

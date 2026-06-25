@@ -118,7 +118,7 @@ func TestSceneQuoteReactor_NPCTarget_StampsWarrant(t *testing.T) {
 	)
 	defer stop()
 
-	res, err := w.Send(sim.SceneQuoteCreate("aldous", "ale", 2, 5, true, "Bea", nil, time.Now().UTC()))
+	res, err := w.Send(sim.SceneQuoteCreate("aldous", []sim.QuoteLineInput{{ItemName: "ale", Qty: 2}}, 5, true, "Bea", nil, time.Now().UTC()))
 	if err != nil {
 		t.Fatalf("SceneQuoteCreate: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestSceneQuoteReactor_NPCTarget_StampsWarrant(t *testing.T) {
 	if reason.SellerID != "aldous" {
 		t.Errorf("SellerID = %q, want aldous", reason.SellerID)
 	}
-	if reason.ItemKind != "ale" || reason.Qty != 2 || reason.Amount != 5 || reason.ConsumeNow != true {
+	if reason.Lines[0].ItemKind != "ale" || reason.Lines[0].Qty != 2 || reason.Amount != 5 || reason.ConsumeNow != true {
 		t.Errorf("warrant terms = %+v", reason)
 	}
 	if ws[0].SourceEventID == 0 {
@@ -165,7 +165,7 @@ func TestSceneQuoteReactor_PublicQuote_NoActiveHuddle_NoStamp(t *testing.T) {
 	)
 	defer stop()
 
-	if _, err := w.Send(sim.SceneQuoteCreate("aldous", "ale", 1, 2, false, "", nil, time.Now().UTC())); err != nil {
+	if _, err := w.Send(sim.SceneQuoteCreate("aldous", []sim.QuoteLineInput{{ItemName: "ale", Qty: 1}}, 2, false, "", nil, time.Now().UTC())); err != nil {
 		t.Fatalf("SceneQuoteCreate public: %v", err)
 	}
 	if got := len(peekActorWarrantsForQuoteTest(t, w, "bea")); got != 0 {
@@ -221,7 +221,7 @@ func TestSceneQuoteReactor_PublicQuote_FansOutToHuddlePeers(t *testing.T) {
 		t.Fatalf("set walker MoveIntent: %v", err)
 	}
 
-	res, err := w.Send(sim.SceneQuoteCreate("aldous", "ale", 1, 4, false, "", nil, time.Now().UTC()))
+	res, err := w.Send(sim.SceneQuoteCreate("aldous", []sim.QuoteLineInput{{ItemName: "ale", Qty: 1}}, 4, false, "", nil, time.Now().UTC()))
 	if err != nil {
 		t.Fatalf("SceneQuoteCreate public: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestSceneQuoteReactor_PublicQuote_FansOutToHuddlePeers(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s Warrants[0].Reason type = %T, want SceneQuoteTargetedWarrantReason", id, ws[0].Reason)
 		}
-		if reason.QuoteID != qid || reason.SellerID != "aldous" || reason.ItemKind != "ale" || reason.Amount != 4 {
+		if reason.QuoteID != qid || reason.SellerID != "aldous" || reason.Lines[0].ItemKind != "ale" || reason.Amount != 4 {
 			t.Errorf("%s warrant terms = %+v, want quote %d from aldous", id, reason, qid)
 		}
 		if !reason.Overheard {
@@ -261,7 +261,7 @@ func TestSceneQuoteReactor_PublicQuote_ConcludedHuddle_NoStamp(t *testing.T) {
 	defer stop()
 	seedQuoteTestHuddle(t, w, "h1", true, "aldous", "bea")
 
-	if _, err := w.Send(sim.SceneQuoteCreate("aldous", "ale", 1, 2, false, "", nil, time.Now().UTC())); err != nil {
+	if _, err := w.Send(sim.SceneQuoteCreate("aldous", []sim.QuoteLineInput{{ItemName: "ale", Qty: 1}}, 2, false, "", nil, time.Now().UTC())); err != nil {
 		t.Fatalf("SceneQuoteCreate public: %v", err)
 	}
 	if got := len(peekActorWarrantsForQuoteTest(t, w, "bea")); got != 0 {
@@ -279,7 +279,7 @@ func TestSceneQuoteReactor_PCTarget_NoStamp(t *testing.T) {
 	)
 	defer stop()
 
-	if _, err := w.Send(sim.SceneQuoteCreate("aldous", "ale", 1, 2, false, "PCPlayer", nil, time.Now().UTC())); err != nil {
+	if _, err := w.Send(sim.SceneQuoteCreate("aldous", []sim.QuoteLineInput{{ItemName: "ale", Qty: 1}}, 2, false, "PCPlayer", nil, time.Now().UTC())); err != nil {
 		t.Fatalf("SceneQuoteCreate PC target: %v", err)
 	}
 	if got := len(peekActorWarrantsForQuoteTest(t, w, "pcplayer")); got != 0 {
@@ -296,7 +296,7 @@ func TestSceneQuoteReactor_NPCSharedTarget_StampsWarrant(t *testing.T) {
 	)
 	defer stop()
 
-	if _, err := w.Send(sim.SceneQuoteCreate("aldous", "ale", 1, 2, false, "Shopkeeper", nil, time.Now().UTC())); err != nil {
+	if _, err := w.Send(sim.SceneQuoteCreate("aldous", []sim.QuoteLineInput{{ItemName: "ale", Qty: 1}}, 2, false, "Shopkeeper", nil, time.Now().UTC())); err != nil {
 		t.Fatalf("SceneQuoteCreate: %v", err)
 	}
 	if got := len(peekActorWarrantsForQuoteTest(t, w, "shopkeeper")); got != 1 {
@@ -316,7 +316,7 @@ func TestSceneQuoteReactor_DedupOnDoubleStamp(t *testing.T) {
 	defer stop()
 
 	// First real create stamps the warrant.
-	res, err := w.Send(sim.SceneQuoteCreate("aldous", "ale", 1, 2, false, "Bea", nil, time.Now().UTC()))
+	res, err := w.Send(sim.SceneQuoteCreate("aldous", []sim.QuoteLineInput{{ItemName: "ale", Qty: 1}}, 2, false, "Bea", nil, time.Now().UTC()))
 	if err != nil {
 		t.Fatalf("SceneQuoteCreate: %v", err)
 	}

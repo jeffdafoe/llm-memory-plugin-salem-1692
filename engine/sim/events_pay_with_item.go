@@ -205,6 +205,12 @@ type PayWithItemResolved struct {
 	ConsumerIDs    []ActorID
 	Amount         int
 
+	// Lines is populated only on a bundle quote-take accept (LLM-101): the
+	// full set of {ItemKind, Qty} lines the buyer took. Empty for every
+	// single-item terminal (use ItemKind/QtyPerConsumer there). Carried so the
+	// action-log for-text and any settlement audit can describe the bundle.
+	Lines []QuoteLine
+
 	// PayItems are the goods the buyer paid WITH in the settled barter leg
 	// (LLM-105). Empty for a pure-coin pay. Snapshotted from the accepted entry
 	// (entry.PayItems) so the durable settlement audit row can tell a paid sale

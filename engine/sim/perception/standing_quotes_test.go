@@ -22,8 +22,7 @@ func activeQuote(id sim.QuoteID, seller, target sim.ActorID, item sim.ItemKind, 
 		ID:          id,
 		SellerID:    seller,
 		TargetBuyer: target,
-		ItemKind:    item,
-		Qty:         qty,
+		Lines:       []sim.QuoteLine{{ItemKind: item, Qty: qty}},
 		Amount:      amount,
 		State:       sim.SceneQuoteStateActive,
 	}
@@ -118,12 +117,12 @@ func TestBuildStandingQuotesFromMe_NilQuoteAndMissingBuyerSafe(t *testing.T) {
 func TestRenderStandingQuotesFromMe_TargetedLine(t *testing.T) {
 	var b strings.Builder
 	renderStandingQuotesFromMe(&b, []StandingQuoteView{
-		{QuoteID: 1, BuyerName: "Jefferey", Item: "nights_stay", Qty: 1, Amount: 4},
+		{QuoteID: 1, BuyerName: "Jefferey", Lines: []sim.QuoteLine{{ItemKind: "nights_stay", Qty: 1}}, Amount: 4},
 	})
 	out := b.String()
 	for _, must := range []string{
 		"## Offers you've put out",
-		"You have offered Jefferey 1 nights_stay for 4 coins",
+		"You have offered Jefferey nights_stay for 4 coins",
 		"they have yet to answer",
 		"do not post it again",
 	} {
@@ -136,10 +135,10 @@ func TestRenderStandingQuotesFromMe_TargetedLine(t *testing.T) {
 func TestRenderStandingQuotesFromMe_PublicLine(t *testing.T) {
 	var b strings.Builder
 	renderStandingQuotesFromMe(&b, []StandingQuoteView{
-		{QuoteID: 2, BuyerName: "", Item: "nights_stay", Qty: 1, Amount: 4},
+		{QuoteID: 2, BuyerName: "", Lines: []sim.QuoteLine{{ItemKind: "nights_stay", Qty: 1}}, Amount: 4},
 	})
 	out := b.String()
-	if !strings.Contains(out, "1 nights_stay for 4 coins to anyone here") {
+	if !strings.Contains(out, "nights_stay for 4 coins to anyone here") {
 		t.Errorf("public quote line wrong\n%s", out)
 	}
 }
@@ -159,7 +158,7 @@ func TestRender_SellerStandingQuoteSection(t *testing.T) {
 	})
 	p := Build(snap, "john", nil)
 	out := combinedPrompt(Render(p, DefaultRenderConfig()))
-	if !strings.Contains(out, "## Offers you've put out") || !strings.Contains(out, "You have offered Jefferey 1 nights_stay") {
+	if !strings.Contains(out, "## Offers you've put out") || !strings.Contains(out, "You have offered Jefferey nights_stay") {
 		t.Errorf("seller standing-quote cue missing from full prompt\n%s", out)
 	}
 }

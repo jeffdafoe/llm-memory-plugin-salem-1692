@@ -228,16 +228,18 @@ func (r PaidWarrantReason) DedupDiscriminator() uint64 { return uint64(r.PaidID)
 // restart-stable scheme ledger-substrate-design § 8 designs for
 // pay-offer warrants).
 //
-// Amount/Qty/ConsumeNow/ItemKind/ExpiresAt all travel on the warrant
+// Amount/Lines/ConsumeNow/ExpiresAt all travel on the warrant
 // payload so the buyer's tick prompt can render the offer terms
 // directly off WarrantMeta without a separate World.Quotes lookup
 // (the prompt builder runs off the published Snapshot off the world
 // goroutine; pulling the live quote at prompt time would race).
 type SceneQuoteTargetedWarrantReason struct {
-	QuoteID    QuoteID
-	SellerID   ActorID
-	ItemKind   ItemKind
-	Qty        int
+	QuoteID  QuoteID
+	SellerID ActorID
+	// Lines carries the bundle's item kinds + per-consumer quantities so
+	// the buyer's tick prompt renders the offer (single- or multi-line)
+	// without a live World.Quotes lookup (LLM-101).
+	Lines      []QuoteLine
 	Amount     int
 	ConsumeNow bool
 	ExpiresAt  time.Time

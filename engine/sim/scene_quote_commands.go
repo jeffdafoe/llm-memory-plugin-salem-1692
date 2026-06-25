@@ -36,6 +36,17 @@ const MaxSceneQuoteAmount = math.MaxInt32
 // check uses the product.
 const MaxSceneQuoteQty = math.MaxInt32
 
+// QuoteLineInput is one bundle line as it arrives from the tool layer: a
+// free-text item NAME (resolved to a canonical ItemKind inside the Command Fn
+// via resolveOrMintItemKind) and a positive per-consumer quantity. The Command
+// turns a []QuoteLineInput into the resolved []QuoteLine it stores on the
+// quote, merging duplicate canonical kinds (LLM-101). Mirrors PayItemInput's
+// free-text-name shape on the pay side.
+type QuoteLineInput struct {
+	ItemName string
+	Qty      int
+}
+
 // SceneQuoteCreateResult is the value returned by the SceneQuoteCreate
 // Command — the handler narrates QuoteID and ExpiresAt back to the
 // LLM so it has a stable identifier to reference in a follow-up
@@ -94,8 +105,7 @@ type SceneQuoteCreateResult struct {
 // supersede.
 func SceneQuoteCreate(
 	sellerID ActorID,
-	itemName string,
-	qty int,
+	lines []QuoteLineInput,
 	amount int,
 	consumeNow bool,
 	targetBuyerName string,
@@ -107,17 +117,14 @@ func SceneQuoteCreate(
 			// Defense-in-depth re-validation. SceneQuoteCreate is
 			// exported — non-handler callers (tests, admin paths,
 			// future cascades) could pass through bad shapes.
-			if qty < 1 {
-				return nil, fmt.Errorf("SceneQuoteCreate: qty must be at least 1 (got %d)", qty)
-			}
-			if qty > MaxSceneQuoteQty {
-				return nil, fmt.Errorf("SceneQuoteCreate: qty exceeds maximum (got %d, max %d)", qty, MaxSceneQuoteQty)
-			}
 			if amount < 1 {
 				return nil, fmt.Errorf("SceneQuoteCreate: amount must be at least 1 (got %d)", amount)
 			}
 			if amount > MaxSceneQuoteAmount {
 				return nil, fmt.Errorf("SceneQuoteCreate: amount exceeds maximum (got %d, max %d)", amount, MaxSceneQuoteAmount)
+			}
+			if len(lines) == 0 {
+				return nil, errors.New("a quote must offer at least one item line.")
 			}
 
 			seller, ok := w.Actors[sellerID]
@@ -147,27 +154,42 @@ func SceneQuoteCreate(
 			// at qty 0 — a seller quoting a good the world doesn't have yet is a
 			// discovery signal. The seller holds 0 of a freshly-minted kind, so
 			// the stock gate below still rejects the quote.
-			kind, ok := resolveOrMintItemKind(w, itemName)
-			if !ok {
-				return nil, fmt.Errorf(
-					"unknown item kind %q — check the items available in this world before quoting.",
-					itemName,
-				)
+			resolvedLines, err := resolveQuoteLines(w, lines)
+			if err != nil {
+				return nil, err
 			}
 
-			// ZBBS-WORK-405: a quote for a non-portable consumable always
-			// proposes eat-here — the seller-side mirror of the
-			// pay_with_item buyer clamp, applied before the quote becomes
-			// anything (dedup key, supersede match, the persisted quote,
-			// the Created event). Without this a take-home stew quote
-			// could exist that no clamped buyer offer can opportunistically
-			// match (the HOME-424 auto-match requires disposition
-			// equality), and the seller model would believe it posted a
-			// take-home offer it didn't.
+			// A bundle (>1 line) can't carry a service-capability kind (e.g.
+			// nights_stay): a service has no inventory and delivers as a
+			// deferred/eager Order, which the bundle take path deliberately
+			// does not mint. Service items stay on the single-item quote path.
+			if len(resolvedLines) > 1 {
+				for _, ln := range resolvedLines {
+					if itemHasCapability(w, ln.ItemKind, "service") {
+						return nil, fmt.Errorf(
+							"%s can't be part of a bundle — quote it on its own.", ln.ItemKind,
+						)
+					}
+				}
+			}
+
+			// ZBBS-WORK-405 (extended to bundles, LLM-101): if ANY line is a
+			// non-portable consumable the whole bundle clamps to eat-here —
+			// disposition is bundle-level, and a basket holding a served dish
+			// can't be carried out. Applied before the quote becomes anything
+			// (dedup key, supersede match, the persisted quote, the Created
+			// event), so a clamped buyer offer can opportunistically match (the
+			// HOME-424 auto-match requires disposition equality) and the seller
+			// model isn't left believing it posted a take-home offer it didn't.
 			eatHereClamped := false
-			if !consumeNow && w.ItemKinds[kind].EatHereOnly() {
-				consumeNow = true
-				eatHereClamped = true
+			if !consumeNow {
+				for _, ln := range resolvedLines {
+					if w.ItemKinds[ln.ItemKind].EatHereOnly() {
+						consumeNow = true
+						eatHereClamped = true
+						break
+					}
+				}
 			}
 
 			// Gate 3: closed-shop / break gate (simple-strict).
@@ -212,37 +234,36 @@ func SceneQuoteCreate(
 				return nil, err
 			}
 
-			// Gate 8 + 4: numeric range guard, then stock check.
-			// Computed together because the multiplication is the
-			// overflow risk.
+			// Gate 8 + 4: per-line overflow guard, then stock check.
+			// effectiveConsumers is bundle-level (the consumer set applies to
+			// every line); each line stock-checks independently.
 			effectiveConsumers := len(consumerIDs)
 			if effectiveConsumers == 0 {
 				effectiveConsumers = 1
 			}
-			// Overflow guard: Qty * effectiveConsumers must fit in
-			// int. Both inputs already capped at MaxSceneQuoteQty
-			// (MaxInt32), so on a 32-bit int platform the product
-			// could wrap; on 64-bit int it cannot. Defensive guard
-			// anyway, since Inventory[kind] is int and a wrapped
-			// negative would silently pass the stock check.
-			if qty > math.MaxInt/effectiveConsumers {
-				return nil, fmt.Errorf(
-					"SceneQuoteCreate: qty %d × %d consumers overflows int — split the order.",
-					qty, effectiveConsumers,
-				)
-			}
-			needed := qty * effectiveConsumers
-			// Service-capability items (e.g. nights_stay) carry no inventory —
-			// they're a capacity grant, not stock — so the stock check is skipped
-			// for them, mirroring the deliver_order gate (order_commands.go:
-			// "lodging IMPLIES service (no inventory)"). Lodging capacity is
-			// enforced downstream at AssignBedroomForLodger (ErrNoPrivateRooms /
-			// all-bedrooms-occupied), not here. A non-service item still stock-gates.
-			if !itemHasCapability(w, kind, "service") {
-				if seller.Inventory[kind] < needed {
+			for _, ln := range resolvedLines {
+				// Overflow guard: Qty * effectiveConsumers must fit in int.
+				// Inputs are capped at MaxSceneQuoteQty (MaxInt32), so on a
+				// 32-bit int platform the product could wrap and a negative
+				// would silently pass the stock check.
+				if ln.Qty > math.MaxInt/effectiveConsumers {
+					return nil, fmt.Errorf(
+						"SceneQuoteCreate: qty %d × %d consumers overflows int — split the order.",
+						ln.Qty, effectiveConsumers,
+					)
+				}
+				needed := ln.Qty * effectiveConsumers
+				// Service-capability items carry no inventory (capacity grant,
+				// not stock) so they skip the stock check. A bundle can't hold
+				// one (rejected above), so this only fires for a single-item
+				// service quote, preserving prior behavior.
+				if itemHasCapability(w, ln.ItemKind, "service") {
+					continue
+				}
+				if seller.Inventory[ln.ItemKind] < needed {
 					return nil, fmt.Errorf(
 						"insufficient stock (have %d %s, need %d) — quote a smaller quantity before posting.",
-						seller.Inventory[kind], kind, needed,
+						seller.Inventory[ln.ItemKind], ln.ItemKind, needed,
 					)
 				}
 			}
@@ -271,7 +292,7 @@ func SceneQuoteCreate(
 			// Run BEFORE the cap check (design § 4): an exact-key
 			// duplicate frees a slot, which may save us from
 			// hitting the cap.
-			supersedeMatchingQuotes(w, scene, sellerID, kind, qty, consumeNow, targetBuyerID, consumerIDs, at)
+			supersedeMatchingQuotes(w, scene, sellerID, resolvedLines, consumeNow, targetBuyerID, consumerIDs, at)
 
 			// Gate 10: per-(seller, scene) cap. Count remaining
 			// active quotes in the bucket (post-supersede); if at
@@ -287,8 +308,7 @@ func SceneQuoteCreate(
 				SceneID:     sceneID,
 				SellerID:    sellerID,
 				TargetBuyer: targetBuyerID,
-				ItemKind:    kind,
-				Qty:         qty,
+				Lines:       resolvedLines,
 				ConsumeNow:  consumeNow,
 				ConsumerIDs: consumerIDs,
 				Amount:      amount,
@@ -304,8 +324,7 @@ func SceneQuoteCreate(
 				SceneID:     sceneID,
 				SellerID:    sellerID,
 				TargetBuyer: targetBuyerID,
-				ItemKind:    kind,
-				Qty:         qty,
+				Lines:       cloneQuoteLines(resolvedLines),
 				Amount:      amount,
 				ConsumeNow:  consumeNow,
 				ConsumerIDs: cloneActorIDs(consumerIDs),
@@ -498,8 +517,7 @@ func supersedeMatchingQuotes(
 	w *World,
 	scene *Scene,
 	sellerID ActorID,
-	kind ItemKind,
-	qty int,
+	lines []QuoteLine,
 	consumeNow bool,
 	targetBuyerID ActorID,
 	consumerIDs []ActorID,
@@ -520,7 +538,12 @@ func supersedeMatchingQuotes(
 		if q.SellerID != sellerID {
 			continue
 		}
-		if q.ItemKind != kind || q.Qty != qty || q.ConsumeNow != consumeNow || q.TargetBuyer != targetBuyerID {
+		if q.ConsumeNow != consumeNow || q.TargetBuyer != targetBuyerID {
+			continue
+		}
+		// Bundle line set must match (order-independent, LLM-101) — the
+		// multi-line analogue of the old ItemKind+Qty scalar key.
+		if !quoteLinesEqual(q.Lines, lines) {
 			continue
 		}
 		if !actorIDSetsEqual(q.ConsumerIDs, consumerIDs) {
@@ -621,4 +644,91 @@ func cloneActorIDs(ids []ActorID) []ActorID {
 	out := make([]ActorID, len(ids))
 	copy(out, ids)
 	return out
+}
+
+// cloneQuoteLines returns an independent copy of lines. QuoteLine is a flat
+// value type, so copying the backing array fully isolates the clone — used to
+// give the emitted SceneQuoteCreated event its own slice so a post-emit
+// mutation of the quote's Lines can't reach a subscriber's retained reference.
+func cloneQuoteLines(lines []QuoteLine) []QuoteLine {
+	if len(lines) == 0 {
+		return nil
+	}
+	out := make([]QuoteLine, len(lines))
+	copy(out, lines)
+	return out
+}
+
+// resolveQuoteLines resolves each free-text bundle line to a canonical
+// ItemKind and merges duplicate kinds by summing their quantities (LLM-101).
+// Per-line qty must be in [1, MaxSceneQuoteQty]; a merged total is
+// overflow-checked and re-capped. Unknown names mint a kind at qty 0
+// (ZBBS-WORK-412 discovery signal the caller's stock gate then rejects);
+// resolveOrMintItemKind only returns ok=false for an unusable name. Returns
+// the merged lines in first-seen order (deterministic for the dedup key + the
+// rendered line list); rejects an empty input and a bundle exceeding
+// MaxSceneQuoteLines distinct kinds.
+func resolveQuoteLines(w *World, lines []QuoteLineInput) ([]QuoteLine, error) {
+	if len(lines) == 0 {
+		return nil, errors.New("a quote must offer at least one item line.")
+	}
+	merged := make([]QuoteLine, 0, len(lines))
+	index := make(map[ItemKind]int, len(lines))
+	for _, in := range lines {
+		if in.Qty < 1 {
+			return nil, fmt.Errorf("each line's quantity must be at least 1 (got %d for %q).", in.Qty, in.ItemName)
+		}
+		if in.Qty > MaxSceneQuoteQty {
+			return nil, fmt.Errorf("quantity exceeds maximum (got %d, max %d).", in.Qty, MaxSceneQuoteQty)
+		}
+		kind, ok := resolveOrMintItemKind(w, in.ItemName)
+		if !ok {
+			return nil, fmt.Errorf(
+				"unknown item kind %q — check the items available in this world before quoting.",
+				in.ItemName,
+			)
+		}
+		if pos, seen := index[kind]; seen {
+			sum, err := addChecked(merged[pos].Qty, in.Qty)
+			if err != nil || sum > MaxSceneQuoteQty {
+				return nil, fmt.Errorf("merged quantity for %s exceeds maximum — quote a smaller amount.", kind)
+			}
+			merged[pos].Qty = sum
+			continue
+		}
+		if len(merged) >= MaxSceneQuoteLines {
+			return nil, fmt.Errorf(
+				"too many item kinds in one quote (max %d) — split into separate quotes.",
+				MaxSceneQuoteLines,
+			)
+		}
+		index[kind] = len(merged)
+		merged = append(merged, QuoteLine{ItemKind: kind, Qty: in.Qty})
+	}
+	return merged, nil
+}
+
+// quoteLinesEqual reports whether two bundle line sets are equal,
+// order-independent — the model may list "blueberries, raspberries" or the
+// reverse for the same bundle (LLM-101). Both inputs hold merged unique kinds,
+// so a per-kind quantity comparison suffices. Used by the duplicate-key
+// supersede check (the multi-line analogue of the old ItemKind+Qty scalar key).
+func quoteLinesEqual(a, b []QuoteLine) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	if len(a) == 0 {
+		return true
+	}
+	counts := make(map[ItemKind]int, len(a))
+	for _, ln := range a {
+		counts[ln.ItemKind] += ln.Qty
+	}
+	for _, ln := range b {
+		counts[ln.ItemKind] -= ln.Qty
+		if counts[ln.ItemKind] == 0 {
+			delete(counts, ln.ItemKind)
+		}
+	}
+	return len(counts) == 0
 }

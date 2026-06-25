@@ -526,9 +526,10 @@ type PendingOfferView struct {
 type StandingQuoteView struct {
 	QuoteID   sim.QuoteID
 	BuyerName string
-	Item      sim.ItemKind
-	Qty       int
-	Amount    int
+	// Lines are the offer's item lines (LLM-101) — single-element for the
+	// common single-item quote, multi for a bundle.
+	Lines  []sim.QuoteLine
+	Amount int
 }
 
 // ResolvedOfferView is one entry in RecentlyResolvedOffersFromMe — a

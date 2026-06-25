@@ -1770,18 +1770,18 @@ func renderStandingQuotesFromMe(b *strings.Builder, quotes []StandingQuoteView) 
 	}
 	b.WriteString("## Offers you've put out\n")
 	for i, q := range quotes {
-		item := sanitizeInline(string(q.Item))
-		if item == "" {
-			item = "item"
+		items := formatQuoteLines(q.Lines)
+		if items == "" {
+			items = "item"
 		}
 		price := formatOfferPayment(q.Amount, nil)
 		if q.BuyerName != "" {
-			fmt.Fprintf(b, "%d. You have offered %s %d %s for %s — they have yet to answer.\n",
-				i+1, sanitizeInline(q.BuyerName), q.Qty, item, price)
+			fmt.Fprintf(b, "%d. You have offered %s %s for %s — they have yet to answer.\n",
+				i+1, sanitizeInline(q.BuyerName), items, price)
 			continue
 		}
-		fmt.Fprintf(b, "%d. You have offered %d %s for %s to anyone here — none has yet taken it.\n",
-			i+1, q.Qty, item, price)
+		fmt.Fprintf(b, "%d. You have offered %s for %s to anyone here — none has yet taken it.\n",
+			i+1, items, price)
 	}
 	// Steer against re-posting a STANDING offer (the already_quoted thrash), not
 	// against making a fresh offer to a different buyer — a keeper with rooms or
@@ -2002,7 +2002,16 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 	case sim.NeedThresholdWarrantReason:
 		return renderNeedNudgeLine(n, r.Need), false
 	case sim.SceneQuoteTargetedWarrantReason:
-		return renderQuoteWarrantLine(n, nameOf(r.SellerID), r, eatHereKind(r.ItemKind)), false
+		// A bundle is eat-here if ANY line is non-portable (the whole bundle
+		// was clamped to eat-here at quote creation, LLM-101).
+		eatHere := false
+		for _, ln := range r.Lines {
+			if eatHereKind(ln.ItemKind) {
+				eatHere = true
+				break
+			}
+		}
+		return renderQuoteWarrantLine(n, nameOf(r.SellerID), r, eatHere), false
 	case sim.PayResolvedWarrantReason:
 		return renderPayResolvedWarrantLine(n, nameOf(r.Seller), r, maxTextBytes), false
 	case sim.ServeHandoverWarrantReason:
@@ -2096,7 +2105,7 @@ func renderQuoteWarrantLine(n int, seller string, r sim.SceneQuoteTargetedWarran
 	if r.Amount == 1 {
 		unit = "coin"
 	}
-	item := sanitizeInline(string(r.ItemKind))
+	items := formatQuoteLines(r.Lines)
 	// The eat-here disposition fact (ZBBS-WORK-405): goods of this class
 	// can't be carried away, so say so up front rather than letting the
 	// buyer plan a take-home the clamp will quietly rewrite.
@@ -2104,7 +2113,15 @@ func renderQuoteWarrantLine(n int, seller string, r sim.SceneQuoteTargetedWarran
 	if eatHere {
 		disposition = ", to eat here (it can't be carried away)"
 	}
-	take := fmt.Sprintf(" To take it, call pay_with_item with quote_id %d and the same item, qty, and amount — it settles at once.", r.QuoteID)
+	// The take-instruction carries the quote_id. A bundle (LLM-101) is taken
+	// whole, so it needs only the quote_id + total amount; a single-item quote
+	// keeps the match-the-terms phrasing.
+	var take string
+	if len(r.Lines) > 1 {
+		take = fmt.Sprintf(" To take the whole bundle, call pay_with_item with quote_id %d and amount %d — it settles at once.", r.QuoteID, r.Amount)
+	} else {
+		take = fmt.Sprintf(" To take it, call pay_with_item with quote_id %d and the same item, qty, and amount — it settles at once.", r.QuoteID)
+	}
 	// An overheard public quote (huddle fan-out, ZBBS-HOME-431) is an ad
 	// announced to the conversation, not a direct address — "offers" not
 	// "offers you", so the actor doesn't perceive a personal offer.
@@ -2112,10 +2129,34 @@ func renderQuoteWarrantLine(n int, seller string, r sim.SceneQuoteTargetedWarran
 	if r.Overheard {
 		offers = "offers"
 	}
-	if r.Qty > 1 {
-		return fmt.Sprintf("%d. %s %s %d %s for %d %s%s.%s\n", n, seller, offers, r.Qty, item, r.Amount, unit, disposition, take)
+	return fmt.Sprintf("%d. %s %s %s for %d %s%s.%s\n", n, seller, offers, items, r.Amount, unit, disposition, take)
+}
+
+// formatQuoteLines renders a quote's item lines as a readable phrase:
+// "2 blueberries", or for a bundle "2 blueberries and 2 raspberries", or
+// "2 blueberries, 2 raspberries, and 3 bread" (LLM-101). Qty 1 drops the
+// leading count, matching the prior single-item rendering. Items are
+// sanitized inline (catalog keys, but defensive against odd labels).
+func formatQuoteLines(lines []sim.QuoteLine) string {
+	parts := make([]string, 0, len(lines))
+	for _, ln := range lines {
+		item := sanitizeInline(string(ln.ItemKind))
+		if ln.Qty > 1 {
+			parts = append(parts, fmt.Sprintf("%d %s", ln.Qty, item))
+		} else {
+			parts = append(parts, item)
+		}
 	}
-	return fmt.Sprintf("%d. %s %s %s for %d %s%s.%s\n", n, seller, offers, item, r.Amount, unit, disposition, take)
+	switch len(parts) {
+	case 0:
+		return ""
+	case 1:
+		return parts[0]
+	case 2:
+		return parts[0] + " and " + parts[1]
+	default:
+		return strings.Join(parts[:len(parts)-1], ", ") + ", and " + parts[len(parts)-1]
+	}
 }
 
 // renderPayResolvedWarrantLine renders, to the buyer, how the seller resolved

@@ -70,44 +70,44 @@ func quotesWorld(t *testing.T) *sim.World {
 		}
 		world.Quotes = map[sim.QuoteID]*sim.SceneQuote{
 			// Included: public, John's, in the PC's scene, live.
-			1: {ID: 1, SceneID: "sc1", SellerID: "npc-john", ItemKind: "stew",
-				Qty: 1, Amount: 2, ConsumeNow: true,
+			1: {ID: 1, SceneID: "sc1", SellerID: "npc-john",
+				Lines: []sim.QuoteLine{{ItemKind: "stew", Qty: 1}}, Amount: 2, ConsumeNow: true,
 				State: sim.SceneQuoteStateActive, CreatedAt: now.Add(-2 * time.Minute), ExpiresAt: live},
 			// Included + targeted: addressed to this PC; newer than 1 but
 			// targeted sorts first anyway.
 			2: {ID: 2, SceneID: "sc1", SellerID: "npc-john", TargetBuyer: "pc-tester",
-				ItemKind: "nights_stay", Qty: 1, Amount: 4, ConsumeNow: false,
+				Lines: []sim.QuoteLine{{ItemKind: "nights_stay", Qty: 1}}, Amount: 4, ConsumeNow: false,
 				State: sim.SceneQuoteStateActive, CreatedAt: now.Add(-1 * time.Minute), ExpiresAt: live},
 			// Excluded: targeted at someone else.
 			3: {ID: 3, SceneID: "sc1", SellerID: "npc-john", TargetBuyer: "npc-mary",
-				ItemKind: "stew", Qty: 1, Amount: 2, ConsumeNow: true,
+				Lines: []sim.QuoteLine{{ItemKind: "stew", Qty: 1}}, Amount: 2, ConsumeNow: true,
 				State: sim.SceneQuoteStateActive, CreatedAt: now, ExpiresAt: live},
 			// Excluded: past ExpiresAt though still marked Active (sweep lag).
-			4: {ID: 4, SceneID: "sc1", SellerID: "npc-john", ItemKind: "stew",
-				Qty: 1, Amount: 2, ConsumeNow: true,
+			4: {ID: 4, SceneID: "sc1", SellerID: "npc-john",
+				Lines: []sim.QuoteLine{{ItemKind: "stew", Qty: 1}}, Amount: 2, ConsumeNow: true,
 				State: sim.SceneQuoteStateActive, CreatedAt: now.Add(-20 * time.Minute),
 				ExpiresAt: now.Add(-10 * time.Minute)},
 			// Excluded: terminal state.
-			5: {ID: 5, SceneID: "sc1", SellerID: "npc-john", ItemKind: "stew",
-				Qty: 1, Amount: 2, ConsumeNow: true,
+			5: {ID: 5, SceneID: "sc1", SellerID: "npc-john",
+				Lines: []sim.QuoteLine{{ItemKind: "stew", Qty: 1}}, Amount: 2, ConsumeNow: true,
 				State: sim.SceneQuoteStateSuperseded, CreatedAt: now, ExpiresAt: live},
 			// Excluded: scene doesn't observe the PC's huddle.
-			6: {ID: 6, SceneID: "sc2", SellerID: "npc-john", ItemKind: "stew",
-				Qty: 1, Amount: 2, ConsumeNow: true,
+			6: {ID: 6, SceneID: "sc2", SellerID: "npc-john",
+				Lines: []sim.QuoteLine{{ItemKind: "stew", Qty: 1}}, Amount: 2, ConsumeNow: true,
 				State: sim.SceneQuoteStateActive, CreatedAt: now, ExpiresAt: live},
 			// Excluded: group order (ConsumerIDs non-empty) — V1 scope.
-			7: {ID: 7, SceneID: "sc1", SellerID: "npc-john", ItemKind: "stew",
-				Qty: 1, Amount: 6, ConsumeNow: true,
+			7: {ID: 7, SceneID: "sc1", SellerID: "npc-john",
+				Lines: []sim.QuoteLine{{ItemKind: "stew", Qty: 1}}, Amount: 6, ConsumeNow: true,
 				ConsumerIDs: []sim.ActorID{"pc-tester", "npc-mary"},
 				State:       sim.SceneQuoteStateActive, CreatedAt: now, ExpiresAt: live},
 			// Excluded: seller not co-huddled with the PC.
-			8: {ID: 8, SceneID: "sc1", SellerID: "npc-mary", ItemKind: "stew",
-				Qty: 1, Amount: 2, ConsumeNow: true,
+			8: {ID: 8, SceneID: "sc1", SellerID: "npc-mary",
+				Lines: []sim.QuoteLine{{ItemKind: "stew", Qty: 1}}, Amount: 2, ConsumeNow: true,
 				State: sim.SceneQuoteStateActive, CreatedAt: now, ExpiresAt: live},
 			// Excluded: seller's display name is ambiguous within the huddle
 			// (the other Bob), so a take's seller resolution would reject.
-			9: {ID: 9, SceneID: "sc1", SellerID: "npc-bob1", ItemKind: "stew",
-				Qty: 1, Amount: 2, ConsumeNow: true,
+			9: {ID: 9, SceneID: "sc1", SellerID: "npc-bob1",
+				Lines: []sim.QuoteLine{{ItemKind: "stew", Qty: 1}}, Amount: 2, ConsumeNow: true,
 				State: sim.SceneQuoteStateActive, CreatedAt: now, ExpiresAt: live},
 		}
 		return nil, nil

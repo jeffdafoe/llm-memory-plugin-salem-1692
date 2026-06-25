@@ -35,7 +35,7 @@ func newQuoteDedupHarness(t *testing.T, client llm.Client) (*Harness, *[]string)
 		if !ok {
 			return "", errors.New("scene_quote test handler: unexpected args type")
 		}
-		quoteLog = append(quoteLog, args.ItemKind)
+		quoteLog = append(quoteLog, args.Lines[0].ItemKind)
 		return "[quote: ok]", nil
 	}
 	if err := r.RegisterObservation("sell", sceneQuoteSchema, DecodeSceneQuoteArgs, quoteFn, WithDescription(sceneQuoteDescription)); err != nil {
@@ -52,7 +52,7 @@ func newQuoteDedupHarness(t *testing.T, client llm.Client) (*Harness, *[]string)
 }
 
 func sceneQuoteJSON(item string, qty, amount int, consumeNow bool) string {
-	b, _ := json.Marshal(SceneQuoteArgs{ItemKind: item, Qty: qty, Amount: amount, ConsumeNow: consumeNow})
+	b, _ := json.Marshal(SceneQuoteArgs{Lines: []SceneQuoteLineArg{{ItemKind: item, Qty: qty}}, Amount: amount, ConsumeNow: consumeNow})
 	return string(b)
 }
 
@@ -62,7 +62,7 @@ func sceneQuoteJSON(item string, qty, amount int, consumeNow bool) string {
 // silently disable for the real tool and the storm could return. Mirrors
 // TestPayOfferKey_ProductionDecoderShape.
 func TestSceneQuoteKey_ProductionDecoderShape(t *testing.T) {
-	decoded, err := DecodeSceneQuoteArgs(json.RawMessage(`{"item_kind":"Bread","qty":1,"amount":4,"consume_now":false}`))
+	decoded, err := DecodeSceneQuoteArgs(json.RawMessage(`{"lines":[{"item_kind":"Bread","qty":1}],"amount":4,"consume_now":false}`))
 	if err != nil {
 		t.Fatalf("DecodeSceneQuoteArgs: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestSceneQuoteKey_ProductionDecoderShape(t *testing.T) {
 	if !ok {
 		t.Fatal("sceneQuoteKey ok=false for a production-decoded quote — dedup would be silently disabled in production")
 	}
-	if want := "bread\x00keep\x00\x001"; key != want {
+	if want := "bread\x011\x00keep\x00"; key != want {
 		t.Errorf("key = %q, want %q", key, want)
 	}
 }
@@ -79,7 +79,7 @@ func TestSceneQuoteKey_ProductionDecoderShape(t *testing.T) {
 // for the same goods key differently, as do consume-now vs take-away and
 // different lot sizes — but price is excluded.
 func TestSceneQuoteKey_TargetAndDisposition(t *testing.T) {
-	base := SceneQuoteArgs{ItemKind: "Bread", Qty: 1, Amount: 4}
+	base := SceneQuoteArgs{Lines: []SceneQuoteLineArg{{ItemKind: "Bread", Qty: 1}}, Amount: 4}
 	key := func(a SceneQuoteArgs) string {
 		k, ok := sceneQuoteKey(&ValidatedCall{Name: "sell", DecodedArgs: a})
 		if !ok {
@@ -98,7 +98,7 @@ func TestSceneQuoteKey_TargetAndDisposition(t *testing.T) {
 	// substrate's supersede/coexist rules decide its fate, not the guard
 	// (code_review #415).
 	differentLot := base
-	differentLot.Qty = 3
+	differentLot.Lines = []SceneQuoteLineArg{{ItemKind: "Bread", Qty: 3}}
 	if key(base) == key(differentLot) {
 		t.Error("different qty must change the key")
 	}

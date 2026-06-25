@@ -17,22 +17,32 @@ import (
 // Buyer-side fast-path via pay_with_item(quote_id=...) lands in PR S4
 // alongside the pay-ledger substrate.
 //
-// The model emits {"item_kind": "...", "qty": N, "amount": M,
-// "consume_now": true|false, "target_buyer": "...", "consumers": [...]}
-// as the scene_quote tool's arguments. Decode parses + applies schema-
-// bounded length + numeric range; HandleSceneQuote applies semantic
-// static validation (trim-empty / control-char scans / consumer-list
-// duplicate-name reject); the returned sim.SceneQuoteCreate Command
-// runs on the world goroutine and performs world-state-dependent
-// validation (scene resolution, ItemKind catalog lookup, break gate,
-// stock check, target-buyer + consumer resolution, duplicate-key +
-// per-(seller, scene) cap) + mint + emit.
+// The model emits {"lines": [{"item_kind": "...", "qty": N}, ...],
+// "amount": M, "consume_now": true|false, "target_buyer": "...",
+// "consumers": [...]} as the scene_quote tool's arguments — one or more
+// item lines bundled under a single total price (LLM-101). Decode parses +
+// applies schema-bounded length + numeric range; HandleSceneQuote applies
+// semantic static validation (per-line trim-empty / control-char scans /
+// consumer-list duplicate-name reject); the returned sim.SceneQuoteCreate
+// Command runs on the world goroutine and performs world-state-dependent
+// validation (scene resolution, per-line ItemKind catalog lookup + merge,
+// break gate, per-line stock check, target-buyer + consumer resolution,
+// duplicate-key + per-(seller, scene) cap) + mint + emit.
+
+// SceneQuoteLineArg is one bundle line in the scene_quote tool's arguments:
+// a free-text item_kind + per-consumer qty (LLM-101). Resolved + merged into
+// canonical sim.QuoteLine values inside sim.SceneQuoteCreate.
+type SceneQuoteLineArg struct {
+	ItemKind string `json:"item_kind"`
+	Qty      int    `json:"qty"`
+}
 
 // SceneQuoteArgs is the decoded shape of the scene_quote tool's
 // arguments. The model-facing schema enforces:
 //
-//   - item_kind:   minLength 1, maxLength MaxSceneQuoteItemChars
-//   - qty:         integer, minimum 1, maximum math.MaxInt32
+//   - lines:       array, minItems 1, maxItems MaxSceneQuoteLines; each
+//     entry { item_kind: minLength 1 / maxLength MaxSceneQuoteItemChars,
+//     qty: integer 1..math.MaxInt32 }
 //   - amount:      integer, minimum 1, maximum math.MaxInt32
 //   - consume_now: required boolean (no default — per S2's lesson,
 //     load-bearing fields don't get inferred defaults)
@@ -40,13 +50,19 @@ import (
 //   - consumers:   array (optional), maxItems MaxSceneQuoteConsumers,
 //     each item minLength 1, maxLength MaxSceneQuoteNameChars
 type SceneQuoteArgs struct {
-	ItemKind    string   `json:"item_kind"`
-	Qty         int      `json:"qty"`
-	Amount      int      `json:"amount"`
-	ConsumeNow  bool     `json:"consume_now"`
-	TargetBuyer string   `json:"target_buyer"`
-	Consumers   []string `json:"consumers"`
+	Lines       []SceneQuoteLineArg `json:"lines"`
+	Amount      int                 `json:"amount"`
+	ConsumeNow  bool                `json:"consume_now"`
+	TargetBuyer string              `json:"target_buyer"`
+	Consumers   []string            `json:"consumers"`
 }
+
+// MaxSceneQuoteLines caps len(lines[]) in the schema. Mirrors
+// sim.MaxSceneQuoteLines; the two MUST stay in sync (the schema literal is
+// asserted against the substrate const in the handler test). Schema-side cap
+// is defense-in-depth so the LLM can't blow the per-tool token budget on a
+// runaway line list before validation runs.
+const MaxSceneQuoteLines = 8
 
 // MaxSceneQuoteItemChars caps the item_kind length on the model-facing
 // schema. Matches MaxConsumeItemChars — same catalog, same headroom
@@ -79,17 +95,30 @@ const MaxSceneQuoteConsumers = 8
 var sceneQuoteSchema = json.RawMessage(`{
     "type": "object",
     "properties": {
-        "item_kind": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 64,
-            "description": "Canonical item kind from your inventory to offer for sale (e.g. 'ale', 'stew', 'bread')."
-        },
-        "qty": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 2147483647,
-            "description": "Quantity per consumer in the bundle (e.g. qty=2 for 'two ales each')."
+        "lines": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 8,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "item_kind": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 64,
+                        "description": "Canonical item kind from your inventory (e.g. 'blueberries', 'ale', 'stew')."
+                    },
+                    "qty": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 2147483647,
+                        "description": "Quantity of this item per consumer (e.g. qty=2 for 'two each')."
+                    }
+                },
+                "required": ["item_kind", "qty"],
+                "additionalProperties": false
+            },
+            "description": "The items to offer for sale, one entry per item kind. One offer can bundle several kinds for a single total price (e.g. 2 blueberries + 2 raspberries for 8 coins); most offers have a single line."
         },
         "amount": {
             "type": "integer",
@@ -99,7 +128,7 @@ var sceneQuoteSchema = json.RawMessage(`{
         },
         "consume_now": {
             "type": "boolean",
-            "description": "True for eat-here / drink-here (immediate consumption); false for takeaway (the buyer gets the item to take with them). Some goods (a served meal, a poured drink) can't be carried away — quotes for those always stand as eat-here regardless."
+            "description": "True for eat-here / drink-here (immediate consumption); false for takeaway (the buyer carries the items away). Applies to the whole bundle. Some goods (a served meal, a poured drink) can't be carried away — an offer including those always stands as eat-here regardless."
         },
         "target_buyer": {
             "type": "string",
@@ -117,7 +146,7 @@ var sceneQuoteSchema = json.RawMessage(`{
             "description": "Optional list of display names for a group order (e.g. 'a round of ale for the table'). Empty means the buyer is the sole consumer. All consumers must be in your current conversation."
         }
     },
-    "required": ["item_kind", "qty", "amount", "consume_now"],
+    "required": ["lines", "amount", "consume_now"],
     "additionalProperties": false
 }`)
 
@@ -127,7 +156,8 @@ var sceneQuoteSchema = json.RawMessage(`{
 // actual transactional offer).
 const sceneQuoteDescription = "Post an offer to sell items from your inventory to the people in your current conversation. " +
 	"This is the transactional surface — speech that mentions a price is just flavor, this is what a buyer can actually pay against. " +
-	"You set the item, quantity (per consumer), total price, and whether it's eat-here or takeaway. " +
+	"You set the item lines (one or more item kinds, each with a per-consumer quantity), one total price for the whole offer, and whether it's eat-here or takeaway. " +
+	"Bundle several kinds in one offer when a buyer wants some of each (e.g. 2 blueberries + 2 raspberries for 8 coins). " +
 	"Optionally target a specific buyer or specify consumers for a group order. " +
 	"Quotes expire after about 10 minutes; posting the same shape again replaces the old quote."
 
@@ -182,20 +212,31 @@ func DecodeSceneQuoteArgs(raw json.RawMessage) (any, error) {
 		return nil, fmt.Errorf("scene_quote: malformed trailing data: %w", err)
 	}
 
-	if args.ItemKind == "" {
-		return nil, modelSafef("sell: item_kind is required")
+	if len(args.Lines) == 0 {
+		return nil, modelSafef("sell: at least one line is required (set lines to a non-empty array of {item_kind, qty})")
 	}
-	if n := utf8.RuneCountInString(args.ItemKind); n > MaxSceneQuoteItemChars {
+	if len(args.Lines) > MaxSceneQuoteLines {
 		return nil, modelSafef(
-			"sell: item_kind exceeds %d-character cap (got %d characters)",
-			MaxSceneQuoteItemChars, n,
+			"sell: too many lines (got %d, max %d) — bundle fewer item kinds.",
+			len(args.Lines), MaxSceneQuoteLines,
 		)
 	}
-	if args.Qty < 1 {
-		return nil, modelSafef("sell: qty must be at least 1 (got %d)", args.Qty)
-	}
-	if args.Qty > sim.MaxSceneQuoteQty {
-		return nil, modelSafef("sell: qty exceeds maximum (got %d, max %d)", args.Qty, sim.MaxSceneQuoteQty)
+	for i, ln := range args.Lines {
+		if ln.ItemKind == "" {
+			return nil, modelSafef("sell: lines[%d].item_kind is required", i)
+		}
+		if n := utf8.RuneCountInString(ln.ItemKind); n > MaxSceneQuoteItemChars {
+			return nil, modelSafef(
+				"sell: lines[%d].item_kind exceeds %d-character cap (got %d characters)",
+				i, MaxSceneQuoteItemChars, n,
+			)
+		}
+		if ln.Qty < 1 {
+			return nil, modelSafef("sell: lines[%d].qty must be at least 1 (got %d)", i, ln.Qty)
+		}
+		if ln.Qty > sim.MaxSceneQuoteQty {
+			return nil, modelSafef("sell: lines[%d].qty exceeds maximum (got %d, max %d)", i, ln.Qty, sim.MaxSceneQuoteQty)
+		}
 	}
 	if args.Amount < 1 {
 		return nil, modelSafef("sell: amount must be at least 1 (got %d)", args.Amount)
@@ -246,16 +287,22 @@ func HandleSceneQuote(in HandlerInput) (sim.Command, error) {
 		return sim.Command{}, fmt.Errorf("scene_quote: handler received unexpected args type %T", in.Args)
 	}
 
-	// Normalize the catalog-ish item_kind: trim + strict-control-char
-	// scan. Same posture as consume — short-form identifier, no
-	// legitimate \n/\r/\t.
-	itemKind := strings.TrimSpace(args.ItemKind)
-	if itemKind == "" {
-		return sim.Command{}, modelSafef("sell: item_kind is empty after trim")
-	}
-	if i := indexStrictControlChar(itemKind); i >= 0 {
-		return sim.Command{}, modelSafef(
-			"sell: item_kind contains a disallowed control character at byte offset %d", i)
+	// Normalize each bundle line's catalog-ish item_kind: trim +
+	// strict-control-char scan (same posture as consume — short-form
+	// identifier, no legitimate \n/\r/\t). Duplicate canonical kinds are
+	// merged downstream in sim.SceneQuoteCreate after catalog resolution, so
+	// the handler does NOT dedup here. qty was range-checked in decode.
+	lines := make([]sim.QuoteLineInput, 0, len(args.Lines))
+	for i, ln := range args.Lines {
+		itemKind := strings.TrimSpace(ln.ItemKind)
+		if itemKind == "" {
+			return sim.Command{}, modelSafef("sell: lines[%d].item_kind is empty after trim", i)
+		}
+		if idx := indexStrictControlChar(itemKind); idx >= 0 {
+			return sim.Command{}, modelSafef(
+				"sell: lines[%d].item_kind contains a disallowed control character at byte offset %d", i, idx)
+		}
+		lines = append(lines, sim.QuoteLineInput{ItemName: itemKind, Qty: ln.Qty})
 	}
 
 	// Normalize target_buyer (optional). Empty after trim is fine —
@@ -307,8 +354,7 @@ func HandleSceneQuote(in HandlerInput) (sim.Command, error) {
 	now := time.Now().UTC()
 	return withHuddleBootstrap(in.ActorID, now, sim.SceneQuoteCreate(
 		in.ActorID,
-		itemKind,
-		args.Qty,
+		lines,
 		args.Amount,
 		args.ConsumeNow,
 		targetBuyer,

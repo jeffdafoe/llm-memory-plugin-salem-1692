@@ -865,8 +865,7 @@ func TestTranslateEvent_SceneQuoteCreated_NoFrame(t *testing.T) {
 		SceneID:  "sc1",
 		SellerID: "josiah",
 		HuddleID: "h1",
-		ItemKind: "Bread",
-		Qty:      1,
+		Lines:    []sim.QuoteLine{{ItemKind: "Bread", Qty: 1}},
 		Amount:   1,
 		At:       time.Now().UTC(),
 	}); ok {

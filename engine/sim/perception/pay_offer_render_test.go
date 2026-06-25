@@ -189,7 +189,7 @@ func TestRender_QuoteWarrantLine_CarriesQuoteID(t *testing.T) {
 	quote := sim.WarrantMeta{
 		TriggerActorID: "john",
 		Reason: sim.SceneQuoteTargetedWarrantReason{
-			QuoteID: 9, SellerID: "john", ItemKind: "water", Qty: 1, Amount: 4, ConsumeNow: true,
+			QuoteID: 9, SellerID: "john", Lines: []sim.QuoteLine{{ItemKind: "water", Qty: 1}}, Amount: 4, ConsumeNow: true,
 		},
 		SourceEventID: 31,
 	}
@@ -216,7 +216,7 @@ func TestRender_QuoteWarrantLine_Overheard(t *testing.T) {
 	quote := sim.WarrantMeta{
 		TriggerActorID: "john",
 		Reason: sim.SceneQuoteTargetedWarrantReason{
-			QuoteID: 12, SellerID: "john", ItemKind: "bread", Qty: 1, Amount: 4, Overheard: true,
+			QuoteID: 12, SellerID: "john", Lines: []sim.QuoteLine{{ItemKind: "bread", Qty: 1}}, Amount: 4, Overheard: true,
 		},
 		SourceEventID: 32,
 	}
@@ -246,7 +246,7 @@ func TestRender_QuoteWarrantLine_EatHereFact(t *testing.T) {
 	quote := sim.WarrantMeta{
 		TriggerActorID: "john",
 		Reason: sim.SceneQuoteTargetedWarrantReason{
-			QuoteID: 9, SellerID: "john", ItemKind: "stew", Qty: 1, Amount: 4, ConsumeNow: true,
+			QuoteID: 9, SellerID: "john", Lines: []sim.QuoteLine{{ItemKind: "stew", Qty: 1}}, Amount: 4, ConsumeNow: true,
 		},
 		SourceEventID: 31,
 	}

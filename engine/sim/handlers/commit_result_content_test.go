@@ -233,7 +233,7 @@ func TestCommitResultContent_PayEatHereClampNote(t *testing.T) {
 // eat-here tells the seller model so; every successful quote — clamped or
 // not — carries the post-quote steer so the model stops re-posting it.
 func TestCommitResultContent_SceneQuoteEatHereClampNote(t *testing.T) {
-	vc := ValidatedCall{Name: "sell", DecodedArgs: SceneQuoteArgs{ItemKind: "Stew", Qty: 1, Amount: 4, ConsumeNow: false}}
+	vc := ValidatedCall{Name: "sell", DecodedArgs: SceneQuoteArgs{Lines: []SceneQuoteLineArg{{ItemKind: "Stew", Qty: 1}}, Amount: 4, ConsumeNow: false}}
 	const steer = "The room has heard your offer — await an answer or call done(). Do not post the same offer again."
 
 	got := commitResultContent(&vc, sim.SceneQuoteCreateResult{QuoteID: 3, EatHereClamped: true})
