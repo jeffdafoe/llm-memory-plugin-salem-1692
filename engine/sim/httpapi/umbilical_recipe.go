@@ -6,14 +6,18 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
+	"strings"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
 
-// umbilical_recipe.go — the recipe-edit control route (LLM-97): live add/edit of
-// an item recipe (the rate / inputs / output-batch a produce entry feeds off).
-// Operator-gated, audited, armed only when control is enabled. Existing item
-// kinds only — output and every input must already be in the catalog.
+// umbilical_recipe.go — the recipe routes. The EDIT control route (LLM-97):
+// live add/edit of an item recipe (the rate / inputs / output-batch a produce
+// entry feeds off). Operator-gated, audited, armed only when control is enabled.
+// Existing item kinds only — output and every input must already be in the
+// catalog. The READ counterpart (LLM-110, handleUmbilicalRecipes at the bottom)
+// dumps the same catalog so an operator can see current values before editing.
 //
 // Recipes are reference data with NO checkpoint path, so durability is a direct
 // item_recipe write (the injected RecipeWriter) followed by an in-memory
@@ -176,4 +180,58 @@ func recipeResponse(r sim.ItemRecipe) umbilicalRecipeResponse {
 		out.Inputs = append(out.Inputs, umbilicalRecipeInput{Item: string(in.Item), Qty: in.Qty})
 	}
 	return out
+}
+
+// ---- Recipe read (LLM-110) ----------------------------------------------
+
+// UmbilicalRecipesDTO is the GET /api/village/umbilical/recipes response: the
+// live item-recipe catalog (the read side of recipe/set), so an operator can see
+// an item's current rate / inputs / wholesale+retail price before editing it.
+// With ?item= it carries just the one matching recipe.
+type UmbilicalRecipesDTO struct {
+	ContractVersion int                       `json:"contract_version"`
+	Total           int                       `json:"total"`
+	Recipes         []umbilicalRecipeResponse `json:"recipes"`
+}
+
+// handleUmbilicalRecipes serves the live recipe catalog (World.Recipes). Read on
+// the world goroutine via SendContext: recipe/set mutates World.Recipes in place
+// (it writes a key), so reading it off the published snapshot's ALIASED Recipes
+// reference would race the writer — the catalog isn't deep-cloned at publish.
+// Optional ?item= filters to one recipe, matched case-insensitively against the
+// canonical catalog key (empty list when unknown). Sorted by output item. Pure
+// read — mutates nothing.
+func (s *Server) handleUmbilicalRecipes(w http.ResponseWriter, r *http.Request) {
+	item := strings.TrimSpace(r.URL.Query().Get("item"))
+	res, err := s.world.SendContext(r.Context(), sim.Command{Fn: func(world *sim.World) (any, error) {
+		dto := UmbilicalRecipesDTO{
+			ContractVersion: ContractVersion,
+			Recipes:         make([]umbilicalRecipeResponse, 0, len(world.Recipes)),
+		}
+		for key, recipe := range world.Recipes {
+			if recipe == nil {
+				continue
+			}
+			if item != "" && !strings.EqualFold(string(key), item) {
+				continue
+			}
+			dto.Recipes = append(dto.Recipes, recipeResponse(*recipe))
+		}
+		dto.Total = len(dto.Recipes)
+		sort.Slice(dto.Recipes, func(i, j int) bool { return dto.Recipes[i].OutputItem < dto.Recipes[j].OutputItem })
+		return dto, nil
+	}})
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	dto, ok := res.(UmbilicalRecipesDTO)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "unexpected recipes result")
+		return
+	}
+	writeJSON(w, dto)
 }

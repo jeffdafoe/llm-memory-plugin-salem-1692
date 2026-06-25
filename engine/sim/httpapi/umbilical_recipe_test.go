@@ -145,3 +145,74 @@ func TestUmbilicalRecipeSet_WriterError(t *testing.T) {
 		t.Errorf("writer error = %d, want 500; body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+// ---- Recipe read (LLM-110) ----------------------------------------------
+
+// seedRecipe installs one recipe into the live catalog for the read tests.
+func seedRecipe(t *testing.T, srv *Server, r sim.ItemRecipe) {
+	t.Helper()
+	if _, err := srv.world.Send(sim.SetRecipe(r)); err != nil {
+		t.Fatalf("seed recipe %s: %v", r.OutputItem, err)
+	}
+}
+
+func TestUmbilicalRecipes_ListAndFilter(t *testing.T) {
+	srv, h := recipeServer(t, nil)
+	seedRecipe(t, srv, sim.ItemRecipe{OutputItem: "cheese", OutputQty: 1, RateQty: 1, RatePerHours: 2, Inputs: []sim.RecipeInput{{Item: "milk", Qty: 3}}, WholesalePrice: 4, RetailPrice: 7})
+	seedRecipe(t, srv, sim.ItemRecipe{OutputItem: "axe", OutputQty: 1, RateQty: 1, RatePerHours: 6, WholesalePrice: 5, RetailPrice: 9})
+
+	// Full catalog, sorted by output item (axe before cheese).
+	rec := req(t, h, "/api/village/umbilical/recipes", "tok")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("recipes = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var out UmbilicalRecipesDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Total != 2 || len(out.Recipes) != 2 {
+		t.Fatalf("total=%d recipes=%d, want 2/2", out.Total, len(out.Recipes))
+	}
+	if out.Recipes[0].OutputItem != "axe" || out.Recipes[1].OutputItem != "cheese" {
+		t.Fatalf("not sorted by output item: %s, %s", out.Recipes[0].OutputItem, out.Recipes[1].OutputItem)
+	}
+	if out.Recipes[1].RetailPrice != 7 || len(out.Recipes[1].Inputs) != 1 || out.Recipes[1].Inputs[0].Item != "milk" {
+		t.Fatalf("cheese recipe wrong: %+v", out.Recipes[1])
+	}
+
+	// ?item= filters to one (case-insensitive against the canonical key).
+	rec = req(t, h, "/api/village/umbilical/recipes?item=CHEESE", "tok")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("recipes?item = %d, want 200", rec.Code)
+	}
+	out = UmbilicalRecipesDTO{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode filtered: %v", err)
+	}
+	if out.Total != 1 || out.Recipes[0].OutputItem != "cheese" {
+		t.Fatalf("filter = %+v, want only cheese", out.Recipes)
+	}
+
+	// Unknown item → empty list, still 200.
+	rec = req(t, h, "/api/village/umbilical/recipes?item=dragonfruit", "tok")
+	out = UmbilicalRecipesDTO{}
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	if rec.Code != http.StatusOK || out.Total != 0 {
+		t.Fatalf("unknown filter = %d total=%d, want 200/0", rec.Code, out.Total)
+	}
+}
+
+func TestUmbilicalRecipes_EmptyCatalog(t *testing.T) {
+	_, h := recipeServer(t, nil) // ItemKinds seeded, no recipes
+	rec := req(t, h, "/api/village/umbilical/recipes", "tok")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("recipes = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var out UmbilicalRecipesDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Total != 0 || len(out.Recipes) != 0 {
+		t.Fatalf("empty catalog total=%d, want 0", out.Total)
+	}
+}
