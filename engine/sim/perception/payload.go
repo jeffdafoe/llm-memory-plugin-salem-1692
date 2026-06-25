@@ -328,6 +328,18 @@ type Payload struct {
 	// payloads); the renderer falls back to the host UTC day then. ZBBS-HOME-403.
 	LocalDateUTC time.Time
 
+	// RenderedAt is the render INSTANT (full timestamp), copied from
+	// Snapshot.PublishedAt — distinct from LocalDateUTC, which is the village's
+	// calendar DATE (timezone-aware midnight). The order-book expiry clause
+	// (renderPendingDeliveries* → expiryClause) renders "expires in N minutes"
+	// relative to this, so the duration is anchored to the snapshot instant every
+	// actor perceiving this snapshot shares — NOT to wall-clock at render time,
+	// which made two NPCs rendering the same snapshot a beat apart show different
+	// remaining-time text (and made the render path non-deterministic for tests).
+	// Zero on a hand-built payload with no clock → the expiry clause is omitted
+	// (expiryClause's far-future-horizon guard eats a zero now). LLM-106.
+	RenderedAt time.Time
+
 	// RecoveryOptions surfaces how a tired-or-homeless actor could rest —
 	// free tiredness-bearing objects (shade trees) and inns to rent a room.
 	// nil when the actor isn't tired/homeless or no options exist (the

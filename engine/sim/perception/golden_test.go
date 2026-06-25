@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
@@ -94,8 +95,9 @@ var perceptionScenarios = []perceptionScenario{
 		summary: "Stateful keeper arrives at its own store during working hours with no one else present " +
 			"(the live Josiah Thorne case, LLM-106). The golden pins exactly what the engine shows him: " +
 			"co-presence reads 'no one else here', yet the turn is speak-eligible and framed for trade — " +
-			"the structural pull that made the model greet an empty room. When the speak-audience gate lands, " +
-			"this golden's diff is where the framing change shows up.",
+			"the structural pull that made the model greet an empty room. The speak-audience gate (LLM-106 slice 2) " +
+			"fixed it at the tool-advertising layer, so this PAYLOAD is unchanged — the golden is a regression pin; " +
+			"the fix's guard is the handlers gating test.",
 		build: keeperAloneAtPostOnShift,
 	},
 	{
@@ -104,6 +106,15 @@ var perceptionScenarios = []perceptionScenario{
 			"cue offers take_break (rest in place) only because the actor is on shift. The golden pins the bullet's " +
 			"presence; a regression to the on-shift gate would flip it in the diff.",
 		build: tiredKeeperAtPostOnShift,
+	},
+	{
+		name: "keeper_with_ready_order",
+		summary: "An innkeeper holds a Ready order (a nights_stay check-in) for a co-present guest. Exercises the " +
+			"order book with a deterministic expiry clause — the LLM-106 render-clock fix anchors 'expires in N " +
+			"minutes' to the snapshot instant (RenderedAt), so this golden is byte-stable. Without it the expiry text " +
+			"drifts with wall-clock and the determinism guard trips. Demonstrates an order-bearing scenario joining " +
+			"the matrix.",
+		build: keeperWithReadyOrder,
 	},
 }
 
@@ -183,4 +194,72 @@ func tiredKeeperAtPostOnShift() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) 
 		},
 	}
 	return snap, ezekielID, nil
+}
+
+// keeperWithReadyOrder is an order-bearing scenario unblocked by the LLM-106
+// render-clock fix: Hannah, an innkeeper, holds a Ready order (a nights_stay
+// check-in) for a co-present guest. The order's ExpiresAt is anchored to the
+// snapshot instant (PublishedAt → RenderedAt), so the "expires in N minutes"
+// clause renders deterministically — byte-stable with no wall-clock read.
+func keeperWithReadyOrder() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		hannahID = sim.ActorID("hannah")
+		guestID  = sim.ActorID("jeff")
+		inn      = sim.StructureID("hannahs_inn")
+		huddle   = sim.HuddleID("h1")
+	)
+	start, end := 360, 1320 // 06:00–22:00
+	nowMin := 600           // 10:00, on shift
+	// The render instant: ExpiresAt is set relative to this, so the expiry clause
+	// is fixed regardless of when the test runs.
+	published := time.Date(2026, 6, 25, 10, 0, 0, 0, time.UTC)
+	hannah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Hannah Boggs",
+		Role:              "innkeeper",
+		State:             sim.StateIdle,
+		WorkStructureID:   inn,
+		InsideStructureID: inn,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		CurrentHuddleID:   huddle,
+		Coins:             30,
+		Needs:             map[sim.NeedKey]int{},
+	}
+	guest := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Jeff",
+		Role:              "traveler",
+		State:             sim.StateIdle,
+		InsideStructureID: inn,
+		CurrentHuddleID:   huddle,
+		Needs:             map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalDateUTC:     time.Date(2026, 6, 25, 0, 0, 0, 0, time.UTC),
+		LocalMinuteOfDay: &nowMin,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{hannahID: hannah, guestID: guest},
+		Structures: map[sim.StructureID]*sim.Structure{
+			inn: plainStructure(inn, "Hannah's Inn"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{hannahID: {}, guestID: {}}},
+		},
+		Orders: map[sim.OrderID]*sim.Order{
+			1: {
+				ID:          1,
+				State:       sim.OrderStateReady,
+				SellerID:    hannahID,
+				BuyerID:     guestID,
+				Item:        "nights_stay",
+				Qty:         1,
+				ConsumerIDs: []sim.ActorID{guestID},
+				CreatedAt:   published.Add(-2 * time.Minute),
+				ExpiresAt:   published.Add(8 * time.Minute),
+			},
+		},
+	}
+	return snap, hannahID, nil
 }

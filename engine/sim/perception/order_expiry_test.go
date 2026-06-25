@@ -27,7 +27,7 @@ func TestExpiryClause(t *testing.T) {
 		wantSub  string
 	}{
 		{"real ttl renders", now.Add(5 * time.Minute), true, "expires in 5 minutes"},
-		{"zero omitted", time.Time{}, false, ""},
+		{"zero deadline omitted", time.Time{}, false, ""},
 		{"far-future sentinel omitted", theSentinel, false, ""},
 		{"at horizon renders", now.Add(maxRenderableExpiryHorizon), true, "expires in"},
 		{"just past horizon omitted", now.Add(maxRenderableExpiryHorizon + time.Nanosecond), false, ""},
@@ -49,6 +49,12 @@ func TestExpiryClause(t *testing.T) {
 			}
 		})
 	}
+
+	// A zero render clock (a hand-built payload with no PublishedAt) omits the
+	// clause explicitly, independent of the far-future-horizon check. LLM-106.
+	if _, ok := expiryClause(now.Add(5*time.Minute), time.Time{}); ok {
+		t.Error("a zero render clock should omit the expiry clause")
+	}
 }
 
 // TestRenderPendingDeliveries_SentinelOmitsExpiry is the end-to-end guard: a
@@ -62,9 +68,9 @@ func TestRenderPendingDeliveries_SentinelOmitsExpiry(t *testing.T) {
 	}}
 
 	var from strings.Builder
-	renderPendingDeliveriesFromMe(&from, view, startOfUTCDay(time.Now()))
+	renderPendingDeliveriesFromMe(&from, view, startOfUTCDay(time.Now()), time.Time{})
 	var to strings.Builder
-	renderPendingDeliveriesToMe(&to, view, startOfUTCDay(time.Now()))
+	renderPendingDeliveriesToMe(&to, view, startOfUTCDay(time.Now()), time.Time{})
 
 	for _, out := range []string{from.String(), to.String()} {
 		if !strings.Contains(out, "#102") || !strings.Contains(out, "milk") {
@@ -87,7 +93,7 @@ func TestRenderPendingDeliveries_RealTTLStillRenders(t *testing.T) {
 		ExpiresAt: time.Now().Add(8 * time.Minute),
 	}}
 	var b strings.Builder
-	renderPendingDeliveriesToMe(&b, view, startOfUTCDay(time.Now()))
+	renderPendingDeliveriesToMe(&b, view, startOfUTCDay(time.Now()), time.Now())
 	if !strings.Contains(b.String(), "expires in") {
 		t.Errorf("a real TTL must still render its expiry:\n%s", b.String())
 	}
