@@ -67,23 +67,110 @@ func home362Snapshot() *sim.Snapshot {
 	}
 }
 
-// TestBuildRecoveryOptions_AtPostTired_RestInPlace: a tired keeper standing at
-// its own work structure gets RestInPlace set.
-func TestBuildRecoveryOptions_AtPostTired_RestInPlace(t *testing.T) {
-	snap := home362Snapshot()
-	a := &sim.ActorSnapshot{
+// onShiftAtPostActor is a tired keeper standing at its own post with a 06:00–18:00
+// shift; paired with home362Snapshot's clock set to a daytime minute it is on-shift.
+func onShiftAtPostActor() *sim.ActorSnapshot {
+	start, end := 360, 1080 // 06:00–18:00
+	return &sim.ActorSnapshot{
 		Kind:              sim.KindNPCShared,
 		WorkStructureID:   "work-1",
 		HomeStructureID:   "home-1",
 		InsideStructureID: "work-1",
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
 		Needs:             map[sim.NeedKey]int{recoveryTirednessNeed: 24},
 	}
-	v := buildRecoveryOptions(snap, "actor-1", a)
+}
+
+// TestBuildRecoveryOptions_AtPostTired_RestInPlace: a tired keeper standing at
+// its own work structure WHILE ON SHIFT gets RestInPlace set.
+func TestBuildRecoveryOptions_AtPostTired_RestInPlace(t *testing.T) {
+	snap := home362Snapshot()
+	now := 600 // 10:00 → inside the 06:00–18:00 shift
+	snap.LocalMinuteOfDay = &now
+	v := buildRecoveryOptions(snap, "actor-1", onShiftAtPostActor())
 	if v == nil {
 		t.Fatal("expected a recovery view, got nil")
 	}
 	if !v.RestInPlace {
-		t.Error("RestInPlace = false, want true (tired, at own post)")
+		t.Error("RestInPlace = false, want true (tired, at own post, on shift)")
+	}
+}
+
+// TestBuildRecoveryOptions_AtPostOffShift_NoRestInPlace is the LLM-100 regression:
+// a tired keeper standing at its own post but OFF shift (evening, past its shift
+// window) must NOT get the rest-in-place cue — there is no shift to step away from,
+// so take_break would be a phantom action. Mirrors Ezekiel Crane (07:00–16:00)
+// walking back into his own smithy at 22:08 after a foraging loop.
+func TestBuildRecoveryOptions_AtPostOffShift_NoRestInPlace(t *testing.T) {
+	snap := home362Snapshot()
+	now := 1325 // 22:05 → past the shift window below
+	snap.LocalMinuteOfDay = &now
+	a := onShiftAtPostActor()
+	start, end := 420, 960 // 07:00–16:00
+	a.ScheduleStartMin = &start
+	a.ScheduleEndMin = &end
+	if v := buildRecoveryOptions(snap, "actor-1", a); v != nil && v.RestInPlace {
+		t.Error("RestInPlace = true, want false (tired, at post, but off shift — LLM-100)")
+	}
+}
+
+// TestBuildRecoveryOptions_AtPostUnscheduled_NoRestInPlace: an unscheduled actor is
+// always off-shift (OnShiftAtMinute returns false on nil bounds), so even tired at
+// its own post it gets no in-place rest cue — matches the LLM-62 home-bed sibling.
+func TestBuildRecoveryOptions_AtPostUnscheduled_NoRestInPlace(t *testing.T) {
+	snap := home362Snapshot()
+	now := 600
+	snap.LocalMinuteOfDay = &now
+	a := onShiftAtPostActor()
+	a.ScheduleStartMin = nil // unscheduled → always off shift
+	a.ScheduleEndMin = nil
+	if v := buildRecoveryOptions(snap, "actor-1", a); v != nil && v.RestInPlace {
+		t.Error("RestInPlace = true, want false (unscheduled actor is off-shift — LLM-100)")
+	}
+}
+
+// TestBuildRecoveryOptions_AtPostNilClock_NoRestInPlace: with no snapshot clock the
+// shift can't be confirmed, so the in-place cue is suppressed (conservative — don't
+// advertise stepping away from a shift we can't confirm is running). LLM-100.
+func TestBuildRecoveryOptions_AtPostNilClock_NoRestInPlace(t *testing.T) {
+	snap := home362Snapshot() // LocalMinuteOfDay stays nil
+	if v := buildRecoveryOptions(snap, "actor-1", onShiftAtPostActor()); v != nil && v.RestInPlace {
+		t.Error("RestInPlace = true, want false (nil clock suppresses — LLM-100)")
+	}
+}
+
+// TestBuildRecoveryOptions_AtPostNilSnapshot_NoRestInPlace: a nil snapshot returns
+// the early nil view (the buildRecoveryOptions top guard), so the on-shift predicate
+// never derefs snap. Guards that the LLM-100 clock-deref stays behind that guard.
+func TestBuildRecoveryOptions_AtPostNilSnapshot_NoRestInPlace(t *testing.T) {
+	if v := buildRecoveryOptions(nil, "actor-1", onShiftAtPostActor()); v != nil && v.RestInPlace {
+		t.Error("RestInPlace = true, want false (nil snapshot suppresses)")
+	}
+}
+
+// TestBuildRecoveryOptions_AtPostOvernightShift_RestInPlace exercises the LLM-100
+// on-shift clause through a wrap-midnight (start > end) schedule: a tired keeper at
+// its own post is on-shift inside the overnight window (RestInPlace fires) and
+// off-shift in the daytime gap (suppressed). Covers the schedule/clock plumbing this
+// change routes through buildRecoveryOptions, not just OnShiftAtMinute in isolation.
+func TestBuildRecoveryOptions_AtPostOvernightShift_RestInPlace(t *testing.T) {
+	start, end := 1320, 360 // 22:00–06:00 overnight shift
+	atPost := func(nowMin int) *RecoveryOptionsView {
+		a := onShiftAtPostActor()
+		a.ScheduleStartMin = &start
+		a.ScheduleEndMin = &end
+		snap := home362Snapshot()
+		snap.LocalMinuteOfDay = &nowMin
+		return buildRecoveryOptions(snap, "actor-1", a)
+	}
+	for _, now := range []int{1380, 120} { // 23:00 and 02:00 → inside the overnight window
+		if v := atPost(now); v == nil || !v.RestInPlace {
+			t.Errorf("at %d min: RestInPlace want true (on-shift overnight at own post), got %+v", now, v)
+		}
+	}
+	if v := atPost(720); v != nil && v.RestInPlace { // 12:00 → daytime gap, off shift
+		t.Errorf("at 720 min (overnight off-shift gap): RestInPlace want false, got %+v", v)
 	}
 }
 
