@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -1259,8 +1260,8 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 		if r, ok := cmdResult.(sim.SceneQuoteCreateResult); ok {
 			if r.EatHereClamped {
 				item := "those goods"
-				if args, ok := vc.DecodedArgs.(SceneQuoteArgs); ok {
-					if it := strings.ToLower(strings.Join(strings.Fields(args.ItemKind), " ")); it != "" {
+				if args, ok := vc.DecodedArgs.(SceneQuoteArgs); ok && len(args.Lines) == 1 {
+					if it := strings.ToLower(strings.Join(strings.Fields(args.Lines[0].ItemKind), " ")); it != "" {
 						item = it
 					}
 				}
@@ -1374,6 +1375,27 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 // states something the model cannot see anywhere else this tick: the settle
 // happened, what it ate vs pocketed, and how it feels NOW — the perception
 // body it re-reads after this message still shows tick-start needs.
+// formatBundleGoods renders a bundle's lines as a readable phrase for the
+// buyer's settle feedback: "2 blueberries", "2 blueberries and 2 raspberries",
+// or "2 blueberries, 2 raspberries, and 3 bread" (LLM-101).
+func formatBundleGoods(lines []sim.QuoteLine) string {
+	parts := make([]string, 0, len(lines))
+	for _, ln := range lines {
+		item := strings.ToLower(strings.Join(strings.Fields(string(ln.ItemKind)), " "))
+		parts = append(parts, fmt.Sprintf("%d %s", ln.Qty, item))
+	}
+	switch len(parts) {
+	case 0:
+		return "those goods"
+	case 1:
+		return parts[0]
+	case 2:
+		return parts[0] + " and " + parts[1]
+	default:
+		return strings.Join(parts[:len(parts)-1], ", ") + ", and " + parts[len(parts)-1]
+	}
+}
+
 func settledPayContent(args PayWithItemArgs, r sim.PayWithItemResult, clampNote string) string {
 	// Defensive: decoded args drive the display. The command layer rejects
 	// qty < 1 / amount < 0 before any settle, so these can't co-occur with
@@ -1395,15 +1417,23 @@ func settledPayContent(args PayWithItemArgs, r sim.PayWithItemResult, clampNote 
 	if seller == "" {
 		seller = "them"
 	}
+	// LLM-101: a bundle take names every line ("2 blueberries and 2
+	// raspberries"); a single-item take keeps "<qty> <item>". args.Item/Qty are
+	// only the representative first line on a bundle, so the result's Lines are
+	// authoritative when present.
+	goods := fmt.Sprintf("%d %s", args.Qty, item)
+	if len(r.Lines) > 0 {
+		goods = formatBundleGoods(r.Lines)
+	}
 	var b strings.Builder
 	if args.Amount > 0 {
 		coinWord := "coins"
 		if args.Amount == 1 {
 			coinWord = "coin"
 		}
-		fmt.Fprintf(&b, "[ok] Settled on the spot — you pay %s %d %s for %d %s.", seller, args.Amount, coinWord, args.Qty, item)
+		fmt.Fprintf(&b, "[ok] Settled on the spot — you pay %s %d %s for %s.", seller, args.Amount, coinWord, goods)
 	} else {
-		fmt.Fprintf(&b, "[ok] Settled on the spot — %s hands over %d %s for nothing.", seller, args.Qty, item)
+		fmt.Fprintf(&b, "[ok] Settled on the spot — %s hands over %s for nothing.", seller, goods)
 	}
 	b.WriteString(clampNote)
 	// ZBBS-WORK-409: an eat-here meal/drink keeps easing the need for MealMinutes
@@ -1601,16 +1631,28 @@ func sceneQuoteKey(vc *ValidatedCall) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	item := strings.ToLower(strings.Join(strings.Fields(args.ItemKind), " "))
-	if item == "" {
+	if len(args.Lines) == 0 {
 		return "", false
 	}
+	// Order-independent key over the bundle's lines (LLM-101): each "item\x01qty",
+	// sorted, so "blueberries+raspberries" and the reverse hash the same. Amount
+	// is excluded (a re-post at a drifting price rides the substrate's supersede
+	// path); qty IS part of each line (a different lot size is a distinct offer).
+	parts := make([]string, 0, len(args.Lines))
+	for _, ln := range args.Lines {
+		item := strings.ToLower(strings.Join(strings.Fields(ln.ItemKind), " "))
+		if item == "" {
+			return "", false
+		}
+		parts = append(parts, item+"\x01"+strconv.Itoa(ln.Qty))
+	}
+	sort.Strings(parts)
 	target := strings.ToLower(strings.Join(strings.Fields(args.TargetBuyer), " "))
 	disposition := "keep"
 	if args.ConsumeNow {
 		disposition = "consume"
 	}
-	return item + "\x00" + disposition + "\x00" + target + "\x00" + strconv.Itoa(args.Qty), true
+	return strings.Join(parts, "\x00") + "\x00" + disposition + "\x00" + target, true
 }
 
 // genericCallKey returns the same-tick identical-call dedup key for the

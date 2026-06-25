@@ -392,7 +392,7 @@ func TestIntegration_QuoteFastPath(t *testing.T) {
 	// Bob posts a quote for 1 bread at 4 coins.
 	quoteCmd, err := handlers.HandleSceneQuote(handlers.HandlerInput{
 		ActorID: "bob", AttemptID: "tk-1",
-		Args: handlers.SceneQuoteArgs{ItemKind: "bread", Qty: 1, Amount: 4, ConsumeNow: false},
+		Args: handlers.SceneQuoteArgs{Lines: []handlers.SceneQuoteLineArg{{ItemKind: "bread", Qty: 1}}, Amount: 4, ConsumeNow: false},
 	})
 	if err != nil {
 		t.Fatalf("HandleSceneQuote: %v", err)

@@ -199,8 +199,20 @@ func handlePayResolvedActionLog(w *sim.World, evt sim.Event) {
 	if consumerCount == 0 {
 		consumerCount = 1
 	}
-	qty := resolved.QtyPerConsumer * consumerCount
-	forText := formatItemQty(resolved.ItemKind, qty)
+	var forText string
+	if len(resolved.Lines) > 0 {
+		// Bundle quote-take (LLM-101): list every line with its consumer-scaled
+		// qty, e.g. "2x blueberries, 2x raspberries".
+		for i, ln := range resolved.Lines {
+			if i > 0 {
+				forText += ", "
+			}
+			forText += formatItemQty(ln.ItemKind, ln.Qty*consumerCount)
+		}
+	} else {
+		qty := resolved.QtyPerConsumer * consumerCount
+		forText = formatItemQty(resolved.ItemKind, qty)
+	}
 	entry := sim.ActionLogEntry{
 		ActorID:          resolved.BuyerID,
 		OccurredAt:       resolved.At,

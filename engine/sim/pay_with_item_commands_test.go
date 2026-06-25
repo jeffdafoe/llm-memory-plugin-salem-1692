@@ -784,8 +784,7 @@ func buildFastPathFixture(t *testing.T, quoteID sim.QuoteID) (*sim.World, func()
 		ID:        quoteID,
 		SceneID:   "sc1",
 		SellerID:  "bob",
-		ItemKind:  "stew",
-		Qty:       1,
+		Lines:     []sim.QuoteLine{{ItemKind: "stew", Qty: 1}},
 		Amount:    4,
 		State:     sim.SceneQuoteStateActive,
 		CreatedAt: at,
@@ -834,8 +833,8 @@ func TestPayWithItem_FastPath_HappyPath_Takeaway(t *testing.T) {
 		world.Actors["bob"].Inventory["bread"] = 5
 	})
 	seedQuote(t, w, sim.SceneQuote{
-		ID: 8, SceneID: "sc1", SellerID: "bob", ItemKind: "bread",
-		Qty: 1, Amount: 4, State: sim.SceneQuoteStateActive,
+		ID: 8, SceneID: "sc1", SellerID: "bob",
+		Lines: []sim.QuoteLine{{ItemKind: "bread", Qty: 1}}, Amount: 4, State: sim.SceneQuoteStateActive,
 		CreatedAt: at, ExpiresAt: at.Add(10 * time.Minute),
 	})
 
@@ -1041,7 +1040,7 @@ func TestPayWithItem_FastPath_StrictRejectPredicates(t *testing.T) {
 			name: "item_mismatch",
 			tweak: func(t *testing.T, w *sim.World, _ time.Time) {
 				mustSend(t, w, func(world *sim.World) {
-					world.Quotes[7].ItemKind = "ale"
+					world.Quotes[7].Lines[0].ItemKind = "ale"
 				})
 			},
 			want: "different terms: item",
@@ -2128,8 +2127,8 @@ func TestPayWithItem_AutoMatch_BareOfferTakesOpenQuote(t *testing.T) {
 		world.Actors["bob"].Inventory["bread"] = 5
 	})
 	seedQuote(t, w, sim.SceneQuote{
-		ID: 8, SceneID: "sc1", SellerID: "bob", ItemKind: "bread",
-		Qty: 1, Amount: 4, State: sim.SceneQuoteStateActive,
+		ID: 8, SceneID: "sc1", SellerID: "bob",
+		Lines: []sim.QuoteLine{{ItemKind: "bread", Qty: 1}}, Amount: 4, State: sim.SceneQuoteStateActive,
 		CreatedAt: at, ExpiresAt: at.Add(10 * time.Minute),
 	})
 
@@ -2163,8 +2162,8 @@ func TestPayWithItem_AutoMatch_WithdrawsCrossingOffer(t *testing.T) {
 		world.Actors["bob"].Inventory["bread"] = 5
 	})
 	seedQuote(t, w, sim.SceneQuote{
-		ID: 8, SceneID: "sc1", SellerID: "bob", ItemKind: "bread",
-		Qty: 1, Amount: 4, State: sim.SceneQuoteStateActive,
+		ID: 8, SceneID: "sc1", SellerID: "bob",
+		Lines: []sim.QuoteLine{{ItemKind: "bread", Qty: 1}}, Amount: 4, State: sim.SceneQuoteStateActive,
 		CreatedAt: at, ExpiresAt: at.Add(10 * time.Minute),
 	})
 	// The mirror: same scene, kind, qty, disposition, consumers as the take.
@@ -2338,8 +2337,8 @@ func TestPayWithItem_FastPath_ServiceClampsDisposition(t *testing.T) {
 		t.Fatalf("seed service kind: %v", err)
 	}
 	seedQuote(t, w, sim.SceneQuote{
-		ID: 8, SceneID: "sc1", SellerID: "bob", ItemKind: "nights_stay",
-		Qty: 1, Amount: 2, State: sim.SceneQuoteStateActive,
+		ID: 8, SceneID: "sc1", SellerID: "bob",
+		Lines: []sim.QuoteLine{{ItemKind: "nights_stay", Qty: 1}}, Amount: 2, State: sim.SceneQuoteStateActive,
 		CreatedAt: at, ExpiresAt: at.Add(10 * time.Minute),
 	})
 	events := capturePayWithItemEvents(t, w)

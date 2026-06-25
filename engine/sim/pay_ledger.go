@@ -252,6 +252,16 @@ type PayLedgerEntry struct {
 	ConsumeNow  bool
 	ConsumerIDs []ActorID
 
+	// Lines is populated ONLY for a bundle quote-take (LLM-101): a buyer
+	// taking a multi-line scene quote by quote_id. It carries the quote's
+	// full set of {ItemKind, Qty} lines so commitPayTransfer delivers each.
+	// Empty for every other entry — single-item offers, slow-path pendings,
+	// counters, and barter all use the scalar ItemKind/Qty above. A bundle
+	// take is minted already-Accepted and never sits pending, so the
+	// AcceptPay gate matrix never reads this. Not persisted: a bundle take
+	// mints no durable Order (see the LLM-101 design note).
+	Lines []QuoteLine
+
 	// ReadyBy is the buyer-requested delivery/check-in date for a deferred
 	// order (lodging advance booking; ZBBS-HOME-403). Zero for a same-day /
 	// immediate offer — createOrderForPayWithItem defaults it to the creation
@@ -357,6 +367,7 @@ func ClonePayLedgerEntry(e *PayLedgerEntry) *PayLedgerEntry {
 		cp.ConsumerIDs = make([]ActorID, len(e.ConsumerIDs))
 		copy(cp.ConsumerIDs, e.ConsumerIDs)
 	}
+	cp.Lines = cloneQuoteLines(e.Lines)
 	cp.PayItems = cloneItemKindQtys(e.PayItems)
 	cp.CounterPayItems = cloneItemKindQtys(e.CounterPayItems)
 	return &cp

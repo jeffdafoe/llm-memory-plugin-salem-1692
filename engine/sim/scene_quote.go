@@ -101,6 +101,25 @@ const SceneQuoteMaxPerSellerScene = 10
 // have to special-case quote-side vs offer-side limits.
 const SceneQuoteMaxConsumers = 8
 
+// MaxSceneQuoteLines caps the number of distinct item lines in one bundle
+// quote (LLM-101). 8 matches the consumer cap — generous enough for a real
+// "some of each" basket, tight enough to keep the per-quote prompt + pay-panel
+// line list bounded. Duplicate kinds within a bundle are merged at creation,
+// so this caps distinct kinds, not raw lines the model emitted.
+const MaxSceneQuoteLines = 8
+
+// QuoteLine is one item kind + per-consumer quantity within a SceneQuote's
+// bundle (LLM-101). A single-line quote is the ordinary single-item offer; a
+// multi-line quote bundles several kinds under one total Amount, taken whole
+// by a buyer's quote_id (the seller could not previously represent "some of
+// both" in one offer, so a weak model fumbled the multi-call decomposition).
+// ItemKind is canonical (resolved at quote-creation time); Qty is units per
+// consumer for this line.
+type QuoteLine struct {
+	ItemKind ItemKind
+	Qty      int
+}
+
 // SceneQuote is a vendor-posted offer-to-sell anchored to one Scene.
 // Authoritative seller-side commerce surface — created via the
 // scene_quote tool by an NPC seller; buyer's pay_with_item (PR S4)
@@ -164,15 +183,17 @@ type SceneQuote struct {
 	// (warrant would be inert on a non-deliberating PC).
 	TargetBuyer ActorID
 
-	// ItemKind is the canonical item kind (resolved against
-	// w.ItemKinds at quote-creation time, NOT the raw LLM string).
-	ItemKind ItemKind
-
-	// Qty is units per consumer. Quotes for a single buyer have
-	// effectiveConsumerCount=1; group orders multiply by len(ConsumerIDs).
-	// Stock check at create time: seller.Inventory[ItemKind] >=
-	// Qty * effectiveConsumerCount. No reservation.
-	Qty int
+	// Lines are the item kinds + per-consumer quantities this quote
+	// bundles (LLM-101). A single-line quote is the common single-item
+	// offer; a multi-line quote is a bundle ("2 blueberries + 2
+	// raspberries for 8 coins") taken whole via the buyer's quote_id.
+	// Each line's ItemKind is canonical (resolved against w.ItemKinds at
+	// quote-creation time, NOT the raw LLM string); Qty is units per
+	// consumer for that line. Always holds >=1 line; duplicate kinds are
+	// merged at creation. Stock check at create time runs per line:
+	// seller.Inventory[line.ItemKind] >= line.Qty * effectiveConsumerCount.
+	// No reservation.
+	Lines []QuoteLine
 
 	// ConsumeNow toggles the immediate-apply semantics of the
 	// downstream pay-with-item flow. Quotes match buyer's
@@ -222,6 +243,12 @@ func CloneSceneQuote(q *SceneQuote) *SceneQuote {
 	if q.ConsumerIDs != nil {
 		cp.ConsumerIDs = make([]ActorID, len(q.ConsumerIDs))
 		copy(cp.ConsumerIDs, q.ConsumerIDs)
+	}
+	// QuoteLine is a flat value type (no slices/pointers), so a plain copy
+	// of the backing array fully isolates the clone.
+	if q.Lines != nil {
+		cp.Lines = make([]QuoteLine, len(q.Lines))
+		copy(cp.Lines, q.Lines)
 	}
 	return &cp
 }

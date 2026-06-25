@@ -310,8 +310,8 @@ func TestSubscriber_ServeHandover_StampsSellerOnQuoteTake(t *testing.T) {
 	defer stop()
 	now := time.Now().UTC()
 	seedActiveQuote(t, w, sim.SceneQuote{
-		ID: 8, SceneID: "sc1", SellerID: "bob", ItemKind: "stew",
-		Qty: 1, Amount: 4, ConsumeNow: true, State: sim.SceneQuoteStateActive,
+		ID: 8, SceneID: "sc1", SellerID: "bob",
+		Lines: []sim.QuoteLine{{ItemKind: "stew", Qty: 1}}, Amount: 4, ConsumeNow: true, State: sim.SceneQuoteStateActive,
 		CreatedAt: now, ExpiresAt: now.Add(10 * time.Minute),
 	})
 	res, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, true, nil, nil, 8, 0, "", now))
@@ -352,8 +352,8 @@ func TestSubscriber_ServeHandover_StampsSellerWhenPCBuyerTakes(t *testing.T) {
 	defer stop()
 	now := time.Now().UTC()
 	seedActiveQuote(t, w, sim.SceneQuote{
-		ID: 9, SceneID: "sc1", SellerID: "bob", ItemKind: "stew",
-		Qty: 1, Amount: 4, ConsumeNow: true, State: sim.SceneQuoteStateActive,
+		ID: 9, SceneID: "sc1", SellerID: "bob",
+		Lines: []sim.QuoteLine{{ItemKind: "stew", Qty: 1}}, Amount: 4, ConsumeNow: true, State: sim.SceneQuoteStateActive,
 		CreatedAt: now, ExpiresAt: now.Add(10 * time.Minute),
 	})
 	if _, err := w.Send(sim.PayWithItem("pc-jeff", "Bob", "stew", 1, 4, true, nil, nil, 9, 0, "", now)); err != nil {
@@ -407,8 +407,8 @@ func TestSubscriber_ServeHandover_DedupsOnDoubleRegistration(t *testing.T) {
 		t.Fatalf("second RegisterPayWithItemHandlers: %v", err)
 	}
 	seedActiveQuote(t, w, sim.SceneQuote{
-		ID: 10, SceneID: "sc1", SellerID: "bob", ItemKind: "stew",
-		Qty: 1, Amount: 4, ConsumeNow: true, State: sim.SceneQuoteStateActive,
+		ID: 10, SceneID: "sc1", SellerID: "bob",
+		Lines: []sim.QuoteLine{{ItemKind: "stew", Qty: 1}}, Amount: 4, ConsumeNow: true, State: sim.SceneQuoteStateActive,
 		CreatedAt: now, ExpiresAt: now.Add(10 * time.Minute),
 	})
 	if _, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, true, nil, nil, 10, 0, "", now)); err != nil {

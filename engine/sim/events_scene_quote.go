@@ -36,8 +36,10 @@ type SceneQuoteCreated struct {
 	SceneID     SceneID
 	SellerID    ActorID
 	TargetBuyer ActorID // empty for public
-	ItemKind    ItemKind
-	Qty         int
+	// Lines carries the bundle's item kinds + per-consumer quantities
+	// (LLM-101). Single-line for the common single-item quote. Deep-cloned
+	// at emit so subscribers can't mutate the quote's slice.
+	Lines       []QuoteLine
 	Amount      int
 	ConsumeNow  bool
 	ConsumerIDs []ActorID

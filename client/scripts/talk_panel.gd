@@ -2344,33 +2344,56 @@ func _on_pay_mention_pressed(seller: String, item: String) -> void:
 ## disposition work (WORK-402) ships; drop it there, not here.
 func _pay_quote_row_label(q: Dictionary) -> String:
     var seller := str(q.get("seller", ""))
-    var label := str(q.get("display_label", q.get("item", "")))
-    var qty := int(q.get("qty", 1))
     var amount := int(q.get("amount", 0))
     var item := str(q.get("item", "")).to_lower()
-    # "a bowl of stew" pluralizes badly in the generic case, so qty > 1
-    # reads "2× bowl of stew" with the leading article stripped, and the
-    # bundle amount gains an explicit "total" so each-vs-total is never
-    # ambiguous (quote amounts are bundle totals on the wire).
-    var what := label
-    if qty > 1:
-        what = "%d× %s" % [qty, _strip_leading_article(label)]
+    # LLM-101: render every line of a bundle ("2× Blueberries + 2× Raspberries");
+    # a single-item quote (one line, or the legacy representative fields) reads as
+    # before. "a bowl of stew" pluralizes badly in the generic case, so qty > 1
+    # reads "2× bowl of stew" with the leading article stripped.
+    var parts := []
+    var lines = q.get("lines", [])
+    if typeof(lines) == TYPE_ARRAY and lines.size() > 0:
+        for ln in lines:
+            if typeof(ln) != TYPE_DICTIONARY:
+                continue
+            var ln_label := str(ln.get("display_label", ln.get("item", "")))
+            var ln_qty := int(ln.get("qty", 1))
+            if ln_qty > 1:
+                parts.append("%d× %s" % [ln_qty, _strip_leading_article(ln_label)])
+            else:
+                parts.append(ln_label)
+    if parts.is_empty():
+        # Legacy/representative single-item path (no lines array on the wire).
+        var label := str(q.get("display_label", q.get("item", "")))
+        var qty := int(q.get("qty", 1))
+        if qty > 1:
+            parts.append("%d× %s" % [qty, _strip_leading_article(label)])
+        else:
+            parts.append(label)
+    var is_bundle := parts.size() > 1
+    var what := " + ".join(parts)
+    # The bundle/multi-unit amount gains an explicit "total" so each-vs-total is
+    # never ambiguous (quote amounts are bundle totals on the wire).
+    var multi := is_bundle or int(q.get("qty", 1)) > 1
     var dispo := _pay_item_dispo(item)
     var line: String
-    if dispo == "tonight" or item == "nights_stay":
+    if not is_bundle and (dispo == "tonight" or item == "nights_stay"):
         line = "%s offers %s tonight for %d coins" % [seller, what, amount]
     else:
         line = "%s offers %s for %d coins" % [seller, what, amount]
-    if qty > 1:
+    if multi:
         line += " total"
-    # Disposition clause (ZBBS-WORK-402/403): choice-class items carry
-    # NONE — the "Take eligible offers as" toggle governs the take, so
-    # asserting the quote's preference here would mislead. eat_here-class
-    # items say so plainly (a PC take always settles eat-here for them).
-    # Unknown class (catalog fetch not landed/failed) keeps the
-    # quote-verbatim clause, matching exactly what the Take will send in
-    # that degraded state.
-    if dispo == "eat_here":
+    # Disposition clause (ZBBS-WORK-402/403): a bundle carries ONE disposition
+    # (its consume_now), so use that directly. For a single item, choice-class
+    # items carry NONE (the "Take eligible offers as" toggle governs the take);
+    # eat_here-class items say so plainly; unknown class keeps the quote-verbatim
+    # clause, matching what the Take will send in that degraded state.
+    if is_bundle:
+        if bool(q.get("consume_now", false)):
+            line += ", to eat here"
+        else:
+            line += ", to take home"
+    elif dispo == "eat_here":
         line += ", to eat here"
     elif dispo == "" and item != "nights_stay":
         if bool(q.get("consume_now", false)):

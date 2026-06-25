@@ -179,7 +179,7 @@ func TestArrival_SceneQuoteFormsHuddleOnQuote(t *testing.T) {
 
 	cmd, err := handlers.HandleSceneQuote(handlers.HandlerInput{
 		ActorID: "seller", AttemptID: "tk-1",
-		Args: handlers.SceneQuoteArgs{ItemKind: "stew", Qty: 1, Amount: 4, ConsumeNow: false},
+		Args: handlers.SceneQuoteArgs{Lines: []handlers.SceneQuoteLineArg{{ItemKind: "stew", Qty: 1}}, Amount: 4, ConsumeNow: false},
 	})
 	if err != nil {
 		t.Fatalf("HandleSceneQuote: %v", err)

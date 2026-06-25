@@ -13,8 +13,11 @@ import (
 // modal can render them as take-able rows instead of making the player
 // reconstruct terms from chat history. A take-row submits pc/pay with the
 // quote_id and the terms copied verbatim from this response — verbatim copy
-// satisfies the fast path's exact-term predicates by construction
-// (runPayWithItemFastPath, scene-quote-design § 8).
+// satisfies the single-item fast path's exact-term predicates by construction
+// (runPayWithItemFastPath, scene-quote-design § 8). A bundle row (LLM-101:
+// >1 line) is taken WHOLE off the quote_id + amount; the representative Item/
+// Qty the client echoes are ignored by the engine for a bundle, so any line
+// serves and the take submission stays identical to the single-item case.
 //
 // Pure read over s.world.Published(), same posture as pc/me: Snapshot.Quotes
 // is deep-cloned per publish exactly so client perception can read it
@@ -36,18 +39,34 @@ import (
 //     need the consumer ActorID set echoed through pc/pay's display-name
 //     consumers field, and PC group orders aren't a real surface today.
 //     Deliberate V1 scope, not an oversight.
+//
+// pcQuoteLineDTO is one item line of a quote (LLM-101): the wire item kind +
+// catalog DisplayLabel (falls back to Item) + per-consumer qty. A single-item
+// quote has one; a bundle has several.
+type pcQuoteLineDTO struct {
+	Item         string `json:"item"`
+	DisplayLabel string `json:"display_label"`
+	Qty          int    `json:"qty"`
+}
+
 type pcQuoteDTO struct {
 	QuoteID uint64 `json:"quote_id"`
 	// Seller is the seller's DisplayName — the exact string pc/pay's seller
 	// field resolves (findHuddlePeerByDisplayName), so the client echoes it
 	// back rather than translating ids.
 	Seller string `json:"seller"`
-	// Item is the wire item kind; DisplayLabel the catalog label (falls back
-	// to Item when the catalog has no entry).
+	// Lines are the offer's item lines (LLM-101): single-element for an
+	// ordinary quote, several for a bundle. The client renders these.
+	Lines []pcQuoteLineDTO `json:"lines"`
+	// Item / DisplayLabel / Qty echo the FIRST line — a representative the
+	// client passes back to pc/pay verbatim. For a single-line quote that IS
+	// the exact-match term; for a bundle the engine ignores them (a bundle
+	// take is wholesale by quote_id + amount), so any line serves. Kept so the
+	// client's take submission is identical for single-item and bundle.
 	Item         string `json:"item"`
 	DisplayLabel string `json:"display_label"`
-	// Qty is units per consumer; Amount the bundle-total floor (overpaying
-	// is tipping — fast-path predicate 5).
+	// Qty is units per consumer (of the representative line); Amount the
+	// bundle-total floor (overpaying is tipping — fast-path predicate 5).
 	Qty        int  `json:"qty"`
 	Amount     int  `json:"amount"`
 	ConsumeNow bool `json:"consume_now"`
@@ -125,9 +144,22 @@ func (s *Server) handlePCQuotes(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		label := string(q.ItemKind)
-		if def := snap.ItemKinds[q.ItemKind]; def != nil && def.DisplayLabel != "" {
-			label = def.DisplayLabel
+		lines := make([]pcQuoteLineDTO, 0, len(q.Lines))
+		for _, ln := range q.Lines {
+			label := string(ln.ItemKind)
+			if def := snap.ItemKinds[ln.ItemKind]; def != nil && def.DisplayLabel != "" {
+				label = def.DisplayLabel
+			}
+			lines = append(lines, pcQuoteLineDTO{
+				Item:         string(ln.ItemKind),
+				DisplayLabel: label,
+				Qty:          ln.Qty,
+			})
+		}
+		if len(lines) == 0 {
+			// Defensive — a quote always carries >=1 line; skip a malformed one
+			// rather than emit a row the client can't render or take.
+			continue
 		}
 		remaining := 0
 		if q.ExpiresAt.After(snap.PublishedAt) {
@@ -136,9 +168,10 @@ func (s *Server) handlePCQuotes(w http.ResponseWriter, r *http.Request) {
 		resp.Quotes = append(resp.Quotes, pcQuoteDTO{
 			QuoteID:          uint64(id),
 			Seller:           seller.DisplayName,
-			Item:             string(q.ItemKind),
-			DisplayLabel:     label,
-			Qty:              q.Qty,
+			Lines:            lines,
+			Item:             lines[0].Item,
+			DisplayLabel:     lines[0].DisplayLabel,
+			Qty:              lines[0].Qty,
 			Amount:           q.Amount,
 			ConsumeNow:       q.ConsumeNow,
 			Targeted:         q.TargetBuyer == pcID,

@@ -2271,8 +2271,7 @@ func buildStandingQuotesFromMe(snap *sim.Snapshot, subject sim.ActorID, subjectS
 		views = append(views, StandingQuoteView{
 			QuoteID:   q.ID,
 			BuyerName: buyerName,
-			Item:      q.ItemKind,
-			Qty:       q.Qty,
+			Lines:     q.Lines,
 			Amount:    q.Amount,
 		})
 	}

@@ -205,7 +205,7 @@ func TestSceneQuoteCreate_HappyPath_Public(t *testing.T) {
 
 	captured := captureSceneQuoteCreated(t, w)
 	at := time.Now().UTC()
-	res, err := w.Send(sim.SceneQuoteCreate("aldous", "ale", 1, 2, false, "", nil, at))
+	res, err := w.Send(sim.SceneQuoteCreate("aldous", []sim.QuoteLineInput{{ItemName: "ale", Qty: 1}}, 2, false, "", nil, at))
 	if err != nil {
 		t.Fatalf("SceneQuoteCreate: %v", err)
 	}
@@ -225,7 +225,7 @@ func TestSceneQuoteCreate_HappyPath_Public(t *testing.T) {
 		t.Fatalf("SceneQuoteCreated events = %d, want 1", len(*captured))
 	}
 	evt := (*captured)[0]
-	if evt.QuoteID != result.QuoteID || evt.SellerID != "aldous" || evt.ItemKind != "ale" {
+	if evt.QuoteID != result.QuoteID || evt.SellerID != "aldous" || evt.Lines[0].ItemKind != "ale" {
 		t.Errorf("event mismatch: %+v", evt)
 	}
 	if evt.TargetBuyer != "" {
@@ -262,7 +262,7 @@ func TestSceneQuoteCreate_EatHereClamp(t *testing.T) {
 	at := time.Now().UTC()
 
 	// ale: consumable, no portable capability in the fixture — clamps.
-	res, err := w.Send(sim.SceneQuoteCreate("aldous", "ale", 1, 2, false, "", nil, at))
+	res, err := w.Send(sim.SceneQuoteCreate("aldous", []sim.QuoteLineInput{{ItemName: "ale", Qty: 1}}, 2, false, "", nil, at))
 	if err != nil {
 		t.Fatalf("SceneQuoteCreate ale: %v", err)
 	}
@@ -276,7 +276,7 @@ func TestSceneQuoteCreate_EatHereClamp(t *testing.T) {
 	}
 
 	// bread: portable in the fixture — the proposed take-home survives.
-	res, err = w.Send(sim.SceneQuoteCreate("aldous", "bread", 1, 2, false, "", nil, at))
+	res, err = w.Send(sim.SceneQuoteCreate("aldous", []sim.QuoteLineInput{{ItemName: "bread", Qty: 1}}, 2, false, "", nil, at))
 	if err != nil {
 		t.Fatalf("SceneQuoteCreate bread: %v", err)
 	}
@@ -298,7 +298,7 @@ func TestSceneQuoteCreate_HappyPath_TargetedNPC(t *testing.T) {
 	defer stop()
 
 	captured := captureSceneQuoteCreated(t, w)
-	_, err := w.Send(sim.SceneQuoteCreate("aldous", "stew", 1, 5, true, "Bea", nil, time.Now().UTC()))
+	_, err := w.Send(sim.SceneQuoteCreate("aldous", []sim.QuoteLineInput{{ItemName: "stew", Qty: 1}}, 5, true, "Bea", nil, time.Now().UTC()))
 	if err != nil {
 		t.Fatalf("SceneQuoteCreate: %v", err)
 	}
@@ -316,7 +316,7 @@ func TestSceneQuoteCreate_HappyPath_GroupOrder(t *testing.T) {
 	defer stop()
 
 	captured := captureSceneQuoteCreated(t, w)
-	_, err := w.Send(sim.SceneQuoteCreate("aldous", "ale", 2, 12, false, "", []string{"Bea", "Cyrus"}, time.Now().UTC()))
+	_, err := w.Send(sim.SceneQuoteCreate("aldous", []sim.QuoteLineInput{{ItemName: "ale", Qty: 2}}, 12, false, "", []string{"Bea", "Cyrus"}, time.Now().UTC()))
 	if err != nil {
 		t.Fatalf("SceneQuoteCreate group: %v", err)
 	}
@@ -342,7 +342,7 @@ func TestSceneQuoteCreate_Reject_NoHuddle(t *testing.T) {
 	})
 	defer stop()
 
-	_, err := w.Send(sim.SceneQuoteCreate("aldous", "ale", 1, 2, false, "", nil, time.Now().UTC()))
+	_, err := w.Send(sim.SceneQuoteCreate("aldous", []sim.QuoteLineInput{{ItemName: "ale", Qty: 1}}, 2, false, "", nil, time.Now().UTC()))
 	if err == nil || !strings.Contains(err.Error(), "not in a conversation") {
 		t.Fatalf("err = %v, want 'not in a conversation'", err)
 	}
@@ -363,7 +363,7 @@ func TestSceneQuoteCreate_Reject_NoScene(t *testing.T) {
 		t.Fatalf("drop scene: %v", err)
 	}
 
-	_, err := w.Send(sim.SceneQuoteCreate("aldous", "ale", 1, 2, false, "", nil, time.Now().UTC()))
+	_, err := w.Send(sim.SceneQuoteCreate("aldous", []sim.QuoteLineInput{{ItemName: "ale", Qty: 1}}, 2, false, "", nil, time.Now().UTC()))
 	if err == nil || !strings.Contains(err.Error(), "anchored to a scene") {
 		t.Fatalf("err = %v, want 'anchored to a scene'", err)
 	}
@@ -379,7 +379,7 @@ func TestSceneQuoteCreate_Reject_UnknownItem(t *testing.T) {
 	// ZBBS-WORK-412: an unknown quoted good is now MINTED (a discovery); the
 	// quote then fails the stock gate (Aldous holds 0 of the minted kind) rather
 	// than "unknown item kind".
-	_, err := w.Send(sim.SceneQuoteCreate("aldous", "moonshine", 1, 2, false, "", nil, time.Now().UTC()))
+	_, err := w.Send(sim.SceneQuoteCreate("aldous", []sim.QuoteLineInput{{ItemName: "moonshine", Qty: 1}}, 2, false, "", nil, time.Now().UTC()))
 	if err == nil || !strings.Contains(err.Error(), "insufficient stock") {
 		t.Fatalf("err = %v, want 'insufficient stock' (moonshine minted at qty 0)", err)
 	}
@@ -393,7 +393,7 @@ func TestSceneQuoteCreate_Reject_OnBreak(t *testing.T) {
 	})
 	defer stop()
 
-	_, err := w.Send(sim.SceneQuoteCreate("aldous", "ale", 1, 2, false, "", nil, time.Now().UTC()))
+	_, err := w.Send(sim.SceneQuoteCreate("aldous", []sim.QuoteLineInput{{ItemName: "ale", Qty: 1}}, 2, false, "", nil, time.Now().UTC()))
 	if err == nil || !strings.Contains(err.Error(), "on a break") {
 		t.Fatalf("err = %v, want 'on a break'", err)
 	}
@@ -406,7 +406,7 @@ func TestSceneQuoteCreate_Reject_InsufficientStock(t *testing.T) {
 	})
 	defer stop()
 
-	_, err := w.Send(sim.SceneQuoteCreate("aldous", "ale", 3, 6, false, "", nil, time.Now().UTC()))
+	_, err := w.Send(sim.SceneQuoteCreate("aldous", []sim.QuoteLineInput{{ItemName: "ale", Qty: 3}}, 6, false, "", nil, time.Now().UTC()))
 	if err == nil || !strings.Contains(err.Error(), "insufficient stock") {
 		t.Fatalf("err = %v, want 'insufficient stock'", err)
 	}
@@ -421,7 +421,7 @@ func TestSceneQuoteCreate_GroupOrderStockMultiplier(t *testing.T) {
 	})
 	defer stop()
 
-	_, err := w.Send(sim.SceneQuoteCreate("aldous", "ale", 2, 12, false, "", []string{"Bea", "Cyrus"}, time.Now().UTC()))
+	_, err := w.Send(sim.SceneQuoteCreate("aldous", []sim.QuoteLineInput{{ItemName: "ale", Qty: 2}}, 12, false, "", []string{"Bea", "Cyrus"}, time.Now().UTC()))
 	if err == nil || !strings.Contains(err.Error(), "insufficient stock") {
 		t.Fatalf("err = %v, want 'insufficient stock' (needed 4, has 3)", err)
 	}
@@ -434,7 +434,7 @@ func TestSceneQuoteCreate_Reject_TargetBuyerMissing(t *testing.T) {
 	})
 	defer stop()
 
-	_, err := w.Send(sim.SceneQuoteCreate("aldous", "ale", 1, 2, false, "Nonexistent", nil, time.Now().UTC()))
+	_, err := w.Send(sim.SceneQuoteCreate("aldous", []sim.QuoteLineInput{{ItemName: "ale", Qty: 1}}, 2, false, "Nonexistent", nil, time.Now().UTC()))
 	if err == nil || !strings.Contains(err.Error(), "no one named") {
 		t.Fatalf("err = %v, want 'no one named'", err)
 	}
@@ -448,7 +448,7 @@ func TestSceneQuoteCreate_Reject_TargetBuyerAmbiguous(t *testing.T) {
 	})
 	defer stop()
 
-	_, err := w.Send(sim.SceneQuoteCreate("aldous", "ale", 1, 2, false, "Bea", nil, time.Now().UTC()))
+	_, err := w.Send(sim.SceneQuoteCreate("aldous", []sim.QuoteLineInput{{ItemName: "ale", Qty: 1}}, 2, false, "Bea", nil, time.Now().UTC()))
 	if err == nil || !strings.Contains(err.Error(), "more than one") {
 		t.Fatalf("err = %v, want 'more than one'", err)
 	}
@@ -461,7 +461,7 @@ func TestSceneQuoteCreate_Reject_SellerAsConsumer(t *testing.T) {
 	})
 	defer stop()
 
-	_, err := w.Send(sim.SceneQuoteCreate("aldous", "ale", 1, 2, false, "", []string{"Aldous"}, time.Now().UTC()))
+	_, err := w.Send(sim.SceneQuoteCreate("aldous", []sim.QuoteLineInput{{ItemName: "ale", Qty: 1}}, 2, false, "", []string{"Aldous"}, time.Now().UTC()))
 	if err == nil || !strings.Contains(err.Error(), "seller can't be a consumer") {
 		t.Fatalf("err = %v, want 'seller can't be a consumer'", err)
 	}
@@ -486,7 +486,7 @@ func TestSceneQuoteCreate_Reject_TooManyConsumers(t *testing.T) {
 	w, stop := buildQuoteTestWorld(t, "h1", "sc1", actors)
 	defer stop()
 
-	_, err := w.Send(sim.SceneQuoteCreate("aldous", "ale", 1, 9, false, "", names, time.Now().UTC()))
+	_, err := w.Send(sim.SceneQuoteCreate("aldous", []sim.QuoteLineInput{{ItemName: "ale", Qty: 1}}, 9, false, "", names, time.Now().UTC()))
 	if err == nil || !strings.Contains(err.Error(), "too many consumers") {
 		t.Fatalf("err = %v, want 'too many consumers'", err)
 	}
@@ -499,8 +499,8 @@ func TestSceneQuoteCreate_Reject_QtyZero(t *testing.T) {
 	})
 	defer stop()
 
-	_, err := w.Send(sim.SceneQuoteCreate("aldous", "ale", 0, 2, false, "", nil, time.Now().UTC()))
-	if err == nil || !strings.Contains(err.Error(), "qty must be at least 1") {
+	_, err := w.Send(sim.SceneQuoteCreate("aldous", []sim.QuoteLineInput{{ItemName: "ale", Qty: 0}}, 2, false, "", nil, time.Now().UTC()))
+	if err == nil || !strings.Contains(err.Error(), "quantity must be at least 1") {
 		t.Fatalf("err = %v, want qty validation", err)
 	}
 }
@@ -512,7 +512,7 @@ func TestSceneQuoteCreate_Reject_AmountZero(t *testing.T) {
 	})
 	defer stop()
 
-	_, err := w.Send(sim.SceneQuoteCreate("aldous", "ale", 1, 0, false, "", nil, time.Now().UTC()))
+	_, err := w.Send(sim.SceneQuoteCreate("aldous", []sim.QuoteLineInput{{ItemName: "ale", Qty: 1}}, 0, false, "", nil, time.Now().UTC()))
 	if err == nil || !strings.Contains(err.Error(), "amount must be at least 1") {
 		t.Fatalf("err = %v, want amount validation", err)
 	}
@@ -530,11 +530,11 @@ func TestSceneQuoteCreate_DuplicateKey_Supersedes(t *testing.T) {
 	expired := captureSceneQuoteExpired(t, w)
 
 	// First quote — 1 ale for 2 coins, eat-in, public.
-	res1, _ := w.Send(sim.SceneQuoteCreate("aldous", "ale", 1, 2, true, "", nil, time.Now().UTC()))
+	res1, _ := w.Send(sim.SceneQuoteCreate("aldous", []sim.QuoteLineInput{{ItemName: "ale", Qty: 1}}, 2, true, "", nil, time.Now().UTC()))
 	q1 := res1.(sim.SceneQuoteCreateResult).QuoteID
 
 	// Same non-Amount key, different price — must supersede.
-	res2, err := w.Send(sim.SceneQuoteCreate("aldous", "ale", 1, 3, true, "", nil, time.Now().UTC()))
+	res2, err := w.Send(sim.SceneQuoteCreate("aldous", []sim.QuoteLineInput{{ItemName: "ale", Qty: 1}}, 3, true, "", nil, time.Now().UTC()))
 	if err != nil {
 		t.Fatalf("second SceneQuoteCreate: %v", err)
 	}
@@ -584,7 +584,7 @@ func TestSceneQuoteCreate_CapHit_DisplacesOldest(t *testing.T) {
 	var firstID sim.QuoteID
 	for i := 1; i <= sim.SceneQuoteMaxPerSellerScene; i++ {
 		// CreatedAt monotonic via base.Add(i) so the oldest is unambiguous.
-		res, err := w.Send(sim.SceneQuoteCreate("aldous", "ale", i, i, false, "", nil, base.Add(time.Duration(i)*time.Second)))
+		res, err := w.Send(sim.SceneQuoteCreate("aldous", []sim.QuoteLineInput{{ItemName: "ale", Qty: i}}, i, false, "", nil, base.Add(time.Duration(i)*time.Second)))
 		if err != nil {
 			t.Fatalf("seed quote %d: %v", i, err)
 		}
@@ -595,7 +595,7 @@ func TestSceneQuoteCreate_CapHit_DisplacesOldest(t *testing.T) {
 	}
 
 	// 11th quote (different qty so no supersede) → triggers cap displacement.
-	_, err := w.Send(sim.SceneQuoteCreate("aldous", "ale", 11, 11, false, "", nil, base.Add(11*time.Second)))
+	_, err := w.Send(sim.SceneQuoteCreate("aldous", []sim.QuoteLineInput{{ItemName: "ale", Qty: 11}}, 11, false, "", nil, base.Add(11*time.Second)))
 	if err != nil {
 		t.Fatalf("over-cap SceneQuoteCreate: %v", err)
 	}
@@ -626,7 +626,7 @@ func TestSceneQuoteCreate_MintsSequentialIDs(t *testing.T) {
 	at := time.Now().UTC()
 	// Three quotes with distinct qty so no supersede.
 	for i := 1; i <= 3; i++ {
-		res, err := w.Send(sim.SceneQuoteCreate("aldous", "ale", i, i*2, false, "", nil, at))
+		res, err := w.Send(sim.SceneQuoteCreate("aldous", []sim.QuoteLineInput{{ItemName: "ale", Qty: i}}, i*2, false, "", nil, at))
 		if err != nil {
 			t.Fatalf("SceneQuoteCreate %d: %v", i, err)
 		}
@@ -646,7 +646,7 @@ func TestSceneQuote_Snapshot_Isolation(t *testing.T) {
 	})
 	defer stop()
 
-	res, _ := w.Send(sim.SceneQuoteCreate("aldous", "ale", 1, 2, false, "", []string{"Bea", "Cyrus"}, time.Now().UTC()))
+	res, _ := w.Send(sim.SceneQuoteCreate("aldous", []sim.QuoteLineInput{{ItemName: "ale", Qty: 1}}, 2, false, "", []string{"Bea", "Cyrus"}, time.Now().UTC()))
 	qid := res.(sim.SceneQuoteCreateResult).QuoteID
 
 	snap1 := w.Published()
@@ -691,8 +691,7 @@ func TestRestartExpireScannedQuotes(t *testing.T) {
 			ID:        42,
 			SceneID:   "sc1",
 			SellerID:  "aldous",
-			ItemKind:  "ale",
-			Qty:       1,
+			Lines:     []sim.QuoteLine{{ItemKind: "ale", Qty: 1}},
 			Amount:    2,
 			State:     sim.SceneQuoteStateActive,
 			CreatedAt: staleAt.Add(-1 * time.Hour),
@@ -731,8 +730,7 @@ func TestRebuildSceneQuoteIndex(t *testing.T) {
 			ID:        10,
 			SceneID:   "sc1",
 			SellerID:  "aldous",
-			ItemKind:  "ale",
-			Qty:       1,
+			Lines:     []sim.QuoteLine{{ItemKind: "ale", Qty: 1}},
 			Amount:    2,
 			State:     sim.SceneQuoteStateActive,
 			CreatedAt: now,
@@ -742,8 +740,7 @@ func TestRebuildSceneQuoteIndex(t *testing.T) {
 			ID:        11,
 			SceneID:   "sc1",
 			SellerID:  "aldous",
-			ItemKind:  "ale",
-			Qty:       2,
+			Lines:     []sim.QuoteLine{{ItemKind: "ale", Qty: 2}},
 			Amount:    4,
 			State:     sim.SceneQuoteStateActive,
 			CreatedAt: now,
@@ -803,7 +800,7 @@ func TestSceneQuoteCreate_ServiceItem_SkipsStockGate(t *testing.T) {
 	at := time.Now().UTC()
 
 	// Hannah holds 0 nights_stay; the service bypass still lets her quote a room.
-	res, err := w.Send(sim.SceneQuoteCreate("hannah", "nights_stay", 2, 8, false, "", nil, at))
+	res, err := w.Send(sim.SceneQuoteCreate("hannah", []sim.QuoteLineInput{{ItemName: "nights_stay", Qty: 2}}, 8, false, "", nil, at))
 	if err != nil {
 		t.Fatalf("service-item quote rejected (stock bypass failed): %v", err)
 	}
@@ -812,7 +809,7 @@ func TestSceneQuoteCreate_ServiceItem_SkipsStockGate(t *testing.T) {
 	}
 
 	// Control: a non-service item at 0 stock still hits the stock gate.
-	_, err = w.Send(sim.SceneQuoteCreate("hannah", "ale", 1, 2, false, "", nil, at))
+	_, err = w.Send(sim.SceneQuoteCreate("hannah", []sim.QuoteLineInput{{ItemName: "ale", Qty: 1}}, 2, false, "", nil, at))
 	if err == nil || !strings.Contains(err.Error(), "insufficient stock") {
 		t.Fatalf("non-service item at 0 stock must reject with insufficient stock, got %v", err)
 	}

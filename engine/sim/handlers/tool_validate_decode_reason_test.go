@@ -40,7 +40,7 @@ func TestValidator_Validate_SurfacesModelSafeDecodeReason(t *testing.T) {
 			// "argument decode failed", and kept retrying.
 			name:    "scene_quote amount below minimum",
 			tool:    "sell",
-			args:    `{"item_kind":"Porridge","qty":1,"amount":0}`,
+			args:    `{"lines":[{"item_kind":"Porridge","qty":1}],"amount":0}`,
 			wantSub: "amount",
 		},
 		{
@@ -85,8 +85,8 @@ func TestValidator_Validate_RawDecodeStaysGeneric(t *testing.T) {
 		name string
 		args string
 	}{
-		{"type mismatch", `{"item_kind":"` + sentinel + `","qty":"not-a-number","amount":1}`},
-		{"truncated json", `{"item_kind":"` + sentinel + `",`},
+		{"type mismatch", `{"lines":[{"item_kind":"` + sentinel + `","qty":"not-a-number"}],"amount":1}`},
+		{"truncated json", `{"lines":[{"item_kind":"` + sentinel + `",`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

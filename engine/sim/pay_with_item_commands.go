@@ -157,6 +157,10 @@ type PayWithItemResult struct {
 	// adjusted disposition instead of leaving the model believing it
 	// carried the goods off.
 	EatHereClamped bool
+	// Lines is the bundle's item lines on a bundle quote-take (LLM-101), so the
+	// harness settle feedback names the whole bundle rather than just the
+	// representative first line the buyer echoed. Empty for a single-item take.
+	Lines []QuoteLine
 	// Fast-path settle summary (ZBBS-HOME-436). A quote-take settles, pays,
 	// and (consume_now) feeds the buyer inside this one tool call, but the
 	// buyer's feedback was a bare [ok] — and the within-tick perception body
@@ -842,36 +846,60 @@ func runPayWithItemFastPath(
 		)
 	}
 
-	// Exact term match. Consumer set comparison is order-independent
-	// (matches the supersede key in scene_quote_commands.go).
-	if quote.ItemKind != kind {
-		return nil, fmt.Errorf(
-			"quote %d has different terms: item %q, not %q",
-			quoteID, quote.ItemKind, kind,
-		)
-	}
-	if quote.Qty != qty {
-		return nil, fmt.Errorf(
-			"quote %d has different terms: qty %d, not %d",
-			quoteID, quote.Qty, qty,
-		)
-	}
-	// Disposition is the BUYER's term, not the quote's (ZBBS-WORK-402 —
-	// the quote's ConsumeNow survives as the UI row default, but a take no
-	// longer has to match it: whether goods are consumed on the spot or
-	// carried home is the buyer's call, same as the slow path's
-	// buyer-supplied consume_now). Service kinds have no choice — no
-	// physical good exists, so the engine forces the service shape rather
-	// than rejecting a confused caller (mirrors the client's forced
-	// handling for bookings, HOME-423).
-	if itemHasCapability(w, kind, "service") {
-		consumeNow = false
-	}
-	if !actorIDSetsEqual(quote.ConsumerIDs, consumerIDs) {
-		return nil, fmt.Errorf(
-			"quote %d has different consumer set — re-check who the quote is for.",
-			quoteID,
-		)
+	// LLM-101: a multi-line quote is a bundle, taken WHOLE. The buyer's
+	// item/qty/consume_now/consumer args don't describe a bundle (the PC modal
+	// / perception render echoes a single representative line), so for a bundle
+	// they're ignored — the take adopts the quote's lines, disposition, and
+	// consumer set. A single-line quote keeps the original exact-term contract
+	// (the buyer named the one item they're buying).
+	bundle := len(quote.Lines) > 1
+	entryConsumeNow := consumeNow
+	entryConsumerIDs := consumerIDs
+	var entryItemKind ItemKind
+	var entryQty int
+	var entryLines []QuoteLine
+	var deliverLines []QuoteLine
+
+	if bundle {
+		entryConsumeNow = quote.ConsumeNow
+		entryConsumerIDs = quote.ConsumerIDs
+		entryLines = cloneQuoteLines(quote.Lines)
+		deliverLines = quote.Lines
+	} else {
+		// Exact term match against the buyer's named terms. Consumer set
+		// comparison is order-independent (matches the supersede key in
+		// scene_quote_commands.go).
+		line := quote.Lines[0]
+		if line.ItemKind != kind {
+			return nil, fmt.Errorf(
+				"quote %d has different terms: item %q, not %q",
+				quoteID, line.ItemKind, kind,
+			)
+		}
+		if line.Qty != qty {
+			return nil, fmt.Errorf(
+				"quote %d has different terms: qty %d, not %d",
+				quoteID, line.Qty, qty,
+			)
+		}
+		// Disposition is the BUYER's term, not the quote's (ZBBS-WORK-402 —
+		// the quote's ConsumeNow survives as the UI row default, but a take no
+		// longer has to match it). Service kinds have no choice — no physical
+		// good exists, so the engine forces the service shape rather than
+		// rejecting a confused caller (mirrors the client's forced handling
+		// for bookings, HOME-423).
+		if itemHasCapability(w, kind, "service") {
+			entryConsumeNow = false
+		}
+		if !actorIDSetsEqual(quote.ConsumerIDs, consumerIDs) {
+			return nil, fmt.Errorf(
+				"quote %d has different consumer set — re-check who the quote is for.",
+				quoteID,
+			)
+		}
+		entryItemKind = kind
+		entryQty = qty
+		deliverLines = []QuoteLine{line}
 	}
 
 	if amount < quote.Amount {
@@ -888,25 +916,44 @@ func runPayWithItemFastPath(
 			seller.DisplayName,
 		)
 	}
-	// Stock reservation accounting (PR S6 R1 code_review fix): post-S6,
-	// accepted-but-not-yet-delivered Orders keep goods in the seller's
-	// inventory. The visible Inventory doesn't reflect those obligations,
-	// so we subtract outstandingReadyOrderQty before comparing against
-	// `needed` — otherwise two concurrent fast-path accepts against the
-	// same physical stew could both pass and only one could deliver.
-	//
-	// "service"-capability items (e.g. nights_stay) carry no inventory —
-	// they're infinite-stock, so the stock check is skipped (ZBBS-HOME-296).
-	// Must match the slow-path skip in acceptPendingOffer's gate 10 so a
-	// service item that fast-paths can't later hit a stock reject there.
-	if !itemHasCapability(w, kind, "service") {
+	// Stock reservation accounting (PR S6 R1): accepted-but-not-yet-delivered
+	// Orders keep goods in the seller's inventory, so subtract
+	// outstandingReadyOrderQty before comparing against need — otherwise two
+	// concurrent fast-path accepts against the same physical stew could both
+	// pass. A bundle stock-checks every line independently (LLM-101); a
+	// single-line take keeps the original scalar check. "service"-capability
+	// items carry no inventory and skip the check (ZBBS-HOME-296) — a bundle
+	// can't hold one (rejected at quote creation), so the skip only matters
+	// single-item, and the slow-path acceptPendingOffer gate-10 skip mirrors it.
+	if bundle {
+		effConsumers := effectivePayConsumerCount(entryConsumerIDs)
+		for _, ln := range deliverLines {
+			if itemHasCapability(w, ln.ItemKind, "service") {
+				continue
+			}
+			if ln.Qty > math.MaxInt/effConsumers {
+				return nil, fmt.Errorf(
+					"PayWithItem: qty %d × %d consumers overflows int — split the order.",
+					ln.Qty, effConsumers,
+				)
+			}
+			need := ln.Qty * effConsumers
+			reserved := outstandingReadyOrderQty(w, seller.ID, ln.ItemKind)
+			if seller.Inventory[ln.ItemKind]-reserved < need {
+				noteOutOfStock(w, buyer.ID, seller.ID, ln.ItemKind, at)
+				return nil, fmt.Errorf(
+					"%s doesn't have enough %s (have %d, reserved %d, need %d)",
+					seller.DisplayName, ln.ItemKind, seller.Inventory[ln.ItemKind], reserved, need,
+				)
+			}
+		}
+	} else if !itemHasCapability(w, kind, "service") {
 		reserved := outstandingReadyOrderQty(w, seller.ID, kind)
 		available := seller.Inventory[kind] - reserved
 		if available < needed {
 			// ZBBS-HOME-363: the buyer walked here and found the seller dry on
-			// this item. This quote-payment fast-path rejects with a bare error
-			// and emits NO PayWithItemResolved (no ledger entry), so the
-			// out-of-stock subscriber would miss it — record the experiential
+			// this item. This fast-path rejects with no ledger entry (the
+			// out-of-stock subscriber would miss it), so record the experiential
 			// memory inline through the shared recorder.
 			noteOutOfStock(w, buyer.ID, seller.ID, kind, at)
 			return nil, fmt.Errorf(
@@ -916,12 +963,11 @@ func runPayWithItemFastPath(
 		}
 	}
 	// LLM-84: a same-day lodging quote-take grants the room at this accept (the
-	// service stock-skip above leaves no inventory gate to catch a full inn), so
-	// reject up front when no room is grantable — mirrors the slow-path gate 10b.
-	// A quote carries no future ready_by, so a fast-path lodging take is always
-	// same-day; the readyBy guard is belt-and-suspenders for any future advance
-	// quote shape.
-	if itemHasCapability(w, kind, "lodging") && !readyBy.After(orderDateUTC(at, w.Settings.Location)) {
+	// service stock-skip leaves no inventory gate to catch a full inn), so
+	// reject up front when no room is grantable — mirrors the slow-path gate
+	// 10b. Only a single-item service quote reaches lodging (a bundle can't
+	// hold a service kind), so guard on !bundle.
+	if !bundle && itemHasCapability(w, kind, "lodging") && !readyBy.After(orderDateUTC(at, w.Settings.Location)) {
 		if !lodgingRoomGrantable(w, seller, buyer.ID) {
 			return nil, fmt.Errorf(
 				"%s has no room free right now — try again shortly.",
@@ -957,10 +1003,11 @@ func runPayWithItemFastPath(
 		ID:          id,
 		BuyerID:     buyer.ID,
 		SellerID:    sellerID,
-		ItemKind:    kind,
-		Qty:         qty,
-		ConsumeNow:  consumeNow,
-		ConsumerIDs: append([]ActorID(nil), consumerIDs...),
+		ItemKind:    entryItemKind,
+		Qty:         entryQty,
+		ConsumeNow:  entryConsumeNow,
+		ConsumerIDs: append([]ActorID(nil), entryConsumerIDs...),
+		Lines:       entryLines,
 		ReadyBy:     readyBy,
 		Amount:      amount,
 		QuoteID:     quoteID,
@@ -970,8 +1017,8 @@ func runPayWithItemFastPath(
 		CreatedAt:   at,
 		ResolvedAt:  at,
 		// ExpiresAt left zero — entry is already terminal, sweep skips
-		// non-pending entries (pay_ledger_sweep.go in step 8). The TTL
-		// concept doesn't apply to a fast-path accept.
+		// non-pending entries. The TTL concept doesn't apply to a fast-path
+		// accept.
 		SceneID:  sceneID,
 		HuddleID: buyer.CurrentHuddleID,
 	}
@@ -996,10 +1043,11 @@ func runPayWithItemFastPath(
 		LedgerID:       id,
 		BuyerID:        buyer.ID,
 		SellerID:       sellerID,
-		ItemKind:       kind,
-		QtyPerConsumer: qty,
-		ConsumeNow:     consumeNow,
-		ConsumerIDs:    cloneActorIDs(consumerIDs),
+		ItemKind:       entryItemKind,
+		QtyPerConsumer: entryQty,
+		ConsumeNow:     entryConsumeNow,
+		ConsumerIDs:    cloneActorIDs(entryConsumerIDs),
+		Lines:          cloneQuoteLines(entryLines), // LLM-101: bundle lines (audit / action log)
 		Amount:         amount,
 		PayItems:       cloneItemKindQtys(entry.PayItems), // LLM-105: settled barter goods (audit)
 		TerminalState:  PayTerminalStateAccepted,
@@ -1016,6 +1064,7 @@ func runPayWithItemFastPath(
 		LedgerID:        id,
 		State:           PayLedgerStateAccepted,
 		FastPath:        true,
+		Lines:           cloneQuoteLines(entryLines),
 		BuyerAte:        out.buyerAte,
 		KeptToInventory: out.keptToInventory,
 		TookHome:        out.tookHome,
@@ -1567,7 +1616,13 @@ func findAutoMatchQuote(
 		if q.TargetBuyer != "" && q.TargetBuyer != buyer.ID {
 			continue
 		}
-		if q.ItemKind != kind || q.Qty != qty || q.ConsumeNow != consumeNow {
+		// Auto-match only single-line quotes — a bare single-item offer can't
+		// expand into a multi-line bundle (LLM-101). Bundle takes always go
+		// through an explicit quote_id.
+		if len(q.Lines) != 1 {
+			continue
+		}
+		if q.Lines[0].ItemKind != kind || q.Lines[0].Qty != qty || q.ConsumeNow != consumeNow {
 			continue
 		}
 		if !actorIDSetsEqual(q.ConsumerIDs, consumerIDs) {
@@ -2236,7 +2291,17 @@ func commitPayTransfer(
 	var eagerlyDelivered *Order
 
 	def := w.ItemKinds[entry.ItemKind]
-	if entry.ConsumeNow {
+	if len(entry.Lines) > 0 {
+		// LLM-101 bundle take: deliver every line (eat-here consume or
+		// take-home hand-over), no durable Order. Coins + any barter already
+		// moved above; leaves eagerlyDelivered nil so the Order-flip below is
+		// skipped.
+		bundleOut, bundleErr := deliverBundleLines(w, buyer, seller, entry, consumers, at)
+		if bundleErr != nil {
+			return payTransferOutcome{}, bundleErr
+		}
+		out = bundleOut
+	} else if entry.ConsumeNow {
 		// Eat-on-the-spot: stock leaves seller, consumer needs
 		// satisfied directly. Per-consumer apply + dwell stamp +
 		// ItemConsumed emit. No Order minted.
@@ -2426,6 +2491,129 @@ func commitPayTransfer(
 	if eagerlyDelivered != nil {
 		flipOrderTerminal(w, eagerlyDelivered, OrderStateDelivered, at)
 	}
+	return out, nil
+}
+
+// deliverBundleLines delivers every line of a bundle quote-take (LLM-101) — the
+// per-line analogue of commitPayTransfer's single-item delivery. A bundle is
+// fast-path only (minted Accepted) and mints NO durable Order: take-home goods
+// are handed straight to the consumers and eat-here lines are consumed in
+// place, both persisted via the Actors checkpoint. Bundles can't contain a
+// service/lodging kind (rejected at quote creation), so there is no Order /
+// room-grant branch. Coins (and any barter) were already moved by the caller.
+//
+// Lines hold distinct canonical kinds (merged at quote creation), so per-line
+// buyer-inventory pockets never alias. The fast-path gates already validated
+// per-line stock, so the seller-drain / transfer errors here are substrate
+// invariant violations, not domain failures. consumers is the resolved list
+// (normalized to [buyer] when the offer was sole-consumer).
+func deliverBundleLines(w *World, buyer, seller *Actor, entry *PayLedgerEntry, consumers []ActorID, at time.Time) (payTransferOutcome, error) {
+	var out payTransferOutcome
+	if entry.ConsumeNow {
+		// Eat-here bundle: each consumer eats what their needs absorb per line
+		// (consumableUnits clamp, ZBBS-WORK-391); the surplus pockets to the
+		// BUYER, who paid. Same shape as the single-item consume_now branch,
+		// looped per line, with the buyer-overflow preflighted per line's kind.
+		type bundleSplit struct {
+			cid       ActorID
+			consumer  *Actor
+			eat, kept int
+		}
+		for _, ln := range entry.Lines {
+			def := w.ItemKinds[ln.ItemKind]
+			splits := make([]bundleSplit, 0, len(consumers))
+			totalKept := 0
+			for _, cid := range consumers {
+				consumer, ok := w.Actors[cid]
+				if !ok {
+					continue
+				}
+				eat := consumableUnits(consumer, def, ln.Qty)
+				splits = append(splits, bundleSplit{cid: cid, consumer: consumer, eat: eat, kept: ln.Qty - eat})
+				totalKept += ln.Qty - eat
+			}
+			if totalKept > 0 {
+				if _, err := addChecked(buyer.Inventory[ln.ItemKind], totalKept); err != nil {
+					return payTransferOutcome{}, fmt.Errorf("deliverBundleLines: buyer %q %s balance would overflow pocketing surplus", buyer.ID, ln.ItemKind)
+				}
+			}
+			out.keptToInventory += totalKept
+			for _, sp := range splits {
+				have := seller.Inventory[ln.ItemKind]
+				if have < ln.Qty {
+					return payTransferOutcome{}, fmt.Errorf("deliverBundleLines: seller %q %s drained mid-commit", seller.ID, ln.ItemKind)
+				}
+				seller.Inventory[ln.ItemKind] = have - ln.Qty
+				if seller.Inventory[ln.ItemKind] == 0 {
+					delete(seller.Inventory, ln.ItemKind)
+				}
+				if sp.kept > 0 {
+					if buyer.Inventory == nil {
+						buyer.Inventory = make(map[ItemKind]int)
+					}
+					buyer.Inventory[ln.ItemKind] += sp.kept
+				}
+				applied := applyConsumeSatisfactions(sp.consumer, def, sp.eat)
+				structureID, _ := resolveLoiteringObject(w, sp.consumer.Pos, LoiterAttributionTiles)
+				var stamped []DwellCreditSnapshot
+				if structureID != "" && def != nil {
+					stamped = UpsertItemDwellCredits(sp.consumer, ln.ItemKind, def.Satisfies, structureID, at)
+				}
+				// Kept is stamped only on the BUYER's own event — the surplus
+				// lands in the buyer's inventory (matches the single-item rule).
+				eventKept := 0
+				if sp.cid == entry.BuyerID {
+					eventKept = sp.kept
+					out.buyerAte += sp.eat
+					if m := maxDwellMinutes(stamped); m > out.mealMinutes {
+						out.mealMinutes = m
+					}
+				}
+				w.emit(&ItemConsumed{
+					ActorID: sp.cid,
+					Kind:    ln.ItemKind,
+					Qty:     sp.eat,
+					Kept:    eventKept,
+					Applied: applied,
+					At:      at,
+				})
+				if len(stamped) > 0 {
+					narration := ""
+					if def != nil {
+						narration = def.ConsumeDwellNarration
+					}
+					w.emit(&DwellStarted{
+						ActorID:       sp.cid,
+						Kind:          ln.ItemKind,
+						StructureID:   structureID,
+						Credits:       stamped,
+						NarrationText: narration,
+						At:            at,
+					})
+				}
+			}
+		}
+		// SatisfiesNeed / FeltAfter stay zero for a bundle — multiple kinds
+		// satisfy multiple needs, so a single per-need verdict would mislead;
+		// the settle feedback degrades to the generic bundle line.
+		return out, nil
+	}
+
+	// Take-home bundle: hand each line's qty to each consumer (no Order). For
+	// the common sole-consumer offer that is the buyer. Per-line stock was
+	// validated by the fast-path gates, so transferItem cannot fail in practice.
+	for _, ln := range entry.Lines {
+		for _, cid := range consumers {
+			consumer, ok := w.Actors[cid]
+			if !ok {
+				return payTransferOutcome{}, fmt.Errorf("deliverBundleLines: consumer %q vanished mid-commit", cid)
+			}
+			if err := transferItem(w, seller, consumer, ln.ItemKind, ln.Qty); err != nil {
+				return payTransferOutcome{}, fmt.Errorf("deliverBundleLines: transfer %s to %q: %w", ln.ItemKind, cid, err)
+			}
+		}
+	}
+	out.tookHome = true
 	return out, nil
 }
 

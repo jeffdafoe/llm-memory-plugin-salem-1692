@@ -264,7 +264,7 @@ func TestBuild_ForageErrandWiring(t *testing.T) {
 	t.Run("standing quote from seller -> Forage deferred", func(t *testing.T) {
 		snap, _ := base()
 		snap.Quotes = map[sim.QuoteID]*sim.SceneQuote{
-			1: {ID: 1, SellerID: "prudence", TargetBuyer: "mary", ItemKind: "raspberries", State: sim.SceneQuoteStateActive},
+			1: {ID: 1, SellerID: "prudence", TargetBuyer: "mary", Lines: []sim.QuoteLine{{ItemKind: "raspberries", Qty: 1}}, State: sim.SceneQuoteStateActive},
 		}
 		p := Build(snap, "prudence", nil)
 		if p.Forage != nil {

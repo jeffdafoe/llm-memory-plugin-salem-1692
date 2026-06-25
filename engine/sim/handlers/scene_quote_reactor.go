@@ -99,8 +99,7 @@ func sceneQuoteWarrantMeta(created *sim.SceneQuoteCreated, overheard bool) sim.W
 		Reason: sim.SceneQuoteTargetedWarrantReason{
 			QuoteID:    created.QuoteID,
 			SellerID:   created.SellerID,
-			ItemKind:   created.ItemKind,
-			Qty:        created.Qty,
+			Lines:      created.Lines,
 			Amount:     created.Amount,
 			ConsumeNow: created.ConsumeNow,
 			ExpiresAt:  created.ExpiresAt,
