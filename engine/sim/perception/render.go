@@ -667,9 +667,13 @@ func renderInFlightMove(m InFlightMoveView) string {
 		return "walking to your destination"
 	}
 	if m.Kind == sim.MoveDestinationStructureEnter {
-		return fmt.Sprintf("walking to enter %s", sanitizeInline(dest))
+		return fmt.Sprintf("walking to enter %s", sim.WithDefiniteArticle(sanitizeInline(dest)))
 	}
-	return fmt.Sprintf("walking to %s", sanitizeInline(dest))
+	if m.Kind == sim.MoveDestinationPosition {
+		// A bare coordinate label ("(41, 44)") names no place — no article.
+		return fmt.Sprintf("walking to %s", sanitizeInline(dest))
+	}
+	return fmt.Sprintf("walking to %s", sim.WithDefiniteArticle(sanitizeInline(dest)))
 }
 
 // sourceActivityVerb picks the second-person verb for an in-flight source
@@ -2048,7 +2052,7 @@ func renderArrivalWarrantLine(n int, who string, r sim.ArrivalWarrantReason, pla
 	if place == "" {
 		return fmt.Sprintf("%d. %s arrived.\n", n, subject)
 	}
-	return fmt.Sprintf("%d. %s arrived at %s.\n", n, subject, place)
+	return fmt.Sprintf("%d. %s arrived at %s.\n", n, subject, sim.WithDefiniteArticle(place))
 }
 
 // renderBasicWarrantLine renders the kinds carried by BasicWarrantReason (the

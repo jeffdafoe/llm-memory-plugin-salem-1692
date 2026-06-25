@@ -232,6 +232,7 @@ func TestRender_ArrivalWarrant_NamesDestination(t *testing.T) {
 		{"object", sim.ArrivalWarrantReason{AttemptID: 2, AtObjectID: "well1"}, map[string]string{"well1": "the Village Well"}, "You arrived at the Village Well."},
 		{"bare position", sim.ArrivalWarrantReason{AttemptID: 3}, nil, "You arrived."},
 		{"unresolved id falls back", sim.ArrivalWarrantReason{AttemptID: 4, AtStructureID: "ghost"}, nil, "You arrived."},
+		{"bare common noun gets definite article", sim.ArrivalWarrantReason{AttemptID: 5, AtStructureID: "store"}, map[string]string{"store": "General Store"}, "You arrived at the General Store."},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

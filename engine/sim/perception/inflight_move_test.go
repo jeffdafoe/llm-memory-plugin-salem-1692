@@ -68,8 +68,8 @@ func TestBuildActorView_StructureEnter_ResolvesLabel(t *testing.T) {
 	if m.DestinationLabel != "Tavern" {
 		t.Errorf("DestinationLabel = %q, want 'Tavern'", m.DestinationLabel)
 	}
-	if got := renderInFlightMove(*m); got != "walking to enter Tavern" {
-		t.Errorf("render = %q, want 'walking to enter Tavern'", got)
+	if got := renderInFlightMove(*m); got != "walking to enter the Tavern" {
+		t.Errorf("render = %q, want 'walking to enter the Tavern'", got)
 	}
 }
 
@@ -157,7 +157,7 @@ func TestRenderActor_IncludesInFlightMoveLine(t *testing.T) {
 
 	var b strings.Builder
 	renderActor(&b, av)
-	if !strings.Contains(b.String(), "You are walking to enter Tavern.") {
+	if !strings.Contains(b.String(), "You are walking to enter the Tavern.") {
 		t.Errorf("renderActor output missing in-flight move line:\n%s", b.String())
 	}
 }
