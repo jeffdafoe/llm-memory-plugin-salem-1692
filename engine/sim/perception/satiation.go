@@ -234,8 +234,11 @@ func gatherSatiationVendors(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *
 			sv: SatiationVendor{
 				StructureLabel: vc.StructureLabel,
 				StructureID:    vc.StructureID,
-				ItemLabel:      vc.ItemLabel,
-				Magnitude:      vc.Magnitude,
+				// LLM-113: the full buy-cue noun — "a wedge of cheese" when the kind
+				// has a singular phrase, else the bare menu label (no article glued
+				// onto a phrase-less label). Render prints it verbatim.
+				ItemLabel: buyCueNoun(snap, vc.ItemKind),
+				Magnitude: vc.Magnitude,
 				CostText:       vc.CostText,
 				Shut:           businessRememberedShut(snap, actorSnap, vc.StructureID),
 				OutOfStock:     outOfStock,

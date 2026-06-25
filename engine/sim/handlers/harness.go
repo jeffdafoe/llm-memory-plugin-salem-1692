@@ -1116,10 +1116,17 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 	// ate one loaf, bounced four more consumes, then greeted an empty room).
 	if vc.Name == "consume" {
 		if r, ok := cmdResult.(sim.ConsumeResult); ok {
+			// LLM-113: render the count-aware catalog noun ("3 raspberries", "a
+			// bowl of stew"), falling back to the raw kind key if the catalog
+			// carried no phrase (a discovery-minted kind).
+			noun := r.ConsumedNoun
+			if noun == "" {
+				noun = string(r.Kind)
+			}
 			if r.Kept > 0 {
 				return fmt.Sprintf(
 					"[ok] You consume %d %s — that satisfies you; the remaining %d stay in your pack. Do not consume more now.",
-					r.Consumed, r.Kind, r.Kept,
+					r.Consumed, noun, r.Kept,
 				)
 			}
 			// Honest post-consume state for the no-surplus case, mirroring the
@@ -1129,7 +1136,7 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 			// still caught by the ZBBS-HOME-414 dedup guard).
 			if r.Consumed > 0 && r.SatisfiesNeed != "" {
 				var b strings.Builder
-				fmt.Fprintf(&b, "[ok] You consume %d %s.", r.Consumed, r.Kind)
+				fmt.Fprintf(&b, "[ok] You consume %d %s.", r.Consumed, noun)
 				if r.FeltAfter != "" {
 					fmt.Fprintf(&b, " You still feel %s.", r.FeltAfter)
 				} else {

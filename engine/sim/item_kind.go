@@ -18,9 +18,20 @@ type ItemKindDef struct {
 	// the key. Mirrors ItemRecipe.OutputItem.
 	Name ItemKind
 
-	// DisplayLabel is the human-facing label rendered in prompts and admin
-	// UI. v1's item_kind.display_label.
+	// DisplayLabel is the human-facing menu/catalog label (Pay modal, admin
+	// UI) and a resolution alias. v1's item_kind.display_label.
 	DisplayLabel string
+
+	// DisplayLabelSingular / DisplayLabelPlural are the in-world COUNTING noun
+	// phrases (article-less), LLM-113 — the form woven into perception prose and
+	// buy/gather cues. Count nouns are regular ("axe"/"axes",
+	// "raspberry"/"raspberries"); mass nouns carry a period measure word
+	// ("tankard of ale"/"tankards of ale", "loaf of bread"/"loaves of bread").
+	// Both are ALSO matched on the input side (resolveItemKind), so the model
+	// may name an item by key, label, singular, or plural. Empty falls back to
+	// DisplayLabel — a discovery-minted kind (ZBBS-WORK-412) carries neither.
+	DisplayLabelSingular string
+	DisplayLabelPlural   string
 
 	// Category is the soft-typed bucket. v1 stored it as a free VARCHAR with
 	// values food | drink | material | craft; v2 ports it as a typed enum so
@@ -105,6 +116,57 @@ const (
 // rather than rejecting (matches v1 behavior).
 func (d *ItemKindDef) Consumable() bool {
 	return len(d.Satisfies) > 0
+}
+
+// Singular is the article-less singular counting noun phrase for in-world prose
+// and cues (LLM-113), falling back to DisplayLabel when unset — a discovery-
+// minted kind (ZBBS-WORK-412) carries no phrase. Nil-safe.
+func (d *ItemKindDef) Singular() string {
+	if d == nil {
+		return ""
+	}
+	if d.DisplayLabelSingular != "" {
+		return d.DisplayLabelSingular
+	}
+	return d.DisplayLabel
+}
+
+// Plural is the plural counting noun phrase (LLM-113), falling back to the
+// singular form (then DisplayLabel) when unset. Nil-safe.
+func (d *ItemKindDef) Plural() string {
+	if d == nil {
+		return ""
+	}
+	if d.DisplayLabelPlural != "" {
+		return d.DisplayLabelPlural
+	}
+	return d.Singular()
+}
+
+// CountNoun is the count-aware noun for "N <item>" prose (LLM-113): the singular
+// phrase at qty == 1, the plural otherwise. Nil-safe.
+func (d *ItemKindDef) CountNoun(qty int) string {
+	if qty == 1 {
+		return d.Singular()
+	}
+	return d.Plural()
+}
+
+// WithIndefiniteArticle prefixes "a"/"an" to a noun phrase by the leading
+// letter's vowel sound — "a skillet", "an ingot of iron", "an axe" (LLM-113).
+// Sufficient for the catalog vocabulary (no silent-h or "u-as-you" cases in the
+// authored phrases). Empty in, empty out. Shared by the consume failure copy
+// (item_commands.go) and the perception buy cue so the rule lives in one place.
+func WithIndefiniteArticle(noun string) string {
+	if noun == "" {
+		return ""
+	}
+	switch noun[0] {
+	case 'a', 'e', 'i', 'o', 'u', 'A', 'E', 'I', 'O', 'U':
+		return "an " + noun
+	default:
+		return "a " + noun
+	}
 }
 
 // EatHereOnly reports whether this kind always settles eat-here: a

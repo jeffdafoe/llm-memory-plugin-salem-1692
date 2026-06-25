@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"time"
 )
@@ -112,25 +113,72 @@ func transferItem(_ *World, from, to *Actor, kind ItemKind, qty int) error {
 // Linear scan over ~10 catalog entries per call. No precomputed lookup
 // map needed at this scale.
 func resolveItemKind(w *World, name string) (ItemKind, bool) {
-	// Normalize both sides identically — trim + lowercase. The label pass in
-	// particular must trim the catalog DisplayLabel too: a seeded/admin-edited
-	// label with stray surrounding whitespace should still match (code_review).
+	// Normalize both sides identically — trim + lowercase. The label passes in
+	// particular must trim the catalog labels too: a seeded/admin-edited label
+	// with stray surrounding whitespace should still match (code_review).
 	normalize := func(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
 	needle := normalize(name)
 	if needle == "" {
 		return "", false
 	}
+	// LLM-113: tolerate a leading article so the model can echo a cue verbatim
+	// ("a tankard of ale" -> "tankard of ale", "an axe" -> "axe"). The
+	// singular/plural phrases are stored article-less.
+	stripped := stripLeadingArticle(needle)
+	matches := func(form string) bool {
+		f := normalize(form)
+		return f != "" && (f == needle || f == stripped)
+	}
+
+	// LLM-113: match on any of key, display label, singular phrase, or plural
+	// phrase, so the model may name an item however it likes. Sort the keys so
+	// the result is deterministic even when two kinds collide on a form (Go map
+	// iteration is randomized); ordered passes (key > label > singular > plural)
+	// give the more specific form precedence. The migration keeps the phrases
+	// unique across kinds, so a within-pass collision means an admin edit — and
+	// lowest-id-wins is then the least-surprising stable resolution.
+	kinds := make([]ItemKind, 0, len(w.ItemKinds))
 	for kind := range w.ItemKinds {
-		if normalize(string(kind)) == needle {
+		kinds = append(kinds, kind)
+	}
+	sort.Slice(kinds, func(i, j int) bool { return kinds[i] < kinds[j] })
+
+	for _, kind := range kinds {
+		if matches(string(kind)) {
 			return kind, true
 		}
 	}
-	for kind, def := range w.ItemKinds {
-		if def != nil && normalize(def.DisplayLabel) == needle {
+	for _, kind := range kinds {
+		if def := w.ItemKinds[kind]; def != nil && matches(def.DisplayLabel) {
+			return kind, true
+		}
+	}
+	for _, kind := range kinds {
+		if def := w.ItemKinds[kind]; def != nil && matches(def.DisplayLabelSingular) {
+			return kind, true
+		}
+	}
+	for _, kind := range kinds {
+		if def := w.ItemKinds[kind]; def != nil && matches(def.DisplayLabelPlural) {
 			return kind, true
 		}
 	}
 	return "", false
+}
+
+// consumeItemLabel is the NPC-facing noun for a kind in a Consume failure
+// message (LLM-113): the singular counting phrase ("raspberry", "skillet",
+// "bowl of stew"), falling back to the raw kind key when the def is missing or
+// unlabeled (a phantom-minted discovery still carries its key). Keeps the
+// failure prose plain ("you don't have any raspberry to consume", "you cannot
+// eat a skillet") instead of leaking the snake_case key or the plural menu label.
+func consumeItemLabel(def *ItemKindDef, kind ItemKind) string {
+	if def != nil {
+		if s := def.Singular(); s != "" {
+			return s
+		}
+	}
+	return string(kind)
 }
 
 // Consume returns a Command that consumes qty units of an item from
@@ -201,16 +249,14 @@ func Consume(actorID ActorID, itemName string, qty int, at time.Time) Command {
 
 			// ZBBS-WORK-412: mint an unknown kind at qty 0 instead of failing
 			// with ErrUnknownItemKind. The actor holds 0 of a freshly-minted
-			// kind, so this consume still fails below (non-consumable / no
-			// stock) — but the discovery is captured for the config catalog.
+			// kind, so this consume still fails below — at the inventory gate,
+			// surfacing the honest "you don't have any X" (the discovery design's
+			// own stated intent) rather than a catalog-shape rejection.
 			kind, ok := resolveOrMintItemKind(w, itemName)
 			if !ok {
 				return nil, fmt.Errorf("Consume: %w %q", ErrUnknownItemKind, itemName)
 			}
 			def := w.ItemKinds[kind]
-			if !def.Consumable() {
-				return nil, fmt.Errorf("Consume: %w (%q has no satisfactions)", ErrNotConsumable, kind)
-			}
 
 			actor, ok := w.Actors[actorID]
 			if !ok {
@@ -222,11 +268,24 @@ func Consume(actorID ActorID, itemName string, qty int, at time.Time) Command {
 						"Either consume BEFORE the move_to, or wait until you arrive.",
 				)
 			}
-			if actor.Inventory[kind] < qty {
-				return nil, fmt.Errorf(
-					"Consume: %w (have %d of %q, need %d)",
-					ErrInsufficientInventory, actor.Inventory[kind], kind, qty,
-				)
+
+			// LLM-113: order the gates none-held -> inedible -> not-enough so each
+			// failure reads as the actor's own pack-perception would ground it.
+			//   - holds none (incl. a phantom-minted qty-0 kind): the honest "you
+			//     don't have any X", never "has no satisfactions".
+			//   - holds some but it's not food (an axe in the pack): "you cannot
+			//     eat an axe" wins over a quantity quibble, even on a consume-2.
+			//   - holds some food but short: "you only have N".
+			label := consumeItemLabel(def, kind)
+			have := actor.Inventory[kind]
+			if have == 0 {
+				return nil, fmt.Errorf("you don't have any %s to consume: %w", label, ErrInsufficientInventory)
+			}
+			if def == nil || !def.Consumable() {
+				return nil, fmt.Errorf("you cannot eat %s: %w", WithIndefiniteArticle(label), ErrNotConsumable)
+			}
+			if have < qty {
+				return nil, fmt.Errorf("you only have %d of those to consume, not %d: %w", have, qty, ErrInsufficientInventory)
 			}
 
 			// ZBBS-WORK-391: consume only what the actor's needs can absorb;
@@ -314,7 +373,7 @@ func Consume(actorID ActorID, itemName string, qty int, at time.Time) Command {
 			// pay_with_item eat path uses) so the harness can steer a sated NPC to
 			// stop, instead of a bare [ok] that the stale eat-affordance furniture
 			// overrides into a re-eat loop. Only meaningful when something was eaten.
-			res := ConsumeResult{Kind: kind, Requested: qty, Consumed: eat, Kept: qty - eat, EasedNeed: len(applied) > 0}
+			res := ConsumeResult{Kind: kind, Requested: qty, Consumed: eat, Kept: qty - eat, EasedNeed: len(applied) > 0, ConsumedNoun: def.CountNoun(eat)}
 			if eat > 0 {
 				res.SatisfiesNeed, res.FeltAfter = buyerFeltAfterConsume(actor, def, w.Settings.NeedThresholds)
 			}
@@ -335,6 +394,11 @@ type ConsumeResult struct {
 	Requested int
 	Consumed  int
 	Kept      int
+	// ConsumedNoun is the count-aware display noun for Consumed (LLM-113):
+	// "raspberry" at 1, "raspberries" at >1, "bowl of stew"/"bowls of stew" for
+	// a mass noun — so commitResultContent renders "you consume 3 raspberries"
+	// off the catalog phrasing rather than the raw kind key.
+	ConsumedNoun string
 	// SatisfiesNeed / FeltAfter mirror PayWithItemResult: the primary need the
 	// consumed item eases and the eater's post-consume felt label ("" = sated).
 	// LLM-7: lets commitResultContent voice "your hunger is met — eat no more
