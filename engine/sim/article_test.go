@@ -21,6 +21,7 @@ func TestWithDefiniteArticle(t *testing.T) {
 		{"singular possessive, another", "John's Tavern", "John's Tavern"},
 		{"possessive, apostrophe in owner name", "O'Brien's Inn", "O'Brien's Inn"},
 		{"plural possessive, bare apostrophe", "Travelers' Rest", "Travelers' Rest"},
+		{"singular name ending in s, bare-apostrophe possessive", "James' Place", "James' Place"},
 		{"plural possessive, typographic apostrophe", "Farmers’ Market", "Farmers’ Market"},
 		{"singular possessive, typographic apostrophe", "Maria’s Bakery", "Maria’s Bakery"},
 		{"non-possessive proper name still gets the", "Thorne Residence", "the Thorne Residence"},
