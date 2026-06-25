@@ -1001,6 +1001,7 @@ func runPayWithItemFastPath(
 		ConsumeNow:     consumeNow,
 		ConsumerIDs:    cloneActorIDs(consumerIDs),
 		Amount:         amount,
+		PayItems:       cloneItemKindQtys(entry.PayItems), // LLM-105: settled barter goods (audit)
 		TerminalState:  PayTerminalStateAccepted,
 		BuyerTookQuote: true, // ZBBS-WORK-420: this IS the instant quote-take path
 		SceneID:        sceneID,
@@ -1273,6 +1274,7 @@ func acceptPendingOffer(w *World, seller *Actor, entry *PayLedgerEntry, at time.
 		ConsumeNow:     entry.ConsumeNow,
 		ConsumerIDs:    cloneActorIDs(entry.ConsumerIDs),
 		Amount:         entry.Amount,
+		PayItems:       cloneItemKindQtys(entry.PayItems), // LLM-105: settled barter goods (audit)
 		TerminalState:  PayTerminalStateAccepted,
 		SceneID:        entry.SceneID,
 		HuddleID:       entry.HuddleID,
@@ -1994,6 +1996,7 @@ func finalizePayLedgerTerminal(
 		ConsumeNow:     entry.ConsumeNow,
 		ConsumerIDs:    cloneActorIDs(entry.ConsumerIDs),
 		Amount:         entry.Amount,
+		PayItems:       cloneItemKindQtys(entry.PayItems), // LLM-105: barter goods snapshot (mirrors entry; only Accepted drives the audit row)
 		TerminalState:  terminal,
 		Message:        message,
 		SceneID:        entry.SceneID,

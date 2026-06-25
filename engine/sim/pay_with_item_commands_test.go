@@ -1799,6 +1799,42 @@ func TestCounterPay_NonIncreasingCoercesToAccept(t *testing.T) {
 	}
 }
 
+// LLM-105: a slow-path accept of a barter offer must carry the buyer's goods leg on
+// the resolved event, so the durable `paid` audit row records what actually moved —
+// and a 0-coin barter (0 coins + goods) is then distinguishable from a give-away.
+// (This is the real barter-settlement path; the coerced-accept path is gated to
+// pure-coin haggles via pureCoinHaggle in CounterPay, so it never carries goods.)
+func TestAcceptPay_ResolvedCarriesBarterGoods(t *testing.T) {
+	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
+		{id: "alice", displayName: "Alice", kind: sim.KindNPCShared, huddleID: "h1", coins: 50, inventory: map[sim.ItemKind]int{"nail": 10}},
+		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1", inventory: map[sim.ItemKind]int{"stew": 5}},
+	})
+	defer stop()
+	at := time.Now().UTC()
+	// Buyer's pending offer: 0 coins + 3 nails for 1 stew — the exact 0-coin-but-not-
+	// free barter case the audit must tell apart from a give-away.
+	seedLedgerEntry(t, w, sim.PayLedgerEntry{
+		ID: 1, BuyerID: "alice", SellerID: "bob",
+		ItemKind: "stew", Qty: 1, Amount: 0,
+		PayItems:  []sim.ItemKindQty{{Kind: "nail", Qty: 3}},
+		State:     sim.PayLedgerStatePending,
+		ExpiresAt: at.Add(3 * time.Minute),
+		SceneID:   "sc1", HuddleID: "h1",
+	})
+	events := capturePayWithItemEvents(t, w)
+
+	if _, err := w.Send(sim.AcceptPay("bob", 1, at)); err != nil {
+		t.Fatalf("AcceptPay: %v", err)
+	}
+	if len(events.Resolved) != 1 || events.Resolved[0].TerminalState != sim.PayTerminalStateAccepted {
+		t.Fatalf("want 1 PayWithItemResolved{Accepted}, got %+v", events.Resolved)
+	}
+	got := events.Resolved[0].PayItems
+	if len(got) != 1 || got[0].Kind != "nail" || got[0].Qty != 3 {
+		t.Errorf("resolved.PayItems = %+v, want the buyer's barter goods [{nail 3}] (audit records what moved)", got)
+	}
+}
+
 // ============================================================
 // WithdrawPay
 // ============================================================

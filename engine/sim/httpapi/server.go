@@ -48,6 +48,10 @@ type Server struct {
 	// nil → that route answers 503 (store not wired), the same posture as an unset
 	// /turns upstream. Wired by SetTranscriptStore under UMBILICAL_ENABLED.
 	transcript HuddleTranscriptStore
+	// settlements reads durable accepted settlements off the agent_action_log `paid`
+	// beat, backing the operator-gated GET /umbilical/settlements audit route
+	// (LLM-105). nil → 503, same posture as transcript. Wired by SetSettlementStore.
+	settlements SettlementStore
 	// routeForcer backs the operator-gated POST /umbilical/route control route.
 	// It returns a sim.Command that dispatches a schedule-driven NPC route
 	// (crier / washerwoman) immediately, bypassing the schedule-window gate. Held
@@ -161,6 +165,16 @@ func (s *Server) SetMemoryAPIBaseURL(baseURL string) {
 // concurrently with serving.
 func (s *Server) SetTranscriptStore(store HuddleTranscriptStore) {
 	s.transcript = store
+}
+
+// SetSettlementStore attaches the durable settlements reader backing the operator-
+// gated GET /umbilical/settlements audit route (LLM-105). Optional and independent
+// of SetTelemetry like SetTranscriptStore: when nil, the route still registers but
+// answers 503. cmd/engine wires the same *pg.ActionLogRepo it installed as the
+// durable action-log sink. Wiring-time-only — call before Handler, never
+// concurrently with serving.
+func (s *Server) SetSettlementStore(store SettlementStore) {
+	s.settlements = store
 }
 
 // SetCheckpointHealth attaches the durable-checkpoint health recorder so the

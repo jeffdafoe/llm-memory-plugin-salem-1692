@@ -459,6 +459,7 @@ func run(rt runtime, stop <-chan struct{}) error {
 			// defeat the handler's nil-store 503 guard, so only wire a real one.
 			if rt.ActionLog != nil {
 				server.SetTranscriptStore(rt.ActionLog)
+				server.SetSettlementStore(rt.ActionLog) // LLM-105: durable settlements audit read
 			}
 			server.SetCheckpointHealth(checkpointHealth)
 			if rt.UmbilicalControl {
