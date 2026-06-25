@@ -522,6 +522,12 @@ func forgeFocusLabel(snap *sim.Snapshot, a *sim.ActorSnapshot) string {
 	if a.ProductionFocus == "" {
 		return ""
 	}
+	// Only surface a focus the actor can actually make (recipe-backed, positive
+	// rate), so the standing line never claims "making X" for a good produce_tick
+	// will skip. Mirrors the sim-side makeable check.
+	if r := snap.Recipes[a.ProductionFocus]; r == nil || r.RateQty <= 0 || r.RatePerHours <= 0 {
+		return ""
+	}
 	return itemDisplayLabel(snap, a.ProductionFocus)
 }
 
