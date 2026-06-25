@@ -138,6 +138,16 @@ const speakToolName = "speak"
 // substrate stays authoritative, and the gate lifts the moment the flag clears.
 const moveToToolName = "move_to"
 
+// craftToolName — the multi-output crafter's "what to forge next" tool (LLM-116).
+// Advertised ONLY when the "## At your forge" cue is present (payload.ForgeChoice
+// non-empty), which itself fires only for a >1-produce-entry crafter AT its
+// workplace. Reading the SAME signal the cue renders from keeps the tool and its
+// cue in lockstep — the discussion-109 "advertise a tool only with its triggering
+// perception" invariant. A single-output producer never sees it; the
+// sim.SetProductionFocus Command stays the authoritative gate for any call that
+// arrives anyway.
+const craftToolName = "craft"
+
 // actorIsMoving reports whether the subject has an in-flight move at snapshot
 // time, read from the ZBBS-HOME-336 read-path projection (MoveDestKind is
 // empty when the actor is not moving). False when the actor can't be resolved
@@ -232,6 +242,7 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 	offerRestInPlace := payload.RecoveryOptions != nil && payload.RecoveryOptions.RestInPlace
 	hasAudience := payload.Surroundings.HasAudience()
 	flaggedDegenerate := actorIsFlaggedDegenerate(payload.ActorID, snap)
+	offerCraft := payload.ForgeChoice != nil && len(payload.ForgeChoice.Items) > 0
 
 	// Single pass over the Available set so each gated group is evaluated
 	// against its OWN condition. We deliberately avoid a "pending offer →
@@ -302,6 +313,13 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 		// the same actor. Removes the futile-walk affordance until a productive
 		// tick clears the flag.
 		if spec.Name == moveToToolName && flaggedDegenerate {
+			continue
+		}
+		// craft consumer (LLM-116): advertise only when the "## At your forge" cue
+		// is present — the same ForgeChoice signal the cue renders from — so a
+		// crafter is handed the tool exactly when it has a choice to make, and no
+		// other actor ever sees it.
+		if spec.Name == craftToolName && !offerCraft {
 			continue
 		}
 		if _, gated := payOfferResponseTools[spec.Name]; gated {

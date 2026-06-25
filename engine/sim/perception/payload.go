@@ -370,6 +370,12 @@ type Payload struct {
 	// when no produced recipe has a low bought input, or restock is disabled. LLM-82.
 	ProductionInputs *ProductionInputsView
 
+	// ForgeChoice surfaces, to a multi-output crafter at its workplace, every
+	// good it can forge (per-unit time, stock vs cap, recent sales) so it can
+	// pick one via the craft tool — produce_tick then fills only that good. nil
+	// for a single-output producer or when away from the forge. LLM-116.
+	ForgeChoice *ForgeChoiceView
+
 	// Forage surfaces a grower-seller's own forage-to-sell bushes when their
 	// harvested stock of an item is low (< RestockReorderPct of cap) — each low
 	// `forage` RestockEntry, the on-hand/cap, the ripe count across the actor's
@@ -634,6 +640,14 @@ type ActorView struct {
 	// (peckish/hungry/starving) without re-reading world state. ZBBS-HOME-339
 	// — replaces the raw "needs: hunger=24" dump with felt language.
 	NeedThresholds sim.NeedThresholds
+
+	// ProductionFocusLabel is the display label of the good a multi-output
+	// crafter is currently forging (LLM-116), empty when unfocused or a single-
+	// output producer. Rendered as a standing "You are forging X." self-state
+	// line on EVERY tick — including a social tick when someone approaches — so
+	// the crafter always knows its own current work (a PC walking up to ask
+	// "what are you making?" gets a real answer).
+	ProductionFocusLabel string
 
 	// ActiveDwellCredits is the actor's in-progress dwell credits at
 	// snapshot time — meals being eaten, rests being taken. Renders as

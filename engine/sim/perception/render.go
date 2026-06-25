@@ -247,6 +247,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderRecoveryOptions(&ephemeral, p.RecoveryOptions)
 	renderSatiation(&ephemeral, p.Satiation)
 	renderProductionInputs(&ephemeral, p.ProductionInputs)
+	renderForgeChoice(&ephemeral, p.ForgeChoice)
 	renderRestocking(&ephemeral, p.Restocking)
 	renderForage(&ephemeral, p.Forage)
 	renderLodging(&ephemeral, p.Lodging)
@@ -518,6 +519,12 @@ func renderActor(b *strings.Builder, a ActorView) {
 			fmt.Fprintf(b, "%s (x%d)", sanitizeInline(it.Label), it.Qty)
 		}
 		b.WriteString(".\n")
+	}
+	// Standing production focus (LLM-116): a multi-output crafter's chosen work,
+	// surfaced on EVERY tick — including a social one when someone approaches —
+	// so the crafter can always say what it is making (a PC can ask).
+	if a.ProductionFocusLabel != "" {
+		fmt.Fprintf(b, "You are making %s.\n", sanitizeInline(a.ProductionFocusLabel))
 	}
 	// In-progress activity reads as felt self-state. A meal/rest/walk already
 	// under way is surfaced so a tick firing mid-activity doesn't re-pick a
@@ -2027,6 +2034,11 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 		return renderPayResolvedWarrantLine(n, nameOf(r.Seller), r, maxTextBytes), false
 	case sim.ServeHandoverWarrantReason:
 		return renderServeHandoverWarrantLine(n, nameOf(r.Buyer), r), false
+	case sim.ProductionChoiceWarrantReason:
+		// LLM-116: the forge is free and there's work to do — the "## At your
+		// forge" cue carries the options + the craft tool; this line is just the
+		// "why you ticked" beat, like the idle-backstop / need-nudge lines.
+		return fmt.Sprintf("%d. You have time at your forge — decide what to make next.\n", n), false
 	default:
 		return renderBasicWarrantLine(n, w.Kind(), nameOf(w.TriggerActorID)), false
 	}

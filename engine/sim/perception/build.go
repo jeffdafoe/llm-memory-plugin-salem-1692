@@ -96,6 +96,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	p.Satiation = buildSatiation(snap, actorID, actorSnap)
 	p.Restocking = buildRestocking(snap, actorID, actorSnap)
 	p.ProductionInputs = buildProductionInputs(snap, actorSnap)
+	p.ForgeChoice = buildForgeChoice(snap, actorID, actorSnap)
 	// customerEngaged (LLM-90): the seller-side "someone's at my stall right now"
 	// signal — a buyer's pending offer awaiting my decision (PayOffersForMe), a
 	// quote I have standing out to a buyer (StandingQuotesFromMe), or simply a
@@ -508,7 +509,20 @@ func buildActorView(snap *sim.Snapshot, a *sim.ActorSnapshot) ActorView {
 		InFlightSourceActivity: buildInFlightSourceActivity(snap, a),
 		Inventory:              buildInventoryView(snap, a),
 		HoursAwake:             computeHoursAwake(snap.LocalMinuteOfDay, a.ScheduleStartMin, a.ScheduleEndMin),
+		ProductionFocusLabel:   forgeFocusLabel(snap, a),
 	}
+}
+
+// forgeFocusLabel resolves the display label of a crafter's current production
+// focus for the standing "## You" self-state line, or "" when unfocused so the
+// line is omitted. LLM-116. Surfaced on every tick (not just at the forge) so a
+// social tick — someone approaching and asking — carries what the crafter is
+// making.
+func forgeFocusLabel(snap *sim.Snapshot, a *sim.ActorSnapshot) string {
+	if a.ProductionFocus == "" {
+		return ""
+	}
+	return itemDisplayLabel(snap, a.ProductionFocus)
 }
 
 // computeHoursAwake returns whole hours the actor has been awake, measured from

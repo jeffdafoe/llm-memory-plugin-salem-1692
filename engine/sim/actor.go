@@ -748,6 +748,21 @@ type Actor struct {
 	// observation.
 	ProduceState map[ItemKind]*ProduceState
 
+	// ProductionFocus is the item a multi-output crafter is currently
+	// forging (LLM-116). produce_tick fills ONLY this item for an actor with
+	// more than one produce entry; empty = nothing chosen yet (the forge cue
+	// + craft tool drive the choice). Single-output producers ignore it and
+	// keep auto-producing. Restart-lossy by design (transient intent — the
+	// actor re-decides on its next at-forge tick), so it is NOT checkpointed.
+	ProductionFocus ItemKind
+
+	// RecentProduce is a restart-lossy ring of this actor's ACTUAL production
+	// mints (LLM-116) — what it has forged recently, not at-cap anchor advances —
+	// windowed-counted into the forge-choice cue's "made N this past week"
+	// readout. Newest last; capped at RecentProduceCapacity. Not checkpointed
+	// (transient decision-support, same posture as the price book).
+	RecentProduce []ProduceEvent
+
 	// RoomAccess — this actor's grants to enter private/staff rooms.
 	// Keyed by (RoomID, Source). Stamped by AssignBedroomForLodger
 	// (source=ledger) and flipped to Active=false by ExpireRoomAccess
@@ -972,6 +987,9 @@ func CloneActor(a *Actor) *Actor {
 			vc := *v
 			cp.ProduceState[k] = &vc
 		}
+	}
+	if a.RecentProduce != nil {
+		cp.RecentProduce = append([]ProduceEvent(nil), a.RecentProduce...)
 	}
 	cp.RoomAccess = cloneRoomAccess(a.RoomAccess)
 	if a.Attributes != nil {
@@ -1257,6 +1275,15 @@ type ActorSnapshot struct {
 	// CloneActor; see the TODO there) and perception only reads it. nil for
 	// actors with no restock-bearing attribute.
 	RestockPolicy *RestockPolicy
+
+	// ProductionFocus mirrors the live Actor's current craft focus (LLM-116)
+	// so the forge perception cue can show what a multi-output crafter is
+	// working on without a world-goroutine round trip. Empty when unfocused.
+	ProductionFocus ItemKind
+
+	// RecentProduce mirrors the live actor's recent-production ring (LLM-116) so
+	// the forge-choice cue can read "made N this past week" off the snapshot.
+	RecentProduce []ProduceEvent
 
 	// TickInFlight + TickAttemptID mirror the live Actor fields so PR 3d's
 	// harness can do a cheap pre-LLM stale-check by reading the snapshot

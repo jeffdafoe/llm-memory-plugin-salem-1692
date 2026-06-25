@@ -1939,6 +1939,8 @@ func snapshotActor(a *Actor, atTick uint64, degeneracyEnabled bool) *ActorSnapsh
 		RoomAccess:           cloneRoomAccess(a.RoomAccess),
 		OpenUntil:            copyTimePtr(a.OpenUntil),
 		RestockPolicy:        a.RestockPolicy,
+		ProductionFocus:      a.ProductionFocus,
+		RecentProduce:        append([]ProduceEvent(nil), a.RecentProduce...),
 		TickInFlight:         a.TickInFlight,
 		TickAttemptID:        a.TickAttemptID,
 		DegenStage:           degenStage,

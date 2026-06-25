@@ -1,0 +1,57 @@
+package sim
+
+import "fmt"
+
+// production_focus_commands.go — the crafter's "decide what to forge next"
+// choice (LLM-116). A multi-output producer (e.g. the smith: skillet + nail) no
+// longer auto-fills every produce entry in parallel; it sets a ProductionFocus
+// and produce_tick fills only that item. This is the world side of the `craft`
+// tool: it validates the chosen item is one the actor actually produces and
+// records the focus. Single-output producers are unaffected — produce_tick
+// ignores focus when there is only one produce entry.
+
+// ProductionFocusResult is the command reply: the actor and the item now in
+// focus, so tool dispatch can confirm the choice back to the model.
+type ProductionFocusResult struct {
+	ID    ActorID
+	Focus ItemKind
+}
+
+// SetProductionFocus records the item a crafter will forge next. The item must
+// resolve in the catalog AND be one the actor carries a `produce` restock entry
+// for — a crafter can only focus on something it knows how to make. A bad item
+// returns a ModelFacingError so the acting NPC learns what went wrong within its
+// tick budget. PCs are rejected (ErrActorNotFound); production is an NPC concept.
+func SetProductionFocus(id ActorID, itemName string) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			a, err := editableNPC(w, id)
+			if err != nil {
+				return nil, err
+			}
+			kind, ok := resolveItemKind(w, itemName)
+			if !ok {
+				return nil, ModelFacingError{Msg: fmt.Sprintf("you don't know how to make %q", itemName)}
+			}
+			if !producesItem(a, kind) {
+				return nil, ModelFacingError{Msg: fmt.Sprintf("you don't make %s at your workplace — focus only on what you produce", kind)}
+			}
+			a.ProductionFocus = kind
+			return ProductionFocusResult{ID: id, Focus: kind}, nil
+		},
+	}
+}
+
+// producesItem reports whether the actor carries a produce-source restock entry
+// for kind.
+func producesItem(a *Actor, kind ItemKind) bool {
+	if a == nil || a.RestockPolicy == nil {
+		return false
+	}
+	for _, e := range a.RestockPolicy.ProduceEntries() {
+		if e.Item == kind {
+			return true
+		}
+	}
+	return false
+}

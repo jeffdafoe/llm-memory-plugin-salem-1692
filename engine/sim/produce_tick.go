@@ -40,6 +40,35 @@ type ProduceState struct {
 	LastProducedAt time.Time
 }
 
+// ProduceEvent records one ACTUAL production execution (a real mint, NOT an
+// at-cap anchor advance) for the recent-production readout the forge-choice cue
+// shows a multi-output crafter (LLM-116). Restart-lossy — a transient decision-
+// support signal, never checkpointed (same posture as the price book).
+type ProduceEvent struct {
+	Item ItemKind
+	Qty  int
+	At   time.Time
+}
+
+// RecentProduceCapacity bounds the per-actor recent-production ring. 32 covers a
+// busy smith's recent run; the windowed count the cue shows (restockSalesWindow)
+// reads only what fits, like the price book's 20-deep ring.
+const RecentProduceCapacity = 32
+
+// recordRecentProduce appends one real mint to the actor's RecentProduce ring,
+// dropping the oldest over capacity. Called ONLY when produce_tick actually
+// minted (qty > 0), so an at-cap anchor advance never pollutes the "recently
+// made" signal.
+func recordRecentProduce(a *Actor, item ItemKind, qty int, now time.Time) {
+	if qty <= 0 {
+		return
+	}
+	a.RecentProduce = append(a.RecentProduce, ProduceEvent{Item: item, Qty: qty, At: now})
+	if len(a.RecentProduce) > RecentProduceCapacity {
+		a.RecentProduce = a.RecentProduce[len(a.RecentProduce)-RecentProduceCapacity:]
+	}
+}
+
 // ProduceTickInventoryChange is a per-item inventory delta produced by
 // ApplyProduceTick. The Hub layer (when ported) translates these to
 // actor_inventory_changed broadcasts; today they surface via the
@@ -83,13 +112,24 @@ func ApplyProduceTick(now time.Time) Command {
 				if actor.Inventory == nil {
 					actor.Inventory = make(map[ItemKind]int)
 				}
-				for _, entry := range actor.RestockPolicy.ProduceEntries() {
+				produceEntries := actor.RestockPolicy.ProduceEntries()
+				// A multi-output crafter (e.g. the smith: skillet + nail) forges
+				// only its chosen ProductionFocus, not every entry in parallel
+				// (LLM-116). An empty focus → it produces nothing until it picks
+				// one at its forge. A single-output producer ignores focus and
+				// keeps auto-producing its one good.
+				multiOutput := len(produceEntries) > 1
+				for _, entry := range produceEntries {
+					if multiOutput && actor.ProductionFocus != entry.Item {
+						continue
+					}
 					recipe, ok := w.Recipes[entry.Item]
 					if !ok {
 						continue
 					}
 					change, executed := applyProduceEntry(actor, entry, recipe, now)
 					if executed {
+						recordRecentProduce(actor, change.Item, change.Added, now)
 						res.Executions++
 						res.Changes = append(res.Changes, ProduceTickInventoryChange{
 							ActorID:       actorID,
