@@ -946,6 +946,16 @@ func findGatherableCue(snap *sim.Snapshot, subjectID sim.ActorID, a *sim.ActorSn
 	if obj == nil || row == nil || obj.OwnedByOther(subjectID) {
 		return "", "", false
 	}
+	// Suppress the cue when the resolved source is depleted. In a sparse plot
+	// (bushes spaced wider than LoiterAttributionTiles) the only in-reach
+	// candidate after a clean harvest is the empty bush just stripped, so
+	// advertising it only baits futile gather attempts (LLM-98). The command
+	// path resolves the same depleted source and errors cleanly, so dropping
+	// the cue here introduces no cue↔command divergence — it just stops the cue
+	// dangling a gather that can't succeed.
+	if !row.HasStock() {
+		return "", "", false
+	}
 	return sim.ItemKind(strings.TrimSpace(string(row.GatherItem))), obj.DisplayName, true
 }
 

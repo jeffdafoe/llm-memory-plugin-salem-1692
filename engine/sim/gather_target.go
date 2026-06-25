@@ -75,12 +75,7 @@ func FirstGatherableRow(obj *VillageObject) (row *ObjectRefresh, hasStock bool, 
 	}
 	for _, r := range obj.Refreshes {
 		if r.IsGatherable() {
-			// Infinite (no tracked supply) always gives; a finite row gives only
-			// with a positive count. The AvailableQuantity nil-check is belt-and-
-			// suspenders even though IsFinite() == (AvailableQuantity != nil) — a
-			// finite row with a nil count reads as depleted/malformed, never a panic.
-			stock := !r.IsFinite() || (r.AvailableQuantity != nil && *r.AvailableQuantity > 0)
-			return r, stock, true
+			return r, r.HasStock(), true
 		}
 	}
 	return nil, false, false

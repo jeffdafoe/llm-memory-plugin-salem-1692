@@ -182,3 +182,55 @@ func TestBuild_GatherableCue_NearestOwnedSuppresses_NoFallthrough(t *testing.T) 
 		t.Errorf("GatherableItem=%q, want empty (nearest is owned — must NOT fall through to the farther commons)", p.Surroundings.GatherableItem)
 	}
 }
+
+// gatherBushSnapshot builds a snapshot with one finite (tracked-supply)
+// gatherable bush at world (100,100) and the actor at actorTile. avail is the
+// bush's AvailableQuantity — pass 0 for a stripped bush, a positive count for a
+// ripe one. Forage-to-sell (Amount 0), so only the gather cue is in play.
+func gatherBushSnapshot(actorTile sim.TilePos, avail int) *sim.Snapshot {
+	zero := 0
+	return &sim.Snapshot{
+		Assets: emptyAssetSet,
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			"hannah": {Pos: actorTile},
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"bush": {
+				ID:            "bush",
+				DisplayName:   "Raspberry Bush",
+				Pos:           sim.WorldPos{X: 100, Y: 100},
+				LoiterOffsetX: &zero,
+				LoiterOffsetY: &zero,
+				Refreshes: []*sim.ObjectRefresh{
+					{Attribute: "hunger", Amount: 0, GatherItem: "raspberries", AvailableQuantity: intp(avail)},
+				},
+			},
+		},
+	}
+}
+
+// TestBuild_GatherableCue_DepletedSource_Suppressed — LLM-98: after a clean
+// harvest the only in-reach candidate (siblings sit wider than
+// LoiterAttributionTiles) is the bush just stripped to zero stock, so
+// ResolveGatherSource hands it back. The cue must NOT advertise it — an empty
+// bush only baits futile gather attempts the command rejects as depleted.
+func TestBuild_GatherableCue_DepletedSource_Suppressed(t *testing.T) {
+	bushPin := sim.WorldPos{X: 100, Y: 100}.Tile()
+	p := Build(gatherBushSnapshot(bushPin, 0), "hannah", nil)
+
+	if p.Surroundings.GatherableItem != "" {
+		t.Errorf("GatherableItem=%q, want empty (resolved source is depleted)", p.Surroundings.GatherableItem)
+	}
+}
+
+// TestBuild_GatherableCue_StockedSource_Shows — the same finite bush with stock
+// left still cues, so the LLM-98 suppression is stock-gated, not a blanket
+// finite-source drop.
+func TestBuild_GatherableCue_StockedSource_Shows(t *testing.T) {
+	bushPin := sim.WorldPos{X: 100, Y: 100}.Tile()
+	p := Build(gatherBushSnapshot(bushPin, 3), "hannah", nil)
+
+	if p.Surroundings.GatherableItem != "raspberries" {
+		t.Errorf("GatherableItem=%q, want raspberries (finite source still has stock)", p.Surroundings.GatherableItem)
+	}
+}
