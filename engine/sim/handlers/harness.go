@@ -435,9 +435,24 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 	// on FIRST attempt regardless of outcome (unlike spokenThisTick/offeredThisTick,
 	// which record on success), so a byte-identical retry of a call that itself
 	// FAILED is rejected, not just a repeat of a successful one — the degenerate
-	// case is precisely accept_pay(234) re-fired after "no longer pending". See the
+	// case is a deliver_order(7) re-fired after the hand-over already failed. See the
 	// guard in the dispatch loop and genericCallKey for what is in/out of scope.
 	triedThisTick := map[string]struct{}{}
+	// resolvedLedgerThisTick holds the LedgerID of every pay-offer this actor has
+	// already answered this tick via the resolution family (accept_pay / decline_pay
+	// / counter_pay / withdraw_pay). The FIRST answer moves the ledger out of
+	// `pending`, so any SECOND resolution call against the same id this tick — same
+	// tool or a different one — is provably useless and only reaches the command's
+	// "no longer pending (currently …)" error. This is a SUPERSET of what the
+	// ZBBS-HOME-414 generic guard caught for these four tools (LLM-104): that guard
+	// keys on name + full decoded args, so a counter re-fired with a `message` added
+	// (the model satisfying the perception's "say a brief word with the counter" cue
+	// by stuffing the word into the tool instead of speak), or a counter followed by
+	// an accept of that same just-countered ledger, both present as DIFFERENT keys
+	// and slipped through. Keying on the ledger id alone, shared across the family,
+	// closes both. Recorded on first attempt regardless of outcome, like
+	// triedThisTick. The four tools therefore leave genericCallKey's allowlist.
+	resolvedLedgerThisTick := map[LenientID]struct{}{}
 	// consumedNothingThisTick holds the item key of every consume this actor has
 	// made this tick that fed it NOTHING — the satiation clamp absorbed zero units
 	// (ConsumeResult.Consumed == 0: already sated for what that item eases). This
@@ -623,12 +638,33 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 				}
 			}
 
+			// LLM-104: pay-offer resolution same-tick guard, shared across the
+			// resolution family (accept_pay / decline_pay / counter_pay /
+			// withdraw_pay). One answer per offer per tick: the first resolution
+			// moves the ledger out of `pending`, so a second call against the same
+			// id this tick is a guaranteed no-op that only reaches the command's
+			// "no longer pending" error. Keyed on the LEDGER ID alone — not name +
+			// args like genericCallKey below — so it catches the two slip-throughs
+			// that guard missed: a counter re-fired with a `message` added (different
+			// args → different generic key), and a counter followed by an accept of
+			// that same just-countered ledger (different tool name → different
+			// generic key). Recorded on first attempt regardless of outcome; the
+			// reject steers the model to the speak beat + done() the perception wants.
+			if id, ok := ledgerResolutionID(vc); ok {
+				if _, dup := resolvedLedgerThisTick[id]; dup {
+					observationOnly = false
+					result.ToolsFailedRejected = append(result.ToolsFailedRejected, call.Name)
+					transcript = append(transcript, toolResultMsg(call.ID, "[error: already_did_that] you already answered that offer this turn — it's the other party's move now; call speak or done()."))
+					continue
+				}
+				resolvedLedgerThisTick[id] = struct{}{}
+			}
+
 			// ZBBS-HOME-414: tool-agnostic same-tick identical-call guard for the
-			// action tools that lack their own (accept_pay / decline_pay /
-			// counter_pay / deliver_order / withdraw_pay / move_to). The weak model
-			// re-fires a byte-identical call until the iteration budget —
-			// accept_pay(234) after it is already accepted, move_to(here) again —
-			// burning rounds and bloating the durable transcript later ticks replay.
+			// action tools that lack their own (deliver_order / move_to). The weak
+			// model re-fires a byte-identical call until the iteration budget —
+			// deliver_order(7) after the hand-over already failed, move_to(here)
+			// again — burning rounds and bloating the durable transcript later ticks replay.
 			// Unlike the speak/offer guards above (record on SUCCESS, so a bounced
 			// line may be retried after the situation changes), this records on the
 			// FIRST attempt regardless of outcome: the degenerate case IS the
@@ -1164,7 +1200,7 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 		if state, ok := cmdResult.(sim.PayLedgerState); ok {
 			switch state {
 			case sim.PayLedgerStateCountered:
-				return "[ok] Your counter stands. Say a brief word with the counter, then call done() and wait for their answer. Do not counter again."
+				return "[ok] Your counter stands. Now call speak to say a brief word about it, then call done() and wait for their answer. Do not counter again."
 			// A non-increasing pure-coin counter coerces to an accept in
 			// sim.CounterPay (the "I'll let it go at your price" path), so the
 			// sale settles under the counter_pay name and would otherwise miss
@@ -1610,12 +1646,16 @@ func genericCallKey(vc *ValidatedCall) (string, bool) {
 		return "", false
 	}
 	switch vc.Name {
-	case "accept_pay", "decline_pay", "counter_pay", "deliver_order", "withdraw_pay", "move_to":
+	case "deliver_order", "move_to":
 		// The action tools where a byte-identical repeat in one tick is provably
-		// useless: a resolve-by-id call cannot resolve the same id twice, and
-		// move_to to your current place (or a re-fire of the same destination) is a
-		// no-op. consume is NOT here — a repeat consume while still in need is
-		// productive; see consumeItemKey for its result-aware guard.
+		// useless: deliver_order cannot hand the same order over twice, and move_to
+		// to your current place (or a re-fire of the same destination) is a no-op.
+		// The pay-offer resolution family (accept_pay / decline_pay / counter_pay /
+		// withdraw_pay) left this allowlist in LLM-104: resolvedLedgerThisTick now
+		// guards them earlier and more broadly, keyed on the ledger id (shared across
+		// the family) rather than this narrower name + full-args key. consume is NOT
+		// here — a repeat consume while still in need is productive; see consumeItemKey
+		// for its result-aware guard.
 	default:
 		return "", false
 	}
@@ -1627,6 +1667,33 @@ func genericCallKey(vc *ValidatedCall) (string, bool) {
 		return "", false
 	}
 	return vc.Name + "\x00" + string(b), true
+}
+
+// ledgerResolutionID returns the pay-offer LedgerID that a resolution-family call
+// (accept_pay / decline_pay / counter_pay / withdraw_pay) acts on, and true; any
+// other call returns (0, false) and the resolvedLedgerThisTick guard does not
+// apply. Each of these four tools answers a single pending pay-offer addressed by
+// `ledger_id`, and the first answer this tick moves that ledger out of `pending`,
+// so the guard keys on the id alone (shared across the family) to reject a second
+// answer — see the guard in the dispatch loop. The match is on the decoded-arg
+// TYPE, not the tool-name string, so a renamed tool cannot silently slip the guard
+// while still decoding to one of these arg shapes.
+func ledgerResolutionID(vc *ValidatedCall) (LenientID, bool) {
+	if vc == nil {
+		return 0, false
+	}
+	switch a := vc.DecodedArgs.(type) {
+	case AcceptPayArgs:
+		return a.LedgerID, true
+	case DeclinePayArgs:
+		return a.LedgerID, true
+	case CounterPayArgs:
+		return a.LedgerID, true
+	case WithdrawPayArgs:
+		return a.LedgerID, true
+	default:
+		return 0, false
+	}
 }
 
 // conversationIDFromPayload returns the narrative-beat scene id the perception
