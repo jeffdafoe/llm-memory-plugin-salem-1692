@@ -314,7 +314,7 @@ func Consume(actorID ActorID, itemName string, qty int, at time.Time) Command {
 			// pay_with_item eat path uses) so the harness can steer a sated NPC to
 			// stop, instead of a bare [ok] that the stale eat-affordance furniture
 			// overrides into a re-eat loop. Only meaningful when something was eaten.
-			res := ConsumeResult{Kind: kind, Requested: qty, Consumed: eat, Kept: qty - eat}
+			res := ConsumeResult{Kind: kind, Requested: qty, Consumed: eat, Kept: qty - eat, EasedNeed: len(applied) > 0}
 			if eat > 0 {
 				res.SatisfiesNeed, res.FeltAfter = buyerFeltAfterConsume(actor, def, w.Settings.NeedThresholds)
 			}
@@ -342,4 +342,12 @@ type ConsumeResult struct {
 	// within-tick eat-affordance furniture stops priming a re-eat loop.
 	SatisfiesNeed NeedKey
 	FeltAfter     string
+	// EasedNeed reports whether this consume actually moved at least one need
+	// (len(applied) > 0). It is the senseless-repeat signal the LLM-91 harness
+	// guard arms on. NOTE it is NOT "Consumed == 0": a sated actor's consume
+	// still eats and wastes a unit (Consumed >= 1) by design (ZBBS-WORK-391
+	// consumableUnits floors eat to 1 — consuming while full wastes a unit), so
+	// the only way to detect "this consume eased nothing" is whether a need
+	// moved, not whether stock left the pack (LLM-107).
+	EasedNeed bool
 }

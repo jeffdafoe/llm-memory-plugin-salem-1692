@@ -863,8 +863,8 @@ func TestConsume_ClampToNeed_KeepsSurplus(t *testing.T) {
 	if !ok {
 		t.Fatalf("result type = %T, want ConsumeResult", res)
 	}
-	if result.Requested != 10 || result.Consumed != 2 || result.Kept != 8 || result.Kind != "bread" {
-		t.Errorf("ConsumeResult = %+v, want {bread 10 2 8}", result)
+	if result.Requested != 10 || result.Consumed != 2 || result.Kept != 8 || result.Kind != "bread" || !result.EasedNeed {
+		t.Errorf("ConsumeResult = %+v, want {bread 10 2 8} EasedNeed true", result)
 	}
 
 	view := readLiveActor(t, w, "a1")
@@ -889,7 +889,8 @@ func TestConsume_ClampToNeed_KeepsSurplus(t *testing.T) {
 // TestConsume_ZeroNeed_EatsOneKeepsRest: the clamp floors at one unit — a
 // consume was asked for, so one unit is eaten even when no need moves; the
 // surplus stays. Applied stays empty (no need moved), matching the no-beat
-// contract for sated consumes.
+// contract for sated consumes. EasedNeed is false even though Consumed==1 (the
+// wasted unit) — this is the LLM-107 signal the harness no-op guard arms on.
 func TestConsume_ZeroNeed_EatsOneKeepsRest(t *testing.T) {
 	w, stop := buildConsumeTestWorld(t, []consumeActorSpec{
 		{id: "a1", displayName: "Sated", inventory: map[sim.ItemKind]int{"bread": 3}},
@@ -902,8 +903,8 @@ func TestConsume_ZeroNeed_EatsOneKeepsRest(t *testing.T) {
 		t.Fatalf("Consume: %v", err)
 	}
 	result := res.(sim.ConsumeResult)
-	if result.Consumed != 1 || result.Kept != 2 {
-		t.Errorf("ConsumeResult = %+v, want Consumed 1 Kept 2", result)
+	if result.Consumed != 1 || result.Kept != 2 || result.EasedNeed {
+		t.Errorf("ConsumeResult = %+v, want Consumed 1 Kept 2 EasedNeed false (sated consume wastes a unit but eases nothing)", result)
 	}
 	view := readLiveActor(t, w, "a1")
 	if got := view.Inventory["bread"]; got != 2 {
