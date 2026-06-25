@@ -144,6 +144,15 @@ var perceptionScenarios = []perceptionScenario{
 			"output producer never gets this section (see TestForgeCueOnlyForMultiOutputCrafterAtForge).",
 		build: smithChoosingAtForge,
 	},
+	{
+		name: "smith_off_work_focus_hidden",
+		summary: "The same multi-output crafter (Ezekiel, focus still nail) is NOT at his forge — he is at the Tavern " +
+			"after his shift (the live Tavern bug, LLM-121). produce_tick makes nothing away from the workplace, so the " +
+			"standing 'You are making nail.' self-state line must NOT render here, and the '## At your forge' cue is " +
+			"likewise absent. The golden pins that neither leaks into an off-work turn; a regression to the work-structure " +
+			"gate would make the line reappear in the diff (see TestProductionFocusLineOnlyAtWork).",
+		build: smithOffWorkFocusHidden,
+	},
 }
 
 // TestForgeCueOnlyForMultiOutputCrafterAtForge is the LLM-116 cross-scenario
@@ -159,6 +168,25 @@ func TestForgeCueOnlyForMultiOutputCrafterAtForge(t *testing.T) {
 		want := sc.name == "smith_choosing_at_forge"
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: forge cue present=%v, want %v", sc.name, has, want)
+		}
+	}
+}
+
+// TestProductionFocusLineOnlyAtWork is the LLM-121 cross-scenario invariant: the
+// standing "You are making X." self-state line appears in EXACTLY the scenario where
+// the crafter is at its own work structure (smith_choosing_at_forge) and never away
+// from it. The off-work smith (same focus, at the Tavern) must not carry it —
+// produce_tick makes nothing there, so the present-tense line would misstate the
+// situation. Mirrors the forge-cue invariant; both express the "only at the forge"
+// gate as a property over the whole matrix.
+func TestProductionFocusLineOnlyAtWork(t *testing.T) {
+	const marker = "You are making"
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		got := renderScenario(sc)
+		want := sc.name == "smith_choosing_at_forge"
+		if has := strings.Contains(got, marker); has != want {
+			t.Errorf("scenario %q: production-focus line present=%v, want %v", sc.name, has, want)
 		}
 	}
 }
@@ -333,6 +361,57 @@ func smithChoosingAtForge() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 		{TriggerActorID: ezekielID, Reason: sim.ProductionChoiceWarrantReason{}, SourceEventID: 1},
 	}
 	return snap, ezekielID, warrants
+}
+
+// smithOffWorkFocusHidden is the LLM-121 regression: the same multi-output crafter
+// (Ezekiel, focus still nail) is NOT at his forge — he is at the Tavern after his
+// shift. produce_tick makes nothing away from the workplace, so the standing
+// "You are making nail." self-state line must NOT render (the live Tavern bug), and
+// the "## At your forge" choice cue is likewise gated off. Mirrors smithChoosingAtForge
+// but with InsideStructureID = the tavern and off-shift, no production-choice warrant.
+// No orders, no clock read → byte-stable.
+func smithOffWorkFocusHidden() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		ezekielID = sim.ActorID("ezekiel")
+		forge     = sim.StructureID("blacksmith")
+		tavern    = sim.StructureID("tavern")
+	)
+	start, end := 360, 1080 // 06:00–18:00
+	now := 1140             // 19:00 — off shift, resting at the tavern
+	published := time.Date(2026, 6, 25, 19, 0, 0, 0, time.UTC)
+	ezekiel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Ezekiel Crane",
+		Role:              "blacksmith",
+		State:             sim.StateIdle,
+		WorkStructureID:   forge,
+		InsideStructureID: tavern,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             0,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"skillet": 5},
+		ProductionFocus:   "nail",
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "skillet", Source: sim.RestockSourceProduce, Max: 5},
+			{Item: "nail", Source: sim.RestockSourceProduce, Max: 20},
+		}},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{ezekielID: ezekiel},
+		Structures: map[sim.StructureID]*sim.Structure{
+			forge:  plainStructure(forge, "Blacksmith"),
+			tavern: plainStructure(tavern, "Tavern"),
+		},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"skillet": {OutputItem: "skillet", OutputQty: 1, RateQty: 1, RatePerHours: 3, WholesalePrice: 5, RetailPrice: 10},
+			"nail":    {OutputItem: "nail", OutputQty: 1, RateQty: 1, RatePerHours: 1, WholesalePrice: 1, RetailPrice: 2},
+		},
+	}
+	return snap, ezekielID, nil
 }
 
 // keeperAloneAtPostOnShift reproduces the LLM-106 live shape: Josiah Thorne, a

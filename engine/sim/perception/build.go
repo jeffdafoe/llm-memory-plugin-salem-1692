@@ -514,12 +514,19 @@ func buildActorView(snap *sim.Snapshot, a *sim.ActorSnapshot) ActorView {
 }
 
 // forgeFocusLabel resolves the display label of a crafter's current production
-// focus for the standing "## You" self-state line, or "" when unfocused so the
-// line is omitted. LLM-116. Surfaced on every tick (not just at the forge) so a
-// social tick — someone approaching and asking — carries what the crafter is
-// making.
+// focus for the standing "## You" self-state line, or "" when unfocused or away
+// from its work so the line is omitted. LLM-116 / LLM-121. Surfaced only while the
+// crafter is physically at its own work structure (its forge) — so a visitor who
+// approaches at the shop and asks gets an answer, while the present-tense "making
+// X" line never appears out in the world (Tavern, street) where nothing is forged.
 func forgeFocusLabel(snap *sim.Snapshot, a *sim.ActorSnapshot) string {
 	if a.ProductionFocus == "" {
+		return ""
+	}
+	// Only while physically at its own work structure: produce_tick fills the
+	// focus only there (produceTickGate), so the standing line stays truthful and
+	// the model is never told it is "making X" away from the forge.
+	if a.WorkStructureID == "" || a.InsideStructureID != a.WorkStructureID {
 		return ""
 	}
 	// Only surface a focus the actor can actually make (recipe-backed, positive
