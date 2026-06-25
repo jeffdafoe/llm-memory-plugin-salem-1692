@@ -495,6 +495,7 @@ func (s *Server) handleUmbilicalObjectSetRefresh(w http.ResponseWriter, r *http.
 			RefreshPeriodHours: row.RefreshPeriodHours,
 			DwellDelta:         row.DwellDelta,
 			DwellPeriodMinutes: row.DwellPeriodMinutes,
+			GatherItem:         sim.ItemKind(row.GatherItem),
 		})
 	}
 

@@ -1402,13 +1402,16 @@ func (s *Server) handleAdminObjectTagMutation(w http.ResponseWriter, r *http.Req
 }
 
 // adminObjectRefreshRow is one refresh policy on the .../set-refresh wire. It
-// maps 1:1 to the persisted sim.ObjectRefresh fields; last_refresh_at is omitted
-// because it is engine-managed (the regen tick anchors it). amount and
-// dwell_delta are NEGATIVE — they are the decrement applied to an actor on
-// arrival, matching the object_refresh CHECK constraints (amount < 0) and the
-// sim/DB representation. available_quantity and max_quantity are both-or-neither
-// (an infinite supply omits both); an infinite row must also omit refresh_mode
-// and refresh_period_hours, since regen only applies to a finite supply.
+// maps 1:1 to the persisted sim.ObjectRefresh fields (gather_item included —
+// LLM-109; without it a set-refresh silently stripped a source's harvestable
+// yield); last_refresh_at is the only omission, because it is engine-managed (the
+// regen tick anchors it). amount and dwell_delta are NEGATIVE — they are the
+// decrement applied to an actor on arrival, matching the object_refresh CHECK
+// constraints (amount < 0) and the sim/DB representation. available_quantity and
+// max_quantity are both-or-neither (an infinite supply omits both); an infinite
+// row must also omit refresh_mode and refresh_period_hours, since regen only
+// applies to a finite supply. gather_item, when set, marks the source harvestable
+// (the yield item); a row with amount == 0 (forage-to-sell) MUST carry one.
 type adminObjectRefreshRow struct {
 	Attribute          string `json:"attribute"`
 	Amount             int    `json:"amount"`
@@ -1418,6 +1421,7 @@ type adminObjectRefreshRow struct {
 	RefreshPeriodHours *int   `json:"refresh_period_hours"`
 	DwellDelta         *int   `json:"dwell_delta"`
 	DwellPeriodMinutes *int   `json:"dwell_period_minutes"`
+	GatherItem         string `json:"gather_item"`
 }
 
 // adminObjectRefreshRequest is the POST .../set-refresh body: the target object
@@ -1478,6 +1482,7 @@ func (s *Server) handleAdminObjectSetRefresh(w http.ResponseWriter, r *http.Requ
 			RefreshPeriodHours: row.RefreshPeriodHours,
 			DwellDelta:         row.DwellDelta,
 			DwellPeriodMinutes: row.DwellPeriodMinutes,
+			GatherItem:         sim.ItemKind(row.GatherItem),
 		})
 	}
 
@@ -1529,6 +1534,7 @@ func refreshRowsToWire(rows []*sim.ObjectRefresh) []adminObjectRefreshRow {
 			RefreshPeriodHours: r.RefreshPeriodHours,
 			DwellDelta:         r.DwellDelta,
 			DwellPeriodMinutes: r.DwellPeriodMinutes,
+			GatherItem:         string(r.GatherItem),
 		})
 	}
 	return out

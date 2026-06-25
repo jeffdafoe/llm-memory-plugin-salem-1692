@@ -674,6 +674,61 @@ func TestHandleAdminObjectSetRefresh_Accepted(t *testing.T) {
 	}
 }
 
+// TestHandleAdminObjectSetRefresh_PreservesGatherItem is the LLM-109 regression:
+// a set-refresh on a gather source must carry gather_item end to end (wire -> sim
+// -> wire) instead of silently stripping the source's harvestable yield. It also
+// covers the forage-to-sell row (amount == 0), which is INVALID without a
+// gather_item — so before the fix it could not be set at all (the dropped field
+// failed validation as "amount may be zero only on a gather source").
+func TestHandleAdminObjectSetRefresh_PreservesGatherItem(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+
+	// Eat-and-pick gather source: a need drop on arrival AND a harvestable yield.
+	body := `{"object_id":"obj1","rows":[` +
+		`{"attribute":"hunger","amount":-2,"available_quantity":3,"max_quantity":3,"refresh_mode":"periodic","refresh_period_hours":6,"gather_item":"berries"}` +
+		`]}`
+	rec := post(t, srv, "/api/village/admin/object/set-refresh", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var res adminObjectRefreshResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(res.Rows) != 1 || res.Rows[0].GatherItem != "berries" {
+		t.Fatalf("response rows = %+v, want gather_item berries echoed back", res.Rows)
+	}
+	// The live object actually carries the yield item — not stripped to "".
+	got, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return string(world.VillageObjects["obj1"].Refreshes[0].GatherItem), nil
+	}})
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+	if got.(string) != "berries" {
+		t.Errorf("live GatherItem = %q, want berries", got)
+	}
+
+	// Forage-to-sell row (amount == 0) is valid ONLY with a gather_item, so its
+	// acceptance proves the field now reaches validation (pre-LLM-109 this 400'd).
+	forage := `{"object_id":"obj1","rows":[` +
+		`{"attribute":"hunger","amount":0,"available_quantity":3,"max_quantity":3,"refresh_mode":"periodic","refresh_period_hours":6,"gather_item":"raspberries"}` +
+		`]}`
+	rec = post(t, srv, "/api/village/admin/object/set-refresh", forage)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("forage-to-sell status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	res = adminObjectRefreshResponse{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode forage: %v", err)
+	}
+	if len(res.Rows) != 1 || res.Rows[0].Amount != 0 || res.Rows[0].GatherItem != "raspberries" {
+		t.Errorf("forage row = %+v, want amount 0 + gather_item raspberries", res.Rows)
+	}
+}
+
 // TestHandleAdminObjectSetRefresh_ClearsToEmptyArray: an empty rows clears the
 // set and the response body carries [] (not null) per the always-an-array rule.
 func TestHandleAdminObjectSetRefresh_ClearsToEmptyArray(t *testing.T) {
