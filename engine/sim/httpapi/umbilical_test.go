@@ -368,6 +368,7 @@ func TestUmbilical_ViewsGated(t *testing.T) {
 		"/api/village/umbilical/agent?id=hannah",
 		"/api/village/umbilical/reactor",
 		"/api/village/umbilical/structures",
+		"/api/village/umbilical/objects",
 	}
 	// Off by default (no telemetry attached) → 404.
 	off := NewServer(seededWorld(t), permAuth{operatorPerms}).Handler()
