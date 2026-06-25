@@ -104,6 +104,17 @@ func (r *ObjectRefresh) IsFinite() bool {
 	return r.AvailableQuantity != nil
 }
 
+// HasStock reports whether this row has anything left to give: an infinite
+// (untracked-supply) row always does; a finite row only with a positive count.
+// The AvailableQuantity nil-check is belt-and-suspenders even though IsFinite()
+// == (AvailableQuantity != nil) — a finite row with a nil count reads as
+// depleted/malformed, never a panic. The single source of truth for the stock
+// half of the gather predicate, shared by FirstGatherableRow (the command path)
+// and findGatherableCue (the perception cue) so they never disagree (LLM-98).
+func (r *ObjectRefresh) HasStock() bool {
+	return !r.IsFinite() || (r.AvailableQuantity != nil && *r.AvailableQuantity > 0)
+}
+
 // IsYieldOnly reports whether this is a pure-material gather source — a row
 // that mints GatherItem into inventory with NO consume-in-place need drop and
 // no dwell. Such a row carries Amount == 0: ApplyObjectRefreshAtArrival skips

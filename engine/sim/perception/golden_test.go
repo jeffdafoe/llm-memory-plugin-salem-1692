@@ -116,6 +116,59 @@ var perceptionScenarios = []perceptionScenario{
 			"the matrix.",
 		build: keeperWithReadyOrder,
 	},
+	{
+		name: "grower_at_stripped_bush",
+		summary: "A forager stands at her own raspberry bush after harvesting it clean (the live Prudence case, " +
+			"LLM-98). Her bushes sit wider apart than LoiterAttributionTiles, so the only in-reach gather candidate " +
+			"is the now-empty bush — ResolveGatherSource hands it back. The golden pins that the prompt carries NO " +
+			"'you can gather' cue (and so no gather tool): the LLM-98 stock gate suppresses the depleted source. A " +
+			"regression would make the 'You're at Raspberry Bush — you can gather raspberries here.' line reappear in the diff.",
+		build: growerAtStrippedBush,
+	},
+}
+
+// growerAtStrippedBush reproduces the LLM-98 live shape: Prudence, a forager,
+// stands on her own raspberry bush during her shift, having just stripped it to
+// zero stock. It is the only gatherable within loiter reach, so
+// ResolveGatherSource resolves it — the LLM-98 stock gate is what keeps the cue
+// (and the gather tool) off an empty bush. No orders, no clock read → byte-stable.
+func growerAtStrippedBush() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const prudenceID = sim.ActorID("prudence")
+	zero := 0
+	start, end := 360, 1080 // 06:00–18:00
+	now := 600              // 10:00 — on shift, mid-harvest
+	bushPin := sim.WorldPos{X: 100, Y: 100}.Tile()
+	prudence := &sim.ActorSnapshot{
+		Kind:             sim.KindNPCShared,
+		DisplayName:      "Prudence Hart",
+		Role:             "forager",
+		State:            sim.StateIdle,
+		Pos:              bushPin,
+		ScheduleStartMin: &start,
+		ScheduleEndMin:   &end,
+		Coins:            12,
+		Needs:            map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Assets:           emptyAssetSet,
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{prudenceID: prudence},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"prudence_bush": {
+				ID:            "prudence_bush",
+				DisplayName:   "Raspberry Bush",
+				Pos:           sim.WorldPos{X: 100, Y: 100},
+				OwnerActorID:  prudenceID,
+				LoiterOffsetX: &zero,
+				LoiterOffsetY: &zero,
+				Refreshes: []*sim.ObjectRefresh{
+					{Attribute: "hunger", Amount: 0, GatherItem: "raspberries", AvailableQuantity: intp(0)},
+				},
+			},
+		},
+	}
+	return snap, prudenceID, nil
 }
 
 // keeperAloneAtPostOnShift reproduces the LLM-106 live shape: Josiah Thorne, a
