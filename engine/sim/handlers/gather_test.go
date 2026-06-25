@@ -38,7 +38,7 @@ func TestGateTools_Gather_AdvertisedOnlyAtSource(t *testing.T) {
 		t.Errorf("gather should be advertised at a gatherable source; count %d", names["gather"])
 	}
 
-	notAtSource := perception.Payload{ActorID: "npc"}
+	notAtSource := perception.Payload{ActorID: "npc", Surroundings: speakAudience()}
 	if names := specNameSet(gateTools(r, notAtSource, nil)); names["gather"] != 0 {
 		t.Errorf("gather should NOT be advertised away from a source; count %d", names["gather"])
 	}

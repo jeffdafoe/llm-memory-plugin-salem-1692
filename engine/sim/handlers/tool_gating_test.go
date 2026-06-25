@@ -33,6 +33,15 @@ func specNameSet(specs []llm.ToolSpec) map[string]int {
 	return counts
 }
 
+// speakAudience is a SurroundingsView carrying one awake co-present actor, so the
+// LLM-106 speak gate keeps speak advertised. Used by gating tests that assert
+// speak presence but are not about the speak gate itself (a pending pay offer
+// implies the buyer is co-present anyway — pay_with_item_reactor stamps the offer
+// only when buyer and seller share a huddle).
+func speakAudience() perception.SurroundingsView {
+	return perception.SurroundingsView{CoPresent: []perception.HuddleMember{{ID: "bystander"}}}
+}
+
 // payOfferPayload builds a payload whose standing ledger view carries one
 // pending offer per supplied ledger id. Since ZBBS-HOME-453 the gate keys off
 // Payload.PayOffersForMe (the per-tick snap.PayLedger scan), not the consumed
@@ -42,7 +51,7 @@ func payOfferPayload(ledgers ...sim.LedgerID) perception.Payload {
 	for _, id := range ledgers {
 		offers = append(offers, sim.PayOfferWarrantReason{LedgerID: id, Buyer: "bob", Item: "stew", Qty: 1, Amount: 5})
 	}
-	return perception.Payload{ActorID: "seller", PayOffersForMe: offers}
+	return perception.Payload{ActorID: "seller", PayOffersForMe: offers, Surroundings: speakAudience()}
 }
 
 // payOfferPayloadDepths builds a payload with one pending offer per supplied
@@ -62,7 +71,7 @@ func payOfferPayloadDepths(depths ...int) perception.Payload {
 // advertised; everything else (incl. buyer-side withdraw_pay) still is.
 func TestGateTools_NoOffer_DropsSellerResponseTools(t *testing.T) {
 	r := gatingTestRegistry(t)
-	specs := gateTools(r, perception.Payload{ActorID: "seller"}, nil)
+	specs := gateTools(r, perception.Payload{ActorID: "seller", Surroundings: speakAudience()}, nil)
 	names := specNameSet(specs)
 
 	for _, gated := range []string{"accept_pay", "decline_pay", "counter_pay"} {
@@ -126,7 +135,7 @@ func TestGateTools_PendingOffer_MatchesAdvertisedSpecs(t *testing.T) {
 // leaves the remaining tools in their registration order.
 func TestGateTools_NoOffer_PreservesOrderOfRemaining(t *testing.T) {
 	r := gatingTestRegistry(t)
-	got := gateTools(r, perception.Payload{ActorID: "seller"}, nil)
+	got := gateTools(r, perception.Payload{ActorID: "seller", Surroundings: speakAudience()}, nil)
 
 	var want []string
 	for _, s := range r.AdvertisedSpecs() {
@@ -367,5 +376,56 @@ func TestGateTools_TakeBreak_AdvertisedOnlyWithRestInPlaceCue(t *testing.T) {
 	}, nil))
 	if offered[takeBreakToolName] != 1 {
 		t.Errorf("take_break should be advertised when the recovery cue offers in-place rest; count %d", offered[takeBreakToolName])
+	}
+}
+
+// TestGateTools_Speak_DroppedWhenNoAudience — LLM-106: speak is advertised only
+// when the actor has an awake, addressable audience (huddle peers, or co-present
+// actors within earshot — Surroundings.HasAudience()). The substrate already
+// rejects a no-listener speak, so a lone actor handed speak just burns a turn on a
+// doomed greeting (the live Josiah Thorne empty-room case). A walk-in customer in
+// CoPresent re-enables it, so a keeper can still greet a newcomer; a lone sleeper
+// does not (this NPC's speech can't rouse it).
+func TestGateTools_Speak_DroppedWhenNoAudience(t *testing.T) {
+	r := gatingTestRegistry(t) // registers speak
+
+	alone := specNameSet(gateTools(r, perception.Payload{ActorID: "keeper"}, nil))
+	if alone[speakToolName] != 0 {
+		t.Errorf("speak advertised to a lone actor with no audience; count %d", alone[speakToolName])
+	}
+
+	huddled := specNameSet(gateTools(r, perception.Payload{
+		ActorID:      "keeper",
+		Surroundings: perception.SurroundingsView{HuddleMembers: []perception.HuddleMember{{ID: "peer"}}},
+	}, nil))
+	if huddled[speakToolName] != 1 {
+		t.Errorf("speak should be advertised to a huddled actor; count %d", huddled[speakToolName])
+	}
+
+	newcomer := specNameSet(gateTools(r, perception.Payload{
+		ActorID:      "keeper",
+		Surroundings: perception.SurroundingsView{CoPresent: []perception.HuddleMember{{ID: "customer"}}},
+	}, nil))
+	if newcomer[speakToolName] != 1 {
+		t.Errorf("speak should be advertised when an awake actor is co-present (greet a newcomer); count %d", newcomer[speakToolName])
+	}
+
+	sleeperOnly := specNameSet(gateTools(r, perception.Payload{
+		ActorID:      "keeper",
+		Surroundings: perception.SurroundingsView{CoPresentAsleep: []perception.HuddleMember{{ID: "sleeper"}}},
+	}, nil))
+	if sleeperOnly[speakToolName] != 0 {
+		t.Errorf("speak advertised with only a sleeper present (not addressable); count %d", sleeperOnly[speakToolName])
+	}
+
+	// A resting actor stays in the shared audience (a PC can wake it) but this
+	// NPC's speech can't rouse it, so it must NOT re-enable speak — symmetric with
+	// the sleeper case.
+	restingOnly := specNameSet(gateTools(r, perception.Payload{
+		ActorID:      "keeper",
+		Surroundings: perception.SurroundingsView{CoPresentResting: []perception.HuddleMember{{ID: "resting"}}},
+	}, nil))
+	if restingOnly[speakToolName] != 0 {
+		t.Errorf("speak advertised with only a resting actor present (not addressable); count %d", restingOnly[speakToolName])
 	}
 }

@@ -116,6 +116,18 @@ const stayOpenToolName = "stay_open"
 // and handed the tool.
 const takeBreakToolName = "take_break"
 
+// speakToolName — the conversation tool. Advertised ONLY when the actor has an
+// awake, addressable audience (payload.Surroundings.HasAudience() — its huddle
+// peers, or co-present actors within earshot). The substrate already rejects a
+// speak with no listener ("there is no one here to hear you"), so a lone actor
+// handed speak just burns a turn on a doomed greeting — the live Josiah Thorne
+// case (LLM-106): alone in his shop, advertised speak, he greeted an empty room
+// and the call was rejected at dispatch. Gating off the SAME audience set the
+// co-presence line and the dispatch gate read keeps cue, tool, and substrate
+// aligned (discussion-109). A walk-in customer lands in CoPresent, so the keeper
+// can still greet a newcomer to open a conversation.
+const speakToolName = "speak"
+
 // moveToToolName — the locomotion tool. Dropped from a degeneracy-flagged
 // actor's advertised set (LLM-94 Stage-1): a flagged actor is in a sustained
 // futile loop whose live signature is move_to rejected every tick. Perception
@@ -218,6 +230,7 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 	moving := actorIsMoving(payload.ActorID, snap)
 	offerStayOpen := payload.DutySteer != nil && payload.DutySteer.OfferStayOpen
 	offerRestInPlace := payload.RecoveryOptions != nil && payload.RecoveryOptions.RestInPlace
+	hasAudience := payload.Surroundings.HasAudience()
 	flaggedDegenerate := actorIsFlaggedDegenerate(payload.ActorID, snap)
 
 	// Single pass over the Available set so each gated group is evaluated
@@ -274,6 +287,14 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 		// take_break out of the prompt for an off-shift actor with no shift to step
 		// away from (the LLM-100 phantom-take_break case).
 		if spec.Name == takeBreakToolName && !offerRestInPlace {
+			continue
+		}
+		// speak consumer (LLM-106): advertise only when there's an awake audience to
+		// address. The dispatch gate already rejects a no-listener speak, so a lone
+		// actor offered speak just wastes a turn greeting no one (the Josiah empty-
+		// room case). Same audience set as the co-presence cue → cue and tool can't
+		// drift; a co-present walk-in re-enables it so a keeper can greet a newcomer.
+		if spec.Name == speakToolName && !hasAudience {
 			continue
 		}
 		// degeneracy Stage-1 gate (LLM-94): drop move_to from a flagged actor's

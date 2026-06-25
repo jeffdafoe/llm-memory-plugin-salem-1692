@@ -810,6 +810,18 @@ type SurroundingsView struct {
 	GatherableSource string
 }
 
+// HasAudience reports whether the subject has at least one awake, addressable
+// actor to speak to right now — its huddle peers, or (unhuddled) the co-present
+// actors within earshot. CoPresentAsleep / CoPresentResting are deliberately
+// excluded: this NPC's speech can't rouse them, so they are not an audience for
+// it. This is the SAME set the dispatch-side "there is no one here to hear you"
+// speak gate and the "## Around you" co-presence line derive from (HuddleMembers
+// ∪ CoPresent via the colocatedAudienceIDs scope rule), so the advertised-tool
+// gate, the rendered cue, and the substrate can't drift. ZBBS-WORK-407; LLM-106.
+func (s SurroundingsView) HasAudience() bool {
+	return len(s.HuddleMembers) > 0 || len(s.CoPresent) > 0
+}
+
 // TurnStateView is the subject actor's conversation turn-state, derived in
 // Build from the directed awaiting-reply edges (ActorSnapshot.AwaitingReplyFrom)
 // among its present huddle peers (ZBBS-WORK-370). Names are the acquaintance-
