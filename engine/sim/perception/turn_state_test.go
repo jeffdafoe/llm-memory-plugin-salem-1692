@@ -164,7 +164,7 @@ func TestRenderTriage_MidWalkCoda(t *testing.T) {
 	var b strings.Builder
 	renderTriage(&b, needs, thresholds, false, false, move, nil)
 	got := b.String()
-	if !strings.Contains(got, "You are already walking to enter General Store.") {
+	if !strings.Contains(got, "You are already walking to enter the General Store.") {
 		t.Errorf("mid-walk coda should name the committed walk:\n%s", got)
 	}
 	if !strings.Contains(got, "call done() and keep walking") {

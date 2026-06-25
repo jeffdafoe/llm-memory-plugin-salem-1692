@@ -667,9 +667,13 @@ func renderInFlightMove(m InFlightMoveView) string {
 		return "walking to your destination"
 	}
 	if m.Kind == sim.MoveDestinationStructureEnter {
-		return fmt.Sprintf("walking to enter %s", sanitizeInline(dest))
+		return fmt.Sprintf("walking to enter %s", sim.WithDefiniteArticle(sanitizeInline(dest)))
 	}
-	return fmt.Sprintf("walking to %s", sanitizeInline(dest))
+	if m.Kind == sim.MoveDestinationPosition {
+		// A bare coordinate label ("(41, 44)") names no place — no article.
+		return fmt.Sprintf("walking to %s", sanitizeInline(dest))
+	}
+	return fmt.Sprintf("walking to %s", sim.WithDefiniteArticle(sanitizeInline(dest)))
 }
 
 // sourceActivityVerb picks the second-person verb for an in-flight source
@@ -837,13 +841,13 @@ func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 		if name == "" {
 			name = "a building"
 		}
-		location = "inside " + sanitizeInline(name)
+		location = "inside " + sim.WithDefiniteArticle(sanitizeInline(name))
 	case s.NearbyStructureName != "":
 		// Standing at a structure's loiter slot while outdoors — a keeper at
 		// their own stall, a customer outside a shop. Names where they are so
 		// the model doesn't read raw coordinates and re-walk to a place it is
 		// already standing at.
-		location = "outdoors by " + sanitizeInline(s.NearbyStructureName)
+		location = "outdoors by " + sim.WithDefiniteArticle(sanitizeInline(s.NearbyStructureName))
 	default:
 		location = "outdoors"
 	}
@@ -981,7 +985,7 @@ func anchorPlace(label, fallback string) string {
 	if label == "" {
 		return fallback
 	}
-	return sanitizeInline(label)
+	return sim.WithDefiniteArticle(sanitizeInline(label))
 }
 
 // renderDutySteer writes the standing return-to-post cue (ZBBS-HOME-352) — the
@@ -2048,7 +2052,7 @@ func renderArrivalWarrantLine(n int, who string, r sim.ArrivalWarrantReason, pla
 	if place == "" {
 		return fmt.Sprintf("%d. %s arrived.\n", n, subject)
 	}
-	return fmt.Sprintf("%d. %s arrived at %s.\n", n, subject, place)
+	return fmt.Sprintf("%d. %s arrived at %s.\n", n, subject, sim.WithDefiniteArticle(place))
 }
 
 // renderBasicWarrantLine renders the kinds carried by BasicWarrantReason (the

@@ -54,8 +54,8 @@ func TestRenderSurroundings_InsideHuddleLinesOmitIDs(t *testing.T) {
 	insideOut := render(SurroundingsView{
 		InsideStructureID: "tavern", StructureName: "Tavern",
 	})
-	if !strings.Contains(insideOut, "You are inside Tavern, with no one else here to hear you speak.\n") {
-		t.Errorf("inside (alone) line should read 'You are inside Tavern, with no one else here to hear you speak.':\n%s", insideOut)
+	if !strings.Contains(insideOut, "You are inside the Tavern, with no one else here to hear you speak.\n") {
+		t.Errorf("inside (alone) line should read 'You are inside the Tavern, with no one else here to hear you speak.':\n%s", insideOut)
 	}
 	if strings.Contains(insideOut, "[tavern]") || strings.Contains(insideOut, "tavern\n") {
 		t.Errorf("inside line still leaks the StructureID:\n%s", insideOut)
@@ -232,6 +232,7 @@ func TestRender_ArrivalWarrant_NamesDestination(t *testing.T) {
 		{"object", sim.ArrivalWarrantReason{AttemptID: 2, AtObjectID: "well1"}, map[string]string{"well1": "the Village Well"}, "You arrived at the Village Well."},
 		{"bare position", sim.ArrivalWarrantReason{AttemptID: 3}, nil, "You arrived."},
 		{"unresolved id falls back", sim.ArrivalWarrantReason{AttemptID: 4, AtStructureID: "ghost"}, nil, "You arrived."},
+		{"bare common noun gets definite article", sim.ArrivalWarrantReason{AttemptID: 5, AtStructureID: "store"}, map[string]string{"store": "General Store"}, "You arrived at the General Store."},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
