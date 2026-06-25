@@ -11,14 +11,16 @@ import (
 )
 
 // harness_generic_dedup_test.go — ZBBS-HOME-414: the same-tick identical-call
-// guard for an explicit allowlist of action tools (accept_pay / decline_pay /
-// counter_pay / deliver_order / withdraw_pay / move_to). The weak model re-fires
-// a byte-identical call until the iteration budget — accept_pay(234) after it's
-// already accepted — and every attempt + result bloats the durable transcript
-// later ticks replay. speak and the offer family keep their own (broader,
-// success-only) guards; consume left this list in LLM-91 for a result-aware guard
-// (a repeat consume while still in need is productive, not a no-op) — see
-// harness_consume_dedup_test.go.
+// guard for an explicit allowlist of action tools (deliver_order / move_to). The
+// weak model re-fires a byte-identical call until the iteration budget —
+// deliver_order(7) after the hand-over already failed — and every attempt + result
+// bloats the durable transcript later ticks replay. speak and the offer family keep
+// their own (broader, success-only) guards; consume left this list in LLM-91 for a
+// result-aware guard (a repeat consume while still in need is productive, not a
+// no-op) — see harness_consume_dedup_test.go. The pay-offer resolution family
+// (accept_pay / decline_pay / counter_pay / withdraw_pay) left this allowlist in
+// LLM-104 for the broader ledger-id-scoped resolvedLedgerThisTick guard — see
+// harness_ledger_resolution_dedup_test.go.
 
 // newActionDedupHarness builds a harness whose registry has a single NON-terminal
 // commit tool on the HOME-414 allowlist (deliver_order), logging each dispatch,
@@ -54,16 +56,28 @@ func TestGenericCallKey(t *testing.T) {
 	obs := &RegistryEntry{Class: ClassObservation}
 
 	// Applies to an allowlisted action tool, with a stable + arg-sensitive key.
-	k1, ok := genericCallKey(&ValidatedCall{Name: "accept_pay", Entry: commit, DecodedArgs: AcceptPayArgs{LedgerID: 234}})
+	// deliver_order represents the remaining allowlist (the pay-offer resolution
+	// family moved to resolvedLedgerThisTick in LLM-104 — see the exclusion below).
+	k1, ok := genericCallKey(&ValidatedCall{Name: "deliver_order", Entry: commit, DecodedArgs: map[string]any{"order_id": 234}})
 	if !ok {
-		t.Fatal("genericCallKey ok=false for an allowlisted accept_pay — the guard would be silently disabled")
+		t.Fatal("genericCallKey ok=false for an allowlisted deliver_order — the guard would be silently disabled")
 	}
-	k1b, _ := genericCallKey(&ValidatedCall{Name: "accept_pay", Entry: commit, DecodedArgs: AcceptPayArgs{LedgerID: 234}})
+	k1b, _ := genericCallKey(&ValidatedCall{Name: "deliver_order", Entry: commit, DecodedArgs: map[string]any{"order_id": 234}})
 	if k1 != k1b {
 		t.Errorf("identical calls keyed differently: %q vs %q", k1, k1b)
 	}
-	if k2, _ := genericCallKey(&ValidatedCall{Name: "accept_pay", Entry: commit, DecodedArgs: AcceptPayArgs{LedgerID: 235}}); k1 == k2 {
-		t.Error("different ledger ids must key differently")
+	if k2, _ := genericCallKey(&ValidatedCall{Name: "deliver_order", Entry: commit, DecodedArgs: map[string]any{"order_id": 235}}); k1 == k2 {
+		t.Error("different args must key differently")
+	}
+
+	// Excluded: the pay-offer resolution family — moved off this guard to the
+	// broader, ledger-id-scoped resolvedLedgerThisTick guard (LLM-104, owned by
+	// ledgerResolutionID). If they stayed here, a counter re-fired with a `message`
+	// added would key differently and slip through.
+	for _, name := range []string{"accept_pay", "decline_pay", "counter_pay", "withdraw_pay"} {
+		if _, ok := genericCallKey(&ValidatedCall{Name: name, Entry: commit, DecodedArgs: AcceptPayArgs{LedgerID: 234}}); ok {
+			t.Errorf("%s must be excluded from genericCallKey — resolvedLedgerThisTick owns the pay family now", name)
+		}
 	}
 
 	// Excluded: consume (LLM-91). A byte-identical repeat consume while still in
