@@ -43,10 +43,42 @@ func SetProductionFocus(id ActorID, itemName string) Command {
 			if !makeableRecipe(w, kind) {
 				return nil, ModelFacingError{Msg: fmt.Sprintf("you can't make %s right now", kind)}
 			}
+			// At-cap guard: focusing a good you already hold to its cap produces
+			// nothing (no headroom) and would just re-wake you next minute. If
+			// another makeable good is still below its cap, reject and steer there.
+			// When EVERY makeable good is at cap there's nothing better to pick, so
+			// the focus is allowed (you'll make more once a sale frees headroom).
+			if chosenAtCap, otherBelowCap := capStatusForFocus(a, w, kind); chosenAtCap && otherBelowCap {
+				return nil, ModelFacingError{Msg: fmt.Sprintf("you already have all the %s you can hold — make something that's still needed", kind)}
+			}
 			a.ProductionFocus = kind
 			return ProductionFocusResult{ID: id, Focus: kind}, nil
 		},
 	}
+}
+
+// capStatusForFocus reports, for a chosen makeable good, whether the actor is
+// already at that good's cap, and whether any OTHER makeable produce good is still
+// below its cap. SetProductionFocus uses it to reject focusing a full good while
+// something else still needs making (LLM-116). An uncapped entry (cap <= 0) is
+// never "at cap".
+func capStatusForFocus(a *Actor, w *World, kind ItemKind) (chosenAtCap, otherBelowCap bool) {
+	if a.RestockPolicy == nil {
+		return false, false
+	}
+	for _, e := range a.RestockPolicy.ProduceEntries() {
+		if !makeableRecipe(w, e.Item) {
+			continue
+		}
+		cap := e.Cap()
+		belowCap := cap <= 0 || a.Inventory[e.Item] < cap
+		if e.Item == kind {
+			chosenAtCap = !belowCap
+		} else if belowCap {
+			otherBelowCap = true
+		}
+	}
+	return chosenAtCap, otherBelowCap
 }
 
 // producesItem reports whether the actor carries a produce-source restock entry
