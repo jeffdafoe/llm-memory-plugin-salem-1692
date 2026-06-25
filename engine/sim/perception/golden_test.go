@@ -125,6 +125,15 @@ var perceptionScenarios = []perceptionScenario{
 			"regression would make the 'You're at Raspberry Bush — you can gather raspberries here.' line reappear in the diff.",
 		build: growerAtStrippedBush,
 	},
+	{
+		name: "hungry_forager_at_stocked_bush",
+		summary: "A hungry forager stands at an unowned raspberry bush that still has stock, with a cheese seller at " +
+			"the General Store nearby — the LLM-113 situation (Ezekiel at the Raspberry Bush with buy options). The " +
+			"golden pins the count-aware catalog phrasing the singular/plural labels drive: the gather cue 'you can " +
+			"gather raspberries here', and the buy cue 'buy a wedge of cheese' (the period measure phrase with an " +
+			"indefinite article) rather than the bare 'buy Cheese'. A regression in the label model flips those lines.",
+		build: hungryForagerAtStockedBush,
+	},
 }
 
 // growerAtStrippedBush reproduces the LLM-98 live shape: Prudence, a forager,
@@ -169,6 +178,82 @@ func growerAtStrippedBush() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 		},
 	}
 	return snap, prudenceID, nil
+}
+
+// hungryForagerAtStockedBush is the LLM-113 situation: a hungry forager stands at
+// an unowned (commons) raspberry bush that still has stock, with a cheese seller
+// at the General Store. It exercises the singular/plural catalog phrasing in two
+// cues at once — the gather affordance ("you can gather raspberries here") and the
+// buy menu ("buy a wedge of cheese", the measure phrase + indefinite article). No
+// orders, no clock read → byte-stable.
+func hungryForagerAtStockedBush() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		ezekielID = sim.ActorID("ezekiel")
+		mabelID   = sim.ActorID("mabel")
+		store     = sim.StructureID("general_store")
+	)
+	zero := 0
+	start, end := 360, 1080 // 06:00–18:00
+	now := 600              // 10:00 — daytime
+	bushPin := sim.WorldPos{X: 100, Y: 100}.Tile()
+	ezekiel := &sim.ActorSnapshot{
+		Kind:             sim.KindNPCStateful,
+		DisplayName:      "Ezekiel Crane",
+		Role:             "forager",
+		State:            sim.StateIdle,
+		Pos:              bushPin,
+		ScheduleStartMin: &start,
+		ScheduleEndMin:   &end,
+		Coins:            6,
+		Needs:            map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold},
+	}
+	mabel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Mabel Stone",
+		Role:              "shopkeeper",
+		State:             sim.StateIdle,
+		WorkStructureID:   store,
+		InsideStructureID: store,
+		Coins:             20,
+		Inventory:         map[sim.ItemKind]int{"cheese": 5},
+		Needs:             map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Assets:           emptyAssetSet,
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{ezekielID: ezekiel, mabelID: mabel},
+		Structures: map[sim.StructureID]*sim.Structure{
+			store: plainStructure(store, "General Store"),
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"raspberries": {
+				Name: "raspberries", DisplayLabel: "Raspberries",
+				DisplayLabelSingular: "raspberry", DisplayLabelPlural: "raspberries",
+				Category:  sim.ItemCategoryFood,
+				Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 2}},
+			},
+			"cheese": {
+				Name: "cheese", DisplayLabel: "Cheese",
+				DisplayLabelSingular: "wedge of cheese", DisplayLabelPlural: "wedges of cheese",
+				Category:  sim.ItemCategoryFood,
+				Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 8}},
+			},
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"wild_bush": {
+				ID:            "wild_bush",
+				DisplayName:   "Raspberry Bush",
+				Pos:           sim.WorldPos{X: 100, Y: 100},
+				LoiterOffsetX: &zero,
+				LoiterOffsetY: &zero,
+				Refreshes: []*sim.ObjectRefresh{
+					{Attribute: "hunger", Amount: 0, GatherItem: "raspberries", AvailableQuantity: intp(3)},
+				},
+			},
+		},
+	}
+	return snap, ezekielID, nil
 }
 
 // keeperAloneAtPostOnShift reproduces the LLM-106 live shape: Josiah Thorne, a

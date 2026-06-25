@@ -31,7 +31,8 @@ func NewItemKindsRepo(pool Pool) *ItemKindsRepo {
 // for the lodging fulfillment path); hours_per_unit remains intentionally
 // unselected (not modeled in v2).
 const loadAllItemKindsSQL = `
-SELECT name, display_label, category, sort_order, capabilities, consume_dwell_narration
+SELECT name, display_label, display_label_singular, display_label_plural,
+       category, sort_order, capabilities, consume_dwell_narration
   FROM item_kind
  ORDER BY sort_order, name`
 
@@ -77,12 +78,13 @@ func (r *ItemKindsRepo) loadDefs(ctx context.Context) (map[sim.ItemKind]*sim.Ite
 	defs := make(map[sim.ItemKind]*sim.ItemKindDef)
 	for rows.Next() {
 		var (
-			name, displayLabel, category string
-			sortOrder                    int
-			capabilities                 []string
-			narration                    *string
+			name, displayLabel, category             string
+			displayLabelSingular, displayLabelPlural *string // nullable columns
+			sortOrder                                int
+			capabilities                             []string
+			narration                                *string
 		)
-		if err := rows.Scan(&name, &displayLabel, &category, &sortOrder, &capabilities, &narration); err != nil {
+		if err := rows.Scan(&name, &displayLabel, &displayLabelSingular, &displayLabelPlural, &category, &sortOrder, &capabilities, &narration); err != nil {
 			return nil, fmt.Errorf("pg item_kinds LoadAll: item_kind scan: %w", err)
 		}
 		def := &sim.ItemKindDef{
@@ -91,6 +93,12 @@ func (r *ItemKindsRepo) loadDefs(ctx context.Context) (map[sim.ItemKind]*sim.Ite
 			Category:     sim.ItemCategory(category),
 			SortOrder:    sortOrder,
 			Capabilities: capabilities,
+		}
+		if displayLabelSingular != nil {
+			def.DisplayLabelSingular = *displayLabelSingular
+		}
+		if displayLabelPlural != nil {
+			def.DisplayLabelPlural = *displayLabelPlural
 		}
 		if narration != nil {
 			def.ConsumeDwellNarration = *narration

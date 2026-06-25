@@ -409,14 +409,17 @@ func TestConsume_UnknownKind(t *testing.T) {
 	if err == nil {
 		t.Fatal("Consume: want error for unknown kind, got nil")
 	}
-	// ZBBS-WORK-412: "moonbeam" is now MINTED at qty 0 (a discovery), so the
-	// failure is no longer ErrUnknownItemKind — the minted kind exists but has
-	// no satisfactions, so it's ErrNotConsumable. (That this is ErrNotConsumable
-	// rather than ErrUnknownItemKind is itself proof the mint happened.)
-	if !errors.Is(err, sim.ErrNotConsumable) {
-		t.Errorf("want ErrNotConsumable for the minted kind; got %v", err)
+	// ZBBS-WORK-412 + LLM-113: "moonbeam" is MINTED at qty 0 (a discovery), so the
+	// failure is no longer ErrUnknownItemKind. Post-LLM-113 Consume checks
+	// inventory BEFORE consumability, so a freshly-minted kind the actor holds 0
+	// of surfaces as the honest ErrInsufficientInventory ("you don't have any
+	// moonbeam to consume") — the discovery design's intended groundable failure —
+	// rather than the catalog-shape ErrNotConsumable. (Either sentinel, not
+	// ErrUnknownItemKind, is itself proof the mint happened.)
+	if !errors.Is(err, sim.ErrInsufficientInventory) {
+		t.Errorf("want ErrInsufficientInventory for the minted kind; got %v", err)
 	}
-	if !strings.Contains(err.Error(), `"moonbeam"`) {
+	if !strings.Contains(err.Error(), "moonbeam") {
 		t.Errorf("error should echo the unknown kind: %v", err)
 	}
 	if len(*captured) != 0 {

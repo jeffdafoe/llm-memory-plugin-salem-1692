@@ -641,6 +641,8 @@ CREATE TABLE public.item_kind (
     capabilities text[] DEFAULT '{}'::text[] NOT NULL,
     hours_per_unit smallint,
     consume_dwell_narration text,
+    display_label_singular character varying(64),
+    display_label_plural character varying(64),
     CONSTRAINT item_kind_hours_per_unit_check CHECK (((hours_per_unit IS NULL) OR (hours_per_unit >= 0)))
 );
 

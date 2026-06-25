@@ -757,6 +757,7 @@ func buildSurroundings(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnap
 	if item, source, ok := findGatherableCue(snap, actorID, a); ok {
 		s.GatherableItem = item
 		s.GatherableSource = source
+		s.GatherableNoun = itemPlural(snap, item)
 	}
 	if a.InsideStructureID != "" {
 		if st := snap.Structures[a.InsideStructureID]; st != nil {

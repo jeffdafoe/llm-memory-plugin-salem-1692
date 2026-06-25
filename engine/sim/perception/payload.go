@@ -821,6 +821,10 @@ type SurroundingsView struct {
 	// the sim.Gather Command is the authoritative resolver at gather time.
 	GatherableItem   sim.ItemKind
 	GatherableSource string
+	// GatherableNoun is the plural counting phrase for GatherableItem (LLM-113)
+	// woven into the "you can gather X here" cue ("raspberries", not the raw
+	// key). Empty when there is no cue; render falls back to the key string.
+	GatherableNoun string
 }
 
 // HasAudience reports whether the subject has at least one awake, addressable

@@ -926,8 +926,15 @@ func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 		if source == "" {
 			source = "this spot"
 		}
+		// LLM-113: render the plural counting phrase ("raspberries"), not the raw
+		// catalog key. GatherableNoun is empty when a caller builds the view
+		// directly (some tests) — fall back to the key so the cue still renders.
+		noun := s.GatherableNoun
+		if noun == "" {
+			noun = string(s.GatherableItem)
+		}
 		fmt.Fprintf(b, "You're at %s — you can gather %s here.\n",
-			source, sanitizeInline(string(s.GatherableItem)))
+			source, sanitizeInline(noun))
 	}
 	b.WriteString("\n")
 }
