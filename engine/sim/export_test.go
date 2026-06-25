@@ -19,6 +19,7 @@ var (
 	DetermineTransitionFlips    = determineTransitionFlips
 	ScheduleFlips               = scheduleFlips
 	RegenObjectRefresh          = regenObjectRefresh
+	DrawDownStock               = drawDownStock
 	CompleteDueSourceActivities = completeDueSourceActivities
 
 	// FireScheduledFlip exposes the post-AfterFunc callback body so the

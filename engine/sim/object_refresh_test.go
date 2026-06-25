@@ -631,6 +631,135 @@ func TestRegenObjectRefreshFirstPassStampsAnchor(t *testing.T) {
 	}
 }
 
+// TestRegenObjectRefreshFullKeepsAnchorCurrent is part of the LLM-103 regression:
+// a finite periodic source that has sat full far longer than its period must keep
+// its regen anchor current while full, so a later draw-down regrows a full period
+// from the draw rather than snapping back on the next regen tick (a stale anchor
+// would read elapsed >= period and refill instantly).
+func TestRegenObjectRefreshFullKeepsAnchorCurrent(t *testing.T) {
+	repo, handles := mem.NewRepository()
+	stale := time.Now().UTC().Add(-72 * time.Hour) // 3 days idle, period 6h
+	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
+		"bush": {
+			ID: "bush", AssetID: "raspberry-bush", CurrentState: "berries",
+			Pos: sim.WorldPos{X: 0, Y: 0},
+			Refreshes: []*sim.ObjectRefresh{{
+				Attribute:          "hunger",
+				Amount:             -2,
+				AvailableQuantity:  ip(3),
+				MaxQuantity:        ip(3),
+				RefreshMode:        sim.RefreshModePeriodic,
+				RefreshPeriodHours: ip(6),
+				LastRefreshAt:      tp(stale),
+			}},
+		},
+	})
+	w, err := sim.LoadWorld(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go w.Run(ctx)
+
+	send := func(fn func(*sim.World) (any, error)) any {
+		v, err := w.Send(sim.Command{Fn: fn})
+		if err != nil {
+			t.Fatalf("command: %v", err)
+		}
+		return v
+	}
+	avail := func() int {
+		return send(func(world *sim.World) (any, error) {
+			return *world.VillageObjects["bush"].Refreshes[0].AvailableQuantity, nil
+		}).(int)
+	}
+
+	// A regen pass over the FULL bush refills nothing but re-anchors it to now,
+	// shedding the stale 3-day-old anchor.
+	now := time.Now().UTC()
+	if touched := send(func(world *sim.World) (any, error) {
+		return sim.RegenObjectRefresh(world, now), nil
+	}).(int); touched != 0 {
+		t.Errorf("full-bush regen touched = %d, want 0", touched)
+	}
+	anchor, ok := send(func(world *sim.World) (any, error) {
+		return world.VillageObjects["bush"].Refreshes[0].LastRefreshAt, nil
+	}).(*time.Time)
+	if !ok || anchor == nil || !anchor.Equal(now) {
+		t.Fatalf("anchor = %v, want it advanced to %v while full", anchor, now)
+	}
+
+	// Simulate the bush already depleted after that anchored full-pass (a direct
+	// set, not the gather path — the draw-down path is covered separately). The
+	// anchor stays `now`, so regrow is measured from it: no refill just before the
+	// period, a jump to max at the period.
+	send(func(world *sim.World) (any, error) {
+		world.VillageObjects["bush"].Refreshes[0].AvailableQuantity = ip(0)
+		return nil, nil
+	})
+	send(func(world *sim.World) (any, error) {
+		return sim.RegenObjectRefresh(world, now.Add(6*time.Hour-time.Nanosecond)), nil
+	})
+	if got := avail(); got != 0 {
+		t.Errorf("bush supply just before the period = %d, want 0", got)
+	}
+	send(func(world *sim.World) (any, error) {
+		return sim.RegenObjectRefresh(world, now.Add(6*time.Hour)), nil
+	})
+	if got := avail(); got != 3 {
+		t.Errorf("bush supply at the period = %d, want 3 (regrew to max)", got)
+	}
+}
+
+// TestDrawDownStockAnchorsRegrowAtHarvest covers the draw-down half of the
+// LLM-103 fix (and the restart/boot race code_review flagged): a full finite
+// periodic source carrying a stale anchor, harvested BEFORE any regen pass runs,
+// must anchor regrow to the harvest instant so it does not snap back to max on
+// the next regen tick. A draw from a non-full source leaves the anchor alone
+// (its regrow is already running), and an infinite source is a no-op.
+func TestDrawDownStockAnchorsRegrowAtHarvest(t *testing.T) {
+	now := time.Now().UTC()
+	stale := now.Add(-72 * time.Hour)
+
+	// Full source, stale anchor: a draw stamps the anchor to the harvest instant.
+	full := &sim.ObjectRefresh{
+		Attribute: "hunger", Amount: -2,
+		AvailableQuantity: ip(3), MaxQuantity: ip(3),
+		RefreshMode: sim.RefreshModePeriodic, RefreshPeriodHours: ip(6),
+		LastRefreshAt: tp(stale),
+	}
+	sim.DrawDownStock(full, 3, now)
+	if *full.AvailableQuantity != 0 {
+		t.Errorf("avail = %d, want 0 (picked clean)", *full.AvailableQuantity)
+	}
+	if full.LastRefreshAt == nil || !full.LastRefreshAt.Equal(now) {
+		t.Errorf("anchor = %v, want stamped to harvest time %v", full.LastRefreshAt, now)
+	}
+
+	// Non-full source: a draw leaves the anchor unchanged (regrow already running).
+	partial := &sim.ObjectRefresh{
+		Attribute: "hunger", Amount: -2,
+		AvailableQuantity: ip(2), MaxQuantity: ip(3),
+		RefreshMode: sim.RefreshModePeriodic, RefreshPeriodHours: ip(6),
+		LastRefreshAt: tp(stale),
+	}
+	sim.DrawDownStock(partial, 1, now)
+	if *partial.AvailableQuantity != 1 {
+		t.Errorf("avail = %d, want 1", *partial.AvailableQuantity)
+	}
+	if partial.LastRefreshAt == nil || !partial.LastRefreshAt.Equal(stale) {
+		t.Errorf("anchor = %v, want unchanged %v (source was not full)", partial.LastRefreshAt, stale)
+	}
+
+	// Infinite source (a well): no finite supply to draw, no-op.
+	well := &sim.ObjectRefresh{Attribute: "thirst", Amount: -12}
+	sim.DrawDownStock(well, 1, now)
+	if well.AvailableQuantity != nil {
+		t.Errorf("infinite source gained a supply counter: %v", well.AvailableQuantity)
+	}
+}
+
 // TestRegenObjectRefreshClampsAtMax covers the upper-bound clamp.
 func TestRegenObjectRefreshClampsAtMax(t *testing.T) {
 	repo, handles := mem.NewRepository()
