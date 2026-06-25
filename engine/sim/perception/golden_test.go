@@ -4,6 +4,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -134,6 +135,32 @@ var perceptionScenarios = []perceptionScenario{
 			"indefinite article) rather than the bare 'buy Cheese'. A regression in the label model flips those lines.",
 		build: hungryForagerAtStockedBush,
 	},
+	{
+		name: "smith_choosing_at_forge",
+		summary: "A multi-output crafter (Ezekiel the blacksmith: skillet + nail) stands at his own forge, nothing " +
+			"sold yet, currently forging nails (LLM-116). The golden pins the '## At your forge' choice cue — each " +
+			"makeable good with its per-unit time, stock vs cap, and weekly made/sold counts, the current focus marked — " +
+			"plus the standing 'You are making nail.' self-state line and the production-choice wake warrant. A single-" +
+			"output producer never gets this section (see TestForgeCueOnlyForMultiOutputCrafterAtForge).",
+		build: smithChoosingAtForge,
+	},
+}
+
+// TestForgeCueOnlyForMultiOutputCrafterAtForge is the LLM-116 cross-scenario
+// invariant: the "## At your forge" production-choice cue appears in EXACTLY the
+// multi-output-crafter-at-forge scenario and no other. A single-output producer or
+// a non-crafter must never see it — the structural property the per-builder gate
+// (>1 produce entry AND at workplace) is meant to hold across the whole matrix.
+func TestForgeCueOnlyForMultiOutputCrafterAtForge(t *testing.T) {
+	const marker = "## At your forge"
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		got := renderScenario(sc)
+		want := sc.name == "smith_choosing_at_forge"
+		if has := strings.Contains(got, marker); has != want {
+			t.Errorf("scenario %q: forge cue present=%v, want %v", sc.name, has, want)
+		}
+	}
 }
 
 // growerAtStrippedBush reproduces the LLM-98 live shape: Prudence, a forager,
@@ -254,6 +281,58 @@ func hungryForagerAtStockedBush() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta
 		},
 	}
 	return snap, ezekielID, nil
+}
+
+// smithChoosingAtForge is the LLM-116 situation: Ezekiel, a multi-output crafter,
+// stands inside his own forge on shift with two produce goods (skillet at cap,
+// nail empty) and his focus set to nail. The "## At your forge" cue lists both
+// makeable goods with time cost, stock vs cap, and (empty) weekly made/sold counts;
+// the standing "You are making nail." self-state line and the production-choice
+// wake warrant also render. No orders, no clock read (PriceBook/RecentProduce empty
+// so the windowed counts are 0 regardless of PublishedAt) → byte-stable.
+func smithChoosingAtForge() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		ezekielID = sim.ActorID("ezekiel")
+		forge     = sim.StructureID("blacksmith")
+	)
+	start, end := 360, 1080 // 06:00–18:00
+	now := 600              // 10:00 — on shift
+	published := time.Date(2026, 6, 25, 10, 0, 0, 0, time.UTC)
+	ezekiel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Ezekiel Crane",
+		Role:              "blacksmith",
+		State:             sim.StateIdle,
+		WorkStructureID:   forge,
+		InsideStructureID: forge,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             0,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"skillet": 5},
+		ProductionFocus:   "nail",
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "skillet", Source: sim.RestockSourceProduce, Max: 5},
+			{Item: "nail", Source: sim.RestockSourceProduce, Max: 20},
+		}},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{ezekielID: ezekiel},
+		Structures: map[sim.StructureID]*sim.Structure{
+			forge: plainStructure(forge, "Blacksmith"),
+		},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"skillet": {OutputItem: "skillet", OutputQty: 1, RateQty: 1, RatePerHours: 3, WholesalePrice: 5, RetailPrice: 10},
+			"nail":    {OutputItem: "nail", OutputQty: 1, RateQty: 1, RatePerHours: 1, WholesalePrice: 1, RetailPrice: 2},
+		},
+	}
+	warrants := []sim.WarrantMeta{
+		{TriggerActorID: ezekielID, Reason: sim.ProductionChoiceWarrantReason{}, SourceEventID: 1},
+	}
+	return snap, ezekielID, warrants
 }
 
 // keeperAloneAtPostOnShift reproduces the LLM-106 live shape: Josiah Thorne, a

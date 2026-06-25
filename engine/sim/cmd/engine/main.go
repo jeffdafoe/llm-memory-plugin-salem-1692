@@ -582,6 +582,7 @@ func registerTools(r *handlers.Registry, searcher llm.MemorySearcher) error {
 		{"move_to", handlers.RegisterMoveTo},         // ZBBS-HOME-285
 		{"summon", handlers.RegisterSummon},          // ZBBS-HOME-311
 		{"gather", handlers.RegisterGather},          // ZBBS-WORK-328
+		{"craft", handlers.RegisterCraft},            // LLM-116: crafter picks what to forge next
 		{"stop", handlers.RegisterStop},              // ZBBS-HOME-338
 		// `done` — the universal terminal tool. The NPC's instructions tell it
 		// to end its turn with done, and the v2 harness ends the tick on a
@@ -621,7 +622,8 @@ func startTickers(ctx context.Context, w *sim.World) {
 
 	go sim.RunDwellTicker(ctx, w)
 	go sim.RunProduceTicker(ctx, w)
-	go sim.RunRestockTicker(ctx, w) // ZBBS-WORK-322: buy-side restock producer
+	go sim.RunRestockTicker(ctx, w)          // ZBBS-WORK-322: buy-side restock producer
+	go sim.RunProductionChoiceTicker(ctx, w) // LLM-116: wake an idle multi-output crafter to choose what to forge
 	go sim.RunObjectRefreshRegen(ctx, w)
 	go sim.RunSourceActivityTicker(ctx, w) // LLM-54: completes timed eat/drink/harvest
 	go sim.RunOrderSweep(ctx, w)
