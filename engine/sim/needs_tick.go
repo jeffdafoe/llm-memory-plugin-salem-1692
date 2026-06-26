@@ -197,7 +197,7 @@ func actorActionableRedNeed(w *World, a *Actor, now time.Time, nowMinute int) (N
 		if a.Needs[n.Key] < threshold {
 			continue
 		}
-		if n.Key == "tiredness" && !isActorOnShift(a, nowMinute) {
+		if n.Key == "tiredness" && !actorOnShift(w, a, nowMinute) {
 			continue
 		}
 		return n.Key, true
