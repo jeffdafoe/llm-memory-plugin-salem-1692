@@ -261,6 +261,23 @@ var perceptionScenarios = []perceptionScenario{
 			"closed)' marker is retired. The seller is present and awake; the cue is driven by his memory, not her state.",
 		build: buyerRemembersVendorShut,
 	},
+	{
+		name: "producer_hungry_mild_at_post",
+		summary: "A farmer (Moses James) stands at his own farm on shift, only MILDLY hungry (felt, below the red " +
+			"threshold), carrying nothing edible but the carrots he grows to sell (the live grazing case, LLM-134). The " +
+			"golden pins that the '## What you can eat or drink' own-stock 'consume to eat' cue is ABSENT — his own trade " +
+			"stock is demoted out of the personal eat menu below desperation, so he isn't nudged to graze the merchandise. " +
+			"Pairs with producer_starving_at_post (same farmer, red hunger -> the cue returns).",
+		build: producerHungryMildAtPost,
+	},
+	{
+		name: "producer_starving_at_post",
+		summary: "The same farmer (Moses) at the same farm, now at the red/distress hunger tier with the same carrots and " +
+			"no other food (LLM-134). The golden pins that the own-stock 'consume to eat' cue DOES surface his carrots — at " +
+			"desperation the trade stock returns as the last resort the own-stock line was built to be (the ZBBS-123 don't-" +
+			"starve-next-to-your-food safety net). Pairs with producer_hungry_mild_at_post.",
+		build: producerStarvingAtPost,
+	},
 }
 
 // lodgerGoldenBase builds the shared LLM-127 lodging-gate fixture: Ezekiel Crane,
@@ -738,6 +755,82 @@ func hungryForagerAtStockedBush() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta
 		},
 	}
 	return snap, ezekielID, nil
+}
+
+// grazingProducerScenario builds the LLM-134 fixture: Moses James, a carrot
+// farmer, standing at his own farm on shift carrying only the carrots he grows
+// to sell, at the given hunger level. No other food, vendor, or free source is
+// present, so the carrots are the only possible own-stock cue — the scenario
+// isolates the trade-stock demotion. No PriceBook/orders, so the render takes no
+// wall-clock read and stays byte-stable.
+func grazingProducerScenario(hunger int) (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		mosesID = sim.ActorID("moses")
+		farm    = sim.StructureID("james_farm")
+	)
+	start, end := 360, 1080 // 06:00–18:00
+	now := 600              // 10:00 — on shift
+	moses := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Moses James",
+		Role:              "farmer",
+		State:             sim.StateIdle,
+		Pos:               sim.WorldPos{X: 100, Y: 100}.Tile(),
+		WorkStructureID:   farm,
+		InsideStructureID: farm,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             4,
+		Inventory:         map[sim.ItemKind]int{"carrots": 20},
+		Needs:             map[sim.NeedKey]int{"hunger": hunger},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "carrots", Source: sim.RestockSourceProduce, Max: 30},
+		}},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Assets:           emptyAssetSet,
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{mosesID: moses},
+		Structures: map[sim.StructureID]*sim.Structure{
+			farm: plainStructure(farm, "James Farm"),
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"carrots": {
+				Name: "carrots", DisplayLabel: "Carrots",
+				DisplayLabelSingular: "carrot", DisplayLabelPlural: "carrots",
+				Category:  sim.ItemCategoryFood,
+				Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 3}},
+			},
+		},
+	}
+	return snap, mosesID, nil
+}
+
+func producerHungryMildAtPost() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return grazingProducerScenario(14) // mild: felt (>= silent floor 10), below red (18)
+}
+
+func producerStarvingAtPost() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return grazingProducerScenario(sim.DefaultHungerRedThreshold) // 18 — red/desperation tier
+}
+
+// TestOwnTradeStockEatCueOnlyAtDesperation is the LLM-134 cross-scenario
+// invariant: a producer's own trade stock surfaces in the own-stock "consume to
+// eat" cue ONLY at the red/desperation tier. The same farmer holding the same
+// carrots is offered them when starving and NOT when only mildly hungry — the
+// demotion that stops merchandise grazing while preserving the don't-starve-next-
+// to-your-food safety net.
+func TestOwnTradeStockEatCueOnlyAtDesperation(t *testing.T) {
+	const cue = "consume to eat"
+	mild := renderScenario(perceptionScenario{name: "producer_hungry_mild_at_post", build: producerHungryMildAtPost})
+	if strings.Contains(mild, cue) {
+		t.Errorf("mild-hunger producer was offered its own trade stock to eat (cue %q should be absent):\n%s", cue, mild)
+	}
+	red := renderScenario(perceptionScenario{name: "producer_starving_at_post", build: producerStarvingAtPost})
+	if !strings.Contains(red, cue) {
+		t.Errorf("starving producer was NOT offered its own trade stock as last resort (cue %q should be present):\n%s", cue, red)
+	}
 }
 
 // smithChoosingAtForge is the LLM-116/LLM-128 situation: Ezekiel, a multi-output
