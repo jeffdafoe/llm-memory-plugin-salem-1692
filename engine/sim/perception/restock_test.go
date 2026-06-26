@@ -627,67 +627,29 @@ func TestRenderRestocking_NoPriceOmitsCost(t *testing.T) {
 	}
 }
 
-// --- live keeper-asleep gate (ZBBS-HOME-406) --------------------------
+// --- experiential remembered-shut (LLM-126) ---------------------------
 
-// TestBuildRestocking_ClosedNowWhenKeeperAsleep: a supplier whose only keeper of
-// the low item is asleep is annotated ClosedNow (a live snapshot read), so the
-// cue can read "no one tending it just now" rather than baiting the merchant to
-// petition an unreachable seller in a loop (the Josiah↔Tavern spiral). The
-// buyer-side mirror of satiation's keeper-asleep gate (ZBBS-HOME-387).
-func TestBuildRestocking_ClosedNowWhenKeeperAsleep(t *testing.T) {
-	subj := &sim.ActorSnapshot{Inventory: map[sim.ItemKind]int{"ale": 2}, RestockPolicy: buyPolicy("ale", 20)}
-	supplier := &sim.ActorSnapshot{WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}, State: sim.StateSleeping}
+// TestBuildRestocking_RememberedShutSupplierNotDemoted — LLM-126, decision 1(a). A
+// supplier the buyer remembers finding shut (a decaying ObservedClosed memory) is
+// flagged Shut but keeps its natural (alphabetical) position rather than being sunk
+// below an open one: the omniscient live-asleep read AND its open-before-closed sort
+// sink were retired together, so a remembered-shut supplier is annotated, not
+// demoted. A supplier the buyer has never visited carries no flag at all.
+func TestBuildRestocking_RememberedShutSupplierNotDemoted(t *testing.T) {
+	now := time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)
+	subj := &sim.ActorSnapshot{
+		Inventory:     map[sim.ItemKind]int{"ale": 2},
+		RestockPolicy: buyPolicy("ale", 20),
+		// He remembers the Abbey (alphabetically first) shut; the Brewery he does not.
+		Observed: sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
+			{StructureID: "abbey", Condition: sim.ObservedClosed}: now.Add(-time.Hour),
+		}),
+	}
+	amos := &sim.ActorSnapshot{WorkStructureID: "abbey", Inventory: map[sim.ItemKind]int{"ale": 40}, State: sim.StateIdle}
+	bram := &sim.ActorSnapshot{WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}, State: sim.StateIdle}
 	snap := &sim.Snapshot{
-		Actors:            map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj, "brewer": supplier},
-		Structures:        map[sim.StructureID]*sim.Structure{"brewery": {ID: "brewery", DisplayName: "The Brewery"}},
-		ItemKinds:         restockCatalog(),
-		RestockReorderPct: 25,
-	}
-	v := buildRestocking(snap, "merchant", subj)
-	if v == nil || len(v.Items) != 1 || len(v.Items[0].Vendors) != 1 {
-		t.Fatalf("want 1 vendor cue, got %+v", v)
-	}
-	if !v.Items[0].Vendors[0].ClosedNow {
-		t.Error("supplier whose only keeper is asleep should be ClosedNow")
-	}
-}
-
-// TestBuildRestocking_NotClosedWhenAnotherKeeperAwake: ClosedNow is structure-
-// WIDE. The deduped representative is the lowest VendorID, which is arbitrary
-// w.r.t. wakefulness — so when the representative ("anders") is asleep but
-// ANOTHER keeper of the item at the same structure ("bramble") is awake, the cue
-// must NOT be closed. Keying ClosedNow off the representative alone would
-// false-close a staffed shop and steer the buyer away from a valid supplier —
-// the very failure this fix removes. ZBBS-HOME-406.
-func TestBuildRestocking_NotClosedWhenAnotherKeeperAwake(t *testing.T) {
-	subj := &sim.ActorSnapshot{Inventory: map[sim.ItemKind]int{"ale": 2}, RestockPolicy: buyPolicy("ale", 20)}
-	anders := &sim.ActorSnapshot{WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}, State: sim.StateSleeping}
-	bramble := &sim.ActorSnapshot{WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}, State: sim.StateIdle}
-	snap := &sim.Snapshot{
-		Actors:            map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj, "anders": anders, "bramble": bramble},
-		Structures:        map[sim.StructureID]*sim.Structure{"brewery": {ID: "brewery", DisplayName: "The Brewery"}},
-		ItemKinds:         restockCatalog(),
-		RestockReorderPct: 25,
-	}
-	v := buildRestocking(snap, "merchant", subj)
-	if v == nil || len(v.Items) != 1 || len(v.Items[0].Vendors) != 1 {
-		t.Fatalf("want 1 deduped vendor cue, got %+v", v)
-	}
-	if v.Items[0].Vendors[0].ClosedNow {
-		t.Error("structure with an awake keeper of the item should NOT be ClosedNow")
-	}
-}
-
-// TestBuildRestocking_ClosedSupplierDemoted: a closed supplier (every vendor of
-// the item asleep) sorts BELOW an open one even when its name sorts first
-// alphabetically — open-before-closed is the primary sort key (mirrors the
-// satiation buy menu), so the restock cue leads with a supplier that can sell.
-func TestBuildRestocking_ClosedSupplierDemoted(t *testing.T) {
-	subj := &sim.ActorSnapshot{Inventory: map[sim.ItemKind]int{"ale": 2}, RestockPolicy: buyPolicy("ale", 20)}
-	amos := &sim.ActorSnapshot{WorkStructureID: "abbey", Inventory: map[sim.ItemKind]int{"ale": 40}, State: sim.StateSleeping} // closed; "Abbey" sorts first
-	bram := &sim.ActorSnapshot{WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}, State: sim.StateIdle}   // open
-	snap := &sim.Snapshot{
-		Actors: map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj, "amos": amos, "bram": bram},
+		PublishedAt: now,
+		Actors:      map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj, "amos": amos, "bram": bram},
 		Structures: map[sim.StructureID]*sim.Structure{
 			"abbey":   {ID: "abbey", DisplayName: "Abbey Brewhouse"},
 			"brewery": {ID: "brewery", DisplayName: "The Brewery"},
@@ -700,33 +662,13 @@ func TestBuildRestocking_ClosedSupplierDemoted(t *testing.T) {
 		t.Fatalf("want 2 supplier cues, got %+v", v)
 	}
 	vds := v.Items[0].Vendors
-	if vds[0].StructureID != "brewery" || vds[0].ClosedNow {
-		t.Errorf("open supplier must lead the alphabetically-earlier closed one, got first = %+v", vds[0])
+	// Alphabetical by label (Abbey Brewhouse < The Brewery); the remembered-shut
+	// Abbey is NOT sunk below the open Brewery.
+	if vds[0].StructureID != "abbey" || !vds[0].Shut {
+		t.Errorf("remembered-shut Abbey must keep its alphabetical lead (not demoted), got first = %+v", vds[0])
 	}
-	if vds[1].StructureID != "abbey" || !vds[1].ClosedNow {
-		t.Errorf("closed supplier must be demoted to the tail, got second = %+v", vds[1])
-	}
-}
-
-// TestRenderRestocking_ClosedNowPreferredOverShut: when both the live ClosedNow
-// and the stale Shut memory point at the same supplier, render emits the
-// present-tense "(currently closed)" name marker and NOT the decaying "found it
-// shut" recollection — live state beats stale memory (mirrors satiation, HOME-387/406).
-func TestRenderRestocking_ClosedNowPreferredOverShut(t *testing.T) {
-	v := &RestockingView{Items: []RestockItemView{
-		{
-			ItemLabel: "ale", CurrentQty: 2, Cap: 20,
-			Vendors: []RestockVendor{{StructureLabel: "The Brewery", StructureID: "brewery", Shut: true, ClosedNow: true}},
-		},
-	}}
-	var b strings.Builder
-	renderRestocking(&b, v)
-	out := b.String()
-	if !strings.Contains(out, "The Brewery"+closedNowMarker) {
-		t.Errorf("expected the live (currently closed) name marker:\n%s", out)
-	}
-	if strings.Contains(out, closedBusinessAnnotation) {
-		t.Errorf("live ClosedNow should suppress the stale Shut annotation:\n%s", out)
+	if vds[1].StructureID != "brewery" || vds[1].Shut {
+		t.Errorf("the un-remembered Brewery must follow and not be flagged shut, got second = %+v", vds[1])
 	}
 }
 

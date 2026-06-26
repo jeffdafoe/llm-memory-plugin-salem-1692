@@ -344,35 +344,6 @@ func businessRememberedShut(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, st
 	return actorSnap.Observed.Active(sim.ObservedStateKey{StructureID: structureID, Condition: sim.ObservedClosed}, snap.PublishedAt)
 }
 
-// closedNowMarker is the blunt "(currently closed)" tag rendered right after a
-// vendor / inn / supplier's NAME — in the satiation buy menu, the recovery-
-// options rest list, and the restock cue — when its backing keeper is asleep at
-// snapshot time (the live ZBBS-HOME-387/406, WORK-416 read). It replaced the
-// older soft trailing clause ("— but no one is tending it just now"): the weak
-// NPC models skimmed past that and still walked to the closed shop (the Ezekiel
-// blacksmith↔tavern cycle), so the closed state is now stated plainly and up
-// front. All three surfaces also sink closed entries below open ones, so the
-// marker only flags a demoted straggler. The live read takes precedence over the
-// experiential closedBusinessAnnotation (Shut) memory when both point at a shop.
-const closedNowMarker = " (currently closed)"
-
-// vendorKeeperAsleep reports whether the actor backing a vendor offer is asleep
-// at snapshot time — i.e. not open for business, so the cue should read closed.
-// The snapshot-side proxy for sim.actorIsResting (the predicate occupancy uses
-// to darken a tavern when its keeper beds down): the rest WINDOWS
-// (SleepingUntil/BreakUntil) are deliberately off the published snapshot, but
-// State is on it and executeNPCSleep stamps State=StateSleeping on bed-down.
-// Gated on sleeping ONLY — StateResting is overloaded (take_break AND
-// dwell-credit/eating-at-post), so a resting keeper is left alone to avoid
-// false-closing a shop whose keeper is merely dwelling at the counter.
-func vendorKeeperAsleep(snap *sim.Snapshot, vendorID sim.ActorID) bool {
-	if snap == nil {
-		return false
-	}
-	v := snap.Actors[vendorID]
-	return v != nil && v.State == sim.StateSleeping
-}
-
 // outOfStockAnnotation is the in-world suffix appended to a buy cue for a
 // (vendor, item) the subject remembers finding out of stock (ZBBS-HOME-363).
 // Recalled experience, not a live read — it deprioritizes rather than forbids

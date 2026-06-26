@@ -1,0 +1,18 @@
+# Your turn
+
+## What just happened
+(nothing specific — this is a routine check-in)
+
+
+## You
+Coins in your purse: 0.
+
+## Around you
+You are inside the Market, with no one else here to hear you speak.
+Evening settles over the village.
+
+## Your lodging
+Your room at Tavern is nearly up — if you wish to stay on, see the keeper to renew. Renewing is 2 coins a night. You stopped by not long ago and found the keeper's desk shut — best wait until they are tending it before going to renew.
+You have only 0 coins — short of the 2 for another night. Earn or sell something before your room lapses.
+
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.

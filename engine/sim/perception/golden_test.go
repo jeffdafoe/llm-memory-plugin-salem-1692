@@ -243,6 +243,24 @@ var perceptionScenarios = []perceptionScenario{
 			"renew') plus the rate hint and earn cue: the positive baseline the two suppression gates are measured against.",
 		build: lodgerRenewalDueOffShift,
 	},
+	{
+		name: "lodger_renewal_due_desk_remembered_shut",
+		summary: "The same renewal-due lodger, off-shift and away from the inn (so the walk-pull is actionable), but he went " +
+			"to the Tavern within the decay window and found the keeper's desk shut (LLM-126). The golden pins the experiential " +
+			"wait-steer ('you stopped by not long ago and found the keeper's desk shut — best wait until they are tending it') " +
+			"in place of the retired omniscient 'the keeper is abed just now' read: the lodger only knows the desk was shut " +
+			"because it was actually there, and the memory decays on the 4h closed-business TTL.",
+		build: lodgerRenewalDueDeskRememberedShut,
+	},
+	{
+		name: "buyer_remembers_vendor_shut",
+		summary: "A hungry forager (Ezekiel) stands near a cheese seller at the General Store, but he went there within the " +
+			"decay window and found it shut — no keeper tending it (now including an abed keeper, since the capture gates on " +
+			"availability, LLM-126). The golden pins that the '## What you can eat or drink' buy cue carries the experiential " +
+			"'found it shut up' annotation — the only path to a closed cue now that the omniscient live-asleep '(currently " +
+			"closed)' marker is retired. The seller is present and awake; the cue is driven by his memory, not her state.",
+		build: buyerRemembersVendorShut,
+	},
 }
 
 // lodgerGoldenBase builds the shared LLM-127 lodging-gate fixture: Ezekiel Crane,
@@ -327,6 +345,80 @@ func lodgerRenewalDueOnShiftAway() (*sim.Snapshot, sim.ActorID, []sim.WarrantMet
 func lodgerRenewalDueOffShift() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	snap, id := lodgerGoldenBase("market", 20*60, false) // off-shift, away from inn, alone
 	return snap, id, nil
+}
+
+// lodgerRenewalDueDeskRememberedShut is the LLM-126 Step-B surface: the same off-shift,
+// away-from-inn, alone lodger as the positive baseline (so the walk-pull is actionable),
+// but he went to the Tavern within the decay window and found the keeper's desk shut.
+// The experiential wait-steer replaces the retired omniscient "keeper is abed" read; the
+// memory is stamped relative to PublishedAt so it decays on the 4h closed-business TTL.
+func lodgerRenewalDueDeskRememberedShut() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, id := lodgerGoldenBase("market", 20*60, false)
+	snap.Actors[id].Observed = sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
+		{StructureID: "tavern", Condition: sim.ObservedClosed}: snap.PublishedAt.Add(-time.Hour),
+	})
+	return snap, id, nil
+}
+
+// buyerRemembersVendorShut is the LLM-126 Step-A surface: a hungry forager (Ezekiel)
+// stands near a cheese seller at the General Store, but he went there within the decay
+// window and found it shut — no keeper tending it (now including an abed keeper, since
+// the capture gates on availability). The golden pins the "## What you can eat or drink"
+// buy cue carrying the experiential "found it shut up" annotation — the only path to a
+// closed cue now that the omniscient "(currently closed)" marker is retired. The seller
+// is present and awake; the cue is driven by his memory, not her state. No orders, fixed
+// PublishedAt (the observation is stamped relative to it) → byte-stable.
+func buyerRemembersVendorShut() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		ezekielID = sim.ActorID("ezekiel")
+		mabelID   = sim.ActorID("mabel")
+		store     = sim.StructureID("general_store")
+	)
+	now := 600 // 10:00 — daytime
+	published := time.Date(2026, 6, 25, 10, 0, 0, 0, time.UTC)
+	ezekiel := &sim.ActorSnapshot{
+		Kind:        sim.KindNPCStateful,
+		DisplayName: "Ezekiel Crane",
+		Role:        "forager",
+		State:       sim.StateIdle,
+		Pos:         sim.WorldPos{X: 0, Y: 0}.Tile(),
+		Coins:       6,
+		Needs:       map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold},
+		// He went to the store within the decay window and found it shut.
+		Observed: sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
+			{StructureID: store, Condition: sim.ObservedClosed}: published.Add(-time.Hour),
+		}),
+	}
+	mabel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Mabel Stone",
+		Role:              "shopkeeper",
+		State:             sim.StateIdle,
+		WorkStructureID:   store,
+		InsideStructureID: store,
+		Coins:             20,
+		Inventory:         map[sim.ItemKind]int{"cheese": 5},
+		Needs:             map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Assets:           emptyAssetSet,
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{ezekielID: ezekiel, mabelID: mabel},
+		Structures: map[sim.StructureID]*sim.Structure{
+			store: plainStructure(store, "General Store"),
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"cheese": {
+				Name: "cheese", DisplayLabel: "Cheese",
+				DisplayLabelSingular: "wedge of cheese", DisplayLabelPlural: "wedges of cheese",
+				Category:  sim.ItemCategoryFood,
+				Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 8}},
+			},
+		},
+	}
+	return snap, ezekielID, nil
 }
 
 // TestForgeCueOnlyForMultiOutputCrafterAtForge is the LLM-116 cross-scenario
@@ -424,6 +516,41 @@ func TestVendorOperatingCueOnlyDuringOperatingHours(t *testing.T) {
 		want := operating[sc.name]
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: trade-conduct cue present=%v, want %v", sc.name, has, want)
+		}
+	}
+}
+
+// TestLodgingDeskShutCueOnlyWhenRemembered is the LLM-126 cross-scenario invariant:
+// the experiential "found the keeper's desk shut" wait-steer appears in EXACTLY the
+// scenario where a renewal-due lodger remembers its inn shut and the pull is not
+// deferred (lodger_renewal_due_desk_remembered_shut). It must never leak into a lodger
+// turn without that memory — the omniscient keeper-asleep read it replaced is gone, so
+// the cue is gated purely on the decaying experiential memory.
+func TestLodgingDeskShutCueOnlyWhenRemembered(t *testing.T) {
+	const marker = "found the keeper's desk shut"
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		got := renderScenario(sc)
+		want := sc.name == "lodger_renewal_due_desk_remembered_shut"
+		if has := strings.Contains(got, marker); has != want {
+			t.Errorf("scenario %q: desk-shut cue present=%v, want %v", sc.name, has, want)
+		}
+	}
+}
+
+// TestExperientialShutCueOnlyWhenRemembered is the LLM-126 cross-scenario invariant:
+// the experiential closed-business annotation (a buy/rest cue's "found it shut up"
+// recollection) appears in EXACTLY the scenario where the buyer remembers the vendor
+// shut (buyer_remembers_vendor_shut). With the omniscient live-asleep marker retired, a
+// closed buy cue is reachable only through the decaying experiential memory — never from
+// a keeper's live state across the map.
+func TestExperientialShutCueOnlyWhenRemembered(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		got := renderScenario(sc)
+		want := sc.name == "buyer_remembers_vendor_shut"
+		if has := strings.Contains(got, closedBusinessAnnotation); has != want {
+			t.Errorf("scenario %q: experiential shut annotation present=%v, want %v", sc.name, has, want)
 		}
 	}
 }

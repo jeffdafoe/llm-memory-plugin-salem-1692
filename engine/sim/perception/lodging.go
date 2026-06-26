@@ -45,11 +45,13 @@ type LodgingView struct {
 	// shortfall.
 	Coins int
 
-	// KeeperAsleep is true when the inn's keeper is asleep at snapshot time, so
-	// the "see the keeper to renew" cue is unactionable right now. Render flags it
-	// (within the renewal window) so the lodger waits rather than walking to a
-	// sleeping keeper. ZBBS-WORK-416.
-	KeeperAsleep bool
+	// DeskRememberedShut is true when the lodger has a decaying experiential memory
+	// (LLM-126, businessRememberedShut on the 4h closed-business TTL) of arriving at
+	// its inn and finding the keeper's desk shut — no one tending it. Render flags it
+	// (within the renewal window) so the lodger waits rather than walking to a desk
+	// it just found unattended. Replaces the old omniscient KeeperAsleep snapshot
+	// read: the lodger only "knows" the desk was shut if it was actually there.
+	DeskRememberedShut bool
 
 	// RenewalInFlight is true when the lodger already has a renewal moving to the
 	// keeper of this inn — a still-pending pay_with_item offer, or an accepted
@@ -109,13 +111,17 @@ func buildLodgingView(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 	}
 
 	innName := "the inn"
-	keeperAsleep := false
+	rememberedShut := false
 	renewalInFlight := false
 	atInn := false
 	if s := structureForRoom(snap, best.RoomID); s != nil {
 		innName = innLabel(s) // shared with the recovery-options inn finder
 		keeper := keeperOf(snap, s.ID)
-		keeperAsleep = vendorKeeperAsleep(snap, keeper)
+		// LLM-126: the experiential "found the desk shut" memory, keyed on the inn
+		// structure — the same ObservedClosed entry the buy cues read. Replaces the
+		// old omniscient keeper-asleep read so the lodger only knows the desk was
+		// shut if it actually went there.
+		rememberedShut = businessRememberedShut(snap, actorSnap, s.ID)
 		// LLM-81: defer the renewal cue when a renewal is already moving to this keeper.
 		renewalInFlight = lodgingRenewalInFlight(snap, actorID, keeper)
 		atInn = actorSnap.InsideStructureID == s.ID
@@ -126,7 +132,7 @@ func buildLodgingView(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 		ExpiresAt:           *best.ExpiresAt,
 		NightlyRate:         sim.LodgingNightlyRate(snap.LodgingDefaultWeeklyRate),
 		Coins:               actorSnap.Coins,
-		KeeperAsleep:        keeperAsleep,
+		DeskRememberedShut:  rememberedShut,
 		RenewalInFlight:     renewalInFlight,
 		RenewalDue:          renewalDue,
 		InConversation:      anyHuddlePeerAwake(snap, members),
@@ -319,8 +325,8 @@ func actorSnapIsLodgingSeeker(as *sim.ActorSnapshot, now time.Time) bool {
 // (buildSurroundings), so any awake member is a co-present listener. Sleepers
 // stay in the huddle roster (membership doesn't drop on bed-down), so the
 // per-member State check is what separates an empty/all-asleep room from a live
-// audience. StateSleeping is the snapshot-side asleep proxy (mirrors
-// vendorKeeperAsleep); a resting/on-break peer still counts as a listener. LLM-22.
+// audience. StateSleeping is the snapshot-side asleep proxy; a resting/on-break
+// peer still counts as a listener. LLM-22.
 func anyHuddlePeerAwake(snap *sim.Snapshot, members []HuddleMember) bool {
 	if snap == nil {
 		return false
@@ -433,12 +439,14 @@ func renderLodging(b *strings.Builder, v *LodgingView) {
 	if v.NightlyRate > 0 {
 		fmt.Fprintf(b, " Renewing is %d coins a night.", v.NightlyRate)
 	}
-	// An asleep keeper can't take the renewal right now — flag it so the lodger
-	// waits rather than walking to a sleeping keeper (ZBBS-WORK-416). Skipped when
-	// the pull is already deferred (gate 3, LLM-127): the line then steers "renew
-	// when next at the inn", so the abed note would be redundant.
-	if v.KeeperAsleep && !v.RenewalPullDeferred {
-		b.WriteString(" The keeper is abed just now — renew once they are next tending the desk.")
+	// The lodger went to the inn not long ago and found the keeper's desk shut —
+	// flag it so it waits rather than walking back to an unattended desk (LLM-126,
+	// decaying on the 4h closed-business TTL). Replaces the old omniscient
+	// KeeperAsleep read: the lodger only knows the desk was shut if it was actually
+	// there. Skipped when the pull is already deferred (gate 3, LLM-127): the line
+	// then steers "renew when next at the inn", so the desk-shut note is redundant.
+	if v.DeskRememberedShut && !v.RenewalPullDeferred {
+		b.WriteString(" You stopped by not long ago and found the keeper's desk shut — best wait until they are tending it before going to renew.")
 	}
 	b.WriteString("\n")
 	if cue := lodgingAffordabilityCue(v); cue != "" {

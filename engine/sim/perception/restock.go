@@ -118,15 +118,6 @@ type RestockVendor struct {
 	// this supplier shut (no keeper) within the decay window — render annotates
 	// the line so the model deprioritizes the trip. ZBBS-HOME-353.
 	Shut bool
-
-	// ClosedNow is true when this structure stocks the item but every vendor of
-	// it here is asleep right now — a LIVE read off the snapshot, not the
-	// decaying Shut memory. Render prefers it over Shut (live state beats stale
-	// recollection). The buyer-side mirror of satiation's keeper-asleep gate
-	// (ZBBS-HOME-387): without it the restock cue named an asleep keeper's shop
-	// as an open supplier, so a merchant petitioned an unreachable seller in a
-	// loop (the Josiah↔Tavern spiral). ZBBS-HOME-406.
-	ClosedNow bool
 }
 
 // buildRestocking builds the restock view for actorSnap, or nil when the actor
@@ -360,20 +351,9 @@ func findItemVendors(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *sim.Act
 		structure *sim.Structure
 	}
 	best := map[sim.StructureID]pick{}
-	// anyAwake[structureID] is true once a NON-asleep vendor of itemKind is seen
-	// at that structure. ClosedNow is its negation: the shop stocks the item but
-	// no one awake is tending it. Checked structure-wide (not just on the
-	// representative pick) because the representative is the lowest VendorID,
-	// which is arbitrary w.r.t. wakefulness — keying ClosedNow off it could
-	// false-close a structure whose lowest-id keeper sleeps while another tends,
-	// re-creating the very "avoid a valid supplier" bug this fixes. ZBBS-HOME-406.
-	anyAwake := map[sim.StructureID]bool{}
 	eachVendorOffer(snap, buyerID, func(o vendorOffer) {
 		if o.Kind != itemKind {
 			return
-		}
-		if !vendorKeeperAsleep(snap, o.VendorID) {
-			anyAwake[o.StructureID] = true
 		}
 		if cur, ok := best[o.StructureID]; ok && cur.vendorID <= o.VendorID {
 			return // keep the lowest VendorID at this structure
@@ -392,18 +372,14 @@ func findItemVendors(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *sim.Act
 			// which invited the reseller to SPEAK a price question instead of
 			// calling pay_with_item — ZBBS-HOME-386). With "", renderRestocking
 			// omits the cost clause entirely; the header carries the action.
-			CostText:  buyerLastPaidText(snap, buyerID, p.vendorID, itemKind, ""),
-			Shut:      businessRememberedShut(snap, buyerSnap, structureID),
-			ClosedNow: !anyAwake[structureID],
+			CostText: buyerLastPaidText(snap, buyerID, p.vendorID, itemKind, ""),
+			Shut:     businessRememberedShut(snap, buyerSnap, structureID),
 		})
 	}
-	// Open suppliers lead closed ones (a structure whose every vendor of the item
-	// is asleep can't sell now), then alphabetical for deterministic output —
-	// mirrors the satiation buy menu so a closed supplier doesn't lead the cue.
+	// Alphabetical for deterministic output. A supplier the buyer remembers finding
+	// shut is annotated (closedBusinessAnnotation), not demoted — the omniscient
+	// live-asleep sink was retired with ClosedNow (LLM-126).
 	sort.Slice(out, func(i, j int) bool {
-		if out[i].ClosedNow != out[j].ClosedNow {
-			return !out[i].ClosedNow
-		}
 		if out[i].StructureLabel != out[j].StructureLabel {
 			return out[i].StructureLabel < out[j].StructureLabel
 		}
@@ -551,22 +527,17 @@ func renderRestocking(b *strings.Builder, v *RestockingView) {
 		for _, vd := range it.Vendors {
 			b.WriteString("  - buy from ")
 			b.WriteString(sanitizeInline(vd.StructureLabel))
-			// A supplier whose every vendor of the item is asleep can't sell now
-			// — mark it "(currently closed)" right after the name, not a soft
-			// trailing clause the weak model skims (mirrors satiation,
-			// ZBBS-HOME-387/406).
-			if vd.ClosedNow {
-				b.WriteString(closedNowMarker)
-			}
 			if vd.StructureID != "" {
 				fmt.Fprintf(b, " (structure_id: %s)", vd.StructureID)
 			}
 			if vd.CostText != "" {
 				fmt.Fprintf(b, ", %s", vd.CostText)
 			}
-			// The stale experiential Shut memory only annotates when the supplier
-			// isn't live-closed — a present-tense read beats a decaying recollection.
-			if !vd.ClosedNow && vd.Shut {
+			// The decaying experiential memory of finding this supplier shut — no
+			// keeper tending it, now including an abed keeper (the capture gates on
+			// availability, LLM-126). Replaces the old omniscient live-asleep marker:
+			// the buyer only "knows" it was shut if it actually went there.
+			if vd.Shut {
 				b.WriteString(closedBusinessAnnotation)
 			}
 			b.WriteString("\n")

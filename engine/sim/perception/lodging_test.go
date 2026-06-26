@@ -243,28 +243,34 @@ func TestBuildLodgingView_UnknownStructure_GenericName(t *testing.T) {
 	}
 }
 
-// TestBuildLodgingView_KeeperAsleepFlagged — ZBBS-WORK-416. When the inn keeper is
-// asleep the lodging view flags it, and renderLodging discloses that the renewal
-// can't be done right now — so the lodger waits rather than walking to a sleeping
-// keeper.
-func TestBuildLodgingView_KeeperAsleepFlagged(t *testing.T) {
+// TestBuildLodgingView_DeskRememberedShutFlagged — LLM-126. When the lodger has a
+// decaying experiential memory of finding its inn's keeper-desk shut, the lodging
+// view flags it (DeskRememberedShut) and renderLodging steers the lodger to wait
+// rather than walking back to an unattended desk — the experiential replacement
+// for the retired omniscient keeper-asleep read. The keeper here is awake: the cue
+// is driven by the memory, not the keeper's live state.
+func TestBuildLodgingView_DeskRememberedShutFlagged(t *testing.T) {
 	subj := &sim.ActorSnapshot{
 		// Renewal-due (within the 13h window) so the renewal cue — and thus the
-		// asleep-keeper caveat that rides it — actually renders.
+		// desk-shut caveat that rides it — actually renders.
 		RoomAccess: map[sim.RoomAccessKey]*sim.RoomAccess{
 			{RoomID: 2, Source: sim.AccessSourceLedger}: ledgerAccess(2, 8*time.Hour),
 		},
+		// He went to the inn within the decay window and found the desk untended.
+		Observed: sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
+			{StructureID: "inn", Condition: sim.ObservedClosed}: lodgingNow.Add(-time.Hour),
+		}),
 	}
 	structs := map[sim.StructureID]*sim.Structure{"inn": innStructure("inn", "Hannah's Inn")}
-	keeper := &sim.ActorSnapshot{WorkStructureID: "inn", State: sim.StateSleeping}
+	keeper := &sim.ActorSnapshot{WorkStructureID: "inn", State: sim.StateIdle}
 	v := buildLodgingView(lodgingSnap(subj, structs, keeper), "ezekiel", subj, nil)
-	if v == nil || !v.KeeperAsleep || !v.RenewalDue {
-		t.Fatalf("want KeeperAsleep + RenewalDue set when the inn keeper sleeps near checkout, got %+v", v)
+	if v == nil || !v.DeskRememberedShut || !v.RenewalDue {
+		t.Fatalf("want DeskRememberedShut + RenewalDue set when the lodger remembers the desk shut, got %+v", v)
 	}
 	var b strings.Builder
 	renderLodging(&b, v)
-	if !strings.Contains(b.String(), "abed just now") {
-		t.Errorf("rendered lodging missing the asleep-keeper caveat:\n%s", b.String())
+	if !strings.Contains(b.String(), "found the keeper's desk shut") {
+		t.Errorf("rendered lodging missing the experiential desk-shut caveat:\n%s", b.String())
 	}
 }
 
@@ -439,11 +445,11 @@ func TestRenderLodging_Gate1_MidConversationDropsBlock(t *testing.T) {
 }
 
 // Gate 3 render: deferred steers to renew at the inn, drops the active walk-pull
-// and the now-redundant asleep-keeper note, but keeps the earn cue (gate 2 was
+// and the now-redundant desk-shut note, but keeps the earn cue (gate 2 was
 // intentionally not added — a broke lodger may still barter for the room).
 func TestRenderLodging_Gate3_DeferredPhrasing(t *testing.T) {
 	var b strings.Builder
-	renderLodging(&b, &LodgingView{InnName: "Hannah's Inn", RenewalDue: true, NightlyRate: 4, Coins: 0, RenewalPullDeferred: true, KeeperAsleep: true})
+	renderLodging(&b, &LodgingView{InnName: "Hannah's Inn", RenewalDue: true, NightlyRate: 4, Coins: 0, RenewalPullDeferred: true, DeskRememberedShut: true})
 	out := b.String()
 	if !strings.Contains(out, "when you are next back at the inn") {
 		t.Errorf("deferred render must steer to renew at the inn, got %q", out)
@@ -451,8 +457,8 @@ func TestRenderLodging_Gate3_DeferredPhrasing(t *testing.T) {
 	if strings.Contains(out, "if you wish to stay on") {
 		t.Errorf("deferred render must drop the active walk-pull, got %q", out)
 	}
-	if strings.Contains(out, "abed just now") {
-		t.Errorf("deferred render should suppress the redundant asleep-keeper note, got %q", out)
+	if strings.Contains(out, "found the keeper's desk shut") {
+		t.Errorf("deferred render should suppress the redundant desk-shut note, got %q", out)
 	}
 	if !strings.Contains(out, "Earn or sell") {
 		t.Errorf("a broke deferred lodger should still get the earn cue, got %q", out)

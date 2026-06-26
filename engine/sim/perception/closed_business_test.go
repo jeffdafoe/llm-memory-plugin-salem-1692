@@ -120,12 +120,14 @@ func TestRenderSatiation_ShutAnnotation(t *testing.T) {
 	}
 }
 
-// TestRenderSatiation_KeeperAsleepAnnotation: a vendor whose keeper is asleep at
-// snapshot time gets the blunt "(currently closed)" marker right after its name
-// (ZBBS-HOME-387's live read, restated plainly per the weak-model legibility
-// pass) — distinct from the experiential Shut memory, and taking precedence over
-// it when both point at the same shop.
-func TestRenderSatiation_KeeperAsleepAnnotation(t *testing.T) {
+// TestRenderSatiation_AsleepKeeperNoLongerOmniscient — LLM-126. With the live
+// keeper-asleep read retired, a sleeping keeper the buyer has NEVER visited
+// produces no closed cue at all: no "(currently closed)" marker and no experiential
+// "found it shut up". The buyer learns a shop is shut only by going (the John Ellis
+// philosophy); once it has (an ObservedClosed memory), the decaying experiential
+// annotation renders — the only path to a closed cue now. The out-of-stock suffix
+// is independent and co-renders, with the shut clause preceding it.
+func TestRenderSatiation_AsleepKeeperNoLongerOmniscient(t *testing.T) {
 	now := time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)
 	subj := &sim.ActorSnapshot{
 		Needs: map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold},
@@ -153,48 +155,35 @@ func TestRenderSatiation_KeeperAsleepAnnotation(t *testing.T) {
 		return b.String()
 	}
 
-	// Sleeping keeper → blunt closed marker on the name, and NOT the old soft
-	// trailing clause.
-	if out := render(); !strings.Contains(out, "The Tavern (currently closed)") {
-		t.Errorf("expected the (currently closed) name marker for a sleeping keeper, got:\n%s", out)
+	// Sleeping keeper, but the buyer has never been there → no closed cue of any
+	// kind (the retired live read no longer leaks the keeper's state across the map).
+	out := render()
+	if strings.Contains(out, "(currently closed)") {
+		t.Errorf("the retired live closed-now marker must not appear, got:\n%s", out)
 	}
-	if out := render(); strings.Contains(out, "no one is tending it just now") {
-		t.Errorf("the soft trailing closed clause should be gone from satiation, got:\n%s", out)
-	}
-
-	// Awake keeper → no closed marker.
-	cook.State = sim.StateIdle
-	if out := render(); strings.Contains(out, "(currently closed)") {
-		t.Errorf("did not expect the closed marker for an awake keeper, got:\n%s", out)
+	if strings.Contains(out, "found it shut up") {
+		t.Errorf("no experiential shut annotation without a memory, got:\n%s", out)
 	}
 
-	// Live closed-now wins over the stale experiential Shut memory: only the
-	// present-tense marker shows, not "found it shut up".
-	cook.State = sim.StateSleeping
+	// Once the buyer remembers finding it shut, the decaying experiential annotation
+	// renders — the only path to a closed cue now.
 	subj.Observed = sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
 		{StructureID: "tavern", Condition: sim.ObservedClosed}: now.Add(-time.Hour),
 	})
-	out := render()
-	if !strings.Contains(out, "(currently closed)") {
-		t.Errorf("expected the closed marker to win, got:\n%s", out)
-	}
-	if strings.Contains(out, "found it shut up") {
-		t.Errorf("experiential Shut annotation should be suppressed when live closed-now applies, got:\n%s", out)
+	if out := render(); !strings.Contains(out, "found it shut up") {
+		t.Errorf("a remembered-shut vendor should carry the experiential annotation, got:\n%s", out)
 	}
 
-	// The ClosedNow marker and the OutOfStock suffix are independent and both
-	// render — the (currently closed) name marker necessarily precedes the
-	// trailing out-of-stock suffix.
-	subj.Observed = sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
-		{StructureID: "tavern", ItemKind: "stew", Condition: sim.ObservedOutOfStock}: now.Add(-time.Hour),
-	})
+	// The shut clause and the out-of-stock suffix are independent and both render,
+	// the shut clause preceding the trailing out-of-stock suffix.
+	subj.Observed.Observe(sim.ObservedStateKey{StructureID: "tavern", ItemKind: "stew", Condition: sim.ObservedOutOfStock}, now.Add(-time.Hour))
 	out = render()
-	closedIdx := strings.Index(out, "(currently closed)")
+	shutIdx := strings.Index(out, "found it shut up")
 	stockIdx := strings.Index(out, "found them out")
-	if closedIdx < 0 || stockIdx < 0 {
-		t.Errorf("expected BOTH the closed marker and the out-of-stock suffix, got:\n%s", out)
+	if shutIdx < 0 || stockIdx < 0 {
+		t.Errorf("expected BOTH the shut annotation and the out-of-stock suffix, got:\n%s", out)
 	}
-	if closedIdx >= 0 && stockIdx >= 0 && closedIdx > stockIdx {
-		t.Errorf("the closed marker should precede the out-of-stock suffix, got:\n%s", out)
+	if shutIdx >= 0 && stockIdx >= 0 && shutIdx > stockIdx {
+		t.Errorf("the shut annotation should precede the out-of-stock suffix, got:\n%s", out)
 	}
 }
