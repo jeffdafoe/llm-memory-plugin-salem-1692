@@ -159,3 +159,39 @@ func TestBuildLaborViews_ScanShape(t *testing.T) {
 		t.Errorf("subjectIsWorker(josiah) = true, want false")
 	}
 }
+
+// TestBuildLaboring_PrefersActiveJob — if two Working offers ever coexist for a
+// worker (the sweep-lag overlap state; unreachable in normal flow but defended),
+// buildLaboring picks the one with the LATEST WorkingUntil — the active job —
+// not the lowest LaborID (which here is the stale one). code_review.
+func TestBuildLaboring_PrefersActiveJob(t *testing.T) {
+	stale := time.Date(2026, 6, 26, 12, 0, 0, 0, time.UTC)
+	active := time.Date(2026, 6, 26, 12, 30, 0, 0, time.UTC)
+	snap := &sim.Snapshot{
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": {DisplayName: "Ezekiel"}},
+		LaborLedger: map[sim.LaborID]*sim.LaborOffer{
+			1: {ID: 1, WorkerID: "ezekiel", EmployerID: "josiah", State: sim.LaborStateWorking, WorkingUntil: &stale},
+			2: {ID: 2, WorkerID: "ezekiel", EmployerID: "john", State: sim.LaborStateWorking, WorkingUntil: &active},
+		},
+	}
+	v := buildLaboring(snap, "ezekiel")
+	if v == nil || !v.Until.Equal(active) || v.Employer != "john" {
+		t.Errorf("buildLaboring = %+v, want the active job (john, %v)", v, active)
+	}
+}
+
+// TestSubjectHasPendingLaborOffer — the worker-side pending-offer check that
+// hides the solicit_work affordance + tool while a bid is outstanding.
+func TestSubjectHasPendingLaborOffer(t *testing.T) {
+	snap := &sim.Snapshot{
+		LaborLedger: map[sim.LaborID]*sim.LaborOffer{
+			1: {ID: 1, WorkerID: "ezekiel", EmployerID: "josiah", State: sim.LaborStatePending},
+		},
+	}
+	if !subjectHasPendingLaborOffer(snap, "ezekiel") {
+		t.Error("subjectHasPendingLaborOffer(ezekiel) = false, want true (has a pending offer out)")
+	}
+	if subjectHasPendingLaborOffer(snap, "josiah") {
+		t.Error("subjectHasPendingLaborOffer(josiah) = true, want false (the employer, not the worker)")
+	}
+}

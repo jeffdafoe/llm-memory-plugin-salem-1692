@@ -108,8 +108,12 @@ func SolicitWork(workerID ActorID, employerName string, reward int, durationMin 
 					"you're not in a conversation — start one with the person you want to work for first.",
 				)
 			}
-			// Already committed to a job — can't take a second.
-			if worker.LaboringUntil != nil && worker.LaboringUntil.After(at) {
+			// Already committed to a job — can't take a second. Ledger-
+			// authoritative (workerHasLiveJob): a Working offer occupies the
+			// worker until the sweep settles it, even past its window, so this
+			// can't be fooled by the actor mirror reading "free" during sweep
+			// lag.
+			if workerHasLiveJob(w, workerID) {
 				return nil, errors.New(
 					"you're already on a job — finish your current work before offering to take on more.",
 				)
@@ -145,24 +149,23 @@ func SolicitWork(workerID ActorID, employerName string, reward int, durationMin 
 				return nil, fmt.Errorf("SolicitWork: employer %q vanished mid-resolve", employerID)
 			}
 
-			// Duplicate-offer gate: at most one pending solicitation per
-			// (worker, employer) pair. Mirrors pay's cross-tick duplicate gate
-			// — a weak model re-offers while the first still stands; reject
-			// model-facing so a stack of identical offers can't pile up. Past-
-			// TTL entries are skipped (they resolve on the sweep, not here).
+			// Duplicate-offer gate: at most ONE pending outgoing offer per
+			// worker (any employer). A worker bids one job at a time and waits
+			// for an answer — this prevents both the weak-model re-offer storm
+			// AND a worker staking valid-looking offers to several employers at
+			// once, where every late acceptor would then hit failed_unavailable
+			// (code_review). Past-TTL entries are skipped (they resolve on the
+			// sweep, not here).
 			for _, o := range w.LaborLedger {
-				if o == nil || o.State != LaborStatePending {
-					continue
-				}
-				if o.WorkerID != workerID || o.EmployerID != employerID {
+				if o == nil || o.State != LaborStatePending || o.WorkerID != workerID {
 					continue
 				}
 				if !o.ExpiresAt.IsZero() && !at.Before(o.ExpiresAt) {
 					continue
 				}
 				return nil, fmt.Errorf(
-					"you already have a work offer out to %s, awaiting their answer (offer id %d) — wait for their response before offering again.",
-					employer.DisplayName, o.ID,
+					"you already have a work offer out awaiting an answer (offer id %d) — wait for a response before offering again.",
+					o.ID,
 				)
 			}
 
@@ -267,10 +270,12 @@ func AcceptWork(callerID ActorID, laborID LaborID, at time.Time) Command {
 				return finalizeLaborTerminal(w, offer, LaborTerminalStateFailedUnavailable, at), nil
 			}
 
-			// Gate 7: worker free. A worker already committed to another live
-			// job can't be double-booked — fail this accept rather than
-			// stack a second window.
-			if worker.LaboringUntil != nil && worker.LaboringUntil.After(at) {
+			// Gate 7: worker free. Ledger-authoritative — a worker with ANY
+			// Working offer is occupied until it settles, even if its window has
+			// elapsed but the sweep hasn't run yet. Reading the actor mirror's
+			// timestamp here would let a second job slip in during sweep lag and
+			// orphan the first job's mirror (code_review).
+			if workerHasLiveJob(w, offer.WorkerID) {
 				return finalizeLaborTerminal(w, offer, LaborTerminalStateFailedUnavailable, at), nil
 			}
 
@@ -401,3 +406,20 @@ func finalizeLaborTerminal(w *World, offer *LaborOffer, terminal LaborTerminalSt
 // instant can be handed to multiple fields (offer.WorkingUntil and
 // worker.LaboringUntil) without aliasing them through one pointer.
 func timePtrLabor(t time.Time) *time.Time { return &t }
+
+// workerHasLiveJob reports whether the worker currently holds a Working
+// (accepted, not-yet-settled) labor offer — the authoritative "this worker is
+// occupied" signal. Ledger-based, NOT the actor's LaboringUntil mirror: the
+// mirror's timestamp can read "free" in the gap between a work window elapsing
+// and the sweep settling it, while the offer is still Working. Reading it for
+// the busy-gate (SolicitWork, AcceptWork) keeps a second job from slipping in
+// during sweep lag, which would break the one-live-job-per-worker invariant
+// and orphan the first job's mirror (code_review). World-goroutine-only.
+func workerHasLiveJob(w *World, workerID ActorID) bool {
+	for _, o := range w.LaborLedger {
+		if o != nil && o.State == LaborStateWorking && o.WorkerID == workerID {
+			return true
+		}
+	}
+	return false
+}

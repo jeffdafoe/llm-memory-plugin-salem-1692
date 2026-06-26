@@ -785,3 +785,104 @@ func TestLaborLifecycle_EndToEndConservesCoins(t *testing.T) {
 		t.Errorf("coin total = %d, want 53 (conserved)", emp+wrk)
 	}
 }
+
+// ---- code_review regressions ----------------------------------------
+
+// TestSolicitWork_RejectsSecondPendingDifferentEmployer — one pending outgoing
+// offer per worker (not per worker+employer): a worker with an offer out to one
+// employer can't simultaneously bid a second to another. Prevents the
+// multi-employer race where every late acceptor hits failed_unavailable.
+func TestSolicitWork_RejectsSecondPendingDifferentEmployer(t *testing.T) {
+	w, stop := buildLaborWorld(t, "h1", "sc1", []laborActor{
+		{id: "ezekiel", displayName: "Ezekiel", huddleID: "h1", worker: true},
+		{id: "josiah", displayName: "Josiah", huddleID: "h1", coins: 50},
+		{id: "john", displayName: "John", huddleID: "h1", coins: 50},
+	})
+	defer stop()
+	now := time.Now().UTC()
+	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, 30, now)); err != nil {
+		t.Fatalf("first SolicitWork: %v", err)
+	}
+	if _, err := w.Send(sim.SolicitWork("ezekiel", "John", 8, 20, now)); err == nil {
+		t.Fatal("second SolicitWork to a different employer: want error, got nil")
+	}
+	if n := len(readLaborLedger(t, w)); n != 1 {
+		t.Errorf("ledger size = %d, want 1 (one pending offer per worker)", n)
+	}
+}
+
+// TestAcceptWork_WorkerAlreadyWorkingFlipsFailed — the busy-gate is ledger-
+// authoritative: a worker with a live Working offer can't be hired again, even
+// if the offer's window has elapsed but the sweep hasn't settled it (the
+// sweep-lag overlapping-job hazard code_review caught). Seeded directly since
+// SolicitWork's gate would prevent the second pending offer.
+func TestAcceptWork_WorkerAlreadyWorkingFlipsFailed(t *testing.T) {
+	w, stop := buildLaborWorld(t, "h1", "sc1", []laborActor{
+		{id: "ezekiel", displayName: "Ezekiel", huddleID: "h1", worker: true},
+		{id: "josiah", displayName: "Josiah", huddleID: "h1", coins: 50},
+		{id: "john", displayName: "John", huddleID: "h1", coins: 50},
+	})
+	defer stop()
+	now := time.Now().UTC()
+	elapsed := now.Add(-time.Minute) // window elapsed but not yet swept
+	seedLaborOffer(t, w, sim.LaborOffer{
+		ID: 1, WorkerID: "ezekiel", EmployerID: "josiah",
+		Reward: 10, DurationMin: 30, State: sim.LaborStateWorking,
+		HuddleID: "h1", SceneID: "sc1", WorkingUntil: &elapsed,
+	})
+	seedLaborOffer(t, w, sim.LaborOffer{
+		ID: 2, WorkerID: "ezekiel", EmployerID: "john",
+		Reward: 5, DurationMin: 15, State: sim.LaborStatePending,
+		HuddleID: "h1", SceneID: "sc1", ExpiresAt: now.Add(2 * time.Minute),
+	})
+	if _, err := w.Send(sim.AcceptWork("john", 2, now)); err != nil {
+		t.Fatalf("AcceptWork (worker busy): %v", err)
+	}
+	if got := readLaborLedger(t, w)[2].State; got != sim.LaborStateFailedUnavailable {
+		t.Errorf("offer 2 State = %q, want failed_unavailable (worker already on a job)", got)
+	}
+	if got := readLaborLedger(t, w)[1].State; got != sim.LaborStateWorking {
+		t.Errorf("offer 1 State = %q, want still working (untouched)", got)
+	}
+}
+
+// TestSettleCompletedLabor_PreservesNewerJobMirror — settling a stale offer must
+// clear the worker mirror ONLY if it owns it. Here the worker's mirror points at
+// a newer job's window; settling the stale offer must not free the worker.
+func TestSettleCompletedLabor_PreservesNewerJobMirror(t *testing.T) {
+	w, stop := buildLaborWorld(t, "h1", "sc1", []laborActor{
+		{id: "ezekiel", displayName: "Ezekiel", huddleID: "h1", worker: true},
+		{id: "josiah", displayName: "Josiah", huddleID: "h1", coins: 50},
+	})
+	defer stop()
+	now := time.Now().UTC()
+	staleUntil := now.Add(-time.Minute)     // offer 1's window elapsed
+	newerUntil := now.Add(20 * time.Minute) // the worker's current-job mirror
+	seedLaborOffer(t, w, sim.LaborOffer{
+		ID: 1, WorkerID: "ezekiel", EmployerID: "josiah",
+		Reward: 10, DurationMin: 30, State: sim.LaborStateWorking,
+		HuddleID: "h1", SceneID: "sc1", WorkingUntil: &staleUntil,
+	})
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Actors["ezekiel"]
+		u := newerUntil
+		a.LaboringUntil = &u
+		a.State = sim.StateLaboring
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed worker mirror: %v", err)
+	}
+	if _, err := w.Send(sim.EvaluateLaborLedgerSweep(now)); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if got := readLaborLedger(t, w)[1].State; got != sim.LaborStateCompleted {
+		t.Errorf("offer 1 State = %q, want completed", got)
+	}
+	ws := readActor(t, w, "ezekiel")
+	if ws.LaboringUntil == nil || !ws.LaboringUntil.Equal(newerUntil) {
+		t.Errorf("worker mirror = %v, want preserved at %v (settling stale offer must not clear a newer job)", ws.LaboringUntil, newerUntil)
+	}
+	if ws.State != sim.StateLaboring {
+		t.Errorf("worker State = %q, want still laboring", ws.State)
+	}
+}
