@@ -108,6 +108,51 @@ func TestBuildTradeValue_RecentPriceClause(t *testing.T) {
 	}
 }
 
+// TestBuildTradeValue_PriceNormalization locks the wholesale/retail normalization
+// edge cases: a missing wholesale or retail collapses to the single configured
+// price, a reversed config is sorted into a range, and a good with no price at all
+// is dropped entirely.
+func TestBuildTradeValue_PriceNormalization(t *testing.T) {
+	tests := []struct {
+		name      string
+		wholesale int
+		retail    int
+		wantNil   bool
+		wantLow   int
+		wantHigh  int
+	}{
+		{name: "normal range", wholesale: 1, retail: 2, wantLow: 1, wantHigh: 2},
+		{name: "wholesale missing", wholesale: 0, retail: 5, wantLow: 5, wantHigh: 5},
+		{name: "retail missing", wholesale: 5, retail: 0, wantLow: 5, wantHigh: 5},
+		{name: "reversed", wholesale: 10, retail: 5, wantLow: 5, wantHigh: 10},
+		{name: "both missing", wholesale: 0, retail: 0, wantNil: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			subj := &sim.ActorSnapshot{RestockPolicy: tvProducePolicy("x")}
+			snap := &sim.Snapshot{
+				Actors: map[sim.ActorID]*sim.ActorSnapshot{"a": subj},
+				Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+					"x": {OutputItem: "x", WholesalePrice: tt.wholesale, RetailPrice: tt.retail},
+				},
+			}
+			v := buildTradeValue(snap, "a", subj, true)
+			if tt.wantNil {
+				if v != nil {
+					t.Fatalf("want nil (no priced own-trade good), got %+v", v)
+				}
+				return
+			}
+			if v == nil || len(v.Items) != 1 {
+				t.Fatalf("want one item, got %+v", v)
+			}
+			if got := v.Items[0]; got.Low != tt.wantLow || got.High != tt.wantHigh {
+				t.Fatalf("range = %d..%d, want %d..%d", got.Low, got.High, tt.wantLow, tt.wantHigh)
+			}
+		})
+	}
+}
+
 // TestBuildTradeValue_NotInCompanyNil: alone, there is no one to trade with, so the
 // cue is suppressed regardless of own-trade goods.
 func TestBuildTradeValue_NotInCompanyNil(t *testing.T) {
