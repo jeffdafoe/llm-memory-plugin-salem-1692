@@ -450,3 +450,54 @@ func TestCommitResultContent_ConsumeNeedFeedback(t *testing.T) {
 		})
 	}
 }
+
+// TestCommitResultContent_GatherSteer pins the LLM-120 lead-with-imperative
+// post-gather copy: a started pick leads with the two don'ts (don't gather again,
+// don't walk off) — the walk-off warning is load-bearing (LLM-69: a move abandons
+// the in-flight pick) and must survive the reword — before the why. A result that
+// didn't start, a wrong-typed payload, or a nil result degrade to generic [ok].
+func TestCommitResultContent_GatherSteer(t *testing.T) {
+	vc := ValidatedCall{Name: "gather", DecodedArgs: GatherArgs{}}
+	const want = "[ok] You're now gathering — do not gather again, and do not walk off (leaving now abandons the pick and you gather nothing). It finishes on its own in a few seconds; the harvest lands in your pack next turn. Call done() now."
+
+	if got := commitResultContent(&vc, sim.SourceActivityStartResult{Started: true}); got != want {
+		t.Errorf("started gather:\n got %q\nwant %q", got, want)
+	}
+	if got := commitResultContent(&vc, sim.SourceActivityStartResult{Started: false}); got != "[ok]" {
+		t.Errorf("not-started gather = %q, want generic [ok]", got)
+	}
+	if got := commitResultContent(&vc, nil); got != "[ok]" {
+		t.Errorf("nil result = %q, want generic [ok]", got)
+	}
+}
+
+// TestCommitResultContent_CraftSteer pins the LLM-120 post-craft copy: a set
+// focus is confirmed by name (the catalog plural noun the command resolved) and
+// leads with the imperative to stop, instead of the bare [ok] that drove the
+// craft×6 forge loop. A missing noun falls back to the raw kind key; a
+// wrong-typed payload or nil result degrade to generic [ok].
+func TestCommitResultContent_CraftSteer(t *testing.T) {
+	vc := ValidatedCall{Name: "craft", DecodedArgs: CraftArgs{Item: "Nail"}}
+
+	got := commitResultContent(&vc, sim.ProductionFocusResult{Focus: "nail", Noun: "nails"})
+	want := "[ok] Your forge is set to nails — that is what you make until you choose again. Do not choose again now; tend your post or call done()."
+	if got != want {
+		t.Errorf("craft steer:\n got %q\nwant %q", got, want)
+	}
+
+	// No noun on the result (a discovery-minted kind with no catalog phrase) →
+	// fall back to the raw kind key rather than render an empty good. The steer
+	// is pronoun-free so the singular fallback reads correctly too.
+	got = commitResultContent(&vc, sim.ProductionFocusResult{Focus: "nail"})
+	want = "[ok] Your forge is set to nail — that is what you make until you choose again. Do not choose again now; tend your post or call done()."
+	if got != want {
+		t.Errorf("craft steer noun fallback:\n got %q\nwant %q", got, want)
+	}
+
+	if got := commitResultContent(&vc, struct{ X int }{X: 1}); got != "[ok]" {
+		t.Errorf("wrong result type = %q, want generic [ok]", got)
+	}
+	if got := commitResultContent(&vc, nil); got != "[ok]" {
+		t.Errorf("nil result = %q, want generic [ok]", got)
+	}
+}

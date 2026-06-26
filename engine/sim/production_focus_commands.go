@@ -11,10 +11,16 @@ import "fmt"
 // ignores focus when there is only one produce entry.
 
 // ProductionFocusResult is the command reply: the actor and the item now in
-// focus, so tool dispatch can confirm the choice back to the model.
+// focus, so tool dispatch can confirm the choice back to the model. Noun is the
+// catalog plural display phrase for the focused good ("nails", "skillets"),
+// resolved here on the world goroutine where the item catalog is in hand, so
+// commitResultContent can name the choice without re-plumbing the catalog
+// (LLM-120 craft steer). Falls back to the raw kind key for a discovery-minted
+// kind that carries no phrase.
 type ProductionFocusResult struct {
 	ID    ActorID
 	Focus ItemKind
+	Noun  string
 }
 
 // SetProductionFocus records the item a crafter will forge next. The item must
@@ -52,7 +58,13 @@ func SetProductionFocus(id ActorID, itemName string) Command {
 				return nil, ModelFacingError{Msg: fmt.Sprintf("you already have all the %s you can hold — make something that's still needed", kind)}
 			}
 			a.ProductionFocus = kind
-			return ProductionFocusResult{ID: id, Focus: kind}, nil
+			noun := string(kind)
+			if def := w.ItemKinds[kind]; def != nil {
+				if p := def.Plural(); p != "" {
+					noun = p
+				}
+			}
+			return ProductionFocusResult{ID: id, Focus: kind, Noun: noun}, nil
 		},
 	}
 }
