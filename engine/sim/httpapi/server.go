@@ -66,6 +66,13 @@ type Server struct {
 	// the edit's durable half. Nil when unwired → the /recipe/set handler answers
 	// 503.
 	recipeWriter RecipeWriter
+	// satisfiesWriter backs the operator-gated POST /umbilical/item/set-satisfies
+	// control route (LLM-119) — the durable item_satisfies upsert. Injected (set
+	// by cmd/engine via SetSatisfiesWriter) so httpapi does not import the pg
+	// package. item_satisfies is reference data with no checkpoint path, so this
+	// direct write is the edit's durable half. Nil when unwired → the
+	// /item/set-satisfies handler answers 503.
+	satisfiesWriter SatisfiesWriter
 }
 
 // NewServer builds a Server for w, authenticating every route via auth. Panics
@@ -223,6 +230,17 @@ func (s *Server) SetRouteForcer(f func(attrSlug string, start bool) sim.Command)
 // SetRouteForcer — call before Handler, never concurrently with serving.
 func (s *Server) SetRecipeWriter(wr RecipeWriter) {
 	s.recipeWriter = wr
+}
+
+// SetSatisfiesWriter wires the durable item_satisfies upsert behind the
+// operator-gated POST /umbilical/item/set-satisfies control route (LLM-119).
+// item_satisfies is reference data with no checkpoint path, so the edit's durable
+// half is this direct write (the in-memory ItemKindDef.Satisfies update is a
+// separate sim Command in the handler). Optional: unset → the handler answers
+// 503. Same wiring-time-only contract as SetRecipeWriter — call before Handler,
+// never concurrently with serving.
+func (s *Server) SetSatisfiesWriter(wr SatisfiesWriter) {
+	s.satisfiesWriter = wr
 }
 
 // Handler returns the read-surface routes: the static-render read set

@@ -339,3 +339,59 @@ func TestIntegration_ItemKinds_LoadAllHappyPath(t *testing.T) {
 		t.Error("iron (material) should not be consumable")
 	}
 }
+
+// I2 UpsertItemSatisfies inserts a new satiation row and updates an existing
+// one's immediate amount in place (LLM-119 — the operator satiation-edit durable
+// write), preserving the dwell triple on edit. Round-trips via LoadAll.
+func TestIntegration_ItemKinds_UpsertItemSatisfies(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	clearCatalog(t, f)
+
+	// item_satisfies.item_kind FKs item_kind(name) — seed the parents first.
+	if _, err := f.Pool.Exec(ctx, `
+		INSERT INTO item_kind (name, display_label, category)
+		VALUES ('berry','Berry','food'), ('stew','Hearty Stew','food')`); err != nil {
+		t.Fatalf("seed item_kind: %v", err)
+	}
+	// stew starts with a full dwell triple so the edit-preserves-dwell case is real.
+	if _, err := f.Pool.Exec(ctx, `
+		INSERT INTO item_satisfies (item_kind, attribute, amount, dwell_amount, dwell_period_minutes, dwell_total_ticks)
+		VALUES ('stew','hunger', 10, 2, 15, 4)`); err != nil {
+		t.Fatalf("seed item_satisfies: %v", err)
+	}
+
+	repo := NewItemKindsRepo(f.Pool)
+
+	// Insert a brand-new satiation row (berry has none yet).
+	if err := repo.UpsertItemSatisfies(ctx, "berry", "hunger", 2); err != nil {
+		t.Fatalf("UpsertItemSatisfies insert: %v", err)
+	}
+	got, err := repo.LoadAll(ctx)
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	if b := got["berry"]; b == nil || len(b.Satisfies) != 1 ||
+		b.Satisfies[0].Attribute != "hunger" || b.Satisfies[0].Immediate != 2 {
+		t.Fatalf("after berry insert: %+v", got["berry"])
+	}
+
+	// Update stew's immediate hunger amount — the dwell triple must survive (the
+	// upsert touches only the amount column).
+	if err := repo.UpsertItemSatisfies(ctx, "stew", "hunger", 12); err != nil {
+		t.Fatalf("UpsertItemSatisfies update: %v", err)
+	}
+	got, err = repo.LoadAll(ctx)
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	stew := got["stew"]
+	if stew == nil || len(stew.Satisfies) != 1 {
+		t.Fatalf("stew satisfies = %+v, want exactly one entry (update, not a second row)", stew)
+	}
+	st := stew.Satisfies[0]
+	if st.Attribute != "hunger" || st.Immediate != 12 ||
+		st.DwellAmount != 2 || st.DwellPeriodMinutes != 15 || st.DwellTotalTicks != 4 {
+		t.Fatalf("after update: %+v, want immediate 12 with dwell triple intact", st)
+	}
+}
