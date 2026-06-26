@@ -175,6 +175,14 @@ var perceptionScenarios = []perceptionScenario{
 		build: smithBarteringAtTavern,
 	},
 	{
+		name: "keeper_offers_room_to_coinless_guest",
+		summary: "John Ellis the tavernkeeper shares his tavern (one free private room at a live nightly rate) with " +
+			"Ezekiel Crane, a homeless smith with no home, no lodging grant, and 0 coins, carrying his own wares. The " +
+			"'## A room to let' cue fires and now names the goods-for-room path (LLM-136): a coinless guest is offered " +
+			"the room for goods (offer_trade → accept_pay) rather than dead-ended on coins. Keeper side of the live livelock.",
+		build: keeperOffersRoomToCoinlessGuest,
+	},
+	{
 		name: "owner_at_worn_stall",
 		summary: "A stall owner (Ezekiel) stands at his own worn market stall (wear past the repair threshold, " +
 			"below degrade) carrying too few nails to mend it. The golden pins the '## Your stall' cue: the worn-boards " +
@@ -1063,6 +1071,67 @@ func smithBarteringAtTavern() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 		},
 	}
 	return snap, ezekielID, nil
+}
+
+// keeperOffersRoomToCoinlessGuest is the LLM-136 host-side scene. John Ellis, the
+// tavernkeeper, shares his tavern (one free private room at a live nightly rate)
+// with Ezekiel Crane — a homeless smith with no home, no lodging grant, and 0
+// coins, carrying only his own wares. The "## A room to let" cue fires; the golden
+// pins the new goods-for-room clause, so a coinless guest is offered the room for
+// goods (offer_trade → accept_pay) instead of being dead-ended on coins he doesn't
+// have. This is the keeper side of the live livelock from LLM-136.
+func keeperOffersRoomToCoinlessGuest() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		ezekielID = sim.ActorID("ezekiel")
+		johnID    = sim.ActorID("john")
+		tavern    = sim.StructureID("tavern")
+		huddle    = sim.HuddleID("h1")
+	)
+	start, end := 360, 1320 // 06:00–22:00, on shift in the evening
+	now := 1140             // 19:00 — a guest seeking a bed for the night
+	published := time.Date(2026, 6, 25, 19, 0, 0, 0, time.UTC)
+	john := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "John Ellis",
+		Role:              "tavernkeeper",
+		State:             sim.StateIdle,
+		WorkStructureID:   tavern,
+		InsideStructureID: tavern,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		CurrentHuddleID:   huddle,
+		Coins:             267,
+		Needs:             map[sim.NeedKey]int{},
+	}
+	// No HomeStructureID and no RoomAccess → a structural lodging-seeker. 0 coins
+	// with wares on hand is the whole point: the goods path is his only way in.
+	ezekiel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Ezekiel Crane",
+		Role:              "blacksmith",
+		State:             sim.StateIdle,
+		InsideStructureID: tavern,
+		CurrentHuddleID:   huddle,
+		Coins:             0,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"skillet": 4, "nail": 27},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:              published,
+		LocalMinuteOfDay:         &now,
+		NeedThresholds:           sim.NeedThresholds{},
+		LodgingDefaultWeeklyRate: 28, // → 4 coins/night
+		Actors:                   map[sim.ActorID]*sim.ActorSnapshot{johnID: john, ezekielID: ezekiel},
+		Structures: map[sim.StructureID]*sim.Structure{
+			tavern: {ID: tavern, DisplayName: "Tavern", Rooms: []*sim.Room{
+				{ID: 1, StructureID: tavern, Kind: sim.RoomKindPrivate, Name: "bedroom_1"},
+			}},
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{johnID: {}, ezekielID: {}}},
+		},
+	}
+	return snap, johnID, nil
 }
 
 // keeperAloneAtPostOnShift reproduces the LLM-106 live shape: Josiah Thorne, a

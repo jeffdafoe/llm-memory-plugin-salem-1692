@@ -13,6 +13,6 @@ Evening settles over the village.
 
 ## Your lodging
 Your room at Tavern is nearly up — if you wish to stay on, see the keeper to renew. Renewing is 2 coins a night.
-You have only 0 coins — short of the 2 for another night. Earn or sell something before your room lapses.
+You have only 0 coins — short of the 2 for another night. If you have wares to spare, offer them for the room directly with offer_trade; otherwise earn coins before your room lapses.
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.
