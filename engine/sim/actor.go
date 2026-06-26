@@ -77,8 +77,9 @@ const (
 	StateIdle          ActorState = "idle"
 	StateWalking       ActorState = "walking"
 	StateConversing    ActorState = "conversing"
-	StateWorking       ActorState = "working" // on shift, performing chores at workplace
-	StateResting       ActorState = "resting" // take_break, dwell-credit accumulating
+	StateWorking       ActorState = "working"  // on shift, performing chores at workplace
+	StateLaboring      ActorState = "laboring" // fulfilling an accepted solicit_work commitment (LLM-26)
+	StateResting       ActorState = "resting"  // take_break, dwell-credit accumulating
 	StateSleeping      ActorState = "sleeping"
 	StateShopping      ActorState = "shopping"       // buy_walker active
 	StateInTransaction ActorState = "in_transaction" // pay flow open
@@ -438,6 +439,32 @@ type Actor struct {
 	// Activity windows.
 	BreakUntil    *time.Time
 	SleepingUntil *time.Time
+
+	// LaborID is the accepted labor offer the worker is currently committed to
+	// (LLM-26), or LaborID(0) when not on a job. The AUTHORITATIVE per-actor
+	// ownership key: set by AcceptWork to the offer's id, cleared by the
+	// completion sweep when THAT id settles. The settle path guards on this id
+	// (not on the window timestamp) so settling a stale offer can never free a
+	// worker who has since taken a different job (code_review). StateLaboring is
+	// always paired with a non-zero LaborID.
+	//
+	// LaboringUntil is the matching completion deadline, kept as the activity-
+	// window mirror (the BreakUntil/SleepingUntil pattern). Set/cleared in
+	// lockstep with LaborID. The authoritative window lives on the LaborOffer
+	// (WorkingUntil); this copy documents the job's end on the actor.
+	//
+	// Both are TRANSIENT — deliberately NOT checkpointed, unlike BreakUntil/
+	// SleepingUntil. Their settlement authority, World.LaborLedger, is itself
+	// in-memory-only and restart-lossy (the sibling PayLedger's accepted
+	// 2026-05-20 design). Persisting them WITHOUT the ledger would be the
+	// WORK-410 orphan in reverse: a restored StateLaboring actor with no offer
+	// left to settle it, stuck laboring forever. So they are lost together with
+	// the ledger — on restart the actor reverts cleanly to idle, and no coins
+	// are stranded (the reward only ever moves at completion, never before).
+	// LaboringUntil is cloned in CloneActor (pointer field); LaborID rides the
+	// value copy.
+	LaborID       LaborID
+	LaboringUntil *time.Time
 
 	// SourceActivity is an in-flight, timed action AT a village object — eating
 	// or drinking in place at a refresh source, or harvesting a gatherable
@@ -838,7 +865,7 @@ func cloneSummonRefusal(r *SummonRefusal) *SummonRefusal {
 // serialization boundary. Mutated containers (Needs, Inventory,
 // DwellCredits, RoomAccess, ProduceState, Acquaintances, Relationships)
 // and pointer fields commands rebind (BreakUntil, SleepingUntil,
-// LastTickedAt, SocialLastBoundaryAt, Narrative) are cloned.
+// LaboringUntil, LastTickedAt, SocialLastBoundaryAt, Narrative) are cloned.
 // Attributes is
 // deep-cloned including each []byte payload. RecentActions is cloned
 // via RingBuffer.Clone. MoveIntent is deep-cloned via
@@ -880,6 +907,10 @@ func CloneActor(a *Actor) *Actor {
 	if a.SleepingUntil != nil {
 		t := *a.SleepingUntil
 		cp.SleepingUntil = &t
+	}
+	if a.LaboringUntil != nil {
+		t := *a.LaboringUntil
+		cp.LaboringUntil = &t
 	}
 	if a.SourceActivity != nil {
 		// Value struct with no nested pointers — a shallow copy breaks aliasing.

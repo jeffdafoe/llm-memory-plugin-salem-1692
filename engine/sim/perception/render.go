@@ -223,6 +223,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// anchors, steers, relationships, the offers awaiting this actor's decision,
 	// owed orders, recovery/satiation/restock/lodging affordances, summons, scene.
 	ephemeral.WriteString(selfState.String())
+	renderLaborSelfState(&ephemeral, p.Laboring, nameOf, p.RenderedAt)
 	renderNarrativeState(&ephemeral, p.NarrativeState)
 	renderVendorOperating(&ephemeral, p.AtOwnBusinessOperating)
 	renderSurroundings(&ephemeral, p.Surroundings)
@@ -237,6 +238,11 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// (conversation hud-6c849d…, ZBBS-HOME-424). renderTriage reinforces the
 	// same priority at the decision point.
 	renderPayOffers(&ephemeral, payOffers, nameOf, stockOf, p.RoomAlreadySoldOrderByLedger)
+	// LLM-26: the employer's pending work-offer decisions sit alongside pay
+	// offers (both are "someone wants my answer"); the worker affordance cue
+	// follows so a free worker sees the option to offer their labor.
+	renderLaborOffers(&ephemeral, p.LaborOffersForMe, nameOf)
+	renderLaborAffordance(&ephemeral, p.CanSolicitWork)
 	renderOfferableCustomers(&ephemeral, p.OfferableCustomers)
 	renderTradeValue(&ephemeral, p.TradeValue)
 	renderStandingQuotesFromMe(&ephemeral, p.StandingQuotesFromMe)
@@ -1607,6 +1613,19 @@ func PendingPayOffers(p Payload) []sim.PayOfferWarrantReason {
 	return p.PayOffersForMe
 }
 
+// PendingLaborOffers returns the labor offers currently pending against this
+// actor as EMPLOYER — the payload's standing ledger view (Build's
+// buildLaborOffersForMe scan over snap.LaborLedger, LLM-26). The single source
+// of truth shared by the perception decision section (renderLaborOffers) and
+// the handlers tool-gate (gateTools): the rendered offer and the advertised
+// accept_work/decline_work tools both key off this one predicate so they
+// cannot drift (discussion-109). Same contract as PendingPayOffers — Build
+// established the "pending against subject as employer" invariant; this
+// accessor trusts the field.
+func PendingLaborOffers(p Payload) []LaborOfferView {
+	return p.LaborOffersForMe
+}
+
 // nonPayOfferWarrants returns the consumed batch with pay-offer warrants
 // removed — they render in the dedicated decision section (renderPayOffers)
 // instead of the generic "what just happened" list, so they must not also
@@ -1732,6 +1751,97 @@ func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason, nam
 	// rather than just "say a word", which a weak model may satisfy as plain text).
 	// ZBBS-HOME-388.
 	b.WriteString("Respond first with accept_pay, decline_pay, or counter_pay, passing the offer id as ledger_id. Then also use speak for a brief reply, because the pay response itself passes in silence.\n")
+}
+
+// renderLaborOffers renders the employer-side pending-work-offer decision
+// section: one line per offer carrying the labor_id (the load-bearing field
+// the model must echo into accept_work/decline_work), the worker, the reward,
+// and how long the job takes. Uncapped by design — labor offers are inherently
+// few (bounded by co-present workers), and the section must always carry the
+// labor_id whenever gateTools advertises the response tools (the discussion-109
+// invariant). LLM-26.
+func renderLaborOffers(b *strings.Builder, offers []LaborOfferView, nameOf func(sim.ActorID) string) {
+	if len(offers) == 0 {
+		return
+	}
+	b.WriteString("## Work offers awaiting your decision\n")
+	for i, o := range offers {
+		worker := nameOf(o.Worker)
+		unit := "coins"
+		if o.Reward == 1 {
+			unit = "coin"
+		}
+		fmt.Fprintf(b, "%d. %s offers to do a job for you for %d %s — about %s of work (offer id %d)\n",
+			i+1, worker, o.Reward, unit, humanizeWorkMinutes(o.DurationMin), o.LaborID)
+	}
+	// Action first, then an explicit speak — same "say a word as you decide"
+	// pattern the pay decision section uses (the accept_work/decline_work call
+	// itself passes in silence).
+	b.WriteString("Respond with accept_work or decline_work, passing the offer id as labor_id. Then also use speak for a brief reply, because the work response itself passes in silence.\n")
+}
+
+// renderLaborSelfState renders the worker's own in-progress job as a self-state
+// line (LLM-26) — who they're working for and roughly how much longer, with the
+// nudge to stay with it. Placed in the self-state block (top) because it is
+// point-in-time "what I'm doing right now." Content-gated on Laboring != nil.
+func renderLaborSelfState(b *strings.Builder, laboring *LaboringView, nameOf func(sim.ActorID) string, renderedAt time.Time) {
+	if laboring == nil {
+		return
+	}
+	employer := nameOf(laboring.Employer)
+	mins := minutesUntil(laboring.Until, renderedAt)
+	if mins <= 0 {
+		fmt.Fprintf(b, "You are finishing a job for %s — the work is just about done; you'll be paid as you finish.\n", employer)
+		return
+	}
+	fmt.Fprintf(b, "You are working a job for %s — about %s of work left. Stay with it until it's done; you are paid when you finish.\n",
+		employer, humanizeWorkMinutes(mins))
+}
+
+// renderLaborAffordance renders the free-worker option cue (LLM-26): the
+// subject takes work for pay and has someone here to offer it to. Content-gated
+// on CanSolicitWork, the same signal that gates the solicit_work tool.
+func renderLaborAffordance(b *strings.Builder, canSolicit bool) {
+	if !canSolicit {
+		return
+	}
+	b.WriteString("You take work for pay. If someone here has a task you could do and you want the coin, offer your labor with solicit_work — name them, the coins you want, and roughly how long the job will take.\n")
+}
+
+// humanizeWorkMinutes renders a work duration in minutes as legible prose for a
+// weak model ("45 minutes", "2 hours", "1 hour 30 minutes") — concrete time,
+// not a terse count (the salem-prose convention). LLM-26.
+func humanizeWorkMinutes(min int) string {
+	if min < 60 {
+		return fmt.Sprintf("%d minutes", min)
+	}
+	h := min / 60
+	m := min % 60
+	hUnit := "hours"
+	if h == 1 {
+		hUnit = "hour"
+	}
+	if m == 0 {
+		return fmt.Sprintf("%d %s", h, hUnit)
+	}
+	return fmt.Sprintf("%d %s %d minutes", h, hUnit, m)
+}
+
+// minutesUntil returns whole minutes from now to t, floored at 1 for any
+// positive sub-minute remainder (so "about 1 minute" rather than "0"), and 0
+// when t is at or before now. A zero renderedAt (hand-built payload with no
+// clock) yields a far-future duration; callers content-gate on Laboring, so a
+// missing clock just renders a long "left" value rather than crashing. LLM-26.
+func minutesUntil(t, now time.Time) int {
+	d := t.Sub(now)
+	if d <= 0 {
+		return 0
+	}
+	m := int(d / time.Minute)
+	if m == 0 {
+		m = 1
+	}
+	return m
 }
 
 // renderPendingOffersFromMe renders the buyer-side "## Offers you have
