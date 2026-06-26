@@ -224,7 +224,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// owed orders, recovery/satiation/restock/lodging affordances, summons, scene.
 	ephemeral.WriteString(selfState.String())
 	renderNarrativeState(&ephemeral, p.NarrativeState)
-	renderVendorOperating(&ephemeral, p.AtOwnBusiness)
+	renderVendorOperating(&ephemeral, p.AtOwnBusinessOperating)
 	renderSurroundings(&ephemeral, p.Surroundings)
 	renderAnchors(&ephemeral, p.Anchors, p.DutySteer != nil && p.DutySteer.AtPost)
 	renderDutySteer(&ephemeral, p.DutySteer)
@@ -1136,17 +1136,19 @@ func renderNarrativeState(b *strings.Builder, n *NarrativeStateView) {
 // memory-api <Instructions> system block) and drove the "instant room pitch on a
 // bare Hello" sell-pressure. Moved engine-side (ZBBS-WORK-374) so the whole
 // decision prompt is code-owned and the rules sit near the decision point rather
-// than in a detached, far-away system preamble. Gated on AtOwnBusiness — a
-// businessowner physically at their own post (ZBBS-WORK-385) — so it reaches
-// vendors (innkeeper, farmers, shopkeepers) tending their business, but not
-// visitors, stateful NPCs, or a keeper off-post in someone else's place. The
-// scoped wording replaces "always be closing" with "a greeting is not a sale".
-// ZBBS-HOME-385 restores the "tend to your trade" working framing that the
-// WORK-374 port dropped (the producers were drifting off-post with nothing to
+// than in a detached, far-away system preamble. Gated on AtOwnBusinessOperating
+// — a businessowner physically at their own post (ZBBS-WORK-385) AND within
+// operating hours (on shift, or staying open past close; LLM-123) — so it reaches
+// vendors (innkeeper, farmers, shopkeepers) tending their business during the day,
+// but not visitors, stateful NPCs, a keeper off-post in someone else's place, or a
+// keeper standing at their own CLOSED post after hours (the off-shift forge<->Tavern
+// oscillation). The scoped wording replaces "always be closing" with "a greeting is
+// not a sale". ZBBS-HOME-385 restores the "tend to your trade" working framing that
+// the WORK-374 port dropped (the producers were drifting off-post with nothing to
 // do); kept generic ("your trade", not "your stall") since a vendor may keep a
 // stall or a building.
-func renderVendorOperating(b *strings.Builder, atOwnBusiness bool) {
-	if !atOwnBusiness {
+func renderVendorOperating(b *strings.Builder, atOwnBusinessOperating bool) {
+	if !atOwnBusinessOperating {
 		return
 	}
 	b.WriteString("How you trade:\n")

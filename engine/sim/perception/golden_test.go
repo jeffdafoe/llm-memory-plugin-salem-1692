@@ -184,6 +184,30 @@ var perceptionScenarios = []perceptionScenario{
 			"passerby can remark on the wear but isn't handed the repair (LLM-118).",
 		build: passerbyAtWornStall,
 	},
+	{
+		name: "keeper_at_post_onshift",
+		summary: "A keeper (shopkeeper) stands at his own store during business hours. The golden pins the " +
+			"'How you trade:' trade-conduct block — the positive case for the operating-hours gate (LLM-123). On shift " +
+			"and at-post, the keeper is open for trade, so the cue renders.",
+		build: keeperAtPostOnShift,
+	},
+	{
+		name: "keeper_at_closed_post_offshift_night",
+		summary: "The same keeper stands at his own CLOSED store late at night, off shift (the LLM-123 bug shape: " +
+			"Ezekiel told to 'tend to your trade' at midnight). The golden pins that the 'How you trade:' block is ABSENT " +
+			"after hours — the off-shift work-pressure that fought his needs-pull and drove the post<->Tavern oscillation " +
+			"is gone — while the off-shift wind-down steer (head home) renders instead. A regression to the operating-hours " +
+			"gate would make the trade block reappear in the diff.",
+		build: keeperAtClosedPostOffshiftNight,
+	},
+	{
+		name: "keeper_staying_open_offshift",
+		summary: "The same keeper, off shift at night, but holding a live stay_open commitment (committed to keep the " +
+			"store open past close). The golden pins that the 'How you trade:' block renders despite being off-shift — the " +
+			"operating-hours gate (LLM-123) opens on a stay_open commitment too, so a keeper working late by choice still " +
+			"gets the trade-conduct framing, and the routine wind-down is suppressed.",
+		build: keeperStayingOpenOffshift,
+	},
 }
 
 // TestForgeCueOnlyForMultiOutputCrafterAtForge is the LLM-116 cross-scenario
@@ -254,6 +278,30 @@ func TestStallRepairCueOnlyAtOwnWornStall(t *testing.T) {
 		want := sc.name == "owner_at_worn_stall" || sc.name == "owner_at_degraded_stall"
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: '## Your stall' cue present=%v, want %v", sc.name, has, want)
+		}
+	}
+}
+
+// TestVendorOperatingCueOnlyDuringOperatingHours is the LLM-123 cross-scenario
+// invariant: the "How you trade:" trade-conduct block appears in EXACTLY the
+// scenarios where a keeper is at its own post AND operating — on shift
+// (keeper_at_post_onshift) or staying open past close (keeper_staying_open_offshift)
+// — and never at a closed post off-shift (keeper_at_closed_post_offshift_night) nor
+// in any non-keeper / off-post scenario. The structural property the
+// AtOwnBusinessOperating gate is meant to hold across the whole matrix: off-shift at
+// a closed post, the keeper is no longer told to "tend to your trade" at midnight.
+func TestVendorOperatingCueOnlyDuringOperatingHours(t *testing.T) {
+	const marker = "How you trade:"
+	operating := map[string]bool{
+		"keeper_at_post_onshift":       true,
+		"keeper_staying_open_offshift": true,
+	}
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		got := renderScenario(sc)
+		want := operating[sc.name]
+		if has := strings.Contains(got, marker); has != want {
+			t.Errorf("scenario %q: trade-conduct cue present=%v, want %v", sc.name, has, want)
 		}
 	}
 }
@@ -761,4 +809,73 @@ func keeperWithReadyOrder() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 		},
 	}
 	return snap, hannahID, nil
+}
+
+// operatingKeeperSnapshot builds a one-actor snapshot for the LLM-123 operating-
+// hours cue: a homed shopkeeper standing inside his own store, with the given local
+// minute (on/off shift) and an optional live stay_open commitment. No co-present
+// actors, no recipes, no orders → no forge/wares/stall cue and byte-stable. The
+// trade-conduct block ("How you trade:") renders iff the keeper is operating —
+// on shift, or off-shift with stayOpen — which is exactly what the three scenarios
+// below and the cross-scenario invariant exercise.
+func operatingKeeperSnapshot(nowMin int, stayOpen bool) (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		keeperID = sim.ActorID("moses")
+		store    = sim.StructureID("general_store")
+		home     = sim.StructureID("james_farm")
+	)
+	start, end := 360, 1080 // 06:00–18:00
+	now := nowMin
+	// PublishedAt's wall-clock tracks the local minute so the stay_open OpenUntil
+	// (set relative to it) is internally consistent; fixed date → byte-stable.
+	published := time.Date(2026, 6, 25, nowMin/60, nowMin%60, 0, 0, time.UTC)
+	moses := &sim.ActorSnapshot{
+		Kind:               sim.KindNPCShared,
+		DisplayName:        "Moses James",
+		Role:               "shopkeeper",
+		State:              sim.StateIdle,
+		WorkStructureID:    store,
+		InsideStructureID:  store,
+		HomeStructureID:    home,
+		ScheduleStartMin:   &start,
+		ScheduleEndMin:     &end,
+		BusinessownerState: &sim.BusinessownerState{Flavor: "flamboyant"},
+		Coins:              20,
+		Needs:              map[sim.NeedKey]int{},
+	}
+	if stayOpen {
+		ou := published.Add(2 * time.Hour) // committed to keep the store open until ~1am
+		moses.OpenUntil = &ou
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{keeperID: moses},
+		Structures: map[sim.StructureID]*sim.Structure{
+			store: plainStructure(store, "General Store"),
+			home:  plainStructure(home, "James Farm"),
+		},
+	}
+	return snap, keeperID, nil
+}
+
+// keeperAtPostOnShift: keeper at his own store during business hours → the
+// "How you trade:" block renders (LLM-123 positive case).
+func keeperAtPostOnShift() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return operatingKeeperSnapshot(600, false) // 10:00 — on shift, open for trade
+}
+
+// keeperAtClosedPostOffshiftNight: keeper at his own CLOSED store late at night,
+// off shift → the trade block is gone (the LLM-123 fix); the off-shift wind-down
+// "head home" steer renders instead.
+func keeperAtClosedPostOffshiftNight() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return operatingKeeperSnapshot(1380, false) // 23:00 — off shift, stall closed
+}
+
+// keeperStayingOpenOffshift: keeper off shift at night but holding a live stay_open
+// commitment → the trade block renders despite being off-shift (the operating-hours
+// gate opens on a stay_open commitment too), and the routine wind-down is suppressed.
+func keeperStayingOpenOffshift() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return operatingKeeperSnapshot(1380, true) // 23:00 — off shift but committed to stay open
 }

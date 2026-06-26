@@ -188,6 +188,17 @@ type Payload struct {
 	// ZBBS-WORK-385.
 	AtOwnBusiness bool
 
+	// AtOwnBusinessOperating narrows AtOwnBusiness to operating hours (LLM-123):
+	// true iff the keeper is at its own post AND open for trade — on shift, or
+	// off-shift with a live stay_open commitment. The trade-conduct cue
+	// (renderVendorOperating) gates on THIS, not bare AtOwnBusiness, so a keeper
+	// standing at its closed stall after hours isn't told to "see to the day's
+	// business" at midnight (the off-shift forge<->Tavern oscillation). The
+	// customer-facing cues stay on AtOwnBusiness (location only) — a buyer who walks
+	// up off-hours can still be served; the keeper just isn't nudged to drum up
+	// trade at a closed post.
+	AtOwnBusinessOperating bool
+
 	// OfferableCustomers is the seller-side "offer your wares" cue
 	// (ZBBS-HOME-404): non-nil when the subject is a businessowner co-present
 	// with one or more customers it could proactively offer goods to. Carries
