@@ -1,0 +1,22 @@
+# Your turn
+
+## What just happened
+(nothing specific — this is a routine check-in)
+
+
+## You
+Coins in your purse: 0.
+You are carrying: skillet (x5).
+
+## Around you
+You are inside the Tavern, with the tavernkeeper.
+Evening settles over the village.
+
+You keep your trade at the Blacksmith (structure_id: blacksmith) — you can head back there whenever you wish.
+
+## What your wares fetch
+What your own craft is worth in coin — use it to set a fair price or weigh a trade:
+- nail: 1 to 2 coins each.
+- skillet: 5 to 10 coins each.
+
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.

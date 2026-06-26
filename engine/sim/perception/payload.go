@@ -376,6 +376,13 @@ type Payload struct {
 	// for a single-output producer or when away from the forge. LLM-116.
 	ForgeChoice *ForgeChoiceView
 
+	// TradeValue surfaces, to an actor in company, the coin worth of the goods of
+	// its own trade — the wholesale–retail spread plus its recent realized price —
+	// so a barter has a yardstick instead of invented numbers. Own-trade only, so
+	// the actor doesn't omnisciently learn others' prices. nil when alone or with
+	// no priced own-trade goods. LLM-125.
+	TradeValue *TradeValueView
+
 	// Forage surfaces a grower-seller's own forage-to-sell bushes when their
 	// harvested stock of an item is low (< RestockReorderPct of cap) — each low
 	// `forage` RestockEntry, the on-hand/cap, the ripe count across the actor's

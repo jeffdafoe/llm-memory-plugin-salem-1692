@@ -238,6 +238,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// same priority at the decision point.
 	renderPayOffers(&ephemeral, payOffers, nameOf, stockOf, p.RoomAlreadySoldOrderByLedger)
 	renderOfferableCustomers(&ephemeral, p.OfferableCustomers)
+	renderTradeValue(&ephemeral, p.TradeValue)
 	renderStandingQuotesFromMe(&ephemeral, p.StandingQuotesFromMe)
 	renderPendingDeliveriesFromMe(&ephemeral, p.PendingDeliveriesFromMe, p.LocalDateUTC, p.RenderedAt)
 	renderPendingDeliveriesToMe(&ephemeral, p.PendingDeliveriesToMe, p.LocalDateUTC, p.RenderedAt)

@@ -153,6 +153,15 @@ var perceptionScenarios = []perceptionScenario{
 			"gate would make the line reappear in the diff (see TestProductionFocusLineOnlyAtWork).",
 		build: smithOffWorkFocusHidden,
 	},
+	{
+		name: "smith_bartering_at_tavern",
+		summary: "A smith (Ezekiel) carrying his own wares stands in the Tavern in company with John Ellis the " +
+			"tavernkeeper — the live LLM-125 barter scene. Off shift and away from the forge, so neither '## At your " +
+			"forge' nor the 'You are making nail.' line render; the new '## What your wares fetch' cue DOES, valuing his " +
+			"own-trade goods (nail 1-2, skillet 5-10 from the recipe wholesale-retail spread) so a barter has a coin " +
+			"yardstick instead of an invented number. No coin sales history yet (empty PriceBook), so no recent-price clause.",
+		build: smithBarteringAtTavern,
+	},
 }
 
 // TestForgeCueOnlyForMultiOutputCrafterAtForge is the LLM-116 cross-scenario
@@ -187,6 +196,25 @@ func TestProductionFocusLineOnlyAtWork(t *testing.T) {
 		want := sc.name == "smith_choosing_at_forge"
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: production-focus line present=%v, want %v", sc.name, has, want)
+		}
+	}
+}
+
+// TestWaresWorthCueOnlyInCompanyWithOwnTrade is the LLM-125 cross-scenario
+// invariant: the "## What your wares fetch" cue appears in EXACTLY the scenario
+// where the actor is in company (a huddle) AND has priced own-trade goods
+// (smith_bartering_at_tavern). An actor alone — even at its forge with recipes —
+// or one in company but without its own priced trade goods must never see it: the
+// own-trade base price stays out of solo and non-producer turns, and is gated on
+// company rather than location (unlike the forge cue).
+func TestWaresWorthCueOnlyInCompanyWithOwnTrade(t *testing.T) {
+	const marker = "## What your wares fetch"
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		got := renderScenario(sc)
+		want := sc.name == "smith_bartering_at_tavern"
+		if has := strings.Contains(got, marker); has != want {
+			t.Errorf("scenario %q: wares-worth cue present=%v, want %v", sc.name, has, want)
 		}
 	}
 }
@@ -405,6 +433,77 @@ func smithOffWorkFocusHidden() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 		Structures: map[sim.StructureID]*sim.Structure{
 			forge:  plainStructure(forge, "Blacksmith"),
 			tavern: plainStructure(tavern, "Tavern"),
+		},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"skillet": {OutputItem: "skillet", OutputQty: 1, RateQty: 1, RatePerHours: 3, WholesalePrice: 5, RetailPrice: 10},
+			"nail":    {OutputItem: "nail", OutputQty: 1, RateQty: 1, RatePerHours: 1, WholesalePrice: 1, RetailPrice: 2},
+		},
+	}
+	return snap, ezekielID, nil
+}
+
+// smithBarteringAtTavern is the LLM-125 situation: Ezekiel, a smith carrying his
+// own wares, stands in the Tavern in company with John Ellis the tavernkeeper —
+// the live barter scene. Off his shift and away from the forge, so neither the
+// "## At your forge" cue nor the "You are making nail." line render; what DOES
+// render is the new "## What your wares fetch" cue, valuing his own-trade goods
+// (nail 1-2, skillet 5-10 from the recipe wholesale-retail spread) so a barter has
+// a coin yardstick. Empty PriceBook → no recent-price clause; no orders, no clock
+// read → byte-stable.
+func smithBarteringAtTavern() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		ezekielID = sim.ActorID("ezekiel")
+		johnID    = sim.ActorID("john")
+		forge     = sim.StructureID("blacksmith")
+		tavern    = sim.StructureID("tavern")
+		huddle    = sim.HuddleID("h1")
+	)
+	start, end := 360, 1080 // 06:00-18:00
+	now := 1140             // 19:00 — off shift, at the tavern
+	published := time.Date(2026, 6, 25, 19, 0, 0, 0, time.UTC)
+	ezekiel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Ezekiel Crane",
+		Role:              "blacksmith",
+		State:             sim.StateIdle,
+		WorkStructureID:   forge,
+		InsideStructureID: tavern,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		CurrentHuddleID:   huddle,
+		Coins:             0,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"skillet": 5},
+		ProductionFocus:   "nail",
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "skillet", Source: sim.RestockSourceProduce, Max: 5},
+			{Item: "nail", Source: sim.RestockSourceProduce, Max: 20},
+		}},
+	}
+	john := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "John Ellis",
+		Role:              "tavernkeeper",
+		State:             sim.StateIdle,
+		WorkStructureID:   tavern,
+		InsideStructureID: tavern,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		CurrentHuddleID:   huddle,
+		Coins:             267,
+		Needs:             map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{ezekielID: ezekiel, johnID: john},
+		Structures: map[sim.StructureID]*sim.Structure{
+			forge:  plainStructure(forge, "Blacksmith"),
+			tavern: plainStructure(tavern, "Tavern"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{ezekielID: {}, johnID: {}}},
 		},
 		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
 			"skillet": {OutputItem: "skillet", OutputQty: 1, RateQty: 1, RatePerHours: 3, WholesalePrice: 5, RetailPrice: 10},
