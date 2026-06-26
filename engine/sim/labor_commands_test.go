@@ -13,7 +13,7 @@ import (
 // (SolicitWork, AcceptWork, DeclineWork) and the completion/expiry sweep
 // (EvaluateLaborLedgerSweep). Self-contained fixtures: unlike the pay
 // fixtures, a labor actor needs the AttrWorker marker and the tests assert
-// on the per-actor LaboringUntil mirror + escrow coin movement.
+// on the per-actor LaboringUntil mirror + settle-at-completion coin movement.
 
 // laborActor — minimal actor seed for labor Command tests.
 type laborActor struct {
@@ -403,7 +403,7 @@ func TestAcceptWork_RejectsNonEmployer(t *testing.T) {
 		t.Errorf("offer State = %q after non-employer accept, want still pending", got)
 	}
 	if got := readActor(t, w, "josiah").Coins; got != 50 {
-		t.Errorf("employer coins = %d, want 50 (no escrow on rejected accept)", got)
+		t.Errorf("employer coins = %d, want 50 (no debit on rejected accept)", got)
 	}
 }
 

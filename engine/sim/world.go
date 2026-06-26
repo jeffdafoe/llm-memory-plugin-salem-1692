@@ -635,9 +635,9 @@ type World struct {
 	// for the labor offer-side state machine; like PayLedger it has no durable
 	// backing and is intentionally restart-lossy (the same 2026-05-20 call).
 	// NewWorld / LoadWorld start it empty and it stays empty until a worker
-	// solicits — there is no labor table to re-stamp on load. See
-	// labor_ledger.go for the one bounded exception (an in-flight Working
-	// escrow lost to a mid-window restart).
+	// solicits — there is no labor table to re-stamp on load. Restart-loss is
+	// clean: no coins are ever held (the reward only moves at completion), so a
+	// lost offer is just a deal that didn't happen. See labor_ledger.go.
 	LaborLedger map[LaborID]*LaborOffer
 
 	// BusinessownerCooldowns is the per-(speaker, listener, trigger) gap

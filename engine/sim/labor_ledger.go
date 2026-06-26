@@ -49,8 +49,8 @@ type LaborID uint64
 //
 // Unlike PayLedgerState, `working` (the post-accept state) is NOT terminal:
 // accepting a labor offer starts the work window (the worker enters
-// StateLaboring until WorkingUntil), and the escrowed reward settles only
-// when that window completes. So the ACTIVE (non-terminal) states are
+// StateLaboring until WorkingUntil), and the reward transfers only when that
+// window completes. So the ACTIVE (non-terminal) states are
 // Pending and Working; the TERMINAL states are Completed / Declined /
 // Expired / FailedUnavailable.
 type LaborLedgerState string
@@ -145,9 +145,9 @@ const (
 )
 
 // LaborOffer is one worker→employer labor commitment. Minted Pending by
-// SolicitWork; AcceptWork escrows the reward (debits the employer) and
-// flips it Working with a WorkingUntil window; the completion sweep flips
-// it Completed and credits the worker.
+// SolicitWork; AcceptWork flips it Working with a WorkingUntil window (no
+// coins move); the completion sweep flips it Completed and transfers the
+// reward from the employer to the worker.
 type LaborOffer struct {
 	ID         LaborID
 	WorkerID   ActorID // does the work; solicited the offer

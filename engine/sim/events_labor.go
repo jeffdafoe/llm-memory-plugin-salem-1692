@@ -11,9 +11,9 @@ import "time"
 //     employer's warrant so their next reactor tick perceives the offer
 //     and can accept_work / decline_work.
 //
-//   - LaborOfferAccepted fires when sim.AcceptWork escrows the reward and
-//     flips the offer to Working. NON-terminal — the commerce isn't ended,
-//     the worker is now laboring until WorkingUntil and the reward settles
+//   - LaborOfferAccepted fires when sim.AcceptWork flips the offer to
+//     Working (no coins move). NON-terminal — the commerce isn't ended,
+//     the worker is now laboring until WorkingUntil and the reward transfers
 //     when the completion sweep fires. Carried as its own event (rather
 //     than folded into a "resolved" signal) because a subscriber that
 //     warns "you're committed until T" needs the WorkingUntil deadline,
@@ -54,11 +54,11 @@ type LaborOfferReceived struct {
 
 func (LaborOfferReceived) isSimEvent() {}
 
-// LaborOfferAccepted fires when sim.AcceptWork accepts a pending offer:
-// the reward was escrowed (debited from the employer) and the worker
-// entered StateLaboring until WorkingUntil. Distinct from LaborResolved
-// because the labor isn't ENDED — the completion sweep credits the worker
-// and emits LaborResolved{Completed} when WorkingUntil elapses.
+// LaborOfferAccepted fires when sim.AcceptWork accepts a pending offer: the
+// worker entered StateLaboring until WorkingUntil. No coins moved — the
+// reward transfers from employer to worker at completion. Distinct from
+// LaborResolved because the labor isn't ENDED — the completion sweep does
+// the transfer and emits LaborResolved{Completed} when WorkingUntil elapses.
 type LaborOfferAccepted struct {
 	EventBase
 
