@@ -80,8 +80,9 @@ func EnterOrKnock(actorID ActorID, structureID StructureID, leaveHuddleFirst boo
 			// interior; owner-only structures admit only members; and a door
 			// tile must resolve. Anything short of that routes to a loiter slot.
 			member := structureMembershipAllows(w, actor, structureID, now)
-			policyAllowsEnter := vobj.EntryPolicy != EntryPolicyClosed &&
-				(vobj.EntryPolicy != EntryPolicyOwner || member)
+			policy := effectiveEntryPolicy(w, structureID, vobj, now)
+			policyAllowsEnter := policy != EntryPolicyClosed &&
+				(policy != EntryPolicyOwner || member)
 			_, hasDoor := structureEntryTile(w, structureID)
 			canEnter := policyAllowsEnter && hasDoor
 
@@ -91,7 +92,7 @@ func EnterOrKnock(actorID ActorID, structureID StructureID, leaveHuddleFirst boo
 			// (stand beside a well), not a knock — no service huddle, no "the door
 			// is shut" narration. hasDoor is required so a doorless owner-only
 			// structure is a visit, matching the comment above and v1.
-			knocked := vobj.EntryPolicy == EntryPolicyOwner && !member && hasDoor
+			knocked := policy == EntryPolicyOwner && !member && hasDoor
 
 			var dest MoveDestination
 			if canEnter {

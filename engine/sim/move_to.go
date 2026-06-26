@@ -587,10 +587,11 @@ func moveToCanEnter(w *World, actor *Actor, structureID StructureID, now time.Ti
 	if !ok {
 		return false
 	}
-	if vobj.EntryPolicy == EntryPolicyClosed {
+	policy := effectiveEntryPolicy(w, structureID, vobj, now)
+	if policy == EntryPolicyClosed {
 		return false
 	}
-	if vobj.EntryPolicy == EntryPolicyOwner && !structureMembershipAllows(w, actor, structureID, now) {
+	if policy == EntryPolicyOwner && !structureMembershipAllows(w, actor, structureID, now) {
 		return false
 	}
 	if _, ok := structureEntryTile(w, structureID); !ok {
