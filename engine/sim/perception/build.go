@@ -160,7 +160,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	if degeneracyFlagged(actorSnap) {
 		thinDegenerateSteer(&p)
 	}
-	p.Lodging = buildLodgingView(snap, actorID, actorSnap)
+	p.Lodging = buildLodgingView(snap, actorID, actorSnap, p.Surroundings.HuddleMembers)
 	// LLM-36: the lodger bedtime nudge — fires for a lodger that has wound down
 	// to its rented inn once the night window opens, with a co-present companion
 	// to bid goodnight to, so it retires deliberately. Gated on the same audience

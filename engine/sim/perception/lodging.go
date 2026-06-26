@@ -66,14 +66,30 @@ type LodgingView struct {
 	// snap.PublishedAt (like TenureLabel) so the rendered cue is deterministic and
 	// render needs no village TZ. LLM-96.
 	RenewalDue bool
+
+	// InConversation is true when the lodger shares its huddle with an awake peer
+	// — a live conversation. Gate 1 (LLM-127): while renewal-due, render drops the
+	// whole "## Your lodging" block so a rent cue never pulls the lodger out of an
+	// exchange mid-conversation (the Ezekiel-walks-off-mid-chat incident). Derived
+	// from anyHuddlePeerAwake over the huddle members at build.
+	InConversation bool
+
+	// RenewalPullDeferred is true when the lodger is renewal-due but on-shift away
+	// from its inn. Gate 3 (LLM-127): the renewal steer is deferred rather than
+	// pulling the lodger off its post — it lodges at the inn and renews co-located
+	// when next there off-shift. False when off-shift OR already at the inn, where
+	// the walk-pull is actionable now.
+	RenewalPullDeferred bool
 }
 
 // buildLodgingView returns the lodging view for actorSnap, or nil when the
 // actor holds no active ledger RoomAccess (i.e. isn't a lodger). Pure over
 // the snapshot. The gate is sim.IsActiveLedgerGrant (active, ledger source,
 // future ExpiresAt); it also selects the soonest-expiring grant so the
-// rendered cue points at the most urgent renewal. ZBBS-HOME-296 PR2.
-func buildLodgingView(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSnapshot) *LodgingView {
+// rendered cue points at the most urgent renewal. ZBBS-HOME-296 PR2. members is
+// the actor's huddle roster (build.go passes p.Surroundings.HuddleMembers) —
+// the LLM-127 conversation gate reads it via anyHuddlePeerAwake.
+func buildLodgingView(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSnapshot, members []HuddleMember) *LodgingView {
 	if snap == nil || actorSnap == nil {
 		return nil
 	}
@@ -95,23 +111,45 @@ func buildLodgingView(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 	innName := "the inn"
 	keeperAsleep := false
 	renewalInFlight := false
+	atInn := false
 	if s := structureForRoom(snap, best.RoomID); s != nil {
 		innName = innLabel(s) // shared with the recovery-options inn finder
 		keeper := keeperOf(snap, s.ID)
 		keeperAsleep = vendorKeeperAsleep(snap, keeper)
 		// LLM-81: defer the renewal cue when a renewal is already moving to this keeper.
 		renewalInFlight = lodgingRenewalInFlight(snap, actorID, keeper)
+		atInn = actorSnap.InsideStructureID == s.ID
 	}
 	renewalDue := !now.Before(best.ExpiresAt.Add(-lodgingRenewalWindow(snap)))
 	return &LodgingView{
-		InnName:         innName,
-		ExpiresAt:       *best.ExpiresAt,
-		NightlyRate:     sim.LodgingNightlyRate(snap.LodgingDefaultWeeklyRate),
-		Coins:           actorSnap.Coins,
-		KeeperAsleep:    keeperAsleep,
-		RenewalInFlight: renewalInFlight,
-		RenewalDue:      renewalDue,
+		InnName:             innName,
+		ExpiresAt:           *best.ExpiresAt,
+		NightlyRate:         sim.LodgingNightlyRate(snap.LodgingDefaultWeeklyRate),
+		Coins:               actorSnap.Coins,
+		KeeperAsleep:        keeperAsleep,
+		RenewalInFlight:     renewalInFlight,
+		RenewalDue:          renewalDue,
+		InConversation:      anyHuddlePeerAwake(snap, members),
+		RenewalPullDeferred: renewalDue && lodgerOnShiftAwayFromInn(actorSnap, snap, atInn),
 	}
+}
+
+// lodgerOnShiftAwayFromInn reports whether a renewal-due lodger's renewal
+// walk-pull should be deferred (gate 3, LLM-127): true only when the lodger is
+// on its work shift AND not currently inside its inn. At the inn (atInn) the
+// renewal is actionable on the spot, and off-shift the lodger is free to walk
+// over — both keep the pull. An unscheduled lodger, or a snapshot with no local
+// clock, counts as off-shift (no defer), matching sim.isActorOnShift's
+// nil-schedule semantics. The shift test reuses minuteInWindow, the snapshot-pure
+// shift-window check shared with the duty steer.
+func lodgerOnShiftAwayFromInn(actorSnap *sim.ActorSnapshot, snap *sim.Snapshot, atInn bool) bool {
+	if atInn {
+		return false
+	}
+	if actorSnap.ScheduleStartMin == nil || actorSnap.ScheduleEndMin == nil || snap.LocalMinuteOfDay == nil {
+		return false
+	}
+	return minuteInWindow(*actorSnap.ScheduleStartMin, *actorSnap.ScheduleEndMin, *snap.LocalMinuteOfDay)
 }
 
 // KeeperLodgingView is the content-gated "## Your inn" section shown to an
@@ -315,22 +353,27 @@ func structureForRoom(snap *sim.Snapshot, roomID sim.RoomID) *sim.Structure {
 	return nil
 }
 
-// lodgingStatusLine renders the "## Your lodging" headline in one of two states.
+// lodgingStatusLine renders the "## Your lodging" headline in one of three states.
 // renewalDue is false while the lodger is settled — it holds a paid room and is
 // not yet into its final night, so the line confirms the room and explicitly
 // does NOT invite paying for another (the LLM-96 double-buy was a settled lodger
 // re-told to "renew" the room it had just bought). renewalDue flips true once the
 // stay is into its final night before checkout (now >= RenewalDueAt), where the
-// line steers the lodger to renew. The caller decides renewalDue against
-// RenewalDueAt; this stays a pure formatter. Pre-LLM-96 this tiered by raw
-// time-to-expiry (24h/48h), which fired the renewal cue on a one-night stay from
-// purchase since such a stay expires inside 24h.
-func lodgingStatusLine(innName string, renewalDue bool) string {
+// line steers the lodger to renew. pullDeferred (gate 3, LLM-127) softens that
+// renewal-due steer to "renew when next at the inn" when the lodger is on-shift
+// away from its post, so the cue doesn't walk it off duty. The caller decides
+// renewalDue/pullDeferred; this stays a pure formatter. Pre-LLM-96 this tiered by
+// raw time-to-expiry (24h/48h), which fired the renewal cue on a one-night stay
+// from purchase since such a stay expires inside 24h.
+func lodgingStatusLine(innName string, renewalDue, pullDeferred bool) string {
 	inn := sanitizeInline(innName)
-	if renewalDue {
-		return fmt.Sprintf("Your room at %s is nearly up — if you wish to stay on, see the keeper to renew.", inn)
+	if !renewalDue {
+		return fmt.Sprintf("Your room at %s is paid — you are settled here for now, no need to arrange another.", inn)
 	}
-	return fmt.Sprintf("Your room at %s is paid — you are settled here for now, no need to arrange another.", inn)
+	if pullDeferred {
+		return fmt.Sprintf("Your room at %s is nearly up — see the keeper to renew when you are next back at the inn.", inn)
+	}
+	return fmt.Sprintf("Your room at %s is nearly up — if you wish to stay on, see the keeper to renew.", inn)
 }
 
 // lodgingAffordabilityCue returns the rent-shortfall warning, or "" when it
@@ -360,6 +403,14 @@ func renderLodging(b *strings.Builder, v *LodgingView) {
 	if v == nil {
 		return
 	}
+	// Gate 1 (LLM-127): renewal-due but mid-conversation (an awake huddle peer).
+	// Drop the whole "## Your lodging" block — a live social beat must not carry
+	// rent math or a "see the keeper" pull that walks the lodger out of the exchange.
+	// Scoped to renewal-due: the settled confirmation line below is harmless
+	// background, so a settled lodger still gets it mid-conversation.
+	if v.RenewalDue && v.InConversation {
+		return
+	}
 	b.WriteString("## Your lodging\n")
 	// LLM-81: a renewal is already in flight to the keeper (a pending offer, or an
 	// accepted order awaiting hand-over). The grant only extends on delivery, so the
@@ -371,7 +422,7 @@ func renderLodging(b *strings.Builder, v *LodgingView) {
 		fmt.Fprintf(b, "Your renewal at %s is paid and with the keeper — they will bring you the room shortly. Do not pay for it again; wait here for them.\n\n", sanitizeInline(v.InnName))
 		return
 	}
-	b.WriteString(lodgingStatusLine(v.InnName, v.RenewalDue))
+	b.WriteString(lodgingStatusLine(v.InnName, v.RenewalDue, v.RenewalPullDeferred))
 	// Settled (not yet the final night): confirm the room and stop — the rate
 	// hint, asleep-keeper note, and shortfall cue all push toward renewing, which
 	// a settled lodger must not be nudged to do (LLM-96).
@@ -383,8 +434,10 @@ func renderLodging(b *strings.Builder, v *LodgingView) {
 		fmt.Fprintf(b, " Renewing is %d coins a night.", v.NightlyRate)
 	}
 	// An asleep keeper can't take the renewal right now — flag it so the lodger
-	// waits rather than walking to a sleeping keeper (ZBBS-WORK-416).
-	if v.KeeperAsleep {
+	// waits rather than walking to a sleeping keeper (ZBBS-WORK-416). Skipped when
+	// the pull is already deferred (gate 3, LLM-127): the line then steers "renew
+	// when next at the inn", so the abed note would be redundant.
+	if v.KeeperAsleep && !v.RenewalPullDeferred {
 		b.WriteString(" The keeper is abed just now — renew once they are next tending the desk.")
 	}
 	b.WriteString("\n")

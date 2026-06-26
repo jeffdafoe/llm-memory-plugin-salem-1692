@@ -220,6 +220,113 @@ var perceptionScenarios = []perceptionScenario{
 			"gets the trade-conduct framing, and the routine wind-down is suppressed.",
 		build: keeperStayingOpenOffshift,
 	},
+	{
+		name: "lodger_renewal_due_in_conversation",
+		summary: "Renewal-due lodger (Ezekiel Crane, 0 coins, room at the Tavern nearly up) mid-conversation with an " +
+			"awake huddle peer — the live incident where the renewal walk-pull dragged him out of a PC exchange. Gate 1 " +
+			"(LLM-127): the golden pins that NO '## Your lodging' section renders, so rent math never interrupts a live " +
+			"social beat.",
+		build: lodgerRenewalDueInConversation,
+	},
+	{
+		name: "lodger_renewal_due_onshift_away",
+		summary: "The same renewal-due lodger, on-shift and away from his inn, not in conversation. Gate 3 (LLM-127): the " +
+			"golden pins the deferred headline ('see the keeper to renew when you are next back at the inn') — no walk-pull " +
+			"off his post — plus the rate hint and the earn cue (he's broke). The abed-keeper note is absent (deferral makes " +
+			"it redundant).",
+		build: lodgerRenewalDueOnShiftAway,
+	},
+	{
+		name: "lodger_renewal_due_offshift",
+		summary: "The same renewal-due lodger, off-shift and away from the inn, not in conversation — the case where the " +
+			"renewal IS actionable now. The golden pins the active walk-pull ('if you wish to stay on, see the keeper to " +
+			"renew') plus the rate hint and earn cue: the positive baseline the two suppression gates are measured against.",
+		build: lodgerRenewalDueOffShift,
+	},
+}
+
+// lodgerGoldenBase builds the shared LLM-127 lodging-gate fixture: Ezekiel Crane,
+// a renewal-due lodger of the Tavern (room 2, expiring 8h out — inside the 13h
+// renewal window), 0 coins, scheduled 06:00–18:00. The caller positions him
+// (inside) and sets the local clock (nowMin) to drive the on-shift gate, and may
+// add an awake huddle companion. Renewal-due is computed off PublishedAt, so the
+// rendered cue is deterministic; nowMin only moves the shift gate.
+func lodgerGoldenBase(inside sim.StructureID, nowMin int, withCompanion bool) (*sim.Snapshot, sim.ActorID) {
+	const (
+		ezekielID = sim.ActorID("ezekiel")
+		patronID  = sim.ActorID("patron")
+		tavern    = sim.StructureID("tavern")
+		market    = sim.StructureID("market")
+		huddleID  = sim.HuddleID("h1")
+	)
+	start, end := 360, 1080 // 06:00–18:00
+	published := time.Date(2026, 6, 25, 0, 0, 0, 0, time.UTC).Add(time.Duration(nowMin) * time.Minute)
+	ezekiel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Ezekiel Crane",
+		Role:              "blacksmith",
+		State:             sim.StateIdle,
+		InsideStructureID: inside,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             0,
+		Needs:             map[sim.NeedKey]int{},
+		RoomAccess: map[sim.RoomAccessKey]*sim.RoomAccess{
+			{RoomID: 2, Source: sim.AccessSourceLedger}: {
+				RoomID:    2,
+				Source:    sim.AccessSourceLedger,
+				LedgerID:  1,
+				ExpiresAt: ptrTime(published.Add(8 * time.Hour)),
+				Active:    true,
+			},
+		},
+	}
+	actors := map[sim.ActorID]*sim.ActorSnapshot{ezekielID: ezekiel}
+	huddles := map[sim.HuddleID]*sim.Huddle{}
+	if withCompanion {
+		ezekiel.CurrentHuddleID = huddleID
+		actors[patronID] = &sim.ActorSnapshot{
+			Kind:              sim.KindNPCStateful,
+			DisplayName:       "Goodwife Hale",
+			Role:              "patron",
+			State:             sim.StateIdle,
+			InsideStructureID: inside,
+			CurrentHuddleID:   huddleID,
+			Needs:             map[sim.NeedKey]int{},
+		}
+		huddles[huddleID] = &sim.Huddle{ID: huddleID, Members: map[sim.ActorID]struct{}{ezekielID: {}, patronID: {}}}
+	}
+	nm := nowMin
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &nm,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           actors,
+		Huddles:          huddles,
+		Structures: map[sim.StructureID]*sim.Structure{
+			tavern: innStructure(tavern, "Tavern"),
+			market: plainStructure(market, "Market"),
+		},
+		LodgingDefaultWeeklyRate: 14, // nightly 2
+		LodgingBedtimeMinute:     22 * 60,
+		LodgingCheckOutMinute:    11 * 60,
+	}
+	return snap, ezekielID
+}
+
+func lodgerRenewalDueInConversation() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, id := lodgerGoldenBase("market", 12*60, true) // on-shift, awake huddle companion
+	return snap, id, nil
+}
+
+func lodgerRenewalDueOnShiftAway() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, id := lodgerGoldenBase("market", 12*60, false) // on-shift, away from inn, alone
+	return snap, id, nil
+}
+
+func lodgerRenewalDueOffShift() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, id := lodgerGoldenBase("market", 20*60, false) // off-shift, away from inn, alone
+	return snap, id, nil
 }
 
 // TestForgeCueOnlyForMultiOutputCrafterAtForge is the LLM-116 cross-scenario
