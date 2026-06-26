@@ -101,9 +101,16 @@ func buildForgeChoice(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 	})
 	view := &ForgeChoiceView{Items: items}
 	// LLM-128: surface an already-set, still-productive focus so the cue can
-	// steer "keep going / done()" instead of "choose". Mirrors the warrant's
-	// productivity test (shouldChooseProduction): a focus at cap is NOT
-	// productive, so it falls through to the choose menu.
+	// steer "keep going / done()" instead of "choose". `items` holds ONLY
+	// recipe-backed makeable goods — the build loop above `continue`s past any
+	// without a positive-rate recipe — so an IsFocus entry HERE is already
+	// makeable; the below-cap check completes the productivity test, matching
+	// shouldChooseProduction's gate (makeable AND below cap) exactly. A
+	// non-makeable focus never gets an item (no IsFocus -> FocusNoun stays "")
+	// and an at-cap focus fails the check, so both fall through to the choose
+	// menu — the same states the production-choice warrant fires on, so the cue
+	// and the warrant can't disagree. Keep them in lockstep: if the build filter
+	// or shouldChooseProduction's productivity gate changes, the other must too.
 	for _, it := range items {
 		if it.IsFocus {
 			if it.Cap <= 0 || it.OnHand < it.Cap {
