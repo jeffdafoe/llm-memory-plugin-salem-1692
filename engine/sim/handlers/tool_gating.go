@@ -42,6 +42,25 @@ var payOfferResponseTools = map[string]struct{}{
 	"counter_pay": {},
 }
 
+// laborResponseTools are the employer-side labor-decision tools advertised ONLY
+// when the actor's perception carries a pending labor offer staked against them
+// (perception.PendingLaborOffers — the standing LaborLedger view). The labor
+// analog of payOfferResponseTools; same advertising-only posture (the tools
+// stay AvailabilityAvailable so a call that arrives is still dispatchable, and
+// sim.AcceptWork/DeclineWork stay authoritative). LLM-26.
+var laborResponseTools = map[string]struct{}{
+	"accept_work":  {},
+	"decline_work": {},
+}
+
+// solicitWorkToolName — the worker's offer-my-labor tool. Advertised ONLY when
+// perception offers it (payload.CanSolicitWork: a free AttrWorker carrier with
+// an audience). Reading the SAME signal the solicit_work affordance cue renders
+// from keeps the tool and its cue from drifting (discussion-109). Also dropped
+// while the actor is walking (walkIncompatibleTools — SolicitWork rejects on
+// MoveIntent != nil). LLM-26.
+const solicitWorkToolName = "solicit_work"
+
 // counterPayToolName is the seller's counter tool — gated more tightly than
 // the rest of the seller-response group (see gateTools / scar #4).
 const counterPayToolName = "counter_pay"
@@ -78,6 +97,7 @@ var walkIncompatibleTools = map[string]struct{}{
 	"offer_trade":   {}, // ZBBS-HOME-407: same substrate as pay_with_item (walk-in-flight reject)
 	"pay":           {}, // LLM-99: bare-coin pay re-registered; same walk-in-flight reject
 	"repair":        {}, // LLM-118: StartRepair rejects on MoveIntent != nil (mend at the stall)
+	"solicit_work":  {}, // LLM-26: SolicitWork rejects on MoveIntent != nil (offer when stationary)
 }
 
 // stopToolName — the voluntary-halt tool (ZBBS-HOME-338). The inverse of the
@@ -256,6 +276,8 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 	flaggedDegenerate := actorIsFlaggedDegenerate(payload.ActorID, snap)
 	offerCraft := payload.ForgeChoice != nil && len(payload.ForgeChoice.Items) > 0
 	offerRepair := payload.StallRepair != nil
+	hasLaborOffer := len(perception.PendingLaborOffers(payload)) > 0
+	canSolicitWork := payload.CanSolicitWork
 
 	// Single pass over the Available set so each gated group is evaluated
 	// against its OWN condition. We deliberately avoid a "pending offer →
@@ -353,6 +375,21 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 				// answered. Drop counter_pay (keep accept_pay / decline_pay).
 				continue
 			}
+		}
+		// solicit_work consumer (LLM-26): advertise only to a free worker with an
+		// audience — the same CanSolicitWork signal the affordance cue renders
+		// from — so the tool and its cue can't drift, and no non-worker ever sees
+		// it.
+		if spec.Name == solicitWorkToolName && !canSolicitWork {
+			continue
+		}
+		// labor-response consumer (LLM-26): advertise accept_work/decline_work
+		// only to an employer with a pending labor offer (PendingLaborOffers, the
+		// same standing view the decision section renders the labor_id from), so
+		// the tools appear exactly when there's an offer to answer and never as
+		// noise + a labor_id-hallucination vector.
+		if _, gated := laborResponseTools[spec.Name]; gated && !hasLaborOffer {
+			continue
 		}
 		out = append(out, spec)
 	}

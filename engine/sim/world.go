@@ -571,6 +571,15 @@ type orderSweepState struct {
 	scheduled bool
 }
 
+// laborLedgerSweepState carries the coalescing flag for the labor-ledger
+// sweep's AfterFunc self-rearm chain (LLM-26). Same shape and rules as
+// payLedgerSweepState — the labor sweep does double duty (expire pending
+// offers AND settle completed work windows) but the scheduling machinery
+// is identical.
+type laborLedgerSweepState struct {
+	scheduled bool
+}
+
 // World is the in-memory state of one realm's simulation. A single
 // goroutine (started by World.Run) owns all mutable fields below — every
 // mutation must go through the cmds channel. Readers consume the published
@@ -619,6 +628,17 @@ type World struct {
 	// became Orders persist separately via OrdersRepo on the shared
 	// pay_ledger table.
 	PayLedger map[LedgerID]*PayLedgerEntry
+
+	// LaborLedger is the world-level flat map of all LaborOffers (LLM-26),
+	// pending and terminal. Keyed by LaborID — the LLM-visible uint64 the
+	// employer references in accept_work / decline_work. Sole source of truth
+	// for the labor offer-side state machine; like PayLedger it has no durable
+	// backing and is intentionally restart-lossy (the same 2026-05-20 call).
+	// NewWorld / LoadWorld start it empty and it stays empty until a worker
+	// solicits — there is no labor table to re-stamp on load. See
+	// labor_ledger.go for the one bounded exception (an in-flight Working
+	// escrow lost to a mid-window restart).
+	LaborLedger map[LaborID]*LaborOffer
 
 	// BusinessownerCooldowns is the per-(speaker, listener, trigger) gap
 	// map used by the businessowner cascade slice to suppress redundant
@@ -835,6 +855,7 @@ type World struct {
 	locomotionTick     locomotionTickerState
 	sceneQuoteSweep    sceneQuoteSweepState
 	payLedgerSweep     payLedgerSweepState
+	laborLedgerSweep   laborLedgerSweepState
 	orderSweep         orderSweepState
 	huddleSilenceSweep huddleSilenceSweepState
 
@@ -857,6 +878,14 @@ type World struct {
 	// World-goroutine-only. Restart-lossy by design (errands are in-memory),
 	// so there is no LoadWorld safety-floor pass — it always starts at 0.
 	errandSeq uint64
+
+	// laborLedgerSeq is the monotonic per-run LaborID counter (LLM-26) — same
+	// shape and rules as payLedgerSeq. Incremented before assignment; first
+	// minted LaborID is 1 (LaborID(0) reserved as the unset sentinel).
+	// World-goroutine-only. Like errandSeq it is restart-lossy by design (the
+	// LaborLedger is in-memory, has no table), so there is no LoadWorld
+	// safety-floor pass — it always starts at 0.
+	laborLedgerSeq uint64
 
 	// suppressArrivalWarrant, when non-nil, is consulted by the locomotion
 	// ticker's finishArrival immediately before it stamps an
@@ -1016,6 +1045,7 @@ func NewWorld(repo Repository) *World {
 		VillageObjects:       make(map[VillageObjectID]*VillageObject),
 		Quotes:               make(map[QuoteID]*SceneQuote),
 		PayLedger:            make(map[LedgerID]*PayLedgerEntry),
+		LaborLedger:          make(map[LaborID]*LaborOffer),
 		Assets:               make(map[AssetID]*Asset),
 		Sprites:              make(map[SpriteID]*Sprite),
 		AttributeDefinitions: make(map[string]*AttributeDefinition),
@@ -1643,6 +1673,7 @@ func (w *World) republish() {
 		VillageObjects:            make(map[VillageObjectID]*VillageObject, len(w.VillageObjects)),
 		Quotes:                    make(map[QuoteID]*SceneQuote, len(w.Quotes)),
 		PayLedger:                 make(map[LedgerID]*PayLedgerEntry, len(w.PayLedger)),
+		LaborLedger:               make(map[LaborID]*LaborOffer, len(w.LaborLedger)),
 		ActionLog:                 CloneActionLog(w.ActionLog),
 		NoticeboardContent:        make(map[VillageObjectID]*NoticeboardContent, len(w.NoticeboardContent)),
 		PriceBook:                 ClonePriceBook(w.PriceBook),
@@ -1743,6 +1774,9 @@ func (w *World) republish() {
 	}
 	for id, e := range w.PayLedger {
 		snap.PayLedger[id] = ClonePayLedgerEntry(e)
+	}
+	for id, o := range w.LaborLedger {
+		snap.LaborLedger[id] = CloneLaborOffer(o)
 	}
 	for id, n := range w.NoticeboardContent {
 		if n == nil {

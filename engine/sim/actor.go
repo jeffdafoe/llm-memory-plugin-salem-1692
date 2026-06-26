@@ -77,8 +77,9 @@ const (
 	StateIdle          ActorState = "idle"
 	StateWalking       ActorState = "walking"
 	StateConversing    ActorState = "conversing"
-	StateWorking       ActorState = "working" // on shift, performing chores at workplace
-	StateResting       ActorState = "resting" // take_break, dwell-credit accumulating
+	StateWorking       ActorState = "working"  // on shift, performing chores at workplace
+	StateLaboring      ActorState = "laboring" // fulfilling an accepted solicit_work commitment (LLM-26)
+	StateResting       ActorState = "resting"  // take_break, dwell-credit accumulating
 	StateSleeping      ActorState = "sleeping"
 	StateShopping      ActorState = "shopping"       // buy_walker active
 	StateInTransaction ActorState = "in_transaction" // pay flow open
@@ -438,6 +439,26 @@ type Actor struct {
 	// Activity windows.
 	BreakUntil    *time.Time
 	SleepingUntil *time.Time
+
+	// LaboringUntil is an accepted labor commitment's completion deadline
+	// (LLM-26): set by AcceptWork to AcceptedAt+DurationMin, cleared when the
+	// completion sweep credits the worker. While set the worker is in
+	// StateLaboring and occupied. The sweep settles strictly off the
+	// LaborOffer in World.LaborLedger; this field is the per-actor mirror that
+	// gates perception and occupancy.
+	//
+	// TRANSIENT — deliberately NOT checkpointed, unlike BreakUntil/
+	// SleepingUntil. Its settlement authority, World.LaborLedger, is itself
+	// in-memory-only and restart-lossy (the sibling PayLedger's accepted
+	// 2026-05-20 design). Persisting this window WITHOUT the ledger would be
+	// the WORK-410 orphan in reverse: a restored StateLaboring actor with no
+	// offer left to settle it, stuck laboring forever. So the two are lost
+	// together — on restart the actor reverts cleanly to idle, and no coins
+	// are stranded (the reward only ever moves at completion, never before).
+	// Cloned in CloneActor regardless: the mem-repo snapshot boundary must
+	// break pointer aliasing for every pointer field, durable or not (cf.
+	// OpenUntil).
+	LaboringUntil *time.Time
 
 	// SourceActivity is an in-flight, timed action AT a village object — eating
 	// or drinking in place at a refresh source, or harvesting a gatherable
@@ -838,7 +859,7 @@ func cloneSummonRefusal(r *SummonRefusal) *SummonRefusal {
 // serialization boundary. Mutated containers (Needs, Inventory,
 // DwellCredits, RoomAccess, ProduceState, Acquaintances, Relationships)
 // and pointer fields commands rebind (BreakUntil, SleepingUntil,
-// LastTickedAt, SocialLastBoundaryAt, Narrative) are cloned.
+// LaboringUntil, LastTickedAt, SocialLastBoundaryAt, Narrative) are cloned.
 // Attributes is
 // deep-cloned including each []byte payload. RecentActions is cloned
 // via RingBuffer.Clone. MoveIntent is deep-cloned via
@@ -880,6 +901,10 @@ func CloneActor(a *Actor) *Actor {
 	if a.SleepingUntil != nil {
 		t := *a.SleepingUntil
 		cp.SleepingUntil = &t
+	}
+	if a.LaboringUntil != nil {
+		t := *a.LaboringUntil
+		cp.LaboringUntil = &t
 	}
 	if a.SourceActivity != nil {
 		// Value struct with no nested pointers — a shallow copy breaks aliasing.

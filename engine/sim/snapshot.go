@@ -48,6 +48,13 @@ type Snapshot struct {
 	// authoritative state lives here). Phase 3 PR S4.
 	PayLedger map[LedgerID]*PayLedgerEntry
 
+	// LaborLedger is the published snapshot of World.LaborLedger — every
+	// labor offer in the world (pending, working, and terminal), deep-cloned
+	// via CloneLaborOffer so snapshot readers can't reach back into world
+	// state. Source of truth for admin/umbilical inspection of the labor
+	// machine; like PayLedger it has no durable projection. LLM-26.
+	LaborLedger map[LaborID]*LaborOffer
+
 	// ActionLog is the published snapshot of World.ActionLog — the
 	// append-only audit trail of committed agent + engine-source
 	// actions, value-copied via CloneActionLog. Consumed by the

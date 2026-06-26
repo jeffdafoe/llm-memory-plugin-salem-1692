@@ -585,15 +585,16 @@ func registerTools(r *handlers.Registry, searcher llm.MemorySearcher) error {
 		{"sell", handlers.RegisterSceneQuote},
 		{"deliver_order", handlers.RegisterDeliverOrder},
 		{"pay_with_item_family", handlers.RegisterPayWithItemFamily},
-		{"offer_trade", handlers.RegisterOfferTrade}, // ZBBS-HOME-407
-		{"take_break", handlers.RegisterTakeBreak},   // ZBBS-HOME-284 #4
-		{"stay_open", handlers.RegisterStayOpen},     // ZBBS-WORK-387
-		{"move_to", handlers.RegisterMoveTo},         // ZBBS-HOME-285
-		{"summon", handlers.RegisterSummon},          // ZBBS-HOME-311
-		{"gather", handlers.RegisterGather},          // ZBBS-WORK-328
-		{"craft", handlers.RegisterCraft},            // LLM-116: crafter picks what to forge next
-		{"repair", handlers.RegisterRepair},          // LLM-118: owner mends their worn market stall
-		{"stop", handlers.RegisterStop},              // ZBBS-HOME-338
+		{"labor_family", handlers.RegisterLaborFamily}, // LLM-26: solicit_work / accept_work / decline_work
+		{"offer_trade", handlers.RegisterOfferTrade},   // ZBBS-HOME-407
+		{"take_break", handlers.RegisterTakeBreak},     // ZBBS-HOME-284 #4
+		{"stay_open", handlers.RegisterStayOpen},       // ZBBS-WORK-387
+		{"move_to", handlers.RegisterMoveTo},           // ZBBS-HOME-285
+		{"summon", handlers.RegisterSummon},            // ZBBS-HOME-311
+		{"gather", handlers.RegisterGather},            // ZBBS-WORK-328
+		{"craft", handlers.RegisterCraft},              // LLM-116: crafter picks what to forge next
+		{"repair", handlers.RegisterRepair},            // LLM-118: owner mends their worn market stall
+		{"stop", handlers.RegisterStop},                // ZBBS-HOME-338
 		// `done` — the universal terminal tool. The NPC's instructions tell it
 		// to end its turn with done, and the v2 harness ends the tick on a
 		// ClassTerminal dispatch (sim.TickStatusDone, see sim/reactor_commands.go).
@@ -638,6 +639,7 @@ func startTickers(ctx context.Context, w *sim.World) {
 	go sim.RunSourceActivityTicker(ctx, w) // LLM-54: completes timed eat/drink/harvest
 	go sim.RunOrderSweep(ctx, w)
 	go sim.RunPayLedgerSweep(ctx, w)
+	go sim.RunLaborLedgerSweep(ctx, w)   // LLM-26: expire pending + settle completed labor offers
 	go sim.RunHuddleSilenceSweep(ctx, w) // ZBBS-HOME-417: conclude dormant huddles
 	go sim.RunRoomSweep(ctx, w)
 	go sim.RunPCPresenceSweep(ctx, w) // ZBBS-WORK-326: reclaim ghost (closed-tab) PCs

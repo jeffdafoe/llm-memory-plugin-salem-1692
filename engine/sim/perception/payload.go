@@ -330,6 +330,29 @@ type Payload struct {
 	// another." nil when no pending offer overlaps an undelivered room.
 	RoomAlreadySoldOrderByLedger map[sim.LedgerID]sim.OrderID
 
+	// LaborOffersForMe lists the still-pending labor offers staked AGAINST the
+	// subject as EMPLOYER (snap.LaborLedger entries where EmployerID == subject
+	// and State == Pending) — the standing decision view that drives the
+	// "## Work offers awaiting your decision" section (renderLaborOffers) and
+	// the accept_work/decline_work tool gate (PendingLaborOffers). Sourced from
+	// snap.LaborLedger every tick, same standing-view posture as PayOffersForMe.
+	// nil when nothing is pending. Ordered by LaborID ascending. LLM-26.
+	LaborOffersForMe []LaborOfferView
+
+	// Laboring is non-nil when the subject is a WORKER currently fulfilling an
+	// accepted job (a Working LaborOffer where WorkerID == subject). It carries
+	// the employer and the completion deadline so the self-state line can say
+	// "you're working for X, about N more minutes." nil when the subject isn't
+	// on a job. LLM-26.
+	Laboring *LaboringView
+
+	// CanSolicitWork is true when the subject is a free worker — carries the
+	// AttrWorker marker, is not currently laboring, and has an audience to
+	// offer to. The standing affordance that renders the solicit_work cue
+	// (renderLaborAffordance) and gates the solicit_work tool; the one signal
+	// drives both so cue and tool can't drift (discussion-109). LLM-26.
+	CanSolicitWork bool
+
 	// LocalDateUTC is midnight UTC of the village's current calendar date,
 	// copied from Snapshot.LocalDateUTC. Render's order-book split
 	// (renderPendingDeliveries*) compares it against each OrderView.ReadyBy so
@@ -600,6 +623,26 @@ type CounterOfferView struct {
 	Qty             int
 	CounterAmount   int
 	CounterPayItems []sim.ItemKindQty
+}
+
+// LaborOfferView is one pending labor offer staked AGAINST the subject as
+// EMPLOYER — a worker offering to do a job for pay (LLM-26). It drives the
+// "## Work offers awaiting your decision" section (renderLaborOffers) and the
+// accept_work/decline_work tool gate (PendingLaborOffers). LaborID is the
+// load-bearing field the employer must echo back into accept_work/decline_work.
+type LaborOfferView struct {
+	LaborID     sim.LaborID
+	Worker      sim.ActorID
+	Reward      int
+	DurationMin int
+	ExpiresAt   time.Time
+}
+
+// LaboringView carries the subject's OWN in-progress job for the self-state
+// line (LLM-26): who they're working for and when the work window completes.
+type LaboringView struct {
+	Employer sim.ActorID
+	Until    time.Time
 }
 
 // OfferableCustomersView is the seller-side "offer your wares" cue's content
