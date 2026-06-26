@@ -1,12 +1,13 @@
 # Your turn
 
 ## What just happened
-1. You have time at your forge — decide what to make next.
+(nothing specific — this is a routine check-in)
 
 
 ## You
 Coins in your purse: 0.
-You are carrying: skillet (x5).
+You are carrying: Skillet (x5).
+You are making Nail.
 
 ## Around you
 You are inside the Blacksmith, with no one else here to hear you speak.
@@ -17,8 +18,6 @@ You keep your trade at the Blacksmith (structure_id: blacksmith) — you can hea
 It is your working hours and you are at your post — stay and look after your work; you close at 6 in the evening. If no one needs you right now, wait here for customers rather than wandering off.
 
 ## At your forge
-You make one thing at a time. Choose what to forge next with craft — you keep making it until you choose again.
-- nail: about 1h each, 0 of 20 on hand, made 0 and sold 0 this past week.
-- skillet: about 3h each, 5 of 5 on hand, made 0 and sold 0 this past week.
+You are crafting nails now — tend your post or call done(). Choose again with craft only if you mean to switch.
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.

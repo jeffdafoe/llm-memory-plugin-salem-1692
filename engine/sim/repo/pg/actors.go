@@ -113,7 +113,8 @@ SELECT
     social_end_minute,
     social_last_boundary_at,
     admin,
-    move_destination
+    move_destination,
+    production_focus
   FROM actor`
 
 // loadAllNeedsSQLA selects every actor_need row. Joined to actors in
@@ -150,7 +151,7 @@ INSERT INTO actor (
     move_attempt_counter, sim_state,
     sprite_id, facing,
     social_tag, social_start_minute, social_end_minute, social_last_boundary_at,
-    snapshot_gen, move_destination
+    snapshot_gen, move_destination, production_focus
 ) VALUES (
     $1, $2, $3, $4,
     $5, $6, $7,
@@ -161,7 +162,7 @@ INSERT INTO actor (
     $19, $20,
     $21, $22,
     $23, $24, $25, $26,
-    $27, $28
+    $27, $28, $29
 )
 ON CONFLICT (id) DO UPDATE SET
     display_name           = EXCLUDED.display_name,
@@ -190,7 +191,8 @@ ON CONFLICT (id) DO UPDATE SET
     social_end_minute      = EXCLUDED.social_end_minute,
     social_last_boundary_at = EXCLUDED.social_last_boundary_at,
     snapshot_gen           = EXCLUDED.snapshot_gen,
-    move_destination       = EXCLUDED.move_destination`
+    move_destination       = EXCLUDED.move_destination,
+    production_focus       = EXCLUDED.production_focus`
 
 // upsertNeedSQLA writes one actor_need row. PK is (actor_id, key)
 // per the table definition — UPSERT inserts new (actor, need)
@@ -547,6 +549,7 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			socialLastBoundaryAt *time.Time
 			isAdmin              bool
 			moveDestination      []byte
+			productionFocus      string
 		)
 		if err := rows.Scan(
 			&id, &displayName, &currentX, &currentY,
@@ -558,7 +561,7 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			&moveAttemptCounter, &simState,
 			&spriteID, &facing,
 			&socialTag, &socialStartMinute, &socialEndMinute, &socialLastBoundaryAt,
-			&isAdmin, &moveDestination,
+			&isAdmin, &moveDestination, &productionFocus,
 		); err != nil {
 			return nil, fmt.Errorf("pg actors LoadAll scan: %w", err)
 		}
@@ -604,6 +607,7 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			SocialEndMin:         derefInt16(socialEndMinute),
 			SocialLastBoundaryAt: socialLastBoundaryAt,
 			IsAdmin:              isAdmin,
+			ProductionFocus:      sim.ItemKind(productionFocus),
 			ResumeDestination:    resumeDest,
 			Needs:                make(map[sim.NeedKey]int),
 			Inventory:            make(map[sim.ItemKind]int),
@@ -1519,6 +1523,7 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 			a.SocialLastBoundaryAt,                  // $26 social_last_boundary_at
 			actorGen,                                // $27 snapshot_gen
 			encodeMoveDestination(a.MoveIntent),     // $28 move_destination
+			string(a.ProductionFocus),               // $29 production_focus
 		); err != nil {
 			return fmt.Errorf("pg actors SaveSnapshot: upsert actor id=%s: %w", a.ID, err)
 		}
