@@ -122,11 +122,13 @@ func TestNeedsTickDwellSkip_PerAttributeGranularity(t *testing.T) {
 	}
 }
 
-// TestNeedsTickDwellSkip_SleepingActorUnaffected: a sleeping actor is
-// filtered at the whole-actor level before the per-need loop runs; the
-// dwell-skip branch never fires. Regression guard so the per-need skip
-// can't accidentally tick a sleeping actor.
-func TestNeedsTickDwellSkip_SleepingActorUnaffected(t *testing.T) {
+// TestNeedsTickDwellSkip_SleepingAccruesHungerThirstOnly: LLM-135 — a sleeping
+// actor now accrues hunger + thirst (so it wakes wanting a meal) while
+// tiredness is held (the sleep loop is recovering it; accruing it here would
+// fight that). The tiredness dwell credit is redundant with the sleeping
+// tiredness skip — included only to confirm the two skips coexist and don't
+// double-count.
+func TestNeedsTickDwellSkip_SleepingAccruesHungerThirstOnly(t *testing.T) {
 	a := agentNPCWithNeeds("n", 5, 5, 5)
 	until := time.Now().UTC().Add(time.Hour)
 	a.SleepingUntil = &until
@@ -136,16 +138,14 @@ func TestNeedsTickDwellSkip_SleepingActorUnaffected(t *testing.T) {
 	if _, err := IncrementNeedsTick(1).Fn(w); err != nil {
 		t.Fatalf("IncrementNeedsTick: %v", err)
 	}
-	// All needs unchanged because the whole-actor sleeping filter ran
-	// before the per-need loop.
-	if got := a.Needs["hunger"]; got != 5 {
-		t.Errorf("hunger = %d, want 5 (sleeping actor)", got)
+	if got := a.Needs["hunger"]; got != 6 {
+		t.Errorf("hunger = %d, want 6 (accrues during sleep)", got)
 	}
-	if got := a.Needs["thirst"]; got != 5 {
-		t.Errorf("thirst = %d, want 5 (sleeping actor)", got)
+	if got := a.Needs["thirst"]; got != 6 {
+		t.Errorf("thirst = %d, want 6 (accrues during sleep)", got)
 	}
 	if got := a.Needs["tiredness"]; got != 5 {
-		t.Errorf("tiredness = %d, want 5 (sleeping actor)", got)
+		t.Errorf("tiredness = %d, want 5 (held — recovered by the sleep loop)", got)
 	}
 }
 
