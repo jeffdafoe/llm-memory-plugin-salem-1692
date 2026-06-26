@@ -1789,7 +1789,9 @@ func _on_agents_loaded(result: int, response_code: int, headers: PackedStringArr
     # The owner dropdown lists every actor (by GUID), sorted by display name —
     # ownership is a per-actor owner_actor_id, so any actor is a valid owner. LLM-122.
     actor_list = actor_names.keys()
-    actor_list.sort_custom(func(a, b): return actor_names[a].naturalnocasecmp_to(actor_names[b]) < 0)
+    # str()-wrap defends the comparator against any non-String value sneaking into
+    # actor_names (display names are Strings today; this stays robust if that changes).
+    actor_list.sort_custom(func(a, b): return str(actor_names.get(a, a)).naturalnocasecmp_to(str(actor_names.get(b, b))) < 0)
 
 ## Set the owner of an object and persist to the server.
 func set_object_owner(node: Node2D, owner: String) -> void:
