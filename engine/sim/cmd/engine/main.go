@@ -583,6 +583,7 @@ func registerTools(r *handlers.Registry, searcher llm.MemorySearcher) error {
 		{"summon", handlers.RegisterSummon},          // ZBBS-HOME-311
 		{"gather", handlers.RegisterGather},          // ZBBS-WORK-328
 		{"craft", handlers.RegisterCraft},            // LLM-116: crafter picks what to forge next
+		{"repair", handlers.RegisterRepair},          // LLM-118: owner mends their worn market stall
 		{"stop", handlers.RegisterStop},              // ZBBS-HOME-338
 		// `done` — the universal terminal tool. The NPC's instructions tell it
 		// to end its turn with done, and the v2 harness ends the tick on a

@@ -116,20 +116,20 @@ func TestVillageObjectsRepo_LoadAll_HappyPath(t *testing.T) {
 	rows := pgxmock.NewRows([]string{
 		"id", "asset_id", "current_state", "x", "y", "placed_by",
 		"display_name", "entry_policy", "owner_actor_id", "attached_to",
-		"loiter_offset_x", "loiter_offset_y", "available_quantity", "tags",
+		"loiter_offset_x", "loiter_offset_y", "available_quantity", "tags", "wear",
 	}).
-		// Top-level placement, owned, with loiter offsets, tags.
+		// Top-level placement, owned, with loiter offsets, tags, worn.
 		AddRow(uuidObj1, sp(uuidAssetWell), "default", 640.0, 320.0, sp("admin"),
 			sp("Old Well"), "closed", &ownerStr, (*string)(nil),
-			&loiterX, &loiterY, 10, []string{"vendor", "well"}).
+			&loiterX, &loiterY, 10, []string{"vendor", "well"}, 120).
 		// Top-level placement, unowned, no loiter, empty tags.
 		AddRow(uuidObj2, sp(uuidAssetBench), "variant-1", 1000.0, 500.0, sp(""),
 			sp(""), "open", (*string)(nil), (*string)(nil),
-			(*int)(nil), (*int)(nil), 0, []string{}).
+			(*int)(nil), (*int)(nil), 0, []string{}, 0).
 		// Overlay attached to obj-1, owner-only, no tags.
 		AddRow(uuidObj3, sp(uuidAssetLamp), "lit", 645.0, 325.0, sp("admin"),
 			sp("Lamp"), "owner-only", &ownerStr, &parentRef,
-			(*int)(nil), (*int)(nil), 0, []string{})
+			(*int)(nil), (*int)(nil), 0, []string{}, 0)
 
 	mock.ExpectQuery(`SELECT[\s\S]+FROM village_object`).WillReturnRows(rows)
 	mock.ExpectQuery(`SELECT[\s\S]+FROM object_refresh`).WillReturnRows(emptyRefreshRows())
@@ -166,6 +166,9 @@ func TestVillageObjectsRepo_LoadAll_HappyPath(t *testing.T) {
 	}
 	if len(o1.Tags) != 2 {
 		t.Errorf("o1.Tags = %v, want 2 entries", o1.Tags)
+	}
+	if o1.Wear != 120 {
+		t.Errorf("o1.Wear = %d, want 120", o1.Wear)
 	}
 	if o1.Refreshes != nil {
 		t.Errorf("o1.Refreshes = %v, want nil (this test's fixture has no refresh rows)", o1.Refreshes)
@@ -206,7 +209,7 @@ func TestVillageObjectsRepo_LoadAll_Empty(t *testing.T) {
 	rows := pgxmock.NewRows([]string{
 		"id", "asset_id", "current_state", "x", "y", "placed_by",
 		"display_name", "entry_policy", "owner_actor_id", "attached_to",
-		"loiter_offset_x", "loiter_offset_y", "available_quantity", "tags",
+		"loiter_offset_x", "loiter_offset_y", "available_quantity", "tags", "wear",
 	})
 	mock.ExpectQuery(`SELECT[\s\S]+FROM village_object`).WillReturnRows(rows)
 	mock.ExpectQuery(`SELECT[\s\S]+FROM object_refresh`).WillReturnRows(emptyRefreshRows())
@@ -246,7 +249,7 @@ func TestVillageObjectsRepo_SaveSnapshot_HappyPath(t *testing.T) {
 		WithArgs(
 			uuidObj1, uuidAssetWell, "default", 640.0, 320.0, "admin",
 			"Old Well", "closed", "alice", nil,
-			(*int)(nil), (*int)(nil), 0, []string{"vendor"}, int64(5),
+			(*int)(nil), (*int)(nil), 0, []string{"vendor"}, 120, int64(5),
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 
@@ -254,7 +257,7 @@ func TestVillageObjectsRepo_SaveSnapshot_HappyPath(t *testing.T) {
 		WithArgs(
 			uuidObj2, uuidAssetBench, "variant-1", 1000.0, 500.0, "", "",
 			"open", nil, nil,
-			(*int)(nil), (*int)(nil), 0, []string{}, int64(5),
+			(*int)(nil), (*int)(nil), 0, []string{}, 0, int64(5),
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 
@@ -289,6 +292,7 @@ func TestVillageObjectsRepo_SaveSnapshot_HappyPath(t *testing.T) {
 			EntryPolicy:  sim.EntryPolicyClosed,
 			OwnerActorID: "alice",
 			Tags:         []string{"vendor"},
+			Wear:         120,
 		},
 		sim.VillageObjectID(uuidObj2): {
 			ID:           sim.VillageObjectID(uuidObj2),
@@ -435,7 +439,7 @@ func TestVillageObjectsRepo_SaveSnapshot_OrphanCheckViolation(t *testing.T) {
 		WithArgs(
 			uuidObj1, uuidAssetWell, "default", 0.0, 0.0, "", "",
 			"open", nil, nil,
-			(*int)(nil), (*int)(nil), 0, []string{}, int64(3),
+			(*int)(nil), (*int)(nil), 0, []string{}, 0, int64(3),
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 
@@ -473,7 +477,7 @@ func TestVillageObjectsRepo_SaveSnapshot_OwnerNullVsValue(t *testing.T) {
 		WithArgs(
 			uuidOverlay, uuidAssetLamp, "lit", 100.0, 100.0, "",
 			"", "open", "alice", uuidObj1,
-			(*int)(nil), (*int)(nil), 0, []string{}, int64(2),
+			(*int)(nil), (*int)(nil), 0, []string{}, 0, int64(2),
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 
@@ -512,14 +516,14 @@ func TestVillageObjectsRepo_LoadAll_WithRefreshes(t *testing.T) {
 	parentRows := pgxmock.NewRows([]string{
 		"id", "asset_id", "current_state", "x", "y", "placed_by",
 		"display_name", "entry_policy", "owner_actor_id", "attached_to",
-		"loiter_offset_x", "loiter_offset_y", "available_quantity", "tags",
+		"loiter_offset_x", "loiter_offset_y", "available_quantity", "tags", "wear",
 	}).
 		AddRow(uuidObj1, sp(uuidAssetWell), "default", 640.0, 320.0, sp(""),
 			sp("Well"), "open", (*string)(nil), (*string)(nil),
-			(*int)(nil), (*int)(nil), 0, []string{}).
+			(*int)(nil), (*int)(nil), 0, []string{}, 0).
 		AddRow(uuidObj2, sp(uuidAssetBench), "default", 0.0, 0.0, sp(""),
 			sp("Shaded Oak"), "open", (*string)(nil), (*string)(nil),
-			(*int)(nil), (*int)(nil), 0, []string{})
+			(*int)(nil), (*int)(nil), 0, []string{}, 0)
 	mock.ExpectQuery(`SELECT[\s\S]+FROM village_object`).WillReturnRows(parentRows)
 
 	// obj1: well with finite-supply continuous regen on thirst.
@@ -637,10 +641,10 @@ func TestVillageObjectsRepo_LoadAll_RefreshOrphanSkipped(t *testing.T) {
 	parentRows := pgxmock.NewRows([]string{
 		"id", "asset_id", "current_state", "x", "y", "placed_by",
 		"display_name", "entry_policy", "owner_actor_id", "attached_to",
-		"loiter_offset_x", "loiter_offset_y", "available_quantity", "tags",
+		"loiter_offset_x", "loiter_offset_y", "available_quantity", "tags", "wear",
 	}).AddRow(uuidObj1, sp(uuidAssetWell), "default", 0.0, 0.0, sp(""),
 		sp("Well"), "open", (*string)(nil), (*string)(nil),
-		(*int)(nil), (*int)(nil), 0, []string{})
+		(*int)(nil), (*int)(nil), 0, []string{}, 0)
 	mock.ExpectQuery(`SELECT[\s\S]+FROM village_object`).WillReturnRows(parentRows)
 
 	// Two refresh rows: one for the real parent, one orphan.
@@ -686,10 +690,10 @@ func TestVillageObjectsRepo_LoadAll_RefreshQueryError(t *testing.T) {
 	parentRows := pgxmock.NewRows([]string{
 		"id", "asset_id", "current_state", "x", "y", "placed_by",
 		"display_name", "entry_policy", "owner_actor_id", "attached_to",
-		"loiter_offset_x", "loiter_offset_y", "available_quantity", "tags",
+		"loiter_offset_x", "loiter_offset_y", "available_quantity", "tags", "wear",
 	}).AddRow(uuidObj1, sp(uuidAssetWell), "default", 0.0, 0.0, sp(""),
 		sp(""), "open", (*string)(nil), (*string)(nil),
-		(*int)(nil), (*int)(nil), 0, []string{})
+		(*int)(nil), (*int)(nil), 0, []string{}, 0)
 	mock.ExpectQuery(`SELECT[\s\S]+FROM village_object`).WillReturnRows(parentRows)
 	mock.ExpectQuery(`SELECT[\s\S]+FROM object_refresh`).
 		WillReturnError(errors.New("conn closed"))
@@ -717,7 +721,7 @@ func TestVillageObjectsRepo_SaveSnapshot_WithRefreshes(t *testing.T) {
 		WithArgs(
 			uuidObj1, uuidAssetWell, "default", 0.0, 0.0, "", "",
 			"open", nil, nil,
-			(*int)(nil), (*int)(nil), 0, []string{}, int64(9),
+			(*int)(nil), (*int)(nil), 0, []string{}, 0, int64(9),
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 
@@ -821,7 +825,7 @@ func TestVillageObjectsRepo_SaveSnapshot_NilRefreshSkipped(t *testing.T) {
 		WithArgs(
 			uuidObj1, uuidAssetWell, "", 0.0, 0.0, "", "",
 			"open", nil, nil,
-			(*int)(nil), (*int)(nil), 0, []string{}, int64(4),
+			(*int)(nil), (*int)(nil), 0, []string{}, 0, int64(4),
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM village_object stale`).
@@ -861,7 +865,7 @@ func TestVillageObjectsRepo_SaveSnapshot_RefreshNextvalError(t *testing.T) {
 		WithArgs(
 			uuidObj1, uuidAssetWell, "", 0.0, 0.0, "", "",
 			"", nil, nil,
-			(*int)(nil), (*int)(nil), 0, []string{}, int64(1),
+			(*int)(nil), (*int)(nil), 0, []string{}, 0, int64(1),
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM village_object stale`).
@@ -892,7 +896,7 @@ func TestVillageObjectsRepo_SaveSnapshot_RefreshUpsertError(t *testing.T) {
 		WithArgs(
 			uuidObj1, uuidAssetWell, "", 0.0, 0.0, "", "",
 			"open", nil, nil,
-			(*int)(nil), (*int)(nil), 0, []string{}, int64(1),
+			(*int)(nil), (*int)(nil), 0, []string{}, 0, int64(1),
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM village_object stale`).

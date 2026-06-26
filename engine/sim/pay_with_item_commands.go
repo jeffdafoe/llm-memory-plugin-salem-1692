@@ -916,6 +916,13 @@ func runPayWithItemFastPath(
 			seller.DisplayName,
 		)
 	}
+	// LLM-118: a seller whose stall is in disrepair can't trade until it's mended.
+	if sellerStallDegraded(w, sellerID) {
+		return nil, fmt.Errorf(
+			"%s's stall is in disrepair — they can't trade until it's mended.",
+			seller.DisplayName,
+		)
+	}
 	// Stock reservation accounting (PR S6 R1): accepted-but-not-yet-delivered
 	// Orders keep goods in the seller's inventory, so subtract
 	// outstandingReadyOrderQty before comparing against need — otherwise two
@@ -1225,6 +1232,13 @@ func acceptPendingOffer(w *World, seller *Actor, entry *PayLedgerEntry, at time.
 	// Gate 7: seller break (simple-strict, ledger-substrate § 11).
 	if seller.BreakUntil != nil && seller.BreakUntil.After(at) {
 		return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedUnavailable, "", at), nil
+	}
+
+	// Gate 7b (LLM-118): a degraded stall is closed for trade — fail the accept
+	// with a buyer-facing reason until the owner mends it.
+	if sellerStallDegraded(w, seller.ID) {
+		return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedUnavailable,
+			fmt.Sprintf("%s's stall is in disrepair — they can't trade until it's mended.", seller.DisplayName), at), nil
 	}
 
 	// Gate 8: ItemKind catalog still has this kind.
@@ -2265,6 +2279,9 @@ func commitPayTransfer(
 	// guarded by caller.
 	buyer.Coins -= entry.Amount
 	seller.Coins += entry.Amount
+	// LLM-118: a market stall wears in proportion to the coin its owner takes
+	// in here; crossing the repair threshold wakes them to mend it.
+	accrueStallWear(w, seller, entry.Amount, at)
 	for _, m := range moves {
 		if m.buyerPostQty == 0 {
 			delete(buyer.Inventory, m.kind) // delete-on-zero invariant

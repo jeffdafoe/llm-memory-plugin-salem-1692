@@ -63,6 +63,68 @@ func validZoomFloor(v float64) bool {
 	return !math.IsNaN(v) && !math.IsInf(v, 0) && v > 0
 }
 
+// ErrInvalidStallWearSetting is returned by SetStallWearSettings when no knob is
+// provided, or a provided value is negative (→ 400 at the umbilical route).
+var ErrInvalidStallWearSetting = errors.New("invalid stall wear setting")
+
+// StallWearSettingsResult echoes the post-change stall wear knobs.
+type StallWearSettingsResult struct {
+	StallWearPerCoin           int
+	StallWearRepairThreshold   int
+	StallWearDegradeThreshold  int
+	StallNailsPerRepair        int
+	StallRepairDurationSeconds int
+}
+
+// SetStallWearSettings returns a Command that live-tunes the LLM-118 stall wear
+// knobs. Each is independently optional (nil = leave that knob unchanged) so the
+// operator can nudge one or several; at least one must be present, and a provided
+// value must be >= 0 (StallWearPerCoin==0 disables wear; a 0 threshold disables
+// that transition). Durability rides the periodic checkpoint (MutableWorldSettings
+// → SaveMutableSettings), so a live change survives restart.
+func SetStallWearSettings(perCoin, repairThreshold, degradeThreshold, nailsPerRepair, durationSeconds *int) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			knobs := []*int{perCoin, repairThreshold, degradeThreshold, nailsPerRepair, durationSeconds}
+			hasOne := false
+			for _, p := range knobs {
+				if p == nil {
+					continue
+				}
+				if *p < 0 {
+					return nil, ErrInvalidStallWearSetting
+				}
+				hasOne = true
+			}
+			if !hasOne {
+				return nil, ErrInvalidStallWearSetting
+			}
+			if perCoin != nil {
+				w.Settings.StallWearPerCoin = *perCoin
+			}
+			if repairThreshold != nil {
+				w.Settings.StallWearRepairThreshold = *repairThreshold
+			}
+			if degradeThreshold != nil {
+				w.Settings.StallWearDegradeThreshold = *degradeThreshold
+			}
+			if nailsPerRepair != nil {
+				w.Settings.StallNailsPerRepair = *nailsPerRepair
+			}
+			if durationSeconds != nil {
+				w.Settings.StallRepairDurationSeconds = *durationSeconds
+			}
+			return StallWearSettingsResult{
+				StallWearPerCoin:           w.Settings.StallWearPerCoin,
+				StallWearRepairThreshold:   w.Settings.StallWearRepairThreshold,
+				StallWearDegradeThreshold:  w.Settings.StallWearDegradeThreshold,
+				StallNailsPerRepair:        w.Settings.StallNailsPerRepair,
+				StallRepairDurationSeconds: w.Settings.StallRepairDurationSeconds,
+			}, nil
+		},
+	}
+}
+
 // SetAgentTicksPausedResult echoes the post-change pause state.
 type SetAgentTicksPausedResult struct {
 	Paused bool

@@ -1,0 +1,191 @@
+package sim
+
+import "time"
+
+// stall_wear.go — LLM-118. Wooden market stalls accrue Wear as they do
+// business and must be repaired (consuming nails) before they degrade and
+// close for trade. This file holds the domain defaults + helpers; the accrual
+// seam is commitPayTransfer (pay_with_item_commands.go), the warrant is
+// WarrantKindStallRepair (reactor.go), the repair action rides the
+// SourceActivity substrate, and the perception cues live under perception/.
+
+// Default WorldSettings knobs for stall wear. Guesstimates, tuned live via the
+// umbilical. With WearPerCoin=1 a busy stall (~300-400 coins/day) reaches worn
+// (~400) in ~1 day and degraded (~600) in ~1.5 days if ignored; a slow stall
+// (~50 coins/day) effectively never needs repair.
+const (
+	DefaultStallWearPerCoin           = 1
+	DefaultStallWearRepairThreshold   = 400
+	DefaultStallWearDegradeThreshold  = 600
+	DefaultStallNailsPerRepair        = 5
+	DefaultStallRepairDurationSeconds = 90
+)
+
+// TagMarketStall scopes the wear/repair economy to market-stall instances. An
+// operator opts an object in by tagging it (umbilical /object/add-tag); a stall
+// only wears once it ALSO carries an owner (the owner is who perceives the need
+// and performs the repair). Tag-scoped rather than asset-name-matched so the
+// engine carries no catalog string and an operator can add/remove a stall from
+// the economy live.
+const TagMarketStall = "market_stall"
+
+// NailItemKind is the canonical item a repair consumes — the smith's nail
+// (seeded in the item catalog; produced by Ezekiel, LLM-116). Bought from the
+// smith and spent mending a stall: the demand half of the nail loop.
+const NailItemKind ItemKind = "nail"
+
+// IsWearableStall reports whether obj is an owned market stall — the scope gate
+// for all wear accrual, the repair tool, and the degrade block. Nil-safe.
+func IsWearableStall(obj *VillageObject) bool {
+	return obj != nil && obj.OwnerActorID != "" && obj.HasTag(TagMarketStall)
+}
+
+// OwnedWearableStall returns the market stall owned by sellerID, or nil when the
+// seller owns none. Takes the object map so it serves both the live World
+// (w.VillageObjects) and a perception Snapshot (snap.VillageObjects). A vendor
+// owns at most one stall by data convention; the first match wins.
+func OwnedWearableStall(objects map[VillageObjectID]*VillageObject, sellerID ActorID) *VillageObject {
+	if sellerID == "" {
+		return nil
+	}
+	for _, obj := range objects {
+		if obj.OwnerActorID == sellerID && IsWearableStall(obj) {
+			return obj
+		}
+	}
+	return nil
+}
+
+// StallNeedsRepair reports whether a wearable stall has worn to or past the
+// repair threshold. A non-positive threshold disables the transition.
+func StallNeedsRepair(obj *VillageObject, repairThreshold int) bool {
+	return IsWearableStall(obj) && repairThreshold > 0 && obj.Wear >= repairThreshold
+}
+
+// StallDegraded reports whether a wearable stall has worn to or past the degrade
+// threshold — the point at which it closes for trade until mended. A
+// non-positive threshold disables the transition (never degrades).
+func StallDegraded(obj *VillageObject, degradeThreshold int) bool {
+	return IsWearableStall(obj) && degradeThreshold > 0 && obj.Wear >= degradeThreshold
+}
+
+// sellerStallDegraded reports whether the seller owns a market stall worn past
+// the degrade threshold — closed for trade until mended (LLM-118). The
+// sale-blocking gate at quote-post, fast-path take, and slow accept. nil-safe: a
+// seller who owns no stall is never degraded.
+func sellerStallDegraded(w *World, sellerID ActorID) bool {
+	if w == nil {
+		return false
+	}
+	return StallDegraded(OwnedWearableStall(w.VillageObjects, sellerID), w.Settings.StallWearDegradeThreshold)
+}
+
+// StallRepairWarrantReason is stamped on a stall owner when their stall's wear
+// crosses the repair threshold (edge-triggered at the accrual in
+// commitPayTransfer). StallID is the worn stall — carried for telemetry / admin
+// replay and so the cue can name the precise object; the deliberation reads the
+// live stall + the owner's nail count from perception. DedupDiscriminator
+// returns 0: a wear-threshold crossing is a state condition, not an event, so it
+// bypasses the substrate's source-key dedup paths — mirrors
+// NeedThresholdWarrantReason. The crossing is self-limiting (it fires only on
+// the before<threshold && after>=threshold transition), and repair resets wear
+// to 0, which re-arms it.
+type StallRepairWarrantReason struct {
+	StallID VillageObjectID
+}
+
+func (StallRepairWarrantReason) isWarrantReason()           {}
+func (StallRepairWarrantReason) Kind() WarrantKind          { return WarrantKindStallRepair }
+func (StallRepairWarrantReason) DedupDiscriminator() uint64 { return 0 }
+
+// accrueStallWear adds usage-weighted wear to the seller's owned stall on a
+// completed sale and, on the upward crossing of the repair threshold, wakes the
+// owner to mend it. Called from commitPayTransfer — the single coin-transfer
+// chokepoint — so every accepted sale (slow accept, fast quote-take, bundle,
+// eat-here) accrues. A seller who owns no market stall, a zero amount, or
+// StallWearPerCoin==0 is a no-op (idle stalls never wear; the off-switch
+// disables the feature entirely).
+//
+// The warrant is edge-triggered: stamped only on the before<threshold &&
+// after>=threshold transition, so a stall already past the threshold doesn't
+// re-stamp every sale. Repair resets Wear to 0, which re-arms the edge. The
+// standing arrival cue (perception) keeps reminding the owner after the one-shot
+// warrant is consumed, so an ignored warrant doesn't go silent.
+func accrueStallWear(w *World, seller *Actor, amount int, at time.Time) {
+	if w == nil || seller == nil || amount <= 0 || w.Settings.StallWearPerCoin <= 0 {
+		return
+	}
+	stall := OwnedWearableStall(w.VillageObjects, seller.ID)
+	if stall == nil {
+		return
+	}
+	before := stall.Wear
+	stall.Wear += amount * w.Settings.StallWearPerCoin
+
+	threshold := w.Settings.StallWearRepairThreshold
+	if threshold > 0 && before < threshold && stall.Wear >= threshold {
+		tryStampWarrant(w, seller, WarrantMeta{
+			TriggerActorID: seller.ID,
+			Reason:         StallRepairWarrantReason{StallID: stall.ID},
+		}, at)
+	}
+}
+
+// StallConditionNarrated is a WIRE-ONLY event (no engine subscriber) carrying the
+// PC talk-box atmosphere line for arriving at a worn market stall (LLM-118) — the
+// player's twin of the co-present NPC perception cue (StallConditionView).
+// emitStallConditionNarration emits it only when a PC arrives at a worn stall;
+// TranslateEvent maps it to a PRIVATE room_event the talk panel renders as a
+// second-person narration line addressed to that PC (no speaker), the same
+// carrier sleep / lodging narrations use.
+type StallConditionNarrated struct {
+	EventBase
+	ActorID     ActorID
+	StructureID StructureID
+	Text        string
+	At          time.Time
+}
+
+func (StallConditionNarrated) isSimEvent() {}
+
+// arrivalStall resolves the worn-or-not market stall a just-arrived actor landed
+// at — the arrival's destination object, else the stall whose loiter pin the
+// actor now stands at — or nil when they didn't arrive at a wearable stall.
+func arrivalStall(w *World, actor *Actor, arrivedEvt *ActorArrived) *VillageObject {
+	if arrivedEvt != nil && arrivedEvt.DestObjectID != "" {
+		if o := w.VillageObjects[arrivedEvt.DestObjectID]; IsWearableStall(o) {
+			return o
+		}
+	}
+	if objID, ok := resolveLoiteringObject(w, actor.Pos, LoiterAttributionTiles); ok {
+		if o := w.VillageObjects[objID]; IsWearableStall(o) {
+			return o
+		}
+	}
+	return nil
+}
+
+// emitStallConditionNarration surfaces a worn market stall to a PC who just walked
+// up to it, as a private talk-box atmosphere line (LLM-118). PC-only: NPCs get the
+// pull-side perception cue (StallConditionView) instead. Fires once per arrival (a
+// discrete event), so it can't spam; a fresh wear state is reflected each time the
+// player returns.
+func emitStallConditionNarration(w *World, actor *Actor, arrivedEvt *ActorArrived, now time.Time) {
+	if actor == nil || actor.Kind != KindPC {
+		return
+	}
+	stall := arrivalStall(w, actor, arrivedEvt)
+	if !StallNeedsRepair(stall, w.Settings.StallWearRepairThreshold) {
+		return
+	}
+	text := "The market stall here looks worn, its boards loosened by hard use."
+	if StallDegraded(stall, w.Settings.StallWearDegradeThreshold) {
+		text = "The market stall here is battered and clearly unfit for trade — its boards hang loose."
+	}
+	w.emit(&StallConditionNarrated{
+		ActorID:     actor.ID,
+		StructureID: conversationalScopeStructure(w, actor),
+		Text:        text,
+		At:          now,
+	})
+}

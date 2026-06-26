@@ -249,6 +249,8 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderSatiation(&ephemeral, p.Satiation)
 	renderProductionInputs(&ephemeral, p.ProductionInputs)
 	renderForgeChoice(&ephemeral, p.ForgeChoice)
+	renderStallRepair(&ephemeral, p.StallRepair)
+	renderStallCondition(&ephemeral, p.StallCondition)
 	renderRestocking(&ephemeral, p.Restocking)
 	renderForage(&ephemeral, p.Forage)
 	renderLodging(&ephemeral, p.Lodging)
@@ -688,8 +690,11 @@ func renderInFlightMove(m InFlightMoveView) string {
 // activity: "gathering" for a harvest, and eat/drink/rest for a refresh keyed on
 // the eased need (falling back to "busy" for an unknown attribute). LLM-69.
 func sourceActivityVerb(v InFlightSourceActivityView) string {
-	if v.Kind == sim.SourceActivityHarvest {
+	switch v.Kind {
+	case sim.SourceActivityHarvest:
 		return "gathering"
+	case sim.SourceActivityRepair:
+		return "mending"
 	}
 	switch v.Attribute {
 	case "hunger":
@@ -722,8 +727,11 @@ func sourceActivityPhrase(v InFlightSourceActivityView) string {
 // that abandons the pick (LLM-69). The caller prepends "You are ".
 func renderInFlightSourceActivity(v InFlightSourceActivityView) string {
 	tail := "if you walk off now you won't finish"
-	if v.Kind == sim.SourceActivityHarvest {
+	switch v.Kind {
+	case sim.SourceActivityHarvest:
 		tail = "if you walk off now you abandon the pick and gather nothing"
+	case sim.SourceActivityRepair:
+		tail = "if you walk off now the mending is unfinished and the stall stays worn"
 	}
 	return fmt.Sprintf("%s — stay where you are; %s", sourceActivityPhrase(v), tail)
 }
@@ -2040,6 +2048,11 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 		// forge" cue carries the options + the craft tool; this line is just the
 		// "why you ticked" beat, like the idle-backstop / need-nudge lines.
 		return fmt.Sprintf("%d. You have time at your forge — decide what to make next.\n", n), false
+	case sim.StallRepairWarrantReason:
+		// LLM-118: the stall just wore through the repair threshold. At the stall
+		// the "## Your stall" cue carries the nail count + buy-from-the-smith
+		// steer; this is the wake-from-anywhere nudge to go tend it.
+		return fmt.Sprintf("%d. Your market stall has worn from use and needs mending — go to it and repair it (you'll need nails; the smith sells them).\n", n), false
 	default:
 		return renderBasicWarrantLine(n, w.Kind(), nameOf(w.TriggerActorID)), false
 	}

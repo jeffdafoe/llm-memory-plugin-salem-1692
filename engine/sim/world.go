@@ -129,6 +129,22 @@ type WorldSettings struct {
 	// restock producer and the "## Restocking" perception gate.
 	RestockReorderPct int
 
+	// Stall wear & repair (LLM-118). A wooden market stall accrues Wear in
+	// proportion to the coin it turns over (StallWearPerCoin × sale amount,
+	// accrued at commitPayTransfer to the seller's owned stall). Crossing
+	// StallWearRepairThreshold stamps a repair warrant; crossing
+	// StallWearDegradeThreshold closes the stall for trade until mended. A
+	// repair consumes StallNailsPerRepair nails and runs a SourceActivity
+	// window of StallRepairDurationSeconds, then resets Wear to 0. All five are
+	// live-tunable (umbilical) — the defaults are guesstimates calibrated
+	// against the smith's nail output. StallWearPerCoin==0 disables wear
+	// entirely (the per-feature off-switch posture).
+	StallWearPerCoin           int
+	StallWearRepairThreshold   int
+	StallWearDegradeThreshold  int
+	StallNailsPerRepair        int
+	StallRepairDurationSeconds int
+
 	// Reactor evaluator tunables (Phase 2 PR 2). Settings-driven gross
 	// gates — no per-call cost calculation; llm-memory-api's per-VA dollar
 	// budgets (MEM-052) own the hard $ ceiling.
@@ -1613,6 +1629,9 @@ func (w *World) republish() {
 		LodgingBedtimeMinute:      lodgerBedtimeMinute(w),
 		LodgingCheckOutMinute:     w.Settings.LodgingCheckOutHour * 60,
 		RestockReorderPct:         w.Settings.RestockReorderPct,
+		StallWearRepairThreshold:  w.Settings.StallWearRepairThreshold,
+		StallWearDegradeThreshold: w.Settings.StallWearDegradeThreshold,
+		StallNailsPerRepair:       w.Settings.StallNailsPerRepair,
 		DefaultOutdoorSceneRadius: w.Settings.DefaultOutdoorSceneRadius,
 		Assets:                    w.Assets,
 		ZoomMinAdmin:              w.Settings.ZoomMinAdmin,
