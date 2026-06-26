@@ -9,7 +9,7 @@ import (
 
 // consolidation.go — per-relationship salient-fact consolidation
 // substrate (Phase 3 PR C1). The sweep worker that drives this lives
-// off-world in engine/sim/handlers/consolidation.go because it issues
+// off-world in engine/sim/cascade/consolidation.go because it issues
 // LLM calls; this file is sim-package primitives only.
 //
 // Mechanism (mirrors v1 engine/actor_narrative_consolidate.go):
@@ -20,7 +20,7 @@ import (
 //      display names) so the off-world worker can build the prompt
 //      without coming back to the world goroutine.
 //
-//   2. Worker (handlers/) calls the LLM with the prompt, receives a
+//   2. Worker (cascade/) calls the LLM with the prompt, receives a
 //      new SummaryText.
 //
 //   3. ApplyConsolidation runs back on the world goroutine: verify
@@ -48,9 +48,10 @@ import (
 // Relationships populated by RecordInteraction (gated there). The
 // scan filter on Kind here is belt-and-braces — even if a stateful
 // actor somehow has a Relationship row, we skip them. Per-actor
-// narrative consolidation (v1 Phase 4 — rewrite NarrativeState.
-// EvolvingSummary from agent_action_log) is deferred to a follow-up
-// PR; v2 doesn't have agent_action_log yet.
+// narrative consolidation (rewrite NarrativeState.EvolvingSummary from
+// the actor's recent World.ActionLog + per-peer SummaryText impressions)
+// is the sibling slice — narrative_consolidation.go (primitives) +
+// cascade/narrative_consolidation.go (worker), Phase 3 PR C2.
 
 // ConsolidationCeiling is the high-water-mark fact count that forces
 // a mid-cycle consolidation pass even if the daily floor hasn't
