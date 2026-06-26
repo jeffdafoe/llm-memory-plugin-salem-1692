@@ -1,6 +1,7 @@
 package sim
 
 import (
+	"math"
 	"testing"
 	"time"
 )
@@ -89,6 +90,64 @@ func TestAccrueStallWear_NoOps(t *testing.T) {
 	accrueStallWear(w3, owner3, 100, now)
 	if stall3.Wear != 100 {
 		t.Errorf("untagged stall should not wear: Wear=%d", stall3.Wear)
+	}
+}
+
+func TestAccrueStallWear_Saturates(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	// An add that would exceed int range saturates at MaxInt rather than wrapping
+	// negative (which could lower Wear or un-degrade a stall).
+	w, owner, stall := stallTestWorld(1, 400, 600, math.MaxInt-5)
+	accrueStallWear(w, owner, 100, now) // (MaxInt-5) + 100 overflows int
+	if stall.Wear != math.MaxInt {
+		t.Errorf("Wear = %d, want saturated math.MaxInt (no negative wrap)", stall.Wear)
+	}
+}
+
+func TestStallRepairable_DegradedDeBricks(t *testing.T) {
+	// Misconfiguration: degrade (100) below repair (400). A stall at wear 150 is
+	// degraded (sales blocked) but not "worn" to the repair line — StallRepairable
+	// must still report it mendable so a bad config can't brick it.
+	stall := &VillageObject{ID: "s", OwnerActorID: "ezekiel", Tags: []string{TagMarketStall}, Wear: 150}
+	if StallNeedsRepair(stall, 400) {
+		t.Fatal("precondition: wear 150 is not 'worn' at repair threshold 400")
+	}
+	if !StallDegraded(stall, 100) {
+		t.Fatal("precondition: wear 150 IS degraded at degrade threshold 100")
+	}
+	if !StallRepairable(stall, 400, 100) {
+		t.Error("a degraded stall must be repairable even when degrade < repair (de-brick)")
+	}
+}
+
+func TestSetStallWearSettings_Validation(t *testing.T) {
+	ip := func(v int) *int { return &v }
+	world := func() *World {
+		return &World{Settings: WorldSettings{StallWearRepairThreshold: 400, StallWearDegradeThreshold: 600}}
+	}
+	bad := []struct {
+		name                                      string
+		perCoin, repair, degrade, nails, duration *int
+	}{
+		{"none provided", nil, nil, nil, nil, nil},
+		{"negative perCoin", ip(-1), nil, nil, nil, nil},
+		{"zero nails", nil, nil, nil, ip(0), nil},
+		{"zero duration", nil, nil, nil, nil, ip(0)},
+		{"degrade below repair", nil, ip(500), ip(400), nil, nil},
+		{"degrade on, repair disabled", nil, ip(0), ip(400), nil, nil},
+		{"partial degrade below current repair", nil, nil, ip(300), nil, nil},
+	}
+	for _, c := range bad {
+		if _, err := SetStallWearSettings(c.perCoin, c.repair, c.degrade, c.nails, c.duration).Fn(world()); err == nil {
+			t.Errorf("%s: expected rejection, got nil", c.name)
+		}
+	}
+	w := world()
+	if _, err := SetStallWearSettings(ip(2), ip(300), ip(900), ip(7), ip(120)).Fn(w); err != nil {
+		t.Fatalf("valid change rejected: %v", err)
+	}
+	if w.Settings.StallWearPerCoin != 2 || w.Settings.StallWearDegradeThreshold != 900 {
+		t.Errorf("settings not applied: %+v", w.Settings)
 	}
 }
 

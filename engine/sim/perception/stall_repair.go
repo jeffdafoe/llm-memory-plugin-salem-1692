@@ -39,8 +39,8 @@ func buildStallRepair(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 	if actorSnap.Pos.Chebyshev(objectLoiterPin(stall)) > sim.LoiterAttributionTiles {
 		return nil // not standing at the stall
 	}
-	if !sim.StallNeedsRepair(stall, snap.StallWearRepairThreshold) {
-		return nil // not worn enough to bother
+	if !sim.StallRepairable(stall, snap.StallWearRepairThreshold, snap.StallWearDegradeThreshold) {
+		return nil // not worn enough to bother (degraded counts — a bad threshold config can't hide the cue)
 	}
 	needed := snap.StallNailsPerRepair
 	held := actorSnap.Inventory[sim.NailItemKind]

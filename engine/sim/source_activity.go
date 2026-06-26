@@ -342,15 +342,20 @@ func StartRepair(actorID ActorID) Command {
 					"you are already busy — finish what you're doing before mending the stall.",
 				)
 			}
-			objID, atPin := resolveLoiteringObject(w, actor.Pos, LoiterAttributionTiles)
-			if !atPin {
-				return nil, errors.New("walk to your stall before mending it.")
-			}
-			stall := w.VillageObjects[objID]
-			if stall == nil || stall.OwnerActorID != actorID || !IsWearableStall(stall) {
+			// Resolve the actor's OWN stall first, then check they stand at it —
+			// the same order perception's buildStallRepair uses to advertise the
+			// tool. Resolving "some loitering object" first would diverge from the
+			// cue when objects share a loiter pin (advertised, then rejected here).
+			stall := OwnedWearableStall(w.VillageObjects, actorID)
+			if stall == nil {
 				return nil, errors.New("there's no stall of yours to mend here.")
 			}
-			if !StallNeedsRepair(stall, w.Settings.StallWearRepairThreshold) {
+			pin, ok := effectiveObjectLoiterTile(w, stall.ID)
+			if !ok || actor.Pos.Chebyshev(pin) > LoiterAttributionTiles {
+				return nil, errors.New("walk to your stall before mending it.")
+			}
+			objID := stall.ID
+			if !StallRepairable(stall, w.Settings.StallWearRepairThreshold, w.Settings.StallWearDegradeThreshold) {
 				return nil, errors.New("your stall doesn't need mending yet.")
 			}
 			need := w.Settings.StallNailsPerRepair

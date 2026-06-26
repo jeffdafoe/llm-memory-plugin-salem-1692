@@ -152,9 +152,12 @@ const craftToolName = "craft"
 // repairToolName — the stall owner's "mend your worn market stall" tool (LLM-118).
 // Advertised ONLY when the "## Your stall" cue is present (payload.StallRepair
 // non-nil), which itself fires only when the owner stands at their own stall and
-// it has worn to the repair threshold. Reading the SAME signal the cue renders
-// from keeps the tool and its cue in lockstep (the discussion-109 invariant); the
-// sim.StartRepair Command stays the authoritative gate for any call that arrives.
+// it is mendable (worn to the repair threshold, or degraded). Reading the SAME
+// signal the cue renders from keeps the tool and its cue in lockstep (the
+// discussion-109 invariant). Deliberately NOT gated on carrying enough nails: the
+// affordance stays visible so the model knows mending is the way out, the cue
+// steers buy-then-mend when short, and StartRepair errors helpfully if called
+// without nails. The sim.StartRepair Command stays the authoritative gate.
 const repairToolName = "repair"
 
 // actorIsMoving reports whether the subject has an in-flight move at snapshot

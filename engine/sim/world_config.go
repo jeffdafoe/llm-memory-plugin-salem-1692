@@ -64,7 +64,9 @@ func validZoomFloor(v float64) bool {
 }
 
 // ErrInvalidStallWearSetting is returned by SetStallWearSettings when no knob is
-// provided, or a provided value is negative (→ 400 at the umbilical route).
+// provided, a value is out of range (a negative perCoin/threshold, a non-positive
+// nails/duration), or the resulting thresholds contradict (degrade below an
+// enabled repair) — all → 400 at the umbilical route.
 var ErrInvalidStallWearSetting = errors.New("invalid stall wear setting")
 
 // StallWearSettingsResult echoes the post-change stall wear knobs.
@@ -78,25 +80,58 @@ type StallWearSettingsResult struct {
 
 // SetStallWearSettings returns a Command that live-tunes the LLM-118 stall wear
 // knobs. Each is independently optional (nil = leave that knob unchanged) so the
-// operator can nudge one or several; at least one must be present, and a provided
-// value must be >= 0 (StallWearPerCoin==0 disables wear; a 0 threshold disables
-// that transition). Durability rides the periodic checkpoint (MutableWorldSettings
+// operator can nudge one or several; at least one must be present. Range rules:
+// perCoin and the two thresholds must be >= 0 (StallWearPerCoin==0 disables wear,
+// a 0 threshold disables that transition); nails-per-repair and duration must be
+// > 0; and an enabled degrade threshold must be >= an enabled repair threshold
+// (checked against the resulting live values) so a stall can't degrade before it
+// can be repaired. Durability rides the periodic checkpoint (MutableWorldSettings
 // → SaveMutableSettings), so a live change survives restart.
 func SetStallWearSettings(perCoin, repairThreshold, degradeThreshold, nailsPerRepair, durationSeconds *int) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
-			knobs := []*int{perCoin, repairThreshold, degradeThreshold, nailsPerRepair, durationSeconds}
+			// Per-knob validation. perCoin and the two thresholds may be 0 (0
+			// disables wear / that transition); nails and duration must be positive
+			// (a free or instant repair is not a meaningful mode). At least one knob
+			// must be present.
+			// MaxInt32 upper bound keeps any knob × a sale amount (also bounded by
+			// MaxPayWithItemAmount) well inside int64, so wear accrual can't overflow.
 			hasOne := false
-			for _, p := range knobs {
-				if p == nil {
-					continue
+			for _, p := range []*int{perCoin, repairThreshold, degradeThreshold} {
+				if p != nil {
+					hasOne = true
+					if *p < 0 || *p > math.MaxInt32 {
+						return nil, ErrInvalidStallWearSetting
+					}
 				}
-				if *p < 0 {
-					return nil, ErrInvalidStallWearSetting
+			}
+			for _, p := range []*int{nailsPerRepair, durationSeconds} {
+				if p != nil {
+					hasOne = true
+					if *p <= 0 || *p > math.MaxInt32 {
+						return nil, ErrInvalidStallWearSetting
+					}
 				}
-				hasOne = true
 			}
 			if !hasOne {
+				return nil, ErrInvalidStallWearSetting
+			}
+			// Threshold relationship, checked against the RESULTING live values (a
+			// partial update is validated against the other threshold's current
+			// value): an enabled degrade threshold must sit at or above an enabled
+			// repair threshold, else a stall could degrade — and block its own
+			// sales — before it ever reaches the wear level that lets it be repaired.
+			// (StallRepairable de-bricks at runtime regardless; this stops the
+			// operator setting a self-contradicting config in the first place.)
+			resulting := func(p *int, cur int) int {
+				if p != nil {
+					return *p
+				}
+				return cur
+			}
+			newRepair := resulting(repairThreshold, w.Settings.StallWearRepairThreshold)
+			newDegrade := resulting(degradeThreshold, w.Settings.StallWearDegradeThreshold)
+			if newDegrade > 0 && (newRepair == 0 || newRepair > newDegrade) {
 				return nil, ErrInvalidStallWearSetting
 			}
 			if perCoin != nil {

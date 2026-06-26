@@ -1,6 +1,9 @@
 package sim
 
-import "time"
+import (
+	"math"
+	"time"
+)
 
 // stall_wear.go — LLM-118. Wooden market stalls accrue Wear as they do
 // business and must be repaired (consuming nails) before they degrade and
@@ -69,6 +72,18 @@ func StallDegraded(obj *VillageObject, degradeThreshold int) bool {
 	return IsWearableStall(obj) && degradeThreshold > 0 && obj.Wear >= degradeThreshold
 }
 
+// StallRepairable reports whether a wearable stall is in a state its owner can
+// (and should) mend — worn to the repair threshold OR already degraded. The
+// OR-degraded clause guards against a threshold MISCONFIGURATION (degrade set
+// below repair, or repair disabled while degrade is on): a degraded stall is
+// always repairable, even if it never crossed the repair line, so a bad config
+// can't brick a stall (degraded → sales blocked → wear can never climb to the
+// repair threshold). The repair tool, its cue, and the StartRepair gate all key
+// off this so the cue and the command can't drift.
+func StallRepairable(obj *VillageObject, repairThreshold, degradeThreshold int) bool {
+	return StallNeedsRepair(obj, repairThreshold) || StallDegraded(obj, degradeThreshold)
+}
+
 // sellerStallDegraded reports whether the seller owns a market stall worn past
 // the degrade threshold — closed for trade until mended (LLM-118). The
 // sale-blocking gate at quote-post, fast-path take, and slow accept. nil-safe: a
@@ -120,7 +135,21 @@ func accrueStallWear(w *World, seller *Actor, amount int, at time.Time) {
 		return
 	}
 	before := stall.Wear
-	stall.Wear += amount * w.Settings.StallWearPerCoin
+	// int64 saturating add: a large sale amount × StallWearPerCoin (or accrual
+	// over a long-lived stall) must never wrap an int negative — that could lower
+	// Wear, skip a threshold, or silently un-degrade a stall across a checkpoint.
+	delta := int64(amount) * int64(w.Settings.StallWearPerCoin)
+	if delta <= 0 {
+		return // 0 (guarded above) or an overflowed product — nothing safe to add
+	}
+	// Saturate (don't wrap) if the add would exceed int range. Headroom is
+	// computed as MaxInt − Wear (Wear >= 0, so this never overflows int64), which
+	// keeps the comparison correct even for an absurdly large existing Wear.
+	if delta > int64(math.MaxInt)-int64(stall.Wear) {
+		stall.Wear = math.MaxInt
+	} else {
+		stall.Wear = int(int64(stall.Wear) + delta)
+	}
 
 	threshold := w.Settings.StallWearRepairThreshold
 	if threshold > 0 && before < threshold && stall.Wear >= threshold {
@@ -171,7 +200,7 @@ func arrivalStall(w *World, actor *Actor, arrivedEvt *ActorArrived) *VillageObje
 // discrete event), so it can't spam; a fresh wear state is reflected each time the
 // player returns.
 func emitStallConditionNarration(w *World, actor *Actor, arrivedEvt *ActorArrived, now time.Time) {
-	if actor == nil || actor.Kind != KindPC {
+	if w == nil || actor == nil || actor.Kind != KindPC {
 		return
 	}
 	stall := arrivalStall(w, actor, arrivedEvt)
