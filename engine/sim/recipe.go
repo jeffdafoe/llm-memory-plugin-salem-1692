@@ -118,3 +118,22 @@ func (p *RestockPolicy) ForageEntries() []RestockEntry {
 	}
 	return out
 }
+
+// Manages reports whether this item kind is one of the actor's trade goods —
+// something the role produces, buys, or forages per its restock manifest, as
+// opposed to personal provisions it merely carries. Any restock source counts
+// (a `buy` entry covers a recipe input like a tavernkeeper's stew carrots, not
+// just a sellable output). Used to demote a producer's own merchandise out of
+// its personal "consume to eat" cue below the desperation tier (LLM-134).
+// Nil-safe — an actor with no policy manages nothing.
+func (p *RestockPolicy) Manages(kind ItemKind) bool {
+	if p == nil {
+		return false
+	}
+	for _, e := range p.Restock {
+		if e.Item == kind {
+			return true
+		}
+	}
+	return false
+}

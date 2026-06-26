@@ -144,6 +144,22 @@ type SatiationVendor struct {
 	EatHere bool
 }
 
+// personalOwnStock returns only the own-stock items that are NOT the actor's
+// trade goods — its personal provisions. Used to demote a producer's own
+// merchandise/ingredients out of the eat cue below the desperation tier
+// (LLM-134). Returns nil when nothing personal remains, so the caller's
+// empty-section gate omits the cue rather than rendering an empty line.
+func personalOwnStock(items []OwnStockItem) []OwnStockItem {
+	var out []OwnStockItem
+	for _, it := range items {
+		if it.TradeStock {
+			continue
+		}
+		out = append(out, it)
+	}
+	return out
+}
+
 // buildSatiation builds the eat/drink view for actorSnap, or nil when no
 // consumable need is felt or no satisfier exists. Pure over the snapshot.
 func buildSatiation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSnapshot) *SatiationView {
@@ -161,10 +177,25 @@ func buildSatiation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Acto
 		// Ezekiel well-blind cycle, ZBBS-WORK-414). If a need is felt, its options
 		// ride along; below the silent floor it isn't aware of the need, so the
 		// section stays closed — and the felt line is silent there too.
-		if sim.NeedLabelTier(actorSnap.Needs[need], snap.NeedThresholds.Get(need)) == sim.NeedSilent {
+		tier := sim.NeedLabelTier(actorSnap.Needs[need], snap.NeedThresholds.Get(need))
+		if tier == sim.NeedSilent {
 			continue
 		}
 		own := gatherOwnStock(snap, actorSnap, need)
+		// Demote the actor's own TRADE stock to a desperation-only option
+		// (LLM-134). The own-stock cue exists so a hungry actor eats what it
+		// carries rather than starving en route to a shop (ZBBS-123), but it
+		// can't tell personal provisions from the merchandise/ingredients the
+		// actor produces or buys to sell — so a producer was nudged to graze its
+		// own goods (Moses eating his farm carrots, Elizabeth her cheese). Below
+		// the red/distress tier we drop the actor's own trade-manifest items from
+		// the eat cue, steering it to a real meal / vendor / forage; at red-or-
+		// worse (about to starve, nothing else) the trade stock returns as the
+		// last resort the cue was built to be. Personal food (not in the manifest)
+		// always rides at the felt floor.
+		if tier < sim.NeedRed {
+			own = personalOwnStock(own)
+		}
 		peers := gatherCoPresentPeerOffers(snap, actorID, actorSnap, need)
 		free := gatherFreeSatiationSources(snap, actorID, actorSnap, need)
 		vendors := gatherSatiationVendors(snap, actorID, actorSnap, need)

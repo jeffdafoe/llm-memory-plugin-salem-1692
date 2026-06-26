@@ -143,6 +143,14 @@ type OwnStockItem struct {
 	Label     string // "coca tea"
 	Magnitude int    // immediate need eased per unit
 
+	// TradeStock is true when this satisfier is one of the actor's own trade
+	// goods (in its RestockPolicy) — merchandise/ingredients it produces, buys,
+	// or forages, not personal provisions. The satiation own-stock cue uses it
+	// to demote trade stock to a desperation-only option (LLM-134) so a producer
+	// isn't nudged to graze the goods it sells. The recovery-options tiredness
+	// caller ignores the flag.
+	TradeStock bool
+
 	// kind is the final sort tie-break so two item kinds that share a display
 	// label AND magnitude order deterministically (Inventory is a map).
 	// Unexported — never rendered.
@@ -165,7 +173,12 @@ func gatherOwnStock(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, need sim.N
 		if mag <= 0 {
 			continue
 		}
-		out = append(out, OwnStockItem{Label: itemDisplayLabel(snap, kind), Magnitude: mag, kind: kind})
+		out = append(out, OwnStockItem{
+			Label:      itemDisplayLabel(snap, kind),
+			Magnitude:  mag,
+			TradeStock: actorSnap.RestockPolicy.Manages(kind),
+			kind:       kind,
+		})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Magnitude != out[j].Magnitude {

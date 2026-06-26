@@ -876,3 +876,73 @@ func TestFeltAmountWithSufficiency_UnsupportedNeedStaysBare(t *testing.T) {
 		t.Errorf("unsupported need = %q, want bare tier %q", got, "a thorough waking")
 	}
 }
+
+// LLM-134: below the red/distress tier, a producer's own TRADE stock (items in
+// its RestockPolicy) is dropped from the eat cue so it isn't nudged to graze the
+// goods it sells; personal food it carries still surfaces. John produces stew;
+// the bread is personal provisions.
+func TestBuildSatiation_OwnTradeStockDemotedBelowRed(t *testing.T) {
+	subj := &sim.ActorSnapshot{
+		// Mild hunger: felt (>= needSilentFloor) but below the red threshold (18).
+		Needs:         map[sim.NeedKey]int{"hunger": 14},
+		Inventory:     map[sim.ItemKind]int{"stew": 5, "bread": 2},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{{Item: "stew", Source: sim.RestockSourceProduce, Max: 30}}},
+	}
+	snap := &sim.Snapshot{
+		Actors:    map[sim.ActorID]*sim.ActorSnapshot{"john": subj},
+		ItemKinds: foodDrinkCatalog(),
+	}
+	v := buildSatiation(snap, "john", subj)
+	if v == nil || len(v.Needs) != 1 {
+		t.Fatalf("want 1 pressing need, got %+v", v)
+	}
+	own := v.Needs[0].OwnStock
+	if len(own) != 1 || own[0].Label != "bread" {
+		t.Fatalf("want only personal bread (own stew demoted below red), got %+v", own)
+	}
+}
+
+// LLM-134: at the red/distress tier the producer's own trade stock returns to
+// the eat cue — the desperation last resort the own-stock line was built to be.
+func TestBuildSatiation_OwnTradeStockReturnsAtRed(t *testing.T) {
+	subj := &sim.ActorSnapshot{
+		Needs:         map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold}, // 18 — red
+		Inventory:     map[sim.ItemKind]int{"stew": 5, "bread": 2},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{{Item: "stew", Source: sim.RestockSourceProduce, Max: 30}}},
+	}
+	snap := &sim.Snapshot{
+		Actors:    map[sim.ActorID]*sim.ActorSnapshot{"john": subj},
+		ItemKinds: foodDrinkCatalog(),
+	}
+	v := buildSatiation(snap, "john", subj)
+	if v == nil || len(v.Needs) != 1 {
+		t.Fatalf("want 1 pressing need, got %+v", v)
+	}
+	own := v.Needs[0].OwnStock
+	// Both present, strongest-first: stew (12) before bread (6).
+	if len(own) != 2 || own[0].Label != "stew" || own[1].Label != "bread" {
+		t.Fatalf("want stew + bread at red (trade stock returns), got %+v", own)
+	}
+	if !own[0].TradeStock || own[1].TradeStock {
+		t.Errorf("TradeStock flags wrong (stew=trade, bread=personal): %+v", own)
+	}
+}
+
+// LLM-134 guard: an actor with NO restock manifest manages nothing, so all the
+// food it carries is personal and surfaces at the felt floor exactly as before —
+// the demotion only touches a producer's own trade goods.
+func TestBuildSatiation_NonProducerStockNotDemoted(t *testing.T) {
+	subj := &sim.ActorSnapshot{
+		Needs:     map[sim.NeedKey]int{"hunger": 14}, // mild
+		Inventory: map[sim.ItemKind]int{"stew": 5, "bread": 2},
+		// No RestockPolicy — a customer carrying provisions, not a vendor.
+	}
+	snap := &sim.Snapshot{
+		Actors:    map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj},
+		ItemKinds: foodDrinkCatalog(),
+	}
+	v := buildSatiation(snap, "ezekiel", subj)
+	if v == nil || len(v.Needs) != 1 || len(v.Needs[0].OwnStock) != 2 {
+		t.Fatalf("want both items for a non-producer at mild hunger, got %+v", v)
+	}
+}
