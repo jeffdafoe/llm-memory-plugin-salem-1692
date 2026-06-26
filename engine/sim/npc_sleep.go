@@ -132,6 +132,28 @@ func isActorOnShift(a *Actor, nowMinute int) bool {
 	return nowMinute >= start || nowMinute < end
 }
 
+// actorOnShift is the worker-aware shift check (LLM-137). It matches
+// isActorOnShift except that an unscheduled WORKER (AttrWorker) falls back to
+// the world dawn/dusk day window — the same "decision B / day-active" notion
+// shift_duty already uses via effectiveShiftWindow — instead of
+// always-off-when-unscheduled. So an activated worker with no explicit schedule
+// is day-active: out earning during the day and bedded only at night, rather
+// than sleep-darted at home the moment it arrives back mid-afternoon. An
+// explicit schedule still governs; every non-worker unscheduled actor stays
+// always-off (home is its default resting state, HOME-204). Needs w for the
+// world dawn/dusk settings (every call site passes a live world).
+func actorOnShift(w *World, a *Actor, nowMinute int) bool {
+	if a.ScheduleStartMin != nil && a.ScheduleEndMin != nil {
+		return isActorOnShift(a, nowMinute)
+	}
+	if actorIsWorker(a) {
+		if start, end, ok := effectiveShiftWindow(w, a); ok {
+			return minuteInShiftWindow(start, end, nowMinute)
+		}
+	}
+	return false
+}
+
 // localMinuteOfDay converts an instant to minute-of-day in the world timezone.
 // Falls back to UTC when settings haven't loaded a Location yet.
 func localMinuteOfDay(w *World, at time.Time) int {
@@ -148,9 +170,11 @@ func localMinuteOfDay(w *World, at time.Time) int {
 // lodger resting relationships (ZBBS-HOME-296 2c). Both require off-shift; the
 // difference is which shift notion governs:
 //
-//   - Home: a is inside its HomeStructureID. Off-shift via isActorOnShift, where
-//     an unscheduled NPC is always off-shift — home is the default resting state
-//     (HOME-204), so a homed NPC beds on any off-shift arrival. Unchanged.
+//   - Home: a is inside its HomeStructureID. Off-shift via actorOnShift: an
+//     unscheduled NPC is always off-shift — home is the default resting state
+//     (HOME-204), so a homed NPC beds on any off-shift arrival — EXCEPT an
+//     unscheduled worker (AttrWorker), which actorOnShift makes day-active on
+//     the dawn/dusk window, so it beds only at night (LLM-137).
 //   - Lodger: a is not home-matched but holds an active ledger RoomAccess for
 //     its current structure (actorIsLodgerAt). Bedded only INSIDE the lodger
 //     night window ([LodgingBedtimeHour, DawnTime) — see lodgerNightWindow), NOT
@@ -167,7 +191,7 @@ func npcSleepHere(w *World, a *Actor, now time.Time) bool {
 	}
 	nowMinute := localMinuteOfDay(w, now)
 	if a.HomeStructureID != "" && a.InsideStructureID == a.HomeStructureID {
-		return !isActorOnShift(a, nowMinute)
+		return !actorOnShift(w, a, nowMinute)
 	}
 	if actorIsLodgerAt(w, a, a.InsideStructureID, now) {
 		start, end, ok := lodgerNightWindow(w)
@@ -554,21 +578,21 @@ func WakeExpiredNPCSleepers(now time.Time) Command {
 					woken++
 					continue
 				}
-				// Morning wake. A current lodger (no HomeStructureID AND an active
-				// ledger grant at its structure) wakes when the lodger night window
-				// closes at dawn — symmetric with the bedtime gate it was bedded by
-				// (npcSleepHere reads the same lodgerNightWindow), so the two never
-				// thrash. Rather than isActorOnShift's always-off-when-unscheduled
-				// (which would strand a lodger asleep until the 12h cap), the lodger
-				// leaves sleep the moment it is OUT of [LodgingBedtimeHour,
-				// DawnTime). The lodger relationship is checked EXPLICITLY rather
-				// than inferred from no-home: any other no-home sleeper (debug
-				// tooling, a future HOME-300 shade-tree rester, a backfill) keeps
-				// the default cap-only wake, so the wake condition never outruns the
-				// bed condition. Homed NPCs are unchanged (the night window is
-				// lodger-only, ZBBS-HOME-296 2c).
-				wake := isActorOnShift(a, nowMinute)
-				if a.HomeStructureID == "" && actorIsLodgerAt(w, a, a.InsideStructureID, now) {
+				// Morning wake mirrors the bedding precedence in npcSleepHere so the
+				// two never thrash. An actor sleeping AT its home wakes via
+				// actorOnShift — so a homed worker wakes at dawn (its day-shift
+				// start), symmetric with the dawn/dusk bedding gate, instead of
+				// being stranded to the 12h cap (LLM-137). An actor sleeping
+				// somewhere that is NOT its home but where it holds an active ledger
+				// grant (actorIsLodgerAt) wakes when the lodger night window closes
+				// at dawn — the same window it was bedded by. The discriminator is
+				// the RELATIONSHIP (not-at-home + lodger), not "no HomeStructureID":
+				// a homed NPC lodging elsewhere is bedded by the lodger rule, so it
+				// must wake by it too. Any other sleeper (debug tooling, a future
+				// HOME-300 shade-tree rester, a backfill) keeps the default cap-only
+				// wake, so the wake condition never outruns the bed condition.
+				wake := actorOnShift(w, a, nowMinute)
+				if a.HomeStructureID != a.InsideStructureID && actorIsLodgerAt(w, a, a.InsideStructureID, now) {
 					start, end, ok := lodgerNightWindow(w)
 					wake = ok && !minuteInShiftWindow(start, end, nowMinute)
 				}

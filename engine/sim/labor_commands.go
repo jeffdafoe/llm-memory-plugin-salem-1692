@@ -92,7 +92,7 @@ func SolicitWork(workerID ActorID, employerName string, reward int, durationMin 
 			// solicit_work to AttrWorker carriers; re-checked here because
 			// SolicitWork is exported and tool/test/cascade callers reach the
 			// substrate directly.
-			if _, isWorker := worker.Attributes[AttrWorker]; !isWorker {
+			if !actorIsWorker(worker) {
 				return nil, errors.New(
 					"you aren't taken on as a worker — only villagers minded up as workers can offer their labor for pay.",
 				)

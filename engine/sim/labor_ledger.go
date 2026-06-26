@@ -110,6 +110,19 @@ const (
 // re-checks it as defense-in-depth for non-handler callers.
 const AttrWorker = "worker"
 
+// actorIsWorker reports whether the actor carries the AttrWorker marker. The
+// attribute is presence-only, so existence of the key in a.Attributes is the
+// grant. Shared by the labor command gate (SolicitWork) and the worker-aware
+// shift check (actorOnShift) that gives an unscheduled worker a default
+// dawn/dusk day shift (LLM-137).
+func actorIsWorker(a *Actor) bool {
+	if a == nil || a.Attributes == nil {
+		return false
+	}
+	_, ok := a.Attributes[AttrWorker]
+	return ok
+}
+
 const (
 	// LaborLedgerTTLDefault — how long a solicited offer stays Pending
 	// before the aging sweep flips it Expired. No WorldSettings override is
