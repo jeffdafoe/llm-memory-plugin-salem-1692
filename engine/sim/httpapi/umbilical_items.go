@@ -57,11 +57,15 @@ type UmbilicalItemsDTO struct {
 // itemRowDTO builds the wire row from a catalog def.
 func itemRowDTO(def *sim.ItemKindDef) umbilicalItemDTO {
 	out := umbilicalItemDTO{
-		Name:         string(def.Name),
-		Label:        def.DisplayLabel,
-		Category:     string(def.Category),
-		SortOrder:    def.SortOrder,
-		Capabilities: def.Capabilities,
+		Name:      string(def.Name),
+		Label:     def.DisplayLabel,
+		Category:  string(def.Category),
+		SortOrder: def.SortOrder,
+		// Deep-copy so the DTO retains no alias into World.ItemKinds — JSON
+		// encoding runs after SendContext returns (off the world goroutine), so
+		// an aliased slice could race a concurrent catalog writer. Same rationale
+		// as the Satisfies copy below. nil in → nil out (omitempty drops it).
+		Capabilities: append([]string(nil), def.Capabilities...),
 		EatHereOnly:  def.EatHereOnly(),
 		Satisfies:    make([]umbilicalSatisfactionDTO, 0, len(def.Satisfies)),
 	}
