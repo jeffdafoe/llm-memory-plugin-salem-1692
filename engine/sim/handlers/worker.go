@@ -42,7 +42,7 @@ func (p *TickWorkerPool) worker(ctx context.Context) {
 // exercises the lifecycle without a real perception/LLM turn. PR 3c/3d
 // swap in the real runner; runJob itself does not change.
 func (p *TickWorkerPool) runJob(ctx context.Context, job tickJob) {
-	p.writeTelemetry(job, telemetryStarted, nil)
+	p.writeTelemetry(job, telemetryStarted, startedDetail(job))
 
 	result := p.runner.RunTick(ctx, p.world, job)
 
@@ -74,6 +74,31 @@ func (p *TickWorkerPool) runJob(ctx context.Context, job tickJob) {
 		kind = telemetryFailed
 	}
 	p.writeTelemetry(job, kind, harnessResultDetail(result))
+}
+
+// startedDetail builds the redacted Detail for a tick's "started" telemetry
+// record from the consumed warrant batch on job. It records warrant_kinds —
+// the comma-joined, deduped kinds that drove this dispatch — so a later
+// stale/before_render completion (which carries no warrant info of its own)
+// can be joined to its started record by attempt_id to identify the producer
+// that re-warranted the actor. Warrant kinds are registry enum labels (like
+// tool names), not model text, so they satisfy the redacted-Detail contract.
+// Returns nil for an empty batch to keep records sparse.
+func startedDetail(job tickJob) map[string]string {
+	if len(job.warrants) == 0 {
+		return nil
+	}
+	kinds := make([]string, 0, len(job.warrants))
+	seen := make(map[sim.WarrantKind]bool, len(job.warrants))
+	for _, m := range job.warrants {
+		k := m.Kind()
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		kinds = append(kinds, string(k))
+	}
+	return map[string]string{"warrant_kinds": strings.Join(kinds, ",")}
 }
 
 // harnessResultDetail flattens the PR 3d harness's diagnostic fields on

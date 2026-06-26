@@ -98,6 +98,33 @@ func TestWorkerStaleCompletionTelemetry(t *testing.T) {
 	})
 }
 
+// TestStartedDetailWarrantKinds: the started record carries the deduped,
+// comma-joined warrant kinds that drove the dispatch (LLM-133), and stays
+// sparse (nil) for an empty batch.
+func TestStartedDetailWarrantKinds(t *testing.T) {
+	if d := startedDetail(tickJob{}); d != nil {
+		t.Fatalf("empty warrant batch: want nil detail, got %v", d)
+	}
+
+	job := tickJob{warrants: []sim.WarrantMeta{
+		{Reason: sim.IdleBackstopWarrantReason{}},
+		{Reason: sim.ArrivalWarrantReason{}},
+		{Reason: sim.IdleBackstopWarrantReason{}},
+	}}
+	got := startedDetail(job)["warrant_kinds"]
+	if want := "idle_backstop,arrived"; got != want {
+		t.Fatalf("warrant_kinds: want %q, got %q", want, got)
+	}
+
+	// A nil/missing Reason resolves to WarrantKindUnknown (m.Kind() is
+	// nil-safe), and duplicate unknowns collapse to a single label.
+	unknownJob := tickJob{warrants: []sim.WarrantMeta{{}, {Reason: nil}}}
+	gotUnknown := startedDetail(unknownJob)["warrant_kinds"]
+	if want := string(sim.WarrantKindUnknown); gotUnknown != want {
+		t.Fatalf("nil/empty warrant reason: want %q, got %q", want, gotUnknown)
+	}
+}
+
 // TestStubRunnerCompletesTickEndToEnd drives the whole PR 3b pipeline with
 // the real NewTickWorkerPool (stub runner): the evaluator admits → the
 // subscriber enqueues → a worker runs the stub → CompleteReactorTick clears
