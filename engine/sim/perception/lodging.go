@@ -398,8 +398,10 @@ func lodgingAffordabilityCue(v *LodgingView) string {
 	}
 	// LLM-136: don't steer a coin-short lodger only toward earning coins — the
 	// room can be paid in goods. Name the direct barter (offer_trade) alongside
-	// the earn-coins fallback so a producer can renew with its wares.
-	return fmt.Sprintf("You have only %d coins — short of the %d for another night. Offer your wares for the room directly with offer_trade, or earn coins, before your room lapses.",
+	// the earn-coins fallback so a producer can renew with its wares. Phrased
+	// conditionally ("if you have wares") — LodgingView carries no inventory, so
+	// an empty-handed lodger mustn't be told to offer goods it doesn't have.
+	return fmt.Sprintf("You have only %d coins — short of the %d for another night. If you have wares to spare, offer them for the room directly with offer_trade; otherwise earn coins before your room lapses.",
 		v.Coins, v.NightlyRate)
 }
 
@@ -571,7 +573,7 @@ func renderLodgingOffer(b *strings.Builder, v *LodgingOfferView) {
 	// here keeps the keeper from dead-ending such a guest on coins it doesn't
 	// have — the offer travels the existing barter flow (offer_trade → the
 	// keeper's standing accept_pay/counter_pay decision on the pending offer).
-	fmt.Fprintf(b, "%s %s here with you and %s nowhere to stay. If they want a room, offer it — call sell with item \"nights_stay\", consume_now false, qty set to the number of nights, and amount set to nights × %d coins (your nightly rate). A room is for the one guest, so leave consumers empty; use target_buyer only if you know the guest's name, otherwise leave it empty and anyone here may take the offer. They are then free to take it or leave it. If a guest has no coins, you needn't turn them away — you can let the room for goods instead: wait for their offer_trade and accept_pay it (or counter_pay to adjust the terms).\n", who, beVerb, haveVerb, v.NightlyRate)
+	fmt.Fprintf(b, "%s %s here with you and %s nowhere to stay. If they want a room, offer it — call sell with item \"nights_stay\", consume_now false, qty set to the number of nights, and amount set to nights × %d coins (your nightly rate). A room is for the one guest, so leave consumers empty; use target_buyer only if you know the guest's name, otherwise leave it empty and anyone here may take the offer. They are then free to take it or leave it. If a guest has no coins, you needn't turn them away — tell them they may offer goods for the room, then accept_pay their offer_trade (or counter_pay to adjust the terms).\n", who, beVerb, haveVerb, v.NightlyRate)
 	roomWord := "rooms"
 	if v.RoomsAvailable == 1 {
 		roomWord = "room"

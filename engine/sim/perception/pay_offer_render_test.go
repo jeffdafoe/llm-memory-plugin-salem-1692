@@ -208,6 +208,69 @@ func TestRender_QuoteWarrantLine_CarriesQuoteID(t *testing.T) {
 	}
 }
 
+// TestRender_QuoteWarrantLine_BarterAlternative (LLM-136): a single-item coin
+// quote also names the goods route — a coin-short buyer is pointed at a SEPARATE
+// offer_trade with the concrete want_item, and told goods can't ride the
+// quote_id. This is the highest-risk routing text (it broke the live
+// coinless-lodger livelock), so it must carry the machine value, not "this".
+func TestRender_QuoteWarrantLine_BarterAlternative(t *testing.T) {
+	quote := sim.WarrantMeta{
+		TriggerActorID: "john",
+		Reason: sim.SceneQuoteTargetedWarrantReason{
+			QuoteID: 2, SellerID: "john", Lines: []sim.QuoteLine{{ItemKind: "nights_stay", Qty: 1}}, Amount: 4,
+		},
+		SourceEventID: 33,
+	}
+	out := combinedPrompt(Render(Payload{
+		ActorID:           "ezekiel",
+		Warrants:          []sim.WarrantMeta{quote},
+		WarrantActorNames: map[sim.ActorID]string{"john": "John Ellis"},
+		Baseline:          BaselinePresent,
+	}, DefaultRenderConfig()))
+
+	// Coin path still named.
+	if !strings.Contains(out, "quote_id 2") || !strings.Contains(out, "settles at once") {
+		t.Errorf("quote line dropped the coin take instruction\n%s", out)
+	}
+	// Goods path: a separate offer_trade naming the concrete want_item, not "this".
+	if !strings.Contains(out, "offer_trade") || !strings.Contains(out, `want_item "nights_stay"`) {
+		t.Errorf("quote line missing the offer_trade goods alternative with the concrete want_item\n%s", out)
+	}
+	if strings.Contains(out, "as want_item") {
+		t.Errorf("quote line used the vague 'this as want_item' phrasing\n%s", out)
+	}
+	// Routing guard: goods must not be attached to a quote_id (that path rejects).
+	if !strings.Contains(out, "Don't put goods on a quote_id") {
+		t.Errorf("quote line missing the do-not-attach-goods-to-quote_id guard\n%s", out)
+	}
+}
+
+// TestRender_QuoteWarrantLine_BundleNoBarterAlt (LLM-136): a multi-item bundle
+// quote stays coin-only — offer_trade takes a single item kind, so a bundle has
+// no single want_item to name. The barter alternative is single-item-scoped.
+func TestRender_QuoteWarrantLine_BundleNoBarterAlt(t *testing.T) {
+	quote := sim.WarrantMeta{
+		TriggerActorID: "john",
+		Reason: sim.SceneQuoteTargetedWarrantReason{
+			QuoteID: 7, SellerID: "john", Lines: []sim.QuoteLine{{ItemKind: "bread", Qty: 2}, {ItemKind: "stew", Qty: 1}}, Amount: 9,
+		},
+		SourceEventID: 34,
+	}
+	out := combinedPrompt(Render(Payload{
+		ActorID:           "ezekiel",
+		Warrants:          []sim.WarrantMeta{quote},
+		WarrantActorNames: map[sim.ActorID]string{"john": "John Ellis"},
+		Baseline:          BaselinePresent,
+	}, DefaultRenderConfig()))
+
+	if !strings.Contains(out, "quote_id 7") {
+		t.Errorf("bundle quote line dropped the take instruction\n%s", out)
+	}
+	if strings.Contains(out, "offer_trade") {
+		t.Errorf("bundle quote line should not advertise offer_trade (no single want_item)\n%s", out)
+	}
+}
+
 // TestRender_QuoteWarrantLine_Overheard (ZBBS-HOME-431): a public quote that
 // reached this actor via the huddle fan-out renders "offers" — not the
 // targeted "offers you" — so an overheard ad isn't perceived as a direct

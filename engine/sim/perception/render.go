@@ -2265,18 +2265,21 @@ func renderQuoteWarrantLine(n int, seller string, r sim.SceneQuoteTargetedWarran
 	// The take-instruction carries the quote_id. A bundle (LLM-101) is taken
 	// whole, so it needs only the quote_id + total amount; a single-item quote
 	// keeps the match-the-terms phrasing.
+	//
+	// LLM-136: a single-item quote is the COIN settlement path — goods can't ride
+	// a quote_id (that rejects). A coin-short buyer isn't stuck, though: barter is
+	// a first-class path via a SEPARATE offer_trade that names the item it wants.
+	// Saying so on the take-line keeps a coinless buyer (e.g. a homeless smith
+	// eyeing a room) from looping on a price it can't meet. The want_item is the
+	// concrete kind, not "this", so a weak model sends the real machine value.
+	// Bundles stay coin-only here: offer_trade takes one item kind, and a bundle
+	// has no single want_item to name.
 	var take string
 	if len(r.Lines) > 1 {
 		take = fmt.Sprintf(" To take the whole bundle, call pay_with_item with quote_id %d and amount %d — it settles at once.", r.QuoteID, r.Amount)
 	} else {
-		take = fmt.Sprintf(" To take it, call pay_with_item with quote_id %d and the same item, qty, and amount — it settles at once.", r.QuoteID)
+		take = fmt.Sprintf(" To take this coin quote, call pay_with_item with quote_id %d and the same item, qty, and amount — it settles at once. Don't put goods on a quote_id; if you lack coins but have goods to offer, propose a separate trade instead — call offer_trade with the goods you'll give and want_item %q; they can accept or counter.", r.QuoteID, string(r.Lines[0].ItemKind))
 	}
-	// LLM-136: a quote carries a coin price (goods can't ride a quote_id — that
-	// rejects), but a buyer short on coins isn't stuck: barter is a first-class
-	// path. Without this the coin take-line reads as the only way in, and a
-	// coinless buyer (e.g. a homeless smith eyeing a room) loops instead of
-	// offering its wares. Point at the goods route as the alternative.
-	take += " If you'd sooner pay with goods you carry than coins, propose a trade instead — call offer_trade with the goods you'll give and this as want_item; they can accept or counter."
 	// An overheard public quote (huddle fan-out, ZBBS-HOME-431) is an ad
 	// announced to the conversation, not a direct address — "offers" not
 	// "offers you", so the actor doesn't perceive a personal offer.
