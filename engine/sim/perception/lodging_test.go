@@ -377,6 +377,33 @@ func TestBuildLodgingView_RenewalPullDeferred(t *testing.T) {
 	}
 }
 
+// A settled (not renewal-due) lodger never carries the deferred flag, even when
+// on-shift away from the inn — the flag means "deferred renewal pull", and there is
+// no pull to defer when settled (RenewalPullDeferred is gated on RenewalDue so the
+// view stays internally consistent for any future caller). (code_review)
+func TestBuildLodgingView_SettledOnShiftAway_NoDefer(t *testing.T) {
+	start, end := 6*60, 18*60
+	nowMin := 12 * 60 // on-shift
+	subj := &sim.ActorSnapshot{
+		InsideStructureID: "blacksmith", // away from the inn
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		RoomAccess: map[sim.RoomAccessKey]*sim.RoomAccess{
+			{RoomID: 2, Source: sim.AccessSourceLedger}: ledgerAccess(2, 72*time.Hour), // beyond the 13h window → settled
+		},
+	}
+	structs := map[sim.StructureID]*sim.Structure{"inn": innStructure("inn", "Hannah's Inn")}
+	snap := lodgingSnap(subj, structs)
+	snap.LocalMinuteOfDay = &nowMin
+	v := buildLodgingView(snap, "ezekiel", subj, nil)
+	if v == nil || v.RenewalDue {
+		t.Fatalf("a 72h grant must be settled, got %+v", v)
+	}
+	if v.RenewalPullDeferred {
+		t.Errorf("a settled lodger must not carry RenewalPullDeferred, got %+v", v)
+	}
+}
+
 // An unscheduled lodger (nil schedule) is always off-shift, so the pull is never
 // deferred even when away from the inn (matches sim.isActorOnShift).
 func TestBuildLodgingView_RenewalPullDeferred_Unscheduled_False(t *testing.T) {

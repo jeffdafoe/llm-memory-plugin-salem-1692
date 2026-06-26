@@ -130,7 +130,7 @@ func buildLodgingView(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 		RenewalInFlight:     renewalInFlight,
 		RenewalDue:          renewalDue,
 		InConversation:      anyHuddlePeerAwake(snap, members),
-		RenewalPullDeferred: lodgerOnShiftAwayFromInn(actorSnap, snap, atInn),
+		RenewalPullDeferred: renewalDue && lodgerOnShiftAwayFromInn(actorSnap, snap, atInn),
 	}
 }
 
