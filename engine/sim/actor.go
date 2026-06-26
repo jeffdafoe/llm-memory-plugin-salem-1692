@@ -440,24 +440,30 @@ type Actor struct {
 	BreakUntil    *time.Time
 	SleepingUntil *time.Time
 
-	// LaboringUntil is an accepted labor commitment's completion deadline
-	// (LLM-26): set by AcceptWork to AcceptedAt+DurationMin, cleared when the
-	// completion sweep credits the worker. While set the worker is in
-	// StateLaboring and occupied. The sweep settles strictly off the
-	// LaborOffer in World.LaborLedger; this field is the per-actor mirror that
-	// gates perception and occupancy.
+	// LaborID is the accepted labor offer the worker is currently committed to
+	// (LLM-26), or LaborID(0) when not on a job. The AUTHORITATIVE per-actor
+	// ownership key: set by AcceptWork to the offer's id, cleared by the
+	// completion sweep when THAT id settles. The settle path guards on this id
+	// (not on the window timestamp) so settling a stale offer can never free a
+	// worker who has since taken a different job (code_review). StateLaboring is
+	// always paired with a non-zero LaborID.
 	//
-	// TRANSIENT — deliberately NOT checkpointed, unlike BreakUntil/
-	// SleepingUntil. Its settlement authority, World.LaborLedger, is itself
+	// LaboringUntil is the matching completion deadline, kept as the activity-
+	// window mirror (the BreakUntil/SleepingUntil pattern). Set/cleared in
+	// lockstep with LaborID. The authoritative window lives on the LaborOffer
+	// (WorkingUntil); this copy documents the job's end on the actor.
+	//
+	// Both are TRANSIENT — deliberately NOT checkpointed, unlike BreakUntil/
+	// SleepingUntil. Their settlement authority, World.LaborLedger, is itself
 	// in-memory-only and restart-lossy (the sibling PayLedger's accepted
-	// 2026-05-20 design). Persisting this window WITHOUT the ledger would be
-	// the WORK-410 orphan in reverse: a restored StateLaboring actor with no
-	// offer left to settle it, stuck laboring forever. So the two are lost
-	// together — on restart the actor reverts cleanly to idle, and no coins
+	// 2026-05-20 design). Persisting them WITHOUT the ledger would be the
+	// WORK-410 orphan in reverse: a restored StateLaboring actor with no offer
+	// left to settle it, stuck laboring forever. So they are lost together with
+	// the ledger — on restart the actor reverts cleanly to idle, and no coins
 	// are stranded (the reward only ever moves at completion, never before).
-	// Cloned in CloneActor regardless: the mem-repo snapshot boundary must
-	// break pointer aliasing for every pointer field, durable or not (cf.
-	// OpenUntil).
+	// LaboringUntil is cloned in CloneActor (pointer field); LaborID rides the
+	// value copy.
+	LaborID       LaborID
 	LaboringUntil *time.Time
 
 	// SourceActivity is an in-flight, timed action AT a village object — eating

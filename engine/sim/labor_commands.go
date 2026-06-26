@@ -299,9 +299,11 @@ func AcceptWork(callerID ActorID, laborID LaborID, at time.Time) Command {
 			offer.State = LaborStateWorking
 			offer.AcceptedAt = timePtrLabor(at)
 			offer.WorkingUntil = timePtrLabor(workingUntil)
-			// StateLaboring is ALWAYS paired with a live LaboringUntil window
-			// (WORK-410 orphan lesson); the completion sweep clears both
-			// together.
+			// StateLaboring is ALWAYS paired with a non-zero LaborID + live
+			// window (WORK-410 orphan lesson); the completion sweep clears them
+			// together. LaborID is the authoritative ownership key the settle
+			// path guards on (not the window timestamp).
+			worker.LaborID = offer.ID
 			worker.LaboringUntil = timePtrLabor(workingUntil)
 			worker.State = StateLaboring
 

@@ -179,14 +179,16 @@ func settleCompletedLabor(w *World, offer *LaborOffer, now time.Time) {
 	employer := w.Actors[offer.EmployerID]
 
 	// Free the worker regardless of the payment outcome — but ONLY if the
-	// mirror still corresponds to THIS offer's window. AcceptWork's ledger-
+	// worker's ownership key still points at THIS offer. AcceptWork's ledger-
 	// based busy-gate already makes two concurrent Working offers per worker
-	// unreachable, so in practice the mirror always matches; this equality
-	// guard is defense-in-depth so that settling a stale offer can never clear
-	// a newer job's mirror (code_review). StateLaboring is always paired with a
-	// live window; with it cleared the actor returns to idle and the next
+	// unreachable, so in practice this always matches; the id guard is
+	// defense-in-depth so settling a stale offer can never free a worker who
+	// has since taken a different job — a true ownership check, not a window-
+	// timestamp proxy (code_review). StateLaboring is always paired with a
+	// non-zero LaborID; with it cleared the actor returns to idle and the next
 	// tick's observers re-derive conversing if still huddled.
-	if worker != nil && laborTimeEqualPtr(worker.LaboringUntil, offer.WorkingUntil) {
+	if worker != nil && worker.LaborID == offer.ID {
+		worker.LaborID = 0
 		worker.LaboringUntil = nil
 		if worker.State == StateLaboring {
 			worker.State = StateIdle
@@ -209,17 +211,6 @@ func settleCompletedLabor(w *World, offer *LaborOffer, now time.Time) {
 	employer.Coins -= offer.Reward
 	worker.Coins += offer.Reward
 	finalizeLaborTerminal(w, offer, LaborTerminalStateCompleted, now)
-}
-
-// laborTimeEqualPtr reports whether two *time.Time point at equal instants.
-// nil on either side is NOT equal (a cleared mirror never matches a live
-// window). Used by settleCompletedLabor to clear the worker mirror only for
-// the offer that actually owns it.
-func laborTimeEqualPtr(a, b *time.Time) bool {
-	if a == nil || b == nil {
-		return false
-	}
-	return a.Equal(*b)
 }
 
 // reapTerminalLaborOffers removes terminal LaborOffers from World.LaborLedger

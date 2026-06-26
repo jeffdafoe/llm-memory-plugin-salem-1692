@@ -150,6 +150,7 @@ func readLaborLedger(t *testing.T, w *sim.World) map[sim.LaborID]sim.LaborOffer 
 type actorSnap struct {
 	Coins         int
 	State         sim.ActorState
+	LaborID       sim.LaborID
 	LaboringUntil *time.Time
 }
 
@@ -160,7 +161,7 @@ func readActor(t *testing.T, w *sim.World, id sim.ActorID) actorSnap {
 		if !ok {
 			return actorSnap{}, nil
 		}
-		return actorSnap{Coins: a.Coins, State: a.State, LaboringUntil: a.LaboringUntil}, nil
+		return actorSnap{Coins: a.Coins, State: a.State, LaborID: a.LaborID, LaboringUntil: a.LaboringUntil}, nil
 	}})
 	if err != nil {
 		t.Fatalf("readActor %q: %v", id, err)
@@ -596,6 +597,7 @@ func TestEvaluateLaborLedgerSweep_CompletesWorking(t *testing.T) {
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		a := world.Actors["ezekiel"]
 		u := until
+		a.LaborID = 1
 		a.LaboringUntil = &u
 		a.State = sim.StateLaboring
 		return nil, nil
@@ -614,6 +616,9 @@ func TestEvaluateLaborLedgerSweep_CompletesWorking(t *testing.T) {
 	ws := readActor(t, w, "ezekiel")
 	if ws.Coins != 10 {
 		t.Errorf("worker coins = %d, want 10 (paid at completion)", ws.Coins)
+	}
+	if ws.LaborID != 0 {
+		t.Errorf("worker LaborID = %d, want 0 (cleared on completion)", ws.LaborID)
 	}
 	if ws.LaboringUntil != nil {
 		t.Errorf("worker LaboringUntil = %v, want nil (cleared)", ws.LaboringUntil)
@@ -652,6 +657,7 @@ func TestEvaluateLaborLedgerSweep_EmployerBrokeAtCompletionFails(t *testing.T) {
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		a := world.Actors["ezekiel"]
 		u := until
+		a.LaborID = 1
 		a.LaboringUntil = &u
 		a.State = sim.StateLaboring
 		return nil, nil
@@ -866,6 +872,7 @@ func TestSettleCompletedLabor_PreservesNewerJobMirror(t *testing.T) {
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		a := world.Actors["ezekiel"]
 		u := newerUntil
+		a.LaborID = 2 // committed to a DIFFERENT (newer) job, not the stale offer 1
 		a.LaboringUntil = &u
 		a.State = sim.StateLaboring
 		return nil, nil
@@ -879,6 +886,9 @@ func TestSettleCompletedLabor_PreservesNewerJobMirror(t *testing.T) {
 		t.Errorf("offer 1 State = %q, want completed", got)
 	}
 	ws := readActor(t, w, "ezekiel")
+	if ws.LaborID != 2 {
+		t.Errorf("worker LaborID = %d, want 2 preserved (settling stale offer 1 must not touch the newer job's ownership key)", ws.LaborID)
+	}
 	if ws.LaboringUntil == nil || !ws.LaboringUntil.Equal(newerUntil) {
 		t.Errorf("worker mirror = %v, want preserved at %v (settling stale offer must not clear a newer job)", ws.LaboringUntil, newerUntil)
 	}
