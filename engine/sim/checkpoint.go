@@ -58,6 +58,14 @@ type MutableWorldSettings struct {
 	ZoomMinAdmin     float64
 	ZoomMinRegular   float64
 	AgentTicksPaused bool
+
+	// Stall wear knobs (LLM-118) — live-tunable via the umbilical, persisted here
+	// each checkpoint so a live change survives restart.
+	StallWearPerCoin           int
+	StallWearRepairThreshold   int
+	StallWearDegradeThreshold  int
+	StallNailsPerRepair        int
+	StallRepairDurationSeconds int
 }
 
 // DiscoveredKind is the minimal persist-tuple for an engine-minted item kind
@@ -94,9 +102,14 @@ func (w *World) BuildCheckpointSnapshot() *CheckpointSnapshot {
 		Environment:    w.Environment,
 		Phase:          w.Phase,
 		MutableSettings: MutableWorldSettings{
-			ZoomMinAdmin:     w.Settings.ZoomMinAdmin,
-			ZoomMinRegular:   w.Settings.ZoomMinRegular,
-			AgentTicksPaused: w.Settings.AgentTicksPaused,
+			ZoomMinAdmin:               w.Settings.ZoomMinAdmin,
+			ZoomMinRegular:             w.Settings.ZoomMinRegular,
+			AgentTicksPaused:           w.Settings.AgentTicksPaused,
+			StallWearPerCoin:           w.Settings.StallWearPerCoin,
+			StallWearRepairThreshold:   w.Settings.StallWearRepairThreshold,
+			StallWearDegradeThreshold:  w.Settings.StallWearDegradeThreshold,
+			StallNailsPerRepair:        w.Settings.StallNailsPerRepair,
+			StallRepairDurationSeconds: w.Settings.StallRepairDurationSeconds,
 		},
 	}
 	// ZBBS-WORK-412: carry the engine-minted (unknown-category) item kinds so

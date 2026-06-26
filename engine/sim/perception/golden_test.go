@@ -162,6 +162,28 @@ var perceptionScenarios = []perceptionScenario{
 			"yardstick instead of an invented number. No coin sales history yet (empty PriceBook), so no recent-price clause.",
 		build: smithBarteringAtTavern,
 	},
+	{
+		name: "owner_at_worn_stall",
+		summary: "A stall owner (Ezekiel) stands at his own worn market stall (wear past the repair threshold, " +
+			"below degrade) carrying too few nails to mend it. The golden pins the '## Your stall' cue: the worn-boards " +
+			"problem AND the buy-nails-from-the-smith steer in one line (symmetrical awareness, LLM-118). The repair tool " +
+			"rides the same StallRepair signal (handlers gating test).",
+		build: ownerAtWornStall,
+	},
+	{
+		name: "owner_at_degraded_stall",
+		summary: "A stall owner stands at his own DEGRADED stall (wear past the degrade threshold — closed for trade), " +
+			"carrying enough nails. The golden pins the escalated '## Your stall' steer ('too worn to trade … repair it " +
+			"now') — the seller-facing half of the degrade sales-block (LLM-118).",
+		build: ownerAtDegradedStall,
+	},
+	{
+		name: "passerby_at_worn_stall",
+		summary: "A non-owner (John) stands at someone else's worn market stall. The golden pins the co-present " +
+			"atmosphere line ('The market stall here looks worn…') and the ABSENCE of the owner '## Your stall' cue — a " +
+			"passerby can remark on the wear but isn't handed the repair (LLM-118).",
+		build: passerbyAtWornStall,
+	},
 }
 
 // TestForgeCueOnlyForMultiOutputCrafterAtForge is the LLM-116 cross-scenario
@@ -219,6 +241,23 @@ func TestWaresWorthCueOnlyInCompanyWithOwnTrade(t *testing.T) {
 	}
 }
 
+// TestStallRepairCueOnlyAtOwnWornStall is the LLM-118 cross-scenario invariant:
+// the "## Your stall" owner repair cue appears in EXACTLY the scenarios where the
+// actor stands at their OWN worn stall — never for a passerby (who gets the
+// co-present line instead) or any unrelated scenario. The same StallRepair signal
+// gates the repair tool, so this also pins where the tool is offered.
+func TestStallRepairCueOnlyAtOwnWornStall(t *testing.T) {
+	const marker = "## Your stall"
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		got := renderScenario(sc)
+		want := sc.name == "owner_at_worn_stall" || sc.name == "owner_at_degraded_stall"
+		if has := strings.Contains(got, marker); has != want {
+			t.Errorf("scenario %q: '## Your stall' cue present=%v, want %v", sc.name, has, want)
+		}
+	}
+}
+
 // growerAtStrippedBush reproduces the LLM-98 live shape: Prudence, a forager,
 // stands on her own raspberry bush during her shift, having just stripped it to
 // zero stock. It is the only gatherable within loiter reach, so
@@ -261,6 +300,71 @@ func growerAtStrippedBush() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 		},
 	}
 	return snap, prudenceID, nil
+}
+
+// stallWearSnapshot builds a one-stall, one-actor snapshot for the LLM-118 cues.
+// The actor stands on the stall's loiter pin; the stall is a tagged, owned market
+// stall worn to `wear`. ownerID is the stall's owner (the perceiving actor for the
+// owner cues; a different actor for the passerby cue). nails seeds the actor's
+// pack. No orders, no clock read → byte-stable.
+func stallWearSnapshot(actorID, ownerID sim.ActorID, displayName, role string, wear, nails int) (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	zero := 0
+	start, end := 360, 1080 // 06:00–18:00
+	now := 600              // 10:00 — on shift
+	stallPin := sim.WorldPos{X: 100, Y: 100}.Tile()
+	actor := &sim.ActorSnapshot{
+		Kind:             sim.KindNPCStateful,
+		DisplayName:      displayName,
+		Role:             role,
+		State:            sim.StateIdle,
+		Pos:              stallPin,
+		ScheduleStartMin: &start,
+		ScheduleEndMin:   &end,
+		Coins:            8,
+		Needs:            map[sim.NeedKey]int{},
+		Inventory:        map[sim.ItemKind]int{"nail": nails},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay:          &now,
+		NeedThresholds:            sim.NeedThresholds{},
+		Assets:                    emptyAssetSet,
+		StallWearRepairThreshold:  400,
+		StallWearDegradeThreshold: 600,
+		StallNailsPerRepair:       5,
+		Actors:                    map[sim.ActorID]*sim.ActorSnapshot{actorID: actor},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"market_stall": {
+				ID:            "market_stall",
+				DisplayName:   "Blacksmith",
+				Pos:           sim.WorldPos{X: 100, Y: 100},
+				OwnerActorID:  ownerID,
+				Tags:          []string{sim.TagMarketStall},
+				Wear:          wear,
+				LoiterOffsetX: &zero,
+				LoiterOffsetY: &zero,
+			},
+		},
+	}
+	return snap, actorID, nil
+}
+
+// ownerAtWornStall: the owner at his own worn stall, short on nails — the buy-then-
+// mend steer. wear 450 (>= repair 400, < degrade 600), 2 nails (< 5 needed).
+func ownerAtWornStall() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return stallWearSnapshot("ezekiel", "ezekiel", "Ezekiel Crane", "blacksmith", 450, 2)
+}
+
+// ownerAtDegradedStall: the owner at his own degraded stall with nails in hand —
+// the "too worn to trade … repair it now" steer. wear 650 (>= degrade 600).
+func ownerAtDegradedStall() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return stallWearSnapshot("ezekiel", "ezekiel", "Ezekiel Crane", "blacksmith", 650, 5)
+}
+
+// passerbyAtWornStall: a non-owner standing at someone else's worn stall — the
+// co-present atmosphere line, no owner cue. The actor (John) differs from the
+// stall's owner (Ezekiel).
+func passerbyAtWornStall() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return stallWearSnapshot("john", "ezekiel", "John Ellis", "tavernkeeper", 450, 0)
 }
 
 // hungryForagerAtStockedBush is the LLM-113 situation: a hungry forager stands at

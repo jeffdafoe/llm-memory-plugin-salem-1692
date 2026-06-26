@@ -383,6 +383,18 @@ type Payload struct {
 	// no priced own-trade goods. LLM-125.
 	TradeValue *TradeValueView
 
+	// StallRepair surfaces, to a market-stall owner standing at their own worn
+	// stall, that it needs mending and how (nail count + buy-from-the-smith
+	// steer). nil when not at the stall or it hasn't worn to the repair
+	// threshold. The same non-nil view gates the `repair` tool. LLM-118.
+	StallRepair *StallRepairView
+
+	// StallCondition surfaces a co-present worn market stall to a NON-owner
+	// standing at it — environmental texture a passerby can remark on. nil when
+	// not at a worn stall (or when the actor owns it — StallRepair covers them).
+	// LLM-118.
+	StallCondition *StallConditionView
+
 	// Forage surfaces a grower-seller's own forage-to-sell bushes when their
 	// harvested stock of an item is low (< RestockReorderPct of cap) — each low
 	// `forage` RestockEntry, the on-hand/cap, the ripe count across the actor's

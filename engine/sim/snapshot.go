@@ -139,6 +139,16 @@ type Snapshot struct {
 	// on w.Settings. Plain int, copied at publish. 0 = restock disabled.
 	RestockReorderPct int
 
+	// Stall wear thresholds (LLM-118) mirror the WorldSettings knobs, carried so
+	// perception can gate the owner repair cue, the co-present "battered stall"
+	// line, and the degraded-sales steer on the SAME boundaries the engine
+	// enforces — pure over the snapshot rather than racing on w.Settings. The
+	// engine-only knobs (StallWearPerCoin, StallRepairDurationSeconds) are not
+	// carried; perception never reads them.
+	StallWearRepairThreshold  int
+	StallWearDegradeThreshold int
+	StallNailsPerRepair       int
+
 	// DefaultOutdoorSceneRadius mirrors WorldSettings.DefaultOutdoorSceneRadius —
 	// the "what is around me" tile radius the move_to name-resolver and scene
 	// bound use. Carried so perception can bound a proximity scan to the SAME

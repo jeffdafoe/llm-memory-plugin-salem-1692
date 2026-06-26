@@ -77,6 +77,7 @@ var walkIncompatibleTools = map[string]struct{}{
 	"pay_with_item": {},
 	"offer_trade":   {}, // ZBBS-HOME-407: same substrate as pay_with_item (walk-in-flight reject)
 	"pay":           {}, // LLM-99: bare-coin pay re-registered; same walk-in-flight reject
+	"repair":        {}, // LLM-118: StartRepair rejects on MoveIntent != nil (mend at the stall)
 }
 
 // stopToolName — the voluntary-halt tool (ZBBS-HOME-338). The inverse of the
@@ -147,6 +148,17 @@ const moveToToolName = "move_to"
 // sim.SetProductionFocus Command stays the authoritative gate for any call that
 // arrives anyway.
 const craftToolName = "craft"
+
+// repairToolName — the stall owner's "mend your worn market stall" tool (LLM-118).
+// Advertised ONLY when the "## Your stall" cue is present (payload.StallRepair
+// non-nil), which itself fires only when the owner stands at their own stall and
+// it is mendable (worn to the repair threshold, or degraded). Reading the SAME
+// signal the cue renders from keeps the tool and its cue in lockstep (the
+// discussion-109 invariant). Deliberately NOT gated on carrying enough nails: the
+// affordance stays visible so the model knows mending is the way out, the cue
+// steers buy-then-mend when short, and StartRepair errors helpfully if called
+// without nails. The sim.StartRepair Command stays the authoritative gate.
+const repairToolName = "repair"
 
 // actorIsMoving reports whether the subject has an in-flight move at snapshot
 // time, read from the ZBBS-HOME-336 read-path projection (MoveDestKind is
@@ -243,6 +255,7 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 	hasAudience := payload.Surroundings.HasAudience()
 	flaggedDegenerate := actorIsFlaggedDegenerate(payload.ActorID, snap)
 	offerCraft := payload.ForgeChoice != nil && len(payload.ForgeChoice.Items) > 0
+	offerRepair := payload.StallRepair != nil
 
 	// Single pass over the Available set so each gated group is evaluated
 	// against its OWN condition. We deliberately avoid a "pending offer →
@@ -320,6 +333,13 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 		// crafter is handed the tool exactly when it has a choice to make, and no
 		// other actor ever sees it.
 		if spec.Name == craftToolName && !offerCraft {
+			continue
+		}
+		// repair consumer (LLM-118): advertise only when the "## Your stall" cue
+		// is present — the same StallRepair signal the cue renders from — so the
+		// owner is handed the tool exactly when standing at their own worn stall,
+		// and no other actor ever sees it.
+		if spec.Name == repairToolName && !offerRepair {
 			continue
 		}
 		if _, gated := payOfferResponseTools[spec.Name]; gated {

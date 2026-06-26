@@ -38,6 +38,10 @@ type SourceActivityKind string
 const (
 	SourceActivityRefresh SourceActivityKind = "refresh"
 	SourceActivityHarvest SourceActivityKind = "harvest"
+	// SourceActivityRepair is an owner mending their worn market stall (LLM-118):
+	// nails are consumed at start, the window runs StallRepairDurationSeconds, and
+	// completion resets the stall's Wear to 0 so it trades again.
+	SourceActivityRepair SourceActivityKind = "repair"
 )
 
 // Durations are tunable engine constants (Jeff approved eat ~3s / harvest ~5s
@@ -305,6 +309,91 @@ func StartHarvest(actorID ActorID, qty int) Command {
 	}
 }
 
+// StartRepair begins a timed repair of the worn market stall the owner is
+// standing at (LLM-118). Validates ownership + co-location + that the stall
+// actually needs mending + that the owner holds enough nails, consumes the nails
+// up front, and opens the SourceActivity window; the wear reset lands at
+// completion (applyCompletedSourceActivity). The repair tool is gated to be
+// advertised only in exactly this situation, but every gate is re-validated here
+// because the substrate stays authoritative.
+//
+// Nails are consumed at START with no refund on an abandoned repair: the move-
+// cancel belt clears the window if the owner walks off, but the wear isn't reset,
+// so they simply buy/retry — simpler than a refund and the lost nails are the
+// cost of starting and walking away.
+func StartRepair(actorID ActorID) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			actor, ok := w.Actors[actorID]
+			if !ok {
+				return nil, fmt.Errorf("StartRepair: actor %q not in world", actorID)
+			}
+			if actor.MoveIntent != nil {
+				return nil, errors.New(
+					"you are walking — arrive at your stall before mending it.",
+				)
+			}
+			now := time.Now().UTC()
+			// Land a finished-but-not-yet-swept window first so a stale activity
+			// doesn't spuriously read as "still busy".
+			completeIfDue(w, actorID, actor, now)
+			if actor.SourceActivity != nil {
+				return nil, errors.New(
+					"you are already busy — finish what you're doing before mending the stall.",
+				)
+			}
+			// Resolve the actor's OWN stall first, then check they stand at it —
+			// the same order perception's buildStallRepair uses to advertise the
+			// tool. Resolving "some loitering object" first would diverge from the
+			// cue when objects share a loiter pin (advertised, then rejected here).
+			stall := OwnedWearableStall(w.VillageObjects, actorID)
+			if stall == nil {
+				return nil, errors.New("there's no stall of yours to mend here.")
+			}
+			pin, ok := effectiveObjectLoiterTile(w, stall.ID)
+			if !ok || actor.Pos.Chebyshev(pin) > LoiterAttributionTiles {
+				return nil, errors.New("walk to your stall before mending it.")
+			}
+			objID := stall.ID
+			if !StallRepairable(stall, w.Settings.StallWearRepairThreshold, w.Settings.StallWearDegradeThreshold) {
+				return nil, errors.New("your stall doesn't need mending yet.")
+			}
+			need := w.Settings.StallNailsPerRepair
+			if actor.Inventory[NailItemKind] < need {
+				return nil, fmt.Errorf(
+					"mending the stall takes %d nails but you have %d — buy more nails first.",
+					need, actor.Inventory[NailItemKind],
+				)
+			}
+			// Consume the nails up front (delete-on-zero inventory invariant).
+			actor.Inventory[NailItemKind] -= need
+			if actor.Inventory[NailItemKind] == 0 {
+				delete(actor.Inventory, NailItemKind)
+			}
+			actor.SourceActivity = &SourceActivity{
+				Kind:      SourceActivityRepair,
+				ObjectID:  objID,
+				StartedAt: now,
+				Until:     now.Add(time.Duration(w.Settings.StallRepairDurationSeconds) * time.Second),
+			}
+			w.emit(&SourceActivityStarted{
+				ActorID:  actorID,
+				ObjectID: objID,
+				Kind:     SourceActivityRepair,
+				Until:    actor.SourceActivity.Until,
+				At:       now,
+			})
+			return SourceActivityStartResult{
+				Started:    true,
+				Kind:       SourceActivityRepair,
+				ObjectID:   objID,
+				SourceName: sourceActivityObjectName(w, stall),
+				Until:      actor.SourceActivity.Until,
+			}, nil
+		},
+	}
+}
+
 // applyCompletedSourceActivity lands the effect of a finished activity. It
 // RE-RESOLVES the source off the actor's live tile and applies only if the actor
 // is still at the SAME object it began at — a defensive guard mirroring the
@@ -396,6 +485,26 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 			Qty:        res.Qty,
 			SourceName: res.SourceName,
 			Continues:  false, // harvest never auto-repeats
+			At:         now,
+		})
+	case SourceActivityRepair:
+		// LLM-118: the mending lands — wear cleared, the stall trades again. The
+		// waking repair warrant was already consumed by the deliberation tick
+		// that chose repair; Wear=0 re-arms the edge-triggered warrant for the
+		// next time the stall wears through the threshold. Re-resolve by the
+		// object id the window began at (the move-cancel belt already aborts a
+		// window if the owner walks off, so they are still here).
+		stall := w.VillageObjects[act.ObjectID]
+		if stall == nil || stall.OwnerActorID != actorID || !IsWearableStall(stall) {
+			return
+		}
+		stall.Wear = 0
+		w.emit(&SourceActivityCompleted{
+			ActorID:    actorID,
+			ObjectID:   act.ObjectID,
+			Kind:       act.Kind,
+			SourceName: sourceActivityObjectName(w, stall),
+			Continues:  false,
 			At:         now,
 		})
 	}
@@ -536,6 +645,8 @@ func SourceActivityCompletionNarration(kind SourceActivityKind, item ItemKind, q
 		case "tiredness":
 			return fmt.Sprintf("You finish resting%s; the weariness eases.", at)
 		}
+	case SourceActivityRepair:
+		return "You finish mending your stall; it is sound again."
 	}
 	return ""
 }

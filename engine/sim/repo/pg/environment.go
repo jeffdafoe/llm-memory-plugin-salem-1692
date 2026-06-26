@@ -213,6 +213,13 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.TirednessRecoveryPerMinuteX100 = parseIntSetting(values, "tiredness_recovery_per_minute_x100", sim.DefaultTirednessRecoveryPerMinuteX100)
 	s.RestockReorderPct = parseIntSetting(values, "restock_reorder_pct", sim.DefaultRestockReorderPct)
 
+	// Stall wear & repair (LLM-118).
+	s.StallWearPerCoin = parseIntSetting(values, "stall_wear_per_coin", sim.DefaultStallWearPerCoin)
+	s.StallWearRepairThreshold = parseIntSetting(values, "stall_wear_repair_threshold", sim.DefaultStallWearRepairThreshold)
+	s.StallWearDegradeThreshold = parseIntSetting(values, "stall_wear_degrade_threshold", sim.DefaultStallWearDegradeThreshold)
+	s.StallNailsPerRepair = parseIntSetting(values, "stall_nails_per_repair", sim.DefaultStallNailsPerRepair)
+	s.StallRepairDurationSeconds = parseIntSetting(values, "stall_repair_duration_seconds", sim.DefaultStallRepairDurationSeconds)
+
 	// Reactor evaluator tunables.
 	s.ReactorJitterMin = parseDurationSetting(values, "reactor_jitter_min_ms", 1*time.Second)
 	s.ReactorJitterMax = parseDurationSetting(values, "reactor_jitter_max_ms", 4*time.Second)
@@ -487,12 +494,12 @@ func (r *EnvironmentRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, env sim.W
 
 // SaveMutableSettings upserts the runtime-tunable settings the admin config
 // write routes own (ZBBS-WORK-363) into the setting kv table, inside the
-// checkpoint Tx. ONLY these three keys are written — the rest of the setting
+// checkpoint Tx. ONLY these keys are written — the rest of the setting
 // table is load-once, operator-tuned out of band, so a full settings replace
 // would clobber a direct DB edit with the startup-loaded value. Values are
 // stored as strings (the load path parses them via parseFloatSetting /
-// parseBoolSetting), so they're formatted to match: floats with the minimal
-// round-trippable form, bool as "true"/"false".
+// parseBoolSetting / parseIntSetting), so they're formatted to match: floats
+// with the minimal round-trippable form, bool as "true"/"false", ints decimal.
 func (r *EnvironmentRepo) SaveMutableSettings(ctx context.Context, tx sim.Tx, ms sim.MutableWorldSettings) error {
 	rows := [...]struct {
 		key string
@@ -501,6 +508,12 @@ func (r *EnvironmentRepo) SaveMutableSettings(ctx context.Context, tx sim.Tx, ms
 		{"world_zoom_min_admin", strconv.FormatFloat(ms.ZoomMinAdmin, 'f', -1, 64)},
 		{"world_zoom_min_regular", strconv.FormatFloat(ms.ZoomMinRegular, 'f', -1, 64)},
 		{"agent_ticks_paused", strconv.FormatBool(ms.AgentTicksPaused)},
+		// Stall wear knobs (LLM-118) — live-tuned via the umbilical, persisted here.
+		{"stall_wear_per_coin", strconv.Itoa(ms.StallWearPerCoin)},
+		{"stall_wear_repair_threshold", strconv.Itoa(ms.StallWearRepairThreshold)},
+		{"stall_wear_degrade_threshold", strconv.Itoa(ms.StallWearDegradeThreshold)},
+		{"stall_nails_per_repair", strconv.Itoa(ms.StallNailsPerRepair)},
+		{"stall_repair_duration_seconds", strconv.Itoa(ms.StallRepairDurationSeconds)},
 	}
 	for _, row := range rows {
 		if _, err := tx.Exec(ctx, upsertSettingSQL, row.key, row.val); err != nil {

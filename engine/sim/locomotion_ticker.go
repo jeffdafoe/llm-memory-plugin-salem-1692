@@ -804,6 +804,9 @@ func finishArrival(w *World, actor *Actor, dest MoveDestination, attemptID Movem
 	// narration line ("X arrives at Y"), so a player in the room sees someone
 	// walk in rather than only noticing a sprite move.
 	emitArrivalNarration(w, actor, arrivedEvt, now)
+	// LLM-118: a PC who walks up to a worn market stall gets a talk-box
+	// atmosphere line about its condition (the player's twin of the NPC cue).
+	emitStallConditionNarration(w, actor, arrivedEvt, now)
 }
 
 // emitArrivalNarration emits the observer-facing arrival narration to co-present

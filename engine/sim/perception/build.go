@@ -102,6 +102,8 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	// smith knows a nail's worth away from the forge — so it is gated on company,
 	// not on AtOwnBusiness like the forge/restock cues.
 	p.TradeValue = buildTradeValue(snap, actorID, actorSnap, len(p.Surroundings.HuddleMembers) > 0)
+	p.StallRepair = buildStallRepair(snap, actorID, actorSnap)
+	p.StallCondition = buildStallCondition(snap, actorID, actorSnap)
 	// customerEngaged (LLM-90): the seller-side "someone's at my stall right now"
 	// signal — a buyer's pending offer awaiting my decision (PayOffersForMe), a
 	// quote I have standing out to a buyer (StandingQuotesFromMe), or simply a

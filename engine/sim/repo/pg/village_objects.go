@@ -55,7 +55,7 @@ const loadAllSQLVO = `
 SELECT
     id, asset_id, current_state, x, y, placed_by, display_name,
     entry_policy, owner_actor_id, attached_to,
-    loiter_offset_x, loiter_offset_y, available_quantity, tags
+    loiter_offset_x, loiter_offset_y, available_quantity, tags, wear
 FROM village_object`
 
 // upsertSQLVO writes one VillageObject row. snapshot_gen is included
@@ -77,12 +77,12 @@ INSERT INTO village_object (
     id, asset_id, current_state, x, y, placed_by, display_name,
     entry_policy, owner_actor_id, attached_to,
     loiter_offset_x, loiter_offset_y, available_quantity, tags,
-    snapshot_gen
+    wear, snapshot_gen
 ) VALUES (
     $1::uuid, $2::uuid, $3, $4, $5, $6, $7,
     $8, $9, $10::uuid,
     $11, $12, $13, $14,
-    $15
+    $15, $16
 )
 ON CONFLICT (id) DO UPDATE SET
     asset_id           = EXCLUDED.asset_id,
@@ -98,6 +98,7 @@ ON CONFLICT (id) DO UPDATE SET
     loiter_offset_y    = EXCLUDED.loiter_offset_y,
     available_quantity = EXCLUDED.available_quantity,
     tags               = EXCLUDED.tags,
+    wear               = EXCLUDED.wear,
     snapshot_gen       = EXCLUDED.snapshot_gen`
 
 // deleteStaleSQLVO prunes village_object rows whose snapshot_gen is
@@ -303,11 +304,12 @@ func (r *VillageObjectsRepo) LoadAll(ctx context.Context) (map[sim.VillageObject
 			loiterY      *int
 			availableQty int
 			tags         []string
+			wear         int
 		)
 		if err := rows.Scan(
 			&id, &assetID, &currentState, &x, &y, &placedBy, &displayName,
 			&entryPolicy, &ownerActorID, &attachedTo,
-			&loiterX, &loiterY, &availableQty, &tags,
+			&loiterX, &loiterY, &availableQty, &tags, &wear,
 		); err != nil {
 			return nil, fmt.Errorf("pg village_objects LoadAll scan: %w", err)
 		}
@@ -363,6 +365,7 @@ func (r *VillageObjectsRepo) LoadAll(ctx context.Context) (map[sim.VillageObject
 			LoiterOffsetY:     loiterY,
 			Tags:              tags,
 			AvailableQuantity: availableQty,
+			Wear:              wear,
 			// Refreshes populated below by loadAllRefreshes.
 		}
 	}
@@ -555,7 +558,8 @@ func (r *VillageObjectsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, object
 			obj.LoiterOffsetY,       // $12 loiter_offset_y (nullable)
 			obj.AvailableQuantity,   // $13 available_quantity
 			tags,                    // $14 tags (text[])
-			gen,                     // $15 snapshot_gen
+			obj.Wear,                // $15 wear
+			gen,                     // $16 snapshot_gen
 		); err != nil {
 			return fmt.Errorf("pg village_objects SaveSnapshot: upsert id=%s: %w", obj.ID, err)
 		}

@@ -461,6 +461,24 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			StructureID: string(e.StructureID),
 			At:          e.At.UTC().Format(time.RFC3339),
 		}}, true
+	case *sim.StallConditionNarrated:
+		// LLM-118: a PC walked up to a worn market stall — a second-person felt
+		// atmosphere line ("The market stall here looks worn…"). PRIVATE +
+		// actor-scoped (actor_name "" — no speaker, addressed to the PC), the same
+		// carrier as the sleep / lodging narrations, so the client's _on_room_event
+		// matches it to its own PC by actor_id and renders the brown-panel line.
+		if e.Text == "" {
+			return WireFrame{}, false
+		}
+		return WireFrame{Type: "room_event", Data: roomEventWireDTO{
+			ActorID:     string(e.ActorID),
+			ActorName:   "",
+			Kind:        "stall_condition",
+			Text:        e.Text,
+			Private:     true,
+			StructureID: string(e.StructureID),
+			At:          e.At.UTC().Format(time.RFC3339),
+		}}, true
 	default:
 		return WireFrame{}, false
 	}

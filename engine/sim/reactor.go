@@ -69,6 +69,7 @@ const (
 	WarrantKindStranded           WarrantKind = "stranded"             // anomalous-position backstop: standing in the open at no anchor (ZBBS-HOME-450)
 	WarrantKindServeHandover      WarrantKind = "serve_handover"       // a buyer instantly took the seller's posted quote — wake the seller to hand over with a word (ZBBS-WORK-423)
 	WarrantKindProductionChoice   WarrantKind = "production_choice"    // multi-output crafter idle at its forge — wake it to pick what to make (LLM-116)
+	WarrantKindStallRepair        WarrantKind = "stall_repair"         // an owned market stall crossed the wear repair threshold — wake the owner to mend it (LLM-118)
 )
 
 // WarrantReason is the marker interface for kind-specific warrant payloads.

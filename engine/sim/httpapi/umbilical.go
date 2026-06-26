@@ -432,6 +432,10 @@ func (s *Server) umbilicalRoutes() []umbilicalRoute {
 		{http.MethodPost, umbilicalBasePath + "/restock/set", "Add or update one restock entry on an actor (produce/buy/forage). Validates the item exists; a produce entry requires a recipe. Body: {actor_id, item, source, cap}.", true, s.handleUmbilicalRestockSet},
 		{http.MethodPost, umbilicalBasePath + "/restock/remove", "Remove one restock entry (by item) from an actor. Body: {actor_id, item}.", true, s.handleUmbilicalRestockRemove},
 
+		// Stall wear (LLM-118) — live-tune the market-stall wear/repair knobs
+		// without a restart; applied in memory and persisted on the next checkpoint.
+		{http.MethodPost, umbilicalBasePath + "/stall-wear/set", "Live-tune the stall wear knobs (LLM-118) without a restart. All fields optional (at least one required), non-negative ints. Body: {stall_wear_per_coin?, stall_wear_repair_threshold?, stall_wear_degrade_threshold?, stall_nails_per_repair?, stall_repair_duration_seconds?}.", true, s.handleUmbilicalStallWearSet},
+
 		// Recipe (LLM-97) — live edit/add of an item recipe (existing items
 		// only). Durable write to item_recipe + in-memory catalog update; needs
 		// SetRecipeWriter wired (else 503).
