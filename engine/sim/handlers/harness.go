@@ -438,6 +438,18 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 	// case is a deliver_order(7) re-fired after the hand-over already failed. See the
 	// guard in the dispatch loop and genericCallKey for what is in/out of scope.
 	triedThisTick := map[string]struct{}{}
+	// gatheredThisTick / craftedThisTick record that this actor has SUCCESSFULLY
+	// started a gather / chosen a production focus this tick (LLM-120). Both are
+	// name-only flags (not genericCallKey's name+args) because each tool's args
+	// don't distinguish a meaningful re-fire: gather's `qty` is vestigial (LLM-87)
+	// and craft's item resolves through aliases (LLM-113: Nail/nail/nails → one
+	// kind). Set in the outcome.success block so a bounced first attempt isn't
+	// recorded and a legitimate retry still lands (mirrors spokenThisTick /
+	// offeredThisTick). The dispatch-loop guards reject a second gather/craft once
+	// the flag is set. One of each is all that helps in a tick: a started pick runs
+	// for seconds, and a crafter forges one good at a time.
+	gatheredThisTick := false
+	craftedThisTick := false
 	// resolvedLedgerThisTick holds the LedgerID of every pay-offer this actor has
 	// already answered this tick via the resolution family (accept_pay / decline_pay
 	// / counter_pay / withdraw_pay). The FIRST answer moves the ledger out of
@@ -661,6 +673,34 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 				resolvedLedgerThisTick[id] = struct{}{}
 			}
 
+			// LLM-120: same-tick gather + craft guards. Both tools STARTED a within-
+			// tick re-fire loop in the wild — gather at a Blueberry Bush, craft×6 at the
+			// forge — because a repeat fell through to a domain error (gather "already
+			// busy") or a bare [ok] re-invite (craft), and the weak model re-fired to
+			// the iteration budget. Each is keyed on the tool NAME ALONE, not
+			// genericCallKey's name+args: gather's `qty` is vestigial (LLM-87 — it
+			// always picks the source clean) and craft's item resolves through aliases
+			// (LLM-113: Nail/nail/nails → one kind), so a byte-identical key would miss
+			// a drifted re-fire of either. Both RECORD ON SUCCESS (in the outcome.success
+			// block below), mirroring speak/offer/quote: a bounced first attempt isn't
+			// recorded, so a legitimate retry still lands — gather that bounced on the
+			// wrong spot (its only in-tick fix, move_to, is terminal and ends the tick
+			// anyway), or craft that named an unmakeable good and is re-called with a
+			// valid one. The reject is the model-facing teeth; the post-success steer in
+			// commitResultContent is the soft half.
+			if vc.Name == "gather" && gatheredThisTick {
+				observationOnly = false
+				result.ToolsFailedRejected = append(result.ToolsFailedRejected, call.Name)
+				transcript = append(transcript, toolResultMsg(call.ID, "[error: already_gathering] you're already gathering here this turn — the pick is under way and the harvest lands in your pack shortly; do not gather again, just wait or call done()."))
+				continue
+			}
+			if vc.Name == "craft" && craftedThisTick {
+				observationOnly = false
+				result.ToolsFailedRejected = append(result.ToolsFailedRejected, call.Name)
+				transcript = append(transcript, toolResultMsg(call.ID, "[error: already_chose] you already chose what to forge this turn — your focus is set and you keep making it until you choose again; do not choose again now, tend your post or call done()."))
+				continue
+			}
+
 			// ZBBS-HOME-414: tool-agnostic same-tick identical-call guard for the
 			// action tools that lack their own (deliver_order / move_to). The weak
 			// model re-fires a byte-identical call until the iteration budget —
@@ -674,7 +714,8 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 			// tools, so rejecting it model-facing costs nothing and steers the model
 			// to a different action or done(). consume is deliberately NOT on this
 			// list (LLM-91): an identical repeat consume while still in need is
-			// productive, so it earns the result-aware guard below instead.
+			// productive, so it earns the result-aware guard below instead. gather and
+			// craft are NOT here either (LLM-120) — name-only guards above, not name+args.
 			if key, ok := genericCallKey(vc); ok {
 				if _, dup := triedThisTick[key]; dup {
 					observationOnly = false
@@ -773,6 +814,19 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 				// and may be retried.
 				if key, isQuote := sceneQuoteKey(vc); isQuote {
 					quotedThisTick[key] = struct{}{}
+				}
+				// LLM-120: record a started gather / chosen craft-focus so a second of
+				// either this tick is rejected by the name-only guards above. Success-
+				// only, like the speak/offer/quote records — a gather that bounced (wrong
+				// spot) or a craft that named an unmakeable good may be retried. gather's
+				// nil-error result is always Started (sim.StartHarvest) and craft's is
+				// always a set focus (sim.SetProductionFocus), so outcome.success alone is
+				// the signal — no result inspection needed.
+				if vc.Name == "gather" {
+					gatheredThisTick = true
+				}
+				if vc.Name == "craft" {
+					craftedThisTick = true
 				}
 				// LLM-88: a non-terminal commit that moved the actor's own material
 				// state (a consume that eased a need and spent stock, a buy that moved
@@ -1227,14 +1281,31 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 	// steers it to wait rather than re-fire.
 	if vc.Name == "gather" {
 		if r, ok := cmdResult.(sim.SourceActivityStartResult); ok && r.Started {
-			// LLM-69: frame STAYING, not leaving. The old "carry on with something
-			// else" copy actively invited a move, and a move abandons the in-flight
-			// pick (commands_move.go) — the live forage→walk-off bug. Tell the model
-			// the pick is under way, that walking off forfeits it, and that it need
-			// not re-gather (the within-turn re-gather spam that hit the "already
-			// busy" reject). The yield lands in its pack a few seconds later, surfaced
+			// LLM-120: lead with the imperative. The prior copy buried "you needn't
+			// gather again" in a trailing soft clause that the weak model ignored,
+			// re-firing gather every round to the iteration budget. State the two
+			// don'ts first — don't gather again, don't walk off — then the why.
+			// LLM-69: the walk-off warning is load-bearing, NOT a flourish: a move
+			// abandons the in-flight pick (commands_move.go) — the live forage→walk-off
+			// bug — so framing STAYING (not "carry on elsewhere") must survive the
+			// reword. The yield lands in the actor's pack a few seconds later, surfaced
 			// as a completion beat in its next perception.
-			return "[ok] You set to gathering — it takes a few seconds, then what you gather lands in your pack. Stay where you are: if you walk off now you abandon the pick and gather nothing. You needn't gather again — just wait, or call done()."
+			return "[ok] You're now gathering — do not gather again, and do not walk off (leaving now abandons the pick and you gather nothing). It finishes on its own in a few seconds; the harvest lands in your pack next turn. Call done() now."
+		}
+	}
+	// craft: SetProductionFocus records the good the crafter forges next; the yield
+	// accrues over later ticks via produce_tick, so a bare "[ok]" read as "nothing
+	// happened, try again" and drove a within-tick re-craft loop to the iteration
+	// budget (live: Ezekiel, craft×6 at the forge, LLM-120). Confirm the choice —
+	// named via the catalog plural noun the command resolved — and lead with the
+	// imperative to stop; the genericCallKey same-tick guard is the teeth.
+	if vc.Name == "craft" {
+		if r, ok := cmdResult.(sim.ProductionFocusResult); ok {
+			noun := r.Noun
+			if noun == "" {
+				noun = string(r.Focus)
+			}
+			return fmt.Sprintf("[ok] Your forge is set to %s — that is what you make until you choose again. Do not choose again now; tend your post or call done().", noun)
 		}
 	}
 	if vc.Name == "speak" {
@@ -1707,7 +1778,11 @@ func genericCallKey(vc *ValidatedCall) (string, bool) {
 		// guards them earlier and more broadly, keyed on the ledger id (shared across
 		// the family) rather than this narrower name + full-args key. consume is NOT
 		// here — a repeat consume while still in need is productive; see consumeItemKey
-		// for its result-aware guard.
+		// for its result-aware guard. gather and craft are NOT here either (LLM-120):
+		// both key on the tool NAME alone (gatheredThisTick / craftedThisTick in the
+		// dispatch loop), not name+args — gather's `qty` is vestigial (LLM-87) and
+		// craft's item resolves through aliases (LLM-113: Nail/nail/nails → one kind),
+		// so a byte-identical name+args key would miss a drifted re-fire of either.
 	default:
 		return "", false
 	}
