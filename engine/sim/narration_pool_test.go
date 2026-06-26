@@ -19,8 +19,8 @@ func narrationTestWorld() *World {
 
 func TestNarrationSeedPools_RegistryShape(t *testing.T) {
 	pools := narrationSeedPools()
-	if len(pools) != 9 {
-		t.Errorf("seed registry has %d pools, want 9 (6 businessowner + 2 lodging + retire)", len(pools))
+	if len(pools) != 10 {
+		t.Errorf("seed registry has %d pools, want 10 (6 businessowner + 2 lodging + retire + establishment-closing)", len(pools))
 	}
 	for key, p := range pools {
 		if len(p.Seed) == 0 {
