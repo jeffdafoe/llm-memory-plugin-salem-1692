@@ -33,9 +33,10 @@ const ClosedBusinessMemoryTTL = 4 * time.Hour
 // workplace (has >=1 worker), reached either by entering it (FinalStructureID)
 // or by standing at its loiter slot (a StructureVisit to an owner-only shop,
 // where FinalStructureID is empty — the John Ellis path). "Keeper present" = at
-// least one worker of that structure is at it right now (inside it, or loitering
-// at it); presence is location-only and deliberately NOT gated on break/sleep/
-// shift — a keeper briefly on break inside the shop still counts as open.
+// least one AWAKE worker of that structure is at it right now (inside it, or
+// loitering at it); an asleep keeper does not count — innkeepers sleep at the
+// inn, so an abed inn reads shut — but a keeper briefly on break (StateResting)
+// still counts as open (the business is open, just quiet). LLM-126.
 func handleClosedBusinessOnArrival(w *World, evt Event) {
 	arr, ok := evt.(*ActorArrived)
 	if !ok {
@@ -120,15 +121,21 @@ func structureHasWorker(w *World, structureID StructureID) bool {
 	return false
 }
 
-// keeperPresentAt reports whether any worker of structureID is currently AT it —
-// inside its interior, or loitering at its slot. Location-only: it does NOT gate
-// on break/sleep/shift, so a keeper briefly on break inside the shop still reads
-// as present (the business is open, just quiet). A worker who has wandered off
-// (the drifted Ellis Farm dairyer) is not present, so the business reads shut.
+// keeperPresentAt reports whether any worker of structureID is currently TENDING
+// it — at it (inside its interior, or loitering at its slot) AND awake. The awake
+// gate is LLM-126: innkeepers sleep AT the inn, so without it an abed keeper reads
+// as present and the arrival capture records the OPPOSITE of reality (it would
+// even clear a stale "shut"). Only StateSleeping disqualifies — a keeper briefly
+// on break (StateResting) still counts as present (the business is open, just
+// quiet). A worker who has wandered off (the drifted Ellis Farm dairyer) is not
+// present, so the business reads shut.
 func keeperPresentAt(w *World, structureID StructureID) bool {
 	for _, worker := range w.Actors {
 		if worker == nil || worker.WorkStructureID != structureID {
 			continue
+		}
+		if worker.State == StateSleeping {
+			continue // abed ⇒ not tending, though bedded down AT the inn (LLM-126)
 		}
 		if worker.InsideStructureID == structureID {
 			return true

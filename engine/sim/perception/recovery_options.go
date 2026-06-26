@@ -55,11 +55,13 @@ type RecoveryOption struct {
 	Distance  string // qualitative ("a short walk"); "" when unknown (inns, remedies)
 	Direction string // cardinal ("northeast"); "" when unknown (inns, remedies)
 
-	// ClosedNow marks an inn whose keeper is asleep at snapshot time — the room
-	// can't be booked right now (booking pays the keeper), so render appends the
-	// same "no one is tending it just now" caveat the buy cues use. Set only for
-	// the "inn" kind. ZBBS-WORK-416.
-	ClosedNow bool
+	// Shut marks an inn the actor has a decaying experiential memory (LLM-126,
+	// businessRememberedShut on the 4h closed-business TTL) of finding shut — no
+	// keeper tending the desk, including an abed keeper now the capture gates on
+	// availability. Render appends the same recalled-shut caveat the buy cues use
+	// so the actor deprioritizes a booking it can't make. Set only for the "inn"
+	// kind. Replaces the old omniscient ClosedNow live-asleep read.
+	Shut bool
 
 	// AfterShiftOnly marks the "home" bed option for an actor who is currently
 	// ON shift: the engine only beds a homed NPC at home when it is OFF shift
@@ -156,7 +158,7 @@ func buildRecoveryOptions(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *si
 	if !resting {
 		opts = append(opts, gatherFreeRestSpots(snap, actorSnap)...)
 	}
-	opts = append(opts, gatherInnRestSpots(snap, actorID)...)
+	opts = append(opts, gatherInnRestSpots(snap, actorID, actorSnap)...)
 	// Consumable remedies, the own-bed option, and the own-stock line are all
 	// tiredness-gated, NOT homeless-gated: a not-yet-tired homeless actor
 	// surveying where to shelter doesn't need stimulant-brew prompts or a
@@ -193,15 +195,11 @@ func buildRecoveryOptions(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *si
 		return nil
 	}
 
-	// Open options lead closed ones (an inn whose keeper is asleep can't take a
-	// booking now), THEN nearest first; ties (and the no-distance
-	// inns/remedies/home) broken by label for deterministic output. The
-	// open-before-closed key mirrors the satiation buy menu — a closed inn must
-	// not lead a weak model to walk to a booking it can't make.
+	// Nearest first; ties (and the no-distance inns/remedies/home) broken by label
+	// for deterministic output. An inn the actor remembers finding shut is annotated
+	// (closedBusinessAnnotation), not demoted — the omniscient live-asleep sink was
+	// retired with ClosedNow (LLM-126).
 	sort.SliceStable(opts, func(i, j int) bool {
-		if opts[i].ClosedNow != opts[j].ClosedNow {
-			return !opts[i].ClosedNow
-		}
 		if opts[i].sortKey != opts[j].sortKey {
 			return opts[i].sortKey < opts[j].sortKey
 		}
@@ -337,7 +335,7 @@ func objectLabel(obj *sim.VillageObject) string {
 // keeper". Distance/direction are omitted: Structure.Position is grid space
 // (vs. the pixel space of actors/objects) and inn distance is pure flavor —
 // the grid->pixel conversion is an additive follow-on (see HOME-297 design).
-func gatherInnRestSpots(snap *sim.Snapshot, actorID sim.ActorID) []RecoveryOption {
+func gatherInnRestSpots(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSnapshot) []RecoveryOption {
 	var out []RecoveryOption
 	for id, s := range snap.Structures {
 		if s == nil || !hasPrivateRoom(s) {
@@ -354,7 +352,7 @@ func gatherInnRestSpots(snap *sim.Snapshot, actorID sim.ActorID) []RecoveryOptio
 			Kind:        "inn",
 			Label:       innLabel(s),
 			CostText:    innCostText(snap, actorID, keeperID),
-			ClosedNow:   vendorKeeperAsleep(snap, keeperID),
+			Shut:        businessRememberedShut(snap, actorSnap, id),
 			StructureID: id,
 			sortKey:     innSortKey,
 			sourceKey:   string(id),
@@ -515,13 +513,6 @@ func renderRecoveryOptions(b *strings.Builder, v *RecoveryOptionsView) {
 	for _, o := range v.Options {
 		b.WriteString("- ")
 		b.WriteString(sanitizeInline(o.Label))
-		// An asleep keeper can't take a booking right now — mark the inn
-		// "(currently closed)" right after the name (a weak model skims a soft
-		// trailing caveat), the same blunt marker the eat/drink buy cues use.
-		// ZBBS-WORK-416.
-		if o.ClosedNow {
-			b.WriteString(closedNowMarker)
-		}
 		switch o.Kind {
 		case "inn":
 			b.WriteString(" — rent a room")
@@ -578,6 +569,13 @@ func renderRecoveryOptions(b *strings.Builder, v *RecoveryOptionsView) {
 		// an explicit stay-put directive — the last thing read on the line. LLM-62.
 		if o.Kind == "home" && o.AfterShiftOnly {
 			b.WriteString(" — stay at your post until then")
+		}
+		// An inn the actor remembers finding shut (keeper not tending it, incl. abed
+		// now the capture gates on availability — LLM-126). Decaying experiential
+		// memory, replaces the old omniscient live-asleep marker: the actor only
+		// knows the desk was shut if it actually went there.
+		if o.Shut {
+			b.WriteString(closedBusinessAnnotation)
 		}
 		b.WriteString("\n")
 	}

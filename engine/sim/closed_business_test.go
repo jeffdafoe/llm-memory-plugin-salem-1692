@@ -79,6 +79,50 @@ func TestClosedBusiness_KeeperPresentClearsStaleMemory(t *testing.T) {
 	}
 }
 
+// TestClosedBusiness_AbedKeeperRecordsShut — LLM-126. A keeper bedded down AT its
+// own business (innkeepers sleep at the inn) does not count as tending: keeperPresentAt
+// gates on awake, so an arrival finds the desk shut and records ObservedClosed. The
+// capture half of teaching the decaying memory keeper AVAILABILITY, not just presence
+// — without it an abed inn read "attended" and the memory recorded the opposite of reality.
+func TestClosedBusiness_AbedKeeperRecordsShut(t *testing.T) {
+	w := cbWorld()
+	now := time.Now()
+	w.Structures["inn"] = &Structure{ID: "inn", DisplayName: "Hannah's Inn"}
+	// The keeper is INSIDE the inn but asleep → not tending.
+	keeper := cbAgent("hannah", "inn", "inn")
+	keeper.State = StateSleeping
+	w.Actors["hannah"] = keeper
+	lodger := cbAgent("ezekiel", "blacksmith", "inn")
+	w.Actors["ezekiel"] = lodger
+
+	handleClosedBusinessOnArrival(w, arrivedInside("ezekiel", "inn", now))
+
+	if _, ok := lodger.Observed.At(ObservedStateKey{StructureID: "inn", Condition: ObservedClosed}); !ok {
+		t.Fatalf("an abed keeper at the inn must read shut, got %v", lodger.Observed)
+	}
+}
+
+// TestClosedBusiness_RestingKeeperStaysPresent — LLM-126. Only StateSleeping
+// disqualifies a keeper; a keeper on a brief break (StateResting — take_break or
+// dwell-credit at the counter) still counts as tending, so the business reads open.
+// Preserves the deliberate "brief break = open, just quiet" intent.
+func TestClosedBusiness_RestingKeeperStaysPresent(t *testing.T) {
+	w := cbWorld()
+	now := time.Now()
+	w.Structures["tavern"] = &Structure{ID: "tavern", DisplayName: "The Tavern"}
+	keeper := cbAgent("john", "tavern", "tavern")
+	keeper.State = StateResting
+	w.Actors["john"] = keeper
+	patron := cbAgent("ezekiel", "blacksmith", "tavern")
+	w.Actors["ezekiel"] = patron
+
+	handleClosedBusinessOnArrival(w, arrivedInside("ezekiel", "tavern", now))
+
+	if patron.Observed.Len() != 0 {
+		t.Fatalf("a resting keeper still counts as present → no shut memory, got %v", patron.Observed)
+	}
+}
+
 func TestClosedBusiness_OwnWorkplaceExcluded(t *testing.T) {
 	w := cbWorld()
 	now := time.Now()

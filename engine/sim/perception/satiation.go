@@ -137,14 +137,6 @@ type SatiationVendor struct {
 	// ZBBS-HOME-363.
 	OutOfStock bool
 
-	// ClosedNow is true when the vendor backing this offer is asleep at snapshot
-	// time (an off-shift night-shift keeper abed at the counter) — render
-	// annotates the line present-tense so the buyer redirects to an open source
-	// instead of petitioning a sleeping keeper who can't transact. Distinct from
-	// the experiential Shut memory: this is a LIVE state read, so it takes
-	// precedence over Shut in render. ZBBS-HOME-387.
-	ClosedNow bool
-
 	// EatHere is true when the item always settles eat-here (consumable,
 	// neither service nor portable — ItemKindDef.EatHereOnly). Render states
 	// the fact on the line so the buyer plans a sit-down, not a carry-out
@@ -237,13 +229,12 @@ func gatherSatiationVendors(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *
 				// LLM-113: the full buy-cue noun — "a wedge of cheese" when the kind
 				// has a singular phrase, else the bare menu label (no article glued
 				// onto a phrase-less label). Render prints it verbatim.
-				ItemLabel: buyCueNoun(snap, vc.ItemKind),
-				Magnitude: vc.Magnitude,
-				CostText:       vc.CostText,
-				Shut:           businessRememberedShut(snap, actorSnap, vc.StructureID),
-				OutOfStock:     outOfStock,
-				ClosedNow:      vendorKeeperAsleep(snap, vc.VendorID),
-				EatHere:        snap.ItemKinds[vc.ItemKind].EatHereOnly(),
+				ItemLabel:  buyCueNoun(snap, vc.ItemKind),
+				Magnitude:  vc.Magnitude,
+				CostText:   vc.CostText,
+				Shut:       businessRememberedShut(snap, actorSnap, vc.StructureID),
+				OutOfStock: outOfStock,
+				EatHere:    snap.ItemKinds[vc.ItemKind].EatHereOnly(),
 			},
 			distTiles:  vendorStructureDistanceTiles(snap, actorSnap, vc.StructureID),
 			outOfStock: outOfStock,
@@ -261,16 +252,11 @@ func gatherSatiationVendors(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *
 	for _, c := range byStructure {
 		cands = append(cands, c)
 	}
-	// Open vendors lead closed ones, THEN nearest-first; ties by label then
-	// structure_id for deterministic output. The open-before-closed key is
-	// primary and applied BEFORE the maxSatiationVendors cap below, so a vendor
-	// whose keeper is asleep can neither outrank nor crowd out an open one the
-	// weak model would otherwise walk to first (the Ezekiel blacksmith↔tavern
-	// cycle: the closed Tavern sat nearest the forge and so led the open Inn).
+	// Nearest-first; ties by label then structure_id for deterministic output. A
+	// vendor the buyer remembers finding shut is annotated (closedBusinessAnnotation),
+	// not demoted — the omniscient live-asleep sink was retired with ClosedNow
+	// (LLM-126).
 	sort.Slice(cands, func(i, j int) bool {
-		if cands[i].sv.ClosedNow != cands[j].sv.ClosedNow {
-			return !cands[i].sv.ClosedNow
-		}
 		if cands[i].distTiles != cands[j].distTiles {
 			return cands[i].distTiles < cands[j].distTiles
 		}
@@ -603,16 +589,6 @@ func renderSatiation(b *strings.Builder, v *SatiationView) {
 			for _, vd := range n.Vendors {
 				b.WriteString("- ")
 				b.WriteString(sanitizeInline(vd.StructureLabel))
-				// A vendor whose keeper is asleep can't transact now — state it
-				// bluntly as "(currently closed)" right after the name, not a
-				// soft trailing clause. The weak model read top-down and walked
-				// to the closed shop anyway when this was the trailing "no one is
-				// tending it just now" (the Ezekiel blacksmith↔tavern cycle);
-				// gatherSatiationVendors also sinks closed vendors below open
-				// ones, so this only marks the demoted straggler.
-				if vd.ClosedNow {
-					b.WriteString(closedNowMarker)
-				}
 				fmt.Fprintf(b, " — buy %s", sanitizeInline(vd.ItemLabel))
 				if vd.Magnitude > 0 {
 					fmt.Fprintf(b, " (%s)", feltAmountWithSufficiency(vd.Magnitude, n.Need, n.Level))
@@ -632,11 +608,11 @@ func renderSatiation(b *strings.Builder, v *SatiationView) {
 				if vd.StructureID != "" {
 					fmt.Fprintf(b, " (structure_id: %s)", vd.StructureID)
 				}
-				// Live "closed now" is shown as the (currently closed) name
-				// marker above; the stale experiential Shut memory only annotates
-				// when the vendor isn't live-closed — a present-tense read beats a
-				// decaying recollection when both point at the same shop.
-				if !vd.ClosedNow && vd.Shut {
+				// The decaying experiential memory of finding this vendor shut — no
+				// keeper tending it, now including an abed keeper (the capture gates
+				// on availability, LLM-126). Replaces the old omniscient live-asleep
+				// marker: the buyer only "knows" it was shut if it actually went there.
+				if vd.Shut {
 					b.WriteString(closedBusinessAnnotation)
 				}
 				if vd.OutOfStock {

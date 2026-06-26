@@ -190,41 +190,59 @@ func TestBuildRecoveryOptions_KeeperlessInnSkipped(t *testing.T) {
 	}
 }
 
-// TestBuildRecoveryOptions_InnClosedWhenKeeperAsleep — ZBBS-WORK-416. An inn whose
-// keeper is asleep can't take a booking right now, so the rest cue is flagged
-// ClosedNow and the render marks it "(currently closed)" right after the name
-// instead of advertising it as freely bookable.
-func TestBuildRecoveryOptions_InnClosedWhenKeeperAsleep(t *testing.T) {
-	subj := &sim.ActorSnapshot{Needs: map[sim.NeedKey]int{"tiredness": 1}, HomeStructureID: ""} // homeless → fires
+// TestBuildRecoveryOptions_InnRememberedShut — LLM-126. An inn the actor remembers
+// finding shut (a decaying ObservedClosed memory) is flagged Shut, and the render
+// appends the recalled-shut caveat instead of advertising it as freely bookable —
+// the experiential replacement for the retired omniscient keeper-asleep marker. The
+// keeper is awake here: the cue is driven by the memory, not the keeper's state.
+func TestBuildRecoveryOptions_InnRememberedShut(t *testing.T) {
+	now := time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)
+	subj := &sim.ActorSnapshot{
+		Needs:           map[sim.NeedKey]int{"tiredness": 1},
+		HomeStructureID: "", // homeless → inns fire
+		Observed: sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
+			{StructureID: "inn", Condition: sim.ObservedClosed}: now.Add(-time.Hour),
+		}),
+	}
 	snap := &sim.Snapshot{
+		PublishedAt: now,
 		Actors: map[sim.ActorID]*sim.ActorSnapshot{
 			"ezekiel": subj,
-			"hannah":  {WorkStructureID: "inn", State: sim.StateSleeping},
+			"hannah":  {WorkStructureID: "inn", State: sim.StateIdle},
 		},
 		Structures: map[sim.StructureID]*sim.Structure{"inn": innStructure("inn", "Hannah's Inn")},
 	}
 	v := buildRecoveryOptions(snap, "ezekiel", subj)
-	if v == nil || len(v.Options) != 1 || !v.Options[0].ClosedNow {
-		t.Fatalf("want 1 inn option flagged ClosedNow, got %+v", v)
+	if v == nil || len(v.Options) != 1 || !v.Options[0].Shut {
+		t.Fatalf("want 1 inn option flagged Shut, got %+v", v)
 	}
 	var b strings.Builder
 	renderRecoveryOptions(&b, v)
-	if !strings.Contains(b.String(), "Hannah's Inn"+closedNowMarker) {
-		t.Errorf("rendered rest section missing the (currently closed) name marker:\n%s", b.String())
+	if !strings.Contains(b.String(), closedBusinessAnnotation) {
+		t.Errorf("rendered rest section missing the experiential shut caveat:\n%s", b.String())
 	}
 }
 
-// TestBuildRecoveryOptions_ClosedInnDemoted: a closed inn (keeper asleep) sorts
-// BELOW an open one even when its name sorts first alphabetically — open-before-
-// closed is the primary sort key (mirrors the satiation buy menu), so a weak
-// model doesn't lead with a booking it can't make.
-func TestBuildRecoveryOptions_ClosedInnDemoted(t *testing.T) {
-	subj := &sim.ActorSnapshot{Needs: map[sim.NeedKey]int{"tiredness": 1}, HomeStructureID: ""} // homeless → inns fire
+// TestBuildRecoveryOptions_RememberedShutInnNotDemoted — LLM-126, decision 1(a). An
+// inn the actor remembers finding shut keeps its natural (alphabetical) position
+// rather than being sunk below an open one: the omniscient open-before-closed sink
+// was retired with ClosedNow, so a remembered-shut inn is annotated, not demoted.
+func TestBuildRecoveryOptions_RememberedShutInnNotDemoted(t *testing.T) {
+	now := time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)
+	subj := &sim.ActorSnapshot{
+		Needs:           map[sim.NeedKey]int{"tiredness": 1},
+		HomeStructureID: "", // homeless → inns fire
+		// He remembers the Anchor (alphabetically first) shut; the Boggs he does not.
+		Observed: sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
+			{StructureID: "anchor", Condition: sim.ObservedClosed}: now.Add(-time.Hour),
+		}),
+	}
 	snap := &sim.Snapshot{
+		PublishedAt: now,
 		Actors: map[sim.ActorID]*sim.ActorSnapshot{
 			"ezekiel": subj,
-			"amos":    {WorkStructureID: "anchor", State: sim.StateSleeping}, // closed; "Anchor" sorts first
-			"boggs":   {WorkStructureID: "boggs", State: sim.StateIdle},      // open
+			"amos":    {WorkStructureID: "anchor", State: sim.StateIdle},
+			"boggs":   {WorkStructureID: "boggs", State: sim.StateIdle},
 		},
 		Structures: map[sim.StructureID]*sim.Structure{
 			"anchor": innStructure("anchor", "Anchor Inn"),
@@ -235,11 +253,12 @@ func TestBuildRecoveryOptions_ClosedInnDemoted(t *testing.T) {
 	if v == nil || len(v.Options) != 2 {
 		t.Fatalf("want 2 inn options, got %+v", v)
 	}
-	if v.Options[0].StructureID != "boggs" || v.Options[0].ClosedNow {
-		t.Errorf("open inn must lead the alphabetically-earlier closed one, got first = %+v", v.Options[0])
+	// Alphabetical by label (Anchor < Boggs); the remembered-shut Anchor is NOT sunk.
+	if v.Options[0].StructureID != "anchor" || !v.Options[0].Shut {
+		t.Errorf("remembered-shut Anchor must keep its alphabetical lead (not demoted), got first = %+v", v.Options[0])
 	}
-	if v.Options[1].StructureID != "anchor" || !v.Options[1].ClosedNow {
-		t.Errorf("closed inn must be demoted to the tail, got second = %+v", v.Options[1])
+	if v.Options[1].StructureID != "boggs" || v.Options[1].Shut {
+		t.Errorf("the un-remembered Boggs must follow and not be flagged shut, got second = %+v", v.Options[1])
 	}
 }
 
