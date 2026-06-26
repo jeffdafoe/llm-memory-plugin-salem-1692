@@ -928,6 +928,39 @@ func TestBuildSatiation_OwnTradeStockReturnsAtRed(t *testing.T) {
 	}
 }
 
+// LLM-134: trade stock is demoted regardless of restock source — a buy-sourced
+// recipe input (a tavernkeeper's bought stew carrots) is treated the same as a
+// produced output, so an actor isn't nudged to graze its ingredients either.
+// (code_review follow-up: cover a buy/input item, not just a produced output.)
+func TestBuildSatiation_BuyInputAlsoDemotedBelowRed(t *testing.T) {
+	subj := &sim.ActorSnapshot{
+		Needs:     map[sim.NeedKey]int{"hunger": 14}, // mild
+		Inventory: map[sim.ItemKind]int{"stew": 5, "carrots": 8, "bread": 2},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "stew", Source: sim.RestockSourceProduce, Max: 30}, // output he makes
+			{Item: "carrots", Source: sim.RestockSourceBuy, Max: 12},  // input he buys
+		}},
+	}
+	cat := map[sim.ItemKind]*sim.ItemKindDef{
+		"stew":    {Name: "stew", DisplayLabel: "stew", Category: sim.ItemCategoryFood, Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 12}}},
+		"carrots": {Name: "carrots", DisplayLabel: "carrots", Category: sim.ItemCategoryFood, Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 3}}},
+		"bread":   {Name: "bread", DisplayLabel: "bread", Category: sim.ItemCategoryFood, Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 6}}},
+	}
+	snap := &sim.Snapshot{
+		Actors:    map[sim.ActorID]*sim.ActorSnapshot{"john": subj},
+		ItemKinds: cat,
+	}
+	v := buildSatiation(snap, "john", subj)
+	if v == nil || len(v.Needs) != 1 {
+		t.Fatalf("want 1 pressing need, got %+v", v)
+	}
+	own := v.Needs[0].OwnStock
+	// Only personal bread survives; the produced stew AND the bought-input carrots are both demoted.
+	if len(own) != 1 || own[0].Label != "bread" {
+		t.Fatalf("want only personal bread (produced stew + bought carrots both demoted), got %+v", own)
+	}
+}
+
 // LLM-134 guard: an actor with NO restock manifest manages nothing, so all the
 // food it carries is personal and surfaces at the felt floor exactly as before —
 // the demotion only touches a producer's own trade goods.
