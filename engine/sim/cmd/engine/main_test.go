@@ -248,3 +248,62 @@ func TestRun_WiresOffWorldCascades(t *testing.T) {
 		t.Errorf("Environment.Atmosphere = %q, want %q (RegisterAtmosphere not wired into run()?)", got, wantAtmosphere)
 	}
 }
+
+// TestRun_WiresStormCascade proves run() reaches RegisterStorm (LLM-117) by
+// witnessing its boot behavior: the storm sweep's first act is SeedWeatherClear,
+// which forces a (simulated persisted) mid-storm weather back to clear. We seed
+// Environment.Weather = "storm" before boot and assert it becomes "clear" after
+// run() starts — if RegisterStorm weren't wired, the seeded "storm" would
+// persist.
+func TestRun_WiresStormCascade(t *testing.T) {
+	repo, _ := mem.NewRepository()
+	world, err := sim.LoadWorld(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	world.Settings.CheckpointInterval = 20 * time.Millisecond
+	// Simulate a mid-storm weather loaded from world_state. Safe to mutate
+	// directly — the world goroutine hasn't started.
+	world.Environment.Weather = sim.WeatherStorm
+
+	rt := runtime{
+		World:     world,
+		LLMClient: llm.NewFakeClient(),
+		Save:      func(context.Context, *sim.CheckpointSnapshot) error { return nil },
+		TickSink:  nil,
+	}
+
+	stop := make(chan struct{})
+	done := make(chan error, 1)
+	go func() { done <- run(rt, stop) }()
+
+	// The boot SeedWeatherClear applies async once Run starts; poll for clear.
+	var got string
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		res, sendErr := world.SendContext(context.Background(), sim.Command{Fn: func(w *sim.World) (any, error) {
+			return w.Environment.Weather, nil
+		}})
+		if sendErr == nil {
+			if s, _ := res.(string); s == sim.WeatherClear {
+				got = s
+				break
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	close(stop)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run did not return within 5s of shutdown signal")
+	}
+
+	if got != sim.WeatherClear {
+		t.Errorf("Environment.Weather = %q, want %q (RegisterStorm not wired into run()?)", got, sim.WeatherClear)
+	}
+}

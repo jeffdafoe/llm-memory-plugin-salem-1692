@@ -202,6 +202,57 @@ func (s *Server) handleUmbilicalPhase(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// umbilicalWeatherRequest is the POST /api/village/umbilical/weather body.
+type umbilicalWeatherRequest struct {
+	Weather string `json:"weather"` // storm | clear
+}
+
+// umbilicalWeatherResponse reports the forced weather and whether it was a real
+// transition (false = it was already that weather; the dedup in
+// ApplyWeatherChange suppressed the write + WS frame).
+type umbilicalWeatherResponse struct {
+	Weather string `json:"weather"`
+	Changed bool   `json:"changed"`
+}
+
+// handleUmbilicalWeather forces the world weather to storm or clear (LLM-117).
+// The operator-reachable trigger for the storm FX, deliberately NOT gated on PC
+// presence (unlike the automatic sweep in cascade/storm.go) so a storm can be
+// summoned on an empty village for demo/testing. Issues sim.ApplyWeatherChange
+// directly — the same command the auto-sweep funnels through — so the storm FX
+// reaches clients via the weather_changed WS broadcast. 400 invalid weather; 422
+// on a command error; 200 with the applied weather. Forcing the current weather
+// is allowed (idempotent — changed=false, no write, no frame).
+func (s *Server) handleUmbilicalWeather(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	if user == nil {
+		writeAuthError(w, "invalid")
+		return
+	}
+	var req umbilicalWeatherRequest
+	if !decodeUmbilicalBody(w, r, &req) {
+		return
+	}
+	weather := strings.TrimSpace(req.Weather)
+	if weather != sim.WeatherStorm && weather != sim.WeatherClear {
+		writeError(w, http.StatusBadRequest, `weather must be "storm" or "clear"`)
+		return
+	}
+
+	auditUmbilical(user.Username, "weather", "to="+weather)
+
+	res, err := s.world.SendContext(r.Context(), sim.ApplyWeatherChange(weather, time.Now().UTC()))
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	changed, _ := res.(bool)
+	writeJSON(w, umbilicalWeatherResponse{Weather: weather, Changed: changed})
+}
+
 // umbilicalSettleRequest is the POST /api/village/umbilical/settle body: which
 // actor to clear the pending warrant cycle for.
 type umbilicalSettleRequest struct {

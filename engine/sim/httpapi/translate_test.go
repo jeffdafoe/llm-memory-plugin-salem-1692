@@ -42,6 +42,35 @@ func TestTranslateEvent_MoveStarted(t *testing.T) {
 	}
 }
 
+func TestTranslateEvent_WeatherChanged(t *testing.T) {
+	at := time.Date(2026, 6, 25, 13, 30, 0, 0, time.UTC)
+	frame, ok := TranslateEvent(&sim.WeatherChanged{Weather: sim.WeatherStorm, At: at})
+	if !ok {
+		t.Fatal("WeatherChanged should translate")
+	}
+	if frame.Type != "weather_changed" {
+		t.Fatalf("type = %q, want weather_changed", frame.Type)
+	}
+	d, isType := frame.Data.(weatherChangedWireDTO)
+	if !isType {
+		t.Fatalf("data type = %T, want weatherChangedWireDTO", frame.Data)
+	}
+	if d.Weather != sim.WeatherStorm {
+		t.Errorf("weather = %q, want %q", d.Weather, sim.WeatherStorm)
+	}
+	if !d.At.Equal(at) {
+		t.Errorf("at = %v, want %v", d.At, at)
+	}
+	// The wire JSON the client reads carries weather + at.
+	b, err := json.Marshal(frame.Data)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(b), `"weather":"storm"`) {
+		t.Errorf("wire JSON missing weather token: %s", b)
+	}
+}
+
 func TestTranslateEvent_PCNeedsChanged(t *testing.T) {
 	frame, ok := TranslateEvent(&sim.PCNeedsChanged{
 		ActorID: "jeff",

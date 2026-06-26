@@ -174,6 +174,11 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 		return WireFrame{Type: "world_phase_changed", Data: phaseChangedWireDTO{
 			Phase: string(e.To),
 		}}, true
+	case *sim.WeatherChanged:
+		return WireFrame{Type: "weather_changed", Data: weatherChangedWireDTO{
+			Weather: e.Weather,
+			At:      e.At,
+		}}, true
 	case *sim.VillageObjectStateChanged:
 		return WireFrame{Type: "object_state_changed", Data: objectStateChangedWireDTO{
 			ID:    string(e.ObjectID),
@@ -573,6 +578,19 @@ type spokeWireDTO struct {
 // frames, so this carries only the scalar phase.
 type phaseChangedWireDTO struct {
 	Phase string `json:"phase"`
+}
+
+// weatherChangedWireDTO is the weather_changed payload — the storm boundary
+// (LLM-117). weather is the post-transition value ("clear" | "storm", matching
+// the world DTO's weather token); the client raises / tweens out the storm FX
+// layer on receipt (event_client.gd _on_world_weather_changed → world.set_weather).
+// at is the RFC3339 instant the change landed (carried for parity with the
+// event; the client uses only weather). A client connecting / reconnecting
+// mid-storm renders the storm from the world DTO's weather field instead of this
+// frame, so the two share the same token vocabulary.
+type weatherChangedWireDTO struct {
+	Weather string    `json:"weather"`
+	At      time.Time `json:"at"`
 }
 
 // objectStateChangedWireDTO is the object_state_changed payload — one placed

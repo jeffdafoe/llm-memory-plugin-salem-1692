@@ -401,6 +401,7 @@ func (s *Server) umbilicalRoutes() []umbilicalRoute {
 		// Control whitelist — world-mutating; armed only when control is also enabled.
 		{http.MethodPost, umbilicalBasePath + "/nudge", "Force a reactor tick for one actor, optionally injecting an in-world felt-impulse directive. Body: {actor_id, message?}.", true, s.handleUmbilicalNudge},
 		{http.MethodPost, umbilicalBasePath + "/phase", "Force a day/night phase transition. Body: {phase}.", true, s.handleUmbilicalPhase},
+		{http.MethodPost, umbilicalBasePath + "/weather", "Force the world weather to storm or clear on demand — ungated by PC presence, so it works on an empty village for demo/testing (LLM-117). Body: {weather}.", true, s.handleUmbilicalWeather},
 		{http.MethodPost, umbilicalBasePath + "/settle", "Clear one actor's pending warrant cycle (stop a spiraling NPC). Body: {actor_id}.", true, s.handleUmbilicalSettle},
 		{http.MethodPost, umbilicalBasePath + "/rotate", "Force a daily-rotation pass. Body: {tag?}.", true, s.handleUmbilicalRotate},
 		{http.MethodPost, umbilicalBasePath + "/settings/need-threshold", "Live-tune one need's red-line threshold (ephemeral; resets on restart). Body: {need, value}.", true, s.handleUmbilicalNeedThreshold},

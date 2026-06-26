@@ -159,6 +159,8 @@ func _handle_message(data: String) -> void:
             _on_terrain_updated(event_data)
         "world_phase_changed":
             _on_world_phase_changed(event_data)
+        "weather_changed":
+            _on_world_weather_changed(event_data)
         "npc_walking":
             _on_npc_walking(event_data)
         "npc_arrived":
@@ -575,6 +577,15 @@ func _on_world_phase_changed(data: Dictionary) -> void:
         return
     var phase: String = data.get("phase", "day")
     world.set_phase(phase, true)
+
+## Server says the world weather changed (LLM-117). Raises / clears the storm
+## FX overlay via world.set_weather (which delegates to the storm CanvasLayer).
+## Tweened — a forced or auto storm rolls in rather than snapping.
+func _on_world_weather_changed(data: Dictionary) -> void:
+    if world == null:
+        return
+    var weather: String = data.get("weather", "clear")
+    world.set_weather(weather, true)
 
 ## Server says an NPC is starting a walk. The v2 engine sends the full
 ## cost-weighted TILE path it computed (road-preferring, building-avoiding) —

@@ -27,6 +27,7 @@ type WorldEnvironment struct {
 	Weather                 string
 	Atmosphere              string
 	LastAtmosphereRefreshAt time.Time // last successful atmosphere refresh (UTC); see engine/sim/atmosphere.go. Restart-lossy by design — cosmetic prose, fresh fire after restart is acceptable.
+	LastWeatherChangeAt     time.Time // last weather transition (UTC); see engine/sim/weather.go. Restart-lossy by design — the storm sweep boots to clear and reseeds this (SeedWeatherClear), so it is NOT persisted.
 	LastTransitionAt        time.Time // last day↔night transition (UTC). Durable — persisted in world_state.last_transition_at.
 	LastRotationAt          time.Time // last daily asset rotation (UTC). Durable — persisted in world_state.last_rotation_at.
 	LastNeedsTickAt         time.Time // last hourly needs increment (UTC, hour-truncated). Durable — persisted in world_state.last_needs_tick_at.
@@ -275,6 +276,21 @@ type WorldSettings struct {
 	// owns the goroutine driver). Settings-driven from day one so dev /
 	// staging can tune it down for testing without rebuilding.
 	AtmosphereRefreshInterval time.Duration
+
+	// Storm weather cascade tunables (engine/sim/weather.go +
+	// engine/sim/cascade/storm.go — LLM-117 Half A). Both fall back to
+	// the cascade-owned defaults (defaultStormInterval /
+	// defaultStormDuration) when zero, so a test or a fresh world that
+	// bypasses the environment loader still gets sane behavior.
+	//
+	//   - StormInterval: the gap between automatic storms, measured from
+	//     the last weather change (clear → storm). Default 3h. Settings-
+	//     driven so dev / staging can tune it down to seconds for testing
+	//     without a rebuild (same posture as AtmosphereRefreshInterval).
+	//   - StormDuration: how long an automatic storm holds before it
+	//     clears (storm → clear). Default 15m.
+	StormInterval time.Duration
+	StormDuration time.Duration
 
 	// Action-log substrate tunables (engine/sim/action_log.go +
 	// engine/sim/cascade/action_log.go). Both fall back to defaults

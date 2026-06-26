@@ -282,7 +282,11 @@ func buildAtmospherePrompt(c sim.AtmosphereContext) string {
 	b.WriteString("You author the village's current atmosphere — weather, mood, ambient texture. There are no tools available for this turn; respond with prose only.\n\n")
 
 	fmt.Fprintf(&b, "It is %s.", c.Phase)
-	if weather := strings.TrimSpace(c.Weather); weather != "" {
+	// "clear" is the calm/default weather (LLM-117) — render it as no weather
+	// line, identical to the empty (pre-weather-cascade) case, so the clear-
+	// state atmosphere prompt is byte-for-byte unchanged. A storm (or any
+	// future non-clear state) surfaces naturally in the mood prose.
+	if weather := strings.TrimSpace(c.Weather); weather != "" && weather != sim.WeatherClear {
 		fmt.Fprintf(&b, " The weather: %s.", weather)
 	}
 	b.WriteString("\n\n")
