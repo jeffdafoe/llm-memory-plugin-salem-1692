@@ -71,6 +71,25 @@ const (
 	defaultDegeneracyThrottleBackoff     = 5 * time.Minute
 )
 
+// Defaults for the oscillation arm (LLM-124). Deliberately conservative: the
+// arm fires only on a FULL window that shows a tight, sustained shuttle. An
+// operator tunes these live alongside the master Stage-1 threshold.
+const (
+	defaultDegeneracyOscillationWindow         = 8
+	defaultDegeneracyOscillationMinTransitions = 3
+	defaultDegeneracyOscillationMaxDistinct    = 2
+)
+
+// DegenVisit is one scored tick's snapshot in the oscillation window (LLM-124):
+// the structure the actor ended the tick inside (empty when in transit or
+// outdoors) and how many of its needs were red at that moment. The red count
+// lets the arm tell a pointless shuttle (count flat or rising) from a trip that
+// resolved a need (count fell — genuine progress, not futile).
+type DegenVisit struct {
+	Structure StructureID
+	RedNeeds  int
+}
+
 // degeneracyEnabled reports whether the observer is active. It is OFF unless
 // explicitly enabled via a positive DegeneracyThinAfterTicks — a deliberately
 // opt-in posture for a gate that can suppress an agent's ticks. The safe
@@ -106,6 +125,30 @@ func (s WorldSettings) degeneracyThrottleBackoff() time.Duration {
 	return defaultDegeneracyThrottleBackoff
 }
 
+// degeneracyOscillationWindow / …MinTransitions / …MaxDistinct resolve the
+// oscillation arm's tunables, each falling back to a safe default when unset so
+// the arm is fully configured whenever the observer is enabled.
+func (s WorldSettings) degeneracyOscillationWindow() int {
+	if s.DegeneracyOscillationWindow > 0 {
+		return s.DegeneracyOscillationWindow
+	}
+	return defaultDegeneracyOscillationWindow
+}
+
+func (s WorldSettings) degeneracyOscillationMinTransitions() int {
+	if s.DegeneracyOscillationMinTransitions > 0 {
+		return s.DegeneracyOscillationMinTransitions
+	}
+	return defaultDegeneracyOscillationMinTransitions
+}
+
+func (s WorldSettings) degeneracyOscillationMaxDistinct() int {
+	if s.DegeneracyOscillationMaxDistinct > 0 {
+		return s.DegeneracyOscillationMaxDistinct
+	}
+	return defaultDegeneracyOscillationMaxDistinct
+}
+
 // updateDegeneracy folds a completed tick's yield into the actor's futility
 // streak. Called by CompleteReactorTick on a matching (non-stale) completion,
 // on the world goroutine, so the per-actor tracker is mutated race-free.
@@ -125,13 +168,18 @@ func updateDegeneracy(w *World, a *Actor, result TickResult, now time.Time) {
 		if a.DegenStage != DegeneracyNone || a.DegenStreak != 0 {
 			clearDegeneracy(w, a, now)
 		}
+		a.DegenVisits = nil
 		return
 	}
 	if !degeneracyTickScored(result.TerminalStatus) {
 		return
 	}
-	if !degeneracyTickWasFutile(result) {
-		// A productive tick breaks the streak and releases any stage.
+	// Snapshot this scored tick's structure + red-need state into the
+	// oscillation window before scoring, so the arm sees the current tick.
+	recordDegenVisit(w.Settings, a)
+	if !degeneracyTickWasFutile(result) && !degeneracyOscillationFutile(w.Settings, a) {
+		// A tick that is neither zero-yield nor an unproductive oscillation is
+		// productive: it breaks the streak and releases any stage.
 		clearDegeneracy(w, a, now)
 		return
 	}
@@ -215,6 +263,86 @@ func hasMaterialSuccess(succeeded []string) bool {
 		}
 	}
 	return false
+}
+
+// recordDegenVisit appends the current scored tick's post-tick structure and
+// red-need snapshot to the actor's oscillation window, trimming to the
+// configured size (oldest dropped). Runs once per scored tick, before scoring.
+func recordDegenVisit(s WorldSettings, a *Actor) {
+	a.DegenVisits = append(a.DegenVisits, DegenVisit{
+		Structure: a.InsideStructureID,
+		RedNeeds:  countRedNeeds(s, a),
+	})
+	window := s.degeneracyOscillationWindow()
+	if len(a.DegenVisits) > window {
+		// Copy the trailing window into a fresh slice so the backing array
+		// cannot grow without bound across a long-lived actor.
+		a.DegenVisits = append([]DegenVisit(nil), a.DegenVisits[len(a.DegenVisits)-window:]...)
+	}
+}
+
+// countRedNeeds counts how many of the actor's needs sit at or past their red
+// threshold right now, using the world's (settings-tuned) thresholds.
+func countRedNeeds(s WorldSettings, a *Actor) int {
+	n := 0
+	for _, need := range Needs {
+		if a.Needs[need.Key] >= s.NeedThresholds.Get(need.Key) {
+			n++
+		}
+	}
+	return n
+}
+
+// degeneracyOscillationFutile reports whether the actor's recent scored ticks
+// form a tight structure oscillation with no goal-completion — futile even
+// though each leg state-changed (so degeneracyTickWasFutile alone reads it as
+// productive). This is the LLM-124 arm: it measures NET progress over a window
+// rather than per-tick yield, catching the Ezekiel Crane Blacksmith<->Tavern
+// shuttle where every move_to leg individually looks productive.
+//
+// It requires a FULL window (sustained behavior). "Tight oscillation": collapse
+// the window's post-tick structures (dropping in-transit blanks and consecutive
+// repeats) into a visit sequence; the actor must have changed structure at
+// least MinTransitions times while touching no more than MaxDistinct distinct
+// structures — i.e. it keeps returning to the same few places. "No
+// goal-completion": the red-need count never fell anywhere in the window. A red
+// need that resolved (the count dropped between two consecutive ticks) is real
+// progress and exempts the window, so incidental eating/drinking mid-shuttle is
+// not mistaken for thrashing.
+func degeneracyOscillationFutile(s WorldSettings, a *Actor) bool {
+	window := s.degeneracyOscillationWindow()
+	if len(a.DegenVisits) < window {
+		return false
+	}
+	// Goal-completion guard: if the red-need count dropped at any point in the
+	// window, the actor resolved a need on one of these trips — genuine
+	// progress, not a futile shuttle. (Endpoint comparison alone would miss a
+	// resolve-then-reclimb within the window.)
+	for i := 1; i < len(a.DegenVisits); i++ {
+		if a.DegenVisits[i].RedNeeds < a.DegenVisits[i-1].RedNeeds {
+			return false
+		}
+	}
+	// Collapse the window into a visit sequence: drop in-transit blanks and
+	// consecutive repeats, so dwelling in one place doesn't read as movement.
+	var seq []StructureID
+	for _, v := range a.DegenVisits {
+		if v.Structure == "" {
+			continue
+		}
+		if len(seq) > 0 && seq[len(seq)-1] == v.Structure {
+			continue
+		}
+		seq = append(seq, v.Structure)
+	}
+	if len(seq)-1 < s.degeneracyOscillationMinTransitions() {
+		return false
+	}
+	distinct := make(map[StructureID]struct{}, len(seq))
+	for _, id := range seq {
+		distinct[id] = struct{}{}
+	}
+	return len(distinct) <= s.degeneracyOscillationMaxDistinct()
 }
 
 // advanceDegeneracyStage recomputes the actor's stage from the current streak

@@ -224,6 +224,23 @@ type WorldSettings struct {
 	DegeneracyThrottleMinDuration time.Duration
 	DegeneracyThrottleBackoff     time.Duration
 
+	// Oscillation arm (LLM-124, engine/sim/degeneracy.go). Layered on the
+	// per-tick yield scorer: an actor shuttling between a tight set of
+	// structures with no goal progress reads as futile even though each move_to
+	// leg individually state-changed (the live Ezekiel Crane Blacksmith<->Tavern
+	// loop the zero-yield arms missed). Active whenever the observer is enabled;
+	// each knob falls back to a safe default when unset.
+	//
+	//   - DegeneracyOscillationWindow: scored ticks of structure history kept
+	//     for the arm (default 8). The arm fires only on a full window.
+	//   - DegeneracyOscillationMinTransitions: minimum structure changes within
+	//     the window to count as oscillating (default 3).
+	//   - DegeneracyOscillationMaxDistinct: maximum distinct structures the actor
+	//     may touch and still count as a tight loop (default 2).
+	DegeneracyOscillationWindow         int
+	DegeneracyOscillationMinTransitions int
+	DegeneracyOscillationMaxDistinct    int
+
 	// Conversation turn-state liveness windows (ZBBS-WORK-370). How long an
 	// actor's outgoing "I addressed X, awaiting their reply" edge stays live
 	// before the turn-taking backstop stops suppressing a re-initiation and

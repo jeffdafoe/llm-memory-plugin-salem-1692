@@ -239,6 +239,12 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.DegeneracyThrottleAfterTicks = parseIntSetting(values, "degeneracy_throttle_after_ticks", 0)
 	s.DegeneracyThrottleMinDuration = parseDurationSetting(values, "degeneracy_throttle_min_duration_minutes", 0)
 	s.DegeneracyThrottleBackoff = parseDurationSetting(values, "degeneracy_throttle_backoff_minutes", 0)
+	// Oscillation arm (LLM-124). All fall back to safe defaults (8 / 3 / 2,
+	// owned by the resolvers in degeneracy.go) when left 0; active only while
+	// the observer above is enabled.
+	s.DegeneracyOscillationWindow = parseIntSetting(values, "degeneracy_oscillation_window", 0)
+	s.DegeneracyOscillationMinTransitions = parseIntSetting(values, "degeneracy_oscillation_min_transitions", 0)
+	s.DegeneracyOscillationMaxDistinct = parseIntSetting(values, "degeneracy_oscillation_max_distinct", 0)
 
 	// Idle backstop.
 	s.IdleBackstopThreshold = parseDurationSetting(values, "idle_backstop_threshold_minutes", 30*time.Minute)

@@ -599,12 +599,18 @@ type Actor struct {
 	//   - DegenStreak: consecutive obviously-futile scored ticks. 0 = none.
 	//   - DegenStreakSince: wall-clock start of the current streak; nil = none.
 	//   - DegenStage: escalation level (none / flagged / throttled).
+	//   - DegenVisits: the oscillation window (LLM-124) — the last few scored
+	//     ticks' post-tick structure + red-need snapshot, oldest first, capped
+	//     at DegeneracyOscillationWindow. Feeds the structure-oscillation arm so
+	//     an actor shuttling between a tight set of structures with no goal
+	//     progress is caught even though each move_to leg counts as productive.
 	//
 	// All ephemeral — wiped on LoadWorld with the rest of the reactor pacing
 	// state, so a fresh-loaded actor starts unflagged.
 	DegenStreak      int
 	DegenStreakSince *time.Time
 	DegenStage       DegeneracyStage
+	DegenVisits      []DegenVisit
 
 	// inFlightSourceKeys is the set of WarrantSourceKeys consumed into the
 	// actor's current in-flight tick attempt — recorded at ReactorTickDue
@@ -932,6 +938,9 @@ func CloneActor(a *Actor) *Actor {
 	if a.DegenStreakSince != nil {
 		t := *a.DegenStreakSince
 		cp.DegenStreakSince = &t
+	}
+	if a.DegenVisits != nil {
+		cp.DegenVisits = append([]DegenVisit(nil), a.DegenVisits...)
 	}
 	if a.inFlightSourceKeys != nil {
 		cp.inFlightSourceKeys = make(map[WarrantSourceKey]struct{}, len(a.inFlightSourceKeys))
