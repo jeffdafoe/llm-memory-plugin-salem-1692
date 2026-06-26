@@ -95,10 +95,11 @@ func MoveActor(actorID ActorID, dest MoveDestination, leaveHuddleFirst bool, now
 				if !ok {
 					return MoveActorResult{}, fmt.Errorf("structure %q has no placement to enter", *dest.StructureID)
 				}
-				if vobj.EntryPolicy == EntryPolicyClosed {
+				policy := effectiveEntryPolicy(w, *dest.StructureID, vobj, now)
+				if policy == EntryPolicyClosed {
 					return MoveActorResult{}, fmt.Errorf("structure %q entry policy is closed", *dest.StructureID)
 				}
-				if vobj.EntryPolicy == EntryPolicyOwner &&
+				if policy == EntryPolicyOwner &&
 					!structureMembershipAllows(w, actor, *dest.StructureID, now) {
 					return MoveActorResult{}, fmt.Errorf(
 						"structure %q is members-only; actor %q is not a member", *dest.StructureID, actorID)
@@ -329,10 +330,14 @@ func resolvePathTarget(w *World, actor *Actor, dest MoveDestination, grid *WalkG
 			return Position{}, false
 		}
 		vobj, _, ok := villageObjectForStructure(w, *dest.StructureID)
-		if !ok || vobj.EntryPolicy == EntryPolicyClosed {
+		if !ok {
 			return Position{}, false
 		}
-		if vobj.EntryPolicy == EntryPolicyOwner &&
+		policy := effectiveEntryPolicy(w, *dest.StructureID, vobj, now)
+		if policy == EntryPolicyClosed {
+			return Position{}, false
+		}
+		if policy == EntryPolicyOwner &&
 			!structureMembershipAllows(w, actor, *dest.StructureID, now) {
 			return Position{}, false
 		}
