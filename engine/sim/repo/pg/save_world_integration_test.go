@@ -112,6 +112,50 @@ func TestIntegration_SaveWorld_PopulatedRoundTrip(t *testing.T) {
 	}
 }
 
+// TestIntegration_SaveWorld_ProductionFocusRoundTrip is the LLM-128 regression: a
+// crafter's ProductionFocus must survive a checkpoint + reload. Pre-fix it was an
+// in-memory-only field — no actor column, absent from the checkpoint upsert — so
+// every engine restart wiped it, re-warranting the production-choice tick and
+// driving the weak model to re-spam craft after each deploy. A focused actor must
+// come back focused; an unfocused one must come back empty (the NOT NULL DEFAULT '').
+func TestIntegration_SaveWorld_ProductionFocusRoundTrip(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	repo := NewRepository(f.Pool)
+
+	const (
+		smithID = sim.ActorID("dddddddd-0000-0000-0000-00000000d128")
+		bareID  = sim.ActorID("eeeeeeee-0000-0000-0000-00000000e128")
+	)
+	w := checkpointableWorld(repo)
+	w.Actors = map[sim.ActorID]*sim.Actor{
+		smithID: {ID: smithID, DisplayName: "Smith", State: sim.StateIdle, ProductionFocus: "nail"},
+		bareID:  {ID: bareID, DisplayName: "Bare", State: sim.StateIdle},
+	}
+	if err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
+		t.Fatalf("SaveWorld: %v", err)
+	}
+
+	loaded, err := LoadWorld(ctx, repo, true /*requireAllImpl*/)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	smith := loaded.Actors[smithID]
+	if smith == nil {
+		t.Fatalf("smith actor did not round-trip")
+	}
+	if smith.ProductionFocus != "nail" {
+		t.Errorf("ProductionFocus = %q after reload, want %q — focus must survive restart (LLM-128)", smith.ProductionFocus, "nail")
+	}
+	bare := loaded.Actors[bareID]
+	if bare == nil {
+		t.Fatalf("bare actor did not round-trip")
+	}
+	if bare.ProductionFocus != "" {
+		t.Errorf("unfocused ProductionFocus = %q after reload, want empty", bare.ProductionFocus)
+	}
+}
+
 // TestIntegration_SaveWorld_DeleteStaleAcrossCheckpoints — a second
 // checkpoint with a smaller set must prune rows the first one wrote, end
 // to end through SaveWorld. This proves the per-aggregate gen-marker

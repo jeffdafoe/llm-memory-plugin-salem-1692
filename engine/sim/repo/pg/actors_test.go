@@ -100,7 +100,7 @@ func actorParentColumns() []string {
 		"move_attempt_counter", "sim_state",
 		"sprite_id", "facing",
 		"social_tag", "social_start_minute", "social_end_minute", "social_last_boundary_at",
-		"admin", "move_destination",
+		"admin", "move_destination", "production_focus",
 	}
 }
 
@@ -153,7 +153,7 @@ func oneBareActorRows() *pgxmock.Rows {
 		int64(0), "idle",
 		(*string)(nil), "south",
 		(*string)(nil), (*int16)(nil), (*int16)(nil), (*time.Time)(nil),
-		false, []byte(nil),
+		false, []byte(nil), "",
 	)
 }
 
@@ -331,7 +331,7 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 				int64(7), "working",
 				ptrStr("00000000-0000-0000-0000-5555eeeeeeee"), "east",
 				&socialTag, &socialStartM, &socialEndM, &tsBreak,
-				true, []byte(`{"kind":"structure_enter","structure_id":"00000000-0000-0000-0000-3333cccccccc"}`),
+				true, []byte(`{"kind":"structure_enter","structure_id":"00000000-0000-0000-0000-3333cccccccc"}`), "",
 			).
 			AddRow(
 				actB, "Bare", 0, 0,
@@ -343,7 +343,7 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 				int64(0), "idle",
 				(*string)(nil), "south",
 				(*string)(nil), (*int16)(nil), (*int16)(nil), (*time.Time)(nil),
-				false, []byte(nil),
+				false, []byte(nil), "",
 			))
 
 	mock.ExpectQuery(`FROM actor_need\b`).
@@ -606,6 +606,7 @@ func TestActorsRepo_SaveSnapshot_FullActor(t *testing.T) {
 			"tavern_evening", int16(1080), int16(1320), &tsBreak,
 			int64(101),
 			nil,
+			"", // production_focus (LLM-128)
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 
@@ -695,6 +696,7 @@ func TestActorsRepo_SaveSnapshot_BareActor(t *testing.T) {
 			nil, nil, nil, (*time.Time)(nil), // social (all NULL)
 			int64(102),
 			nil,
+			"", // production_focus (LLM-128)
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
@@ -803,6 +805,7 @@ func TestActorsRepo_SaveSnapshot_ZeroQtyInventoryDropped(t *testing.T) {
 			nil, nil, nil, (*time.Time)(nil), // social (all NULL)
 			int64(105),
 			nil,
+			"", // production_focus (LLM-128)
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
@@ -1160,7 +1163,7 @@ func TestActorsRepo_LoadAll_Continuity(t *testing.T) {
 				int64(0), "idle",
 				(*string)(nil), "south",
 				(*string)(nil), (*int16)(nil), (*int16)(nil), (*time.Time)(nil),
-				false, []byte(nil),
+				false, []byte(nil), "",
 			))
 	mock.ExpectQuery(`FROM actor_need\b`).WillReturnRows(emptyNeedRows())
 	mock.ExpectQuery(`FROM actor_inventory\b`).WillReturnRows(emptyInvRows())
@@ -1360,6 +1363,7 @@ func TestActorsRepo_SaveSnapshot_Continuity(t *testing.T) {
 			nil, nil, nil, (*time.Time)(nil), // social (all NULL)
 			int64(701),
 			nil,
+			"", // production_focus (LLM-128)
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
@@ -1462,6 +1466,7 @@ func TestActorsRepo_SaveSnapshot_EmptySalientFacts(t *testing.T) {
 			nil, nil, nil, (*time.Time)(nil), // social (all NULL)
 			int64(702),
 			nil,
+			"", // production_focus (LLM-128)
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
@@ -1637,6 +1642,7 @@ func TestActorsRepo_SaveSnapshot_AcquaintanceMultibyteWithinLimit(t *testing.T) 
 			nil, nil, nil, (*time.Time)(nil), // social (all NULL)
 			int64(706),
 			nil,
+			"", // production_focus (LLM-128)
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
@@ -1908,6 +1914,7 @@ func TestActorsRepo_SaveSnapshot_Slice3(t *testing.T) {
 			nil, nil, nil, (*time.Time)(nil), // social (all NULL)
 			int64(710),
 			nil,
+			"", // production_focus (LLM-128)
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).

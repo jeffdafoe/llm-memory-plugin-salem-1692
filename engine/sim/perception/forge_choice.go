@@ -23,6 +23,13 @@ import (
 // empty Items) means render omits the section.
 type ForgeChoiceView struct {
 	Items []ForgeChoiceItem
+	// FocusNoun is the plural counting phrase ("nails") of the crafter's current
+	// focus WHEN one is set and still below cap, else "". When set, the cue leads
+	// with a continue-and-stop steer instead of the choose menu, so a weak model
+	// isn't re-invited to pick what it is already forging (LLM-128). An at-cap or
+	// unset focus leaves it "" and keeps the menu — the production-choice warrant
+	// legitimately wants a fresh pick there.
+	FocusNoun string
 }
 
 // ForgeChoiceItem is one good the crafter can forge.
@@ -92,7 +99,20 @@ func buildForgeChoice(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 		}
 		return items[i].itemKind < items[j].itemKind
 	})
-	return &ForgeChoiceView{Items: items}
+	view := &ForgeChoiceView{Items: items}
+	// LLM-128: surface an already-set, still-productive focus so the cue can
+	// steer "keep going / done()" instead of "choose". Mirrors the warrant's
+	// productivity test (shouldChooseProduction): a focus at cap is NOT
+	// productive, so it falls through to the choose menu.
+	for _, it := range items {
+		if it.IsFocus {
+			if it.Cap <= 0 || it.OnHand < it.Cap {
+				view.FocusNoun = itemPlural(snap, it.itemKind)
+			}
+			break
+		}
+	}
+	return view
 }
 
 // recentProducedUnits totals the units of `item` the actor actually FORGED within
@@ -123,6 +143,15 @@ func renderForgeChoice(b *strings.Builder, v *ForgeChoiceView) {
 		return
 	}
 	b.WriteString("## At your forge\n")
+	if v.FocusNoun != "" {
+		// LLM-128: a productive focus is already set — lead with the
+		// continue-and-stop steer naming what's being made, not the choose
+		// prompt that lured the weak model into re-picking every tick. The craft
+		// tool stays advertised, so the closing clause notes it may still switch;
+		// the lead imperative is to stop and let production run.
+		fmt.Fprintf(b, "You are crafting %s now — tend your post or call done(). Choose again with craft only if you mean to switch.\n\n", v.FocusNoun)
+		return
+	}
 	b.WriteString("You make one thing at a time. Choose what to forge next with craft — you keep making it until you choose again.\n")
 	for _, it := range v.Items {
 		rate := fmt.Sprintf("about %dh each", it.PerUnitHours)

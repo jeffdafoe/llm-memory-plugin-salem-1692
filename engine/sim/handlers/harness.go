@@ -1096,10 +1096,14 @@ func (h *Harness) dispatch(ctx context.Context, w *sim.World, job tickJob, vc *V
 // selfStateChanged reports whether a commit moved the actor's own MATERIAL
 // state in a way the ## You block and the eat/drink/buy affordances reflect:
 // needs (a consume / eat-in-place eases them), coins, or carried goods (a buy
-// or sale moves them). These are the three axes the LLM-88 mid-tick refresh
-// targets — the affordance-staleness re-fire loop is driven by them. Position /
-// huddle / rest-state changes are deliberately out of scope (a move_to is
-// terminal and never loops; take_break's resting line is not an action primer).
+// or sale moves them), plus the crafter's production focus (a craft commit sets
+// it). These axes drive the LLM-88 mid-tick refresh — the affordance-staleness
+// re-fire loop. The focus axis (LLM-128) is what flips the forge cue's lead from
+// "choose what to forge" to "you are crafting X now" mid-tick, the moment the
+// first craft sets the focus, so the within-tick re-prompt stops re-inviting a
+// pick the model already made. Position / huddle / rest-state changes are
+// deliberately out of scope (a move_to is terminal and never loops; take_break's
+// resting line is not an action primer).
 //
 // InventoryHash is the snapshot's own per-actor quantity sum, so it catches any
 // net stock change a single commit makes (consume/buy/sale never swap two kinds
@@ -1111,6 +1115,9 @@ func selfStateChanged(pre, post *sim.ActorSnapshot) bool {
 	}
 	if pre.Coins != post.Coins || pre.InventoryHash != post.InventoryHash {
 		return true
+	}
+	if pre.ProductionFocus != post.ProductionFocus {
+		return true // LLM-128: a craft set the focus — re-render so the forge cue flips
 	}
 	if len(pre.Needs) != len(post.Needs) {
 		return true

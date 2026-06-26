@@ -137,12 +137,24 @@ var perceptionScenarios = []perceptionScenario{
 	},
 	{
 		name: "smith_choosing_at_forge",
-		summary: "A multi-output crafter (Ezekiel the blacksmith: skillet + nail) stands at his own forge, nothing " +
-			"sold yet, currently forging nails (LLM-116). The golden pins the '## At your forge' choice cue — each " +
-			"makeable good with its per-unit time, stock vs cap, and weekly made/sold counts, the current focus marked — " +
-			"plus the standing 'You are making nail.' self-state line and the production-choice wake warrant. A single-" +
-			"output producer never gets this section (see TestForgeCueOnlyForMultiOutputCrafterAtForge).",
+		summary: "A multi-output crafter (Ezekiel the blacksmith: skillet + nail) stands UNFOCUSED at his own forge on " +
+			"shift — the post-restart state the production-choice warrant fires on (LLM-116/LLM-128). The golden pins the " +
+			"'## At your forge' CHOOSE menu — each makeable good with its per-unit time, stock vs cap, and weekly made/sold " +
+			"counts — under the 'Choose what to forge next' header, plus the 'decide what to make next' wake warrant. With no " +
+			"focus set, the steer cue and the standing 'You are making nail.' line do NOT render here (see " +
+			"smith_forging_focused). A single-output producer never gets this section (see " +
+			"TestForgeCueOnlyForMultiOutputCrafterAtForge).",
 		build: smithChoosingAtForge,
+	},
+	{
+		name: "smith_forging_focused",
+		summary: "The same multi-output crafter (Ezekiel) at his forge WITH a productive focus already set (nail, below " +
+			"cap) and no production-choice warrant — the steady state after he has chosen (LLM-128). The golden pins the " +
+			"focus-aware cue: the '## At your forge' section leads with 'You are crafting nails now — tend your post or call " +
+			"done()' INSTEAD of the choose menu, so the weak model isn't re-invited to pick what it is already forging. The " +
+			"standing 'You are making nail.' self-state line renders too. Pairs with smith_choosing_at_forge (unfocused -> " +
+			"menu) to pin both halves of the cue.",
+		build: smithForgingFocused,
 	},
 	{
 		name: "smith_off_work_focus_hidden",
@@ -211,16 +223,18 @@ var perceptionScenarios = []perceptionScenario{
 }
 
 // TestForgeCueOnlyForMultiOutputCrafterAtForge is the LLM-116 cross-scenario
-// invariant: the "## At your forge" production-choice cue appears in EXACTLY the
-// multi-output-crafter-at-forge scenario and no other. A single-output producer or
-// a non-crafter must never see it — the structural property the per-builder gate
-// (>1 produce entry AND at workplace) is meant to hold across the whole matrix.
+// invariant: the "## At your forge" cue appears in EXACTLY the multi-output-crafter-
+// at-forge scenarios and no other — whether unfocused (choose menu,
+// smith_choosing_at_forge) or focused (the LLM-128 continue-and-stop steer,
+// smith_forging_focused). A single-output producer or a non-crafter must never see
+// it — the structural property the per-builder gate (>1 produce entry AND at
+// workplace) is meant to hold across the whole matrix.
 func TestForgeCueOnlyForMultiOutputCrafterAtForge(t *testing.T) {
 	const marker = "## At your forge"
 	for _, sc := range perceptionScenarios {
 		sc := sc
 		got := renderScenario(sc)
-		want := sc.name == "smith_choosing_at_forge"
+		want := sc.name == "smith_choosing_at_forge" || sc.name == "smith_forging_focused"
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: forge cue present=%v, want %v", sc.name, has, want)
 		}
@@ -229,17 +243,18 @@ func TestForgeCueOnlyForMultiOutputCrafterAtForge(t *testing.T) {
 
 // TestProductionFocusLineOnlyAtWork is the LLM-121 cross-scenario invariant: the
 // standing "You are making X." self-state line appears in EXACTLY the scenario where
-// the crafter is at its own work structure (smith_choosing_at_forge) and never away
-// from it. The off-work smith (same focus, at the Tavern) must not carry it —
-// produce_tick makes nothing there, so the present-tense line would misstate the
-// situation. Mirrors the forge-cue invariant; both express the "only at the forge"
+// the crafter has a focus set AND is at its own work structure (smith_forging_focused)
+// and never away from it. The off-work smith (same focus, at the Tavern) must not
+// carry it — produce_tick makes nothing there, so the present-tense line would
+// misstate the situation; the unfocused smith (smith_choosing_at_forge) has no focus
+// to state. Mirrors the forge-cue invariant; both express the "only at the forge"
 // gate as a property over the whole matrix.
 func TestProductionFocusLineOnlyAtWork(t *testing.T) {
 	const marker = "You are making"
 	for _, sc := range perceptionScenarios {
 		sc := sc
 		got := renderScenario(sc)
-		want := sc.name == "smith_choosing_at_forge"
+		want := sc.name == "smith_forging_focused"
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: production-focus line present=%v, want %v", sc.name, has, want)
 		}
@@ -491,14 +506,71 @@ func hungryForagerAtStockedBush() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta
 	return snap, ezekielID, nil
 }
 
-// smithChoosingAtForge is the LLM-116 situation: Ezekiel, a multi-output crafter,
-// stands inside his own forge on shift with two produce goods (skillet at cap,
-// nail empty) and his focus set to nail. The "## At your forge" cue lists both
-// makeable goods with time cost, stock vs cap, and (empty) weekly made/sold counts;
-// the standing "You are making nail." self-state line and the production-choice
-// wake warrant also render. No orders, no clock read (PriceBook/RecentProduce empty
-// so the windowed counts are 0 regardless of PublishedAt) → byte-stable.
+// smithChoosingAtForge is the LLM-116/LLM-128 situation: Ezekiel, a multi-output
+// crafter, stands inside his own forge on shift with two produce goods (skillet at
+// cap, nail empty) and NO focus set yet — the realistic post-restart state the
+// production-choice warrant fires on. The "## At your forge" cue lists both makeable
+// goods (time cost, stock vs cap, empty weekly made/sold counts) under the "Choose
+// what to forge next" header, and the production-choice wake warrant renders. With
+// no focus, neither the "— making this now" marker nor the standing "You are making
+// nail." line appears — those move to smithForgingFocused. No orders, no clock read
+// (PriceBook/RecentProduce empty so the windowed counts are 0 regardless of
+// PublishedAt) → byte-stable.
 func smithChoosingAtForge() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		ezekielID = sim.ActorID("ezekiel")
+		forge     = sim.StructureID("blacksmith")
+	)
+	start, end := 360, 1080 // 06:00–18:00
+	now := 600              // 10:00 — on shift
+	published := time.Date(2026, 6, 25, 10, 0, 0, 0, time.UTC)
+	ezekiel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Ezekiel Crane",
+		Role:              "blacksmith",
+		State:             sim.StateIdle,
+		WorkStructureID:   forge,
+		InsideStructureID: forge,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             0,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"skillet": 5},
+		ProductionFocus:   "", // unfocused — the post-restart state the warrant fires on (LLM-128)
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "skillet", Source: sim.RestockSourceProduce, Max: 5},
+			{Item: "nail", Source: sim.RestockSourceProduce, Max: 20},
+		}},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{ezekielID: ezekiel},
+		Structures: map[sim.StructureID]*sim.Structure{
+			forge: plainStructure(forge, "Blacksmith"),
+		},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"skillet": {OutputItem: "skillet", OutputQty: 1, RateQty: 1, RatePerHours: 3, WholesalePrice: 5, RetailPrice: 10},
+			"nail":    {OutputItem: "nail", OutputQty: 1, RateQty: 1, RatePerHours: 1, WholesalePrice: 1, RetailPrice: 2},
+		},
+	}
+	warrants := []sim.WarrantMeta{
+		{TriggerActorID: ezekielID, Reason: sim.ProductionChoiceWarrantReason{}, SourceEventID: 1},
+	}
+	return snap, ezekielID, warrants
+}
+
+// smithForgingFocused is the LLM-128 steady state: Ezekiel at his own forge on
+// shift WITH a productive focus already set (nail, below cap) and NO production-
+// choice warrant — the consistent state once he has chosen (shouldChooseProduction
+// gates the warrant off for a productive focus, so no "decide what to make next").
+// The "## At your forge" cue leads with the "You are crafting nails now — tend your
+// post or call done()" steer instead of the choose menu, and the standing "You are
+// making nail." self-state line renders. ItemKinds carry the singular/plural
+// counting phrases (LLM-113) so the steer reads "nails", as the live catalog does.
+// Byte-stable.
+func smithForgingFocused() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	const (
 		ezekielID = sim.ActorID("ezekiel")
 		forge     = sim.StructureID("blacksmith")
@@ -536,11 +608,12 @@ func smithChoosingAtForge() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 			"skillet": {OutputItem: "skillet", OutputQty: 1, RateQty: 1, RatePerHours: 3, WholesalePrice: 5, RetailPrice: 10},
 			"nail":    {OutputItem: "nail", OutputQty: 1, RateQty: 1, RatePerHours: 1, WholesalePrice: 1, RetailPrice: 2},
 		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"nail":    {Name: "nail", DisplayLabel: "Nail", DisplayLabelSingular: "nail", DisplayLabelPlural: "nails", Category: sim.ItemCategoryCraft},
+			"skillet": {Name: "skillet", DisplayLabel: "Skillet", DisplayLabelSingular: "skillet", DisplayLabelPlural: "skillets", Category: sim.ItemCategoryCraft},
+		},
 	}
-	warrants := []sim.WarrantMeta{
-		{TriggerActorID: ezekielID, Reason: sim.ProductionChoiceWarrantReason{}, SourceEventID: 1},
-	}
-	return snap, ezekielID, warrants
+	return snap, ezekielID, nil
 }
 
 // smithOffWorkFocusHidden is the LLM-121 regression: the same multi-output crafter
