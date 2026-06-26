@@ -51,6 +51,17 @@ func lodgerActor(id ActorID, now time.Time) *Actor {
 	}
 }
 
+// closeupKeeper is a live-in tavernkeeper that the close-up recognizes as the
+// establishment's keeper: liveInKeeper plus the BusinessownerState marker
+// (actorIsEstablishmentKeeper requires it, matching the cascade-wide keeper
+// predicate). The flavor value is irrelevant to the close-up — only non-nil
+// matters.
+func closeupKeeper(id ActorID) *Actor {
+	k := liveInKeeper(id)
+	k.BusinessownerState = &BusinessownerState{Flavor: "reserved"}
+	return k
+}
+
 // TestNonTenantOccupants: of everyone inside the tavern, only the agent NPC and
 // the PC with no membership are turned out. The keeper (staff), a lodger (active
 // private grant), and a resident (HomeStructureID == here) all stay; a
@@ -58,7 +69,7 @@ func lodgerActor(id ActorID, now time.Time) *Actor {
 func TestNonTenantOccupants(t *testing.T) {
 	now := time.Date(2026, 6, 24, 4, 0, 0, 0, time.UTC)
 
-	keeper := liveInKeeper("john") // staff: WorkStructureID == tavern
+	keeper := closeupKeeper("john") // staff: WorkStructureID == tavern
 	lodger := lodgerActor("ezekiel", now)
 	resident := &Actor{ID: "child", Kind: KindNPCStateful, HomeStructureID: "tavern", InsideStructureID: "tavern"}
 	customer := &Actor{ID: "buyer", Kind: KindNPCStateful, InsideStructureID: "tavern"} // no membership
@@ -108,7 +119,7 @@ func TestEstablishmentHasAwakeKeeperPresent(t *testing.T) {
 	now := time.Date(2026, 6, 24, 4, 0, 0, 0, time.UTC)
 
 	t.Run("awake keeper inside -> attended", func(t *testing.T) {
-		k := liveInKeeper("john")
+		k := closeupKeeper("john")
 		w := keeperTavernWorld(true, k)
 		placeInside(w, "tavern", "john")
 		if !establishmentHasAwakeKeeperPresent(w, "tavern", "", now) {
@@ -117,7 +128,7 @@ func TestEstablishmentHasAwakeKeeperPresent(t *testing.T) {
 	})
 
 	t.Run("resting keeper -> not attended", func(t *testing.T) {
-		k := liveInKeeper("john")
+		k := closeupKeeper("john")
 		future := now.Add(8 * time.Hour)
 		k.SleepingUntil = &future
 		w := keeperTavernWorld(true, k)
@@ -128,7 +139,7 @@ func TestEstablishmentHasAwakeKeeperPresent(t *testing.T) {
 	})
 
 	t.Run("excluded keeper is skipped", func(t *testing.T) {
-		k := liveInKeeper("john") // awake, but the one bedding down
+		k := closeupKeeper("john") // awake, but the one bedding down
 		w := keeperTavernWorld(true, k)
 		placeInside(w, "tavern", "john")
 		if establishmentHasAwakeKeeperPresent(w, "tavern", "john", now) {
@@ -137,8 +148,8 @@ func TestEstablishmentHasAwakeKeeperPresent(t *testing.T) {
 	})
 
 	t.Run("co-keeper still awake -> attended", func(t *testing.T) {
-		bedding := liveInKeeper("john")
-		cokeeper := liveInKeeper("martha") // also works the tavern, still awake
+		bedding := closeupKeeper("john")
+		cokeeper := closeupKeeper("martha") // also works the tavern, still awake
 		w := keeperTavernWorld(true, bedding, cokeeper)
 		placeInside(w, "tavern", "john", "martha")
 		if !establishmentHasAwakeKeeperPresent(w, "tavern", "john", now) {
@@ -147,7 +158,7 @@ func TestEstablishmentHasAwakeKeeperPresent(t *testing.T) {
 	})
 
 	t.Run("works elsewhere -> not a keeper here", func(t *testing.T) {
-		k := liveInKeeper("john")
+		k := closeupKeeper("john")
 		future := now.Add(8 * time.Hour)
 		k.SleepingUntil = &future
 		passerby := &Actor{ID: "smith", Kind: KindNPCStateful, WorkStructureID: "smithy", InsideStructureID: "tavern"}
@@ -157,6 +168,21 @@ func TestEstablishmentHasAwakeKeeperPresent(t *testing.T) {
 			t.Error("want unattended — the awake person inside works at the smithy, not here")
 		}
 	})
+
+	t.Run("non-keeper employee inside -> not attended", func(t *testing.T) {
+		k := closeupKeeper("john")
+		future := now.Add(8 * time.Hour)
+		k.SleepingUntil = &future // the keeper is asleep
+		// A hired hand works here (WorkStructureID == tavern) but has no
+		// BusinessownerState, so it is NOT the establishment's keeper and must not
+		// keep the house attended — the LLM-129 keeper-predicate tightening.
+		hand := &Actor{ID: "hired", Kind: KindNPCStateful, WorkStructureID: "tavern", InsideStructureID: "tavern"}
+		w := keeperTavernWorld(true, k, hand)
+		placeInside(w, "tavern", "john", "hired")
+		if establishmentHasAwakeKeeperPresent(w, "tavern", "", now) {
+			t.Error("want unattended — an awake hired hand is not the keeper")
+		}
+	})
 }
 
 // TestAnnounceEstablishmentClosing: a single engine-authored Spoke — speaker is
@@ -164,7 +190,7 @@ func TestEstablishmentHasAwakeKeeperPresent(t *testing.T) {
 // PCBystanderIDs, text drawn from the closing pool.
 func TestAnnounceEstablishmentClosing(t *testing.T) {
 	now := time.Date(2026, 6, 24, 4, 0, 0, 0, time.UTC)
-	keeper := liveInKeeper("john")
+	keeper := closeupKeeper("john")
 	w := keeperTavernWorld(true, keeper)
 	rec := &spokeRecorder{}
 	w.Subscribe(rec)
@@ -197,7 +223,7 @@ func TestAnnounceEstablishmentClosing(t *testing.T) {
 // eviction still fires; the courtesy is optional, the mechanism is not.
 func TestAnnounceEstablishmentClosing_SilentWithoutPool(t *testing.T) {
 	now := time.Date(2026, 6, 24, 4, 0, 0, 0, time.UTC)
-	keeper := liveInKeeper("john")
+	keeper := closeupKeeper("john")
 	w := keeperTavernWorld(true, keeper)
 	w.NarrationPools = nil // no registry — narrationDraw returns nil
 	rec := &spokeRecorder{}
@@ -217,7 +243,7 @@ func TestMaybeBeginEstablishmentCloseup(t *testing.T) {
 	now := time.Date(2026, 6, 24, 4, 0, 0, 0, time.UTC)
 
 	t.Run("keeper beds with a non-tenant inside -> announces", func(t *testing.T) {
-		keeper := liveInKeeper("john")
+		keeper := closeupKeeper("john")
 		customer := &Actor{ID: "buyer", Kind: KindNPCStateful, InsideStructureID: "tavern"}
 		w := keeperTavernWorld(true, keeper, customer)
 		placeInside(w, "tavern", "john", "buyer")
@@ -232,7 +258,7 @@ func TestMaybeBeginEstablishmentCloseup(t *testing.T) {
 	})
 
 	t.Run("a lodger bedding down is not a close-up", func(t *testing.T) {
-		keeper := liveInKeeper("john")
+		keeper := closeupKeeper("john")
 		lodger := lodgerActor("ezekiel", now) // WorkStructureID == smithy, not tavern
 		customer := &Actor{ID: "buyer", Kind: KindNPCStateful, InsideStructureID: "tavern"}
 		w := keeperTavernWorld(true, keeper, lodger, customer)
@@ -248,8 +274,8 @@ func TestMaybeBeginEstablishmentCloseup(t *testing.T) {
 	})
 
 	t.Run("co-keeper still awake -> no close-up", func(t *testing.T) {
-		bedding := liveInKeeper("john")
-		cokeeper := liveInKeeper("martha")
+		bedding := closeupKeeper("john")
+		cokeeper := closeupKeeper("martha")
 		customer := &Actor{ID: "buyer", Kind: KindNPCStateful, InsideStructureID: "tavern"}
 		w := keeperTavernWorld(true, bedding, cokeeper, customer)
 		placeInside(w, "tavern", "john", "martha", "buyer")
@@ -264,7 +290,7 @@ func TestMaybeBeginEstablishmentCloseup(t *testing.T) {
 	})
 
 	t.Run("empty house -> no announce", func(t *testing.T) {
-		keeper := liveInKeeper("john")
+		keeper := closeupKeeper("john")
 		w := keeperTavernWorld(true, keeper)
 		placeInside(w, "tavern", "john")
 		rec := &spokeRecorder{}
@@ -283,7 +309,7 @@ func TestMaybeBeginEstablishmentCloseup(t *testing.T) {
 // the eviction is a no-op — no one is moved.
 func TestEvictNonTenantsAtClose_ReopenedNoOp(t *testing.T) {
 	now := time.Date(2026, 6, 24, 4, 0, 0, 0, time.UTC)
-	keeper := liveInKeeper("john") // awake again
+	keeper := closeupKeeper("john") // awake again
 	customer := &Actor{ID: "buyer", Kind: KindNPCStateful, InsideStructureID: "tavern"}
 	w := keeperTavernWorld(true, keeper, customer)
 	placeInside(w, "tavern", "john", "buyer")
@@ -327,5 +353,46 @@ func TestRenderClosingLine(t *testing.T) {
 	w.NarrationPools = nil
 	if empty := w.renderClosingLine("john", now); empty != "" {
 		t.Errorf("renderClosingLine = %q with no pool, want empty", empty)
+	}
+}
+
+// TestFireEstablishmentCloseup_StaleTimerNoOp: the generation guard. A keeper
+// that woke and re-bedded inside the grace window leaves two timers armed for the
+// same structure; only the one matching the recorded deadline may fire. A stale
+// timer (an older deadline) is a no-op and must not consume the current entry —
+// otherwise it would evict on a shortened second grace window.
+func TestFireEstablishmentCloseup_StaleTimerNoOp(t *testing.T) {
+	now := time.Date(2026, 6, 24, 4, 0, 0, 0, time.UTC)
+	keeper := closeupKeeper("john") // awake on the floor — so the eviction body no-ops cleanly
+	customer := &Actor{ID: "buyer", Kind: KindNPCStateful, InsideStructureID: "tavern"}
+	w := keeperTavernWorld(true, keeper, customer)
+	placeInside(w, "tavern", "john", "buyer")
+
+	d1 := now.Add(establishmentCloseupGrace)                 // the first (now superseded) close-up
+	d2 := now.Add(2*time.Minute + establishmentCloseupGrace) // the active close-up after a re-bed
+	w.establishmentCloseupDeadline = map[StructureID]time.Time{"tavern": d2}
+
+	// Stale timer fires (deadline d1): superseded -> no eviction, and the current
+	// entry (d2) is left intact for the live timer.
+	res, err := fireEstablishmentCloseup("tavern", d1).Fn(w)
+	if err != nil {
+		t.Fatalf("fireEstablishmentCloseup(stale): %v", err)
+	}
+	if n, _ := res.(int); n != 0 {
+		t.Errorf("stale timer evicted %d, want 0", n)
+	}
+	if customer.MoveIntent != nil {
+		t.Error("stale timer sent the customer walking")
+	}
+	if got, ok := w.establishmentCloseupDeadline["tavern"]; !ok || !got.Equal(d2) {
+		t.Errorf("stale timer disturbed the current deadline entry: got %v ok=%v, want %v", got, ok, d2)
+	}
+
+	// The live timer fires (deadline d2): it matches, so it consumes the entry.
+	if _, err := fireEstablishmentCloseup("tavern", d2).Fn(w); err != nil {
+		t.Fatalf("fireEstablishmentCloseup(current): %v", err)
+	}
+	if _, ok := w.establishmentCloseupDeadline["tavern"]; ok {
+		t.Error("the live timer did not consume the deadline entry")
 	}
 }

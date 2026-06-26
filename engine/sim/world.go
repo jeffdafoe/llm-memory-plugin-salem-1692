@@ -633,6 +633,18 @@ type World struct {
 	// summoner's warrants forever.
 	SummonErrands map[ErrandID]*summonErrand
 
+	// establishmentCloseupDeadline holds the active close-up grace deadline per
+	// establishment (LLM-129). Keyed by StructureID; nil-readable as empty
+	// (lazy-allocated when a keeper beds down and arms the close-up). It is the
+	// generation guard for the eviction timer: arming overwrites the entry, so a
+	// superseded timer (keeper woke and re-bedded inside the window) sees a
+	// deadline that no longer matches its own and no-ops rather than evicting on a
+	// shortened second window. World-goroutine-only; restart-loss is accepted —
+	// same transient posture as SummonErrands / ActiveRoutes. The matching timer
+	// removes its entry when it fires (fireEstablishmentCloseup), so entries don't
+	// accumulate.
+	establishmentCloseupDeadline map[StructureID]time.Time
+
 	// ActiveRoutes holds the in-flight per-NPC scheduled-route state
 	// machines (lamplighter / washerwoman / town_crier). Keyed by the
 	// running NPC's ActorID; nil-readable as empty (lazy-allocated on

@@ -94,7 +94,7 @@ func maybeBeginEstablishmentCloseup(w *World, keeper *Actor, now time.Time) {
 		return
 	}
 	structureID := keeper.InsideStructureID
-	if structureID == "" || keeper.WorkStructureID != structureID {
+	if structureID == "" || !actorIsEstablishmentKeeper(keeper, structureID) {
 		return // not the keeper of the place it's sleeping in — not a close-up
 	}
 	// Another keeper still on the floor and awake → the house is still attended;
@@ -111,7 +111,19 @@ func maybeBeginEstablishmentCloseup(w *World, keeper *Actor, now time.Time) {
 	armEstablishmentCloseupEviction(w, structureID, now)
 }
 
-// establishmentHasAwakeKeeperPresent reports whether any worker of structureID
+// actorIsEstablishmentKeeper reports whether a is the keeper of structureID — a
+// businessowner whose workplace is this structure. This is the canonical
+// keeper-of-X predicate used across the cascade (arrival_business_huddle.go,
+// pay_commands.go, stay_open.go): BusinessownerState != nil marks the
+// establishment's attendant, and WorkStructureID ties it to this structure.
+// Stricter than a bare WorkStructureID match, so a hired hand or any other
+// live-in worker who is not the establishment's keeper neither triggers a
+// close-up nor (awake) keeps one from firing.
+func actorIsEstablishmentKeeper(a *Actor, structureID StructureID) bool {
+	return a != nil && a.BusinessownerState != nil && a.WorkStructureID == structureID
+}
+
+// establishmentHasAwakeKeeperPresent reports whether the keeper of structureID
 // (other than excludeID) is currently inside it AND awake — i.e. the place is
 // still attended. A resting keeper (asleep / on break) does not count: the whole
 // point of the close-up is that the keeper going to bed shuts the house. Used
@@ -119,7 +131,7 @@ func maybeBeginEstablishmentCloseup(w *World, keeper *Actor, now time.Time) {
 // keeper who woke and came back during the grace window re-opened the house).
 //
 // excludeID skips a specific actor (the just-bedded keeper at trigger time); pass
-// "" to consider every worker (the eviction-time re-check). MUST be called from
+// "" to consider every keeper (the eviction-time re-check). MUST be called from
 // inside a Command.Fn.
 func establishmentHasAwakeKeeperPresent(w *World, structureID StructureID, excludeID ActorID, now time.Time) bool {
 	for id := range w.actorsByStructure[structureID] {
@@ -127,8 +139,8 @@ func establishmentHasAwakeKeeperPresent(w *World, structureID StructureID, exclu
 			continue
 		}
 		a := w.Actors[id]
-		if a == nil || a.WorkStructureID != structureID {
-			continue // not a keeper of this structure
+		if !actorIsEstablishmentKeeper(a, structureID) {
+			continue // not the keeper of this structure
 		}
 		if actorIsResting(a, now) {
 			continue // present but asleep / on break — not attending
@@ -188,15 +200,20 @@ func announceEstablishmentClosing(w *World, keeper *Actor, npcIDs, pcIDs []Actor
 	if text == "" {
 		return
 	}
-	recipients := npcIDs
-	if recipients == nil {
-		recipients = []ActorID{}
+	// Copy into the event so it never aliases the caller's slices — the Spoke can
+	// outlive this call (action log, telemetry rings) and a subscriber must not be
+	// able to mutate our working sets. RecipientIDs is non-nil (the speech reactor
+	// ranges it); PCBystanderIDs stays nil when there are no co-present players.
+	recipients := append([]ActorID{}, npcIDs...)
+	var bystanders []ActorID
+	if len(pcIDs) > 0 {
+		bystanders = append([]ActorID{}, pcIDs...)
 	}
 	w.emit(&Spoke{
 		SpeakerID:      keeper.ID,
 		HuddleID:       "",
 		RecipientIDs:   recipients,
-		PCBystanderIDs: pcIDs,
+		PCBystanderIDs: bystanders,
 		Text:           text,
 		At:             now,
 	})
@@ -206,25 +223,52 @@ func announceEstablishmentClosing(w *World, keeper *Actor, npcIDs, pcIDs []Actor
 // structureID. Mirrors armSummonErrandTTL (summon.go): a time.AfterFunc hops back
 // onto the world goroutine via SendContext, guarded by LifecycleContext so a
 // shutdown-while-armed aborts cleanly instead of parking on a dead cmds channel.
-// The fire re-resolves live world state, so no explicit cancel is needed if the
-// house re-opens — the eviction Command itself no-ops that case. MUST be called
-// from inside a Command.Fn / inline subscriber.
+//
+// The deadline is recorded in w.establishmentCloseupDeadline (overwriting any
+// prior one) and captured by the callback, so fireEstablishmentCloseup can tell
+// the CURRENT close-up from a superseded one: if the keeper wakes and re-beds
+// inside the window, the second arm overwrites the deadline and the first
+// (stale) timer no-ops instead of evicting on a shortened second window. MUST be
+// called from inside a Command.Fn / inline subscriber.
 func armEstablishmentCloseupEviction(w *World, structureID StructureID, now time.Time) {
+	deadline := now.Add(establishmentCloseupGrace)
+	if w.establishmentCloseupDeadline == nil {
+		w.establishmentCloseupDeadline = make(map[StructureID]time.Time)
+	}
+	w.establishmentCloseupDeadline[structureID] = deadline
 	time.AfterFunc(establishmentCloseupGrace, func() {
 		ctx := w.LifecycleContext()
 		if ctx.Err() != nil {
 			return
 		}
-		if _, err := w.SendContext(ctx, evictNonTenantsAtClose(structureID, time.Now().UTC())); err != nil && ctx.Err() == nil {
+		if _, err := w.SendContext(ctx, fireEstablishmentCloseup(structureID, deadline)); err != nil && ctx.Err() == nil {
 			log.Printf("sim/establishment_closeup: eviction sweep for %s failed: %v", structureID, err)
 		}
 	})
 }
 
-// evictNonTenantsAtClose is the body of the grace timer, run on the world
-// goroutine. Level-triggered: it re-reads live state rather than trusting the
-// bed-down snapshot. If a keeper is back on the floor and awake — the keeper
-// woke (shift start, cap) and re-opened during the grace window — it is a no-op.
+// fireEstablishmentCloseup is the grace-timer callback body, run on the world
+// goroutine. It is the generation guard: it evicts only when the recorded
+// deadline still equals the one this timer was armed with — otherwise a newer
+// close-up superseded it (keeper re-bedded) or it already fired, and this is a
+// no-op. On a match it consumes the entry and delegates to the pure eviction.
+func fireEstablishmentCloseup(structureID StructureID, deadline time.Time) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			cur, ok := w.establishmentCloseupDeadline[structureID]
+			if !ok || !cur.Equal(deadline) {
+				return 0, nil // superseded by a newer close-up, or already consumed
+			}
+			delete(w.establishmentCloseupDeadline, structureID)
+			return evictNonTenantsAtClose(structureID, time.Now().UTC()).Fn(w)
+		},
+	}
+}
+
+// evictNonTenantsAtClose is the eviction body, run on the world goroutine.
+// Level-triggered: it re-reads live state rather than trusting the bed-down
+// snapshot. If a keeper is back on the floor and awake — the keeper woke (shift
+// start, cap) and re-opened during the grace window — it is a no-op.
 // Otherwise it walks every non-tenant still inside out to the establishment's
 // loiter slot: a StructureVisit destination resolves to a visitor slot OUTSIDE
 // the footprint (commands_move.go resolvePathTarget → pickVisitorSlot), so the
