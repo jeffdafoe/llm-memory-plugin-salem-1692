@@ -81,6 +81,13 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	// elsewhere (Prudence pitching Water mid-meal in John Ellis's tavern) isn't told
 	// to sell. ZBBS-WORK-385.
 	p.AtOwnBusiness = p.Businessowner && actorSnap.WorkStructureID != "" && actorSnap.InsideStructureID == actorSnap.WorkStructureID
+	// AtOwnBusinessOperating gates the trade-conduct cue on operating hours, not
+	// merely on being at-post (LLM-123): a keeper at its closed stall off-shift was
+	// told to "tend to your trade" at midnight, which — fighting its needs-pull to
+	// the Tavern — drove the off-shift forge<->Tavern oscillation. keeperOperating
+	// is on-shift OR a live stay_open commitment. The customer-facing cues keep
+	// gating on bare AtOwnBusiness (location).
+	p.AtOwnBusinessOperating = p.AtOwnBusiness && keeperOperating(snap, actorSnap)
 	heardNow := currentHeardExcerpts(p.Warrants)
 	p.Relationships = buildRelationships(actorSnap, p.Surroundings.HuddleMembers, heardNow)
 	p.RecentConversation = buildRecentConversation(snap, actorID, actorSnap, heardNow)
@@ -1451,6 +1458,38 @@ func shiftWindowBounds(snap *sim.Snapshot, a *sim.ActorSnapshot) (start, end int
 	default:
 		return 0, 0, false
 	}
+}
+
+// keeperOperating reports whether a keeper standing at its own post is within
+// operating hours — inside its shift window, or off-shift but holding an unlapsed
+// stay_open commitment (it has chosen to keep the business open past close). The
+// trade-conduct cue gates on this (via AtOwnBusinessOperating) so the "tend to
+// your trade" steer is silent at a closed post after hours (LLM-123).
+//
+// When the clock or shift window can't be resolved from the snapshot it returns
+// false: an operating-hours claim we can't substantiate must not drive
+// work-pressure, the same way buildDutySteer goes silent on an unresolvable
+// clock. In the live engine LocalMinuteOfDay is always published and a keeper
+// has a schedule (or the dawn/dusk fallback), so this only suppresses for a
+// malformed fixture. The stay_open check compares OpenUntil against the render
+// instant (no minute-of-day needed) but still requires a real instant — a zero
+// PublishedAt is an unsubstantiated clock, so it can't open the gate either
+// (code_review).
+func keeperOperating(snap *sim.Snapshot, a *sim.ActorSnapshot) bool {
+	if snap == nil || a == nil {
+		return false
+	}
+	if !snap.PublishedAt.IsZero() && a.OpenUntil != nil && a.OpenUntil.After(snap.PublishedAt) {
+		return true
+	}
+	if snap.LocalMinuteOfDay == nil {
+		return false
+	}
+	start, end, ok := shiftWindowBounds(snap, a)
+	if !ok {
+		return false
+	}
+	return minuteInWindow(start, end, *snap.LocalMinuteOfDay)
 }
 
 // buildDutyPending reports whether the actor is off-post inside its shift

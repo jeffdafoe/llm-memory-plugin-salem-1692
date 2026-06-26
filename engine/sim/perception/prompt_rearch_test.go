@@ -15,8 +15,11 @@ import (
 
 const vendorOperatingMarker = "How you trade:"
 
-// TestRenderVendorOperating_Gate: the trade-conduct block renders only for a
-// businessowner. A non-keeper (visitor, plain NPC) gets nothing.
+// TestRenderVendorOperating_Gate: the render half is a pure bool gate — the
+// trade-conduct block renders iff the actor is operating (the build-side
+// AtOwnBusinessOperating: at its own post AND within business hours). The
+// operating-hours determination itself is covered by the build/golden tests
+// (LLM-123).
 func TestRenderVendorOperating_Gate(t *testing.T) {
 	var on strings.Builder
 	renderVendorOperating(&on, true)
@@ -48,11 +51,19 @@ func TestRenderVendorOperating_Gate(t *testing.T) {
 func TestBuild_BusinessownerFlag(t *testing.T) {
 	keeper := sharedSnap("moses", "Moses", "")
 	keeper.BusinessownerState = &sim.BusinessownerState{Flavor: "reserved"}
-	// Place Moses at his own post so the vendor block renders — the cue now gates
-	// on AtOwnBusiness (InsideStructureID == WorkStructureID). ZBBS-WORK-385.
+	// Place Moses at his own post, on shift, so the vendor block renders — the cue
+	// gates on AtOwnBusinessOperating (at post AND within operating hours).
+	// ZBBS-WORK-385, LLM-123.
 	keeper.WorkStructureID = "post"
 	keeper.InsideStructureID = "post"
-	snap := &sim.Snapshot{Actors: map[sim.ActorID]*sim.ActorSnapshot{"moses": keeper}}
+	start, end := 360, 1080 // 06:00–18:00
+	keeper.ScheduleStartMin = &start
+	keeper.ScheduleEndMin = &end
+	now := 600 // 10:00 — on shift
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{"moses": keeper},
+	}
 	p := Build(snap, "moses", nil)
 	if !p.Businessowner {
 		t.Fatal("Businessowner flag not set for actor with BusinessownerState")
@@ -81,6 +92,10 @@ func TestBuild_BusinessownerFlag(t *testing.T) {
 func TestBuild_VendorCues_GatedOnAtOwnBusiness(t *testing.T) {
 	// inside varies; her business is always "tavern".
 	newSnap := func(inside sim.StructureID) *sim.Snapshot {
+		// On shift (10:00 inside 06:00–18:00) so the operating-hours gate (LLM-123)
+		// is open and this test isolates the LOCATION variable — at-post vs away.
+		start, end := 360, 1080
+		now := 600
 		seller := &sim.ActorSnapshot{
 			DisplayName:        "Goodwife Ellis",
 			Kind:               sim.KindNPCShared,
@@ -90,6 +105,8 @@ func TestBuild_VendorCues_GatedOnAtOwnBusiness(t *testing.T) {
 			Acquaintances:      map[string]sim.Acquaintance{"Goodwife Mary": {}},
 			WorkStructureID:    "tavern",
 			InsideStructureID:  inside,
+			ScheduleStartMin:   &start,
+			ScheduleEndMin:     &end,
 		}
 		customer := &sim.ActorSnapshot{
 			DisplayName:     "Goodwife Mary",
@@ -97,7 +114,8 @@ func TestBuild_VendorCues_GatedOnAtOwnBusiness(t *testing.T) {
 			CurrentHuddleID: "h1",
 		}
 		return &sim.Snapshot{
-			Actors: map[sim.ActorID]*sim.ActorSnapshot{"ellis": seller, "mary": customer},
+			LocalMinuteOfDay: &now,
+			Actors:           map[sim.ActorID]*sim.ActorSnapshot{"ellis": seller, "mary": customer},
 			Huddles: map[sim.HuddleID]*sim.Huddle{
 				"h1": {ID: "h1", Members: map[sim.ActorID]struct{}{"ellis": {}, "mary": {}}},
 			},
