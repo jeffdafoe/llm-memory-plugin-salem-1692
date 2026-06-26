@@ -396,7 +396,10 @@ func lodgingAffordabilityCue(v *LodgingView) string {
 	if v.Coins >= v.NightlyRate {
 		return ""
 	}
-	return fmt.Sprintf("You have only %d coins — short of the %d for another night. Earn or sell something before your room lapses.",
+	// LLM-136: don't steer a coin-short lodger only toward earning coins — the
+	// room can be paid in goods. Name the direct barter (offer_trade) alongside
+	// the earn-coins fallback so a producer can renew with its wares.
+	return fmt.Sprintf("You have only %d coins — short of the %d for another night. Offer your wares for the room directly with offer_trade, or earn coins, before your room lapses.",
 		v.Coins, v.NightlyRate)
 }
 
@@ -563,7 +566,12 @@ func renderLodgingOffer(b *strings.Builder, v *LodgingOfferView) {
 	if len(v.SeekerNames) > 1 {
 		beVerb, haveVerb = "are", "have"
 	}
-	fmt.Fprintf(b, "%s %s here with you and %s nowhere to stay. If they want a room, offer it — call sell with item \"nights_stay\", consume_now false, qty set to the number of nights, and amount set to nights × %d coins (your nightly rate). A room is for the one guest, so leave consumers empty; use target_buyer only if you know the guest's name, otherwise leave it empty and anyone here may take the offer. They are then free to take it or leave it.\n", who, beVerb, haveVerb, v.NightlyRate)
+	// LLM-136: the coin offer (sell → quote) is the default, but a guest may be
+	// coinless (a homeless producer pays in its wares). Naming the goods path
+	// here keeps the keeper from dead-ending such a guest on coins it doesn't
+	// have — the offer travels the existing barter flow (offer_trade → the
+	// keeper's standing accept_pay/counter_pay decision on the pending offer).
+	fmt.Fprintf(b, "%s %s here with you and %s nowhere to stay. If they want a room, offer it — call sell with item \"nights_stay\", consume_now false, qty set to the number of nights, and amount set to nights × %d coins (your nightly rate). A room is for the one guest, so leave consumers empty; use target_buyer only if you know the guest's name, otherwise leave it empty and anyone here may take the offer. They are then free to take it or leave it. If a guest has no coins, you needn't turn them away — you can let the room for goods instead: wait for their offer_trade and accept_pay it (or counter_pay to adjust the terms).\n", who, beVerb, haveVerb, v.NightlyRate)
 	roomWord := "rooms"
 	if v.RoomsAvailable == 1 {
 		roomWord = "room"

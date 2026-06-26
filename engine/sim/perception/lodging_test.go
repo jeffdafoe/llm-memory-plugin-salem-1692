@@ -460,8 +460,10 @@ func TestRenderLodging_Gate3_DeferredPhrasing(t *testing.T) {
 	if strings.Contains(out, "found the keeper's desk shut") {
 		t.Errorf("deferred render should suppress the redundant desk-shut note, got %q", out)
 	}
-	if !strings.Contains(out, "Earn or sell") {
-		t.Errorf("a broke deferred lodger should still get the earn cue, got %q", out)
+	// LLM-136: the cue now names the barter path explicitly (offer_trade) alongside
+	// the earn-coins fallback — a broke lodger can renew with its wares.
+	if !strings.Contains(out, "offer_trade") || !strings.Contains(out, "earn coins") {
+		t.Errorf("a broke deferred lodger should get the barter-or-earn cue, got %q", out)
 	}
 }
 

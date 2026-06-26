@@ -2271,6 +2271,12 @@ func renderQuoteWarrantLine(n int, seller string, r sim.SceneQuoteTargetedWarran
 	} else {
 		take = fmt.Sprintf(" To take it, call pay_with_item with quote_id %d and the same item, qty, and amount — it settles at once.", r.QuoteID)
 	}
+	// LLM-136: a quote carries a coin price (goods can't ride a quote_id — that
+	// rejects), but a buyer short on coins isn't stuck: barter is a first-class
+	// path. Without this the coin take-line reads as the only way in, and a
+	// coinless buyer (e.g. a homeless smith eyeing a room) loops instead of
+	// offering its wares. Point at the goods route as the alternative.
+	take += " If you'd sooner pay with goods you carry than coins, propose a trade instead — call offer_trade with the goods you'll give and this as want_item; they can accept or counter."
 	// An overheard public quote (huddle fan-out, ZBBS-HOME-431) is an ad
 	// announced to the conversation, not a direct address — "offers" not
 	// "offers you", so the actor doesn't perceive a personal offer.
