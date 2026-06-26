@@ -72,7 +72,7 @@ func TestBuildLodgingView_RenewalInFlight_PendingOffer(t *testing.T) {
 	snap.PayLedger = map[sim.LedgerID]*sim.PayLedgerEntry{
 		1: {ID: 1, BuyerID: "ezekiel", SellerID: "other0", ItemKind: "nights_stay", State: sim.PayLedgerStatePending},
 	}
-	v := buildLodgingView(snap, "ezekiel", subj)
+	v := buildLodgingView(snap, "ezekiel", subj, nil)
 	if v == nil || !v.RenewalInFlight {
 		t.Fatalf("want RenewalInFlight for a pending nights_stay offer to the keeper, got %+v", v)
 	}
@@ -87,7 +87,7 @@ func TestBuildLodgingView_RenewalInFlight_AcceptedOrder(t *testing.T) {
 	snap.Orders = map[sim.OrderID]*sim.Order{
 		5: {ID: 5, State: sim.OrderStateReady, BuyerID: "ezekiel", SellerID: "other0", Item: "nights_stay"},
 	}
-	v := buildLodgingView(snap, "ezekiel", subj)
+	v := buildLodgingView(snap, "ezekiel", subj, nil)
 	if v == nil || !v.RenewalInFlight {
 		t.Fatalf("want RenewalInFlight for an accepted-but-undelivered nights_stay order, got %+v", v)
 	}
@@ -101,7 +101,7 @@ func TestBuildLodgingView_RenewalToOtherSeller_NotInFlight(t *testing.T) {
 	snap.PayLedger = map[sim.LedgerID]*sim.PayLedgerEntry{
 		1: {ID: 1, BuyerID: "ezekiel", SellerID: "someone_else", ItemKind: "nights_stay", State: sim.PayLedgerStatePending},
 	}
-	v := buildLodgingView(snap, "ezekiel", subj)
+	v := buildLodgingView(snap, "ezekiel", subj, nil)
 	if v == nil || v.RenewalInFlight {
 		t.Fatalf("RenewalInFlight must be false for an offer to a non-keeper seller, got %+v", v)
 	}
@@ -115,7 +115,7 @@ func TestBuildLodgingView_DeliveredOrder_NotInFlight(t *testing.T) {
 	snap.Orders = map[sim.OrderID]*sim.Order{
 		5: {ID: 5, State: sim.OrderStateDelivered, BuyerID: "ezekiel", SellerID: "other0", Item: "nights_stay"},
 	}
-	v := buildLodgingView(snap, "ezekiel", subj)
+	v := buildLodgingView(snap, "ezekiel", subj, nil)
 	if v == nil || v.RenewalInFlight {
 		t.Fatalf("RenewalInFlight must be false for a delivered order, got %+v", v)
 	}
@@ -150,7 +150,7 @@ func TestRenderLodging_RenewalInFlight_WaitSteer(t *testing.T) {
 
 func TestBuildLodgingView_NoAccess_Nil(t *testing.T) {
 	subj := &sim.ActorSnapshot{}
-	if v := buildLodgingView(lodgingSnap(subj, nil), "ezekiel", subj); v != nil {
+	if v := buildLodgingView(lodgingSnap(subj, nil), "ezekiel", subj, nil); v != nil {
 		t.Errorf("want nil for an actor with no room access, got %+v", v)
 	}
 }
@@ -162,7 +162,7 @@ func TestBuildLodgingView_ActiveLedger_View(t *testing.T) {
 		},
 	}
 	structs := map[sim.StructureID]*sim.Structure{"inn": innStructure("inn", "Hannah's Inn")}
-	v := buildLodgingView(lodgingSnap(subj, structs), "ezekiel", subj)
+	v := buildLodgingView(lodgingSnap(subj, structs), "ezekiel", subj, nil)
 	if v == nil {
 		t.Fatal("want a lodging view for an active ledger grant, got nil")
 	}
@@ -181,7 +181,7 @@ func TestBuildLodgingView_ExpiredLedger_Nil(t *testing.T) {
 		},
 	}
 	structs := map[sim.StructureID]*sim.Structure{"inn": innStructure("inn", "Hannah's Inn")}
-	if v := buildLodgingView(lodgingSnap(subj, structs), "ezekiel", subj); v != nil {
+	if v := buildLodgingView(lodgingSnap(subj, structs), "ezekiel", subj, nil); v != nil {
 		t.Errorf("want nil for an expired grant, got %+v", v)
 	}
 }
@@ -195,7 +195,7 @@ func TestBuildLodgingView_InactiveLedger_Nil(t *testing.T) {
 		},
 	}
 	structs := map[sim.StructureID]*sim.Structure{"inn": innStructure("inn", "Hannah's Inn")}
-	if v := buildLodgingView(lodgingSnap(subj, structs), "ezekiel", subj); v != nil {
+	if v := buildLodgingView(lodgingSnap(subj, structs), "ezekiel", subj, nil); v != nil {
 		t.Errorf("want nil for an inactive grant, got %+v", v)
 	}
 }
@@ -208,7 +208,7 @@ func TestBuildLodgingView_StaffAccess_Nil(t *testing.T) {
 		},
 	}
 	structs := map[sim.StructureID]*sim.Structure{"inn": innStructure("inn", "Hannah's Inn")}
-	if v := buildLodgingView(lodgingSnap(subj, structs), "ezekiel", subj); v != nil {
+	if v := buildLodgingView(lodgingSnap(subj, structs), "ezekiel", subj, nil); v != nil {
 		t.Errorf("want nil for a staff grant, got %+v", v)
 	}
 }
@@ -221,7 +221,7 @@ func TestBuildLodgingView_PicksSoonestExpiry(t *testing.T) {
 		},
 	}
 	structs := map[sim.StructureID]*sim.Structure{"inn": innStructure("inn", "Hannah's Inn")}
-	v := buildLodgingView(lodgingSnap(subj, structs), "ezekiel", subj)
+	v := buildLodgingView(lodgingSnap(subj, structs), "ezekiel", subj, nil)
 	if v == nil {
 		t.Fatal("want a view, got nil")
 	}
@@ -237,7 +237,7 @@ func TestBuildLodgingView_UnknownStructure_GenericName(t *testing.T) {
 		},
 	}
 	// No structure declares room 99 → generic fallback name.
-	v := buildLodgingView(lodgingSnap(subj, nil), "ezekiel", subj)
+	v := buildLodgingView(lodgingSnap(subj, nil), "ezekiel", subj, nil)
 	if v == nil || v.InnName != "the inn" {
 		t.Fatalf("want generic fallback name, got %+v", v)
 	}
@@ -257,7 +257,7 @@ func TestBuildLodgingView_KeeperAsleepFlagged(t *testing.T) {
 	}
 	structs := map[sim.StructureID]*sim.Structure{"inn": innStructure("inn", "Hannah's Inn")}
 	keeper := &sim.ActorSnapshot{WorkStructureID: "inn", State: sim.StateSleeping}
-	v := buildLodgingView(lodgingSnap(subj, structs, keeper), "ezekiel", subj)
+	v := buildLodgingView(lodgingSnap(subj, structs, keeper), "ezekiel", subj, nil)
 	if v == nil || !v.KeeperAsleep || !v.RenewalDue {
 		t.Fatalf("want KeeperAsleep + RenewalDue set when the inn keeper sleeps near checkout, got %+v", v)
 	}
@@ -270,19 +270,28 @@ func TestBuildLodgingView_KeeperAsleepFlagged(t *testing.T) {
 
 // --- escalation tiers ---
 
-func TestLodgingStatusLine_TwoState(t *testing.T) {
+func TestLodgingStatusLine_ThreeState(t *testing.T) {
 	// Settled: confirm the room, do NOT nudge a renewal (the LLM-96 fix — a
 	// settled lodger re-told to renew is what drove the double-buy).
-	settled := lodgingStatusLine("Hannah's Inn", false)
+	settled := lodgingStatusLine("Hannah's Inn", false, false)
 	if !strings.Contains(settled, "settled here") || strings.Contains(settled, "renew") {
 		t.Errorf("settled line = %q, want a settled confirmation with no renew nudge", settled)
 	}
-	// Renewal-due (final night before checkout): steer to renew.
-	due := lodgingStatusLine("Hannah's Inn", true)
-	if !strings.Contains(due, "nearly up") || !strings.Contains(due, "renew") {
-		t.Errorf("renewal-due line = %q, want a renew steer", due)
+	// Renewal-due (final night before checkout): steer to renew now.
+	due := lodgingStatusLine("Hannah's Inn", true, false)
+	if !strings.Contains(due, "nearly up") || !strings.Contains(due, "if you wish to stay on") {
+		t.Errorf("renewal-due line = %q, want an active renew steer", due)
 	}
-	for _, l := range []string{settled, due} {
+	// Renewal-due but deferred (gate 3, LLM-127): still flags "nearly up" but steers
+	// to renew at the inn rather than walking off-post now.
+	deferred := lodgingStatusLine("Hannah's Inn", true, true)
+	if !strings.Contains(deferred, "nearly up") || !strings.Contains(deferred, "when you are next back at the inn") {
+		t.Errorf("deferred line = %q, want a defer-to-the-inn steer", deferred)
+	}
+	if strings.Contains(deferred, "if you wish to stay on") {
+		t.Errorf("deferred line = %q, must drop the active walk-pull phrasing", deferred)
+	}
+	for _, l := range []string{settled, due, deferred} {
 		if !strings.Contains(l, "Hannah's Inn") {
 			t.Errorf("line %q missing inn name", l)
 		}
@@ -302,6 +311,152 @@ func TestRenderLodging_GatedAndSectioned(t *testing.T) {
 	}
 }
 
+// --- LLM-127 renewal-pull suppression gates ---
+
+// gateLodger builds a renewal-due lodger (room 2 of "inn", expiring inside the
+// 13h window) standing inside `inside`, scheduled 06:00–18:00, at local minute
+// nowMin, optionally sharing a huddle with a peer that is awake or asleep. Returns
+// the built view so a test can assert the gate flags. renewalDue is computed off
+// PublishedAt (lodgingNow), so nowMin only drives the on-shift check.
+func gateLodger(t *testing.T, inside sim.StructureID, nowMin int, withPeer, peerAwake bool) *LodgingView {
+	t.Helper()
+	start, end := 6*60, 18*60
+	subj := &sim.ActorSnapshot{
+		InsideStructureID: inside,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		RoomAccess: map[sim.RoomAccessKey]*sim.RoomAccess{
+			{RoomID: 2, Source: sim.AccessSourceLedger}: ledgerAccess(2, 8*time.Hour),
+		},
+	}
+	structs := map[sim.StructureID]*sim.Structure{"inn": innStructure("inn", "Hannah's Inn")}
+	var others []*sim.ActorSnapshot
+	var members []HuddleMember
+	if withPeer {
+		st := sim.StateSleeping
+		if peerAwake {
+			st = sim.StateIdle
+		}
+		others = append(others, &sim.ActorSnapshot{State: st})
+		members = []HuddleMember{{ID: "other0"}} // lodgingSnap keys the first extra actor "other0"
+	}
+	snap := lodgingSnap(subj, structs, others...)
+	snap.LocalMinuteOfDay = &nowMin
+	v := buildLodgingView(snap, "ezekiel", subj, members)
+	if v == nil || !v.RenewalDue {
+		t.Fatalf("fixture must be a renewal-due lodger, got %+v", v)
+	}
+	return v
+}
+
+// Gate 1 (conversation): an awake huddle peer is a live conversation; a sleeper or
+// an empty huddle is not. now=20:00 is off-shift so the defer flag stays isolated.
+func TestBuildLodgingView_InConversation(t *testing.T) {
+	if v := gateLodger(t, "market", 20*60, true, true); !v.InConversation {
+		t.Errorf("an awake huddle peer must set InConversation, got %+v", v)
+	}
+	if v := gateLodger(t, "market", 20*60, true, false); v.InConversation {
+		t.Errorf("a sleeping huddle peer is no conversation — want InConversation=false, got %+v", v)
+	}
+	if v := gateLodger(t, "market", 20*60, false, false); v.InConversation {
+		t.Errorf("no huddle peer → InConversation must be false, got %+v", v)
+	}
+}
+
+// Gate 3 (defer): the pull is deferred only when on-shift AND away from the inn.
+// withPeer=false isolates the defer flag from the conversation gate.
+func TestBuildLodgingView_RenewalPullDeferred(t *testing.T) {
+	if v := gateLodger(t, "blacksmith", 12*60, false, false); !v.RenewalPullDeferred {
+		t.Errorf("on-shift away from the inn must defer the pull, got %+v", v)
+	}
+	if v := gateLodger(t, "inn", 12*60, false, false); v.RenewalPullDeferred {
+		t.Errorf("at the inn the renewal is actionable — want no defer, got %+v", v)
+	}
+	if v := gateLodger(t, "blacksmith", 20*60, false, false); v.RenewalPullDeferred {
+		t.Errorf("off-shift the lodger is free to walk over — want no defer, got %+v", v)
+	}
+}
+
+// An unscheduled lodger (nil schedule) is always off-shift, so the pull is never
+// deferred even when away from the inn (matches sim.isActorOnShift).
+func TestBuildLodgingView_RenewalPullDeferred_Unscheduled_False(t *testing.T) {
+	subj := &sim.ActorSnapshot{
+		InsideStructureID: "blacksmith",
+		RoomAccess: map[sim.RoomAccessKey]*sim.RoomAccess{
+			{RoomID: 2, Source: sim.AccessSourceLedger}: ledgerAccess(2, 8*time.Hour),
+		},
+	}
+	structs := map[sim.StructureID]*sim.Structure{"inn": innStructure("inn", "Hannah's Inn")}
+	nowMin := 12 * 60
+	snap := lodgingSnap(subj, structs)
+	snap.LocalMinuteOfDay = &nowMin
+	v := buildLodgingView(snap, "ezekiel", subj, nil)
+	if v == nil || v.RenewalPullDeferred {
+		t.Fatalf("an unscheduled lodger is off-shift → no defer, got %+v", v)
+	}
+}
+
+// Gate 1 render: renewal-due + mid-conversation drops the whole section; a settled
+// lodger mid-conversation still gets the harmless confirmation line.
+func TestRenderLodging_Gate1_MidConversationDropsBlock(t *testing.T) {
+	var b strings.Builder
+	renderLodging(&b, &LodgingView{InnName: "Hannah's Inn", RenewalDue: true, NightlyRate: 4, Coins: 0, InConversation: true})
+	if b.String() != "" {
+		t.Errorf("renewal-due + in-conversation must drop the whole block, got %q", b.String())
+	}
+	b.Reset()
+	renderLodging(&b, &LodgingView{InnName: "Hannah's Inn", RenewalDue: false, InConversation: true})
+	if !strings.Contains(b.String(), "settled here") {
+		t.Errorf("settled lodger mid-conversation should still confirm the room, got %q", b.String())
+	}
+}
+
+// Gate 3 render: deferred steers to renew at the inn, drops the active walk-pull
+// and the now-redundant asleep-keeper note, but keeps the earn cue (gate 2 was
+// intentionally not added — a broke lodger may still barter for the room).
+func TestRenderLodging_Gate3_DeferredPhrasing(t *testing.T) {
+	var b strings.Builder
+	renderLodging(&b, &LodgingView{InnName: "Hannah's Inn", RenewalDue: true, NightlyRate: 4, Coins: 0, RenewalPullDeferred: true, KeeperAsleep: true})
+	out := b.String()
+	if !strings.Contains(out, "when you are next back at the inn") {
+		t.Errorf("deferred render must steer to renew at the inn, got %q", out)
+	}
+	if strings.Contains(out, "if you wish to stay on") {
+		t.Errorf("deferred render must drop the active walk-pull, got %q", out)
+	}
+	if strings.Contains(out, "abed just now") {
+		t.Errorf("deferred render should suppress the redundant asleep-keeper note, got %q", out)
+	}
+	if !strings.Contains(out, "Earn or sell") {
+		t.Errorf("a broke deferred lodger should still get the earn cue, got %q", out)
+	}
+}
+
+// TestRenderLodging_WalkPullInvariant is the LLM-127 cross-cutting guarantee: the
+// active renewal walk-pull appears IFF the lodger is renewal-due AND not in a
+// conversation AND the pull is not deferred. Exhaustive over the three gate booleans.
+func TestRenderLodging_WalkPullInvariant(t *testing.T) {
+	const walkPull = "if you wish to stay on, see the keeper to renew"
+	for _, due := range []bool{false, true} {
+		for _, conv := range []bool{false, true} {
+			for _, deferred := range []bool{false, true} {
+				var b strings.Builder
+				renderLodging(&b, &LodgingView{
+					InnName:             "Hannah's Inn",
+					RenewalDue:          due,
+					InConversation:      conv,
+					RenewalPullDeferred: deferred,
+				})
+				wantPull := due && !conv && !deferred
+				if gotPull := strings.Contains(b.String(), walkPull); gotPull != wantPull {
+					t.Errorf("due=%v conv=%v deferred=%v: walk-pull present=%v, want %v\n%q",
+						due, conv, deferred, gotPull, wantPull, b.String())
+				}
+			}
+		}
+	}
+}
+
 // --- rate hint + affordability cue ---
 
 func TestBuildLodgingView_CarriesRateAndCoins(t *testing.T) {
@@ -314,7 +469,7 @@ func TestBuildLodgingView_CarriesRateAndCoins(t *testing.T) {
 	structs := map[sim.StructureID]*sim.Structure{"inn": innStructure("inn", "Hannah's Inn")}
 	snap := lodgingSnap(subj, structs)
 	snap.LodgingDefaultWeeklyRate = 28 // nightly 4
-	v := buildLodgingView(snap, "ezekiel", subj)
+	v := buildLodgingView(snap, "ezekiel", subj, nil)
 	if v == nil || v.NightlyRate != 4 || v.Coins != 11 {
 		t.Fatalf("want NightlyRate=4 Coins=11, got %+v", v)
 	}
@@ -384,7 +539,7 @@ func TestBuildLodgingView_RenewalDue_FinalNightOnly(t *testing.T) {
 	settledSubj := &sim.ActorSnapshot{RoomAccess: map[sim.RoomAccessKey]*sim.RoomAccess{
 		{RoomID: 2, Source: sim.AccessSourceLedger}: ledgerAccess(2, 20*time.Hour),
 	}}
-	sv := buildLodgingView(lodgingSnap(settledSubj, structs), "ezekiel", settledSubj)
+	sv := buildLodgingView(lodgingSnap(settledSubj, structs), "ezekiel", settledSubj, nil)
 	if sv == nil || sv.RenewalDue {
 		t.Fatalf("a room expiring ~20h out must be settled, not renewal-due, got %+v", sv)
 	}
@@ -392,7 +547,7 @@ func TestBuildLodgingView_RenewalDue_FinalNightOnly(t *testing.T) {
 	dueSubj := &sim.ActorSnapshot{RoomAccess: map[sim.RoomAccessKey]*sim.RoomAccess{
 		{RoomID: 2, Source: sim.AccessSourceLedger}: ledgerAccess(2, 8*time.Hour),
 	}}
-	dv := buildLodgingView(lodgingSnap(dueSubj, structs), "ezekiel", dueSubj)
+	dv := buildLodgingView(lodgingSnap(dueSubj, structs), "ezekiel", dueSubj, nil)
 	if dv == nil || !dv.RenewalDue {
 		t.Fatalf("a room expiring within the final-night window (8h) must be renewal-due, got %+v", dv)
 	}
