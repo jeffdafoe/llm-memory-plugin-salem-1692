@@ -115,6 +115,11 @@ var (
 	StructureContainingTile   = structureContainingTile
 )
 
+// LLM-129 establishment close-up — exposed so the external sim_test integration
+// suite can drive the eviction Command against the walkable buildMoveTestWorld
+// (the in-package unit tests cover the selection/announce/gate logic directly).
+var EvictNonTenantsAtClose = evictNonTenantsAtClose
+
 // PR 4 locomotion ticker — the per-tick scan helpers. EvaluateLocomotion
 // is the public Command (tests drive ticks through it directly); the
 // rest are command-only internals exposed for focused unit tests.

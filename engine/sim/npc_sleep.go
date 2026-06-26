@@ -234,6 +234,12 @@ func executeNPCSleep(w *World, a *Actor, now time.Time) bool {
 	if actorInActiveHuddle(w, a) {
 		speakRetireFarewell(w, a, now)
 	}
+	// LLM-129: a keeper turning in at its own establishment closes the house for
+	// the night — announce to any non-tenant still inside and arm the grace timer
+	// that turns out whoever hasn't left. Runs while the keeper is still awake (the
+	// announcement reads as its closing call) and is a fast no-op for a non-keeper
+	// bed-down (a lodger, a homed villager) and for an empty house.
+	maybeBeginEstablishmentCloseup(w, a, now)
 	// Bed the sleeper into a private room — stamp InsideRoomID at the actual
 	// bed-down (not at check-in/arrival) so audience-scoping treats it as public
 	// while awake on the floor and private only while asleep (audienceRoomScope).

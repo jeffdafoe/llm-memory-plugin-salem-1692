@@ -65,6 +65,11 @@ const (
 // BusinessownerNarrationKey.
 const NarrationKeyNPCRetire = "npc_retire"
 
+// NarrationKeyEstablishmentClosing keys the keeper's closing-call pool
+// (establishment_closeup.go closingLines) — the "we're shut, head home" beat a
+// live-in keeper speaks to lingering non-tenants when it beds down (LLM-129).
+const NarrationKeyEstablishmentClosing = "establishment_closing"
+
 // BusinessownerNarrationKey derives the registry key for one hospitality
 // pool, e.g. "businessowner_flamboyant_greet". An unknown flavor or
 // trigger produces a key absent from the registry, which draws as an
@@ -141,6 +146,9 @@ var narrationPoolMetas = map[string]narrationPoolMeta{
 	NarrationKeyNPCRetire: {
 		Description: "A villager excusing themselves from an evening conversation to go to bed for the night.",
 	},
+	NarrationKeyEstablishmentClosing: {
+		Description: "A shopkeeper or innkeeper calling closing time as they turn in for the night, telling any patrons still lingering inside that the establishment is shut and they should head home.",
+	},
 }
 
 // narrationSeedPools builds the boot-time registry from the compile-time
@@ -158,6 +166,7 @@ func narrationSeedPools() map[string]*NarrationPool {
 		pools[reason] = &NarrationPool{Seed: phrases}
 	}
 	pools[NarrationKeyNPCRetire] = &NarrationPool{Seed: retireLines}
+	pools[NarrationKeyEstablishmentClosing] = &NarrationPool{Seed: closingLines}
 	return pools
 }
 
