@@ -2025,14 +2025,15 @@ func _label_for_structure(structure_id: String) -> String:
 func _on_owner_selected(index: int) -> void:
     if _ignoring_dropdown:
         return
-    var agent_key: String = _owner_dropdown.get_item_metadata(index)
-    owner_changed.emit(agent_key)
+    # Item metadata is the owner actor GUID (or "" for "No owner") — LLM-122.
+    var owner_id: String = _owner_dropdown.get_item_metadata(index)
+    owner_changed.emit(owner_id)
 
     # Update the owner label immediately
-    if agent_key != "":
-        var display_name: String = agent_key
+    if owner_id != "":
+        var display_name: String = owner_id
         if world != null:
-            display_name = world.get_owner_display_name(agent_key)
+            display_name = world.get_owner_display_name(owner_id)
         _owner_label.text = "Owner: " + display_name
         _owner_label.visible = true
     else:
@@ -2606,7 +2607,10 @@ func show_selection(info: Dictionary) -> void:
     _name_input_object_id = info.get("object_id", "")
     _ignoring_name_input = false
 
-    # Populate owner dropdown from agent list
+    # Populate owner dropdown from the full actor list. Any actor can own an object
+    # (owner_actor_id is a per-actor GUID), so list every actor by id — not the
+    # VA-slug agent_list, which collapsed shared-VA actors and hid all but one
+    # (e.g. Moses James was unselectable behind Elizabeth Ellis). LLM-122.
     _ignoring_dropdown = true
     _owner_dropdown.clear()
     _owner_dropdown.add_item("No owner", 0)
@@ -2614,11 +2618,11 @@ func show_selection(info: Dictionary) -> void:
     var selected_index: int = 0
     if world != null:
         var idx: int = 1
-        for agent_key in world.agent_list:
-            var display: String = world.agent_names.get(agent_key, agent_key)
+        for actor_id in world.actor_list:
+            var display: String = world.actor_names.get(actor_id, actor_id)
             _owner_dropdown.add_item(display, idx)
-            _owner_dropdown.set_item_metadata(idx, agent_key)
-            if agent_key == owner:
+            _owner_dropdown.set_item_metadata(idx, actor_id)
+            if actor_id == owner:
                 selected_index = idx
             idx += 1
     _owner_dropdown.selected = selected_index

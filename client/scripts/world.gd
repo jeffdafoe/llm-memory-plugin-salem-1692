@@ -101,8 +101,13 @@ var agent_names: Dictionary = {}
 # stored as owner_actor_id (a GUID), so owner-name resolution keys on id, not
 # the llm_memory_agent slug (which is absent for non-VA owners).
 var actor_names: Dictionary = {}
-# Ordered list of agent keys for dropdowns
+# Ordered list of agent keys (VA slugs) for the NPC-link dropdown.
 var agent_list: Array = []
+# Ordered list of actor GUIDs for the object-owner dropdown. Any actor can own an
+# object (owner_actor_id is a per-actor GUID), so this lists every actor — not just
+# the VA-backed ones in agent_list, which collapsed shared-VA actors and hid all
+# but one (LLM-122).
+var actor_list: Array = []
 
 # Event client reference — set by main.gd for marking local objects
 var event_client: Node = null
@@ -1781,6 +1786,10 @@ func _on_agents_loaded(result: int, response_code: int, headers: PackedStringArr
             agent_names[llm_name] = display_name
             agent_list.append(llm_name)
     agent_list.sort()
+    # The owner dropdown lists every actor (by GUID), sorted by display name —
+    # ownership is a per-actor owner_actor_id, so any actor is a valid owner. LLM-122.
+    actor_list = actor_names.keys()
+    actor_list.sort_custom(func(a, b): return actor_names[a].naturalnocasecmp_to(actor_names[b]) < 0)
 
 ## Set the owner of an object and persist to the server.
 func set_object_owner(node: Node2D, owner: String) -> void:
