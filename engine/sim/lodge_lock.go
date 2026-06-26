@@ -20,25 +20,38 @@ import "time"
 // at dawn. A brief take_break rests the keeper in place (StateResting, no room
 // relocation) and deliberately does NOT lock the door.
 //
+// A co-keeper still awake on the floor keeps the lodge OPEN: the lock shares the
+// close-up's establishmentHasAwakeKeeperPresent "is anyone still tending it"
+// predicate (LLM-129), so the lock and the eviction always agree — a lodge that
+// the close-up would not have evicted from (still attended) is not locked either.
+//
 // MUST be called from inside a Command.Fn (reads world maps).
 func lodgeLocked(w *World, structureID StructureID, now time.Time) bool {
 	vobj, _, ok := villageObjectForStructure(w, structureID)
 	if !ok || !vobj.HasTag("lodging") {
 		return false
 	}
+	// A keeper of this lodge must be abed in a staff room of it.
+	keeperAbed := false
 	for id := range w.actorsByStructure[structureID] {
 		a := w.Actors[id]
-		if !actorIsEstablishmentKeeper(a, structureID) {
+		if a == nil || !actorIsEstablishmentKeeper(a, structureID) {
 			continue // not the keeper of this lodge
 		}
 		if a.State != StateSleeping {
-			continue // present but not abed (awake / on break) — house still open
+			continue // present but not abed (awake / on break)
 		}
 		if staff, ok := keeperStaffRoomAt(w, a, structureID); ok && a.InsideRoomID == staff {
-			return true
+			keeperAbed = true
+			break
 		}
 	}
-	return false
+	if !keeperAbed {
+		return false
+	}
+	// ...and no other keeper is still awake tending the floor (a co-keeper keeps
+	// the house open, exactly as it keeps the close-up from firing).
+	return !establishmentHasAwakeKeeperPresent(w, structureID, "", now)
 }
 
 // effectiveEntryPolicy returns the entry policy in force for structureID right

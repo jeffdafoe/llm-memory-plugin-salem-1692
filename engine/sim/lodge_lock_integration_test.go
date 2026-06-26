@@ -73,8 +73,19 @@ func TestEnterOrKnock_LockedLodge_PCKnocksDoorShut(t *testing.T) {
 		k := world.Actors["keeper"]
 		k.BusinessownerState = &sim.BusinessownerState{}
 		sim.SetActorInsideStructure(world, k, "inn")
-		k.InsideRoomID = 1
+		// Resolve the staff room from the structure rather than hard-coding its id,
+		// so the test beds the keeper where the real keeperStaffRoomAt would.
+		for _, r := range world.Structures["inn"].Rooms {
+			if r.Kind == sim.RoomKindStaff {
+				k.InsideRoomID = r.ID
+				break
+			}
+		}
 		k.State = sim.StateSleeping
+		// A future SleepingUntil so the keeper reads as abed (not awake on the
+		// floor) to the establishmentHasAwakeKeeperPresent gate in lodgeLocked.
+		until := now.Add(8 * time.Hour)
+		k.SleepingUntil = &until
 		return nil, nil
 	}}); err != nil {
 		t.Fatalf("bed the keeper: %v", err)

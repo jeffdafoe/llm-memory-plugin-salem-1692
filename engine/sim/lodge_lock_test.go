@@ -38,6 +38,12 @@ func abedInStaffRoom(w *World, k *Actor) {
 	room, _ := keeperStaffRoomAt(w, k, "tavern")
 	k.InsideRoomID = room
 	k.State = StateSleeping
+	// Mirror executeNPCSleep: a future SleepingUntil, not just the State enum, so
+	// actorIsResting (and thus the establishmentHasAwakeKeeperPresent gate in
+	// lodgeLocked) reads the keeper as abed rather than awake on the floor.
+	// Far-future is fine — every test's `now` precedes it.
+	until := time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
+	k.SleepingUntil = &until
 }
 
 func TestLodgeLocked(t *testing.T) {
@@ -84,6 +90,19 @@ func TestLodgeLocked(t *testing.T) {
 		placeInside(w, "tavern", "john")
 		if lodgeLocked(w, "tavern", now) {
 			t.Error("want open — the lock keys off the staff-room bed-down, not bare sleep")
+		}
+	})
+
+	t.Run("a co-keeper awake on the floor keeps it open", func(t *testing.T) {
+		// Mirrors the close-up's co-keeper gate: one keeper abed does not lock the
+		// lodge while another keeper is still up tending it.
+		bedded := closeupKeeper("john")
+		cokeeper := closeupKeeper("martha") // also works the lodge, still awake
+		w := lodgeWorld(EntryPolicyOpen, []string{"lodging"}, bedded, cokeeper)
+		placeInside(w, "tavern", "john", "martha")
+		abedInStaffRoom(w, bedded)
+		if lodgeLocked(w, "tavern", now) {
+			t.Error("want open — a co-keeper is still awake tending the floor")
 		}
 	})
 
