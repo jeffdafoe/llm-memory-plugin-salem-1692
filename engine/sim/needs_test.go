@@ -184,8 +184,8 @@ func TestIncrementNeedsTick(t *testing.T) {
 	if err != nil {
 		t.Fatalf("increment: %v", err)
 	}
-	if touched := res.(int); touched != 2 {
-		t.Errorf("touched = %d, want 2 (npc + pc, skip decorative + sleeper)", touched)
+	if touched := res.(int); touched != 3 {
+		t.Errorf("touched = %d, want 3 (npc + pc + sleeper, skip decorative)", touched)
 	}
 
 	// Verify per-actor outcomes via snapshot.
@@ -203,7 +203,17 @@ func TestIncrementNeedsTick(t *testing.T) {
 	checkNeed("npc", 7)        // 5 + 2
 	checkNeed("pc", 7)         // 5 + 2
 	checkNeed("decorative", 5) // unchanged (no agent + no login)
-	checkNeed("sleeper", 5)    // unchanged (sleeping)
+	checkNeed("sleeper", 7)    // LLM-135: hunger accrues during sleep (5 + 2)
+
+	// LLM-135: the sleeper accrues hunger + thirst but tiredness is held — the
+	// sleep loop is recovering it, so the needs tick must not push it up.
+	sleeper := snap.Actors["sleeper"]
+	if got := sleeper.Needs["thirst"]; got != 7 {
+		t.Errorf("sleeper thirst = %d, want 7 (accrues during sleep)", got)
+	}
+	if got := sleeper.Needs["tiredness"]; got != 5 {
+		t.Errorf("sleeper tiredness = %d, want 5 (held — recovered by the sleep loop)", got)
+	}
 }
 
 // TestIncrementNeedsTickClamps covers the upper-bound clamp.

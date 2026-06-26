@@ -171,6 +171,12 @@ func hasFreshDwellCreditForAttribute(a *Actor, attr NeedKey, now time.Time, fres
 // on shift (overnight tiredness is the deterministic sleep loop's job, not
 // a deliberation). ok=false when nothing qualifies.
 //
+// A sleeping actor never has an actionable need (LLM-135). Hunger/thirst keep
+// climbing while it sleeps (IncrementNeedsTick), but the rising need must not
+// wake it — it surfaces on wake, not at 3am. This guard is the single point
+// that suppresses the mid-sleep wake on BOTH warrant paths that share this
+// predicate (the hourly tick producer and the red-need backstop sweep).
+//
 // Single source of truth for "what red need presses this actor": shared by
 // the hourly needs-tick warrant producer (IncrementNeedsTick) and the
 // red-need backstop sweep (ZBBS-HOME-363, EvaluateRedNeedBackstop) so the
@@ -178,6 +184,9 @@ func hasFreshDwellCreditForAttribute(a *Actor, attr NeedKey, now time.Time, fres
 // updates both at once.
 func actorActionableRedNeed(w *World, a *Actor, now time.Time, nowMinute int) (NeedKey, bool) {
 	if a.Needs == nil {
+		return "", false
+	}
+	if a.SleepingUntil != nil && a.SleepingUntil.After(now) {
 		return "", false
 	}
 	for _, n := range Needs {
@@ -199,10 +208,17 @@ func actorActionableRedNeed(w *World, a *Actor, now time.Time, nowMinute int) (N
 // IncrementNeedsTick returns a Command that applies the hourly needs
 // increment across all eligible actors.
 //
-// Eligibility filter (matches legacy needTickEligibilityPred):
+// Eligibility filter, derived from legacy needTickEligibilityPred — LLM-135
+// changes sleeping actors from whole-actor skipped to per-need skipped
+// (hunger/thirst accrue, tiredness held):
 //   - actor must have either LLMAgent or LoginUsername set
 //     (decoratives have neither, so they're skipped)
-//   - actor must NOT be sleeping (SleepingUntil > now suppresses)
+//   - sleeping actors STILL tick hunger + thirst (LLM-135: they wake hungry to
+//     drive breakfast demand) but skip tiredness, which the sleep loop is
+//     recovering — incrementing it here would fight that recovery. The rising
+//     need stays unsurfaced: actorActionableRedNeed returns nothing for a
+//     sleeping actor, so neither the warrant below nor the backstop sweep wakes
+//     them; it surfaces on wake.
 //   - on-break actors STILL tick (vendor on break is awake, just off-shift,
 //     and should still get hungry per legacy comment)
 //
@@ -234,12 +250,16 @@ func IncrementNeedsTick(cappedHours int) Command {
 				if a.LLMAgent == "" && a.LoginUsername == "" {
 					continue // decorative
 				}
-				if a.SleepingUntil != nil && a.SleepingUntil.After(now) {
-					continue // sleeping body's clock pauses
-				}
 				if a.Needs == nil {
 					a.Needs = make(map[NeedKey]int)
 				}
+				// LLM-135: a sleeping body still gets hungry and thirsty (those
+				// needs accrue below so the actor wakes wanting a meal), but
+				// tiredness is excluded — the sleep loop is recovering it, and
+				// accruing it here would fight that. The climbing need is not
+				// surfaced: actorActionableRedNeed returns nothing while asleep,
+				// so the warrant block below is a no-op for a sleeper.
+				sleeping := a.SleepingUntil != nil && a.SleepingUntil.After(now)
 
 				// ZBBS-WORK-277 — #1 need-threshold producer. Only agent-backed
 				// NPCs warrant: PCs accrue needs but don't reactor-tick, and
@@ -254,6 +274,9 @@ func IncrementNeedsTick(cappedHours int) Command {
 					a.VisitorState == nil && a.WarrantedSince == nil && !a.TickInFlight
 
 				for _, n := range Needs {
+					if sleeping && n.Key == "tiredness" {
+						continue // recovered by the sleep loop, not accrued here
+					}
 					// ZBBS-WORK-346 — port of v1 ZBBS-HOME-214: skip this need
 					// for this actor if a fresh dwell-credit exists on the
 					// matching attribute. Closes the "rest under a tree but
