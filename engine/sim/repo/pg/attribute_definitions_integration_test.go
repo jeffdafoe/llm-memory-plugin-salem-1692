@@ -21,6 +21,13 @@ func TestIntegration_AttributeDefinitions_LoadAllScopeFilter(t *testing.T) {
 	f := newFixture(t)
 	ctx := t.Context()
 
+	// Seed migrations may put rows in attribute_definition (LLM-26 seeds
+	// `worker`); clear it first so this case asserts the scope filter against
+	// exactly the three rows it seeds. Mirrors LoadAllEmpty.
+	if _, err := f.Pool.Exec(ctx, `DELETE FROM attribute_definition`); err != nil {
+		t.Fatalf("clear attribute_definition: %v", err)
+	}
+
 	if _, err := f.Pool.Exec(ctx, `
 		INSERT INTO attribute_definition (slug, display_name, scope)
 		VALUES ('tavernkeeper', 'Tavern Keeper', 'actor'),
