@@ -110,6 +110,11 @@ type runtime struct {
 	// the umbilical control surface is enabled. Nil in the headless lifecycle
 	// test (mem-backed, no pg) → the route answers 503.
 	RecipeWriter *pg.RecipesRepo
+	// SatisfiesWriter is the durable item_satisfies upsert behind the operator-
+	// gated /umbilical/item/set-satisfies route (LLM-119). run wires it via
+	// SetSatisfiesWriter when the umbilical control surface is enabled. Nil in the
+	// headless lifecycle test (mem-backed, no pg) → the route answers 503.
+	SatisfiesWriter *pg.ItemKindsRepo
 }
 
 func main() {
@@ -246,6 +251,7 @@ func main() {
 		Umbilical:        umbilical,
 		UmbilicalControl: umbilicalControl,
 		RecipeWriter:     pg.NewRecipesRepo(pool),
+		SatisfiesWriter:  pg.NewItemKindsRepo(pool),
 		PromptRing:       promptRing,
 		ChatRing:         chatRing,
 		MemoryAPIBaseURL: llmMemoryURL,
@@ -458,6 +464,9 @@ func run(rt runtime, stop <-chan struct{}) error {
 				server.SetRouteForcer(cascade.ForceRouteCommand) // backs /umbilical/route (force a crier/washerwoman tour on demand)
 				if rt.RecipeWriter != nil {
 					server.SetRecipeWriter(rt.RecipeWriter) // backs /umbilical/recipe/set (LLM-97) — durable item_recipe upsert
+				}
+				if rt.SatisfiesWriter != nil {
+					server.SetSatisfiesWriter(rt.SatisfiesWriter) // backs /umbilical/item/set-satisfies (LLM-119) — durable item_satisfies upsert
 				}
 			}
 		}

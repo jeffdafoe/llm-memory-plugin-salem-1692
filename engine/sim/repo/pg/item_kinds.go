@@ -157,6 +157,42 @@ func (r *ItemKindsRepo) attachSatisfactions(ctx context.Context, defs map[sim.It
 	return nil
 }
 
+// upsertItemSatisfiesSQL writes one item_satisfies row (the operator
+// satiation-edit path, LLM-119). PK is (item_kind, attribute); ON CONFLICT
+// updates ONLY the immediate amount, leaving any hand-authored dwell triple
+// (dwell_amount / dwell_period_minutes / dwell_total_ticks) intact. A new
+// attribute inserts with the dwell columns at their NULL defaults — immediate-
+// only, the MVP write surface.
+const upsertItemSatisfiesSQL = `
+INSERT INTO item_satisfies (item_kind, attribute, amount)
+VALUES ($1, $2, $3)
+ON CONFLICT (item_kind, attribute) DO UPDATE SET
+    amount = EXCLUDED.amount`
+
+// UpsertItemSatisfies inserts or updates one immediate need-ease magnitude in
+// item_satisfies — the durable half of the umbilical /item/set-satisfies route
+// (LLM-119). The catalog has no checkpoint path (reference data), so this is a
+// direct, standalone write; the in-memory ItemKindDef.Satisfies update is the
+// caller's separate step. item_kind must already exist (FK enforced by the DB);
+// amount must be positive (item_satisfies.amount is CHECK > 0 — re-asserted here
+// so a bad value fails before it reaches pg). Only the amount column is written,
+// so an edit preserves any existing dwell triple on the row.
+func (r *ItemKindsRepo) UpsertItemSatisfies(ctx context.Context, kind sim.ItemKind, attribute sim.NeedKey, amount int) error {
+	if kind == "" {
+		return fmt.Errorf("pg item_kinds UpsertItemSatisfies: empty item_kind")
+	}
+	if attribute == "" {
+		return fmt.Errorf("pg item_kinds UpsertItemSatisfies: empty attribute")
+	}
+	if amount <= 0 {
+		return fmt.Errorf("pg item_kinds UpsertItemSatisfies: amount must be positive (got %d)", amount)
+	}
+	if _, err := r.pool.Exec(ctx, upsertItemSatisfiesSQL, string(kind), string(attribute), amount); err != nil {
+		return fmt.Errorf("pg item_kinds UpsertItemSatisfies: exec: %w", err)
+	}
+	return nil
+}
+
 // upsertDiscoveredItemKindSQL inserts an engine-minted kind (ZBBS-WORK-412) and
 // does nothing if the name already exists — so the checkpoint never clobbers an
 // authored row or an operator's later edit to a discovered kind (e.g. once they

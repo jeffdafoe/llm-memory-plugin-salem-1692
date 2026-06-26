@@ -396,6 +396,7 @@ func (s *Server) umbilicalRoutes() []umbilicalRoute {
 		{http.MethodGet, umbilicalBasePath + "/transcript", "Complete durable committed-action transcript of one huddle (every participant — agent, player, engine — oldest-first) read from agent_action_log: the durable companion to the retention-bounded /huddle ring. Query param: huddle (required).", false, s.handleUmbilicalTranscript},
 		{http.MethodGet, umbilicalBasePath + "/settlements", "Durable accepted pay-with-item settlements off the agent_action_log 'paid' beat, most-recent first — the audit lens for 'did a free-food settlement happen' (each row carries coins + barter goods + a `free` flag, so a give-away is unambiguous). Reaches settlements that happened outside a huddle, unlike /transcript. Optional query params: actor (buyer id), since, until (RFC3339), ledger (a ledger id), limit. Rows from before LLM-105 carry has_legacy=true (no goods leg recorded).", false, s.handleUmbilicalSettlements},
 		{http.MethodGet, umbilicalBasePath + "/recipes", "Live item-recipe catalog (read side of recipe/set): per recipe its output batch, production rate, inputs, and wholesale/retail price. Query param: item (filter to one, case-insensitive against the canonical catalog key).", false, s.handleUmbilicalRecipes},
+		{http.MethodGet, umbilicalBasePath + "/items", "Live item catalog (read side of item/set-satisfies): per item kind its label, category, capabilities, eat-here-only flag, and per-need satiation entries (immediate amount + dwell triple where authored). Production rate/inputs/price live on /recipes. Query param: item (filter to one, case-insensitive against the canonical catalog key).", false, s.handleUmbilicalItems},
 		{http.MethodGet, umbilicalBasePath + "/settings", "Live operator-tunable world settings (read side of settings/need-threshold): current per-need red-line thresholds. Ephemeral — reset to env defaults on restart.", false, s.handleUmbilicalSettings},
 
 		// Control whitelist — world-mutating; armed only when control is also enabled.
@@ -440,6 +441,12 @@ func (s *Server) umbilicalRoutes() []umbilicalRoute {
 		// only). Durable write to item_recipe + in-memory catalog update; needs
 		// SetRecipeWriter wired (else 503).
 		{http.MethodPost, umbilicalBasePath + "/recipe/set", "Add or update one item recipe (upsert; output + input items must already exist). Body: {output_item, output_qty, rate_qty, rate_per_hours, inputs:[{item,qty}], wholesale_price, retail_price}.", true, s.handleUmbilicalRecipeSet},
+
+		// Item satiation (LLM-119) — live edit of how much consuming one unit of
+		// an item eases a need (the item_satisfies immediate amount). Durable
+		// write to item_satisfies + in-memory catalog update; needs
+		// SetSatisfiesWriter wired (else 503).
+		{http.MethodPost, umbilicalBasePath + "/item/set-satisfies", "Add or update one item's immediate per-unit need-ease magnitude (upsert keyed item+attribute; the item must already exist and the attribute must be a tracked need). Edits preserve any authored dwell triple. Body: {item, attribute, amount}.", true, s.handleUmbilicalSetSatisfies},
 	}
 }
 
