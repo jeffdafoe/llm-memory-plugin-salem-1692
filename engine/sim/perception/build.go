@@ -84,13 +84,21 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	p.Surroundings = buildSurroundings(snap, actorID, actorSnap)
 	// LLM-26: a free worker can solicit work — carries AttrWorker, isn't already
 	// laboring, has no pending offer already out (one bid at a time, the mirror
-	// of SolicitWork's gate), and has an audience to offer to. The one signal
-	// renders the solicit_work affordance cue AND gates the solicit_work tool.
-	// Built after Surroundings so HasAudience() is populated.
+	// of SolicitWork's gate), and has someone SOLICITABLE to offer to. The one
+	// signal renders the solicit_work affordance cue AND gates the solicit_work
+	// tool. Built after Surroundings so the audience is populated.
+	//
+	// LLM-145: the final term narrows HasAudience() to hasSolicitableAudience —
+	// at least one co-present actor who is NOT a housemate or a co-worker. A
+	// broke worker shut in with only its own family (the Walkers all share the
+	// Walker Residence) would otherwise be told to bid its kin for coin they
+	// don't have; now the affordance hides and the seek-work backstop keeps
+	// nudging it toward a real employer. SolicitWork re-checks the resolved
+	// employer for defense-in-depth.
 	p.CanSolicitWork = subjectIsWorker(actorSnap) &&
 		p.Laboring == nil &&
 		!subjectHasPendingLaborOffer(snap, actorID) &&
-		p.Surroundings.HasAudience()
+		hasSolicitableAudience(snap, actorSnap, p.Surroundings)
 	p.TurnState = buildTurnState(snap, actorID, actorSnap, p.Surroundings.HuddleMembers)
 	p.Anchors = buildAnchors(snap, actorSnap)
 	p.NarrativeState = buildNarrativeState(actorSnap)
@@ -2555,6 +2563,58 @@ func subjectIsWorker(actorSnap *sim.ActorSnapshot) bool {
 		}
 	}
 	return false
+}
+
+// hasSolicitableAudience reports whether at least one awake, addressable actor in
+// the subject's audience (huddle peers ∪ co-present) is someone the subject could
+// actually solicit work from — i.e. NOT a member of its own household (same home
+// structure) or its own workplace crew (same work structure). It is the narrowed
+// successor to SurroundingsView.HasAudience() in the CanSolicitWork gate: a broke
+// worker shut in with only family present HAS an audience but no one worth bidding
+// (LLM-145). CoPresentAsleep / CoPresentResting are already partitioned out
+// upstream — HuddleMembers and CoPresent are the same addressable set HasAudience
+// reads, so this can't advertise solicit_work against someone the speak path
+// couldn't reach.
+func hasSolicitableAudience(snap *sim.Snapshot, subject *sim.ActorSnapshot, surr SurroundingsView) bool {
+	if snap == nil || subject == nil {
+		return false
+	}
+	for _, m := range surr.HuddleMembers {
+		if isSolicitableEmployer(snap, subject, m.ID) {
+			return true
+		}
+	}
+	for _, m := range surr.CoPresent {
+		if isSolicitableEmployer(snap, subject, m.ID) {
+			return true
+		}
+	}
+	return false
+}
+
+// isSolicitableEmployer reports whether candidate (by id) is a co-present actor
+// the subject could solicit — present in the snapshot and sharing neither the
+// subject's household nor its workplace (LLM-145).
+func isSolicitableEmployer(snap *sim.Snapshot, subject *sim.ActorSnapshot, candidate sim.ActorID) bool {
+	other := snap.Actors[candidate]
+	if other == nil {
+		return false
+	}
+	return !sharesHousehold(subject, other) && !sharesWorkplace(subject, other)
+}
+
+// sharesHousehold reports whether a and b live in the same (non-empty) home
+// structure. An empty HomeStructureID never matches — a homeless actor (Ezekiel)
+// shares a household with no one. LLM-145.
+func sharesHousehold(a, b *sim.ActorSnapshot) bool {
+	return a.HomeStructureID != "" && a.HomeStructureID == b.HomeStructureID
+}
+
+// sharesWorkplace reports whether a and b are anchored to the same (non-empty)
+// work structure — the same employer's crew, who wouldn't take each other on for
+// pay. An empty WorkStructureID never matches. LLM-145.
+func sharesWorkplace(a, b *sim.ActorSnapshot) bool {
+	return a.WorkStructureID != "" && a.WorkStructureID == b.WorkStructureID
 }
 
 // buildRoomAlreadySold maps each pending lodging offer (by its LedgerID) to an
