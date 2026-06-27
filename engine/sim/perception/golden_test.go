@@ -150,7 +150,7 @@ var perceptionScenarios = []perceptionScenario{
 		name: "smith_forging_focused",
 		summary: "The same multi-output crafter (Ezekiel) at his forge WITH a productive focus already set (nail, below " +
 			"cap) and no production-choice warrant — the steady state after he has chosen (LLM-128). The golden pins the " +
-			"focus-aware cue: the '## Time to produce' section leads with 'You are crafting nails now — tend your post or call " +
+			"focus-aware cue: the '## Time to produce' section leads with 'You are producing nails now — tend your post or call " +
 			"done()' INSTEAD of the choose menu, so the weak model isn't re-invited to pick what it is already forging. The " +
 			"standing 'You are making nail.' self-state line renders too. Pairs with smith_choosing_at_forge (unfocused -> " +
 			"menu) to pin both halves of the cue.",
@@ -169,7 +169,7 @@ var perceptionScenarios = []perceptionScenario{
 		name: "smith_bartering_at_tavern",
 		summary: "A smith (Ezekiel) carrying his own wares stands in the Tavern in company with John Ellis the " +
 			"tavernkeeper — the live LLM-125 barter scene. Off shift and away from the forge, so neither '## Time to " +
-			"craft' nor the 'You are making nail.' line render; the new '## What your wares fetch' cue DOES, valuing his " +
+			"produce' nor the 'You are making nail.' line render; the new '## What your wares fetch' cue DOES, valuing his " +
 			"own-trade goods (nail 1-2, skillet 5-10 from the recipe wholesale-retail spread) so a barter has a coin " +
 			"yardstick instead of an invented number. No coin sales history yet (empty PriceBook), so no recent-price clause.",
 		build: smithBarteringAtTavern,
@@ -922,7 +922,7 @@ func smithChoosingAtForge() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 // state smithChoosingAtForge pins for the blacksmith, but for a dairy/farm trade.
 // The golden proves the cue and the wake warrant render trade-neutrally: the
 // "## Time to produce" header, the "Choose what to produce next" menu, and the
-// "It's time to craft — decide what to make next" warrant — NOT the blacksmith-only
+// "It's time to produce — decide what to make next" warrant — NOT the blacksmith-only
 // "forge" wording a dairywoman was wrongly shown (the live Elizabeth cheese scene
 // 019f0969). Mirrors smithChoosingAtForge; byte-stable.
 func dairyChoosingAtFarm() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
@@ -976,7 +976,7 @@ func dairyChoosingAtFarm() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 // shift WITH a productive focus already set (nail, below cap) and NO production-
 // choice warrant — the consistent state once he has chosen (shouldChooseProduction
 // gates the warrant off for a productive focus, so no "decide what to make next").
-// The "## Time to produce" cue leads with the "You are crafting nails now — tend your
+// The "## Time to produce" cue leads with the "You are producing nails now — tend your
 // post or call done()" steer instead of the choose menu, and the standing "You are
 // making nail." self-state line renders. ItemKinds carry the singular/plural
 // counting phrases (LLM-113) so the steer reads "nails", as the live catalog does.

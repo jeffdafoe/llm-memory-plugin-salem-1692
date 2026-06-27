@@ -11,7 +11,7 @@ import (
 
 // forge_choice.go — LLM-116. The "## Time to produce" cue. A multi-output crafter
 // (the smith makes skillets AND nails) forges one good at a time and picks which
-// via the `craft` tool; produce_tick then fills only the actor's ProductionFocus.
+// via the `produce` tool; produce_tick then fills only the actor's ProductionFocus.
 // This cue surfaces, AT the workplace, every good the actor can make — its
 // per-unit time cost, current stock vs cap, and recent sell-through — so the
 // choice leans toward what is actually selling. A single-output producer never
@@ -153,7 +153,7 @@ func renderForgeChoice(b *strings.Builder, v *ForgeChoiceView) {
 	if v.FocusNoun != "" {
 		// LLM-128: a productive focus is already set — lead with the
 		// continue-and-stop steer naming what's being made, not the choose
-		// prompt that lured the weak model into re-picking every tick. The craft
+		// prompt that lured the weak model into re-picking every tick. The produce
 		// tool stays advertised, so the closing clause notes it may still switch;
 		// the lead imperative is to stop and let production run.
 		fmt.Fprintf(b, "You are producing %s now — tend your post or call done(). Choose again with produce only if you mean to switch.\n\n", v.FocusNoun)
