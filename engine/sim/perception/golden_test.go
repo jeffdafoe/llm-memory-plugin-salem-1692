@@ -609,33 +609,32 @@ func TestExperientialShutCueOnlyWhenRemembered(t *testing.T) {
 	}
 }
 
-// TestEmptyPurseCannotPayCueTracksZeroCoins is the LLM-153 cross-scenario invariant:
+// TestEmptyPurseCannotPayCueTracksActorCoins is the LLM-153 cross-scenario invariant:
 // the "you cannot pay" consequence appears in EXACTLY the scenarios whose rendered
-// purse line reads zero, and never alongside a positive balance. The empty-purse
-// branch and the bare-count branch are the two halves of the same "## You" coins line,
-// so this pins that one — and only one — renders per turn, across the whole matrix and
-// any scenario added later. The matrix must exercise both branches for the check to
-// mean anything, so we also require at least one of each.
-func TestEmptyPurseCannotPayCueTracksZeroCoins(t *testing.T) {
-	const (
-		coinsLine        = "Coins in your purse:"
-		emptyPurseMarker = "Coins in your purse: 0"
-		cannotPayMarker  = "you cannot pay for anything until you earn some"
-	)
+// actor holds zero coins, and never with a positive balance. The expected branch is
+// derived from the BUILT actor state (snap.Actors[actorID].Coins), NOT from the
+// rendered purse text — so this independently asserts the cue tracks the actor's coins
+// rather than merely pinning that the rendered line is internally self-consistent (it
+// would catch a positive actor wrongly rendering the empty-purse form). The matrix must
+// exercise both branches for the check to mean anything, so we also require one of each.
+func TestEmptyPurseCannotPayCueTracksActorCoins(t *testing.T) {
+	const cannotPayMarker = "you cannot pay for anything until you earn some"
 	var sawEmpty, sawPositive bool
 	for _, sc := range perceptionScenarios {
 		sc := sc
-		got := renderScenario(sc)
-		hasEmpty := strings.Contains(got, emptyPurseMarker)
-		hasCannotPay := strings.Contains(got, cannotPayMarker)
-		if hasEmpty != hasCannotPay {
-			t.Errorf("scenario %q: empty-purse line=%v but cannot-pay cue=%v — they must agree", sc.name, hasEmpty, hasCannotPay)
+		snap, actorID, _ := sc.build()
+		actor := snap.Actors[actorID]
+		if actor == nil {
+			t.Fatalf("scenario %q: rendered actor %q missing from snapshot", sc.name, actorID)
 		}
-		switch {
-		case hasEmpty:
+		wantCannotPay := actor.Coins == 0
+		if wantCannotPay {
 			sawEmpty = true
-		case strings.Contains(got, coinsLine):
+		} else {
 			sawPositive = true
+		}
+		if has := strings.Contains(renderScenario(sc), cannotPayMarker); has != wantCannotPay {
+			t.Errorf("scenario %q: coins=%d cannot-pay cue=%v, want %v", sc.name, actor.Coins, has, wantCannotPay)
 		}
 	}
 	if !sawEmpty || !sawPositive {
