@@ -1812,7 +1812,7 @@ func renderLaborAffordance(b *strings.Builder, canSolicit bool) {
 	if !canSolicit {
 		return
 	}
-	b.WriteString("You take work for pay. If someone here has a task you could do and you want the coin, offer your labor with solicit_work — name them, the coins you want, and roughly how long the job will take.\n")
+	b.WriteString("You take work for pay. If someone here outside your own household or trade has a task you could do and you want the coin, offer your labor with solicit_work — name them, the coins you want, and roughly how long the job will take.\n")
 }
 
 // humanizeWorkMinutes renders a work duration in minutes as legible prose for a

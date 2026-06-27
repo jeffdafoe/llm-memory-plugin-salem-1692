@@ -149,6 +149,26 @@ func SolicitWork(workerID ActorID, employerName string, reward int, durationMin 
 				return nil, fmt.Errorf("SolicitWork: employer %q vanished mid-resolve", employerID)
 			}
 
+			// Co-resident / co-worker gate (LLM-145): a worker can't bill its
+			// own household or workplace crew. The Walkers all share the Walker
+			// Residence; unchecked, a broke worker shut in with kin just bids
+			// family for coin they don't have. The perception affordance already
+			// hides when only housemates/co-workers are present (CanSolicitWork);
+			// this is the substrate backstop for direct / stale-perception callers,
+			// the same posture as the worker-attribute re-check above.
+			if worker.HomeStructureID != "" && worker.HomeStructureID == employer.HomeStructureID {
+				return nil, fmt.Errorf(
+					"you live with %s — offer your labor to someone outside your own household.",
+					employer.DisplayName,
+				)
+			}
+			if worker.WorkStructureID != "" && worker.WorkStructureID == employer.WorkStructureID {
+				return nil, fmt.Errorf(
+					"you and %s keep the same workplace — offer your labor to someone else.",
+					employer.DisplayName,
+				)
+			}
+
 			// Duplicate-offer gate: at most ONE pending outgoing offer per
 			// worker (any employer). A worker bids one job at a time and waits
 			// for an answer — this prevents both the weak-model re-offer storm

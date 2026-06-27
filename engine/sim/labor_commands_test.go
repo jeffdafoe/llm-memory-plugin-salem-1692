@@ -24,6 +24,8 @@ type laborActor struct {
 	worker        bool // seeds Attributes[AttrWorker]
 	moveInFlight  bool
 	laboringUntil *time.Time
+	homeStruct    sim.StructureID // home anchor (LLM-145 co-resident gate)
+	workStruct    sim.StructureID // work anchor (LLM-145 co-worker gate)
 }
 
 // buildLaborWorld constructs a world with the given actors, one huddle, and
@@ -45,6 +47,8 @@ func buildLaborWorld(t *testing.T, huddleID sim.HuddleID, sceneID sim.SceneID, a
 			Coins:           s.coins,
 			CurrentHuddleID: s.huddleID,
 			LaboringUntil:   s.laboringUntil,
+			HomeStructureID: s.homeStruct,
+			WorkStructureID: s.workStruct,
 			RecentActions:   sim.NewRingBuffer[sim.Action](4),
 		}
 		if s.worker {
@@ -315,6 +319,62 @@ func TestSolicitWork_RejectsBadTerms(t *testing.T) {
 	}
 	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, 9999, now)); err == nil {
 		t.Error("duration over cap: want error, got nil")
+	}
+}
+
+// TestSolicitWork_RejectsHousemate — the LLM-145 co-resident gate: a worker
+// can't bill someone who shares its home structure (the Walkers all live at the
+// Walker Residence). Defense-in-depth behind the CanSolicitWork affordance.
+func TestSolicitWork_RejectsHousemate(t *testing.T) {
+	w, stop := buildLaborWorld(t, "h1", "sc1", []laborActor{
+		{id: "silence", displayName: "Silence", huddleID: "h1", worker: true, homeStruct: "walker-residence"},
+		{id: "patience", displayName: "Patience", huddleID: "h1", coins: 50, homeStruct: "walker-residence"},
+	})
+	defer stop()
+
+	now := time.Now().UTC()
+	if _, err := w.Send(sim.SolicitWork("silence", "Patience", 10, 30, now)); err == nil {
+		t.Fatal("SolicitWork against a housemate: want error, got nil")
+	}
+	if n := len(readLaborLedger(t, w)); n != 0 {
+		t.Errorf("ledger size = %d after rejected housemate solicit, want 0", n)
+	}
+}
+
+// TestSolicitWork_RejectsCoworker — the LLM-145 co-worker gate: a worker can't
+// bill someone anchored to the same work structure (the same employer's crew).
+func TestSolicitWork_RejectsCoworker(t *testing.T) {
+	w, stop := buildLaborWorld(t, "h1", "sc1", []laborActor{
+		{id: "ezekiel", displayName: "Ezekiel", huddleID: "h1", worker: true, workStruct: "ellis-farm"},
+		{id: "josiah", displayName: "Josiah", huddleID: "h1", coins: 50, workStruct: "ellis-farm"},
+	})
+	defer stop()
+
+	now := time.Now().UTC()
+	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, 30, now)); err == nil {
+		t.Fatal("SolicitWork against a co-worker: want error, got nil")
+	}
+	if n := len(readLaborLedger(t, w)); n != 0 {
+		t.Errorf("ledger size = %d after rejected co-worker solicit, want 0", n)
+	}
+}
+
+// TestSolicitWork_AllowsUnrelatedDespiteAnchors — a positive control: distinct,
+// non-empty home AND work anchors don't trip either gate; the offer mints. Also
+// proves an empty anchor on one side never matches a non-empty one.
+func TestSolicitWork_AllowsUnrelatedDespiteAnchors(t *testing.T) {
+	w, stop := buildLaborWorld(t, "h1", "sc1", []laborActor{
+		{id: "ezekiel", displayName: "Ezekiel", huddleID: "h1", worker: true, workStruct: "ellis-farm"}, // homeless (empty home)
+		{id: "josiah", displayName: "Josiah", huddleID: "h1", coins: 50, homeStruct: "ellis-house", workStruct: "smithy"},
+	})
+	defer stop()
+
+	now := time.Now().UTC()
+	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, 30, now)); err != nil {
+		t.Fatalf("SolicitWork against an unrelated employer: %v", err)
+	}
+	if n := len(readLaborLedger(t, w)); n != 1 {
+		t.Errorf("ledger size = %d after valid solicit, want 1", n)
 	}
 }
 
