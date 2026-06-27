@@ -203,6 +203,15 @@ var perceptionScenarios = []perceptionScenario{
 		build: peersHoldingSameFood,
 	},
 	{
+		name: "coinless_worker_among_peers",
+		summary: "Two laborers stand together in the commons and the one we render (Goodwife Bishop, a newcomer) has " +
+			"an empty purse — the LLM-153 situation, where 0-coin workers tried to BUY services from each other. The pay " +
+			"path rejects a coinless buy, but the model kept attempting it because '## You' showed 'Coins in your purse: 0' " +
+			"with no consequence. The golden pins the empty-purse line now spelling out that the actor cannot pay until it " +
+			"earns coin — coin-specific wording so barter (offer_trade) is left untouched.",
+		build: coinlessWorkerAmongPeers,
+	},
+	{
 		name: "owner_at_worn_stall",
 		summary: "A stall owner (Ezekiel) stands at his own worn market stall (wear past the repair threshold, " +
 			"below degrade) carrying too few nails to mend it. The golden pins the '## Your stall' cue: the worn-boards " +
@@ -597,6 +606,40 @@ func TestExperientialShutCueOnlyWhenRemembered(t *testing.T) {
 		if has := strings.Contains(got, closedBusinessAnnotation); has != want {
 			t.Errorf("scenario %q: experiential shut annotation present=%v, want %v", sc.name, has, want)
 		}
+	}
+}
+
+// TestEmptyPurseCannotPayCueTracksZeroCoins is the LLM-153 cross-scenario invariant:
+// the "you cannot pay" consequence appears in EXACTLY the scenarios whose rendered
+// purse line reads zero, and never alongside a positive balance. The empty-purse
+// branch and the bare-count branch are the two halves of the same "## You" coins line,
+// so this pins that one — and only one — renders per turn, across the whole matrix and
+// any scenario added later. The matrix must exercise both branches for the check to
+// mean anything, so we also require at least one of each.
+func TestEmptyPurseCannotPayCueTracksZeroCoins(t *testing.T) {
+	const (
+		coinsLine        = "Coins in your purse:"
+		emptyPurseMarker = "Coins in your purse: 0"
+		cannotPayMarker  = "you cannot pay for anything until you earn some"
+	)
+	var sawEmpty, sawPositive bool
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		got := renderScenario(sc)
+		hasEmpty := strings.Contains(got, emptyPurseMarker)
+		hasCannotPay := strings.Contains(got, cannotPayMarker)
+		if hasEmpty != hasCannotPay {
+			t.Errorf("scenario %q: empty-purse line=%v but cannot-pay cue=%v — they must agree", sc.name, hasEmpty, hasCannotPay)
+		}
+		switch {
+		case hasEmpty:
+			sawEmpty = true
+		case strings.Contains(got, coinsLine):
+			sawPositive = true
+		}
+	}
+	if !sawEmpty || !sawPositive {
+		t.Errorf("matrix must exercise both branches: sawEmpty=%v sawPositive=%v", sawEmpty, sawPositive)
 	}
 }
 
@@ -1200,6 +1243,58 @@ func peersHoldingSameFood() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 		ItemKinds: foodDrinkCatalog(),
 	}
 	return snap, ezekielID, nil
+}
+
+// coinlessWorkerAmongPeers is the LLM-153 situation: two laborers stand together in
+// the commons and the one we render (Goodwife Bishop, a newcomer) has an empty purse.
+// Live, 0-coin workers tried to BUY services from each other — the pay path rejected
+// every attempt (engine/sim/pay_commands.go), but the model kept trying because the
+// prompt showed "Coins in your purse: 0" without saying that meant it could not pay.
+// The golden pins the consequence line the empty-purse case now renders in "## You".
+// No needs, no clock-bound content → byte-stable.
+func coinlessWorkerAmongPeers() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		bishopID = sim.ActorID("bishop")
+		walkerID = sim.ActorID("walker")
+		commons  = sim.StructureID("commons")
+		huddle   = sim.HuddleID("h1")
+	)
+	published := time.Date(2026, 6, 27, 11, 0, 0, 0, time.UTC)
+	bishop := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Goodwife Bishop",
+		Role:              "laborer",
+		State:             sim.StateIdle,
+		InsideStructureID: commons,
+		CurrentHuddleID:   huddle,
+		Coins:             0,
+		Needs:             map[sim.NeedKey]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"Lewis Walker": {}},
+	}
+	walker := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Lewis Walker",
+		Role:              "farmer",
+		State:             sim.StateIdle,
+		InsideStructureID: commons,
+		CurrentHuddleID:   huddle,
+		Coins:             6,
+		Needs:             map[sim.NeedKey]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"Goodwife Bishop": {}},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:    published,
+		NeedThresholds: sim.NeedThresholds{},
+		Actors:         map[sim.ActorID]*sim.ActorSnapshot{bishopID: bishop, walkerID: walker},
+		Structures: map[sim.StructureID]*sim.Structure{
+			commons: plainStructure(commons, "Village Commons"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{bishopID: {}, walkerID: {}}},
+		},
+		ItemKinds: foodDrinkCatalog(),
+	}
+	return snap, bishopID, nil
 }
 
 // keeperOffersRoomToCoinlessGuest is the LLM-136 host-side scene. John Ellis, the
