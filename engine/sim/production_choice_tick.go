@@ -15,7 +15,7 @@ import (
 // their own stimulus). Without this producer an idle smith — needs met, no
 // customers — would sit unfocused and forge nothing, a regression from the old
 // silent auto-produce. This level-triggered producer wakes such a crafter so it
-// sees the "## Time to craft" cue and chooses via the craft tool.
+// sees the "## Time to produce" cue and chooses via the produce tool.
 //
 // LLM-DECIDED, like the restock/shift producers: it does NOT pick for the actor.
 // It stamps a WarrantKindProductionChoice warrant (high-information, so it bypasses

@@ -2172,9 +2172,9 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 		return renderServeHandoverWarrantLine(n, nameOf(r.Buyer), r), false
 	case sim.ProductionChoiceWarrantReason:
 		// LLM-116: the workplace is free and there's work to do — the "## Time to
-		// craft" cue carries the options + the craft tool; this line is just the
+		// produce" cue carries the options + the produce tool; this line is just the
 		// "why you ticked" beat, like the idle-backstop / need-nudge lines.
-		return fmt.Sprintf("%d. It's time to craft — decide what to make next.\n", n), false
+		return fmt.Sprintf("%d. It's time to produce — decide what to make next.\n", n), false
 	case sim.StallRepairWarrantReason:
 		// LLM-118: the stall just wore through the repair threshold. At the stall
 		// the "## Your stall" cue carries the nail count + buy-from-the-smith

@@ -18,7 +18,7 @@ package handlers
 // dispatchable; the sim.SetProductionFocus Command is the authoritative gate.
 func RegisterCraft(r *Registry) error {
 	return r.RegisterCommit(
-		"craft",
+		"produce",
 		craftSchema,
 		DecodeCraftArgs,
 		HandleCraft,

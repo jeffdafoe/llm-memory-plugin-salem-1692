@@ -26,7 +26,7 @@ import (
 // knows what its own craft is worth, but does not omnisciently learn the going
 // rate of wares outside its trade — knowledge of others' prices stays "earned by
 // patronage" (the PriceBook buyer-side path in recovery_options / consumable_
-// vendors). Unlike "## Time to craft" this is NOT gated on being at the
+// vendors). Unlike "## Time to produce" this is NOT gated on being at the
 // workplace: a smith knows a nail is worth 1–2 coins whether stood at the forge
 // or pitching it across a tavern table.
 

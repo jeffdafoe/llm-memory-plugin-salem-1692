@@ -171,15 +171,17 @@ const speakToolName = "speak"
 // substrate stays authoritative, and the gate lifts the moment the flag clears.
 const moveToToolName = "move_to"
 
-// craftToolName — the multi-output crafter's "what to forge next" tool (LLM-116).
-// Advertised ONLY when the "## Time to craft" cue is present (payload.ForgeChoice
+// craftToolName — the model-facing name of the multi-output producer's production-
+// choice tool (LLM-116). The internal identifiers keep the "craft" codename to
+// avoid colliding with the produce_tick auto-fill machinery (ProduceState etc.).
+// Advertised ONLY when the "## Time to produce" cue is present (payload.ForgeChoice
 // non-empty), which itself fires only for a >1-produce-entry crafter AT its
 // workplace. Reading the SAME signal the cue renders from keeps the tool and its
 // cue in lockstep — the discussion-109 "advertise a tool only with its triggering
 // perception" invariant. A single-output producer never sees it; the
 // sim.SetProductionFocus Command stays the authoritative gate for any call that
 // arrives anyway.
-const craftToolName = "craft"
+const craftToolName = "produce"
 
 // repairToolName — the stall owner's "mend your worn market stall" tool (LLM-118).
 // Advertised ONLY when the "## Your stall" cue is present (payload.StallRepair
@@ -363,7 +365,7 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 		if spec.Name == moveToToolName && flaggedDegenerate {
 			continue
 		}
-		// craft consumer (LLM-116): advertise only when the "## Time to craft" cue
+		// craft consumer (LLM-116): advertise only when the "## Time to produce" cue
 		// is present — the same ForgeChoice signal the cue renders from — so a
 		// crafter is handed the tool exactly when it has a choice to make, and no
 		// other actor ever sees it.

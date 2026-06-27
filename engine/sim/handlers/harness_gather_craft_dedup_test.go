@@ -169,11 +169,11 @@ func TestHarness_CraftRepeatSameItem_BlockedSameTick(t *testing.T) {
 	w, cancel := newHarnessWorld(t, "attempt-A")
 	defer cancel()
 	client := llm.NewFakeClient(
-		callTurn("c1", "craft", `{"item":"Nail"}`),
-		callTurn("c2", "craft", `{"item":"Nail"}`),
+		callTurn("c1", "produce", `{"item":"Nail"}`),
+		callTurn("c2", "produce", `{"item":"Nail"}`),
 		doneTurn("d1"),
 	)
-	h, log := newObsDedupHarness(t, client, "craft", craftSchema, DecodeCraftArgs, craftLogArg)
+	h, log := newObsDedupHarness(t, client, "produce", craftSchema, DecodeCraftArgs, craftLogArg)
 
 	result := h.RunTick(context.Background(), w, newTestJob("attempt-A", nil))
 
@@ -183,7 +183,7 @@ func TestHarness_CraftRepeatSameItem_BlockedSameTick(t *testing.T) {
 	if len(*log) != 1 {
 		t.Errorf("craft landings: got %d, want 1 — the second craft must be bounced before dispatch", len(*log))
 	}
-	if !contains(result.ToolsFailedRejected, "craft") {
+	if !contains(result.ToolsFailedRejected, "produce") {
 		t.Errorf("ToolsFailedRejected should include the blocked repeat, got %v", result.ToolsFailedRejected)
 	}
 }
@@ -196,11 +196,11 @@ func TestHarness_CraftAliasDrift_BlockedSameTick(t *testing.T) {
 	w, cancel := newHarnessWorld(t, "attempt-A")
 	defer cancel()
 	client := llm.NewFakeClient(
-		callTurn("c1", "craft", `{"item":"Nail"}`),
-		callTurn("c2", "craft", `{"item":"nails"}`),
+		callTurn("c1", "produce", `{"item":"Nail"}`),
+		callTurn("c2", "produce", `{"item":"nails"}`),
 		doneTurn("d1"),
 	)
-	h, log := newObsDedupHarness(t, client, "craft", craftSchema, DecodeCraftArgs, craftLogArg)
+	h, log := newObsDedupHarness(t, client, "produce", craftSchema, DecodeCraftArgs, craftLogArg)
 
 	result := h.RunTick(context.Background(), w, newTestJob("attempt-A", nil))
 
@@ -219,11 +219,11 @@ func TestHarness_CraftDifferentItem_BlockedSameTick(t *testing.T) {
 	w, cancel := newHarnessWorld(t, "attempt-A")
 	defer cancel()
 	client := llm.NewFakeClient(
-		callTurn("c1", "craft", `{"item":"Nail"}`),
-		callTurn("c2", "craft", `{"item":"Skillet"}`),
+		callTurn("c1", "produce", `{"item":"Nail"}`),
+		callTurn("c2", "produce", `{"item":"Skillet"}`),
 		doneTurn("d1"),
 	)
-	h, log := newObsDedupHarness(t, client, "craft", craftSchema, DecodeCraftArgs, craftLogArg)
+	h, log := newObsDedupHarness(t, client, "produce", craftSchema, DecodeCraftArgs, craftLogArg)
 
 	result := h.RunTick(context.Background(), w, newTestJob("attempt-A", nil))
 
@@ -242,8 +242,8 @@ func TestHarness_CraftBounced_NotRecorded(t *testing.T) {
 	w, cancel := newHarnessWorld(t, "attempt-A")
 	defer cancel()
 	client := llm.NewFakeClient(
-		callTurn("c1", "craft", `{"item":"Widget"}`),
-		callTurn("c2", "craft", `{"item":"Nail"}`),
+		callTurn("c1", "produce", `{"item":"Widget"}`),
+		callTurn("c2", "produce", `{"item":"Nail"}`),
 		doneTurn("d1"),
 	)
 	r := NewRegistry()
@@ -257,7 +257,7 @@ func TestHarness_CraftBounced_NotRecorded(t *testing.T) {
 		log = append(log, craftLogArg(in.Args))
 		return "[ok]", nil
 	}
-	if err := r.RegisterObservation("craft", craftSchema, DecodeCraftArgs, craftFn); err != nil {
+	if err := r.RegisterObservation("produce", craftSchema, DecodeCraftArgs, craftFn); err != nil {
 		t.Fatalf("register craft: %v", err)
 	}
 	if err := r.RegisterTerminal("done"); err != nil {

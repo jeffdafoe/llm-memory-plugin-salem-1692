@@ -34,7 +34,7 @@ var craftSchema = json.RawMessage(`{
     "properties": {
         "item": {
             "type": "string",
-            "description": "The good to craft next, e.g. \"skillet\" or \"nail\". You make one thing at a time and keep making it until you choose again."
+            "description": "The good to produce next, e.g. \"cheese\" or \"nail\". You make one thing at a time and keep making it until you choose again."
         }
     },
     "required": ["item"],
@@ -44,7 +44,7 @@ var craftSchema = json.RawMessage(`{
 // craftDescription is advertised to the model. gateTools only offers this tool to
 // a crafter that makes more than one good and is at its workplace, so the copy
 // can assume that context.
-const craftDescription = "Set what you craft next at your workplace. You make one good at a time — name the " +
+const craftDescription = "Set what you produce next at your workplace. You make one good at a time — name the " +
 	"item to work on it (you can only make what your trade produces). You keep making it until you choose " +
 	"again, so favour what people are actually buying."
 

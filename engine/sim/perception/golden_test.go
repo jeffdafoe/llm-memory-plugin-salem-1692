@@ -139,8 +139,8 @@ var perceptionScenarios = []perceptionScenario{
 		name: "smith_choosing_at_forge",
 		summary: "A multi-output crafter (Ezekiel the blacksmith: skillet + nail) stands UNFOCUSED at his own forge on " +
 			"shift — the post-restart state the production-choice warrant fires on (LLM-116/LLM-128). The golden pins the " +
-			"'## Time to craft' CHOOSE menu — each makeable good with its per-unit time, stock vs cap, and weekly made/sold " +
-			"counts — under the 'Choose what to craft next' header, plus the 'decide what to make next' wake warrant. With no " +
+			"'## Time to produce' CHOOSE menu — each makeable good with its per-unit time, stock vs cap, and weekly made/sold " +
+			"counts — under the 'Choose what to produce next' header, plus the 'decide what to make next' wake warrant. With no " +
 			"focus set, the steer cue and the standing 'You are making nail.' line do NOT render here (see " +
 			"smith_forging_focused). A single-output producer never gets this section (see " +
 			"TestForgeCueOnlyForMultiOutputCrafterAtForge).",
@@ -150,7 +150,7 @@ var perceptionScenarios = []perceptionScenario{
 		name: "smith_forging_focused",
 		summary: "The same multi-output crafter (Ezekiel) at his forge WITH a productive focus already set (nail, below " +
 			"cap) and no production-choice warrant — the steady state after he has chosen (LLM-128). The golden pins the " +
-			"focus-aware cue: the '## Time to craft' section leads with 'You are crafting nails now — tend your post or call " +
+			"focus-aware cue: the '## Time to produce' section leads with 'You are crafting nails now — tend your post or call " +
 			"done()' INSTEAD of the choose menu, so the weak model isn't re-invited to pick what it is already forging. The " +
 			"standing 'You are making nail.' self-state line renders too. Pairs with smith_choosing_at_forge (unfocused -> " +
 			"menu) to pin both halves of the cue.",
@@ -160,7 +160,7 @@ var perceptionScenarios = []perceptionScenario{
 		name: "smith_off_work_focus_hidden",
 		summary: "The same multi-output crafter (Ezekiel, focus still nail) is NOT at his forge — he is at the Tavern " +
 			"after his shift (the live Tavern bug, LLM-121). produce_tick makes nothing away from the workplace, so the " +
-			"standing 'You are making nail.' self-state line must NOT render here, and the '## Time to craft' cue is " +
+			"standing 'You are making nail.' self-state line must NOT render here, and the '## Time to produce' cue is " +
 			"likewise absent. The golden pins that neither leaks into an off-work turn; a regression to the work-structure " +
 			"gate would make the line reappear in the diff (see TestProductionFocusLineOnlyAtWork).",
 		build: smithOffWorkFocusHidden,
@@ -179,7 +179,7 @@ var perceptionScenarios = []perceptionScenario{
 		summary: "LLM-144: a NON-smith multi-output producer (Elizabeth Ellis at Ellis Farm: milk + meat + cheese) stands " +
 			"UNFOCUSED at her own workplace on shift — the same production-choice state smith_choosing_at_forge pins for the " +
 			"blacksmith, but for a dairy/farm trade. The golden proves the cue and wake warrant render trade-neutrally: the " +
-			"'## Time to craft' header, the 'Choose what to craft next' menu, and the 'It's time to craft — decide what to " +
+			"'## Time to produce' header, the 'Choose what to produce next' menu, and the 'It's time to produce — decide what to " +
 			"make next' warrant — NOT the blacksmith-only 'forge' wording a dairywoman was wrongly shown (the live Elizabeth " +
 			"cheese scene 019f0969). Mirrors smithChoosingAtForge; byte-stable.",
 		build: dairyChoosingAtFarm,
@@ -467,14 +467,14 @@ func buyerRemembersVendorShut() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) 
 }
 
 // TestForgeCueOnlyForMultiOutputCrafterAtForge is the LLM-116 cross-scenario
-// invariant: the "## Time to craft" cue appears in EXACTLY the multi-output-producer-
+// invariant: the "## Time to produce" cue appears in EXACTLY the multi-output-producer-
 // at-workplace scenarios and no other — whether unfocused (choose menu,
 // smith_choosing_at_forge / the non-smith dairy_choosing_at_farm) or focused (the
 // LLM-128 continue-and-stop steer, smith_forging_focused). A single-output producer
 // or a non-crafter must never see it — the structural property the per-builder gate
 // (>1 produce entry AND at workplace) is meant to hold across the whole matrix.
 func TestForgeCueOnlyForMultiOutputCrafterAtForge(t *testing.T) {
-	const marker = "## Time to craft"
+	const marker = "## Time to produce"
 	for _, sc := range perceptionScenarios {
 		sc := sc
 		got := renderScenario(sc)
@@ -864,9 +864,9 @@ func TestOwnTradeStockEatCueOnlyAtDesperation(t *testing.T) {
 // smithChoosingAtForge is the LLM-116/LLM-128 situation: Ezekiel, a multi-output
 // crafter, stands inside his own forge on shift with two produce goods (skillet at
 // cap, nail empty) and NO focus set yet — the realistic post-restart state the
-// production-choice warrant fires on. The "## Time to craft" cue lists both makeable
+// production-choice warrant fires on. The "## Time to produce" cue lists both makeable
 // goods (time cost, stock vs cap, empty weekly made/sold counts) under the "Choose
-// what to craft next" header, and the production-choice wake warrant renders. With
+// what to produce next" header, and the production-choice wake warrant renders. With
 // no focus, neither the "— making this now" marker nor the standing "You are making
 // nail." line appears — those move to smithForgingFocused. No orders, no clock read
 // (PriceBook/RecentProduce empty so the windowed counts are 0 regardless of
@@ -921,7 +921,7 @@ func smithChoosingAtForge() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 // stands UNFOCUSED at her own workplace on shift — the same production-choice
 // state smithChoosingAtForge pins for the blacksmith, but for a dairy/farm trade.
 // The golden proves the cue and the wake warrant render trade-neutrally: the
-// "## Time to craft" header, the "Choose what to craft next" menu, and the
+// "## Time to produce" header, the "Choose what to produce next" menu, and the
 // "It's time to craft — decide what to make next" warrant — NOT the blacksmith-only
 // "forge" wording a dairywoman was wrongly shown (the live Elizabeth cheese scene
 // 019f0969). Mirrors smithChoosingAtForge; byte-stable.
@@ -976,7 +976,7 @@ func dairyChoosingAtFarm() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 // shift WITH a productive focus already set (nail, below cap) and NO production-
 // choice warrant — the consistent state once he has chosen (shouldChooseProduction
 // gates the warrant off for a productive focus, so no "decide what to make next").
-// The "## Time to craft" cue leads with the "You are crafting nails now — tend your
+// The "## Time to produce" cue leads with the "You are crafting nails now — tend your
 // post or call done()" steer instead of the choose menu, and the standing "You are
 // making nail." self-state line renders. ItemKinds carry the singular/plural
 // counting phrases (LLM-113) so the steer reads "nails", as the live catalog does.
@@ -1031,7 +1031,7 @@ func smithForgingFocused() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 // (Ezekiel, focus still nail) is NOT at his forge — he is at the Tavern after his
 // shift. produce_tick makes nothing away from the workplace, so the standing
 // "You are making nail." self-state line must NOT render (the live Tavern bug), and
-// the "## Time to craft" choice cue is likewise gated off. Mirrors smithChoosingAtForge
+// the "## Time to produce" choice cue is likewise gated off. Mirrors smithChoosingAtForge
 // but with InsideStructureID = the tavern and off-shift, no production-choice warrant.
 // No orders, no clock read → byte-stable.
 func smithOffWorkFocusHidden() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
@@ -1081,7 +1081,7 @@ func smithOffWorkFocusHidden() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 // smithBarteringAtTavern is the LLM-125 situation: Ezekiel, a smith carrying his
 // own wares, stands in the Tavern in company with John Ellis the tavernkeeper —
 // the live barter scene. Off his shift and away from the forge, so neither the
-// "## Time to craft" cue nor the "You are making nail." line render; what DOES
+// "## Time to produce" cue nor the "You are making nail." line render; what DOES
 // render is the new "## What your wares fetch" cue, valuing his own-trade goods
 // (nail 1-2, skillet 5-10 from the recipe wholesale-retail spread) so a barter has
 // a coin yardstick. Empty PriceBook → no recent-price clause; no orders, no clock
