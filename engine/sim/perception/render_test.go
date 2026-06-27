@@ -845,3 +845,71 @@ func TestRender_ServeHandoverWarrantLine(t *testing.T) {
 		})
 	}
 }
+
+// TestRenderLaborOffers_AffordabilitySteer is the LLM-158 case: an employer whose
+// purse can't cover an offer's reward must be steered to decline_work (with an
+// explicit speak), never presented accept_work — accepting would only flip the
+// offer to failed_unavailable at the funds gate and leave the worker in dead air.
+func TestRenderLaborOffers_AffordabilitySteer(t *testing.T) {
+	nameOf := func(id sim.ActorID) string {
+		if id == "lewis" {
+			return "Lewis Walker"
+		}
+		return string(id)
+	}
+	offer := func(id sim.LaborID, reward int) LaborOfferView {
+		return LaborOfferView{LaborID: id, Worker: "lewis", Reward: reward, DurationMin: 60}
+	}
+	const (
+		acceptFooter = "Respond with accept_work or decline_work"
+		speakNamed   = "then use speak to tell them"
+	)
+
+	t.Run("broke employer: decline steer with spoken reason, no accept footer", func(t *testing.T) {
+		var b strings.Builder
+		renderLaborOffers(&b, []LaborOfferView{offer(1, 5)}, 0, nameOf)
+		got := b.String()
+		if !strings.Contains(got, "call decline_work (offer id 1)") || !strings.Contains(got, speakNamed) {
+			t.Errorf("broke employer should be steered to decline WITH a spoken reason; got:\n%s", got)
+		}
+		if !strings.Contains(got, "You only have 0 coins") {
+			t.Errorf("decline steer should name the employer's coin count; got:\n%s", got)
+		}
+		if strings.Contains(got, acceptFooter) {
+			t.Errorf("broke employer must NOT be offered the accept_work footer; got:\n%s", got)
+		}
+	})
+
+	t.Run("solvent employer: accept footer, no forced decline", func(t *testing.T) {
+		var b strings.Builder
+		renderLaborOffers(&b, []LaborOfferView{offer(1, 5)}, 46, nameOf)
+		got := b.String()
+		if !strings.Contains(got, acceptFooter) {
+			t.Errorf("solvent employer should see the accept_work/decline_work footer; got:\n%s", got)
+		}
+		if strings.Contains(got, "call decline_work (offer id 1)") {
+			t.Errorf("solvent employer should not get a forced-decline steer; got:\n%s", got)
+		}
+	})
+
+	t.Run("mixed: footer is scoped to affordable offers, unaffordable carries its own decline", func(t *testing.T) {
+		var b strings.Builder
+		// 5 coins on hand covers the 4-coin job but not the 9-coin one.
+		renderLaborOffers(&b, []LaborOfferView{offer(1, 4), offer(2, 9)}, 5, nameOf)
+		got := b.String()
+		// The footer must scope accept_work to affordable offers — a generic
+		// "accept_work or decline_work" could be applied to the unaffordable one.
+		if !strings.Contains(got, "For an offer you can afford") || !strings.Contains(got, "decline_work the ones you cannot pay") {
+			t.Errorf("mixed case should scope the footer to affordable offers; got:\n%s", got)
+		}
+		if strings.Contains(got, acceptFooter) {
+			t.Errorf("mixed case must NOT emit the generic accept footer; got:\n%s", got)
+		}
+		if !strings.Contains(got, "call decline_work (offer id 2)") {
+			t.Errorf("the unaffordable offer (id 2) should carry its own decline steer; got:\n%s", got)
+		}
+		if strings.Contains(got, "call decline_work (offer id 1)") {
+			t.Errorf("the affordable offer (id 1) should not carry a decline steer; got:\n%s", got)
+		}
+	})
+}
