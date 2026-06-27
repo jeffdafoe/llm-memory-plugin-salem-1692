@@ -156,13 +156,7 @@ func SolicitWork(workerID ActorID, employerName string, reward int, durationMin 
 			// once, where every late acceptor would then hit failed_unavailable
 			// (code_review). Past-TTL entries are skipped (they resolve on the
 			// sweep, not here).
-			for _, o := range w.LaborLedger {
-				if o == nil || o.State != LaborStatePending || o.WorkerID != workerID {
-					continue
-				}
-				if !o.ExpiresAt.IsZero() && !at.Before(o.ExpiresAt) {
-					continue
-				}
+			if o := workerPendingLaborOffer(w, workerID, at); o != nil {
 				return nil, fmt.Errorf(
 					"you already have a work offer out awaiting an answer (offer id %d) — wait for a response before offering again.",
 					o.ID,
@@ -424,4 +418,22 @@ func workerHasLiveJob(w *World, workerID ActorID) bool {
 		}
 	}
 	return false
+}
+
+// workerPendingLaborOffer returns the worker's live (not past-TTL) pending
+// outgoing labor offer, or nil. Shared by SolicitWork's duplicate-offer gate
+// and the seek-work backstop's eligibility (LLM-141) so the "already bidding"
+// predicate can't drift between them. Past-TTL pending entries are skipped —
+// they resolve on the labor sweep, not here. World-goroutine-only.
+func workerPendingLaborOffer(w *World, workerID ActorID, now time.Time) *LaborOffer {
+	for _, o := range w.LaborLedger {
+		if o == nil || o.State != LaborStatePending || o.WorkerID != workerID {
+			continue
+		}
+		if !o.ExpiresAt.IsZero() && !now.Before(o.ExpiresAt) {
+			continue
+		}
+		return o
+	}
+	return nil
 }

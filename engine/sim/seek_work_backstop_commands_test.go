@@ -120,6 +120,49 @@ func TestSeekWorkBackstop_SkipsSleeper(t *testing.T) {
 	}
 }
 
+// TestSeekWorkBackstop_SkipsRester: a broke worker on a scheduled break is
+// recovering — don't nudge it off to find work mid-rest.
+func TestSeekWorkBackstop_SkipsRester(t *testing.T) {
+	byState := homedWorker("rs")
+	byState.State = StateResting
+	until := homedWorker("bu")
+	bu := seekNoon.Add(10 * time.Minute)
+	until.BreakUntil = &bu
+	w := workerShiftWorld(byState, until)
+	tm := evalSeekWork(t, w, seekNoon)
+	if tm.Stamped != 0 || tm.SkippedNotEligible != 2 {
+		t.Errorf("Stamped=%d SkippedNotEligible=%d, want 0/2 (on break)", tm.Stamped, tm.SkippedNotEligible)
+	}
+}
+
+// TestSeekWorkBackstop_SkipsSourceActivity: a broke worker mid eat/drink/harvest
+// is occupied — don't yank it off the activity.
+func TestSeekWorkBackstop_SkipsSourceActivity(t *testing.T) {
+	a := homedWorker("w")
+	a.SourceActivity = &SourceActivity{}
+	w := workerShiftWorld(a)
+	tm := evalSeekWork(t, w, seekNoon)
+	if tm.Stamped != 0 || tm.SkippedNotEligible != 1 {
+		t.Errorf("Stamped=%d SkippedNotEligible=%d, want 0/1 (source activity)", tm.Stamped, tm.SkippedNotEligible)
+	}
+}
+
+// TestSeekWorkBackstop_PastTTLPendingOfferDoesNotBlock: a pending offer past its
+// TTL is NOT a live block — it resolves on the labor sweep — so the worker is
+// still eligible. Locks parity with SolicitWork's duplicate-offer gate (both use
+// workerPendingLaborOffer).
+func TestSeekWorkBackstop_PastTTLPendingOfferDoesNotBlock(t *testing.T) {
+	a := homedWorker("w")
+	w := workerShiftWorld(a)
+	w.LaborLedger = map[LaborID]*LaborOffer{
+		1: {ID: 1, WorkerID: "w", State: LaborStatePending, ExpiresAt: seekNoon.Add(-time.Minute)},
+	}
+	tm := evalSeekWork(t, w, seekNoon)
+	if tm.Stamped != 1 {
+		t.Errorf("Stamped = %d, want 1 (past-TTL pending offer is not a live block)", tm.Stamped)
+	}
+}
+
 // TestSeekWorkBackstop_YieldsToRedNeed: a broke worker that is ALSO red on a
 // need is left to the red-need backstop (eat before work) — no seek-work warrant.
 func TestSeekWorkBackstop_YieldsToRedNeed(t *testing.T) {

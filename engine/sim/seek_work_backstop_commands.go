@@ -9,7 +9,7 @@ import "time"
 // (red_need_backstop_commands.go); the goroutine driver lives in
 // engine/sim/cascade/seek_work_backstop.go.
 //
-// WHY THIS EXISTS. A Worker's whole point is the labor income faucit, but
+// WHY THIS EXISTS. A Worker's whole point is the labor income faucet, but
 // "broke" is not a need and so stamps no warrant. A worker with sub-red needs
 // and an empty purse therefore has nothing to wake it — the only re-engagers
 // (hourly needs tick, 30-min idle backstop) either need a red need or produce
@@ -162,35 +162,34 @@ func seekWorkEligible(w *World, a *Actor, now time.Time, nowMinute int) bool {
 	if a.SleepingUntil != nil && a.SleepingUntil.After(now) {
 		return false
 	}
+	// Don't disturb a cleanly-occupied worker: a scheduled break (StateResting /
+	// BreakUntil — recovering) or an in-flight timed source activity (mid
+	// eat/drink/harvest). The seek-work kind isn't a rester-interrupting one, so
+	// such a warrant would only shelve in actorCanReactNow anyway — skipping here
+	// keeps the invariant local and avoids burning a warrant slot + advancing the
+	// backoff on a worker that is legitimately busy.
+	if a.State == StateResting {
+		return false
+	}
+	if a.BreakUntil != nil && a.BreakUntil.After(now) {
+		return false
+	}
+	if a.SourceActivity != nil {
+		return false
+	}
 	if !actorOnShift(w, a, nowMinute) {
 		return false
 	}
 	// Ledger-authoritative busy check (same rationale as SolicitWork): a worker
-	// mid-job or holding a pending offer is already engaged.
+	// mid-job or holding a live pending offer is already engaged. Shares
+	// workerPendingLaborOffer with SolicitWork's gate so the predicate can't drift.
 	if workerHasLiveJob(w, a.ID) {
 		return false
 	}
-	if workerHasPendingLaborOffer(w, a.ID, now) {
+	if workerPendingLaborOffer(w, a.ID, now) != nil {
 		return false
 	}
 	return true
-}
-
-// workerHasPendingLaborOffer reports whether the worker holds a still-live
-// pending outgoing labor offer. Mirrors SolicitWork's duplicate-offer gate
-// (labor_commands.go): a past-TTL pending entry is skipped (it resolves on the
-// labor sweep, not here).
-func workerHasPendingLaborOffer(w *World, workerID ActorID, now time.Time) bool {
-	for _, o := range w.LaborLedger {
-		if o == nil || o.State != LaborStatePending || o.WorkerID != workerID {
-			continue
-		}
-		if !o.ExpiresAt.IsZero() && !now.Before(o.ExpiresAt) {
-			continue
-		}
-		return true
-	}
-	return false
 }
 
 // clearSeekWorkBackstop resets a worker's seek-work backoff pacing. Called when
