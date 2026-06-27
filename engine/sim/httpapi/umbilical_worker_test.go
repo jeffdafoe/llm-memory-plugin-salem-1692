@@ -105,6 +105,16 @@ func TestUmbilicalProvisionWorker_PCRejected(t *testing.T) {
 	}
 }
 
+// TestUmbilicalProvisionWorker_AlreadyLiveNPC: hannah is seeded KindNPCShared,
+// so provisioning her is refused with 409 (not a decorative).
+func TestUmbilicalProvisionWorker_AlreadyLiveNPC(t *testing.T) {
+	srv, h := controlServer(t, operatorPerms)
+	seedWorkerProvisioning(t, srv)
+	if rec := postReq(t, h, "/api/village/umbilical/worker/provision", "tok", `{"actor_id":"hannah"}`); rec.Code != http.StatusConflict {
+		t.Errorf("already-live NPC = %d, want 409", rec.Code)
+	}
+}
+
 // TestUmbilicalProvisionWorker_Gated: the route honors the control surface gate
 // (403 without plugins/administer, 401 with no token).
 func TestUmbilicalProvisionWorker_Gated(t *testing.T) {

@@ -1,10 +1,17 @@
 package sim
 
 import (
+	"errors"
 	"strings"
 	"time"
 	"unicode/utf8"
 )
+
+// ErrActorNotProvisionable is returned when the target actor exists and is not a
+// PC but is already a live NPC (KindNPCStateful / KindNPCShared). ProvisionWorker
+// mints only a never-ticked KindDecorative; relinking a ticking actor's VA could
+// race an in-flight reaction (see ProvisionWorker).
+var ErrActorNotProvisionable = errors.New("actor is already a live NPC, not a provisionable decorative")
 
 // ProvisionWorkerResult reports an actor's driver state after it was minted
 // into a live Worker: the backing VA link, the reclassified Kind, and the full
@@ -36,14 +43,25 @@ type ProvisionWorkerResult struct {
 // an empty agent is rejected here (a worker with no VA can never tick — the
 // HTTP layer defaults an omitted agent to salem-vendor before calling).
 //
-// Idempotent: re-provisioning an actor already linked / already carrying the
-// attribute is a no-op for that leg and emits no spurious frame. Emits
-// NPCAgentChanged and NPCAttributesChanged (only on an actual change) so a live
-// editor stays consistent — Kind itself is derived on load and has no frame.
+// The command provisions ONLY a sprite-only KindDecorative actor — the case
+// that genuinely needs the live Kind flip. A decorative has never ticked, so it
+// carries no warrant, no in-flight LLM tick, and no reactor state a relink could
+// race; the flip is therefore provably safe. An already-live NPC
+// (KindNPCStateful / KindNPCShared) is refused with ErrActorNotProvisionable:
+// re-linking a ticking actor's VA could let a reaction dispatched outside this
+// command loop apply against the newly linked actor, and merely granting the
+// worker attribute to an actor that already deliberates is the editor's
+// AddActorAttribute job, not this route's. A PC or missing id is ErrActorNotFound.
+//
+// Emits NPCAgentChanged + NPCAttributesChanged (the same frames the editor's
+// SetActorAgentLink / AddActorAttribute emit) so a live editor stays consistent;
+// Kind itself is derived on load and has no frame. The per-leg change guards are
+// defensive — a fresh decorative trips both, but a decorative pre-granted the
+// worker attribute via the editor won't re-emit the attribute frame.
 //
 // Errors: ErrInvalidAgentLink (empty / too long / control chars),
 // ErrUnknownAttribute (the `worker` definition is unseeded), ErrActorNotFound
-// (missing actor or a PC).
+// (missing actor or a PC), ErrActorNotProvisionable (already a live NPC).
 func ProvisionWorker(id ActorID, agent string) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
@@ -57,6 +75,13 @@ func ProvisionWorker(id ActorID, agent string) Command {
 			a, err := editableNPC(w, id)
 			if err != nil {
 				return nil, err
+			}
+			// Mint only a never-ticked decorative — see the doc comment: an
+			// already-live NPC may have a warrant or an in-flight LLM tick
+			// (dispatched outside this command loop), and relinking its VA
+			// could let that stale reaction apply against the new link.
+			if a.Kind != KindDecorative {
+				return nil, ErrActorNotProvisionable
 			}
 
 			// VA link + live Kind reclassify. The reclassify is the whole

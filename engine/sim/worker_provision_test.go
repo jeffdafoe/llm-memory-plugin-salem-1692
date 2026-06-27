@@ -39,6 +39,8 @@ func buildProvisionTestWorld(t *testing.T, withWorkerDef bool) (*sim.World, *eve
 		// zero-value Kind would NOT be decorative.
 		wd.Actors["statue"] = &sim.Actor{ID: "statue", DisplayName: "Statue", Kind: sim.KindDecorative}
 		wd.Actors["pip"] = &sim.Actor{ID: "pip", DisplayName: "Pip", Kind: sim.KindPC, LoginUsername: "pip"}
+		// An already-live NPC (own VA) — must be refused, not re-linked.
+		wd.Actors["hank"] = &sim.Actor{ID: "hank", DisplayName: "Hank", Kind: sim.KindNPCStateful, LLMAgent: "zbbs-hank"}
 		return nil, nil
 	}}); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -158,24 +160,36 @@ func TestProvisionWorker_UnseededWorkerDef(t *testing.T) {
 	}
 }
 
-// TestProvisionWorker_Idempotent: re-provisioning an already-minted worker is a
-// no-op for each leg — no duplicate attribute, no spurious second frame.
-func TestProvisionWorker_Idempotent(t *testing.T) {
+// TestProvisionWorker_AlreadyMintedRejected: once minted, the actor is
+// KindNPCShared, so a second provision is refused — the route is a one-way
+// decorative -> worker transition, not a re-link. The refused call mutates
+// nothing and emits no extra frame.
+func TestProvisionWorker_AlreadyMintedRejected(t *testing.T) {
 	w, rec := buildProvisionTestWorld(t, true)
 	if _, err := w.Send(sim.ProvisionWorker("statue", sim.VendorAgentName)); err != nil {
 		t.Fatalf("first provision: %v", err)
 	}
-	if _, err := w.Send(sim.ProvisionWorker("statue", sim.VendorAgentName)); err != nil {
-		t.Fatalf("second provision: %v", err)
+	if _, err := w.Send(sim.ProvisionWorker("statue", sim.VendorAgentName)); !errors.Is(err, sim.ErrActorNotProvisionable) {
+		t.Errorf("re-provision err = %v, want ErrActorNotProvisionable", err)
 	}
 	a := provisionActor(t, w, "statue")
 	if len(a.Attributes) != 1 {
-		t.Errorf("attributes after double-provision = %d, want 1 (no dup)", len(a.Attributes))
+		t.Errorf("attributes = %d, want 1", len(a.Attributes))
 	}
 	if n := countAgentChanged(rec); n != 1 {
-		t.Errorf("NPCAgentChanged count = %d, want 1 (idempotent)", n)
+		t.Errorf("NPCAgentChanged count = %d, want 1 (no second frame)", n)
 	}
 	if n := countAttributesChanged(rec); n != 1 {
-		t.Errorf("NPCAttributesChanged count = %d, want 1 (idempotent)", n)
+		t.Errorf("NPCAttributesChanged count = %d, want 1 (no second frame)", n)
+	}
+}
+
+// TestProvisionWorker_ExistingLiveNPCRejected: an actor that is already a live
+// NPC (own VA, KindNPCStateful) is refused — relinking a ticking actor could
+// race in-flight reaction work, so the command mints only never-ticked decoratives.
+func TestProvisionWorker_ExistingLiveNPCRejected(t *testing.T) {
+	w, _ := buildProvisionTestWorld(t, true)
+	if _, err := w.Send(sim.ProvisionWorker("hank", sim.VendorAgentName)); !errors.Is(err, sim.ErrActorNotProvisionable) {
+		t.Errorf("err = %v, want ErrActorNotProvisionable (already a live NPC)", err)
 	}
 }

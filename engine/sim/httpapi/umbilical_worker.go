@@ -32,12 +32,12 @@ type provisionWorkerResponse struct {
 	Attributes []string `json:"attributes"`
 }
 
-// handleUmbilicalProvisionWorker mints an actor into a live Worker: assign a
-// backing VA (default salem-vendor when agent omitted), grant the `worker`
-// attribute, and reclassify the actor's Kind in memory so a sprite-only
-// decorative comes online without a restart. 400 missing actor_id / invalid
-// agent; 404 actor not found or a PC; 422 the `worker` attribute is unseeded;
-// 200 with the actor's new driver state.
+// handleUmbilicalProvisionWorker mints a sprite-only decorative into a live
+// Worker: assign a backing VA (default salem-vendor when agent omitted), grant
+// the `worker` attribute, and reclassify the actor's Kind in memory so it comes
+// online without a restart. 400 missing actor_id / invalid agent; 404 actor not
+// found or a PC; 409 the actor is already a live NPC (not a decorative); 422 the
+// `worker` attribute is unseeded; 200 with the actor's new driver state.
 func (s *Server) handleUmbilicalProvisionWorker(w http.ResponseWriter, r *http.Request) {
 	user := userFromContext(r.Context())
 	if user == nil {
@@ -65,6 +65,8 @@ func (s *Server) handleUmbilicalProvisionWorker(w http.ResponseWriter, r *http.R
 			// Caller gone / timed out; the response is moot.
 		case errors.Is(err, sim.ErrActorNotFound):
 			writeError(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, sim.ErrActorNotProvisionable):
+			writeError(w, http.StatusConflict, err.Error())
 		case errors.Is(err, sim.ErrInvalidAgentLink):
 			writeError(w, http.StatusBadRequest, err.Error())
 		case errors.Is(err, sim.ErrUnknownAttribute):
