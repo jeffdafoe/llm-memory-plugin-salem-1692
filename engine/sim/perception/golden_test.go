@@ -683,13 +683,33 @@ func TestLaborTieAnnotationTracksWorkerKin(t *testing.T) {
 		} else {
 			sawUntied = true
 		}
-		if has := strings.Contains(renderScenario(sc), marker); has != want {
+		// Scope the search to the "## Around you" block where the annotation renders,
+		// not the whole prompt — so the invariant can't pass/fail on the marker phrase
+		// appearing in some unrelated cue or section later (code_review note).
+		if has := strings.Contains(aroundYouSection(renderScenario(sc)), marker); has != want {
 			t.Errorf("scenario %q: labor-tie annotation=%v, want %v", sc.name, has, want)
 		}
 	}
 	if !sawTied || !sawUntied {
 		t.Errorf("matrix must exercise both branches: sawTied=%v sawUntied=%v", sawTied, sawUntied)
 	}
+}
+
+// aroundYouSection returns the rendered "## Around you" block (its header line
+// excluded), up to the next "## " section header or the end of the prompt — so a
+// surroundings-specific assertion can scope to where a cue actually renders instead
+// of scanning the whole prompt and risking a false match elsewhere.
+func aroundYouSection(rendered string) string {
+	const head = "## Around you\n"
+	i := strings.Index(rendered, head)
+	if i < 0 {
+		return ""
+	}
+	rest := rendered[i+len(head):]
+	if j := strings.Index(rest, "\n## "); j >= 0 {
+		return rest[:j]
+	}
+	return rest
 }
 
 // growerAtStrippedBush reproduces the LLM-98 live shape: Prudence, a forager,
