@@ -525,7 +525,16 @@ func renderActor(b *strings.Builder, a ActorView) {
 			b.WriteString("\n")
 		}
 	}
-	fmt.Fprintf(b, "Coins in your purse: %d.\n", a.Coins)
+	// An empty purse is a hard constraint on paying, not just a number (LLM-153).
+	// Without the consequence spelled out, 0-coin NPCs burned tool calls attempting
+	// buys the pay path rejects (engine/sim/pay_commands.go). The wording is coin-
+	// specific so it leaves barter untouched — a 0-coin actor can still offer_trade
+	// goods-for-goods (ZBBS-HOME-393/407), which needs no coins.
+	if a.Coins == 0 {
+		b.WriteString("Coins in your purse: 0 — you have no coins to spend, so you cannot pay for anything until you earn some.\n")
+	} else {
+		fmt.Fprintf(b, "Coins in your purse: %d.\n", a.Coins)
+	}
 	// Standing inventory readout (ZBBS-HOME-361): neutral statement of what the
 	// actor holds, so it's aware of its own goods (to eat, to sell, to give)
 	// without being pushed to act — the "consume to eat" nudge stays in the
