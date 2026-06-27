@@ -1,23 +1,25 @@
 # Your turn
 
 ## What just happened
-(nothing specific — this is a routine check-in)
+1. It's time to craft — decide what to make next.
 
 
 ## You
 Coins in your purse: 0.
-You are carrying: Skillet (x5).
-You are making Nail.
+You are carrying: cheese (x2), milk (x4).
 
 ## Around you
-You are inside the Blacksmith, with no one else here to hear you speak.
+You are inside the Ellis Farm, with no one else here to hear you speak.
 It is morning in the village.
 
-You keep your trade at the Blacksmith (structure_id: blacksmith) — you can head back there whenever you wish.
+You keep your trade at the Ellis Farm (structure_id: ellis_farm) — you can head back there whenever you wish.
 
 It is your working hours and you are at your post — stay and look after your work; you close at 6 in the evening. If no one needs you right now, wait here for customers rather than wandering off.
 
 ## Time to craft
-You are crafting nails now — tend your post or call done(). Choose again with craft only if you mean to switch.
+You make one thing at a time. Choose what to craft next — you keep making it until you choose again.
+- cheese: about 4h each, 2 of 8 on hand, made 0 and sold 0 this past week.
+- meat: about 6h each, 0 of 6 on hand, made 0 and sold 0 this past week.
+- milk: about 2h each, 4 of 10 on hand, made 0 and sold 0 this past week.
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.

@@ -1,7 +1,7 @@
 # Your turn
 
 ## What just happened
-1. You have time at your forge — decide what to make next.
+1. It's time to craft — decide what to make next.
 
 
 ## You
@@ -16,8 +16,8 @@ You keep your trade at the Blacksmith (structure_id: blacksmith) — you can hea
 
 It is your working hours and you are at your post — stay and look after your work; you close at 6 in the evening. If no one needs you right now, wait here for customers rather than wandering off.
 
-## At your forge
-You make one thing at a time. Choose what to forge next with craft — you keep making it until you choose again.
+## Time to craft
+You make one thing at a time. Choose what to craft next — you keep making it until you choose again.
 - nail: about 1h each, 0 of 20 on hand, made 0 and sold 0 this past week.
 - skillet: about 3h each, 5 of 5 on hand, made 0 and sold 0 this past week.
 

@@ -9,7 +9,7 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
 
-// forge_choice.go — LLM-116. The "## At your forge" cue. A multi-output crafter
+// forge_choice.go — LLM-116. The "## Time to craft" cue. A multi-output crafter
 // (the smith makes skillets AND nails) forges one good at a time and picks which
 // via the `craft` tool; produce_tick then fills only the actor's ProductionFocus.
 // This cue surfaces, AT the workplace, every good the actor can make — its
@@ -19,7 +19,7 @@ import (
 // over restockSalesWindow — the same weekly signal "## Restocking" shows a
 // reseller, kept consistent so the two cues can't disagree on "what's moving".
 
-// ForgeChoiceView is the content-gated "## At your forge" section. A nil view (or
+// ForgeChoiceView is the content-gated "## Time to craft" section. A nil view (or
 // empty Items) means render omits the section.
 type ForgeChoiceView struct {
 	Items []ForgeChoiceItem
@@ -141,7 +141,7 @@ func recentProducedUnits(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, item 
 	return total
 }
 
-// renderForgeChoice writes the "## At your forge" section. Content-gated: a
+// renderForgeChoice writes the "## Time to craft" section. Content-gated: a
 // nil/empty view writes nothing. One line per makeable good — time cost, stock vs
 // cap, and last week's sales — then a steer toward demand. Count-led like the
 // other economy cues (no item-noun pluralization).
@@ -149,7 +149,7 @@ func renderForgeChoice(b *strings.Builder, v *ForgeChoiceView) {
 	if v == nil || len(v.Items) == 0 {
 		return
 	}
-	b.WriteString("## At your forge\n")
+	b.WriteString("## Time to craft\n")
 	if v.FocusNoun != "" {
 		// LLM-128: a productive focus is already set — lead with the
 		// continue-and-stop steer naming what's being made, not the choose
@@ -159,7 +159,7 @@ func renderForgeChoice(b *strings.Builder, v *ForgeChoiceView) {
 		fmt.Fprintf(b, "You are crafting %s now — tend your post or call done(). Choose again with craft only if you mean to switch.\n\n", v.FocusNoun)
 		return
 	}
-	b.WriteString("You make one thing at a time. Choose what to forge next with craft — you keep making it until you choose again.\n")
+	b.WriteString("You make one thing at a time. Choose what to craft next — you keep making it until you choose again.\n")
 	for _, it := range v.Items {
 		rate := fmt.Sprintf("about %dh each", it.PerUnitHours)
 		if it.RateQty > 1 {

@@ -172,7 +172,7 @@ const speakToolName = "speak"
 const moveToToolName = "move_to"
 
 // craftToolName — the multi-output crafter's "what to forge next" tool (LLM-116).
-// Advertised ONLY when the "## At your forge" cue is present (payload.ForgeChoice
+// Advertised ONLY when the "## Time to craft" cue is present (payload.ForgeChoice
 // non-empty), which itself fires only for a >1-produce-entry crafter AT its
 // workplace. Reading the SAME signal the cue renders from keeps the tool and its
 // cue in lockstep — the discussion-109 "advertise a tool only with its triggering
@@ -363,7 +363,7 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 		if spec.Name == moveToToolName && flaggedDegenerate {
 			continue
 		}
-		// craft consumer (LLM-116): advertise only when the "## At your forge" cue
+		// craft consumer (LLM-116): advertise only when the "## Time to craft" cue
 		// is present — the same ForgeChoice signal the cue renders from — so a
 		// crafter is handed the tool exactly when it has a choice to make, and no
 		// other actor ever sees it.

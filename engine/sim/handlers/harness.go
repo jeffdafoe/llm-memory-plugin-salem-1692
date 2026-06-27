@@ -697,7 +697,7 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 			if vc.Name == "craft" && craftedThisTick {
 				observationOnly = false
 				result.ToolsFailedRejected = append(result.ToolsFailedRejected, call.Name)
-				transcript = append(transcript, toolResultMsg(call.ID, "[error: already_chose] you already chose what to forge this turn — your focus is set and you keep making it until you choose again; do not choose again now, tend your post or call done()."))
+				transcript = append(transcript, toolResultMsg(call.ID, "[error: already_chose] you already chose what to craft this turn — your focus is set and you keep making it until you choose again; do not choose again now, tend your post or call done()."))
 				continue
 			}
 
@@ -1313,7 +1313,7 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 			if noun == "" {
 				noun = string(r.Focus)
 			}
-			return fmt.Sprintf("[ok] Your forge is set to %s — that is what you make until you choose again. Do not choose again now; tend your post or call done().", noun)
+			return fmt.Sprintf("[ok] You're set to craft %s — that is what you make until you choose again. Do not choose again now; tend your post or call done().", noun)
 		}
 	}
 	if vc.Name == "speak" {

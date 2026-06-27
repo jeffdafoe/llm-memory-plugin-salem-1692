@@ -480,7 +480,7 @@ func TestCommitResultContent_CraftSteer(t *testing.T) {
 	vc := ValidatedCall{Name: "craft", DecodedArgs: CraftArgs{Item: "Nail"}}
 
 	got := commitResultContent(&vc, sim.ProductionFocusResult{Focus: "nail", Noun: "nails"})
-	want := "[ok] Your forge is set to nails — that is what you make until you choose again. Do not choose again now; tend your post or call done()."
+	want := "[ok] You're set to craft nails — that is what you make until you choose again. Do not choose again now; tend your post or call done()."
 	if got != want {
 		t.Errorf("craft steer:\n got %q\nwant %q", got, want)
 	}
@@ -489,7 +489,7 @@ func TestCommitResultContent_CraftSteer(t *testing.T) {
 	// fall back to the raw kind key rather than render an empty good. The steer
 	// is pronoun-free so the singular fallback reads correctly too.
 	got = commitResultContent(&vc, sim.ProductionFocusResult{Focus: "nail"})
-	want = "[ok] Your forge is set to nail — that is what you make until you choose again. Do not choose again now; tend your post or call done()."
+	want = "[ok] You're set to craft nail — that is what you make until you choose again. Do not choose again now; tend your post or call done()."
 	if got != want {
 		t.Errorf("craft steer noun fallback:\n got %q\nwant %q", got, want)
 	}
