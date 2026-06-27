@@ -8,9 +8,12 @@
 -- companion code removal; the all-or-none + range CHECK constraints go with them.
 --
 -- The actor table is checkpointed by the running engine, so this migration must
--- be applied with the engine STOPPED (stop -> migrate -> start): the old binary's
--- checkpoint INSERT still names these columns and would error against the dropped
--- columns mid-flight. Do NOT run via the unconditional deploy.sh restart path.
+-- be applied with the engine STOPPED, or the old binary's checkpoint INSERT
+-- (which still names these columns) would error against the dropped columns
+-- mid-flight. The deploy playbook already does this: it stops salem-engine before
+-- running migrations and restarts the freshly-built binary after (the LLM-73
+-- stop -> migrate -> start order in infrastructure/playbooks/deploy.yml), so the
+-- standard deploy (sudo bash deploy.sh) applies this safely.
 
 BEGIN;
 
