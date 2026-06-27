@@ -132,7 +132,11 @@ func placeNameMatches(displayName, query string) bool {
 // resolveStructureByVillageName resolves a place name to a structure_id against
 // EVERY named structure in the village (LLM-142): a resident knows where every
 // building is, so geography is common knowledge — there is no anchor /
-// scene-radius / shown / remembered gate. Matches are case-insensitive and
+// scene-radius / shown / remembered gate. Salem is a SINGLE-SETTLEMENT engine —
+// `w.Structures` IS the village (one settlement per World; the cross-realm
+// `Structure.LeadsToRealm` is empty in v1), so scanning the whole world is
+// village-scoped today. A future multi-village orchestrator would filter
+// candidates to the actor's own settlement here. Matches are case-insensitive and
 // tolerant of a leading article (placeNameMatches); duplicate names resolve
 // nearest-wins (Chebyshev to the actor; ties break by structure_id for
 // determinism). A structure with no walkable placement is skipped (can't walk
