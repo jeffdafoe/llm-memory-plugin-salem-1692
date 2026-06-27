@@ -32,7 +32,10 @@ func TestPendingLaborOffers_ReadsStandingView(t *testing.T) {
 func TestRender_LaborOfferDecisionSection(t *testing.T) {
 	p := Payload{
 		ActorID: "josiah",
-		Actor:   ActorView{State: sim.StateIdle},
+		// Coins cover the 10-coin reward, so this exercises the affordable path:
+		// the accept_work/decline_work footer. The broke-employer decline steer
+		// (LLM-158) is covered by TestRenderLaborOffers_AffordabilitySteer.
+		Actor: ActorView{State: sim.StateIdle, Coins: 20},
 		LaborOffersForMe: []LaborOfferView{
 			{LaborID: 7, Worker: "ezekiel", Reward: 10, DurationMin: 120},
 		},

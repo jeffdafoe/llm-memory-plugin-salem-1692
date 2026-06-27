@@ -244,7 +244,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// LLM-26: the employer's pending work-offer decisions sit alongside pay
 	// offers (both are "someone wants my answer"); the worker affordance cue
 	// follows so a free worker sees the option to offer their labor.
-	renderLaborOffers(&ephemeral, p.LaborOffersForMe, nameOf)
+	renderLaborOffers(&ephemeral, p.LaborOffersForMe, p.Actor.Coins, nameOf)
 	renderLaborAffordance(&ephemeral, p.CanSolicitWork)
 	// LLM-152: the directional half of the seek-work nudge — when a broke worker
 	// is told to go earn (seek_work warrant), list the town's businesses to head
@@ -1797,11 +1797,12 @@ func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason, nam
 // few (bounded by co-present workers), and the section must always carry the
 // labor_id whenever gateTools advertises the response tools (the discussion-109
 // invariant). LLM-26.
-func renderLaborOffers(b *strings.Builder, offers []LaborOfferView, nameOf func(sim.ActorID) string) {
+func renderLaborOffers(b *strings.Builder, offers []LaborOfferView, employerCoins int, nameOf func(sim.ActorID) string) {
 	if len(offers) == 0 {
 		return
 	}
 	b.WriteString("## Work offers awaiting your decision\n")
+	anyAffordable, anyUnaffordable := false, false
 	for i, o := range offers {
 		worker := nameOf(o.Worker)
 		unit := "coins"
@@ -1810,11 +1811,39 @@ func renderLaborOffers(b *strings.Builder, offers []LaborOfferView, nameOf func(
 		}
 		fmt.Fprintf(b, "%d. %s offers to do a job for you for %d %s — about %s of work (offer id %d)\n",
 			i+1, worker, o.Reward, unit, humanizeWorkMinutes(o.DurationMin), o.LaborID)
+		// A reward the employer can't cover is a doomed accept: accept_work's
+		// funds gate would only flip the offer to failed_unavailable
+		// (buyerCanAfford, labor_commands.go), so the model "accepts" verbally
+		// and the deal dies in silence. Steer the broke employer to decline WITH
+		// a spoken reason instead — naming speak explicitly, because decline_work
+		// (like accept_work) passes in silence, the same reason the all-affordable
+		// footer below names it. Matches the funds gate exactly (Coins < Reward)
+		// so the cue and the substrate never disagree. LLM-158.
+		if employerCoins < o.Reward {
+			anyUnaffordable = true
+			coinUnit := "coins"
+			if employerCoins == 1 {
+				coinUnit = "coin"
+			}
+			fmt.Fprintf(b, "You only have %d %s, so you cannot pay for this — call decline_work (offer id %d), then use speak to tell them you have not enough coin to take them on.\n",
+				employerCoins, coinUnit, o.LaborID)
+			continue
+		}
+		anyAffordable = true
 	}
 	// Action first, then an explicit speak — same "say a word as you decide"
 	// pattern the pay decision section uses (the accept_work/decline_work call
-	// itself passes in silence).
-	b.WriteString("Respond with accept_work or decline_work, passing the offer id as labor_id. Then also use speak for a brief reply, because the work response itself passes in silence.\n")
+	// itself passes in silence). When SOME offers are unaffordable, scope the
+	// footer to the affordable ones so a weak model can't apply a generic
+	// "accept_work or decline_work" to an offer that was just steered to decline.
+	// Suppressed entirely when EVERY offer is unaffordable — each carried its own
+	// decline steer above. LLM-158.
+	switch {
+	case anyAffordable && anyUnaffordable:
+		b.WriteString("For an offer you can afford, respond with accept_work or decline_work, passing the offer id as labor_id; decline_work the ones you cannot pay. Then also use speak for a brief reply, because the work response itself passes in silence.\n")
+	case anyAffordable:
+		b.WriteString("Respond with accept_work or decline_work, passing the offer id as labor_id. Then also use speak for a brief reply, because the work response itself passes in silence.\n")
+	}
 }
 
 // renderLaborSelfState renders the worker's own in-progress job as a self-state

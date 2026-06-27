@@ -212,6 +212,16 @@ var perceptionScenarios = []perceptionScenario{
 		build: coinlessWorkerAmongPeers,
 	},
 	{
+		name: "broke_employer_cannot_pay_labor_offer",
+		summary: "A worker (Lewis Walker) has solicited the subject (Ezekiel Crane) for a 5-coin job, but the subject " +
+			"has an empty purse — the LLM-158 situation. accept_work's funds gate (buyerCanAfford) would only flip the " +
+			"offer to failed_unavailable, so the model 'accepts' verbally and the deal dies in silence (the live ~10-min " +
+			"Lewis<->Ezekiel blacksmith dead-air). The golden pins the affordability steer: the unaffordable offer is " +
+			"directed to decline_work WITH an explicit speak, and the generic accept_work/decline_work footer is suppressed " +
+			"because no offer is affordable.",
+		build: brokeEmployerCannotPayLaborOffer,
+	},
+	{
 		name: "worker_among_household_no_solicit",
 		summary: "Two worker-tagged Walker siblings (Lewis + Anne) stand together in their own home, both jobless — the " +
 			"LLM-157 situation, where housemates solicited each other for work ('I'm looking for work, does anyone need a " +
@@ -1369,6 +1379,70 @@ func coinlessWorkerAmongPeers() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) 
 		ItemKinds: foodDrinkCatalog(),
 	}
 	return snap, bishopID, nil
+}
+
+// brokeEmployerCannotPayLaborOffer is the LLM-158 situation, reduced to its
+// load-bearing parts: Lewis Walker (a worker) has solicited the subject (Ezekiel
+// Crane) for a 5-coin job, but Ezekiel's purse is empty. accept_work's funds
+// gate (buyerCanAfford, labor_commands.go) would flip the offer to
+// failed_unavailable, so the cue must steer Ezekiel to decline_work WITH a spoken
+// reason rather than present accept_work — otherwise he "accepts" verbally and
+// the deal dies in silence (the live Lewis<->Ezekiel blacksmith dead-air). No
+// needs, no clock-bound content → byte-stable.
+func brokeEmployerCannotPayLaborOffer() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		ezekielID = sim.ActorID("ezekiel")
+		lewisID   = sim.ActorID("lewis")
+		commons   = sim.StructureID("commons")
+		huddle    = sim.HuddleID("h1")
+	)
+	published := time.Date(2026, 6, 27, 11, 0, 0, 0, time.UTC)
+	ezekiel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Ezekiel Crane",
+		Role:              "blacksmith",
+		State:             sim.StateIdle,
+		InsideStructureID: commons,
+		CurrentHuddleID:   huddle,
+		Coins:             0,
+		Needs:             map[sim.NeedKey]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"Lewis Walker": {}},
+	}
+	lewis := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Lewis Walker",
+		Role:              "laborer",
+		State:             sim.StateIdle,
+		InsideStructureID: commons,
+		CurrentHuddleID:   huddle,
+		Coins:             0,
+		Needs:             map[sim.NeedKey]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"Ezekiel Crane": {}},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:    published,
+		NeedThresholds: sim.NeedThresholds{},
+		Actors:         map[sim.ActorID]*sim.ActorSnapshot{ezekielID: ezekiel, lewisID: lewis},
+		Structures: map[sim.StructureID]*sim.Structure{
+			commons: plainStructure(commons, "Village Commons"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{ezekielID: {}, lewisID: {}}},
+		},
+		LaborLedger: map[sim.LaborID]*sim.LaborOffer{
+			1: {
+				ID:          1,
+				WorkerID:    lewisID,
+				EmployerID:  ezekielID,
+				Reward:      5,
+				DurationMin: 60,
+				State:       sim.LaborStatePending,
+				HuddleID:    huddle,
+			},
+		},
+		ItemKinds: foodDrinkCatalog(),
+	}
+	return snap, ezekielID, nil
 }
 
 // workerAmongHousehold is the LLM-157 situation: two worker-tagged Walker siblings
