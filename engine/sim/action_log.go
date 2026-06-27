@@ -76,6 +76,15 @@ const (
 	// cascade huddle join that may follow).
 	ActionTypeWalked ActionType = "walked"
 
+	// ActionTypeDeparted — the inverse of ActionTypeWalked: the mover crossed
+	// OUT of a structure footprint mid-walk. ActorID is the mover; Text is the
+	// LEFT structure's DisplayName; HuddleID is empty (a departure leaves any
+	// huddle behind). Emitted by the locomotion exit seam BEFORE the inside-flip
+	// (via ActorLeftStructure) so the central scope stamp lands on the structure
+	// being left and a co-present PC's talk-panel backload shows the exit. Renders
+	// "<name> leaves the <place>." (httpapi.renderActionLogEntry).
+	ActionTypeDeparted ActionType = "departed"
+
 	// ActionTypeTookBreak — committed take_break tool call
 	// (ZBBS-HOME-284 #4). ActorID is the actor that stepped away; Text
 	// is the model-supplied reason; HuddleID is the actor's huddle at

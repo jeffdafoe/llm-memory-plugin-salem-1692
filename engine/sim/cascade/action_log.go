@@ -10,11 +10,11 @@ import (
 )
 
 // action_log.go — append-only in-memory action log substrate driver.
-// Wires eight event subscribers (Spoke / Paid / PayWithItemResolved /
-// ItemConsumed / OrderDelivered / ActorArrived / TookBreak / StayingOpen)
-// to translate engine events into sim.ActionLogEntry rows, and spawns a
-// sweep goroutine that periodically compacts the log via
-// sim.CompactActionLog.
+// Wires nine event subscribers (Spoke / Paid / PayWithItemResolved /
+// ItemConsumed / OrderDelivered / ActorArrived / ActorLeftStructure /
+// TookBreak / StayingOpen) to translate engine events into
+// sim.ActionLogEntry rows, and spawns a sweep goroutine that periodically
+// compacts the log via sim.CompactActionLog.
 //
 // Subscribers run inline on the world goroutine via emit dispatch;
 // the sweep goroutine runs off-world and routes mutations through
@@ -30,6 +30,7 @@ import (
 //   ├─> w.Subscribe(handleConsumedActionLog)
 //   ├─> w.Subscribe(handleOrderDeliveredActionLog)
 //   ├─> w.Subscribe(handleActorArrivedActionLog)
+//   ├─> w.Subscribe(handleActorLeftStructureActionLog)
 //   ├─> w.Subscribe(handleTookBreakActionLog)
 //   ├─> w.Subscribe(handleStayedOpenActionLog)
 //   └─> go runActionLogSweep(ctx, w)
@@ -57,7 +58,7 @@ import (
 // controls how promptly memory is reclaimed.
 const defaultActionLogSweepInterval = 1 * time.Hour
 
-// RegisterActionLog wires the eight event subscribers and spawns the
+// RegisterActionLog wires the nine event subscribers and spawns the
 // compaction sweep goroutine. Must run on the world goroutine — call
 // before World.Run, or from inside a Command.Fn.
 //
@@ -78,6 +79,7 @@ func RegisterActionLog(ctx context.Context, w *sim.World) {
 	w.Subscribe(sim.SubscriberFunc(handleConsumedActionLog))
 	w.Subscribe(sim.SubscriberFunc(handleOrderDeliveredActionLog))
 	w.Subscribe(sim.SubscriberFunc(handleActorArrivedActionLog))
+	w.Subscribe(sim.SubscriberFunc(handleActorLeftStructureActionLog))
 	w.Subscribe(sim.SubscriberFunc(handleTookBreakActionLog))
 	w.Subscribe(sim.SubscriberFunc(handleStayedOpenActionLog))
 	go runActionLogSweep(ctx, w)
@@ -403,6 +405,44 @@ func handleActorArrivedActionLog(w *sim.World, evt sim.Event) {
 		HuddleID:    sim.HuddleID(""),
 		Source:      source,
 	})
+}
+
+// handleActorLeftStructureActionLog appends a row when an actor walks OUT of a
+// structure (sim.ActorLeftStructure, emitted by the locomotion exit seam BEFORE
+// the inside-flip). Text is the LEFT structure's DisplayName — the inverse of
+// handleActorArrivedActionLog's destination. The row renders as
+// "<name> leaves the <place>." in the talk-panel backload + admin Village tab.
+// Because the event fires pre-flip, AppendActionLogEntry's central scope stamp
+// still resolves to the structure being left, so a co-present PC sees the exit.
+//
+// No durable mirror (unlike arrival's ZBBS-WORK-376 row): the in-memory row is
+// the talk-panel + narrative-consolidation source this feature needs; the durable
+// agent_action_log feeds the cross-system dream/distillation pipeline, where a
+// presence-departure beat doesn't warrant a new action_type. HuddleID empty — a
+// departure leaves any huddle behind.
+func handleActorLeftStructureActionLog(w *sim.World, evt sim.Event) {
+	left, ok := evt.(*sim.ActorLeftStructure)
+	if !ok {
+		return
+	}
+	name := ""
+	if s, ok := w.Structures[left.StructureID]; ok {
+		name = s.DisplayName
+	}
+	if name == "" {
+		return // nameless / vanished structure — nothing to render
+	}
+	entry := sim.ActionLogEntry{
+		ActorID:    left.ActorID,
+		OccurredAt: left.At,
+		ActionType: sim.ActionTypeDeparted,
+		Text:       name,
+		HuddleID:   sim.HuddleID(""),
+	}
+	if _, err := sim.AppendActionLogEntry(entry).Fn(w); err != nil {
+		log.Printf("cascade/action_log: append departed (actor %q event %d): %v",
+			left.ActorID, left.EventID(), err)
+	}
 }
 
 // handleTookBreakActionLog appends a row when a take_break tool call

@@ -145,6 +145,52 @@ type ActorArrivalNarrated struct {
 
 func (ActorArrivalNarrated) isSimEvent() {}
 
+// ActorLeftStructure fires when an actor crosses OUT of a structure footprint to
+// outdoors during locomotion (the seam fires on target=="", see
+// reconcileInsideAndNarrateDeparture) — the inverse of ActorArrived's "reached a
+// place". Emitted by
+// reconcileInsideAndNarrateDeparture BEFORE setActorInsideStructure flips the
+// actor's attribution, so a subscriber that appends an action-log row gets the
+// central scope stamp (AppendActionLogEntry) on the structure being LEFT — the
+// actor is still attributed to it — letting a co-present PC's talk-panel backload
+// show the exit. StructureID is that structure; At is the locomotion tick clock.
+//
+// Walk-only: an admin delete / visitor despawn / teleport flips inside-state
+// through the same setActorInsideStructure chokepoint but stays SILENT (those
+// callers keep using updateInsideStructureIDFromTileOwnership) — a removal or a
+// snap is not a walked departure, mirroring how ActorTeleported is kept distinct
+// from ActorArrived so the arrival machinery doesn't fire on a teleport.
+type ActorLeftStructure struct {
+	EventBase
+	ActorID     ActorID
+	StructureID StructureID // the structure the actor walked out of
+	At          time.Time
+}
+
+func (ActorLeftStructure) isSimEvent() {}
+
+// ActorDepartureNarrated is the departure twin of ActorArrivalNarrated: a
+// WIRE-ONLY event (no engine subscriber) carrying the observer-facing "X leaves Y"
+// narration to co-present PCs. emitDepartureNarration emits it from the same
+// locomotion exit seam, BEFORE the inside-flip, gated to a conversational mover
+// leaving a PUBLIC structure scope with at least one PC in earshot. TranslateEvent
+// maps it to a non-private room_event the talk panel renders as a narration line.
+//
+// Separate from ActorLeftStructure because that one is the always-on action-log
+// source (every exit, public or private, for the panel backload) while this is
+// the audience-gated live line — the same split as ActorArrived (always, → the
+// backload subscriber) vs ActorArrivalNarrated (gated, → the live room_event).
+type ActorDepartureNarrated struct {
+	EventBase
+	ActorID     ActorID
+	ActorName   string
+	StructureID StructureID
+	Text        string // pre-rendered "X leaves the Y." — matches the action-log backload phrasing
+	At          time.Time
+}
+
+func (ActorDepartureNarrated) isSimEvent() {}
+
 // ArrivalDestinationName resolves the DisplayName of the place an arrival landed
 // at: the destination structure (StructureEnter/StructureVisit/knock — names the
 // shop even when the actor stopped at a loiter slot OUTSIDE it), or the

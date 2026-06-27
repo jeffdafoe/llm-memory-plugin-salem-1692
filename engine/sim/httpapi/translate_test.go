@@ -876,6 +876,51 @@ func TestTranslateEvent_ActorArrivalNarrated(t *testing.T) {
 	}
 }
 
+// TestTranslateEvent_ActorDepartureNarrated: the departure twin renders as the same
+// NON-private, structure-scoped room_event (kind "peer_departure") so the talk panel
+// surfaces a peer leaving to co-present PCs as a narration line.
+func TestTranslateEvent_ActorDepartureNarrated(t *testing.T) {
+	at := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	frame, ok := TranslateEvent(&sim.ActorDepartureNarrated{
+		ActorID:     "ezekiel",
+		ActorName:   "Ezekiel Cheever",
+		StructureID: "tavern",
+		Text:        "Ezekiel Cheever leaves the Tavern.",
+		At:          at,
+	})
+	if !ok {
+		t.Fatal("ActorDepartureNarrated should translate")
+	}
+	if frame.Type != "room_event" {
+		t.Fatalf("type = %q, want room_event", frame.Type)
+	}
+	d, isType := frame.Data.(roomEventWireDTO)
+	if !isType {
+		t.Fatalf("data type = %T, want roomEventWireDTO", frame.Data)
+	}
+	want := roomEventWireDTO{
+		ActorID:     "ezekiel",
+		ActorName:   "Ezekiel Cheever",
+		Kind:        "peer_departure",
+		Text:        "Ezekiel Cheever leaves the Tavern.",
+		Private:     false,
+		StructureID: "tavern",
+		At:          at.UTC().Format(time.RFC3339),
+	}
+	if d != want {
+		t.Errorf("room_event payload = %+v, want %+v", d, want)
+	}
+	b, err := json.Marshal(d)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, key := range []string{`"actor_name":"Ezekiel Cheever"`, `"kind":"peer_departure"`, `"private":false`, `"structure_id":"tavern"`} {
+		if !strings.Contains(string(b), key) {
+			t.Errorf("room_event json missing %s: %s", key, b)
+		}
+	}
+}
+
 // TestTranslateEvent_UnmappedDropped covers the default case: per-tile
 // ActorMoved is engine-internal and must not reach the client.
 func TestTranslateEvent_UnmappedDropped(t *testing.T) {

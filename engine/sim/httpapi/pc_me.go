@@ -750,10 +750,20 @@ func renderActionLogEntry(snap *sim.Snapshot, e sim.ActionLogEntry) (speaker, te
 		}
 		return name, line + ".", "act", true
 	case sim.ActionTypeWalked:
+		// WithDefiniteArticle adds "the" for a common-noun place ("the Tavern") and
+		// leaves possessives / already-articled names alone ("Hannah's Inn", "the
+		// Village Well"). Kept in sync with the live arrival line (emitArrivalNarration).
 		if e.Text != "" {
-			return name, name + " arrives at " + e.Text + ".", "act", true
+			return name, name + " arrives at " + sim.WithDefiniteArticle(e.Text) + ".", "act", true
 		}
 		return name, name + " arrives.", "act", true
+	case sim.ActionTypeDeparted:
+		// The inverse of ActionTypeWalked: Text is the structure the actor left.
+		// Same article treatment, kept in sync with the live emitDepartureNarration line.
+		if e.Text != "" {
+			return name, name + " leaves " + sim.WithDefiniteArticle(e.Text) + ".", "act", true
+		}
+		return name, name + " leaves.", "act", true
 	case sim.ActionTypeTookBreak:
 		return name, name + " steps away.", "act", true
 	default:

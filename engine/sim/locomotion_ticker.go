@@ -268,7 +268,7 @@ func advanceActorLocomotion(w *World, actor *Actor, grid *WalkGrid, now time.Tim
 	// the actor's current tile before the arrival check — covers an actor
 	// placed directly on a structure tile without a prior locomotion step,
 	// and reconciles a structure removed out from under a standing actor.
-	updateInsideStructureIDFromTileOwnership(w, actor)
+	reconcileInsideAndNarrateDeparture(w, actor, now)
 
 	target, ok := resolvePathTarget(w, actor, dest, grid, now)
 	if !ok {
@@ -340,7 +340,7 @@ func advanceActorLocomotion(w *World, actor *Actor, grid *WalkGrid, now time.Tim
 		from := actor.Pos
 		fromStructure := actor.InsideStructureID
 		actor.Pos = nextTile
-		updateInsideStructureIDFromTileOwnership(w, actor)
+		reconcileInsideAndNarrateDeparture(w, actor, now)
 		mi.StuckTicks = 0
 		mi.NoProgressTicks = 0
 		mi.BestRemaining = -1
@@ -381,7 +381,7 @@ func advanceActorLocomotion(w *World, actor *Actor, grid *WalkGrid, now time.Tim
 	from := actor.Pos
 	fromStructure := actor.InsideStructureID
 	actor.Pos = nextTile
-	updateInsideStructureIDFromTileOwnership(w, actor)
+	reconcileInsideAndNarrateDeparture(w, actor, now)
 	actor.MoveIntent.StuckTicks = 0
 
 	w.emit(&ActorMoved{
@@ -487,7 +487,7 @@ func advanceActorViaReroute(w *World, actor *Actor, dest MoveDestination, attemp
 			from := actor.Pos
 			fromStructure := actor.InsideStructureID
 			actor.Pos = altNext
-			updateInsideStructureIDFromTileOwnership(w, actor)
+			reconcileInsideAndNarrateDeparture(w, actor, now)
 			actor.MoveIntent.StuckTicks = 0
 
 			w.emit(&ActorMoved{
@@ -559,7 +559,7 @@ func advanceActorViaReroute(w *World, actor *Actor, dest MoveDestination, attemp
 		from := actor.Pos
 		fromStructure := actor.InsideStructureID
 		actor.Pos = occupiedNext
-		updateInsideStructureIDFromTileOwnership(w, actor)
+		reconcileInsideAndNarrateDeparture(w, actor, now)
 		actor.MoveIntent.StuckTicks = 0
 
 		w.emit(&ActorMoved{
@@ -654,7 +654,7 @@ func advanceActorViaReroute(w *World, actor *Actor, dest MoveDestination, attemp
 	from := actor.Pos
 	fromStructure := actor.InsideStructureID
 	actor.Pos = occupiedNext
-	updateInsideStructureIDFromTileOwnership(w, actor)
+	reconcileInsideAndNarrateDeparture(w, actor, now)
 	actor.MoveIntent.StuckTicks = 0
 
 	w.emit(&ActorMoved{
@@ -841,16 +841,60 @@ func emitArrivalNarration(w *World, actor *Actor, arrivedEvt *ActorArrived, now 
 		return
 	}
 	destName := ArrivalDestinationName(w, arrivedEvt)
-	// Mirrors renderActionLogEntry's "<name> arrives at <place>." (httpapi/pc_me.go)
+	// Mirrors renderActionLogEntry's "<name> arrives at the <place>." (httpapi/pc_me.go)
 	// so the live line matches the panel backload of the same arrival — keep in sync.
+	// WithDefiniteArticle adds "the" for a common-noun place ("the Tavern") and leaves
+	// possessives / already-articled names alone ("Hannah's Inn", "the Village Well").
 	text := actor.DisplayName + " arrives."
 	if destName != "" {
-		text = actor.DisplayName + " arrives at " + destName + "."
+		text = actor.DisplayName + " arrives at " + WithDefiniteArticle(destName) + "."
 	}
 	w.emit(&ActorArrivalNarrated{
 		ActorID:     actor.ID,
 		ActorName:   actor.DisplayName,
 		StructureID: structureID,
+		Text:        text,
+		At:          now,
+	})
+}
+
+// emitDepartureNarration is the departure twin of emitArrivalNarration: it
+// surfaces an actor walking OUT of a structure to co-present PCs as a live
+// talk-panel line ("X leaves the Y"). Called from reconcileInsideAndNarrateDeparture
+// BEFORE the inside-flip, so the actor is still attributed to leftStructure and the
+// same scope/earshot helpers (audienceRoomScope, pcBystanders) resolve the audience
+// left behind in it.
+//
+// Same gates as arrival:
+//   - conversational mover only (a decorative NPC walking out is scenery);
+//   - a PUBLIC structure scope — a private/staff-room departure is left to the
+//     backload, since a room_id-less wire frame would otherwise leak the line to
+//     common-room observers who can't see into the back room;
+//   - at least one PC in earshot — no point narrating to no one.
+//
+// The text mirrors renderActionLogEntry's "<name> leaves the <place>." so a live
+// line and a later panel-open backload read identically.
+func emitDepartureNarration(w *World, actor *Actor, leftStructure StructureID, now time.Time) {
+	switch actor.Kind {
+	case KindPC, KindNPCStateful, KindNPCShared:
+	default:
+		return
+	}
+	if audienceRoomScope(w, actor) != 0 {
+		return
+	}
+	if len(pcBystanders(w, actor, nil)) == 0 {
+		return
+	}
+	st, ok := w.Structures[leftStructure]
+	if !ok || st.DisplayName == "" {
+		return
+	}
+	text := actor.DisplayName + " leaves " + WithDefiniteArticle(st.DisplayName) + "."
+	w.emit(&ActorDepartureNarrated{
+		ActorID:     actor.ID,
+		ActorName:   actor.DisplayName,
+		StructureID: leftStructure,
 		Text:        text,
 		At:          now,
 	})
@@ -884,19 +928,68 @@ func actorInActiveHuddle(w *World, actor *Actor) bool {
 	return ok && h.ConcludedAt == nil
 }
 
+// structureForActorTile returns the structure whose footprint contains the
+// actor's current tile, or "" when the tile is outside every footprint. It is the
+// inside-attribution that updateInsideStructureIDFromTileOwnership and the
+// locomotion departure seam both reconcile an actor to.
+//
+// MUST be called from inside a Command.Fn.
+func structureForActorTile(w *World, actor *Actor) StructureID {
+	if sid, ok := structureContainingTile(w, actor.Pos); ok {
+		return sid
+	}
+	return ""
+}
+
 // updateInsideStructureIDFromTileOwnership reconciles actor.InsideStructureID
 // (and the actorsByStructure index) with the actor's current tile: the
 // actor is "inside" whichever structure's footprint contains its tile, or
 // no structure if its tile is outside every footprint.
 //
+// SILENT — no departure narration. Used by the non-walk inside-state flips
+// (teleport, admin move) where a "walked out" line would be wrong; the
+// locomotion advance path uses reconcileInsideAndNarrateDeparture instead.
+//
 // MUST be called from inside a Command.Fn.
 func updateInsideStructureIDFromTileOwnership(w *World, actor *Actor) {
-	pos := actor.Pos
-	if sid, ok := structureContainingTile(w, pos); ok {
-		setActorInsideStructure(w, actor, sid)
-		return
+	setActorInsideStructure(w, actor, structureForActorTile(w, actor))
+}
+
+// reconcileInsideAndNarrateDeparture is the locomotion-path inside-state
+// reconcile: same attribution as updateInsideStructureIDFromTileOwnership, but
+// when the actor is crossing OUT of a structure to outdoors (was inside one; the
+// new tile belongs to no structure) it first emits the departure beats — the
+// always-on ActorLeftStructure (the action-log backload row source) and the
+// audience-gated ActorDepartureNarrated (the live talk-panel line). Both fire
+// BEFORE setActorInsideStructure flips the attribution, so the action-log scope
+// stamp and the narration audience still resolve to the structure being LEFT.
+//
+// Outdoor-exit only (target == ""), the precise reading of "leaves the X": in the
+// village layout a structure is always exited through its door to an outdoor tile
+// before walking on (door → outdoor → door), so a tavern→inn journey still
+// narrates the tavern departure at the outdoor crossing. A direct
+// structure-to-structure flip with no outdoor tile between (geometrically
+// adjacent footprints — not a real village layout) would attribute silently until
+// the arrival narration fires; not narrating a phantom "leaves" there is the safe
+// default, and it keeps the event name / "leaves the X" wording unambiguous.
+//
+// The departure twin of finishArrival's arrival emit. Walk-only by construction:
+// only the locomotion advance funnels through here, so a snap/removal (teleport,
+// admin delete, visitor despawn) stays on the silent reconcile.
+//
+// MUST be called from inside a Command.Fn.
+func reconcileInsideAndNarrateDeparture(w *World, actor *Actor, now time.Time) {
+	old := actor.InsideStructureID
+	target := structureForActorTile(w, actor)
+	if old != "" && target == "" {
+		// Emit before the flip: ActorLeftStructure's action-log subscriber reads
+		// the actor's still-current scope (= old) for the central stamp, and
+		// emitDepartureNarration's pcBystanders/audienceRoomScope resolve the
+		// audience in `old`.
+		w.emit(&ActorLeftStructure{ActorID: actor.ID, StructureID: old, At: now})
+		emitDepartureNarration(w, actor, old, now)
 	}
-	setActorInsideStructure(w, actor, "")
+	setActorInsideStructure(w, actor, target)
 }
 
 // setActorInsideStructure sets actor.InsideStructureID AND the
