@@ -26,15 +26,14 @@ import (
 //   - structure_id: required, minLength 1, maxLength MaxMoveToStructureIDChars.
 //     The id of a structure the NPC can see in its perception (its own
 //     home/work, a shop, a place nearby).
-//   - structure_name: ALTERNATIVE to structure_id — a place name the NPC can see
-//     in its perception (its own home/work, a landmark nearby, or any place a cue
-//     named this tick). The engine resolves the name to a structure it could
-//     plausibly reach — anchors + structures within scene radius + the move
-//     targets this tick's perception surfaced (PerceivedStructureIDs/ObjectIDs,
-//     ZBBS-HOME-389) + the actor's durable known places (RememberedPlaces, the
-//     memory-backed fallback, LLM-78) — nearest-wins on duplicates
-//     (ZBBS-HOME-356). Exactly one of structure_id / structure_name is required
-//     (decode rejects both).
+//   - structure_name: ALTERNATIVE to structure_id — the name of any structure in
+//     the village. Village geography is common knowledge (LLM-142), so the engine
+//     resolves the name against EVERY named structure (nearest-wins on duplicates),
+//     not just perceivable ones. A name matching no structure falls through to a
+//     bare refresh source (a well, a fruit tree) the tick SHOWED (PerceivedObjectIDs,
+//     ZBBS-HOME-389) or the actor has personally experienced (RememberedPlaces.ObjectIDs,
+//     LLM-78) — objects stay discovered. Exactly one of structure_id / structure_name
+//     is required (decode rejects both).
 type MoveToArgs struct {
 	StructureID   string `json:"structure_id"`
 	StructureName string `json:"structure_name"`
@@ -178,7 +177,7 @@ func HandleMoveTo(in HandlerInput) (sim.Command, error) {
 			return sim.Command{}, modelSafef(
 				"move_to: structure_name contains a disallowed control character at byte offset %d", i)
 		}
-		return sim.MoveToStructureByName(in.ActorID, name, in.PerceivedStructureIDs, in.PerceivedObjectIDs, in.RememberedPlaces, time.Now().UTC()), nil
+		return sim.MoveToStructureByName(in.ActorID, name, in.PerceivedObjectIDs, in.RememberedPlaces, time.Now().UTC()), nil
 	}
 
 	structureID := strings.TrimSpace(args.StructureID)

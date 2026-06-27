@@ -5,11 +5,12 @@ import (
 	"testing"
 )
 
-// move_to_remembered_test.go — LLM-78. White-box (package sim) coverage of the
-// memory-backed name-resolution fallback: CollectRememberedPlaces (the by-kind
-// split) and the resolveStructureByRememberedName / resolveObjectByRememberedName
-// resolvers. Reuses bnWorld / bnPlace / bnActor (move_to_byname_test.go). The
-// end-to-end walk-issuing + precedence wiring is covered in
+// move_to_remembered_test.go — LLM-78 / LLM-142. White-box (package sim) coverage
+// of the memory-backed OBJECT name-resolution fallback: CollectRememberedPlaces
+// (object-only projection) and resolveObjectByRememberedName. Structures are
+// common-knowledge geography (LLM-142) and resolve directly by name, so there is
+// no remembered-structure resolver. Reuses bnWorld / bnPlace / bnActor
+// (move_to_byname_test.go). The end-to-end walk-issuing + precedence wiring is in
 // move_to_remembered_e2e_test.go; this drives the unexported pieces directly.
 
 // bnBareObject seeds a bare object with NO refresh row — a gather patch or décor
@@ -23,9 +24,9 @@ func bnBareObject(w *World, id VillageObjectID, name string, tilesEast int) {
 
 // --- CollectRememberedPlaces ------------------------------------------
 
-func TestCollectRememberedPlaces_SplitsByKindSortedAndDeduped(t *testing.T) {
+func TestCollectRememberedPlaces_CollectsObjectsSortedDropsStructures(t *testing.T) {
 	known := map[PlaceRef]*KnownPlace{
-		"s2":    {Ref: "s2", Kind: PlaceKindStructure},
+		"s2":    {Ref: "s2", Kind: PlaceKindStructure}, // structures dropped — geography is common knowledge (LLM-142)
 		"s1":    {Ref: "s1", Kind: PlaceKindStructure},
 		"o2":    {Ref: "o2", Kind: PlaceKindObject},
 		"o1":    {Ref: "o1", Kind: PlaceKindObject},
@@ -34,93 +35,26 @@ func TestCollectRememberedPlaces_SplitsByKindSortedAndDeduped(t *testing.T) {
 		"nilkp": nil,                                  // nil entry → dropped
 	}
 	got := CollectRememberedPlaces(known)
-	wantS := []StructureID{"s1", "s2"}
-	wantO := []VillageObjectID{"o1", "o2"}
-	if !reflect.DeepEqual(got.StructureIDs, wantS) {
-		t.Errorf("StructureIDs = %v, want %v (sorted, kind-split, junk dropped)", got.StructureIDs, wantS)
-	}
-	if !reflect.DeepEqual(got.ObjectIDs, wantO) {
-		t.Errorf("ObjectIDs = %v, want %v (sorted, kind-split, junk dropped)", got.ObjectIDs, wantO)
+	want := []VillageObjectID{"o1", "o2"}
+	if !reflect.DeepEqual(got.ObjectIDs, want) {
+		t.Errorf("ObjectIDs = %v, want %v (sorted, objects only, structures + junk dropped)", got.ObjectIDs, want)
 	}
 }
 
-func TestCollectRememberedPlaces_EmptyAndNilYieldNilSlices(t *testing.T) {
+func TestCollectRememberedPlaces_EmptyAndNilYieldNilSlice(t *testing.T) {
 	for _, in := range []map[PlaceRef]*KnownPlace{nil, {}} {
 		got := CollectRememberedPlaces(in)
-		if got.StructureIDs != nil || got.ObjectIDs != nil {
-			t.Errorf("empty/nil map must yield nil slices, got %+v", got)
+		if got.ObjectIDs != nil {
+			t.Errorf("empty/nil map must yield a nil ObjectIDs slice, got %+v", got)
 		}
 	}
 }
 
-func TestCollectRememberedPlaces_OneKindOnlyNilsTheOther(t *testing.T) {
-	known := map[PlaceRef]*KnownPlace{"o1": {Ref: "o1", Kind: PlaceKindObject}}
+func TestCollectRememberedPlaces_StructureOnlyYieldsNil(t *testing.T) {
+	known := map[PlaceRef]*KnownPlace{"s1": {Ref: "s1", Kind: PlaceKindStructure}}
 	got := CollectRememberedPlaces(known)
-	if got.StructureIDs != nil {
-		t.Errorf("no structures → nil StructureIDs, got %v", got.StructureIDs)
-	}
-	if len(got.ObjectIDs) != 1 || got.ObjectIDs[0] != "o1" {
-		t.Errorf("ObjectIDs = %v, want [o1]", got.ObjectIDs)
-	}
-}
-
-// --- resolveStructureByRememberedName ---------------------------------
-
-func TestResolveStructureByRememberedName_MatchAtAnyDistance(t *testing.T) {
-	w := bnWorld(3)
-	bnPlace(w, "tavern", "The Tavern", 50) // far beyond radius 3, NOT an anchor
-	// The live resolver would miss it (not in scene radius, not an anchor); the
-	// memory resolver finds it because it is in the remembered set, at any distance.
-	got, ok := resolveStructureByRememberedName(w, bnActor("", ""), "the tavern", []StructureID{"tavern"})
-	if !ok || got != "tavern" {
-		t.Fatalf("a remembered structure must resolve at any distance, got %q ok=%v", got, ok)
-	}
-}
-
-func TestResolveStructureByRememberedName_OnlyConsidersThreadedSet(t *testing.T) {
-	w := bnWorld(3)
-	bnPlace(w, "tavern", "The Tavern", 50) // present + named in the world...
-	// ...but NOT in the remembered slice → must NOT resolve (no omniscience leak).
-	if got, ok := resolveStructureByRememberedName(w, bnActor("", ""), "the tavern", nil); ok {
-		t.Fatalf("a place not in the remembered set must not resolve, got %q", got)
-	}
-}
-
-func TestResolveStructureByRememberedName_RemovedStructureSkipped(t *testing.T) {
-	w := bnWorld(3)
-	// The remembered id has no live structure (since removed) → liveness skip.
-	if got, ok := resolveStructureByRememberedName(w, bnActor("", ""), "the tavern", []StructureID{"tavern"}); ok {
-		t.Fatalf("a remembered-but-removed structure must not resolve, got %q", got)
-	}
-}
-
-func TestResolveStructureByRememberedName_NoPlacementSkipped(t *testing.T) {
-	w := bnWorld(3)
-	w.Structures["ghost"] = &Structure{ID: "ghost", DisplayName: "The Tavern"} // no placement
-	if got, ok := resolveStructureByRememberedName(w, bnActor("", ""), "the tavern", []StructureID{"ghost"}); ok {
-		t.Fatalf("a remembered structure with no placement must not resolve, got %q", got)
-	}
-}
-
-func TestResolveStructureByRememberedName_NearestWinsAndTieBreak(t *testing.T) {
-	w := bnWorld(3)
-	bnPlace(w, "tav_far", "The Tavern", 9)
-	bnPlace(w, "tav_near", "The Tavern", 2)
-	// Nearest wins regardless of the remembered slice's order.
-	for _, order := range [][]StructureID{{"tav_far", "tav_near"}, {"tav_near", "tav_far"}} {
-		got, ok := resolveStructureByRememberedName(w, bnActor("", ""), "the tavern", order)
-		if !ok || got != "tav_near" {
-			t.Fatalf("nearest must win regardless of order %v, got %q ok=%v", order, got, ok)
-		}
-	}
-	// Equal distance → lowest id, stable across repeats.
-	bnPlace(w, "inn_bbb", "Inn", 4)
-	bnPlace(w, "inn_aaa", "Inn", 4)
-	for i := 0; i < 25; i++ {
-		got, ok := resolveStructureByRememberedName(w, bnActor("", ""), "inn", []StructureID{"inn_bbb", "inn_aaa"})
-		if !ok || got != "inn_aaa" {
-			t.Fatalf("equal-distance tie must break to the lowest id, got %q", got)
-		}
+	if got.ObjectIDs != nil {
+		t.Errorf("a structure-only known set must yield nil ObjectIDs (structures resolve by village name), got %v", got.ObjectIDs)
 	}
 }
 

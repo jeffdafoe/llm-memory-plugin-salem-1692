@@ -36,56 +36,40 @@ import (
 // actor just left. Confirmed with work for the duty-warrant seam.
 
 // MoveToStructureByName returns a Command that resolves a place NAME to a
-// structure_id the actor could plausibly know, then walks there exactly as
-// MoveToStructure does. It exists because prose perception (ZBBS-HOME-351..355)
-// makes the model answer in prose-shaped calls — move_to("the Tavern") — which
-// the id-only form rejected, punishing the model's correct instinct (the live
-// John Ellis case: he had the closed farm's id from a cue but no id for his own
-// Tavern, so move_to by name bounced). ZBBS-HOME-356.
+// structure_id and walks there exactly as MoveToStructure does. It exists
+// because prose perception (ZBBS-HOME-351..355) makes the model answer in
+// prose-shaped calls — move_to("the Tavern") — which the id-only form rejected,
+// punishing the model's correct instinct (the live John Ellis case: he had a
+// closed farm's id from a cue but no id for his own Tavern, so move_to by name
+// bounced).
 //
-// Resolution scope is what the actor can plausibly know (NOT every structure in
-// the village — a villager doesn't know a place exists just because the engine
-// does): its own home/work anchors (always, any distance) PLUS any named
-// structure within its scene radius (DefaultOutdoorSceneRadius — the same "what
-// is around me" radius perception uses). Matches are case-insensitive and
-// tolerate a leading article on either side, so move_to("the Tavern") resolves
-// the structure named "Tavern" (placeNameMatches). ZBBS-WORK-417.
+// STRUCTURES ARE COMMON-KNOWLEDGE GEOGRAPHY (LLM-142). A resident knows where
+// every building in their own village is, so a structure_name resolves against
+// EVERY named structure in the world, at any distance — there is no anchor /
+// scene-radius / shown-this-tick / personally-visited gate. The earlier gating
+// (HOME-356 scene-radius, HOME-389 shown-this-tick, LLM-78 remembered known
+// places) put the world-memory no-omniscience guard on the wrong axis: knowing a
+// place EXISTS is not omniscience. Only a place's dynamic STATUS (open/closed,
+// keeper asleep, stock on hand) is earned, and that lives in observed_state.go +
+// the perception cues, untouched by this path. Entry is gated downstream
+// (entry_policy, room_access, the keeper-abed lock) — existence-known is not
+// enter-allowed, so a villager can walk to a private home's door without being
+// let inside.
 //
+// Matches are case-insensitive and tolerate a leading article on either side, so
+// move_to("the Tavern") resolves the structure named "Tavern" (placeNameMatches).
 // DUPLICATE NAMES resolve to the NEAREST match (Chebyshev), not an ambiguity
-// reject — unlike the pay path's findHuddlePeerByDisplayName. Places legitimately
-// share names ("the well"), and "walk to the well" means the closest one; a
-// money transfer to an ambiguous person does not have a safe default, but a walk
-// does. Ties beyond distance break by structure_id for determinism.
+// reject — places legitimately share names ("the well") and "walk to X" means the
+// closest one; ties beyond distance break by structure_id for determinism.
 //
-// PLUS — ZBBS-HOME-389 — any structure the tick's PERCEPTION surfaced as a move
-// target (a vendor / rest / restock cue named it, with its id), at any distance.
-// The cue showed it to the actor, so it is perceivable for this tick — the same
-// "things you were just told about" justification as anchors. This closes the
-// recurring "model emits the distant cue's NAME, move_to rejects it, the NPC
-// starves in place" hole: those cues always carried the structure_id inline, but
-// name-resolution never consulted them — only anchors + scene radius — so a far
-// shop named by the model bounced. The shown id set is threaded in by the
-// harness (perception.CollectPerceivedPlaces) through the move_to handler.
-//
-// A name that matches no structure falls through to a bare refresh source — a
-// well, a fruit tree the actor saw in a "free to drink/eat nearby" cue — via
-// resolveObjectByPerceivableName, so "walk to the well" reaches a placement that
-// has no Structure shell (ZBBS-HOME-359). Structures win on a name collision:
-// the structure resolver runs first, so "the Tavern" still enters rather than
-// stops outside its placement.
-//
-// PLUS — LLM-78 — the actor's DURABLE known places (LLM-77's experiential
-// world-memory: places it has gathered at, bought from, drank at, or owns) as a
-// FOURTH name-resolution source, threaded in as `remembered` the same way the
-// shown set is. This is the no-omniscience guard widened from "shown this tick"
-// to "shown this tick OR personally experienced" — still not omniscient (a place
-// never visited and not owned stays unresolvable). It is tried ONLY after the
-// live sources (anchors + scene-radius + shown) miss, so a live cue always wins a
-// name it shares with a remembered place: prefer live, fall back to memory. The
-// remembered resolvers enforce liveness against the live world, so a remembered
-// place since removed is skipped and falls through to the steer below — a clean
-// reject, never a walk to a ghost.
-func MoveToStructureByName(actorID ActorID, name string, shownStructures []StructureID, shownObjects []VillageObjectID, remembered RememberedPlaces, now time.Time) Command {
+// OBJECTS ARE STILL DISCOVERED. A name that matches no structure falls through to
+// a bare refresh source — a well, a fruit tree (resolveObjectByPerceivableName,
+// ZBBS-HOME-359) — and those stay gated on what the tick SHOWED (shownObjects) or
+// the actor has personally experienced (remembered.ObjectIDs, LLM-78): a wild
+// bush in the woods is not common knowledge the way a building is. Structures win
+// a name collision: the structure resolver runs first, so "the Tavern" enters
+// rather than stopping outside its placement.
+func MoveToStructureByName(actorID ActorID, name string, shownObjects []VillageObjectID, remembered RememberedPlaces, now time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
 			a, ok := w.Actors[actorID]
@@ -96,29 +80,23 @@ func MoveToStructureByName(actorID ActorID, name string, shownStructures []Struc
 			if target == "" {
 				return MoveActorResult{}, fmt.Errorf("move_to: structure_name is required")
 			}
-			// Live sources first — anchors + scene-radius + shown-this-tick
-			// (ZBBS-HOME-356/389). A structure wins a name it shares with a bare
-			// object: the structure resolver runs first.
-			if structureID, ok := resolveStructureByPerceivableName(w, a, target, shownStructures); ok {
+			// Structures are common-knowledge geography (LLM-142): resolve against
+			// every named structure in the village. A structure wins a name it
+			// shares with a bare object — the structure resolver runs first.
+			if structureID, ok := resolveStructureByVillageName(w, a, target); ok {
 				return MoveToStructure(actorID, structureID, now).Fn(w)
 			}
 			// No structure by that name — try a bare refresh source (a well, a
-			// fruit tree). ZBBS-HOME-359.
+			// fruit tree), which IS still discovered: shown this tick (ZBBS-HOME-359)
+			// or personally experienced (LLM-78), live winning a shared name.
 			if objID, ok := resolveObjectByPerceivableName(w, a, target, shownObjects); ok {
 				return MoveToObject(actorID, objID, now).Fn(w)
-			}
-			// Memory fallback (LLM-78) — a place the actor has personally
-			// experienced but that THIS tick's perception did not surface. Same
-			// structure-before-object precedence; tried only because the live
-			// sources missed, so live always wins a shared name.
-			if structureID, ok := resolveStructureByRememberedName(w, a, target, remembered.StructureIDs); ok {
-				return MoveToStructure(actorID, structureID, now).Fn(w)
 			}
 			if objID, ok := resolveObjectByRememberedName(w, a, target, remembered.ObjectIDs); ok {
 				return MoveToObject(actorID, objID, now).Fn(w)
 			}
 			return MoveActorResult{}, fmt.Errorf(
-				"there is no place called %q that you can see or remember — use a structure_id from your perception, or name a place you were shown this tick or have been to before", target)
+				"there is no place called %q — name a structure in the village, or a source (a well, a bush) you can see or have visited", target)
 		},
 	}
 }
@@ -151,33 +129,25 @@ func placeNameMatches(displayName, query string) bool {
 	)
 }
 
-// resolveStructureByPerceivableName resolves a place name to a structure_id the
-// actor a could plausibly know — its home/work anchors (any distance), named
-// structures within DefaultOutdoorSceneRadius, AND any id in `shown` (the move
-// targets this tick's perception surfaced, ZBBS-HOME-389; any distance) —
-// case-insensitively and tolerant of a leading article (placeNameMatches),
-// nearest-wins on duplicate names (Chebyshev to the actor;
-// ties break by structure_id for determinism). ok=false when no perceivable
-// structure matches. MUST be called from inside a Command.Fn. ZBBS-HOME-356.
-func resolveStructureByPerceivableName(w *World, a *Actor, name string, shown []StructureID) (StructureID, bool) {
-	radius := w.Settings.DefaultOutdoorSceneRadius
-	if radius <= 0 {
-		radius = DefaultOutdoorSceneRadiusValue
-	}
-
-	// nameMatches reports whether structureID resolves to a structure whose
-	// DisplayName equals name (case-insensitive). Returns the placement tile too
-	// (for the distance tie-break) when it resolves.
+// resolveStructureByVillageName resolves a place name to a structure_id against
+// EVERY named structure in the village (LLM-142): a resident knows where every
+// building is, so geography is common knowledge — there is no anchor /
+// scene-radius / shown / remembered gate. Matches are case-insensitive and
+// tolerant of a leading article (placeNameMatches); duplicate names resolve
+// nearest-wins (Chebyshev to the actor; ties break by structure_id for
+// determinism). A structure with no walkable placement is skipped (can't walk
+// there, can't measure distance). ok=false when no named structure matches. MUST
+// be called from inside a Command.Fn.
+func resolveStructureByVillageName(w *World, a *Actor, name string) (StructureID, bool) {
 	bestID := StructureID("")
 	bestDist := -1
-	consider := func(structureID StructureID) {
-		st := w.Structures[structureID]
+	for structureID, st := range w.Structures {
 		if st == nil || !placeNameMatches(st.DisplayName, name) {
-			return
+			continue
 		}
 		vobj, ok := villageObjectForStructureOnly(w, structureID)
 		if !ok {
-			return // no placement → can't walk there (and can't measure distance)
+			continue // no placement → can't walk there (and can't measure distance)
 		}
 		dist := a.Pos.Chebyshev(vobj.Pos.Tile())
 		// Closer wins; equal distance breaks by lower structure_id for a stable
@@ -186,35 +156,6 @@ func resolveStructureByPerceivableName(w *World, a *Actor, name string, shown []
 			bestID, bestDist = structureID, dist
 		}
 	}
-
-	// Anchors are always perceivable regardless of distance (the actor knows its
-	// own home and workplace), so consider them unconditionally.
-	if a.HomeStructureID != "" {
-		consider(a.HomeStructureID)
-	}
-	if a.WorkStructureID != "" {
-		consider(a.WorkStructureID)
-	}
-	// Plus any named structure within scene radius — "what is around me."
-	for structureID, st := range w.Structures {
-		if st == nil {
-			continue
-		}
-		vobj, ok := villageObjectForStructureOnly(w, structureID)
-		if !ok {
-			continue
-		}
-		if a.Pos.Chebyshev(vobj.Pos.Tile()) > radius {
-			continue
-		}
-		consider(structureID)
-	}
-	// Plus any structure the actor was SHOWN this tick (a vendor/rest/restock cue
-	// named it with its id) — at any distance, like an anchor. ZBBS-HOME-389.
-	for _, id := range shown {
-		consider(id)
-	}
-
 	if bestDist == -1 {
 		return "", false
 	}
@@ -227,7 +168,7 @@ func resolveStructureByPerceivableName(w *World, a *Actor, name string, shown []
 // tolerant of a leading article (placeNameMatches), nearest-wins on duplicate
 // names (Chebyshev to the actor; ties break by object
 // id for determinism). The object-keyed sibling of
-// resolveStructureByPerceivableName and the move_to name path's fallthrough when
+// resolveStructureByVillageName and the move_to name path's fallthrough when
 // no structure matches. ZBBS-HOME-359.
 //
 // Structure-backed placements are excluded: those resolve through the structure
@@ -283,48 +224,12 @@ func resolveObjectByPerceivableName(w *World, a *Actor, name string, shown []Vil
 	return bestID, true
 }
 
-// resolveStructureByRememberedName resolves a place name against the actor's
-// DURABLE known-places set (LLM-78) — a structure it has personally experienced
-// (a vendor it bought from, its own anchors) but that THIS tick's perception did
-// not surface. The memory-backed counterpart to resolveStructureByPerceivableName
-// and the move_to name path's FALLBACK when the live structure resolver misses,
-// so a live cue always wins a name shared with a remembered place (prefer live,
-// fall back to memory). Considers ONLY the threaded remembered ids, at any
-// distance (like an anchor); liveness is enforced here — a remembered structure
-// since removed from the world, or one with no placement to walk to, is skipped
-// (it falls through to a clean steer, never a walk to a ghost). Case-insensitive
-// + article-tolerant (placeNameMatches), nearest-wins on duplicate names
-// (Chebyshev to the actor; ties break by structure_id for determinism, so the
-// result is stable regardless of the remembered slice's order). ok=false when no
-// live remembered structure matches. MUST be called from inside a Command.Fn.
-func resolveStructureByRememberedName(w *World, a *Actor, name string, remembered []StructureID) (StructureID, bool) {
-	bestID := StructureID("")
-	bestDist := -1
-	for _, structureID := range remembered {
-		st := w.Structures[structureID]
-		if st == nil || !placeNameMatches(st.DisplayName, name) {
-			continue
-		}
-		vobj, ok := villageObjectForStructureOnly(w, structureID)
-		if !ok {
-			continue // no placement → can't walk there (and can't measure distance)
-		}
-		dist := a.Pos.Chebyshev(vobj.Pos.Tile())
-		if bestDist == -1 || dist < bestDist || (dist == bestDist && structureID < bestID) {
-			bestID, bestDist = structureID, dist
-		}
-	}
-	if bestDist == -1 {
-		return "", false
-	}
-	return bestID, true
-}
-
 // resolveObjectByRememberedName resolves a place name against the actor's DURABLE
 // known-places set (LLM-78) — a bare placement it has personally experienced (a
 // berry patch it gathered, a well it drank at) that THIS tick's perception did
-// not surface. The object-keyed sibling of resolveStructureByRememberedName and
-// move_to's memory fallthrough when no remembered structure matches. Considers
+// not surface. The object-keyed memory fallthrough when no structure matches
+// (structures are common-knowledge geography and resolve directly, LLM-142).
+// Considers
 // ONLY the threaded remembered ids, at any distance; liveness = the placement
 // still exists (w.VillageObjects), so a remembered source since removed is
 // skipped and the model gets a steer, not a crash.
