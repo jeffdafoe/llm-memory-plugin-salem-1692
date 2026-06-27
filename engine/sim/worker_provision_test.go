@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/repo/mem"
@@ -191,5 +192,100 @@ func TestProvisionWorker_ExistingLiveNPCRejected(t *testing.T) {
 	w, _ := buildProvisionTestWorld(t, true)
 	if _, err := w.Send(sim.ProvisionWorker("hank", sim.VendorAgentName)); !errors.Is(err, sim.ErrActorNotProvisionable) {
 		t.Errorf("err = %v, want ErrActorNotProvisionable (already a live NPC)", err)
+	}
+}
+
+// --- RetireWorker (LLM-143) ------------------------------------------------
+
+// TestRetireWorker_RemovesAttributeKeepsVA: the default — drop the worker
+// attribute, but the actor stays a live npc_shared NPC (VA + Kind unchanged), so
+// no restart / reclassify is involved.
+func TestRetireWorker_RemovesAttributeKeepsVA(t *testing.T) {
+	w, _ := buildProvisionTestWorld(t, true)
+	if _, err := w.Send(sim.ProvisionWorker("statue", sim.VendorAgentName)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	res, err := w.Send(sim.RetireWorker("statue", false))
+	if err != nil {
+		t.Fatalf("RetireWorker: %v", err)
+	}
+	out := res.(sim.RetireWorkerResult)
+	if out.Kind != sim.KindNPCShared {
+		t.Errorf("Kind = %v, want KindNPCShared (retire keeps the VA)", out.Kind)
+	}
+	if out.LLMAgent != sim.VendorAgentName {
+		t.Errorf("LLMAgent = %q, want %q (retire keeps the VA)", out.LLMAgent, sim.VendorAgentName)
+	}
+	if len(out.Attributes) != 0 {
+		t.Errorf("Attributes = %v, want [] (worker removed)", out.Attributes)
+	}
+	a := provisionActor(t, w, "statue")
+	if _, ok := a.Attributes[sim.AttrWorker]; ok {
+		t.Error("worker attribute still present after retire")
+	}
+}
+
+// TestRetireWorker_ToDecorative: to_decorative also unlinks the VA, reclassifies
+// to decorative, and resets reactor state (open warrant + in-flight tick wiped).
+func TestRetireWorker_ToDecorative(t *testing.T) {
+	w, _ := buildProvisionTestWorld(t, true)
+	if _, err := w.Send(sim.ProvisionWorker("statue", sim.VendorAgentName)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	// Stage an open warrant + in-flight tick to prove the reset clears them.
+	if _, err := w.Send(sim.Command{Fn: func(wd *sim.World) (any, error) {
+		a := wd.Actors["statue"]
+		now := time.Now().UTC()
+		a.WarrantedSince = &now
+		a.TickInFlight = true
+		a.TickAttemptID = "tk-stale"
+		a.Warrants = []sim.WarrantMeta{{Reason: sim.SeekWorkWarrantReason{}}}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("stage: %v", err)
+	}
+
+	res, err := w.Send(sim.RetireWorker("statue", true))
+	if err != nil {
+		t.Fatalf("RetireWorker to_decorative: %v", err)
+	}
+	out := res.(sim.RetireWorkerResult)
+	if out.Kind != sim.KindDecorative || out.LLMAgent != "" {
+		t.Errorf("result = {Kind:%v LLMAgent:%q}, want {decorative, \"\"}", out.Kind, out.LLMAgent)
+	}
+	a := provisionActor(t, w, "statue")
+	if a.WarrantedSince != nil || a.TickInFlight || a.TickAttemptID != "" || len(a.Warrants) != 0 {
+		t.Errorf("reactor state not reset: WarrantedSince=%v TickInFlight=%v TickAttemptID=%q warrants=%d",
+			a.WarrantedSince, a.TickInFlight, a.TickAttemptID, len(a.Warrants))
+	}
+}
+
+// TestRetireWorker_NonWorkerNoOp: retiring an NPC that isn't a worker is a no-op
+// (no error), leaving it a live NPC.
+func TestRetireWorker_NonWorkerNoOp(t *testing.T) {
+	w, _ := buildProvisionTestWorld(t, true)
+	res, err := w.Send(sim.RetireWorker("hank", false)) // hank has a VA, no worker attr
+	if err != nil {
+		t.Fatalf("RetireWorker non-worker: %v", err)
+	}
+	if out := res.(sim.RetireWorkerResult); out.Kind != sim.KindNPCStateful || out.LLMAgent != "zbbs-hank" {
+		t.Errorf("non-worker retire changed driver state: %+v", out)
+	}
+}
+
+// TestRetireWorker_PCRejected: editableNPC refuses a player.
+func TestRetireWorker_PCRejected(t *testing.T) {
+	w, _ := buildProvisionTestWorld(t, true)
+	if _, err := w.Send(sim.RetireWorker("pip", false)); !errors.Is(err, sim.ErrActorNotFound) {
+		t.Errorf("err = %v, want ErrActorNotFound (PC)", err)
+	}
+}
+
+// TestRetireWorker_UnknownActor: a missing actor id is ErrActorNotFound.
+func TestRetireWorker_UnknownActor(t *testing.T) {
+	w, _ := buildProvisionTestWorld(t, true)
+	if _, err := w.Send(sim.RetireWorker("ghost", false)); !errors.Is(err, sim.ErrActorNotFound) {
+		t.Errorf("err = %v, want ErrActorNotFound", err)
 	}
 }

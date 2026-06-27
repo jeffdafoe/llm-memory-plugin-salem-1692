@@ -88,3 +88,62 @@ func (s *Server) handleUmbilicalProvisionWorker(w http.ResponseWriter, r *http.R
 		Attributes: out.Attributes,
 	})
 }
+
+type retireWorkerRequest struct {
+	ActorID      string `json:"actor_id"`
+	ToDecorative bool   `json:"to_decorative"`
+}
+
+type retireWorkerResponse struct {
+	ActorID    string   `json:"actor_id"`
+	Agent      string   `json:"agent"`
+	Kind       string   `json:"kind"`
+	Attributes []string `json:"attributes"`
+}
+
+// handleUmbilicalRetireWorker retires an actor from Worker duty — the inverse of
+// worker/provision. It removes the `worker` attribute (live, no restart — no Kind
+// change, so no reclassify and no race). With {to_decorative:true} it also
+// unlinks the VA, reclassifies to decorative, and resets reactor state so the
+// actor goes fully inert. 400 missing actor_id; 404 actor not found or a PC; 200
+// with the actor's new driver state.
+func (s *Server) handleUmbilicalRetireWorker(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	if user == nil {
+		writeAuthError(w, "invalid")
+		return
+	}
+	var req retireWorkerRequest
+	if !decodeUmbilicalBody(w, r, &req) {
+		return
+	}
+	if req.ActorID == "" {
+		writeError(w, http.StatusBadRequest, "actor_id is required")
+		return
+	}
+	auditUmbilical(user.Username, "worker.retire", fmt.Sprintf("actor=%s to_decorative=%t", req.ActorID, req.ToDecorative))
+
+	res, err := s.world.SendContext(r.Context(), sim.RetireWorker(sim.ActorID(req.ActorID), req.ToDecorative))
+	if err != nil {
+		switch {
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			// Caller gone / timed out; the response is moot.
+		case errors.Is(err, sim.ErrActorNotFound):
+			writeError(w, http.StatusNotFound, err.Error())
+		default:
+			writeError(w, http.StatusInternalServerError, "retire failed")
+		}
+		return
+	}
+	out, ok := res.(sim.RetireWorkerResult)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "unexpected retire result")
+		return
+	}
+	writeJSON(w, retireWorkerResponse{
+		ActorID:    string(out.ID),
+		Agent:      out.LLMAgent,
+		Kind:       actorKindString(out.Kind),
+		Attributes: out.Attributes,
+	})
+}
