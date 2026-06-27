@@ -7,10 +7,12 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
 
-// seek_work_places_test.go — LLM-152. The directional half of the seek-work
-// backstop: when a broke worker is nudged to go earn (a seek_work warrant in the
-// batch), Build lists the town's businesses (village objects tagged
-// sim.TagBusiness, resolved to their structure names) as move_to destinations.
+// seek_work_places_test.go — LLM-152/160. The directional half of seek-work:
+// Build lists the town's businesses (village objects tagged sim.TagBusiness,
+// resolved to their structure names) as move_to destinations. LLM-160 made this a
+// STANDING cue for a broke idle worker with no solicitable employer present —
+// every tick, not gated on a seek-work warrant — so move_to always has a real,
+// resolvable target instead of an invented place name.
 
 func TestBuildSeekWorkPlaces(t *testing.T) {
 	// Business objects share their id with the co-located structure (the identity
@@ -64,29 +66,19 @@ func TestBuildSeekWorkPlaces_DedupNilAndNoneTagged(t *testing.T) {
 	}
 }
 
-func TestHasSeekWorkWarrant(t *testing.T) {
-	if hasSeekWorkWarrant(nil) {
-		t.Error("nil warrants: want false")
+// TestBuild_SeekWorkPlacesStandingForBrokeWorker proves the wiring end-to-end
+// (LLM-160): Build populates SeekWorkPlaces for a broke idle worker with no
+// solicitable employer present — every tick, no seek-work warrant required — and
+// leaves it empty for a worker that holds coin or for a non-worker.
+func TestBuild_SeekWorkPlacesStandingForBrokeWorker(t *testing.T) {
+	worker := func(coins int) *sim.ActorSnapshot {
+		a := actorSnap(sim.StateIdle, "", 0, 0, "", coins)
+		a.AttributeSlugs = []string{sim.AttrWorker}
+		return a
 	}
-	if hasSeekWorkWarrant([]sim.WarrantMeta{{Reason: sim.IdleBackstopWarrantReason{}}}) {
-		t.Error("no seek_work warrant: want false")
-	}
-	mixed := []sim.WarrantMeta{
-		{Reason: sim.IdleBackstopWarrantReason{}},
-		{Reason: sim.SeekWorkWarrantReason{}},
-	}
-	if !hasSeekWorkWarrant(mixed) {
-		t.Error("seek_work warrant present: want true")
-	}
-}
-
-// TestBuild_SeekWorkPlacesGatedOnWarrant proves the wiring end-to-end: Build
-// populates SeekWorkPlaces only when a real SeekWorkWarrantReason is in the
-// batch, even though the businesses exist either way.
-func TestBuild_SeekWorkPlacesGatedOnWarrant(t *testing.T) {
-	mk := func() *sim.Snapshot {
+	mk := func(subj *sim.ActorSnapshot) *sim.Snapshot {
 		return &sim.Snapshot{
-			Actors:     map[sim.ActorID]*sim.ActorSnapshot{"lewis": actorSnap(sim.StateIdle, "", 0, 0, "", 0)},
+			Actors:     map[sim.ActorID]*sim.ActorSnapshot{"lewis": subj},
 			Structures: map[sim.StructureID]*sim.Structure{"tav": {DisplayName: "Tavern"}},
 			VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
 				"tav": {ID: "tav", Tags: []string{"business"}},
@@ -94,16 +86,27 @@ func TestBuild_SeekWorkPlacesGatedOnWarrant(t *testing.T) {
 		}
 	}
 
-	// A real seek_work warrant (not a generic BasicWarrantReason) populates it.
-	seek := sim.WarrantMeta{Reason: sim.SeekWorkWarrantReason{}}
-	if p := Build(mk(), "lewis", []sim.WarrantMeta{seek}); len(p.SeekWorkPlaces) != 1 || p.SeekWorkPlaces[0] != "Tavern" {
-		t.Errorf("with seek_work warrant: SeekWorkPlaces = %v, want [Tavern]", p.SeekWorkPlaces)
+	// Broke worker, no one present to hire it → directory, no warrant needed.
+	if p := Build(mk(worker(0)), "lewis", nil); len(p.SeekWorkPlaces) != 1 || p.SeekWorkPlaces[0] != "Tavern" {
+		t.Errorf("broke worker alone: SeekWorkPlaces = %v, want [Tavern]", p.SeekWorkPlaces)
 	}
 
-	// An unrelated warrant leaves the list empty even though the business exists.
-	other := basicWarrant(sim.WarrantKindArrived, 5, "", "", "lewis")
-	if p := Build(mk(), "lewis", []sim.WarrantMeta{other}); len(p.SeekWorkPlaces) != 0 {
-		t.Errorf("without seek_work warrant: SeekWorkPlaces = %v, want empty", p.SeekWorkPlaces)
+	// Same worker holding coin → not broke → no directory.
+	if p := Build(mk(worker(5)), "lewis", nil); len(p.SeekWorkPlaces) != 0 {
+		t.Errorf("worker with coin: SeekWorkPlaces = %v, want empty", p.SeekWorkPlaces)
+	}
+
+	// A broke NON-worker (no worker attribute) is not directed to seek work.
+	if p := Build(mk(actorSnap(sim.StateIdle, "", 0, 0, "", 0)), "lewis", nil); len(p.SeekWorkPlaces) != 0 {
+		t.Errorf("non-worker: SeekWorkPlaces = %v, want empty", p.SeekWorkPlaces)
+	}
+
+	// A broke worker mid source-activity is NOT free to leave → no directory, so the
+	// directive bit stays off and the owed-reply nag is preserved (LLM-160 review).
+	busy := worker(0)
+	busy.SourceActivityKind = sim.SourceActivityHarvest
+	if p := Build(mk(busy), "lewis", nil); len(p.SeekWorkPlaces) != 0 {
+		t.Errorf("broke worker mid source-activity: SeekWorkPlaces = %v, want empty", p.SeekWorkPlaces)
 	}
 }
 
