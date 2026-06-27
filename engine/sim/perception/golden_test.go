@@ -183,6 +183,16 @@ var perceptionScenarios = []perceptionScenario{
 		build: keeperOffersRoomToCoinlessGuest,
 	},
 	{
+		name: "peers_holding_same_food_no_degenerate_buy",
+		summary: "Two hungry NPCs stand together, each already carrying the same food (stew) — the LLM-138 " +
+			"degenerate-buy shape from live hud-6a887a…, where each was told ONLY to BUY the other's blueberries " +
+			"(the cue that drove the hollow 'I can offer thee blueberries' beats backed by no transaction). The golden " +
+			"pins that the '## What you can eat or drink' section shows the subject its OWN stew to consume but carries " +
+			"NO 'offer to buy it from them' peer line — buying a copy of food already in hand is pointless " +
+			"(gatherCoPresentPeerOffers gate). A regression would make the buy line reappear in the diff.",
+		build: peersHoldingSameFood,
+	},
+	{
 		name: "owner_at_worn_stall",
 		summary: "A stall owner (Ezekiel) stands at his own worn market stall (wear past the repair threshold, " +
 			"below degrade) carrying too few nails to mend it. The golden pins the '## Your stall' cue: the worn-boards " +
@@ -1069,6 +1079,59 @@ func smithBarteringAtTavern() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 			"skillet": {OutputItem: "skillet", OutputQty: 1, RateQty: 1, RatePerHours: 3, WholesalePrice: 5, RetailPrice: 10},
 			"nail":    {OutputItem: "nail", OutputQty: 1, RateQty: 1, RatePerHours: 1, WholesalePrice: 1, RetailPrice: 2},
 		},
+	}
+	return snap, ezekielID, nil
+}
+
+// peersHoldingSameFood is the LLM-138 degenerate-buy scene: two hungry NPCs
+// stand together, each already carrying the same food (stew). The live
+// hud-6a887a… case had each told ONLY to BUY the other's blueberries — the
+// degenerate cue that drove the hollow "I can offer thee blueberries" beats
+// backed by no transaction. The golden pins that the satiation section shows
+// the subject its OWN stock to eat but carries NO "offer to buy it from them"
+// peer line, because buying a copy of food already in hand is pointless (the
+// gatherCoPresentPeerOffers gate suppresses it).
+func peersHoldingSameFood() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		ezekielID = sim.ActorID("ezekiel")
+		lewisID   = sim.ActorID("lewis")
+		commons   = sim.StructureID("commons")
+		huddle    = sim.HuddleID("h1")
+	)
+	published := time.Date(2026, 6, 27, 11, 0, 0, 0, time.UTC)
+	ezekiel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Ezekiel Crane",
+		Role:              "blacksmith",
+		State:             sim.StateIdle,
+		InsideStructureID: commons,
+		CurrentHuddleID:   huddle,
+		Needs:             map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold},
+		Inventory:         map[sim.ItemKind]int{"stew": 3},
+		Acquaintances:     map[string]sim.Acquaintance{"Lewis Walker": {}},
+	}
+	lewis := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Lewis Walker",
+		Role:              "farmer",
+		State:             sim.StateIdle,
+		InsideStructureID: commons,
+		CurrentHuddleID:   huddle,
+		Needs:             map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold},
+		Inventory:         map[sim.ItemKind]int{"stew": 1},
+		Acquaintances:     map[string]sim.Acquaintance{"Ezekiel Crane": {}},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:    published,
+		NeedThresholds: sim.NeedThresholds{},
+		Actors:         map[sim.ActorID]*sim.ActorSnapshot{ezekielID: ezekiel, lewisID: lewis},
+		Structures: map[sim.StructureID]*sim.Structure{
+			commons: plainStructure(commons, "Village Commons"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{ezekielID: {}, lewisID: {}}},
+		},
+		ItemKinds: foodDrinkCatalog(),
 	}
 	return snap, ezekielID, nil
 }

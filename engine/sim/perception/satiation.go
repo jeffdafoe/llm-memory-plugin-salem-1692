@@ -494,6 +494,17 @@ func gatherCoPresentPeerOffers(snap *sim.Snapshot, actorID sim.ActorID, actorSna
 			if mag <= 0 {
 				continue
 			}
+			// Degenerate-buy gate (LLM-138): if the subject ALREADY carries this
+			// same item, buying the peer's copy is pointless — suppress the line.
+			// Live hud-6a887a…: two NPCs at a free blueberry bush, each already
+			// holding blueberries, were each told to BUY the other's blueberries —
+			// the only peer-food cue — so they narrated hollow "I can offer thee
+			// blueberries" beats backed by no transaction. A subject with the item
+			// in hand has no reason to buy more of it from someone beside them; its
+			// own-stock "consume to eat" line already covers the need.
+			if actorSnap.Inventory[kind] > 0 {
+				continue
+			}
 			// A purchase already in flight must not be re-urged: the cross-tick
 			// duplicate gate (ZBBS-WORK-391) rejects exactly the pay_with_item
 			// this line cues, so rendering it puts the prompt at war with the

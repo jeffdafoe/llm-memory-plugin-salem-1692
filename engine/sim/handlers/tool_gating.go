@@ -53,6 +53,17 @@ var laborResponseTools = map[string]struct{}{
 	"decline_work": {},
 }
 
+// giftResponseTools are the recipient-side gift-decision tools advertised ONLY
+// when the actor's perception carries a pending gift offered to them
+// (perception.PendingGiftsForMe — the standing IsGift ledger view). The gift
+// analog of payOfferResponseTools; same advertising-only posture (the tools
+// stay AvailabilityAvailable so a call that arrives is still dispatchable, and
+// the reused sim.AcceptPay / sim.DeclinePay stay authoritative). LLM-138.
+var giftResponseTools = map[string]struct{}{
+	"accept_gift":  {},
+	"decline_gift": {},
+}
+
 // solicitWorkToolName — the worker's offer-my-labor tool. Advertised ONLY when
 // perception offers it (payload.CanSolicitWork: a free AttrWorker carrier with
 // an audience). Reading the SAME signal the solicit_work affordance cue renders
@@ -95,6 +106,7 @@ var walkIncompatibleTools = map[string]struct{}{
 	"gather":        {},
 	"pay_with_item": {},
 	"offer_trade":   {}, // ZBBS-HOME-407: same substrate as pay_with_item (walk-in-flight reject)
+	"give":          {}, // LLM-138: GiveItems rejects on MoveIntent != nil (offer the gift when stationary)
 	"pay":           {}, // LLM-99: bare-coin pay re-registered; same walk-in-flight reject
 	"repair":        {}, // LLM-118: StartRepair rejects on MoveIntent != nil (mend at the stall)
 	"solicit_work":  {}, // LLM-26: SolicitWork rejects on MoveIntent != nil (offer when stationary)
@@ -278,6 +290,7 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 	offerRepair := payload.StallRepair != nil
 	hasLaborOffer := len(perception.PendingLaborOffers(payload)) > 0
 	canSolicitWork := payload.CanSolicitWork
+	hasGift := len(perception.PendingGiftsForMe(payload)) > 0
 
 	// Single pass over the Available set so each gated group is evaluated
 	// against its OWN condition. We deliberately avoid a "pending offer →
@@ -389,6 +402,13 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 		// the tools appear exactly when there's an offer to answer and never as
 		// noise + a labor_id-hallucination vector.
 		if _, gated := laborResponseTools[spec.Name]; gated && !hasLaborOffer {
+			continue
+		}
+		// gift-response consumer (LLM-138): advertise accept_gift/decline_gift only
+		// to a recipient with a pending gift (PendingGiftsForMe, the same standing
+		// view the "## Gifts offered to you" section renders the ledger_id from), so
+		// the tools appear exactly when there's a gift to answer and never as noise.
+		if _, gated := giftResponseTools[spec.Name]; gated && !hasGift {
 			continue
 		}
 		out = append(out, spec)

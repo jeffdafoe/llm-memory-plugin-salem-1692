@@ -238,6 +238,9 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// (conversation hud-6c849d…, ZBBS-HOME-424). renderTriage reinforces the
 	// same priority at the decision point.
 	renderPayOffers(&ephemeral, payOffers, nameOf, stockOf, p.RoomAlreadySoldOrderByLedger)
+	// LLM-138: a gift offered TO this actor is the same "someone wants my answer"
+	// decision class as a pay offer, so it renders right alongside.
+	renderGiftsForMe(&ephemeral, p.GiftsForMe)
 	// LLM-26: the employer's pending work-offer decisions sit alongside pay
 	// offers (both are "someone wants my answer"); the worker affordance cue
 	// follows so a free worker sees the option to offer their labor.
@@ -250,6 +253,10 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderPendingDeliveriesToMe(&ephemeral, p.PendingDeliveriesToMe, p.LocalDateUTC, p.RenderedAt)
 	renderPendingOffersFromMe(&ephemeral, p.PendingOffersFromMe)
 	renderRecentlyResolvedOffersFromMe(&ephemeral, p.RecentlyResolvedOffersFromMe)
+	// LLM-138: the giver-side gift counterparts — own gifts still standing, then
+	// own gifts just settled.
+	renderGiftsFromMe(&ephemeral, p.GiftsFromMe)
+	renderSettledGiftsFromMe(&ephemeral, p.SettledGiftsFromMe)
 	renderCountersAwaitingMyResponse(&ephemeral, p.CountersAwaitingMyResponse)
 	renderRecoveryOptions(&ephemeral, p.RecoveryOptions)
 	renderSatiation(&ephemeral, p.Satiation)

@@ -64,6 +64,10 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	// resolving can still settle the offer on any later tick.
 	p.PayOffersForMe = buildPayOffersForMe(snap, actorID)
 	p.RoomAlreadySoldOrderByLedger = buildRoomAlreadySold(snap, actorID, p.PayOffersForMe)
+	// LLM-138: the recipient-side gift decision view (gifts offered TO me),
+	// the gift counterpart to PayOffersForMe. Drives the "## Gifts offered to
+	// you" cue + the accept_gift / decline_gift tool gate.
+	p.GiftsForMe = buildGiftsForMe(snap, actorID, actorSnap)
 
 	// LLM-26: the standing labor views, scanned from snap.LaborLedger every
 	// tick (same posture as PayOffersForMe). LaborOffersForMe is the employer's
@@ -113,6 +117,11 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	p.PendingDeliveriesFromMe, p.PendingDeliveriesToMe = buildPendingOrderViews(snap, actorID)
 	p.PendingOffersFromMe = buildPendingOffersFromMe(snap, actorID, actorSnap)
 	p.RecentlyResolvedOffersFromMe = buildRecentlyResolvedOffersFromMe(snap, actorID, actorSnap)
+	// LLM-138: the giver-side gift views — own pending gifts (standing) + own
+	// recently-settled gifts (resolution) — gift counterparts to the two lines
+	// above.
+	p.GiftsFromMe = buildGiftsFromMe(snap, actorID, actorSnap)
+	p.SettledGiftsFromMe = buildSettledGiftsFromMe(snap, actorID, actorSnap)
 	p.CountersAwaitingMyResponse = buildCountersAwaitingMyResponse(snap, actorID, actorSnap)
 	p.LocalDateUTC = snap.LocalDateUTC // world "today" for the order-book date split (ZBBS-HOME-403)
 	p.RenderedAt = snap.PublishedAt    // render instant for the order-expiry clause (LLM-106)
@@ -2096,6 +2105,9 @@ func buildRecentlyResolvedOffersFromMe(snap *sim.Snapshot, subject sim.ActorID, 
 		if e == nil || e.BuyerID != subject {
 			continue
 		}
+		if e.IsGift {
+			continue // the subject's settled gifts render via buildSettledGiftsFromMe (LLM-138)
+		}
 		if e.State == sim.PayLedgerStatePending || e.State == sim.PayLedgerStateCountered {
 			continue
 		}
@@ -2270,6 +2282,9 @@ func buildPendingOffersFromMe(snap *sim.Snapshot, subject sim.ActorID, subjectSn
 		if e.BuyerID != subject {
 			continue
 		}
+		if e.IsGift {
+			continue // the subject's own pending gifts render via buildGiftsFromMe (LLM-138)
+		}
 		ids = append(ids, id)
 	}
 	if len(ids) == 0 {
@@ -2411,6 +2426,9 @@ func buildPayOffersForMe(snap *sim.Snapshot, subject sim.ActorID) []sim.PayOffer
 		}
 		if e.SellerID != subject {
 			continue
+		}
+		if e.IsGift {
+			continue // gifts render in the LLM-138 gift lane (buildGiftsForMe), not here
 		}
 		ids = append(ids, id)
 	}

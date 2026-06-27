@@ -214,10 +214,17 @@ const (
 	InteractionDeclinedPay   InteractionKind = "declined_pay"
 	InteractionCounteredBy   InteractionKind = "countered_by"
 	InteractionCountered     InteractionKind = "countered"
-	InteractionServed        InteractionKind = "served"
-	InteractionServedBy      InteractionKind = "served_by"
-	InteractionDelivered     InteractionKind = "delivered"
-	InteractionReceived      InteractionKind = "received"
+	// InteractionGave / InteractionReceivedGift record a one-way gift
+	// (LLM-138): the giver hands goods to a co-present recipient for
+	// nothing in return. Gave is written giver→recipient, ReceivedGift
+	// recipient→giver — the gift counterpart to the Paid/PaidBy pair (a
+	// gift has no coin or return-goods leg, so Paid would mislabel it).
+	InteractionGave         InteractionKind = "gave"
+	InteractionReceivedGift InteractionKind = "received_gift"
+	InteractionServed       InteractionKind = "served"
+	InteractionServedBy     InteractionKind = "served_by"
+	InteractionDelivered    InteractionKind = "delivered"
+	InteractionReceived     InteractionKind = "received"
 )
 
 // MaxSalientFactTextLen caps per-fact Text at write time so a single
