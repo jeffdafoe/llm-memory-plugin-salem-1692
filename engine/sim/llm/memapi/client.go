@@ -356,6 +356,67 @@ func (c *Client) SearchMemory(ctx context.Context, namespace, query string, limi
 	return hits, nil
 }
 
+// --- FetchRateLimits ------------------------------------------------------
+
+// RateLimit is one agent's effective rate-limit config as resolved by
+// memory-api (LLM-156): the global config-table defaults merged with the
+// agent's per-agent override. The engine paces per-agent tick emission to stay
+// under Limit within WindowMS, so a shared VA never bursts into its CooldownMS
+// lockout. Window/cooldown are milliseconds — the unit the limiter enforces, so
+// the engine never paces against a rounded second.
+type RateLimit struct {
+	Limit      int
+	WindowMS   int
+	CooldownMS int
+}
+
+// rateLimitRequest / rateLimitResponse mirror POST /v1/agent/rate-limit.
+type rateLimitRequest struct {
+	Agents []string `json:"agents"`
+}
+
+type rateLimitWire struct {
+	Limit      int `json:"limit"`
+	WindowMS   int `json:"window_ms"`
+	CooldownMS int `json:"cooldown_ms"`
+}
+
+type rateLimitResponse struct {
+	Limits map[string]rateLimitWire `json:"limits"`
+}
+
+// FetchRateLimits resolves the effective per-agent rate limit for each VA slug
+// via POST /v1/agent/rate-limit. Called once at engine startup so the reactor
+// can pace per-agent tick emission under the cap memory-api enforces (LLM-156).
+// Returns a map keyed by slug; slugs the server omits are simply absent (the
+// caller leaves them ungated). An empty input returns an empty map, no call.
+func (c *Client) FetchRateLimits(ctx context.Context, agents []string) (map[string]RateLimit, error) {
+	if len(agents) == 0 {
+		return map[string]RateLimit{}, nil
+	}
+	body, err := json.Marshal(rateLimitRequest{Agents: agents})
+	if err != nil {
+		return nil, fmt.Errorf("memapi: marshal rate-limit request: %w", err)
+	}
+	respBytes, err := c.post(ctx, "/v1/agent/rate-limit", body)
+	if err != nil {
+		return nil, fmt.Errorf("memapi: rate-limit: %w", err)
+	}
+	var resp rateLimitResponse
+	if err := json.Unmarshal(respBytes, &resp); err != nil {
+		return nil, fmt.Errorf("memapi: parse rate-limit response: %w", err)
+	}
+	out := make(map[string]RateLimit, len(resp.Limits))
+	for slug, e := range resp.Limits {
+		out[slug] = RateLimit{
+			Limit:      e.Limit,
+			WindowMS:   e.WindowMS,
+			CooldownMS: e.CooldownMS,
+		}
+	}
+	return out, nil
+}
+
 // --- HTTP plumbing --------------------------------------------------------
 
 // post issues a POST to baseURL+path with the given JSON body. Returns

@@ -235,9 +235,13 @@ func main() {
 		simpush.NewHTTPPoster(llmMemoryURL, engineKey),
 	)
 
+	// LLM-156: one memapi client, shared by the runtime's LLMClient slot and the
+	// startup per-agent rate-limit query (installAgentRateLimits below).
+	llmClient := memapi.NewClient(llmMemoryURL, engineKey)
+
 	rt := runtime{
 		World:     world,
-		LLMClient: memapi.NewClient(llmMemoryURL, engineKey),
+		LLMClient: llmClient,
 		Save: func(ctx context.Context, cp *sim.CheckpointSnapshot) error {
 			return pg.SaveWorld(ctx, repo, cp)
 		},
@@ -268,10 +272,117 @@ func main() {
 		close(stop)
 	}()
 
+	// LLM-156: install per-agent tick caps before run() starts the world loop,
+	// so the reactor paces a shared VA's pool under its memory-api rate limit
+	// instead of bursting into the cooldown. Startup-only; a fetch failure
+	// installs conservative fallback pacing for the shared VAs (not unthrottled).
+	rlCtx, rlCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	installAgentRateLimits(rlCtx, world, llmClient)
+	rlCancel()
+
 	if err := run(rt, stop); err != nil {
 		log.Fatalf("engine: %v", err)
 	}
 	log.Println("engine: stopped")
+}
+
+// agentRateCapHeadroom scales memory-api's effective per-agent limit down to
+// the cap the reactor paces against (LLM-156). The engine emits at most Cap
+// ticks per window for a shared VA; memory-api trips one tick PAST its limit.
+// Pacing strictly under the limit (rather than at it) absorbs the slack between
+// the engine's emit-time window and memory-api's call-time window — a tick is
+// counted server-side a beat after it's emitted, and the worker pool's small
+// buffer lets a few bunch — so the server cooldown effectively never fires for
+// engine traffic.
+const agentRateCapHeadroom = 0.8
+
+// fallbackAgentLimit / fallbackAgentWindow are the conservative pacing applied
+// to the shared VAs when the startup rate-limit query FAILS — matching
+// memory-api's documented global default (10 calls / 60s). Pacing the shared
+// slugs at headroom under this beats reverting to the un-paced behavior that
+// drops the whole pool into a cooldown; a drifted value here only bites on the
+// rare boot where the query itself fails.
+const (
+	fallbackAgentLimit  = 10
+	fallbackAgentWindow = time.Minute
+)
+
+// pacedCap scales a memory-api limit down to the cap the reactor paces against,
+// never below 1.
+func pacedCap(limit int) int {
+	c := int(float64(limit) * agentRateCapHeadroom)
+	if c < 1 {
+		c = 1
+	}
+	return c
+}
+
+// sharedVASlugs are the switchboard VAs that aggregate many NPCs under one
+// agent-name — the only slugs the per-agent pacing actually protects (a
+// dedicated 1:1 VA can't burst a shared limit). Always queried, even when no
+// actor of the slug exists at boot (visitors spawn on demand), so the slug is
+// already gated the moment its first NPC ticks.
+func sharedVASlugs() []string {
+	return []string{sim.VendorAgentName, sim.VisitorAgentName, sim.GenericAgentName}
+}
+
+// installAgentRateLimits queries memory-api for the effective rate limit of the
+// VA slugs the engine drives and installs per-agent tick caps on the world
+// (LLM-156). MUST be called before the world loop starts (the write is
+// unsynchronized — see World.SetAgentRateLimits). On a fetch failure it falls
+// back to conservative pacing for the shared VAs rather than leaving the whole
+// process un-paced for one transient boot-time API blip.
+func installAgentRateLimits(ctx context.Context, world *sim.World, client *memapi.Client) {
+	slugs := agentSlugsToQuery(world)
+	fetched, err := client.FetchRateLimits(ctx, slugs)
+	if err != nil {
+		limits := make(map[string]sim.AgentRateLimit, len(sharedVASlugs()))
+		for _, slug := range sharedVASlugs() {
+			limits[slug] = sim.AgentRateLimit{Cap: pacedCap(fallbackAgentLimit), Window: fallbackAgentWindow}
+		}
+		world.SetAgentRateLimits(limits)
+		log.Printf("engine: agent rate-limit fetch failed (%v); pacing shared VAs at conservative fallback %d/%s",
+			err, pacedCap(fallbackAgentLimit), fallbackAgentWindow)
+		return
+	}
+	limits := make(map[string]sim.AgentRateLimit, len(fetched))
+	for slug, rl := range fetched {
+		if rl.Limit <= 0 {
+			continue
+		}
+		window := time.Duration(rl.WindowMS) * time.Millisecond
+		if window <= 0 {
+			window = fallbackAgentWindow
+		}
+		limits[slug] = sim.AgentRateLimit{Cap: pacedCap(rl.Limit), Window: window}
+	}
+	world.SetAgentRateLimits(limits)
+	log.Printf("engine: installed per-agent tick caps for %d of %d VA(s) (%.0f%% headroom under the memory-api limit)",
+		len(limits), len(slugs), agentRateCapHeadroom*100)
+}
+
+// agentSlugsToQuery is the union of the shared VAs and every distinct non-empty
+// Actor.LLMAgent present at boot — the set the startup rate-limit query resolves.
+func agentSlugsToQuery(world *sim.World) []string {
+	seen := make(map[string]struct{})
+	var slugs []string
+	add := func(slug string) {
+		if slug == "" {
+			return
+		}
+		if _, ok := seen[slug]; ok {
+			return
+		}
+		seen[slug] = struct{}{}
+		slugs = append(slugs, slug)
+	}
+	for _, slug := range sharedVASlugs() {
+		add(slug)
+	}
+	for _, a := range world.Actors {
+		add(a.LLMAgent)
+	}
+	return slugs
 }
 
 // run wires the full runtime onto an already-loaded world, operates it until

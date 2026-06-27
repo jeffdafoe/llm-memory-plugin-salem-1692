@@ -1130,6 +1130,133 @@ func recordReactorTick(a *Actor, now time.Time, cap int) {
 	a.RecentReactorTicks.Push(now)
 }
 
+// AgentRateLimit is one shared-VA slug's per-window tick cap, as paced by the
+// reactor (LLM-156). Cap is the number of reactor ticks allowed across all
+// actors sharing the slug within Window. Built at startup from memory-api's
+// effective per-agent limit (with headroom) and installed via
+// SetAgentRateLimits.
+type AgentRateLimit struct {
+	Cap    int
+	Window time.Duration
+}
+
+// SetAgentRateLimits installs the per-shared-VA tick caps the reactor paces
+// against (LLM-156). Called once at engine startup, before the world loop
+// starts, so no concurrent reader races the write. Entries with an empty slug,
+// a non-positive cap, or a non-positive window are dropped (an agent without a
+// usable cap is simply ungated). Passing an empty map clears all pacing.
+func (w *World) SetAgentRateLimits(limits map[string]AgentRateLimit) {
+	if len(limits) == 0 {
+		w.agentRateLimits = nil
+		return
+	}
+	m := make(map[string]AgentRateLimit, len(limits))
+	for slug, rl := range limits {
+		if slug == "" || rl.Cap <= 0 || rl.Window <= 0 {
+			continue
+		}
+		m[slug] = rl
+	}
+	w.agentRateLimits = m
+}
+
+// agentRateCapFor returns the active cap for a slug, or ok=false when the slug
+// is ungated (no caps installed, empty slug, or no usable entry). The single
+// lookup point for "is this agent paced?" — fail-open is the default.
+func (w *World) agentRateCapFor(slug string) (AgentRateLimit, bool) {
+	if w.agentRateLimits == nil || slug == "" {
+		return AgentRateLimit{}, false
+	}
+	rl, ok := w.agentRateLimits[slug]
+	if !ok || rl.Cap <= 0 {
+		return AgentRateLimit{}, false
+	}
+	return rl, true
+}
+
+// checkAgentRateGate mirrors checkRateGate but counts ticks aggregated across
+// EVERY actor sharing the VA slug (the per-agent ring), so a shared VA paces as
+// one bucket — the whole point of LLM-156. Returns true when the agent is below
+// its cap, or ungated. An ungated agent (no installed cap) always passes.
+func checkAgentRateGate(w *World, slug string, now time.Time) bool {
+	rl, ok := w.agentRateCapFor(slug)
+	if !ok {
+		return true
+	}
+	ring := w.agentRecentTicks[slug]
+	if ring == nil {
+		return true
+	}
+	cutoff := now.Add(-rl.Window)
+	count := 0
+	for _, t := range ring.Snapshot() {
+		if t.After(cutoff) {
+			count++
+		}
+	}
+	return count < rl.Cap
+}
+
+// nextAgentRateAllowedAt mirrors nextRateAllowedAt for the per-agent ring: the
+// earliest time the agent's in-window count drops back below the cap. Returns
+// now when the slug is ungated or not actually at the cap.
+func nextAgentRateAllowedAt(w *World, slug string, now time.Time) time.Time {
+	rl, ok := w.agentRateCapFor(slug)
+	if !ok {
+		return now
+	}
+	ring := w.agentRecentTicks[slug]
+	if ring == nil {
+		return now
+	}
+	ticks := ring.Snapshot()
+	cutoff := now.Add(-rl.Window)
+	inWindow := ticks[:0]
+	for _, t := range ticks {
+		if t.After(cutoff) {
+			inWindow = append(inWindow, t)
+		}
+	}
+	if len(inWindow) < rl.Cap {
+		return now
+	}
+	idx := len(inWindow) - rl.Cap
+	return inWindow[idx].Add(rl.Window).Add(rateBackoffJitter())
+}
+
+// recordAgentTick appends now to the agent's ring at emit time, lazily
+// allocating the per-slug ring and the map. Capacity is sized to comfortably
+// exceed the cap (like recordReactorTick) so the window count stays exact even
+// when many actors of one slug tick inside a single window. A no-op for an
+// ungated slug — no ring is allocated for an agent that isn't paced.
+func recordAgentTick(w *World, slug string, now time.Time) {
+	rl, ok := w.agentRateCapFor(slug)
+	if !ok {
+		return
+	}
+	capacity := rl.Cap * 2
+	if capacity < defaultRecentReactorTicksCap {
+		capacity = defaultRecentReactorTicksCap
+	}
+	if w.agentRecentTicks == nil {
+		w.agentRecentTicks = make(map[string]*RingBuffer[time.Time])
+	}
+	ring := w.agentRecentTicks[slug]
+	if ring == nil {
+		ring = NewRingBuffer[time.Time](capacity)
+		w.agentRecentTicks[slug] = ring
+	} else if ring.Cap() < capacity {
+		old := ring.Snapshot()
+		rb := NewRingBuffer[time.Time](capacity)
+		for _, t := range old {
+			rb.Push(t)
+		}
+		ring = rb
+		w.agentRecentTicks[slug] = ring
+	}
+	ring.Push(now)
+}
+
 // TickAttemptID is the generation identifier for a reactor tick attempt.
 // It disambiguates stale completions: CompleteReactorTick is honored only
 // when its AttemptID matches the actor's current TickAttemptID, so a late-

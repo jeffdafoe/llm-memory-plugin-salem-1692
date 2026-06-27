@@ -552,6 +552,50 @@ func EvaluateReactors(now time.Time) Command {
 					continue
 				}
 
+				// Per-agent rate gate (LLM-156). The per-actor gate above bounds
+				// ONE NPC; this bounds the SHARED VA slug backing many NPCs
+				// (salem-vendor). memory-api's rate limit is keyed per agent-name,
+				// so without pacing the pool's aggregate ticks burst past the cap
+				// and drop the whole pool into a silent cooldown. The engine paces
+				// per-agent emission to stay under that cap.
+				//
+				// Force bypasses, like the per-actor gate: an admin nudge or a
+				// red-need emergency must fire even when the slug is saturated by
+				// decorative chatter. Forced ticks are still RECORDED at emit
+				// (recordAgentTick below), so they consume the agent's budget and
+				// the gate paces the remaining NON-forced ticks accordingly. The
+				// accepted residual is that a rare forced BURST can still reach
+				// memory-api's limit — the server cooldown is the backstop, and the
+				// headroom (engine paces at 80% of the limit) absorbs the common case.
+				//
+				// Bounded-wait-then-shed: a cycle that can't win an agent slot before
+				// it ages out (warrantCycleStale) is dropped rather than deferred
+				// forever — the conversational moment is gone, and unbounded deferral
+				// on a saturated shared slug would pile up.
+				if !hasForcedWarrant(actor.Warrants) &&
+					!checkAgentRateGate(w, actor.LLMAgent, now) {
+					shed := warrantCycleStale(actor, now, w.Settings)
+					if shed {
+						clearWarrant(actor)
+					} else {
+						next := nextAgentRateAllowedAt(w, actor.LLMAgent, now)
+						actor.WarrantDueAt = &next
+					}
+					if w.repo.TickTelemetry != nil {
+						detail := map[string]string{"gate": "agent_rate"}
+						if shed {
+							detail["outcome"] = "shed"
+						}
+						w.repo.TickTelemetry.WriteTickTelemetry(TickTelemetryRecord{
+							At:      now,
+							ActorID: actor.ID,
+							Kind:    "deferred",
+							Detail:  detail,
+						})
+					}
+					continue
+				}
+
 				// Degeneracy Stage-2 throttle (LLM-94). A throttled actor — one
 				// the observer has watched burn an obviously-futile tick every
 				// cadence cycle past the Stage-2 threshold — has its AMBIENT-only
@@ -633,6 +677,10 @@ func EvaluateReactors(now time.Time) Command {
 				// resolves it under the terminal-status policy.
 				actor.inFlightSourceKeys = sourceKeySet(warrantsCopy)
 				recordReactorTick(actor, now, rateCap)
+				// LLM-156: count this tick toward the shared-VA's per-agent window
+				// too, so the slug's aggregate pacing sees it. No-op for an
+				// ungated slug.
+				recordAgentTick(w, actor.LLMAgent, now)
 				// ZBBS-HOME-329 (#6): stamp the human-facing "last ticked"
 				// marker at the single tick-emit chokepoint, so the umbilical /
 				// admin last_agent_tick_at reflects reality instead of freezing

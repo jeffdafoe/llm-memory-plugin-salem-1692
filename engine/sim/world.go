@@ -684,6 +684,23 @@ type World struct {
 
 	// ActiveRoutes holds the in-flight per-NPC scheduled-route state
 	// machines (lamplighter / washerwoman / town_crier). Keyed by the
+	// agentRateLimits is the per-shared-VA tick-rate cap the reactor paces
+	// emission against (LLM-156). A shared VA slug (salem-vendor) backs many
+	// NPCs, but the memory-api rate limit is keyed per agent-NAME, so without
+	// pacing the pool's aggregate ticks burst past the cap and drop the whole
+	// pool into a silent cooldown. Keyed by Actor.LLMAgent; a slug absent here
+	// is ungated (fail-open — never worse than no pacing). Populated once at
+	// startup from the /v1/agent/rate-limit query (SetAgentRateLimits); never
+	// mutated at runtime. World-goroutine-only, never checkpointed — a fresh
+	// process re-queries at boot and an empty window post-restart is correct.
+	agentRateLimits map[string]AgentRateLimit
+
+	// agentRecentTicks is the per-shared-VA ring of recent reactor-tick emit
+	// times — the counting substrate for the agentRateLimits gate, aggregating
+	// ticks across every actor sharing the slug. Lazy-allocated on first
+	// record; world-goroutine-only; never checkpointed (LLM-156).
+	agentRecentTicks map[string]*RingBuffer[time.Time]
+
 	// running NPC's ActorID; nil-readable as empty (lazy-allocated on
 	// first StartNPCRoute). The cascade ActorArrived subscriber consults
 	// this map to advance an arrived actor's route — most arrivals match

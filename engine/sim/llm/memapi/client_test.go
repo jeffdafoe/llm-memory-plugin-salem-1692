@@ -904,6 +904,55 @@ func TestComplete_NullToolCallInputNormalizedToEmptyObject(t *testing.T) {
 	}
 }
 
+func TestFetchRateLimits_ParsesEffectiveLimits(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.server.Close()
+	ts.pushResponse(serverResponse{status: 200, body: `{"limits":{` +
+		`"salem-vendor":{"limit":30,"window_ms":60000,"cooldown_ms":60000},` +
+		`"salem-visitor":{"limit":10,"window_ms":60000,"cooldown_ms":300000}}}`})
+	c := newTestClient(t, ts)
+
+	got, err := c.FetchRateLimits(context.Background(), []string{"salem-vendor", "salem-visitor"})
+	if err != nil {
+		t.Fatalf("FetchRateLimits: %v", err)
+	}
+	if got["salem-vendor"] != (RateLimit{Limit: 30, WindowMS: 60000, CooldownMS: 60000}) {
+		t.Errorf("salem-vendor = %+v", got["salem-vendor"])
+	}
+	if got["salem-visitor"] != (RateLimit{Limit: 10, WindowMS: 60000, CooldownMS: 300000}) {
+		t.Errorf("salem-visitor = %+v", got["salem-visitor"])
+	}
+
+	rec := ts.recorded()
+	if len(rec) != 1 || rec[0].Path != "/v1/agent/rate-limit" {
+		t.Fatalf("expected one POST to /v1/agent/rate-limit; got %+v", rec)
+	}
+	var sent rateLimitRequest
+	if err := json.Unmarshal(rec[0].RawBody, &sent); err != nil {
+		t.Fatalf("unmarshal sent body: %v", err)
+	}
+	if len(sent.Agents) != 2 {
+		t.Errorf("request carried %d agents, want 2", len(sent.Agents))
+	}
+}
+
+func TestFetchRateLimits_EmptyInputMakesNoCall(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.server.Close()
+	c := newTestClient(t, ts)
+
+	got, err := c.FetchRateLimits(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("FetchRateLimits(nil): %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected empty map, got %+v", got)
+	}
+	if len(ts.recorded()) != 0 {
+		t.Error("empty input should make no HTTP call")
+	}
+}
+
 // _ "var" sinks to keep imports referenced by retired unit-level
 // scaffolding around for future tests.
 var _ = fmt.Sprintf

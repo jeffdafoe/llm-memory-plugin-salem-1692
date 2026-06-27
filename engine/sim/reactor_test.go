@@ -1145,6 +1145,142 @@ func TestEvaluateReactors_RateGateDelaysInsteadOfDropping(t *testing.T) {
 	})
 }
 
+// TestEvaluateReactors_AgentRateGateDefersSecondActorOfSharedSlug: two NPCs
+// share one VA slug (salem-vendor) with a per-agent cap of 1. Both come due in
+// the same scan; the gate lets exactly one emit and defers the other — the
+// warrant survives, just delayed (LLM-156).
+func TestEvaluateReactors_AgentRateGateDefersSecondActorOfSharedSlug(t *testing.T) {
+	w, cancel := buildReactorTestWorld(t)
+	defer cancel()
+
+	now := time.Now().UTC()
+
+	_, _ = w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			world.SetAgentRateLimits(map[string]sim.AgentRateLimit{
+				"salem-vendor": {Cap: 1, Window: time.Minute},
+			})
+			for _, id := range []sim.ActorID{"alice", "bob"} {
+				a := world.Actors[id]
+				a.Kind = sim.KindNPCShared
+				a.LLMAgent = "salem-vendor"
+				since := now.Add(-time.Millisecond)
+				a.WarrantedSince = &since
+				due := now.Add(-time.Millisecond)
+				a.WarrantDueAt = &due
+				a.Warrants = []sim.WarrantMeta{
+					{Reason: sim.BasicWarrantReason{K: sim.WarrantKindPCSpoke}},
+				}
+			}
+			return nil, nil
+		},
+	})
+
+	var emitted []*sim.ReactorTickDue
+	_, _ = w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			world.Subscribe(sim.SubscriberFunc(func(_ *sim.World, evt sim.Event) {
+				if e, ok := evt.(*sim.ReactorTickDue); ok {
+					emitted = append(emitted, e)
+				}
+			}))
+			return nil, nil
+		},
+	})
+
+	_, _ = w.Send(sim.EvaluateReactors(now))
+
+	if len(emitted) != 1 {
+		t.Fatalf("expected exactly 1 emit (shared-slug cap 1); got %d", len(emitted))
+	}
+	// The actor that did NOT emit must have been deferred, not dropped.
+	deferred := sim.ActorID("bob")
+	if emitted[0].ActorID == "bob" {
+		deferred = "alice"
+	}
+	inspectActor(t, w, deferred, func(a *sim.Actor) {
+		if a.WarrantedSince == nil {
+			t.Error("deferred actor's warrant was cleared (should survive)")
+		}
+		if a.WarrantDueAt == nil || !a.WarrantDueAt.After(now) {
+			t.Errorf("deferred actor's WarrantDueAt not pushed forward: %v", a.WarrantDueAt)
+		}
+	})
+}
+
+// TestEvaluateReactors_AgentRateGateShedsStaleWarrant: the "then shed" half of
+// bounded-wait-then-shed. A shared slug is already at its cap (a filler NPC
+// ticked), and a second NPC's warrant cycle has aged past MaxWarrantAge while
+// waiting — it is dropped rather than deferred forever (LLM-156).
+func TestEvaluateReactors_AgentRateGateShedsStaleWarrant(t *testing.T) {
+	w, cancel := buildReactorTestWorld(t)
+	defer cancel()
+
+	now := time.Now().UTC()
+
+	// Phase 1: alice ticks, filling the salem-vendor ring to its cap of 1.
+	_, _ = w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			world.SetAgentRateLimits(map[string]sim.AgentRateLimit{
+				"salem-vendor": {Cap: 1, Window: time.Minute},
+			})
+			a := world.Actors["alice"]
+			a.Kind = sim.KindNPCShared
+			a.LLMAgent = "salem-vendor"
+			since := now.Add(-time.Millisecond)
+			a.WarrantedSince = &since
+			due := now.Add(-time.Millisecond)
+			a.WarrantDueAt = &due
+			a.Warrants = []sim.WarrantMeta{
+				{Reason: sim.BasicWarrantReason{K: sim.WarrantKindPCSpoke}},
+			}
+			return nil, nil
+		},
+	})
+	_, _ = w.Send(sim.EvaluateReactors(now))
+
+	// Phase 2: bob comes due on the same saturated slug, but his warrant cycle
+	// began 200s ago — past the 90s default MaxWarrantAge — so he is shed.
+	_, _ = w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			b := world.Actors["bob"]
+			b.Kind = sim.KindNPCShared
+			b.LLMAgent = "salem-vendor"
+			stale := now.Add(-200 * time.Second)
+			b.WarrantedSince = &stale
+			due := now.Add(-time.Millisecond)
+			b.WarrantDueAt = &due
+			b.Warrants = []sim.WarrantMeta{
+				{Reason: sim.BasicWarrantReason{K: sim.WarrantKindPCSpoke}},
+			}
+			return nil, nil
+		},
+	})
+
+	var emitted []*sim.ReactorTickDue
+	_, _ = w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			world.Subscribe(sim.SubscriberFunc(func(_ *sim.World, evt sim.Event) {
+				if e, ok := evt.(*sim.ReactorTickDue); ok {
+					emitted = append(emitted, e)
+				}
+			}))
+			return nil, nil
+		},
+	})
+
+	_, _ = w.Send(sim.EvaluateReactors(now))
+
+	if len(emitted) != 0 {
+		t.Fatalf("expected no emit (slug saturated); got %d", len(emitted))
+	}
+	inspectActor(t, w, "bob", func(a *sim.Actor) {
+		if a.WarrantedSince != nil {
+			t.Error("stale warrant on a saturated slug should be shed (cleared), but it survived")
+		}
+	})
+}
+
 // TestCompleteReactorTick_MatchingAttemptIDClears: completion command
 // with the right AttemptID clears in-flight state.
 func TestCompleteReactorTick_MatchingAttemptIDClears(t *testing.T) {
