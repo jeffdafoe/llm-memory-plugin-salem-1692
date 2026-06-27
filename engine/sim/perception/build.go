@@ -108,9 +108,17 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	// IS present the affordance (CanSolicitWork) already covers "offer your labor to
 	// them"; when none is, surface the town's businesses by their resolvable names
 	// every tick so move_to actually has a target it can hit.
+	//
+	// "idle" is load-bearing: a populated SeekWorkPlaces IS the render-side directive
+	// bit (it suppresses the owed-reply nag and swaps the triage coda to "go now"), so
+	// it must mean the worker is actually free to leave. Exclude an in-flight walk or
+	// a mid source-activity — those are their own coda states, and the directive must
+	// not fire (or drop the reply nag) while the worker is already committed to one.
 	if subjectIsWorker(actorSnap) &&
 		p.Actor.Coins == 0 &&
 		p.Laboring == nil &&
+		p.Actor.InFlightMove == nil &&
+		p.Actor.InFlightSourceActivity == nil &&
 		!subjectHasPendingLaborOffer(snap, actorID) &&
 		!hasSolicitableAudience(snap, actorSnap, p.Surroundings) {
 		p.SeekWorkPlaces = buildSeekWorkPlaces(snap)

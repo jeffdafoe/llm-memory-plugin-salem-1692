@@ -100,6 +100,14 @@ func TestBuild_SeekWorkPlacesStandingForBrokeWorker(t *testing.T) {
 	if p := Build(mk(actorSnap(sim.StateIdle, "", 0, 0, "", 0)), "lewis", nil); len(p.SeekWorkPlaces) != 0 {
 		t.Errorf("non-worker: SeekWorkPlaces = %v, want empty", p.SeekWorkPlaces)
 	}
+
+	// A broke worker mid source-activity is NOT free to leave → no directory, so the
+	// directive bit stays off and the owed-reply nag is preserved (LLM-160 review).
+	busy := worker(0)
+	busy.SourceActivityKind = sim.SourceActivityHarvest
+	if p := Build(mk(busy), "lewis", nil); len(p.SeekWorkPlaces) != 0 {
+		t.Errorf("broke worker mid source-activity: SeekWorkPlaces = %v, want empty", p.SeekWorkPlaces)
+	}
 }
 
 func TestRenderSeekWorkPlaces(t *testing.T) {
