@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
@@ -893,6 +894,42 @@ func timeOfDayProse(minute int) string {
 	}
 }
 
+// deadEndClause renders the at-location dead-end sentence for the place the
+// actor is physically at (LLM-154), or "" when the place can serve them. The
+// place is named from the same SurroundingsView fields the location line uses
+// (StructureName inside, NearbyStructureName outdoors), so the clause and the
+// "You are ..." line can never name different places. Sentence-start, so the
+// mid-clause article from WithDefiniteArticle is capitalized ("the Tavern" →
+// "The Tavern").
+func deadEndClause(s SurroundingsView) string {
+	if s.LocationDeadEnd != DeadEndShutBusiness {
+		return ""
+	}
+	name := s.StructureName
+	if name == "" {
+		name = s.NearbyStructureName
+	}
+	if name == "" {
+		return ""
+	}
+	place := capitalizeFirst(sim.WithDefiniteArticle(sanitizeInline(name)))
+	return place + " is shut — no one is tending it."
+}
+
+// capitalizeFirst upper-cases the leading letter of a mid-clause label so it can
+// open a sentence — WithDefiniteArticle yields "the Tavern", and a sentence-
+// start caller (the LLM-154 shut-business clause) needs "The Tavern". Rune-aware
+// so a non-ASCII leading character in a display name is upper-cased, not mangled
+// byte-wise; empty in, empty out.
+func capitalizeFirst(s string) string {
+	r := []rune(s)
+	if len(r) == 0 {
+		return ""
+	}
+	r[0] = unicode.ToUpper(r[0])
+	return string(r)
+}
+
 func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 	b.WriteString("## Around you\n")
 
@@ -965,6 +1002,16 @@ func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 		// to a solo task or moves to find company rather than speaking to an empty
 		// room. Echoes the speak gate's wording ("no one here to hear you").
 		fmt.Fprintf(b, "You are %s, with no one else here to hear you speak.\n", location)
+	}
+
+	// LLM-154: a live dead-end at the actor's current location, stated plainly on
+	// its own line so a weak model isn't left to infer "closed" from "the keeper
+	// is asleep". Branch-independent (fires whether the actor is huddled, has
+	// company, or is alone) and named from the same fields the location line uses,
+	// so the two can't name different places.
+	if clause := deadEndClause(s); clause != "" {
+		b.WriteString(clause)
+		b.WriteString("\n")
 	}
 
 	// Time of day as ambient prose (ZBBS-HOME-351). v2 rendered no clock at all,

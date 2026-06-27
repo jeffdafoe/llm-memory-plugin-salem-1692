@@ -859,7 +859,9 @@ func buildSurroundings(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnap
 		s.GatherableSource = source
 		s.GatherableNoun = itemPlural(snap, item)
 	}
+	var curStructureID sim.StructureID
 	if a.InsideStructureID != "" {
+		curStructureID = a.InsideStructureID
 		if st := snap.Structures[a.InsideStructureID]; st != nil {
 			s.StructureName = st.DisplayName
 		}
@@ -867,7 +869,14 @@ func buildSurroundings(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnap
 		// Outdoors: name the structure whose loiter slot the actor is standing
 		// at (a keeper at their own stall, a customer outside a shop), so Render
 		// can say "outdoors by the General Store" rather than dumping coords.
-		s.NearbyStructureName = findLoiterStructure(snap, a)
+		s.NearbyStructureName, curStructureID = findLoiterStructure(snap, a)
+	}
+	// LLM-154: a live dead-end read on the place the actor is physically at —
+	// e.g. standing at a business no keeper is tending. Recomputed cold each tick
+	// (not an arrival-event memory), so it fires the moment they arrive and
+	// persists while they linger, robust to a failed/rerun arrival tick.
+	if isShutBusiness(snap, a, curStructureID) {
+		s.LocationDeadEnd = DeadEndShutBusiness
 	}
 	if a.CurrentHuddleID != "" {
 		if h := snap.Huddles[a.CurrentHuddleID]; h != nil {
@@ -1080,15 +1089,16 @@ func findGatherableCue(snap *sim.Snapshot, subjectID sim.ActorID, a *sim.ActorSn
 	return sim.ItemKind(strings.TrimSpace(string(row.GatherItem))), obj.DisplayName, true
 }
 
-// findLoiterStructure returns the DisplayName of the structure whose loiter
-// slot the subject is standing at (nearest within sim.LoiterAttributionTiles,
-// Chebyshev), or "" when none. A structure shares its id with a VillageObject
-// (the placement), so the loiter pin is that object's tile anchor plus its
-// loiter offset — the same asset-free derivation findGatherableCue uses for
-// gatherable props. Used only for the OUTDOORS position phrasing; when the
-// actor is genuinely inside a structure the caller reads InsideStructureID
+// findLoiterStructure returns the DisplayName and id of the structure whose
+// loiter slot the subject is standing at (nearest within
+// sim.LoiterAttributionTiles, Chebyshev), or ("", "") when none. A structure
+// shares its id with a VillageObject (the placement), so the loiter pin is that
+// object's tile anchor plus its loiter offset — the same asset-free derivation
+// findGatherableCue uses for gatherable props. The name drives the OUTDOORS
+// position phrasing; the id is what the dead-end check (LLM-154) keys on. When
+// the actor is genuinely inside a structure the caller reads InsideStructureID
 // instead. Ties break by lowest structure id for determinism.
-func findLoiterStructure(snap *sim.Snapshot, a *sim.ActorSnapshot) string {
+func findLoiterStructure(snap *sim.Snapshot, a *sim.ActorSnapshot) (string, sim.StructureID) {
 	bestCheb := -1
 	var bestName string
 	var bestID sim.StructureID
@@ -1119,7 +1129,7 @@ func findLoiterStructure(snap *sim.Snapshot, a *sim.ActorSnapshot) string {
 			bestID = stID
 		}
 	}
-	return bestName
+	return bestName, bestID
 }
 
 // descriptorLabel renders an actor reference as the subject would name them:
@@ -1527,6 +1537,59 @@ func objectLoiterPin(vobj *sim.VillageObject) sim.TilePos {
 		off.DY = *vobj.LoiterOffsetY
 	}
 	return pin.Add(off)
+}
+
+// isShutBusiness reports whether stID is a business the actor is standing at
+// that no keeper is tending — the live, situated dead-end the at-location cue
+// surfaces (LLM-154). It mirrors the sim-side capture gate (validBusiness
+// composed with !keeperPresentAt, closed_business.go) but reads the snapshot: a
+// business is a structure someone works (snapshotStructureHasWorker), the
+// actor's OWN workplace is excluded (you don't read your own shop as shut — you
+// are its keeper), and "tended" means an awake worker of it is present
+// (snapshotKeeperPresent). False for an empty id, a residence (no workers), or
+// an attended business.
+func isShutBusiness(snap *sim.Snapshot, a *sim.ActorSnapshot, stID sim.StructureID) bool {
+	if snap == nil || a == nil || stID == "" || stID == a.WorkStructureID {
+		return false
+	}
+	return snapshotStructureHasWorker(snap, stID) && !snapshotKeeperPresent(snap, stID)
+}
+
+// snapshotStructureHasWorker reports whether any actor in the snapshot has stID
+// as its workplace — the snapshot mirror of sim.structureHasWorker. A structure
+// no one works is a residence, not a business, so it can't read as "shut".
+func snapshotStructureHasWorker(snap *sim.Snapshot, stID sim.StructureID) bool {
+	if snap == nil {
+		return false
+	}
+	for _, w := range snap.Actors {
+		if w != nil && w.WorkStructureID == stID {
+			return true
+		}
+	}
+	return false
+}
+
+// snapshotKeeperPresent reports whether a worker of stID is currently tending it
+// in the snapshot: at it (inside, or within its loiter pin — actorAtStructure)
+// AND awake. The snapshot mirror of sim.keeperPresentAt, with the same gates:
+// StateSleeping disqualifies (an innkeeper sleeps AT the inn, so an abed keeper
+// reads shut — LLM-126), but a keeper briefly on break (StateResting) still
+// counts (the business is open, just quiet). A worker who has wandered off is
+// not present, so the business reads shut.
+func snapshotKeeperPresent(snap *sim.Snapshot, stID sim.StructureID) bool {
+	if snap == nil {
+		return false
+	}
+	for _, w := range snap.Actors {
+		if w == nil || w.WorkStructureID != stID || w.State == sim.StateSleeping {
+			continue
+		}
+		if actorAtStructure(snap, w, stID) {
+			return true
+		}
+	}
+	return false
 }
 
 // shiftWindowBounds resolves the actor's effective shift window: its own
