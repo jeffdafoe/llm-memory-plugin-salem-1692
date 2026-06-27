@@ -224,6 +224,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// owed orders, recovery/satiation/restock/lodging affordances, summons, scene.
 	ephemeral.WriteString(selfState.String())
 	renderLaborSelfState(&ephemeral, p.Laboring, nameOf, p.RenderedAt)
+	renderPendingLaborOfferOut(&ephemeral, p.PendingLaborOfferOut, nameOf)
 	renderNarrativeState(&ephemeral, p.NarrativeState)
 	renderVendorOperating(&ephemeral, p.AtOwnBusinessOperating)
 	renderSurroundings(&ephemeral, p.Surroundings)
@@ -1884,6 +1885,25 @@ func renderLaborSelfState(b *strings.Builder, laboring *LaboringView, nameOf fun
 	}
 	fmt.Fprintf(b, "You are working a job for %s — about %s of work left. Stay with it until it's done; you are paid when you finish.\n",
 		employer, humanizeWorkMinutes(mins))
+}
+
+// renderPendingLaborOfferOut renders the worker's OWN outgoing labor offer that
+// is still awaiting the employer's answer (LLM-164) — the awaiting-acceptance
+// mirror of renderLaborSelfState's in-progress line. A worker who has solicited
+// has no Working job yet, so this is the only labor self-state they get while
+// waiting; it names what's on the table and says plainly to sit tight, the anchor
+// that keeps the weak model from flailing into an unrelated tool under the quiet
+// backstop / "choose one action" pressure. Content-gated on PendingLaborOfferOut.
+func renderPendingLaborOfferOut(b *strings.Builder, offer *PendingLaborOfferOutView, nameOf func(sim.ActorID) string) {
+	if offer == nil {
+		return
+	}
+	unit := "coins"
+	if offer.Reward == 1 {
+		unit = "coin"
+	}
+	fmt.Fprintf(b, "You've offered to work for %s for %d %s (about %s) — your offer stands and it is their move now. There's nothing more to do on it; wait for their answer, say a brief word if you like, then call done().\n",
+		nameOf(offer.Employer), offer.Reward, unit, humanizeWorkMinutes(offer.DurationMin))
 }
 
 // renderLaborAffordance renders the free-worker option cue (LLM-26): the

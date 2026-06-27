@@ -76,9 +76,10 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	// they reference resolve in render.
 	p.LaborOffersForMe = buildLaborOffersForMe(snap, actorID)
 	p.Laboring = buildLaboring(snap, actorID)
+	p.PendingLaborOfferOut = buildPendingLaborOfferOut(snap, actorID)
 
 	p.Actor = buildActorView(snap, actorSnap)
-	p.WarrantActorNames = buildWarrantActorNames(snap, actorSnap, actorID, p.Warrants, p.PayOffersForMe, p.LaborOffersForMe, p.Laboring)
+	p.WarrantActorNames = buildWarrantActorNames(snap, actorSnap, actorID, p.Warrants, p.PayOffersForMe, p.LaborOffersForMe, p.Laboring, p.PendingLaborOfferOut)
 	p.WarrantPlaceNames = buildWarrantPlaceNames(snap, p.Warrants)
 	p.EatHereKinds = buildEatHereKinds(snap)
 	p.Surroundings = buildSurroundings(snap, actorID, actorSnap)
@@ -1204,7 +1205,7 @@ func buildEatHereKinds(snap *sim.Snapshot) map[sim.ItemKind]bool {
 // UUID into the "## What just happened" lines (ZBBS-HOME-339). The subject's
 // own ID is excluded — Render resolves self to "you". Returns nil when no
 // warrant references another actor (the common single-actor tick).
-func buildWarrantActorNames(snap *sim.Snapshot, subject *sim.ActorSnapshot, subjectID sim.ActorID, warrants []sim.WarrantMeta, payOffers []sim.PayOfferWarrantReason, laborOffers []LaborOfferView, laboring *LaboringView) map[sim.ActorID]string {
+func buildWarrantActorNames(snap *sim.Snapshot, subject *sim.ActorSnapshot, subjectID sim.ActorID, warrants []sim.WarrantMeta, payOffers []sim.PayOfferWarrantReason, laborOffers []LaborOfferView, laboring *LaboringView, pendingLaborOut *PendingLaborOfferOutView) map[sim.ActorID]string {
 	var names map[sim.ActorID]string
 	add := func(id sim.ActorID) {
 		if id == "" || id == subjectID {
@@ -1263,6 +1264,14 @@ func buildWarrantActorNames(snap *sim.Snapshot, subject *sim.ActorSnapshot, subj
 	}
 	if laboring != nil {
 		add(laboring.Employer)
+	}
+	// LLM-164: the worker's own pending-offer self-state (PendingLaborOfferOut)
+	// renders its employer on ticks carrying no warrant — in particular the
+	// idle/quiet-backstop wake the anchor exists to handle, whose only warrant
+	// triggers on the subject itself — so the employer's label must resolve here
+	// too, else render falls back to "someone."
+	if pendingLaborOut != nil {
+		add(pendingLaborOut.Employer)
 	}
 	return names
 }
@@ -2576,6 +2585,35 @@ func buildLaboring(snap *sim.Snapshot, subject sim.ActorID) *LaboringView {
 		return nil
 	}
 	return &LaboringView{Employer: best.EmployerID, Until: *best.WorkingUntil}
+}
+
+// buildPendingLaborOfferOut scans snap.LaborLedger for a Pending offer where the
+// subject is the WORKER, returning the worker-side self-state view (employer +
+// offered terms) or nil if the subject has no outgoing offer (LLM-164). The
+// mirror of buildLaboring for the awaiting-acceptance state. The
+// one-pending-offer-per-worker gate (SolicitWork) means at most one exists;
+// lowest LaborID wins for determinism if more ever appear.
+func buildPendingLaborOfferOut(snap *sim.Snapshot, subject sim.ActorID) *PendingLaborOfferOutView {
+	if snap == nil || len(snap.LaborLedger) == 0 {
+		return nil
+	}
+	var best *sim.LaborOffer
+	for _, o := range snap.LaborLedger {
+		if o == nil || o.State != sim.LaborStatePending || o.WorkerID != subject {
+			continue
+		}
+		if best == nil || o.ID < best.ID {
+			best = o
+		}
+	}
+	if best == nil {
+		return nil
+	}
+	return &PendingLaborOfferOutView{
+		Employer:    best.EmployerID,
+		Reward:      best.Reward,
+		DurationMin: best.DurationMin,
+	}
 }
 
 // subjectHasPendingLaborOffer reports whether the subject (as worker) has a

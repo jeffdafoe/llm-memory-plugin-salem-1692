@@ -454,10 +454,23 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 	// offer this tick (LLM-163, the solicit_work analogue of gatheredThisTick). The
 	// one-pending-offer-per-worker rule makes a second solicit this tick always
 	// redundant, so a name-only flag suffices; the post-success steer in
-	// commitResultContent is the soft half, this guard is the teeth. accept_work /
-	// decline_work need no flag — they RESOLVE the offer, so a re-fire hits the
-	// substrate's not-pending gate (the accept_pay posture).
+	// commitResultContent is the soft half, this guard is the teeth.
 	solicitedThisTick := false
+	// resolvedLaborThisTick holds the LaborID of every labor offer this actor has
+	// answered this tick as EMPLOYER via accept_work / decline_work. LLM-163 left
+	// these two unguarded on the theory that a re-fire "hits the substrate's
+	// not-pending gate" so no flag was needed — but that gate returns a RAW
+	// "offer N is no longer pending (currently working) — nothing to accept" error,
+	// not a model-stopping steer, and the turn-start perception keeps rendering the
+	// offer in "## Work offers awaiting your decision" every round (it is not rebuilt
+	// mid-turn), so the weak model re-accepts to the iteration budget (live: John
+	// Ellis accept_work×6 in one turn against a single pending offer — 1 real accept
+	// then 5 raw not-pending errors). This is the exact failure resolvedLedgerThisTick
+	// fixes for the pay-offer family (LLM-104); the labor mirror keys on the labor id,
+	// shared across accept_work/decline_work, and records on first attempt regardless
+	// of outcome (the first answer resolves the offer to working/declined/terminal, so
+	// any second answer to the same id this tick is provably useless).
+	resolvedLaborThisTick := map[LenientID]struct{}{}
 	// resolvedLedgerThisTick holds the LedgerID of every pay-offer this actor has
 	// already answered this tick via the resolution family (accept_pay / decline_pay
 	// / counter_pay / withdraw_pay). The FIRST answer moves the ledger out of
@@ -713,6 +726,25 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 				result.ToolsFailedRejected = append(result.ToolsFailedRejected, call.Name)
 				transcript = append(transcript, toolResultMsg(call.ID, "[error: already_offered] you already offered your labor this turn — your offer stands; wait for their answer or call done(). Do not offer again."))
 				continue
+			}
+			// LLM-164: employer-side labor-resolution same-tick guard, the labor
+			// mirror of the resolvedLedgerThisTick guard above (accept_pay family). The
+			// first accept_work/decline_work moves the offer out of `pending` (to
+			// working or declined), so a second answer to the SAME offer this tick is a
+			// guaranteed no-op that only reaches AcceptWork's raw "no longer pending"
+			// error — which the weak model does not read as "stop", and which the
+			// turn-start "## Work offers awaiting your decision" section keeps
+			// re-inviting all turn (perception is not rebuilt between rounds). Keyed on
+			// the labor id alone, shared across the pair, recorded on first attempt
+			// regardless of outcome.
+			if id, ok := laborResolutionID(vc); ok {
+				if _, dup := resolvedLaborThisTick[id]; dup {
+					observationOnly = false
+					result.ToolsFailedRejected = append(result.ToolsFailedRejected, call.Name)
+					transcript = append(transcript, toolResultMsg(call.ID, "[error: already_answered] you already answered that work offer this turn — it is settled (they are at the work now, or you declined it); do not answer again, say a brief word or call done()."))
+					continue
+				}
+				resolvedLaborThisTick[id] = struct{}{}
 			}
 
 			// ZBBS-HOME-414: tool-agnostic same-tick identical-call guard for the
@@ -1893,6 +1925,34 @@ func ledgerResolutionID(vc *ValidatedCall) (LenientID, bool) {
 	case "withdraw_pay":
 		if a, ok := vc.DecodedArgs.(WithdrawPayArgs); ok {
 			return a.LedgerID, true
+		}
+	}
+	return 0, false
+}
+
+// laborResolutionID returns the LaborID that an employer-side labor-resolution
+// call (accept_work / decline_work) acts on, and true; any other call returns
+// (0, false) and the resolvedLaborThisTick guard does not apply. Both tools
+// answer a single pending labor offer addressed by `labor_id`, and the first
+// answer this tick moves that offer out of `pending` (to working or declined),
+// so the guard keys on the id alone — shared across the pair — to reject a second
+// answer this tick before it reaches AcceptWork's raw "no longer pending" error.
+// The labor mirror of ledgerResolutionID (LLM-164 / LLM-104): it binds BOTH the
+// tool name and the decoded-arg shape and fails closed on a mismatch, since
+// over-blocking a dispatch guard is worse than under-blocking — under it, the
+// command's own not-pending gate still backstops the call.
+func laborResolutionID(vc *ValidatedCall) (LenientID, bool) {
+	if vc == nil {
+		return 0, false
+	}
+	switch vc.Name {
+	case "accept_work":
+		if a, ok := vc.DecodedArgs.(AcceptWorkArgs); ok {
+			return a.LaborID, true
+		}
+	case "decline_work":
+		if a, ok := vc.DecodedArgs.(DeclineWorkArgs); ok {
+			return a.LaborID, true
 		}
 	}
 	return 0, false
