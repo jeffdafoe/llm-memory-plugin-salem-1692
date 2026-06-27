@@ -66,6 +66,7 @@ const (
 	WarrantKindSourceActivityDone WarrantKind = "source_activity_done" // a timed eat/drink/harvest finished — completion beat (LLM-69)
 	WarrantKindAdmin              WarrantKind = "admin"                // operator forced a bare tick
 	WarrantKindImpulse            WarrantKind = "impulse"              // operator-injected in-world felt impulse (umbilical directive nudge)
+	WarrantKindSeekWork           WarrantKind = "seek_work"            // engine-authored felt impulse: a broke worker should go earn (LLM-141)
 	WarrantKindStranded           WarrantKind = "stranded"             // anomalous-position backstop: standing in the open at no anchor (ZBBS-HOME-450)
 	WarrantKindServeHandover      WarrantKind = "serve_handover"       // a buyer instantly took the seller's posted quote — wake the seller to hand over with a word (ZBBS-WORK-423)
 	WarrantKindProductionChoice   WarrantKind = "production_choice"    // multi-output crafter idle at its forge — wake it to pick what to make (LLM-116)
@@ -506,6 +507,21 @@ func (AdminDirectiveWarrantReason) isWarrantReason()           {}
 func (AdminDirectiveWarrantReason) Kind() WarrantKind          { return WarrantKindImpulse }
 func (AdminDirectiveWarrantReason) DedupDiscriminator() uint64 { return 0 }
 
+// SeekWorkWarrantReason wakes a broke, on-shift, idle Worker so it goes and
+// earns (LLM-141). Carries no fields — the impulse text is engine-authored and
+// fixed (perception.renderWarrantLine). Kind is its OWN WarrantKindSeekWork,
+// deliberately NOT WarrantKindImpulse: it renders a felt-impulse line like the
+// operator directive, but it must NOT inherit that kind's rester-interrupting
+// power (hasOperatorNudgeWarrant) — a "go find work" nudge should wait for a
+// clean moment, never cut short a break, a mid-bite source activity, or sleep.
+// Not event-sourced, so DedupDiscriminator returns 0; the backstop's own
+// WarrantedSince pre-check prevents a second stamp on an open cycle.
+type SeekWorkWarrantReason struct{}
+
+func (SeekWorkWarrantReason) isWarrantReason()           {}
+func (SeekWorkWarrantReason) Kind() WarrantKind          { return WarrantKindSeekWork }
+func (SeekWorkWarrantReason) DedupDiscriminator() uint64 { return 0 }
+
 // WarrantMeta is one entry in an actor's Warrants list — a signal that
 // fired during the actor's warranted window. The evaluator carries the
 // full list into ReactorTickDue; the prompt builder (PR 3) renders each
@@ -861,6 +877,9 @@ func resetReactorStateOnLoad(a *Actor) {
 	// red need re-engages promptly after restart rather than inheriting a
 	// stale backoff timer.
 	clearRedNeedBackstop(a)
+	// Seek-work backstop pacing (LLM-141) — ephemeral, same rationale as the
+	// red-need pacing above: a fresh-loaded broke worker re-engages from base.
+	clearSeekWorkBackstop(a)
 	// Degeneracy observer streak (LLM-94) — ephemeral, same rationale: a
 	// fresh-loaded actor starts unflagged rather than inheriting a stale
 	// futility streak from before the restart.

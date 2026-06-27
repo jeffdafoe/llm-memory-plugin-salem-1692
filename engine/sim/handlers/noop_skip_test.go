@@ -42,6 +42,29 @@ func TestShouldSkipNoop_IdleBackstopAlone_NoPeerNoNeeds_Skips(t *testing.T) {
 	}
 }
 
+// TestShouldSkipNoop_SeekWorkAlone_NoPeerNoNeeds_DoesNotSkip: the seek-work
+// warrant is HIGH-info — a broke worker alone, no peer, no red need must STILL
+// tick so it perceives its empty purse and goes to find work. This is the exact
+// regression the idle-backstop kind suffers (eaten by the gate); proving
+// WarrantKindSeekWork is NOT in isLowInfoWarrantKind is the whole point of the
+// new kind (LLM-141). Locks the high-info classification through the gate, not
+// just renderWarrantLine.
+func TestShouldSkipNoop_SeekWorkAlone_NoPeerNoNeeds_DoesNotSkip(t *testing.T) {
+	w := sim.WarrantMeta{
+		TriggerActorID: "alice",
+		Reason:         sim.SeekWorkWarrantReason{},
+	}
+	// WarrantMeta has no Kind field — Kind() derives from Reason, exactly as
+	// production stamps it (tryStampWarrant carries the Reason). Assert it so the
+	// gate test can't pass on a stray default rather than the real seek-work kind.
+	if w.Kind() != sim.WarrantKindSeekWork {
+		t.Fatalf("WarrantMeta.Kind() = %q, want %q", w.Kind(), sim.WarrantKindSeekWork)
+	}
+	if shouldSkipNoop(quietPayload(), defaultThresholds(), []sim.WarrantMeta{w}) {
+		t.Fatalf("expected skip=false for a lone broke worker — seek-work must tick (high-info)")
+	}
+}
+
 func TestShouldSkipNoop_HuddleConcludedAlone_NoPeerNoNeeds_Skips(t *testing.T) {
 	w := sim.WarrantMeta{
 		TriggerActorID: "",
