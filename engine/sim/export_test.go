@@ -332,8 +332,26 @@ func EffectiveHuddleSilenceSweepCadence(s WorldSettings) time.Duration {
 func TouchHuddleActivity(w *World, id HuddleID, now time.Time) {
 	touchHuddleActivity(w, id, now)
 }
-func RestartExpirePendingEntries(w *World, now time.Time)  { restartExpirePendingEntries(w, now) }
-func ReapTerminalPayLedgerEntries(w *World, now time.Time) { reapTerminalPayLedgerEntries(w, now) }
+
+// Huddle loop sweep (LLM-159) — wrappers for direct table tests, mirroring the
+// silence-sweep wrappers.
+func HuddleLoopEnabled(s WorldSettings) bool { return huddleLoopEnabled(s) }
+func EffectiveHuddleLoopSweepCadence(s WorldSettings) time.Duration {
+	return effectiveHuddleLoopSweepCadence(s)
+}
+func EffectiveHuddleLoopRepeatFraction(s WorldSettings) float64 {
+	return effectiveHuddleLoopRepeatFraction(s)
+}
+func HuddleUtteranceRepetition(ring []Utterance) float64 { return huddleUtteranceRepetition(ring) }
+func HuddleConversationLooping(s WorldSettings, h *Huddle, now time.Time) bool {
+	return huddleConversationLooping(s, h, now)
+}
+
+// SetTickTelemetrySink wires a telemetry sink for tests (the sweeps' `stuck`
+// records land here). Touches repo, so callers MUST run it inside a Command.Fn.
+func SetTickTelemetrySink(w *World, sink TickTelemetrySink) { w.repo.TickTelemetry = sink }
+func RestartExpirePendingEntries(w *World, now time.Time)   { restartExpirePendingEntries(w, now) }
+func ReapTerminalPayLedgerEntries(w *World, now time.Time)  { reapTerminalPayLedgerEntries(w, now) }
 func EffectivePayLedgerTerminalRetention(s WorldSettings) time.Duration {
 	return effectivePayLedgerTerminalRetention(s)
 }

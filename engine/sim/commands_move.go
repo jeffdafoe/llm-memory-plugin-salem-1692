@@ -515,6 +515,11 @@ func StartOutdoorHuddle(participants []ActorID, anchor Position, radius int, rea
 				Members:     make(map[ActorID]struct{}, len(participants)),
 				StructureID: "", // outdoor — no structure
 				StartedAt:   now,
+				// LLM-159: forming the huddle is a membership change = progress, so
+				// the loop sweep doesn't treat a brand-new outdoor huddle as a
+				// pre-existing stuck loop. (LastActivityAt stays zero here — the
+				// silence sweep falls back to StartedAt, same as before.)
+				LastProgressAt: now,
 			}
 			huddle := w.Huddles[huddleID]
 			if err := attachHuddleToScene(scene, huddleID); err != nil {

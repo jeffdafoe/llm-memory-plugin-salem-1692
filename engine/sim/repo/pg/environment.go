@@ -304,6 +304,12 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.HuddleSilenceTimeout = parseDurationSetting(values, "huddle_silence_timeout_minutes", sim.HuddleSilenceTimeoutDefault)
 	s.HuddleSilenceSweepCadence = parseDurationSetting(values, "huddle_silence_sweep_cadence_seconds", sim.HuddleSilenceSweepCadenceDefault)
 
+	// Huddle loop conclusion (LLM-159). huddle_loop_timeout_seconds is the master
+	// enable: 0/unset leaves the loop sweep OFF.
+	s.HuddleLoopTimeout = parseDurationSetting(values, "huddle_loop_timeout_seconds", 0)
+	s.HuddleLoopRepeatPercent = parseIntSetting(values, "huddle_loop_repeat_percent", sim.HuddleLoopRepeatPercentDefault)
+	s.HuddleLoopSweepCadence = parseDurationSetting(values, "huddle_loop_sweep_cadence_seconds", sim.HuddleLoopSweepCadenceDefault)
+
 	// PC presence staleness (ZBBS-WORK-326).
 	s.PCPresenceStaleAfter = parseDurationSetting(values, "pc_presence_stale_seconds", sim.DefaultPCPresenceStaleAfter)
 

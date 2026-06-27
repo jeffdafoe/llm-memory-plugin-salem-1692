@@ -488,6 +488,36 @@ type WorldSettings struct {
 	// / scene-quote / order sweeps so admin tuning sees one mental model.
 	HuddleSilenceTimeout      time.Duration
 	HuddleSilenceSweepCadence time.Duration
+
+	// Huddle loop-conclusion tunables (LLM-159). The silence sweep concludes a
+	// DORMANT huddle; this concludes the inverse — a huddle that is hyper-active
+	// but going nowhere: members repeating near-identical lines ("let's go to the
+	// market" x50, never moving), burning an LLM tick every few seconds. It is
+	// the degeneracy observer's structural blind spot — every speak succeeds, an
+	// audience is present, and no one moves, so the per-actor observer scores
+	// every tick productive and never flags it.
+	//
+	// HuddleLoopTimeout is the MASTER ENABLE plus the persistence gate: a huddle
+	// must stay in a high-repetition, progress-free conversation for at least
+	// this long before the sweep concludes it. <= 0 disables the whole loop sweep
+	// — the safe default, since concluding a LIVE conversation is heavier than
+	// the silence sweep's dormant-conclude. Mirrors DegeneracyThinAfterTicks's
+	// "one positive number both enables and tunes" posture. Tunable via
+	// huddle_loop_timeout_seconds.
+	//
+	// HuddleLoopRepeatPercent is the repetition threshold (0-100): the percent of
+	// the huddle's content-bearing recent turns (filler-only lines like "Yes."
+	// are excluded from the count) that must be near-duplicates of another turn
+	// for the conversation to read as looping. Default 60
+	// (HuddleLoopRepeatPercentDefault). Tunable via huddle_loop_repeat_percent.
+	//
+	// HuddleLoopSweepCadence is how often the sweep scans World.Huddles. Default
+	// 30s (HuddleLoopSweepCadenceDefault) — finer than the silence sweep's 60s
+	// because the persistence gate is minutes, not hours. Tunable via
+	// huddle_loop_sweep_cadence_seconds.
+	HuddleLoopTimeout       time.Duration
+	HuddleLoopRepeatPercent int
+	HuddleLoopSweepCadence  time.Duration
 }
 
 // DefaultOutdoorSceneRadiusValue is the fallback radius used when
@@ -561,6 +591,13 @@ type payLedgerSweepState struct {
 // silence-conclusion sweep's AfterFunc self-rearm chain (ZBBS-HOME-417).
 // Same shape and rules as payLedgerSweepState.
 type huddleSilenceSweepState struct {
+	scheduled bool
+}
+
+// huddleLoopSweepState carries the coalescing flag for the huddle
+// loop-conclusion sweep's AfterFunc self-rearm chain (LLM-159). Same shape
+// and rules as payLedgerSweepState.
+type huddleLoopSweepState struct {
 	scheduled bool
 }
 
@@ -874,6 +911,7 @@ type World struct {
 	laborLedgerSweep   laborLedgerSweepState
 	orderSweep         orderSweepState
 	huddleSilenceSweep huddleSilenceSweepState
+	huddleLoopSweep    huddleLoopSweepState
 
 	// quoteSeq is the monotonic per-run QuoteID counter — same shape
 	// and rules as eventSeq. Incremented before assignment; first

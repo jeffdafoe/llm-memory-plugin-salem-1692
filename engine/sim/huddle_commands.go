@@ -355,6 +355,9 @@ func JoinHuddle(actorID ActorID, structureID StructureID, sceneID SceneID, now t
 			// counts the dormancy window from the latest arrival, not a stale
 			// StartedAt.
 			huddle.LastActivityAt = now
+			// LLM-159: a membership change is non-conversational progress — the
+			// conversation's composition just shifted, so it is not a stuck loop.
+			huddle.LastProgressAt = now
 			if w.actorsByHuddle[huddleID] == nil {
 				w.actorsByHuddle[huddleID] = make(map[ActorID]struct{})
 			}
@@ -569,6 +572,24 @@ func touchHuddleActivity(w *World, huddleID HuddleID, now time.Time) {
 	}
 }
 
+// touchHuddleProgress stamps a huddle's LastProgressAt (and LastActivityAt) to
+// `now`, recording NON-conversational progress — a completed transaction. The
+// loop sweep (LLM-159) reads LastProgressAt to spare a huddle that is genuinely
+// advancing from being concluded as a repetition livelock, and bumping
+// LastActivityAt too keeps the transaction counting as activity for the silence
+// sweep. Membership-change progress is stamped inline at the join/leave sites
+// (the huddle pointer is already in hand there). No-op on a missing or already-
+// concluded huddle. MUST run on the world goroutine.
+func touchHuddleProgress(w *World, huddleID HuddleID, now time.Time) {
+	if huddleID == "" {
+		return
+	}
+	if h, ok := w.Huddles[huddleID]; ok && h.ConcludedAt == nil {
+		h.LastActivityAt = now
+		h.LastProgressAt = now
+	}
+}
+
 // ClearConversationalHuddlesOnBoot drops every huddle from the world and clears
 // the conversational back-references that point at them (ZBBS-HOME-417). A
 // huddle is transient conversational state; a conversation that "resumes" hours
@@ -651,6 +672,14 @@ func leaveCurrentHuddle(w *World, actor *Actor, now time.Time) LeaveHuddleResult
 	actor.CurrentHuddleID = ""
 	// ZBBS-WORK-370: the leaver's pending turn edges are moot once it exits.
 	actor.dropAwaitingReplies()
+	// LLM-159: a departure is non-conversational progress — the conversation's
+	// composition shifted, so a surviving huddle is not a stuck loop. Only the
+	// progress clock is stamped, NOT LastActivityAt: ZBBS-HOME-417 deliberately
+	// counts a join (but not a leave) as silence-sweep activity, and a huddle
+	// nobody speaks in after a member leaves SHOULD remain concludable by the
+	// silence sweep. Harmless on the paths below that go on to conclude the huddle
+	// (ConcludedAt gates both sweeps).
+	huddle.LastProgressAt = now
 	if members, ok := w.actorsByHuddle[huddleID]; ok {
 		delete(members, actor.ID)
 		if len(members) == 0 {
