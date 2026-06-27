@@ -76,6 +76,11 @@ func TestHasSolicitableAudience_NilGuards(t *testing.T) {
 	if hasSolicitableAudience(snap, nil, surr) {
 		t.Error("nil subject: want false")
 	}
+	// Non-nil snapshot with a nil Actors map — reading a nil map is safe and
+	// every candidate misses, so no one is solicitable (code_review).
+	if hasSolicitableAudience(&sim.Snapshot{}, &sim.ActorSnapshot{}, surr) {
+		t.Error("nil Actors map: want false")
+	}
 }
 
 func TestSharesHouseholdAndWorkplace(t *testing.T) {
