@@ -450,6 +450,14 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 	// for seconds, and a crafter forges one good at a time.
 	gatheredThisTick := false
 	craftedThisTick := false
+	// solicitedThisTick records that this actor has SUCCESSFULLY placed a labor
+	// offer this tick (LLM-163, the solicit_work analogue of gatheredThisTick). The
+	// one-pending-offer-per-worker rule makes a second solicit this tick always
+	// redundant, so a name-only flag suffices; the post-success steer in
+	// commitResultContent is the soft half, this guard is the teeth. accept_work /
+	// decline_work need no flag — they RESOLVE the offer, so a re-fire hits the
+	// substrate's not-pending gate (the accept_pay posture).
+	solicitedThisTick := false
 	// resolvedLedgerThisTick holds the LedgerID of every pay-offer this actor has
 	// already answered this tick via the resolution family (accept_pay / decline_pay
 	// / counter_pay / withdraw_pay). The FIRST answer moves the ledger out of
@@ -700,6 +708,12 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 				transcript = append(transcript, toolResultMsg(call.ID, "[error: already_chose] you already chose what to produce this turn — your focus is set and you keep making it until you choose again; do not choose again now, tend your post or call done()."))
 				continue
 			}
+			if vc.Name == "solicit_work" && solicitedThisTick {
+				observationOnly = false
+				result.ToolsFailedRejected = append(result.ToolsFailedRejected, call.Name)
+				transcript = append(transcript, toolResultMsg(call.ID, "[error: already_offered] you already offered your labor this turn — your offer stands; wait for their answer or call done(). Do not offer again."))
+				continue
+			}
 
 			// ZBBS-HOME-414: tool-agnostic same-tick identical-call guard for the
 			// action tools that lack their own (deliver_order / move_to). The weak
@@ -827,6 +841,13 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 				}
 				if vc.Name == craftToolName {
 					craftedThisTick = true
+				}
+				// LLM-163: record a placed labor offer so a second solicit_work this
+				// tick is rejected by the guard above. solicit_work's nil-error result
+				// is always a placed Pending offer (it errors otherwise), so
+				// outcome.success alone is the signal — same posture as gather/craft.
+				if vc.Name == "solicit_work" {
+					solicitedThisTick = true
 				}
 				// LLM-88: a non-terminal commit that moved the actor's own material
 				// state (a consume that eased a need and spent stock, a buy that moved
@@ -1450,6 +1471,41 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 		}
 		if clampNote != "" {
 			return "[ok]" + clampNote
+		}
+	}
+	// solicit_work (LLM-163): a placed labor offer returned a bare [ok], so the
+	// weak worker model — still reading the "offer your labor" affordance — re-
+	// fired solicit_work to the iteration budget (the carrot/bread storm, third
+	// time: see offeredThisTick / quotedThisTick). Echo who the offer went to and
+	// steer to wait + done(); the solicitedThisTick guard is the teeth.
+	if vc.Name == "solicit_work" {
+		if r, ok := cmdResult.(sim.LaborSolicitResult); ok && r.State == sim.LaborStatePending {
+			return fmt.Sprintf("[ok] Your offer of labor to %s is on the table — wait for their answer. Say a brief word if you like, then call done(). Do not offer again.", r.EmployerName)
+		}
+	}
+	// accept_work (LLM-163): on a real accept the offer flips Working and the
+	// worker is hired; a gate-driven flip (TTL elapsed, co-presence lost, can't
+	// afford) resolves terminal with NO hire. A bare [ok] read "hired" on either
+	// and gave no within-result reason to stop, so the employer re-fired
+	// accept_work (the accept_pay posture). Report the real outcome + steer.
+	if vc.Name == "accept_work" {
+		if r, ok := cmdResult.(sim.LaborAcceptResult); ok {
+			switch r.State {
+			case sim.LaborStateWorking:
+				return fmt.Sprintf("[ok] You hired %s — they are at the work now for %d coins, paid when they finish. Say a brief word, then call done(). Do not accept again.", r.WorkerName, r.Reward)
+			case sim.LaborStateExpired:
+				return "[ok] That offer had already expired — too late to take them on."
+			case sim.LaborStateFailedUnavailable:
+				return "[ok] That couldn't be arranged — they had moved on, were already at a job, or you couldn't cover the coin."
+			}
+		}
+	}
+	// decline_work (LLM-163): a declined offer passed in silence on a bare [ok],
+	// reading to the worker as ignored, with no reason for the employer to stop
+	// re-firing. Echo the decline and steer to a brief refusal + done().
+	if vc.Name == "decline_work" {
+		if r, ok := cmdResult.(sim.LaborDeclineResult); ok && r.State == sim.LaborStateDeclined {
+			return "[ok] You declined the work. Say a brief word of refusal, then call done(). Do not decline again."
 		}
 	}
 	return "[ok]"
