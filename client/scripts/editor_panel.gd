@@ -21,10 +21,6 @@ signal npc_work_structure_changed(structure_id: String)
 #     mirrors the schedule_window_all_or_none DB CHECK.
 #   interval / start / end: rotation cadence triple. -1 means "no cadence".
 signal npc_schedule_changed(start_min: int, end_min: int)
-# Social-hour overlay (ZBBS-068, minute-precision since ZBBS-071). Empty tag
-# == "clear the schedule" (and start_min/end_min are ignored in that case).
-# Applied all-or-none server-side.
-signal npc_social_changed(tag: String, start_min: int, end_min: int)
 signal npc_home_assign_requested
 signal npc_work_assign_requested
 signal npc_sprite_change_requested(npc_id: String, current_sprite_id: String)
@@ -242,18 +238,6 @@ var _npc_end_hour_spin: SpinBox = null
 var _npc_end_minute_spin: SpinBox = null
 var _npc_schedule_window_is_null: bool = true
 var _npc_schedule_save_button: Button = null
-# Social-hour overlay UI (ZBBS-068). Like the work window, it's gated by a checkbox
-# so the panel can express "no social schedule" distinct from "scheduled at
-# minute 0." Tag dropdown is populated from GET /api/assets/state-tags.
-# HH:MM precision since ZBBS-071.
-var _npc_social_check: CheckBox = null
-var _npc_social_tag_dropdown: OptionButton = null
-var _npc_social_start_hour_spin: SpinBox = null
-var _npc_social_start_minute_spin: SpinBox = null
-var _npc_social_end_hour_spin: SpinBox = null
-var _npc_social_end_minute_spin: SpinBox = null
-var _npc_social_row: HBoxContainer = null
-var _npc_social_tag_row: HBoxContainer = null
 
 # Per-instance tag editor for placed objects (ZBBS-069). Chips rendered
 # into _obj_tags_chips_box as removable buttons; the add dropdown shows
@@ -373,7 +357,7 @@ func _ready() -> void:
     _set_view_tab_active(_villagers_tab_button, false)
 
     # Selection info (hidden when nothing selected). Wrapped in a
-    # ScrollContainer so long selections (NPC with all schedule + social
+    # ScrollContainer so long selections (NPC with all schedule
     # fields expanded, or an asset with many attachments) don't push the
     # bottom of the panel off-screen. The scroll container takes the
     # expand-fill slot so it grows with the panel; the inner VBox holds
@@ -1002,59 +986,6 @@ func _ready() -> void:
     _npc_schedule_save_button.pressed.connect(_on_schedule_save_pressed)
     _npc_schedule_section.add_child(_npc_schedule_save_button)
 
-    # Social-hour section — orthogonal overlay on behavior (ZBBS-068).
-    # Any NPC can opt into a daily window where they walk to the nearest
-    # structure carrying a named state tag (e.g. the tavern) and head
-    # home when the window ends. Checkbox gates the three fields the same
-    # way "Use cadence window" gates the rotation triple.
-    var social_header = Label.new()
-    social_header.text = "SOCIAL HOUR"
-    social_header.add_theme_color_override("font_color", COLOR_LABEL)
-    social_header.add_theme_font_size_override("font_size", 11)
-    _npc_schedule_section.add_child(social_header)
-
-    _npc_social_check = CheckBox.new()
-    _npc_social_check.text = "Gathers at tagged structure"
-    _npc_social_check.add_theme_color_override("font_color", COLOR_TEXT)
-    _npc_social_check.add_theme_font_size_override("font_size", 11)
-    _npc_social_check.toggled.connect(_on_social_toggled)
-    _npc_social_check.toggled.connect(func(_v): _emit_social_changed())
-    _npc_schedule_section.add_child(_npc_social_check)
-
-    _npc_social_tag_row = HBoxContainer.new()
-    _npc_social_tag_row.add_theme_constant_override("separation", 6)
-    _npc_schedule_section.add_child(_npc_social_tag_row)
-    var social_tag_lbl = Label.new()
-    social_tag_lbl.text = "Tag"
-    social_tag_lbl.add_theme_color_override("font_color", COLOR_TEXT_DIM)
-    social_tag_lbl.add_theme_font_size_override("font_size", 11)
-    _npc_social_tag_row.add_child(social_tag_lbl)
-    _npc_social_tag_dropdown = OptionButton.new()
-    _npc_social_tag_dropdown.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    _npc_social_tag_dropdown.item_selected.connect(func(_i): _emit_social_changed())
-    _npc_social_tag_row.add_child(_npc_social_tag_dropdown)
-
-    # HH:MM start / end rows. Default 19:00 / 22:00 so a freshly-checked
-    # social schedule lands in the typical evening tavern window.
-    var social_start_row = _build_hm_row("Start",
-        func(_v): _emit_social_changed(),
-        "Time of day the NPC walks to the nearest matching structure.")
-    _npc_schedule_section.add_child(social_start_row.row)
-    _npc_social_start_hour_spin = social_start_row.hour_spin
-    _npc_social_start_minute_spin = social_start_row.minute_spin
-    _npc_social_start_hour_spin.value = 19
-
-    var social_end_row = _build_hm_row("End",
-        func(_v): _emit_social_changed(),
-        "Time of day the NPC walks home. End < start wraps past midnight.")
-    _npc_schedule_section.add_child(social_end_row.row)
-    _npc_social_end_hour_spin = social_end_row.hour_spin
-    _npc_social_end_minute_spin = social_end_row.minute_spin
-    _npc_social_end_hour_spin.value = 22
-    # Hold _npc_social_row at the start row so legacy show/hide code that
-    # toggled visibility on the single row still affects the visible UI.
-    _npc_social_row = social_start_row.row
-
     var sel_sep = HSeparator.new()
     sel_sep.add_theme_color_override("separator_color", Color(0.4, 0.32, 0.2, 0.4))
     _selection_info.add_child(sel_sep)
@@ -1590,48 +1521,6 @@ func _on_npc_name_focus_lost() -> void:
 ## disable only — the save handler also checks the checkbox state when
 ## building the payload, so unchecked always sends null regardless of
 ## the SpinBox values.
-
-## Gates the social-hour fields the same way cadence does. Editable state
-## follows the checkbox so a disabled schedule can't push stale values
-## through the auto-save.
-func _on_social_toggled(enabled: bool) -> void:
-    if _npc_social_tag_dropdown != null:
-        _npc_social_tag_dropdown.disabled = not enabled
-    if _npc_social_start_hour_spin != null:
-        _npc_social_start_hour_spin.editable = enabled
-    if _npc_social_start_minute_spin != null:
-        _npc_social_start_minute_spin.editable = enabled
-    if _npc_social_end_hour_spin != null:
-        _npc_social_end_hour_spin.editable = enabled
-    if _npc_social_end_minute_spin != null:
-        _npc_social_end_minute_spin.editable = enabled
-
-## Emits npc_social_changed with the current field values. When the
-## checkbox is off or the tag dropdown is empty, emit an empty tag — the
-## handler converts that into a null-clear payload.
-func _emit_social_changed() -> void:
-    if _ignoring_npc_inputs:
-        return
-    if _npc_social_check == null or not _npc_social_check.button_pressed:
-        npc_social_changed.emit("", 0, 0)
-        return
-    var tag: String = ""
-    if _npc_social_tag_dropdown != null and _npc_social_tag_dropdown.selected >= 0:
-        tag = _npc_social_tag_dropdown.get_item_text(_npc_social_tag_dropdown.selected)
-    var start_min: int = int(_npc_social_start_hour_spin.value) * 60 + int(_npc_social_start_minute_spin.value)
-    var end_min: int = int(_npc_social_end_hour_spin.value) * 60 + int(_npc_social_end_minute_spin.value)
-    npc_social_changed.emit(tag, start_min, end_min)
-
-## Populate the social tag dropdown from the server allowlist. Called by
-## main.gd after it fetches the object-tags allowlist (social_tag is
-## itself a per-instance object tag, so this dropdown draws from the same
-## source as _obj_tags_add_dropdown). Idempotent.
-func set_social_tag_options(tags: Array) -> void:
-    if _npc_social_tag_dropdown == null:
-        return
-    _npc_social_tag_dropdown.clear()
-    for tag in tags:
-        _npc_social_tag_dropdown.add_item(str(tag))
 
 ## Refresh the per-instance tag UI for the currently-selected object.
 ## Chips box is redrawn from _obj_tags_current_list; the add dropdown
@@ -2486,10 +2375,8 @@ func _populate_people_section(object_id: String, asset_id: String) -> void:
         var is_home: bool = home_id == object_id
         var is_work: bool = work_id == object_id
         # Also list NPCs who are CURRENTLY inside this structure even if
-        # they don't live or work here — the social scheduler walks NPCs
-        # to tagged structures (e.g. a tavern they don't own), and an
-        # admin selecting that structure expects to see who's actually
-        # there, not just who belongs there.
+        # they don't live or work here — an admin selecting that structure
+        # expects to see who's actually there, not just who belongs there.
         var is_inside: bool = inside_id == object_id
         if not is_home and not is_work and not is_inside:
             continue
@@ -2750,29 +2637,6 @@ func show_npc_selection(info: Dictionary) -> void:
     if _npc_end_hour_spin != null:
         _npc_end_hour_spin.value = end_min / 60
         _npc_end_minute_spin.value = end_min % 60
-    # Social-hour fields — same all-or-none shape as the work-window pair. Minute
-    # precision since ZBBS-071.
-    var social_tag_raw = info.get("social_tag", null)
-    var social_start_raw_min = info.get("social_start_minute", null)
-    var social_end_raw_min = info.get("social_end_minute", null)
-    var has_social: bool = social_tag_raw != null and social_tag_raw != "" and social_start_raw_min != null and social_end_raw_min != null
-    if _npc_social_check != null:
-        _npc_social_check.button_pressed = has_social
-    if has_social and _npc_social_tag_dropdown != null:
-        # Select the matching tag in the dropdown, or leave at index 0 if
-        # the tag isn't in the list (e.g. it was removed from the allowlist
-        # server-side since this NPC was configured).
-        for i in range(_npc_social_tag_dropdown.item_count):
-            if _npc_social_tag_dropdown.get_item_text(i) == str(social_tag_raw):
-                _npc_social_tag_dropdown.select(i)
-                break
-        var social_start_min: int = int(social_start_raw_min)
-        var social_end_min: int = int(social_end_raw_min)
-        _npc_social_start_hour_spin.value = social_start_min / 60
-        _npc_social_start_minute_spin.value = social_start_min % 60
-        _npc_social_end_hour_spin.value = social_end_min / 60
-        _npc_social_end_minute_spin.value = social_end_min % 60
-    _on_social_toggled(has_social)
 
     # Needs readout — current values from the actor row, refreshed on
     # selection and via npc_metadata_changed when the WS broadcasts a

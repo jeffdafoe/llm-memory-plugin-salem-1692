@@ -884,44 +884,6 @@ func TestCloneActor_PR3aFieldsRoundTrip(t *testing.T) {
 	}
 }
 
-// TestCloneActor_SocialFields verifies the #4 social persistence fields survive
-// CloneActor: the config values (tag/start/end) are preserved, and the mutated
-// SocialLastBoundaryAt cursor is deep-cloned (a distinct pointer) like the other
-// *time.Time cursors — so a published snapshot can't alias the live boundary
-// stamp the social mover advances.
-func TestCloneActor_SocialFields(t *testing.T) {
-	start := 1080
-	end := 1320
-	bound := time.Now().UTC()
-	orig := &sim.Actor{
-		ID:                   "deco",
-		SocialTag:            "tavern_evening",
-		SocialStartMin:       &start,
-		SocialEndMin:         &end,
-		SocialLastBoundaryAt: &bound,
-	}
-
-	clone := sim.CloneActor(orig)
-
-	if clone.SocialTag != "tavern_evening" {
-		t.Errorf("SocialTag = %q, want tavern_evening", clone.SocialTag)
-	}
-	if clone.SocialStartMin == nil || *clone.SocialStartMin != 1080 {
-		t.Errorf("SocialStartMin = %v, want 1080", clone.SocialStartMin)
-	}
-	if clone.SocialEndMin == nil || *clone.SocialEndMin != 1320 {
-		t.Errorf("SocialEndMin = %v, want 1320", clone.SocialEndMin)
-	}
-	if clone.SocialLastBoundaryAt == nil || !clone.SocialLastBoundaryAt.Equal(bound) {
-		t.Fatalf("SocialLastBoundaryAt = %v, want %v", clone.SocialLastBoundaryAt, bound)
-	}
-	// Deep-cloned: a distinct pointer from the original, so advancing the live
-	// actor's boundary stamp can't leak into a published snapshot.
-	if clone.SocialLastBoundaryAt == orig.SocialLastBoundaryAt {
-		t.Error("SocialLastBoundaryAt aliased — want a deep-cloned distinct pointer")
-	}
-}
-
 // TestTerminalStatusAddresses covers the per-status classification: which
 // terminal statuses count their addressed keys as "consumed" (move into
 // recently-consumed) and which carry everything forward.

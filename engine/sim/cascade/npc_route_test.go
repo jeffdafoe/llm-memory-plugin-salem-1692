@@ -85,7 +85,7 @@ func buildRouteCascadeWorld(t *testing.T) (*sim.World, func()) {
 	}
 	// Pin the world timezone so the schedule-boundary tests' fixed UTC
 	// instants resolve deterministically regardless of the host's local
-	// zone (same convention as sim's socialTestWorld).
+	// zone (same convention as sim's schedule-boundary test world).
 	w.Settings.Location = time.UTC
 	return w, func() {}
 }

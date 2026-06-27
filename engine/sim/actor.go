@@ -423,21 +423,6 @@ type Actor struct {
 	ScheduleStartMin *int
 	ScheduleEndMin   *int
 
-	// Social schedule (decorative-NPC mover, #4 — persistence here; the
-	// RunSocialTicker mover is a follow-up slice). SocialTag / SocialStartMin /
-	// SocialEndMin are config that travels together — all-or-none, enforced by
-	// the DB's actor_social_all_or_none CHECK and mirrored by the SaveSnapshot
-	// pre-pass. When set on a decorative NPC they drive a daily walk to the
-	// nearest village_object carrying SocialTag and back home.
-	// SocialLastBoundaryAt is the edge-trigger idempotency stamp (the last
-	// processed social boundary), kept separate from any shift stamp so the
-	// two schedulers can't collide. These are pre-existing v1 columns; empty/
-	// nil round-trips through SQL NULL.
-	SocialTag            string     // "" = unset
-	SocialStartMin       *int       // minute-of-day [0,1439]; nil = unset
-	SocialEndMin         *int       // minute-of-day [0,1439]; nil = unset
-	SocialLastBoundaryAt *time.Time // last processed boundary; nil = none
-
 	// Mutable state.
 	Needs     map[NeedKey]int
 	Inventory map[ItemKind]int
@@ -882,7 +867,7 @@ func cloneSummonRefusal(r *SummonRefusal) *SummonRefusal {
 // serialization boundary. Mutated containers (Needs, Inventory,
 // DwellCredits, RoomAccess, ProduceState, Acquaintances, Relationships)
 // and pointer fields commands rebind (BreakUntil, SleepingUntil,
-// LaboringUntil, LastTickedAt, SocialLastBoundaryAt, Narrative) are cloned.
+// LaboringUntil, LastTickedAt, Narrative) are cloned.
 // Attributes is
 // deep-cloned including each []byte payload. RecentActions is cloned
 // via RingBuffer.Clone. MoveIntent is deep-cloned via
@@ -949,14 +934,6 @@ func CloneActor(a *Actor) *Actor {
 	if a.LastPCSeenAt != nil {
 		t := *a.LastPCSeenAt
 		cp.LastPCSeenAt = &t
-	}
-	if a.SocialLastBoundaryAt != nil {
-		// Deep-cloned (the social mover stamps it each boundary), like the
-		// other mutated *time.Time cursors. SocialStartMin/EndMin are config
-		// pointers rebound on edit, not mutated through, so they follow the
-		// schedule-pointer convention and stay shallow-aliased via `cp := *a`.
-		t := *a.SocialLastBoundaryAt
-		cp.SocialLastBoundaryAt = &t
 	}
 	if a.LastTickedAt != nil {
 		t := *a.LastTickedAt
@@ -1155,19 +1132,15 @@ type ActorSnapshot struct {
 	// Actor.Attributes map's keys); the editor renders them as chips and only
 	// needs the slugs, so the opaque param payloads are deliberately NOT carried
 	// here. HomeStructureID/WorkStructureID are the actor's home/work anchors
-	// (empty when unset). ScheduleStartMin/EndMin + SocialTag/SocialStartMin/
-	// SocialEndMin are the work-shift and social-gathering windows (nil/empty =
-	// unset → the editor shows "inherit dawn/dusk"); the *int fields are copied
-	// into fresh pointers by snapshotActor so the published snapshot never
-	// aliases the live Actor's pointers.
+	// (empty when unset). ScheduleStartMin/EndMin are the work-shift window
+	// (nil = unset → the editor shows "inherit dawn/dusk"); the *int fields are
+	// copied into fresh pointers by snapshotActor so the published snapshot
+	// never aliases the live Actor's pointers.
 	AttributeSlugs   []string
 	HomeStructureID  StructureID
 	WorkStructureID  StructureID
 	ScheduleStartMin *int
 	ScheduleEndMin   *int
-	SocialTag        string
-	SocialStartMin   *int
-	SocialEndMin     *int
 
 	// Per-actor knowledge state — read by perception build:
 	//   - Acquaintances gates "Around you" name-vs-descriptor rendering
@@ -1418,8 +1391,6 @@ func CloneActorSnapshot(s *ActorSnapshot) *ActorSnapshot {
 	}
 	cp.ScheduleStartMin = copyIntPtr(s.ScheduleStartMin)
 	cp.ScheduleEndMin = copyIntPtr(s.ScheduleEndMin)
-	cp.SocialStartMin = copyIntPtr(s.SocialStartMin)
-	cp.SocialEndMin = copyIntPtr(s.SocialEndMin)
 	cp.PendingSummon = clonePendingSummon(s.PendingSummon)
 	cp.SummonRefusal = cloneSummonRefusal(s.SummonRefusal)
 	return &cp

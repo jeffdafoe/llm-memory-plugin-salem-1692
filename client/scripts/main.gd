@@ -311,13 +311,6 @@ func _on_catalog_ready() -> void:
     # Build catalog in editor panel now that assets are loaded
     if editor_panel != null:
         editor_panel.build_catalog()
-        # Push the object-tag allowlist — drives both the social-hour tag
-        # dropdown and the per-instance tag editor. If tags are already
-        # loaded, push immediately; otherwise subscribe for the one-shot.
-        if Catalog.object_tags_loaded_flag:
-            editor_panel.set_social_tag_options(Catalog.object_tags)
-        elif not Catalog.object_tags_loaded.is_connected(_on_object_tags_loaded):
-            Catalog.object_tags_loaded.connect(_on_object_tags_loaded)
     # Tag mutations broadcast back via this world signal — forward to the
     # panel so the chips refresh in place.
     if world != null and editor_panel != null:
@@ -325,10 +318,6 @@ func _on_catalog_ready() -> void:
             world.object_tags_updated.connect(_on_object_tags_updated_from_world)
         if not world.npc_attributes_changed.is_connected(_on_npc_attributes_changed_from_world):
             world.npc_attributes_changed.connect(_on_npc_attributes_changed_from_world)
-
-func _on_object_tags_loaded() -> void:
-    if editor_panel != null:
-        editor_panel.set_social_tag_options(Catalog.object_tags)
 
 func _on_object_tags_updated_from_world(object_id: String, tags: Array) -> void:
     if editor_panel != null:
@@ -601,7 +590,6 @@ func _build_ui() -> void:
     editor_panel.npc_home_structure_changed.connect(_on_npc_home_structure_changed)
     editor_panel.npc_work_structure_changed.connect(_on_npc_work_structure_changed)
     editor_panel.npc_schedule_changed.connect(_on_npc_schedule_changed)
-    editor_panel.npc_social_changed.connect(_on_npc_social_changed)
     editor_panel.npc_home_assign_requested.connect(_on_npc_home_assign_requested)
     editor_panel.npc_work_assign_requested.connect(_on_npc_work_assign_requested)
     editor_panel.npc_select_requested.connect(_on_npc_select_requested)
@@ -816,12 +804,6 @@ func _on_npc_work_structure_changed(structure_id: String) -> void:
 func _on_npc_schedule_changed(start_min: int, end_min: int) -> void:
     if editor.selected_npc != null:
         world.set_npc_schedule(editor.selected_npc, start_min, end_min)
-
-## Social-hour schedule changed (ZBBS-068, minute precision since ZBBS-071).
-## Empty tag clears the schedule (start_min/end_min ignored in that case).
-func _on_npc_social_changed(tag: String, start_min: int, end_min: int) -> void:
-    if editor.selected_npc != null:
-        world.set_npc_social(editor.selected_npc, tag, start_min, end_min)
 
 func _on_npc_home_assign_requested() -> void:
     editor.begin_assign_home()
@@ -1294,10 +1276,6 @@ func _on_npc_metadata_changed(npc_id: String) -> void:
     if container.has_meta("schedule_start_minute"):
         info["schedule_start_minute"] = container.get_meta("schedule_start_minute")
         info["schedule_end_minute"] = container.get_meta("schedule_end_minute")
-    if container.has_meta("social_tag"):
-        info["social_tag"] = container.get_meta("social_tag")
-        info["social_start_minute"] = container.get_meta("social_start_minute")
-        info["social_end_minute"] = container.get_meta("social_end_minute")
     info["hunger"] = int(container.get_meta("hunger", 0))
     info["thirst"] = int(container.get_meta("thirst", 0))
     info["tiredness"] = int(container.get_meta("tiredness", 0))

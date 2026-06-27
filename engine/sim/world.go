@@ -699,8 +699,7 @@ type World struct {
 
 	// RouteBoundaryStamps records, per route attribute slug (washerwoman /
 	// town_crier), the schedule-window boundary last acted on by the
-	// route-schedule trigger (ZBBS-HOME-446) — the edge re-fire guard, same
-	// role SocialLastBoundaryAt plays for the social scheduler. Keyed by
+	// route-schedule trigger (ZBBS-HOME-446) — the edge re-fire guard. Keyed by
 	// attribute slug rather than actor because each route attribute has a
 	// single carrier; nil-readable as empty (lazy-allocated on first stamp).
 	//
@@ -2018,9 +2017,6 @@ func snapshotActor(a *Actor, atTick uint64, degeneracyEnabled bool) *ActorSnapsh
 		WorkStructureID:      a.WorkStructureID,
 		ScheduleStartMin:     copyIntPtr(a.ScheduleStartMin),
 		ScheduleEndMin:       copyIntPtr(a.ScheduleEndMin),
-		SocialTag:            a.SocialTag,
-		SocialStartMin:       copyIntPtr(a.SocialStartMin),
-		SocialEndMin:         copyIntPtr(a.SocialEndMin),
 		Needs:                needsCopy,
 		InventoryHash:        hash,
 		Inventory:            inventoryCopy,

@@ -108,10 +108,6 @@ SELECT
     sim_state,
     sprite_id::text,
     facing,
-    social_tag,
-    social_start_minute,
-    social_end_minute,
-    social_last_boundary_at,
     admin,
     move_destination,
     production_focus
@@ -150,7 +146,6 @@ INSERT INTO actor (
     last_agent_tick_at, break_until, sleeping_until,
     move_attempt_counter, sim_state,
     sprite_id, facing,
-    social_tag, social_start_minute, social_end_minute, social_last_boundary_at,
     snapshot_gen, move_destination, production_focus
 ) VALUES (
     $1, $2, $3, $4,
@@ -161,8 +156,7 @@ INSERT INTO actor (
     $16, $17, $18,
     $19, $20,
     $21, $22,
-    $23, $24, $25, $26,
-    $27, $28, $29
+    $23, $24, $25
 )
 ON CONFLICT (id) DO UPDATE SET
     display_name           = EXCLUDED.display_name,
@@ -186,10 +180,6 @@ ON CONFLICT (id) DO UPDATE SET
     sim_state              = EXCLUDED.sim_state,
     sprite_id              = EXCLUDED.sprite_id,
     facing                 = EXCLUDED.facing,
-    social_tag             = EXCLUDED.social_tag,
-    social_start_minute    = EXCLUDED.social_start_minute,
-    social_end_minute      = EXCLUDED.social_end_minute,
-    social_last_boundary_at = EXCLUDED.social_last_boundary_at,
     snapshot_gen           = EXCLUDED.snapshot_gen,
     move_destination       = EXCLUDED.move_destination,
     production_focus       = EXCLUDED.production_focus`
@@ -543,10 +533,6 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			simState             string
 			spriteID             *string
 			facing               string
-			socialTag            *string
-			socialStartMinute    *int16
-			socialEndMinute      *int16
-			socialLastBoundaryAt *time.Time
 			isAdmin              bool
 			moveDestination      []byte
 			productionFocus      string
@@ -560,7 +546,6 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			&lastAgentTickAt, &breakUntil, &sleepingUntil,
 			&moveAttemptCounter, &simState,
 			&spriteID, &facing,
-			&socialTag, &socialStartMinute, &socialEndMinute, &socialLastBoundaryAt,
 			&isAdmin, &moveDestination, &productionFocus,
 		); err != nil {
 			return nil, fmt.Errorf("pg actors LoadAll scan: %w", err)
@@ -602,10 +587,6 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			State:                sim.ActorState(simState),
 			SpriteID:             sim.SpriteID(deref(spriteID)),
 			Facing:               facing,
-			SocialTag:            deref(socialTag),
-			SocialStartMin:       derefInt16(socialStartMinute),
-			SocialEndMin:         derefInt16(socialEndMinute),
-			SocialLastBoundaryAt: socialLastBoundaryAt,
 			IsAdmin:              isAdmin,
 			ProductionFocus:      sim.ItemKind(productionFocus),
 			ResumeDestination:    resumeDest,
@@ -1278,31 +1259,6 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 		if a.ScheduleEndMin != nil && (*a.ScheduleEndMin < 0 || *a.ScheduleEndMin > 1439) {
 			return fmt.Errorf("pg actors SaveSnapshot: id=%s ScheduleEndMin=%d out of range [0,1439]", a.ID, *a.ScheduleEndMin)
 		}
-		// Social config (tag/start/end) is all-or-none on the DB side
-		// (actor_social_all_or_none CHECK). SocialTag "" maps to SQL NULL
-		// (nilOnEmpty), so the empty-string check matches the column's NULL.
-		// SocialLastBoundaryAt is an independent idempotency stamp, not part of
-		// the all-or-none group.
-		socialConfigSet := a.SocialTag != "" || a.SocialStartMin != nil || a.SocialEndMin != nil
-		socialConfigComplete := a.SocialTag != "" && a.SocialStartMin != nil && a.SocialEndMin != nil
-		if socialConfigSet && !socialConfigComplete {
-			return fmt.Errorf("pg actors SaveSnapshot: id=%s has half-set social schedule (tag=%q start=%v end=%v) — tag/start/end must be all set or all unset",
-				a.ID, a.SocialTag, a.SocialStartMin, a.SocialEndMin)
-		}
-		// Social range: minute-of-day [0, 1439]. Guards intPtrToSQL's int16 narrowing.
-		if a.SocialStartMin != nil && (*a.SocialStartMin < 0 || *a.SocialStartMin > 1439) {
-			return fmt.Errorf("pg actors SaveSnapshot: id=%s SocialStartMin=%d out of range [0,1439]", a.ID, *a.SocialStartMin)
-		}
-		if a.SocialEndMin != nil && (*a.SocialEndMin < 0 || *a.SocialEndMin > 1439) {
-			return fmt.Errorf("pg actors SaveSnapshot: id=%s SocialEndMin=%d out of range [0,1439]", a.ID, *a.SocialEndMin)
-		}
-		// social_tag is character varying(64); rune-count guard so an
-		// over-long tag fails clean here instead of tripping the VARCHAR limit
-		// mid-Tx and rolling back the whole checkpoint (same pre-pass posture as
-		// the other varchar columns in this aggregate).
-		if n := utf8.RuneCountInString(a.SocialTag); n > 64 {
-			return fmt.Errorf("pg actors SaveSnapshot: id=%s SocialTag length %d exceeds VARCHAR(64)", a.ID, n)
-		}
 		// Need values must fit the CHECK 0-24 range (Slice 121). Key
 		// validation guards against whitespace-only keys that would
 		// pass Go-side empty checks and trip a btrim CHECK mid-Tx.
@@ -1517,13 +1473,9 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 			string(a.State),                         // $20 sim_state
 			nilOnEmpty(string(a.SpriteID)),          // $21 sprite_id (nullable uuid)
 			facing,                                  // $22 facing (validated above)
-			nilOnEmpty(a.SocialTag),                 // $23 social_tag
-			intPtrToSQL(a.SocialStartMin),           // $24 social_start_minute
-			intPtrToSQL(a.SocialEndMin),             // $25 social_end_minute
-			a.SocialLastBoundaryAt,                  // $26 social_last_boundary_at
-			actorGen,                                // $27 snapshot_gen
-			encodeMoveDestination(a.MoveIntent),     // $28 move_destination
-			string(a.ProductionFocus),               // $29 production_focus
+			actorGen,                                // $23 snapshot_gen
+			encodeMoveDestination(a.MoveIntent),     // $24 move_destination
+			string(a.ProductionFocus),               // $25 production_focus
 		); err != nil {
 			return fmt.Errorf("pg actors SaveSnapshot: upsert actor id=%s: %w", a.ID, err)
 		}

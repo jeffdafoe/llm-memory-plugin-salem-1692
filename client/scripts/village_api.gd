@@ -116,10 +116,10 @@ func check_contract_version(server_version: int) -> bool:
 ##   - sprite / display_name / facing / llm_memory_agent / kind / state / role
 ##     pass through unchanged (sprite is already inlined in the render subset).
 ##
-## The editor/HUD config fields (attributes, home/work bindings, schedule and
-## social windows) are now carried by AgentDTO (ZBBS-HOME-290) and passed
+## The editor/HUD config fields (attributes, home/work bindings, schedule
+## windows) are now carried by AgentDTO (ZBBS-HOME-290) and passed
 ## through here so the existing _place_npc meta-setters + editor panels pick
-## them up. The schedule/social *_minute fields are forwarded RAW (null
+## them up. The schedule *_minute fields are forwarded RAW (null
 ## preserved, not coerced) because _place_npc gates "set vs inherit dawn/dusk"
 ## on null. Needs (hunger/thirst/tiredness, ZBBS-HOME-462) and coins (LLM-70) are
 ## carried too — the editor's per-NPC readout renders them; live updates arrive via
@@ -148,9 +148,6 @@ func normalize_agent(dto: Dictionary) -> Dictionary:
         # Raw / null-preserving: _place_npc reads null as "inherit dawn/dusk".
         "schedule_start_minute": dto.get("schedule_start_minute", null),
         "schedule_end_minute": dto.get("schedule_end_minute", null),
-        "social_tag": dto.get("social_tag", null),
-        "social_start_minute": dto.get("social_start_minute", null),
-        "social_end_minute": dto.get("social_end_minute", null),
         # Live needs (ZBBS-HOME-462) — the editor needs readout reads these off the
         # agent row; _place_npc seeds them as container meta. Coerced to int (default
         # 0) since a decorative / sprite-less actor may omit them.
