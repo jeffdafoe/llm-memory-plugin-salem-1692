@@ -694,10 +694,10 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 				transcript = append(transcript, toolResultMsg(call.ID, "[error: already_gathering] you're already gathering here this turn — the pick is under way and the harvest lands in your pack shortly; do not gather again, just wait or call done()."))
 				continue
 			}
-			if vc.Name == "craft" && craftedThisTick {
+			if vc.Name == craftToolName && craftedThisTick {
 				observationOnly = false
 				result.ToolsFailedRejected = append(result.ToolsFailedRejected, call.Name)
-				transcript = append(transcript, toolResultMsg(call.ID, "[error: already_chose] you already chose what to forge this turn — your focus is set and you keep making it until you choose again; do not choose again now, tend your post or call done()."))
+				transcript = append(transcript, toolResultMsg(call.ID, "[error: already_chose] you already chose what to produce this turn — your focus is set and you keep making it until you choose again; do not choose again now, tend your post or call done()."))
 				continue
 			}
 
@@ -825,7 +825,7 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 				if vc.Name == "gather" {
 					gatheredThisTick = true
 				}
-				if vc.Name == "craft" {
+				if vc.Name == craftToolName {
 					craftedThisTick = true
 				}
 				// LLM-88: a non-terminal commit that moved the actor's own material
@@ -1307,13 +1307,13 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 	// budget (live: Ezekiel, craft×6 at the forge, LLM-120). Confirm the choice —
 	// named via the catalog plural noun the command resolved — and lead with the
 	// imperative to stop; the genericCallKey same-tick guard is the teeth.
-	if vc.Name == "craft" {
+	if vc.Name == craftToolName {
 		if r, ok := cmdResult.(sim.ProductionFocusResult); ok {
 			noun := r.Noun
 			if noun == "" {
 				noun = string(r.Focus)
 			}
-			return fmt.Sprintf("[ok] Your forge is set to %s — that is what you make until you choose again. Do not choose again now; tend your post or call done().", noun)
+			return fmt.Sprintf("[ok] You're set to produce %s — that is what you make until you choose again. Do not choose again now; tend your post or call done().", noun)
 		}
 	}
 	if vc.Name == "speak" {
