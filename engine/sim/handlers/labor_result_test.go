@@ -40,7 +40,7 @@ func TestCommitResultContent_LaborSteers(t *testing.T) {
 			name:   "accept_work failed_unavailable → honest no-hire outcome",
 			vc:     ValidatedCall{Name: "accept_work"},
 			result: sim.LaborAcceptResult{State: sim.LaborStateFailedUnavailable},
-			want:   "[ok] That couldn't be arranged — they had moved on, were already at a job, or you couldn't cover the coin.",
+			want:   "[ok] That couldn't be arranged — one of you was no longer available, they were already at a job, or you couldn't cover the coin.",
 		},
 		{
 			name:   "decline_work declined → refusal steer",

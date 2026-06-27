@@ -1496,7 +1496,7 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 			case sim.LaborStateExpired:
 				return "[ok] That offer had already expired — too late to take them on."
 			case sim.LaborStateFailedUnavailable:
-				return "[ok] That couldn't be arranged — they had moved on, were already at a job, or you couldn't cover the coin."
+				return "[ok] That couldn't be arranged — one of you was no longer available, they were already at a job, or you couldn't cover the coin."
 			}
 		}
 	}
