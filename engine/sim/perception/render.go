@@ -922,6 +922,7 @@ func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 				// while, since "## Around you" only lists standing presence.
 				label += " (just arrived)"
 			}
+			label += laborTiePhrase(m.SolicitTie)
 			names[i] = label
 		}
 		verb := "is"
@@ -1129,7 +1130,25 @@ func joinHuddleMembers(members []HuddleMember) string {
 }
 
 func renderHuddleMember(m HuddleMember) string {
-	return sanitizeInline(descriptorLabel(m.DisplayName, m.Role, m.Acquainted))
+	return sanitizeInline(descriptorLabel(m.DisplayName, m.Role, m.Acquainted)) + laborTiePhrase(m.SolicitTie)
+}
+
+// laborTiePhrase annotates a co-present member the subject shares a household or
+// workplace with as off-limits for paid-work solicitation (LLM-157). Empty for
+// laborTieNone, so it composes onto any member label without adding a separator of
+// its own. The wording names the tie (household / trade / both) so a worker reads
+// why the person in front of it isn't a work prospect.
+func laborTiePhrase(t laborTie) string {
+	switch t {
+	case laborTieHousehold:
+		return " (your own household — not someone to ask for paid work)"
+	case laborTieWorkplace:
+		return " (your own trade — not someone to ask for paid work)"
+	case laborTieBoth:
+		return " (your own household and trade — not someone to ask for paid work)"
+	default:
+		return ""
+	}
 }
 
 // renderNarrativeState writes the "Who you are:" section for shared-VA
