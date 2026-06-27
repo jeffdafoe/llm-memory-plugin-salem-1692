@@ -198,3 +198,102 @@ func TestSubjectHasPendingLaborOffer(t *testing.T) {
 		t.Error("subjectHasPendingLaborOffer(josiah) = true, want false (the employer, not the worker)")
 	}
 }
+
+// TestRender_PendingLaborOfferOut — the worker-side awaiting-acceptance self-state
+// anchor (LLM-164): a worker who has solicited and is waiting sees a line naming
+// the employer and terms and telling them to sit tight, so they don't flail into
+// an unrelated tool under the quiet backstop / "choose one action" pressure.
+func TestRender_PendingLaborOfferOut(t *testing.T) {
+	p := Payload{
+		ActorID:              "anne",
+		Actor:                ActorView{State: sim.StateIdle},
+		PendingLaborOfferOut: &PendingLaborOfferOutView{Employer: "john", Reward: 5, DurationMin: 30},
+		WarrantActorNames:    map[sim.ActorID]string{"john": "John Ellis"},
+		Baseline:             BaselinePresent,
+	}
+	out := combinedPrompt(Render(p, DefaultRenderConfig()))
+
+	if !strings.Contains(out, "offered to work for John Ellis") {
+		t.Errorf("pending-offer self-state line missing employer\n%s", out)
+	}
+	if !strings.Contains(out, "5 coins") || !strings.Contains(out, "30 minutes") {
+		t.Errorf("pending-offer self-state line missing the offered terms\n%s", out)
+	}
+	if !strings.Contains(out, "wait for their answer") {
+		t.Errorf("pending-offer self-state line missing the wait nudge\n%s", out)
+	}
+
+	// Absent when there is no outgoing offer.
+	p.PendingLaborOfferOut = nil
+	if out := combinedPrompt(Render(p, DefaultRenderConfig())); strings.Contains(out, "offered to work for") {
+		t.Errorf("pending-offer line leaked with no outgoing offer\n%s", out)
+	}
+}
+
+// TestBuildPendingLaborOfferOut — the Build-side scan projects the worker's OWN
+// pending offer into the awaiting-acceptance view, and ignores Working offers,
+// the employer side, and other workers' offers.
+func TestBuildPendingLaborOfferOut(t *testing.T) {
+	until := time.Date(2026, 6, 26, 12, 30, 0, 0, time.UTC)
+	snap := &sim.Snapshot{
+		LaborLedger: map[sim.LaborID]*sim.LaborOffer{
+			1: {ID: 1, WorkerID: "anne", EmployerID: "john", Reward: 5, DurationMin: 30, State: sim.LaborStatePending},
+			2: {ID: 2, WorkerID: "mary", EmployerID: "john", Reward: 4, DurationMin: 15, State: sim.LaborStatePending},
+			3: {ID: 3, WorkerID: "ezekiel", EmployerID: "josiah", Reward: 6, DurationMin: 20, State: sim.LaborStateWorking, WorkingUntil: &until},
+		},
+	}
+
+	// Anne (worker) has a pending offer out → the view carries employer + terms.
+	v := buildPendingLaborOfferOut(snap, "anne")
+	if v == nil || v.Employer != "john" || v.Reward != 5 || v.DurationMin != 30 {
+		t.Fatalf("buildPendingLaborOfferOut(anne) = %+v, want employer john, 5 coins, 30 min", v)
+	}
+	// John is the EMPLOYER on Anne's offer, not the worker → no outgoing offer.
+	if got := buildPendingLaborOfferOut(snap, "john"); got != nil {
+		t.Errorf("buildPendingLaborOfferOut(john) = %+v, want nil (employer, not worker)", got)
+	}
+	// Ezekiel's offer is Working, not Pending → not an awaiting-acceptance offer.
+	if got := buildPendingLaborOfferOut(snap, "ezekiel"); got != nil {
+		t.Errorf("buildPendingLaborOfferOut(ezekiel) = %+v, want nil (working, not pending)", got)
+	}
+}
+
+// TestBuild_PendingLaborOfferOut_ResolvesEmployerWithoutWarrant — the LLM-164
+// name-resolution regression, end-to-end through Build+Render: a waiting worker on
+// a tick with NO warrant referencing the employer (the idle/quiet-backstop wake
+// this anchor exists for, whose only warrant triggers on the worker itself) still
+// renders the employer's label off the standing PendingLaborOfferOut view rather
+// than falling back to "someone". Mirrors TestBuild_StandingOfferSurvivesConsumedWarrant
+// for the pay-offer side. The plain renderPendingLaborOfferOut unit test above hard-
+// codes WarrantActorNames, so it cannot catch a missing build-side wire.
+func TestBuild_PendingLaborOfferOut_ResolvesEmployerWithoutWarrant(t *testing.T) {
+	snap := &sim.Snapshot{
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			"anne": {DisplayName: "Anne Walker", Role: "vendor", Kind: sim.KindNPCStateful,
+				AttributeSlugs: []string{"worker"}, Needs: map[sim.NeedKey]int{}},
+			"john": {DisplayName: "John Ellis", Role: "tavernkeeper", Kind: sim.KindNPCStateful, Needs: map[sim.NeedKey]int{}},
+		},
+		LaborLedger: map[sim.LaborID]*sim.LaborOffer{
+			1: {ID: 1, WorkerID: "anne", EmployerID: "john", Reward: 5, DurationMin: 30, State: sim.LaborStatePending},
+		},
+		Scenes:     map[sim.SceneID]*sim.Scene{},
+		Huddles:    map[sim.HuddleID]*sim.Huddle{},
+		Structures: map[sim.StructureID]*sim.Structure{},
+	}
+	p := Build(snap, "anne", nil) // empty warrant batch — the idle-backstop tick
+
+	if p.PendingLaborOfferOut == nil || p.PendingLaborOfferOut.Employer != "john" {
+		t.Fatalf("PendingLaborOfferOut = %+v, want the standing offer to john", p.PendingLaborOfferOut)
+	}
+	if got := p.WarrantActorNames["john"]; got == "" {
+		t.Fatalf("employer name unresolved in WarrantActorNames — render will fall back to \"someone\"")
+	}
+	out := combinedPrompt(Render(p, DefaultRenderConfig()))
+	// Anne doesn't know John → role-gated label, NOT the raw "someone" fallback.
+	if !strings.Contains(out, "offered to work for the tavernkeeper") {
+		t.Errorf("pending-offer line missing the role-resolved employer\n%s", out)
+	}
+	if strings.Contains(out, "offered to work for someone") {
+		t.Errorf("employer degraded to \"someone\" — build-side name wire missing\n%s", out)
+	}
+}

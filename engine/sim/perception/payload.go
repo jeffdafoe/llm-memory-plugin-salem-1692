@@ -358,6 +358,17 @@ type Payload struct {
 	// on a job. LLM-26.
 	Laboring *LaboringView
 
+	// PendingLaborOfferOut is non-nil when the subject is a WORKER with an
+	// OUTGOING labor offer still awaiting the employer's answer (a Pending
+	// LaborOffer where WorkerID == subject). It carries the employer and the
+	// offered terms so the self-state line can say "you've offered to work for X
+	// — wait for their answer." The worker-side mirror of Laboring: a worker who
+	// has solicited has no Working job yet, so without this anchor they sit with
+	// no labor self-state and — under the LLM-159 quiet backstop / "choose one
+	// action" pressure — flail into an unrelated tool (live: a worker paid her own
+	// employer while waiting). nil when the subject has no outgoing offer. LLM-164.
+	PendingLaborOfferOut *PendingLaborOfferOutView
+
 	// CanSolicitWork is true when the subject is a free worker — carries the
 	// AttrWorker marker, is not currently laboring, and has an audience to
 	// offer to. The standing affordance that renders the solicit_work cue
@@ -664,6 +675,18 @@ type LaborOfferView struct {
 type LaboringView struct {
 	Employer sim.ActorID
 	Until    time.Time
+}
+
+// PendingLaborOfferOutView carries the subject's OWN outgoing labor offer that
+// is still awaiting the employer's answer, for the worker-side "you've offered,
+// wait for their answer" self-state anchor (LLM-164). The worker has no Working
+// job yet, so this is the only labor self-state they get while waiting; without
+// it they flail under action pressure. Employer plus the offered terms (the same
+// reward + duration they solicited with) so the line can name what's on the table.
+type PendingLaborOfferOutView struct {
+	Employer    sim.ActorID
+	Reward      int
+	DurationMin int
 }
 
 // OfferableCustomersView is the seller-side "offer your wares" cue's content
