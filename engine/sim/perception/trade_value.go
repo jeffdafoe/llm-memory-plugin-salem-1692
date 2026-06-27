@@ -23,7 +23,7 @@ import (
 // they have a coin sales history to draw on.
 //
 // Scoped to own-trade goods (RestockPolicy.ProduceEntries) ON PURPOSE: an NPC
-// knows what its own craft is worth, but does not omnisciently learn the going
+// knows what its own wares fetch, but does not omnisciently learn the going
 // rate of wares outside its trade — knowledge of others' prices stays "earned by
 // patronage" (the PriceBook buyer-side path in recovery_options / consumable_
 // vendors). Unlike "## Time to produce" this is NOT gated on being at the
@@ -111,7 +111,7 @@ func renderTradeValue(b *strings.Builder, v *TradeValueView) {
 		return
 	}
 	b.WriteString("## What your wares fetch\n")
-	b.WriteString("What your own craft is worth in coin — use it to set a fair price or weigh a trade:\n")
+	b.WriteString("What your wares fetch in coin — use it to set a fair price or weigh a trade:\n")
 	for _, it := range v.Items {
 		worth := fmt.Sprintf("%s each", coinsPhrase(it.High))
 		if it.Low != it.High {
