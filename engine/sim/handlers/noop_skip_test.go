@@ -54,6 +54,12 @@ func TestShouldSkipNoop_SeekWorkAlone_NoPeerNoNeeds_DoesNotSkip(t *testing.T) {
 		TriggerActorID: "alice",
 		Reason:         sim.SeekWorkWarrantReason{},
 	}
+	// WarrantMeta has no Kind field — Kind() derives from Reason, exactly as
+	// production stamps it (tryStampWarrant carries the Reason). Assert it so the
+	// gate test can't pass on a stray default rather than the real seek-work kind.
+	if w.Kind() != sim.WarrantKindSeekWork {
+		t.Fatalf("WarrantMeta.Kind() = %q, want %q", w.Kind(), sim.WarrantKindSeekWork)
+	}
 	if shouldSkipNoop(quietPayload(), defaultThresholds(), []sim.WarrantMeta{w}) {
 		t.Fatalf("expected skip=false for a lone broke worker — seek-work must tick (high-info)")
 	}
