@@ -110,3 +110,73 @@ func ProvisionWorker(id ActorID, agent string) Command {
 		},
 	}
 }
+
+// RetireWorkerResult reports an actor's driver state after it was retired from
+// Worker duty.
+type RetireWorkerResult struct {
+	ID         ActorID
+	LLMAgent   string
+	Kind       ActorKind
+	Attributes []string
+}
+
+// RetireWorker is the inverse of ProvisionWorker: it removes the `worker`
+// attribute so the seek-work backstop (LLM-141) and the solicit_work affordance
+// no longer engage the actor. Unlike ProvisionWorker it is NOT decorative-gated
+// and needs no restart — removing an attribute does NOT change the actor's Kind,
+// so there is no live reclassify and none of the mid-tick relink race that makes
+// provisioning decorative-only. The actor stays a live KindNPCShared/Stateful
+// NPC, just not a Worker (a non-worker broke NPC then idles — the idle backstop
+// noop-skips it, so it costs ~nothing).
+//
+// If toDecorative is set it ALSO parks the actor fully: unlink the backing VA,
+// reclassify Kind to decorative, and reset the actor's reactor state
+// (resetReactorStateOnLoad) so it goes cleanly dormant. The reset is REQUIRED,
+// not cosmetic: an agent-less decorative must carry no open warrant (else the
+// evaluator would tick the now-VA-less actor — the ZBBS-HOME-428 agent-less-tick
+// class), and clearing the in-flight attempt id makes any tick dispatched before
+// this lands stale on completion. Use it to return an experimental worker to the
+// inert sprite it was before provisioning (zero LLM cost); re-provision brings it
+// back.
+//
+// Idempotent: retiring a non-worker (or an already-decorative actor) is a no-op
+// for each leg, emitting no spurious frame. editableNPC rejects PCs / missing
+// (ErrActorNotFound). Emits NPCAttributesChanged / NPCAgentChanged only on an
+// actual change.
+func RetireWorker(id ActorID, toDecorative bool) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			a, err := editableNPC(w, id)
+			if err != nil {
+				return nil, err
+			}
+
+			// Drop the worker attribute (idempotent). No Kind change — this is
+			// the whole reason retire is restart-free and race-free.
+			if _, present := a.Attributes[AttrWorker]; present {
+				delete(a.Attributes, AttrWorker)
+				w.emit(&NPCAttributesChanged{ActorID: id, Attributes: sortedAttributeSlugs(a), At: time.Now().UTC()})
+			}
+
+			if toDecorative {
+				// Park it fully: unlink the VA, reclassify to decorative, and
+				// wipe reactor state. The reset discards any in-flight tick (its
+				// attempt id is cleared → stale on completion) and removes any
+				// open warrant so the agent-less actor is never ticked.
+				if a.LLMAgent != "" {
+					a.LLMAgent = ""
+					w.emit(&NPCAgentChanged{ActorID: id, LLMAgent: "", At: time.Now().UTC()})
+				}
+				a.Kind = ClassifyActorKind(a.LoginUsername, "")
+				resetReactorStateOnLoad(a)
+			}
+
+			return RetireWorkerResult{
+				ID:         id,
+				LLMAgent:   a.LLMAgent,
+				Kind:       a.Kind,
+				Attributes: sortedAttributeSlugs(a),
+			}, nil
+		},
+	}
+}

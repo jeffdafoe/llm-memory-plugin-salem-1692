@@ -126,3 +126,81 @@ func TestUmbilicalProvisionWorker_Gated(t *testing.T) {
 		t.Errorf("no token = %d, want 401", rec.Code)
 	}
 }
+
+// provisionStatue mints "statue" into a worker via the route — the precondition
+// for the retire tests.
+func provisionStatue(t *testing.T, srv *Server, h http.Handler) {
+	t.Helper()
+	seedWorkerProvisioning(t, srv)
+	if rec := postReq(t, h, "/api/village/umbilical/worker/provision", "tok", `{"actor_id":"statue"}`); rec.Code != http.StatusOK {
+		t.Fatalf("precondition provision = %d, want 200", rec.Code)
+	}
+}
+
+// TestUmbilicalRetireWorker_RemovesAttributeKeepsVA: the default retire drops the
+// worker attribute but leaves the actor a live npc_shared NPC.
+func TestUmbilicalRetireWorker_RemovesAttributeKeepsVA(t *testing.T) {
+	srv, h := controlServer(t, operatorPerms)
+	provisionStatue(t, srv, h)
+
+	rec := postReq(t, h, "/api/village/umbilical/worker/retire", "tok", `{"actor_id":"statue"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("retire = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var out retireWorkerResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Kind != "npc_shared" || out.Agent != sim.VendorAgentName {
+		t.Errorf("response = %+v, want npc_shared + %s (VA kept)", out, sim.VendorAgentName)
+	}
+	if len(out.Attributes) != 0 {
+		t.Errorf("attributes = %v, want [] (worker removed)", out.Attributes)
+	}
+}
+
+// TestUmbilicalRetireWorker_ToDecorative: to_decorative parks the actor — VA
+// cleared, reclassified decorative.
+func TestUmbilicalRetireWorker_ToDecorative(t *testing.T) {
+	srv, h := controlServer(t, operatorPerms)
+	provisionStatue(t, srv, h)
+
+	rec := postReq(t, h, "/api/village/umbilical/worker/retire", "tok", `{"actor_id":"statue","to_decorative":true}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("retire to_decorative = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var out retireWorkerResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Kind != "decorative" || out.Agent != "" {
+		t.Errorf("response = %+v, want decorative + empty agent", out)
+	}
+}
+
+// TestUmbilicalRetireWorker_MissingActorID: a body without actor_id is 400.
+func TestUmbilicalRetireWorker_MissingActorID(t *testing.T) {
+	_, h := controlServer(t, operatorPerms)
+	if rec := postReq(t, h, "/api/village/umbilical/worker/retire", "tok", `{}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("missing actor_id = %d, want 400", rec.Code)
+	}
+}
+
+// TestUmbilicalRetireWorker_PCRejected: a player (bram, seeded KindPC) is 404.
+func TestUmbilicalRetireWorker_PCRejected(t *testing.T) {
+	_, h := controlServer(t, operatorPerms)
+	if rec := postReq(t, h, "/api/village/umbilical/worker/retire", "tok", `{"actor_id":"bram"}`); rec.Code != http.StatusNotFound {
+		t.Errorf("PC retire = %d, want 404", rec.Code)
+	}
+}
+
+// TestUmbilicalRetireWorker_Gated: honors the control gate.
+func TestUmbilicalRetireWorker_Gated(t *testing.T) {
+	_, h := controlServer(t, nil)
+	if rec := postReq(t, h, "/api/village/umbilical/worker/retire", "tok", `{"actor_id":"statue"}`); rec.Code != http.StatusForbidden {
+		t.Errorf("non-operator = %d, want 403", rec.Code)
+	}
+	if rec := postReq(t, h, "/api/village/umbilical/worker/retire", "", `{"actor_id":"statue"}`); rec.Code != http.StatusUnauthorized {
+		t.Errorf("no token = %d, want 401", rec.Code)
+	}
+}
