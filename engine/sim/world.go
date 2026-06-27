@@ -506,7 +506,8 @@ type WorldSettings struct {
 	// huddle_loop_timeout_seconds.
 	//
 	// HuddleLoopRepeatPercent is the repetition threshold (0-100): the percent of
-	// the huddle's RecentUtterances that must be near-duplicates of another turn
+	// the huddle's content-bearing recent turns (filler-only lines like "Yes."
+	// are excluded from the count) that must be near-duplicates of another turn
 	// for the conversation to read as looping. Default 60
 	// (HuddleLoopRepeatPercentDefault). Tunable via huddle_loop_repeat_percent.
 	//

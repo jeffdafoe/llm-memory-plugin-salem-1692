@@ -673,8 +673,12 @@ func leaveCurrentHuddle(w *World, actor *Actor, now time.Time) LeaveHuddleResult
 	// ZBBS-WORK-370: the leaver's pending turn edges are moot once it exits.
 	actor.dropAwaitingReplies()
 	// LLM-159: a departure is non-conversational progress — the conversation's
-	// composition shifted, so a surviving huddle is not a stuck loop. Harmless on
-	// the paths below that go on to conclude the huddle (ConcludedAt gates the sweep).
+	// composition shifted, so a surviving huddle is not a stuck loop. Only the
+	// progress clock is stamped, NOT LastActivityAt: ZBBS-HOME-417 deliberately
+	// counts a join (but not a leave) as silence-sweep activity, and a huddle
+	// nobody speaks in after a member leaves SHOULD remain concludable by the
+	// silence sweep. Harmless on the paths below that go on to conclude the huddle
+	// (ConcludedAt gates both sweeps).
 	huddle.LastProgressAt = now
 	if members, ok := w.actorsByHuddle[huddleID]; ok {
 		delete(members, actor.ID)

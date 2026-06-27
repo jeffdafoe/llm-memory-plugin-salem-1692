@@ -99,6 +99,20 @@ func setHuddleLoopState(t *testing.T, w *sim.World, id sim.HuddleID, ring []sim.
 	}})
 }
 
+// huddleLoopingSince reads a huddle's LoopingSince off the world goroutine.
+func huddleLoopingSince(t *testing.T, w *sim.World, id sim.HuddleID) *time.Time {
+	t.Helper()
+	v := sendT(t, w, sim.Command{Fn: func(world *sim.World) (any, error) {
+		h, ok := world.Huddles[id]
+		if !ok {
+			return (*time.Time)(nil), nil
+		}
+		return h.LoopingSince, nil
+	}})
+	ls, _ := v.(*time.Time)
+	return ls
+}
+
 func wireLoopTelemetry(t *testing.T, w *sim.World) *loopRecordingTelemetry {
 	t.Helper()
 	sink := &loopRecordingTelemetry{}
@@ -185,8 +199,9 @@ func TestHuddleLoopSweep_ConcludesLoopSparesProductive(t *testing.T) {
 
 	enableLoopSweep(t, w, 2*time.Minute, 60)
 
-	old := now.Add(-3 * time.Minute) // LoopingSince already past the timeout
-	setHuddleLoopState(t, w, loop, loopingLines(now), &old, time.Time{})
+	onset := now.Add(-3 * time.Minute)          // LoopingSince already past the timeout
+	staleProgress := now.Add(-10 * time.Minute) // progress older than the repetitive ring
+	setHuddleLoopState(t, w, loop, loopingLines(now), &onset, staleProgress)
 	setHuddleLoopState(t, w, good, variedLines(now), nil, time.Time{})
 
 	sendT(t, w, sim.EvaluateHuddleLoopSweep(now))
@@ -240,8 +255,10 @@ func TestHuddleLoopSweep_PersistenceGate(t *testing.T) {
 	}
 }
 
-// TestHuddleLoopSweep_ProgressResets confirms a transaction/membership change
-// recorded after the loop onset spares the huddle — it is advancing, not stuck.
+// TestHuddleLoopSweep_ProgressResets confirms that a transaction / membership
+// change more recent than the repetitive ring spares the huddle and clears the
+// spell — the loop must re-form with fresh repetitive speech AFTER the progress
+// before it can be concluded.
 func TestHuddleLoopSweep_ProgressResets(t *testing.T) {
 	w, cancel := buildHuddleTestWorld(t)
 	defer cancel()
@@ -251,13 +268,17 @@ func TestHuddleLoopSweep_ProgressResets(t *testing.T) {
 	sendT(t, w, sim.JoinHuddle("bob", "tavern", "", now))
 	enableLoopSweep(t, w, 2*time.Minute, 60)
 
-	old := now.Add(-3 * time.Minute)      // onset already past timeout…
-	progress := now.Add(-1 * time.Minute) // …but progress happened after onset
-	setHuddleLoopState(t, w, h, loopingLines(now), &old, progress)
+	onset := now.Add(-3 * time.Minute)               // onset already past the timeout…
+	ring := loopingLines(now.Add(-30 * time.Second)) // …a repetitive ring, newest ~34s old…
+	progress := now.Add(-5 * time.Second)            // …but a transaction happened AFTER the newest line
+	setHuddleLoopState(t, w, h, ring, &onset, progress)
 
 	sendT(t, w, sim.EvaluateHuddleLoopSweep(now))
 	if huddleConcludedAt(t, w, h) != nil {
-		t.Error("a huddle with progress after loop onset must NOT be concluded")
+		t.Error("a huddle whose latest progress post-dates its repetitive ring must NOT be concluded")
+	}
+	if huddleLoopingSince(t, w, h) != nil {
+		t.Error("progress newer than the ring should clear LoopingSince (the spell is broken)")
 	}
 }
 

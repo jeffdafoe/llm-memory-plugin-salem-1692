@@ -226,11 +226,19 @@ func EvaluateHuddleLoopSweep(now time.Time) Command {
 					h.LoopingSince = nil
 					continue
 				}
-				// Non-conversational progress during the current spell means the
-				// huddle is advancing despite the repetitive surface — restart
-				// the persistence clock from this scan.
-				if h.LoopingSince != nil && h.LastProgressAt.After(*h.LoopingSince) {
+				// A loop spell is only armed by repetition that POST-DATES the
+				// last non-conversational progress (transaction / membership
+				// change). If the newest utterance is not newer than the last
+				// progress event, the repetitive ring is stale relative to that
+				// progress — the huddle transacted/changed and has not produced
+				// fresh repetitive speech since, so it is advancing, not stuck.
+				// Without this a single mid-loop transaction would only postpone
+				// conclusion by one timeout while the unchanged, still-repetitive
+				// ring re-armed against itself.
+				newestAt := h.RecentUtterances[len(h.RecentUtterances)-1].At
+				if !h.LastProgressAt.IsZero() && !newestAt.After(h.LastProgressAt) {
 					h.LoopingSince = nil
+					continue
 				}
 				if h.LoopingSince == nil {
 					t := now
@@ -275,7 +283,11 @@ func huddleConversationLooping(s WorldSettings, h *Huddle, now time.Time) bool {
 	if len(ring) < huddleLoopMinUtterances {
 		return false
 	}
-	if now.Sub(ring[len(ring)-1].At) > huddleLoopLiveWindow {
+	// A negative age (now earlier than the newest utterance — possible with
+	// caller-supplied/replayed timestamps) is not "live": treat it the same as
+	// stale so a loop never arms off an out-of-order clock.
+	age := now.Sub(ring[len(ring)-1].At)
+	if age < 0 || age > huddleLoopLiveWindow {
 		return false
 	}
 	return huddleUtteranceRepetition(ring) >= effectiveHuddleLoopRepeatFraction(s)
@@ -386,6 +398,14 @@ var huddleLoopStopwords = map[string]struct{}{
 	"ok": {}, "okay": {}, "yes": {}, "no": {}, "please": {}, "thank": {},
 	"thanks": {}, "hello": {}, "hi": {}, "hey": {}, "lets": {}, "let": {},
 	"well": {}, "now": {},
+	// Apostrophe-folded contractions: keepAlphaNum strips the apostrophe before
+	// stopword matching, so "I'll" -> "ill", "don't" -> "dont", etc. Filtering
+	// these stops conversational boilerplate from creating false content overlap.
+	"ill": {}, "youll": {}, "theyll": {}, "ive": {}, "youve": {},
+	"weve": {}, "theyve": {}, "cant": {}, "dont": {}, "wont": {}, "didnt": {},
+	"doesnt": {}, "isnt": {}, "arent": {}, "wasnt": {}, "werent": {}, "havent": {},
+	"hasnt": {}, "hadnt": {}, "shouldnt": {}, "couldnt": {}, "wouldnt": {},
+	"thats": {}, "whats": {}, "hes": {}, "shes": {}, "theres": {}, "heres": {},
 }
 
 // emitHuddleLoopTelemetry writes a `stuck` tick-telemetry record per member of a
