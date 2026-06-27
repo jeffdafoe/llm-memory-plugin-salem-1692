@@ -614,6 +614,16 @@ type Actor struct {
 	RedNeedLastKey       NeedKey
 	RedNeedLastValue     int
 
+	// Seek-work backstop pacing (LLM-141) — the broke-worker analog of the
+	// RedNeed* fields above. SeekWorkNextWarrantAt is the earliest wall-clock
+	// the sweep may stamp the next seek-work warrant (nil = eligible
+	// immediately); SeekWorkBackoffLevel is the escalation level (delay is
+	// base << level, capped at the 30-min idle-backstop rate). Eligibility is
+	// binary (coins == 0), so there is no last-value to track — going
+	// ineligible clears both via clearSeekWorkBackstop. Ephemeral: reset on load.
+	SeekWorkNextWarrantAt *time.Time
+	SeekWorkBackoffLevel  int
+
 	// Degeneracy observer (LLM-94). Per-actor tracking of consecutive
 	// "zero-yield" reactor ticks — substantive (LLM-deliberated) ticks that
 	// accomplished nothing (a present scene baseline showing no change, no

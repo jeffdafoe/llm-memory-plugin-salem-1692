@@ -2136,6 +2136,14 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 		return renderNarrationWarrantLine(n, w.Kind(), r.NarrationText, nameOf(w.TriggerActorID), maxTextBytes)
 	case sim.AdminDirectiveWarrantReason:
 		return renderImpulseWarrantLine(n, r.Message, maxTextBytes)
+	case sim.SeekWorkWarrantReason:
+		// LLM-141: a broke worker is woken to go earn. Engine-authored felt
+		// impulse, generic (no named hirer) — the worker decides freely where to
+		// go and whom to ask. Wake-from-anywhere nudge in the style of the
+		// stall-repair / production-choice lines; the standing labor affordance
+		// ("you take work for pay … solicit_work") renders separately once it is
+		// co-present with someone.
+		return fmt.Sprintf("%d. Your purse is empty, and you take work for pay — seek out someone who could use a hand and offer your labor.\n", n), false
 	case sim.ArrivalWarrantReason:
 		return renderArrivalWarrantLine(n, nameOf(w.TriggerActorID), r, placeNameOf), false
 	case sim.NeedThresholdWarrantReason:

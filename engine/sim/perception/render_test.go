@@ -772,6 +772,22 @@ func TestRenderWarrantLine_Stranded(t *testing.T) {
 	}
 }
 
+// --- seek-work warrant (LLM-141) ------------------------------------------
+
+func TestRenderWarrantLine_SeekWork(t *testing.T) {
+	line, truncated := renderWarrantLine(1, sim.WarrantMeta{
+		TriggerActorID: "lewis",
+		Reason:         sim.SeekWorkWarrantReason{},
+	}, func(sim.ActorID) string { return "you" }, func(string) string { return "" }, func(sim.ItemKind) bool { return false }, 200)
+	want := "1. Your purse is empty, and you take work for pay — seek out someone who could use a hand and offer your labor.\n"
+	if line != want {
+		t.Errorf("seek-work line = %q, want %q", line, want)
+	}
+	if truncated {
+		t.Error("seek-work line reported truncation — it has no free-text payload")
+	}
+}
+
 // --- serve-handover warrant (ZBBS-WORK-423) -------------------------------
 
 func serveHandoverWarrant(eventID sim.EventID, buyer sim.ActorID, item sim.ItemKind, qty, amount int, consumeNow bool) sim.WarrantMeta {
