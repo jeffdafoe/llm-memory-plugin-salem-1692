@@ -412,6 +412,47 @@ func TestHandleActorArrivedActionLog_StructureLabelAsText(t *testing.T) {
 	}
 }
 
+// --- TestHandleActorLeftStructureActionLog_StructureLabelAsText ----------
+// Departure out of a known structure: ActionType = departed, Text = the LEFT
+// structure's DisplayName, HuddleID empty (a departure leaves any huddle behind).
+//
+// The core invariant this PR depends on: the seam emits ActorLeftStructure BEFORE
+// the inside-flip, so when AppendActionLogEntry stamps the row's central scope the
+// actor is still attributed to the structure being left — and a co-present PC's
+// structure-scoped backload sees the exit. Reproduce that pre-flip state (hannah
+// still inside "tavern") and assert the stamp landed on "tavern".
+func TestHandleActorLeftStructureActionLog_StructureLabelAsText(t *testing.T) {
+	w, stop := buildActionLogCascadeWorld(t)
+	defer stop()
+
+	at := time.Now().UTC()
+	invokeOnWorld(t, w, func(world *sim.World) {
+		world.Actors["hannah"].InsideStructureID = "tavern" // pre-flip: still in the left structure
+		handleActorLeftStructureActionLog(world, &sim.ActorLeftStructure{
+			ActorID:     "hannah",
+			StructureID: "tavern",
+			At:          at,
+		})
+	})
+
+	got := readActionLog(t, w)
+	if len(got) != 1 {
+		t.Fatalf("len(ActionLog) = %d, want 1", len(got))
+	}
+	if got[0].ActionType != sim.ActionTypeDeparted {
+		t.Errorf("ActionType = %q, want %q", got[0].ActionType, sim.ActionTypeDeparted)
+	}
+	if got[0].Text != "the tavern" {
+		t.Errorf("Text = %q, want %q (left structure DisplayName)", got[0].Text, "the tavern")
+	}
+	if got[0].StructureID != "tavern" {
+		t.Errorf("StructureID = %q, want %q (row scoped to the left structure for the co-present backload)", got[0].StructureID, "tavern")
+	}
+	if got[0].HuddleID != "" {
+		t.Errorf("HuddleID = %q, want empty (departure leaves any huddle behind)", got[0].HuddleID)
+	}
+}
+
 // --- TestHandleActorArrivedActionLog_OutdoorEmptyText --------------
 // Outdoor arrival (FinalStructureID empty) → Text empty.
 func TestHandleActorArrivedActionLog_OutdoorEmptyText(t *testing.T) {

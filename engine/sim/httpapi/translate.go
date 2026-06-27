@@ -461,6 +461,21 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			StructureID: string(e.StructureID),
 			At:          e.At.UTC().Format(time.RFC3339),
 		}}, true
+	case *sim.ActorDepartureNarrated:
+		// Departure twin of ActorArrivalNarrated: observer-facing "X leaves Y" line
+		// for co-present PCs, rendered by the talk panel's _on_room_event as a narration
+		// line. NON-private + structure-scoped, emitted only for a public-scope
+		// departure, so the client's structure filter delivers it to co-present
+		// common-room PCs (no room_id needed — public scope is room_id="").
+		return WireFrame{Type: "room_event", Data: roomEventWireDTO{
+			ActorID:     string(e.ActorID),
+			ActorName:   e.ActorName,
+			Kind:        "peer_departure",
+			Text:        e.Text,
+			Private:     false,
+			StructureID: string(e.StructureID),
+			At:          e.At.UTC().Format(time.RFC3339),
+		}}, true
 	case *sim.StallConditionNarrated:
 		// LLM-118: a PC walked up to a worn market stall — a second-person felt
 		// atmosphere line ("The market stall here looks worn…"). PRIVATE +

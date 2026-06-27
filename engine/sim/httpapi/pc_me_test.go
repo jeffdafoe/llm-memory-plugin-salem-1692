@@ -689,6 +689,10 @@ func TestRenderActionLogEntry(t *testing.T) {
 		{"delivered multi-qty lodging falls back", sim.ActionLogEntry{ActorID: "npc", ActionType: sim.ActionTypeDelivered, Text: "2x nights_stay", CounterpartyName: "Tester"}, "Hannah", "Hannah delivers 2x nights_stay to Tester.", "act", true},
 		{"walked to dest", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeWalked, Text: "The Inn"}, "Tester", "Tester arrives at The Inn.", "act", true},
 		{"walked no dest", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeWalked, Text: ""}, "Tester", "Tester arrives.", "act", true},
+		{"walked common-noun dest gets article", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeWalked, Text: "Tavern"}, "Tester", "Tester arrives at the Tavern.", "act", true},
+		{"departed common-noun place", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeDeparted, Text: "Tavern"}, "Tester", "Tester leaves the Tavern.", "act", true},
+		{"departed possessive keeps no article", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeDeparted, Text: "Hannah's Inn"}, "Tester", "Tester leaves Hannah's Inn.", "act", true},
+		{"departed no place", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeDeparted, Text: ""}, "Tester", "Tester leaves.", "act", true},
 		{"took break", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeTookBreak, Text: "tired"}, "Tester", "Tester steps away.", "act", true},
 		{"unknown actor skipped", sim.ActionLogEntry{ActorID: "ghost", ActionType: sim.ActionTypeSpoke, Text: "boo"}, "", "", "", false},
 	}

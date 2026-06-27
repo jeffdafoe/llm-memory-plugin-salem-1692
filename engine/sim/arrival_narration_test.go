@@ -110,8 +110,68 @@ func TestArrivalNarration_EmitsToCoPresentPC(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("ActorArrivalNarrated count = %d, want 1", n)
 	}
-	if want := "Walker arrives at Cottage."; text != want {
+	if want := "Walker arrives at the Cottage."; text != want {
 		t.Errorf("narration text = %q, want %q", text, want)
+	}
+}
+
+// TestDepartureNarration_EmitsToCoPresentPC: an NPC walking OUT of a structure
+// where a PC stands emits ActorDepartureNarrated with the "<name> leaves the
+// <place>." line — the mirror of the arrival narration. The walker is first walked
+// IN (the known-good arrival path) so it genuinely crosses the footprint boundary
+// on the way out; counting by event type isolates the departure from the arrival.
+func TestDepartureNarration_EmitsToCoPresentPC(t *testing.T) {
+	w, cancel, rec := buildArrivalNarrationWorld(t, true)
+	defer cancel()
+	now := time.Now().UTC()
+	// Walk in first — walker ends inside "cottage".
+	if _, err := w.Send(sim.MoveActor("walker", sim.NewStructureEnterDestination("cottage"), false, now)); err != nil {
+		t.Fatalf("MoveActor in: %v", err)
+	}
+	driveToArrival(t, w, "walker", now, 40)
+	// Walk back out to the original outdoor start tile — crosses out of the footprint.
+	if _, err := w.Send(sim.MoveActor("walker", sim.NewPositionDestination(sim.Position{X: sim.PadX + 5, Y: sim.PadY + 5}), false, now)); err != nil {
+		t.Fatalf("MoveActor out: %v", err)
+	}
+	driveToArrival(t, w, "walker", now, 40)
+
+	var text string
+	n := rec.countEvents(func(e sim.Event) bool {
+		d, ok := e.(*sim.ActorDepartureNarrated)
+		if ok && d.ActorID == "walker" {
+			text = d.Text
+			return true
+		}
+		return false
+	})
+	if n != 1 {
+		t.Fatalf("ActorDepartureNarrated count = %d, want 1", n)
+	}
+	if want := "Walker leaves the Cottage."; text != want {
+		t.Errorf("narration text = %q, want %q", text, want)
+	}
+}
+
+// TestDepartureNarration_SkippedWithNoPC: the same walk-out with no PC present
+// emits no narration — the line would reach no one.
+func TestDepartureNarration_SkippedWithNoPC(t *testing.T) {
+	w, cancel, rec := buildArrivalNarrationWorld(t, false)
+	defer cancel()
+	now := time.Now().UTC()
+	if _, err := w.Send(sim.MoveActor("walker", sim.NewStructureEnterDestination("cottage"), false, now)); err != nil {
+		t.Fatalf("MoveActor in: %v", err)
+	}
+	driveToArrival(t, w, "walker", now, 40)
+	if _, err := w.Send(sim.MoveActor("walker", sim.NewPositionDestination(sim.Position{X: sim.PadX + 5, Y: sim.PadY + 5}), false, now)); err != nil {
+		t.Fatalf("MoveActor out: %v", err)
+	}
+	driveToArrival(t, w, "walker", now, 40)
+
+	if n := rec.countEvents(func(e sim.Event) bool {
+		_, ok := e.(*sim.ActorDepartureNarrated)
+		return ok
+	}); n != 0 {
+		t.Errorf("ActorDepartureNarrated count = %d, want 0 (no PC in earshot)", n)
 	}
 }
 
