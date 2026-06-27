@@ -180,6 +180,13 @@ func Pay(buyerID ActorID, recipientName string, amount int, forText string, at t
 				At:       at,
 			})
 
+			// LLM-159: a coin payment is non-conversational progress (and
+			// activity) in the buyer's huddle — stamp both clocks so the loop
+			// sweep spares a huddle that just transacted and the silence sweep
+			// keeps it alive. The pay command requires the buyer be in a huddle
+			// (validated above), so CurrentHuddleID is set here.
+			touchHuddleProgress(w, buyer.CurrentHuddleID, at)
+
 			// Bidirectional relationship writes. Texts mirror v1's
 			// recordPayInteractions: first person from each actor's POV,
 			// optional ForText folded in.

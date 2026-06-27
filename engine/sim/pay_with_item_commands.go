@@ -1355,8 +1355,10 @@ func acceptPendingOffer(w *World, seller *Actor, entry *PayLedgerEntry, at time.
 	// ZBBS-HOME-417: a completed transaction is conversational activity —
 	// reset the huddle's silence-sweep dormancy clock so a busy-but-quiet
 	// commerce huddle isn't concluded mid-trade. (Speech usually accompanies
-	// commerce here, but a silent accept must still count.)
-	touchHuddleActivity(w, entry.HuddleID, at)
+	// commerce here, but a silent accept must still count.) It is also
+	// non-conversational PROGRESS (LLM-159), so touchHuddleProgress stamps both
+	// clocks and the loop sweep spares the trading huddle too.
+	touchHuddleProgress(w, entry.HuddleID, at)
 
 	evt := &PayWithItemResolved{
 		LedgerID:       entry.ID,

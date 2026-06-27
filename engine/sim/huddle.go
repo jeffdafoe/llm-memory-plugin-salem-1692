@@ -53,6 +53,26 @@ type Huddle struct {
 	// per shared/GUIDELINES (transient state stays in-process; Postgres is for
 	// durable data). Oldest-first; trimmed to MaxRecentUtterancesPerHuddle.
 	RecentUtterances []Utterance
+
+	// LastProgressAt is the wall-clock time of the last NON-conversational
+	// progress in this huddle — a completed transaction (coin pay, pay-with-
+	// item, labor accept) or a membership change (join/leave). The loop sweep
+	// (RunHuddleLoopSweep, LLM-159) treats a huddle whose progress is newer than
+	// the current repetition spell as productive even when its speech looks
+	// repetitive, so a busy vendor huddle or a closing negotiation is never
+	// concluded as a livelock. Distinct from LastActivityAt, which a plain
+	// spoken line also bumps — speech is exactly what a livelock is made of, so
+	// it cannot itself be the progress signal. Zero until the first such event.
+	// In-memory only, not checkpointed — same transient posture as LastActivityAt.
+	LastProgressAt time.Time
+
+	// LoopingSince marks when the loop sweep (LLM-159) first observed this huddle
+	// in a sustained high-repetition, progress-free conversation — the onset of a
+	// candidate conversational livelock. nil whenever the huddle is not currently
+	// looping; a turn that breaks the repetition, a progress event, or the
+	// conversation going quiet clears it. The sweep concludes the huddle once the
+	// spell has persisted HuddleLoopTimeout. In-memory only, not checkpointed.
+	LoopingSince *time.Time
 }
 
 // Utterance is one spoken line recorded in a Huddle's RecentUtterances ring.
@@ -90,6 +110,10 @@ func CloneHuddle(h *Huddle) *Huddle {
 	if h.ConcludedAt != nil {
 		t := *h.ConcludedAt
 		cp.ConcludedAt = &t
+	}
+	if h.LoopingSince != nil {
+		t := *h.LoopingSince
+		cp.LoopingSince = &t
 	}
 	// Utterance is a pure value type (no pointers/maps), so a slice copy fully
 	// isolates the published snapshot from later world-goroutine appends.

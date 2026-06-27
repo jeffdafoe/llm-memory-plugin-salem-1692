@@ -322,8 +322,10 @@ func AcceptWork(callerID ActorID, laborID LaborID, at time.Time) Command {
 			worker.State = StateLaboring
 
 			// A struck deal is conversational activity — keep the huddle's
-			// silence sweep from concluding it mid-arrangement.
-			touchHuddleActivity(w, offer.HuddleID, at)
+			// silence sweep from concluding it mid-arrangement. It is also
+			// non-conversational PROGRESS (LLM-159), so it spares the huddle from
+			// the loop sweep too: touchHuddleProgress stamps both clocks.
+			touchHuddleProgress(w, offer.HuddleID, at)
 
 			evt := &LaborOfferAccepted{
 				LaborID:      offer.ID,

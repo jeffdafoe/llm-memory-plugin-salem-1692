@@ -752,6 +752,7 @@ func startTickers(ctx context.Context, w *sim.World) {
 	go sim.RunPayLedgerSweep(ctx, w)
 	go sim.RunLaborLedgerSweep(ctx, w)   // LLM-26: expire pending + settle completed labor offers
 	go sim.RunHuddleSilenceSweep(ctx, w) // ZBBS-HOME-417: conclude dormant huddles
+	go sim.RunHuddleLoopSweep(ctx, w)    // LLM-159: conclude conversational-livelock huddles (OFF unless huddle_loop_timeout_seconds > 0)
 	go sim.RunRoomSweep(ctx, w)
 	go sim.RunPCPresenceSweep(ctx, w) // ZBBS-WORK-326: reclaim ghost (closed-tab) PCs
 	go sim.RunSceneQuoteSweep(ctx, w)
