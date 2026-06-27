@@ -196,9 +196,23 @@ func buildSatiation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Acto
 		if tier < sim.NeedRed {
 			own = personalOwnStock(own)
 		}
-		peers := gatherCoPresentPeerOffers(snap, actorID, actorSnap, need)
-		free := gatherFreeSatiationSources(snap, actorID, actorSnap, need)
-		vendors := gatherSatiationVendors(snap, actorID, actorSnap, need)
+		// LLM-139: at a mildly-felt need, personal food already on hand is reason
+		// enough to just eat what you carry — the own-stock "consume to eat" line is
+		// the answer, and the walk-to directory of peers / free sources / vendors is
+		// noise (the 14-line food directory shown to a peckish NPC already carrying
+		// food). So below the red/distress tier, when any personal stock survives,
+		// suppress the directory. Deliberately presence-based, not sufficiency-based:
+		// a mild need doesn't demand a full meal, and if the carried food proves too
+		// little the need climbs to red, where the full list always rides (as it does
+		// when the actor carries nothing personal).
+		var peers []SatiationPeerOffer
+		var free []SatiationFreeSource
+		var vendors []SatiationVendor
+		if tier >= sim.NeedRed || len(own) == 0 {
+			peers = gatherCoPresentPeerOffers(snap, actorID, actorSnap, need)
+			free = gatherFreeSatiationSources(snap, actorID, actorSnap, need)
+			vendors = gatherSatiationVendors(snap, actorID, actorSnap, need)
+		}
 		if len(own) == 0 && len(peers) == 0 && len(free) == 0 && len(vendors) == 0 {
 			continue
 		}
@@ -356,6 +370,12 @@ func vendorStructureDistanceTiles(snap *sim.Snapshot, actorSnap *sim.ActorSnapsh
 // name-resolution stay discovery-gated; only the free public sources are common
 // knowledge. Liveness is implicit: consider() re-reads the live object's refresh
 // magnitude, so a well gone dry or removed drops out.
+//
+// The raw scan is then put through an ALTITUDE pass (LLM-139): collapsed to one
+// nearest representative per label and capped to maxSatiationFreeSources, so the
+// cue stays a short ordered list instead of a per-object data-dump.
+const maxSatiationFreeSources = 4
+
 func gatherFreeSatiationSources(snap *sim.Snapshot, subjectID sim.ActorID, actorSnap *sim.ActorSnapshot, need sim.NeedKey) []SatiationFreeSource {
 	if snap == nil || actorSnap == nil {
 		return nil
@@ -412,7 +432,26 @@ func gatherFreeSatiationSources(snap *sim.Snapshot, subjectID sim.ActorID, actor
 		}
 		return out[i].sourceKey < out[j].sourceKey
 	})
-	return out
+	// ALTITUDE (LLM-139): the common-knowledge scan lists EVERY matching object,
+	// so a farm's dozen co-located bushes or a town's several wells flood the cue
+	// and bury the load-bearing own-stock line (the hud-6a887a… blast: four copies
+	// of one bush kind + five of another). Walking to any source of a kind is
+	// equivalent, so keep one representative per label — the nearest, since `out`
+	// is already nearest-first — then cap to the nearest few kinds. Same altitude
+	// posture as the paid arm's dedup-by-structure + maxSatiationVendors.
+	seen := make(map[string]bool, len(out))
+	deduped := make([]SatiationFreeSource, 0, len(out))
+	for _, fs := range out {
+		if seen[fs.Label] {
+			continue
+		}
+		seen[fs.Label] = true
+		deduped = append(deduped, fs)
+	}
+	if len(deduped) > maxSatiationFreeSources {
+		deduped = deduped[:maxSatiationFreeSources]
+	}
+	return deduped
 }
 
 // objectRefreshMagnitude returns the positive amount of `need` eased by
