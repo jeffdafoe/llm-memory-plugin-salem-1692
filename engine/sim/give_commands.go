@@ -145,12 +145,17 @@ func GiveItems(
 			ttl := effectivePayLedgerTTL(w.Settings)
 			expiresAt := at.Add(ttl)
 			entry := &PayLedgerEntry{
-				ID:        id,
-				BuyerID:   giverID,
-				SellerID:  recipientID,
-				IsGift:    true,
-				PayItems:  cloneItemKindQtys(resolvedGiftItems),
-				Amount:    0,
+				ID:       id,
+				BuyerID:  giverID,
+				SellerID: recipientID,
+				IsGift:   true,
+				PayItems: cloneItemKindQtys(resolvedGiftItems),
+				Amount:   0,
+				// The optional "for" note rides Message — unused by a pending gift
+				// otherwise, and the accept path calls commitPayTransfer with an
+				// empty forText param, so the entry must carry the note itself for
+				// the gave/received_gift relationship facts to include it.
+				Message:   truncatePayMessage(forText),
 				State:     PayLedgerStatePending,
 				CreatedAt: at,
 				ExpiresAt: expiresAt,
@@ -185,6 +190,21 @@ func GiveItems(
 			}, nil
 		},
 	}
+}
+
+// AcceptGift is the recipient's accept for a one-way gift (LLM-138). It shares
+// the accept path with AcceptPay via acceptPayCommand, but requires the entry to
+// BE a gift (expectGift true) — so accept_gift can't resolve a purchase offer,
+// and accept_pay can't resolve a gift. The disposition boundary is enforced at
+// the substrate, not merely the gateTools advertising layer.
+func AcceptGift(callerID ActorID, ledgerID LedgerID, at time.Time) Command {
+	return acceptPayCommand(callerID, ledgerID, at, true)
+}
+
+// DeclineGift is the recipient's decline for a one-way gift (LLM-138) — the gift
+// counterpart to DeclinePay, sharing declinePayCommand with expectGift true.
+func DeclineGift(callerID ActorID, ledgerID LedgerID, reason string, at time.Time) Command {
+	return declinePayCommand(callerID, ledgerID, reason, at, true)
 }
 
 // giftFactText renders the relationship-memory line for a settled gift,

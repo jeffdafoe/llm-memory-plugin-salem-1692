@@ -183,15 +183,15 @@ func DecodeAcceptGiftArgs(raw json.RawMessage) (any, error) {
 	return AcceptGiftArgs{LedgerID: args.LedgerID}, nil
 }
 
-// HandleAcceptGift is the CommitFn for accept_gift. It reuses sim.AcceptPay —
-// a gift entry resolves through the same accept path (acceptPendingOffer
-// skips the bought-item gates for it).
+// HandleAcceptGift is the CommitFn for accept_gift → sim.AcceptGift, which
+// shares the accept path with AcceptPay but requires the entry to be a gift
+// (so accept_gift can't resolve a purchase offer).
 func HandleAcceptGift(in HandlerInput) (sim.Command, error) {
 	args, ok := in.Args.(AcceptGiftArgs)
 	if !ok {
 		return sim.Command{}, fmt.Errorf("accept_gift: handler received unexpected args type %T", in.Args)
 	}
-	return sim.AcceptPay(in.ActorID, sim.LedgerID(args.LedgerID), time.Now().UTC()), nil
+	return sim.AcceptGift(in.ActorID, sim.LedgerID(args.LedgerID), time.Now().UTC()), nil
 }
 
 // ---- decline_gift ---------------------------------------------------
@@ -251,7 +251,8 @@ func DecodeDeclineGiftArgs(raw json.RawMessage) (any, error) {
 	return args, nil
 }
 
-// HandleDeclineGift is the CommitFn for decline_gift. Reuses sim.DeclinePay.
+// HandleDeclineGift is the CommitFn for decline_gift → sim.DeclineGift (the
+// gift-disposition-checked decline).
 func HandleDeclineGift(in HandlerInput) (sim.Command, error) {
 	args, ok := in.Args.(DeclineGiftArgs)
 	if !ok {
@@ -263,5 +264,5 @@ func HandleDeclineGift(in HandlerInput) (sim.Command, error) {
 			return sim.Command{}, modelSafef("decline_gift: reason contains a disallowed control character at byte offset %d", i)
 		}
 	}
-	return sim.DeclinePay(in.ActorID, sim.LedgerID(args.LedgerID), reason, time.Now().UTC()), nil
+	return sim.DeclineGift(in.ActorID, sim.LedgerID(args.LedgerID), reason, time.Now().UTC()), nil
 }

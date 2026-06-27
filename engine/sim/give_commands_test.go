@@ -2,6 +2,7 @@ package sim_test
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -89,9 +90,9 @@ func TestGiveItems_HappyPath_AcceptMovesGoods(t *testing.T) {
 		t.Errorf("gift goods = %+v, want [{stew 2}]", entry.PayItems)
 	}
 
-	// Recipient accepts via the reused AcceptPay path.
-	if _, err := w.Send(sim.AcceptPay("bob", result.LedgerID, time.Now().UTC())); err != nil {
-		t.Fatalf("AcceptPay(gift): %v", err)
+	// Recipient accepts via accept_gift (the gift-disposition accept).
+	if _, err := w.Send(sim.AcceptGift("bob", result.LedgerID, time.Now().UTC())); err != nil {
+		t.Fatalf("AcceptGift: %v", err)
 	}
 
 	ledger = readPayLedger(t, w)
@@ -123,8 +124,8 @@ func TestGiveItems_Decline_NoMovement(t *testing.T) {
 	}
 	id := res.(sim.PayWithItemResult).LedgerID
 
-	if _, err := w.Send(sim.DeclinePay("bob", id, "I've plenty, thank ye", time.Now().UTC())); err != nil {
-		t.Fatalf("DeclinePay(gift): %v", err)
+	if _, err := w.Send(sim.DeclineGift("bob", id, "I've plenty, thank ye", time.Now().UTC())); err != nil {
+		t.Fatalf("DeclineGift: %v", err)
 	}
 	ledger := readPayLedger(t, w)
 	if got := ledger[id].State; got != sim.PayLedgerStateDeclined {
@@ -212,8 +213,8 @@ func TestGiveItems_AcceptRevalidatesGiverHoldings(t *testing.T) {
 		t.Fatalf("drain giver: %v", err)
 	}
 
-	if _, err := w.Send(sim.AcceptPay("bob", id, time.Now().UTC())); err != nil {
-		t.Fatalf("AcceptPay: %v", err)
+	if _, err := w.Send(sim.AcceptGift("bob", id, time.Now().UTC())); err != nil {
+		t.Fatalf("AcceptGift: %v", err)
 	}
 	ledger := readPayLedger(t, w)
 	if got := ledger[id].State; got != sim.PayLedgerStateFailedInsufficientGoods {
@@ -254,4 +255,100 @@ func equalFold(a, b string) bool {
 		}
 	}
 	return true
+}
+
+// TestGift_DispositionBoundary (LLM-138, code_review #2): accept_gift /
+// decline_gift must not resolve a purchase offer, and accept_pay / decline_pay
+// must not resolve a gift — the gift/buy boundary is enforced at the substrate,
+// not just the gateTools advertising layer (which only governs which tools are
+// shown, not which a model may dispatch).
+func TestGift_DispositionBoundary(t *testing.T) {
+	w, stop := giftWorld(t)
+	defer stop()
+	now := time.Now().UTC()
+	// id 1: a normal purchase offer (alice buys stew from bob). id 2: a gift
+	// (alice gives stew to bob). Both pending; bob is the resolving party.
+	seedLedgerEntry(t, w, sim.PayLedgerEntry{
+		ID: 1, BuyerID: "alice", SellerID: "bob", ItemKind: "stew", Qty: 1, Amount: 4,
+		State: sim.PayLedgerStatePending, ExpiresAt: now.Add(time.Minute), HuddleID: "h1",
+	})
+	seedLedgerEntry(t, w, sim.PayLedgerEntry{
+		ID: 2, BuyerID: "alice", SellerID: "bob", IsGift: true,
+		PayItems: []sim.ItemKindQty{{Kind: "stew", Qty: 1}},
+		State:    sim.PayLedgerStatePending, ExpiresAt: now.Add(time.Minute), HuddleID: "h1",
+	})
+
+	mustErr := func(name string, err error, want string) {
+		if err == nil {
+			t.Errorf("%s: want error, got nil", name)
+			return
+		}
+		if !containsFold(err.Error(), want) {
+			t.Errorf("%s: error = %q, want substring %q", name, err.Error(), want)
+		}
+	}
+	_, e1 := w.Send(sim.AcceptGift("bob", 1, now))
+	mustErr("accept_gift on purchase offer", e1, "not a gift")
+	_, e2 := w.Send(sim.AcceptPay("bob", 2, now))
+	mustErr("accept_pay on gift", e2, "is a gift")
+	_, e3 := w.Send(sim.DeclineGift("bob", 1, "", now))
+	mustErr("decline_gift on purchase offer", e3, "not a gift")
+	_, e4 := w.Send(sim.DeclinePay("bob", 2, "", now))
+	mustErr("decline_pay on gift", e4, "is a gift")
+
+	// Both entries are untouched (still pending) — a verb mismatch is an
+	// idempotent reject, not a transition.
+	ledger := readPayLedger(t, w)
+	if ledger[1].State != sim.PayLedgerStatePending || ledger[2].State != sim.PayLedgerStatePending {
+		t.Errorf("verb mismatch must not transition either entry: %s / %s", ledger[1].State, ledger[2].State)
+	}
+}
+
+// TestGiveItems_ForNotePersisted (LLM-138, code_review #3): the gift's optional
+// "for" note rides entry.Message and reaches the gave/received_gift relationship
+// facts (the accept path calls commitPayTransfer with an empty forText param, so
+// the note must live on the entry).
+func TestGiveItems_ForNotePersisted(t *testing.T) {
+	w, stop := giftWorld(t)
+	defer stop()
+	res, err := w.Send(sim.GiveItems("alice", "Bob", giftLine("stew", 1), "for your hunger", time.Now().UTC()))
+	if err != nil {
+		t.Fatalf("GiveItems: %v", err)
+	}
+	id := res.(sim.PayWithItemResult).LedgerID
+	if _, err := w.Send(sim.AcceptGift("bob", id, time.Now().UTC())); err != nil {
+		t.Fatalf("AcceptGift: %v", err)
+	}
+	joined := strings.Join(readSalientFacts(t, w, "bob", "alice"), " | ") // recipient's facts about the giver
+	if !strings.Contains(joined, "for your hunger") {
+		t.Errorf("received-gift fact should include the for-note, got: %s", joined)
+	}
+	if !containsFold(joined, "gave me") {
+		t.Errorf("received-gift fact should read 'gave me ...', got: %s", joined)
+	}
+}
+
+// readSalientFacts returns the text of every SalientFact on `from`'s
+// relationship to `to`, read live on the world goroutine.
+func readSalientFacts(t *testing.T, w *sim.World, from, to sim.ActorID) []string {
+	t.Helper()
+	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Actors[from]
+		if a == nil || a.Relationships == nil {
+			return []string{}, nil
+		}
+		rel := a.Relationships[to]
+		if rel == nil {
+			return []string{}, nil
+		}
+		out := make([]string, 0, len(rel.SalientFacts))
+		for _, f := range rel.SalientFacts {
+			out = append(out, f.Text)
+		}
+		return out, nil
+	}})
+	if err != nil {
+		t.Fatalf("readSalientFacts: %v", err)
+	}
+	return res.([]string)
 }
