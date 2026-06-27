@@ -99,6 +99,13 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 		p.Laboring == nil &&
 		!subjectHasPendingLaborOffer(snap, actorID) &&
 		hasSolicitableAudience(snap, actorSnap, p.Surroundings)
+	// LLM-152: when the seek-work backstop nudges a broke worker to go earn (the
+	// LLM-141 cue), give it direction — the town's businesses as move_to
+	// destinations. Gated on the seek_work warrant being in this tick's batch so
+	// the directory rides only with the nudge, never bloating an ordinary tick.
+	if hasSeekWorkWarrant(p.Warrants) {
+		p.SeekWorkPlaces = buildSeekWorkPlaces(snap)
+	}
 	p.TurnState = buildTurnState(snap, actorID, actorSnap, p.Surroundings.HuddleMembers)
 	p.Anchors = buildAnchors(snap, actorSnap)
 	p.NarrativeState = buildNarrativeState(actorSnap)
@@ -2563,6 +2570,50 @@ func subjectIsWorker(actorSnap *sim.ActorSnapshot) bool {
 		}
 	}
 	return false
+}
+
+// hasSeekWorkWarrant reports whether the actor's consumed warrant batch carries a
+// seek-work nudge this tick — the gate for surfacing the businesses directory
+// (LLM-152). The seek-work warrant is the LLM-141 backstop's "go earn" impulse;
+// its presence is what makes the list of places relevant, so the directory rides
+// only with the nudge.
+func hasSeekWorkWarrant(warrants []sim.WarrantMeta) bool {
+	for _, w := range warrants {
+		if _, ok := w.Reason.(sim.SeekWorkWarrantReason); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// buildSeekWorkPlaces lists the town's businesses as move_to destinations for a
+// worker nudged to seek work (LLM-152). Businesses are village objects tagged
+// sim.TagBusiness; each shares its id with the co-located structure (the identity
+// bridge), so resolveStructureLabel yields the clean structure name the worker
+// navigates to by name (LLM-142). De-duped by name and sorted for a deterministic
+// line; falls back to the object's own DisplayName if no structure resolves.
+func buildSeekWorkPlaces(snap *sim.Snapshot) []string {
+	if snap == nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var names []string
+	for _, obj := range snap.VillageObjects {
+		if obj == nil || !obj.HasTag(sim.TagBusiness) {
+			continue
+		}
+		label, ok := resolveStructureLabel(snap, sim.StructureID(obj.ID))
+		if !ok || label == "" {
+			label = obj.DisplayName
+		}
+		if label == "" || seen[label] {
+			continue
+		}
+		seen[label] = true
+		names = append(names, label)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // hasSolicitableAudience reports whether at least one awake, addressable actor in

@@ -246,6 +246,10 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// follows so a free worker sees the option to offer their labor.
 	renderLaborOffers(&ephemeral, p.LaborOffersForMe, nameOf)
 	renderLaborAffordance(&ephemeral, p.CanSolicitWork)
+	// LLM-152: the directional half of the seek-work nudge — when a broke worker
+	// is told to go earn (seek_work warrant), list the town's businesses to head
+	// to. Sits with the labor affordance; non-empty only on a seek-work tick.
+	renderSeekWorkPlaces(&ephemeral, p.SeekWorkPlaces)
 	renderOfferableCustomers(&ephemeral, p.OfferableCustomers)
 	renderTradeValue(&ephemeral, p.TradeValue)
 	renderStandingQuotesFromMe(&ephemeral, p.StandingQuotesFromMe)
@@ -1813,6 +1817,23 @@ func renderLaborAffordance(b *strings.Builder, canSolicit bool) {
 		return
 	}
 	b.WriteString("You take work for pay. If someone here outside your own household or trade has a task you could do and you want the coin, offer your labor with solicit_work — name them, the coins you want, and roughly how long the job will take.\n")
+}
+
+// renderSeekWorkPlaces lists the town's businesses as move_to destinations for a
+// broke worker nudged to go earn (LLM-152) — the directional companion to the
+// seek-work impulse line (the "go seek work" warrant renders separately in the
+// what-just-happened block). Content-gated on a non-empty list, which Build
+// populates only on a seek-work tick. Names only: each is a structure navigable
+// by move_to-by-name (LLM-142).
+func renderSeekWorkPlaces(b *strings.Builder, places []string) {
+	if len(places) == 0 {
+		return
+	}
+	clean := make([]string, len(places))
+	for i, p := range places {
+		clean[i] = sanitizeInline(p)
+	}
+	fmt.Fprintf(b, "If you mean to take paid work, use move_to to head to one of the town's businesses and offer your labor once you arrive. The businesses in town: %s.\n", strings.Join(clean, ", "))
 }
 
 // humanizeWorkMinutes renders a work duration in minutes as legible prose for a

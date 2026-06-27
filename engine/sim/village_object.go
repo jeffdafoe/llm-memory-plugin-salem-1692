@@ -257,6 +257,13 @@ func CloneVillageObject(v *VillageObject) *VillageObject {
 	return &cp
 }
 
+// TagBusiness marks a village object — and, via the shared structure↔object id,
+// the structure it co-locates with — as a place of trade where a worker can seek
+// paid work (a shop, smithy, tavern, inn, market stall, or farm). Curated on
+// objects through the editor's tag tool; read by the seek-work directional cue
+// (LLM-152).
+const TagBusiness = "business"
+
 // HasTag returns true if this instance carries tag.
 func (o *VillageObject) HasTag(tag string) bool {
 	for _, t := range o.Tags {

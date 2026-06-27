@@ -365,6 +365,15 @@ type Payload struct {
 	// drives both so cue and tool can't drift (discussion-109). LLM-26.
 	CanSolicitWork bool
 
+	// SeekWorkPlaces are the town's businesses (village objects tagged
+	// sim.TagBusiness, resolved to their structure names), surfaced as move_to
+	// destinations when a broke worker is nudged to go earn. Build populates it
+	// ONLY on a seek-work tick (a SeekWorkWarrantReason in the batch), so a
+	// non-empty slice IS the render gate; sorted and de-duped. Names only — each
+	// is navigable by move_to-by-name (LLM-142). The directional half of the
+	// LLM-141 seek-work backstop (LLM-152).
+	SeekWorkPlaces []string
+
 	// LocalDateUTC is midnight UTC of the village's current calendar date,
 	// copied from Snapshot.LocalDateUTC. Render's order-book split
 	// (renderPendingDeliveries*) compares it against each OrderView.ReadyBy so
