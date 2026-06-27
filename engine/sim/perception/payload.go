@@ -320,6 +320,18 @@ type Payload struct {
 	// LedgerID ascending for determinism.
 	PayOffersForMe []sim.PayOfferWarrantReason
 
+	// GiftsForMe / GiftsFromMe / SettledGiftsFromMe are the one-way gift lane
+	// (LLM-138), all scanned from snap.PayLedger's IsGift entries: pending gifts
+	// offered TO the subject (the accept_gift / decline_gift decision view),
+	// the subject's OWN pending gifts (don't-re-offer standing view), and its
+	// recently-settled gifts (taken-or-not resolution view). Gift entries are
+	// excluded from the buy-side pay scans and rendered in dedicated sections so
+	// a gift never reads through buy-shaped copy. nil (render content-gates) when
+	// empty. Ordering: by LedgerID ascending for determinism.
+	GiftsForMe         []GiftOfferView
+	GiftsFromMe        []StandingGiftView
+	SettledGiftsFromMe []SettledGiftView
+
 	// RoomAlreadySoldOrderByLedger maps a pending lodging offer (by its
 	// LedgerID in PayOffersForMe) to an existing Ready lodging order this
 	// keeper already owes the SAME buyer. It marks the duplicate-room

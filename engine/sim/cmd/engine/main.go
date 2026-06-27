@@ -587,6 +587,7 @@ func registerTools(r *handlers.Registry, searcher llm.MemorySearcher) error {
 		{"pay_with_item_family", handlers.RegisterPayWithItemFamily},
 		{"labor_family", handlers.RegisterLaborFamily}, // LLM-26: solicit_work / accept_work / decline_work
 		{"offer_trade", handlers.RegisterOfferTrade},   // ZBBS-HOME-407
+		{"give_family", handlers.RegisterGiveFamily},   // LLM-138: give / accept_gift / decline_gift
 		{"take_break", handlers.RegisterTakeBreak},     // ZBBS-HOME-284 #4
 		{"stay_open", handlers.RegisterStayOpen},       // ZBBS-WORK-387
 		{"move_to", handlers.RegisterMoveTo},           // ZBBS-HOME-285

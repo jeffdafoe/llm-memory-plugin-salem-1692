@@ -287,6 +287,18 @@ type PayLedgerEntry struct {
 	// coin debit.
 	PayItems []ItemKindQty
 
+	// IsGift marks a one-way gift offer (LLM-138): the BuyerID (giver)
+	// hands the PayItems goods to the SellerID (recipient) for nothing in
+	// return. ItemKind/Qty (the bought-item leg) are empty and Amount is 0
+	// — the entry carries only the gift goods on PayItems, which already
+	// flow buyer→seller in commitPayTransfer. A gift rides the same ledger
+	// rails (Pending → Accepted/Declined/etc., the same sweep + warrant +
+	// resolution flow) but commitPayTransfer skips the bought-item delivery
+	// leg and acceptPendingOffer skips the bought-item gates (catalog /
+	// stock / lodging / stall) for it. Minted only by sim.GiveItems; resolved
+	// by accept_gift / decline_gift (which reuse AcceptPay / DeclinePay).
+	IsGift bool
+
 	// QuoteID is non-zero when the buyer's pay_with_item call referenced
 	// a quote_id. Zero for a slow-path offer. Denormalized — cheap to
 	// store, makes restart re-stamp + admin lookups straightforward.

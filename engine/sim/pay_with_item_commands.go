@@ -1124,6 +1124,16 @@ func runPayWithItemFastPath(
 // nil err with the PayLedgerEntry's new state so callers can inspect
 // the outcome.
 func AcceptPay(callerID ActorID, ledgerID LedgerID, at time.Time) Command {
+	return acceptPayCommand(callerID, ledgerID, at, false)
+}
+
+// acceptPayCommand is the shared accept path for AcceptPay (expectGift false)
+// and AcceptGift (expectGift true). The expectGift flag enforces the
+// verb/disposition match (LLM-138) right after the entry is resolved, keeping
+// accept_gift and accept_pay mutually exclusive at the SUBSTRATE — not merely at
+// the gateTools advertising layer — so a model can't cross gift/buy semantics at
+// resolution time by passing a wrong-kind ledger_id.
+func acceptPayCommand(callerID ActorID, ledgerID LedgerID, at time.Time, expectGift bool) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
 			// Gate 1: caller exists.
@@ -1139,6 +1149,15 @@ func AcceptPay(callerID ActorID, ledgerID LedgerID, at time.Time) Command {
 					"AcceptPay: ledger %d not found — re-check the ledger_id.",
 					ledgerID,
 				)
+			}
+
+			// Verb/disposition match (LLM-138): accept_pay must not resolve a
+			// gift, and accept_gift must not resolve a purchase offer.
+			if entry.IsGift != expectGift {
+				if expectGift {
+					return nil, fmt.Errorf("offer %d is not a gift — use accept_pay to answer a purchase offer.", ledgerID)
+				}
+				return nil, fmt.Errorf("offer %d is a gift — use accept_gift to take it.", ledgerID)
 			}
 
 			// Gate 3: auth (idempotent reject — NO transition).
@@ -1229,21 +1248,32 @@ func acceptPendingOffer(w *World, seller *Actor, entry *PayLedgerEntry, at time.
 		return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedUnavailable, "", at), nil
 	}
 
+	// Gates 7–10b are the bought-item / commerce preconditions (the
+	// recipient's break, stall, the bought ItemKind's catalog presence,
+	// stock, and lodging-room availability). A gift (LLM-138) carries no
+	// bought item — ItemKind is empty, the recipient provides nothing — so
+	// these are skipped for it. Gate 12 below still revalidates the GIVER
+	// holds the gift goods (entry.PayItems), which is the real gift
+	// precondition. Co-presence (gate 6) already ran and applies to a gift too.
+
 	// Gate 7: seller break (simple-strict, ledger-substrate § 11).
-	if seller.BreakUntil != nil && seller.BreakUntil.After(at) {
+	if !entry.IsGift && seller.BreakUntil != nil && seller.BreakUntil.After(at) {
 		return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedUnavailable, "", at), nil
 	}
 
 	// Gate 7b (LLM-118): a degraded stall is closed for trade — fail the accept
 	// with a buyer-facing reason until the owner mends it.
-	if sellerStallDegraded(w, seller.ID) {
+	if !entry.IsGift && sellerStallDegraded(w, seller.ID) {
 		return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedUnavailable,
 			fmt.Sprintf("%s's stall is in disrepair — they can't trade until it's mended.", seller.DisplayName), at), nil
 	}
 
-	// Gate 8: ItemKind catalog still has this kind.
-	if _, ok := w.ItemKinds[entry.ItemKind]; !ok {
-		return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedUnavailable, "", at), nil
+	// Gate 8: ItemKind catalog still has this kind (skipped for a gift — it has
+	// no bought item, so entry.ItemKind is empty).
+	if !entry.IsGift {
+		if _, ok := w.ItemKinds[entry.ItemKind]; !ok {
+			return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedUnavailable, "", at), nil
+		}
 	}
 
 	// Gate 9: consumer departure. Only relevant when a non-
@@ -1261,7 +1291,7 @@ func acceptPendingOffer(w *World, seller *Actor, entry *PayLedgerEntry, at time.
 	// runPayWithItemFastPath so the two paths agree. Funds (gate 11),
 	// co-presence, catalog, TTL, and counter-chain gates all still run
 	// for service items — only the stock/inventory check is bypassed.
-	if !itemHasCapability(w, entry.ItemKind, "service") {
+	if !entry.IsGift && !itemHasCapability(w, entry.ItemKind, "service") {
 		effectiveConsumers := effectivePayConsumerCount(entry.ConsumerIDs)
 		// Defensive overflow guard — entry.Qty was capped at intake,
 		// but a future repo could load entries with whatever shape;
@@ -1288,7 +1318,7 @@ func acceptPendingOffer(w *World, seller *Actor, entry *PayLedgerEntry, at time.
 	// A FUTURE reservation skips this: it mints a deferred Order and the room
 	// is assigned at deliver_order on the booked day. This is the lodging
 	// analog of the (service-skipped) stock gate above.
-	if itemHasCapability(w, entry.ItemKind, "lodging") && !isAdvanceLodgingBooking(w, entry, at) {
+	if !entry.IsGift && itemHasCapability(w, entry.ItemKind, "lodging") && !isAdvanceLodgingBooking(w, entry, at) {
 		if !lodgingRoomGrantable(w, seller, entry.BuyerID) {
 			return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedUnavailable, "", at), nil
 		}
@@ -1366,6 +1396,13 @@ func acceptPendingOffer(w *World, seller *Actor, entry *PayLedgerEntry, at time.
 // with the decline reason (trim + rune-truncate), emit
 // PayWithItemResolved{Declined}. Returns the new state.
 func DeclinePay(callerID ActorID, ledgerID LedgerID, reason string, at time.Time) Command {
+	return declinePayCommand(callerID, ledgerID, reason, at, false)
+}
+
+// declinePayCommand is the shared decline path for DeclinePay (expectGift false)
+// and DeclineGift (expectGift true) — the verb/disposition boundary (LLM-138),
+// mirroring acceptPayCommand.
+func declinePayCommand(callerID ActorID, ledgerID LedgerID, reason string, at time.Time, expectGift bool) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
 			if _, ok := w.Actors[callerID]; !ok {
@@ -1377,6 +1414,13 @@ func DeclinePay(callerID ActorID, ledgerID LedgerID, reason string, at time.Time
 					"DeclinePay: ledger %d not found — re-check the ledger_id.",
 					ledgerID,
 				)
+			}
+			// Verb/disposition match (LLM-138), mirroring acceptPayCommand.
+			if entry.IsGift != expectGift {
+				if expectGift {
+					return nil, fmt.Errorf("offer %d is not a gift — use decline_pay to answer a purchase offer.", ledgerID)
+				}
+				return nil, fmt.Errorf("offer %d is a gift — use decline_gift to turn it down.", ledgerID)
 			}
 			if entry.SellerID != callerID {
 				return nil, fmt.Errorf(
@@ -2292,6 +2336,29 @@ func commitPayTransfer(
 			seller.Inventory = make(map[ItemKind]int)
 		}
 		seller.Inventory[m.kind] = m.sellerPostQty
+	}
+
+	// LLM-138: a gift ends here. The PayItems swap above already moved the
+	// gift goods giver→recipient, and a gift carries no coins (Amount 0, the
+	// debit above was a no-op) and no bought-item leg to deliver. Record the
+	// gift relationship facts — the gift counterpart to the Paid/PaidBy pair
+	// below — and return before the bought-item delivery branches.
+	if entry.IsGift {
+		giverName := buyer.DisplayName
+		recipientName := seller.DisplayName
+		// The gift's optional "for" note rides entry.Message (the accept path
+		// calls commitPayTransfer with forText="" — LLM-138 stores the note on the
+		// entry at mint, since GiveItems is the only writer of the Message field
+		// for a gift).
+		giverFact := giftFactText(w, giverName, recipientName, entry.PayItems, entry.Message, true)
+		recipientFact := giftFactText(w, giverName, recipientName, entry.PayItems, entry.Message, false)
+		if _, err := RecordInteraction(entry.BuyerID, entry.SellerID, InteractionGave, giverFact, at).Fn(w); err != nil {
+			log.Printf("sim.commitPayTransfer: gift RecordInteraction giver→recipient %q→%q: %v", entry.BuyerID, entry.SellerID, err)
+		}
+		if _, err := RecordInteraction(entry.SellerID, entry.BuyerID, InteractionReceivedGift, recipientFact, at).Fn(w); err != nil {
+			log.Printf("sim.commitPayTransfer: gift RecordInteraction recipient→giver %q→%q: %v", entry.SellerID, entry.BuyerID, err)
+		}
+		return out, nil
 	}
 
 	consumers := entry.ConsumerIDs
