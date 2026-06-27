@@ -99,11 +99,20 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 		p.Laboring == nil &&
 		!subjectHasPendingLaborOffer(snap, actorID) &&
 		hasSolicitableAudience(snap, actorSnap, p.Surroundings)
-	// LLM-152: when the seek-work backstop nudges a broke worker to go earn (the
-	// LLM-141 cue), give it direction — the town's businesses as move_to
-	// destinations. Gated on the seek_work warrant being in this tick's batch so
-	// the directory rides only with the nudge, never bloating an ordinary tick.
-	if hasSeekWorkWarrant(p.Warrants) {
+	// LLM-160: the businesses directory is a STANDING cue for a broke idle worker
+	// with no employer present — not a rare warrant-gated one. Pre-fix it rode only
+	// the paced seek-work warrant tick (LLM-152, ~7% of ticks), so on the ordinary
+	// conversational ticks that dominate the model had no list of real place names
+	// and invented destinations ("the market", "the Well") that move_to can't
+	// resolve — it talked about leaving and never left. When a solicitable employer
+	// IS present the affordance (CanSolicitWork) already covers "offer your labor to
+	// them"; when none is, surface the town's businesses by their resolvable names
+	// every tick so move_to actually has a target it can hit.
+	if subjectIsWorker(actorSnap) &&
+		p.Actor.Coins == 0 &&
+		p.Laboring == nil &&
+		!subjectHasPendingLaborOffer(snap, actorID) &&
+		!hasSolicitableAudience(snap, actorSnap, p.Surroundings) {
 		p.SeekWorkPlaces = buildSeekWorkPlaces(snap)
 	}
 	p.TurnState = buildTurnState(snap, actorID, actorSnap, p.Surroundings.HuddleMembers)
@@ -2586,20 +2595,6 @@ func subjectIsWorker(actorSnap *sim.ActorSnapshot) bool {
 	}
 	for _, slug := range actorSnap.AttributeSlugs {
 		if slug == sim.AttrWorker {
-			return true
-		}
-	}
-	return false
-}
-
-// hasSeekWorkWarrant reports whether the actor's consumed warrant batch carries a
-// seek-work nudge this tick — the gate for surfacing the businesses directory
-// (LLM-152). The seek-work warrant is the LLM-141 backstop's "go earn" impulse;
-// its presence is what makes the list of places relevant, so the directory rides
-// only with the nudge.
-func hasSeekWorkWarrant(warrants []sim.WarrantMeta) bool {
-	for _, w := range warrants {
-		if _, ok := w.Reason.(sim.SeekWorkWarrantReason); ok {
 			return true
 		}
 	}

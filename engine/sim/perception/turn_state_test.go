@@ -105,7 +105,7 @@ func TestRenderTurnState_Lines(t *testing.T) {
 	renderTurnState(&b, TurnStateView{
 		AwaitingReplyFrom: []string{"Ezekiel Crane"},
 		OwedReplyTo:       []string{"Bob"},
-	})
+	}, false)
 	out := b.String()
 	if !strings.Contains(out, "Bob is waiting for your reply.") {
 		t.Errorf("missing owed-reply line:\n%s", out)
@@ -119,7 +119,7 @@ func TestRenderTurnState_Lines(t *testing.T) {
 
 	// No turn → nothing rendered.
 	var empty strings.Builder
-	renderTurnState(&empty, TurnStateView{})
+	renderTurnState(&empty, TurnStateView{}, false)
 	if empty.Len() != 0 {
 		t.Errorf("empty turn-state should render nothing, got: %q", empty.String())
 	}
@@ -132,7 +132,7 @@ func TestRenderTriage_CodaSwap(t *testing.T) {
 	thresholds := sim.NeedThresholds{}
 
 	var awaiting strings.Builder
-	renderTriage(&awaiting, needs, thresholds, true, false, nil, nil)
+	renderTriage(&awaiting, needs, thresholds, true, false, false, nil, nil)
 	got := awaiting.String()
 	if strings.Contains(got, "Choose one action") {
 		t.Errorf("awaiting coda must not command an action:\n%s", got)
@@ -145,7 +145,7 @@ func TestRenderTriage_CodaSwap(t *testing.T) {
 	// command ("Choose one action") — but now pairs it with the yield-after-speak
 	// turn discipline.
 	var normal strings.Builder
-	renderTriage(&normal, needs, thresholds, false, false, nil, nil)
+	renderTriage(&normal, needs, thresholds, false, false, false, nil, nil)
 	if !strings.Contains(normal.String(), "Choose one action") {
 		t.Errorf("non-awaiting coda should keep the act-now imperative:\n%s", normal.String())
 	}
@@ -162,7 +162,7 @@ func TestRenderTriage_MidWalkCoda(t *testing.T) {
 	move := &InFlightMoveView{DestinationLabel: "General Store", Kind: sim.MoveDestinationStructureEnter}
 
 	var b strings.Builder
-	renderTriage(&b, needs, thresholds, false, false, move, nil)
+	renderTriage(&b, needs, thresholds, false, false, false, move, nil)
 	got := b.String()
 	if !strings.Contains(got, "You are already walking to enter the General Store.") {
 		t.Errorf("mid-walk coda should name the committed walk:\n%s", got)
@@ -176,14 +176,14 @@ func TestRenderTriage_MidWalkCoda(t *testing.T) {
 
 	// Mid-walk wins over awaiting-reply.
 	var both strings.Builder
-	renderTriage(&both, needs, thresholds, true, false, move, nil)
+	renderTriage(&both, needs, thresholds, true, false, false, move, nil)
 	if !strings.Contains(both.String(), "keep walking") {
 		t.Errorf("mid-walk should outrank awaiting-reply:\n%s", both.String())
 	}
 
 	// Pay-offers line still leads.
 	var offers strings.Builder
-	renderTriage(&offers, needs, thresholds, false, true, move, nil)
+	renderTriage(&offers, needs, thresholds, false, false, true, move, nil)
 	if !strings.HasPrefix(offers.String(), "A buyer's offer awaits your answer") {
 		t.Errorf("offer-first line must still lead the mid-walk coda:\n%s", offers.String())
 	}
@@ -198,7 +198,7 @@ func TestRenderTriage_PayOffersFirst(t *testing.T) {
 
 	for _, awaiting := range []bool{false, true} {
 		var b strings.Builder
-		renderTriage(&b, needs, thresholds, awaiting, true, nil, nil)
+		renderTriage(&b, needs, thresholds, awaiting, false, true, nil, nil)
 		got := b.String()
 		if !strings.Contains(got, "settle it first with accept_pay") {
 			t.Errorf("awaiting=%v: coda should lead with the offer decision:\n%s", awaiting, got)
@@ -210,8 +210,51 @@ func TestRenderTriage_PayOffersFirst(t *testing.T) {
 
 	// And absent offers, the line must not render.
 	var b strings.Builder
-	renderTriage(&b, needs, thresholds, false, false, nil, nil)
+	renderTriage(&b, needs, thresholds, false, false, false, nil, nil)
 	if strings.Contains(b.String(), "accept_pay") {
 		t.Errorf("no-offers coda must not mention accept_pay:\n%s", b.String())
+	}
+}
+
+// TestRenderTriage_SeekWorkCoda (LLM-160) — the seek-work directive (a broke
+// worker with no employer present) commands leaving for a business and pre-empts
+// the awaiting-reply/default codas, but yields to an in-flight walk (already going).
+func TestRenderTriage_SeekWorkCoda(t *testing.T) {
+	needs := map[sim.NeedKey]int{}
+	thresholds := sim.NeedThresholds{}
+
+	var b strings.Builder
+	renderTriage(&b, needs, thresholds, true /*awaitingReply*/, true /*seekWork*/, false, nil, nil)
+	got := b.String()
+	if !strings.Contains(got, "call move_to now") {
+		t.Errorf("seek-work coda should command move_to:\n%s", got)
+	}
+	if strings.Contains(got, "Choose one action") || strings.Contains(got, "awaiting someone's reply") {
+		t.Errorf("seek-work coda must pre-empt the default/awaiting codas:\n%s", got)
+	}
+
+	// An in-flight walk still wins — the actor is already on its way.
+	move := &InFlightMoveView{DestinationLabel: "Inn", Kind: sim.MoveDestinationStructureEnter}
+	var walking strings.Builder
+	renderTriage(&walking, needs, thresholds, false, true, false, move, nil)
+	if !strings.Contains(walking.String(), "keep walking") {
+		t.Errorf("in-flight walk should outrank the seek-work coda:\n%s", walking.String())
+	}
+}
+
+// TestRenderTurnState_SuppressOwedReply (LLM-160) — the seek-work directive drops
+// the "X is waiting for your reply" nag while keeping the "you already spoke" half.
+func TestRenderTurnState_SuppressOwedReply(t *testing.T) {
+	var b strings.Builder
+	renderTurnState(&b, TurnStateView{
+		AwaitingReplyFrom: []string{"Ezekiel Crane"},
+		OwedReplyTo:       []string{"Bob"},
+	}, true)
+	out := b.String()
+	if strings.Contains(out, "Bob is waiting for your reply.") {
+		t.Errorf("owed-reply nag should be suppressed under the seek-work directive:\n%s", out)
+	}
+	if !strings.Contains(out, "You already spoke to Ezekiel Crane") {
+		t.Errorf("awaiting-reply half should still render:\n%s", out)
 	}
 }

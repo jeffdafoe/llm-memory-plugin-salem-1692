@@ -246,9 +246,10 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// follows so a free worker sees the option to offer their labor.
 	renderLaborOffers(&ephemeral, p.LaborOffersForMe, p.Actor.Coins, nameOf)
 	renderLaborAffordance(&ephemeral, p.CanSolicitWork)
-	// LLM-152: the directional half of the seek-work nudge — when a broke worker
-	// is told to go earn (seek_work warrant), list the town's businesses to head
-	// to. Sits with the labor affordance; non-empty only on a seek-work tick.
+	// LLM-152/160: the directional half of seek-work — the town's businesses to head
+	// to, by their resolvable names. Sits with the labor affordance; non-empty
+	// whenever the subject is a broke idle worker with no employer present to solicit
+	// (a STANDING cue, see the build-side gate), so move_to always has a real target.
 	renderSeekWorkPlaces(&ephemeral, p.SeekWorkPlaces)
 	renderOfferableCustomers(&ephemeral, p.OfferableCustomers)
 	renderTradeValue(&ephemeral, p.TradeValue)
@@ -305,8 +306,13 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// are instructions for THIS tick, not facts to remember. The turn-line lands
 	// before the coda so the coda's "weigh everything above" sees it; the coda
 	// itself swaps to a wait-framing when the actor is awaiting a reply.
-	renderTurnState(&ephemeral, p.TurnState)
-	renderTriage(&ephemeral, p.Actor.Needs, p.Actor.NeedThresholds, p.TurnState.AwaitingReply(), len(payOffers) > 0, p.Actor.InFlightMove, p.Actor.InFlightSourceActivity)
+	// LLM-160: a populated SeekWorkPlaces means a broke worker with no employer
+	// present — the directive is "leave for a business". That overrides the
+	// conversational reply-pressure (suppress the owed-reply nag) and swaps the coda
+	// to a decisive go-line, so the model stops agree-looping and actually moves.
+	seekWorkDirective := len(p.SeekWorkPlaces) > 0
+	renderTurnState(&ephemeral, p.TurnState, seekWorkDirective)
+	renderTriage(&ephemeral, p.Actor.Needs, p.Actor.NeedThresholds, p.TurnState.AwaitingReply(), seekWorkDirective, len(payOffers) > 0, p.Actor.InFlightMove, p.Actor.InFlightSourceActivity)
 
 	out.Text = durable.String()
 	out.EphemeralText = ephemeral.String()
@@ -323,9 +329,16 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 // not re-pitch a peer who hasn't answered; renderTriage's coda swap reinforces
 // it. Both lists are acquaintance-gated labels resolved at build time. Emits
 // nothing when there is no pending turn (the common case).
-func renderTurnState(b *strings.Builder, ts TurnStateView) {
-	for _, name := range ts.OwedReplyTo {
-		fmt.Fprintf(b, "%s is waiting for your reply.\n", sanitizeInline(name))
+func renderTurnState(b *strings.Builder, ts TurnStateView, suppressOwedReply bool) {
+	// suppressOwedReply drops the "X is waiting for your reply" nag (LLM-160): when
+	// the actor's one productive move is to leave for work (the seek-work directive),
+	// the reply-pressure is exactly what kept it agree-looping instead of going. The
+	// "you already spoke, wait" half below still renders — it discourages re-pitching
+	// and is aligned with leaving.
+	if !suppressOwedReply {
+		for _, name := range ts.OwedReplyTo {
+			fmt.Fprintf(b, "%s is waiting for your reply.\n", sanitizeInline(name))
+		}
 	}
 	if len(ts.AwaitingReplyFrom) > 0 {
 		fmt.Fprintf(b,
@@ -411,7 +424,7 @@ func stateGroup(members []HuddleMember, state string) string {
 // wandering exposed: obligations to others and pressing needs over idle drift.
 // Rendered unconditionally — Render is only called on the NPC reactor-tick path
 // (handlers.Harness.RunTick), never for a PC.
-func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.NeedThresholds, awaitingReply bool, hasPayOffers bool, inFlightMove *InFlightMoveView, inFlightSourceActivity *InFlightSourceActivityView) {
+func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.NeedThresholds, awaitingReply bool, seekWork bool, hasPayOffers bool, inFlightMove *InFlightMoveView, inFlightSourceActivity *InFlightSourceActivityView) {
 	// A buyer's offer awaiting this actor's answer outranks everything below —
 	// including the actor's own felt needs, which the coda's "pressing needs"
 	// phrasing otherwise licenses to win. Without this, a starving seller read
@@ -448,6 +461,15 @@ func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.
 				"reason to change course, call done() and keep walking. Do not stop "+
 				"without cause.\n",
 			renderInFlightMove(*inFlightMove))
+	case seekWork:
+		// Seek-work directive coda (LLM-160): a broke worker with no employer present
+		// has one productive move — leave and go to a business. The awaiting-reply and
+		// default codas let the huddle's "X is waiting for your reply" social pressure
+		// win, and the model re-agreed ("yes, let's go") tick after tick without ever
+		// calling move_to (the live Walker agree-loop). Make leaving the imperative; the
+		// businesses directory rendered above carries the resolvable destination names.
+		// Ordered below the in-flight codas so an actor already walking keeps walking.
+		b.WriteString("You have no coin, and no one here can hire you. Don't keep talking about going — pick one of the businesses listed above and call move_to now.\n")
 	case awaitingReply:
 		// Turn-state coda (ZBBS-WORK-370): the actor has spoken and is awaiting a
 		// reply. The default "choose one thing and do it" imperative is exactly

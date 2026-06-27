@@ -335,6 +335,16 @@ var perceptionScenarios = []perceptionScenario{
 			"starve-next-to-your-food safety net). Pairs with producer_hungry_mild_at_post.",
 		build: producerStarvingAtPost,
 	},
+	{
+		name: "broke_worker_no_employer_seeks_work",
+		summary: "A broke worker (Lewis Walker, a salem-vendor) idle at home with no employer present — the live LLM-160 " +
+			"case. The golden pins the make-it-move fix: the businesses directory renders as a STANDING cue (the town's " +
+			"businesses by their resolvable structure names) even with no seek-work warrant, so move_to has a real target " +
+			"instead of an invented place ('the market', 'the Well') that bounces; and the triage coda is the decisive " +
+			"'call move_to now' go-line, not the default act-now/await-reply coda the agree-loop fed on. A regression to the " +
+			"warrant gate would drop the directory line, and a regression to the coda swap would bring back 'Choose one action'.",
+		build: brokeWorkerNoEmployerSeeksWork,
+	},
 }
 
 // lodgerGoldenBase builds the shared LLM-127 lodging-gate fixture: Ezekiel Crane,
@@ -1775,4 +1785,58 @@ func keeperAtClosedPostOffshiftNight() (*sim.Snapshot, sim.ActorID, []sim.Warran
 // gate opens on a stay_open commitment too), and the routine wind-down is suppressed.
 func keeperStayingOpenOffshift() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	return operatingKeeperSnapshot(1380, true) // 23:00 — off shift but committed to stay open
+}
+
+// brokeWorkerNoEmployerSeeksWork builds the live LLM-160 situation: a broke
+// salem-vendor worker (Lewis Walker) idle at home with no employer present. Drives
+// the standing seek-work directory + the "go now" coda — see the scenario summary.
+func brokeWorkerNoEmployerSeeksWork() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		lewisID   = sim.ActorID("lewis")
+		residence = sim.StructureID("walker_residence")
+		inn       = sim.StructureID("inn")
+		store     = sim.StructureID("general_store")
+	)
+	now := 540 // 09:00 — daytime
+	lewis := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Lewis Walker",
+		State:             sim.StateIdle,
+		InsideStructureID: residence,
+		HomeStructureID:   residence,
+		Coins:             0,
+		AttributeSlugs:    []string{sim.AttrWorker},
+		Needs:             map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{lewisID: lewis},
+		Structures: map[sim.StructureID]*sim.Structure{
+			residence: plainStructure(residence, "Walker Residence"),
+			inn:       plainStructure(inn, "Inn"),
+			store:     plainStructure(store, "General Store"),
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			sim.VillageObjectID(inn):   {ID: sim.VillageObjectID(inn), Tags: []string{"business", "lodging"}},
+			sim.VillageObjectID(store): {ID: sim.VillageObjectID(store), Tags: []string{"business", "shop"}},
+		},
+	}
+	return snap, lewisID, nil
+}
+
+// TestSeekWorkDirectiveOnlyForBrokeWorkerNoEmployer is the LLM-160 cross-scenario
+// invariant: the decisive "call move_to now" go-coda appears in EXACTLY the
+// broke-worker-no-employer scenario and nowhere else in the matrix. A regression
+// that re-gated the directory on a warrant, or that let another scenario trip the
+// broke-worker-with-no-employer condition, would flip a cell here.
+func TestSeekWorkDirectiveOnlyForBrokeWorkerNoEmployer(t *testing.T) {
+	const marker = "call move_to now"
+	for _, sc := range perceptionScenarios {
+		want := sc.name == "broke_worker_no_employer_seeks_work"
+		got := strings.Contains(renderScenario(sc), marker)
+		if got != want {
+			t.Errorf("scenario %q: seek-work go-coda present = %v, want %v", sc.name, got, want)
+		}
+	}
 }
