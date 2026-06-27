@@ -255,7 +255,7 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 	case *sim.NPCCreated:
 		// Reuse AgentDTO so the frame is byte-identical to a per-NPC entry from
 		// the /api/village/agents load the client already renders. A fresh NPC
-		// has no editor metadata yet (agent/schedule/social/anchors/attributes all
+		// has no editor metadata yet (agent/schedule/anchors/attributes all
 		// zero), so only the render fields are populated; the sprite is resolved
 		// from the *Sprite the event carried (no catalog lookup needed here).
 		return WireFrame{Type: "npc_created", Data: AgentDTO{
@@ -315,13 +315,6 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			ID:               string(e.ActorID),
 			ScheduleStartMin: e.ScheduleStartMin,
 			ScheduleEndMin:   e.ScheduleEndMin,
-		}}, true
-	case *sim.NPCSocialUpdated:
-		return WireFrame{Type: "npc_social_updated", Data: npcSocialUpdatedWireDTO{
-			ID:             string(e.ActorID),
-			SocialTag:      strPtrOrNil(e.SocialTag),
-			SocialStartMin: e.SocialStartMin,
-			SocialEndMin:   e.SocialEndMin,
 		}}, true
 	case *sim.NPCSpriteChanged:
 		return WireFrame{Type: "npc_sprite_changed", Data: npcSpriteChangedWireDTO{
@@ -709,8 +702,8 @@ type objectTagsUpdatedWireDTO struct {
 
 // NPC editor write frames (ZBBS-HOME-309). Each mirrors the field set the Godot
 // editor's apply_npc_* handler reads (world.gd) — all keyed on `id`. Nullable
-// fields (agent link, home/work anchors, schedule + social bounds) use pointers
-// so an unset value marshals as JSON null, which the client reads as
+// fields (agent link, home/work anchors, schedule bounds) use pointers so an
+// unset value marshals as JSON null, which the client reads as
 // "unlinked / inherit" rather than the zero value.
 type npcDisplayNameChangedWireDTO struct {
 	ID          string `json:"id"`
@@ -740,13 +733,6 @@ type npcScheduleChangedWireDTO struct {
 	ID               string `json:"id"`
 	ScheduleStartMin *int   `json:"schedule_start_minute"`
 	ScheduleEndMin   *int   `json:"schedule_end_minute"`
-}
-
-type npcSocialUpdatedWireDTO struct {
-	ID             string  `json:"id"`
-	SocialTag      *string `json:"social_tag"`
-	SocialStartMin *int    `json:"social_start_minute"`
-	SocialEndMin   *int    `json:"social_end_minute"`
 }
 
 type npcAttributesChangedWireDTO struct {

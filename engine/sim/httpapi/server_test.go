@@ -41,7 +41,7 @@ func seededWorld(t *testing.T) *sim.World {
 			LLMAgent:          "hannah-va",
 			SpriteID:          "sprite-1", Facing: "east",
 			// Editor metadata (ZBBS-HOME-290). Two attributes (assert sorted on
-			// the wire), home/work anchors, and both schedule windows set.
+			// the wire), home/work anchors, and the schedule window set.
 			Attributes: map[string][]byte{
 				"tavernkeeper":  []byte("{}"),
 				"businessowner": []byte(`{"flavor":"warm"}`),
@@ -50,9 +50,6 @@ func seededWorld(t *testing.T) *sim.World {
 			WorkStructureID:  "tavern",
 			ScheduleStartMin: intPtr(480),
 			ScheduleEndMin:   intPtr(1080),
-			SocialTag:        "tavern",
-			SocialStartMin:   intPtr(1140),
-			SocialEndMin:     intPtr(1320),
 			// Live needs (ZBBS-HOME-462) — asserted on the wire by TestHandleAgents.
 			Needs: map[sim.NeedKey]int{"hunger": 14, "thirst": 9, "tiredness": 3},
 			// Coins (LLM-70) — purse balance carried on the wire for the editor row.
@@ -288,27 +285,24 @@ func TestHandleAgents(t *testing.T) {
 	if hannah.ScheduleStartMin == nil || *hannah.ScheduleStartMin != 480 || hannah.ScheduleEndMin == nil || *hannah.ScheduleEndMin != 1080 {
 		t.Errorf("hannah schedule = %v/%v, want 480/1080", hannah.ScheduleStartMin, hannah.ScheduleEndMin)
 	}
-	if hannah.SocialTag != "tavern" || hannah.SocialStartMin == nil || *hannah.SocialStartMin != 1140 || hannah.SocialEndMin == nil || *hannah.SocialEndMin != 1320 {
-		t.Errorf("hannah social = %q %v/%v, want tavern 1140/1320", hannah.SocialTag, hannah.SocialStartMin, hannah.SocialEndMin)
-	}
 
-	// bram is bare: omitempty fields absent, but the schedule/social *minute
+	// bram is bare: omitempty fields absent, but the schedule *minute
 	// fields emit as explicit null (editor reads null = "inherit dawn/dusk").
-	if bram.Attributes != nil || bram.HomeStructureID != "" || bram.WorkStructureID != "" || bram.SocialTag != "" {
+	if bram.Attributes != nil || bram.HomeStructureID != "" || bram.WorkStructureID != "" {
 		t.Errorf("bram editor fields should be empty: %+v", bram)
 	}
-	if bram.ScheduleStartMin != nil || bram.SocialEndMin != nil {
-		t.Errorf("bram schedule/social pointers should be nil, got %v/%v", bram.ScheduleStartMin, bram.SocialEndMin)
+	if bram.ScheduleStartMin != nil || bram.ScheduleEndMin != nil {
+		t.Errorf("bram schedule pointers should be nil, got %v/%v", bram.ScheduleStartMin, bram.ScheduleEndMin)
 	}
 	bramRaw := raw[0]
 	// omitempty keys absent for the bare PC.
-	for _, k := range []string{"attributes", "home_structure_id", "work_structure_id", "social_tag"} {
+	for _, k := range []string{"attributes", "home_structure_id", "work_structure_id"} {
 		if _, present := bramRaw[k]; present {
 			t.Errorf("bram raw[%q] should be omitted, got present", k)
 		}
 	}
 	// non-omitempty pointer keys present and null.
-	for _, k := range []string{"schedule_start_minute", "schedule_end_minute", "social_start_minute", "social_end_minute"} {
+	for _, k := range []string{"schedule_start_minute", "schedule_end_minute"} {
 		v, present := bramRaw[k]
 		if !present || v != nil {
 			t.Errorf("bram raw[%q] = (present=%v, val=%v), want present and null", k, present, v)

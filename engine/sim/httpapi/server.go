@@ -338,7 +338,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/village/admin/npc/set-home-structure", s.requireAuth(s.handleAdminNPCSetHomeStructure))
 	mux.HandleFunc("POST /api/village/admin/npc/set-work-structure", s.requireAuth(s.handleAdminNPCSetWorkStructure))
 	mux.HandleFunc("POST /api/village/admin/npc/set-schedule", s.requireAuth(s.handleAdminNPCSetSchedule))
-	mux.HandleFunc("POST /api/village/admin/npc/set-social", s.requireAuth(s.handleAdminNPCSetSocial))
 	mux.HandleFunc("POST /api/village/admin/npc/add-attribute", s.requireAuth(s.handleAdminNPCAddAttribute))
 	mux.HandleFunc("POST /api/village/admin/npc/remove-attribute", s.requireAuth(s.handleAdminNPCRemoveAttribute))
 	mux.HandleFunc("POST /api/village/admin/npc/create", s.requireAuth(s.handleAdminNPCCreate))
@@ -483,9 +482,6 @@ func agentsFromSnapshot(s *sim.Snapshot, sprites map[sim.SpriteID]*sim.Sprite) [
 			WorkStructureID:   string(a.WorkStructureID),
 			ScheduleStartMin:  a.ScheduleStartMin,
 			ScheduleEndMin:    a.ScheduleEndMin,
-			SocialTag:         a.SocialTag,
-			SocialStartMin:    a.SocialStartMin,
-			SocialEndMin:      a.SocialEndMin,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })

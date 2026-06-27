@@ -570,19 +570,6 @@ type NPCScheduleChanged struct {
 
 func (NPCScheduleChanged) isSimEvent() {}
 
-// NPCSocialUpdated — the new social-hour overlay. Empty tag + nil minutes means
-// cleared (the frame carries null for each). Frame: npc_social_updated.
-type NPCSocialUpdated struct {
-	EventBase
-	ActorID        ActorID
-	SocialTag      string
-	SocialStartMin *int
-	SocialEndMin   *int
-	At             time.Time
-}
-
-func (NPCSocialUpdated) isSimEvent() {}
-
 // NPCAttributesChanged — the AUTHORITATIVE full sorted slug set after an add or
 // remove (never a delta), so the client converges on one source of truth
 // regardless of which mutation produced it. Frame: npc_attributes_changed

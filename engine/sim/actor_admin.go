@@ -18,11 +18,9 @@ import (
 // /api/village/npcs/{id}/{field} PATCH surface (ZBBS-HOME-309).
 //
 // Scheduler entanglement is handled implicitly: the shift-duty (shift_duty.go)
-// and social (social.go) tickers are level-triggered — they re-read the actor's
-// window every tick — so a live schedule/social edit just changes what the next
-// tick evaluates against. There is no stored in-flight shift to corrupt. The one
-// edge case is the social edge-trigger stamp (SocialLastBoundaryAt), which
-// SetActorSocial resets on a real change so the reconfigured window fires fresh.
+// ticker is level-triggered — it re-reads the actor's window every tick — so a
+// live schedule edit just changes what the next tick evaluates against. There is
+// no stored in-flight shift to corrupt.
 
 // ErrActorNotFound is returned when the target actor id is absent, OR when it
 // resolves to a PC — PCs are not editable through the NPC editor surface, so
@@ -45,10 +43,6 @@ var ErrStructureNotFound = errors.New("structure not found")
 // per minuteInShiftWindow).
 var ErrInvalidSchedule = errors.New("invalid schedule")
 
-// ErrInvalidSocial is returned by SetActorSocial when the tag/start/end trio is
-// not all-or-none, the tag is malformed, or a minute is outside [0,1439] (→ 400).
-var ErrInvalidSocial = errors.New("invalid social schedule")
-
 // ErrUnknownAttribute is returned by AddActorAttribute when the slug is empty or
 // absent from World.AttributeDefinitions (the actor-assignable catalog) (→ 422).
 // Removal does NOT validate against the catalog — a slug no longer in the
@@ -58,10 +52,6 @@ var ErrUnknownAttribute = errors.New("unknown attribute slug")
 // MaxActorDisplayNameLen caps an NPC display name's rune length. Matches the
 // village-object cap — both are short client-rendered labels.
 const MaxActorDisplayNameLen = 100
-
-// MaxSocialTagLen caps a social-hour tag's rune length (the gathering-structure
-// tag an NPC walks to). Matches the village-object tag cap.
-const MaxSocialTagLen = 64
 
 // Result types echo the post-mutation value back to the HTTP layer so the route
 // can serialize a confirmation body off the world goroutine. Pointer fields are
@@ -85,13 +75,6 @@ type ActorScheduleResult struct {
 	ID               ActorID
 	ScheduleStartMin *int
 	ScheduleEndMin   *int
-}
-
-type ActorSocialResult struct {
-	ID             ActorID
-	SocialTag      string
-	SocialStartMin *int
-	SocialEndMin   *int
 }
 
 type ActorAttributesResult struct {
@@ -257,53 +240,6 @@ func SetActorSchedule(id ActorID, start, end *int) Command {
 				At:               time.Now().UTC(),
 			})
 			return ActorScheduleResult{ID: id, ScheduleStartMin: copyIntPtr(start), ScheduleEndMin: copyIntPtr(end)}, nil
-		},
-	}
-}
-
-// SetActorSocial sets (or clears) an NPC's social-hour overlay — the daily walk
-// to the nearest village_object carrying SocialTag and back. The tag/start/end
-// trio is all-or-none: either a non-empty tag with both minutes set in [0,1439],
-// or an empty tag with both minutes nil (clears). Anything else is
-// ErrInvalidSocial. On an actual change the social edge-trigger stamp
-// (SocialLastBoundaryAt) is reset so the reconfigured window fires fresh on its
-// next boundary. Emits NPCSocialUpdated only on an actual change.
-func SetActorSocial(id ActorID, tag string, start, end *int) Command {
-	return Command{
-		Fn: func(w *World) (any, error) {
-			trimmed := strings.TrimSpace(tag)
-			hasTag := trimmed != ""
-			hasMinutes := start != nil && end != nil
-			if (start == nil) != (end == nil) || hasTag != hasMinutes {
-				return nil, ErrInvalidSocial
-			}
-			if hasTag {
-				if utf8.RuneCountInString(trimmed) > MaxSocialTagLen || containsControlChar(trimmed) {
-					return nil, ErrInvalidSocial
-				}
-				if !validMinuteOfDay(*start) || !validMinuteOfDay(*end) {
-					return nil, ErrInvalidSocial
-				}
-			}
-			a, err := editableNPC(w, id)
-			if err != nil {
-				return nil, err
-			}
-			if a.SocialTag == trimmed && intPtrEqual(a.SocialStartMin, start) && intPtrEqual(a.SocialEndMin, end) {
-				return ActorSocialResult{ID: id, SocialTag: trimmed, SocialStartMin: copyIntPtr(start), SocialEndMin: copyIntPtr(end)}, nil
-			}
-			a.SocialTag = trimmed
-			a.SocialStartMin = copyIntPtr(start)
-			a.SocialEndMin = copyIntPtr(end)
-			a.SocialLastBoundaryAt = nil
-			w.emit(&NPCSocialUpdated{
-				ActorID:        id,
-				SocialTag:      trimmed,
-				SocialStartMin: copyIntPtr(start),
-				SocialEndMin:   copyIntPtr(end),
-				At:             time.Now().UTC(),
-			})
-			return ActorSocialResult{ID: id, SocialTag: trimmed, SocialStartMin: copyIntPtr(start), SocialEndMin: copyIntPtr(end)}, nil
 		},
 	}
 }

@@ -729,15 +729,6 @@ func _render_npc(npc: Dictionary) -> void:
     if _sched_start != null and _sched_end != null:
         container.set_meta("schedule_start_minute", int(_sched_start))
         container.set_meta("schedule_end_minute", int(_sched_end))
-    # Social-hour overlay (ZBBS-068, minute-precision since ZBBS-071) —
-    # carry only when all three are set.
-    var _social_tag = npc.get("social_tag", null)
-    var _social_start = npc.get("social_start_minute", null)
-    var _social_end = npc.get("social_end_minute", null)
-    if _social_tag != null and _social_tag != "" and _social_start != null and _social_end != null:
-        container.set_meta("social_tag", str(_social_tag))
-        container.set_meta("social_start_minute", int(_social_start))
-        container.set_meta("social_end_minute", int(_social_end))
     # Needs (ZBBS-082) — current hunger/thirst/tiredness in [0, 24].
     # Always set, default to 0 so the editor panel can read them without
     # null-checks. Updates arrive via apply_npc_needs_changed (admin
@@ -1895,31 +1886,6 @@ func set_npc_schedule(container: Node2D, start_min: int, end_min: int) -> void:
         container.remove_meta("schedule_end_minute")
     _post_npc_admin(npc_id, "set-schedule", payload)
 
-## Update the NPC's social-hour overlay (ZBBS-068, minute-precision since
-## ZBBS-071). Empty tag clears the schedule server-side (payload sends
-## nulls for all three fields). Otherwise tag + start_min + end_min are
-## committed atomically.
-func set_npc_social(container: Node2D, tag: String, start_min: int, end_min: int) -> void:
-    var npc_id = container.get_meta("npc_id", null)
-    if npc_id == null:
-        return
-    var payload: Dictionary = {}
-    if tag == "":
-        payload["social_tag"] = null
-        payload["social_start_minute"] = null
-        payload["social_end_minute"] = null
-        container.remove_meta("social_tag")
-        container.remove_meta("social_start_minute")
-        container.remove_meta("social_end_minute")
-    else:
-        payload["social_tag"] = tag
-        payload["social_start_minute"] = start_min
-        payload["social_end_minute"] = end_min
-        container.set_meta("social_tag", tag)
-        container.set_meta("social_start_minute", start_min)
-        container.set_meta("social_end_minute", end_min)
-    _post_npc_admin(npc_id, "set-social", payload)
-
 ## POST /api/village/objects/{id}/tags — add a per-instance tag. The WS
 ## event village_object_tags_updated comes back with the authoritative set
 ## and refreshes the selection panel if it's showing this object.
@@ -2437,28 +2403,6 @@ func _npc_sprite(container: Node2D) -> AnimatedSprite2D:
         if child is AnimatedSprite2D:
             return child
     return null
-
-## WS event — another admin edited the social-hour schedule. Update our
-## container meta and tell the panel to refresh if it's the selected NPC.
-func apply_npc_social_updated(data: Dictionary) -> void:
-    var npc_id: String = data.get("id", "")
-    if npc_id == "":
-        return
-    var container: Node2D = placed_npcs.get(npc_id, null)
-    if container == null:
-        return
-    var tag = data.get("social_tag", null)
-    var start_min = data.get("social_start_minute", null)
-    var end_min = data.get("social_end_minute", null)
-    if tag == null or tag == "" or start_min == null or end_min == null:
-        container.remove_meta("social_tag")
-        container.remove_meta("social_start_minute")
-        container.remove_meta("social_end_minute")
-    else:
-        container.set_meta("social_tag", str(tag))
-        container.set_meta("social_start_minute", int(start_min))
-        container.set_meta("social_end_minute", int(end_min))
-    npc_metadata_changed.emit(npc_id)
 
 ## route is the admin/npc action ("set-home-structure" / "set-work-structure");
 ## field is the local container meta key (home_structure_id / work_structure_id).

@@ -134,10 +134,6 @@ func actorStrandedInOpen(w *World, a *Actor, now time.Time) bool {
 	if start, end, ok := effectiveShiftWindow(w, a); ok && minuteInShiftWindow(start, end, nowMinute) {
 		return false
 	}
-	if a.SocialStartMin != nil && a.SocialEndMin != nil &&
-		minuteInShiftWindow(*a.SocialStartMin, *a.SocialEndMin, nowMinute) {
-		return false
-	}
 	if _, atPin := resolveLoiteringObject(w, a.Pos, LoiterAttributionTiles); atPin {
 		return false
 	}

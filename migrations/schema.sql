@@ -123,10 +123,6 @@ CREATE TABLE public.actor (
     work_structure_id text,
     schedule_start_minute smallint,
     schedule_end_minute smallint,
-    social_tag character varying(64),
-    social_start_minute smallint,
-    social_end_minute smallint,
-    social_last_boundary_at timestamp with time zone,
     last_agent_tick_at timestamp with time zone,
     login_username character varying(100),
     created_at timestamp with time zone DEFAULT now() NOT NULL,
@@ -143,10 +139,7 @@ CREATE TABLE public.actor (
     CONSTRAINT actor_facing_check CHECK (((facing)::text = ANY ((ARRAY['north'::character varying, 'south'::character varying, 'east'::character varying, 'west'::character varying])::text[]))),
     CONSTRAINT actor_schedule_end_minute_check CHECK (((schedule_end_minute IS NULL) OR ((schedule_end_minute >= 0) AND (schedule_end_minute <= 1439)))),
     CONSTRAINT actor_schedule_start_minute_check CHECK (((schedule_start_minute IS NULL) OR ((schedule_start_minute >= 0) AND (schedule_start_minute <= 1439)))),
-    CONSTRAINT actor_schedule_window_all_or_none CHECK ((((schedule_start_minute IS NULL) AND (schedule_end_minute IS NULL)) OR ((schedule_start_minute IS NOT NULL) AND (schedule_end_minute IS NOT NULL)))),
-    CONSTRAINT actor_social_all_or_none CHECK ((((social_tag IS NULL) AND (social_start_minute IS NULL) AND (social_end_minute IS NULL)) OR ((social_tag IS NOT NULL) AND (social_start_minute IS NOT NULL) AND (social_end_minute IS NOT NULL)))),
-    CONSTRAINT actor_social_end_minute_check CHECK (((social_end_minute IS NULL) OR ((social_end_minute >= 0) AND (social_end_minute <= 1439)))),
-    CONSTRAINT actor_social_start_minute_check CHECK (((social_start_minute IS NULL) OR ((social_start_minute >= 0) AND (social_start_minute <= 1439))))
+    CONSTRAINT actor_schedule_window_all_or_none CHECK ((((schedule_start_minute IS NULL) AND (schedule_end_minute IS NULL)) OR ((schedule_start_minute IS NOT NULL) AND (schedule_end_minute IS NOT NULL))))
 );
 
 

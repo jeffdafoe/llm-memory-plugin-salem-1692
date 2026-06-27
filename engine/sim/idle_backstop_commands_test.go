@@ -565,9 +565,6 @@ func TestEvaluateIdleBackstop_StrandedExemptions(t *testing.T) {
 		{"on shift", func(a *sim.Actor) {
 			a.ScheduleStartMin, a.ScheduleEndMin = &allDayStart, &allDayEnd
 		}},
-		{"social window", func(a *sim.Actor) {
-			a.SocialStartMin, a.SocialEndMin = &allDayStart, &allDayEnd
-		}},
 		{"resting state", func(a *sim.Actor) { a.State = sim.StateResting }},
 	}
 	for _, c := range cases {

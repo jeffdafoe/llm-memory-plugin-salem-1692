@@ -39,7 +39,7 @@ var npc_behaviors_loaded_flag: bool = false
 
 # State-tag allowlist — server-side truth for what state tags the editor can
 # apply / filter by. Same shape as npc_behaviors: small array loaded once
-# after login. Consumers (social-hour dropdown, state-tag editor) subscribe
+# after login. Consumers (state-tag editor) subscribe
 # to state_tags_loaded.
 var state_tags: Array = []
 var state_tags_loaded_flag: bool = false

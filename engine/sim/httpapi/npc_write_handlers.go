@@ -67,8 +67,7 @@ func writeActorAdminError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, sim.ErrInvalidDisplayName),
 		errors.Is(err, sim.ErrInvalidAgentLink),
-		errors.Is(err, sim.ErrInvalidSchedule),
-		errors.Is(err, sim.ErrInvalidSocial):
+		errors.Is(err, sim.ErrInvalidSchedule):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, sim.ErrUnknownAttribute), errors.Is(err, sim.ErrUnknownItemKind):
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
@@ -253,56 +252,6 @@ func (s *Server) handleAdminNPCSetSchedule(w http.ResponseWriter, r *http.Reques
 		ID:               string(out.ID),
 		ScheduleStartMin: out.ScheduleStartMin,
 		ScheduleEndMin:   out.ScheduleEndMin,
-	})
-}
-
-// ---- social ----
-
-type adminNPCSocialRequest struct {
-	NPCID          string  `json:"npc_id"`
-	SocialTag      *string `json:"social_tag"`
-	SocialStartMin *int    `json:"social_start_minute"`
-	SocialEndMin   *int    `json:"social_end_minute"`
-}
-
-type adminNPCSocialResponse struct {
-	ID             string  `json:"id"`
-	SocialTag      *string `json:"social_tag"`
-	SocialStartMin *int    `json:"social_start_minute"`
-	SocialEndMin   *int    `json:"social_end_minute"`
-}
-
-func (s *Server) handleAdminNPCSetSocial(w http.ResponseWriter, r *http.Request) {
-	var req adminNPCSocialRequest
-	username, ok := s.adminNPCRequest(w, r, &req)
-	if !ok {
-		return
-	}
-	if req.NPCID == "" {
-		writeError(w, http.StatusBadRequest, "npc_id is required")
-		return
-	}
-	tag := ""
-	if req.SocialTag != nil {
-		tag = *req.SocialTag
-	}
-	res, err := s.world.SendContext(r.Context(), adminCommand(username, func(world *sim.World) (any, error) {
-		return sim.SetActorSocial(sim.ActorID(req.NPCID), tag, req.SocialStartMin, req.SocialEndMin).Fn(world)
-	}))
-	if err != nil {
-		writeActorAdminError(w, err)
-		return
-	}
-	out, ok := res.(sim.ActorSocialResult)
-	if !ok {
-		writeError(w, http.StatusInternalServerError, "unexpected set-social result")
-		return
-	}
-	writeJSON(w, adminNPCSocialResponse{
-		ID:             string(out.ID),
-		SocialTag:      strPtrOrNil(out.SocialTag),
-		SocialStartMin: out.SocialStartMin,
-		SocialEndMin:   out.SocialEndMin,
 	})
 }
 

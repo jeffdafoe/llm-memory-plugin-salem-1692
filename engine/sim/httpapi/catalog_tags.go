@@ -34,8 +34,7 @@ var allowedStateTags = map[string]bool{
 // allowedObjectTags is the per-instance object tag vocabulary served at
 // GET /api/village/object-tags. Role tags applied to a specific placed
 // village_object (the same asset can be a tavern in one placement and a plain
-// house in another). Categorical tags (tavern/smithy/shop/…) double as
-// social_tag values for the social scheduler.
+// house in another).
 var allowedObjectTags = map[string]bool{
 	"tavern":        true,
 	"smithy":        true,

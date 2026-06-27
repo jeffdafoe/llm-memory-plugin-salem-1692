@@ -87,7 +87,7 @@ func RegisterNPCRoutes(ctx context.Context, w *sim.World, client llm.Client) {
 }
 
 // RouteScheduleTickerInterval — once a minute, matching the sim
-// package's RunShiftTicker / RunSocialTicker cadence. A boundary fires
+// package's RunShiftTicker cadence. A boundary fires
 // at worst ~60s late.
 const RouteScheduleTickerInterval = time.Minute
 
