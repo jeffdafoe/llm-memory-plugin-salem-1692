@@ -979,11 +979,33 @@ func (t TurnStateView) AwaitingReply() bool { return len(t.AwaitingReplyFrom) > 
 // otherwise falls back to Role ("the blacksmith") or a generic
 // stranger label. Mirrors v1's coLocatedHuddleMembers name-vs-
 // descriptor gating.
+// laborTie names a co-present member's standing relationship to the subject —
+// housemate or workmate — so the model reads it as kin/crew rather than a paid-work
+// prospect. The zero value (laborTieNone) renders no annotation. Set only when the
+// SUBJECT carries AttrWorker (subjectIsWorker) — a non-worker never solicits, so the
+// note would be noise. LLM-157: the affordance gate (LLM-145) already hides the
+// solicit_work tool among kin/crew, but the seek-work backstop warrant still nudges a
+// broke worker to "seek out someone," which the model satisfies by asking the
+// housemate standing in the room as freeform speech; naming the relationship heads
+// that off. Household takes precedence when a peer is both.
+type laborTie int
+
+const (
+	laborTieNone laborTie = iota
+	laborTieHousehold
+	laborTieWorkplace
+)
+
 type HuddleMember struct {
 	ID          sim.ActorID
 	DisplayName string
 	Role        string
 	Acquainted  bool
+
+	// SolicitTie marks a co-present member the subject shares a household or
+	// workplace with — kin/crew the subject (when a worker) should not solicit for
+	// paid work. laborTieNone for everyone else. LLM-157.
+	SolicitTie laborTie
 
 	// JustArrived marks a co-present actor that reached its current spot within
 	// the last coPresentJustArrivedWindow (ZBBS-WORK-422). Only meaningful for

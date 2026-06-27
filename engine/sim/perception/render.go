@@ -922,6 +922,7 @@ func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 				// while, since "## Around you" only lists standing presence.
 				label += " (just arrived)"
 			}
+			label += laborTiePhrase(m.SolicitTie)
 			names[i] = label
 		}
 		verb := "is"
@@ -1129,7 +1130,23 @@ func joinHuddleMembers(members []HuddleMember) string {
 }
 
 func renderHuddleMember(m HuddleMember) string {
-	return sanitizeInline(descriptorLabel(m.DisplayName, m.Role, m.Acquainted))
+	return sanitizeInline(descriptorLabel(m.DisplayName, m.Role, m.Acquainted)) + laborTiePhrase(m.SolicitTie)
+}
+
+// laborTiePhrase names a co-present member's relationship to the subject —
+// housemate or workmate (LLM-157) — so a worker reads them as kin/crew rather than a
+// paid-work prospect, without the engine spelling out the instruction. Empty for
+// laborTieNone, so it composes onto any member label without adding a separator of
+// its own.
+func laborTiePhrase(t laborTie) string {
+	switch t {
+	case laborTieHousehold:
+		return " (your housemate)"
+	case laborTieWorkplace:
+		return " (your workmate)"
+	default:
+		return ""
+	}
 }
 
 // renderNarrativeState writes the "Who you are:" section for shared-VA

@@ -904,11 +904,31 @@ func resolveCoPresentMember(snap *sim.Snapshot, subj *sim.ActorSnapshot, memberI
 	if peer := snap.Actors[memberID]; peer != nil {
 		m.DisplayName = peer.DisplayName
 		m.Role = peer.Role
+		m.SolicitTie = laborTieFor(subj, peer)
 	}
 	if m.DisplayName != "" {
 		_, m.Acquainted = subj.Acquaintances[m.DisplayName]
 	}
 	return m
+}
+
+// laborTieFor classifies how a co-present peer is bound to the subject for the
+// no-solicit annotation (LLM-157): laborTieNone unless the SUBJECT is a worker
+// (only a worker solicits for pay) AND shares the peer's household and/or
+// workplace. Reuses the LLM-145 household/workplace predicates so the annotation
+// and the solicit_work affordance gate read co-residence/co-employment identically.
+func laborTieFor(subj, peer *sim.ActorSnapshot) laborTie {
+	if !subjectIsWorker(subj) {
+		return laborTieNone
+	}
+	switch {
+	case sharesHousehold(subj, peer):
+		return laborTieHousehold
+	case sharesWorkplace(subj, peer):
+		return laborTieWorkplace
+	default:
+		return laborTieNone
+	}
 }
 
 // coPresentJustArrivedWindow bounds how long after an actor's arrival a

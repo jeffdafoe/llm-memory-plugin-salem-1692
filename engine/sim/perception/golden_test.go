@@ -212,6 +212,16 @@ var perceptionScenarios = []perceptionScenario{
 		build: coinlessWorkerAmongPeers,
 	},
 	{
+		name: "worker_among_household_no_solicit",
+		summary: "Two worker-tagged Walker siblings (Lewis + Anne) stand together in their own home, both jobless — the " +
+			"LLM-157 situation, where housemates solicited each other for work ('I'm looking for work, does anyone need a " +
+			"hand?'). LLM-145 already hides the solicit_work tool among kin, but the seek-work backstop warrant still made " +
+			"the model ask the housemate as freeform speech. The golden pins the '## Around you' annotation that now names " +
+			"Anne as the subject's housemate, so the worker reads her as kin rather than a work prospect and steers to a " +
+			"real employer instead. A non-kin co-present worker would carry no such annotation.",
+		build: workerAmongHousehold,
+	},
+	{
 		name: "owner_at_worn_stall",
 		summary: "A stall owner (Ezekiel) stands at his own worn market stall (wear past the repair threshold, " +
 			"below degrade) carrying too few nails to mend it. The golden pins the '## Your stall' cue: the worn-boards " +
@@ -640,6 +650,71 @@ func TestEmptyPurseCannotPayCueTracksActorCoins(t *testing.T) {
 	if !sawEmpty || !sawPositive {
 		t.Errorf("matrix must exercise both branches: sawEmpty=%v sawPositive=%v", sawEmpty, sawPositive)
 	}
+}
+
+// TestLaborTieAnnotationTracksWorkerKin is the LLM-157 cross-scenario invariant: the
+// "(your housemate)" / "(your workmate)" relationship annotation appears in EXACTLY the
+// scenarios where the subject is a worker AND at least one of its addressable co-present members (huddle
+// peers ∪ co-present, the same lists Render names) shares its household or workplace.
+// The expectation is recomputed from raw ActorSnapshot fields (subjectIsWorker +
+// sharesHousehold/sharesWorkplace) — NOT from the member's SolicitTie — so it independently
+// asserts the annotation tracks co-residence/co-employment rather than pinning the render
+// against its own marker. The matrix must exercise both branches to mean anything.
+func TestLaborTieAnnotationTracksWorkerKin(t *testing.T) {
+	const (
+		housemateMarker = "(your housemate)"
+		workmateMarker  = "(your workmate)"
+	)
+	var sawTied, sawUntied bool
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		snap, actorID, warrants := sc.build()
+		subj := snap.Actors[actorID]
+		p := Build(snap, actorID, warrants)
+		want := false
+		if subjectIsWorker(subj) {
+			audience := append(append([]HuddleMember{}, p.Surroundings.HuddleMembers...), p.Surroundings.CoPresent...)
+			for _, m := range audience {
+				if peer := snap.Actors[m.ID]; peer != nil && (sharesHousehold(subj, peer) || sharesWorkplace(subj, peer)) {
+					want = true
+					break
+				}
+			}
+		}
+		if want {
+			sawTied = true
+		} else {
+			sawUntied = true
+		}
+		// Scope the search to the "## Around you" block where the annotation renders,
+		// not the whole prompt — so the invariant can't pass/fail on the marker phrase
+		// appearing in some unrelated cue or section later (code_review note).
+		around := aroundYouSection(renderScenario(sc))
+		has := strings.Contains(around, housemateMarker) || strings.Contains(around, workmateMarker)
+		if has != want {
+			t.Errorf("scenario %q: labor-tie annotation=%v, want %v", sc.name, has, want)
+		}
+	}
+	if !sawTied || !sawUntied {
+		t.Errorf("matrix must exercise both branches: sawTied=%v sawUntied=%v", sawTied, sawUntied)
+	}
+}
+
+// aroundYouSection returns the rendered "## Around you" block (its header line
+// excluded), up to the next "## " section header or the end of the prompt — so a
+// surroundings-specific assertion can scope to where a cue actually renders instead
+// of scanning the whole prompt and risking a false match elsewhere.
+func aroundYouSection(rendered string) string {
+	const head = "## Around you\n"
+	i := strings.Index(rendered, head)
+	if i < 0 {
+		return ""
+	}
+	rest := rendered[i+len(head):]
+	if j := strings.Index(rest, "\n## "); j >= 0 {
+		return rest[:j]
+	}
+	return rest
 }
 
 // growerAtStrippedBush reproduces the LLM-98 live shape: Prudence, a forager,
@@ -1294,6 +1369,62 @@ func coinlessWorkerAmongPeers() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) 
 		ItemKinds: foodDrinkCatalog(),
 	}
 	return snap, bishopID, nil
+}
+
+// workerAmongHousehold is the LLM-157 situation: two worker-tagged Walker siblings
+// (Lewis, the rendered subject, + Anne) share a home and stand together in it, both
+// jobless. LLM-145 already hides the solicit_work tool when only kin are present,
+// but the seek-work backstop warrant still nudged the model to ask the housemate for
+// work as freeform speech. The golden pins the "## Around you" annotation that now
+// names Anne as the subject's housemate. Small non-zero purses keep the empty-purse
+// line out so the golden centers on the household annotation. No clock-bound content
+// → byte-stable.
+func workerAmongHousehold() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		lewisID = sim.ActorID("lewis")
+		anneID  = sim.ActorID("anne")
+		home    = sim.StructureID("walker-residence")
+		huddle  = sim.HuddleID("h1")
+	)
+	published := time.Date(2026, 6, 27, 11, 0, 0, 0, time.UTC)
+	lewis := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Lewis Walker",
+		Role:              "laborer",
+		State:             sim.StateIdle,
+		InsideStructureID: home,
+		HomeStructureID:   home,
+		CurrentHuddleID:   huddle,
+		AttributeSlugs:    []string{sim.AttrWorker},
+		Coins:             2,
+		Needs:             map[sim.NeedKey]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"Anne Walker": {}},
+	}
+	anne := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Anne Walker",
+		Role:              "laborer",
+		State:             sim.StateIdle,
+		InsideStructureID: home,
+		HomeStructureID:   home,
+		CurrentHuddleID:   huddle,
+		AttributeSlugs:    []string{sim.AttrWorker},
+		Coins:             2,
+		Needs:             map[sim.NeedKey]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"Lewis Walker": {}},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:    published,
+		NeedThresholds: sim.NeedThresholds{},
+		Actors:         map[sim.ActorID]*sim.ActorSnapshot{lewisID: lewis, anneID: anne},
+		Structures: map[sim.StructureID]*sim.Structure{
+			home: plainStructure(home, "Walker Residence"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{lewisID: {}, anneID: {}}},
+		},
+	}
+	return snap, lewisID, nil
 }
 
 // keeperOffersRoomToCoinlessGuest is the LLM-136 host-side scene. John Ellis, the
