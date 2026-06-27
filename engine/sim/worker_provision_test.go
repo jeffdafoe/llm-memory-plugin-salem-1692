@@ -255,9 +255,9 @@ func TestRetireWorker_ToDecorative(t *testing.T) {
 		t.Errorf("result = {Kind:%v LLMAgent:%q}, want {decorative, \"\"}", out.Kind, out.LLMAgent)
 	}
 	a := provisionActor(t, w, "statue")
-	if a.WarrantedSince != nil || a.TickInFlight || len(a.Warrants) != 0 {
-		t.Errorf("reactor state not reset: WarrantedSince=%v TickInFlight=%v warrants=%d",
-			a.WarrantedSince, a.TickInFlight, len(a.Warrants))
+	if a.WarrantedSince != nil || a.TickInFlight || a.TickAttemptID != "" || len(a.Warrants) != 0 {
+		t.Errorf("reactor state not reset: WarrantedSince=%v TickInFlight=%v TickAttemptID=%q warrants=%d",
+			a.WarrantedSince, a.TickInFlight, a.TickAttemptID, len(a.Warrants))
 	}
 }
 
