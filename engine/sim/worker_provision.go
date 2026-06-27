@@ -160,9 +160,13 @@ func RetireWorker(id ActorID, toDecorative bool) Command {
 
 			if toDecorative {
 				// Park it fully: unlink the VA, reclassify to decorative, and
-				// wipe reactor state. The reset discards any in-flight tick (its
-				// attempt id is cleared → stale on completion) and removes any
-				// open warrant so the agent-less actor is never ticked.
+				// wipe reactor state. The full resetReactorStateOnLoad is
+				// INTENTIONAL despite the "OnLoad" name — a decorative must retain
+				// NO reactor / backstop / degeneracy bookkeeping, and a narrower
+				// partial reset would let stale state survive the agent-less
+				// transition. It also discards any in-flight tick (the attempt id
+				// is cleared → stale on completion) and removes any open warrant,
+				// so the now-agent-less actor is never ticked.
 				if a.LLMAgent != "" {
 					a.LLMAgent = ""
 					w.emit(&NPCAgentChanged{ActorID: id, LLMAgent: "", At: time.Now().UTC()})
