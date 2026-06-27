@@ -216,9 +216,9 @@ var perceptionScenarios = []perceptionScenario{
 		summary: "Two worker-tagged Walker siblings (Lewis + Anne) stand together in their own home, both jobless — the " +
 			"LLM-157 situation, where housemates solicited each other for work ('I'm looking for work, does anyone need a " +
 			"hand?'). LLM-145 already hides the solicit_work tool among kin, but the seek-work backstop warrant still made " +
-			"the model ask the housemate as freeform speech. The golden pins the '## Around you' annotation that now marks " +
-			"Anne as the subject's own household — not someone to ask for paid work — so the worker steers to a real " +
-			"employer instead. A non-kin co-present worker would carry no such annotation.",
+			"the model ask the housemate as freeform speech. The golden pins the '## Around you' annotation that now names " +
+			"Anne as the subject's housemate, so the worker reads her as kin rather than a work prospect and steers to a " +
+			"real employer instead. A non-kin co-present worker would carry no such annotation.",
 		build: workerAmongHousehold,
 	},
 	{
@@ -653,15 +653,18 @@ func TestEmptyPurseCannotPayCueTracksActorCoins(t *testing.T) {
 }
 
 // TestLaborTieAnnotationTracksWorkerKin is the LLM-157 cross-scenario invariant: the
-// "not someone to ask for paid work" annotation appears in EXACTLY the scenarios where
-// the subject is a worker AND at least one of its addressable co-present members (huddle
+// "(your housemate)" / "(your workmate)" relationship annotation appears in EXACTLY the
+// scenarios where the subject is a worker AND at least one of its addressable co-present members (huddle
 // peers ∪ co-present, the same lists Render names) shares its household or workplace.
 // The expectation is recomputed from raw ActorSnapshot fields (subjectIsWorker +
 // sharesHousehold/sharesWorkplace) — NOT from the member's SolicitTie — so it independently
 // asserts the annotation tracks co-residence/co-employment rather than pinning the render
 // against its own marker. The matrix must exercise both branches to mean anything.
 func TestLaborTieAnnotationTracksWorkerKin(t *testing.T) {
-	const marker = "not someone to ask for paid work"
+	const (
+		housemateMarker = "(your housemate)"
+		workmateMarker  = "(your workmate)"
+	)
 	var sawTied, sawUntied bool
 	for _, sc := range perceptionScenarios {
 		sc := sc
@@ -686,7 +689,9 @@ func TestLaborTieAnnotationTracksWorkerKin(t *testing.T) {
 		// Scope the search to the "## Around you" block where the annotation renders,
 		// not the whole prompt — so the invariant can't pass/fail on the marker phrase
 		// appearing in some unrelated cue or section later (code_review note).
-		if has := strings.Contains(aroundYouSection(renderScenario(sc)), marker); has != want {
+		around := aroundYouSection(renderScenario(sc))
+		has := strings.Contains(around, housemateMarker) || strings.Contains(around, workmateMarker)
+		if has != want {
 			t.Errorf("scenario %q: labor-tie annotation=%v, want %v", sc.name, has, want)
 		}
 	}
@@ -1371,9 +1376,9 @@ func coinlessWorkerAmongPeers() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) 
 // jobless. LLM-145 already hides the solicit_work tool when only kin are present,
 // but the seek-work backstop warrant still nudged the model to ask the housemate for
 // work as freeform speech. The golden pins the "## Around you" annotation that now
-// marks Anne as the subject's own household — not someone to ask for paid work.
-// Small non-zero purses keep the empty-purse line out so the golden centers on the
-// household annotation. No clock-bound content → byte-stable.
+// names Anne as the subject's housemate. Small non-zero purses keep the empty-purse
+// line out so the golden centers on the household annotation. No clock-bound content
+// → byte-stable.
 func workerAmongHousehold() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	const (
 		lewisID = sim.ActorID("lewis")

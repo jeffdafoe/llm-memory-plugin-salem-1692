@@ -1133,19 +1133,17 @@ func renderHuddleMember(m HuddleMember) string {
 	return sanitizeInline(descriptorLabel(m.DisplayName, m.Role, m.Acquainted)) + laborTiePhrase(m.SolicitTie)
 }
 
-// laborTiePhrase annotates a co-present member the subject shares a household or
-// workplace with as off-limits for paid-work solicitation (LLM-157). Empty for
+// laborTiePhrase names a co-present member's relationship to the subject —
+// housemate or workmate (LLM-157) — so a worker reads them as kin/crew rather than a
+// paid-work prospect, without the engine spelling out the instruction. Empty for
 // laborTieNone, so it composes onto any member label without adding a separator of
-// its own. The wording names the tie (household / trade / both) so a worker reads
-// why the person in front of it isn't a work prospect.
+// its own.
 func laborTiePhrase(t laborTie) string {
 	switch t {
 	case laborTieHousehold:
-		return " (your own household — not someone to ask for paid work)"
+		return " (your housemate)"
 	case laborTieWorkplace:
-		return " (your own trade — not someone to ask for paid work)"
-	case laborTieBoth:
-		return " (your own household and trade — not someone to ask for paid work)"
+		return " (your workmate)"
 	default:
 		return ""
 	}

@@ -979,21 +979,21 @@ func (t TurnStateView) AwaitingReply() bool { return len(t.AwaitingReplyFrom) > 
 // otherwise falls back to Role ("the blacksmith") or a generic
 // stranger label. Mirrors v1's coLocatedHuddleMembers name-vs-
 // descriptor gating.
-// laborTie marks why a co-present member is off-limits as a paid-work prospect:
-// the subject shares their household, their workplace crew, or both. The zero
-// value (laborTieNone) renders no annotation. Set only when the SUBJECT carries
-// AttrWorker (subjectIsWorker) — a non-worker never solicits, so the note would be
-// noise. LLM-157: the affordance gate (LLM-145) already hides the solicit_work
-// tool among kin/crew, but the seek-work backstop warrant still nudges a broke
-// worker to "seek out someone," which the model satisfies by asking the housemate
-// standing in the room as freeform speech; naming the tie here heads that off.
+// laborTie names a co-present member's standing relationship to the subject —
+// housemate or workmate — so the model reads it as kin/crew rather than a paid-work
+// prospect. The zero value (laborTieNone) renders no annotation. Set only when the
+// SUBJECT carries AttrWorker (subjectIsWorker) — a non-worker never solicits, so the
+// note would be noise. LLM-157: the affordance gate (LLM-145) already hides the
+// solicit_work tool among kin/crew, but the seek-work backstop warrant still nudges a
+// broke worker to "seek out someone," which the model satisfies by asking the
+// housemate standing in the room as freeform speech; naming the relationship heads
+// that off. Household takes precedence when a peer is both.
 type laborTie int
 
 const (
 	laborTieNone laborTie = iota
 	laborTieHousehold
 	laborTieWorkplace
-	laborTieBoth
 )
 
 type HuddleMember struct {

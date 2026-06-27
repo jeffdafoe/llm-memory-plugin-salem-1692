@@ -921,14 +921,10 @@ func laborTieFor(subj, peer *sim.ActorSnapshot) laborTie {
 	if !subjectIsWorker(subj) {
 		return laborTieNone
 	}
-	home := sharesHousehold(subj, peer)
-	work := sharesWorkplace(subj, peer)
 	switch {
-	case home && work:
-		return laborTieBoth
-	case home:
+	case sharesHousehold(subj, peer):
 		return laborTieHousehold
-	case work:
+	case sharesWorkplace(subj, peer):
 		return laborTieWorkplace
 	default:
 		return laborTieNone
