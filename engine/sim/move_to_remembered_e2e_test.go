@@ -10,22 +10,20 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/repo/mem"
 )
 
-// move_to_remembered_e2e_test.go — LLM-78. End-to-end coverage of the
-// memory-backed name-resolution fallback on a running world: a remembered place
-// that THIS tick's perception did not surface resolves by name and ISSUES the
-// walk; a never-known name still rejects (no omniscience leak); a remembered
-// place since removed rejects cleanly with a steer; and a live cue wins a name it
-// shares with a remembered place (prefer live, fall back to memory). The resolver
-// internals are covered white-box in move_to_remembered_test.go.
+// move_to_remembered_e2e_test.go — LLM-78 / LLM-142. End-to-end coverage of
+// name-resolution on a running world: a far structure resolves by name (village
+// geography is common knowledge, LLM-142) and ISSUES the walk; a far BARE gather
+// patch resolves ONLY through the memory fallback and issues the object visit; a
+// name matching no village structure and no remembered object rejects cleanly
+// with a steer; and a since-removed structure rejects (liveness re-validated, no
+// walk to a ghost). The resolver internals are covered white-box in
+// move_to_remembered_test.go.
 
-// buildRememberedTestWorld seeds a running world with places that are all BEYOND
-// the radius-3 name-resolution scene scan and are not the walker's anchors, so
-// they are reachable by name ONLY through the threaded shown / remembered sets:
-//   - "tavern": a far open structure (memory-only).
+// buildRememberedTestWorld seeds a running world with:
+//   - "tavern": a far open structure (10 tiles east, beyond any scene scan) —
+//     resolves by village name with no shown/remembered threading (LLM-142).
 //   - "berry_patch": a far BARE gather patch with no refresh row (memory-only;
 //     the live object resolver skips non-refresh objects).
-//   - "market_near" / "market_far": two structures sharing the name "Market",
-//     for the live-wins-over-memory precedence test.
 //
 // All sit on an all-grass grid with a clear path from the walker at the pad.
 func buildRememberedTestWorld(t *testing.T) (*sim.World, context.CancelFunc) {
@@ -41,15 +39,9 @@ func buildRememberedTestWorld(t *testing.T) (*sim.World, context.CancelFunc) {
 		"tavern": {ID: "tavern", AssetID: "house", Pos: sim.WorldPos{X: 320, Y: 0}, EntryPolicy: sim.EntryPolicyOpen},
 		// 10 tiles south — a bare gather patch, NO refresh row (not a refresh source).
 		"berry_patch": {ID: "berry_patch", AssetID: "prop", Pos: sim.WorldPos{X: 0, Y: 320}, DisplayName: "Raspberry Patch"},
-		// Two "Market" placements, both beyond the scan: one reachable only via the
-		// shown set, one only via memory.
-		"market_near": {ID: "market_near", AssetID: "house", Pos: sim.WorldPos{X: 288, Y: 0}, EntryPolicy: sim.EntryPolicyOpen},
-		"market_far":  {ID: "market_far", AssetID: "house", Pos: sim.WorldPos{X: 0, Y: 288}, EntryPolicy: sim.EntryPolicyOpen},
 	})
 	handles.Structures.Seed(map[sim.StructureID]*sim.Structure{
-		"tavern":      {ID: "tavern", DisplayName: "The Tavern"},
-		"market_near": {ID: "market_near", DisplayName: "Market"},
-		"market_far":  {ID: "market_far", DisplayName: "Market"},
+		"tavern": {ID: "tavern", DisplayName: "The Tavern"},
 	})
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
 		"walker": {ID: "walker", DisplayName: "Walker", Pos: sim.TilePos{X: sim.PadX, Y: sim.PadY}},
@@ -63,30 +55,32 @@ func buildRememberedTestWorld(t *testing.T) (*sim.World, context.CancelFunc) {
 	return w, cancel
 }
 
-// A remembered structure not shown this tick resolves by name and issues the walk.
-func TestMoveToByName_RememberedStructureResolvesAndWalks(t *testing.T) {
+// A far, never-visited, non-anchor structure resolves by name and issues the walk
+// — village geography is common knowledge (LLM-142), no shown/remembered needed.
+// This is the live scene-019f094d case (a Walker naming "the Tavern" across town).
+func TestMoveToByName_FarStructureResolvesAndWalks(t *testing.T) {
 	w, cancel := buildRememberedTestWorld(t)
 	defer cancel()
 
-	remembered := sim.RememberedPlaces{StructureIDs: []sim.StructureID{"tavern"}}
-	if _, err := w.Send(sim.MoveToStructureByName("walker", "The Tavern", nil, nil, remembered, time.Now().UTC())); err != nil {
-		t.Fatalf("MoveToStructureByName(The Tavern) via memory: %v", err)
+	if _, err := w.Send(sim.MoveToStructureByName("walker", "The Tavern", nil, sim.RememberedPlaces{}, time.Now().UTC())); err != nil {
+		t.Fatalf("MoveToStructureByName(The Tavern): %v", err)
 	}
 	_, sid := destKindOf(t, w, "walker")
 	if sid != "tavern" {
-		t.Errorf("dest structure = %q, want tavern (resolved via the memory fallback)", sid)
+		t.Errorf("dest structure = %q, want tavern (resolved as common-knowledge geography)", sid)
 	}
 }
 
 // A remembered BARE gather patch (no refresh row) resolves by name and issues the
 // object visit — proving the memory object resolver does NOT gate on
-// objectIsRefreshSource the way the live object resolver does.
+// objectIsRefreshSource the way the live object resolver does. Objects stay
+// discovered (a wild bush is not common knowledge like a building).
 func TestMoveToByName_RememberedGatherPatchResolvesAndWalks(t *testing.T) {
 	w, cancel := buildRememberedTestWorld(t)
 	defer cancel()
 
 	remembered := sim.RememberedPlaces{ObjectIDs: []sim.VillageObjectID{"berry_patch"}}
-	if _, err := w.Send(sim.MoveToStructureByName("walker", "Raspberry Patch", nil, nil, remembered, time.Now().UTC())); err != nil {
+	if _, err := w.Send(sim.MoveToStructureByName("walker", "Raspberry Patch", nil, remembered, time.Now().UTC())); err != nil {
 		t.Fatalf("MoveToStructureByName(Raspberry Patch) via memory: %v", err)
 	}
 	kind, oid := objDestOf(t, w, "walker")
@@ -95,35 +89,33 @@ func TestMoveToByName_RememberedGatherPatchResolvesAndWalks(t *testing.T) {
 	}
 }
 
-// A never-known place name still rejects even with a non-empty memory set — the
-// no-omniscience guard holds (only shown OR personally-experienced places resolve).
-func TestMoveToByName_NeverKnownRejectsDespiteMemory(t *testing.T) {
+// A name matching no village structure and no remembered object still rejects,
+// even with a non-empty memory set — a bare source stays discovered.
+func TestMoveToByName_UnknownNameRejectsDespiteMemory(t *testing.T) {
 	w, cancel := buildRememberedTestWorld(t)
 	defer cancel()
 
-	remembered := sim.RememberedPlaces{
-		StructureIDs: []sim.StructureID{"tavern"},
-		ObjectIDs:    []sim.VillageObjectID{"berry_patch"},
-	}
-	_, err := w.Send(sim.MoveToStructureByName("walker", "The Smithy", nil, nil, remembered, time.Now().UTC()))
+	remembered := sim.RememberedPlaces{ObjectIDs: []sim.VillageObjectID{"berry_patch"}}
+	_, err := w.Send(sim.MoveToStructureByName("walker", "The Smithy", nil, remembered, time.Now().UTC()))
 	if err == nil {
-		t.Fatal("want reject for a never-known place name, got nil")
+		t.Fatal("want reject for a name no structure or remembered source has, got nil")
 	}
 	if !strings.Contains(err.Error(), "no place called") {
 		t.Errorf("error lacks the 'no place called' steer: %v", err)
 	}
 	if mi := moveIntentOf(t, w, "walker"); mi != nil {
-		t.Error("a rejected never-known name stamped a MoveIntent; want none")
+		t.Error("a rejected unknown name stamped a MoveIntent; want none")
 	}
 }
 
-// A remembered place since removed from the world rejects cleanly with a steer —
-// liveness is re-validated against the live world, never a walk to a ghost.
-func TestMoveToByName_RememberedButDeletedRejectsWithSteer(t *testing.T) {
+// A structure since removed from the world rejects cleanly with a steer — the
+// village resolver re-validates liveness against the live world, never a walk to
+// a ghost.
+func TestMoveToByName_RemovedStructureRejectsWithSteer(t *testing.T) {
 	w, cancel := buildRememberedTestWorld(t)
 	defer cancel()
 
-	// Demolish the tavern on the world goroutine, then name it from memory.
+	// Demolish the tavern on the world goroutine, then name it.
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		delete(world.Structures, sim.StructureID("tavern"))
 		delete(world.VillageObjects, sim.VillageObjectID("tavern"))
@@ -132,42 +124,14 @@ func TestMoveToByName_RememberedButDeletedRejectsWithSteer(t *testing.T) {
 		t.Fatalf("demolish tavern: %v", err)
 	}
 
-	remembered := sim.RememberedPlaces{StructureIDs: []sim.StructureID{"tavern"}}
-	_, err := w.Send(sim.MoveToStructureByName("walker", "The Tavern", nil, nil, remembered, time.Now().UTC()))
+	_, err := w.Send(sim.MoveToStructureByName("walker", "The Tavern", nil, sim.RememberedPlaces{}, time.Now().UTC()))
 	if err == nil {
-		t.Fatal("want reject for a remembered place since removed, got nil")
+		t.Fatal("want reject for a structure since removed, got nil")
 	}
 	if !strings.Contains(err.Error(), "no place called") {
 		t.Errorf("error lacks the 'no place called' steer: %v", err)
 	}
 	if mi := moveIntentOf(t, w, "walker"); mi != nil {
-		t.Error("a remembered-but-removed reject stamped a MoveIntent; want none")
-	}
-}
-
-// A name shared by a live-cue place (market_near, in the shown set) and a
-// remembered place (market_far) resolves to the LIVE one — and the result is
-// stable regardless of the remembered slice's order (prefer live, fall back to
-// memory). The memory tier alone would tie-break to market_far (lower id at equal
-// distance), so this proves live truly wins rather than coincidentally agreeing.
-func TestMoveToByName_LiveCueWinsOverMemory(t *testing.T) {
-	shown := []sim.StructureID{"market_near"}
-	orders := [][]sim.StructureID{
-		{"market_far"},                // memory names a DIFFERENT place by the same name
-		{"market_far", "market_near"}, // memory names both; live must still win
-	}
-	for _, order := range orders {
-		w, cancel := buildRememberedTestWorld(t)
-		remembered := sim.RememberedPlaces{StructureIDs: order}
-		_, err := w.Send(sim.MoveToStructureByName("walker", "Market", shown, nil, remembered, time.Now().UTC()))
-		if err != nil {
-			cancel()
-			t.Fatalf("MoveToStructureByName(Market) order %v: %v", order, err)
-		}
-		_, sid := destKindOf(t, w, "walker")
-		cancel()
-		if sid != "market_near" {
-			t.Errorf("order %v: dest = %q, want market_near (live cue wins over memory)", order, sid)
-		}
+		t.Error("a removed-structure reject stamped a MoveIntent; want none")
 	}
 }

@@ -972,12 +972,13 @@ func (h *Harness) dispatch(ctx context.Context, w *sim.World, job tickJob, vc *V
 		RootEventID:    job.rootEventID,
 		LLMMemoryAgent: llmMemoryAgent,
 		Args:           vc.DecodedArgs,
-		// Move targets this tick's perception surfaced (ZBBS-HOME-389) — the move_to
-		// commit resolves a structure_name against these. Empty for non-move ticks.
-		PerceivedStructureIDs: perceivedPlaces.StructureIDs,
-		PerceivedObjectIDs:    perceivedPlaces.ObjectIDs,
+		// Object move targets this tick's perception surfaced (ZBBS-HOME-389) — the
+		// move_to commit resolves a name that matches no village structure against
+		// these (a well, a fruit tree). Structures resolve by village geography
+		// directly (LLM-142). Empty for non-move ticks.
+		PerceivedObjectIDs: perceivedPlaces.ObjectIDs,
 		// The actor's durable known places (LLM-78) — move_to's memory-backed
-		// name-resolution fallback, tried after the perceived sources miss.
+		// OBJECT name-resolution fallback, tried after the perceived sources miss.
 		RememberedPlaces: rememberedPlaces,
 		// New-news signal for the turn-state gate (ZBBS-WORK-370). Computed from
 		// the tick's consumed warrant batch; only the speak commit consumes it.

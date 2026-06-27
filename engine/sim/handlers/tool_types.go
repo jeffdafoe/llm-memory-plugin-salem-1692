@@ -142,24 +142,24 @@ type HandlerInput struct {
 	// per-tool args struct.
 	Args any
 
-	// PerceivedStructureIDs / PerceivedObjectIDs are the move targets this tick's
-	// perception surfaced to the actor (ZBBS-HOME-389) — every structure_id /
-	// object_id a vendor / rest / restock / anchor cue named. The move_to commit
-	// resolves a structure_name against these (in addition to anchors + scene
-	// radius) so the model can walk by NAME to any place it was actually shown,
-	// distant or not. Empty for a tick with no move-target cues. Threaded from the
-	// harness (off-world); the move_to Command consults them on the world goroutine.
-	PerceivedStructureIDs []sim.StructureID
-	PerceivedObjectIDs    []sim.VillageObjectID
+	// PerceivedObjectIDs are the move-target OBJECTS this tick's perception
+	// surfaced to the actor (ZBBS-HOME-389) — every object_id a satiation / rest
+	// cue named (a well, a fruit tree). The move_to commit resolves a
+	// structure_name that matches no village structure against these so the model
+	// can walk by NAME to a free source it was actually shown, distant or not.
+	// Structures need no such set — village geography is common knowledge
+	// (LLM-142). Empty for a tick with no object move-target cues. Threaded from
+	// the harness (off-world); the move_to Command consults them on the world goroutine.
+	PerceivedObjectIDs []sim.VillageObjectID
 
 	// RememberedPlaces is the actor's DURABLE known-places set (LLM-77) split by
-	// kind — the places it has personally experienced across its life, threaded as
-	// the move_to name-resolver's memory-backed FALLBACK source (LLM-78). Distinct
-	// from Perceived* above (what THIS tick showed): the resolver tries Perceived*
-	// first and falls back to these, so a live cue wins a name shared with a
-	// remembered place. Empty when the actor knows no places. Threaded from the
-	// harness off the published snapshot, like Perceived*; the move_to Command
-	// consults it on the world goroutine (and re-validates liveness there).
+	// kind — the places it has personally experienced across its life. Only its
+	// ObjectIDs are consulted now, as the move_to name-resolver's memory-backed
+	// FALLBACK for a bare source (LLM-78): a wild bush is still discovered, unlike
+	// a building. The PerceivedObjectIDs (what THIS tick showed) win a shared name;
+	// these are the fallback. Empty when the actor knows no places. Threaded from
+	// the harness off the published snapshot; the move_to Command consults it on
+	// the world goroutine (and re-validates liveness there).
 	RememberedPlaces sim.RememberedPlaces
 
 	// HasNewNews is the turn-state gate's new-news signal (ZBBS-WORK-370): true
