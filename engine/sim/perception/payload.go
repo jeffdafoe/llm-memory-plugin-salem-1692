@@ -891,6 +891,17 @@ type SurroundingsView struct {
 	// Store" instead of dumping raw "(94, 126)" coordinates (ZBBS-HOME-339).
 	NearbyStructureName string
 
+	// LocationDeadEnd names a live reason the place the actor is physically at
+	// can't serve them, or DeadEndNone when it can (LLM-154). A LIVE, situated
+	// read recomputed cold each tick from the snapshot — the NPC is standing
+	// here and can see the empty stall — distinct from the ObservedClosed
+	// *memory* (consumable_vendors.go) that deprioritizes a FAR-AWAY cue. Render
+	// states it plainly next to the location line ("The Tavern is shut — no one
+	// is tending it.") so a weak model isn't left to infer "closed" from "the
+	// keeper is asleep." Closed-business is the first wired reason; out-of-stock
+	// / exhausted-source / locked-entry slot in as further values.
+	LocationDeadEnd DeadEndReason
+
 	// HuddleID is the actor's current huddle, empty when not huddled.
 	HuddleID sim.HuddleID
 
@@ -957,6 +968,26 @@ type SurroundingsView struct {
 	// key). Empty when there is no cue; render falls back to the key string.
 	GatherableNoun string
 }
+
+// DeadEndReason enumerates the live reasons the actor's CURRENT location can't
+// serve the purpose it was approached for (LLM-154). It is a situated read, not
+// a memory: each value is recomputed from the snapshot every tick, so it fires
+// the moment the actor arrives and persists while they linger. Adding a reason
+// is a new value here plus its detection in buildSurroundings and its clause in
+// renderSurroundings — the mechanism is shared, the conditions slot in.
+type DeadEndReason string
+
+const (
+	// DeadEndNone — the current location can serve the actor (or isn't the kind
+	// of place that can be a dead end). The zero value, so an unset view reads
+	// "fine".
+	DeadEndNone DeadEndReason = ""
+	// DeadEndShutBusiness — the actor is at a business (a structure someone
+	// works) with no keeper tending it right now: no awake worker of the
+	// structure is present at it. The live complement of the ObservedClosed
+	// memory; the first wired reason (LLM-154).
+	DeadEndShutBusiness DeadEndReason = "shut_business"
+)
 
 // HasAudience reports whether the subject has at least one awake, addressable
 // actor to speak to right now — its huddle peers, or (unhuddled) the co-present

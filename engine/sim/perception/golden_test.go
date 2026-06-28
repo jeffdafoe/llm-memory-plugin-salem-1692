@@ -345,6 +345,30 @@ var perceptionScenarios = []perceptionScenario{
 			"warrant gate would drop the directory line, and a regression to the coda swap would bring back 'Choose one action'.",
 		build: brokeWorkerNoEmployerSeeksWork,
 	},
+	{
+		name: "customer_at_shut_business_loitering",
+		summary: "A laborer (Goodman Silence) stands OUTDOORS at the Tavern's loiter slot, but its only keeper (John Ellis) " +
+			"is asleep inside — the live LLM-154 case (Silence stuck at the closed Tavern while seeking work). The golden pins " +
+			"the at-location dead-end clause 'The Tavern is shut — no one is tending it.' next to the 'outdoors by the Tavern' " +
+			"location line: a live, situated read (the keeper is abed, so the place reads shut) distinct from the ObservedClosed " +
+			"memory, so a weak model isn't left to infer 'closed' from 'the keeper is asleep'.",
+		build: customerAtShutBusinessLoitering,
+	},
+	{
+		name: "customer_at_shut_business_inside",
+		summary: "The same laborer, now standing INSIDE the Tavern's interior with the keeper asleep there (LLM-154). The " +
+			"golden pins that the shut clause fires on the interior placement too — keyed on the current location whether the " +
+			"actor entered or is loitering at the slot — and that the abed keeper is named as a co-present sleeper (visible but " +
+			"not addressable).",
+		build: customerAtShutBusinessInside,
+	},
+	{
+		name: "customer_at_open_business",
+		summary: "The positive control for LLM-154: the same laborer outdoors at the Tavern's loiter slot, but the keeper is " +
+			"awake and present inside. The golden pins that NO shut clause renders — an awake, present keeper means the business " +
+			"is tended, so the live read stays silent (render the situation, not omniscient).",
+		build: customerAtOpenBusiness,
+	},
 }
 
 // lodgerGoldenBase builds the shared LLM-127 lodging-gate fixture: Ezekiel Crane,

@@ -1,0 +1,18 @@
+# Your turn
+
+## What just happened
+(nothing specific — this is a routine check-in)
+
+
+## You
+Coins in your purse: 6.
+
+## Around you
+You are inside the Tavern. the innkeeper is asleep and won't respond if you speak to them. There is no one awake here to hear you speak.
+The Tavern is shut — no one is tending it.
+It is midday.
+
+## How you can rest
+- Tavern — rent a room, ask the keeper (structure_id: tavern)
+
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.
