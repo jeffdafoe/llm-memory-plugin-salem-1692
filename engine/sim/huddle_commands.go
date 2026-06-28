@@ -336,6 +336,12 @@ func JoinHuddle(actorID ActorID, structureID StructureID, sceneID SceneID, now t
 				}
 				w.Huddles[huddleID] = huddle
 				huddleNew = true
+				// LLM-170: if this structure's conversation just concluded and the
+				// speaker re-forming it was part of it (within the continuity
+				// window), carry the ring + loop state forward so the reconvening
+				// peers aren't re-greeted as strangers and a churned loop can't
+				// evade the sweep. A genuinely new arrival starts a fresh huddle.
+				seedHuddleFromContinuity(w, huddle, structureID, actorID, now)
 			} else {
 				huddle = w.Huddles[huddleID]
 			}
@@ -357,7 +363,16 @@ func JoinHuddle(actorID ActorID, structureID StructureID, sceneID SceneID, now t
 			huddle.LastActivityAt = now
 			// LLM-159: a membership change is non-conversational progress — the
 			// conversation's composition just shifted, so it is not a stuck loop.
-			huddle.LastProgressAt = now
+			// LLM-170 refinement: a re-join that merely continues the same clique
+			// (joiner + every current member were in the just-concluded conversation
+			// here) is NOT a composition change, so it must NOT stamp progress —
+			// otherwise rapid re-formation would reset the loop spell every cycle and
+			// evade the sweep. Once a genuinely-new participant has joined, the huddle
+			// has diverged and further joins ARE progress. Runs after the joiner is
+			// added to Members (joinContinuesClique includes it in the check).
+			if !w.joinContinuesClique(huddle, structureID, actorID, now) {
+				huddle.LastProgressAt = now
+			}
 			if w.actorsByHuddle[huddleID] == nil {
 				w.actorsByHuddle[huddleID] = make(map[ActorID]struct{})
 			}
@@ -516,6 +531,12 @@ func concludeHuddleInner(w *World, huddleID HuddleID, now time.Time, stampWarran
 		return
 	}
 
+	// LLM-170: snapshot this conversation into the per-structure carry-over before
+	// the huddle is torn down, so a re-formation among the same speakers within the
+	// continuity window inherits the recent-utterance ring and loop state. MUST run
+	// before Members is cleared and the ring is dropped below.
+	writeConversationCarryover(w, huddle, now)
+
 	members := make([]ActorID, 0, len(huddle.Members))
 	for id := range huddle.Members {
 		members = append(members, id)
@@ -637,6 +658,9 @@ func ClearConversationalHuddlesOnBoot(w *World) {
 	}
 	w.Huddles = make(map[HuddleID]*Huddle)
 	w.actorsByHuddle = make(map[HuddleID]map[ActorID]struct{})
+	// LLM-170: the conversation carry-over is transient — no conversation survives a
+	// restart, so a re-form after boot must not inherit a pre-restart exchange.
+	w.carryoverByStructure = make(map[StructureID]*conversationCarryover)
 }
 
 // leaveCurrentHuddle implements the leave half of join (atomic transition)
@@ -672,14 +696,16 @@ func leaveCurrentHuddle(w *World, actor *Actor, now time.Time) LeaveHuddleResult
 	actor.CurrentHuddleID = ""
 	// ZBBS-WORK-370: the leaver's pending turn edges are moot once it exits.
 	actor.dropAwaitingReplies()
-	// LLM-159: a departure is non-conversational progress — the conversation's
-	// composition shifted, so a surviving huddle is not a stuck loop. Only the
-	// progress clock is stamped, NOT LastActivityAt: ZBBS-HOME-417 deliberately
-	// counts a join (but not a leave) as silence-sweep activity, and a huddle
-	// nobody speaks in after a member leaves SHOULD remain concludable by the
-	// silence sweep. Harmless on the paths below that go on to conclude the huddle
-	// (ConcludedAt gates both sweeps).
-	huddle.LastProgressAt = now
+	// LLM-170: a departure is NOT progress. It was stamped as progress under LLM-159
+	// (composition shifted ⇒ not a stuck loop), but that is exactly what let a clique
+	// churn out of the loop sweep — and on the last-member-leave conclude path it
+	// stamped LastProgressAt=now at conclude time, which would defeat the conversation
+	// carry-over (the carried ring would read as older than the carried progress).
+	// Progress is now only a transaction (touchHuddleProgress) or a genuinely-new
+	// participant joining (JoinHuddle); the remaining members of a shrunk huddle can
+	// still be looping, so a leave must not spare them. (LastActivityAt is unchanged —
+	// it was deliberately NOT bumped on leave so a post-departure quiet huddle stays
+	// concludable by the silence sweep.)
 	if members, ok := w.actorsByHuddle[huddleID]; ok {
 		delete(members, actor.ID)
 		if len(members) == 0 {
@@ -782,6 +808,11 @@ func leaveCurrentHuddle(w *World, actor *Actor, now time.Time) LeaveHuddleResult
 
 	concluded := false
 	if len(huddle.Members) == 0 {
+		// LLM-170: snapshot the conversation before tear-down so a re-form among the
+		// same speakers within the continuity window inherits the ring + loop state.
+		// This is the PRIMARY churn-conclude path (last member leaves), separate from
+		// concludeHuddleInner; the ring is still intact here (a leave never clears it).
+		writeConversationCarryover(w, huddle, now)
 		t := now
 		huddle.ConcludedAt = &t
 		concluded = true

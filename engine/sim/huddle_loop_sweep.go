@@ -198,12 +198,15 @@ func evaluateHuddleLoopAndRearm(now time.Time) Command {
 // an internal Fn) so tests can drive sweeps deterministically without the
 // AfterFunc timing chain.
 //
-// Per active huddle: huddleConversationLooping decides whether the conversation
-// is repetitive-and-live right now. A huddle that isn't has its LoopingSince
-// cleared (a recovery — the loop broke on its own). A huddle that is gets
-// LoopingSince stamped on first sight; a progress event (transaction / membership
-// change) recorded AFTER that onset resets it (the huddle is advancing after
-// all). Once the spell has persisted HuddleLoopTimeout the huddle is concluded.
+// Per active huddle: huddleLoopContentPresent (the DURABLE condition — repetitive +
+// progress-free, NOT recency-gated) decides whether to stamp/hold LoopingSince. A
+// huddle that isn't content-present has it cleared (a genuine recovery — varied
+// content or a progress event newer than the ring). The durable condition (vs the
+// live one) is what lets the spell survive a churned clique's brief silence between
+// concluding one huddle and re-forming the next (LLM-170), so the gate counts
+// continuously across the churn. Conclusion additionally requires the loop to be LIVE
+// (huddleLoopArmed) — a repetitive huddle that has merely gone quiet is the silence
+// sweep's job. Once the spell has persisted HuddleLoopTimeout AND is live, conclude.
 //
 // Collect-then-conclude: concludeHuddleInner emits HuddleConcluded and a
 // subscriber could in principle mutate w.Huddles, so the looping set is gathered
@@ -222,13 +225,15 @@ func EvaluateHuddleLoopSweep(now time.Time) Command {
 				if h == nil || h.ConcludedAt != nil {
 					continue
 				}
-				// huddleLoopArmed folds the point-in-time looping predicate and
-				// the post-dates-progress guard. Extracted (LLM-169) so the
-				// per-tick perception steer (republish → ActorSnapshot.
-				// ConversationLooping) arms on the EXACT same condition this sweep
-				// does — the gentle "you've agreed, act now" nudge and this
-				// destructive silent conclude read one signal.
-				if !huddleLoopArmed(w.Settings, h, now) {
+				// Onset/clear are gated on huddleLoopContentPresent — the DURABLE
+				// condition (repetitive ring + progress guard), NOT recency. So the
+				// spell survives the brief quiet between a churned huddle concluding
+				// and the same clique re-forming + speaking again (LLM-170): the
+				// carried ring keeps the condition true across the gap, so the gate
+				// counts continuously instead of restarting each cycle. A real
+				// recovery (varied content, or a transaction/new-member progress
+				// event newer than the ring) flips it false and clears the spell.
+				if !huddleLoopContentPresent(w.Settings, h) {
 					h.LoopingSince = nil
 					continue
 				}
@@ -236,7 +241,13 @@ func EvaluateHuddleLoopSweep(now time.Time) Command {
 					t := now
 					h.LoopingSince = &t
 				}
-				if now.Sub(*h.LoopingSince) >= timeout {
+				// Conclude only a spell that has BOTH persisted past the gate AND is
+				// live right now — a repetitive huddle that has merely gone quiet is
+				// the silence sweep's job, not a livelock to break. huddleLoopArmed
+				// (content-present + live) is the same signal the LLM-169 per-tick
+				// steer arms on, so the gentle nudge and this destructive conclude
+				// stay coupled.
+				if now.Sub(*h.LoopingSince) >= timeout && huddleLoopArmed(w.Settings, h, now) {
 					looping = append(looping, id)
 				}
 			}
@@ -253,65 +264,94 @@ func EvaluateHuddleLoopSweep(now time.Time) Command {
 				}
 				// Telemetry BEFORE conclude — concludeHuddleInner clears Members.
 				emitHuddleLoopTelemetry(w, h, now)
+				structureID := h.StructureID
 				concludeHuddleInner(w, id, now, false)
+				// concludeHuddleInner wrote a carry-over (LLM-170). Keep its ring (so a
+				// re-form doesn't re-greet) but reset the carried loop clock: a silent
+				// conclude is meant to give the clique a fresh chance, so if they
+				// re-form and resume looping the NEXT gate catches them, not an
+				// instantly-elapsed inherited spell.
+				if cb := w.carryoverByStructure[structureID]; cb != nil {
+					cb.loopingSince = nil
+				}
 			}
 			return nil, nil
 		},
 	}
 }
 
-// huddleConversationLooping reports whether the huddle's conversation is, right
-// now, a repetitive live loop: the RecentUtterances ring is full enough to judge
-// (huddleLoopMinUtterances), the last spoken line is recent (huddleLoopLiveWindow
-// — a quiet huddle belongs to the silence sweep), and the near-duplicate fraction
-// meets the configured threshold. Persistence (LoopingSince) and the progress
-// guard (LastProgressAt) are applied by the caller, not here — this is the
-// point-in-time "does it look like a loop" predicate.
-func huddleConversationLooping(s WorldSettings, h *Huddle, now time.Time) bool {
+// huddleLoopRepetitive reports whether the recent-utterance ring is full enough to
+// judge (huddleLoopMinUtterances) and repetitive past the configured threshold — the
+// content SHAPE of a loop, independent of recency or progress. The building block
+// shared by the live predicate (huddleConversationLooping) and the durable one
+// (huddleLoopContentPresent).
+func huddleLoopRepetitive(s WorldSettings, h *Huddle) bool {
 	if h == nil || h.ConcludedAt != nil {
 		return false
 	}
-	ring := h.RecentUtterances
-	if len(ring) < huddleLoopMinUtterances {
+	if len(h.RecentUtterances) < huddleLoopMinUtterances {
 		return false
 	}
-	// A negative age (now earlier than the newest utterance — possible with
-	// caller-supplied/replayed timestamps) is not "live": treat it the same as
-	// stale so a loop never arms off an out-of-order clock.
-	age := now.Sub(ring[len(ring)-1].At)
-	if age < 0 || age > huddleLoopLiveWindow {
-		return false
-	}
-	return huddleUtteranceRepetition(ring) >= effectiveHuddleLoopRepeatFraction(s)
+	return huddleUtteranceRepetition(h.RecentUtterances) >= effectiveHuddleLoopRepeatFraction(s)
 }
 
-// huddleLoopArmed reports whether the huddle is, right now, in a repetitive live
-// loop whose repetition POST-DATES the last non-conversational progress — the
-// point-in-time "this is a stuck loop" condition, with the progress guard the
-// loop sweep applies before stamping LoopingSince. A loop spell is only armed by
-// repetition newer than the last progress event (a transaction or membership
-// change, Huddle.LastProgressAt): if the newest utterance is not newer than that,
-// the repetitive ring is stale relative to the progress — the huddle advanced and
-// has produced no fresh repetitive speech since, so it is not stuck. Without this
-// a single mid-loop transaction would only postpone conclusion by one timeout
-// while the unchanged, still-repetitive ring re-armed against itself.
-//
-// Persistence (LoopingSince / HuddleLoopTimeout) stays in the sweep; this is the
-// armed-now predicate shared by the sweep's persistence gate and the per-tick
-// perception steer (republish → ActorSnapshot.ConversationLooping, LLM-169), so
-// the gentle "you've agreed, act now" nudge and the destructive silent conclude
-// fire on the same signal. The ring is non-empty whenever huddleConversationLooping
-// is true (it requires >= huddleLoopMinUtterances), so the newest-utterance index
-// is safe.
+// huddleNewestUtteranceLive reports whether the newest spoken line is recent enough
+// (huddleLoopLiveWindow) for the huddle to count as ACTIVELY looping — a quiet huddle
+// is the silence sweep's domain. A negative age (now earlier than the newest line,
+// possible with caller-supplied / replayed timestamps) is treated as not-live so a
+// loop never arms off an out-of-order clock.
+func huddleNewestUtteranceLive(h *Huddle, now time.Time) bool {
+	ring := h.RecentUtterances
+	if len(ring) == 0 {
+		return false
+	}
+	age := now.Sub(ring[len(ring)-1].At)
+	return age >= 0 && age <= huddleLoopLiveWindow
+}
+
+// huddleNewestAfterProgress reports whether the newest utterance post-dates the last
+// non-conversational progress (a transaction or a genuinely-new participant —
+// Huddle.LastProgressAt). When it does not, the repetitive ring is stale relative to
+// progress: the huddle advanced and has produced no fresh repetitive speech since, so
+// it is not stuck. A zero LastProgressAt (none ever recorded) trivially passes.
+func huddleNewestAfterProgress(h *Huddle) bool {
+	ring := h.RecentUtterances
+	if len(ring) == 0 {
+		return false
+	}
+	newestAt := ring[len(ring)-1].At
+	return h.LastProgressAt.IsZero() || newestAt.After(h.LastProgressAt)
+}
+
+// huddleConversationLooping reports whether the huddle's conversation is, right now, a
+// repetitive LIVE loop: repetitive ring + the newest line is recent. The progress
+// guard is NOT applied here — this is the point-in-time "does it look like an active
+// loop" predicate. Exported for tests.
+func huddleConversationLooping(s WorldSettings, h *Huddle, now time.Time) bool {
+	return huddleLoopRepetitive(s, h) && huddleNewestUtteranceLive(h, now)
+}
+
+// huddleLoopContentPresent is the DURABLE loop condition that gates the sweep's
+// LoopingSince onset: a repetitive ring whose newest line post-dates the last
+// progress — with NO recency requirement. Unlike huddleLoopArmed it stays true while
+// the huddle is briefly quiet (LLM-170: the gap between a churned huddle concluding
+// and the same clique re-forming + speaking again, bridged by the carried ring), so
+// the persistence gate counts continuously across the churn instead of restarting
+// each cycle. It flips false only on a genuine recovery — the repetition drops
+// (varied content) or a progress event post-dates the ring.
+func huddleLoopContentPresent(s WorldSettings, h *Huddle) bool {
+	return huddleLoopRepetitive(s, h) && huddleNewestAfterProgress(h)
+}
+
+// huddleLoopArmed reports whether the huddle is, right now, in a repetitive LIVE loop
+// whose repetition post-dates the last progress — content-present AND live. The
+// armed-now signal shared by the sweep's conclude gate and the per-tick perception
+// steer (republish → ActorSnapshot.ConversationLooping, LLM-169), so the gentle
+// "you've agreed, act now" nudge and the destructive silent conclude fire on the same
+// condition. Without the progress guard a single mid-loop transaction would only
+// postpone conclusion by one timeout while the unchanged repetitive ring re-armed.
 func huddleLoopArmed(s WorldSettings, h *Huddle, now time.Time) bool {
-	if !huddleConversationLooping(s, h, now) {
-		return false
-	}
-	newestAt := h.RecentUtterances[len(h.RecentUtterances)-1].At
-	if !h.LastProgressAt.IsZero() && !newestAt.After(h.LastProgressAt) {
-		return false
-	}
-	return true
+	return huddleLoopContentPresent(s, h) && huddleNewestUtteranceLive(h, now)
 }
 
 // huddleUtteranceRepetition returns the fraction (0..1) of the ring's content-

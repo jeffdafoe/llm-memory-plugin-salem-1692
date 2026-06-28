@@ -347,6 +347,23 @@ func HuddleConversationLooping(s WorldSettings, h *Huddle, now time.Time) bool {
 	return huddleConversationLooping(s, h, now)
 }
 
+// HuddleLoopContentPresent exposes the DURABLE loop condition (LLM-170) — repetitive
+// + progress-free, NOT recency-gated — for direct predicate tests.
+func HuddleLoopContentPresent(s WorldSettings, h *Huddle) bool {
+	return huddleLoopContentPresent(s, h)
+}
+
+// CarryoverLoopingSince returns the per-structure conversation carry-over's loop
+// clock (LLM-170): (ls, true) when a carry-over exists for structureID, (nil, false)
+// when none does. MUST run inside a Command.Fn (touches world-goroutine state).
+func CarryoverLoopingSince(w *World, structureID StructureID) (*time.Time, bool) {
+	cb := w.carryoverByStructure[structureID]
+	if cb == nil {
+		return nil, false
+	}
+	return cb.loopingSince, true
+}
+
 // SetTickTelemetrySink wires a telemetry sink for tests (the sweeps' `stuck`
 // records land here). Touches repo, so callers MUST run it inside a Command.Fn.
 func SetTickTelemetrySink(w *World, sink TickTelemetrySink) { w.repo.TickTelemetry = sink }
