@@ -1097,9 +1097,16 @@ type ActorSnapshot struct {
 	InsideRoomID    RoomID
 	Pos             TilePos // padded grid tile; was CurrentX/CurrentY (see geom.go)
 	CurrentHuddleID HuddleID
-	Needs           map[NeedKey]int
-	InventoryHash   uint64 // fast-compare; computed at snapshot time
-	Coins           int
+	// ConversationLooping is set at publish (World.republish) when this actor's
+	// current huddle is in an armed conversational loop right now — the same
+	// huddleLoopArmed signal the loop sweep uses, surfaced per-tick so perception
+	// can steer the actor to act on the agreement instead of re-echoing it
+	// (LLM-169), well before the sweep's persistence gate silently concludes the
+	// huddle. False for an unhuddled actor or a healthy, advancing conversation.
+	ConversationLooping bool
+	Needs               map[NeedKey]int
+	InventoryHash       uint64 // fast-compare; computed at snapshot time
+	Coins               int
 
 	// SpriteID + Facing mirror the live Actor's render identity at snapshot
 	// time so the client read surface (httpapi) can resolve + inline the

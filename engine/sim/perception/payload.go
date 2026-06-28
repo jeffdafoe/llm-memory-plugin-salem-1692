@@ -1024,6 +1024,14 @@ type TurnStateView struct {
 	// it is this actor's turn to answer them. Rendered as a "they are waiting for
 	// your reply" nudge so an addressed NPC takes its turn.
 	OwedReplyTo []string
+
+	// ConversationLooping is set when this actor's huddle is in an armed
+	// conversational loop (sim.ActorSnapshot.ConversationLooping, LLM-169): the
+	// members keep restating the same agreement without it converting to action.
+	// True → suppress the "X is waiting for your reply" nag (that nag is what
+	// manufactures the echo) AND swap the coda for an "you've agreed, act now or
+	// done()" steer — the social-loop analogue of the LLM-160 seek-work directive.
+	ConversationLooping bool
 }
 
 // AwaitingReply reports whether the subject is awaiting at least one live reply

@@ -184,6 +184,52 @@ func TestHuddleConversationLooping_Predicate(t *testing.T) {
 	}
 }
 
+// TestRepublish_ConversationLoopingFlag (LLM-169) pins the core contract: the
+// per-actor ConversationLooping flag the snapshot carries for perception is computed
+// from the SAME armed-loop signal the sweep uses (repetition predicate + post-dates-
+// progress guard). An armed loop flags every member; progress newer than the ring, a
+// varied conversation, and a disabled sweep all leave it false — so the per-tick steer
+// can never drift from the sweep's arming semantics. republish runs after every command
+// (World.Run), so staging the loop state refreshes the snapshot.
+func TestRepublish_ConversationLoopingFlag(t *testing.T) {
+	w, cancel := buildHuddleTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	loop := sendT(t, w, sim.JoinHuddle("alice", "tavern", "", now)).(sim.JoinHuddleResult).HuddleID
+	sendT(t, w, sim.JoinHuddle("bob", "tavern", "", now)) // a second member, so the loop has an audience
+	enableLoopSweep(t, w, 2*time.Minute, 60)
+
+	aliceLooping := func() bool { return w.Published().Actors["alice"].ConversationLooping }
+
+	// Armed: a fresh repetitive ring with no recorded progress → flags BOTH members.
+	setHuddleLoopState(t, w, loop, loopingLines(now), nil, time.Time{})
+	snap := w.Published()
+	if !snap.Actors["alice"].ConversationLooping || !snap.Actors["bob"].ConversationLooping {
+		t.Errorf("armed loop should flag both members: alice=%v bob=%v",
+			snap.Actors["alice"].ConversationLooping, snap.Actors["bob"].ConversationLooping)
+	}
+
+	// Progress newer than the ring disarms it (the huddle advanced after all).
+	setHuddleLoopState(t, w, loop, loopingLines(now), nil, now.Add(time.Second))
+	if aliceLooping() {
+		t.Error("a ring whose newest line pre-dates the last progress must not flag (post-dates-progress guard)")
+	}
+
+	// A varied, advancing conversation is never a loop.
+	setHuddleLoopState(t, w, loop, variedLines(now), nil, time.Time{})
+	if aliceLooping() {
+		t.Error("a varied conversation must not flag as looping")
+	}
+
+	// Master enable off (HuddleLoopTimeout <= 0) leaves the flag false regardless of repetition.
+	setHuddleLoopState(t, w, loop, loopingLines(now), nil, time.Time{})
+	enableLoopSweep(t, w, 0, 60)
+	if aliceLooping() {
+		t.Error("a disabled loop sweep (HuddleLoopTimeout<=0) must leave the flag false")
+	}
+}
+
 // --- sweep integration tests (full harness) ---
 
 // TestHuddleLoopSweep_ConcludesLoopSparesProductive is the core lever: a sustained

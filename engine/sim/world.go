@@ -1815,6 +1815,19 @@ func (w *World) republish() {
 				}
 			}
 		}
+		// Per-tick conversational-loop flag (LLM-169): when this actor's huddle is
+		// in an armed loop right now (the same huddleLoopArmed signal the loop sweep
+		// arms on), perception swaps the reply-pressure nudge for an "you've agreed —
+		// act now" steer, nudging the huddle to self-resolve before the sweep's
+		// persistence gate silently concludes it. Gated on the loop sweep's master
+		// enable so one knob governs all loop handling, and on the conversational NPC
+		// kinds — Render is the NPC reactor-tick path (never a PC or decorative), so
+		// the flag would be inert noise on any other kind (matches the co-presence gate above).
+		if huddleLoopEnabled(w.Settings) && (a.Kind == KindNPCStateful || a.Kind == KindNPCShared) && a.CurrentHuddleID != "" {
+			if h := w.Huddles[a.CurrentHuddleID]; h != nil && huddleLoopArmed(w.Settings, h, now) {
+				sa.ConversationLooping = true
+			}
+		}
 		snap.Actors[id] = sa
 	}
 	for id, h := range w.Huddles {

@@ -313,8 +313,12 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// conversational reply-pressure (suppress the owed-reply nag) and swaps the coda
 	// to a decisive go-line, so the model stops agree-looping and actually moves.
 	seekWorkDirective := len(p.SeekWorkPlaces) > 0
-	renderTurnState(&ephemeral, p.TurnState, seekWorkDirective)
-	renderTriage(&ephemeral, p.Actor.Needs, p.Actor.NeedThresholds, p.TurnState.AwaitingReply(), seekWorkDirective, len(payOffers) > 0, p.Actor.InFlightMove, p.Actor.InFlightSourceActivity)
+	// LLM-169: a looping huddle (members re-echoing a settled agreement) ALSO
+	// suppresses the owed-reply nag — that nag is exactly what manufactures the
+	// echo — while renderTriage's coda swaps to an "act now or done()" steer below.
+	conversationLooping := p.TurnState.ConversationLooping
+	renderTurnState(&ephemeral, p.TurnState, seekWorkDirective || conversationLooping)
+	renderTriage(&ephemeral, p.Actor.Needs, p.Actor.NeedThresholds, p.TurnState.AwaitingReply(), conversationLooping, seekWorkDirective, len(payOffers) > 0, p.Actor.InFlightMove, p.Actor.InFlightSourceActivity)
 
 	out.Text = durable.String()
 	out.EphemeralText = ephemeral.String()
@@ -426,7 +430,7 @@ func stateGroup(members []HuddleMember, state string) string {
 // wandering exposed: obligations to others and pressing needs over idle drift.
 // Rendered unconditionally — Render is only called on the NPC reactor-tick path
 // (handlers.Harness.RunTick), never for a PC.
-func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.NeedThresholds, awaitingReply bool, seekWork bool, hasPayOffers bool, inFlightMove *InFlightMoveView, inFlightSourceActivity *InFlightSourceActivityView) {
+func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.NeedThresholds, awaitingReply bool, conversationLooping bool, seekWork bool, hasPayOffers bool, inFlightMove *InFlightMoveView, inFlightSourceActivity *InFlightSourceActivityView) {
 	// A buyer's offer awaiting this actor's answer outranks everything below —
 	// including the actor's own felt needs, which the coda's "pressing needs"
 	// phrasing otherwise licenses to win. Without this, a starving seller read
@@ -472,6 +476,19 @@ func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.
 		// businesses directory rendered above carries the resolvable destination names.
 		// Ordered below the in-flight codas so an actor already walking keeps walking.
 		b.WriteString("You have no coin, and no one here can hire you. Don't keep talking about going — pick one of the businesses listed above and call move_to now.\n")
+	case conversationLooping:
+		// Conversational-loop coda (LLM-169): the actor's huddle is going in
+		// circles — members re-stating the same agreement without it converting to
+		// action (the live Walker "let's go to the well" / "let's go!" echo). The
+		// default and awaiting-reply codas both let the reply-pressure win and the
+		// echo re-arms; this names the loop and makes resolving it the imperative —
+		// act on what's agreed, or let it rest with done(), anything but say it
+		// again. The social-loop analogue of the seek-work go-line above; the
+		// owed-reply nag is suppressed in renderTurnState so the two steers agree.
+		// Ordered below seek-work so a broke worker still gets the leave-for-work
+		// directive, and above awaiting-reply since "looping" is the more specific
+		// read of why a reply is pending.
+		b.WriteString("You and the others here keep saying the same thing — the matter is already settled between you. Don't say it again: do what you've agreed — move, tend your work or a need — or call done() and let the moment rest. Speak again only if you truly have something new.\n")
 	case awaitingReply:
 		// Turn-state coda (ZBBS-WORK-370): the actor has spoken and is awaiting a
 		// reply. The default "choose one thing and do it" imperative is exactly
