@@ -379,11 +379,13 @@ type Payload struct {
 	// SeekWorkPlaces are the town's businesses (village objects tagged
 	// sim.TagBusiness, resolved to their structure names), surfaced as move_to
 	// destinations when a broke worker is nudged to go earn. Build populates it
-	// ONLY on a seek-work tick (a SeekWorkWarrantReason in the batch), so a
-	// non-empty slice IS the render gate; sorted and de-duped. Names only — each
-	// is navigable by move_to-by-name (LLM-142). The directional half of the
-	// LLM-141 seek-work backstop (LLM-152).
-	SeekWorkPlaces []string
+	// for a broke idle worker with no employer present (the gate in Build), so a
+	// non-empty slice IS the render gate. Each entry carries a qualitative distance
+	// + direction so the worker heads to a near, open shop; ordered nearest-first,
+	// de-duped by name, and businesses the worker recently found shut are dropped
+	// (LLM-155). Names only — each is navigable by move_to-by-name (LLM-142). The
+	// directional half of the LLM-141 seek-work backstop (LLM-152).
+	SeekWorkPlaces []SeekWorkPlace
 
 	// LocalDateUTC is midnight UTC of the village's current calendar date,
 	// copied from Snapshot.LocalDateUTC. Render's order-book split

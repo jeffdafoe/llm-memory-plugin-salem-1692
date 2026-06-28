@@ -14,6 +14,5 @@ It is morning in the village.
 Your home is at the Walker Residence (structure_id: walker_residence) — you can head back there whenever you wish.
 
 If you mean to take paid work, use move_to to head to one of the town's businesses and offer your labor once you arrive:
-- General Store — a long walk southeast
-- Inn — a long walk southeast
+- General Store — a short walk east
 You have no coin, and no one here can hire you. Don't keep talking about going — pick one of the businesses listed above and call move_to now.

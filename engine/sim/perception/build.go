@@ -2,6 +2,7 @@ package perception
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -122,7 +123,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 		p.Actor.InFlightSourceActivity == nil &&
 		!subjectHasPendingLaborOffer(snap, actorID) &&
 		!hasSolicitableAudience(snap, actorSnap, p.Surroundings) {
-		p.SeekWorkPlaces = buildSeekWorkPlaces(snap)
+		p.SeekWorkPlaces = buildSeekWorkPlaces(snap, actorSnap)
 	}
 	p.TurnState = buildTurnState(snap, actorID, actorSnap, p.Surroundings.HuddleMembers)
 	p.Anchors = buildAnchors(snap, actorSnap)
@@ -2710,34 +2711,98 @@ func subjectIsWorker(actorSnap *sim.ActorSnapshot) bool {
 	return false
 }
 
+// SeekWorkPlace is one business in the seek-work directory: a structure name a
+// broke worker can move_to, tagged with how far it is and in which direction so
+// the worker heads to a near, open shop instead of trekking to a far-flung farm
+// (LLM-155). Name stays the bare move_to-by-name token — no structure_id. sortKey
+// is the raw tile distance, kept only to order nearest-first.
+type SeekWorkPlace struct {
+	Name      string
+	Distance  string // qualitativeDistance phrase, e.g. "a short walk"
+	Direction string // 8-point compass bearing; empty when coincident
+	sortKey   float64
+	sourceID  sim.VillageObjectID // tie-break for the representative; never rendered
+}
+
 // buildSeekWorkPlaces lists the town's businesses as move_to destinations for a
 // worker nudged to seek work (LLM-152). Businesses are village objects tagged
 // sim.TagBusiness; each shares its id with the co-located structure (the identity
 // bridge), so resolveStructureLabel yields the clean structure name the worker
-// navigates to by name (LLM-142). De-duped by name and sorted for a deterministic
-// line; falls back to the object's own DisplayName if no structure resolves.
-func buildSeekWorkPlaces(snap *sim.Snapshot) []string {
-	if snap == nil {
+// navigates to by name (LLM-142); falls back to the object's own DisplayName if no
+// structure resolves.
+//
+// Each entry carries a qualitative distance + direction from the actor (LLM-155),
+// derived in tile space exactly like the eat/drink free-source cue (actor Pos is a
+// padded tile; obj.Pos is world pixels, converted via Tile()). The list is ordered
+// nearest-first so a weak model favours a close shop, and a business the worker
+// recently found shut (earned ObservedClosed memory, 4h TTL) is DROPPED — sending
+// them back to a closed door wastes the trip, and the entry reappears once the
+// memory decays. De-duped by name, keeping the nearest representative.
+func buildSeekWorkPlaces(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) []SeekWorkPlace {
+	if snap == nil || actorSnap == nil {
 		return nil
 	}
-	seen := make(map[string]bool)
-	var names []string
+	ax := float64(actorSnap.Pos.X)
+	ay := float64(actorSnap.Pos.Y)
+	best := make(map[string]SeekWorkPlace)
 	for _, obj := range snap.VillageObjects {
 		if obj == nil || !obj.HasTag(sim.TagBusiness) {
 			continue
 		}
-		label, ok := resolveStructureLabel(snap, sim.StructureID(obj.ID))
+		structureID := sim.StructureID(obj.ID)
+		if businessRememberedShut(snap, actorSnap, structureID) {
+			continue
+		}
+		label, ok := resolveStructureLabel(snap, structureID)
 		if !ok || label == "" {
 			label = obj.DisplayName
 		}
-		if label == "" || seen[label] {
+		if label == "" {
 			continue
 		}
-		seen[label] = true
-		names = append(names, label)
+		objTile := obj.Pos.Tile()
+		tx := float64(objTile.X)
+		ty := float64(objTile.Y)
+		dx := tx - ax
+		dy := ty - ay
+		distTiles := math.Sqrt(dx*dx + dy*dy)
+		candidate := SeekWorkPlace{
+			Name:      label,
+			Distance:  qualitativeDistance(distTiles),
+			Direction: cardinalDirection(ax, ay, tx, ty),
+			sortKey:   distTiles,
+			sourceID:  obj.ID,
+		}
+		// A name can resolve from more than one co-located business object; with
+		// nearest-first ordering, keep the closest instance — and on an exact
+		// distance tie, the lowest object id — so the representative (and its
+		// rendered direction) stays deterministic despite unordered map iteration.
+		if existing, seen := best[label]; seen {
+			if existing.sortKey < candidate.sortKey {
+				continue
+			}
+			if existing.sortKey == candidate.sortKey && existing.sourceID <= candidate.sourceID {
+				continue
+			}
+		}
+		best[label] = candidate
 	}
-	sort.Strings(names)
-	return names
+	if len(best) == 0 {
+		return nil
+	}
+	places := make([]SeekWorkPlace, 0, len(best))
+	for _, p := range best {
+		places = append(places, p)
+	}
+	// Nearest first; ties broken by name for a deterministic order (map iteration
+	// is unordered). Mirrors the eat/drink free-source ordering.
+	sort.Slice(places, func(i, j int) bool {
+		if places[i].sortKey != places[j].sortKey {
+			return places[i].sortKey < places[j].sortKey
+		}
+		return places[i].Name < places[j].Name
+	})
+	return places
 }
 
 // hasSolicitableAudience reports whether at least one awake, addressable actor in
