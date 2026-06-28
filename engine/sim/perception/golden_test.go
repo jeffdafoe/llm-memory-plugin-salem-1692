@@ -346,6 +346,15 @@ var perceptionScenarios = []perceptionScenario{
 		build: brokeWorkerNoEmployerSeeksWork,
 	},
 	{
+		name: "broke_worker_seeks_work_skips_shut_business",
+		summary: "The LLM-155 companion to broke_worker_no_employer_seeks_work: the same broke idle worker (Lewis Walker), but he " +
+			"remembers finding the Inn shut an hour ago (an earned ObservedClosed memory within the 4h TTL). The golden pins that the " +
+			"seek-work directory DROPS the remembered-shut Inn entirely — not annotates it — and lists only the open General Store, " +
+			"carrying its qualitative distance + direction ('a short walk east'). A regression that stopped consulting the shut " +
+			"memory would re-list the Inn; one that dropped distance would lose the walk descriptor.",
+		build: brokeWorkerSeeksWorkSkipsShutBusiness,
+	},
+	{
 		name: "customer_at_shut_business_loitering",
 		summary: "A laborer (Goodman Silence) stands OUTDOORS at the Tavern's loiter slot, but its only keeper (John Ellis) " +
 			"is asleep inside — the live LLM-154 case (Silence stuck at the closed Tavern while seeking work). The golden pins " +
@@ -1849,15 +1858,67 @@ func brokeWorkerNoEmployerSeeksWork() (*sim.Snapshot, sim.ActorID, []sim.Warrant
 	return snap, lewisID, nil
 }
 
-// TestSeekWorkDirectiveOnlyForBrokeWorkerNoEmployer is the LLM-160 cross-scenario
+// brokeWorkerSeeksWorkSkipsShutBusiness is the LLM-155 companion to
+// brokeWorkerNoEmployerSeeksWork: the same broke idle worker, but he carries an
+// earned ObservedClosed memory of the Inn (found shut an hour ago, within the 4h
+// TTL). The golden pins that the directory DROPS the remembered-shut Inn entirely
+// — not annotates it — and lists only the open General Store with its qualitative
+// distance + direction. Positions are set so the kept entry renders "a short walk
+// east"; the Inn's position is irrelevant since it is dropped.
+func brokeWorkerSeeksWorkSkipsShutBusiness() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		lewisID   = sim.ActorID("lewis")
+		residence = sim.StructureID("walker_residence")
+		inn       = sim.StructureID("inn")
+		store     = sim.StructureID("general_store")
+	)
+	now := 540 // 09:00 — daytime
+	published := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	lewis := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Lewis Walker",
+		State:             sim.StateIdle,
+		InsideStructureID: residence,
+		HomeStructureID:   residence,
+		Pos:               sim.WorldToTile(0, 0),
+		Coins:             0,
+		AttributeSlugs:    []string{sim.AttrWorker},
+		Needs:             map[sim.NeedKey]int{},
+		Observed: sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
+			{StructureID: inn, Condition: sim.ObservedClosed}: published.Add(-time.Hour),
+		}),
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{lewisID: lewis},
+		Structures: map[sim.StructureID]*sim.Structure{
+			residence: plainStructure(residence, "Walker Residence"),
+			inn:       plainStructure(inn, "Inn"),
+			store:     plainStructure(store, "General Store"),
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			sim.VillageObjectID(inn):   {ID: sim.VillageObjectID(inn), Pos: sim.WorldPos{X: 0, Y: 160}, Tags: []string{"business", "lodging"}},
+			sim.VillageObjectID(store): {ID: sim.VillageObjectID(store), Pos: sim.WorldPos{X: 160, Y: 0}, Tags: []string{"business", "shop"}},
+		},
+	}
+	return snap, lewisID, nil
+}
+
+// TestSeekWorkDirectiveOnlyForBrokeWorker is the LLM-160/155 cross-scenario
 // invariant: the decisive "call move_to now" go-coda appears in EXACTLY the
-// broke-worker-no-employer scenario and nowhere else in the matrix. A regression
+// broke-worker-no-employer scenarios and nowhere else in the matrix. A regression
 // that re-gated the directory on a warrant, or that let another scenario trip the
 // broke-worker-with-no-employer condition, would flip a cell here.
-func TestSeekWorkDirectiveOnlyForBrokeWorkerNoEmployer(t *testing.T) {
+func TestSeekWorkDirectiveOnlyForBrokeWorker(t *testing.T) {
 	const marker = "call move_to now"
+	seekWorkScenarios := map[string]bool{
+		"broke_worker_no_employer_seeks_work":         true,
+		"broke_worker_seeks_work_skips_shut_business": true,
+	}
 	for _, sc := range perceptionScenarios {
-		want := sc.name == "broke_worker_no_employer_seeks_work"
+		want := seekWorkScenarios[sc.name]
 		got := strings.Contains(renderScenario(sc), marker)
 		if got != want {
 			t.Errorf("scenario %q: seek-work go-coda present = %v, want %v", sc.name, got, want)

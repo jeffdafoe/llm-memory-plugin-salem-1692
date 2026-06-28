@@ -1967,17 +1967,26 @@ func renderLaborAffordance(b *strings.Builder, canSolicit bool) {
 // broke worker nudged to go earn (LLM-152) — the directional companion to the
 // seek-work impulse line (the "go seek work" warrant renders separately in the
 // what-just-happened block). Content-gated on a non-empty list, which Build
-// populates only on a seek-work tick. Names only: each is a structure navigable
-// by move_to-by-name (LLM-142).
-func renderSeekWorkPlaces(b *strings.Builder, places []string) {
+// populates only for a broke idle worker with no employer present. Each business is
+// a bullet carrying its qualitative distance + direction (LLM-155), matching the
+// eat/drink cue's "a fair walk south" phrasing so the worker favours a near, open
+// shop. Names only: each is a structure navigable by move_to-by-name (LLM-142).
+func renderSeekWorkPlaces(b *strings.Builder, places []SeekWorkPlace) {
 	if len(places) == 0 {
 		return
 	}
-	clean := make([]string, len(places))
-	for i, p := range places {
-		clean[i] = sanitizeInline(p)
+	b.WriteString("If you mean to take paid work, use move_to to head to one of the town's businesses and offer your labor once you arrive:\n")
+	for _, p := range places {
+		b.WriteString("- ")
+		b.WriteString(sanitizeInline(p.Name))
+		if p.Distance != "" {
+			fmt.Fprintf(b, " — %s", p.Distance)
+			if p.Direction != "" {
+				fmt.Fprintf(b, " %s", p.Direction)
+			}
+		}
+		b.WriteString("\n")
 	}
-	fmt.Fprintf(b, "If you mean to take paid work, use move_to to head to one of the town's businesses and offer your labor once you arrive. The businesses in town: %s.\n", strings.Join(clean, ", "))
 }
 
 // humanizeWorkMinutes renders a work duration in minutes as legible prose for a
