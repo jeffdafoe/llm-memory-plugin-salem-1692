@@ -170,6 +170,38 @@ func TestConversationCarryover_ReJoinIsNotProgress(t *testing.T) {
 	}
 }
 
+// TestConversationCarryover_JoinAfterDivergenceIsProgress: once a genuinely-new
+// participant has joined a re-formed huddle, it has diverged from the old clique, so
+// a LATER join even by a former member counts as composition progress — it must NOT
+// inherit the old loop baseline.
+func TestConversationCarryover_JoinAfterDivergenceIsProgress(t *testing.T) {
+	w, cancel := buildHuddleTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+	baseline := now.Add(-10 * time.Minute)
+
+	h1 := sendT(t, w, sim.JoinHuddle("alice", "tavern", "", now)).(sim.JoinHuddleResult).HuddleID
+	sendT(t, w, sim.JoinHuddle("bob", "tavern", "", now))
+	setHuddleLoopState(t, w, h1, loopingRingAmong([]sim.ActorID{"alice", "bob"}, now), nil, baseline)
+	drainHuddle(t, w, []sim.ActorID{"alice", "bob"}, now)
+
+	now2 := now.Add(30 * time.Second)
+	h2 := sendT(t, w, sim.JoinHuddle("alice", "tavern", "", now2)).(sim.JoinHuddleResult).HuddleID // returning → baseline
+	if got := huddleLastProgress(t, w, h2); !got.Equal(baseline) {
+		t.Fatalf("alice re-form LastProgressAt = %v, want carried baseline %v", got, baseline)
+	}
+	t3 := now2.Add(5 * time.Second)
+	sendT(t, w, sim.JoinHuddle("charlie", "tavern", "", t3)) // genuinely new → diverges the huddle
+	if got := huddleLastProgress(t, w, h2); !got.Equal(t3) {
+		t.Fatalf("new participant join LastProgressAt = %v, want stamped %v", got, t3)
+	}
+	t4 := now2.Add(10 * time.Second)
+	sendT(t, w, sim.JoinHuddle("bob", "tavern", "", t4)) // former member, but the huddle has diverged → progress
+	if got := huddleLastProgress(t, w, h2); !got.Equal(t4) {
+		t.Errorf("former member joining a diverged huddle LastProgressAt = %v, want stamped %v (not the old baseline)", got, t4)
+	}
+}
+
 // TestLeaveHuddle_DoesNotStampProgress: a leave from a surviving huddle no longer
 // counts as progress (LLM-170 — only a transaction or a new participant does), so a
 // remaining clique can still be caught looping.

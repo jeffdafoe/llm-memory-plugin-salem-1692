@@ -77,17 +77,31 @@ func (w *World) continuityFor(structureID StructureID, now time.Time) *conversat
 	return cb
 }
 
-// isContinuityMember reports whether actorID was a speaker in the recent
-// (within-window) conversation at this structure — i.e. a re-join by this actor is
-// the same clique reconvening, not a composition change. Drives both the ring/loop
-// seeding and the "this join is not progress" decision in JoinHuddle.
-func (w *World) isContinuityMember(structureID StructureID, actorID ActorID, now time.Time) bool {
+// joinContinuesClique reports whether this join is a same-clique re-formation that
+// must NOT count as progress: the joiner was a speaker in the recent (within-window)
+// conversation here AND every current member is too — the huddle is still the same
+// clique reconvening. Once a GENUINELY-NEW participant has joined, the huddle has
+// diverged from the old clique, so a later join even by a former member IS a
+// composition change (progress) — otherwise a returning member sliding into an
+// already-mixed conversation would wrongly carry the old loop baseline forward.
+//
+// MUST run AFTER the joiner is added to huddle.Members — the joiner is included in
+// the all-members check (and trivially passes, since the joiner-is-a-member guard
+// above already confirmed it is in the clique).
+func (w *World) joinContinuesClique(huddle *Huddle, structureID StructureID, actorID ActorID, now time.Time) bool {
 	cb := w.continuityFor(structureID, now)
 	if cb == nil {
 		return false
 	}
-	_, ok := cb.members[actorID]
-	return ok
+	if _, ok := cb.members[actorID]; !ok {
+		return false
+	}
+	for memberID := range huddle.Members {
+		if _, ok := cb.members[memberID]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // writeConversationCarryover snapshots a concluding structure huddle's conversation

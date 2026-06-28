@@ -363,12 +363,14 @@ func JoinHuddle(actorID ActorID, structureID StructureID, sceneID SceneID, now t
 			huddle.LastActivityAt = now
 			// LLM-159: a membership change is non-conversational progress — the
 			// conversation's composition just shifted, so it is not a stuck loop.
-			// LLM-170 refinement: a re-join by someone who was just part of this
-			// conversation (same-clique churn) is NOT a composition change, so it
-			// must NOT stamp progress — otherwise rapid re-formation would reset the
-			// loop spell every cycle and evade the sweep. Only a genuinely new
-			// participant counts as progress.
-			if !w.isContinuityMember(structureID, actorID, now) {
+			// LLM-170 refinement: a re-join that merely continues the same clique
+			// (joiner + every current member were in the just-concluded conversation
+			// here) is NOT a composition change, so it must NOT stamp progress —
+			// otherwise rapid re-formation would reset the loop spell every cycle and
+			// evade the sweep. Once a genuinely-new participant has joined, the huddle
+			// has diverged and further joins ARE progress. Runs after the joiner is
+			// added to Members (joinContinuesClique includes it in the check).
+			if !w.joinContinuesClique(huddle, structureID, actorID, now) {
 				huddle.LastProgressAt = now
 			}
 			if w.actorsByHuddle[huddleID] == nil {
