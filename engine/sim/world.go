@@ -1294,6 +1294,15 @@ func (w *World) FinalizeLoad(ctx context.Context) error {
 	// conversational moment passed).
 	for _, a := range w.Actors {
 		resetReactorStateOnLoad(a)
+		// LLM-162: a worker checkpointed mid-job reloads as StateLaboring (State
+		// IS persisted via sim_state), but its backing LaborOffer is gone —
+		// World.LaborLedger has no repo and is restart-lossy by design
+		// (labor_ledger.go), and the LaborID/LaboringUntil mirror is transient
+		// (never checkpointed). The only code that clears StateLaboring is the
+		// completion sweep, which reads the ledger — so without this the actor
+		// would be stranded laboring forever. The ledger is always empty at load,
+		// so any laboring actor is by definition stranded: revert it to idle.
+		reconcileStrandedLaboringOnLoad(a)
 	}
 	// LoadedAt is the wall-clock moment this world woke up (not
 	// w.Environment.Now, which can lag arbitrarily on a long-crash

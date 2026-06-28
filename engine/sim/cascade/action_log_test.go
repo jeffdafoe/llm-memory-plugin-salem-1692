@@ -298,6 +298,77 @@ func TestHandlePayResolvedActionLog_NonAcceptedAppendsNothing(t *testing.T) {
 	}
 }
 
+// --- TestHandleLaborResolvedActionLog -------------------------------
+// LLM-162: a COMPLETED labor contract appends a worker-side `labored` row —
+// the audit fix for coins moving (employer→worker) with no durable trace.
+// Non-completed terminals move no coins and append nothing, mirroring
+// handlePayResolvedActionLog's accepted-only rule.
+func TestHandleLaborResolvedActionLog_CompletedAppendsLaboredRow(t *testing.T) {
+	w, stop := buildActionLogCascadeWorld(t)
+	defer stop()
+
+	at := time.Now().UTC()
+	invokeOnWorld(t, w, func(world *sim.World) {
+		handleLaborResolvedActionLog(world, &sim.LaborResolved{
+			LaborID:       9,
+			WorkerID:      "hannah",
+			EmployerID:    "bob",
+			Reward:        5,
+			DurationMin:   30,
+			TerminalState: sim.LaborTerminalStateCompleted,
+			HuddleID:      "h1",
+			At:            at,
+		})
+	})
+
+	got := readActionLog(t, w)
+	if len(got) != 1 {
+		t.Fatalf("len(ActionLog) = %d, want 1", len(got))
+	}
+	e := got[0]
+	if e.ActorID != "hannah" {
+		t.Errorf("ActorID = %q, want hannah (worker)", e.ActorID)
+	}
+	if e.ActionType != sim.ActionTypeLabored {
+		t.Errorf("ActionType = %q, want %q", e.ActionType, sim.ActionTypeLabored)
+	}
+	if e.CounterpartyName != "Bob" {
+		t.Errorf("CounterpartyName = %q, want Bob (employer)", e.CounterpartyName)
+	}
+	if e.Amount != 5 {
+		t.Errorf("Amount = %d, want 5 (reward)", e.Amount)
+	}
+	if e.HuddleID != "h1" {
+		t.Errorf("HuddleID = %q, want h1 (from the event)", e.HuddleID)
+	}
+}
+
+func TestHandleLaborResolvedActionLog_NonCompletedAppendsNothing(t *testing.T) {
+	w, stop := buildActionLogCascadeWorld(t)
+	defer stop()
+
+	for _, terminal := range []sim.LaborTerminalState{
+		sim.LaborTerminalStateDeclined,
+		sim.LaborTerminalStateExpired,
+		sim.LaborTerminalStateFailedUnavailable,
+	} {
+		invokeOnWorld(t, w, func(world *sim.World) {
+			handleLaborResolvedActionLog(world, &sim.LaborResolved{
+				WorkerID:      "hannah",
+				EmployerID:    "bob",
+				Reward:        5,
+				DurationMin:   30,
+				TerminalState: terminal,
+				At:            time.Now().UTC(),
+			})
+		})
+	}
+
+	if got := readActionLog(t, w); len(got) != 0 {
+		t.Errorf("len(ActionLog) = %d, want 0 (no coins move on non-completed terminals)", len(got))
+	}
+}
+
 // --- TestHandleConsumedActionLog_FormatsText -----------------------
 // Qty 1 → bare kind; Qty > 1 → "Nx kind".
 func TestHandleConsumedActionLog_FormatsText(t *testing.T) {

@@ -85,3 +85,51 @@ func TestHandlePayResolvedActionLog_DurablePayloadRecordsSettlementTerms(t *test
 		t.Errorf("give-away coins/ledger/pay_items = %d/%d/%v, want 0/331/none", g.Amount, g.LedgerID, g.PayItems)
 	}
 }
+
+// TestHandleLaborResolvedActionLog_DurablePayloadRecordsTerms — LLM-162: the
+// completed-labor durable mirror records employer + amount + duration_min +
+// labor_id so the dream distiller has the full economic fact a bare coin delta
+// lacks. Marshals + re-parses the payload to catch writer/reader key drift.
+func TestHandleLaborResolvedActionLog_DurablePayloadRecordsTerms(t *testing.T) {
+	w, stop := buildActionLogCascadeWorld(t)
+	defer stop()
+
+	rec := &recordingActionLogSink{}
+	invokeOnWorld(t, w, func(world *sim.World) { world.SetActionLogSink(rec) })
+
+	at := time.Now().UTC()
+	invokeOnWorld(t, w, func(world *sim.World) {
+		handleLaborResolvedActionLog(world, &sim.LaborResolved{
+			LaborID: 42, WorkerID: "hannah", EmployerID: "bob", Reward: 7, DurationMin: 45,
+			TerminalState: sim.LaborTerminalStateCompleted, HuddleID: "h1", At: at,
+		})
+	})
+
+	rows := rec.snapshot()
+	if len(rows) != 1 {
+		t.Fatalf("recorded %d durable rows, want 1", len(rows))
+	}
+	row := rows[0]
+	if row.ActorID != "hannah" || row.ActionType != sim.ActionTypeLabored ||
+		row.SpeakerName != "Hannah" || row.Source != "agent" || row.HuddleID != "h1" {
+		t.Errorf("durable header = %+v", row)
+	}
+
+	type parsed struct {
+		Employer    string `json:"employer"`
+		Amount      int    `json:"amount"`
+		DurationMin int    `json:"duration_min"`
+		LaborID     uint64 `json:"labor_id"`
+	}
+	raw, err := json.Marshal(row.Payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	var p parsed
+	if err := json.Unmarshal(raw, &p); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if p.Employer != "Bob" || p.Amount != 7 || p.DurationMin != 45 || p.LaborID != 42 {
+		t.Errorf("payload = %+v, want {Bob 7 45 42}", p)
+	}
+}

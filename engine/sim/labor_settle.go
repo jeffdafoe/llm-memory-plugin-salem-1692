@@ -213,6 +213,29 @@ func settleCompletedLabor(w *World, offer *LaborOffer, now time.Time) {
 	finalizeLaborTerminal(w, offer, LaborTerminalStateCompleted, now)
 }
 
+// reconcileStrandedLaboringOnLoad frees an actor that was checkpointed mid-job
+// (LLM-162). Actor.State IS persisted (sim_state), so a worker in StateLaboring
+// at checkpoint reloads still laboring — but its backing LaborOffer does not:
+// World.LaborLedger has no repo and is restart-lossy by design (labor_ledger.go),
+// and LaborID/LaboringUntil are transient (never checkpointed). The only path
+// that clears StateLaboring is the completion sweep, which settles off the
+// ledger; with the ledger empty at load, a still-laboring actor would never be
+// freed and would sit occupied forever. Because the ledger is ALWAYS empty when
+// FinalizeLoad runs (it only ever fills from live solicit/accept commands during
+// the run), any laboring actor at load is necessarily stranded — so the reset is
+// unconditional. No coins are touched: the reward only ever moves at completion,
+// never before, so there is no torn coin state to recover (the WORK-410 orphan in
+// reverse the actor.go doc describes). Idempotent; world-goroutine-only (called
+// from FinalizeLoad).
+func reconcileStrandedLaboringOnLoad(a *Actor) {
+	if a == nil || a.State != StateLaboring {
+		return
+	}
+	a.State = StateIdle
+	a.LaborID = 0
+	a.LaboringUntil = nil
+}
+
 // reapTerminalLaborOffers removes terminal LaborOffers from World.LaborLedger
 // once they are older than LaborLedgerTerminalRetentionDefault (measured from
 // ResolvedAt). This bounds the offer-side map: terminal offers

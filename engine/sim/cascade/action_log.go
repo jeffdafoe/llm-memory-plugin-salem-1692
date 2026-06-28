@@ -10,9 +10,9 @@ import (
 )
 
 // action_log.go — append-only in-memory action log substrate driver.
-// Wires nine event subscribers (Spoke / Paid / PayWithItemResolved /
+// Wires ten event subscribers (Spoke / Paid / PayWithItemResolved /
 // ItemConsumed / OrderDelivered / ActorArrived / ActorLeftStructure /
-// TookBreak / StayingOpen) to translate engine events into
+// TookBreak / StayingOpen / LaborResolved) to translate engine events into
 // sim.ActionLogEntry rows, and spawns a sweep goroutine that periodically
 // compacts the log via sim.CompactActionLog.
 //
@@ -33,6 +33,7 @@ import (
 //   ├─> w.Subscribe(handleActorLeftStructureActionLog)
 //   ├─> w.Subscribe(handleTookBreakActionLog)
 //   ├─> w.Subscribe(handleStayedOpenActionLog)
+//   ├─> w.Subscribe(handleLaborResolvedActionLog)
 //   └─> go runActionLogSweep(ctx, w)
 //        ├─> immediate first compaction
 //        └─> time.Ticker @ ActionLogSweepInterval until ctx.Done
@@ -58,7 +59,7 @@ import (
 // controls how promptly memory is reclaimed.
 const defaultActionLogSweepInterval = 1 * time.Hour
 
-// RegisterActionLog wires the nine event subscribers and spawns the
+// RegisterActionLog wires the ten event subscribers and spawns the
 // compaction sweep goroutine. Must run on the world goroutine — call
 // before World.Run, or from inside a Command.Fn.
 //
@@ -82,6 +83,7 @@ func RegisterActionLog(ctx context.Context, w *sim.World) {
 	w.Subscribe(sim.SubscriberFunc(handleActorLeftStructureActionLog))
 	w.Subscribe(sim.SubscriberFunc(handleTookBreakActionLog))
 	w.Subscribe(sim.SubscriberFunc(handleStayedOpenActionLog))
+	w.Subscribe(sim.SubscriberFunc(handleLaborResolvedActionLog))
 	go runActionLogSweep(ctx, w)
 }
 
@@ -527,6 +529,68 @@ func handleStayedOpenActionLog(w *sim.World, evt sim.Event) {
 		Payload:     payload,
 		SpeakerName: display,
 		HuddleID:    huddleID,
+		Source:      source,
+	})
+}
+
+// handleLaborResolvedActionLog appends a row when an LLM-26 labor contract
+// settles Completed — the worker's accepted solicit_work job finished and the
+// reward transferred from the employer to the worker (labor_settle.go's
+// settleCompletedLabor). This is the LLM-162 audit fix: before it, a completed
+// contract moved coins (employer −reward / worker +reward) with no durable
+// trace, the one economic event in the engine that left the activity feed and
+// the dream-feeding agent_action_log blank.
+//
+// Worker-side single row: ActorID is the worker (the labor is theirs, and the
+// broke-NPC-earning beat is the salient one — LLM-83's commerce loop), the
+// employer is the counterparty, Amount is the reward. The worker + employer
+// share the offer's HuddleID by construction (co-presence is required to
+// solicit and to accept), so cross-actor narrative pickup reaches the employer
+// via the same-huddle peer filter — one row suffices, the same posture as
+// handlePaidActionLog.
+//
+// Non-Completed terminals (declined / expired / failed_unavailable) move no
+// coins and append nothing, mirroring handlePayResolvedActionLog's
+// accepted-only rule.
+func handleLaborResolvedActionLog(w *sim.World, evt sim.Event) {
+	resolved, ok := evt.(*sim.LaborResolved)
+	if !ok {
+		return
+	}
+	if resolved.TerminalState != sim.LaborTerminalStateCompleted {
+		return
+	}
+	entry := sim.ActionLogEntry{
+		ActorID:          resolved.WorkerID,
+		OccurredAt:       resolved.At,
+		ActionType:       sim.ActionTypeLabored,
+		HuddleID:         resolved.HuddleID,
+		CounterpartyName: actorDisplayNameOrEmpty(w, resolved.EmployerID),
+		Amount:           resolved.Reward,
+	}
+	if _, err := sim.AppendActionLogEntry(entry).Fn(w); err != nil {
+		log.Printf("cascade/action_log: append labored (worker %q labor %d event %d): %v",
+			resolved.WorkerID, resolved.LaborID, resolved.EventID(), err)
+		return
+	}
+	// Durable mirror (ZBBS-WORK-376): the worker earned the reward from the
+	// employer over a DurationMin job. employer + amount + duration_min give the
+	// dream distiller the full economic fact a bare coin delta lacks (the
+	// LLM-162 gap); labor_id joins the row back to its in-run offer.
+	display, source := actorDisplayAndSource(w, resolved.WorkerID)
+	payload := map[string]any{
+		"employer":     actorDisplayName(w, resolved.EmployerID),
+		"amount":       resolved.Reward,
+		"duration_min": resolved.DurationMin,
+		"labor_id":     uint64(resolved.LaborID),
+	}
+	w.AppendActionLogDurable(sim.DurableActionLogRow{
+		ActorID:     resolved.WorkerID,
+		OccurredAt:  resolved.At,
+		ActionType:  sim.ActionTypeLabored,
+		Payload:     payload,
+		SpeakerName: display,
+		HuddleID:    resolved.HuddleID,
 		Source:      source,
 	})
 }

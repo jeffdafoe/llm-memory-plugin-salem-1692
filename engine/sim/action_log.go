@@ -103,6 +103,18 @@ const (
 	// delivery time. Engine-sourced, not a tool call — the messenger is a
 	// non-VA NPC.
 	ActionTypeSummoned ActionType = "summoned"
+
+	// ActionTypeLabored — a worker's accepted solicit_work commitment (LLM-26)
+	// completed and the reward transferred from the employer to the worker
+	// (labor_settle.go settle-at-completion). ActorID is the WORKER — the labor
+	// is theirs and worker-side is the salient economic beat (the broke NPC
+	// earning); CounterpartyName is the employer who paid; Amount is the reward
+	// coins; HuddleID is the offer's captured huddle (the same-huddle peer
+	// filter reaches the employer). Engine-sourced — written by the completion
+	// sweep, not a tool call. Only the Completed terminal logs a row;
+	// declined/expired/failed move no coins and log nothing, mirroring the
+	// accepted-only pay row (LLM-162).
+	ActionTypeLabored ActionType = "labored"
 )
 
 // ActionLogEntry is one row in the in-memory action log. Carries the
@@ -148,14 +160,14 @@ type ActionLogEntry struct {
 	RoomID      RoomID
 
 	// CounterpartyName is the other party in a two-sided action: the
-	// seller for ActionTypePaid, the buyer for ActionTypeDelivered. Empty
-	// when the counterparty has no display name (the renderer falls back
-	// to a counterparty-less phrasing rather than show a raw id). Unset
-	// for all other ActionTypes.
+	// seller for ActionTypePaid, the buyer for ActionTypeDelivered, the
+	// employer for ActionTypeLabored. Empty when the counterparty has no
+	// display name (the renderer falls back to a counterparty-less phrasing
+	// rather than show a raw id). Unset for all other ActionTypes.
 	CounterpartyName string
-	// Amount is the coin total for ActionTypePaid (whole coins, > 0).
-	// Zero means "no amount to show" — the renderer omits it. Unset for
-	// all other ActionTypes.
+	// Amount is the coin total for ActionTypePaid and the reward earned for
+	// ActionTypeLabored (whole coins, > 0). Zero means "no amount to show" —
+	// the renderer omits it. Unset for all other ActionTypes.
 	Amount int
 }
 

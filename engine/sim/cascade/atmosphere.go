@@ -366,6 +366,7 @@ var atmosphereDigestVerbs = map[sim.ActionType]string{
 	sim.ActionTypeConsumed:  "ate",
 	sim.ActionTypePaid:      "paid",
 	sim.ActionTypeDelivered: "delivered",
+	sim.ActionTypeLabored:   "labored",
 }
 
 // digestActorParts renders one actor's per-action-type counts as

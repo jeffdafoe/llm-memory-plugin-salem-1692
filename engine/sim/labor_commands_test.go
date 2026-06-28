@@ -956,3 +956,43 @@ func TestSettleCompletedLabor_PreservesNewerJobMirror(t *testing.T) {
 		t.Errorf("worker State = %q, want still laboring", ws.State)
 	}
 }
+
+// TestFinalizeLoad_RevertsStrandedLaboringActor — LLM-162. Actor.State is
+// persisted (sim_state), but the LaborLedger is restart-lossy (no repo) and the
+// LaborID/LaboringUntil mirror is transient, so a worker checkpointed mid-job
+// reloads StateLaboring with no offer left to settle it. The only path that
+// clears StateLaboring is the ledger-driven completion sweep, so without the
+// FinalizeLoad reconciliation the actor would sit laboring forever. Seed a
+// laboring actor (the ledger is always empty on the mem load path, exactly as
+// in prod) and assert LoadWorld reverts it cleanly to idle with the mirror
+// cleared. No coins are involved — the reward only ever moves at completion.
+func TestFinalizeLoad_RevertsStrandedLaboringActor(t *testing.T) {
+	repo, handles := mem.NewRepository()
+	until := time.Now().UTC().Add(20 * time.Minute)
+	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
+		"lewis": {
+			ID: "lewis", DisplayName: "Lewis", Kind: sim.KindNPCShared,
+			State: sim.StateLaboring, LaborID: 7, LaboringUntil: &until,
+			RecentActions: sim.NewRingBuffer[sim.Action](4),
+		},
+	})
+
+	w, err := sim.LoadWorld(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+
+	a := w.Actors["lewis"]
+	if a == nil {
+		t.Fatal("actor lewis not loaded")
+	}
+	if a.State != sim.StateIdle {
+		t.Errorf("State = %q, want idle (stranded laboring actor reverted on load)", a.State)
+	}
+	if a.LaborID != 0 {
+		t.Errorf("LaborID = %d, want 0 (cleared on load)", a.LaborID)
+	}
+	if a.LaboringUntil != nil {
+		t.Errorf("LaboringUntil = %v, want nil (cleared on load)", a.LaboringUntil)
+	}
+}
