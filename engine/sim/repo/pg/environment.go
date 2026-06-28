@@ -310,6 +310,11 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.HuddleLoopRepeatPercent = parseIntSetting(values, "huddle_loop_repeat_percent", sim.HuddleLoopRepeatPercentDefault)
 	s.HuddleLoopSweepCadence = parseDurationSetting(values, "huddle_loop_sweep_cadence_seconds", sim.HuddleLoopSweepCadenceDefault)
 
+	// Cross-huddle conversation continuity (LLM-170). ON by default — the ring
+	// carry-over is pure perception legibility; the loop-state carry is inert
+	// unless the loop sweep above is enabled.
+	s.HuddleContinuityWindow = parseDurationSetting(values, "huddle_continuity_window_seconds", sim.HuddleContinuityWindowDefault)
+
 	// PC presence staleness (ZBBS-WORK-326).
 	s.PCPresenceStaleAfter = parseDurationSetting(values, "pc_presence_stale_seconds", sim.DefaultPCPresenceStaleAfter)
 

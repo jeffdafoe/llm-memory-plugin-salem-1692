@@ -518,6 +518,17 @@ type WorldSettings struct {
 	HuddleLoopTimeout       time.Duration
 	HuddleLoopRepeatPercent int
 	HuddleLoopSweepCadence  time.Duration
+
+	// HuddleContinuityWindow is how long after a structure huddle concludes a
+	// re-formation among the same speakers still counts as the SAME conversation
+	// (LLM-170). Within it, a new huddle at that structure inherits the prior
+	// conversation's recent-utterance ring (no cross-huddle re-greeting) and loop
+	// state (so churn can't evade the loop sweep). Default 5m
+	// (HuddleContinuityWindowDefault) — spans the observed Walker churn cycle.
+	// Tunable via huddle_continuity_window_seconds. Unlike the loop sweep this is
+	// ON by default: the ring carry-over is pure perception legibility, and the
+	// loop-state carry is inert unless HuddleLoopTimeout enables the sweep.
+	HuddleContinuityWindow time.Duration
 }
 
 // DefaultOutdoorSceneRadiusValue is the fallback radius used when
@@ -874,6 +885,12 @@ type World struct {
 	// and kept consistent by command handlers thereafter.
 	actorsByStructure map[StructureID]map[ActorID]struct{}
 	actorsByHuddle    map[HuddleID]map[ActorID]struct{}
+	// carryoverByStructure holds the most-recent concluded conversation per
+	// structure (LLM-170), so a huddle re-forming there can inherit its ring +
+	// loop state across the churn. Keyed by StructureID, so bounded by structure
+	// count; transient (never checkpointed, cleared at boot — chatter is restart-
+	// lossy by design). World-goroutine only.
+	carryoverByStructure map[StructureID]*conversationCarryover
 	// outdoorActors tracks every actor with InsideStructureID == "". Hot-
 	// path optimization for the arrival-encounter subscriber
 	// (handleArrivalEncounter): at 200+ actors, scanning w.Actors
@@ -1108,6 +1125,7 @@ func NewWorld(repo Repository) *World {
 		NarrationPools:       narrationSeedPools(),
 		actorsByStructure:    make(map[StructureID]map[ActorID]struct{}),
 		actorsByHuddle:       make(map[HuddleID]map[ActorID]struct{}),
+		carryoverByStructure: make(map[StructureID]*conversationCarryover),
 		outdoorActors:        make(map[ActorID]struct{}),
 		Speech:               &SpeechHelper{},
 		cmds:                 make(chan Command, 256),
