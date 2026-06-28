@@ -766,6 +766,20 @@ func renderActionLogEntry(snap *sim.Snapshot, e sim.ActionLogEntry) (speaker, te
 		return name, name + " leaves.", "act", true
 	case sim.ActionTypeTookBreak:
 		return name, name + " steps away.", "act", true
+	case sim.ActionTypeLabored:
+		// LLM-162: settle-at-completion labor — the worker earned the reward
+		// working for the employer. Reward is always > 0, but degrade like the
+		// paid case so a missing counterparty/amount still renders a clean line.
+		switch {
+		case e.Amount > 0 && e.CounterpartyName != "":
+			return name, name + " earns " + formatCoins(e.Amount) + " working for " + e.CounterpartyName + ".", "act", true
+		case e.Amount > 0:
+			return name, name + " earns " + formatCoins(e.Amount) + " for a job.", "act", true
+		case e.CounterpartyName != "":
+			return name, name + " finishes a job for " + e.CounterpartyName + ".", "act", true
+		default:
+			return name, name + " finishes a job.", "act", true
+		}
 	default:
 		return "", "", "", false
 	}
