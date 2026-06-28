@@ -2721,6 +2721,7 @@ type SeekWorkPlace struct {
 	Distance  string // qualitativeDistance phrase, e.g. "a short walk"
 	Direction string // 8-point compass bearing; empty when coincident
 	sortKey   float64
+	sourceID  sim.VillageObjectID // tie-break for the representative; never rendered
 }
 
 // buildSeekWorkPlaces lists the town's businesses as move_to destinations for a
@@ -2765,17 +2766,26 @@ func buildSeekWorkPlaces(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) []See
 		dx := tx - ax
 		dy := ty - ay
 		distTiles := math.Sqrt(dx*dx + dy*dy)
-		// A name can resolve from more than one co-located business object; with
-		// nearest-first ordering, keep the closest instance for a deterministic line.
-		if existing, seen := best[label]; seen && existing.sortKey <= distTiles {
-			continue
-		}
-		best[label] = SeekWorkPlace{
+		candidate := SeekWorkPlace{
 			Name:      label,
 			Distance:  qualitativeDistance(distTiles),
 			Direction: cardinalDirection(ax, ay, tx, ty),
 			sortKey:   distTiles,
+			sourceID:  obj.ID,
 		}
+		// A name can resolve from more than one co-located business object; with
+		// nearest-first ordering, keep the closest instance — and on an exact
+		// distance tie, the lowest object id — so the representative (and its
+		// rendered direction) stays deterministic despite unordered map iteration.
+		if existing, seen := best[label]; seen {
+			if existing.sortKey < candidate.sortKey {
+				continue
+			}
+			if existing.sortKey == candidate.sortKey && existing.sourceID <= candidate.sourceID {
+				continue
+			}
+		}
+		best[label] = candidate
 	}
 	if len(best) == 0 {
 		return nil

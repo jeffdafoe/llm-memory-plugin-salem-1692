@@ -76,6 +76,24 @@ func TestBuildSeekWorkPlaces_DedupNilAndNoneTagged(t *testing.T) {
 		t.Errorf("dedup: buildSeekWorkPlaces = %+v, want one {General Store, right nearby}", got)
 	}
 
+	// Equal-distance duplicates resolve deterministically: same label, same
+	// distance, different directions → the lowest object id wins, so the kept
+	// direction can't flip with map iteration order (LLM-155). "store_a" is 1 tile
+	// east, "store_b" 1 tile west; store_a's id sorts first, so "east" must win
+	// across repeated builds (Go randomizes map iteration per range).
+	tie := &sim.Snapshot{
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"store_a": {ID: "store_a", DisplayName: "General Store", Pos: sim.WorldPos{X: 32, Y: 0}, Tags: []string{"business"}},
+			"store_b": {ID: "store_b", DisplayName: "General Store", Pos: sim.WorldPos{X: -32, Y: 0}, Tags: []string{"business"}},
+		},
+	}
+	for i := 0; i < 8; i++ {
+		got := buildSeekWorkPlaces(tie, actor)
+		if len(got) != 1 || got[0].Direction != "east" {
+			t.Fatalf("equal-distance dedup not deterministic: got %+v, want one entry, direction east (lowest id store_a)", got)
+		}
+	}
+
 	if got := buildSeekWorkPlaces(nil, actor); got != nil {
 		t.Errorf("nil snapshot: want nil, got %+v", got)
 	}
