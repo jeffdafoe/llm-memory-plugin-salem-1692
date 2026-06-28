@@ -378,6 +378,17 @@ var perceptionScenarios = []perceptionScenario{
 			"is tended, so the live read stays silent (render the situation, not omniscient).",
 		build: customerAtOpenBusiness,
 	},
+	{
+		name: "huddle_conversation_looping",
+		summary: "Two idle workers (the Walker sisters) stand together going in circles — the live LLM-169 case: " +
+			"Patience and Anne re-echo 'Let's go to the well!' / 'Let's go!' without it converting to a move. The huddle " +
+			"is in an armed conversational loop (ActorSnapshot.ConversationLooping — the same huddleLoopArmed signal the " +
+			"loop sweep arms on, surfaced per-tick), and Anne holds a live await edge to Patience. The golden pins the " +
+			"LLM-169 swap: the 'Anne Walker is waiting for your reply.' nag is SUPPRESSED (that nag is what manufactures " +
+			"the echo) and the coda is the 'you've agreed — act now or done()' loop steer, NOT the default/awaiting coda " +
+			"that fed the agree-loop. A regression that dropped the flag would bring back the nag and the 'Choose one action' coda.",
+		build: huddleConversationLoopingScenario,
+	},
 }
 
 // lodgerGoldenBase builds the shared LLM-127 lodging-gate fixture: Ezekiel Crane,
@@ -1011,6 +1022,103 @@ func producerHungryMildAtPost() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) 
 
 func producerStarvingAtPost() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	return grazingProducerScenario(sim.DefaultHungerRedThreshold) // 18 — red/desperation tier
+}
+
+// huddleConversationLoopingScenario is the LLM-169 fixture: two idle workers (the
+// Walker sisters) stand together in a huddle going in circles. Patience (the
+// subject) is in an armed conversational loop — ConversationLooping is set, the
+// publish-time huddleLoopArmed signal the loop sweep arms on — and Anne holds a
+// live await edge to her (Anne addressed Patience and waits on a reply). The golden
+// pins the LLM-169 swap: the "Anne Walker is waiting for your reply." nag is
+// suppressed (that nag is what manufactures the echo) and the coda is the "you've
+// agreed — act now or done()" loop steer rather than the default/awaiting coda the
+// agree-loop fed on. Byte-stable: fixed PublishedAt, the await edge + utterances
+// stamped relative to it, no orders.
+func huddleConversationLoopingScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		patienceID = sim.ActorID("patience")
+		anneID     = sim.ActorID("anne")
+		huddleID   = sim.HuddleID("walker_huddle")
+	)
+	now := 13 * 60 // 13:00 — afternoon
+	published := time.Date(2026, 6, 28, 13, 0, 0, 0, time.UTC)
+	patience := &sim.ActorSnapshot{
+		Kind:                sim.KindNPCStateful,
+		DisplayName:         "Patience Walker",
+		Role:                "villager",
+		State:               sim.StateIdle,
+		CurrentHuddleID:     huddleID,
+		Coins:               5,
+		Needs:               map[sim.NeedKey]int{},
+		ConversationLooping: true,
+	}
+	anne := &sim.ActorSnapshot{
+		Kind:            sim.KindNPCStateful,
+		DisplayName:     "Anne Walker",
+		Role:            "villager",
+		State:           sim.StateIdle,
+		CurrentHuddleID: huddleID,
+		Coins:           5,
+		Needs:           map[sim.NeedKey]int{},
+		// Anne addressed Patience and awaits her reply — the edge that would render
+		// "Anne Walker is waiting for your reply." but for the LLM-169 suppression.
+		AwaitingReplyFrom: map[sim.ActorID]time.Time{patienceID: published.Add(-10 * time.Second)},
+	}
+	utter := func(spk sim.ActorID, name, text string, agoSec int) sim.Utterance {
+		return sim.Utterance{SpeakerID: spk, SpeakerName: name, Text: text, At: published.Add(-time.Duration(agoSec) * time.Second)}
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:         published,
+		LocalMinuteOfDay:    &now,
+		NeedThresholds:      sim.NeedThresholds{},
+		Assets:              emptyAssetSet,
+		NPCAwaitReplyWindow: 60 * time.Second,
+		Actors:              map[sim.ActorID]*sim.ActorSnapshot{patienceID: patience, anneID: anne},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddleID: {
+				ID:      huddleID,
+				Members: map[sim.ActorID]struct{}{patienceID: {}, anneID: {}},
+				RecentUtterances: []sim.Utterance{
+					utter(patienceID, "Patience Walker", "Let's go to the well!", 40),
+					utter(anneID, "Anne Walker", "Let's go to the well!", 32),
+					utter(patienceID, "Patience Walker", "Let's go!", 24),
+					utter(anneID, "Anne Walker", "Let's go to the well!", 16),
+					utter(patienceID, "Patience Walker", "Lead the way, Anne.", 8),
+				},
+			},
+		},
+	}
+	return snap, patienceID, nil
+}
+
+// TestConversationLoopingCodaOnlyWhenLooping is the LLM-169 cross-scenario
+// invariant: the "you've agreed, act now or done()" loop coda appears in EXACTLY
+// the scenario whose rendered actor is in an armed conversational loop
+// (ActorSnapshot.ConversationLooping), and never elsewhere. The expectation is
+// recomputed from the BUILT actor state, not the rendered text, so it independently
+// asserts the coda tracks the flag rather than pinning the render against its own
+// marker.
+func TestConversationLoopingCodaOnlyWhenLooping(t *testing.T) {
+	const marker = "keep saying the same thing"
+	var sawLooping bool
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		snap, actorID, _ := sc.build()
+		actor := snap.Actors[actorID]
+		if actor == nil {
+			t.Fatalf("scenario %q: rendered actor %q missing from snapshot", sc.name, actorID)
+		}
+		want := actor.ConversationLooping
+		if want {
+			sawLooping = true
+		}
+		if has := strings.Contains(renderScenario(sc), marker); has != want {
+			t.Errorf("scenario %q: looping coda present=%v, want %v (ConversationLooping=%v)", sc.name, has, want, actor.ConversationLooping)
+		}
+	}
+	if !sawLooping {
+		t.Error("matrix must exercise the looping branch (ConversationLooping=true) at least once")
+	}
 }
 
 // TestOwnTradeStockEatCueOnlyAtDesperation is the LLM-134 cross-scenario
