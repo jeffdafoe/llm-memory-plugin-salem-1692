@@ -234,13 +234,14 @@ const MaxSalientFactTextLen = 220
 
 // MaxSalientFactsPerRelationship caps stored SalientFacts per pair.
 // Enforced in RecordInteraction with FIFO eviction (oldest dropped) +
-// Relationship.DroppedFactCount increment. The cap is the upper-bound
-// safety net — the consolidation cascade (when it lands) is expected to
-// trigger and prune well below this in normal operation, so hitting the
-// cap signals consolidation is failing or hasn't run yet. Will likely
-// move to WorldSettings when consolidation MVP lands and tuning becomes
-// per-environment.
-const MaxSalientFactsPerRelationship = 30
+// Relationship.DroppedFactCount increment. Sized to hold a full day of
+// interactions so the once-daily consolidation (ConsolidationFloor)
+// reflects the whole day, not just the most recent slice. The
+// ConsolidationCeiling backstop fires before a pair reaches this cap, so
+// FIFO eviction is a last-resort safety net rather than an expected
+// event — a non-zero DroppedFactCount means a pair out-ran even the
+// backstop.
+const MaxSalientFactsPerRelationship = 200
 
 // NewSalientFact builds a SalientFact with Text truncated to
 // MaxSalientFactTextLen runes. Use this at every write callsite — never

@@ -75,6 +75,21 @@ func narrativeCandidates(t *testing.T, w *sim.World, at time.Time, limit int) []
 	return cs
 }
 
+// recordNarrativeEvent appends one ActionLog entry for the actor at
+// `when` — the activity signal the selection gate requires for a
+// floor-overdue re-consolidation.
+func recordNarrativeEvent(t *testing.T, w *sim.World, actorID sim.ActorID, when time.Time) {
+	t.Helper()
+	if _, err := w.Send(sim.AppendActionLogEntry(sim.ActionLogEntry{
+		ActorID:    actorID,
+		OccurredAt: when,
+		ActionType: sim.ActionTypeSpoke,
+		Text:       "did a thing",
+	})); err != nil {
+		t.Fatalf("AppendActionLogEntry(%s): %v", actorID, err)
+	}
+}
+
 // TestFindNarrativeCandidates_FirstTimeNilNarrative confirms an actor
 // with Narrative == nil qualifies (never-consolidated branch).
 func TestFindNarrativeCandidates_FirstTimeNilNarrative(t *testing.T) {
@@ -133,8 +148,9 @@ func TestFindNarrativeCandidates_FirstTimeWithNarrativeButNilStamp(t *testing.T)
 	}
 }
 
-// TestFindNarrativeCandidates_FloorOverdue confirms an actor whose
-// last consolidation is past the daily floor qualifies.
+// TestFindNarrativeCandidates_FloorOverdue confirms an actor whose last
+// consolidation is past the daily floor AND who logged activity in the
+// events window qualifies (the activity gate is satisfied).
 func TestFindNarrativeCandidates_FloorOverdue(t *testing.T) {
 	w, stop := buildNarrativeTestWorld(t)
 	defer stop()
@@ -144,6 +160,8 @@ func TestFindNarrativeCandidates_FloorOverdue(t *testing.T) {
 	if _, err := w.Send(sim.ApplyNarrativeConsolidation("hannah", "earlier reflection", stale)); err != nil {
 		t.Fatalf("seed apply: %v", err)
 	}
+	// Activity since the last reflection — satisfies the gate.
+	recordNarrativeEvent(t, w, "hannah", at.Add(-1*time.Hour))
 
 	cs := narrativeCandidates(t, w, at, 5)
 	if len(cs) != 1 {
@@ -154,6 +172,29 @@ func TestFindNarrativeCandidates_FloorOverdue(t *testing.T) {
 	}
 	if cs[0].LastConsolidated == nil || !cs[0].LastConsolidated.Equal(stale) {
 		t.Errorf("LastConsolidated = %v, want %v", cs[0].LastConsolidated, stale)
+	}
+}
+
+// TestFindNarrativeCandidates_FloorOverdueNoActivitySkipped confirms the
+// activity gate (LLM-174): a floor-overdue actor that carries a prior
+// reflection but logged nothing in the events window is NOT selected —
+// re-reflecting would burn an LLM call to re-chew an unchanged prior.
+func TestFindNarrativeCandidates_FloorOverdueNoActivitySkipped(t *testing.T) {
+	w, stop := buildNarrativeTestWorld(t)
+	defer stop()
+	at := time.Now().UTC()
+
+	stale := at.Add(-25 * time.Hour)
+	if _, err := w.Send(sim.ApplyNarrativeConsolidation("hannah", "earlier reflection", stale)); err != nil {
+		t.Fatalf("seed apply: %v", err)
+	}
+	// One event, but OLDER than the events window — not recent activity,
+	// so the gate still suppresses the re-consolidation.
+	recordNarrativeEvent(t, w, "hannah", at.Add(-30*time.Hour))
+
+	cs := narrativeCandidates(t, w, at, 5)
+	if len(cs) != 0 {
+		t.Fatalf("len(candidates) = %d, want 0 (floor-overdue but no in-window activity)", len(cs))
 	}
 }
 
@@ -258,6 +299,9 @@ func TestFindNarrativeCandidates_OrderingNullsFirst(t *testing.T) {
 	if _, err := w.Send(sim.ApplyNarrativeConsolidation("hannah", "stale reflection", stale)); err != nil {
 		t.Fatalf("seed apply: %v", err)
 	}
+	// Hannah is floor-overdue; give her in-window activity so the gate
+	// admits her (mara is first-time and exempt).
+	recordNarrativeEvent(t, w, "hannah", at.Add(-1*time.Hour))
 
 	cs := narrativeCandidates(t, w, at, 5)
 	if len(cs) != 2 {
