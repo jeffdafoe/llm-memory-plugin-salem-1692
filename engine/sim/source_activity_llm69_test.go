@@ -123,6 +123,35 @@ func TestHarvestCompletion_StampsCompletionWarrant(t *testing.T) {
 	}
 }
 
+// TestHarvestCompletion_InfiniteSourceNotBare — an infinite gatherable source (a
+// well) is never depleted, so the completion beat must NOT carry the "bare now"
+// clause (LLM-175). Proves the SourceDepleted=false path through the REAL
+// completion plumbing (applyGatherMint -> SourceActivityCompleted -> narration),
+// complementing the finite-depletion warrant test above.
+func TestHarvestCompletion_InfiniteSourceNotBare(t *testing.T) {
+	w, cancel := buildGatherTestWorld(t)
+	defer cancel()
+	setActorKindNPC(t, w, "hannah")
+	registerSourceActivityHandlers(t, w)
+	placeAt(t, w, "hannah", "well") // infinite: GatherItem "water", no AvailableQuantity
+
+	if _, err := w.Send(sim.StartHarvest("hannah", 1)); err != nil {
+		t.Fatalf("StartHarvest: %v", err)
+	}
+	forceComplete(t, w)
+
+	r, ok := completionWarrant(t, w, "hannah")
+	if !ok {
+		t.Fatal("no completion warrant stamped after infinite-source harvest")
+	}
+	if strings.Contains(r.NarrationText, "bare now") {
+		t.Errorf("NarrationText = %q, want NO 'bare now' clause for an infinite source", r.NarrationText)
+	}
+	if !strings.Contains(r.NarrationText, "in your pack") {
+		t.Errorf("NarrationText = %q, want the yield beat", r.NarrationText)
+	}
+}
+
 // TestSourceActivityCompletion_ContinuesSkipsWarrant — a non-terminal auto-repeat
 // bite (Continues=true) stamps nothing; only the terminal completion does. Drives
 // the subscriber directly via EmitForTest so the Continues gate is isolated from
