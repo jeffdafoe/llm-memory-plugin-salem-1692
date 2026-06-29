@@ -273,8 +273,9 @@ func TestAutoSleepOnArrival_OnBreak(t *testing.T) {
 }
 
 func TestAutoSleepOnArrival(t *testing.T) {
-	offShift := time.Date(2026, 5, 22, 22, 0, 0, 0, time.UTC) // 22:00 → minute 1320
-	onShift := time.Date(2026, 5, 22, 10, 0, 0, 0, time.UTC)  // 10:00 → minute 600
+	offShift := time.Date(2026, 5, 22, 22, 0, 0, 0, time.UTC)      // 22:00 → minute 1320 (bedtime)
+	onShift := time.Date(2026, 5, 22, 10, 0, 0, 0, time.UTC)       // 10:00 → minute 600
+	eveningPreBed := time.Date(2026, 5, 22, 20, 0, 0, 0, time.UTC) // 20:00 → off-shift, into the evening, pre-bedtime
 	dayShift := func(a *Actor) *Actor {
 		a.ScheduleStartMin = intptr(420)
 		a.ScheduleEndMin = intptr(960)
@@ -291,13 +292,18 @@ func TestAutoSleepOnArrival(t *testing.T) {
 		{"npc home off-shift", npc("a", KindNPCStateful), offShift, "home", true},
 		{"shared-VA npc home off-shift", npc("a", KindNPCShared), offShift, "home", true},
 		{"on-shift not bedded", dayShift(npc("a", KindNPCStateful)), onShift, "home", false},
-		{"off-shift scheduled bedded", dayShift(npc("a", KindNPCStateful)), offShift, "home", true},
+		{"off-shift scheduled at bedtime bedded", dayShift(npc("a", KindNPCStateful)), offShift, "home", true},
+		{"off-shift scheduled pre-bedtime not bedded", dayShift(npc("a", KindNPCStateful)), eveningPreBed, "home", false},
 		{"pc not bedded", npc("a", KindPC), offShift, "home", false},
 		{"decorative not bedded", npc("a", KindDecorative), offShift, "home", false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			w := sleepTestWorld(tc.actor)
+			// LLM-148: a scheduled homed agent beds only inside the night window
+			// [22:00, dawn), so the gate needs the window configured.
+			w.Settings.DawnTime = "07:00"
+			w.Settings.LodgingBedtimeHour = 22
 			handleAutoSleepOnArrival(w, &ActorArrived{ActorID: tc.actor.ID, FinalStructureID: tc.finalStruc, At: tc.at})
 			bedded := tc.actor.SleepingUntil != nil
 			if bedded != tc.wantBedded {
