@@ -60,7 +60,9 @@ func WithResolvedPayOffers(ids map[sim.LedgerID]struct{}) BuildOption {
 func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, opts ...BuildOption) Payload {
 	var o buildOptions
 	for _, fn := range opts {
-		fn(&o)
+		if fn != nil {
+			fn(&o)
+		}
 	}
 
 	p := Payload{
