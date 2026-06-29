@@ -598,7 +598,14 @@ func renderActor(b *strings.Builder, a ActorView) {
 			if i > 0 {
 				b.WriteString(", ")
 			}
-			fmt.Fprintf(b, "%s (x%d)", sanitizeInline(it.Label), it.Qty)
+			// The use annotation folds into the quantity parens (LLM-166) so the
+			// comma-separated item list stays unambiguous: "Meat (x7, used to
+			// produce stew)". Empty for edibles / non-ingredients.
+			if it.Use != "" {
+				fmt.Fprintf(b, "%s (x%d, %s)", sanitizeInline(it.Label), it.Qty, sanitizeInline(it.Use))
+			} else {
+				fmt.Fprintf(b, "%s (x%d)", sanitizeInline(it.Label), it.Qty)
+			}
 		}
 		b.WriteString(".\n")
 	}
@@ -1331,7 +1338,13 @@ func renderOfferableCustomers(b *strings.Builder, v *OfferableCustomersView) {
 		if s := sanitizeInline(g.Label); s != "" {
 			// The on-hand count is the sizing fact (ZBBS-HOME-459): the cue asks
 			// the seller to name a quantity, so it must see what it actually holds.
-			goods = append(goods, fmt.Sprintf("%s (%d on hand)", s, g.OnHand))
+			// An inedible ingredient also carries its use (LLM-166), folded into
+			// the same parens as the carry readout.
+			if g.Use != "" {
+				goods = append(goods, fmt.Sprintf("%s (%d on hand, %s)", s, g.OnHand, sanitizeInline(g.Use)))
+			} else {
+				goods = append(goods, fmt.Sprintf("%s (%d on hand)", s, g.OnHand))
+			}
 		}
 	}
 	if len(goods) == 0 {

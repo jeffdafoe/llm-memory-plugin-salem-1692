@@ -214,6 +214,14 @@ type Snapshot struct {
 	// consume, and how long will my inputs last?" for the producer-input runway cue
 	// (perception/production_inputs.go). nil only before the first LoadWorld.
 	Recipes map[ItemKind]*ItemRecipe
+
+	// RecipeUses is an ALIASED reference to World.recipeUses — the reverse of
+	// Recipes (input item -> the items it helps produce), memoized on the World
+	// and refreshed whenever the catalog changes. Perception reads it to annotate
+	// an inedible carried/for-sale ingredient with its purpose ("used to produce
+	// stew") so a hungry model doesn't try to eat it (LLM-166). Same aliased,
+	// not-cloned posture as Recipes.
+	RecipeUses map[ItemKind][]ItemKind
 }
 
 // WithActor returns a shallow copy of the snapshot with one actor's entry

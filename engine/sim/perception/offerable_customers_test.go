@@ -273,6 +273,23 @@ func TestRenderOfferableCustomers_SingleCustomer(t *testing.T) {
 	}
 }
 
+// LLM-166: a for-sale inedible ingredient carries its use in the sell-list,
+// folded into the on-hand parens, consistent with the carry readout.
+func TestRenderOfferableCustomers_IngredientUse(t *testing.T) {
+	var b strings.Builder
+	renderOfferableCustomers(&b, &OfferableCustomersView{
+		CustomerNames: []string{"Goodwife Mary"},
+		Goods: []OfferableGood{
+			{Label: "Meat", OnHand: 7, Use: "used to produce stew"},
+			{Label: "Cheese", OnHand: 15},
+		},
+	})
+	out := b.String()
+	if !strings.Contains(out, "Your goods to sell: Meat (7 on hand, used to produce stew), Cheese (15 on hand).") {
+		t.Errorf("want folded use annotation in sell-list, got:\n%s", out)
+	}
+}
+
 func TestRenderOfferableCustomers_MultipleCustomersPluralVerb(t *testing.T) {
 	var b strings.Builder
 	renderOfferableCustomers(&b, &OfferableCustomersView{

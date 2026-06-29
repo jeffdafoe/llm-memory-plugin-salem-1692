@@ -53,3 +53,50 @@ func TestConsume_FailureMessages(t *testing.T) {
 		t.Errorf("raspberry message = %q, want it to contain %q", err.Error(), "you don't have any raspberry to consume")
 	}
 }
+
+// LLM-166: an inedible item that IS a recipe input names what it's for, so a
+// hungry model redirects instead of re-trying to eat it (the Josiah raw-meat
+// loop). An inedible item that is NOT a recipe input states the honest floor.
+// Both still match ErrNotConsumable (Unwrap), and the prose REPLACES the bare
+// sentinel text rather than appending a redundant "item is not consumable".
+func TestConsume_InedibleNamesRecipeUse(t *testing.T) {
+	w := &World{
+		ItemKinds: map[ItemKind]*ItemKindDef{
+			"meat": {
+				Name: "meat", DisplayLabel: "Meat",
+				DisplayLabelSingular: "cut of meat", DisplayLabelPlural: "cuts of meat",
+				Category: ItemCategoryFood, // food, no Satisfies -> inedible raw
+			},
+			"stew": {Name: "stew", DisplayLabel: "Stew", DisplayLabelSingular: "bowl of stew"},
+			"horseshoe": {
+				Name: "horseshoe", DisplayLabel: "Horseshoe",
+				DisplayLabelSingular: "horseshoe", Category: ItemCategoryMaterial,
+			},
+		},
+		Recipes: map[ItemKind]*ItemRecipe{
+			"stew": {OutputItem: "stew", Inputs: []RecipeInput{{Item: "meat", Qty: 10}}},
+		},
+		Actors: map[ActorID]*Actor{
+			"josiah": {ID: "josiah", Inventory: map[ItemKind]int{"meat": 7, "horseshoe": 2}},
+		},
+	}
+	at := time.Now().UTC()
+
+	// Recipe input -> names the output, no trailing sentinel text.
+	_, err := Consume("josiah", "meat", 1, at).Fn(w)
+	if err == nil || !errors.Is(err, ErrNotConsumable) {
+		t.Fatalf("meat consume: want ErrNotConsumable, got %v", err)
+	}
+	if got := err.Error(); got != "you cannot eat a cut of meat — it's used to produce stew" {
+		t.Errorf("meat message = %q, want the recipe-use steer", got)
+	}
+
+	// Inedible non-ingredient -> honest floor, no fabricated reason.
+	_, err = Consume("josiah", "horseshoe", 1, at).Fn(w)
+	if err == nil || !errors.Is(err, ErrNotConsumable) {
+		t.Fatalf("horseshoe consume: want ErrNotConsumable, got %v", err)
+	}
+	if got := err.Error(); got != "you cannot eat a horseshoe — it isn't something you can eat as it is" {
+		t.Errorf("horseshoe message = %q, want the reason-free floor", got)
+	}
+}

@@ -862,6 +862,14 @@ type World struct {
 	// (wholesale/retail prices).
 	Recipes map[ItemKind]*ItemRecipe
 
+	// recipeUses is the memoized reverse of Recipes (input item -> the items it
+	// helps produce), so perception and the consume rejection can name an
+	// inedible ingredient's purpose without scanning the catalog per call
+	// (LLM-166). Built lazily via ensureRecipeUses and refreshed in place by
+	// SetRecipe; aliased onto the published Snapshot like Recipes. See
+	// recipe_uses.go.
+	recipeUses map[ItemKind][]ItemKind
+
 	// ItemKind catalog — reference state. Keyed by Name (== ItemKind). The
 	// definitional source for an item's display label, category, default
 	// price, sort order, and per-need satisfies entries (port of v1's
@@ -1782,8 +1790,9 @@ func (w *World) republish() {
 		PCAwaitReplyWindow:  w.awaitReplyWindow(KindPC),
 		NPCAwaitReplyWindow: w.awaitReplyWindow(KindNPCShared),
 		// Aliased, not cloned — immutable post-startup catalogs. See Snapshot.ItemKinds / Snapshot.Recipes.
-		ItemKinds: w.ItemKinds,
-		Recipes:   w.Recipes,
+		ItemKinds:  w.ItemKinds,
+		Recipes:    w.Recipes,
+		RecipeUses: w.ensureRecipeUses(),
 	}
 	for id, a := range w.Actors {
 		sa := snapshotActor(a, w.TickCounter, w.Settings.degeneracyEnabled())

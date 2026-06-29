@@ -53,6 +53,10 @@ func SetRecipe(r ItemRecipe) Command {
 			}
 			stored := r
 			w.Recipes[r.OutputItem] = &stored
+			// Refresh the memoized reverse index (LLM-166) — the cache is already
+			// warm by the time a live edit lands, so ensureRecipeUses' lazy build
+			// won't pick up this in-place change on its own.
+			w.recipeUses = buildRecipeUses(w.Recipes)
 			return r, nil
 		},
 	}

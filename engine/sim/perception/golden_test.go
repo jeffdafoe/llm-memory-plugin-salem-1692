@@ -428,6 +428,15 @@ var perceptionScenarios = []perceptionScenario{
 			"that fed the agree-loop. A regression that dropped the flag would bring back the nag and the 'Choose one action' coda.",
 		build: huddleConversationLoopingScenario,
 	},
+	{
+		name: "hungry_actor_holding_raw_meat",
+		summary: "A hungry shopkeeper (Josiah Thorne) at his post carries raw Meat — a stew INGREDIENT (food-category but " +
+			"eases no need raw) — alongside edible Cheese (the live LLM-166 case: he fired consume{Meat} 22 times). The golden " +
+			"pins the use annotation folded into the carry readout, 'Meat (x7, used to produce stew)', while Cheese stays bare " +
+			"(the satiation cue owns edibles). A regression that dropped the annotation would let the most food-like name in a " +
+			"flat inventory read as a meal again.",
+		build: hungryActorHoldingRawMeat,
+	},
 }
 
 // lodgerGoldenBase builds the shared LLM-127 lodging-gate fixture: Ezekiel Crane,
@@ -1125,6 +1134,66 @@ func producerHungryMildAtPost() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) 
 	return grazingProducerScenario(14) // mild: felt (>= silent floor 10), below red (18)
 }
 
+// hungryActorHoldingRawMeat is the LLM-166 fixture: a hungry stateful NPC stands
+// at its post carrying raw Meat (a stew INGREDIENT — food-category but eases no
+// need raw) alongside edible Cheese. The golden pins the use annotation folded
+// into the carry readout — "Meat (x7, used to produce stew)" — while Cheese stays
+// bare. This is the Josiah-eats-raw-meat case: the most food-like name in a flat
+// inventory was the rejected eat that burned the turn.
+func hungryActorHoldingRawMeat() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		josiahID = sim.ActorID("josiah")
+		store    = sim.StructureID("general_store")
+	)
+	start, end := 360, 1080 // 06:00–18:00
+	now := 600              // 10:00 — on shift
+	josiah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Josiah Thorne",
+		Role:              "shopkeeper",
+		State:             sim.StateIdle,
+		Pos:               sim.WorldPos{X: 100, Y: 100}.Tile(),
+		WorkStructureID:   store,
+		InsideStructureID: store,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             6,
+		Inventory:         map[sim.ItemKind]int{"meat": 7, "cheese": 15},
+		Needs:             map[sim.NeedKey]int{"hunger": 14}, // felt, below red
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Assets:           emptyAssetSet,
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{josiahID: josiah},
+		Structures: map[sim.StructureID]*sim.Structure{
+			store: plainStructure(store, "General Store"),
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"meat": {
+				Name: "meat", DisplayLabel: "Meat",
+				DisplayLabelSingular: "cut of meat", DisplayLabelPlural: "cuts of meat",
+				Category: sim.ItemCategoryFood, // food, but no Satisfies -> inedible raw
+			},
+			"cheese": {
+				Name: "cheese", DisplayLabel: "Cheese",
+				DisplayLabelSingular: "wedge of cheese", DisplayLabelPlural: "wedges of cheese",
+				Category:  sim.ItemCategoryFood,
+				Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 4}},
+			},
+			"stew": {Name: "stew", DisplayLabel: "Stew", DisplayLabelSingular: "bowl of stew"},
+		},
+		// stew consumes meat — the engine derives the reverse use-index from this
+		// (World.recipeUses), aliased onto the snapshot as RecipeUses. Set both so
+		// the fixture reads coherently.
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"stew": {OutputItem: "stew", Inputs: []sim.RecipeInput{{Item: "meat", Qty: 10}}},
+		},
+		RecipeUses: map[sim.ItemKind][]sim.ItemKind{"meat": {"stew"}},
+	}
+	return snap, josiahID, nil
+}
+
 func producerStarvingAtPost() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	return grazingProducerScenario(sim.DefaultHungerRedThreshold) // 18 — red/desperation tier
 }
@@ -1223,6 +1292,48 @@ func TestConversationLoopingCodaOnlyWhenLooping(t *testing.T) {
 	}
 	if !sawLooping {
 		t.Error("matrix must exercise the looping branch (ConversationLooping=true) at least once")
+	}
+}
+
+// TestIngredientUseAnnotationOnlyForInedibleRecipeInputs is the LLM-166
+// cross-scenario invariant: the "used to produce X" annotation appears in EXACTLY
+// the scenarios whose rendered actor carries an INEDIBLE item that some recipe
+// consumes as an input (snap.RecipeUses), and never otherwise. The gate is
+// recomputed from BUILT state — non-consumable AND a recipe input — so it mirrors
+// inventoryItemUse exactly (an edible item, a non-ingredient, or an item with no
+// catalog def draws no annotation, even if it appears in RecipeUses).
+func TestIngredientUseAnnotationOnlyForInedibleRecipeInputs(t *testing.T) {
+	const marker = "used to produce"
+	var sawAnnotated bool
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		snap, actorID, _ := sc.build()
+		actor := snap.Actors[actorID]
+		want := false
+		if actor != nil {
+			for kind, qty := range actor.Inventory {
+				if qty <= 0 {
+					continue
+				}
+				def := snap.ItemKinds[kind]
+				if def == nil || def.Consumable() {
+					continue // edible or uncatalogued -> not annotated
+				}
+				if len(snap.RecipeUses[kind]) > 0 {
+					want = true
+					break
+				}
+			}
+		}
+		if want {
+			sawAnnotated = true
+		}
+		if has := strings.Contains(renderScenario(sc), marker); has != want {
+			t.Errorf("scenario %q: ingredient-use annotation present=%v, want %v", sc.name, has, want)
+		}
+	}
+	if !sawAnnotated {
+		t.Error("matrix must exercise the annotated branch (an inedible carried recipe-input) at least once")
 	}
 }
 

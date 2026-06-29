@@ -101,3 +101,57 @@ func TestRenderActor_NoCarryingLineWhenEmpty(t *testing.T) {
 		t.Errorf("empty inventory must render no carrying line, got:\n%s", b.String())
 	}
 }
+
+// LLM-166: an INEDIBLE carried ingredient is annotated with what it's used to
+// produce, so a hungry model doesn't read a food-named non-food (raw "Meat") as
+// a meal. Edible items (the satiation cue owns those) and non-ingredient
+// materials carry no annotation.
+func TestBuildInventoryView_IngredientUseAnnotation(t *testing.T) {
+	kinds := map[sim.ItemKind]*sim.ItemKindDef{
+		// food, no Satisfies -> inedible raw (a cooking input)
+		"meat": {Name: "meat", DisplayLabel: "Meat"},
+		// edible -> consumable, so no use annotation even though it's a stew input
+		"milk": {Name: "milk", DisplayLabel: "Milk", Satisfies: []sim.ItemSatisfaction{{Attribute: "thirst", Immediate: 4}}},
+		// inedible but no recipe uses it -> nothing to say
+		"horseshoe": {Name: "horseshoe", DisplayLabel: "Horseshoe"},
+	}
+	snap := invSnap(map[sim.ItemKind]int{"meat": 7, "milk": 4, "horseshoe": 2}, kinds)
+	snap.RecipeUses = map[sim.ItemKind][]sim.ItemKind{
+		"meat": {"stew"},
+		"milk": {"stew"}, // edible -> still suppressed by the Consumable() gate
+	}
+	av := buildActorView(snap, snap.Actors["josiah"])
+	got := map[sim.ItemKind]string{}
+	for _, it := range av.Inventory {
+		got[it.kind] = it.Use
+	}
+	if got["meat"] != "used to produce stew" {
+		t.Errorf("meat.Use = %q, want %q", got["meat"], "used to produce stew")
+	}
+	if got["milk"] != "" {
+		t.Errorf("milk is edible -> want no use annotation, got %q", got["milk"])
+	}
+	if got["horseshoe"] != "" {
+		t.Errorf("horseshoe is in no recipe -> want no annotation, got %q", got["horseshoe"])
+	}
+}
+
+func TestRenderActor_CarryingLine_IngredientUse(t *testing.T) {
+	var b strings.Builder
+	renderActor(&b, ActorView{
+		State: sim.StateIdle,
+		Inventory: []InventoryItem{
+			{Label: "Cheese", Qty: 15},
+			{Label: "Meat", Qty: 7, Use: "used to produce stew"},
+		},
+	})
+	out := b.String()
+	// The use folds into the quantity parens so the comma list stays unambiguous.
+	if !strings.Contains(out, "Meat (x7, used to produce stew)") {
+		t.Errorf("want folded use annotation, got:\n%s", out)
+	}
+	// An unannotated item keeps the bare form.
+	if !strings.Contains(out, "Cheese (x15)") {
+		t.Errorf("unannotated item should stay bare, got:\n%s", out)
+	}
+}
