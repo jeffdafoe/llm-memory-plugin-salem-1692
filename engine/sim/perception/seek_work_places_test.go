@@ -8,10 +8,10 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
 
-// seek_work_places_test.go — LLM-152/160/155. The directional half of seek-work:
+// seek_work_places_test.go — LLM-152/160/155/168. The directional half of seek-work:
 // Build lists the town's businesses (village objects tagged sim.TagBusiness,
 // resolved to their structure names) as move_to destinations. LLM-160 made this a
-// STANDING cue for a broke idle worker with no solicitable employer present —
+// STANDING cue for a workless idle worker with no solicitable employer present —
 // every tick, not gated on a seek-work warrant — so move_to always has a real,
 // resolvable target instead of an invented place name. LLM-155 added a qualitative
 // distance + direction per entry, ordered nearest-first, and drops a business the
@@ -139,11 +139,12 @@ func TestBuildSeekWorkPlaces_DropsRememberedShut(t *testing.T) {
 	}
 }
 
-// TestBuild_SeekWorkPlacesStandingForBrokeWorker proves the wiring end-to-end
-// (LLM-160): Build populates SeekWorkPlaces for a broke idle worker with no
-// solicitable employer present — every tick, no seek-work warrant required — and
-// leaves it empty for a worker that holds coin or for a non-worker.
-func TestBuild_SeekWorkPlacesStandingForBrokeWorker(t *testing.T) {
+// TestBuild_SeekWorkPlacesStandingForWorklessWorker proves the wiring end-to-end
+// (LLM-160/168): Build populates SeekWorkPlaces for a WORKLESS idle worker with no
+// solicitable employer present — every tick, no seek-work warrant required, and
+// whether or not it holds coin — and leaves it empty for a worker that has a post
+// of its own or for a non-worker.
+func TestBuild_SeekWorkPlacesStandingForWorklessWorker(t *testing.T) {
 	worker := func(coins int) *sim.ActorSnapshot {
 		a := actorSnap(sim.StateIdle, "", 0, 0, "", coins)
 		a.AttributeSlugs = []string{sim.AttrWorker}
@@ -159,27 +160,46 @@ func TestBuild_SeekWorkPlacesStandingForBrokeWorker(t *testing.T) {
 		}
 	}
 
-	// Broke worker, no one present to hire it → directory, no warrant needed.
+	// Workless worker, broke, no one present to hire it → directory, no warrant needed.
 	if p := Build(mk(worker(0)), "lewis", nil); len(p.SeekWorkPlaces) != 1 || p.SeekWorkPlaces[0].Name != "Tavern" {
-		t.Errorf("broke worker alone: SeekWorkPlaces = %+v, want [Tavern]", p.SeekWorkPlaces)
+		t.Errorf("workless worker (broke) alone: SeekWorkPlaces = %+v, want [Tavern]", p.SeekWorkPlaces)
 	}
 
-	// Same worker holding coin → not broke → no directory.
-	if p := Build(mk(worker(5)), "lewis", nil); len(p.SeekWorkPlaces) != 0 {
-		t.Errorf("worker with coin: SeekWorkPlaces = %+v, want empty", p.SeekWorkPlaces)
+	// LLM-168: the same workless worker holding coin STILL gets the directory — a
+	// worker with no post has nothing else to do on-shift whether or not it's broke.
+	if p := Build(mk(worker(15)), "lewis", nil); len(p.SeekWorkPlaces) != 1 || p.SeekWorkPlaces[0].Name != "Tavern" {
+		t.Errorf("workless worker with coin: SeekWorkPlaces = %+v, want [Tavern]", p.SeekWorkPlaces)
 	}
 
-	// A broke NON-worker (no worker attribute) is not directed to seek work.
+	// A worker WITH a RESOLVABLE post of its own (work_structure_id naming a structure
+	// in the snapshot) is steered there by the duty steer, not the seek-work directory
+	// (LLM-168). "tav" resolves via mk's Structures.
+	homed := worker(0)
+	homed.WorkStructureID = "tav"
+	if p := Build(mk(homed), "lewis", nil); len(p.SeekWorkPlaces) != 0 {
+		t.Errorf("worker with a workplace: SeekWorkPlaces = %+v, want empty", p.SeekWorkPlaces)
+	}
+
+	// A set-but-DANGLING WorkStructureID (no matching structure in the snapshot) reads
+	// as workless — the duty steer can't route there either, so seek-work still fires
+	// rather than dead-zoning (LLM-168, raised in code review).
+	dangling := worker(0)
+	dangling.WorkStructureID = "ghost"
+	if p := Build(mk(dangling), "lewis", nil); len(p.SeekWorkPlaces) != 1 || p.SeekWorkPlaces[0].Name != "Tavern" {
+		t.Errorf("worker with dangling workplace: SeekWorkPlaces = %+v, want [Tavern]", p.SeekWorkPlaces)
+	}
+
+	// A NON-worker (no worker attribute) is not directed to seek work.
 	if p := Build(mk(actorSnap(sim.StateIdle, "", 0, 0, "", 0)), "lewis", nil); len(p.SeekWorkPlaces) != 0 {
 		t.Errorf("non-worker: SeekWorkPlaces = %+v, want empty", p.SeekWorkPlaces)
 	}
 
-	// A broke worker mid source-activity is NOT free to leave → no directory, so the
+	// A workless worker mid source-activity is NOT free to leave → no directory, so the
 	// directive bit stays off and the owed-reply nag is preserved (LLM-160 review).
 	busy := worker(0)
 	busy.SourceActivityKind = sim.SourceActivityHarvest
 	if p := Build(mk(busy), "lewis", nil); len(p.SeekWorkPlaces) != 0 {
-		t.Errorf("broke worker mid source-activity: SeekWorkPlaces = %+v, want empty", p.SeekWorkPlaces)
+		t.Errorf("workless worker mid source-activity: SeekWorkPlaces = %+v, want empty", p.SeekWorkPlaces)
 	}
 }
 

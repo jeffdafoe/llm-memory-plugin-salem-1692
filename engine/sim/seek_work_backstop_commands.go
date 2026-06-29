@@ -2,36 +2,40 @@ package sim
 
 import "time"
 
-// seek_work_backstop_commands.go — LLM-141. The substrate primitive for the
-// idle-broke-worker backstop: a paced sweep that re-engages a Worker who has
-// run out of coins but has no pressing need, so it goes and earns instead of
-// going dormant. Sibling of the red-need backstop
+// seek_work_backstop_commands.go — LLM-141/168. The substrate primitive for the
+// idle-workless-worker backstop: a paced sweep that re-engages a Worker who has
+// no workplace of its own and no pressing need, so it goes and finds odd jobs
+// instead of going dormant. Sibling of the red-need backstop
 // (red_need_backstop_commands.go); the goroutine driver lives in
 // engine/sim/cascade/seek_work_backstop.go.
 //
-// WHY THIS EXISTS. A Worker's whole point is the labor income faucet, but
-// "broke" is not a need and so stamps no warrant. A worker with sub-red needs
-// and an empty purse therefore has nothing to wake it — the only re-engagers
-// (hourly needs tick, 30-min idle backstop) either need a red need or produce
-// a contentless idle tick that goes stale before render. So the worker sits
-// frozen, never soliciting work (observed: Lewis Walker, 0 ticks / 0 warrants,
-// idle in a berry patch). This sweep stamps a SeekWorkWarrantReason — an
-// engine-authored felt impulse ("your purse is empty, you take work for pay")
-// that is real rendered content, so the tick actually deliberates.
+// WHY THIS EXISTS. A Worker's whole point is the labor income faucet, but a
+// WORKLESS worker (the worker attribute, no work_structure_id) has no post to
+// keep — the shift-duty warrant + duty steer, which both need a work anchor,
+// never fire for it. With sub-red needs it therefore has nothing to wake it on
+// shift: the only re-engagers (hourly needs tick, 30-min idle backstop) either
+// need a red need or produce a contentless idle tick that goes stale before
+// render. So the worker sits frozen, never soliciting work (observed: Lewis
+// Walker, 0 ticks / 0 warrants, idle in a berry patch). This sweep stamps a
+// SeekWorkWarrantReason — an engine-authored felt impulse ("you have no work of
+// your own … you take work for pay") that is real rendered content, so the tick
+// actually deliberates. (LLM-168 re-anchored eligibility from broke/Coins==0 to
+// workless: a workless worker holding a few coins, like the brand-new Walkers,
+// was left idle all shift by the old broke gate.)
 //
-// YIELDS TO NEED. A broke worker that is ALSO red on a need is left to the
+// YIELDS TO NEED. A workless worker that is ALSO red on a need is left to the
 // red-need backstop — eat before you work. We skip it here without touching
 // its seek-work backoff, so once the need resolves it re-engages on its
 // existing cadence.
 //
-// COST DISCIPLINE. Eligibility is binary (coins == 0), so unlike the red-need
-// sweep there is no "partial progress" to reset the cadence — every sweep the
-// worker stays broke-and-idle escalates an EXPONENTIAL BACKOFF
+// COST DISCIPLINE. Eligibility is binary (workless or not), so unlike the red-
+// need sweep there is no "partial progress" to reset the cadence — every sweep
+// the worker stays workless-and-idle escalates an EXPONENTIAL BACKOFF
 // (SeekWorkBackoffLevel): base (90 s) doubling to the cap (30 min = the idle-
 // backstop rate). A worker who can never find work therefore costs no more at
-// steady state than the idle backstop. Earning a coin (or going off-shift /
+// steady state than the idle backstop. Gaining a workplace (or going off-shift /
 // taking a job) makes it ineligible, which clears the backoff so the next
-// broke spell re-engages from base.
+// workless spell re-engages from base.
 //
 // Scope mirrors the red-need backstop: KindNPCStateful + KindNPCShared,
 // excluding transient visitors.
@@ -42,12 +46,12 @@ const (
 )
 
 // SeekWorkBackstopTelemetry is the return value of EvaluateSeekWorkBackstop.
-// Stamped is how many broke workers got a seek-work warrant this sweep; the
+// Stamped is how many workless workers got a seek-work warrant this sweep; the
 // Skipped* breakdown is why the rest didn't, for telemetry + the unit tests.
 type SeekWorkBackstopTelemetry struct {
 	Stamped              int
 	SkippedScope         int // not KindNPCStateful / KindNPCShared, or a visitor
-	SkippedNotEligible   int // not a worker, has coins, off-shift, asleep, or already working
+	SkippedNotEligible   int // not a worker, has a workplace, off-shift, asleep, or already working
 	SkippedRedNeed       int // an actionable red need takes precedence (eat before work)
 	SkippedWarranted     int // open WarrantedSince cycle
 	SkippedTickInFlight  int // mid-tick
@@ -56,7 +60,7 @@ type SeekWorkBackstopTelemetry struct {
 }
 
 // EvaluateSeekWorkBackstop returns a Command that scans the world's actors and
-// stamps a SeekWorkWarrantReason warrant on each broke, on-shift, idle Worker
+// stamps a SeekWorkWarrantReason warrant on each workless, on-shift, idle Worker
 // whose per-actor backoff window has elapsed. The whole scan + stamp + backoff
 // update happens inside the single Fn on the world goroutine. now is the
 // wall-clock the sweep started, passed in so tests can drive deterministic
@@ -78,15 +82,15 @@ func EvaluateSeekWorkBackstop(now time.Time) Command {
 				}
 
 				if !seekWorkEligible(w, a, now, nowMinute) {
-					// Not a broke idle worker (earned, off-shift, working, …).
-					// Clear the backoff so the NEXT broke spell re-engages from
-					// base rather than inheriting a stale escalated timer.
+					// Not a workless idle worker (has a workplace, off-shift,
+					// working, …). Clear the backoff so the NEXT workless spell
+					// re-engages from base rather than inheriting a stale timer.
 					clearSeekWorkBackstop(a)
 					t.SkippedNotEligible++
 					continue
 				}
 
-				// Eat before you work: a broke worker that is also red on a need
+				// Eat before you work: a workless worker that is also red on a need
 				// is the red-need backstop's job. Leave the seek-work backoff
 				// untouched — once the need resolves it re-engages on its
 				// existing cadence rather than resetting to base.
@@ -144,14 +148,25 @@ func EvaluateSeekWorkBackstop(now time.Time) Command {
 	}
 }
 
-// seekWorkEligible reports whether a is a broke, on-shift, awake Worker with no
-// live or pending labor job — the core "should be out earning but isn't" state.
-// Scope (kind / visitor) is checked by the caller.
+// seekWorkEligible reports whether a is a workless, on-shift, awake Worker with
+// no live or pending labor job — the core "has no post to keep but should be
+// finding odd jobs" state. Scope (kind / visitor) is checked by the caller.
 func seekWorkEligible(w *World, a *Actor, now time.Time, nowMinute int) bool {
 	if !actorIsWorker(a) {
 		return false
 	}
-	if a.Coins != 0 {
+	// LLM-168: the population this nudge serves is the WORKLESS worker — it
+	// carries the worker attribute (the labor income faucet) but has no RESOLVABLE
+	// work_structure_id, so it has no post to keep and the shift-duty warrant +
+	// duty steer (both of which need a resolvable work anchor) never usefully fire
+	// for it. On-shift it therefore has no driver at all, so without this it goes
+	// dormant or idle-loops. A worker WITH a resolvable workplace is already driven
+	// to its post by the duty steer and doesn't need seek-work. "Resolvable" (not a
+	// bare WorkStructureID != "") matches perception's buildAnchors, so the warrant
+	// agrees with the directory even for a set-but-dangling id. (Previously gated on
+	// Coins==0 — a "broke" proxy that left a workless worker holding a few coins,
+	// like the brand-new Walker family, in a dead zone for its whole shift.)
+	if actorHasResolvableWorkplace(w, a) {
 		return false
 	}
 	// Never nudge a sleeper (the seek-work warrant can't wake one anyway — it is
@@ -190,6 +205,27 @@ func seekWorkEligible(w *World, a *Actor, now time.Time, nowMinute int) bool {
 		return false
 	}
 	return true
+}
+
+// actorHasResolvableWorkplace reports whether the actor's WorkStructureID names a
+// structure (or shared village_object) PRESENT in the live world — the sim-side
+// mirror of perception's resolveStructureLabel. Seek-work keys on this, not the raw
+// field, so the warrant agrees with the duty steer and the seek-work directory: a
+// worker is "workless" exactly when it has no post the engine can route it to. A
+// set-but-dangling WorkStructureID reads as workless, so such a worker still seeks
+// work rather than dead-zoning between an unroutable duty steer and a suppressed
+// seek-work cue (LLM-168).
+func actorHasResolvableWorkplace(w *World, a *Actor) bool {
+	if a.WorkStructureID == "" {
+		return false
+	}
+	if w.Structures[a.WorkStructureID] != nil {
+		return true
+	}
+	if w.VillageObjects[VillageObjectID(a.WorkStructureID)] != nil {
+		return true
+	}
+	return false
 }
 
 // clearSeekWorkBackstop resets a worker's seek-work backoff pacing. Called when

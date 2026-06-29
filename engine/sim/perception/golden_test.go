@@ -384,6 +384,16 @@ var perceptionScenarios = []perceptionScenario{
 		build: brokeWorkerSeeksWorkSkipsShutBusiness,
 	},
 	{
+		name: "worker_with_coin_no_employer_seeks_work",
+		summary: "The LLM-168 live case: a WORKLESS worker (Silence Walker — worker attribute, no work_structure_id) idle at " +
+			"home holding a few coins, no employer present. Under the old broke (Coins==0) gate she got no directory and no " +
+			"seek-work warrant, so the brand-new Walker family idled all shift inventing move_to destinations. LLM-168 re-" +
+			"anchored eligibility on workless, so the same standing businesses directory + decisive 'call move_to now' coda " +
+			"fire whether or not she holds coin. The golden pins that a coin-holding workless worker gets the identical leave-" +
+			"for-a-business directive as the broke one; a regression to the Coins==0 gate would drop the directory + go-coda here.",
+		build: workerWithCoinNoEmployerSeeksWork,
+	},
+	{
 		name: "customer_at_shut_business_loitering",
 		summary: "A laborer (Goodman Silence) stands OUTDOORS at the Tavern's loiter slot, but its only keeper (John Ellis) " +
 			"is asleep inside — the live LLM-154 case (Silence stuck at the closed Tavern while seeking work). The golden pins " +
@@ -2343,16 +2353,59 @@ func brokeWorkerSeeksWorkSkipsShutBusiness() (*sim.Snapshot, sim.ActorID, []sim.
 	return snap, lewisID, nil
 }
 
-// TestSeekWorkDirectiveOnlyForBrokeWorker is the LLM-160/155 cross-scenario
+// workerWithCoinNoEmployerSeeksWork is the LLM-168 live case: a WORKLESS worker
+// (Silence Walker — worker attribute, no work_structure_id) idle at home holding a
+// few coins, no employer present. The same fixture as brokeWorkerNoEmployerSeeksWork
+// but with coins: under the old broke (Coins==0) gate she got no directory; LLM-168
+// re-anchored eligibility on workless, so the standing seek-work directory + "go now"
+// coda fire whether or not she holds coin.
+func workerWithCoinNoEmployerSeeksWork() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		silenceID = sim.ActorID("silence")
+		residence = sim.StructureID("walker_residence")
+		inn       = sim.StructureID("inn")
+		store     = sim.StructureID("general_store")
+	)
+	now := 540 // 09:00 — daytime
+	silence := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Silence Walker",
+		State:             sim.StateIdle,
+		InsideStructureID: residence,
+		HomeStructureID:   residence,
+		Coins:             15, // holds coin, but workless → still directed to seek work
+		AttributeSlugs:    []string{sim.AttrWorker},
+		Needs:             map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{silenceID: silence},
+		Structures: map[sim.StructureID]*sim.Structure{
+			residence: plainStructure(residence, "Walker Residence"),
+			inn:       plainStructure(inn, "Inn"),
+			store:     plainStructure(store, "General Store"),
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			sim.VillageObjectID(inn):   {ID: sim.VillageObjectID(inn), Tags: []string{"business", "lodging"}},
+			sim.VillageObjectID(store): {ID: sim.VillageObjectID(store), Tags: []string{"business", "shop"}},
+		},
+	}
+	return snap, silenceID, nil
+}
+
+// TestSeekWorkDirectiveOnlyForWorklessWorker is the LLM-160/155/168 cross-scenario
 // invariant: the decisive "call move_to now" go-coda appears in EXACTLY the
-// broke-worker-no-employer scenarios and nowhere else in the matrix. A regression
-// that re-gated the directory on a warrant, or that let another scenario trip the
-// broke-worker-with-no-employer condition, would flip a cell here.
-func TestSeekWorkDirectiveOnlyForBrokeWorker(t *testing.T) {
+// workless-worker-no-employer scenarios and nowhere else in the matrix. A regression
+// that re-gated the directory on a warrant, that restored the Coins==0 gate (dropping
+// the coin-holding worker_with_coin scenario), or that let another scenario trip the
+// workless-worker-with-no-employer condition, would flip a cell here.
+func TestSeekWorkDirectiveOnlyForWorklessWorker(t *testing.T) {
 	const marker = "call move_to now"
 	seekWorkScenarios := map[string]bool{
 		"broke_worker_no_employer_seeks_work":         true,
 		"broke_worker_seeks_work_skips_shut_business": true,
+		"worker_with_coin_no_employer_seeks_work":     true,
 	}
 	for _, sc := range perceptionScenarios {
 		want := seekWorkScenarios[sc.name]

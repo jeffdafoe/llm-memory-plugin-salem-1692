@@ -5,8 +5,8 @@ import (
 	"time"
 )
 
-// seek_work_backstop_commands_test.go — LLM-141. Substrate tests for the
-// idle-broke-worker backstop sweep + its per-actor exponential backoff. Drives
+// seek_work_backstop_commands_test.go — LLM-141/168. Substrate tests for the
+// idle-workless-worker backstop sweep + its per-actor exponential backoff. Drives
 // EvaluateSeekWorkBackstop(now).Fn(w) directly on an in-memory World (no
 // goroutine) so the time-based backoff is deterministic. Reuses
 // workerShiftWorld / homedWorker (LLM-137 sleep-shift tests) and warrantKinds
@@ -49,10 +49,10 @@ func hasSeekWorkWarrant(a *Actor) bool {
 	return false
 }
 
-// TestSeekWorkBackstop_StampsBrokeIdleWorker: a broke, on-shift, idle worker
-// gets a seek_work warrant, and the backoff initializes (level 0, base timer).
-func TestSeekWorkBackstop_StampsBrokeIdleWorker(t *testing.T) {
-	a := homedWorker("w") // KindNPCShared, worker attr, coins 0
+// TestSeekWorkBackstop_StampsWorklessIdleWorker: a workless, on-shift, idle
+// worker gets a seek_work warrant, and the backoff initializes (level 0, base timer).
+func TestSeekWorkBackstop_StampsWorklessIdleWorker(t *testing.T) {
+	a := homedWorker("w") // KindNPCShared, worker attr, no work_structure_id
 	w := workerShiftWorld(a)
 
 	tm := evalSeekWork(t, w, seekNoon)
@@ -84,15 +84,49 @@ func TestSeekWorkBackstop_SkipsNonWorker(t *testing.T) {
 	}
 }
 
-// TestSeekWorkBackstop_SkipsWorkerWithCoins: a worker that still has coins isn't
-// broke, so it's left alone.
-func TestSeekWorkBackstop_SkipsWorkerWithCoins(t *testing.T) {
+// TestSeekWorkBackstop_SkipsWorkerWithWorkplace: a worker that has its own post
+// (work_structure_id set) is driven there by the duty steer — seek-work is for
+// the workless, so it's left alone (LLM-168).
+func TestSeekWorkBackstop_SkipsWorkerWithWorkplace(t *testing.T) {
 	a := homedWorker("w")
-	a.Coins = 5
+	a.WorkStructureID = "shop1"
 	w := workerShiftWorld(a)
+	w.Structures = map[StructureID]*Structure{"shop1": {}} // resolvable post → has a workplace
 	tm := evalSeekWork(t, w, seekNoon)
 	if tm.Stamped != 0 || tm.SkippedNotEligible != 1 {
-		t.Errorf("Stamped=%d SkippedNotEligible=%d, want 0/1", tm.Stamped, tm.SkippedNotEligible)
+		t.Errorf("Stamped=%d SkippedNotEligible=%d, want 0/1 (has a workplace)", tm.Stamped, tm.SkippedNotEligible)
+	}
+}
+
+// TestSeekWorkBackstop_StampsWorkerWithDanglingWorkplace: a worker whose
+// WorkStructureID is set but names no structure in the world (a stale/dangling
+// reference the duty steer can't route to) reads as WORKLESS and IS nudged to seek
+// work — otherwise it would dead-zone between an unroutable duty steer and a
+// suppressed seek-work cue (LLM-168, raised in code review).
+func TestSeekWorkBackstop_StampsWorkerWithDanglingWorkplace(t *testing.T) {
+	a := homedWorker("w")
+	a.WorkStructureID = "ghost" // set, but no such structure exists in the world
+	w := workerShiftWorld(a)
+	tm := evalSeekWork(t, w, seekNoon)
+	if tm.Stamped != 1 {
+		t.Fatalf("Stamped = %d, want 1 (dangling workplace reads as workless); telemetry=%+v", tm.Stamped, tm)
+	}
+}
+
+// TestSeekWorkBackstop_StampsWorklessWorkerWithCoins is the LLM-168 regression: a
+// workless worker holding coin is STILL nudged to seek work — eligibility is
+// workless, not broke. The brand-new Walker family (a few coins each, no
+// workplace) idled all shift because the old Coins==0 gate skipped them here.
+func TestSeekWorkBackstop_StampsWorklessWorkerWithCoins(t *testing.T) {
+	a := homedWorker("w")
+	a.Coins = 15 // holds coin, but workless → still eligible
+	w := workerShiftWorld(a)
+	tm := evalSeekWork(t, w, seekNoon)
+	if tm.Stamped != 1 {
+		t.Fatalf("Stamped = %d, want 1 (workless worker with coin still seeks work); telemetry=%+v", tm.Stamped, tm)
+	}
+	if !hasSeekWorkWarrant(a) {
+		t.Fatalf("warrant is not seek_work; kinds=%v", warrantKinds(a))
 	}
 }
 
@@ -163,7 +197,7 @@ func TestSeekWorkBackstop_PastTTLPendingOfferDoesNotBlock(t *testing.T) {
 	}
 }
 
-// TestSeekWorkBackstop_YieldsToRedNeed: a broke worker that is ALSO red on a
+// TestSeekWorkBackstop_YieldsToRedNeed: a workless worker that is ALSO red on a
 // need is left to the red-need backstop (eat before work) — no seek-work warrant.
 func TestSeekWorkBackstop_YieldsToRedNeed(t *testing.T) {
 	a := homedWorker("w")
@@ -254,9 +288,9 @@ func TestSeekWorkBackstop_RespectsBackoffWindow(t *testing.T) {
 	}
 }
 
-// TestSeekWorkBackstop_EscalatesWhileBroke: a worker that stays broke doubles
-// its backoff each time the window elapses — 90 s → 180 s → 360 s.
-func TestSeekWorkBackstop_EscalatesWhileBroke(t *testing.T) {
+// TestSeekWorkBackstop_EscalatesWhileWorkless: a worker that stays workless
+// doubles its backoff each time the window elapses — 90 s → 180 s → 360 s.
+func TestSeekWorkBackstop_EscalatesWhileWorkless(t *testing.T) {
 	a := homedWorker("w")
 	w := workerShiftWorld(a)
 	base := defaultSeekWorkBackstopBaseDelay
@@ -283,10 +317,10 @@ func TestSeekWorkBackstop_EscalatesWhileBroke(t *testing.T) {
 	}
 }
 
-// TestSeekWorkBackstop_ClearsBackoffWhenEarned: once the worker earns a coin it
-// is ineligible, and its backoff state is cleared so the next broke spell
-// re-engages from base.
-func TestSeekWorkBackstop_ClearsBackoffWhenEarned(t *testing.T) {
+// TestSeekWorkBackstop_ClearsBackoffWhenGainsWorkplace: once the worker gains a
+// post of its own (work_structure_id set) it is ineligible, and its backoff
+// state is cleared so the next workless spell re-engages from base (LLM-168).
+func TestSeekWorkBackstop_ClearsBackoffWhenGainsWorkplace(t *testing.T) {
 	a := homedWorker("w")
 	w := workerShiftWorld(a)
 
@@ -296,7 +330,8 @@ func TestSeekWorkBackstop_ClearsBackoffWhenEarned(t *testing.T) {
 		t.Fatal("expected backoff state after first stamp")
 	}
 
-	a.Coins = 7 // earned — no longer eligible
+	a.WorkStructureID = "shop1" // got a workplace — no longer eligible
+	w.Structures = map[StructureID]*Structure{"shop1": {}}
 	tm := evalSeekWork(t, w, seekNoon.Add(2*time.Minute))
 	if tm.SkippedNotEligible != 1 {
 		t.Errorf("SkippedNotEligible = %d, want 1", tm.SkippedNotEligible)

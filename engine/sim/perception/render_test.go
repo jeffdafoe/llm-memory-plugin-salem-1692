@@ -779,7 +779,7 @@ func TestRenderWarrantLine_SeekWork(t *testing.T) {
 		TriggerActorID: "lewis",
 		Reason:         sim.SeekWorkWarrantReason{},
 	}, func(sim.ActorID) string { return "you" }, func(string) string { return "" }, func(sim.ItemKind) bool { return false }, func(sim.ItemKind) (bool, bool) { return false, false }, 200)
-	want := "1. Your purse is empty, and you take work for pay — seek out someone who could use a hand and offer your labor.\n"
+	want := "1. You have no work of your own to tend, and you take work for pay — seek out someone who could use a hand and offer your labor.\n"
 	if line != want {
 		t.Errorf("seek-work line = %q, want %q", line, want)
 	}
