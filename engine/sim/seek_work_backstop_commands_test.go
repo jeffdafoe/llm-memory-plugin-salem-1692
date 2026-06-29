@@ -91,9 +91,25 @@ func TestSeekWorkBackstop_SkipsWorkerWithWorkplace(t *testing.T) {
 	a := homedWorker("w")
 	a.WorkStructureID = "shop1"
 	w := workerShiftWorld(a)
+	w.Structures = map[StructureID]*Structure{"shop1": {}} // resolvable post → has a workplace
 	tm := evalSeekWork(t, w, seekNoon)
 	if tm.Stamped != 0 || tm.SkippedNotEligible != 1 {
 		t.Errorf("Stamped=%d SkippedNotEligible=%d, want 0/1 (has a workplace)", tm.Stamped, tm.SkippedNotEligible)
+	}
+}
+
+// TestSeekWorkBackstop_StampsWorkerWithDanglingWorkplace: a worker whose
+// WorkStructureID is set but names no structure in the world (a stale/dangling
+// reference the duty steer can't route to) reads as WORKLESS and IS nudged to seek
+// work — otherwise it would dead-zone between an unroutable duty steer and a
+// suppressed seek-work cue (LLM-168, raised in code review).
+func TestSeekWorkBackstop_StampsWorkerWithDanglingWorkplace(t *testing.T) {
+	a := homedWorker("w")
+	a.WorkStructureID = "ghost" // set, but no such structure exists in the world
+	w := workerShiftWorld(a)
+	tm := evalSeekWork(t, w, seekNoon)
+	if tm.Stamped != 1 {
+		t.Fatalf("Stamped = %d, want 1 (dangling workplace reads as workless); telemetry=%+v", tm.Stamped, tm)
 	}
 }
 
@@ -315,6 +331,7 @@ func TestSeekWorkBackstop_ClearsBackoffWhenGainsWorkplace(t *testing.T) {
 	}
 
 	a.WorkStructureID = "shop1" // got a workplace — no longer eligible
+	w.Structures = map[StructureID]*Structure{"shop1": {}}
 	tm := evalSeekWork(t, w, seekNoon.Add(2*time.Minute))
 	if tm.SkippedNotEligible != 1 {
 		t.Errorf("SkippedNotEligible = %d, want 1", tm.SkippedNotEligible)

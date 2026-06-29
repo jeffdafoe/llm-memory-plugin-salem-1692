@@ -156,15 +156,17 @@ func seekWorkEligible(w *World, a *Actor, now time.Time, nowMinute int) bool {
 		return false
 	}
 	// LLM-168: the population this nudge serves is the WORKLESS worker — it
-	// carries the worker attribute (the labor income faucet) but has no
+	// carries the worker attribute (the labor income faucet) but has no RESOLVABLE
 	// work_structure_id, so it has no post to keep and the shift-duty warrant +
-	// duty steer (both of which need a work anchor) never fire for it. On-shift it
-	// therefore has no driver at all, so without this it goes dormant or idle-
-	// loops. A worker WITH a workplace is already driven to its post by the duty
-	// steer and doesn't need seek-work. (Previously gated on Coins==0 — a "broke"
-	// proxy that left a workless worker holding a few coins, like the brand-new
-	// Walker family, in a dead zone for its whole shift.)
-	if a.WorkStructureID != "" {
+	// duty steer (both of which need a resolvable work anchor) never usefully fire
+	// for it. On-shift it therefore has no driver at all, so without this it goes
+	// dormant or idle-loops. A worker WITH a resolvable workplace is already driven
+	// to its post by the duty steer and doesn't need seek-work. "Resolvable" (not a
+	// bare WorkStructureID != "") matches perception's buildAnchors, so the warrant
+	// agrees with the directory even for a set-but-dangling id. (Previously gated on
+	// Coins==0 — a "broke" proxy that left a workless worker holding a few coins,
+	// like the brand-new Walker family, in a dead zone for its whole shift.)
+	if actorHasResolvableWorkplace(w, a) {
 		return false
 	}
 	// Never nudge a sleeper (the seek-work warrant can't wake one anyway — it is
@@ -203,6 +205,27 @@ func seekWorkEligible(w *World, a *Actor, now time.Time, nowMinute int) bool {
 		return false
 	}
 	return true
+}
+
+// actorHasResolvableWorkplace reports whether the actor's WorkStructureID names a
+// structure (or shared village_object) PRESENT in the live world — the sim-side
+// mirror of perception's resolveStructureLabel. Seek-work keys on this, not the raw
+// field, so the warrant agrees with the duty steer and the seek-work directory: a
+// worker is "workless" exactly when it has no post the engine can route it to. A
+// set-but-dangling WorkStructureID reads as workless, so such a worker still seeks
+// work rather than dead-zoning between an unroutable duty steer and a suppressed
+// seek-work cue (LLM-168).
+func actorHasResolvableWorkplace(w *World, a *Actor) bool {
+	if a.WorkStructureID == "" {
+		return false
+	}
+	if w.Structures[a.WorkStructureID] != nil {
+		return true
+	}
+	if w.VillageObjects[VillageObjectID(a.WorkStructureID)] != nil {
+		return true
+	}
+	return false
 }
 
 // clearSeekWorkBackstop resets a worker's seek-work backoff pacing. Called when

@@ -171,12 +171,22 @@ func TestBuild_SeekWorkPlacesStandingForWorklessWorker(t *testing.T) {
 		t.Errorf("workless worker with coin: SeekWorkPlaces = %+v, want [Tavern]", p.SeekWorkPlaces)
 	}
 
-	// A worker WITH a post of its own (work_structure_id) is steered there by the
-	// duty steer, not the seek-work directory (LLM-168).
+	// A worker WITH a RESOLVABLE post of its own (work_structure_id naming a structure
+	// in the snapshot) is steered there by the duty steer, not the seek-work directory
+	// (LLM-168). "tav" resolves via mk's Structures.
 	homed := worker(0)
 	homed.WorkStructureID = "tav"
 	if p := Build(mk(homed), "lewis", nil); len(p.SeekWorkPlaces) != 0 {
 		t.Errorf("worker with a workplace: SeekWorkPlaces = %+v, want empty", p.SeekWorkPlaces)
+	}
+
+	// A set-but-DANGLING WorkStructureID (no matching structure in the snapshot) reads
+	// as workless — the duty steer can't route there either, so seek-work still fires
+	// rather than dead-zoning (LLM-168, raised in code review).
+	dangling := worker(0)
+	dangling.WorkStructureID = "ghost"
+	if p := Build(mk(dangling), "lewis", nil); len(p.SeekWorkPlaces) != 1 || p.SeekWorkPlaces[0].Name != "Tavern" {
+		t.Errorf("worker with dangling workplace: SeekWorkPlaces = %+v, want [Tavern]", p.SeekWorkPlaces)
 	}
 
 	// A NON-worker (no worker attribute) is not directed to seek work.
