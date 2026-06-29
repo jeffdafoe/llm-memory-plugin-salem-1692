@@ -34,6 +34,21 @@ func assertLaborSteer(t *testing.T, err error) {
 	}
 }
 
+// assertNotMinted fails if name is present in the catalog — the regression the
+// mint-site steers guard: the labor token must be intercepted BEFORE
+// resolveOrMintItemKind, so it never mints a phantom inert discovery row.
+func assertNotMinted(t *testing.T, w *sim.World, name sim.ItemKind) {
+	t.Helper()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		if _, ok := world.ItemKinds[name]; ok {
+			t.Errorf("item kind %q was minted; the steer must run before resolveOrMintItemKind", name)
+		}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("assertNotMinted(%q): %v", name, err)
+	}
+}
+
 // TestPayWithItem_BuySide_LaborTokenSteers — naming "work" as the good you want
 // (the offer_trade want_item facet / pay_with_item item) hits the non-minting
 // buy-side resolution and steers to the labor verbs.
@@ -62,6 +77,7 @@ func TestPayWithItem_PayItems_LaborTokenSteers(t *testing.T) {
 	_, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 0, false, nil,
 		[]sim.PayItemInput{{Item: "labor", Qty: 3}}, 0, 0, "", time.Now().UTC()))
 	assertLaborSteer(t, err)
+	assertNotMinted(t, w, "labor")
 }
 
 // TestSceneQuoteCreate_LaborTokenSteers — quoting "work" as a wares line (the
@@ -75,4 +91,5 @@ func TestSceneQuoteCreate_LaborTokenSteers(t *testing.T) {
 	defer stop()
 	_, err := w.Send(sim.SceneQuoteCreate("aldous", []sim.QuoteLineInput{{ItemName: "work", Qty: 1}}, 2, false, "", nil, time.Now().UTC()))
 	assertLaborSteer(t, err)
+	assertNotMinted(t, w, "work")
 }
