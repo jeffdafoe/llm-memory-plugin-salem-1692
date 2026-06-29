@@ -892,9 +892,16 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 				// patched, so every external section (surroundings, warrants, scene)
 				// re-renders byte-identical; only the self-state sections move. Composes
 				// with the post-speak swap above via continuationText.
+				//
+				// LLM-173: the one external section also narrowed here is the seller's
+				// "## Offers awaiting your decision" cue — WithResolvedPayOffers drops
+				// the offers this actor already answered this tick, so the post-accept
+				// re-render stops re-inviting a settlement that already happened (the
+				// subtractive complement to the LLM-104 resolvedLedgerThisTick reject).
 				if outcome.postSelfState != nil && selfStateChanged(lastSelf, outcome.postSelfState) {
 					refreshed := perception.Render(
-						perception.Build(snap.WithActor(job.actorID, outcome.postSelfState), job.actorID, job.warrants),
+						perception.Build(snap.WithActor(job.actorID, outcome.postSelfState), job.actorID, job.warrants,
+							perception.WithResolvedPayOffers(resolvedPayOfferIDs(resolvedLedgerThisTick))),
 						h.renderConfig,
 					)
 					continuationText = refreshed.ContinuationText
@@ -1928,6 +1935,23 @@ func ledgerResolutionID(vc *ValidatedCall) (LenientID, bool) {
 		}
 	}
 	return 0, false
+}
+
+// resolvedPayOfferIDs projects the resolvedLedgerThisTick guard set (keyed by
+// the lenient wire id) onto the sim.LedgerID set perception.WithResolvedPayOffers
+// wants, so the within-tick re-render withholds an already-answered offer from
+// the seller cue (LLM-173). Both underlying types are uint64. Returns nil for an
+// empty set so the conversion allocates nothing on a refresh that follows a
+// non-resolution commit (e.g. a consume), leaving WithResolvedPayOffers a no-op.
+func resolvedPayOfferIDs(resolved map[LenientID]struct{}) map[sim.LedgerID]struct{} {
+	if len(resolved) == 0 {
+		return nil
+	}
+	out := make(map[sim.LedgerID]struct{}, len(resolved))
+	for id := range resolved {
+		out[sim.LedgerID(id)] = struct{}{}
+	}
+	return out
 }
 
 // laborResolutionID returns the LaborID that an employer-side labor-resolution

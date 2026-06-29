@@ -199,3 +199,25 @@ func TestHarness_LedgerResolution_DifferentLedgerAllowed(t *testing.T) {
 		t.Errorf("dispatched: got %v, want both counter_pay + decline_pay (distinct ledgers each allowed)", got)
 	}
 }
+
+// TestResolvedPayOfferIDs covers the LLM-173 projection from the resolvedLedgerThisTick
+// guard set (keyed by the lenient wire id) onto the sim.LedgerID set the within-tick
+// re-render feeds perception.WithResolvedPayOffers. An empty set returns nil so the
+// option is a no-op on a refresh that follows a non-resolution commit.
+func TestResolvedPayOfferIDs(t *testing.T) {
+	if got := resolvedPayOfferIDs(nil); got != nil {
+		t.Errorf("nil set: got %v, want nil", got)
+	}
+	if got := resolvedPayOfferIDs(map[LenientID]struct{}{}); got != nil {
+		t.Errorf("empty set: got %v, want nil", got)
+	}
+	got := resolvedPayOfferIDs(map[LenientID]struct{}{377: {}, 5: {}})
+	if len(got) != 2 {
+		t.Fatalf("converted set size = %d, want 2", len(got))
+	}
+	for _, id := range []sim.LedgerID{377, 5} {
+		if _, ok := got[id]; !ok {
+			t.Errorf("converted set missing ledger %d", id)
+		}
+	}
+}
