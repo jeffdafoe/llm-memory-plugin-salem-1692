@@ -514,10 +514,19 @@ func renderRecoveryOptions(b *strings.Builder, v *RecoveryOptionsView) {
 	// act on it, so a tired model reached for a bare rest()/sleep() that isn't a
 	// registered tool (LLM-178). move_to is the rest action for every listed place
 	// (the free-object "rest" kind takes its ObjectID on the same structure_id
-	// arg). The take_break bullet above is the only in-place option and names its
-	// own verb, so this line speaks only to the id-bearing places "below".
-	if len(v.Options) > 0 {
-		b.WriteString("Each place below lists a structure_id — call move_to with that id to head there.\n")
+	// arg). Scope the line to places reachable NOW: an on-shift home bed is shown
+	// but deferred ("once your shift ends — stay at your post until then", LLM-62),
+	// and a blanket "go there with move_to" would contradict that per-bullet
+	// stay-put directive. So suppress the line when every option is deferred.
+	hasMoveToNow := false
+	for _, o := range v.Options {
+		if !o.AfterShiftOnly {
+			hasMoveToNow = true
+			break
+		}
+	}
+	if hasMoveToNow {
+		b.WriteString("For a place you can go to now, call move_to with the structure_id listed for it.\n")
 	}
 	for _, o := range v.Options {
 		b.WriteString("- ")

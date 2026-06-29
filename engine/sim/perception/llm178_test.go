@@ -13,8 +13,11 @@ import (
 
 // TestRestMenuNamesMoveToForPlaces is the LLM-178 cross-scenario invariant: any
 // "## How you can rest" menu that lists a place (a structure_id bullet) must name
-// move_to as the verb to act on that id. The menu used to dangle structure_ids
-// with no verb, so a tired model reached for a rest()/sleep() that isn't registered.
+// move_to as the verb to act on that id — unless every listed place is the
+// on-shift home bed deferred to after the shift (LLM-62), where the verb is
+// withheld in favor of "stay at your post until then". The menu used to dangle
+// structure_ids with no verb, so a tired model reached for a rest()/sleep() that
+// isn't registered.
 func TestRestMenuNamesMoveToForPlaces(t *testing.T) {
 	const header = "## How you can rest"
 	var sawPlaces bool
@@ -34,12 +37,50 @@ func TestRestMenuNamesMoveToForPlaces(t *testing.T) {
 			continue // a menu with no place bullet (e.g. own-stock only) — no move_to needed
 		}
 		sawPlaces = true
-		if !strings.Contains(section, "move_to") {
-			t.Errorf("scenario %q: rest menu lists a place but never names move_to:\n%s", sc.name, section)
+		if !strings.Contains(section, "move_to") && !strings.Contains(section, "stay at your post until then") {
+			t.Errorf("scenario %q: rest menu lists a place but names neither move_to nor a deferral:\n%s", sc.name, section)
 		}
 	}
 	if !sawPlaces {
 		t.Error("matrix must exercise a rest menu with at least one place (structure_id) bullet")
+	}
+}
+
+// TestRestMenuMoveToLineRendersForActionablePlace: a menu with a place reachable
+// now names move_to.
+func TestRestMenuMoveToLineRendersForActionablePlace(t *testing.T) {
+	var b strings.Builder
+	renderRecoveryOptions(&b, &RecoveryOptionsView{
+		Options: []RecoveryOption{
+			{Kind: "inn", Label: "the Inn", CostText: "ask the keeper", StructureID: "inn1"},
+		},
+	})
+	out := b.String()
+	if !strings.Contains(out, "move_to") {
+		t.Errorf("expected the move_to line for an actionable place:\n%s", out)
+	}
+}
+
+// TestRestMenuMoveToLineSkipsAfterShiftOnlyHome guards the LLM-178/LLM-62 seam:
+// when the only rest option is the on-shift home bed (deferred until shift-end),
+// the "call move_to … now" line must NOT render — it would contradict the
+// bullet's "stay at your post until then" directive (code_review).
+func TestRestMenuMoveToLineSkipsAfterShiftOnlyHome(t *testing.T) {
+	var b strings.Builder
+	renderRecoveryOptions(&b, &RecoveryOptionsView{
+		Options: []RecoveryOption{
+			{Kind: "home", Label: "your home", CostText: "free", StructureID: "home1", AfterShiftOnly: true},
+		},
+	})
+	out := b.String()
+	if !strings.Contains(out, "## How you can rest") {
+		t.Fatalf("expected the rest menu to render:\n%s", out)
+	}
+	if !strings.Contains(out, "stay at your post until then") {
+		t.Errorf("expected the after-shift home bullet's stay-put directive:\n%s", out)
+	}
+	if strings.Contains(out, "move_to") {
+		t.Errorf("after-shift-only menu must not render the move_to-now line:\n%s", out)
 	}
 }
 
