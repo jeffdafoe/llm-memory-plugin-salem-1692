@@ -1,0 +1,17 @@
+# Your turn
+
+## What just happened
+1. John Ellis offers you stew for 4 coins. To take this coin quote, call pay_with_item with quote_id 1, item "stew", qty 1, and amount 4 — it settles at once. Don't put goods on a quote_id; if you lack coins but have goods to offer, propose a separate trade instead — call offer_trade with the goods you'll give and want_item "stew"; they can accept or counter.
+
+
+## You
+Coins in your purse: 25.
+You are carrying: nail (x20).
+
+## Around you
+You are inside the Tavern, with John Ellis.
+Evening settles over the village.
+
+You keep your trade at the Blacksmith (structure_id: blacksmith) — you can head back there whenever you wish.
+
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.

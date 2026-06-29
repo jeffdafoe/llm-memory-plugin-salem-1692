@@ -142,6 +142,35 @@ func Pay(buyerID ActorID, recipientName string, amount int, forText string, at t
 				return nil, fmt.Errorf("Pay: seller %q vanished mid-resolve", sellerID)
 			}
 
+			// LLM-172: bare pay is a pure coin transfer — it does NOT settle a
+			// scene quote or deliver the quoted good. When forText names a good the
+			// seller has posted an active quote for, the buyer is almost certainly
+			// trying to BUY it and reached for the wrong tool; left to proceed the
+			// coins move but no item is delivered and the quote stays open, so the
+			// seller re-offers and the buyer re-accepts (the live Ezekiel/John stew
+			// loop). Redirect to the settlement tool. forText that names no active
+			// quoted good (a tip, a debt, an unquoted item) falls through to a
+			// plain transfer.
+			if q := findCoinQuoteForPay(w, buyer, sellerID, forText, at); q != nil {
+				if buyer.Coins < q.Amount {
+					// Coin-short for the quote: redirecting to pay_with_item would just
+					// bounce on funds and loop with the right tool (code_review). Steer
+					// to the real ways forward for a broke buyer — bargain the price
+					// down, or barter goods via offer_trade — not a settlement they
+					// can't cover.
+					return nil, fmt.Errorf(
+						"%s has an open quote for %s (quote_id %d, %d coins) but you only have %d — a plain pay won't deliver the %s. Agree a lower coin price, or call offer_trade with goods you'll give and want_item %q.",
+						seller.DisplayName, q.Lines[0].ItemKind, q.ID, q.Amount, buyer.Coins,
+						q.Lines[0].ItemKind, q.Lines[0].ItemKind,
+					)
+				}
+				return nil, fmt.Errorf(
+					"%s has an open quote for %s (quote_id %d, %d coins) — a plain pay only hands over coins and won't deliver the %s. Call pay_with_item with quote_id %d, item %q, qty %d, and amount %d to actually receive it.",
+					seller.DisplayName, q.Lines[0].ItemKind, q.ID, q.Amount,
+					q.Lines[0].ItemKind, q.ID, q.Lines[0].ItemKind, q.Lines[0].Qty, q.Amount,
+				)
+			}
+
 			if buyer.Coins < amount {
 				return nil, fmt.Errorf(
 					"insufficient coins (have %d, need %d) — agree on a lower amount before paying.",
@@ -383,4 +412,55 @@ func payFactText(subject, verb, object string, amount int, forText string) strin
 		return fmt.Sprintf("%s %s %s %d %s.", subject, verb, object, amount, coins)
 	}
 	return fmt.Sprintf("%s %s %s %d %s for %s.", subject, verb, object, amount, coins, for_)
+}
+
+// findCoinQuoteForPay returns the active single-line scene quote the seller has
+// posted for the good the buyer named in a bare pay's forText — i.e. the buyer
+// is trying to buy a quoted good with the coin-only pay tool, which transfers
+// coins but never delivers the good or settles the quote (LLM-172). Returns nil
+// when forText names no active quoted good — resolveItemKind can't canonicalize
+// it, the buyer's huddle maps to no scene, or no matching quote exists — so a
+// tip, a debt, or an unquoted payment proceeds as a plain coin transfer.
+//
+// Eligibility mirrors findAutoMatchQuote's filter (active, unexpired, this
+// seller, visible to this buyer in their scene, single-line, not addressed to
+// someone else), but the match keys off the forText item rather than echoed
+// pay_with_item terms — a bare pay carries no item/qty fields, only free text.
+// Single-line only: a bundle has no single forText good to name and is taken
+// whole via an explicit quote_id.
+//
+// Among multiple eligible quotes the cheapest (then lowest ID) wins, matching
+// findAutoMatchQuote — the chosen quote's ID lands in the corrective steer, so
+// the pick must be deterministic across runs and not ride map-iteration order.
+func findCoinQuoteForPay(w *World, buyer *Actor, sellerID ActorID, forText string, at time.Time) *SceneQuote {
+	kind, ok := resolveItemKind(w, forText)
+	if !ok {
+		return nil
+	}
+	sceneID, ok := resolveSellerScene(w, buyer.CurrentHuddleID)
+	if !ok {
+		return nil
+	}
+	var best *SceneQuote
+	for _, q := range w.Quotes {
+		if q == nil || q.State != SceneQuoteStateActive {
+			continue
+		}
+		if !q.ExpiresAt.IsZero() && !at.Before(q.ExpiresAt) {
+			continue
+		}
+		if q.SellerID != sellerID || q.SceneID != sceneID {
+			continue
+		}
+		if q.TargetBuyer != "" && q.TargetBuyer != buyer.ID {
+			continue
+		}
+		if len(q.Lines) != 1 || q.Lines[0].ItemKind != kind {
+			continue
+		}
+		if best == nil || q.Amount < best.Amount || (q.Amount == best.Amount && q.ID < best.ID) {
+			best = q
+		}
+	}
+	return best
 }
