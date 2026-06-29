@@ -217,7 +217,7 @@ func FindNarrativeConsolidationCandidates(at time.Time, limit int) Command {
 				// LLM call just re-chews the unchanged prior summary. First-
 				// time actors skip the gate — the worker stamps a genuinely-
 				// empty first-timer without an LLM call.
-				if floorOverdue && !actorHasEventSince(w, actor.ID, eventsCutoff) {
+				if !firstTime && floorOverdue && !actorHasEventSince(w, actor.ID, eventsCutoff) {
 					continue
 				}
 				all = append(all, entry{actor: actor, lastCons: lastCons, priorSummary: prior})

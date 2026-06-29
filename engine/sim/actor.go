@@ -237,10 +237,9 @@ const MaxSalientFactTextLen = 220
 // Relationship.DroppedFactCount increment. Sized to hold a full day of
 // interactions so the once-daily consolidation (ConsolidationFloor)
 // reflects the whole day, not just the most recent slice. The
-// ConsolidationCeiling backstop fires before a pair reaches this cap, so
-// FIFO eviction is a last-resort safety net rather than an expected
-// event — a non-zero DroppedFactCount means a pair out-ran even the
-// backstop.
+// ConsolidationCeiling backstop is expected to fire before a pair
+// reaches this cap, keeping FIFO eviction a last-resort safety net — a
+// non-zero DroppedFactCount means a pair out-ran even the backstop.
 const MaxSalientFactsPerRelationship = 200
 
 // NewSalientFact builds a SalientFact with Text truncated to

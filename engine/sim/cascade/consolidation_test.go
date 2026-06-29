@@ -529,6 +529,12 @@ func TestRunOneSweep_CapEvictionDuringLLMCallPreservesFacts(t *testing.T) {
 	defer stop()
 	at := time.Now().UTC()
 
+	// This test needs headroom between the snapshot point (the ceiling)
+	// and the cap for FIFO eviction to be exercised at all.
+	if sim.ConsolidationCeiling >= sim.MaxSalientFactsPerRelationship {
+		t.Fatalf("test requires ConsolidationCeiling < MaxSalientFactsPerRelationship")
+	}
+
 	// Drive exactly ConsolidationCeiling facts pre-snapshot. Each fact
 	// has a distinct numeric text so we can verify which survived.
 	for i := 0; i < sim.ConsolidationCeiling; i++ {

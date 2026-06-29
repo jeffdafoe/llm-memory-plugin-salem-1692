@@ -34,9 +34,11 @@ import (
 // Selection rules (3 OR branches):
 //
 //   - Ceiling: len(SalientFacts) >= ConsolidationCeiling. A pre-eviction
-//     backstop, not the routine cadence — forces an early pass only when
-//     a pair out-runs a full day's interactions, so facts get
-//     consolidated before the FIFO cap evicts them off the front.
+//     backstop, not the routine cadence — forces an early pass when a
+//     pair out-runs a full day's interactions, giving the sweep a chance
+//     to consolidate before the FIFO cap evicts facts off the front. Not
+//     a hard guarantee: a pair waiting behind others in the sweep, or
+//     gaining > cap-ceiling facts during the LLM call, can still evict.
 //   - First-time: LastConsolidatedAt == nil AND len(SalientFacts) >=
 //     ConsolidationFirstMinFacts. The minimum-facts gate prevents
 //     fake-deep "coherent impressions" distilled from one "Good
@@ -57,11 +59,12 @@ import (
 // ConsolidationCeiling is a pre-eviction backstop, not the routine
 // cadence. The daily floor (ConsolidationFloor) is the normal trigger;
 // the ceiling only forces an early pass when a pair out-runs a full
-// day's interactions, consolidating before the FIFO cap
-// (MaxSalientFactsPerRelationship) would silently evict facts. Kept
-// below the cap to leave the sweep headroom to fire before eviction.
-// (v1 used this as a routine ~hourly trigger for chatty pairs; v2 makes
-// the floor the cadence so a pair re-opines at most once per day.)
+// day's interactions, giving the sweep a chance to consolidate before
+// the FIFO cap (MaxSalientFactsPerRelationship) evicts facts. Kept below
+// the cap for headroom — not a hard guarantee (a pair behind others in
+// the sweep, or gaining > cap-ceiling facts mid-LLM-call, can still
+// evict). (v1 used this as a routine ~hourly trigger for chatty pairs;
+// v2 makes the floor the cadence so a pair re-opines at most once/day.)
 const ConsolidationCeiling = 150
 
 // ConsolidationFloor is the minimum age past which a relationship
