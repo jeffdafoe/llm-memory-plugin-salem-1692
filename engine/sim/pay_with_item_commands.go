@@ -380,6 +380,12 @@ func PayWithItem(
 			// scene_quote, and pay_items goods (resolvePayItems).
 			kind, ok := resolveItemKind(w, itemName)
 			if !ok {
+				// LLM-167: a buyer naming "work"/"labor" as the good it wants is
+				// reaching for the labor market through the barter tool — steer
+				// to the labor verbs instead of the dead-end unknown-kind error.
+				if isLaborToken(itemName) {
+					return nil, errors.New(laborTradeSteerMsg)
+				}
 				return nil, fmt.Errorf(
 					"unknown item kind %q — check the items available in this world before offering.",
 					itemName,
@@ -1842,6 +1848,14 @@ func resolvePayItems(w *World, payItems []PayItemInput) ([]ItemKindQty, error) {
 		}
 		if pi.Qty > MaxPayWithItemQty {
 			return nil, fmt.Errorf("pay_items: quantity exceeds maximum (got %d, max %d)", pi.Qty, MaxPayWithItemQty)
+		}
+		// LLM-167: an NPC paying with "work"/"labor" is reaching for the labor
+		// market through the barter tool. Steer to the labor verbs BEFORE the
+		// discovery mint below — otherwise the token mints a phantom inert kind
+		// into the catalog and dead-ends on the holdings shortfall, with no hint
+		// the labor flow exists.
+		if isLaborToken(pi.Item) {
+			return nil, errors.New(laborTradeSteerMsg)
 		}
 		// ZBBS-WORK-412: mint an unknown pay-with good at qty 0 (an NPC offering
 		// to pay with a good it names is a discovery signal). The offerer holds 0
