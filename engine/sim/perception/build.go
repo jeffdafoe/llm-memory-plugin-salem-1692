@@ -138,7 +138,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	p.CanSolicitWork = subjectIsWorker(actorSnap) &&
 		p.Laboring == nil &&
 		!subjectHasPendingLaborOffer(snap, actorID) &&
-		hasSolicitableAudience(snap, actorSnap, p.Surroundings)
+		hasSolicitableAudience(snap, actorID, actorSnap, p.Surroundings)
 	// LLM-160: the businesses directory is a STANDING cue for a workless idle
 	// worker with no employer present — not a rare warrant-gated one. Pre-fix it
 	// rode only the paced seek-work warrant tick (LLM-152, ~7% of ticks), so on the
@@ -171,7 +171,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 		p.Actor.InFlightMove == nil &&
 		p.Actor.InFlightSourceActivity == nil &&
 		!subjectHasPendingLaborOffer(snap, actorID) &&
-		!hasSolicitableAudience(snap, actorSnap, p.Surroundings) {
+		!hasSolicitableAudience(snap, actorID, actorSnap, p.Surroundings) {
 		p.SeekWorkPlaces = buildSeekWorkPlaces(snap, actorSnap)
 	}
 	p.TurnState = buildTurnState(snap, actorID, actorSnap, p.Surroundings.HuddleMembers)
@@ -3175,24 +3175,26 @@ func buildSeekWorkPlaces(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) []See
 // hasSolicitableAudience reports whether at least one awake, addressable actor in
 // the subject's audience (huddle peers ∪ co-present) is someone the subject could
 // actually solicit work from — i.e. NOT a member of its own household (same home
-// structure) or its own workplace crew (same work structure). It is the narrowed
-// successor to SurroundingsView.HasAudience() in the CanSolicitWork gate: a broke
-// worker shut in with only family present HAS an audience but no one worth bidding
-// (LLM-145). CoPresentAsleep / CoPresentResting are already partitioned out
-// upstream — HuddleMembers and CoPresent are the same addressable set HasAudience
-// reads, so this can't advertise solicit_work against someone the speak path
-// couldn't reach.
-func hasSolicitableAudience(snap *sim.Snapshot, subject *sim.ActorSnapshot, surr SurroundingsView) bool {
+// structure) or its own workplace crew (same work structure), AND not an employer
+// who has already declined this worker (LLM-181). It is the narrowed successor to
+// SurroundingsView.HasAudience() in the CanSolicitWork gate: a broke worker shut in
+// with only family present HAS an audience but no one worth bidding (LLM-145).
+// CoPresentAsleep / CoPresentResting are already partitioned out upstream —
+// HuddleMembers and CoPresent are the same addressable set HasAudience reads, so
+// this can't advertise solicit_work against someone the speak path couldn't reach.
+// subjectID identifies the worker so the decline check can match the ledger's
+// WorkerID (ActorSnapshot carries no self id).
+func hasSolicitableAudience(snap *sim.Snapshot, subjectID sim.ActorID, subject *sim.ActorSnapshot, surr SurroundingsView) bool {
 	if snap == nil || subject == nil {
 		return false
 	}
 	for _, m := range surr.HuddleMembers {
-		if isSolicitableEmployer(snap, subject, m.ID) {
+		if isSolicitableEmployer(snap, subjectID, subject, m.ID) {
 			return true
 		}
 	}
 	for _, m := range surr.CoPresent {
-		if isSolicitableEmployer(snap, subject, m.ID) {
+		if isSolicitableEmployer(snap, subjectID, subject, m.ID) {
 			return true
 		}
 	}
@@ -3200,14 +3202,41 @@ func hasSolicitableAudience(snap *sim.Snapshot, subject *sim.ActorSnapshot, surr
 }
 
 // isSolicitableEmployer reports whether candidate (by id) is a co-present actor
-// the subject could solicit — present in the snapshot and sharing neither the
-// subject's household nor its workplace (LLM-145).
-func isSolicitableEmployer(snap *sim.Snapshot, subject *sim.ActorSnapshot, candidate sim.ActorID) bool {
+// the subject could solicit — present in the snapshot, sharing neither the
+// subject's household nor its workplace (LLM-145), and not already on record as
+// having declined this worker (LLM-181).
+func isSolicitableEmployer(snap *sim.Snapshot, subjectID sim.ActorID, subject *sim.ActorSnapshot, candidate sim.ActorID) bool {
 	other := snap.Actors[candidate]
 	if other == nil {
 		return false
 	}
+	if employerDeclinedSubject(snap, subjectID, candidate) {
+		return false
+	}
 	return !sharesHousehold(subject, other) && !sharesWorkplace(subject, other)
+}
+
+// employerDeclinedSubject reports whether the candidate employer holds a terminal
+// declined labor offer from this worker in the ledger. A worker who solicited an
+// employer and was turned down must stop counting that employer as a live prospect:
+// the decline IS the engine's "no one here can hire you" memory, and treating the
+// refuser as still-solicitable is exactly what suppressed the seek-work directive
+// and trapped a worker re-soliciting the same refusal tick after tick (LLM-181 —
+// Lewis Walker at the General Store). Dropping the declined employer from the
+// audience re-arms SeekWorkPlaces, so the worker is steered to a business instead.
+//
+// Scoped to LaborStateDeclined — an Expired (ignored) or FailedUnavailable offer is
+// a different signal, left for a follow-up. The offer lingers up to
+// LaborLedgerTerminalRetentionDefault (1h) before the reaper removes it, which
+// bounds the cooldown; once it ages out — or the worker walks off and returns — the
+// employer is solicitable again. Pure ledger scan, mirroring subjectHasPendingLaborOffer.
+func employerDeclinedSubject(snap *sim.Snapshot, subjectID, candidate sim.ActorID) bool {
+	for _, o := range snap.LaborLedger {
+		if o != nil && o.State == sim.LaborStateDeclined && o.WorkerID == subjectID && o.EmployerID == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 // sharesHousehold reports whether a and b live in the same (non-empty) home
