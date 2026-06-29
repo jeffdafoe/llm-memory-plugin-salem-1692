@@ -51,6 +51,10 @@ type GatherResult struct {
 	SourceName string // resolved display/catalog name, e.g. "Old Well"
 	Item       ItemKind
 	Qty        int // units actually gathered (<= requested when finite ran low)
+	// SourceDepleted is true when this pick emptied a finite source (a bush picked
+	// clean — gather takes all ripe units, LLM-87). Drives the "it's bare now"
+	// completion beat (LLM-175); always false for an infinite source (a well).
+	SourceDepleted bool
 }
 
 // findGatherableObjectNear resolves the village object the actor should harvest
@@ -185,10 +189,17 @@ func applyGatherMint(w *World, actor *Actor, objID VillageObjectID, obj *Village
 		At:       at,
 	})
 
+	// A finite source emptied by this pick reads as "bare" downstream (the
+	// completion beat's "it's bare now" copy, LLM-175). Read AFTER drawDownStock
+	// decremented the supply above; an infinite source (nil AvailableQuantity) is
+	// never depleted.
+	depleted := row.IsFinite() && *row.AvailableQuantity <= 0
+
 	return GatherResult{
-		ObjectID:   objID,
-		SourceName: name,
-		Item:       kind,
-		Qty:        actual,
+		ObjectID:       objID,
+		SourceName:     name,
+		Item:           kind,
+		Qty:            actual,
+		SourceDepleted: depleted,
 	}, nil
 }

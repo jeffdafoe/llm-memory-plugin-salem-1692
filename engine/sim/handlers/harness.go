@@ -1341,24 +1341,21 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 			}
 		}
 	}
-	// gather: harvesting now takes time (LLM-54). The commit STARTS a timed pick
-	// — the yield lands in the actor's pack a few seconds later, surfaced in its
-	// next perception — so a bare "[ok]" would read as "done, nothing happened"
-	// and bait an immediate re-gather. The actor is occupied for the window (the
-	// reactor won't re-tick it mid-pick); this is the model-facing half that
-	// steers it to wait rather than re-fire.
+	// gather: harvesting takes time (LLM-54) and is now tick-terminal (LLM-175) — a
+	// started pick ends the tick, so the old "do not gather again / call done() now"
+	// steer is moot (the engine ends the turn for it). Keep the result purely
+	// informational: the pick is timed and the yield lands next turn, so a bare
+	// "[ok]" would read as "done, nothing happened". The "you took it all / it's
+	// bare" beat lands in the next-tick completion perception
+	// (SourceActivityCompletionNarration), where the exact yield + depletion are
+	// known.
 	if vc.Name == "gather" {
 		if r, ok := cmdResult.(sim.SourceActivityStartResult); ok && r.Started {
-			// LLM-120: lead with the imperative. The prior copy buried "you needn't
-			// gather again" in a trailing soft clause that the weak model ignored,
-			// re-firing gather every round to the iteration budget. State the two
-			// don'ts first — don't gather again, don't walk off — then the why.
-			// LLM-69: the walk-off warning is load-bearing, NOT a flourish: a move
-			// abandons the in-flight pick (commands_move.go) — the live forage→walk-off
-			// bug — so framing STAYING (not "carry on elsewhere") must survive the
-			// reword. The yield lands in the actor's pack a few seconds later, surfaced
-			// as a completion beat in its next perception.
-			return "[ok] You're now gathering — do not gather again, and do not walk off (leaving now abandons the pick and you gather nothing). It finishes on its own in a few seconds; the harvest lands in your pack next turn. Call done() now."
+			at := ""
+			if r.SourceName != "" {
+				at = " at " + r.SourceName
+			}
+			return fmt.Sprintf("[ok] You start gathering%s. It finishes on its own in a few seconds; the harvest lands in your pack next turn.", at)
 		}
 	}
 	// craft: SetProductionFocus records the good the crafter forges next; the yield
