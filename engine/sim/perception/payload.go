@@ -111,6 +111,21 @@ type Payload struct {
 	// the suppressed band. See buildDutyPending.
 	DutyPending bool
 
+	// EveningLeisure is the evening "tavern's open" cue (LLM-149, Lever 2 of the
+	// living-evening epic LLM-147): a non-coercive invitation shown to a homed,
+	// day-shift agent NPC that is off-shift and awake in the post-work evening
+	// window [shift-end, 22:00). It names that the day's work is done and the
+	// tavern is open of an evening and lets the model decide — head over, stay in,
+	// or turn in — imposing NO walk. nil when out of scope (unhomed / unscheduled /
+	// not an agent), outside the evening window, red-need-pressed, already settled
+	// at home, already at the venue or walking there, or no tavern venue resolves.
+	// Renders in ## Around you, REPLACING the off-shift go-home wind-down steer for
+	// the window's duration: buildDutySteer suppresses that steer in-window so this
+	// is the single voice (no "turn in" pressure before Lever 1's 22:00 bedtime),
+	// and it holds the noop-skip gate open in the steer's place so the idle agent
+	// still ticks and sees the invitation. See buildEveningLeisure.
+	EveningLeisure *EveningLeisureView
+
 	// Warrants is every consumed warrant, ordered by SourceEventID
 	// ascending — PR 3a's monotonic EventID is the authoritative causal
 	// order. Zero-lineage warrants (SourceEventID == 0, legacy/non-event-
@@ -1193,6 +1208,21 @@ type DutySteerView struct {
 	// offer); otherwise it is offered as a discretionary option. ZBBS-WORK-387.
 	OfferStayOpen  bool
 	StayOpenReason string
+}
+
+// EveningLeisureView is the evening leisure cue (LLM-149). VenueID/VenueLabel
+// name the nearest tavern-tagged venue, resolved from the snapshot (never a
+// hardcoded id) — the "tavern" venue tag lives on the VillageObject, whose id
+// also names a Structure via the shared-identity bridge (the same idiom
+// pickVisitorDestination uses). HomeID/HomeLabel carry the co-equal stay-home
+// option so the cue is self-sufficient — it does not depend on the anchors line
+// rendering the home id, matching the duty steer's inline-structure_id
+// convention. See buildEveningLeisure / renderEveningLeisure.
+type EveningLeisureView struct {
+	VenueID    sim.StructureID
+	VenueLabel string // resolved venue DisplayName; render falls back to "the tavern"
+	HomeID     sim.StructureID
+	HomeLabel  string // resolved home DisplayName; render falls back to "your home"
 }
 
 // SceneView describes the primary scene and, when a baseline could be

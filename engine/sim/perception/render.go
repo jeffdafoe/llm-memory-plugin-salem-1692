@@ -240,6 +240,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderSurroundings(&ephemeral, p.Surroundings)
 	renderAnchors(&ephemeral, p.Anchors, p.DutySteer != nil && p.DutySteer.AtPost)
 	renderDutySteer(&ephemeral, p.DutySteer)
+	renderEveningLeisure(&ephemeral, p.EveningLeisure)
 	renderRelationships(&ephemeral, p.Relationships)
 	renderRecentConversation(&ephemeral, p.RecentConversation)
 	// The decision section renders ABOVE the affordance dumps (it used to land
@@ -1220,6 +1221,25 @@ func renderDutySteer(b *strings.Builder, v *DutySteerView) {
 		}
 	}
 	b.WriteString("\n\n")
+}
+
+// renderEveningLeisure writes the evening "tavern's open" cue (LLM-149) — a
+// non-coercive invitation: the day's work is done, the tavern is open of an
+// evening, and the agent may head over, pass a quiet evening at home, or turn in
+// as it likes. It carries the tavern's structure_id (the new move_to token) and
+// the home structure_id (the co-equal stay-home choice) inline, so the cue is
+// self-sufficient like the duty steer. No imperative and no "turn in" pressure —
+// the three options are equal-weight; bedtime is Lever 1's 22:00 gate. Renders
+// in ## Around you, in the slot the off-shift go-home steer occupies the rest of
+// the day (suppressed in-window so this is the single voice).
+func renderEveningLeisure(b *strings.Builder, v *EveningLeisureView) {
+	if v == nil {
+		return
+	}
+	venue := anchorPlace(v.VenueLabel, "the tavern")
+	home := anchorPlace(v.HomeLabel, "your home")
+	fmt.Fprintf(b, "Your day's work is done, and the tavern is open of an evening — you might make your way to %s (structure_id: %s) for company, pass a quiet evening at %s (structure_id: %s), or turn in for the night, as you please.\n\n",
+		venue, v.VenueID, home, v.HomeID)
 }
 
 // joinHuddleMembers renders co-huddle peers with name-vs-descriptor
