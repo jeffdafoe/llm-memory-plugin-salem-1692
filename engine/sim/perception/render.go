@@ -2529,7 +2529,11 @@ func renderQuoteWarrantLine(n int, seller string, r sim.SceneQuoteTargetedWarran
 	}
 	// The take-instruction carries the quote_id. A bundle (LLM-101) is taken
 	// whole, so it needs only the quote_id + total amount; a single-item quote
-	// keeps the match-the-terms phrasing.
+	// names the concrete item/qty/amount (LLM-172 — the prior "the same item,
+	// qty, and amount" phrasing had no anchor, so a buyer carrying other goods
+	// bound "item" to one of those: pay_with_item then rejected the term
+	// mismatch and the model fell back to a bare pay, leaking coins for an
+	// undelivered good with the quote still open).
 	//
 	// LLM-136: a single-item quote is the COIN settlement path — goods can't ride
 	// a quote_id (that rejects). A coin-short buyer isn't stuck, though: barter is
@@ -2544,7 +2548,7 @@ func renderQuoteWarrantLine(n int, seller string, r sim.SceneQuoteTargetedWarran
 	case len(r.Lines) > 1:
 		take = fmt.Sprintf(" To take the whole bundle, call pay_with_item with quote_id %d and amount %d — it settles at once.", r.QuoteID, r.Amount)
 	case len(r.Lines) == 1:
-		take = fmt.Sprintf(" To take this coin quote, call pay_with_item with quote_id %d and the same item, qty, and amount — it settles at once. Don't put goods on a quote_id; if you lack coins but have goods to offer, propose a separate trade instead — call offer_trade with the goods you'll give and want_item %q; they can accept or counter.", r.QuoteID, string(r.Lines[0].ItemKind))
+		take = fmt.Sprintf(" To take this coin quote, call pay_with_item with quote_id %d, item %q, qty %d, and amount %d — it settles at once. Don't put goods on a quote_id; if you lack coins but have goods to offer, propose a separate trade instead — call offer_trade with the goods you'll give and want_item %q; they can accept or counter.", r.QuoteID, string(r.Lines[0].ItemKind), r.Lines[0].Qty, r.Amount, string(r.Lines[0].ItemKind))
 	default:
 		// Defensive (code_review): a quote with zero lines shouldn't reach here —
 		// sell/scene_quote require ≥1 item — but the single-item arm indexes

@@ -678,3 +678,55 @@ func TestPay_TwoPaysAccumulate(t *testing.T) {
 		t.Errorf("LastInteractionAt = %v, want %v", rel.LastInteractionAt, second)
 	}
 }
+
+// --- TestPay_RedirectsToOpenQuoteSettlement: LLM-172. A bare pay naming a good
+// the seller has an active quote for is rejected with a redirect to
+// pay_with_item, and no coins move — bare pay transfers coins but never delivers
+// the good or settles the quote, so letting it through leaks coins for nothing
+// (the live Ezekiel/John stew loop). buildFastPathFixture posts Bob's active
+// stew quote (id 7, qty 1, 4 coins) to Alice in scene sc1.
+func TestPay_RedirectsToOpenQuoteSettlement(t *testing.T) {
+	w, stop, at := buildFastPathFixture(t, 7)
+	defer stop()
+
+	_, err := w.Send(sim.Pay("alice", "Bob", 4, "stew", at))
+	if err == nil {
+		t.Fatal("bare pay for a quoted good should be redirected to pay_with_item")
+	}
+	if !strings.Contains(err.Error(), "pay_with_item with quote_id 7") {
+		t.Errorf("redirect missing the quote_id steer: %v", err)
+	}
+	if !strings.Contains(err.Error(), "won't deliver") {
+		t.Errorf("redirect missing the no-delivery explanation: %v", err)
+	}
+
+	// The reject fires before any state change — no coins moved.
+	snap := w.Published()
+	if got := snap.Actors["alice"].Coins; got != 50 {
+		t.Errorf("alice.Coins = %d, want 50 (no transfer on redirect)", got)
+	}
+	if got := snap.Actors["bob"].Coins; got != 0 {
+		t.Errorf("bob.Coins = %d, want 0 (no transfer on redirect)", got)
+	}
+}
+
+// --- TestPay_AllowsTipWhenForTextNamesNoQuotedGood: LLM-172 fall-through. A
+// bare pay whose forText names no active quoted good (a tip / thanks) is not a
+// botched purchase — it proceeds as a plain coin transfer. Same fixture (Bob
+// has only a stew quote), but the pay is "for" something resolveItemKind can't
+// canonicalize, so the open-quote guard doesn't fire.
+func TestPay_AllowsTipWhenForTextNamesNoQuotedGood(t *testing.T) {
+	w, stop, at := buildFastPathFixture(t, 7)
+	defer stop()
+
+	if _, err := w.Send(sim.Pay("alice", "Bob", 3, "your kindness", at)); err != nil {
+		t.Fatalf("a tip naming no quoted good should proceed: %v", err)
+	}
+	snap := w.Published()
+	if got := snap.Actors["alice"].Coins; got != 47 {
+		t.Errorf("alice.Coins = %d, want 47 (tip transferred)", got)
+	}
+	if got := snap.Actors["bob"].Coins; got != 3 {
+		t.Errorf("bob.Coins = %d, want 3 (tip received)", got)
+	}
+}

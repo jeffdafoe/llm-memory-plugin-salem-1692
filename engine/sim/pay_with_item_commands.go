@@ -871,15 +871,20 @@ func runPayWithItemFastPath(
 		// scene_quote_commands.go).
 		line := quote.Lines[0]
 		if line.ItemKind != kind {
+			// LLM-172: name the quote's actual item and the corrected retry so a
+			// misread self-corrects in-place. The bare rejection dead-ended the
+			// live trace — the buyer put a carried good ("nail") where the quoted
+			// good ("stew") belonged, got this error with no fix, and fell back to
+			// a bare pay that leaked coins for nothing.
 			return nil, fmt.Errorf(
-				"quote %d has different terms: item %q, not %q",
-				quoteID, line.ItemKind, kind,
+				"quote %d is for %q, not %q — retry pay_with_item with quote_id %d and item %q; the item is the good the quote sells, not one you're carrying.",
+				quoteID, line.ItemKind, kind, quoteID, line.ItemKind,
 			)
 		}
 		if line.Qty != qty {
 			return nil, fmt.Errorf(
-				"quote %d has different terms: qty %d, not %d",
-				quoteID, line.Qty, qty,
+				"quote %d is for qty %d, not %d — retry pay_with_item with quote_id %d and qty %d.",
+				quoteID, line.Qty, qty, quoteID, line.Qty,
 			)
 		}
 		// Disposition is the BUYER's term, not the quote's (ZBBS-WORK-402 —

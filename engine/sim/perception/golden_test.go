@@ -193,6 +193,17 @@ var perceptionScenarios = []perceptionScenario{
 		build: makerOfferedOwnWareBuyQuote,
 	},
 	{
+		name: "buyer_offered_quote_take_names_terms",
+		summary: "LLM-172 buyer side: John Ellis posts a targeted STEW quote (qty 1, 4 coins) at Ezekiel Crane — a good he " +
+			"buys, not makes — so the actionable take RENDERS (unlike the maker buy-back above). Ezekiel carries 20 nails, " +
+			"the live trap: the prior take said 'pay_with_item with quote_id 1 and the same item, qty, and amount', and a " +
+			"buyer holding other goods bound 'the same item' to a nail, dead-ended on the term-mismatch reject, and fell " +
+			"back to a bare pay that leaked coins for an undelivered stew (the quote still open). The golden pins that the " +
+			"take now names the concrete 'item \"stew\", qty 1, and amount 4' so there is nothing to misbind. Only golden " +
+			"exercising the single-line coin-quote actionable take (see TestCoinQuoteTakeNamesConcreteTerms).",
+		build: buyerOfferedQuoteTakeNamesTerms,
+	},
+	{
 		name: "dairy_choosing_at_farm",
 		summary: "LLM-144: a NON-smith multi-output producer (Elizabeth Ellis at Ellis Farm: milk + meat + cheese) stands " +
 			"UNFOCUSED at her own workplace on shift — the same production-choice state smith_choosing_at_forge pins for the " +
@@ -663,6 +674,28 @@ func TestBuyBackQuoteSteerOnlyForOwnProducedOrAtCap(t *testing.T) {
 		}
 		if want && strings.Contains(got, take) {
 			t.Errorf("scenario %q: redundant buy-quote still shows the actionable take %q — it must be withheld", sc.name, take)
+		}
+	}
+}
+
+// TestCoinQuoteTakeNamesConcreteTerms is the LLM-172 cross-scenario invariant:
+// the single-line coin-quote take never falls back to the unanchored "the same
+// item, qty, and amount" phrasing that a buyer carrying other goods misbound to
+// one of those (paying for nothing via a bare pay). Wherever the actionable take
+// renders it must name the concrete item/qty/amount; buyer_offered_quote_take_names_terms
+// pins the exact string for the live stew case.
+func TestCoinQuoteTakeNamesConcreteTerms(t *testing.T) {
+	const vague = "the same item, qty, and amount"
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		got := renderScenario(sc)
+		if strings.Contains(got, vague) {
+			t.Errorf("scenario %q: coin-quote take still uses the unanchored %q phrasing — name the concrete item/qty/amount", sc.name, vague)
+		}
+		if sc.name == "buyer_offered_quote_take_names_terms" {
+			if want := `item "stew", qty 1, and amount 4`; !strings.Contains(got, want) {
+				t.Errorf("scenario %q: take missing the concrete terms %q\n%s", sc.name, want, got)
+			}
 		}
 	}
 }
@@ -1633,6 +1666,89 @@ func makerOfferedOwnWareBuyQuote() (*sim.Snapshot, sim.ActorID, []sim.WarrantMet
 				QuoteID: 1, SellerID: johnID,
 				Lines:  []sim.QuoteLine{{ItemKind: "skillet", Qty: 1}},
 				Amount: 2,
+			},
+			SourceEventID: 1,
+		},
+	}
+	return snap, ezekielID, warrants
+}
+
+// buyerOfferedQuoteTakeNamesTerms is the LLM-172 buyer side: John Ellis posts a
+// targeted STEW quote at Ezekiel Crane — a good Ezekiel does NOT make and isn't
+// at cap on — so the actionable take renders (unlike the maker buy-back above,
+// which withholds it). Ezekiel is carrying 20 nails, the live trap: the prior
+// take read "call pay_with_item with quote_id 1 and the same item, qty, and
+// amount", and a buyer holding other goods bound "the same item" to a nail,
+// dead-ended on the term-mismatch reject, and fell back to a bare pay that
+// leaked coins for an undelivered stew with the quote still open. The golden
+// pins that the take now names the concrete item/qty/amount ("item \"stew\",
+// qty 1, and amount 4") so there is nothing to misbind. This is the ONLY golden
+// exercising the single-line coin-quote actionable take.
+func buyerOfferedQuoteTakeNamesTerms() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		ezekielID = sim.ActorID("ezekiel")
+		johnID    = sim.ActorID("john")
+		forge     = sim.StructureID("blacksmith")
+		tavern    = sim.StructureID("tavern")
+		huddle    = sim.HuddleID("h1")
+	)
+	start, end := 360, 1080 // 06:00–18:00
+	now := 1140             // 19:00 — off shift, visiting the tavern
+	published := time.Date(2026, 6, 25, 19, 0, 0, 0, time.UTC)
+	ezekiel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Ezekiel Crane",
+		Role:              "blacksmith",
+		State:             sim.StateIdle,
+		WorkStructureID:   forge,
+		InsideStructureID: tavern,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		CurrentHuddleID:   huddle,
+		Coins:             25,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"nail": 20},
+		Acquaintances:     map[string]sim.Acquaintance{"John Ellis": {}},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "skillet", Source: sim.RestockSourceProduce, Max: 5},
+			{Item: "nail", Source: sim.RestockSourceProduce, Max: 20},
+		}},
+	}
+	john := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "John Ellis",
+		Role:              "tavernkeeper",
+		State:             sim.StateIdle,
+		WorkStructureID:   tavern,
+		InsideStructureID: tavern,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		CurrentHuddleID:   huddle,
+		Coins:             267,
+		Needs:             map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{ezekielID: ezekiel, johnID: john},
+		Structures: map[sim.StructureID]*sim.Structure{
+			forge:  plainStructure(forge, "Blacksmith"),
+			tavern: plainStructure(tavern, "Tavern"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{ezekielID: {}, johnID: {}}},
+		},
+	}
+	// John's targeted stew quote at Ezekiel — a good he buys, not makes, so the
+	// actionable take renders.
+	warrants := []sim.WarrantMeta{
+		{
+			TriggerActorID: johnID,
+			Reason: sim.SceneQuoteTargetedWarrantReason{
+				QuoteID: 1, SellerID: johnID,
+				Lines:  []sim.QuoteLine{{ItemKind: "stew", Qty: 1}},
+				Amount: 4,
 			},
 			SourceEventID: 1,
 		},

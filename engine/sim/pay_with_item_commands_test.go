@@ -1043,12 +1043,12 @@ func TestPayWithItem_FastPath_StrictRejectPredicates(t *testing.T) {
 					world.Quotes[7].Lines[0].ItemKind = "ale"
 				})
 			},
-			want: "different terms: item",
+			want: "the item is the good the quote sells",
 		},
 		{
 			name:    "qty_mismatch",
 			argItem: "stew", argQty: 2, argAmount: 4,
-			want: "different terms: qty",
+			want: "is for qty",
 		},
 		{
 			name:    "amount_below_floor",
