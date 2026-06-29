@@ -33,16 +33,19 @@ import (
 //
 // Selection rules (3 OR branches):
 //
-//   - Ceiling: len(SalientFacts) >= ConsolidationCeiling. Forces a
-//     mid-cycle pass when a chatty pair accumulates faster than the
-//     daily floor.
+//   - Ceiling: len(SalientFacts) >= ConsolidationCeiling. A pre-eviction
+//     backstop, not the routine cadence — forces an early pass when a
+//     pair out-runs a full day's interactions, giving the sweep a chance
+//     to consolidate before the FIFO cap evicts facts off the front. Not
+//     a hard guarantee: a pair waiting behind others in the sweep, or
+//     gaining > cap-ceiling facts during the LLM call, can still evict.
 //   - First-time: LastConsolidatedAt == nil AND len(SalientFacts) >=
 //     ConsolidationFirstMinFacts. The minimum-facts gate prevents
 //     fake-deep "coherent impressions" distilled from one "Good
 //     morrow" line — observed bug WORK-233.
-//   - Floor: LastConsolidatedAt < now - ConsolidationFloor. Daily
-//     cadence ensures every active pair gets at least one pass per
-//     24h regardless of fact count.
+//   - Floor: LastConsolidatedAt < now - ConsolidationFloor. The primary
+//     cadence — every active pair gets one pass per 24h regardless of
+//     fact count.
 //
 // Substrate gating: only actors with Kind == KindNPCShared have
 // Relationships populated by RecordInteraction (gated there). The
@@ -53,10 +56,16 @@ import (
 // is the sibling slice — narrative_consolidation.go (primitives) +
 // cascade/narrative_consolidation.go (worker), Phase 3 PR C2.
 
-// ConsolidationCeiling is the high-water-mark fact count that forces
-// a mid-cycle consolidation pass even if the daily floor hasn't
-// elapsed. Mirrors v1's consolidationCeiling.
-const ConsolidationCeiling = 20
+// ConsolidationCeiling is a pre-eviction backstop, not the routine
+// cadence. The daily floor (ConsolidationFloor) is the normal trigger;
+// the ceiling only forces an early pass when a pair out-runs a full
+// day's interactions, giving the sweep a chance to consolidate before
+// the FIFO cap (MaxSalientFactsPerRelationship) evicts facts. Kept below
+// the cap for headroom — not a hard guarantee (a pair behind others in
+// the sweep, or gaining > cap-ceiling facts mid-LLM-call, can still
+// evict). (v1 used this as a routine ~hourly trigger for chatty pairs;
+// v2 makes the floor the cadence so a pair re-opines at most once/day.)
+const ConsolidationCeiling = 150
 
 // ConsolidationFloor is the minimum age past which a relationship
 // gets re-consolidated regardless of fact count. Daily cadence —

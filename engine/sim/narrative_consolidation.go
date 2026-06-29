@@ -45,7 +45,14 @@ import (
 //
 //   - First-time: Actor.Narrative == nil OR
 //     Actor.Narrative.LastConsolidatedAt == nil.
-//   - Floor: Actor.Narrative.LastConsolidatedAt < now - NarrativeConsolidationFloor.
+//   - Floor: Actor.Narrative.LastConsolidatedAt < now - NarrativeConsolidationFloor,
+//     AND the actor logged at least one ActionLog event in the events
+//     window (the activity gate). Without the gate, an actor with a
+//     prior EvolvingSummary re-reflects every 24h even when it did
+//     nothing new — burning an LLM call to re-chew an unchanged prior
+//     (HasSourceMaterial stays true on the prior alone). First-time
+//     actors are exempt: the worker's stamp-only path already retires a
+//     truly-empty first-timer without an LLM call.
 //
 // There's no ceiling-trigger because per-actor consolidation has no
 // append-pressure equivalent to per-pair SalientFacts — the ActionLog
@@ -204,6 +211,15 @@ func FindNarrativeConsolidationCandidates(at time.Time, limit int) Command {
 				if !firstTime && !floorOverdue {
 					continue
 				}
+				// Activity gate (LLM-174): a floor-overdue re-consolidation
+				// only fires if the actor logged something in the events
+				// window. Otherwise the prompt carries no new events and the
+				// LLM call just re-chews the unchanged prior summary. First-
+				// time actors skip the gate — the worker stamps a genuinely-
+				// empty first-timer without an LLM call.
+				if !firstTime && floorOverdue && !actorHasEventSince(w, actor.ID, eventsCutoff) {
+					continue
+				}
 				all = append(all, entry{actor: actor, lastCons: lastCons, priorSummary: prior})
 			}
 
@@ -280,6 +296,22 @@ func snapshotEventsForActor(w *World, actorID ActorID, cutoff time.Time) []Actio
 		all = all[len(all)-NarrativeEventsLimit:]
 	}
 	return all
+}
+
+// actorHasEventSince reports whether the actor has at least one ActionLog
+// entry strictly after cutoff. A cheap existence check (early-returns on
+// first match) used by the narrative activity gate to skip re-reflecting
+// on an actor that has logged nothing in the events window — which would
+// otherwise burn an LLM call to re-chew an unchanged prior summary.
+// Mirrors snapshotEventsForActor's filter (ActorID match + OccurredAt >
+// cutoff) without building or sorting the full slice.
+func actorHasEventSince(w *World, actorID ActorID, cutoff time.Time) bool {
+	for _, e := range w.ActionLog {
+		if e.ActorID == actorID && e.OccurredAt.After(cutoff) {
+			return true
+		}
+	}
+	return false
 }
 
 // snapshotPeerSummaries returns a fresh slice of {PeerID, Name,
