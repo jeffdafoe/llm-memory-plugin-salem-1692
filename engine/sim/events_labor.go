@@ -98,6 +98,19 @@ type LaborResolved struct {
 
 	TerminalState LaborTerminalState
 
+	// WorkPerformed is true when the work window actually elapsed before this
+	// terminal — the offer reached Completed, or reached FailedUnavailable from
+	// the completion sweep (the worker finished the job but the employer could no
+	// longer cover the reward). It is false for every terminal reached WITHOUT
+	// the work happening: Declined, Expired, and the accept-time
+	// FailedUnavailable fall-throughs (co-presence lost / worker busy / employer
+	// visibly broke at accept). It exists because FailedUnavailable is overloaded
+	// across both the accept-time deal that never started and the completion-time
+	// job that ran unpaid — and a consumer keying off TerminalState alone can't
+	// tell the aggrieved "worked and stiffed" case (a real relationship beat)
+	// from the never-started one (a non-event). LLM-165.
+	WorkPerformed bool
+
 	SceneID  SceneID
 	HuddleID HuddleID
 	At       time.Time

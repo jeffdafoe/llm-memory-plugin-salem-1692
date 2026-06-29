@@ -3,6 +3,7 @@ package sim
 import (
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 )
@@ -272,7 +273,7 @@ func AcceptWork(callerID ActorID, laborID LaborID, at time.Time) Command {
 
 			// Gate 5: TTL. From here gate failures drive terminal transitions.
 			if !offer.ExpiresAt.IsZero() && !at.Before(offer.ExpiresAt) {
-				return finalizeLaborTerminal(w, offer, LaborTerminalStateExpired, at), nil
+				return finalizeLaborTerminal(w, offer, LaborTerminalStateExpired, false, at), nil
 			}
 
 			// Gate 6: co-presence. Worker and employer must both still be in
@@ -282,7 +283,7 @@ func AcceptWork(callerID ActorID, laborID LaborID, at time.Time) Command {
 				offer.HuddleID == "" ||
 				worker.CurrentHuddleID != offer.HuddleID ||
 				caller.CurrentHuddleID != offer.HuddleID {
-				return finalizeLaborTerminal(w, offer, LaborTerminalStateFailedUnavailable, at), nil
+				return finalizeLaborTerminal(w, offer, LaborTerminalStateFailedUnavailable, false, at), nil
 			}
 
 			// Gate 7: worker free. Ledger-authoritative — a worker with ANY
@@ -291,7 +292,7 @@ func AcceptWork(callerID ActorID, laborID LaborID, at time.Time) Command {
 			// timestamp here would let a second job slip in during sweep lag and
 			// orphan the first job's mirror (code_review).
 			if workerHasLiveJob(w, offer.WorkerID) {
-				return finalizeLaborTerminal(w, offer, LaborTerminalStateFailedUnavailable, at), nil
+				return finalizeLaborTerminal(w, offer, LaborTerminalStateFailedUnavailable, false, at), nil
 			}
 
 			// Gate 8: funds (courtesy check, NOT authoritative). No coins move
@@ -302,7 +303,7 @@ func AcceptWork(callerID ActorID, laborID LaborID, at time.Time) Command {
 			// land. The completion sweep re-checks funds authoritatively, since
 			// the employer's balance can drift across a long work window.
 			if !buyerCanAfford(caller, offer.Reward) {
-				return finalizeLaborTerminal(w, offer, LaborTerminalStateFailedUnavailable, at), nil
+				return finalizeLaborTerminal(w, offer, LaborTerminalStateFailedUnavailable, false, at), nil
 			}
 
 			// All gates pass — flip + mirror the worker's state. No coins move
@@ -383,7 +384,7 @@ func DeclineWork(callerID ActorID, laborID LaborID, at time.Time) Command {
 					laborID, offer.State,
 				)
 			}
-			state := finalizeLaborTerminal(w, offer, LaborTerminalStateDeclined, at)
+			state := finalizeLaborTerminal(w, offer, LaborTerminalStateDeclined, false, at)
 			return LaborDeclineResult{ID: offer.ID, State: state}, nil
 		},
 	}
@@ -401,7 +402,21 @@ func DeclineWork(callerID ActorID, laborID LaborID, at time.Time) Command {
 // (LaboringUntil/StateLaboring) — set only on a Working offer — has already
 // been cleared. A Pending offer never set that mirror, so there is nothing to
 // clear on the decline/expire paths.
-func finalizeLaborTerminal(w *World, offer *LaborOffer, terminal LaborTerminalState, at time.Time) LaborLedgerState {
+//
+// workPerformed records whether the work window actually elapsed before this
+// terminal (Completed, or the completion-sweep's unpaid FailedUnavailable). It
+// rides onto LaborResolved.WorkPerformed and drives the relationship-fact split
+// below — see recordLaborInteractions. Callers on the no-work paths (decline,
+// accept-time gate flips, the pending-expire sweep) pass false; only
+// settleCompletedLabor passes true.
+func finalizeLaborTerminal(w *World, offer *LaborOffer, terminal LaborTerminalState, workPerformed bool, at time.Time) LaborLedgerState {
+	// A Completed terminal means the work window elapsed by definition — pin the
+	// invariant locally so a future caller can't emit Completed with
+	// workPerformed=false (which would still write the "worked" facts below).
+	// code_review, LLM-165.
+	if terminal == LaborTerminalStateCompleted {
+		workPerformed = true
+	}
 	offer.State = LaborLedgerState(terminal)
 	offer.ResolvedAt = timePtrLabor(at)
 
@@ -412,12 +427,148 @@ func finalizeLaborTerminal(w *World, offer *LaborOffer, terminal LaborTerminalSt
 		Reward:        offer.Reward,
 		DurationMin:   offer.DurationMin,
 		TerminalState: terminal,
+		WorkPerformed: workPerformed,
 		SceneID:       offer.SceneID,
 		HuddleID:      offer.HuddleID,
 		At:            at,
 	}
 	w.emit(evt)
+
+	// Relationship facts (LLM-165) — written inline here, the labor mirror of
+	// finalizePayLedgerTerminal's decline-path RecordInteraction. Only the
+	// terminals that are a social move between the two NPCs write; the
+	// KindNPCShared + visitor gates inside RecordInteraction decide which of the
+	// two writes actually persists.
+	recordLaborInteractions(w, offer, terminal, workPerformed, at)
 	return offer.State
+}
+
+// recordLaborInteractions writes the bidirectional SalientFacts for a labor
+// terminal, the labor counterpart to pay's Paid/Declined relationship writes.
+// Three social terminals get facts; everything else returns early:
+//
+//   - Completed                         → Worked (worker) / Hired (employer)
+//   - FailedUnavailable && workPerformed → WorkedUnpaid / LeftWorkerUnpaid
+//     (the worker finished the job but the employer could no longer pay — the
+//     one labor beat pay has no analog for; see LaborResolved.WorkPerformed)
+//   - Declined                          → WorkDeclinedBy / DeclinedWork
+//
+// Expired and the accept-time FailedUnavailable fall-through (workPerformed
+// false) are low-signal lifecycle events — nobody acted, or the deal never
+// started — and write nothing, matching finalizePayLedgerTerminal's
+// expired/withdrawn/failed skip. Each fact is first-person from its rememberer's
+// POV; RecordInteraction's KindNPCShared + visitor gates filter which side
+// actually persists. Errors are logged, not surfaced — a relationship write
+// never fails the terminal itself (mirrors the pay/deliver callsites).
+func recordLaborInteractions(w *World, offer *LaborOffer, terminal LaborTerminalState, workPerformed bool, at time.Time) {
+	// Pick the interaction kinds for this terminal. The non-social terminals
+	// (expired, and the accept-time failed_unavailable fall-through) return here
+	// — before the name lookups below — and write nothing.
+	var workerKind, employerKind InteractionKind
+	switch {
+	case terminal == LaborTerminalStateCompleted:
+		workerKind, employerKind = InteractionWorked, InteractionHired
+	case terminal == LaborTerminalStateFailedUnavailable && workPerformed:
+		workerKind, employerKind = InteractionWorkedUnpaid, InteractionLeftWorkerUnpaid
+	case terminal == LaborTerminalStateDeclined:
+		workerKind, employerKind = InteractionWorkDeclinedBy, InteractionDeclinedWork
+	default:
+		return
+	}
+
+	workerName := actorDisplayName(w, offer.WorkerID)
+	employerName := actorDisplayName(w, offer.EmployerID)
+	var workerFact, employerFact string
+	switch workerKind {
+	case InteractionWorked:
+		workerFact, employerFact = laborCompletedFacts(workerName, employerName, offer.Reward, offer.DurationMin)
+	case InteractionWorkedUnpaid:
+		workerFact, employerFact = laborUnpaidFacts(workerName, employerName, offer.Reward, offer.DurationMin)
+	case InteractionWorkDeclinedBy:
+		workerFact, employerFact = laborDeclinedFacts(workerName, employerName, offer.Reward)
+	}
+
+	if _, err := RecordInteraction(offer.WorkerID, offer.EmployerID, workerKind, workerFact, at).Fn(w); err != nil {
+		log.Printf("sim.finalizeLaborTerminal: RecordInteraction worker→employer %q→%q: %v", offer.WorkerID, offer.EmployerID, err)
+	}
+	if _, err := RecordInteraction(offer.EmployerID, offer.WorkerID, employerKind, employerFact, at).Fn(w); err != nil {
+		log.Printf("sim.finalizeLaborTerminal: RecordInteraction employer→worker %q→%q: %v", offer.EmployerID, offer.WorkerID, err)
+	}
+}
+
+// laborCoinsPhrase renders a coin amount with the right singular/plural unit
+// ("5 coins" / "1 coin"), mirroring payFactText's inline coin handling.
+func laborCoinsPhrase(n int) string {
+	if n == 1 {
+		return "1 coin"
+	}
+	return fmt.Sprintf("%d coins", n)
+}
+
+// humanizeLaborMinutes renders a labor duration in hours/minutes for a salient
+// fact ("2 hours", "1 hour 30 minutes", "45 minutes", "1 minute"). A sim-local
+// copy of perception's humanizeWorkMinutes — perception imports sim, so the
+// renderer can't be shared the other way without an import cycle, and the two
+// serve different layers (a relationship-fact sentence vs. a live perception cue).
+func humanizeLaborMinutes(min int) string {
+	if min < 1 {
+		min = 1
+	}
+	if min < 60 {
+		if min == 1 {
+			return "1 minute"
+		}
+		return fmt.Sprintf("%d minutes", min)
+	}
+	h := min / 60
+	m := min % 60
+	hUnit := "hours"
+	if h == 1 {
+		hUnit = "hour"
+	}
+	if m == 0 {
+		return fmt.Sprintf("%d %s", h, hUnit)
+	}
+	mUnit := "minutes"
+	if m == 1 {
+		mUnit = "minute"
+	}
+	return fmt.Sprintf("%d %s %d %s", h, hUnit, m, mUnit)
+}
+
+// laborCompletedFacts returns the (worker→employer, employer→worker) salient
+// fact texts for a completed, paid job — the labor analogue of payFactText's
+// Paid/PaidBy pair, with the work duration folded in.
+func laborCompletedFacts(workerName, employerName string, reward, durationMin int) (workerFact, employerFact string) {
+	coins := laborCoinsPhrase(reward)
+	dur := humanizeLaborMinutes(durationMin)
+	workerFact = fmt.Sprintf("I worked for %s and earned %s for about %s of work.", employerName, coins, dur)
+	employerFact = fmt.Sprintf("%s worked for me and I paid them %s for about %s of work.", workerName, coins, dur)
+	return workerFact, employerFact
+}
+
+// laborUnpaidFacts returns the (worker→employer, employer→worker) salient fact
+// texts for a job the worker finished but the employer could no longer pay for
+// (the completion-time failed_unavailable). The aggrieved beat pay has no
+// equivalent of — pay settles at accept, so "work done, never paid" can't arise
+// there.
+func laborUnpaidFacts(workerName, employerName string, reward, durationMin int) (workerFact, employerFact string) {
+	coins := laborCoinsPhrase(reward)
+	dur := humanizeLaborMinutes(durationMin)
+	workerFact = fmt.Sprintf("I worked for %s for about %s but was never paid the %s I was owed.", employerName, dur, coins)
+	employerFact = fmt.Sprintf("%s worked for me for about %s but I could not pay the %s I owed.", workerName, dur, coins)
+	return workerFact, employerFact
+}
+
+// laborDeclinedFacts returns the (worker→employer, employer→worker) salient
+// fact texts for an offer the employer declined — the labor analogue of
+// payDeclinedFactText. No duration (the work never started); the reward names
+// the terms that were refused.
+func laborDeclinedFacts(workerName, employerName string, reward int) (workerFact, employerFact string) {
+	coins := laborCoinsPhrase(reward)
+	workerFact = fmt.Sprintf("%s declined my offer to work for them for %s.", employerName, coins)
+	employerFact = fmt.Sprintf("I declined %s's offer to work for me for %s.", workerName, coins)
+	return workerFact, employerFact
 }
 
 // timePtrLabor returns a pointer to a COPY of t. Because the argument is
