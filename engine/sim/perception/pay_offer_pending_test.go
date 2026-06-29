@@ -271,6 +271,39 @@ func TestBuild_DropsResolvedSellerOfferWarrant(t *testing.T) {
 	}
 }
 
+// LLM-173: an offer still PENDING in the snapshot but already answered THIS tick
+// is withheld from the seller cue when Build is given WithResolvedPayOffers. The
+// within-tick self-state refresh (LLM-88) re-perceives from the turn-start
+// snapshot, which still shows the just-accepted offer as pending — so without
+// this the cue re-invites a settlement that already happened and the weak model
+// burns its remaining rounds re-accepting. The turn-start Build (no option)
+// renders the same pending offer normally.
+func TestBuild_WithholdsResolvedThisTickPayOffer(t *testing.T) {
+	snap := offerSnap(map[sim.LedgerID]*sim.PayLedgerEntry{
+		236: offerEntry(236, "prudence", "elizabeth", "meat", 10, 48, sim.PayLedgerStatePending),
+	})
+	warrants := []sim.WarrantMeta{payOfferWarrant(236, "prudence", "meat", 10, 48, false)}
+
+	// Turn-start Build: the pending offer drives the cue (the option is absent).
+	full := Build(snap, "elizabeth", warrants)
+	if got := PendingPayOffers(full); len(got) != 1 {
+		t.Fatalf("turn-start PendingPayOffers = %d, want 1 (pending offer present)", len(got))
+	}
+	if out := combinedPrompt(Render(full, DefaultRenderConfig())); !strings.Contains(out, "## Offers awaiting your decision") {
+		t.Fatalf("turn-start render must show the cue, got:\n%s", out)
+	}
+
+	// Mid-tick re-render: ledger 236 was answered this tick → withheld from both
+	// the offer list and the rendered cue, though the snapshot still shows it pending.
+	narrowed := Build(snap, "elizabeth", warrants, WithResolvedPayOffers(map[sim.LedgerID]struct{}{236: {}}))
+	if got := PendingPayOffers(narrowed); len(got) != 0 {
+		t.Errorf("PendingPayOffers = %d, want 0 (resolved-this-tick offer withheld)", len(got))
+	}
+	if out := combinedPrompt(Render(narrowed, DefaultRenderConfig())); strings.Contains(out, "## Offers awaiting your decision") {
+		t.Errorf("re-render must withhold the resolved-this-tick offer's cue\n%s", out)
+	}
+}
+
 // The pending counterpart survives Build and still drives the seller section.
 func TestBuild_KeepsPendingSellerOfferWarrant(t *testing.T) {
 	snap := offerSnap(map[sim.LedgerID]*sim.PayLedgerEntry{
@@ -297,7 +330,7 @@ func TestBuildPayOffersForMe_ScanShape(t *testing.T) {
 	ledger[237].Depth = 1
 	snap := offerSnap(ledger)
 
-	offers := buildPayOffersForMe(snap, "elizabeth")
+	offers := buildPayOffersForMe(snap, "elizabeth", nil)
 	if len(offers) != 2 {
 		t.Fatalf("offers = %+v, want the two pending entries staked against elizabeth", offers)
 	}
@@ -311,11 +344,20 @@ func TestBuildPayOffersForMe_ScanShape(t *testing.T) {
 		t.Errorf("Depth = %d, want 1 (the counter-cap tool gate reads it)", offers[1].Depth)
 	}
 
-	if got := buildPayOffersForMe(nil, "elizabeth"); got != nil {
+	if got := buildPayOffersForMe(nil, "elizabeth", nil); got != nil {
 		t.Errorf("nil snap: got %v, want nil", got)
 	}
-	if got := buildPayOffersForMe(snap, "mary"); got != nil {
+	if got := buildPayOffersForMe(snap, "mary", nil); got != nil {
 		t.Errorf("non-seller subject: got %v, want nil", got)
+	}
+
+	// LLM-173: an offer already answered this tick is withheld so the within-tick
+	// re-render stops re-inviting a settlement that already happened. 235 is
+	// resolved, 237 still stands.
+	resolved := map[sim.LedgerID]struct{}{235: {}}
+	narrowed := buildPayOffersForMe(snap, "elizabeth", resolved)
+	if len(narrowed) != 1 || narrowed[0].LedgerID != 237 {
+		t.Errorf("resolved-this-tick filter: got %+v, want only ledger 237", narrowed)
 	}
 }
 

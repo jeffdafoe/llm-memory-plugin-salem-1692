@@ -10,6 +10,37 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
 
+// BuildOption tunes an otherwise-default Build. The zero set of options
+// reproduces the turn-start perception; the harness passes options only when
+// re-perceiving mid-tick, where a snapshot-derived cue is knowably stale
+// relative to a command the actor has already run this tick (LLM-173).
+type BuildOption func(*buildOptions)
+
+type buildOptions struct {
+	// resolvedPayOffers holds the pay-ledger ids the actor has already answered
+	// THIS tick (accept/decline/counter/withdraw). They are withheld from the
+	// seller-side "## Offers awaiting your decision" cue.
+	resolvedPayOffers map[sim.LedgerID]struct{}
+}
+
+// WithResolvedPayOffers withdraws pay offers the actor has already resolved this
+// tick from the "## Offers awaiting your decision" cue. The within-tick
+// self-state refresh (LLM-88, handlers.RunTick) re-perceives from the turn-start
+// snapshot, whose ledger still shows a just-accepted offer as pending — so
+// without this the cue re-invites the seller to settle an offer it already
+// settled, and the weak model burns its remaining rounds re-accepting into the
+// LLM-104 resolvedLedgerThisTick reject. This is the subtractive half of that
+// guard: stop showing the cue rather than only rejecting the re-fire after the
+// fact. Pay-only by design — accept_work moves no coins at accept, so the
+// employer's self-state doesn't change, the refresh never fires, and the labor
+// cue is never re-rendered by this path (its re-fire stays guarded by LLM-164).
+// A nil/empty set is a no-op, so the turn-start Build is unaffected.
+func WithResolvedPayOffers(ids map[sim.LedgerID]struct{}) BuildOption {
+	return func(o *buildOptions) {
+		o.resolvedPayOffers = ids
+	}
+}
+
 // Build turns a published snapshot plus an actor's consumed warrant batch
 // into a Payload. It is a pure function: it reads only the immutable
 // *sim.Snapshot and the passed warrants, mutates nothing, and never
@@ -26,7 +57,14 @@ import (
 // Payload (empty views, Baseline == BaselineMissingNoScene) with the
 // reason recorded in SelectionReason; the harness decides what to do with
 // a degraded perception.
-func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) Payload {
+func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, opts ...BuildOption) Payload {
+	var o buildOptions
+	for _, fn := range opts {
+		if fn != nil {
+			fn(&o)
+		}
+	}
+
 	p := Payload{
 		ActorID:  actorID,
 		Warrants: orderWarrants(warrants),
@@ -63,7 +101,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	// and the accept/decline/counter tools present until the entry leaves
 	// Pending, so a seller who speaks through the warranted tick instead of
 	// resolving can still settle the offer on any later tick.
-	p.PayOffersForMe = buildPayOffersForMe(snap, actorID)
+	p.PayOffersForMe = buildPayOffersForMe(snap, actorID, o.resolvedPayOffers)
 	p.RoomAlreadySoldOrderByLedger = buildRoomAlreadySold(snap, actorID, p.PayOffersForMe)
 	// LLM-138: the recipient-side gift decision view (gifts offered TO me),
 	// the gift counterpart to PayOffersForMe. Drives the "## Gifts offered to
@@ -2639,7 +2677,13 @@ func buildStandingQuotesFromMe(snap *sim.Snapshot, subject sim.ActorID, subjectS
 // posture as buildPendingOffersFromMe. Returns nil for no pending offers so
 // render and gate content-gate cheaply. Ordering: by LedgerID ascending,
 // deterministic across runs.
-func buildPayOffersForMe(snap *sim.Snapshot, subject sim.ActorID) []sim.PayOfferWarrantReason {
+//
+// resolvedThisTick (LLM-173) withholds offers the actor has already answered
+// this tick: on a mid-tick re-render the turn-start snapshot still shows a
+// just-accepted offer as pending, so without this the cue re-invites a
+// settlement that already happened. Empty/nil on the turn-start Build, so it
+// only narrows the within-tick refresh.
+func buildPayOffersForMe(snap *sim.Snapshot, subject sim.ActorID, resolvedThisTick map[sim.LedgerID]struct{}) []sim.PayOfferWarrantReason {
 	if snap == nil || len(snap.PayLedger) == 0 {
 		return nil
 	}
@@ -2653,6 +2697,9 @@ func buildPayOffersForMe(snap *sim.Snapshot, subject sim.ActorID) []sim.PayOffer
 		}
 		if e.IsGift {
 			continue // gifts render in the LLM-138 gift lane (buildGiftsForMe), not here
+		}
+		if _, done := resolvedThisTick[id]; done {
+			continue // already answered this tick (LLM-173) — don't re-invite the settlement
 		}
 		ids = append(ids, id)
 	}
