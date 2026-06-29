@@ -404,6 +404,17 @@ var perceptionScenarios = []perceptionScenario{
 		build: workerWithCoinNoEmployerSeeksWork,
 	},
 	{
+		name: "worker_seeks_work_after_employer_declines",
+		summary: "The LLM-181 live case (Lewis Walker at the General Store, hud-8db08741…), reduced: a workless worker shares a " +
+			"huddle with a co-present stranger employer (Josiah Thorne) who has ALREADY declined his labor offer. Pre-fix, the " +
+			"co-present employer kept hasSolicitableAudience true, which suppressed SeekWorkPlaces and the seek-work off-ramp — so " +
+			"the worker re-soliciting the same refusal was never told to leave. LLM-181 drops a declined employer from the " +
+			"solicitable audience, so the standing businesses directory + decisive 'call move_to now' go-coda arm DESPITE the " +
+			"employer being present, and no solicit_work affordance is offered for the refuser. A regression that forgot the " +
+			"decline would re-suppress the directory and bring back the solicit cue against Josiah.",
+		build: workerSeeksWorkAfterEmployerDeclines,
+	},
+	{
 		name: "customer_at_shut_business_loitering",
 		summary: "A laborer (Goodman Silence) stands OUTDOORS at the Tavern's loiter slot, but its only keeper (John Ellis) " +
 			"is asleep inside — the live LLM-154 case (Silence stuck at the closed Tavern while seeking work). The golden pins " +
@@ -2562,6 +2573,89 @@ func workerWithCoinNoEmployerSeeksWork() (*sim.Snapshot, sim.ActorID, []sim.Warr
 	return snap, silenceID, nil
 }
 
+// workerSeeksWorkAfterEmployerDeclines is the LLM-181 live case (Lewis Walker at the
+// General Store, hud-8db08741…), reduced to its load-bearing parts: a workless worker
+// shares a huddle with a co-present stranger employer (Josiah Thorne) who has already
+// declined his labor offer. The declined ledger entry is what flips
+// hasSolicitableAudience to false, so SeekWorkPlaces populates and the seek-work
+// off-ramp ("call move_to now") arms even though an employer is physically present —
+// the fix that frees the worker from re-soliciting the same refusal. No needs, the
+// offer is terminal (no clock-bound content) → byte-stable.
+func workerSeeksWorkAfterEmployerDeclines() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		lewisID   = sim.ActorID("lewis")
+		josiahID  = sim.ActorID("josiah")
+		residence = sim.StructureID("walker_residence")
+		thorne    = sim.StructureID("thorne_house")
+		commons   = sim.StructureID("commons")
+		inn       = sim.StructureID("inn")
+		store     = sim.StructureID("general_store")
+		huddle    = sim.HuddleID("h1")
+	)
+	now := 540 // 09:00 — daytime, on shift
+	published := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
+	lewis := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Lewis Walker",
+		Role:              "laborer",
+		State:             sim.StateIdle,
+		InsideStructureID: commons,
+		HomeStructureID:   residence,
+		CurrentHuddleID:   huddle,
+		Coins:             0,
+		AttributeSlugs:    []string{sim.AttrWorker},
+		Needs:             map[sim.NeedKey]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"Josiah Thorne": {}},
+	}
+	// Josiah is a structural stranger to Lewis (different home; Lewis is workless so
+	// they never share a workplace) — solicitable by anchor, excluded only by the decline.
+	josiah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Josiah Thorne",
+		Role:              "shopkeeper",
+		State:             sim.StateIdle,
+		InsideStructureID: commons,
+		HomeStructureID:   thorne,
+		WorkStructureID:   store,
+		CurrentHuddleID:   huddle,
+		Coins:             0,
+		Needs:             map[sim.NeedKey]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"Lewis Walker": {}},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{lewisID: lewis, josiahID: josiah},
+		Structures: map[sim.StructureID]*sim.Structure{
+			commons:   plainStructure(commons, "Village Commons"),
+			residence: plainStructure(residence, "Walker Residence"),
+			thorne:    plainStructure(thorne, "Thorne House"),
+			inn:       plainStructure(inn, "Inn"),
+			store:     plainStructure(store, "General Store"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{lewisID: {}, josiahID: {}}},
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			sim.VillageObjectID(inn):   {ID: sim.VillageObjectID(inn), Tags: []string{"business", "lodging"}},
+			sim.VillageObjectID(store): {ID: sim.VillageObjectID(store), Tags: []string{"business", "shop"}},
+		},
+		LaborLedger: map[sim.LaborID]*sim.LaborOffer{
+			1: {
+				ID:          1,
+				WorkerID:    lewisID,
+				EmployerID:  josiahID,
+				Reward:      10,
+				DurationMin: 60,
+				State:       sim.LaborStateDeclined,
+				HuddleID:    huddle,
+			},
+		},
+	}
+	return snap, lewisID, nil
+}
+
 // TestSeekWorkDirectiveOnlyForWorklessWorker is the LLM-160/155/168 cross-scenario
 // invariant: the decisive "call move_to now" go-coda appears in EXACTLY the
 // workless-worker-no-employer scenarios and nowhere else in the matrix. A regression
@@ -2574,6 +2668,7 @@ func TestSeekWorkDirectiveOnlyForWorklessWorker(t *testing.T) {
 		"broke_worker_no_employer_seeks_work":         true,
 		"broke_worker_seeks_work_skips_shut_business": true,
 		"worker_with_coin_no_employer_seeks_work":     true,
+		"worker_seeks_work_after_employer_declines":   true,
 	}
 	for _, sc := range perceptionScenarios {
 		want := seekWorkScenarios[sc.name]

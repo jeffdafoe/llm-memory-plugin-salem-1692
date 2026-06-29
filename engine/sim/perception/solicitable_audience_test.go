@@ -48,7 +48,7 @@ func TestHasSolicitableAudience(t *testing.T) {
 		{"member absent from snapshot is skipped", SurroundingsView{HuddleMembers: []HuddleMember{solicitMember("ghost")}}, false},
 	}
 	for _, c := range cases {
-		if got := hasSolicitableAudience(snap, subject, c.surr); got != c.want {
+		if got := hasSolicitableAudience(snap, "walker", subject, c.surr); got != c.want {
 			t.Errorf("%s: hasSolicitableAudience() = %v, want %v", c.name, got, c.want)
 		}
 	}
@@ -62,24 +62,127 @@ func TestHasSolicitableAudience_EmptyAnchorsDoNotShare(t *testing.T) {
 	subject := &sim.ActorSnapshot{}
 	snap := &sim.Snapshot{Actors: map[sim.ActorID]*sim.ActorSnapshot{"other": {}}}
 	surr := SurroundingsView{CoPresent: []HuddleMember{solicitMember("other")}}
-	if !hasSolicitableAudience(snap, subject, surr) {
+	if !hasSolicitableAudience(snap, "subject", subject, surr) {
 		t.Error("two anchor-less actors: want solicitable (empty != empty), got not")
 	}
 }
 
 func TestHasSolicitableAudience_NilGuards(t *testing.T) {
 	surr := SurroundingsView{CoPresent: []HuddleMember{solicitMember("x")}}
-	if hasSolicitableAudience(nil, &sim.ActorSnapshot{}, surr) {
+	if hasSolicitableAudience(nil, "x", &sim.ActorSnapshot{}, surr) {
 		t.Error("nil snapshot: want false")
 	}
 	snap := &sim.Snapshot{Actors: map[sim.ActorID]*sim.ActorSnapshot{"x": {}}}
-	if hasSolicitableAudience(snap, nil, surr) {
+	if hasSolicitableAudience(snap, "subject", nil, surr) {
 		t.Error("nil subject: want false")
 	}
 	// Non-nil snapshot with a nil Actors map — reading a nil map is safe and
 	// every candidate misses, so no one is solicitable (code_review).
-	if hasSolicitableAudience(&sim.Snapshot{}, &sim.ActorSnapshot{}, surr) {
+	if hasSolicitableAudience(&sim.Snapshot{}, "subject", &sim.ActorSnapshot{}, surr) {
 		t.Error("nil Actors map: want false")
+	}
+}
+
+// LLM-181: an employer who already declined this worker drops out of the
+// solicitable audience, even though it shares neither household nor workplace. The
+// decline is the engine's "no one here can hire you" memory; keeping the refuser
+// solicitable is what suppressed the seek-work directive and trapped a worker
+// (Lewis Walker) re-soliciting the same refusal at the General Store.
+func TestHasSolicitableAudience_DeclineAware(t *testing.T) {
+	const (
+		lewis  = sim.ActorID("lewis")
+		josiah = sim.ActorID("josiah")
+		john   = sim.ActorID("john")
+	)
+	// Both josiah and john are strangers (share neither home nor work with Lewis).
+	subject := &sim.ActorSnapshot{HomeStructureID: "walker-residence"}
+	snap := &sim.Snapshot{
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			josiah: {HomeStructureID: "thorne-house", WorkStructureID: "general-store"},
+			john:   {HomeStructureID: "ellis-house", WorkStructureID: "tavern"},
+		},
+		LaborLedger: map[sim.LaborID]*sim.LaborOffer{
+			1: {ID: 1, WorkerID: lewis, EmployerID: josiah, State: sim.LaborStateDeclined},
+		},
+	}
+
+	// Only the employer who declined is present → audience is empty (off-ramp arms).
+	onlyJosiah := SurroundingsView{HuddleMembers: []HuddleMember{solicitMember(josiah)}}
+	if hasSolicitableAudience(snap, lewis, subject, onlyJosiah) {
+		t.Error("declined employer alone: want NOT solicitable (seek-work off-ramp should arm)")
+	}
+
+	// A second, un-declined stranger is still solicitable — the exclusion is
+	// per-candidate, not whole-audience.
+	bothPresent := SurroundingsView{HuddleMembers: []HuddleMember{solicitMember(josiah), solicitMember(john)}}
+	if !hasSolicitableAudience(snap, lewis, subject, bothPresent) {
+		t.Error("declined employer + fresh stranger: want solicitable (john is still a prospect)")
+	}
+
+	// The decline is worker-scoped: a different worker is unaffected by Lewis's decline.
+	if !hasSolicitableAudience(snap, "anne", subject, onlyJosiah) {
+		t.Error("different worker: Lewis's decline must not suppress another worker's prospect")
+	}
+}
+
+// LLM-181: only a terminal Declined offer suppresses the prospect. A still-pending
+// offer (the worker is waiting on an answer — that is subjectHasPendingLaborOffer's
+// job) or any other state must NOT drop the employer from the audience.
+func TestHasSolicitableAudience_OnlyDeclinedSuppresses(t *testing.T) {
+	const (
+		lewis  = sim.ActorID("lewis")
+		josiah = sim.ActorID("josiah")
+	)
+	subject := &sim.ActorSnapshot{HomeStructureID: "walker-residence"}
+	surr := SurroundingsView{HuddleMembers: []HuddleMember{solicitMember(josiah)}}
+	withOffer := func(state sim.LaborLedgerState) *sim.Snapshot {
+		return &sim.Snapshot{
+			Actors: map[sim.ActorID]*sim.ActorSnapshot{
+				josiah: {HomeStructureID: "thorne-house", WorkStructureID: "general-store"},
+			},
+			LaborLedger: map[sim.LaborID]*sim.LaborOffer{
+				1: {ID: 1, WorkerID: lewis, EmployerID: josiah, State: state},
+			},
+		}
+	}
+	for _, state := range []sim.LaborLedgerState{
+		sim.LaborStatePending, sim.LaborStateWorking, sim.LaborStateCompleted,
+		sim.LaborStateExpired, sim.LaborStateFailedUnavailable,
+	} {
+		if !hasSolicitableAudience(withOffer(state), lewis, subject, surr) {
+			t.Errorf("offer state %q: want still solicitable (only declined suppresses)", state)
+		}
+	}
+}
+
+// LLM-181 (code_review): solicitability resolves by the LATEST offer for a pair, so
+// an older declined offer must not mask a newer non-declined one, and a newer decline
+// supersedes an older completed job. LaborID is monotonic, so highest id == most recent.
+func TestHasSolicitableAudience_LatestOfferWins(t *testing.T) {
+	const (
+		lewis  = sim.ActorID("lewis")
+		josiah = sim.ActorID("josiah")
+	)
+	subject := &sim.ActorSnapshot{HomeStructureID: "walker-residence"}
+	surr := SurroundingsView{HuddleMembers: []HuddleMember{solicitMember(josiah)}}
+	snap := &sim.Snapshot{
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			josiah: {HomeStructureID: "thorne-house", WorkStructureID: "general-store"},
+		},
+		LaborLedger: map[sim.LaborID]*sim.LaborOffer{
+			1: {ID: 1, WorkerID: lewis, EmployerID: josiah, State: sim.LaborStateDeclined},
+			2: {ID: 2, WorkerID: lewis, EmployerID: josiah, State: sim.LaborStatePending},
+		},
+	}
+	if !hasSolicitableAudience(snap, lewis, subject, surr) {
+		t.Error("older declined + newer pending: want solicitable (latest offer wins)")
+	}
+
+	// A newer decline after an older completed job re-suppresses.
+	snap.LaborLedger[2].State = sim.LaborStateCompleted
+	snap.LaborLedger[3] = &sim.LaborOffer{ID: 3, WorkerID: lewis, EmployerID: josiah, State: sim.LaborStateDeclined}
+	if hasSolicitableAudience(snap, lewis, subject, surr) {
+		t.Error("newer declined after older completed: want NOT solicitable (latest is declined)")
 	}
 }
 
