@@ -118,7 +118,7 @@ type RenderedPrompt struct {
 // ticks via the reactor), so there is nothing new for the model to inspect, and
 // naming the possibility would only invite it to invent one (code_review, HOME-411).
 const continuationDecisionText = "## Decide\n" +
-	"You have already spoken this turn — let others respond. Call done() unless a prior tool result needs a word, you owe a distinct answer someone asked of you, or a needed non-speaking action remains (such as moving or resting). Do not greet again, re-pitch, or rephrase what you have already said.\n"
+	"You have already spoken this turn — let others respond. Call done() unless a prior tool result needs a word, you owe a distinct answer someone asked of you, or a needed non-speaking action remains (such as moving to where you can rest or tend a need). Do not greet again, re-pitch, or rephrase what you have already said.\n"
 
 // Render turns a Payload into a prompt string. It is a pure function:
 // deterministic ordering (already applied in Build) is preserved, the

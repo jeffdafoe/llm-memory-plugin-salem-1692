@@ -39,6 +39,34 @@ func TestNeedTier(t *testing.T) {
 	}
 }
 
+// TestPerNeedAwarenessFloor covers LLM-179: tiredness raises its own awareness
+// floor to 13 (DefaultTirednessAwarenessFloor) while hunger keeps the global
+// needSilentFloor (10). So the mild daytime tiredness plateau (~10–12) reads
+// NeedSilent and isn't surfaced, while the same value for hunger is already mild.
+func TestPerNeedAwarenessFloor(t *testing.T) {
+	tiredness, _ := sim.FindNeed("tiredness")
+	hunger, _ := sim.FindNeed("hunger")
+	tThr := sim.DefaultTirednessRedThreshold // 16
+	hThr := sim.DefaultHungerRedThreshold    // 18
+
+	// Tiredness: silent through the plateau, mild only from the raised floor (13).
+	for _, v := range []int{10, 11, 12} {
+		if got := tiredness.Tier(v, tThr); got != sim.NeedSilent {
+			t.Errorf("tiredness.Tier(%d) = %d, want NeedSilent (floor 13)", v, got)
+		}
+	}
+	if got := tiredness.Tier(13, tThr); got != sim.NeedMild {
+		t.Errorf("tiredness.Tier(13) = %d, want NeedMild (at the raised floor)", got)
+	}
+	if got := tiredness.Tier(16, tThr); got != sim.NeedRed {
+		t.Errorf("tiredness.Tier(16) = %d, want NeedRed (weary)", got)
+	}
+	// Hunger is unchanged by the per-need floor — the same plateau value is mild.
+	if got := hunger.Tier(10, hThr); got != sim.NeedMild {
+		t.Errorf("hunger.Tier(10) = %d, want NeedMild (global floor 10)", got)
+	}
+}
+
 // TestClampNeed covers the bounding helper.
 func TestClampNeed(t *testing.T) {
 	cases := []struct{ in, want int }{
