@@ -722,7 +722,7 @@ func buildInventoryView(snap *sim.Snapshot, a *sim.ActorSnapshot) []InventoryIte
 		if qty <= 0 {
 			continue
 		}
-		out = append(out, InventoryItem{Label: itemDisplayLabel(snap, kind), Qty: qty, kind: kind})
+		out = append(out, InventoryItem{Label: itemDisplayLabel(snap, kind), Qty: qty, Use: inventoryItemUse(snap, kind), kind: kind})
 	}
 	if len(out) == 0 {
 		return nil
@@ -734,6 +734,27 @@ func buildInventoryView(snap *sim.Snapshot, a *sim.ActorSnapshot) []InventoryIte
 		return out[i].kind < out[j].kind
 	})
 	return out
+}
+
+// inventoryItemUse returns the "used to produce X" annotation for a carried item
+// that is INEDIBLE and a recipe input (LLM-166), else "". An edible item is left
+// to the satiation cue; a non-ingredient inedible (a horseshoe in no recipe) has
+// nothing to say. Reads the precomputed reverse index off the snapshot — no
+// per-build catalog scan.
+func inventoryItemUse(snap *sim.Snapshot, kind sim.ItemKind) string {
+	def := snap.ItemKinds[kind]
+	if def == nil || def.Consumable() {
+		return ""
+	}
+	outs := snap.RecipeUses[kind]
+	if len(outs) == 0 {
+		return ""
+	}
+	labels := make([]string, 0, len(outs))
+	for _, o := range outs {
+		labels = append(labels, itemDisplayLabel(snap, o))
+	}
+	return sim.RecipeUseClause(labels)
 }
 
 // buildInFlightMove projects the subject's in-flight MoveIntent (the
@@ -1997,7 +2018,9 @@ func buildOfferableCustomers(snap *sim.Snapshot, subject sim.ActorID, atOwnBusin
 		if it.Label == "" {
 			continue
 		}
-		goods = append(goods, OfferableGood{Label: it.Label, OnHand: it.Qty, kind: it.kind})
+		// it.Use is already resolved by buildInventoryView (LLM-166), so the
+		// for-sale listing reads consistently with the carry readout.
+		goods = append(goods, OfferableGood{Label: it.Label, OnHand: it.Qty, Use: it.Use, kind: it.kind})
 	}
 	if len(goods) == 0 {
 		return nil

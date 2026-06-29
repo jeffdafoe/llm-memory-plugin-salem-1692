@@ -181,6 +181,36 @@ func consumeItemLabel(def *ItemKindDef, kind ItemKind) string {
 	return string(kind)
 }
 
+// notConsumableError carries a model-facing reason that REPLACES the bare
+// "item is not consumable" sentinel text. A weak model reads the bare sentinel
+// as a system glitch and retries the same eat (LLM-166 — the Josiah raw-meat
+// loop, 22 rejected consume() calls in one turn). Unwrap keeps
+// errors.Is(err, ErrNotConsumable) matching for callers and tests.
+type notConsumableError struct{ msg string }
+
+func (e notConsumableError) Error() string { return e.msg }
+func (e notConsumableError) Unwrap() error { return ErrNotConsumable }
+
+// inedibleReason builds the "you cannot eat X — <why>" rejection for an item the
+// catalog says isn't consumable. When the kind is a recipe INPUT it names what
+// the item is for ("it's used to produce stew") so the model redirects instead
+// of re-trying to eat a raw ingredient (LLM-166); otherwise it states the honest
+// floor ("it isn't something you can eat as it is"). label is the article-less
+// eaten phrase (e.g. "cut of meat") the caller already resolved.
+func (w *World) inedibleReason(kind ItemKind, label string) error {
+	reason := "it isn't something you can eat as it is"
+	if uses := w.ensureRecipeUses()[kind]; len(uses) > 0 {
+		labels := make([]string, 0, len(uses))
+		for _, out := range uses {
+			labels = append(labels, itemKindDisplayLabel(w, out))
+		}
+		if clause := RecipeUseClause(labels); clause != "" {
+			reason = "it's " + clause
+		}
+	}
+	return notConsumableError{msg: "you cannot eat " + WithIndefiniteArticle(label) + " — " + reason}
+}
+
 // Consume returns a Command that consumes qty units of an item from
 // actorID's inventory, applies the immediate satisfaction, stamps any
 // item-source dwell credits, and emits ItemConsumed.
@@ -282,7 +312,7 @@ func Consume(actorID ActorID, itemName string, qty int, at time.Time) Command {
 				return nil, fmt.Errorf("you don't have any %s to consume: %w", label, ErrInsufficientInventory)
 			}
 			if def == nil || !def.Consumable() {
-				return nil, fmt.Errorf("you cannot eat %s: %w", WithIndefiniteArticle(label), ErrNotConsumable)
+				return nil, w.inedibleReason(kind, label)
 			}
 			if have < qty {
 				return nil, fmt.Errorf("you only have %d of those to consume, not %d: %w", have, qty, ErrInsufficientInventory)

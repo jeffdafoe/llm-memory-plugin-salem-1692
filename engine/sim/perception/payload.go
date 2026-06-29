@@ -736,7 +736,11 @@ type OfferableCustomersView struct {
 type OfferableGood struct {
 	Label  string
 	OnHand int
-	kind   sim.ItemKind
+	// Use is the "used to produce X" annotation for an INEDIBLE sellable
+	// ingredient (LLM-166) — mirrors InventoryItem.Use so the for-sale listing
+	// reads consistently with the carry readout. Empty otherwise.
+	Use  string
+	kind sim.ItemKind
 }
 
 // ProducerNote names a co-present customer and the seller's goods that customer
@@ -860,7 +864,12 @@ type ActorView struct {
 type InventoryItem struct {
 	Label string
 	Qty   int
-	kind  sim.ItemKind
+	// Use is the "used to produce X" annotation for an INEDIBLE carried
+	// ingredient (LLM-166), so a hungry model doesn't mistake it for food.
+	// Empty for an edible item (the satiation cue owns those) or a non-ingredient
+	// (nothing to say). See buildInventoryView.
+	Use  string
+	kind sim.ItemKind
 }
 
 // InFlightMoveView is the perception-side projection of the subject's
