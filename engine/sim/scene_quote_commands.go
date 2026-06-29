@@ -687,6 +687,14 @@ func resolveQuoteLines(w *World, lines []QuoteLineInput) ([]QuoteLine, error) {
 		if in.Qty > MaxSceneQuoteQty {
 			return nil, fmt.Errorf("quantity exceeds maximum (got %d, max %d).", in.Qty, MaxSceneQuoteQty)
 		}
+		// LLM-167: a seller quoting "work"/"labor" as a good is reaching for the
+		// labor market through the sell/quote tool. Steer to the labor verbs
+		// BEFORE the discovery mint below — otherwise the token mints a phantom
+		// inert kind into the catalog and dead-ends on the stock shortfall, with
+		// no hint the labor flow exists.
+		if isLaborToken(in.ItemName) {
+			return nil, errors.New(laborTradeSteerMsg)
+		}
 		kind, ok := resolveOrMintItemKind(w, in.ItemName)
 		if !ok {
 			return nil, fmt.Errorf(

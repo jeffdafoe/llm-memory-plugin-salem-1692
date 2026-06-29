@@ -3,6 +3,7 @@ package sim
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -458,4 +459,31 @@ func workerPendingLaborOffer(w *World, workerID ActorID, now time.Time) *LaborOf
 		return o
 	}
 	return nil
+}
+
+// laborTradeSteerMsg redirects an NPC that reaches for the goods-trade tools
+// (offer_trade / pay_with_item / sell / scene_quote) to transact labor — naming
+// "work"/"labor" as an item kind — toward the first-class labor verbs. Labor is
+// NOT a tradeable item: it has its own worker-initiated flow, so naming it as a
+// good either dead-ends on "unknown item kind" (buy side) or mints a phantom
+// inert kind into the catalog and then dead-ends on a holdings/stock shortfall
+// (pay_items / quote side) — in both cases with no hint the labor flow exists.
+// That is the LLM-167 symptom (Ezekiel Crane burned ~20 trade-tool turns before
+// stumbling onto accept_work). The copy names ONLY the real verbs: the labor
+// market is worker-initiated, so the worker solicits and the employer
+// accepts/declines — there is no employer-initiated "offer_work". LLM-167.
+const laborTradeSteerMsg = "labor isn't a tradeable good. To offer to do a job for someone in exchange for coins, use solicit_work. If someone has offered to work for you, respond with accept_work or decline_work."
+
+// isLaborToken reports whether an item-kind argument is really the labor/work
+// concept rather than a good. A closed allow-list — none of these tokens is an
+// authored item kind (verified against the catalog), so a match unambiguously
+// means the model is conflating the labor market with item trade. Normalized
+// trim + lower + leading-article tolerant, mirroring resolveItemKind, so
+// "a job" / "the work" / "Labour" all match. LLM-167.
+func isLaborToken(name string) bool {
+	switch stripLeadingArticle(strings.TrimSpace(strings.ToLower(name))) {
+	case "work", "labor", "labour", "job", "jobs":
+		return true
+	}
+	return false
 }
