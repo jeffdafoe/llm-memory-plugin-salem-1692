@@ -152,6 +152,18 @@ func Pay(buyerID ActorID, recipientName string, amount int, forText string, at t
 			// quoted good (a tip, a debt, an unquoted item) falls through to a
 			// plain transfer.
 			if q := findCoinQuoteForPay(w, buyer, sellerID, forText, at); q != nil {
+				if buyer.Coins < q.Amount {
+					// Coin-short for the quote: redirecting to pay_with_item would just
+					// bounce on funds and loop with the right tool (code_review). Steer
+					// to the real ways forward for a broke buyer — bargain the price
+					// down, or barter goods via offer_trade — not a settlement they
+					// can't cover.
+					return nil, fmt.Errorf(
+						"%s has an open quote for %s (quote_id %d, %d coins) but you only have %d — a plain pay won't deliver the %s. Agree a lower coin price, or call offer_trade with goods you'll give and want_item %q.",
+						seller.DisplayName, q.Lines[0].ItemKind, q.ID, q.Amount, buyer.Coins,
+						q.Lines[0].ItemKind, q.Lines[0].ItemKind,
+					)
+				}
 				return nil, fmt.Errorf(
 					"%s has an open quote for %s (quote_id %d, %d coins) — a plain pay only hands over coins and won't deliver the %s. Call pay_with_item with quote_id %d, item %q, qty %d, and amount %d to actually receive it.",
 					seller.DisplayName, q.Lines[0].ItemKind, q.ID, q.Amount,
@@ -416,6 +428,10 @@ func payFactText(subject, verb, object string, amount int, forText string) strin
 // pay_with_item terms — a bare pay carries no item/qty fields, only free text.
 // Single-line only: a bundle has no single forText good to name and is taken
 // whole via an explicit quote_id.
+//
+// Among multiple eligible quotes the cheapest (then lowest ID) wins, matching
+// findAutoMatchQuote — the chosen quote's ID lands in the corrective steer, so
+// the pick must be deterministic across runs and not ride map-iteration order.
 func findCoinQuoteForPay(w *World, buyer *Actor, sellerID ActorID, forText string, at time.Time) *SceneQuote {
 	kind, ok := resolveItemKind(w, forText)
 	if !ok {
@@ -425,6 +441,7 @@ func findCoinQuoteForPay(w *World, buyer *Actor, sellerID ActorID, forText strin
 	if !ok {
 		return nil
 	}
+	var best *SceneQuote
 	for _, q := range w.Quotes {
 		if q == nil || q.State != SceneQuoteStateActive {
 			continue
@@ -441,7 +458,9 @@ func findCoinQuoteForPay(w *World, buyer *Actor, sellerID ActorID, forText strin
 		if len(q.Lines) != 1 || q.Lines[0].ItemKind != kind {
 			continue
 		}
-		return q
+		if best == nil || q.Amount < best.Amount || (q.Amount == best.Amount && q.ID < best.ID) {
+			best = q
+		}
 	}
-	return nil
+	return best
 }

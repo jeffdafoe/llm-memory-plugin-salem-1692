@@ -730,3 +730,34 @@ func TestPay_AllowsTipWhenForTextNamesNoQuotedGood(t *testing.T) {
 		t.Errorf("bob.Coins = %d, want 3 (tip received)", got)
 	}
 }
+
+// --- TestPay_CoinShortQuoteSteersToBargainNotSettlement: LLM-172 (code_review).
+// A coin-short buyer for a quoted good must NOT be redirected to a pay_with_item
+// it can't afford — that just loops with the right tool. Steer to bargain or
+// barter instead, and move no coins. Alice is dropped below Bob's 4-coin stew
+// quote.
+func TestPay_CoinShortQuoteSteersToBargainNotSettlement(t *testing.T) {
+	w, stop, at := buildFastPathFixture(t, 7)
+	defer stop()
+	mustSend(t, w, func(world *sim.World) { world.Actors["alice"].Coins = 3 })
+
+	_, err := w.Send(sim.Pay("alice", "Bob", 3, "stew", at))
+	if err == nil {
+		t.Fatal("coin-short bare pay for a quoted good should be rejected")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "pay_with_item") {
+		t.Errorf("coin-short buyer steered to an unaffordable settlement: %v", err)
+	}
+	if !strings.Contains(msg, "you only have 3") || !strings.Contains(msg, "offer_trade") {
+		t.Errorf("missing the bargain/barter steer: %v", err)
+	}
+
+	snap := w.Published()
+	if got := snap.Actors["alice"].Coins; got != 3 {
+		t.Errorf("alice.Coins = %d, want 3 (no transfer)", got)
+	}
+	if got := snap.Actors["bob"].Coins; got != 0 {
+		t.Errorf("bob.Coins = %d, want 0 (no transfer)", got)
+	}
+}
