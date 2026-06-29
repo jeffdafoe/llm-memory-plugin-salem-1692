@@ -225,6 +225,21 @@ const (
 	InteractionServedBy     InteractionKind = "served_by"
 	InteractionDelivered    InteractionKind = "delivered"
 	InteractionReceived     InteractionKind = "received"
+	// Labor (LLM-26 service-for-pay) relationship facts (LLM-165), written at
+	// the labor terminals as the analogue of the pay family's Paid/Declined
+	// writes. Each is one side of a bidirectional pair (worker→employer +
+	// employer→worker). Worked/Hired record a completed, paid job;
+	// WorkedUnpaid/LeftWorkerUnpaid record a job the worker finished but the
+	// employer could no longer pay for (the completion-time failed_unavailable —
+	// the aggrieved beat pay has no equivalent of); WorkDeclinedBy/DeclinedWork
+	// record a refused offer. Expired offers and the accept-time
+	// failed_unavailable fall-throughs write nothing — no social move happened.
+	InteractionWorked           InteractionKind = "worked"
+	InteractionHired            InteractionKind = "hired"
+	InteractionWorkedUnpaid     InteractionKind = "worked_unpaid"
+	InteractionLeftWorkerUnpaid InteractionKind = "left_worker_unpaid"
+	InteractionWorkDeclinedBy   InteractionKind = "work_declined_by"
+	InteractionDeclinedWork     InteractionKind = "declined_work"
 )
 
 // MaxSalientFactTextLen caps per-fact Text at write time so a single

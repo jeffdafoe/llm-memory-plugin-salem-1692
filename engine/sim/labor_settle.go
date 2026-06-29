@@ -145,7 +145,7 @@ func EvaluateLaborLedgerSweep(now time.Time) Command {
 				if !ok || o == nil || o.State != LaborStatePending {
 					continue
 				}
-				finalizeLaborTerminal(w, o, LaborTerminalStateExpired, now)
+				finalizeLaborTerminal(w, o, LaborTerminalStateExpired, false, now)
 			}
 			for _, id := range completed {
 				o, ok := w.LaborLedger[id]
@@ -203,14 +203,14 @@ func settleCompletedLabor(w *World, offer *LaborOffer, now time.Time) {
 		if employer == nil || worker == nil {
 			log.Printf("sim/labor: completion of offer %d found worker/employer missing — resolving unpaid", offer.ID)
 		}
-		finalizeLaborTerminal(w, offer, LaborTerminalStateFailedUnavailable, now)
+		finalizeLaborTerminal(w, offer, LaborTerminalStateFailedUnavailable, true, now)
 		return
 	}
 
 	// Atomic transfer: the employer pays the worker now.
 	employer.Coins -= offer.Reward
 	worker.Coins += offer.Reward
-	finalizeLaborTerminal(w, offer, LaborTerminalStateCompleted, now)
+	finalizeLaborTerminal(w, offer, LaborTerminalStateCompleted, true, now)
 }
 
 // reconcileStrandedLaboringOnLoad frees an actor that was checkpointed mid-job
