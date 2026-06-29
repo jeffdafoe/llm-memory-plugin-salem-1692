@@ -109,15 +109,16 @@ func (SourceActivityStarted) isSimEvent() {}
 // while the actor is still shelved mid-meal.
 type SourceActivityCompleted struct {
 	EventBase
-	ActorID    ActorID
-	ObjectID   VillageObjectID
-	Kind       SourceActivityKind
-	Item       ItemKind // harvest only: the kind credited
-	Qty        int      // harvest only: units actually gathered
-	Attribute  NeedKey  // refresh only: the primary need eased
-	SourceName string   // resolved object display name (both kinds)
-	Continues  bool     // true when a refresh auto-repeat re-arms after this emit
-	At         time.Time
+	ActorID        ActorID
+	ObjectID       VillageObjectID
+	Kind           SourceActivityKind
+	Item           ItemKind // harvest only: the kind credited
+	Qty            int      // harvest only: units actually gathered
+	SourceDepleted bool     // harvest only: the finite source was emptied (bush picked clean) — drives the "it's bare now" beat (LLM-175)
+	Attribute      NeedKey  // refresh only: the primary need eased
+	SourceName     string   // resolved object display name (both kinds)
+	Continues      bool     // true when a refresh auto-repeat re-arms after this emit
+	At             time.Time
 }
 
 func (SourceActivityCompleted) isSimEvent() {}
@@ -478,14 +479,15 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 			return
 		}
 		w.emit(&SourceActivityCompleted{
-			ActorID:    actorID,
-			ObjectID:   act.ObjectID,
-			Kind:       act.Kind,
-			Item:       res.Item,
-			Qty:        res.Qty,
-			SourceName: res.SourceName,
-			Continues:  false, // harvest never auto-repeats
-			At:         now,
+			ActorID:        actorID,
+			ObjectID:       act.ObjectID,
+			Kind:           act.Kind,
+			Item:           res.Item,
+			Qty:            res.Qty,
+			SourceDepleted: res.SourceDepleted,
+			SourceName:     res.SourceName,
+			Continues:      false, // harvest never auto-repeats
+			At:             now,
 		})
 	case SourceActivityRepair:
 		// LLM-118: the mending lands — wear cleared, the stall trades again. The
@@ -621,7 +623,7 @@ func (SourceActivityCompletedWarrantReason) DedupDiscriminator() uint64 { return
 // display name; an empty name drops the "at X" clause. Returns "" for an
 // unhandled combination so the subscriber skips the warrant (matching the dwell
 // empty-narration posture) rather than minting the vague fallback line.
-func SourceActivityCompletionNarration(kind SourceActivityKind, item ItemKind, qty int, attribute NeedKey, sourceName string) string {
+func SourceActivityCompletionNarration(kind SourceActivityKind, item ItemKind, qty int, attribute NeedKey, sourceName string, sourceDepleted bool) string {
 	at := ""
 	if sourceName != "" {
 		at = " at " + sourceName
@@ -634,6 +636,14 @@ func SourceActivityCompletionNarration(kind SourceActivityKind, item ItemKind, q
 		yield := string(item)
 		if yield == "" {
 			yield = "what you gathered"
+		}
+		if sourceDepleted {
+			// LLM-175: gather picks a finite source clean (LLM-87), so name the
+			// emptiness — and that it regrows — outright. In the wild a weak model
+			// re-fired gather at an already-picked bush because nothing told it the
+			// source was spent; making "it's bare now" legible removes that bait and
+			// keeps a later tick from treating the bare bush as still pickable.
+			return fmt.Sprintf("You finish gathering%s; you take all %d %s it had — it's bare now and will grow back in time. You now have %d %s in your pack.", at, qty, yield, qty, yield)
 		}
 		return fmt.Sprintf("You finish gathering%s; you now have %d %s in your pack.", at, qty, yield)
 	case SourceActivityRefresh:

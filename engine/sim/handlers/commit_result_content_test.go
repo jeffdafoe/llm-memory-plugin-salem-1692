@@ -451,17 +451,21 @@ func TestCommitResultContent_ConsumeNeedFeedback(t *testing.T) {
 	}
 }
 
-// TestCommitResultContent_GatherSteer pins the LLM-120 lead-with-imperative
-// post-gather copy: a started pick leads with the two don'ts (don't gather again,
-// don't walk off) — the walk-off warning is load-bearing (LLM-69: a move abandons
-// the in-flight pick) and must survive the reword — before the why. A result that
+// TestCommitResultContent_GatherSteer pins the LLM-175 post-gather copy: gather is
+// tick-terminal now, so the result is purely informational — it names the source
+// when known and says the harvest lands next turn, with NO "do not gather again /
+// call done() now" steer (the engine ends the turn for it). The "all of it / it's
+// bare" beat lands on the next-tick completion perception, not here. A result that
 // didn't start, a wrong-typed payload, or a nil result degrade to generic [ok].
 func TestCommitResultContent_GatherSteer(t *testing.T) {
 	vc := ValidatedCall{Name: "gather", DecodedArgs: GatherArgs{}}
-	const want = "[ok] You're now gathering — do not gather again, and do not walk off (leaving now abandons the pick and you gather nothing). It finishes on its own in a few seconds; the harvest lands in your pack next turn. Call done() now."
-
+	const want = "[ok] You start gathering. It finishes on its own in a few seconds; the harvest lands in your pack next turn."
 	if got := commitResultContent(&vc, sim.SourceActivityStartResult{Started: true}); got != want {
 		t.Errorf("started gather:\n got %q\nwant %q", got, want)
+	}
+	const wantNamed = "[ok] You start gathering at Raspberry Bush. It finishes on its own in a few seconds; the harvest lands in your pack next turn."
+	if got := commitResultContent(&vc, sim.SourceActivityStartResult{Started: true, SourceName: "Raspberry Bush"}); got != wantNamed {
+		t.Errorf("started gather (named source):\n got %q\nwant %q", got, wantNamed)
 	}
 	if got := commitResultContent(&vc, sim.SourceActivityStartResult{Started: false}); got != "[ok]" {
 		t.Errorf("not-started gather = %q, want generic [ok]", got)

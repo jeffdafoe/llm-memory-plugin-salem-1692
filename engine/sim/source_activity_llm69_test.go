@@ -65,16 +65,20 @@ func TestSourceActivityCompletionNarration(t *testing.T) {
 		got  string
 		want string
 	}{
-		{"harvest with yield", sim.SourceActivityCompletionNarration(sim.SourceActivityHarvest, "berries", 3, "", "Berry Bush"),
+		{"harvest with yield", sim.SourceActivityCompletionNarration(sim.SourceActivityHarvest, "berries", 3, "", "Berry Bush", false),
 			"You finish gathering at Berry Bush; you now have 3 berries in your pack."},
-		{"harvest no source name", sim.SourceActivityCompletionNarration(sim.SourceActivityHarvest, "water", 1, "", ""),
+		{"harvest no source name", sim.SourceActivityCompletionNarration(sim.SourceActivityHarvest, "water", 1, "", "", false),
 			"You finish gathering; you now have 1 water in your pack."},
-		{"harvest zero qty is silent", sim.SourceActivityCompletionNarration(sim.SourceActivityHarvest, "berries", 0, "", "Berry Bush"), ""},
-		{"refresh hunger", sim.SourceActivityCompletionNarration(sim.SourceActivityRefresh, "", 0, "hunger", "Berry Bush"),
+		{"harvest depleted names the bare source (LLM-175)", sim.SourceActivityCompletionNarration(sim.SourceActivityHarvest, "berries", 3, "", "Berry Bush", true),
+			"You finish gathering at Berry Bush; you take all 3 berries it had — it's bare now and will grow back in time. You now have 3 berries in your pack."},
+		{"harvest depleted no source name", sim.SourceActivityCompletionNarration(sim.SourceActivityHarvest, "berries", 2, "", "", true),
+			"You finish gathering; you take all 2 berries it had — it's bare now and will grow back in time. You now have 2 berries in your pack."},
+		{"harvest zero qty is silent even if depleted", sim.SourceActivityCompletionNarration(sim.SourceActivityHarvest, "berries", 0, "", "Berry Bush", true), ""},
+		{"refresh hunger", sim.SourceActivityCompletionNarration(sim.SourceActivityRefresh, "", 0, "hunger", "Berry Bush", false),
 			"You finish eating at Berry Bush; the gnawing eases."},
-		{"refresh thirst", sim.SourceActivityCompletionNarration(sim.SourceActivityRefresh, "", 0, "thirst", "Old Well"),
+		{"refresh thirst", sim.SourceActivityCompletionNarration(sim.SourceActivityRefresh, "", 0, "thirst", "Old Well", false),
 			"You finish drinking at Old Well; the dryness fades."},
-		{"refresh unknown attr is silent", sim.SourceActivityCompletionNarration(sim.SourceActivityRefresh, "", 0, "mana", "X"), ""},
+		{"refresh unknown attr is silent", sim.SourceActivityCompletionNarration(sim.SourceActivityRefresh, "", 0, "mana", "X", false), ""},
 	}
 	for _, tc := range cases {
 		if tc.got != tc.want {
@@ -108,6 +112,40 @@ func TestHarvestCompletion_StampsCompletionWarrant(t *testing.T) {
 	}
 	if r.Item != "berries" || r.Qty < 1 {
 		t.Errorf("Item/Qty = %q/%d, want berries / >=1", r.Item, r.Qty)
+	}
+	if !strings.Contains(r.NarrationText, "in your pack") {
+		t.Errorf("NarrationText = %q, want the yield beat", r.NarrationText)
+	}
+	// The test bush is finite (AvailableQuantity 2) and gather picks it clean
+	// (LLM-87), so the completion beat names the now-bare source (LLM-175).
+	if !strings.Contains(r.NarrationText, "bare now") {
+		t.Errorf("NarrationText = %q, want the picked-clean 'bare now' beat", r.NarrationText)
+	}
+}
+
+// TestHarvestCompletion_InfiniteSourceNotBare — an infinite gatherable source (a
+// well) is never depleted, so the completion beat must NOT carry the "bare now"
+// clause (LLM-175). Proves the SourceDepleted=false path through the REAL
+// completion plumbing (applyGatherMint -> SourceActivityCompleted -> narration),
+// complementing the finite-depletion warrant test above.
+func TestHarvestCompletion_InfiniteSourceNotBare(t *testing.T) {
+	w, cancel := buildGatherTestWorld(t)
+	defer cancel()
+	setActorKindNPC(t, w, "hannah")
+	registerSourceActivityHandlers(t, w)
+	placeAt(t, w, "hannah", "well") // infinite: GatherItem "water", no AvailableQuantity
+
+	if _, err := w.Send(sim.StartHarvest("hannah", 1)); err != nil {
+		t.Fatalf("StartHarvest: %v", err)
+	}
+	forceComplete(t, w)
+
+	r, ok := completionWarrant(t, w, "hannah")
+	if !ok {
+		t.Fatal("no completion warrant stamped after infinite-source harvest")
+	}
+	if strings.Contains(r.NarrationText, "bare now") {
+		t.Errorf("NarrationText = %q, want NO 'bare now' clause for an infinite source", r.NarrationText)
 	}
 	if !strings.Contains(r.NarrationText, "in your pack") {
 		t.Errorf("NarrationText = %q, want the yield beat", r.NarrationText)

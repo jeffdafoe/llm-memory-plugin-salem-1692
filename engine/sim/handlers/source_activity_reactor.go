@@ -40,7 +40,7 @@ func handleSourceActivityCompletedWarrants(w *sim.World, evt sim.Event) {
 	if !ok || actor == nil {
 		return
 	}
-	narration := sim.SourceActivityCompletionNarration(done.Kind, done.Item, done.Qty, done.Attribute, done.SourceName)
+	narration := sim.SourceActivityCompletionNarration(done.Kind, done.Item, done.Qty, done.Attribute, done.SourceName, done.SourceDepleted)
 	if narration == "" {
 		// An unhandled kind/attribute combination — keep the event for audit/
 		// replay but don't mint a vague-fallback warrant. Breadcrumb so a real
