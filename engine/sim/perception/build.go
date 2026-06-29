@@ -248,6 +248,11 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// signals. (p.Forage already encodes "not mid-customer" via customerEngaged.)
 	p.DutySteer = buildDutySteer(snap, actorID, actorSnap, p.Anchors, p.Restocking != nil, p.Forage != nil)
 	p.DutyPending = buildDutyPending(snap, actorSnap, p.Anchors)
+	// LLM-149 (Lever 2): the evening "tavern's open" cue. Built off the same
+	// anchors; on the evening window it replaces the off-shift go-home steer
+	// buildDutySteer just suppressed. Placed before degeneracy thinning so a
+	// flagged actor's movement invitation is stripped in lockstep with the steers.
+	p.EveningLeisure = buildEveningLeisure(snap, actorSnap, p.Anchors)
 	// Stay-open choice (ZBBS-WORK-387): a keeper standing at its own post on an
 	// off-shift wind-down may keep its business open instead of closing up. Surface
 	// the option, and encourage it when a concrete reason is present (the hybrid
@@ -373,6 +378,10 @@ func degeneracyFlagged(a *sim.ActorSnapshot) bool {
 func thinDegenerateSteer(p *Payload) {
 	p.Restocking = nil
 	p.Forage = nil
+	// The evening leisure cue (LLM-149) is a place-naming "head to the tavern"
+	// invitation — the same movement-steer class this thinning removes for a
+	// flagged actor, so it goes too.
+	p.EveningLeisure = nil
 	if p.DutySteer == nil {
 		return
 	}
@@ -1581,6 +1590,17 @@ func buildDutySteer(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapsho
 			if atHome {
 				return nil
 			}
+			// LLM-149 (Lever 2): inside the post-work evening window [shift-end,
+			// 22:00) the go-home wind-down steer IS the "turn in" pressure the
+			// epic forbids before Lever 1's 22:00 bedtime. Suppress it so the
+			// evening leisure cue ("the tavern's open of an evening") is the
+			// single voice in-window; after 22:00 this resumes and Lever 1 beds
+			// the agent. buildEveningLeisure fires on the same window, and the
+			// noop-skip gate keys on EveningLeisure in this steer's place so the
+			// idle agent still ticks and sees the invitation.
+			if inEveningWindow(snap, a) {
+				return nil
+			}
 			if windDownSuppressed(a, snap) {
 				return nil
 			}
@@ -1612,6 +1632,135 @@ func buildDutySteer(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapsho
 		}
 	default:
 		return nil
+	}
+}
+
+// inEveningWindow reports whether the snapshot clock is inside the post-work
+// evening window [shift-end, 22:00) for a homed day-shift agent — the slice
+// during which the evening leisure cue (LLM-149) replaces the off-shift go-home
+// wind-down steer. The window's open is the actor's own schedule end; its close
+// is snap.LodgingBedtimeMinute (the 22:00 lodger bedtime — the same gate Lever 1
+// beds homed agents at, so cue and bedtime agree). Requires a normal
+// (non-wrapping) schedule whose end precedes the bedtime; wrap/night shifts and
+// shifts running to or past bedtime have no evening and are excluded (the
+// in-scope day-workers end 19:00–21:00). Keying on a present schedule also keeps
+// the four unscheduled vendors untouched, matching Lever 1's scope guard.
+func inEveningWindow(snap *sim.Snapshot, a *sim.ActorSnapshot) bool {
+	if snap == nil || a == nil || snap.LocalMinuteOfDay == nil {
+		return false
+	}
+	if a.ScheduleStartMin == nil || a.ScheduleEndMin == nil {
+		return false
+	}
+	shiftStart, shiftEnd := *a.ScheduleStartMin, *a.ScheduleEndMin
+	if shiftStart >= shiftEnd {
+		return false // wrap/degenerate schedule — no simple post-work evening
+	}
+	bedtime := snap.LodgingBedtimeMinute
+	if shiftEnd >= bedtime {
+		return false // shift runs to/past bedtime — no evening window
+	}
+	nowMin := *snap.LocalMinuteOfDay
+	return nowMin >= shiftEnd && nowMin < bedtime
+}
+
+// nearestTaggedVenue returns the structure id + display label of the nearest
+// VillageObject carrying tag that is bridged to a Structure (shared id), by
+// Chebyshev distance to the actor, ties broken on the smaller structure id for
+// determinism. The "tavern" venue tag lives on the VillageObject, not the
+// Structure (Structure.Tags is unused), and a placed venue is the tagged object
+// whose id also names a Structure — the same shared-identity bridge
+// pickVisitorDestination and the create_pc lodging lookup use. Returns ok=false
+// when no such venue is placed (then the caller renders no cue rather than
+// hardcoding an id).
+func nearestTaggedVenue(snap *sim.Snapshot, a *sim.ActorSnapshot, tag string) (sim.StructureID, string, bool) {
+	if snap == nil || a == nil {
+		return "", "", false
+	}
+	var bestID sim.StructureID
+	var bestLabel string
+	bestDist := -1
+	for id, vobj := range snap.VillageObjects {
+		if vobj == nil || !vobj.HasTag(tag) {
+			continue
+		}
+		stID := sim.StructureID(id)
+		st, ok := snap.Structures[stID]
+		if !ok || st == nil {
+			continue // tagged object with no backing Structure — not a venue we steer to
+		}
+		d := a.Pos.Chebyshev(vobj.Pos.Tile())
+		if bestDist == -1 || d < bestDist || (d == bestDist && stID < bestID) {
+			bestDist = d
+			bestID = stID
+			bestLabel = st.DisplayName
+		}
+	}
+	if bestDist == -1 {
+		return "", "", false
+	}
+	return bestID, bestLabel, true
+}
+
+// buildEveningLeisure computes the evening "tavern's open" cue (LLM-149, Lever 2
+// of the living-evening epic). It fires for a homed, day-shift agent NPC that is
+// off-shift and awake inside the evening window [shift-end, 22:00), naming the
+// tavern as a place to pass the evening and letting the model choose — head
+// over, stay in, or turn in — with NO forced walk. The off-shift go-home steer
+// is suppressed on the same window (buildDutySteer) so this is the single voice.
+//
+// Clear/defer conditions — the cue-catalog discipline (a standing cue with no
+// clear is a loop): a RED need outranks idle leisure (let satiation/recovery
+// win, matching the duty steer); already at home → chose to stay in, don't pull
+// back out; already at the venue, or walking there → acted on, don't re-pump
+// (the Ezekiel lesson, both sides — the in-flight line + mid-walk coda keep a
+// walking agent on course). Lodgers and the homeless are out of scope (the
+// epic's Lever 2 is the homed agents' evening); their wind-down stays the duty
+// steer's lodger/homeless arms.
+func buildEveningLeisure(snap *sim.Snapshot, a *sim.ActorSnapshot, anchors *AnchorsView) *EveningLeisureView {
+	if snap == nil || a == nil || anchors == nil {
+		return nil
+	}
+	// Agent NPCs only — same scope as the duty steer (PCs are player-driven,
+	// decoratives are never perceived).
+	if a.Kind != sim.KindNPCStateful && a.Kind != sim.KindNPCShared {
+		return nil
+	}
+	// Homed only.
+	if anchors.HomeID == "" {
+		return nil
+	}
+	// Inside the post-work evening window — also enforces the day-shift scope
+	// guard (unscheduled vendors excluded).
+	if !inEveningWindow(snap, a) {
+		return nil
+	}
+	// A pressing (red) need outranks an idle evening; the cue resumes once it
+	// clears.
+	if hasRedNeed(a, snap) {
+		return nil
+	}
+	// Settled at home → stay-in choice already made; don't re-pump back out.
+	if a.InsideStructureID == anchors.HomeID {
+		return nil
+	}
+	// Resolve the venue from the snapshot — no tavern placed → no cue.
+	venueID, venueLabel, ok := nearestTaggedVenue(snap, a, sim.VisitorTagTavern)
+	if !ok {
+		return nil
+	}
+	// Already at the tavern, or walking there → acted on; don't re-pump.
+	if a.InsideStructureID == venueID {
+		return nil
+	}
+	if a.MoveDestKind == sim.MoveDestinationStructureEnter && a.MoveDestStructureID == venueID {
+		return nil
+	}
+	return &EveningLeisureView{
+		VenueID:    venueID,
+		VenueLabel: venueLabel,
+		HomeID:     anchors.HomeID,
+		HomeLabel:  anchors.HomeLabel,
 	}
 }
 

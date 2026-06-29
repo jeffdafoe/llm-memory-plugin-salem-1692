@@ -109,6 +109,16 @@ var perceptionScenarios = []perceptionScenario{
 		build: tiredKeeperAtPostOnShift,
 	},
 	{
+		name: "homed_worker_evening_tavern_open",
+		summary: "A homed day-shift agent (Ezekiel, 07:00–19:00), off-shift and awake at 20:30 — inside the " +
+			"evening window [shift-end, 22:00) — standing at his forge after closing up (LLM-149, Lever 2). The golden " +
+			"pins the evening 'tavern's open' invitation in ## Around you (carrying the tavern + home structure_ids, no " +
+			"forced walk) AND that the off-shift go-home wind-down steer ('Your working hours are over …') is ABSENT: the " +
+			"cue REPLACES that turn-in pressure for the window (bedtime is Lever 1's 22:00 gate). A regression that let the " +
+			"go-home steer leak back in, or dropped the invitation, shows in the diff.",
+		build: homedWorkerEveningTavernOpen,
+	},
+	{
 		name: "keeper_with_ready_order",
 		summary: "An innkeeper holds a Ready order (a nights_stay check-in) for a co-present guest. Exercises the " +
 			"order book with a deterministic expiry clause — the LLM-106 render-clock fix anchors 'expires in N " +
@@ -2236,6 +2246,53 @@ func tiredKeeperAtPostOnShift() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) 
 		Actors:           map[sim.ActorID]*sim.ActorSnapshot{ezekielID: ezekiel},
 		Structures: map[sim.StructureID]*sim.Structure{
 			forge: plainStructure(forge, "Blacksmith"),
+		},
+	}
+	return snap, ezekielID, nil
+}
+
+// homedWorkerEveningTavernOpen is the LLM-149 (Lever 2) positive case: a homed
+// day-shift agent, off-shift and awake in the evening window [shift-end, 22:00),
+// standing at its workplace after closing up. The evening "tavern's open" cue
+// fires in ## Around you, and the off-shift go-home wind-down steer is suppressed
+// in-window so the cue is the single voice. No co-present actor, no orders — the
+// evening invitation is the point.
+func homedWorkerEveningTavernOpen() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		ezekielID = sim.ActorID("ezekiel")
+		forge     = sim.StructureID("blacksmith")
+		home      = sim.StructureID("crane_cottage")
+		tavern    = sim.StructureID("tavern")
+	)
+	start, end := 420, 1140 // 07:00–19:00
+	now := 1230             // 20:30 — off shift, inside the evening window
+	ezekiel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Ezekiel Crane",
+		Role:              "blacksmith",
+		State:             sim.StateIdle,
+		WorkStructureID:   forge,
+		InsideStructureID: forge,
+		HomeStructureID:   home,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             12,
+		Needs:             map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay:     &now,
+		LodgingBedtimeMinute: 1320, // 22:00 — the evening window's close
+		NeedThresholds:       sim.NeedThresholds{},
+		Actors:               map[sim.ActorID]*sim.ActorSnapshot{ezekielID: ezekiel},
+		Structures: map[sim.StructureID]*sim.Structure{
+			forge:  plainStructure(forge, "Blacksmith"),
+			home:   plainStructure(home, "Crane Cottage"),
+			tavern: plainStructure(tavern, "the Tavern"),
+		},
+		// The tavern venue: a VillageObject tagged "tavern" bridged to the
+		// same-id Structure (the shared-identity bridge nearestTaggedVenue reads).
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			sim.VillageObjectID(tavern): {Tags: []string{sim.VisitorTagTavern}, Pos: sim.WorldPos{X: 0, Y: 0}},
 		},
 	}
 	return snap, ezekielID, nil

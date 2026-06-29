@@ -116,7 +116,15 @@ func shouldSkipNoop(payload perception.Payload, thresholds sim.NeedThresholds, w
 	// idle-backstops (HOME-441), or this gate would re-open and the constant
 	// deliberation it caused is exactly what made the actor wander. The to-work /
 	// wind-down arms remain standing actionable signals that hold the gate open.
-	if (payload.DutySteer != nil && !payload.DutySteer.AtPost) || payload.DutyPending {
+	//
+	// EveningLeisure (LLM-149) holds the gate open in the off-shift go-home
+	// steer's place: on the evening window [shift-end, 22:00) buildDutySteer
+	// suppresses the go-home steer so the evening cue is the single voice, but
+	// that steer is exactly what kept an idle off-shift homed agent ticking
+	// (HOME-441). Without this an evening agent with only idle-backstop warrants
+	// would skip-lock and never see the invitation. It self-extinguishes when the
+	// agent commits (the cue clears at the tavern or home).
+	if (payload.DutySteer != nil && !payload.DutySteer.AtPost) || payload.DutyPending || payload.EveningLeisure != nil {
 		return false
 	}
 	return true

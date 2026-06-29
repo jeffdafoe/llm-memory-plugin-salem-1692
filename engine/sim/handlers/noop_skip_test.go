@@ -209,6 +209,26 @@ func TestShouldSkipNoop_DutyPending_DoesNotSkip(t *testing.T) {
 	// quietPayload carries DutyPending=false.
 }
 
+func TestShouldSkipNoop_EveningLeisurePresent_DoesNotSkip(t *testing.T) {
+	// LLM-149: inside the evening window buildDutySteer suppresses the off-shift
+	// go-home steer so the evening "tavern's open" cue is the single voice. But
+	// the go-home steer is exactly what kept an idle off-shift homed agent ticking
+	// (HOME-441); the evening cue must hold the gate open in its place, or an
+	// agent with only idle-backstop warrants skip-locks and never sees the
+	// invitation.
+	pl := quietPayload()
+	pl.EveningLeisure = &perception.EveningLeisureView{
+		VenueID: "tavern", VenueLabel: "the Tavern",
+		HomeID: "cottage", HomeLabel: "Ellis Cottage",
+	}
+	if shouldSkipNoop(pl, defaultThresholds(), []sim.WarrantMeta{idleBackstopWarrant()}) {
+		t.Fatalf("expected skip=false when payload carries an evening-leisure cue")
+	}
+	// The nil baseline (skip=true) is pinned by
+	// TestShouldSkipNoop_IdleBackstopAlone_NoPeerNoNeeds_Skips — quietPayload
+	// carries EveningLeisure=nil.
+}
+
 func TestShouldSkipNoop_HighInfoWarrantInBatch_DoesNotSkip(t *testing.T) {
 	cases := []sim.WarrantKind{
 		sim.WarrantKindNPCSpoke,
