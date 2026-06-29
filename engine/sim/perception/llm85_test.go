@@ -11,7 +11,9 @@ import (
 // phrase (a little tired / weary / exhausted) anchored to real hours awake, with
 // NO imperative at any tier (the "address this" cue that drove the re-take_break
 // loop is gone — see llm67_test.go). The awareness-floor and weary-threshold
-// moves (8→10, 20→16) are exercised in the sim package's needs_test.go.
+// moves (8→10, 20→16) are exercised in the sim package's needs_test.go. LLM-179
+// raised tiredness's own awareness floor to 13 (DefaultTirednessAwarenessFloor)
+// so the mild "a little tired" band is [13, 16); the cases below track that.
 
 func intPtr(v int) *int { return &v }
 
@@ -24,7 +26,8 @@ func TestRenderTiredness_Tiers(t *testing.T) {
 		wantPre string // "" means the line must be empty
 	}{
 		{"below floor is silent", 9, ""},
-		{"at floor is mild", 10, "You're starting to feel a little tired"},
+		{"plateau band stays silent (LLM-179)", 12, ""},
+		{"at floor is mild", 13, "You're starting to feel a little tired"},
 		{"mid mild band", 15, "You're starting to feel a little tired"},
 		{"at weary threshold", 16, "You're weary"},
 		{"upper weary band", 23, "You're weary"},
@@ -63,14 +66,14 @@ func TestRenderTiredness_HoursAwakeTail(t *testing.T) {
 		}
 	})
 	t.Run("nil hours drops the tail (unscheduled NPC)", func(t *testing.T) {
-		if line := renderTiredness(12, threshold, nil); line != "You're starting to feel a little tired." {
+		if line := renderTiredness(14, threshold, nil); line != "You're starting to feel a little tired." {
 			t.Errorf("unexpected: %q", line)
 		}
 	})
 	t.Run("zero hours drops the tail", func(t *testing.T) {
-		// Just-woke edge — tiredness this low is silent in practice, but the
-		// "awake for 0 hours" wording is guarded out regardless.
-		if line := renderTiredness(12, threshold, intPtr(0)); line != "You're starting to feel a little tired." {
+		// A mild but real fatigue (14, just into the [13,16) band): the
+		// "awake for 0 hours" wording is guarded out regardless of the value.
+		if line := renderTiredness(14, threshold, intPtr(0)); line != "You're starting to feel a little tired." {
 			t.Errorf("unexpected: %q", line)
 		}
 	})

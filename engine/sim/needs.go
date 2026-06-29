@@ -65,8 +65,18 @@ const (
 
 	// needSilentFloor — values below this are not surfaced in perception. Raised
 	// to 10 (LLM-85): on the 0–24 scale a need at 8–9 (~a third) isn't worth a
-	// cue, and surfacing mild tiredness that low drove over-eager rest.
+	// cue, and surfacing mild tiredness that low drove over-eager rest. This is
+	// the default; a need can raise its own floor via Need.AwarenessFloor.
 	needSilentFloor = 10
+
+	// DefaultTirednessAwarenessFloor raises tiredness's surfacing floor above the
+	// global needSilentFloor (LLM-179). Mild daytime tiredness plateaus at ~10–11
+	// (sleep fully recovers overnight, then it climbs ~1/hr through the day); at
+	// the global floor of 10 the whole village reads "a little tired" every
+	// afternoon with no clean daytime rest, churning ticks. 13 keeps it silent
+	// through the plateau and surfaces it only as it approaches the red "weary"
+	// line (16), leaving a window to seek rest before distress.
+	DefaultTirednessAwarenessFloor = 13
 )
 
 // Need describes one graduated quantity an actor carries. The registry
@@ -79,6 +89,12 @@ type Need struct {
 	Peak                string // tier 3 vocabulary — "starving", "desperate", "exhausted"
 	DefaultThreshold    int
 	ThresholdSettingKey string // setting row key — used when porting SettingsRepo
+
+	// AwarenessFloor is the per-need value below which the need is not surfaced
+	// in perception. 0 falls back to the global needSilentFloor; tiredness raises
+	// it (LLM-179) so the mild mid-afternoon fatigue plateau stays silent until
+	// it nears the actionable/red band.
+	AwarenessFloor int
 }
 
 // Needs is the canonical registry. Iteration order is stable across
@@ -108,6 +124,7 @@ var Needs = []Need{
 		Peak:                "exhausted",
 		DefaultThreshold:    DefaultTirednessRedThreshold,
 		ThresholdSettingKey: "tiredness_red_threshold",
+		AwarenessFloor:      DefaultTirednessAwarenessFloor,
 	},
 }
 
@@ -138,9 +155,23 @@ const (
 	NeedPeak NeedTier = 3
 )
 
-// Tier classifies a value against this need's threshold.
+// silentFloor is this need's awareness floor — the value below which it isn't
+// surfaced in perception. Falls back to the global needSilentFloor when the need
+// doesn't raise its own (LLM-179).
+func (n Need) silentFloor() int {
+	if n.AwarenessFloor > 0 {
+		return n.AwarenessFloor
+	}
+	return needSilentFloor
+}
+
+// Tier classifies a value against this need's threshold. The awareness floor is
+// checked first, so it takes precedence: a value below n.silentFloor() reads
+// NeedSilent even if it is at/over the red threshold. That only matters under a
+// misconfiguration where the tiredness red threshold is set below the raised
+// tiredness floor (13) — at the defaults (floor 13 < red 16) the bands are ordered.
 func (n Need) Tier(value, threshold int) NeedTier {
-	if value < needSilentFloor {
+	if value < n.silentFloor() {
 		return NeedSilent
 	}
 	if value >= NeedMax {
@@ -219,6 +250,14 @@ func NeedLabel(key NeedKey, value, threshold int) string {
 
 // NeedLabelTier returns 0/1/2/3 — silent/mild/red/peak — without needing
 // to lookup the vocabulary. Used by filters that classify by tier.
+//
+// NOTE: this keyless form uses the GLOBAL needSilentFloor, NOT a per-need
+// AwarenessFloor (it has no need key to look one up). That is safe only for
+// callers that either (a) classify hunger/thirst — whose floor is the global
+// default — or (b) test a Red/Peak boundary, which sits above any floor. A new
+// tiredness caller that depends on the Silent vs Mild boundary must use
+// FindNeed("tiredness").Tier(...) instead, or it will see the floor-10 result
+// and disagree with renderTiredness (which uses the raised floor 13, LLM-179).
 func NeedLabelTier(value, threshold int) NeedTier {
 	if value < needSilentFloor {
 		return NeedSilent

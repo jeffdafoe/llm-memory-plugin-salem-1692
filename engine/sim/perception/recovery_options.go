@@ -510,6 +510,15 @@ func renderRecoveryOptions(b *strings.Builder, v *RecoveryOptionsView) {
 	if v.RestInPlace {
 		b.WriteString("- Close up and rest where you are — call take_break to recover without leaving your post.\n")
 	}
+	// Name the verb. The place bullets carry a structure_id but never said HOW to
+	// act on it, so a tired model reached for a bare rest()/sleep() that isn't a
+	// registered tool (LLM-178). move_to is the rest action for every listed place
+	// (the free-object "rest" kind takes its ObjectID on the same structure_id
+	// arg). The take_break bullet above is the only in-place option and names its
+	// own verb, so this line speaks only to the id-bearing places "below".
+	if len(v.Options) > 0 {
+		b.WriteString("Each place below lists a structure_id — call move_to with that id to head there.\n")
+	}
 	for _, o := range v.Options {
 		b.WriteString("- ")
 		b.WriteString(sanitizeInline(o.Label))
