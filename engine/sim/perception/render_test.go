@@ -762,7 +762,7 @@ func TestRenderWarrantLine_Stranded(t *testing.T) {
 	line, truncated := renderWarrantLine(1, sim.WarrantMeta{
 		TriggerActorID: "zeke",
 		Reason:         sim.StrandedWarrantReason{},
-	}, func(sim.ActorID) string { return "you" }, func(string) string { return "" }, func(sim.ItemKind) bool { return false }, 200)
+	}, func(sim.ActorID) string { return "you" }, func(string) string { return "" }, func(sim.ItemKind) bool { return false }, func(sim.ItemKind) (bool, bool) { return false, false }, 200)
 	want := "1. You find yourself standing out in the open, between places, with nothing under way.\n"
 	if line != want {
 		t.Errorf("stranded line = %q, want %q", line, want)
@@ -778,7 +778,7 @@ func TestRenderWarrantLine_SeekWork(t *testing.T) {
 	line, truncated := renderWarrantLine(1, sim.WarrantMeta{
 		TriggerActorID: "lewis",
 		Reason:         sim.SeekWorkWarrantReason{},
-	}, func(sim.ActorID) string { return "you" }, func(string) string { return "" }, func(sim.ItemKind) bool { return false }, 200)
+	}, func(sim.ActorID) string { return "you" }, func(string) string { return "" }, func(sim.ItemKind) bool { return false }, func(sim.ItemKind) (bool, bool) { return false, false }, 200)
 	want := "1. Your purse is empty, and you take work for pay — seek out someone who could use a hand and offer your labor.\n"
 	if line != want {
 		t.Errorf("seek-work line = %q, want %q", line, want)

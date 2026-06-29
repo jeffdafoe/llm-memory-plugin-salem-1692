@@ -167,6 +167,69 @@ func TestBuildOfferableCustomers_AllSuppressedReturnsNil(t *testing.T) {
 	}
 }
 
+// LLM-171: a co-present customer who MAKES one of the seller's goods is flagged
+// in ProducerNotes (only the produced good, not the rest of the stock), so Render
+// can steer the seller off pitching it back at its maker.
+func TestBuildOfferableCustomers_ProducerNoteForMakerCustomer(t *testing.T) {
+	members := []HuddleMember{{ID: "ezekiel", DisplayName: "Ezekiel Crane", Acquainted: true}}
+	inv := []InventoryItem{{Label: "skillet", Qty: 4, kind: "skillet"}, {Label: "ale", Qty: 20, kind: "ale"}}
+	snap := &sim.Snapshot{
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			"ezekiel": {RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+				{Item: "skillet", Source: sim.RestockSourceProduce, Max: 5},
+			}}},
+		},
+	}
+	v := buildOfferableCustomers(snap, "seller", true, members, inv)
+	if v == nil {
+		t.Fatal("expected a cue view, got nil")
+	}
+	if len(v.ProducerNotes) != 1 {
+		t.Fatalf("ProducerNotes = %+v, want exactly 1 note", v.ProducerNotes)
+	}
+	note := v.ProducerNotes[0]
+	if note.CustomerName != "Ezekiel Crane" {
+		t.Errorf("note customer = %q, want Ezekiel Crane", note.CustomerName)
+	}
+	if len(note.Goods) != 1 || note.Goods[0] != "skillet" {
+		t.Errorf("note goods = %v, want [skillet] (the produced good only, not ale)", note.Goods)
+	}
+}
+
+// A co-present customer who makes NONE of the seller's goods draws no note.
+func TestBuildOfferableCustomers_NoProducerNoteForNonMaker(t *testing.T) {
+	members := []HuddleMember{{ID: "mary", DisplayName: "Goodwife Mary", Acquainted: true}}
+	inv := []InventoryItem{{Label: "skillet", Qty: 4, kind: "skillet"}}
+	snap := &sim.Snapshot{
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			"mary": {RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+				{Item: "bread", Source: sim.RestockSourceProduce, Max: 5},
+			}}},
+		},
+	}
+	v := buildOfferableCustomers(snap, "seller", true, members, inv)
+	if v == nil {
+		t.Fatal("expected a cue view, got nil")
+	}
+	if len(v.ProducerNotes) != 0 {
+		t.Errorf("ProducerNotes = %+v, want none (Mary makes bread, not skillet)", v.ProducerNotes)
+	}
+}
+
+func TestRenderOfferableCustomers_ProducerNote(t *testing.T) {
+	var b strings.Builder
+	renderOfferableCustomers(&b, &OfferableCustomersView{
+		CustomerNames: []string{"Ezekiel Crane"},
+		Goods:         []OfferableGood{{Label: "nail", OnHand: 38}, {Label: "skillet", OnHand: 4}},
+		ProducerNotes: []ProducerNote{{CustomerName: "Ezekiel Crane", Goods: []string{"nail", "skillet"}}},
+	})
+	out := b.String()
+	want := "Ezekiel Crane makes nail and skillet themselves — don't pitch those back to their own maker; offer them to other customers instead."
+	if !strings.Contains(out, want) {
+		t.Errorf("output missing producer note %q\n--- got ---\n%s", want, out)
+	}
+}
+
 func TestRenderOfferableCustomers_NilAndEmptySkip(t *testing.T) {
 	var b strings.Builder
 	renderOfferableCustomers(&b, nil)

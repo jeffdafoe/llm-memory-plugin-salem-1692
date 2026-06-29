@@ -551,6 +551,20 @@ type Payload struct {
 	// from the snapshot's catalog; empty when no kind is eat-here-only.
 	// ZBBS-WORK-405.
 	EatHereKinds map[sim.ItemKind]bool
+
+	// OwnProducedKinds is the set of item kinds the subject MAKES itself — its
+	// produce-source restock entries. Render consults it to strip the actionable
+	// take from a buy-quote for a good the actor produces: the buyer-side half of
+	// the producer-awareness guard against buying back your own ware (LLM-171).
+	// Empty when the actor produces nothing.
+	OwnProducedKinds map[sim.ItemKind]bool
+
+	// AtCapKinds is the set of item kinds the subject already holds at or above
+	// its restock cap, across all restock sources with a configured cap (produce,
+	// buy, forage). Render strips the actionable take from a buy-quote for such a
+	// good — at cap, buying more just overflows what the actor can carry (LLM-171).
+	// Empty when nothing is capped or at cap.
+	AtCapKinds map[sim.ItemKind]bool
 }
 
 // OrderView is the perception-side projection of one sim.Order.
@@ -702,16 +716,36 @@ type PendingLaborOfferOutView struct {
 type OfferableCustomersView struct {
 	CustomerNames []string
 	Goods         []OfferableGood
+	// ProducerNotes flags any co-present customer who MAKES one or more of the
+	// seller's pitchable goods themselves (the good is in that customer's produce
+	// manifest). The seller's stock of such a good came from a maker like them, so
+	// Render steers "don't offer those back to their own maker" — the seller-side
+	// half of the producer-awareness guard against the degenerate buy-back loop
+	// where a reseller pitches a smith's own skillet back at the smith (LLM-171).
+	// Empty when no co-present customer produces any of the goods.
+	ProducerNotes []ProducerNote
 }
 
 // OfferableGood is one sellable good in the "## Custom at hand" cue, carrying
 // its on-hand count so the seller sizes a scene_quote against real stock rather
 // than naming a round number it can't deliver (ZBBS-HOME-459 — the seller-side
 // mirror of the buyer's ZBBS-WORK-392 sufficiency fact). OnHand is the seller's
-// current Inventory[kind] at build time.
+// current Inventory[kind] at build time. kind is the unexported item kind, kept
+// so Build can match a good against a co-present customer's produce manifest
+// (LLM-171) without re-resolving the label.
 type OfferableGood struct {
 	Label  string
 	OnHand int
+	kind   sim.ItemKind
+}
+
+// ProducerNote names a co-present customer and the seller's goods that customer
+// makes themselves — so Render can steer the seller not to pitch a maker their
+// own ware back (LLM-171). CustomerName is the same acquaintance-gated descriptor
+// used in CustomerNames; Goods are the overlapping good labels.
+type ProducerNote struct {
+	CustomerName string
+	Goods        []string
 }
 
 // NarrativeStateView is the kind-aware "Who you are:" content. Slim by
