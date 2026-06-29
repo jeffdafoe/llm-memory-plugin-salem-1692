@@ -175,6 +175,24 @@ var perceptionScenarios = []perceptionScenario{
 		build: smithBarteringAtTavern,
 	},
 	{
+		name: "keeper_not_pitching_makers_own_ware",
+		summary: "LLM-171 seller side: John Ellis keeps his tavern in company with Ezekiel Crane the smith, and John's " +
+			"stock holds skillet + nail he bought FROM Ezekiel. The '## Custom at hand' cue lists those wares to pitch, so " +
+			"the golden pins the producer-note line that steers the keeper off selling a smith his own ware back (the live " +
+			"buy-back: John read Ezekiel's sell-offer as a buy and quoted skillets at him). A customer who makes none of " +
+			"the goods draws no note (see TestProducerPitchNoteOnlyForCoPresentMaker).",
+		build: keeperNotPitchingMakersOwnWare,
+	},
+	{
+		name: "maker_offered_own_ware_buy_quote",
+		summary: "LLM-171 buyer side: Ezekiel Crane (skillet at his cap of 5, which he makes) has a targeted skillet " +
+			"quote posted at him by John Ellis for 2 coins — the mis-pitched buy-back quote from the live trace. The " +
+			"golden pins that the quote warrant line WITHHOLDS the 'pay_with_item with quote_id' take and steers 'these " +
+			"are wares you make yourself … decline' instead, so a mis-pitched quote can't close the buy-back loop. A " +
+			"quote for a good the buyer doesn't make keeps its take (see TestBuyBackQuoteSteerOnlyForOwnProducedOrAtCap).",
+		build: makerOfferedOwnWareBuyQuote,
+	},
+	{
 		name: "dairy_choosing_at_farm",
 		summary: "LLM-144: a NON-smith multi-output producer (Elizabeth Ellis at Ellis Farm: milk + meat + cheese) stands " +
 			"UNFOCUSED at her own workplace on shift — the same production-choice state smith_choosing_at_forge pins for the " +
@@ -607,6 +625,48 @@ func TestWaresWorthCueOnlyInCompanyWithOwnTrade(t *testing.T) {
 	}
 }
 
+// TestProducerPitchNoteOnlyForCoPresentMaker is the LLM-171 seller-side
+// cross-scenario invariant: the producer-awareness note that steers a keeper off
+// pitching a maker their own ware back appears in EXACTLY the scenario where a
+// co-present customer makes one of the seller's listed goods
+// (keeper_not_pitching_makers_own_ware). No other "## Custom at hand" scenario —
+// nor any unrelated turn — carries it.
+func TestProducerPitchNoteOnlyForCoPresentMaker(t *testing.T) {
+	const marker = "don't pitch those back to their own maker"
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		got := renderScenario(sc)
+		want := sc.name == "keeper_not_pitching_makers_own_ware"
+		if has := strings.Contains(got, marker); has != want {
+			t.Errorf("scenario %q: producer-pitch note present=%v, want %v", sc.name, has, want)
+		}
+	}
+}
+
+// TestBuyBackQuoteSteerOnlyForOwnProducedOrAtCap is the LLM-171 buyer-side
+// cross-scenario invariant: the steer that withholds a buy-quote's take for a
+// good the buyer makes itself or already holds at cap appears in EXACTLY the
+// scenario where that holds (maker_offered_own_ware_buy_quote). In that scenario
+// the actionable "pay_with_item with quote_id" take is absent — the steer
+// REPLACES it, so the buy-back loop can't close — while no other turn shows it.
+func TestBuyBackQuoteSteerOnlyForOwnProducedOrAtCap(t *testing.T) {
+	const (
+		steer = "there's no reason to buy"
+		take  = "pay_with_item with quote_id"
+	)
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		got := renderScenario(sc)
+		want := sc.name == "maker_offered_own_ware_buy_quote"
+		if has := strings.Contains(got, steer); has != want {
+			t.Errorf("scenario %q: buy-back steer present=%v, want %v", sc.name, has, want)
+		}
+		if want && strings.Contains(got, take) {
+			t.Errorf("scenario %q: redundant buy-quote still shows the actionable take %q — it must be withheld", sc.name, take)
+		}
+	}
+}
+
 // TestStallRepairCueOnlyAtOwnWornStall is the LLM-118 cross-scenario invariant:
 // the "## Your stall" owner repair cue appears in EXACTLY the scenarios where the
 // actor stands at their OWN worn stall — never for a passerby (who gets the
@@ -637,6 +697,8 @@ func TestVendorOperatingCueOnlyDuringOperatingHours(t *testing.T) {
 	operating := map[string]bool{
 		"keeper_at_post_onshift":       true,
 		"keeper_staying_open_offshift": true,
+		// LLM-171: John keeps his tavern on shift, at post — legitimately operating.
+		"keeper_not_pitching_makers_own_ware": true,
 	}
 	for _, sc := range perceptionScenarios {
 		sc := sc
@@ -1425,6 +1487,157 @@ func smithBarteringAtTavern() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 		},
 	}
 	return snap, ezekielID, nil
+}
+
+// keeperNotPitchingMakersOwnWare is the LLM-171 seller side: John Ellis keeps
+// his tavern (on shift, at post) co-present with Ezekiel Crane the smith, and
+// John's stock includes skillet + nail he BOUGHT from Ezekiel. The "## Custom
+// at hand" cue lists those goods to pitch, so the golden pins the producer-note
+// line — "Ezekiel Crane makes nail and skillet themselves — don't pitch those
+// back to their own maker" — that steers the keeper off selling a smith his own
+// ware back (the live buy-back, where John read Ezekiel's sell-offer as a buy
+// and quoted skillets at him). A co-present customer who makes none of the goods
+// would draw no such note.
+func keeperNotPitchingMakersOwnWare() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		ezekielID = sim.ActorID("ezekiel")
+		johnID    = sim.ActorID("john")
+		forge     = sim.StructureID("blacksmith")
+		tavern    = sim.StructureID("tavern")
+		huddle    = sim.HuddleID("h1")
+	)
+	start, end := 360, 1320 // 06:00–22:00, on shift in the evening
+	now := 1140             // 19:00 — keeping the tavern, a customer present
+	published := time.Date(2026, 6, 25, 19, 0, 0, 0, time.UTC)
+	john := &sim.ActorSnapshot{
+		Kind:               sim.KindNPCStateful,
+		DisplayName:        "John Ellis",
+		Role:               "tavernkeeper",
+		State:              sim.StateIdle,
+		WorkStructureID:    tavern,
+		InsideStructureID:  tavern,
+		ScheduleStartMin:   &start,
+		ScheduleEndMin:     &end,
+		CurrentHuddleID:    huddle,
+		Coins:              267,
+		Needs:              map[sim.NeedKey]int{},
+		BusinessownerState: &sim.BusinessownerState{},
+		// Skillet + nail here came FROM Ezekiel — the reseller stock the cue would
+		// otherwise pitch straight back at its maker.
+		Inventory:     map[sim.ItemKind]int{"skillet": 4, "nail": 38},
+		Acquaintances: map[string]sim.Acquaintance{"Ezekiel Crane": {}},
+	}
+	ezekiel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Ezekiel Crane",
+		Role:              "blacksmith",
+		State:             sim.StateIdle,
+		WorkStructureID:   forge,
+		InsideStructureID: tavern,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		CurrentHuddleID:   huddle,
+		Coins:             0,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"skillet": 5},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "skillet", Source: sim.RestockSourceProduce, Max: 5},
+			{Item: "nail", Source: sim.RestockSourceProduce, Max: 20},
+		}},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{johnID: john, ezekielID: ezekiel},
+		Structures: map[sim.StructureID]*sim.Structure{
+			forge:  plainStructure(forge, "Blacksmith"),
+			tavern: plainStructure(tavern, "Tavern"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{johnID: {}, ezekielID: {}}},
+		},
+	}
+	return snap, johnID, nil
+}
+
+// makerOfferedOwnWareBuyQuote is the LLM-171 buyer side: Ezekiel Crane the smith
+// (skillet at his cap of 5, which he MAKES) is co-present with John Ellis, who
+// has posted a targeted skillet quote at him for 2 coins — the mis-pitched
+// buy-back quote from the live trace. The golden pins that the quote warrant
+// line withholds the actionable "pay_with_item with quote_id" take and instead
+// steers "these are wares you make yourself … decline", so a mis-pitched quote
+// can't close the buy-back loop. A quote for a good the buyer does NOT make
+// keeps its normal take.
+func makerOfferedOwnWareBuyQuote() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		ezekielID = sim.ActorID("ezekiel")
+		johnID    = sim.ActorID("john")
+		forge     = sim.StructureID("blacksmith")
+		tavern    = sim.StructureID("tavern")
+		huddle    = sim.HuddleID("h1")
+	)
+	start, end := 360, 1080 // 06:00–18:00
+	now := 1140             // 19:00 — off shift, visiting the tavern
+	published := time.Date(2026, 6, 25, 19, 0, 0, 0, time.UTC)
+	ezekiel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Ezekiel Crane",
+		Role:              "blacksmith",
+		State:             sim.StateIdle,
+		WorkStructureID:   forge,
+		InsideStructureID: tavern,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		CurrentHuddleID:   huddle,
+		Coins:             40,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"skillet": 5},
+		Acquaintances:     map[string]sim.Acquaintance{"John Ellis": {}},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "skillet", Source: sim.RestockSourceProduce, Max: 5},
+			{Item: "nail", Source: sim.RestockSourceProduce, Max: 20},
+		}},
+	}
+	john := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "John Ellis",
+		Role:              "tavernkeeper",
+		State:             sim.StateIdle,
+		WorkStructureID:   tavern,
+		InsideStructureID: tavern,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		CurrentHuddleID:   huddle,
+		Coins:             267,
+		Needs:             map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{ezekielID: ezekiel, johnID: john},
+		Structures: map[sim.StructureID]*sim.Structure{
+			forge:  plainStructure(forge, "Blacksmith"),
+			tavern: plainStructure(tavern, "Tavern"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{ezekielID: {}, johnID: {}}},
+		},
+	}
+	// John's targeted skillet quote at Ezekiel — the mis-pitched buy-back offer.
+	warrants := []sim.WarrantMeta{
+		{
+			TriggerActorID: johnID,
+			Reason: sim.SceneQuoteTargetedWarrantReason{
+				QuoteID: 1, SellerID: johnID,
+				Lines:  []sim.QuoteLine{{ItemKind: "skillet", Qty: 1}},
+				Amount: 2,
+			},
+			SourceEventID: 1,
+		},
+	}
+	return snap, ezekielID, warrants
 }
 
 // peersHoldingSameFood is the LLM-138 degenerate-buy scene: two hungry NPCs

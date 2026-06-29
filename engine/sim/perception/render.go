@@ -193,6 +193,15 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 		return p.EatHereKinds[kind]
 	}
 
+	// buyRedundancy reports, for a quoted item, whether the buyer MAKES it itself
+	// (produced) or already holds it at cap (atCap) — LLM-171. renderWarrantLine
+	// uses it to strip the actionable take from a buy-quote whose every line is
+	// redundant, so a co-present seller's mis-pitched quote can't drive the buyer
+	// to buy back its own ware or overflow its carry.
+	buyRedundancy := func(kind sim.ItemKind) (produced, atCap bool) {
+		return p.OwnProducedKinds[kind], p.AtCapKinds[kind]
+	}
+
 	// stockOf reports the subject's current on-hand of a kind and whether they
 	// stock it at all — the seller-side bound for the pay-offer cue
 	// (ZBBS-HOME-459). Built from the standing inventory readout (real goods,
@@ -301,7 +310,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// routine-check-in line for the genuinely-empty case). Warrant caps +
 	// carry-forward accounting land in `out` as before.
 	if len(warrants) > 0 || len(payOffers) == 0 {
-		renderWarrants(&durable, warrants, nameOf, placeNameOf, eatHereKind, cfg, &out)
+		renderWarrants(&durable, warrants, nameOf, placeNameOf, eatHereKind, buyRedundancy, cfg, &out)
 	}
 
 	// Ephemeral: the turn-state nudge, the act-now coda, and the rest-first steer
@@ -1333,7 +1342,15 @@ func renderOfferableCustomers(b *strings.Builder, v *OfferableCustomersView) {
 	// at offer_trade so a goods-for-goods swap has a legible execution path
 	// instead of dissolving into a verbal agreement nothing commits.
 	fmt.Fprintf(b, "If one of them is carrying something you would rather have than coin, you can instead propose a direct trade — call offer_trade with the goods you will give and what you want from them. They are then free to accept, decline, or counter.\n")
-	fmt.Fprintf(b, "Your goods to sell: %s.\n\n", strings.Join(goods, ", "))
+	fmt.Fprintf(b, "Your goods to sell: %s.\n", strings.Join(goods, ", "))
+	// LLM-171: a co-present customer who MAKES one of these goods is the wrong
+	// person to pitch it to — your stock of it came from a maker like them. Name
+	// the overlap so the keeper doesn't sell a smith his own skillet back (which a
+	// 70B keeper otherwise does, reading the maker's own sell-offer as a buy-ask).
+	for _, note := range v.ProducerNotes {
+		fmt.Fprintf(b, "%s makes %s themselves — don't pitch those back to their own maker; offer them to other customers instead.\n", sanitizeInline(note.CustomerName), joinNames(note.Goods))
+	}
+	b.WriteString("\n")
 }
 
 // renderRelationships writes the "## What you remember of those here" section —
@@ -2228,12 +2245,17 @@ func isSectionSurfacedKind(k sim.WarrantKind) bool {
 	}
 }
 
-func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(sim.ActorID) string, placeNameOf func(string) string, eatHereKind func(sim.ItemKind) bool, cfg RenderConfig, out *RenderedPrompt) {
+func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(sim.ActorID) string, placeNameOf func(string) string, eatHereKind func(sim.ItemKind) bool, buyRedundancy func(sim.ItemKind) (produced, atCap bool), cfg RenderConfig, out *RenderedPrompt) {
 	// Nil-safe for direct/test callers — the main Render path always passes
 	// its closure, but the signature grew by a callback (ZBBS-WORK-405) and
 	// a nil here must degrade to "no eat-here tag", not panic (code_review).
 	if eatHereKind == nil {
 		eatHereKind = func(sim.ItemKind) bool { return false }
+	}
+	// Same nil-safety for the LLM-171 buyer-redundancy callback: a nil here must
+	// degrade to "never redundant" (every quote keeps its actionable take).
+	if buyRedundancy == nil {
+		buyRedundancy = func(sim.ItemKind) (bool, bool) { return false, false }
 	}
 	// ZBBS-WORK-407: drop warrants already surfaced by a dedicated section so they
 	// don't double-render as the vague "something happened nearby" catch-all. They
@@ -2269,7 +2291,7 @@ func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(
 			cutoff = i
 			break
 		}
-		line, truncated := renderWarrantLine(i+1, w, nameOf, placeNameOf, eatHereKind, cfg.MaxBytesPerWarrant)
+		line, truncated := renderWarrantLine(i+1, w, nameOf, placeNameOf, eatHereKind, buyRedundancy, cfg.MaxBytesPerWarrant)
 		if sectionBytes+len(line) > cfg.MaxSectionBytes && i > 0 {
 			// At least one warrant already rendered; this one would
 			// overflow the section cap — stop here and carry the rest.
@@ -2301,7 +2323,7 @@ func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(
 // sentence. The untrusted free-text payload (a speech excerpt) is sanitized and
 // capped; the returned bool reports whether that text was truncated.
 // ZBBS-HOME-339.
-func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string, placeNameOf func(string) string, eatHereKind func(sim.ItemKind) bool, maxTextBytes int) (string, bool) {
+func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string, placeNameOf func(string) string, eatHereKind func(sim.ItemKind) bool, buyRedundancy func(sim.ItemKind) (produced, atCap bool), maxTextBytes int) (string, bool) {
 	switch r := w.Reason.(type) {
 	case sim.PCSpeechWarrantReason:
 		return renderSpeechWarrantLine(n, nameOf(r.Speaker), r.Excerpt, maxTextBytes)
@@ -2356,7 +2378,12 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 				break
 			}
 		}
-		return renderQuoteWarrantLine(n, nameOf(r.SellerID), r, eatHere), false
+		// LLM-171: when EVERY line in the quote is a good this buyer makes itself
+		// or already holds at cap, the take is degenerate — strip the actionable
+		// take and steer them off it. A mixed bundle (≥1 genuinely wanted good)
+		// renders with its normal take.
+		redundancy := buyQuoteRedundancyReason(r.Lines, buyRedundancy)
+		return renderQuoteWarrantLine(n, nameOf(r.SellerID), r, eatHere, redundancy), false
 	case sim.PayResolvedWarrantReason:
 		return renderPayResolvedWarrantLine(n, nameOf(r.Seller), r, maxTextBytes), false
 	case sim.ServeHandoverWarrantReason:
@@ -2449,13 +2476,45 @@ func renderNeedNudgeLine(n int, need sim.NeedKey) string {
 	}
 }
 
+// buyQuoteRedundancyReason classifies whether a buy-quote is pointless for the
+// buyer: every line is a good they MAKE themselves ("produced") or already hold
+// at cap ("atcap"), so taking it just buys back their own ware or overflows
+// their carry (LLM-171). Returns "" when at least one line is a good worth
+// buying, so the quote renders with its normal actionable take. "produced" wins
+// the label when every line is produced; a mix of produced + at-cap lines is
+// "atcap" so the steer leads with the carry reason. Nil/empty inputs → "".
+func buyQuoteRedundancyReason(lines []sim.QuoteLine, redundant func(sim.ItemKind) (produced, atCap bool)) string {
+	if len(lines) == 0 || redundant == nil {
+		return ""
+	}
+	allProduced := true
+	for _, ln := range lines {
+		produced, atCap := redundant(ln.ItemKind)
+		if !produced && !atCap {
+			return "" // a genuinely wanted good — render the normal take
+		}
+		if !produced {
+			allProduced = false
+		}
+	}
+	if allProduced {
+		return "produced"
+	}
+	return "atcap"
+}
+
 // renderQuoteWarrantLine renders a vendor's scene quote aimed directly at this
 // actor — a standing offer they can take by paying. Names the seller; the
 // terms come straight off the warrant payload. The take-instruction carries
 // the quote_id: without it the buyer model answered a standing quote with a
 // bare pay_with_item, minting a crossing offer that deadlocked against the
 // quote (ZBBS-HOME-424) — the fast path existed but was never legible.
-func renderQuoteWarrantLine(n int, seller string, r sim.SceneQuoteTargetedWarrantReason, eatHere bool) string {
+//
+// redundancy (LLM-171), when non-empty, replaces the actionable take with a
+// steer: "produced" — the buyer makes these wares itself; "atcap" — it already
+// holds all of these it can carry. Either way there is no reason to buy, so the
+// quote_id take is withheld and the line tells the buyer to decline.
+func renderQuoteWarrantLine(n int, seller string, r sim.SceneQuoteTargetedWarrantReason, eatHere bool, redundancy string) string {
 	unit := "coins"
 	if r.Amount == 1 {
 		unit = "coin"
@@ -2492,6 +2551,15 @@ func renderQuoteWarrantLine(n int, seller string, r sim.SceneQuoteTargetedWarran
 		// r.Lines[0], so guard the empty case instead of risking a panic on
 		// malformed/legacy warrant data. Bare coin take, no item to name.
 		take = fmt.Sprintf(" To take it, call pay_with_item with quote_id %d and the stated amount — it settles at once.", r.QuoteID)
+	}
+	// LLM-171: the buyer makes or is at cap on every quoted good — withhold the
+	// take entirely and steer them to decline, so a mis-pitched quote can't drive
+	// a buy-back of their own ware or an over-cap purchase.
+	switch redundancy {
+	case "produced":
+		take = " But these are wares you make yourself — there's no reason to buy them. Decline and tend to your own work."
+	case "atcap":
+		take = " But you already hold all of these you can carry — there's no reason to buy more. Decline and move on."
 	}
 	// An overheard public quote (huddle fan-out, ZBBS-HOME-431) is an ad
 	// announced to the conversation, not a direct address — "offers" not

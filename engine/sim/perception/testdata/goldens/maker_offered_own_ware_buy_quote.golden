@@ -1,0 +1,17 @@
+# Your turn
+
+## What just happened
+1. John Ellis offers you skillet for 2 coins. But these are wares you make yourself — there's no reason to buy them. Decline and tend to your own work.
+
+
+## You
+Coins in your purse: 40.
+You are carrying: skillet (x5).
+
+## Around you
+You are inside the Tavern, with John Ellis.
+Evening settles over the village.
+
+You keep your trade at the Blacksmith (structure_id: blacksmith) — you can head back there whenever you wish.
+
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.

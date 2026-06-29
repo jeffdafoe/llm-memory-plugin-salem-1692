@@ -169,6 +169,13 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	// smith knows a nail's worth away from the forge — so it is gated on company,
 	// not on AtOwnBusiness like the forge/restock cues.
 	p.TradeValue = buildTradeValue(snap, actorID, actorSnap, len(p.Surroundings.HuddleMembers) > 0)
+	// LLM-171: the buyer-side producer-awareness sets — the goods the subject makes
+	// itself, and the goods it already holds at cap. Render strips the actionable
+	// take from a buy-quote whose every line falls in these sets (buying back your
+	// own ware / overflowing your carry), so a co-present seller's mis-pitched quote
+	// can't close a degenerate loop.
+	p.OwnProducedKinds = buildOwnProducedKinds(actorSnap)
+	p.AtCapKinds = buildAtCapKinds(actorSnap, p.Actor.Inventory)
 	p.StallRepair = buildStallRepair(snap, actorID, actorSnap)
 	p.StallCondition = buildStallCondition(snap, actorID, actorSnap)
 	// customerEngaged (LLM-90): the seller-side "someone's at my stall right now"
@@ -1214,6 +1221,87 @@ func buildEatHereKinds(snap *sim.Snapshot) map[sim.ItemKind]bool {
 	return kinds
 }
 
+// buildOwnProducedKinds collects the item kinds the subject MAKES itself — its
+// produce-source restock entries. The buyer-side producer-awareness guard
+// (LLM-171) consults it to strip the actionable take from a buy-quote for a good
+// the actor produces (a smith has no reason to buy back his own skillet).
+// Returns nil when the actor has no produce policy.
+func buildOwnProducedKinds(actorSnap *sim.ActorSnapshot) map[sim.ItemKind]bool {
+	if actorSnap == nil || actorSnap.RestockPolicy == nil {
+		return nil
+	}
+	var kinds map[sim.ItemKind]bool
+	for _, e := range actorSnap.RestockPolicy.ProduceEntries() {
+		if kinds == nil {
+			kinds = make(map[sim.ItemKind]bool)
+		}
+		kinds[e.Item] = true
+	}
+	return kinds
+}
+
+// buildAtCapKinds collects the item kinds the subject already holds at or above
+// its restock cap, across ALL restock sources with a configured cap (produce,
+// buy, forage). The buyer-side guard (LLM-171) strips the actionable take from a
+// buy-quote for such a good — at cap, buying more just overflows what the actor
+// can carry. On-hand comes from the standing inventory readout (real carried
+// goods). Returns nil when nothing is capped or at cap.
+func buildAtCapKinds(actorSnap *sim.ActorSnapshot, inventory []InventoryItem) map[sim.ItemKind]bool {
+	if actorSnap == nil || actorSnap.RestockPolicy == nil {
+		return nil
+	}
+	// Sum per kind (+=, not =): the standing inventory is map-derived so kinds are
+	// unique today, but the at-cap gate turns on an exact threshold compare — sum
+	// defensively so a future multi-row inventory can't undercount past the cap.
+	onHand := make(map[sim.ItemKind]int, len(inventory))
+	for _, it := range inventory {
+		onHand[it.kind] += it.Qty
+	}
+	var kinds map[sim.ItemKind]bool
+	for _, e := range actorSnap.RestockPolicy.Restock {
+		limit := e.Cap()
+		if limit <= 0 {
+			continue // no cap configured — never "at cap"
+		}
+		if onHand[e.Item] >= limit {
+			if kinds == nil {
+				kinds = make(map[sim.ItemKind]bool)
+			}
+			kinds[e.Item] = true
+		}
+	}
+	return kinds
+}
+
+// customerProducedGoods returns the labels of the seller's goods that `customer`
+// makes itself — the intersection of the seller's pitchable goods with the
+// customer's produce manifest (LLM-171). Used to steer the seller off pitching a
+// maker their own ware back (the buy-back loop). Nil-safe; returns nil when the
+// customer makes none of them.
+func customerProducedGoods(snap *sim.Snapshot, customer sim.ActorID, goods []OfferableGood) []string {
+	if snap == nil {
+		return nil
+	}
+	cust := snap.Actors[customer]
+	if cust == nil || cust.RestockPolicy == nil {
+		return nil
+	}
+	produced := make(map[sim.ItemKind]bool)
+	for _, e := range cust.RestockPolicy.ProduceEntries() {
+		produced[e.Item] = true
+	}
+	if len(produced) == 0 {
+		return nil
+	}
+	var made []string
+	for _, g := range goods {
+		if produced[g.kind] {
+			made = append(made, g.Label)
+		}
+	}
+	return made
+}
+
 // buildWarrantActorNames resolves every OTHER actor referenced by a warrant in
 // the batch to its acquaintance-gated label, so Render never leaks a raw actor
 // UUID into the "## What just happened" lines (ZBBS-HOME-339). The subject's
@@ -1860,13 +1948,14 @@ func buildOfferableCustomers(snap *sim.Snapshot, subject sim.ActorID, atOwnBusin
 		if it.Label == "" {
 			continue
 		}
-		goods = append(goods, OfferableGood{Label: it.Label, OnHand: it.Qty})
+		goods = append(goods, OfferableGood{Label: it.Label, OnHand: it.Qty, kind: it.kind})
 	}
 	if len(goods) == 0 {
 		return nil
 	}
 	// members is already sorted by ID (buildSurroundings), so names is deterministic.
 	var names []string
+	var producerNotes []ProducerNote
 	for _, m := range members {
 		if customerHasPendingOfferWithSeller(snap, m.ID, subject) {
 			continue
@@ -1874,12 +1963,19 @@ func buildOfferableCustomers(snap *sim.Snapshot, subject sim.ActorID, atOwnBusin
 		if sellerHasActiveQuoteToBuyer(snap, subject, m.ID) {
 			continue
 		}
-		names = append(names, descriptorLabel(m.DisplayName, m.Role, m.Acquainted))
+		label := descriptorLabel(m.DisplayName, m.Role, m.Acquainted)
+		names = append(names, label)
+		// LLM-171: flag the goods this customer MAKES themselves, so Render steers
+		// the seller off pitching a maker their own ware back — the seller's stock
+		// of those came from a maker like them.
+		if made := customerProducedGoods(snap, m.ID, goods); len(made) > 0 {
+			producerNotes = append(producerNotes, ProducerNote{CustomerName: label, Goods: made})
+		}
 	}
 	if len(names) == 0 {
 		return nil
 	}
-	return &OfferableCustomersView{CustomerNames: names, Goods: goods}
+	return &OfferableCustomersView{CustomerNames: names, Goods: goods, ProducerNotes: producerNotes}
 }
 
 // customerHasPendingOfferWithSeller reports whether `buyer` has a pending

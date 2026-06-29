@@ -24,7 +24,7 @@ func TestRenderWarrants_SuppressesSectionSurfacedKinds(t *testing.T) {
 	} {
 		var b strings.Builder
 		out := &RenderedPrompt{}
-		renderWarrants(&b, []sim.WarrantMeta{w}, nameOf, placeNameOf, nil, DefaultRenderConfig(), out)
+		renderWarrants(&b, []sim.WarrantMeta{w}, nameOf, placeNameOf, nil, nil, DefaultRenderConfig(), out)
 		got := b.String()
 		if strings.Contains(got, "Something happened") {
 			t.Errorf("%s rendered the vague catch-all line:\n%s", w.Kind(), got)
@@ -49,7 +49,7 @@ func TestRenderWarrants_SuppressedKindKeepsContiguousNumbering(t *testing.T) {
 		{Reason: sim.PayOfferWarrantReason{}},                                             // suppressed
 		{Reason: sim.NPCSpeechWarrantReason{Speaker: "ezekiel", Excerpt: "Good morrow."}}, // rendered
 	}
-	renderWarrants(&b, warrants, nameOf, placeNameOf, nil, DefaultRenderConfig(), out)
+	renderWarrants(&b, warrants, nameOf, placeNameOf, nil, nil, DefaultRenderConfig(), out)
 	got := b.String()
 	if strings.Contains(got, "Something happened") {
 		t.Errorf("pay-offer leaked the vague catch-all:\n%s", got)
