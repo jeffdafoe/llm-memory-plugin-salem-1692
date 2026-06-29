@@ -155,6 +155,37 @@ func TestHasSolicitableAudience_OnlyDeclinedSuppresses(t *testing.T) {
 	}
 }
 
+// LLM-181 (code_review): solicitability resolves by the LATEST offer for a pair, so
+// an older declined offer must not mask a newer non-declined one, and a newer decline
+// supersedes an older completed job. LaborID is monotonic, so highest id == most recent.
+func TestHasSolicitableAudience_LatestOfferWins(t *testing.T) {
+	const (
+		lewis  = sim.ActorID("lewis")
+		josiah = sim.ActorID("josiah")
+	)
+	subject := &sim.ActorSnapshot{HomeStructureID: "walker-residence"}
+	surr := SurroundingsView{HuddleMembers: []HuddleMember{solicitMember(josiah)}}
+	snap := &sim.Snapshot{
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			josiah: {HomeStructureID: "thorne-house", WorkStructureID: "general-store"},
+		},
+		LaborLedger: map[sim.LaborID]*sim.LaborOffer{
+			1: {ID: 1, WorkerID: lewis, EmployerID: josiah, State: sim.LaborStateDeclined},
+			2: {ID: 2, WorkerID: lewis, EmployerID: josiah, State: sim.LaborStatePending},
+		},
+	}
+	if !hasSolicitableAudience(snap, lewis, subject, surr) {
+		t.Error("older declined + newer pending: want solicitable (latest offer wins)")
+	}
+
+	// A newer decline after an older completed job re-suppresses.
+	snap.LaborLedger[2].State = sim.LaborStateCompleted
+	snap.LaborLedger[3] = &sim.LaborOffer{ID: 3, WorkerID: lewis, EmployerID: josiah, State: sim.LaborStateDeclined}
+	if hasSolicitableAudience(snap, lewis, subject, surr) {
+		t.Error("newer declined after older completed: want NOT solicitable (latest is declined)")
+	}
+}
+
 func TestSharesHouseholdAndWorkplace(t *testing.T) {
 	empty := &sim.ActorSnapshot{}
 	if sharesHousehold(empty, empty) {

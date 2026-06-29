@@ -3216,27 +3216,35 @@ func isSolicitableEmployer(snap *sim.Snapshot, subjectID sim.ActorID, subject *s
 	return !sharesHousehold(subject, other) && !sharesWorkplace(subject, other)
 }
 
-// employerDeclinedSubject reports whether the candidate employer holds a terminal
-// declined labor offer from this worker in the ledger. A worker who solicited an
-// employer and was turned down must stop counting that employer as a live prospect:
-// the decline IS the engine's "no one here can hire you" memory, and treating the
-// refuser as still-solicitable is exactly what suppressed the seek-work directive
-// and trapped a worker re-soliciting the same refusal tick after tick (LLM-181 —
-// Lewis Walker at the General Store). Dropping the declined employer from the
-// audience re-arms SeekWorkPlaces, so the worker is steered to a business instead.
+// employerDeclinedSubject reports whether the candidate employer's MOST RECENT labor
+// offer from this worker ended in a decline. A worker who solicited an employer and
+// was turned down must stop counting that employer as a live prospect: the decline IS
+// the engine's "no one here can hire you" memory, and treating the refuser as
+// still-solicitable is exactly what suppressed the seek-work directive and trapped a
+// worker re-soliciting the same refusal tick after tick (LLM-181 — Lewis Walker at
+// the General Store). Dropping the declined employer from the audience re-arms
+// SeekWorkPlaces, so the worker is steered to a business instead.
 //
-// Scoped to LaborStateDeclined — an Expired (ignored) or FailedUnavailable offer is
-// a different signal, left for a follow-up. The offer lingers up to
-// LaborLedgerTerminalRetentionDefault (1h) before the reaper removes it, which
-// bounds the cooldown; once it ages out — or the worker walks off and returns — the
-// employer is solicitable again. Pure ledger scan, mirroring subjectHasPendingLaborOffer.
+// Resolves by the LATEST offer for the (worker, employer) pair — LaborID is minted
+// monotonically (nextLaborSeq), so the highest id is the most recent — and suppresses
+// only when that latest offer is Declined. A newer pending re-ask or a later completed
+// job therefore un-suppresses even if an older declined offer for the same pair is
+// still lingering in the ledger (code_review). Scoped to LaborStateDeclined: an
+// Expired (no answer) or FailedUnavailable offer is a different signal, left for a
+// follow-up. The suppression ages out only when the ledger reaper removes the declined
+// offer (LaborLedgerTerminalRetentionDefault, 1h) — walking away does not clear it.
+// Pure ledger scan, mirroring subjectHasPendingLaborOffer.
 func employerDeclinedSubject(snap *sim.Snapshot, subjectID, candidate sim.ActorID) bool {
+	var latest *sim.LaborOffer
 	for _, o := range snap.LaborLedger {
-		if o != nil && o.State == sim.LaborStateDeclined && o.WorkerID == subjectID && o.EmployerID == candidate {
-			return true
+		if o == nil || o.WorkerID != subjectID || o.EmployerID != candidate {
+			continue
+		}
+		if latest == nil || o.ID > latest.ID {
+			latest = o
 		}
 	}
-	return false
+	return latest != nil && latest.State == sim.LaborStateDeclined
 }
 
 // sharesHousehold reports whether a and b live in the same (non-empty) home
