@@ -139,15 +139,21 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 		p.Laboring == nil &&
 		!subjectHasPendingLaborOffer(snap, actorID) &&
 		hasSolicitableAudience(snap, actorSnap, p.Surroundings)
-	// LLM-160: the businesses directory is a STANDING cue for a broke idle worker
-	// with no employer present — not a rare warrant-gated one. Pre-fix it rode only
-	// the paced seek-work warrant tick (LLM-152, ~7% of ticks), so on the ordinary
-	// conversational ticks that dominate the model had no list of real place names
-	// and invented destinations ("the market", "the Well") that move_to can't
-	// resolve — it talked about leaving and never left. When a solicitable employer
-	// IS present the affordance (CanSolicitWork) already covers "offer your labor to
-	// them"; when none is, surface the town's businesses by their resolvable names
-	// every tick so move_to actually has a target it can hit.
+	// LLM-160: the businesses directory is a STANDING cue for a workless idle
+	// worker with no employer present — not a rare warrant-gated one. Pre-fix it
+	// rode only the paced seek-work warrant tick (LLM-152, ~7% of ticks), so on the
+	// ordinary conversational ticks that dominate the model had no list of real
+	// place names and invented destinations ("the market", "the Well") that move_to
+	// can't resolve — it talked about leaving and never left. When a solicitable
+	// employer IS present the affordance (CanSolicitWork) already covers "offer your
+	// labor to them"; when none is, surface the town's businesses by their
+	// resolvable names every tick so move_to actually has a target it can hit.
+	//
+	// LLM-168: gated on WORKLESS (no work_structure_id), not broke (Coins==0). A
+	// workless worker has no post to keep, so seeking odd jobs is its only on-shift
+	// activity whether or not it is penniless; the brand-new Walker family idled all
+	// shift holding a few coins because the old broke gate never surfaced this for
+	// them. A worker with a workplace is steered to its post by the duty steer.
 	//
 	// "idle" is load-bearing: a populated SeekWorkPlaces IS the render-side directive
 	// bit (it suppresses the owed-reply nag and swaps the triage coda to "go now"), so
@@ -155,7 +161,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// a mid source-activity — those are their own coda states, and the directive must
 	// not fire (or drop the reply nag) while the worker is already committed to one.
 	if subjectIsWorker(actorSnap) &&
-		p.Actor.Coins == 0 &&
+		actorSnap.WorkStructureID == "" &&
 		p.Laboring == nil &&
 		p.Actor.InFlightMove == nil &&
 		p.Actor.InFlightSourceActivity == nil &&

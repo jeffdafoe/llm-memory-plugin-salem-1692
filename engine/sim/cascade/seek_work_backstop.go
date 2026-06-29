@@ -8,14 +8,14 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
 
-// seek_work_backstop.go — LLM-141. The goroutine driver for the idle-broke-
-// worker backstop, the sibling of red_need_backstop.go. The criterion + scope +
+// seek_work_backstop.go — LLM-141/168. The goroutine driver for the idle-
+// workless-worker backstop, the sibling of red_need_backstop.go. The criterion + scope +
 // per-actor exponential backoff live in the substrate Command
 // sim.EvaluateSeekWorkBackstop (engine/sim/seek_work_backstop_commands.go);
 // this slice owns only the goroutine + sweep cadence.
 //
 // Cadence mirrors the red-need backstop: a short sweep interval (30 s) sets the
-// detection latency for a newly-broke idle worker, while the PER-ACTOR backoff
+// detection latency for a newly-workless idle worker, while the PER-ACTOR backoff
 // in the Command — not the sweep rate — is what bounds LLM cost for a worker
 // who can never find work. Unlike the red-need driver this uses a fixed
 // interval constant rather than a WorldSettings knob (none plumbed yet — add
@@ -32,7 +32,7 @@ func RegisterSeekWorkBackstop(ctx context.Context, w *sim.World) {
 }
 
 // runSeekWorkBackstopSweep is the goroutine body. An immediate first sweep on
-// entry (so a worker already broke at startup doesn't wait a full cadence
+// entry (so a worker already workless at startup doesn't wait a full cadence
 // interval), then ticks at seekWorkBackstopSweepInterval.
 func runSeekWorkBackstopSweep(ctx context.Context, w *sim.World) {
 	if ctx.Err() != nil {
@@ -80,7 +80,7 @@ func runOneSeekWorkBackstopSweep(ctx context.Context, w *sim.World) {
 }
 
 // seekWorkBackstopSweepInterval is the sweep cadence — the detection latency
-// for a newly-broke idle worker. 30 s, matching the red-need backstop default;
+// for a newly-workless idle worker. 30 s, matching the red-need backstop default;
 // the per-actor exponential backoff (base 90 s in the Command) bounds repeat
 // cost. The sweep itself is cheap: per-actor field reads on the world goroutine.
 const seekWorkBackstopSweepInterval = 30 * time.Second

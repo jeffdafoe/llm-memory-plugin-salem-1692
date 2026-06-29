@@ -317,7 +317,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// are instructions for THIS tick, not facts to remember. The turn-line lands
 	// before the coda so the coda's "weigh everything above" sees it; the coda
 	// itself swaps to a wait-framing when the actor is awaiting a reply.
-	// LLM-160: a populated SeekWorkPlaces means a broke worker with no employer
+	// LLM-160: a populated SeekWorkPlaces means a workless worker with no employer
 	// present — the directive is "leave for a business". That overrides the
 	// conversational reply-pressure (suppress the owed-reply nag) and swaps the coda
 	// to a decisive go-line, so the model stops agree-looping and actually moves.
@@ -477,14 +477,17 @@ func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.
 				"without cause.\n",
 			renderInFlightMove(*inFlightMove))
 	case seekWork:
-		// Seek-work directive coda (LLM-160): a broke worker with no employer present
-		// has one productive move — leave and go to a business. The awaiting-reply and
-		// default codas let the huddle's "X is waiting for your reply" social pressure
-		// win, and the model re-agreed ("yes, let's go") tick after tick without ever
-		// calling move_to (the live Walker agree-loop). Make leaving the imperative; the
-		// businesses directory rendered above carries the resolvable destination names.
-		// Ordered below the in-flight codas so an actor already walking keeps walking.
-		b.WriteString("You have no coin, and no one here can hire you. Don't keep talking about going — pick one of the businesses listed above and call move_to now.\n")
+		// Seek-work directive coda (LLM-160/168): a workless worker with no employer
+		// present has one productive move — leave and go to a business. The awaiting-
+		// reply and default codas let the huddle's "X is waiting for your reply" social
+		// pressure win, and the model re-agreed ("yes, let's go") tick after tick without
+		// ever calling move_to (the live Walker agree-loop). Make leaving the imperative;
+		// the businesses directory rendered above carries the resolvable destination
+		// names. Coins-neutral — a workless worker may hold a little coin and still have
+		// no work of its own (LLM-168), so the coda asserts only the actionable facts (no
+		// hirer here, go now), not the purse state, which the self-state line already
+		// carries. Ordered below the in-flight codas so an actor already walking keeps walking.
+		b.WriteString("No one here can hire you. Don't keep talking about going — pick one of the businesses listed above and call move_to now.\n")
 	case conversationLooping:
 		// Conversational-loop coda (LLM-169): the actor's huddle is going in
 		// circles — members re-stating the same agreement without it converting to
@@ -494,7 +497,7 @@ func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.
 		// act on what's agreed, or let it rest with done(), anything but say it
 		// again. The social-loop analogue of the seek-work go-line above; the
 		// owed-reply nag is suppressed in renderTurnState so the two steers agree.
-		// Ordered below seek-work so a broke worker still gets the leave-for-work
+		// Ordered below seek-work so a workless worker still gets the leave-for-work
 		// directive, and above awaiting-reply since "looping" is the more specific
 		// read of why a reply is pending.
 		b.WriteString("You and the others here keep saying the same thing — the matter is already settled between you. Don't say it again: do what you've agreed — move, tend your work or a need — or call done() and let the moment rest. Speak again only if you truly have something new.\n")
@@ -2357,13 +2360,15 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 	case sim.AdminDirectiveWarrantReason:
 		return renderImpulseWarrantLine(n, r.Message, maxTextBytes)
 	case sim.SeekWorkWarrantReason:
-		// LLM-141: a broke worker is woken to go earn. Engine-authored felt
-		// impulse, generic (no named hirer) — the worker decides freely where to
-		// go and whom to ask. Wake-from-anywhere nudge in the style of the
-		// stall-repair / production-choice lines; the standing labor affordance
-		// ("you take work for pay … solicit_work") renders separately once it is
-		// co-present with someone.
-		return fmt.Sprintf("%d. Your purse is empty, and you take work for pay — seek out someone who could use a hand and offer your labor.\n", n), false
+		// LLM-141/168: a workless worker (no post of its own) is woken to go find
+		// odd jobs. Engine-authored felt impulse, generic (no named hirer) — the
+		// worker decides freely where to go and whom to ask. Wake-from-anywhere
+		// nudge in the style of the stall-repair / production-choice lines; the
+		// standing labor affordance ("you take work for pay … solicit_work") renders
+		// separately once it is co-present with someone. Framed on having no work of
+		// its own, not an empty purse — the nudge fires for a workless worker whether
+		// or not it holds coin (LLM-168).
+		return fmt.Sprintf("%d. You have no work of your own to tend, and you take work for pay — seek out someone who could use a hand and offer your labor.\n", n), false
 	case sim.ArrivalWarrantReason:
 		return renderArrivalWarrantLine(n, nameOf(w.TriggerActorID), r, placeNameOf), false
 	case sim.NeedThresholdWarrantReason:
