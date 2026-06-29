@@ -180,6 +180,23 @@ func TestBuildEveningLeisure(t *testing.T) {
 			t.Fatalf("want nil while walking to the venue, got %+v", v)
 		}
 	})
+	t.Run("nil walking home (chose the stay-home option)", func(t *testing.T) {
+		// The cue offers home as an actionable move_to token; a model that takes it
+		// must not be re-pumped the same invitation the whole walk home (code_review).
+		a := eveningWorker("")
+		a.MoveDestKind = sim.MoveDestinationStructureEnter
+		a.MoveDestStructureID = "cottage"
+		if v := buildEveningLeisure(eveningSnap(1230), a, eveningAnchors); v != nil {
+			t.Fatalf("want nil while walking home, got %+v", v)
+		}
+	})
+	t.Run("nil while sleeping", func(t *testing.T) {
+		a := eveningWorker("")
+		a.State = sim.StateSleeping
+		if v := buildEveningLeisure(eveningSnap(1230), a, eveningAnchors); v != nil {
+			t.Fatalf("want nil for a sleeping actor (awake-only), got %+v", v)
+		}
+	})
 	t.Run("nil before the window (still on shift)", func(t *testing.T) {
 		if v := buildEveningLeisure(eveningSnap(1000), eveningWorker("blacksmith"), eveningAnchors); v != nil {
 			t.Fatalf("want nil pre-window, got %+v", v)

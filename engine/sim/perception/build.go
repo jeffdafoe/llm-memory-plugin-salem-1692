@@ -1598,6 +1598,16 @@ func buildDutySteer(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapsho
 			// the agent. buildEveningLeisure fires on the same window, and the
 			// noop-skip gate keys on EveningLeisure in this steer's place so the
 			// idle agent still ticks and sees the invitation.
+			//
+			// Suppression is keyed on the WINDOW, not on whether the evening cue
+			// actually rendered (code_review): "no turn-in pressure during the
+			// evening" must hold even in the cue's cleared states — most importantly
+			// once the agent has REACHED the tavern (the cue clears on at-venue), it
+			// must not then be told to go home. Suppress-only-when-cue-present would
+			// reintroduce exactly that nag. The lone window-but-no-cue case is a
+			// village with no tavern placed (degenerate): the agent gets no
+			// invitation and still no turn-in pressure, idling cheaply until Lever 1
+			// beds it — an acceptable, consistent fallback.
 			if inEveningWindow(snap, a) {
 				return nil
 			}
@@ -1726,6 +1736,13 @@ func buildEveningLeisure(snap *sim.Snapshot, a *sim.ActorSnapshot, anchors *Anch
 	if a.Kind != sim.KindNPCStateful && a.Kind != sim.KindNPCShared {
 		return nil
 	}
+	// Awake only (the ticket's "awake" requirement). A homed agent should be awake
+	// through the evening window — Lever 1 beds it at 22:00, the window's close —
+	// but guard explicitly so a sleeping actor that reaches perception is never
+	// cued to the tavern. code_review.
+	if a.State == sim.StateSleeping {
+		return nil
+	}
 	// Homed only.
 	if anchors.HomeID == "" {
 		return nil
@@ -1749,11 +1766,16 @@ func buildEveningLeisure(snap *sim.Snapshot, a *sim.ActorSnapshot, anchors *Anch
 	if !ok {
 		return nil
 	}
-	// Already at the tavern, or walking there → acted on; don't re-pump.
+	// Already at the tavern → acted on; don't re-pump.
 	if a.InsideStructureID == venueID {
 		return nil
 	}
-	if a.MoveDestKind == sim.MoveDestinationStructureEnter && a.MoveDestStructureID == venueID {
+	// Walking to EITHER offered destination — the tavern, or home (the cue gives
+	// the home as an actionable token too) → the choice is made; don't re-pump the
+	// same invitation at the agent's back the whole walk (the Ezekiel lesson; the
+	// in-flight move line + mid-walk coda already keep it on course). code_review.
+	if a.MoveDestKind == sim.MoveDestinationStructureEnter &&
+		(a.MoveDestStructureID == venueID || a.MoveDestStructureID == anchors.HomeID) {
 		return nil
 	}
 	return &EveningLeisureView{
