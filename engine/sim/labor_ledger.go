@@ -35,6 +35,15 @@ import (
 // coin state to recover. The actor's LaboringUntil mirror is transient for
 // the same reason: persisting it without the ledger would orphan the worker
 // in StateLaboring forever.
+//
+// Consequence for the LLM-187 employer-wake warrant: there is deliberately NO
+// labor analog of pay_ledger.go's restartReStampLaborOfferWarrants. The pay
+// re-stamp is itself dormant-by-design (PayLedger is likewise restart-lossy),
+// and labor's restart-lossy ledger means LoadWorld holds zero pending offers
+// to re-advertise — so a re-stamp pass would never have a row to walk. The
+// restart-stable dedup the migration enabled is still honored: the
+// LaborOfferWarrantReason.DedupDiscriminator is uint64(LaborID), so the live
+// LaborOfferReceived stamp self-dedupes against a double registration.
 
 // LaborID identifies a LaborOffer within a single world run. uint64,
 // LLM-visible — the employer reads the id off perception text and emits it

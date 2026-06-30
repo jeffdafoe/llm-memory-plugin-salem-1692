@@ -454,6 +454,7 @@ func run(rt runtime, stop <-chan struct{}) error {
 	handlers.RegisterConsumeHandlers(rt.World)
 	handlers.RegisterSceneQuoteHandlers(rt.World)
 	handlers.RegisterPayWithItemHandlers(rt.World)
+	handlers.RegisterLaborHandlers(rt.World) // LLM-187: wake the employer when a worker solicits work (accept_work/decline_work)
 	sim.RegisterAcquaintanceSubscriber(rt.World)
 	sim.RegisterSummonSubscriber(rt.World)                // ZBBS-HOME-311: advance summon errands on arrival + arrival-warrant suppression hook
 	sim.RegisterSleepSubscriber(rt.World)                 // ZBBS-HOME-284 #2: auto-sleep NPCs on arrival home

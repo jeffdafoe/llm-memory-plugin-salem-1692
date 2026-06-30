@@ -19,6 +19,7 @@ func TestRenderWarrants_SuppressesSectionSurfacedKinds(t *testing.T) {
 	placeNameOf := func(string) string { return "" }
 	for _, w := range []sim.WarrantMeta{
 		{Reason: sim.PayOfferWarrantReason{}},
+		{Reason: sim.LaborOfferWarrantReason{}}, // LLM-187: content is the "## Work offers awaiting your decision" section
 		{Reason: sim.ShiftDutyWarrantReason{}},
 		{Reason: sim.BasicWarrantReason{K: sim.WarrantKindAdmin}}, // bare operator nudge (ZBBS-WORK-418)
 	} {
