@@ -436,6 +436,17 @@ type Payload struct {
 	// it connects the pressing need to the consume tool. ZBBS-HOME-304.
 	Satiation *SatiationView
 
+	// NeedRedirect is a concrete one-target redirect for a SOCIALLY-LOOPING actor
+	// with a felt consumable need and a resolvable source already listed in
+	// Satiation (LLM-176). non-nil only when ActorSnapshot.ConversationLooping is
+	// set: renderTriage's looping coda then names this single target + a move_to /
+	// consume imperative instead of the generic "do what you've agreed" line, so a
+	// huddle going in circles over a confabulated plan ("food in the kitchen") is
+	// pointed at the engine's known affordance (the nearest free source / an
+	// affordable vendor). Mirrors the duty steer's inline structure_id. nil → the
+	// generic looping coda renders.
+	NeedRedirect *NeedRedirectView
+
 	// Restocking surfaces how a reseller could replenish its low `buy` stock —
 	// each item below the reorder threshold (current/cap) and the suppliers
 	// selling it (workplace + structure_id + per-buyer price hint). nil when the
@@ -962,6 +973,13 @@ type SurroundingsView struct {
 	// / exhausted-source / locked-entry slot in as further values.
 	LocationDeadEnd DeadEndReason
 
+	// DeadEndHunger / DeadEndThirst qualify a DeadEndNoConsumableHere
+	// LocationDeadEnd: which felt consumable need(s) have no source at this place,
+	// so deadEndClause can name "eat" vs "drink" vs "eat or drink" (LLM-176). Unset
+	// for any other LocationDeadEnd.
+	DeadEndHunger bool
+	DeadEndThirst bool
+
 	// HuddleID is the actor's current huddle, empty when not huddled.
 	HuddleID sim.HuddleID
 
@@ -1047,6 +1065,15 @@ const (
 	// structure is present at it. The live complement of the ObservedClosed
 	// memory; the first wired reason (LLM-154).
 	DeadEndShutBusiness DeadEndReason = "shut_business"
+	// DeadEndNoConsumableHere — the actor feels a consumable need (hunger and/or
+	// thirst), holds nothing that eases it, and there is no source for it at the
+	// place it is standing (no co-present peer with a satisfier, no free source on
+	// its tile, no vendor structure it is at). Names the dead end so a weak model
+	// can't confabulate food where there is none ("I saw bread in the kitchen" at
+	// a residence with no larder) and dead-end on consume() for an item it doesn't
+	// hold. Which needs are unserved here is carried on SurroundingsView
+	// (DeadEndHunger / DeadEndThirst) so the clause names eat vs drink. LLM-176.
+	DeadEndNoConsumableHere DeadEndReason = "no_consumable_here"
 )
 
 // HasAudience reports whether the subject has at least one awake, addressable
@@ -1095,6 +1122,38 @@ type TurnStateView struct {
 // AwaitingReply reports whether the subject is awaiting at least one live reply
 // — the condition that swaps the act-now coda for a wait-framing.
 func (t TurnStateView) AwaitingReply() bool { return len(t.AwaitingReplyFrom) > 0 }
+
+// NeedRedirectKind discriminates how the looping-coda redirect resolves the
+// felt need: consume what's carried, walk to a free source, or walk to a vendor
+// and buy. The render picks the imperative from this (LLM-176).
+type NeedRedirectKind string
+
+const (
+	NeedRedirectConsume NeedRedirectKind = "consume" // already carries a satisfier
+	NeedRedirectFree    NeedRedirectKind = "free"    // walk to a free public source
+	NeedRedirectBuy     NeedRedirectKind = "buy"     // walk to a vendor and buy
+)
+
+// NeedRedirectView is the concrete, single-target steer the looping coda renders
+// for a need-driven huddle loop (LLM-176): it names ONE affordance the engine
+// already knows resolves the actor's most-pressing felt consumable need, plus
+// the imperative to act on it now rather than talk the plan over again. Built
+// from Payload.Satiation (buildNeedRedirect) only while the actor is looping.
+type NeedRedirectView struct {
+	Kind NeedRedirectKind
+	Verb string // "eat" | "drink" — the need's resolution verb
+
+	// ItemLabel names the item: the carried satisfier to consume (Consume), or
+	// the good to buy (Buy). Empty for Free.
+	ItemLabel string
+
+	// TargetLabel / TargetID name the place to move_to (Free / Buy). TargetID is
+	// the move_to handle — a free source's object id or a vendor's structure id,
+	// rendered as a (structure_id: …) the same way every actionable cue is. Both
+	// empty for Consume.
+	TargetLabel string
+	TargetID    string
+}
 
 // HuddleMember is one co-huddle peer's identity slice for the
 // SurroundingsView. Render emits DisplayName when Acquainted is true,

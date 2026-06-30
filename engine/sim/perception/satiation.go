@@ -126,6 +126,13 @@ type SatiationVendor struct {
 	Magnitude      int
 	CostText       string // "~3 coins" | "ask the seller"
 
+	// costCoins is the per-buyer last-paid price as a number, 0 when the actor has
+	// never bought this item here (CostText is then the "ask the seller" fallback).
+	// Unexported — never rendered; the LLM-176 need-redirect reads it to skip a
+	// vendor whose remembered price the looping actor can't meet, while leaving an
+	// unknown-price (0) vendor a valid redirect to go and learn the price.
+	costCoins int
+
 	// Shut is true when the subject has a live experiential memory of finding
 	// this business shut (no keeper) within the decay window — render annotates
 	// the line so the model deprioritizes the trip. ZBBS-HOME-353.
@@ -277,6 +284,7 @@ func gatherSatiationVendors(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *
 				ItemLabel:  buyCueNoun(snap, vc.ItemKind),
 				Magnitude:  vc.Magnitude,
 				CostText:   vc.CostText,
+				costCoins:  vc.costCoins,
 				Shut:       businessRememberedShut(snap, actorSnap, vc.StructureID),
 				OutOfStock: outOfStock,
 				EatHere:    snap.ItemKinds[vc.ItemKind].EatHereOnly(),

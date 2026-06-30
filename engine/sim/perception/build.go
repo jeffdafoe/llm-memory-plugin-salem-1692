@@ -210,6 +210,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	p.RenderedAt = snap.PublishedAt    // render instant for the order-expiry clause (LLM-106)
 	p.RecoveryOptions = buildRecoveryOptions(snap, actorID, actorSnap)
 	p.Satiation = buildSatiation(snap, actorID, actorSnap)
+	p.NeedRedirect = buildNeedRedirect(snap, actorSnap, p.Satiation) // LLM-176: looping-coda redirect; reads p.Satiation
 	p.Restocking = buildRestocking(snap, actorID, actorSnap)
 	p.ProductionInputs = buildProductionInputs(snap, actorSnap)
 	p.ForgeChoice = buildForgeChoice(snap, actorID, actorSnap)
@@ -964,6 +965,15 @@ func buildSurroundings(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnap
 	// persists while they linger, robust to a failed/rerun arrival tick.
 	if isShutBusiness(snap, a, curStructureID) {
 		s.LocationDeadEnd = DeadEndShutBusiness
+	} else if hungerDE, thirstDE := consumableDeadEndHere(snap, actorID, a); hungerDE || thirstDE {
+		// LLM-176: the actor feels hunger/thirst, holds nothing to ease it, and no
+		// source is co-located here — name the dead end so a weak model can't
+		// confabulate food where there is none ("bread in the kitchen" at a foodless
+		// residence). Disjoint from shut-business in practice (a residence has no
+		// worker), so the else-if precedence only matters at a rare overlap.
+		s.LocationDeadEnd = DeadEndNoConsumableHere
+		s.DeadEndHunger = hungerDE
+		s.DeadEndThirst = thirstDE
 	}
 	if a.CurrentHuddleID != "" {
 		if h := snap.Huddles[a.CurrentHuddleID]; h != nil {
@@ -1854,6 +1864,143 @@ func actorAtStructure(snap *sim.Snapshot, a *sim.ActorSnapshot, stID sim.Structu
 		return false
 	}
 	return a.Pos.Chebyshev(objectLoiterPin(vobj)) <= sim.LoiterAttributionTiles
+}
+
+// consumableDeadEndHere reports, per consumable need, whether the structure the
+// actor is INSIDE offers no way to resolve a felt hunger/thirst it holds no
+// satisfier for — the LLM-176 dead end behind the "I saw bread in the kitchen"
+// confabulation at a foodless residence. A need is a dead end here when it is FELT
+// (NeedSilent floor — the same gate the eat/drink cue uses), the actor carries
+// NOTHING that eases it (raw gatherOwnStock, so even desperation trade stock
+// counts as food on hand), AND no source for it is co-located
+// (consumableSourceColocated). Returns which needs are dead ends so deadEndClause
+// can name eat vs drink vs both.
+//
+// Gated on being INSIDE a structure: the confabulation is a structure-bound
+// belief ("food in the kitchen") and the cue's "here" reads as that room. An
+// actor outdoors has no enclosed "here" to imagine food in, and firing in the
+// open would spam the cue on every foodless tile — the satiation directory and
+// the duty steer already guide a wandering hungry actor.
+func consumableDeadEndHere(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapshot) (hunger, thirst bool) {
+	if snap == nil || a == nil || a.InsideStructureID == "" {
+		return false, false
+	}
+	for _, need := range satiationNeeds {
+		if sim.NeedLabelTier(a.Needs[need], snap.NeedThresholds.Get(need)) == sim.NeedSilent {
+			continue // not felt — no dead end for it
+		}
+		if len(gatherOwnStock(snap, a, need)) > 0 {
+			continue // carries a satisfier — can consume in place, not a dead end
+		}
+		if consumableSourceColocated(snap, actorID, a, need) {
+			continue // a usable source is right here
+		}
+		switch need {
+		case "hunger":
+			hunger = true
+		case "thirst":
+			thirst = true
+		}
+	}
+	return hunger, thirst
+}
+
+// consumableSourceColocated reports whether a source that eases `need` is at the
+// actor's current location: a co-present huddle peer holding a satisfier, a free
+// public source on its tile, or a vendor structure it is standing at. It is the
+// "here" half of atResolvableSatiationSource, but COINS-BLIND on the vendor arm:
+// a shop at this spot means food EXISTS here (so it isn't the no-food dead end)
+// even when the actor can't afford it — that's a purse problem, not a missing-
+// affordance one. A shut shop is handled separately as DeadEndShutBusiness, which
+// takes precedence in buildSurroundings.
+func consumableSourceColocated(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapshot, need sim.NeedKey) bool {
+	if len(gatherCoPresentPeerOffers(snap, actorID, a, need)) > 0 {
+		return true
+	}
+	for _, obj := range snap.VillageObjects {
+		if obj == nil || objectRefreshMagnitude(obj, need) <= 0 || obj.OwnedByOther(actorID) {
+			continue
+		}
+		if a.Pos.Chebyshev(objectLoiterPin(obj)) <= sim.LoiterAttributionTiles {
+			return true
+		}
+	}
+	for _, vc := range findVendorConsumables(snap, actorID, need, "") {
+		if vc.StructureID != "" && actorAtStructure(snap, a, vc.StructureID) {
+			return true
+		}
+	}
+	return false
+}
+
+// buildNeedRedirect returns the one-target loop-break steer for a socially-
+// looping actor with a felt consumable need and a resolvable source already in
+// the satiation view (LLM-176), or nil. Gated on ConversationLooping — it feeds
+// only the looping coda. For the most-pressing felt need (a red need before a
+// merely-felt one; hunger before thirst on a tie), it picks the first resolvable
+// affordance in the same order the eat/drink cue lists them: consume what's
+// carried, else the nearest free source, else the nearest usable vendor. nil when
+// nothing resolves → the generic looping coda renders.
+func buildNeedRedirect(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, sat *SatiationView) *NeedRedirectView {
+	if snap == nil || actorSnap == nil || !actorSnap.ConversationLooping || sat == nil {
+		return nil
+	}
+	for _, nv := range pressingFirst(snap, sat.Needs) {
+		if r := needRedirectFor(nv, actorSnap.Coins); r != nil {
+			return r
+		}
+	}
+	return nil
+}
+
+// needRedirectFor resolves the single redirect target for one felt need, in the
+// satiation cue's own priority order: consume what's carried, else the nearest
+// free source (FreeSources is already nearest-first), else the nearest usable
+// vendor (Vendors is already nearest-first). A vendor is usable when it is not
+// remembered shut or out of stock and is affordable — affordability is
+// experiential (LLM-176): a known remembered price the actor can't meet skips it,
+// but an unknown price (costCoins == 0, never bought there) does NOT — the actor
+// walks over and learns it. nil when the need has no resolvable target.
+func needRedirectFor(nv SatiationNeedView, coins int) *NeedRedirectView {
+	if len(nv.OwnStock) > 0 {
+		return &NeedRedirectView{Kind: NeedRedirectConsume, Verb: nv.Verb, ItemLabel: nv.OwnStock[0].Label}
+	}
+	if len(nv.FreeSources) > 0 {
+		fs := nv.FreeSources[0]
+		return &NeedRedirectView{Kind: NeedRedirectFree, Verb: nv.Verb, TargetLabel: fs.Label, TargetID: string(fs.ObjectID)}
+	}
+	for _, v := range nv.Vendors {
+		if v.Shut || v.OutOfStock {
+			continue
+		}
+		if v.costCoins > 0 && coins < v.costCoins {
+			continue // a remembered price the looping actor can't meet
+		}
+		return &NeedRedirectView{Kind: NeedRedirectBuy, Verb: nv.Verb, ItemLabel: v.ItemLabel, TargetLabel: v.StructureLabel, TargetID: string(v.StructureID)}
+	}
+	return nil
+}
+
+// pressingFirst orders the felt consumable needs most-pressing first: a red-tier
+// need before a merely-felt one, otherwise the fixed satiation order (hunger
+// before thirst). Stable, so the fixed order breaks tier ties.
+func pressingFirst(snap *sim.Snapshot, needs []SatiationNeedView) []SatiationNeedView {
+	out := append([]SatiationNeedView(nil), needs...)
+	sort.SliceStable(out, func(i, j int) bool {
+		return needRedTier(snap, out[i]) && !needRedTier(snap, out[j])
+	})
+	return out
+}
+
+// needRedTier reports whether a satiation need is at its red threshold or worse —
+// the redirect-priority lever (a pressing need outranks a merely-felt one). nil
+// snap (no callers today — buildNeedRedirect guards it) yields false, so
+// pressingFirst degrades to the stable satiation order rather than panicking.
+func needRedTier(snap *sim.Snapshot, nv SatiationNeedView) bool {
+	if snap == nil {
+		return false
+	}
+	return sim.NeedLabelTier(nv.Level, snap.NeedThresholds.Get(nv.Need)) == sim.NeedRed
 }
 
 // objectLoiterPin returns the tile an actor stands on when "at" obj — its base

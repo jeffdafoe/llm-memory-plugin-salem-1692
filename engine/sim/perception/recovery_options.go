@@ -456,6 +456,29 @@ func buyerLastPaidText(snap *sim.Snapshot, buyerID, sellerID sim.ActorID, item s
 	return fallback
 }
 
+// buyerLastPaidCoins is the numeric sibling of buyerLastPaidText: the buyer's
+// most-recent accepted price for (seller, item) from the snapshot PriceBook, or
+// 0 when there is no prior purchase on record. The LLM-176 need-redirect uses it
+// to skip a vendor whose REMEMBERED price the actor can't meet; an unknown price
+// (0) is never a skip — patronage earns the number, so a never-visited vendor
+// stays a valid redirect the actor walks to and learns the price of.
+func buyerLastPaidCoins(snap *sim.Snapshot, buyerID, sellerID sim.ActorID, item sim.ItemKind) int {
+	if sellerID == "" || snap.PriceBook == nil {
+		return 0
+	}
+	buf, ok := snap.PriceBook[sim.PriceBookKey{SellerID: sellerID, Item: item}]
+	if !ok || buf == nil || buf.Len() == 0 {
+		return 0
+	}
+	entries := buf.Snapshot() // oldest-first; scan from the end for newest-first
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].BuyerID == buyerID {
+			return entries[i].Amount
+		}
+	}
+	return 0
+}
+
 // qualitativeDistance maps a tile distance to a benefit-first walk phrase. The
 // bands are calibrated to the live village's scale — the town spans ~50 tiles
 // (blacksmith→inn) and the outlying farms sit ~90 tiles out — so an in-town
