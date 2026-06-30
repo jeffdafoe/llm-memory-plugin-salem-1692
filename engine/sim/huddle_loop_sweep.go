@@ -233,6 +233,15 @@ func EvaluateHuddleLoopSweep(now time.Time) Command {
 				// counts continuously instead of restarting each cycle. A real
 				// recovery (varied content, or a transaction/new-member progress
 				// event newer than the ring) flips it false and clears the spell.
+				// LLM-185: a player-attended huddle (a PC spoke within huddlePCAttentionWindow)
+				// is an active human conversation — never conclude it. Clear any spell so the
+				// gate restarts fresh once the player goes quiet; a silent parked PC's NPC
+				// loops then get swept after a full timeout, so a hub like the tavern isn't
+				// permanently immune.
+				if huddlePCAttended(h, now) {
+					h.LoopingSince = nil
+					continue
+				}
 				if !huddleLoopContentPresent(w.Settings, h) {
 					h.LoopingSince = nil
 					continue
@@ -350,6 +359,26 @@ func huddleLoopContentPresent(s WorldSettings, h *Huddle) bool {
 // "you've agreed, act now" nudge and the destructive silent conclude fire on the same
 // condition. Without the progress guard a single mid-loop transaction would only
 // postpone conclusion by one timeout while the unchanged repetitive ring re-armed.
+// huddlePCAttentionWindow is how long after a PLAYER (KindPC) member's last spoken
+// line a huddle stays "player-attended" and thus exempt from the loop sweep + the
+// ConversationLooping steer (LLM-185). Keyed on recent PC SPEECH, not mere PC
+// membership, so a parked-and-silent PC at a hub (the tavern) doesn't permanently
+// shield NPC loops there. 3 minutes — long enough to span a human's read-and-reply
+// pause, short enough that a player who wanders off frees the huddle to be swept.
+const huddlePCAttentionWindow = 3 * time.Minute
+
+// huddlePCAttended reports whether a player spoke in this huddle within
+// huddlePCAttentionWindow — i.e. it's an active player conversation the loop sweep +
+// steer must leave alone (LLM-185). A negative age (out-of-order / replayed clock)
+// is treated as not-attended, matching huddleNewestUtteranceLive.
+func huddlePCAttended(h *Huddle, now time.Time) bool {
+	if h == nil || h.LastPCUtteranceAt.IsZero() {
+		return false
+	}
+	age := now.Sub(h.LastPCUtteranceAt)
+	return age >= 0 && age < huddlePCAttentionWindow
+}
+
 func huddleLoopArmed(s WorldSettings, h *Huddle, now time.Time) bool {
 	return huddleLoopContentPresent(s, h) && huddleNewestUtteranceLive(h, now)
 }

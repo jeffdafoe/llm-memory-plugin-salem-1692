@@ -1851,7 +1851,7 @@ func (w *World) republish() {
 		// kinds — Render is the NPC reactor-tick path (never a PC or decorative), so
 		// the flag would be inert noise on any other kind (matches the co-presence gate above).
 		if huddleLoopEnabled(w.Settings) && (a.Kind == KindNPCStateful || a.Kind == KindNPCShared) && a.CurrentHuddleID != "" {
-			if h := w.Huddles[a.CurrentHuddleID]; h != nil && huddleLoopArmed(w.Settings, h, now) {
+			if h := w.Huddles[a.CurrentHuddleID]; h != nil && huddleLoopArmed(w.Settings, h, now) && !huddlePCAttended(h, now) {
 				sa.ConversationLooping = true
 			}
 		}
