@@ -115,6 +115,13 @@ type runtime struct {
 	// SetSatisfiesWriter when the umbilical control surface is enabled. Nil in the
 	// headless lifecycle test (mem-backed, no pg) → the route answers 503.
 	SatisfiesWriter *pg.ItemKindsRepo
+	// ItemKindWriter is the durable item_kind upsert behind the operator-gated
+	// /umbilical/item/set route (LLM-200). Same repo type as SatisfiesWriter —
+	// both writes live on pg.ItemKindsRepo — but wired separately so each route's
+	// nil-guard stays independent. run wires it via SetItemKindWriter when the
+	// umbilical control surface is enabled. Nil in the headless lifecycle test
+	// (mem-backed, no pg) → the route answers 503.
+	ItemKindWriter *pg.ItemKindsRepo
 }
 
 func main() {
@@ -256,6 +263,7 @@ func main() {
 		UmbilicalControl: umbilicalControl,
 		RecipeWriter:     pg.NewRecipesRepo(pool),
 		SatisfiesWriter:  pg.NewItemKindsRepo(pool),
+		ItemKindWriter:   pg.NewItemKindsRepo(pool),
 		PromptRing:       promptRing,
 		ChatRing:         chatRing,
 		MemoryAPIBaseURL: llmMemoryURL,
@@ -580,6 +588,9 @@ func run(rt runtime, stop <-chan struct{}) error {
 				}
 				if rt.SatisfiesWriter != nil {
 					server.SetSatisfiesWriter(rt.SatisfiesWriter) // backs /umbilical/item/set-satisfies (LLM-119) — durable item_satisfies upsert
+				}
+				if rt.ItemKindWriter != nil {
+					server.SetItemKindWriter(rt.ItemKindWriter) // backs /umbilical/item/set (LLM-200) — durable item_kind upsert
 				}
 			}
 		}

@@ -3,9 +3,12 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
@@ -121,4 +124,162 @@ func (s *Server) handleUmbilicalItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, dto)
+}
+
+// ---- Item definition write (LLM-200) -------------------------------------
+
+// ItemKindWriter is the durable item_kind upsert, injected by cmd/engine
+// (Server.SetItemKindWriter) so httpapi doesn't import the pg package. nil on a
+// deploy without it wired → the route answers 503. pg.ItemKindsRepo satisfies it.
+type ItemKindWriter interface {
+	UpsertItemKind(ctx context.Context, def sim.ItemKindDef) error
+}
+
+// umbilicalItemSetRequest is the POST /api/village/umbilical/item/set body:
+// upsert one item_kind definition. cap-free; an existing name is updated in
+// place and its item_satisfies satiation rows are left intact. hours_per_unit is
+// intentionally absent — v2 doesn't model it (production rate lives on the
+// recipe, set via /recipe/set); see LLM-200.
+type umbilicalItemSetRequest struct {
+	Name                  string   `json:"name"`
+	DisplayLabel          string   `json:"display_label"`
+	Category              string   `json:"category"`
+	SortOrder             int      `json:"sort_order"`
+	Capabilities          []string `json:"capabilities"`
+	DisplayLabelSingular  string   `json:"display_label_singular"`
+	DisplayLabelPlural    string   `json:"display_label_plural"`
+	ConsumeDwellNarration string   `json:"consume_dwell_narration"`
+}
+
+// handleUmbilicalItemSet upserts one item_kind definition — the create/edit leg
+// of the all-live new-good flow (item/set → recipe/set → restock/set, LLM-200).
+// Unlike recipe/set and item/set-satisfies it can CREATE a kind: the name is the
+// new catalog key, so there is no pre-existence check. The durable item_kind
+// write runs before the in-memory catalog update (recipe/set's ordering); on an
+// update the item's satiation (item_satisfies) is preserved — this route writes
+// only the definition row.
+//
+// category is free text by design (operators add new good classes without a
+// deploy); the typed ItemCategory enum is a soft type, not a closed set, and the
+// mismatch is tracked in LLM-204. 400 missing name/display_label/category,
+// over-length field, out-of-range sort_order, or a blank capability token; 503
+// when the writer isn't wired; 500 on a write failure; 200 with the applied
+// catalog row (the same shape /items serves).
+func (s *Server) handleUmbilicalItemSet(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	if user == nil {
+		writeAuthError(w, "invalid")
+		return
+	}
+	var req umbilicalItemSetRequest
+	if !decodeUmbilicalBody(w, r, &req) {
+		return
+	}
+
+	// Trim the free-text fields up front; the name becomes the catalog key, so
+	// stray whitespace there would mint an unreachable kind.
+	name := strings.TrimSpace(req.Name)
+	displayLabel := strings.TrimSpace(req.DisplayLabel)
+	category := strings.TrimSpace(req.Category)
+	singular := strings.TrimSpace(req.DisplayLabelSingular)
+	plural := strings.TrimSpace(req.DisplayLabelPlural)
+	narration := strings.TrimSpace(req.ConsumeDwellNarration)
+
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	if displayLabel == "" {
+		writeError(w, http.StatusBadRequest, "display_label is required")
+		return
+	}
+	if category == "" {
+		writeError(w, http.StatusBadRequest, "category is required")
+		return
+	}
+	// Lengths mirror the item_kind columns: name/category varchar(32), labels
+	// varchar(64). Count runes — varchar(n) limits characters, not bytes.
+	if utf8.RuneCountInString(name) > 32 {
+		writeError(w, http.StatusBadRequest, "name exceeds 32 characters")
+		return
+	}
+	if utf8.RuneCountInString(category) > 32 {
+		writeError(w, http.StatusBadRequest, "category exceeds 32 characters")
+		return
+	}
+	for _, label := range []string{displayLabel, singular, plural} {
+		if utf8.RuneCountInString(label) > 64 {
+			writeError(w, http.StatusBadRequest, "display labels must be 64 characters or fewer")
+			return
+		}
+	}
+	// sort_order maps to a SMALLINT column — keep it in range so a bad value
+	// fails at the handler (400) rather than the pg write (500).
+	if req.SortOrder < 0 || req.SortOrder > 32767 {
+		writeError(w, http.StatusBadRequest, "sort_order must be between 0 and 32767")
+		return
+	}
+	// capabilities is a soft token set; trim each and reject a blank token so a
+	// stray "" can't pollute the array.
+	capabilities := make([]string, 0, len(req.Capabilities))
+	for _, c := range req.Capabilities {
+		token := strings.TrimSpace(c)
+		if token == "" {
+			writeError(w, http.StatusBadRequest, "capability tokens must be non-empty")
+			return
+		}
+		capabilities = append(capabilities, token)
+	}
+
+	if s.itemKindWriter == nil {
+		writeError(w, http.StatusServiceUnavailable, "item editing is not wired on this deploy")
+		return
+	}
+
+	auditUmbilical(user.Username, "item.set",
+		fmt.Sprintf("name=%s category=%s sort=%d caps=%d", name, category, req.SortOrder, len(capabilities)))
+
+	def := sim.ItemKindDef{
+		Name:                  sim.ItemKind(name),
+		DisplayLabel:          displayLabel,
+		DisplayLabelSingular:  singular,
+		DisplayLabelPlural:    plural,
+		Category:              sim.ItemCategory(category),
+		SortOrder:             req.SortOrder,
+		Capabilities:          capabilities,
+		ConsumeDwellNarration: narration,
+	}
+
+	// 1) Durable write FIRST — item_kind is the source of truth (the catalog
+	//    rebuilds from it on restart), so memory is only touched once it lands.
+	if err := s.itemKindWriter.UpsertItemKind(r.Context(), def); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
+		log.Printf("umbilical item.set: name=%s: %v", def.Name, err)
+		writeError(w, http.StatusInternalServerError, "item write failed")
+		return
+	}
+
+	// 2) In-memory catalog update so perception and the produce/commerce paths
+	//    see the new or edited kind immediately. An update preserves the live
+	//    satiation entries (see sim.SetItemKind).
+	res, err := s.world.SendContext(r.Context(), sim.SetItemKind(def))
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
+		// The durable write already landed; the live catalog will catch up on the
+		// next reload. Don't imply nothing persisted.
+		log.Printf("umbilical item.set: name=%s persisted but live-catalog update failed: %v", def.Name, err)
+		writeError(w, http.StatusInternalServerError, "item persisted but live update failed; applies on next reload")
+		return
+	}
+	stored, ok := res.(sim.ItemKindDef)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "unexpected item set result")
+		return
+	}
+
+	writeJSON(w, itemRowDTO(&stored))
 }
