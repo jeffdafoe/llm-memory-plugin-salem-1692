@@ -1,0 +1,18 @@
+# Your turn
+
+## What just happened
+(nothing specific — this is a routine check-in)
+
+
+## You
+Coins in your purse: 2.
+
+## Around you
+You are inside the Blacksmith, with no one else here to hear you speak.
+Evening settles over the village.
+
+You keep your trade at the Blacksmith (structure_id: blacksmith), and your home is at the Crane Cottage (structure_id: crane_cottage) — you can head to either whenever you wish.
+
+Your working hours are over and you are not yet home — head home to Crane Cottage (structure_id: crane_cottage) now.
+
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.

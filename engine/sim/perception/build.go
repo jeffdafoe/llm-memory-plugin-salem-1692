@@ -147,8 +147,14 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// (code_review). subjectIsComfortable is the shared predicate (mirrors
 	// sim.workerIsComfortable on the warrant side).
 	comfortableWorklessSeeker := !subjectHasResolvableWorkplace(snap, actorSnap) && subjectIsComfortable(snap, actorSnap)
+	// LLM-205: a homed agent enjoying an affordable evening is off the clock — don't
+	// offer the solicit affordance/tool (this one CanSolicitWork signal gates both).
+	// inEveningLeisure is homed-scoped and afford-gated, so a homeless/lodger worker
+	// (Ezekiel) and a broke homed agent — neither of whom has an affordable evening —
+	// can still bid for work; only the lingering well-off are silenced.
 	p.CanSolicitWork = subjectIsWorker(actorSnap) &&
 		!comfortableWorklessSeeker &&
+		!inEveningLeisure(snap, actorSnap) &&
 		p.Laboring == nil &&
 		!subjectHasPendingLaborOffer(snap, actorID) &&
 		hasSolicitableAudience(snap, actorID, actorSnap, p.Surroundings)
@@ -184,9 +190,14 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// "go now" coda), draining its purse via ordinary consumption instead of being
 	// pushed to a business. Mirrors the warrant gate (workerIsComfortable) and the
 	// CanSolicitWork gate above.
+	//
+	// LLM-205: also suppressed during an affordable evening — a lingering homed worker
+	// isn't directed to businesses to find work (mirrors the CanSolicitWork gate). A
+	// broke homed worker has no affordable evening, so it still gets the directory.
 	if subjectIsWorker(actorSnap) &&
 		!subjectHasResolvableWorkplace(snap, actorSnap) &&
 		!subjectIsComfortable(snap, actorSnap) &&
+		!inEveningLeisure(snap, actorSnap) &&
 		p.Laboring == nil &&
 		p.Actor.InFlightMove == nil &&
 		p.Actor.InFlightSourceActivity == nil &&
@@ -1635,16 +1646,20 @@ func buildDutySteer(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapsho
 			// noop-skip gate keys on EveningLeisure in this steer's place so the
 			// idle agent still ticks and sees the invitation.
 			//
-			// Suppression is keyed on the WINDOW, not on whether the evening cue
-			// actually rendered (code_review): "no turn-in pressure during the
-			// evening" must hold even in the cue's cleared states — most importantly
-			// once the agent has REACHED the tavern (the cue clears on at-venue), it
-			// must not then be told to go home. Suppress-only-when-cue-present would
-			// reintroduce exactly that nag. The lone window-but-no-cue case is a
-			// village with no tavern placed (degenerate): the agent gets no
-			// invitation and still no turn-in pressure, idling cheaply until Lever 1
-			// beds it — an acceptable, consistent fallback.
-			if inEveningWindow(snap, a) {
+			// Suppression is keyed on the affordable evening (inEveningLeisure), not
+			// on whether the evening cue actually rendered (code_review): "no turn-in
+			// pressure during the evening" must hold even in the cue's cleared states —
+			// most importantly once the agent has REACHED the tavern (the cue clears on
+			// at-venue), it must not then be told to go home. Suppress-only-when-cue-
+			// present would reintroduce exactly that nag. A village with no tavern
+			// placed (degenerate) still counts as in-leisure (canAffordLeisure finds no
+			// barrier to apply): the agent gets no invitation and still no turn-in
+			// pressure, idling cheaply until Lever 1 beds it.
+			//
+			// LLM-205: a homed agent that can't afford the tavern's cheapest drink is
+			// NOT in evening leisure, so this suppression lifts for it and the go-home
+			// wind-down resumes — the broke have no evening and bed at shift-end.
+			if inEveningLeisure(snap, a) {
 				return nil
 			}
 			if windDownSuppressed(a, snap) {
@@ -1710,6 +1725,68 @@ func inEveningWindow(snap *sim.Snapshot, a *sim.ActorSnapshot) bool {
 	return nowMin >= shiftEnd && nowMin < bedtime
 }
 
+// subjectIsHomed reports whether the actor has a home structure that resolves in
+// the snapshot — the same notion buildAnchors uses to set AnchorsView.HomeID, so
+// the evening-leisure scope agrees with the duty steer's homed arm.
+func subjectIsHomed(snap *sim.Snapshot, a *sim.ActorSnapshot) bool {
+	if a == nil || a.HomeStructureID == "" {
+		return false
+	}
+	_, ok := resolveStructureLabel(snap, a.HomeStructureID)
+	return ok
+}
+
+// inEveningLeisure reports whether the actor is in an AFFORDABLE post-work evening
+// (LLM-205): a homed day-shift agent inside the [shift-end, 22:00) window who can
+// afford a night out. It is the single predicate behind the living-evening gates —
+// the off-shift go-home steer suppression, the "tavern's open" cue
+// (buildEveningLeisure), and the two work-seeking suppressions (CanSolicitWork and
+// the SeekWorkPlaces directory). A broke homed agent is NOT in evening leisure: it
+// has no evening, so the go-home wind-down resumes (it beds at shift-end) and it may
+// still pick up a side job on the way. The rich linger; the poor hustle.
+func inEveningLeisure(snap *sim.Snapshot, a *sim.ActorSnapshot) bool {
+	return subjectIsHomed(snap, a) && inEveningWindow(snap, a) && canAffordLeisure(snap, a)
+}
+
+// canAffordLeisure reports whether the actor holds enough coin for a night out at
+// the tavern: coins at or above the cheapest PRICED item sold by a vendor stationed
+// at the tavern venue, valued at the recipe's authored retail (asking) price. The
+// asking price — not the actor's last-paid — is the floor: it is the price a newcomer
+// faces and is history-independent (the price book is a transaction-history ring, not
+// a list price). A free/unpriced item (e.g. well water) is not "a night out" and does
+// not set the floor. Degenerate cases return true (no affordability barrier — preserve
+// the existing no-tavern evening fallback rather than newly stranding agents): no
+// tavern placed, or a tavern that sells nothing priced.
+func canAffordLeisure(snap *sim.Snapshot, a *sim.ActorSnapshot) bool {
+	if snap == nil || a == nil {
+		return true
+	}
+	venueID, _, ok := nearestTaggedVenue(snap, a, sim.VisitorTagTavern)
+	if !ok {
+		return true
+	}
+	floor := -1
+	// Empty buyerID: this is a min-asking-price scan over the venue, not a directional
+	// "buy from X" cue, so the leisure-seeker needn't be excluded from its own venue's
+	// offers (the cheapest item's asking price is the same whoever sells it).
+	eachVendorOffer(snap, "", func(o vendorOffer) {
+		if o.StructureID != venueID {
+			return
+		}
+		recipe := snap.Recipes[o.Kind]
+		if recipe == nil || recipe.RetailPrice <= 0 {
+			return
+		}
+		if floor == -1 || recipe.RetailPrice < floor {
+			floor = recipe.RetailPrice
+		}
+	})
+	if floor == -1 {
+		return true
+	}
+	return a.Coins >= floor
+}
+
 // nearestTaggedVenue returns the structure id + display label of the nearest
 // VillageObject carrying tag that is bridged to a Structure (shared id), by
 // Chebyshev distance to the actor, ties broken on the smaller structure id for
@@ -1750,8 +1827,9 @@ func nearestTaggedVenue(snap *sim.Snapshot, a *sim.ActorSnapshot, tag string) (s
 
 // buildEveningLeisure computes the evening "tavern's open" cue (LLM-149, Lever 2
 // of the living-evening epic). It fires for a homed, day-shift agent NPC that is
-// off-shift and awake inside the evening window [shift-end, 22:00), naming the
-// tavern as a place to pass the evening and letting the model choose — head
+// off-shift and awake inside an AFFORDABLE evening window [shift-end, 22:00) —
+// LLM-205 gates the cue on being able to afford the tavern's cheapest drink —
+// naming the tavern as a place to pass the evening and letting the model choose — head
 // over, stay in, or turn in — with NO forced walk. The off-shift go-home steer
 // is suppressed on the same window (buildDutySteer) so this is the single voice.
 //
@@ -1783,9 +1861,11 @@ func buildEveningLeisure(snap *sim.Snapshot, a *sim.ActorSnapshot, anchors *Anch
 	if anchors.HomeID == "" {
 		return nil
 	}
-	// Inside the post-work evening window — also enforces the day-shift scope
-	// guard (unscheduled vendors excluded).
-	if !inEveningWindow(snap, a) {
+	// Inside an AFFORDABLE post-work evening window (LLM-205): inEveningLeisure adds
+	// the coin gate (canAffordLeisure) to inEveningWindow's day-shift scope guard, so
+	// a homed agent too broke for the tavern's cheapest drink gets no invitation and
+	// winds down home instead. (Re-checks homed too — already guaranteed above.)
+	if !inEveningLeisure(snap, a) {
 		return nil
 	}
 	// A pressing (red) need outranks an idle evening; the cue resumes once it
