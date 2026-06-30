@@ -99,22 +99,24 @@ func TestBuild_ComfortableWorkerNoSolicitAffordance(t *testing.T) {
 		huddle  = sim.HuddleID("h1")
 		commons = sim.StructureID("commons")
 		store   = sim.StructureID("general_store")
+		tavern  = sim.StructureID("tavern")
 	)
-	mk := func(coins int) *sim.Snapshot {
+	mk := func(coins int, workplace sim.StructureID) *sim.Snapshot {
 		worker := &sim.ActorSnapshot{
 			Kind:              sim.KindNPCShared,
 			DisplayName:       "Lewis Walker",
 			State:             sim.StateIdle,
 			InsideStructureID: commons,
 			HomeStructureID:   "walker_residence",
+			WorkStructureID:   workplace, // "" = workless; a resolvable id = employed
 			CurrentHuddleID:   huddle,
 			Coins:             coins,
 			AttributeSlugs:    []string{sim.AttrWorker},
 			Needs:             map[sim.NeedKey]int{},
 		}
-		// Josiah is a structural stranger to Lewis (different home; Lewis is workless so
-		// they share no workplace) → a solicitable employer. But-for comfort, his presence
-		// makes CanSolicitWork true.
+		// Josiah is a structural stranger to Lewis (different home; the workless Lewis
+		// shares no workplace, and the employed Lewis works the Tavern not the Store) → a
+		// solicitable employer. But-for comfort, his presence makes CanSolicitWork true.
 		employer := &sim.ActorSnapshot{
 			Kind:              sim.KindNPCStateful,
 			DisplayName:       "Josiah Thorne",
@@ -131,6 +133,7 @@ func TestBuild_ComfortableWorkerNoSolicitAffordance(t *testing.T) {
 			Structures: map[sim.StructureID]*sim.Structure{
 				commons: plainStructure(commons, "Village Commons"),
 				store:   plainStructure(store, "General Store"),
+				tavern:  plainStructure(tavern, "Tavern"),
 			},
 			Huddles: map[sim.HuddleID]*sim.Huddle{
 				huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{lewis: {}, josiah: {}}},
@@ -138,12 +141,20 @@ func TestBuild_ComfortableWorkerNoSolicitAffordance(t *testing.T) {
 		}
 	}
 
-	// Positive control: a broke worker with a solicitable employer present IS offered solicit_work.
-	if p := Build(mk(0), lewis, nil); !p.CanSolicitWork {
-		t.Fatal("poor worker with a solicitable employer present: CanSolicitWork = false, want true (positive control)")
+	// Positive control: a broke WORKLESS worker with a solicitable employer present IS
+	// offered solicit_work.
+	if p := Build(mk(0, ""), lewis, nil); !p.CanSolicitWork {
+		t.Fatal("poor workless worker with a solicitable employer present: CanSolicitWork = false, want true (positive control)")
 	}
-	// The gate: a comfortable worker (coins at the ceiling), same audience → no affordance.
-	if p := Build(mk(sim.SeekWorkCoinCeilingDefault), lewis, nil); p.CanSolicitWork {
-		t.Error("comfortable worker: CanSolicitWork = true, want false (suppressed by the seek-work coin ceiling)")
+	// The gate: a comfortable WORKLESS worker (coins at the ceiling), same audience → no affordance.
+	if p := Build(mk(sim.SeekWorkCoinCeilingDefault, ""), lewis, nil); p.CanSolicitWork {
+		t.Error("comfortable workless worker: CanSolicitWork = true, want false (suppressed by the seek-work coin ceiling)")
+	}
+	// Scope guard (code_review): an EMPLOYED worker (resolvable workplace) at/above the
+	// ceiling KEEPS the solicit affordance — comfort suppression is workless-only, so the
+	// ceiling must not silence a worker who already has a post. Lewis works the Tavern
+	// (not Josiah's Store), so they are not coworkers and the audience stays solicitable.
+	if p := Build(mk(sim.SeekWorkCoinCeilingDefault+50, tavern), lewis, nil); !p.CanSolicitWork {
+		t.Error("comfortable EMPLOYED worker: CanSolicitWork = false, want true (comfort is workless-scoped; an employed worker is unaffected by the ceiling)")
 	}
 }

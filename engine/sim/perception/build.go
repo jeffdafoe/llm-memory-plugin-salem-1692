@@ -135,12 +135,18 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// don't have; now the affordance hides and the seek-work backstop keeps
 	// nudging it toward a real employer. SolicitWork re-checks the resolved
 	// employer for defense-in-depth.
-	// LLM-194: a coin-comfortable worker (coins at/above the seek-work ceiling) is not
-	// offered the solicit affordance — it doesn't need odd jobs, so it shouldn't bid a
-	// co-present keeper for work. Mirrors the warrant gate (workerIsComfortable) and the
-	// directory gate below so all three seek-work cues agree.
+	// LLM-194: a coin-comfortable WORKLESS worker is not offered the solicit affordance
+	// — it doesn't need odd jobs, so it shouldn't bid a co-present keeper for work. The
+	// comfort suppression is SCOPED to workless (no resolvable workplace), matching the
+	// warrant gate and the directory gate below — both of which check workless before
+	// comfort. Unlike those two, the base CanSolicitWork gate is NOT workless-only (an
+	// EMPLOYED worker with a solicitable audience can still bid for a side job), so the
+	// ceiling must not silence an employed worker; comfort only gates the workless seeker
+	// (code_review). subjectIsComfortable is the shared predicate (mirrors
+	// sim.workerIsComfortable on the warrant side).
+	comfortableWorklessSeeker := !subjectHasResolvableWorkplace(snap, actorSnap) && subjectIsComfortable(snap, actorSnap)
 	p.CanSolicitWork = subjectIsWorker(actorSnap) &&
-		!subjectIsComfortable(snap, actorSnap) &&
+		!comfortableWorklessSeeker &&
 		p.Laboring == nil &&
 		!subjectHasPendingLaborOffer(snap, actorID) &&
 		hasSolicitableAudience(snap, actorID, actorSnap, p.Surroundings)
