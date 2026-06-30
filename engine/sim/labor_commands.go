@@ -417,8 +417,18 @@ func finalizeLaborTerminal(w *World, offer *LaborOffer, terminal LaborTerminalSt
 	if terminal == LaborTerminalStateCompleted {
 		workPerformed = true
 	}
+	priorState := offer.State
 	offer.State = LaborLedgerState(terminal)
 	offer.ResolvedAt = timePtrLabor(at)
+
+	// LLM-186 diagnostic: log every labor terminal with the PRE-flip state and
+	// the work window. An early-finalized Working offer — priorState "working"
+	// while now is well before workingUntil — is the live PW-Apothecary symptom
+	// (a hired worker's job vanishing before its window) and previously left no
+	// journal trace, since resolutions were unlogged. acceptedAt/workingUntil are
+	// *time.Time; %v deref-prints the time (or <nil>).
+	log.Printf("sim/labor: finalize offer %d %s->%s worker=%s employer=%s reward=%d acceptedAt=%v workingUntil=%v now=%v workPerformed=%t",
+		offer.ID, priorState, terminal, offer.WorkerID, offer.EmployerID, offer.Reward, offer.AcceptedAt, offer.WorkingUntil, at, workPerformed)
 
 	evt := &LaborResolved{
 		LaborID:       offer.ID,
