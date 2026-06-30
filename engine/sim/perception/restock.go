@@ -303,19 +303,21 @@ func sellerRecentSales(snap *sim.Snapshot, sellerID sim.ActorID, item sim.ItemKi
 	return int(u), int(c)
 }
 
-// buyerRecentSpend totals the coins the actor has PAID restocking `item` within the
-// trailing `window` — the cost half of the restock cue's weekly P&L (LLM-63). Price
-// knowledge is per-buyer, so this scans every (seller, item) ring for observations
-// the actor BOUGHT (obs.BuyerID == buyerID) no older than snap.PublishedAt − window
-// and sums the amounts — its purchases across all the sellers it restocked from. 0
-// when it has bought none in the window. int64 guards the sum; the result clamps
-// into int range.
-func buyerRecentSpend(snap *sim.Snapshot, buyerID sim.ActorID, item sim.ItemKind, window time.Duration) int {
+// buyerRecentPurchases totals what the actor has BOUGHT of `item` within the trailing
+// `window`, read from the buyer view of the price book: units = Qty×Consumers per
+// accepted purchase (observationUnits, as the seller side gives), coins = the amounts
+// it paid. Price knowledge is per-buyer, so this scans every (seller, item) ring for
+// observations the actor BOUGHT (obs.BuyerID == buyerID) no older than
+// snap.PublishedAt − window — its purchases across all the sellers it restocked from.
+// Both 0 when it has bought none in the window. The buyer-side sibling of
+// sellerRecentSales, and the cost-basis source for the reseller leg of the wares-worth
+// cue (LLM-191). int64 guards the sums; results clamp into int range.
+func buyerRecentPurchases(snap *sim.Snapshot, buyerID sim.ActorID, item sim.ItemKind, window time.Duration) (units int, coins int) {
 	if snap == nil || snap.PriceBook == nil {
-		return 0
+		return 0, 0
 	}
 	cutoff := snap.PublishedAt.Add(-window)
-	var total int64
+	var u, c int64
 	for key, buf := range snap.PriceBook {
 		if key.Item != item || buf == nil || buf.Len() == 0 {
 			continue
@@ -324,13 +326,25 @@ func buyerRecentSpend(snap *sim.Snapshot, buyerID sim.ActorID, item sim.ItemKind
 			if obs.BuyerID != buyerID || obs.At.Before(cutoff) {
 				continue
 			}
-			total += int64(obs.Amount)
+			u += observationUnits(obs)
+			c += int64(obs.Amount)
 		}
 	}
-	if total > int64(math.MaxInt32) {
-		total = int64(math.MaxInt32)
+	if u > int64(math.MaxInt32) {
+		u = int64(math.MaxInt32)
 	}
-	return int(total)
+	if c > int64(math.MaxInt32) {
+		c = int64(math.MaxInt32)
+	}
+	return int(u), int(c)
+}
+
+// buyerRecentSpend totals just the coins the actor has PAID restocking `item` within
+// the trailing `window` — the cost half of the restock cue's weekly P&L (LLM-63). Thin
+// wrapper over buyerRecentPurchases for the call site that wants only the spend.
+func buyerRecentSpend(snap *sim.Snapshot, buyerID sim.ActorID, item sim.ItemKind, window time.Duration) int {
+	_, coins := buyerRecentPurchases(snap, buyerID, item, window)
+	return coins
 }
 
 // findItemVendors resolves the suppliers selling itemKind, ONE cue per workplace
