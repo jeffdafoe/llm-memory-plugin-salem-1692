@@ -79,6 +79,7 @@ type vendorConsumable struct {
 	ItemLabel      string          // the consumable's display label
 	Magnitude      int             // immediate need eased per unit (positive)
 	CostText       string          // per-buyer last-paid, or the caller's fallback
+	costCoins      int             // per-buyer last-paid as a number, 0 when unknown (LLM-176 affordability)
 	VendorID       sim.ActorID     // for the caller's deterministic sourceKey
 	ItemKind       sim.ItemKind
 }
@@ -119,6 +120,7 @@ func findVendorConsumables(snap *sim.Snapshot, buyerID sim.ActorID, need sim.Nee
 			ItemLabel:      itemDisplayLabel(snap, o.Kind),
 			Magnitude:      mag,
 			CostText:       buyerLastPaidText(snap, buyerID, o.VendorID, o.Kind, costFallback),
+			costCoins:      buyerLastPaidCoins(snap, buyerID, o.VendorID, o.Kind),
 			VendorID:       o.VendorID,
 			ItemKind:       o.Kind,
 		})

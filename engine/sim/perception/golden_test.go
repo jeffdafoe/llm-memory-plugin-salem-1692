@@ -450,6 +450,18 @@ var perceptionScenarios = []perceptionScenario{
 		build: huddleConversationLoopingScenario,
 	},
 	{
+		name: "hungry_looper_at_foodless_home",
+		summary: "The live LLM-176 case: hungry Walker sisters loop in a huddle at their foodless residence, " +
+			"confabulating 'food in the kitchen' instead of walking to a real source. Patience (the subject) is in an " +
+			"armed conversational loop, feels hunger, holds nothing edible, has 1 coin, and a free Raspberry Bush sits a " +
+			"walk away. The golden pins BOTH LLM-176 cues: the at-location dead-end ('There's no food to be had here — " +
+			"you'll need to forage or buy a meal elsewhere.') that kills the confabulation, and the need-redirect coda " +
+			"(swapping the generic 'do what you've agreed' line for 'go to Raspberry Bush (structure_id: …) now and eat') " +
+			"that names the engine's known affordance. A regression that dropped either would bring back the silent dead " +
+			"end or the plan-endorsing generic coda.",
+		build: hungryLooperAtFoodlessHome,
+	},
+	{
 		name: "hungry_actor_holding_raw_meat",
 		summary: "A hungry shopkeeper (Josiah Thorne) at his post carries raw Meat — a stew INGREDIENT (food-category but " +
 			"eases no need raw) — alongside edible Cheese (the live LLM-166 case: he fired consume{Meat} 22 times). The golden " +
@@ -1279,6 +1291,93 @@ func huddleConversationLoopingScenario() (*sim.Snapshot, sim.ActorID, []sim.Warr
 					utter(patienceID, "Patience Walker", "Let's go!", 24),
 					utter(anneID, "Anne Walker", "Let's go to the well!", 16),
 					utter(patienceID, "Patience Walker", "Lead the way, Anne.", 8),
+				},
+			},
+		},
+	}
+	return snap, patienceID, nil
+}
+
+// hungryLooperAtFoodlessHome is the LLM-176 fixture: the Walker sisters loop in a
+// huddle inside their foodless residence while hungry. Patience (the subject) is
+// in an armed conversational loop, feels red-tier hunger, carries nothing edible,
+// holds 1 coin, and a free Raspberry Bush sits a walk away (in VillageObjects but
+// far from the home, so it lists in the eat cue yet is NOT co-located). It drives
+// both LLM-176 cues at once: the no-food-here dead end (inside a structure, felt
+// hunger, nothing held, no source on the tile) and the need-redirect coda (the
+// looping coda names the nearest free source + move_to instead of the generic
+// "do what you've agreed" line). Fixed PublishedAt, no orders/PriceBook →
+// byte-stable.
+func hungryLooperAtFoodlessHome() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		patienceID = sim.ActorID("patience")
+		anneID     = sim.ActorID("anne")
+		homeID     = sim.StructureID("walker_residence")
+		huddleID   = sim.HuddleID("walker_huddle")
+	)
+	zero := 0
+	now := 13 * 60 // 13:00 — afternoon, so no sleep/return-to-post cue competes
+	published := time.Date(2026, 6, 29, 13, 0, 0, 0, time.UTC)
+	homeTile := sim.WorldPos{X: 10, Y: 10}.Tile() // at home, far from the bush
+	mkSister := func(name string, looping bool) *sim.ActorSnapshot {
+		return &sim.ActorSnapshot{
+			Kind:                sim.KindNPCStateful,
+			DisplayName:         name,
+			Role:                "villager",
+			State:               sim.StateIdle,
+			Pos:                 homeTile,
+			HomeStructureID:     homeID,
+			InsideStructureID:   homeID,
+			CurrentHuddleID:     huddleID,
+			Coins:               1,
+			Needs:               map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold},
+			ConversationLooping: looping,
+		}
+	}
+	patience := mkSister("Patience Walker", true)
+	anne := mkSister("Anne Walker", false)
+	utter := func(spk sim.ActorID, name, text string, agoSec int) sim.Utterance {
+		return sim.Utterance{SpeakerID: spk, SpeakerName: name, Text: text, At: published.Add(-time.Duration(agoSec) * time.Second)}
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Assets:           emptyAssetSet,
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{patienceID: patience, anneID: anne},
+		Structures: map[sim.StructureID]*sim.Structure{
+			homeID: plainStructure(homeID, "Walker Residence"),
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"raspberries": {
+				Name: "raspberries", DisplayLabel: "Raspberries",
+				DisplayLabelSingular: "raspberry", DisplayLabelPlural: "raspberries",
+				Category:  sim.ItemCategoryFood,
+				Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 2}},
+			},
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"wild_bush": {
+				ID:            "wild_bush",
+				DisplayName:   "Raspberry Bush",
+				Pos:           sim.WorldPos{X: 400, Y: 400}, // a walk away — listed in the eat cue, not co-located
+				LoiterOffsetX: &zero,
+				LoiterOffsetY: &zero,
+				Refreshes: []*sim.ObjectRefresh{
+					{Attribute: "hunger", Amount: -2}, // eases hunger on arrival — a free public source
+				},
+			},
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddleID: {
+				ID:      huddleID,
+				Members: map[sim.ActorID]struct{}{patienceID: {}, anneID: {}},
+				RecentUtterances: []sim.Utterance{
+					utter(patienceID, "Patience Walker", "I'm sure there's bread in the kitchen.", 40),
+					utter(anneID, "Anne Walker", "Let's check the kitchen for food.", 32),
+					utter(patienceID, "Patience Walker", "There must be something to eat at home.", 24),
+					utter(anneID, "Anne Walker", "Let's look in the kitchen.", 16),
+					utter(patienceID, "Patience Walker", "I'll find us a bite here.", 8),
 				},
 			},
 		},

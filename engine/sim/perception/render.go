@@ -328,7 +328,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// echo — while renderTriage's coda swaps to an "act now or done()" steer below.
 	conversationLooping := p.TurnState.ConversationLooping
 	renderTurnState(&ephemeral, p.TurnState, seekWorkDirective || conversationLooping)
-	renderTriage(&ephemeral, p.Actor.Needs, p.Actor.NeedThresholds, p.TurnState.AwaitingReply(), conversationLooping, seekWorkDirective, len(payOffers) > 0, p.Actor.InFlightMove, p.Actor.InFlightSourceActivity)
+	renderTriage(&ephemeral, p.Actor.Needs, p.Actor.NeedThresholds, p.TurnState.AwaitingReply(), conversationLooping, p.NeedRedirect, seekWorkDirective, len(payOffers) > 0, p.Actor.InFlightMove, p.Actor.InFlightSourceActivity)
 
 	out.Text = durable.String()
 	out.EphemeralText = ephemeral.String()
@@ -428,6 +428,27 @@ func stateGroup(members []HuddleMember, state string) string {
 	return joinNames(names) + " " + verb + " " + state
 }
 
+// renderNeedRedirect writes the LLM-176 need-driven loop coda: in place of the
+// generic "do what you've agreed" line — which endorses a confabulated plan when
+// the agreement is imaginary ("there's bread in the kitchen") — it names the one
+// affordance the engine knows resolves the actor's pressing consumable need plus
+// the imperative to act on it now. Need-agnostic phrasing via Verb (eat/drink);
+// the move targets carry the inline structure_id every actionable cue does, so
+// move_to resolves them. Mirrors the seek-work go-line and the duty steer.
+func renderNeedRedirect(v NeedRedirectView) string {
+	switch v.Kind {
+	case NeedRedirectConsume:
+		return fmt.Sprintf("You and the others here keep saying the same thing, but you already carry %s. Don't talk it over again — consume it now to %s.\n",
+			sanitizeInline(v.ItemLabel), v.Verb)
+	case NeedRedirectBuy:
+		return fmt.Sprintf("You and the others here keep saying the same thing, but there is nothing to %s here. Don't talk it over again — go to %s (structure_id: %s) now and buy %s to %s.\n",
+			v.Verb, sanitizeInline(v.TargetLabel), sanitizeInline(v.TargetID), sanitizeInline(v.ItemLabel), v.Verb)
+	default: // NeedRedirectFree
+		return fmt.Sprintf("You and the others here keep saying the same thing, but there is nothing to %s here. Don't talk it over again — go to %s (structure_id: %s) now and %s.\n",
+			v.Verb, sanitizeInline(v.TargetLabel), sanitizeInline(v.TargetID), v.Verb)
+	}
+}
+
 // renderTriage writes the closing prioritization instruction — the synthesis
 // keystone (ZBBS-HOME-355). The per-tick prompt is a set of equal-weight context
 // sections (felt needs, return-to-post, owed orders, vendor cues, what-just-
@@ -440,7 +461,7 @@ func stateGroup(members []HuddleMember, state string) string {
 // wandering exposed: obligations to others and pressing needs over idle drift.
 // Rendered unconditionally — Render is only called on the NPC reactor-tick path
 // (handlers.Harness.RunTick), never for a PC.
-func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.NeedThresholds, awaitingReply bool, conversationLooping bool, seekWork bool, hasPayOffers bool, inFlightMove *InFlightMoveView, inFlightSourceActivity *InFlightSourceActivityView) {
+func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.NeedThresholds, awaitingReply bool, conversationLooping bool, needRedirect *NeedRedirectView, seekWork bool, hasPayOffers bool, inFlightMove *InFlightMoveView, inFlightSourceActivity *InFlightSourceActivityView) {
 	// A buyer's offer awaiting this actor's answer outranks everything below —
 	// including the actor's own felt needs, which the coda's "pressing needs"
 	// phrasing otherwise licenses to win. Without this, a starving seller read
@@ -501,7 +522,18 @@ func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.
 		// Ordered below seek-work so a workless worker still gets the leave-for-work
 		// directive, and above awaiting-reply since "looping" is the more specific
 		// read of why a reply is pending.
-		b.WriteString("You and the others here keep saying the same thing — the matter is already settled between you. Don't say it again: do what you've agreed — move, tend your work or a need — or call done() and let the moment rest. Speak again only if you truly have something new.\n")
+		//
+		// LLM-176: a need-driven loop circles a CONFABULATED plan ("check the kitchen
+		// for bread"), and the generic line above tells them to "do what you've
+		// agreed" — endorsing the confabulation. When the actor has a felt consumable
+		// need with a real listed source, swap in a concrete redirect that names the
+		// engine's known affordance + a move_to/consume imperative (the duty-steer
+		// pattern). Falls back to the generic line when no target resolves.
+		if needRedirect != nil {
+			b.WriteString(renderNeedRedirect(*needRedirect))
+		} else {
+			b.WriteString("You and the others here keep saying the same thing — the matter is already settled between you. Don't say it again: do what you've agreed — move, tend your work or a need — or call done() and let the moment rest. Speak again only if you truly have something new.\n")
+		}
 	case awaitingReply:
 		// Turn-state coda (ZBBS-WORK-370): the actor has spoken and is awaiting a
 		// reply. The default "choose one thing and do it" imperative is exactly
@@ -939,18 +971,32 @@ func timeOfDayProse(minute int) string {
 // mid-clause article from WithDefiniteArticle is capitalized ("the Tavern" →
 // "The Tavern").
 func deadEndClause(s SurroundingsView) string {
-	if s.LocationDeadEnd != DeadEndShutBusiness {
+	switch s.LocationDeadEnd {
+	case DeadEndShutBusiness:
+		name := s.StructureName
+		if name == "" {
+			name = s.NearbyStructureName
+		}
+		if name == "" {
+			return ""
+		}
+		place := capitalizeFirst(sim.WithDefiniteArticle(sanitizeInline(name)))
+		return place + " is shut — no one is tending it."
+	case DeadEndNoConsumableHere:
+		// LLM-176: name the missing affordance at a foodless spot so a weak model
+		// can't confabulate food here ("bread in the kitchen"). "Here" is unambiguous
+		// next to the location line; phrasing follows which felt need has no source.
+		switch {
+		case s.DeadEndHunger && s.DeadEndThirst:
+			return "There's nothing to eat or drink here — you'll need to forage or buy it elsewhere."
+		case s.DeadEndThirst:
+			return "There's nothing to drink here — you'll need to find a well or buy a drink elsewhere."
+		default:
+			return "There's no food to be had here — you'll need to forage or buy a meal elsewhere."
+		}
+	default:
 		return ""
 	}
-	name := s.StructureName
-	if name == "" {
-		name = s.NearbyStructureName
-	}
-	if name == "" {
-		return ""
-	}
-	place := capitalizeFirst(sim.WithDefiniteArticle(sanitizeInline(name)))
-	return place + " is shut — no one is tending it."
 }
 
 // capitalizeFirst upper-cases the leading letter of a mid-clause label so it can

@@ -1,0 +1,29 @@
+# Your turn
+
+## What just happened
+(nothing specific — this is a routine check-in)
+
+
+## You
+Address now: hunger. You feel hungry.
+Coins in your purse: 1.
+
+## Around you
+You are inside the Walker Residence, with the villager.
+There's no food to be had here — you'll need to forage or buy a meal elsewhere.
+It is midday.
+
+Your home is at the Walker Residence (structure_id: walker_residence) — you can head back there whenever you wish.
+
+## Recent conversation here
+- You said: I'm sure there's bread in the kitchen.
+- Anne Walker said: Let's check the kitchen for food.
+- You said: There must be something to eat at home.
+- Anne Walker said: Let's look in the kitchen.
+- You said: I'll find us a bite here.
+
+## What you can eat or drink
+Free to eat nearby:
+- Raspberry Bush — a nibble, free, a short walk southeast (structure_id: wild_bush)
+
+You and the others here keep saying the same thing, but there is nothing to eat here. Don't talk it over again — go to Raspberry Bush (structure_id: wild_bush) now and eat.
