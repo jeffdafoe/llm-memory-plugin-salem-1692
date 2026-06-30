@@ -41,9 +41,10 @@ import "time"
 // on restart: counter = max(checkpointed, max(IDs across entries)).
 type QuoteID uint64
 
-// SceneQuoteState is the lifecycle state of a SceneQuote. Four-state
-// enum: one active state, three terminal states (no transitions out of
-// any terminal). Mirrors the locked spec at scene-quote-design § 6.
+// SceneQuoteState is the lifecycle state of a SceneQuote. Five-state
+// enum: one active state, four terminal states (no transitions out of
+// any terminal). Mirrors the locked spec at scene-quote-design § 6,
+// extended with the "taken" terminal (LLM-189).
 type SceneQuoteState string
 
 const (
@@ -66,6 +67,17 @@ const (
 	// quote in the (seller, scene) bucket when the per-seller-per-scene
 	// cap was hit. Terminal.
 	SceneQuoteStateCapDisplaced SceneQuoteState = "cap_displaced"
+
+	// SceneQuoteStateTaken — a buyer settled this quote via the
+	// pay_with_item fast path (explicit quote_id or auto-match). The
+	// quote represents a specific lot offered for sale; a take is
+	// whole-lot (the fast path requires an exact qty match), so the
+	// lot is sold and the offer is fulfilled — it closes rather than
+	// lingering as a phantom "standing" offer in the seller's
+	// perception. A seller with more to sell re-posts. This is the
+	// "once-then-done" policy choice the SceneQuote doc comment defers
+	// to pay-with-item time (LLM-189). Terminal.
+	SceneQuoteStateTaken SceneQuoteState = "taken"
 )
 
 // SceneQuoteTTLDefault is the default Time-To-Live for a scene quote
@@ -134,12 +146,15 @@ type QuoteLine struct {
 //     at TTL — no eager nuke on scene close).
 //
 //   - State is one of SceneQuoteState{Active, Expired, Superseded,
-//     CapDisplaced}. Three terminal states cover the non-acceptance
-//     end conditions; the accepted path lives on the pay-ledger
-//     entry created by pay_with_item, NOT on the quote (a quote can
-//     be taken by many fast-path matches conceptually, though in
-//     practice once-then-decremented behaviors are policy choices at
-//     pay-with-item time).
+//     CapDisplaced, Taken}. The accepted transfer lives on the
+//     pay-ledger entry created by pay_with_item; the quote carries a
+//     "taken" terminal so the seller's perception stops advertising a
+//     lot that is already sold (LLM-189). The "conceptually a quote
+//     could be taken many times" hedge in the original spec deferred
+//     the once-vs-many policy to pay-with-item time — that choice is
+//     now made: a take is whole-lot (the fast path requires an exact
+//     qty match), so one take fulfills the lot and closes the quote.
+//     A seller with more to sell re-posts.
 //
 //   - TargetBuyer empty means public-to-huddle (every eligible scene
 //     participant sees the quote); non-empty means a single addressed

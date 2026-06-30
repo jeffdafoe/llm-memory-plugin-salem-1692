@@ -75,16 +75,25 @@ const (
 	// cap was hit; this was the oldest active quote in the bucket
 	// so it got displaced.
 	SceneQuoteExpiredReasonCapDisplaced = "cap_displaced"
+
+	// SceneQuoteExpiredReasonTaken — a buyer settled this quote via the
+	// pay_with_item fast path (LLM-189). The quote's lot is sold, so it
+	// closes (terminal SceneQuoteStateTaken) instead of lingering as a
+	// phantom standing offer. The transfer itself rides the
+	// PayWithItemResolved{Accepted} event; this is the quote-side close.
+	SceneQuoteExpiredReasonTaken = "taken"
 )
 
 // SceneQuoteExpired fires on every scene-quote terminal-state
-// transition. Reason distinguishes the three terminal paths:
+// transition. Reason distinguishes the terminal paths:
 //
 //   - "ttl" — aging sweep flipped expired (the common case).
 //   - "superseded" — duplicate-key replacement at create time.
 //   - "cap_displaced" — per-(seller, scene) cap hit at create time.
+//   - "taken" — a buyer settled the quote via the pay_with_item fast
+//     path; the lot is sold (LLM-189).
 //
-// No subscribers in PR S3 — the event is shipped for the PR S5
+// No subscribers — the event is shipped for the PR S5
 // SceneQuoteSink admin projection and any later policy subscribers.
 // Quote warrants are restart-noncritical (TargetBuyer's perception
 // surfaces fresh quotes on every tick anyway), so no warrant is
