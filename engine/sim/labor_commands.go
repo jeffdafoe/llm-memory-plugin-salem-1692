@@ -625,15 +625,25 @@ func clampWorkingUntilToEmployerClose(w *World, employer *Actor, workingUntil, a
 	if !ok {
 		return workingUntil
 	}
-	nowMin := localMinuteOfDay(w, at)
+	loc := time.UTC
+	if w != nil && w.Settings.Location != nil {
+		loc = w.Settings.Location
+	}
+	local := at.In(loc)
+	nowMin := local.Hour()*60 + local.Minute()
 	if !minuteInShiftWindow(start, end, nowMin) {
-		return workingUntil
+		return workingUntil // off shift now — no live shift to bound against
 	}
-	minsUntilClose := (end - nowMin + 1440) % 1440
-	if minsUntilClose <= 0 {
-		return workingUntil
+	// Build the close instant from the local wall-clock DATE at the shift-end
+	// minute, seconds zeroed. Adding whole minutes to `at` would carry at's
+	// seconds past the close (minute-of-day drops sub-minute precision), leaving
+	// the worker laboring up to ~59s past close and the fact one minute long
+	// (code_review).
+	closeAt := time.Date(local.Year(), local.Month(), local.Day(), end/60, end%60, 0, 0, loc)
+	if end <= start && nowMin >= start {
+		// Wrap-midnight shift in its pre-midnight half — the close is tomorrow.
+		closeAt = closeAt.AddDate(0, 0, 1)
 	}
-	closeAt := at.Add(time.Duration(minsUntilClose) * time.Minute)
 	if closeAt.Before(workingUntil) {
 		return closeAt
 	}

@@ -1061,10 +1061,15 @@ func actorCanReactNow(w *World, a *Actor, now time.Time) (eligible bool, stale b
 	// does NOT, the same posture as a break, and the shift-end clamp keeps a job
 	// from running into the worker's own bedtime), an operator nudge, or a PC
 	// speaking to it (a player gets a reply). NPC chatter / arrivals / idle still
-	// shelve. Gate on either the enum OR the window since the enum can lag the
-	// authoritative LaboringUntil the way Sleeping does; the completion sweep
-	// clears both together, so a settled worker ticks normally again.
-	laboring := a.State == StateLaboring || (a.LaboringUntil != nil && a.LaboringUntil.After(now))
+	// shelve. Gate on the LaboringUntil window ALONE, NOT the StateLaboring enum:
+	// the mirror window is the authoritative busy signal here, and a stranded
+	// StateLaboring with a nil/elapsed window (a missed settle, or a checkpoint
+	// reload before reconcileStrandedLaboringOnLoad runs) must stay tickable so it
+	// can recover, not be shelved forever (code_review). AcceptWork sets State +
+	// LaboringUntil together and the sweep clears them together, so in the live
+	// happy path the window tracks the job exactly; once it elapses the worker
+	// ticks again even in the ≤1-cadence gap before the settle formally lands.
+	laboring := a.LaboringUntil != nil && a.LaboringUntil.After(now)
 	if laboring &&
 		!hasBreakInterruptingNeedWarrant(a.Warrants) &&
 		!hasOperatorNudgeWarrant(a.Warrants) &&

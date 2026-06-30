@@ -62,6 +62,26 @@ func TestClampWorkingUntilToEmployerClose_WrapMidnight(t *testing.T) {
 	}
 }
 
+// The close instant is the shift-end MINUTE with seconds zeroed — accepting at a
+// non-zero second must not push the close past the minute boundary (code_review).
+func TestClampWorkingUntilToEmployerClose_ZeroesSeconds(t *testing.T) {
+	w := &World{}
+	emp := schedActor("ezekiel", 480, 1080)                 // 08:00–18:00
+	at := time.Date(2026, 6, 30, 14, 59, 59, 500, time.UTC) // non-zero sec+nanos
+	want := time.Date(2026, 6, 30, 18, 0, 0, 0, time.UTC)
+	if got := clampWorkingUntilToEmployerClose(w, emp, at.Add(8*time.Hour), at); !got.Equal(want) {
+		t.Errorf("clamp = %v, want exactly %v (seconds/nanos zeroed at close)", got, want)
+	}
+
+	// Same for a wrap-midnight shift accepted with non-zero seconds.
+	night := schedActor("john", 960, 180)                    // 16:00–03:00
+	at2 := time.Date(2026, 6, 30, 22, 17, 42, 900, time.UTC) // 22:17:42.x
+	want2 := time.Date(2026, 7, 1, 3, 0, 0, 0, time.UTC)
+	if got := clampWorkingUntilToEmployerClose(w, night, at2.Add(8*time.Hour), at2); !got.Equal(want2) {
+		t.Errorf("wrap-midnight clamp = %v, want exactly %v", got, want2)
+	}
+}
+
 func TestShopClosedForCloseout(t *testing.T) {
 	w := &World{}
 	keeper := schedActor("ezekiel", 480, 1080)
