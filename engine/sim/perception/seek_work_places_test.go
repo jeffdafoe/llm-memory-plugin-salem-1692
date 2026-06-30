@@ -182,6 +182,33 @@ func TestBuildSeekWorkPlaces_DropsDeclinedEmployer(t *testing.T) {
 	}
 }
 
+// TestBuildSeekWorkPlaces_FutureDeclinedWorkMemoryIgnored guards the clock-skew
+// case: a decline observation stamped in the FUTURE relative to the snapshot clock
+// must not read as "fresh forever" and suppress the business. Observed.Active's
+// age >= 0 guard handles this centrally (shared with ObservedClosed/OutOfStock);
+// this pins the invariant for the new condition.
+func TestBuildSeekWorkPlaces_FutureDeclinedWorkMemoryIgnored(t *testing.T) {
+	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+	snap := &sim.Snapshot{
+		PublishedAt: now,
+		Structures: map[sim.StructureID]*sim.Structure{
+			"smy": {DisplayName: "Blacksmith"},
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"smy": {ID: "smy", Pos: sim.WorldPos{X: 32, Y: 0}, Tags: []string{"business"}},
+		},
+	}
+	actor := &sim.ActorSnapshot{
+		Pos: sim.WorldToTile(0, 0),
+		Observed: sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
+			{StructureID: "smy", Condition: sim.ObservedDeclinedWork}: now.Add(time.Hour),
+		}),
+	}
+	if got := buildSeekWorkPlaces(snap, actor); len(got) != 1 || got[0].Name != "Blacksmith" {
+		t.Fatalf("future declined-work memory should not suppress business: got %+v", got)
+	}
+}
+
 // TestBuild_SeekWorkPlacesStandingForWorklessWorker proves the wiring end-to-end
 // (LLM-160/168): Build populates SeekWorkPlaces for a WORKLESS idle worker with no
 // solicitable employer present — every tick, no seek-work warrant required, and
