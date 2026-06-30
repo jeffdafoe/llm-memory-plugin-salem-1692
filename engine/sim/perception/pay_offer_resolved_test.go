@@ -127,6 +127,70 @@ func TestRenderRecentlyResolvedOffersFromMe_AcceptedAndClosed(t *testing.T) {
 	}
 }
 
+// LLM-188: a consume_now buy whose needs-clamp ate fewer units than purchased
+// must reconcile the eaten-vs-kept split in the line, so it agrees with the
+// buyer's carried inventory instead of asserting all Qty were had on the spot
+// (the contradiction that drove the "missing blueberry" confabulation). Anne's
+// repro: paid 10 for 5 blueberries, ate 1, kept 4.
+func TestRenderRecentlyResolvedOffersFromMe_ConsumeRemainderSplit(t *testing.T) {
+	var b strings.Builder
+	renderRecentlyResolvedOffersFromMe(&b, []ResolvedOfferView{
+		{LedgerID: 449, SellerName: "Prudence Ward", Item: "blueberries", Qty: 5, Amount: 10, Accepted: true, ConsumeNow: true, KeptUnits: 4},
+	})
+	out := b.String()
+	if !strings.Contains(out, "you ate 1 on the spot and kept the other 4") {
+		t.Errorf("missing reconciling split clause; got:\n%s", out)
+	}
+	if strings.Contains(out, "you had it right away") {
+		t.Errorf("clamped consume_now must not claim it was all had right away; got:\n%s", out)
+	}
+	if !strings.Contains(out, "you paid 10 coins for 5 blueberries") {
+		t.Errorf("purchase facts must stay; got:\n%s", out)
+	}
+}
+
+// The split clause is gated to a coherent self-consume split. A fully-consumed
+// buy (KeptUnits 0) keeps "you had it right away"; a group-order split that
+// breaks the 0 < KeptUnits < Qty invariant falls back to the plain line rather
+// than print a nonsensical eaten count.
+func TestRenderRecentlyResolvedOffersFromMe_ConsumeRemainderFallback(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		view ResolvedOfferView
+	}{
+		{"ate all (kept 0)", ResolvedOfferView{LedgerID: 1, SellerName: "s", Item: "water", Qty: 3, Amount: 6, Accepted: true, ConsumeNow: true, KeptUnits: 0}},
+		{"kept >= qty (group)", ResolvedOfferView{LedgerID: 2, SellerName: "s", Item: "meat", Qty: 2, Amount: 8, Accepted: true, ConsumeNow: true, KeptUnits: 2}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var b strings.Builder
+			renderRecentlyResolvedOffersFromMe(&b, []ResolvedOfferView{tc.view})
+			out := b.String()
+			if !strings.Contains(out, "you had it right away") {
+				t.Errorf("expected plain consume_now line; got:\n%s", out)
+			}
+			if strings.Contains(out, "on the spot and kept") {
+				t.Errorf("did not expect split clause; got:\n%s", out)
+			}
+		})
+	}
+}
+
+// The clamp surplus carried on the ledger entry reaches the view so the render
+// can reconcile it (LLM-188).
+func TestBuildRecentlyResolvedOffersFromMe_CarriesKeptUnits(t *testing.T) {
+	now := time.Now().UTC()
+	e := resolvedEntry(449, "anne", "prudence", "blueberries", 5, 10, sim.PayLedgerStateAccepted, true, now.Add(-20*time.Second))
+	e.KeptUnits = 4
+	snap := resolvedSnap(now, map[sim.LedgerID]*sim.PayLedgerEntry{449: e})
+	views := buildRecentlyResolvedOffersFromMe(snap, "anne", snap.Actors["anne"])
+	if len(views) != 1 {
+		t.Fatalf("views = %+v, want one", views)
+	}
+	if views[0].KeptUnits != 4 {
+		t.Errorf("KeptUnits = %d, want 4 (carried from the ledger entry)", views[0].KeptUnits)
+	}
+}
+
 func TestRenderRecentlyResolvedOffersFromMe_EmptyGated(t *testing.T) {
 	var b strings.Builder
 	renderRecentlyResolvedOffersFromMe(&b, nil)

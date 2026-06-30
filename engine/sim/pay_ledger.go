@@ -252,6 +252,17 @@ type PayLedgerEntry struct {
 	ConsumeNow  bool
 	ConsumerIDs []ActorID
 
+	// KeptUnits is the consume_now surplus pocketed into the BUYER's pack at
+	// accept — set only when ConsumeNow held units back via the needs-clamp
+	// (consumableUnits, ZBBS-WORK-391): the buyer paid for Qty but ate fewer,
+	// so Qty-KeptUnits were eaten on the spot and KeptUnits were kept. Zero for
+	// a take-home or fully-consumed offer. Surfaced in the buyer's "## Recently
+	// settled offers" line so it reconciles with the carried-inventory count
+	// instead of asserting all Qty were "had right away" (LLM-188). In-memory
+	// only: consume_now mints no Order, so the entry is never persisted, and the
+	// 3-min settled-offers window makes restart-loss harmless.
+	KeptUnits int
+
 	// Lines is populated ONLY for a bundle quote-take (LLM-101): a buyer
 	// taking a multi-line scene quote by quote_id. It carries the quote's
 	// full set of {ItemKind, Qty} lines so commitPayTransfer delivers each.
