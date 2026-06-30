@@ -531,6 +531,13 @@ func (r *EnvironmentRepo) SaveMutableSettings(ctx context.Context, tx sim.Tx, ms
 		{"stall_wear_degrade_threshold", strconv.Itoa(ms.StallWearDegradeThreshold)},
 		{"stall_nails_per_repair", strconv.Itoa(ms.StallNailsPerRepair)},
 		{"stall_repair_duration_seconds", strconv.Itoa(ms.StallRepairDurationSeconds)},
+		// Huddle loop-sweep knobs (LLM-159; enabled/tuned via the umbilical in
+		// LLM-183) — live-tuned, persisted here. Stored in seconds; the load path
+		// parses huddle_loop_timeout_seconds / huddle_loop_sweep_cadence_seconds via
+		// parseDurationSetting and huddle_loop_repeat_percent via parseIntSetting.
+		{"huddle_loop_timeout_seconds", strconv.Itoa(ms.HuddleLoopTimeoutSeconds)},
+		{"huddle_loop_repeat_percent", strconv.Itoa(ms.HuddleLoopRepeatPercent)},
+		{"huddle_loop_sweep_cadence_seconds", strconv.Itoa(ms.HuddleLoopSweepCadenceSeconds)},
 	}
 	for _, row := range rows {
 		if _, err := tx.Exec(ctx, upsertSettingSQL, row.key, row.val); err != nil {

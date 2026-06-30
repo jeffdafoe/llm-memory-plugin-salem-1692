@@ -432,6 +432,7 @@ func TestUmbilicalControl_NewRoutesGated(t *testing.T) {
 		"/api/village/umbilical/settle",
 		"/api/village/umbilical/rotate",
 		"/api/village/umbilical/settings/need-threshold",
+		"/api/village/umbilical/settings/huddle-loop",
 		"/api/village/umbilical/set-needs",
 		"/api/village/umbilical/set-position",
 	}

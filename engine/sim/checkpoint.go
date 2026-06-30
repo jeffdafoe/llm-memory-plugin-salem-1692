@@ -52,8 +52,8 @@ type CheckpointSnapshot struct {
 // persists. The full settings table holds ~20 operator-tuned-out-of-band keys
 // that are load-once by design; writing the whole map back at every checkpoint
 // would clobber any direct DB edit with the startup-loaded value. So the
-// checkpoint carries (and SaveWorld upserts) only these three keys. Value type —
-// plain-copied into the CheckpointSnapshot, no clone needed.
+// checkpoint carries (and SaveWorld upserts) only this explicitly-listed subset.
+// Value type — plain-copied into the CheckpointSnapshot, no clone needed.
 type MutableWorldSettings struct {
 	ZoomMinAdmin     float64
 	ZoomMinRegular   float64
@@ -66,6 +66,14 @@ type MutableWorldSettings struct {
 	StallWearDegradeThreshold  int
 	StallNailsPerRepair        int
 	StallRepairDurationSeconds int
+
+	// Huddle loop-sweep knobs (LLM-159; enabled/tuned via the umbilical in LLM-183)
+	// — live-tunable, persisted here each checkpoint so a live change survives
+	// restart. HuddleLoopTimeoutSeconds is the master enable (0 = sweep off). Stored
+	// in seconds to match the huddle_loop_*_seconds setting keys.
+	HuddleLoopTimeoutSeconds      int
+	HuddleLoopRepeatPercent       int
+	HuddleLoopSweepCadenceSeconds int
 }
 
 // DiscoveredKind is the minimal persist-tuple for an engine-minted item kind
@@ -102,14 +110,17 @@ func (w *World) BuildCheckpointSnapshot() *CheckpointSnapshot {
 		Environment:    w.Environment,
 		Phase:          w.Phase,
 		MutableSettings: MutableWorldSettings{
-			ZoomMinAdmin:               w.Settings.ZoomMinAdmin,
-			ZoomMinRegular:             w.Settings.ZoomMinRegular,
-			AgentTicksPaused:           w.Settings.AgentTicksPaused,
-			StallWearPerCoin:           w.Settings.StallWearPerCoin,
-			StallWearRepairThreshold:   w.Settings.StallWearRepairThreshold,
-			StallWearDegradeThreshold:  w.Settings.StallWearDegradeThreshold,
-			StallNailsPerRepair:        w.Settings.StallNailsPerRepair,
-			StallRepairDurationSeconds: w.Settings.StallRepairDurationSeconds,
+			ZoomMinAdmin:                  w.Settings.ZoomMinAdmin,
+			ZoomMinRegular:                w.Settings.ZoomMinRegular,
+			AgentTicksPaused:              w.Settings.AgentTicksPaused,
+			StallWearPerCoin:              w.Settings.StallWearPerCoin,
+			StallWearRepairThreshold:      w.Settings.StallWearRepairThreshold,
+			StallWearDegradeThreshold:     w.Settings.StallWearDegradeThreshold,
+			StallNailsPerRepair:           w.Settings.StallNailsPerRepair,
+			StallRepairDurationSeconds:    w.Settings.StallRepairDurationSeconds,
+			HuddleLoopTimeoutSeconds:      int(w.Settings.HuddleLoopTimeout / time.Second),
+			HuddleLoopRepeatPercent:       w.Settings.HuddleLoopRepeatPercent,
+			HuddleLoopSweepCadenceSeconds: int(w.Settings.HuddleLoopSweepCadence / time.Second),
 		},
 	}
 	// ZBBS-WORK-412: carry the engine-minted (unknown-category) item kinds so

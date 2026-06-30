@@ -4,23 +4,36 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
 
 // umbilical_settings.go — the read side (LLM-110) of the live-tunable
-// WorldSettings the control surface mutates. Today that is the per-need red-line
-// thresholds (settings/need-threshold); this is the get that pairs with that set,
-// so an operator can see the current threshold before tuning it.
+// WorldSettings the control surface mutates: the per-need red-line thresholds
+// (settings/need-threshold) and the huddle loop-sweep knobs (settings/huddle-loop,
+// LLM-183). The get that pairs with those sets, so an operator can see the current
+// values before tuning them.
 
 // UmbilicalSettingsDTO is the GET /api/village/umbilical/settings response: the
-// live, operator-tunable world settings. need_thresholds maps each configured
-// need to its current red-line (the value settings/need-threshold writes). These
-// are EPHEMERAL — WorldSettings is load-only (not persisted by SaveWorld), so
-// they reset to the env-configured defaults on restart.
+// live, operator-tunable world settings.
+//
+// need_thresholds maps each configured need to its current red-line (the value
+// settings/need-threshold writes). These are EPHEMERAL — those keys are not
+// persisted by SaveWorld, so they reset to the env-configured defaults on restart.
+//
+// The huddle_loop_* fields are the loop-sweep knobs settings/huddle-loop writes.
+// huddle_loop_enabled is timeout > 0 — the master enable for both the sweep and
+// the per-tick ConversationLooping steer. Unlike the need thresholds these PERSIST
+// (the checkpoint writes them back to the setting table), so they survive restart.
 type UmbilicalSettingsDTO struct {
 	ContractVersion int            `json:"contract_version"`
 	NeedThresholds  map[string]int `json:"need_thresholds"`
+
+	HuddleLoopEnabled             bool `json:"huddle_loop_enabled"`
+	HuddleLoopTimeoutSeconds      int  `json:"huddle_loop_timeout_seconds"`
+	HuddleLoopRepeatPercent       int  `json:"huddle_loop_repeat_percent"`
+	HuddleLoopSweepCadenceSeconds int  `json:"huddle_loop_sweep_cadence_seconds"`
 }
 
 // handleUmbilicalSettings serves the current live-tunable world settings. Read on
@@ -30,8 +43,12 @@ type UmbilicalSettingsDTO struct {
 func (s *Server) handleUmbilicalSettings(w http.ResponseWriter, r *http.Request) {
 	res, err := s.world.SendContext(r.Context(), sim.Command{Fn: func(world *sim.World) (any, error) {
 		dto := UmbilicalSettingsDTO{
-			ContractVersion: ContractVersion,
-			NeedThresholds:  make(map[string]int, len(world.Settings.NeedThresholds)),
+			ContractVersion:               ContractVersion,
+			NeedThresholds:                make(map[string]int, len(world.Settings.NeedThresholds)),
+			HuddleLoopEnabled:             world.Settings.HuddleLoopTimeout > 0,
+			HuddleLoopTimeoutSeconds:      int(world.Settings.HuddleLoopTimeout / time.Second),
+			HuddleLoopRepeatPercent:       world.Settings.HuddleLoopRepeatPercent,
+			HuddleLoopSweepCadenceSeconds: int(world.Settings.HuddleLoopSweepCadence / time.Second),
 		}
 		for k, v := range world.Settings.NeedThresholds {
 			dto.NeedThresholds[string(k)] = v
