@@ -24,65 +24,89 @@ package handlers
 // / register_scene_quote.go.
 
 // RegisterPayWithItem adds the pay_with_item tool to r as a
-// ClassCommit entry. Non-terminal — the buyer can chain speak / move
-// after offering.
+// ClassCommit entry.
+//
+// terminalOnSuccess is TRUE (LLM-184): a placed buy offer ends the tick. The
+// offer is instant and stands until the seller answers on THEIR turn, so there
+// is nothing useful to chain after it — a second pay_with_item is a guaranteed
+// no-op (the already_offered guard rejects it) and the courtesy after-word is
+// the re-pitch the weak model stormed to the round budget (pay_with_item x6,
+// observed live). The buyer still announces BEFORE offering (speak is
+// non-terminal: speak, then pay_with_item ends the tick); only the after-word is
+// dropped. Mirrors solicit_work (LLM-180) / gather (LLM-175).
 func RegisterPayWithItem(r *Registry) error {
 	return r.RegisterCommit(
 		"pay_with_item",
 		payWithItemSchema,
 		DecodePayWithItemArgs,
 		HandlePayWithItem,
-		false, // non-terminal: pay_with_item is a within-tick step
+		true, // terminal: a placed buy offer ends the tick (LLM-184)
 		WithDescription(payWithItemDescription),
 	)
 }
 
-// RegisterAcceptPay adds the accept_pay tool to r. Non-terminal — the
-// seller can chain a speak ("thank you, here's your stew") after
-// accepting.
+// RegisterAcceptPay adds the accept_pay tool to r.
+//
+// terminalOnSuccess is TRUE (LLM-184): accepting settles the sale atomically,
+// so there is nothing mechanical left to do this tick. The courtesy after-word
+// ("thank you, here's your stew") is exactly the re-fire vector the weak model
+// stormed; the seller's before-speak is preserved (speak is non-terminal). The
+// already_answered guard stays a backstop.
 func RegisterAcceptPay(r *Registry) error {
 	return r.RegisterCommit(
 		"accept_pay",
 		acceptPaySchema,
 		DecodeAcceptPayArgs,
 		HandleAcceptPay,
-		false,
+		true, // terminal: an atomic settle ends the tick (LLM-184)
 		WithDescription(acceptPayDescription),
 	)
 }
 
-// RegisterDeclinePay adds the decline_pay tool to r. Non-terminal.
+// RegisterDeclinePay adds the decline_pay tool to r.
+//
+// terminalOnSuccess is TRUE (LLM-184): a decline is instant and final for this
+// tick — nothing to chain — so ending the tick here kills the decline_pay x6
+// storm (observed live) at the source. The already_X guard stays a backstop.
 func RegisterDeclinePay(r *Registry) error {
 	return r.RegisterCommit(
 		"decline_pay",
 		declinePaySchema,
 		DecodeDeclinePayArgs,
 		HandleDeclinePay,
-		false,
+		true, // terminal: an instant decline ends the tick (LLM-184)
 		WithDescription(declinePayDescription),
 	)
 }
 
-// RegisterCounterPay adds the counter_pay tool to r. Non-terminal.
+// RegisterCounterPay adds the counter_pay tool to r.
+//
+// terminalOnSuccess is TRUE (LLM-184): a counter places a fresh offer that
+// stands until the other party answers on THEIR turn — same shape as
+// pay_with_item — so there is nothing to chain after it this tick.
 func RegisterCounterPay(r *Registry) error {
 	return r.RegisterCommit(
 		"counter_pay",
 		counterPaySchema,
 		DecodeCounterPayArgs,
 		HandleCounterPay,
-		false,
+		true, // terminal: a placed counter-offer ends the tick (LLM-184)
 		WithDescription(counterPayDescription),
 	)
 }
 
-// RegisterWithdrawPay adds the withdraw_pay tool to r. Non-terminal.
+// RegisterWithdrawPay adds the withdraw_pay tool to r.
+//
+// terminalOnSuccess is TRUE (LLM-184): retracting an offer is instant and final
+// for this tick — nothing to chain — so the withdraw_pay x6 storm (observed
+// live) cannot recur.
 func RegisterWithdrawPay(r *Registry) error {
 	return r.RegisterCommit(
 		"withdraw_pay",
 		withdrawPaySchema,
 		DecodeWithdrawPayArgs,
 		HandleWithdrawPay,
-		false,
+		true, // terminal: an instant withdrawal ends the tick (LLM-184)
 		WithDescription(withdrawPayDescription),
 	)
 }

@@ -34,10 +34,13 @@ package handlers
 // HandleSceneQuote; the decoder is DecodeSceneQuoteArgs; both live
 // in scene_quote.go.
 //
-// terminalOnSuccess is FALSE: scene_quote is non-terminal so the
-// seller can follow with a speak ("I'm running a special on stew
-// tonight, quote #5") or other tool in the same tick — same
-// rationale as pay/speak/consume.
+// terminalOnSuccess is TRUE (LLM-184): a posted quote stands until a buyer
+// answers on THEIR turn, so there is nothing useful to chain after it — a
+// second sell of the same lot is a no-op (the same-tick quote guard rejects it)
+// and the courtesy after-word ("I'm running a special on stew tonight, quote
+// #5") is the re-pitch the weak model stormed to the round budget (sell x3,
+// observed live). The seller still announces BEFORE quoting (speak is
+// non-terminal); only the after-word is dropped. Mirrors solicit_work (LLM-180).
 //
 // Returns an error on registration failure (duplicate name, malformed
 // schema bytes — both startup bugs the caller should panic/exit on).
@@ -47,7 +50,7 @@ func RegisterSceneQuote(r *Registry) error {
 		sceneQuoteSchema,
 		DecodeSceneQuoteArgs,
 		HandleSceneQuote,
-		false, // non-terminal: scene_quote is a within-tick step, not a tick-ender
+		true, // terminal: a posted quote ends the tick (LLM-184)
 		WithDescription(sceneQuoteDescription),
 	)
 }

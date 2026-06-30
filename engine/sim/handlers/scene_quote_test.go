@@ -231,6 +231,16 @@ func TestRegisterSceneQuote_AddsTool(t *testing.T) {
 	if err := RegisterSceneQuote(r); err != nil {
 		t.Fatalf("RegisterSceneQuote: %v", err)
 	}
+	// LLM-184: sell is tick-terminal — a posted quote stands until a buyer
+	// answers on their turn, so a forced re-quote (sell x3, observed live) can't
+	// storm the round budget.
+	e, ok := r.Lookup("sell")
+	if !ok {
+		t.Fatal("sell not registered")
+	}
+	if e.TerminalPolicy != TerminalOnSuccess {
+		t.Errorf("sell TerminalPolicy = %v, want TerminalOnSuccess (LLM-184)", e.TerminalPolicy)
+	}
 	if err := RegisterSceneQuote(r); err == nil {
 		t.Error("re-registration should reject duplicate tool name")
 	}
