@@ -41,6 +41,12 @@ const (
 	// ObservedOutOfStock — tried to buy an item and the vendor was out of stock
 	// (HOME-363). Per-item: the key carries the ItemKind alongside the structure.
 	ObservedOutOfStock
+	// ObservedDeclinedWork — solicited work from an employer and was declined
+	// (LLM-198). Whole-structure (empty ItemKind), keyed by the employer's
+	// WORKPLACE — the business named in the seek-work directory. Perception drops
+	// that business from the worker's directory for the TTL so it stops walking
+	// back to a door that just turned it away.
+	ObservedDeclinedWork
 )
 
 // ttl is how long an observation of this condition stays actionable before
@@ -53,6 +59,8 @@ func (c ObservedCondition) ttl() time.Duration {
 		return ClosedBusinessMemoryTTL
 	case ObservedOutOfStock:
 		return OutOfStockMemoryTTL
+	case ObservedDeclinedWork:
+		return DeclinedWorkMemoryTTL
 	}
 	return 0
 }

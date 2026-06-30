@@ -139,6 +139,49 @@ func TestBuildSeekWorkPlaces_DropsRememberedShut(t *testing.T) {
 	}
 }
 
+// TestBuildSeekWorkPlaces_DropsDeclinedEmployer proves a business whose keeper
+// recently declined the worker's labor offer (a fresh ObservedDeclinedWork memory,
+// within its 12h TTL) is DROPPED from the directory — the worker tries the next
+// shop instead of walking back to a refusal (LLM-198). A decline older than the
+// TTL has decayed, so the business reappears.
+func TestBuildSeekWorkPlaces_DropsDeclinedEmployer(t *testing.T) {
+	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+	snap := &sim.Snapshot{
+		PublishedAt: now,
+		Structures: map[sim.StructureID]*sim.Structure{
+			"tav": {DisplayName: "Tavern"},
+			"smy": {DisplayName: "Blacksmith"},
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"tav": {ID: "tav", Pos: sim.WorldPos{X: 32, Y: 0}, Tags: []string{"business"}},
+			"smy": {ID: "smy", Pos: sim.WorldPos{X: 320, Y: 0}, Tags: []string{"business"}},
+		},
+	}
+
+	// Fresh decline at the Blacksmith (1h ago, within the 12h TTL) → dropped; the
+	// never-solicited Tavern stays.
+	fresh := &sim.ActorSnapshot{
+		Pos: sim.WorldToTile(0, 0),
+		Observed: sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
+			{StructureID: "smy", Condition: sim.ObservedDeclinedWork}: now.Add(-time.Hour),
+		}),
+	}
+	if got := buildSeekWorkPlaces(snap, fresh); len(got) != 1 || got[0].Name != "Tavern" {
+		t.Errorf("a freshly-declined Blacksmith should be dropped: got %+v, want only Tavern", got)
+	}
+
+	// The same decline 13h ago has decayed past the 12h TTL → Blacksmith reappears.
+	stale := &sim.ActorSnapshot{
+		Pos: sim.WorldToTile(0, 0),
+		Observed: sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
+			{StructureID: "smy", Condition: sim.ObservedDeclinedWork}: now.Add(-sim.DeclinedWorkMemoryTTL - time.Hour),
+		}),
+	}
+	if got := buildSeekWorkPlaces(snap, stale); len(got) != 2 {
+		t.Errorf("a decline older than the 12h TTL should have decayed (both businesses listed): got %+v", got)
+	}
+}
+
 // TestBuild_SeekWorkPlacesStandingForWorklessWorker proves the wiring end-to-end
 // (LLM-160/168): Build populates SeekWorkPlaces for a WORKLESS idle worker with no
 // solicitable employer present — every tick, no seek-work warrant required, and
