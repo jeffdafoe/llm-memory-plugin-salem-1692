@@ -787,6 +787,52 @@ func TestBuildRestocking_RecentSalesUnits_NoSellerHistory(t *testing.T) {
 	}
 }
 
+// TestBuyerRecentPurchases_BoundaryAndFilter pins the buyer-leg PriceBook scan that
+// feeds the reseller cost basis (LLM-191): purchases are summed across all sellers
+// of the item, filtered to this buyer, with the window cutoff INCLUSIVE of an
+// observation exactly at it and EXCLUSIVE of one just before it; units are
+// Qty×Consumers.
+func TestBuyerRecentPurchases_BoundaryAndFilter(t *testing.T) {
+	now := time.Date(2026, 6, 23, 12, 0, 0, 0, time.UTC)
+	window := restockSalesWindow
+	cutoff := now.Add(-window)
+	// Two suppliers of cheese, both bought by "merchant" in-window (8 coins/4 units
+	// and 6 coins/2 units = 14 coins / 6 units), plus a different-buyer obs and a
+	// just-before-cutoff obs that must both be excluded.
+	s1 := sim.NewRingBuffer[sim.PriceObservation](8)
+	s1.Push(sim.PriceObservation{BuyerID: "merchant", Amount: 8, Qty: 4, Consumers: 1, At: now.Add(-2 * time.Hour)})
+	s1.Push(sim.PriceObservation{BuyerID: "other", Amount: 99, Qty: 9, Consumers: 1, At: now.Add(-1 * time.Hour)})     // different buyer — ignored
+	s1.Push(sim.PriceObservation{BuyerID: "merchant", Amount: 50, Qty: 5, Consumers: 1, At: cutoff.Add(-time.Second)}) // before cutoff — excluded
+	s2 := sim.NewRingBuffer[sim.PriceObservation](8)
+	s2.Push(sim.PriceObservation{BuyerID: "merchant", Amount: 6, Qty: 2, Consumers: 1, At: cutoff}) // exactly at cutoff — included
+	// A different item the merchant also bought — must not bleed into the cheese total.
+	milk := sim.NewRingBuffer[sim.PriceObservation](8)
+	milk.Push(sim.PriceObservation{BuyerID: "merchant", Amount: 100, Qty: 10, Consumers: 1, At: now.Add(-1 * time.Hour)})
+	snap := &sim.Snapshot{
+		PublishedAt: now,
+		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+			{SellerID: "s1", Item: "cheese"}: s1,
+			{SellerID: "s2", Item: "cheese"}: s2,
+			{SellerID: "s1", Item: "milk"}:   milk,
+		},
+	}
+	if units, coins := buyerRecentPurchases(snap, "merchant", "cheese", window); units != 6 || coins != 14 {
+		t.Fatalf("buyerRecentPurchases = (%d units, %d coins), want (6, 14)", units, coins)
+	}
+	// Consumers multiply units: Qty 2 × Consumers 3 = 6 units for 3 coins.
+	multi := sim.NewRingBuffer[sim.PriceObservation](4)
+	multi.Push(sim.PriceObservation{BuyerID: "m", Amount: 3, Qty: 2, Consumers: 3, At: now.Add(-1 * time.Hour)})
+	snap2 := &sim.Snapshot{
+		PublishedAt: now,
+		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+			{SellerID: "s", Item: "cheese"}: multi,
+		},
+	}
+	if u, c := buyerRecentPurchases(snap2, "m", "cheese", window); u != 6 || c != 3 {
+		t.Errorf("Qty×Consumers units: got (%d, %d), want (6, 3)", u, c)
+	}
+}
+
 // TestRenderRestocking_SellThroughLine: a positive RecentSalesUnits renders the
 // "you've sold about N over the past week" demand line after the on-hand lead;
 // zero renders nothing.

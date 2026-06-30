@@ -185,6 +185,17 @@ var perceptionScenarios = []perceptionScenario{
 		build: smithBarteringAtTavern,
 	},
 	{
+		name: "keeper_reselling_in_company",
+		summary: "A pure RESELLER — Josiah Thorne, general-store keeper, all-`buy` restock (cheese, milk), produces " +
+			"nothing — stands in his store in company with a customer holding bought-in stock. LLM-191: his empty " +
+			"ProduceEntries() left the '## What your wares fetch' cue blank before, so he named prices with no anchor and " +
+			"never reliably moved stock (live: 0 coins, empty sell-through). The golden pins the cue now valuing his resold " +
+			"goods from the recipe wholesale-retail spread AND surfacing his own recent purchase cost ('you have lately " +
+			"paid about N each for it') from the buyer-side PriceBook — the cost basis to mark up from. No sale history " +
+			"yet, so no 'sold for' clause. Pairs with smith_bartering_at_tavern (the producer leg) to pin both halves.",
+		build: keeperResellingInCompany,
+	},
+	{
 		name: "keeper_not_pitching_makers_own_ware",
 		summary: "LLM-171 seller side: John Ellis keeps his tavern in company with Ezekiel Crane the smith, and John's " +
 			"stock holds skillet + nail he bought FROM Ezekiel. The '## Custom at hand' cue lists those wares to pitch, so " +
@@ -797,19 +808,20 @@ func TestProductionFocusLineOnlyAtWork(t *testing.T) {
 	}
 }
 
-// TestWaresWorthCueOnlyInCompanyWithOwnTrade is the LLM-125 cross-scenario
-// invariant: the "## What your wares fetch" cue appears in EXACTLY the scenario
-// where the actor is in company (a huddle) AND has priced own-trade goods
-// (smith_bartering_at_tavern). An actor alone — even at its forge with recipes —
-// or one in company but without its own priced trade goods must never see it: the
-// own-trade base price stays out of solo and non-producer turns, and is gated on
-// company rather than location (unlike the forge cue).
+// TestWaresWorthCueOnlyInCompanyWithOwnTrade is the LLM-125 / LLM-191 cross-scenario
+// invariant: the "## What your wares fetch" cue appears in EXACTLY the scenarios where
+// the actor is in company (a huddle) AND has priced own wares — produced
+// (smith_bartering_at_tavern) or resold (keeper_reselling_in_company, LLM-191). An
+// actor alone — even at its forge with recipes — or one in company but without its
+// own priced wares must never see it: the own-wares base price stays out of solo and
+// no-own-trade turns, and is gated on company rather than location (unlike the forge
+// cue).
 func TestWaresWorthCueOnlyInCompanyWithOwnTrade(t *testing.T) {
 	const marker = "## What your wares fetch"
 	for _, sc := range perceptionScenarios {
 		sc := sc
 		got := renderScenario(sc)
-		want := sc.name == "smith_bartering_at_tavern"
+		want := sc.name == "smith_bartering_at_tavern" || sc.name == "keeper_reselling_in_company"
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: wares-worth cue present=%v, want %v", sc.name, has, want)
 		}
@@ -1889,6 +1901,86 @@ func smithBarteringAtTavern() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 		},
 	}
 	return snap, ezekielID, nil
+}
+
+// keeperResellingInCompany is the LLM-191 reseller leg: Josiah Thorne keeps his
+// general store on shift in company with a customer (Martha). His restock policy is
+// all `buy` (cheese, milk) and he produces nothing, so the pre-LLM-191 wares-worth
+// cue — gated to ProduceEntries() — rendered him NOTHING, leaving a reseller to name
+// prices with no anchor (the live 0-coin, empty-sell-through Josiah). He holds
+// bought-in stock and his buyer-side PriceBook carries this week's restock purchases
+// (cheese 8 coins / 4 units = 2 each, milk 6 coins / 6 units = 1 each), so the
+// extended cue values both goods off the recipe spread AND adds the cost-basis
+// clause. No seller ring for him → no realized-sale clause.
+func keeperResellingInCompany() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		josiahID = sim.ActorID("josiah")
+		marthaID = sim.ActorID("martha")
+		store    = sim.StructureID("general_store")
+		supplier = sim.ActorID("ellis_farm")
+		huddle   = sim.HuddleID("h1")
+	)
+	start, end := 360, 1080 // 06:00-18:00
+	now := 720              // 12:00 — on shift, at the store
+	published := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	josiah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Josiah Thorne",
+		Role:              "shopkeeper",
+		State:             sim.StateIdle,
+		WorkStructureID:   store,
+		InsideStructureID: store,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		CurrentHuddleID:   huddle,
+		Coins:             0,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"cheese": 4, "milk": 6},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "cheese", Source: sim.RestockSourceBuy, Max: 10},
+			{Item: "milk", Source: sim.RestockSourceBuy, Max: 12},
+		}},
+	}
+	martha := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Martha Bishop",
+		Role:              "laborer",
+		State:             sim.StateIdle,
+		InsideStructureID: store,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		CurrentHuddleID:   huddle,
+		Coins:             20,
+		Needs:             map[sim.NeedKey]int{},
+	}
+	// Josiah's buyer-side history: he restocked cheese and milk from the farm this
+	// week. Keyed by the SELLER (supplier) ring; buyerRecentPurchases reads it by
+	// obs.BuyerID == josiah, so the per-unit cost is 2 (cheese) and 1 (milk).
+	cheeseBuys := sim.NewRingBuffer[sim.PriceObservation](8)
+	cheeseBuys.Push(sim.PriceObservation{BuyerID: josiahID, Amount: 8, Qty: 4, Consumers: 1, At: published.Add(-2 * 24 * time.Hour)})
+	milkBuys := sim.NewRingBuffer[sim.PriceObservation](8)
+	milkBuys.Push(sim.PriceObservation{BuyerID: josiahID, Amount: 6, Qty: 6, Consumers: 1, At: published.Add(-1 * 24 * time.Hour)})
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{josiahID: josiah, marthaID: martha},
+		Structures: map[sim.StructureID]*sim.Structure{
+			store: plainStructure(store, "General Store"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{josiahID: {}, marthaID: {}}},
+		},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"cheese": {OutputItem: "cheese", OutputQty: 1, RateQty: 1, RatePerHours: 3, WholesalePrice: 3, RetailPrice: 6},
+			"milk":   {OutputItem: "milk", OutputQty: 1, RateQty: 1, RatePerHours: 2, WholesalePrice: 1, RetailPrice: 3},
+		},
+		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+			{SellerID: supplier, Item: "cheese"}: cheeseBuys,
+			{SellerID: supplier, Item: "milk"}:   milkBuys,
+		},
+	}
+	return snap, josiahID, nil
 }
 
 // keeperNotPitchingMakersOwnWare is the LLM-171 seller side: John Ellis keeps
