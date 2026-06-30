@@ -336,6 +336,37 @@ func TestRepublish_ConversationLooping_SuppressedWhenPlayerAttended(t *testing.T
 	}
 }
 
+// TestSpeak_StampsLastPCUtterance (LLM-185) exercises the REAL speak path: a
+// KindPC member speaking into a huddle must stamp LastPCUtteranceAt so the huddle
+// reads as player-attended. The direct-stamp tests above can't prove the stamp
+// site itself fires; this covers that integration risk.
+func TestSpeak_StampsLastPCUtterance(t *testing.T) {
+	w, cancel := buildHuddleTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	h := sendT(t, w, sim.JoinHuddle("alice", "tavern", "", now)).(sim.JoinHuddleResult).HuddleID
+	sendT(t, w, sim.JoinHuddle("bob", "tavern", "", now)) // an audience for the line
+	// Make alice a player, then drive a real speak through the production command.
+	sendT(t, w, sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["alice"].Kind = sim.KindPC
+		return nil, nil
+	}})
+	sendT(t, w, sim.Speak("alice", "Good evening — what news from the road?", now))
+
+	res := sendT(t, w, sim.Command{Fn: func(world *sim.World) (any, error) {
+		hud := world.Huddles[h]
+		return []any{hud.LastPCUtteranceAt.IsZero(), sim.HuddlePCAttended(hud, now)}, nil
+	}})
+	v := res.([]any)
+	if v[0].(bool) {
+		t.Error("a PC's spoken line must stamp LastPCUtteranceAt")
+	}
+	if !v[1].(bool) {
+		t.Error("after a PC speaks, the huddle should read as player-attended")
+	}
+}
+
 // --- sweep integration tests (full harness) ---
 
 // TestHuddleLoopSweep_ConcludesLoopSparesProductive is the core lever: a sustained
