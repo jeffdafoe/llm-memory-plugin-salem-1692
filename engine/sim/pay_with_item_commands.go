@@ -1094,6 +1094,9 @@ func runPayWithItemFastPath(
 		// a domain error.
 		return nil, fmt.Errorf("PayWithItem fast-path transfer: %w", err)
 	}
+	// LLM-188: record any needs-clamp surplus pocketed to the buyer so the
+	// settled-offer perception line can reconcile the eaten-vs-kept split.
+	entry.KeptUnits = out.keptToInventory
 
 	// Emit PayWithItemResolved{Accepted}. Fast path skips
 	// PayOfferReceived because the offer never sat pending (architecture
@@ -1410,12 +1413,16 @@ func acceptPendingOffer(w *World, seller *Actor, entry *PayLedgerEntry, at time.
 	}
 
 	// All gates pass. Atomic transfer + state flip + emit.
-	if _, err := commitPayTransfer(w, buyer, seller, entry, at, ""); err != nil {
+	out, err := commitPayTransfer(w, buyer, seller, entry, at, "")
+	if err != nil {
 		// Theoretically unreachable — gates covered every path.
 		return entry.State, fmt.Errorf("acceptPendingOffer: transfer for ledger %d: %w", entry.ID, err)
 	}
 	entry.State = PayLedgerStateAccepted
 	entry.ResolvedAt = at
+	// LLM-188: record any needs-clamp surplus pocketed to the buyer so the
+	// settled-offer perception line can reconcile the eaten-vs-kept split.
+	entry.KeptUnits = out.keptToInventory
 	// ZBBS-HOME-417: a completed transaction is conversational activity —
 	// reset the huddle's silence-sweep dormancy clock so a busy-but-quiet
 	// commerce huddle isn't concluded mid-trade. (Speech usually accompanies

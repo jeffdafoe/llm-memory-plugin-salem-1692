@@ -670,6 +670,10 @@ type StandingQuoteView struct {
 // seller took it" (suppress any re-buy of the same need) from a close without a
 // deal (declined / expired / failed — stop waiting). ConsumeNow marks an
 // accepted eat-here / drink-now deal whose goods were taken on the spot.
+// KeptUnits is the consume_now needs-clamp surplus pocketed to the buyer
+// (LLM-188): when >0 the buyer ate Qty-KeptUnits on the spot and kept the
+// rest, so the rendered line reconciles with their carried inventory instead
+// of claiming all Qty were "had right away".
 type ResolvedOfferView struct {
 	LedgerID   sim.LedgerID
 	SellerName string
@@ -679,6 +683,7 @@ type ResolvedOfferView struct {
 	PayItems   []sim.ItemKindQty
 	Accepted   bool
 	ConsumeNow bool
+	KeptUnits  int
 }
 
 // CounterOfferView is one entry in CountersAwaitingMyResponse — a seller's

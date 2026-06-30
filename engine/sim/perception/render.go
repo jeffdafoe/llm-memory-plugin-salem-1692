@@ -2259,6 +2259,17 @@ func renderRecentlyResolvedOffersFromMe(b *strings.Builder, offers []ResolvedOff
 			gotIt := "it's in your pack now"
 			if o.ConsumeNow {
 				gotIt = "you had it right away"
+				// LLM-188: when the needs-clamp ate fewer than purchased
+				// (consumableUnits, ZBBS-WORK-391), say what was eaten vs kept
+				// so this line reconciles with the carried-inventory count
+				// rather than asserting all Qty were consumed on the spot — the
+				// contradiction that made buyers confabulate a short-count. The
+				// 0 < KeptUnits < Qty guard holds for the self-consume case (the
+				// clamp floors at 1, so kept <= Qty-1); a rare group-order split
+				// that breaks the invariant falls back to the plain line.
+				if o.KeptUnits > 0 && o.KeptUnits < o.Qty {
+					gotIt = fmt.Sprintf("you ate %d on the spot and kept the other %d", o.Qty-o.KeptUnits, o.KeptUnits)
+				}
 			}
 			fmt.Fprintf(b, "%d. %s accepted your offer — you paid %s for %d %s; %s. That deal is done — don't offer for it again (offer id %d).\n",
 				i+1, seller, payment, o.Qty, item, gotIt, o.LedgerID)

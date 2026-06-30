@@ -958,6 +958,36 @@ func TestPayWithItem_FastPath_HappyPath_ConsumeNow(t *testing.T) {
 	}
 }
 
+// LLM-188: a fast-path (quote-take) consume_now buy whose needs-clamp ate fewer
+// than purchased records the pocketed surplus on the ledger entry — the
+// quote-take is the live repro path (Anne's 5 blueberries at PW Apothecary, ate
+// 1, kept 4). The settled-offer perception line reads KeptUnits to reconcile
+// the eaten-vs-kept split against the buyer's carried inventory.
+func TestPayWithItem_FastPath_ConsumeNow_RecordsKeptUnits(t *testing.T) {
+	w, stop, at := buildFastPathFixture(t, 7)
+	defer stop()
+	mustSend(t, w, func(world *sim.World) {
+		world.Quotes[7].ConsumeNow = true
+		world.Quotes[7].Lines = []sim.QuoteLine{{ItemKind: "stew", Qty: 5}}
+		world.Quotes[7].Amount = 10
+		world.Actors["bob"].Inventory["stew"] = 5
+		// hunger 2 vs stew Immediate 4 → ceil(2/4)=1 eaten, 4 pocketed.
+		world.Actors["alice"].Needs = map[sim.NeedKey]int{"hunger": 2}
+	})
+
+	res, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 5, 10, true, nil, nil, 7, 0, "", at))
+	if err != nil {
+		t.Fatalf("PayWithItem fast-path consume_now: %v", err)
+	}
+	result := res.(sim.PayWithItemResult)
+	if result.BuyerAte != 1 || result.KeptToInventory != 4 {
+		t.Fatalf("BuyerAte/KeptToInventory = %d/%d, want 1/4", result.BuyerAte, result.KeptToInventory)
+	}
+	if e, ok := readPayLedger(t, w)[result.LedgerID]; !ok || e.KeptUnits != 4 {
+		t.Errorf("ledger entry KeptUnits = %d (present=%v), want 4 (clamp surplus recorded)", e.KeptUnits, ok)
+	}
+}
+
 // TestPayWithItem_FastPath_ConsumeNow_StillHungryFelt (ZBBS-HOME-436): when
 // one unit doesn't clear the buyer's need, the settle result voices the
 // remaining felt state from LIVE post-commit needs — the within-tick
@@ -2084,6 +2114,12 @@ func TestAcceptPay_ConsumeNow_ClampsToNeed_PocketsSurplus(t *testing.T) {
 	}
 	if got[4] != 20 {
 		t.Errorf("bob coins = %d, want 20 (received the full amount)", got[4])
+	}
+
+	// LLM-188: the pocketed surplus is recorded on the ledger entry so the
+	// buyer's settled-offer perception line can reconcile eaten-vs-kept.
+	if e, ok := readPayLedger(t, w)[1]; !ok || e.KeptUnits != 8 {
+		t.Errorf("ledger entry KeptUnits = %d (present=%v), want 8", e.KeptUnits, ok)
 	}
 }
 

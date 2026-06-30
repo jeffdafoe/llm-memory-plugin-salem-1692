@@ -2762,6 +2762,7 @@ func buildRecentlyResolvedOffersFromMe(snap *sim.Snapshot, subject sim.ActorID, 
 			PayItems:   e.PayItems,
 			Accepted:   e.State == sim.PayLedgerStateAccepted,
 			ConsumeNow: e.ConsumeNow,
+			KeptUnits:  e.KeptUnits,
 		})
 	}
 	return views

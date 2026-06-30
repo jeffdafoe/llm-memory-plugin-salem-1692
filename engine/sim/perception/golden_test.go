@@ -480,6 +480,76 @@ var perceptionScenarios = []perceptionScenario{
 			"her own buyer. The reverse-pay dispatch gate itself is pinned by the sim-package handler tests.",
 		build: sellerWithTakenQuoteAtPost,
 	},
+	{
+		name: "buyer_kept_consume_remainder_reconciled",
+		summary: "A buyer (Anne Walker) just took a consume_now quote for 5 blueberries, but her low hunger meant the " +
+			"needs-clamp ate only 1 and pocketed 4 (the live LLM-188 case). The golden pins that '## Recently settled " +
+			"offers' reconciles the split — 'you ate 1 on the spot and kept the other 4' — so it agrees with the carried " +
+			"Blueberries (x4) readout instead of claiming all 5 were had right away. The bare 'had it right away' line " +
+			"contradicted the inventory and drove both NPCs to confabulate a missing-blueberry short-count; a regression " +
+			"that dropped the reconciliation would resurface that contradiction in the diff.",
+		build: buyerKeptConsumeRemainderReconciled,
+	},
+}
+
+// buyerKeptConsumeRemainderReconciled is the LLM-188 buyer-POV fixture: Anne
+// Walker took a consume_now quote for 5 blueberries from Prudence Ward, but her
+// hunger was low so the needs-clamp (consumableUnits, ZBBS-WORK-391) ate 1 and
+// pocketed 4 to her pack. The settled ledger entry carries KeptUnits=4, and the
+// golden pins that the "## Recently settled offers" line reads "you ate 1 on the
+// spot and kept the other 4" — internally consistent with the Blueberries (x4)
+// she carries — rather than the bare "you had it right away" that contradicted
+// her inventory and triggered the confabulated short-count. Clock-free: the
+// settled-offers recency window is measured against the fixture's PublishedAt /
+// ResolvedAt, and the render path reads no wall clock.
+func buyerKeptConsumeRemainderReconciled() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		anneID     = sim.ActorID("anne")
+		prudenceID = sim.ActorID("prudence")
+		apothecary = sim.StructureID("apothecary")
+	)
+	now := 915 // 15:15, the repro window
+	published := time.Date(2026, 6, 30, 15, 15, 0, 0, time.UTC)
+	anne := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Anne Walker",
+		Role:              "traveler",
+		State:             sim.StateIdle,
+		InsideStructureID: apothecary,
+		Coins:             20,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"blueberries": 4},
+		Acquaintances:     map[string]sim.Acquaintance{"Prudence Ward": {}},
+	}
+	prudence := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Prudence Ward",
+		Role:              "apothecary",
+		State:             sim.StateIdle,
+		InsideStructureID: apothecary,
+		WorkStructureID:   apothecary,
+		Coins:             40,
+		Needs:             map[sim.NeedKey]int{},
+	}
+	settled := &sim.PayLedgerEntry{
+		ID: 449, BuyerID: anneID, SellerID: prudenceID,
+		ItemKind: "blueberries", Qty: 5, Amount: 10, ConsumeNow: true,
+		KeptUnits:  4,
+		State:      sim.PayLedgerStateAccepted,
+		ResolvedAt: published.Add(-30 * time.Second),
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{anneID: anne, prudenceID: prudence},
+		Quotes:           map[sim.QuoteID]*sim.SceneQuote{},
+		PayLedger:        map[sim.LedgerID]*sim.PayLedgerEntry{449: settled},
+		Scenes:           map[sim.SceneID]*sim.Scene{},
+		Huddles:          map[sim.HuddleID]*sim.Huddle{},
+		Structures:       map[sim.StructureID]*sim.Structure{apothecary: plainStructure(apothecary, "PW Apothecary")},
+	}
+	return snap, anneID, nil
 }
 
 // sellerWithTakenQuoteAtPost is the LLM-189 perception regression fixture: a
