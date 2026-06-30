@@ -130,6 +130,52 @@ func TestSeekWorkBackstop_StampsWorklessWorkerWithCoins(t *testing.T) {
 	}
 }
 
+// TestSeekWorkBackstop_SkipsComfortableWorker is the LLM-194 gate: a workless worker
+// holding coin AT OR ABOVE the seek-work ceiling is NOT nudged to seek work — it's
+// comfortable, so it drains its purse via consumption rather than hustling for odd jobs
+// it doesn't need. The complement of TestSeekWorkBackstop_StampsWorklessWorkerWithCoins
+// (a few coins, under the ceiling, still seeks).
+func TestSeekWorkBackstop_SkipsComfortableWorker(t *testing.T) {
+	a := homedWorker("w")
+	a.Coins = SeekWorkCoinCeilingDefault // 25 — at the ceiling → comfortable
+	w := workerShiftWorld(a)
+	tm := evalSeekWork(t, w, seekNoon)
+	if tm.Stamped != 0 || tm.SkippedNotEligible != 1 {
+		t.Errorf("Stamped=%d SkippedNotEligible=%d, want 0/1 (comfortable worker at the ceiling)", tm.Stamped, tm.SkippedNotEligible)
+	}
+	if hasSeekWorkWarrant(a) {
+		t.Errorf("comfortable worker got a seek_work warrant; kinds=%v", warrantKinds(a))
+	}
+}
+
+// TestSeekWorkBackstop_StampsWorkerJustUnderCeiling: one coin under the ceiling the
+// worker is still hustling — the boundary is >= ceiling, so ceiling-1 seeks. Pins the
+// exact edge so a future off-by-one (> vs >=) is caught.
+func TestSeekWorkBackstop_StampsWorkerJustUnderCeiling(t *testing.T) {
+	a := homedWorker("w")
+	a.Coins = SeekWorkCoinCeilingDefault - 1 // 24 — under the ceiling → still seeks
+	w := workerShiftWorld(a)
+	tm := evalSeekWork(t, w, seekNoon)
+	if tm.Stamped != 1 {
+		t.Fatalf("Stamped = %d, want 1 (one coin under the ceiling still seeks); telemetry=%+v", tm.Stamped, tm)
+	}
+}
+
+// TestSeekWorkBackstop_RespectsTunedCeiling: the gate reads the LIVE WorldSettings
+// ceiling, not just the compiled default. With a raised ceiling a worker that would be
+// comfortable at the default (25) is nudged again, so the live-tune actually takes
+// effect on the warrant side.
+func TestSeekWorkBackstop_RespectsTunedCeiling(t *testing.T) {
+	a := homedWorker("w")
+	a.Coins = 40 // above the default 25, below the tuned 60
+	w := workerShiftWorld(a)
+	w.Settings.SeekWorkCoinCeiling = 60
+	tm := evalSeekWork(t, w, seekNoon)
+	if tm.Stamped != 1 {
+		t.Fatalf("Stamped = %d, want 1 (40 coins under the tuned 60 ceiling still seeks); telemetry=%+v", tm.Stamped, tm)
+	}
+}
+
 // TestSeekWorkBackstop_SkipsOffShift: a broke worker outside its day window is
 // not nudged (don't send it to find work at night).
 func TestSeekWorkBackstop_SkipsOffShift(t *testing.T) {

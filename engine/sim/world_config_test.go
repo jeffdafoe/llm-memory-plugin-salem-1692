@@ -194,3 +194,44 @@ func TestSetHuddleLoopSettings(t *testing.T) {
 		}
 	}
 }
+
+// TestSetSeekWorkCoinCeiling covers the LLM-194 live-tune command: a valid set lands on
+// WorldSettings and echoes in the result; a missing/zero/negative ceiling is rejected
+// (a zero would suppress seek-work for everyone) and leaves the prior value intact.
+func TestSetSeekWorkCoinCeiling(t *testing.T) {
+	ip := func(v int) *int { return &v }
+
+	w := newConfigWorld(t)
+	res, err := sim.SetSeekWorkCoinCeiling(ip(30)).Fn(w)
+	if err != nil {
+		t.Fatalf("SetSeekWorkCoinCeiling: %v", err)
+	}
+	out, ok := res.(sim.SeekWorkCeilingSettingResult)
+	if !ok {
+		t.Fatalf("result %T, want SeekWorkCeilingSettingResult", res)
+	}
+	if out.CoinCeiling != 30 {
+		t.Errorf("result = %+v, want CoinCeiling 30", out)
+	}
+	if w.Settings.SeekWorkCoinCeiling != 30 {
+		t.Errorf("settings ceiling = %d, want 30", w.Settings.SeekWorkCoinCeiling)
+	}
+
+	bad := []struct {
+		name    string
+		ceiling *int
+	}{
+		{"missing", nil},
+		{"zero", ip(0)},
+		{"negative", ip(-5)},
+	}
+	for _, c := range bad {
+		if _, err := sim.SetSeekWorkCoinCeiling(c.ceiling).Fn(w); !errors.Is(err, sim.ErrInvalidSeekWorkCeilingSetting) {
+			t.Errorf("%s: err = %v, want ErrInvalidSeekWorkCeilingSetting", c.name, err)
+		}
+	}
+	// A rejected set must not mutate the prior value.
+	if w.Settings.SeekWorkCoinCeiling != 30 {
+		t.Errorf("ceiling after rejected sets = %d, want 30 (unchanged)", w.Settings.SeekWorkCoinCeiling)
+	}
+}

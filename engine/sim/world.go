@@ -529,6 +529,16 @@ type WorldSettings struct {
 	// ON by default: the ring carry-over is pure perception legibility, and the
 	// loop-state carry is inert unless HuddleLoopTimeout enables the sweep.
 	HuddleContinuityWindow time.Duration
+
+	// SeekWorkCoinCeiling is the wealth shelf (LLM-194): a workless worker stops
+	// seeking/soliciting work once its coins reach this value, becoming a plain idle
+	// villager that drains its purse via ordinary consumption until it dips under the
+	// ceiling and re-enters the labor market. <= 0 falls back to
+	// SeekWorkCoinCeilingDefault (25) via effectiveSeekWorkCoinCeiling — a zero ceiling
+	// would suppress seek-work for everyone. Live-tunable + persisted
+	// (settings/seek-work-ceiling, read side GET /settings). Mirrored onto the
+	// snapshot at publish so the perception gates read it without racing on w.Settings.
+	SeekWorkCoinCeiling int
 }
 
 // DefaultOutdoorSceneRadiusValue is the fallback radius used when
@@ -1774,6 +1784,7 @@ func (w *World) republish() {
 		DuskMinute:                duskMin,
 		DawnDuskMinuteOK:          dawnOK && duskOK,
 		NeedThresholds:            w.Settings.NeedThresholds.Clone(),
+		SeekWorkCoinCeiling:       effectiveSeekWorkCoinCeiling(w.Settings),
 		LodgingDefaultWeeklyRate:  w.Settings.LodgingDefaultWeeklyRate,
 		LodgingBedtimeMinute:      lodgerBedtimeMinute(w),
 		LodgingCheckOutMinute:     w.Settings.LodgingCheckOutHour * 60,

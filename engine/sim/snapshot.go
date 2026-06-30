@@ -115,6 +115,15 @@ type Snapshot struct {
 	// rather than racing on w.Settings directly.
 	NeedThresholds NeedThresholds
 
+	// SeekWorkCoinCeiling mirrors the EFFECTIVE WorldSettings.SeekWorkCoinCeiling
+	// (LLM-194), copied at publish via effectiveSeekWorkCoinCeiling so it is the
+	// resolved shelf value (never 0 on a published snapshot). The perception seek-work
+	// gates read it off the snapshot rather than racing on w.Settings;
+	// subjectIsComfortable compares the subject's Coins against it (treating a 0 on a
+	// directly-constructed test snapshot as the default, so test snapshots that omit it
+	// keep the pre-LLM-194 always-seek behavior below the default).
+	SeekWorkCoinCeiling int
+
 	// LodgingDefaultWeeklyRate mirrors WorldSettings.LodgingDefaultWeeklyRate
 	// (the operator-set weekly rent) so perception — pure over the snapshot —
 	// can surface the keeper/lodger nightly-rate hints and the affordability

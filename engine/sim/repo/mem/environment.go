@@ -82,5 +82,6 @@ func (r *EnvironmentRepo) SaveMutableSettings(_ context.Context, _ sim.Tx, ms si
 	r.settings.HuddleLoopTimeout = time.Duration(ms.HuddleLoopTimeoutSeconds) * time.Second
 	r.settings.HuddleLoopRepeatPercent = ms.HuddleLoopRepeatPercent
 	r.settings.HuddleLoopSweepCadence = time.Duration(ms.HuddleLoopSweepCadenceSeconds) * time.Second
+	r.settings.SeekWorkCoinCeiling = ms.SeekWorkCoinCeiling
 	return nil
 }
