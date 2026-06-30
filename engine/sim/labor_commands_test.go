@@ -388,7 +388,12 @@ func TestAcceptWork_StartsWindowNoCoinsMove(t *testing.T) {
 	defer stop()
 	events := captureLaborEvents(t, w)
 
-	now := time.Now().UTC()
+	// 13:00 UTC = 09:00 America/New_York — mid-morning, on-shift. A FIXED instant
+	// keeps AcceptWork's day-window-close clamp (LLM-190) a no-op, so the
+	// WorkingUntil == now+duration assertions below hold regardless of the host
+	// clock. time.Now() here failed when the suite ran 18:30–19:00 ET, where a
+	// 30m job crosses the 19:00 dusk close and the clamp caps WorkingUntil at it.
+	now := time.Date(2026, 6, 24, 13, 0, 0, 0, time.UTC)
 	seedLaborOffer(t, w, sim.LaborOffer{
 		ID: 1, WorkerID: "ezekiel", EmployerID: "josiah",
 		Reward: 10, DurationMin: 30,
