@@ -3270,7 +3270,10 @@ type SeekWorkPlace struct {
 // nearest-first so a weak model favours a close shop, and a business the worker
 // recently found shut (earned ObservedClosed memory, 4h TTL) is DROPPED — sending
 // them back to a closed door wastes the trip, and the entry reappears once the
-// memory decays. De-duped by name, keeping the nearest representative.
+// memory decays. A business whose keeper recently DECLINED this worker's labor
+// offer (earned ObservedDeclinedWork memory, 12h TTL) is dropped the same way
+// (LLM-198), so the worker tries the next-nearest business instead of walking
+// back to a refusal. De-duped by name, keeping the nearest representative.
 func buildSeekWorkPlaces(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) []SeekWorkPlace {
 	if snap == nil || actorSnap == nil {
 		return nil
@@ -3284,6 +3287,9 @@ func buildSeekWorkPlaces(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) []See
 		}
 		structureID := sim.StructureID(obj.ID)
 		if businessRememberedShut(snap, actorSnap, structureID) {
+			continue
+		}
+		if workerRememberedDeclinedWork(snap, actorSnap, structureID) {
 			continue
 		}
 		label, ok := resolveStructureLabel(snap, structureID)
@@ -3336,6 +3342,23 @@ func buildSeekWorkPlaces(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) []See
 		return places[i].Name < places[j].Name
 	})
 	return places
+}
+
+// workerRememberedDeclinedWork reports whether the subject has an earned
+// experiential memory (LLM-198) of soliciting work at structureID and being
+// declined, still within its TTL of the snapshot clock. buildSeekWorkPlaces uses
+// it to DROP that business from the worker's directory so it stops walking back
+// to an employer who just refused it — the seek-work sibling of
+// businessRememberedShut. The memory is stamped by the LaborResolved subscriber
+// (sim/declined_work.go); the TTL decay is applied by Observed.Active at read
+// time so a stale refusal fades (the worker retries) without the world goroutine
+// sweeping the store. False when the subject has no such memory, the snapshot has
+// no clock baseline, or the memory has expired.
+func workerRememberedDeclinedWork(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, structureID sim.StructureID) bool {
+	if snap == nil || actorSnap == nil {
+		return false
+	}
+	return actorSnap.Observed.Active(sim.ObservedStateKey{StructureID: structureID, Condition: sim.ObservedDeclinedWork}, snap.PublishedAt)
 }
 
 // subjectIsComfortable reports whether the subject worker holds enough coin to stop
