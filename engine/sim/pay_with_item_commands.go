@@ -1707,20 +1707,22 @@ func WithdrawPay(callerID ActorID, ledgerID LedgerID, message string, at time.Ti
 
 // callerSellsItemTo reports whether `caller` is, in this huddle/scene, the
 // SELLER of `kind` to `counterparty` — the signal the reverse-pay role-gate
-// (LLM-189) rejects a pay_with_item on. Two arms, either sufficient:
+// (LLM-189) rejects a pay_with_item on. Two arms, either sufficient, each
+// requiring CONCRETE direction (caller→counterparty), not mere visibility:
 //
-//   - an ACTIVE sell quote the caller posted that is visible to the
-//     counterparty (public, or targeted at them) in this scene and offers
-//     `kind` (matched against any bundle line); or
+//   - an ACTIVE sell quote the caller posted that is TARGETED AT the
+//     counterparty in this scene and offers `kind` (any bundle line); or
 //   - an ACCEPTED sale in the CURRENT huddle where the caller was the seller
 //     and the counterparty the buyer of `kind` (the just-closed deal the
 //     model misreads as still open and tries to "settle" with the buyer
-//     verb).
+//     verb — the live Prudence→Anne case).
 //
-// Item-scoped on purpose: a vendor legitimately buys OTHER goods, or buys
-// `kind` from someone she isn't selling it to, so the gate fires only on the
-// exact same-item, same-counterparty inversion. Huddle-scoping arm 2 bounds
-// it to the active conversation without a recency constant.
+// A PUBLIC quote (no TargetBuyer) is deliberately NOT evidence: it is visible
+// to everyone and ties no specific counterparty to the sale, so it must not
+// block a legitimate restock — a reseller advertising `kind` to the room while
+// buying `kind` from a co-present supplier. Item-scoped for the same reason: a
+// vendor buying OTHER goods is never gated. Huddle-scoping arm 2 bounds it to
+// the active conversation without a recency constant.
 func callerSellsItemTo(
 	w *World,
 	caller, counterparty ActorID,
@@ -1729,8 +1731,10 @@ func callerSellsItemTo(
 	huddleID HuddleID,
 	at time.Time,
 ) bool {
-	// Arm 1: an active sell quote from caller, visible to counterparty,
-	// offering this item in this scene.
+	// Arm 1: an active sell quote from caller TARGETED at counterparty,
+	// offering this item in this scene. (counterparty is always a resolved,
+	// non-empty actor, so this also excludes public quotes where TargetBuyer
+	// is empty.)
 	for _, q := range w.Quotes {
 		if q == nil || q.State != SceneQuoteStateActive {
 			continue
@@ -1741,7 +1745,7 @@ func callerSellsItemTo(
 		if !q.ExpiresAt.IsZero() && !at.Before(q.ExpiresAt) {
 			continue
 		}
-		if q.TargetBuyer != "" && q.TargetBuyer != counterparty {
+		if q.TargetBuyer != counterparty {
 			continue
 		}
 		for _, line := range q.Lines {

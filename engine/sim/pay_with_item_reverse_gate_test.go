@@ -123,6 +123,18 @@ func TestPayWithItem_QuoteClosedOnTake(t *testing.T) {
 		if got := readQuoteState(t, w, 9); got != sim.SceneQuoteStateTaken {
 			t.Errorf("auto-matched quote state = %q, want taken", got)
 		}
+		if sceneHasQuoteIndexed(t, w, "sc1", 9) {
+			t.Error("auto-matched-then-taken quote still in scene index")
+		}
+		// A second bare offer no longer auto-matches the closed quote — it
+		// falls through to a slow-path mint instead of re-settling.
+		res2, err := w.Send(sim.PayWithItem("anne", "Prudence", "bread", 1, 4, false, nil, nil, 0, 0, "", at))
+		if err != nil {
+			t.Fatalf("second bare offer: %v", err)
+		}
+		if res2.(sim.PayWithItemResult).FastPath {
+			t.Error("second bare offer fast-pathed — taken quote was still auto-matchable")
+		}
 	})
 }
 
@@ -149,19 +161,25 @@ func TestPayWithItem_ReverseSaleGate(t *testing.T) {
 		}
 	})
 
-	t.Run("public_sell_quote_blocks_reverse", func(t *testing.T) {
+	t.Run("public_sell_quote_does_not_block", func(t *testing.T) {
 		w, stop, at := buildReverseGateWorld(t)
 		defer stop()
-		// A public bread quote (no TargetBuyer) — Prudence advertises bread to
-		// the room, so she still shouldn't buy bread from anyone in it.
+		// A PUBLIC bread quote (no TargetBuyer) ties no specific buyer to the
+		// sale, so it must NOT block a legitimate restock — Prudence advertising
+		// bread to the room while buying bread from a co-present supplier (Anne).
+		// The gate keys on a TARGETED quote (arm 1) or a concrete accepted sale
+		// (arm 2); a public quote alone is neither.
 		seedQuote(t, w, sim.SceneQuote{
 			ID: 11, SceneID: "sc1", SellerID: "prudence",
 			Lines: []sim.QuoteLine{{ItemKind: "bread", Qty: 1}}, Amount: 4,
 			State: sim.SceneQuoteStateActive, CreatedAt: at, ExpiresAt: at.Add(10 * time.Minute),
 		})
-		_, err := w.Send(sim.PayWithItem("prudence", "Anne", "bread", 1, 4, false, nil, nil, 0, 0, "", at))
-		if err == nil || !strings.Contains(err.Error(), wantSteer) {
-			t.Fatalf("reverse offer against public quote err = %v, want reverse-pay steer", err)
+		res, err := w.Send(sim.PayWithItem("prudence", "Anne", "bread", 1, 4, false, nil, nil, 0, 0, "", at))
+		if err != nil {
+			t.Fatalf("public-quote-only seller buying the item should not be gated: %v", err)
+		}
+		if res.(sim.PayWithItemResult).State != sim.PayLedgerStatePending {
+			t.Errorf("state = %q, want pending (mints normally)", res.(sim.PayWithItemResult).State)
 		}
 	})
 
