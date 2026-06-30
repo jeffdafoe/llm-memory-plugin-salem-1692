@@ -7,6 +7,7 @@ import (
 	"math"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // MaxPayAmount is the upper bound on amount accepted by the Pay Command,
@@ -168,6 +169,41 @@ func Pay(buyerID ActorID, recipientName string, amount int, forText string, at t
 					"%s has an open quote for %s (quote_id %d, %d coins) — a plain pay only hands over coins and won't deliver the %s. Call pay_with_item with quote_id %d, item %q, qty %d, and amount %d to actually receive it.",
 					seller.DisplayName, q.Lines[0].ItemKind, q.ID, q.Amount,
 					q.Lines[0].ItemKind, q.ID, q.Lines[0].ItemKind, q.Lines[0].Qty, q.Amount,
+				)
+			}
+
+			// LLM-177: lodging is never settled by a bare coin transfer — pay
+			// moves coins but mints no Order and grants no RoomAccess, so "pay 4
+			// for a room" leaves the guest with nowhere to sleep while the keeper
+			// often reverses coins back trying to "complete" the deal (the live
+			// Ezekiel/Hannah loop). The LLM-172 goods guard above misses this:
+			// lodging phrasing ("a room for the night", "lodging") doesn't
+			// canonicalize to the nights_stay item kind, so findCoinQuoteForPay
+			// returns nil. Catch it here instead — on an open room offer between
+			// the two (either direction, so it also catches a keeper reversing
+			// coins to the guest) or on lodging vocabulary when no quote is posted
+			// yet. A bare pay touching lodging is wrong whoever pays whom: the
+			// guest rents with pay_with_item, the keeper grants the room by
+			// accepting it. A PUBLIC room quote only counts as "this is a botched
+			// room payment" when the pay text itself signals lodging (lodgingIntent)
+			// — otherwise an unrelated tip that happens to coincide with an open
+			// public room quote would be misread; a quote TARGETED at the
+			// counterparty blocks any bare pay between them (a room deal is
+			// unambiguously underway).
+			lodgingIntent := isLodgingToken(forText) || isLodgingNightPhrase(forText)
+			if lq := activeLodgingQuoteBetween(w, sellerID, buyerID, buyer.CurrentHuddleID, at, lodgingIntent); lq != nil {
+				keeperName := string(lq.SellerID)
+				if keeper := w.Actors[lq.SellerID]; keeper != nil && keeper.DisplayName != "" {
+					keeperName = keeper.DisplayName
+				}
+				return nil, fmt.Errorf(
+					"renting a room isn't a plain coin payment — it moves coins but grants no room. %s has a night's-stay offer (quote_id %d, %d coins): the guest rents it with pay_with_item (quote_id %d, item %q, qty %d, amount %d), and the keeper grants the room by accepting that — never by paying.",
+					keeperName, lq.ID, lq.Amount, lq.ID, lq.Lines[0].ItemKind, lq.Lines[0].Qty, lq.Amount,
+				)
+			}
+			if isLodgingToken(forText) {
+				return nil, errors.New(
+					"renting a room isn't a plain coin payment — it moves coins but grants no room. Ask the keeper for a room; they'll offer you a night's stay, then take it with pay_with_item.",
 				)
 			}
 
@@ -456,6 +492,99 @@ func findCoinQuoteForPay(w *World, buyer *Actor, sellerID ActorID, forText strin
 			continue
 		}
 		if len(q.Lines) != 1 || q.Lines[0].ItemKind != kind {
+			continue
+		}
+		if best == nil || q.Amount < best.Amount || (q.Amount == best.Amount && q.ID < best.ID) {
+			best = q
+		}
+	}
+	return best
+}
+
+// isLodgingToken reports whether a bare pay's free-text `for` names lodging — a
+// closed, word-level allow-list of room nouns. Word-level (via FieldsFunc on
+// non-letters) rather than substring so "mushroom"/"embed" don't trip
+// "room"/"bed". Deliberately omits the bare time-word "night" ("for last
+// night's ale" is a legitimate tip); a vague "a night" payment is instead
+// caught by activeLodgingQuoteBetween whenever a room offer is actually on the
+// table. Mirrors isLaborToken (LLM-167). LLM-177.
+func isLodgingToken(forText string) bool {
+	for _, tok := range strings.FieldsFunc(strings.ToLower(forText), func(r rune) bool { return !unicode.IsLetter(r) }) {
+		switch tok {
+		case "room", "rooms", "lodging", "lodgings", "lodge", "bedroom", "bedrooms", "bed", "beds":
+			return true
+		}
+	}
+	return false
+}
+
+// isLodgingNightPhrase reports whether the WHOLE pay text is one of the vague
+// "a night"/"night's stay" phrasings that mean lodging only in context. Kept as
+// an exact normalized-phrase match (article stripped) rather than word-level so
+// it catches "a night" / "the night's stay" without firing on "for last
+// night's ale" (a legitimate tip that merely contains "night"). Used ONLY to
+// qualify an open lodging quote (activeLodgingQuoteBetween) — never on its own,
+// since a bare "a night" with no room offer on the table is too weak to steer.
+// LLM-177.
+func isLodgingNightPhrase(forText string) bool {
+	switch stripLeadingArticle(strings.ToLower(strings.TrimSpace(forText))) {
+	case "night", "nights", "night's stay", "nights stay", "night stay", "stay the night":
+		return true
+	}
+	return false
+}
+
+// activeLodgingQuoteBetween finds an active, unexpired single-line lodging
+// (room-granting) quote in the payer's scene posted by EITHER party to the bare
+// pay — so it fires whether the guest pays the keeper or the keeper reverses
+// coins back to the guest (both are the wrong tool for a room). Eligibility
+// mirrors findCoinQuoteForPay (active, unexpired, in this scene), but keys off
+// the "lodging" capability rather than a forText item match, since lodging
+// phrasing doesn't canonicalize to nights_stay.
+//
+// Targeting decides how much intent the pay text needs: a quote TARGETED at the
+// counterparty marks a room deal already underway, so it matches any bare pay
+// between the two. A PUBLIC quote (TargetBuyer empty) is visible to the whole
+// huddle and must NOT capture an unrelated tip that merely coincides with an
+// open room offer, so it matches only when lodgingIntent is set (the pay text
+// itself signals lodging). Cheapest then lowest-ID wins so the quote_id named in
+// the steer is deterministic across runs. LLM-177.
+func activeLodgingQuoteBetween(w *World, partyA, partyB ActorID, huddleID HuddleID, at time.Time, lodgingIntent bool) *SceneQuote {
+	sceneID, ok := resolveSellerScene(w, huddleID)
+	if !ok {
+		return nil
+	}
+	var best *SceneQuote
+	for _, q := range w.Quotes {
+		if q == nil || q.State != SceneQuoteStateActive {
+			continue
+		}
+		if !q.ExpiresAt.IsZero() && !at.Before(q.ExpiresAt) {
+			continue
+		}
+		if q.SceneID != sceneID {
+			continue
+		}
+		// One of the two must have posted it.
+		if q.SellerID != partyA && q.SellerID != partyB {
+			continue
+		}
+		other := partyA
+		if q.SellerID == partyA {
+			other = partyB
+		}
+		if q.TargetBuyer != "" {
+			// Targeted: must be addressed to the counterparty; then it blocks
+			// any bare pay between them.
+			if q.TargetBuyer != other {
+				continue
+			}
+		} else if !lodgingIntent {
+			// Public: only a lodging-intent pay text counts as a botched room
+			// payment — don't capture an unrelated tip.
+			continue
+		}
+		if len(q.Lines) != 1 || !itemHasCapability(w, q.Lines[0].ItemKind, "lodging") {
 			continue
 		}
 		if best == nil || q.Amount < best.Amount || (q.Amount == best.Amount && q.ID < best.ID) {

@@ -454,6 +454,28 @@ func PayWithItem(
 			// inherits both guards. Matches deliver_order's own capability
 			// check at order_commands.go.
 			if itemHasCapability(w, kind, "lodging") {
+				// LLM-182 — buyer-side need-a-room gate. The lodging seek/offer
+				// cues are already home-gated in perception
+				// (actorSnapIsLodgingSeeker), but nothing stopped a homed villager
+				// who FREELANCES a room request (no engine cue prompts it) from
+				// minting a real nights_stay purchase — paying for a bed it never
+				// uses, then walking home to sleep (Prudence Ward → Ward Residence,
+				// live 2026-06-29). Reject before any ledger/coin side effect, the
+				// buyer-side mirror of the seller gates below. An active room grant
+				// is NOT a disqualifier — only a home is — so a homeless lodger
+				// renewing the next night (LLM-46/96) still books.
+				if buyer.HomeStructureID != "" {
+					if home, ok := w.Structures[buyer.HomeStructureID]; ok && home.DisplayName != "" {
+						return nil, fmt.Errorf(
+							"you already have a home (%s) — head there to sleep; you don't need to rent a room.",
+							home.DisplayName,
+						)
+					}
+					return nil, errors.New(
+						"you already have a home — head there to sleep; you don't need to rent a room.",
+					)
+				}
+
 				// WORK-343 — operator-data guard. A keeper whose
 				// work_structure has zero private bedrooms (or no work
 				// structure at all) is structurally unable to fulfill any
