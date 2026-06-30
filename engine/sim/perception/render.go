@@ -2311,7 +2311,11 @@ func renderCountersAwaitingMyResponse(b *strings.Builder, counters []CounterOffe
 // read the rest of the prompt); they just have no standalone event line. Most
 // carry their content in a dedicated section; the bare operator nudge has no
 // in-world content at all:
-//   - pay_offer  -> "## Offers awaiting your decision" (PayOffersForMe)
+//   - pay_offer   -> "## Offers awaiting your decision" (PayOffersForMe)
+//   - labor_offer -> "## Work offers awaiting your decision" (LaborOffersForMe,
+//     LLM-187). The employer is woken to accept_work / decline_work; its
+//     content is the labor decision section, so it must not also fabricate a
+//     bare "something happened" line.
 //   - shift_duty -> the return-to-post steer (DutySteer)
 //   - admin      -> a bare operator force-tick (umbilical /nudge with no
 //     message). Not an in-world event, so it falls to the routine
@@ -2320,7 +2324,7 @@ func renderCountersAwaitingMyResponse(b *strings.Builder, counters []CounterOffe
 //     impulse line (WarrantKindImpulse) — that is real content.
 func isSectionSurfacedKind(k sim.WarrantKind) bool {
 	switch k {
-	case sim.WarrantKindPayOffer, sim.WarrantKindShiftDuty, sim.WarrantKindAdmin:
+	case sim.WarrantKindPayOffer, sim.WarrantKindLaborOffer, sim.WarrantKindShiftDuty, sim.WarrantKindAdmin:
 		return true
 	default:
 		return false

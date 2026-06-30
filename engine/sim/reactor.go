@@ -71,6 +71,7 @@ const (
 	WarrantKindServeHandover      WarrantKind = "serve_handover"       // a buyer instantly took the seller's posted quote — wake the seller to hand over with a word (ZBBS-WORK-423)
 	WarrantKindProductionChoice   WarrantKind = "production_choice"    // multi-output crafter idle at its forge — wake it to pick what to make (LLM-116)
 	WarrantKindStallRepair        WarrantKind = "stall_repair"         // an owned market stall crossed the wear repair threshold — wake the owner to mend it (LLM-118)
+	WarrantKindLaborOffer         WarrantKind = "labor_offer"          // a worker solicited the employer for service-for-pay — wake the employer to accept_work / decline_work (LLM-187)
 )
 
 // WarrantReason is the marker interface for kind-specific warrant payloads.
@@ -330,6 +331,36 @@ type PayOfferWarrantReason struct {
 func (PayOfferWarrantReason) isWarrantReason()             {}
 func (PayOfferWarrantReason) Kind() WarrantKind            { return WarrantKindPayOffer }
 func (r PayOfferWarrantReason) DedupDiscriminator() uint64 { return uint64(r.LedgerID) }
+
+// LaborOfferWarrantReason wakes the EMPLOYER when a worker solicits a
+// service-for-pay job (LLM-187). The labor analog of PayOfferWarrantReason:
+// solicit_work mints a pending LaborOffer, the LaborOfferReceived subscriber
+// (handlers/labor_reactor.go) stamps this on the employer, and their next
+// reactor tick perceives the offer and decides accept_work / decline_work.
+//
+// Without this the employer is only woken by some OTHER reactor (e.g. the
+// worker speaking again), so a solicitation made into a lull expires unseen
+// at the 3-minute LaborLedgerTTLDefault — the confabulated-hire bug this
+// reason exists to close.
+//
+// The decision section + tool gate read the LIVE pending offer off the
+// snapshot (perception.buildLaborOffersForMe over snap.LaborLedger), NOT this
+// payload — so the fields here are not consumed by rendering. They snapshot
+// the LaborOfferReceived terms for the telemetry/debug trail and parity with
+// PayOfferWarrantReason. DedupDiscriminator returns uint64(LaborID), the
+// stable per-offer key, so a double registration (or a future restart
+// re-stamp) dedupes cleanly against the normal-flow stamp.
+type LaborOfferWarrantReason struct {
+	LaborID     LaborID
+	Worker      ActorID
+	Reward      int
+	DurationMin int
+	ExpiresAt   time.Time
+}
+
+func (LaborOfferWarrantReason) isWarrantReason()             {}
+func (LaborOfferWarrantReason) Kind() WarrantKind            { return WarrantKindLaborOffer }
+func (r LaborOfferWarrantReason) DedupDiscriminator() uint64 { return uint64(r.LaborID) }
 
 // PayResolvedWarrantReason captures the buyer-side resolution of a
 // pay-with-item offer. Phase 3 PR S4 step 7 — the pay-resolved

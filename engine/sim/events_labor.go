@@ -7,9 +7,11 @@ import "time"
 // offer lifecycle, mirroring the pay-with-item family's split:
 //
 //   - LaborOfferReceived fires when sim.SolicitWork inserts a new pending
-//     LaborOffer into World.LaborLedger. A later subscriber stamps the
-//     employer's warrant so their next reactor tick perceives the offer
-//     and can accept_work / decline_work.
+//     LaborOffer into World.LaborLedger. The handlers/labor_reactor.go
+//     subscriber stamps LaborOfferWarrantReason on the employer so their
+//     next reactor tick perceives the offer and can accept_work /
+//     decline_work (LLM-187 — without it the employer is only woken
+//     incidentally and the offer can expire unseen).
 //
 //   - LaborOfferAccepted fires when sim.AcceptWork flips the offer to
 //     Working (no coins move). NON-terminal — the commerce isn't ended,
