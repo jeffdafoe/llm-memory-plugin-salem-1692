@@ -9,9 +9,13 @@ package handlers
 // registerTools).
 
 // RegisterOfferTrade adds the offer_trade tool to r as a ClassCommit
-// entry. Non-terminal — like pay_with_item, the proposer can chain a
-// speak ("here, take these and give me the bread") after placing the
-// offer.
+// entry.
+//
+// terminalOnSuccess is TRUE (LLM-184): like pay_with_item (it shares the barter
+// substrate), a placed barter offer stands until the other party answers on
+// THEIR turn, so there is nothing to chain after it this tick. The proposer
+// announces BEFORE offering (speak is non-terminal); only the after-word is
+// dropped.
 //
 // The commit handler is HandlePayWithItem, NOT a dedicated offer_trade
 // handler: DecodeOfferTradeArgs lowers the proposer-POV args onto a
@@ -23,7 +27,7 @@ func RegisterOfferTrade(r *Registry) error {
 		offerTradeSchema,
 		DecodeOfferTradeArgs,
 		HandlePayWithItem,
-		false, // non-terminal: offer_trade is a within-tick step
+		true, // terminal: a placed barter offer ends the tick (LLM-184)
 		WithDescription(offerTradeDescription),
 	)
 }

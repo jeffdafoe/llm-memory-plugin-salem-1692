@@ -2,13 +2,14 @@ package handlers
 
 import "testing"
 
-// register_labor_test.go — LLM-180. solicit_work is tick-terminal: a placed
-// labor offer ends the tick, so the within-tick re-fire loop (a weak model
-// calling solicit_work x6 to the round budget, observed live) cannot recur.
-// This pins the TerminalOnSuccess policy so a regression that flips it back to
-// non-terminal fails here. accept_work / decline_work stay non-terminal (the
-// employer/worker answers in-conversation and may chain a word) — pinned below
-// so the family's deliberate asymmetry doesn't drift.
+// register_labor_test.go — LLM-180 / LLM-184. The whole labor family is
+// tick-terminal: a placed labor offer (solicit_work, LLM-180), an accept, and a
+// decline each end the tick, so the within-tick re-fire loop (a weak model
+// calling the verb x6 to the round budget, observed live) cannot recur. This
+// pins the TerminalOnSuccess policy so a regression that flips any of them back
+// to non-terminal fails here. LLM-184 converted accept_work / decline_work from
+// non-terminal to terminal — the answering side announces BEFORE answering
+// (speak is non-terminal) and the courtesy word AFTER was the re-fire vector.
 func TestRegisterSolicitWork_IsTerminalOnSuccess(t *testing.T) {
 	r := NewRegistry()
 	if err := RegisterSolicitWork(r); err != nil {
@@ -26,7 +27,7 @@ func TestRegisterSolicitWork_IsTerminalOnSuccess(t *testing.T) {
 	}
 }
 
-func TestRegisterLaborFamily_AcceptAndDeclineStayNonTerminal(t *testing.T) {
+func TestRegisterLaborFamily_AcceptAndDeclineAreTerminal(t *testing.T) {
 	r := NewRegistry()
 	if err := RegisterLaborFamily(r); err != nil {
 		t.Fatalf("RegisterLaborFamily: %v", err)
@@ -36,8 +37,8 @@ func TestRegisterLaborFamily_AcceptAndDeclineStayNonTerminal(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s not registered", name)
 		}
-		if e.TerminalPolicy != TerminalNever {
-			t.Errorf("%s TerminalPolicy = %v, want TerminalNever — the answering side may chain a word", name, e.TerminalPolicy)
+		if e.TerminalPolicy != TerminalOnSuccess {
+			t.Errorf("%s TerminalPolicy = %v, want TerminalOnSuccess — an answer ends the tick (LLM-184); a forced second answer is the storm", name, e.TerminalPolicy)
 		}
 	}
 }

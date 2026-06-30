@@ -335,3 +335,24 @@ func offerTradeJSON(with, wantItem string, wantQty int, giveItem string, giveQty
 	})
 	return string(b)
 }
+
+// TestRegisterOfferTrade_IsTerminalOnSuccess — LLM-184. offer_trade shares the
+// pay_with_item substrate and is tick-terminal: a placed barter offer stands
+// until the other party answers on their turn, so a forced re-offer can't storm
+// the round budget. Pins the policy so a flip back to non-terminal fails here.
+func TestRegisterOfferTrade_IsTerminalOnSuccess(t *testing.T) {
+	r := NewRegistry()
+	if err := RegisterOfferTrade(r); err != nil {
+		t.Fatalf("RegisterOfferTrade: %v", err)
+	}
+	e, ok := r.Lookup("offer_trade")
+	if !ok {
+		t.Fatal("offer_trade not registered")
+	}
+	if e.Class != ClassCommit {
+		t.Errorf("offer_trade Class = %v, want ClassCommit", e.Class)
+	}
+	if e.TerminalPolicy != TerminalOnSuccess {
+		t.Errorf("offer_trade TerminalPolicy = %v, want TerminalOnSuccess (LLM-184)", e.TerminalPolicy)
+	}
+}

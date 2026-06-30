@@ -586,8 +586,18 @@ func TestRegisterPayWithItemFamily(t *testing.T) {
 	}
 	want := []string{"pay_with_item", "accept_pay", "decline_pay", "counter_pay", "withdraw_pay"}
 	for _, name := range want {
-		if _, ok := r.Lookup(name); !ok {
+		e, ok := r.Lookup(name)
+		if !ok {
 			t.Errorf("tool %q not registered", name)
+			continue
+		}
+		// LLM-184: every pay-family commit is tick-terminal — a placed or
+		// answered offer ends the tick, so a weak model can't storm the verb to
+		// the round budget (pay_with_item / decline_pay / withdraw_pay x6,
+		// observed live). A forced second call is the storm the guards alone
+		// couldn't stop.
+		if e.TerminalPolicy != TerminalOnSuccess {
+			t.Errorf("tool %q TerminalPolicy = %v, want TerminalOnSuccess (LLM-184)", name, e.TerminalPolicy)
 		}
 	}
 }

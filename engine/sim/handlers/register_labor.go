@@ -28,27 +28,36 @@ func RegisterSolicitWork(r *Registry) error {
 	)
 }
 
-// RegisterAcceptWork adds the accept_work tool to r. Non-terminal — the
-// employer can chain a speak ("good, get started") after accepting.
+// RegisterAcceptWork adds the accept_work tool to r.
+//
+// terminalOnSuccess is TRUE (LLM-184): accepting hires the worker atomically,
+// so there is nothing mechanical left to do this tick. The courtesy after-word
+// ("good, get started") is the re-fire vector the weak model stormed
+// (accept_work x6, observed live on pooled AND stateful NPCs); the employer's
+// before-speak is preserved (speak is non-terminal). The already_answered guard
+// (LLM-164) stays a backstop.
 func RegisterAcceptWork(r *Registry) error {
 	return r.RegisterCommit(
 		"accept_work",
 		acceptWorkSchema,
 		DecodeAcceptWorkArgs,
 		HandleAcceptWork,
-		false,
+		true, // terminal: an atomic hire ends the tick (LLM-184)
 		WithDescription(acceptWorkDescription),
 	)
 }
 
-// RegisterDeclineWork adds the decline_work tool to r. Non-terminal.
+// RegisterDeclineWork adds the decline_work tool to r.
+//
+// terminalOnSuccess is TRUE (LLM-184): a decline is instant and final for this
+// tick — nothing to chain — so the decline_work storm cannot recur.
 func RegisterDeclineWork(r *Registry) error {
 	return r.RegisterCommit(
 		"decline_work",
 		declineWorkSchema,
 		DecodeDeclineWorkArgs,
 		HandleDeclineWork,
-		false,
+		true, // terminal: an instant decline ends the tick (LLM-184)
 		WithDescription(declineWorkDescription),
 	)
 }
