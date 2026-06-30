@@ -441,6 +441,14 @@ func (s *Server) umbilicalRoutes() []umbilicalRoute {
 		// without a restart; applied in memory and persisted on the next checkpoint.
 		{http.MethodPost, umbilicalBasePath + "/stall-wear/set", "Live-tune the stall wear knobs (LLM-118) without a restart. All fields optional (at least one required), non-negative ints. Body: {stall_wear_per_coin?, stall_wear_repair_threshold?, stall_wear_degrade_threshold?, stall_nails_per_repair?, stall_repair_duration_seconds?}.", true, s.handleUmbilicalStallWearSet},
 
+		// Item definition (LLM-200) — live create/edit of one item_kind row (the
+		// definition: label, category, sort order, capabilities, counting nouns,
+		// dwell narration). The create leg of the all-live new-good flow
+		// (item/set → recipe/set → restock/set), so unlike the other two it can
+		// introduce a brand-new good. Durable write to item_kind + in-memory
+		// catalog update; needs SetItemKindWriter wired (else 503).
+		{http.MethodPost, umbilicalBasePath + "/item/set", "Add or update one item-kind definition (upsert keyed on name; creates a brand-new good or edits an existing one, leaving its satiation rows intact). Body: {name, display_label, category, sort_order, capabilities:[...], display_label_singular, display_label_plural, consume_dwell_narration}.", true, s.handleUmbilicalItemSet},
+
 		// Recipe (LLM-97) — live edit/add of an item recipe (existing items
 		// only). Durable write to item_recipe + in-memory catalog update; needs
 		// SetRecipeWriter wired (else 503).

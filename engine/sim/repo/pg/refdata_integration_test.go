@@ -395,3 +395,77 @@ func TestIntegration_ItemKinds_UpsertItemSatisfies(t *testing.T) {
 		t.Fatalf("after update: %+v, want immediate 12 with dwell triple intact", st)
 	}
 }
+
+// I3 UpsertItemKind inserts a full new definition (every authorable column,
+// including the nullable singular/plural labels and the free-text category that
+// the typed enum doesn't constrain, LLM-204) and then updates it in place. The
+// ON CONFLICT path must rewrite the definitional columns while leaving a
+// pre-existing item_satisfies row untouched — item/set edits the definition only.
+func TestIntegration_ItemKinds_UpsertItemKind(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	clearCatalog(t, f)
+
+	repo := NewItemKindsRepo(f.Pool)
+
+	// Insert a brand-new kind with every authorable column populated, including a
+	// free-text category ("tool") that is not one of the typed enum constants.
+	insert := sim.ItemKindDef{
+		Name: "shovel", DisplayLabel: "Shovel", Category: sim.ItemCategory("tool"),
+		SortOrder: 4, Capabilities: []string{"portable"},
+		DisplayLabelSingular: "shovel", DisplayLabelPlural: "shovels",
+	}
+	if err := repo.UpsertItemKind(ctx, insert); err != nil {
+		t.Fatalf("UpsertItemKind insert: %v", err)
+	}
+	got, err := repo.LoadAll(ctx)
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	sh := got["shovel"]
+	if sh == nil {
+		t.Fatal("shovel missing after insert")
+	}
+	if sh.DisplayLabel != "Shovel" || sh.Category != "tool" || sh.SortOrder != 4 ||
+		sh.DisplayLabelSingular != "shovel" || sh.DisplayLabelPlural != "shovels" {
+		t.Errorf("inserted def fields: %+v", sh)
+	}
+	if len(sh.Capabilities) != 1 || sh.Capabilities[0] != "portable" {
+		t.Errorf("inserted capabilities: %+v", sh.Capabilities)
+	}
+
+	// Seed a satiation row, then UPDATE the definition. The satiation must
+	// survive — item_kind upsert never touches item_satisfies.
+	if _, err := f.Pool.Exec(ctx,
+		`INSERT INTO item_satisfies (item_kind, attribute, amount) VALUES ('shovel','hunger',1)`); err != nil {
+		t.Fatalf("seed item_satisfies: %v", err)
+	}
+	update := sim.ItemKindDef{
+		Name: "shovel", DisplayLabel: "Garden Spade", Category: sim.ItemCategory("implement"),
+		SortOrder: 9, Capabilities: []string{"portable", "service"},
+		DisplayLabelSingular: "spade", DisplayLabelPlural: "spades",
+	}
+	if err := repo.UpsertItemKind(ctx, update); err != nil {
+		t.Fatalf("UpsertItemKind update: %v", err)
+	}
+	got, err = repo.LoadAll(ctx)
+	if err != nil {
+		t.Fatalf("LoadAll after update: %v", err)
+	}
+	sh = got["shovel"]
+	if sh == nil {
+		t.Fatal("shovel missing after update")
+	}
+	if sh.DisplayLabel != "Garden Spade" || sh.Category != "implement" || sh.SortOrder != 9 ||
+		sh.DisplayLabelSingular != "spade" || sh.DisplayLabelPlural != "spades" {
+		t.Errorf("updated def fields: %+v", sh)
+	}
+	if len(sh.Capabilities) != 2 {
+		t.Errorf("updated capabilities: %+v", sh.Capabilities)
+	}
+	// The satiation row seeded between insert and update survived the definition
+	// rewrite (proves the upsert is definition-only).
+	if len(sh.Satisfies) != 1 || sh.Satisfies[0].Attribute != "hunger" {
+		t.Errorf("satiation not preserved across definition update: %+v", sh.Satisfies)
+	}
+}

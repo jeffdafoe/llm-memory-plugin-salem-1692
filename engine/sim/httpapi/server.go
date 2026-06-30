@@ -73,6 +73,14 @@ type Server struct {
 	// direct write is the edit's durable half. Nil when unwired → the
 	// /item/set-satisfies handler answers 503.
 	satisfiesWriter SatisfiesWriter
+	// itemKindWriter backs the operator-gated POST /umbilical/item/set control
+	// route (LLM-200) — the durable item_kind upsert (the item-definition row:
+	// label, category, sort order, capabilities, counting nouns, dwell
+	// narration). Injected (set by cmd/engine via SetItemKindWriter) so httpapi
+	// does not import the pg package. item_kind is reference data with no
+	// checkpoint path, so this direct write is the edit's durable half. Nil when
+	// unwired → the /item/set handler answers 503.
+	itemKindWriter ItemKindWriter
 }
 
 // NewServer builds a Server for w, authenticating every route via auth. Panics
@@ -241,6 +249,16 @@ func (s *Server) SetRecipeWriter(wr RecipeWriter) {
 // never concurrently with serving.
 func (s *Server) SetSatisfiesWriter(wr SatisfiesWriter) {
 	s.satisfiesWriter = wr
+}
+
+// SetItemKindWriter wires the durable item_kind upsert behind the operator-gated
+// POST /umbilical/item/set control route (LLM-200). item_kind is reference data
+// with no checkpoint path, so the edit's durable half is this direct write (the
+// in-memory World.ItemKinds update is a separate sim Command in the handler).
+// Optional: unset → the handler answers 503. Same wiring-time-only contract as
+// SetRecipeWriter — call before Handler, never concurrently with serving.
+func (s *Server) SetItemKindWriter(wr ItemKindWriter) {
+	s.itemKindWriter = wr
 }
 
 // Handler returns the read-surface routes: the static-render read set

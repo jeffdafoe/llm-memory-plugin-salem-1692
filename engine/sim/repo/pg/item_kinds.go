@@ -193,6 +193,85 @@ func (r *ItemKindsRepo) UpsertItemSatisfies(ctx context.Context, kind sim.ItemKi
 	return nil
 }
 
+// upsertItemKindSQL writes one item_kind row — the durable half of the operator
+// item-definition edit (umbilical /item/set, LLM-200). ON CONFLICT (name) it
+// UPDATEs every authorable definitional column in place, which is what makes the
+// all-live new-good flow possible (item/set → recipe/set → restock/set; no
+// migration, no restart). This is the full-upsert sibling of the insert-or-ignore
+// upsertDiscoveredItemKindSQL below — that one only protects an engine-minted row
+// from clobber, this one is the operator deliberately authoring the definition.
+//
+// hours_per_unit is deliberately NOT written: v2 doesn't model it (the loader
+// skips it, ItemKindDef has no field) — production rate lives on item_recipe
+// (rate_qty / rate_per_hours), set via recipe/set. On insert it takes its column
+// default (NULL); on update it's left untouched. item_satisfies is a separate
+// table (set via item/set-satisfies) and is likewise untouched here, so editing
+// an item's definition never disturbs its satiation rows.
+const upsertItemKindSQL = `
+INSERT INTO item_kind (
+    name, display_label, display_label_singular, display_label_plural,
+    category, sort_order, capabilities, consume_dwell_narration)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+ON CONFLICT (name) DO UPDATE SET
+    display_label           = EXCLUDED.display_label,
+    display_label_singular  = EXCLUDED.display_label_singular,
+    display_label_plural    = EXCLUDED.display_label_plural,
+    category                = EXCLUDED.category,
+    sort_order              = EXCLUDED.sort_order,
+    capabilities            = EXCLUDED.capabilities,
+    consume_dwell_narration = EXCLUDED.consume_dwell_narration`
+
+// UpsertItemKind inserts or updates one item_kind definition — the durable half
+// of the umbilical /item/set route (LLM-200). The catalog has no checkpoint path
+// (reference data), so this is a direct write; the in-memory World.ItemKinds
+// update (sim.SetItemKind) is the caller's separate step and runs only after this
+// lands. name/display_label/category are re-asserted non-empty here (the handler
+// validates first, 400) so a bad value fails before it reaches pg. The nullable
+// label/narration columns store SQL NULL for a Go empty string (matching the
+// loader's NULL→empty round-trip and the Singular()/Plural() fallback); the
+// NOT NULL capabilities[] column coalesces nil → '{}'.
+func (r *ItemKindsRepo) UpsertItemKind(ctx context.Context, def sim.ItemKindDef) error {
+	if def.Name == "" {
+		return fmt.Errorf("pg item_kinds UpsertItemKind: empty name")
+	}
+	if def.DisplayLabel == "" {
+		return fmt.Errorf("pg item_kinds UpsertItemKind: empty display_label")
+	}
+	if def.Category == "" {
+		return fmt.Errorf("pg item_kinds UpsertItemKind: empty category")
+	}
+	// Nullable label/narration columns: a Go empty string → SQL NULL by leaving
+	// the arg as a nil interface (the village_objects nullable-write idiom).
+	var singularArg, pluralArg, narrationArg any
+	if def.DisplayLabelSingular != "" {
+		singularArg = def.DisplayLabelSingular
+	}
+	if def.DisplayLabelPlural != "" {
+		pluralArg = def.DisplayLabelPlural
+	}
+	if def.ConsumeDwellNarration != "" {
+		narrationArg = def.ConsumeDwellNarration
+	}
+	// capabilities is NOT NULL DEFAULT '{}': nil → empty slice so pg stores '{}'.
+	caps := def.Capabilities
+	if caps == nil {
+		caps = []string{}
+	}
+	if _, err := r.pool.Exec(ctx, upsertItemKindSQL,
+		string(def.Name),
+		def.DisplayLabel,
+		singularArg,
+		pluralArg,
+		string(def.Category),
+		def.SortOrder,
+		caps,
+		narrationArg,
+	); err != nil {
+		return fmt.Errorf("pg item_kinds UpsertItemKind: exec: %w", err)
+	}
+	return nil
+}
+
 // upsertDiscoveredItemKindSQL inserts an engine-minted kind (ZBBS-WORK-412) and
 // does nothing if the name already exists — so the checkpoint never clobbers an
 // authored row or an operator's later edit to a discovered kind (e.g. once they
