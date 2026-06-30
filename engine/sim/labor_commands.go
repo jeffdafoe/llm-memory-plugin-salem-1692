@@ -312,6 +312,14 @@ func AcceptWork(callerID ActorID, laborID LaborID, at time.Time) Command {
 			// offer.WorkingUntil and worker.LaboringUntil don't alias one
 			// instant.
 			workingUntil := at.Add(time.Duration(offer.DurationMin) * time.Minute)
+			// LLM-190: a worker can't keep working past the employer's closing
+			// time. Clamp the completion deadline to the end of the employer's
+			// current shift (a keeper's posted hours, or the dawn/dusk day window
+			// for an unscheduled employer) so an 8h job taken late in the day ends
+			// when the shop shuts, not 8h later. The full agreed reward is still
+			// paid for the shortened window, and the keeper announces the close-out
+			// when the clamped job completes off-shift (settleCompletedLabor).
+			workingUntil = clampWorkingUntilToEmployerClose(w, caller, workingUntil, at)
 			offer.State = LaborStateWorking
 			offer.AcceptedAt = timePtrLabor(at)
 			offer.WorkingUntil = timePtrLabor(workingUntil)
@@ -488,12 +496,23 @@ func recordLaborInteractions(w *World, offer *LaborOffer, terminal LaborTerminal
 
 	workerName := actorDisplayName(w, offer.WorkerID)
 	employerName := actorDisplayName(w, offer.EmployerID)
+	// The worked-duration facts report the ACTUAL time put in, not the offered
+	// duration: a job clamped to the employer's closing time (LLM-190) finishes
+	// early, so "worked about 8 hours" would overstate a shift-bounded job. The
+	// real window is AcceptedAt→WorkingUntil; fall back to the offered duration if
+	// either is unset (declines never set them and don't take this path anyway).
+	workedMin := offer.DurationMin
+	if offer.AcceptedAt != nil && offer.WorkingUntil != nil {
+		if m := int(offer.WorkingUntil.Sub(*offer.AcceptedAt).Minutes()); m > 0 {
+			workedMin = m
+		}
+	}
 	var workerFact, employerFact string
 	switch workerKind {
 	case InteractionWorked:
-		workerFact, employerFact = laborCompletedFacts(workerName, employerName, offer.Reward, offer.DurationMin)
+		workerFact, employerFact = laborCompletedFacts(workerName, employerName, offer.Reward, workedMin)
 	case InteractionWorkedUnpaid:
-		workerFact, employerFact = laborUnpaidFacts(workerName, employerName, offer.Reward, offer.DurationMin)
+		workerFact, employerFact = laborUnpaidFacts(workerName, employerName, offer.Reward, workedMin)
 	case InteractionWorkDeclinedBy:
 		workerFact, employerFact = laborDeclinedFacts(workerName, employerName, offer.Reward)
 	}
@@ -586,6 +605,91 @@ func laborDeclinedFacts(workerName, employerName string, reward int) (workerFact
 // instant can be handed to multiple fields (offer.WorkingUntil and
 // worker.LaboringUntil) without aliasing them through one pointer.
 func timePtrLabor(t time.Time) *time.Time { return &t }
+
+// clampWorkingUntilToEmployerClose caps a job's completion deadline to the
+// employer's closing time — a worker can't keep working past when the shop
+// stops serving (LLM-190). Returns the earlier of the proposed workingUntil and
+// the wall-clock instant the employer's current shift ends: a scheduled keeper's
+// posted close, or the dawn/dusk day window for an unscheduled employer
+// (effectiveShiftWindow). A no-op when the employer has no shift window or is
+// already off shift at `at` (no live shift to bound against — an off-shift
+// employer taking on work is abnormal, so the natural window stands). The
+// village clock is wall-clock (localMinuteOfDay), so the shift-end minute-of-day
+// maps straight onto the wall clock; the modulo carries a wrap-midnight shift to
+// tomorrow's close. World-goroutine-only.
+func clampWorkingUntilToEmployerClose(w *World, employer *Actor, workingUntil, at time.Time) time.Time {
+	if employer == nil {
+		return workingUntil
+	}
+	start, end, ok := effectiveShiftWindow(w, employer)
+	if !ok {
+		return workingUntil
+	}
+	nowMin := localMinuteOfDay(w, at)
+	if !minuteInShiftWindow(start, end, nowMin) {
+		return workingUntil
+	}
+	minsUntilClose := (end - nowMin + 1440) % 1440
+	if minsUntilClose <= 0 {
+		return workingUntil
+	}
+	closeAt := at.Add(time.Duration(minsUntilClose) * time.Minute)
+	if closeAt.Before(workingUntil) {
+		return closeAt
+	}
+	return workingUntil
+}
+
+// announceLaborCloseoutIfShopClosed emits the keeper's "we're shutting, your
+// work's done" closing line to the worker when a completed job ended because the
+// shop closed for the day (LLM-190): the employer is an establishment keeper now
+// OFF shift, so this completion is the shift-end close-out rather than a job that
+// finished mid-shift. AcceptWork clamps a job to the keeper's closing time, so a
+// shift-bounded job lands here exactly as the keeper goes off shift; a job that
+// finished earlier in the day completes silently (keeper still on shift). Engine-
+// authored Spoke (HuddleID empty — the businessowner / establishment-closeup
+// pattern); the worker rides RecipientIDs so the speech reactor lets it perceive
+// the line. No-op for a non-keeper employer or one still on shift.
+// World-goroutine-only.
+func announceLaborCloseoutIfShopClosed(w *World, employer, worker *Actor, reward int, now time.Time) {
+	if worker == nil || !shopClosedForCloseout(w, employer, now) {
+		return
+	}
+	w.emit(&Spoke{
+		SpeakerID:    employer.ID,
+		RecipientIDs: []ActorID{worker.ID},
+		Text:         laborCloseoutLine(reward),
+		At:           now,
+	})
+}
+
+// shopClosedForCloseout reports whether a just-completed job ended because the
+// employer's shop closed for the day: the employer is an establishment keeper
+// (BusinessownerState set) who is now OFF shift. A non-keeper employer, or a
+// keeper still on shift (the job finished earlier in the day), is not a close-out
+// — the completion stays silent. World-goroutine-only.
+func shopClosedForCloseout(w *World, employer *Actor, now time.Time) bool {
+	if employer == nil || employer.BusinessownerState == nil {
+		return false
+	}
+	start, end, ok := effectiveShiftWindow(w, employer)
+	if !ok {
+		return false
+	}
+	return !minuteInShiftWindow(start, end, localMinuteOfDay(w, now))
+}
+
+// laborCloseoutLine composes the keeper's closing call to a worker whose job
+// ended because the shop shut for the day — telling them they're done and
+// handing over the pay. Plain modern register, matching the establishment
+// close-up's closingLines; the coin amount is templated, so this is composed in
+// Go rather than drawn from a narration pool.
+func laborCloseoutLine(reward int) string {
+	return fmt.Sprintf(
+		"That's the shop shut for the day — your work's done, and well done. Here's your %s, with my thanks.",
+		laborCoinsPhrase(reward),
+	)
+}
 
 // workerHasLiveJob reports whether the worker currently holds a Working
 // (accepted, not-yet-settled) labor offer — the authoritative "this worker is

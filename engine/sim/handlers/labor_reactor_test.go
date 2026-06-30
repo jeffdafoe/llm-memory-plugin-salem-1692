@@ -69,7 +69,7 @@ func TestSubscriber_LaborOfferReceived_StampsEmployer(t *testing.T) {
 	})
 	defer stop()
 	armLaborWorker(t, w, "anne", 1)
-	solicitWork(t, w, "anne", "Prudence", 5, 30)
+	solicitWork(t, w, "anne", "Prudence", 5, 120)
 
 	warrants := readWarrants(t, w, "prudence")
 	m, ok := firstByKind(warrants, sim.WarrantKindLaborOffer)
@@ -80,7 +80,7 @@ func TestSubscriber_LaborOfferReceived_StampsEmployer(t *testing.T) {
 	if !ok {
 		t.Fatalf("warrant reason is %T, want LaborOfferWarrantReason", m.Reason)
 	}
-	if reason.Worker != "anne" || reason.Reward != 5 || reason.DurationMin != 30 {
+	if reason.Worker != "anne" || reason.Reward != 5 || reason.DurationMin != 120 {
 		t.Errorf("reason = %+v, want worker anne / reward 5 / duration 30", reason)
 	}
 	if reason.LaborID == 0 {
@@ -101,7 +101,7 @@ func TestSubscriber_LaborOfferReceived_SkipsPCEmployer(t *testing.T) {
 	})
 	defer stop()
 	armLaborWorker(t, w, "anne", 1)
-	solicitWork(t, w, "anne", "Patron", 5, 30)
+	solicitWork(t, w, "anne", "Patron", 5, 120)
 
 	warrants := readWarrants(t, w, "patron")
 	if _, ok := firstByKind(warrants, sim.WarrantKindLaborOffer); ok {
@@ -119,7 +119,7 @@ func TestSubscriber_LaborOfferReceived_DedupesDoubleRegister(t *testing.T) {
 	})
 	defer stop()
 	armLaborWorker(t, w, "anne", 2)
-	solicitWork(t, w, "anne", "Prudence", 5, 30)
+	solicitWork(t, w, "anne", "Prudence", 5, 120)
 
 	warrants := readWarrants(t, w, "prudence")
 	if got := countByKind(warrants, sim.WarrantKindLaborOffer); got != 1 {

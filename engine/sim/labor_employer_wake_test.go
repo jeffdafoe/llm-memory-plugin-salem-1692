@@ -55,7 +55,7 @@ func TestLaborOffer_WakesEmployerAndSurfacesOffer(t *testing.T) {
 		t.Fatalf("RegisterLaborHandlers: %v", err)
 	}
 
-	res, err := w.Send(sim.SolicitWork("anne", "Prudence Ward", 5, 30, time.Now().UTC()))
+	res, err := w.Send(sim.SolicitWork("anne", "Prudence Ward", 5, 120, time.Now().UTC()))
 	if err != nil {
 		t.Fatalf("SolicitWork: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestLaborOffer_WakesEmployerAndSurfacesOffer(t *testing.T) {
 	if off.LaborID != laborID {
 		t.Errorf("offer view LaborID = %d, want %d (the id accept_work echoes)", off.LaborID, laborID)
 	}
-	if off.Worker != "anne" || off.Reward != 5 || off.DurationMin != 30 {
-		t.Errorf("offer view = %+v, want worker anne / reward 5 / duration 30", off)
+	if off.Worker != "anne" || off.Reward != 5 || off.DurationMin != 120 {
+		t.Errorf("offer view = %+v, want worker anne / reward 5 / duration 120", off)
 	}
 }

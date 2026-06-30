@@ -151,11 +151,16 @@ const (
 	LaborLedgerTerminalRetentionDefault = time.Hour
 
 	// MinLaborDurationMinutes / MaxLaborDurationMinutes clamp the
-	// model-proposed work duration to a sane range (reject 0 / absurd).
-	// The 4h ceiling mirrors the take_break cap — a single labor
-	// commitment shouldn't swallow a whole shift.
-	MinLaborDurationMinutes = 1
-	MaxLaborDurationMinutes = 240
+	// model-proposed work duration to the 2h–8h band (LLM-190). The 2h floor
+	// stops the weak model lowballing to a near-instant job it then spends the
+	// rest of the conversation talking about; the 8h ceiling is the longest a
+	// full work day runs. A job is bounded in practice by the employer's
+	// closing time, not this ceiling: AcceptWork clamps WorkingUntil to a
+	// keeper-employer's shift end, and the establishment close-up settles any
+	// still-running job when the shop shuts (so an 8h offer taken late in the
+	// day ends when the shop closes, not 8h later).
+	MinLaborDurationMinutes = 120
+	MaxLaborDurationMinutes = 480
 
 	// MaxLaborReward caps the reward coins (matches MaxPayWithItemAmount).
 	MaxLaborReward = math.MaxInt32
