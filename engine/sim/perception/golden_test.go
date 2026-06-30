@@ -119,6 +119,26 @@ var perceptionScenarios = []perceptionScenario{
 		build: homedWorkerEveningTavernOpen,
 	},
 	{
+		name: "homed_worker_evening_too_broke_for_tavern",
+		summary: "A homed day-shift agent (Ezekiel, 07:00–19:00) off-shift at 20:30 — inside the evening window — but " +
+			"holding only 2 coins, below the tavern's cheapest drink (ale, retail 3, sold by the co-located keeper). LLM-205: " +
+			"a night out costs coin, so canAffordLeisure fails and the agent is NOT in evening leisure. The golden pins that " +
+			"the 'tavern's open of an evening' invitation is ABSENT and the off-shift go-home wind-down steer ('Your working " +
+			"hours are over …') is PRESENT — the broke have no evening; they wind down home and bed at shift-end. The mirror " +
+			"of homed_worker_evening_tavern_open (same situation, affordable there).",
+		build: homedWorkerEveningTooBrokeForTavern,
+	},
+	{
+		name: "homed_workers_evening_commons_no_solicit",
+		summary: "Two homed day-shift workers (Ezekiel + Lewis, different homes and trades) off-shift at 20:30, together at " +
+			"the Village Commons — neither at home nor the tavern — with a tavern placed and the subject flush enough to afford " +
+			"a drink (10 coins, ale retail 3). LLM-205 rule 2: the subject is in affordable evening leisure, so the solicit-work " +
+			"affordance ('offer your labor with solicit_work') is SUPPRESSED even though a solicitable peer is present (without " +
+			"the gate an employed worker with a solicitable audience would be offered it). The golden pins the evening cue PRESENT " +
+			"and the solicit affordance ABSENT — the lingering don't hustle. Makes TestEveningLeisureSuppressesSolicit non-vacuous.",
+		build: homedWorkersEveningCommonsNoSolicit,
+	},
+	{
 		name: "keeper_with_ready_order",
 		summary: "An innkeeper holds a Ready order (a nights_stay check-in) for a co-present guest. Exercises the " +
 			"order book with a deterministic expiry clause — the LLM-106 render-clock fix anchors 'expires in N " +
@@ -2733,6 +2753,159 @@ func homedWorkerEveningTavernOpen() (*sim.Snapshot, sim.ActorID, []sim.WarrantMe
 		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
 			sim.VillageObjectID(tavern): {Tags: []string{sim.VisitorTagTavern}, Pos: sim.WorldPos{X: 0, Y: 0}},
 		},
+	}
+	return snap, ezekielID, nil
+}
+
+// homedWorkerEveningTooBrokeForTavern is the LLM-205 rule-1 case: the same homed
+// day-shift agent as homedWorkerEveningTavernOpen, in the evening window, but too
+// broke to afford the tavern's cheapest drink (2 coins; the co-located keeper sells
+// ale at retail 3). canAffordLeisure fails, so the agent is NOT in evening leisure:
+// no tavern invitation, and the off-shift go-home wind-down steer resumes (the broke
+// have no evening). No needs / no PriceBook / no orders → byte-stable.
+func homedWorkerEveningTooBrokeForTavern() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		ezekielID = sim.ActorID("ezekiel")
+		keeperID  = sim.ActorID("innkeep")
+		forge     = sim.StructureID("blacksmith")
+		home      = sim.StructureID("crane_cottage")
+		tavern    = sim.StructureID("tavern")
+	)
+	start, end := 420, 1140 // 07:00–19:00
+	now := 1230             // 20:30 — off shift, inside the evening window
+	ezekiel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Ezekiel Crane",
+		Role:              "blacksmith",
+		State:             sim.StateIdle,
+		WorkStructureID:   forge,
+		InsideStructureID: forge,
+		HomeStructureID:   home,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             2, // below the tavern's cheapest drink (ale, retail 3)
+		Needs:             map[sim.NeedKey]int{},
+	}
+	keeper := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Hannah Boggs",
+		Role:              "innkeeper",
+		State:             sim.StateIdle,
+		WorkStructureID:   tavern,
+		InsideStructureID: tavern,
+		Inventory:         map[sim.ItemKind]int{"ale": 5},
+		Needs:             map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay:     &now,
+		LodgingBedtimeMinute: 1320, // 22:00 — the evening window's close
+		NeedThresholds:       sim.NeedThresholds{},
+		Actors:               map[sim.ActorID]*sim.ActorSnapshot{ezekielID: ezekiel, keeperID: keeper},
+		Structures: map[sim.StructureID]*sim.Structure{
+			forge:  plainStructure(forge, "Blacksmith"),
+			home:   plainStructure(home, "Crane Cottage"),
+			tavern: plainStructure(tavern, "the Tavern"),
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			sim.VillageObjectID(tavern): {Tags: []string{sim.VisitorTagTavern}, Pos: sim.WorldPos{X: 0, Y: 0}},
+		},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"ale": {OutputItem: "ale", OutputQty: 1, RateQty: 1, RatePerHours: 1, WholesalePrice: 1, RetailPrice: 3},
+		},
+	}
+	return snap, ezekielID, nil
+}
+
+// homedWorkersEveningCommonsNoSolicit is the LLM-205 rule-2 case: two homed
+// day-shift workers (different homes + trades, so solicitable to each other) off
+// shift in the evening window, together at the Commons — neither at home nor the
+// tavern, so the evening cue still fires. The subject carries AttrWorker and is flush
+// enough for a drink (10 coins, ale retail 3), so it is in evening leisure: the
+// solicit-work affordance is suppressed even though a solicitable peer is present.
+// Without the gate, an employed worker with a solicitable audience would be offered
+// solicit_work — so this pins that evening leisure replaces the hustle. Fixed
+// PublishedAt, no orders/PriceBook → byte-stable.
+func homedWorkersEveningCommonsNoSolicit() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		ezekielID = sim.ActorID("ezekiel")
+		lewisID   = sim.ActorID("lewis")
+		keeperID  = sim.ActorID("innkeep")
+		forge     = sim.StructureID("blacksmith")
+		farm      = sim.StructureID("walker_farm")
+		ezHome    = sim.StructureID("crane_cottage")
+		lwHome    = sim.StructureID("walker_house")
+		commons   = sim.StructureID("commons")
+		tavern    = sim.StructureID("tavern")
+		huddle    = sim.HuddleID("h1")
+	)
+	start, end := 420, 1140 // 07:00–19:00
+	now := 1230             // 20:30 — off shift, inside the evening window
+	published := time.Date(2026, 6, 30, 20, 30, 0, 0, time.UTC)
+	ezekiel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Ezekiel Crane",
+		Role:              "blacksmith",
+		State:             sim.StateIdle,
+		WorkStructureID:   forge,
+		HomeStructureID:   ezHome,
+		InsideStructureID: commons,
+		CurrentHuddleID:   huddle,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             10, // affords ale (retail 3); below the comfort ceiling (25)
+		AttributeSlugs:    []string{sim.AttrWorker},
+		Needs:             map[sim.NeedKey]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"Lewis Walker": {}},
+	}
+	lewis := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Lewis Walker",
+		Role:              "farmer",
+		State:             sim.StateIdle,
+		WorkStructureID:   farm,
+		HomeStructureID:   lwHome,
+		InsideStructureID: commons,
+		CurrentHuddleID:   huddle,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             8,
+		Needs:             map[sim.NeedKey]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"Ezekiel Crane": {}},
+	}
+	keeper := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Hannah Boggs",
+		Role:              "innkeeper",
+		State:             sim.StateIdle,
+		WorkStructureID:   tavern,
+		InsideStructureID: tavern,
+		Inventory:         map[sim.ItemKind]int{"ale": 5},
+		Needs:             map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:          published,
+		LocalMinuteOfDay:     &now,
+		LodgingBedtimeMinute: 1320,
+		NeedThresholds:       sim.NeedThresholds{},
+		Actors:               map[sim.ActorID]*sim.ActorSnapshot{ezekielID: ezekiel, lewisID: lewis, keeperID: keeper},
+		Structures: map[sim.StructureID]*sim.Structure{
+			forge:   plainStructure(forge, "Blacksmith"),
+			farm:    plainStructure(farm, "Walker Farm"),
+			ezHome:  plainStructure(ezHome, "Crane Cottage"),
+			lwHome:  plainStructure(lwHome, "Walker House"),
+			commons: plainStructure(commons, "Village Commons"),
+			tavern:  plainStructure(tavern, "the Tavern"),
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			sim.VillageObjectID(tavern): {Tags: []string{sim.VisitorTagTavern}, Pos: sim.WorldPos{X: 0, Y: 0}},
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{ezekielID: {}, lewisID: {}}},
+		},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"ale": {OutputItem: "ale", OutputQty: 1, RateQty: 1, RatePerHours: 1, WholesalePrice: 1, RetailPrice: 3},
+		},
+		ItemKinds: foodDrinkCatalog(),
 	}
 	return snap, ezekielID, nil
 }
