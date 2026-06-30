@@ -42,6 +42,7 @@ var allowedObjectTags = map[string]bool{
 	"meeting-house": true,
 	"well":          true,
 	"outhouse":      true,
+	"farm":          true,
 	"lodging":       true,
 	// summon_point marks a placement (loiter point, future bell) where a
 	// summoner walks to ring for a messenger. Underscore form by convention.
