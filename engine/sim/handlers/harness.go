@@ -274,6 +274,15 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 	// --- perception build (cheap; no rendering yet) ---
 	payload := perception.Build(snap, job.actorID, job.warrants)
 
+	// LLM-186 diagnostic: a worker the world holds in StateLaboring whose
+	// perception shows no in-progress job (Payload.Laboring == nil) is the
+	// PW-Apothecary inconsistency — the seek-work directive stays live and the
+	// hired worker is steered to re-solicit. Rare by construction (the snapshot is
+	// a coherent point-in-time clone), so this warn fires only on the bug.
+	if actor.State == sim.StateLaboring && payload.Laboring == nil {
+		log.Printf("sim/labor: WARN actor %s is StateLaboring but perception Laboring is nil — hired worker would be steered to seek work [LLM-186] (tick=%d)", job.actorID, snap.AtTick)
+	}
+
 	// Degeneracy observer yield facts (LLM-94). Derived from this tick's
 	// perception so CompleteReactorTick can score the tick without
 	// re-perceiving. Set unconditionally here (cheap field reads); harmless on
