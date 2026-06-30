@@ -166,8 +166,10 @@ func TestBuildTradeValue_NotInCompanyNil(t *testing.T) {
 	}
 }
 
-// TestBuildTradeValue_NoOwnTradeNil: an actor with no produce entries (a pure buyer)
-// or no RestockPolicy at all has no own trade to value.
+// TestBuildTradeValue_NoOwnTradeNil: the cue is nil when there is no priced own ware
+// to value — a buy good with no catalog recipe (ale is unpriced here) yields nothing,
+// as does a nil RestockPolicy. A priced resold good IS valued now (LLM-191) — that
+// positive case is TestBuildTradeValue_ResoldGoodCostBasis.
 func TestBuildTradeValue_NoOwnTradeNil(t *testing.T) {
 	subj := &sim.ActorSnapshot{RestockPolicy: buyPolicy("ale", 20)}
 	snap := &sim.Snapshot{
@@ -175,9 +177,117 @@ func TestBuildTradeValue_NoOwnTradeNil(t *testing.T) {
 		Recipes: tradeValueRecipes(),
 	}
 	if v := buildTradeValue(snap, "a", subj, true); v != nil {
-		t.Errorf("non-producer should yield nil, got %+v", v)
+		t.Errorf("unpriced buy good should yield nil, got %+v", v)
 	}
 	if v := buildTradeValue(snap, "a", &sim.ActorSnapshot{}, true); v != nil {
 		t.Errorf("nil RestockPolicy should yield nil, got %+v", v)
+	}
+}
+
+// TestBuildTradeValue_ResoldGoodCostBasis: a pure reseller (all-buy restock) in
+// company sees its resold goods valued from the recipe range AND its own recent
+// per-unit purchase cost (LLM-191). 8 coins over 4 units rounds to 2 each; with no
+// sale history the "sold for" clause is absent.
+func TestBuildTradeValue_ResoldGoodCostBasis(t *testing.T) {
+	subj := &sim.ActorSnapshot{RestockPolicy: buyPolicy("cheese", 10)}
+	published := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	buys := sim.NewRingBuffer[sim.PriceObservation](4)
+	buys.Push(sim.PriceObservation{BuyerID: "josiah", Amount: 8, Qty: 4, Consumers: 1, At: published.Add(-24 * time.Hour)})
+	snap := &sim.Snapshot{
+		PublishedAt: published,
+		Actors:      map[sim.ActorID]*sim.ActorSnapshot{"josiah": subj},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"cheese": {OutputItem: "cheese", WholesalePrice: 3, RetailPrice: 6},
+		},
+		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+			{SellerID: "ellis_farm", Item: "cheese"}: buys,
+		},
+	}
+	v := buildTradeValue(snap, "josiah", subj, true)
+	if v == nil || len(v.Items) != 1 {
+		t.Fatalf("want 1 resold item, got %+v", v)
+	}
+	if got := v.Items[0]; got.itemKind != "cheese" || got.Low != 3 || got.High != 6 || got.PaidUnit != 2 || got.RecentUnit != 0 {
+		t.Fatalf("cheese item wrong: %+v", got)
+	}
+	var b strings.Builder
+	renderTradeValue(&b, v)
+	out := b.String()
+	if !strings.Contains(out, "cheese: 3 to 6 coins each; you have lately paid about 2 coins each for it.") {
+		t.Errorf("missing cost-basis clause:\n%s", out)
+	}
+	if strings.Contains(out, "sold for") {
+		t.Errorf("no sale history — should not render a sold-for clause:\n%s", out)
+	}
+}
+
+// TestBuildTradeValue_ResoldGoodBothClauses: a resold good the actor has BOTH bought
+// (cost basis) and sold (realized price) renders both clauses — paid then sold — so
+// the pair brackets the markup (LLM-191, the Q3 decision). Buy 8/4 = 2, sale 20/4 = 5.
+func TestBuildTradeValue_ResoldGoodBothClauses(t *testing.T) {
+	subj := &sim.ActorSnapshot{RestockPolicy: buyPolicy("cheese", 10)}
+	published := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	buys := sim.NewRingBuffer[sim.PriceObservation](4)
+	buys.Push(sim.PriceObservation{BuyerID: "josiah", Amount: 8, Qty: 4, Consumers: 1, At: published.Add(-24 * time.Hour)})
+	sales := sim.NewRingBuffer[sim.PriceObservation](4)
+	sales.Push(sim.PriceObservation{BuyerID: "martha", Amount: 20, Qty: 4, Consumers: 1, At: published.Add(-12 * time.Hour)})
+	snap := &sim.Snapshot{
+		PublishedAt: published,
+		Actors:      map[sim.ActorID]*sim.ActorSnapshot{"josiah": subj},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"cheese": {OutputItem: "cheese", WholesalePrice: 3, RetailPrice: 6},
+		},
+		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+			{SellerID: "ellis_farm", Item: "cheese"}: buys,  // josiah as buyer (cost)
+			{SellerID: "josiah", Item: "cheese"}:     sales, // josiah as seller (realized)
+		},
+	}
+	v := buildTradeValue(snap, "josiah", subj, true)
+	if v == nil || len(v.Items) != 1 {
+		t.Fatalf("want 1 item, got %+v", v)
+	}
+	if got := v.Items[0]; got.PaidUnit != 2 || got.RecentUnit != 5 {
+		t.Fatalf("want PaidUnit=2 RecentUnit=5, got %+v", got)
+	}
+	var b strings.Builder
+	renderTradeValue(&b, v)
+	if !strings.Contains(b.String(), "you have lately paid about 2 coins each for it; of late you have sold for about 5 coins each.") {
+		t.Errorf("want paid-then-sold clauses in order:\n%s", b.String())
+	}
+}
+
+// TestBuildTradeValue_DualSourceProducedWins: a kind listed under BOTH produce and buy
+// entries is valued ONCE, as own-production — the produced loop runs first and the
+// seen-set dedupe suppresses the buy pass, so no cost-basis clause attaches even with
+// a purchase history (LLM-191). Pins the loop order against an accidental flip.
+func TestBuildTradeValue_DualSourceProducedWins(t *testing.T) {
+	subj := &sim.ActorSnapshot{RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+		{Item: "cheese", Source: sim.RestockSourceProduce, Max: 10},
+		{Item: "cheese", Source: sim.RestockSourceBuy, Max: 10},
+	}}}
+	published := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	buys := sim.NewRingBuffer[sim.PriceObservation](4)
+	buys.Push(sim.PriceObservation{BuyerID: "josiah", Amount: 8, Qty: 4, Consumers: 1, At: published.Add(-24 * time.Hour)})
+	snap := &sim.Snapshot{
+		PublishedAt: published,
+		Actors:      map[sim.ActorID]*sim.ActorSnapshot{"josiah": subj},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"cheese": {OutputItem: "cheese", WholesalePrice: 3, RetailPrice: 6},
+		},
+		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+			{SellerID: "ellis_farm", Item: "cheese"}: buys,
+		},
+	}
+	v := buildTradeValue(snap, "josiah", subj, true)
+	if v == nil || len(v.Items) != 1 {
+		t.Fatalf("want exactly 1 deduped item, got %+v", v)
+	}
+	if got := v.Items[0]; got.PaidUnit != 0 {
+		t.Errorf("produced-source should win → PaidUnit 0, got %+v", got)
+	}
+	var b strings.Builder
+	renderTradeValue(&b, v)
+	if strings.Contains(b.String(), "lately paid") {
+		t.Errorf("produced good should carry no cost-basis clause:\n%s", b.String())
 	}
 }
