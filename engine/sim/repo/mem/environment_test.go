@@ -30,6 +30,7 @@ func TestSaveMutableSettings_RoundTrip(t *testing.T) {
 		HuddleLoopTimeoutSeconds:      90,
 		HuddleLoopRepeatPercent:       70,
 		HuddleLoopSweepCadenceSeconds: 20,
+		SeekWorkCoinCeiling:           33,
 	}
 	if err := repo.SaveMutableSettings(ctx, nil, ms); err != nil {
 		t.Fatalf("SaveMutableSettings: %v", err)
@@ -51,5 +52,8 @@ func TestSaveMutableSettings_RoundTrip(t *testing.T) {
 	}
 	if settings.ZoomMinAdmin != 0.3 || !settings.AgentTicksPaused {
 		t.Errorf("zoom/pause = %v/%v, want 0.3/true", settings.ZoomMinAdmin, settings.AgentTicksPaused)
+	}
+	if settings.SeekWorkCoinCeiling != 33 {
+		t.Errorf("seek-work coin ceiling = %d, want 33 (LLM-194 round-trip)", settings.SeekWorkCoinCeiling)
 	}
 }

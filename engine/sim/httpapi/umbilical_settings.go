@@ -34,6 +34,13 @@ type UmbilicalSettingsDTO struct {
 	HuddleLoopTimeoutSeconds      int  `json:"huddle_loop_timeout_seconds"`
 	HuddleLoopRepeatPercent       int  `json:"huddle_loop_repeat_percent"`
 	HuddleLoopSweepCadenceSeconds int  `json:"huddle_loop_sweep_cadence_seconds"`
+
+	// SeekWorkCoinCeiling (LLM-194) is the coin balance at/above which a workless
+	// worker stops seeking/soliciting work (settings/seek-work-ceiling writes it). Like
+	// the huddle_loop_* knobs it PERSISTS (the checkpoint writes it back to the setting
+	// table), so it survives restart. The live engine resolves a 0 here to the default;
+	// the loaded value is seeded to the default, so this reports a concrete figure.
+	SeekWorkCoinCeiling int `json:"seek_work_coin_ceiling"`
 }
 
 // handleUmbilicalSettings serves the current live-tunable world settings. Read on
@@ -49,6 +56,7 @@ func (s *Server) handleUmbilicalSettings(w http.ResponseWriter, r *http.Request)
 			HuddleLoopTimeoutSeconds:      int(world.Settings.HuddleLoopTimeout / time.Second),
 			HuddleLoopRepeatPercent:       world.Settings.HuddleLoopRepeatPercent,
 			HuddleLoopSweepCadenceSeconds: int(world.Settings.HuddleLoopSweepCadence / time.Second),
+			SeekWorkCoinCeiling:           world.Settings.SeekWorkCoinCeiling,
 		}
 		for k, v := range world.Settings.NeedThresholds {
 			dto.NeedThresholds[string(k)] = v

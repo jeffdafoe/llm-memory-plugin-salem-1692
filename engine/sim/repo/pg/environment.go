@@ -310,6 +310,11 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.HuddleLoopRepeatPercent = parseIntSetting(values, "huddle_loop_repeat_percent", sim.HuddleLoopRepeatPercentDefault)
 	s.HuddleLoopSweepCadence = parseDurationSetting(values, "huddle_loop_sweep_cadence_seconds", sim.HuddleLoopSweepCadenceDefault)
 
+	// Seek-work coin ceiling (LLM-194). 0/unset falls back to the default at read time
+	// via effectiveSeekWorkCoinCeiling, but seed the default here too so GET /settings
+	// reports the live value and the checkpoint round-trips a concrete number.
+	s.SeekWorkCoinCeiling = parseIntSetting(values, "seek_work_coin_ceiling", sim.SeekWorkCoinCeilingDefault)
+
 	// Cross-huddle conversation continuity (LLM-170). ON by default — the ring
 	// carry-over is pure perception legibility; the loop-state carry is inert
 	// unless the loop sweep above is enabled.
@@ -538,6 +543,9 @@ func (r *EnvironmentRepo) SaveMutableSettings(ctx context.Context, tx sim.Tx, ms
 		{"huddle_loop_timeout_seconds", strconv.Itoa(ms.HuddleLoopTimeoutSeconds)},
 		{"huddle_loop_repeat_percent", strconv.Itoa(ms.HuddleLoopRepeatPercent)},
 		{"huddle_loop_sweep_cadence_seconds", strconv.Itoa(ms.HuddleLoopSweepCadenceSeconds)},
+		// Seek-work coin ceiling (LLM-194) — live-tuned via the umbilical, persisted
+		// here; the load path parses seek_work_coin_ceiling via parseIntSetting.
+		{"seek_work_coin_ceiling", strconv.Itoa(ms.SeekWorkCoinCeiling)},
 	}
 	for _, row := range rows {
 		if _, err := tx.Exec(ctx, upsertSettingSQL, row.key, row.val); err != nil {

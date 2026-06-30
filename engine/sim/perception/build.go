@@ -135,7 +135,18 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// don't have; now the affordance hides and the seek-work backstop keeps
 	// nudging it toward a real employer. SolicitWork re-checks the resolved
 	// employer for defense-in-depth.
+	// LLM-194: a coin-comfortable WORKLESS worker is not offered the solicit affordance
+	// — it doesn't need odd jobs, so it shouldn't bid a co-present keeper for work. The
+	// comfort suppression is SCOPED to workless (no resolvable workplace), matching the
+	// warrant gate and the directory gate below — both of which check workless before
+	// comfort. Unlike those two, the base CanSolicitWork gate is NOT workless-only (an
+	// EMPLOYED worker with a solicitable audience can still bid for a side job), so the
+	// ceiling must not silence an employed worker; comfort only gates the workless seeker
+	// (code_review). subjectIsComfortable is the shared predicate (mirrors
+	// sim.workerIsComfortable on the warrant side).
+	comfortableWorklessSeeker := !subjectHasResolvableWorkplace(snap, actorSnap) && subjectIsComfortable(snap, actorSnap)
 	p.CanSolicitWork = subjectIsWorker(actorSnap) &&
+		!comfortableWorklessSeeker &&
 		p.Laboring == nil &&
 		!subjectHasPendingLaborOffer(snap, actorID) &&
 		hasSolicitableAudience(snap, actorID, actorSnap, p.Surroundings)
@@ -165,8 +176,15 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// it must mean the worker is actually free to leave. Exclude an in-flight walk or
 	// a mid source-activity — those are their own coda states, and the directive must
 	// not fire (or drop the reply nag) while the worker is already committed to one.
+	//
+	// LLM-194: also gated on NOT comfortable — a workless worker holding coin at/above
+	// the seek-work ceiling reads as a plain idle villager (no businesses directory, no
+	// "go now" coda), draining its purse via ordinary consumption instead of being
+	// pushed to a business. Mirrors the warrant gate (workerIsComfortable) and the
+	// CanSolicitWork gate above.
 	if subjectIsWorker(actorSnap) &&
 		!subjectHasResolvableWorkplace(snap, actorSnap) &&
+		!subjectIsComfortable(snap, actorSnap) &&
 		p.Laboring == nil &&
 		p.Actor.InFlightMove == nil &&
 		p.Actor.InFlightSourceActivity == nil &&
@@ -3318,6 +3336,26 @@ func buildSeekWorkPlaces(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) []See
 		return places[i].Name < places[j].Name
 	})
 	return places
+}
+
+// subjectIsComfortable reports whether the subject worker holds enough coin to stop
+// hustling for work (LLM-194): coins at or above the effective seek-work ceiling. The
+// perception-side mirror of sim.workerIsComfortable — both reduce to coins >= ceiling,
+// and the ceiling magnitude lives in one place (sim.SeekWorkCoinCeilingDefault), so the
+// warrant gate and the directory/affordance gates can't disagree. The ceiling is read
+// off the snapshot (snap.SeekWorkCoinCeiling, the effective value copied at publish); a
+// 0 means the snapshot was built directly in a test without going through publish, so
+// it resolves to the default (test snapshots that omit it keep the pre-ceiling
+// always-seek behavior below the default).
+func subjectIsComfortable(snap *sim.Snapshot, subject *sim.ActorSnapshot) bool {
+	if snap == nil || subject == nil {
+		return false
+	}
+	ceiling := snap.SeekWorkCoinCeiling
+	if ceiling <= 0 {
+		ceiling = sim.SeekWorkCoinCeilingDefault
+	}
+	return subject.Coins >= ceiling
 }
 
 // hasSolicitableAudience reports whether at least one awake, addressable actor in

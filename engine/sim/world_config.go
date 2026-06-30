@@ -254,3 +254,35 @@ func SetHuddleLoopSettings(timeoutSeconds, repeatPercent, cadenceSeconds *int) C
 		},
 	}
 }
+
+// ErrInvalidSeekWorkCeilingSetting is returned by SetSeekWorkCoinCeiling when the
+// ceiling is missing or out of range (must be >= 1) — → 400 at the umbilical route.
+var ErrInvalidSeekWorkCeilingSetting = errors.New("invalid seek-work ceiling setting")
+
+// SeekWorkCeilingSettingResult echoes the post-change seek-work coin ceiling.
+type SeekWorkCeilingSettingResult struct {
+	CoinCeiling int
+}
+
+// SetSeekWorkCoinCeiling returns a Command that live-tunes the seek-work coin ceiling
+// (LLM-194): the coin balance at/above which a workless worker stops seeking/soliciting
+// work and drains its purse via ordinary consumption. Required (a single knob, nil =
+// nothing to do) and must be >= 1 — a zero/negative ceiling is meaningless (it would
+// suppress seek-work for every worker, since coins >= 0 is always true; the load/read
+// paths treat 0 as "use the default" via effectiveSeekWorkCoinCeiling). To DISABLE the
+// shelf and restore always-seek, set a very large ceiling. The MaxInt32 upper bound
+// keeps the value comfortably inside int. Takes effect immediately — the warrant gate
+// reads w.Settings live and the perception gate reads the next published snapshot
+// (which copies the effective value) — AND persists on the next checkpoint via
+// MutableWorldSettings, so a live change survives restart.
+func SetSeekWorkCoinCeiling(ceiling *int) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			if ceiling == nil || *ceiling < 1 || *ceiling > math.MaxInt32 {
+				return nil, ErrInvalidSeekWorkCeilingSetting
+			}
+			w.Settings.SeekWorkCoinCeiling = *ceiling
+			return SeekWorkCeilingSettingResult{CoinCeiling: w.Settings.SeekWorkCoinCeiling}, nil
+		},
+	}
+}

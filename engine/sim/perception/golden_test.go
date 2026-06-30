@@ -415,6 +415,16 @@ var perceptionScenarios = []perceptionScenario{
 		build: workerWithCoinNoEmployerSeeksWork,
 	},
 	{
+		name: "comfortable_worker_no_seek_work",
+		summary: "The LLM-194 case: the same workless Silence Walker as worker_with_coin_no_employer_seeks_work, but holding " +
+			"coin AT/ABOVE the seek-work ceiling (40 >= the default 25). A coin-rich worker is 'comfortable' — it doesn't need " +
+			"odd jobs — so the golden pins that it gets NEITHER the businesses directory NOR the 'call move_to now' go-coda: " +
+			"it's left to idle and drain its purse via ordinary consumption instead of pestering keepers for work. The negative " +
+			"counterpart of the 15-coin scenario (which still seeks); a regression that dropped the coin ceiling would re-add " +
+			"the seek-work cue here and flip TestSeekWorkDirectiveOnlyForWorklessWorker.",
+		build: comfortableWorkerNoSeekWork,
+	},
+	{
 		name: "worker_seeks_work_after_employer_declines",
 		summary: "The LLM-181 live case (Lewis Walker at the General Store, hud-8db08741…), reduced: a workless worker shares a " +
 			"huddle with a co-present stranger employer (Josiah Thorne) who has ALREADY declined his labor offer. Pre-fix, the " +
@@ -2872,6 +2882,49 @@ func workerWithCoinNoEmployerSeeksWork() (*sim.Snapshot, sim.ActorID, []sim.Warr
 		InsideStructureID: residence,
 		HomeStructureID:   residence,
 		Coins:             15, // holds coin, but workless → still directed to seek work
+		AttributeSlugs:    []string{sim.AttrWorker},
+		Needs:             map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{silenceID: silence},
+		Structures: map[sim.StructureID]*sim.Structure{
+			residence: plainStructure(residence, "Walker Residence"),
+			inn:       plainStructure(inn, "Inn"),
+			store:     plainStructure(store, "General Store"),
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			sim.VillageObjectID(inn):   {ID: sim.VillageObjectID(inn), Tags: []string{"business", "lodging"}},
+			sim.VillageObjectID(store): {ID: sim.VillageObjectID(store), Tags: []string{"business", "shop"}},
+		},
+	}
+	return snap, silenceID, nil
+}
+
+// comfortableWorkerNoSeekWork is the LLM-194 case: the SAME workless worker as
+// workerWithCoinNoEmployerSeeksWork, but holding coin AT/ABOVE the seek-work ceiling
+// (40 >= the default 25). The snapshot is built directly, so SeekWorkCoinCeiling is 0
+// and subjectIsComfortable resolves it to the default — the worker reads as comfortable,
+// so the golden pins that it gets NEITHER the businesses directory NOR the "call move_to
+// now" go-coda: a coin-rich worker stops hustling and is left to idle/consume. The
+// negative counterpart of worker_with_coin_no_employer_seeks_work (same actor, 15 coins,
+// still seeks).
+func comfortableWorkerNoSeekWork() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		silenceID = sim.ActorID("silence")
+		residence = sim.StructureID("walker_residence")
+		inn       = sim.StructureID("inn")
+		store     = sim.StructureID("general_store")
+	)
+	now := 540 // 09:00 — daytime
+	silence := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Silence Walker",
+		State:             sim.StateIdle,
+		InsideStructureID: residence,
+		HomeStructureID:   residence,
+		Coins:             40, // at/above the default seek-work ceiling (25) → comfortable
 		AttributeSlugs:    []string{sim.AttrWorker},
 		Needs:             map[sim.NeedKey]int{},
 	}

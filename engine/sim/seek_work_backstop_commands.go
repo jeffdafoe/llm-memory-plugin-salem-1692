@@ -148,6 +148,39 @@ func EvaluateSeekWorkBackstop(now time.Time) Command {
 	}
 }
 
+// SeekWorkCoinCeilingDefault is the wealth shelf above which a workless worker
+// stops seeking/soliciting work (LLM-194): at or above this coin balance the worker
+// is "comfortable" and reads as a plain idle villager, draining its purse via
+// ordinary eating/drinking until it dips back under the ceiling and re-enters the
+// labor market. Used when WorldSettings.SeekWorkCoinCeiling is unset (<= 0). 25 ≈ a
+// few days of vendor food, but workers forage free berries + drink free at the well,
+// so coins are discretionary, not a survival buffer — this is a "how rich before they
+// chill" feel knob. Live-tunable + persisted via settings/seek-work-ceiling; the read
+// side is GET /settings.
+const SeekWorkCoinCeilingDefault = 25
+
+// effectiveSeekWorkCoinCeiling resolves the configured seek-work coin ceiling,
+// falling back to SeekWorkCoinCeilingDefault when WorldSettings.SeekWorkCoinCeiling is
+// unset (<= 0). A zero ceiling would otherwise read as "every worker is comfortable"
+// (coins >= 0 is always true), suppressing seek-work entirely — so zero means "use the
+// default", mirroring effectiveHuddleLoopSweepCadence's zero-is-default posture. To
+// effectively DISABLE the shelf (restore always-seek), set a very large ceiling.
+func effectiveSeekWorkCoinCeiling(s WorldSettings) int {
+	if s.SeekWorkCoinCeiling > 0 {
+		return s.SeekWorkCoinCeiling
+	}
+	return SeekWorkCoinCeilingDefault
+}
+
+// workerIsComfortable reports whether a worker holds enough coin to stop hustling for
+// work (LLM-194): coins at or above the effective seek-work ceiling. The single
+// sim-side predicate behind the seek-work warrant gate; the perception side mirrors it
+// via subjectIsComfortable reading snap.SeekWorkCoinCeiling (the effective value copied
+// at publish), so the warrant and the directory/affordance cues can't disagree.
+func workerIsComfortable(w *World, a *Actor) bool {
+	return a.Coins >= effectiveSeekWorkCoinCeiling(w.Settings)
+}
+
 // seekWorkEligible reports whether a is a workless, on-shift, awake Worker with
 // no live or pending labor job — the core "has no post to keep but should be
 // finding odd jobs" state. Scope (kind / visitor) is checked by the caller.
@@ -167,6 +200,15 @@ func seekWorkEligible(w *World, a *Actor, now time.Time, nowMinute int) bool {
 	// Coins==0 — a "broke" proxy that left a workless worker holding a few coins,
 	// like the brand-new Walker family, in a dead zone for its whole shift.)
 	if actorHasResolvableWorkplace(w, a) {
+		return false
+	}
+	// LLM-194: a coin-rich worker doesn't need odd jobs. At or above the seek-work
+	// coin ceiling the worker reads as a plain idle villager and drains its purse via
+	// ordinary consumption instead of pestering keepers for work it doesn't need;
+	// it re-enters the labor market once it dips back under the ceiling. Mirrors the
+	// perception directory/affordance gate (subjectIsComfortable) so the warrant and
+	// the cues agree (the LLM-168 warrant/directory-must-agree invariant).
+	if workerIsComfortable(w, a) {
 		return false
 	}
 	// Never nudge a sleeper (the seek-work warrant can't wake one anyway — it is

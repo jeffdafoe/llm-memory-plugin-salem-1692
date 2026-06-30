@@ -74,6 +74,11 @@ type MutableWorldSettings struct {
 	HuddleLoopTimeoutSeconds      int
 	HuddleLoopRepeatPercent       int
 	HuddleLoopSweepCadenceSeconds int
+
+	// SeekWorkCoinCeiling (LLM-194) — the coin balance at/above which a workless
+	// worker stops seeking/soliciting work. Live-tunable via the umbilical, persisted
+	// here each checkpoint so a live change survives restart.
+	SeekWorkCoinCeiling int
 }
 
 // DiscoveredKind is the minimal persist-tuple for an engine-minted item kind
@@ -121,6 +126,7 @@ func (w *World) BuildCheckpointSnapshot() *CheckpointSnapshot {
 			HuddleLoopTimeoutSeconds:      int(w.Settings.HuddleLoopTimeout / time.Second),
 			HuddleLoopRepeatPercent:       w.Settings.HuddleLoopRepeatPercent,
 			HuddleLoopSweepCadenceSeconds: int(w.Settings.HuddleLoopSweepCadence / time.Second),
+			SeekWorkCoinCeiling:           w.Settings.SeekWorkCoinCeiling,
 		},
 	}
 	// ZBBS-WORK-412: carry the engine-minted (unknown-category) item kinds so
