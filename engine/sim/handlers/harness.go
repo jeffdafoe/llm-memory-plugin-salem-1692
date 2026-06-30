@@ -761,7 +761,7 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 				if solicitAttemptedThisTick {
 					observationOnly = false
 					result.ToolsFailedRejected = append(result.ToolsFailedRejected, call.Name)
-					transcript = append(transcript, toolResultMsg(call.ID, "[error: offer_not_placed] your offer to work this turn didn't go through, and repeating it won't change that — offer someone else who can take you on, say a brief word, or call done()."))
+					transcript = append(transcript, toolResultMsg(call.ID, "[error: offer_not_placed] your offer to work this turn didn't go through, and repeating solicit_work won't change that this turn — say a brief word, tend your post, or call done(); you can try a different employer on a later turn."))
 					continue
 				}
 				solicitAttemptedThisTick = true

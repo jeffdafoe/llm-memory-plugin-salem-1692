@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
@@ -29,14 +30,15 @@ func newSolicitRefireHarness(t *testing.T, client llm.Client) (*Harness, *[]stri
 	t.Helper()
 	r := NewRegistry()
 	var log []string
-	// solicit_work: log the dispatch, then fail on the world goroutine. A failed
-	// command is not a success, so terminal-on-success does NOT end the tick — exactly
-	// the live shape where the co-resident gate bounces the offer and the turn rolls on.
+	// solicit_work: log the dispatch, then fail deterministically at the handler. A
+	// handler error is a clean stand-in for any solicit failure (the live cause is the
+	// co-resident gate in sim.SolicitWork) and, unlike a failing command Fn, does not
+	// depend on the minimal test world accepting a commit. The guard keys on the
+	// ATTEMPT, not the cause; a failed attempt is not a success, so terminal-on-success
+	// does NOT end the tick and the turn rolls on to the re-fire.
 	solicit := func(in HandlerInput) (sim.Command, error) {
 		log = append(log, "solicit_work")
-		return sim.Command{Fn: func(*sim.World) (any, error) {
-			return nil, errors.New("you live with them — offer your labor to someone outside your own household")
-		}}, nil
+		return sim.Command{}, errors.New("co-resident gate: offer your labor to someone outside your own household")
 	}
 	if err := r.RegisterCommit("solicit_work", json.RawMessage(`{"type":"object"}`), DecodeSolicitWorkArgs, solicit, true); err != nil {
 		t.Fatalf("register solicit_work: %v", err)
@@ -83,6 +85,23 @@ func TestHarness_SolicitWork_RejectsRefireAfterFailure(t *testing.T) {
 	}
 	if !contains(result.ToolsFailedRejected, "solicit_work") {
 		t.Errorf("ToolsFailedRejected should include the blocked re-solicit, got %v", result.ToolsFailedRejected)
+	}
+	// Lock the steering text the fix puts in front of the model: the rejected
+	// second solicit's tool result carries the offer_not_placed label, which is the
+	// model-facing half of the fix (the guard is the teeth, the steer is the nudge).
+	reqs := client.Requests()
+	if len(reqs) < 3 {
+		t.Fatalf("client calls: got %d, want >= 3 (perception, post-c1, post-c2)", len(reqs))
+	}
+	var c2Content string
+	for _, m := range reqs[2].Messages {
+		if m.Role == llm.RoleTool && m.ToolCallID == "c2" {
+			c2Content = m.Content
+			break
+		}
+	}
+	if !strings.Contains(c2Content, "[error: offer_not_placed]") {
+		t.Errorf("rejected re-solicit should carry the offer_not_placed steer; got %q", c2Content)
 	}
 }
 
