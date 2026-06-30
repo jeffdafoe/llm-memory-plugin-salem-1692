@@ -465,6 +465,16 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 	// redundant, so a name-only flag suffices; the post-success steer in
 	// commitResultContent is the soft half, this guard is the teeth.
 	solicitedThisTick := false
+	// solicitAttemptedThisTick records that this actor has TRIED to solicit work this
+	// tick, success or failure (LLM-195). solicitedThisTick (above) is success-only,
+	// and a successful solicit is terminal-on-success (LLM-180) — so the ONLY way to
+	// reach a second solicit_work in a tick is a FAILED first one, which the
+	// success-only flag never caught. The weak model then re-fires the rejected offer
+	// to the round budget (live: solicit_work x6 to a co-resident "employer", each
+	// bounced by the co-resident gate). Recorded on the first attempt regardless of
+	// outcome, like resolvedLaborThisTick below; a name-only flag, since one work
+	// offer per tick is all that helps whether or not it lands.
+	solicitAttemptedThisTick := false
 	// resolvedLaborThisTick holds the LaborID of every labor offer this actor has
 	// answered this tick as EMPLOYER via accept_work / decline_work. LLM-163 left
 	// these two unguarded on the theory that a re-fire "hits the substrate's
@@ -730,11 +740,31 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 				transcript = append(transcript, toolResultMsg(call.ID, "[error: already_chose] you already chose what to produce this turn — your focus is set and you keep making it until you choose again; do not choose again now, tend your post or call done()."))
 				continue
 			}
-			if vc.Name == "solicit_work" && solicitedThisTick {
-				observationOnly = false
-				result.ToolsFailedRejected = append(result.ToolsFailedRejected, call.Name)
-				transcript = append(transcript, toolResultMsg(call.ID, "[error: already_offered] you already offered your labor this turn — your offer stands; wait for their answer or call done(). Do not offer again."))
-				continue
+			// solicit_work same-tick guard. Two re-fire cases, both observed live:
+			//   - solicitedThisTick: a prior solicit this tick SUCCEEDED. terminal-on-
+			//     success (LLM-180) normally ends the tick before a second call, so this
+			//     arm is belt-and-suspenders — the offer stands, wait for the answer.
+			//   - solicitAttemptedThisTick: a prior solicit this tick FAILED. This is the
+			//     real case (LLM-195) — a successful solicit is terminal, so a second
+			//     solicit is only reachable after a failed first one, which the success-
+			//     only solicitedThisTick flag never recorded. The weak model re-fires the
+			//     bounced offer to the round budget (live: solicit_work x6 to a co-
+			//     resident "employer"). Name-only: varying the reward dodges a byte-
+			//     identical guard, so the cap is one solicit attempt per tick.
+			if vc.Name == "solicit_work" {
+				if solicitedThisTick {
+					observationOnly = false
+					result.ToolsFailedRejected = append(result.ToolsFailedRejected, call.Name)
+					transcript = append(transcript, toolResultMsg(call.ID, "[error: already_offered] you already offered your labor this turn — your offer stands; wait for their answer or call done(). Do not offer again."))
+					continue
+				}
+				if solicitAttemptedThisTick {
+					observationOnly = false
+					result.ToolsFailedRejected = append(result.ToolsFailedRejected, call.Name)
+					transcript = append(transcript, toolResultMsg(call.ID, "[error: offer_not_placed] your offer to work this turn didn't go through, and repeating solicit_work won't change that this turn — say a brief word, tend your post, or call done(); you can try a different employer on a later turn."))
+					continue
+				}
+				solicitAttemptedThisTick = true
 			}
 			// LLM-164: employer-side labor-resolution same-tick guard, the labor
 			// mirror of the resolvedLedgerThisTick guard above (accept_pay family). The
@@ -883,10 +913,11 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 				if vc.Name == craftToolName {
 					craftedThisTick = true
 				}
-				// LLM-163: record a placed labor offer so a second solicit_work this
-				// tick is rejected by the guard above. solicit_work's nil-error result
-				// is always a placed Pending offer (it errors otherwise), so
-				// outcome.success alone is the signal — same posture as gather/craft.
+				// LLM-163: record a SUCCESSFULLY placed labor offer so a second
+				// solicit_work this tick is rejected by the guard above with the "offer
+				// stands" steer. The FAILED-attempt case is handled separately by
+				// solicitAttemptedThisTick (recorded pre-dispatch, LLM-195); this flag
+				// stays success-only so the two arms can give distinct feedback.
 				if vc.Name == "solicit_work" {
 					solicitedThisTick = true
 				}
@@ -1523,8 +1554,9 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 	// offer again" steer is moot — the engine ends the turn for it. Keep the result
 	// purely informational: echo who the offer went to and that they answer on
 	// their turn. (The solicitedThisTick guard stays as belt-and-suspenders for any
-	// caller/path that does not honor terminal policy; errored solicits still do not
-	// set it and remain retryable.)
+	// caller/path that does not honor terminal policy; an errored solicit does not set
+	// it, so it is retryable on a LATER tick — but a second errored solicit WITHIN this
+	// tick is blocked by solicitAttemptedThisTick, LLM-195.)
 	if vc.Name == "solicit_work" {
 		if r, ok := cmdResult.(sim.LaborSolicitResult); ok && r.State == sim.LaborStatePending {
 			return fmt.Sprintf("[ok] Your offer of labor to %s is on the table — they will answer on their turn.", r.EmployerName)
