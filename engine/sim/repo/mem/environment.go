@@ -70,5 +70,17 @@ func (r *EnvironmentRepo) SaveMutableSettings(_ context.Context, _ sim.Tx, ms si
 	r.settings.ZoomMinAdmin = ms.ZoomMinAdmin
 	r.settings.ZoomMinRegular = ms.ZoomMinRegular
 	r.settings.AgentTicksPaused = ms.AgentTicksPaused
+	// Mirror the pg writeback so a mem-backed save→load round-trip matches prod:
+	// the FULL mutable subset, not just zoom/pause. Stall wear (LLM-118) was
+	// missing here; huddle-loop (LLM-183) added alongside. The *_seconds fields are
+	// held as Durations in WorldSettings, so convert back from the snapshot's ints.
+	r.settings.StallWearPerCoin = ms.StallWearPerCoin
+	r.settings.StallWearRepairThreshold = ms.StallWearRepairThreshold
+	r.settings.StallWearDegradeThreshold = ms.StallWearDegradeThreshold
+	r.settings.StallNailsPerRepair = ms.StallNailsPerRepair
+	r.settings.StallRepairDurationSeconds = ms.StallRepairDurationSeconds
+	r.settings.HuddleLoopTimeout = time.Duration(ms.HuddleLoopTimeoutSeconds) * time.Second
+	r.settings.HuddleLoopRepeatPercent = ms.HuddleLoopRepeatPercent
+	r.settings.HuddleLoopSweepCadence = time.Duration(ms.HuddleLoopSweepCadenceSeconds) * time.Second
 	return nil
 }
