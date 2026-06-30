@@ -429,6 +429,22 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 	// See payOfferKey for the keying rationale (price AND qty deliberately
 	// excluded).
 	offeredThisTick := map[string]struct{}{}
+	// paidThisTick holds the dedup key of every bare `pay` this actor has
+	// successfully SETTLED this tick (LLM-202 — the pay analogue of
+	// offeredThisTick). Unlike pay_with_item's offer, a bare pay settles coins
+	// instantly and irreversibly, with no pending ledger row and no "now
+	// pending" signal, so a weak model that re-emits the identical call settles
+	// it a SECOND time (live: John Ellis paid Silence Walker 4 coins twice in one
+	// tick, 8 coins for one verbal arrangement). `pay` carries no resolution id to
+	// key on (it has no ledger), so the key is (recipient, for) — amount excluded,
+	// the same rationale that excludes price from payOfferKey, so a re-fire at a
+	// drifted amount still matches. The `for` text IS in the key so one tick can
+	// still carry two genuinely distinct payments to the same recipient (a wage
+	// and a separate gift); only a repeat of the same (recipient, reason) is the
+	// double-settle. Recorded on SUCCESS like offeredThisTick — a pay that bounced
+	// (insufficient funds, a wrong-channel redirect) moved no coins and stays
+	// retryable.
+	paidThisTick := map[string]struct{}{}
 	// quotedThisTick holds the dedup key of every scene_quote this actor has
 	// successfully POSTED this tick (ZBBS-HOME-433 — the seller-side analogue
 	// of offeredThisTick). Pre-433 a posted quote came back as a bare [ok], so
@@ -678,6 +694,23 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 				}
 			}
 
+			// LLM-202: same-tick repeat-PAY guard — the bare-pay analogue of the
+			// repeat-offer guard above. A bare pay settles coins instantly and
+			// irreversibly with no "now pending" signal, so a weak model that
+			// re-emits the identical call settles it a second time (the live John
+			// Ellis pay×2 double). Reject a second pay for the same (recipient,
+			// reason) this tick model-facing so the coins move once. Recorded on
+			// SUCCESS below (paidThisTick) — a bounced pay moved nothing and stays
+			// retryable. Keyed on (recipient, for) via payDedupKey, amount excluded.
+			if key, isPay := payDedupKey(vc); isPay {
+				if _, dup := paidThisTick[key]; dup {
+					observationOnly = false
+					result.ToolsFailedRejected = append(result.ToolsFailedRejected, call.Name)
+					transcript = append(transcript, toolResultMsg(call.ID, "[error: already_paid] you already paid them for that this turn — the coins have moved; do not pay again, say a word or call done()."))
+					continue
+				}
+			}
+
 			// ZBBS-HOME-433: same-tick repeat-QUOTE guard, the seller-side
 			// analogue of the offer guard above. A posted quote already stands
 			// before the whole scene — re-posting it (at any price) buys
@@ -891,6 +924,13 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 				// may retry the bounced offer.
 				if key, isOffer := payOfferKey(vc); isOffer {
 					offeredThisTick[key] = struct{}{}
+				}
+				// LLM-202: record a settled bare pay so a later round (or a later
+				// call in this same batch) re-paying the same (recipient, reason) is
+				// rejected by the guard above. Success-only, like the offer record —
+				// a bounced pay moved no coins and may be retried.
+				if key, isPay := payDedupKey(vc); isPay {
+					paidThisTick[key] = struct{}{}
 				}
 				// ZBBS-HOME-433: record a posted quote so a later round (or a
 				// later call in this same batch) re-posting the same (item,
@@ -1830,6 +1870,35 @@ func payOfferKey(vc *ValidatedCall) (string, bool) {
 		disposition = "consume"
 	}
 	return seller + "\x00" + item + "\x00" + disposition, true
+}
+
+// payDedupKey returns the same-tick dedup key for a bare `pay` call —
+// normalized (recipient, for) — and true when vc is a pay (LLM-202). The
+// recipient and `for` are normalized exactly as payOfferKey normalizes the
+// seller (lowercase + whitespace-collapse) because the model types free-text
+// that drifts in casing and spacing across rounds. Amount is deliberately
+// excluded — the same rationale that excludes price from payOfferKey: a re-fire
+// at a drifted amount is still the same intended payment and must match. The
+// `for` text IS part of the key so one tick can carry two genuinely distinct
+// payments to the same recipient (a wage and a separate gift); only a repeat of
+// the same (recipient, reason) is the double-settle this guards. An empty `for`
+// keys cleanly (two bare same-recipient pays with no stated reason are a
+// double). Not a resolution-id key like ledgerResolutionID — a bare pay has no
+// ledger to key on.
+func payDedupKey(vc *ValidatedCall) (string, bool) {
+	if vc == nil || vc.Name != "pay" {
+		return "", false
+	}
+	args, ok := vc.DecodedArgs.(PayArgs)
+	if !ok {
+		return "", false
+	}
+	recipient := strings.ToLower(strings.Join(strings.Fields(args.Recipient), " "))
+	if recipient == "" {
+		return "", false
+	}
+	forText := strings.ToLower(strings.Join(strings.Fields(args.For), " "))
+	return recipient + "\x00" + forText, true
 }
 
 // sceneQuoteKey returns the same-tick repeat-QUOTE dedup key for a scene_quote

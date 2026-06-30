@@ -110,15 +110,17 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 
 	// LLM-26: the standing labor views, scanned from snap.LaborLedger every
 	// tick (same posture as PayOffersForMe). LaborOffersForMe is the employer's
-	// pending-offer decision view; Laboring is the worker's own in-progress
-	// job. Built before buildWarrantActorNames so the worker/employer names
-	// they reference resolve in render.
+	// pending-offer decision view; WorkersForMe is the employer's in-progress
+	// jobs (LLM-202); Laboring is the worker's own in-progress job. Built before
+	// buildWarrantActorNames so the worker/employer names they reference resolve
+	// in render.
 	p.LaborOffersForMe = buildLaborOffersForMe(snap, actorID)
+	p.WorkersForMe = buildWorkersForMe(snap, actorID)
 	p.Laboring = buildLaboring(snap, actorID)
 	p.PendingLaborOfferOut = buildPendingLaborOfferOut(snap, actorID)
 
 	p.Actor = buildActorView(snap, actorSnap)
-	p.WarrantActorNames = buildWarrantActorNames(snap, actorSnap, actorID, p.Warrants, p.PayOffersForMe, p.LaborOffersForMe, p.Laboring, p.PendingLaborOfferOut)
+	p.WarrantActorNames = buildWarrantActorNames(snap, actorSnap, actorID, p.Warrants, p.PayOffersForMe, p.LaborOffersForMe, p.WorkersForMe, p.Laboring, p.PendingLaborOfferOut)
 	p.WarrantPlaceNames = buildWarrantPlaceNames(snap, p.Warrants)
 	p.EatHereKinds = buildEatHereKinds(snap)
 	p.Surroundings = buildSurroundings(snap, actorID, actorSnap)
@@ -1414,7 +1416,7 @@ func customerProducedGoods(snap *sim.Snapshot, customer sim.ActorID, goods []Off
 // UUID into the "## What just happened" lines (ZBBS-HOME-339). The subject's
 // own ID is excluded — Render resolves self to "you". Returns nil when no
 // warrant references another actor (the common single-actor tick).
-func buildWarrantActorNames(snap *sim.Snapshot, subject *sim.ActorSnapshot, subjectID sim.ActorID, warrants []sim.WarrantMeta, payOffers []sim.PayOfferWarrantReason, laborOffers []LaborOfferView, laboring *LaboringView, pendingLaborOut *PendingLaborOfferOutView) map[sim.ActorID]string {
+func buildWarrantActorNames(snap *sim.Snapshot, subject *sim.ActorSnapshot, subjectID sim.ActorID, warrants []sim.WarrantMeta, payOffers []sim.PayOfferWarrantReason, laborOffers []LaborOfferView, workersForMe []WorkerForMeView, laboring *LaboringView, pendingLaborOut *PendingLaborOfferOutView) map[sim.ActorID]string {
 	var names map[sim.ActorID]string
 	add := func(id sim.ActorID) {
 		if id == "" || id == subjectID {
@@ -1469,6 +1471,12 @@ func buildWarrantActorNames(snap *sim.Snapshot, subject *sim.ActorSnapshot, subj
 	// employer I'm working for (Laboring) — so their labels must resolve here
 	// too, else render falls back to "someone."
 	for _, o := range laborOffers {
+		add(o.Worker)
+	}
+	// LLM-202: the employer's active-job view (WorkersForMe) renders its workers
+	// on ticks carrying no warrant — the standing "who's working for you" cue — so
+	// their labels must resolve here too, else render falls back to "someone."
+	for _, o := range workersForMe {
 		add(o.Worker)
 	}
 	if laboring != nil {
@@ -3166,6 +3174,41 @@ func buildLaboring(snap *sim.Snapshot, subject sim.ActorID) *LaboringView {
 		return nil
 	}
 	return &LaboringView{Employer: best.EmployerID, Until: *best.WorkingUntil}
+}
+
+// buildWorkersForMe scans snap.LaborLedger for the Working offers where the
+// subject is the EMPLOYER, projecting each to a WorkerForMeView for the
+// "## Workers currently working for you" cue (LLM-202) — the employer-side
+// mirror of buildLaboring. Unlike a worker (at most one live job), an employer
+// can have several workers at once (John Ellis hired two), so this is a list,
+// ordered by LaborID ascending for a stable render. Returns nil when no one is
+// working for the subject. A Working offer with a nil WorkingUntil is skipped
+// defensively — AcceptWork always sets it on the flip to Working.
+func buildWorkersForMe(snap *sim.Snapshot, subject sim.ActorID) []WorkerForMeView {
+	if snap == nil || len(snap.LaborLedger) == 0 {
+		return nil
+	}
+	var ids []sim.LaborID
+	for id, o := range snap.LaborLedger {
+		if o == nil || o.State != sim.LaborStateWorking || o.EmployerID != subject || o.WorkingUntil == nil {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	out := make([]WorkerForMeView, 0, len(ids))
+	for _, id := range ids {
+		o := snap.LaborLedger[id]
+		out = append(out, WorkerForMeView{
+			Worker: o.WorkerID,
+			Reward: o.Reward,
+			Until:  *o.WorkingUntil,
+		})
+	}
+	return out
 }
 
 // buildPendingLaborOfferOut scans snap.LaborLedger for a Pending offer where the

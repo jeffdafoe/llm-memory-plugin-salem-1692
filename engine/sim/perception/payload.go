@@ -366,6 +366,18 @@ type Payload struct {
 	// nil when nothing is pending. Ordered by LaborID ascending. LLM-26.
 	LaborOffersForMe []LaborOfferView
 
+	// WorkersForMe lists the subject's IN-PROGRESS jobs as EMPLOYER — Working
+	// LaborOffers where EmployerID == subject — the employer-side mirror of the
+	// worker's Laboring self-state (LLM-202). Without it the employer has only the
+	// pending-decision view (LaborOffersForMe) and nothing telling them a job is
+	// already underway, so they re-hire a second body for work already covered
+	// (live: John Ellis booked Patience for serving ale ~30 min into Silence's
+	// still-running contract for the same). Drives the "## Workers currently
+	// working for you" cue (renderWorkersForMe). Sourced from snap.LaborLedger
+	// every tick, same standing-view posture as LaborOffersForMe. nil when no one
+	// is working for the subject. Ordered by LaborID ascending. LLM-202.
+	WorkersForMe []WorkerForMeView
+
 	// Laboring is non-nil when the subject is a WORKER currently fulfilling an
 	// accepted job (a Working LaborOffer where WorkerID == subject). It carries
 	// the employer and the completion deadline so the self-state line can say
@@ -722,6 +734,18 @@ type LaborOfferView struct {
 type LaboringView struct {
 	Employer sim.ActorID
 	Until    time.Time
+}
+
+// WorkerForMeView carries one of the subject's in-progress jobs as EMPLOYER for
+// the "## Workers currently working for you" cue (LLM-202) — the employer-side
+// mirror of LaboringView. Worker is who's doing the job, Reward the coins owed
+// on completion, Until the work-window deadline so the line can say "about N
+// minutes left." The employer pays nothing until then (settle-at-completion),
+// so this is purely a "the job is covered, don't re-hire or pay again" signal.
+type WorkerForMeView struct {
+	Worker sim.ActorID
+	Reward int
+	Until  time.Time
 }
 
 // PendingLaborOfferOutView carries the subject's OWN outgoing labor offer that

@@ -207,6 +207,47 @@ func Pay(buyerID ActorID, recipientName string, amount int, forText string, at t
 				)
 			}
 
+			// LLM-202: keep labor compensation out of the bare-pay channel. A labor
+			// offer (solicit_work / accept_work) settles its reward at completion
+			// through the labor sweep, so a separate pay between the same pair
+			// double-compensates the one job — the live John Ellis / Silence Walker
+			// case (8 coins paid by hand up front AND a 2-coin labor contract booked
+			// on top). The pair-state is the signal, deterministically: a live
+			// (pending or working) labor offer between the two in either direction
+			// blocks any bare pay between them. forText is deliberately NOT consulted
+			// — "helping with serving ale" is not a labor token and parsing free text
+			// for work-intent is brittle; the standing arrangement is the fact.
+			if lo := activeLaborBetween(w, buyerID, sellerID, at); lo != nil {
+				unit := "coins"
+				if lo.Reward == 1 {
+					unit = "coin"
+				}
+				switch {
+				case lo.EmployerID == buyerID && lo.WorkerID == sellerID && lo.State == LaborStateWorking:
+					// The dominant, live case: the employer is paying their own worker
+					// who is mid-contract. Name the worker (the seller) accurately.
+					return nil, fmt.Errorf(
+						"%s is working a job for you right now (%d %s, paid when the work is done) — don't pay separately; the reward settles on its own as they finish. Say a word and let them work.",
+						seller.DisplayName, lo.Reward, unit,
+					)
+				case lo.EmployerID == buyerID && lo.WorkerID == sellerID:
+					// Pending offer and the buyer is the employer who should book it,
+					// not pay by hand.
+					return nil, fmt.Errorf(
+						"%s has offered to work for you for %d %s — that reward pays when the job's done, so don't pay by hand (it would compensate the same work twice). Accept the offer with accept_work to set them working, or talk terms first.",
+						seller.DisplayName, lo.Reward, unit,
+					)
+				default:
+					// Any other direction (notably the worker paying their own
+					// employer — the LLM-164 "paid while waiting" shape). Role-neutral
+					// copy that doesn't assert who works for whom.
+					return nil, fmt.Errorf(
+						"you and %s already have a work arrangement in play (%d %s) — don't settle it with a bare pay; labor pays out on its own when the job's done.",
+						seller.DisplayName, lo.Reward, unit,
+					)
+				}
+			}
+
 			if buyer.Coins < amount {
 				return nil, fmt.Errorf(
 					"insufficient coins (have %d, need %d) — agree on a lower amount before paying.",
