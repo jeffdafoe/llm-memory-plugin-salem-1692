@@ -1046,6 +1046,36 @@ func actorCanReactNow(w *World, a *Actor, now time.Time) (eligible bool, stale b
 		!hasPCSpeechWarrant(a.Warrants) {
 		return false, false
 	}
+	// A live labor job (StateLaboring + a LaboringUntil window, LLM-190) shelves
+	// the tick the same way a source activity does. The worker took on a 2–8h job
+	// and is occupied with it — it should be getting the work done, not drawing a
+	// fresh full-context tick every time the huddle it struck the deal in stays
+	// noisy. Left un-shelved, a hired worker sits in the conversation re-announcing
+	// "I'll finish the job first" for the whole window, one LLM tick per line (the
+	// live LLM-190 Blacksmith babble — the cost this targets). The standing "You
+	// are working a job … stay with it until it's done" perception line
+	// (render.go) is the busy-state cue that lets it answer the high-value
+	// interrupts below WITHOUT abandoning the job. EXCEPT the same interrupts that
+	// cut a break / source activity short — a red-tier hunger/thirst need (a
+	// starving worker may break off to eat; a red-TIREDNESS warrant deliberately
+	// does NOT, the same posture as a break, and the shift-end clamp keeps a job
+	// from running into the worker's own bedtime), an operator nudge, or a PC
+	// speaking to it (a player gets a reply). NPC chatter / arrivals / idle still
+	// shelve. Gate on the LaboringUntil window ALONE, NOT the StateLaboring enum:
+	// the mirror window is the authoritative busy signal here, and a stranded
+	// StateLaboring with a nil/elapsed window (a missed settle, or a checkpoint
+	// reload before reconcileStrandedLaboringOnLoad runs) must stay tickable so it
+	// can recover, not be shelved forever (code_review). AcceptWork sets State +
+	// LaboringUntil together and the sweep clears them together, so in the live
+	// happy path the window tracks the job exactly; once it elapses the worker
+	// ticks again even in the ≤1-cadence gap before the settle formally lands.
+	laboring := a.LaboringUntil != nil && a.LaboringUntil.After(now)
+	if laboring &&
+		!hasBreakInterruptingNeedWarrant(a.Warrants) &&
+		!hasOperatorNudgeWarrant(a.Warrants) &&
+		!hasPCSpeechWarrant(a.Warrants) {
+		return false, false
+	}
 	// A scheduled break (StateResting / BreakUntil) shelves the tick too — EXCEPT
 	// a red-tier hunger/thirst need warrant (ZBBS-HOME-329 #3; a red-TIREDNESS
 	// warrant does NOT, because a break recovers tiredness — interrupting it

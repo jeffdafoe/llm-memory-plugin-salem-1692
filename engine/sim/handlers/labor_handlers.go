@@ -45,7 +45,7 @@ const MaxLaborEmployerNameChars = 100
 // Schema-enforced constraints:
 //   - employer:         minLength 1, maxLength MaxLaborEmployerNameChars
 //   - reward:           integer, minimum MinLaborReward, maximum math.MaxInt32
-//   - duration_minutes: integer, minimum 1, maximum MaxLaborDurationMinutes
+//   - duration_minutes: integer, minimum MinLaborDurationMinutes, maximum MaxLaborDurationMinutes
 type SolicitWorkArgs struct {
 	Employer        string `json:"employer"`
 	Reward          int    `json:"reward"`
@@ -69,9 +69,9 @@ var solicitWorkSchema = json.RawMessage(`{
         },
         "duration_minutes": {
             "type": "integer",
-            "minimum": 1,
-            "maximum": 240,
-            "description": "How many minutes the work will take. You are occupied for this long once they accept."
+            "minimum": 120,
+            "maximum": 480,
+            "description": "How long the job takes, in minutes. Pick a full stretch of work: 120 (2 hours), 240 (4 hours), 360 (6 hours), or 480 (8 hours). You are occupied for this whole time once they accept, and you cannot work past the employer's closing time."
         }
     },
     "required": ["employer", "reward", "duration_minutes"],
@@ -79,9 +79,9 @@ var solicitWorkSchema = json.RawMessage(`{
 }`)
 
 const solicitWorkDescription = "Offer to do a job for another villager in your current conversation, for pay. " +
-	"You set who you'll work for (employer), the coins you want (reward), and how long it takes (duration_minutes). " +
+	"You set who you'll work for (employer), the coins you want (reward), and how long it takes (duration_minutes — a real stretch of work: 2, 4, 6, or 8 hours). " +
 	"This creates a pending offer they must accept or decline. " +
-	"On accept you're paid when the work finishes and you're occupied for the duration. " +
+	"On accept you're paid when the work finishes, and you're occupied with the job the whole time — you get on with it rather than standing about talking. " +
 	"What the work actually is, and any back-and-forth on terms, is up to your conversation — re-offer with new terms if they want something different."
 
 // DecodeSolicitWorkArgs parses raw tool-call arguments into a

@@ -211,6 +211,11 @@ func settleCompletedLabor(w *World, offer *LaborOffer, now time.Time) {
 	employer.Coins -= offer.Reward
 	worker.Coins += offer.Reward
 	finalizeLaborTerminal(w, offer, LaborTerminalStateCompleted, true, now)
+	// LLM-190: if the job ran up to the keeper's closing time (the employer is an
+	// establishment keeper now off shift), the keeper announces the close-out —
+	// "we're shut, your work's done, here's your pay." A job that finished
+	// mid-shift completes silently.
+	announceLaborCloseoutIfShopClosed(w, employer, worker, offer.Reward, now)
 }
 
 // reconcileStrandedLaboringOnLoad frees an actor that was checkpointed mid-job
