@@ -5,14 +5,25 @@ package handlers
 // opt-in-piecewise + composite pattern as register_pay_with_item.go.
 
 // RegisterSolicitWork adds the solicit_work tool to r as a ClassCommit
-// entry. Non-terminal — a worker can chain speak after offering.
+// entry.
+//
+// terminalOnSuccess is TRUE (LLM-180): a placed labor offer ends the tick.
+// Posting a solicitation is instant and there is nothing useful to do with it
+// this tick — the offer stands until the employer answers on THEIR turn — so a
+// second solicit is a guaranteed no-op (the solicitedThisTick guard rejects it)
+// and a chained speak is the re-pitch the storm was made of. Ending the tick
+// here kills at the source the within-tick re-fire loop a weak model fell into
+// (solicit_work x6 to the round budget, observed live) — mirrors gather
+// (LLM-175) and move_to. The worker still announces BEFORE offering (speak is
+// non-terminal: speak, then solicit ends the tick); only the courtesy word
+// AFTER is dropped, and that was the re-pitch vector.
 func RegisterSolicitWork(r *Registry) error {
 	return r.RegisterCommit(
 		"solicit_work",
 		solicitWorkSchema,
 		DecodeSolicitWorkArgs,
 		HandleSolicitWork,
-		false, // non-terminal: offering is a within-tick step
+		true, // terminal: a placed labor offer ends the tick (LLM-180)
 		WithDescription(solicitWorkDescription),
 	)
 }

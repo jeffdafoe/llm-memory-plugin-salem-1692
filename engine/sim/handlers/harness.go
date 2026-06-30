@@ -1509,14 +1509,16 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 			return "[ok]" + clampNote
 		}
 	}
-	// solicit_work (LLM-163): a placed labor offer returned a bare [ok], so the
-	// weak worker model — still reading the "offer your labor" affordance — re-
-	// fired solicit_work to the iteration budget (the carrot/bread storm, third
-	// time: see offeredThisTick / quotedThisTick). Echo who the offer went to and
-	// steer to wait + done(); the solicitedThisTick guard is the teeth.
+	// solicit_work (LLM-163 → LLM-180): a placed labor offer is now tick-terminal
+	// (RegisterSolicitWork), so the old "say a brief word, then call done(), do not
+	// offer again" steer is moot — the engine ends the turn for it. Keep the result
+	// purely informational: echo who the offer went to and that they answer on
+	// their turn. (The solicitedThisTick guard stays as belt-and-suspenders for any
+	// caller/path that does not honor terminal policy; errored solicits still do not
+	// set it and remain retryable.)
 	if vc.Name == "solicit_work" {
 		if r, ok := cmdResult.(sim.LaborSolicitResult); ok && r.State == sim.LaborStatePending {
-			return fmt.Sprintf("[ok] Your offer of labor to %s is on the table — wait for their answer. Say a brief word if you like, then call done(). Do not offer again.", r.EmployerName)
+			return fmt.Sprintf("[ok] Your offer of labor to %s is on the table — they will answer on their turn.", r.EmployerName)
 		}
 	}
 	// accept_work (LLM-163): on a real accept the offer flips Working and the

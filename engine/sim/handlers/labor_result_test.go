@@ -22,7 +22,7 @@ func TestCommitResultContent_LaborSteers(t *testing.T) {
 			name:   "solicit_work pending → offer-on-the-table steer",
 			vc:     ValidatedCall{Name: "solicit_work"},
 			result: sim.LaborSolicitResult{State: sim.LaborStatePending, EmployerName: "Hannah Boggs"},
-			want:   "[ok] Your offer of labor to Hannah Boggs is on the table — wait for their answer. Say a brief word if you like, then call done(). Do not offer again.",
+			want:   "[ok] Your offer of labor to Hannah Boggs is on the table — they will answer on their turn.",
 		},
 		{
 			name:   "accept_work working → hired + handover steer",
