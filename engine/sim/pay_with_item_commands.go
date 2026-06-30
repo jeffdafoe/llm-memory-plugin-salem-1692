@@ -392,6 +392,25 @@ func PayWithItem(
 				)
 			}
 
+			// LLM-189: reverse-pay role-gate. A seller must not fire the
+			// buyer verb (pay_with_item, or offer_trade which lowers onto
+			// this command) at the very counterparty she is selling THIS
+			// item to — that mints a phantom reverse-direction offer. The
+			// live Prudence→Anne blueberry inversion: Prudence held a
+			// standing blueberry quote to Anne AND had just sold her 5, yet
+			// named Anne as "seller" and staked a mirror offer Anne could
+			// never fill, deadlocking the huddle. A seller consummates a
+			// sale via accept_pay, never by buying her own goods back. Reject
+			// at dispatch — the substrate stays authoritative; closing the
+			// taken quote (runPayWithItemFastPath) thins the perception cue
+			// that lured the model here, and this is the hard backstop.
+			if callerSellsItemTo(w, buyerID, sellerID, kind, sceneID, buyer.CurrentHuddleID, at) {
+				return nil, fmt.Errorf(
+					"you're the one selling %s to %s here — you don't buy it back. Wait for them to pay you, or use accept_pay to settle their offer.",
+					kind, seller.DisplayName,
+				)
+			}
+
 			// ZBBS-WORK-403: a purchase of a non-portable consumable always
 			// settles eat-here, clamped HERE on the world goroutine so
 			// it holds regardless of what the client sent — a failed catalog
@@ -1100,6 +1119,18 @@ func runPayWithItemFastPath(
 	entry.RootEventID = evt.RootEventID()
 	entry.SourceEventID = evt.EventID()
 
+	// LLM-189: close the quote. A take is whole-lot (the exact-qty
+	// predicates above passed), so this quote's lot is now sold — flip it
+	// to the Taken terminal so it stops rendering as a phantom "standing"
+	// offer in the seller's perception (buildStandingQuotesFromMe filters
+	// on Active) and can't be auto-matched / explicitly taken again. Both
+	// fast-path entries — explicit quote_id and the slow-path auto-match —
+	// route through here, so this single site covers both. Mirrors the
+	// sweep/supersede terminal transition (flipQuoteTerminal handles the
+	// scene-index removal + audit event; SceneQuoteExpired has no
+	// subscribers, so the emit is trace-only).
+	flipQuoteTerminal(w, w.Scenes[quote.SceneID], quote, SceneQuoteStateTaken, SceneQuoteExpiredReasonTaken, at)
+
 	return PayWithItemResult{
 		LedgerID:        id,
 		State:           PayLedgerStateAccepted,
@@ -1673,6 +1704,67 @@ func WithdrawPay(callerID ActorID, ledgerID LedgerID, message string, at time.Ti
 }
 
 // ---- shared helpers --------------------------------------------------
+
+// callerSellsItemTo reports whether `caller` is, in this huddle/scene, the
+// SELLER of `kind` to `counterparty` — the signal the reverse-pay role-gate
+// (LLM-189) rejects a pay_with_item on. Two arms, either sufficient:
+//
+//   - an ACTIVE sell quote the caller posted that is visible to the
+//     counterparty (public, or targeted at them) in this scene and offers
+//     `kind` (matched against any bundle line); or
+//   - an ACCEPTED sale in the CURRENT huddle where the caller was the seller
+//     and the counterparty the buyer of `kind` (the just-closed deal the
+//     model misreads as still open and tries to "settle" with the buyer
+//     verb).
+//
+// Item-scoped on purpose: a vendor legitimately buys OTHER goods, or buys
+// `kind` from someone she isn't selling it to, so the gate fires only on the
+// exact same-item, same-counterparty inversion. Huddle-scoping arm 2 bounds
+// it to the active conversation without a recency constant.
+func callerSellsItemTo(
+	w *World,
+	caller, counterparty ActorID,
+	kind ItemKind,
+	sceneID SceneID,
+	huddleID HuddleID,
+	at time.Time,
+) bool {
+	// Arm 1: an active sell quote from caller, visible to counterparty,
+	// offering this item in this scene.
+	for _, q := range w.Quotes {
+		if q == nil || q.State != SceneQuoteStateActive {
+			continue
+		}
+		if q.SellerID != caller || q.SceneID != sceneID {
+			continue
+		}
+		if !q.ExpiresAt.IsZero() && !at.Before(q.ExpiresAt) {
+			continue
+		}
+		if q.TargetBuyer != "" && q.TargetBuyer != counterparty {
+			continue
+		}
+		for _, line := range q.Lines {
+			if line.ItemKind == kind {
+				return true
+			}
+		}
+	}
+	// Arm 2: an accepted sale of this item from caller to counterparty in the
+	// current huddle.
+	if huddleID != "" {
+		for _, e := range w.PayLedger {
+			if e == nil || e.State != PayLedgerStateAccepted {
+				continue
+			}
+			if e.SellerID == caller && e.BuyerID == counterparty &&
+				e.ItemKind == kind && e.HuddleID == huddleID {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 // findAutoMatchQuote returns the id of an open quote a bare (quote_id-less)
 // coin offer can take — same seller, same scene, buyer-eligible, exact term

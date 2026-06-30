@@ -470,6 +470,64 @@ var perceptionScenarios = []perceptionScenario{
 			"flat inventory read as a meal again.",
 		build: hungryActorHoldingRawMeat,
 	},
+	{
+		name: "seller_with_taken_quote_at_post",
+		summary: "A vendor (Prudence Ward) at her post has just SOLD one lot — its quote is now " +
+			"SceneQuoteStateTaken — while a second lot stays on offer (the live LLM-189 case). The golden pins that " +
+			"'## Offers you've put out' lists ONLY the still-active lot (raspberries); the taken lot (blueberries) is " +
+			"gone, not shown as 'they have yet to answer'. Reverting the close-on-take fix would make the sold lot " +
+			"reappear in the diff — the phantom standing offer that lured the live seller into firing pay_with_item at " +
+			"her own buyer. The reverse-pay dispatch gate itself is pinned by the sim-package handler tests.",
+		build: sellerWithTakenQuoteAtPost,
+	},
+}
+
+// sellerWithTakenQuoteAtPost is the LLM-189 perception regression fixture: a
+// stateful vendor who just sold a lot (quote flipped to SceneQuoteStateTaken)
+// while another lot stays active. The golden proves the taken lot drops out of
+// "## Offers you've put out" and only the active lot renders.
+func sellerWithTakenQuoteAtPost() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		prudenceID = sim.ActorID("prudence")
+		anneID     = sim.ActorID("anne")
+		apothecary = sim.StructureID("apothecary")
+	)
+	now := 600 // 10:00
+	active := &sim.SceneQuote{
+		ID: 1, SellerID: prudenceID, TargetBuyer: anneID,
+		Lines: []sim.QuoteLine{{ItemKind: "raspberries", Qty: 5}}, Amount: 10,
+		State: sim.SceneQuoteStateActive,
+	}
+	taken := &sim.SceneQuote{
+		ID: 2, SellerID: prudenceID, TargetBuyer: anneID,
+		Lines: []sim.QuoteLine{{ItemKind: "blueberries", Qty: 5}}, Amount: 10,
+		State: sim.SceneQuoteStateTaken,
+	}
+	prudence := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Prudence Ward",
+		Role:              "apothecary",
+		State:             sim.StateIdle,
+		InsideStructureID: apothecary,
+		WorkStructureID:   apothecary,
+		Coins:             30,
+		Needs:             map[sim.NeedKey]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"Anne": {}},
+	}
+	anne := &sim.ActorSnapshot{
+		Kind: sim.KindNPCShared, DisplayName: "Anne", Role: "traveler", Needs: map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{prudenceID: prudence, anneID: anne},
+		Quotes:           map[sim.QuoteID]*sim.SceneQuote{1: active, 2: taken},
+		PayLedger:        map[sim.LedgerID]*sim.PayLedgerEntry{},
+		Scenes:           map[sim.SceneID]*sim.Scene{},
+		Huddles:          map[sim.HuddleID]*sim.Huddle{},
+		Structures:       map[sim.StructureID]*sim.Structure{apothecary: plainStructure(apothecary, "PW Apothecary")},
+	}
+	return snap, prudenceID, nil
 }
 
 // lodgerGoldenBase builds the shared LLM-127 lodging-gate fixture: Ezekiel Crane,

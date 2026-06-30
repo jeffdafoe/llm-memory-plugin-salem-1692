@@ -82,6 +82,24 @@ func TestBuildStandingQuotesFromMe_FiltersForeignTerminalAndBuyerSubject(t *test
 	}
 }
 
+// LLM-189: a quote taken via the fast path flips to the terminal
+// SceneQuoteStateTaken, so it drops out of "## Offers you've put out" while a
+// separate still-active quote stays. Pins the live Prudence regression — a
+// just-sold quote kept rendering as a phantom standing offer ("they have yet
+// to answer"), luring the seller into firing the buyer verb at her own customer.
+func TestBuildStandingQuotesFromMe_TakenQuoteExcluded(t *testing.T) {
+	taken := activeQuote(7, "john", "jefferey", "stew", 1, 4)
+	taken.State = sim.SceneQuoteStateTaken
+	snap := quoteSnap(map[sim.QuoteID]*sim.SceneQuote{
+		1: activeQuote(1, "john", "jefferey", "nights_stay", 1, 4), // still standing
+		7: taken,                                                   // just sold
+	})
+	views := buildStandingQuotesFromMe(snap, "john", snap.Actors["john"])
+	if len(views) != 1 || views[0].QuoteID != 1 {
+		t.Fatalf("views = %+v, want only the active quote 1 (taken quote 7 excluded)", views)
+	}
+}
+
 // An unacquainted targeted buyer renders as a role descriptor, not a name.
 func TestBuildStandingQuotesFromMe_UnacquaintedBuyerGetsDescriptor(t *testing.T) {
 	snap := quoteSnap(map[sim.QuoteID]*sim.SceneQuote{
