@@ -347,6 +347,10 @@ func HuddleConversationLooping(s WorldSettings, h *Huddle, now time.Time) bool {
 	return huddleConversationLooping(s, h, now)
 }
 
+// HuddlePCAttended exposes the LLM-185 player-attendance predicate (a PC spoke
+// within huddlePCAttentionWindow) for direct predicate tests.
+func HuddlePCAttended(h *Huddle, now time.Time) bool { return huddlePCAttended(h, now) }
+
 // HuddleLoopContentPresent exposes the DURABLE loop condition (LLM-170) — repetitive
 // + progress-free, NOT recency-gated — for direct predicate tests.
 func HuddleLoopContentPresent(s WorldSettings, h *Huddle) bool {

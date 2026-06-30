@@ -73,6 +73,17 @@ type Huddle struct {
 	// conversation going quiet clears it. The sweep concludes the huddle once the
 	// spell has persisted HuddleLoopTimeout. In-memory only, not checkpointed.
 	LoopingSince *time.Time
+
+	// LastPCUtteranceAt is the wall-clock time a PLAYER (KindPC) member last spoke
+	// in this huddle. The loop sweep + the per-tick ConversationLooping steer
+	// (LLM-185) treat the huddle as player-attended while now-LastPCUtteranceAt is
+	// within huddlePCAttentionWindow and skip concluding/steering it, so an active
+	// player conversation is never broken. Gating on a PC's recent SPEECH rather
+	// than mere PC membership is deliberate: a PC parked-and-silent at a hub (the
+	// tavern) must NOT permanently exempt that huddle, or NPC loops there would
+	// never be swept. Zero until a PC speaks. In-memory only, not checkpointed —
+	// same transient posture as LastActivityAt.
+	LastPCUtteranceAt time.Time
 }
 
 // Utterance is one spoken line recorded in a Huddle's RecentUtterances ring.

@@ -245,6 +245,13 @@ func SpeakTo(speakerID ActorID, text, to string, mentions []SpeakMention, hasNew
 						// conversation is alive" signal — reset the silence
 						// sweep's dormancy clock.
 						h.LastActivityAt = at
+						// LLM-185: a player's own line marks the huddle as
+						// player-attended, exempting it from the loop sweep + the
+						// ConversationLooping steer for huddlePCAttentionWindow so an
+						// active conversation isn't concluded or nudged to wrap up.
+						if actor.Kind == KindPC {
+							h.LastPCUtteranceAt = at
+						}
 					}
 				}
 			}

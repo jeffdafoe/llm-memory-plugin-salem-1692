@@ -230,6 +230,143 @@ func TestRepublish_ConversationLoopingFlag(t *testing.T) {
 	}
 }
 
+// setHuddlePCUtterance stamps a huddle's LastPCUtteranceAt directly on the world
+// goroutine (LLM-185), simulating a player's spoken line without a full PC speak.
+func setHuddlePCUtterance(t *testing.T, w *sim.World, id sim.HuddleID, at time.Time) {
+	t.Helper()
+	sendT(t, w, sim.Command{Fn: func(world *sim.World) (any, error) {
+		h, ok := world.Huddles[id]
+		if !ok {
+			t.Fatalf("huddle %q not found when stamping PC utterance", id)
+		}
+		h.LastPCUtteranceAt = at
+		return nil, nil
+	}})
+}
+
+// TestHuddlePCAttended_Predicate (LLM-185) pins the attendance window: zero =
+// never spoke, a recent PC line = attended, a stale one = not, and a negative age
+// (out-of-order clock) reads as not-attended.
+func TestHuddlePCAttended_Predicate(t *testing.T) {
+	now := time.Now().UTC()
+	if sim.HuddlePCAttended(&sim.Huddle{}, now) {
+		t.Error("a zero LastPCUtteranceAt must read as not-attended")
+	}
+	if !sim.HuddlePCAttended(&sim.Huddle{LastPCUtteranceAt: now.Add(-30 * time.Second)}, now) {
+		t.Error("a PC line 30s ago must read as attended")
+	}
+	if sim.HuddlePCAttended(&sim.Huddle{LastPCUtteranceAt: now.Add(-10 * time.Minute)}, now) {
+		t.Error("a PC line 10m ago is past the window — not attended")
+	}
+	if sim.HuddlePCAttended(&sim.Huddle{LastPCUtteranceAt: now.Add(time.Minute)}, now) {
+		t.Error("a negative age (out-of-order clock) must read as not-attended")
+	}
+}
+
+// TestHuddleLoopSweep_SparesPlayerAttended (LLM-185): a huddle a player spoke in
+// recently is an active human conversation — the sweep must not conclude it even
+// when the loop has otherwise persisted past the timeout, and it clears the spell.
+func TestHuddleLoopSweep_SparesPlayerAttended(t *testing.T) {
+	w, cancel := buildHuddleTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	h := sendT(t, w, sim.JoinHuddle("alice", "tavern", "", now)).(sim.JoinHuddleResult).HuddleID
+	sendT(t, w, sim.JoinHuddle("bob", "tavern", "", now))
+	enableLoopSweep(t, w, 2*time.Minute, 60)
+
+	onset := now.Add(-3 * time.Minute)          // already past the timeout
+	staleProgress := now.Add(-10 * time.Minute) // progress older than the ring
+	setHuddleLoopState(t, w, h, loopingLines(now), &onset, staleProgress)
+	setHuddlePCUtterance(t, w, h, now.Add(-30*time.Second)) // a player spoke 30s ago
+
+	sendT(t, w, sim.EvaluateHuddleLoopSweep(now))
+	if huddleConcludedAt(t, w, h) != nil {
+		t.Error("a player-attended huddle must not be concluded even past the timeout")
+	}
+	if huddleLoopingSince(t, w, h) != nil {
+		t.Error("an attended huddle should have its loop spell cleared (restarts fresh once the player goes quiet)")
+	}
+}
+
+// TestHuddleLoopSweep_ConcludesWhenPlayerSilent (LLM-185) is the tavern-immunity
+// guard: a PC parked at the structure but whose last line is well past the
+// attention window does NOT shield the NPC loop — the sweep still concludes it.
+func TestHuddleLoopSweep_ConcludesWhenPlayerSilent(t *testing.T) {
+	w, cancel := buildHuddleTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	h := sendT(t, w, sim.JoinHuddle("alice", "tavern", "", now)).(sim.JoinHuddleResult).HuddleID
+	sendT(t, w, sim.JoinHuddle("bob", "tavern", "", now))
+	enableLoopSweep(t, w, 2*time.Minute, 60)
+
+	onset := now.Add(-3 * time.Minute)
+	staleProgress := now.Add(-10 * time.Minute)
+	setHuddleLoopState(t, w, h, loopingLines(now), &onset, staleProgress)
+	setHuddlePCUtterance(t, w, h, now.Add(-10*time.Minute)) // last PC line long past the window
+
+	sendT(t, w, sim.EvaluateHuddleLoopSweep(now))
+	if huddleConcludedAt(t, w, h) == nil {
+		t.Error("a silent, parked PC must not shield an NPC loop — the sweep should still conclude it")
+	}
+}
+
+// TestRepublish_ConversationLooping_SuppressedWhenPlayerAttended (LLM-185): the
+// per-tick steer is suppressed for a player-attended huddle, so the NPCs aren't
+// nudged to wrap up / disengage while a player is talking to them.
+func TestRepublish_ConversationLooping_SuppressedWhenPlayerAttended(t *testing.T) {
+	w, cancel := buildHuddleTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	loop := sendT(t, w, sim.JoinHuddle("alice", "tavern", "", now)).(sim.JoinHuddleResult).HuddleID
+	sendT(t, w, sim.JoinHuddle("bob", "tavern", "", now))
+	enableLoopSweep(t, w, 2*time.Minute, 60)
+
+	// Precondition: an armed loop flags the members.
+	setHuddleLoopState(t, w, loop, loopingLines(now), nil, time.Time{})
+	if !w.Published().Actors["alice"].ConversationLooping {
+		t.Fatal("precondition: an armed loop should flag alice")
+	}
+	// A player speaks → the steer is suppressed for the attended huddle.
+	setHuddlePCUtterance(t, w, loop, now.Add(-10*time.Second))
+	if w.Published().Actors["alice"].ConversationLooping {
+		t.Error("ConversationLooping must be suppressed while the huddle is player-attended")
+	}
+}
+
+// TestSpeak_StampsLastPCUtterance (LLM-185) exercises the REAL speak path: a
+// KindPC member speaking into a huddle must stamp LastPCUtteranceAt so the huddle
+// reads as player-attended. The direct-stamp tests above can't prove the stamp
+// site itself fires; this covers that integration risk.
+func TestSpeak_StampsLastPCUtterance(t *testing.T) {
+	w, cancel := buildHuddleTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	h := sendT(t, w, sim.JoinHuddle("alice", "tavern", "", now)).(sim.JoinHuddleResult).HuddleID
+	sendT(t, w, sim.JoinHuddle("bob", "tavern", "", now)) // an audience for the line
+	// Make alice a player, then drive a real speak through the production command.
+	sendT(t, w, sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["alice"].Kind = sim.KindPC
+		return nil, nil
+	}})
+	sendT(t, w, sim.Speak("alice", "Good evening — what news from the road?", now))
+
+	res := sendT(t, w, sim.Command{Fn: func(world *sim.World) (any, error) {
+		hud := world.Huddles[h]
+		return []any{hud.LastPCUtteranceAt.IsZero(), sim.HuddlePCAttended(hud, now)}, nil
+	}})
+	v := res.([]any)
+	if v[0].(bool) {
+		t.Error("a PC's spoken line must stamp LastPCUtteranceAt")
+	}
+	if !v[1].(bool) {
+		t.Error("after a PC speaks, the huddle should read as player-attended")
+	}
+}
+
 // --- sweep integration tests (full harness) ---
 
 // TestHuddleLoopSweep_ConcludesLoopSparesProductive is the core lever: a sustained
