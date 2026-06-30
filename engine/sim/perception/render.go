@@ -234,6 +234,9 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// owed orders, recovery/satiation/restock/lodging affordances, summons, scene.
 	ephemeral.WriteString(selfState.String())
 	renderLaborSelfState(&ephemeral, p.Laboring, nameOf, p.RenderedAt)
+	// LLM-202: the employer-side mirror — workers currently on a job for this
+	// actor, so they don't re-hire or pay again for work already covered.
+	renderWorkersForMe(&ephemeral, p.WorkersForMe, nameOf, p.RenderedAt)
 	renderPendingLaborOfferOut(&ephemeral, p.PendingLaborOfferOut, nameOf)
 	renderNarrativeState(&ephemeral, p.NarrativeState)
 	renderVendorOperating(&ephemeral, p.AtOwnBusinessOperating)
@@ -2048,6 +2051,41 @@ func renderLaborSelfState(b *strings.Builder, laboring *LaboringView, nameOf fun
 	}
 	fmt.Fprintf(b, "You are working a job for %s — about %s of work left. Stay with it until it's done; you are paid when you finish.\n",
 		employer, humanizeWorkMinutes(mins))
+}
+
+// renderWorkersForMe renders the employer-side active-labor cue (LLM-202): the
+// workers currently on a job for the subject, with roughly how much longer and
+// what they're owed on completion, plus a steer not to double up. The
+// employer-side mirror of renderLaborSelfState's worker line — where the worker
+// gets "you are working for X," the employer gets "X is working for you."
+// Without it the employer sees only the pending-decision view (renderLaborOffers)
+// and has no signal an accepted job is already underway, so they re-hire a second
+// body or pay by hand for work already covered (the live John Ellis re-hire of
+// Patience mid-way through Silence's contract). A standing situational line in the
+// self-state block; one line per worker (an employer can have several), then one
+// shared steer. Content-gated on a non-empty WorkersForMe.
+func renderWorkersForMe(b *strings.Builder, workers []WorkerForMeView, nameOf func(sim.ActorID) string, renderedAt time.Time) {
+	if len(workers) == 0 {
+		return
+	}
+	for _, wkr := range workers {
+		worker := nameOf(wkr.Worker)
+		unit := "coins"
+		if wkr.Reward == 1 {
+			unit = "coin"
+		}
+		mins := minutesUntil(wkr.Until, renderedAt)
+		if mins <= 0 {
+			fmt.Fprintf(b, "%s is finishing a job for you — almost done; %d %s owed as they finish.\n",
+				worker, wkr.Reward, unit)
+			continue
+		}
+		fmt.Fprintf(b, "%s is working a job for you — about %s left; %d %s owed when it's done.\n",
+			worker, humanizeWorkMinutes(mins), wkr.Reward, unit)
+	}
+	// Trailing blank line so the following section keeps its separator, matching
+	// the self-state-gap convention (renderNarrativeState / renderVendorOperating).
+	b.WriteString("That work is already covered and settles in coin on its own when it's finished — don't hire someone else for it or pay again by hand.\n\n")
 }
 
 // renderPendingLaborOfferOut renders the worker's OWN outgoing labor offer that

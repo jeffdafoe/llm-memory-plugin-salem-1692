@@ -511,6 +511,17 @@ var perceptionScenarios = []perceptionScenario{
 			"that dropped the reconciliation would resurface that contradiction in the diff.",
 		build: buyerKeptConsumeRemainderReconciled,
 	},
+	{
+		name: "employer_with_worker_on_job",
+		summary: "An employer (John Ellis the tavernkeeper) stands with a worker (Silence Walker) who is mid-contract " +
+			"for him — a Working labor offer, ~90 minutes left (the live LLM-202 case). The golden pins the new " +
+			"'## Workers currently working for you' employer-side cue ('Silence Walker is working a job for you — about " +
+			"1 hour 30 minutes left; 2 coins owed when it's done') plus the shared 'already covered … don't hire someone " +
+			"else for it or pay again by hand' steer. Without it the employer saw only the pending-offer decision view and " +
+			"re-hired a second worker for the same job. The worker's own '## Work offers awaiting your decision' is ABSENT " +
+			"here (the offer is Working, not Pending). A regression that dropped the cue resurfaces the blind re-hire in the diff.",
+		build: employerWithWorkerOnJob,
+	},
 }
 
 // buyerKeptConsumeRemainderReconciled is the LLM-188 buyer-POV fixture: Anne
@@ -814,6 +825,27 @@ func TestProductionFocusLineOnlyAtWork(t *testing.T) {
 		want := sc.name == "smith_forging_focused"
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: production-focus line present=%v, want %v", sc.name, has, want)
+		}
+	}
+}
+
+// TestActiveWorkerCueOnlyForEmployerWithWorkingOffer is the LLM-202 cross-scenario
+// invariant: the employer-side "X is working a job for you" cue (renderWorkersForMe)
+// renders in EXACTLY the scenario where the subject is an employer with a worker
+// mid-contract (a Working offer where EmployerID == subject). It must NOT appear for
+// an employer whose only labor offer is Pending (broke_employer_cannot_pay_labor_offer
+// — that renders in "## Work offers awaiting your decision", not as an active worker),
+// nor anywhere else in the matrix. The marker is distinct from the worker's own
+// "You are working a job for X" self-state line (renderLaborSelfState), which is
+// second-person and never carries "is working a job for you".
+func TestActiveWorkerCueOnlyForEmployerWithWorkingOffer(t *testing.T) {
+	const marker = "is working a job for you"
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		got := renderScenario(sc)
+		want := sc.name == "employer_with_worker_on_job"
+		if has := strings.Contains(got, marker); has != want {
+			t.Errorf("scenario %q: active-worker cue present=%v, want %v", sc.name, has, want)
 		}
 	}
 }
@@ -2394,6 +2426,73 @@ func brokeEmployerCannotPayLaborOffer() (*sim.Snapshot, sim.ActorID, []sim.Warra
 		ItemKinds: foodDrinkCatalog(),
 	}
 	return snap, ezekielID, nil
+}
+
+// employerWithWorkerOnJob is the LLM-202 employer-side cue fixture: John Ellis the
+// tavernkeeper stands with Silence Walker, who is mid-contract for him (a Working
+// labor offer with ~90 minutes left). The subject is the EMPLOYER, so the new
+// "## Workers currently working for you" cue (renderWorkersForMe) renders — the
+// mirror of the worker's Laboring self-state. WorkingUntil is anchored to the
+// snapshot instant + 90m so the "about N left" line is byte-stable (RenderedAt =
+// PublishedAt). The reward (2) renders in the owed clause.
+func employerWithWorkerOnJob() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		johnID    = sim.ActorID("john")
+		silenceID = sim.ActorID("silence")
+		tavern    = sim.StructureID("tavern")
+		huddle    = sim.HuddleID("h1")
+	)
+	published := time.Date(2026, 6, 30, 20, 30, 0, 0, time.UTC)
+	workingUntil := published.Add(90 * time.Minute)
+	acceptedAt := published.Add(-30 * time.Minute)
+	john := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "John Ellis",
+		Role:              "tavernkeeper",
+		State:             sim.StateIdle,
+		InsideStructureID: tavern,
+		CurrentHuddleID:   huddle,
+		Coins:             50,
+		Needs:             map[sim.NeedKey]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"Silence Walker": {}},
+	}
+	silence := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Silence Walker",
+		Role:              "laborer",
+		State:             sim.StateLaboring,
+		InsideStructureID: tavern,
+		CurrentHuddleID:   huddle,
+		Coins:             0,
+		Needs:             map[sim.NeedKey]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"John Ellis": {}},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:    published,
+		NeedThresholds: sim.NeedThresholds{},
+		Actors:         map[sim.ActorID]*sim.ActorSnapshot{johnID: john, silenceID: silence},
+		Structures: map[sim.StructureID]*sim.Structure{
+			tavern: plainStructure(tavern, "Tavern"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{johnID: {}, silenceID: {}}},
+		},
+		LaborLedger: map[sim.LaborID]*sim.LaborOffer{
+			1: {
+				ID:           1,
+				WorkerID:     silenceID,
+				EmployerID:   johnID,
+				Reward:       2,
+				DurationMin:  120,
+				State:        sim.LaborStateWorking,
+				HuddleID:     huddle,
+				AcceptedAt:   &acceptedAt,
+				WorkingUntil: &workingUntil,
+			},
+		},
+		ItemKinds: foodDrinkCatalog(),
+	}
+	return snap, johnID, nil
 }
 
 // workerAmongHousehold is the LLM-157 situation: two worker-tagged Walker siblings

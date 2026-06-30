@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 )
@@ -734,6 +735,55 @@ func workerPendingLaborOffer(w *World, workerID ActorID, now time.Time) *LaborOf
 		return o
 	}
 	return nil
+}
+
+// activeLaborBetween returns a live (Pending or Working) labor offer standing
+// between the two actors in EITHER direction, or nil. Used by sim.Pay to keep
+// labor compensation out of the bare-pay channel (LLM-202): a labor offer's
+// reward settles at completion through the labor sweep, so a separate bare pay
+// between the same pair double-compensates the one job (the live John Ellis /
+// Silence Walker case — 8 coins paid by hand AND a 2-coin labor contract booked
+// on top). Either direction because the worker who solicits and the employer who
+// accepts can each be the one who then mistakenly reaches for pay. A pending
+// offer past its TTL is dead (the aging sweep just hasn't flipped it yet) and is
+// skipped, mirroring workerPendingLaborOffer; a Working offer has no such expiry
+// — it settles at WorkingUntil. When more than one live offer stands between the
+// pair (e.g. each is the other's worker in opposite-direction deals), the pick is
+// deterministic — Working before Pending, then lowest LaborID — so the steer's
+// message branch and named reward never ride map-iteration order (code_review).
+// World-goroutine-only.
+func activeLaborBetween(w *World, partyA, partyB ActorID, now time.Time) *LaborOffer {
+	var ids []LaborID
+	for id, o := range w.LaborLedger {
+		if o == nil {
+			continue
+		}
+		if o.State != LaborStatePending && o.State != LaborStateWorking {
+			continue
+		}
+		matched := (o.WorkerID == partyA && o.EmployerID == partyB) ||
+			(o.WorkerID == partyB && o.EmployerID == partyA)
+		if !matched {
+			continue
+		}
+		if o.State == LaborStatePending && !o.ExpiresAt.IsZero() && !now.Before(o.ExpiresAt) {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		a, b := w.LaborLedger[ids[i]], w.LaborLedger[ids[j]]
+		if a.State != b.State {
+			// Working sorts ahead of Pending — an in-progress job is the more
+			// pressing "don't pay separately" signal than a not-yet-accepted offer.
+			return a.State == LaborStateWorking
+		}
+		return ids[i] < ids[j]
+	})
+	return w.LaborLedger[ids[0]]
 }
 
 // laborTradeSteerMsg redirects an NPC that reaches for the goods-trade tools
