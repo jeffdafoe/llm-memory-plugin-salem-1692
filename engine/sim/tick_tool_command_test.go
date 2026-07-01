@@ -216,6 +216,18 @@ func TestRunTickToolCommandPreservesTerminalNoOp(t *testing.T) {
 	}
 }
 
+func TestTerminalNoOpError_EmptyMsgFallback(t *testing.T) {
+	// A zero-value TerminalNoOpError still changes terminal behavior, so its
+	// message must never surface to the model as a bare "[ok] " with no reason
+	// (LLM-209 review hardening).
+	if got := (sim.TerminalNoOpError{}).Error(); got == "" {
+		t.Fatal("empty-Msg TerminalNoOpError.Error() must fall back to a non-empty reason")
+	}
+	if got := (sim.TerminalNoOpError{Msg: `you are already at "inn"`}).Error(); got != `you are already at "inn"` {
+		t.Fatalf("Error() should pass a set Msg through unchanged, got %q", got)
+	}
+}
+
 func TestRunTickToolCommandWrapperErrorsNotModelFacing(t *testing.T) {
 	w, cancel, root := buildToolCmdWorld(t, "A1")
 	defer cancel()

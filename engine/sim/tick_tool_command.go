@@ -127,12 +127,14 @@ type ModelFacingError struct{ Msg string }
 
 func (e ModelFacingError) Error() string { return e.Msg }
 
-// TerminalNoOpError marks a command Fn rejection that is a genuine NO-OP: the
-// actor asked for something it already has — walk to the structure it is already
-// in (or already walking to), take a break while already on break. The message
-// is model-facing like ModelFacingError, but unlike a correctable rejection
-// there is nothing for the model to FIX by retrying — the request is already
-// satisfied, so a retry is pure waste.
+// TerminalNoOpError marks an AGENT-TICK COMMAND no-op that should END THE
+// CURRENT TICK: the actor asked for something it already has — walk to the
+// structure it is already in (or already walking to), take a break while already
+// on break. The message is model-facing like ModelFacingError, but unlike a
+// correctable rejection there is nothing for the model to FIX by retrying — the
+// request is already satisfied, so a retry is pure waste. Use it ONLY where the
+// terminal semantics are wanted (it ends deliberation for the tick); a rejection
+// the model should correct and retry stays a plain error / ModelFacingError.
 //
 // RunTickToolCommand preserves this type (does NOT flatten it to
 // ModelFacingError), so the tick harness can distinguish it via errors.As and
@@ -143,4 +145,13 @@ func (e ModelFacingError) Error() string { return e.Msg }
 // %w wrapping.
 type TerminalNoOpError struct{ Msg string }
 
-func (e TerminalNoOpError) Error() string { return e.Msg }
+// Error returns the model-facing reason. The empty-Msg fallback is defensive: a
+// zero-value TerminalNoOpError{} (a construction slip) still changes terminal
+// behavior, so it must never surface to the model as a bare "[ok] " with no
+// reason — give it a sane default instead.
+func (e TerminalNoOpError) Error() string {
+	if e.Msg == "" {
+		return "that action is already done — nothing more to do this turn."
+	}
+	return e.Msg
+}
