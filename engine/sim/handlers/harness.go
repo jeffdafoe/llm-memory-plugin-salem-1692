@@ -1203,17 +1203,32 @@ func (h *Harness) dispatch(ctx context.Context, w *sim.World, job tickJob, vc *V
 			return "[error: command_failed] world command rejected the tool", dispatchOutcome{}
 		}
 
-		ended := vc.Entry.TerminalPolicy == TerminalOnSuccess
-		out := dispatchOutcome{success: true, ended: ended}
-		if ended {
-			out.terminalStatus = sim.TickStatusSuccess
-		}
 		// LLM-88: RunTickToolCommand wraps the tool's result with the actor's
 		// post-commit self-state. Unwrap so commitResultContent still sees the
 		// inner domain result, and carry the snapshot up for the loop's own-state
 		// re-perception. Reachable only on the err==nil path, where the wrapper
-		// always returns a TickToolResult, so the assertion holds.
+		// always returns a TickToolResult, so the assertion holds. Unwrapped before
+		// the terminal decision below so the LLM-201 no-switch flip can read it.
 		wrapped, _ := cmdResult.(sim.TickToolResult)
+
+		ended := vc.Entry.TerminalPolicy == TerminalOnSuccess
+		// LLM-201: produce is registered non-terminal so a genuine item SWITCH can be
+		// followed by a speak/act in the same tick. But a produce that does NOT change
+		// the active item is a "tend your post" no-op, and the weak model tends to fumble
+		// the needless second round — serializing its calls as raw text content instead of
+		// structured tool_calls, or churning the produce target for no reason. End the tick
+		// on a no-switch produce so that second round never happens: accept one success per
+		// tick, the LLM-184 terminal-flip shape. A bounced produce returns a ModelFacingError
+		// (not a ProductionFocusResult) and never reaches here, so it stays retryable.
+		if !ended && vc.Name == craftToolName {
+			if r, ok := wrapped.Result.(sim.ProductionFocusResult); ok && !r.Switched {
+				ended = true
+			}
+		}
+		out := dispatchOutcome{success: true, ended: ended}
+		if ended {
+			out.terminalStatus = sim.TickStatusSuccess
+		}
 		out.postSelfState = wrapped.PostActorSnapshot
 		// LLM-91: flag a consume that eased no need so the loop can arm the
 		// semantic repeat-consume guard (consumeNoop: a ConsumeResult with
