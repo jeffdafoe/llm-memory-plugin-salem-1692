@@ -19,7 +19,8 @@ import "time"
 // finds a keeper present but not hireable (on break), it remembers that — and
 // perception drops the business from the seek-work directory until the memory
 // decays, steering the worker to a business with an available keeper instead. The
-// memory self-clears the moment the worker next finds a hireable keeper there.
+// memory self-clears the moment the worker next finds the business in any other
+// state (a hireable keeper, or keeperless).
 //
 // This is the CAPTURE half (an ActorArrived subscriber, additive). The SURFACE
 // half lives in perception (workerRememberedNoHiring in build.go, read by
@@ -34,42 +35,48 @@ import "time"
 const NoHiringMemoryTTL = 2 * time.Hour
 
 // handleNoHiringOnArrival is the ActorArrived subscriber that records (or clears)
-// the arriving worker's memory of a business having no keeper available to hire.
-// It fires once per arrival and is a no-op for non-agent arrivals or arrivals that
-// don't resolve to a business other than the arriver's own workplace
-// (businessArrivedAt, shared with the closed-business capture).
+// a WORKLESS worker's memory of a business having no keeper available to hire. It
+// fires once per arrival and is a no-op for anyone who does not consult the
+// seek-work directory (non-agents, non-workers, employed workers) or for arrivals
+// that don't resolve to a business other than the arriver's own workplace.
 //
-// Keeper states, at the resolved business:
-//   - a hireable keeper present (awake, not on break) → clear any stale memory (self-heal);
-//   - a keeper present but on break (StateResting) → remember it (the resting-keeper gap);
-//   - no keeper present (absent/asleep) → left to handleClosedBusinessOnArrival, which
-//     records ObservedClosed; that already drops the business from the directory, so a
-//     separate no-hiring stamp would be redundant. Any stale no-hiring memory just decays.
+// Keeper states at the resolved business, once the arriver is a seek-work subject:
+//   - present but on break (StateResting) → remember it (the resting-keeper gap);
+//   - a hireable keeper present (awake, not on break) → clear (the business is workable);
+//   - no keeper present (absent/asleep) → clear, and leave the "shut" record to
+//     handleClosedBusinessOnArrival (ObservedClosed), which already drops the business.
+//
+// The single stamp-only-while-resting / clear-otherwise rule keeps ObservedNoHiring
+// reflecting just the CURRENT condition — no stale belief lingers past a state change.
 func handleNoHiringOnArrival(w *World, evt Event) {
 	arr, ok := evt.(*ActorArrived)
 	if !ok {
 		return
 	}
 	a := w.Actors[arr.ActorID]
-	if a == nil || !isAgentNPC(a) {
-		return // only NPC workers perceive the seek-work directory
+	// Only a WORKLESS worker consults the seek-work directory (buildSeekWorkPlaces),
+	// the SOLE reader of ObservedNoHiring — mirror its gate (subjectIsWorker &&
+	// !subjectHasResolvableWorkplace) so a customer, an inn guest, or an EMPLOYED
+	// worker (steered to its own post by the duty steer, not the directory) never
+	// accrues a memory it can't act on (code_review). Unlike ObservedClosed, which
+	// several cues read, nothing else needs a broader capture here.
+	if a == nil || !isAgentNPC(a) || !actorIsWorker(a) || actorHasResolvableWorkplace(w, a) {
+		return
 	}
 
 	structureID, ok := businessArrivedAt(w, a, arr)
 	if !ok {
 		return
 	}
-	if !keeperPresentAt(w, structureID) {
-		return // keeperless ⇒ handleClosedBusinessOnArrival's ObservedClosed covers it
-	}
-
 	key := ObservedStateKey{StructureID: structureID, Condition: ObservedNoHiring}
-	if hireableKeeperPresentAt(w, structureID) {
-		a.Observed.Clear(key) // a keeper is here and free to take on work — belief cleared
+	if keeperPresentAt(w, structureID) && !hireableKeeperPresentAt(w, structureID) {
+		// A keeper is here but on break: present (so not "shut"), yet not solicitable.
+		a.Observed.Observe(key, arr.At)
 		return
 	}
-	// A keeper is here but on break: present (so not "shut"), yet not solicitable.
-	a.Observed.Observe(key, arr.At)
+	// Hireable, or keeperless (the latter handled by ObservedClosed) — the business is
+	// no longer "on break" for this worker, so drop any stale no-hiring belief.
+	a.Observed.Clear(key)
 }
 
 // hireableKeeperPresentAt is the stricter sibling of keeperPresentAt
