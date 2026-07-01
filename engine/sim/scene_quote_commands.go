@@ -287,6 +287,31 @@ func SceneQuoteCreate(
 				}
 			}
 
+			// LLM-208: seller-side homed-guest lodging gate. A homed buyer can't
+			// take a room — the buyer-side pay_with_item guard rejects it
+			// (pay_with_item_commands.go, LLM-182) — so a nights_stay quote aimed
+			// at one only dangles an offer that dead-ends in a doomed nightly
+			// negotiation (John Ellis → Prudence Ward, live 2026-06-30). Reject at
+			// creation, the seller-side mirror of that buyer gate. Keyed on the
+			// "lodging" capability so a future operator-defined lodging kind
+			// inherits it. Only a resolved target can be pre-checked here; a public
+			// quote is suppressed per-viewer in perception instead
+			// (build.go filterHomedLodgingQuoteWarrants).
+			if targetBuyerID != "" && quoteLinesGrantLodging(w, resolvedLines) {
+				if targetBuyer, ok := w.Actors[targetBuyerID]; ok && targetBuyer.HomeStructureID != "" {
+					if home, ok := w.Structures[targetBuyer.HomeStructureID]; ok && home.DisplayName != "" {
+						return nil, fmt.Errorf(
+							"%s has a home (%s) and doesn't need a room — don't offer them lodging.",
+							targetBuyer.DisplayName, home.DisplayName,
+						)
+					}
+					return nil, fmt.Errorf(
+						"%s has a home and doesn't need a room — don't offer them lodging.",
+						targetBuyer.DisplayName,
+					)
+				}
+			}
+
 			// Gate 9: duplicate-key resolution. Non-Amount key —
 			// the legitimate use case for "same key, new amount"
 			// IS re-pricing. Replace any matching active quote in
@@ -720,6 +745,20 @@ func resolveQuoteLines(w *World, lines []QuoteLineInput) ([]QuoteLine, error) {
 		merged = append(merged, QuoteLine{ItemKind: kind, Qty: in.Qty})
 	}
 	return merged, nil
+}
+
+// quoteLinesGrantLodging reports whether any line in a resolved bundle carries
+// the "lodging" capability — the marker for a room-granting service kind
+// (nights_stay). A lodging kind is a service and so can never be part of a
+// multi-line bundle (rejected upstream), but the loop keeps the check total.
+// Used by the LLM-208 seller-side homed-guest gate.
+func quoteLinesGrantLodging(w *World, lines []QuoteLine) bool {
+	for _, ln := range lines {
+		if itemHasCapability(w, ln.ItemKind, "lodging") {
+			return true
+		}
+	}
+	return false
 }
 
 // quoteLinesEqual reports whether two bundle line sets are equal,

@@ -95,6 +95,15 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// below — so this filter now only protects the generic warrant render.)
 	p.Warrants = filterStalePayOfferWarrants(p.Warrants, snap)
 
+	// LLM-208: drop a lodging (nights_stay) room-quote warrant when the subject
+	// already has a home. A homed guest can't take a room — the buyer-side
+	// pay_with_item guard rejects it (LLM-182) — so dangling the offer only pulls
+	// it into a doomed nightly negotiation. Per-viewer: a homeless seeker in the
+	// same scene still perceives a public room quote; only the homed subject is
+	// spared it. Complements the seller-side creation gate
+	// (scene_quote_commands.go), which can only pre-check a targeted quote.
+	p.Warrants = filterHomedLodgingQuoteWarrants(p.Warrants, snap, actorSnap)
+
 	// ZBBS-HOME-453: the standing seller-side offer view, scanned from
 	// snap.PayLedger every tick. The warrant above only WAKES the seller's
 	// first tick; this scan is what keeps "## Offers awaiting your decision"
@@ -3678,6 +3687,50 @@ func filterStalePayOfferWarrants(warrants []sim.WarrantMeta, snap *sim.Snapshot)
 	out := make([]sim.WarrantMeta, 0, len(warrants))
 	for _, w := range warrants {
 		if !stale(w) {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+// filterHomedLodgingQuoteWarrants drops a scene-quote warrant advertising a
+// lodging (nights_stay) room to a subject who already has a home. Such a buyer
+// can't take the room — the buyer-side pay_with_item guard rejects it (LLM-182)
+// — so surfacing the offer only dangles a doomed nightly negotiation (LLM-208).
+// Per-viewer: the check is against THIS subject's HomeStructureID, so a homeless
+// seeker in the same scene still perceives a public room quote — only a homed
+// subject is spared it. Covers a public/overheard quote the seller-side creation
+// gate (scene_quote_commands.go) can't pre-check per-buyer, and backstops the
+// targeted path. Pure over the snapshot; reuses itemGrantsLodging (lodging.go).
+func filterHomedLodgingQuoteWarrants(warrants []sim.WarrantMeta, snap *sim.Snapshot, subjectSnap *sim.ActorSnapshot) []sim.WarrantMeta {
+	if len(warrants) == 0 || snap == nil || subjectSnap == nil || subjectSnap.HomeStructureID == "" {
+		return warrants
+	}
+	suppress := func(w sim.WarrantMeta) bool {
+		r, ok := w.Reason.(sim.SceneQuoteTargetedWarrantReason)
+		if !ok {
+			return false
+		}
+		for _, ln := range r.Lines {
+			if itemGrantsLodging(snap, ln.ItemKind) {
+				return true
+			}
+		}
+		return false
+	}
+	anySuppressed := false
+	for _, w := range warrants {
+		if suppress(w) {
+			anySuppressed = true
+			break
+		}
+	}
+	if !anySuppressed {
+		return warrants
+	}
+	out := make([]sim.WarrantMeta, 0, len(warrants))
+	for _, w := range warrants {
+		if !suppress(w) {
 			out = append(out, w)
 		}
 	}
