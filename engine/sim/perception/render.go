@@ -1321,26 +1321,27 @@ func laborTiePhrase(t laborTie) string {
 	}
 }
 
-// renderNarrativeState writes the "Who you are:" section for shared-VA
+// renderNarrativeState writes the "## Who you are" section for shared-VA
 // actors. Content-gated: a nil view skips the section entirely so
 // stateful and PC actors don't see an empty block. The contract
 // matches the perception note — Render is kind-agnostic; Build is the
 // one that gates on Kind.
 //
-// ZBBS-WORK-374: EvolvingSummary is NOT rendered into the live decision prompt.
-// The per-actor narrative consolidation that would rewrite it is not ported to
-// v2 (see the perception note "Not in this package yet"), so it is frozen seed
-// data — and that frozen prose is the first-person rumination ("the same
-// greetings, the same offers of rooms…") that primed the repeat-pitch loop. The
-// field stays on the view + snapshot for when consolidation lands; we just keep
-// model-generated diary prose out of the prompt the model decides from.
+// The body is the actor's AboutMe — the accreting first-person soul the
+// per-actor narrative sweep synthesizes each day via the dream-sim-soul agent
+// (LLM-199). Build gates the view on a non-empty AboutMe, so an actor whose
+// soul hasn't been synthesized yet gets no section rather than a bare header
+// (the original empty-block bug). SeedText/EvolvingSummary are not rendered —
+// SeedText is never populated for shared VAs, and EvolvingSummary was the
+// frozen, unconsolidated diary prose that primed the repeat-pitch loop
+// (ZBBS-WORK-374); the identity-framed soul prompt is what avoids that loop.
 func renderNarrativeState(b *strings.Builder, n *NarrativeStateView) {
 	if n == nil {
 		return
 	}
 	b.WriteString("## Who you are\n")
-	if n.SeedText != "" {
-		b.WriteString(sanitizeInline(n.SeedText))
+	if n.AboutMe != "" {
+		b.WriteString(sanitizeInline(n.AboutMe))
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")

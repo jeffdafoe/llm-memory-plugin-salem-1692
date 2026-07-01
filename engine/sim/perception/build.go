@@ -2421,23 +2421,25 @@ func sellerHasActiveQuoteToBuyer(snap *sim.Snapshot, seller, buyer sim.ActorID) 
 	return false
 }
 
-// buildNarrativeState returns the kind-aware "Who you are:" content
+// buildNarrativeState returns the kind-aware "## Who you are" content
 // for shared-VA actors, or nil otherwise. Stateful and PC actors get
 // no engine-side narrative — their identity comes from their own VA's
 // <Self> block (stateful) or from the player (PC).
 //
-// Returns nil for an empty NarrativeState too — Render is content-
-// gated, so a nil view skips the section cleanly.
+// Gated on AboutMe (the synthesized soul, LLM-199): a shared actor whose
+// soul hasn't been synthesized yet gets nil so Render skips the section
+// cleanly rather than emitting a bare header. SeedText/EvolvingSummary are
+// not rendered (SeedText is never set for shared VAs; EvolvingSummary is
+// legacy), so they don't open the section.
 func buildNarrativeState(a *sim.ActorSnapshot) *NarrativeStateView {
 	if a.Kind != sim.KindNPCShared || a.Narrative == nil {
 		return nil
 	}
-	if a.Narrative.SeedText == "" && a.Narrative.EvolvingSummary == "" {
+	if a.Narrative.AboutMe == "" {
 		return nil
 	}
 	return &NarrativeStateView{
-		SeedText:        a.Narrative.SeedText,
-		EvolvingSummary: a.Narrative.EvolvingSummary,
+		AboutMe: a.Narrative.AboutMe,
 	}
 }
 
