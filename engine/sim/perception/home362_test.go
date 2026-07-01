@@ -319,6 +319,14 @@ func TestBuildRecoveryOptions_HomeEqualsWork_OnShift_PrefersRestInPlace(t *testi
 	if v.RestAtHome {
 		t.Error("RestAtHome = true, want false (RestInPlace takes precedence)")
 	}
+	// Even though RestInPlace (not RestAtHome) fires here, the actor is inside its
+	// own home (home==work), so the bed MOVE option must STILL be suppressed — the
+	// suppression keys on insideOwnHome, not restAtHome (code_review, LLM-214).
+	for _, o := range v.Options {
+		if o.Kind == "home" {
+			t.Errorf("home MOVE option must be suppressed when already inside home (home==work); got %+v", o)
+		}
+	}
 }
 
 // TestBuildRecoveryOptions_HomeEqualsWork_OffShift_RestAtHome: the same home==work

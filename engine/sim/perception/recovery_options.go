@@ -219,11 +219,14 @@ func buildRecoveryOptions(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *si
 	var ownStock []OwnStockItem
 	if tired {
 		opts = append(opts, gatherConsumableRemedies(snap, actorID)...)
-		// Skip the "sleep in your own bed (structure_id …)" MOVE option when the
-		// actor is ALREADY inside its home — RestAtHome leads with an in-place
-		// take_break cue instead, so advertising the current structure as a move
-		// target (the LLM-214 no-op) is exactly what we're removing here.
-		if !restAtHome {
+		// Skip the "sleep in your own bed (structure_id …)" MOVE option whenever the
+		// actor is ALREADY inside its home — advertising the current structure as a
+		// move target is the LLM-214 no-op. Key on insideOwnHome, NOT restAtHome: a
+		// home==work keeper on shift inside the shared structure has restAtHome=false
+		// (RestInPlace wins), but it is still standing in its home and its in-place
+		// lead bullet ("close up and rest where you are") already covers resting — so
+		// the bed move option is redundant there too. (code_review)
+		if !insideOwnHome {
 			if home := gatherHomeRestSpot(snap, actorSnap); home != nil {
 				opts = append(opts, *home)
 			}
