@@ -377,6 +377,17 @@ func TestGateTools_TakeBreak_AdvertisedOnlyWithRestInPlaceCue(t *testing.T) {
 	if offered[takeBreakToolName] != 1 {
 		t.Errorf("take_break should be advertised when the recovery cue offers in-place rest; count %d", offered[takeBreakToolName])
 	}
+
+	// LLM-214: RestAtHome (weary NPC inside its own home) unlocks take_break the
+	// same way — the tool gate reads OffersTakeBreak (RestInPlace OR RestAtHome), so
+	// a homed vendor resting in its own bed gets the verb it was previously denied.
+	offeredAtHome := specNameSet(gateTools(r, perception.Payload{
+		ActorID:         "vendor",
+		RecoveryOptions: &perception.RecoveryOptionsView{RestAtHome: true},
+	}, nil))
+	if offeredAtHome[takeBreakToolName] != 1 {
+		t.Errorf("take_break should be advertised when the recovery cue offers rest-at-home; count %d", offeredAtHome[takeBreakToolName])
+	}
 }
 
 // TestGateTools_Speak_DroppedWhenNoAudience — LLM-106: speak is advertised only

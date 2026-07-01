@@ -5,12 +5,16 @@
 
 
 ## You
-Coins in your purse: 40.
+You're weary.
+Coins in your purse: 12.
 
 ## Around you
 You are inside the Walker Residence, your home, with no one else here to hear you speak.
-It is morning in the village.
+Evening settles over the village.
 
-You're home.
+You're home. You keep your trade at the Walker Garden (structure_id: walker_garden) — you can head there whenever you wish.
+
+## How you can rest
+- You're home — call take_break to lie down and rest in your own bed, no need to travel.
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.

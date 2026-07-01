@@ -86,6 +86,31 @@ func TestPerceptionGoldens(t *testing.T) {
 	}
 }
 
+// TestGoldensNeverAdvertiseHomeAsMoveTargetWhenInside is the LLM-214 cross-scenario
+// invariant: whenever the subject actor is standing INSIDE its own home, the
+// rendered prompt must never advertise that home's structure_id as a move target.
+// "(structure_id: <id>)" is the load-bearing token the model echoes into move_to
+// (HOME-349), and you can't move to where you already are — the no-op the model
+// looped on (Lewis Walker calling move_to{residence} every tick). Runs over the
+// whole matrix so a future cue can't reintroduce the current-home move target for
+// any situation, not just the one weary_resident_in_own_home scenario pins.
+func TestGoldensNeverAdvertiseHomeAsMoveTargetWhenInside(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, _ := sc.build()
+			a := snap.Actors[actorID]
+			if a == nil || a.HomeStructureID == "" || a.InsideStructureID != a.HomeStructureID {
+				return // subject isn't inside its own home — invariant N/A here
+			}
+			token := "(structure_id: " + string(a.HomeStructureID) + ")"
+			if out := renderScenario(sc); strings.Contains(out, token) {
+				t.Errorf("scenario %q: subject stands inside its own home but the prompt advertises that home as a move target %q — you can't move_to where you stand (LLM-214)", sc.name, token)
+			}
+		})
+	}
+}
+
 // perceptionScenarios is the (growing) matrix. Seeded from LLM-106 with two
 // situations: a keeper alone at its post, and a tired keeper on shift at its post.
 // Each new live (a)-class failure should add a scenario here (and, where it states
@@ -107,6 +132,17 @@ var perceptionScenarios = []perceptionScenario{
 			"cue offers take_break (rest in place) only because the actor is on shift. The golden pins the bullet's " +
 			"presence; a regression to the on-shift gate would flip it in the diff.",
 		build: tiredKeeperAtPostOnShift,
+	},
+	{
+		name: "weary_resident_in_own_home",
+		summary: "LLM-214: a weary salem-vendor (Anne Walker) stands INSIDE its own home, off-shift for the evening, with " +
+			"a separate workplace. Before the fix the '## How you can rest' list handed it the home structure_id as a move_to " +
+			"target ('sleep in your own bed (structure_id …)') for the structure it was standing in — the no-op move Lewis / " +
+			"Anne looped on — and the anchor pointer told it to 'head back there'. The golden pins the in-place cues: the rest " +
+			"section leads with the RestAtHome take_break bullet and carries NO home structure_id, and the anchor states " +
+			"'You're home' while keeping only the workplace as a reachable move target. The matrix-wide guard is " +
+			"TestGoldensNeverAdvertiseHomeAsMoveTargetWhenInside.",
+		build: wearyResidentInOwnHome,
 	},
 	{
 		name: "shared_npc_soul_who_you_are",
@@ -2870,6 +2906,48 @@ func tiredKeeperAtPostOnShift() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) 
 		},
 	}
 	return snap, ezekielID, nil
+}
+
+// wearyResidentInOwnHome is the LLM-214 fixture: a weary salem-vendor standing
+// INSIDE its own home (home != work), off-shift in the evening. Before the fix the
+// "## How you can rest" list handed it the home structure_id as a move_to target
+// ("sleep in your own bed (structure_id …)") for the structure it was already in —
+// the no-op move Lewis / Anne Walker looped on — and the anchor pointer told it to
+// "head back there whenever you wish". The golden pins the in-place cues: the rest
+// section leads with the RestAtHome take_break bullet (no home id), and the anchor
+// states "You're home" while keeping only the workplace as a reachable move target.
+// Off-shift and already home, so no to-work / wind-down steer clutters the pin.
+func wearyResidentInOwnHome() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		anneID = sim.ActorID("anne")
+		home   = sim.StructureID("walker_residence")
+		garden = sim.StructureID("walker_garden")
+	)
+	start, end := 360, 1080 // 06:00–18:00
+	now := 1200             // 20:00 — off shift, home for the evening
+	anne := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Anne Walker",
+		Role:              "gardener",
+		State:             sim.StateIdle,
+		WorkStructureID:   garden,
+		HomeStructureID:   home,
+		InsideStructureID: home,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             12,
+		Needs:             map[sim.NeedKey]int{"tiredness": 23},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{anneID: anne},
+		Structures: map[sim.StructureID]*sim.Structure{
+			home:   plainStructure(home, "Walker Residence"),
+			garden: plainStructure(garden, "Walker Garden"),
+		},
+	}
+	return snap, anneID, nil
 }
 
 // homedWorkerEveningTavernOpen is the LLM-149 (Lever 2) positive case: a homed

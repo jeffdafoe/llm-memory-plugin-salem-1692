@@ -67,7 +67,7 @@ func TestBuildAnchors_MissingStructure_dropped(t *testing.T) {
 
 func TestRenderAnchors_SamePlace_carriesProseAndId(t *testing.T) {
 	var b strings.Builder
-	renderAnchors(&b, &AnchorsView{WorkLabel: "Tavern", WorkID: "019dbcd2", HomeLabel: "Tavern", HomeID: "019dbcd2", SamePlace: true}, false)
+	renderAnchors(&b, &AnchorsView{WorkLabel: "Tavern", WorkID: "019dbcd2", HomeLabel: "Tavern", HomeID: "019dbcd2", SamePlace: true}, false, "")
 	out := b.String()
 	if !strings.Contains(out, "structure_id: 019dbcd2") {
 		t.Errorf("missing structure_id; got %q", out)
@@ -80,7 +80,7 @@ func TestRenderAnchors_SamePlace_carriesProseAndId(t *testing.T) {
 
 func TestRenderAnchors_Different_bothIds(t *testing.T) {
 	var b strings.Builder
-	renderAnchors(&b, &AnchorsView{WorkLabel: "General Store", WorkID: "gstore", HomeLabel: "Thorne Residence", HomeID: "thorne"}, false)
+	renderAnchors(&b, &AnchorsView{WorkLabel: "General Store", WorkID: "gstore", HomeLabel: "Thorne Residence", HomeID: "thorne"}, false, "")
 	out := b.String()
 	if !strings.Contains(out, "structure_id: gstore") || !strings.Contains(out, "structure_id: thorne") {
 		t.Errorf("missing one of the ids; got %q", out)
@@ -97,7 +97,7 @@ func TestRenderAnchors_Different_bothIds(t *testing.T) {
 // at-post duty steer (renderDutySteer) carries the "stay put" cue in tandem.
 func TestRenderAnchors_AtPost_reframesDeparture(t *testing.T) {
 	var b strings.Builder
-	renderAnchors(&b, &AnchorsView{WorkLabel: "General Store", WorkID: "gstore", HomeLabel: "Thorne Residence", HomeID: "thorne"}, true)
+	renderAnchors(&b, &AnchorsView{WorkLabel: "General Store", WorkID: "gstore", HomeLabel: "Thorne Residence", HomeID: "thorne"}, true, "")
 	out := b.String()
 	if !strings.Contains(out, "structure_id: gstore") || !strings.Contains(out, "structure_id: thorne") {
 		t.Errorf("at-post anchors must still carry both ids (move_to tokens); got %q", out)
@@ -113,7 +113,7 @@ func TestRenderAnchors_AtPost_reframesDeparture(t *testing.T) {
 
 func TestRenderAnchors_WorkOnly_emptyLabelFallback(t *testing.T) {
 	var b strings.Builder
-	renderAnchors(&b, &AnchorsView{WorkID: "x"}, false)
+	renderAnchors(&b, &AnchorsView{WorkID: "x"}, false, "")
 	out := b.String()
 	if !strings.Contains(out, "your workplace") || !strings.Contains(out, "structure_id: x") {
 		t.Errorf("expected generic fallback + id; got %q", out)
@@ -122,8 +122,73 @@ func TestRenderAnchors_WorkOnly_emptyLabelFallback(t *testing.T) {
 
 func TestRenderAnchors_Nil_noOutput(t *testing.T) {
 	var b strings.Builder
-	renderAnchors(&b, nil, false)
+	renderAnchors(&b, nil, false, "")
 	if b.String() != "" {
 		t.Errorf("expected no output for nil anchors, got %q", b.String())
+	}
+}
+
+// LLM-214: standing INSIDE its own home (home-only anchor), the pointer must not
+// invite a move to the current structure — state it in-place with no id.
+func TestRenderAnchors_InsideHome_marksInPlace(t *testing.T) {
+	var b strings.Builder
+	renderAnchors(&b, &AnchorsView{HomeLabel: "Thorne Residence", HomeID: "thorne"}, false, "thorne")
+	out := b.String()
+	if !strings.Contains(out, "You're home") {
+		t.Errorf("want an in-place 'You're home' line; got %q", out)
+	}
+	if strings.Contains(out, "structure_id") {
+		t.Errorf("must NOT advertise the current structure as a move target; got %q", out)
+	}
+	if strings.Contains(out, "whenever you wish") {
+		t.Errorf("must NOT invite heading back to where it's standing; got %q", out)
+	}
+}
+
+// LLM-214: inside its home with a SEPARATE workplace, the home id drops (no-op
+// move) but the workplace stays a reachable target.
+func TestRenderAnchors_InsideHome_bothAnchors_keepsWorkTargetOnly(t *testing.T) {
+	var b strings.Builder
+	renderAnchors(&b, &AnchorsView{WorkLabel: "General Store", WorkID: "gstore", HomeLabel: "Thorne Residence", HomeID: "thorne"}, false, "thorne")
+	out := b.String()
+	if !strings.Contains(out, "You're home") {
+		t.Errorf("want an in-place 'You're home' line; got %q", out)
+	}
+	if !strings.Contains(out, "structure_id: gstore") {
+		t.Errorf("workplace must stay a reachable move target; got %q", out)
+	}
+	if strings.Contains(out, "structure_id: thorne") {
+		t.Errorf("home (current structure) must NOT be advertised as a move target; got %q", out)
+	}
+}
+
+// LLM-214: inside its workplace OFF shift (atPost handles the on-shift case), the
+// work id drops but home stays reachable.
+func TestRenderAnchors_InsideWorkOffShift_keepsHomeTargetOnly(t *testing.T) {
+	var b strings.Builder
+	renderAnchors(&b, &AnchorsView{WorkLabel: "General Store", WorkID: "gstore", HomeLabel: "Thorne Residence", HomeID: "thorne"}, false, "gstore")
+	out := b.String()
+	if !strings.Contains(out, "You're at your workplace") {
+		t.Errorf("want an in-place workplace line; got %q", out)
+	}
+	if !strings.Contains(out, "structure_id: thorne") {
+		t.Errorf("home must stay a reachable move target; got %q", out)
+	}
+	if strings.Contains(out, "structure_id: gstore") {
+		t.Errorf("workplace (current structure) must NOT be advertised as a move target; got %q", out)
+	}
+}
+
+// LLM-214: home==work keeper standing at that shared structure — one in-place line,
+// no move id (there's nowhere else to point it).
+func TestRenderAnchors_InsideSamePlace_marksInPlace(t *testing.T) {
+	var b strings.Builder
+	renderAnchors(&b, &AnchorsView{WorkLabel: "Tavern", WorkID: "019dbcd2", HomeLabel: "Tavern", HomeID: "019dbcd2", SamePlace: true}, false, "019dbcd2")
+	out := b.String()
+	if !strings.Contains(out, "home and workplace") {
+		t.Errorf("want an in-place home-and-workplace line; got %q", out)
+	}
+	if strings.Contains(out, "structure_id") {
+		t.Errorf("must NOT advertise the current structure as a move target; got %q", out)
 	}
 }
