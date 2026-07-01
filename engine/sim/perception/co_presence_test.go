@@ -87,11 +87,13 @@ func TestRenderSurroundings_CoPresentNamesThemPlural(t *testing.T) {
 		},
 	})
 	out := b.String()
-	if !strings.Contains(out, "Hannah Boggs and John Ellis are here with you") {
+	if !strings.Contains(out, "Hannah Boggs and John Ellis are here with you.") {
 		t.Errorf("co-present plural line missing in:\n%s", out)
 	}
-	if !strings.Contains(out, "speak to start conversing with them") {
-		t.Errorf("co-present speak nudge missing in:\n%s", out)
+	// LLM-220: presence is stated neutrally — the old "speak to start conversing
+	// with them" directive pushed unprompted monologues at whoever was present.
+	if strings.Contains(out, "speak to start conversing") {
+		t.Errorf("co-present line must not coach speaking, got:\n%s", out)
 	}
 }
 
@@ -250,7 +252,7 @@ func TestRenderSurroundings_AsleepClauseAlongsideAwake(t *testing.T) {
 		CoPresentAsleep:   []HuddleMember{{ID: "prudence", DisplayName: "Prudence Ward", Acquainted: true}},
 	})
 	out := b.String()
-	if !strings.Contains(out, "Hannah Boggs is here with you") || !strings.Contains(out, "speak to start conversing with them") {
+	if !strings.Contains(out, "Hannah Boggs is here with you.") {
 		t.Errorf("awake co-present line missing in:\n%s", out)
 	}
 	if !strings.Contains(out, "Prudence Ward is asleep and won't respond if you speak to them") {
@@ -327,7 +329,7 @@ func TestRenderSurroundings_RestingNotAddressableAlongsideAwake(t *testing.T) {
 		CoPresentResting:  []HuddleMember{{ID: "stark", DisplayName: "Goodman Stark", Acquainted: true}},
 	})
 	out := b.String()
-	if !strings.Contains(out, "Hannah Boggs is here with you — speak to start conversing with them") {
+	if !strings.Contains(out, "Hannah Boggs is here with you.") {
 		t.Errorf("awake line missing in:\n%s", out)
 	}
 	if !strings.Contains(out, "Goodman Stark is resting and won't respond if you speak to them") {

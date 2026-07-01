@@ -1077,7 +1077,7 @@ type SurroundingsView struct {
 	// CoPresentAsleep are co-present SLEEPING actors when the subject is NOT in a
 	// huddle — the read projection of ActorSnapshot.ColocatedSleeperIDs. Render
 	// names them in a distinct not-addressable clause, never folded into CoPresent's
-	// "speak to start conversing with them" set: they are visible but cannot be spoken to.
+	// "here with you" set: they are visible but cannot be spoken to.
 	// Empty when huddled or when no one nearby is asleep. Same acquaintance gating
 	// and ID-sorted order as CoPresent. ZBBS-WORK-426 (residual of HOME-436).
 	CoPresentAsleep []HuddleMember
@@ -1087,7 +1087,7 @@ type SurroundingsView struct {
 	// in the shared audience (a PC can wake it), but THIS NPC's speech can't rouse it
 	// (reactor.go actorCanReactNow gates NPC-to-NPC speech against a rester), so
 	// Render groups it with CoPresentAsleep in the not-addressable clause rather than
-	// the "speak to start conversing" set. ZBBS-WORK-426.
+	// the addressable "here with you" set. ZBBS-WORK-426.
 	CoPresentResting []HuddleMember
 
 	// Atmosphere is the village-wide ambient line authored by the atmosphere

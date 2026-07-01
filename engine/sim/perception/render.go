@@ -1071,7 +1071,11 @@ func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 		// Not conversing, but others are within earshot. Name them (every turn) so
 		// the actor can address someone and start conversing, instead of
 		// discovering "no one here to hear you" by tripping the speak gate. This is
-		// the SAME set the speak path would reach (ZBBS-WORK-407).
+		// the SAME set the speak path would reach (ZBBS-WORK-407). Presence is
+		// stated neutrally — no "speak to them" coaching. The directive fired on
+		// every arrival and pushed NPCs into unprompted monologues at whoever was
+		// present, PCs included; naming alone is enough for a greeting to happen
+		// when the actor has a social reason for one (LLM-220).
 		names := make([]string, len(s.CoPresent))
 		for i, m := range s.CoPresent {
 			label := descriptorLabel(m.DisplayName, m.Role, m.Acquainted)
@@ -1089,7 +1093,7 @@ func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 		if len(names) > 1 {
 			verb = "are"
 		}
-		fmt.Fprintf(b, "You are %s. %s %s here with you — speak to start conversing with them.%s\n",
+		fmt.Fprintf(b, "You are %s. %s %s here with you.%s\n",
 			location, joinNames(names), verb, dormant)
 	case len(s.CoPresentAsleep) > 0 || len(s.CoPresentResting) > 0:
 		// No one awake within earshot, but someone is here asleep or resting. Name
