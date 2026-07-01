@@ -525,4 +525,15 @@ func checkAndRotate(ctx context.Context, w *World, r *rand.Rand, scope RotationS
 			log.Printf("sim/world_rotation: apply: %v", err)
 		}
 	}
+	// Farm upkeep wealth tax (LLM-215): once per game-day, wear out farms' upkeep
+	// shovels and wake owners to re-buy from the smith. Bound to the daily boundary
+	// crossing HERE — not inside ApplyDailyRotation — so the umbilical force-rotate
+	// (which calls ApplyDailyRotation directly for state flips) never levies the
+	// tax. Keyed to the same durable boundary as the rotation, so it inherits the
+	// once-per-day + restart-idempotent guarantee. A no-op when disabled.
+	if _, err := w.SendContext(ctx, ApplyFarmUpkeep(boundary)); err != nil {
+		if ctx.Err() == nil {
+			log.Printf("sim/world_rotation: farm upkeep: %v", err)
+		}
+	}
 }

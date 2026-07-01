@@ -220,6 +220,10 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.StallNailsPerRepair = parseIntSetting(values, "stall_nails_per_repair", sim.DefaultStallNailsPerRepair)
 	s.StallRepairDurationSeconds = parseIntSetting(values, "stall_repair_duration_seconds", sim.DefaultStallRepairDurationSeconds)
 
+	// Farm upkeep wealth tax (LLM-215).
+	s.FarmUpkeepFloor = parseIntSetting(values, "farm_upkeep_floor", sim.DefaultFarmUpkeepFloor)
+	s.FarmUpkeepCoinsPerShovel = parseIntSetting(values, "farm_upkeep_coins_per_shovel", sim.DefaultFarmUpkeepCoinsPerShovel)
+
 	// Reactor evaluator tunables.
 	s.ReactorJitterMin = parseDurationSetting(values, "reactor_jitter_min_ms", 1*time.Second)
 	s.ReactorJitterMax = parseDurationSetting(values, "reactor_jitter_max_ms", 4*time.Second)
@@ -536,6 +540,9 @@ func (r *EnvironmentRepo) SaveMutableSettings(ctx context.Context, tx sim.Tx, ms
 		{"stall_wear_degrade_threshold", strconv.Itoa(ms.StallWearDegradeThreshold)},
 		{"stall_nails_per_repair", strconv.Itoa(ms.StallNailsPerRepair)},
 		{"stall_repair_duration_seconds", strconv.Itoa(ms.StallRepairDurationSeconds)},
+		// Farm upkeep wealth-tax knobs (LLM-215) — live-tuned via the umbilical, persisted here.
+		{"farm_upkeep_floor", strconv.Itoa(ms.FarmUpkeepFloor)},
+		{"farm_upkeep_coins_per_shovel", strconv.Itoa(ms.FarmUpkeepCoinsPerShovel)},
 		// Huddle loop-sweep knobs (LLM-159; enabled/tuned via the umbilical in
 		// LLM-183) — live-tuned, persisted here. Stored in seconds; the load path
 		// parses huddle_loop_timeout_seconds / huddle_loop_sweep_cadence_seconds via

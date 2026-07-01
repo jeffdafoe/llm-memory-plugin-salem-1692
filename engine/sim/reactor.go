@@ -72,6 +72,7 @@ const (
 	WarrantKindProductionChoice   WarrantKind = "production_choice"    // multi-output crafter idle at its forge — wake it to pick what to make (LLM-116)
 	WarrantKindStallRepair        WarrantKind = "stall_repair"         // an owned market stall crossed the wear repair threshold — wake the owner to mend it (LLM-118)
 	WarrantKindLaborOffer         WarrantKind = "labor_offer"          // a worker solicited the employer for service-for-pay — wake the employer to accept_work / decline_work (LLM-187)
+	WarrantKindFarmUpkeep         WarrantKind = "farm_upkeep"          // a farm owner owes upkeep shovels (coins above the floor) — wake them to buy from the smith (LLM-215)
 )
 
 // WarrantReason is the marker interface for kind-specific warrant payloads.

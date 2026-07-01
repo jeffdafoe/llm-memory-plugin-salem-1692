@@ -41,6 +41,14 @@ type UmbilicalSettingsDTO struct {
 	// table), so it survives restart. The live engine resolves a 0 here to the default;
 	// the loaded value is seeded to the default, so this reports a concrete figure.
 	SeekWorkCoinCeiling int `json:"seek_work_coin_ceiling"`
+
+	// FarmUpkeepFloor / FarmUpkeepCoinsPerShovel (LLM-215) are the farm wealth-tax
+	// knobs the farm-upkeep/set route writes: a farm owner owes one upkeep shovel per
+	// FarmUpkeepCoinsPerShovel coins held above FarmUpkeepFloor. Persisted (checkpoint
+	// writes them back), so they survive restart. FarmUpkeepCoinsPerShovel == 0 means
+	// the feature is disabled. The GET half of no-blind-tuning symmetry.
+	FarmUpkeepFloor          int `json:"farm_upkeep_floor"`
+	FarmUpkeepCoinsPerShovel int `json:"farm_upkeep_coins_per_shovel"`
 }
 
 // handleUmbilicalSettings serves the current live-tunable world settings. Read on
@@ -57,6 +65,8 @@ func (s *Server) handleUmbilicalSettings(w http.ResponseWriter, r *http.Request)
 			HuddleLoopRepeatPercent:       world.Settings.HuddleLoopRepeatPercent,
 			HuddleLoopSweepCadenceSeconds: int(world.Settings.HuddleLoopSweepCadence / time.Second),
 			SeekWorkCoinCeiling:           world.Settings.SeekWorkCoinCeiling,
+			FarmUpkeepFloor:               world.Settings.FarmUpkeepFloor,
+			FarmUpkeepCoinsPerShovel:      world.Settings.FarmUpkeepCoinsPerShovel,
 		}
 		for k, v := range world.Settings.NeedThresholds {
 			dto.NeedThresholds[string(k)] = v

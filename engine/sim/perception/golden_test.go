@@ -379,6 +379,14 @@ var perceptionScenarios = []perceptionScenario{
 		build: passerbyAtWornStall,
 	},
 	{
+		name: "farm_owner_owes_upkeep",
+		summary: "A farm owner (Elizabeth Ellis) with 95 coins (floor 30, band 20 → owes 3 upkeep shovels) and none in " +
+			"hand. The golden pins the '## Farm upkeep' cue: the worn-tools problem AND the buy-N-shovels-from-the-blacksmith " +
+			"steer in one line (the farm wealth tax, LLM-215). Stock-based — derived from coins, not a per-object meter — and " +
+			"not co-location-gated, so it rides any tick.",
+		build: farmOwnerOwesUpkeep,
+	},
+	{
 		name: "keeper_at_post_onshift",
 		summary: "A keeper (shopkeeper) stands at his own store during business hours. The golden pins the " +
 			"'How you trade:' trade-conduct block — the positive case for the operating-hours gate (LLM-123). On shift " +
@@ -1048,6 +1056,23 @@ func TestStallRepairCueOnlyAtOwnWornStall(t *testing.T) {
 	}
 }
 
+// TestFarmUpkeepCueOnlyForOwingFarmOwner is the LLM-215 cross-scenario invariant: the
+// "## Farm upkeep" cue appears in EXACTLY the scenarios where the actor owns a farm
+// and owes upkeep shovels — never for a non-farm-owner or any unrelated scenario. It
+// backstops the leak an owner-scoped, stock-derived cue is most prone to: showing up
+// for someone who doesn't own a farm.
+func TestFarmUpkeepCueOnlyForOwingFarmOwner(t *testing.T) {
+	const marker = "## Farm upkeep"
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		got := renderScenario(sc)
+		want := sc.name == "farm_owner_owes_upkeep"
+		if has := strings.Contains(got, marker); has != want {
+			t.Errorf("scenario %q: '## Farm upkeep' cue present=%v, want %v", sc.name, has, want)
+		}
+	}
+}
+
 // TestVendorOperatingCueOnlyDuringOperatingHours is the LLM-123 cross-scenario
 // invariant: the "How you trade:" trade-conduct block appears in EXACTLY the
 // scenarios where a keeper is at its own post AND operating — on shift
@@ -1314,6 +1339,61 @@ func ownerAtDegradedStall() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 // stall's owner (Ezekiel).
 func passerbyAtWornStall() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	return stallWearSnapshot("john", "ezekiel", "John Ellis", "tavernkeeper", 450, 0)
+}
+
+// farmUpkeepSnapshot: the actor owns a farm-tagged object and, with `coins` held
+// against `floor`/`coinsPerShovel`, owes more upkeep shovels than the `shovels` they
+// carry — so the "## Farm upkeep" cue renders. Not co-location-gated (the buy happens
+// at the blacksmith), so the actor's position is irrelevant to the cue. No orders, no
+// clock read → byte-stable.
+func farmUpkeepSnapshot(coins, shovels, floor, coinsPerShovel int) (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const actorID = sim.ActorID("elizabeth")
+	zero := 0
+	start, end := 360, 1080 // 06:00–18:00
+	now := 600              // 10:00 — on shift
+	farmPin := sim.WorldPos{X: 100, Y: 100}.Tile()
+	inv := map[sim.ItemKind]int{}
+	if shovels > 0 {
+		inv[sim.ShovelItemKind] = shovels
+	}
+	actor := &sim.ActorSnapshot{
+		Kind:             sim.KindNPCShared,
+		DisplayName:      "Elizabeth Ellis",
+		Role:             "farmer",
+		State:            sim.StateIdle,
+		Pos:              farmPin,
+		ScheduleStartMin: &start,
+		ScheduleEndMin:   &end,
+		Coins:            coins,
+		Needs:            map[sim.NeedKey]int{},
+		Inventory:        inv,
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay:         &now,
+		NeedThresholds:           sim.NeedThresholds{},
+		Assets:                   emptyAssetSet,
+		FarmUpkeepFloor:          floor,
+		FarmUpkeepCoinsPerShovel: coinsPerShovel,
+		Actors:                   map[sim.ActorID]*sim.ActorSnapshot{actorID: actor},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"ellis_farm": {
+				ID:            "ellis_farm",
+				DisplayName:   "Ellis Farm",
+				Pos:           sim.WorldPos{X: 100, Y: 100},
+				OwnerActorID:  actorID,
+				Tags:          []string{sim.TagFarm},
+				LoiterOffsetX: &zero,
+				LoiterOffsetY: &zero,
+			},
+		},
+	}
+	return snap, actorID, nil
+}
+
+// farmOwnerOwesUpkeep: Elizabeth owns Ellis Farm with 95 coins (floor 30, band 20 →
+// owes 3 shovels) and none in hand — the "## Farm upkeep" buy-3-from-the-blacksmith cue.
+func farmOwnerOwesUpkeep() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return farmUpkeepSnapshot(95, 0, 30, 20)
 }
 
 // hungryForagerAtStockedBush is the LLM-113 situation: a hungry forager stands at

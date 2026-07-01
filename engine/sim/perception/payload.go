@@ -501,6 +501,12 @@ type Payload struct {
 	// LLM-118.
 	StallCondition *StallConditionView
 
+	// FarmUpkeep surfaces, to a farm owner, that the season wore out their upkeep
+	// shovels and they owe fresh ones from the blacksmith (shovel count + buy
+	// steer). nil when not a farm owner or nothing is owed. Not co-location-gated —
+	// the buy happens at the blacksmith. LLM-215.
+	FarmUpkeep *FarmUpkeepView
+
 	// Forage surfaces a grower-seller's own forage-to-sell bushes when their
 	// harvested stock of an item is low (< RestockReorderPct of cap) — each low
 	// `forage` RestockEntry, the on-hand/cap, the ripe count across the actor's

@@ -286,3 +286,51 @@ func SetSeekWorkCoinCeiling(ceiling *int) Command {
 		},
 	}
 }
+
+// ErrInvalidFarmUpkeepSetting is returned by SetFarmUpkeepSettings when no knob is
+// provided or a value is out of range (must be >= 0) — → 400 at the umbilical route.
+var ErrInvalidFarmUpkeepSetting = errors.New("invalid farm upkeep setting")
+
+// FarmUpkeepSettingsResult echoes the post-change farm-upkeep knobs.
+type FarmUpkeepSettingsResult struct {
+	FarmUpkeepFloor          int
+	FarmUpkeepCoinsPerShovel int
+}
+
+// SetFarmUpkeepSettings returns a Command that live-tunes the LLM-215 farm wealth-tax
+// knobs. Each is independently optional (nil = leave that knob unchanged) so the
+// operator can nudge one or both; at least one must be present. Range: both must be
+// >= 0 — the floor may be 0 (tax from the first coin), and FarmUpkeepCoinsPerShovel==0
+// disables the feature entirely (the off-switch, mirroring StallWearPerCoin==0). The
+// MaxInt32 upper bound keeps each value comfortably inside int. Takes effect
+// immediately — the daily assessment reads w.Settings live and the perception cue reads
+// the next published snapshot (which copies both) — AND persists on the next checkpoint
+// via MutableWorldSettings, so a live change survives restart.
+func SetFarmUpkeepSettings(floor, coinsPerShovel *int) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			hasOne := false
+			for _, p := range []*int{floor, coinsPerShovel} {
+				if p != nil {
+					hasOne = true
+					if *p < 0 || *p > math.MaxInt32 {
+						return nil, ErrInvalidFarmUpkeepSetting
+					}
+				}
+			}
+			if !hasOne {
+				return nil, ErrInvalidFarmUpkeepSetting
+			}
+			if floor != nil {
+				w.Settings.FarmUpkeepFloor = *floor
+			}
+			if coinsPerShovel != nil {
+				w.Settings.FarmUpkeepCoinsPerShovel = *coinsPerShovel
+			}
+			return FarmUpkeepSettingsResult{
+				FarmUpkeepFloor:          w.Settings.FarmUpkeepFloor,
+				FarmUpkeepCoinsPerShovel: w.Settings.FarmUpkeepCoinsPerShovel,
+			}, nil
+		},
+	}
+}

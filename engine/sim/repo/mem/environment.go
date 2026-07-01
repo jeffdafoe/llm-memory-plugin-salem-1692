@@ -79,6 +79,8 @@ func (r *EnvironmentRepo) SaveMutableSettings(_ context.Context, _ sim.Tx, ms si
 	r.settings.StallWearDegradeThreshold = ms.StallWearDegradeThreshold
 	r.settings.StallNailsPerRepair = ms.StallNailsPerRepair
 	r.settings.StallRepairDurationSeconds = ms.StallRepairDurationSeconds
+	r.settings.FarmUpkeepFloor = ms.FarmUpkeepFloor
+	r.settings.FarmUpkeepCoinsPerShovel = ms.FarmUpkeepCoinsPerShovel
 	r.settings.HuddleLoopTimeout = time.Duration(ms.HuddleLoopTimeoutSeconds) * time.Second
 	r.settings.HuddleLoopRepeatPercent = ms.HuddleLoopRepeatPercent
 	r.settings.HuddleLoopSweepCadence = time.Duration(ms.HuddleLoopSweepCadenceSeconds) * time.Second

@@ -67,6 +67,11 @@ type MutableWorldSettings struct {
 	StallNailsPerRepair        int
 	StallRepairDurationSeconds int
 
+	// Farm upkeep wealth-tax knobs (LLM-215) — live-tunable via the umbilical,
+	// persisted here each checkpoint so a live change survives restart.
+	FarmUpkeepFloor          int
+	FarmUpkeepCoinsPerShovel int
+
 	// Huddle loop-sweep knobs (LLM-159; enabled/tuned via the umbilical in LLM-183)
 	// — live-tunable, persisted here each checkpoint so a live change survives
 	// restart. HuddleLoopTimeoutSeconds is the master enable (0 = sweep off). Stored
@@ -123,6 +128,8 @@ func (w *World) BuildCheckpointSnapshot() *CheckpointSnapshot {
 			StallWearDegradeThreshold:     w.Settings.StallWearDegradeThreshold,
 			StallNailsPerRepair:           w.Settings.StallNailsPerRepair,
 			StallRepairDurationSeconds:    w.Settings.StallRepairDurationSeconds,
+			FarmUpkeepFloor:               w.Settings.FarmUpkeepFloor,
+			FarmUpkeepCoinsPerShovel:      w.Settings.FarmUpkeepCoinsPerShovel,
 			HuddleLoopTimeoutSeconds:      int(w.Settings.HuddleLoopTimeout / time.Second),
 			HuddleLoopRepeatPercent:       w.Settings.HuddleLoopRepeatPercent,
 			HuddleLoopSweepCadenceSeconds: int(w.Settings.HuddleLoopSweepCadence / time.Second),
