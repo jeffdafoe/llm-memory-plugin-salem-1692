@@ -21,6 +21,14 @@ type ProductionFocusResult struct {
 	ID    ActorID
 	Focus ItemKind
 	Noun  string
+	// Switched is true when this call CHANGED the actor's active production item
+	// (the previous focus differed from Focus). A no-switch produce — the model
+	// re-issuing produce(currentItem), a "tend your post" no-op — is terminal-on-
+	// success in the harness dispatch (LLM-201): the tick ends so the wasted second
+	// agentic round, and the malformed tool output that rides it, never happen. A
+	// genuine switch (Switched=true) stays non-terminal so the actor may speak/act/
+	// done() after choosing.
+	Switched bool
 }
 
 // SetProductionFocus records the item a crafter will forge next. The item must
@@ -57,6 +65,7 @@ func SetProductionFocus(id ActorID, itemName string) Command {
 			if chosenAtCap, otherBelowCap := capStatusForFocus(a, w, kind); chosenAtCap && otherBelowCap {
 				return nil, ModelFacingError{Msg: fmt.Sprintf("you already have all the %s you can hold — make something that's still needed", kind)}
 			}
+			switched := a.ProductionFocus != kind
 			a.ProductionFocus = kind
 			noun := string(kind)
 			if def := w.ItemKinds[kind]; def != nil {
@@ -64,7 +73,7 @@ func SetProductionFocus(id ActorID, itemName string) Command {
 					noun = p
 				}
 			}
-			return ProductionFocusResult{ID: id, Focus: kind, Noun: noun}, nil
+			return ProductionFocusResult{ID: id, Focus: kind, Noun: noun, Switched: switched}, nil
 		},
 	}
 }
