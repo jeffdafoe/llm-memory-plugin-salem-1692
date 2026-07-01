@@ -330,13 +330,22 @@ func cloneAcquaintances(src map[string]Acquaintance) map[string]Acquaintance {
 	return dst
 }
 
-// NarrativeState is the engine-side continuity layer for shared-VA NPCs:
-// the seed_text identity frame plus the evolving_summary the consolidator
-// rewrites from accumulated relationship trails. Nil for stateful-VA
-// actors — their own VA loads context/soul into the system prompt.
+// NarrativeState is the engine-side continuity layer for shared-VA NPCs.
+// Nil for stateful-VA actors — their own VA loads context/soul into the
+// system prompt.
+//
+// AboutMe is the rendered identity: the accreting first-person "soul" the
+// per-actor narrative sweep synthesizes each day via the dream-sim-soul agent
+// (LLM-199), shown in perception's "## Who you are" block. SeedText (dream-
+// pipeline input, never populated for shared VAs) and EvolvingSummary (the
+// older flat-paragraph consolidation output) are kept as distinct columns for
+// round-trip, but neither is rendered: SeedText was the only field render ever
+// emitted and shared VAs have none; EvolvingSummary is legacy (the sweep that
+// wrote it now writes AboutMe instead).
 type NarrativeState struct {
 	SeedText           string
 	EvolvingSummary    string
+	AboutMe            string
 	LastConsolidatedAt *time.Time
 	CreatedAt          time.Time
 	UpdatedAt          time.Time

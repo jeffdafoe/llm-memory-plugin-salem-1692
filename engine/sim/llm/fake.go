@@ -31,6 +31,7 @@ type FakeClient struct {
 	requests        []Request
 	persistRequests []PersistRequest
 	persistErr      error
+	soulRequests    []SoulRequest
 }
 
 // ScriptedTurn is one entry in the FakeClient script. Exactly one of
@@ -125,6 +126,36 @@ func (f *FakeClient) SearchMemory(ctx context.Context, namespace, query string, 
 		}
 	}
 	return nil, nil
+}
+
+// SynthesizeSoul implements the cascade's SoulSynthesizer capability
+// (LLM-199) — the narrative soul sweep type-asserts the client to it at wiring
+// time, so the boot-wiring / compose tests that pass a FakeClient need it
+// satisfied (same role SearchMemory plays for recall). Records the request for
+// inspection via SoulRequests() and returns a canned non-empty soul, enough for
+// a sweep driven through this client to install something. Tests that exercise
+// the sweep's branching use a dedicated SoulSynthesizer fake, not this.
+// Ctx-cancel handling mirrors Complete.
+func (f *FakeClient) SynthesizeSoul(ctx context.Context, req SoulRequest) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", &Error{
+			Class:   ErrorContextCancelled,
+			Message: "ctx cancelled before fake SynthesizeSoul",
+			Cause:   err,
+		}
+	}
+	f.mu.Lock()
+	f.soulRequests = append(f.soulRequests, req)
+	f.mu.Unlock()
+	return "a synthesized soul", nil
+}
+
+// SoulRequests returns a copy of every SynthesizeSoul call seen so far, in
+// call order. Safe to call from any goroutine.
+func (f *FakeClient) SoulRequests() []SoulRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]SoulRequest(nil), f.soulRequests...)
 }
 
 // PersistToolResults implements ToolResultPersister. Records the request

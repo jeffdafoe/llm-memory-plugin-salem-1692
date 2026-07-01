@@ -131,10 +131,17 @@ type NarrativePeerSummary struct {
 // fresh slice sorted by peer DisplayName, with PeerID tiebreak so the
 // rendering is deterministic even when display names collide.
 type NarrativeCandidate struct {
-	ActorID          ActorID
-	ActorName        string
-	ActorLLMAgent    string
-	PriorSummary     string
+	ActorID   ActorID
+	ActorName string
+	// PriorAboutMe is the actor's current synthesized soul (about_me) — the
+	// prior the soul agent evolves from. Empty on the first synthesis.
+	PriorAboutMe string
+	// Dwelling and Household compose the live per-actor seed for the soul
+	// prompt: the actor's home-structure name and the display names of the
+	// co-residents sharing that home (sorted, self excluded). Either may be
+	// empty (no home set / lives alone).
+	Dwelling         string
+	Household        []string
 	Events           []ActionLogEntry
 	PeerSummaries    []NarrativePeerSummary
 	LastConsolidated *time.Time
@@ -144,12 +151,15 @@ type NarrativeCandidate struct {
 // LLM could synthesize from. Drives the worker's decision to call the
 // LLM vs stamp-only.
 //
-// PriorSummary is treated as empty when whitespace-only — the prompt
+// PriorAboutMe is treated as empty when whitespace-only — the prompt
 // build strips trim-only strings too, so an actor with `"   "` for a
 // prior would otherwise burn an LLM call with effectively zero source
-// material.
+// material. The live seed (name/dwelling/household) is always present, so
+// it is deliberately NOT counted here: synthesizing a soul from a bare seed
+// with no events, peers, or prior would burn a call for a thin "I live at X"
+// stub — the stamp-only path retires such an actor until it has real activity.
 func (c NarrativeCandidate) HasSourceMaterial() bool {
-	return len(c.Events) > 0 || len(c.PeerSummaries) > 0 || strings.TrimSpace(c.PriorSummary) != ""
+	return len(c.Events) > 0 || len(c.PeerSummaries) > 0 || strings.TrimSpace(c.PriorAboutMe) != ""
 }
 
 // FindNarrativeConsolidationCandidates returns a Command that scans
@@ -203,7 +213,7 @@ func FindNarrativeConsolidationCandidates(at time.Time, limit int) Command {
 						t := *actor.Narrative.LastConsolidatedAt
 						lastCons = &t
 					}
-					prior = actor.Narrative.EvolvingSummary
+					prior = actor.Narrative.AboutMe
 				}
 				// Qualifying: never-consolidated OR past the daily floor.
 				firstTime := lastCons == nil
@@ -241,11 +251,13 @@ func FindNarrativeConsolidationCandidates(at time.Time, limit int) Command {
 			for _, e := range all {
 				events := snapshotEventsForActor(w, e.actor.ID, eventsCutoff)
 				peers := snapshotPeerSummaries(w, e.actor)
+				dwelling, household := snapshotDwellingAndHousehold(w, e.actor)
 				out = append(out, NarrativeCandidate{
 					ActorID:          e.actor.ID,
 					ActorName:        e.actor.DisplayName,
-					ActorLLMAgent:    e.actor.LLMAgent,
-					PriorSummary:     e.priorSummary,
+					PriorAboutMe:     e.priorSummary,
+					Dwelling:         dwelling,
+					Household:        household,
 					Events:           events,
 					PeerSummaries:    peers,
 					LastConsolidated: e.lastCons,
@@ -357,47 +369,77 @@ func snapshotPeerSummaries(w *World, actor *Actor) []NarrativePeerSummary {
 	return out
 }
 
-// ApplyNarrativeConsolidation returns a Command that installs
-// `newSummary` as the actor's EvolvingSummary and stamps
-// LastConsolidatedAt + UpdatedAt. Auto-creates Actor.Narrative if nil
-// (mirrors RecordInteraction's lazy-create posture for Relationships).
+// snapshotDwellingAndHousehold composes the live per-actor seed inputs for
+// the soul prompt: the actor's home-structure display name and the sorted
+// display names of co-residents sharing that home (self excluded, unnamed
+// skipped). Both empty when the actor has no home set. Composed live each
+// pass — household membership drifts (move/death/birth), so live composition
+// stays current for free rather than persisting a stale roster.
+func snapshotDwellingAndHousehold(w *World, actor *Actor) (string, []string) {
+	home := actor.HomeStructureID
+	if home == "" {
+		return "", nil
+	}
+	var dwelling string
+	if s, ok := w.Structures[home]; ok && s != nil {
+		dwelling = s.DisplayName
+	}
+	var household []string
+	for _, other := range w.Actors {
+		if other == nil || other.ID == actor.ID {
+			continue
+		}
+		if other.HomeStructureID != home || other.DisplayName == "" {
+			continue
+		}
+		household = append(household, other.DisplayName)
+	}
+	sort.Strings(household)
+	return dwelling, household
+}
+
+// ApplyNarrativeSoul returns a Command that installs `newAboutMe` as the
+// actor's AboutMe (the rendered soul) and stamps LastConsolidatedAt +
+// UpdatedAt. Auto-creates Actor.Narrative if nil (mirrors RecordInteraction's
+// lazy-create posture for Relationships).
 //
-// Does NOT touch SeedText — that's an external input (dream pipeline,
-// admin tool) and is not within this slice's authority to overwrite.
+// Does NOT touch SeedText (external dream-pipeline input) or EvolvingSummary
+// (legacy) — only AboutMe is this path's authority.
 //
 // Errors:
-//   - empty newSummary (after trim)
+//   - empty newAboutMe (after trim)
 //   - actor not found
 //   - actor is not KindNPCShared (substrate invariant violation)
+//   - actor is a transient visitor
 //
 // On any error the actor's Narrative is left untouched.
-func ApplyNarrativeConsolidation(actorID ActorID, newSummary string, at time.Time) Command {
+func ApplyNarrativeSoul(actorID ActorID, newAboutMe string, at time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
 			// Trim at the substrate boundary — the cascade driver already
 			// trims, but the Command is public (callable directly from
 			// tests / future callers / admin paths) so we defend the
-			// invariant here: EvolvingSummary is never set to whitespace-
-			// only via this path. Mirrors AppendActionLogEntry's
-			// rune-truncate-at-boundary posture.
-			newSummary = strings.TrimSpace(newSummary)
-			if newSummary == "" {
-				return nil, fmt.Errorf("ApplyNarrativeConsolidation: empty new summary for %q", actorID)
+			// invariant here: AboutMe is never set to whitespace-only via
+			// this path. Mirrors AppendActionLogEntry's rune-truncate-at-
+			// boundary posture.
+			newAboutMe = strings.TrimSpace(newAboutMe)
+			if newAboutMe == "" {
+				return nil, fmt.Errorf("ApplyNarrativeSoul: empty about_me for %q", actorID)
 			}
 			actor, ok := w.Actors[actorID]
 			if !ok || actor == nil {
-				return nil, fmt.Errorf("ApplyNarrativeConsolidation: actor %q not found", actorID)
+				return nil, fmt.Errorf("ApplyNarrativeSoul: actor %q not found", actorID)
 			}
 			if actor.Kind != KindNPCShared {
-				return nil, fmt.Errorf("ApplyNarrativeConsolidation: actor %q is not KindNPCShared", actorID)
+				return nil, fmt.Errorf("ApplyNarrativeSoul: actor %q is not KindNPCShared", actorID)
 			}
 			if actor.VisitorState != nil {
-				return nil, fmt.Errorf("ApplyNarrativeConsolidation: actor %q is a transient visitor", actorID)
+				return nil, fmt.Errorf("ApplyNarrativeSoul: actor %q is a transient visitor", actorID)
 			}
 			if actor.Narrative == nil {
 				actor.Narrative = &NarrativeState{CreatedAt: at}
 			}
-			actor.Narrative.EvolvingSummary = newSummary
+			actor.Narrative.AboutMe = newAboutMe
 			t := at
 			actor.Narrative.LastConsolidatedAt = &t
 			actor.Narrative.UpdatedAt = at

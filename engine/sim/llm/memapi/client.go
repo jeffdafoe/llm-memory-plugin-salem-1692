@@ -417,6 +417,58 @@ func (c *Client) FetchRateLimits(ctx context.Context, agents []string) (map[stri
 	return out, nil
 }
 
+// --- SynthesizeSoul -------------------------------------------------------
+
+// soulRequest is the /v1/sim/soul body. Mirrors llm.SoulRequest; current_soul
+// and day are omitempty (empty on a first run / when no day label is supplied).
+type soulRequest struct {
+	CharacterDescription string `json:"character_description"`
+	CurrentSoul          string `json:"current_soul,omitempty"`
+	DaySnapshot          string `json:"day_snapshot"`
+	Day                  string `json:"day,omitempty"`
+}
+
+// soulResponse is the /v1/sim/soul response. text is the synthesized soul (or
+// "" when the endpoint rejected the model output); rejected names the reason
+// when text is empty (empty-reply / reasoning-preamble) — carried for logging
+// but not required by the caller.
+type soulResponse struct {
+	Text     string `json:"text"`
+	Rejected string `json:"rejected,omitempty"`
+}
+
+// SynthesizeSoul synthesizes a shared-NPC soul from engine-assembled material
+// via POST /v1/sim/soul (LLM-199). Unlike Complete, this does NOT route to the
+// actor's own VA: the endpoint resolves and invokes the system-owned
+// dream-sim-soul agent server-side — the engine holds no session for it — and
+// returns the prose.
+//
+// Returns the synthesized text, or "" (with no error) when the model produced
+// nothing usable (the endpoint's empty-reply / reasoning-preamble rejection),
+// which the caller treats as "keep the prior soul." Errors carry no llm.Error
+// classification (like SearchMemory): the narrative sweep logs + skips on any
+// failure and retries on its next pass, so it only needs success-vs-failure.
+func (c *Client) SynthesizeSoul(ctx context.Context, req llm.SoulRequest) (string, error) {
+	body, err := json.Marshal(soulRequest{
+		CharacterDescription: req.CharacterDescription,
+		CurrentSoul:          req.CurrentSoul,
+		DaySnapshot:          req.DaySnapshot,
+		Day:                  req.Day,
+	})
+	if err != nil {
+		return "", fmt.Errorf("memapi: marshal soul request: %w", err)
+	}
+	respBytes, err := c.post(ctx, "/v1/sim/soul", body)
+	if err != nil {
+		return "", fmt.Errorf("memapi: soul: %w", err)
+	}
+	var resp soulResponse
+	if err := json.Unmarshal(respBytes, &resp); err != nil {
+		return "", fmt.Errorf("memapi: parse soul response: %w", err)
+	}
+	return resp.Text, nil
+}
+
 // --- HTTP plumbing --------------------------------------------------------
 
 // post issues a POST to baseURL+path with the given JSON body. Returns

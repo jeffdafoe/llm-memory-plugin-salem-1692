@@ -109,6 +109,15 @@ var perceptionScenarios = []perceptionScenario{
 		build: tiredKeeperAtPostOnShift,
 	},
 	{
+		name: "shared_npc_soul_who_you_are",
+		summary: "A shared-VA keeper (Hannah, salem-vendor) at her own post during working hours, carrying a " +
+			"synthesized about_me soul (LLM-199). The golden pins that '## Who you are' renders the soul prose — the " +
+			"fix for the empty-block bug (shared VAs had no rendered identity because render emitted only the never-" +
+			"populated seed_text). A regression that muted about_me, reverted the render field, or dropped the build " +
+			"gate would show the block going empty in the diff.",
+		build: sharedNpcWithSoul,
+	},
+	{
 		name: "homed_worker_evening_tavern_open",
 		summary: "A homed day-shift agent (Ezekiel, 07:00–19:00), off-shift and awake at 20:30 — inside the " +
 			"evening window [shift-end, 22:00) — standing at his forge after closing up (LLM-149, Lever 2). The golden " +
@@ -2675,6 +2684,50 @@ func keeperAloneAtPostOnShift() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) 
 		},
 	}
 	return snap, josiahID, warrants
+}
+
+// sharedNpcWithSoul is the LLM-199 case: a shared-VA keeper standing at her own
+// post during working hours, carrying a synthesized about_me soul. The golden
+// pins that "## Who you are" renders that prose (the empty-block fix) rather
+// than a bare header — the render now emits AboutMe, gated by a non-empty value.
+func sharedNpcWithSoul() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		hannahID = sim.ActorID("hannah")
+		inn      = sim.StructureID("wayfarer_inn")
+	)
+	start, end := 360, 1260 // working hours 06:00–21:00
+	now := 540              // 09:00 — on shift
+	hannah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Hannah",
+		Role:              "innkeeper",
+		State:             sim.StateIdle,
+		WorkStructureID:   inn,
+		InsideStructureID: inn,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             12,
+		Needs:             map[sim.NeedKey]int{},
+		Narrative: &sim.NarrativeState{
+			AboutMe: "I am Hannah, keeper of the Wayfarer Inn. My days run to the rhythm of the hearth and the door — I take a quiet pride in a warm room and a fair reckoning, and I have come to know the regulars by their thirst.",
+		},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{hannahID: hannah},
+		Structures: map[sim.StructureID]*sim.Structure{
+			inn: plainStructure(inn, "Wayfarer Inn"),
+		},
+	}
+	warrants := []sim.WarrantMeta{
+		{
+			TriggerActorID: hannahID,
+			Reason:         sim.ArrivalWarrantReason{AtStructureID: inn},
+			SourceEventID:  1,
+		},
+	}
+	return snap, hannahID, warrants
 }
 
 // tiredKeeperAtPostOnShift is the LLM-100 positive case: a tired keeper standing

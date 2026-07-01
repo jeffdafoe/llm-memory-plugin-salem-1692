@@ -98,6 +98,15 @@ func RegisterProductionCascades(ctx context.Context, w *sim.World, client llm.Cl
 	RegisterAtmosphere(ctx, w, client)
 	RegisterConsolidation(ctx, w, client)
 	RegisterNarrationExpansion(ctx, w, client)
-	RegisterNarrativeConsolidation(ctx, w, client)
+	// Narrative soul synthesis (LLM-199) calls the memory-api /sim/soul
+	// endpoint (resolving the system-owned dream-sim-soul agent), not the
+	// generic completion path, so it needs a SoulSynthesizer rather than a
+	// plain llm.Client. The production client (memapi) implements it; fail
+	// fast at wiring if a client that doesn't is ever passed.
+	soul, ok := client.(SoulSynthesizer)
+	if !ok {
+		panic("cascade: RegisterProductionCascades requires an LLM client implementing SoulSynthesizer (memory-api /sim/soul)")
+	}
+	RegisterNarrativeConsolidation(ctx, w, soul)
 	RegisterNoticeboard(ctx, w, client)
 }

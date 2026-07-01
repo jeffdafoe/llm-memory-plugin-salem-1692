@@ -239,7 +239,7 @@ SELECT
 // with actor).
 const loadAllNarrativeSQLA = `
 SELECT
-    actor_id::text, seed_text, evolving_summary,
+    actor_id::text, seed_text, evolving_summary, about_me,
     last_consolidated_at, created_at, updated_at
   FROM actor_narrative_state`
 
@@ -280,19 +280,21 @@ ON CONFLICT (actor_id, other_actor_id) DO UPDATE SET
     snapshot_gen         = EXCLUDED.snapshot_gen`
 
 // upsertNarrativeSQLA writes one actor_narrative_state row. PK is
-// actor_id (1:1). seed_text is external input (dream pipeline); no
-// cascade mutates it, but persistence round-trips it verbatim.
+// actor_id (1:1). seed_text is external input (dream pipeline) and
+// evolving_summary is legacy (no longer written), but persistence
+// round-trips both verbatim. about_me carries the rendered soul (LLM-199).
 const upsertNarrativeSQLA = `
 INSERT INTO actor_narrative_state (
-    actor_id, seed_text, evolving_summary,
+    actor_id, seed_text, evolving_summary, about_me,
     last_consolidated_at, created_at, updated_at, snapshot_gen
 ) VALUES (
-    $1, $2, $3,
-    $4, $5, $6, $7
+    $1, $2, $3, $4,
+    $5, $6, $7, $8
 )
 ON CONFLICT (actor_id) DO UPDATE SET
     seed_text            = EXCLUDED.seed_text,
     evolving_summary     = EXCLUDED.evolving_summary,
+    about_me             = EXCLUDED.about_me,
     last_consolidated_at = EXCLUDED.last_consolidated_at,
     created_at           = EXCLUDED.created_at,
     updated_at           = EXCLUDED.updated_at,
@@ -800,12 +802,13 @@ func (r *ActorsRepo) loadAllNarrative(ctx context.Context, actors map[sim.ActorI
 			actorID            string
 			seedText           string
 			evolvingSummary    string
+			aboutMe            string
 			lastConsolidatedAt *time.Time
 			createdAt          time.Time
 			updatedAt          time.Time
 		)
 		if err := rows.Scan(
-			&actorID, &seedText, &evolvingSummary,
+			&actorID, &seedText, &evolvingSummary, &aboutMe,
 			&lastConsolidatedAt, &createdAt, &updatedAt,
 		); err != nil {
 			return fmt.Errorf("pg actors LoadAll narrative scan: %w", err)
@@ -818,6 +821,7 @@ func (r *ActorsRepo) loadAllNarrative(ctx context.Context, actors map[sim.ActorI
 		parent.Narrative = &sim.NarrativeState{
 			SeedText:           seedText,
 			EvolvingSummary:    evolvingSummary,
+			AboutMe:            aboutMe,
 			LastConsolidatedAt: lastConsolidatedAt,
 			CreatedAt:          createdAt,
 			UpdatedAt:          updatedAt,
@@ -1607,10 +1611,11 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 			string(a.ID),                   // $1 actor_id
 			a.Narrative.SeedText,           // $2 seed_text
 			a.Narrative.EvolvingSummary,    // $3 evolving_summary
-			a.Narrative.LastConsolidatedAt, // $4 last_consolidated_at
-			a.Narrative.CreatedAt,          // $5 created_at
-			a.Narrative.UpdatedAt,          // $6 updated_at
-			narrGen,                        // $7 snapshot_gen
+			a.Narrative.AboutMe,            // $4 about_me
+			a.Narrative.LastConsolidatedAt, // $5 last_consolidated_at
+			a.Narrative.CreatedAt,          // $6 created_at
+			a.Narrative.UpdatedAt,          // $7 updated_at
+			narrGen,                        // $8 snapshot_gen
 		); err != nil {
 			return fmt.Errorf("pg actors SaveSnapshot: upsert narrative actor=%s: %w", a.ID, err)
 		}

@@ -125,7 +125,7 @@ func relationshipColumns() []string {
 
 func narrativeColumns() []string {
 	return []string{
-		"actor_id", "seed_text", "evolving_summary",
+		"actor_id", "seed_text", "evolving_summary", "about_me",
 		"last_consolidated_at", "created_at", "updated_at",
 	}
 }
@@ -1095,7 +1095,7 @@ func TestActorsRepo_LoadAll_Continuity(t *testing.T) {
 
 	mock.ExpectQuery(`FROM actor_narrative_state\b`).
 		WillReturnRows(pgxmock.NewRows(narrativeColumns()).
-			AddRow(actA, "seed frame", "evolving impression", &tsBreak, tsEntered, tsTickedAt))
+			AddRow(actA, "seed frame", "evolving impression", "about frame", &tsBreak, tsEntered, tsTickedAt))
 
 	mock.ExpectQuery(`FROM npc_acquaintance\b`).
 		WillReturnRows(pgxmock.NewRows(acquaintanceColumns()).
@@ -1151,7 +1151,7 @@ func TestActorsRepo_LoadAll_Continuity(t *testing.T) {
 	if a.Narrative == nil {
 		t.Fatal("narrative missing")
 	}
-	if a.Narrative.SeedText != "seed frame" || a.Narrative.EvolvingSummary != "evolving impression" {
+	if a.Narrative.SeedText != "seed frame" || a.Narrative.EvolvingSummary != "evolving impression" || a.Narrative.AboutMe != "about frame" {
 		t.Errorf("narrative = %+v", a.Narrative)
 	}
 	if a.Narrative.LastConsolidatedAt == nil || !a.Narrative.LastConsolidatedAt.Equal(tsBreak) {
@@ -1192,7 +1192,7 @@ func TestActorsRepo_LoadAll_OrphanNarrative(t *testing.T) {
 	mock.ExpectQuery(`FROM actor_relationship\b`).WillReturnRows(emptyRelRows())
 	mock.ExpectQuery(`FROM actor_narrative_state\b`).
 		WillReturnRows(pgxmock.NewRows(narrativeColumns()).
-			AddRow(actA, "seed", "", (*time.Time)(nil), tsEntered, tsEntered))
+			AddRow(actA, "seed", "", "", (*time.Time)(nil), tsEntered, tsEntered))
 
 	_, err := repo.LoadAll(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "orphan narrative row") {
@@ -1308,7 +1308,7 @@ func TestActorsRepo_SaveSnapshot_Continuity(t *testing.T) {
 	mock.ExpectQuery(`SELECT nextval\('actor_narrative_state_snapshot_gen_seq`).
 		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(int64(1101)))
 	mock.ExpectExec(`INSERT INTO actor_narrative_state `).
-		WithArgs(actA, "seed frame", "evolving impression", &tsBreak, tsEntered, tsTickedAt, int64(1101)).
+		WithArgs(actA, "seed frame", "evolving impression", "about frame", &tsBreak, tsEntered, tsTickedAt, int64(1101)).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor_narrative_state .*WHERE snapshot_gen < \$1`).
 		WithArgs(int64(1101)).
@@ -1343,6 +1343,7 @@ func TestActorsRepo_SaveSnapshot_Continuity(t *testing.T) {
 			Narrative: &sim.NarrativeState{
 				SeedText:           "seed frame",
 				EvolvingSummary:    "evolving impression",
+				AboutMe:            "about frame",
 				LastConsolidatedAt: &tsBreak,
 				CreatedAt:          tsEntered,
 				UpdatedAt:          tsTickedAt,

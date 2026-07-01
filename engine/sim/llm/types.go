@@ -78,6 +78,25 @@ type Request struct {
 	EphemeralContext string
 }
 
+// SoulRequest is the input to a shared-NPC soul synthesis call (LLM-199) —
+// the contract between the cascade's narrative sweep and the memory-api
+// adapter's SynthesizeSoul. Unlike Request, this does NOT route to the actor's
+// own VA: the adapter POSTs to /v1/sim/soul, which resolves and invokes the
+// system-owned dream-sim-soul agent server-side and returns prose. The engine
+// supplies only the material; it holds no session for that agent.
+//
+// The fields map to the endpoint's section anchors. CharacterDescription is
+// the live-composed per-actor seed (name + dwelling + household); CurrentSoul
+// is the prior about_me (empty on a first run); DaySnapshot is the day's
+// material (recent events + per-peer impressions); Day is an optional
+// YYYY-MM-DD label for the snapshot header.
+type SoulRequest struct {
+	CharacterDescription string
+	CurrentSoul          string
+	DaySnapshot          string
+	Day                  string
+}
+
 // ToolResult is one engine-side answer to a tool call the model emitted
 // in a prior assistant message. Used by ToolResultPersister to write
 // orphaned tool-result rows to history without firing a follow-up LLM

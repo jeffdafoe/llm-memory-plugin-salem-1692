@@ -13,8 +13,7 @@ import (
 // buildNarrativeTestWorld stands up a world with three actors covering
 // the Kind gate: one KindNPCShared (hannah), one KindNPCStateful
 // (ezekiel — must be skipped), and one KindPC (the player — also
-// skipped). Hannah carries the salem-vendor LLMAgent slug so prompt-
-// routing tests can verify Request.Model.
+// skipped).
 func buildNarrativeTestWorld(t *testing.T) (*sim.World, func()) {
 	t.Helper()
 	repo, handles := mem.NewRepository()
@@ -108,11 +107,8 @@ func TestFindNarrativeCandidates_FirstTimeNilNarrative(t *testing.T) {
 	if c.ActorName != "Hannah" {
 		t.Errorf("ActorName = %q, want Hannah", c.ActorName)
 	}
-	if c.ActorLLMAgent != "salem-vendor" {
-		t.Errorf("ActorLLMAgent = %q, want salem-vendor", c.ActorLLMAgent)
-	}
-	if c.PriorSummary != "" {
-		t.Errorf("PriorSummary = %q, want empty", c.PriorSummary)
+	if c.PriorAboutMe != "" {
+		t.Errorf("PriorAboutMe = %q, want empty", c.PriorAboutMe)
 	}
 	if c.LastConsolidated != nil {
 		t.Errorf("LastConsolidated = %v, want nil", c.LastConsolidated)
@@ -148,6 +144,51 @@ func TestFindNarrativeCandidates_FirstTimeWithNarrativeButNilStamp(t *testing.T)
 	}
 }
 
+// TestFindNarrativeCandidates_DwellingAndHousehold verifies the live seed
+// inputs: the actor's home-structure display name and the sorted display
+// names of co-residents sharing that home (self + non-residents excluded).
+func TestFindNarrativeCandidates_DwellingAndHousehold(t *testing.T) {
+	w, stop := buildNarrativeTestWorld(t)
+	defer stop()
+	at := time.Now().UTC()
+
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Structures["inn"] = &sim.Structure{ID: "inn", DisplayName: "the Wayfarer Inn"}
+		world.Actors["hannah"].HomeStructureID = "inn"
+		// Bram shares the home — a co-resident.
+		world.Actors["bram"] = &sim.Actor{
+			ID:              "bram",
+			DisplayName:     "Bram",
+			Kind:            sim.KindNPCShared,
+			HomeStructureID: "inn",
+			State:           sim.StateIdle,
+			RecentActions:   sim.NewRingBuffer[sim.Action](4),
+		}
+		// Ezekiel lives elsewhere — NOT part of hannah's household.
+		world.Actors["ezekiel"].HomeStructureID = "forge"
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed home/household: %v", err)
+	}
+
+	cs := narrativeCandidates(t, w, at, 5)
+	var h *sim.NarrativeCandidate
+	for i := range cs {
+		if cs[i].ActorID == "hannah" {
+			h = &cs[i]
+		}
+	}
+	if h == nil {
+		t.Fatal("hannah candidate not found")
+	}
+	if h.Dwelling != "the Wayfarer Inn" {
+		t.Errorf("Dwelling = %q, want 'the Wayfarer Inn'", h.Dwelling)
+	}
+	if len(h.Household) != 1 || h.Household[0] != "Bram" {
+		t.Errorf("Household = %v, want [Bram] (self + non-residents excluded)", h.Household)
+	}
+}
+
 // TestFindNarrativeCandidates_FloorOverdue confirms an actor whose last
 // consolidation is past the daily floor AND who logged activity in the
 // events window qualifies (the activity gate is satisfied).
@@ -157,7 +198,7 @@ func TestFindNarrativeCandidates_FloorOverdue(t *testing.T) {
 	at := time.Now().UTC()
 
 	stale := at.Add(-25 * time.Hour)
-	if _, err := w.Send(sim.ApplyNarrativeConsolidation("hannah", "earlier reflection", stale)); err != nil {
+	if _, err := w.Send(sim.ApplyNarrativeSoul("hannah", "earlier reflection", stale)); err != nil {
 		t.Fatalf("seed apply: %v", err)
 	}
 	// Activity since the last reflection — satisfies the gate.
@@ -167,8 +208,8 @@ func TestFindNarrativeCandidates_FloorOverdue(t *testing.T) {
 	if len(cs) != 1 {
 		t.Fatalf("len(candidates) = %d, want 1 (floor-overdue)", len(cs))
 	}
-	if cs[0].PriorSummary != "earlier reflection" {
-		t.Errorf("PriorSummary = %q, want earlier reflection", cs[0].PriorSummary)
+	if cs[0].PriorAboutMe != "earlier reflection" {
+		t.Errorf("PriorAboutMe = %q, want earlier reflection", cs[0].PriorAboutMe)
 	}
 	if cs[0].LastConsolidated == nil || !cs[0].LastConsolidated.Equal(stale) {
 		t.Errorf("LastConsolidated = %v, want %v", cs[0].LastConsolidated, stale)
@@ -178,14 +219,14 @@ func TestFindNarrativeCandidates_FloorOverdue(t *testing.T) {
 // TestFindNarrativeCandidates_FloorOverdueNoActivitySkipped confirms the
 // activity gate (LLM-174): a floor-overdue actor that carries a prior
 // reflection but logged nothing in the events window is NOT selected —
-// re-reflecting would burn an LLM call to re-chew an unchanged prior.
+// re-reflecting would burn a soul call to re-chew an unchanged prior.
 func TestFindNarrativeCandidates_FloorOverdueNoActivitySkipped(t *testing.T) {
 	w, stop := buildNarrativeTestWorld(t)
 	defer stop()
 	at := time.Now().UTC()
 
 	stale := at.Add(-25 * time.Hour)
-	if _, err := w.Send(sim.ApplyNarrativeConsolidation("hannah", "earlier reflection", stale)); err != nil {
+	if _, err := w.Send(sim.ApplyNarrativeSoul("hannah", "earlier reflection", stale)); err != nil {
 		t.Fatalf("seed apply: %v", err)
 	}
 	// One event, but OLDER than the events window — not recent activity,
@@ -206,7 +247,7 @@ func TestFindNarrativeCandidates_RecentlyConsolidatedSkipped(t *testing.T) {
 	at := time.Now().UTC()
 
 	recent := at.Add(-1 * time.Hour)
-	if _, err := w.Send(sim.ApplyNarrativeConsolidation("hannah", "fresh reflection", recent)); err != nil {
+	if _, err := w.Send(sim.ApplyNarrativeSoul("hannah", "fresh reflection", recent)); err != nil {
 		t.Fatalf("seed apply: %v", err)
 	}
 
@@ -296,7 +337,7 @@ func TestFindNarrativeCandidates_OrderingNullsFirst(t *testing.T) {
 		t.Fatalf("seed mara: %v", err)
 	}
 	stale := at.Add(-25 * time.Hour)
-	if _, err := w.Send(sim.ApplyNarrativeConsolidation("hannah", "stale reflection", stale)); err != nil {
+	if _, err := w.Send(sim.ApplyNarrativeSoul("hannah", "stale reflection", stale)); err != nil {
 		t.Fatalf("seed apply: %v", err)
 	}
 	// Hannah is floor-overdue; give her in-window activity so the gate
@@ -519,10 +560,13 @@ func TestHasSourceMaterial(t *testing.T) {
 		want bool
 	}{
 		{"all empty", sim.NarrativeCandidate{}, false},
-		{"prior only", sim.NarrativeCandidate{PriorSummary: "x"}, true},
-		{"prior whitespace-only", sim.NarrativeCandidate{PriorSummary: "   \n  "}, false},
+		{"prior only", sim.NarrativeCandidate{PriorAboutMe: "x"}, true},
+		{"prior whitespace-only", sim.NarrativeCandidate{PriorAboutMe: "   \n  "}, false},
 		{"events only", sim.NarrativeCandidate{Events: []sim.ActionLogEntry{{}}}, true},
 		{"peers only", sim.NarrativeCandidate{PeerSummaries: []sim.NarrativePeerSummary{{Name: "x", Summary: "y"}}}, true},
+		// The live seed (dwelling/household) is deliberately NOT material:
+		// a bare seed with no events/peers/prior must not trigger a call.
+		{"dwelling/household only", sim.NarrativeCandidate{Dwelling: "the Inn", Household: []string{"Bram"}}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -533,16 +577,16 @@ func TestHasSourceMaterial(t *testing.T) {
 	}
 }
 
-// TestApplyNarrativeConsolidation_BasicInstallAndStamp confirms the
-// apply path installs EvolvingSummary and stamps timestamps, auto-
-// creating Actor.Narrative when nil.
-func TestApplyNarrativeConsolidation_BasicInstallAndStamp(t *testing.T) {
+// TestApplyNarrativeSoul_BasicInstallAndStamp confirms the apply path
+// installs AboutMe and stamps timestamps, auto-creating Actor.Narrative
+// when nil.
+func TestApplyNarrativeSoul_BasicInstallAndStamp(t *testing.T) {
 	w, stop := buildNarrativeTestWorld(t)
 	defer stop()
 	at := time.Now().UTC()
 
-	if _, err := w.Send(sim.ApplyNarrativeConsolidation("hannah", "she keeps to her own thoughts.", at)); err != nil {
-		t.Fatalf("ApplyNarrativeConsolidation: %v", err)
+	if _, err := w.Send(sim.ApplyNarrativeSoul("hannah", "she keeps to her own thoughts.", at)); err != nil {
+		t.Fatalf("ApplyNarrativeSoul: %v", err)
 	}
 
 	snap := w.Published()
@@ -550,8 +594,8 @@ func TestApplyNarrativeConsolidation_BasicInstallAndStamp(t *testing.T) {
 	if ns == nil {
 		t.Fatal("Narrative not auto-created")
 	}
-	if ns.EvolvingSummary != "she keeps to her own thoughts." {
-		t.Errorf("EvolvingSummary = %q, want 'she keeps to her own thoughts.'", ns.EvolvingSummary)
+	if ns.AboutMe != "she keeps to her own thoughts." {
+		t.Errorf("AboutMe = %q, want 'she keeps to her own thoughts.'", ns.AboutMe)
 	}
 	if ns.LastConsolidatedAt == nil || !ns.LastConsolidatedAt.Equal(at) {
 		t.Errorf("LastConsolidatedAt = %v, want %v", ns.LastConsolidatedAt, at)
@@ -564,11 +608,11 @@ func TestApplyNarrativeConsolidation_BasicInstallAndStamp(t *testing.T) {
 	}
 }
 
-// TestApplyNarrativeConsolidation_PreservesSeedAndCreatedAt verifies
-// that a pre-existing Narrative's SeedText and CreatedAt are not
-// overwritten — the apply only touches EvolvingSummary +
-// LastConsolidatedAt + UpdatedAt.
-func TestApplyNarrativeConsolidation_PreservesSeedAndCreatedAt(t *testing.T) {
+// TestApplyNarrativeSoul_PreservesSeedEvolvingAndCreatedAt verifies that a
+// pre-existing Narrative's SeedText, legacy EvolvingSummary, and CreatedAt
+// are not overwritten — the apply only touches AboutMe + LastConsolidatedAt
+// + UpdatedAt.
+func TestApplyNarrativeSoul_PreservesSeedEvolvingAndCreatedAt(t *testing.T) {
 	w, stop := buildNarrativeTestWorld(t)
 	defer stop()
 	at := time.Now().UTC()
@@ -578,7 +622,8 @@ func TestApplyNarrativeConsolidation_PreservesSeedAndCreatedAt(t *testing.T) {
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		world.Actors["hannah"].Narrative = &sim.NarrativeState{
 			SeedText:        "Hannah keeps the tavern; she is widowed and stoic.",
-			EvolvingSummary: "first impression",
+			EvolvingSummary: "legacy flat summary",
+			AboutMe:         "first soul",
 			CreatedAt:       created,
 		}
 		return nil, nil
@@ -586,8 +631,8 @@ func TestApplyNarrativeConsolidation_PreservesSeedAndCreatedAt(t *testing.T) {
 		t.Fatalf("seed Narrative: %v", err)
 	}
 
-	if _, err := w.Send(sim.ApplyNarrativeConsolidation("hannah", "second impression", at)); err != nil {
-		t.Fatalf("ApplyNarrativeConsolidation: %v", err)
+	if _, err := w.Send(sim.ApplyNarrativeSoul("hannah", "second soul", at)); err != nil {
+		t.Fatalf("ApplyNarrativeSoul: %v", err)
 	}
 
 	snap := w.Published()
@@ -595,22 +640,25 @@ func TestApplyNarrativeConsolidation_PreservesSeedAndCreatedAt(t *testing.T) {
 	if ns.SeedText != "Hannah keeps the tavern; she is widowed and stoic." {
 		t.Errorf("SeedText overwritten: %q", ns.SeedText)
 	}
+	if ns.EvolvingSummary != "legacy flat summary" {
+		t.Errorf("EvolvingSummary (legacy) overwritten: %q", ns.EvolvingSummary)
+	}
 	if !ns.CreatedAt.Equal(created) {
 		t.Errorf("CreatedAt overwritten: %v, want %v", ns.CreatedAt, created)
 	}
-	if ns.EvolvingSummary != "second impression" {
-		t.Errorf("EvolvingSummary = %q, want 'second impression'", ns.EvolvingSummary)
+	if ns.AboutMe != "second soul" {
+		t.Errorf("AboutMe = %q, want 'second soul'", ns.AboutMe)
 	}
 }
 
-// TestApplyNarrativeConsolidation_RejectsEmpty confirms the guard.
-func TestApplyNarrativeConsolidation_RejectsEmpty(t *testing.T) {
+// TestApplyNarrativeSoul_RejectsEmpty confirms the guard.
+func TestApplyNarrativeSoul_RejectsEmpty(t *testing.T) {
 	w, stop := buildNarrativeTestWorld(t)
 	defer stop()
 	at := time.Now().UTC()
 
-	if _, err := w.Send(sim.ApplyNarrativeConsolidation("hannah", "", at)); err == nil {
-		t.Fatal("ApplyNarrativeConsolidation with empty summary: no error")
+	if _, err := w.Send(sim.ApplyNarrativeSoul("hannah", "", at)); err == nil {
+		t.Fatal("ApplyNarrativeSoul with empty about_me: no error")
 	}
 
 	snap := w.Published()
@@ -619,18 +667,17 @@ func TestApplyNarrativeConsolidation_RejectsEmpty(t *testing.T) {
 	}
 }
 
-// TestApplyNarrativeConsolidation_RejectsWhitespaceOnly confirms the
-// substrate trims at the boundary and rejects whitespace-only input
-// (defends the "EvolvingSummary is never set to whitespace-only via
-// this path" invariant). The cascade driver already trims; this guard
-// covers direct callers (tests, admin paths, future code).
-func TestApplyNarrativeConsolidation_RejectsWhitespaceOnly(t *testing.T) {
+// TestApplyNarrativeSoul_RejectsWhitespaceOnly confirms the substrate
+// trims at the boundary and rejects whitespace-only input (defends the
+// "AboutMe is never set to whitespace-only via this path" invariant). The
+// cascade driver already trims; this guard covers direct callers.
+func TestApplyNarrativeSoul_RejectsWhitespaceOnly(t *testing.T) {
 	w, stop := buildNarrativeTestWorld(t)
 	defer stop()
 	at := time.Now().UTC()
 
-	if _, err := w.Send(sim.ApplyNarrativeConsolidation("hannah", "   \n\t  ", at)); err == nil {
-		t.Fatal("ApplyNarrativeConsolidation with whitespace-only summary: no error")
+	if _, err := w.Send(sim.ApplyNarrativeSoul("hannah", "   \n\t  ", at)); err == nil {
+		t.Fatal("ApplyNarrativeSoul with whitespace-only about_me: no error")
 	}
 
 	snap := w.Published()
@@ -639,49 +686,47 @@ func TestApplyNarrativeConsolidation_RejectsWhitespaceOnly(t *testing.T) {
 	}
 }
 
-// TestApplyNarrativeConsolidation_TrimsAcceptedInput confirms that
-// when the trim leaves non-empty content, the substrate stores the
-// trimmed form (not the original with leading/trailing whitespace).
-func TestApplyNarrativeConsolidation_TrimsAcceptedInput(t *testing.T) {
+// TestApplyNarrativeSoul_TrimsAcceptedInput confirms that when the trim
+// leaves non-empty content, the substrate stores the trimmed form.
+func TestApplyNarrativeSoul_TrimsAcceptedInput(t *testing.T) {
 	w, stop := buildNarrativeTestWorld(t)
 	defer stop()
 	at := time.Now().UTC()
 
-	if _, err := w.Send(sim.ApplyNarrativeConsolidation("hannah", "   surrounded by whitespace.   ", at)); err != nil {
-		t.Fatalf("ApplyNarrativeConsolidation: %v", err)
+	if _, err := w.Send(sim.ApplyNarrativeSoul("hannah", "   surrounded by whitespace.   ", at)); err != nil {
+		t.Fatalf("ApplyNarrativeSoul: %v", err)
 	}
 
 	snap := w.Published()
-	if got := snap.Actors["hannah"].Narrative.EvolvingSummary; got != "surrounded by whitespace." {
-		t.Errorf("EvolvingSummary = %q, want trimmed 'surrounded by whitespace.'", got)
+	if got := snap.Actors["hannah"].Narrative.AboutMe; got != "surrounded by whitespace." {
+		t.Errorf("AboutMe = %q, want trimmed 'surrounded by whitespace.'", got)
 	}
 }
 
-// TestApplyNarrativeConsolidation_RejectsUnknownActor confirms the guard.
-func TestApplyNarrativeConsolidation_RejectsUnknownActor(t *testing.T) {
+// TestApplyNarrativeSoul_RejectsUnknownActor confirms the guard.
+func TestApplyNarrativeSoul_RejectsUnknownActor(t *testing.T) {
 	w, stop := buildNarrativeTestWorld(t)
 	defer stop()
-	if _, err := w.Send(sim.ApplyNarrativeConsolidation("ghost", "x", time.Now().UTC())); err == nil {
-		t.Fatal("ApplyNarrativeConsolidation with unknown actor: no error")
+	if _, err := w.Send(sim.ApplyNarrativeSoul("ghost", "x", time.Now().UTC())); err == nil {
+		t.Fatal("ApplyNarrativeSoul with unknown actor: no error")
 	}
 }
 
-// TestApplyNarrativeConsolidation_RejectsNonShared confirms the
-// substrate guard: stateful and PC actors cannot have their Narrative
-// flipped via this path.
-func TestApplyNarrativeConsolidation_RejectsNonShared(t *testing.T) {
+// TestApplyNarrativeSoul_RejectsNonShared confirms the substrate guard:
+// stateful and PC actors cannot have their Narrative flipped via this path.
+func TestApplyNarrativeSoul_RejectsNonShared(t *testing.T) {
 	w, stop := buildNarrativeTestWorld(t)
 	defer stop()
-	if _, err := w.Send(sim.ApplyNarrativeConsolidation("ezekiel", "x", time.Now().UTC())); err == nil {
-		t.Fatal("ApplyNarrativeConsolidation on stateful actor: no error")
+	if _, err := w.Send(sim.ApplyNarrativeSoul("ezekiel", "x", time.Now().UTC())); err == nil {
+		t.Fatal("ApplyNarrativeSoul on stateful actor: no error")
 	}
-	if _, err := w.Send(sim.ApplyNarrativeConsolidation("player", "x", time.Now().UTC())); err == nil {
-		t.Fatal("ApplyNarrativeConsolidation on PC actor: no error")
+	if _, err := w.Send(sim.ApplyNarrativeSoul("player", "x", time.Now().UTC())); err == nil {
+		t.Fatal("ApplyNarrativeSoul on PC actor: no error")
 	}
 }
 
 // TestStampNarrativeConsolidated_AutoCreates verifies the stamp-only
-// path auto-creates Narrative when nil, without setting EvolvingSummary.
+// path auto-creates Narrative when nil, without setting AboutMe.
 func TestStampNarrativeConsolidated_AutoCreates(t *testing.T) {
 	w, stop := buildNarrativeTestWorld(t)
 	defer stop()
@@ -696,22 +741,22 @@ func TestStampNarrativeConsolidated_AutoCreates(t *testing.T) {
 	if ns == nil {
 		t.Fatal("Narrative not auto-created")
 	}
-	if ns.EvolvingSummary != "" {
-		t.Errorf("EvolvingSummary = %q, want empty (stamp-only)", ns.EvolvingSummary)
+	if ns.AboutMe != "" {
+		t.Errorf("AboutMe = %q, want empty (stamp-only)", ns.AboutMe)
 	}
 	if ns.LastConsolidatedAt == nil || !ns.LastConsolidatedAt.Equal(at) {
 		t.Errorf("LastConsolidatedAt = %v, want %v", ns.LastConsolidatedAt, at)
 	}
 }
 
-// TestStampNarrativeConsolidated_LeavesEvolvingSummaryAlone verifies
-// that an existing EvolvingSummary is not overwritten.
-func TestStampNarrativeConsolidated_LeavesEvolvingSummaryAlone(t *testing.T) {
+// TestStampNarrativeConsolidated_LeavesAboutMeAlone verifies that an
+// existing AboutMe is not overwritten.
+func TestStampNarrativeConsolidated_LeavesAboutMeAlone(t *testing.T) {
 	w, stop := buildNarrativeTestWorld(t)
 	defer stop()
 	at := time.Now().UTC()
 
-	if _, err := w.Send(sim.ApplyNarrativeConsolidation("hannah", "first impression", at.Add(-time.Hour))); err != nil {
+	if _, err := w.Send(sim.ApplyNarrativeSoul("hannah", "first soul", at.Add(-time.Hour))); err != nil {
 		t.Fatalf("seed apply: %v", err)
 	}
 	if _, err := w.Send(sim.StampNarrativeConsolidated("hannah", at)); err != nil {
@@ -720,8 +765,8 @@ func TestStampNarrativeConsolidated_LeavesEvolvingSummaryAlone(t *testing.T) {
 
 	snap := w.Published()
 	ns := snap.Actors["hannah"].Narrative
-	if ns.EvolvingSummary != "first impression" {
-		t.Errorf("EvolvingSummary = %q, want 'first impression' (stamp must not overwrite)", ns.EvolvingSummary)
+	if ns.AboutMe != "first soul" {
+		t.Errorf("AboutMe = %q, want 'first soul' (stamp must not overwrite)", ns.AboutMe)
 	}
 	if !ns.LastConsolidatedAt.Equal(at) {
 		t.Errorf("LastConsolidatedAt = %v, want %v (stamp updated)", ns.LastConsolidatedAt, at)

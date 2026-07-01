@@ -274,6 +274,7 @@ CREATE TABLE public.actor_narrative_state (
     actor_id uuid NOT NULL,
     seed_text text DEFAULT ''::text NOT NULL,
     evolving_summary text DEFAULT ''::text NOT NULL,
+    about_me text DEFAULT ''::text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     last_consolidated_at timestamp with time zone,

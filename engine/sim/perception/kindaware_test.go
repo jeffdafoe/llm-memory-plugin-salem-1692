@@ -34,8 +34,7 @@ func peerSnap(id sim.ActorID, name, role string, kind sim.ActorKind, huddle sim.
 func TestBuild_NarrativeStatePopulatedForShared(t *testing.T) {
 	a := sharedSnap("hannah", "Hannah", "")
 	a.Narrative = &sim.NarrativeState{
-		SeedText:        "You are Hannah, daughter of the innkeeper.",
-		EvolvingSummary: "Has been worried about the harvest.",
+		AboutMe: "You are Hannah, daughter of the innkeeper, worried about the harvest.",
 	}
 	snap := &sim.Snapshot{Actors: map[sim.ActorID]*sim.ActorSnapshot{"hannah": a}}
 
@@ -43,11 +42,8 @@ func TestBuild_NarrativeStatePopulatedForShared(t *testing.T) {
 	if p.NarrativeState == nil {
 		t.Fatal("NarrativeState nil for shared actor with populated narrative")
 	}
-	if p.NarrativeState.SeedText != a.Narrative.SeedText {
-		t.Errorf("SeedText = %q", p.NarrativeState.SeedText)
-	}
-	if p.NarrativeState.EvolvingSummary != a.Narrative.EvolvingSummary {
-		t.Errorf("EvolvingSummary = %q", p.NarrativeState.EvolvingSummary)
+	if p.NarrativeState.AboutMe != a.Narrative.AboutMe {
+		t.Errorf("AboutMe = %q", p.NarrativeState.AboutMe)
 	}
 }
 
@@ -55,8 +51,7 @@ func TestBuild_NarrativeStateNilForStateful(t *testing.T) {
 	a := sharedSnap("ezekiel", "Ezekiel Crane", "")
 	a.Kind = sim.KindNPCStateful
 	a.Narrative = &sim.NarrativeState{
-		SeedText:        "Should NOT appear — stateful actors get this from their VA.",
-		EvolvingSummary: "...",
+		AboutMe: "Should NOT appear — stateful actors get this from their VA.",
 	}
 	snap := &sim.Snapshot{Actors: map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": a}}
 
@@ -243,8 +238,9 @@ func TestBuild_HuddleMembersCarryAcquaintanceFlag(t *testing.T) {
 func TestRender_WhoYouAreSectionForShared(t *testing.T) {
 	a := sharedSnap("hannah", "Hannah", "")
 	a.Narrative = &sim.NarrativeState{
-		SeedText:        "You are Hannah.",
-		EvolvingSummary: "Currently anxious about the storm.",
+		AboutMe:         "You are Hannah, and lately the storm has you anxious.",
+		SeedText:        "stale seed should not render",
+		EvolvingSummary: "stale summary should not render",
 	}
 	snap := &sim.Snapshot{Actors: map[sim.ActorID]*sim.ActorSnapshot{"hannah": a}}
 
@@ -252,21 +248,22 @@ func TestRender_WhoYouAreSectionForShared(t *testing.T) {
 	if !strings.Contains(combinedPrompt(rendered), "## Who you are") {
 		t.Error("missing '## Who you are' section")
 	}
-	if !strings.Contains(combinedPrompt(rendered), "You are Hannah.") {
-		t.Error("missing SeedText in rendered prompt")
+	if !strings.Contains(combinedPrompt(rendered), "You are Hannah, and lately the storm has you anxious.") {
+		t.Error("missing AboutMe in rendered prompt")
 	}
-	// ZBBS-WORK-374: EvolvingSummary is no longer rendered into the decision
-	// prompt — it's frozen, unconsolidated diary prose that primed the repeat
-	// loop. SeedText (the factual identity) stays.
-	if strings.Contains(combinedPrompt(rendered), "Currently anxious about the storm.") {
-		t.Error("EvolvingSummary should no longer appear in the decision prompt (ZBBS-WORK-374)")
+	// AboutMe (the synthesized soul) is the only narrative field rendered; the
+	// legacy SeedText/EvolvingSummary must not leak in (LLM-199; ZBBS-WORK-374:
+	// EvolvingSummary was the frozen diary prose that primed the repeat loop).
+	if strings.Contains(combinedPrompt(rendered), "stale seed should not render") ||
+		strings.Contains(combinedPrompt(rendered), "stale summary should not render") {
+		t.Error("legacy SeedText/EvolvingSummary leaked into the decision prompt")
 	}
 }
 
 func TestRender_WhoYouAreOmittedForStateful(t *testing.T) {
 	a := sharedSnap("ezekiel", "Ezekiel", "")
 	a.Kind = sim.KindNPCStateful
-	a.Narrative = &sim.NarrativeState{SeedText: "should not appear"}
+	a.Narrative = &sim.NarrativeState{AboutMe: "should not appear"}
 	snap := &sim.Snapshot{Actors: map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": a}}
 
 	rendered := Render(Build(snap, "ezekiel", nil), DefaultRenderConfig())

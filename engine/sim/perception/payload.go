@@ -807,12 +807,13 @@ type ProducerNote struct {
 	Goods        []string
 }
 
-// NarrativeStateView is the kind-aware "Who you are:" content. Slim by
-// design — Render combines SeedText and EvolvingSummary into one
-// section.
+// NarrativeStateView is the kind-aware "## Who you are" content for a
+// shared-VA actor: the accreting first-person soul the per-actor narrative
+// sweep synthesizes each day via the dream-sim-soul agent (LLM-199). Nil for
+// stateful / PC actors, who get identity elsewhere (the VA's <Self> block /
+// the player).
 type NarrativeStateView struct {
-	SeedText        string
-	EvolvingSummary string
+	AboutMe string
 }
 
 // RelationshipPeerView is the per-peer entry in the "What you remember

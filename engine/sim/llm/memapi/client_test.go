@@ -119,6 +119,91 @@ func okReplyWithTools(text string, calls []apiToolCall) serverResponse {
 	return serverResponse{status: 200, body: string(body)}
 }
 
+// okSoul is a 2xx /sim/soul body with the given synthesized text.
+func okSoul(text string) serverResponse {
+	body, _ := json.Marshal(soulResponse{Text: text})
+	return serverResponse{status: 200, body: string(body)}
+}
+
+// TestSynthesizeSoul_PostsAndParses verifies SynthesizeSoul POSTs the soul
+// request to /v1/sim/soul with the bearer token and the mapped body, and
+// returns the endpoint's text.
+func TestSynthesizeSoul_PostsAndParses(t *testing.T) {
+	ts := newTestServer(t)
+	ts.pushResponse(okSoul("I keep the Wayfarer in steady hands."))
+	c := newTestClient(t, ts)
+
+	got, err := c.SynthesizeSoul(context.Background(), llm.SoulRequest{
+		CharacterDescription: "You are Hannah. You make your home at the Wayfarer Inn.",
+		CurrentSoul:          "prior soul",
+		DaySnapshot:          "Things you did recently:\n- [May 15] spoke: Good morrow.",
+		Day:                  "2026-06-30",
+	})
+	if err != nil {
+		t.Fatalf("SynthesizeSoul: %v", err)
+	}
+	if got != "I keep the Wayfarer in steady hands." {
+		t.Errorf("text = %q, want the endpoint's soul", got)
+	}
+
+	recs := ts.recorded()
+	if len(recs) != 1 {
+		t.Fatalf("recorded requests = %d, want 1", len(recs))
+	}
+	r := recs[0]
+	if r.Method != http.MethodPost || r.Path != "/v1/sim/soul" {
+		t.Errorf("request = %s %s, want POST /v1/sim/soul", r.Method, r.Path)
+	}
+	if r.Authz != "Bearer test-key" {
+		t.Errorf("Authorization = %q, want 'Bearer test-key'", r.Authz)
+	}
+	var body soulRequest
+	if err := json.Unmarshal(r.RawBody, &body); err != nil {
+		t.Fatalf("parse soul request body: %v", err)
+	}
+	if body.CharacterDescription != "You are Hannah. You make your home at the Wayfarer Inn." ||
+		body.CurrentSoul != "prior soul" ||
+		!strings.Contains(body.DaySnapshot, "Good morrow.") ||
+		body.Day != "2026-06-30" {
+		t.Errorf("request body mismatch: %+v", body)
+	}
+}
+
+// TestSynthesizeSoul_EmptyTextIsNoError confirms an endpoint rejection (empty
+// text) surfaces as "" with no error — the caller keeps the prior soul.
+func TestSynthesizeSoul_EmptyTextIsNoError(t *testing.T) {
+	ts := newTestServer(t)
+	body, _ := json.Marshal(soulResponse{Text: "", Rejected: "reasoning-preamble"})
+	ts.pushResponse(serverResponse{status: 200, body: string(body)})
+	c := newTestClient(t, ts)
+
+	got, err := c.SynthesizeSoul(context.Background(), llm.SoulRequest{
+		CharacterDescription: "You are Hannah.",
+		DaySnapshot:          "something happened",
+	})
+	if err != nil {
+		t.Fatalf("SynthesizeSoul: unexpected error %v", err)
+	}
+	if got != "" {
+		t.Errorf("text = %q, want empty (rejection)", got)
+	}
+}
+
+// TestSynthesizeSoul_Non2xxIsError confirms a non-2xx status returns an error
+// (the sweep logs + skips, retrying next pass).
+func TestSynthesizeSoul_Non2xxIsError(t *testing.T) {
+	ts := newTestServer(t)
+	ts.pushResponse(serverResponse{status: 503, body: `{"error":{"code":"UNAVAILABLE","message":"soul agent down"}}`})
+	c := newTestClient(t, ts)
+
+	if _, err := c.SynthesizeSoul(context.Background(), llm.SoulRequest{
+		CharacterDescription: "You are Hannah.",
+		DaySnapshot:          "something happened",
+	}); err == nil {
+		t.Fatal("SynthesizeSoul on 503: no error")
+	}
+}
+
 // --- Complete -------------------------------------------------------------
 
 func TestComplete_RequiresModel(t *testing.T) {
