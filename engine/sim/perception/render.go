@@ -1560,6 +1560,9 @@ func agoPhrase(at, now time.Time) string {
 	d := now.Sub(at)
 	switch {
 	case d < 15*time.Second:
+		// Covers negative deltas too: an At a hair after the snapshot's
+		// publish instant (clock race) clamps to "just now" rather than
+		// leaking a nonsense future interval.
 		return "just now"
 	case d < 90*time.Second:
 		return fmt.Sprintf("%ds ago", int(d/time.Second))

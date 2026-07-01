@@ -46,6 +46,14 @@ func TestBuildSelfActions_WindowAndCap(t *testing.T) {
 			ActionType: sim.ActionTypeDeparted, Text: "Tavern",
 		})
 	}
+	// OccurredAt is only approximately monotonic vs Seq: an out-of-window
+	// entry sitting LATE in the slice must be skipped, not end the scan —
+	// the in-window entries before it still qualify.
+	log = append(log, sim.ActionLogEntry{
+		Seq: 10, ActorID: "ezekiel",
+		OccurredAt: ago(selfActionTrailWindow + 2*time.Minute),
+		ActionType: sim.ActionTypeWalked, Text: "Blacksmith",
+	})
 	snap, subject := selfActionsFixture(published, log, "")
 
 	got := buildSelfActions(snap, "ezekiel", subject)

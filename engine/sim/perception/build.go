@@ -2730,7 +2730,11 @@ func buildSelfActions(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 	for i := len(snap.ActionLog) - 1; i >= 0 && len(out) < maxSelfActionTrail; i-- {
 		e := snap.ActionLog[i]
 		if e.OccurredAt.Before(cutoff) {
-			break // Seq-ordered tail scan: everything earlier is older still
+			// No early break: the log is Seq-ordered and OccurredAt is only
+			// APPROXIMATELY monotonic (see ActionLogEntry.Seq), so an in-window
+			// entry can sit behind an out-of-window one. The log is retention-
+			// capped, so the full tail scan stays cheap.
+			continue
 		}
 		if e.ActorID != actorID || !selfActionTrailTypes[e.ActionType] {
 			continue
