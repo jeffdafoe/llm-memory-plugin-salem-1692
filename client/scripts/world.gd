@@ -2152,7 +2152,13 @@ func display_name_for(actor_id: String) -> String:
         var dn = container.get_meta("display_name", "")
         if typeof(dn) == TYPE_STRING and dn != "":
             return dn
-    return actor_id
+    # The speaker's sprite isn't placed in the current view (an NPC talking in a
+    # structure the viewer isn't focused on, or one reloaded from a checkpoint
+    # that bypassed arrival placement). Fall back to the full agent roster — GET
+    # /api/village/agents populates actor_names with every actor's display name —
+    # so the talk panel renders a name, not a raw UUID. The raw id survives only
+    # as the last resort for a genuinely unknown actor.
+    return str(actor_names.get(actor_id, actor_id))
 
 
 func apply_pay_offer(data: Dictionary) -> void:
