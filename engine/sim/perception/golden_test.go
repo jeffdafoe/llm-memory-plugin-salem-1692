@@ -4,6 +4,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -111,6 +112,39 @@ func TestGoldensNeverAdvertiseHomeAsMoveTargetWhenInside(t *testing.T) {
 	}
 }
 
+// TestGoldensConversationLinesCarryIntervalStamps is the LLM-217 cross-scenario
+// invariant: in any scenario whose snapshot carries a clock (PublishedAt set —
+// every clocked fixture stamps its utterances relative to it), every line of
+// "## Recent conversation here" must carry an interval stamp ("(just now)" /
+// "(40s ago)"). The stamp is what lets the model tell rapid-fire churn from a
+// normally paced exchange (the Patience Walker go-home ↔ seek-work loop read as
+// one continuous moment without it); a future cue path that builds UtteranceView
+// without At — or a render change that drops the stamp — fails here for every
+// affected scenario, not just the one the LLM-217 golden pins.
+func TestGoldensConversationLinesCarryIntervalStamps(t *testing.T) {
+	stamped := regexp.MustCompile(`\((just now|\d+[smh] ago)\): `)
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, _, _ := sc.build()
+			if snap.PublishedAt.IsZero() {
+				return // clockless fixture — stamps are correctly omitted
+			}
+			out := renderScenario(sc)
+			_, section, found := strings.Cut(out, "## Recent conversation here\n")
+			if !found {
+				return // no conversation section in this situation
+			}
+			section, _, _ = strings.Cut(section, "\n\n")
+			for _, line := range strings.Split(section, "\n") {
+				if !stamped.MatchString(line) {
+					t.Errorf("scenario %q: conversation line %q carries no interval stamp — the model can't gauge tempo without it (LLM-217)", sc.name, line)
+				}
+			}
+		})
+	}
+}
+
 // perceptionScenarios is the (growing) matrix. Seeded from LLM-106 with two
 // situations: a keeper alone at its post, and a tired keeper on shift at its post.
 // Each new live (a)-class failure should add a scenario here (and, where it states
@@ -182,6 +216,18 @@ var perceptionScenarios = []perceptionScenario{
 			"the gate an employed worker with a solicitable audience would be offered it). The golden pins the evening cue PRESENT " +
 			"and the solicit affordance ABSENT — the lingering don't hustle. Makes TestEveningLeisureSuppressesSolicit non-vacuous.",
 		build: homedWorkersEveningCommonsNoSolicit,
+	},
+	{
+		name: "workless_tired_rejoiner_self_action_trail",
+		summary: "LLM-217: a workless, tired shared-worker NPC (Patience Walker, the live case) stands back in the Tavern " +
+			"huddle with John Ellis the tavernkeeper after twice announcing 'I'll head home now', walking out, and bouncing " +
+			"back — the go-home ↔ seek-work oscillation. The golden pins the two perception surfaces that make the churn " +
+			"visible: '## Recent conversation here' lines carry interval stamps (John's byte-identical re-greetings read " +
+			"'2m ago' vs 'just now', not as one moment), and '## What you've recently done' lists her own departed/arrived " +
+			"trail most-recent-first with stamps. Her in-current-huddle 'I'll head home now.' spoke entry appears ONLY in the " +
+			"conversation ring — the trail's current-huddle spoke de-dup keeps it out — and John's own walked entry is absent " +
+			"(subject filter). The matrix-wide guard is TestGoldensConversationLinesCarryIntervalStamps.",
+		build: worklessTiredRejoinerSelfActionTrail,
 	},
 	{
 		name: "keeper_with_ready_order",
@@ -2909,6 +2955,88 @@ func keeperAloneAtPostOnShift() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) 
 		},
 	}
 	return snap, josiahID, warrants
+}
+
+// worklessTiredRejoinerSelfActionTrail is the LLM-217 fixture: the live Patience
+// Walker oscillation, mid-loop. She is workless (no work structure), tired, and
+// back in the Tavern huddle with John Ellis after two announce-leave-return
+// cycles. The huddle ring holds John's two byte-identical re-greetings plus her
+// own "I'll head home now." — with At stamps spanning the cycles — and the
+// snapshot's ActionLog carries her consumed/departed/arrived trail (plus one of
+// John's arrivals, which the subject filter must drop, and one of her own spoke
+// entries in the CURRENT huddle, which the ring de-dup must keep out of the
+// trail). Fixed PublishedAt, utterances and log entries stamped relative to it
+// → byte-stable.
+func worklessTiredRejoinerSelfActionTrail() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		patienceID = sim.ActorID("patience")
+		johnID     = sim.ActorID("john")
+		tavern     = sim.StructureID("tavern")
+		home       = sim.StructureID("walker_residence")
+		huddleID   = sim.HuddleID("tavern_huddle")
+	)
+	start, end := 360, 1260 // John's working hours 06:00–21:00
+	now := 15*60 + 50       // 15:50 — afternoon, John on shift
+	published := time.Date(2026, 7, 1, 19, 50, 0, 0, time.UTC)
+	ago := func(sec int) time.Time { return published.Add(-time.Duration(sec) * time.Second) }
+	patience := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Patience Walker",
+		Role:              "villager",
+		State:             sim.StateIdle,
+		HomeStructureID:   home,
+		InsideStructureID: tavern,
+		CurrentHuddleID:   huddleID,
+		Coins:             3,
+		Needs:             map[sim.NeedKey]int{"tiredness": sim.DefaultTirednessRedThreshold},
+	}
+	john := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "John Ellis",
+		Role:              "tavernkeeper",
+		State:             sim.StateIdle,
+		WorkStructureID:   tavern,
+		InsideStructureID: tavern,
+		CurrentHuddleID:   huddleID,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             40,
+		Needs:             map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{patienceID: patience, johnID: john},
+		Structures: map[sim.StructureID]*sim.Structure{
+			tavern: plainStructure(tavern, "Tavern"),
+			home:   plainStructure(home, "Walker Residence"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddleID: {
+				ID:      huddleID,
+				Members: map[sim.ActorID]struct{}{patienceID: {}, johnID: {}},
+				RecentUtterances: []sim.Utterance{
+					{SpeakerID: johnID, SpeakerName: "John Ellis", Text: "Welcome back to the tavern, Patience!", At: ago(170)},
+					{SpeakerID: patienceID, SpeakerName: "Patience Walker", Text: "I'll head home now.", At: ago(150)},
+					{SpeakerID: johnID, SpeakerName: "John Ellis", Text: "Welcome back to the tavern, Patience!", At: ago(8)},
+				},
+			},
+		},
+		ActionLog: []sim.ActionLogEntry{
+			{Seq: 1, ActorID: patienceID, OccurredAt: ago(480), ActionType: sim.ActionTypeConsumed, Text: "carrot", HuddleID: huddleID},
+			{Seq: 2, ActorID: patienceID, OccurredAt: ago(420), ActionType: sim.ActionTypeDeparted, Text: "Tavern"},
+			// John's own arrival — the subject filter drops it from HER trail.
+			{Seq: 3, ActorID: johnID, OccurredAt: ago(300), ActionType: sim.ActionTypeWalked, Text: "Tavern"},
+			{Seq: 4, ActorID: patienceID, OccurredAt: ago(240), ActionType: sim.ActionTypeWalked, Text: "Tavern"},
+			// Her announce line, spoken IN the current huddle — the ring above
+			// renders it, so the self-action trail must NOT repeat it.
+			{Seq: 5, ActorID: patienceID, OccurredAt: ago(150), ActionType: sim.ActionTypeSpoke, Text: "I'll head home now.", HuddleID: huddleID},
+			{Seq: 6, ActorID: patienceID, OccurredAt: ago(130), ActionType: sim.ActionTypeDeparted, Text: "Tavern"},
+			{Seq: 7, ActorID: patienceID, OccurredAt: ago(45), ActionType: sim.ActionTypeWalked, Text: "Tavern"},
+		},
+	}
+	return snap, patienceID, nil
 }
 
 // sharedNpcWithSoul is the LLM-199 case: a shared-VA keeper standing at her own

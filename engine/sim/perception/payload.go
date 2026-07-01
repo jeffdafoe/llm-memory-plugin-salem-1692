@@ -186,6 +186,14 @@ type Payload struct {
 	// no huddle. The subject's own lines carry IsSelf for "You said" rendering.
 	RecentConversation []UtteranceView
 
+	// SelfActions is the subject's own recent committed-action trail, most-
+	// recent-first — the "## What you've recently done" section (LLM-217).
+	// Sourced from snap.ActionLog filtered to the subject, window- and
+	// count-capped. Populated for every actor kind; nil when the subject has
+	// no recent entries (or the snapshot carries no clock, as in hand-built
+	// test payloads — the window needs PublishedAt to measure against).
+	SelfActions []SelfActionView
+
 	// Businessowner reports whether the subject actor runs a business
 	// (Actor.BusinessownerState != nil — the existing keeper predicate).
 	// Carries the trade conduct rules that used to live in salem-vendor's
@@ -837,10 +845,32 @@ type RelationshipPeerView struct {
 // (ZBBS-HOME-412), projected from a Huddle's RecentUtterances ring. IsSelf marks
 // the subject's own lines so the render reads "You said" vs "<Name> said",
 // making turn-taking legible. SpeakerName is the speaker's display name.
+// At is the moment the line was spoken (LLM-217): render stamps each line with
+// its distance from RenderedAt ("just now" / "40s ago") so the model can tell
+// rapid-fire churn from a normally paced exchange — without it, three
+// "I'll head home now" lines minutes apart and three seconds apart read
+// identically, and the anti-repeat instruction has no tempo to work with.
 type UtteranceView struct {
 	SpeakerName string
 	Text        string
 	IsSelf      bool
+	At          time.Time
+}
+
+// SelfActionView is one line in the "## What you've recently done" section
+// (LLM-217) — the subject's own recent committed actions, projected from
+// snap.ActionLog. This is the NPC's only cross-tick memory of its own DEEDS:
+// warrants live one tick and the conversation ring carries speech only, so
+// without it an actor cannot see "I've left for home and bounced back three
+// times" and self-loops (the Patience Walker go-home ↔ seek-work oscillation)
+// stay invisible to the model. Fields mirror the ActionLogEntry the line came
+// from; render phrases them second-person ("You arrived at the Tavern").
+type SelfActionView struct {
+	ActionType       sim.ActionType
+	Text             string
+	CounterpartyName string
+	Amount           int
+	At               time.Time
 }
 
 // ActorView is the subject actor's own current state, lifted from the

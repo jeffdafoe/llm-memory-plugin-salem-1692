@@ -244,6 +244,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	heardNow := currentHeardExcerpts(p.Warrants)
 	p.Relationships = buildRelationships(actorSnap, p.Surroundings.HuddleMembers, heardNow)
 	p.RecentConversation = buildRecentConversation(snap, actorID, actorSnap, heardNow)
+	p.SelfActions = buildSelfActions(snap, actorID, actorSnap)
 	p.OfferableCustomers = buildOfferableCustomers(snap, actorID, p.AtOwnBusiness, p.Surroundings.HuddleMembers, p.Actor.Inventory)
 	p.StandingQuotesFromMe = buildStandingQuotesFromMe(snap, actorID, actorSnap)
 	p.PendingDeliveriesFromMe, p.PendingDeliveriesToMe = buildPendingOrderViews(snap, actorID)
@@ -2669,10 +2670,81 @@ func buildRecentConversation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap 
 			SpeakerName: u.SpeakerName,
 			Text:        u.Text,
 			IsSelf:      u.SpeakerID == actorID,
+			At:          u.At,
 		})
 	}
 	if len(out) == 0 {
 		return nil
+	}
+	return out
+}
+
+// selfActionTrailWindow bounds how far back the "## What you've recently done"
+// trail reaches. Wide enough to span several go-home ↔ seek-work oscillation
+// cycles (the live Patience loop ran ~2 minutes per cycle), narrow enough that
+// this morning's errands don't clutter an evening turn — the trail is loop-
+// noticing context, not a diary. LLM-217.
+const selfActionTrailWindow = 15 * time.Minute
+
+// maxSelfActionTrail caps the trail's line count. Small on purpose, matching
+// the MaxRecentUtterancesPerHuddle posture: the last handful of deeds is what
+// self-loop detection needs; anything durable is the consolidation cascade's
+// job. LLM-217.
+const maxSelfActionTrail = 6
+
+// selfActionTrailTypes is the set of committed actions the trail renders — the
+// deed types renderSelfActions has second-person phrasing for. Notably absent:
+// summoned (delivered TO the actor, not done by it) and stayed_open (a
+// commitment, not a deed; the operating state already renders standing).
+var selfActionTrailTypes = map[sim.ActionType]bool{
+	sim.ActionTypeSpoke:         true,
+	sim.ActionTypePaid:          true,
+	sim.ActionTypeConsumed:      true,
+	sim.ActionTypeDelivered:     true,
+	sim.ActionTypeWalked:        true,
+	sim.ActionTypeDeparted:      true,
+	sim.ActionTypeTookBreak:     true,
+	sim.ActionTypeLabored:       true,
+	sim.ActionTypeSolicitedWork: true,
+	sim.ActionTypeHired:         true,
+}
+
+// buildSelfActions projects the subject's own recent committed actions out of
+// snap.ActionLog into the "## What you've recently done" view (LLM-217),
+// most-recent-first. This is the self-action memory the prompt otherwise
+// lacks: warrant beats live one tick and the conversation ring carries speech
+// only, so a vacillating NPC (the Patience Walker go-home ↔ seek-work loop)
+// could not see its own churn. Scans from the log tail — the log is Seq-
+// ordered, so everything relevant sits within the window at the end. A spoke
+// entry from the subject's CURRENT huddle is skipped: the conversation ring
+// already renders those lines, and the trail's job is the deeds (and prior-
+// huddle speech, e.g. "I'll head home now" said before walking out) the ring
+// can't show. Returns nil when the snapshot has no clock (hand-built payloads
+// — the window needs PublishedAt) or nothing qualifies.
+func buildSelfActions(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSnapshot) []SelfActionView {
+	if snap.PublishedAt.IsZero() || len(snap.ActionLog) == 0 {
+		return nil
+	}
+	cutoff := snap.PublishedAt.Add(-selfActionTrailWindow)
+	var out []SelfActionView
+	for i := len(snap.ActionLog) - 1; i >= 0 && len(out) < maxSelfActionTrail; i-- {
+		e := snap.ActionLog[i]
+		if e.OccurredAt.Before(cutoff) {
+			break // Seq-ordered tail scan: everything earlier is older still
+		}
+		if e.ActorID != actorID || !selfActionTrailTypes[e.ActionType] {
+			continue
+		}
+		if e.ActionType == sim.ActionTypeSpoke && e.HuddleID != "" && e.HuddleID == actorSnap.CurrentHuddleID {
+			continue // the current huddle's ring already renders this line
+		}
+		out = append(out, SelfActionView{
+			ActionType:       e.ActionType,
+			Text:             e.Text,
+			CounterpartyName: e.CounterpartyName,
+			Amount:           e.Amount,
+			At:               e.OccurredAt,
+		})
 	}
 	return out
 }

@@ -1,0 +1,34 @@
+# Your turn
+
+## What just happened
+(nothing specific — this is a routine check-in)
+
+
+## You
+You're weary.
+Coins in your purse: 3.
+
+## Around you
+You are inside the Tavern, with the tavernkeeper.
+The afternoon wears on.
+
+Your home is at the Walker Residence (structure_id: walker_residence) — you can head back there whenever you wish.
+
+## What you've recently done
+Most recent first.
+- You arrived at the Tavern (45s ago)
+- You left the Tavern (2m ago)
+- You arrived at the Tavern (4m ago)
+- You left the Tavern (7m ago)
+- You consumed carrot (8m ago)
+
+## Recent conversation here
+- John Ellis said (2m ago): Welcome back to the tavern, Patience!
+- You said (2m ago): I'll head home now.
+- John Ellis said (just now): Welcome back to the tavern, Patience!
+
+## How you can rest
+For a place you can go to now, call move_to with the structure_id listed for it.
+- Walker Residence — sleep in your own bed, free (structure_id: walker_residence)
+
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.
