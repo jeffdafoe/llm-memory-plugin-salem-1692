@@ -9,13 +9,12 @@ You're weary.
 Coins in your purse: 15.
 
 ## Around you
-You are inside the Walker Residence, with no one else here to hear you speak.
+You are inside the Walker Residence, your home, with no one else here to hear you speak.
 It is morning in the village.
 
-Your home is at the Walker Residence (structure_id: walker_residence) — you can head back there whenever you wish.
+You're home.
 
 ## How you can rest
-For a place you can go to now, call move_to with the structure_id listed for it.
-- Walker Residence — sleep in your own bed, free (structure_id: walker_residence)
+- You're home — call take_break to lie down and rest in your own bed, no need to travel.
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.

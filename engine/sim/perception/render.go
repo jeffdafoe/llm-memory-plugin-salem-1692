@@ -241,7 +241,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderNarrativeState(&ephemeral, p.NarrativeState)
 	renderVendorOperating(&ephemeral, p.AtOwnBusinessOperating)
 	renderSurroundings(&ephemeral, p.Surroundings)
-	renderAnchors(&ephemeral, p.Anchors, p.DutySteer != nil && p.DutySteer.AtPost)
+	renderAnchors(&ephemeral, p.Anchors, p.DutySteer != nil && p.DutySteer.AtPost, p.Surroundings.InsideStructureID)
 	renderDutySteer(&ephemeral, p.DutySteer)
 	renderEveningLeisure(&ephemeral, p.EveningLeisure)
 	renderRelationships(&ephemeral, p.Relationships)
@@ -1158,30 +1158,58 @@ func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 // The "(structure_id: …)" form matches the satiation / restock / shift-duty
 // cues — it's the load-bearing token the model echoes into move_to.
 // ZBBS-HOME-349.
-func renderAnchors(b *strings.Builder, v *AnchorsView, atPost bool) {
+func renderAnchors(b *strings.Builder, v *AnchorsView, atPost bool, insideID sim.StructureID) {
 	if v == nil {
 		return
 	}
 	work := anchorPlace(v.WorkLabel, "your workplace")
 	home := anchorPlace(v.HomeLabel, "your home")
+	// You can't "head back to" the structure you're standing in — pointing the
+	// model at the CURRENT structure's id is the LLM-214 no-op move it looped on
+	// (Lewis Walker, inside the Walker Residence, calling move_to{residence} every
+	// tick). When the actor is inside its own home/work, state that in-place (no move
+	// id) and keep only the OTHER anchor as a reachable target.
+	insideHome := v.HomeID != "" && insideID == v.HomeID
+	insideWork := v.WorkID != "" && insideID == v.WorkID
 	switch {
 	case v.SamePlace:
-		fmt.Fprintf(b, "Your home and your trade are both at %s (structure_id: %s) — you can head back there whenever you wish.\n\n", work, v.WorkID)
-	case v.WorkID != "" && v.HomeID != "":
-		// On-shift AT its own post, the open "head to either whenever you wish"
-		// invitation actively pulls an idle owner home (the Prudence shop↔house
-		// oscillation, ZBBS-WORK-431). Keep both structure_ids — they are the
-		// load-bearing move_to tokens (HOME-349) — but frame home as after-hours
-		// rather than an open door; the at-post duty steer carries "stay put".
-		if atPost {
-			fmt.Fprintf(b, "You keep your trade at %s (structure_id: %s); your home is at %s (structure_id: %s) — head home once your work is done.\n\n", work, v.WorkID, home, v.HomeID)
+		if insideHome { // SamePlace ⇒ insideHome and insideWork coincide
+			b.WriteString("You're at your home and workplace.\n\n")
 		} else {
+			fmt.Fprintf(b, "Your home and your trade are both at %s (structure_id: %s) — you can head back there whenever you wish.\n\n", work, v.WorkID)
+		}
+	case v.WorkID != "" && v.HomeID != "":
+		switch {
+		case atPost:
+			// On-shift AT its own post, the open "head to either whenever you wish"
+			// invitation actively pulls an idle owner home (the Prudence shop↔house
+			// oscillation, ZBBS-WORK-431). Keep both structure_ids — they are the
+			// load-bearing move_to tokens (HOME-349) — but frame home as after-hours
+			// rather than an open door; the at-post duty steer carries "stay put".
+			fmt.Fprintf(b, "You keep your trade at %s (structure_id: %s); your home is at %s (structure_id: %s) — head home once your work is done.\n\n", work, v.WorkID, home, v.HomeID)
+		case insideHome:
+			// Standing at home: its id is a no-op move target, so state it in-place and
+			// keep the workplace as the reachable anchor (LLM-214).
+			fmt.Fprintf(b, "You're home. You keep your trade at %s (structure_id: %s) — you can head there whenever you wish.\n\n", work, v.WorkID)
+		case insideWork:
+			// Standing at the workplace off-shift (atPost handles on-shift above): state
+			// it in-place and keep home as the reachable anchor (LLM-214).
+			fmt.Fprintf(b, "You're at your workplace. Your home is at %s (structure_id: %s) — you can head home whenever you wish.\n\n", home, v.HomeID)
+		default:
 			fmt.Fprintf(b, "You keep your trade at %s (structure_id: %s), and your home is at %s (structure_id: %s) — you can head to either whenever you wish.\n\n", work, v.WorkID, home, v.HomeID)
 		}
 	case v.WorkID != "":
-		fmt.Fprintf(b, "You keep your trade at %s (structure_id: %s) — you can head back there whenever you wish.\n\n", work, v.WorkID)
+		if insideWork {
+			b.WriteString("You're at your workplace.\n\n")
+		} else {
+			fmt.Fprintf(b, "You keep your trade at %s (structure_id: %s) — you can head back there whenever you wish.\n\n", work, v.WorkID)
+		}
 	case v.HomeID != "":
-		fmt.Fprintf(b, "Your home is at %s (structure_id: %s) — you can head back there whenever you wish.\n\n", home, v.HomeID)
+		if insideHome {
+			b.WriteString("You're home.\n\n")
+		} else {
+			fmt.Fprintf(b, "Your home is at %s (structure_id: %s) — you can head back there whenever you wish.\n\n", home, v.HomeID)
+		}
 	}
 }
 

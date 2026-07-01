@@ -219,3 +219,178 @@ func TestRenderRecoveryOptions_RestInPlace_RendersBullet(t *testing.T) {
 		t.Errorf("missing the rest-in-place bullet; got:\n%s", out)
 	}
 }
+
+// --- LLM-214: rest-in-place at HOME (the home-side sibling of RestInPlace) ---
+
+// tiredInOwnHomeActor is a weary NPC standing inside its own home, with a SEPARATE
+// workplace — the Anne/Lewis Walker shape (a salem-vendor whose home != work,
+// walked home to rest). Unscheduled unless the caller sets a schedule.
+func tiredInOwnHomeActor() *sim.ActorSnapshot {
+	return &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		WorkStructureID:   "work-1",
+		HomeStructureID:   "home-1",
+		InsideStructureID: "home-1",
+		Needs:             map[sim.NeedKey]int{recoveryTirednessNeed: 23},
+	}
+}
+
+// TestBuildRecoveryOptions_TiredInOwnHome_RestAtHome: a weary NPC inside its own
+// home gets RestAtHome (not RestInPlace) — the home-bed rest-in-place cue.
+func TestBuildRecoveryOptions_TiredInOwnHome_RestAtHome(t *testing.T) {
+	snap := home362Snapshot()
+	v := buildRecoveryOptions(snap, "actor-1", tiredInOwnHomeActor())
+	if v == nil {
+		t.Fatal("expected a recovery view, got nil")
+	}
+	if !v.RestAtHome {
+		t.Error("RestAtHome = false, want true (tired, inside own home)")
+	}
+	if v.RestInPlace {
+		t.Error("RestInPlace = true, want false (not at the work post)")
+	}
+	if !v.OffersTakeBreak() {
+		t.Error("OffersTakeBreak = false, want true (RestAtHome unlocks take_break)")
+	}
+}
+
+// TestBuildRecoveryOptions_TiredInOwnHome_NoShiftGate: RestAtHome has NO shift gate
+// — a homed NPC counted on-shift (schedule + clock inside its window) still gets it
+// when standing in its own home. This is the whole point: a day-active vendor with
+// no other daytime rest path can lie down at home.
+func TestBuildRecoveryOptions_TiredInOwnHome_NoShiftGate(t *testing.T) {
+	snap := home362Snapshot()
+	now := 600 // 10:00
+	snap.LocalMinuteOfDay = &now
+	a := tiredInOwnHomeActor()
+	start, end := 360, 1080 // 06:00–18:00 → on shift at 10:00
+	a.ScheduleStartMin = &start
+	a.ScheduleEndMin = &end
+	v := buildRecoveryOptions(snap, "actor-1", a)
+	if v == nil || !v.RestAtHome {
+		t.Fatalf("RestAtHome want true regardless of shift (inside own home), got %+v", v)
+	}
+}
+
+// TestBuildRecoveryOptions_TiredInOwnHome_SuppressesHomeMoveOption: the redundant
+// "sleep in your own bed (structure_id …)" move option is dropped when already
+// inside home — that current-structure move target is the LLM-214 no-op.
+func TestBuildRecoveryOptions_TiredInOwnHome_SuppressesHomeMoveOption(t *testing.T) {
+	snap := home362Snapshot()
+	snap.Structures["home-1"] = &sim.Structure{DisplayName: "Walker Residence"}
+	v := buildRecoveryOptions(snap, "actor-1", tiredInOwnHomeActor())
+	if v == nil {
+		t.Fatal("expected a recovery view, got nil")
+	}
+	for _, o := range v.Options {
+		if o.Kind == "home" {
+			t.Errorf("home MOVE option must be suppressed when already inside home; got %+v", o)
+		}
+	}
+	// And it must not surface anywhere in the rendered section as a move target.
+	var b strings.Builder
+	renderRecoveryOptions(&b, v)
+	if strings.Contains(b.String(), "structure_id: home-1") {
+		t.Errorf("current home structure must not be advertised as a move target; got:\n%s", b.String())
+	}
+}
+
+// TestBuildRecoveryOptions_HomeEqualsWork_OnShift_PrefersRestInPlace: a home==work
+// keeper on shift keeps the at-post RestInPlace framing (RestAtHome is gated on
+// !RestInPlace so the two never both fire).
+func TestBuildRecoveryOptions_HomeEqualsWork_OnShift_PrefersRestInPlace(t *testing.T) {
+	snap := home362Snapshot()
+	now := 600
+	snap.LocalMinuteOfDay = &now
+	start, end := 360, 1080
+	a := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		WorkStructureID:   "shop-1",
+		HomeStructureID:   "shop-1", // lives at the shop
+		InsideStructureID: "shop-1",
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Needs:             map[sim.NeedKey]int{recoveryTirednessNeed: 24},
+	}
+	v := buildRecoveryOptions(snap, "actor-1", a)
+	if v == nil || !v.RestInPlace {
+		t.Fatalf("RestInPlace want true (home==work, on shift, at post), got %+v", v)
+	}
+	if v.RestAtHome {
+		t.Error("RestAtHome = true, want false (RestInPlace takes precedence)")
+	}
+	// Even though RestInPlace (not RestAtHome) fires here, the actor is inside its
+	// own home (home==work), so the bed MOVE option must STILL be suppressed — the
+	// suppression keys on insideOwnHome, not restAtHome (code_review, LLM-214).
+	for _, o := range v.Options {
+		if o.Kind == "home" {
+			t.Errorf("home MOVE option must be suppressed when already inside home (home==work); got %+v", o)
+		}
+	}
+}
+
+// TestBuildRecoveryOptions_HomeEqualsWork_OffShift_RestAtHome: the same home==work
+// keeper OFF shift (unscheduled → off shift) falls to the home framing — RestInPlace
+// needs on-shift, so RestAtHome carries the in-place rest.
+func TestBuildRecoveryOptions_HomeEqualsWork_OffShift_RestAtHome(t *testing.T) {
+	snap := home362Snapshot()
+	a := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		WorkStructureID:   "shop-1",
+		HomeStructureID:   "shop-1",
+		InsideStructureID: "shop-1",
+		Needs:             map[sim.NeedKey]int{recoveryTirednessNeed: 24}, // unscheduled → off shift
+	}
+	v := buildRecoveryOptions(snap, "actor-1", a)
+	if v == nil || !v.RestAtHome {
+		t.Fatalf("RestAtHome want true (home==work, off shift), got %+v", v)
+	}
+	if v.RestInPlace {
+		t.Error("RestInPlace = true, want false (off shift)")
+	}
+}
+
+// TestBuildRecoveryOptions_InOwnHomeNotTired_NoRestAtHome: inside home but rested —
+// no rest cue at all.
+func TestBuildRecoveryOptions_InOwnHomeNotTired_NoRestAtHome(t *testing.T) {
+	snap := home362Snapshot()
+	a := tiredInOwnHomeActor()
+	a.Needs[recoveryTirednessNeed] = 5 // not tired
+	if v := buildRecoveryOptions(snap, "actor-1", a); v != nil && v.RestAtHome {
+		t.Errorf("RestAtHome = true, want false (not tired); got %+v", v)
+	}
+}
+
+// TestRenderRecoveryOptions_RestAtHome_RendersBullet: the RestAtHome flag renders
+// the in-place take_break bed bullet — naming the verb, no "leave your post" framing.
+func TestRenderRecoveryOptions_RestAtHome_RendersBullet(t *testing.T) {
+	var b strings.Builder
+	renderRecoveryOptions(&b, &RecoveryOptionsView{RestAtHome: true})
+	out := b.String()
+	if !strings.Contains(out, "## How you can rest") {
+		t.Errorf("missing section heading; got:\n%s", out)
+	}
+	if !strings.Contains(out, "take_break") || !strings.Contains(out, "your own bed") {
+		t.Errorf("missing the rest-at-home bullet; got:\n%s", out)
+	}
+	if strings.Contains(out, "without leaving your post") {
+		t.Errorf("home rest must not use the at-post framing; got:\n%s", out)
+	}
+}
+
+// TestOffersTakeBreak covers the shared tool-gating signal.
+func TestOffersTakeBreak(t *testing.T) {
+	var nilView *RecoveryOptionsView
+	if nilView.OffersTakeBreak() {
+		t.Error("nil view OffersTakeBreak = true, want false")
+	}
+	if (&RecoveryOptionsView{}).OffersTakeBreak() {
+		t.Error("empty view OffersTakeBreak = true, want false")
+	}
+	if !(&RecoveryOptionsView{RestInPlace: true}).OffersTakeBreak() {
+		t.Error("RestInPlace view OffersTakeBreak = false, want true")
+	}
+	if !(&RecoveryOptionsView{RestAtHome: true}).OffersTakeBreak() {
+		t.Error("RestAtHome view OffersTakeBreak = false, want true")
+	}
+}

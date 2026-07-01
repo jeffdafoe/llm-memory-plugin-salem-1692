@@ -285,7 +285,7 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 	atGatherableSource := payload.Surroundings.GatherableItem != ""
 	moving := actorIsMoving(payload.ActorID, snap)
 	offerStayOpen := payload.DutySteer != nil && payload.DutySteer.OfferStayOpen
-	offerRestInPlace := payload.RecoveryOptions != nil && payload.RecoveryOptions.RestInPlace
+	offerTakeBreak := payload.RecoveryOptions.OffersTakeBreak()
 	hasAudience := payload.Surroundings.HasAudience()
 	flaggedDegenerate := actorIsFlaggedDegenerate(payload.ActorID, snap)
 	offerCraft := payload.ForgeChoice != nil && len(payload.ForgeChoice.Items) > 0
@@ -342,12 +342,13 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 		if spec.Name == stayOpenToolName && !offerStayOpen {
 			continue
 		}
-		// take_break consumer (LLM-100): advertise only on the recovery cue's own
-		// RestInPlace signal — the same field the "rest where you are" prose renders
-		// from — so the tool and its cue can't drift (discussion-109). Keeps
-		// take_break out of the prompt for an off-shift actor with no shift to step
-		// away from (the LLM-100 phantom-take_break case).
-		if spec.Name == takeBreakToolName && !offerRestInPlace {
+		// take_break consumer (LLM-100 + LLM-214): advertise only on the recovery
+		// cue's own in-place-rest signal — OffersTakeBreak = RestInPlace (tired at
+		// own post, on shift) OR RestAtHome (tired inside own home) — the same signal
+		// the in-place-rest prose renders from, so the tool and its cue can't drift
+		// (discussion-109). Keeps take_break out of the prompt for an actor away from
+		// any post/bed with no shift to step away from (the LLM-100 phantom case).
+		if spec.Name == takeBreakToolName && !offerTakeBreak {
 			continue
 		}
 		// speak consumer (LLM-106): advertise only when there's an awake audience to

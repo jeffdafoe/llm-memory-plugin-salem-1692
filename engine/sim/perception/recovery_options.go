@@ -26,8 +26,8 @@ const recoveryTirednessNeed = sim.NeedKey("tiredness")
 const nightsStayItem = sim.ItemKind("nights_stay")
 
 // RecoveryOptionsView is the content-gated "## How you can rest" section.
-// A nil view (or empty Options AND empty OwnStock AND no RestInPlace) means
-// render omits the section.
+// A nil view (or empty Options AND empty OwnStock AND no RestInPlace AND no
+// RestAtHome) means render omits the section.
 type RecoveryOptionsView struct {
 	Options []RecoveryOption
 
@@ -43,6 +43,25 @@ type RecoveryOptionsView struct {
 	// supply) stall. Rendered as the lead bullet so the at-post option is the
 	// first thing weighed. ZBBS-HOME-362.
 	RestInPlace bool
+
+	// RestAtHome is set when the actor is tired AND standing inside its own home
+	// (and not already covered by RestInPlace). Like RestInPlace it renders a lead
+	// "call take_break" bullet and unlocks the take_break tool (OffersTakeBreak),
+	// but for lying down in one's own bed — so a weary NPC already home rests in
+	// place instead of being told to move_to the structure it is standing in (the
+	// LLM-214 no-op). No shift gate: resting in your own bed is valid regardless of
+	// shift, which is the point for a day-active homed vendor with no other daytime
+	// rest path.
+	RestAtHome bool
+}
+
+// OffersTakeBreak reports whether the view surfaces an in-place take_break rest
+// affordance — at the actor's own work post (RestInPlace) or inside its own home
+// (RestAtHome). handlers/tool_gating.go advertises the take_break tool off this
+// same signal so the offered tool and the rendered cue can't drift
+// (discussion-109). Nil-safe.
+func (v *RecoveryOptionsView) OffersTakeBreak() bool {
+	return v != nil && (v.RestInPlace || v.RestAtHome)
 }
 
 // RecoveryOption is one rest-affordance bullet.
@@ -149,6 +168,38 @@ func buildRecoveryOptions(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *si
 		return nil
 	}
 
+	// A tired keeper standing at its own work structure AND currently on shift can
+	// recover in place via take_break rather than walking off to a bed — which, for
+	// a stall, leaves the post (and its supply) unmanned. The on-shift clause is the
+	// LLM-100 fix: take_break is "step away from the shift you're working", so an
+	// off-shift wanderer who has merely walked back into its own (now-closed) shop
+	// has no shift to step away from and must not get the cue. Uses the same
+	// OnShiftAtMinute helper as the LLM-62 home-bed sibling: an unscheduled actor is
+	// always off-shift (so never offered take_break), and a nil clock suppresses the
+	// cue (can't confirm on shift → don't advertise stepping away). Gated on tired
+	// so it doesn't appear to a homeless-but-rested actor scoping shelter. take_break
+	// is advertised off this SAME signal in handlers/tool_gating.go (OffersTakeBreak),
+	// so the cue and the offered tool can't drift. ZBBS-HOME-362 / LLM-100.
+	restInPlace := tired && actorSnap.WorkStructureID != "" &&
+		actorSnap.InsideStructureID == actorSnap.WorkStructureID &&
+		snap.LocalMinuteOfDay != nil &&
+		sim.OnShiftAtMinute(actorSnap.ScheduleStartMin, actorSnap.ScheduleEndMin, *snap.LocalMinuteOfDay)
+
+	// LLM-214: a tired NPC standing INSIDE ITS OWN HOME can rest in its own bed
+	// right there — no travel. Without this it was handed the home structure's id as
+	// a move_to target ("sleep in your own bed (structure_id …)") for the structure
+	// it was already in, a no-op move the model looped on (Lewis / Anne Walker). This
+	// is the home-side sibling of RestInPlace: it both leads the section with an
+	// in-place "call take_break" cue AND unlocks the take_break tool (OffersTakeBreak
+	// → tool_gating). NO shift gate — unlike the at-post case, take_break at home is
+	// "lie down in your own bed", valid whether or not the day-active-worker rule
+	// counts the actor on shift (the very gap that stranded exhausted salem-vendors
+	// at home with no daytime rest). Suppressed when RestInPlace already fires (a
+	// home==work keeper on shift keeps the at-post framing).
+	insideOwnHome := actorSnap.HomeStructureID != "" &&
+		actorSnap.InsideStructureID == actorSnap.HomeStructureID
+	restAtHome := tired && insideOwnHome && !restInPlace
+
 	var opts []RecoveryOption
 	// Free tiredness-recovery spots are a "rest here" affordance — redundant for
 	// an actor already on a break (LLM-67). The homeless arm still reaches this,
@@ -168,30 +219,22 @@ func buildRecoveryOptions(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *si
 	var ownStock []OwnStockItem
 	if tired {
 		opts = append(opts, gatherConsumableRemedies(snap, actorID)...)
-		if home := gatherHomeRestSpot(snap, actorSnap); home != nil {
-			opts = append(opts, *home)
+		// Skip the "sleep in your own bed (structure_id …)" MOVE option whenever the
+		// actor is ALREADY inside its home — advertising the current structure as a
+		// move target is the LLM-214 no-op. Key on insideOwnHome, NOT restAtHome: a
+		// home==work keeper on shift inside the shared structure has restAtHome=false
+		// (RestInPlace wins), but it is still standing in its home and its in-place
+		// lead bullet ("close up and rest where you are") already covers resting — so
+		// the bed move option is redundant there too. (code_review)
+		if !insideOwnHome {
+			if home := gatherHomeRestSpot(snap, actorSnap); home != nil {
+				opts = append(opts, *home)
+			}
 		}
 		ownStock = gatherOwnStock(snap, actorSnap, recoveryTirednessNeed)
 	}
 
-	// A tired keeper standing at its own work structure AND currently on shift can
-	// recover in place via take_break rather than walking off to a bed — which, for
-	// a stall, leaves the post (and its supply) unmanned. The on-shift clause is the
-	// LLM-100 fix: take_break is "step away from the shift you're working", so an
-	// off-shift wanderer who has merely walked back into its own (now-closed) shop
-	// has no shift to step away from and must not get the cue. Uses the same
-	// OnShiftAtMinute helper as the LLM-62 home-bed sibling: an unscheduled actor is
-	// always off-shift (so never offered take_break), and a nil clock suppresses the
-	// cue (can't confirm on shift → don't advertise stepping away). Gated on tired
-	// so it doesn't appear to a homeless-but-rested actor scoping shelter. take_break
-	// is advertised off this SAME RestInPlace field in handlers/tool_gating.go, so
-	// the cue and the offered tool can't drift. ZBBS-HOME-362 / LLM-100.
-	restInPlace := tired && actorSnap.WorkStructureID != "" &&
-		actorSnap.InsideStructureID == actorSnap.WorkStructureID &&
-		snap.LocalMinuteOfDay != nil &&
-		sim.OnShiftAtMinute(actorSnap.ScheduleStartMin, actorSnap.ScheduleEndMin, *snap.LocalMinuteOfDay)
-
-	if len(opts) == 0 && len(ownStock) == 0 && !restInPlace {
+	if len(opts) == 0 && len(ownStock) == 0 && !restInPlace && !restAtHome {
 		return nil
 	}
 
@@ -208,7 +251,7 @@ func buildRecoveryOptions(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *si
 		}
 		return opts[i].sourceKey < opts[j].sourceKey
 	})
-	return &RecoveryOptionsView{Options: opts, OwnStock: ownStock, RestInPlace: restInPlace}
+	return &RecoveryOptionsView{Options: opts, OwnStock: ownStock, RestInPlace: restInPlace, RestAtHome: restAtHome}
 }
 
 // hasActiveLodgingGrant reports whether actorSnap holds an active ledger lodging
@@ -524,14 +567,18 @@ func cardinalDirection(fromX, fromY, toX, toY float64) string {
 // renderRecoveryOptions writes the "## How you can rest" section. Content-
 // gated: nil/empty view writes nothing. Benefit-first bullets.
 func renderRecoveryOptions(b *strings.Builder, v *RecoveryOptionsView) {
-	if v == nil || (len(v.Options) == 0 && len(v.OwnStock) == 0 && !v.RestInPlace) {
+	if v == nil || (len(v.Options) == 0 && len(v.OwnStock) == 0 && !v.RestInPlace && !v.RestAtHome) {
 		return
 	}
 	b.WriteString("## How you can rest\n")
-	// At-post rest leads: closing up where you stand keeps the post manned, so
-	// it is the option to weigh before walking off to a bed. ZBBS-HOME-362.
+	// In-place rest leads: resting where you already stand — your post, or your own
+	// bed at home — is the option to weigh before walking off anywhere. RestInPlace
+	// and RestAtHome are mutually exclusive (RestAtHome is gated on !RestInPlace).
+	// ZBBS-HOME-362 (post) / LLM-214 (home).
 	if v.RestInPlace {
 		b.WriteString("- Close up and rest where you are — call take_break to recover without leaving your post.\n")
+	} else if v.RestAtHome {
+		b.WriteString("- You're home — call take_break to lie down and rest in your own bed, no need to travel.\n")
 	}
 	// Name the verb. The place bullets carry a structure_id but never said HOW to
 	// act on it, so a tired model reached for a bare rest()/sleep() that isn't a

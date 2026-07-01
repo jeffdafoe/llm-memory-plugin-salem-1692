@@ -11,7 +11,7 @@ Coins in your purse: 0 — you have no coins to spend, so you cannot pay for any
 You are inside the Walker Residence, your home, with no one else here to hear you speak.
 It is morning in the village.
 
-Your home is at the Walker Residence (structure_id: walker_residence) — you can head back there whenever you wish.
+You're home.
 
 If you mean to take paid work, use move_to to head to one of the town's businesses and offer your labor once you arrive:
 - General Store — a long walk southeast

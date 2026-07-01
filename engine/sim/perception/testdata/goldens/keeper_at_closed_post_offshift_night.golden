@@ -11,7 +11,7 @@ Coins in your purse: 20.
 You are inside the General Store, your workplace, with no one else here to hear you speak.
 Night lies over the village.
 
-You keep your trade at the General Store (structure_id: general_store), and your home is at the James Farm (structure_id: james_farm) — you can head to either whenever you wish.
+You're at your workplace. Your home is at the James Farm (structure_id: james_farm) — you can head home whenever you wish.
 
 Your working hours are over and you are not yet home — head home to James Farm (structure_id: james_farm) now. Or, if you have reason to keep your business open later instead, you may call stay_open and state the hour you will close (until_hour).
 
