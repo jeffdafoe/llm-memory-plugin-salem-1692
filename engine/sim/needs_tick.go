@@ -189,6 +189,16 @@ func actorActionableRedNeed(w *World, a *Actor, now time.Time, nowMinute int) (N
 	if a.SleepingUntil != nil && a.SleepingUntil.After(now) {
 		return "", false
 	}
+	// LLM-211: an actor on a break is recovering, the same as a sleeper — no red
+	// need (including the tiredness the break is curing) should wake it. Mirrors
+	// the SleepingUntil suppression above so the break runs to its window rather
+	// than the reactor ending it to service the actor's own red need (the
+	// take_break churn: reactor_commands.go un-shelves a rester for a red need and
+	// calls endBreak at the emit point). Operator-force and PC-speech still
+	// interrupt a break — those don't route through this warrant path.
+	if a.BreakUntil != nil && a.BreakUntil.After(now) {
+		return "", false
+	}
 	for _, n := range Needs {
 		if hasFreshDwellCreditForAttribute(a, n.Key, now, NeedsTickDwellSkipWindow) {
 			continue
@@ -219,8 +229,12 @@ func actorActionableRedNeed(w *World, a *Actor, now time.Time, nowMinute int) (N
 //     need stays unsurfaced: actorActionableRedNeed returns nothing for a
 //     sleeping actor, so neither the warrant below nor the backstop sweep wakes
 //     them; it surfaces on wake.
-//   - on-break actors STILL tick (vendor on break is awake, just off-shift,
-//     and should still get hungry per legacy comment)
+//   - on-break actors STILL accrue hunger + thirst (a vendor on break is awake
+//     and should get hungry) but skip tiredness, which the break's recovery
+//     sweep is restoring — same treatment as sleep (LLM-211). Like a sleeper, an
+//     on-break actor is not warranted while resting (actorActionableRedNeed
+//     returns nothing), so the reactor no longer ends the break to service the
+//     actor's own red need — the break runs to its window.
 //
 // Within an eligible actor, per-attribute the increment is skipped if a
 // fresh DwellCredit exists for that need (see hasFreshDwellCreditForAttribute)
@@ -260,6 +274,13 @@ func IncrementNeedsTick(cappedHours int) Command {
 				// surfaced: actorActionableRedNeed returns nothing while asleep,
 				// so the warrant block below is a no-op for a sleeper.
 				sleeping := a.SleepingUntil != nil && a.SleepingUntil.After(now)
+				// LLM-211: an actor on a break recovers tiredness via the same
+				// mode-blind sweep, so hold its tiredness accrual too — otherwise
+				// the +1/hr increment fights the break's recovery. Hunger/thirst
+				// still accrue (like sleep) so it wakes appropriately hungry; only
+				// tiredness is held. actorActionableRedNeed likewise returns nothing
+				// while on break, so the warrant block below is a no-op for a rester.
+				onBreak := a.BreakUntil != nil && a.BreakUntil.After(now)
 
 				// ZBBS-WORK-277 — #1 need-threshold producer. Only agent-backed
 				// NPCs warrant: PCs accrue needs but don't reactor-tick, and
@@ -274,8 +295,8 @@ func IncrementNeedsTick(cappedHours int) Command {
 					a.VisitorState == nil && a.WarrantedSince == nil && !a.TickInFlight
 
 				for _, n := range Needs {
-					if sleeping && n.Key == "tiredness" {
-						continue // recovered by the sleep loop, not accrued here
+					if (sleeping || onBreak) && n.Key == "tiredness" {
+						continue // recovered by the sleep/break loop, not accrued here
 					}
 					// ZBBS-WORK-346 — port of v1 ZBBS-HOME-214: skip this need
 					// for this actor if a fresh dwell-credit exists on the

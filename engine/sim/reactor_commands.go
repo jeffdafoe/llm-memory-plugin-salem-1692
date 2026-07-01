@@ -659,12 +659,16 @@ func EvaluateReactors(now time.Time) Command {
 				warrantedSince := *actor.WarrantedSince
 				dueAt := *actor.WarrantDueAt
 
-				// ZBBS-HOME-329 #3/#4: a red-need or operator-force warrant is the
-				// only thing that lets an on-break actor reach this emit point
+				// ZBBS-HOME-329 #3/#4: an operator-force or PC-speech warrant is the
+				// only thing that now lets an on-break actor reach this emit point
 				// (actorCanReactNow shelves resters otherwise; sleepers never reach
-				// here at all). We're committing to its tick, so end the break now —
-				// the actor leaves rest to act instead of deliberating while still
-				// flagged StateResting, which would re-shelve it on the next scan.
+				// here at all). A red need NO LONGER does — LLM-211 made
+				// actorActionableRedNeed suppress warrants for a rester (like a
+				// sleeper), so the reactor stops ending a break to service the actor's
+				// own recovering need (the take_break churn). We're committing to this
+				// tick, so end the break now — the actor leaves rest to act instead of
+				// deliberating while still flagged StateResting, which would re-shelve
+				// it on the next scan.
 				if actor.State == StateResting || (actor.BreakUntil != nil && actor.BreakUntil.After(now)) {
 					endBreak(w, actor)
 				}

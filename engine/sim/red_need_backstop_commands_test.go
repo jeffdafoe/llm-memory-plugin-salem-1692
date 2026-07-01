@@ -303,17 +303,19 @@ func TestRedNeedBackoffDelay_CapsAtMax(t *testing.T) {
 	}
 }
 
-// TestNeedProducers_OpenTirednessWarrantNotRestamped pins the LLM-62
-// cost-discipline invariant that slice 2 relies on. A red-tiredness warrant no
-// longer interrupts a break (the break is the cure), so it sits OPEN + shelved on
-// the actor for the whole break. Every warrant becomes an LLM deliberation, so
-// that shelved warrant must NOT be re-stamped on a loop. Both need-warrant
-// producers gate on the actor having no open warrant cycle — the hourly needs
-// tick via warrantEligible (WarrantedSince==nil) and the fast backstop sweep via
-// its explicit SkippedWarranted guard — so neither re-stamps an actor that
-// already carries one. This drives BOTH against an on-shift exhausted vendor on
-// break with an already-open tiredness warrant and asserts no second warrant is
-// appended by either.
+// TestNeedProducers_OpenTirednessWarrantNotRestamped pins that neither need-warrant
+// producer re-stamps an on-break actor carrying an already-open tiredness warrant.
+// LLM-62 (slice 2) first kept a red-tiredness warrant from interrupting a break (the
+// break is the cure); LLM-211 goes further — an on-break actor is suppressed at the
+// source, exactly like a sleeper (actorActionableRedNeed returns nothing while
+// resting), so NO need (tiredness or hunger/thirst) is evaluated as actionable. The
+// already-open warrant therefore survives untouched: the fast backstop sweep skips
+// it as SkippedNoRedNeed (the need is suppressed by the break, not merely gated by
+// the already-warranted guard), and the hourly needs tick's warrantEligible gate
+// (WarrantedSince==nil) skips it too — neither appends a second warrant. Drives BOTH
+// producers against an on-shift exhausted vendor on break. (The SkippedWarranted
+// already-warranted guard for a NON-resting actor is covered separately — see the
+// crossing/warranted cases above and in idle_backstop_commands_test.go.)
 func TestNeedProducers_OpenTirednessWarrantNotRestamped(t *testing.T) {
 	allDayStart, allDayEnd := 0, 1440          // on shift at any minute-of-day (covers the wall-clock hourly tick)
 	a := agentNPCWithNeeds("vendor", 5, 5, 23) // only tiredness red (≥ red 20)
@@ -331,11 +333,12 @@ func TestNeedProducers_OpenTirednessWarrantNotRestamped(t *testing.T) {
 
 	w := needsTickWorld(1, a) // NeedsTickAmount=1 so the hourly tick actually runs
 
-	// Producer 1 — fast red-need backstop sweep. The actor HAS an actionable red
-	// need (on-shift tiredness), so it clears the actionable check; the open
-	// warrant cycle is what must short-circuit it.
-	if tm := evalRedNeed(t, w, now); tm.Stamped != 0 || tm.SkippedWarranted != 1 {
-		t.Fatalf("backstop sweep: Stamped=%d SkippedWarranted=%d, want 0/1; telemetry=%+v", tm.Stamped, tm.SkippedWarranted, tm)
+	// Producer 1 — fast red-need backstop sweep. The actor is on a break, so
+	// actorActionableRedNeed suppresses its red need entirely (LLM-211, like a
+	// sleeper): the sweep finds no actionable need and skips it as SkippedNoRedNeed,
+	// so the already-open warrant is never re-stamped.
+	if tm := evalRedNeed(t, w, now); tm.Stamped != 0 || tm.SkippedNoRedNeed != 1 {
+		t.Fatalf("backstop sweep: Stamped=%d SkippedNoRedNeed=%d, want 0/1; telemetry=%+v", tm.Stamped, tm.SkippedNoRedNeed, tm)
 	}
 
 	// Producer 2 — hourly needs tick. Increments needs but must not stamp a
