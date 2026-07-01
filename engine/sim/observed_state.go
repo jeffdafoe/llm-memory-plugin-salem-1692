@@ -47,6 +47,15 @@ const (
 	// that business from the worker's directory for the TTL so it stops walking
 	// back to a door that just turned it away.
 	ObservedDeclinedWork
+	// ObservedNoHiring — arrived at a business whose keeper was present but on
+	// break (StateResting), so it could not be solicited for work (LLM-210).
+	// Whole-structure (empty ItemKind), keyed by the business the seek-work
+	// directory names. Distinct from ObservedClosed (keeperLESS — the keeper is
+	// asleep or has wandered off) and ObservedDeclinedWork (an explicit refusal):
+	// a resting keeper is "open" for lodging/consumption but cannot take on a
+	// worker, so this drops the business from the seek-work directory ONLY, on a
+	// shorter TTL since a break ends soon.
+	ObservedNoHiring
 )
 
 // ttl is how long an observation of this condition stays actionable before
@@ -61,6 +70,8 @@ func (c ObservedCondition) ttl() time.Duration {
 		return OutOfStockMemoryTTL
 	case ObservedDeclinedWork:
 		return DeclinedWorkMemoryTTL
+	case ObservedNoHiring:
+		return NoHiringMemoryTTL
 	}
 	return 0
 }

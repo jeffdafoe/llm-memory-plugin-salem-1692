@@ -475,6 +475,28 @@ var perceptionScenarios = []perceptionScenario{
 		build: workerSeeksWorkAfterEmployerDeclines,
 	},
 	{
+		name: "worker_seeks_work_skips_no_hiring_business",
+		summary: "The LLM-210 companion to broke_worker_seeks_work_skips_shut_business: the same workless idle worker (Lewis " +
+			"Walker), but he last found the General Store's keeper on a break — an earned ObservedNoHiring memory within its 2h " +
+			"TTL — where the keeper was PRESENT (so the store is NOT remembered shut) yet could not take him on. The golden pins " +
+			"that the seek-work directory DROPS the no-hiring General Store entirely and lists only the open Blacksmith, carrying " +
+			"its distance + direction, so he is steered to a business with an available keeper. A regression that stopped " +
+			"consulting the no-hiring memory would re-list the General Store and re-strand him on the resting-keeper loop that " +
+			"ObservedClosed (sleeping only) and ObservedDeclinedWork (a refusal) both miss.",
+		build: workerSeeksWorkSkipsNoHiringBusiness,
+	},
+	{
+		name: "red_tired_worker_no_seek_work",
+		summary: "The LLM-210 case: a WORKLESS worker (Lewis Walker) idle at home holding a few coins (15, below the seek-work " +
+			"ceiling → not comfortable) but at RED tiredness (20 >= the default red-line 16). A pressing need outranks job-" +
+			"hunting, so the golden pins that he gets NEITHER the businesses directory NOR the 'call move_to now' go-coda — both " +
+			"seek-work gates suppress and the already-present weariness cue is left to win, so he rests on his own rather than " +
+			"pacing to a shop while exhausted (the live home<->store loop). The rested counterpart is " +
+			"worker_with_coin_no_employer_seeks_work (same workless coin-holder, not red → still seeks). A regression that dropped " +
+			"the hasRedNeed gate would re-add the directory + go-coda here and flip TestSeekWorkSuppressedByRedNeed.",
+		build: redTiredWorkerNoSeekWork,
+	},
+	{
 		name: "customer_at_shut_business_loitering",
 		summary: "A laborer (Goodman Silence) stands OUTDOORS at the Tavern's loiter slot, but its only keeper (John Ellis) " +
 			"is asleep inside — the live LLM-154 case (Silence stuck at the closed Tavern while seeking work). The golden pins " +
@@ -3440,6 +3462,92 @@ func workerSeeksWorkAfterEmployerDeclines() (*sim.Snapshot, sim.ActorID, []sim.W
 	return snap, lewisID, nil
 }
 
+// workerSeeksWorkSkipsNoHiringBusiness is the LLM-210 companion to
+// brokeWorkerSeeksWorkSkipsShutBusiness: the same workless idle worker (Lewis Walker),
+// but he last found the General Store's keeper on a break — an earned ObservedNoHiring
+// memory within its 2h TTL — where the keeper was PRESENT (so the store is NOT
+// remembered shut) yet could not take him on. The seek-work directory drops the
+// no-hiring store and lists only the open Blacksmith, steering him to a business with
+// an available keeper instead of looping back to the resting one.
+func workerSeeksWorkSkipsNoHiringBusiness() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		lewisID    = sim.ActorID("lewis")
+		residence  = sim.StructureID("walker_residence")
+		store      = sim.StructureID("general_store")
+		blacksmith = sim.StructureID("blacksmith")
+	)
+	now := 540 // 09:00 — daytime
+	published := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	lewis := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Lewis Walker",
+		State:             sim.StateIdle,
+		InsideStructureID: residence,
+		HomeStructureID:   residence,
+		Pos:               sim.WorldToTile(0, 0),
+		Coins:             0,
+		AttributeSlugs:    []string{sim.AttrWorker},
+		Needs:             map[sim.NeedKey]int{},
+		Observed: sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
+			{StructureID: store, Condition: sim.ObservedNoHiring}: published.Add(-30 * time.Minute),
+		}),
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{lewisID: lewis},
+		Structures: map[sim.StructureID]*sim.Structure{
+			residence:  plainStructure(residence, "Walker Residence"),
+			store:      plainStructure(store, "General Store"),
+			blacksmith: plainStructure(blacksmith, "Blacksmith"),
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			sim.VillageObjectID(store):      {ID: sim.VillageObjectID(store), Pos: sim.WorldPos{X: 160, Y: 0}, Tags: []string{"business", "shop"}},
+			sim.VillageObjectID(blacksmith): {ID: sim.VillageObjectID(blacksmith), Pos: sim.WorldPos{X: 0, Y: 160}, Tags: []string{"business", "shop"}},
+		},
+	}
+	return snap, lewisID, nil
+}
+
+// redTiredWorkerNoSeekWork is the LLM-210 case: a WORKLESS worker (Lewis Walker) idle at
+// home holding a few coins (15, below the seek-work ceiling → not comfortable) but at RED
+// tiredness (20 >= the default red-line 16). A red need outranks job-hunting, so both
+// seek-work gates suppress — the businesses directory and the "call move_to now" go-coda
+// are gone and the weariness cue is left to win. The rested counterpart is
+// worker_with_coin_no_employer_seeks_work (same workless coin-holder, not red → still seeks).
+func redTiredWorkerNoSeekWork() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		lewisID   = sim.ActorID("lewis")
+		residence = sim.StructureID("walker_residence")
+		store     = sim.StructureID("general_store")
+	)
+	now := 540 // 09:00 — daytime
+	lewis := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Lewis Walker",
+		State:             sim.StateIdle,
+		InsideStructureID: residence,
+		HomeStructureID:   residence,
+		Coins:             15, // below the seek-work ceiling (25) → not comfortable
+		AttributeSlugs:    []string{sim.AttrWorker},
+		Needs:             map[sim.NeedKey]int{"tiredness": 20}, // red: >= the default red-line (16)
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{lewisID: lewis},
+		Structures: map[sim.StructureID]*sim.Structure{
+			residence: plainStructure(residence, "Walker Residence"),
+			store:     plainStructure(store, "General Store"),
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			sim.VillageObjectID(store): {ID: sim.VillageObjectID(store), Tags: []string{"business", "shop"}},
+		},
+	}
+	return snap, lewisID, nil
+}
+
 // TestSeekWorkDirectiveOnlyForWorklessWorker is the LLM-160/155/168 cross-scenario
 // invariant: the decisive "call move_to now" go-coda appears in EXACTLY the
 // workless-worker-no-employer scenarios and nowhere else in the matrix. A regression
@@ -3453,6 +3561,7 @@ func TestSeekWorkDirectiveOnlyForWorklessWorker(t *testing.T) {
 		"broke_worker_seeks_work_skips_shut_business": true,
 		"worker_with_coin_no_employer_seeks_work":     true,
 		"worker_seeks_work_after_employer_declines":   true,
+		"worker_seeks_work_skips_no_hiring_business":  true,
 	}
 	for _, sc := range perceptionScenarios {
 		want := seekWorkScenarios[sc.name]
@@ -3460,5 +3569,30 @@ func TestSeekWorkDirectiveOnlyForWorklessWorker(t *testing.T) {
 		if got != want {
 			t.Errorf("scenario %q: seek-work go-coda present = %v, want %v", sc.name, got, want)
 		}
+	}
+}
+
+// TestSeekWorkSuppressedByRedNeed is the LLM-210 cross-scenario invariant: a red need
+// outranks job-hunting, so the SAME workless worker gets the businesses directory when
+// rested but NOT when red-tired. Flipping only tiredness across the red-line toggles the
+// directory, proving the gate is the need itself and not some other fixture difference. A
+// regression that dropped the hasRedNeed gate would leave the directory present in both.
+func TestSeekWorkSuppressedByRedNeed(t *testing.T) {
+	const directoryMarker = "offer your labor"
+	render := func(tiredness int) string {
+		return renderScenario(perceptionScenario{
+			name: "redneed_flip",
+			build: func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+				snap, id, warrants := redTiredWorkerNoSeekWork()
+				snap.Actors[id].Needs["tiredness"] = tiredness
+				return snap, id, warrants
+			},
+		})
+	}
+	if strings.Contains(render(20), directoryMarker) {
+		t.Errorf("red-tired workless worker: seek-work directory present, want absent")
+	}
+	if !strings.Contains(render(0), directoryMarker) {
+		t.Errorf("rested workless worker: seek-work directory absent, want present")
 	}
 }

@@ -164,6 +164,9 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	p.CanSolicitWork = subjectIsWorker(actorSnap) &&
 		!comfortableWorklessSeeker &&
 		!inEveningLeisure(snap, actorSnap) &&
+		// LLM-210: a red need outranks job-hunting (see the SeekWorkPlaces gate below).
+		// The two seek-work gates suppress symmetrically, as they do for evening leisure.
+		!hasRedNeed(actorSnap, snap) &&
 		p.Laboring == nil &&
 		!subjectHasPendingLaborOffer(snap, actorID) &&
 		hasSolicitableAudience(snap, actorID, actorSnap, p.Surroundings)
@@ -207,6 +210,12 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 		!subjectHasResolvableWorkplace(snap, actorSnap) &&
 		!subjectIsComfortable(snap, actorSnap) &&
 		!inEveningLeisure(snap, actorSnap) &&
+		// LLM-210: a red need outranks job-hunting. Suppressing the directory for a
+		// red-tired (or red-hungry/thirsty) worker lets the need cue + its remedy
+		// already in the perception (the free bed / a food source) win, so the NPC
+		// rests or eats on its own — subtractive, mirroring the duty-steer and
+		// evening-leisure hasRedNeed gates. The directory resumes the tick it clears.
+		!hasRedNeed(actorSnap, snap) &&
 		p.Laboring == nil &&
 		p.Actor.InFlightMove == nil &&
 		p.Actor.InFlightSourceActivity == nil &&
@@ -3427,7 +3436,10 @@ type SeekWorkPlace struct {
 // memory decays. A business whose keeper recently DECLINED this worker's labor
 // offer (earned ObservedDeclinedWork memory, 12h TTL) is dropped the same way
 // (LLM-198), so the worker tries the next-nearest business instead of walking
-// back to a refusal. De-duped by name, keeping the nearest representative.
+// back to a refusal. A business whose keeper the worker last found on break
+// (earned ObservedNoHiring memory) is dropped the same way (LLM-210) — a resting
+// keeper is "open" but cannot take on a worker, so routing back there just loops.
+// De-duped by name, keeping the nearest representative.
 func buildSeekWorkPlaces(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) []SeekWorkPlace {
 	if snap == nil || actorSnap == nil {
 		return nil
@@ -3444,6 +3456,9 @@ func buildSeekWorkPlaces(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) []See
 			continue
 		}
 		if workerRememberedDeclinedWork(snap, actorSnap, structureID) {
+			continue
+		}
+		if workerRememberedNoHiring(snap, actorSnap, structureID) {
 			continue
 		}
 		label, ok := resolveStructureLabel(snap, structureID)
@@ -3513,6 +3528,23 @@ func workerRememberedDeclinedWork(snap *sim.Snapshot, actorSnap *sim.ActorSnapsh
 		return false
 	}
 	return actorSnap.Observed.Active(sim.ObservedStateKey{StructureID: structureID, Condition: sim.ObservedDeclinedWork}, snap.PublishedAt)
+}
+
+// workerRememberedNoHiring reports whether the subject has an earned experiential
+// memory (LLM-210) of arriving at structureID and finding its keeper present but on
+// break — not hireable — still within its TTL of the snapshot clock.
+// buildSeekWorkPlaces uses it to DROP that business from the worker's directory so it
+// stops routing back to a shop whose keeper cannot take it on right now, the
+// resting-keeper sibling of workerRememberedDeclinedWork / businessRememberedShut. The
+// memory is stamped by the NoHiring arrival subscriber (sim/no_hiring.go); the TTL
+// decay is applied by Observed.Active at read time so a stale belief fades (the worker
+// retries) without a world-goroutine sweep. False when the subject has no such memory,
+// the snapshot has no clock baseline, or the memory has expired.
+func workerRememberedNoHiring(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, structureID sim.StructureID) bool {
+	if snap == nil || actorSnap == nil {
+		return false
+	}
+	return actorSnap.Observed.Active(sim.ObservedStateKey{StructureID: structureID, Condition: sim.ObservedNoHiring}, snap.PublishedAt)
 }
 
 // subjectIsComfortable reports whether the subject worker holds enough coin to stop
