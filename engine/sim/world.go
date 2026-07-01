@@ -145,6 +145,18 @@ type WorldSettings struct {
 	StallNailsPerRepair        int
 	StallRepairDurationSeconds int
 
+	// Farm upkeep wealth tax (LLM-215). Each game-day a farm-tagged producer's
+	// owner owes one upkeep shovel per FarmUpkeepCoinsPerShovel coins held above
+	// FarmUpkeepFloor, bought from the smith (the LLM-83 circulation lever). Stock-
+	// based, so there is no per-object accumulator — the obligation is a pure
+	// function of the owner's coins (FarmUpkeepObligation), assessed on the daily
+	// rotation boundary (assessFarmUpkeep). Live-tunable (umbilical);
+	// FarmUpkeepCoinsPerShovel<=0 disables the feature entirely (the off-switch,
+	// mirroring StallWearPerCoin==0). Both ride the Snapshot so the perception cue
+	// derives the obligation on the same values the assessment enforces.
+	FarmUpkeepFloor          int
+	FarmUpkeepCoinsPerShovel int
+
 	// Reactor evaluator tunables (Phase 2 PR 2). Settings-driven gross
 	// gates — no per-call cost calculation; llm-memory-api's per-VA dollar
 	// budgets (MEM-052) own the hard $ ceiling.
@@ -1792,6 +1804,8 @@ func (w *World) republish() {
 		StallWearRepairThreshold:  w.Settings.StallWearRepairThreshold,
 		StallWearDegradeThreshold: w.Settings.StallWearDegradeThreshold,
 		StallNailsPerRepair:       w.Settings.StallNailsPerRepair,
+		FarmUpkeepFloor:           w.Settings.FarmUpkeepFloor,
+		FarmUpkeepCoinsPerShovel:  w.Settings.FarmUpkeepCoinsPerShovel,
 		DefaultOutdoorSceneRadius: w.Settings.DefaultOutdoorSceneRadius,
 		Assets:                    w.Assets,
 		ZoomMinAdmin:              w.Settings.ZoomMinAdmin,

@@ -284,6 +284,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderForgeChoice(&ephemeral, p.ForgeChoice)
 	renderStallRepair(&ephemeral, p.StallRepair)
 	renderStallCondition(&ephemeral, p.StallCondition)
+	renderFarmUpkeep(&ephemeral, p.FarmUpkeep)
 	renderRestocking(&ephemeral, p.Restocking)
 	renderForage(&ephemeral, p.Forage)
 	renderLodging(&ephemeral, p.Lodging)
@@ -2572,6 +2573,11 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 		// the "## Your stall" cue carries the nail count + buy-from-the-smith
 		// steer; this is the wake-from-anywhere nudge to go tend it.
 		return fmt.Sprintf("%d. Your market stall has worn from use and needs mending — go to it and repair it (you'll need nails; the smith sells them).\n", n), false
+	case sim.FarmUpkeepWarrantReason:
+		// LLM-215: the season wore out the farm's upkeep shovels. The "## Farm upkeep"
+		// cue carries the shovel count + buy-from-the-blacksmith steer; this is the
+		// wake-from-anywhere "why you ticked" nudge, like production-choice / seek-work.
+		return fmt.Sprintf("%d. Your farm tools are worn from the season's work — buy fresh shovels from the blacksmith.\n", n), false
 	default:
 		return renderBasicWarrantLine(n, w.Kind(), nameOf(w.TriggerActorID)), false
 	}

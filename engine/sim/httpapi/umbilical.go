@@ -397,7 +397,7 @@ func (s *Server) umbilicalRoutes() []umbilicalRoute {
 		{http.MethodGet, umbilicalBasePath + "/settlements", "Durable accepted pay-with-item settlements off the agent_action_log 'paid' beat, most-recent first — the audit lens for 'did a free-food settlement happen' (each row carries coins + barter goods + a `free` flag, so a give-away is unambiguous). Reaches settlements that happened outside a huddle, unlike /transcript. Optional query params: actor (buyer id), since, until (RFC3339), ledger (a ledger id), limit. Rows from before LLM-105 carry has_legacy=true (no goods leg recorded).", false, s.handleUmbilicalSettlements},
 		{http.MethodGet, umbilicalBasePath + "/recipes", "Live item-recipe catalog (read side of recipe/set): per recipe its output batch, production rate, inputs, and wholesale/retail price. Query param: item (filter to one, case-insensitive against the canonical catalog key).", false, s.handleUmbilicalRecipes},
 		{http.MethodGet, umbilicalBasePath + "/items", "Live item catalog (read side of item/set-satisfies): per item kind its label, category, capabilities, eat-here-only flag, and per-need satiation entries (immediate amount + dwell triple where authored). Production rate/inputs/price live on /recipes. Query param: item (filter to one, case-insensitive against the canonical catalog key).", false, s.handleUmbilicalItems},
-		{http.MethodGet, umbilicalBasePath + "/settings", "Live operator-tunable world settings: per-need red-line thresholds (read side of settings/need-threshold; ephemeral) + the huddle loop-sweep knobs (read side of settings/huddle-loop; persisted) with an enabled flag + the seek-work coin ceiling (read side of settings/seek-work-ceiling; persisted).", false, s.handleUmbilicalSettings},
+		{http.MethodGet, umbilicalBasePath + "/settings", "Live operator-tunable world settings: per-need red-line thresholds (read side of settings/need-threshold; ephemeral) + the huddle loop-sweep knobs (read side of settings/huddle-loop; persisted) with an enabled flag + the seek-work coin ceiling (read side of settings/seek-work-ceiling; persisted) + the farm wealth-tax knobs (read side of farm-upkeep/set; persisted).", false, s.handleUmbilicalSettings},
 
 		// Control whitelist — world-mutating; armed only when control is also enabled.
 		{http.MethodPost, umbilicalBasePath + "/nudge", "Force a reactor tick for one actor, optionally injecting an in-world felt-impulse directive. Body: {actor_id, message?}.", true, s.handleUmbilicalNudge},
@@ -440,6 +440,10 @@ func (s *Server) umbilicalRoutes() []umbilicalRoute {
 		// Stall wear (LLM-118) — live-tune the market-stall wear/repair knobs
 		// without a restart; applied in memory and persisted on the next checkpoint.
 		{http.MethodPost, umbilicalBasePath + "/stall-wear/set", "Live-tune the stall wear knobs (LLM-118) without a restart. All fields optional (at least one required), non-negative ints. Body: {stall_wear_per_coin?, stall_wear_repair_threshold?, stall_wear_degrade_threshold?, stall_nails_per_repair?, stall_repair_duration_seconds?}.", true, s.handleUmbilicalStallWearSet},
+
+		// Farm upkeep wealth tax (LLM-215) — live-tune the per-farm shovel levy
+		// without a restart; applied in memory and persisted on the next checkpoint.
+		{http.MethodPost, umbilicalBasePath + "/farm-upkeep/set", "Live-tune the farm wealth-tax knobs (LLM-215) without a restart. Both fields optional (at least one required), non-negative ints; farm_upkeep_coins_per_shovel=0 disables the feature. Body: {farm_upkeep_floor?, farm_upkeep_coins_per_shovel?}.", true, s.handleUmbilicalFarmUpkeepSet},
 
 		// Item definition (LLM-200) — live create/edit of one item_kind row (the
 		// definition: label, category, sort order, capabilities, counting nouns,

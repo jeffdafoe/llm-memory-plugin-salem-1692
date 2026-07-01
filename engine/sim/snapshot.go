@@ -165,6 +165,15 @@ type Snapshot struct {
 	StallWearDegradeThreshold int
 	StallNailsPerRepair       int
 
+	// FarmUpkeepFloor / FarmUpkeepCoinsPerShovel mirror the WorldSettings knobs
+	// (LLM-215) so the owner upkeep cue derives the shovel obligation
+	// (FarmUpkeepObligation) on the SAME values assessFarmUpkeep enforces, pure over
+	// the snapshot rather than racing on w.Settings. A non-positive
+	// FarmUpkeepCoinsPerShovel disables the feature (obligation 0), so a
+	// directly-constructed test snapshot that omits these gets no farm-upkeep cue.
+	FarmUpkeepFloor          int
+	FarmUpkeepCoinsPerShovel int
+
 	// DefaultOutdoorSceneRadius mirrors WorldSettings.DefaultOutdoorSceneRadius —
 	// the "what is around me" tile radius the move_to name-resolver and scene
 	// bound use. Carried so perception can bound a proximity scan to the SAME
