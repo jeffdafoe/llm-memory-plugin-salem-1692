@@ -40,6 +40,12 @@ func buildFarmUpkeep(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 	}
 	owed := sim.FarmUpkeepObligation(actorSnap.Coins, snap.FarmUpkeepFloor, snap.FarmUpkeepCoinsPerShovel)
 	held := actorSnap.Inventory[sim.ShovelItemKind]
+	// DYNAMIC target, not a fixed daily debt: `owed` is re-derived from CURRENT coins
+	// every build, so as the owner buys shovels (coins fall, held rises) the shortfall
+	// shrinks and clears at a fixed point (held == owed) — self-limiting, so a farm
+	// whose balance drops mid-cycle is never over-taxed. This is the greenlit stock-
+	// based, no-accumulator design; the coin actually collected is <= the boundary
+	// assessment, by intent.
 	if owed <= held {
 		return nil // nothing owed beyond what they already carry
 	}

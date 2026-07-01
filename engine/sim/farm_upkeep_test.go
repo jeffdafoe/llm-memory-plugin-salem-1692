@@ -111,6 +111,27 @@ func TestAssessFarmUpkeep_NonAgentOwnerNoWarrant(t *testing.T) {
 	}
 }
 
+func TestAssessFarmUpkeep_DuplicateFarmAssessedOnce(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	w, owner, _ := farmTestWorld(30, 20, 95, 3)
+	// A second farm tagged to the same owner (live-tag drift breaking the one-farm
+	// data convention): the pass must assess the owner once, not once per object.
+	w.VillageObjects["james-farm"] = &VillageObject{ID: "james-farm", OwnerActorID: owner.ID, Tags: []string{TagFarm}}
+	assessFarmUpkeep(w, now)
+	if owner.Inventory[ShovelItemKind] != 0 {
+		t.Errorf("shovels should be consumed once, have %d", owner.Inventory[ShovelItemKind])
+	}
+	count := 0
+	for _, wm := range owner.Warrants {
+		if _, ok := wm.Reason.(FarmUpkeepWarrantReason); ok {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly 1 farm-upkeep warrant across duplicate farms, got %d", count)
+	}
+}
+
 func TestFarmPredicates(t *testing.T) {
 	owned := &VillageObject{ID: "f", OwnerActorID: "elizabeth", Tags: []string{TagFarm}}
 	unowned := &VillageObject{ID: "u", Tags: []string{TagFarm}}

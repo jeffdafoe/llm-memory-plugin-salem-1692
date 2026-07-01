@@ -128,10 +128,21 @@ func assessFarmUpkeep(w *World, now time.Time) {
 	}
 	floor := w.Settings.FarmUpkeepFloor
 	perShovel := w.Settings.FarmUpkeepCoinsPerShovel
+	// One assessment per OWNER, not per farm object. A farmer owns one farm by data
+	// convention (OwnedFarm), but a live-tagged duplicate must not consume/warrant the
+	// same owner twice in a pass — the second pass would find the shovels already gone
+	// and (were it not for this guard) re-evaluate the same coin balance. Assess-per-
+	// owner keeps the levy independent of how many farm objects an owner happens to
+	// carry; multiplying the tax by farm count is explicitly NOT the intent.
+	assessed := make(map[ActorID]bool)
 	for _, obj := range w.VillageObjects {
 		if !IsFarmStructure(obj) {
 			continue
 		}
+		if assessed[obj.OwnerActorID] {
+			continue
+		}
+		assessed[obj.OwnerActorID] = true
 		owner := w.Actors[obj.OwnerActorID]
 		if owner == nil {
 			continue
