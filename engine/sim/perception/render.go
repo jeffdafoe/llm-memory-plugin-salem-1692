@@ -245,7 +245,12 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderDutySteer(&ephemeral, p.DutySteer)
 	renderEveningLeisure(&ephemeral, p.EveningLeisure)
 	renderRelationships(&ephemeral, p.Relationships)
-	renderRecentConversation(&ephemeral, p.RecentConversation)
+	// LLM-217: the subject's own recent deeds render just above the spoken
+	// turns — together they are the actor's short-term memory of the scene,
+	// and the action trail is what makes a self-loop (leave ↔ bounce back)
+	// visible to the model.
+	renderSelfActions(&ephemeral, p.SelfActions, p.RenderedAt)
+	renderRecentConversation(&ephemeral, p.RecentConversation, p.RenderedAt)
 	// The decision section renders ABOVE the affordance dumps (it used to land
 	// after them): a buyer's coin on the table is the seller's most actionable
 	// fact, and burying it under eat/drink and room-to-let cues let the
@@ -1514,26 +1519,184 @@ func renderRelationships(b *strings.Builder, peers []RelationshipPeerView) {
 // the subject's own lines "You said" and everyone else "<Name> said". This is
 // the cross-tick conversational continuity EVERY NPC (stateful included) and the
 // player's own lines feed into, so a re-engaging actor sees that it already
-// spoke and what was just asked, instead of re-pitching. Empty list skips the
-// section.
-func renderRecentConversation(b *strings.Builder, lines []UtteranceView) {
+// spoke and what was just asked, instead of re-pitching. Each line carries an
+// interval stamp ("said (40s ago):") measured against renderedAt (LLM-217), so
+// the model can tell rapid-fire churn from a normally paced exchange; the stamp
+// is omitted when either clock is missing (hand-built payloads). Empty list
+// skips the section.
+func renderRecentConversation(b *strings.Builder, lines []UtteranceView, renderedAt time.Time) {
 	if len(lines) == 0 {
 		return
 	}
 	b.WriteString("## Recent conversation here\n")
 	for _, u := range lines {
 		text, _ := sanitizeText(u.Text, 0)
+		said := "said"
+		if stamp := agoPhrase(u.At, renderedAt); stamp != "" {
+			said = "said (" + stamp + ")"
+		}
 		if u.IsSelf {
-			fmt.Fprintf(b, "- You said: %s\n", text)
+			fmt.Fprintf(b, "- You %s: %s\n", said, text)
 			continue
 		}
 		name := sanitizeInline(u.SpeakerName)
 		if name == "" {
 			name = "someone"
 		}
-		fmt.Fprintf(b, "- %s said: %s\n", name, text)
+		fmt.Fprintf(b, "- %s %s: %s\n", name, said, text)
 	}
 	b.WriteString("\n")
+}
+
+// agoPhrase renders how long before now `at` happened, in the coarse buckets a
+// prompt line needs: "just now" inside 15s, whole seconds under 90s, then whole
+// minutes, then whole hours. Returns "" when either clock is zero (hand-built
+// test payloads) — callers drop the stamp rather than show a bogus interval.
+// LLM-217.
+func agoPhrase(at, now time.Time) string {
+	if at.IsZero() || now.IsZero() {
+		return ""
+	}
+	d := now.Sub(at)
+	switch {
+	case d < 15*time.Second:
+		// Covers negative deltas too: an At a hair after the snapshot's
+		// publish instant (clock race) clamps to "just now" rather than
+		// leaking a nonsense future interval.
+		return "just now"
+	case d < 90*time.Second:
+		return fmt.Sprintf("%ds ago", int(d/time.Second))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d/time.Minute))
+	default:
+		return fmt.Sprintf("%dh ago", int(d/time.Hour))
+	}
+}
+
+// renderSelfActions writes the "## What you've recently done" section (LLM-217)
+// — the subject's own recent committed actions, most-recent-first, each with an
+// interval stamp. This is the self-action memory that lets a vacillating NPC
+// SEE its own churn ("You arrived at the Tavern (just now). You left the Tavern
+// (2m ago). You arrived at the Tavern (4m ago).") and break the loop — the
+// information gap behind the live go-home ↔ seek-work oscillation. Phrasing
+// mirrors the talk-panel narration (httpapi renderActionLogEntry) in second
+// person; an entry whose type has no phrasing here should not have passed the
+// build-side selfActionTrailTypes filter, but is skipped defensively. Empty
+// list skips the section.
+func renderSelfActions(b *strings.Builder, actions []SelfActionView, renderedAt time.Time) {
+	if len(actions) == 0 {
+		return
+	}
+	wrote := false
+	for _, a := range actions {
+		line := selfActionLine(a)
+		if line == "" {
+			continue
+		}
+		if !wrote {
+			b.WriteString("## What you've recently done\n")
+			b.WriteString("Most recent first.\n")
+			wrote = true
+		}
+		if stamp := agoPhrase(a.At, renderedAt); stamp != "" {
+			fmt.Fprintf(b, "- %s (%s)\n", line, stamp)
+			continue
+		}
+		fmt.Fprintf(b, "- %s\n", line)
+	}
+	if wrote {
+		b.WriteString("\n")
+	}
+}
+
+// selfActionLine phrases one SelfActionView second-person, no trailing period
+// (the interval stamp follows). Degrades on missing counterparty/amount the
+// same way the talk-panel narration does. Returns "" for a type it can't
+// phrase.
+func selfActionLine(a SelfActionView) string {
+	coins := func(n int) string {
+		if n == 1 {
+			return "1 coin"
+		}
+		return fmt.Sprintf("%d coins", n)
+	}
+	switch a.ActionType {
+	case sim.ActionTypeSpoke:
+		text, _ := sanitizeText(a.Text, 0)
+		if text == "" {
+			return ""
+		}
+		return fmt.Sprintf("You said: %q", text)
+	case sim.ActionTypePaid:
+		if a.CounterpartyName == "" {
+			return "You made a payment"
+		}
+		line := "You paid " + sanitizeInline(a.CounterpartyName)
+		if a.Amount > 0 {
+			line += " " + coins(a.Amount)
+		}
+		if a.Text != "" {
+			line += " for " + sanitizeInline(a.Text)
+		}
+		return line
+	case sim.ActionTypeConsumed:
+		if a.Text == "" {
+			return ""
+		}
+		return "You consumed " + sanitizeInline(a.Text)
+	case sim.ActionTypeDelivered:
+		if a.Text == "" {
+			return ""
+		}
+		line := "You delivered " + sanitizeInline(a.Text)
+		if a.CounterpartyName != "" {
+			line += " to " + sanitizeInline(a.CounterpartyName)
+		}
+		return line
+	case sim.ActionTypeWalked:
+		if a.Text == "" {
+			return "You arrived"
+		}
+		return "You arrived at " + sim.WithDefiniteArticle(sanitizeInline(a.Text))
+	case sim.ActionTypeDeparted:
+		if a.Text == "" {
+			return "You left"
+		}
+		return "You left " + sim.WithDefiniteArticle(sanitizeInline(a.Text))
+	case sim.ActionTypeTookBreak:
+		return "You stepped away to rest"
+	case sim.ActionTypeLabored:
+		switch {
+		case a.Amount > 0 && a.CounterpartyName != "":
+			return "You earned " + coins(a.Amount) + " working for " + sanitizeInline(a.CounterpartyName)
+		case a.Amount > 0:
+			return "You earned " + coins(a.Amount) + " for a job"
+		case a.CounterpartyName != "":
+			return "You finished a job for " + sanitizeInline(a.CounterpartyName)
+		default:
+			return "You finished a job"
+		}
+	case sim.ActionTypeSolicitedWork:
+		switch {
+		case a.Amount > 0 && a.CounterpartyName != "":
+			return "You offered to work for " + sanitizeInline(a.CounterpartyName) + " for " + coins(a.Amount)
+		case a.CounterpartyName != "":
+			return "You offered to work for " + sanitizeInline(a.CounterpartyName)
+		default:
+			return "You offered to work for coin"
+		}
+	case sim.ActionTypeHired:
+		switch {
+		case a.Amount > 0 && a.CounterpartyName != "":
+			return "You hired " + sanitizeInline(a.CounterpartyName) + " for " + coins(a.Amount)
+		case a.CounterpartyName != "":
+			return "You hired " + sanitizeInline(a.CounterpartyName)
+		default:
+			return "You took someone on"
+		}
+	default:
+		return ""
+	}
 }
 
 // fallbackToday derives the order-book "today" for a hand-built payload that
