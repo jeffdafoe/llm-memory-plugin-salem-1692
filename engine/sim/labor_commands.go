@@ -203,6 +203,35 @@ func SolicitWork(workerID ActorID, employerName string, reward int, durationMin 
 			}
 			w.LaborLedger[id] = offer
 
+			// LLM-193: affordability gate. A broke employer — coins below the asked
+			// reward — can only refuse, but the solicit still emitted
+			// LaborOfferReceived, which WOKE the employer for a full LLM tick that
+			// ended in "my purse is empty": a tick burned on BOTH sides for no hire
+			// (the live Walker/Ward store-to-store hunt — 68% of NPC speech was
+			// unconverted work-chatter). Resolve the offer Declined immediately,
+			// WITHOUT emitting LaborOfferReceived, so the employer is never woken.
+			// The Declined terminal reuses the existing seek-work off-ramp with no
+			// new perception code: it stamps the worker's 12h "this shop declined me"
+			// memory (handleDeclinedWorkOnResolved → ObservedDeclinedWork on the
+			// employer's workplace), which drops the shop from buildSeekWorkPlaces,
+			// and the Declined ledger entry drops the employer from the solicit
+			// audience (employerDeclinedSubject). So the worker solicits once, learns,
+			// and is steered to a shop that can actually pay. buyerCanAfford is the
+			// same funds predicate AcceptWork's accept-time gate uses (gate 8); the
+			// balance can rise and the memory decays, so a shop that later has coin
+			// re-enters the directory. RootEventID/SourceEventID stay unset — there
+			// was no received event, and finalizeLaborTerminal doesn't need them.
+			// recordFacts=false: no conscious decline happened, so no relationship
+			// fact is written (matches AcceptWork's accept-time funds failure).
+			if !buyerCanAfford(employer, reward) {
+				state := finalizeLaborTerminalOpts(w, offer, LaborTerminalStateDeclined, false, at, false)
+				return LaborSolicitResult{
+					ID:           id,
+					State:        state,
+					EmployerName: employer.DisplayName,
+				}, nil
+			}
+
 			evt := &LaborOfferReceived{
 				LaborID:     id,
 				WorkerID:    workerID,
@@ -419,6 +448,20 @@ func DeclineWork(callerID ActorID, laborID LaborID, at time.Time) Command {
 // accept-time gate flips, the pending-expire sweep) pass false; only
 // settleCompletedLabor passes true.
 func finalizeLaborTerminal(w *World, offer *LaborOffer, terminal LaborTerminalState, workPerformed bool, at time.Time) LaborLedgerState {
+	return finalizeLaborTerminalOpts(w, offer, terminal, workPerformed, at, true)
+}
+
+// finalizeLaborTerminalOpts is finalizeLaborTerminal with control over whether the
+// bidirectional relationship facts are written. Every conscious-terminal caller
+// (decline_work, AcceptWork's gate flips, the completion/expiry sweep) goes through
+// finalizeLaborTerminal (recordFacts=true). The LLM-193 affordability auto-decline
+// passes recordFacts=false: no one consciously declined — the engine resolved the
+// offer because the employer couldn't cover the reward and was never woken — so an
+// "I declined X" employer fact would fabricate a social decision the employer never
+// made (the same reason AcceptWork's accept-time funds FailedUnavailable writes no
+// facts). The LaborResolved event and the worker's 12h ObservedDeclinedWork memory
+// still fire; only the relationship facts are suppressed.
+func finalizeLaborTerminalOpts(w *World, offer *LaborOffer, terminal LaborTerminalState, workPerformed bool, at time.Time, recordFacts bool) LaborLedgerState {
 	// A Completed terminal means the work window elapsed by definition — pin the
 	// invariant locally so a future caller can't emit Completed with
 	// workPerformed=false (which would still write the "worked" facts below).
@@ -457,8 +500,12 @@ func finalizeLaborTerminal(w *World, offer *LaborOffer, terminal LaborTerminalSt
 	// finalizePayLedgerTerminal's decline-path RecordInteraction. Only the
 	// terminals that are a social move between the two NPCs write; the
 	// KindNPCShared + visitor gates inside RecordInteraction decide which of the
-	// two writes actually persists.
-	recordLaborInteractions(w, offer, terminal, workPerformed, at)
+	// two writes actually persists. Suppressed for the LLM-193 affordability
+	// auto-decline (recordFacts=false) — that resolution is not a conscious social
+	// move by either party.
+	if recordFacts {
+		recordLaborInteractions(w, offer, terminal, workPerformed, at)
+	}
 	return offer.State
 }
 

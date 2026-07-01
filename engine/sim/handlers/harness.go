@@ -1613,8 +1613,19 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 	// it, so it is retryable on a LATER tick — but a second errored solicit WITHIN this
 	// tick is blocked by solicitAttemptedThisTick, LLM-195.)
 	if vc.Name == "solicit_work" {
-		if r, ok := cmdResult.(sim.LaborSolicitResult); ok && r.State == sim.LaborStatePending {
-			return fmt.Sprintf("[ok] Your offer of labor to %s is on the table — they will answer on their turn.", r.EmployerName)
+		if r, ok := cmdResult.(sim.LaborSolicitResult); ok {
+			switch r.State {
+			case sim.LaborStatePending:
+				return fmt.Sprintf("[ok] Your offer of labor to %s is on the table — they will answer on their turn.", r.EmployerName)
+			case sim.LaborStateDeclined:
+				// LLM-193: the offer was auto-declined at mint because the employer
+				// can't cover the reward you asked — they were never woken. Tell the
+				// worker the real reason so it looks to a shop that can pay rather than
+				// re-asking the same purse. "cannot pay your requested reward" is
+				// precise for the reward-relative gate (they may hold some coin, just
+				// less than you asked), unlike "hasn't the coin" which reads as zero.
+				return fmt.Sprintf("[ok] %s cannot pay your requested reward just now — look to another shop for work.", r.EmployerName)
+			}
 		}
 	}
 	// accept_work (LLM-163): on a real accept the offer flips Working and the
