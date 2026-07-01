@@ -60,8 +60,12 @@ func TestHarness_ProduceNoSwitch_EndsTick(t *testing.T) {
 	if _, err := f.world.Send(sim.EvaluateReactors(now)); err != nil {
 		t.Fatalf("EvaluateReactors: %v", err)
 	}
-	if rec := f.waitForTerminalTelemetry(t); rec.Kind != "completed" {
+	rec := f.waitForTerminalTelemetry(t)
+	if rec.Kind != "completed" {
 		t.Fatalf("tick did not complete cleanly: kind=%q", rec.Kind)
+	}
+	if got := rec.Detail["terminal_status"]; got != "success" {
+		t.Errorf("terminal_status: got %q, want \"success\" — the no-switch produce ends the tick on its own success, not budget/done/other", got)
 	}
 	if n := len(client.Requests()); n != 1 {
 		t.Errorf("LLM rounds: got %d, want 1 — a no-switch produce ends the tick, so the wasted second round never runs", n)
@@ -83,8 +87,12 @@ func TestHarness_ProduceSwitch_StaysNonTerminal(t *testing.T) {
 	if _, err := f.world.Send(sim.EvaluateReactors(now)); err != nil {
 		t.Fatalf("EvaluateReactors: %v", err)
 	}
-	if rec := f.waitForTerminalTelemetry(t); rec.Kind != "completed" {
+	rec := f.waitForTerminalTelemetry(t)
+	if rec.Kind != "completed" {
 		t.Fatalf("tick did not complete cleanly: kind=%q", rec.Kind)
+	}
+	if got := rec.Detail["terminal_status"]; got != "done" {
+		t.Errorf("terminal_status: got %q, want \"done\" — a switching produce is non-terminal, so the model's done() ends the tick", got)
 	}
 	if n := len(client.Requests()); n != 2 {
 		t.Errorf("LLM rounds: got %d, want 2 — a switching produce is non-terminal, so round 2 (done) runs", n)
