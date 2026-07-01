@@ -361,6 +361,17 @@ func TestMoveToStructure_NoOpVisitKeepsHuddle(t *testing.T) {
 	if huddleIDOf(t, w, "walker") == "" {
 		t.Fatal("walker not in a huddle after JoinHuddle")
 	}
+	// Seed a stale "found it shut" memory for the well: a rejected no-op visit
+	// must NOT clear it — the ZBBS-HOME-405 forget fires only on a genuine new
+	// walk, and the reordered dest-derivation still sits above forget.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["walker"].Observed = sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
+			{StructureID: "well", Condition: sim.ObservedClosed}: now,
+		})
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed stale supplier memory: %v", err)
+	}
 
 	if _, err := w.Send(sim.MoveToStructure("walker", "well", now)); err == nil {
 		t.Fatal("want no-op reject for move_to the structure the actor loiters at, got nil")
@@ -369,6 +380,34 @@ func TestMoveToStructure_NoOpVisitKeepsHuddle(t *testing.T) {
 		t.Error("no-op move_to dropped the huddle; want it preserved (LLM-196)")
 	}
 	if mi := moveIntentOf(t, w, "walker"); mi != nil {
+		t.Error("no-op visit stamped a MoveIntent; want none")
+	}
+	if _, ok := supplierMemoryOf(t, w, "walker").At(sim.ObservedStateKey{StructureID: "well", Condition: sim.ObservedClosed}); !ok {
+		t.Error("no-op visit cleared stale supplier memory; want it preserved (ZBBS-HOME-405)")
+	}
+}
+
+// TestMoveToStructure_NoOpVisitOwnerOnlyRejects exercises the exact decision
+// shape of the live bug: a non-member standing on an owner-only structure's
+// loiter pin. moveToDestinationFor derives a VISIT (the stranger cannot enter),
+// and standing on the pin makes the walk a no-op — rejected "already at" with
+// no MoveIntent, rather than a huddle-tearing zero-distance move (LLM-196). The
+// closed-well test covers the guard; this covers the shop/owner-only shape.
+func TestMoveToStructure_NoOpVisitOwnerOnlyRejects(t *testing.T) {
+	w, cancel := buildMoveToOwnerTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	seedActorAtLoiterPin(t, w, "stranger", "manor")
+
+	_, err := w.Send(sim.MoveToStructure("stranger", "manor", now))
+	if err == nil {
+		t.Fatal("want 'already at' reject for a non-member on the owner-only loiter pin, got nil")
+	}
+	if !strings.Contains(err.Error(), "already at") {
+		t.Errorf("error lacks 'already at': %v", err)
+	}
+	if mi := moveIntentOf(t, w, "stranger"); mi != nil {
 		t.Error("no-op visit stamped a MoveIntent; want none")
 	}
 }
