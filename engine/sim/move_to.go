@@ -418,12 +418,29 @@ func MoveToStructure(actorID ActorID, structureID StructureID, now time.Time) Co
 				return MoveActorResult{}, fmt.Errorf(
 					"you are already on your way to %q — keep walking; pick a different action this turn", structureID)
 			}
+			dest := moveToDestinationFor(w, a, structureID, now)
+			// A move that resolves to a VISIT of a structure the actor already
+			// stands at is a no-op walk — reject it before MoveActor tears the
+			// huddle down. The InsideStructureID guard above catches the ENTER
+			// no-op (already inside); this catches its VISIT sibling: a co-present
+			// actor loitering at the structure's slot (e.g. a worker at an
+			// owner-only shop's loiter pin, in a huddle with the keeper). Without
+			// it, re-issuing move_to here runs MoveActor with leaveHuddleFirst —
+			// emitting a spurious HuddleLeft (and the keeper's businessowner
+			// farewell) and re-forming the huddle on instant arrival,
+			// mid-negotiation (LLM-196). Mirrors MoveToObject's loiter-pin no-op
+			// guard; LoiterAttributionTiles = "standing AT" the pin.
+			if dest.Kind == MoveDestinationStructureVisit {
+				if pin, ok := effectiveLoiterTile(w, structureID); ok && a.Pos.Chebyshev(pin) <= LoiterAttributionTiles {
+					return MoveActorResult{}, fmt.Errorf(
+						"you are already at %q — no need to move there; pick a different action this turn", structureID)
+				}
+			}
 			// The actor has chosen to walk to structureID — deciding to GO there
 			// supersedes any stale "I found it shut/dry" belief about it, so drop
 			// that experiential memory now (ZBBS-HOME-405). Placed after the
 			// guards above so it fires only on a genuinely new walk.
 			forgetSupplierStaleMemory(a, structureID)
-			dest := moveToDestinationFor(w, a, structureID, now)
 			// leaveHuddleFirst=true: choosing to walk somewhere ends any
 			// conversation the actor is in (ZBBS-HOME-285 — matches v1's
 			// move=leave, confirmed with work for the duty-warrant seam). The
