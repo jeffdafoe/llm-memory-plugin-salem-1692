@@ -33,9 +33,11 @@ type ItemKindDef struct {
 	DisplayLabelSingular string
 	DisplayLabelPlural   string
 
-	// Category is the soft-typed bucket. v1 stored it as a free VARCHAR with
-	// values food | drink | material | craft; v2 ports it as a typed enum so
-	// misspellings fail to compile.
+	// Category is the soft-typed bucket — a free VARCHAR(32) in both v1 and v2.
+	// ItemCategory names the well-known values (food | drink | material | craft,
+	// plus the engine-minted "unknown"), but it is a string soft-type, not a
+	// closed set: the umbilical item/set route (LLM-200) accepts any category so
+	// operators can introduce new good classes (e.g. "tool") without a deploy.
 	Category ItemCategory
 
 	// SortOrder is the UI sort hint (low → high). v1's item_kind.sort_order.
@@ -84,9 +86,13 @@ type ItemKindDef struct {
 	ConsumeDwellNarration string
 }
 
-// ItemCategory is the typed item-category enum. Consumers must always
-// include a default branch on switches over this type so adding a new
-// category doesn't break them.
+// ItemCategory is a free-text soft-type mirroring the item_kind.category
+// VARCHAR(32) column — NOT a closed enum. The constants below are the
+// well-known values, but any string is valid: the umbilical item/set route
+// (LLM-200) writes operator-authored categories (e.g. "tool") straight
+// through, by design (LLM-204). Treat the named constants as a convenience
+// vocabulary, not an exhaustive set — any switch over this type must include a
+// default branch so an off-vocabulary value is handled, not dropped.
 type ItemCategory string
 
 const (
