@@ -203,6 +203,33 @@ func SolicitWork(workerID ActorID, employerName string, reward int, durationMin 
 			}
 			w.LaborLedger[id] = offer
 
+			// LLM-193: affordability gate. A broke employer — coins below the asked
+			// reward — can only refuse, but the solicit still emitted
+			// LaborOfferReceived, which WOKE the employer for a full LLM tick that
+			// ended in "my purse is empty": a tick burned on BOTH sides for no hire
+			// (the live Walker/Ward store-to-store hunt — 68% of NPC speech was
+			// unconverted work-chatter). Resolve the offer Declined immediately,
+			// WITHOUT emitting LaborOfferReceived, so the employer is never woken.
+			// The Declined terminal reuses the existing seek-work off-ramp with no
+			// new perception code: it stamps the worker's 12h "this shop declined me"
+			// memory (handleDeclinedWorkOnResolved → ObservedDeclinedWork on the
+			// employer's workplace), which drops the shop from buildSeekWorkPlaces,
+			// and the Declined ledger entry drops the employer from the solicit
+			// audience (employerDeclinedSubject). So the worker solicits once, learns,
+			// and is steered to a shop that can actually pay. buyerCanAfford is the
+			// same funds predicate AcceptWork's accept-time gate uses (gate 8); the
+			// balance can rise and the memory decays, so a shop that later has coin
+			// re-enters the directory. RootEventID/SourceEventID stay unset — there
+			// was no received event, and finalizeLaborTerminal doesn't need them.
+			if !buyerCanAfford(employer, reward) {
+				state := finalizeLaborTerminal(w, offer, LaborTerminalStateDeclined, false, at)
+				return LaborSolicitResult{
+					ID:           id,
+					State:        state,
+					EmployerName: employer.DisplayName,
+				}, nil
+			}
+
 			evt := &LaborOfferReceived{
 				LaborID:     id,
 				WorkerID:    workerID,

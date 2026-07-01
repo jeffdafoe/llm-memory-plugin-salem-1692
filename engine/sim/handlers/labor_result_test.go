@@ -25,6 +25,15 @@ func TestCommitResultContent_LaborSteers(t *testing.T) {
 			want:   "[ok] Your offer of labor to Hannah Boggs is on the table — they will answer on their turn.",
 		},
 		{
+			// LLM-193: an unaffordable solicit auto-declines at mint (the employer
+			// hasn't the coin and is never woken) — tell the worker the real reason
+			// so it looks elsewhere instead of re-asking the same empty purse.
+			name:   "solicit_work declined → broke-employer steer",
+			vc:     ValidatedCall{Name: "solicit_work"},
+			result: sim.LaborSolicitResult{State: sim.LaborStateDeclined, EmployerName: "Prudence Ward"},
+			want:   "[ok] Prudence Ward hasn't the coin to take you on just now — look to another shop for work.",
+		},
+		{
 			name:   "accept_work working → hired + handover steer",
 			vc:     ValidatedCall{Name: "accept_work"},
 			result: sim.LaborAcceptResult{State: sim.LaborStateWorking, WorkerName: "Lewis Walker", Reward: 5},
