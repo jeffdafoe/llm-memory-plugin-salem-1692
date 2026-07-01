@@ -2,6 +2,7 @@ package sim_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -341,6 +342,69 @@ func TestMoveToStructure_RejectsAlreadyAtVisitSlot(t *testing.T) {
 	if mi := moveIntentOf(t, w, "walker"); mi != nil {
 		t.Error("no-op visit stamped a MoveIntent; want none")
 	}
+}
+
+// TestMoveTo_NoOpGuardsAreTerminalNoOp (LLM-209): every already-there /
+// already-walking no-op reject must carry sim.TerminalNoOpError, so the tick
+// harness ENDS the tick on it instead of the weak model re-firing the identical
+// move every round to the iteration budget (the observed move_to×6 budget_forced
+// storm). A GENUINE error (an unknown structure_id the model should correct)
+// must NOT — it stays a retryable ModelFacingError.
+func TestMoveTo_NoOpGuardsAreTerminalNoOp(t *testing.T) {
+	now := time.Now().UTC()
+
+	t.Run("already inside (enter no-op)", func(t *testing.T) {
+		w, cancel, _ := buildMoveTestWorld(t)
+		defer cancel()
+		if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+			world.Actors["walker"].InsideStructureID = "inn"
+			return nil, nil
+		}}); err != nil {
+			t.Fatalf("seed InsideStructureID: %v", err)
+		}
+		_, err := w.Send(sim.MoveToStructure("walker", "inn", now))
+		var noop sim.TerminalNoOpError
+		if !errors.As(err, &noop) {
+			t.Fatalf("already-inside reject must be TerminalNoOpError, got %T: %v", err, err)
+		}
+	})
+
+	t.Run("already at visit slot", func(t *testing.T) {
+		w, cancel, _ := buildMoveTestWorld(t)
+		defer cancel()
+		seedActorAtLoiterPin(t, w, "walker", "well")
+		_, err := w.Send(sim.MoveToStructure("walker", "well", now))
+		var noop sim.TerminalNoOpError
+		if !errors.As(err, &noop) {
+			t.Fatalf("already-at-slot reject must be TerminalNoOpError, got %T: %v", err, err)
+		}
+	})
+
+	t.Run("already walking to same dest", func(t *testing.T) {
+		w, cancel, _ := buildMoveTestWorld(t)
+		defer cancel()
+		if _, err := w.Send(sim.MoveToStructure("walker", "inn", now)); err != nil {
+			t.Fatalf("first MoveToStructure(inn): %v", err)
+		}
+		_, err := w.Send(sim.MoveToStructure("walker", "inn", now))
+		var noop sim.TerminalNoOpError
+		if !errors.As(err, &noop) {
+			t.Fatalf("already-walking reject must be TerminalNoOpError, got %T: %v", err, err)
+		}
+	})
+
+	t.Run("unknown structure stays a retryable error", func(t *testing.T) {
+		w, cancel, _ := buildMoveTestWorld(t)
+		defer cancel()
+		_, err := w.Send(sim.MoveToStructure("walker", "nowhere", now))
+		if err == nil {
+			t.Fatal("want error for an unknown structure_id, got nil")
+		}
+		var noop sim.TerminalNoOpError
+		if errors.As(err, &noop) {
+			t.Fatalf("an unknown structure_id must NOT be TerminalNoOpError (the model should retry): %v", err)
+		}
+	})
 }
 
 // TestMoveToStructure_NoOpVisitKeepsHuddle is the LLM-196 regression proper: a

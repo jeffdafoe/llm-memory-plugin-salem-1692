@@ -159,10 +159,14 @@ func TakeBreak(actorID ActorID, reason string, untilHour int, at time.Time) Comm
 				loc = time.UTC
 			}
 			if a.BreakUntil != nil && a.BreakUntil.After(at) {
-				return nil, fmt.Errorf(
-					"you are already on break until %s — no need to call take_break again; pick a different action this turn",
+				// LLM-209: a no-op — TerminalNoOpError ends the tick instead of the
+				// model re-firing take_break every round to the budget while it is
+				// already resting. A real (first) take_break stays non-terminal (this
+				// only flips the already-on-break reject).
+				return nil, TerminalNoOpError{Msg: fmt.Sprintf(
+					"you are already on break until %s — you're resting; no need to call take_break again.",
 					a.BreakUntil.In(loc).Format("15:04"),
-				)
+				)}
 			}
 			breakUntil, err := resolveBreakUntil(loc, untilHour, at)
 			if err != nil {

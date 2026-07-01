@@ -1183,6 +1183,18 @@ func (h *Harness) dispatch(ctx context.Context, w *sim.World, job tickJob, vc *V
 			if errors.Is(err, sim.ErrTickAttemptStale) {
 				return "[error: stale] tick attempt superseded", dispatchOutcome{stale: true}
 			}
+			// LLM-209: a NO-OP rest verb (walk to where the actor already is / is
+			// already walking to; take a break while already on break) is TERMINAL.
+			// Echo its model-facing reason and END the tick, so a weak model can't
+			// re-fire the identical no-op every round to the iteration budget (the
+			// move_to×6 / take_break×6 budget_forced storm). Checked BEFORE the
+			// generic ModelFacingError echo below, which is non-terminal (a genuinely
+			// correctable error — a bad structure_id, an unreachable target — still
+			// gets a retry).
+			var noop sim.TerminalNoOpError
+			if errors.As(err, &noop) {
+				return fmt.Sprintf("[ok] %s", noop.Error()), dispatchOutcome{success: true, ended: true, terminalStatus: sim.TickStatusSuccess}
+			}
 			// Echo the command validator's rejection reason to the model so it can
 			// correct its next call ("no one named X in this conversation", "use a
 			// structure_id you can see in your perception"). These reasons are

@@ -1,6 +1,7 @@
 package sim
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
@@ -137,8 +138,16 @@ func TestTakeBreakCommand_AlreadyOnBreakRejected(t *testing.T) {
 	a.State = StateResting
 	w := sleepTestWorld(a)
 
-	if _, err := TakeBreak("k", "again", 0, at).Fn(w); err == nil {
+	_, err := TakeBreak("k", "again", 0, at).Fn(w)
+	if err == nil {
 		t.Fatal("expected rejection when already on break, got nil")
+	}
+	// LLM-209: the already-on-break reject must be a TerminalNoOpError, so the
+	// harness ends the tick instead of the model re-firing take_break every round
+	// to the iteration budget while already resting (the take_break×6 storm).
+	var noop TerminalNoOpError
+	if !errors.As(err, &noop) {
+		t.Fatalf("already-on-break reject must be TerminalNoOpError, got %T: %v", err, err)
 	}
 	// Window untouched by the rejected call.
 	if !a.BreakUntil.Equal(existing) {
@@ -151,8 +160,16 @@ func TestTakeBreakCommand_PastHourRejected(t *testing.T) {
 	a := npc("k", KindNPCStateful)
 	w := sleepTestWorld(a)
 
-	if _, err := TakeBreak("k", "too late", 8, at).Fn(w); err == nil {
+	_, err := TakeBreak("k", "too late", 8, at).Fn(w)
+	if err == nil {
 		t.Fatal("expected rejection for a past until_hour, got nil")
+	}
+	// A bad until_hour is a correctable INPUT error, not a no-op: it must stay
+	// retryable (non-terminal) so the model can pass a valid hour — the opposite
+	// of the already-on-break no-op above (LLM-209).
+	var noop TerminalNoOpError
+	if errors.As(err, &noop) {
+		t.Fatalf("a past until_hour must NOT be TerminalNoOpError (the model should retry): %v", err)
 	}
 	if a.BreakUntil != nil {
 		t.Errorf("BreakUntil set despite rejection: %v", a.BreakUntil)
