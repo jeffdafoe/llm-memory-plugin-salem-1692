@@ -780,6 +780,28 @@ func renderActionLogEntry(snap *sim.Snapshot, e sim.ActionLogEntry) (speaker, te
 		default:
 			return name, name + " finishes a job.", "act", true
 		}
+	case sim.ActionTypeSolicitedWork:
+		// LLM-213: the worker offered to work for the employer at a reward.
+		// Amount carries the coin ask (consistent with the paid/labored lines
+		// showing amounts); degrade gracefully on a missing counterparty/amount.
+		switch {
+		case e.Amount > 0 && e.CounterpartyName != "":
+			return name, name + " offers to work for " + e.CounterpartyName + " for " + formatCoins(e.Amount) + ".", "act", true
+		case e.CounterpartyName != "":
+			return name, name + " offers to work for " + e.CounterpartyName + ".", "act", true
+		default:
+			return name, name + " offers to work for coin.", "act", true
+		}
+	case sim.ActionTypeHired:
+		// LLM-213: the employer took the worker on at the agreed reward.
+		switch {
+		case e.Amount > 0 && e.CounterpartyName != "":
+			return name, name + " hires " + e.CounterpartyName + " for " + formatCoins(e.Amount) + ".", "act", true
+		case e.CounterpartyName != "":
+			return name, name + " hires " + e.CounterpartyName + ".", "act", true
+		default:
+			return name, name + " takes someone on.", "act", true
+		}
 	default:
 		return "", "", "", false
 	}
