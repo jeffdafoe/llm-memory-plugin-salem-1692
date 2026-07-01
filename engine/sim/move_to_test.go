@@ -707,4 +707,32 @@ func TestMoveTo_AnchorKeywords(t *testing.T) {
 			t.Fatalf("homeless move_to(home) must stay retryable, not TerminalNoOpError: %v", err)
 		}
 	})
+
+	t.Run("stale anchor gives a retryable steer, no recursion/panic", func(t *testing.T) {
+		w, cancel, _ := buildMoveTestWorld(t)
+		defer cancel()
+		// HomeStructureID points at a structure that isn't in the world (stale/
+		// corrupt). It must steer, not dispatch a bad move or recurse.
+		setWalkerAnchors(t, w, "ghost-home", "well")
+		_, err := w.Send(sim.MoveToStructureByName("walker", "home", nil, sim.RememberedPlaces{}, now))
+		if err == nil {
+			t.Fatal("want a steer for a stale HomeStructureID, got nil")
+		}
+		var noop sim.TerminalNoOpError
+		if errors.As(err, &noop) {
+			t.Fatalf("stale-anchor move_to(home) must stay retryable, not TerminalNoOpError: %v", err)
+		}
+	})
+
+	t.Run("work synonym via structure_id path", func(t *testing.T) {
+		w, cancel, _ := buildMoveTestWorld(t)
+		defer cancel()
+		setWalkerAnchors(t, w, "well", "inn")
+		if _, err := w.Send(sim.MoveToStructure("walker", "my post", now)); err != nil {
+			t.Fatalf("MoveToStructure(my post): %v", err)
+		}
+		if _, sid := destKindOf(t, w, "walker"); sid != "inn" {
+			t.Errorf("structure_id 'my post' resolved to %q, want inn (WorkStructureID)", sid)
+		}
+	})
 }
