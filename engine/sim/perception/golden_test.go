@@ -272,6 +272,16 @@ var perceptionScenarios = []perceptionScenario{
 		build: keeperOffersRoomToCoinlessGuest,
 	},
 	{
+		name: "homed_guest_lodging_quote_suppressed",
+		summary: "LLM-208 buyer side: John Ellis posts a targeted nights_stay (room) quote at Prudence Ward, but Prudence " +
+			"HAS a home (Ward Residence) — she structurally can't take a room (the buyer-side pay_with_item guard rejects " +
+			"it, LLM-182). The golden pins that the room-offer take is SUPPRESSED for her: filterHomedLodgingQuoteWarrants " +
+			"drops the lodging quote warrant at build, so the prompt carries no 'offers you … nights_stay' take line and she " +
+			"isn't pulled into a doomed nightly negotiation (the live John↔Prudence tavern loop). Contrast " +
+			"keeper_offers_room_to_coinless_guest (a HOMELESS seeker, who correctly DOES get offered the room).",
+		build: homedGuestLodgingQuoteSuppressed,
+	},
+	{
 		name: "peers_holding_same_food_no_degenerate_buy",
 		summary: "Two hungry NPCs stand together, each already carrying the same food (stew) — the LLM-138 " +
 			"degenerate-buy shape from live hud-6a887a…, where each was told ONLY to BUY the other's blueberries " +
@@ -2639,6 +2649,83 @@ func keeperOffersRoomToCoinlessGuest() (*sim.Snapshot, sim.ActorID, []sim.Warran
 		},
 	}
 	return snap, johnID, nil
+}
+
+// homedGuestLodgingQuoteSuppressed is the LLM-208 buyer side: John Ellis posts a
+// targeted nights_stay (room) quote at Prudence Ward, but Prudence HAS a home
+// (Ward Residence). A homed guest can't take a room — the buyer-side
+// pay_with_item guard rejects it (LLM-182) — so surfacing the offer only pulls
+// her into a doomed nightly negotiation (the live John↔Prudence tavern loop).
+// The golden pins that the room-offer take is SUPPRESSED for her:
+// filterHomedLodgingQuoteWarrants drops the lodging quote warrant at build, so
+// the assembled prompt carries no "offers you … nights_stay" / pay_with_item
+// take line. Contrast keeper_offers_room_to_coinless_guest (a HOMELESS seeker,
+// who correctly DOES get the offer). TestHomedGuestLodgingQuoteSuppressed pins
+// that clearing her home restores the take — proving the home is the sole cause.
+func homedGuestLodgingQuoteSuppressed() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		prudenceID = sim.ActorID("prudence")
+		johnID     = sim.ActorID("john")
+		tavern     = sim.StructureID("tavern")
+		wardHome   = sim.StructureID("ward_residence")
+		huddle     = sim.HuddleID("h1")
+	)
+	now := 1140 // 19:00 — visiting the tavern in the evening
+	published := time.Date(2026, 6, 30, 19, 0, 0, 0, time.UTC)
+	// Prudence has a home (Ward Residence) and no lodging grant — the homed guest.
+	prudence := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Prudence Ward",
+		Role:              "villager",
+		State:             sim.StateIdle,
+		InsideStructureID: tavern,
+		HomeStructureID:   wardHome,
+		CurrentHuddleID:   huddle,
+		Coins:             12,
+		Needs:             map[sim.NeedKey]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"John Ellis": {}},
+	}
+	john := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "John Ellis",
+		Role:              "tavernkeeper",
+		State:             sim.StateIdle,
+		WorkStructureID:   tavern,
+		InsideStructureID: tavern,
+		CurrentHuddleID:   huddle,
+		Coins:             267,
+		Needs:             map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:              published,
+		LocalMinuteOfDay:         &now,
+		NeedThresholds:           sim.NeedThresholds{},
+		LodgingDefaultWeeklyRate: 28, // → 4 coins/night
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"nights_stay": {Name: "nights_stay", Capabilities: []string{"service", "lodging"}},
+		},
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{prudenceID: prudence, johnID: john},
+		Structures: map[sim.StructureID]*sim.Structure{
+			tavern:   {ID: tavern, DisplayName: "Tavern", Rooms: []*sim.Room{{ID: 1, StructureID: tavern, Kind: sim.RoomKindPrivate, Name: "bedroom_1"}}},
+			wardHome: plainStructure(wardHome, "Ward Residence"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{prudenceID: {}, johnID: {}}},
+		},
+	}
+	// John's targeted nights_stay quote at Prudence — the room offer she can't take.
+	warrants := []sim.WarrantMeta{
+		{
+			TriggerActorID: johnID,
+			Reason: sim.SceneQuoteTargetedWarrantReason{
+				QuoteID: 1, SellerID: johnID,
+				Lines:  []sim.QuoteLine{{ItemKind: "nights_stay", Qty: 1}},
+				Amount: 4,
+			},
+			SourceEventID: 1,
+		},
+	}
+	return snap, prudenceID, warrants
 }
 
 // keeperAloneAtPostOnShift reproduces the LLM-106 live shape: Josiah Thorne, a
