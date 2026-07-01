@@ -74,6 +74,18 @@ func RunTickToolCommand(actorID ActorID, attemptID TickAttemptID, rootEventID Ev
 		}
 		res, err := tool.Fn(w)
 		if err != nil {
+			// LLM-209: a NO-OP rejection (the actor asked for something it already
+			// has — walk to the structure it already stands in / is already walking
+			// to, take a break while already on break) is TERMINAL, not a
+			// correctable error. Preserve its concrete type instead of flattening it
+			// to ModelFacingError, so the harness dispatch can recognize it via
+			// errors.As and END the tick — rather than echoing it non-terminally to
+			// be re-fired to the iteration budget (the observed move_to×6 /
+			// take_break×6 budget_forced storm).
+			var noop TerminalNoOpError
+			if errors.As(err, &noop) {
+				return TickToolResult{Result: res}, err
+			}
 			// The tool command's own Fn error is the command validator's
 			// model-facing rejection reason — written for the model to read and
 			// correct its NEXT call ("no one named X in this conversation", "use a
@@ -114,3 +126,32 @@ func RunTickToolCommand(actorID ActorID, attemptID TickAttemptID, rootEventID Ev
 type ModelFacingError struct{ Msg string }
 
 func (e ModelFacingError) Error() string { return e.Msg }
+
+// TerminalNoOpError marks an AGENT-TICK COMMAND no-op that should END THE
+// CURRENT TICK: the actor asked for something it already has — walk to the
+// structure it is already in (or already walking to), take a break while already
+// on break. The message is model-facing like ModelFacingError, but unlike a
+// correctable rejection there is nothing for the model to FIX by retrying — the
+// request is already satisfied, so a retry is pure waste. Use it ONLY where the
+// terminal semantics are wanted (it ends deliberation for the tick); a rejection
+// the model should correct and retry stays a plain error / ModelFacingError.
+//
+// RunTickToolCommand preserves this type (does NOT flatten it to
+// ModelFacingError), so the tick harness can distinguish it via errors.As and
+// END the tick on it (a terminal, one-attempt-per-tick outcome) rather than
+// echoing it non-terminally. Without this a weak model re-fires the identical
+// no-op every round to the iteration budget — the move_to×6 / take_break×6
+// budget_forced storm (LLM-209). Compared on type via errors.As, so it survives
+// %w wrapping.
+type TerminalNoOpError struct{ Msg string }
+
+// Error returns the model-facing reason. The empty-Msg fallback is defensive: a
+// zero-value TerminalNoOpError{} (a construction slip) still changes terminal
+// behavior, so it must never surface to the model as a bare "[ok] " with no
+// reason — give it a sane default instead.
+func (e TerminalNoOpError) Error() string {
+	if e.Msg == "" {
+		return "that action is already done — nothing more to do this turn."
+	}
+	return e.Msg
+}

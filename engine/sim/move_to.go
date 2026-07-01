@@ -337,13 +337,15 @@ func MoveToObject(actorID ActorID, objID VillageObjectID, now time.Time) Command
 					"there is no place %q to walk to — use a structure_id or name you can see in your perception", objID)
 			}
 			if pin, ok := effectiveObjectLoiterTile(w, objID); ok && a.Pos.Chebyshev(pin) <= LoiterAttributionTiles {
-				return MoveActorResult{}, fmt.Errorf(
-					"you are already at %q — no need to move there; pick a different action this turn", objID)
+				// LLM-209: a no-op walk — TerminalNoOpError so the harness ends the
+				// tick rather than the model re-firing move_to(here) to the budget.
+				return MoveActorResult{}, TerminalNoOpError{Msg: fmt.Sprintf(
+					"you are already at %q — you're right where you meant to be; nothing more to do here.", objID)}
 			}
 			if a.MoveIntent != nil && a.MoveIntent.Destination.ObjectID != nil &&
 				*a.MoveIntent.Destination.ObjectID == objID {
-				return MoveActorResult{}, fmt.Errorf(
-					"you are already on your way to %q — keep walking; pick a different action this turn", objID)
+				return MoveActorResult{}, TerminalNoOpError{Msg: fmt.Sprintf(
+					"you are already on your way to %q — keep walking; you'll arrive shortly.", objID)}
 			}
 			// leaveHuddleFirst=true mirrors MoveToStructure: choosing to walk
 			// somewhere ends any conversation the actor is in.
@@ -410,13 +412,15 @@ func MoveToStructure(actorID ActorID, structureID StructureID, now time.Time) Co
 					"structure %q has no placement in the village to walk to — pick a different structure_id from your perception", structureID)
 			}
 			if a.InsideStructureID == structureID {
-				return MoveActorResult{}, fmt.Errorf(
-					"you are already at %q — no need to move there; pick a different action this turn", structureID)
+				// LLM-209: a no-op walk — TerminalNoOpError ends the tick (the model
+				// was re-firing move_to(home) here to the budget while already home).
+				return MoveActorResult{}, TerminalNoOpError{Msg: fmt.Sprintf(
+					"you are already at %q — you're right where you meant to be; nothing more to do here.", structureID)}
 			}
 			if a.MoveIntent != nil && a.MoveIntent.Destination.StructureID != nil &&
 				*a.MoveIntent.Destination.StructureID == structureID {
-				return MoveActorResult{}, fmt.Errorf(
-					"you are already on your way to %q — keep walking; pick a different action this turn", structureID)
+				return MoveActorResult{}, TerminalNoOpError{Msg: fmt.Sprintf(
+					"you are already on your way to %q — keep walking; you'll arrive shortly.", structureID)}
 			}
 			dest := moveToDestinationFor(w, a, structureID, now)
 			// A move that resolves to a VISIT of a structure the actor already
@@ -432,8 +436,8 @@ func MoveToStructure(actorID ActorID, structureID StructureID, now time.Time) Co
 			// guard; LoiterAttributionTiles = "standing AT" the pin.
 			if dest.Kind == MoveDestinationStructureVisit {
 				if pin, ok := effectiveLoiterTile(w, structureID); ok && a.Pos.Chebyshev(pin) <= LoiterAttributionTiles {
-					return MoveActorResult{}, fmt.Errorf(
-						"you are already at %q — no need to move there; pick a different action this turn", structureID)
+					return MoveActorResult{}, TerminalNoOpError{Msg: fmt.Sprintf(
+						"you are already at %q — you're right where you meant to be; nothing more to do here.", structureID)}
 				}
 			}
 			// The actor has chosen to walk to structureID — deciding to GO there

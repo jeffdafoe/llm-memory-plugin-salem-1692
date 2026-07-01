@@ -186,6 +186,48 @@ func TestRunTickToolCommandTagsToolErrorAsModelFacing(t *testing.T) {
 	}
 }
 
+func TestRunTickToolCommandPreservesTerminalNoOp(t *testing.T) {
+	w, cancel, root := buildToolCmdWorld(t, "A1")
+	defer cancel()
+
+	// LLM-209: a no-op rejection (already there / already on break) is a
+	// TerminalNoOpError. RunTickToolCommand must preserve its concrete type — NOT
+	// flatten it to ModelFacingError — so the harness can distinguish it via
+	// errors.As and end the tick on it. If it were flattened, the harness would
+	// echo it non-terminally and the weak model would re-fire the identical no-op
+	// to the iteration budget.
+	wantMsg := `you are already at "inn" — you're right where you meant to be; nothing more to do here.`
+	tool := sim.Command{Fn: func(*sim.World) (any, error) {
+		return nil, sim.TerminalNoOpError{Msg: wantMsg}
+	}}
+
+	_, err := w.Send(sim.RunTickToolCommand("alice", "A1", root, tool))
+	var noop sim.TerminalNoOpError
+	if !errors.As(err, &noop) {
+		t.Fatalf("TerminalNoOpError should survive RunTickToolCommand, got %T: %v", err, err)
+	}
+	if noop.Error() != wantMsg {
+		t.Fatalf("TerminalNoOpError message = %q, want %q", noop.Error(), wantMsg)
+	}
+	// It must NOT masquerade as a (non-terminal) ModelFacingError.
+	var modelErr sim.ModelFacingError
+	if errors.As(err, &modelErr) {
+		t.Fatalf("TerminalNoOpError must not be tagged ModelFacingError (that path is non-terminal): %v", err)
+	}
+}
+
+func TestTerminalNoOpError_EmptyMsgFallback(t *testing.T) {
+	// A zero-value TerminalNoOpError still changes terminal behavior, so its
+	// message must never surface to the model as a bare "[ok] " with no reason
+	// (LLM-209 review hardening).
+	if got := (sim.TerminalNoOpError{}).Error(); got == "" {
+		t.Fatal("empty-Msg TerminalNoOpError.Error() must fall back to a non-empty reason")
+	}
+	if got := (sim.TerminalNoOpError{Msg: `you are already at "inn"`}).Error(); got != `you are already at "inn"` {
+		t.Fatalf("Error() should pass a set Msg through unchanged, got %q", got)
+	}
+}
+
 func TestRunTickToolCommandWrapperErrorsNotModelFacing(t *testing.T) {
 	w, cancel, root := buildToolCmdWorld(t, "A1")
 	defer cancel()

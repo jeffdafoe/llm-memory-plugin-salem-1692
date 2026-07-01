@@ -294,3 +294,66 @@ func TestHarnessPool_LLMErrorPath(t *testing.T) {
 	// pipeline ferries the failure result the same way as success).
 	eventually(t, "alice tick cleared", func() bool { return !actorTickInFlight(t, f.world) })
 }
+
+// --- LLM-209: a TerminalNoOpError ends the tick (no budget_forced storm) --
+
+// A commit whose command returns a sim.TerminalNoOpError — the shape of a no-op
+// rest verb (move_to to the structure the actor is already in, take_break while
+// already on break) — must END the tick in ONE round, even though the tool is
+// registered NON-terminal. The terminal outcome must come from the
+// TerminalNoOpError path, not the registration (registered false on purpose).
+// Without the fix the weak model re-fires the identical no-op every round to the
+// iteration budget (terminal_status budget_forced) — the observed move_to×6 /
+// take_break×6 storm. client.Requests() (the number of LLM rounds) is the metric.
+func TestHarnessPool_TerminalNoOpEndsTickNotBudgetForced(t *testing.T) {
+	var commitRuns atomic.Int32
+	r := NewRegistry()
+	noopFn := func(_ HandlerInput) (sim.Command, error) {
+		return sim.Command{Fn: func(*sim.World) (any, error) {
+			commitRuns.Add(1)
+			return nil, sim.TerminalNoOpError{Msg: `you are already at "home" — you're right where you meant to be; nothing more to do here.`}
+		}}, nil
+	}
+	// terminalOnSuccess=false: the tick must end via the no-op error path, not the
+	// tool's own terminal policy.
+	if err := r.RegisterCommit("move_to", json.RawMessage(`{"type":"object"}`), passthroughDecode, noopFn, false); err != nil {
+		t.Fatalf("register move_to: %v", err)
+	}
+
+	// Script the identical no-op move far more times than the iteration budget: if
+	// the no-op did NOT end the tick, the harness would consume these round after
+	// round to budget_forced. With the fix, only the first is ever requested.
+	client := llm.NewFakeClient(
+		callTurn("c1", "move_to", `{}`),
+		callTurn("c2", "move_to", `{}`),
+		callTurn("c3", "move_to", `{}`),
+		callTurn("c4", "move_to", `{}`),
+		callTurn("c5", "move_to", `{}`),
+		callTurn("c6", "move_to", `{}`),
+		callTurn("c7", "move_to", `{}`),
+		callTurn("c8", "move_to", `{}`),
+	)
+
+	f := newIntegrationFixture(t, r, client)
+	defer f.stop()
+
+	now := time.Now()
+	seedDueWarrant(t, f.world, now)
+	if _, err := f.world.Send(sim.EvaluateReactors(now)); err != nil {
+		t.Fatalf("EvaluateReactors: %v", err)
+	}
+
+	rec := f.waitForTerminalTelemetry(t)
+	if rec.Kind != "completed" {
+		t.Fatalf("tick did not complete cleanly: kind=%q", rec.Kind)
+	}
+	if got := rec.Detail["terminal_status"]; got != "success" {
+		t.Errorf("terminal_status: got %q, want \"success\" — a TerminalNoOpError ends the tick as a terminal no-op, not budget_forced", got)
+	}
+	if n := len(client.Requests()); n != 1 {
+		t.Errorf("LLM rounds: got %d, want 1 — the no-op ends the tick on round 1 instead of storming to the iteration budget", n)
+	}
+	if got := commitRuns.Load(); got != 1 {
+		t.Errorf("commit runs: got %d, want 1 — the no-op command runs once then ends the tick", got)
+	}
+}
