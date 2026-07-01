@@ -1030,6 +1030,14 @@ func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 			name = "a building"
 		}
 		location = "inside " + sim.WithDefiniteArticle(sanitizeInline(name))
+		// LLM-212: annotate when the actor is inside its OWN home/workplace, so a
+		// weak model reads "inside the James Residence, your home" and can tell it
+		// is already at its anchor (the legibility half of the move_to(home)
+		// confusion). Set only for the inside branch (Build computes it from the
+		// actor's home/work ids); empty otherwise.
+		if s.InsideRelation != "" {
+			location += ", " + s.InsideRelation
+		}
 	case s.NearbyStructureName != "":
 		// Standing at a structure's loiter slot while outdoors — a keeper at
 		// their own stall, a customer outside a shop. Names where they are so

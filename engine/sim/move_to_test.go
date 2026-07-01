@@ -603,3 +603,136 @@ func TestMoveToStructure_KeepsMemoryWhenAlreadyInside(t *testing.T) {
 		t.Error("closed[inn] should survive a rejected (already-inside) move_to")
 	}
 }
+
+// --- reserved home/work keywords (LLM-212) ----------------------------------
+
+// setWalkerAnchors seeds walker's home/work anchor structures on the world
+// goroutine, so the keyword resolver can map "home"/"work" to them.
+func setWalkerAnchors(t *testing.T, w *sim.World, home, work sim.StructureID) {
+	t.Helper()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["walker"].HomeStructureID = home
+		world.Actors["walker"].WorkStructureID = work
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed anchors: %v", err)
+	}
+}
+
+// TestMoveTo_AnchorKeywords: move_to("home")/("work") (+ synonyms, article- and
+// case-tolerant) resolve to the actor's own anchor structure, via BOTH the name
+// path and the structure_id path. A homeless actor gets a retryable steer; an
+// actor already at its anchor gets the LLM-209 terminal no-op.
+func TestMoveTo_AnchorKeywords(t *testing.T) {
+	now := time.Now().UTC()
+
+	t.Run("home keyword walks to HomeStructureID (name path)", func(t *testing.T) {
+		w, cancel, _ := buildMoveTestWorld(t)
+		defer cancel()
+		setWalkerAnchors(t, w, "inn", "well")
+		if _, err := w.Send(sim.MoveToStructureByName("walker", "home", nil, sim.RememberedPlaces{}, now)); err != nil {
+			t.Fatalf("move_to(home): %v", err)
+		}
+		if _, sid := destKindOf(t, w, "walker"); sid != "inn" {
+			t.Errorf("'home' resolved to %q, want inn (HomeStructureID)", sid)
+		}
+	})
+
+	t.Run("work synonym walks to WorkStructureID", func(t *testing.T) {
+		w, cancel, _ := buildMoveTestWorld(t)
+		defer cancel()
+		setWalkerAnchors(t, w, "well", "inn")
+		if _, err := w.Send(sim.MoveToStructureByName("walker", "my shop", nil, sim.RememberedPlaces{}, now)); err != nil {
+			t.Fatalf("move_to(my shop): %v", err)
+		}
+		if _, sid := destKindOf(t, w, "walker"); sid != "inn" {
+			t.Errorf("'my shop' resolved to %q, want inn (WorkStructureID)", sid)
+		}
+	})
+
+	t.Run("home keyword via structure_id path", func(t *testing.T) {
+		w, cancel, _ := buildMoveTestWorld(t)
+		defer cancel()
+		setWalkerAnchors(t, w, "inn", "well")
+		if _, err := w.Send(sim.MoveToStructure("walker", "home", now)); err != nil {
+			t.Fatalf("MoveToStructure(home): %v", err)
+		}
+		if _, sid := destKindOf(t, w, "walker"); sid != "inn" {
+			t.Errorf("structure_id 'home' resolved to %q, want inn", sid)
+		}
+	})
+
+	t.Run("case- and article-tolerant", func(t *testing.T) {
+		w, cancel, _ := buildMoveTestWorld(t)
+		defer cancel()
+		setWalkerAnchors(t, w, "inn", "well")
+		if _, err := w.Send(sim.MoveToStructureByName("walker", "the Home", nil, sim.RememberedPlaces{}, now)); err != nil {
+			t.Fatalf("move_to('the Home'): %v", err)
+		}
+		if _, sid := destKindOf(t, w, "walker"); sid != "inn" {
+			t.Errorf("'the Home' resolved to %q, want inn", sid)
+		}
+	})
+
+	t.Run("already home is a terminal no-op (composes with LLM-209)", func(t *testing.T) {
+		w, cancel, _ := buildMoveTestWorld(t)
+		defer cancel()
+		setWalkerAnchors(t, w, "inn", "well")
+		if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+			world.Actors["walker"].InsideStructureID = "inn"
+			return nil, nil
+		}}); err != nil {
+			t.Fatalf("seed inside: %v", err)
+		}
+		_, err := w.Send(sim.MoveToStructureByName("walker", "home", nil, sim.RememberedPlaces{}, now))
+		var noop sim.TerminalNoOpError
+		if !errors.As(err, &noop) {
+			t.Fatalf("move_to(home) while already home must be TerminalNoOpError, got %T: %v", err, err)
+		}
+	})
+
+	t.Run("homeless actor gets a retryable steer, not a no-op", func(t *testing.T) {
+		w, cancel, _ := buildMoveTestWorld(t)
+		defer cancel()
+		setWalkerAnchors(t, w, "", "well")
+		_, err := w.Send(sim.MoveToStructureByName("walker", "home", nil, sim.RememberedPlaces{}, now))
+		if err == nil {
+			t.Fatal("want error for a homeless actor's move_to(home), got nil")
+		}
+		if !strings.Contains(err.Error(), "no home") {
+			t.Errorf("error should explain there's no home to go to: %v", err)
+		}
+		var noop sim.TerminalNoOpError
+		if errors.As(err, &noop) {
+			t.Fatalf("homeless move_to(home) must stay retryable, not TerminalNoOpError: %v", err)
+		}
+	})
+
+	t.Run("stale anchor gives a retryable steer, no recursion/panic", func(t *testing.T) {
+		w, cancel, _ := buildMoveTestWorld(t)
+		defer cancel()
+		// HomeStructureID points at a structure that isn't in the world (stale/
+		// corrupt). It must steer, not dispatch a bad move or recurse.
+		setWalkerAnchors(t, w, "ghost-home", "well")
+		_, err := w.Send(sim.MoveToStructureByName("walker", "home", nil, sim.RememberedPlaces{}, now))
+		if err == nil {
+			t.Fatal("want a steer for a stale HomeStructureID, got nil")
+		}
+		var noop sim.TerminalNoOpError
+		if errors.As(err, &noop) {
+			t.Fatalf("stale-anchor move_to(home) must stay retryable, not TerminalNoOpError: %v", err)
+		}
+	})
+
+	t.Run("work synonym via structure_id path", func(t *testing.T) {
+		w, cancel, _ := buildMoveTestWorld(t)
+		defer cancel()
+		setWalkerAnchors(t, w, "well", "inn")
+		if _, err := w.Send(sim.MoveToStructure("walker", "my post", now)); err != nil {
+			t.Fatalf("MoveToStructure(my post): %v", err)
+		}
+		if _, sid := destKindOf(t, w, "walker"); sid != "inn" {
+			t.Errorf("structure_id 'my post' resolved to %q, want inn (WorkStructureID)", sid)
+		}
+	})
+}

@@ -95,10 +95,70 @@ func MoveToStructureByName(actorID ActorID, name string, shownObjects []VillageO
 			if objID, ok := resolveObjectByRememberedName(w, a, target, remembered.ObjectIDs); ok {
 				return MoveToObject(actorID, objID, now).Fn(w)
 			}
+			// LLM-212: reserved relationship keywords ("home"/"work" + synonyms), as a
+			// FALLBACK only — after no real structure or object matched the word, so a
+			// place actually named "home"/"my shop" wins the name and the keyword fires
+			// solely when nothing else matches. An NPC can say move_to("home") the way
+			// it talks; it resolves to its own anchor (composing with the LLM-209
+			// already-there terminal no-op when it is already there). Homeless/workless
+			// — or a stale anchor — yields a plain retryable steer.
+			if id, matched, err := anchorKeywordTarget(w, a, target); matched {
+				if err != nil {
+					return MoveActorResult{}, err
+				}
+				return MoveToStructure(actorID, id, now).Fn(w)
+			}
 			return MoveActorResult{}, fmt.Errorf(
 				"there is no place called %q — name a structure in the village, or a source (a well, a bush) you can see or have visited", target)
 		},
 	}
+}
+
+// anchorKeywordTarget resolves a reserved relationship KEYWORD — the way an NPC
+// refers to its own home or post in speech ("home", "work", "my shop") rather
+// than by the building's proper name — to the actor's own anchor structure
+// (LLM-212). Article-stripped and case-insensitive, mirroring placeNameMatches.
+// It validates the resolved anchor still names a LIVE structure (liveAnchor), so
+// a stale/corrupt anchor id yields a retryable steer rather than a bad dispatch —
+// and a keyword-shaped anchor id can't drive MoveToStructure into unbounded
+// recursion (the re-dispatched id is guaranteed to hit the structures map).
+// Returns:
+//   - (id, true, nil):  keyword matched, the actor HAS that anchor and it is live.
+//   - ("", true, err):  keyword matched but the actor has no such anchor
+//     (homeless/workless) or it no longer names a structure — a plain RETRYABLE
+//     steer, NOT a TerminalNoOpError (nothing there to no-op against).
+//   - ("", false, nil): not a keyword — the caller falls through to normal
+//     structure-name / bare-object resolution. This runs as a FALLBACK after
+//     name resolution in MoveToStructureByName, so a real place actually named
+//     "home"/"my shop" wins the word; the keyword only fires when nothing matches.
+//
+// MUST be called from inside a Command.Fn (reads the live actor + world).
+// Unexported.
+func anchorKeywordTarget(w *World, a *Actor, name string) (StructureID, bool, error) {
+	if a == nil {
+		return "", false, nil
+	}
+	switch strings.ToLower(stripLeadingArticle(strings.TrimSpace(name))) {
+	case "home", "my home", "my house":
+		return liveAnchor(w, a.HomeStructureID, "home")
+	case "work", "my work", "my workplace", "my post", "my shop", "my stall":
+		return liveAnchor(w, a.WorkStructureID, "workplace")
+	}
+	return "", false, nil
+}
+
+// liveAnchor turns a resolved anchor id into an anchorKeywordTarget result: an
+// empty anchor (homeless/workless) or a stale one (no longer a live structure)
+// both become a retryable steer; a live id passes through. label is the felt
+// noun for the steer ("home"/"workplace").
+func liveAnchor(w *World, id StructureID, label string) (StructureID, bool, error) {
+	if id == "" {
+		return "", true, fmt.Errorf("you have no %s to go to", label)
+	}
+	if _, ok := w.Structures[id]; !ok {
+		return "", true, fmt.Errorf("your %s is no longer somewhere you can walk to", label)
+	}
+	return id, true, nil
 }
 
 // stripLeadingArticle removes a single leading article ("the"/"a"/"an") from a
@@ -383,6 +443,18 @@ func MoveToStructure(actorID ActorID, structureID StructureID, now time.Time) Co
 				return MoveActorResult{}, fmt.Errorf("move_to: structure_id is required")
 			}
 			if _, ok := w.Structures[structureID]; !ok {
+				// LLM-212: a reserved relationship keyword ("home"/"work"/…) can ride
+				// the structure_id field when the model names its own anchor as a word
+				// rather than an id. Resolve it to the actor's home/work structure
+				// before the bare-object fallthrough (the name path handles the same
+				// keywords in MoveToStructureByName). The resolved id is a real
+				// structure, so the re-dispatch can't re-enter this keyword branch.
+				if id, matched, err := anchorKeywordTarget(w, a, string(structureID)); matched {
+					if err != nil {
+						return MoveActorResult{}, err
+					}
+					return MoveToStructure(actorID, id, now).Fn(w)
+				}
 				// Not a structure — it may be a bare placement the actor saw in a cue,
 				// whose id rides the same structure_id field: a need-easing refresh
 				// source (a well, a fruit tree — a free-source cue) OR a forage-to-sell
