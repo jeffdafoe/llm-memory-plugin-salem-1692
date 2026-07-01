@@ -694,6 +694,15 @@ func TestRenderActionLogEntry(t *testing.T) {
 		{"departed possessive keeps no article", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeDeparted, Text: "Hannah's Inn"}, "Tester", "Tester leaves Hannah's Inn.", "act", true},
 		{"departed no place", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeDeparted, Text: ""}, "Tester", "Tester leaves.", "act", true},
 		{"took break", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeTookBreak, Text: "tired"}, "Tester", "Tester steps away.", "act", true},
+		// LLM-213: labor conversational beats. Amount shown when present (consistent
+		// with the paid/labored lines); degrade on missing counterparty/amount.
+		{"solicited work amount recipient", sim.ActionLogEntry{ActorID: "npc", ActionType: sim.ActionTypeSolicitedWork, CounterpartyName: "Tester", Amount: 4}, "Hannah", "Hannah offers to work for Tester for 4 coins.", "act", true},
+		{"solicited work one coin", sim.ActionLogEntry{ActorID: "npc", ActionType: sim.ActionTypeSolicitedWork, CounterpartyName: "Tester", Amount: 1}, "Hannah", "Hannah offers to work for Tester for 1 coin.", "act", true},
+		{"solicited work recipient no amount", sim.ActionLogEntry{ActorID: "npc", ActionType: sim.ActionTypeSolicitedWork, CounterpartyName: "Tester", Amount: 0}, "Hannah", "Hannah offers to work for Tester.", "act", true},
+		{"solicited work no recipient", sim.ActionLogEntry{ActorID: "npc", ActionType: sim.ActionTypeSolicitedWork, CounterpartyName: "", Amount: 4}, "Hannah", "Hannah offers to work for coin.", "act", true},
+		{"hired amount recipient", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeHired, CounterpartyName: "Hannah", Amount: 4}, "Tester", "Tester hires Hannah for 4 coins.", "act", true},
+		{"hired recipient no amount", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeHired, CounterpartyName: "Hannah", Amount: 0}, "Tester", "Tester hires Hannah.", "act", true},
+		{"hired no recipient", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeHired, CounterpartyName: "", Amount: 4}, "Tester", "Tester takes someone on.", "act", true},
 		{"unknown actor skipped", sim.ActionLogEntry{ActorID: "ghost", ActionType: sim.ActionTypeSpoke, Text: "boo"}, "", "", "", false},
 	}
 	for _, tc := range cases {

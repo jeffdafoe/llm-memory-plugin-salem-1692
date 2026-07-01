@@ -10,11 +10,12 @@ import (
 )
 
 // action_log.go — append-only in-memory action log substrate driver.
-// Wires ten event subscribers (Spoke / Paid / PayWithItemResolved /
+// Wires twelve event subscribers (Spoke / Paid / PayWithItemResolved /
 // ItemConsumed / OrderDelivered / ActorArrived / ActorLeftStructure /
-// TookBreak / StayingOpen / LaborResolved) to translate engine events into
-// sim.ActionLogEntry rows, and spawns a sweep goroutine that periodically
-// compacts the log via sim.CompactActionLog.
+// TookBreak / StayingOpen / LaborOfferReceived / LaborOfferAccepted /
+// LaborResolved) to translate engine events into sim.ActionLogEntry rows,
+// and spawns a sweep goroutine that periodically compacts the log via
+// sim.CompactActionLog.
 //
 // Subscribers run inline on the world goroutine via emit dispatch;
 // the sweep goroutine runs off-world and routes mutations through
@@ -33,6 +34,8 @@ import (
 //   ├─> w.Subscribe(handleActorLeftStructureActionLog)
 //   ├─> w.Subscribe(handleTookBreakActionLog)
 //   ├─> w.Subscribe(handleStayedOpenActionLog)
+//   ├─> w.Subscribe(handleSolicitedWorkActionLog)
+//   ├─> w.Subscribe(handleHiredActionLog)
 //   ├─> w.Subscribe(handleLaborResolvedActionLog)
 //   └─> go runActionLogSweep(ctx, w)
 //        ├─> immediate first compaction
@@ -59,7 +62,7 @@ import (
 // controls how promptly memory is reclaimed.
 const defaultActionLogSweepInterval = 1 * time.Hour
 
-// RegisterActionLog wires the ten event subscribers and spawns the
+// RegisterActionLog wires the twelve event subscribers and spawns the
 // compaction sweep goroutine. Must run on the world goroutine — call
 // before World.Run, or from inside a Command.Fn.
 //
@@ -83,6 +86,8 @@ func RegisterActionLog(ctx context.Context, w *sim.World) {
 	w.Subscribe(sim.SubscriberFunc(handleActorLeftStructureActionLog))
 	w.Subscribe(sim.SubscriberFunc(handleTookBreakActionLog))
 	w.Subscribe(sim.SubscriberFunc(handleStayedOpenActionLog))
+	w.Subscribe(sim.SubscriberFunc(handleSolicitedWorkActionLog))
+	w.Subscribe(sim.SubscriberFunc(handleHiredActionLog))
 	w.Subscribe(sim.SubscriberFunc(handleLaborResolvedActionLog))
 	go runActionLogSweep(ctx, w)
 }
@@ -529,6 +534,103 @@ func handleStayedOpenActionLog(w *sim.World, evt sim.Event) {
 		Payload:     payload,
 		SpeakerName: display,
 		HuddleID:    huddleID,
+		Source:      source,
+	})
+}
+
+// handleSolicitedWorkActionLog appends a row when a solicit_work tool call
+// mints a live pending offer (LLM-213). The event fires ONLY on SolicitWork's
+// live-pending path — the LLM-193 affordability auto-decline resolves the offer
+// Declined WITHOUT emitting LaborOfferReceived, so a broke-employer solicit logs
+// nothing here (the deliberate non-beat). Worker-side single row: ActorID is the
+// worker (the offer is theirs), the employer is the counterparty, Amount is the
+// reward asked. Worker + employer share the offer's HuddleID by construction
+// (co-presence is required to solicit), so the same-huddle peer filter reaches
+// the employer for narrative pickup — one row suffices, the handlePaidActionLog
+// posture. No coins move at solicit.
+func handleSolicitedWorkActionLog(w *sim.World, evt sim.Event) {
+	received, ok := evt.(*sim.LaborOfferReceived)
+	if !ok {
+		return
+	}
+	entry := sim.ActionLogEntry{
+		ActorID:          received.WorkerID,
+		OccurredAt:       received.At,
+		ActionType:       sim.ActionTypeSolicitedWork,
+		HuddleID:         received.HuddleID,
+		CounterpartyName: actorDisplayNameOrEmpty(w, received.EmployerID),
+		Amount:           received.Reward,
+	}
+	if _, err := sim.AppendActionLogEntry(entry).Fn(w); err != nil {
+		log.Printf("cascade/action_log: append solicited_work (worker %q labor %d event %d): %v",
+			received.WorkerID, received.LaborID, received.EventID(), err)
+		return
+	}
+	// Durable mirror (ZBBS-WORK-376): the worker offered the employer a
+	// DurationMin job for the reward. employer + amount + duration_min give the
+	// dream distiller the full arrangement; labor_id joins the row to its offer.
+	display, source := actorDisplayAndSource(w, received.WorkerID)
+	payload := map[string]any{
+		"employer":     actorDisplayName(w, received.EmployerID),
+		"amount":       received.Reward,
+		"duration_min": received.DurationMin,
+		"labor_id":     uint64(received.LaborID),
+	}
+	w.AppendActionLogDurable(sim.DurableActionLogRow{
+		ActorID:     received.WorkerID,
+		OccurredAt:  received.At,
+		ActionType:  sim.ActionTypeSolicitedWork,
+		Payload:     payload,
+		SpeakerName: display,
+		HuddleID:    received.HuddleID,
+		Source:      source,
+	})
+}
+
+// handleHiredActionLog appends a row when an accept_work tool call flips a
+// pending offer to Working (LLM-213). The event fires only when every AcceptWork
+// gate passes (TTL / co-presence / worker-free / funds), so a gate-failed accept
+// — which reaches a terminal via finalizeLaborTerminal and never emits — logs
+// nothing. Employer-side single row: ActorID is the employer (the hire is
+// theirs), the worker is the counterparty, Amount is the agreed reward. The pair
+// shares the offer's HuddleID (co-presence is required to accept), so the
+// same-huddle peer filter reaches the worker. No coins move at accept — the
+// reward settles at completion (handleLaborResolvedActionLog).
+func handleHiredActionLog(w *sim.World, evt sim.Event) {
+	accepted, ok := evt.(*sim.LaborOfferAccepted)
+	if !ok {
+		return
+	}
+	entry := sim.ActionLogEntry{
+		ActorID:          accepted.EmployerID,
+		OccurredAt:       accepted.At,
+		ActionType:       sim.ActionTypeHired,
+		HuddleID:         accepted.HuddleID,
+		CounterpartyName: actorDisplayNameOrEmpty(w, accepted.WorkerID),
+		Amount:           accepted.Reward,
+	}
+	if _, err := sim.AppendActionLogEntry(entry).Fn(w); err != nil {
+		log.Printf("cascade/action_log: append hired (employer %q labor %d event %d): %v",
+			accepted.EmployerID, accepted.LaborID, accepted.EventID(), err)
+		return
+	}
+	// Durable mirror (ZBBS-WORK-376): the employer took the worker on for a
+	// DurationMin job at the reward. worker + amount + duration_min give the
+	// dream distiller the full arrangement; labor_id joins the row to its offer.
+	display, source := actorDisplayAndSource(w, accepted.EmployerID)
+	payload := map[string]any{
+		"worker":       actorDisplayName(w, accepted.WorkerID),
+		"amount":       accepted.Reward,
+		"duration_min": accepted.DurationMin,
+		"labor_id":     uint64(accepted.LaborID),
+	}
+	w.AppendActionLogDurable(sim.DurableActionLogRow{
+		ActorID:     accepted.EmployerID,
+		OccurredAt:  accepted.At,
+		ActionType:  sim.ActionTypeHired,
+		Payload:     payload,
+		SpeakerName: display,
+		HuddleID:    accepted.HuddleID,
 		Source:      source,
 	})
 }

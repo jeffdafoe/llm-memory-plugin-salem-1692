@@ -115,6 +115,24 @@ const (
 	// declined/expired/failed move no coins and log nothing, mirroring the
 	// accepted-only pay row (LLM-162).
 	ActionTypeLabored ActionType = "labored"
+
+	// ActionTypeSolicitedWork — a worker's committed solicit_work that minted a
+	// live pending LaborOffer (LLM-213). ActorID is the WORKER (the offer is
+	// theirs); CounterpartyName is the employer solicited; Amount is the reward
+	// asked; HuddleID is the offer's huddle. Event-sourced off LaborOfferReceived,
+	// which SolicitWork emits ONLY on the live-pending path — so the LLM-193
+	// affordability auto-decline (which mints then finalizes Declined without
+	// emitting the event) logs nothing, mirroring ActionTypeLabored logging only
+	// the Completed terminal. No coins move at solicit.
+	ActionTypeSolicitedWork ActionType = "solicited_work"
+
+	// ActionTypeHired — an employer's committed accept_work (LLM-213). ActorID is
+	// the EMPLOYER (the hire is theirs); CounterpartyName is the worker taken on;
+	// Amount is the agreed reward; HuddleID is the offer's huddle. Event-sourced
+	// off LaborOfferAccepted, which AcceptWork emits only when every accept gate
+	// passes. No coins move here — the reward settles at completion
+	// (ActionTypeLabored).
+	ActionTypeHired ActionType = "hired"
 )
 
 // ActionLogEntry is one row in the in-memory action log. Carries the
