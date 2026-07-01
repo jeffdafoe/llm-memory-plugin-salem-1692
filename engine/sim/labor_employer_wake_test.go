@@ -123,7 +123,8 @@ func TestLaborOffer_UnaffordableEmployerAutoDeclinedNotWoken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SolicitWork: %v", err)
 	}
-	if r := res.(sim.LaborSolicitResult); r.State != sim.LaborStateDeclined {
+	r := res.(sim.LaborSolicitResult)
+	if r.State != sim.LaborStateDeclined {
 		t.Fatalf("unaffordable solicit State = %v, want Declined", r.State)
 	}
 
@@ -140,6 +141,13 @@ func TestLaborOffer_UnaffordableEmployerAutoDeclinedNotWoken(t *testing.T) {
 	// (ii) The offer resolved Declined — exactly one terminal.
 	if len(events.Resolved) != 1 || events.Resolved[0].TerminalState != sim.LaborTerminalStateDeclined {
 		t.Fatalf("LaborResolved = %+v, want exactly one Declined terminal", events.Resolved)
+	}
+
+	// (ii-b) The auto-declined offer has NO received event — RootEventID and
+	// SourceEventID stay zero. Pins the intentional invariant that skipping the
+	// LaborOfferReceived emit is exactly what keeps the employer dormant.
+	if off := readLaborLedger(t, w)[r.ID]; off.RootEventID != 0 || off.SourceEventID != 0 {
+		t.Errorf("auto-declined offer event ids = root %d / source %d, want 0/0 (no received event)", off.RootEventID, off.SourceEventID)
 	}
 
 	// (iii) The worker learned to avoid the shop — the 12h ObservedDeclinedWork

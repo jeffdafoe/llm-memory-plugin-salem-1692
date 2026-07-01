@@ -1619,10 +1619,12 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 				return fmt.Sprintf("[ok] Your offer of labor to %s is on the table — they will answer on their turn.", r.EmployerName)
 			case sim.LaborStateDeclined:
 				// LLM-193: the offer was auto-declined at mint because the employer
-				// hasn't the coin to hire right now — they were never woken. Tell the
+				// can't cover the reward you asked — they were never woken. Tell the
 				// worker the real reason so it looks to a shop that can pay rather than
-				// re-asking the same empty purse.
-				return fmt.Sprintf("[ok] %s hasn't the coin to take you on just now — look to another shop for work.", r.EmployerName)
+				// re-asking the same purse. "cannot pay your requested reward" is
+				// precise for the reward-relative gate (they may hold some coin, just
+				// less than you asked), unlike "hasn't the coin" which reads as zero.
+				return fmt.Sprintf("[ok] %s cannot pay your requested reward just now — look to another shop for work.", r.EmployerName)
 			}
 		}
 	}

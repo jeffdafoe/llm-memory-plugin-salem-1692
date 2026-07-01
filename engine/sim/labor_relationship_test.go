@@ -217,6 +217,36 @@ func TestLaborExpired_WritesNoRelationshipFacts(t *testing.T) {
 	requireNoFacts(t, w, "ezekiel", "josiah")
 }
 
+// The LLM-193 affordability auto-decline resolves the offer Declined but writes
+// NO relationship facts — the engine declined it because the employer couldn't
+// cover the reward and was never woken, so neither party made a conscious social
+// move (the same posture as the accept-time funds FailedUnavailable below). The
+// worker's avoidance is carried by the 12h ObservedDeclinedWork memory, not a
+// relationship fact — so a real decline_work still writes DeclinedWork
+// (TestLaborDeclined_WritesRelationshipFacts) while the auto-decline stays silent.
+func TestLaborSolicitUnaffordable_WritesNoRelationshipFacts(t *testing.T) {
+	w, stop := buildLaborWorld(t, "h1", "sc1", []laborActor{
+		{id: "ezekiel", displayName: "Ezekiel", huddleID: "h1", worker: true},
+		{id: "josiah", displayName: "Josiah", huddleID: "h1", coins: 2, workStruct: "smithy"},
+	})
+	defer stop()
+	events := captureLaborEvents(t, w)
+	now := time.Now().UTC()
+
+	// Worker asks 10; the employer holds 2 — auto-declined at mint.
+	res, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, 120, now))
+	if err != nil {
+		t.Fatalf("SolicitWork: %v", err)
+	}
+	if r := res.(sim.LaborSolicitResult); r.State != sim.LaborStateDeclined {
+		t.Fatalf("unaffordable solicit State = %v, want Declined", r.State)
+	}
+	if len(events.Resolved) != 1 || events.Resolved[0].TerminalState != sim.LaborTerminalStateDeclined {
+		t.Fatalf("LaborResolved = %+v, want one Declined terminal", events.Resolved)
+	}
+	requireNoFacts(t, w, "ezekiel", "josiah")
+}
+
 // An accept-time FailedUnavailable (here gate 8 — the employer is visibly broke
 // at accept) ends the deal BEFORE any work happens. It shares the
 // failed_unavailable terminal with the unpaid-completion case but carries

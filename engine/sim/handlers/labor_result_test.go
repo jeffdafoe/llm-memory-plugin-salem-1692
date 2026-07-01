@@ -31,7 +31,7 @@ func TestCommitResultContent_LaborSteers(t *testing.T) {
 			name:   "solicit_work declined → broke-employer steer",
 			vc:     ValidatedCall{Name: "solicit_work"},
 			result: sim.LaborSolicitResult{State: sim.LaborStateDeclined, EmployerName: "Prudence Ward"},
-			want:   "[ok] Prudence Ward hasn't the coin to take you on just now — look to another shop for work.",
+			want:   "[ok] Prudence Ward cannot pay your requested reward just now — look to another shop for work.",
 		},
 		{
 			name:   "accept_work working → hired + handover steer",
