@@ -984,6 +984,16 @@ type SurroundingsView struct {
 	// actor is outdoors or the structure is absent from the snapshot.
 	StructureName string
 
+	// InsideRelation names how the structure the actor is INSIDE relates to the
+	// actor: "your home", "your workplace", or "your home and workplace" when it
+	// is both (a keeper who lives at their shop). Empty when the actor is
+	// outdoors, or inside a structure that is neither its home nor its workplace.
+	// Render appends it to the location line ("inside the James Residence, your
+	// home") so a weak model can tell at a glance it is already at its own anchor
+	// — the legibility half of the move_to(home) confusion LLM-209 hardened
+	// (LLM-212).
+	InsideRelation string
+
 	// NearbyStructureName is the DisplayName of the structure the actor is
 	// standing at the loiter slot of while OUTDOORS (within
 	// sim.LoiterAttributionTiles) — e.g. a shopkeeper at their own stall, a

@@ -61,7 +61,7 @@ var moveToSchema = json.RawMessage(`{
             "type": "string",
             "minLength": 1,
             "maxLength": 128,
-            "description": "Alternative to structure_id: the NAME of a place you can see in your perception (e.g. \"the Tavern\", \"the Well\", your home). Use this when you know the place by name but not its id. The engine resolves it to the nearest matching place you could reach. Provide structure_id OR structure_name, not both."
+            "description": "Alternative to structure_id: the NAME of a place you can see in your perception (e.g. \"the Tavern\", \"the Well\", your home). Use this when you know the place by name but not its id. The engine resolves it to the nearest matching place you could reach. You can also say simply \"home\" or \"work\" to go to your own home or workplace. Provide structure_id OR structure_name, not both."
         }
     },
     "oneOf": [

@@ -972,6 +972,25 @@ func resolveStructureLabel(snap *sim.Snapshot, sid sim.StructureID) (string, boo
 
 // buildSurroundings assembles the actor's immediate context — the
 // structure it occupies and the other members of its current huddle.
+// insideRelationLabel names how the structure the actor is INSIDE relates to it
+// — "your home", "your workplace", or "your home and workplace" when it is both
+// (a keeper who lives at their shop, e.g. John Ellis at the Tavern). Empty when
+// the structure is neither (or the actor is outdoors: inside == ""). Drives the
+// SurroundingsView.InsideRelation annotation on the location line (LLM-212).
+func insideRelationLabel(inside, home, work sim.StructureID) string {
+	isHome := inside != "" && inside == home
+	isWork := inside != "" && inside == work
+	switch {
+	case isHome && isWork:
+		return "your home and workplace"
+	case isHome:
+		return "your home"
+	case isWork:
+		return "your workplace"
+	}
+	return ""
+}
+
 // Per-member acquaintance status is resolved against the subject
 // actor's Acquaintances map so Render can swap name vs. descriptor
 // without re-reading the snapshot.
@@ -993,6 +1012,7 @@ func buildSurroundings(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnap
 		if st := snap.Structures[a.InsideStructureID]; st != nil {
 			s.StructureName = st.DisplayName
 		}
+		s.InsideRelation = insideRelationLabel(a.InsideStructureID, a.HomeStructureID, a.WorkStructureID)
 	} else {
 		// Outdoors: name the structure whose loiter slot the actor is standing
 		// at (a keeper at their own stall, a customer outside a shop), so Render

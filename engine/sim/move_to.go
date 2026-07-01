@@ -80,6 +80,19 @@ func MoveToStructureByName(actorID ActorID, name string, shownObjects []VillageO
 			if target == "" {
 				return MoveActorResult{}, fmt.Errorf("move_to: structure_name is required")
 			}
+			// LLM-212: reserved relationship keywords — an NPC refers to its own home
+			// or post the way a person speaks ("home", "work", "my shop"), not by the
+			// building's proper name. Resolve these to the actor's own anchor structure
+			// BEFORE display-name matching, so move_to("home") walks it to its
+			// HomeStructureID (and composes with the LLM-209 already-there terminal
+			// no-op when it is already home). A homeless/workless actor gets a plain
+			// retryable steer.
+			if id, matched, err := anchorKeywordTarget(a, target); matched {
+				if err != nil {
+					return MoveActorResult{}, err
+				}
+				return MoveToStructure(actorID, id, now).Fn(w)
+			}
 			// Structures are common-knowledge geography (LLM-142): resolve against
 			// every named structure in the village. A structure wins a name it
 			// shares with a bare object — the structure resolver runs first.
@@ -99,6 +112,36 @@ func MoveToStructureByName(actorID ActorID, name string, shownObjects []VillageO
 				"there is no place called %q — name a structure in the village, or a source (a well, a bush) you can see or have visited", target)
 		},
 	}
+}
+
+// anchorKeywordTarget resolves a reserved relationship KEYWORD — the way an NPC
+// refers to its own home or post in speech ("home", "work", "my shop") rather
+// than by the building's proper name — to the actor's own anchor structure
+// (LLM-212). The match is article-stripped and case-insensitive, mirroring
+// placeNameMatches. Returns:
+//   - (id, true, nil):  the keyword matched and the actor HAS that anchor.
+//   - ("", true, err):  the keyword matched but the actor has no such anchor
+//     (homeless/workless) — a plain RETRYABLE steer, NOT a TerminalNoOpError
+//     (there is nothing there to no-op against; the model may pick another place).
+//   - ("", false, nil): not a keyword — the caller falls through to normal
+//     structure-name / bare-object resolution.
+//
+// MUST be called from inside a Command.Fn (reads the live actor). Unexported.
+func anchorKeywordTarget(a *Actor, name string) (StructureID, bool, error) {
+	switch strings.ToLower(stripLeadingArticle(strings.TrimSpace(name))) {
+	case "home", "my home", "my house":
+		if a.HomeStructureID == "" {
+			return "", true, fmt.Errorf(
+				"you have no home to go to — you would need to bed down or rent a room somewhere")
+		}
+		return a.HomeStructureID, true, nil
+	case "work", "my work", "my shop", "my post", "my workplace", "my stall":
+		if a.WorkStructureID == "" {
+			return "", true, fmt.Errorf("you have no workplace to go to")
+		}
+		return a.WorkStructureID, true, nil
+	}
+	return "", false, nil
 }
 
 // stripLeadingArticle removes a single leading article ("the"/"a"/"an") from a
@@ -383,6 +426,18 @@ func MoveToStructure(actorID ActorID, structureID StructureID, now time.Time) Co
 				return MoveActorResult{}, fmt.Errorf("move_to: structure_id is required")
 			}
 			if _, ok := w.Structures[structureID]; !ok {
+				// LLM-212: a reserved relationship keyword ("home"/"work"/…) can ride
+				// the structure_id field when the model names its own anchor as a word
+				// rather than an id. Resolve it to the actor's home/work structure
+				// before the bare-object fallthrough (the name path handles the same
+				// keywords in MoveToStructureByName). The resolved id is a real
+				// structure, so the re-dispatch can't re-enter this keyword branch.
+				if id, matched, err := anchorKeywordTarget(a, string(structureID)); matched {
+					if err != nil {
+						return MoveActorResult{}, err
+					}
+					return MoveToStructure(actorID, id, now).Fn(w)
+				}
 				// Not a structure — it may be a bare placement the actor saw in a cue,
 				// whose id rides the same structure_id field: a need-easing refresh
 				// source (a well, a fruit tree — a free-source cue) OR a forage-to-sell
