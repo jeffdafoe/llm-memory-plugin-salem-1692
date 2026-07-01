@@ -2,6 +2,7 @@ package sim_test
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -296,6 +297,79 @@ func TestMoveToStructure_LeavesHuddleOnMove(t *testing.T) {
 	}
 	if mi := moveIntentOf(t, w, "walker"); mi == nil {
 		t.Error("move_to while huddled left no MoveIntent; want a walk in flight")
+	}
+}
+
+// --- no-op self-move to the current structure (LLM-196) ----------------
+
+// seedActorAtLoiterPin parks id on structureID's loiter pin — the tile a
+// StructureVisit resolves to — so a subsequent move_to(structureID) that
+// derives a VISIT is a no-op walk to where the actor already stands.
+func seedActorAtLoiterPin(t *testing.T, w *sim.World, id sim.ActorID, structureID sim.StructureID) {
+	t.Helper()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		pin, ok := sim.EffectiveLoiterTile(world, structureID)
+		if !ok {
+			return nil, fmt.Errorf("structure %q has no loiter pin", structureID)
+		}
+		world.Actors[id].Pos = pin
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed %q at %q loiter pin: %v", id, structureID, err)
+	}
+}
+
+// TestMoveToStructure_RejectsAlreadyAtVisitSlot covers the VISIT sibling of the
+// already-inside reject: an actor standing on a structure's loiter pin issues
+// move_to for that same structure. The well is EntryPolicyClosed, so the move
+// derives a StructureVisit — and the walker already stands on the slot, so it
+// is a no-op. It must reject WITHOUT stamping a MoveIntent (LLM-196).
+func TestMoveToStructure_RejectsAlreadyAtVisitSlot(t *testing.T) {
+	w, cancel, _ := buildMoveTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	seedActorAtLoiterPin(t, w, "walker", "well")
+
+	_, err := w.Send(sim.MoveToStructure("walker", "well", now))
+	if err == nil {
+		t.Fatal("want error for move_to a structure the actor already loiters at, got nil")
+	}
+	if !strings.Contains(err.Error(), "already at") {
+		t.Errorf("error lacks 'already at': %v", err)
+	}
+	if mi := moveIntentOf(t, w, "walker"); mi != nil {
+		t.Error("no-op visit stamped a MoveIntent; want none")
+	}
+}
+
+// TestMoveToStructure_NoOpVisitKeepsHuddle is the LLM-196 regression proper: a
+// co-present actor loitering at a structure's slot, in a huddle there, issues
+// move_to for that same structure. The no-op visit must be rejected BEFORE
+// MoveActor runs, so the huddle is left intact — the bug was the self-move
+// firing HuddleLeft (and a spurious businessowner farewell) then re-forming the
+// huddle on instant arrival, mid-negotiation.
+func TestMoveToStructure_NoOpVisitKeepsHuddle(t *testing.T) {
+	w, cancel, _ := buildMoveTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	seedActorAtLoiterPin(t, w, "walker", "well")
+	if _, err := w.Send(sim.JoinHuddle("walker", "well", "", now)); err != nil {
+		t.Fatalf("JoinHuddle(well): %v", err)
+	}
+	if huddleIDOf(t, w, "walker") == "" {
+		t.Fatal("walker not in a huddle after JoinHuddle")
+	}
+
+	if _, err := w.Send(sim.MoveToStructure("walker", "well", now)); err == nil {
+		t.Fatal("want no-op reject for move_to the structure the actor loiters at, got nil")
+	}
+	if got := huddleIDOf(t, w, "walker"); got == "" {
+		t.Error("no-op move_to dropped the huddle; want it preserved (LLM-196)")
+	}
+	if mi := moveIntentOf(t, w, "walker"); mi != nil {
+		t.Error("no-op visit stamped a MoveIntent; want none")
 	}
 }
 
