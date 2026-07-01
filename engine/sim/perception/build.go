@@ -2680,11 +2680,14 @@ func buildRecentConversation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap 
 }
 
 // selfActionTrailWindow bounds how far back the "## What you've recently done"
-// trail reaches. Wide enough to span several go-home ↔ seek-work oscillation
-// cycles (the live Patience loop ran ~2 minutes per cycle), narrow enough that
-// this morning's errands don't clutter an evening turn — the trail is loop-
-// noticing context, not a diary. LLM-217.
-const selfActionTrailWindow = 15 * time.Minute
+// trail reaches. Wide enough that even a SLOW oscillation (need-refire-paced
+// cycles of 5-10 minutes, like the off-shift forge↔Tavern loop) shows several
+// repeats, narrow enough that this morning's errands don't clutter an evening
+// turn — the trail is loop-noticing context, not a diary. maxSelfActionTrail
+// is the real prompt budget: an active NPC fills the cap long before the
+// window binds, so the window only trims stale context for sparse actors.
+// LLM-217.
+const selfActionTrailWindow = 30 * time.Minute
 
 // maxSelfActionTrail caps the trail's line count. Small on purpose, matching
 // the MaxRecentUtterancesPerHuddle posture: the last handful of deeds is what
