@@ -206,6 +206,47 @@ func TestGoldensNeverCoachSpeakingAtCompany(t *testing.T) {
 	}
 }
 
+// TestGoldensNonDistributorRestockNeverTargetsFarm is the LLM-223 cross-scenario
+// invariant: within the "## Restocking" section of any scenario whose subject is
+// NOT the village distributor, a farm-tagged structure must never appear as a
+// "(structure_id: <id>)" walk-to target. Farm-origin goods flow farms → distributor
+// → everyone else, so perception routes a non-distributor's restock through the
+// distributor, never straight to a farm the PayWithItem backstop would refuse. Runs
+// over the whole matrix so a future restock/vendor cue change can't reintroduce a
+// farm as a target for any non-distributor situation. Non-vacuous: the
+// reseller_restock_routed_to_distributor_not_farm scenario renders a restock section
+// with a farm-tagged milk supplier present in the fixture.
+func TestGoldensNonDistributorRestockNeverTargetsFarm(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, _ := sc.build()
+			a := snap.Actors[actorID]
+			if a == nil || sim.ActorIsDistributor(snap.VillageObjects, a.WorkStructureID) {
+				return // subject is the distributor (or missing) — invariant N/A here
+			}
+			_, section, found := strings.Cut(renderScenario(sc), "## Restocking\n")
+			if !found {
+				return // no restock section in this situation — invariant N/A here
+			}
+			// Bound the scan to the restock section — cut at the next markdown header
+			// so a farm id lower in the prompt (a home/work anchor) can't false-positive.
+			if idx := strings.Index(section, "\n## "); idx >= 0 {
+				section = section[:idx]
+			}
+			for id, obj := range snap.VillageObjects {
+				if !sim.IsFarmStructure(obj) {
+					continue
+				}
+				token := "(structure_id: " + string(id) + ")"
+				if strings.Contains(section, token) {
+					t.Errorf("scenario %q: the restock section advertises farm %q as a move target for a non-distributor — farm goods must route through the distributor (LLM-223)", sc.name, token)
+				}
+			}
+		})
+	}
+}
+
 // perceptionScenarios is the (growing) matrix. Seeded from LLM-106 with two
 // situations: a keeper alone at its post, and a tired keeper on shift at its post.
 // Each new live (a)-class failure should add a scenario here (and, where it states
@@ -789,6 +830,16 @@ var perceptionScenarios = []perceptionScenario{
 			"broke_keeper_shut_and_unaffordable_suppliers_no_restock (the whole-section suppression half).",
 		build: keeperRestockDropsShutKeepsOpenSupplier,
 	},
+	{
+		name: "reseller_restock_routed_to_distributor_not_farm",
+		summary: "LLM-223 farm wholesale tier: a non-distributor reseller (Hannah Boggs, the innkeeper) is low on milk and " +
+			"has two milk suppliers — Ellis Farm (farm-tagged) and Josiah's General Store (the distributor). The golden pins " +
+			"that the '## Restocking' cue lists ONLY the General Store as the walk-to target: the farm is dropped for every " +
+			"non-distributor buyer (farm-origin goods route through the distributor), so Hannah is never sent straight to the " +
+			"farm the PayWithItem backstop would refuse. Keeps TestGoldensNonDistributorRestockNeverTargetsFarm non-vacuous " +
+			"(a rendered restock section with a farm-tagged supplier in the fixture).",
+		build: resellerRestockRoutedToDistributorNotFarm,
+	},
 }
 
 // brokeKeeperShutAndUnaffordableSuppliersNoRestock is the LLM-216 live fixture:
@@ -971,6 +1022,83 @@ func keeperRestockDropsShutKeepsOpenSupplier() (*sim.Snapshot, sim.ActorID, []si
 		},
 	}
 	return snap, thomasID, nil
+}
+
+// resellerRestockRoutedToDistributorNotFarm is the LLM-223 farm-wholesale fixture:
+// a non-distributor reseller (Hannah Boggs, the innkeeper) is low on milk and has
+// two milk suppliers — Ellis Farm (farm-tagged) and Josiah's General Store (the
+// distributor-tagged wholesaler). The farm is dropped from every non-distributor's
+// buy cues, so the "## Restocking" section lists ONLY the General Store as the
+// walk-to target: Hannah restocks farm-origin milk through the distributor, never
+// straight from the farm the PayWithItem backstop would refuse. Keeps
+// TestGoldensNonDistributorRestockNeverTargetsFarm non-vacuous (a rendered restock
+// section with a farm-tagged supplier present in the fixture). Clock-free: no
+// price/shut memory and no wall-clock read in the render path.
+func resellerRestockRoutedToDistributorNotFarm() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		hannahID = sim.ActorID("hannah")
+		josiahID = sim.ActorID("josiah")
+		ellisID  = sim.ActorID("ellis")
+		inn      = sim.StructureID("the_inn")
+		store    = sim.StructureID("general_store")
+		farm     = sim.StructureID("ellis_farm")
+	)
+	start, end := 360, 1080 // 06:00-18:00
+	now := 720              // 12:00 — on shift, at the inn
+	hannah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Hannah Boggs",
+		Role:              "innkeeper",
+		State:             sim.StateIdle,
+		Pos:               sim.TilePos{X: 10, Y: 10},
+		WorkStructureID:   inn,
+		InsideStructureID: inn,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             30,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"milk": 2},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "milk", Source: sim.RestockSourceBuy, Max: 12},
+		}},
+	}
+	josiah := &sim.ActorSnapshot{
+		Kind:            sim.KindNPCStateful,
+		DisplayName:     "Josiah Thorne",
+		State:           sim.StateIdle,
+		Pos:             sim.TilePos{X: 200, Y: 200},
+		WorkStructureID: store,
+		Inventory:       map[sim.ItemKind]int{"milk": 40},
+	}
+	ellis := &sim.ActorSnapshot{
+		Kind:            sim.KindNPCStateful,
+		DisplayName:     "Ellis Ward",
+		State:           sim.StateIdle,
+		Pos:             sim.TilePos{X: 400, Y: 400},
+		WorkStructureID: farm,
+		Inventory:       map[sim.ItemKind]int{"milk": 40},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			hannahID: hannah, josiahID: josiah, ellisID: ellis,
+		},
+		Structures: map[sim.StructureID]*sim.Structure{
+			inn:   plainStructure(inn, "The Inn"),
+			store: plainStructure(store, "General Store"),
+			farm:  plainStructure(farm, "Ellis Farm"),
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			sim.VillageObjectID(store): {ID: sim.VillageObjectID(store), OwnerActorID: josiahID, Tags: []string{sim.TagDistributor}},
+			sim.VillageObjectID(farm):  {ID: sim.VillageObjectID(farm), OwnerActorID: ellisID, Tags: []string{sim.TagFarm}},
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"milk": {Name: "milk", DisplayLabel: "milk", Category: sim.ItemCategoryDrink},
+		},
+		RestockReorderPct: 25,
+	}
+	return snap, hannahID, nil
 }
 
 // buyerKeptConsumeRemainderReconciled is the LLM-188 buyer-POV fixture: Anne
