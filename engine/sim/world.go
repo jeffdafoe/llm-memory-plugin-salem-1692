@@ -558,9 +558,9 @@ type WorldSettings struct {
 	// fast). <= 0 disables the boost — the per-feature off-switch, mirroring
 	// FarmUpkeepCoinsPerShovel==0 (the pg loader seeds DefaultLaborProduceBoostPct
 	// when the setting key is absent). Live-tunable + persisted
-	// (settings/labor-produce-boost, read side GET /settings). Mirrored onto the
-	// snapshot at publish so the perception hire-value cue reads the same switch the
-	// produce tick enforces.
+	// (settings/labor-produce-boost, read side GET /settings). Engine-side only —
+	// perception deliberately carries no hire-value pitch (they hire willingly
+	// without one; the experiential after-the-fact beat is a separate ticket).
 	LaborProduceBoostPct int
 }
 
@@ -1808,7 +1808,6 @@ func (w *World) republish() {
 		DawnDuskMinuteOK:          dawnOK && duskOK,
 		NeedThresholds:            w.Settings.NeedThresholds.Clone(),
 		SeekWorkCoinCeiling:       effectiveSeekWorkCoinCeiling(w.Settings),
-		LaborProduceBoostPct:      w.Settings.LaborProduceBoostPct,
 		LodgingDefaultWeeklyRate:  w.Settings.LodgingDefaultWeeklyRate,
 		LodgingBedtimeMinute:      lodgerBedtimeMinute(w),
 		LodgingCheckOutMinute:     w.Settings.LodgingCheckOutHour * 60,

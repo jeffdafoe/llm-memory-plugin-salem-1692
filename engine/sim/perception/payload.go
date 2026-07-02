@@ -374,18 +374,6 @@ type Payload struct {
 	// nil when nothing is pending. Ordered by LaborID ascending. LLM-26.
 	LaborOffersForMe []LaborOfferView
 
-	// HiredHelpSpeedsProduction is true when hiring a worker would actually speed
-	// the subject's own production (LLM-224): the subject has at least one
-	// makeable produce-source restock entry (recipe-backed with a positive rate —
-	// the same test the produce tick applies) AND the labor produce boost is
-	// enabled (snap.LaborProduceBoostPct > 0). renderLaborOffers uses it to name
-	// the value of help in the hire decision ("help speeds your restock"), so
-	// hiring is reasoned rather than purely social. False for a non-producer
-	// employer (a hire is then social/flavor, as before) or when the boost is
-	// switched off — the cue and the produce tick read the same switch, so they
-	// can't drift.
-	HiredHelpSpeedsProduction bool
-
 	// WorkersForMe lists the subject's IN-PROGRESS jobs as EMPLOYER — Working
 	// LaborOffers where EmployerID == subject — the employer-side mirror of the
 	// worker's Laboring self-state (LLM-202). Without it the employer has only the
