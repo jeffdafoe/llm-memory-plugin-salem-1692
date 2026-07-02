@@ -527,6 +527,16 @@ var perceptionScenarios = []perceptionScenario{
 		build: employerMissingRewardItemsSteer,
 	},
 	{
+		name: "producer_employer_help_speeds_restock",
+		summary: "A producing keeper (Hannah Boggs, porridge produce entry with a live recipe) holds an AFFORDABLE " +
+			"pending labor offer while the labor produce boost is enabled — the LLM-224 situation: a hired worker " +
+			"laboring at the establishment now speeds the keeper's produce tick, so the hire decision should see the " +
+			"value ('help pays for itself in goods') and hiring is reasoned, not just social. The golden pins the " +
+			"hire-value line rendering between the offer lines and the accept_work/decline_work footer. A non-producer " +
+			"employer, a broke employer, or a disabled boost must not carry it (cross-scenario invariant).",
+		build: producerEmployerHelpSpeedsRestock,
+	},
+	{
 		name: "worker_among_household_no_solicit",
 		summary: "Two worker-tagged Walker siblings (Lewis + Anne) stand together in their own home, both jobless — the " +
 			"LLM-157 situation, where housemates solicited each other for work ('I'm looking for work, does anyone need a " +
@@ -1426,6 +1436,25 @@ func TestActiveWorkerCueOnlyForEmployerWithWorkingOffer(t *testing.T) {
 		want := sc.name == "employer_with_worker_on_job"
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: active-worker cue present=%v, want %v", sc.name, has, want)
+		}
+	}
+}
+
+// TestHelpSpeedsRestockLineOnlyForProducingEmployer is the LLM-224 cross-scenario
+// invariant: the hire-value line renders in EXACTLY the scenario where the subject
+// is an employer with an AFFORDABLE pending labor offer, a makeable produce entry,
+// and the boost enabled (producer_employer_help_speeds_restock). The other labor
+// decision scenarios must never carry it: the in-kind fixtures build snapshots with
+// LaborProduceBoostPct 0 and no produce entries (a hire there is social), and the
+// broke-employer fixture has no affordable offer to sweeten.
+func TestHelpSpeedsRestockLineOnlyForProducingEmployer(t *testing.T) {
+	const marker = "Taking on help pays for itself in goods"
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		got := renderScenario(sc)
+		want := sc.name == "producer_employer_help_speeds_restock"
+		if has := strings.Contains(got, marker); has != want {
+			t.Errorf("scenario %q: hire-value line present=%v, want %v", sc.name, has, want)
 		}
 	}
 }
@@ -3222,6 +3251,75 @@ func laborOfferInKindReward() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 
 func employerMissingRewardItemsSteer() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	return inKindLaborOfferSnapshot(false)
+}
+
+// producerEmployerHelpSpeedsRestock is the LLM-224 hire-value fixture: Hannah
+// Boggs, a PRODUCING keeper (porridge produce-source restock entry backed by a
+// live recipe), holds an affordable coins-only labor offer from Anne Walker
+// while the labor produce boost is enabled (snap.LaborProduceBoostPct 50). The
+// decision section should carry the "Taking on help pays for itself in goods"
+// line so the hire is reasoned against real output, not just social flavor.
+func producerEmployerHelpSpeedsRestock() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		hannahID = sim.ActorID("hannah")
+		anneID   = sim.ActorID("anne")
+		inn      = sim.StructureID("inn")
+		huddle   = sim.HuddleID("h1")
+	)
+	published := time.Date(2026, 7, 2, 11, 0, 0, 0, time.UTC)
+	hannah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Hannah Boggs",
+		Role:              "innkeeper",
+		State:             sim.StateIdle,
+		InsideStructureID: inn,
+		CurrentHuddleID:   huddle,
+		Coins:             50,
+		Needs:             map[sim.NeedKey]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"Anne Walker": {}},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "porridge", Source: sim.RestockSourceProduce, Max: 10},
+		}},
+	}
+	anne := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Anne Walker",
+		Role:              "laborer",
+		State:             sim.StateIdle,
+		InsideStructureID: inn,
+		CurrentHuddleID:   huddle,
+		Coins:             1,
+		Needs:             map[sim.NeedKey]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"Hannah Boggs": {}},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:    published,
+		NeedThresholds: sim.NeedThresholds{},
+		Actors:         map[sim.ActorID]*sim.ActorSnapshot{hannahID: hannah, anneID: anne},
+		Structures: map[sim.StructureID]*sim.Structure{
+			inn: plainStructure(inn, "The Inn"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{hannahID: {}, anneID: {}}},
+		},
+		LaborLedger: map[sim.LaborID]*sim.LaborOffer{
+			1: {
+				ID:          1,
+				WorkerID:    anneID,
+				EmployerID:  hannahID,
+				Reward:      2,
+				DurationMin: 120,
+				State:       sim.LaborStatePending,
+				HuddleID:    huddle,
+			},
+		},
+		ItemKinds: foodDrinkCatalog(),
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"porridge": {OutputItem: "porridge", OutputQty: 10, RateQty: 10, RatePerHours: 24},
+		},
+		LaborProduceBoostPct: 50,
+	}
+	return snap, hannahID, nil
 }
 
 // employerWithWorkerOnJob is the LLM-202 employer-side cue fixture: John Ellis the

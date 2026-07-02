@@ -40,6 +40,53 @@ type ProduceState struct {
 	LastProducedAt time.Time
 }
 
+// DefaultLaborProduceBoostPct is the per-worker production boost (LLM-224):
+// each hired worker laboring AT the keeper's establishment adds this percent
+// of the keeper's own base rate to the produce tick, so a wage buys real
+// output instead of pure flavor (one helper at 50 → 1.5x, two → 2x). A
+// non-positive WorldSettings.LaborProduceBoostPct disables the boost (the
+// per-feature off-switch, mirroring FarmUpkeepCoinsPerShovel==0). Guesstimate,
+// tuned live via the umbilical (settings/labor-produce-boost).
+const DefaultLaborProduceBoostPct = 50
+
+// laboringHelperCount counts the workers currently on an accepted job for
+// employerID who are physically at the employer's workplace — Working
+// LaborLedger offers whose worker stands inside workStructureID. Ledger-
+// authoritative like workerHasLiveJob (a Working row counts until the sweep
+// settles it, regardless of its clock), and location-gated because the boost
+// models hands-on help: a deal struck elsewhere speeds nothing until the
+// worker is at the establishment. LLM-224.
+func laboringHelperCount(w *World, employerID ActorID, workStructureID StructureID) int {
+	if workStructureID == "" {
+		return 0
+	}
+	n := 0
+	for _, o := range w.LaborLedger {
+		if o.State != LaborStateWorking || o.EmployerID != employerID {
+			continue
+		}
+		worker := w.Actors[o.WorkerID]
+		if worker == nil || worker.InsideStructureID != workStructureID {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
+// produceRateScalePct resolves the keeper's production-rate scale for this
+// tick: 100 (base rate) plus LaborProduceBoostPct per laboring helper at the
+// establishment. Sampled once per keeper per tick — the 1-min cadence bounds
+// how stale a mid-window hire/finish can read.
+func produceRateScalePct(w *World, employerID ActorID, employer *Actor) int {
+	boostPct := w.Settings.LaborProduceBoostPct
+	if boostPct <= 0 {
+		return 100
+	}
+	helpers := laboringHelperCount(w, employerID, employer.WorkStructureID)
+	return 100 + helpers*boostPct
+}
+
 // ProduceEvent records one ACTUAL production execution (a real mint, NOT an
 // at-cap anchor advance) for the recent-production readout the forge-choice cue
 // shows a multi-output crafter (LLM-116). Restart-lossy — a transient decision-
@@ -146,6 +193,9 @@ func ApplyProduceTick(now time.Time) Command {
 				// actor a chooser (which would otherwise stall it on a focus it
 				// can't produce).
 				multiOutput := makeableProduceCount(w, produceEntries) > 1
+				// LLM-224: hired help speeds the keeper's whole produce tick —
+				// each worker laboring at the establishment scales the rate.
+				rateScalePct := produceRateScalePct(w, actorID, actor)
 				for _, entry := range produceEntries {
 					if multiOutput && actor.ProductionFocus != entry.Item {
 						continue
@@ -154,7 +204,7 @@ func ApplyProduceTick(now time.Time) Command {
 					if !ok {
 						continue
 					}
-					change, executed := applyProduceEntry(actor, entry, recipe, now)
+					change, executed := applyProduceEntry(actor, entry, recipe, now, rateScalePct)
 					if executed {
 						recordRecentProduce(actor, change.Item, change.Added, now)
 						res.Executions++
@@ -196,9 +246,15 @@ type produceChange struct {
 // applyProduceEntry runs one entry on one actor. Returns the change
 // (when something was produced) and whether an execution fired.
 //
+// rateScalePct scales the recipe rate (100 = base; 150 = one boost-50 helper,
+// LLM-224) by shrinking secondsPerUnit. The boosted value is used for BOTH the
+// units-owed division and the anchor advance, so sub-unit residue stays
+// consistent within the tick; a scale change between ticks mis-values at most
+// one unit's residue (acceptable at the 1-min cadence).
+//
 // First-observation case stamps the anchor to now without filling
 // (mirrors legacy "first observation: stamp anchor, no fill").
-func applyProduceEntry(actor *Actor, entry RestockEntry, recipe *ItemRecipe, now time.Time) (produceChange, bool) {
+func applyProduceEntry(actor *Actor, entry RestockEntry, recipe *ItemRecipe, now time.Time, rateScalePct int) (produceChange, bool) {
 	state, ok := actor.ProduceState[entry.Item]
 	if !ok {
 		actor.ProduceState[entry.Item] = &ProduceState{
@@ -215,6 +271,12 @@ func applyProduceEntry(actor *Actor, entry RestockEntry, recipe *ItemRecipe, now
 	secondsPerUnit := periodSeconds / int64(recipe.RateQty)
 	if secondsPerUnit <= 0 {
 		return produceChange{}, false
+	}
+	if rateScalePct > 100 {
+		secondsPerUnit = secondsPerUnit * 100 / int64(rateScalePct)
+		if secondsPerUnit < 1 {
+			secondsPerUnit = 1
+		}
 	}
 	elapsedSeconds := int64(now.Sub(state.LastProducedAt).Seconds())
 	if elapsedSeconds < secondsPerUnit {

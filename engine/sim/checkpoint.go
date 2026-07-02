@@ -84,6 +84,11 @@ type MutableWorldSettings struct {
 	// worker stops seeking/soliciting work. Live-tunable via the umbilical, persisted
 	// here each checkpoint so a live change survives restart.
 	SeekWorkCoinCeiling int
+
+	// LaborProduceBoostPct (LLM-224) — the per-worker produce-rate boost a laboring
+	// worker adds at their employer's establishment. Live-tunable via the umbilical,
+	// persisted here each checkpoint so a live change survives restart.
+	LaborProduceBoostPct int
 }
 
 // DiscoveredKind is the minimal persist-tuple for an engine-minted item kind
@@ -134,6 +139,7 @@ func (w *World) BuildCheckpointSnapshot() *CheckpointSnapshot {
 			HuddleLoopRepeatPercent:       w.Settings.HuddleLoopRepeatPercent,
 			HuddleLoopSweepCadenceSeconds: int(w.Settings.HuddleLoopSweepCadence / time.Second),
 			SeekWorkCoinCeiling:           w.Settings.SeekWorkCoinCeiling,
+			LaborProduceBoostPct:          w.Settings.LaborProduceBoostPct,
 		},
 	}
 	// ZBBS-WORK-412: carry the engine-minted (unknown-category) item kinds so

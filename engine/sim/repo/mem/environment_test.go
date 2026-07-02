@@ -31,6 +31,7 @@ func TestSaveMutableSettings_RoundTrip(t *testing.T) {
 		HuddleLoopRepeatPercent:       70,
 		HuddleLoopSweepCadenceSeconds: 20,
 		SeekWorkCoinCeiling:           33,
+		LaborProduceBoostPct:          75,
 	}
 	if err := repo.SaveMutableSettings(ctx, nil, ms); err != nil {
 		t.Fatalf("SaveMutableSettings: %v", err)
@@ -55,5 +56,8 @@ func TestSaveMutableSettings_RoundTrip(t *testing.T) {
 	}
 	if settings.SeekWorkCoinCeiling != 33 {
 		t.Errorf("seek-work coin ceiling = %d, want 33 (LLM-194 round-trip)", settings.SeekWorkCoinCeiling)
+	}
+	if settings.LaborProduceBoostPct != 75 {
+		t.Errorf("labor produce boost = %d, want 75 (LLM-224 round-trip)", settings.LaborProduceBoostPct)
 	}
 }

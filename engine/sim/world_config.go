@@ -287,6 +287,35 @@ func SetSeekWorkCoinCeiling(ceiling *int) Command {
 	}
 }
 
+// ErrInvalidLaborProduceBoostSetting is returned by SetLaborProduceBoostPct when the
+// percent is missing or out of range (must be >= 0) — → 400 at the umbilical route.
+var ErrInvalidLaborProduceBoostSetting = errors.New("invalid labor produce boost setting")
+
+// LaborProduceBoostSettingResult echoes the post-change per-worker boost percent.
+type LaborProduceBoostSettingResult struct {
+	BoostPct int
+}
+
+// SetLaborProduceBoostPct returns a Command that live-tunes the per-worker produce
+// boost (LLM-224): each worker laboring at their employer's establishment adds this
+// percent of the keeper's base rate to the produce tick. Required (a single knob,
+// nil = nothing to do) and must be >= 0 — 0 is the explicit off-switch (labor buys
+// no output, the pre-LLM-224 behavior). Takes effect immediately — the produce tick
+// reads w.Settings live and the perception hire-value cue reads the next published
+// snapshot — AND persists on the next checkpoint via MutableWorldSettings, so a live
+// change survives restart.
+func SetLaborProduceBoostPct(pct *int) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			if pct == nil || *pct < 0 || *pct > math.MaxInt32 {
+				return nil, ErrInvalidLaborProduceBoostSetting
+			}
+			w.Settings.LaborProduceBoostPct = *pct
+			return LaborProduceBoostSettingResult{BoostPct: w.Settings.LaborProduceBoostPct}, nil
+		},
+	}
+}
+
 // ErrInvalidFarmUpkeepSetting is returned by SetFarmUpkeepSettings when no knob is
 // provided or a value is out of range (must be >= 0) — → 400 at the umbilical route.
 var ErrInvalidFarmUpkeepSetting = errors.New("invalid farm upkeep setting")

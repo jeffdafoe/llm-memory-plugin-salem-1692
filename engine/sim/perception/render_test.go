@@ -867,7 +867,7 @@ func TestRenderLaborOffers_AffordabilitySteer(t *testing.T) {
 
 	t.Run("broke employer: decline steer with spoken reason, no accept footer", func(t *testing.T) {
 		var b strings.Builder
-		renderLaborOffers(&b, []LaborOfferView{offer(1, 5)}, 0, nameOf)
+		renderLaborOffers(&b, []LaborOfferView{offer(1, 5)}, 0, false, nameOf)
 		got := b.String()
 		if !strings.Contains(got, "call decline_work (offer id 1)") || !strings.Contains(got, speakNamed) {
 			t.Errorf("broke employer should be steered to decline WITH a spoken reason; got:\n%s", got)
@@ -882,7 +882,7 @@ func TestRenderLaborOffers_AffordabilitySteer(t *testing.T) {
 
 	t.Run("solvent employer: accept footer, no forced decline", func(t *testing.T) {
 		var b strings.Builder
-		renderLaborOffers(&b, []LaborOfferView{offer(1, 5)}, 46, nameOf)
+		renderLaborOffers(&b, []LaborOfferView{offer(1, 5)}, 46, false, nameOf)
 		got := b.String()
 		if !strings.Contains(got, acceptFooter) {
 			t.Errorf("solvent employer should see the accept_work/decline_work footer; got:\n%s", got)
@@ -892,10 +892,31 @@ func TestRenderLaborOffers_AffordabilitySteer(t *testing.T) {
 		}
 	})
 
+	t.Run("hire-value line renders for a producing employer with an affordable offer", func(t *testing.T) {
+		// LLM-224: the produce boost means a hire buys real output — the line
+		// names that stake at the decision point.
+		var b strings.Builder
+		renderLaborOffers(&b, []LaborOfferView{offer(1, 5)}, 46, true, nameOf)
+		got := b.String()
+		if !strings.Contains(got, "Taking on help pays for itself in goods") {
+			t.Errorf("producing employer should see the hire-value line; got:\n%s", got)
+		}
+	})
+
+	t.Run("hire-value line suppressed when no offer is affordable", func(t *testing.T) {
+		// Never sweeten a doomed accept — the broke employer is being steered
+		// to decline, so the value of help must not argue against that.
+		var b strings.Builder
+		renderLaborOffers(&b, []LaborOfferView{offer(1, 5)}, 0, true, nameOf)
+		if got := b.String(); strings.Contains(got, "Taking on help pays for itself in goods") {
+			t.Errorf("broke employer must not see the hire-value line; got:\n%s", got)
+		}
+	})
+
 	t.Run("mixed: footer is scoped to affordable offers, unaffordable carries its own decline", func(t *testing.T) {
 		var b strings.Builder
 		// 5 coins on hand covers the 4-coin job but not the 9-coin one.
-		renderLaborOffers(&b, []LaborOfferView{offer(1, 4), offer(2, 9)}, 5, nameOf)
+		renderLaborOffers(&b, []LaborOfferView{offer(1, 4), offer(2, 9)}, 5, false, nameOf)
 		got := b.String()
 		// The footer must scope accept_work to affordable offers — a generic
 		// "accept_work or decline_work" could be applied to the unaffordable one.
