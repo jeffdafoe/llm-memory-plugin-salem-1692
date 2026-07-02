@@ -368,6 +368,18 @@ var perceptionScenarios = []perceptionScenario{
 		build: keeperResellingInCompany,
 	},
 	{
+		name: "innkeeper_pricing_with_makings_cost",
+		summary: "A PRODUCER whose recipe has real inputs — Hannah Boggs keeping her inn in company with a guest, " +
+			"porridge made 10 bowls at a time from 3 milk + 5 water (the live catalog shape). LLM-226: the wares-worth " +
+			"cue previously gave a producer no cost anchor, so she could price below cost unknowing (live: 1-coin " +
+			"porridge against an 0.8-coin makings cost). The golden pins the makings clause: inputs priced from catalog " +
+			"wholesale with no purchase history (8 coins a batch), spoken per-unit as 'nearly 1 coin each' — the engine " +
+			"does the division and rounds the prose UP, never down to a break-even-erasing 'about 1' — with the " +
+			"price-above-it stake. Pairs with keeper_reselling_in_company (the resale cost basis) and " +
+			"smith_bartering_at_tavern (the no-inputs producer, no makings clause).",
+		build: innkeeperPricingWithMakingsCost,
+	},
+	{
 		name: "keeper_not_pitching_makers_own_ware",
 		summary: "LLM-171 seller side: John Ellis keeps his tavern in company with Ezekiel Crane the smith, and John's " +
 			"stock holds skillet + nail he bought FROM Ezekiel. The '## Custom at hand' cue lists those wares to pitch, so " +
@@ -1239,7 +1251,10 @@ func TestProductionFocusLineOnlyAtWork(t *testing.T) {
 	for _, sc := range perceptionScenarios {
 		sc := sc
 		got := renderScenario(sc)
-		want := sc.name == "smith_forging_focused"
+		// innkeeper_pricing_with_makings_cost (LLM-226) is Hannah focused on porridge
+		// AT her inn — the same focus-at-work state as the forging smith, so the line
+		// is correct there too.
+		want := sc.name == "smith_forging_focused" || sc.name == "innkeeper_pricing_with_makings_cost"
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: production-focus line present=%v, want %v", sc.name, has, want)
 		}
@@ -1280,7 +1295,8 @@ func TestWaresWorthCueOnlyInCompanyWithOwnTrade(t *testing.T) {
 	for _, sc := range perceptionScenarios {
 		sc := sc
 		got := renderScenario(sc)
-		want := sc.name == "smith_bartering_at_tavern" || sc.name == "keeper_reselling_in_company"
+		want := sc.name == "smith_bartering_at_tavern" || sc.name == "keeper_reselling_in_company" ||
+			sc.name == "innkeeper_pricing_with_makings_cost" // LLM-226: producer in company, priced own ware
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: wares-worth cue present=%v, want %v", sc.name, has, want)
 		}
@@ -2512,6 +2528,76 @@ func keeperResellingInCompany() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) 
 		},
 	}
 	return snap, josiahID, nil
+}
+
+// innkeeperPricingWithMakingsCost is the LLM-226 producer cost-of-goods leg: Hannah
+// Boggs keeps her inn on shift in company with a guest, producing porridge from a
+// recipe with REAL inputs (10 bowls from 3 milk + 5 water — the live catalog shape).
+// Before LLM-226 the wares-worth cue gave a producer no cost anchor at all, so she
+// could price below cost without knowing it (live: porridge quoted at 1 coin against
+// an 0.8-coin makings cost). The golden pins the makings clause: with no purchase
+// history the inputs price from catalog wholesale (3×1 + 5×1 = 8 a batch), and 8/10
+// is spoken as "nearly 1 coin each" — rounded UP in prose, never down to a
+// break-even-erasing "about 1" — with the price-above-it stake closing the line.
+func innkeeperPricingWithMakingsCost() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		hannahID = sim.ActorID("hannah")
+		guestID  = sim.ActorID("ezekiel")
+		inn      = sim.StructureID("inn")
+		huddle   = sim.HuddleID("h1")
+	)
+	start, end := 360, 1200 // 06:00-20:00 — the innkeeper day shift
+	now := 480              // 08:00 — breakfast custom
+	published := time.Date(2026, 6, 25, 8, 0, 0, 0, time.UTC)
+	hannah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Hannah Boggs",
+		Role:              "innkeeper",
+		State:             sim.StateIdle,
+		WorkStructureID:   inn,
+		InsideStructureID: inn,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		CurrentHuddleID:   huddle,
+		Coins:             10,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"porridge": 30},
+		ProductionFocus:   "porridge",
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "porridge", Source: sim.RestockSourceProduce, Max: 30},
+		}},
+	}
+	guest := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Ezekiel Crane",
+		Role:              "blacksmith",
+		State:             sim.StateIdle,
+		InsideStructureID: inn,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		CurrentHuddleID:   huddle,
+		Coins:             15,
+		Needs:             map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{hannahID: hannah, guestID: guest},
+		Structures: map[sim.StructureID]*sim.Structure{
+			inn: plainStructure(inn, "Inn"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{hannahID: {}, guestID: {}}},
+		},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"porridge": {OutputItem: "porridge", OutputQty: 10, RateQty: 8, RatePerHours: 1, WholesalePrice: 1, RetailPrice: 2,
+				Inputs: []sim.RecipeInput{{Item: "milk", Qty: 3}, {Item: "water", Qty: 5}}},
+			"milk":  {OutputItem: "milk", OutputQty: 1, RateQty: 4, RatePerHours: 1, WholesalePrice: 1, RetailPrice: 2},
+			"water": {OutputItem: "water", OutputQty: 1, RateQty: 12, RatePerHours: 1, WholesalePrice: 1, RetailPrice: 1},
+		},
+	}
+	return snap, hannahID, nil
 }
 
 // keeperNotPitchingMakersOwnWare is the LLM-171 seller side: John Ellis keeps

@@ -29,7 +29,10 @@ import (
 // vendors). For a resold good the cue also surfaces the actor's OWN recent purchase
 // cost (buyerRecentPurchases) so a reseller can mark up off what it actually paid —
 // the supply-side price anchor a pure reseller (empty ProduceEntries) otherwise
-// lacked entirely (LLM-191). Unlike "## Time to produce" this is NOT gated on being
+// lacked entirely (LLM-191). A PRODUCED good whose recipe has inputs gets the
+// matching cost anchor from its ingredient side (LLM-226): each input priced by the
+// actor's own purchase history, recipe wholesale as the fallback, spoken per-unit so
+// the model never divides. Unlike "## Time to produce" this is NOT gated on being
 // at the workplace: a smith knows a nail is worth 1–2 coins whether stood at the
 // forge or pitching it across a tavern table.
 
@@ -47,6 +50,13 @@ type TradeValueView struct {
 // per-unit PURCHASE cost over the same window — the cost basis to mark up from — set
 // only for resold (buy-restock) goods and 0 otherwise. Render omits each clause when
 // its value is 0.
+//
+// CostBatch/CostQty carry the produce-side cost basis (LLM-226): the estimated
+// ingredient cost of one recipe batch and the batch's output count, set only for a
+// produced good whose recipe has inputs. Kept as the exact pair — not a pre-divided
+// per-unit coin — so render can phrase the fraction honestly instead of rounding it
+// away. CostFloor marks a cost sum missing an unpriceable input, which render
+// qualifies as "at least". CostBatch 0 omits the clause.
 type TradeValueItem struct {
 	ItemLabel  string
 	itemKind   sim.ItemKind // unexported sort tiebreak
@@ -54,6 +64,9 @@ type TradeValueItem struct {
 	High       int
 	RecentUnit int
 	PaidUnit   int
+	CostBatch  int
+	CostQty    int
+	CostFloor  bool
 }
 
 // buildTradeValue builds the wares-worth view for an actor that has goods of its
@@ -105,6 +118,45 @@ func buildTradeValue(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 				paidUnit = (coins + units/2) / units
 			}
 		}
+		// For a produced good with real recipe inputs, estimate the cost of goods —
+		// the produce-side sibling of the reseller cost-basis clause (LLM-226).
+		// Each input is priced by the actor's own recent purchases (what it actually
+		// pays for its milk), falling back to the input's catalog price (wholesale,
+		// else retail) when it has no purchase history. An input priceable by
+		// neither is left out of the sum and flags the total as a floor.
+		costBatch, costQty, costFloor := 0, 0, false
+		if !isResale && len(recipe.Inputs) > 0 {
+			costQty = recipe.OutputQty
+			if costQty <= 0 {
+				costQty = 1
+			}
+			for _, in := range recipe.Inputs {
+				unitCost := 0
+				// History prices by CEILING division, unlike paidUnit's
+				// nearest-rounding: paidUnit reports what was paid, this feeds a
+				// don't-sell-below-this floor, where rounding a bulk-bought cheap
+				// input (1 coin for 10 milk) down to a free ingredient silently
+				// understates the cost the clause exists to reveal. Zero-coin
+				// history is no price signal — fall through to the catalog.
+				if units, coins := buyerRecentPurchases(snap, actorID, in.Item, restockSalesWindow); units > 0 && coins > 0 {
+					unitCost = (coins + units - 1) / units
+				} else if inRecipe := snap.Recipes[in.Item]; inRecipe != nil {
+					unitCost = inRecipe.WholesalePrice
+					if unitCost <= 0 {
+						unitCost = inRecipe.RetailPrice
+					}
+				}
+				if unitCost <= 0 {
+					costFloor = true
+					continue
+				}
+				costBatch += in.Qty * unitCost
+			}
+			if costBatch <= 0 {
+				// No positive input cost was found — no useful cost signal, omit the clause.
+				costQty, costFloor = 0, false
+			}
+		}
 		seen[item] = true
 		items = append(items, TradeValueItem{
 			ItemLabel:  itemDisplayLabel(snap, item),
@@ -113,6 +165,9 @@ func buildTradeValue(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 			High:       hi,
 			RecentUnit: recentUnit,
 			PaidUnit:   paidUnit,
+			CostBatch:  costBatch,
+			CostQty:    costQty,
+			CostFloor:  costFloor,
 		})
 	}
 	// Produced goods first, so a kind somehow listed under both sources values as
@@ -162,6 +217,20 @@ func renderTradeValue(b *strings.Builder, v *TradeValueView) {
 		if it.RecentUnit > 0 {
 			clauses += fmt.Sprintf("; of late you have sold for about %s each", coinsPhrase(it.RecentUnit))
 		}
+		// A produced good's cost of goods (LLM-226) goes last so its stake fragment
+		// closes the line. All arithmetic is done HERE — the model gets a per-unit
+		// phrase to compare against its price, never a batch fraction to divide.
+		if it.CostBatch > 0 && it.CostQty > 0 {
+			costPhrase := costEachPhrase(it.CostBatch, it.CostQty)
+			if it.CostFloor {
+				// The sum is missing an unpriceable input, so the true cost exceeds
+				// it — state the known part as a whole-coin floor (ceiling division;
+				// erring high is the safe direction for a don't-sell-below-this cue).
+				ceilUnit := (it.CostBatch + it.CostQty - 1) / it.CostQty
+				costPhrase = fmt.Sprintf("at least %s each", coinsPhrase(ceilUnit))
+			}
+			clauses += fmt.Sprintf("; the makings run you %s — price above that or you lose coin", costPhrase)
+		}
 		fmt.Fprintf(b, "- %s: %s%s.\n", sanitizeInline(it.ItemLabel), worth, clauses)
 	}
 	b.WriteString("\n")
@@ -173,4 +242,29 @@ func coinsPhrase(n int) string {
 		return "1 coin"
 	}
 	return fmt.Sprintf("%d coins", n)
+}
+
+// costEachPhrase renders a batch cost as bucketed per-unit prose ("nearly 1 coin
+// each", "a little over 2 coins each"). Weak models can compare a phrase against
+// their asking price but cannot be trusted to divide batch/qty themselves, so the
+// division happens here and the fraction is spoken, not rounded away — 8 coins per
+// 10 bowls must NOT collapse to "about 1 coin each" (that erases the margin the
+// clause exists to reveal). The half-and-up bucket rounds the phrase UPWARD
+// ("nearly N+1") so approximation never understates cost — the failure mode this
+// cue guards against is pricing below cost, not above it.
+func costEachPhrase(batch, qty int) string {
+	if batch <= 0 || qty <= 0 {
+		return "" // defensive: render gates on both being positive already
+	}
+	whole, rem := batch/qty, batch%qty
+	switch {
+	case rem == 0:
+		return fmt.Sprintf("about %s each", coinsPhrase(whole))
+	case whole == 0 && rem*2 < qty:
+		return "under half a coin each"
+	case rem*2 < qty:
+		return fmt.Sprintf("a little over %s each", coinsPhrase(whole))
+	default:
+		return fmt.Sprintf("nearly %s each", coinsPhrase(whole+1))
+	}
 }
