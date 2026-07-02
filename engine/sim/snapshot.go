@@ -174,13 +174,6 @@ type Snapshot struct {
 	FarmUpkeepFloor          int
 	FarmUpkeepCoinsPerShovel int
 
-	// LaborProduceBoostPct mirrors WorldSettings.LaborProduceBoostPct (LLM-224) so
-	// the employer hire-value cue ("help speeds your restock") renders iff the
-	// produce tick would actually boost — the same switch, pure over the snapshot
-	// rather than racing on w.Settings. Non-positive = boost disabled = no cue, so a
-	// directly-constructed test snapshot that omits it gets no hire-value line.
-	LaborProduceBoostPct int
-
 	// DefaultOutdoorSceneRadius mirrors WorldSettings.DefaultOutdoorSceneRadius —
 	// the "what is around me" tile radius the move_to name-resolver and scene
 	// bound use. Carried so perception can bound a proximity scan to the SAME

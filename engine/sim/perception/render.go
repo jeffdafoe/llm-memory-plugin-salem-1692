@@ -264,7 +264,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// LLM-26: the employer's pending work-offer decisions sit alongside pay
 	// offers (both are "someone wants my answer"); the worker affordance cue
 	// follows so a free worker sees the option to offer their labor.
-	renderLaborOffers(&ephemeral, p.LaborOffersForMe, p.Actor.Coins, p.HiredHelpSpeedsProduction, nameOf)
+	renderLaborOffers(&ephemeral, p.LaborOffersForMe, p.Actor.Coins, nameOf)
 	renderLaborAffordance(&ephemeral, p.CanSolicitWork)
 	// LLM-152/160: the directional half of seek-work — the town's businesses to head
 	// to, by their resolvable names. Sits with the labor affordance; non-empty
@@ -2191,7 +2191,7 @@ func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason, nam
 // few (bounded by co-present workers), and the section must always carry the
 // labor_id whenever gateTools advertises the response tools (the discussion-109
 // invariant). LLM-26.
-func renderLaborOffers(b *strings.Builder, offers []LaborOfferView, employerCoins int, helpSpeedsProduction bool, nameOf func(sim.ActorID) string) {
+func renderLaborOffers(b *strings.Builder, offers []LaborOfferView, employerCoins int, nameOf func(sim.ActorID) string) {
 	if len(offers) == 0 {
 		return
 	}
@@ -2232,16 +2232,6 @@ func renderLaborOffers(b *strings.Builder, offers []LaborOfferView, employerCoin
 			continue
 		}
 		anyAffordable = true
-	}
-	// The value of help (LLM-224): a producing keeper's goods really do arrive
-	// faster while a hired worker labors at the establishment (the produce-tick
-	// boost), so name the stake at the decision point — a hire is a purchase of
-	// output, not just a social nicety. Rendered only when at least one offer is
-	// affordable (never sweeten a doomed accept) and only for a subject whose
-	// production would actually speed up (HiredHelpSpeedsProduction — the same
-	// switch the produce tick reads, so cue and engine can't drift).
-	if anyAffordable && helpSpeedsProduction {
-		b.WriteString("Taking on help pays for itself in goods: while someone labors here for you, your wares are made faster than you manage alone.\n")
 	}
 	// Action first, then an explicit speak — same "say a word as you decide"
 	// pattern the pay decision section uses (the accept_work/decline_work call
