@@ -1649,11 +1649,22 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 		if r, ok := cmdResult.(sim.LaborAcceptResult); ok {
 			switch r.State {
 			case sim.LaborStateWorking:
-				return fmt.Sprintf("[ok] You hired %s — they are at the work now for %d coins, paid when they finish. Say a brief word, then call done(). Do not accept again.", r.WorkerName, r.Reward)
+				// r.Payment names both reward legs ("5 coins", "1 porridge and
+				// 2 coins" — LLM-225), pre-formatted by the Command. Fall back
+				// to the coin leg for a result built without it (defensive —
+				// AcceptWork always sets it).
+				payment := r.Payment
+				if payment == "" {
+					payment = fmt.Sprintf("%d coins", r.Reward)
+					if r.Reward == 1 {
+						payment = "1 coin"
+					}
+				}
+				return fmt.Sprintf("[ok] You hired %s — they are at the work now for %s, paid when they finish. Say a brief word, then call done(). Do not accept again.", r.WorkerName, payment)
 			case sim.LaborStateExpired:
 				return "[ok] That offer had already expired — too late to take them on."
 			case sim.LaborStateFailedUnavailable:
-				return "[ok] That couldn't be arranged — one of you was no longer available, they were already at a job, or you couldn't cover the coin."
+				return "[ok] That couldn't be arranged — one of you was no longer available, they were already at a job, or you couldn't cover the pay they asked."
 			}
 		}
 	}

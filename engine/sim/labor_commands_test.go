@@ -20,6 +20,7 @@ type laborActor struct {
 	id            sim.ActorID
 	displayName   string
 	coins         int
+	inventory     map[sim.ItemKind]int // carried goods (LLM-225 in-kind rewards)
 	huddleID      sim.HuddleID
 	worker        bool // seeds Attributes[AttrWorker]
 	moveInFlight  bool
@@ -45,6 +46,7 @@ func buildLaborWorld(t *testing.T, huddleID sim.HuddleID, sceneID sim.SceneID, a
 			Kind:            sim.KindNPCShared,
 			State:           sim.StateIdle,
 			Coins:           s.coins,
+			Inventory:       s.inventory,
 			CurrentHuddleID: s.huddleID,
 			LaboringUntil:   s.laboringUntil,
 			HomeStructureID: s.homeStruct,
@@ -196,7 +198,7 @@ func TestSolicitWork_MintsPendingOffer(t *testing.T) {
 	events := captureLaborEvents(t, w)
 
 	now := time.Now().UTC()
-	res, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, 120, now))
+	res, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, nil, 120, now))
 	if err != nil {
 		t.Fatalf("SolicitWork: %v", err)
 	}
@@ -250,7 +252,7 @@ func TestSolicitWork_RejectsNonWorker(t *testing.T) {
 	defer stop()
 
 	now := time.Now().UTC()
-	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, 120, now)); err == nil {
+	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, nil, 120, now)); err == nil {
 		t.Fatal("SolicitWork by non-worker: want error, got nil")
 	}
 	if n := len(readLaborLedger(t, w)); n != 0 {
@@ -266,7 +268,7 @@ func TestSolicitWork_RejectsUnknownEmployer(t *testing.T) {
 	defer stop()
 
 	now := time.Now().UTC()
-	if _, err := w.Send(sim.SolicitWork("ezekiel", "Nobody", 10, 120, now)); err == nil {
+	if _, err := w.Send(sim.SolicitWork("ezekiel", "Nobody", 10, nil, 120, now)); err == nil {
 		t.Fatal("SolicitWork naming absent employer: want error, got nil")
 	}
 }
@@ -279,10 +281,10 @@ func TestSolicitWork_RejectsDuplicatePending(t *testing.T) {
 	defer stop()
 
 	now := time.Now().UTC()
-	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, 120, now)); err != nil {
+	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, nil, 120, now)); err != nil {
 		t.Fatalf("first SolicitWork: %v", err)
 	}
-	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 8, 120, now)); err == nil {
+	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 8, nil, 120, now)); err == nil {
 		t.Fatal("second SolicitWork to same employer: want duplicate error, got nil")
 	}
 	if n := len(readLaborLedger(t, w)); n != 1 {
@@ -298,7 +300,7 @@ func TestSolicitWork_RejectsWhenNotHuddled(t *testing.T) {
 	defer stop()
 
 	now := time.Now().UTC()
-	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, 120, now)); err == nil {
+	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, nil, 120, now)); err == nil {
 		t.Fatal("SolicitWork while not huddled: want error, got nil")
 	}
 }
@@ -311,13 +313,13 @@ func TestSolicitWork_RejectsBadTerms(t *testing.T) {
 	defer stop()
 	now := time.Now().UTC()
 
-	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 0, 120, now)); err == nil {
+	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 0, nil, 120, now)); err == nil {
 		t.Error("reward 0: want error, got nil")
 	}
-	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, 0, now)); err == nil {
+	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, nil, 0, now)); err == nil {
 		t.Error("duration 0: want error, got nil")
 	}
-	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, 9999, now)); err == nil {
+	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, nil, 9999, now)); err == nil {
 		t.Error("duration over cap: want error, got nil")
 	}
 }
@@ -333,7 +335,7 @@ func TestSolicitWork_RejectsHousemate(t *testing.T) {
 	defer stop()
 
 	now := time.Now().UTC()
-	if _, err := w.Send(sim.SolicitWork("silence", "Patience", 10, 120, now)); err == nil {
+	if _, err := w.Send(sim.SolicitWork("silence", "Patience", 10, nil, 120, now)); err == nil {
 		t.Fatal("SolicitWork against a housemate: want error, got nil")
 	}
 	if n := len(readLaborLedger(t, w)); n != 0 {
@@ -351,7 +353,7 @@ func TestSolicitWork_RejectsCoworker(t *testing.T) {
 	defer stop()
 
 	now := time.Now().UTC()
-	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, 120, now)); err == nil {
+	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, nil, 120, now)); err == nil {
 		t.Fatal("SolicitWork against a co-worker: want error, got nil")
 	}
 	if n := len(readLaborLedger(t, w)); n != 0 {
@@ -370,7 +372,7 @@ func TestSolicitWork_AllowsUnrelatedDespiteAnchors(t *testing.T) {
 	defer stop()
 
 	now := time.Now().UTC()
-	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, 120, now)); err != nil {
+	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, nil, 120, now)); err != nil {
 		t.Fatalf("SolicitWork against an unrelated employer: %v", err)
 	}
 	if n := len(readLaborLedger(t, w)); n != 1 {
@@ -821,7 +823,7 @@ func TestLaborLifecycle_EndToEndConservesCoins(t *testing.T) {
 	defer stop()
 
 	now := time.Now().UTC()
-	res, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, 120, now))
+	res, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, nil, 120, now))
 	if err != nil {
 		t.Fatalf("SolicitWork: %v", err)
 	}
@@ -871,10 +873,10 @@ func TestSolicitWork_RejectsSecondPendingDifferentEmployer(t *testing.T) {
 	})
 	defer stop()
 	now := time.Now().UTC()
-	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, 120, now)); err != nil {
+	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, nil, 120, now)); err != nil {
 		t.Fatalf("first SolicitWork: %v", err)
 	}
-	if _, err := w.Send(sim.SolicitWork("ezekiel", "John", 8, 120, now)); err == nil {
+	if _, err := w.Send(sim.SolicitWork("ezekiel", "John", 8, nil, 120, now)); err == nil {
 		t.Fatal("second SolicitWork to a different employer: want error, got nil")
 	}
 	if n := len(readLaborLedger(t, w)); n != 1 {

@@ -34,11 +34,11 @@ import "time"
 
 // LaborOfferReceived fires when sim.SolicitWork inserts a new pending
 // LaborOffer. WorkerID solicited; EmployerID is the peer who must accept
-// or decline. Reward + DurationMin snapshot the proposed terms. SceneID +
-// HuddleID anchor the co-presence context captured at solicitation;
-// accept-time revalidation re-checks both parties are still in HuddleID.
-// ExpiresAt is the pending-TTL boundary the aging sweep enforces off the
-// offer.
+// or decline. Reward + RewardItems + DurationMin snapshot the proposed
+// terms (coins and/or goods — LLM-225). SceneID + HuddleID anchor the
+// co-presence context captured at solicitation; accept-time revalidation
+// re-checks both parties are still in HuddleID. ExpiresAt is the
+// pending-TTL boundary the aging sweep enforces off the offer.
 type LaborOfferReceived struct {
 	EventBase
 
@@ -46,6 +46,7 @@ type LaborOfferReceived struct {
 	WorkerID    ActorID
 	EmployerID  ActorID
 	Reward      int
+	RewardItems []ItemKindQty
 	DurationMin int
 
 	SceneID   SceneID
@@ -68,6 +69,7 @@ type LaborOfferAccepted struct {
 	WorkerID     ActorID
 	EmployerID   ActorID
 	Reward       int
+	RewardItems  []ItemKindQty
 	DurationMin  int
 	WorkingUntil time.Time
 
@@ -85,10 +87,10 @@ func (LaborOfferAccepted) isSimEvent() {}
 // TerminalState is typed LaborTerminalState for compile-time enforcement
 // that the event never carries an active state (pending / working).
 //
-// Reward is carried on every terminal so a Completed event records what
-// the worker was paid and a Declined/Expired/failed event records what
-// was forgone, without a ledger lookup. DurationMin likewise snapshots
-// the agreed work length.
+// Reward + RewardItems are carried on every terminal so a Completed event
+// records what the worker was paid (coins and/or goods — LLM-225) and a
+// Declined/Expired/failed event records what was forgone, without a
+// ledger lookup. DurationMin likewise snapshots the agreed work length.
 type LaborResolved struct {
 	EventBase
 
@@ -96,6 +98,7 @@ type LaborResolved struct {
 	WorkerID    ActorID
 	EmployerID  ActorID
 	Reward      int
+	RewardItems []ItemKindQty
 	DurationMin int
 
 	TerminalState LaborTerminalState

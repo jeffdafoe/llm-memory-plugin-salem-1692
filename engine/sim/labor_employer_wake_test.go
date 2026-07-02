@@ -55,7 +55,7 @@ func TestLaborOffer_WakesEmployerAndSurfacesOffer(t *testing.T) {
 		t.Fatalf("RegisterLaborHandlers: %v", err)
 	}
 
-	res, err := w.Send(sim.SolicitWork("anne", "Prudence Ward", 5, 120, time.Now().UTC()))
+	res, err := w.Send(sim.SolicitWork("anne", "Prudence Ward", 5, nil, 120, time.Now().UTC()))
 	if err != nil {
 		t.Fatalf("SolicitWork: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestLaborOffer_UnaffordableEmployerAutoDeclinedNotWoken(t *testing.T) {
 	}
 
 	// Worker asks 5 coins; the employer holds 2 — can't cover it.
-	res, err := w.Send(sim.SolicitWork("lewis", "Prudence Ward", 5, 120, time.Now().UTC()))
+	res, err := w.Send(sim.SolicitWork("lewis", "Prudence Ward", 5, nil, 120, time.Now().UTC()))
 	if err != nil {
 		t.Fatalf("SolicitWork: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestLaborOffer_AffordableExactRewardStillWoken(t *testing.T) {
 		t.Fatalf("RegisterLaborHandlers: %v", err)
 	}
 
-	res, err := w.Send(sim.SolicitWork("lewis", "Prudence Ward", 5, 120, time.Now().UTC()))
+	res, err := w.Send(sim.SolicitWork("lewis", "Prudence Ward", 5, nil, 120, time.Now().UTC()))
 	if err != nil {
 		t.Fatalf("SolicitWork: %v", err)
 	}

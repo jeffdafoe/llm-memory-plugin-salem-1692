@@ -37,7 +37,7 @@ func TestHiredWorkerPerceivesOwnJob(t *testing.T) {
 
 	// Anne solicits a 2-hour job; Prudence hires her (reward 2, 120 minutes —
 	// the 2h floor is the minimum a worker may offer, LLM-190).
-	res, err := w.Send(sim.SolicitWork("anne", "Prudence Ward", 2, 120, now))
+	res, err := w.Send(sim.SolicitWork("anne", "Prudence Ward", 2, nil, 120, now))
 	if err != nil {
 		t.Fatalf("SolicitWork: %v", err)
 	}

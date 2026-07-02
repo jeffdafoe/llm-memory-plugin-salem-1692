@@ -57,6 +57,7 @@ func handleLaborOfferReceivedWarrants(w *sim.World, evt sim.Event) {
 			LaborID:     offer.LaborID,
 			Worker:      offer.WorkerID,
 			Reward:      offer.Reward,
+			RewardItems: offer.RewardItems,
 			DurationMin: offer.DurationMin,
 			ExpiresAt:   offer.ExpiresAt,
 		},

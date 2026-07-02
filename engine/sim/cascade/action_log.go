@@ -576,6 +576,11 @@ func handleSolicitedWorkActionLog(w *sim.World, evt sim.Event) {
 		"duration_min": received.DurationMin,
 		"labor_id":     uint64(received.LaborID),
 	}
+	// LLM-225: the in-kind reward leg, omitted for a coins-only ask so the
+	// pre-existing row shape is unchanged.
+	if goods := laborRewardItemsPayload(received.RewardItems); goods != nil {
+		payload["reward_items"] = goods
+	}
 	w.AppendActionLogDurable(sim.DurableActionLogRow{
 		ActorID:     received.WorkerID,
 		OccurredAt:  received.At,
@@ -585,6 +590,22 @@ func handleSolicitedWorkActionLog(w *sim.World, evt sim.Event) {
 		HuddleID:    received.HuddleID,
 		Source:      source,
 	})
+}
+
+// laborRewardItemsPayload renders a labor reward's in-kind leg (LLM-225) in
+// the explicit {item,qty} shape the durable payloads use for goods
+// (ItemKindQty has no json tags — the same convention as the paid row's
+// pay_items). Returns nil for a coins-only reward so callers can attach it
+// conditionally and coins-only rows keep their exact pre-LLM-225 shape.
+func laborRewardItemsPayload(items []sim.ItemKindQty) []map[string]any {
+	if len(items) == 0 {
+		return nil
+	}
+	goods := make([]map[string]any, 0, len(items))
+	for _, ri := range items {
+		goods = append(goods, map[string]any{"item": string(ri.Kind), "qty": ri.Qty})
+	}
+	return goods
 }
 
 // handleHiredActionLog appends a row when an accept_work tool call flips a
@@ -623,6 +644,10 @@ func handleHiredActionLog(w *sim.World, evt sim.Event) {
 		"amount":       accepted.Reward,
 		"duration_min": accepted.DurationMin,
 		"labor_id":     uint64(accepted.LaborID),
+	}
+	// LLM-225: the in-kind reward leg, omitted for a coins-only hire.
+	if goods := laborRewardItemsPayload(accepted.RewardItems); goods != nil {
+		payload["reward_items"] = goods
 	}
 	w.AppendActionLogDurable(sim.DurableActionLogRow{
 		ActorID:     accepted.EmployerID,
@@ -685,6 +710,12 @@ func handleLaborResolvedActionLog(w *sim.World, evt sim.Event) {
 		"amount":       resolved.Reward,
 		"duration_min": resolved.DurationMin,
 		"labor_id":     uint64(resolved.LaborID),
+	}
+	// LLM-225: the in-kind reward leg that settled alongside (or instead of)
+	// the coins — the durable audit trail for "did the promised porridge
+	// actually change hands". Omitted for a coins-only reward.
+	if goods := laborRewardItemsPayload(resolved.RewardItems); goods != nil {
+		payload["reward_items"] = goods
 	}
 	w.AppendActionLogDurable(sim.DurableActionLogRow{
 		ActorID:     resolved.WorkerID,

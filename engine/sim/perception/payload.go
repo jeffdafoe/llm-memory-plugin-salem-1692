@@ -736,11 +736,20 @@ type CounterOfferView struct {
 // accept_work/decline_work tool gate (PendingLaborOffers). LaborID is the
 // load-bearing field the employer must echo back into accept_work/decline_work.
 type LaborOfferView struct {
-	LaborID     sim.LaborID
-	Worker      sim.ActorID
+	LaborID sim.LaborID
+	Worker  sim.ActorID
+	// Reward is the coin leg; RewardItems the in-kind leg (goods the
+	// EMPLOYER hands over at settle — LLM-225). At least one is non-empty.
 	Reward      int
-	DurationMin int
-	ExpiresAt   time.Time
+	RewardItems []sim.ItemKindQty
+	// MissingRewardItems is the subset of RewardItems the employer does NOT
+	// currently hold in full, resolved at build time against the subject's
+	// snapshot inventory — the goods half of accept_work's gate-8 mirror
+	// (the coin half stays a render-side Coins comparison, LLM-158). Non-nil
+	// drives the "you do not hold what they ask" decline steer.
+	MissingRewardItems []sim.ItemKindQty
+	DurationMin        int
+	ExpiresAt          time.Time
 }
 
 // LaboringView carries the subject's OWN in-progress job for the self-state
@@ -752,14 +761,16 @@ type LaboringView struct {
 
 // WorkerForMeView carries one of the subject's in-progress jobs as EMPLOYER for
 // the "## Workers currently working for you" cue (LLM-202) — the employer-side
-// mirror of LaboringView. Worker is who's doing the job, Reward the coins owed
-// on completion, Until the work-window deadline so the line can say "about N
-// minutes left." The employer pays nothing until then (settle-at-completion),
-// so this is purely a "the job is covered, don't re-hire or pay again" signal.
+// mirror of LaboringView. Worker is who's doing the job, Reward + RewardItems
+// the pay owed on completion (coins and/or goods — LLM-225), Until the
+// work-window deadline so the line can say "about N minutes left." The employer
+// pays nothing until then (settle-at-completion), so this is purely a "the job
+// is covered, don't re-hire or pay again" signal.
 type WorkerForMeView struct {
-	Worker sim.ActorID
-	Reward int
-	Until  time.Time
+	Worker      sim.ActorID
+	Reward      int
+	RewardItems []sim.ItemKindQty
+	Until       time.Time
 }
 
 // PendingLaborOfferOutView carries the subject's OWN outgoing labor offer that
@@ -769,8 +780,11 @@ type WorkerForMeView struct {
 // it they flail under action pressure. Employer plus the offered terms (the same
 // reward + duration they solicited with) so the line can name what's on the table.
 type PendingLaborOfferOutView struct {
-	Employer    sim.ActorID
+	Employer sim.ActorID
+	// Reward is the coin leg; RewardItems the in-kind leg the worker asked
+	// to be paid in (LLM-225).
 	Reward      int
+	RewardItems []sim.ItemKindQty
 	DurationMin int
 }
 

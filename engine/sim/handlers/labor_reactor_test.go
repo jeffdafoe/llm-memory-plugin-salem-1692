@@ -40,7 +40,7 @@ func armLaborWorker(t *testing.T, w *sim.World, workerID sim.ActorID, registerTi
 
 func solicitWork(t *testing.T, w *sim.World, workerID sim.ActorID, employerName string, reward, durationMin int) {
 	t.Helper()
-	if _, err := w.Send(sim.SolicitWork(workerID, employerName, reward, durationMin, time.Now().UTC())); err != nil {
+	if _, err := w.Send(sim.SolicitWork(workerID, employerName, reward, nil, durationMin, time.Now().UTC())); err != nil {
 		t.Fatalf("SolicitWork: %v", err)
 	}
 }

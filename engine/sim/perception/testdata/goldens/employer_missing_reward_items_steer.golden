@@ -7,10 +7,10 @@
 ## You
 Coins in your purse: 50.
 
-Silence Walker is working a job for you — about 1 hour 30 minutes left; 2 coins owed when it's done.
-That work is already covered and the pay settles on its own when it's finished — don't hire someone else for it or pay again by hand.
-
 ## Around you
-You are inside the Tavern, with Silence Walker.
+You are inside The Inn, with Anne Walker.
 
+## Work offers awaiting your decision
+1. Anne Walker offers to do a job for you for 1 porridge and 2 coins — about 2 hours of work (offer id 1)
+You do not hold the 1 porridge they ask to be paid in, so you cannot pay for this — call decline_work (offer id 1), then use speak to tell them you cannot pay what they ask.
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.

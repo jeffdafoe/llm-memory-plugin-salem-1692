@@ -234,7 +234,7 @@ func TestLaborSolicitUnaffordable_WritesNoRelationshipFacts(t *testing.T) {
 	now := time.Now().UTC()
 
 	// Worker asks 10; the employer holds 2 — auto-declined at mint.
-	res, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, 120, now))
+	res, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, nil, 120, now))
 	if err != nil {
 		t.Fatalf("SolicitWork: %v", err)
 	}

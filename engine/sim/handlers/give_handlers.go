@@ -107,7 +107,7 @@ func DecodeGiveArgs(raw json.RawMessage) (any, error) {
 	if len(args.Give) == 0 {
 		return nil, modelSafef("give: name at least one item to give")
 	}
-	if err := validatePayItemsDecode("give", args.Give); err != nil {
+	if err := validatePayItemsDecode("give", "give", args.Give); err != nil {
 		return nil, err
 	}
 	if n := utf8.RuneCountInString(args.For); n > MaxPayWithItemForChars {
@@ -137,7 +137,7 @@ func HandleGive(in HandlerInput) (sim.Command, error) {
 			return sim.Command{}, modelSafef("give: 'for' contains a disallowed control character at byte offset %d", i)
 		}
 	}
-	giftItems, err := buildPayItemInputs("give", args.Give)
+	giftItems, err := buildPayItemInputs("give", "give", args.Give)
 	if err != nil {
 		return sim.Command{}, err
 	}

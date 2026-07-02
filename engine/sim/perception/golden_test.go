@@ -467,6 +467,25 @@ var perceptionScenarios = []perceptionScenario{
 		build: brokeEmployerCannotPayLaborOffer,
 	},
 	{
+		name: "labor_offer_in_kind_reward",
+		summary: "A worker (Anne Walker) has solicited the subject (Hannah Boggs) for a job paid in kind — 1 porridge " +
+			"plus 2 coins — and the subject holds both legs. The LLM-225 situation: spoken in-kind hire terms ('a bowl " +
+			"of porridge for some help') are now real contract terms, not talk that evaporates at commit (the live " +
+			"Hannah Boggs Inn hires, where the workers ended up buying the promised porridge with their own coins). The " +
+			"golden pins the decision line naming BOTH reward legs via the payment phrase, and the normal " +
+			"accept_work/decline_work footer (the offer is affordable — the employer holds the porridge and the coins).",
+		build: laborOfferInKindReward,
+	},
+	{
+		name: "employer_missing_reward_items_steer",
+		summary: "The same in-kind solicitation, but the subject does NOT hold the asked porridge (coins are ample) — " +
+			"the goods-leg half of the LLM-158 affordability steer (LLM-225). accept_work's gate 8 now spans both legs " +
+			"(employerCanCoverLaborReward), so an accept would only flip the offer to failed_unavailable and the deal " +
+			"would die in silence. The golden pins the missing-goods decline steer ('You do not hold the 1 porridge " +
+			"they ask to be paid in') and the suppressed footer (no affordable offer remains).",
+		build: employerMissingRewardItemsSteer,
+	},
+	{
 		name: "worker_among_household_no_solicit",
 		summary: "Two worker-tagged Walker siblings (Lewis + Anne) stand together in their own home, both jobless — the " +
 			"LLM-157 situation, where housemates solicited each other for work ('I'm looking for work, does anyone need a " +
@@ -3002,6 +3021,79 @@ func brokeEmployerCannotPayLaborOffer() (*sim.Snapshot, sim.ActorID, []sim.Warra
 		ItemKinds: foodDrinkCatalog(),
 	}
 	return snap, ezekielID, nil
+}
+
+// inKindLaborOfferSnapshot builds the shared LLM-225 shape: Anne Walker has
+// solicited Hannah Boggs for a job paid 1 porridge + 2 coins. employerHoldsGoods
+// controls whether Hannah's inventory carries the porridge — true renders the
+// both-legs decision line + normal footer (labor_offer_in_kind_reward), false
+// the missing-goods decline steer (employer_missing_reward_items_steer).
+func inKindLaborOfferSnapshot(employerHoldsGoods bool) (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		hannahID = sim.ActorID("hannah")
+		anneID   = sim.ActorID("anne")
+		inn      = sim.StructureID("inn")
+		huddle   = sim.HuddleID("h1")
+	)
+	published := time.Date(2026, 7, 2, 11, 0, 0, 0, time.UTC)
+	hannah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Hannah Boggs",
+		Role:              "innkeeper",
+		State:             sim.StateIdle,
+		InsideStructureID: inn,
+		CurrentHuddleID:   huddle,
+		Coins:             50,
+		Needs:             map[sim.NeedKey]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"Anne Walker": {}},
+	}
+	if employerHoldsGoods {
+		hannah.Inventory = map[sim.ItemKind]int{"porridge": 3}
+	}
+	anne := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Anne Walker",
+		Role:              "laborer",
+		State:             sim.StateIdle,
+		InsideStructureID: inn,
+		CurrentHuddleID:   huddle,
+		Coins:             1,
+		Needs:             map[sim.NeedKey]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"Hannah Boggs": {}},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:    published,
+		NeedThresholds: sim.NeedThresholds{},
+		Actors:         map[sim.ActorID]*sim.ActorSnapshot{hannahID: hannah, anneID: anne},
+		Structures: map[sim.StructureID]*sim.Structure{
+			inn: plainStructure(inn, "The Inn"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{hannahID: {}, anneID: {}}},
+		},
+		LaborLedger: map[sim.LaborID]*sim.LaborOffer{
+			1: {
+				ID:          1,
+				WorkerID:    anneID,
+				EmployerID:  hannahID,
+				Reward:      2,
+				RewardItems: []sim.ItemKindQty{{Kind: "porridge", Qty: 1}},
+				DurationMin: 120,
+				State:       sim.LaborStatePending,
+				HuddleID:    huddle,
+			},
+		},
+		ItemKinds: foodDrinkCatalog(),
+	}
+	return snap, hannahID, nil
+}
+
+func laborOfferInKindReward() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return inKindLaborOfferSnapshot(true)
+}
+
+func employerMissingRewardItemsSteer() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return inKindLaborOfferSnapshot(false)
 }
 
 // employerWithWorkerOnJob is the LLM-202 employer-side cue fixture: John Ellis the

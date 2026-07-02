@@ -165,15 +165,19 @@ func EvaluateLaborLedgerSweep(now time.Time) Command {
 // employer to the worker and finalizes Completed. Caller guarantees
 // offer.State == Working and now is at or past *offer.WorkingUntil.
 //
-// No coins were held during the window — the transfer happens HERE, at
-// completion (settle-at-completion, not escrow-at-accept). So funds are
-// re-checked authoritatively now: the employer's balance can have drifted
-// across a long window. If the employer is gone, can no longer cover the
-// reward, or paying would overflow the worker's purse, the deal falls
-// through unpaid — terminal FailedUnavailable, no coins move. The worker
-// already did the work; that is the risk of working for someone who turns
-// out unable to pay. Either way the worker is freed first (the work IS
-// finished regardless of whether payment lands).
+// Nothing was held during the window — no coins and no goods (LLM-225's
+// in-kind leg is deliberately NOT escrowed either: the ledger is
+// restart-lossy, so items held against a row a restart destroys would
+// vanish with it). The transfer happens HERE, at completion
+// (settle-at-completion, not escrow-at-accept), so the payment is
+// re-checked authoritatively now: the employer's coins AND promised goods
+// can have drifted across a long window. If the employer is gone, can no
+// longer cover either leg of the reward, or paying would overflow the
+// worker's purse or pack, the deal falls through unpaid — terminal
+// FailedUnavailable, nothing moves. The worker already did the work; that
+// is the risk of working for someone who turns out unable to pay. Either
+// way the worker is freed first (the work IS finished regardless of
+// whether payment lands).
 func settleCompletedLabor(w *World, offer *LaborOffer, now time.Time) {
 	worker := w.Actors[offer.WorkerID]
 	employer := w.Actors[offer.EmployerID]
@@ -195,10 +199,26 @@ func settleCompletedLabor(w *World, offer *LaborOffer, now time.Time) {
 		}
 	}
 
+	// Authoritative payment re-check, both legs (LLM-225): coins + the
+	// in-kind goods promised (employerCanCoverLaborReward — the same
+	// predicate the solicit auto-decline and accept gate 8 use), plus the
+	// worker-side receive-overflow guards. All-or-nothing: a shortfall on
+	// EITHER leg resolves the whole reward unpaid (failed_unavailable,
+	// WorkPerformed=true → the LLM-165 stiffed-worker facts) rather than
+	// part-paying — a partial wage is a new ambiguity the fiction then has
+	// to explain, and the unpaid path already narrates cleanly.
 	canPay := worker != nil &&
 		employer != nil &&
-		buyerCanAfford(employer, offer.Reward) &&
+		employerCanCoverLaborReward(employer, offer) &&
 		worker.Coins <= math.MaxInt-offer.Reward
+	if canPay {
+		for _, ri := range offer.RewardItems {
+			if worker.Inventory[ri.Kind] > math.MaxInt-ri.Qty {
+				canPay = false
+				break
+			}
+		}
+	}
 	if !canPay {
 		if employer == nil || worker == nil {
 			log.Printf("sim/labor: completion of offer %d found worker/employer missing — resolving unpaid", offer.ID)
@@ -207,15 +227,31 @@ func settleCompletedLabor(w *World, offer *LaborOffer, now time.Time) {
 		return
 	}
 
-	// Atomic transfer: the employer pays the worker now.
+	// Atomic transfer: the employer pays the worker now — coins and goods
+	// together. Every leg was validated above (holdings + overflow), so the
+	// applies below cannot fail mid-way. RewardItems kinds are unique by
+	// construction (resolvePayItems rejects duplicate canonical kinds at
+	// solicit), so a plain per-line move is safe; the employer side deletes
+	// on zero to keep inventories sparse (the commitPayTransfer convention).
 	employer.Coins -= offer.Reward
 	worker.Coins += offer.Reward
+	for _, ri := range offer.RewardItems {
+		if remaining := employer.Inventory[ri.Kind] - ri.Qty; remaining > 0 {
+			employer.Inventory[ri.Kind] = remaining
+		} else {
+			delete(employer.Inventory, ri.Kind)
+		}
+		if worker.Inventory == nil {
+			worker.Inventory = make(map[ItemKind]int)
+		}
+		worker.Inventory[ri.Kind] += ri.Qty
+	}
 	finalizeLaborTerminal(w, offer, LaborTerminalStateCompleted, true, now)
 	// LLM-190: if the job ran up to the keeper's closing time (the employer is an
 	// establishment keeper now off shift), the keeper announces the close-out —
 	// "we're shut, your work's done, here's your pay." A job that finished
 	// mid-shift completes silently.
-	announceLaborCloseoutIfShopClosed(w, employer, worker, offer.Reward, now)
+	announceLaborCloseoutIfShopClosed(w, employer, worker, formatPayment(offer.Reward, offer.RewardItems), now)
 }
 
 // reconcileStrandedLaboringOnLoad frees an actor that was checkpointed mid-job

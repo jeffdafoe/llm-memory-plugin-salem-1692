@@ -355,6 +355,7 @@ type LaborOfferWarrantReason struct {
 	LaborID     LaborID
 	Worker      ActorID
 	Reward      int
+	RewardItems []ItemKindQty
 	DurationMin int
 	ExpiresAt   time.Time
 }

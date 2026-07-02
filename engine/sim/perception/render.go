@@ -2199,28 +2199,36 @@ func renderLaborOffers(b *strings.Builder, offers []LaborOfferView, employerCoin
 	anyAffordable, anyUnaffordable := false, false
 	for i, o := range offers {
 		worker := nameOf(o.Worker)
-		unit := "coins"
-		if o.Reward == 1 {
-			unit = "coin"
-		}
-		fmt.Fprintf(b, "%d. %s offers to do a job for you for %d %s — about %s of work (offer id %d)\n",
-			i+1, worker, o.Reward, unit, humanizeWorkMinutes(o.DurationMin), o.LaborID)
+		// The asked pay may be coins, goods the employer holds, or both
+		// (LLM-225) — formatOfferPayment renders whichever legs are present
+		// ("5 coins", "1 porridge", "1 porridge and 2 coins").
+		fmt.Fprintf(b, "%d. %s offers to do a job for you for %s — about %s of work (offer id %d)\n",
+			i+1, worker, formatOfferPayment(o.Reward, o.RewardItems), humanizeWorkMinutes(o.DurationMin), o.LaborID)
 		// A reward the employer can't cover is a doomed accept: accept_work's
-		// funds gate would only flip the offer to failed_unavailable
-		// (buyerCanAfford, labor_commands.go), so the model "accepts" verbally
-		// and the deal dies in silence. Steer the broke employer to decline WITH
-		// a spoken reason instead — naming speak explicitly, because decline_work
-		// (like accept_work) passes in silence, the same reason the all-affordable
-		// footer below names it. Matches the funds gate exactly (Coins < Reward)
-		// so the cue and the substrate never disagree. LLM-158.
-		if employerCoins < o.Reward {
+		// gate 8 would only flip the offer to failed_unavailable
+		// (employerCanCoverLaborReward, labor_commands.go), so the model
+		// "accepts" verbally and the deal dies in silence. Steer the employer
+		// to decline WITH a spoken reason instead — naming speak explicitly,
+		// because decline_work (like accept_work) passes in silence, the same
+		// reason the all-affordable footer below names it. The two checks here
+		// mirror gate 8's two legs exactly — Coins < Reward, and the
+		// build-time MissingRewardItems holdings scan — so the cue and the
+		// substrate never disagree. LLM-158; goods leg LLM-225.
+		shortOnCoins := employerCoins < o.Reward
+		missing := o.MissingRewardItems
+		if shortOnCoins || len(missing) > 0 {
 			anyUnaffordable = true
-			coinUnit := "coins"
-			if employerCoins == 1 {
-				coinUnit = "coin"
+			switch {
+			case shortOnCoins && len(missing) > 0:
+				fmt.Fprintf(b, "You only have %s and do not hold the %s they ask to be paid in, so you cannot pay for this — call decline_work (offer id %d), then use speak to tell them you cannot pay what they ask.\n",
+					coinsPhrase(employerCoins), formatOfferPayment(0, missing), o.LaborID)
+			case len(missing) > 0:
+				fmt.Fprintf(b, "You do not hold the %s they ask to be paid in, so you cannot pay for this — call decline_work (offer id %d), then use speak to tell them you cannot pay what they ask.\n",
+					formatOfferPayment(0, missing), o.LaborID)
+			default:
+				fmt.Fprintf(b, "You only have %s, so you cannot pay for this — call decline_work (offer id %d), then use speak to tell them you have not enough coin to take them on.\n",
+					coinsPhrase(employerCoins), o.LaborID)
 			}
-			fmt.Fprintf(b, "You only have %d %s, so you cannot pay for this — call decline_work (offer id %d), then use speak to tell them you have not enough coin to take them on.\n",
-				employerCoins, coinUnit, o.LaborID)
 			continue
 		}
 		anyAffordable = true
@@ -2275,22 +2283,20 @@ func renderWorkersForMe(b *strings.Builder, workers []WorkerForMeView, nameOf fu
 	}
 	for _, wkr := range workers {
 		worker := nameOf(wkr.Worker)
-		unit := "coins"
-		if wkr.Reward == 1 {
-			unit = "coin"
-		}
+		// The owed pay may be coins, goods, or both (LLM-225).
+		payment := formatOfferPayment(wkr.Reward, wkr.RewardItems)
 		mins := minutesUntil(wkr.Until, renderedAt)
 		if mins <= 0 {
-			fmt.Fprintf(b, "%s is finishing a job for you — almost done; %d %s owed as they finish.\n",
-				worker, wkr.Reward, unit)
+			fmt.Fprintf(b, "%s is finishing a job for you — almost done; %s owed as they finish.\n",
+				worker, payment)
 			continue
 		}
-		fmt.Fprintf(b, "%s is working a job for you — about %s left; %d %s owed when it's done.\n",
-			worker, humanizeWorkMinutes(mins), wkr.Reward, unit)
+		fmt.Fprintf(b, "%s is working a job for you — about %s left; %s owed when it's done.\n",
+			worker, humanizeWorkMinutes(mins), payment)
 	}
 	// Trailing blank line so the following section keeps its separator, matching
 	// the self-state-gap convention (renderNarrativeState / renderVendorOperating).
-	b.WriteString("That work is already covered and settles in coin on its own when it's finished — don't hire someone else for it or pay again by hand.\n\n")
+	b.WriteString("That work is already covered and the pay settles on its own when it's finished — don't hire someone else for it or pay again by hand.\n\n")
 }
 
 // renderPendingLaborOfferOut renders the worker's OWN outgoing labor offer that
@@ -2304,12 +2310,9 @@ func renderPendingLaborOfferOut(b *strings.Builder, offer *PendingLaborOfferOutV
 	if offer == nil {
 		return
 	}
-	unit := "coins"
-	if offer.Reward == 1 {
-		unit = "coin"
-	}
-	fmt.Fprintf(b, "You've offered to work for %s for %d %s (about %s) — your offer stands and it is their move now. There's nothing more to do on it; wait for their answer, say a brief word if you like, then call done().\n",
-		nameOf(offer.Employer), offer.Reward, unit, humanizeWorkMinutes(offer.DurationMin))
+	// The asked pay may be coins, goods, or both (LLM-225).
+	fmt.Fprintf(b, "You've offered to work for %s for %s (about %s) — your offer stands and it is their move now. There's nothing more to do on it; wait for their answer, say a brief word if you like, then call done().\n",
+		nameOf(offer.Employer), formatOfferPayment(offer.Reward, offer.RewardItems), humanizeWorkMinutes(offer.DurationMin))
 }
 
 // renderLaborAffordance renders the free-worker option cue (LLM-26): the
@@ -2319,7 +2322,7 @@ func renderLaborAffordance(b *strings.Builder, canSolicit bool) {
 	if !canSolicit {
 		return
 	}
-	b.WriteString("You take work for pay. If someone here outside your own household or trade has a task you could do and you want the coin, offer your labor with solicit_work — name them, the coins you want, and roughly how long the job will take.\n")
+	b.WriteString("You take work for pay. If someone here outside your own household or trade has a task you could do and you want the pay, offer your labor with solicit_work — name them, the pay you want (coins, goods they hold such as a meal, or both), and roughly how long the job will take.\n")
 }
 
 // renderSeekWorkPlaces lists the town's businesses as move_to destinations for a

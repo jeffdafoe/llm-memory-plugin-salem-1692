@@ -103,11 +103,16 @@ func TestShopClosedForCloseout(t *testing.T) {
 }
 
 func TestLaborCloseoutLine(t *testing.T) {
-	line := strings.ToLower(laborCloseoutLine(5))
+	line := strings.ToLower(laborCloseoutLine(formatPayment(5, nil)))
 	if !strings.Contains(line, "5 coins") {
 		t.Errorf("close-out line %q should name the 5-coin pay", line)
 	}
 	if !strings.Contains(line, "shop shut") || !strings.Contains(line, "work's done") {
 		t.Errorf("close-out line %q should announce closing + work done", line)
+	}
+	// LLM-225: an in-kind reward is handed over in the same breath.
+	line = strings.ToLower(laborCloseoutLine(formatPayment(2, []ItemKindQty{{Kind: "porridge", Qty: 1}})))
+	if !strings.Contains(line, "1 porridge and 2 coins") {
+		t.Errorf("close-out line %q should name both reward legs", line)
 	}
 }
