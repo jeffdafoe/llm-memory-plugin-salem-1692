@@ -45,6 +45,20 @@ func eachVendorOffer(snap *sim.Snapshot, buyerID sim.ActorID, fn func(vendorOffe
 	if snap == nil {
 		return
 	}
+	// LLM-223 farm wholesale tier: farm-tagged sellers sell only to the village
+	// distributor. For every other buyer, drop farm vendors from this scan so
+	// perception never points a non-distributor at a farm — the restock buy
+	// directory AND the satiation/consumption cues both ride this shared scan, so
+	// a hungry or restocking buyer is routed to the distributor (or nowhere) rather
+	// than lured to a farm the PayWithItem backstop then rejects. The distributor
+	// himself still perceives the farms as suppliers. Resolved once for the scan;
+	// an empty buyerID (min-price venue scan in canAffordLeisure) reads as
+	// non-distributor, which is harmless there — that caller only keeps offers at
+	// the tavern venue, never a farm.
+	buyerIsDistributor := false
+	if buyer := snap.Actors[buyerID]; buyer != nil {
+		buyerIsDistributor = sim.ActorIsDistributor(snap.VillageObjects, buyer.WorkStructureID)
+	}
 	for vendorID, vendor := range snap.Actors {
 		if vendor == nil || vendorID == buyerID || vendor.Kind == sim.KindPC {
 			continue
@@ -54,6 +68,9 @@ func eachVendorOffer(snap *sim.Snapshot, buyerID sim.ActorID, fn func(vendorOffe
 		}
 		st := snap.Structures[vendor.WorkStructureID]
 		if st == nil {
+			continue
+		}
+		if !buyerIsDistributor && sim.SellerAtFarm(snap.VillageObjects, vendor.WorkStructureID) {
 			continue
 		}
 		for kind, qty := range vendor.Inventory {
