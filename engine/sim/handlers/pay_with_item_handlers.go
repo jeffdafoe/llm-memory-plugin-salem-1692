@@ -424,7 +424,7 @@ func DecodePayWithItemArgs(raw json.RawMessage) (any, error) {
 	if args.Amount > sim.MaxPayWithItemAmount {
 		return nil, modelSafef("pay_with_item: amount exceeds maximum (got %d, max %d)", args.Amount, sim.MaxPayWithItemAmount)
 	}
-	if err := validatePayItemsDecode("pay_with_item", args.PayItems); err != nil {
+	if err := validatePayItemsDecode("pay_with_item", "pay_items", args.PayItems); err != nil {
 		return nil, err
 	}
 	if args.Amount == 0 && len(args.PayItems) == 0 {
@@ -530,7 +530,7 @@ func HandlePayWithItem(in HandlerInput) (sim.Command, error) {
 		}
 	}
 
-	payItems, err := buildPayItemInputs("pay_with_item", args.PayItems)
+	payItems, err := buildPayItemInputs("pay_with_item", "pay_items", args.PayItems)
 	if err != nil {
 		return sim.Command{}, err
 	}
@@ -752,7 +752,7 @@ func DecodeCounterPayArgs(raw json.RawMessage) (any, error) {
 	if args.Amount > sim.MaxPayWithItemAmount {
 		return nil, modelSafef("counter_pay: amount exceeds maximum (got %d, max %d)", args.Amount, sim.MaxPayWithItemAmount)
 	}
-	if err := validatePayItemsDecode("counter_pay", args.PayItems); err != nil {
+	if err := validatePayItemsDecode("counter_pay", "pay_items", args.PayItems); err != nil {
 		return nil, err
 	}
 	if args.Amount == 0 && len(args.PayItems) == 0 {
@@ -780,7 +780,7 @@ func HandleCounterPay(in HandlerInput) (sim.Command, error) {
 				"counter_pay: message contains a disallowed control character at byte offset %d", i)
 		}
 	}
-	payItems, err := buildPayItemInputs("counter_pay", args.PayItems)
+	payItems, err := buildPayItemInputs("counter_pay", "pay_items", args.PayItems)
 	if err != nil {
 		return sim.Command{}, err
 	}
@@ -918,26 +918,28 @@ func normalizeShortMessage(s string) string {
 // bounds. Trim-emptiness, control-char scans, dup-kind reject, and item
 // resolution are deferred to buildPayItemInputs / the Command Fn (the
 // same split pay_with_item's other fields use). toolName scopes the
-// error messages.
-func validatePayItemsDecode(toolName string, items []payItemArg) error {
+// error messages; fieldName names the tool's actual goods-array arg
+// ("pay_items", "give", "reward_items" — LLM-225) so a weak model can map
+// the error back to the field it sent.
+func validatePayItemsDecode(toolName, fieldName string, items []payItemArg) error {
 	if len(items) > MaxPayWithItemPayItemsHandler {
 		return modelSafef(
-			"%s: pay_items exceeds %d-entry cap (got %d)",
-			toolName, MaxPayWithItemPayItemsHandler, len(items),
+			"%s: %s exceeds %d-entry cap (got %d)",
+			toolName, fieldName, MaxPayWithItemPayItemsHandler, len(items),
 		)
 	}
 	for i, pi := range items {
 		if n := utf8.RuneCountInString(pi.Item); n > MaxPayWithItemItemChars {
 			return modelSafef(
-				"%s: pay_items[%d].item exceeds %d-character cap (got %d characters)",
-				toolName, i, MaxPayWithItemItemChars, n,
+				"%s: %s[%d].item exceeds %d-character cap (got %d characters)",
+				toolName, fieldName, i, MaxPayWithItemItemChars, n,
 			)
 		}
 		if pi.Qty < 1 {
-			return modelSafef("%s: pay_items[%d].qty must be at least 1 (got %d)", toolName, i, pi.Qty)
+			return modelSafef("%s: %s[%d].qty must be at least 1 (got %d)", toolName, fieldName, i, pi.Qty)
 		}
 		if pi.Qty > sim.MaxPayWithItemQty {
-			return modelSafef("%s: pay_items[%d].qty exceeds maximum (got %d, max %d)", toolName, i, pi.Qty, sim.MaxPayWithItemQty)
+			return modelSafef("%s: %s[%d].qty exceeds maximum (got %d, max %d)", toolName, fieldName, i, pi.Qty, sim.MaxPayWithItemQty)
 		}
 	}
 	return nil
@@ -947,8 +949,9 @@ func validatePayItemsDecode(toolName string, items []payItemArg) error {
 // validatePayItemsDecode: it trims each item name, rejects control chars,
 // catches obvious duplicate names statically (the Command Fn does the
 // canonical-kind dedup after resolution), and returns the []sim.PayItemInput
-// the Command consumes. ZBBS-HOME-393.
-func buildPayItemInputs(toolName string, items []payItemArg) ([]sim.PayItemInput, error) {
+// the Command consumes. fieldName names the tool's actual goods-array arg,
+// same as validatePayItemsDecode. ZBBS-HOME-393.
+func buildPayItemInputs(toolName, fieldName string, items []payItemArg) ([]sim.PayItemInput, error) {
 	if len(items) == 0 {
 		return nil, nil
 	}
@@ -957,16 +960,16 @@ func buildPayItemInputs(toolName string, items []payItemArg) ([]sim.PayItemInput
 	for i, pi := range items {
 		item := strings.TrimSpace(pi.Item)
 		if item == "" {
-			return nil, modelSafef("%s: pay_items[%d].item is empty after trim", toolName, i)
+			return nil, modelSafef("%s: %s[%d].item is empty after trim", toolName, fieldName, i)
 		}
 		if idx := indexStrictControlChar(item); idx >= 0 {
 			return nil, modelSafef(
-				"%s: pay_items[%d].item contains a disallowed control character at byte offset %d", toolName, i, idx)
+				"%s: %s[%d].item contains a disallowed control character at byte offset %d", toolName, fieldName, i, idx)
 		}
 		key := strings.ToLower(item)
 		if _, dup := seen[key]; dup {
 			return nil, modelSafef(
-				"%s: %q appears more than once in pay_items — combine it into a single line.", toolName, item)
+				"%s: %q appears more than once in %s — combine it into a single line.", toolName, item, fieldName)
 		}
 		seen[key] = struct{}{}
 		out = append(out, sim.PayItemInput{Item: item, Qty: pi.Qty})

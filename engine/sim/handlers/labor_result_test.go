@@ -36,6 +36,21 @@ func TestCommitResultContent_LaborSteers(t *testing.T) {
 		{
 			name:   "accept_work working → hired + handover steer",
 			vc:     ValidatedCall{Name: "accept_work"},
+			result: sim.LaborAcceptResult{State: sim.LaborStateWorking, WorkerName: "Lewis Walker", Reward: 5, Payment: "5 coins"},
+			want:   "[ok] You hired Lewis Walker — they are at the work now for 5 coins, paid when they finish. Say a brief word, then call done(). Do not accept again.",
+		},
+		{
+			// LLM-225: an in-kind reward names both legs in the hired steer.
+			name:   "accept_work working with in-kind reward → payment phrase in steer",
+			vc:     ValidatedCall{Name: "accept_work"},
+			result: sim.LaborAcceptResult{State: sim.LaborStateWorking, WorkerName: "Anne Walker", Reward: 2, Payment: "1 porridge and 2 coins"},
+			want:   "[ok] You hired Anne Walker — they are at the work now for 1 porridge and 2 coins, paid when they finish. Say a brief word, then call done(). Do not accept again.",
+		},
+		{
+			// Defensive: a result built without the pre-formatted Payment falls
+			// back to the coin leg rather than rendering "for ,".
+			name:   "accept_work working without Payment falls back to coins",
+			vc:     ValidatedCall{Name: "accept_work"},
 			result: sim.LaborAcceptResult{State: sim.LaborStateWorking, WorkerName: "Lewis Walker", Reward: 5},
 			want:   "[ok] You hired Lewis Walker — they are at the work now for 5 coins, paid when they finish. Say a brief word, then call done(). Do not accept again.",
 		},
@@ -49,7 +64,7 @@ func TestCommitResultContent_LaborSteers(t *testing.T) {
 			name:   "accept_work failed_unavailable → honest no-hire outcome",
 			vc:     ValidatedCall{Name: "accept_work"},
 			result: sim.LaborAcceptResult{State: sim.LaborStateFailedUnavailable},
-			want:   "[ok] That couldn't be arranged — one of you was no longer available, they were already at a job, or you couldn't cover the coin.",
+			want:   "[ok] That couldn't be arranged — one of you was no longer available, they were already at a job, or you couldn't cover the pay they asked.",
 		},
 		{
 			name:   "decline_work declined → refusal steer",

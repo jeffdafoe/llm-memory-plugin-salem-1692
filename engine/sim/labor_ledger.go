@@ -22,8 +22,9 @@ import (
 // Super-basic MVP scope: the worker submits {employer, reward, duration};
 // the employer accepts or declines — no counter, no haggle (different
 // terms are re-negotiated in conversation and the worker re-submits).
-// Coins only, no goods. Soliciting is gated to actors carrying the
-// `worker` attribute.
+// The reward may be coins, goods, or both (LLM-225 — "a bowl of porridge
+// for some help" is a real contract, not just talk). Soliciting is gated
+// to actors carrying the `worker` attribute.
 //
 // Persistence: the LaborLedger lives only in the in-memory World — it has
 // NO repo and is intentionally restart-lossy, the same call PayLedger made
@@ -165,9 +166,12 @@ const (
 	// MaxLaborReward caps the reward coins (matches MaxPayWithItemAmount).
 	MaxLaborReward = math.MaxInt32
 
-	// MinLaborReward floors the reward — a labor offer must pay something
-	// (a 0-coin "job" is the free-work hole, the labor analog of the
-	// pay-with-item free-goods reject).
+	// MinLaborReward floors the COIN leg of a reward that carries no goods —
+	// a labor offer must pay something (a pay-nothing "job" is the free-work
+	// hole, the labor analog of the pay-with-item all-zero-offer reject).
+	// Since LLM-225 the reward may instead (or additionally) carry goods
+	// (RewardItems), so the enforced invariant is coins >= 1 OR >= 1 goods
+	// line, not a bare coin floor.
 	MinLaborReward = 1
 )
 
@@ -180,7 +184,16 @@ type LaborOffer struct {
 	WorkerID   ActorID // does the work; solicited the offer
 	EmployerID ActorID // pays the reward; accepts or declines
 
-	Reward      int // coins the employer pays on completion (> 0)
+	// Reward is the coin leg the employer pays on completion; RewardItems is
+	// the in-kind leg — goods (canonical kind + qty, the LLM-105 goods-leg
+	// shape) the employer hands over at the same settle (LLM-225). At least
+	// one leg is non-empty (coins >= MinLaborReward OR >= 1 goods line); both
+	// transfer together, atomically, when the completion sweep settles the
+	// job. Nothing is escrowed: the ledger is restart-lossy, so items held
+	// against a row that a restart destroys would vanish with it — the settle
+	// re-checks the employer holds both legs at completion instead.
+	Reward      int
+	RewardItems []ItemKindQty
 	DurationMin int // minutes the work takes (clamped to [Min,Max]LaborDurationMinutes)
 
 	State LaborLedgerState
@@ -211,12 +224,14 @@ func (w *World) nextLaborSeq() LaborID {
 
 // CloneLaborOffer returns a deep copy so a published snapshot can't reach
 // back into live world state. The value copy handles the scalar fields;
-// the three *time.Time pointers are copied into fresh pointers.
+// the three *time.Time pointers are copied into fresh pointers and the
+// RewardItems slice into a fresh backing array.
 func CloneLaborOffer(o *LaborOffer) *LaborOffer {
 	if o == nil {
 		return nil
 	}
 	c := *o
+	c.RewardItems = cloneItemKindQtys(o.RewardItems)
 	if o.AcceptedAt != nil {
 		t := *o.AcceptedAt
 		c.AcceptedAt = &t

@@ -3331,15 +3331,30 @@ func buildLaborOffersForMe(snap *sim.Snapshot, subject sim.ActorID) []LaborOffer
 		return nil
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	// Employer holdings for the in-kind affordability mirror (LLM-225): the
+	// subject IS the employer here, so their snapshot inventory is the same
+	// map accept_work's gate 8 will check (buyerHoldsPayItems).
+	var employerInv map[sim.ItemKind]int
+	if a := snap.Actors[subject]; a != nil {
+		employerInv = a.Inventory
+	}
 	out := make([]LaborOfferView, 0, len(ids))
 	for _, id := range ids {
 		o := snap.LaborLedger[id]
+		var missing []sim.ItemKindQty
+		for _, ri := range o.RewardItems {
+			if employerInv[ri.Kind] < ri.Qty {
+				missing = append(missing, ri)
+			}
+		}
 		out = append(out, LaborOfferView{
-			LaborID:     o.ID,
-			Worker:      o.WorkerID,
-			Reward:      o.Reward,
-			DurationMin: o.DurationMin,
-			ExpiresAt:   o.ExpiresAt,
+			LaborID:            o.ID,
+			Worker:             o.WorkerID,
+			Reward:             o.Reward,
+			RewardItems:        o.RewardItems,
+			MissingRewardItems: missing,
+			DurationMin:        o.DurationMin,
+			ExpiresAt:          o.ExpiresAt,
 		})
 	}
 	return out
@@ -3403,9 +3418,10 @@ func buildWorkersForMe(snap *sim.Snapshot, subject sim.ActorID) []WorkerForMeVie
 	for _, id := range ids {
 		o := snap.LaborLedger[id]
 		out = append(out, WorkerForMeView{
-			Worker: o.WorkerID,
-			Reward: o.Reward,
-			Until:  *o.WorkingUntil,
+			Worker:      o.WorkerID,
+			Reward:      o.Reward,
+			RewardItems: o.RewardItems,
+			Until:       *o.WorkingUntil,
 		})
 	}
 	return out
@@ -3436,6 +3452,7 @@ func buildPendingLaborOfferOut(snap *sim.Snapshot, subject sim.ActorID) *Pending
 	return &PendingLaborOfferOutView{
 		Employer:    best.EmployerID,
 		Reward:      best.Reward,
+		RewardItems: best.RewardItems,
 		DurationMin: best.DurationMin,
 	}
 }

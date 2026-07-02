@@ -48,12 +48,15 @@ type LaborSolicitResult struct {
 // LaborAcceptResult is AcceptWork's value. On a gate-driven terminal flip
 // (expired / failed) State carries that terminal and WorkingUntil is zero;
 // on a real accept State is Working and WorkingUntil is the completion
-// deadline.
+// deadline. Payment is the pre-formatted reward phrase ("5 coins",
+// "1 porridge and 2 coins" — LLM-225) so the harness steer can name the
+// full terms without re-formatting (formatPayment is sim-internal).
 type LaborAcceptResult struct {
 	ID           LaborID
 	State        LaborLedgerState
 	WorkerName   string
 	Reward       int
+	Payment      string
 	WorkingUntil time.Time
 }
 
@@ -65,17 +68,27 @@ type LaborDeclineResult struct {
 
 // SolicitWork returns the Command for a worker offering their labor to a
 // co-present employer. Pending offer only — the employer resolves it with
-// accept_work / decline_work. Gates first-failure-wins: numeric bounds →
-// worker exists → worker attribute → not-walking → in-conversation →
+// accept_work / decline_work. The reward may be coins, goods the employer
+// holds (rewardItems, the LLM-105 goods-leg shape), or both (LLM-225); at
+// least one leg must be non-empty. Gates first-failure-wins: numeric bounds
+// → worker exists → worker attribute → not-walking → in-conversation →
 // not-already-laboring → scene anchor → employer resolve → not-self → no
-// duplicate pending offer to the same employer.
-func SolicitWork(workerID ActorID, employerName string, reward int, durationMin int, at time.Time) Command {
+// duplicate pending offer to the same employer → goods resolve.
+func SolicitWork(workerID ActorID, employerName string, reward int, rewardItems []PayItemInput, durationMin int, at time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
 			// Numeric defense. SolicitWork is exported — non-handler callers
 			// could pass shapes the decode side rejects.
-			if reward < MinLaborReward {
-				return nil, fmt.Errorf("solicit_work: reward must be at least %d coin (got %d)", MinLaborReward, reward)
+			if reward < 0 {
+				return nil, fmt.Errorf("solicit_work: reward cannot be negative (got %d)", reward)
+			}
+			// The pay-nothing hole: a reward must carry coins, goods, or both.
+			// The coin floor applies only when no goods leg is offered.
+			if reward < MinLaborReward && len(rewardItems) == 0 {
+				return nil, fmt.Errorf(
+					"solicit_work: the reward must be worth something — ask for at least %d coin, or goods via reward_items, or both.",
+					MinLaborReward,
+				)
 			}
 			if reward > MaxLaborReward {
 				return nil, fmt.Errorf("solicit_work: reward exceeds maximum (got %d, max %d)", reward, MaxLaborReward)
@@ -186,6 +199,18 @@ func SolicitWork(workerID ActorID, employerName string, reward int, durationMin 
 				)
 			}
 
+			// Resolve the in-kind reward leg (LLM-225). resolvePayItems is the
+			// shared goods-line resolver (pay_with_item / counter_pay / give):
+			// free-text → canonical kind, duplicate-kind reject, qty bounds, the
+			// LLM-167 labor-token steer, and the service-kind reject. Resolved
+			// LAST among the gates so a solicit that bounces on an earlier gate
+			// (ambiguous employer, duplicate offer) doesn't mint a qty-0
+			// discovery kind for nothing.
+			resolvedRewardItems, err := resolvePayItems(w, rewardItems)
+			if err != nil {
+				return nil, err
+			}
+
 			// Mint the pending offer.
 			id := w.nextLaborSeq()
 			expiresAt := at.Add(LaborLedgerTTLDefault)
@@ -194,6 +219,7 @@ func SolicitWork(workerID ActorID, employerName string, reward int, durationMin 
 				WorkerID:    workerID,
 				EmployerID:  employerID,
 				Reward:      reward,
+				RewardItems: resolvedRewardItems,
 				DurationMin: durationMin,
 				State:       LaborStatePending,
 				HuddleID:    worker.CurrentHuddleID,
@@ -223,7 +249,11 @@ func SolicitWork(workerID ActorID, employerName string, reward int, durationMin 
 			// was no received event, and finalizeLaborTerminal doesn't need them.
 			// recordFacts=false: no conscious decline happened, so no relationship
 			// fact is written (matches AcceptWork's accept-time funds failure).
-			if !buyerCanAfford(employer, reward) {
+			// LLM-225: "can cover" now spans both legs — coins AND the in-kind
+			// goods the worker asked for (employerCanCoverLaborReward), so a
+			// solicit for porridge the employer doesn't hold auto-declines the
+			// same way an unaffordable coin ask does.
+			if !employerCanCoverLaborReward(employer, offer) {
 				state := finalizeLaborTerminalOpts(w, offer, LaborTerminalStateDeclined, false, at, false)
 				return LaborSolicitResult{
 					ID:           id,
@@ -237,6 +267,7 @@ func SolicitWork(workerID ActorID, employerName string, reward int, durationMin 
 				WorkerID:    workerID,
 				EmployerID:  employerID,
 				Reward:      reward,
+				RewardItems: cloneItemKindQtys(resolvedRewardItems),
 				DurationMin: durationMin,
 				SceneID:     sceneID,
 				HuddleID:    worker.CurrentHuddleID,
@@ -325,14 +356,16 @@ func AcceptWork(callerID ActorID, laborID LaborID, at time.Time) Command {
 				return finalizeLaborTerminal(w, offer, LaborTerminalStateFailedUnavailable, false, at), nil
 			}
 
-			// Gate 8: funds (courtesy check, NOT authoritative). No coins move
-			// at accept — the employer→worker transfer settles at completion.
-			// But taking on a job the employer plainly can't pay for right now
-			// is a bad deal, so fail it here rather than let the worker labor
-			// (possibly for hours) toward a payout that was never going to
-			// land. The completion sweep re-checks funds authoritatively, since
-			// the employer's balance can drift across a long work window.
-			if !buyerCanAfford(caller, offer.Reward) {
+			// Gate 8: funds + goods (courtesy check, NOT authoritative). Nothing
+			// moves at accept — the employer→worker transfer settles at
+			// completion. But taking on a job the employer plainly can't pay for
+			// right now — short of coins OR of the promised in-kind goods
+			// (LLM-225) — is a bad deal, so fail it here rather than let the
+			// worker labor (possibly for hours) toward a payout that was never
+			// going to land. The completion sweep re-checks both legs
+			// authoritatively, since the employer's holdings can drift across a
+			// long work window.
+			if !employerCanCoverLaborReward(caller, offer) {
 				return finalizeLaborTerminal(w, offer, LaborTerminalStateFailedUnavailable, false, at), nil
 			}
 
@@ -372,6 +405,7 @@ func AcceptWork(callerID ActorID, laborID LaborID, at time.Time) Command {
 				WorkerID:     offer.WorkerID,
 				EmployerID:   offer.EmployerID,
 				Reward:       offer.Reward,
+				RewardItems:  cloneItemKindQtys(offer.RewardItems),
 				DurationMin:  offer.DurationMin,
 				WorkingUntil: workingUntil,
 				SceneID:      offer.SceneID,
@@ -385,6 +419,7 @@ func AcceptWork(callerID ActorID, laborID LaborID, at time.Time) Command {
 				State:        LaborStateWorking,
 				WorkerName:   worker.DisplayName,
 				Reward:       offer.Reward,
+				Payment:      formatPayment(offer.Reward, offer.RewardItems),
 				WorkingUntil: workingUntil,
 			}, nil
 		},
@@ -479,14 +514,15 @@ func finalizeLaborTerminalOpts(w *World, offer *LaborOffer, terminal LaborTermin
 	// (a hired worker's job vanishing before its window) and previously left no
 	// journal trace, since resolutions were unlogged. acceptedAt/workingUntil are
 	// *time.Time; %v deref-prints the time (or <nil>).
-	log.Printf("sim/labor: finalize offer %d %s->%s worker=%s employer=%s reward=%d acceptedAt=%v workingUntil=%v now=%v workPerformed=%t",
-		offer.ID, priorState, terminal, offer.WorkerID, offer.EmployerID, offer.Reward, offer.AcceptedAt, offer.WorkingUntil, at, workPerformed)
+	log.Printf("sim/labor: finalize offer %d %s->%s worker=%s employer=%s reward=%d rewardItems=%v acceptedAt=%v workingUntil=%v now=%v workPerformed=%t",
+		offer.ID, priorState, terminal, offer.WorkerID, offer.EmployerID, offer.Reward, offer.RewardItems, offer.AcceptedAt, offer.WorkingUntil, at, workPerformed)
 
 	evt := &LaborResolved{
 		LaborID:       offer.ID,
 		WorkerID:      offer.WorkerID,
 		EmployerID:    offer.EmployerID,
 		Reward:        offer.Reward,
+		RewardItems:   cloneItemKindQtys(offer.RewardItems),
 		DurationMin:   offer.DurationMin,
 		TerminalState: terminal,
 		WorkPerformed: workPerformed,
@@ -555,14 +591,19 @@ func recordLaborInteractions(w *World, offer *LaborOffer, terminal LaborTerminal
 			workedMin = m
 		}
 	}
+	// The payment phrase names both legs of the reward — "5 coins",
+	// "1 porridge", "1 porridge and 2 coins" (formatPayment, LLM-225) — so an
+	// in-kind promise is remembered as concretely as a coin one, including in
+	// the stiffed-worker facts.
+	payment := formatPayment(offer.Reward, offer.RewardItems)
 	var workerFact, employerFact string
 	switch workerKind {
 	case InteractionWorked:
-		workerFact, employerFact = laborCompletedFacts(workerName, employerName, offer.Reward, workedMin)
+		workerFact, employerFact = laborCompletedFacts(workerName, employerName, payment, workedMin)
 	case InteractionWorkedUnpaid:
-		workerFact, employerFact = laborUnpaidFacts(workerName, employerName, offer.Reward, workedMin)
+		workerFact, employerFact = laborUnpaidFacts(workerName, employerName, payment, workedMin)
 	case InteractionWorkDeclinedBy:
-		workerFact, employerFact = laborDeclinedFacts(workerName, employerName, offer.Reward)
+		workerFact, employerFact = laborDeclinedFacts(workerName, employerName, payment)
 	}
 
 	if _, err := RecordInteraction(offer.WorkerID, offer.EmployerID, workerKind, workerFact, at).Fn(w); err != nil {
@@ -615,12 +656,12 @@ func humanizeLaborMinutes(min int) string {
 
 // laborCompletedFacts returns the (worker→employer, employer→worker) salient
 // fact texts for a completed, paid job — the labor analogue of payFactText's
-// Paid/PaidBy pair, with the work duration folded in.
-func laborCompletedFacts(workerName, employerName string, reward, durationMin int) (workerFact, employerFact string) {
-	coins := laborCoinsPhrase(reward)
+// Paid/PaidBy pair, with the work duration folded in. payment is the
+// pre-formatted reward phrase (formatPayment — coins, goods, or both).
+func laborCompletedFacts(workerName, employerName, payment string, durationMin int) (workerFact, employerFact string) {
 	dur := humanizeLaborMinutes(durationMin)
-	workerFact = fmt.Sprintf("I worked for %s and earned %s for about %s of work.", employerName, coins, dur)
-	employerFact = fmt.Sprintf("%s worked for me and I paid them %s for about %s of work.", workerName, coins, dur)
+	workerFact = fmt.Sprintf("I worked for %s and earned %s for about %s of work.", employerName, payment, dur)
+	employerFact = fmt.Sprintf("%s worked for me and I paid them %s for about %s of work.", workerName, payment, dur)
 	return workerFact, employerFact
 }
 
@@ -628,23 +669,22 @@ func laborCompletedFacts(workerName, employerName string, reward, durationMin in
 // texts for a job the worker finished but the employer could no longer pay for
 // (the completion-time failed_unavailable). The aggrieved beat pay has no
 // equivalent of — pay settles at accept, so "work done, never paid" can't arise
-// there.
-func laborUnpaidFacts(workerName, employerName string, reward, durationMin int) (workerFact, employerFact string) {
-	coins := laborCoinsPhrase(reward)
+// there. payment names the full promised reward (coins and/or goods), so a
+// worker stiffed of a promised bowl of porridge remembers the porridge.
+func laborUnpaidFacts(workerName, employerName, payment string, durationMin int) (workerFact, employerFact string) {
 	dur := humanizeLaborMinutes(durationMin)
-	workerFact = fmt.Sprintf("I worked for %s for about %s but was never paid the %s I was owed.", employerName, dur, coins)
-	employerFact = fmt.Sprintf("%s worked for me for about %s but I could not pay the %s I owed.", workerName, dur, coins)
+	workerFact = fmt.Sprintf("I worked for %s for about %s but was never paid the %s I was owed.", employerName, dur, payment)
+	employerFact = fmt.Sprintf("%s worked for me for about %s but I could not pay the %s I owed.", workerName, dur, payment)
 	return workerFact, employerFact
 }
 
 // laborDeclinedFacts returns the (worker→employer, employer→worker) salient
 // fact texts for an offer the employer declined — the labor analogue of
-// payDeclinedFactText. No duration (the work never started); the reward names
+// payDeclinedFactText. No duration (the work never started); the payment names
 // the terms that were refused.
-func laborDeclinedFacts(workerName, employerName string, reward int) (workerFact, employerFact string) {
-	coins := laborCoinsPhrase(reward)
-	workerFact = fmt.Sprintf("%s declined my offer to work for them for %s.", employerName, coins)
-	employerFact = fmt.Sprintf("I declined %s's offer to work for me for %s.", workerName, coins)
+func laborDeclinedFacts(workerName, employerName, payment string) (workerFact, employerFact string) {
+	workerFact = fmt.Sprintf("%s declined my offer to work for them for %s.", employerName, payment)
+	employerFact = fmt.Sprintf("I declined %s's offer to work for me for %s.", workerName, payment)
 	return workerFact, employerFact
 }
 
@@ -709,14 +749,14 @@ func clampWorkingUntilToEmployerClose(w *World, employer *Actor, workingUntil, a
 // pattern); the worker rides RecipientIDs so the speech reactor lets it perceive
 // the line. No-op for a non-keeper employer or one still on shift.
 // World-goroutine-only.
-func announceLaborCloseoutIfShopClosed(w *World, employer, worker *Actor, reward int, now time.Time) {
+func announceLaborCloseoutIfShopClosed(w *World, employer, worker *Actor, payment string, now time.Time) {
 	if worker == nil || !shopClosedForCloseout(w, employer, now) {
 		return
 	}
 	w.emit(&Spoke{
 		SpeakerID:    employer.ID,
 		RecipientIDs: []ActorID{worker.ID},
-		Text:         laborCloseoutLine(reward),
+		Text:         laborCloseoutLine(payment),
 		At:           now,
 	})
 }
@@ -740,13 +780,27 @@ func shopClosedForCloseout(w *World, employer *Actor, now time.Time) bool {
 // laborCloseoutLine composes the keeper's closing call to a worker whose job
 // ended because the shop shut for the day — telling them they're done and
 // handing over the pay. Plain modern register, matching the establishment
-// close-up's closingLines; the coin amount is templated, so this is composed in
-// Go rather than drawn from a narration pool.
-func laborCloseoutLine(reward int) string {
+// close-up's closingLines; the payment phrase (coins and/or goods —
+// formatPayment) is templated, so this is composed in Go rather than drawn
+// from a narration pool.
+func laborCloseoutLine(payment string) string {
 	return fmt.Sprintf(
 		"That's the shop shut for the day — your work's done, and well done. Here's your %s, with my thanks.",
-		laborCoinsPhrase(reward),
+		payment,
 	)
+}
+
+// employerCanCoverLaborReward reports whether the employer currently holds
+// BOTH legs of the offer's reward: the coins (buyerCanAfford) and every
+// in-kind goods line (buyerHoldsPayItems) — LLM-225. The single "can the
+// employer pay this" predicate, shared by the three sites that ask it:
+// SolicitWork's LLM-193 affordability auto-decline, AcceptWork's courtesy
+// gate 8, and settleCompletedLabor's authoritative completion re-check.
+// Centralized so the cue, the gates, and the settle can never disagree on
+// what "can cover" means. The ACTION on false stays per-site (auto-decline /
+// terminal flip / unpaid settle), mirroring the buyerCanAfford posture.
+func employerCanCoverLaborReward(employer *Actor, offer *LaborOffer) bool {
+	return buyerCanAfford(employer, offer.Reward) && buyerHoldsPayItems(employer, offer.RewardItems)
 }
 
 // workerHasLiveJob reports whether the worker currently holds a Working

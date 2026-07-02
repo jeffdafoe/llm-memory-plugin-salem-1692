@@ -27,13 +27,41 @@ import (
 // world-state validation runs inside the Command Fn on the world goroutine
 // (labor_commands.go).
 //
-// The labor tools are deliberately minimal — no barter, no consumers, no
-// counter, no message fields. Everything but {employer, reward, duration}
-// is negotiated in conversation.
+// The labor tools are deliberately minimal — no consumers, no counter, no
+// message fields. Everything but {employer, reward, duration} is negotiated
+// in conversation. The one term the schema DOES carry beyond the MVP is the
+// in-kind reward leg (reward_items, LLM-225): spoken hire terms like "a bowl
+// of porridge for some help" must be expressible as enforceable contract
+// terms, or the in-kind leg silently evaporates when the contract commits
+// (the live Hannah Boggs Inn hires — workers bought the promised porridge
+// with their own coins).
 
 // MaxLaborEmployerNameChars caps the employer name field on the
 // model-facing schema. Mirrors MaxPayWithItemNameChars.
 const MaxLaborEmployerNameChars = 100
+
+// laborRewardItemsSchemaFragment is the schema for solicit_work's in-kind
+// reward leg (LLM-225). Structurally identical to payItemsSchemaFragment
+// (same maxItems / rune / qty literals — the shared payItemList decode and
+// validatePayItemsDecode enforce the same bounds), but with the direction
+// REVERSED in the copy: these are goods the EMPLOYER hands over as pay, not
+// goods the caller carries and offers. Reusing the pay fragment verbatim
+// would tell the worker to name goods "you carry", steering the weak model
+// away from the exact porridge-for-help case this field exists for.
+const laborRewardItemsSchemaFragment = `{
+        "type": "array",
+        "maxItems": 8,
+        "items": {
+            "type": "object",
+            "properties": {
+                "item": {"type": "string", "minLength": 1, "maxLength": 64, "description": "Item kind the employer holds and will hand over as pay (e.g. 'porridge', 'bread')."},
+                "qty": {"type": "integer", "minimum": 1, "maximum": 2147483647, "description": "How many of this item you are asking for."}
+            },
+            "required": ["item", "qty"],
+            "additionalProperties": false
+        },
+        "description": "Optional goods you want as pay, handed over by the employer when the work is finished — use this when the agreed pay is a meal or goods rather than (or as well as) coins. The reward must include coins, goods, or both."
+    }`
 
 // ====================================================================
 // solicit_work — worker-side offer creation
@@ -44,12 +72,16 @@ const MaxLaborEmployerNameChars = 100
 //
 // Schema-enforced constraints:
 //   - employer:         minLength 1, maxLength MaxLaborEmployerNameChars
-//   - reward:           integer, minimum MinLaborReward, maximum math.MaxInt32
+//   - reward:           integer, minimum 0, maximum math.MaxInt32 (coins may
+//     be 0 when reward_items carries the payment — the combined-empty reject
+//     is decoder + Command-side, matching the pay family's all-zero-offer rule)
+//   - reward_items:     optional goods leg (LLM-225), payItemsSchemaFragment shape
 //   - duration_minutes: integer, minimum MinLaborDurationMinutes, maximum MaxLaborDurationMinutes
 type SolicitWorkArgs struct {
-	Employer        string `json:"employer"`
-	Reward          int    `json:"reward"`
-	DurationMinutes int    `json:"duration_minutes"`
+	Employer        string      `json:"employer"`
+	Reward          int         `json:"reward"`
+	RewardItems     payItemList `json:"reward_items"`
+	DurationMinutes int         `json:"duration_minutes"`
 }
 
 var solicitWorkSchema = json.RawMessage(`{
@@ -63,10 +95,11 @@ var solicitWorkSchema = json.RawMessage(`{
         },
         "reward": {
             "type": "integer",
-            "minimum": 1,
+            "minimum": 0,
             "maximum": 2147483647,
-            "description": "Coins you want to be paid for the job. Paid to you when the work is finished."
+            "description": "Coins you want to be paid for the job, handed over when the work is finished. May be 0 if you are asking to be paid in goods via reward_items instead — but the reward must include coins, goods, or both."
         },
+        "reward_items": ` + laborRewardItemsSchemaFragment + `,
         "duration_minutes": {
             "type": "integer",
             "minimum": 120,
@@ -79,9 +112,10 @@ var solicitWorkSchema = json.RawMessage(`{
 }`)
 
 const solicitWorkDescription = "Offer to do a job for another villager in your current conversation, for pay. " +
-	"You set who you'll work for (employer), the coins you want (reward), and how long it takes (duration_minutes — a real stretch of work: 2, 4, 6, or 8 hours). " +
+	"You set who you'll work for (employer), the pay you want — coins (reward), goods they hold (reward_items, e.g. a meal), or both — and how long it takes (duration_minutes — a real stretch of work: 2, 4, 6, or 8 hours). " +
 	"This creates a pending offer they must accept or decline. " +
-	"On accept you're paid when the work finishes, and you're occupied with the job the whole time — you get on with it rather than standing about talking. " +
+	"On accept you're paid when the work finishes — the coins and any goods are handed over together then — and you're occupied with the job the whole time; you get on with it rather than standing about talking. " +
+	"If the pay you agreed out loud includes food or goods, name them in reward_items so the bargain is real. " +
 	"What the work actually is, and any back-and-forth on terms, is up to your conversation — re-offer with new terms if they want something different."
 
 // DecodeSolicitWorkArgs parses raw tool-call arguments into a
@@ -118,11 +152,22 @@ func DecodeSolicitWorkArgs(raw json.RawMessage) (any, error) {
 			MaxLaborEmployerNameChars, n,
 		)
 	}
-	if args.Reward < sim.MinLaborReward {
-		return nil, modelSafef("solicit_work: reward must be at least %d (got %d)", sim.MinLaborReward, args.Reward)
+	if args.Reward < 0 {
+		return nil, modelSafef("solicit_work: reward cannot be negative (got %d)", args.Reward)
+	}
+	// The pay-nothing hole (LLM-225): the reward must carry coins, goods, or
+	// both. The coin floor only applies when no goods leg is offered.
+	if args.Reward < sim.MinLaborReward && len(args.RewardItems) == 0 {
+		return nil, modelSafef(
+			"solicit_work: the reward must be worth something — ask for at least %d coin, or goods via reward_items, or both",
+			sim.MinLaborReward,
+		)
 	}
 	if args.Reward > sim.MaxLaborReward {
 		return nil, modelSafef("solicit_work: reward exceeds maximum (got %d, max %d)", args.Reward, sim.MaxLaborReward)
+	}
+	if err := validatePayItemsDecode("solicit_work", "reward_items", args.RewardItems); err != nil {
+		return nil, err
 	}
 	if args.DurationMinutes < sim.MinLaborDurationMinutes {
 		return nil, modelSafef("solicit_work: duration_minutes must be at least %d (got %d)", sim.MinLaborDurationMinutes, args.DurationMinutes)
@@ -152,12 +197,17 @@ func HandleSolicitWork(in HandlerInput) (sim.Command, error) {
 		return sim.Command{}, modelSafef(
 			"solicit_work: employer contains a disallowed control character at byte offset %d", i)
 	}
+	rewardItems, err := buildPayItemInputs("solicit_work", "reward_items", args.RewardItems)
+	if err != nil {
+		return sim.Command{}, err
+	}
 
 	now := time.Now().UTC()
 	return withHuddleBootstrap(in.ActorID, now, sim.SolicitWork(
 		in.ActorID,
 		employer,
 		args.Reward,
+		rewardItems,
 		args.DurationMinutes,
 		now,
 	)), nil
@@ -186,8 +236,8 @@ var acceptWorkSchema = json.RawMessage(`{
 }`)
 
 const acceptWorkDescription = "Accept a pending work offer from a worker in your current conversation. " +
-	"At acceptance the engine verifies you're both still in the same conversation and you can afford the reward — if a check fails the offer flips to a terminal failed state and nobody is hired. " +
-	"On success the reward is set aside from your coins now, the worker starts the job, and they're paid when the work finishes."
+	"At acceptance the engine verifies you're both still in the same conversation and that you hold the offered reward — the coins and any goods asked for — and if a check fails the offer flips to a terminal failed state and nobody is hired. " +
+	"On success the worker starts the job; nothing is taken from you now, but the reward is handed over when the work finishes, so you must still hold it then."
 
 // DecodeAcceptWorkArgs parses raw args into an AcceptWorkArgs.
 func DecodeAcceptWorkArgs(raw json.RawMessage) (any, error) {
