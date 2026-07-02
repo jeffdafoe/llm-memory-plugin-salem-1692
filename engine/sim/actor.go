@@ -665,6 +665,15 @@ type Actor struct {
 	DegenStage       DegeneracyStage
 	DegenVisits      []DegenVisit
 
+	// StaleWake is the per-ambient-warrant-kind staleness-decay ledger
+	// (LLM-233, engine/sim/stale_wake.go): for each kind, the situation
+	// fingerprint at its last emitted tick, the consecutive same-fingerprint
+	// emit streak, and the last emit time. The reactor defers an all-ambient
+	// cycle whose every kind has already been paid for under the current
+	// fingerprint. Ephemeral — wiped on LoadWorld like the pacing state
+	// above; nil until the first ambient emit.
+	StaleWake map[WarrantKind]*StaleWakeEntry
+
 	// inFlightSourceKeys is the set of WarrantSourceKeys consumed into the
 	// actor's current in-flight tick attempt — recorded at ReactorTickDue
 	// emit, consulted by tryStampWarrant's in-flight dedup path, and
@@ -990,6 +999,13 @@ func CloneActor(a *Actor) *Actor {
 	}
 	if a.DegenVisits != nil {
 		cp.DegenVisits = append([]DegenVisit(nil), a.DegenVisits...)
+	}
+	if a.StaleWake != nil {
+		cp.StaleWake = make(map[WarrantKind]*StaleWakeEntry, len(a.StaleWake))
+		for k, v := range a.StaleWake {
+			e := *v
+			cp.StaleWake[k] = &e
+		}
 	}
 	if a.inFlightSourceKeys != nil {
 		cp.inFlightSourceKeys = make(map[WarrantSourceKey]struct{}, len(a.inFlightSourceKeys))

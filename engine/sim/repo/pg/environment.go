@@ -250,6 +250,15 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.DegeneracyOscillationMinTransitions = parseIntSetting(values, "degeneracy_oscillation_min_transitions", 0)
 	s.DegeneracyOscillationMaxDistinct = parseIntSetting(values, "degeneracy_oscillation_max_distinct", 0)
 
+	// Staleness decay for level-triggered warrants (LLM-233,
+	// engine/sim/stale_wake.go). ON by default — the gate keys on an exact
+	// situation-fingerprint equality (not a heuristic) and any real change or
+	// salient warrant lifts it instantly. Set stale_wake_decay_base_seconds
+	// to 0 to disable. The cap falls back to 30m (owned by the resolver in
+	// stale_wake.go) when left 0.
+	s.StaleWakeDecayBase = parseDurationSetting(values, "stale_wake_decay_base_seconds", time.Minute)
+	s.StaleWakeDecayCap = parseDurationSetting(values, "stale_wake_decay_cap_minutes", 0)
+
 	// Idle backstop.
 	s.IdleBackstopThreshold = parseDurationSetting(values, "idle_backstop_threshold_minutes", 30*time.Minute)
 	s.IdleBackstopSweepInterval = parseDurationSetting(values, "idle_backstop_sweep_interval_minutes", 5*time.Minute)
