@@ -281,7 +281,7 @@ func TestBuildTradeValue_ProducedCostFromWholesale(t *testing.T) {
 	}
 	var b strings.Builder
 	renderTradeValue(&b, v)
-	if !strings.Contains(b.String(), "the makings run you nearly 1 coin each — price above that or you lose coin.") {
+	if !strings.Contains(b.String(), "the makings run you nearly 1 coin each.") {
 		t.Errorf("missing makings-cost clause:\n%s", b.String())
 	}
 }

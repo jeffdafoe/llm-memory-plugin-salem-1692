@@ -374,9 +374,10 @@ var perceptionScenarios = []perceptionScenario{
 			"cue previously gave a producer no cost anchor, so she could price below cost unknowing (live: 1-coin " +
 			"porridge against an 0.8-coin makings cost). The golden pins the makings clause: inputs priced from catalog " +
 			"wholesale with no purchase history (8 coins a batch), spoken per-unit as 'nearly 1 coin each' — the engine " +
-			"does the division and rounds the prose UP, never down to a break-even-erasing 'about 1' — with the " +
-			"price-above-it stake. Pairs with keeper_reselling_in_company (the resale cost basis) and " +
-			"smith_bartering_at_tavern (the no-inputs producer, no makings clause).",
+			"does the division and rounds the prose UP, never down to a break-even-erasing 'about 1'. Stated as a fact " +
+			"with no pricing directive (LLM-227) — the NPC decides what to do with its cost. Pairs with " +
+			"keeper_reselling_in_company (the resale cost basis) and smith_bartering_at_tavern (the no-inputs producer, " +
+			"no makings clause).",
 		build: innkeeperPricingWithMakingsCost,
 	},
 	{
@@ -2538,7 +2539,7 @@ func keeperResellingInCompany() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) 
 // an 0.8-coin makings cost). The golden pins the makings clause: with no purchase
 // history the inputs price from catalog wholesale (3×1 + 5×1 = 8 a batch), and 8/10
 // is spoken as "nearly 1 coin each" — rounded UP in prose, never down to a
-// break-even-erasing "about 1" — with the price-above-it stake closing the line.
+// break-even-erasing "about 1". A fact with no pricing directive (LLM-227).
 func innkeeperPricingWithMakingsCost() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	const (
 		hannahID = sim.ActorID("hannah")
