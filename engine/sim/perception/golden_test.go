@@ -188,6 +188,24 @@ func TestGoldensRestockNeverTargetsRememberedShutSupplier(t *testing.T) {
 	}
 }
 
+// TestGoldensNeverCoachSpeakingAtCompany is the LLM-220 cross-scenario
+// invariant: no rendered situation coaches the actor to speak at whoever is
+// present. The old co-presence clause ("— speak to start conversing with them")
+// fired on every arrival and pushed NPCs into unprompted monologues at any
+// co-present actor, PCs included (the live Josiah-at-the-Tavern cold-open).
+// Naming the company is legibility; telling the actor to speak is compulsion.
+func TestGoldensNeverCoachSpeakingAtCompany(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			out := renderScenario(sc)
+			if strings.Contains(out, "speak to start conversing") {
+				t.Errorf("scenario %q: co-presence line coaches speaking — presence must be stated neutrally (LLM-220):\n%s", sc.name, out)
+			}
+		})
+	}
+}
+
 // perceptionScenarios is the (growing) matrix. Seeded from LLM-106 with two
 // situations: a keeper alone at its post, and a tired keeper on shift at its post.
 // Each new live (a)-class failure should add a scenario here (and, where it states
