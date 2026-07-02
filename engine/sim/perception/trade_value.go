@@ -131,25 +131,29 @@ func buildTradeValue(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 				costQty = 1
 			}
 			for _, in := range recipe.Inputs {
-				unitCost, priced := 0, false
-				if units, coins := buyerRecentPurchases(snap, actorID, in.Item, restockSalesWindow); units > 0 {
-					unitCost = (coins + units/2) / units
-					priced = true
+				unitCost := 0
+				// History prices by CEILING division, unlike paidUnit's
+				// nearest-rounding: paidUnit reports what was paid, this feeds a
+				// don't-sell-below-this floor, where rounding a bulk-bought cheap
+				// input (1 coin for 10 milk) down to a free ingredient silently
+				// understates the cost the clause exists to reveal. Zero-coin
+				// history is no price signal — fall through to the catalog.
+				if units, coins := buyerRecentPurchases(snap, actorID, in.Item, restockSalesWindow); units > 0 && coins > 0 {
+					unitCost = (coins + units - 1) / units
 				} else if inRecipe := snap.Recipes[in.Item]; inRecipe != nil {
 					unitCost = inRecipe.WholesalePrice
 					if unitCost <= 0 {
 						unitCost = inRecipe.RetailPrice
 					}
-					priced = unitCost > 0
 				}
-				if !priced {
+				if unitCost <= 0 {
 					costFloor = true
 					continue
 				}
 				costBatch += in.Qty * unitCost
 			}
 			if costBatch <= 0 {
-				// Nothing priceable (or an all-free history) — no useful cost signal.
+				// No input was priceable — no useful cost signal, omit the clause.
 				costQty, costFloor = 0, false
 			}
 		}
@@ -249,6 +253,9 @@ func coinsPhrase(n int) string {
 // ("nearly N+1") so approximation never understates cost — the failure mode this
 // cue guards against is pricing below cost, not above it.
 func costEachPhrase(batch, qty int) string {
+	if batch <= 0 || qty <= 0 {
+		return "" // defensive: render gates on both being positive already
+	}
 	whole, rem := batch/qty, batch%qty
 	switch {
 	case rem == 0:

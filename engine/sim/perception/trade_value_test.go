@@ -319,6 +319,44 @@ func TestBuildTradeValue_ProducedCostPurchaseHistoryWins(t *testing.T) {
 	}
 }
 
+// TestBuildTradeValue_ProducedCostCheapBulkHistoryNotFree: purchase history whose
+// per-unit cost rounds below 1 coin (1 coin for 10 milk) must NOT price the input as
+// free — history prices by ceiling division, so the input still costs 1 each and the
+// makings clause renders. Pins the code_review blocking case: nearest-rounding here
+// silently erased a known positive cost, the exact understatement the clause guards
+// against. 3 milk x 1 + 5 water x 1 (wholesale) = 8 per 10.
+func TestBuildTradeValue_ProducedCostCheapBulkHistoryNotFree(t *testing.T) {
+	subj := &sim.ActorSnapshot{RestockPolicy: tvProducePolicy("porridge")}
+	published := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	buys := sim.NewRingBuffer[sim.PriceObservation](4)
+	buys.Push(sim.PriceObservation{BuyerID: "hannah", Amount: 1, Qty: 10, Consumers: 1, At: published.Add(-24 * time.Hour)})
+	snap := &sim.Snapshot{
+		PublishedAt: published,
+		Actors:      map[sim.ActorID]*sim.ActorSnapshot{"hannah": subj},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"porridge": {OutputItem: "porridge", OutputQty: 10, WholesalePrice: 1, RetailPrice: 2,
+				Inputs: []sim.RecipeInput{{Item: "milk", Qty: 3}, {Item: "water", Qty: 5}}},
+			"milk":  {OutputItem: "milk", OutputQty: 1, WholesalePrice: 1, RetailPrice: 2},
+			"water": {OutputItem: "water", OutputQty: 1, WholesalePrice: 1, RetailPrice: 1},
+		},
+		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+			{SellerID: "dairy", Item: "milk"}: buys,
+		},
+	}
+	v := buildTradeValue(snap, "hannah", subj, true)
+	if v == nil || len(v.Items) != 1 {
+		t.Fatalf("want 1 item, got %+v", v)
+	}
+	if got := v.Items[0]; got.CostBatch != 8 || got.CostFloor {
+		t.Fatalf("cheap bulk history must ceil to 1/unit (CostBatch=8, no floor), got %+v", got)
+	}
+	var b strings.Builder
+	renderTradeValue(&b, v)
+	if !strings.Contains(b.String(), "the makings run you nearly 1 coin each") {
+		t.Errorf("makings clause must not vanish on cheap bulk history:\n%s", b.String())
+	}
+}
+
 // TestBuildTradeValue_ProducedCostUnpriceableInputFloor: an input with no purchase
 // history and no catalog price is left out of the sum, and the clause is qualified
 // as a floor ("at least") rather than silently understating the cost.
@@ -344,6 +382,38 @@ func TestBuildTradeValue_ProducedCostUnpriceableInputFloor(t *testing.T) {
 	renderTradeValue(&b, v)
 	if !strings.Contains(b.String(), "the makings run you at least 6 coins each") {
 		t.Errorf("missing floor-qualified makings clause:\n%s", b.String())
+	}
+}
+
+// TestBuildTradeValue_ProducedCostFractionalFloor: when the priced part of the cost
+// is itself fractional (1 coin of priced inputs per 10-unit batch) AND an unpriceable
+// input flags the floor, the "at least" phrase uses the whole-coin CEILING of the
+// known part — "at least 1 coin each", not "at least 0". Deliberately a conservative
+// warning rather than a strict mathematical floor (the known floor is 0.1/unit): the
+// clause guards against underpricing, and the true cost includes the unpriced input
+// anyway. Pins the behavior as intentional (code_review round 1).
+func TestBuildTradeValue_ProducedCostFractionalFloor(t *testing.T) {
+	subj := &sim.ActorSnapshot{RestockPolicy: tvProducePolicy("gruel")}
+	snap := &sim.Snapshot{
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{"a": subj},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"gruel": {OutputItem: "gruel", OutputQty: 10, WholesalePrice: 1, RetailPrice: 2,
+				Inputs: []sim.RecipeInput{{Item: "water", Qty: 1}, {Item: "mystery", Qty: 1}}},
+			"water": {OutputItem: "water", OutputQty: 1, WholesalePrice: 1, RetailPrice: 1},
+			// "mystery" has no recipe row — unpriceable, flags the floor.
+		},
+	}
+	v := buildTradeValue(snap, "a", subj, true)
+	if v == nil || len(v.Items) != 1 {
+		t.Fatalf("want 1 item, got %+v", v)
+	}
+	if got := v.Items[0]; got.CostBatch != 1 || got.CostQty != 10 || !got.CostFloor {
+		t.Fatalf("want CostBatch=1 CostQty=10 floor=true, got %+v", got)
+	}
+	var b strings.Builder
+	renderTradeValue(&b, v)
+	if !strings.Contains(b.String(), "the makings run you at least 1 coin each") {
+		t.Errorf("fractional floor should ceil to 'at least 1 coin each':\n%s", b.String())
 	}
 }
 
@@ -383,6 +453,8 @@ func TestCostEachPhrase(t *testing.T) {
 		{batch: 11, qty: 10, want: "a little over 1 coin each"},
 		{batch: 15, qty: 10, want: "nearly 2 coins each"},
 		{batch: 25, qty: 10, want: "nearly 3 coins each"},
+		{batch: 0, qty: 10, want: ""}, // defensive guards — render gates on both
+		{batch: 8, qty: 0, want: ""},  // being positive, but the helper must not panic
 	}
 	for _, tt := range tests {
 		if got := costEachPhrase(tt.batch, tt.qty); got != tt.want {
