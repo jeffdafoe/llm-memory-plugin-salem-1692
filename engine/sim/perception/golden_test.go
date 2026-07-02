@@ -145,6 +145,49 @@ func TestGoldensConversationLinesCarryIntervalStamps(t *testing.T) {
 	}
 }
 
+// TestGoldensRestockNeverTargetsRememberedShutSupplier is the LLM-216 cross-scenario
+// invariant: within the "## Restocking" section of any scenario, a structure the
+// subject remembers finding shut (a live ObservedClosed memory) must never appear as
+// a "(structure_id: <id>)" walk-to target. A shut supplier is a dead end the weak
+// model toured on (Josiah's every-tick move_to loop among shut farms), so the restock
+// builder DROPS it rather than annotating it. Runs over the whole matrix so a future
+// restock cue change can't reintroduce a shut supplier as a target for any situation,
+// not just the one keeper_restock_drops_shut_keeps_open_supplier scenario pins.
+// Non-vacuous: that scenario renders a restock section while remembering James Farm
+// shut, so the check actually exercises a shut structure.
+func TestGoldensRestockNeverTargetsRememberedShutSupplier(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, _ := sc.build()
+			a := snap.Actors[actorID]
+			if a == nil {
+				return
+			}
+			_, section, found := strings.Cut(renderScenario(sc), "## Restocking\n")
+			if !found {
+				return // no restock section in this situation — invariant N/A here
+			}
+			// Bound the scan to the restock section by cutting at the next markdown
+			// header, NOT the first blank line — a future intra-section blank line would
+			// otherwise hide a bad remembered-shut target lower in the same section
+			// (code_review). The section runs to the next "## " or end of prompt.
+			if idx := strings.Index(section, "\n## "); idx >= 0 {
+				section = section[:idx]
+			}
+			for structureID := range snap.Structures {
+				if !businessRememberedShut(snap, a, structureID) {
+					continue
+				}
+				token := "(structure_id: " + string(structureID) + ")"
+				if strings.Contains(section, token) {
+					t.Errorf("scenario %q: the restock section advertises remembered-shut supplier %q as a move target — a shut supplier is a dead end and must be dropped (LLM-216)", sc.name, token)
+				}
+			}
+		})
+	}
+}
+
 // perceptionScenarios is the (growing) matrix. Seeded from LLM-106 with two
 // situations: a keeper alone at its post, and a tired keeper on shift at its post.
 // Each new live (a)-class failure should add a scenario here (and, where it states
@@ -673,6 +716,211 @@ var perceptionScenarios = []perceptionScenario{
 			"here (the offer is Working, not Pending). A regression that dropped the cue resurfaces the blind re-hire in the diff.",
 		build: employerWithWorkerOnJob,
 	},
+	{
+		name: "broke_keeper_shut_and_unaffordable_suppliers_no_restock",
+		summary: "LLM-216, the live Josiah Thorne case: a broke (0 coins) general-store keeper whose bought-in carrots " +
+			"and milk are both empty stands alone at his store on shift. His carrot supplier (James Farm) he remembers " +
+			"finding SHUT; his milk supplier (Ellis Farm) is open but its remembered price (4 coins) is beyond his empty " +
+			"purse. Before the fix the '## Restocking' cue handed him BOTH farms as move_to targets — annotating James " +
+			"'found it shut up' yet still steering there, and listing an Ellis he couldn't pay — and he toured them every " +
+			"tick instead of tending his shop and earning. The golden pins that NO '## Restocking' section renders: the " +
+			"shut supplier is dropped and the unaffordable one is dropped, so with no actionable buy path both items are " +
+			"omitted. The matrix-wide guard is TestGoldensRestockNeverTargetsRememberedShutSupplier.",
+		build: brokeKeeperShutAndUnaffordableSuppliersNoRestock,
+	},
+	{
+		name: "keeper_restock_drops_shut_keeps_open_supplier",
+		summary: "LLM-216 shut-drop, section-present half: a general-store keeper with coin (30) is low on carrots and has " +
+			"TWO carrot suppliers — Bell Farm (open, ~3 coins, affordable) and James Farm (remembered SHUT). The golden pins " +
+			"that the '## Restocking' cue renders and lists ONLY Bell Farm as the move_to target: the shut James Farm is " +
+			"dropped (not annotated 'found it shut up' as before), so the keeper is never routed to the dead end while a live " +
+			"supplier is available. Makes TestGoldensRestockNeverTargetsRememberedShutSupplier non-vacuous (a rendered restock " +
+			"section with a remembered-shut structure in the fixture). Pairs with " +
+			"broke_keeper_shut_and_unaffordable_suppliers_no_restock (the whole-section suppression half).",
+		build: keeperRestockDropsShutKeepsOpenSupplier,
+	},
+}
+
+// brokeKeeperShutAndUnaffordableSuppliersNoRestock is the LLM-216 live fixture:
+// Josiah Thorne, a broke (0 coins) general-store keeper with empty carrot and milk
+// stock, stands alone at his store on shift. His only carrot supplier (James Farm)
+// he remembers finding shut; his only milk supplier (Ellis Farm) is open but its
+// remembered price (4 coins) is beyond his empty purse. Both suppliers are present
+// as resolvable vendor structures — so WITHOUT the LLM-216 drops the restock cue
+// would list both as move_to targets (the every-tick tour). With them, the shut
+// James Farm and the unaffordable Ellis Farm are both dropped, and an item with no
+// actionable buy path (no surviving walk-to supplier, no co-present seller) is
+// omitted — so the golden carries no "## Restocking" section at all. Clock-free: the
+// shut memory and the price history are stamped relative to PublishedAt, and the
+// render path reads no wall clock.
+func brokeKeeperShutAndUnaffordableSuppliersNoRestock() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		josiahID  = sim.ActorID("josiah")
+		jamesID   = sim.ActorID("james")
+		ellisID   = sim.ActorID("ellis")
+		store     = sim.StructureID("general_store")
+		jamesFarm = sim.StructureID("james_farm")
+		ellisFarm = sim.StructureID("ellis_farm")
+	)
+	start, end := 360, 1080 // 06:00-18:00
+	now := 720              // 12:00 — on shift, at the store
+	published := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	josiah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Josiah Thorne",
+		Role:              "shopkeeper",
+		State:             sim.StateIdle,
+		Pos:               sim.TilePos{X: 10, Y: 10},
+		WorkStructureID:   store,
+		InsideStructureID: store,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             0,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"carrots": 0, "milk": 0},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "carrots", Source: sim.RestockSourceBuy, Max: 12},
+			{Item: "milk", Source: sim.RestockSourceBuy, Max: 12},
+		}},
+		// He went to James Farm and found it shut; Ellis Farm he has no shut memory of.
+		Observed: sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
+			{StructureID: jamesFarm, Condition: sim.ObservedClosed}: published.Add(-time.Hour),
+		}),
+	}
+	james := &sim.ActorSnapshot{
+		Kind:            sim.KindNPCStateful,
+		DisplayName:     "James Fuller",
+		State:           sim.StateIdle,
+		Pos:             sim.TilePos{X: 400, Y: 400},
+		WorkStructureID: jamesFarm,
+		Inventory:       map[sim.ItemKind]int{"carrots": 40},
+	}
+	ellis := &sim.ActorSnapshot{
+		Kind:            sim.KindNPCStateful,
+		DisplayName:     "Ellis Ward",
+		State:           sim.StateIdle,
+		Pos:             sim.TilePos{X: 420, Y: 420},
+		WorkStructureID: ellisFarm,
+		Inventory:       map[sim.ItemKind]int{"milk": 40},
+	}
+	// Josiah's buyer-side price history: 6 coins/carrot from James, 4 coins/milk from
+	// Ellis — both beyond his empty purse (the affordability drop), and James is shut
+	// on top of that.
+	carrotBuys := sim.NewRingBuffer[sim.PriceObservation](8)
+	carrotBuys.Push(sim.PriceObservation{BuyerID: josiahID, Amount: 6, Qty: 1, Consumers: 1, At: published.Add(-2 * 24 * time.Hour)})
+	milkBuys := sim.NewRingBuffer[sim.PriceObservation](8)
+	milkBuys.Push(sim.PriceObservation{BuyerID: josiahID, Amount: 4, Qty: 1, Consumers: 1, At: published.Add(-1 * 24 * time.Hour)})
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			josiahID: josiah, jamesID: james, ellisID: ellis,
+		},
+		Structures: map[sim.StructureID]*sim.Structure{
+			store:     plainStructure(store, "General Store"),
+			jamesFarm: plainStructure(jamesFarm, "James Farm"),
+			ellisFarm: plainStructure(ellisFarm, "Ellis Farm"),
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"carrots": {Name: "carrots", DisplayLabel: "carrots", Category: sim.ItemCategoryFood},
+			"milk":    {Name: "milk", DisplayLabel: "milk", Category: sim.ItemCategoryDrink},
+		},
+		RestockReorderPct: 25,
+		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+			{SellerID: jamesID, Item: "carrots"}: carrotBuys,
+			{SellerID: ellisID, Item: "milk"}:    milkBuys,
+		},
+	}
+	return snap, josiahID, nil
+}
+
+// keeperRestockDropsShutKeepsOpenSupplier is the LLM-216 section-present fixture: a
+// coin-holding keeper (Thomas Bishop, 30 coins) is low on carrots and has two carrot
+// suppliers — Bell Farm (open, remembered price ~3 coins, affordable) and James Farm
+// (remembered shut). With the shut James Farm dropped and the affordable Bell Farm
+// kept, the "## Restocking" cue renders and lists ONLY Bell Farm as the walk-to
+// target — the visible half of the shut-drop, and the fixture that keeps
+// TestGoldensRestockNeverTargetsRememberedShutSupplier non-vacuous (a rendered restock
+// section carrying a remembered-shut structure). Clock-free: the shut memory and price
+// history are stamped relative to PublishedAt.
+func keeperRestockDropsShutKeepsOpenSupplier() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		thomasID  = sim.ActorID("thomas")
+		bellID    = sim.ActorID("bell")
+		jamesID   = sim.ActorID("james")
+		store     = sim.StructureID("general_store")
+		bellFarm  = sim.StructureID("bell_farm")
+		jamesFarm = sim.StructureID("james_farm")
+	)
+	start, end := 360, 1080 // 06:00-18:00
+	now := 720              // 12:00 — on shift, at the store
+	published := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	thomas := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Thomas Bishop",
+		Role:              "shopkeeper",
+		State:             sim.StateIdle,
+		Pos:               sim.TilePos{X: 10, Y: 10},
+		WorkStructureID:   store,
+		InsideStructureID: store,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             30,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"carrots": 2},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "carrots", Source: sim.RestockSourceBuy, Max: 12},
+		}},
+		// He remembers James Farm shut; Bell Farm he does not.
+		Observed: sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
+			{StructureID: jamesFarm, Condition: sim.ObservedClosed}: published.Add(-time.Hour),
+		}),
+	}
+	bell := &sim.ActorSnapshot{
+		Kind:            sim.KindNPCStateful,
+		DisplayName:     "Bell Farmer",
+		State:           sim.StateIdle,
+		Pos:             sim.TilePos{X: 400, Y: 400},
+		WorkStructureID: bellFarm,
+		Inventory:       map[sim.ItemKind]int{"carrots": 40},
+	}
+	james := &sim.ActorSnapshot{
+		Kind:            sim.KindNPCStateful,
+		DisplayName:     "James Fuller",
+		State:           sim.StateIdle,
+		Pos:             sim.TilePos{X: 420, Y: 420},
+		WorkStructureID: jamesFarm,
+		Inventory:       map[sim.ItemKind]int{"carrots": 40},
+	}
+	// Buyer-side price history: ~3 coins/carrot at Bell (affordable on 30 coins), ~6 at
+	// James (which is shut anyway).
+	bellBuys := sim.NewRingBuffer[sim.PriceObservation](8)
+	bellBuys.Push(sim.PriceObservation{BuyerID: thomasID, Amount: 3, Qty: 1, Consumers: 1, At: published.Add(-2 * 24 * time.Hour)})
+	jamesBuys := sim.NewRingBuffer[sim.PriceObservation](8)
+	jamesBuys.Push(sim.PriceObservation{BuyerID: thomasID, Amount: 6, Qty: 1, Consumers: 1, At: published.Add(-2 * 24 * time.Hour)})
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			thomasID: thomas, bellID: bell, jamesID: james,
+		},
+		Structures: map[sim.StructureID]*sim.Structure{
+			store:     plainStructure(store, "General Store"),
+			bellFarm:  plainStructure(bellFarm, "Bell Farm"),
+			jamesFarm: plainStructure(jamesFarm, "James Farm"),
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"carrots": {Name: "carrots", DisplayLabel: "carrots", Category: sim.ItemCategoryFood},
+		},
+		RestockReorderPct: 25,
+		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+			{SellerID: bellID, Item: "carrots"}:  bellBuys,
+			{SellerID: jamesID, Item: "carrots"}: jamesBuys,
+		},
+	}
+	return snap, thomasID, nil
 }
 
 // buyerKeptConsumeRemainderReconciled is the LLM-188 buyer-POV fixture: Anne

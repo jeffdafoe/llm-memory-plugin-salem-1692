@@ -43,8 +43,10 @@ type RestockingView struct {
 
 // RestockItemView is one low `buy` item the reseller could replenish: its label,
 // current on-hand quantity, the cap it restocks toward, and the suppliers
-// selling it. Vendors may be empty — the item still surfaces (the reseller knows
-// it's low) but with no actionable "buy at X" destination this tick.
+// selling it. buildRestocking only emits an item that has at least one actionable
+// buy path — a co-present seller, or a reachable, open, affordable walk-to
+// supplier; an item with neither is omitted rather than surfaced as a dead-end
+// cue the weak model would tour on (LLM-216).
 type RestockItemView struct {
 	ItemLabel  string
 	CurrentQty int
@@ -113,11 +115,6 @@ type RestockVendor struct {
 	StructureLabel string // "Thorne's General Store" — where the reseller walks to
 	StructureID    sim.StructureID
 	CostText       string // per-buyer last-paid "~3 coins", or "" when no price is on record
-
-	// Shut is true when the reseller has a live experiential memory of finding
-	// this supplier shut (no keeper) within the decay window — render annotates
-	// the line so the model deprioritizes the trip. ZBBS-HOME-353.
-	Shut bool
 }
 
 // buildRestocking builds the restock view for actorSnap, or nil when the actor
@@ -153,11 +150,21 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 		salesUnits, salesCoins := sellerRecentSales(snap, actorID, e.Item, restockSalesWindow)
 		buyCost := buyerRecentSpend(snap, actorID, e.Item, restockSalesWindow)
 		coName, coID := coPresentSellerForItem(snap, actorID, actorSnap, e.Item)
+		vendors := findItemVendors(snap, actorID, actorSnap, e.Item)
+		// LLM-216: omit an item with no actionable buy path — no co-present seller to
+		// transact with here-and-now, and no reachable, open, affordable walk-to
+		// supplier (findItemVendors drops the shut and the unaffordable). A broke or
+		// dead-ended keeper is no longer handed an unactionable restock cue it would
+		// tour on the wasted-move loop (the live Josiah Thorne shut-farm case); the
+		// item returns the moment a supplier opens or the purse can cover one.
+		if len(vendors) == 0 && coName == "" {
+			continue
+		}
 		items = append(items, RestockItemView{
 			ItemLabel:                     itemDisplayLabel(snap, e.Item),
 			CurrentQty:                    current,
 			Cap:                           cap,
-			Vendors:                       findItemVendors(snap, actorID, actorSnap, e.Item),
+			Vendors:                       vendors,
 			CoPresentSeller:               coName,
 			PendingOfferToCoPresentSeller: coID != "" && hasPendingOfferTo(snap, actorID, coID, e.Item),
 			AffordableQty:                 affordable,
@@ -352,6 +359,12 @@ func buyerRecentSpend(snap *sim.Snapshot, buyerID sim.ActorID, item sim.ItemKind
 // the shared structural-vendorship scan (eachVendorOffer, consumable_vendors.go),
 // the same supplier-resolution path the satiation/recovery consumable cues use.
 //
+// It drops two kinds of non-destination before returning (LLM-216, mirroring the
+// seek-work directory and the need-redirect affordability skip): a supplier the
+// buyer remembers finding shut, and one whose remembered price the buyer's purse
+// can't cover — both are unactionable walk-to targets the weak model would
+// otherwise tour (the live Josiah Thorne shut-farm move_to loop).
+//
 // Dedupe-by-structure: the LLM only needs a destination — move_to(structure_id)
 // then pay_with_item resolves which co-present seller actually transacts — so two
 // NPCs working the same structure and both holding the item collapse to one cue
@@ -377,8 +390,29 @@ func findItemVendors(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *sim.Act
 	if len(best) == 0 {
 		return nil
 	}
+	coins := buyerSnap.Coins
 	out := make([]RestockVendor, 0, len(best))
 	for structureID, p := range best {
+		// LLM-216: drop a supplier the buyer remembers finding shut, mirroring the
+		// seek-work directory (buildSeekWorkPlaces). Annotating it — the old
+		// ZBBS-HOME-353 / LLM-126 "found it shut up" posture — left the weak model
+		// touring the dead ends (Josiah's every-tick move_to loop among shut farms).
+		// The shut memory is experiential and TTL-decayed, so the supplier reappears
+		// once it lapses (he'd go there and find a keeper), preserving the retry the
+		// annotation aimed for without the wasted trips in between.
+		if businessRememberedShut(snap, buyerSnap, structureID) {
+			continue
+		}
+		// LLM-216: drop a supplier the buyer can't afford, mirroring the need-redirect
+		// affordability skip (needRedirectFor, build.go). A REMEMBERED price above the
+		// purse names an unactionable destination; an unknown price (0, never bought
+		// there) is kept — patronage earns the number, so the buyer walks over and
+		// learns it (and can still barter goods on arrival). A broke keeper with a
+		// KNOWN-price supplier (the live Josiah case: 0 coins, ~4/~6 farms) thus drops
+		// it, and the cue self-heals the moment he earns.
+		if price := buyerLastPaidCoins(snap, buyerID, p.vendorID, itemKind); price > 0 && coins < price {
+			continue
+		}
 		out = append(out, RestockVendor{
 			StructureLabel: vendorStructureLabel(p.structure),
 			StructureID:    structureID,
@@ -387,12 +421,10 @@ func findItemVendors(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *sim.Act
 			// calling pay_with_item — ZBBS-HOME-386). With "", renderRestocking
 			// omits the cost clause entirely; the header carries the action.
 			CostText: buyerLastPaidText(snap, buyerID, p.vendorID, itemKind, ""),
-			Shut:     businessRememberedShut(snap, buyerSnap, structureID),
 		})
 	}
-	// Alphabetical for deterministic output. A supplier the buyer remembers finding
-	// shut is annotated (closedBusinessAnnotation), not demoted — the omniscient
-	// live-asleep sink was retired with ClosedNow (LLM-126).
+	// Alphabetical for deterministic output over the surviving suppliers (the shut
+	// and the unaffordable were dropped above).
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].StructureLabel != out[j].StructureLabel {
 			return out[i].StructureLabel < out[j].StructureLabel
@@ -529,6 +561,10 @@ func renderRestocking(b *strings.Builder, v *RestockingView) {
 				seller, sanitizeInline(it.ItemLabel), seller, sanitizeInline(string(it.kind)), headroom)
 			continue
 		}
+		// Defensive: buildRestocking omits an item that has no co-present seller and
+		// no surviving walk-to supplier (LLM-216), so this branch is unreachable in
+		// the assembled prompt — it keeps renderRestocking total for a directly
+		// constructed view (unit tests) rather than emitting a bare capacity line.
 		if len(it.Vendors) == 0 {
 			b.WriteString(" No supplier nearby is currently holding stock.\n")
 			continue
@@ -546,13 +582,6 @@ func renderRestocking(b *strings.Builder, v *RestockingView) {
 			}
 			if vd.CostText != "" {
 				fmt.Fprintf(b, ", %s", vd.CostText)
-			}
-			// The decaying experiential memory of finding this supplier shut — no
-			// keeper tending it, now including an abed keeper (the capture gates on
-			// availability, LLM-126). Replaces the old omniscient live-asleep marker:
-			// the buyer only "knows" it was shut if it actually went there.
-			if vd.Shut {
-				b.WriteString(closedBusinessAnnotation)
 			}
 			b.WriteString("\n")
 		}

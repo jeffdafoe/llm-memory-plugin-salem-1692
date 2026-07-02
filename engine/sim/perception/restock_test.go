@@ -65,23 +65,20 @@ func TestBuildRestocking_AboveThreshold_Nil(t *testing.T) {
 	}
 }
 
-func TestBuildRestocking_LowStockNoVendor(t *testing.T) {
+// TestBuildRestocking_LowStockNoVendorOmitted — LLM-216. A low `buy` item with no
+// supplier anywhere (nobody sells it) and no co-present seller has no actionable
+// buy path, so buildRestocking omits it rather than surfacing a dead-end capacity
+// line the weak model would fixate on. With the only low item omitted, the whole
+// section is nil.
+func TestBuildRestocking_LowStockNoVendorOmitted(t *testing.T) {
 	subj := &sim.ActorSnapshot{Inventory: map[sim.ItemKind]int{"ale": 3}, RestockPolicy: buyPolicy("ale", 20)} // 15%
 	snap := &sim.Snapshot{
 		Actors:            map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj},
 		ItemKinds:         restockCatalog(),
 		RestockReorderPct: 25,
 	}
-	v := buildRestocking(snap, "merchant", subj)
-	if v == nil || len(v.Items) != 1 {
-		t.Fatalf("want 1 low item, got %+v", v)
-	}
-	it := v.Items[0]
-	if it.ItemLabel != "ale" || it.CurrentQty != 3 || it.Cap != 20 {
-		t.Errorf("item view = %+v, want ale 3/20", it)
-	}
-	if len(it.Vendors) != 0 {
-		t.Errorf("want no vendors (none holding stock), got %+v", it.Vendors)
+	if v := buildRestocking(snap, "merchant", subj); v != nil {
+		t.Errorf("want nil — a low item with no actionable supplier is omitted, got %+v", v)
 	}
 }
 
@@ -349,9 +346,12 @@ func TestBuildRestocking_CoPresentSeller_Deterministic(t *testing.T) {
 }
 
 // TestBuildRestocking_VendorExclusions: self, PC suppliers, no-workplace, and
-// unresolvable-structure suppliers are all excluded.
+// unresolvable-structure suppliers are all excluded. Asserted on findItemVendors
+// directly — with every supplier excluded, buildRestocking would omit the whole
+// item (LLM-216: no actionable buy path), so the vendor-resolution result is what
+// this test is really about.
 func TestBuildRestocking_VendorExclusions(t *testing.T) {
-	subj := &sim.ActorSnapshot{Inventory: map[sim.ItemKind]int{"ale": 1}, RestockPolicy: buyPolicy("ale", 20)}
+	subj := &sim.ActorSnapshot{Coins: 20, Inventory: map[sim.ItemKind]int{"ale": 1}, RestockPolicy: buyPolicy("ale", 20)}
 	// PC holding ale — excluded (PCs don't sell through the NPC commerce path).
 	pcSeller := &sim.ActorSnapshot{Kind: sim.KindPC, WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}}
 	// No workplace — excluded.
@@ -366,12 +366,12 @@ func TestBuildRestocking_VendorExclusions(t *testing.T) {
 		ItemKinds:         restockCatalog(),
 		RestockReorderPct: 25,
 	}
-	v := buildRestocking(snap, "merchant", subj)
-	if v == nil || len(v.Items) != 1 {
-		t.Fatalf("want the low item, got %+v", v)
+	if vds := findItemVendors(snap, "merchant", subj, "ale"); len(vds) != 0 {
+		t.Errorf("all suppliers should be excluded, got %+v", vds)
 	}
-	if len(v.Items[0].Vendors) != 0 {
-		t.Errorf("all suppliers should be excluded, got %+v", v.Items[0].Vendors)
+	// With no resolvable supplier and no co-present seller, the item is omitted.
+	if v := buildRestocking(snap, "merchant", subj); v != nil {
+		t.Errorf("want nil — no actionable supplier means the item is omitted, got %+v", v)
 	}
 }
 
@@ -399,7 +399,7 @@ func TestBuildRestocking_ProduceEntriesIgnored(t *testing.T) {
 // lowest VendorID (so the per-buyer price hint is stable). Runs many times to
 // catch map-order nondeterminism.
 func TestFindItemVendors_DedupeByStructure(t *testing.T) {
-	subj := &sim.ActorSnapshot{Inventory: map[sim.ItemKind]int{"ale": 1}, RestockPolicy: buyPolicy("ale", 20)}
+	subj := &sim.ActorSnapshot{Coins: 20, Inventory: map[sim.ItemKind]int{"ale": 1}, RestockPolicy: buyPolicy("ale", 20)}
 	// Two brewers at the same structure; "anders" (< "bramble") is the rep.
 	anders := &sim.ActorSnapshot{WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}}
 	bramble := &sim.ActorSnapshot{WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}}
@@ -430,7 +430,7 @@ func TestFindItemVendors_DedupeByStructure(t *testing.T) {
 }
 
 func TestBuildRestocking_PriceFromPriceBook(t *testing.T) {
-	subj := &sim.ActorSnapshot{Inventory: map[sim.ItemKind]int{"ale": 1}, RestockPolicy: buyPolicy("ale", 20)}
+	subj := &sim.ActorSnapshot{Coins: 20, Inventory: map[sim.ItemKind]int{"ale": 1}, RestockPolicy: buyPolicy("ale", 20)}
 	supplier := &sim.ActorSnapshot{WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}}
 	pb := sim.NewRingBuffer[sim.PriceObservation](4)
 	pb.Push(sim.PriceObservation{BuyerID: "merchant", Amount: 2, Qty: 1, Consumers: 1, At: time.Now().UTC()})
@@ -494,9 +494,14 @@ func TestBuildRestocking_AffordabilityDeterministicOnTimestampTie(t *testing.T) 
 	pbAnders.Push(sim.PriceObservation{BuyerID: "merchant", Amount: 10, Qty: 1, Consumers: 1, At: at}) // 10/unit → 10 affordable
 	pbBramble := sim.NewRingBuffer[sim.PriceObservation](4)
 	pbBramble.Push(sim.PriceObservation{BuyerID: "merchant", Amount: 5, Qty: 1, Consumers: 1, At: at}) // 5/unit → 20 affordable
+	// One resolvable, affordable supplier (anders at 10/unit ≤ 100 coins) so the item
+	// has an actionable buy path and survives; AffordableQty reads the PriceBook, not
+	// the vendor list, so the timestamp-tie determinism is unaffected.
+	anders := &sim.ActorSnapshot{WorkStructureID: "abbey", Inventory: map[sim.ItemKind]int{"ale": 40}}
 	snap := &sim.Snapshot{
-		Actors:    map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj},
-		ItemKinds: restockCatalog(),
+		Actors:     map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj, "anders": anders},
+		Structures: map[sim.StructureID]*sim.Structure{"abbey": {ID: "abbey", DisplayName: "Abbey Brewhouse"}},
+		ItemKinds:  restockCatalog(),
 		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
 			{SellerID: "anders", Item: "ale"}:  pbAnders,
 			{SellerID: "bramble", Item: "ale"}: pbBramble,
@@ -627,17 +632,19 @@ func TestRenderRestocking_NoPriceOmitsCost(t *testing.T) {
 	}
 }
 
-// --- experiential remembered-shut (LLM-126) ---------------------------
+// --- experiential remembered-shut drop (LLM-216) ----------------------
 
-// TestBuildRestocking_RememberedShutSupplierNotDemoted — LLM-126, decision 1(a). A
-// supplier the buyer remembers finding shut (a decaying ObservedClosed memory) is
-// flagged Shut but keeps its natural (alphabetical) position rather than being sunk
-// below an open one: the omniscient live-asleep read AND its open-before-closed sort
-// sink were retired together, so a remembered-shut supplier is annotated, not
-// demoted. A supplier the buyer has never visited carries no flag at all.
-func TestBuildRestocking_RememberedShutSupplierNotDemoted(t *testing.T) {
+// TestBuildRestocking_DropsRememberedShutSupplier — LLM-216. A supplier the buyer
+// remembers finding shut (a decaying ObservedClosed memory) is DROPPED from the
+// walk-to list, mirroring the seek-work directory. The old "annotate, don't demote"
+// posture (LLM-126) left the weak model touring the dead ends (Josiah's every-tick
+// move_to loop among shut farms). An open supplier the buyer has never visited
+// survives (unknown price → no affordability skip). With the shut Abbey gone, only
+// the open Brewery remains.
+func TestBuildRestocking_DropsRememberedShutSupplier(t *testing.T) {
 	now := time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)
 	subj := &sim.ActorSnapshot{
+		Coins:         20, // not broke; prices are unknown anyway, so affordability isn't in play
 		Inventory:     map[sim.ItemKind]int{"ale": 2},
 		RestockPolicy: buyPolicy("ale", 20),
 		// He remembers the Abbey (alphabetically first) shut; the Brewery he does not.
@@ -658,17 +665,60 @@ func TestBuildRestocking_RememberedShutSupplierNotDemoted(t *testing.T) {
 		RestockReorderPct: 25,
 	}
 	v := buildRestocking(snap, "merchant", subj)
-	if v == nil || len(v.Items) != 1 || len(v.Items[0].Vendors) != 2 {
-		t.Fatalf("want 2 supplier cues, got %+v", v)
+	if v == nil || len(v.Items) != 1 || len(v.Items[0].Vendors) != 1 {
+		t.Fatalf("want the shut Abbey dropped and only the open Brewery left, got %+v", v)
 	}
-	vds := v.Items[0].Vendors
-	// Alphabetical by label (Abbey Brewhouse < The Brewery); the remembered-shut
-	// Abbey is NOT sunk below the open Brewery.
-	if vds[0].StructureID != "abbey" || !vds[0].Shut {
-		t.Errorf("remembered-shut Abbey must keep its alphabetical lead (not demoted), got first = %+v", vds[0])
+	if vd := v.Items[0].Vendors[0]; vd.StructureID != "brewery" {
+		t.Errorf("surviving supplier should be the open Brewery, got %+v", vd)
 	}
-	if vds[1].StructureID != "brewery" || vds[1].Shut {
-		t.Errorf("the un-remembered Brewery must follow and not be flagged shut, got second = %+v", vds[1])
+}
+
+// TestBuildRestocking_DropsUnaffordableSupplier — LLM-216. A supplier whose
+// REMEMBERED price the buyer's purse can't cover is dropped, mirroring the
+// need-redirect affordability skip (needRedirectFor); an unknown price (never bought
+// there) is kept — patronage earns the number, so the buyer walks over and learns it
+// (and may barter on arrival). A broke keeper with a lone known-price supplier thus
+// gets no restock item (the live Josiah 0-coins case), and it returns once his purse
+// covers the price.
+func TestBuildRestocking_DropsUnaffordableSupplier(t *testing.T) {
+	priced := func() *sim.RingBuffer[sim.PriceObservation] {
+		buf := sim.NewRingBuffer[sim.PriceObservation](8)
+		// He last paid this seller 6 coins for 1 ale.
+		buf.Push(sim.PriceObservation{BuyerID: "merchant", Amount: 6, Qty: 1, Consumers: 1, At: time.Date(2026, 5, 29, 12, 0, 0, 0, time.UTC)})
+		return buf
+	}
+	mk := func(coins int, withPrice bool) *sim.Snapshot {
+		subj := &sim.ActorSnapshot{Coins: coins, Inventory: map[sim.ItemKind]int{"ale": 2}, RestockPolicy: buyPolicy("ale", 20)}
+		supplier := &sim.ActorSnapshot{WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}}
+		snap := &sim.Snapshot{
+			PublishedAt:       time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC),
+			Actors:            map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj, "brewer": supplier},
+			Structures:        map[sim.StructureID]*sim.Structure{"brewery": {ID: "brewery", DisplayName: "The Brewery"}},
+			ItemKinds:         restockCatalog(),
+			RestockReorderPct: 25,
+		}
+		if withPrice {
+			snap.PriceBook = map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+				{SellerID: "brewer", Item: "ale"}: priced(),
+			}
+		}
+		return snap
+	}
+
+	// Broke (0 < 6) → the lone known-price supplier is unaffordable → item omitted.
+	broke := mk(0, true)
+	if v := buildRestocking(broke, "merchant", broke.Actors["merchant"]); v != nil {
+		t.Errorf("a broke keeper's lone known-price supplier is unaffordable → section nil, got %+v", v)
+	}
+	// Purse covers the price (6 >= 6) → supplier kept.
+	flush := mk(6, true)
+	if v := buildRestocking(flush, "merchant", flush.Actors["merchant"]); v == nil || len(v.Items) != 1 || len(v.Items[0].Vendors) != 1 {
+		t.Errorf("a keeper who can cover the remembered price keeps the supplier, got %+v", v)
+	}
+	// Unknown price (never bought there) is kept even when broke — walk-and-learn.
+	brokeUnknown := mk(0, false)
+	if v := buildRestocking(brokeUnknown, "merchant", brokeUnknown.Actors["merchant"]); v == nil || len(v.Items) != 1 || len(v.Items[0].Vendors) != 1 {
+		t.Errorf("an unknown-price supplier is kept even for a broke keeper (walk-and-learn), got %+v", v)
 	}
 }
 
@@ -723,7 +773,7 @@ func TestRenderRestocking_HeaderNeutral(t *testing.T) {
 // excluded from all three.
 func TestBuildRestocking_RecentSalesUnits(t *testing.T) {
 	now := time.Date(2026, 6, 23, 12, 0, 0, 0, time.UTC)
-	subj := &sim.ActorSnapshot{Inventory: map[sim.ItemKind]int{"ale": 2}, RestockPolicy: buyPolicy("ale", 20)}
+	subj := &sim.ActorSnapshot{Coins: 20, Inventory: map[sim.ItemKind]int{"ale": 2}, RestockPolicy: buyPolicy("ale", 20)}
 	// merchant-as-SELLER ring for ale: a 2×3 = 6-unit sale (12 coins) and a solo
 	// 4-unit sale (8 coins) in window, plus a stale 99-unit sale 10 days back.
 	pb := sim.NewRingBuffer[sim.PriceObservation](20)
@@ -735,9 +785,14 @@ func TestBuildRestocking_RecentSalesUnits(t *testing.T) {
 	buyPB := sim.NewRingBuffer[sim.PriceObservation](20)
 	buyPB.Push(sim.PriceObservation{BuyerID: "merchant", Amount: 50, Qty: 6, Consumers: 1, At: now.Add(-9 * 24 * time.Hour)})
 	buyPB.Push(sim.PriceObservation{BuyerID: "merchant", Amount: 7, Qty: 1, Consumers: 1, At: now.Add(-3 * time.Hour)})
+	// That supplier as a resolvable, affordable vendor (last paid 7 ≤ 20 coins) so the
+	// low item has an actionable buy path and surfaces (LLM-216); the sell-through and
+	// cost figures under test read the price book, not the vendor list.
+	supplierActor := &sim.ActorSnapshot{WorkStructureID: "supplyDepot", Inventory: map[sim.ItemKind]int{"ale": 40}}
 	snap := &sim.Snapshot{
 		PublishedAt: now,
-		Actors:      map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj},
+		Actors:      map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj, "supplier": supplierActor},
+		Structures:  map[sim.StructureID]*sim.Structure{"supplyDepot": {ID: "supplyDepot", DisplayName: "Supply Depot"}},
 		ItemKinds:   restockCatalog(),
 		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
 			{SellerID: "merchant", Item: "ale"}: pb,
@@ -766,12 +821,17 @@ func TestBuildRestocking_RecentSalesUnits(t *testing.T) {
 // stays silent rather than asserting a rate from someone else's book.
 func TestBuildRestocking_RecentSalesUnits_NoSellerHistory(t *testing.T) {
 	now := time.Date(2026, 6, 23, 12, 0, 0, 0, time.UTC)
-	subj := &sim.ActorSnapshot{Inventory: map[sim.ItemKind]int{"ale": 2}, RestockPolicy: buyPolicy("ale", 20)}
+	subj := &sim.ActorSnapshot{Coins: 20, Inventory: map[sim.ItemKind]int{"ale": 2}, RestockPolicy: buyPolicy("ale", 20)}
 	pb := sim.NewRingBuffer[sim.PriceObservation](20)
 	pb.Push(sim.PriceObservation{BuyerID: "merchant", Amount: 4, Qty: 4, Consumers: 1, At: now.Add(-1 * time.Hour)})
+	// The other party as a resolvable, affordable vendor so the low item surfaces
+	// (LLM-216); RecentSalesUnits under test reads the merchant-as-SELLER ring, which
+	// has no entry here — the point of the test.
+	elseActor := &sim.ActorSnapshot{WorkStructureID: "elseStore", Inventory: map[sim.ItemKind]int{"ale": 40}}
 	snap := &sim.Snapshot{
 		PublishedAt: now,
-		Actors:      map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj},
+		Actors:      map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj, "someone_else": elseActor},
+		Structures:  map[sim.StructureID]*sim.Structure{"elseStore": {ID: "elseStore", DisplayName: "Else Store"}},
 		ItemKinds:   restockCatalog(),
 		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
 			{SellerID: "someone_else", Item: "ale"}: pb,

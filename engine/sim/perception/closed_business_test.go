@@ -9,8 +9,10 @@ import (
 )
 
 // closed_business_test.go — ZBBS-HOME-353 surface half: the decay-checked
-// businessRememberedShut helper and the annotation it drives in the restock +
-// satiation vendor cues.
+// businessRememberedShut helper. It drives a DROP in the restock supplier list
+// (LLM-216 — a shut supplier is not an actionable walk-to target) and an
+// ANNOTATION in the satiation vendor cue (a shut consumable seller is deprioritized,
+// not dropped, since a felt need still wants the closest source).
 
 func TestBusinessRememberedShut_Decay(t *testing.T) {
 	now := time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)
@@ -46,11 +48,17 @@ func TestBusinessRememberedShut_Decay(t *testing.T) {
 	}
 }
 
-// TestRenderRestocking_ShutAnnotation: a remembered-shut supplier gets the
-// in-world annotation; a fresh one does not.
-func TestRenderRestocking_ShutAnnotation(t *testing.T) {
+// TestBuildRestocking_ShutSupplierDropped — LLM-216. The restock path DROPS a
+// supplier the buyer remembers finding shut (it no longer annotates it "found it
+// shut up" — that ZBBS-HOME-353/LLM-126 posture left the weak model touring the dead
+// ends). When the shut brewery is the only supplier, the item has no actionable buy
+// path and the whole section is omitted; without the memory the open brewery
+// surfaces normally. (The satiation cue still annotates — see
+// TestRenderSatiation_ShutAnnotation.)
+func TestBuildRestocking_ShutSupplierDropped(t *testing.T) {
 	now := time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)
 	subj := &sim.ActorSnapshot{
+		Coins:         20, // not broke; the brewery price is unknown, so only the shut-drop is in play
 		Inventory:     map[sim.ItemKind]int{"ale": 2},
 		RestockPolicy: buyPolicy("ale", 20),
 		Observed: sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
@@ -59,30 +67,22 @@ func TestRenderRestocking_ShutAnnotation(t *testing.T) {
 	}
 	supplier := &sim.ActorSnapshot{WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}}
 	snap := &sim.Snapshot{
-		PublishedAt: now,
-		Actors:      map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj, "brewer": supplier},
-		Structures:  map[sim.StructureID]*sim.Structure{"brewery": {ID: "brewery", DisplayName: "The Brewery"}},
-		ItemKinds:   restockCatalog(),
-
+		PublishedAt:       now,
+		Actors:            map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj, "brewer": supplier},
+		Structures:        map[sim.StructureID]*sim.Structure{"brewery": {ID: "brewery", DisplayName: "The Brewery"}},
+		ItemKinds:         restockCatalog(),
 		RestockReorderPct: 25,
 	}
-	v := buildRestocking(snap, "merchant", subj)
-	if v == nil || len(v.Items) != 1 || len(v.Items[0].Vendors) != 1 || !v.Items[0].Vendors[0].Shut {
-		t.Fatalf("expected the brewery vendor marked Shut, got %+v", v)
-	}
-	var b strings.Builder
-	renderRestocking(&b, v)
-	if !strings.Contains(b.String(), "found it shut up") {
-		t.Errorf("expected shut annotation in restock cue, got:\n%s", b.String())
+	// The lone remembered-shut supplier is dropped → no actionable item → section nil.
+	if v := buildRestocking(snap, "merchant", subj); v != nil {
+		t.Fatalf("a lone remembered-shut supplier should leave no actionable item (section nil), got %+v", v)
 	}
 
-	// Same setup without the memory → no annotation.
+	// Same setup without the memory → the open brewery surfaces.
 	subj.Observed = sim.ObservedStates{}
-	v2 := buildRestocking(snap, "merchant", subj)
-	var b2 strings.Builder
-	renderRestocking(&b2, v2)
-	if strings.Contains(b2.String(), "found it shut up") {
-		t.Errorf("did not expect shut annotation without a memory, got:\n%s", b2.String())
+	v := buildRestocking(snap, "merchant", subj)
+	if v == nil || len(v.Items) != 1 || len(v.Items[0].Vendors) != 1 || v.Items[0].Vendors[0].StructureID != "brewery" {
+		t.Fatalf("without the shut memory the open brewery should surface, got %+v", v)
 	}
 }
 
