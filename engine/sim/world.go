@@ -551,6 +551,17 @@ type WorldSettings struct {
 	// (settings/seek-work-ceiling, read side GET /settings). Mirrored onto the
 	// snapshot at publish so the perception gates read it without racing on w.Settings.
 	SeekWorkCoinCeiling int
+
+	// LaborProduceBoostPct is the per-worker production boost (LLM-224): each hired
+	// worker laboring at the keeper's establishment adds this percent of the keeper's
+	// own base rate to the produce tick (50 → one helper makes goods arrive 1.5x as
+	// fast). <= 0 disables the boost — the per-feature off-switch, mirroring
+	// FarmUpkeepCoinsPerShovel==0 (the pg loader seeds DefaultLaborProduceBoostPct
+	// when the setting key is absent). Live-tunable + persisted
+	// (settings/labor-produce-boost, read side GET /settings). Mirrored onto the
+	// snapshot at publish so the perception hire-value cue reads the same switch the
+	// produce tick enforces.
+	LaborProduceBoostPct int
 }
 
 // DefaultOutdoorSceneRadiusValue is the fallback radius used when
@@ -1797,6 +1808,7 @@ func (w *World) republish() {
 		DawnDuskMinuteOK:          dawnOK && duskOK,
 		NeedThresholds:            w.Settings.NeedThresholds.Clone(),
 		SeekWorkCoinCeiling:       effectiveSeekWorkCoinCeiling(w.Settings),
+		LaborProduceBoostPct:      w.Settings.LaborProduceBoostPct,
 		LodgingDefaultWeeklyRate:  w.Settings.LodgingDefaultWeeklyRate,
 		LodgingBedtimeMinute:      lodgerBedtimeMinute(w),
 		LodgingCheckOutMinute:     w.Settings.LodgingCheckOutHour * 60,

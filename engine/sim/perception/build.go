@@ -124,6 +124,10 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// buildWarrantActorNames so the worker/employer names they reference resolve
 	// in render.
 	p.LaborOffersForMe = buildLaborOffersForMe(snap, actorID)
+	// LLM-224: whether hiring would actually speed the subject's production —
+	// boost enabled AND the subject has a makeable produce entry. Drives the
+	// hire-value line in the decision section.
+	p.HiredHelpSpeedsProduction = snap.LaborProduceBoostPct > 0 && subjectHasMakeableProduce(snap, actorSnap)
 	p.WorkersForMe = buildWorkersForMe(snap, actorID)
 	p.Laboring = buildLaboring(snap, actorID)
 	p.PendingLaborOfferOut = buildPendingLaborOfferOut(snap, actorID)
@@ -3358,6 +3362,25 @@ func buildLaborOffersForMe(snap *sim.Snapshot, subject sim.ActorID) []LaborOffer
 		})
 	}
 	return out
+}
+
+// subjectHasMakeableProduce reports whether the subject has at least one
+// produce-source restock entry that can actually produce — recipe-backed with a
+// positive rate, mirroring sim.makeableRecipe (the produce tick's own test), so
+// the LLM-224 hire-value cue names a boost only for a keeper whose produce tick
+// would really run faster with help. A buy-source reseller (Josiah) or a
+// no-recipe entry doesn't qualify.
+func subjectHasMakeableProduce(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) bool {
+	if snap == nil || actorSnap == nil || actorSnap.RestockPolicy == nil {
+		return false
+	}
+	for _, e := range actorSnap.RestockPolicy.ProduceEntries() {
+		r := snap.Recipes[e.Item]
+		if r != nil && r.RateQty > 0 && r.RatePerHours > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // buildLaboring scans snap.LaborLedger for a Working offer where the subject is

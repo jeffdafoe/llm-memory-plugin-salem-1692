@@ -319,6 +319,10 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	// reports the live value and the checkpoint round-trips a concrete number.
 	s.SeekWorkCoinCeiling = parseIntSetting(values, "seek_work_coin_ceiling", sim.SeekWorkCoinCeilingDefault)
 
+	// Labor produce boost (LLM-224). Unset seeds the default; an explicit 0 sticks
+	// and disables the boost (the off-switch, like farm_upkeep_coins_per_shovel).
+	s.LaborProduceBoostPct = parseIntSetting(values, "labor_produce_boost_pct", sim.DefaultLaborProduceBoostPct)
+
 	// Cross-huddle conversation continuity (LLM-170). ON by default — the ring
 	// carry-over is pure perception legibility; the loop-state carry is inert
 	// unless the loop sweep above is enabled.
@@ -553,6 +557,9 @@ func (r *EnvironmentRepo) SaveMutableSettings(ctx context.Context, tx sim.Tx, ms
 		// Seek-work coin ceiling (LLM-194) — live-tuned via the umbilical, persisted
 		// here; the load path parses seek_work_coin_ceiling via parseIntSetting.
 		{"seek_work_coin_ceiling", strconv.Itoa(ms.SeekWorkCoinCeiling)},
+		// Labor produce boost (LLM-224) — live-tuned via the umbilical, persisted
+		// here; the load path parses labor_produce_boost_pct via parseIntSetting.
+		{"labor_produce_boost_pct", strconv.Itoa(ms.LaborProduceBoostPct)},
 	}
 	for _, row := range rows {
 		if _, err := tx.Exec(ctx, upsertSettingSQL, row.key, row.val); err != nil {

@@ -49,6 +49,12 @@ type UmbilicalSettingsDTO struct {
 	// the feature is disabled. The GET half of no-blind-tuning symmetry.
 	FarmUpkeepFloor          int `json:"farm_upkeep_floor"`
 	FarmUpkeepCoinsPerShovel int `json:"farm_upkeep_coins_per_shovel"`
+
+	// LaborProduceBoostPct (LLM-224) is the per-worker produce-rate boost a laboring
+	// worker adds at their employer's establishment (settings/labor-produce-boost
+	// writes it). Persisted (checkpoint writes it back), so it survives restart.
+	// 0 means the boost is disabled.
+	LaborProduceBoostPct int `json:"labor_produce_boost_pct"`
 }
 
 // handleUmbilicalSettings serves the current live-tunable world settings. Read on
@@ -67,6 +73,7 @@ func (s *Server) handleUmbilicalSettings(w http.ResponseWriter, r *http.Request)
 			SeekWorkCoinCeiling:           world.Settings.SeekWorkCoinCeiling,
 			FarmUpkeepFloor:               world.Settings.FarmUpkeepFloor,
 			FarmUpkeepCoinsPerShovel:      world.Settings.FarmUpkeepCoinsPerShovel,
+			LaborProduceBoostPct:          world.Settings.LaborProduceBoostPct,
 		}
 		for k, v := range world.Settings.NeedThresholds {
 			dto.NeedThresholds[string(k)] = v
