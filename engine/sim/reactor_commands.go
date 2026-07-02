@@ -629,6 +629,40 @@ func EvaluateReactors(now time.Time) Command {
 					continue
 				}
 
+				// Staleness decay (LLM-233). An all-ambient cycle whose every
+				// warrant kind has ALREADY been ticked under the actor's
+				// current situation fingerprint is a repeat wake against an
+				// unchanged world — defer it to the kind's decayed re-wake
+				// time (base·2^streak, capped) instead of paying full producer
+				// rate. Deterministic, not a heuristic: the fingerprint
+				// (stale_wake.go) hashes location, state, purse/inventory,
+				// huddle membership, and the newest non-self utterance, so ANY
+				// real development passes at full rate, as does a kind with no
+				// ledger entry yet (the day's first shift_duty) or any salient
+				// / forced warrant (same bypass posture as the degeneracy
+				// throttle above — this gate only ever slows the engine's own
+				// re-poking of a world that hasn't moved). Unlike the throttle
+				// it needs no futility diagnosis, so it also bounds loops the
+				// observer scores as productive (the John Ellis restock case:
+				// 256 wakes in 2h at a shelved, unresponsive audience).
+				if w.Settings.staleWakeDecayEnabled() &&
+					!hasForcedWarrant(actor.Warrants) &&
+					warrantCycleAllAmbient(actor.Warrants) {
+					fp := actorSituationFingerprint(w, actor)
+					if next, stale := staleWakeDeferUntil(w.Settings, actor, fp, now); stale {
+						actor.WarrantDueAt = &next
+						if w.repo.TickTelemetry != nil {
+							w.repo.TickTelemetry.WriteTickTelemetry(TickTelemetryRecord{
+								At:      now,
+								ActorID: actor.ID,
+								Kind:    "deferred",
+								Detail:  map[string]string{"gate": "stale_wake"},
+							})
+						}
+						continue
+					}
+				}
+
 				// Tick admission control (Option A — admit before consume).
 				// If downstream capacity is unavailable, push the warrant
 				// out by AdmissionBackoff and emit nothing — the warrants
@@ -671,6 +705,15 @@ func EvaluateReactors(now time.Time) Command {
 				// it on the next scan.
 				if actor.State == StateResting || (actor.BreakUntil != nil && actor.BreakUntil.After(now)) {
 					endBreak(w, actor)
+				}
+
+				// Staleness-decay ledger advance (LLM-233): recorded HERE, at
+				// the emit commitment, never on a deferral — a streak counts
+				// real LLM calls. Only all-ambient cycles are recorded; a
+				// salient cycle doesn't advance ambient decay (its kinds
+				// aren't in the ledger's scope).
+				if w.Settings.staleWakeDecayEnabled() && warrantCycleAllAmbient(actor.Warrants) {
+					recordStaleWake(actor, actor.Warrants, actorSituationFingerprint(w, actor), now)
 				}
 
 				clearWarrant(actor)

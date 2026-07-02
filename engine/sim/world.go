@@ -253,6 +253,23 @@ type WorldSettings struct {
 	DegeneracyOscillationMinTransitions int
 	DegeneracyOscillationMaxDistinct    int
 
+	// Staleness decay for level-triggered warrants (LLM-233,
+	// engine/sim/stale_wake.go). An all-ambient warrant cycle whose every
+	// kind was already ticked under the actor's current situation
+	// fingerprint is deferred to lastEmit + base·2^streak instead of firing
+	// at full producer rate — "an unchanged situation must not re-warrant at
+	// full rate."
+	//
+	//   - StaleWakeDecayBase: master enable + the base interval the backoff
+	//     doubles from. <= 0 disables the gate (the zero-value default for
+	//     directly-constructed settings; the pg loader defaults it ON at 1m).
+	//     Settings key: stale_wake_decay_base_seconds.
+	//   - StaleWakeDecayCap: backoff ceiling — a fully-decayed unchanged
+	//     situation is still re-observed this often (default 30m). Settings
+	//     key: stale_wake_decay_cap_minutes.
+	StaleWakeDecayBase time.Duration
+	StaleWakeDecayCap  time.Duration
+
 	// Conversation turn-state liveness windows (ZBBS-WORK-370). How long an
 	// actor's outgoing "I addressed X, awaiting their reply" edge stays live
 	// before the turn-taking backstop stops suppressing a re-initiation and

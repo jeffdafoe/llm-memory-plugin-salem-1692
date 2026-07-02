@@ -913,6 +913,9 @@ func resetReactorStateOnLoad(a *Actor) {
 	// Seek-work backstop pacing (LLM-141) — ephemeral, same rationale as the
 	// red-need pacing above: a fresh-loaded broke worker re-engages from base.
 	clearSeekWorkBackstop(a)
+	// Staleness-decay ledger (LLM-233) — ephemeral pacing state; a
+	// fresh-loaded actor re-learns its decay from base rate.
+	clearStaleWake(a)
 	// Degeneracy observer streak (LLM-94) — ephemeral, same rationale: a
 	// fresh-loaded actor starts unflagged rather than inheriting a stale
 	// futility streak from before the restart.
