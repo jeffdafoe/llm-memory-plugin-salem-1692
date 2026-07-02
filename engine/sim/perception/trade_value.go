@@ -153,7 +153,7 @@ func buildTradeValue(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 				costBatch += in.Qty * unitCost
 			}
 			if costBatch <= 0 {
-				// No input was priceable — no useful cost signal, omit the clause.
+				// No positive input cost was found — no useful cost signal, omit the clause.
 				costQty, costFloor = 0, false
 			}
 		}
