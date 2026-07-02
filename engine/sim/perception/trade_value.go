@@ -217,19 +217,22 @@ func renderTradeValue(b *strings.Builder, v *TradeValueView) {
 		if it.RecentUnit > 0 {
 			clauses += fmt.Sprintf("; of late you have sold for about %s each", coinsPhrase(it.RecentUnit))
 		}
-		// A produced good's cost of goods (LLM-226) goes last so its stake fragment
-		// closes the line. All arithmetic is done HERE — the model gets a per-unit
-		// phrase to compare against its price, never a batch fraction to divide.
+		// A produced good's cost of goods (LLM-226). All arithmetic is done HERE —
+		// the model gets a per-unit phrase to compare against its price, never a
+		// batch fraction to divide. Stated as a fact, not a pricing directive
+		// (LLM-227): the NPC decides what to do with its cost; a command here
+		// over-anchors weak models into rigid haggling and fights a deliberately
+		// set loss-leader price.
 		if it.CostBatch > 0 && it.CostQty > 0 {
 			costPhrase := costEachPhrase(it.CostBatch, it.CostQty)
 			if it.CostFloor {
 				// The sum is missing an unpriceable input, so the true cost exceeds
 				// it — state the known part as a whole-coin floor (ceiling division;
-				// erring high is the safe direction for a don't-sell-below-this cue).
+				// erring high is the safe direction for a cost estimate).
 				ceilUnit := (it.CostBatch + it.CostQty - 1) / it.CostQty
 				costPhrase = fmt.Sprintf("at least %s each", coinsPhrase(ceilUnit))
 			}
-			clauses += fmt.Sprintf("; the makings run you %s — price above that or you lose coin", costPhrase)
+			clauses += fmt.Sprintf("; the makings run you %s", costPhrase)
 		}
 		fmt.Fprintf(b, "- %s: %s%s.\n", sanitizeInline(it.ItemLabel), worth, clauses)
 	}
