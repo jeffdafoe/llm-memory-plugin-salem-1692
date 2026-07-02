@@ -37,7 +37,19 @@ func TestStaleWakeBackoff(t *testing.T) {
 	if got := staleWakeBackoff(custom, 10); got != 5*time.Minute {
 		t.Errorf("custom cap: backoff = %v, want 5m", got)
 	}
+
+	// Doubling toward an absurdly large cap must clamp, never wrap negative
+	// (code_review overflow guard).
+	huge := WorldSettings{StaleWakeDecayBase: time.Hour, StaleWakeDecayCap: time.Duration(1<<63 - 1)}
+	if got := staleWakeBackoff(huge, 100); got != huge.StaleWakeDecayCap || got < 0 {
+		t.Errorf("huge cap: backoff = %v, want clamped to cap and non-negative", got)
+	}
 }
+
+// fpNow is the fixed instant fingerprint tests evaluate at; the only
+// time-derived fingerprint field is the on-shift phase boolean, exercised
+// explicitly in the shift-phase case below.
+var fpNow = time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
 
 // fingerprintWorld builds a minimal world + actor sharing a huddle with a
 // peer, for exercising what the fingerprint does and does not react to.
@@ -88,12 +100,28 @@ func TestActorSituationFingerprint_ChangesOnRealDevelopments(t *testing.T) {
 		{"pc speaks", func(w *World, _ *Actor) {
 			w.Huddles["hud-1"].LastPCUtteranceAt = time.Unix(3000, 0).UTC()
 		}},
+		{"peer utterance text differs at same instant", func(w *World, _ *Actor) {
+			// Utterance identity must not collapse to (speaker, time):
+			// replace the newest peer line with different TEXT at the same
+			// timestamp (code_review).
+			h := w.Huddles["hud-1"]
+			h.RecentUtterances[len(h.RecentUtterances)-1].Text = "different words"
+		}},
+		{"shift phase flips", func(_ *World, a *Actor) {
+			// Give the actor a schedule spanning fpNow's minute-of-day
+			// (12:00 UTC world time) — on-shift at fpNow where the baseline
+			// unscheduled actor reads off-shift. A shift boundary crossing
+			// is a situation change (code_review).
+			start, end := 0, 24*60
+			a.ScheduleStartMin = &start
+			a.ScheduleEndMin = &end
+		}},
 	}
 	for _, m := range mutations {
 		w, a := fingerprintWorld()
-		before := actorSituationFingerprint(w, a)
+		before := actorSituationFingerprint(w, a, fpNow)
 		m.mutate(w, a)
-		if after := actorSituationFingerprint(w, a); after == before {
+		if after := actorSituationFingerprint(w, a, fpNow); after == before {
 			t.Errorf("%s: fingerprint unchanged, want change", m.name)
 		}
 	}
@@ -101,30 +129,30 @@ func TestActorSituationFingerprint_ChangesOnRealDevelopments(t *testing.T) {
 
 func TestActorSituationFingerprint_IgnoresSelfSpeechAndNeeds(t *testing.T) {
 	w, a := fingerprintWorld()
-	before := actorSituationFingerprint(w, a)
+	before := actorSituationFingerprint(w, a, fpNow)
 
 	// The actor's own re-pitch must not read as change — it would reset the
 	// decay the actor's own looping caused.
 	h := w.Huddles["hud-1"]
 	h.RecentUtterances = append(h.RecentUtterances,
 		Utterance{SpeakerID: "john", At: time.Unix(5000, 0).UTC()})
-	if got := actorSituationFingerprint(w, a); got != before {
+	if got := actorSituationFingerprint(w, a, fpNow); got != before {
 		t.Error("own utterance changed the fingerprint, want unchanged")
 	}
 
 	// Needs drift every minute by design; they are deliberately excluded
 	// (red thresholds have their own salient warrants).
 	a.Needs["hunger"] = 20
-	if got := actorSituationFingerprint(w, a); got != before {
+	if got := actorSituationFingerprint(w, a, fpNow); got != before {
 		t.Error("needs change altered the fingerprint, want unchanged")
 	}
 }
 
 func TestActorSituationFingerprint_StableAcrossMapOrder(t *testing.T) {
 	w, a := fingerprintWorld()
-	first := actorSituationFingerprint(w, a)
+	first := actorSituationFingerprint(w, a, fpNow)
 	for i := 0; i < 20; i++ {
-		if got := actorSituationFingerprint(w, a); got != first {
+		if got := actorSituationFingerprint(w, a, fpNow); got != first {
 			t.Fatal("fingerprint not deterministic across recomputation")
 		}
 	}

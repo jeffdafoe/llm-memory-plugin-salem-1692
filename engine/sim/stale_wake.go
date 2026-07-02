@@ -97,6 +97,13 @@ func staleWakeBackoff(s WorldSettings, streak int) time.Duration {
 	}
 	max := s.staleWakeDecayCap()
 	for i := 0; i < streak && d < max; i++ {
+		// Overflow guard: with an absurdly large configured cap, doubling
+		// past max/2 would wrap negative before the d < max check catches
+		// it — clamp to the cap instead (code_review).
+		if d > max/2 {
+			d = max
+			break
+		}
 		d *= 2
 	}
 	if d > max {
@@ -105,11 +112,18 @@ func staleWakeBackoff(s WorldSettings, streak int) time.Duration {
 	return d
 }
 
-// actorSituationFingerprint hashes the actor's reactable situation. Two
-// equal fingerprints mean "nothing the actor could newly react to has
+// actorSituationFingerprint hashes the actor's reactable situation at `now`.
+// Two equal fingerprints mean "nothing the actor could newly react to has
 // changed" — the deterministic staleness test the decay gate keys on. See
 // the file comment for what's in and what's deliberately out (needs).
-func actorSituationFingerprint(w *World, a *Actor) uint64 {
+//
+// The one time-derived field is the actor's on-shift PHASE (actorOnShift) —
+// a boolean, not a clock — so a shift boundary crossing reads as a situation
+// change and a decayed shift_duty (or restock) wake resumes at full rate the
+// moment the actor's duty context flips (code_review: without this, a duty
+// re-wake shortly after a run of ignored duty pokes could be deferred up to
+// the cap across the boundary).
+func actorSituationFingerprint(w *World, a *Actor, now time.Time) uint64 {
 	h := fnv.New64a()
 	write := func(field string) {
 		h.Write([]byte(field))
@@ -120,6 +134,7 @@ func actorSituationFingerprint(w *World, a *Actor) uint64 {
 	write(strconv.Itoa(a.Pos.Y))
 	write(string(a.State))
 	write(strconv.Itoa(a.Coins))
+	write(strconv.FormatBool(actorOnShift(w, a, localMinuteOfDay(w, now))))
 	items := make([]string, 0, len(a.Inventory))
 	for k, v := range a.Inventory {
 		items = append(items, string(k)+"="+strconv.Itoa(v))
@@ -140,11 +155,14 @@ func actorSituationFingerprint(w *World, a *Actor) uint64 {
 		}
 		// Newest utterance by anyone else — the actor's own lines must not
 		// read as change, or a re-pitching NPC would reset its own decay.
+		// Text is hashed alongside speaker+time so an utterance identity
+		// never collapses to a timestamp collision (code_review).
 		for i := len(hud.RecentUtterances) - 1; i >= 0; i-- {
 			u := hud.RecentUtterances[i]
 			if u.SpeakerID != a.ID {
 				write(string(u.SpeakerID))
 				write(u.At.UTC().Format(time.RFC3339Nano))
+				write(u.Text)
 				break
 			}
 		}

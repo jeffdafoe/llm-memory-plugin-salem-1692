@@ -648,7 +648,7 @@ func EvaluateReactors(now time.Time) Command {
 				if w.Settings.staleWakeDecayEnabled() &&
 					!hasForcedWarrant(actor.Warrants) &&
 					warrantCycleAllAmbient(actor.Warrants) {
-					fp := actorSituationFingerprint(w, actor)
+					fp := actorSituationFingerprint(w, actor, now)
 					if next, stale := staleWakeDeferUntil(w.Settings, actor, fp, now); stale {
 						actor.WarrantDueAt = &next
 						if w.repo.TickTelemetry != nil {
@@ -709,11 +709,17 @@ func EvaluateReactors(now time.Time) Command {
 
 				// Staleness-decay ledger advance (LLM-233): recorded HERE, at
 				// the emit commitment, never on a deferral — a streak counts
-				// real LLM calls. Only all-ambient cycles are recorded; a
-				// salient cycle doesn't advance ambient decay (its kinds
-				// aren't in the ledger's scope).
-				if w.Settings.staleWakeDecayEnabled() && warrantCycleAllAmbient(actor.Warrants) {
-					recordStaleWake(actor, actor.Warrants, actorSituationFingerprint(w, actor), now)
+				// real LLM calls. Only unforced all-ambient cycles are
+				// recorded: a salient cycle doesn't advance ambient decay
+				// (its kinds aren't in the ledger's scope), and a FORCED
+				// ambient tick must not touch the ledger either — Force
+				// bypasses the gate entirely, so an operator nudge can
+				// neither extend a deferral (LastEmitAt push) nor deepen a
+				// streak (code_review).
+				if w.Settings.staleWakeDecayEnabled() &&
+					!hasForcedWarrant(actor.Warrants) &&
+					warrantCycleAllAmbient(actor.Warrants) {
+					recordStaleWake(actor, actor.Warrants, actorSituationFingerprint(w, actor, now), now)
 				}
 
 				clearWarrant(actor)

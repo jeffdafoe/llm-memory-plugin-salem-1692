@@ -178,6 +178,16 @@ func TestEvaluateReactors_StaleWake_SalientAndForcedBypass(t *testing.T) {
 	if len(*emitted) != 3 {
 		t.Fatalf("forced ambient cycle: want 3 emits, got %d", len(*emitted))
 	}
+
+	// Neither the salient-carrying cycle nor the forced one advanced the
+	// ledger: Force and salient bypass ENTIRELY — the operator nudge must not
+	// deepen the streak or push LastEmitAt (extending a later deferral).
+	inspectActor(t, w, "alice", func(a *sim.Actor) {
+		e := a.StaleWake[sim.WarrantKindRestock]
+		if e == nil || e.Streak != 1 || !e.LastEmitAt.Equal(t0) {
+			t.Errorf("ledger after salient+forced emits: %+v, want streak 1 lastEmit %v (untouched)", e, t0)
+		}
+	})
 }
 
 func TestEvaluateReactors_StaleWake_DisabledIsInert(t *testing.T) {
