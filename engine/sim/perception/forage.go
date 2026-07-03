@@ -2,6 +2,7 @@ package perception
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 
@@ -42,10 +43,23 @@ import (
 // gather-from-afar reject loop). No new commit tool, the same LLM-decided posture
 // as buy-side restock.
 
-// ForageView is the content-gated "## Your bushes to harvest" section. A nil
-// view (or empty Items) means render omits the section.
+// ForageView is the content-gated forage cue. A nil view (or a view with both
+// slices empty) means render omits the whole thing. It carries two independent
+// sections:
+//   - Items — "## Your bushes to harvest": the actor's OWN bushes for a low item,
+//     owner-only and distance-independent (LLM-79).
+//   - WildSources — "## Wild sources you know of": the LLM-253 ranged cue for a
+//     forager carrying sim.AttrForageRange — the nearest ripe UNOWNED source for a
+//     low item the actor owns no bush for, at any distance. A distinct section so
+//     it never claims to be "your bushes."
+//
+// Both live on one view (not two payload fields) so the whole cue defers together
+// on a live sale (customerEngaged) and a single p.Forage != nil signal drives the
+// duty-steer suppression (build.go) whether the errand is an owned harvest or a
+// wild trek.
 type ForageView struct {
-	Items []ForageItemView
+	Items       []ForageItemView
+	WildSources []WildForageItemView
 }
 
 // ForageItemView is one low `forage` item the grower could replenish by
@@ -64,6 +78,29 @@ type ForageItemView struct {
 
 	// kind is the final sort tie-break for two kinds sharing a display label.
 	// Unexported — never rendered. Same posture as RestockItemView.kind.
+	kind sim.ItemKind
+}
+
+// WildForageItemView is one low forage item a ranged forager (sim.AttrForageRange)
+// can replenish from an UNOWNED wild source at any distance (LLM-253). Distinct
+// from ForageItemView: the source is not the actor's own, so it carries the
+// source's own name and a qualitative distance + direction — this cue crosses the
+// whole map, unlike the distance-independent owned-bush cue. MoveHandle steers
+// move_to ONLY; the at-bush proximity cue (findGatherableCue) advertises gather
+// once the forager arrives, so this distant cue never names a tool that isn't
+// callable yet (the LLM-59 gather-from-afar reject loop).
+type WildForageItemView struct {
+	ItemLabel   string
+	SourceLabel string
+	CurrentQty  int
+	Cap         int
+	RipeUnits   int
+	Distance    string // qualitativeDistance phrase, e.g. "a long walk"
+	Direction   string // 8-point compass bearing; empty when coincident
+	MoveHandle  sim.VillageObjectID
+
+	// kind is the sort tie-break for two kinds sharing a display label. Unexported
+	// — never rendered. Same posture as ForageItemView.kind.
 	kind sim.ItemKind
 }
 
@@ -93,7 +130,12 @@ func buildForage(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSn
 	if pct <= 0 {
 		return nil // restock feature disabled
 	}
+	// A ranged forager (LLM-253) also gets wild UNOWNED sources for low items it
+	// owns no bush for — computed inside the same low-item loop so it shares the
+	// threshold gate and the customerEngaged deferral above.
+	tagged := hasForageRange(actorSnap)
 	var items []ForageItemView
+	var wild []WildForageItemView
 	for _, e := range actorSnap.RestockPolicy.ForageEntries() {
 		cap := e.Cap()
 		current := actorSnap.Inventory[e.Item]
@@ -139,7 +181,16 @@ func buildForage(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSn
 			}
 		}
 		if bushCount == 0 {
-			continue // owns no bushes producing this item — nothing to point at
+			// Owns no bush for this low item. A ranged forager (sim.AttrForageRange,
+			// LLM-253) can still be pointed at the nearest ripe UNOWNED wild source
+			// for it — the gap the owner-only cue here and the proximity-only at-bush
+			// cue both leave open. Untagged: nothing to point at, as before.
+			if tagged {
+				if wv, ok := nearestWildForageSource(snap, actorSnap, e.Item, current, cap); ok {
+					wild = append(wild, wv)
+				}
+			}
+			continue
 		}
 		items = append(items, ForageItemView{
 			ItemLabel:  itemDisplayLabel(snap, e.Item),
@@ -151,7 +202,7 @@ func buildForage(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSn
 			kind:       e.Item,
 		})
 	}
-	if len(items) == 0 {
+	if len(items) == 0 && len(wild) == 0 {
 		return nil
 	}
 	// Deterministic section order — by item label, then the underlying kind as a
@@ -163,7 +214,82 @@ func buildForage(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSn
 		}
 		return items[i].kind < items[j].kind
 	})
-	return &ForageView{Items: items}
+	sort.Slice(wild, func(i, j int) bool {
+		if wild[i].ItemLabel != wild[j].ItemLabel {
+			return wild[i].ItemLabel < wild[j].ItemLabel
+		}
+		return wild[i].kind < wild[j].kind
+	})
+	return &ForageView{Items: items, WildSources: wild}
+}
+
+// hasForageRange reports whether the actor carries the sim.AttrForageRange
+// capability marker (LLM-253), read from the snapshot's sorted AttributeSlugs
+// projection — the same presence-only read as subjectIsWorker (LLM-26).
+func hasForageRange(actorSnap *sim.ActorSnapshot) bool {
+	if actorSnap == nil {
+		return false
+	}
+	for _, slug := range actorSnap.AttributeSlugs {
+		if slug == sim.AttrForageRange {
+			return true
+		}
+	}
+	return false
+}
+
+// nearestWildForageSource finds the nearest ripe UNOWNED forage-to-sell source for
+// item across the whole map (the LLM-253 ranged cue) and renders it as a
+// WildForageItemView, or ok=false when no unowned source for the item has stock
+// this tick. "Unowned" means OwnerActorID == "" (a commons bush); an owned bush is
+// the province of the owned-bush cue and is never surfaced here. Selection uses
+// integer squared tile distance — no Sqrt and no float equality in the tie-break;
+// the rendered phrase takes Sqrt once. Ordering is identical to the Euclidean
+// qualitativeDistance calibration buildSeekWorkPlaces uses. Ties break by ripest
+// then lowest id for determinism over unordered map iteration. Requires stock > 0
+// so the cue never sends a forager on a long trek to an empty bush — the source
+// reappears in a later tick once it regrows. snap/actorSnap non-nil is guaranteed
+// by the sole caller (buildForage); guarded anyway for a nil-safe helper.
+func nearestWildForageSource(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, item sim.ItemKind, current, capacity int) (WildForageItemView, bool) {
+	if snap == nil || actorSnap == nil {
+		return WildForageItemView{}, false
+	}
+	ax, ay := actorSnap.Pos.X, actorSnap.Pos.Y
+	var best *sim.VillageObject
+	var bestDist2, bestStock int
+	for _, obj := range snap.VillageObjects {
+		if obj == nil || obj.OwnerActorID != "" || obj.DisplayName == "" {
+			continue // owned, or nameless (no name to render in the cue) — skip
+		}
+		stock, ok := forageStockForItem(obj, item)
+		if !ok || stock <= 0 {
+			continue
+		}
+		objTile := obj.Pos.Tile()
+		dx := objTile.X - ax
+		dy := objTile.Y - ay
+		dist2 := dx*dx + dy*dy
+		if best == nil || dist2 < bestDist2 ||
+			(dist2 == bestDist2 && stock > bestStock) ||
+			(dist2 == bestDist2 && stock == bestStock && obj.ID < best.ID) {
+			best, bestDist2, bestStock = obj, dist2, stock
+		}
+	}
+	if best == nil {
+		return WildForageItemView{}, false
+	}
+	objTile := best.Pos.Tile()
+	return WildForageItemView{
+		ItemLabel:   itemDisplayLabel(snap, item),
+		SourceLabel: best.DisplayName,
+		CurrentQty:  current,
+		Cap:         capacity,
+		RipeUnits:   bestStock,
+		Distance:    qualitativeDistance(math.Sqrt(float64(bestDist2))),
+		Direction:   cardinalDirection(float64(ax), float64(ay), float64(objTile.X), float64(objTile.Y)),
+		MoveHandle:  best.ID,
+		kind:        item,
+	}, true
 }
 
 // forageStockForItem returns the total gatherable stock of `item` across obj's
@@ -198,28 +324,58 @@ func forageStockForItem(obj *sim.VillageObject, item sim.ItemKind) (int, bool) {
 // the on-hand/cap, the bush + ripe count, and the move_to handle to the ripest
 // bush.
 func renderForage(b *strings.Builder, v *ForageView) {
-	if v == nil || len(v.Items) == 0 {
+	if v == nil || (len(v.Items) == 0 && len(v.WildSources) == 0) {
 		return
 	}
-	b.WriteString("## Your bushes to harvest\n")
-	b.WriteString("Your stock of these is running low. You grow them yourself — walk out to your bushes to restock. You choose how much to pick.\n")
-	for _, it := range v.Items {
+	if len(v.Items) > 0 {
+		b.WriteString("## Your bushes to harvest\n")
+		b.WriteString("Your stock of these is running low. You grow them yourself — walk out to your bushes to restock. You choose how much to pick.\n")
+		for _, it := range v.Items {
+			headroom := it.Cap - it.CurrentQty
+			if headroom < 0 {
+				headroom = 0
+			}
+			fmt.Fprintf(b, "- %s: %d on hand of %d cap (room for %d more). You own %d bush(es) of it",
+				sanitizeInline(it.ItemLabel), it.CurrentQty, it.Cap, headroom, it.BushCount)
+			if it.MoveHandle != "" {
+				// Steer move_to ONLY — no `gather` mention (LLM-79 / LLM-59 fix). The
+				// at-bush proximity cue (findGatherableCue) advertises and steers gather
+				// once the grower arrives; naming it here, where gather isn't callable
+				// yet, drove the weak model to fixate on gather and skip the walk (the
+				// LLM-59 reject-retry loop).
+				fmt.Fprintf(b, ", %d ripe to pick now. Use move_to with structure_id \"%s\" to walk out to them.\n",
+					it.RipeUnits, it.MoveHandle)
+			} else {
+				b.WriteString(", none ripe yet — they will regrow, so check back later.\n")
+			}
+		}
+	}
+	renderWildForage(b, v.WildSources)
+}
+
+// renderWildForage writes the "## Wild sources you know of" section — the LLM-253
+// ranged cue. A distinct header from "## Your bushes to harvest" so it never claims
+// the actor owns these; move_to ONLY, no `gather` mention (same LLM-59/79 posture
+// as the owned cue — gather isn't callable until the forager arrives).
+func renderWildForage(b *strings.Builder, sources []WildForageItemView) {
+	if len(sources) == 0 {
+		return
+	}
+	b.WriteString("## Wild sources you know of\n")
+	b.WriteString("You know where these grow wild in the countryside. No one owns them, so you may pick freely — walk out to gather when your own stock runs low. You choose how much to pick.\n")
+	for _, it := range sources {
 		headroom := it.Cap - it.CurrentQty
 		if headroom < 0 {
 			headroom = 0
 		}
-		fmt.Fprintf(b, "- %s: %d on hand of %d cap (room for %d more). You own %d bush(es) of it",
-			sanitizeInline(it.ItemLabel), it.CurrentQty, it.Cap, headroom, it.BushCount)
-		if it.MoveHandle != "" {
-			// Steer move_to ONLY — no `gather` mention (LLM-79 / LLM-59 fix). The
-			// at-bush proximity cue (findGatherableCue) advertises and steers gather
-			// once the grower arrives; naming it here, where gather isn't callable
-			// yet, drove the weak model to fixate on gather and skip the walk (the
-			// LLM-59 reject-retry loop).
-			fmt.Fprintf(b, ", %d ripe to pick now. Use move_to with structure_id \"%s\" to walk out to them.\n",
-				it.RipeUnits, it.MoveHandle)
-		} else {
-			b.WriteString(", none ripe yet — they will regrow, so check back later.\n")
+		// Direction is empty only if the source shares the actor's tile — not a real
+		// case for a ranged cue, but fall back to the bare distance phrase then.
+		where := it.Distance
+		if it.Direction != "" {
+			where = it.Distance + " to the " + it.Direction
 		}
+		fmt.Fprintf(b, "- %s: %d on hand of %d cap (room for %d more). A wild %s grows %s, %d ripe to pick now. Use move_to with structure_id \"%s\" to walk out to it.\n",
+			sanitizeInline(it.ItemLabel), it.CurrentQty, it.Cap, headroom,
+			sanitizeInline(it.SourceLabel), where, it.RipeUnits, it.MoveHandle)
 	}
 }

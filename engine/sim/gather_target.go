@@ -158,6 +158,18 @@ func loiterChebIn(obj *VillageObject, assets map[AssetID]*Asset, actorTile TileP
 	return computeLoiterTile(obj, asset).Chebyshev(actorTile)
 }
 
+// AttrForageRange is the presence-only capability marker that grants an actor the
+// ranged forage cue (LLM-253): a tagged forager (first instance: the herbalist)
+// perceives the nearest ripe UNOWNED forage-to-sell source for each of their low
+// forage-restock items at ANY distance, closing the gap the owner-only owned-bush
+// cue (buildForage) and the proximity-only at-bush cue (findGatherableCue) both
+// leave open. Like AttrWorker / AttrMessenger the value is unused — the key's
+// existence is the grant. The "herbalist gift": a deliberate, role-scoped
+// departure from the LLM-76/77/79 no-omniscience posture, justified as domain
+// knowledge (an herbalist knows where herbs grow). Read in perception from
+// ActorSnapshot.AttributeSlugs.
+const AttrForageRange = "forage_range"
+
 // LowForageItems returns the set of items the actor restocks by foraging and is
 // currently below the reorder threshold on — the item bias the fallback resolution
 // uses to prefer the bush she's short on. Empty when the policy has no forage
