@@ -585,6 +585,18 @@ func gatherCoPresentPeerOffers(snap *sim.Snapshot, actorID sim.ActorID, actorSna
 	if h == nil {
 		return nil
 	}
+	// LLM-242 means-to-pay gate — the consumer-side sibling of the LLM-222 vendor
+	// gate in gatherSatiationVendors. pay_with_item needs SOME means of payment:
+	// coins to spend or goods to put up in trade (pay_items). A buyer with neither
+	// hits the same hard pay_with_item dead-end LLM-222 suppresses on the vendor cue
+	// (the 55-hit no-offer rejection class), so drop every peer buy offer too. No
+	// per-peer price here (pay_with_item resolves the co-present seller, terms
+	// negotiated on their turn), so the gate is a flat coin>0-or-goods, not the
+	// vendor cue's costCoins affordability tier. Reuses holdsBarterableGoods so the
+	// two buy-food affordances read the SAME goods signal (discussion-109 no-drift).
+	if actorSnap.Coins <= 0 && !holdsBarterableGoods(actorSnap) {
+		return nil
+	}
 	var out []SatiationPeerOffer
 	for peerID := range h.Members {
 		if peerID == actorID {

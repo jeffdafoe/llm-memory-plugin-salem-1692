@@ -45,9 +45,16 @@ func TestBuildSatiation_DegenerateBuy_SuppressedWhenSubjectHoldsItem(t *testing.
 	}
 
 	// Control: a subject NOT holding the item still sees the peer offer (the gate
-	// is item-specific, not a blanket peer suppression).
+	// is item-specific, not a blanket peer suppression). Give it coins so the
+	// LLM-242 means-to-pay gate passes — a 0-coin, goods-less buyer is correctly
+	// suppressed for lack of any way to pay, but that is a DIFFERENT gate than the
+	// item-specific degenerate one under test here.
 	subj.Inventory = nil
+	subj.Coins = 5
 	v = buildSatiation(snap, "ezekiel", subj)
+	if v == nil || len(v.Needs) != 1 {
+		t.Fatalf("subject without stew but with coins → want 1 pressing need, got %+v", v)
+	}
 	if got := len(v.Needs[0].CoPresentPeers); got != 1 {
 		t.Errorf("subject without stew → peer offer should appear, got %d", got)
 	}
