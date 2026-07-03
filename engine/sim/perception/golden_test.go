@@ -856,6 +856,18 @@ var perceptionScenarios = []perceptionScenario{
 		build: workerSeeksWorkAfterEmployerDeclines,
 	},
 	{
+		name: "worker_solicits_goods_rich_coin_poor_employer",
+		summary: "The LLM-243 live case (Silence Walker / Prudence Ward at the PW Apothecary, hud-36317f65…), reduced: a workless " +
+			"worker shares a huddle with a co-present stranger employer who holds 0 coins but goods on hand (berries, tea). Such " +
+			"an employer can still hire IN KIND (LLM-225), so SolicitWork no longer auto-declines a bad coin ask against it — the " +
+			"barter branch mints no offer and records no decline. With no Declined ledger entry the employer stays a solicitable " +
+			"prospect: the golden pins the solicit_work affordance PRESENT for Prudence and the ABSENCE of the SeekWorkPlaces " +
+			"businesses directory + the 'No one here can hire you' seek-work dead-end. A regression that foreclosed a coin-poor " +
+			"employer (dropping it from the solicitable audience for its empty purse) would re-suppress the affordance and bring " +
+			"back the dead-end. Matrix-wide guard: TestGoldensCoinPoorEmployerStaysSolicitable.",
+		build: workerSolicitsGoodsRichCoinPoorEmployer,
+	},
+	{
 		name: "worker_seeks_work_skips_no_hiring_business",
 		summary: "The LLM-210 companion to broke_worker_seeks_work_skips_shut_business: the same workless idle worker (Lewis " +
 			"Walker), but he last found the General Store's keeper on a break — an earned ObservedNoHiring memory within its 2h " +
@@ -2101,6 +2113,69 @@ func TestGoldensNoBuyCueWithoutMeansToPay(t *testing.T) {
 	}
 	if !sawPeerArm {
 		t.Error("no no-means-to-pay scenario stands the buyer in a huddle with a goods-carrying peer — the LLM-242 peer-offer suppression is untested; add one (broke_buyer_no_goods_no_peer_buy)")
+	}
+}
+
+// TestGoldensCoinPoorEmployerStaysSolicitable is the LLM-243 cross-scenario
+// invariant — the hiring-side mirror of TestGoldensNoBuyCueWithoutMeansToPay. A
+// co-present stranger employer that holds 0 coins BUT tradeable goods must NOT be
+// foreclosed: it can still hire in kind (LLM-225), so a workless worker huddled
+// with one must never be shown the "No one here can hire you" seek-work dead-end.
+// A genuinely destitute employer (0 coins AND no goods) is NOT covered — it can
+// hire no one and is allowed to dead-end — so the guard reuses the SAME
+// holdsBarterableGoods predicate the sim gate (employerCanHireInKind) keys on, no
+// drift. The other "could hire you" conditions are re-derived here independently
+// of the employer's purse (present, not same household, no prior decline), so a
+// regression that added a coin gate to the solicitable-audience check — re-breaking
+// the barter path — would trip this rather than silently excusing itself. The
+// subject is workless by the guard, so it shares a workplace with no one.
+// Non-vacuous: worker_solicits_goods_rich_coin_poor_employer builds exactly this pair.
+func TestGoldensCoinPoorEmployerStaysSolicitable(t *testing.T) {
+	const deadEnd = "No one here can hire you"
+	var sawCoinPoorGoodsHoldingEmployer bool
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, _ := sc.build()
+			subject := snap.Actors[actorID]
+			if !subjectIsWorker(subject) || subject.WorkStructureID != "" {
+				return // subject isn't a workless worker — invariant N/A here
+			}
+			hud := snap.Huddles[subject.CurrentHuddleID]
+			if hud == nil {
+				return // no huddle audience — invariant N/A here
+			}
+			for peerID := range hud.Members {
+				if peerID == actorID {
+					continue
+				}
+				peer := snap.Actors[peerID]
+				// The LLM-243 rule covers only a coin-poor employer that can still hire
+				// IN KIND — 0 coins AND holds goods. A destitute peer (no goods) is not
+				// covered; it may legitimately dead-end. holdsBarterableGoods is the same
+				// predicate the sim gate (employerCanHireInKind) uses.
+				if peer == nil || peer.Coins != 0 || !holdsBarterableGoods(peer) {
+					continue
+				}
+				// Coin-independent "could hire you" test, mirroring isSolicitableEmployer
+				// but computed inline so a coin gate added to that predicate can't silence
+				// the invariant: a co-present stranger (different household) with no prior
+				// decline against this worker.
+				if subject.HomeStructureID != "" && subject.HomeStructureID == peer.HomeStructureID {
+					continue
+				}
+				if employerDeclinedSubject(snap, actorID, peerID) {
+					continue
+				}
+				sawCoinPoorGoodsHoldingEmployer = true
+				if strings.Contains(renderScenario(sc), deadEnd) {
+					t.Errorf("scenario %q: co-present coin-poor goods-holding employer %s could hire the worker in kind, but the prompt renders the %q dead-end — an empty purse must not foreclose a goods-holding employer (LLM-243)", sc.name, peer.DisplayName, deadEnd)
+				}
+			}
+		})
+	}
+	if !sawCoinPoorGoodsHoldingEmployer {
+		t.Error("no scenario exercised a co-present coin-poor goods-holding solicitable employer — add one (worker_solicits_goods_rich_coin_poor_employer)")
 	}
 }
 
@@ -5280,6 +5355,85 @@ func workerSeeksWorkAfterEmployerDeclines() (*sim.Snapshot, sim.ActorID, []sim.W
 		},
 	}
 	return snap, lewisID, nil
+}
+
+// workerSolicitsGoodsRichCoinPoorEmployer is the LLM-243 reduction: a workless
+// worker (Silence Walker) shares a huddle with a co-present stranger employer
+// (Prudence Ward) who holds 0 coins but goods on hand. Post-fix, a bad coin ask
+// against her mints no offer and records no decline (the barter branch), so the
+// ledger is EMPTY — she stays a solicitable prospect. The subject is the worker;
+// the golden must show the solicit_work affordance for Prudence and NOT the
+// SeekWorkPlaces businesses directory or the "No one here can hire you" dead-end.
+// Coins=15 for Silence is below the seek-work ceiling (25), so the directory WOULD
+// arm if Prudence were foreclosed — the suppression is earned by her solicitability,
+// not by the worker being comfortable (non-vacuous).
+func workerSolicitsGoodsRichCoinPoorEmployer() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		silenceID  = sim.ActorID("silence")
+		prudenceID = sim.ActorID("prudence")
+		residence  = sim.StructureID("walker_residence")
+		wardHome   = sim.StructureID("ward_house")
+		apothecary = sim.StructureID("pw_apothecary")
+		commons    = sim.StructureID("commons")
+		inn        = sim.StructureID("inn")
+		huddle     = sim.HuddleID("h1")
+	)
+	now := 540 // 09:00 — daytime, on shift
+	published := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
+	silence := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Silence Walker",
+		Role:              "peddler",
+		State:             sim.StateIdle,
+		InsideStructureID: commons,
+		HomeStructureID:   residence,
+		CurrentHuddleID:   huddle,
+		Coins:             15,
+		AttributeSlugs:    []string{sim.AttrWorker},
+		Needs:             map[sim.NeedKey]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"Prudence Ward": {}},
+	}
+	// Prudence is a structural stranger to Silence (different home; Silence is
+	// workless so they never share a workplace) and has NO declined offer against
+	// her — solicitable by anchor. Her empty purse must not change that: she holds
+	// berries and tea and can hire in kind (LLM-225).
+	prudence := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Prudence Ward",
+		Role:              "herbalist",
+		State:             sim.StateIdle,
+		InsideStructureID: commons,
+		HomeStructureID:   wardHome,
+		WorkStructureID:   apothecary,
+		CurrentHuddleID:   huddle,
+		Coins:             0,
+		Inventory:         map[sim.ItemKind]int{"blueberry": 4, "coca_tea": 9, "raspberry": 14},
+		Needs:             map[sim.NeedKey]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"Silence Walker": {}},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{silenceID: silence, prudenceID: prudence},
+		Structures: map[sim.StructureID]*sim.Structure{
+			commons:    plainStructure(commons, "Village Commons"),
+			residence:  plainStructure(residence, "Walker Residence"),
+			wardHome:   plainStructure(wardHome, "Ward House"),
+			apothecary: plainStructure(apothecary, "PW Apothecary"),
+			inn:        plainStructure(inn, "Inn"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{silenceID: {}, prudenceID: {}}},
+		},
+		// Businesses exist and would populate SeekWorkPlaces if the directory armed —
+		// so the absence of the dead-end is because Prudence stays solicitable.
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			sim.VillageObjectID(apothecary): {ID: sim.VillageObjectID(apothecary), Tags: []string{"business", "shop"}},
+			sim.VillageObjectID(inn):        {ID: sim.VillageObjectID(inn), Tags: []string{"business", "lodging"}},
+		},
+	}
+	return snap, silenceID, nil
 }
 
 // workerSeeksWorkSkipsNoHiringBusiness is the LLM-210 companion to

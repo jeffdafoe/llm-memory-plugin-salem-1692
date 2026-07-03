@@ -36,9 +36,22 @@ import (
 // the reward transfers when that window completes — the worker has to put in
 // the time before getting paid, so no coins move until then.
 
+// LaborStateBarterPossible is a SolicitWork RESULT-only signal — it is never
+// assigned to a LaborOffer nor written to the ledger. It means the employer
+// can't cover the reward as ASKED but holds tradeable goods, so an in-kind hire
+// is still possible (LLM-225). SolicitWork returns it INSTEAD of minting a
+// Declined offer, so the employer is not foreclosed (no employerDeclinedSubject
+// drop, no ObservedDeclinedWork stamp) and the worker is steered to re-ask in
+// kind (harness). LLM-243 — the labor-side mirror of LLM-222's coin-or-goods
+// means-to-pay: don't render a false dead-end for a broke-but-goods-rich
+// employer that can still hire in kind.
+const LaborStateBarterPossible LaborLedgerState = "barter_possible"
+
 // LaborSolicitResult is SolicitWork's success value — the minted pending
 // offer's id + state, plus the resolved employer display name so the tool
-// feedback can name who the offer went to.
+// feedback can name who the offer went to. State carries a real ledger state
+// (Pending on a placed offer, Declined on the LLM-193 destitute auto-decline)
+// or the result-only LaborStateBarterPossible (LLM-243), which mints no offer.
 type LaborSolicitResult struct {
 	ID           LaborID
 	State        LaborLedgerState
@@ -214,11 +227,12 @@ func SolicitWork(workerID ActorID, employerName string, reward int, rewardItems 
 				return nil, err
 			}
 
-			// Mint the pending offer.
-			id := w.nextLaborSeq()
+			// Build the pending offer — but do NOT record it yet. The LLM-243
+			// barter branch below leaves NO ledger entry, so the id is minted and
+			// the offer recorded only once we know it will be placed (Pending) or
+			// stand as the LLM-193 destitute decline.
 			expiresAt := at.Add(LaborLedgerTTLDefault)
 			offer := &LaborOffer{
-				ID:          id,
 				WorkerID:    workerID,
 				EmployerID:  employerID,
 				Reward:      reward,
@@ -230,33 +244,57 @@ func SolicitWork(workerID ActorID, employerName string, reward int, rewardItems 
 				CreatedAt:   at,
 				ExpiresAt:   expiresAt,
 			}
+			// canCover spans both reward legs — coins AND the in-kind goods the
+			// worker asked for (LLM-225). Computed once and reused by the barter
+			// branch and the destitute decline below.
+			canCover := employerCanCoverLaborReward(employer, offer)
+
+			// LLM-243: coin-anchored-gate mirror of LLM-222 on the hiring side. The
+			// employer can't cover the reward the worker ASKED (coins and/or the
+			// named goods), but holds tradeable goods, so an in-kind hire is still
+			// possible (LLM-225, the accept_work in-kind path). Do NOT mint a
+			// Declined offer: that over-generalizes "can't meet these terms" into
+			// "can't hire you at all" — the Declined ledger entry drops the employer
+			// from the solicit audience (employerDeclinedSubject) and the
+			// LaborResolved→ObservedDeclinedWork stamp drops its shop from the
+			// seek-work directory, so the worker perceives "No one here can hire you"
+			// and routes past an employer it could hire from. Return the barter
+			// signal with no ledger entry — the employer stays solicitable, no
+			// decline is remembered — and the harness steers the worker to re-ask in
+			// kind. Only a genuinely destitute employer (no coin AND no goods —
+			// employerCanHireInKind false) still hits the LLM-193 auto-decline below.
+			if !canCover && employerCanHireInKind(employer) {
+				return LaborSolicitResult{
+					State:        LaborStateBarterPossible,
+					EmployerName: employer.DisplayName,
+				}, nil
+			}
+
+			// Mint: assign the id and record the offer.
+			id := w.nextLaborSeq()
+			offer.ID = id
 			w.LaborLedger[id] = offer
 
-			// LLM-193: affordability gate. A broke employer — coins below the asked
-			// reward — can only refuse, but the solicit still emitted
-			// LaborOfferReceived, which WOKE the employer for a full LLM tick that
-			// ended in "my purse is empty": a tick burned on BOTH sides for no hire
-			// (the live Walker/Ward store-to-store hunt — 68% of NPC speech was
-			// unconverted work-chatter). Resolve the offer Declined immediately,
-			// WITHOUT emitting LaborOfferReceived, so the employer is never woken.
-			// The Declined terminal reuses the existing seek-work off-ramp with no
-			// new perception code: it stamps the worker's 12h "this shop declined me"
-			// memory (handleDeclinedWorkOnResolved → ObservedDeclinedWork on the
-			// employer's workplace), which drops the shop from buildSeekWorkPlaces,
-			// and the Declined ledger entry drops the employer from the solicit
-			// audience (employerDeclinedSubject). So the worker solicits once, learns,
-			// and is steered to a shop that can actually pay. buyerCanAfford is the
-			// same funds predicate AcceptWork's accept-time gate uses (gate 8); the
-			// balance can rise and the memory decays, so a shop that later has coin
-			// re-enters the directory. RootEventID/SourceEventID stay unset — there
-			// was no received event, and finalizeLaborTerminal doesn't need them.
-			// recordFacts=false: no conscious decline happened, so no relationship
-			// fact is written (matches AcceptWork's accept-time funds failure).
-			// LLM-225: "can cover" now spans both legs — coins AND the in-kind
-			// goods the worker asked for (employerCanCoverLaborReward), so a
-			// solicit for porridge the employer doesn't hold auto-declines the
-			// same way an unaffordable coin ask does.
-			if !employerCanCoverLaborReward(employer, offer) {
+			// LLM-193: affordability gate. A broke employer that can neither pay the
+			// coin nor barter any goods (employerCanHireInKind false above) can only
+			// refuse, but the solicit still emitted LaborOfferReceived, which WOKE the
+			// employer for a full LLM tick that ended in "my purse is empty": a tick
+			// burned on BOTH sides for no hire (the live Walker/Ward store-to-store
+			// hunt — 68% of NPC speech was unconverted work-chatter). Resolve the offer
+			// Declined immediately, WITHOUT emitting LaborOfferReceived, so the employer
+			// is never woken. The Declined terminal reuses the existing seek-work
+			// off-ramp with no new perception code: it stamps the worker's 12h "this
+			// shop declined me" memory (handleDeclinedWorkOnResolved → ObservedDeclinedWork
+			// on the employer's workplace), which drops the shop from buildSeekWorkPlaces,
+			// and the Declined ledger entry drops the employer from the solicit audience
+			// (employerDeclinedSubject). So the worker solicits once, learns, and is
+			// steered to a shop that can actually pay. The balance can rise and the
+			// memory decays, so a shop that later has coin re-enters the directory.
+			// RootEventID/SourceEventID stay unset — there was no received event, and
+			// finalizeLaborTerminal doesn't need them. recordFacts=false: no conscious
+			// decline happened, so no relationship fact is written (matches AcceptWork's
+			// accept-time funds failure).
+			if !canCover {
 				state := finalizeLaborTerminalOpts(w, offer, LaborTerminalStateDeclined, false, at, false)
 				return LaborSolicitResult{
 					ID:           id,
@@ -825,6 +863,25 @@ func laborCloseoutLine(payment string) string {
 // terminal flip / unpaid settle), mirroring the buyerCanAfford posture.
 func employerCanCoverLaborReward(employer *Actor, offer *LaborOffer) bool {
 	return buyerCanAfford(employer, offer.Reward) && buyerHoldsPayItems(employer, offer.RewardItems)
+}
+
+// employerCanHireInKind reports whether the employer holds any tradeable goods
+// it could offer as an in-kind wage — the "could this employer hire AT ALL"
+// predicate (LLM-243), distinct from employerCanCoverLaborReward's "can it cover
+// THIS ask". Any carried ItemKind with a positive quantity counts: the worker
+// names the reward goods and the employer either holds them or not, so this
+// gates only on whether goods exist to pay WITH, never on whether these
+// particular goods match a given ask (that is the per-offer coverage check).
+// The sim-side mirror of perception.holdsBarterableGoods (LLM-222), kept in step
+// so the hiring gate and the buy-side means-to-pay cue agree on what "has goods
+// to trade" means. World-goroutine-only.
+func employerCanHireInKind(employer *Actor) bool {
+	for _, qty := range employer.Inventory {
+		if qty > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // workerHasLiveJob reports whether the worker currently holds a committed labor
