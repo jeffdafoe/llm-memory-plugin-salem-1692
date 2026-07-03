@@ -418,6 +418,24 @@ var perceptionScenarios = []perceptionScenario{
 		build: growerAtStrippedBush,
 	},
 	{
+		name: "herbalist_ranged_wild_forage",
+		summary: "The LLM-253 ranged forage cue. Prudence (herbalist, tagged sim.AttrForageRange) is low on sage " +
+			"(0 of cap 5) and owns no sage bush, while an UNOWNED Sage Bush with 10 ripe sits ~80 tiles to the " +
+			"northeast — the gap the owner-only owned-bush cue and the proximity-only at-bush cue both leave open. The " +
+			"golden pins the distinct '## Wild sources you know of' section (never 'your bushes'), the qualitative " +
+			"distance+direction ('a long walk to the northeast'), the ripe count, and a move_to-by-structure_id handle — " +
+			"move_to ONLY, no gather mention (LLM-59/79). Paired with untagged_forager_no_ranged_wild_forage.",
+		build: herbalistRangedWildForage,
+	},
+	{
+		name: "untagged_forager_no_ranged_wild_forage",
+		summary: "The tag gate for the LLM-253 ranged forage cue: the SAME fixture as herbalist_ranged_wild_forage " +
+			"(low on sage, unowned distant Sage Bush) but the forager does NOT carry sim.AttrForageRange. The golden " +
+			"pins that NO '## Wild sources you know of' section renders — ranged awareness of an unowned distant source " +
+			"is the tagged 'herbalist gift' only. Enforced across the matrix by TestGoldensRangedWildForageRequiresTag.",
+		build: untaggedForagerNoRangedWildForage,
+	},
+	{
 		name: "hungry_forager_at_stocked_bush",
 		summary: "A hungry forager stands at an unowned raspberry bush that still has stock, with a cheese seller at " +
 			"the General Store nearby — the LLM-113 situation (Ezekiel at the Raspberry Bush with buy options). The " +
@@ -2434,6 +2452,124 @@ func growerAtStrippedBush() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 		},
 	}
 	return snap, prudenceID, nil
+}
+
+// herbalistRangedWildForage / untaggedForagerNoRangedWildForage are the LLM-253
+// pair: a forager low on sage (0 of cap 5) who owns no sage bush, with an UNOWNED
+// Sage Bush (10 ripe) ~80 tiles to the northeast — far outside loiter reach, so it
+// falls in the gap between the owner-only owned-bush cue and the proximity-only
+// at-bush cue. The tagged herbalist gets the ranged "## Wild sources you know of"
+// cue; the untagged forager gets nothing (the tag gate). Farm ~tile (23,73), bush
+// ~tile (70,9): dx=+47, dy=-64 → ~79 tiles, rendered "a long walk to the
+// northeast". On shift, no orders, no clock-driven text → byte-stable.
+func herbalistRangedWildForage() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return wildSageScenario(true)
+}
+
+func untaggedForagerNoRangedWildForage() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return wildSageScenario(false)
+}
+
+func wildSageScenario(tagged bool) (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const prudenceID = sim.ActorID("prudence")
+	zero := 0
+	start, end := 360, 1080 // 06:00–18:00
+	now := 600              // 10:00 — on shift
+	var slugs []string
+	if tagged {
+		slugs = []string{sim.AttrForageRange}
+	}
+	prudence := &sim.ActorSnapshot{
+		Kind:             sim.KindNPCShared,
+		DisplayName:      "Prudence Ward",
+		Role:             "herbalist",
+		State:            sim.StateIdle,
+		Pos:              sim.WorldPos{X: 736, Y: 2336}.Tile(), // ~tile (23,73) — her farm
+		ScheduleStartMin: &start,
+		ScheduleEndMin:   &end,
+		Coins:            12,
+		Needs:            map[sim.NeedKey]int{},
+		Inventory:        map[sim.ItemKind]int{"sage": 0},
+		AttributeSlugs:   slugs,
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "sage", Source: sim.RestockSourceForage, Max: 5},
+		}},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay:  &now,
+		NeedThresholds:    sim.NeedThresholds{},
+		Assets:            emptyAssetSet,
+		RestockReorderPct: 25,
+		Actors:            map[sim.ActorID]*sim.ActorSnapshot{prudenceID: prudence},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"sage_bush": {
+				ID:            "sage_bush",
+				DisplayName:   "Sage Bush",
+				Pos:           sim.WorldPos{X: 2240, Y: 288}, // ~tile (70,9) — far NW commons
+				OwnerActorID:  "",                            // UNOWNED — a wild commons source
+				LoiterOffsetX: &zero,
+				LoiterOffsetY: &zero,
+				Refreshes: []*sim.ObjectRefresh{
+					{Amount: 0, GatherItem: "sage", AvailableQuantity: intp(10)},
+				},
+			},
+		},
+	}
+	return snap, prudenceID, nil
+}
+
+// TestRangedWildForageRequiresTag is the LLM-253 tag-gate unit: the ranged
+// "## Wild sources you know of" cue (with its move_to handle and qualitative
+// distance+direction) renders for a forager carrying sim.AttrForageRange and does
+// NOT render for the same fixture without the tag. Asserts the render directly, so
+// the gate is pinned independently of whether a golden was regenerated.
+func TestRangedWildForageRequiresTag(t *testing.T) {
+	const header = "## Wild sources you know of"
+	tagged := renderScenario(perceptionScenario{name: "tagged", build: herbalistRangedWildForage})
+	if !strings.Contains(tagged, header) {
+		t.Fatalf("tagged herbalist: expected the ranged wild-forage section %q, got:\n%s", header, tagged)
+	}
+	if !strings.Contains(tagged, `move_to with structure_id "sage_bush"`) {
+		t.Errorf("tagged herbalist: expected a move_to handle to the Sage Bush, got:\n%s", tagged)
+	}
+	if !strings.Contains(tagged, "a long walk to the northeast") {
+		t.Errorf("tagged herbalist: expected the qualitative distance+direction phrase, got:\n%s", tagged)
+	}
+	untagged := renderScenario(perceptionScenario{name: "untagged", build: untaggedForagerNoRangedWildForage})
+	if strings.Contains(untagged, header) {
+		t.Errorf("untagged forager: ranged wild-forage section must NOT render without sim.AttrForageRange, got:\n%s", untagged)
+	}
+}
+
+// TestGoldensRangedWildForageRequiresTag is the LLM-253 cross-scenario invariant:
+// the ranged "## Wild sources you know of" section may render only for a subject
+// carrying sim.AttrForageRange. Runs over the whole matrix so a future cue can't
+// leak omniscient wild-source awareness to an untagged actor in any situation, not
+// just the one pair pinned above.
+func TestGoldensRangedWildForageRequiresTag(t *testing.T) {
+	const header = "## Wild sources you know of"
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, _ := sc.build()
+			a := snap.Actors[actorID]
+			tagged := false
+			if a != nil {
+				for _, slug := range a.AttributeSlugs {
+					if slug == sim.AttrForageRange {
+						tagged = true
+						break
+					}
+				}
+			}
+			if tagged {
+				return // subject carries the tag — the cue is permitted
+			}
+			if out := renderScenario(sc); strings.Contains(out, header) {
+				t.Errorf("scenario %q: subject lacks sim.AttrForageRange but the prompt renders the ranged wild-forage section %q (LLM-253)", sc.name, header)
+			}
+		})
+	}
 }
 
 // stallWearSnapshot builds a one-business, one-actor snapshot for the LLM-118
