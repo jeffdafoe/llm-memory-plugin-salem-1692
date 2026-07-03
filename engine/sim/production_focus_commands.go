@@ -1,6 +1,9 @@
 package sim
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // production_focus_commands.go — the crafter's "decide what to forge next"
 // choice (LLM-116). A multi-output producer (e.g. the smith: skillet + nail) no
@@ -47,7 +50,8 @@ func SetProductionFocus(id ActorID, itemName string) Command {
 			if !ok {
 				return nil, ModelFacingError{Msg: fmt.Sprintf("you don't know how to make %q", itemName)}
 			}
-			if !producesItem(a, kind) {
+			chosen, ok := produceEntry(a, kind)
+			if !ok {
 				return nil, ModelFacingError{Msg: fmt.Sprintf("you don't make %s at your workplace — focus only on what you produce", kind)}
 			}
 			// Must be MAKEABLE (recipe with positive rate), not just on the produce
@@ -57,12 +61,24 @@ func SetProductionFocus(id ActorID, itemName string) Command {
 			if !makeableRecipe(w, kind) {
 				return nil, ModelFacingError{Msg: fmt.Sprintf("you can't make %s right now", kind)}
 			}
-			// At-cap guard: focusing a good you already hold to its cap produces
-			// nothing (no headroom) and would just re-wake you next minute. If
-			// another makeable good is still below its cap, reject and steer there.
-			// When EVERY makeable good is at cap there's nothing better to pick, so
-			// the focus is allowed (you'll make more once a sale frees headroom).
-			if chosenAtCap, otherBelowCap := capStatusForFocus(a, w, kind); chosenAtCap && otherBelowCap {
+			// Worth-choosing guard (LLM-257): a focus worth setting must be
+			// craftable RIGHT NOW — makeable, below cap, AND its inputs on hand
+			// (craftableNow, the exact "worth choosing" test shouldChooseProduction
+			// and the forge cue use, so the tool and the wake warrant can't disagree).
+			// If the chosen good isn't craftable but ANOTHER good is, reject and steer
+			// there: a focus that forges nothing (at cap, or input-short) just re-wakes
+			// the crafter every minute and, for a multi-output crafter, starves the
+			// goods it CAN make (John Ellis locked on a sage-less stew, unable to mint
+			// even no-input water). When nothing else is craftable either, allow the
+			// pick — there is nothing better (the all-at-cap / all-starved escape).
+			if !craftableNow(w, a, chosen) && anyOtherCraftable(a, w, kind) {
+				// Branch the message on the ACTUAL failing predicate rather than
+				// inferring "not at cap ⇒ input-short": name the missing inputs only
+				// when inputs are truly the problem; otherwise makeableRecipe passed
+				// and the inputs are in hand, so the block is the carry cap.
+				if recipe := w.Recipes[kind]; !HasProduceInputs(recipe, a.Inventory) {
+					return nil, ModelFacingError{Msg: fmt.Sprintf("you can't make %s right now — you're %s; focus on something you can make now", kind, describeMissingInputs(recipe, a.Inventory))}
+				}
 				return nil, ModelFacingError{Msg: fmt.Sprintf("you already have all the %s you can hold — make something that's still needed", kind)}
 			}
 			switched := a.ProductionFocus != kind
@@ -78,40 +94,62 @@ func SetProductionFocus(id ActorID, itemName string) Command {
 	}
 }
 
-// capStatusForFocus reports, for a chosen makeable good, whether the actor is
-// already at that good's cap, and whether any OTHER makeable produce good is still
-// below its cap. SetProductionFocus uses it to reject focusing a full good while
-// something else still needs making (LLM-116). An uncapped entry (cap <= 0) is
-// never "at cap".
-func capStatusForFocus(a *Actor, w *World, kind ItemKind) (chosenAtCap, otherBelowCap bool) {
+// produceEntry returns the actor's produce RestockEntry for kind, and whether one
+// exists (`ok` false = the actor doesn't produce it). SetProductionFocus uses `ok`
+// as its "do you make this?" gate, so the entry lookup and the existence check are
+// one pass.
+func produceEntry(a *Actor, kind ItemKind) (RestockEntry, bool) {
 	if a.RestockPolicy == nil {
-		return false, false
+		return RestockEntry{}, false
 	}
 	for _, e := range a.RestockPolicy.ProduceEntries() {
-		if !makeableRecipe(w, e.Item) {
-			continue
-		}
-		cap := e.Cap()
-		belowCap := cap <= 0 || a.Inventory[e.Item] < cap
 		if e.Item == kind {
-			chosenAtCap = !belowCap
-		} else if belowCap {
-			otherBelowCap = true
+			return e, true
 		}
 	}
-	return chosenAtCap, otherBelowCap
+	return RestockEntry{}, false
 }
 
-// producesItem reports whether the actor carries a produce-source restock entry
-// for kind.
-func producesItem(a *Actor, kind ItemKind) bool {
-	if a == nil || a.RestockPolicy == nil {
+// anyOtherCraftable reports whether the actor has some produce good OTHER than
+// `kind` that is craftable right now (makeable, below cap, inputs on hand). Used
+// by SetProductionFocus to decide whether to reject a stuck focus (at cap or
+// input-short) — there is a better pick to steer to — or allow it because nothing
+// else can be made either.
+func anyOtherCraftable(a *Actor, w *World, kind ItemKind) bool {
+	if a.RestockPolicy == nil {
 		return false
 	}
 	for _, e := range a.RestockPolicy.ProduceEntries() {
 		if e.Item == kind {
+			continue
+		}
+		if craftableNow(w, a, e) {
 			return true
 		}
 	}
 	return false
+}
+
+// describeMissingInputs renders the recipe inputs the actor is short of as a
+// model-facing phrase for a craft-tool rejection, e.g. "short of sage (need 2,
+// have 0), meat (need 10, have 4)". Only shortfalls are listed; an input held in
+// full is omitted. The caller gates on !HasProduceInputs, so there is normally at
+// least one shortfall.
+func describeMissingInputs(recipe *ItemRecipe, inventory map[ItemKind]int) string {
+	if recipe == nil {
+		return "missing inputs"
+	}
+	var parts []string
+	for _, in := range recipe.Inputs {
+		if in.Qty <= 0 {
+			continue
+		}
+		if have := inventory[in.Item]; have < in.Qty {
+			parts = append(parts, fmt.Sprintf("%s (need %d, have %d)", in.Item, in.Qty, have))
+		}
+	}
+	if len(parts) == 0 {
+		return "missing inputs"
+	}
+	return "short of " + strings.Join(parts, ", ")
 }

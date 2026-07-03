@@ -44,6 +44,17 @@ type ForgeChoiceItem struct {
 	SoldUnits    int // units sold over the past week — the demand signal
 	MadeUnits    int // units actually forged over the past week — recent-production signal
 	IsFocus      bool
+	InputsReady  bool           // false when the crafter lacks the inputs to make one now (LLM-257)
+	Missing      []MissingInput // per-input shortfalls, for the "can't make now" annotation
+}
+
+// MissingInput is one recipe input the crafter is short of, resolved to its
+// catalog display label, for the forge-choice "can't make now" annotation
+// (LLM-257).
+type MissingInput struct {
+	Label string
+	Need  int
+	Have  int
 }
 
 // buildForgeChoice builds the forge-choice view for a multi-output crafter AT its
@@ -73,6 +84,11 @@ func buildForgeChoice(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 			perUnit = 1
 		}
 		soldUnits, _ := sellerRecentSales(snap, actorID, e.Item, restockSalesWindow)
+		inputsReady := sim.HasProduceInputs(recipe, actorSnap.Inventory)
+		var missing []MissingInput
+		if !inputsReady {
+			missing = missingInputs(snap, recipe, actorSnap.Inventory)
+		}
 		items = append(items, ForgeChoiceItem{
 			ItemLabel:    itemDisplayLabel(snap, e.Item),
 			itemKind:     e.Item,
@@ -84,6 +100,8 @@ func buildForgeChoice(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 			SoldUnits:    soldUnits,
 			MadeUnits:    recentProducedUnits(snap, actorSnap, e.Item, restockSalesWindow),
 			IsFocus:      actorSnap.ProductionFocus == e.Item,
+			InputsReady:  inputsReady,
+			Missing:      missing,
 		})
 	}
 	if len(items) < 2 {
@@ -104,16 +122,17 @@ func buildForgeChoice(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 	// steer "keep going / done()" instead of "choose". `items` holds ONLY
 	// recipe-backed makeable goods — the build loop above `continue`s past any
 	// without a positive-rate recipe — so an IsFocus entry HERE is already
-	// makeable; the below-cap check completes the productivity test, matching
-	// shouldChooseProduction's gate (makeable AND below cap) exactly. A
-	// non-makeable focus never gets an item (no IsFocus -> FocusNoun stays "")
-	// and an at-cap focus fails the check, so both fall through to the choose
-	// menu — the same states the production-choice warrant fires on, so the cue
-	// and the warrant can't disagree. Keep them in lockstep: if the build filter
-	// or shouldChooseProduction's productivity gate changes, the other must too.
+	// makeable; the below-cap AND inputs-ready checks complete the craftability
+	// test, matching shouldChooseProduction's gate (craftableNow: makeable AND
+	// below cap AND inputs on hand — LLM-257) exactly. A non-makeable focus never
+	// gets an item, and an at-cap OR input-starved focus fails the check, so all
+	// three fall through to the choose menu — the same states the production-choice
+	// warrant fires on, so the cue and the warrant can't disagree. Keep them in
+	// lockstep: if the build filter or shouldChooseProduction's craftability gate
+	// changes, the other must too.
 	for _, it := range items {
 		if it.IsFocus {
-			if it.Cap <= 0 || it.OnHand < it.Cap {
+			if (it.Cap <= 0 || it.OnHand < it.Cap) && it.InputsReady {
 				view.FocusNoun = itemPlural(snap, it.itemKind)
 			}
 			break
@@ -169,12 +188,55 @@ func renderForgeChoice(b *strings.Builder, v *ForgeChoiceView) {
 		if it.Cap > 0 {
 			stock = fmt.Sprintf("%d of %d on hand", it.OnHand, it.Cap)
 		}
-		focus := ""
-		if it.IsFocus {
-			focus = " — making this now"
+		// Status suffix: an input-starved good is flagged "can't make now" with the
+		// shortfall so the model picks informed and isn't lured into re-choosing a
+		// good it can't make (LLM-257); otherwise the focused good carries the
+		// "making this now" marker. A starved good never carries the focus marker —
+		// a starved focus already dropped FocusNoun to "" and lands us in this menu.
+		suffix := ""
+		if !it.InputsReady {
+			suffix = " — can't make now: " + renderMissingInputs(it.Missing)
+		} else if it.IsFocus {
+			suffix = " — making this now"
 		}
 		fmt.Fprintf(b, "- %s: %s, %s, made %d and sold %d this past week%s.\n",
-			sanitizeInline(it.ItemLabel), rate, stock, it.MadeUnits, it.SoldUnits, focus)
+			sanitizeInline(it.ItemLabel), rate, stock, it.MadeUnits, it.SoldUnits, suffix)
 	}
 	b.WriteString("\n")
+}
+
+// missingInputs lists the recipe inputs actorSnap's inventory is short of,
+// resolving each to its catalog display label for the forge-choice annotation
+// (LLM-257). Mirrors sim.HasProduceInputs's per-input test.
+func missingInputs(snap *sim.Snapshot, recipe *sim.ItemRecipe, inventory map[sim.ItemKind]int) []MissingInput {
+	if recipe == nil {
+		return nil
+	}
+	var out []MissingInput
+	for _, in := range recipe.Inputs {
+		if in.Qty <= 0 {
+			continue
+		}
+		if have := inventory[in.Item]; have < in.Qty {
+			out = append(out, MissingInput{
+				Label: itemDisplayLabel(snap, in.Item),
+				Need:  in.Qty,
+				Have:  have,
+			})
+		}
+	}
+	return out
+}
+
+// renderMissingInputs phrases a shortfall list for the forge-choice annotation,
+// e.g. "short of sage (need 2, have 0), meat (need 10, have 4)" (LLM-257).
+func renderMissingInputs(missing []MissingInput) string {
+	if len(missing) == 0 {
+		return "missing inputs"
+	}
+	parts := make([]string, 0, len(missing))
+	for _, m := range missing {
+		parts = append(parts, fmt.Sprintf("%s (need %d, have %d)", sanitizeInline(m.Label), m.Need, m.Have))
+	}
+	return "short of " + strings.Join(parts, ", ")
 }
