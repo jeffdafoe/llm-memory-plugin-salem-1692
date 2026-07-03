@@ -85,6 +85,16 @@ func TestDegenVisitScope(t *testing.T) {
 	if got := degenVisitScope(w, atPin); got != "tavern" {
 		t.Errorf("at the loiter pin: got %q, want tavern", got)
 	}
+	atSlot := &Actor{Pos: TilePos{X: tavernTile.X + 1, Y: tavernTile.Y - 1}}
+	if got := degenVisitScope(w, atSlot); got != "tavern" {
+		t.Errorf("on a visitor slot (Chebyshev 1): got %q, want tavern", got)
+	}
+	// Chebyshev 2 is audience scope, NOT a visit — a mid-walk pass-by near the
+	// pin must not mint a phantom visit (code_review false-positive boundary).
+	passBy := &Actor{Pos: TilePos{X: tavernTile.X + 2, Y: tavernTile.Y}}
+	if got := degenVisitScope(w, passBy); got != "" {
+		t.Errorf("pass-by at Chebyshev 2: got %q, want empty", got)
+	}
 	open := &Actor{Pos: WorldToTile(5000, 5000)}
 	if got := degenVisitScope(w, open); got != "" {
 		t.Errorf("open ground: got %q, want empty", got)

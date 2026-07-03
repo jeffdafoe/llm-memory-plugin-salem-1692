@@ -286,11 +286,10 @@ func recordDegenVisit(w *World, a *Actor) {
 }
 
 // degenVisitScope resolves the place identity a scored tick's visit is
-// attributed to: the structure the actor is inside when set, else the nearest
-// named village object whose loiter pin lies within AudienceScopeTiles of the
-// actor — the same position-based attribution perception uses for utterances
-// and actions. Empty only when the actor is genuinely in transit or in the
-// open.
+// attributed to: the structure the actor is inside when set, else the named
+// village object at whose loiter pin the actor is standing — pin tile or its
+// eight visitor slots (LoiterAttributionTiles, the exact inverse of
+// pickVisitorSlot). Empty when the actor is in transit or in the open.
 //
 // LLM-255: keying the window on InsideStructureID alone made the oscillation
 // arm blind to any shuttle among structures whose arrival resolves at the
@@ -298,15 +297,23 @@ func recordDegenVisit(w *World, a *Actor) {
 // every visit recorded blank, and the arm could not fire no matter how long
 // the shuttle persisted (the live John Ellis Tavern<->General Store case).
 //
+// The radius is deliberately the ARRIVAL scope, not the wider audience scope
+// (AudienceScopeTiles): a visit means the actor is standing at the place, and
+// the tighter ring keeps mid-walk pass-bys near a named object from minting
+// phantom visits that could assemble a false oscillation window
+// (code_review). Radius 0 would be too tight the other way — an arriving
+// visitor stands on the slot ring at Chebyshev 1, not the pin tile itself.
+//
 // A bare named prop (a well, a shade tree) has no Structure entry; its object
 // id still identifies the place for the arm's transition / distinct-place
 // counting, and buildings share one id across both maps (the shared-identity
-// bridge), so the cast is safe for both.
+// bridge), so the cast is safe for both. Nothing dereferences the id through
+// w.Structures — it is an identity token only.
 func degenVisitScope(w *World, a *Actor) StructureID {
 	if a.InsideStructureID != "" {
 		return a.InsideStructureID
 	}
-	if objID, ok := ResolveLoiteringObject(w.VillageObjects, w.Assets, a.Pos, AudienceScopeTiles); ok {
+	if objID, ok := ResolveLoiteringObject(w.VillageObjects, w.Assets, a.Pos, LoiterAttributionTiles); ok {
 		return StructureID(objID)
 	}
 	return ""
