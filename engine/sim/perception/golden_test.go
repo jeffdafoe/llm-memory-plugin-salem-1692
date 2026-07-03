@@ -779,6 +779,16 @@ var perceptionScenarios = []perceptionScenario{
 		build: brokeBuyerNoGoodsNoBuyCue,
 	},
 	{
+		name: "broke_buyer_no_goods_no_peer_buy",
+		summary: "The LLM-242 co-present peer arm of the same means-to-pay dead-end: the broke forager (Ezekiel, 0 coins, empty " +
+			"pack) stands in a huddle with a co-present peer (Lewis) carrying stew he'd otherwise be cued to buy with pay_with_item. " +
+			"With no coins and nothing to trade there is no means of payment, so the peer buy offer is suppressed (the sibling of the " +
+			"LLM-222 vendor-cue drop); with no free source or own stock nearby the whole '## What you can eat or drink' section is " +
+			"omitted. Contrast peers_holding_same_food, where the subject DOES hold goods and so keeps a means to pay. Non-vacuous " +
+			"fixture for the peer half of TestGoldensNoBuyCueWithoutMeansToPay.",
+		build: brokeBuyerNoGoodsNoPeerBuy,
+	},
+	{
 		name: "producer_hungry_mild_at_post",
 		summary: "A farmer (Moses James) stands at his own farm on shift, only MILDLY hungry (felt, below the red " +
 			"threshold), carrying nothing edible but the carrots he grows to sell (the live grazing case, LLM-134). The " +
@@ -1712,6 +1722,59 @@ func brokeBuyerNoGoodsNoBuyCue() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta)
 	return snap, ezekielID, nil
 }
 
+// brokeBuyerNoGoodsNoPeerBuy — LLM-242 means-to-pay suppression, the co-present
+// peer arm (sibling of brokeBuyerNoGoodsNoBuyCue's vendor arm). The same broke
+// forager (0 coins, nothing to trade) stands in a huddle with a co-present peer
+// (Lewis) carrying stew he'd otherwise be told to buy with pay_with_item. No
+// coins and no goods is no means to pay, so the peer offer is dropped; with no
+// free source or own stock nearby the whole "## What you can eat or drink"
+// section is omitted. Contrast peers_holding_same_food, where the subject holds
+// stew (goods) and so keeps a means to pay.
+func brokeBuyerNoGoodsNoPeerBuy() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		ezekielID = sim.ActorID("ezekiel")
+		lewisID   = sim.ActorID("lewis")
+		commons   = sim.StructureID("commons")
+		huddle    = sim.HuddleID("h1")
+	)
+	published := time.Date(2026, 6, 27, 11, 0, 0, 0, time.UTC)
+	ezekiel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Ezekiel Crane",
+		Role:              "forager",
+		State:             sim.StateIdle,
+		InsideStructureID: commons,
+		CurrentHuddleID:   huddle,
+		Coins:             0,
+		Needs:             map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold},
+		Acquaintances:     map[string]sim.Acquaintance{"Lewis Walker": {}},
+	}
+	lewis := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Lewis Walker",
+		Role:              "farmer",
+		State:             sim.StateIdle,
+		InsideStructureID: commons,
+		CurrentHuddleID:   huddle,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"stew": 1},
+		Acquaintances:     map[string]sim.Acquaintance{"Ezekiel Crane": {}},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:    published,
+		NeedThresholds: sim.NeedThresholds{},
+		Actors:         map[sim.ActorID]*sim.ActorSnapshot{ezekielID: ezekiel, lewisID: lewis},
+		Structures: map[sim.StructureID]*sim.Structure{
+			commons: plainStructure(commons, "Village Commons"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{ezekielID: {}, lewisID: {}}},
+		},
+		ItemKinds: foodDrinkCatalog(),
+	}
+	return snap, ezekielID, nil
+}
+
 // TestForgeCueOnlyForMultiOutputCrafterAtForge is the LLM-116 cross-scenario
 // invariant: the "## Time to produce" cue appears in EXACTLY the multi-output-producer-
 // at-workplace scenarios and no other — whether unfocused (choose menu,
@@ -1988,17 +2051,22 @@ func TestGoldensSatiationBuyCueNeverTargetsRememberedShutVendor(t *testing.T) {
 	}
 }
 
-// TestGoldensNoBuyCueWithoutMeansToPay is the LLM-222 cross-scenario invariant: a
-// buyer with 0 coins AND no barterable goods holds no means of payment at all, so
-// the "## What you can eat or drink" buy cue ("Nearby to buy") must never be shown
-// to them — a buy imperative they can neither pay nor barter is the genuine dead
-// end this ticket suppresses (the 55-hit pay_with_item no-offer rejection). Reads
-// the SAME means-to-pay signal the build gate does (holdsBarterableGoods + coins),
-// per the discussion-109 no-drift rule. Non-vacuous: broke_buyer_no_goods_no_buy_cue
-// builds exactly this actor beside an open cheese seller the cue would otherwise
-// advertise.
+// TestGoldensNoBuyCueWithoutMeansToPay is the cross-scenario invariant over BOTH
+// buy-food affordances in "## What you can eat or drink": the walk-to vendor cue
+// ("Nearby to buy", LLM-222) and the co-present peer offer ("offer to buy it from
+// them now with pay_with_item", LLM-242). A buyer with 0 coins AND no barterable
+// goods holds no means of payment at all, so NEITHER affordance may be shown — a
+// buy imperative they can neither pay nor barter is the genuine dead end (the
+// 55-hit pay_with_item no-offer rejection). Reads the SAME means-to-pay signal the
+// build gates do (holdsBarterableGoods + coins), per the discussion-109 no-drift
+// rule. Non-vacuous on both arms: broke_buyer_no_goods_no_buy_cue builds this actor
+// beside an open cheese seller (vendor arm), broke_buyer_no_goods_no_peer_buy stands
+// it in a huddle with a peer carrying stew (peer arm) — each an affordance the cue
+// would otherwise advertise.
 func TestGoldensNoBuyCueWithoutMeansToPay(t *testing.T) {
-	var sawBroke bool
+	const vendorMarker = "Nearby to buy ("
+	const peerMarker = "offer to buy it from them now with pay_with_item"
+	var sawBroke, sawPeerArm bool
 	for _, sc := range perceptionScenarios {
 		sc := sc
 		t.Run(sc.name, func(t *testing.T) {
@@ -2008,13 +2076,31 @@ func TestGoldensNoBuyCueWithoutMeansToPay(t *testing.T) {
 				return // has some means to pay — invariant N/A here
 			}
 			sawBroke = true
-			if strings.Contains(renderScenario(sc), "Nearby to buy (") {
-				t.Errorf("scenario %q: buyer holds 0 coins and no barterable goods but the eat/drink cue advertises a buy — no means to pay is a hard dead-end that must be suppressed (LLM-222)", sc.name)
+			out := renderScenario(sc)
+			if strings.Contains(out, vendorMarker) {
+				t.Errorf("scenario %q: buyer holds 0 coins and no barterable goods but the eat/drink cue advertises a walk-to buy — no means to pay is a hard dead-end that must be suppressed (LLM-222)", sc.name)
+			}
+			if strings.Contains(out, peerMarker) {
+				t.Errorf("scenario %q: buyer holds 0 coins and no barterable goods but the eat/drink cue offers to buy from a co-present peer — pay_with_item needs coins or goods, so the peer offer must be suppressed too (LLM-242)", sc.name)
+			}
+			// Track that the peer arm is genuinely exercised: this no-means subject
+			// shares a huddle with a co-present non-PC peer carrying goods — the case
+			// where a peer buy line WOULD render absent the LLM-242 gate. Guards the peer
+			// half from silently going vacuous if its fixture is ever dropped.
+			if h := snap.Huddles[a.CurrentHuddleID]; h != nil {
+				for peerID := range h.Members {
+					if p := snap.Actors[peerID]; peerID != actorID && p != nil && p.Kind != sim.KindPC && holdsBarterableGoods(p) {
+						sawPeerArm = true
+					}
+				}
 			}
 		})
 	}
 	if !sawBroke {
 		t.Error("no scenario exercised the no-means-to-pay branch — add one (broke_buyer_no_goods_no_buy_cue)")
+	}
+	if !sawPeerArm {
+		t.Error("no no-means-to-pay scenario stands the buyer in a huddle with a goods-carrying peer — the LLM-242 peer-offer suppression is untested; add one (broke_buyer_no_goods_no_peer_buy)")
 	}
 }
 

@@ -331,6 +331,7 @@ func huddleWith(members ...sim.ActorID) (sim.HuddleID, *sim.Huddle) {
 func TestBuildSatiation_CoPresentPeer_Acquainted(t *testing.T) {
 	hid, h := huddleWith("ezekiel", "hannah")
 	subj := &sim.ActorSnapshot{
+		Coins:           5, // means to pay — clears the LLM-242 peer-offer gate (orthogonal to this test)
 		Needs:           map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold},
 		CurrentHuddleID: hid,
 		Acquaintances:   map[string]sim.Acquaintance{"Hannah": {}},
@@ -380,6 +381,7 @@ func TestBuildSatiation_CoPresentPeer_Acquainted(t *testing.T) {
 func TestBuildSatiation_CoPresentPeer_PendingOfferSuppressed(t *testing.T) {
 	hid, h := huddleWith("hannah", "john", "ezekiel")
 	subj := &sim.ActorSnapshot{
+		Coins:           5, // means to pay — clears the LLM-242 peer-offer gate (orthogonal to this test)
 		Needs:           map[sim.NeedKey]int{"thirst": sim.DefaultThirstRedThreshold},
 		CurrentHuddleID: hid,
 		Acquaintances:   map[string]sim.Acquaintance{"John Ellis": {}, "Ezekiel Crane": {}},
@@ -420,6 +422,7 @@ func TestBuildSatiation_CoPresentPeer_PendingOfferSuppressed(t *testing.T) {
 func TestBuildSatiation_CoPresentPeer_Unacquainted(t *testing.T) {
 	hid, h := huddleWith("ezekiel", "stranger")
 	subj := &sim.ActorSnapshot{
+		Coins:           5, // means to pay — clears the LLM-242 peer-offer gate (orthogonal to this test)
 		Needs:           map[sim.NeedKey]int{"thirst": sim.DefaultThirstRedThreshold},
 		CurrentHuddleID: hid,
 		// No Acquaintances — subject does not know the peer.
