@@ -146,6 +146,40 @@ func TestGoldensEnRouteWorkerNotOfferedNewWork(t *testing.T) {
 	}
 }
 
+// TestGoldensLaboringPeerNotAnOfferTarget is the LLM-231 cross-scenario invariant: a
+// co-present huddle peer fulfilling a hired job (a Working LaborOffer with the peer as
+// worker) is never surfaced as an offerable customer — a worker mid-job is not a valid
+// sale target. The laboring set is recomputed from the raw LaborLedger (laboringOfferFor),
+// NOT from HuddleMember.Laboring, so it independently asserts buildOfferableCustomers drops
+// them rather than pinning the cue against its own flag. Requires the matrix to exercise
+// the exclusion at least once (a seller scenario with a laboring co-present peer).
+func TestGoldensLaboringPeerNotAnOfferTarget(t *testing.T) {
+	var exercised bool
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		snap, actorID, warrants := sc.build()
+		p := Build(snap, actorID, warrants)
+		if p.OfferableCustomers == nil {
+			continue // subject isn't a seller with co-present customers — invariant N/A here
+		}
+		for _, m := range p.Surroundings.HuddleMembers {
+			if laboringOfferFor(snap, m.ID) == nil {
+				continue
+			}
+			exercised = true
+			label := descriptorLabel(m.DisplayName, m.Role, m.Acquainted)
+			for _, name := range p.OfferableCustomers.CustomerNames {
+				if name == label {
+					t.Errorf("scenario %q: laboring peer %q surfaced as an offerable customer — a worker mid-job is not a pitch target (LLM-231)", sc.name, label)
+				}
+			}
+		}
+	}
+	if !exercised {
+		t.Error("matrix must exercise a seller scenario with a laboring co-present peer (LLM-231)")
+	}
+}
+
 // TestGoldensConversationLinesCarryIntervalStamps is the LLM-217 cross-scenario
 // invariant: in any scenario whose snapshot carries a clock (PublishedAt set —
 // every clocked fixture stamps its utterances relative to it), every line of
@@ -463,6 +497,27 @@ var perceptionScenarios = []perceptionScenario{
 			"buy-back: John read Ezekiel's sell-offer as a buy and quoted skillets at him). A customer who makes none of " +
 			"the goods draws no note (see TestProducerPitchNoteOnlyForCoPresentMaker).",
 		build: keeperNotPitchingMakersOwnWare,
+	},
+	{
+		name: "seller_huddled_with_laboring_peer",
+		summary: "LLM-231: John Ellis keeps his tavern in company with two peers — Patience Walker, mid-job for Josiah " +
+			"Thorne (a Working LaborOffer, StateLaboring), and Grace Bishop, free. The live shape: John burned ~20 ticks " +
+			"re-pitching a laboring Patience because nothing told him she was busy. The golden pins that the '## Around you' " +
+			"line annotates Patience busy ('working a job for Josiah Thorne just now — not free to trade') while Grace reads " +
+			"plainly, AND that the seller offer cue lists Grace but NOT Patience (a worker mid-job is not a pitch target). The " +
+			"busy annotation deliberately does not say 'won't respond' — a laborer can still answer speech (LLM-230). Pairs " +
+			"with TestGoldensLaboringPeerNotAnOfferTarget (the matrix-wide exclusion).",
+		build: sellerHuddledWithLaboringPeer,
+	},
+	{
+		name: "seller_employing_own_laboring_worker",
+		summary: "LLM-231 employer-seller case: John Ellis keeps his tavern (stew to sell) while a worker he himself " +
+			"hired, Silence Walker, labors for him (a Working LaborOffer with John as employer), alongside Grace Bishop, a " +
+			"free customer. The golden pins that Silence is STILL dropped from the '## Custom at hand' offer cue (a worker " +
+			"mid-job isn't a sale target even for their own employer) while Grace is listed — AND that Silence carries NO " +
+			"busy annotation in '## Around you' (the employer gets the richer '## Workers currently working for you' cue " +
+			"instead; the annotation is bystander-only). Complements seller_huddled_with_laboring_peer (the bystander case).",
+		build: sellerEmployingOwnLaboringWorker,
 	},
 	{
 		name: "maker_offered_own_ware_buy_quote",
@@ -1704,7 +1759,9 @@ func TestActiveWorkerCueOnlyForEmployerWithWorkingOffer(t *testing.T) {
 	for _, sc := range perceptionScenarios {
 		sc := sc
 		got := renderScenario(sc)
-		want := sc.name == "employer_with_worker_on_job"
+		// LLM-231: seller_employing_own_laboring_worker also puts the subject in the
+		// employer seat of a Working offer (John employs Silence), so the cue is correct there.
+		want := sc.name == "employer_with_worker_on_job" || sc.name == "seller_employing_own_laboring_worker"
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: active-worker cue present=%v, want %v", sc.name, has, want)
 		}
@@ -1846,6 +1903,10 @@ func TestVendorOperatingCueOnlyDuringOperatingHours(t *testing.T) {
 		"keeper_staying_open_offshift": true,
 		// LLM-171: John keeps his tavern on shift, at post — legitimately operating.
 		"keeper_not_pitching_makers_own_ware": true,
+		// LLM-231: John keeps his tavern on shift, at post, with a laboring peer present.
+		"seller_huddled_with_laboring_peer": true,
+		// LLM-231: John keeps his tavern on shift, at post, employing a laboring worker.
+		"seller_employing_own_laboring_worker": true,
 	}
 	for _, sc := range perceptionScenarios {
 		sc := sc
@@ -3231,6 +3292,164 @@ func keeperNotPitchingMakersOwnWare() (*sim.Snapshot, sim.ActorID, []sim.Warrant
 		},
 		Huddles: map[sim.HuddleID]*sim.Huddle{
 			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{johnID: {}, ezekielID: {}}},
+		},
+	}
+	return snap, johnID, nil
+}
+
+// sellerHuddledWithLaboringPeer is the LLM-231 fixture: John Ellis (seller, at his own
+// tavern with stew to sell) is huddled with Patience Walker — mid-job for Josiah Thorne
+// (a Working LaborOffer, so StateLaboring) — and Grace Bishop, a free customer. It exercises
+// both halves of the fix: the busy annotation on Patience in "## Around you", and her absence
+// from the seller offer cue (which still lists the free Grace). Josiah is present only as the
+// employer named by the annotation (not co-present). No clock-relative churn beyond the fixed
+// PublishedAt → byte-stable.
+func sellerHuddledWithLaboringPeer() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		johnID     = sim.ActorID("john")
+		patienceID = sim.ActorID("patience")
+		graceID    = sim.ActorID("grace")
+		josiahID   = sim.ActorID("josiah")
+		tavern     = sim.StructureID("tavern")
+		huddle     = sim.HuddleID("h1")
+	)
+	start, end := 360, 1320 // 06:00–22:00, on shift in the evening
+	now := 1140             // 19:00 — keeping the tavern, company present
+	published := time.Date(2026, 7, 3, 19, 0, 0, 0, time.UTC)
+	workingUntil := published.Add(90 * time.Minute)
+	john := &sim.ActorSnapshot{
+		Kind:               sim.KindNPCStateful,
+		DisplayName:        "John Ellis",
+		Role:               "tavernkeeper",
+		State:              sim.StateIdle,
+		WorkStructureID:    tavern,
+		InsideStructureID:  tavern,
+		ScheduleStartMin:   &start,
+		ScheduleEndMin:     &end,
+		CurrentHuddleID:    huddle,
+		Coins:              267,
+		Needs:              map[sim.NeedKey]int{},
+		BusinessownerState: &sim.BusinessownerState{},
+		Inventory:          map[sim.ItemKind]int{"stew": 4},
+		Acquaintances: map[string]sim.Acquaintance{
+			"Patience Walker": {}, "Grace Bishop": {}, "Josiah Thorne": {},
+		},
+	}
+	patience := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Patience Walker",
+		Role:              "laborer",
+		State:             sim.StateLaboring,
+		InsideStructureID: tavern,
+		CurrentHuddleID:   huddle,
+		Needs:             map[sim.NeedKey]int{},
+	}
+	grace := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Grace Bishop",
+		Role:              "villager",
+		State:             sim.StateIdle,
+		InsideStructureID: tavern,
+		CurrentHuddleID:   huddle,
+		Needs:             map[sim.NeedKey]int{},
+	}
+	josiah := &sim.ActorSnapshot{
+		Kind:        sim.KindNPCStateful,
+		DisplayName: "Josiah Thorne",
+		Role:        "shopkeeper",
+		State:       sim.StateIdle,
+		Needs:       map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			johnID: john, patienceID: patience, graceID: grace, josiahID: josiah,
+		},
+		Structures: map[sim.StructureID]*sim.Structure{
+			tavern: plainStructure(tavern, "Tavern"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{johnID: {}, patienceID: {}, graceID: {}}},
+		},
+		LaborLedger: map[sim.LaborID]*sim.LaborOffer{
+			5: {ID: 5, WorkerID: patienceID, EmployerID: josiahID, State: sim.LaborStateWorking, WorkingUntil: &workingUntil, HuddleID: huddle},
+		},
+	}
+	return snap, johnID, nil
+}
+
+// sellerEmployingOwnLaboringWorker is the LLM-231 employer-seller fixture: John Ellis
+// (seller, at his own tavern with stew to sell) is the EMPLOYER of a co-present laboring
+// worker, Silence Walker (a Working LaborOffer with John as employer), and is also huddled
+// with Grace Bishop, a free customer. It pins the two-way split of the fix: Silence is still
+// dropped from the offer cue (exclusion is truthful for every observer, employer included),
+// while she carries NO busy annotation in "## Around you" (that is bystander-only — the
+// employer sees the "## Workers currently working for you" cue instead). Byte-stable.
+func sellerEmployingOwnLaboringWorker() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		johnID    = sim.ActorID("john")
+		silenceID = sim.ActorID("silence")
+		graceID   = sim.ActorID("grace")
+		tavern    = sim.StructureID("tavern")
+		huddle    = sim.HuddleID("h1")
+	)
+	start, end := 360, 1320 // 06:00–22:00, on shift in the evening
+	now := 1140             // 19:00 — keeping the tavern, company present
+	published := time.Date(2026, 7, 3, 19, 0, 0, 0, time.UTC)
+	workingUntil := published.Add(90 * time.Minute)
+	john := &sim.ActorSnapshot{
+		Kind:               sim.KindNPCStateful,
+		DisplayName:        "John Ellis",
+		Role:               "tavernkeeper",
+		State:              sim.StateIdle,
+		WorkStructureID:    tavern,
+		InsideStructureID:  tavern,
+		ScheduleStartMin:   &start,
+		ScheduleEndMin:     &end,
+		CurrentHuddleID:    huddle,
+		Coins:              267,
+		Needs:              map[sim.NeedKey]int{},
+		BusinessownerState: &sim.BusinessownerState{},
+		Inventory:          map[sim.ItemKind]int{"stew": 4},
+		Acquaintances: map[string]sim.Acquaintance{
+			"Silence Walker": {}, "Grace Bishop": {},
+		},
+	}
+	silence := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Silence Walker",
+		Role:              "laborer",
+		State:             sim.StateLaboring,
+		InsideStructureID: tavern,
+		CurrentHuddleID:   huddle,
+		Needs:             map[sim.NeedKey]int{},
+	}
+	grace := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Grace Bishop",
+		Role:              "villager",
+		State:             sim.StateIdle,
+		InsideStructureID: tavern,
+		CurrentHuddleID:   huddle,
+		Needs:             map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			johnID: john, silenceID: silence, graceID: grace,
+		},
+		Structures: map[sim.StructureID]*sim.Structure{
+			tavern: plainStructure(tavern, "Tavern"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{johnID: {}, silenceID: {}, graceID: {}}},
+		},
+		LaborLedger: map[sim.LaborID]*sim.LaborOffer{
+			5: {ID: 5, WorkerID: silenceID, EmployerID: johnID, Reward: 2, State: sim.LaborStateWorking, WorkingUntil: &workingUntil, HuddleID: huddle},
 		},
 	}
 	return snap, johnID, nil

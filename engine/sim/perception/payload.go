@@ -1318,6 +1318,28 @@ type HuddleMember struct {
 	// NPC can't infer from a bare co-presence list. Left false on HuddleMembers
 	// (a huddle peer's arrival is already conveyed by the huddle-join).
 	JustArrived bool
+
+	// Laboring marks a co-present member fulfilling a hired job (a Working
+	// LaborOffer / StateLaboring), set truthfully for EVERY observer. The seller
+	// offer/quote cue (buildOfferableCustomers) drops a laboring peer as a pitch
+	// target regardless of who is looking — a worker mid-job is not a sale target,
+	// not even for their own employer. It does NOT drop them from the speech
+	// audience: unlike a sleeper, a laboring worker can still answer if spoken to.
+	// LLM-231.
+	Laboring bool
+
+	// LaboringBystander is true when Laboring holds AND the observer is not the
+	// peer's own employer — the case the "## Around you" busy annotation renders
+	// for. The employer is suppressed here: they get the richer "## Workers
+	// currently working for you" cue instead, and naming the employer to themselves
+	// reads wrong. False for non-laboring peers. LLM-231.
+	LaboringBystander bool
+
+	// LaboringForLabel is the acquaintance-gated label of the employer the member
+	// works for, woven into the busy annotation ("working a job for X"). Set only
+	// alongside LaboringBystander; empty when the observer is the employer or the
+	// employer can't be resolved (render then omits the name). LLM-231.
+	LaboringForLabel string
 }
 
 // AnchorsView carries the actor's own home and work structures as standing

@@ -1099,6 +1099,7 @@ func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 				label += " (just arrived)"
 			}
 			label += laborTiePhrase(m.SolicitTie)
+			label += laboringPhrase(m)
 			names[i] = label
 		}
 		verb := "is"
@@ -1363,7 +1364,23 @@ func joinHuddleMembers(members []HuddleMember) string {
 }
 
 func renderHuddleMember(m HuddleMember) string {
-	return sanitizeInline(descriptorLabel(m.DisplayName, m.Role, m.Acquainted)) + laborTiePhrase(m.SolicitTie)
+	return sanitizeInline(descriptorLabel(m.DisplayName, m.Role, m.Acquainted)) + laborTiePhrase(m.SolicitTie) + laboringPhrase(m)
+}
+
+// laboringPhrase renders the LLM-231 busy annotation for a co-present member who is
+// mid-job (fulfilling a Working LaborOffer). It names the employer when the subject
+// can resolve them, otherwise omits the name. The wording signals the member is
+// occupied and not a trade prospect right now — it deliberately does NOT say "won't
+// respond" the way a sleeper is rendered: a laboring worker can still answer speech
+// (LLM-230), it just shouldn't be pitched a sale. Empty for a non-laboring member.
+func laboringPhrase(m HuddleMember) string {
+	if !m.LaboringBystander {
+		return ""
+	}
+	if m.LaboringForLabel != "" {
+		return fmt.Sprintf(" (working a job for %s just now — not free to trade)", sanitizeInline(m.LaboringForLabel))
+	}
+	return " (working a job just now — not free to trade)"
 }
 
 // laborTiePhrase names a co-present member's relationship to the subject —
