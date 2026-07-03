@@ -1062,7 +1062,7 @@ func buildSurroundings(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnap
 				if memberID == actorID {
 					continue
 				}
-				s.HuddleMembers = append(s.HuddleMembers, resolveCoPresentMember(snap, a, memberID))
+				s.HuddleMembers = append(s.HuddleMembers, resolveCoPresentMember(snap, actorID, a, memberID))
 			}
 			sort.Slice(s.HuddleMembers, func(i, j int) bool {
 				return s.HuddleMembers[i].ID < s.HuddleMembers[j].ID
@@ -1075,7 +1075,7 @@ func buildSurroundings(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnap
 		// rule). Same acquaintance gating as the huddle roster; the IDs arrive
 		// pre-sorted from the world-side helper. ZBBS-WORK-407.
 		for _, id := range a.ColocatedAudienceIDs {
-			m := resolveCoPresentMember(snap, a, id)
+			m := resolveCoPresentMember(snap, actorID, a, id)
 			// A resting audience member can't be roused by THIS NPC's speech
 			// (NPC-to-NPC speech doesn't interrupt rest — reactor.go
 			// actorCanReactNow; only a PC / red-tier need / operator nudge does),
@@ -1094,7 +1094,7 @@ func buildSurroundings(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnap
 		// (colocatedSleeperIDs), surfaced here so Render marks them not-addressable
 		// rather than dropping them from the actor's view.
 		for _, id := range a.ColocatedSleeperIDs {
-			s.CoPresentAsleep = append(s.CoPresentAsleep, resolveCoPresentMember(snap, a, id))
+			s.CoPresentAsleep = append(s.CoPresentAsleep, resolveCoPresentMember(snap, actorID, a, id))
 		}
 	}
 	return s
@@ -1104,17 +1104,51 @@ func buildSurroundings(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnap
 // role from the snapshot, acquaintance status from the subject's Acquaintances
 // map. Shared by the huddle roster and the co-presence line (ZBBS-WORK-407) so
 // both render with identical name-vs-descriptor gating.
-func resolveCoPresentMember(snap *sim.Snapshot, subj *sim.ActorSnapshot, memberID sim.ActorID) HuddleMember {
+func resolveCoPresentMember(snap *sim.Snapshot, subjectID sim.ActorID, subj *sim.ActorSnapshot, memberID sim.ActorID) HuddleMember {
 	m := HuddleMember{ID: memberID}
 	if peer := snap.Actors[memberID]; peer != nil {
 		m.DisplayName = peer.DisplayName
 		m.Role = peer.Role
 		m.SolicitTie = laborTieFor(subj, peer)
+		// LLM-231: a peer fulfilling a hired job is dropped from the seller
+		// offer/quote cue (m.Laboring, set for every observer — even the employer
+		// shouldn't pitch a sale to their own mid-job worker) and rendered as busy
+		// in "## Around you" for BYSTANDERS only (LaboringBystander). The peer's own
+		// employer is suppressed from the annotation: they get the richer "## Workers
+		// currently working for you" cue, and naming the employer to themselves reads
+		// wrong. Gate the ledger scan on the cheap State mirror first; the ledger is
+		// authoritative for the employer/until.
+		if peer.State == sim.StateLaboring {
+			if o := laboringOfferFor(snap, memberID); o != nil {
+				m.Laboring = true
+				if o.EmployerID != subjectID {
+					m.LaboringBystander = true
+					m.LaboringForLabel = employerLabelFor(snap, subj, o.EmployerID)
+				}
+			}
+		}
 	}
 	if m.DisplayName != "" {
 		_, m.Acquainted = subj.Acquaintances[m.DisplayName]
 	}
 	return m
+}
+
+// employerLabelFor resolves the acquaintance-gated label of employerID from the
+// subject's point of view — the name if the subject knows them, else the role or a
+// generic descriptor — for the LLM-231 busy annotation. Empty when the employer
+// isn't in the snapshot (render then omits the name). Mirrors the name-vs-descriptor
+// gating resolveCoPresentMember applies to the member itself.
+func employerLabelFor(snap *sim.Snapshot, subj *sim.ActorSnapshot, employerID sim.ActorID) string {
+	if snap == nil || subj == nil {
+		return ""
+	}
+	emp := snap.Actors[employerID]
+	if emp == nil {
+		return ""
+	}
+	_, acq := subj.Acquaintances[emp.DisplayName]
+	return descriptorLabel(emp.DisplayName, emp.Role, acq)
 }
 
 // laborTieFor classifies how a co-present peer is bound to the subject for the
@@ -2586,6 +2620,14 @@ func buildOfferableCustomers(snap *sim.Snapshot, subject sim.ActorID, atOwnBusin
 	var names []string
 	var producerNotes []ProducerNote
 	for _, m := range members {
+		// LLM-231: a peer mid-job (a Working LaborOffer) is not a valid sale
+		// target — don't cue the seller to pitch someone busy working. m.Laboring
+		// is set for every observer, so this drops the peer even when the seller is
+		// the worker's OWN employer (who shouldn't pitch a sale to their mid-job
+		// worker either). For a bystander, "## Around you" also annotates them busy.
+		if m.Laboring {
+			continue
+		}
 		if customerHasPendingOfferWithSeller(snap, m.ID, subject) {
 			continue
 		}
@@ -3469,29 +3511,35 @@ func buildLaborOffersForMe(snap *sim.Snapshot, subject sim.ActorID) []LaborOffer
 // job (AcceptWork forbids double-booking); the lowest LaborID is taken if more
 // than one ever appears, for determinism.
 func buildLaboring(snap *sim.Snapshot, subject sim.ActorID) *LaboringView {
+	o := laboringOfferFor(snap, subject)
+	if o == nil {
+		return nil
+	}
+	return &LaboringView{Employer: o.EmployerID, Until: *o.WorkingUntil}
+}
+
+// laboringOfferFor returns the live Working LaborOffer that workerID is fulfilling,
+// or nil. Shared by buildLaboring (the subject's own self-state) and the co-present
+// peer busy-annotation (LLM-231) so both read the ledger identically. A worker holds
+// at most one live job (AcceptWork forbids double-booking); if a stale unswept offer
+// ever coexists with a newer one, the latest WorkingUntil wins, then the lowest
+// LaborID, for determinism. WorkingUntil is non-nil on the returned offer.
+func laboringOfferFor(snap *sim.Snapshot, workerID sim.ActorID) *sim.LaborOffer {
 	if snap == nil || len(snap.LaborLedger) == 0 {
 		return nil
 	}
 	var best *sim.LaborOffer
 	for _, o := range snap.LaborLedger {
-		if o == nil || o.State != sim.LaborStateWorking || o.WorkerID != subject || o.WorkingUntil == nil {
+		if o == nil || o.State != sim.LaborStateWorking || o.WorkerID != workerID || o.WorkingUntil == nil {
 			continue
 		}
-		// Prefer the most recently-started job (latest WorkingUntil) so a stale
-		// completed-but-unswept Working offer can't win over a newer active one
-		// — defensive; AcceptWork's ledger-based busy-gate makes two concurrent
-		// Working offers unreachable, but perception stays robust regardless
-		// (code_review). Tiebreak by lowest LaborID for determinism.
 		if best == nil ||
 			o.WorkingUntil.After(*best.WorkingUntil) ||
 			(o.WorkingUntil.Equal(*best.WorkingUntil) && o.ID < best.ID) {
 			best = o
 		}
 	}
-	if best == nil {
-		return nil
-	}
-	return &LaboringView{Employer: best.EmployerID, Until: *best.WorkingUntil}
+	return best
 }
 
 // buildLaborEnRoute scans snap.LaborLedger for an EnRoute offer where the
