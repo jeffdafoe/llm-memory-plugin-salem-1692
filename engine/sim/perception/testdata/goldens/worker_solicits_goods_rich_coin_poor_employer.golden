@@ -1,0 +1,17 @@
+# Your turn
+
+## What just happened
+(nothing specific — this is a routine check-in)
+
+
+## You
+Coins in your purse: 15.
+
+## Around you
+You are inside the Village Commons, with Prudence Ward.
+It is morning in the village.
+
+Your home is at the Walker Residence (structure_id: walker_residence) — you can head back there whenever you wish.
+
+You take work for pay. If someone here outside your own household or trade has a task you could do and you want the pay, offer your labor with solicit_work — name them, the pay you want (coins, goods they hold such as a meal, or both), and roughly how long the job will take.
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.
