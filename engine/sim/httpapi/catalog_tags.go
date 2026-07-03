@@ -43,7 +43,12 @@ var allowedObjectTags = map[string]bool{
 	"well":          true,
 	"outhouse":      true,
 	"farm":          true,
-	"lodging":       true,
+	// wholesaler (LLM-252) gates a placement's sellers to the distributor-only
+	// wholesale tier — the farms and the mill. Independent of `farm`, which now
+	// scopes only the farm-upkeep tax, so the gate and the tax stay orthogonal
+	// (a farm carries both; the mill carries only wholesaler).
+	"wholesaler": true,
+	"lodging":    true,
 	// summon_point marks a placement (loiter point, future bell) where a
 	// summoner walks to ring for a messenger. Underscore form by convention.
 	"summon_point": true,

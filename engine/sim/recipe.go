@@ -152,3 +152,24 @@ func (p *RestockPolicy) Manages(kind ItemKind) bool {
 	}
 	return false
 }
+
+// ProducesOrForages reports whether this item kind is one the actor supplies at
+// first hand — it has a `produce` or `forage` restock entry for it — as opposed
+// to one it merely resells via a `buy` entry (or carries as provisions). The
+// restock-supplier gate (LLM-252) uses it so a reseller who bought item X in the
+// past does NOT qualify as a *supplier* of X: only its producers/foragers (and
+// the distributor) do. That keeps the supply chain a one-way DAG (producers →
+// distributor → resellers) and makes the Josiah↔John carrot buy-back
+// structurally impossible. Nil-safe — a policy-less actor supplies nothing at
+// first hand.
+func (p *RestockPolicy) ProducesOrForages(kind ItemKind) bool {
+	if p == nil {
+		return false
+	}
+	for _, e := range p.Restock {
+		if e.Item == kind && (e.Source == RestockSourceProduce || e.Source == RestockSourceForage) {
+			return true
+		}
+	}
+	return false
+}

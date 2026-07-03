@@ -746,7 +746,7 @@ func TestHandleObjectTags(t *testing.T) {
 	}
 	want := []string{
 		"business", "farm", "lodging", "meeting-house", "noticeboard_content",
-		"outhouse", "shop", "smithy", "summon_point", "tavern", "well",
+		"outhouse", "shop", "smithy", "summon_point", "tavern", "well", "wholesaler",
 	}
 	if len(tags) != len(want) {
 		t.Fatalf("object-tags = %v (len %d), want len %d", tags, len(tags), len(want))

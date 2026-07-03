@@ -354,6 +354,30 @@ func buyerRecentSpend(snap *sim.Snapshot, buyerID sim.ActorID, item sim.ItemKind
 	return coins
 }
 
+// isRestockSupplierOf reports whether vendor qualifies as a restock supplier of
+// itemKind (LLM-252): it supplies itemKind at first hand — produces or forages it
+// — or it is the village distributor. A vendor merely holding itemKind from a past
+// `buy` (a fellow reseller) does NOT qualify: treating a reseller's retail stock
+// as a supply source is what let the Josiah↔John carrot buy-back loop form. Gating
+// on this keeps the supply chain a one-way DAG (producers → distributor →
+// resellers). Scoped to the restock cue surface only — a hungry buyer purchasing
+// itemKind to CONSUME rides the same eachVendorOffer scan but not this gate, so it
+// is unaffected. Shared by findItemVendors and coPresentSellerForItem so the
+// directory and the co-present buy-here imperative gate identically.
+func isRestockSupplierOf(snap *sim.Snapshot, vendorID sim.ActorID, itemKind sim.ItemKind) bool {
+	if snap == nil {
+		return false
+	}
+	vendor := snap.Actors[vendorID]
+	if vendor == nil {
+		return false
+	}
+	if vendor.RestockPolicy.ProducesOrForages(itemKind) {
+		return true
+	}
+	return sim.ActorIsDistributor(snap.VillageObjects, vendor.WorkStructureID)
+}
+
 // findItemVendors resolves the suppliers selling itemKind, ONE cue per workplace
 // structure, sorted deterministically by (StructureLabel, StructureID). Runs over
 // the shared structural-vendorship scan (eachVendorOffer, consumable_vendors.go),
@@ -381,6 +405,9 @@ func findItemVendors(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *sim.Act
 	eachVendorOffer(snap, buyerID, func(o vendorOffer) {
 		if o.Kind != itemKind {
 			return
+		}
+		if !isRestockSupplierOf(snap, o.VendorID, itemKind) {
+			return // LLM-252: only first-hand suppliers (or the distributor), never a reseller's retail stock
 		}
 		if cur, ok := best[o.StructureID]; ok && cur.vendorID <= o.VendorID {
 			return // keep the lowest VendorID at this structure
@@ -456,6 +483,9 @@ func coPresentSellerForItem(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *
 	eachVendorOffer(snap, buyerID, func(o vendorOffer) {
 		if o.Kind != itemKind {
 			return
+		}
+		if !isRestockSupplierOf(snap, o.VendorID, itemKind) {
+			return // LLM-252: only first-hand suppliers (or the distributor), never a reseller's retail stock
 		}
 		seller := snap.Actors[o.VendorID]
 		if seller == nil || seller.DisplayName == "" || seller.CurrentHuddleID != huddle {

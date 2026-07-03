@@ -315,6 +315,43 @@ func TestGoldensNonDistributorRestockNeverTargetsFarm(t *testing.T) {
 	}
 }
 
+// TestGoldensRestockSupplierProducesOrForagesOrIsDistributor is the LLM-252
+// cross-scenario invariant: every supplier the restock directory advertises for a
+// low `buy` item must supply that item at first hand — some vendor stationed there
+// produces or forages it — or be the distributor. A structure whose only vendors of
+// the item hold it via a past `buy` (a fellow reseller) must never surface: that is
+// the Josiah↔John carrot buy-back. Re-derived from snap.Actors so it independently
+// confirms findItemVendors' output rather than trusting the gate that produced it.
+func TestGoldensRestockSupplierProducesOrForagesOrIsDistributor(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, _ := sc.build()
+			subj := snap.Actors[actorID]
+			if subj == nil || subj.RestockPolicy == nil {
+				return // no reseller restock manifest — invariant N/A here
+			}
+			for _, e := range subj.RestockPolicy.BuyEntries() {
+				for _, vd := range findItemVendors(snap, actorID, subj, e.Item) {
+					if sim.ActorIsDistributor(snap.VillageObjects, vd.StructureID) {
+						continue // the distributor is a standing supplier of everything
+					}
+					firstHand := false
+					for _, a := range snap.Actors {
+						if a != nil && a.WorkStructureID == vd.StructureID && a.RestockPolicy.ProducesOrForages(e.Item) {
+							firstHand = true
+							break
+						}
+					}
+					if !firstHand {
+						t.Errorf("scenario %q: restock directory advertises %q as a supplier of %q, but no vendor there produces/forages it and it is not the distributor — a reseller holding bought stock must not be a supplier (LLM-252)", sc.name, vd.StructureID, e.Item)
+					}
+				}
+			}
+		})
+	}
+}
+
 // perceptionScenarios is the (growing) matrix. Seeded from LLM-106 with two
 // situations: a keeper alone at its post, and a tired keeper on shift at its post.
 // Each new live (a)-class failure should add a scenario here (and, where it states
@@ -1042,6 +1079,17 @@ var perceptionScenarios = []perceptionScenario{
 		build: resellerRestockRoutedToDistributorNotFarm,
 	},
 	{
+		name: "distributor_restock_skips_coPresent_reseller",
+		summary: "LLM-252 reseller buy-back guard: the distributor (Josiah Thorne) has dipped below his carrot reorder " +
+			"threshold while a fellow reseller (John Ellis, the tavernkeeper) is co-present holding carrots he bought — the " +
+			"exact buy-back trigger. The golden pins that the '## Restocking' carrot cue routes Josiah to the PRODUCING James " +
+			"Farm (a walk-to) and does NOT surface John: John holds carrots only via a `buy` entry, so he is neither a walk-to " +
+			"supplier nor the co-present buy-here seller (no 'John Ellis is here — buy it now' imperative). A restock supplier " +
+			"must produce/forage the item or be the distributor. Cross-scenario guard: " +
+			"TestGoldensRestockSupplierProducesOrForagesOrIsDistributor.",
+		build: distributorRestockSkipsCoPresentReseller,
+	},
+	{
 		name: "dairy_keeper_out_of_booster_at_post",
 		summary: "LLM-248 optional booster inputs (the LLM-83 dairy sage edge): an Elizabeth-shaped dairy keeper at her farm " +
 			"on shift, milk recipe carrying a sage booster (1 sage per execution → +2 milk), sage a buy entry at 0 on hand. " +
@@ -1248,6 +1296,11 @@ func keeperRestockDropsShutKeepsOpenSupplier() (*sim.Snapshot, sim.ActorID, []si
 		Pos:             sim.TilePos{X: 400, Y: 400},
 		WorkStructureID: bellFarm,
 		Inventory:       map[sim.ItemKind]int{"carrots": 40},
+		// Produces carrots, so it's a first-hand supplier (LLM-252). Untagged (not
+		// wholesaler), so this fixture isolates the shut-drop, not the wholesale gate.
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "carrots", Source: sim.RestockSourceProduce, Max: 40},
+		}},
 	}
 	james := &sim.ActorSnapshot{
 		Kind:            sim.KindNPCStateful,
@@ -1256,6 +1309,9 @@ func keeperRestockDropsShutKeepsOpenSupplier() (*sim.Snapshot, sim.ActorID, []si
 		Pos:             sim.TilePos{X: 420, Y: 420},
 		WorkStructureID: jamesFarm,
 		Inventory:       map[sim.ItemKind]int{"carrots": 40},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "carrots", Source: sim.RestockSourceProduce, Max: 40},
+		}},
 	}
 	// Buyer-side price history: ~3 coins/carrot at Bell (affordable on 30 coins), ~6 at
 	// James (which is shut anyway).
@@ -1287,13 +1343,15 @@ func keeperRestockDropsShutKeepsOpenSupplier() (*sim.Snapshot, sim.ActorID, []si
 	return snap, thomasID, nil
 }
 
-// resellerRestockRoutedToDistributorNotFarm is the LLM-223 farm-wholesale fixture:
-// a non-distributor reseller (Hannah Boggs, the innkeeper) is low on milk and has
-// two milk suppliers — Ellis Farm (farm-tagged) and Josiah's General Store (the
-// distributor-tagged wholesaler). The farm is dropped from every non-distributor's
-// buy cues, so the "## Restocking" section lists ONLY the General Store as the
-// walk-to target: Hannah restocks farm-origin milk through the distributor, never
-// straight from the farm the PayWithItem backstop would refuse. Keeps
+// resellerRestockRoutedToDistributorNotFarm is the LLM-223 wholesale-tier fixture
+// (generalized to the wholesaler tag in LLM-252): a non-distributor reseller
+// (Hannah Boggs, the innkeeper) is low on milk and has two milk suppliers — Ellis
+// Farm (tagged farm+wholesaler, and a milk PRODUCER so only the wholesale gate can
+// drop it) and Josiah's General Store (the distributor-tagged wholesaler). The
+// wholesale source is dropped from every non-distributor's buy cues, so the
+// "## Restocking" section lists ONLY the General Store as the walk-to target:
+// Hannah restocks wholesale-origin milk through the distributor, never straight
+// from the farm the PayWithItem backstop would refuse. Keeps
 // TestGoldensNonDistributorRestockNeverTargetsFarm non-vacuous (a rendered restock
 // section with a farm-tagged supplier present in the fixture). Clock-free: no
 // price/shut memory and no wall-clock read in the render path.
@@ -1340,6 +1398,11 @@ func resellerRestockRoutedToDistributorNotFarm() (*sim.Snapshot, sim.ActorID, []
 		Pos:             sim.TilePos{X: 400, Y: 400},
 		WorkStructureID: farm,
 		Inventory:       map[sim.ItemKind]int{"milk": 40},
+		// Produces milk, so the LLM-252 supplier gate would KEEP him — isolating the
+		// wholesale gate as the sole reason he's dropped from Hannah's cues below.
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "milk", Source: sim.RestockSourceProduce, Max: 40},
+		}},
 	}
 	snap := &sim.Snapshot{
 		LocalMinuteOfDay: &now,
@@ -1354,7 +1417,7 @@ func resellerRestockRoutedToDistributorNotFarm() (*sim.Snapshot, sim.ActorID, []
 		},
 		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
 			sim.VillageObjectID(store): {ID: sim.VillageObjectID(store), OwnerActorID: josiahID, Tags: []string{sim.TagDistributor}},
-			sim.VillageObjectID(farm):  {ID: sim.VillageObjectID(farm), OwnerActorID: ellisID, Tags: []string{sim.TagFarm}},
+			sim.VillageObjectID(farm):  {ID: sim.VillageObjectID(farm), OwnerActorID: ellisID, Tags: []string{sim.TagFarm, sim.TagWholesaler}},
 		},
 		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
 			"milk": {Name: "milk", DisplayLabel: "milk", Category: sim.ItemCategoryDrink},
@@ -1362,6 +1425,98 @@ func resellerRestockRoutedToDistributorNotFarm() (*sim.Snapshot, sim.ActorID, []
 		RestockReorderPct: 25,
 	}
 	return snap, hannahID, nil
+}
+
+// distributorRestockSkipsCoPresentReseller is the LLM-252 buy-back-guard fixture:
+// Josiah Thorne (the distributor) has dipped below his carrot reorder threshold
+// while John Ellis (the tavernkeeper, a carrot RESELLER via a `buy` entry) is
+// co-present holding 12 carrots — the exact buy-back trigger. His only genuine
+// carrot supplier, Moses at James Farm, PRODUCES carrots and is not co-present. The
+// golden pins that the "## Restocking" carrot cue routes Josiah to the producing
+// James Farm as a walk-to and NEVER surfaces John: a reseller who merely holds the
+// item is not a first-hand supplier, so he is neither listed as a walk-to target
+// nor named in the co-present buy-here imperative. Josiah is the distributor, so the
+// wholesale gate keeps the farm visible to him; the reseller drop is the LLM-252
+// producer/forager/distributor gate. Clock-free: no price/shut memory, no wall-clock
+// read in the render path.
+func distributorRestockSkipsCoPresentReseller() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		josiahID  = sim.ActorID("josiah")
+		johnID    = sim.ActorID("john")
+		mosesID   = sim.ActorID("moses")
+		store     = sim.StructureID("general_store")
+		tavern    = sim.StructureID("the_tavern")
+		jamesFarm = sim.StructureID("james_farm")
+	)
+	start, end := 360, 1080 // 06:00-18:00
+	now := 720              // 12:00 — on shift, at the store
+	josiah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Josiah Thorne",
+		Role:              "distributor",
+		State:             sim.StateIdle,
+		Pos:               sim.TilePos{X: 10, Y: 10},
+		WorkStructureID:   store,
+		InsideStructureID: store,
+		CurrentHuddleID:   "h1",
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             30,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"carrots": 1}, // 1 of cap 6 → below the 25% reorder line
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "carrots", Source: sim.RestockSourceBuy, Max: 6},
+		}},
+	}
+	// John is a carrot RESELLER (buy entry) co-present with Josiah, holding stock —
+	// the buy-back specimen. He must NOT surface as a supplier.
+	john := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "John Ellis",
+		Role:              "tavernkeeper",
+		State:             sim.StateIdle,
+		Pos:               sim.TilePos{X: 11, Y: 10},
+		WorkStructureID:   tavern,
+		InsideStructureID: store, // visiting the distributor's store, carrots in hand — the buy-back specimen
+		CurrentHuddleID:   "h1",
+		Inventory:         map[sim.ItemKind]int{"carrots": 12},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "carrots", Source: sim.RestockSourceBuy, Max: 12},
+		}},
+	}
+	// Moses PRODUCES carrots at the farm — the legitimate supplier, not co-present.
+	moses := &sim.ActorSnapshot{
+		Kind:            sim.KindNPCStateful,
+		DisplayName:     "Moses James",
+		State:           sim.StateIdle,
+		Pos:             sim.TilePos{X: 400, Y: 400},
+		WorkStructureID: jamesFarm,
+		Inventory:       map[sim.ItemKind]int{"carrots": 40},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "carrots", Source: sim.RestockSourceProduce, Max: 40},
+		}},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			josiahID: josiah, johnID: john, mosesID: moses,
+		},
+		Structures: map[sim.StructureID]*sim.Structure{
+			store:     plainStructure(store, "General Store"),
+			tavern:    plainStructure(tavern, "The Tavern"),
+			jamesFarm: plainStructure(jamesFarm, "James Farm"),
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			sim.VillageObjectID(store):     {ID: sim.VillageObjectID(store), OwnerActorID: josiahID, Tags: []string{sim.TagDistributor}},
+			sim.VillageObjectID(jamesFarm): {ID: sim.VillageObjectID(jamesFarm), OwnerActorID: mosesID, Tags: []string{sim.TagFarm, sim.TagWholesaler}},
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"carrots": {Name: "carrots", DisplayLabel: "carrots", Category: sim.ItemCategoryFood},
+		},
+		RestockReorderPct: 25,
+	}
+	return snap, josiahID, nil
 }
 
 // buyerKeptConsumeRemainderReconciled is the LLM-188 buyer-POV fixture: Anne
