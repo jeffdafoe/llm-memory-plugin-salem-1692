@@ -27,6 +27,11 @@ import (
 type OrdersRepo struct {
 	orders map[sim.OrderID]*sim.Order
 	prices []sim.PriceBookSeedRecord
+	// paidActionLogMaxLedgerID stands in for the pg backend's
+	// agent_action_log query — the mem backend has no action_log table, so
+	// tests stage the consume_now ledger high-water mark here via
+	// SeedPaidActionLogMax. LLM-245.
+	paidActionLogMaxLedgerID int64
 }
 
 func NewOrdersRepo() *OrdersRepo {
@@ -46,6 +51,15 @@ func (r *OrdersRepo) Seed(orders map[sim.OrderID]*sim.Order) {
 // to the chronological-per-key shape SeedPriceBook expects.
 func (r *OrdersRepo) SeedPrices(records []sim.PriceBookSeedRecord) {
 	r.prices = append(r.prices[:0:0], records...)
+}
+
+// SeedPaidActionLogMax stages the value the next MaxPaidActionLogLedgerID call
+// returns. The mem backend has no agent_action_log table — paid action-log
+// history lives separately from the orders map, mirroring how SeedPrices
+// stages pay_ledger price history — so tests set the consume_now ledger
+// high-water mark explicitly here. LLM-245.
+func (r *OrdersRepo) SeedPaidActionLogMax(maxLedgerID int64) {
+	r.paidActionLogMaxLedgerID = maxLedgerID
 }
 
 func (r *OrdersRepo) LoadAll(_ context.Context) (map[sim.OrderID]*sim.Order, error) {
@@ -90,6 +104,14 @@ func (r *OrdersRepo) MaxLedgerID(_ context.Context) (int64, error) {
 		}
 	}
 	return maxID, nil
+}
+
+// MaxPaidActionLogLedgerID returns the staged paid-action-log ledger
+// high-water mark (0 unless a test set it via SeedPaidActionLogMax). The mem
+// backend has no agent_action_log table; production wires the pg impl, which
+// reads it directly. LLM-245.
+func (r *OrdersRepo) MaxPaidActionLogLedgerID(_ context.Context) (int64, error) {
+	return r.paidActionLogMaxLedgerID, nil
 }
 
 // LoadRecentPrices filters the seeded slice by `since` (At >= since),

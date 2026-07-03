@@ -231,6 +231,33 @@ func TestFinalizeLoad_SeedsLedgerSeqFromMaxLedgerID(t *testing.T) {
 	}
 }
 
+// TestFinalizeLoad_SeedsLedgerSeqFromActionLogLedgerID — LLM-245. v2
+// consume_now settlements mint a LedgerID but write NO pay_ledger row; their id
+// survives only in the `paid` action-log payload. So the pay_ledger max can run
+// BELOW the true high-water mark, and without the action-log floor a restart
+// re-mints an already-referenced id and corrupts LLM-105's audit join. Seed a
+// terminal order at id 50 but an action-log max of 200 (a consume_now id with
+// no pay_ledger row) and assert the counter floors to the GREATER — 200.
+func TestFinalizeLoad_SeedsLedgerSeqFromActionLogLedgerID(t *testing.T) {
+	repo, handles := mem.NewRepository()
+	at := time.Now().UTC()
+	handles.Orders.Seed(map[sim.OrderID]*sim.Order{
+		50: {
+			ID: 50, LedgerID: 50, State: sim.OrderStateDelivered,
+			BuyerID: "b", SellerID: "s", Item: "stew", Qty: 1,
+			ConsumerIDs: []sim.ActorID{"b"}, CreatedAt: at, ExpiresAt: at.Add(time.Hour),
+		},
+	})
+	handles.Orders.SeedPaidActionLogMax(200)
+	w, err := sim.LoadWorld(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	if got := sim.PayLedgerSeqForTest(w); got != 200 {
+		t.Errorf("payLedgerSeq = %d, want 200 (floored from the consume_now action-log id so the next mint can't reuse it)", got)
+	}
+}
+
 // TestCreateOrderForPayWithItem_ExplicitConsumers verifies multi-consumer
 // group orders preserve ConsumerIDs as-given (no normalization to [buyer]).
 func TestCreateOrderForPayWithItem_ExplicitConsumers(t *testing.T) {

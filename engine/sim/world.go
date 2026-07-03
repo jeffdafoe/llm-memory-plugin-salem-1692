@@ -1444,21 +1444,37 @@ func (w *World) FinalizeLoad(ctx context.Context) error {
 	// LedgerID sequence-counter safety floor. payLedgerSeq is the sole
 	// allocator for pay_ledger ids — Orders adopt their LedgerID
 	// (ZBBS-HOME-394), so there is no separate order counter. It MUST start
-	// above every id ever persisted, or a post-restart mint would reuse an
-	// existing pay_ledger id and the checkpoint upsert would clobber that
-	// historical row. The authoritative high-water mark is the DB max(id):
-	// the in-memory PayLedger map holds only restart-lossy pending entries
-	// (empty here) and w.Orders only the in-flight subset, so neither sees
-	// terminal-row ids. This is persistence safety, not optional enrichment:
-	// fail the load on a query error rather than start in a state where a mint
-	// could reuse an id and the checkpoint upsert corrupt a historical row
-	// (code_review). maxID>0 guards the (unreachable) negative before uint64.
+	// above every id still durably referenced, or a post-restart mint would
+	// reuse one and the checkpoint upsert would clobber that historical row.
+	// A ledger_id is durably referenced in exactly two places, and the floor
+	// takes the GREATEST of both DB maxes:
+	//   1. a pay_ledger row — MaxLedgerID. Covers Orders too: every checkpoint
+	//      upserts each in-flight order's pay_ledger row, so w.Orders (the
+	//      in-flight subset) and the restart-lossy in-memory PayLedger map
+	//      (empty here) never hold an id above this max.
+	//   2. a `paid` action-log payload — MaxPaidActionLogLedgerID. v2
+	//      consume_now settlements mint a LedgerID and write NO pay_ledger row,
+	//      so their ids live ONLY here; without this term the seed lands below
+	//      the true high-water mark and a mint reuses a consume_now id,
+	//      corrupting LLM-105's paid.ledger_id -> pay_ledger.id audit join
+	//      (LLM-245).
+	// This is persistence safety, not optional enrichment: fail the load on a
+	// query error rather than start in a state where a mint could reuse an id
+	// and the checkpoint upsert corrupt a historical row (code_review). The
+	// >0 guards keep the (unreachable) negative out of the uint64 conversion.
 	maxID, err := w.repo.Orders.MaxLedgerID(ctx)
 	if err != nil {
 		return fmt.Errorf("sim: FinalizeLoad: seed pay-ledger id allocator from MaxLedgerID: %w", err)
 	}
 	if maxID > 0 && uint64(maxID) > w.payLedgerSeq {
 		w.payLedgerSeq = uint64(maxID)
+	}
+	actionLogMaxID, err := w.repo.Orders.MaxPaidActionLogLedgerID(ctx)
+	if err != nil {
+		return fmt.Errorf("sim: FinalizeLoad: seed pay-ledger id allocator from MaxPaidActionLogLedgerID: %w", err)
+	}
+	if actionLogMaxID > 0 && uint64(actionLogMaxID) > w.payLedgerSeq {
+		w.payLedgerSeq = uint64(actionLogMaxID)
 	}
 	// Belt-and-suspenders: also floor from any in-memory pending entries
 	// (a no-op today since pending entries are restart-lossy, but correct

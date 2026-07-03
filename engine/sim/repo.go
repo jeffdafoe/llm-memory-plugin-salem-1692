@@ -99,6 +99,17 @@ type OrdersRepo interface {
 	// ZBBS-HOME-394.
 	MaxLedgerID(ctx context.Context) (int64, error)
 
+	// MaxPaidActionLogLedgerID returns the largest ledger_id stamped on any
+	// `paid` agent_action_log row (0 when none). v2 consume_now settlements
+	// mint a LedgerID and write NO pay_ledger row — their only durable record
+	// is the paid action-log row whose payload carries ledger_id (LLM-105) —
+	// so those ids are invisible to MaxLedgerID and the DB max(id) runs BELOW
+	// the true high-water mark. FinalizeLoad floors payLedgerSeq from
+	// GREATEST(MaxLedgerID, this) so a post-restart mint can't reuse a
+	// consume_now id and corrupt the audit join / clobber a later checkpoint's
+	// row. LLM-245.
+	MaxPaidActionLogLedgerID(ctx context.Context) (int64, error)
+
 	// LoadRecentPrices returns up to perKeyCap most-recent accepted
 	// PayLedger rows per (seller, item) tuple within the time window
 	// (created_at >= since), packaged as PriceBookSeedRecord values for
