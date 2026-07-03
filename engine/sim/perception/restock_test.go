@@ -29,6 +29,17 @@ func buyPolicy(item sim.ItemKind, cap int) *sim.RestockPolicy {
 	}}
 }
 
+// producePolicy is a one-entry produce policy for `item` at `cap`. A supplier in
+// these restock tests is a first-hand PRODUCER of what it sells (a brewery makes
+// its ale), which is the LLM-252 precondition for qualifying as a restock supplier
+// (isRestockSupplierOf) — a vendor merely holding stock from a past `buy` no
+// longer counts.
+func producePolicy(item sim.ItemKind, cap int) *sim.RestockPolicy {
+	return &sim.RestockPolicy{Restock: []sim.RestockEntry{
+		{Item: item, Source: sim.RestockSourceProduce, Max: cap},
+	}}
+}
+
 func TestBuildRestocking_NoPolicy_Nil(t *testing.T) {
 	subj := &sim.ActorSnapshot{Inventory: map[sim.ItemKind]int{"ale": 0}}
 	snap := &sim.Snapshot{
@@ -84,7 +95,7 @@ func TestBuildRestocking_LowStockNoVendorOmitted(t *testing.T) {
 
 func TestBuildRestocking_VendorResolved(t *testing.T) {
 	subj := &sim.ActorSnapshot{Inventory: map[sim.ItemKind]int{"ale": 2}, RestockPolicy: buyPolicy("ale", 20)}
-	supplier := &sim.ActorSnapshot{WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}}
+	supplier := &sim.ActorSnapshot{WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}, RestockPolicy: producePolicy("ale", 40)}
 	snap := &sim.Snapshot{
 		Actors: map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj, "brewer": supplier},
 		Structures: map[sim.StructureID]*sim.Structure{
@@ -117,6 +128,7 @@ func TestBuildRestocking_CoPresentSeller(t *testing.T) {
 	}
 	supplier := &sim.ActorSnapshot{
 		DisplayName:     "Anders Brewer",
+		RestockPolicy:   producePolicy("ale", 40),
 		WorkStructureID: "brewery",
 		Inventory:       map[sim.ItemKind]int{"ale": 40},
 		CurrentHuddleID: "h1", // same huddle as the buyer → pay_with_item resolves now
@@ -147,6 +159,7 @@ func TestBuildRestocking_SellerNotCoPresent(t *testing.T) {
 	}
 	supplier := &sim.ActorSnapshot{
 		DisplayName:     "Anders Brewer",
+		RestockPolicy:   producePolicy("ale", 40),
 		WorkStructureID: "brewery",
 		Inventory:       map[sim.ItemKind]int{"ale": 40},
 		CurrentHuddleID: "h2", // different huddle → not co-present
@@ -220,6 +233,7 @@ func TestBuildRestocking_PendingOfferToCoPresentSeller(t *testing.T) {
 	}
 	supplier := &sim.ActorSnapshot{
 		DisplayName:     "Anders Brewer",
+		RestockPolicy:   producePolicy("ale", 40),
 		WorkStructureID: "brewery",
 		Inventory:       map[sim.ItemKind]int{"ale": 40},
 		CurrentHuddleID: "h1",
@@ -254,6 +268,7 @@ func TestBuildRestocking_PendingOfferToOtherSeller_FlagUnset(t *testing.T) {
 	}
 	supplier := &sim.ActorSnapshot{
 		DisplayName:     "Anders Brewer",
+		RestockPolicy:   producePolicy("ale", 40),
 		WorkStructureID: "brewery",
 		Inventory:       map[sim.ItemKind]int{"ale": 40},
 		CurrentHuddleID: "h1",
@@ -325,8 +340,8 @@ func TestBuildRestocking_CoPresentSeller_Deterministic(t *testing.T) {
 		RestockPolicy:   buyPolicy("ale", 20),
 		CurrentHuddleID: "h1",
 	}
-	ann := &sim.ActorSnapshot{DisplayName: "Ann", WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}, CurrentHuddleID: "h1"}
-	zed := &sim.ActorSnapshot{DisplayName: "Zed", WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}, CurrentHuddleID: "h1"}
+	ann := &sim.ActorSnapshot{DisplayName: "Ann", WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}, CurrentHuddleID: "h1", RestockPolicy: producePolicy("ale", 40)}
+	zed := &sim.ActorSnapshot{DisplayName: "Zed", WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}, CurrentHuddleID: "h1", RestockPolicy: producePolicy("ale", 40)}
 	snap := &sim.Snapshot{
 		Actors:            map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj, "z_seller": zed, "a_seller": ann},
 		Structures:        map[sim.StructureID]*sim.Structure{"brewery": {ID: "brewery", DisplayName: "The Brewery"}},
@@ -353,11 +368,14 @@ func TestBuildRestocking_CoPresentSeller_Deterministic(t *testing.T) {
 func TestBuildRestocking_VendorExclusions(t *testing.T) {
 	subj := &sim.ActorSnapshot{Coins: 20, Inventory: map[sim.ItemKind]int{"ale": 1}, RestockPolicy: buyPolicy("ale", 20)}
 	// PC holding ale — excluded (PCs don't sell through the NPC commerce path).
-	pcSeller := &sim.ActorSnapshot{Kind: sim.KindPC, WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}}
+	// All three carry a produce policy so the ONLY reason they drop is the
+	// PC / no-workplace / ghost-structure rule under test, not the LLM-252
+	// first-hand-supplier gate.
+	pcSeller := &sim.ActorSnapshot{Kind: sim.KindPC, WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}, RestockPolicy: producePolicy("ale", 40)}
 	// No workplace — excluded.
-	noWork := &sim.ActorSnapshot{Inventory: map[sim.ItemKind]int{"ale": 40}}
+	noWork := &sim.ActorSnapshot{Inventory: map[sim.ItemKind]int{"ale": 40}, RestockPolicy: producePolicy("ale", 40)}
 	// Workplace not in snapshot.Structures — excluded (unactionable destination).
-	ghost := &sim.ActorSnapshot{WorkStructureID: "nowhere", Inventory: map[sim.ItemKind]int{"ale": 40}}
+	ghost := &sim.ActorSnapshot{WorkStructureID: "nowhere", Inventory: map[sim.ItemKind]int{"ale": 40}, RestockPolicy: producePolicy("ale", 40)}
 	snap := &sim.Snapshot{
 		Actors: map[sim.ActorID]*sim.ActorSnapshot{
 			"merchant": subj, "pc": pcSeller, "drifter": noWork, "ghost": ghost,
@@ -401,8 +419,8 @@ func TestBuildRestocking_ProduceEntriesIgnored(t *testing.T) {
 func TestFindItemVendors_DedupeByStructure(t *testing.T) {
 	subj := &sim.ActorSnapshot{Coins: 20, Inventory: map[sim.ItemKind]int{"ale": 1}, RestockPolicy: buyPolicy("ale", 20)}
 	// Two brewers at the same structure; "anders" (< "bramble") is the rep.
-	anders := &sim.ActorSnapshot{WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}}
-	bramble := &sim.ActorSnapshot{WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}}
+	anders := &sim.ActorSnapshot{WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}, RestockPolicy: producePolicy("ale", 40)}
+	bramble := &sim.ActorSnapshot{WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}, RestockPolicy: producePolicy("ale", 40)}
 	pbAnders := sim.NewRingBuffer[sim.PriceObservation](4)
 	pbAnders.Push(sim.PriceObservation{BuyerID: "merchant", Amount: 2, Qty: 1, Consumers: 1, At: time.Now().UTC()})
 	pbBramble := sim.NewRingBuffer[sim.PriceObservation](4)
@@ -431,7 +449,7 @@ func TestFindItemVendors_DedupeByStructure(t *testing.T) {
 
 func TestBuildRestocking_PriceFromPriceBook(t *testing.T) {
 	subj := &sim.ActorSnapshot{Coins: 20, Inventory: map[sim.ItemKind]int{"ale": 1}, RestockPolicy: buyPolicy("ale", 20)}
-	supplier := &sim.ActorSnapshot{WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}}
+	supplier := &sim.ActorSnapshot{WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}, RestockPolicy: producePolicy("ale", 40)}
 	pb := sim.NewRingBuffer[sim.PriceObservation](4)
 	pb.Push(sim.PriceObservation{BuyerID: "merchant", Amount: 2, Qty: 1, Consumers: 1, At: time.Now().UTC()})
 	snap := &sim.Snapshot{
@@ -458,7 +476,7 @@ func TestBuildRestocking_PriceFromPriceBook(t *testing.T) {
 // — a floored unit price (5/2 = 2) would wrongly read 9/2 = 4 and over-promise.
 func TestBuildRestocking_AffordabilityFromBundleRatio(t *testing.T) {
 	subj := &sim.ActorSnapshot{Coins: 9, Inventory: map[sim.ItemKind]int{"ale": 1}, RestockPolicy: buyPolicy("ale", 20)}
-	supplier := &sim.ActorSnapshot{WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}}
+	supplier := &sim.ActorSnapshot{WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}, RestockPolicy: producePolicy("ale", 40)}
 	pb := sim.NewRingBuffer[sim.PriceObservation](4)
 	pb.Push(sim.PriceObservation{BuyerID: "merchant", Amount: 5, Qty: 2, Consumers: 1, At: time.Now().UTC()})
 	snap := &sim.Snapshot{
@@ -497,7 +515,7 @@ func TestBuildRestocking_AffordabilityDeterministicOnTimestampTie(t *testing.T) 
 	// One resolvable, affordable supplier (anders at 10/unit ≤ 100 coins) so the item
 	// has an actionable buy path and survives; AffordableQty reads the PriceBook, not
 	// the vendor list, so the timestamp-tie determinism is unaffected.
-	anders := &sim.ActorSnapshot{WorkStructureID: "abbey", Inventory: map[sim.ItemKind]int{"ale": 40}}
+	anders := &sim.ActorSnapshot{WorkStructureID: "abbey", Inventory: map[sim.ItemKind]int{"ale": 40}, RestockPolicy: producePolicy("ale", 40)}
 	snap := &sim.Snapshot{
 		Actors:     map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj, "anders": anders},
 		Structures: map[sim.StructureID]*sim.Structure{"abbey": {ID: "abbey", DisplayName: "Abbey Brewhouse"}},
@@ -652,8 +670,8 @@ func TestBuildRestocking_DropsRememberedShutSupplier(t *testing.T) {
 			{StructureID: "abbey", Condition: sim.ObservedClosed}: now.Add(-time.Hour),
 		}),
 	}
-	amos := &sim.ActorSnapshot{WorkStructureID: "abbey", Inventory: map[sim.ItemKind]int{"ale": 40}, State: sim.StateIdle}
-	bram := &sim.ActorSnapshot{WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}, State: sim.StateIdle}
+	amos := &sim.ActorSnapshot{WorkStructureID: "abbey", Inventory: map[sim.ItemKind]int{"ale": 40}, State: sim.StateIdle, RestockPolicy: producePolicy("ale", 40)}
+	bram := &sim.ActorSnapshot{WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}, State: sim.StateIdle, RestockPolicy: producePolicy("ale", 40)}
 	snap := &sim.Snapshot{
 		PublishedAt: now,
 		Actors:      map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj, "amos": amos, "bram": bram},
@@ -689,7 +707,7 @@ func TestBuildRestocking_DropsUnaffordableSupplier(t *testing.T) {
 	}
 	mk := func(coins int, withPrice bool) *sim.Snapshot {
 		subj := &sim.ActorSnapshot{Coins: coins, Inventory: map[sim.ItemKind]int{"ale": 2}, RestockPolicy: buyPolicy("ale", 20)}
-		supplier := &sim.ActorSnapshot{WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}}
+		supplier := &sim.ActorSnapshot{WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}, RestockPolicy: producePolicy("ale", 40)}
 		snap := &sim.Snapshot{
 			PublishedAt:       time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC),
 			Actors:            map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj, "brewer": supplier},
@@ -788,7 +806,7 @@ func TestBuildRestocking_RecentSalesUnits(t *testing.T) {
 	// That supplier as a resolvable, affordable vendor (last paid 7 ≤ 20 coins) so the
 	// low item has an actionable buy path and surfaces (LLM-216); the sell-through and
 	// cost figures under test read the price book, not the vendor list.
-	supplierActor := &sim.ActorSnapshot{WorkStructureID: "supplyDepot", Inventory: map[sim.ItemKind]int{"ale": 40}}
+	supplierActor := &sim.ActorSnapshot{WorkStructureID: "supplyDepot", Inventory: map[sim.ItemKind]int{"ale": 40}, RestockPolicy: producePolicy("ale", 40)}
 	snap := &sim.Snapshot{
 		PublishedAt: now,
 		Actors:      map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj, "supplier": supplierActor},
@@ -827,7 +845,7 @@ func TestBuildRestocking_RecentSalesUnits_NoSellerHistory(t *testing.T) {
 	// The other party as a resolvable, affordable vendor so the low item surfaces
 	// (LLM-216); RecentSalesUnits under test reads the merchant-as-SELLER ring, which
 	// has no entry here — the point of the test.
-	elseActor := &sim.ActorSnapshot{WorkStructureID: "elseStore", Inventory: map[sim.ItemKind]int{"ale": 40}}
+	elseActor := &sim.ActorSnapshot{WorkStructureID: "elseStore", Inventory: map[sim.ItemKind]int{"ale": 40}, RestockPolicy: producePolicy("ale", 40)}
 	snap := &sim.Snapshot{
 		PublishedAt: now,
 		Actors:      map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj, "someone_else": elseActor},
@@ -917,5 +935,88 @@ func TestRenderRestocking_SellThroughLine(t *testing.T) {
 	}})
 	if out := silent.String(); strings.Contains(out, "over the past week") {
 		t.Errorf("zero recent sales should render no sell-through/P&L line:\n%s", out)
+	}
+}
+
+// --- LLM-252: restock supplier must be a first-hand supplier or the distributor ---
+
+// carrotSupplyChainSnap seeds a carrot supply chain: a producer (Moses at the
+// farm, produces carrots), a fellow reseller (John at the tavern, holds carrots
+// only via a `buy` entry), and the distributor (Josiah at the distributor-tagged
+// store, also a `buy`-only holder). `subj` restocks carrots by `buy`. No wholesaler
+// tags, so the LLM-252 first-hand-supplier gate is the only thing under test (not
+// the wholesale gate). Sellers optionally share the buyer's huddle for the
+// co-present cue. No PriceBook → unknown prices → no affordability skip.
+func carrotSupplyChainSnap(subj *sim.ActorSnapshot, coPresent bool) *sim.Snapshot {
+	huddle := sim.HuddleID("")
+	if coPresent {
+		huddle = "h1"
+		subj.CurrentHuddleID = huddle
+	}
+	moses := &sim.ActorSnapshot{DisplayName: "Moses", WorkStructureID: "farm", Inventory: map[sim.ItemKind]int{"carrots": 40}, RestockPolicy: producePolicy("carrots", 40), CurrentHuddleID: huddle}
+	john := &sim.ActorSnapshot{DisplayName: "John Ellis", WorkStructureID: "tavern", Inventory: map[sim.ItemKind]int{"carrots": 12}, RestockPolicy: buyPolicy("carrots", 12), CurrentHuddleID: huddle}
+	josiah := &sim.ActorSnapshot{DisplayName: "Josiah Thorne", WorkStructureID: "store", Inventory: map[sim.ItemKind]int{"carrots": 20}, RestockPolicy: buyPolicy("carrots", 6), CurrentHuddleID: huddle}
+	return &sim.Snapshot{
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{"subj": subj, "moses": moses, "john": john, "josiah": josiah},
+		Structures: map[sim.StructureID]*sim.Structure{
+			"farm":   {ID: "farm", DisplayName: "The Farm"},
+			"tavern": {ID: "tavern", DisplayName: "The Tavern"},
+			"store":  {ID: "store", DisplayName: "General Store"},
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"store": {ID: "store", OwnerActorID: "josiah", Tags: []string{sim.TagDistributor}},
+		},
+		ItemKinds:         map[sim.ItemKind]*sim.ItemKindDef{"carrots": {Name: "carrots", DisplayLabel: "carrots", Category: sim.ItemCategoryFood}},
+		RestockReorderPct: 25,
+	}
+}
+
+// TestFindItemVendors_ExcludesResellerHoldingBoughtStock — LLM-252. The restock
+// directory lists a producer of the item and the distributor as suppliers, but NOT
+// a fellow reseller who holds the item only from a past `buy` — the Josiah↔John
+// carrot buy-back. The buyer here is a non-distributor, so its suppliers collapse to
+// the producing farm and the distributor store; the tavern (a reseller) is gone.
+func TestFindItemVendors_ExcludesResellerHoldingBoughtStock(t *testing.T) {
+	subj := &sim.ActorSnapshot{Coins: 50, Inventory: map[sim.ItemKind]int{"carrots": 1}, RestockPolicy: buyPolicy("carrots", 12)}
+	snap := carrotSupplyChainSnap(subj, false)
+	got := map[sim.StructureID]bool{}
+	for _, vd := range findItemVendors(snap, "subj", subj, "carrots") {
+		got[vd.StructureID] = true
+	}
+	if !got["farm"] {
+		t.Error("the producing farm should be a restock supplier")
+	}
+	if !got["store"] {
+		t.Error("the distributor should be a restock supplier")
+	}
+	if got["tavern"] {
+		t.Error("a reseller holding bought carrots must NOT be a restock supplier (buy-back guard)")
+	}
+	if len(got) != 2 {
+		t.Errorf("want exactly {farm, store}, got %v", got)
+	}
+}
+
+// TestCoPresentSellerForItem_ExcludesReseller — LLM-252. The co-present buy-here
+// imperative (the hard "X is here — buy it now" cue that drove the buy-back) never
+// names a fellow reseller: with only John (a carrot reseller) co-present, no seller
+// is surfaced; with the producing Moses also co-present, HE is the one named.
+func TestCoPresentSellerForItem_ExcludesReseller(t *testing.T) {
+	// Only the reseller (John) is co-present → no co-present restock seller.
+	subjA := &sim.ActorSnapshot{Coins: 50, Inventory: map[sim.ItemKind]int{"carrots": 1}, RestockPolicy: buyPolicy("carrots", 12)}
+	snapA := carrotSupplyChainSnap(subjA, true)
+	// Take Moses and Josiah out of the huddle so ONLY the reseller John is co-present.
+	snapA.Actors["moses"].CurrentHuddleID = "elsewhere"
+	snapA.Actors["josiah"].CurrentHuddleID = "elsewhere"
+	if name, id := coPresentSellerForItem(snapA, "subj", subjA, "carrots"); name != "" || id != "" {
+		t.Errorf("a co-present reseller must not be surfaced as a restock seller (buy-back guard), got %q/%q", name, id)
+	}
+
+	// Producer Moses is co-present → HE is the named co-present seller.
+	subjB := &sim.ActorSnapshot{Coins: 50, Inventory: map[sim.ItemKind]int{"carrots": 1}, RestockPolicy: buyPolicy("carrots", 12)}
+	snapB := carrotSupplyChainSnap(subjB, true)
+	snapB.Actors["josiah"].CurrentHuddleID = "elsewhere"
+	if name, id := coPresentSellerForItem(snapB, "subj", subjB, "carrots"); id != "moses" || name != "Moses" {
+		t.Errorf("the co-present producer should be the named seller, got %q/%q", name, id)
 	}
 }

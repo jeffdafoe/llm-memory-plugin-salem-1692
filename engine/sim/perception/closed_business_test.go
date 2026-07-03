@@ -65,7 +65,7 @@ func TestBuildRestocking_ShutSupplierDropped(t *testing.T) {
 			{StructureID: "brewery", Condition: sim.ObservedClosed}: now.Add(-time.Hour),
 		}),
 	}
-	supplier := &sim.ActorSnapshot{WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}}
+	supplier := &sim.ActorSnapshot{WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}, RestockPolicy: producePolicy("ale", 40)}
 	snap := &sim.Snapshot{
 		PublishedAt:       now,
 		Actors:            map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj, "brewer": supplier},

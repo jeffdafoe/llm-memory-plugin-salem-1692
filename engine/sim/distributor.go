@@ -1,14 +1,16 @@
 package sim
 
-// distributor.go — the LLM-223 farm wholesale tier. Farm-tagged producers sell
-// only to the village distributor (Josiah as the "village Sysco"); everyone else
-// buys farm-origin goods from the distributor, not straight from the farm. Two
-// enforcement points ride the helpers here: the perception filter in
-// perception/consumable_vendors.go (drops farm vendors from every non-distributor
-// buyer's "who sells X" cues) and the engine backstop below the perception layer
-// in pay_with_item_commands.go (rejects a non-distributor's buy from a farm
-// seller). Shares TagFarm / IsFarmStructure with the farm-upkeep tax so the two
-// features can never disagree on "what is a farm".
+// distributor.go — the wholesale tier (LLM-223, generalized from the farm gate
+// to the wholesaler tag in LLM-252). Wholesaler-tagged sellers (the farms and
+// the mill) sell only to the village distributor (Josiah as the "village Sysco");
+// everyone else buys wholesale-origin goods from the distributor, not straight
+// from the source. Two enforcement points ride the helpers here: the perception
+// filter in perception/consumable_vendors.go (drops wholesale vendors from every
+// non-distributor buyer's "who sells X" cues) and the engine backstop below the
+// perception layer in pay_with_item_commands.go (rejects a non-distributor's buy
+// from a wholesale seller). The wholesaler tag is deliberately independent of
+// TagFarm — which now scopes only the farm-upkeep tax — so the gate and the tax
+// stay orthogonal: a farm carries both, the mill carries only wholesaler.
 
 // TagDistributor marks the structure whose keeper is the village wholesale
 // distributor — the sole buyer the farm-tagged producers may sell to, and the
@@ -37,18 +39,34 @@ func ActorIsDistributor(objects map[VillageObjectID]*VillageObject, workStructur
 	return IsDistributorStructure(objects[VillageObjectID(workStructureID)])
 }
 
-// SellerAtFarm reports whether a seller stationed at workStructureID sells from a
-// farm-tagged structure — the wholesale gate's seller-side test. Reuses
-// IsFarmStructure so "what counts as a farm" stays shared with the upkeep tax.
-// Empty workStructureID (no workplace) is never a farm.
-func SellerAtFarm(objects map[VillageObjectID]*VillageObject, workStructureID StructureID) bool {
+// TagWholesaler marks a structure whose sellers are wholesale-tier: they sell
+// only to the village distributor, never direct to retail buyers. Generalizes
+// the LLM-223 farm gate (LLM-252) so non-farm wholesale sources — the mill —
+// join the tier without being farms. Operator-assignable live via
+// /object/add-tag, mirroring TagFarm / TagDistributor (the LLM-203 vocabulary).
+// Deliberately independent of TagFarm: a farm carries both (wholesaler gate +
+// farm-upkeep tax), the mill carries only wholesaler.
+const TagWholesaler = "wholesaler"
+
+// IsWholesalerStructure reports whether obj carries the wholesaler tag. Nil-safe.
+// Like IsDistributorStructure (and unlike IsFarmStructure) it does NOT require an
+// owner: the tag alone marks the wholesale channel, resolved from where the
+// seller WORKS, not from ownership.
+func IsWholesalerStructure(obj *VillageObject) bool {
+	return obj != nil && obj.HasTag(TagWholesaler)
+}
+
+// SellerAtWholesaler reports whether a seller stationed at workStructureID sells
+// from a wholesaler-tagged structure — the wholesale gate's seller-side test.
+// Empty workStructureID (no workplace) is never a wholesaler.
+func SellerAtWholesaler(objects map[VillageObjectID]*VillageObject, workStructureID StructureID) bool {
 	if workStructureID == "" {
 		return false
 	}
-	return IsFarmStructure(objects[VillageObjectID(workStructureID)])
+	return IsWholesalerStructure(objects[VillageObjectID(workStructureID)])
 }
 
-// DistributorSteerLabel names where a farm-gated buyer should shop instead — the
+// DistributorSteerLabel names where a wholesale-gated buyer should shop instead — the
 // distributor's keeper (owner of the distributor-tagged structure), falling back
 // to the structure's own display name, then a generic phrase. Best-effort, for the
 // reject steer only: the gate still holds if no distributor is configured (the

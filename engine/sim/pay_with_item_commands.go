@@ -411,20 +411,21 @@ func PayWithItem(
 				)
 			}
 
-			// LLM-223 farm wholesale tier: farm-tagged producers sell only to the
+			// Wholesale tier (LLM-223, generalized to the wholesaler tag in
+			// LLM-252): wholesaler-tagged sellers (farms, mill) sell only to the
 			// village distributor. A non-distributor buying from a seller whose
-			// workplace is a farm is rejected at dispatch and steered to the
-			// distributor — the hard backstop beneath the perception filter
-			// (eachVendorOffer drops farm vendors from every non-distributor's
+			// workplace is wholesale-tagged is rejected at dispatch and steered to
+			// the distributor — the hard backstop beneath the perception filter
+			// (eachVendorOffer drops wholesale vendors from every non-distributor's
 			// buy/consume cues, so no cue lures a buyer into this rejection). The
 			// distributor's keeper buys wholesale freely; everyone else restocks
 			// from him. Keys on the SELLER's work anchor, so a hired hand or a
-			// farmer trading away from the farm is gated too.
-			if SellerAtFarm(w.VillageObjects, seller.WorkStructureID) &&
+			// seller trading away from the wholesale structure is gated too.
+			if SellerAtWholesaler(w.VillageObjects, seller.WorkStructureID) &&
 				!ActorIsDistributor(w.VillageObjects, buyer.WorkStructureID) {
 				distributor := DistributorSteerLabel(w.VillageObjects, w.Actors)
 				return nil, fmt.Errorf(
-					"the farms sell only to %s, the village distributor — buy your %s from %s, not straight from the farm.",
+					"wholesale goods are sold only to %s, the village distributor — buy your %s from %s, not straight from the source.",
 					distributor, kind, distributor,
 				)
 			}
