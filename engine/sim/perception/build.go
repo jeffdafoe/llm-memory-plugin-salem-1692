@@ -1206,10 +1206,62 @@ func buildTurnState(snap *sim.Snapshot, actorID sim.ActorID, subj *sim.ActorSnap
 			ts.OwedReplyTo = append(ts.OwedReplyTo, label)
 		}
 	}
+	// LLM-232: extend the "await their reply" anchor to a plain spoken proposal
+	// to the sole awake peer of a two-body huddle, at the coarser
+	// ReaskSuppressWindow — the re-ask storm WORK-370's directed 60s edge misses
+	// (an ask that named no addressee opened no edge; a directed one lapses
+	// between minutes-apart re-asks). Only when no live directed edge already
+	// anchors a peer (so the line never double-names one), only for the
+	// unambiguous single-awake-peer case, and NOT while the huddle is in an armed
+	// conversational loop (LLM-169): a looper is steered to act, not to wait — a
+	// "wait for their reply" line would fight the loop-breaking coda, the same
+	// reason ConversationLooping suppresses the owed-reply nag. Feeds the same
+	// AwaitingReplyFrom the render + coda already consume — no new render path.
+	if len(ts.AwaitingReplyFrom) == 0 && !subj.ConversationLooping {
+		if label, ok := solePeerReaskAnchor(snap, actorID, subj, members); ok {
+			ts.AwaitingReplyFrom = append(ts.AwaitingReplyFrom, label)
+		}
+	}
 	// LLM-169: carry the publish-time armed-loop flag through so render can swap
 	// the reply-pressure nudge for the "you've agreed, act now" coda.
 	ts.ConversationLooping = subj.ConversationLooping
 	return ts
+}
+
+// solePeerReaskAnchor computes the LLM-232 re-ask anchor for the subject: when
+// exactly one present huddle peer is awake (not asleep or resting) and the
+// subject last spoke in the huddle within sim.ReaskSuppressWindow AND more
+// recently than that peer (the peer has said nothing back), it returns that
+// peer's acquaintance-gated label to fold into AwaitingReplyFrom. Mirrors the
+// sim.SpeakTo backstop (soleAwaitedPeerForReask) so the rendered "wait, don't
+// repeat" line and the hard gate agree on when a re-ask is idle. Reads the
+// huddle's recent-conversation ring off the snapshot; "now" is PublishedAt.
+func solePeerReaskAnchor(snap *sim.Snapshot, actorID sim.ActorID, subj *sim.ActorSnapshot, members []HuddleMember) (string, bool) {
+	h := snap.Huddles[subj.CurrentHuddleID]
+	if h == nil {
+		return "", false
+	}
+	var awake *HuddleMember
+	count := 0
+	for i := range members {
+		p := snap.Actors[members[i].ID]
+		if p == nil || p.State == sim.StateSleeping || p.State == sim.StateResting {
+			continue
+		}
+		count++
+		awake = &members[i]
+	}
+	if count != 1 {
+		return "", false
+	}
+	subjLast := h.LastUtteranceAtBy(actorID)
+	if subjLast.IsZero() || snap.PublishedAt.Sub(subjLast) >= sim.ReaskSuppressWindow {
+		return "", false
+	}
+	if peerLast := h.LastUtteranceAtBy(awake.ID); !peerLast.Before(subjLast) {
+		return "", false
+	}
+	return descriptorLabel(awake.DisplayName, awake.Role, awake.Acquainted), true
 }
 
 // awaitWindowForKind picks the turn-state liveness window for an edge whose

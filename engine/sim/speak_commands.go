@@ -208,6 +208,32 @@ func SpeakTo(speakerID ActorID, text, to string, mentions []SpeakMention, hasNew
 				}
 			}
 
+			// LLM-232 re-ask-storm backstop — the minutes-scale sibling of the
+			// WORK-370 gate above. That gate only fires for a DIRECTED ask still
+			// inside the 60s edge window; the storm this catches is a plain proposal
+			// to the only other person present, re-pitched every few minutes under a
+			// standing cue (restock priority + one co-present body). Such an ask
+			// names no addressee, so it opens no edge, and the minutes between
+			// re-asks outlast the 60s window anyway. Undirected asks are in scope
+			// here (no addressedID gate) — that is the whole point. Same carve-outs
+			// as above: PC-exempt, new-news-exempt (an event-driven follow-up rides
+			// through), and any utterance from the peer clears it. Reads the pre-speak
+			// ring, before the AppendUtterance below records this line.
+			if actor.Kind != KindPC && !hasNewNews {
+				if peer, blocked := w.soleAwaitedPeerForReask(actor, huddleID, peerIDs, at); blocked {
+					name := "them"
+					if p := w.Actors[peer]; p != nil && p.DisplayName != "" {
+						name = p.DisplayName
+					}
+					return nil, fmt.Errorf(
+						"you already spoke to %s and they haven't answered — do not repeat "+
+							"yourself or press them again; attend to your own work, or wait "+
+							"until they reply.",
+						name,
+					)
+				}
+			}
+
 			// Emit the Spoke event. World.emit stamps EventID + RootEventID
 			// and dispatches subscribers synchronously inside the world
 			// goroutine. PCBystanderIDs is the overhearing wire audience
