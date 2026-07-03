@@ -1,35 +1,39 @@
 package sim
 
 import (
+	"fmt"
 	"math"
 	"time"
 )
 
-// stall_wear.go — LLM-118. Wooden market stalls accrue Wear as they do
-// business and must be repaired (consuming nails) before they degrade and
-// close for trade. This file holds the domain defaults + helpers; the accrual
-// seam is commitPayTransfer (pay_with_item_commands.go), the warrant is
+// stall_wear.go — LLM-118, generalized in LLM-247. Every owned business (tavern,
+// farms, shops, smithy — not just market stalls) accrues Wear as it takes in
+// coin and must be repaired (consuming nails) before it degrades and closes for
+// trade. This file holds the domain defaults + helpers; the accrual seam is
+// commitPayTransfer (pay_with_item_commands.go), the warrant is
 // WarrantKindStallRepair (reactor.go), the repair action rides the
 // SourceActivity substrate, and the perception cues live under perception/.
+// The Stall* identifiers are kept from LLM-118 (they name persisted checkpoint
+// columns + the live umbilical knob contract); the scope is now business-wide.
 
-// Default WorldSettings knobs for stall wear. Guesstimates, tuned live via the
-// umbilical. With WearPerCoin=1 a busy stall (~300-400 coins/day) reaches worn
-// (~400) in ~1 day and degraded (~600) in ~1.5 days if ignored; a slow stall
-// (~50 coins/day) effectively never needs repair.
+// Default WorldSettings knobs for business wear (LLM-247 recalibration). Tuned
+// live via the umbilical. WearPerCoin=1 makes the meter read "wear == coins the
+// owner has taken in since the last repair." Calibrated to observed velocity —
+// the busiest business earns on the order of ~50 coins/week — so a repair
+// threshold of 60 fires roughly weekly on the top earner and rarely on slow
+// ones; degrade sits half again higher, a long cued runway past the first nudge.
 const (
 	DefaultStallWearPerCoin           = 1
-	DefaultStallWearRepairThreshold   = 400
-	DefaultStallWearDegradeThreshold  = 600
+	DefaultStallWearRepairThreshold   = 60
+	DefaultStallWearDegradeThreshold  = 90
 	DefaultStallNailsPerRepair        = 5
 	DefaultStallRepairDurationSeconds = 90
 )
 
-// TagMarketStall scopes the wear/repair economy to market-stall instances. An
-// operator opts an object in by tagging it (umbilical /object/add-tag); a stall
-// only wears once it ALSO carries an owner (the owner is who perceives the need
-// and performs the repair). Tag-scoped rather than asset-name-matched so the
-// engine carries no catalog string and an operator can add/remove a stall from
-// the economy live.
+// TagMarketStall marks a market-stall instance in the tag vocabulary (applied by
+// an operator via the editor / umbilical /object/add-tag). As of LLM-247 it is
+// NO LONGER the wear/repair gate — accrual widened to every owned business
+// (TagBusiness). Kept as a descriptive type tag.
 const TagMarketStall = "market_stall"
 
 // NailItemKind is the canonical item a repair consumes — the smith's nail
@@ -37,16 +41,29 @@ const TagMarketStall = "market_stall"
 // smith and spent mending a stall: the demand half of the nail loop.
 const NailItemKind ItemKind = "nail"
 
-// IsWearableStall reports whether obj is an owned market stall — the scope gate
-// for all wear accrual, the repair tool, and the degrade block. Nil-safe.
+// IsWearableStall reports whether obj is an owned business — the scope gate for
+// all wear accrual, the repair tool, and the degrade block. Despite the name
+// (kept from LLM-118), the gate is the TagBusiness tag, not market_stall
+// (widened in LLM-247): every owned business wears — tavern, farms, shops,
+// smithy — not just stalls. An object wears only when it is tagged TagBusiness
+// AND carries an owner (the owner perceives the need and performs the repair; an
+// unowned business never wears). Nil-safe.
 func IsWearableStall(obj *VillageObject) bool {
-	return obj != nil && obj.OwnerActorID != "" && obj.HasTag(TagMarketStall)
+	return obj != nil && obj.OwnerActorID != "" && obj.HasTag(TagBusiness)
 }
 
-// OwnedWearableStall returns the market stall owned by sellerID, or nil when the
-// seller owns none. Takes the object map so it serves both the live World
-// (w.VillageObjects) and a perception Snapshot (snap.VillageObjects). A vendor
-// owns at most one stall by data convention; the first match wins.
+// OwnedWearableStall returns the wearable business owned by sellerID, or nil when
+// the seller owns none. Takes the object map so it serves both the live World
+// (w.VillageObjects) and a perception Snapshot (snap.VillageObjects).
+//
+// ASSUMES one wearable business per owner (data convention): the first match
+// wins, so with two owned businesses the result is map-iteration-arbitrary. This
+// convention predates LLM-247 (it held trivially when scope was market stalls)
+// and still holds — every live business has a distinct owner. The accrual seam,
+// the degrade sale-block, and the repair cue all resolve the owner's business
+// through here, so if an owner is ever given a second wearable business, those
+// paths need to key off the sale/stand-at location instead. See the codebase note
+// [[shared/notes/codebase/salem-engine-v2/stall-wear-repair]].
 func OwnedWearableStall(objects map[VillageObjectID]*VillageObject, sellerID ActorID) *VillageObject {
 	if sellerID == "" {
 		return nil
@@ -194,11 +211,25 @@ func arrivalStall(w *World, actor *Actor, arrivedEvt *ActorArrived) *VillageObje
 	return nil
 }
 
-// emitStallConditionNarration surfaces a worn market stall to a PC who just walked
-// up to it, as a private talk-box atmosphere line (LLM-118). PC-only: NPCs get the
-// pull-side perception cue (StallConditionView) instead. Fires once per arrival (a
-// discrete event), so it can't spam; a fresh wear state is reflected each time the
-// player returns.
+// businessDisplayName resolves the human label for a worn business — the
+// co-located structure's name (structures share the object's id) first, else the
+// object's own DisplayName, else "" for the caller to fall back to a generic
+// noun. The sim-side twin of perception.resolveDwellPinLabel.
+func businessDisplayName(w *World, obj *VillageObject) string {
+	if w == nil || obj == nil {
+		return ""
+	}
+	if st := w.Structures[StructureID(obj.ID)]; st != nil && st.DisplayName != "" {
+		return st.DisplayName
+	}
+	return obj.DisplayName
+}
+
+// emitStallConditionNarration surfaces a worn business to a PC who just walked up
+// to it, as a private talk-box atmosphere line (LLM-118, generalized LLM-247).
+// PC-only: NPCs get the pull-side perception cue (StallConditionView) instead.
+// Fires once per arrival (a discrete event), so it can't spam; a fresh wear state
+// is reflected each time the player returns.
 func emitStallConditionNarration(w *World, actor *Actor, arrivedEvt *ActorArrived, now time.Time) {
 	if w == nil || actor == nil || actor.Kind != KindPC {
 		return
@@ -207,9 +238,13 @@ func emitStallConditionNarration(w *World, actor *Actor, arrivedEvt *ActorArrive
 	if !StallNeedsRepair(stall, w.Settings.StallWearRepairThreshold) {
 		return
 	}
-	text := "The market stall here looks worn, its boards loosened by hard use."
+	name := businessDisplayName(w, stall)
+	if name == "" {
+		name = "business"
+	}
+	text := fmt.Sprintf("The %s here looks worn and run-down from hard use.", name)
 	if StallDegraded(stall, w.Settings.StallWearDegradeThreshold) {
-		text = "The market stall here is battered and clearly unfit for trade — its boards hang loose."
+		text = fmt.Sprintf("The %s here is battered and clearly unfit for trade.", name)
 	}
 	w.emit(&StallConditionNarrated{
 		ActorID:     actor.ID,

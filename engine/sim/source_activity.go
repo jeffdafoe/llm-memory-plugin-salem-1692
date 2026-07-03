@@ -38,9 +38,10 @@ type SourceActivityKind string
 const (
 	SourceActivityRefresh SourceActivityKind = "refresh"
 	SourceActivityHarvest SourceActivityKind = "harvest"
-	// SourceActivityRepair is an owner mending their worn market stall (LLM-118):
-	// nails are consumed at start, the window runs StallRepairDurationSeconds, and
-	// completion resets the stall's Wear to 0 so it trades again.
+	// SourceActivityRepair is an owner mending their worn business (LLM-118,
+	// LLM-247): nails are consumed at start, the window runs
+	// StallRepairDurationSeconds, and completion resets the business's Wear to 0 so
+	// it trades again.
 	SourceActivityRepair SourceActivityKind = "repair"
 )
 
@@ -310,9 +311,9 @@ func StartHarvest(actorID ActorID, qty int) Command {
 	}
 }
 
-// StartRepair begins a timed repair of the worn market stall the owner is
-// standing at (LLM-118). Validates ownership + co-location + that the stall
-// actually needs mending + that the owner holds enough nails, consumes the nails
+// StartRepair begins a timed repair of the worn business the owner is
+// standing at (LLM-118, LLM-247). Validates ownership + co-location + that the
+// business actually needs mending + that the owner holds enough nails, consumes the nails
 // up front, and opens the SourceActivity window; the wear reset lands at
 // completion (applyCompletedSourceActivity). The repair tool is gated to be
 // advertised only in exactly this situation, but every gate is re-validated here

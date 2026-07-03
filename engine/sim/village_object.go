@@ -84,12 +84,12 @@ type VillageObject struct {
 	// Zero is the safe default for objects without a stock concept.
 	AvailableQuantity int
 
-	// Wear is the accumulated maintenance demand on a market stall (LLM-118),
-	// accrued in proportion to the coin the owner turns over at it
-	// (commitPayTransfer). Crossing the repair threshold warrants a repair;
-	// crossing the degrade threshold closes the stall for trade until mended; a
+	// Wear is the accumulated maintenance demand on an owned business (LLM-118,
+	// generalized in LLM-247), accrued in proportion to the coin the owner turns
+	// over at it (commitPayTransfer). Crossing the repair threshold warrants a
+	// repair; crossing the degrade threshold closes it for trade until mended; a
 	// repair resets it to 0. Durable (checkpointed). Zero for every object that
-	// isn't a wearable stall (see isWearableStall / market_stall scope).
+	// isn't a wearable business (see IsWearableStall / TagBusiness scope).
 	Wear int
 
 	// Refreshes — per-attribute need-decrement-on-arrival policies. Empty

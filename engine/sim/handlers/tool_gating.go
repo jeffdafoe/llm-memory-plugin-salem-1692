@@ -200,10 +200,11 @@ const moveToToolName = "move_to"
 // arrives anyway.
 const craftToolName = "produce"
 
-// repairToolName — the stall owner's "mend your worn market stall" tool (LLM-118).
-// Advertised ONLY when the "## Your stall" cue is present (payload.StallRepair
-// non-nil), which itself fires only when the owner stands at their own stall and
-// it is mendable (worn to the repair threshold, or degraded). Reading the SAME
+// repairToolName — the business owner's "mend your worn premises" tool (LLM-118,
+// generalized LLM-247). Advertised ONLY when the "## Your business" cue is present
+// (payload.StallRepair non-nil), which itself fires only when the owner stands at
+// their own business and it is mendable (worn to the repair threshold, or
+// degraded). Reading the SAME
 // signal the cue renders from keeps the tool and its cue in lockstep (the
 // discussion-109 invariant). Deliberately NOT gated on carrying enough nails: the
 // affordance stays visible so the model knows mending is the way out, the cue
@@ -420,9 +421,9 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 		if spec.Name == craftToolName && !offerCraft {
 			continue
 		}
-		// repair consumer (LLM-118): advertise only when the "## Your stall" cue
+		// repair consumer (LLM-118): advertise only when the "## Your business" cue
 		// is present — the same StallRepair signal the cue renders from — so the
-		// owner is handed the tool exactly when standing at their own worn stall,
+		// owner is handed the tool exactly when standing at their own worn business,
 		// and no other actor ever sees it.
 		if spec.Name == repairToolName && !offerRepair {
 			continue
