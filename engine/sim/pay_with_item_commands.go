@@ -986,10 +986,10 @@ func runPayWithItemFastPath(
 			seller.DisplayName,
 		)
 	}
-	// LLM-118: a seller whose stall is in disrepair can't trade until it's mended.
+	// LLM-118 (LLM-247): a seller whose business is in disrepair can't trade until it's mended.
 	if sellerStallDegraded(w, sellerID) {
 		return nil, fmt.Errorf(
-			"%s's stall is in disrepair — they can't trade until it's mended.",
+			"%s's business is in disrepair — they can't trade until it's mended.",
 			seller.DisplayName,
 		)
 	}
@@ -1346,11 +1346,11 @@ func acceptPendingOffer(w *World, seller *Actor, entry *PayLedgerEntry, at time.
 		return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedUnavailable, "", at), nil
 	}
 
-	// Gate 7b (LLM-118): a degraded stall is closed for trade — fail the accept
-	// with a buyer-facing reason until the owner mends it.
+	// Gate 7b (LLM-118, LLM-247): a degraded business is closed for trade — fail the
+	// accept with a buyer-facing reason until the owner mends it.
 	if !entry.IsGift && sellerStallDegraded(w, seller.ID) {
 		return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedUnavailable,
-			fmt.Sprintf("%s's stall is in disrepair — they can't trade until it's mended.", seller.DisplayName), at), nil
+			fmt.Sprintf("%s's business is in disrepair — they can't trade until it's mended.", seller.DisplayName), at), nil
 	}
 
 	// Gate 8: ItemKind catalog still has this kind (skipped for a gift — it has

@@ -1414,13 +1414,14 @@ func descriptorLabel(displayName, role string, acquainted bool) string {
 	return "a stranger"
 }
 
-// buildWarrantPlaceNames resolves the destination named by each
-// ArrivalWarrantReason in the batch — a structure (StructureEnter/Visit) or a
-// village object (ObjectVisit) — to its display name, so Render can say "You
-// arrived at <place>" without the vacuous "arrived nearby" (ZBBS-WORK-358).
-// Keyed by the raw id string (structure + object ids share one space under the
-// shared-identity bridge). Returns nil when no arrival warrant names a place
-// (the common non-arrival tick).
+// buildWarrantPlaceNames resolves the place named by each warrant that carries
+// one to its display name, so Render can name it instead of a vacuous phrase.
+// Covers ArrivalWarrantReason — a structure (StructureEnter/Visit) or village
+// object (ObjectVisit), for "You arrived at <place>" (ZBBS-WORK-358) — and
+// StallRepairWarrantReason — the worn business, so the wake-from-anywhere repair
+// nudge names it (LLM-247). Keyed by the raw id string (structure + object ids
+// share one space under the shared-identity bridge). Returns nil when no warrant
+// names a place (the common tick).
 func buildWarrantPlaceNames(snap *sim.Snapshot, warrants []sim.WarrantMeta) map[string]string {
 	// Build already returns early on a nil snapshot before reaching here, but
 	// keep the helper independently safe for direct callers/tests (code_review).
@@ -1438,19 +1439,22 @@ func buildWarrantPlaceNames(snap *sim.Snapshot, warrants []sim.WarrantMeta) map[
 		names[id] = name
 	}
 	for _, w := range warrants {
-		r, ok := w.Reason.(sim.ArrivalWarrantReason)
-		if !ok {
-			continue
-		}
-		if r.AtStructureID != "" {
-			if st := snap.Structures[r.AtStructureID]; st != nil {
-				put(string(r.AtStructureID), st.DisplayName)
+		switch r := w.Reason.(type) {
+		case sim.ArrivalWarrantReason:
+			if r.AtStructureID != "" {
+				if st := snap.Structures[r.AtStructureID]; st != nil {
+					put(string(r.AtStructureID), st.DisplayName)
+				}
 			}
-		}
-		if r.AtObjectID != "" {
-			if o := snap.VillageObjects[r.AtObjectID]; o != nil {
-				put(string(r.AtObjectID), o.DisplayName)
+			if r.AtObjectID != "" {
+				if o := snap.VillageObjects[r.AtObjectID]; o != nil {
+					put(string(r.AtObjectID), o.DisplayName)
+				}
 			}
+		case sim.StallRepairWarrantReason:
+			// Name the worn business (structure-first, then object) so the
+			// wake-from-anywhere repair warrant line can say "Your <name> has worn."
+			put(string(r.StallID), resolveDwellPinLabel(snap, r.StallID))
 		}
 	}
 	return names

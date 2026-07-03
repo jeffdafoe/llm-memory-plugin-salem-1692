@@ -2802,10 +2802,16 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 		// "why you ticked" beat, like the idle-backstop / need-nudge lines.
 		return fmt.Sprintf("%d. It's time to produce — decide what to make next.\n", n), false
 	case sim.StallRepairWarrantReason:
-		// LLM-118: the stall just wore through the repair threshold. At the stall
-		// the "## Your stall" cue carries the nail count + buy-from-the-smith
-		// steer; this is the wake-from-anywhere nudge to go tend it.
-		return fmt.Sprintf("%d. Your market stall has worn from use and needs mending — go to it and repair it (you'll need nails; the smith sells them).\n", n), false
+		// LLM-118 (generalized LLM-247): the business just wore through the repair
+		// threshold. At the business the "## Your business" cue carries the nail
+		// count + buy-from-the-smith steer; this is the wake-from-anywhere nudge to
+		// go tend it. The place name resolves the worn business (structure/object);
+		// falls back to a generic noun if unnamed.
+		place := placeNameOf(string(r.StallID))
+		if place == "" {
+			place = "place of business"
+		}
+		return fmt.Sprintf("%d. Your %s has worn from use and needs mending — go to it and repair it (you'll need nails; the smith sells them).\n", n, place), false
 	case sim.FarmUpkeepWarrantReason:
 		// LLM-215: the season wore out the farm's upkeep shovels. The "## Farm upkeep"
 		// cue carries the shovel count + buy-from-the-blacksmith steer; this is the

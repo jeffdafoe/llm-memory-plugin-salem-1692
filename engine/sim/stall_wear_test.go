@@ -30,7 +30,7 @@ func buildStallTestWorld(t *testing.T) (*sim.World, context.CancelFunc) {
 		"stall": {
 			ID: "stall", DisplayName: "Blacksmith", AssetID: "stall-wood", CurrentState: "open",
 			LoiterOffsetX: &zero, LoiterOffsetY: &zero, Pos: sim.WorldPos{X: 100, Y: 100},
-			OwnerActorID: "ezekiel", Tags: []string{sim.TagMarketStall}, Wear: 450,
+			OwnerActorID: "ezekiel", Tags: []string{sim.TagBusiness}, Wear: 450,
 		},
 	})
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
@@ -143,14 +143,15 @@ func TestStartRepair_Rejects(t *testing.T) {
 	})
 }
 
-// degradeBobStall sets the degrade threshold + gives bob a degraded market stall
-// in the pay-with-item fixture, so his trades should be blocked.
+// degradeBobStall sets the degrade threshold + gives bob a degraded business
+// (business-tagged, not market_stall — the LLM-247 generalized gate) in the
+// pay-with-item fixture, so his trades should be blocked.
 func degradeBobStall(t *testing.T, w *sim.World) {
 	t.Helper()
 	mustSend(t, w, func(world *sim.World) {
 		world.Settings.StallWearDegradeThreshold = 600
 		world.VillageObjects["bob_stall"] = &sim.VillageObject{
-			ID: "bob_stall", OwnerActorID: "bob", Tags: []string{sim.TagMarketStall}, Wear: 650,
+			ID: "bob_stall", OwnerActorID: "bob", Tags: []string{sim.TagBusiness}, Wear: 650,
 		}
 	})
 }

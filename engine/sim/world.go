@@ -129,11 +129,11 @@ type WorldSettings struct {
 	// restock producer and the "## Restocking" perception gate.
 	RestockReorderPct int
 
-	// Stall wear & repair (LLM-118). A wooden market stall accrues Wear in
-	// proportion to the coin it turns over (StallWearPerCoin × sale amount,
-	// accrued at commitPayTransfer to the seller's owned stall). Crossing
-	// StallWearRepairThreshold stamps a repair warrant; crossing
-	// StallWearDegradeThreshold closes the stall for trade until mended. A
+	// Stall wear & repair (LLM-118; generalized to all owned businesses in
+	// LLM-247). An owned business accrues Wear in proportion to the coin it turns
+	// over (StallWearPerCoin × sale amount, accrued at commitPayTransfer to the
+	// seller's owned business). Crossing StallWearRepairThreshold stamps a repair
+	// warrant; crossing StallWearDegradeThreshold closes it for trade until mended. A
 	// repair consumes StallNailsPerRepair nails and runs a SourceActivity
 	// window of StallRepairDurationSeconds, then resets Wear to 0. All five are
 	// live-tunable (umbilical) — the defaults are guesstimates calibrated

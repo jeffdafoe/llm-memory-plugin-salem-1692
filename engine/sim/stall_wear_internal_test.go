@@ -16,7 +16,7 @@ func stallTestWorld(perCoin, repairThr, degradeThr, wear int) (*World, *Actor, *
 	stall := &VillageObject{
 		ID:           "stall",
 		OwnerActorID: owner.ID,
-		Tags:         []string{TagMarketStall},
+		Tags:         []string{TagBusiness},
 		Wear:         wear,
 	}
 	w := &World{
@@ -108,7 +108,7 @@ func TestStallRepairable_DegradedDeBricks(t *testing.T) {
 	// Misconfiguration: degrade (100) below repair (400). A stall at wear 150 is
 	// degraded (sales blocked) but not "worn" to the repair line — StallRepairable
 	// must still report it mendable so a bad config can't brick it.
-	stall := &VillageObject{ID: "s", OwnerActorID: "ezekiel", Tags: []string{TagMarketStall}, Wear: 150}
+	stall := &VillageObject{ID: "s", OwnerActorID: "ezekiel", Tags: []string{TagBusiness}, Wear: 150}
 	if StallNeedsRepair(stall, 400) {
 		t.Fatal("precondition: wear 150 is not 'worn' at repair threshold 400")
 	}
@@ -152,8 +152,8 @@ func TestSetStallWearSettings_Validation(t *testing.T) {
 }
 
 func TestStallWearPredicates(t *testing.T) {
-	owned := &VillageObject{ID: "s", OwnerActorID: "ezekiel", Tags: []string{TagMarketStall}, Wear: 450}
-	unowned := &VillageObject{ID: "u", Tags: []string{TagMarketStall}, Wear: 999}
+	owned := &VillageObject{ID: "s", OwnerActorID: "ezekiel", Tags: []string{TagBusiness}, Wear: 450}
+	unowned := &VillageObject{ID: "u", Tags: []string{TagBusiness}, Wear: 999}
 	untagged := &VillageObject{ID: "n", OwnerActorID: "ezekiel", Wear: 999}
 
 	if !IsWearableStall(owned) {
@@ -189,7 +189,7 @@ func TestStallWearPredicates(t *testing.T) {
 
 	wDeg := &World{
 		Settings:       WorldSettings{StallWearDegradeThreshold: 600},
-		VillageObjects: map[VillageObjectID]*VillageObject{"s": {ID: "s", OwnerActorID: "ezekiel", Tags: []string{TagMarketStall}, Wear: 650}},
+		VillageObjects: map[VillageObjectID]*VillageObject{"s": {ID: "s", OwnerActorID: "ezekiel", Tags: []string{TagBusiness}, Wear: 650}},
 	}
 	if !sellerStallDegraded(wDeg, "ezekiel") {
 		t.Error("seller with a 650-wear stall (degrade 600) should be degraded")
