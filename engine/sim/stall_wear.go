@@ -52,10 +52,18 @@ func IsWearableStall(obj *VillageObject) bool {
 	return obj != nil && obj.OwnerActorID != "" && obj.HasTag(TagBusiness)
 }
 
-// OwnedWearableStall returns the market stall owned by sellerID, or nil when the
-// seller owns none. Takes the object map so it serves both the live World
-// (w.VillageObjects) and a perception Snapshot (snap.VillageObjects). A vendor
-// owns at most one stall by data convention; the first match wins.
+// OwnedWearableStall returns the wearable business owned by sellerID, or nil when
+// the seller owns none. Takes the object map so it serves both the live World
+// (w.VillageObjects) and a perception Snapshot (snap.VillageObjects).
+//
+// ASSUMES one wearable business per owner (data convention): the first match
+// wins, so with two owned businesses the result is map-iteration-arbitrary. This
+// convention predates LLM-247 (it held trivially when scope was market stalls)
+// and still holds — every live business has a distinct owner. The accrual seam,
+// the degrade sale-block, and the repair cue all resolve the owner's business
+// through here, so if an owner is ever given a second wearable business, those
+// paths need to key off the sale/stand-at location instead. See the codebase note
+// [[shared/notes/codebase/salem-engine-v2/stall-wear-repair]].
 func OwnedWearableStall(objects map[VillageObjectID]*VillageObject, sellerID ActorID) *VillageObject {
 	if sellerID == "" {
 		return nil

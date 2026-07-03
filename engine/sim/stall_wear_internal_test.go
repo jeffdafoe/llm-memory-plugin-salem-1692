@@ -198,3 +198,34 @@ func TestStallWearPredicates(t *testing.T) {
 		t.Error("a seller who owns no stall is never degraded")
 	}
 }
+
+// TestDefaultStallWearThresholds_LLM247 pins the recalibrated defaults so a future
+// edit can't silently regress to the old LLM-118 400/600 (at which — against real
+// ~50-coins/week velocity — a repair NEVER fired). Guards the constants and their
+// meaning: wear at the repair default is repairable, wear at the degrade default
+// is degraded, and one below repair is neither.
+func TestDefaultStallWearThresholds_LLM247(t *testing.T) {
+	if DefaultStallWearRepairThreshold != 60 || DefaultStallWearDegradeThreshold != 90 {
+		t.Fatalf("default thresholds = repair %d / degrade %d, want 60 / 90",
+			DefaultStallWearRepairThreshold, DefaultStallWearDegradeThreshold)
+	}
+	biz := &VillageObject{ID: "s", OwnerActorID: "ezekiel", Tags: []string{TagBusiness}}
+
+	biz.Wear = DefaultStallWearRepairThreshold // 60
+	if !StallNeedsRepair(biz, DefaultStallWearRepairThreshold) {
+		t.Error("wear at the default repair threshold should be repairable")
+	}
+	if StallDegraded(biz, DefaultStallWearDegradeThreshold) {
+		t.Error("wear at the repair threshold (60) is below degrade (90) — not degraded")
+	}
+
+	biz.Wear = DefaultStallWearRepairThreshold - 1 // 59
+	if StallNeedsRepair(biz, DefaultStallWearRepairThreshold) {
+		t.Error("wear just below the default repair threshold should not be repairable")
+	}
+
+	biz.Wear = DefaultStallWearDegradeThreshold // 90
+	if !StallDegraded(biz, DefaultStallWearDegradeThreshold) {
+		t.Error("wear at the default degrade threshold should be degraded")
+	}
+}
