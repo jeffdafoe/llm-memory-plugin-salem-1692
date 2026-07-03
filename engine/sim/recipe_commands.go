@@ -52,6 +52,17 @@ func ResolveRecipe(w *World, r ItemRecipe) (ItemRecipe, error) {
 		if required[k] {
 			return ItemRecipe{}, fmt.Errorf("boost input %q is already a required input", k)
 		}
+		// Unlike required inputs (whose numeric validation is the HTTP handler's
+		// concern per the contract above), boosts ARE numerically validated here:
+		// SetRecipe is reachable from non-HTTP callers, and an invalid booster
+		// would sit silently skipped in the live catalog while the pg write path
+		// rejects it — accept only what the DB accepts (code_review, LLM-248).
+		if bi.Qty <= 0 {
+			return ItemRecipe{}, fmt.Errorf("boost input %q qty must be positive (got %d)", k, bi.Qty)
+		}
+		if bi.BonusQty <= 0 {
+			return ItemRecipe{}, fmt.Errorf("boost input %q bonus_qty must be positive (got %d)", k, bi.BonusQty)
+		}
 		canonicalBoosts = append(canonicalBoosts, BoostInput{Item: k, Qty: bi.Qty, BonusQty: bi.BonusQty})
 	}
 	r.BoostInputs = canonicalBoosts
