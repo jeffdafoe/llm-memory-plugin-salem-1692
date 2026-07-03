@@ -81,10 +81,12 @@ const (
 )
 
 // DegenVisit is one scored tick's snapshot in the oscillation window (LLM-124):
-// the structure the actor ended the tick inside (empty when in transit or
-// outdoors) and how many of its needs were red at that moment. The red count
-// lets the arm tell a pointless shuttle (count flat or rising) from a trip that
-// resolved a need (count fell — genuine progress, not futile).
+// the place the actor ended the tick at — the structure it is inside, else the
+// named village object whose loiter pin it stands at (degenVisitScope, LLM-255;
+// empty when genuinely in transit or in the open) — and how many of its needs
+// were red at that moment. The red count lets the arm tell a pointless shuttle
+// (count flat or rising) from a trip that resolved a need (count fell —
+// genuine progress, not futile).
 type DegenVisit struct {
 	Structure StructureID
 	RedNeeds  int
@@ -174,9 +176,9 @@ func updateDegeneracy(w *World, a *Actor, result TickResult, now time.Time) {
 	if !degeneracyTickScored(result.TerminalStatus) {
 		return
 	}
-	// Snapshot this scored tick's structure + red-need state into the
+	// Snapshot this scored tick's structure scope + red-need state into the
 	// oscillation window before scoring, so the arm sees the current tick.
-	recordDegenVisit(w.Settings, a)
+	recordDegenVisit(w, a)
 	if !degeneracyTickWasFutile(result) && !degeneracyOscillationFutile(w.Settings, a) {
 		// A tick that is neither zero-yield nor an unproductive oscillation is
 		// productive: it breaks the streak and releases any stage.
@@ -265,20 +267,56 @@ func hasMaterialSuccess(succeeded []string) bool {
 	return false
 }
 
-// recordDegenVisit appends the current scored tick's post-tick structure and
-// red-need snapshot to the actor's oscillation window, trimming to the
-// configured size (oldest dropped). Runs once per scored tick, before scoring.
-func recordDegenVisit(s WorldSettings, a *Actor) {
+// recordDegenVisit appends the current scored tick's post-tick structure scope
+// and red-need snapshot to the actor's oscillation window, trimming to the
+// configured size (oldest dropped). Runs once per scored tick, before scoring,
+// on the world goroutine (it reads w.VillageObjects / w.Assets for the pin
+// lookup).
+func recordDegenVisit(w *World, a *Actor) {
 	a.DegenVisits = append(a.DegenVisits, DegenVisit{
-		Structure: a.InsideStructureID,
-		RedNeeds:  countRedNeeds(s, a),
+		Structure: degenVisitScope(w, a),
+		RedNeeds:  countRedNeeds(w.Settings, a),
 	})
-	window := s.degeneracyOscillationWindow()
+	window := w.Settings.degeneracyOscillationWindow()
 	if len(a.DegenVisits) > window {
 		// Copy the trailing window into a fresh slice so the backing array
 		// cannot grow without bound across a long-lived actor.
 		a.DegenVisits = append([]DegenVisit(nil), a.DegenVisits[len(a.DegenVisits)-window:]...)
 	}
+}
+
+// degenVisitScope resolves the place identity a scored tick's visit is
+// attributed to: the structure the actor is inside when set, else the named
+// village object at whose loiter pin the actor is standing — pin tile or its
+// eight visitor slots (LoiterAttributionTiles, the exact inverse of
+// pickVisitorSlot). Empty when the actor is in transit or in the open.
+//
+// LLM-255: keying the window on InsideStructureID alone made the oscillation
+// arm blind to any shuttle among structures whose arrival resolves at the
+// loiter pin (market stalls, owner-only entry) — the actor is never "inside",
+// every visit recorded blank, and the arm could not fire no matter how long
+// the shuttle persisted (the live John Ellis Tavern<->General Store case).
+//
+// The radius is deliberately the ARRIVAL scope, not the wider audience scope
+// (AudienceScopeTiles): a visit means the actor is standing at the place, and
+// the tighter ring keeps mid-walk pass-bys near a named object from minting
+// phantom visits that could assemble a false oscillation window
+// (code_review). Radius 0 would be too tight the other way — an arriving
+// visitor stands on the slot ring at Chebyshev 1, not the pin tile itself.
+//
+// A bare named prop (a well, a shade tree) has no Structure entry; its object
+// id still identifies the place for the arm's transition / distinct-place
+// counting, and buildings share one id across both maps (the shared-identity
+// bridge), so the cast is safe for both. Nothing dereferences the id through
+// w.Structures — it is an identity token only.
+func degenVisitScope(w *World, a *Actor) StructureID {
+	if a.InsideStructureID != "" {
+		return a.InsideStructureID
+	}
+	if objID, ok := ResolveLoiteringObject(w.VillageObjects, w.Assets, a.Pos, LoiterAttributionTiles); ok {
+		return StructureID(objID)
+	}
+	return ""
 }
 
 // countRedNeeds counts how many of the actor's needs sit at or past their red
