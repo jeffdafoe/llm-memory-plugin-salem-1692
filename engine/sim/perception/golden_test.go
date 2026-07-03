@@ -831,6 +831,20 @@ var perceptionScenarios = []perceptionScenario{
 		build: hungryLooperAtFoodlessHome,
 	},
 	{
+		name: "undirected_reask_sole_peer",
+		summary: "The live LLM-232 case: John Ellis floated a plain, unaddressed trade proposal to the only other " +
+			"person in his huddle (Anne Walker) and she has said nothing back. Because the ask named no addressee it opened " +
+			"no WORK-370 edge, and John's own last line is ~75s old — past the 60s directed-edge window (so even a directed " +
+			"edge would have lapsed) but well inside ReaskSuppressWindow. The golden pins the LLM-232 anchor: the " +
+			"sole-awake-peer condition folds the peer into " +
+			"AwaitingReplyFrom, so the 'You already spoke to the villager and are waiting for their reply. Do not repeat " +
+			"yourself…' line renders (name acquaintance-gated to 'the villager' here) and the coda swaps to the " +
+			"awaiting-reply wait-framing — the cross-tick memory an " +
+			"undirected re-ask storm otherwise lacks. A regression that dropped the anchor would leave no wait line and " +
+			"re-open the re-pitch loop.",
+		build: undirectedReaskSolePeerScenario,
+	},
+	{
 		name: "hungry_actor_holding_raw_meat",
 		summary: "A hungry shopkeeper (Josiah Thorne) at his post carries raw Meat — a stew INGREDIENT (food-category but " +
 			"eases no need raw) — alongside edible Cheese (the live LLM-166 case: he fired consume{Meat} 22 times). The golden " +
@@ -2195,6 +2209,67 @@ func huddleConversationLoopingScenario() (*sim.Snapshot, sim.ActorID, []sim.Warr
 		},
 	}
 	return snap, patienceID, nil
+}
+
+// undirectedReaskSolePeerScenario is the LLM-232 fixture: John Ellis stands in a
+// two-body huddle with Anne Walker and has floated a plain, unaddressed trade
+// proposal that opened no WORK-370 edge; Anne has said nothing back. John spoke
+// most recently (~75s ago — past the 60s directed-edge window, so even a directed
+// edge would have lapsed, but well inside ReaskSuppressWindow), and the huddle is
+// NOT looping, so the sole-awake-peer
+// anchor folds Anne into AwaitingReplyFrom: the golden pins the "you already
+// spoke, wait, don't repeat" line + the awaiting-reply coda on an otherwise
+// undirected re-ask. Fixed PublishedAt, utterances stamped relative to it, no
+// orders → byte-stable.
+func undirectedReaskSolePeerScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		johnID   = sim.ActorID("john")
+		anneID   = sim.ActorID("anne")
+		huddleID = sim.HuddleID("store_huddle")
+	)
+	now := 13 * 60 // 13:00 — afternoon, no sleep/return-to-post cue competes
+	published := time.Date(2026, 7, 3, 13, 0, 0, 0, time.UTC)
+	john := &sim.ActorSnapshot{
+		Kind:            sim.KindNPCStateful,
+		DisplayName:     "John Ellis",
+		Role:            "villager",
+		State:           sim.StateIdle,
+		CurrentHuddleID: huddleID,
+		Coins:           5,
+		Needs:           map[sim.NeedKey]int{},
+	}
+	anne := &sim.ActorSnapshot{
+		Kind:            sim.KindNPCStateful,
+		DisplayName:     "Anne Walker",
+		Role:            "villager",
+		State:           sim.StateIdle,
+		CurrentHuddleID: huddleID,
+		Coins:           5,
+		Needs:           map[sim.NeedKey]int{},
+	}
+	utter := func(spk sim.ActorID, name, text string, agoSec int) sim.Utterance {
+		return sim.Utterance{SpeakerID: spk, SpeakerName: name, Text: text, At: published.Add(-time.Duration(agoSec) * time.Second)}
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:         published,
+		LocalMinuteOfDay:    &now,
+		NeedThresholds:      sim.NeedThresholds{},
+		Assets:              emptyAssetSet,
+		NPCAwaitReplyWindow: 60 * time.Second,
+		Actors:              map[sim.ActorID]*sim.ActorSnapshot{johnID: john, anneID: anne},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddleID: {
+				ID:      huddleID,
+				Members: map[sim.ActorID]struct{}{johnID: {}, anneID: {}},
+				RecentUtterances: []sim.Utterance{
+					utter(anneID, "Anne Walker", "Morning, John.", 110),
+					utter(johnID, "John Ellis", "Morning. Say — I've cheese to spare; could you fetch me carrots?", 85),
+					utter(johnID, "John Ellis", "A fair trade, cheese for carrots?", 75),
+				},
+			},
+		},
+	}
+	return snap, johnID, nil
 }
 
 // hungryLooperAtFoodlessHome is the LLM-176 fixture: the Walker sisters loop in a

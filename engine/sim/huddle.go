@@ -156,3 +156,24 @@ func (h *Huddle) AppendUtterance(speakerID ActorID, speakerName, text string, at
 		h.RecentUtterances = trimmed
 	}
 }
+
+// LastUtteranceAtBy returns the time of the most recent utterance by `id` in
+// this huddle's recent-conversation ring, or the zero time if the ring holds
+// none. The ring is oldest-first (AppendUtterance), so a forward scan keeping
+// the last match yields the latest. Nil-safe. Consumed by the LLM-232 re-ask
+// suppression — the sim.SpeakTo backstop (soleAwaitedPeerForReask) and the
+// perception turn-state anchor (solePeerReaskAnchor) — to tell "I spoke and they
+// went quiet" from "they answered": the subject's own last line newer than the
+// peer's means the peer has said nothing since.
+func (h *Huddle) LastUtteranceAtBy(id ActorID) time.Time {
+	if h == nil {
+		return time.Time{}
+	}
+	var last time.Time
+	for _, u := range h.RecentUtterances {
+		if u.SpeakerID == id {
+			last = u.At
+		}
+	}
+	return last
+}

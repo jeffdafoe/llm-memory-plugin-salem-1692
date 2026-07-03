@@ -91,6 +91,20 @@ const (
 	DefaultNPCAwaitReplyWindow = 60 * time.Second
 )
 
+// ReaskSuppressWindow bounds the LLM-232 re-ask anchor: how long after speaking
+// to the sole awake peer of a two-body huddle — with no reply since — an actor
+// is steered (and, on an idle tick, hard-gated) away from re-addressing them. It
+// is deliberately COARSER than the WORK-370 directed await windows above
+// (DefaultNPCAwaitReplyWindow, 60s). The storm it targets is a plain spoken
+// proposal re-pitched every few MINUTES under a standing cue ("restocking is a
+// priority") plus one co-present body: such an ask names no addressee
+// (resolveAddressee -> whole-huddle) so it opens no WORK-370 edge, and a directed
+// one lapses in the minutes between re-asks. Past this window the suppression
+// lifts so a genuinely dropped conversation can re-open. Kept a plain constant
+// (like counterResponseWindow / restockSalesWindow); promote to a WorldSettings
+// key if it needs live tuning.
+const ReaskSuppressWindow = 3 * time.Minute
+
 // awaitReplyWindow returns the liveness window for an await-reply edge whose
 // ADDRESSEE is of the given kind, applying the WorldSettings override when set
 // (>0) and the Default*AwaitReplyWindow fallback otherwise. PC addressees get
@@ -145,4 +159,47 @@ func cloneAwaitingReplyFrom(src map[ActorID]time.Time) map[ActorID]time.Time {
 		out[k] = v
 	}
 	return out
+}
+
+// soleAwaitedPeerForReask reports the sole awake huddle peer the actor would be
+// re-addressing while still awaiting any reply from them, at the coarse
+// ReaskSuppressWindow scale (LLM-232) — the undirected / lapsed-edge re-ask storm
+// WORK-370's directed 60s edge misses. Returns ("", false) unless ALL hold:
+//   - the actor's huddle exists (its recent-conversation ring is the evidence),
+//   - exactly one present peer is awake — a shelved LABORING peer counts (busy,
+//     not dormant; re-pitching one is exactly the storm), asleep/resting peers
+//     do not; 2+ awake peers reintroduce "whose turn" and are left alone,
+//   - the actor last spoke in this huddle within ReaskSuppressWindow of `at`,
+//   - and more recently than that peer — the peer has said nothing back, so a
+//     fresh utterance now is an unanswered re-ask, not a reply.
+//
+// Any utterance by the peer moves peerLast to/after subjLast and clears it. Pure
+// over live state, world-goroutine only; the caller excludes PC speakers and
+// new-news ticks, mirroring the WORK-370 backstop's carve-outs.
+func (w *World) soleAwaitedPeerForReask(actor *Actor, huddleID HuddleID, peerIDs []ActorID, at time.Time) (ActorID, bool) {
+	h := w.Huddles[huddleID]
+	if h == nil {
+		return "", false
+	}
+	var peer ActorID
+	awake := 0
+	for _, pid := range peerIDs {
+		p := w.Actors[pid]
+		if p == nil || p.State == StateSleeping || p.State == StateResting {
+			continue
+		}
+		awake++
+		peer = pid
+	}
+	if awake != 1 {
+		return "", false
+	}
+	subjLast := h.LastUtteranceAtBy(actor.ID)
+	if subjLast.IsZero() || at.Sub(subjLast) >= ReaskSuppressWindow {
+		return "", false
+	}
+	if peerLast := h.LastUtteranceAtBy(peer); !peerLast.Before(subjLast) {
+		return "", false
+	}
+	return peer, true
 }
