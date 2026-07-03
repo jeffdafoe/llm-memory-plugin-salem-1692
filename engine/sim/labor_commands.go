@@ -46,11 +46,14 @@ type LaborSolicitResult struct {
 }
 
 // LaborAcceptResult is AcceptWork's value. On a gate-driven terminal flip
-// (expired / failed) State carries that terminal and WorkingUntil is zero;
-// on a real accept State is Working and WorkingUntil is the completion
-// deadline. Payment is the pre-formatted reward phrase ("5 coins",
-// "1 porridge and 2 coins" — LLM-225) so the harness steer can name the
-// full terms without re-formatting (formatPayment is sim-internal).
+// (expired / failed) State carries that terminal and WorkingUntil is zero.
+// On a real accept: State is Working with WorkingUntil the completion deadline
+// when work started immediately (on-site hire / workless employer), or EnRoute
+// with a zero WorkingUntil when the worker must first relocate to the workplace
+// (LLM-229 — the window is unknown until they arrive). Payment is the
+// pre-formatted reward phrase ("5 coins", "1 porridge and 2 coins" — LLM-225)
+// so the harness steer can name the full terms without re-formatting
+// (formatPayment is sim-internal).
 type LaborAcceptResult struct {
 	ID           LaborID
 	State        LaborLedgerState
@@ -293,11 +296,16 @@ func SolicitWork(workerID ActorID, employerName string, reward int, rewardItems 
 // co-presence, worker-free, funds) DRIVE a terminal flip: the gate failure
 // IS the resolution (FailedUnavailable / Expired), not a tool error.
 //
-// On all-pass: the offer flips to Working with a WorkingUntil window and the
-// worker enters StateLaboring with the mirrored LaboringUntil. No coins move
-// here — the employer→worker reward transfer settles atomically when the
-// completion sweep (labor_settle.go) fires, after the worker has put in the
-// time.
+// On all-pass the hire is struck (AcceptedAt stamped, LaborOfferAccepted
+// emitted), but where the work happens depends on the deal site (LLM-229): a
+// deal struck at the employer's own post with the owner present — or an
+// employer with no work structure at all — starts the work window immediately
+// in place (startLaborWork); a deal struck anywhere else flips the offer to
+// EnRoute and relocates the worker to the workplace, with the window starting
+// only once they are at the post with the owner present (the arrival
+// subscriber). No coins move here — the employer→worker reward transfer
+// settles atomically when the completion sweep (labor_settle.go) fires, after
+// the worker has put in the time.
 func AcceptWork(callerID ActorID, laborID LaborID, at time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
@@ -369,37 +377,50 @@ func AcceptWork(callerID ActorID, laborID LaborID, at time.Time) Command {
 				return finalizeLaborTerminal(w, offer, LaborTerminalStateFailedUnavailable, false, at), nil
 			}
 
-			// All gates pass — flip + mirror the worker's state. No coins move
-			// here: the employer→worker reward transfer settles atomically at
-			// completion (labor_settle.go). timePtrLabor copies per call so
-			// offer.WorkingUntil and worker.LaboringUntil don't alias one
-			// instant.
-			workingUntil := at.Add(time.Duration(offer.DurationMin) * time.Minute)
-			// LLM-190: a worker can't keep working past the employer's closing
-			// time. Clamp the completion deadline to the end of the employer's
-			// current shift (a keeper's posted hours, or the dawn/dusk day window
-			// for an unscheduled employer) so an 8h job taken late in the day ends
-			// when the shop shuts, not 8h later. The full agreed reward is still
-			// paid for the shortened window, and the keeper announces the close-out
-			// when the clamped job completes off-shift (settleCompletedLabor).
-			workingUntil = clampWorkingUntilToEmployerClose(w, caller, workingUntil, at)
-			offer.State = LaborStateWorking
+			// All gates pass. The employer has accepted — stamp AcceptedAt and,
+			// for the struck deal, touch the huddle's silence + loop-sweep
+			// (LLM-159) progress clocks so neither concludes it mid-arrangement.
+			// Both run BEFORE any relocation walk, which pulls the worker out of
+			// the huddle. No coins move at accept — the employer→worker reward
+			// transfer settles atomically at completion (labor_settle.go).
 			offer.AcceptedAt = timePtrLabor(at)
-			offer.WorkingUntil = timePtrLabor(workingUntil)
-			// StateLaboring is ALWAYS paired with a non-zero LaborID + live
-			// window (WORK-410 orphan lesson); the completion sweep clears them
-			// together. LaborID is the authoritative ownership key the settle
-			// path guards on (not the window timestamp).
-			worker.LaborID = offer.ID
-			worker.LaboringUntil = timePtrLabor(workingUntil)
-			worker.State = StateLaboring
-
-			// A struck deal is conversational activity — keep the huddle's
-			// silence sweep from concluding it mid-arrangement. It is also
-			// non-conversational PROGRESS (LLM-159), so it spares the huddle from
-			// the loop sweep too: touchHuddleProgress stamps both clocks.
 			touchHuddleProgress(w, offer.HuddleID, at)
 
+			// LLM-229: decide where the work happens. Accept used to flip the
+			// worker to StateLaboring IN PLACE, which paid for presence rather
+			// than help whenever the deal was struck away from the employer's shop
+			// (the boost only counts a worker at the post). Now the worker
+			// relocates to the workplace and the window starts on arrival — except
+			// two cases that start immediately, in place:
+			//   1. the employer has no work structure (an unscheduled dawn/dusk
+			//      employer) — there is no post to relocate to; today's behavior.
+			//   2. the worker is already at the employer's post with the owner
+			//      present (a deal struck on-site, e.g. the seek-work push) — they
+			//      are already where the work happens.
+			var resultState LaborLedgerState
+			var resultWorkingUntil time.Time
+			ws := caller.WorkStructureID
+			switch {
+			case ws == "" || (actorAtWorkpost(w, worker, ws) && actorAtWorkpost(w, caller, ws)):
+				startLaborWork(w, offer, worker, caller, at)
+				resultState, resultWorkingUntil = LaborStateWorking, *offer.WorkingUntil
+			default:
+				// Relocate: the worker heads to the employer's workplace; the work
+				// window only starts once they are at the post with the owner
+				// present (handleLaborArrivalOnArrival). The worker never enters
+				// ahead of the owner. EnRouteDeadline bounds the wait so a walk
+				// that deadlocks or an owner who never shows can't occupy the
+				// worker forever — the sweep voids it unpaid past the deadline.
+				offer.State = LaborStateEnRoute
+				offer.EnRouteDeadline = clampWorkingUntilToEmployerClose(w, caller, at.Add(LaborEnRouteWaitDefault), at)
+				sendWorkerToWorkplace(w, worker, caller, true, at)
+				resultState = LaborStateEnRoute
+			}
+
+			// The hire itself happened here regardless of when the work starts, so
+			// emit LaborOfferAccepted at accept (the action-log "hired" beat keys
+			// off it). WorkingUntil is the real window for an immediate start, zero
+			// for a relocation (unknown until the worker arrives and work begins).
 			evt := &LaborOfferAccepted{
 				LaborID:      offer.ID,
 				WorkerID:     offer.WorkerID,
@@ -407,7 +428,7 @@ func AcceptWork(callerID ActorID, laborID LaborID, at time.Time) Command {
 				Reward:       offer.Reward,
 				RewardItems:  cloneItemKindQtys(offer.RewardItems),
 				DurationMin:  offer.DurationMin,
-				WorkingUntil: workingUntil,
+				WorkingUntil: resultWorkingUntil,
 				SceneID:      offer.SceneID,
 				HuddleID:     offer.HuddleID,
 				At:           at,
@@ -416,11 +437,11 @@ func AcceptWork(callerID ActorID, laborID LaborID, at time.Time) Command {
 
 			return LaborAcceptResult{
 				ID:           offer.ID,
-				State:        LaborStateWorking,
+				State:        resultState,
 				WorkerName:   worker.DisplayName,
 				Reward:       offer.Reward,
 				Payment:      formatPayment(offer.Reward, offer.RewardItems),
-				WorkingUntil: workingUntil,
+				WorkingUntil: resultWorkingUntil,
 			}, nil
 		},
 	}
@@ -583,11 +604,14 @@ func recordLaborInteractions(w *World, offer *LaborOffer, terminal LaborTerminal
 	// The worked-duration facts report the ACTUAL time put in, not the offered
 	// duration: a job clamped to the employer's closing time (LLM-190) finishes
 	// early, so "worked about 8 hours" would overstate a shift-bounded job. The
-	// real window is AcceptedAt→WorkingUntil; fall back to the offered duration if
-	// either is unset (declines never set them and don't take this path anyway).
+	// real window runs WorkStartedAt→WorkingUntil — WorkStartedAt is when work
+	// actually began (accept time for an on-site hire, arrival time for a
+	// relocated one, LLM-229), so the relocation walk is never billed as work.
+	// Fall back to the offered duration if either bound is unset (declines never
+	// set them and don't take this path anyway).
 	workedMin := offer.DurationMin
-	if offer.AcceptedAt != nil && offer.WorkingUntil != nil {
-		if m := int(offer.WorkingUntil.Sub(*offer.AcceptedAt).Minutes()); m > 0 {
+	if offer.WorkStartedAt != nil && offer.WorkingUntil != nil {
+		if m := int(offer.WorkingUntil.Sub(*offer.WorkStartedAt).Minutes()); m > 0 {
 			workedMin = m
 		}
 	}
@@ -803,18 +827,157 @@ func employerCanCoverLaborReward(employer *Actor, offer *LaborOffer) bool {
 	return buyerCanAfford(employer, offer.Reward) && buyerHoldsPayItems(employer, offer.RewardItems)
 }
 
-// workerHasLiveJob reports whether the worker currently holds a Working
-// (accepted, not-yet-settled) labor offer — the authoritative "this worker is
-// occupied" signal. Ledger-based, NOT the actor's LaboringUntil mirror: the
-// mirror's timestamp can read "free" in the gap between a work window elapsing
-// and the sweep settling it, while the offer is still Working. Reading it for
-// the busy-gate (SolicitWork, AcceptWork) keeps a second job from slipping in
-// during sweep lag, which would break the one-live-job-per-worker invariant
-// and orphan the first job's mirror (code_review). World-goroutine-only.
+// workerHasLiveJob reports whether the worker currently holds a committed labor
+// offer — EnRoute (accepted, relocating to the workplace) or Working (accepted,
+// not-yet-settled) — the authoritative "this worker is occupied" signal.
+// Ledger-based, NOT the actor's LaboringUntil mirror: the mirror is unset while
+// EnRoute and can read "free" in the gap between a work window elapsing and the
+// sweep settling it. Reading it for the busy-gate (SolicitWork, AcceptWork)
+// keeps a second job from slipping in during relocation or sweep lag, which
+// would break the one-live-job-per-worker invariant and orphan the first job's
+// mirror (code_review). EnRoute counts because the worker is already committed —
+// they're on their way to the post; taking a second job mid-walk would strand
+// the first (LLM-229). World-goroutine-only.
 func workerHasLiveJob(w *World, workerID ActorID) bool {
 	for _, o := range w.LaborLedger {
-		if o != nil && o.State == LaborStateWorking && o.WorkerID == workerID {
+		if o != nil && o.WorkerID == workerID &&
+			(o.State == LaborStateWorking || o.State == LaborStateEnRoute) {
 			return true
+		}
+	}
+	return false
+}
+
+// actorAtWorkpost reports whether actor a is physically at workStructureID's
+// work post — the location gate for "help is happening here" (LLM-229). For a
+// building with an interior, that means standing INSIDE it (InsideStructureID);
+// for a doorless market stall (no interior to enter), it means standing at the
+// stall's staff/loiter pin, the same place its keeper works from. Shared by the
+// accept-time immediate-start decision, the arrival subscriber's start gate, and
+// the produce boost's helper count, so all three agree on "at the post." An
+// empty workStructureID (a workless employer) is never a post.
+// World-goroutine-only.
+func actorAtWorkpost(w *World, a *Actor, workStructureID StructureID) bool {
+	if a == nil || workStructureID == "" {
+		return false
+	}
+	if a.InsideStructureID == workStructureID {
+		return true
+	}
+	// A doorless structure has no interior to be inside — its staff position IS
+	// the loiter pin (the keeper works the stall from there). structureEntryTile
+	// ok=false marks doorless; only then does loiter proximity count as at-post,
+	// so an interior shop still requires actually being inside (a worker
+	// loitering outside the door is NOT at the post).
+	if _, hasDoor := structureEntryTile(w, workStructureID); hasDoor {
+		return false
+	}
+	pin, ok := effectiveLoiterTile(w, workStructureID)
+	if !ok {
+		return false
+	}
+	return a.Pos.Chebyshev(pin) <= LoiterAttributionTiles
+}
+
+// startLaborWork begins a hired worker's work window: the offer flips to
+// Working, the clock starts NOW (WorkStartedAt), and the worker enters
+// StateLaboring until the clamped WorkingUntil. Called at accept time for a job
+// that starts in place (an on-site hire, or an employer with no work structure)
+// and from the arrival subscriber when a relocated worker reaches the post with
+// the owner present (LLM-229). No coins move — the reward settles at completion
+// (labor_settle.go). timePtrLabor copies per call so offer.WorkingUntil and
+// worker.LaboringUntil never alias one instant. Caller guarantees the offer is
+// non-terminal (Pending from AcceptWork, or EnRoute from the arrival subscriber)
+// and holds live worker/employer refs. World-goroutine-only.
+func startLaborWork(w *World, offer *LaborOffer, worker, employer *Actor, at time.Time) {
+	// LLM-190: a worker can't keep working past the employer's closing time.
+	// Clamp the completion deadline to the end of the employer's current shift,
+	// measured from the real work start — so a relocated worker who arrives late
+	// in the day gets a window that ends at close, not start + DurationMin. The
+	// full agreed reward is still paid for the shortened window, and the keeper
+	// announces the close-out when the clamped job completes off-shift
+	// (settleCompletedLabor).
+	workingUntil := clampWorkingUntilToEmployerClose(w, employer, at.Add(time.Duration(offer.DurationMin)*time.Minute), at)
+	offer.State = LaborStateWorking
+	offer.WorkStartedAt = timePtrLabor(at)
+	offer.WorkingUntil = timePtrLabor(workingUntil)
+	offer.EnRouteWaiting = false
+	// StateLaboring is ALWAYS paired with a non-zero LaborID + live window
+	// (WORK-410 orphan lesson); the completion sweep clears them together.
+	// LaborID is the authoritative ownership key the settle path guards on.
+	worker.LaborID = offer.ID
+	worker.LaboringUntil = timePtrLabor(workingUntil)
+	worker.State = StateLaboring
+}
+
+// sendWorkerToWorkplace walks a hired worker to the employer's workplace to
+// start (or wait for) their job (LLM-229). With the owner present at the post,
+// the worker goes to the post itself — inside for a building (MoveToStructure
+// derives the enter; the workerHiredAt leg of structureMembershipAllows admits
+// them even to an owner-only shop) or to the staff pin for a doorless stall.
+// With the owner ABSENT, the worker walks only to the loiter pin and waits there
+// — a worker never enters an establishment ahead of its owner (spec); the
+// arrival subscriber sends them in once the owner shows. leaveHuddle ends any
+// conversation the worker is in — true at accept (the deal was just struck in a
+// huddle), false from the arrival subscriber (the worker is already solo). A
+// TerminalNoOpError (already there / already walking there) is expected and
+// silent; any other walk-start failure is logged and leaves the offer EnRoute
+// for the bounded-wait backstop to void. World-goroutine-only.
+func sendWorkerToWorkplace(w *World, worker, employer *Actor, leaveHuddle bool, at time.Time) {
+	ws := employer.WorkStructureID
+	if ws == "" {
+		return // no post to walk to (a workless employer starts work in place)
+	}
+	var err error
+	if actorAtWorkpost(w, employer, ws) {
+		_, err = MoveToStructure(worker.ID, ws, at).Fn(w)
+	} else {
+		_, err = MoveActor(worker.ID, NewStructureVisitDestination(ws), leaveHuddle, at).Fn(w)
+	}
+	if err == nil {
+		return
+	}
+	if _, isNoOp := err.(TerminalNoOpError); isNoOp {
+		return
+	}
+	log.Printf("sim/labor: LLM-229 relocate walk for worker %s to %q failed: %v (offer stays en_route; bounded-wait backstop voids it if work never starts)",
+		worker.ID, ws, err)
+}
+
+// workerHiredAt reports whether workerID may enter structureID by virtue of a
+// live labor job there (LLM-229) — the labor leg of structureMembershipAllows,
+// admitting a hired worker to the employer's workplace (even an owner-only one)
+// the same way the permanent Staff leg admits a regular employee. The grant is
+// state-scoped to hold the "never enter ahead of the owner" invariant:
+//
+//   - Working — full staff-for-the-window grant (the worker is already at the
+//     post working; the owner was present when it started).
+//   - EnRoute — admitted ONLY while the owner is at the post. A relocating
+//     worker must not be able to walk into an owner-only establishment before
+//     its owner; the arrival subscriber sends them in exactly when the owner is
+//     present, and this gate is what MoveActor re-validates on the enter path.
+//
+// The grant lives only as long as the offer does: once the job settles or the
+// sweep voids it, the worker is no longer a member. World-goroutine-only.
+func workerHiredAt(w *World, workerID ActorID, structureID StructureID) bool {
+	if workerID == "" || structureID == "" {
+		return false
+	}
+	for _, o := range w.LaborLedger {
+		if o == nil || o.WorkerID != workerID {
+			continue
+		}
+		employer := w.Actors[o.EmployerID]
+		if employer == nil || employer.WorkStructureID != structureID {
+			continue
+		}
+		switch o.State {
+		case LaborStateWorking:
+			return true
+		case LaborStateEnRoute:
+			if actorAtWorkpost(w, employer, structureID) {
+				return true
+			}
 		}
 	}
 	return false
@@ -838,28 +1001,30 @@ func workerPendingLaborOffer(w *World, workerID ActorID, now time.Time) *LaborOf
 	return nil
 }
 
-// activeLaborBetween returns a live (Pending or Working) labor offer standing
-// between the two actors in EITHER direction, or nil. Used by sim.Pay to keep
-// labor compensation out of the bare-pay channel (LLM-202): a labor offer's
-// reward settles at completion through the labor sweep, so a separate bare pay
-// between the same pair double-compensates the one job (the live John Ellis /
-// Silence Walker case — 8 coins paid by hand AND a 2-coin labor contract booked
-// on top). Either direction because the worker who solicits and the employer who
-// accepts can each be the one who then mistakenly reaches for pay. A pending
-// offer past its TTL is dead (the aging sweep just hasn't flipped it yet) and is
-// skipped, mirroring workerPendingLaborOffer; a Working offer has no such expiry
-// — it settles at WorkingUntil. When more than one live offer stands between the
-// pair (e.g. each is the other's worker in opposite-direction deals), the pick is
-// deterministic — Working before Pending, then lowest LaborID — so the steer's
-// message branch and named reward never ride map-iteration order (code_review).
-// World-goroutine-only.
+// activeLaborBetween returns a live (Pending, EnRoute, or Working) labor offer
+// standing between the two actors in EITHER direction, or nil. Used by sim.Pay
+// to keep labor compensation out of the bare-pay channel (LLM-202): a labor
+// offer's reward settles at completion through the labor sweep, so a separate
+// bare pay between the same pair double-compensates the one job (the live John
+// Ellis / Silence Walker case — 8 coins paid by hand AND a 2-coin labor contract
+// booked on top). Either direction because the worker who solicits and the
+// employer who accepts can each be the one who then mistakenly reaches for pay.
+// A pending offer past its TTL is dead (the aging sweep just hasn't flipped it
+// yet) and is skipped, mirroring workerPendingLaborOffer; EnRoute and Working
+// offers have no such TTL — an EnRoute worker is committed (relocating) and a
+// Working one settles at WorkingUntil, so both block a bare pay (LLM-229). When
+// more than one live offer stands between the pair (e.g. each is the other's
+// worker in opposite-direction deals), the pick is deterministic — the more
+// pressing state first (Working, then EnRoute, then Pending), then lowest
+// LaborID — so the steer's message branch and named reward never ride map-
+// iteration order (code_review). World-goroutine-only.
 func activeLaborBetween(w *World, partyA, partyB ActorID, now time.Time) *LaborOffer {
 	var ids []LaborID
 	for id, o := range w.LaborLedger {
 		if o == nil {
 			continue
 		}
-		if o.State != LaborStatePending && o.State != LaborStateWorking {
+		if o.State != LaborStatePending && o.State != LaborStateEnRoute && o.State != LaborStateWorking {
 			continue
 		}
 		matched := (o.WorkerID == partyA && o.EmployerID == partyB) ||
@@ -877,14 +1042,29 @@ func activeLaborBetween(w *World, partyA, partyB ActorID, now time.Time) *LaborO
 	}
 	sort.Slice(ids, func(i, j int) bool {
 		a, b := w.LaborLedger[ids[i]], w.LaborLedger[ids[j]]
-		if a.State != b.State {
-			// Working sorts ahead of Pending — an in-progress job is the more
-			// pressing "don't pay separately" signal than a not-yet-accepted offer.
-			return a.State == LaborStateWorking
+		if ra, rb := laborBetweenRank(a.State), laborBetweenRank(b.State); ra != rb {
+			return ra < rb
 		}
 		return ids[i] < ids[j]
 	})
 	return w.LaborLedger[ids[0]]
+}
+
+// laborBetweenRank orders the live labor states by how pressing a "don't pay
+// this pair separately" signal each is, for activeLaborBetween's deterministic
+// pick: an in-progress job (Working) outranks a committed-but-not-started one
+// (EnRoute), which outranks a not-yet-accepted offer (Pending). A total order,
+// so sort.Slice's less function stays a valid strict weak ordering across all
+// three states (a bare "!= Pending" would tie Working against EnRoute).
+func laborBetweenRank(s LaborLedgerState) int {
+	switch s {
+	case LaborStateWorking:
+		return 0
+	case LaborStateEnRoute:
+		return 1
+	default: // LaborStatePending
+		return 2
+	}
 }
 
 // laborTradeSteerMsg redirects an NPC that reaches for the goods-trade tools

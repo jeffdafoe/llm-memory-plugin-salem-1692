@@ -9,10 +9,17 @@ import (
 )
 
 // labor_settle.go — LLM-26 background lifecycle for LaborOffers. One sweep,
-// two jobs:
+// three jobs:
 //
 //  1. Expire PENDING offers past ExpiresAt (the employer never answered).
-//  2. Complete WORKING offers past WorkingUntil — transfer the reward from
+//  2. Void EN_ROUTE offers past EnRouteDeadline — a hired worker who never
+//     reached the post with the owner present (walk deadlock, or an owner who
+//     never showed) is freed and the offer resolves FailedUnavailable unpaid;
+//     no work happened, so nothing moves and no relationship facts are written
+//     (LLM-229). The bounded-wait backstop the start-on-arrival model needs:
+//     WorkingUntil is nil until work starts, so the completion sweep (job 3)
+//     can never fire on an offer stuck EnRoute.
+//  3. Complete WORKING offers past WorkingUntil — transfer the reward from
 //     the employer to the worker, clear the worker's StateLaboring/
 //     LaboringUntil mirror, and finalize Completed. If the employer can no
 //     longer cover the reward, resolve FailedUnavailable instead (the
@@ -120,7 +127,7 @@ func EvaluateLaborLedgerSweep(now time.Time) Command {
 			if len(w.LaborLedger) == 0 {
 				return nil, nil
 			}
-			var expired, completed []LaborID
+			var expired, enRouteExpired, completed []LaborID
 			for id, o := range w.LaborLedger {
 				if o == nil {
 					continue
@@ -131,6 +138,11 @@ func EvaluateLaborLedgerSweep(now time.Time) Command {
 						continue
 					}
 					expired = append(expired, id)
+				case LaborStateEnRoute:
+					if o.EnRouteDeadline.IsZero() || now.Before(o.EnRouteDeadline) {
+						continue
+					}
+					enRouteExpired = append(enRouteExpired, id)
 				case LaborStateWorking:
 					if o.WorkingUntil == nil || now.Before(*o.WorkingUntil) {
 						continue
@@ -139,6 +151,7 @@ func EvaluateLaborLedgerSweep(now time.Time) Command {
 				}
 			}
 			sort.Slice(expired, func(i, j int) bool { return expired[i] < expired[j] })
+			sort.Slice(enRouteExpired, func(i, j int) bool { return enRouteExpired[i] < enRouteExpired[j] })
 			sort.Slice(completed, func(i, j int) bool { return completed[i] < completed[j] })
 			for _, id := range expired {
 				o, ok := w.LaborLedger[id]
@@ -146,6 +159,19 @@ func EvaluateLaborLedgerSweep(now time.Time) Command {
 					continue
 				}
 				finalizeLaborTerminal(w, o, LaborTerminalStateExpired, false, now)
+			}
+			for _, id := range enRouteExpired {
+				o, ok := w.LaborLedger[id]
+				if !ok || o == nil || o.State != LaborStateEnRoute {
+					continue
+				}
+				// LLM-229 bounded-wait backstop: the worker never reached the post
+				// with the owner present before EnRouteDeadline. No work happened,
+				// so void unpaid (workPerformed=false → no relationship facts,
+				// matching the accept-time never-started path). There is no worker
+				// mirror to clear — an EnRoute offer never set StateLaboring /
+				// LaboringUntil (that only happens on the flip to Working).
+				finalizeLaborTerminal(w, o, LaborTerminalStateFailedUnavailable, false, now)
 			}
 			for _, id := range completed {
 				o, ok := w.LaborLedger[id]

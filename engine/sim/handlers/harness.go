@@ -1661,6 +1661,19 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 					}
 				}
 				return fmt.Sprintf("[ok] You hired %s — they are at the work now for %s, paid when they finish. Say a brief word, then call done(). Do not accept again.", r.WorkerName, payment)
+			case sim.LaborStateEnRoute:
+				// LLM-229: the deal was struck away from your workplace, so the
+				// worker is making their way there and starts once they arrive with
+				// you present. Same payment phrasing; no "until T" (the window
+				// hasn't started).
+				payment := r.Payment
+				if payment == "" {
+					payment = fmt.Sprintf("%d coins", r.Reward)
+					if r.Reward == 1 {
+						payment = "1 coin"
+					}
+				}
+				return fmt.Sprintf("[ok] You hired %s — they will make their way to your workplace and get to work once you're both there, paid %s when they finish. Say a brief word, then call done(). Do not accept again.", r.WorkerName, payment)
 			case sim.LaborStateExpired:
 				return "[ok] That offer had already expired — too late to take them on."
 			case sim.LaborStateFailedUnavailable:

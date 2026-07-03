@@ -27,6 +27,7 @@ type laborActor struct {
 	laboringUntil *time.Time
 	homeStruct    sim.StructureID // home anchor (LLM-145 co-resident gate)
 	workStruct    sim.StructureID // work anchor (LLM-145 co-worker gate)
+	insideStruct  sim.StructureID // structure the actor is inside (LLM-229 at-workpost gate)
 }
 
 // buildLaborWorld constructs a world with the given actors, one huddle, and
@@ -41,17 +42,18 @@ func buildLaborWorld(t *testing.T, huddleID sim.HuddleID, sceneID sim.SceneID, a
 	members := make(map[sim.ActorID]struct{}, len(actors))
 	for _, s := range actors {
 		a := &sim.Actor{
-			ID:              s.id,
-			DisplayName:     s.displayName,
-			Kind:            sim.KindNPCShared,
-			State:           sim.StateIdle,
-			Coins:           s.coins,
-			Inventory:       s.inventory,
-			CurrentHuddleID: s.huddleID,
-			LaboringUntil:   s.laboringUntil,
-			HomeStructureID: s.homeStruct,
-			WorkStructureID: s.workStruct,
-			RecentActions:   sim.NewRingBuffer[sim.Action](4),
+			ID:                s.id,
+			DisplayName:       s.displayName,
+			Kind:              sim.KindNPCShared,
+			State:             sim.StateIdle,
+			Coins:             s.coins,
+			Inventory:         s.inventory,
+			CurrentHuddleID:   s.huddleID,
+			LaboringUntil:     s.laboringUntil,
+			HomeStructureID:   s.homeStruct,
+			WorkStructureID:   s.workStruct,
+			InsideStructureID: s.insideStruct,
+			RecentActions:     sim.NewRingBuffer[sim.Action](4),
 		}
 		if s.worker {
 			a.Attributes = map[string][]byte{sim.AttrWorker: {}}

@@ -112,6 +112,40 @@ func TestGoldensNeverAdvertiseHomeAsMoveTargetWhenInside(t *testing.T) {
 	}
 }
 
+// TestGoldensEnRouteWorkerNotOfferedNewWork is the LLM-229 cross-scenario
+// invariant: whenever the subject is a WORKER relocating to an accepted job (an
+// EnRoute LaborOffer with the subject as worker), the rendered prompt must offer
+// neither the solicit affordance nor the businesses directory — the worker is
+// already committed, and a second job would strand the first. Runs over the
+// whole matrix so a future cue can't reintroduce work-seeking for a committed
+// relocating worker in any situation, not just the one worker_en_route_to_workplace
+// scenario pins.
+func TestGoldensEnRouteWorkerNotOfferedNewWork(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, _ := sc.build()
+			enRoute := false
+			for _, o := range snap.LaborLedger {
+				if o != nil && o.State == sim.LaborStateEnRoute && o.WorkerID == actorID {
+					enRoute = true
+					break
+				}
+			}
+			if !enRoute {
+				return // subject isn't relocating to a job — invariant N/A here
+			}
+			out := renderScenario(sc)
+			if strings.Contains(out, "offer your labor with solicit_work") {
+				t.Errorf("scenario %q: subject is relocating to an accepted job but the prompt still offers the solicit affordance (LLM-229)", sc.name)
+			}
+			if strings.Contains(out, "head to one of the town's businesses") {
+				t.Errorf("scenario %q: subject is relocating to an accepted job but the prompt still shows the seek-work businesses directory (LLM-229)", sc.name)
+			}
+		})
+	}
+}
+
 // TestGoldensConversationLinesCarryIntervalStamps is the LLM-217 cross-scenario
 // invariant: in any scenario whose snapshot carries a clock (PublishedAt set —
 // every clocked fixture stamps its utterances relative to it), every line of
@@ -506,6 +540,16 @@ var perceptionScenarios = []perceptionScenario{
 			"directed to decline_work WITH an explicit speak, and the generic accept_work/decline_work footer is suppressed " +
 			"because no offer is affordable.",
 		build: brokeEmployerCannotPayLaborOffer,
+	},
+	{
+		name: "worker_en_route_to_workplace",
+		summary: "LLM-229: a worker (Patience Walker) has accepted a job for Josiah Thorne struck away from his store " +
+			"and is now relocating to his workplace — she is NOT yet laboring, so no coins/boost accrue and she must not " +
+			"statue where the deal was struck. The golden pins the relocation self-state ('You've taken on a job for Josiah " +
+			"Thorne — make your way to their workplace and get to work…'), and — because she already holds a committed job — " +
+			"the absence of both the solicit affordance and the businesses directory. The matrix-wide guard is " +
+			"TestGoldensEnRouteWorkerNotOfferedNewWork.",
+		build: workerEnRouteToWorkplace,
 	},
 	{
 		name: "labor_offer_in_kind_reward",
@@ -3149,6 +3193,64 @@ func brokeEmployerCannotPayLaborOffer() (*sim.Snapshot, sim.ActorID, []sim.Warra
 		ItemKinds: foodDrinkCatalog(),
 	}
 	return snap, ezekielID, nil
+}
+
+// workerEnRouteToWorkplace is the LLM-229 relocation self-state: Patience Walker
+// (a worker) accepted a job for Josiah Thorne struck away from his General Store
+// and is now on her way to his workplace — an EnRoute LaborOffer with her as the
+// worker. She is not yet laboring (no Working offer, no laboring mirror), so the
+// self-state must send her to the post and get her to work; and because she is
+// already committed, the solicit affordance and the businesses directory must
+// stay suppressed even though she is a worker. Solo, no clock-bound content →
+// byte-stable.
+func workerEnRouteToWorkplace() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		patienceID = sim.ActorID("patience")
+		josiahID   = sim.ActorID("josiah")
+		store      = sim.StructureID("store")
+	)
+	published := time.Date(2026, 7, 3, 11, 0, 0, 0, time.UTC)
+	patience := &sim.ActorSnapshot{
+		Kind:           sim.KindNPCShared,
+		DisplayName:    "Patience Walker",
+		Role:           "laborer",
+		State:          sim.StateIdle,
+		Coins:          0,
+		Needs:          map[sim.NeedKey]int{},
+		AttributeSlugs: []string{sim.AttrWorker},
+		Acquaintances:  map[string]sim.Acquaintance{"Josiah Thorne": {}},
+	}
+	josiah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Josiah Thorne",
+		Role:              "shopkeeper",
+		State:             sim.StateIdle,
+		InsideStructureID: store,
+		WorkStructureID:   store,
+		Coins:             50,
+		Needs:             map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:    published,
+		NeedThresholds: sim.NeedThresholds{},
+		Actors:         map[sim.ActorID]*sim.ActorSnapshot{patienceID: patience, josiahID: josiah},
+		Structures: map[sim.StructureID]*sim.Structure{
+			store: plainStructure(store, "General Store"),
+		},
+		LaborLedger: map[sim.LaborID]*sim.LaborOffer{
+			1: {
+				ID:          1,
+				WorkerID:    patienceID,
+				EmployerID:  josiahID,
+				Reward:      1,
+				RewardItems: []sim.ItemKindQty{{Kind: "cheese", Qty: 1}},
+				DurationMin: 120,
+				State:       sim.LaborStateEnRoute,
+			},
+		},
+		ItemKinds: foodDrinkCatalog(),
+	}
+	return snap, patienceID, nil
 }
 
 // inKindLaborOfferSnapshot builds the shared LLM-225 shape: Anne Walker has

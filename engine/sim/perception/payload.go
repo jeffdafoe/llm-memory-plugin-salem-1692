@@ -393,6 +393,15 @@ type Payload struct {
 	// on a job. LLM-26.
 	Laboring *LaboringView
 
+	// LaborEnRoute is non-nil when the subject is a WORKER who has accepted a job
+	// but is still relocating to (or waiting at) the employer's workplace before
+	// the work window starts — an EnRoute LaborOffer where WorkerID == subject
+	// (LLM-229). It carries the employer and whether the worker has arrived and
+	// is waiting for the owner, so the self-state line can say "on your way to X"
+	// or "waiting at X's for them to show." Mutually exclusive with Laboring (a
+	// worker is either relocating or working, never both).
+	LaborEnRoute *LaborEnRouteView
+
 	// PendingLaborOfferOut is non-nil when the subject is a WORKER with an
 	// OUTGOING labor offer still awaiting the employer's answer (a Pending
 	// LaborOffer where WorkerID == subject). It carries the employer and the
@@ -757,6 +766,17 @@ type LaborOfferView struct {
 type LaboringView struct {
 	Employer sim.ActorID
 	Until    time.Time
+}
+
+// LaborEnRouteView carries the subject's OWN accepted-but-not-yet-started job for
+// the relocation self-state line (LLM-229): who they're headed to work for, and
+// whether they have arrived at the workplace and are waiting for the owner to
+// show (Waiting) as opposed to still walking there. The work window has not
+// started — the reward is named nowhere here; the line just keeps the tickable
+// relocating worker on task instead of wandering or soliciting a second job.
+type LaborEnRouteView struct {
+	Employer sim.ActorID
+	Waiting  bool
 }
 
 // WorkerForMeView carries one of the subject's in-progress jobs as EMPLOYER for
