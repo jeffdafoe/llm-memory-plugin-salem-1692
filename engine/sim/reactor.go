@@ -1065,8 +1065,9 @@ func actorCanReactNow(w *World, a *Actor, now time.Time) (eligible bool, stale b
 	// starving worker may break off to eat; a red-TIREDNESS warrant deliberately
 	// does NOT, the same posture as a break, and the shift-end clamp keeps a job
 	// from running into the worker's own bedtime), an operator nudge, or a PC
-	// speaking to it (a player gets a reply). NPC chatter / arrivals / idle still
-	// shelve. Gate on the LaboringUntil window ALONE, NOT the StateLaboring enum:
+	// speaking to it (a player gets a reply). NPC chatter ticks her on a cadence
+	// (LLM-230, see below); arrivals / idle still shelve outright. Gate on the
+	// LaboringUntil window ALONE, NOT the StateLaboring enum:
 	// the mirror window is the authoritative busy signal here, and a stranded
 	// StateLaboring with a nil/elapsed window (a missed settle, or a checkpoint
 	// reload before reconcileStrandedLaboringOnLoad runs) must stay tickable so it
@@ -1074,12 +1075,26 @@ func actorCanReactNow(w *World, a *Actor, now time.Time) (eligible bool, stale b
 	// LaboringUntil together and the sweep clears them together, so in the live
 	// happy path the window tracks the job exactly; once it elapses the worker
 	// ticks again even in the ≤1-cadence gap before the settle formally lands.
+	//
+	// LLM-230 relaxes this shelve for ONE case: NPC speech directed at her ticks
+	// her too, but rate-limited to one conversational reply per LaborReplyCadence
+	// (default 3m) so she can answer "can't stop just now, I'm minding the
+	// shelves" without regressing to the per-line babble. Within the window she
+	// stays shelved; the utterance still lands in the huddle transcript she reads
+	// on her next tick — the WORK-407 dwell-cadence pattern (gate the wake, not
+	// the underlying signal), no new rail. The speak-only tool surface that keeps
+	// that reply from abandoning the job is applied separately at advertise time
+	// (handlers.gateTools). The high-value interrupts below are unchanged.
 	laboring := a.LaboringUntil != nil && a.LaboringUntil.After(now)
-	if laboring &&
-		!hasBreakInterruptingNeedWarrant(a.Warrants) &&
-		!hasOperatorNudgeWarrant(a.Warrants) &&
-		!hasPCSpeechWarrant(a.Warrants) {
-		return false, false
+	if laboring {
+		interrupt := hasBreakInterruptingNeedWarrant(a.Warrants) ||
+			hasOperatorNudgeWarrant(a.Warrants) ||
+			hasPCSpeechWarrant(a.Warrants)
+		npcReplyDue := hasNPCSpeechWarrant(a.Warrants) &&
+			laborReplyCadenceElapsed(a, now, w.Settings.laborReplyCadence())
+		if !interrupt && !npcReplyDue {
+			return false, false
+		}
 	}
 	// A scheduled break (StateResting / BreakUntil) shelves the tick too — EXCEPT
 	// a red-tier hunger/thirst need warrant (ZBBS-HOME-329 #3; a red-TIREDNESS
@@ -1167,6 +1182,30 @@ func lastReactorTickAt(a *Actor) (time.Time, bool) {
 	}
 	snap := a.RecentReactorTicks.Snapshot()
 	return snap[len(snap)-1], true
+}
+
+// laborReplyCadence resolves the laboring-worker NPC-speech reply cadence,
+// falling back to defaultLaborReplyCadence when the setting is unset (LLM-230) —
+// the same value-or-default shape as the degeneracy tunables.
+func (s WorldSettings) laborReplyCadence() time.Duration {
+	if s.LaborReplyCadence > 0 {
+		return s.LaborReplyCadence
+	}
+	return defaultLaborReplyCadence
+}
+
+// laborReplyCadenceElapsed reports whether enough time has passed since the
+// worker's last reactor tick for another NPC-speech reply to be due while she is
+// laboring (LLM-230). Keys on lastReactorTickAt — any recent tick, for any
+// reason, starts a fresh window, so a worker who just answered a red-need or a
+// PC does not also burn a tick on NPC chatter within the cadence. A worker who
+// has never ticked has nothing to pace against, so a reply is due.
+func laborReplyCadenceElapsed(a *Actor, now time.Time, cadence time.Duration) bool {
+	last, ok := lastReactorTickAt(a)
+	if !ok {
+		return true
+	}
+	return now.Sub(last) >= cadence
 }
 
 // recordReactorTick appends now to the actor's RecentReactorTicks ring,
@@ -1358,6 +1397,15 @@ const (
 	// between reactor ticks when WorldSettings.MinReactorTickGap is unset.
 	// A pacing floor independent of the optional per-minute rate cap.
 	defaultMinReactorTickGap = 5 * time.Second
+
+	// defaultLaborReplyCadence is the minimum gap between a laboring worker's
+	// conversational replies to NPC speech when WorldSettings.LaborReplyCadence
+	// is unset (LLM-230). 3m matches the meal/rest dwell cadences: enough to
+	// answer a peer without the pre-190 per-line babble, and — being longer than
+	// defaultMaxWarrantAge (90s) — a shelved NPC-speech warrant simply ages out
+	// mid-window, so she replies to the next FRESH utterance after the window
+	// rather than to a stale one.
+	defaultLaborReplyCadence = 3 * time.Minute
 
 	// defaultAdmissionBackoff is how far the evaluator pushes an actor's
 	// WarrantDueAt when tick admission control turns it away, when

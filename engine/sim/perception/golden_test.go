@@ -885,6 +885,15 @@ var perceptionScenarios = []perceptionScenario{
 		build: employerWithWorkerOnJob,
 	},
 	{
+		name: "laboring_worker_addressed_while_working",
+		summary: "LLM-230, the worker side of the same job: Silence Walker is mid-contract for John Ellis and he speaks " +
+			"to her. The golden pins her standing self-state anchor — 'You are working a job for John Ellis … Stay with it " +
+			"until it's done' — the cue that grounds a 'can't stop just now, I'm minding the work' reply. The reactor reply-" +
+			"cadence and the speak-only tool surface that make that reply happen are covered by unit tests (the render is " +
+			"unchanged); a regression that muted the laboring self-state for an addressed worker would surface here.",
+		build: laboringWorkerAddressedByEmployer,
+	},
+	{
 		name: "broke_keeper_shut_and_unaffordable_suppliers_no_restock",
 		summary: "LLM-216, the live Josiah Thorne case: a broke (0 coins) general-store keeper whose bought-in carrots " +
 			"and milk are both empty stands alone at his store on shift. His carrot supplier (James Farm) he remembers " +
@@ -3486,6 +3495,89 @@ func employerWithWorkerOnJob() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 		ItemKinds: foodDrinkCatalog(),
 	}
 	return snap, johnID, nil
+}
+
+// laboringWorkerAddressedByEmployer is the LLM-230 worker-side fixture: Silence
+// Walker is mid-job for John Ellis in his tavern (a Working LaborOffer, WorkerID
+// == subject) and John speaks to her (an NPC-speech warrant). The golden pins the
+// standing "You are working a job for John Ellis … Stay with it until it's done"
+// self-state line that anchors her reply — the cue that lets her answer "can't
+// stop just now" instead of going silent or abandoning the job. The reply-cadence
+// (reactor) and the speak-only tool surface (handlers.gateTools) are covered by
+// their own unit tests; the render is unchanged, so this is a regression pin on
+// the anchor's presence for the addressed-while-working situation.
+func laboringWorkerAddressedByEmployer() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		johnID    = sim.ActorID("john")
+		silenceID = sim.ActorID("silence")
+		tavern    = sim.StructureID("tavern")
+		huddle    = sim.HuddleID("h1")
+	)
+	published := time.Date(2026, 6, 30, 20, 30, 0, 0, time.UTC)
+	workingUntil := published.Add(90 * time.Minute)
+	acceptedAt := published.Add(-30 * time.Minute)
+	john := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "John Ellis",
+		Role:              "tavernkeeper",
+		State:             sim.StateIdle,
+		InsideStructureID: tavern,
+		CurrentHuddleID:   huddle,
+		Coins:             50,
+		Needs:             map[sim.NeedKey]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"Silence Walker": {}},
+	}
+	silence := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Silence Walker",
+		Role:              "laborer",
+		State:             sim.StateLaboring,
+		InsideStructureID: tavern,
+		CurrentHuddleID:   huddle,
+		Coins:             0,
+		Needs:             map[sim.NeedKey]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"John Ellis": {}},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:    published,
+		NeedThresholds: sim.NeedThresholds{},
+		Actors:         map[sim.ActorID]*sim.ActorSnapshot{johnID: john, silenceID: silence},
+		Structures: map[sim.StructureID]*sim.Structure{
+			tavern: plainStructure(tavern, "Tavern"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {
+				ID:      huddle,
+				Members: map[sim.ActorID]struct{}{johnID: {}, silenceID: {}},
+				RecentUtterances: []sim.Utterance{
+					{SpeakerID: johnID, SpeakerName: "John Ellis", Text: "Care to tend the fire while you're at it?", At: published.Add(-20 * time.Second)},
+				},
+			},
+		},
+		LaborLedger: map[sim.LaborID]*sim.LaborOffer{
+			1: {
+				ID:           1,
+				WorkerID:     silenceID,
+				EmployerID:   johnID,
+				Reward:       2,
+				DurationMin:  120,
+				State:        sim.LaborStateWorking,
+				HuddleID:     huddle,
+				AcceptedAt:   &acceptedAt,
+				WorkingUntil: &workingUntil,
+			},
+		},
+		ItemKinds: foodDrinkCatalog(),
+	}
+	// John speaks to her mid-job — the addressed-while-working moment (LLM-230).
+	warrants := []sim.WarrantMeta{{
+		TriggerActorID: johnID,
+		Reason:         sim.NPCSpeechWarrantReason{SpeechID: 1, Speaker: johnID, Excerpt: "Care to tend the fire while you're at it?"},
+		SourceEventID:  1,
+		HuddleID:       huddle,
+		OccurredAt:     published,
+	}}
+	return snap, silenceID, warrants
 }
 
 // returningHelperLaborOfferSnapshot builds the LLM-228 shape: Anne Walker, who
