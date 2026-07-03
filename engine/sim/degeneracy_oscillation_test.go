@@ -117,7 +117,12 @@ func TestUpdateDegeneracy_OscillationFlagsAtLoiterPins(t *testing.T) {
 	// A standing, never-resolved red hunger, and never inside a structure.
 	a := &Actor{ID: "john", Needs: map[NeedKey]int{"hunger": 20}}
 	t0 := time.Unix(3000, 0).UTC()
-	tiles := []TilePos{tavernTile, storeTile}
+	// Stand on visitor slots (Chebyshev 1 off each pin), where pickVisitorSlot
+	// actually parks an arrival — truer to the live bug than the pin tiles.
+	tiles := []TilePos{
+		{X: tavernTile.X - 1, Y: tavernTile.Y},
+		{X: storeTile.X + 1, Y: storeTile.Y - 1},
+	}
 	for i := 0; i < 12; i++ {
 		a.Pos = tiles[i%2]
 		updateDegeneracy(w, a, oscillationTick(), t0.Add(time.Duration(i)*time.Second))
