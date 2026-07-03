@@ -435,6 +435,31 @@ func (r *OrdersRepo) MaxLedgerID(ctx context.Context) (int64, error) {
 	return maxID, nil
 }
 
+// maxPaidActionLogLedgerIDSQL reads the largest ledger_id carried by any
+// `paid` agent_action_log payload (0 when none). consume_now settlements mint
+// a LedgerID but write no pay_ledger row, so this is the only durable trace of
+// the ids they consume — the allocator floor must include it or a restart
+// re-mints them (LLM-245). Rows whose payload lacks ledger_id (e.g. the
+// engine-charged lodger-rebook paid rows) drop out via the `~ '^[0-9]+$'`
+// guard; COALESCE floors the empty case to 0. The regex guard also fences the
+// `::bigint` cast off from any malformed/non-numeric audit payload — the audit
+// log is a floor source, not authoritative state, so one bad historical row
+// must not wedge engine boot (code_review, LLM-245). Runs once at load, so the
+// action_type filter scanning the audit table unindexed is a non-issue.
+const maxPaidActionLogLedgerIDSQL = `SELECT COALESCE(max((payload->>'ledger_id')::bigint), 0) FROM agent_action_log WHERE action_type = 'paid' AND payload->>'ledger_id' ~ '^[0-9]+$'`
+
+// MaxPaidActionLogLedgerID reports the largest ledger_id on any paid
+// action-log row (0 when none). See the OrdersRepo interface doc: FinalizeLoad
+// floors payLedgerSeq from GREATEST(MaxLedgerID, this) so a consume_now id —
+// durable only in the action log — is never reused after restart. LLM-245.
+func (r *OrdersRepo) MaxPaidActionLogLedgerID(ctx context.Context) (int64, error) {
+	var maxID int64
+	if err := r.pool.QueryRow(ctx, maxPaidActionLogLedgerIDSQL).Scan(&maxID); err != nil {
+		return 0, fmt.Errorf("pg orders MaxPaidActionLogLedgerID: %w", err)
+	}
+	return maxID, nil
+}
+
 // loadRecentPricesSQL pulls the top-N most recent accepted rows per
 // (seller_id, item_kind) tuple, bounded by a `since` floor on
 // created_at. ROW_NUMBER() OVER (PARTITION BY ... ORDER BY created_at

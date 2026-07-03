@@ -50,6 +50,29 @@ func TestOrdersRepo_MaxLedgerID(t *testing.T) {
 	}
 }
 
+// --- MaxPaidActionLogLedgerID ---------------------------------------------
+
+// TestOrdersRepo_MaxPaidActionLogLedgerID reports the largest ledger_id on any
+// `paid` agent_action_log row (LLM-245). consume_now settlements mint a
+// LedgerID but write no pay_ledger row, so this is the only durable trace of
+// their ids; FinalizeLoad floors the allocator from GREATEST(MaxLedgerID,
+// this) so a restart can't re-mint one and corrupt the audit join.
+func TestOrdersRepo_MaxPaidActionLogLedgerID(t *testing.T) {
+	mock, repo := newMockPool(t)
+	mock.ExpectQuery(`SELECT COALESCE\(max\(\(payload->>'ledger_id'\)::bigint\), 0\) FROM agent_action_log WHERE action_type = 'paid' AND payload->>'ledger_id' ~ '\^\[0-9\]\+\$'`).
+		WillReturnRows(pgxmock.NewRows([]string{"max"}).AddRow(int64(497)))
+	got, err := repo.MaxPaidActionLogLedgerID(context.Background())
+	if err != nil {
+		t.Fatalf("MaxPaidActionLogLedgerID: %v", err)
+	}
+	if got != 497 {
+		t.Errorf("MaxPaidActionLogLedgerID = %d, want 497", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
 // --- LoadAll happy path ---------------------------------------------------
 
 func TestOrdersRepo_LoadAll_HappyPath(t *testing.T) {
