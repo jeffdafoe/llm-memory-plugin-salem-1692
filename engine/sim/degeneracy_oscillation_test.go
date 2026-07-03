@@ -42,17 +42,88 @@ func TestCountRedNeeds(t *testing.T) {
 }
 
 func TestRecordDegenVisit_TrimsToWindow(t *testing.T) {
-	s := WorldSettings{DegeneracyOscillationWindow: 3, NeedThresholds: DefaultNeedThresholds()}
+	w := &World{Settings: WorldSettings{DegeneracyOscillationWindow: 3, NeedThresholds: DefaultNeedThresholds()}}
 	a := &Actor{}
 	for _, st := range []StructureID{"a", "b", "c", "d", "e"} {
 		a.InsideStructureID = st
-		recordDegenVisit(s, a)
+		recordDegenVisit(w, a)
 	}
 	if len(a.DegenVisits) != 3 {
 		t.Fatalf("window len = %d, want 3 (trimmed)", len(a.DegenVisits))
 	}
 	if a.DegenVisits[0].Structure != "c" || a.DegenVisits[2].Structure != "e" {
 		t.Errorf("window = %+v, want trailing c,d,e", a.DegenVisits)
+	}
+}
+
+// addDegenScopePlaces wires two named loiter-pin places into a degen test
+// world, well apart so their AudienceScopeTiles rings can't overlap: "tavern"
+// (pin on its anchor tile at world origin) and "store" (pin 320px east). A
+// (0,0) per-instance loiter offset puts each pin on the anchor tile. Returns
+// the two pin tiles for positioning actors AT the pins.
+func addDegenScopePlaces(w *World) (tavernTile, storeTile TilePos) {
+	zero := 0
+	w.Assets = map[AssetID]*Asset{"a": {ID: "a"}}
+	w.VillageObjects = map[VillageObjectID]*VillageObject{
+		"tavern": {ID: "tavern", DisplayName: "Tavern", AssetID: "a",
+			Pos: WorldPos{X: 0, Y: 0}, LoiterOffsetX: &zero, LoiterOffsetY: &zero},
+		"store": {ID: "store", DisplayName: "General Store", AssetID: "a",
+			Pos: WorldPos{X: 320, Y: 0}, LoiterOffsetX: &zero, LoiterOffsetY: &zero},
+	}
+	return WorldToTile(0, 0), WorldToTile(320, 0)
+}
+
+func TestDegenVisitScope(t *testing.T) {
+	w, _ := newDegenWorld(WorldSettings{NeedThresholds: DefaultNeedThresholds()})
+	tavernTile, _ := addDegenScopePlaces(w)
+
+	inside := &Actor{InsideStructureID: "smithy", Pos: tavernTile}
+	if got := degenVisitScope(w, inside); got != "smithy" {
+		t.Errorf("inside must win over the pin: got %q, want smithy", got)
+	}
+	atPin := &Actor{Pos: tavernTile}
+	if got := degenVisitScope(w, atPin); got != "tavern" {
+		t.Errorf("at the loiter pin: got %q, want tavern", got)
+	}
+	open := &Actor{Pos: WorldToTile(5000, 5000)}
+	if got := degenVisitScope(w, open); got != "" {
+		t.Errorf("open ground: got %q, want empty", got)
+	}
+}
+
+// TestUpdateDegeneracy_OscillationFlagsAtLoiterPins is the LLM-255 regression:
+// a sustained shuttle between two places whose arrival resolves at the loiter
+// pin (the actor is never INSIDE either — market stalls, owner-only entry)
+// must flag exactly like the inside-structure shuttle. Keying the window on
+// InsideStructureID alone recorded only blanks here, so the arm could never
+// fire no matter how long the shuttle persisted (the live John Ellis
+// Tavern<->General Store case, 2026-07-03).
+func TestUpdateDegeneracy_OscillationFlagsAtLoiterPins(t *testing.T) {
+	w, sink := newDegenWorld(WorldSettings{
+		DegeneracyThinAfterTicks: 3,
+		NeedThresholds:           DefaultNeedThresholds(),
+	})
+	tavernTile, storeTile := addDegenScopePlaces(w)
+	// A standing, never-resolved red hunger, and never inside a structure.
+	a := &Actor{ID: "john", Needs: map[NeedKey]int{"hunger": 20}}
+	t0 := time.Unix(3000, 0).UTC()
+	tiles := []TilePos{tavernTile, storeTile}
+	for i := 0; i < 12; i++ {
+		a.Pos = tiles[i%2]
+		updateDegeneracy(w, a, oscillationTick(), t0.Add(time.Duration(i)*time.Second))
+	}
+	if a.DegenStage != DegeneracyFlagged {
+		t.Fatalf("loiter-pin shuttle did not flag: stage=%v streak=%d visits=%+v",
+			a.DegenStage, a.DegenStreak, a.DegenVisits)
+	}
+	var sawStuck bool
+	for _, r := range sink.records {
+		if r.Kind == "stuck" {
+			sawStuck = true
+		}
+	}
+	if !sawStuck {
+		t.Errorf("expected a `stuck` telemetry record, got %+v", sink.records)
 	}
 }
 
