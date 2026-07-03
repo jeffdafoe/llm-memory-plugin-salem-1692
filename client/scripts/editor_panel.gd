@@ -595,10 +595,11 @@ func _ready() -> void:
     _attachments_grid.add_theme_constant_override("v_separation", 4)
     attach_scroll.add_child(_attachments_grid)
 
-    # Per-instance entry_policy (ZBBS-101). Three states: 'none' (no entry,
-    # used for decoratives), 'owner' (only NPCs whose home or work is this
-    # structure), 'anyone' (public access). Same visual style as the
-    # owner / behavior pickers.
+    # Per-instance entry_policy (ZBBS-101). Four states matching the engine
+    # EntryPolicy enum: 'closed' (no entry, used for decoratives), 'owner-only'
+    # (only NPCs whose home or work is this structure), 'open' (public access),
+    # and '' (the type-driven default). Same visual style as the owner /
+    # behavior pickers.
     var entry_policy_header = Label.new()
     entry_policy_header.text = "ENTRY POLICY"
     entry_policy_header.add_theme_color_override("font_color", COLOR_LABEL)
@@ -632,11 +633,16 @@ func _ready() -> void:
     # item_id matches the slot order so we can index by selected; the
     # actual policy string is set as item metadata for type safety.
     _entry_policy_dropdown.add_item("Cannot be entered", 0)
-    _entry_policy_dropdown.set_item_metadata(0, "none")
+    _entry_policy_dropdown.set_item_metadata(0, "closed")
     _entry_policy_dropdown.add_item("Owner only", 1)
-    _entry_policy_dropdown.set_item_metadata(1, "owner")
+    _entry_policy_dropdown.set_item_metadata(1, "owner-only")
     _entry_policy_dropdown.add_item("Anyone", 2)
-    _entry_policy_dropdown.set_item_metadata(2, "anyone")
+    _entry_policy_dropdown.set_item_metadata(2, "open")
+    # "" is the engine's type-driven default — enterable like "open" at
+    # runtime, but kept distinct so a placement can be left unset rather
+    # than pinned to an explicit policy. Newly-placed objects arrive here.
+    _entry_policy_dropdown.add_item("Default", 3)
+    _entry_policy_dropdown.set_item_metadata(3, "")
     _entry_policy_dropdown.item_selected.connect(_on_entry_policy_selected)
     _asset_fields_section.add_child(_entry_policy_dropdown)
 
@@ -2452,15 +2458,21 @@ func show_selection(info: Dictionary) -> void:
     # because the two settings are conceptually adjacent).
     _ignoring_policy_dropdowns = true
     _entry_policy_object_id = info.get("object_id", "")
+    # entry_policy arrives as the engine EntryPolicy enum. The default
+    # policy ("") is omitted from the snapshot (omitempty) and surfaces
+    # here as the "none" sentinel from world.gd; both map to the "Default"
+    # item (index 3). Any other unmatched value falls through to index 0.
     var policy: String = str(info.get("entry_policy", "none"))
     var policy_index: int = 0
     match policy:
-        "none":
+        "closed":
             policy_index = 0
-        "owner":
+        "owner-only":
             policy_index = 1
-        "anyone":
+        "open":
             policy_index = 2
+        "", "none":
+            policy_index = 3
     _entry_policy_dropdown.selected = policy_index
     _visible_when_inside_asset_id = asset_id
     if _visible_when_inside_dropdown != null:

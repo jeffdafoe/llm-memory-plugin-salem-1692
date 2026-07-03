@@ -812,11 +812,12 @@ func _on_npc_work_assign_requested() -> void:
     editor.begin_assign_work()
 
 ## Admin chose a new entry policy for the selected placement (ZBBS-101).
-## PATCH /api/village/objects/{id}/entry-policy → server validates and
-## broadcasts object_entry_policy_changed back to every connected client.
-## A 400 (e.g. trying to set 'owner' on a structure with no associated
-## actor) is surfaced as an alert and the dropdown reverts on the next
-## show_selection.
+## POST /api/village/admin/object/set-entry-policy with the engine
+## EntryPolicy enum value ("closed" / "owner-only" / "open" / "" for the
+## type-driven default); the engine validates the value (400 on an unknown
+## enum) and applies it. A non-2xx
+## surfaces the server error as an alert and the dropdown reverts on the
+## next show_selection.
 func _on_entry_policy_changed(object_id: String, policy: String) -> void:
     var payload = JSON.stringify({"object_id": object_id, "entry_policy": policy})
     var http := HTTPRequest.new()
@@ -827,8 +828,8 @@ func _on_entry_policy_changed(object_id: String, policy: String) -> void:
         if c >= 200 and c < 300:
             return
         Auth.check_response(c)
-        # Server refused — likely the no-associated-actor guard. Surface
-        # the message so the admin understands why nothing changed.
+        # Server refused — surface the message so the admin understands why
+        # nothing changed (e.g. an unknown entry_policy enum value).
         var msg: String = "Entry policy change failed."
         var parsed = JSON.parse_string(body.get_string_from_utf8())
         if parsed is Dictionary and parsed.has("error"):
