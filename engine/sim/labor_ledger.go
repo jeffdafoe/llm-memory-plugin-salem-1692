@@ -60,8 +60,11 @@ type LaborID uint64
 // Unlike PayLedgerState, `working` (the post-accept state) is NOT terminal:
 // accepting a labor offer starts the work window (the worker enters
 // StateLaboring until WorkingUntil), and the reward transfers only when that
-// window completes. So the ACTIVE (non-terminal) states are
-// Pending and Working; the TERMINAL states are Completed / Declined /
+// window completes. Between accept and work there is an EnRoute leg (LLM-229):
+// when the deal is struck away from the employer's establishment, the worker
+// relocates to the workplace and the work window only starts once they are at
+// the post with the owner present — so the ACTIVE (non-terminal) states are
+// Pending, EnRoute, and Working; the TERMINAL states are Completed / Declined /
 // Expired / FailedUnavailable.
 type LaborLedgerState string
 
@@ -69,6 +72,17 @@ const (
 	// LaborStatePending — the worker has solicited; the employer has not
 	// yet responded. Non-terminal.
 	LaborStatePending LaborLedgerState = "pending"
+
+	// LaborStateEnRoute — the employer accepted, but the deal was struck away
+	// from the employer's establishment, so the worker is relocating to the
+	// workplace before the work window starts (LLM-229). The worker is NOT yet
+	// laboring: no worker mirror is set (LaborID/LaboringUntil stay clear, the
+	// worker stays tickable so it walks itself there / a red need can still
+	// interrupt), and the boost does not count them until they are working.
+	// The arrival subscriber flips this to Working once the worker is at the
+	// post with the owner present; the bounded-wait backstop (EnRouteDeadline)
+	// voids it unpaid if that never happens. Non-terminal.
+	LaborStateEnRoute LaborLedgerState = "en_route"
 
 	// LaborStateWorking — the employer accepted and the worker is laboring
 	// until WorkingUntil. No coins have moved yet; the reward transfers from
@@ -151,6 +165,17 @@ const (
 	// otherwise-unbounded growth of the offer-side map.
 	LaborLedgerTerminalRetentionDefault = time.Hour
 
+	// LaborEnRouteWaitDefault caps how long a hired worker may spend relocating
+	// to (and then waiting at) the employer's workplace before the work window
+	// starts (LLM-229). If the worker isn't at the post with the owner present
+	// by AcceptedAt + this cap (also clamped to the employer's closing time),
+	// the bounded-wait backstop in the ledger sweep voids the offer unpaid — a
+	// walk-deadlocked worker or an owner who never shows must not occupy the
+	// worker forever, since the completion sweep only fires on WorkingUntil,
+	// which is unset until work actually starts. No coins move on this void; no
+	// work happened.
+	LaborEnRouteWaitDefault = 30 * time.Minute
+
 	// MinLaborDurationMinutes / MaxLaborDurationMinutes clamp the
 	// model-proposed work duration to the 2h–8h band (LLM-190). The 2h floor
 	// stops the weak model lowballing to a near-instant job it then spends the
@@ -203,11 +228,24 @@ type LaborOffer struct {
 	HuddleID HuddleID
 	SceneID  SceneID
 
-	CreatedAt    time.Time
-	ExpiresAt    time.Time  // pending-TTL deadline (solicitation expiry)
-	AcceptedAt   *time.Time // when the employer accepted (work started); nil while Pending
-	WorkingUntil *time.Time // AcceptedAt + DurationMin; the completion deadline; nil until Working
-	ResolvedAt   *time.Time // terminal timestamp; nil while active
+	CreatedAt     time.Time
+	ExpiresAt     time.Time  // pending-TTL deadline (solicitation expiry)
+	AcceptedAt    *time.Time // when the employer accepted the offer; nil while Pending
+	WorkStartedAt *time.Time // when the work window actually began — accept time for an on-site hire, arrival time for a relocated one (LLM-229); nil until Working
+	WorkingUntil  *time.Time // WorkStartedAt + DurationMin (clamped to the employer's close); the completion deadline; nil until Working
+	ResolvedAt    *time.Time // terminal timestamp; nil while active
+
+	// EnRouteDeadline bounds the relocation wait (LLM-229): the instant by which
+	// an EnRoute worker must be at the post with the owner present or the sweep
+	// voids the offer unpaid. Set on accept for a relocated hire (AcceptedAt +
+	// LaborEnRouteWaitDefault, clamped to the employer's close); zero for an
+	// on-site hire that started work immediately.
+	EnRouteDeadline time.Time
+	// EnRouteWaiting is true once a relocating worker has arrived at the
+	// workplace and is waiting for the owner to show (as opposed to still
+	// walking) — the perception self-state reads it to say "waiting for X" vs
+	// "on your way to X." Only meaningful while State is EnRoute (LLM-229).
+	EnRouteWaiting bool
 
 	RootEventID   EventID
 	SourceEventID EventID
@@ -235,6 +273,10 @@ func CloneLaborOffer(o *LaborOffer) *LaborOffer {
 	if o.AcceptedAt != nil {
 		t := *o.AcceptedAt
 		c.AcceptedAt = &t
+	}
+	if o.WorkStartedAt != nil {
+		t := *o.WorkStartedAt
+		c.WorkStartedAt = &t
 	}
 	if o.WorkingUntil != nil {
 		t := *o.WorkingUntil

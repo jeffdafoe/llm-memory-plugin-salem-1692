@@ -126,10 +126,11 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	p.LaborOffersForMe = buildLaborOffersForMe(snap, actorID)
 	p.WorkersForMe = buildWorkersForMe(snap, actorID)
 	p.Laboring = buildLaboring(snap, actorID)
+	p.LaborEnRoute = buildLaborEnRoute(snap, actorID)
 	p.PendingLaborOfferOut = buildPendingLaborOfferOut(snap, actorID)
 
 	p.Actor = buildActorView(snap, actorSnap)
-	p.WarrantActorNames = buildWarrantActorNames(snap, actorSnap, actorID, p.Warrants, p.PayOffersForMe, p.LaborOffersForMe, p.WorkersForMe, p.Laboring, p.PendingLaborOfferOut)
+	p.WarrantActorNames = buildWarrantActorNames(snap, actorSnap, actorID, p.Warrants, p.PayOffersForMe, p.LaborOffersForMe, p.WorkersForMe, p.Laboring, p.LaborEnRoute, p.PendingLaborOfferOut)
 	p.WarrantPlaceNames = buildWarrantPlaceNames(snap, p.Warrants)
 	p.EatHereKinds = buildEatHereKinds(snap)
 	p.Surroundings = buildSurroundings(snap, actorID, actorSnap)
@@ -168,6 +169,9 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 		// The two seek-work gates suppress symmetrically, as they do for evening leisure.
 		!hasRedNeed(actorSnap, snap) &&
 		p.Laboring == nil &&
+		// LLM-229: a worker relocating to an accepted job is already committed —
+		// don't offer the solicit affordance for a second one.
+		p.LaborEnRoute == nil &&
 		!subjectHasPendingLaborOffer(snap, actorID) &&
 		hasSolicitableAudience(snap, actorID, actorSnap, p.Surroundings)
 	// LLM-160: the businesses directory is a STANDING cue for a workless idle
@@ -217,6 +221,11 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 		// evening-leisure hasRedNeed gates. The directory resumes the tick it clears.
 		!hasRedNeed(actorSnap, snap) &&
 		p.Laboring == nil &&
+		// LLM-229: a worker relocating to (or waiting at) an accepted job is
+		// committed — don't push the businesses directory at them. The
+		// in-flight-move gate already covers the walking leg; this also covers a
+		// worker who has arrived and is waiting at the loiter for the owner.
+		p.LaborEnRoute == nil &&
 		p.Actor.InFlightMove == nil &&
 		p.Actor.InFlightSourceActivity == nil &&
 		!subjectHasPendingLaborOffer(snap, actorID) &&
@@ -1467,7 +1476,7 @@ func customerProducedGoods(snap *sim.Snapshot, customer sim.ActorID, goods []Off
 // UUID into the "## What just happened" lines (ZBBS-HOME-339). The subject's
 // own ID is excluded — Render resolves self to "you". Returns nil when no
 // warrant references another actor (the common single-actor tick).
-func buildWarrantActorNames(snap *sim.Snapshot, subject *sim.ActorSnapshot, subjectID sim.ActorID, warrants []sim.WarrantMeta, payOffers []sim.PayOfferWarrantReason, laborOffers []LaborOfferView, workersForMe []WorkerForMeView, laboring *LaboringView, pendingLaborOut *PendingLaborOfferOutView) map[sim.ActorID]string {
+func buildWarrantActorNames(snap *sim.Snapshot, subject *sim.ActorSnapshot, subjectID sim.ActorID, warrants []sim.WarrantMeta, payOffers []sim.PayOfferWarrantReason, laborOffers []LaborOfferView, workersForMe []WorkerForMeView, laboring *LaboringView, laborEnRoute *LaborEnRouteView, pendingLaborOut *PendingLaborOfferOutView) map[sim.ActorID]string {
 	var names map[sim.ActorID]string
 	add := func(id sim.ActorID) {
 		if id == "" || id == subjectID {
@@ -1532,6 +1541,13 @@ func buildWarrantActorNames(snap *sim.Snapshot, subject *sim.ActorSnapshot, subj
 	}
 	if laboring != nil {
 		add(laboring.Employer)
+	}
+	// LLM-229: the relocation self-state (LaborEnRoute) renders its employer on
+	// ticks carrying no warrant — the standing "you're on your way to / waiting
+	// for X" cue — so the employer's label must resolve here too, else render
+	// falls back to "someone."
+	if laborEnRoute != nil {
+		add(laborEnRoute.Employer)
 	}
 	// LLM-164: the worker's own pending-offer self-state (PendingLaborOfferOut)
 	// renders its employer on ticks carrying no warrant — in particular the
@@ -3389,6 +3405,31 @@ func buildLaboring(snap *sim.Snapshot, subject sim.ActorID) *LaboringView {
 		return nil
 	}
 	return &LaboringView{Employer: best.EmployerID, Until: *best.WorkingUntil}
+}
+
+// buildLaborEnRoute scans snap.LaborLedger for an EnRoute offer where the
+// subject is the WORKER, returning the relocation self-state view (employer +
+// whether they have arrived and are waiting for the owner) or nil if the subject
+// isn't relocating to a job (LLM-229). A worker holds at most one live job
+// (accept forbids double-booking); the lowest LaborID is taken if more than one
+// ever appears, for determinism. Mirrors buildLaboring for the pre-work leg.
+func buildLaborEnRoute(snap *sim.Snapshot, subject sim.ActorID) *LaborEnRouteView {
+	if snap == nil || len(snap.LaborLedger) == 0 {
+		return nil
+	}
+	var best *sim.LaborOffer
+	for _, o := range snap.LaborLedger {
+		if o == nil || o.State != sim.LaborStateEnRoute || o.WorkerID != subject {
+			continue
+		}
+		if best == nil || o.ID < best.ID {
+			best = o
+		}
+	}
+	if best == nil {
+		return nil
+	}
+	return &LaborEnRouteView{Employer: best.EmployerID, Waiting: best.EnRouteWaiting}
 }
 
 // buildWorkersForMe scans snap.LaborLedger for the Working offers where the

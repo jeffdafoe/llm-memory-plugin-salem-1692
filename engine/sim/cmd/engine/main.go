@@ -472,6 +472,7 @@ func run(rt runtime, stop <-chan struct{}) error {
 	sim.RegisterNoHiringSubscriber(rt.World)              // LLM-210: remember a business whose keeper was on break (present but not hireable); drop it from the seek-work directory
 	sim.RegisterKnownPlaceSubscriber(rt.World)            // LLM-77: remember a place's affordance on gather/purchase (durable world-memory)
 	sim.RegisterGatherTargetSubscriber(rt.World)          // LLM-93: remember the bush an NPC walked to, so gather prefers it over the nearest
+	sim.RegisterLaborArrivalSubscriber(rt.World)          // LLM-229: start a hired worker's job when they (and the owner) reach the employer's workplace
 	sim.RegisterLodgingMorningDescentSubscriber(rt.World) // ZBBS-HOME-312 #2: walk a naturally-woken lodger PC down to the common room
 	cascade.RegisterProductionCascades(worldCtx, rt.World, rt.LLMClient)
 

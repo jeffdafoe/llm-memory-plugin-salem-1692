@@ -234,6 +234,10 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// owed orders, recovery/satiation/restock/lodging affordances, summons, scene.
 	ephemeral.WriteString(selfState.String())
 	renderLaborSelfState(&ephemeral, p.Laboring, nameOf, p.RenderedAt)
+	// LLM-229: the pre-work leg — a worker who accepted a job and is relocating
+	// to (or waiting at) the employer's workplace. Mutually exclusive with the
+	// in-progress line above (a worker is either relocating or working).
+	renderLaborEnRoute(&ephemeral, p.LaborEnRoute, nameOf)
 	// LLM-202: the employer-side mirror — workers currently on a job for this
 	// actor, so they don't re-hire or pay again for work already covered.
 	renderWorkersForMe(&ephemeral, p.WorkersForMe, nameOf, p.RenderedAt)
@@ -2264,6 +2268,25 @@ func renderLaborSelfState(b *strings.Builder, laboring *LaboringView, nameOf fun
 	}
 	fmt.Fprintf(b, "You are working a job for %s — about %s of work left. Stay with it until it's done; you are paid when you finish.\n",
 		employer, humanizeWorkMinutes(mins))
+}
+
+// renderLaborEnRoute renders the relocation self-state for a worker who has
+// accepted a job but not yet started it (LLM-229): they are on their way to the
+// employer's workplace, or waiting there for the owner to show. It keeps the
+// tickable relocating worker on task — go to the post and get to work — rather
+// than wandering off or soliciting a second job. No reward is named; the work
+// window hasn't started. Placed in the self-state block, mutually exclusive with
+// renderLaborSelfState's in-progress line. Content-gated on LaborEnRoute != nil.
+func renderLaborEnRoute(b *strings.Builder, enRoute *LaborEnRouteView, nameOf func(sim.ActorID) string) {
+	if enRoute == nil {
+		return
+	}
+	employer := nameOf(enRoute.Employer)
+	if enRoute.Waiting {
+		fmt.Fprintf(b, "You've taken on a job for %s and you're at their workplace waiting for them to arrive so you can start — stay put until they do; you are paid once the work is done.\n", employer)
+		return
+	}
+	fmt.Fprintf(b, "You've taken on a job for %s — make your way to their workplace and get to work once you are there (if they aren't in yet, wait for them); you are paid once the work is done.\n", employer)
 }
 
 // renderWorkersForMe renders the employer-side active-labor cue (LLM-202): the

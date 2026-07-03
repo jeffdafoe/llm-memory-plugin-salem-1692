@@ -50,23 +50,26 @@ type ProduceState struct {
 const DefaultLaborProduceBoostPct = 50
 
 // laboringHelperCount counts the workers currently on an accepted job for
-// employerID who are physically at the employer's workplace — Working
-// LaborLedger offers whose worker stands inside workStructureID. Ledger-
-// authoritative like workerHasLiveJob (a Working row counts until the sweep
-// settles it, regardless of its clock), and location-gated because the boost
-// models hands-on help: a deal struck elsewhere speeds nothing until the
-// worker is at the establishment. LLM-224.
+// employerID who are physically at the employer's work post — Working
+// LaborLedger offers whose worker is at workStructureID (actorAtWorkpost: inside
+// a building, or at the staff pin of a doorless stall). Ledger-authoritative
+// like workerHasLiveJob (a Working row counts until the sweep settles it,
+// regardless of its clock), and location-gated because the boost models
+// hands-on help: a deal struck elsewhere speeds nothing until the worker is at
+// the establishment. An EnRoute worker (relocating, not yet working) is skipped
+// by the state check and starts counting only once the arrival subscriber flips
+// them to Working at the post (LLM-229, LLM-224).
 func laboringHelperCount(w *World, employerID ActorID, workStructureID StructureID) int {
 	if workStructureID == "" {
 		return 0
 	}
 	n := 0
 	for _, o := range w.LaborLedger {
-		if o.State != LaborStateWorking || o.EmployerID != employerID {
+		if o == nil || o.State != LaborStateWorking || o.EmployerID != employerID {
 			continue
 		}
 		worker := w.Actors[o.WorkerID]
-		if worker == nil || worker.InsideStructureID != workStructureID {
+		if worker == nil || !actorAtWorkpost(w, worker, workStructureID) {
 			continue
 		}
 		n++

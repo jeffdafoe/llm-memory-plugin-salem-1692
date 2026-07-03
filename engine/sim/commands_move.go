@@ -385,6 +385,11 @@ func resolvePathTarget(w *World, actor *Actor, dest MoveDestination, grid *WalkG
 //   - Owner    — the structure's OwnerActorID is this actor.
 //   - Lodger   — the actor holds an active, unexpired ledger RoomAccess
 //     grant for a room inside this structure (actorIsLodgerAt).
+//   - Hired    — the actor holds a live labor job (EnRoute / Working) whose
+//     employer's work structure is this one (workerHiredAt, LLM-229): a worker
+//     taken on to help here is staff for the window and may enter to do the
+//     job, the same way the permanent Staff leg admits a regular employee. The
+//     grant evaporates when the offer settles or the sweep voids it.
 //
 // now is the expiry clock for the lodger leg — caller-controlled to keep
 // the check deterministic in tests, matching canEnterRoom's pattern.
@@ -407,6 +412,11 @@ func structureMembershipAllows(w *World, actor *Actor, structureID StructureID, 
 		if vobj.OwnerActorID != "" && vobj.OwnerActorID == actor.ID {
 			return true
 		}
+	}
+	// Hired-for-the-window (LLM-229): a worker on a live labor job at this
+	// establishment enters to do it, even when the shop is owner-only.
+	if workerHiredAt(w, actor.ID, structureID) {
+		return true
 	}
 	return actorIsLodgerAt(w, actor, structureID, now)
 }
