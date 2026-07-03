@@ -133,10 +133,17 @@ type SatiationVendor struct {
 	// unknown-price (0) vendor a valid redirect to go and learn the price.
 	costCoins int
 
-	// Shut is true when the subject has a live experiential memory of finding
-	// this business shut (no keeper) within the decay window — render annotates
-	// the line so the model deprioritizes the trip. ZBBS-HOME-353.
-	Shut bool
+	// Barter is true when the buyer cannot cover this vendor's price with coins
+	// but holds goods it could put up in trade — the means-to-pay "barter" state
+	// (LLM-222). Render swaps the coin-price hint for a goods-in-trade steer. A
+	// vendor the buyer can pay by coin (or an unknown-price vendor it holds coins
+	// for) carries Barter=false and renders the normal buy line; a vendor the
+	// buyer can neither pay nor barter for is dropped at build (gatherSatiation-
+	// Vendors) and never reaches a SatiationVendor at all. This replaces the old
+	// experiential-shut annotation: a remembered-shut vendor is now DROPPED like a
+	// dead-end supplier (LLM-216 restock parity), not surfaced with a "found it
+	// shut up" note the weak model toured anyway.
+	Barter bool
 
 	// OutOfStock is true when the subject has a live experiential memory of
 	// trying to buy THIS item here and finding it out of stock within the decay
@@ -165,6 +172,23 @@ func personalOwnStock(items []OwnStockItem) []OwnStockItem {
 		out = append(out, it)
 	}
 	return out
+}
+
+// holdsBarterableGoods reports whether the actor carries any goods it could put
+// up in a pay_with_item / offer_trade bundle — the "goods" half of the LLM-222
+// means-to-pay gate. Any held ItemKind with a positive quantity counts:
+// pay_with_item's pay_items accepts whatever the buyer carries and the SELLER
+// decides accept or decline, so perception gates only on whether goods exist to
+// offer, never on whether this seller would take these particular goods (that
+// adjudication is the seller's own turn — the line the ticket draws at
+// knowable/hard facts). Coins are counted separately by the caller.
+func holdsBarterableGoods(actorSnap *sim.ActorSnapshot) bool {
+	for _, qty := range actorSnap.Inventory {
+		if qty > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // buildSatiation builds the eat/drink view for actorSnap, or nil when no
@@ -264,13 +288,58 @@ type satiationVendorCandidate struct {
 // and cap to maxSatiationVendors. The per-structure representative prefers an
 // item NOT remembered out of stock, then the strongest satisfier — so the menu
 // shows something the NPC can actually buy when possible.
+//
+// It also applies the LLM-222 buy-cue gates, mirroring the LLM-216 restock drop
+// so the two consumer cues never disagree:
+//   - Seller-availability: DROP a vendor the buyer remembers finding shut (was an
+//     annotate-only "found it shut up" note the weak model toured anyway).
+//   - Means-to-pay (coin-OR-goods): a vendor the buyer can pay by coin renders
+//     normally; one it can't cover by coin but can barter for carries Barter;
+//     one it can neither pay nor barter for is a hard payment dead-end and is
+//     DROPPED. Read coin-or-goods, not coin-only (restock's gate), because the
+//     consumer can barter — a coin-only check would re-introduce false dead-ends.
 func gatherSatiationVendors(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSnapshot, need sim.NeedKey) []SatiationVendor {
+	coins := actorSnap.Coins
+	hasGoods := holdsBarterableGoods(actorSnap)
 	byStructure := make(map[sim.StructureID]satiationVendorCandidate)
 	for _, vc := range findVendorConsumables(snap, actorID, need, "ask the seller") {
 		// No resolvable workplace → no structure_id for move_to (unactionable);
 		// own workplace excluded so a hungry vendor doesn't get steered to buy
 		// from itself (the Josiah-buys-at-his-own-General-Store case).
 		if vc.StructureID == "" || vc.StructureID == actorSnap.WorkStructureID {
+			continue
+		}
+		// LLM-222 seller-availability gate: drop a vendor the buyer remembers
+		// finding shut, mirroring LLM-216's restock drop. Annotating it (the old
+		// ZBBS-HOME-353 posture) left the weak model touring the dead ends (the
+		// live Ezekiel→Inn→asleep-Hannah walk). The shut memory is experiential and
+		// TTL-decayed — now capturing an abed keeper too (LLM-126) — so the vendor
+		// reappears once it lapses, preserving the retry without the wasted trip.
+		if businessRememberedShut(snap, actorSnap, vc.StructureID) {
+			continue
+		}
+		// LLM-222 means-to-pay gate: gate on the ability to TRANSACT, not on
+		// brokenness. A 0-coin buyer is not a dead-end now that barter works, so
+		// suppressing on coins==0 would hide a viable goods-in-trade path — the
+		// exact anti-pattern this ticket fixes. The only hard dead-end is no means
+		// of payment at all.
+		barter := false
+		switch {
+		case vc.costCoins > 0 && coins >= vc.costCoins:
+			// Coins cover the remembered price — normal buy line.
+		case vc.costCoins == 0 && coins > 0:
+			// Unknown price but the buyer has coins to spend — keep a normal buy
+			// line (walk over and pay / learn the price), the same call LLM-216
+			// makes for an unknown-price restock supplier; it can still barter on
+			// arrival.
+		case hasGoods:
+			// Coins can't cover it (none, or below a known price) but the buyer
+			// holds goods to put up in trade — keep the cue, steered to barter.
+			barter = true
+		default:
+			// No coins that cover it and nothing to trade — the genuine payment
+			// dead-end (the 55-hit pay_with_item no-offer rejection). Drop the
+			// line; the free-food / own-stock cues already cover this actor.
 			continue
 		}
 		outOfStock := businessRememberedOutOfStock(snap, actorSnap, vc.StructureID, vc.ItemKind)
@@ -285,7 +354,7 @@ func gatherSatiationVendors(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *
 				Magnitude:  vc.Magnitude,
 				CostText:   vc.CostText,
 				costCoins:  vc.costCoins,
-				Shut:       businessRememberedShut(snap, actorSnap, vc.StructureID),
+				Barter:     barter,
 				OutOfStock: outOfStock,
 				EatHere:    snap.ItemKinds[vc.ItemKind].EatHereOnly(),
 			},
@@ -305,10 +374,9 @@ func gatherSatiationVendors(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *
 	for _, c := range byStructure {
 		cands = append(cands, c)
 	}
-	// Nearest-first; ties by label then structure_id for deterministic output. A
-	// vendor the buyer remembers finding shut is annotated (closedBusinessAnnotation),
-	// not demoted — the omniscient live-asleep sink was retired with ClosedNow
-	// (LLM-126).
+	// Nearest-first; ties by label then structure_id for deterministic output.
+	// Remembered-shut vendors were already dropped above (LLM-222), so every
+	// candidate here is an actionable, payable destination.
 	sort.Slice(cands, func(i, j int) bool {
 		if cands[i].distTiles != cands[j].distTiles {
 			return cands[i].distTiles < cands[j].distTiles
@@ -682,7 +750,14 @@ func renderSatiation(b *strings.Builder, v *SatiationView) {
 				if vd.Magnitude > 0 {
 					fmt.Fprintf(b, " (%s)", feltAmountWithSufficiency(vd.Magnitude, n.Need, n.Level))
 				}
-				if vd.CostText != "" {
+				// Means-to-pay phrasing (LLM-222): a vendor the buyer can't cover
+				// with coins but can barter for carries Barter — steer it to a goods
+				// offer instead of a coin price it can't meet (the coin hint would
+				// only invite a pay_with_item the buyer can't fund). Otherwise the
+				// normal last-paid coin hint, when one is on record.
+				if vd.Barter {
+					b.WriteString(", which your coins won't cover — offer goods you carry in trade instead (pay_items)")
+				} else if vd.CostText != "" {
 					fmt.Fprintf(b, ", %s", vd.CostText)
 				}
 				// Eat-here disposition fact (ZBBS-WORK-405): this class of
@@ -696,13 +771,6 @@ func renderSatiation(b *strings.Builder, v *SatiationView) {
 				// name. Same id-in-perception contract restock + shift_duty use.
 				if vd.StructureID != "" {
 					fmt.Fprintf(b, " (structure_id: %s)", vd.StructureID)
-				}
-				// The decaying experiential memory of finding this vendor shut — no
-				// keeper tending it, now including an abed keeper (the capture gates
-				// on availability, LLM-126). Replaces the old omniscient live-asleep
-				// marker: the buyer only "knows" it was shut if it actually went there.
-				if vd.Shut {
-					b.WriteString(closedBusinessAnnotation)
 				}
 				if vd.OutOfStock {
 					b.WriteString(outOfStockAnnotation)
