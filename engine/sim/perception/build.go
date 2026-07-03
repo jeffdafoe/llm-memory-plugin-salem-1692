@@ -124,6 +124,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// buildWarrantActorNames so the worker/employer names they reference resolve
 	// in render.
 	p.LaborOffersForMe = buildLaborOffersForMe(snap, actorID)
+	p.SubjectProducesGoods = subjectProducesGoods(snap, actorSnap)
 	p.WorkersForMe = buildWorkersForMe(snap, actorID)
 	p.Laboring = buildLaboring(snap, actorID)
 	p.PendingLaborOfferOut = buildPendingLaborOfferOut(snap, actorID)
@@ -1398,6 +1399,26 @@ func buildOwnProducedKinds(actorSnap *sim.ActorSnapshot) map[sim.ItemKind]bool {
 		kinds[e.Item] = true
 	}
 	return kinds
+}
+
+// subjectProducesGoods reports whether the subject makes any goods itself — has
+// at least one recipe-backed (makeable) produce entry. This is the same notion
+// of "produces" the labor produce-boost keys on (produce_tick's makeableRecipe:
+// a recipe present with a positive rate); a produce entry with no live recipe
+// never actually mints, so it doesn't count. Only a producing keeper "gets more
+// done" from hired help, so the returning-helper recall (renderLaborOffers,
+// LLM-228) claims added output for a producer and stays a bare social beat
+// otherwise. Pure over the snapshot; nil-safe.
+func subjectProducesGoods(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) bool {
+	if snap == nil || actorSnap == nil || actorSnap.RestockPolicy == nil || snap.Recipes == nil {
+		return false
+	}
+	for _, e := range actorSnap.RestockPolicy.ProduceEntries() {
+		if r := snap.Recipes[e.Item]; r != nil && r.RateQty > 0 && r.RatePerHours > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // buildAtCapKinds collects the item kinds the subject already holds at or above
@@ -3334,9 +3355,10 @@ func buildLaborOffersForMe(snap *sim.Snapshot, subject sim.ActorID) []LaborOffer
 	// Employer holdings for the in-kind affordability mirror (LLM-225): the
 	// subject IS the employer here, so their snapshot inventory is the same
 	// map accept_work's gate 8 will check (buyerHoldsPayItems).
+	subjectSnap := snap.Actors[subject]
 	var employerInv map[sim.ItemKind]int
-	if a := snap.Actors[subject]; a != nil {
-		employerInv = a.Inventory
+	if subjectSnap != nil {
+		employerInv = subjectSnap.Inventory
 	}
 	out := make([]LaborOfferView, 0, len(ids))
 	for _, id := range ids {
@@ -3347,14 +3369,23 @@ func buildLaborOffersForMe(snap *sim.Snapshot, subject sim.ActorID) []LaborOffer
 				missing = append(missing, ri)
 			}
 		}
+		// LLM-228: did this worker complete a paid job for the subject within the
+		// memory window? The subject IS the employer whose Observed store carries
+		// the ObservedHelpedByWorker memory, keyed by the worker's PeerID. When
+		// Active, the decision section adds a returning-helper recall line.
+		helpedBefore := subjectSnap != nil && subjectSnap.Observed.Active(
+			sim.ObservedStateKey{PeerID: o.WorkerID, Condition: sim.ObservedHelpedByWorker},
+			snap.PublishedAt,
+		)
 		out = append(out, LaborOfferView{
-			LaborID:            o.ID,
-			Worker:             o.WorkerID,
-			Reward:             o.Reward,
-			RewardItems:        o.RewardItems,
-			MissingRewardItems: missing,
-			DurationMin:        o.DurationMin,
-			ExpiresAt:          o.ExpiresAt,
+			LaborID:              o.ID,
+			Worker:               o.WorkerID,
+			Reward:               o.Reward,
+			RewardItems:          o.RewardItems,
+			MissingRewardItems:   missing,
+			DurationMin:          o.DurationMin,
+			ExpiresAt:            o.ExpiresAt,
+			HelpedBeforeRecently: helpedBefore,
 		})
 	}
 	return out

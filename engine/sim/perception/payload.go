@@ -374,6 +374,15 @@ type Payload struct {
 	// nil when nothing is pending. Ordered by LaborID ascending. LLM-26.
 	LaborOffersForMe []LaborOfferView
 
+	// SubjectProducesGoods is true when the subject makes any goods itself — has a
+	// recipe-backed (makeable) produce entry, the same notion of "produces" the
+	// labor produce-boost keys on (produce_tick). Only a producing keeper actually
+	// "gets more done" from hired help, so the returning-helper recall
+	// (renderLaborOffers, LLM-228) claims added output for a producer and stays a
+	// bare social beat for a non-producer. Subject-level, so it rides the payload
+	// rather than each LaborOfferView.
+	SubjectProducesGoods bool
+
 	// WorkersForMe lists the subject's IN-PROGRESS jobs as EMPLOYER — Working
 	// LaborOffers where EmployerID == subject — the employer-side mirror of the
 	// worker's Laboring self-state (LLM-202). Without it the employer has only the
@@ -750,6 +759,11 @@ type LaborOfferView struct {
 	MissingRewardItems []sim.ItemKindQty
 	DurationMin        int
 	ExpiresAt          time.Time
+	// HelpedBeforeRecently is true when this worker completed a paid job for the
+	// subject within HelpedByWorkerMemoryTTL (the employer's ObservedHelpedByWorker
+	// memory is Active). Drives the returning-helper recall line the decision
+	// section adds above the accept/decline steer (LLM-228).
+	HelpedBeforeRecently bool
 }
 
 // LaboringView carries the subject's OWN in-progress job for the self-state

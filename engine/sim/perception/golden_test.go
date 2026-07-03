@@ -527,6 +527,25 @@ var perceptionScenarios = []perceptionScenario{
 		build: employerMissingRewardItemsSteer,
 	},
 	{
+		name: "employer_recalls_returning_helper",
+		summary: "A producing keeper (Hannah Boggs, who makes porridge) is solicited again by Anne Walker, who completed " +
+			"a paid job for her a few hours ago (an Active ObservedHelpedByWorker memory). The LLM-228 situation: rather than " +
+			"an engine hire-value pitch at the decision point (that pitch shipped in #690 and was pulled in #691), the " +
+			"decision section recalls the past help experientially. The golden pins the returning-helper recall WITH the " +
+			"added-output clause ('You remember Anne Walker lending you a hand recently, and you got more done for it.') — a " +
+			"producing employer really does get more done from help — above the normal accept/decline footer. Pairs with " +
+			"employer_recalls_returning_helper_nonproducer.",
+		build: employerRecallsReturningHelper,
+	},
+	{
+		name: "employer_recalls_returning_helper_nonproducer",
+		summary: "The same returning-helper solicitation, but the employer makes no goods itself (no makeable produce " +
+			"entry). The golden pins the bare social recall ('You remember Anne Walker lending you a hand recently.') with NO " +
+			"'got more done' clause — a non-producer never claims output it did not make (LLM-228). Pairs with " +
+			"employer_recalls_returning_helper.",
+		build: employerRecallsReturningHelperNonProducer,
+	},
+	{
 		name: "worker_among_household_no_solicit",
 		summary: "Two worker-tagged Walker siblings (Lewis + Anne) stand together in their own home, both jobless — the " +
 			"LLM-157 situation, where housemates solicited each other for work ('I'm looking for work, does anyone need a " +
@@ -1444,7 +1463,8 @@ func TestWaresWorthCueOnlyInCompanyWithOwnTrade(t *testing.T) {
 		sc := sc
 		got := renderScenario(sc)
 		want := sc.name == "smith_bartering_at_tavern" || sc.name == "keeper_reselling_in_company" ||
-			sc.name == "innkeeper_pricing_with_makings_cost" // LLM-226: producer in company, priced own ware
+			sc.name == "innkeeper_pricing_with_makings_cost" || // LLM-226: producer in company, priced own ware
+			sc.name == "employer_recalls_returning_helper" // LLM-228: producing keeper in company (incidental to the recall it tests)
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: wares-worth cue present=%v, want %v", sc.name, has, want)
 		}
@@ -3289,6 +3309,96 @@ func employerWithWorkerOnJob() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 		ItemKinds: foodDrinkCatalog(),
 	}
 	return snap, johnID, nil
+}
+
+// returningHelperLaborOfferSnapshot builds the LLM-228 shape: Anne Walker, who
+// completed a paid job for Hannah Boggs a few hours ago (an Active
+// ObservedHelpedByWorker memory on Hannah), has solicited Hannah again. The
+// decision section recalls the past help. employerProduces controls whether
+// Hannah makes goods herself (a makeable produce entry + recipe) — true renders
+// the "…and you got more done for it" clause (employer_recalls_returning_helper),
+// false the bare social beat (employer_recalls_returning_helper_nonproducer). The
+// offer is coins-only and affordable so the normal accept/decline footer renders
+// alongside the recall.
+func returningHelperLaborOfferSnapshot(employerProduces bool) (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		hannahID = sim.ActorID("hannah")
+		anneID   = sim.ActorID("anne")
+		inn      = sim.StructureID("inn")
+		huddle   = sim.HuddleID("h1")
+	)
+	published := time.Date(2026, 7, 3, 11, 0, 0, 0, time.UTC)
+	hannah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Hannah Boggs",
+		Role:              "innkeeper",
+		State:             sim.StateIdle,
+		InsideStructureID: inn,
+		CurrentHuddleID:   huddle,
+		Coins:             50,
+		Needs:             map[sim.NeedKey]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"Anne Walker": {}},
+		// Hannah remembers Anne finishing a paid job for her five hours ago — well
+		// inside the 36h HelpedByWorkerMemoryTTL, so the recall reads Active.
+		Observed: sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
+			{PeerID: anneID, Condition: sim.ObservedHelpedByWorker}: published.Add(-5 * time.Hour),
+		}),
+	}
+	var recipes map[sim.ItemKind]*sim.ItemRecipe
+	if employerProduces {
+		// A single makeable produce entry makes Hannah a producer for the copy
+		// split (subjectProducesGoods) without tripping the multi-output forge cue.
+		hannah.RestockPolicy = &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "porridge", Source: sim.RestockSourceProduce, Max: 5},
+		}}
+		recipes = map[sim.ItemKind]*sim.ItemRecipe{
+			"porridge": {OutputItem: "porridge", OutputQty: 1, RateQty: 1, RatePerHours: 2, WholesalePrice: 1, RetailPrice: 2},
+		}
+	}
+	anne := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Anne Walker",
+		Role:              "laborer",
+		State:             sim.StateIdle,
+		InsideStructureID: inn,
+		CurrentHuddleID:   huddle,
+		Coins:             1,
+		Needs:             map[sim.NeedKey]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"Hannah Boggs": {}},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:    published,
+		NeedThresholds: sim.NeedThresholds{},
+		Actors:         map[sim.ActorID]*sim.ActorSnapshot{hannahID: hannah, anneID: anne},
+		Structures: map[sim.StructureID]*sim.Structure{
+			inn: plainStructure(inn, "The Inn"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{hannahID: {}, anneID: {}}},
+		},
+		LaborLedger: map[sim.LaborID]*sim.LaborOffer{
+			1: {
+				ID:          1,
+				WorkerID:    anneID,
+				EmployerID:  hannahID,
+				Reward:      3,
+				DurationMin: 60,
+				State:       sim.LaborStatePending,
+				HuddleID:    huddle,
+			},
+		},
+		Recipes:   recipes,
+		ItemKinds: foodDrinkCatalog(),
+	}
+	return snap, hannahID, nil
+}
+
+func employerRecallsReturningHelper() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return returningHelperLaborOfferSnapshot(true)
+}
+
+func employerRecallsReturningHelperNonProducer() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return returningHelperLaborOfferSnapshot(false)
 }
 
 // workerAmongHousehold is the LLM-157 situation: two worker-tagged Walker siblings

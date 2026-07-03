@@ -106,6 +106,57 @@ func TestObservedStates_ClearAndForgetStructure(t *testing.T) {
 	}
 }
 
+func TestObservedStates_PeerKeyedDistinctFromPlace(t *testing.T) {
+	// LLM-228: a person-keyed condition (ObservedHelpedByWorker, keyed by PeerID)
+	// shares the store with the place-keyed conditions. The PeerID is part of the
+	// key, so per-worker memories are distinct and never collide with a
+	// place-keyed entry.
+	now := time.Now()
+	var o ObservedStates
+	helpedAnne := ObservedStateKey{PeerID: "anne", Condition: ObservedHelpedByWorker}
+	helpedLewis := ObservedStateKey{PeerID: "lewis", Condition: ObservedHelpedByWorker}
+	closedInn := ObservedStateKey{StructureID: "inn", Condition: ObservedClosed}
+	o.Observe(helpedAnne, now)
+	o.Observe(closedInn, now)
+
+	if !o.Active(helpedAnne, now) {
+		t.Error("a just-stamped helped-by-worker memory should be active")
+	}
+	if o.Active(helpedLewis, now) {
+		t.Error("a memory of Anne must not match a query about Lewis — PeerID is part of the key")
+	}
+	// Decays on its own TTL.
+	o.Observe(helpedAnne, now.Add(-HelpedByWorkerMemoryTTL-time.Minute))
+	if o.Active(helpedAnne, now) {
+		t.Error("a helped-by-worker memory older than its TTL should have decayed")
+	}
+}
+
+func TestObservedStates_ForgetStructureLeavesPeerMemory(t *testing.T) {
+	// LLM-228: ForgetStructure is the move_to destination-scoped place clear. A
+	// person-keyed memory carries an empty StructureID; the empty-arg guard keeps a
+	// stray ForgetStructure("") from wiping it, and forgetting a real place never
+	// touches it either.
+	now := time.Now()
+	var o ObservedStates
+	helpedAnne := ObservedStateKey{PeerID: "anne", Condition: ObservedHelpedByWorker}
+	closedInn := ObservedStateKey{StructureID: "inn", Condition: ObservedClosed}
+	o.Observe(helpedAnne, now)
+	o.Observe(closedInn, now)
+
+	o.ForgetStructure("") // must be a no-op, not a wipe of the empty-structure peer key
+	if _, ok := o.At(helpedAnne); !ok {
+		t.Error("ForgetStructure(\"\") must not wipe a person-keyed memory")
+	}
+	o.ForgetStructure("inn")
+	if _, ok := o.At(closedInn); ok {
+		t.Error("ForgetStructure(inn) should drop the place memory")
+	}
+	if _, ok := o.At(helpedAnne); !ok {
+		t.Error("forgetting a place must not touch a person-keyed memory")
+	}
+}
+
 func TestObservedStates_CloneIsDeep(t *testing.T) {
 	now := time.Now()
 	var src ObservedStates
