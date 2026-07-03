@@ -86,11 +86,16 @@ func TestBuildRestocking_ShutSupplierDropped(t *testing.T) {
 	}
 }
 
-// TestRenderSatiation_ShutAnnotation: the same annotation flows through the
-// eat/drink vendor cue.
-func TestRenderSatiation_ShutAnnotation(t *testing.T) {
+// TestRenderSatiation_ShutVendorDropped — LLM-222. A vendor the buyer remembers
+// finding shut is DROPPED from the eat/drink cue, not annotated: the shared
+// closed-business annotation no longer flows through satiation (it still does for
+// the recovery/rest cue). The buyer holds coins, so the drop is the seller-
+// availability gate, not affordability; the shut Tavern being the only satisfier,
+// the view is nil.
+func TestRenderSatiation_ShutVendorDropped(t *testing.T) {
 	now := time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)
 	subj := &sim.ActorSnapshot{
+		Coins: 10,
 		Needs: map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold},
 		Observed: sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
 			{StructureID: "tavern", Condition: sim.ObservedClosed}: now.Add(-time.Hour),
@@ -105,31 +110,23 @@ func TestRenderSatiation_ShutAnnotation(t *testing.T) {
 			"stew": {Name: "stew", DisplayLabel: "stew", Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 4}}},
 		},
 	}
-	v := buildSatiation(snap, "diner", subj)
-	if v == nil {
-		t.Fatal("expected a satiation view")
-	}
-	var b strings.Builder
-	renderSatiation(&b, v)
-	out := b.String()
-	if !strings.Contains(out, "The Tavern") {
-		t.Fatalf("expected the tavern vendor cue, got:\n%s", out)
-	}
-	if !strings.Contains(out, "found it shut up") {
-		t.Errorf("expected shut annotation in satiation cue, got:\n%s", out)
+	if v := buildSatiation(snap, "diner", subj); v != nil {
+		t.Fatalf("remembered-shut Tavern was the only satisfier — it must be dropped, leaving a nil view, got %+v", v)
 	}
 }
 
-// TestRenderSatiation_AsleepKeeperNoLongerOmniscient — LLM-126. With the live
-// keeper-asleep read retired, a sleeping keeper the buyer has NEVER visited
-// produces no closed cue at all: no "(currently closed)" marker and no experiential
-// "found it shut up". The buyer learns a shop is shut only by going (the John Ellis
-// philosophy); once it has (an ObservedClosed memory), the decaying experiential
-// annotation renders — the only path to a closed cue now. The out-of-stock suffix
-// is independent and co-renders, with the shut clause preceding it.
+// TestRenderSatiation_AsleepKeeperNoLongerOmniscient — LLM-126 + LLM-222. With the
+// live keeper-asleep read retired (LLM-126), a sleeping keeper the buyer has NEVER
+// visited produces no closed cue: the shop shows as a normal buyable vendor, since
+// perception never leaks the remote keeper's live state across the map. Once the
+// buyer REMEMBERS finding it shut, LLM-222 DROPS the vendor from the eat/drink cue
+// entirely — the experiential "found it shut up" annotation was retired along with
+// the tour-the-dead-end behavior it produced. The buyer holds coins throughout, so
+// a dropped vendor is the seller-availability gate, not affordability.
 func TestRenderSatiation_AsleepKeeperNoLongerOmniscient(t *testing.T) {
 	now := time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)
 	subj := &sim.ActorSnapshot{
+		Coins: 10,
 		Needs: map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold},
 	}
 	cook := &sim.ActorSnapshot{
@@ -146,18 +143,18 @@ func TestRenderSatiation_AsleepKeeperNoLongerOmniscient(t *testing.T) {
 		},
 	}
 	render := func() string {
-		v := buildSatiation(snap, "diner", subj)
-		if v == nil {
-			t.Fatal("expected a satiation view")
-		}
 		var b strings.Builder
-		renderSatiation(&b, v)
+		renderSatiation(&b, buildSatiation(snap, "diner", subj))
 		return b.String()
 	}
 
-	// Sleeping keeper, but the buyer has never been there → no closed cue of any
-	// kind (the retired live read no longer leaks the keeper's state across the map).
+	// Sleeping keeper, buyer never visited → the shop shows as a normal buyable
+	// vendor with no closed cue of any kind (the retired live read no longer leaks
+	// the keeper's state across the map).
 	out := render()
+	if !strings.Contains(out, "The Tavern") {
+		t.Fatalf("a shop with a sleeping keeper the buyer has not visited must still show as a normal vendor, got:\n%s", out)
+	}
 	if strings.Contains(out, "(currently closed)") {
 		t.Errorf("the retired live closed-now marker must not appear, got:\n%s", out)
 	}
@@ -165,25 +162,16 @@ func TestRenderSatiation_AsleepKeeperNoLongerOmniscient(t *testing.T) {
 		t.Errorf("no experiential shut annotation without a memory, got:\n%s", out)
 	}
 
-	// Once the buyer remembers finding it shut, the decaying experiential annotation
-	// renders — the only path to a closed cue now.
+	// Once the buyer remembers finding it shut, LLM-222 DROPS the vendor from the
+	// eat/drink cue — no annotation, no vendor line at all.
 	subj.Observed = sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
 		{StructureID: "tavern", Condition: sim.ObservedClosed}: now.Add(-time.Hour),
 	})
-	if out := render(); !strings.Contains(out, "found it shut up") {
-		t.Errorf("a remembered-shut vendor should carry the experiential annotation, got:\n%s", out)
-	}
-
-	// The shut clause and the out-of-stock suffix are independent and both render,
-	// the shut clause preceding the trailing out-of-stock suffix.
-	subj.Observed.Observe(sim.ObservedStateKey{StructureID: "tavern", ItemKind: "stew", Condition: sim.ObservedOutOfStock}, now.Add(-time.Hour))
 	out = render()
-	shutIdx := strings.Index(out, "found it shut up")
-	stockIdx := strings.Index(out, "found them out")
-	if shutIdx < 0 || stockIdx < 0 {
-		t.Errorf("expected BOTH the shut annotation and the out-of-stock suffix, got:\n%s", out)
+	if strings.Contains(out, "The Tavern") {
+		t.Errorf("a remembered-shut vendor must be dropped from the eat/drink cue (LLM-222), got:\n%s", out)
 	}
-	if shutIdx >= 0 && stockIdx >= 0 && shutIdx > stockIdx {
-		t.Errorf("the shut annotation should precede the out-of-stock suffix, got:\n%s", out)
+	if strings.Contains(out, "found it shut up") {
+		t.Errorf("the retired experiential shut annotation must not render (vendor is dropped), got:\n%s", out)
 	}
 }

@@ -147,7 +147,9 @@ func TestBuildSatiation_OwnStockDeterministicTieBreak(t *testing.T) {
 }
 
 func TestBuildSatiation_VendorCueThirst(t *testing.T) {
-	subj := &sim.ActorSnapshot{Needs: map[sim.NeedKey]int{"thirst": sim.DefaultThirstRedThreshold}}
+	// Coins so the vendor clears the LLM-222 means-to-pay gate; this test's focus
+	// is the vendor cue shape (label/magnitude/id), not affordability.
+	subj := &sim.ActorSnapshot{Coins: 10, Needs: map[sim.NeedKey]int{"thirst": sim.DefaultThirstRedThreshold}}
 	vendor := &sim.ActorSnapshot{WorkStructureID: "well_house", Inventory: map[sim.ItemKind]int{"water": 9}}
 	snap := &sim.Snapshot{
 		Actors:     map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj, "wally": vendor},
@@ -182,7 +184,9 @@ func TestBuildSatiation_VendorCueThirst(t *testing.T) {
 // disposition fact on the line, so the buyer plans a sit-down rather than a
 // carry-out the clamp would quietly rewrite. A portable kind carries no tag.
 func TestBuildSatiation_VendorEatHereFact(t *testing.T) {
-	subj := &sim.ActorSnapshot{Needs: map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold}}
+	// Coins so both vendors clear the LLM-222 means-to-pay gate; this test's focus
+	// is the eat-here disposition fact, not affordability.
+	subj := &sim.ActorSnapshot{Coins: 10, Needs: map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold}}
 	cook := &sim.ActorSnapshot{WorkStructureID: "tavern", Inventory: map[sim.ItemKind]int{"stew": 5}}
 	baker := &sim.ActorSnapshot{WorkStructureID: "bakery", Inventory: map[sim.ItemKind]int{"bread": 5}}
 	snap := &sim.Snapshot{
@@ -214,24 +218,26 @@ func TestBuildSatiation_VendorEatHereFact(t *testing.T) {
 	}
 }
 
-// TestBuildSatiation_RememberedShutVendorNotDemoted — LLM-126, decision 1(a). A
-// vendor the buyer remembers finding shut keeps its natural (nearest-first)
-// position rather than being sunk below an open one: the omniscient live-asleep
-// read and its open-before-closed sort sink were retired together. The nearer
-// remembered-shut Tavern still leads, annotated with the experiential "found it
-// shut up"; the farther vendor it has not visited is unflagged.
-func TestBuildSatiation_RememberedShutVendorNotDemoted(t *testing.T) {
+// TestBuildSatiation_RememberedShutVendorDropped — LLM-222. A vendor the buyer
+// remembers finding shut is DROPPED from the eat/drink buy cue, not annotated —
+// mirroring LLM-216's restock drop. The annotate-only posture (the old ZBBS-HOME-
+// 353 "found it shut up" note) left the weak model touring the dead end. The
+// nearer remembered-shut Tavern is gone; only the farther open Inn (never found
+// shut) remains, with no shut note. The buyer holds coins so the surviving Inn
+// clears the means-to-pay gate — this isolates the seller-availability drop.
+func TestBuildSatiation_RememberedShutVendorDropped(t *testing.T) {
 	now := time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)
 	origin := sim.WorldToTile(0, 0)
 	subj := &sim.ActorSnapshot{
 		Pos:   origin,
+		Coins: 10,
 		Needs: map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold},
 		// He remembers the nearer Tavern shut; the farther Inn he has not visited.
 		Observed: sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
 			{StructureID: "tavern", Condition: sim.ObservedClosed}: now.Add(-time.Hour),
 		}),
 	}
-	// Both keepers awake — the cue is driven by the buyer's memory, not their state.
+	// Both keepers awake — the drop is driven by the buyer's memory, not their state.
 	tavernCook := &sim.ActorSnapshot{State: sim.StateIdle, WorkStructureID: "tavern", Inventory: map[sim.ItemKind]int{"stew": 5}}
 	innCook := &sim.ActorSnapshot{State: sim.StateIdle, WorkStructureID: "inn", Inventory: map[sim.ItemKind]int{"stew": 5}}
 	snap := &sim.Snapshot{
@@ -248,32 +254,28 @@ func TestBuildSatiation_RememberedShutVendorNotDemoted(t *testing.T) {
 		ItemKinds: foodDrinkCatalog(),
 	}
 	v := buildSatiation(snap, "ezekiel", subj)
-	if v == nil || len(v.Needs) != 1 || len(v.Needs[0].Vendors) != 2 {
-		t.Fatalf("want 2 vendor cues (tavern + inn), got %+v", v)
+	if v == nil || len(v.Needs) != 1 || len(v.Needs[0].Vendors) != 1 {
+		t.Fatalf("want exactly 1 vendor cue (the open Inn; the shut Tavern dropped), got %+v", v)
 	}
-	vds := v.Needs[0].Vendors
-	// Nearest-first: the remembered-shut Tavern still leads (not demoted), flagged Shut.
-	if vds[0].StructureID != "tavern" || !vds[0].Shut {
-		t.Errorf("nearer remembered-shut Tavern must keep its lead (not demoted), got first = %+v", vds[0])
-	}
-	if vds[1].StructureID != "inn" || vds[1].Shut {
-		t.Errorf("the farther un-remembered Inn must follow and not be flagged shut, got second = %+v", vds[1])
+	if got := v.Needs[0].Vendors[0].StructureID; got != "inn" {
+		t.Errorf("surviving vendor = %q, want the open Inn ('tavern' must be dropped as remembered-shut)", got)
 	}
 	var b strings.Builder
 	renderSatiation(&b, v)
 	out := b.String()
-	for _, line := range strings.Split(out, "\n") {
-		if strings.Contains(line, "The Tavern") && !strings.Contains(line, "found it shut up") {
-			t.Errorf("remembered-shut Tavern line should carry the experiential annotation:\n%s", line)
-		}
-		if strings.Contains(line, "The Inn") && strings.Contains(line, "found it shut up") {
-			t.Errorf("the un-remembered Inn must not carry the shut annotation:\n%s", line)
-		}
+	if strings.Contains(out, "The Tavern") {
+		t.Errorf("remembered-shut Tavern must be dropped from the buy cue entirely:\n%s", out)
+	}
+	if strings.Contains(out, "found it shut up") {
+		t.Errorf("the buy cue must no longer carry the experiential shut annotation (LLM-222 drops shut vendors):\n%s", out)
 	}
 }
 
 func TestBuildSatiation_VendorPriceFromPriceBook(t *testing.T) {
-	subj := &sim.ActorSnapshot{Needs: map[sim.NeedKey]int{"thirst": sim.DefaultThirstRedThreshold}}
+	// Coins comfortably above the last-paid price (1) so the vendor clears the
+	// LLM-222 means-to-pay gate; this test's focus is the CostText from the price
+	// book, not affordability.
+	subj := &sim.ActorSnapshot{Coins: 10, Needs: map[sim.NeedKey]int{"thirst": sim.DefaultThirstRedThreshold}}
 	vendor := &sim.ActorSnapshot{WorkStructureID: "well_house", Inventory: map[sim.ItemKind]int{"water": 9}}
 	pb := sim.NewRingBuffer[sim.PriceObservation](4)
 	pb.Push(sim.PriceObservation{BuyerID: "ezekiel", Amount: 1, Qty: 1, Consumers: 1, At: time.Now().UTC()})
@@ -497,6 +499,7 @@ func TestBuildSatiation_CoPresentPeer_NoOfferWhenNoSatisfierOrNotPressing(t *tes
 func TestBuildSatiation_PeerAlsoVendor_BothAffordances(t *testing.T) {
 	hid, h := huddleWith("ezekiel", "wally")
 	subj := &sim.ActorSnapshot{
+		Coins:           10, // clears the LLM-222 means-to-pay gate so the vendor cue stays
 		Needs:           map[sim.NeedKey]int{"thirst": sim.DefaultThirstRedThreshold},
 		CurrentHuddleID: hid,
 		Acquaintances:   map[string]sim.Acquaintance{"Wally": {}},

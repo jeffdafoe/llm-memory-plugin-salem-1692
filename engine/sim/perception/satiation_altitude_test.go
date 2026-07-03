@@ -23,7 +23,8 @@ func altitudeCatalog() map[sim.ItemKind]*sim.ItemKindDef {
 // TestGatherSatiation_DedupByStructure: a vendor selling multiple hunger items
 // at one workplace collapses to a SINGLE buy bullet — the strongest satisfier.
 func TestGatherSatiation_DedupByStructure(t *testing.T) {
-	subj := &sim.ActorSnapshot{Needs: map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold}}
+	// Coins clear the LLM-222 means-to-pay gate; this test's focus is dedup-by-structure.
+	subj := &sim.ActorSnapshot{Coins: 10, Needs: map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold}}
 	keeper := &sim.ActorSnapshot{WorkStructureID: "tavern", Inventory: map[sim.ItemKind]int{"bread": 9, "stew": 4}}
 	snap := &sim.Snapshot{
 		Actors:     map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj, "john": keeper},
@@ -47,6 +48,7 @@ func TestGatherSatiation_DedupByStructure(t *testing.T) {
 // are reduced to the nearest maxSatiationVendors, ordered nearest-first.
 func TestGatherSatiation_NearestFirstAndCap(t *testing.T) {
 	subj := &sim.ActorSnapshot{
+		Coins: 10, // clears the LLM-222 means-to-pay gate; focus is nearest-first + cap
 		Needs: map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold},
 		Pos:   sim.TilePos{X: 0, Y: 0},
 	}
@@ -112,6 +114,7 @@ func TestGatherSatiation_ExcludesOwnWorkplace(t *testing.T) {
 func TestGatherSatiation_OutOfStockPrefersInStockRepresentative(t *testing.T) {
 	now := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
 	subj := &sim.ActorSnapshot{
+		Coins: 10, // clears the LLM-222 means-to-pay gate; focus is the in-stock representative
 		Needs: map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold},
 		// Remembers the tavern out of STEW (the stronger item) recently.
 		Observed: sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
@@ -141,6 +144,7 @@ func TestGatherSatiation_OutOfStockPrefersInStockRepresentative(t *testing.T) {
 func TestRenderSatiation_OutOfStockAnnotation(t *testing.T) {
 	now := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
 	subj := &sim.ActorSnapshot{
+		Coins: 10, // clears the LLM-222 means-to-pay gate; focus is the out-of-stock annotation
 		Needs: map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold},
 		Observed: sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
 			{StructureID: "farm", ItemKind: "bread", Condition: sim.ObservedOutOfStock}: now.Add(-time.Hour),

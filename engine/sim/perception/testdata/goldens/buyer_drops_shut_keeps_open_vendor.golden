@@ -5,13 +5,15 @@
 
 
 ## You
-Coins in your purse: 0 — you have no coins to spend, but you may be able to offer goods you carry in trade.
-You are carrying: skillet (x5).
+Address now: hunger. You feel hungry.
+Coins in your purse: 6.
 
 ## Around you
-You are inside the Tavern, with no one else here to hear you speak.
-Evening settles over the village.
+You are outdoors, with no one else here to hear you speak.
+It is morning in the village.
 
-You keep your trade at the Blacksmith (structure_id: blacksmith) — you can head back there whenever you wish.
+## What you can eat or drink
+Nearby to buy (hunger):
+- The Tavern — buy a wedge of cheese (a good meal), ask the seller, to eat there (it can't be carried away) (structure_id: tavern)
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.

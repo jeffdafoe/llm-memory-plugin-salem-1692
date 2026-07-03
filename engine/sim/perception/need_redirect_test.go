@@ -15,14 +15,19 @@ import (
 // TestNeedRedirectFor pins the target-selection order for one felt need: consume
 // what's carried > nearest free source > nearest usable vendor, with experiential
 // affordability (a remembered price the actor can't meet skips the vendor; an
-// unknown price does not) and shut / out-of-stock vendors skipped.
+// unknown price does not) and out-of-stock vendors skipped. Remembered-shut
+// vendors don't need a case here — the satiation build gate drops them upstream
+// (LLM-222), so they never reach this list.
 func TestNeedRedirectFor(t *testing.T) {
 	free := SatiationFreeSource{Label: "Well", ObjectID: "well1"}
 	cheapKnown := SatiationVendor{StructureLabel: "Tavern", StructureID: "tav", ItemLabel: "stew", CostText: "~2 coins", costCoins: 2}
 	dearKnown := SatiationVendor{StructureLabel: "Inn", StructureID: "inn", ItemLabel: "pie", CostText: "~9 coins", costCoins: 9}
 	unknown := SatiationVendor{StructureLabel: "Store", StructureID: "store", ItemLabel: "cheese", CostText: "ask the seller", costCoins: 0}
-	shut := SatiationVendor{StructureLabel: "Bakery", StructureID: "bake", ItemLabel: "bread", costCoins: 1, Shut: true}
 	oos := SatiationVendor{StructureLabel: "Cart", StructureID: "cart", ItemLabel: "apple", costCoins: 1, OutOfStock: true}
+	// A known-price vendor the actor can't meet by COIN but the satiation gate
+	// marked Barter (it holds goods to trade) — a real, transactable target the
+	// redirect must keep, in lockstep with the rendered buy cue (LLM-222).
+	barterKnown := SatiationVendor{StructureLabel: "Market", StructureID: "market", ItemLabel: "cheese", costCoins: 9, Barter: true}
 
 	cases := []struct {
 		name     string
@@ -36,7 +41,8 @@ func TestNeedRedirectFor(t *testing.T) {
 		{"affordable known vendor", SatiationNeedView{Need: "hunger", Verb: "eat", Vendors: []SatiationVendor{cheapKnown}}, 5, NeedRedirectBuy, "tav"},
 		{"unknown-price vendor eligible while broke", SatiationNeedView{Need: "hunger", Verb: "eat", Vendors: []SatiationVendor{unknown}}, 0, NeedRedirectBuy, "store"},
 		{"skip known-unaffordable, take next eligible", SatiationNeedView{Need: "hunger", Verb: "eat", Vendors: []SatiationVendor{dearKnown, unknown}}, 1, NeedRedirectBuy, "store"},
-		{"skip shut and out-of-stock", SatiationNeedView{Need: "hunger", Verb: "eat", Vendors: []SatiationVendor{shut, oos, cheapKnown}}, 5, NeedRedirectBuy, "tav"},
+		{"skip out-of-stock", SatiationNeedView{Need: "hunger", Verb: "eat", Vendors: []SatiationVendor{oos, cheapKnown}}, 5, NeedRedirectBuy, "tav"},
+		{"known-price barter vendor stays eligible", SatiationNeedView{Need: "hunger", Verb: "eat", Vendors: []SatiationVendor{barterKnown}}, 1, NeedRedirectBuy, "market"},
 		{"nothing resolvable → nil", SatiationNeedView{Need: "hunger", Verb: "eat", Vendors: []SatiationVendor{dearKnown}}, 1, "", ""},
 	}
 	for _, c := range cases {

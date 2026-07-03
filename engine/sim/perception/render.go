@@ -626,11 +626,19 @@ func renderActor(b *strings.Builder, a ActorView) {
 	}
 	// An empty purse is a hard constraint on paying, not just a number (LLM-153).
 	// Without the consequence spelled out, 0-coin NPCs burned tool calls attempting
-	// buys the pay path rejects (engine/sim/pay_commands.go). The wording is coin-
-	// specific so it leaves barter untouched — a 0-coin actor can still offer_trade
-	// goods-for-goods (ZBBS-HOME-393/407), which needs no coins.
+	// buys the pay path rejects (engine/sim/pay_commands.go). But "cannot pay for
+	// anything" is only true with an EMPTY PACK too: a 0-coin actor holding goods
+	// can still offer them in trade (pay_with_item / offer_trade, ZBBS-HOME-393/407),
+	// and the satiation buy cue now steers exactly that (LLM-222) — so asserting it
+	// can't pay would contradict that cue in the same prompt. `len(a.Inventory) > 0`
+	// is the render-side mirror of the satiation gate's holdsBarterableGoods (both =
+	// holds >=1 good, off the same snapshot inventory), so the two lines agree.
 	if a.Coins == 0 {
-		b.WriteString("Coins in your purse: 0 — you have no coins to spend, so you cannot pay for anything until you earn some.\n")
+		if len(a.Inventory) > 0 {
+			b.WriteString("Coins in your purse: 0 — you have no coins to spend, but you may be able to offer goods you carry in trade.\n")
+		} else {
+			b.WriteString("Coins in your purse: 0 — you have no coins to spend, so you cannot pay for anything until you earn some.\n")
+		}
 	} else {
 		fmt.Fprintf(b, "Coins in your purse: %d.\n", a.Coins)
 	}

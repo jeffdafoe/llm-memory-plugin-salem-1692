@@ -687,12 +687,41 @@ var perceptionScenarios = []perceptionScenario{
 	},
 	{
 		name: "buyer_remembers_vendor_shut",
-		summary: "A hungry forager (Ezekiel) stands near a cheese seller at the General Store, but he went there within the " +
-			"decay window and found it shut — no keeper tending it (now including an abed keeper, since the capture gates on " +
-			"availability, LLM-126). The golden pins that the '## What you can eat or drink' buy cue carries the experiential " +
-			"'found it shut up' annotation — the only path to a closed cue now that the omniscient live-asleep '(currently " +
-			"closed)' marker is retired. The seller is present and awake; the cue is driven by his memory, not her state.",
+		summary: "A hungry forager (Ezekiel, holding coins he could spend) stands near a cheese seller at the General Store, " +
+			"but he went there within the decay window and found it shut — no keeper tending it (now including an abed keeper, " +
+			"LLM-126). The golden pins the LLM-222 seller-availability drop: the '## What you can eat or drink' buy cue DROPS the " +
+			"remembered-shut vendor entirely rather than annotating it 'found it shut up', so with no other satisfier nearby the " +
+			"whole section is omitted. Mirrors LLM-216's restock drop — the retired annotate-only posture left the weak model " +
+			"touring the dead end (his live asleep-Inn walk). He can afford the cheese, so the drop is driven by the shut memory, " +
+			"not affordability.",
 		build: buyerRemembersVendorShut,
+	},
+	{
+		name: "buyer_drops_shut_keeps_open_vendor",
+		summary: "A hungry forager (Ezekiel, 6 coins) can buy cheese at two shops: the General Store, which he remembers finding " +
+			"shut within the decay window, and the open Tavern he has no shut memory of. The golden pins that the LLM-222 " +
+			"seller-availability drop is surgical — the shut General Store is dropped from the '## What you can eat or drink' buy " +
+			"cue while the open Tavern is kept — the eat/drink analogue of keeper_restock_drops_shut_keeps_open_supplier. Also the " +
+			"non-vacuous fixture for TestGoldensSatiationBuyCueNeverTargetsRememberedShutVendor.",
+		build: buyerDropsShutKeepsOpenVendor,
+	},
+	{
+		name: "broke_buyer_with_goods_barters_for_food",
+		summary: "A hungry forager (Ezekiel) with 0 coins but a pelt in his pack stands near an open cheese seller (Mabel, awake, " +
+			"not shut). The golden pins the LLM-222 means-to-pay 'barter' state: because barter works (pay_with_item / offer_trade " +
+			"accept goods), a 0-coin buyer holding tradeable goods is NOT a dead end — the buy cue is kept but steered to a goods " +
+			"offer ('which your coins won't cover — offer goods you carry in trade instead (pay_items)') rather than a coin price " +
+			"he can't meet. The pelt is non-food, so it drives the barter path without adding an own-stock eat cue.",
+		build: brokeBuyerWithGoodsBartersForFood,
+	},
+	{
+		name: "broke_buyer_no_goods_no_buy_cue",
+		summary: "The same hungry forager (Ezekiel), 0 coins, but now with nothing at all in his pack — no coins and nothing to " +
+			"trade, the one genuine payment dead-end. The golden pins the LLM-222 means-to-pay suppression: the buy cue is dropped " +
+			"entirely (the co-present open cheese seller is unpayable for him), and with no free source or own stock nearby the " +
+			"whole '## What you can eat or drink' section is omitted — the free-food cues, not a futile buy imperative, are what " +
+			"cover this actor. Non-vacuous fixture for TestGoldensNoBuyCueWithoutMeansToPay.",
+		build: brokeBuyerNoGoodsNoBuyCue,
 	},
 	{
 		name: "producer_hungry_mild_at_post",
@@ -1444,6 +1473,181 @@ func buyerRemembersVendorShut() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) 
 	return snap, ezekielID, nil
 }
 
+// cheeseKind is the shared eat-here cheese ItemKindDef the LLM-222 buy-cue
+// scenarios sell — a good meal for hunger, matching buyerRemembersVendorShut.
+func cheeseKind() *sim.ItemKindDef {
+	return &sim.ItemKindDef{
+		Name: "cheese", DisplayLabel: "Cheese",
+		DisplayLabelSingular: "wedge of cheese", DisplayLabelPlural: "wedges of cheese",
+		Category:  sim.ItemCategoryFood,
+		Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 8}},
+	}
+}
+
+// buyerDropsShutKeepsOpenVendor — LLM-222. A hungry forager (6 coins) can buy
+// cheese at two shops: the General Store he remembers finding shut, and the open
+// Tavern he has no shut memory of. The buy cue drops the shut store and keeps the
+// open Tavern — the surgical eat/drink analogue of the restock
+// keeper_restock_drops_shut_keeps_open_supplier golden.
+func buyerDropsShutKeepsOpenVendor() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		ezekielID = sim.ActorID("ezekiel")
+		mabelID   = sim.ActorID("mabel")
+		johnID    = sim.ActorID("john")
+		store     = sim.StructureID("general_store")
+		tavern    = sim.StructureID("tavern")
+	)
+	now := 600 // 10:00 — daytime
+	published := time.Date(2026, 6, 25, 10, 0, 0, 0, time.UTC)
+	ezekiel := &sim.ActorSnapshot{
+		Kind:        sim.KindNPCStateful,
+		DisplayName: "Ezekiel Crane",
+		Role:        "forager",
+		State:       sim.StateIdle,
+		Pos:         sim.WorldPos{X: 0, Y: 0}.Tile(),
+		Coins:       6,
+		Needs:       map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold},
+		// He found the General Store shut within the decay window; the Tavern he has
+		// no shut memory of.
+		Observed: sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
+			{StructureID: store, Condition: sim.ObservedClosed}: published.Add(-time.Hour),
+		}),
+	}
+	mabel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Mabel Stone",
+		Role:              "shopkeeper",
+		State:             sim.StateIdle,
+		WorkStructureID:   store,
+		InsideStructureID: store,
+		Coins:             20,
+		Inventory:         map[sim.ItemKind]int{"cheese": 5},
+		Needs:             map[sim.NeedKey]int{},
+	}
+	john := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "John Ellis",
+		Role:              "tavernkeeper",
+		State:             sim.StateIdle,
+		WorkStructureID:   tavern,
+		InsideStructureID: tavern,
+		Coins:             20,
+		Inventory:         map[sim.ItemKind]int{"cheese": 5},
+		Needs:             map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Assets:           emptyAssetSet,
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{ezekielID: ezekiel, mabelID: mabel, johnID: john},
+		Structures: map[sim.StructureID]*sim.Structure{
+			store:  plainStructure(store, "General Store"),
+			tavern: plainStructure(tavern, "The Tavern"),
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{"cheese": cheeseKind()},
+	}
+	return snap, ezekielID, nil
+}
+
+// brokeBuyerWithGoodsBartersForFood — LLM-222 means-to-pay "barter" state. A
+// hungry forager with 0 coins but a pelt to trade stands near an open cheese
+// seller: the buy cue is kept but steered to a goods offer, because barter is a
+// viable path a coins==0 suppression would have hidden.
+func brokeBuyerWithGoodsBartersForFood() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		ezekielID = sim.ActorID("ezekiel")
+		mabelID   = sim.ActorID("mabel")
+		store     = sim.StructureID("general_store")
+	)
+	now := 600 // 10:00 — daytime
+	published := time.Date(2026, 6, 25, 10, 0, 0, 0, time.UTC)
+	ezekiel := &sim.ActorSnapshot{
+		Kind:        sim.KindNPCStateful,
+		DisplayName: "Ezekiel Crane",
+		Role:        "forager",
+		State:       sim.StateIdle,
+		Pos:         sim.WorldPos{X: 0, Y: 0}.Tile(),
+		Coins:       0,
+		// A non-food trade good he can put up in barter, but no coins. Non-food so it
+		// doesn't add an own-stock "consume to eat" cue.
+		Inventory: map[sim.ItemKind]int{"pelt": 1},
+		Needs:     map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold},
+	}
+	mabel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Mabel Stone",
+		Role:              "shopkeeper",
+		State:             sim.StateIdle,
+		WorkStructureID:   store,
+		InsideStructureID: store,
+		Coins:             20,
+		Inventory:         map[sim.ItemKind]int{"cheese": 5},
+		Needs:             map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Assets:           emptyAssetSet,
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{ezekielID: ezekiel, mabelID: mabel},
+		Structures: map[sim.StructureID]*sim.Structure{
+			store: plainStructure(store, "General Store"),
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"cheese": cheeseKind(),
+			"pelt":   {Name: "pelt", DisplayLabel: "Pelt", DisplayLabelSingular: "pelt"},
+		},
+	}
+	return snap, ezekielID, nil
+}
+
+// brokeBuyerNoGoodsNoBuyCue — LLM-222 means-to-pay suppression. The same broke
+// forager, now with nothing to trade: no coins and no goods is the one genuine
+// payment dead-end, so the buy cue is dropped entirely and (no free source or own
+// stock nearby) the whole eat/drink section is omitted.
+func brokeBuyerNoGoodsNoBuyCue() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		ezekielID = sim.ActorID("ezekiel")
+		mabelID   = sim.ActorID("mabel")
+		store     = sim.StructureID("general_store")
+	)
+	now := 600 // 10:00 — daytime
+	published := time.Date(2026, 6, 25, 10, 0, 0, 0, time.UTC)
+	ezekiel := &sim.ActorSnapshot{
+		Kind:        sim.KindNPCStateful,
+		DisplayName: "Ezekiel Crane",
+		Role:        "forager",
+		State:       sim.StateIdle,
+		Pos:         sim.WorldPos{X: 0, Y: 0}.Tile(),
+		Coins:       0,
+		Needs:       map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold},
+	}
+	mabel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Mabel Stone",
+		Role:              "shopkeeper",
+		State:             sim.StateIdle,
+		WorkStructureID:   store,
+		InsideStructureID: store,
+		Coins:             20,
+		Inventory:         map[sim.ItemKind]int{"cheese": 5},
+		Needs:             map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Assets:           emptyAssetSet,
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{ezekielID: ezekiel, mabelID: mabel},
+		Structures: map[sim.StructureID]*sim.Structure{
+			store: plainStructure(store, "General Store"),
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{"cheese": cheeseKind()},
+	}
+	return snap, ezekielID, nil
+}
+
 // TestForgeCueOnlyForMultiOutputCrafterAtForge is the LLM-116 cross-scenario
 // invariant: the "## Time to produce" cue appears in EXACTLY the multi-output-producer-
 // at-workplace scenarios and no other — whether unfocused (choose menu,
@@ -1671,20 +1875,76 @@ func TestLodgingDeskShutCueOnlyWhenRemembered(t *testing.T) {
 	}
 }
 
-// TestExperientialShutCueOnlyWhenRemembered is the LLM-126 cross-scenario invariant:
-// the experiential closed-business annotation (a buy/rest cue's "found it shut up"
-// recollection) appears in EXACTLY the scenario where the buyer remembers the vendor
-// shut (buyer_remembers_vendor_shut). With the omniscient live-asleep marker retired, a
-// closed buy cue is reachable only through the decaying experiential memory — never from
-// a keeper's live state across the map.
-func TestExperientialShutCueOnlyWhenRemembered(t *testing.T) {
+// TestGoldensSatiationBuyCueNeverTargetsRememberedShutVendor is the LLM-222 cross-
+// scenario invariant: within the "## What you can eat or drink" section of any
+// scenario, a vendor the buyer remembers finding shut must never appear as a
+// "(structure_id: <id>)" buy target. A remembered-shut vendor is a seller-
+// availability dead end the weak model toured on (Ezekiel's asleep-Inn walk), so
+// the buy cue DROPS it rather than annotating it "found it shut up" — mirroring
+// LLM-216's restock drop (TestGoldensRestockNeverTargetsRememberedShutSupplier).
+// Runs over the whole matrix so a future satiation-cue change can't reintroduce a
+// shut vendor as a target. Non-vacuous: buyer_drops_shut_keeps_open_vendor renders
+// an eat/drink section while remembering the General Store shut, so the scan
+// actually exercises a shut structure.
+func TestGoldensSatiationBuyCueNeverTargetsRememberedShutVendor(t *testing.T) {
 	for _, sc := range perceptionScenarios {
 		sc := sc
-		got := renderScenario(sc)
-		want := sc.name == "buyer_remembers_vendor_shut"
-		if has := strings.Contains(got, closedBusinessAnnotation); has != want {
-			t.Errorf("scenario %q: experiential shut annotation present=%v, want %v", sc.name, has, want)
-		}
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, _ := sc.build()
+			a := snap.Actors[actorID]
+			if a == nil {
+				return
+			}
+			_, section, found := strings.Cut(renderScenario(sc), "## What you can eat or drink\n")
+			if !found {
+				return // no eat/drink section in this situation — invariant N/A here
+			}
+			// Bound the scan to the eat/drink section by cutting at the next markdown
+			// header, so a shut structure's id appearing lower in the prompt (a
+			// restock/seek-work target) can't false-positive.
+			if idx := strings.Index(section, "\n## "); idx >= 0 {
+				section = section[:idx]
+			}
+			for structureID := range snap.Structures {
+				if !businessRememberedShut(snap, a, structureID) {
+					continue
+				}
+				token := "(structure_id: " + string(structureID) + ")"
+				if strings.Contains(section, token) {
+					t.Errorf("scenario %q: the eat/drink buy cue advertises remembered-shut vendor %q as a move target — a shut vendor is a dead end and must be dropped (LLM-222)", sc.name, token)
+				}
+			}
+		})
+	}
+}
+
+// TestGoldensNoBuyCueWithoutMeansToPay is the LLM-222 cross-scenario invariant: a
+// buyer with 0 coins AND no barterable goods holds no means of payment at all, so
+// the "## What you can eat or drink" buy cue ("Nearby to buy") must never be shown
+// to them — a buy imperative they can neither pay nor barter is the genuine dead
+// end this ticket suppresses (the 55-hit pay_with_item no-offer rejection). Reads
+// the SAME means-to-pay signal the build gate does (holdsBarterableGoods + coins),
+// per the discussion-109 no-drift rule. Non-vacuous: broke_buyer_no_goods_no_buy_cue
+// builds exactly this actor beside an open cheese seller the cue would otherwise
+// advertise.
+func TestGoldensNoBuyCueWithoutMeansToPay(t *testing.T) {
+	var sawBroke bool
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, _ := sc.build()
+			a := snap.Actors[actorID]
+			if a == nil || a.Coins != 0 || holdsBarterableGoods(a) {
+				return // has some means to pay — invariant N/A here
+			}
+			sawBroke = true
+			if strings.Contains(renderScenario(sc), "Nearby to buy (") {
+				t.Errorf("scenario %q: buyer holds 0 coins and no barterable goods but the eat/drink cue advertises a buy — no means to pay is a hard dead-end that must be suppressed (LLM-222)", sc.name)
+			}
+		})
+	}
+	if !sawBroke {
+		t.Error("no scenario exercised the no-means-to-pay branch — add one (broke_buyer_no_goods_no_buy_cue)")
 	}
 }
 
@@ -1698,7 +1958,8 @@ func TestExperientialShutCueOnlyWhenRemembered(t *testing.T) {
 // exercise both branches for the check to mean anything, so we also require one of each.
 func TestEmptyPurseCannotPayCueTracksActorCoins(t *testing.T) {
 	const cannotPayMarker = "you cannot pay for anything until you earn some"
-	var sawEmpty, sawPositive bool
+	const barterMarker = "you may be able to offer goods you carry in trade"
+	var sawEmptyNoGoods, sawEmptyWithGoods, sawPositive bool
 	for _, sc := range perceptionScenarios {
 		sc := sc
 		snap, actorID, _ := sc.build()
@@ -1706,18 +1967,34 @@ func TestEmptyPurseCannotPayCueTracksActorCoins(t *testing.T) {
 		if actor == nil {
 			t.Fatalf("scenario %q: rendered actor %q missing from snapshot", sc.name, actorID)
 		}
-		wantCannotPay := actor.Coins == 0
-		if wantCannotPay {
-			sawEmpty = true
-		} else {
+		out := renderScenario(sc)
+		// The coin-only "cannot pay for anything" form appears iff the actor has 0
+		// coins AND nothing to barter — a genuine payment dead-end. A 0-coin actor
+		// holding goods gets the barter-aware form instead (LLM-222), so neither purse
+		// line contradicts the satiation barter cue. Both flags are recomputed from raw
+		// snapshot state (Coins + holdsBarterableGoods, the SAME predicate the buy-cue
+		// gate reads), not the rendered text — so this asserts the cue tracks the actor.
+		empty := actor.Coins == 0
+		hasGoods := holdsBarterableGoods(actor)
+		wantCannotPay := empty && !hasGoods
+		wantBarter := empty && hasGoods
+		if has := strings.Contains(out, cannotPayMarker); has != wantCannotPay {
+			t.Errorf("scenario %q: coins=%d hasGoods=%v cannot-pay cue=%v, want %v", sc.name, actor.Coins, hasGoods, has, wantCannotPay)
+		}
+		if has := strings.Contains(out, barterMarker); has != wantBarter {
+			t.Errorf("scenario %q: coins=%d hasGoods=%v barter purse cue=%v, want %v", sc.name, actor.Coins, hasGoods, has, wantBarter)
+		}
+		switch {
+		case wantCannotPay:
+			sawEmptyNoGoods = true
+		case wantBarter:
+			sawEmptyWithGoods = true
+		default:
 			sawPositive = true
 		}
-		if has := strings.Contains(renderScenario(sc), cannotPayMarker); has != wantCannotPay {
-			t.Errorf("scenario %q: coins=%d cannot-pay cue=%v, want %v", sc.name, actor.Coins, has, wantCannotPay)
-		}
 	}
-	if !sawEmpty || !sawPositive {
-		t.Errorf("matrix must exercise both branches: sawEmpty=%v sawPositive=%v", sawEmpty, sawPositive)
+	if !sawEmptyNoGoods || !sawEmptyWithGoods || !sawPositive {
+		t.Errorf("matrix must exercise all three purse branches: emptyNoGoods=%v emptyWithGoods=%v positive=%v", sawEmptyNoGoods, sawEmptyWithGoods, sawPositive)
 	}
 }
 
