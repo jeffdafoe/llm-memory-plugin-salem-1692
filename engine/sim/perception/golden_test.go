@@ -1958,7 +1958,8 @@ func TestGoldensNoBuyCueWithoutMeansToPay(t *testing.T) {
 // exercise both branches for the check to mean anything, so we also require one of each.
 func TestEmptyPurseCannotPayCueTracksActorCoins(t *testing.T) {
 	const cannotPayMarker = "you cannot pay for anything until you earn some"
-	var sawEmpty, sawPositive bool
+	const barterMarker = "you may be able to offer goods you carry in trade"
+	var sawEmptyNoGoods, sawEmptyWithGoods, sawPositive bool
 	for _, sc := range perceptionScenarios {
 		sc := sc
 		snap, actorID, _ := sc.build()
@@ -1966,18 +1967,34 @@ func TestEmptyPurseCannotPayCueTracksActorCoins(t *testing.T) {
 		if actor == nil {
 			t.Fatalf("scenario %q: rendered actor %q missing from snapshot", sc.name, actorID)
 		}
-		wantCannotPay := actor.Coins == 0
-		if wantCannotPay {
-			sawEmpty = true
-		} else {
+		out := renderScenario(sc)
+		// The coin-only "cannot pay for anything" form appears iff the actor has 0
+		// coins AND nothing to barter — a genuine payment dead-end. A 0-coin actor
+		// holding goods gets the barter-aware form instead (LLM-222), so neither purse
+		// line contradicts the satiation barter cue. Both flags are recomputed from raw
+		// snapshot state (Coins + holdsBarterableGoods, the SAME predicate the buy-cue
+		// gate reads), not the rendered text — so this asserts the cue tracks the actor.
+		empty := actor.Coins == 0
+		hasGoods := holdsBarterableGoods(actor)
+		wantCannotPay := empty && !hasGoods
+		wantBarter := empty && hasGoods
+		if has := strings.Contains(out, cannotPayMarker); has != wantCannotPay {
+			t.Errorf("scenario %q: coins=%d hasGoods=%v cannot-pay cue=%v, want %v", sc.name, actor.Coins, hasGoods, has, wantCannotPay)
+		}
+		if has := strings.Contains(out, barterMarker); has != wantBarter {
+			t.Errorf("scenario %q: coins=%d hasGoods=%v barter purse cue=%v, want %v", sc.name, actor.Coins, hasGoods, has, wantBarter)
+		}
+		switch {
+		case wantCannotPay:
+			sawEmptyNoGoods = true
+		case wantBarter:
+			sawEmptyWithGoods = true
+		default:
 			sawPositive = true
 		}
-		if has := strings.Contains(renderScenario(sc), cannotPayMarker); has != wantCannotPay {
-			t.Errorf("scenario %q: coins=%d cannot-pay cue=%v, want %v", sc.name, actor.Coins, has, wantCannotPay)
-		}
 	}
-	if !sawEmpty || !sawPositive {
-		t.Errorf("matrix must exercise both branches: sawEmpty=%v sawPositive=%v", sawEmpty, sawPositive)
+	if !sawEmptyNoGoods || !sawEmptyWithGoods || !sawPositive {
+		t.Errorf("matrix must exercise all three purse branches: emptyNoGoods=%v emptyWithGoods=%v positive=%v", sawEmptyNoGoods, sawEmptyWithGoods, sawPositive)
 	}
 }
 
