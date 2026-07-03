@@ -2118,18 +2118,21 @@ func TestGoldensNoBuyCueWithoutMeansToPay(t *testing.T) {
 
 // TestGoldensCoinPoorEmployerStaysSolicitable is the LLM-243 cross-scenario
 // invariant — the hiring-side mirror of TestGoldensNoBuyCueWithoutMeansToPay. A
-// co-present stranger employer that holds 0 coins must NOT be foreclosed for its
-// empty purse: it can still hire in kind (LLM-225), so a workless worker huddled
+// co-present stranger employer that holds 0 coins BUT tradeable goods must NOT be
+// foreclosed: it can still hire in kind (LLM-225), so a workless worker huddled
 // with one must never be shown the "No one here can hire you" seek-work dead-end.
-// The "structurally could hire you" conditions are re-derived here independently
-// of the employer's coins (present, not same household, no prior decline), so a
+// A genuinely destitute employer (0 coins AND no goods) is NOT covered — it can
+// hire no one and is allowed to dead-end — so the guard reuses the SAME
+// holdsBarterableGoods predicate the sim gate (employerCanHireInKind) keys on, no
+// drift. The other "could hire you" conditions are re-derived here independently
+// of the employer's purse (present, not same household, no prior decline), so a
 // regression that added a coin gate to the solicitable-audience check — re-breaking
 // the barter path — would trip this rather than silently excusing itself. The
 // subject is workless by the guard, so it shares a workplace with no one.
 // Non-vacuous: worker_solicits_goods_rich_coin_poor_employer builds exactly this pair.
 func TestGoldensCoinPoorEmployerStaysSolicitable(t *testing.T) {
 	const deadEnd = "No one here can hire you"
-	var sawCoinPoorEmployer bool
+	var sawCoinPoorGoodsHoldingEmployer bool
 	for _, sc := range perceptionScenarios {
 		sc := sc
 		t.Run(sc.name, func(t *testing.T) {
@@ -2147,8 +2150,12 @@ func TestGoldensCoinPoorEmployerStaysSolicitable(t *testing.T) {
 					continue
 				}
 				peer := snap.Actors[peerID]
-				if peer == nil || peer.Coins != 0 {
-					continue // only the coin-poor employer case this ticket fixes
+				// The LLM-243 rule covers only a coin-poor employer that can still hire
+				// IN KIND — 0 coins AND holds goods. A destitute peer (no goods) is not
+				// covered; it may legitimately dead-end. holdsBarterableGoods is the same
+				// predicate the sim gate (employerCanHireInKind) uses.
+				if peer == nil || peer.Coins != 0 || !holdsBarterableGoods(peer) {
+					continue
 				}
 				// Coin-independent "could hire you" test, mirroring isSolicitableEmployer
 				// but computed inline so a coin gate added to that predicate can't silence
@@ -2160,15 +2167,15 @@ func TestGoldensCoinPoorEmployerStaysSolicitable(t *testing.T) {
 				if employerDeclinedSubject(snap, actorID, peerID) {
 					continue
 				}
-				sawCoinPoorEmployer = true
+				sawCoinPoorGoodsHoldingEmployer = true
 				if strings.Contains(renderScenario(sc), deadEnd) {
-					t.Errorf("scenario %q: co-present coin-poor employer %s could hire the worker in kind, but the prompt renders the %q dead-end — an empty purse must not foreclose a goods-holding employer (LLM-243)", sc.name, peer.DisplayName, deadEnd)
+					t.Errorf("scenario %q: co-present coin-poor goods-holding employer %s could hire the worker in kind, but the prompt renders the %q dead-end — an empty purse must not foreclose a goods-holding employer (LLM-243)", sc.name, peer.DisplayName, deadEnd)
 				}
 			}
 		})
 	}
-	if !sawCoinPoorEmployer {
-		t.Error("no scenario exercised a co-present coin-poor solicitable employer — add one (worker_solicits_goods_rich_coin_poor_employer)")
+	if !sawCoinPoorGoodsHoldingEmployer {
+		t.Error("no scenario exercised a co-present coin-poor goods-holding solicitable employer — add one (worker_solicits_goods_rich_coin_poor_employer)")
 	}
 }
 
