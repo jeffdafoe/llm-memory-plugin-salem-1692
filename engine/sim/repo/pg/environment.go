@@ -232,6 +232,7 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.MaxReactorTicksPerActorPerMinute = parseIntSetting(values, "max_reactor_ticks_per_actor_per_minute", 0)
 	s.MaxWarrantsPerActor = parseIntSetting(values, "max_warrants_per_actor", 16)
 	s.MinReactorTickGap = parseDurationSetting(values, "min_reactor_tick_gap_ms", 5*time.Second)
+	s.LaborReplyCadence = parseDurationSetting(values, "labor_reply_cadence_ms", 3*time.Minute)
 	s.AdmissionBackoff = parseDurationSetting(values, "admission_backoff_ms", 250*time.Millisecond)
 	s.TickWorkerCount = parseIntSetting(values, "tick_worker_count", 1)
 

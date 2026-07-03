@@ -53,6 +53,23 @@ var laborResponseTools = map[string]struct{}{
 	"decline_work": {},
 }
 
+// laborAbandonTools are the commerce/trade tools stripped from a LABORING
+// worker's advertised set (LLM-230): each would walk her off the job she
+// committed to, and none serves a survival need (a starving worker eats via
+// consume, not a trade). Leaving speak (+ consume/done) makes the reply a
+// "can't stop just now, I'm minding the shelves," anchored by the standing
+// renderLaborSelfState line, instead of silence or job abandonment. move_to is
+// handled separately (it stays when a red hunger/thirst need needs walking to
+// food — see gateTools). solicit_work / accept_work / the pay-offer group are
+// already gated by their own conditions (a busy worker is not a free solicitor
+// and holds no offer), so they need no entry here.
+var laborAbandonTools = map[string]struct{}{
+	"pay":           {},
+	"pay_with_item": {},
+	"offer_trade":   {},
+	"sell":          {}, // the seller quote tool's model-facing name (scene_quote, renamed in LLM-184)
+}
+
 // giftResponseTools are the recipient-side gift-decision tools advertised ONLY
 // when the actor's perception carries a pending gift offered to them
 // (perception.PendingGiftsForMe — the standing IsGift ledger view). The gift
@@ -243,6 +260,34 @@ func actorIsFlaggedDegenerate(actorID sim.ActorID, snap *sim.Snapshot) bool {
 	return a.DegenStage >= sim.DegeneracyFlagged
 }
 
+// laboringMayBreakOffToEat reports whether the subject has a red-tier hunger or
+// thirst need — the one situation in which a laboring worker keeps move_to, so
+// she can walk off to eat/drink (LLM-230). It mirrors the reactor's
+// hasBreakInterruptingNeedWarrant carve-out that ticks her in the first place:
+// tiredness is excluded on purpose (a break cures tiredness, so it never
+// justifies abandoning the job, and the shift-end clamp keeps a job from running
+// into the worker's own bedtime). Reads the payload's own ActorView needs, the
+// same values render classifies into felt tiers, so tool and cue can't drift.
+func laboringMayBreakOffToEat(a perception.ActorView) bool {
+	for need, level := range a.Needs {
+		if need == "tiredness" {
+			// Non-tiredness only, in lockstep with the reactor's
+			// hasBreakInterruptingNeedWarrant (a break cures tiredness, so it never
+			// justifies leaving the job). If a need is ever added, update BOTH
+			// predicates together — the tool surface must agree with the reactor tick
+			// that woke her, or she'd tick for a need but be denied move_to (or vice
+			// versa).
+			continue
+		}
+		// >= NeedRed catches both red and the maxed-out NeedPeak tier (the same
+		// idiom shift_duty.go uses); == NeedRed would miss a need pinned at NeedMax.
+		if sim.NeedLabelTier(level, a.NeedThresholds.Get(need)) >= sim.NeedRed {
+			return true
+		}
+	}
+	return false
+}
+
 // gateTools computes the per-tick advertised tool set from the registry's
 // Available tools, conditioned on the actor's perception.
 //
@@ -293,6 +338,8 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 	hasLaborOffer := len(perception.PendingLaborOffers(payload)) > 0
 	canSolicitWork := payload.CanSolicitWork
 	hasGift := len(perception.PendingGiftsForMe(payload)) > 0
+	laboring := payload.Laboring != nil
+	laboringMayMove := laboring && laboringMayBreakOffToEat(payload.Actor)
 
 	// Single pass over the Available set so each gated group is evaluated
 	// against its OWN condition. We deliberately avoid a "pending offer →
@@ -413,6 +460,22 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 		// the tools appear exactly when there's a gift to answer and never as noise.
 		if _, gated := giftResponseTools[spec.Name]; gated && !hasGift {
 			continue
+		}
+		// laboring speak-only surface (LLM-230): a worker mid-job stays committed.
+		// Strip the commerce tools that would walk her off the job (laborAbandonTools),
+		// and move_to too — EXCEPT when a red hunger/thirst need is pressing, the one
+		// carve-out the reactor honors so a starving worker can reach food. speak /
+		// consume / done stay, so she answers "can't stop just now" (or, if starving,
+		// walks off to eat). Applies on every laboring tick regardless of what woke
+		// her, which is why move_to keeps the need carve-out; the commerce tools never
+		// serve a need, so they go unconditionally.
+		if laboring {
+			if _, gated := laborAbandonTools[spec.Name]; gated {
+				continue
+			}
+			if spec.Name == moveToToolName && !laboringMayMove {
+				continue
+			}
 		}
 		out = append(out, spec)
 	}

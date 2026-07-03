@@ -858,6 +858,21 @@ func hasPCSpeechWarrant(list []WarrantMeta) bool {
 	return false
 }
 
+// hasNPCSpeechWarrant reports whether any meta is an NPC-to-NPC directed-speech
+// warrant (WarrantKindNPCSpoke). The laboring carve-out (LLM-230) uses it to let
+// a mid-job worker reply to a peer on a cadence — deliberately NOT reused by the
+// break / source-activity gates, which stay closed to NPC chatter (only the
+// PC-speech kind cuts a rester/eater short; the village's own conversations must
+// not yank one out). Mirrors hasPCSpeechWarrant.
+func hasNPCSpeechWarrant(list []WarrantMeta) bool {
+	for _, m := range list {
+		if m.Reason != nil && m.Reason.Kind() == WarrantKindNPCSpoke {
+			return true
+		}
+	}
+	return false
+}
+
 // hasForcedWarrant returns true if any meta in the list has Force=true.
 // Linear scan; the list is bounded by Settings.MaxWarrantsPerActor
 // (default 16) so this is cheap.

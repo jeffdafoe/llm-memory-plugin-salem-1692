@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"testing"
+	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/perception"
@@ -98,5 +99,102 @@ func TestGateTools_Moving_DropsSolicitWork(t *testing.T) {
 	specs := gateTools(r, payload, movingSnap("ezekiel", true))
 	if specNameSet(specs)["solicit_work"] != 0 {
 		t.Errorf("solicit_work advertised while moving — want it gated out")
+	}
+}
+
+// laborSpeakOnlyRegistry adds the commerce + consume tools on top of the labor
+// set so the LLM-230 speak-only gate can be observed stripping the abandon tools.
+func laborSpeakOnlyRegistry(t *testing.T) *Registry {
+	t.Helper()
+	r := NewRegistry()
+	for name, fn := range map[string]func(*Registry) error{
+		"speak":         RegisterSpeak,
+		"move_to":       RegisterMoveTo,
+		"consume":       RegisterConsume,
+		"pay":           RegisterPay,
+		"pay_with_item": RegisterPayWithItem,
+		"offer_trade":   RegisterOfferTrade,
+		"scene_quote":   RegisterSceneQuote,
+	} {
+		if err := fn(r); err != nil {
+			t.Fatalf("register %s: %v", name, err)
+		}
+	}
+	if err := r.RegisterTerminal("done"); err != nil {
+		t.Fatalf("RegisterTerminal: %v", err)
+	}
+	// Precondition: the seller-quote tool advertises under the model-facing name
+	// "sell" (RegisterSceneQuote, renamed in LLM-184), which is the exact name
+	// laborAbandonTools strips. If the registry ever stops exposing "sell" the
+	// gating tests below would pass/fail for the wrong reason — fail loudly here.
+	if specNameSet(r.AdvertisedSpecs())["sell"] != 1 {
+		t.Fatalf("RegisterSceneQuote did not advertise \"sell\"; laborAbandonTools gates a name the registry doesn't expose. names=%v", specNameSet(r.AdvertisedSpecs()))
+	}
+	return r
+}
+
+// laboringPayload builds a payload for a worker mid-job. redNeed controls whether
+// a red-tier hunger need is present — the one case that keeps move_to (break off
+// to eat), per the reactor's hunger/thirst carve-out.
+func laboringPayload(redNeed bool) perception.Payload {
+	hunger := 5
+	if redNeed {
+		hunger = 22 // >= the 20 threshold, below NeedMax (24): the NeedRed tier
+	}
+	return perception.Payload{
+		ActorID:      "patience",
+		Laboring:     &perception.LaboringView{Employer: "john", Until: time.Now().Add(time.Hour)},
+		Surroundings: speakAudience(),
+		Actor: perception.ActorView{
+			Needs:          map[sim.NeedKey]int{"hunger": hunger, "thirst": 5, "tiredness": 5},
+			NeedThresholds: sim.NeedThresholds{"hunger": 20, "thirst": 20, "tiredness": 20},
+		},
+	}
+}
+
+func TestGateTools_Laboring_SpeakOnlySurface(t *testing.T) {
+	r := laborSpeakOnlyRegistry(t)
+	names := specNameSet(gateTools(r, laboringPayload(false), nil))
+
+	for _, gated := range []string{"pay", "pay_with_item", "offer_trade", "sell", "move_to"} {
+		if names[gated] != 0 {
+			t.Errorf("%q advertised to a laboring worker; want it stripped (speak-only surface, LLM-230)", gated)
+		}
+	}
+	for _, keep := range []string{"speak", "consume", "done"} {
+		if names[keep] != 1 {
+			t.Errorf("%q should stay advertised to a laboring worker; count %d", keep, names[keep])
+		}
+	}
+}
+
+func TestGateTools_LaboringWithRedNeed_KeepsMoveTo(t *testing.T) {
+	r := laborSpeakOnlyRegistry(t)
+	names := specNameSet(gateTools(r, laboringPayload(true), nil))
+
+	// A starving worker keeps move_to so she can break off to eat — the reactor's
+	// hunger/thirst carve-out, mirrored at the tool surface.
+	if names["move_to"] != 1 {
+		t.Errorf("move_to should stay for a laboring worker with a red hunger need (break off to eat); count %d", names["move_to"])
+	}
+	// The commerce tools stay stripped even then — a starving worker eats, she
+	// doesn't trade.
+	for _, gated := range []string{"pay", "pay_with_item", "offer_trade", "sell"} {
+		if names[gated] != 0 {
+			t.Errorf("%q advertised to a laboring worker even with a red need; want it stripped", gated)
+		}
+	}
+}
+
+func TestGateTools_NotLaboring_KeepsCommerceTools(t *testing.T) {
+	// Control: the gate is scoped to laboring, not a blanket strip — a non-laboring
+	// actor with an audience keeps every commerce tool.
+	r := laborSpeakOnlyRegistry(t)
+	payload := perception.Payload{ActorID: "patience", Surroundings: speakAudience()}
+	names := specNameSet(gateTools(r, payload, nil))
+	for _, keep := range []string{"pay", "pay_with_item", "offer_trade", "sell", "move_to", "speak"} {
+		if names[keep] != 1 {
+			t.Errorf("%q should be advertised to a non-laboring actor; count %d", keep, names[keep])
+		}
 	}
 }

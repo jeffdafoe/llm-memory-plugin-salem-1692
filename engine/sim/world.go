@@ -202,6 +202,14 @@ type WorldSettings struct {
 	// gives nondeterministic cross-actor commit order, so the default must
 	// not imply an ordering guarantee the system lacks. The pool derives
 	// its bounded job-buffer size from this; backpressure is a feature.
+	//
+	// LaborReplyCadence: the minimum wall-clock gap between conversational
+	// replies a laboring worker gives to NPC speech (LLM-230). A mid-job worker
+	// is otherwise fully shelved from NPC-speech ticks (actorCanReactNow); this
+	// lets one reply through per window so she can answer "can't stop just now,
+	// I'm minding the shelves" without the pre-190 per-line babble. Default 3m
+	// (defaultLaborReplyCadence). PC speech, operator nudges, and red hunger/
+	// thirst still tick her immediately — the cadence bounds NPC chatter only.
 	ReactorJitterMin                 time.Duration
 	ReactorJitterMax                 time.Duration
 	ReactorEvaluatorCadence          time.Duration
@@ -209,6 +217,7 @@ type WorldSettings struct {
 	MaxReactorTicksPerActorPerMinute int
 	MaxWarrantsPerActor              int
 	MinReactorTickGap                time.Duration
+	LaborReplyCadence                time.Duration
 	AdmissionBackoff                 time.Duration
 	TickWorkerCount                  int
 
