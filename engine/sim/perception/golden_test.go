@@ -1032,6 +1032,68 @@ var perceptionScenarios = []perceptionScenario{
 			"(a rendered restock section with a farm-tagged supplier in the fixture).",
 		build: resellerRestockRoutedToDistributorNotFarm,
 	},
+	{
+		name: "dairy_keeper_out_of_booster_at_post",
+		summary: "LLM-248 optional booster inputs (the LLM-83 dairy sage edge): an Elizabeth-shaped dairy keeper at her farm " +
+			"on shift, milk recipe carrying a sage booster (1 sage per execution → +2 milk), sage a buy entry at 0 on hand. " +
+			"The golden pins the '## Keeping up production' booster line — the forgone-bonus motivation ('a measure of sage " +
+			"in each batch of milk adds 2 extra to the yield') with NO supplier/structure_id/tool mechanics on the line " +
+			"(the LLM-64 split; the adjacent '## Restocking' section carries the where). A booster is elective, so the line " +
+			"must not read as a stall: no runway / 'enough for about N more' phrasing for it.",
+		build: dairyKeeperOutOfBoosterAtPost,
+	},
+}
+
+// dairyKeeperOutOfBoosterAtPost is the LLM-248 booster-cue fixture: a dairy
+// keeper on shift inside her farm, producing milk whose recipe carries an
+// optional sage booster (+2 per boosted execution), with sage as a buy-restock
+// entry and none on hand. Kept minimal — one actor, one structure, no seller in
+// the world — so the golden pins the booster line's own text, not Restocking's
+// supplier resolution (covered by the LLM-223 scenarios).
+func dairyKeeperOutOfBoosterAtPost() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		elizabethID = sim.ActorID("elizabeth")
+		farm        = sim.StructureID("ellis_farm")
+	)
+	start, end := 360, 1080 // 06:00–18:00
+	now := 600              // 10:00 — on shift
+	elizabeth := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Elizabeth Ellis",
+		Role:              "dairywoman",
+		State:             sim.StateIdle,
+		WorkStructureID:   farm,
+		InsideStructureID: farm,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             26,
+		Inventory:         map[sim.ItemKind]int{"milk": 10},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "milk", Source: sim.RestockSourceProduce, Max: 30},
+			{Item: "sage", Source: sim.RestockSourceBuy, Max: 3},
+		}},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{elizabethID: elizabeth},
+		Structures: map[sim.StructureID]*sim.Structure{
+			farm: plainStructure(farm, "Ellis Farm"),
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"milk": {Name: "milk", DisplayLabel: "milk", Category: sim.ItemCategoryDrink},
+			"sage": {Name: "sage", DisplayLabel: "sage"},
+		},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"milk": {
+				OutputItem: "milk", OutputQty: 4, RateQty: 4, RatePerHours: 1,
+				BoostInputs:    []sim.BoostInput{{Item: "sage", Qty: 1, BonusQty: 2}},
+				WholesalePrice: 1, RetailPrice: 2,
+			},
+		},
+		RestockReorderPct: 25,
+	}
+	return snap, elizabethID, nil
 }
 
 // brokeKeeperShutAndUnaffordableSuppliersNoRestock is the LLM-216 live fixture:
@@ -1825,6 +1887,25 @@ func TestProductionFocusLineOnlyAtWork(t *testing.T) {
 		want := sc.name == "smith_forging_focused" || sc.name == "innkeeper_pricing_with_makings_cost"
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: production-focus line present=%v, want %v", sc.name, has, want)
+		}
+	}
+}
+
+// TestGoldensBoosterLineOnlyForBoostedRecipes is the LLM-248 cross-scenario
+// invariant: the elective-booster line ("adds N extra to the yield") renders in
+// EXACTLY the scenarios whose subject produces a good whose recipe defines a
+// booster that is a low bought entry (dairy_keeper_out_of_booster_at_post) and
+// nowhere else in the matrix. A booster line leaking into a scenario with no
+// boosted recipe would mean the gate regressed to reading required inputs;
+// required-input scenarios keep their runway phrasing and never the bonus one.
+func TestGoldensBoosterLineOnlyForBoostedRecipes(t *testing.T) {
+	const marker = "extra to the yield"
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		got := renderScenario(sc)
+		want := sc.name == "dairy_keeper_out_of_booster_at_post"
+		if has := strings.Contains(got, marker); has != want {
+			t.Errorf("scenario %q: booster line present=%v, want %v", sc.name, has, want)
 		}
 	}
 }

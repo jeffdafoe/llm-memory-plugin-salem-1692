@@ -68,6 +68,57 @@ func TestResolveRecipe_CanonicalizesAndValidates(t *testing.T) {
 	}
 }
 
+// ResolveRecipe boost-input coverage (LLM-248): canonicalization, the
+// required/optional overlap guard, and — unlike required inputs, whose numeric
+// validation stays with the HTTP handler — positive qty/bonus_qty enforcement,
+// so a non-HTTP SetRecipe caller can't install a booster the DB would reject
+// and the tick would silently skip (code_review).
+func TestResolveRecipe_BoostInputs(t *testing.T) {
+	w, stop := buildRecipeTestWorld(t)
+	defer stop()
+
+	// Happy path: label-cased booster canonicalizes.
+	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return sim.ResolveRecipe(world, sim.ItemRecipe{
+			OutputItem: "cheese", OutputQty: 1, RateQty: 1, RatePerHours: 1,
+			BoostInputs: []sim.BoostInput{{Item: "Milk", Qty: 1, BonusQty: 2}},
+		})
+	}})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	got := res.(sim.ItemRecipe)
+	if len(got.BoostInputs) != 1 || got.BoostInputs[0].Item != "milk" {
+		t.Fatalf("canonicalized boosts = %+v, want milk key", got.BoostInputs)
+	}
+
+	cases := []struct {
+		name  string
+		boost sim.BoostInput
+		input []sim.RecipeInput
+	}{
+		{"unknown booster", sim.BoostInput{Item: "unobtanium", Qty: 1, BonusQty: 1}, nil},
+		{"zero qty", sim.BoostInput{Item: "milk", Qty: 0, BonusQty: 1}, nil},
+		{"zero bonus_qty", sim.BoostInput{Item: "milk", Qty: 1, BonusQty: 0}, nil},
+		{"overlaps required input", sim.BoostInput{Item: "milk", Qty: 1, BonusQty: 1},
+			[]sim.RecipeInput{{Item: "milk", Qty: 3}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+				return sim.ResolveRecipe(world, sim.ItemRecipe{
+					OutputItem: "cheese", OutputQty: 1, RateQty: 1, RatePerHours: 1,
+					Inputs:      tc.input,
+					BoostInputs: []sim.BoostInput{tc.boost},
+				})
+			}})
+			if err == nil {
+				t.Errorf("%s: ResolveRecipe accepted an invalid booster", tc.name)
+			}
+		})
+	}
+}
+
 func TestSetRecipe_InstallsIntoCatalog(t *testing.T) {
 	w, stop := buildRecipeTestWorld(t)
 	defer stop()

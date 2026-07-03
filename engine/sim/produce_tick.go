@@ -365,6 +365,45 @@ func applyProduceEntry(actor *Actor, entry RestockEntry, recipe *ItemRecipe, now
 	totalProduced := int(executions) * recipe.OutputQty
 	actor.Inventory[entry.Item] += totalProduced
 
+	// Optional booster step (LLM-248). Purely post-mint: boosters never gate
+	// executions (holding none leaves base production untouched) and never
+	// touch the anchor math — the elective mirror of the required-inputs
+	// clamp above. Per booster, each execution that can pay Qty consumes it
+	// and mints BonusQty extra output, clamped to remaining cap headroom so
+	// a boosted batch can't overshoot the entry's carry cap.
+	for _, bi := range recipe.BoostInputs {
+		if bi.Qty <= 0 || bi.BonusQty <= 0 {
+			continue
+		}
+		have := actor.Inventory[bi.Item]
+		boostedExecs := int64(have / bi.Qty)
+		if boostedExecs > executions {
+			boostedExecs = executions
+		}
+		if boostedExecs <= 0 {
+			continue
+		}
+		bonus := int(boostedExecs) * bi.BonusQty
+		if cap > 0 {
+			if room := cap - actor.Inventory[entry.Item]; bonus > room {
+				bonus = room
+			}
+		}
+		if bonus <= 0 {
+			continue
+		}
+		// Consume the booster in full for the executions it backed — the
+		// bonus clamp above trims yield, not cost (the herb went into the
+		// batch either way).
+		consume := bi.Qty * int(boostedExecs)
+		actor.Inventory[bi.Item] -= consume
+		if actor.Inventory[bi.Item] <= 0 {
+			delete(actor.Inventory, bi.Item)
+		}
+		totalProduced += bonus
+		actor.Inventory[entry.Item] += bonus
+	}
+
 	// Advance anchor by exactly the consumed time so sub-unit residue
 	// carries forward to the next tick.
 	advanceUnits := executions

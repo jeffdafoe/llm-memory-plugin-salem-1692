@@ -32,9 +32,26 @@ import (
 // the production dependency and runway.
 
 // ProductionInputsView is the content-gated "## Keeping up production" section.
-// A nil view (or empty Items) means render omits the section.
+// A nil view (or empty Items+Boosts) means render omits the section.
 type ProductionInputsView struct {
-	Items []ProductionInputView
+	Items  []ProductionInputView
+	Boosts []ProductionBoostView // optional-booster lines (LLM-248)
+}
+
+// ProductionBoostView is one low OPTIONAL booster (LLM-248): an item the actor
+// buys, that a recipe the actor produces consumes electively for bonus yield,
+// currently below its reorder threshold. Unlike a required input there is no
+// runway — production continues without it — so the line motivates the buy with
+// the forgone bonus instead ("each batch made with it yields N extra").
+type ProductionBoostView struct {
+	BoostLabel string       // display label of the booster ("sage")
+	BoostKind  sim.ItemKind // sort-key parity with the label
+	CurrentQty int          // on-hand quantity of the booster
+
+	OutputLabel string       // display label of the good it boosts ("milk")
+	OutputKind  sim.ItemKind // tie-break sort key
+
+	BonusQty int // extra output units per boosted execution
 }
 
 // ProductionInputView is one low production input: an item the actor buys, that
@@ -83,10 +100,38 @@ func buildProductionInputs(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) *Pr
 		return nil
 	}
 	var items []ProductionInputView
+	var boosts []ProductionBoostView
 	for _, pe := range actorSnap.RestockPolicy.ProduceEntries() {
 		recipe := snap.Recipes[pe.Item]
 		if recipe == nil || recipe.OutputQty <= 0 {
 			continue
+		}
+		// Optional boosters (LLM-248): same buy-entry + below-threshold gate as
+		// required inputs, but the line motivates with the forgone bonus rather
+		// than a runway (production continues without a booster).
+		for _, bi := range recipe.BoostInputs {
+			if bi.Qty <= 0 || bi.BonusQty <= 0 {
+				continue
+			}
+			cap, isBuy := buyCaps[bi.Item]
+			if !isBuy {
+				continue
+			}
+			current := actorSnap.Inventory[bi.Item]
+			if current < 0 {
+				current = 0
+			}
+			if !sim.RestockReorderThresholdMet(current, cap, pct) {
+				continue
+			}
+			boosts = append(boosts, ProductionBoostView{
+				BoostLabel:  itemDisplayLabel(snap, bi.Item),
+				BoostKind:   bi.Item,
+				CurrentQty:  current,
+				OutputLabel: itemDisplayLabel(snap, pe.Item),
+				OutputKind:  pe.Item,
+				BonusQty:    bi.BonusQty,
+			})
 		}
 		for _, in := range recipe.Inputs {
 			if in.Qty <= 0 {
@@ -120,7 +165,7 @@ func buildProductionInputs(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) *Pr
 			})
 		}
 	}
-	if len(items) == 0 {
+	if len(items) == 0 && len(boosts) == 0 {
 		return nil
 	}
 	// Deterministic order: by output good, then input, then the underlying kinds as
@@ -137,7 +182,19 @@ func buildProductionInputs(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) *Pr
 		}
 		return items[i].InputKind < items[j].InputKind
 	})
-	return &ProductionInputsView{Items: items}
+	sort.Slice(boosts, func(i, j int) bool {
+		if boosts[i].OutputLabel != boosts[j].OutputLabel {
+			return boosts[i].OutputLabel < boosts[j].OutputLabel
+		}
+		if boosts[i].OutputKind != boosts[j].OutputKind {
+			return boosts[i].OutputKind < boosts[j].OutputKind
+		}
+		if boosts[i].BoostLabel != boosts[j].BoostLabel {
+			return boosts[i].BoostLabel < boosts[j].BoostLabel
+		}
+		return boosts[i].BoostKind < boosts[j].BoostKind
+	})
+	return &ProductionInputsView{Items: items, Boosts: boosts}
 }
 
 // renderProductionInputs writes the "## Keeping up production" section. Content-
@@ -147,13 +204,20 @@ func buildProductionInputs(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) *Pr
 // It deliberately carries no supplier, structure_id, or pay_with_item — the
 // adjacent "## Restocking" section carries the buy (LLM-64 split).
 func renderProductionInputs(b *strings.Builder, v *ProductionInputsView) {
-	if v == nil || len(v.Items) == 0 {
+	if v == nil || (len(v.Items) == 0 && len(v.Boosts) == 0) {
 		return
 	}
 	b.WriteString("## Keeping up production\n")
 	for _, it := range v.Items {
 		fmt.Fprintf(b, "- You use %s to make %s — %d on hand, enough for about %d more, and you're running low.\n",
 			sanitizeInline(it.InputLabel), sanitizeInline(it.OutputLabel), it.CurrentQty, it.RunwayUnits)
+	}
+	// Booster lines (LLM-248): elective, so no runway — the motivation is the
+	// forgone bonus. Same no-supplier / no-tool-name discipline (LLM-64 split);
+	// the adjacent "## Restocking" line carries the where/how.
+	for _, bo := range v.Boosts {
+		fmt.Fprintf(b, "- A measure of %s in each batch of %s adds %d extra to the yield — %d on hand, and you're running low.\n",
+			sanitizeInline(bo.BoostLabel), sanitizeInline(bo.OutputLabel), bo.BonusQty, bo.CurrentQty)
 	}
 	b.WriteString("\n")
 }

@@ -38,28 +38,38 @@ type umbilicalRecipeInput struct {
 	Qty  int    `json:"qty"`
 }
 
+// umbilicalRecipeBoostInput is one optional booster input on the wire (LLM-248):
+// per production execution, Qty of Item consumed for BonusQty extra output.
+type umbilicalRecipeBoostInput struct {
+	Item     string `json:"item"`
+	Qty      int    `json:"qty"`
+	BonusQty int    `json:"bonus_qty"`
+}
+
 // umbilicalRecipeSetRequest is the POST /api/village/umbilical/recipe/set body:
 // upsert one recipe. cap-free; an existing output_item is updated in place.
 type umbilicalRecipeSetRequest struct {
-	OutputItem     string                 `json:"output_item"`
-	OutputQty      int                    `json:"output_qty"`
-	RateQty        int                    `json:"rate_qty"`
-	RatePerHours   int                    `json:"rate_per_hours"`
-	Inputs         []umbilicalRecipeInput `json:"inputs"`
-	WholesalePrice int                    `json:"wholesale_price"`
-	RetailPrice    int                    `json:"retail_price"`
+	OutputItem     string                      `json:"output_item"`
+	OutputQty      int                         `json:"output_qty"`
+	RateQty        int                         `json:"rate_qty"`
+	RatePerHours   int                         `json:"rate_per_hours"`
+	Inputs         []umbilicalRecipeInput      `json:"inputs"`
+	BoostInputs    []umbilicalRecipeBoostInput `json:"boost_inputs"`
+	WholesalePrice int                         `json:"wholesale_price"`
+	RetailPrice    int                         `json:"retail_price"`
 }
 
 // umbilicalRecipeResponse echoes the applied recipe (item kinds canonicalized to
 // their catalog keys).
 type umbilicalRecipeResponse struct {
-	OutputItem     string                 `json:"output_item"`
-	OutputQty      int                    `json:"output_qty"`
-	RateQty        int                    `json:"rate_qty"`
-	RatePerHours   int                    `json:"rate_per_hours"`
-	Inputs         []umbilicalRecipeInput `json:"inputs"`
-	WholesalePrice int                    `json:"wholesale_price"`
-	RetailPrice    int                    `json:"retail_price"`
+	OutputItem     string                      `json:"output_item"`
+	OutputQty      int                         `json:"output_qty"`
+	RateQty        int                         `json:"rate_qty"`
+	RatePerHours   int                         `json:"rate_per_hours"`
+	Inputs         []umbilicalRecipeInput      `json:"inputs"`
+	BoostInputs    []umbilicalRecipeBoostInput `json:"boost_inputs"`
+	WholesalePrice int                         `json:"wholesale_price"`
+	RetailPrice    int                         `json:"retail_price"`
 }
 
 // handleUmbilicalRecipeSet upserts one item recipe. Numeric validation is
@@ -102,13 +112,25 @@ func (s *Server) handleUmbilicalRecipeSet(w http.ResponseWriter, r *http.Request
 		}
 		inputs = append(inputs, sim.RecipeInput{Item: sim.ItemKind(in.Item), Qty: in.Qty})
 	}
+	boostInputs := make([]sim.BoostInput, 0, len(req.BoostInputs))
+	for _, bi := range req.BoostInputs {
+		if bi.Item == "" {
+			writeError(w, http.StatusBadRequest, "boost input item is required")
+			return
+		}
+		if bi.Qty < 1 || bi.BonusQty < 1 {
+			writeError(w, http.StatusBadRequest, "boost input qty and bonus_qty must be >= 1")
+			return
+		}
+		boostInputs = append(boostInputs, sim.BoostInput{Item: sim.ItemKind(bi.Item), Qty: bi.Qty, BonusQty: bi.BonusQty})
+	}
 	if s.recipeWriter == nil {
 		writeError(w, http.StatusServiceUnavailable, "recipe editing is not wired on this deploy")
 		return
 	}
 
 	auditUmbilical(user.Username, "recipe.set",
-		fmt.Sprintf("output=%s output_qty=%d rate=%d/%dh inputs=%d", req.OutputItem, req.OutputQty, req.RateQty, req.RatePerHours, len(inputs)))
+		fmt.Sprintf("output=%s output_qty=%d rate=%d/%dh inputs=%d boosts=%d", req.OutputItem, req.OutputQty, req.RateQty, req.RatePerHours, len(inputs), len(boostInputs)))
 
 	requested := sim.ItemRecipe{
 		OutputItem:     sim.ItemKind(req.OutputItem),
@@ -116,6 +138,7 @@ func (s *Server) handleUmbilicalRecipeSet(w http.ResponseWriter, r *http.Request
 		RateQty:        req.RateQty,
 		RatePerHours:   req.RatePerHours,
 		Inputs:         inputs,
+		BoostInputs:    boostInputs,
 		WholesalePrice: req.WholesalePrice,
 		RetailPrice:    req.RetailPrice,
 	}
@@ -173,11 +196,15 @@ func recipeResponse(r sim.ItemRecipe) umbilicalRecipeResponse {
 		RateQty:        r.RateQty,
 		RatePerHours:   r.RatePerHours,
 		Inputs:         make([]umbilicalRecipeInput, 0, len(r.Inputs)),
+		BoostInputs:    make([]umbilicalRecipeBoostInput, 0, len(r.BoostInputs)),
 		WholesalePrice: r.WholesalePrice,
 		RetailPrice:    r.RetailPrice,
 	}
 	for _, in := range r.Inputs {
 		out.Inputs = append(out.Inputs, umbilicalRecipeInput{Item: string(in.Item), Qty: in.Qty})
+	}
+	for _, bi := range r.BoostInputs {
+		out.BoostInputs = append(out.BoostInputs, umbilicalRecipeBoostInput{Item: string(bi.Item), Qty: bi.Qty, BonusQty: bi.BonusQty})
 	}
 	return out
 }

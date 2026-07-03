@@ -36,6 +36,36 @@ func ResolveRecipe(w *World, r ItemRecipe) (ItemRecipe, error) {
 		canonical = append(canonical, RecipeInput{Item: k, Qty: in.Qty})
 	}
 	r.Inputs = canonical
+	// Booster references (LLM-248): same catalog check, plus the overlap guard —
+	// an item can't be both required and optional for the same recipe (the
+	// produce tick would double-consume it with ambiguous semantics).
+	required := make(map[ItemKind]bool, len(canonical))
+	for _, in := range canonical {
+		required[in.Item] = true
+	}
+	canonicalBoosts := make([]BoostInput, 0, len(r.BoostInputs))
+	for _, bi := range r.BoostInputs {
+		k, ok := resolveItemKind(w, string(bi.Item))
+		if !ok {
+			return ItemRecipe{}, fmt.Errorf("%w: boost input %q", ErrUnknownItemKind, bi.Item)
+		}
+		if required[k] {
+			return ItemRecipe{}, fmt.Errorf("boost input %q is already a required input", k)
+		}
+		// Unlike required inputs (whose numeric validation is the HTTP handler's
+		// concern per the contract above), boosts ARE numerically validated here:
+		// SetRecipe is reachable from non-HTTP callers, and an invalid booster
+		// would sit silently skipped in the live catalog while the pg write path
+		// rejects it — accept only what the DB accepts (code_review, LLM-248).
+		if bi.Qty <= 0 {
+			return ItemRecipe{}, fmt.Errorf("boost input %q qty must be positive (got %d)", k, bi.Qty)
+		}
+		if bi.BonusQty <= 0 {
+			return ItemRecipe{}, fmt.Errorf("boost input %q bonus_qty must be positive (got %d)", k, bi.BonusQty)
+		}
+		canonicalBoosts = append(canonicalBoosts, BoostInput{Item: k, Qty: bi.Qty, BonusQty: bi.BonusQty})
+	}
+	r.BoostInputs = canonicalBoosts
 	return r, nil
 }
 

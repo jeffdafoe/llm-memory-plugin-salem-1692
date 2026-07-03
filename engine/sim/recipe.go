@@ -13,8 +13,9 @@ type ItemRecipe struct {
 	RateQty        int
 	RatePerHours   int // rate_qty units per rate_per_hours hours
 	Inputs         []RecipeInput
-	WholesalePrice int // producer → merchant
-	RetailPrice    int // merchant → customer
+	BoostInputs    []BoostInput // optional per-execution yield boosters (LLM-248)
+	WholesalePrice int          // producer → merchant
+	RetailPrice    int          // merchant → customer
 }
 
 // RecipeInput is one input requirement for a recipe execution. JSON tags
@@ -23,6 +24,20 @@ type ItemRecipe struct {
 type RecipeInput struct {
 	Item ItemKind `json:"item"`
 	Qty  int      `json:"qty"`
+}
+
+// BoostInput is one OPTIONAL booster for a recipe execution (LLM-248) — the
+// elective mirror of RecipeInput. At each produce-tick execution, a producer
+// holding Qty of the booster consumes it and mints BonusQty extra output
+// (cap-clamped); holding none leaves base production untouched (no skip, no
+// anchor penalty). Consumption is per-execution, so a booster is a
+// production-scaled sink: it drains only while output is actually minting.
+// JSON tags match the item_recipe.boost_inputs JSONB wire shape
+// ([{"item","qty","bonus_qty"}, ...]).
+type BoostInput struct {
+	Item     ItemKind `json:"item"`
+	Qty      int      `json:"qty"`
+	BonusQty int      `json:"bonus_qty"`
 }
 
 // RestockSource enumerates the supply modes a restock entry can use.
