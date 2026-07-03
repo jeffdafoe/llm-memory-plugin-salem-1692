@@ -123,6 +123,13 @@ func laborSpeakOnlyRegistry(t *testing.T) *Registry {
 	if err := r.RegisterTerminal("done"); err != nil {
 		t.Fatalf("RegisterTerminal: %v", err)
 	}
+	// Precondition: the seller-quote tool advertises under the model-facing name
+	// "sell" (RegisterSceneQuote, renamed in LLM-184), which is the exact name
+	// laborAbandonTools strips. If the registry ever stops exposing "sell" the
+	// gating tests below would pass/fail for the wrong reason — fail loudly here.
+	if specNameSet(r.AdvertisedSpecs())["sell"] != 1 {
+		t.Fatalf("RegisterSceneQuote did not advertise \"sell\"; laborAbandonTools gates a name the registry doesn't expose. names=%v", specNameSet(r.AdvertisedSpecs()))
+	}
 	return r
 }
 

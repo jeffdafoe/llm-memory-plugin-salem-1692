@@ -911,3 +911,62 @@ func TestTerminalStatusAddresses(t *testing.T) {
 		}
 	}
 }
+
+// ---- LLM-230: laboring reply cadence at the evaluator level ------------
+
+// TestEvaluateReactors_LaboringSpeechWarrantStaleEvictedMidCadence proves the
+// cost claim end-to-end (LLM-230 review): while a laboring worker is INSIDE her
+// reply cadence, a shelved NPC-speech warrant is EVICTED once its cycle ages past
+// MaxWarrantAge (90s) — not deferred alive — because the evaluator checks
+// warrantCycleStale before the unavailable-backoff push. Then, once the cadence
+// has elapsed, a FRESH NPC-speech warrant makes her eligible and emits, so the
+// reply lands on the current utterance rather than a stale one.
+func TestEvaluateReactors_LaboringSpeechWarrantStaleEvictedMidCadence(t *testing.T) {
+	w, cancel, _ := buildPR3aWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	// Laboring, last tick 150s ago (inside the 3m cadence → shelved), NPC-speech
+	// warrant whose cycle started 100s ago (past the 90s MaxWarrantAge → stale).
+	_, _ = w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Actors["alice"]
+		a.State = sim.StateLaboring
+		until := now.Add(2 * time.Hour)
+		a.LaboringUntil = &until
+		a.RecentReactorTicks = sim.NewRingBuffer[time.Time](8)
+		a.RecentReactorTicks.Push(now.Add(-150 * time.Second))
+		since := now.Add(-100 * time.Second)
+		due := now.Add(-1 * time.Second)
+		a.WarrantedSince = &since
+		a.WarrantDueAt = &due
+		a.Warrants = []sim.WarrantMeta{{Reason: sim.BasicWarrantReason{K: sim.WarrantKindNPCSpoke}}}
+		return nil, nil
+	}})
+	emitted := subscribeReactorTicks(t, w)
+
+	_, _ = w.Send(sim.EvaluateReactors(now))
+	if len(*emitted) != 0 {
+		t.Errorf("within-cadence laboring speech: want no emit; got %d", len(*emitted))
+	}
+	inspectActor(t, w, "alice", func(a *sim.Actor) {
+		if a.WarrantedSince != nil {
+			t.Error("stale NPC-speech warrant should be EVICTED mid-cadence (aged past MaxWarrantAge), not deferred alive")
+		}
+	})
+
+	// Cadence now elapsed (last tick 4m ago) + a fresh NPC-speech warrant: she
+	// becomes eligible and emits.
+	_, _ = w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Actors["alice"]
+		a.RecentReactorTicks = sim.NewRingBuffer[time.Time](8)
+		a.RecentReactorTicks.Push(now.Add(-4 * time.Minute))
+		return nil, nil
+	}})
+	seedDueWarrant(t, w, "alice", []sim.WarrantMeta{
+		{Reason: sim.BasicWarrantReason{K: sim.WarrantKindNPCSpoke}},
+	}, now)
+	_, _ = w.Send(sim.EvaluateReactors(now))
+	if len(*emitted) != 1 {
+		t.Errorf("post-cadence fresh speech: want 1 emit; got %d", len(*emitted))
+	}
+}
