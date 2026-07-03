@@ -733,10 +733,40 @@ func forgeFocusLabel(snap *sim.Snapshot, a *sim.ActorSnapshot) string {
 	// Only surface a focus the actor can actually make (recipe-backed, positive
 	// rate), so the standing line never claims "making X" for a good produce_tick
 	// will skip. Mirrors the sim-side makeable check.
-	if r := snap.Recipes[a.ProductionFocus]; r == nil || r.RateQty <= 0 || r.RatePerHours <= 0 {
+	r := snap.Recipes[a.ProductionFocus]
+	if r == nil || r.RateQty <= 0 || r.RatePerHours <= 0 {
+		return ""
+	}
+	// For a MULTI-output crafter, the standing line must agree with the "## Time to
+	// produce" choose menu: when the focus is input-starved that menu flags it
+	// "can't make now" (LLM-257), so the standing "You are making X" must not also
+	// claim it — the phantom "You are making Stew" with no sage in the pot. A
+	// single-output producer has no such menu; its line is trade identity ("I make
+	// porridge"), kept even while momentarily short an input.
+	if multiOutputCrafter(snap, a) && !sim.HasProduceInputs(r, a.Inventory) {
 		return ""
 	}
 	return itemDisplayLabel(snap, a.ProductionFocus)
+}
+
+// multiOutputCrafter reports whether the actor makes more than one recipe-backed
+// good — the case where a production choice (and its "## Time to produce" menu)
+// exists, so the standing focus line and the menu must not disagree (LLM-257).
+// Mirrors buildForgeChoice's own multi-output gate, on the snapshot side.
+func multiOutputCrafter(snap *sim.Snapshot, a *sim.ActorSnapshot) bool {
+	if a.RestockPolicy == nil {
+		return false
+	}
+	n := 0
+	for _, e := range a.RestockPolicy.ProduceEntries() {
+		if r := snap.Recipes[e.Item]; r != nil && r.RateQty > 0 && r.RatePerHours > 0 {
+			n++
+			if n > 1 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // computeHoursAwake returns whole hours the actor has been awake, measured from

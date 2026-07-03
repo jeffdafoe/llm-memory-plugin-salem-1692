@@ -466,6 +466,18 @@ var perceptionScenarios = []perceptionScenario{
 		build: smithForgingFocused,
 	},
 	{
+		name: "tavernkeeper_starved_focus_at_forge",
+		summary: "A multi-output crafter whose chosen focus is INPUT-STARVED — John Ellis at his tavern on shift, focus=stew " +
+			"but holding no sage — the live LLM-257 deadlock that froze his production for a week. The golden pins the fix: " +
+			"the '## Time to produce' cue does NOT lead with the 'You are producing stew now' steer (a starved focus isn't " +
+			"productive) but falls through to the CHOOSE menu, with stew annotated 'can't make now: short of Sage (need 2, " +
+			"have 0)' (meat, held in full, omitted) and no-input Water offered plainly; the standing 'You are making Stew.' " +
+			"phantom self-state line is suppressed (forgeFocusLabel now inputs-gated); and the production-choice wake warrant " +
+			"fires so he re-picks a good he can actually make. Contrast smith_forging_focused (a craftable focus DOES lead " +
+			"with the steer).",
+		build: tavernkeeperStarvedFocusAtForge,
+	},
+	{
 		name: "smith_off_work_focus_hidden",
 		summary: "The same multi-output crafter (Ezekiel, focus still nail) is NOT at his forge — he is at the Tavern " +
 			"after his shift (the live Tavern bug, LLM-121). produce_tick makes nothing away from the workplace, so the " +
@@ -1879,19 +1891,63 @@ func brokeBuyerNoGoodsNoPeerBuy() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta
 // TestForgeCueOnlyForMultiOutputCrafterAtForge is the LLM-116 cross-scenario
 // invariant: the "## Time to produce" cue appears in EXACTLY the multi-output-producer-
 // at-workplace scenarios and no other — whether unfocused (choose menu,
-// smith_choosing_at_forge / the non-smith dairy_choosing_at_farm) or focused (the
-// LLM-128 continue-and-stop steer, smith_forging_focused). A single-output producer
-// or a non-crafter must never see it — the structural property the per-builder gate
-// (>1 produce entry AND at workplace) is meant to hold across the whole matrix.
+// smith_choosing_at_forge / the non-smith dairy_choosing_at_farm), focused-and-
+// productive (the LLM-128 continue-and-stop steer, smith_forging_focused), or
+// focused-but-input-starved (falls back to the choose menu, LLM-257
+// tavernkeeper_starved_focus_at_forge). A single-output producer or a non-crafter
+// must never see it — the structural property the per-builder gate (>1 produce entry
+// AND at workplace) is meant to hold across the whole matrix.
 func TestForgeCueOnlyForMultiOutputCrafterAtForge(t *testing.T) {
 	const marker = "## Time to produce"
 	for _, sc := range perceptionScenarios {
 		sc := sc
 		got := renderScenario(sc)
-		want := sc.name == "smith_choosing_at_forge" || sc.name == "smith_forging_focused" || sc.name == "dairy_choosing_at_farm"
+		want := sc.name == "smith_choosing_at_forge" || sc.name == "smith_forging_focused" || sc.name == "dairy_choosing_at_farm" || sc.name == "tavernkeeper_starved_focus_at_forge"
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: forge cue present=%v, want %v", sc.name, has, want)
 		}
+	}
+}
+
+// TestGoldensNoInputGoodAlwaysCraftable is the LLM-257 cross-scenario invariant:
+// in any scenario's forge-choice view, a good whose recipe has NO inputs must never
+// be flagged not-craftable. An origin producer (nail, water) makes its good from
+// nothing, so HasProduceInputs is always satisfied for it — the "always makeable"
+// property the inputs-aware gate must preserve. Guards against a future change that
+// mistakes a no-input recipe for a starved one, which would drop the no-input good
+// from the choose menu and could re-freeze a keeper behind an unmakeable focus with
+// no fallback. White-box over buildForgeChoice so it reads the structured
+// InputsReady flag rather than parsing rendered text.
+func TestGoldensNoInputGoodAlwaysCraftable(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, _ := sc.build()
+			as := snap.Actors[actorID]
+			if as == nil {
+				return
+			}
+			view := buildForgeChoice(snap, actorID, as)
+			if view == nil {
+				return // not a multi-output crafter at its forge — no forge choice here
+			}
+			for _, it := range view.Items {
+				recipe := snap.Recipes[it.itemKind]
+				if recipe == nil {
+					continue
+				}
+				hasInput := false
+				for _, in := range recipe.Inputs {
+					if in.Qty > 0 {
+						hasInput = true
+						break
+					}
+				}
+				if !hasInput && !it.InputsReady {
+					t.Errorf("scenario %q: no-input good %q flagged not-craftable; an origin recipe is always makeable (LLM-257)", sc.name, it.itemKind)
+				}
+			}
+		})
 	}
 }
 
@@ -3405,6 +3461,70 @@ func smithForgingFocused() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 		},
 	}
 	return snap, ezekielID, nil
+}
+
+// tavernkeeperStarvedFocusAtForge is the LLM-257 deadlock: John Ellis, a
+// multi-output tavernkeeper (stew + water), stands at his tavern on shift with
+// focus=stew but NO sage, so stew is input-starved. produce_tick fills only the
+// focus and skips an input-short entry, so the tavern makes nothing — not even the
+// no-input water — which is exactly how his live production froze for a week. The
+// golden pins the FIX across the cue surfaces: the "## Time to produce" section
+// falls through to the CHOOSE menu (a starved focus is not "productive", so it does
+// NOT lead with "You are producing stew now"), stew is annotated "can't make now:
+// short of Sage (need 2, have 0)" (meat, held in full, is omitted), water is
+// offered plainly, the standing "You are making Stew." self-state line is suppressed
+// (forgeFocusLabel is now inputs-gated), and the production-choice wake warrant fires
+// so he re-picks a makeable good. Byte-stable: on shift, idle, empty
+// PriceBook/RecentProduce, single-item inventory.
+func tavernkeeperStarvedFocusAtForge() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		johnID = sim.ActorID("john")
+		tavern = sim.StructureID("tavern")
+	)
+	start, end := 360, 1080 // 06:00–18:00
+	now := 600              // 10:00 — on shift
+	published := time.Date(2026, 6, 25, 10, 0, 0, 0, time.UTC)
+	john := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "John Ellis",
+		Role:              "tavernkeeper",
+		State:             sim.StateIdle,
+		WorkStructureID:   tavern,
+		InsideStructureID: tavern,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             0,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"meat": 10}, // has meat, NO sage → stew input-starved
+		ProductionFocus:   "stew",
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "stew", Source: sim.RestockSourceProduce, Max: 30},
+			{Item: "water", Source: sim.RestockSourceProduce, Max: 30},
+		}},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{johnID: john},
+		Structures: map[sim.StructureID]*sim.Structure{
+			tavern: plainStructure(tavern, "Tavern"),
+		},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"stew":  {OutputItem: "stew", OutputQty: 1, RateQty: 1, RatePerHours: 1, Inputs: []sim.RecipeInput{{Item: "sage", Qty: 2}, {Item: "meat", Qty: 10}}, WholesalePrice: 3, RetailPrice: 5},
+			"water": {OutputItem: "water", OutputQty: 1, RateQty: 12, RatePerHours: 1, WholesalePrice: 1, RetailPrice: 1},
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"stew":  {Name: "stew", DisplayLabel: "Stew", DisplayLabelSingular: "stew", DisplayLabelPlural: "stews", Category: sim.ItemCategoryFood},
+			"water": {Name: "water", DisplayLabel: "Water", DisplayLabelSingular: "water", DisplayLabelPlural: "water", Category: sim.ItemCategoryDrink},
+			"sage":  {Name: "sage", DisplayLabel: "Sage", DisplayLabelSingular: "sage", DisplayLabelPlural: "sage", Category: sim.ItemCategoryMaterial},
+			"meat":  {Name: "meat", DisplayLabel: "Meat", DisplayLabelSingular: "meat", DisplayLabelPlural: "meat", Category: sim.ItemCategoryFood},
+		},
+	}
+	warrants := []sim.WarrantMeta{
+		{TriggerActorID: johnID, Reason: sim.ProductionChoiceWarrantReason{}, SourceEventID: 1},
+	}
+	return snap, johnID, warrants
 }
 
 // smithOffWorkFocusHidden is the LLM-121 regression: the same multi-output crafter

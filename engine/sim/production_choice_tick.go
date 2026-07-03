@@ -40,9 +40,10 @@ func (ProductionChoiceWarrantReason) DedupDiscriminator() uint64 { return 0 }
 // shouldChooseProduction reports whether a multi-output crafter is standing at its
 // forge with a production choice worth a tick: it has more than one recipe-backed
 // produce entry, is physically inside its work structure, at least one good is
-// still below cap (something IS makeable), and either it has no focus or its
-// current focus is no longer productive (the focused good is at cap). When every
-// good is at cap there is nothing to make, so it is left alone. Pure read.
+// craftable right now (makeable, below cap, AND inputs on hand — LLM-257), and
+// either it has no focus or its current focus is no longer craftable (at cap OR
+// its inputs ran out). When nothing is craftable there is nothing to make, so it
+// is left alone. Pure read.
 func shouldChooseProduction(a *Actor, w *World) bool {
 	if a.RestockPolicy == nil {
 		return false
@@ -54,28 +55,25 @@ func shouldChooseProduction(a *Actor, w *World) bool {
 	if makeableProduceCount(w, produce) <= 1 {
 		return false // 0-or-1 makeable goods — no choice to make (matches produce_tick)
 	}
-	anyBelowCap := false
-	focusProductive := false
+	anyCraftable := false
+	focusCraftable := false
 	for _, e := range produce {
-		if !makeableRecipe(w, e.Item) {
-			continue // not makeable — skip
+		if !craftableNow(w, a, e) {
+			continue // at cap, no recipe, or inputs short — not pickable now (LLM-257)
 		}
-		cap := e.Cap()
-		belowCap := cap <= 0 || a.Inventory[e.Item] < cap
-		if !belowCap {
-			continue
-		}
-		anyBelowCap = true
+		anyCraftable = true
 		if a.ProductionFocus == e.Item {
-			focusProductive = true
+			focusCraftable = true
 		}
 	}
-	if !anyBelowCap {
-		return false // everything maxed — nothing to forge, don't wake
+	if !anyCraftable {
+		return false // nothing makeable right now — don't wake to an impossible choice
 	}
-	// Wake when unfocused, or when the current focus can no longer be made (at
-	// cap / no recipe) so the crafter must pick something else.
-	return a.ProductionFocus == "" || !focusProductive
+	// Wake when unfocused, or when the current focus can no longer be made right
+	// now (at cap, no recipe, OR its inputs ran out — LLM-257) so the crafter
+	// picks a good it can actually make instead of starving behind an unmakeable
+	// focus (the John-Ellis-frozen-behind-stew deadlock).
+	return a.ProductionFocus == "" || !focusCraftable
 }
 
 // EvaluateProductionChoice returns a Command that applies one pass: stamp a

@@ -160,6 +160,47 @@ func makeableProduceCount(w *World, entries []RestockEntry) int {
 	return n
 }
 
+// HasProduceInputs reports whether inventory holds enough of every required
+// input to run at least one execution of recipe. A recipe with no inputs (an
+// origin producer like nail or water) is trivially satisfied. Exported so the
+// perception forge-choice cue applies the SAME inputs test applyProduceEntry's
+// input clamp (below) uses, keeping the cue and the tick in lockstep on "can
+// this be made right now" — the inputs axis makeableRecipe deliberately omits
+// (LLM-257).
+func HasProduceInputs(recipe *ItemRecipe, inventory map[ItemKind]int) bool {
+	if recipe == nil {
+		return false
+	}
+	for _, in := range recipe.Inputs {
+		if in.Qty <= 0 {
+			continue
+		}
+		if inventory[in.Item] < in.Qty {
+			return false
+		}
+	}
+	return true
+}
+
+// craftableNow reports whether the actor could actually produce entry.Item on
+// the next tick: it is makeableRecipe (recipe with positive rate), still below
+// its carry cap, AND the actor holds the inputs for at least one execution. The
+// inputs-aware superset of makeableRecipe-plus-below-cap — the shared
+// choice-worthiness gate that keeps the production-choice warrant
+// (shouldChooseProduction) and the craft tool (SetProductionFocus) from steering
+// a keeper onto a good it cannot presently make, and that the forge cue mirrors
+// via HasProduceInputs (LLM-257). Time/anchor is NOT considered — that is
+// produce_tick's rate pacing, not a "should I pick this" test.
+func craftableNow(w *World, a *Actor, entry RestockEntry) bool {
+	if !makeableRecipe(w, entry.Item) {
+		return false
+	}
+	if cap := entry.Cap(); cap > 0 && a.Inventory[entry.Item] >= cap {
+		return false
+	}
+	return HasProduceInputs(w.Recipes[entry.Item], a.Inventory)
+}
+
 // ApplyProduceTick walks every actor with a produce-source restock
 // entry and applies units owed.
 //
