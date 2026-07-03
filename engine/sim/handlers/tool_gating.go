@@ -271,6 +271,12 @@ func actorIsFlaggedDegenerate(actorID sim.ActorID, snap *sim.Snapshot) bool {
 func laboringMayBreakOffToEat(a perception.ActorView) bool {
 	for need, level := range a.Needs {
 		if need == "tiredness" {
+			// Non-tiredness only, in lockstep with the reactor's
+			// hasBreakInterruptingNeedWarrant (a break cures tiredness, so it never
+			// justifies leaving the job). If a need is ever added, update BOTH
+			// predicates together — the tool surface must agree with the reactor tick
+			// that woke her, or she'd tick for a need but be denied move_to (or vice
+			// versa).
 			continue
 		}
 		// >= NeedRed catches both red and the maxed-out NeedPeak tier (the same
