@@ -171,3 +171,105 @@ func TestBuildProductionInputs_NegativeInventoryClampedToZero(t *testing.T) {
 		t.Errorf("negative on-hand should clamp to 0 count / 0 runway, got %+v", it)
 	}
 }
+
+// ---- Optional boosters (LLM-248) ----------------------------------------
+
+// milkRecipeBoostedBySage: the LLM-83 dairy edge fixture — milk produced in
+// 4-unit batches, optionally boosted by 1 sage for +2.
+func milkRecipeBoostedBySage() map[sim.ItemKind]*sim.ItemRecipe {
+	return map[sim.ItemKind]*sim.ItemRecipe{
+		"milk": {
+			OutputItem: "milk", OutputQty: 4, RateQty: 4, RatePerHours: 1,
+			BoostInputs: []sim.BoostInput{{Item: "sage", Qty: 1, BonusQty: 2}},
+		},
+	}
+}
+
+// makesMilkBuyingSage builds an actor producing milk and buying sage (cap), with
+// `onHand` sage.
+func makesMilkBuyingSage(cap, onHand int) *sim.ActorSnapshot {
+	return &sim.ActorSnapshot{
+		Inventory: map[sim.ItemKind]int{"sage": onHand},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "milk", Source: sim.RestockSourceProduce, Max: 30},
+			{Item: "sage", Source: sim.RestockSourceBuy, Max: cap},
+		}},
+	}
+}
+
+func boosterSnap(subj *sim.ActorSnapshot) *sim.Snapshot {
+	catalog := productionCatalog()
+	catalog["milk"] = &sim.ItemKindDef{Name: "milk", DisplayLabel: "milk", Category: sim.ItemCategoryDrink}
+	catalog["sage"] = &sim.ItemKindDef{Name: "sage", DisplayLabel: "sage"}
+	return &sim.Snapshot{
+		Actors:            map[sim.ActorID]*sim.ActorSnapshot{"elizabeth": subj},
+		ItemKinds:         catalog,
+		Recipes:           milkRecipeBoostedBySage(),
+		RestockReorderPct: 25,
+	}
+}
+
+// A low bought booster surfaces with the forgone bonus (no runway — production
+// continues without it).
+func TestBuildProductionInputs_LowBoosterSurfacesBonus(t *testing.T) {
+	subj := makesMilkBuyingSage(3, 0)
+	snap := boosterSnap(subj)
+
+	v := buildProductionInputs(snap, subj)
+	if v == nil || len(v.Boosts) != 1 || len(v.Items) != 0 {
+		t.Fatalf("expected exactly one booster view, got %+v", v)
+	}
+	bo := v.Boosts[0]
+	if bo.BoostKind != "sage" || bo.OutputKind != "milk" || bo.CurrentQty != 0 || bo.BonusQty != 2 {
+		t.Fatalf("got %+v, want sage→milk, 0 on hand, bonus 2", bo)
+	}
+
+	var b strings.Builder
+	renderProductionInputs(&b, v)
+	out := b.String()
+	for _, want := range []string{"## Keeping up production", "A measure of sage in each batch of milk adds 2 extra", "0 on hand", "running low"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("render missing %q\n--- got ---\n%s", want, out)
+		}
+	}
+}
+
+// A stocked booster isn't low, so no booster line (and with no low required
+// inputs either, the whole section is omitted).
+func TestBuildProductionInputs_StockedBoosterNil(t *testing.T) {
+	subj := makesMilkBuyingSage(3, 3)
+	snap := boosterSnap(subj)
+	if v := buildProductionInputs(snap, subj); v != nil {
+		t.Errorf("a full-stock booster should not surface, got %+v", v)
+	}
+}
+
+// A booster without a buy entry (self-foraged, e.g. Prudence's own sage) never
+// surfaces — same self-supplied exclusion as required inputs.
+func TestBuildProductionInputs_SelfForagedBoosterIgnored(t *testing.T) {
+	subj := &sim.ActorSnapshot{
+		Inventory: map[sim.ItemKind]int{"sage": 0},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "milk", Source: sim.RestockSourceProduce, Max: 30},
+			{Item: "sage", Source: sim.RestockSourceForage, Max: 5}, // forages her own — not bought
+		}},
+	}
+	snap := boosterSnap(subj)
+	if v := buildProductionInputs(snap, subj); v != nil {
+		t.Errorf("a self-foraged booster must not surface as a buy concern, got %+v", v)
+	}
+}
+
+// The booster line carries no buy mechanics either (LLM-64 split).
+func TestRenderProductionInputs_BoosterNoBuyMechanics(t *testing.T) {
+	subj := makesMilkBuyingSage(3, 0)
+	snap := boosterSnap(subj)
+	var b strings.Builder
+	renderProductionInputs(&b, buildProductionInputs(snap, subj))
+	out := b.String()
+	for _, forbidden := range []string{"structure_id", "pay_with_item", "buy from", "move_to"} {
+		if strings.Contains(out, forbidden) {
+			t.Errorf("booster cue must not carry buy mechanics, found %q in:\n%s", forbidden, out)
+		}
+	}
+}

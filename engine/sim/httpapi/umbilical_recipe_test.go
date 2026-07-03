@@ -92,6 +92,39 @@ func TestUmbilicalRecipeSet_AddAndEdit(t *testing.T) {
 	}
 }
 
+// TestUmbilicalRecipeSet_BoostInputsRoundTrip covers the LLM-248 optional-booster
+// wire shape: boost_inputs accepted on set, canonicalized, passed to the writer,
+// echoed in the response, and visible on the /recipes read side.
+func TestUmbilicalRecipeSet_BoostInputsRoundTrip(t *testing.T) {
+	fake := &fakeRecipeWriter{}
+	srv, h := recipeServer(t, fake)
+
+	rec := postReq(t, h, "/api/village/umbilical/recipe/set", "tok",
+		`{"output_item":"cheese","output_qty":4,"rate_qty":4,"rate_per_hours":1,"inputs":[],"boost_inputs":[{"item":"Milk","qty":1,"bonus_qty":2}],"wholesale_price":2,"retail_price":4}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("set = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var out umbilicalRecipeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// "Milk" canonicalized to the catalog key.
+	if len(out.BoostInputs) != 1 || out.BoostInputs[0].Item != "milk" || out.BoostInputs[0].Qty != 1 || out.BoostInputs[0].BonusQty != 2 {
+		t.Fatalf("response boost_inputs = %+v, want [{milk 1 2}]", out.BoostInputs)
+	}
+	if len(fake.last.BoostInputs) != 1 || fake.last.BoostInputs[0].Item != "milk" {
+		t.Fatalf("writer boost_inputs = %+v", fake.last.BoostInputs)
+	}
+	// The live catalog carries it too.
+	res, _ := srv.world.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		r := world.Recipes["cheese"]
+		return r != nil && len(r.BoostInputs) == 1 && r.BoostInputs[0].BonusQty == 2, nil
+	}})
+	if ok, _ := res.(bool); !ok {
+		t.Error("world.Recipes cheese missing the booster after set")
+	}
+}
+
 func TestUmbilicalRecipeSet_Validation(t *testing.T) {
 	_, h := recipeServer(t, &fakeRecipeWriter{})
 	cases := []struct{ name, body string }{
@@ -101,6 +134,9 @@ func TestUmbilicalRecipeSet_Validation(t *testing.T) {
 		{"zero rate_per_hours", `{"output_item":"cheese","output_qty":1,"rate_qty":1,"rate_per_hours":0}`},
 		{"negative price", `{"output_item":"cheese","output_qty":1,"rate_qty":1,"rate_per_hours":1,"wholesale_price":-1}`},
 		{"input qty zero", `{"output_item":"cheese","output_qty":1,"rate_qty":1,"rate_per_hours":1,"inputs":[{"item":"milk","qty":0}]}`},
+		{"boost qty zero", `{"output_item":"cheese","output_qty":1,"rate_qty":1,"rate_per_hours":1,"boost_inputs":[{"item":"milk","qty":0,"bonus_qty":1}]}`},
+		{"boost bonus_qty zero", `{"output_item":"cheese","output_qty":1,"rate_qty":1,"rate_per_hours":1,"boost_inputs":[{"item":"milk","qty":1,"bonus_qty":0}]}`},
+		{"boost missing item", `{"output_item":"cheese","output_qty":1,"rate_qty":1,"rate_per_hours":1,"boost_inputs":[{"qty":1,"bonus_qty":1}]}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -117,6 +153,8 @@ func TestUmbilicalRecipeSet_UnknownItems(t *testing.T) {
 	cases := []struct{ name, body string }{
 		{"unknown output", `{"output_item":"dragonfruit","output_qty":1,"rate_qty":1,"rate_per_hours":1}`},
 		{"unknown input", `{"output_item":"cheese","output_qty":1,"rate_qty":1,"rate_per_hours":1,"inputs":[{"item":"unobtanium","qty":1}]}`},
+		{"unknown boost input", `{"output_item":"cheese","output_qty":1,"rate_qty":1,"rate_per_hours":1,"boost_inputs":[{"item":"unobtanium","qty":1,"bonus_qty":1}]}`},
+		{"boost duplicates required input", `{"output_item":"cheese","output_qty":1,"rate_qty":1,"rate_per_hours":1,"inputs":[{"item":"milk","qty":3}],"boost_inputs":[{"item":"milk","qty":1,"bonus_qty":1}]}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

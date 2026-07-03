@@ -36,6 +36,25 @@ func ResolveRecipe(w *World, r ItemRecipe) (ItemRecipe, error) {
 		canonical = append(canonical, RecipeInput{Item: k, Qty: in.Qty})
 	}
 	r.Inputs = canonical
+	// Booster references (LLM-248): same catalog check, plus the overlap guard —
+	// an item can't be both required and optional for the same recipe (the
+	// produce tick would double-consume it with ambiguous semantics).
+	required := make(map[ItemKind]bool, len(canonical))
+	for _, in := range canonical {
+		required[in.Item] = true
+	}
+	canonicalBoosts := make([]BoostInput, 0, len(r.BoostInputs))
+	for _, bi := range r.BoostInputs {
+		k, ok := resolveItemKind(w, string(bi.Item))
+		if !ok {
+			return ItemRecipe{}, fmt.Errorf("%w: boost input %q", ErrUnknownItemKind, bi.Item)
+		}
+		if required[k] {
+			return ItemRecipe{}, fmt.Errorf("boost input %q is already a required input", k)
+		}
+		canonicalBoosts = append(canonicalBoosts, BoostInput{Item: k, Qty: bi.Qty, BonusQty: bi.BonusQty})
+	}
+	r.BoostInputs = canonicalBoosts
 	return r, nil
 }
 
