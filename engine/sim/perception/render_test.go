@@ -867,7 +867,7 @@ func TestRenderLaborOffers_AffordabilitySteer(t *testing.T) {
 
 	t.Run("broke employer: decline steer with spoken reason, no accept footer", func(t *testing.T) {
 		var b strings.Builder
-		renderLaborOffers(&b, []LaborOfferView{offer(1, 5)}, 0, nameOf)
+		renderLaborOffers(&b, []LaborOfferView{offer(1, 5)}, 0, false, nameOf)
 		got := b.String()
 		if !strings.Contains(got, "call decline_work (offer id 1)") || !strings.Contains(got, speakNamed) {
 			t.Errorf("broke employer should be steered to decline WITH a spoken reason; got:\n%s", got)
@@ -882,7 +882,7 @@ func TestRenderLaborOffers_AffordabilitySteer(t *testing.T) {
 
 	t.Run("solvent employer: accept footer, no forced decline", func(t *testing.T) {
 		var b strings.Builder
-		renderLaborOffers(&b, []LaborOfferView{offer(1, 5)}, 46, nameOf)
+		renderLaborOffers(&b, []LaborOfferView{offer(1, 5)}, 46, false, nameOf)
 		got := b.String()
 		if !strings.Contains(got, acceptFooter) {
 			t.Errorf("solvent employer should see the accept_work/decline_work footer; got:\n%s", got)
@@ -895,7 +895,7 @@ func TestRenderLaborOffers_AffordabilitySteer(t *testing.T) {
 	t.Run("mixed: footer is scoped to affordable offers, unaffordable carries its own decline", func(t *testing.T) {
 		var b strings.Builder
 		// 5 coins on hand covers the 4-coin job but not the 9-coin one.
-		renderLaborOffers(&b, []LaborOfferView{offer(1, 4), offer(2, 9)}, 5, nameOf)
+		renderLaborOffers(&b, []LaborOfferView{offer(1, 4), offer(2, 9)}, 5, false, nameOf)
 		got := b.String()
 		// The footer must scope accept_work to affordable offers — a generic
 		// "accept_work or decline_work" could be applied to the unaffordable one.
@@ -910,6 +910,42 @@ func TestRenderLaborOffers_AffordabilitySteer(t *testing.T) {
 		}
 		if strings.Contains(got, "call decline_work (offer id 1)") {
 			t.Errorf("the affordable offer (id 1) should not carry a decline steer; got:\n%s", got)
+		}
+	})
+
+	// LLM-228: the returning-helper recall. HelpedBeforeRecently drives a memory
+	// line above the accept/decline steer; the "got more done" clause is gated on
+	// the employer producing goods so a non-producer never claims output.
+	t.Run("returning helper: recall line, producer claims added output", func(t *testing.T) {
+		helped := LaborOfferView{LaborID: 1, Worker: "lewis", Reward: 5, DurationMin: 60, HelpedBeforeRecently: true}
+		var b strings.Builder
+		renderLaborOffers(&b, []LaborOfferView{helped}, 46, true, nameOf)
+		got := b.String()
+		if !strings.Contains(got, "You remember Lewis Walker lending you a hand recently, and you got more done for it.") {
+			t.Errorf("a producing employer should recall the past help AND the added output; got:\n%s", got)
+		}
+	})
+
+	t.Run("returning helper: non-producer recall omits the output claim", func(t *testing.T) {
+		helped := LaborOfferView{LaborID: 1, Worker: "lewis", Reward: 5, DurationMin: 60, HelpedBeforeRecently: true}
+		var b strings.Builder
+		renderLaborOffers(&b, []LaborOfferView{helped}, 46, false, nameOf)
+		got := b.String()
+		if !strings.Contains(got, "You remember Lewis Walker lending you a hand recently.") {
+			t.Errorf("a non-producer employer should still recall the past help; got:\n%s", got)
+		}
+		if strings.Contains(got, "got more done") {
+			t.Errorf("a non-producer must NOT claim added output it never made; got:\n%s", got)
+		}
+	})
+
+	t.Run("no prior help: no recall line", func(t *testing.T) {
+		plain := LaborOfferView{LaborID: 1, Worker: "lewis", Reward: 5, DurationMin: 60}
+		var b strings.Builder
+		renderLaborOffers(&b, []LaborOfferView{plain}, 46, true, nameOf)
+		got := b.String()
+		if strings.Contains(got, "lending you a hand") {
+			t.Errorf("a worker with no remembered help should get no recall line; got:\n%s", got)
 		}
 	})
 }

@@ -16,7 +16,10 @@ import "time"
 // per-condition TTL, self-cleared when re-observed otherwise, and read by
 // perception to deprioritize a cue. A new volatile observation ("picked clean",
 // "price seen") is now a new ObservedCondition value + a TTL arm — not another
-// map, clone helper, and surface reader.
+// map, clone helper, and surface reader. Most conditions are place-keyed, but
+// the key also carries an optional PeerID, so a person-scoped belief — an
+// employer's memory of a worker who helped them (ObservedHelpedByWorker,
+// LLM-228) — rides the same store and lifecycle.
 //
 // Restart-lossy by design: these are negative, quickly-re-observed beliefs, not
 // durable knowledge (contrast Actor.KnownPlaces, the durable Half-A substrate,
@@ -56,12 +59,24 @@ const (
 	// worker, so this drops the business from the seek-work directory ONLY, on a
 	// shorter TTL since a break ends soon.
 	ObservedNoHiring
+	// ObservedHelpedByWorker — an employer's memory that a specific worker
+	// COMPLETED A PAID job for them (LLM-228). PERSON-keyed (the only such
+	// condition): the key carries the worker's PeerID with StructureID/ItemKind
+	// empty, and the memory lives on the EMPLOYER's store — the mirror of
+	// ObservedDeclinedWork, which lives on the worker keyed by the employer's
+	// workplace. Stamped at labor settle (helped_by_worker.go); perception
+	// surfaces it at the "## Work offers awaiting your decision" section when that
+	// worker solicits the employer again, so the re-hire choice recalls the past
+	// help rather than being pitched a hire-value argument (LLM-224 / #690-#691).
+	ObservedHelpedByWorker
 )
 
 // ttl is how long an observation of this condition stays actionable before
-// perception ignores it (the read-time decay applied by Active). Both are 4
-// game-hours today, carried as the existing named consts so each fact's TTL
-// stays documented next to its capture code (closed_business.go / out_of_stock.go).
+// perception ignores it (the read-time decay applied by Active). Each arm reads
+// the named const kept next to that fact's capture code, so a TTL stays
+// documented where the fact is stamped (closed_business.go / out_of_stock.go /
+// declined_work.go / no_hiring.go / helped_by_worker.go). An unknown condition
+// returns 0 → Active false (safe default).
 func (c ObservedCondition) ttl() time.Duration {
 	switch c {
 	case ObservedClosed:
@@ -72,6 +87,8 @@ func (c ObservedCondition) ttl() time.Duration {
 		return DeclinedWorkMemoryTTL
 	case ObservedNoHiring:
 		return NoHiringMemoryTTL
+	case ObservedHelpedByWorker:
+		return HelpedByWorkerMemoryTTL
 	}
 	return 0
 }
@@ -80,12 +97,17 @@ func (c ObservedCondition) ttl() time.Duration {
 // condition observed, and — for per-item conditions like ObservedOutOfStock —
 // the item (empty for whole-structure conditions like ObservedClosed). The
 // structure is the buy-menu / move_to handle (a vendor's WORKPLACE), matching
-// what the cue names and the actor walks to. All fields are comparable, so the
-// key is usable as a map key.
+// what the cue names and the actor walks to. One condition is instead about a
+// PERSON: ObservedHelpedByWorker carries the worker's PeerID (structure/item
+// empty) — an employer's memory of who helped them. All fields are comparable,
+// so the key is usable as a map key.
 type ObservedStateKey struct {
 	StructureID StructureID
 	ItemKind    ItemKind
-	Condition   ObservedCondition
+	// PeerID scopes a person-keyed condition (ObservedHelpedByWorker) to the
+	// remembered actor. Empty for the place-keyed conditions.
+	PeerID    ActorID
+	Condition ObservedCondition
 }
 
 // ObservedStates is an actor's decaying experiential memory of observed place
@@ -134,6 +156,12 @@ func (o *ObservedStates) Clear(key ObservedStateKey) {
 // beliefs about that place. nil-safe; deleting keys mid-range is permitted by
 // the Go spec.
 func (o *ObservedStates) ForgetStructure(structureID StructureID) {
+	if structureID == "" {
+		// Person-keyed conditions (ObservedHelpedByWorker) carry an empty
+		// StructureID; a walk-commit only ever clears a real destination, so this
+		// guard keeps a stray ForgetStructure("") from wiping those memories.
+		return
+	}
 	for key := range o.at {
 		if key.StructureID == structureID {
 			delete(o.at, key)

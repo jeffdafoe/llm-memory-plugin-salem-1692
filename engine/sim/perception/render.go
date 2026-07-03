@@ -268,7 +268,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// LLM-26: the employer's pending work-offer decisions sit alongside pay
 	// offers (both are "someone wants my answer"); the worker affordance cue
 	// follows so a free worker sees the option to offer their labor.
-	renderLaborOffers(&ephemeral, p.LaborOffersForMe, p.Actor.Coins, nameOf)
+	renderLaborOffers(&ephemeral, p.LaborOffersForMe, p.Actor.Coins, p.SubjectProducesGoods, nameOf)
 	renderLaborAffordance(&ephemeral, p.CanSolicitWork)
 	// LLM-152/160: the directional half of seek-work — the town's businesses to head
 	// to, by their resolvable names. Sits with the labor affordance; non-empty
@@ -2195,7 +2195,7 @@ func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason, nam
 // few (bounded by co-present workers), and the section must always carry the
 // labor_id whenever gateTools advertises the response tools (the discussion-109
 // invariant). LLM-26.
-func renderLaborOffers(b *strings.Builder, offers []LaborOfferView, employerCoins int, nameOf func(sim.ActorID) string) {
+func renderLaborOffers(b *strings.Builder, offers []LaborOfferView, employerCoins int, employerProduces bool, nameOf func(sim.ActorID) string) {
 	if len(offers) == 0 {
 		return
 	}
@@ -2208,6 +2208,21 @@ func renderLaborOffers(b *strings.Builder, offers []LaborOfferView, employerCoin
 		// ("5 coins", "1 porridge", "1 porridge and 2 coins").
 		fmt.Fprintf(b, "%d. %s offers to do a job for you for %s — about %s of work (offer id %d)\n",
 			i+1, worker, formatOfferPayment(o.Reward, o.RewardItems), humanizeWorkMinutes(o.DurationMin), o.LaborID)
+		// LLM-228: the returning-helper recall. When this worker completed a paid
+		// job for the employer within the memory window, name the past help so the
+		// re-hire choice is informed experientially — not by an engine hire-value
+		// pitch at the decision point (a pitch removed in #691). Plain recall, no
+		// directive: it states the fact and leaves accept/decline to the model.
+		// Only a producing keeper actually "got more done" from the help; a
+		// non-producer gets the bare social beat so the line never claims output
+		// that never happened.
+		if o.HelpedBeforeRecently {
+			if employerProduces {
+				fmt.Fprintf(b, "You remember %s lending you a hand recently, and you got more done for it.\n", worker)
+			} else {
+				fmt.Fprintf(b, "You remember %s lending you a hand recently.\n", worker)
+			}
+		}
 		// A reward the employer can't cover is a doomed accept: accept_work's
 		// gate 8 would only flip the offer to failed_unavailable
 		// (employerCanCoverLaborReward, labor_commands.go), so the model

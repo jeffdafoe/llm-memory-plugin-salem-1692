@@ -1,0 +1,17 @@
+# Your turn
+
+## What just happened
+(nothing specific — this is a routine check-in)
+
+
+## You
+Coins in your purse: 50.
+
+## Around you
+You are inside The Inn, with Anne Walker.
+
+## Work offers awaiting your decision
+1. Anne Walker offers to do a job for you for 3 coins — about 1 hour of work (offer id 1)
+You remember Anne Walker lending you a hand recently.
+Respond with accept_work or decline_work, passing the offer id as labor_id. Then also use speak for a brief reply, because the work response itself passes in silence.
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.

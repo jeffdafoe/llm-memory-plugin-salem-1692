@@ -163,6 +163,45 @@ func TestBuildLaborViews_ScanShape(t *testing.T) {
 	}
 }
 
+// TestBuildLaborOffersForMe_HelpedBeforeKeyedByWorker — LLM-228: the
+// returning-helper recall flag is keyed by the SOLICITING worker. An employer
+// who remembers Anne must mark only Anne's offer HelpedBeforeRecently, never
+// Lewis's — the (a)-class mismatch (surfacing the recall for the wrong worker)
+// the flag exists to avoid. Pins that buildLaborOffersForMe reads the employer's
+// Observed store by o.WorkerID.
+func TestBuildLaborOffersForMe_HelpedBeforeKeyedByWorker(t *testing.T) {
+	now := time.Date(2026, 7, 3, 11, 0, 0, 0, time.UTC)
+	hannah := &sim.ActorSnapshot{
+		DisplayName: "Hannah",
+		Observed: sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
+			{PeerID: "anne", Condition: sim.ObservedHelpedByWorker}: now.Add(-time.Hour),
+		}),
+	}
+	snap := &sim.Snapshot{
+		PublishedAt: now,
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			"hannah": hannah,
+			"anne":   {DisplayName: "Anne"},
+			"lewis":  {DisplayName: "Lewis"},
+		},
+		LaborLedger: map[sim.LaborID]*sim.LaborOffer{
+			1: {ID: 1, WorkerID: "anne", EmployerID: "hannah", Reward: 3, DurationMin: 60, State: sim.LaborStatePending},
+			2: {ID: 2, WorkerID: "lewis", EmployerID: "hannah", Reward: 3, DurationMin: 60, State: sim.LaborStatePending},
+		},
+	}
+
+	got := map[sim.ActorID]bool{}
+	for _, o := range buildLaborOffersForMe(snap, "hannah") {
+		got[o.Worker] = o.HelpedBeforeRecently
+	}
+	if !got["anne"] {
+		t.Errorf("Anne completed a job for Hannah — her offer should be HelpedBeforeRecently=true, got %+v", got)
+	}
+	if got["lewis"] {
+		t.Errorf("Hannah has no helped-by memory of Lewis — his offer must not be flagged, got %+v", got)
+	}
+}
+
 // TestBuildLaboring_PrefersActiveJob — if two Working offers ever coexist for a
 // worker (the sweep-lag overlap state; unreachable in normal flow but defended),
 // buildLaboring picks the one with the LATEST WorkingUntil — the active job —
