@@ -2192,12 +2192,14 @@ func buildNeedRedirect(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, sat *Sa
 // satiation cue's own priority order: consume what's carried, else the nearest
 // free source (FreeSources is already nearest-first), else the nearest usable
 // vendor (Vendors is already nearest-first). A vendor is usable when it is not
-// remembered out of stock and is affordable — affordability is experiential
-// (LLM-176): a known remembered price the actor can't meet skips it, but an
-// unknown price (costCoins == 0, never bought there) does NOT — the actor walks
-// over and learns it. Remembered-shut vendors never reach this list — the
-// satiation build gate drops them (LLM-222) — so no shut check is needed here.
-// nil when the need has no resolvable target.
+// remembered out of stock and is payable — payability is experiential (LLM-176):
+// a known remembered price the actor can't meet by coin skips it, but an unknown
+// price (costCoins == 0, never bought there) does NOT — the actor walks over and
+// learns it. A vendor the satiation gate marked Barter (coins short but goods to
+// trade, LLM-222) also stays: it's a real target the actor can transact at, so
+// skipping it would drift from the rendered buy cue. Remembered-shut vendors never
+// reach this list — the satiation build gate drops them (LLM-222) — so no shut
+// check is needed here. nil when the need has no resolvable target.
 func needRedirectFor(nv SatiationNeedView, coins int) *NeedRedirectView {
 	if len(nv.OwnStock) > 0 {
 		return &NeedRedirectView{Kind: NeedRedirectConsume, Verb: nv.Verb, ItemLabel: nv.OwnStock[0].Label}
@@ -2210,8 +2212,8 @@ func needRedirectFor(nv SatiationNeedView, coins int) *NeedRedirectView {
 		if v.OutOfStock {
 			continue
 		}
-		if v.costCoins > 0 && coins < v.costCoins {
-			continue // a remembered price the looping actor can't meet
+		if v.costCoins > 0 && coins < v.costCoins && !v.Barter {
+			continue // a remembered price the looping actor can neither meet by coin nor barter (LLM-222)
 		}
 		return &NeedRedirectView{Kind: NeedRedirectBuy, Verb: nv.Verb, ItemLabel: v.ItemLabel, TargetLabel: v.StructureLabel, TargetID: string(v.StructureID)}
 	}

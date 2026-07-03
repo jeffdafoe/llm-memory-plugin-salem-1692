@@ -756,7 +756,7 @@ func renderSatiation(b *strings.Builder, v *SatiationView) {
 				// only invite a pay_with_item the buyer can't fund). Otherwise the
 				// normal last-paid coin hint, when one is on record.
 				if vd.Barter {
-					b.WriteString(", which your coins won't cover — offer goods you carry in trade instead (pay_items)")
+					b.WriteString(", which your coins won't cover — offer goods you carry in trade instead (use pay_with_item with pay_items)")
 				} else if vd.CostText != "" {
 					fmt.Fprintf(b, ", %s", vd.CostText)
 				}
