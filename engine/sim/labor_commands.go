@@ -925,6 +925,9 @@ func startLaborWork(w *World, offer *LaborOffer, worker, employer *Actor, at tim
 // for the bounded-wait backstop to void. World-goroutine-only.
 func sendWorkerToWorkplace(w *World, worker, employer *Actor, leaveHuddle bool, at time.Time) {
 	ws := employer.WorkStructureID
+	if ws == "" {
+		return // no post to walk to (a workless employer starts work in place)
+	}
 	var err error
 	if actorAtWorkpost(w, employer, ws) {
 		_, err = MoveToStructure(worker.ID, ws, at).Fn(w)
@@ -941,14 +944,21 @@ func sendWorkerToWorkplace(w *World, worker, employer *Actor, leaveHuddle bool, 
 		worker.ID, ws, err)
 }
 
-// workerHiredAt reports whether workerID currently holds a live labor job
-// (EnRoute or Working) whose employer's work structure is structureID — i.e.
-// the worker has been taken on as staff-for-the-window at this establishment
-// (LLM-229). It is the labor leg of structureMembershipAllows: a hired worker
-// may enter the employer's workplace, even an owner-only one, to do the job —
-// the same way the permanent Staff leg admits a regular employee. The grant
-// lives only as long as the offer does: once the job settles or the sweep voids
-// it, the worker is no longer a member. World-goroutine-only.
+// workerHiredAt reports whether workerID may enter structureID by virtue of a
+// live labor job there (LLM-229) — the labor leg of structureMembershipAllows,
+// admitting a hired worker to the employer's workplace (even an owner-only one)
+// the same way the permanent Staff leg admits a regular employee. The grant is
+// state-scoped to hold the "never enter ahead of the owner" invariant:
+//
+//   - Working — full staff-for-the-window grant (the worker is already at the
+//     post working; the owner was present when it started).
+//   - EnRoute — admitted ONLY while the owner is at the post. A relocating
+//     worker must not be able to walk into an owner-only establishment before
+//     its owner; the arrival subscriber sends them in exactly when the owner is
+//     present, and this gate is what MoveActor re-validates on the enter path.
+//
+// The grant lives only as long as the offer does: once the job settles or the
+// sweep voids it, the worker is no longer a member. World-goroutine-only.
 func workerHiredAt(w *World, workerID ActorID, structureID StructureID) bool {
 	if workerID == "" || structureID == "" {
 		return false
@@ -957,11 +967,17 @@ func workerHiredAt(w *World, workerID ActorID, structureID StructureID) bool {
 		if o == nil || o.WorkerID != workerID {
 			continue
 		}
-		if o.State != LaborStateWorking && o.State != LaborStateEnRoute {
+		employer := w.Actors[o.EmployerID]
+		if employer == nil || employer.WorkStructureID != structureID {
 			continue
 		}
-		if employer := w.Actors[o.EmployerID]; employer != nil && employer.WorkStructureID == structureID {
+		switch o.State {
+		case LaborStateWorking:
 			return true
+		case LaborStateEnRoute:
+			if actorAtWorkpost(w, employer, structureID) {
+				return true
+			}
 		}
 	}
 	return false

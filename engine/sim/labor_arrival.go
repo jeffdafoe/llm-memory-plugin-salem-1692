@@ -78,25 +78,32 @@ func advanceEnRouteOffer(w *World, offer *LaborOffer, at time.Time) {
 	if ws == "" {
 		return // no post to reach — the backstop voids it
 	}
+	// Everything below is gated on the worker having actually REACHED the
+	// workplace (atWorkplaceVicinity). This matters because advanceEnRouteOffer
+	// runs on the EMPLOYER's arrival too, across all their en-route offers: a
+	// worker still walking across town must not be pulled early or restarted —
+	// they fall through untouched and their OWN arrival handles them.
 	ownerPresent := actorAtWorkpost(w, employer, ws)
 	switch {
+	case !atWorkplaceVicinity(w, worker, ws):
+		// Worker hasn't reached the workplace yet — nothing to do here.
+		return
 	case ownerPresent && actorAtWorkpost(w, worker, ws):
 		// Worker at the post with the owner present — the work begins.
 		startLaborWork(w, offer, worker, employer, at)
 	case ownerPresent:
-		// The owner is here but the worker isn't at the post yet (arrived at the
-		// loiter of an interior shop, or the owner just showed while they waited)
-		// — send them in. The enter-arrival that follows starts the job.
+		// The owner is here and the worker has reached the loiter of an interior
+		// shop (not yet inside) — send them in. The enter-arrival that follows
+		// starts the job. Re-issuing to a worker already walking in is a
+		// MoveToStructure no-op (its same-structure destination guard), so a
+		// repeat employer arrival can't churn the walk.
 		offer.EnRouteWaiting = false
 		sendWorkerToWorkplace(w, worker, employer, false, at)
 	default:
-		// Owner absent. A worker who has reached the workplace waits at the loiter
-		// for the owner; a still-walking worker just keeps walking. Flag the
-		// arrived-and-waiting case so the self-state reads "waiting for X" rather
-		// than "on your way to X."
-		if atWorkplaceVicinity(w, worker, ws) {
-			offer.EnRouteWaiting = true
-		}
+		// Owner absent and the worker is at the workplace — wait at the loiter
+		// for the owner (never enter ahead of them). Flag it so the self-state
+		// reads "waiting for X" rather than "on your way to X."
+		offer.EnRouteWaiting = true
 	}
 }
 
