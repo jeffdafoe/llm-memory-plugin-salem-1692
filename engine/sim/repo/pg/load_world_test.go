@@ -95,6 +95,18 @@ func (f fakeOrders) MaxPaidActionLogLedgerID(_ context.Context) (int64, error) {
 	return f.paidActionLogMaxID, nil
 }
 
+type fakeLaborContracts struct {
+	out map[sim.LaborID]*sim.LaborOffer
+	err error
+}
+
+func (f fakeLaborContracts) LoadAll(_ context.Context) (map[sim.LaborID]*sim.LaborOffer, error) {
+	return f.out, f.err
+}
+func (fakeLaborContracts) SaveSnapshot(_ context.Context, _ sim.Tx, _ map[sim.LaborID]*sim.LaborOffer) error {
+	return nil
+}
+
 type fakeEnvironment struct {
 	env      sim.WorldEnvironment
 	phase    sim.Phase
@@ -202,6 +214,7 @@ type fakeRepoOpts struct {
 	itemKinds      sim.ItemKindsRepo
 	terrain        sim.TerrainRepo
 	villageObjects sim.VillageObjectsRepo
+	laborContracts sim.LaborContractsRepo
 }
 
 func (o fakeRepoOpts) build() sim.Repository {
@@ -225,6 +238,7 @@ func (o fakeRepoOpts) build() sim.Repository {
 		ItemKinds:            pick(o.itemKinds, fakeItemKinds{out: map[sim.ItemKind]*sim.ItemKindDef{}}).(sim.ItemKindsRepo),
 		Terrain:              pick(o.terrain, fakeTerrain{out: &sim.Terrain{}}).(sim.TerrainRepo),
 		VillageObjects:       pick(o.villageObjects, fakeVillageObjects{out: map[sim.VillageObjectID]*sim.VillageObject{}}).(sim.VillageObjectsRepo),
+		LaborContracts:       pick(o.laborContracts, fakeLaborContracts{out: map[sim.LaborID]*sim.LaborOffer{}}).(sim.LaborContractsRepo),
 		ActionLog:            fakeActionLog{},
 		TickTelemetry:        fakeTickTelemetry{},
 	}
@@ -302,6 +316,7 @@ func TestLoadWorld_NotImpl_Tolerated(t *testing.T) {
 		ItemKinds:            notImplItemKinds{},
 		Terrain:              notImplTerrain{},
 		VillageObjects:       fakeVillageObjects{out: map[sim.VillageObjectID]*sim.VillageObject{}},
+		LaborContracts:       fakeLaborContracts{out: map[sim.LaborID]*sim.LaborOffer{}},
 		ActionLog:            notImplActionLog{},
 		TickTelemetry:        notImplTickTelemetry{},
 	}
@@ -335,6 +350,7 @@ func TestLoadWorld_NotImpl_Required_HardFails(t *testing.T) {
 		ItemKinds:            fakeItemKinds{out: map[sim.ItemKind]*sim.ItemKindDef{}},
 		Terrain:              fakeTerrain{out: &sim.Terrain{}},
 		VillageObjects:       fakeVillageObjects{out: map[sim.VillageObjectID]*sim.VillageObject{}},
+		LaborContracts:       fakeLaborContracts{out: map[sim.LaborID]*sim.LaborOffer{}},
 		ActionLog:            fakeActionLog{},
 		TickTelemetry:        fakeTickTelemetry{},
 	}
@@ -922,6 +938,7 @@ func TestLoadWorld_ActorHuddleReconciliation_SkippedWhenHuddlesNotImpl(t *testin
 		ItemKinds:            fakeItemKinds{out: map[sim.ItemKind]*sim.ItemKindDef{}},
 		Terrain:              fakeTerrain{out: &sim.Terrain{}},
 		VillageObjects:       fakeVillageObjects{out: map[sim.VillageObjectID]*sim.VillageObject{}},
+		LaborContracts:       fakeLaborContracts{out: map[sim.LaborID]*sim.LaborOffer{}},
 		ActionLog:            fakeActionLog{},
 		TickTelemetry:        fakeTickTelemetry{},
 	}
@@ -961,6 +978,7 @@ func TestLoadWorld_ActorStructureRefs_SkippedWhenStructuresNotImpl(t *testing.T)
 		ItemKinds:            fakeItemKinds{out: map[sim.ItemKind]*sim.ItemKindDef{}},
 		Terrain:              fakeTerrain{out: &sim.Terrain{}},
 		VillageObjects:       fakeVillageObjects{out: map[sim.VillageObjectID]*sim.VillageObject{}},
+		LaborContracts:       fakeLaborContracts{out: map[sim.LaborID]*sim.LaborOffer{}},
 		ActionLog:            fakeActionLog{},
 		TickTelemetry:        fakeTickTelemetry{},
 	}
@@ -992,6 +1010,7 @@ func TestLoadWorld_ActorReconciliation_SkippedWhenActorsNotImpl(t *testing.T) {
 		ItemKinds:            fakeItemKinds{out: map[sim.ItemKind]*sim.ItemKindDef{}},
 		Terrain:              fakeTerrain{out: &sim.Terrain{}},
 		VillageObjects:       fakeVillageObjects{out: map[sim.VillageObjectID]*sim.VillageObject{}},
+		LaborContracts:       fakeLaborContracts{out: map[sim.LaborID]*sim.LaborOffer{}},
 		ActionLog:            fakeActionLog{},
 		TickTelemetry:        fakeTickTelemetry{},
 	}

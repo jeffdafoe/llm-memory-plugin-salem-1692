@@ -2,6 +2,7 @@ package sim
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"math"
 	"sort"
@@ -280,23 +281,171 @@ func settleCompletedLabor(w *World, offer *LaborOffer, now time.Time) {
 	announceLaborCloseoutIfShopClosed(w, employer, worker, formatPayment(offer.Reward, offer.RewardItems), now)
 }
 
-// reconcileStrandedLaboringOnLoad frees an actor that was checkpointed mid-job
-// (LLM-162). Actor.State IS persisted (sim_state), so a worker in StateLaboring
-// at checkpoint reloads still laboring — but its backing LaborOffer does not:
-// World.LaborLedger has no repo and is restart-lossy by design (labor_ledger.go),
-// and LaborID/LaboringUntil are transient (never checkpointed). The only path
-// that clears StateLaboring is the completion sweep, which settles off the
-// ledger; with the ledger empty at load, a still-laboring actor would never be
-// freed and would sit occupied forever. Because the ledger is ALWAYS empty when
-// FinalizeLoad runs (it only ever fills from live solicit/accept commands during
-// the run), any laboring actor at load is necessarily stranded — so the reset is
-// unconditional. No coins are touched: the reward only ever moves at completion,
-// never before, so there is no torn coin state to recover (the WORK-410 orphan in
-// reverse the actor.go doc describes). Idempotent; world-goroutine-only (called
-// from FinalizeLoad).
-func reconcileStrandedLaboringOnLoad(a *Actor) {
+// rehydrateLaborContractsOnLoad loads the durable accepted-contract mirror
+// (LLM-259) into World.LaborLedger and re-establishes the transient state a
+// restart would otherwise lose. MUST run from FinalizeLoad BEFORE the
+// reconcileStrandedLaboringOnLoad pass, so a resumed worker isn't reverted to
+// idle. World-goroutine-only (FinalizeLoad runs before Run starts).
+//
+// Only en_route/working offers are ever persisted (SaveWorld filters at build
+// time). A loaded row that isn't a usable accepted contract — non-resumable
+// state, empty or dangling worker/employer ref, a bad reward/duration/reward
+// item, a `working` contract whose worker didn't reload StateLaboring, or one of
+// SEVERAL accepted contracts for the same worker (the one-live-job invariant) —
+// is dropped LOUDLY (per-row + aggregate log), NOT added to the live ledger. Such a
+// row never arises from a consistent checkpoint (actor + contract are written in
+// the SAME SaveWorld Tx, so they agree by construction); it means a manual /
+// out-of-band edit (e.g. an actor deleted mid-job without its contract cleaned).
+// A live village must still boot, and a dropped contract is data-clean (no coins
+// move — settle-at-completion), so warn-and-drop, matching the LoadWorld
+// dropStructureBoundOrphanScenes posture for out-of-band-mutable refs. The
+// dropped row is swept from the table on the next checkpoint (absent from the
+// ledger → absent from the snapshot).
+//
+// For each row (kept or dropped):
+//
+//   - floor laborLedgerSeq to the max loaded LaborID, so the next SolicitWork
+//     mints a fresh id. The ledger id is transient — NOT a checkpointed actor
+//     field — so without this the counter restarts at 0 and a new offer could
+//     reuse a loaded id and clobber its row at the next checkpoint. Mirrors the
+//     quoteSeq / payLedgerSeq safety floors in FinalizeLoad.
+//
+// For each KEPT row:
+//
+//   - a `working` contract restores the transient worker mirror LaborID +
+//     LaboringUntil (from WorkingUntil). State is already StateLaboring (the
+//     usable-check proved it), so it is not re-forced; the completion sweep then
+//     settles the job normally at WorkingUntil.
+//
+//   - an `en_route` contract needs no mirror (en_route never sets StateLaboring):
+//     the worker's walk to the post resumes via the boot ResumeCheckpointedWalks
+//     sweep, and the resulting ActorArrived advances the rehydrated offer through
+//     handleLaborArrivalOnArrival. A worker already waiting at the post
+//     (EnRouteWaiting) resumes on the owner's arrival, or the bounded-wait
+//     backstop voids the offer past EnRouteDeadline — same as the live path.
+func (w *World) rehydrateLaborContractsOnLoad(ctx context.Context) error {
+	contracts, err := w.repo.LaborContracts.LoadAll(ctx)
+	if err != nil {
+		return err
+	}
+	var dropped int
+	// Pass 1: floor the LaborID allocator for every loaded row (even a dropped one,
+	// so a post-restart mint never reuses a persisted id), drop the per-row-unusable
+	// ones loudly, and collect the survivors + count them per worker. The
+	// one-live-job-per-worker invariant (workerHasLiveJob gates accept) is a
+	// cross-row property, so it's checked after per-row validity.
+	survivors := make([]*LaborOffer, 0, len(contracts))
+	acceptedPerWorker := make(map[ActorID]int)
+	for id, offer := range contracts {
+		if offer == nil {
+			continue
+		}
+		if uint64(id) > w.laborLedgerSeq {
+			w.laborLedgerSeq = uint64(id)
+		}
+		if reason := w.unusableLaborContract(id, offer); reason != "" {
+			log.Printf("sim: rehydrate labor contract %d (worker=%q employer=%q state=%q): %s — dropping", id, offer.WorkerID, offer.EmployerID, offer.State, reason)
+			dropped++
+			continue
+		}
+		survivors = append(survivors, offer)
+		acceptedPerWorker[offer.WorkerID]++
+	}
+	// Pass 2: add the survivors, but drop ALL of a worker's contracts if it has more
+	// than one accepted (en_route/working) — a worker can't be laboring two jobs at
+	// once. Dropping every conflicting one (rather than arbitrarily resuming the
+	// "first", which is map-order-nondeterministic) is deterministic and refuses to
+	// resume the wrong job; the worker falls to reconcileStrandedLaboringOnLoad and
+	// re-enters the labor market cleanly.
+	for _, offer := range survivors {
+		if acceptedPerWorker[offer.WorkerID] > 1 {
+			log.Printf("sim: rehydrate labor contract %d: worker %q has %d accepted contracts (one-live-job-per-worker invariant violated) — dropping all", offer.ID, offer.WorkerID, acceptedPerWorker[offer.WorkerID])
+			dropped++
+			continue
+		}
+		w.LaborLedger[offer.ID] = offer
+		if offer.State != LaborStateWorking {
+			continue
+		}
+		worker := w.Actors[offer.WorkerID]
+		worker.LaborID = offer.ID
+		if offer.WorkingUntil != nil {
+			until := *offer.WorkingUntil
+			worker.LaboringUntil = &until
+		} else {
+			worker.LaboringUntil = nil
+		}
+	}
+	if dropped > 0 {
+		log.Printf("sim: rehydrate labor contracts: dropped %d unusable/conflicting contract(s) — see per-row logs above", dropped)
+	}
+	return nil
+}
+
+// unusableLaborContract returns a non-empty reason string if a loaded contract
+// cannot be resumed and must be dropped, or "" if it is a usable accepted
+// contract. World-goroutine-only (reads w.Actors). See
+// rehydrateLaborContractsOnLoad for the warn-and-drop rationale.
+func (w *World) unusableLaborContract(id LaborID, o *LaborOffer) string {
+	if o.ID != id {
+		return fmt.Sprintf("map key %d != offer.ID %d (loader inconsistency)", id, o.ID)
+	}
+	if o.State != LaborStateEnRoute && o.State != LaborStateWorking {
+		return fmt.Sprintf("non-resumable state %q", o.State)
+	}
+	if o.WorkerID == "" || o.EmployerID == "" {
+		return "empty worker/employer id"
+	}
+	worker := w.Actors[o.WorkerID]
+	if worker == nil {
+		return "worker missing from loaded actors"
+	}
+	if _, ok := w.Actors[o.EmployerID]; !ok {
+		return "employer missing from loaded actors"
+	}
+	if o.Reward < 0 {
+		return fmt.Sprintf("negative reward %d", o.Reward)
+	}
+	if o.DurationMin <= 0 {
+		return fmt.Sprintf("non-positive duration_min %d", o.DurationMin)
+	}
+	for _, ri := range o.RewardItems {
+		if ri.Kind == "" || ri.Qty <= 0 {
+			return fmt.Sprintf("invalid reward item {kind:%q qty:%d}", ri.Kind, ri.Qty)
+		}
+	}
+	// A working contract's worker MUST have reloaded StateLaboring — actor +
+	// contract checkpoint atomically in one Tx. A disagreement means the actor was
+	// edited out-of-band without cleaning the contract; drop the stale obligation
+	// rather than force the actor back to laboring.
+	if o.State == LaborStateWorking && worker.State != StateLaboring {
+		return fmt.Sprintf("working but worker loaded as %q not laboring (actor/contract disagreement)", worker.State)
+	}
+	return ""
+}
+
+// reconcileStrandedLaboringOnLoad frees an actor checkpointed mid-job whose
+// backing contract did NOT survive the restart (the genuine orphan). Actor.State
+// IS persisted (sim_state), so a worker in StateLaboring at checkpoint reloads
+// still laboring — but its LaborOffer only survives if it was an accepted
+// (en_route/working) contract that rehydrateLaborContractsOnLoad just restored
+// into World.LaborLedger (LLM-259). The only path that clears StateLaboring is
+// the completion sweep, which settles off the ledger; a laboring actor with NO
+// live ledger job would never be freed and would sit occupied forever, so it is
+// reverted to idle here.
+//
+// Because rehydrate runs first, the check is now conditional: a worker whose
+// working contract loaded holds a live ledger job (workerHasLiveJob) and RESUMES
+// — untouched here; only a laboring actor with no restored contract is stranded
+// and reset. No coins are touched: the reward only ever moves at completion, so
+// there is no torn coin state to recover. Idempotent; world-goroutine-only
+// (called from FinalizeLoad, after rehydrateLaborContractsOnLoad).
+func reconcileStrandedLaboringOnLoad(w *World, a *Actor) {
 	if a == nil || a.State != StateLaboring {
 		return
+	}
+	if workerHasLiveJob(w, a.ID) {
+		return // a rehydrated working contract — resumes, not stranded
 	}
 	a.State = StateIdle
 	a.LaborID = 0

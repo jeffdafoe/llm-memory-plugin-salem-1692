@@ -26,6 +26,7 @@ func NewRepository() (sim.Repository, *Handles) {
 	terrain := NewTerrainRepo()
 	structures := NewStructuresRepo()
 	villageObjects := NewVillageObjectsRepo()
+	laborContracts := NewLaborContractsRepo()
 	h := &Handles{
 		Actors:               actors,
 		Huddles:              huddles,
@@ -40,6 +41,7 @@ func NewRepository() (sim.Repository, *Handles) {
 		Terrain:              terrain,
 		Structures:           structures,
 		VillageObjects:       villageObjects,
+		LaborContracts:       laborContracts,
 	}
 	return sim.Repository{
 		Actors:               actors,
@@ -55,6 +57,7 @@ func NewRepository() (sim.Repository, *Handles) {
 		Terrain:              terrain,
 		Structures:           structures,
 		VillageObjects:       villageObjects,
+		LaborContracts:       laborContracts,
 		ActionLog:            noopActionLog{},
 		TickTelemetry:        noopTickTelemetry{},
 		Begin: func(_ context.Context) (sim.Tx, error) {
@@ -81,6 +84,7 @@ type Handles struct {
 	Terrain              *TerrainRepo
 	Structures           *StructuresRepo
 	VillageObjects       *VillageObjectsRepo
+	LaborContracts       *LaborContractsRepo
 }
 
 // noopActionLog accepts appends silently; tests don't need to assert

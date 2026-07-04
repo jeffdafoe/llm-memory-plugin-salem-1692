@@ -15,7 +15,7 @@ import (
 // Postgres transaction. Running that on the world goroutine (the only
 // goroutine allowed to touch live world state) would stall all command
 // processing for the duration of the write. Instead the world goroutine
-// does a fast in-memory deep-clone of the seven checkpoint aggregates into
+// does a fast in-memory deep-clone of the eight checkpoint aggregates into
 // an immutable CheckpointSnapshot, and the slow Tx runs OFF the world
 // goroutine against that frozen copy. The deep-clone is the quiescence
 // point, not the Tx.
@@ -33,12 +33,17 @@ import (
 // the durable write can run off the world goroutine without racing world
 // mutations. Built by World.BuildCheckpointSnapshot on the world goroutine.
 type CheckpointSnapshot struct {
-	Actors          map[ActorID]*Actor
-	Structures      map[StructureID]*Structure
-	Huddles         map[HuddleID]*Huddle
-	Scenes          map[SceneID]*Scene
-	Orders          map[OrderID]*Order
-	VillageObjects  map[VillageObjectID]*VillageObject
+	Actors         map[ActorID]*Actor
+	Structures     map[StructureID]*Structure
+	Huddles        map[HuddleID]*Huddle
+	Scenes         map[SceneID]*Scene
+	Orders         map[OrderID]*Order
+	VillageObjects map[VillageObjectID]*VillageObject
+	// LaborContracts is the accepted-but-unsettled subset of World.LaborLedger
+	// — en_route + working offers only (LLM-259). Filtered at build time (below):
+	// pending and terminal offers are never checkpointed. SaveWorld mirrors this
+	// exact set into labor_contract, so a restart resumes the arrangement.
+	LaborContracts  map[LaborID]*LaborOffer
 	Environment     WorldEnvironment
 	Phase           Phase
 	MutableSettings MutableWorldSettings
@@ -104,7 +109,7 @@ type DiscoveredKind struct {
 	Category     ItemCategory
 }
 
-// BuildCheckpointSnapshot deep-clones the seven checkpoint aggregates into an
+// BuildCheckpointSnapshot deep-clones the eight checkpoint aggregates into an
 // immutable CheckpointSnapshot.
 //
 // MUST run on the world goroutine — it reads the live maps directly. Off-
@@ -122,6 +127,7 @@ func (w *World) BuildCheckpointSnapshot() *CheckpointSnapshot {
 		Scenes:         make(map[SceneID]*Scene, len(w.Scenes)),
 		Orders:         make(map[OrderID]*Order, len(w.Orders)),
 		VillageObjects: make(map[VillageObjectID]*VillageObject, len(w.VillageObjects)),
+		LaborContracts: make(map[LaborID]*LaborOffer),
 		Environment:    w.Environment,
 		Phase:          w.Phase,
 		MutableSettings: MutableWorldSettings{
@@ -172,6 +178,18 @@ func (w *World) BuildCheckpointSnapshot() *CheckpointSnapshot {
 	}
 	for id, v := range w.VillageObjects {
 		cp.VillageObjects[id] = CloneVillageObject(v)
+	}
+	// LLM-259: carry only the ACCEPTED, non-terminal labor contracts (en_route +
+	// working). pending (unaccepted market chatter) and terminal (settled/failed)
+	// offers stay transient — the whole point is to resume an accepted arrangement
+	// across restart, not to persist the ephemeral solicitation churn. This filter
+	// is the single authoritative gate; the trailing delete-stale in SaveSnapshot
+	// then sweeps a contract that left the accepted set between checkpoints.
+	for id, o := range w.LaborLedger {
+		if o == nil || (o.State != LaborStateEnRoute && o.State != LaborStateWorking) {
+			continue
+		}
+		cp.LaborContracts[id] = CloneLaborOffer(o)
 	}
 	return cp
 }
