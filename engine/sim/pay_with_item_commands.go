@@ -2685,8 +2685,14 @@ func commitPayTransfer(
 			// (AssignBedroomForLodger) happens there, and the eviction exemption
 			// is gated on it. ZBBS-HOME-403 advance booking; see the
 			// salem-engine-v2/lodging codebase note.
-			createOrderForPayWithItem(w, entry, at)
-			orderMinted = true
+			bookedID := createOrderForPayWithItem(w, entry, at)
+			// Postcondition, not trust (code_review R2): orderMinted must
+			// track world state, so a future internal no-op path in the
+			// helper falls back to the order-less write-through below
+			// instead of silently persisting nothing. The two eager
+			// branches get this for free — mintAndFulfillOrderNow errors
+			// out itself when the order isn't in w.Orders post-mint.
+			orderMinted = w.Orders[bookedID] != nil
 			out.booked = true
 		} else {
 			// SAME-DAY walk-in (LLM-84): grant the room NOW, at accept, the same
