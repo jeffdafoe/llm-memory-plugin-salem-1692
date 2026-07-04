@@ -114,23 +114,30 @@ func RestockReorderThresholdMet(currentQty, cap, pct int) bool {
 // cadence). Buy entries are checked first so a buy-side reseller's representative
 // Item is unchanged from before forage existed.
 //
-// The actionability gate is the asymmetry between the two cues (code_review):
-// "## Restocking" renders for ANY low buy item (the supplier is resolved in
-// perception, vendor present or not), so a low buy entry is always actionable. The
-// forage cue, by contrast, renders only when the grower remembers a still-owned
-// forage bush for the item — so a low forage entry warrants ONLY when
-// actorRemembersForageSource holds. Without this gate a high-information forage
-// warrant (WarrantKindRestock bypasses noop-skip) would wake the actor every scan
-// with a cue line pointing at a "## Your bushes to harvest" section buildForage
-// declines to render — a wake loop on forgotten / sold / deleted / never-seeded
-// bushes. Order within each source follows RestockPolicy.Restock (first wins).
-func firstActionableLowEntry(a *Actor, w *World, pct int) (RestockEntry, RestockSource, bool) {
+// The buy side spans the EFFECTIVE demand (LLM-260): explicit `buy` entries plus
+// the ones derived from the actor's produce recipes' unsourced inputs — the same
+// EffectiveBuyEntries set buildRestocking works from.
+//
+// BOTH sources carry an actionability gate mirroring their cue, because a
+// high-information restock warrant (WarrantKindRestock bypasses noop-skip) that
+// points at a section which declines to render is a wake loop — the actor is
+// woken every scan for nothing. Forage warrants only when the grower remembers a
+// still-owned forage bush for the item (actorRemembersForageSource, the
+// buildForage precondition). Buy warrants only when actorHasBuyPath holds — a
+// co-present seller or a surviving walk-to supplier, the buildRestocking
+// LLM-216 item gate. (Before LLM-260 the buy side had no gate: the comment here
+// claimed "## Restocking" renders for any low buy item, which LLM-216 had made
+// false — a low item nobody sells warranted every 60s while the cue rendered
+// nothing. Derived demand for a vendor-less input (water, today) would have
+// mass-produced that loop.) Order within each source follows the entry order
+// (first wins).
+func firstActionableLowEntry(a *Actor, w *World, pct int, now time.Time) (RestockEntry, RestockSource, bool) {
 	policy := a.RestockPolicy
 	if policy == nil {
 		return RestockEntry{}, "", false
 	}
-	for _, e := range policy.BuyEntries() {
-		if RestockReorderThresholdMet(a.Inventory[e.Item], e.Cap(), pct) {
+	for _, e := range EffectiveBuyEntries(w.Recipes, policy) {
+		if RestockReorderThresholdMet(a.Inventory[e.Item], e.Cap(), pct) && actorHasBuyPath(w, a, e.Item, now) {
 			return e, RestockSourceBuy, true
 		}
 	}
@@ -140,6 +147,66 @@ func firstActionableLowEntry(a *Actor, w *World, pct int) (RestockEntry, Restock
 		}
 	}
 	return RestockEntry{}, "", false
+}
+
+// actorHasBuyPath reports whether at least one actionable buy path for item
+// exists for the actor right now — the warrant-side mirror of what makes
+// buildRestocking (perception/restock.go) actually render an item line, so the
+// buy warrant and the "## Restocking" section can never disagree on
+// actionability (the same lockstep discipline the forage side has via
+// actorRemembersForageSource). A path is:
+//
+//   - a CO-PRESENT seller: a qualifying vendor of the item sharing the actor's
+//     current huddle (the cue's buy-here imperative, ZBBS-HOME-388) — actionable
+//     this very tick regardless of the walk-to drops below; or
+//   - a SURVIVING walk-to supplier: a qualifying vendor whose workplace the
+//     actor does not remember finding shut, at a remembered price the purse can
+//     cover (unknown price is kept — patronage earns the number). These are the
+//     LLM-216 drops findItemVendors applies.
+//
+// "Qualifying vendor" mirrors the shared structural-vendorship scan
+// (perception/consumable_vendors.go eachVendorOffer) + the LLM-252 supplier
+// gate: a non-PC actor with a resolvable workplace holding qty>0, not wholesale-
+// gated for this buyer (LLM-223/252), and supplying the item at FIRST HAND
+// (ProducesOrForages) or via the distributor — never a fellow reseller's retail
+// stock. Runs on the world goroutine over live state; perception runs the same
+// tests over the snapshot.
+func actorHasBuyPath(w *World, a *Actor, item ItemKind, now time.Time) bool {
+	buyerIsDistributor := ActorIsDistributor(w.VillageObjects, a.WorkStructureID)
+	for vendorID, vendor := range w.Actors {
+		if vendor == nil || vendorID == a.ID || vendor.Kind == KindPC {
+			continue
+		}
+		if vendor.WorkStructureID == "" || w.Structures[vendor.WorkStructureID] == nil {
+			continue
+		}
+		if vendor.Inventory[item] <= 0 {
+			continue
+		}
+		if !buyerIsDistributor && SellerAtWholesaler(w.VillageObjects, vendor.WorkStructureID) {
+			continue
+		}
+		if !vendor.RestockPolicy.ProducesOrForages(item) && !ActorIsDistributor(w.VillageObjects, vendor.WorkStructureID) {
+			continue // LLM-252: first-hand suppliers (or the distributor) only
+		}
+		// Co-present seller: pay_with_item resolves this very tick, and the cue's
+		// buy-here imperative renders without consulting the walk-to drops.
+		// DisplayName is required because coPresentSellerForItem can't name a
+		// nameless seller and falls back to the walk-to list.
+		if a.CurrentHuddleID != "" && vendor.CurrentHuddleID == a.CurrentHuddleID && vendor.DisplayName != "" {
+			return true
+		}
+		// Walk-to drops (LLM-216): a supplier remembered shut, or one whose
+		// remembered price the purse can't cover, is not a destination.
+		if a.Observed.Active(ObservedStateKey{StructureID: vendor.WorkStructureID, Condition: ObservedClosed}, now) {
+			continue
+		}
+		if price := LastPaidCoins(w.PriceBook, a.ID, vendorID, item); price > 0 && a.Coins < price {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // actorRemembersForageSource reports whether the actor remembers a still-owned
@@ -228,7 +295,7 @@ func EvaluateRestock(now time.Time) Command {
 				if !restockEligible(a, now) {
 					continue
 				}
-				low, src, ok := firstActionableLowEntry(a, w, pct)
+				low, src, ok := firstActionableLowEntry(a, w, pct, now)
 				if !ok {
 					continue
 				}

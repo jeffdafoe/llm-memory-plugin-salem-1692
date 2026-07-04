@@ -194,9 +194,13 @@ func gatherOwnStock(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, need sim.N
 			continue
 		}
 		out = append(out, OwnStockItem{
-			Label:      itemDisplayLabel(snap, kind),
-			Magnitude:  mag,
-			TradeStock: actorSnap.RestockPolicy.Manages(kind),
+			Label:     itemDisplayLabel(snap, kind),
+			Magnitude: mag,
+			// Effective-policy check (LLM-260): a DERIVED buy input — a recipe
+			// ingredient of something the actor produces, with no hand-authored
+			// entry — is trade stock too, so Hannah's porridge milk demotes from
+			// her casual-eating cue the same way John's explicit stew carrots do.
+			TradeStock: sim.ManagesEffective(snap.Recipes, actorSnap.RestockPolicy, kind),
 			kind:       kind,
 		})
 	}

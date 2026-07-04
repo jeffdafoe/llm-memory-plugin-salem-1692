@@ -33,6 +33,31 @@ func restockWorld(actors ...*Actor) *World {
 	return w
 }
 
+// addSupplier wires a first-hand supplier of item into the world: an NPC
+// stationed at its own workplace structure, holding stock, with a `produce`
+// entry for the item so it passes the LLM-252 supplier gate. Buy warrants are
+// gated on an actionable buy path (LLM-260), so tests exercising a different
+// gate add one of these to keep the path open.
+func addSupplier(w *World, id ActorID, item ItemKind) *Actor {
+	sid := StructureID("shop-" + string(id))
+	v := &Actor{
+		ID:              id,
+		Kind:            KindNPCStateful,
+		DisplayName:     string(id),
+		WorkStructureID: sid,
+		Inventory:       map[ItemKind]int{item: 10},
+		RestockPolicy: &RestockPolicy{Restock: []RestockEntry{
+			{Item: item, Source: RestockSourceProduce, Max: 20},
+		}},
+	}
+	w.Actors[id] = v
+	if w.Structures == nil {
+		w.Structures = map[StructureID]*Structure{}
+	}
+	w.Structures[sid] = &Structure{}
+	return v
+}
+
 // forageBushObj builds an owned forage-to-sell bush: a finite, yield-only
 // (Amount 0) gather row for item with `avail` ripe units.
 func forageBushObj(owner ActorID, item ItemKind, avail int) *VillageObject {
@@ -114,6 +139,7 @@ func TestRestockPolicyBuyEntriesFilters(t *testing.T) {
 func TestEvaluateRestock_LowStockStamps(t *testing.T) {
 	a := reseller("merchant", KindNPCStateful, "ale", 20, 3) // 15% < 25%
 	w := restockWorld(a)
+	addSupplier(w, "brewer", "ale")
 	now := time.Now().UTC()
 
 	res, err := EvaluateRestock(now).Fn(w)
@@ -208,6 +234,7 @@ func TestEvaluateRestock_ForageNoRememberedBush_NoStamp(t *testing.T) {
 func TestEvaluateRestock_AtThresholdNoStamp(t *testing.T) {
 	a := reseller("merchant", KindNPCStateful, "ale", 20, 5) // 25% — not below
 	w := restockWorld(a)
+	addSupplier(w, "brewer", "ale")
 	if res, _ := EvaluateRestock(time.Now().UTC()).Fn(w); res.(int) != 0 {
 		t.Errorf("stamped = %d at threshold, want 0", res.(int))
 	}
@@ -220,6 +247,7 @@ func TestEvaluateRestock_AtThresholdNoStamp(t *testing.T) {
 func TestEvaluateRestock_DisabledByPctZero(t *testing.T) {
 	a := reseller("merchant", KindNPCStateful, "ale", 20, 0) // empty shelf
 	w := restockWorld(a)
+	addSupplier(w, "brewer", "ale")
 	w.Settings.RestockReorderPct = 0
 	if res, _ := EvaluateRestock(time.Now().UTC()).Fn(w); res.(int) != 0 {
 		t.Errorf("stamped = %d with pct=0, want 0 (disabled)", res.(int))
@@ -234,6 +262,7 @@ func TestEvaluateRestock_DisabledByPctZero(t *testing.T) {
 func TestEvaluateRestock_CapZeroSkipped(t *testing.T) {
 	a := reseller("merchant", KindNPCStateful, "ale", 0, 0) // no cap configured
 	w := restockWorld(a)
+	addSupplier(w, "brewer", "ale")
 	if res, _ := EvaluateRestock(time.Now().UTC()).Fn(w); res.(int) != 0 {
 		t.Errorf("stamped = %d with cap=0, want 0", res.(int))
 	}
@@ -265,6 +294,7 @@ func TestEvaluateRestock_ScopeExclusions(t *testing.T) {
 	vis := reseller("v", KindNPCShared, "ale", 20, 0)
 	vis.VisitorState = &VisitorState{Archetype: "traveler", ExpiresAt: time.Now().Add(time.Hour)}
 	w := restockWorld(pc, dec, vis)
+	addSupplier(w, "brewer", "ale")
 
 	if res, _ := EvaluateRestock(time.Now().UTC()).Fn(w); res.(int) != 0 {
 		t.Errorf("stamped = %d, want 0 (all out of scope)", res.(int))
@@ -281,6 +311,7 @@ func TestEvaluateRestock_ScopeExclusions(t *testing.T) {
 func TestEvaluateRestock_SharedVAReseller(t *testing.T) {
 	a := reseller("vendor", KindNPCShared, "salt", 20, 1)
 	w := restockWorld(a)
+	addSupplier(w, "salter", "salt")
 	if res, _ := EvaluateRestock(time.Now().UTC()).Fn(w); res.(int) != 1 {
 		t.Errorf("stamped = %d, want 1 (shared VA in scope)", res.(int))
 	}
@@ -306,6 +337,7 @@ func TestEvaluateRestock_RestingAndOpenCycleSkipped(t *testing.T) {
 	inFlight.TickInFlight = true
 
 	world := restockWorld(sleeping, onBreak, warranted, inFlight)
+	addSupplier(world, "brewer", "ale")
 	if res, _ := EvaluateRestock(now).Fn(world); res.(int) != 0 {
 		t.Errorf("stamped = %d, want 0 (all suppressed)", res.(int))
 	}
@@ -336,6 +368,7 @@ func TestEvaluateRestock_WalkingSkipped(t *testing.T) {
 	}
 
 	w := restockWorld(walking)
+	addSupplier(w, "brewer", "ale")
 	if res, _ := EvaluateRestock(now).Fn(w); res.(int) != 0 {
 		t.Errorf("stamped = %d, want 0 (walking reseller left to arrive)", res.(int))
 	}
@@ -356,8 +389,8 @@ func TestEvaluateRestock_WalkingSkipped(t *testing.T) {
 }
 
 // TestFirstActionableLowEntry_BuyDeterministicOrder: the first low buy entry in
-// policy order is the one chosen, entries above threshold are passed over, and the
-// buy source is reported. Buy entries are always actionable (no bush gate).
+// policy order with an actionable buy path (LLM-260) is the one chosen, entries
+// above threshold are passed over, and the buy source is reported.
 func TestFirstActionableLowEntry_BuyDeterministicOrder(t *testing.T) {
 	a := &Actor{
 		ID:        "merchant",
@@ -368,8 +401,17 @@ func TestFirstActionableLowEntry_BuyDeterministicOrder(t *testing.T) {
 			{Item: "ale", Source: RestockSourceBuy, Max: 10},   // also low, but later
 		}},
 	}
-	if e, src, ok := firstActionableLowEntry(a, restockWorld(a), 25); !ok || e.Item != "salt" || src != RestockSourceBuy {
+	w := restockWorld(a)
+	addSupplier(w, "salter", "salt")
+	addSupplier(w, "brewer", "ale")
+	if e, src, ok := firstActionableLowEntry(a, w, 25, time.Now().UTC()); !ok || e.Item != "salt" || src != RestockSourceBuy {
 		t.Errorf("first actionable low = (%q, %q, %v), want (salt, buy, true)", e.Item, src, ok)
+	}
+	// The low buy entry with NO buy path is passed over in favor of a later one
+	// that has a supplier (the LLM-260 buy actionability gate).
+	delete(w.Actors, "salter")
+	if e, _, ok := firstActionableLowEntry(a, w, 25, time.Now().UTC()); !ok || e.Item != "ale" {
+		t.Errorf("with salt unsourced, first actionable low = (%q, %v), want (ale, true)", e.Item, ok)
 	}
 }
 
@@ -394,7 +436,8 @@ func TestFirstActionableLowEntry_BuyBeforeForageAndActionability(t *testing.T) {
 	rememberForageBush(both, "raspberries", "bushA")
 	wBoth := restockWorld(both)
 	wBoth.VillageObjects = bushWorld("prudence")
-	if e, src, ok := firstActionableLowEntry(both, wBoth, 25); !ok || e.Item != "milk" || src != RestockSourceBuy {
+	addSupplier(wBoth, "dairy", "milk")
+	if e, src, ok := firstActionableLowEntry(both, wBoth, 25, time.Now().UTC()); !ok || e.Item != "milk" || src != RestockSourceBuy {
 		t.Errorf("mixed low set: got (%q, %q, %v), want (milk, buy, true)", e.Item, src, ok)
 	}
 
@@ -410,7 +453,7 @@ func TestFirstActionableLowEntry_BuyBeforeForageAndActionability(t *testing.T) {
 	rememberForageBush(forageOnly, "raspberries", "bushA")
 	wForage := restockWorld(forageOnly)
 	wForage.VillageObjects = bushWorld("prudence")
-	if e, src, ok := firstActionableLowEntry(forageOnly, wForage, 25); !ok || e.Item != "raspberries" || src != RestockSourceForage {
+	if e, src, ok := firstActionableLowEntry(forageOnly, wForage, 25, time.Now().UTC()); !ok || e.Item != "raspberries" || src != RestockSourceForage {
 		t.Errorf("forage-only low: got (%q, %q, %v), want (raspberries, forage, true)", e.Item, src, ok)
 	}
 
@@ -422,7 +465,146 @@ func TestFirstActionableLowEntry_BuyBeforeForageAndActionability(t *testing.T) {
 			{Item: "raspberries", Source: RestockSourceForage, Max: 10},
 		}},
 	}
-	if _, _, ok := firstActionableLowEntry(noBush, restockWorld(noBush), 25); ok {
+	if _, _, ok := firstActionableLowEntry(noBush, restockWorld(noBush), 25, time.Now().UTC()); ok {
 		t.Error("a low forage entry with no remembered bush must not be actionable")
+	}
+}
+
+// TestEvaluateRestock_BuyNoVendorNoStamp: the LLM-260 buy-side actionability
+// gate (the wake-loop guard, mirroring the forage bush gate). A low buy entry
+// with NO qualifying vendor anywhere must NOT warrant — buildRestocking omits
+// the item (LLM-216), so a warrant would wake the reseller every scan pointing
+// at a section that isn't there.
+func TestEvaluateRestock_BuyNoVendorNoStamp(t *testing.T) {
+	a := reseller("merchant", KindNPCStateful, "ale", 20, 0) // empty shelf
+	w := restockWorld(a)                                     // no supplier in the world
+	if res, _ := EvaluateRestock(time.Now().UTC()).Fn(w); res.(int) != 0 {
+		t.Fatalf("stamped = %d for a low buy entry with no vendor, want 0", res.(int))
+	}
+	if hasWarrantKind(a, WarrantKindRestock) {
+		t.Error("a buy entry with no vendor must not warrant (wake-loop guard)")
+	}
+}
+
+// TestEvaluateRestock_DerivedInputStamps: derived procurement demand (LLM-260).
+// A producer with a `produce` entry whose recipe consumes inputs it neither
+// self-sources nor explicitly buys (the live Hannah Boggs porridge case) is
+// woken to buy the missing input once a vendor for it exists — no hand-authored
+// `buy` entry required.
+func TestEvaluateRestock_DerivedInputStamps(t *testing.T) {
+	a := &Actor{
+		ID:        "hannah",
+		Kind:      KindNPCStateful,
+		LLMAgent:  "hannah-agent",
+		Inventory: map[ItemKind]int{"porridge": 11}, // output stocked; inputs at zero
+		RestockPolicy: &RestockPolicy{Restock: []RestockEntry{
+			{Item: "porridge", Source: RestockSourceProduce, Max: 12},
+		}},
+	}
+	w := restockWorld(a)
+	w.Recipes = map[ItemKind]*ItemRecipe{
+		"porridge": {OutputItem: "porridge", OutputQty: 4, RateQty: 4, RatePerHours: 1,
+			Inputs: []RecipeInput{{Item: "milk", Qty: 3}, {Item: "water", Qty: 5}}},
+	}
+	addSupplier(w, "dairy", "milk") // milk obtainable; water has no vendor
+
+	if res, _ := EvaluateRestock(time.Now().UTC()).Fn(w); res.(int) != 1 {
+		t.Fatalf("stamped = %d for a derived low input, want 1", res.(int))
+	}
+	var found bool
+	for _, m := range a.Warrants {
+		if r, ok := m.Reason.(RestockWarrantReason); ok {
+			found = true
+			if r.Item != "milk" || r.Source != RestockSourceBuy {
+				t.Errorf("warrant = {%q, %q}, want {milk, buy} (water has no vendor)", r.Item, r.Source)
+			}
+		}
+	}
+	if !found {
+		t.Error("no RestockWarrantReason on the producer")
+	}
+}
+
+// TestEvaluateRestock_SelfSourcedInputNoDerivedDemand: a recipe input the actor
+// self-sources (its own produce/forage entry — John Ellis's stew water) derives
+// no buy demand, even with a vendor selling it and the input at zero.
+func TestEvaluateRestock_SelfSourcedInputNoDerivedDemand(t *testing.T) {
+	a := &Actor{
+		ID:        "john",
+		Kind:      KindNPCStateful,
+		LLMAgent:  "john-agent",
+		Inventory: map[ItemKind]int{"stew": 5, "water": 0},
+		RestockPolicy: &RestockPolicy{Restock: []RestockEntry{
+			{Item: "stew", Source: RestockSourceProduce, Max: 10},
+			{Item: "water", Source: RestockSourceProduce, Max: 20},
+		}},
+	}
+	w := restockWorld(a)
+	w.Recipes = map[ItemKind]*ItemRecipe{
+		"stew":  {OutputItem: "stew", OutputQty: 5, RateQty: 5, RatePerHours: 1, Inputs: []RecipeInput{{Item: "water", Qty: 10}}},
+		"water": {OutputItem: "water", OutputQty: 10, RateQty: 10, RatePerHours: 1},
+	}
+	addSupplier(w, "drawer", "water")
+
+	if res, _ := EvaluateRestock(time.Now().UTC()).Fn(w); res.(int) != 0 {
+		t.Errorf("stamped = %d for a self-sourced input, want 0", res.(int))
+	}
+	if hasWarrantKind(a, WarrantKindRestock) {
+		t.Error("a self-sourced recipe input must not derive buy demand")
+	}
+}
+
+// TestActorHasBuyPath_Gates: the warrant-side mirror of the buildRestocking
+// vendor drops — LLM-252 first-hand-supplier gate, LLM-216 remembered-shut and
+// known-price-affordability drops, and the co-present bypass.
+func TestActorHasBuyPath_Gates(t *testing.T) {
+	now := time.Now().UTC()
+	buyer := reseller("buyer", KindNPCStateful, "ale", 20, 0)
+
+	// A vendor holding the item only via a past `buy` (a fellow reseller) is not
+	// a supplier (LLM-252) — no path.
+	w := restockWorld(buyer)
+	v := addSupplier(w, "brewer", "ale")
+	v.RestockPolicy = &RestockPolicy{Restock: []RestockEntry{{Item: "ale", Source: RestockSourceBuy, Max: 20}}}
+	if actorHasBuyPath(w, buyer, "ale", now) {
+		t.Error("a reseller's retail stock must not be a buy path (LLM-252)")
+	}
+
+	// First-hand supplier restored — path exists.
+	v.RestockPolicy = &RestockPolicy{Restock: []RestockEntry{{Item: "ale", Source: RestockSourceProduce, Max: 20}}}
+	if !actorHasBuyPath(w, buyer, "ale", now) {
+		t.Fatal("a stocked first-hand supplier should be a buy path")
+	}
+
+	// Remembered shut → dropped as a walk-to destination (LLM-216).
+	buyer.Observed.Observe(ObservedStateKey{StructureID: v.WorkStructureID, Condition: ObservedClosed}, now)
+	if actorHasBuyPath(w, buyer, "ale", now) {
+		t.Error("a supplier remembered shut must not be a buy path")
+	}
+
+	// ...unless the seller is co-present in the buyer's huddle — pay_with_item
+	// resolves this very tick, walk-to drops don't apply.
+	buyer.CurrentHuddleID = "h1"
+	v.CurrentHuddleID = "h1"
+	if !actorHasBuyPath(w, buyer, "ale", now) {
+		t.Error("a co-present seller is a buy path regardless of the shut memory")
+	}
+	buyer.CurrentHuddleID = ""
+	v.CurrentHuddleID = ""
+	buyer.Observed.Clear(ObservedStateKey{StructureID: v.WorkStructureID, Condition: ObservedClosed})
+
+	// A remembered price above the purse → dropped (LLM-216); an unknown price
+	// is kept (patronage earns the number).
+	buyer.Coins = 2
+	w.PriceBook = map[PriceBookKey]*RingBuffer[PriceObservation]{}
+	buf := NewRingBuffer[PriceObservation](4)
+	buf.Push(PriceObservation{BuyerID: buyer.ID, Amount: 5, Qty: 1, At: now})
+	w.PriceBook[PriceBookKey{SellerID: v.ID, Item: "ale"}] = buf
+	if actorHasBuyPath(w, buyer, "ale", now) {
+		t.Error("a supplier at a remembered price above the purse must not be a buy path")
+	}
+	buyer.Coins = 5
+	if !actorHasBuyPath(w, buyer, "ale", now) {
+		t.Error("a supplier at a remembered, affordable price should be a buy path")
 	}
 }

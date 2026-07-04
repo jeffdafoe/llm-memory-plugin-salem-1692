@@ -1,0 +1,32 @@
+# Your turn
+
+## What just happened
+(nothing specific — this is a routine check-in)
+
+
+## You
+Coins in your purse: 25.
+You are carrying: stew (x4).
+
+## Around you
+You are inside the Ellis Tavern, your workplace, with no one else here to hear you speak.
+It is morning in the village.
+
+You're at your workplace.
+
+It is your working hours and you are at your post — stay and look after your work; you close at 6 in the evening. If no one needs you right now, wait here for customers rather than wandering off.
+
+## Keeping up production
+- You use meat to make stew — 0 on hand, enough for about 0 more, and you're running low.
+
+## Time to produce
+You make one thing at a time. Choose what to produce next — you keep making it until you choose again.
+- stew: 5 every 2h, 4 of 10 on hand, made 0 and sold 0 this past week — can't make now: short of water (need 10, have 0), meat (need 10, have 0).
+- water: 10 every 1h, 0 of 20 on hand, made 0 and sold 0 this past week.
+
+## Restocking
+Your shop stock of these bought-in goods is running low. You choose how much to buy.
+- You have 0 meat on hand and room for 20 more at the most. No seller is here now — use move_to to reach a supplier below, then pay_with_item once you arrive.
+  - buy from Reed Butchery (structure_id: amos_butchery)
+
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.

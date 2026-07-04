@@ -129,7 +129,11 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 	if pct <= 0 {
 		return nil // producer/feature disabled
 	}
-	buyEntries := actorSnap.RestockPolicy.BuyEntries()
+	// The effective buy demand (LLM-260): explicit `buy` entries plus the ones
+	// derived from the actor's produce recipes' unsourced inputs — the same set
+	// the warrant producer (restock_tick.go firstActionableLowEntry) scans, so
+	// the warrant and this section agree on what the actor needs to buy.
+	buyEntries := sim.EffectiveBuyEntries(snap.Recipes, actorSnap.RestockPolicy)
 	var items []RestockItemView
 	for _, e := range buyEntries {
 		cap := e.Cap()
@@ -190,6 +194,21 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 		Items:      items,
 		BuyerCoins: actorSnap.Coins,
 	}
+}
+
+// itemHasActionableBuyPath reports whether buildRestocking would render an item
+// line for kind: a co-present seller to transact with here-and-now, or at least
+// one surviving walk-to supplier (findItemVendors, after the LLM-216 shut /
+// affordability drops). Shared with the "## Keeping up production" gate
+// (LLM-260) so the motivate-half and the where-half of the LLM-64 split can't
+// disagree: an input with no actionable buy path renders in NEITHER section —
+// a runway line with nowhere to buy is exactly the dead-end that had the live
+// Hannah Boggs narrating phantom fetch-water hires.
+func itemHasActionableBuyPath(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSnapshot, kind sim.ItemKind) bool {
+	if coName, _ := coPresentSellerForItem(snap, actorID, actorSnap, kind); coName != "" {
+		return true
+	}
+	return len(findItemVendors(snap, actorID, actorSnap, kind)) > 0
 }
 
 // buyerLatestPriceObs returns the buyer's newest accepted purchase observation
