@@ -604,8 +604,12 @@ func EvaluateReactors(now time.Time) Command {
 							detail["outcome"] = "shed"
 						}
 						// Record how long the actor has starved so the fairness gate
-						// is observable in the telemetry stream / umbilical.
+						// is observable in the telemetry stream / umbilical. Clamp at 0
+						// so a clock-skewed / future last-tick can't emit a negative age.
 						if served, age := servedStarvationAge(actor, now); served {
+							if age < 0 {
+								age = 0
+							}
 							detail["starved_ms"] = fmt.Sprintf("%d", age.Milliseconds())
 						} else {
 							detail["starved_ms"] = "never"

@@ -250,6 +250,35 @@ func TestAdmitAgentRateFair_AtCapOnlyServedPastCeilingBursts(t *testing.T) {
 	if !admitAgentRateFair(w, servedActorOn("salem-vendor", now.Add(-3*time.Minute)), now) {
 		t.Error("served past the ceiling gets the unconditional bypass")
 	}
+	// One tick over cap: the ceiling overage is bounded to +1, so even a served
+	// actor past the ceiling now defers rather than pushing the bucket to cap+2.
+	fillAgentBucket(w, "salem-vendor", 1, now) // now cap+1
+	if admitAgentRateFair(w, servedActorOn("salem-vendor", now.Add(-3*time.Minute)), now) {
+		t.Error("over cap (cap+1) the ceiling bypass must defer — overage is bounded to +1")
+	}
+}
+
+func TestAdmitAgentRateFair_MultipleNeverServedEachEligibleButNoBurst(t *testing.T) {
+	// LLM-258 review finding 2: never-served actors aren't ranked here — each is
+	// judged independently and all are eligible in the reserved band. Cross-actor
+	// rotation comes from the emit loop's randomized map iteration (w.Actors is a
+	// map[ActorID]*Actor), so no single never-served actor is permanently beaten
+	// to the slot by a stable order. admitAgentRateFair does not mutate the bucket
+	// (recordAgentTick fires at emit, not here), so each call sees the same count.
+	w := vendorWorld(8)
+	now := time.Now().UTC()
+	fillAgentBucket(w, "salem-vendor", 6, now) // reserved band
+	for i := 0; i < 4; i++ {
+		if !admitAgentRateFair(w, neverServedActorOn("salem-vendor"), now) {
+			t.Errorf("never-served actor %d should be individually eligible in the reserved band", i)
+		}
+	}
+	// At the cap none of them burst — they wait for a real slot rather than
+	// forcing the bucket over the paced limit.
+	fillAgentBucket(w, "salem-vendor", 2, now) // now == cap
+	if admitAgentRateFair(w, neverServedActorOn("salem-vendor"), now) {
+		t.Error("never-served must not burst past cap even under multi-actor contention")
+	}
 }
 
 func TestAdmitAgentRateFair_ReserveClampLeavesOneGeneralSlot(t *testing.T) {

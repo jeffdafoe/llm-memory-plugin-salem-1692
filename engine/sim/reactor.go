@@ -1372,19 +1372,25 @@ func servedStarvationAge(a *Actor, now time.Time) (served bool, age time.Duratio
 //     the general slots, so the tail is always reachable by a producer that has
 //     waited — and because a due producer now passes the gate here, it is served
 //     rather than deferred-then-shed in the first place.
-//   - At/over the cap: admit only a *served* actor starved past the hard
-//     agentRateStarvationCeiling — the Force-equivalent guarantee that a producer
-//     ticks within a bounded window even under sustained chatter. This is the one
-//     path that can push the slug one tick past its paced cap; it mirrors the
-//     existing Force bypass's accepted residual (memory-api's server cooldown plus
-//     the 80% pacing headroom absorb the rare overage). A never-served actor does
-//     NOT burst past the cap — it rides the reserved band, so a newly added
-//     producer waits for a real slot rather than forcing an overage on a full
-//     bucket.
+//   - At the cap (count == cap): admit only a *served* actor starved past the
+//     hard agentRateStarvationCeiling — the Force-equivalent guarantee that a
+//     producer ticks within a bounded window even under sustained chatter. The
+//     count == cap guard bounds this to a single-tick overage (cap+1): a bucket
+//     already OVER cap defers further ceiling admits, so fairness can't stack
+//     overage on overage (a multi-actor scan or a Force burst). The residual
+//     mirrors the existing Force bypass — memory-api's server cooldown plus the
+//     80% pacing headroom absorb the rare +1. A never-served actor does NOT burst
+//     past the cap — it rides the reserved band, so a newly added producer waits
+//     for a real slot rather than forcing an overage on a full bucket.
 //
 // Starvation age keys on the last *served* tick (lastReactorTickAt), which
 // persists across the warrantCycleStale shed/re-stamp churn — so even a
 // repeatedly-shed producer keeps accruing age and eventually wins.
+//
+// This judges each due actor independently; cross-contender rotation comes from
+// the emit loop iterating w.Actors in Go map order (randomized per scan), so no
+// never-served actor is systematically beaten to the reserved slots by a stable
+// ordering — over successive scans each gets a fair chance at the reserved band.
 func admitAgentRateFair(w *World, actor *Actor, now time.Time) bool {
 	count, rl, ok := agentInWindowTickCount(w, actor.LLMAgent, now)
 	if !ok {
@@ -1402,7 +1408,13 @@ func admitAgentRateFair(w *World, actor *Actor, now time.Time) bool {
 	}
 	served, age := servedStarvationAge(actor, now)
 	if count >= rl.Cap {
-		return served && age >= w.Settings.agentRateStarvationCeiling()
+		// Bound the ceiling overage to exactly +1: only a bucket AT the cap may be
+		// pushed to cap+1 by a starved served actor. Once the bucket is already
+		// OVER cap — an earlier ceiling admit this scan (recordAgentTick runs at
+		// emit within the same pass, so count reflects it) or a Force burst — a
+		// further ceiling admit defers, so fairness never amplifies an over-cap
+		// bucket past the single-tick residual the comment promises.
+		return count == rl.Cap && served && age >= w.Settings.agentRateStarvationCeiling()
 	}
 	if !served {
 		return true // never ticked this session — maximally starved, takes a reserved slot
