@@ -394,6 +394,23 @@ func ApplyPayLedgerCounterSafetyFloor(w *World) {
 // behavior in isolation.
 func PayLedgerSeqForTest(w *World) uint64 { return w.payLedgerSeq }
 
+// LaborLedgerSeqForTest exposes the per-run LaborID counter so LLM-259
+// sim_test can assert the restart safety-floor (rehydrateLaborContractsOnLoad
+// floors it above the max loaded contract id).
+func LaborLedgerSeqForTest(w *World) uint64 { return w.laborLedgerSeq }
+
+// NextLaborSeq exposes the per-run LaborID allocator so a test can assert the
+// next minted id after a restart floor.
+func NextLaborSeq(w *World) LaborID { return w.nextLaborSeq() }
+
+// AdvanceEnRouteOfferForTest drives the en_route→working arrival flip so LLM-259
+// sim_test can prove a REHYDRATED en_route contract completes its resume (the
+// arrival path reads only fields that survive the checkpoint, not the dropped
+// huddle/scene/event ids or the transient LaborID).
+func AdvanceEnRouteOfferForTest(w *World, offer *LaborOffer, at time.Time) {
+	advanceEnRouteOffer(w, offer, at)
+}
+
 // EffectiveOrderTTL exposes the WorldSettings → default fallback for
 // table tests. Phase 3 PR S6.
 func EffectiveOrderTTL(s WorldSettings) time.Duration { return effectiveOrderTTL(s) }

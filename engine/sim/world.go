@@ -1039,9 +1039,11 @@ type World struct {
 	// laborLedgerSeq is the monotonic per-run LaborID counter (LLM-26) — same
 	// shape and rules as payLedgerSeq. Incremented before assignment; first
 	// minted LaborID is 1 (LaborID(0) reserved as the unset sentinel).
-	// World-goroutine-only. Like errandSeq it is restart-lossy by design (the
-	// LaborLedger is in-memory, has no table), so there is no LoadWorld
-	// safety-floor pass — it always starts at 0.
+	// World-goroutine-only. Since LLM-259 the accepted (en_route/working) subset
+	// of the ledger is checkpointed (labor_contract), so FinalizeLoad floors this
+	// counter above the max loaded LaborID (rehydrateLaborContractsOnLoad) — the
+	// same safety-floor posture as payLedgerSeq — to keep a post-restart mint from
+	// reusing a persisted id. pending/terminal offers stay restart-lossy.
 	laborLedgerSeq uint64
 
 	// suppressArrivalWarrant, when non-nil, is consulted by the locomotion
@@ -1424,6 +1426,17 @@ func (w *World) FinalizeLoad(ctx context.Context) error {
 	normalizeOutdoorSceneRadius(&w.Settings)
 
 	w.rebuildIndices()
+	// LLM-259: rehydrate the accepted (en_route/working) labor contracts from
+	// their durable mirror into World.LaborLedger BEFORE the stranded-laboring
+	// reconcile below. A worker whose working contract loaded then holds a live
+	// ledger job and resumes, instead of being reverted to idle and re-soliciting
+	// on every deploy. Also floors the LaborID allocator and restores the
+	// transient working-worker mirror. Fails the load ONLY on a DB query error;
+	// individual unusable rows (dangling ref, stale state) are warn-dropped so a
+	// bad row can't wedge the village boot.
+	if err := w.rehydrateLaborContractsOnLoad(ctx); err != nil {
+		return fmt.Errorf("sim: FinalizeLoad: rehydrate labor contracts: %w", err)
+	}
 	// Reactor state (warrants + in-flight + attempt-id + recent-tick ring)
 	// is ephemeral by design — payloads are interface-typed and weren't
 	// designed to cross the checkpoint serialization boundary. Cascade
@@ -1432,15 +1445,12 @@ func (w *World) FinalizeLoad(ctx context.Context) error {
 	// conversational moment passed).
 	for _, a := range w.Actors {
 		resetReactorStateOnLoad(a)
-		// LLM-162: a worker checkpointed mid-job reloads as StateLaboring (State
-		// IS persisted via sim_state), but its backing LaborOffer is gone —
-		// World.LaborLedger has no repo and is restart-lossy by design
-		// (labor_ledger.go), and the LaborID/LaboringUntil mirror is transient
-		// (never checkpointed). The only code that clears StateLaboring is the
-		// completion sweep, which reads the ledger — so without this the actor
-		// would be stranded laboring forever. The ledger is always empty at load,
-		// so any laboring actor is by definition stranded: revert it to idle.
-		reconcileStrandedLaboringOnLoad(a)
+		// LLM-162 / LLM-259: a worker checkpointed mid-job reloads as StateLaboring
+		// (State IS persisted via sim_state), but the LaborID/LaboringUntil mirror
+		// is transient. If an accepted contract was rehydrated above, the worker
+		// holds a live ledger job and resumes; otherwise it is a genuine orphan the
+		// completion sweep can never free, so revert it to idle.
+		reconcileStrandedLaboringOnLoad(w, a)
 	}
 	// LoadedAt is the wall-clock moment this world woke up (not
 	// w.Environment.Now, which can lag arbitrarily on a long-crash

@@ -23,6 +23,7 @@ type Repository struct {
 	ItemKinds            ItemKindsRepo
 	Terrain              TerrainRepo
 	VillageObjects       VillageObjectsRepo
+	LaborContracts       LaborContractsRepo
 
 	// Event sinks — write-through per-event, NOT part of the checkpoint tx.
 	// agent-action-log is an audit trail appended outside the checkpoint.
@@ -191,6 +192,19 @@ type TerrainRepo interface {
 type VillageObjectsRepo interface {
 	LoadAll(ctx context.Context) (map[VillageObjectID]*VillageObject, error)
 	SaveSnapshot(ctx context.Context, tx Tx, objects map[VillageObjectID]*VillageObject) error
+}
+
+// LaborContractsRepo loads + checkpoints the accepted-but-unsettled subset of
+// World.LaborLedger — the en_route + working LaborOffers (LLM-259). pending
+// (unaccepted) and terminal offers are never persisted; the checkpoint filters
+// to the accepted subset at build time and SaveSnapshot mirrors exactly that set
+// (per-row UPSERT + delete-stale gen-marker pattern), so a settled/expired
+// contract's row is swept on the next checkpoint. Rehydrated into the ledger at
+// LoadWorld (World.FinalizeLoad) so a restart resumes the arrangement instead of
+// voiding it and re-soliciting.
+type LaborContractsRepo interface {
+	LoadAll(ctx context.Context) (map[LaborID]*LaborOffer, error)
+	SaveSnapshot(ctx context.Context, tx Tx, contracts map[LaborID]*LaborOffer) error
 }
 
 // EnvironmentRepo loads + checkpoints world-level state: environment

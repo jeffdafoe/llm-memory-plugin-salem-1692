@@ -21,9 +21,9 @@ import (
 //
 // # Aggregates checkpointed
 //
-// The seven aggregates that own mutable world state and expose SaveSnapshot:
-// VillageObjects, Structures, Huddles, Scenes, Actors, Orders, Environment
-// (env + phase only). Each SaveSnapshot is a full-snapshot replace via the
+// The eight aggregates that own mutable world state and expose SaveSnapshot:
+// VillageObjects, Structures, Huddles, Scenes, Actors, LaborContracts, Orders,
+// Environment (env + phase only). Each SaveSnapshot is a full-snapshot replace via the
 // generation-marker pattern — bump a per-table gen sequence, UPSERT every
 // live row at the new gen, then DELETE rows still bearing an older gen.
 // Rows absent from the in-memory map (an actor who left, a closed scene)
@@ -51,7 +51,7 @@ import (
 // silently skipping an aggregate's checkpoint would drop live state on the
 // next restart. So SaveWorld has no requireAllImpl flag — every SaveSnapshot
 // error (including errNotImpl from a stub) is a hard failure that rolls the
-// whole Tx back. All seven writers are real pg-impls today (pg.NewRepository
+// whole Tx back. All eight writers are real pg-impls today (pg.NewRepository
 // wires only ActionLog + TickTelemetry as notImpl, and neither is a
 // checkpoint writer), so this is the all-or-nothing contract, not a
 // limitation.
@@ -83,7 +83,7 @@ import (
 // # Concurrency
 //
 // SaveWorld reads a sim.CheckpointSnapshot — a full-fidelity, immutable
-// deep-clone of the seven aggregates built by World.BuildCheckpointSnapshot
+// deep-clone of the eight aggregates built by World.BuildCheckpointSnapshot
 // on the world goroutine. Because the snapshot is frozen and disconnected
 // from live world state, the slow Tx here runs safely OFF the world
 // goroutine while the world keeps processing commands. The quiescence point
@@ -130,6 +130,20 @@ func SaveWorld(ctx context.Context, repo sim.Repository, cp *sim.CheckpointSnaps
 	}
 	if err := repo.Actors.SaveSnapshot(ctx, tx, cp.Actors); err != nil {
 		return fmt.Errorf("pg SaveWorld: Actors.SaveSnapshot: %w", err)
+	}
+	// LLM-259: the accepted-labor-contract mirror (en_route + working). No cross-
+	// aggregate FK (worker_id/employer_id are soft TEXT refs to actor, Go-side
+	// validated at LoadWorld), so order is free — placed after Actors for
+	// readability. Same Tx as everything else, so the DURABLE snapshot is atomic:
+	// Postgres never holds paid actor coins while retaining the active
+	// labor_contract row, or vice versa. A crash before the next checkpoint rolls
+	// both back to the previous checkpoint and the in-memory settlement replays on
+	// reload — the standard checkpoint-replay property, so durable coins still
+	// settle exactly once; a write-through side effect of the replayed settle
+	// (e.g. the agent_action_log `labored` audit row) can duplicate, same as every
+	// other write-through action in the engine.
+	if err := repo.LaborContracts.SaveSnapshot(ctx, tx, cp.LaborContracts); err != nil {
+		return fmt.Errorf("pg SaveWorld: LaborContracts.SaveSnapshot: %w", err)
 	}
 	if err := repo.Environment.SaveSnapshot(ctx, tx, cp.Environment, cp.Phase); err != nil {
 		return fmt.Errorf("pg SaveWorld: Environment.SaveSnapshot: %w", err)
