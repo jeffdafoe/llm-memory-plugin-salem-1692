@@ -182,6 +182,128 @@ func TestBuildRestocking_SellerNotCoPresent(t *testing.T) {
 	}
 }
 
+// TestBuildRestocking_CoPresentSeller_SameStructureNoHuddle: on the arrival tick at
+// a quiet shop there is NO huddle yet (one forms only when someone speaks), but the
+// keeper standing inside the same structure is co-present — pay_with_item bootstraps
+// the co-located huddle on the call (withHuddleBootstrap, ZBBS-HOME-400). So a seller
+// sharing the reseller's structure scope, with neither in a huddle, is surfaced as
+// CoPresentSeller. This is the LLM-286 fix: the huddle-only gate could not fire at
+// the moment the buy-here imperative was built for.
+func TestBuildRestocking_CoPresentSeller_SameStructureNoHuddle(t *testing.T) {
+	subj := &sim.ActorSnapshot{
+		Inventory:         map[sim.ItemKind]int{"ale": 1},
+		RestockPolicy:     buyPolicy("ale", 20),
+		InsideStructureID: "brewery", // arrived inside; no huddle yet
+	}
+	supplier := &sim.ActorSnapshot{
+		DisplayName:       "Anders Brewer",
+		RestockPolicy:     producePolicy("ale", 40),
+		WorkStructureID:   "brewery",
+		InsideStructureID: "brewery", // working inside, same scope as the buyer
+		Inventory:         map[sim.ItemKind]int{"ale": 40},
+	}
+	snap := &sim.Snapshot{
+		Actors:            map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj, "brewer": supplier},
+		Structures:        map[sim.StructureID]*sim.Structure{"brewery": {ID: "brewery", DisplayName: "The Brewery"}},
+		ItemKinds:         restockCatalog(),
+		RestockReorderPct: 25,
+	}
+	v := buildRestocking(snap, "merchant", subj)
+	if v == nil || len(v.Items) != 1 {
+		t.Fatalf("want 1 item, got %+v", v)
+	}
+	if v.Items[0].CoPresentSeller != "Anders Brewer" {
+		t.Errorf("CoPresentSeller = %q, want 'Anders Brewer' (same structure scope, no huddle)", v.Items[0].CoPresentSeller)
+	}
+}
+
+// TestBuildRestocking_CoPresentSeller_LoiterPinNoHuddle: the live incident (LLM-286).
+// An owner-only shop (the Blacksmith) is never entered by customers — the keeper works
+// inside while the buyer conducts commerce from the loiter pin OUTSIDE
+// (InsideStructureID == ""). The buyer's conversational scope resolves to the shop via
+// its loiter pin (conversationalScopeStructure → ResolveLoiteringObject within
+// AudienceScopeTiles), matching where pay_with_item's bootstrap forms the huddle. With
+// the keeper inside and neither in a huddle, the seller is co-present.
+func TestBuildRestocking_CoPresentSeller_LoiterPinNoHuddle(t *testing.T) {
+	zero := 0
+	pin := sim.WorldPos{X: 100, Y: 100}
+	subj := &sim.ActorSnapshot{
+		Inventory:     map[sim.ItemKind]int{"ale": 1},
+		RestockPolicy: buyPolicy("ale", 20),
+		Pos:           pin.Tile(), // loitering at the shop's pin, NOT inside it
+	}
+	supplier := &sim.ActorSnapshot{
+		DisplayName:       "Anders Brewer",
+		RestockPolicy:     producePolicy("ale", 40),
+		WorkStructureID:   "brewery",
+		InsideStructureID: "brewery", // keeper works inside the owner-only shop
+		Inventory:         map[sim.ItemKind]int{"ale": 40},
+	}
+	snap := &sim.Snapshot{
+		Actors:     map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj, "brewer": supplier},
+		Structures: map[sim.StructureID]*sim.Structure{"brewery": {ID: "brewery", DisplayName: "The Brewery"}},
+		// The shop is a village_object (shared-identity bridge) with a zero loiter
+		// offset, so its pin sits on the anchor tile the buyer stands on.
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"brewery": {ID: "brewery", DisplayName: "The Brewery", Pos: pin, LoiterOffsetX: &zero, LoiterOffsetY: &zero},
+		},
+		Assets:            emptyAssetSet,
+		ItemKinds:         restockCatalog(),
+		RestockReorderPct: 25,
+	}
+	v := buildRestocking(snap, "merchant", subj)
+	if v == nil || len(v.Items) != 1 {
+		t.Fatalf("want 1 item, got %+v", v)
+	}
+	if v.Items[0].CoPresentSeller != "Anders Brewer" {
+		t.Errorf("CoPresentSeller = %q, want 'Anders Brewer' (loiter-pin scope, no huddle)", v.Items[0].CoPresentSeller)
+	}
+}
+
+// TestBuildRestocking_LoiteringSellerNotCoPresent: the faithful-negative guard for the
+// seller predicate. EnsureColocatedHuddle pulls co-located actors into the buyer's
+// huddle by literal InsideStructureID == scope, so a seller merely LOITERING at the
+// same stall (InsideStructureID == "") is NOT one pay_with_item's bootstrap would
+// huddle — surfacing it as co-present would lure a "buy it now" the tool then rejects.
+// Both parties at the shop's pin, neither inside, no huddle ⇒ not co-present; the
+// walk-to vendor cue still resolves.
+func TestBuildRestocking_LoiteringSellerNotCoPresent(t *testing.T) {
+	zero := 0
+	pin := sim.WorldPos{X: 100, Y: 100}
+	subj := &sim.ActorSnapshot{
+		Inventory:     map[sim.ItemKind]int{"ale": 1},
+		RestockPolicy: buyPolicy("ale", 20),
+		Pos:           pin.Tile(),
+	}
+	supplier := &sim.ActorSnapshot{
+		DisplayName:     "Anders Brewer",
+		RestockPolicy:   producePolicy("ale", 40),
+		WorkStructureID: "brewery",
+		Pos:             pin.Tile(), // also loitering at the pin, NOT inside
+		Inventory:       map[sim.ItemKind]int{"ale": 40},
+	}
+	snap := &sim.Snapshot{
+		Actors:     map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj, "brewer": supplier},
+		Structures: map[sim.StructureID]*sim.Structure{"brewery": {ID: "brewery", DisplayName: "The Brewery"}},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"brewery": {ID: "brewery", DisplayName: "The Brewery", Pos: pin, LoiterOffsetX: &zero, LoiterOffsetY: &zero},
+		},
+		Assets:            emptyAssetSet,
+		ItemKinds:         restockCatalog(),
+		RestockReorderPct: 25,
+	}
+	v := buildRestocking(snap, "merchant", subj)
+	if v == nil || len(v.Items) != 1 {
+		t.Fatalf("want 1 item, got %+v", v)
+	}
+	if v.Items[0].CoPresentSeller != "" {
+		t.Errorf("CoPresentSeller = %q, want empty (seller only loitering, not inside)", v.Items[0].CoPresentSeller)
+	}
+	if len(v.Items[0].Vendors) != 1 {
+		t.Errorf("walk-to vendor cue should still resolve, got %+v", v.Items[0].Vendors)
+	}
+}
+
 // TestRenderRestocking_BuyHereImperative: a co-present seller renders a concrete
 // pay_with_item imperative (naming the seller + canonical item + consume_now),
 // suppresses the generic walk-to line for that item, and carries no "ask"/"price".
