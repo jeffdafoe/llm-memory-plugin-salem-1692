@@ -573,12 +573,27 @@ func (r *OrdersRepo) WriteOrderlessSettlement(ctx context.Context, e *sim.PayLed
 // rejected pre-acceptance terminals (declined/withdrawn/expired/
 // failed_*) all have state != 'accepted'.
 //
+// offered_amount > 0 mirrors the runtime subscriber's barter guard
+// (handlePayWithItemResolvedPriceBook in engine/sim/cascade/price_book.go,
+// ZBBS-HOME-393): a pure goods-for-goods barter settles at amount 0 and
+// carries no single coin price to remember — seeding it would poison the
+// book with a "free" reading that renders as "~0 coins" in restock cues.
+// Both ingestion paths (boot seed here, live subscriber there) must agree,
+// or every engine restart re-imports up to PriceBookSeedWindow days of
+// zero-coin barters the subscriber never recorded (LLM-285). A mixed
+// coin+goods accept has offered_amount > 0 (the coin leg) and is KEPT —
+// same accepted tradeoff as the subscriber; this filter matches that
+// behavior exactly, it does not tighten it.
+//
 // Index opportunity: a partial index
 //
 //	(seller_id, item_kind, created_at DESC)
-//	WHERE state = 'accepted'
+//	WHERE state = 'accepted' AND item_kind IS NOT NULL AND offered_amount > 0
 //
-// would cover this query's PARTITION BY / ORDER BY exactly. Not yet
+// would cover this query's PARTITION BY / ORDER BY exactly. The partial
+// predicate must carry the query's constant filters (all but the
+// created_at >= $1 range bound) or the index would be looser than the
+// query and needlessly retain rows the WHERE drops. Not yet
 // added; LoadWorld runs once at boot so seq-scan cost is paid once
 // per restart. Add the index if seed time becomes noticeable.
 const loadRecentPricesSQL = `
@@ -595,6 +610,7 @@ SELECT seller_id, item_kind, buyer_id, offered_amount, qty,
          WHERE state = 'accepted'
            AND created_at >= $1
            AND item_kind IS NOT NULL
+           AND offered_amount > 0
        ) t
  WHERE rn <= $2
  ORDER BY seller_id, item_kind, created_at ASC`
