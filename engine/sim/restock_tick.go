@@ -42,6 +42,17 @@ import (
 // cap configured) is skipped — there's no fraction to take. RestockReorderPct==0
 // disables the producer entirely (the operator off-switch).
 //
+// PRODUCE-INPUT BATCH FLOOR (LLM-279): a cap fraction is the wrong geometry for a
+// good the actor consumes to PRODUCE — a recipe draws a whole batch of the input
+// at once, so a fraction the batch draw steps clean over never triggers, and a
+// producer either stalls every cycle (fires only at 0, after production already
+// halted) or deadlocks outright (stock knocked off the batch multiple sits above
+// the fraction forever, unable to produce, never reordered). So for a `buy` entry
+// that is also a required input to one of the actor's produce recipes, the
+// threshold is floored at RestockInputBatchBuffer batches of that input
+// (ReorderFloors), reordering while one whole batch still remains to feed
+// production across the supplier trip. Pure-resale goods keep the cap fraction.
+//
 // SUPPRESSION mirrors the other producers: PCs and transient visitors are out
 // of scope (PCs are player-driven; visitors run their own ExpiresAt lifecycle),
 // decoratives carry no real restock intent (they're not agent-backed), and
@@ -82,12 +93,26 @@ func (RestockWarrantReason) Kind() WarrantKind          { return WarrantKindRest
 func (RestockWarrantReason) DedupDiscriminator() uint64 { return 0 }
 
 // RestockReorderThresholdMet reports whether currentQty is low enough to warrant
-// a reorder for an entry with the given cap, at the given percent. Shared by the
-// producer and the perception gate so the warrant and the "## Restocking" section
-// can never disagree on what counts as "low". A non-positive cap or pct yields
-// false (nothing to reorder against / producer disabled).
+// a reorder for an entry with the given cap, at the given percent, given an
+// optional per-item batch floor (reorderFloor, 0 for goods that are not a
+// produce-recipe input — see ReorderFloors). Shared by the producer and the
+// perception gates so the warrant and the "## Restocking" / "## Keeping up
+// production" sections can never disagree on what counts as "low".
 //
-// Normally the test is strictly below the cap*pct/100 fraction, in integer
+// pct <= 0 is the operator off-switch and yields false unconditionally — the
+// batch floor is disabled with the rest of the feature (LLM-279).
+//
+// A produce-recipe input reorders on batch coverage, not a cap fraction: when
+// reorderFloor > 0 the entry is low as soon as currentQty drops below it. The
+// floor is RestockInputBatchBuffer (2) batches of the input, so the reorder fires
+// while one whole batch still remains to feed production across the multi-minute
+// supplier trip — the shelf never stalls mid-trip, and stock knocked off the batch
+// multiple can't strand above the fraction forever. The floor fires independently
+// of cap, so an explicit `buy` input authored without a cap still reorders on
+// batch coverage.
+//
+// Otherwise (pure-resale goods, forage/gather stock, elective boosters — all
+// reorderFloor 0) the test is strictly below the cap*pct/100 fraction, in integer
 // cross-multiplied form (currentQty*100 < cap*pct) to avoid float rounding at the
 // boundary. But when that fraction is below one whole unit (cap*pct < 100, e.g. a
 // skillet cap of 2 at 25% = 0.5) strict-below floors the trigger to "only when
@@ -96,9 +121,15 @@ func (RestockWarrantReason) DedupDiscriminator() uint64 { return 0 }
 // (currentQty <= 1), so a small cap still gets a proactive trigger. Caps large
 // enough that cap*pct >= 100 are unaffected; the int64 widening keeps a
 // pathological cap/pct from a corrupt config or import from overflowing.
-func RestockReorderThresholdMet(currentQty, cap, pct int) bool {
-	if cap <= 0 || pct <= 0 {
-		return false
+func RestockReorderThresholdMet(currentQty, cap, pct, reorderFloor int) bool {
+	if pct <= 0 {
+		return false // producer/feature disabled — the off-switch dominates, batch floor included
+	}
+	if reorderFloor > 0 && currentQty < reorderFloor {
+		return true // produce-recipe input below its batch buffer (LLM-279)
+	}
+	if cap <= 0 {
+		return false // no cap and no batch floor — nothing to reorder against
 	}
 	if int64(cap)*int64(pct) < 100 {
 		return currentQty <= 1
@@ -136,13 +167,17 @@ func firstActionableLowEntry(a *Actor, w *World, pct int, now time.Time) (Restoc
 	if policy == nil {
 		return RestockEntry{}, "", false
 	}
+	// Batch floors for the actor's produce inputs (LLM-279) — 0 for any item that
+	// is not a required recipe input, so forage entries below fall through to the
+	// cap-fraction rule unchanged. Same catalog the perception gates read.
+	floors := ReorderFloors(w.Recipes, policy)
 	for _, e := range EffectiveBuyEntries(w.Recipes, policy) {
-		if RestockReorderThresholdMet(a.Inventory[e.Item], e.Cap(), pct) && actorHasBuyPath(w, a, e.Item, now) {
+		if RestockReorderThresholdMet(a.Inventory[e.Item], e.Cap(), pct, floors[e.Item]) && actorHasBuyPath(w, a, e.Item, now) {
 			return e, RestockSourceBuy, true
 		}
 	}
 	for _, e := range policy.ForageEntries() {
-		if RestockReorderThresholdMet(a.Inventory[e.Item], e.Cap(), pct) && actorRemembersForageSource(a, w, e.Item) {
+		if RestockReorderThresholdMet(a.Inventory[e.Item], e.Cap(), pct, 0) && actorRemembersForageSource(a, w, e.Item) {
 			return e, RestockSourceForage, true
 		}
 	}

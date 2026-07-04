@@ -180,7 +180,7 @@ func LowForageItems(policy *RestockPolicy, inventory map[ItemKind]int, pct int) 
 	}
 	var low map[ItemKind]bool
 	for _, e := range policy.ForageEntries() {
-		if RestockReorderThresholdMet(inventory[e.Item], e.Cap(), pct) {
+		if RestockReorderThresholdMet(inventory[e.Item], e.Cap(), pct, 0) { // forage stock is not a recipe input — cap fraction only
 			if low == nil {
 				low = make(map[ItemKind]bool)
 			}

@@ -139,7 +139,7 @@ func buildForage(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSn
 	for _, e := range actorSnap.RestockPolicy.ForageEntries() {
 		cap := e.Cap()
 		current := actorSnap.Inventory[e.Item]
-		if !sim.RestockReorderThresholdMet(current, cap, pct) {
+		if !sim.RestockReorderThresholdMet(current, cap, pct, 0) { // forage stock is not a recipe input — cap fraction only
 			continue
 		}
 		// Scan the grower's REMEMBERED gather bushes for this item (LLM-79): the

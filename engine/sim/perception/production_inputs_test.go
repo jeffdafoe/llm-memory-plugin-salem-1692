@@ -120,6 +120,35 @@ func TestBuildProductionInputs_BulkInputRunway(t *testing.T) {
 	}
 }
 
+// LLM-279: a produce input reorders on batch coverage, not a cap fraction. Carrots
+// consumed 5 per batch → floor 10 (2 × batch). With a small resale-style cap of 12
+// (fraction threshold 3), the cap fraction alone would only fire below 3 — leaving
+// the producer stranded at 4-9 units, unable to cover a 5-carrot batch yet above
+// the fraction. The floor surfaces the "## Keeping up production" runway across the
+// whole 0..9 band and stays silent at two full batches on hand.
+func TestBuildProductionInputs_BatchFloorReorders(t *testing.T) {
+	cases := []struct {
+		onHand int
+		low    bool
+		note   string
+	}{
+		{10, false, "two full batches on hand — not low"},
+		{9, true, "below two batches — floor fires where the cap fraction (3) would not"},
+		{5, true, "one batch left — reorder before the stall (mode 1)"},
+		{4, true, "can't cover a 5-carrot batch — deadlock band (mode 2)"},
+		{0, true, "empty"},
+	}
+	for _, c := range cases {
+		subj := makesStewBuying("carrots", 12, c.onHand)
+		snap := productionSnap(subj, stewRecipe("carrots", 5), "carrots")
+		v := buildProductionInputs(snap, "john", subj)
+		got := v != nil && len(v.Items) == 1
+		if got != c.low {
+			t.Errorf("onHand=%d (%s): surfaced=%v, want %v (floor 10 = 2×batch 5)", c.onHand, c.note, got, c.low)
+		}
+	}
+}
+
 // At full stock the input isn't low, so the section is omitted.
 func TestBuildProductionInputs_FullStockNil(t *testing.T) {
 	subj := makesStewBuying("skillet", 2, 2) // full → 2 <= 1 false

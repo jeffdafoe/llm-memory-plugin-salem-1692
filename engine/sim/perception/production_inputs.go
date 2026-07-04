@@ -109,6 +109,11 @@ func buildProductionInputs(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *s
 	if len(buyCaps) == 0 {
 		return nil
 	}
+	// Batch floors for required inputs (LLM-279) — the same floor the warrant and
+	// "## Restocking" use, so this runway line surfaces on the identical trigger.
+	// Elective boosters below keep the plain cap fraction (floor 0): a missing
+	// booster never stalls production.
+	floors := sim.ReorderFloors(snap.Recipes, actorSnap.RestockPolicy)
 	var items []ProductionInputView
 	var boosts []ProductionBoostView
 	for _, pe := range actorSnap.RestockPolicy.ProduceEntries() {
@@ -131,8 +136,8 @@ func buildProductionInputs(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *s
 			if current < 0 {
 				current = 0
 			}
-			if !sim.RestockReorderThresholdMet(current, cap, pct) {
-				continue
+			if !sim.RestockReorderThresholdMet(current, cap, pct, 0) {
+				continue // elective booster — cap fraction only, no batch floor
 			}
 			if !itemHasActionableBuyPath(snap, actorID, actorSnap, bi.Item) {
 				continue // no vendor — Restocking omits it (LLM-216), so the booster motivation stays silent too
@@ -158,8 +163,8 @@ func buildProductionInputs(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *s
 			if current < 0 {
 				current = 0 // a corrupt negative on-hand reads as "out", not a negative runway
 			}
-			if !sim.RestockReorderThresholdMet(current, cap, pct) {
-				continue // not low yet — the same gate Restocking uses
+			if !sim.RestockReorderThresholdMet(current, cap, pct, floors[in.Item]) {
+				continue // not low yet — the same batch-floored gate Restocking uses
 			}
 			if !itemHasActionableBuyPath(snap, actorID, actorSnap, in.Item) {
 				continue // no vendor — Restocking omits it (LLM-216), so the runway line stays silent too (LLM-260)

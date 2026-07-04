@@ -120,6 +120,64 @@ func EffectiveBuyEntries(recipes map[ItemKind]*ItemRecipe, p *RestockPolicy) []R
 	return out
 }
 
+// RestockInputBatchBuffer is how many whole recipe batches of a produce input a
+// producer keeps on hand before the reorder threshold trips (LLM-279). Two means
+// the reorder fires while one full batch still remains to feed production during
+// the multi-minute supplier trip, so the input shelf never stalls mid-trip — the
+// fix for the "dead production window before every rebuy" mode. One batch would
+// only fire once the producer already cannot cover a batch (production already
+// halted), which cures the permanent deadlock but not the per-cycle gap.
+const RestockInputBatchBuffer = 2
+
+// ReorderFloors returns, per item that is a REQUIRED input of one of the policy's
+// produce recipes, the on-hand quantity below which that item must be reordered
+// regardless of its cap fraction: RestockInputBatchBuffer × the largest per-batch
+// draw across the recipes it feeds (an input feeding two recipes floors at the
+// bigger draw — the tighter need governs). This is the produce-input floor
+// LLM-279 hands RestockReorderThresholdMet so a chunky batch consumer reorders on
+// "can I still cover a batch after this one" rather than a fraction of cap a batch
+// draw skips clean over.
+//
+// Only required Inputs count. Elective BoostInputs never stall production, so they
+// keep the plain cap-fraction rule (absent here → floor 0), as do pure-resale
+// goods and foraged/gathered stock (they feed no produce recipe). A self-sourced
+// input still lands in the map but is never a buy entry, so no buy-side gate ever
+// reads its floor. Nil-safe on both arguments like EffectiveBuyEntries, and read
+// by the warrant producer and both buy-side cues so they can't disagree on the
+// floor. Returns nil when the actor produces nothing with inputs (a nil map indexes
+// to 0, which callers pass straight through as "no floor").
+func ReorderFloors(recipes map[ItemKind]*ItemRecipe, p *RestockPolicy) map[ItemKind]int {
+	if p == nil {
+		return nil
+	}
+	var floors map[ItemKind]int
+	for _, pe := range p.ProduceEntries() {
+		recipe := recipes[pe.Item]
+		if recipe == nil {
+			continue
+		}
+		for _, in := range recipe.Inputs {
+			if in.Item == "" || in.Qty <= 0 {
+				continue
+			}
+			// int64 + clamp guards a corrupt/imported catalog with a huge input qty
+			// from overflowing int, the same posture derivedInputCap takes.
+			v := int64(RestockInputBatchBuffer) * int64(in.Qty)
+			if v > int64(math.MaxInt32) {
+				v = int64(math.MaxInt32)
+			}
+			floor := int(v)
+			if floors == nil {
+				floors = make(map[ItemKind]int)
+			}
+			if floor > floors[in.Item] {
+				floors[in.Item] = floor
+			}
+		}
+	}
+	return floors
+}
+
 // ManagesEffective reports whether kind is one of the actor's trade goods under
 // the EFFECTIVE policy — an explicit restock entry of any source (Manages), or
 // a derived buy input of something it produces. The derived-aware sibling of

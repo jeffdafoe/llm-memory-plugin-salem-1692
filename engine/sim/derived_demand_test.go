@@ -128,3 +128,60 @@ func TestManagesEffective(t *testing.T) {
 		t.Error("nil policy manages nothing")
 	}
 }
+
+func TestReorderFloors(t *testing.T) {
+	// Hannah: porridge = milk 3 + water 5 per batch. Floors are 2 batches of each
+	// input regardless of the produce cap (the floor is about batch coverage, not
+	// shelf size): milk 6, water 10.
+	p := &RestockPolicy{Restock: []RestockEntry{
+		{Item: "porridge", Source: RestockSourceProduce, Max: 12},
+	}}
+	recipes := map[ItemKind]*ItemRecipe{
+		"porridge": {OutputItem: "porridge", OutputQty: 4,
+			Inputs:      []RecipeInput{{Item: "milk", Qty: 3}, {Item: "water", Qty: 5}},
+			BoostInputs: []BoostInput{{Item: "sage", Qty: 1, BonusQty: 2}}},
+	}
+	got := ReorderFloors(recipes, p)
+	if got["milk"] != 6 {
+		t.Errorf("milk floor = %d, want 6 (2 × batch draw 3)", got["milk"])
+	}
+	if got["water"] != 10 {
+		t.Errorf("water floor = %d, want 10 (2 × batch draw 5)", got["water"])
+	}
+	// Elective boosters never stall production, so they get no floor.
+	if _, ok := got["sage"]; ok {
+		t.Errorf("sage is a booster — it should carry no batch floor, got %d", got["sage"])
+	}
+}
+
+func TestReorderFloors_MaxAcrossRecipes(t *testing.T) {
+	// An input feeding two recipes floors at the LARGER per-batch draw — the
+	// tighter batch need governs.
+	p := &RestockPolicy{Restock: []RestockEntry{
+		{Item: "porridge", Source: RestockSourceProduce},
+		{Item: "stew", Source: RestockSourceProduce},
+	}}
+	recipes := map[ItemKind]*ItemRecipe{
+		"porridge": {OutputItem: "porridge", OutputQty: 4, Inputs: []RecipeInput{{Item: "water", Qty: 5}}},
+		"stew":     {OutputItem: "stew", OutputQty: 6, Inputs: []RecipeInput{{Item: "water", Qty: 2}}},
+	}
+	if got := ReorderFloors(recipes, p)["water"]; got != 10 {
+		t.Errorf("water floor = %d, want 10 (2 × max batch draw 5, not the stew's 2)", got)
+	}
+}
+
+func TestReorderFloors_NoInputsAndNilSafe(t *testing.T) {
+	// A no-input recipe contributes no floor; a nil policy is safe.
+	p := &RestockPolicy{Restock: []RestockEntry{
+		{Item: "water", Source: RestockSourceProduce},
+	}}
+	recipes := map[ItemKind]*ItemRecipe{
+		"water": {OutputItem: "water", OutputQty: 10},
+	}
+	if got := ReorderFloors(recipes, p); len(got) != 0 {
+		t.Errorf("no-input recipe: floors = %+v, want empty", got)
+	}
+	if got := ReorderFloors(recipes, nil); got != nil {
+		t.Errorf("nil policy: floors = %+v, want nil", got)
+	}
+}
