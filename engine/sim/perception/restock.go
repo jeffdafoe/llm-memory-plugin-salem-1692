@@ -647,3 +647,18 @@ func renderWalkToVendors(b *strings.Builder, vendors []RestockVendor) {
 		b.WriteString("\n")
 	}
 }
+
+// renderCoPresentBuy writes the shared "a seller is here with you — buy it now"
+// imperative used by the owner supply errands (the LLM-277 nail repair-buy and the
+// shovel farm-upkeep buy) when a qualifying seller of the item shares the buyer's
+// huddle. It mirrors the model-proven pay_with_item wording renderRestocking issues
+// at the co-present moment (ZBBS-HOME-388): a complete, copyable pay_with_item call
+// plus a brief speak handoff, so the weak stateful model transacts here instead of
+// narrating its need and walking off (the live Elizabeth-at-the-smith failure that
+// motivated LLM-277). qty is the "up to" ceiling — the shortfall the errand needs.
+// Inputs are sanitized here, so callers pass raw snapshot strings.
+func renderCoPresentBuy(b *strings.Builder, seller, itemLabel string, itemKind sim.ItemKind, qty int) {
+	s := sanitizeInline(seller)
+	fmt.Fprintf(b, "%s is here with you and sells %s. Buy it now — call pay_with_item with seller \"%s\", item \"%s\", a qty up to %d, and a payment: coins (amount), goods you carry (pay_items), or both, with consume_now false. Then also use speak for a brief handoff line as you make the offer. They will accept or counter your offer.\n",
+		s, sanitizeInline(itemLabel), s, sanitizeInline(string(itemKind)), qty)
+}

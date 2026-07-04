@@ -288,6 +288,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	p.AtCapKinds = buildAtCapKinds(actorSnap, p.Actor.Inventory)
 	p.StallRepair = buildStallRepair(snap, actorID, actorSnap)
 	p.StallCondition = buildStallCondition(snap, actorID, actorSnap)
+	p.StallRepairBuy = buildStallRepairBuy(snap, actorID, actorSnap)
 	p.FarmUpkeep = buildFarmUpkeep(snap, actorID, actorSnap)
 	// customerEngaged (LLM-90): the seller-side "someone's at my stall right now"
 	// signal — a buyer's pending offer awaiting my decision (PayOffersForMe), a
@@ -308,7 +309,20 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// errand is active, and the at-post stabilizer flips to a step-out line under a
 	// forage errand — p.Restocking != nil and p.Forage != nil are exactly those
 	// signals. (p.Forage already encodes "not mid-customer" via customerEngaged.)
-	p.DutySteer = buildDutySteer(snap, actorID, actorSnap, p.Anchors, p.Restocking != nil, p.Forage != nil)
+	// LLM-277 adds the owner supply errands to the suppressor set: an owner who has
+	// left her post to buy nails to mend her worn business (p.StallRepairBuy) or
+	// shovels the season owes (p.FarmUpkeep) must not be yanked back before she has
+	// fetched them — the trip away IS the errand, the same posture the restock/forage
+	// errands take. The farm-upkeep half only counts when it has an ACTIONABLE buy
+	// path (a co-present seller or a surviving walk-to supplier): buildFarmUpkeep,
+	// unlike buildStallRepairBuy, still renders a generic "from the blacksmith"
+	// fallback when no supplier resolves (the LLM-216 posture), and suppressing the
+	// nag on that dead-end would strand an owner who owes shovels but can't buy them
+	// anywhere. buildStallRepairBuy already drops itself in the no-path case, so its
+	// mere presence is enough.
+	hasFarmUpkeepErrand := p.FarmUpkeep != nil && (p.FarmUpkeep.CoPresentSeller != "" || len(p.FarmUpkeep.ShovelVendors) > 0)
+	hasUpkeepErrand := p.StallRepairBuy != nil || hasFarmUpkeepErrand
+	p.DutySteer = buildDutySteer(snap, actorID, actorSnap, p.Anchors, p.Restocking != nil, p.Forage != nil, hasUpkeepErrand)
 	p.DutyPending = buildDutyPending(snap, actorSnap, p.Anchors)
 	// LLM-149 (Lever 2): the evening "tavern's open" cue. Built off the same
 	// anchors; on the evening window it replaces the off-shift go-home steer
@@ -1736,7 +1750,7 @@ func minuteInWindow(start, end, now int) bool {
 //
 // a is guaranteed non-nil by Build's early return on a missing actor snapshot —
 // the same invariant buildAnchors and the other sub-builders rely on.
-func buildDutySteer(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapshot, anchors *AnchorsView, hasRestockErrand, hasForageErrand bool) *DutySteerView {
+func buildDutySteer(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapshot, anchors *AnchorsView, hasRestockErrand, hasForageErrand, hasUpkeepErrand bool) *DutySteerView {
 	// Nil guard FIRST, so the a.Kind / clock dereferences below are safe even
 	// when buildDutySteer is called directly (Build never passes a nil actor
 	// snapshot, but the unit tests do). No anchors → no work/home to steer
@@ -1801,7 +1815,13 @@ func buildDutySteer(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapsho
 		// usable source) and coins-gated for paid vendors, so it can't re-strand the
 		// homeless-blacksmith case — that NPC, broke and not yet at a free source,
 		// still gets marched to work.
-		if hasRestockErrand || hasForageErrand || hasPendingOutgoingOffer(snap, actorID) || hasOfferedQuote(snap, actorID) || atResolvableSatiationSource(snap, actorID, a) {
+		//
+		// hasUpkeepErrand (LLM-277): an owner off her post to buy nails to mend her
+		// worn business (StallRepairBuy) or the shovels the season owes (FarmUpkeep)
+		// is on a legitimate supply errand — the walk to the smith IS the errand — so
+		// the to-work yank defers until she has fetched them, the buy-side twin of the
+		// restock errand. Both cues clear once she carries enough, restoring the nag.
+		if hasRestockErrand || hasForageErrand || hasUpkeepErrand || hasPendingOutgoingOffer(snap, actorID) || hasOfferedQuote(snap, actorID) || atResolvableSatiationSource(snap, actorID, a) {
 			return nil
 		}
 		return &DutySteerView{ToWork: true, TargetID: anchors.WorkID, TargetLabel: anchors.WorkLabel}

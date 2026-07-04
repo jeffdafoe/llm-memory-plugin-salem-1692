@@ -26,6 +26,17 @@ type FarmUpkeepView struct {
 	ShovelsHeld   int             // shovels the owner currently carries
 	ShovelsShort  int             // ShovelsOwed - ShovelsHeld (> 0 whenever the cue shows)
 	ShovelVendors []RestockVendor // where to buy the shovels (LLM-274); the move_to destination(s)
+
+	// CoPresentSeller is a shovel seller sharing the owner's huddle right now, so a
+	// pay_with_item resolves this very tick; "" when none. PendingOffer is true when
+	// a still-pending shovel offer already stands with that seller. Both mirror the
+	// nail repair-buy errand (LLM-277): the shovel errand walks the owner to the
+	// smith the same way and so hit the same co-present dead-spot — at the seller,
+	// with pay_with_item available, the weak model narrated and walked off. The
+	// co-present imperative closes it; the pending-offer bide steer stops the re-offer
+	// churn (LLM-64).
+	CoPresentSeller string
+	PendingOffer    bool
 }
 
 // buildFarmUpkeep returns the owner's upkeep-buy cue, or nil. Pure over the snapshot.
@@ -50,6 +61,7 @@ func buildFarmUpkeep(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 	if owed <= held {
 		return nil // nothing owed beyond what they already carry
 	}
+	coName, coID := coPresentSellerForItem(snap, actorID, actorSnap, sim.ShovelItemKind)
 	return &FarmUpkeepView{
 		ShovelsOwed:  owed,
 		ShovelsHeld:  held,
@@ -60,6 +72,9 @@ func buildFarmUpkeep(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 		// (the smith produces shovels, LLM-200), drops remembered-shut/unaffordable, and
 		// dedupes by workplace. Empty → render keeps the generic "from the blacksmith".
 		ShovelVendors: findItemVendors(snap, actorID, actorSnap, sim.ShovelItemKind),
+		// LLM-277: the co-present buy-here fast-path, mirroring the nail repair-buy.
+		CoPresentSeller: coName,
+		PendingOffer:    coID != "" && hasPendingOfferTo(snap, actorID, coID, sim.ShovelItemKind),
 	}
 }
 
@@ -79,6 +94,20 @@ func renderFarmUpkeep(b *strings.Builder, v *FarmUpkeepView) {
 	shovels := "a fresh shovel"
 	if v.ShovelsShort != 1 {
 		shovels = fmt.Sprintf("%d fresh shovels", v.ShovelsShort)
+	}
+	// LLM-277: a shovel seller shares the huddle right now — issue the concrete
+	// buy-here imperative (or a bide steer when an offer already stands) instead of
+	// the walk-to list, the same co-present progression the nail repair-buy and
+	// "## Restocking" cues use. Placed before the walk-to/generic branches so those
+	// keep their exact wording when no seller is co-present.
+	if v.CoPresentSeller != "" {
+		if v.PendingOffer {
+			fmt.Fprintf(b, "%s is here with you and your shovel offer is still with them — wait here for their answer; do not re-offer or leave.\n", sanitizeInline(v.CoPresentSeller))
+			return
+		}
+		fmt.Fprintf(b, "Buy %s to set the farm right for the season. ", shovels)
+		renderCoPresentBuy(b, v.CoPresentSeller, "shovels", sim.ShovelItemKind, v.ShovelsShort)
+		return
 	}
 	if len(v.ShovelVendors) > 0 {
 		// LLM-274: name the actual shovel supplier(s) — workplace + structure_id — in the

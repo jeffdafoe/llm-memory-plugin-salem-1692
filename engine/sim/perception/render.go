@@ -293,6 +293,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderForgeChoice(&ephemeral, p.ForgeChoice)
 	renderStallRepair(&ephemeral, p.StallRepair)
 	renderStallCondition(&ephemeral, p.StallCondition)
+	renderStallRepairBuy(&ephemeral, p.StallRepairBuy)
 	renderFarmUpkeep(&ephemeral, p.FarmUpkeep)
 	renderRestocking(&ephemeral, p.Restocking)
 	renderForage(&ephemeral, p.Forage)
