@@ -461,6 +461,15 @@ var perceptionScenarios = []perceptionScenario{
 		build: keeperAloneAtPostOnShift,
 	},
 	{
+		name: "visitor_arrives_at_keepers_workplace",
+		summary: "LLM-284: a tavern keeper (John Ellis) arrives at another keeper's workplace — the Blacksmith, " +
+			"kept by the co-present Ezekiel Crane — on an errand. The golden pins the keeper possessive in the " +
+			"'## What just happened' arrival line ('You arrived at Ezekiel Crane's Blacksmith.') so the model reads " +
+			"whose shop it entered instead of greeting the smith as if hosting its own forge (the live host-role " +
+			"inversion). A regression back to the ownerless 'the Blacksmith' shows in the diff.",
+		build: visitorArrivesAtKeepersWorkplace,
+	},
+	{
 		name: "hungry_worker_with_means_redirected_to_eat",
 		summary: "LLM-276: a workless, on-shift, idle worker whose hunger sits in the upper felt band (15, " +
 			"below the red-line 18) and who can resolve it now (holds coin, a free bush + a porridge vendor in reach). " +
@@ -6585,6 +6594,78 @@ func keeperAloneAtPostOnShift() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) 
 		},
 	}
 	return snap, josiahID, warrants
+}
+
+// visitorArrivesAtKeepersWorkplace reproduces the LLM-284 host-role inversion:
+// John Ellis (a tavern keeper) walked to the Blacksmith on an errand and arrives
+// with the smith, Ezekiel Crane, already there. Ezekiel keeps the Blacksmith
+// (his WorkStructureID is it); John does not. The golden pins that the "## What
+// just happened" arrival line names the keeper in the possessive — "You arrived
+// at Ezekiel Crane's Blacksmith." — so the model sees whose shop it walked into
+// and hosts as a guest instead of greeting the keeper as if hosting his own
+// forge. A regression that dropped the possessive (back to "the Blacksmith")
+// shows in the diff.
+func visitorArrivesAtKeepersWorkplace() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		johnID     = sim.ActorID("john")
+		ezekielID  = sim.ActorID("ezekiel")
+		blacksmith = sim.StructureID("blacksmith")
+		tavern     = sim.StructureID("tavern")
+		johnHome   = sim.StructureID("ellis_residence")
+	)
+	start, end := 360, 1260 // working hours 06:00–21:00
+	now := 540              // 09:00 — morning, both on shift
+	john := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "John Ellis",
+		Role:              "tavernkeeper",
+		State:             sim.StateIdle,
+		WorkStructureID:   tavern,
+		InsideStructureID: blacksmith, // walked over; standing in the smithy
+		HomeStructureID:   johnHome,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             40,
+		Needs:             map[sim.NeedKey]int{},
+		// John knows Ezekiel (a fellow village keeper — in the incident he greeted
+		// him by name), so the co-present line names him rather than "the blacksmith".
+		Acquaintances: map[string]sim.Acquaintance{"Ezekiel Crane": {}},
+		// Ezekiel is within earshot — the co-present keeper of the incident,
+		// whom John greeted as if hosting his own forge.
+		ColocatedAudienceIDs: []sim.ActorID{ezekielID},
+	}
+	ezekiel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Ezekiel Crane",
+		Role:              "blacksmith",
+		State:             sim.StateIdle,
+		WorkStructureID:   blacksmith,
+		InsideStructureID: blacksmith,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             12,
+		Needs:             map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{johnID: john, ezekielID: ezekiel},
+		Structures: map[sim.StructureID]*sim.Structure{
+			blacksmith: plainStructure(blacksmith, "Blacksmith"),
+			tavern:     plainStructure(tavern, "Tavern"),
+			johnHome:   plainStructure(johnHome, "Ellis Residence"),
+		},
+	}
+	// John just arrived at the Blacksmith → "## What just happened: You arrived at
+	// Ezekiel Crane's Blacksmith." (the keeper possessive, LLM-284).
+	warrants := []sim.WarrantMeta{
+		{
+			TriggerActorID: johnID,
+			Reason:         sim.ArrivalWarrantReason{AtStructureID: blacksmith},
+			SourceEventID:  1,
+		},
+	}
+	return snap, johnID, warrants
 }
 
 // worklessTiredRejoinerSelfActionTrail is the LLM-217 fixture: the live Patience

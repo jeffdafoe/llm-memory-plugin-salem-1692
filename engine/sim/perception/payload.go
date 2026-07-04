@@ -622,6 +622,16 @@ type Payload struct {
 	// Empty when no arrival warrant names a place.
 	WarrantPlaceNames map[string]string
 
+	// WarrantPlaceKeepers maps an arrived-at structure id to the display name of
+	// its keeper — the actor whose WorkStructureID is that structure — so the
+	// arrival line can render the possessive "You arrived at Ezekiel Crane's
+	// Blacksmith" instead of the ownerless "the Blacksmith", the cue that let a
+	// visitor greet the smith as if hosting his own shop (LLM-284). The arriver
+	// is excluded, so reaching one's own workplace keeps the plain form; only
+	// structures have keepers, so village-object arrivals never appear here.
+	// Empty when no arrival names a keeper's workplace.
+	WarrantPlaceKeepers map[string]string
+
 	// EatHereKinds is the set of item kinds that always settle eat-here
 	// (consumable, neither service nor portable — ItemKindDef.EatHereOnly).
 	// Render consults it so a quote warrant line can state the disposition

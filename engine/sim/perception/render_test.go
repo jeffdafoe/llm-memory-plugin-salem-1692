@@ -223,23 +223,28 @@ func TestRender_Deterministic(t *testing.T) {
 
 func TestRender_ArrivalWarrant_NamesDestination(t *testing.T) {
 	cases := []struct {
-		name   string
-		reason sim.ArrivalWarrantReason
-		places map[string]string
-		want   string
+		name    string
+		reason  sim.ArrivalWarrantReason
+		places  map[string]string
+		keepers map[string]string
+		want    string
 	}{
-		{"structure", sim.ArrivalWarrantReason{AttemptID: 1, AtStructureID: "tavern"}, map[string]string{"tavern": "The Prancing Pony"}, "You arrived at The Prancing Pony."},
-		{"object", sim.ArrivalWarrantReason{AttemptID: 2, AtObjectID: "well1"}, map[string]string{"well1": "the Village Well"}, "You arrived at the Village Well."},
-		{"bare position", sim.ArrivalWarrantReason{AttemptID: 3}, nil, "You arrived."},
-		{"unresolved id falls back", sim.ArrivalWarrantReason{AttemptID: 4, AtStructureID: "ghost"}, nil, "You arrived."},
-		{"bare common noun gets definite article", sim.ArrivalWarrantReason{AttemptID: 5, AtStructureID: "store"}, map[string]string{"store": "General Store"}, "You arrived at the General Store."},
+		{"structure", sim.ArrivalWarrantReason{AttemptID: 1, AtStructureID: "tavern"}, map[string]string{"tavern": "The Prancing Pony"}, nil, "You arrived at The Prancing Pony."},
+		{"object", sim.ArrivalWarrantReason{AttemptID: 2, AtObjectID: "well1"}, map[string]string{"well1": "the Village Well"}, nil, "You arrived at the Village Well."},
+		{"bare position", sim.ArrivalWarrantReason{AttemptID: 3}, nil, nil, "You arrived."},
+		{"unresolved id falls back", sim.ArrivalWarrantReason{AttemptID: 4, AtStructureID: "ghost"}, nil, nil, "You arrived."},
+		{"bare common noun gets definite article", sim.ArrivalWarrantReason{AttemptID: 5, AtStructureID: "store"}, map[string]string{"store": "General Store"}, nil, "You arrived at the General Store."},
+		// LLM-284: a keeper's workplace reads as the keeper's possessive, article-free.
+		{"keeper possessive", sim.ArrivalWarrantReason{AttemptID: 6, AtStructureID: "smithy"}, map[string]string{"smithy": "Blacksmith"}, map[string]string{"smithy": "Ezekiel Crane"}, "You arrived at Ezekiel Crane's Blacksmith."},
+		{"keeper name ending in s takes bare apostrophe", sim.ArrivalWarrantReason{AttemptID: 7, AtStructureID: "tav2"}, map[string]string{"tav2": "Tavern"}, map[string]string{"tav2": "John Ellis"}, "You arrived at John Ellis' Tavern."},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			p := Payload{
-				ActorID:           "alice",
-				Warrants:          []sim.WarrantMeta{{TriggerActorID: "alice", Reason: tc.reason}},
-				WarrantPlaceNames: tc.places,
+				ActorID:             "alice",
+				Warrants:            []sim.WarrantMeta{{TriggerActorID: "alice", Reason: tc.reason}},
+				WarrantPlaceNames:   tc.places,
+				WarrantPlaceKeepers: tc.keepers,
 			}
 			out := Render(p, DefaultRenderConfig())
 			if !strings.Contains(out.Text, tc.want) {
@@ -762,7 +767,7 @@ func TestRenderWarrantLine_Stranded(t *testing.T) {
 	line, truncated := renderWarrantLine(1, sim.WarrantMeta{
 		TriggerActorID: "zeke",
 		Reason:         sim.StrandedWarrantReason{},
-	}, func(sim.ActorID) string { return "you" }, func(string) string { return "" }, func(sim.ItemKind) bool { return false }, func(sim.ItemKind) (bool, bool) { return false, false }, 200)
+	}, func(sim.ActorID) string { return "you" }, func(string) string { return "" }, func(string) string { return "" }, func(sim.ItemKind) bool { return false }, func(sim.ItemKind) (bool, bool) { return false, false }, 200)
 	want := "1. You find yourself standing out in the open, between places, with nothing under way.\n"
 	if line != want {
 		t.Errorf("stranded line = %q, want %q", line, want)
@@ -778,7 +783,7 @@ func TestRenderWarrantLine_SeekWork(t *testing.T) {
 	line, truncated := renderWarrantLine(1, sim.WarrantMeta{
 		TriggerActorID: "lewis",
 		Reason:         sim.SeekWorkWarrantReason{},
-	}, func(sim.ActorID) string { return "you" }, func(string) string { return "" }, func(sim.ItemKind) bool { return false }, func(sim.ItemKind) (bool, bool) { return false, false }, 200)
+	}, func(sim.ActorID) string { return "you" }, func(string) string { return "" }, func(string) string { return "" }, func(sim.ItemKind) bool { return false }, func(sim.ItemKind) (bool, bool) { return false, false }, 200)
 	want := "1. You have no work of your own to tend, and you take work for pay — seek out someone who could use a hand and offer your labor.\n"
 	if line != want {
 		t.Errorf("seek-work line = %q, want %q", line, want)
