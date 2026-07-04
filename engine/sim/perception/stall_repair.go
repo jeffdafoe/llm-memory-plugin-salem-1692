@@ -24,12 +24,13 @@ import (
 // Working a hired job there. Hired flips the render from "your business" to "the
 // business you're working at" so the cue states the true relationship.
 type StallRepairView struct {
-	Hired          bool   // resolved through a hire (Working for the owner), not ownership (LLM-271)
-	Degraded       bool   // worn past the degrade threshold: closed for trade until mended
-	NailsNeeded    int    // nails one repair consumes
-	NailsHeld      int    // nails the actor currently carries
-	HasEnoughNails bool   // NailsHeld >= NailsNeeded
-	Name           string // the business's display name (structure/object); "" → generic noun
+	Hired          bool            // resolved through a hire (Working for the owner), not ownership (LLM-271)
+	Degraded       bool            // worn past the degrade threshold: closed for trade until mended
+	NailsNeeded    int             // nails one repair consumes
+	NailsHeld      int             // nails the actor currently carries
+	HasEnoughNails bool            // NailsHeld >= NailsNeeded
+	Name           string          // the business's display name (structure/object); "" → generic noun
+	NailVendors    []RestockVendor // owner's buy-nails destinations (LLM-274); populated only when short of nails and NOT hired
 }
 
 // buildStallRepair returns the at-the-business repair cue, or nil. Pure over the
@@ -52,7 +53,7 @@ func buildStallRepair(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 	}
 	needed := snap.StallNailsPerRepair
 	held := actorSnap.Inventory[sim.NailItemKind]
-	return &StallRepairView{
+	view := &StallRepairView{
 		Hired:          hired,
 		Degraded:       sim.StallDegraded(stall, snap.StallWearDegradeThreshold),
 		NailsNeeded:    needed,
@@ -60,6 +61,16 @@ func buildStallRepair(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 		HasEnoughNails: held >= needed,
 		Name:           resolveDwellPinLabel(snap, stall.ID),
 	}
+	// LLM-274: when the owner is short of nails, resolve the nail supplier(s) so the
+	// cue can name a concrete move_to destination instead of the dead-end "the smith".
+	// findItemVendors inherits the restock directory's filtering (supplier-of-record,
+	// remembered-shut drop, affordability drop, workplace dedupe). Skipped for a hired
+	// worker — they can't leave the job to shop, so their cue only names the shortfall
+	// (renderHiredStallRepair).
+	if !view.HasEnoughNails && !hired {
+		view.NailVendors = findItemVendors(snap, actorID, actorSnap, sim.NailItemKind)
+	}
+	return view
 }
 
 // renderStallRepair writes the "## Your business" section. Content-gated: a nil view
@@ -87,7 +98,18 @@ func renderStallRepair(b *strings.Builder, v *StallRepairView) {
 	}
 	if v.HasEnoughNails {
 		fmt.Fprintf(b, "You carry enough nails (%d) to mend it — repair it now (it takes a short while, hammer in hand, on site).\n", v.NailsHeld)
+	} else if len(v.NailVendors) > 0 {
+		// LLM-274: name the actual nail supplier(s) — workplace + structure_id, resolved
+		// via findItemVendors — in the model-proven Restocking format, plus the repair's
+		// second hop (come back and mend). The old destination-less "buy from the smith"
+		// left llama-3.3-70b narrating the errand ("I must visit the smith") and never
+		// issuing move_to.
+		fmt.Fprintf(b, "Mending takes %d nails and you have %d — buy them, then come back here and repair. Use move_to to reach a supplier, then pay_with_item once you arrive:\n", v.NailsNeeded, v.NailsHeld)
+		renderWalkToVendors(b, v.NailVendors)
 	} else {
+		// No reachable, open, affordable nail supplier on record — keep the generic
+		// sentence rather than a dead-end target (mirrors the Restocking actionability
+		// posture, LLM-216); the cue self-heals when a supplier opens or the purse covers one.
 		fmt.Fprintf(b, "Mending takes %d nails and you have %d — buy more from the smith, then repair it.\n", v.NailsNeeded, v.NailsHeld)
 	}
 }

@@ -1,0 +1,17 @@
+# Your turn
+
+## What just happened
+(nothing specific — this is a routine check-in)
+
+
+## You
+Coins in your purse: 39.
+
+## Around you
+You are outdoors, with no one else here to hear you speak.
+It is morning in the village.
+
+## Your business
+Your Ellis Farm is showing hard use and needs mending. Mending takes 5 nails and you have 0 — buy them, then come back here and repair. Use move_to to reach a supplier, then pay_with_item once you arrive:
+  - buy from Blacksmith (structure_id: blacksmith)
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.
