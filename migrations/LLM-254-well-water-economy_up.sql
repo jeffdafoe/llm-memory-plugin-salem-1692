@@ -24,31 +24,39 @@
 -- ORDERING: this is LLM-254 but depends on LLM-264's nullable object_refresh.attribute
 -- (a yield-only row carries no attribute). The migration-replay harness applies
 -- *_up.sql in lexical order, so LLM-254 replays BEFORE LLM-264 -- the nullable column
--- and the yield partial index don't exist yet there. That is fine: the harness is
--- SCHEMA-ONLY (no Well, no Josiah), so every statement below is guarded to touch ZERO
--- rows there (WHERE EXISTS / NOT EXISTS), and the yield INSERT deliberately AVOIDS
--- ON CONFLICT on LLM-264's partial index (absent at that point) -- a NOT EXISTS guard
--- gives idempotency with no plan-time index dependency. On prod LLM-264 is already
--- applied, so the NULL attribute + finite yield row land cleanly.
+-- and the yield partial index don't exist yet there. That is fine ONLY because the
+-- harness is SCHEMA-ONLY (no Well, no Josiah): every statement below is guarded to
+-- touch ZERO rows there (WHERE EXISTS / NOT EXISTS), and the yield INSERT deliberately
+-- AVOIDS ON CONFLICT on LLM-264's partial index (absent at that point) -- a NOT EXISTS
+-- guard gives idempotency with no plan-time index dependency. NOTE: this migration is
+-- NOT safe for a hypothetical "partially seeded BEFORE LLM-264" DB (the NULL-attribute
+-- insert would hit the still-NOT-NULL column); no such environment exists (prod has
+-- LLM-264 applied; the harness has no seed rows).
 --
 -- object_refresh and actor_attribute are CHECKPOINT-WRITTEN; deploy.sh does
 -- stop -> migrate -> start, so these apply engine-stopped (no checkpoint race).
 
 BEGIN;
 
--- 1a. The Well's thirst row becomes PURE DRINK: drop its gather_item so it is no
---     longer a gatherable source. Amount -8 (< 0) still names its need (thirst) and
---     stays infinite, so public drinking is unchanged. 0 rows on a schema-only DB.
+-- 1a. The Well's thirst DRINK+GATHER row becomes PURE DRINK: drop its gather_item so
+--     it is no longer a gatherable source. Matched on the exact expected shape
+--     (thirst / -8 / gather_item=water) so a hypothetical second thirst row is never
+--     touched. Amount -8 still names its need and stays infinite -> public drinking
+--     unchanged. 0 rows on a schema-only DB.
 UPDATE object_refresh
    SET gather_item = NULL
- WHERE object_id = '019d79ef-d9df-73d7-967a-dc202ceaf624'
-   AND attribute  = 'thirst';
+ WHERE object_id   = '019d79ef-d9df-73d7-967a-dc202ceaf624'
+   AND attribute   = 'thirst'
+   AND amount      = -8
+   AND gather_item = 'water';
 
 -- 1b. Add the yield-only water row: forage-to-sell (amount 0), NULL attribute
 --     (LLM-264 -- eases no need), finite 20 with 6-hour periodic regen. This is now
 --     the Well's SOLE gatherable water source. Guarded on the Well existing (FK) and
---     on the row not already present (idempotent). NOT ON CONFLICT, so it needs no
---     LLM-264 partial index at plan time (see ORDERING above). 0 rows on schema-only.
+--     on no yield-only water row already existing (the LLM-264 partial-index key:
+--     attribute IS NULL + gather_item). NOT ON CONFLICT, so it needs no LLM-264
+--     partial index at plan time (see ORDERING). A wrong-shape existing row is caught
+--     by the full-shape validation below, not silently accepted. 0 rows on schema-only.
 INSERT INTO object_refresh
     (object_id, attribute, amount, available_quantity, max_quantity,
      refresh_mode, refresh_period_hours, gather_item)
@@ -72,21 +80,26 @@ ON CONFLICT (actor_id, slug) DO NOTHING;
 
 -- 2b. Add Josiah's `forage water` restock entry. The RestockPolicy is the union of
 --     every attribute's params.restock; the `merchant` role is the home of his
---     restock, so APPEND to it (don't clobber his existing buy entries). Idempotent
---     via the @> guard. 0 rows on schema-only (no merchant row).
+--     restock, so APPEND to it (don't clobber his existing buy entries). The
+--     jsonb_typeof guard keeps a malformed non-array restock from corrupting via ||.
+--     Idempotent via the @> guard. 0 rows on schema-only (no merchant row).
 UPDATE actor_attribute
    SET params = jsonb_set(
        params,
        '{restock}',
-       COALESCE(params->'restock', '[]'::jsonb) || '[{"item": "water", "source": "forage", "max": 20}]'::jsonb
+       (CASE WHEN jsonb_typeof(params->'restock') = 'array'
+             THEN params->'restock' ELSE '[]'::jsonb END)
+           || '[{"item": "water", "source": "forage", "max": 20}]'::jsonb
    )
  WHERE actor_id = '019dcac2-e78a-715e-91b7-101f339b0891'
    AND slug = 'merchant'
    AND NOT (COALESCE(params->'restock', '[]'::jsonb) @> '[{"item": "water", "source": "forage"}]'::jsonb);
 
--- Validate on a SEEDED DB (fail loud rather than silently shipping this disabled).
--- A schema-only DB has empty village_object / actor -> skip. Mirrors the LLM-253 /
--- LLM-90 deploy-time guards.
+-- Validate on a SEEDED DB (fail loud rather than silently shipping this disabled or
+-- half-applied). A schema-only DB has empty village_object / actor -> skip. Mirrors
+-- the LLM-253 / LLM-90 deploy-time guards. The yield-row check asserts the FULL
+-- intended shape so a pre-existing wrong-shape water yield row (which 1b's NOT EXISTS
+-- would have skipped) fails loud instead of shipping silently.
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM village_object) THEN
@@ -100,8 +113,10 @@ BEGIN
         END IF;
         IF NOT EXISTS (SELECT 1 FROM object_refresh
                         WHERE object_id = '019d79ef-d9df-73d7-967a-dc202ceaf624'
-                          AND attribute IS NULL AND gather_item = 'water' AND amount = 0) THEN
-            RAISE EXCEPTION 'LLM-254: Well water yield row was not added';
+                          AND attribute IS NULL AND gather_item = 'water'
+                          AND amount = 0 AND available_quantity = 20 AND max_quantity = 20
+                          AND refresh_mode = 'periodic' AND refresh_period_hours = 6) THEN
+            RAISE EXCEPTION 'LLM-254: Well water yield row missing or wrong shape';
         END IF;
     END IF;
     IF EXISTS (SELECT 1 FROM actor) THEN
