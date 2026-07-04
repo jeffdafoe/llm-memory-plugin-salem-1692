@@ -129,6 +129,21 @@ func TestReturnToPostBackstop_SkipsNonLaboring(t *testing.T) {
 	}
 }
 
+// TestReturnToPostBackstop_SkipsNonLaboringStateMirror: a stale/corrupt mirror —
+// a future LaboringUntil + a live Working offer on an actor NOT in StateLaboring —
+// must not stamp a "you drifted from the job" warrant on someone the reactor no
+// longer laboring-shelves.
+func TestReturnToPostBackstop_SkipsNonLaboringStateMirror(t *testing.T) {
+	w, worker, _ := rtpWorld(rtpNow)
+	worker.InsideStructureID = ""
+	worker.State = StateIdle // mirror drift: window + Working offer live, but not laboring
+
+	tm := evalReturnToPost(t, w, rtpNow)
+	if tm.Stamped != 0 {
+		t.Errorf("Stamped=%d, want 0 for a non-StateLaboring actor with a stale live window; telemetry=%+v", tm.Stamped, tm)
+	}
+}
+
 // TestReturnToPostBackstop_SkipsInPlaceHire: an employer with no work structure
 // (an in-place hire) has no post to be off — never eligible.
 func TestReturnToPostBackstop_SkipsInPlaceHire(t *testing.T) {

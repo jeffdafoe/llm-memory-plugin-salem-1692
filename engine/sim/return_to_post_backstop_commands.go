@@ -167,14 +167,17 @@ func EvaluateReturnToPostBackstop(now time.Time) Command {
 // selector perception's laboringOfferFor delegates to, so the sweep and the OffPost
 // cue agree on which post she belongs at.
 func returnToPostEligible(w *World, a *Actor, now time.Time) bool {
-	// Must actually be in the shelved-laboring state: gate on the LaboringUntil
-	// window, the SAME authoritative busy signal actorCanReactNow keys the laboring
-	// shelve on — NOT the ledger offer alone. A stranded StateLaboring / stale
-	// Working offer with a nil or elapsed window is already tickable (the reactor
-	// doesn't shelve it), so it needs no return-to-post wake, and stamping the
-	// warrant would put a spurious "you drifted from the job" line in front of a
-	// worker the reactor no longer treats as laboring.
-	if a.LaboringUntil == nil || !a.LaboringUntil.After(now) {
+	// Must actually be laboring — all three signals the engine keeps paired for a
+	// live job (labor_settle.go asserts a Working offer's worker is StateLaboring):
+	// the StateLaboring enum, a live LaboringUntil window (the authoritative busy
+	// signal actorCanReactNow shelves on), and (below) a Working ledger offer.
+	// Requiring all three rejects a stale/corrupt mirror — a future window or a
+	// leftover Working offer on a non-laboring actor — so we never stamp a spurious
+	// "you drifted from the job" warrant on someone the reactor no longer laboring-
+	// shelves. Movement doesn't clear StateLaboring (it's MoveIntent-tracked), so a
+	// worker who walked off-post is still StateLaboring — the gate doesn't exclude
+	// the target case.
+	if a.State != StateLaboring || a.LaboringUntil == nil || !a.LaboringUntil.After(now) {
 		return false
 	}
 	// The live Working offer carries the employer + post.
