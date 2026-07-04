@@ -48,10 +48,10 @@ import (
 // sections:
 //   - Items — "## Your bushes to harvest": the actor's OWN bushes for a low item,
 //     owner-only and distance-independent (LLM-79).
-//   - WildSources — "## Wild sources you know of": the LLM-253 ranged cue for a
-//     forager carrying sim.AttrForageRange — the nearest ripe UNOWNED source for a
-//     low item the actor owns no bush for, at any distance. A distinct section so
-//     it never claims to be "your bushes."
+//   - WildSources — "## Free sources you can gather from": the LLM-253 ranged cue
+//     for a forager carrying sim.AttrForageRange — the nearest ripe UNOWNED source
+//     for a low item the actor owns no bush for, at any distance. A distinct section
+//     so it never claims to be "your bushes."
 //
 // Both live on one view (not two payload fields) so the whole cue defers together
 // on a live sale (customerEngaged) and a single p.Forage != nil signal drives the
@@ -353,16 +353,19 @@ func renderForage(b *strings.Builder, v *ForageView) {
 	renderWildForage(b, v.WildSources)
 }
 
-// renderWildForage writes the "## Wild sources you know of" section — the LLM-253
-// ranged cue. A distinct header from "## Your bushes to harvest" so it never claims
-// the actor owns these; move_to ONLY, no `gather` mention (same LLM-59/79 posture
-// as the owned cue — gather isn't callable until the forager arrives).
+// renderWildForage writes the "## Free sources you can gather from" section — the
+// LLM-253 ranged cue. Source-agnostic copy (LLM-254): the source's own name carries
+// the noun ("The Well is…", "The Sage Bush is…"), so the section reads right for a
+// stone well as well as a countryside bush — no "grows wild / ripe to pick" flavor.
+// A distinct header from "## Your bushes to harvest" so it never claims the actor
+// owns these; move_to ONLY, no `gather` mention (same LLM-59/79 posture as the owned
+// cue — gather isn't callable until the forager arrives).
 func renderWildForage(b *strings.Builder, sources []WildForageItemView) {
 	if len(sources) == 0 {
 		return
 	}
-	b.WriteString("## Wild sources you know of\n")
-	b.WriteString("You know where these grow wild in the countryside. No one owns them, so you may pick freely — walk out to gather when your own stock runs low. You choose how much to pick.\n")
+	b.WriteString("## Free sources you can gather from\n")
+	b.WriteString("You know of these unowned sources out in the town and countryside. No one owns them, so you may take freely — walk out to gather when your own stock runs low. You choose how much to take.\n")
 	for _, it := range sources {
 		headroom := it.Cap - it.CurrentQty
 		if headroom < 0 {
@@ -374,7 +377,7 @@ func renderWildForage(b *strings.Builder, sources []WildForageItemView) {
 		if it.Direction != "" {
 			where = it.Distance + " to the " + it.Direction
 		}
-		fmt.Fprintf(b, "- %s: %d on hand of %d cap (room for %d more). A wild %s grows %s, %d ripe to pick now. Use move_to with structure_id \"%s\" to walk out to it.\n",
+		fmt.Fprintf(b, "- %s: %d on hand of %d cap (room for %d more). The %s is %s, %d ready to gather now. Use move_to with structure_id \"%s\" to walk out to it.\n",
 			sanitizeInline(it.ItemLabel), it.CurrentQty, it.Cap, headroom,
 			sanitizeInline(it.SourceLabel), where, it.RipeUnits, it.MoveHandle)
 	}

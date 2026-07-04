@@ -520,7 +520,7 @@ var perceptionScenarios = []perceptionScenario{
 		summary: "The LLM-253 ranged forage cue. Prudence (herbalist, tagged sim.AttrForageRange) is low on sage " +
 			"(0 of cap 5) and owns no sage bush, while an UNOWNED Sage Bush with 10 ripe sits ~80 tiles to the " +
 			"northeast — the gap the owner-only owned-bush cue and the proximity-only at-bush cue both leave open. The " +
-			"golden pins the distinct '## Wild sources you know of' section (never 'your bushes'), the qualitative " +
+			"golden pins the distinct '## Free sources you can gather from' section (never 'your bushes'), the qualitative " +
 			"distance+direction ('a long walk to the northeast'), the ripe count, and a move_to-by-structure_id handle — " +
 			"move_to ONLY, no gather mention (LLM-59/79). Paired with untagged_forager_no_ranged_wild_forage.",
 		build: herbalistRangedWildForage,
@@ -529,9 +529,21 @@ var perceptionScenarios = []perceptionScenario{
 		name: "untagged_forager_no_ranged_wild_forage",
 		summary: "The tag gate for the LLM-253 ranged forage cue: the SAME fixture as herbalist_ranged_wild_forage " +
 			"(low on sage, unowned distant Sage Bush) but the forager does NOT carry sim.AttrForageRange. The golden " +
-			"pins that NO '## Wild sources you know of' section renders — ranged awareness of an unowned distant source " +
+			"pins that NO '## Free sources you can gather from' section renders — ranged awareness of an unowned distant source " +
 			"is the tagged 'herbalist gift' only. Enforced across the matrix by TestGoldensRangedWildForageRequiresTag.",
 		build: untaggedForagerNoRangedWildForage,
+	},
+	{
+		name: "general_store_water_forage_at_well",
+		summary: "LLM-254 two-row Well. The town Well is an UNOWNED commons carrying BOTH a public thirst " +
+			"drink row (Amount -8, slake-in-place) AND a yield-only water gather row (Amount 0, unset attribute — " +
+			"the LLM-264 clean yield row). Josiah Thorne (merchant, tagged sim.AttrForageRange, low on water with " +
+			"a `forage water` restock entry) is thirsty ~10 tiles away, so ONE unowned object surfaces in TWO " +
+			"independent cues at once with no owner-gate conflict: the free-drink satiation cue ('## What you can " +
+			"eat or drink' — the -8 thirst row) AND the ranged forage cue ('## Free sources you can gather from' — " +
+			"the water yield row, 20 ready to gather). The forage count reads the yield row alone; the -8 drink row " +
+			"never pollutes it (forageStockForItem gates on Amount==0). Byte-stable: on shift, no orders, no clock read.",
+		build: generalStoreWaterForageAtWell,
 	},
 	{
 		name: "hungry_forager_at_stocked_bush",
@@ -2918,7 +2930,7 @@ func growerAtStrippedBush() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 // pair: a forager low on sage (0 of cap 5) who owns no sage bush, with an UNOWNED
 // Sage Bush (10 ripe) ~80 tiles to the northeast — far outside loiter reach, so it
 // falls in the gap between the owner-only owned-bush cue and the proximity-only
-// at-bush cue. The tagged herbalist gets the ranged "## Wild sources you know of"
+// at-bush cue. The tagged herbalist gets the ranged "## Free sources you can gather from"
 // cue; the untagged forager gets nothing (the tag gate). Farm ~tile (23,73), bush
 // ~tile (70,9): dx=+47, dy=-64 → ~79 tiles, rendered "a long walk to the
 // northeast". On shift, no orders, no clock-driven text → byte-stable.
@@ -2978,13 +2990,79 @@ func wildSageScenario(tagged bool) (*sim.Snapshot, sim.ActorID, []sim.WarrantMet
 	return snap, prudenceID, nil
 }
 
+// generalStoreWaterForageAtWell is the LLM-254 two-row Well. The town Well is an
+// UNOWNED commons carrying BOTH a public thirst drink row (Amount -8, slake-in-
+// place) AND a yield-only water gather row (Amount 0, unset attribute — the clean
+// LLM-264 yield row). Josiah Thorne (merchant, tagged sim.AttrForageRange, low on
+// water with a `forage water` restock entry) stands ~10 tiles away and is thirsty,
+// so the ONE unowned object surfaces in TWO independent cues at once with no owner-
+// gate conflict: the free-drink satiation cue ("## What you can eat or drink", from
+// the -8 thirst row) and the ranged forage cue ("## Free sources you can gather
+// from", from the water yield row — 20 ready to gather). The forage stock count
+// reads the yield row alone (forageStockForItem gates on Amount==0), so the -8
+// drink row never pollutes it. Well ~tile (100,135), Josiah ~tile (108,141):
+// dx=-8, dy=-6 → ~10 tiles, "a short walk to the northwest". On shift, no orders,
+// no clock read → byte-stable.
+func generalStoreWaterForageAtWell() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const josiahID = sim.ActorID("josiah")
+	zero := 0
+	start, end := 360, 1080 // 06:00–18:00
+	now := 600              // 10:00 — on shift
+	josiah := &sim.ActorSnapshot{
+		Kind:             sim.KindNPCShared,
+		DisplayName:      "Josiah Thorne",
+		Role:             "merchant",
+		State:            sim.StateIdle,
+		Pos:              sim.WorldPos{X: 108 * 32, Y: 141 * 32}.Tile(), // ~10 tiles SE of the Well
+		ScheduleStartMin: &start,
+		ScheduleEndMin:   &end,
+		Coins:            20,
+		Needs:            map[sim.NeedKey]int{"thirst": sim.DefaultThirstRedThreshold},
+		Inventory:        map[sim.ItemKind]int{"water": 0},
+		AttributeSlugs:   []string{sim.AttrForageRange},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "water", Source: sim.RestockSourceForage, Max: 20},
+		}},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay:  &now,
+		NeedThresholds:    sim.NeedThresholds{},
+		Assets:            emptyAssetSet,
+		RestockReorderPct: 25,
+		Actors:            map[sim.ActorID]*sim.ActorSnapshot{josiahID: josiah},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"water": {Name: "water", DisplayLabel: "water", Category: sim.ItemCategoryDrink},
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"town_well": {
+				ID:            "town_well",
+				DisplayName:   "Well",
+				Pos:           sim.WorldPos{X: 100 * 32, Y: 135 * 32}, // tile (100,135) — the real Well
+				OwnerActorID:  "",                                     // UNOWNED commons — both cues require this
+				LoiterOffsetX: &zero,
+				LoiterOffsetY: &zero,
+				Refreshes: []*sim.ObjectRefresh{
+					// Public drink row: slakes thirst in place, yields no inventory. LLM-254
+					// preserves it so every NPC keeps drinking at the commons Well.
+					{Attribute: "thirst", Amount: -8, AvailableQuantity: intp(10), MaxQuantity: intp(10)},
+					// Yield-only water row: forage-to-sell, unset attribute (LLM-264). A
+					// forage_range holder draws a pail; drinking-in-place never touches this
+					// counter (separate row, gated by Amount==0 in forageStockForItem).
+					{Amount: 0, GatherItem: "water", AvailableQuantity: intp(20), MaxQuantity: intp(20)},
+				},
+			},
+		},
+	}
+	return snap, josiahID, nil
+}
+
 // TestRangedWildForageRequiresTag is the LLM-253 tag-gate unit: the ranged
-// "## Wild sources you know of" cue (with its move_to handle and qualitative
+// "## Free sources you can gather from" cue (with its move_to handle and qualitative
 // distance+direction) renders for a forager carrying sim.AttrForageRange and does
 // NOT render for the same fixture without the tag. Asserts the render directly, so
 // the gate is pinned independently of whether a golden was regenerated.
 func TestRangedWildForageRequiresTag(t *testing.T) {
-	const header = "## Wild sources you know of"
+	const header = "## Free sources you can gather from"
 	tagged := renderScenario(perceptionScenario{name: "tagged", build: herbalistRangedWildForage})
 	if !strings.Contains(tagged, header) {
 		t.Fatalf("tagged herbalist: expected the ranged wild-forage section %q, got:\n%s", header, tagged)
@@ -3002,12 +3080,12 @@ func TestRangedWildForageRequiresTag(t *testing.T) {
 }
 
 // TestGoldensRangedWildForageRequiresTag is the LLM-253 cross-scenario invariant:
-// the ranged "## Wild sources you know of" section may render only for a subject
+// the ranged "## Free sources you can gather from" section may render only for a subject
 // carrying sim.AttrForageRange. Runs over the whole matrix so a future cue can't
 // leak omniscient wild-source awareness to an untagged actor in any situation, not
 // just the one pair pinned above.
 func TestGoldensRangedWildForageRequiresTag(t *testing.T) {
-	const header = "## Wild sources you know of"
+	const header = "## Free sources you can gather from"
 	for _, sc := range perceptionScenarios {
 		sc := sc
 		t.Run(sc.name, func(t *testing.T) {
