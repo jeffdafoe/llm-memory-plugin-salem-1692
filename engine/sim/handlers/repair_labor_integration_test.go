@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -164,14 +165,26 @@ func TestHiredWorkerRepair_HireSettlesDuringWindow(t *testing.T) {
 	seedHiredRepairWorld(t, f, now)
 	runRepairTick(t, f, now)
 
-	// The hire settles mid-window: the settle sweep clears the ledger offer and
-	// drops the worker out of StateLaboring (labor_settle.go deletes the row).
+	// The hire settles WHILE the repair window is still open — the bug condition.
+	// Mirror the load-bearing part of labor_settle.go: the completed hire deletes
+	// the ledger offer (the old completion re-read it via WearableStallToMend) and
+	// drops the worker out of StateLaboring. Then force the still-open window due so
+	// the sweep lands deterministically rather than racing the wall clock — the
+	// settle happened first, so completion sees no Working offer, exactly as live.
 	if _, err := f.world.Send(sim.Command{Fn: func(w *sim.World) (any, error) {
 		delete(w.LaborLedger, 1)
 		a := w.Actors[rlWorker]
+		if a == nil {
+			return nil, fmt.Errorf("actor %s not found", rlWorker)
+		}
 		a.State = sim.StateIdle
 		a.LaboringUntil = nil
 		a.LaborID = 0
+		if a.SourceActivity == nil {
+			return nil, fmt.Errorf("expected an open repair window before settling the hire")
+		}
+		due := now.Add(-time.Second)
+		a.SourceActivity.Until = due
 		return nil, nil
 	}}); err != nil {
 		t.Fatalf("settle hire: %v", err)
@@ -192,6 +205,9 @@ func readRepairState(t *testing.T, w *sim.World, id sim.ActorID) (nails int, has
 	t.Helper()
 	v, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		a := world.Actors[id]
+		if a == nil {
+			return nil, fmt.Errorf("actor %s not found", id)
+		}
 		open := a.SourceActivity != nil && a.SourceActivity.Kind == sim.SourceActivityRepair
 		return [2]int{a.Inventory[sim.NailItemKind], boolToInt(open)}, nil
 	}})
@@ -206,7 +222,11 @@ func readRepairState(t *testing.T, w *sim.World, id sim.ActorID) (nails int, has
 func readWear(t *testing.T, w *sim.World, id sim.VillageObjectID) int {
 	t.Helper()
 	v, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		return world.VillageObjects[id].Wear, nil
+		obj := world.VillageObjects[id]
+		if obj == nil {
+			return nil, fmt.Errorf("village object %s not found", id)
+		}
+		return obj.Wear, nil
 	}})
 	if err != nil {
 		t.Fatalf("readWear: %v", err)
