@@ -727,6 +727,18 @@ func renderActionLogEntry(snap *sim.Snapshot, e sim.ActionLogEntry) (speaker, te
 			return "", "", "", false
 		}
 		return name, name + " consumes " + e.Text + ".", "act", true
+	case sim.ActionTypeGathered:
+		// LLM-273: the gatherer harvested Text from a source object.
+		// CounterpartyName is the source's display name — name it when known
+		// ("gathers 20x water from the Well"), else drop the source clause.
+		// Same WithDefiniteArticle treatment as the walked/departed place names.
+		if e.Text == "" {
+			return "", "", "", false
+		}
+		if e.CounterpartyName != "" {
+			return name, name + " gathers " + e.Text + " from " + sim.WithDefiniteArticle(e.CounterpartyName) + ".", "act", true
+		}
+		return name, name + " gathers " + e.Text + ".", "act", true
 	case sim.ActionTypeDelivered:
 		if e.Text == "" {
 			return "", "", "", false

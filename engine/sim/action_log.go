@@ -133,6 +133,16 @@ const (
 	// passes. No coins move here — the reward settles at completion
 	// (ActionTypeLabored).
 	ActionTypeHired ActionType = "hired"
+
+	// ActionTypeGathered — a committed gather (NPC `gather` tool or PC
+	// POST /api/village/pc/gather). ActorID is the gatherer; Text is the
+	// harvested item kind (with qty prefix when qty > 1, the same
+	// formatItemQty shape as consumed/delivered); CounterpartyName is the
+	// source object's display name (Well / berry bush / firewood pile), so
+	// the talk-panel line can name where it came from; HuddleID is the
+	// gatherer's huddle at append time. Event-sourced off ItemGathered,
+	// which both actor kinds emit post-validation (LLM-273).
+	ActionTypeGathered ActionType = "gathered"
 )
 
 // ActionLogEntry is one row in the in-memory action log. Carries the

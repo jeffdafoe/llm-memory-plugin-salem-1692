@@ -678,6 +678,12 @@ func TestRenderActionLogEntry(t *testing.T) {
 		{"paid no recipient", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypePaid, CounterpartyName: "", Amount: 5, Text: "a round"}, "Tester", "Tester makes a payment.", "act", true},
 		{"consumed", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeConsumed, Text: "stew"}, "Tester", "Tester consumes stew.", "act", true},
 		{"consumed empty skipped", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeConsumed, Text: ""}, "", "", "", false},
+		// LLM-273: gather narrates the harvest and names the source object,
+		// with the walked-line WithDefiniteArticle treatment.
+		{"gathered names common-noun source", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeGathered, Text: "20x water", CounterpartyName: "Well"}, "Tester", "Tester gathers 20x water from the Well.", "act", true},
+		{"gathered qty1 already-articled source", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeGathered, Text: "water", CounterpartyName: "the Village Well"}, "Tester", "Tester gathers water from the Village Well.", "act", true},
+		{"gathered no source drops clause", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeGathered, Text: "5x berries", CounterpartyName: ""}, "Tester", "Tester gathers 5x berries.", "act", true},
+		{"gathered empty skipped", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeGathered, Text: ""}, "", "", "", false},
 		{"delivered with recipient", sim.ActionLogEntry{ActorID: "npc", ActionType: sim.ActionTypeDelivered, Text: "ale", CounterpartyName: "Tester"}, "Hannah", "Hannah delivers ale to Tester.", "act", true},
 		{"delivered no recipient", sim.ActionLogEntry{ActorID: "npc", ActionType: sim.ActionTypeDelivered, Text: "ale"}, "Hannah", "Hannah delivers ale.", "act", true},
 		// ZBBS-HOME-432: a lodging-capability delivery narrates as a check-in,
