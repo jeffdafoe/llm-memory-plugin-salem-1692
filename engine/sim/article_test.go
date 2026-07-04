@@ -37,3 +37,30 @@ func TestWithDefiniteArticle(t *testing.T) {
 		})
 	}
 }
+
+func TestPossessive(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"single word", "Ezekiel", "Ezekiel's"},
+		{"full name", "Ezekiel Crane", "Ezekiel Crane's"},
+		{"name ending in s takes bare apostrophe", "John Ellis", "John Ellis'"},
+		{"surname ending in s", "Hannah Boggs", "Hannah Boggs'"},
+		{"single name ending in s", "Silas", "Silas'"},
+		{"internal apostrophe, no trailing s", "O'Brien", "O'Brien's"},
+		{"already possessive, straight", "Ezekiel Crane's", "Ezekiel Crane's"},
+		{"already possessive, bare apostrophe", "James'", "James'"},
+		{"already possessive, typographic", "Maria’s", "Maria’s"},
+		{"surrounding whitespace trimmed", "  Ezekiel Crane  ", "Ezekiel Crane's"},
+		{"empty stays empty", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Possessive(tc.in); got != tc.want {
+				t.Errorf("Possessive(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}

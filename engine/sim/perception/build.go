@@ -142,6 +142,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	p.Actor = buildActorView(snap, actorSnap)
 	p.WarrantActorNames = buildWarrantActorNames(snap, actorSnap, actorID, p.Warrants, p.PayOffersForMe, p.LaborOffersForMe, p.WorkersForMe, p.Laboring, p.LaborEnRoute, p.PendingLaborOfferOut)
 	p.WarrantPlaceNames = buildWarrantPlaceNames(snap, p.Warrants)
+	p.WarrantPlaceKeepers = buildWarrantPlaceKeepers(snap, p.Warrants)
 	p.EatHereKinds = buildEatHereKinds(snap)
 	p.Surroundings = buildSurroundings(snap, actorID, actorSnap)
 	// LLM-26: a free worker can solicit work — carries AttrWorker, isn't already
@@ -1523,6 +1524,46 @@ func buildWarrantPlaceNames(snap *sim.Snapshot, warrants []sim.WarrantMeta) map[
 	return names
 }
 
+// buildWarrantPlaceKeepers resolves, for each arrival warrant whose destination
+// structure has a keeper OTHER than the actor who arrived, that keeper's display
+// name — so the arrival line can render the possessive "You arrived at
+// <keeper>'s <structure>" (LLM-284). Keyed by the arrived structure id string.
+// A keeper is any actor whose WorkStructureID is the arrived structure; the
+// arriver is excluded so reaching one's own workplace keeps the plain form.
+// Only structure arrivals carry a keeper — a village object (well, house) never
+// resolves one, so ObjectVisit arrivals are skipped. Returns nil when no arrival
+// names a keeper's workplace (the common tick).
+func buildWarrantPlaceKeepers(snap *sim.Snapshot, warrants []sim.WarrantMeta) map[string]string {
+	// Build returns early on a nil snapshot before reaching here; keep the helper
+	// independently safe for direct callers/tests, mirroring buildWarrantPlaceNames.
+	if snap == nil {
+		return nil
+	}
+	var keepers map[string]string
+	for _, w := range warrants {
+		r, ok := w.Reason.(sim.ArrivalWarrantReason)
+		if !ok || r.AtStructureID == "" {
+			continue
+		}
+		// Only record a keeper when the structure itself resolves to a name, so a
+		// keeper entry never outlives its WarrantPlaceNames entry (the arrival line
+		// renders the possessive only when it already has a place name to attach it
+		// to) — mirrors buildWarrantPlaceNames's snapshot-presence guard.
+		if snap.Structures[r.AtStructureID] == nil {
+			continue
+		}
+		name := snapshotStructureKeeperName(snap, r.AtStructureID, w.TriggerActorID)
+		if name == "" {
+			continue
+		}
+		if keepers == nil {
+			keepers = make(map[string]string)
+		}
+		keepers[string(r.AtStructureID)] = name
+	}
+	return keepers
+}
+
 // buildEatHereKinds collects the kinds that always settle eat-here
 // (ItemKindDef.EatHereOnly — consumable, neither service nor portable),
 // so Render can state the disposition fact on a quote warrant line
@@ -2416,6 +2457,33 @@ func snapshotKeeperPresent(snap *sim.Snapshot, stID sim.StructureID) bool {
 		}
 	}
 	return false
+}
+
+// snapshotStructureKeeperName returns the display name of the structure's keeper
+// — an actor whose WorkStructureID is stID — excluding the arriver so an actor
+// reaching its own workplace resolves no keeper, and "" when the structure has
+// no other keeper (a residence, well, or the arriver's own shop). Ownership, not
+// presence: whose shop it is holds whether or not the keeper is standing there,
+// so this does not gate on attendance (LLM-284). A Salem business has a single
+// keeper; when more than one actor shares a workplace the smallest actor id wins
+// so the rendered possessive is stable across ticks (snap.Actors is a Go map
+// with no iteration order).
+func snapshotStructureKeeperName(snap *sim.Snapshot, stID sim.StructureID, arriver sim.ActorID) string {
+	if snap == nil || stID == "" {
+		return ""
+	}
+	var keeperID sim.ActorID
+	var keeperName string
+	for id, w := range snap.Actors {
+		if w == nil || w.WorkStructureID != stID || id == arriver || w.DisplayName == "" {
+			continue
+		}
+		if keeperID == "" || id < keeperID {
+			keeperID = id
+			keeperName = w.DisplayName
+		}
+	}
+	return keeperName
 }
 
 // shiftWindowBounds resolves the actor's effective shift window: its own

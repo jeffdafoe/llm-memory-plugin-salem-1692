@@ -186,6 +186,17 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 		return sanitizeInline(p.WarrantPlaceNames[id])
 	}
 
+	// placeKeeperOf resolves an arrived-at structure id to its keeper's display
+	// name, "" when the structure has no keeper other than the arriver — the
+	// possessive counterpart to placeNameOf that lets the arrival line read "You
+	// arrived at <keeper>'s <place>" (LLM-284).
+	placeKeeperOf := func(id string) string {
+		if id == "" {
+			return ""
+		}
+		return sanitizeInline(p.WarrantPlaceKeepers[id])
+	}
+
 	// eatHereKind reports whether a kind always settles eat-here (Build's
 	// EatHereKinds set, ZBBS-WORK-405) — the quote warrant line states the
 	// disposition fact so the model never plans a carry-out it can't have.
@@ -325,7 +336,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// routine-check-in line for the genuinely-empty case). Warrant caps +
 	// carry-forward accounting land in `out` as before.
 	if len(warrants) > 0 || len(payOffers) == 0 {
-		renderWarrants(&durable, warrants, nameOf, placeNameOf, eatHereKind, buyRedundancy, cfg, &out)
+		renderWarrants(&durable, warrants, nameOf, placeNameOf, placeKeeperOf, eatHereKind, buyRedundancy, cfg, &out)
 	}
 
 	// Ephemeral: the turn-state nudge, the act-now coda, and the rest-first steer
@@ -2678,7 +2689,7 @@ func isSectionSurfacedKind(k sim.WarrantKind) bool {
 	}
 }
 
-func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(sim.ActorID) string, placeNameOf func(string) string, eatHereKind func(sim.ItemKind) bool, buyRedundancy func(sim.ItemKind) (produced, atCap bool), cfg RenderConfig, out *RenderedPrompt) {
+func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(sim.ActorID) string, placeNameOf func(string) string, placeKeeperOf func(string) string, eatHereKind func(sim.ItemKind) bool, buyRedundancy func(sim.ItemKind) (produced, atCap bool), cfg RenderConfig, out *RenderedPrompt) {
 	// Nil-safe for direct/test callers — the main Render path always passes
 	// its closure, but the signature grew by a callback (ZBBS-WORK-405) and
 	// a nil here must degrade to "no eat-here tag", not panic (code_review).
@@ -2689,6 +2700,11 @@ func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(
 	// degrade to "never redundant" (every quote keeps its actionable take).
 	if buyRedundancy == nil {
 		buyRedundancy = func(sim.ItemKind) (bool, bool) { return false, false }
+	}
+	// Same nil-safety for the LLM-284 keeper-possessive callback: a nil here must
+	// degrade to "no keeper", so an arrival line keeps its plain, articled form.
+	if placeKeeperOf == nil {
+		placeKeeperOf = func(string) string { return "" }
 	}
 	// ZBBS-WORK-407: drop warrants already surfaced by a dedicated section so they
 	// don't double-render as the vague "something happened nearby" catch-all. They
@@ -2724,7 +2740,7 @@ func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(
 			cutoff = i
 			break
 		}
-		line, truncated := renderWarrantLine(i+1, w, nameOf, placeNameOf, eatHereKind, buyRedundancy, cfg.MaxBytesPerWarrant)
+		line, truncated := renderWarrantLine(i+1, w, nameOf, placeNameOf, placeKeeperOf, eatHereKind, buyRedundancy, cfg.MaxBytesPerWarrant)
 		if sectionBytes+len(line) > cfg.MaxSectionBytes && i > 0 {
 			// At least one warrant already rendered; this one would
 			// overflow the section cap — stop here and carry the rest.
@@ -2756,7 +2772,7 @@ func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(
 // sentence. The untrusted free-text payload (a speech excerpt) is sanitized and
 // capped; the returned bool reports whether that text was truncated.
 // ZBBS-HOME-339.
-func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string, placeNameOf func(string) string, eatHereKind func(sim.ItemKind) bool, buyRedundancy func(sim.ItemKind) (produced, atCap bool), maxTextBytes int) (string, bool) {
+func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string, placeNameOf func(string) string, placeKeeperOf func(string) string, eatHereKind func(sim.ItemKind) bool, buyRedundancy func(sim.ItemKind) (produced, atCap bool), maxTextBytes int) (string, bool) {
 	switch r := w.Reason.(type) {
 	case sim.PCSpeechWarrantReason:
 		return renderSpeechWarrantLine(n, nameOf(r.Speaker), r.Excerpt, maxTextBytes)
@@ -2807,7 +2823,7 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 		// this line and the tool can't drift. Mirrors the SeekWork felt-impulse line.
 		return fmt.Sprintf("%d. It weighs on you that you have drifted away from the paid job you are in the middle of — you should get back to it.\n", n), false
 	case sim.ArrivalWarrantReason:
-		return renderArrivalWarrantLine(n, nameOf(w.TriggerActorID), r, placeNameOf), false
+		return renderArrivalWarrantLine(n, nameOf(w.TriggerActorID), r, placeNameOf, placeKeeperOf), false
 	case sim.NeedThresholdWarrantReason:
 		return renderNeedNudgeLine(n, r.Need), false
 	case sim.TendNeedWarrantReason:
@@ -2878,7 +2894,15 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 // vacuous "arrived nearby". Falls back to "<who> arrived." when the destination
 // was a bare position with no nameable place. who is the pre-resolved subject
 // ("you" for self), capitalized to match the huddle self-lines.
-func renderArrivalWarrantLine(n int, who string, r sim.ArrivalWarrantReason, placeNameOf func(string) string) string {
+//
+// When the arrived-at structure has a keeper (someone other than the mover works
+// there), the place reads as that keeper's possessive — "<keeper>'s <place>",
+// article-free — so the model sees whose shop it walked into and hosts as a
+// guest instead of greeting the keeper as if it owned the place (LLM-284). The
+// keeper name is a proper noun, so it takes no definite article; sim.Possessive
+// forms the case (a name ending in "s" gets a bare apostrophe), and only the
+// plain, keeperless form runs through WithDefiniteArticle.
+func renderArrivalWarrantLine(n int, who string, r sim.ArrivalWarrantReason, placeNameOf func(string) string, placeKeeperOf func(string) string) string {
 	subject := who
 	if subject == "you" {
 		subject = "You"
@@ -2891,6 +2915,12 @@ func renderArrivalWarrantLine(n int, who string, r sim.ArrivalWarrantReason, pla
 	}
 	if place == "" {
 		return fmt.Sprintf("%d. %s arrived.\n", n, subject)
+	}
+	// A keeper only ever resolves for the structure destination (objects have
+	// none), so key the possessive off AtStructureID regardless of which id named
+	// the place above.
+	if keeper := placeKeeperOf(string(r.AtStructureID)); keeper != "" {
+		return fmt.Sprintf("%d. %s arrived at %s %s.\n", n, subject, sim.Possessive(keeper), place)
 	}
 	return fmt.Sprintf("%d. %s arrived at %s.\n", n, subject, sim.WithDefiniteArticle(place))
 }
