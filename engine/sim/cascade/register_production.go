@@ -76,6 +76,7 @@ func RegisterProductionCascades(ctx context.Context, w *sim.World, client llm.Cl
 	RegisterRedNeedBackstop(ctx, w)
 	RegisterSeekWorkBackstop(ctx, w)
 	RegisterReturnToPostBackstop(ctx, w)
+	RegisterHiredRepairBackstop(ctx, w)
 	RegisterPriceBook(w)
 	RegisterNPCRoutes(ctx, w, client)
 	// Storm weather sweep (LLM-117) — mechanical, no LLM call; drives the
