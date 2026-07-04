@@ -817,6 +817,15 @@ var perceptionScenarios = []perceptionScenario{
 		build: passerbyAtWornStall,
 	},
 	{
+		name: "hired_worker_at_employer_worn_business",
+		summary: "LLM-271: Lewis Walker, hired to labor for Prudence Ward (a Working LaborOffer, WorkerID == subject), " +
+			"stands INSIDE her worn PW Apothecary with enough nails to mend it. The golden pins the hired-framed " +
+			"'## The business you're working at … needs mending' cue (NOT the owner '## Your business') plus the hired repair " +
+			"warrant line — the wake that pierces the laboring shelve-gate so a hired hand actually mends it. The live " +
+			"2026-07-04 case that motivated the feature; the repair tool rides the same StallRepair signal.",
+		build: hiredWorkerAtEmployerWornBusiness,
+	},
+	{
 		name: "owner_at_worn_tavern",
 		summary: "John Ellis stands at his own worn Tavern — an object tagged {business, lodging, tavern} with NO " +
 			"market_stall tag, pinning that LLM-247 widened the wear gate to any owned business, not just stalls. The " +
@@ -2617,6 +2626,55 @@ func TestGoldensRepairCueWheneverColocatedOwnerRepairable(t *testing.T) {
 	}
 }
 
+// TestGoldensHiredWorkerSeesRepairCueWhenColocated is the LLM-271 cross-scenario
+// invariant, the hired-worker twin of TestGoldensRepairCueWheneverColocatedOwnerRepairable:
+// whenever the subject is NOT the owner but is Working a hired job whose employer owns
+// a repairable business, AND the subject is co-located with that business, the rendered
+// prompt must carry the hired "## The business you're working at" cue — never the owner's
+// "## Your business" (that would tell a hired hand it owns the shop). The repair tool is
+// gated on the same StallRepair payload signal, so "cue renders" ⇔ "tool advertised".
+// Keyed off the same sim.WearableStallToMend resolver + sim.AtBusiness predicate the
+// production gate uses, so the two agree by construction; hired_worker_at_employer_worn_business
+// is the non-vacuous golden that would break if the cue stopped rendering end-to-end.
+func TestGoldensHiredWorkerSeesRepairCueWhenColocated(t *testing.T) {
+	const (
+		hiredHeader = "## The business you're working at"
+		ownerHeader = "## Your business"
+	)
+	var exercised bool
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, _ := sc.build()
+			a := snap.Actors[actorID]
+			if a == nil {
+				return
+			}
+			stall, hired := sim.WearableStallToMend(snap.VillageObjects, snap.LaborLedger, actorID)
+			if !hired {
+				return // subject reaches no business through a hire — invariant N/A here
+			}
+			if !sim.StallRepairable(stall, snap.StallWearRepairThreshold, snap.StallWearDegradeThreshold) {
+				return // business isn't worn enough to mend — no cue expected
+			}
+			if !sim.AtBusiness(a.Pos, a.InsideStructureID, stall.ID, objectLoiterPin(stall), true) {
+				return // subject isn't co-located with the employer's business — cue correctly absent
+			}
+			exercised = true
+			out := renderScenario(sc)
+			if !strings.Contains(out, hiredHeader) {
+				t.Errorf("scenario %q: subject is a hired worker co-located with the employer's repairable business but the prompt omits the %q repair cue (LLM-271)", sc.name, hiredHeader)
+			}
+			if strings.Contains(out, ownerHeader) {
+				t.Errorf("scenario %q: subject is a hired worker (not the owner) but the prompt shows the owner %q cue — a hired hand doesn't own the shop (LLM-271)", sc.name, ownerHeader)
+			}
+		})
+	}
+	if !exercised {
+		t.Error("matrix must exercise a hired worker co-located with the employer's repairable business (LLM-271)")
+	}
+}
+
 // TestFarmUpkeepCueOnlyForOwingFarmOwner is the LLM-215 cross-scenario invariant: the
 // "## Farm upkeep" cue appears in EXACTLY the scenarios where the actor owns a farm
 // and owes upkeep shovels — never for a non-farm-owner or any unrelated scenario. It
@@ -3249,6 +3307,99 @@ func ownerAtDegradedStall() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 // business's owner (Ezekiel).
 func passerbyAtWornStall() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	return stallWearSnapshot("john", "ezekiel", "John Ellis", "tavernkeeper", 450, 0)
+}
+
+// hiredWorkerAtEmployerWornBusiness is the LLM-271 fixture, modeled on the live
+// 2026-07-04 case: Lewis Walker, a hired hand mid-job for Prudence Ward (a Working
+// LaborOffer, WorkerID == subject), stands INSIDE her worn PW Apothecary carrying
+// enough nails to mend it. Prudence hired Lewis, who had nails and offered to do
+// the repairs, but the owner-only repair cue never surfaced for him. The golden
+// pins the hired-framed "## The business you're working at … needs mending" cue
+// (NOT the owner's "## Your business") plus the hired repair warrant line — the
+// wake that pierces the laboring shelve-gate. The repair tool rides the same
+// StallRepair payload signal (tool_gating_stall_test.go covers the advertise side).
+// Pos is far from the outdoor pin so the cue can only fire via the inside-structure
+// branch of sim.AtBusiness, proving the hired path inherits LLM-266.
+func hiredWorkerAtEmployerWornBusiness() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		prudenceID = sim.ActorID("prudence")
+		lewisID    = sim.ActorID("lewis")
+		shop       = sim.StructureID("apothecary")
+		huddle     = sim.HuddleID("h1")
+	)
+	zero := 0
+	published := time.Date(2026, 6, 30, 20, 30, 0, 0, time.UTC)
+	workingUntil := published.Add(90 * time.Minute)
+	acceptedAt := published.Add(-30 * time.Minute)
+	insidePos := sim.WorldPos{X: 500, Y: 500}.Tile() // far from the pin at WorldPos{100,100}
+	prudence := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Prudence Ward",
+		Role:              "apothecary",
+		State:             sim.StateIdle,
+		Pos:               insidePos,
+		InsideStructureID: shop,
+		WorkStructureID:   shop,
+		CurrentHuddleID:   huddle,
+		Coins:             50,
+		Needs:             map[sim.NeedKey]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"Lewis Walker": {}},
+	}
+	lewis := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Lewis Walker",
+		Role:              "laborer",
+		State:             sim.StateLaboring,
+		Pos:               insidePos,
+		InsideStructureID: shop,
+		CurrentHuddleID:   huddle,
+		Coins:             0,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"nail": 5},
+		Acquaintances:     map[string]sim.Acquaintance{"Prudence Ward": {}},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:               published,
+		NeedThresholds:            sim.NeedThresholds{},
+		Assets:                    emptyAssetSet,
+		StallWearRepairThreshold:  400,
+		StallWearDegradeThreshold: 600,
+		StallNailsPerRepair:       5,
+		Actors:                    map[sim.ActorID]*sim.ActorSnapshot{prudenceID: prudence, lewisID: lewis},
+		Structures: map[sim.StructureID]*sim.Structure{
+			shop: plainStructure(shop, "PW Apothecary"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{prudenceID: {}, lewisID: {}}},
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"apothecary": {
+				ID:            "apothecary",
+				Pos:           sim.WorldPos{X: 100, Y: 100},
+				OwnerActorID:  prudenceID,
+				Tags:          []string{sim.TagBusiness, "shop", "market_stall"},
+				Wear:          450,
+				LoiterOffsetX: &zero,
+				LoiterOffsetY: &zero,
+			},
+		},
+		LaborLedger: map[sim.LaborID]*sim.LaborOffer{
+			1: {
+				ID:           1,
+				WorkerID:     lewisID,
+				EmployerID:   prudenceID,
+				Reward:       10,
+				DurationMin:  120,
+				State:        sim.LaborStateWorking,
+				HuddleID:     huddle,
+				AcceptedAt:   &acceptedAt,
+				WorkingUntil: &workingUntil,
+			},
+		},
+		ItemKinds: foodDrinkCatalog(),
+	}
+	warrants := []sim.WarrantMeta{{TriggerActorID: lewisID, Reason: sim.StallRepairHiredWarrantReason{StallID: "apothecary"}}}
+	return snap, lewisID, warrants
 }
 
 // ownerAtWornTavern: John Ellis stands at his own worn Tavern — a business tagged

@@ -76,6 +76,45 @@ func OwnedWearableStall(objects map[VillageObjectID]*VillageObject, sellerID Act
 	return nil
 }
 
+// WearableStallToMend returns the wearable business the actor is responsible for
+// mending, and whether they reach it through a hire rather than ownership
+// (LLM-271). The owner's own business wins first; failing that, a worker actively
+// Working a hired job mends the business their EMPLOYER owns — the hired hand at
+// the worn stall may lift the hammer too, not just the owner. Only the Working
+// state qualifies: an EnRoute worker hasn't reached the post yet (they get the
+// relocation cue instead), and a Pending offer isn't a hire. Shared by the
+// perception cue (snap.LaborLedger) and the StartRepair command (w.LaborLedger) so
+// the two can't drift on who may mend. hired is always false when stall is nil.
+//
+// A worker holds at most one live job (AcceptWork forbids double-booking), so this
+// scan normally finds one match — but it picks the LOWEST LaborID rather than the
+// map-iteration-first, so the result is deterministic even if that invariant is
+// ever broken (a bad migration, overlapping test setup). Determinism is load-bearing
+// here: the cue, StartRepair, and the completion sweep all call this, and two of
+// them resolving different employer stalls would advertise one and mend another.
+// Mirrors the lowest-LaborID tie-break in laboringOfferFor / workerPendingLaborOffer.
+func WearableStallToMend(objects map[VillageObjectID]*VillageObject, ledger map[LaborID]*LaborOffer, actorID ActorID) (stall *VillageObject, hired bool) {
+	if own := OwnedWearableStall(objects, actorID); own != nil {
+		return own, false
+	}
+	var best *LaborOffer
+	for _, o := range ledger {
+		if o == nil || o.State != LaborStateWorking || o.WorkerID != actorID {
+			continue
+		}
+		if best == nil || o.ID < best.ID {
+			best = o
+		}
+	}
+	if best == nil {
+		return nil, false
+	}
+	if employerStall := OwnedWearableStall(objects, best.EmployerID); employerStall != nil {
+		return employerStall, true
+	}
+	return nil, false
+}
+
 // StallNeedsRepair reports whether a wearable stall has worn to or past the
 // repair threshold. A non-positive threshold disables the transition.
 func StallNeedsRepair(obj *VillageObject, repairThreshold int) bool {
@@ -153,6 +192,46 @@ type StallRepairWarrantReason struct {
 func (StallRepairWarrantReason) isWarrantReason()           {}
 func (StallRepairWarrantReason) Kind() WarrantKind          { return WarrantKindStallRepair }
 func (StallRepairWarrantReason) DedupDiscriminator() uint64 { return 0 }
+
+// StallRepairHiredWarrantReason is the hired-worker twin of StallRepairWarrantReason
+// (LLM-271). It is stamped on a worker the moment they start a hired job
+// (startLaborWork) at an employer whose business is ALREADY worn to the repair
+// threshold — so unlike the owner's warrant there is no wear-crossing edge to ride
+// (the stall wore before the hire). It carries its OWN kind for two reasons: the
+// reactor's laboring shelve-gate singles it out as an interrupt (a StateLaboring
+// worker is otherwise shelved — hasHiredRepairWarrant), and the warrant line renders
+// hired-framed ("the business you're working at") rather than the owner's "your
+// business." StallID is the employer's worn business. DedupDiscriminator returns 0,
+// matching the owner's warrant — it's a state condition, not an event.
+type StallRepairHiredWarrantReason struct {
+	StallID VillageObjectID
+}
+
+func (StallRepairHiredWarrantReason) isWarrantReason()           {}
+func (StallRepairHiredWarrantReason) Kind() WarrantKind          { return WarrantKindStallRepairHired }
+func (StallRepairHiredWarrantReason) DedupDiscriminator() uint64 { return 0 }
+
+// maybeStampHiredRepairWarrant wakes a just-hired worker to mend their employer's
+// business when it is already worn (LLM-271) — the hired twin of accrueStallWear's
+// owner wake. Called from startLaborWork once the worker is on-post. A no-op unless
+// the employer owns a wearable business worn to the repair threshold (or degraded).
+// One-shot, like the owner's edge-triggered warrant: the worker is woken at the
+// moment work begins, hammer-ready at the post; if they decline to mend, the engine
+// does not nag — the standing "## The business you're working at" cue still reminds
+// them on any later tick they draw. World-goroutine-only.
+func maybeStampHiredRepairWarrant(w *World, worker, employer *Actor, at time.Time) {
+	if w == nil || worker == nil || employer == nil {
+		return
+	}
+	stall := OwnedWearableStall(w.VillageObjects, employer.ID)
+	if !StallRepairable(stall, w.Settings.StallWearRepairThreshold, w.Settings.StallWearDegradeThreshold) {
+		return
+	}
+	tryStampWarrant(w, worker, WarrantMeta{
+		TriggerActorID: worker.ID,
+		Reason:         StallRepairHiredWarrantReason{StallID: stall.ID},
+	}, at)
+}
 
 // accrueStallWear adds usage-weighted wear to the seller's owned stall on a
 // completed sale and, on the upward crossing of the repair threshold, wakes the

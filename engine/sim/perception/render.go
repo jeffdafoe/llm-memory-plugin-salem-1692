@@ -2812,6 +2812,15 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 			place = "place of business"
 		}
 		return fmt.Sprintf("%d. Your %s has worn from use and needs mending — go to it and repair it (you'll need nails; the smith sells them).\n", n, place), false
+	case sim.StallRepairHiredWarrantReason:
+		// LLM-271: hired-worker twin. Same wake-to-mend nudge, framed as the
+		// employer's premises the worker was taken on to help with — the "## The
+		// business you're working at" cue carries the nail count + repair steer.
+		place := placeNameOf(string(r.StallID))
+		if place == "" {
+			return fmt.Sprintf("%d. The business you're working at has worn from use and needs mending — you can repair it (you'll need nails; the smith sells them).\n", n), false
+		}
+		return fmt.Sprintf("%d. The %s you're working at has worn from use and needs mending — you can repair it (you'll need nails; the smith sells them).\n", n, place), false
 	case sim.FarmUpkeepWarrantReason:
 		// LLM-215: the season wore out the farm's upkeep shovels. The "## Farm upkeep"
 		// cue carries the shovel count + buy-from-the-blacksmith steer; this is the

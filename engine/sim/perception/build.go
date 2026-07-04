@@ -1485,6 +1485,10 @@ func buildWarrantPlaceNames(snap *sim.Snapshot, warrants []sim.WarrantMeta) map[
 			// Name the worn business (structure-first, then object) so the
 			// wake-from-anywhere repair warrant line can say "Your <name> has worn."
 			put(string(r.StallID), resolveDwellPinLabel(snap, r.StallID))
+		case sim.StallRepairHiredWarrantReason:
+			// LLM-271: hired-worker twin — name the employer's worn business the same
+			// way, so its warrant line can name the place the worker is mending.
+			put(string(r.StallID), resolveDwellPinLabel(snap, r.StallID))
 		}
 	}
 	return names
