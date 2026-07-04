@@ -36,8 +36,14 @@ BEGIN
 
     GET DIAGNOSTICS updated_count = ROW_COUNT;
 
-    IF updated_count <> 4 THEN
-        RAISE EXCEPTION 'LLM-262: expected to set door_offset on 4 tower assets, updated %', updated_count;
+    -- Tolerate 0 (LLM-265): the schema-only fresh-replay path (the pg integration
+    -- harness loads schema.sql then replays every *_up.sql) has no seeded tower
+    -- `asset` rows, so this UPDATE matches 0 and the strict `<> 4` guard aborted the
+    -- whole template build — reddening CI for every salem PR. A seeded DB (prod, or a
+    -- data-loaded fixture) still fails loudly on partial seed drift (1/2/3/5). Prod
+    -- already applied this at 4 rows, so admitting 0 is outcome-equivalent there.
+    IF updated_count NOT IN (0, 4) THEN
+        RAISE EXCEPTION 'LLM-262: expected to set door_offset on 0 (schema-only) or 4 tower assets, updated %', updated_count;
     END IF;
 END $$;
 
