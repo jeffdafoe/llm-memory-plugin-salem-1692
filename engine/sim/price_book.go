@@ -242,3 +242,29 @@ func ClonePriceBook(in map[PriceBookKey]*RingBuffer[PriceObservation]) map[Price
 	}
 	return out
 }
+
+// LastPaidCoins returns the amount of the buyer's NEWEST accepted purchase of
+// item from this specific seller, or 0 when none is on record. Price knowledge
+// is per-buyer — patronage earns the number. The single definition behind both
+// the perception cost hint (perception/recovery_options.go buyerLastPaidCoins,
+// which delegates here over Snapshot.PriceBook) and the restock warrant's
+// affordability gate (restock_tick.go actorHasBuyPath, over the live
+// World.PriceBook) — one lookup, so the warrant and the cue can't disagree on
+// what the buyer last paid (LLM-260). The ring is oldest-first; scan from the
+// end for the newest match.
+func LastPaidCoins(book map[PriceBookKey]*RingBuffer[PriceObservation], buyerID, sellerID ActorID, item ItemKind) int {
+	if sellerID == "" || book == nil {
+		return 0
+	}
+	buf, ok := book[PriceBookKey{SellerID: sellerID, Item: item}]
+	if !ok || buf == nil || buf.Len() == 0 {
+		return 0
+	}
+	entries := buf.Snapshot()
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].BuyerID == buyerID {
+			return entries[i].Amount
+		}
+	}
+	return 0
+}

@@ -43,22 +43,50 @@ func makesStewBuying(input sim.ItemKind, cap, onHand int) *sim.ActorSnapshot {
 	}
 }
 
-func productionSnap(subj *sim.ActorSnapshot, recipes map[sim.ItemKind]*sim.ItemRecipe) *sim.Snapshot {
-	return &sim.Snapshot{
+func productionSnap(subj *sim.ActorSnapshot, recipes map[sim.ItemKind]*sim.ItemRecipe, vendorOf ...sim.ItemKind) *sim.Snapshot {
+	snap := &sim.Snapshot{
 		Actors:            map[sim.ActorID]*sim.ActorSnapshot{"john": subj},
 		ItemKinds:         productionCatalog(),
 		Recipes:           recipes,
 		RestockReorderPct: 25,
 	}
+	for _, item := range vendorOf {
+		addSnapSupplier(snap, item)
+	}
+	return snap
+}
+
+// addSnapSupplier wires a first-hand supplier of item into the snapshot — a
+// stocked keeper at its own workplace with a `produce` entry for the item, so
+// it passes the LLM-252 supplier gate. Production-input lines are gated on an
+// actionable buy path (LLM-260), so fixtures exercising a different gate add
+// one of these to keep the path open.
+func addSnapSupplier(snap *sim.Snapshot, item sim.ItemKind) {
+	id := sim.ActorID("supplier-" + string(item))
+	sid := sim.StructureID("shop-" + string(item))
+	snap.Actors[id] = &sim.ActorSnapshot{
+		Kind:            sim.KindNPCStateful,
+		DisplayName:     "Supplier of " + string(item),
+		State:           sim.StateIdle,
+		WorkStructureID: sid,
+		Inventory:       map[sim.ItemKind]int{item: 20},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: item, Source: sim.RestockSourceProduce, Max: 40},
+		}},
+	}
+	if snap.Structures == nil {
+		snap.Structures = map[sim.StructureID]*sim.Structure{}
+	}
+	snap.Structures[sid] = plainStructure(sid, "Shop of "+string(item))
 }
 
 // A tool consumed 1-per-batch (skillet) surfaces at the last unit with the exact
 // wear runway (1 skillet × 30-stew batch = 30 stews).
 func TestBuildProductionInputs_SkilletLowSurfacesRunway(t *testing.T) {
 	subj := makesStewBuying("skillet", 2, 1) // cap 2 @ 25% = 0.5 → fires at the last unit
-	snap := productionSnap(subj, stewRecipe("skillet", 1))
+	snap := productionSnap(subj, stewRecipe("skillet", 1), "skillet")
 
-	v := buildProductionInputs(snap, subj)
+	v := buildProductionInputs(snap, "john", subj)
 	if v == nil || len(v.Items) != 1 {
 		t.Fatalf("expected one production-input item, got %+v", v)
 	}
@@ -81,9 +109,9 @@ func TestBuildProductionInputs_SkilletLowSurfacesRunway(t *testing.T) {
 // uses the effective per-unit rate: 7 carrots → about 7 stews.
 func TestBuildProductionInputs_BulkInputRunway(t *testing.T) {
 	subj := makesStewBuying("carrots", 30, 7) // cap 30 @ 25% = 7.5 → 7 is below
-	snap := productionSnap(subj, stewRecipe("carrots", 30))
+	snap := productionSnap(subj, stewRecipe("carrots", 30), "carrots")
 
-	v := buildProductionInputs(snap, subj)
+	v := buildProductionInputs(snap, "john", subj)
 	if v == nil || len(v.Items) != 1 {
 		t.Fatalf("expected one item, got %+v", v)
 	}
@@ -95,8 +123,8 @@ func TestBuildProductionInputs_BulkInputRunway(t *testing.T) {
 // At full stock the input isn't low, so the section is omitted.
 func TestBuildProductionInputs_FullStockNil(t *testing.T) {
 	subj := makesStewBuying("skillet", 2, 2) // full → 2 <= 1 false
-	snap := productionSnap(subj, stewRecipe("skillet", 1))
-	if v := buildProductionInputs(snap, subj); v != nil {
+	snap := productionSnap(subj, stewRecipe("skillet", 1), "skillet")
+	if v := buildProductionInputs(snap, "john", subj); v != nil {
 		t.Errorf("full-stock input should not surface, got %+v", v)
 	}
 }
@@ -111,14 +139,16 @@ func TestBuildProductionInputs_SelfProducedInputIgnored(t *testing.T) {
 			{Item: "skillet", Source: sim.RestockSourceProduce, Max: 5}, // makes its own — not bought
 		}},
 	}
-	snap := productionSnap(subj, stewRecipe("skillet", 1))
-	if v := buildProductionInputs(snap, subj); v != nil {
+	snap := productionSnap(subj, stewRecipe("skillet", 1), "skillet")
+	if v := buildProductionInputs(snap, "john", subj); v != nil {
 		t.Errorf("a self-produced input must not surface as a buy concern, got %+v", v)
 	}
 }
 
 // A bought item that no produced recipe consumes is not a production input, so it
-// stays in Restocking's lane and doesn't surface here.
+// stays in Restocking's lane and doesn't surface here. The recipe's actual input
+// (carrots), by contrast, now surfaces WITHOUT a hand-authored buy entry — the
+// derived-demand path (LLM-260) gives the unsourced input its buy cap.
 func TestBuildProductionInputs_BoughtButNotConsumedIgnored(t *testing.T) {
 	subj := &sim.ActorSnapshot{
 		Inventory: map[sim.ItemKind]int{"skillet": 0},
@@ -127,19 +157,26 @@ func TestBuildProductionInputs_BoughtButNotConsumedIgnored(t *testing.T) {
 			{Item: "skillet", Source: sim.RestockSourceBuy, Max: 2},
 		}},
 	}
-	// stew's recipe consumes carrots, not skillet — so the low skillet is irrelevant here.
-	snap := productionSnap(subj, stewRecipe("carrots", 30))
-	if v := buildProductionInputs(snap, subj); v != nil {
-		t.Errorf("a bought item no recipe consumes must not surface, got %+v", v)
+	// stew's recipe consumes carrots, not skillet — so the low skillet is irrelevant
+	// here, while the unsourced carrots input derives demand and surfaces.
+	snap := productionSnap(subj, stewRecipe("carrots", 30), "carrots", "skillet")
+	v := buildProductionInputs(snap, "john", subj)
+	if v == nil || len(v.Items) != 1 || v.Items[0].InputKind != "carrots" {
+		t.Fatalf("want exactly the derived carrots input to surface, got %+v", v)
+	}
+	for _, it := range v.Items {
+		if it.InputKind == "skillet" {
+			t.Errorf("a bought item no recipe consumes must not surface, got %+v", v)
+		}
 	}
 }
 
 // pct 0 disables the feature (operator off-switch), same as Restocking.
 func TestBuildProductionInputs_DisabledNil(t *testing.T) {
 	subj := makesStewBuying("skillet", 2, 1)
-	snap := productionSnap(subj, stewRecipe("skillet", 1))
+	snap := productionSnap(subj, stewRecipe("skillet", 1), "skillet")
 	snap.RestockReorderPct = 0
-	if v := buildProductionInputs(snap, subj); v != nil {
+	if v := buildProductionInputs(snap, "john", subj); v != nil {
 		t.Errorf("pct 0 should disable the section, got %+v", v)
 	}
 }
@@ -148,9 +185,9 @@ func TestBuildProductionInputs_DisabledNil(t *testing.T) {
 // Restocking's job. The LLM-64 split: this section motivates, Restocking acts.
 func TestRenderProductionInputs_NoBuyMechanics(t *testing.T) {
 	subj := makesStewBuying("skillet", 2, 1)
-	snap := productionSnap(subj, stewRecipe("skillet", 1))
+	snap := productionSnap(subj, stewRecipe("skillet", 1), "skillet")
 	var b strings.Builder
-	renderProductionInputs(&b, buildProductionInputs(snap, subj))
+	renderProductionInputs(&b, buildProductionInputs(snap, "john", subj))
 	out := b.String()
 	for _, forbidden := range []string{"structure_id", "pay_with_item", "buy from", "move_to"} {
 		if strings.Contains(out, forbidden) {
@@ -162,8 +199,8 @@ func TestRenderProductionInputs_NoBuyMechanics(t *testing.T) {
 // A corrupt negative on-hand reads as "out" (0), not a negative count/runway.
 func TestBuildProductionInputs_NegativeInventoryClampedToZero(t *testing.T) {
 	subj := makesStewBuying("skillet", 2, -3)
-	snap := productionSnap(subj, stewRecipe("skillet", 1))
-	v := buildProductionInputs(snap, subj)
+	snap := productionSnap(subj, stewRecipe("skillet", 1), "skillet")
+	v := buildProductionInputs(snap, "john", subj)
 	if v == nil || len(v.Items) != 1 {
 		t.Fatalf("a negative (out-of-stock) input should still surface as low, got %+v", v)
 	}
@@ -201,12 +238,16 @@ func boosterSnap(subj *sim.ActorSnapshot) *sim.Snapshot {
 	catalog := productionCatalog()
 	catalog["milk"] = &sim.ItemKindDef{Name: "milk", DisplayLabel: "milk", Category: sim.ItemCategoryDrink}
 	catalog["sage"] = &sim.ItemKindDef{Name: "sage", DisplayLabel: "sage"}
-	return &sim.Snapshot{
+	snap := &sim.Snapshot{
 		Actors:            map[sim.ActorID]*sim.ActorSnapshot{"elizabeth": subj},
 		ItemKinds:         catalog,
 		Recipes:           milkRecipeBoostedBySage(),
 		RestockReorderPct: 25,
 	}
+	// A sage supplier keeps the LLM-260 buy-path gate open; the no-vendor
+	// silence case is pinned separately.
+	addSnapSupplier(snap, "sage")
+	return snap
 }
 
 // A low bought booster surfaces with the forgone bonus (no runway — production
@@ -215,7 +256,7 @@ func TestBuildProductionInputs_LowBoosterSurfacesBonus(t *testing.T) {
 	subj := makesMilkBuyingSage(3, 0)
 	snap := boosterSnap(subj)
 
-	v := buildProductionInputs(snap, subj)
+	v := buildProductionInputs(snap, "elizabeth", subj)
 	if v == nil || len(v.Boosts) != 1 || len(v.Items) != 0 {
 		t.Fatalf("expected exactly one booster view, got %+v", v)
 	}
@@ -239,7 +280,7 @@ func TestBuildProductionInputs_LowBoosterSurfacesBonus(t *testing.T) {
 func TestBuildProductionInputs_StockedBoosterNil(t *testing.T) {
 	subj := makesMilkBuyingSage(3, 3)
 	snap := boosterSnap(subj)
-	if v := buildProductionInputs(snap, subj); v != nil {
+	if v := buildProductionInputs(snap, "elizabeth", subj); v != nil {
 		t.Errorf("a full-stock booster should not surface, got %+v", v)
 	}
 }
@@ -255,7 +296,7 @@ func TestBuildProductionInputs_SelfForagedBoosterIgnored(t *testing.T) {
 		}},
 	}
 	snap := boosterSnap(subj)
-	if v := buildProductionInputs(snap, subj); v != nil {
+	if v := buildProductionInputs(snap, "elizabeth", subj); v != nil {
 		t.Errorf("a self-foraged booster must not surface as a buy concern, got %+v", v)
 	}
 }
@@ -265,11 +306,41 @@ func TestRenderProductionInputs_BoosterNoBuyMechanics(t *testing.T) {
 	subj := makesMilkBuyingSage(3, 0)
 	snap := boosterSnap(subj)
 	var b strings.Builder
-	renderProductionInputs(&b, buildProductionInputs(snap, subj))
+	renderProductionInputs(&b, buildProductionInputs(snap, "elizabeth", subj))
 	out := b.String()
 	for _, forbidden := range []string{"structure_id", "pay_with_item", "buy from", "move_to"} {
 		if strings.Contains(out, forbidden) {
 			t.Errorf("booster cue must not carry buy mechanics, found %q in:\n%s", forbidden, out)
 		}
+	}
+}
+
+// An input with NO vendor anywhere renders in NEITHER section (LLM-260): the
+// runway motivate-line is gated on the same actionable buy path as Restocking,
+// so an unobtainable input (the live Hannah Boggs water case) stays silent
+// instead of inviting the model to improvise on a dead end.
+func TestBuildProductionInputs_NoVendorInputSilent(t *testing.T) {
+	subj := makesStewBuying("carrots", 30, 0)
+	snap := productionSnap(subj, stewRecipe("carrots", 30)) // no supplier wired
+	if v := buildProductionInputs(snap, "john", subj); v != nil {
+		t.Errorf("an input with no buy path must not surface a runway line, got %+v", v)
+	}
+}
+
+// Same silence for a booster with no vendor: the forgone-bonus motivation is a
+// buy nudge, and a buy nudge with nowhere to buy is the same dead end.
+func TestBuildProductionInputs_NoVendorBoosterSilent(t *testing.T) {
+	subj := makesMilkBuyingSage(3, 0)
+	catalog := productionCatalog()
+	catalog["milk"] = &sim.ItemKindDef{Name: "milk", DisplayLabel: "milk", Category: sim.ItemCategoryDrink}
+	catalog["sage"] = &sim.ItemKindDef{Name: "sage", DisplayLabel: "sage"}
+	snap := &sim.Snapshot{
+		Actors:            map[sim.ActorID]*sim.ActorSnapshot{"elizabeth": subj},
+		ItemKinds:         catalog,
+		Recipes:           milkRecipeBoostedBySage(),
+		RestockReorderPct: 25,
+	}
+	if v := buildProductionInputs(snap, "elizabeth", subj); v != nil {
+		t.Errorf("a booster with no buy path must not surface, got %+v", v)
 	}
 }

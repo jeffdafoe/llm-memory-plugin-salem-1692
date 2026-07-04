@@ -81,7 +81,15 @@ type ProductionInputView struct {
 // the actor produces nothing with a bought, below-threshold input, restock is
 // disabled (RestockReorderPct == 0), or the recipe catalog/policy is absent. Pure
 // over the snapshot.
-func buildProductionInputs(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) *ProductionInputsView {
+//
+// Every line is additionally gated on an ACTIONABLE buy path for the input
+// (itemHasActionableBuyPath — the same LLM-216 item gate buildRestocking
+// applies), so this section renders only alongside a "## Restocking" line for
+// the same item, as the LLM-64 split intends. Without the gate, an
+// unobtainable input (no vendor anywhere — the live Hannah Boggs water case)
+// would get a motivate-line with no act-half, and the model improvises on the
+// dead end (LLM-260).
+func buildProductionInputs(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSnapshot) *ProductionInputsView {
 	if snap == nil || actorSnap == nil || actorSnap.RestockPolicy == nil || snap.Recipes == nil {
 		return nil
 	}
@@ -90,10 +98,12 @@ func buildProductionInputs(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) *Pr
 		return nil // producer/feature disabled
 	}
 	// The items the actor restocks by buying, and their caps — the gate for which
-	// inputs are a buy-restock concern (a self-produced input has no buy entry and
-	// is excluded). Mirrors the set "## Restocking" works from.
+	// inputs are a buy-restock concern (a self-produced input has no buy entry,
+	// derived or otherwise, and is excluded). Mirrors the set "## Restocking"
+	// works from: the EFFECTIVE demand (LLM-260), so an unsourced recipe input
+	// gets its runway line without a hand-authored buy entry.
 	buyCaps := map[sim.ItemKind]int{}
-	for _, e := range actorSnap.RestockPolicy.BuyEntries() {
+	for _, e := range sim.EffectiveBuyEntries(snap.Recipes, actorSnap.RestockPolicy) {
 		buyCaps[e.Item] = e.Cap()
 	}
 	if len(buyCaps) == 0 {
@@ -124,6 +134,9 @@ func buildProductionInputs(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) *Pr
 			if !sim.RestockReorderThresholdMet(current, cap, pct) {
 				continue
 			}
+			if !itemHasActionableBuyPath(snap, actorID, actorSnap, bi.Item) {
+				continue // no vendor — Restocking omits it (LLM-216), so the booster motivation stays silent too
+			}
 			boosts = append(boosts, ProductionBoostView{
 				BoostLabel:  itemDisplayLabel(snap, bi.Item),
 				BoostKind:   bi.Item,
@@ -147,6 +160,9 @@ func buildProductionInputs(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) *Pr
 			}
 			if !sim.RestockReorderThresholdMet(current, cap, pct) {
 				continue // not low yet — the same gate Restocking uses
+			}
+			if !itemHasActionableBuyPath(snap, actorID, actorSnap, in.Item) {
+				continue // no vendor — Restocking omits it (LLM-216), so the runway line stays silent too (LLM-260)
 			}
 			// int64 multiply + clamp guards a corrupt/imported catalog with huge
 			// quantities from overflowing int before the divide — the same posture

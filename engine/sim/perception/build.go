@@ -272,7 +272,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	p.Satiation = buildSatiation(snap, actorID, actorSnap)
 	p.NeedRedirect = buildNeedRedirect(snap, actorSnap, p.Satiation) // LLM-176: looping-coda redirect; reads p.Satiation
 	p.Restocking = buildRestocking(snap, actorID, actorSnap)
-	p.ProductionInputs = buildProductionInputs(snap, actorSnap)
+	p.ProductionInputs = buildProductionInputs(snap, actorID, actorSnap)
 	p.ForgeChoice = buildForgeChoice(snap, actorID, actorSnap)
 	// TradeValue (LLM-125): the coin worth of the actor's own-trade goods, shown
 	// when it is in a huddle (someone to trade with). Location-independent — a

@@ -331,7 +331,9 @@ func TestGoldensRestockSupplierProducesOrForagesOrIsDistributor(t *testing.T) {
 			if subj == nil || subj.RestockPolicy == nil {
 				return // no reseller restock manifest — invariant N/A here
 			}
-			for _, e := range subj.RestockPolicy.BuyEntries() {
+			// Effective demand (LLM-260) so derived buy inputs are held to the
+			// same supplier invariant as hand-authored entries.
+			for _, e := range sim.EffectiveBuyEntries(snap.Recipes, subj.RestockPolicy) {
 				for _, vd := range findItemVendors(snap, actorID, subj, e.Item) {
 					if sim.ActorIsDistributor(snap.VillageObjects, vd.StructureID) {
 						continue // the distributor is a standing supplier of everything
@@ -350,6 +352,65 @@ func TestGoldensRestockSupplierProducesOrForagesOrIsDistributor(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestGoldensUnobtainableInputSurfacesNoDemand is the LLM-260 cross-scenario
+// invariant: an effective buy item (explicit or derived from a produce recipe)
+// that NO other actor in the world holds at a workplace must surface in NEITHER
+// demand section — no "## Restocking" line, no "## Keeping up production"
+// runway/booster line. "Nobody holds it anywhere" is the loosest possible
+// vendor superset (every gate variant — wholesale, LLM-252 first-hand, LLM-216
+// drops — can only shrink it), so the check is independent of the gates that
+// produced the render: if the item genuinely has no source, ANY demand line for
+// it is a dead-end cue the model would improvise on (the live Hannah Boggs
+// phantom fetch-water hires).
+func TestGoldensUnobtainableInputSurfacesNoDemand(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, warrants := sc.build()
+			subj := snap.Actors[actorID]
+			if subj == nil || subj.RestockPolicy == nil {
+				return // no restock manifest — invariant N/A here
+			}
+			prompt := combinedPrompt(Render(Build(snap, actorID, warrants), DefaultRenderConfig()))
+			for _, e := range sim.EffectiveBuyEntries(snap.Recipes, subj.RestockPolicy) {
+				held := false
+				for id, a := range snap.Actors {
+					if id == actorID || a == nil || a.WorkStructureID == "" {
+						continue
+					}
+					if a.Inventory[e.Item] > 0 {
+						held = true
+						break
+					}
+				}
+				if held {
+					continue // someone holds it — obtainability is the gated cues' call
+				}
+				label := itemDisplayLabel(snap, e.Item)
+				for _, header := range []string{"## Restocking", "## Keeping up production"} {
+					if strings.Contains(promptSection(prompt, header), label) {
+						t.Errorf("scenario %q: %s names %q, but no actor in the world holds it at a workplace — an unobtainable item must surface no demand (LLM-260)", sc.name, header, label)
+					}
+				}
+			}
+		})
+	}
+}
+
+// promptSection returns the body of the markdown section starting at header,
+// cut at the next "## " heading; "" when the section is absent.
+func promptSection(prompt, header string) string {
+	idx := strings.Index(prompt, header)
+	if idx < 0 {
+		return ""
+	}
+	section := prompt[idx+len(header):]
+	if end := strings.Index(section, "\n## "); end >= 0 {
+		section = section[:end]
+	}
+	return section
 }
 
 // perceptionScenarios is the (growing) matrix. Seeded from LLM-106 with two
@@ -1129,18 +1190,191 @@ var perceptionScenarios = []perceptionScenario{
 			"must not read as a stall: no runway / 'enough for about N more' phrasing for it.",
 		build: dairyKeeperOutOfBoosterAtPost,
 	},
+	{
+		name: "producer_derived_input_demand",
+		summary: "LLM-260 derived procurement, the live Hannah Boggs case: an innkeeper with `porridge: produce` and NO " +
+			"hand-authored buy entries stands at her inn with zero milk and zero water (porridge needs both). A dairy farm " +
+			"sells milk; nobody anywhere sells water. The golden pins that demand is DERIVED from the recipe — milk gets " +
+			"the '## Keeping up production' runway line AND the '## Restocking' walk-to line with no explicit buy entry — " +
+			"and that the unobtainable water surfaces NOWHERE (no runway line, no restock line): the buy-path gate keeps " +
+			"the engine from motivating a purchase that cannot happen (the phantom fetch-water hires). Matrix-wide guard: " +
+			"TestGoldensUnobtainableInputSurfacesNoDemand.",
+		build: producerDerivedInputDemand,
+	},
+	{
+		name: "producer_self_sourced_input_no_demand",
+		summary: "LLM-260 self-source override, the John Ellis water case: a tavernkeeper produces stew (needs water + meat) " +
+			"and ALSO produces his own water — both at zero on hand, with live vendors selling both. The golden pins that " +
+			"meat derives buy demand (runway + restock lines) while water derives NONE despite the vendor and the empty " +
+			"stock: a produce/forage entry for an input means 'I self-source this', so the derived-demand walk skips it. " +
+			"The '## Time to produce' forge cue rendering alongside is deliberate: it shows the self-sourced water routed " +
+			"to the PRODUCE path (water listed as craftable, stew annotated short of it — LLM-257) while the bought input " +
+			"routes to the BUY path — the two procurement lanes of the same recipe, side by side.",
+		build: producerSelfSourcedInputNoDemand,
+	},
+}
+
+// producerDerivedInputDemand is the LLM-260 derived-demand fixture: Hannah-shaped
+// innkeeper producing porridge (milk 3 + water 5 per 4-unit batch), no explicit
+// buy entries, zero of both inputs. Milk has a first-hand supplier (Ellis Farm);
+// water has no vendor anywhere — the derived milk demand surfaces in both restock
+// sections, the derived water demand in neither.
+func producerDerivedInputDemand() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		hannahID = sim.ActorID("hannah")
+		ellisID  = sim.ActorID("ellis")
+		inn      = sim.StructureID("boggs_inn")
+		farm     = sim.StructureID("ellis_farm")
+	)
+	start, end := 360, 1080 // 06:00–18:00
+	now := 600              // 10:00 — on shift
+	hannah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Hannah Boggs",
+		Role:              "innkeeper",
+		State:             sim.StateIdle,
+		WorkStructureID:   inn,
+		InsideStructureID: inn,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             20,
+		Inventory:         map[sim.ItemKind]int{"porridge": 11},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "porridge", Source: sim.RestockSourceProduce, Max: 12},
+		}},
+	}
+	ellis := &sim.ActorSnapshot{
+		Kind:            sim.KindNPCStateful,
+		DisplayName:     "Elizabeth Ellis",
+		State:           sim.StateIdle,
+		WorkStructureID: farm,
+		Inventory:       map[sim.ItemKind]int{"milk": 30},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "milk", Source: sim.RestockSourceProduce, Max: 30},
+		}},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{hannahID: hannah, ellisID: ellis},
+		Structures: map[sim.StructureID]*sim.Structure{
+			inn:  plainStructure(inn, "Boggs Inn"),
+			farm: plainStructure(farm, "Ellis Farm"),
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"porridge": {Name: "porridge", DisplayLabel: "porridge", Category: sim.ItemCategoryFood},
+			"milk":     {Name: "milk", DisplayLabel: "milk", Category: sim.ItemCategoryDrink},
+			"water":    {Name: "water", DisplayLabel: "water", Category: sim.ItemCategoryDrink},
+		},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"porridge": {
+				OutputItem: "porridge", OutputQty: 4, RateQty: 4, RatePerHours: 1,
+				Inputs:         []sim.RecipeInput{{Item: "milk", Qty: 3}, {Item: "water", Qty: 5}},
+				WholesalePrice: 2, RetailPrice: 3,
+			},
+		},
+		RestockReorderPct: 25,
+	}
+	return snap, hannahID, nil
+}
+
+// producerSelfSourcedInputNoDemand is the LLM-260 self-source-override fixture:
+// John-shaped tavernkeeper producing stew (water 10 + meat 10 per 5-unit batch)
+// AND his own water, zero of both inputs on hand, with first-hand vendors
+// selling both. Meat derives buy demand; water derives none — the produce entry
+// is the override, not vendor absence.
+func producerSelfSourcedInputNoDemand() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		johnID   = sim.ActorID("john")
+		amosID   = sim.ActorID("amos")
+		wellID   = sim.ActorID("welkeeper")
+		tavern   = sim.StructureID("ellis_tavern")
+		butchery = sim.StructureID("amos_butchery")
+		wellHut  = sim.StructureID("well_hut")
+	)
+	start, end := 360, 1080 // 06:00–18:00
+	now := 600              // 10:00 — on shift
+	john := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "John Ellis",
+		Role:              "tavernkeeper",
+		State:             sim.StateIdle,
+		WorkStructureID:   tavern,
+		InsideStructureID: tavern,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             25,
+		Inventory:         map[sim.ItemKind]int{"stew": 4},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "stew", Source: sim.RestockSourceProduce, Max: 10},
+			{Item: "water", Source: sim.RestockSourceProduce, Max: 20},
+		}},
+	}
+	amos := &sim.ActorSnapshot{
+		Kind:            sim.KindNPCStateful,
+		DisplayName:     "Amos Reed",
+		State:           sim.StateIdle,
+		WorkStructureID: butchery,
+		Inventory:       map[sim.ItemKind]int{"meat": 40},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "meat", Source: sim.RestockSourceProduce, Max: 40},
+		}},
+	}
+	// A live water vendor proves the water silence below is the self-source
+	// override, not a missing buy path.
+	welkeeper := &sim.ActorSnapshot{
+		Kind:            sim.KindNPCStateful,
+		DisplayName:     "Josiah Thorne",
+		State:           sim.StateIdle,
+		WorkStructureID: wellHut,
+		Inventory:       map[sim.ItemKind]int{"water": 30},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "water", Source: sim.RestockSourceProduce, Max: 30},
+		}},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			johnID: john, amosID: amos, wellID: welkeeper,
+		},
+		Structures: map[sim.StructureID]*sim.Structure{
+			tavern:   plainStructure(tavern, "Ellis Tavern"),
+			butchery: plainStructure(butchery, "Reed Butchery"),
+			wellHut:  plainStructure(wellHut, "Well Hut"),
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"stew":  {Name: "stew", DisplayLabel: "stew", Category: sim.ItemCategoryFood},
+			"meat":  {Name: "meat", DisplayLabel: "meat"},
+			"water": {Name: "water", DisplayLabel: "water", Category: sim.ItemCategoryDrink},
+		},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"stew": {
+				OutputItem: "stew", OutputQty: 5, RateQty: 5, RatePerHours: 2,
+				Inputs:         []sim.RecipeInput{{Item: "water", Qty: 10}, {Item: "meat", Qty: 10}},
+				WholesalePrice: 2, RetailPrice: 4,
+			},
+			"water": {OutputItem: "water", OutputQty: 10, RateQty: 10, RatePerHours: 1},
+		},
+		RestockReorderPct: 25,
+	}
+	return snap, johnID, nil
 }
 
 // dairyKeeperOutOfBoosterAtPost is the LLM-248 booster-cue fixture: a dairy
 // keeper on shift inside her farm, producing milk whose recipe carries an
 // optional sage booster (+2 per boosted execution), with sage as a buy-restock
-// entry and none on hand. Kept minimal — one actor, one structure, no seller in
-// the world — so the golden pins the booster line's own text, not Restocking's
-// supplier resolution (covered by the LLM-223 scenarios).
+// entry and none on hand. A sage-growing herbalist exists as a walk-to supplier
+// — the LLM-260 buy-path gate silences the booster motivation when the item is
+// unobtainable, so a vendor keeps the line rendering, and the golden now also
+// pins the LLM-64 pairing: the booster motivate-line and the "## Restocking"
+// sage buy line appear together.
 func dairyKeeperOutOfBoosterAtPost() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	const (
 		elizabethID = sim.ActorID("elizabeth")
+		prudenceID  = sim.ActorID("prudence")
 		farm        = sim.StructureID("ellis_farm")
+		herbGarden  = sim.StructureID("ward_garden")
 	)
 	start, end := 360, 1080 // 06:00–18:00
 	now := 600              // 10:00 — on shift
@@ -1160,12 +1394,26 @@ func dairyKeeperOutOfBoosterAtPost() (*sim.Snapshot, sim.ActorID, []sim.WarrantM
 			{Item: "sage", Source: sim.RestockSourceBuy, Max: 3},
 		}},
 	}
+	// The sage supplier: a forage-sourced herbalist at her own garden, stocked —
+	// the actionable buy path the booster line (and the sage Restocking line) is
+	// gated on.
+	prudence := &sim.ActorSnapshot{
+		Kind:            sim.KindNPCStateful,
+		DisplayName:     "Prudence Ward",
+		State:           sim.StateIdle,
+		WorkStructureID: herbGarden,
+		Inventory:       map[sim.ItemKind]int{"sage": 5},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "sage", Source: sim.RestockSourceForage, Max: 5},
+		}},
+	}
 	snap := &sim.Snapshot{
 		LocalMinuteOfDay: &now,
 		NeedThresholds:   sim.NeedThresholds{},
-		Actors:           map[sim.ActorID]*sim.ActorSnapshot{elizabethID: elizabeth},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{elizabethID: elizabeth, prudenceID: prudence},
 		Structures: map[sim.StructureID]*sim.Structure{
-			farm: plainStructure(farm, "Ellis Farm"),
+			farm:       plainStructure(farm, "Ellis Farm"),
+			herbGarden: plainStructure(herbGarden, "Ward Garden"),
 		},
 		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
 			"milk": {Name: "milk", DisplayLabel: "milk", Category: sim.ItemCategoryDrink},
@@ -2057,7 +2305,8 @@ func TestForgeCueOnlyForMultiOutputCrafterAtForge(t *testing.T) {
 	for _, sc := range perceptionScenarios {
 		sc := sc
 		got := renderScenario(sc)
-		want := sc.name == "smith_choosing_at_forge" || sc.name == "smith_forging_focused" || sc.name == "dairy_choosing_at_farm" || sc.name == "tavernkeeper_starved_focus_at_forge"
+		want := sc.name == "smith_choosing_at_forge" || sc.name == "smith_forging_focused" || sc.name == "dairy_choosing_at_farm" || sc.name == "tavernkeeper_starved_focus_at_forge" ||
+			sc.name == "producer_self_sourced_input_no_demand" // multi-output (stew + water) keeper at his forge, LLM-260
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: forge cue present=%v, want %v", sc.name, has, want)
 		}

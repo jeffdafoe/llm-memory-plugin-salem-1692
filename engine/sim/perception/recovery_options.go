@@ -506,20 +506,11 @@ func buyerLastPaidText(snap *sim.Snapshot, buyerID, sellerID sim.ActorID, item s
 // (0) is never a skip — patronage earns the number, so a never-visited vendor
 // stays a valid redirect the actor walks to and learns the price of.
 func buyerLastPaidCoins(snap *sim.Snapshot, buyerID, sellerID sim.ActorID, item sim.ItemKind) int {
-	if sellerID == "" || snap.PriceBook == nil {
-		return 0
-	}
-	buf, ok := snap.PriceBook[sim.PriceBookKey{SellerID: sellerID, Item: item}]
-	if !ok || buf == nil || buf.Len() == 0 {
-		return 0
-	}
-	entries := buf.Snapshot() // oldest-first; scan from the end for newest-first
-	for i := len(entries) - 1; i >= 0; i-- {
-		if entries[i].BuyerID == buyerID {
-			return entries[i].Amount
-		}
-	}
-	return 0
+	// Delegates to the shared sim lookup (LLM-260) so this cost hint and the
+	// restock warrant's affordability gate (restock_tick.go actorHasBuyPath, over
+	// the live World.PriceBook) read the same definition of "what the buyer last
+	// paid" and can't drift.
+	return sim.LastPaidCoins(snap.PriceBook, buyerID, sellerID, item)
 }
 
 // qualitativeDistance maps a tile distance to a benefit-first walk phrase. The
