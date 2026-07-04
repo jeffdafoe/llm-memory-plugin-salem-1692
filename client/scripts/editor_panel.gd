@@ -1673,6 +1673,8 @@ func apply_object_tags_external(object_id: String, tags: Array) -> void:
 ## left a keeper unscheduled (and, for a non-worker keeper, permanently
 ## off-shift and asleep at home).
 func _on_schedule_save_pressed() -> void:
+    if _ignoring_npc_inputs:
+        return
     _npc_schedule_window_is_null = false
     _emit_schedule_changed()
 
@@ -1697,7 +1699,9 @@ func _on_schedule_window_field_changed(_value: float) -> void:
 func _schedule_save_debounced() -> void:
     _emit_schedule_changed()
 
-## Shared emitter for all three auto-save paths.
+## Shared emitter for all three auto-save paths. Sentinel contract: emits
+## -1/-1 to clear the schedule (NULL-inherit dawn/dusk); otherwise concrete
+## minutes. The downstream handler converts -1 to null in the PATCH payload.
 func _emit_schedule_changed() -> void:
     if _ignoring_npc_inputs:
         return
