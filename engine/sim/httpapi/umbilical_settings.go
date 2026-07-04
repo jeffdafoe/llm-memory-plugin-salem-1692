@@ -42,6 +42,13 @@ type UmbilicalSettingsDTO struct {
 	// the loaded value is seeded to the default, so this reports a concrete figure.
 	SeekWorkCoinCeiling int `json:"seek_work_coin_ceiling"`
 
+	// SeekWorkNeedYieldMargin (LLM-276) is the width, below each need's red-line, of
+	// the upper-felt band in which a workless idle worker with a resolvable hunger/
+	// thirst is redirected to eat/drink instead of seeking work (settings/seek-work-
+	// need-margin writes it). Persisted (checkpoint writes it back), so it survives
+	// restart; seeded to the default, so this reports a concrete figure.
+	SeekWorkNeedYieldMargin int `json:"seek_work_need_yield_margin"`
+
 	// FarmUpkeepFloor / FarmUpkeepCoinsPerShovel (LLM-215) are the farm wealth-tax
 	// knobs the farm-upkeep/set route writes: a farm owner owes one upkeep shovel per
 	// FarmUpkeepCoinsPerShovel coins held above FarmUpkeepFloor. Persisted (checkpoint
@@ -71,6 +78,7 @@ func (s *Server) handleUmbilicalSettings(w http.ResponseWriter, r *http.Request)
 			HuddleLoopRepeatPercent:       world.Settings.HuddleLoopRepeatPercent,
 			HuddleLoopSweepCadenceSeconds: int(world.Settings.HuddleLoopSweepCadence / time.Second),
 			SeekWorkCoinCeiling:           world.Settings.SeekWorkCoinCeiling,
+			SeekWorkNeedYieldMargin:       world.Settings.SeekWorkNeedYieldMargin,
 			FarmUpkeepFloor:               world.Settings.FarmUpkeepFloor,
 			FarmUpkeepCoinsPerShovel:      world.Settings.FarmUpkeepCoinsPerShovel,
 			LaborProduceBoostPct:          world.Settings.LaborProduceBoostPct,

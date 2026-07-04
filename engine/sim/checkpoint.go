@@ -90,6 +90,12 @@ type MutableWorldSettings struct {
 	// here each checkpoint so a live change survives restart.
 	SeekWorkCoinCeiling int
 
+	// SeekWorkNeedYieldMargin (LLM-276) — the upper-felt band width below each need's
+	// red-line in which a resolvable-need worker is redirected to eat instead of seeking
+	// work. Live-tunable via the umbilical, persisted here each checkpoint so a live
+	// change survives restart.
+	SeekWorkNeedYieldMargin int
+
 	// LaborProduceBoostPct (LLM-224) — the per-worker produce-rate boost a laboring
 	// worker adds at their employer's establishment. Live-tunable via the umbilical,
 	// persisted here each checkpoint so a live change survives restart.
@@ -145,6 +151,7 @@ func (w *World) BuildCheckpointSnapshot() *CheckpointSnapshot {
 			HuddleLoopRepeatPercent:       w.Settings.HuddleLoopRepeatPercent,
 			HuddleLoopSweepCadenceSeconds: int(w.Settings.HuddleLoopSweepCadence / time.Second),
 			SeekWorkCoinCeiling:           w.Settings.SeekWorkCoinCeiling,
+			SeekWorkNeedYieldMargin:       w.Settings.SeekWorkNeedYieldMargin,
 			LaborProduceBoostPct:          w.Settings.LaborProduceBoostPct,
 		},
 	}

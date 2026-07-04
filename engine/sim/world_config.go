@@ -287,6 +287,36 @@ func SetSeekWorkCoinCeiling(ceiling *int) Command {
 	}
 }
 
+// ErrInvalidSeekWorkNeedMarginSetting is returned by SetSeekWorkNeedYieldMargin when
+// the margin is missing or out of range (must be >= 1) — → 400 at the umbilical route.
+var ErrInvalidSeekWorkNeedMarginSetting = errors.New("invalid seek-work need-margin setting")
+
+// SeekWorkNeedMarginSettingResult echoes the post-change upper-felt margin.
+type SeekWorkNeedMarginSettingResult struct {
+	Margin int
+}
+
+// SetSeekWorkNeedYieldMargin returns a Command that live-tunes the LLM-276 upper-felt
+// margin: the width below each need's red-line in which the seek-work backstop
+// redirects a resolvable-need worker to eat/drink instead of seeking work. Required
+// (a single knob, nil = nothing to do) and must be >= 1 — a zero/negative margin
+// would collapse the redirect band to nothing (the load/read paths treat <= 0 as
+// "use the default" via effectiveSeekWorkNeedYieldMargin). The MaxInt32 upper bound
+// keeps the value comfortably inside int. Takes effect immediately — the backstop
+// reads w.Settings live — AND persists on the next checkpoint via MutableWorldSettings,
+// so a live change survives restart.
+func SetSeekWorkNeedYieldMargin(margin *int) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			if margin == nil || *margin < 1 || *margin > math.MaxInt32 {
+				return nil, ErrInvalidSeekWorkNeedMarginSetting
+			}
+			w.Settings.SeekWorkNeedYieldMargin = *margin
+			return SeekWorkNeedMarginSettingResult{Margin: w.Settings.SeekWorkNeedYieldMargin}, nil
+		},
+	}
+}
+
 // ErrInvalidLaborProduceBoostSetting is returned by SetLaborProduceBoostPct when the
 // percent is missing or out of range (must be >= 0) — → 400 at the umbilical route.
 var ErrInvalidLaborProduceBoostSetting = errors.New("invalid labor produce boost setting")

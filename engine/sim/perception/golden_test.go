@@ -112,6 +112,38 @@ func TestGoldensNeverAdvertiseHomeAsMoveTargetWhenInside(t *testing.T) {
 	}
 }
 
+// TestGoldensTendNeedYieldsToEating is the LLM-276 cross-scenario invariant: whenever
+// a tend-need warrant is present (the seek-work backstop redirected a workless idle
+// worker with a resolvable hunger/thirst to eat), the rendered prompt must carry the
+// tend-need felt pull and must NOT carry the go-earn seek-work directive — eating
+// outranks job-hunting exactly as it does for a red need. Runs over the whole matrix so
+// no future cue can reintroduce the labor directive for a redirected-to-eat worker.
+func TestGoldensTendNeedYieldsToEating(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			_, _, warrants := sc.build()
+			tendNeed := false
+			for _, wm := range warrants {
+				if _, ok := wm.Reason.(sim.TendNeedWarrantReason); ok {
+					tendNeed = true
+					break
+				}
+			}
+			if !tendNeed {
+				return // invariant N/A — no tend-need redirect in this scenario
+			}
+			out := renderScenario(sc)
+			if strings.Contains(out, "offer your labor") {
+				t.Errorf("scenario %q: tend-need active but the prompt still shows the seek-work go-earn line — eating must outrank job-hunting (LLM-276)", sc.name)
+			}
+			if !strings.Contains(out, "the means to see to it") {
+				t.Errorf("scenario %q: tend-need active but the prompt lacks the tend-need felt pull (LLM-276)", sc.name)
+			}
+		})
+	}
+}
+
 // TestGoldensEnRouteWorkerNotOfferedNewWork is the LLM-229 cross-scenario
 // invariant: whenever the subject is a WORKER relocating to an accepted job (an
 // EnRoute LaborOffer with the subject as worker), the rendered prompt must offer
@@ -427,6 +459,15 @@ var perceptionScenarios = []perceptionScenario{
 			"fixed it at the tool-advertising layer, so this PAYLOAD is unchanged — the golden is a regression pin; " +
 			"the fix's guard is the handlers gating test.",
 		build: keeperAloneAtPostOnShift,
+	},
+	{
+		name: "hungry_worker_with_means_redirected_to_eat",
+		summary: "LLM-276: a workless, on-shift, idle worker whose hunger sits in the upper felt band (15, " +
+			"below the red-line 18) and who can resolve it now (holds coin, a free bush + a porridge vendor in reach). " +
+			"The seek-work backstop stamped a tend-need warrant, so the prompt steers the worker to EAT — the tend-need " +
+			"felt line, the eat/drink options, and the one-target need-redirect — and suppresses the businesses directory " +
+			"and the solicit-work hustle, exactly as a red need would. The perception half of the Silence Walker beg-loop fix.",
+		build: hungryWorkerWithMeansRedirectedToEat,
 	},
 	{
 		name: "tired_keeper_at_post_onshift",
@@ -6444,6 +6485,69 @@ func homedWorkerEveningTooBrokeForTavern() (*sim.Snapshot, sim.ActorID, []sim.Wa
 		},
 	}
 	return snap, ezekielID, nil
+}
+
+// hungryWorkerWithMeansRedirectedToEat is the LLM-276 scenario: a workless, on-shift,
+// idle worker whose hunger has climbed into the upper felt band (15, below the red-line
+// 18) and who can resolve it now — it holds coin, a free bush is nearby, and a keeper
+// sells porridge. The seek-work backstop has stamped a TendNeed warrant, so the prompt
+// must steer the worker to EAT (the tend-need felt line + the "## What you can eat or
+// drink" options + the one-target need-redirect) and must NOT show the businesses
+// directory or the solicit-work hustle — those yield to the resolvable need exactly as
+// they do for a red need. The perception half of the live Silence Walker beg-for-food
+// fix.
+func hungryWorkerWithMeansRedirectedToEat() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		silenceID = sim.ActorID("silence")
+		keeperID  = sim.ActorID("keeper")
+		home      = sim.StructureID("walker_house")
+		store     = sim.StructureID("general_store")
+		bush      = sim.VillageObjectID("blueberry_bush")
+	)
+	now := 720 // 12:00 — on shift (day window [420, 1140))
+	silence := &sim.ActorSnapshot{
+		Kind:            sim.KindNPCShared,
+		DisplayName:     "Silence Walker",
+		Role:            "villager",
+		State:           sim.StateIdle,
+		HomeStructureID: home,
+		Coins:           5,
+		Needs:           map[sim.NeedKey]int{"hunger": 15},
+		AttributeSlugs:  []string{sim.AttrWorker},
+	}
+	keeper := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Anne Putnam",
+		Role:              "shopkeeper",
+		State:             sim.StateIdle,
+		WorkStructureID:   store,
+		InsideStructureID: store,
+		Inventory:         map[sim.ItemKind]int{"porridge": 5},
+		Needs:             map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		DawnMinute:       420,
+		DuskMinute:       1140,
+		DawnDuskMinuteOK: true,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{silenceID: silence, keeperID: keeper},
+		Structures: map[sim.StructureID]*sim.Structure{
+			home:  plainStructure(home, "Walker House"),
+			store: plainStructure(store, "General Store"),
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			bush:                       {DisplayName: "Blueberry Bush", Pos: sim.WorldPos{X: 40, Y: 40}, Refreshes: []*sim.ObjectRefresh{{Attribute: "hunger", Amount: -2}}},
+			sim.VillageObjectID(store): {Pos: sim.WorldPos{X: 80, Y: 0}},
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"porridge": {DisplayLabel: "a bowl of porridge", Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 8}}},
+		},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"porridge": {OutputItem: "porridge", OutputQty: 1, RateQty: 1, RatePerHours: 1, WholesalePrice: 2, RetailPrice: 5},
+		},
+	}
+	return snap, silenceID, []sim.WarrantMeta{{TriggerActorID: silenceID, Reason: sim.TendNeedWarrantReason{Need: "hunger"}}}
 }
 
 // homedWorkersEveningCommonsNoSolicit is the LLM-205 rule-2 case: two homed

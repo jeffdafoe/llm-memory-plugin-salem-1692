@@ -50,6 +50,7 @@ const (
 // Skipped* breakdown is why the rest didn't, for telemetry + the unit tests.
 type SeekWorkBackstopTelemetry struct {
 	Stamped              int
+	Redirected           int // of Stamped, how many were re-aimed at eating/drinking (TendNeed) instead of seeking work (LLM-276)
 	SkippedScope         int // not KindNPCStateful / KindNPCShared, or a visitor
 	SkippedNotEligible   int // not a worker, has a workplace, off-shift, asleep, or already working
 	SkippedRedNeed       int // an actionable red need takes precedence (eat before work)
@@ -126,13 +127,26 @@ func EvaluateSeekWorkBackstop(now time.Time) Command {
 				// Shared exponential-backoff helper (red_need_backstop_commands.go).
 				delay := redNeedBackoffDelay(defaultSeekWorkBackstopBaseDelay, defaultSeekWorkBackstopMaxDelay, level)
 
+				// LLM-276: a workless worker that has grown hungry/thirsty (upper felt
+				// band) AND can resolve it right now — carries food, holds coin, or a
+				// free public source is nearby — is steered to EAT rather than to hunt
+				// odd jobs. The seek-work backstop is its waker either way; only the felt
+				// impulse it stamps differs, so the redirect inherits the same backoff
+				// pacing. A broke worker with no reachable food stays on seek-work (goes
+				// to earn meal money) — the coarse resolvable gate is what splits them.
+				var reason WarrantReason = SeekWorkWarrantReason{}
+				redirected := false
+				if need, ok := pressingResolvableConsumableNeed(w, a); ok {
+					reason = TendNeedWarrantReason{Need: need}
+					redirected = true
+				}
 				// Only advance the backoff (and count the stamp) if the funnel
 				// recorded the warrant — same correct-by-construction posture as
 				// the red-need sweep (a declined stamp must not pace a tick that
 				// never happened).
 				if !tryStampWarrant(w, a, WarrantMeta{
 					TriggerActorID: a.ID,
-					Reason:         SeekWorkWarrantReason{},
+					Reason:         reason,
 				}, now) {
 					t.SkippedStampDeclined++
 					continue
@@ -142,6 +156,9 @@ func EvaluateSeekWorkBackstop(now time.Time) Command {
 				a.SeekWorkNextWarrantAt = &next
 				a.SeekWorkBackoffLevel = level
 				t.Stamped++
+				if redirected {
+					t.Redirected++
+				}
 			}
 			return t, nil
 		},
@@ -276,4 +293,175 @@ func actorHasResolvableWorkplace(w *World, a *Actor) bool {
 func clearSeekWorkBackstop(a *Actor) {
 	a.SeekWorkNextWarrantAt = nil
 	a.SeekWorkBackoffLevel = 0
+}
+
+// consumableNeeds are the needs a worker can resolve by eating or drinking — the
+// scope of the LLM-276 seek-work→eat redirect. Tiredness is excluded (its remedy is
+// rest/sleep, not a purchase, and it has its own on-shift + red-need handling).
+// Mirrors perception's satiationNeeds and the fixed hunger-before-thirst render
+// order so the warrant and the eat/drink cue agree on which needs count.
+var consumableNeeds = []NeedKey{"hunger", "thirst"}
+
+// SeekWorkNeedYieldMarginDefault is the default width, below each need's red-line
+// threshold, of the "upper felt" band in which the seek-work backstop redirects a
+// resolvable-need worker to eat/drink instead of seeking work (LLM-276). At the
+// default hunger threshold (18) a margin of 5 opens the redirect at hunger 13 — high
+// enough that a worker spends most of its day below it (still job-hunting), but with
+// a ~30-40 min cushion before the red-line so it eats calmly rather than spiraling
+// into a beg-for-food loop. Used when WorldSettings.SeekWorkNeedYieldMargin is unset
+// (<= 0). Live-tunable + persisted via settings/seek-work-need-margin; the read side
+// is GET /settings.
+const SeekWorkNeedYieldMarginDefault = 5
+
+// effectiveSeekWorkNeedYieldMargin resolves the configured upper-felt margin,
+// falling back to SeekWorkNeedYieldMarginDefault when unset (<= 0). Zero means "use
+// the default": a zero margin would collapse the redirect band to nothing (only a
+// need already at its red-line would qualify — the red-need backstop's job),
+// mirroring effectiveSeekWorkCoinCeiling's zero-is-default posture.
+func effectiveSeekWorkNeedYieldMargin(s WorldSettings) int {
+	if s.SeekWorkNeedYieldMargin > 0 {
+		return s.SeekWorkNeedYieldMargin
+	}
+	return SeekWorkNeedYieldMarginDefault
+}
+
+// pressingResolvableConsumableNeed reports the first consumable need (hunger, then
+// thirst) that a workless idle worker should break off job-hunting to resolve right
+// now: it sits in the UPPER FELT band — at or above (red threshold - margin) but
+// still below red — and it is RESOLVABLE (consumableNeedResolvable). ok=false when
+// none qualifies, in which case the caller stamps the ordinary seek-work impulse.
+//
+// The band is deliberately sub-red: a red need is the red-need backstop's job (the
+// seek-work sweep already yields to it upstream via actorActionableRedNeed), and a
+// need below the margin is not pressing enough to interrupt earning. The caller has
+// already established the actor is on-shift, awake, and not mid source-activity
+// (seekWorkEligible), so no dwell/rest re-check is needed here.
+func pressingResolvableConsumableNeed(w *World, a *Actor) (NeedKey, bool) {
+	if a.Needs == nil {
+		return "", false
+	}
+	margin := effectiveSeekWorkNeedYieldMargin(w.Settings)
+	for _, need := range consumableNeeds {
+		threshold := w.Settings.NeedThresholds.Get(need)
+		level := a.Needs[need]
+		if level < threshold-margin || level >= threshold {
+			continue // below the redirect band, or already red (red-need backstop's job)
+		}
+		if consumableNeedResolvable(w, a, need) {
+			return need, true
+		}
+	}
+	return "", false
+}
+
+// consumableNeedResolvable reports whether the actor has SOME plausible way to ease
+// `need` right now: it carries a satisfier, it holds coin (Salem's food vendors take
+// coin, and an unknown-price vendor is a walk-over-and-learn per the LLM-176
+// redirect), or a free public source for the need exists in the world. Deliberately
+// COARSE — it only has to split "eating is possible" from "genuinely stuck" (a broke
+// worker with no free source, who should keep seeking work for meal money); the
+// perception satiation cue picks the actual target and drops payment/stock dead-ends.
+// This is the same fire-then-let-perception-render posture the red-need backstop
+// takes, and the sim-vs-perception split follows the workerIsComfortable /
+// subjectIsComfortable precedent.
+func consumableNeedResolvable(w *World, a *Actor, need NeedKey) bool {
+	if actorCarriesSatisfier(w, a, need) {
+		return true
+	}
+	if freeConsumableSourceExists(w, a, need) {
+		return true
+	}
+	// Coin is only a means if a vendor actually sells a satisfier this actor can
+	// afford (or one whose price it hasn't learned — a walk-over-and-learn, matching
+	// the LLM-176 need-redirect's unknown-price handling). Gating on coins alone
+	// would promise "you have the means to see to it" to a worker holding 1 coin in a
+	// village where a meal costs 5 (code_review) — a false tend-need cue.
+	return a.Coins > 0 && affordableConsumableVendorExists(w, a, need)
+}
+
+// itemEasesNeed reports whether a unit of the item eases `need` on the immediate hit
+// per the catalog — the shared satisfier test behind the own-stock and vendor arms of
+// resolvability. Mirrors perception's itemNeedMagnitude ( > 0 ). Nil-safe (an item
+// kind absent from the catalog eases nothing).
+func itemEasesNeed(def *ItemKindDef, need NeedKey) bool {
+	if def == nil {
+		return false
+	}
+	for _, satisfies := range def.Satisfies {
+		if satisfies.Attribute == need && satisfies.Immediate > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// actorCarriesSatisfier reports whether the actor holds any item that eases `need`
+// on the immediate hit — the own-stock arm of resolvability. Mirrors perception's
+// gatherOwnStock magnitude read (itemNeedMagnitude).
+func actorCarriesSatisfier(w *World, a *Actor, need NeedKey) bool {
+	for kind, qty := range a.Inventory {
+		if qty > 0 && itemEasesNeed(w.ItemKinds[kind], need) {
+			return true
+		}
+	}
+	return false
+}
+
+// affordableConsumableVendorExists reports whether some non-PC actor stationed at a
+// resolvable workplace sells an item that eases `need` which this actor can pay for —
+// a known retail price within its purse, or an unknown price (no catalog recipe) it
+// would walk over to learn. The coin arm of resolvability. Coarse by design: it does
+// NOT model per-buyer last-paid, barter, wholesaler routing, or reachability — the
+// satiation cue applies those when it renders the actual buy targets. Mirrors
+// perception's eachVendorOffer structural-vendorship (a vendor is a stationed holder).
+func affordableConsumableVendorExists(w *World, a *Actor, need NeedKey) bool {
+	for vendorID, vendor := range w.Actors {
+		if vendor == nil || vendorID == a.ID || vendor.Kind == KindPC {
+			continue
+		}
+		if !actorHasResolvableWorkplace(w, vendor) {
+			continue
+		}
+		for kind, qty := range vendor.Inventory {
+			if qty <= 0 || !itemEasesNeed(w.ItemKinds[kind], need) {
+				continue
+			}
+			recipe := w.Recipes[kind]
+			if recipe == nil || recipe.RetailPrice <= 0 || recipe.RetailPrice <= a.Coins {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// freeConsumableSourceExists reports whether any free public village object eases
+// `need` on arrival and still has stock — the free-forage/well arm of resolvability,
+// the sim-side echo of perception's gatherFreeSatiationSources (free public sources
+// are common knowledge: every actor knows the town's wells/bushes). Owner-gated: an
+// object owned by someone else is not free food for this actor, matching the
+// perception scan's OwnedByOther skip. The immediate ease is -r.Amount (the arrival
+// decrement) plus any dwell delta, the same magnitude objectRefreshMagnitude computes.
+func freeConsumableSourceExists(w *World, a *Actor, need NeedKey) bool {
+	for _, obj := range w.VillageObjects {
+		if obj == nil || obj.OwnedByOther(a.ID) {
+			continue
+		}
+		for _, refresh := range obj.Refreshes {
+			if refresh == nil || refresh.Attribute != need {
+				continue
+			}
+			if refresh.IsFinite() && refresh.AvailableQuantity != nil && *refresh.AvailableQuantity <= 0 {
+				continue
+			}
+			mag := -refresh.Amount
+			if refresh.DwellDelta != nil {
+				mag += -*refresh.DwellDelta
+			}
+			if mag > 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
