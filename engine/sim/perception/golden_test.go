@@ -671,6 +671,17 @@ var perceptionScenarios = []perceptionScenario{
 		build: innkeeperPricingWithMakingsCost,
 	},
 	{
+		name: "producer_input_below_batch_floor_reorders",
+		summary: "LLM-279 produce-input batch floor: Hannah Boggs makes porridge (3 milk + 5 water per 10-bowl batch) " +
+			"and is low on WATER at 4 — stranded in the deadlock band, above the cap fraction (derived cap 15 → fires " +
+			"only below 3.75) yet below a single 5-unit batch, so she can't cover the next batch but the old cap-fraction " +
+			"rule would never reorder her. A well-keeper sells water. The golden pins that BOTH the '## Restocking' cue " +
+			"(walk-to the well for water) AND the '## Keeping up production' runway line now render for water — the batch " +
+			"floor (2×5=10) catching what the fraction skipped — while MILK, stocked at 9 (above its 2×3=6 floor), stays " +
+			"silent. Guards the reorder-on-batch-coverage fix end to end at the perception layer.",
+		build: producerInputBelowBatchFloorReorders,
+	},
+	{
 		name: "keeper_not_pitching_makers_own_ware",
 		summary: "LLM-171 seller side: John Ellis keeps his tavern in company with Ezekiel Crane the smith, and John's " +
 			"stock holds skillet + nail he bought FROM Ezekiel. The '## Custom at hand' cue lists those wares to pitch, so " +
@@ -2555,10 +2566,13 @@ func TestProductionFocusLineOnlyAtWork(t *testing.T) {
 	for _, sc := range perceptionScenarios {
 		sc := sc
 		got := renderScenario(sc)
-		// innkeeper_pricing_with_makings_cost (LLM-226) is Hannah focused on porridge
-		// AT her inn — the same focus-at-work state as the forging smith, so the line
-		// is correct there too.
-		want := sc.name == "smith_forging_focused" || sc.name == "innkeeper_pricing_with_makings_cost"
+		// innkeeper_pricing_with_makings_cost (LLM-226) and
+		// producer_input_below_batch_floor_reorders (LLM-279) are both Hannah focused
+		// on porridge AT her inn — the same focus-at-work state as the forging smith,
+		// so the line is correct there too.
+		want := sc.name == "smith_forging_focused" ||
+			sc.name == "innkeeper_pricing_with_makings_cost" ||
+			sc.name == "producer_input_below_batch_floor_reorders"
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: production-focus line present=%v, want %v", sc.name, has, want)
 		}
@@ -5319,6 +5333,79 @@ func innkeeperPricingWithMakingsCost() (*sim.Snapshot, sim.ActorID, []sim.Warran
 		Huddles: map[sim.HuddleID]*sim.Huddle{
 			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{hannahID: {}, guestID: {}}},
 		},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"porridge": {OutputItem: "porridge", OutputQty: 10, RateQty: 8, RatePerHours: 1, WholesalePrice: 1, RetailPrice: 2,
+				Inputs: []sim.RecipeInput{{Item: "milk", Qty: 3}, {Item: "water", Qty: 5}}},
+			"milk":  {OutputItem: "milk", OutputQty: 1, RateQty: 4, RatePerHours: 1, WholesalePrice: 1, RetailPrice: 2},
+			"water": {OutputItem: "water", OutputQty: 1, RateQty: 12, RatePerHours: 1, WholesalePrice: 1, RetailPrice: 1},
+		},
+	}
+	return snap, hannahID, nil
+}
+
+// producerInputBelowBatchFloorReorders is the LLM-279 fixture: Hannah Boggs makes
+// porridge (3 milk + 5 water per 10-bowl batch) and holds water at 4 — below one
+// 5-unit batch (she can't cover the next batch) but above the cap fraction (derived
+// water cap 15 → the old rule fired only below 3.75, so she was never reordered).
+// A well-keeper sells water, so the buy path is actionable. Milk at 9 is above its
+// 2×3=6 floor, so it stays silent. Pins that the batch floor (2×5=10) surfaces both
+// the "## Restocking" walk-to and the "## Keeping up production" runway for water.
+// Clock-free: no pending orders/deliveries.
+func producerInputBelowBatchFloorReorders() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		hannahID   = sim.ActorID("hannah")
+		wellKeeper = sim.ActorID("osborne")
+		inn        = sim.StructureID("inn")
+		well       = sim.StructureID("well")
+	)
+	start, end := 360, 1200 // 06:00-20:00 innkeeper day shift
+	now := 480              // 08:00
+	published := time.Date(2026, 7, 4, 8, 0, 0, 0, time.UTC)
+	hannah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Hannah Boggs",
+		Role:              "innkeeper",
+		State:             sim.StateIdle,
+		Pos:               sim.TilePos{X: 10, Y: 10},
+		WorkStructureID:   inn,
+		InsideStructureID: inn,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             20,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"porridge": 30, "milk": 9, "water": 4},
+		ProductionFocus:   "porridge",
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "porridge", Source: sim.RestockSourceProduce, Max: 30},
+		}},
+	}
+	osborne := &sim.ActorSnapshot{
+		Kind:            sim.KindNPCStateful,
+		DisplayName:     "Goodwife Osborne",
+		State:           sim.StateIdle,
+		Pos:             sim.TilePos{X: 400, Y: 400},
+		WorkStructureID: well,
+		Inventory:       map[sim.ItemKind]int{"water": 30},
+		// Produces water, so she's a first-hand supplier (LLM-252), not a reseller.
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "water", Source: sim.RestockSourceProduce, Max: 40},
+		}},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{hannahID: hannah, wellKeeper: osborne},
+		Structures: map[sim.StructureID]*sim.Structure{
+			inn:  plainStructure(inn, "Inn"),
+			well: plainStructure(well, "Village Well"),
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"porridge": {Name: "porridge", DisplayLabel: "porridge", Category: sim.ItemCategoryFood},
+			"milk":     {Name: "milk", DisplayLabel: "milk", Category: sim.ItemCategoryDrink},
+			"water":    {Name: "water", DisplayLabel: "water", Category: sim.ItemCategoryDrink},
+		},
+		RestockReorderPct: 25,
 		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
 			"porridge": {OutputItem: "porridge", OutputQty: 10, RateQty: 8, RatePerHours: 1, WholesalePrice: 1, RetailPrice: 2,
 				Inputs: []sim.RecipeInput{{Item: "milk", Qty: 3}, {Item: "water", Qty: 5}}},

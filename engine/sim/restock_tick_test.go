@@ -86,29 +86,44 @@ func rememberForageBush(a *Actor, item ItemKind, bushID VillageObjectID) {
 
 func TestRestockReorderThresholdMet(t *testing.T) {
 	cases := []struct {
-		current, cap, pct int
-		want              bool
+		current, cap, pct, floor int
+		want                     bool
 	}{
-		{0, 10, 25, true},    // empty shelf
-		{2, 10, 25, true},    // 20% < 25%
-		{3, 10, 25, false},   // 30% >= 25%
-		{2, 8, 25, false},    // 25% exactly is NOT below threshold (strict <)
-		{1, 8, 25, true},     // 12.5% < 25%
-		{5, 10, 0, false},    // pct 0 disables
-		{0, 0, 25, false},    // cap 0 — nothing to reorder against
-		{0, 10, 0, false},    // both off
-		{100, 10, 25, false}, // over cap
+		// Pure cap-fraction goods (floor 0) — unchanged behavior.
+		{0, 10, 25, 0, true},    // empty shelf
+		{2, 10, 25, 0, true},    // 20% < 25%
+		{3, 10, 25, 0, false},   // 30% >= 25%
+		{2, 8, 25, 0, false},    // 25% exactly is NOT below threshold (strict <)
+		{1, 8, 25, 0, true},     // 12.5% < 25%
+		{5, 10, 0, 0, false},    // pct 0 disables
+		{0, 0, 25, 0, false},    // cap 0, no floor — nothing to reorder against
+		{0, 10, 0, 0, false},    // both off
+		{100, 10, 25, 0, false}, // over cap
 		// Sub-one-unit fraction (cap*pct < 100) rounds up: reorder at the last
 		// unit, not only when empty. cap 2 @ 25% = 0.5 (the skillet case, LLM-82).
-		{0, 2, 25, true},  // empty
-		{1, 2, 25, true},  // down to the last unit — now reorders (was the bug: fired only at 0)
-		{2, 2, 25, false}, // at full cap — does not reorder
-		{1, 3, 25, true},  // cap 3 @ 25% = 0.75, also sub-one-unit → fires at the last unit
+		{0, 2, 25, 0, true},  // empty
+		{1, 2, 25, 0, true},  // down to the last unit — now reorders (was the bug: fired only at 0)
+		{2, 2, 25, 0, false}, // at full cap — does not reorder
+		{1, 3, 25, 0, true},  // cap 3 @ 25% = 0.75, also sub-one-unit → fires at the last unit
+
+		// Produce-input batch floor (LLM-279). Hannah's water: batch 5, derived
+		// cap 10 → floor 10 (2 batches). The fraction alone fires only at <=2.
+		{10, 10, 25, 10, false}, // two full batches on hand — not low
+		{5, 10, 25, 10, true},   // one batch left — reorders NOW (mode 1: fires before the stall, cap fraction would not: 500>=250)
+		{4, 10, 25, 10, true},   // knocked off the batch multiple (mode 2 deadlock: fraction 400>=250 would strand it forever)
+		{9, 10, 25, 10, true},   // just under two batches
+		// Floor is absolute below pct==0 — the off-switch disables it too.
+		{4, 10, 0, 10, false},
+		// Floor fires even with no cap configured (explicit buy input, Max/Target unset).
+		{4, 0, 25, 10, true},
+		{10, 0, 25, 10, false}, // at/above the floor, no cap → not low
+		// A small floor that doesn't fire still leaves the cap fraction in force.
+		{2, 10, 25, 1, true}, // 2 >= floor 1, but 20% < 25% → low by fraction
 	}
 	for _, c := range cases {
-		if got := RestockReorderThresholdMet(c.current, c.cap, c.pct); got != c.want {
-			t.Errorf("RestockReorderThresholdMet(cur=%d,cap=%d,pct=%d) = %v, want %v",
-				c.current, c.cap, c.pct, got, c.want)
+		if got := RestockReorderThresholdMet(c.current, c.cap, c.pct, c.floor); got != c.want {
+			t.Errorf("RestockReorderThresholdMet(cur=%d,cap=%d,pct=%d,floor=%d) = %v, want %v",
+				c.current, c.cap, c.pct, c.floor, got, c.want)
 		}
 	}
 }
@@ -522,6 +537,39 @@ func TestEvaluateRestock_DerivedInputStamps(t *testing.T) {
 	}
 	if !found {
 		t.Error("no RestockWarrantReason on the producer")
+	}
+}
+
+// TestEvaluateRestock_InputBatchFloorStamps: LLM-279. A producer's recipe input
+// stranded in the deadlock band — above the cap fraction but below one full batch —
+// is now woken to reorder. Hannah's porridge draws milk 3 per batch (derived cap 9,
+// cap fraction ~2.25). Milk pinned at 4 sits ABOVE that fraction, so the old rule
+// left her stranded (she can't cover a 3-milk batch yet was never reordered), but
+// BELOW the 2×batch floor of 6 — so the warrant now stamps. This is the permanent-
+// deadlock case (failure mode 2) from the ticket, and the reason it's the headline
+// fix: without the floor the producer never gets woken at all.
+func TestEvaluateRestock_InputBatchFloorStamps(t *testing.T) {
+	a := &Actor{
+		ID:        "hannah",
+		Kind:      KindNPCStateful,
+		LLMAgent:  "hannah-agent",
+		Inventory: map[ItemKind]int{"porridge": 11, "milk": 4, "water": 20},
+		RestockPolicy: &RestockPolicy{Restock: []RestockEntry{
+			{Item: "porridge", Source: RestockSourceProduce, Max: 12},
+		}},
+	}
+	w := restockWorld(a)
+	w.Recipes = map[ItemKind]*ItemRecipe{
+		"porridge": {OutputItem: "porridge", OutputQty: 4, RateQty: 4, RatePerHours: 1,
+			Inputs: []RecipeInput{{Item: "milk", Qty: 3}, {Item: "water", Qty: 5}}},
+	}
+	addSupplier(w, "dairy", "milk") // milk obtainable so the warrant is actionable
+
+	if res, _ := EvaluateRestock(time.Now().UTC()).Fn(w); res.(int) != 1 {
+		t.Fatalf("stamped = %d for milk below the batch floor (4 < 6), want 1", res.(int))
+	}
+	if !hasWarrantKind(a, WarrantKindRestock) {
+		t.Error("no restock warrant for an input stranded above the cap fraction but below one batch")
 	}
 }
 

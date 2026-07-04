@@ -134,11 +134,15 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 	// the warrant producer (restock_tick.go firstActionableLowEntry) scans, so
 	// the warrant and this section agree on what the actor needs to buy.
 	buyEntries := sim.EffectiveBuyEntries(snap.Recipes, actorSnap.RestockPolicy)
+	// Produce-input batch floors (LLM-279) — same catalog the warrant reads, so a
+	// recipe input surfaces here on the same batch-coverage line the warrant wakes
+	// on. 0 for pure-resale goods, which stay on the cap fraction.
+	floors := sim.ReorderFloors(snap.Recipes, actorSnap.RestockPolicy)
 	var items []RestockItemView
 	for _, e := range buyEntries {
 		cap := e.Cap()
 		current := actorSnap.Inventory[e.Item]
-		if !sim.RestockReorderThresholdMet(current, cap, pct) {
+		if !sim.RestockReorderThresholdMet(current, cap, pct, floors[e.Item]) {
 			continue
 		}
 		// Coins-bound the buy plan (ZBBS-HOME-459). -1 (no price on record)
