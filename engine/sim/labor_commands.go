@@ -923,16 +923,19 @@ func actorAtWorkpost(w *World, a *Actor, workStructureID StructureID) bool {
 	return ActorAtWorkpost(w.VillageObjects, w.Assets, a.InsideStructureID, a.Pos, workStructureID)
 }
 
-// workerWorkingOffer returns the live Working LaborOffer that workerID is
-// fulfilling as the worker, or nil. The world-side sibling of perception's
-// laboringOfferFor — the return-to-post backstop (LLM-268) reads it to recover
-// the employer + post for an off-post laboring worker. A worker holds at most
-// one live job (workerHasLiveJob gates accept); if a stale unswept offer ever
-// coexists with a newer one the latest WorkingUntil wins, then the lowest
-// LaborID, matching laboringOfferFor's determinism. World-goroutine-only.
-func workerWorkingOffer(w *World, workerID ActorID) *LaborOffer {
+// WorkerWorkingOffer returns the live Working LaborOffer that workerID is
+// fulfilling as the worker, or nil, selected from a labor ledger. ledger is
+// World.LaborLedger or the published Snapshot.LaborLedger — both
+// map[LaborID]*LaborOffer — so the world-side return-to-post backstop and
+// perception's laboringOfferFor (which delegates here) pick the SAME offer, hence
+// the same employer + post, for a worker (LLM-268): no drift if a stale unswept
+// offer ever coexists with a live one. A worker holds at most one live job
+// (workerHasLiveJob gates accept); if two ever coexist the latest WorkingUntil
+// wins, then the lowest LaborID, for determinism. WorkingUntil is non-nil on the
+// returned offer.
+func WorkerWorkingOffer(ledger map[LaborID]*LaborOffer, workerID ActorID) *LaborOffer {
 	var best *LaborOffer
-	for _, o := range w.LaborLedger {
+	for _, o := range ledger {
 		if o == nil || o.State != LaborStateWorking || o.WorkerID != workerID || o.WorkingUntil == nil {
 			continue
 		}

@@ -37,9 +37,12 @@ import "time"
 //
 // COST DISCIPLINE. Eligibility is binary (off-post-while-employer-present or not),
 // so like the seek-work sweep there is no "partial progress" to reset the cadence —
-// every sweep she stays off-post escalates an EXPONENTIAL BACKOFF
+// each sweep that actually STAMPS her escalates an EXPONENTIAL BACKOFF
 // (ReturnToPostBackoffLevel): base (90 s) doubling to the cap (30 min = the idle-
-// backstop rate). In practice off-post is brief (she walks back within a tick or
+// backstop rate). A sweep that skips her for an unrelated open warrant cycle or a
+// mid-tick (WarrantedSince / TickInFlight) does NOT pace — same as the seek-work /
+// red-need siblings; the stamp itself is what advances the timer. In practice
+// off-post is brief (she walks back within a tick or
 // two, which makes her ineligible and clears the backoff), so steady-state cost is
 // ~nil; a worker who somehow can never get back costs no more than the idle
 // backstop. Returning to the post, or the job ending, makes her ineligible, which
@@ -160,14 +163,22 @@ func EvaluateReturnToPostBackstop(now time.Time) Command {
 // returnToPostEligible reports whether a is a laboring worker who has wandered off
 // the employer's post while the employer still holds it — the "should head back but
 // won't wake on her own" state. Scope (kind / visitor) is checked by the caller. The
-// employer + post come from the live Working offer (workerWorkingOffer), the same
-// ledger the perception self-state reads, so the sweep and the OffPost cue agree on
-// which post she belongs at.
+// employer + post come from the live Working offer (WorkerWorkingOffer), the SAME
+// selector perception's laboringOfferFor delegates to, so the sweep and the OffPost
+// cue agree on which post she belongs at.
 func returnToPostEligible(w *World, a *Actor, now time.Time) bool {
-	// Must be actively laboring. Read the ledger (authoritative for the employer +
-	// post), not the LaboringUntil mirror: a stranded StateLaboring with no live
-	// Working offer is the settle/reconcile path's job, not this one.
-	offer := workerWorkingOffer(w, a.ID)
+	// Must actually be in the shelved-laboring state: gate on the LaboringUntil
+	// window, the SAME authoritative busy signal actorCanReactNow keys the laboring
+	// shelve on — NOT the ledger offer alone. A stranded StateLaboring / stale
+	// Working offer with a nil or elapsed window is already tickable (the reactor
+	// doesn't shelve it), so it needs no return-to-post wake, and stamping the
+	// warrant would put a spurious "you drifted from the job" line in front of a
+	// worker the reactor no longer treats as laboring.
+	if a.LaboringUntil == nil || !a.LaboringUntil.After(now) {
+		return false
+	}
+	// The live Working offer carries the employer + post.
+	offer := WorkerWorkingOffer(w.LaborLedger, a.ID)
 	if offer == nil {
 		return false
 	}

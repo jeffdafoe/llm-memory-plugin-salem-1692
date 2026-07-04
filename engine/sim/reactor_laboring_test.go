@@ -212,3 +212,55 @@ func TestActorCanReactNow_StrandedLaboringEnumStaysTickable(t *testing.T) {
 		t.Fatalf("send: %v", err)
 	}
 }
+
+// TestActorCanReactNow_LaboringLiftedByReturnToPost — LLM-268. A return-to-post
+// warrant lifts the laboring tick-shelve so an off-post worker actually wakes to
+// walk back. This is the reactor half of the lockstep the tool gate depends on:
+// gateTools re-grants move_to for the off-post laboring worker, so she must also
+// be tickable, or she'd hold the tool but never wake (the marooning).
+func TestActorCanReactNow_LaboringLiftedByReturnToPost(t *testing.T) {
+	w, cancel := buildReactorTestWorld(t)
+	defer cancel()
+	if _, err := w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			now := time.Now().UTC()
+			a := world.Actors["alice"]
+			a.State = sim.StateLaboring
+			until := now.Add(2 * time.Hour)
+			a.LaboringUntil = &until
+			a.Warrants = []sim.WarrantMeta{{Reason: sim.ReturnToPostWarrantReason{}}}
+			eligible, stale := sim.ActorCanReactNowAt(world, a, now)
+			if !eligible || stale {
+				t.Errorf("laboring + return_to_post: eligible=%v stale=%v; want true,false (an off-post worker wakes to walk back, LLM-268)", eligible, stale)
+			}
+			return nil, nil
+		},
+	}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+}
+
+// TestActorCanReactNow_ReturnToPostDoesNotWakeRester — LLM-268. The return-to-post
+// warrant lifts ONLY the laboring shelve; it is not a rester-interrupting kind, so
+// a scheduled break (like sleep / source-activity) still shelves it. Guards against
+// WarrantKindReturnToPost accidentally gaining break-interrupting power.
+func TestActorCanReactNow_ReturnToPostDoesNotWakeRester(t *testing.T) {
+	w, cancel := buildReactorTestWorld(t)
+	defer cancel()
+	if _, err := w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			now := time.Now().UTC()
+			a := world.Actors["alice"]
+			a.State = sim.StateResting
+			until := now.Add(30 * time.Minute)
+			a.BreakUntil = &until
+			a.Warrants = []sim.WarrantMeta{{Reason: sim.ReturnToPostWarrantReason{}}}
+			if eligible, _ := sim.ActorCanReactNowAt(world, a, now); eligible {
+				t.Errorf("resting + return_to_post: eligible=true; want false (the return-to-post warrant lifts only the laboring shelve, never cuts a break short)")
+			}
+			return nil, nil
+		},
+	}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+}

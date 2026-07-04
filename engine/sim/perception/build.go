@@ -3602,21 +3602,13 @@ func laboringActorPlaceLabel(snap *sim.Snapshot, a *sim.ActorSnapshot) string {
 // ever coexists with a newer one, the latest WorkingUntil wins, then the lowest
 // LaborID, for determinism. WorkingUntil is non-nil on the returned offer.
 func laboringOfferFor(snap *sim.Snapshot, workerID sim.ActorID) *sim.LaborOffer {
-	if snap == nil || len(snap.LaborLedger) == 0 {
+	if snap == nil {
 		return nil
 	}
-	var best *sim.LaborOffer
-	for _, o := range snap.LaborLedger {
-		if o == nil || o.State != sim.LaborStateWorking || o.WorkerID != workerID || o.WorkingUntil == nil {
-			continue
-		}
-		if best == nil ||
-			o.WorkingUntil.After(*best.WorkingUntil) ||
-			(o.WorkingUntil.Equal(*best.WorkingUntil) && o.ID < best.ID) {
-			best = o
-		}
-	}
-	return best
+	// Delegate to the shared selector so this (which drives OffPost/EmployerAway
+	// + the self-state cue) and the world-side return-to-post backstop pick the
+	// same offer for a worker — same employer, same post, no drift (LLM-268).
+	return sim.WorkerWorkingOffer(snap.LaborLedger, workerID)
 }
 
 // buildLaborEnRoute scans snap.LaborLedger for an EnRoute offer where the
