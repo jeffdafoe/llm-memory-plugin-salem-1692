@@ -101,6 +101,30 @@ func StallRepairable(obj *VillageObject, repairThreshold, degradeThreshold int) 
 	return StallNeedsRepair(obj, repairThreshold) || StallDegraded(obj, degradeThreshold)
 }
 
+// AtBusiness reports whether an actor is co-located with a business for the
+// wear/repair surfaces — the shared location predicate so the "## Your business"
+// cue, the co-present condition line, and the StartRepair command can't drift on
+// what "at the business" means (the location twin of StallRepairable's wear
+// predicate). True when the actor stands INSIDE the business structure
+// (structure-backed businesses share their id with the village_object, and
+// keepers work indoors — LLM-266) OR at its outdoor loiter pin (the v1
+// open-market-stall case, where a keeper stands at the pin, not inside). The
+// caller resolves and passes the loiter pin — perception via objectLoiterPin, the
+// command via effectiveObjectLoiterTile — passing pinValid=false when none
+// resolves, so an inside keeper still passes.
+//
+// This decides LOCATION only: it trusts the caller to have already validated that
+// businessID refers to the relevant wearable business (all current callers resolve
+// it through OwnedWearableStall / IsWearableStall). It does not itself re-check
+// business-hood, so don't hand it an arbitrary object id and read the result as
+// "that object is a business."
+func AtBusiness(actorPos TilePos, insideStructureID StructureID, businessID VillageObjectID, pin TilePos, pinValid bool) bool {
+	if insideStructureID != "" && string(insideStructureID) == string(businessID) {
+		return true
+	}
+	return pinValid && actorPos.Chebyshev(pin) <= LoiterAttributionTiles
+}
+
 // sellerStallDegraded reports whether the seller owns a market stall worn past
 // the degrade threshold — closed for trade until mended (LLM-118). The
 // sale-blocking gate at quote-post, fast-path take, and slow accept. nil-safe: a

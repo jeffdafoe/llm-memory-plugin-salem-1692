@@ -353,7 +353,7 @@ func StartRepair(actorID ActorID) Command {
 				return nil, errors.New("there's no stall of yours to mend here.")
 			}
 			pin, ok := effectiveObjectLoiterTile(w, stall.ID)
-			if !ok || actor.Pos.Chebyshev(pin) > LoiterAttributionTiles {
+			if !AtBusiness(actor.Pos, actor.InsideStructureID, stall.ID, pin, ok) {
 				return nil, errors.New("walk to your stall before mending it.")
 			}
 			objID := stall.ID

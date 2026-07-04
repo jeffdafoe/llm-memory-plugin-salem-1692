@@ -38,8 +38,8 @@ func buildStallRepair(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 	if stall == nil {
 		return nil
 	}
-	if actorSnap.Pos.Chebyshev(objectLoiterPin(stall)) > sim.LoiterAttributionTiles {
-		return nil // not standing at the stall
+	if !sim.AtBusiness(actorSnap.Pos, actorSnap.InsideStructureID, stall.ID, objectLoiterPin(stall), true) {
+		return nil // not standing at or inside the business
 	}
 	if !sim.StallRepairable(stall, snap.StallWearRepairThreshold, snap.StallWearDegradeThreshold) {
 		return nil // not worn enough to bother (degraded counts — a bad threshold config can't hide the cue)
@@ -102,7 +102,7 @@ func buildStallCondition(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim
 		if !sim.IsWearableStall(obj) || obj.OwnerActorID == actorID {
 			continue // non-business/unowned, or my own (## Your business covers me)
 		}
-		if actorSnap.Pos.Chebyshev(objectLoiterPin(obj)) > sim.LoiterAttributionTiles {
+		if !sim.AtBusiness(actorSnap.Pos, actorSnap.InsideStructureID, obj.ID, objectLoiterPin(obj), true) {
 			continue
 		}
 		if !sim.StallNeedsRepair(obj, snap.StallWearRepairThreshold) {
