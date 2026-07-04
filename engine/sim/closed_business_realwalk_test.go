@@ -2,6 +2,7 @@ package sim_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -9,13 +10,21 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/repo/mem"
 )
 
-// closed_business_realwalk_test.go — LLM-270. The hand-built ActorArrived tests
-// in closed_business_test.go all pass, yet live (Hannah Boggs ↔ the shut Tavern,
-// 2026-07-04) the ObservedClosed memory never takes: she loops Inn↔Tavern all
-// afternoon and every Restocking render keeps listing "buy from Tavern". The
-// defect can only live in the REAL arrival shape — a driven locomotion walk →
-// finishArrival → ActorArrived → the closed-business subscriber — which the
-// hand-built tests bypass by synthesizing the event. This drives that real walk.
+// closed_business_realwalk_test.go — LLM-270 regression guard for the shut-
+// business capture path. The hand-built ActorArrived tests in
+// closed_business_test.go synthesize the event; this drives a REAL walk
+// (locomotion ticker → finishArrival → ActorArrived → the closed-business
+// subscriber) so the capture is exercised against the genuine arrival shape,
+// end to end through the published snapshot the restock drop actually reads.
+//
+// LLM-270 investigated a live symptom — Hannah Boggs looping Inn↔shut-Tavern all
+// afternoon, every Restocking render still listing "buy from Tavern" — on the
+// theory that the arrival capture never fires. It does: this test proves the
+// whole path works (capture → snapshot clone → the Active read the drop
+// consults). The real cause was the in-memory Observed store being wiped by
+// frequent engine restarts (deploys), not a capture defect, and the ticket
+// closed working-as-designed. This guards the capture path so a future genuine
+// break is caught.
 
 // buildShutTavernWorld seeds a running world mirroring the live Hannah↔Tavern
 // case: a named business ("tavern") whose ONLY keeper ("john") is asleep, and a
@@ -44,9 +53,14 @@ func buildShutTavernWorld(t *testing.T) (*sim.World, context.CancelFunc) {
 			ID: "tavern", AssetID: "tavern-asset", DisplayName: "Tavern",
 			Pos: sim.WorldPos{X: 320, Y: 320}, LoiterOffsetX: intp(0), LoiterOffsetY: intp(5),
 		},
+		// hannah's workplace — a real structure elsewhere (well clear of the
+		// tavern's arrival ring) so "workplace is not the tavern" is exercised
+		// against a seeded structure, not a dangling WorkStructureID.
+		"inn": {ID: "inn", AssetID: "tavern-asset", DisplayName: "Inn", Pos: sim.WorldPos{X: 96, Y: 96}},
 	})
 	handles.Structures.Seed(map[sim.StructureID]*sim.Structure{
 		"tavern": {ID: "tavern", DisplayName: "Tavern"},
+		"inn":    {ID: "inn", DisplayName: "Inn"},
 	})
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
 		"hannah": {
@@ -76,6 +90,9 @@ func observedClosedPresent(t *testing.T, w *sim.World, actor sim.ActorID, struct
 	res, err := w.Send(sim.Command{
 		Fn: func(world *sim.World) (any, error) {
 			a := world.Actors[actor]
+			if a == nil {
+				return false, fmt.Errorf("actor %q missing from world", actor)
+			}
 			_, ok := a.Observed.At(sim.ObservedStateKey{StructureID: structure, Condition: sim.ObservedClosed})
 			return ok, nil
 		},
@@ -86,11 +103,11 @@ func observedClosedPresent(t *testing.T, w *sim.World, actor sim.ActorID, struct
 	return res.(bool)
 }
 
-// TestClosedBusiness_RealWalkToShutTavernCaptures is the LLM-270 repro: a real
-// StructureVisit walk to a keeperless (asleep-keeper) business must leave the
-// arriving agent with an ObservedClosed memory of it. This is the "integration
-// through the event" the ticket's definition of done calls for — locomotion →
-// ActorArrived → subscriber — not a synthesized ActorArrived.
+// TestClosedBusiness_RealWalkToShutTavernCaptures is the LLM-270 regression
+// guard: a real StructureVisit walk to a keeperless (asleep-keeper) business must
+// leave the arriving agent with an ObservedClosed memory of it. This is the
+// "integration through the event" the ticket's definition of done calls for —
+// locomotion → ActorArrived → subscriber — not a synthesized ActorArrived.
 func TestClosedBusiness_RealWalkToShutTavernCaptures(t *testing.T) {
 	w, cancel := buildShutTavernWorld(t)
 	defer cancel()
@@ -115,6 +132,15 @@ func TestClosedBusiness_RealWalkToShutTavernCaptures(t *testing.T) {
 	// Active(key, snap.PublishedAt), whose age>=0 guard rejects a future-stamped
 	// entry. Assert the captured memory survives the snapshot clone AND reads active
 	// against the snapshot clock — the exact predicate the "buy from" cue consults.
+	//
+	// Explicit publish barrier: Run republishes after every command and blocks the
+	// Send reply until it has, so any completed Send guarantees Published() reflects
+	// the post-arrival Observed mutation. Make that dependency explicit rather than
+	// leaning on the observedClosedPresent call above, so a later refactor can't
+	// silently read a pre-arrival snapshot.
+	if _, err := w.Send(sim.Command{Fn: func(*sim.World) (any, error) { return nil, nil }}); err != nil {
+		t.Fatalf("publish barrier: %v", err)
+	}
 	key := sim.ObservedStateKey{StructureID: "tavern", Condition: sim.ObservedClosed}
 	snap := w.Published()
 	hs := snap.Actors["hannah"]
