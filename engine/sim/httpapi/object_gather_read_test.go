@@ -29,6 +29,21 @@ func seedGatherObjects(t *testing.T, w *sim.World) {
 			ID:        "well1",
 			Refreshes: []*sim.ObjectRefresh{{Attribute: "thirst", Amount: -12, GatherItem: "water"}}, // infinite
 		}
+		// well2 is the live-authored well shape (LLM-282): a SEPARATE infinite
+		// drink row (thirst, no gather_item) plus a finite water-pail forage row,
+		// here spent (0/20). The forage row owns the gather read; the drink row
+		// is what makes the object still-serves-in-place.
+		world.VillageObjects["well2"] = &sim.VillageObject{
+			ID: "well2",
+			Refreshes: []*sim.ObjectRefresh{
+				{Attribute: "thirst", Amount: -8}, // infinite drink
+				{
+					Amount: 0, GatherItem: "water",
+					AvailableQuantity: ip(0), MaxQuantity: ip(20),
+					RefreshMode: sim.RefreshModePeriodic, RefreshPeriodHours: ip(6),
+				},
+			},
+		}
 		world.VillageObjects["bench1"] = &sim.VillageObject{ID: "bench1"} // no refreshes
 		return nil, nil
 	}}); err != nil {
@@ -52,6 +67,37 @@ func TestHandleObjectGather_FiniteBush(t *testing.T) {
 	if !res.Gatherable || res.Item != "berries" ||
 		res.Available == nil || *res.Available != 7 || res.Max == nil || *res.Max != 10 {
 		t.Errorf("got %+v, want gatherable berries 7/10", res)
+	}
+	// A plain forage bush has no in-place need row, so it is NOT still-serving —
+	// an empty one legitimately reads "Picked clean" on the client (LLM-282).
+	if res.ServesInPlace {
+		t.Errorf("serves_in_place = true for a plain forage bush, want false")
+	}
+}
+
+// TestHandleObjectGather_DualRowWell_ServesInPlace — the live well shape: an
+// infinite drink row plus a spent (0/20) finite water-pail forage row. The read
+// returns the forage stock (0) AND serves_in_place=true, so the client suppresses
+// the misleading "Picked clean" line on a well that is still drinkable (LLM-282).
+func TestHandleObjectGather_DualRowWell_ServesInPlace(t *testing.T) {
+	w := seededWorld(t)
+	seedGatherObjects(t, w)
+	srv := NewServer(w, okAuth{})
+
+	rec := get(t, srv, "/api/village/object/gather?id=well2")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var res objectGatherResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !res.Gatherable || res.Item != "water" ||
+		res.Available == nil || *res.Available != 0 || res.Max == nil || *res.Max != 20 {
+		t.Errorf("got %+v, want gatherable water 0/20", res)
+	}
+	if !res.ServesInPlace {
+		t.Errorf("serves_in_place = false, want true (well still has an infinite drink row)")
 	}
 }
 

@@ -127,6 +127,16 @@ func (r *ObjectRefresh) IsYieldOnly() bool {
 	return r.Amount == 0 && r.IsGatherable()
 }
 
+// IsInfiniteInPlaceNeed reports whether this row satisfies a need in place and
+// never runs dry: a need-bearing row (Amount < 0) with an untracked (infinite)
+// supply — a well's drink row is the canonical case. It means the OWNING object
+// stays usable in place even when a SEPARATE finite gather row on the same
+// object (the well's water-pail forage) is spent, so the client must not paint
+// that object "picked clean" (LLM-282). Nil-safe.
+func (r *ObjectRefresh) IsInfiniteInPlaceNeed() bool {
+	return r != nil && r.Amount < 0 && !r.IsFinite()
+}
+
 // IsForageToSellFor reports whether this row is a forage-to-sell source for item:
 // a finite (tracked-supply) yield-only gather row whose GatherItem is item. This
 // is the single row-shape predicate behind BOTH the forage WARRANT's actionability
