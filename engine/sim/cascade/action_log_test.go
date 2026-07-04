@@ -410,6 +410,94 @@ func TestHandleConsumedActionLog_FormatsText(t *testing.T) {
 	}
 }
 
+// --- TestHandleGatheredActionLog_FormatsTextAndNamesSource ---------
+// Text follows the consumed formatItemQty shape (bare kind at qty 1,
+// "Nx kind" above); the source object's display name rides in
+// CounterpartyName, and drops to "" when the source object is gone.
+func TestHandleGatheredActionLog_FormatsTextAndNamesSource(t *testing.T) {
+	w, stop := buildActionLogCascadeWorld(t)
+	defer stop()
+
+	cases := []struct {
+		name       string
+		objID      sim.VillageObjectID
+		qty        int
+		wantText   string
+		wantSource string
+	}{
+		{"multi-qty names the well", "well", 20, "20x water", "the well"},
+		{"qty 1 bare kind", "well", 1, "water", "the well"},
+		{"vanished source drops name", "ghost", 5, "5x water", ""},
+	}
+	for _, c := range cases {
+		invokeOnWorld(t, w, func(world *sim.World) {
+			handleGatheredActionLog(world, &sim.ItemGathered{
+				ActorID:  "hannah",
+				ObjectID: c.objID,
+				Item:     "water",
+				Qty:      c.qty,
+				At:       time.Now().UTC(),
+			})
+		})
+	}
+	got := readActionLog(t, w)
+	if len(got) != len(cases) {
+		t.Fatalf("len(ActionLog) = %d, want %d", len(got), len(cases))
+	}
+	for i, c := range cases {
+		if got[i].ActionType != sim.ActionTypeGathered {
+			t.Errorf("%s: ActionType = %q, want %q", c.name, got[i].ActionType, sim.ActionTypeGathered)
+		}
+		if got[i].Text != c.wantText {
+			t.Errorf("%s: Text = %q, want %q", c.name, got[i].Text, c.wantText)
+		}
+		if got[i].CounterpartyName != c.wantSource {
+			t.Errorf("%s: CounterpartyName = %q, want %q", c.name, got[i].CounterpartyName, c.wantSource)
+		}
+		if got[i].HuddleID != "h1" {
+			t.Errorf("%s: HuddleID = %q, want h1", c.name, got[i].HuddleID)
+		}
+	}
+}
+
+// --- TestHandleGatheredActionLog_EmitsDurableRow -------------------
+// The durable mirror carries item + qty + the resolved source name;
+// source derivation follows the actor kind (agent for this NPC).
+func TestHandleGatheredActionLog_EmitsDurableRow(t *testing.T) {
+	w, stop := buildActionLogCascadeWorld(t)
+	defer stop()
+
+	rec := &recordingActionLogSink{}
+	invokeOnWorld(t, w, func(world *sim.World) {
+		world.SetActionLogSink(rec)
+	})
+	at := time.Now().UTC()
+	invokeOnWorld(t, w, func(world *sim.World) {
+		handleGatheredActionLog(world, &sim.ItemGathered{
+			ActorID: "hannah", ObjectID: "well", Item: "water", Qty: 20, At: at,
+		})
+	})
+
+	rows := rec.snapshot()
+	if len(rows) != 1 {
+		t.Fatalf("recorded %d durable rows, want 1", len(rows))
+	}
+	r := rows[0]
+	if r.ActorID != "hannah" || r.ActionType != sim.ActionTypeGathered ||
+		r.Source != "agent" || r.SpeakerName != "Hannah" || r.HuddleID != "h1" {
+		t.Errorf("durable gathered header = %+v", r)
+	}
+	if got, _ := r.Payload["item"].(string); got != "water" {
+		t.Errorf("payload[item] = %q, want water", got)
+	}
+	if got, _ := r.Payload["qty"].(int); got != 20 {
+		t.Errorf("payload[qty] = %v, want 20", r.Payload["qty"])
+	}
+	if got, _ := r.Payload["source"].(string); got != "the well" {
+		t.Errorf("payload[source] = %q, want %q", got, "the well")
+	}
+}
+
 // --- TestHandleOrderDeliveredActionLog_AppendsSellerSide -----------
 func TestHandleOrderDeliveredActionLog_AppendsSellerSide(t *testing.T) {
 	w, stop := buildActionLogCascadeWorld(t)
@@ -633,6 +721,7 @@ func TestHandlers_IgnoreUnrelatedEvents(t *testing.T) {
 		handleSpokeActionLog(world, evt)
 		handlePaidActionLog(world, evt)
 		handleConsumedActionLog(world, evt)
+		handleGatheredActionLog(world, evt)
 		handleOrderDeliveredActionLog(world, evt)
 		handleActorArrivedActionLog(world, evt)
 	})

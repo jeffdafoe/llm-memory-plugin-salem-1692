@@ -10,12 +10,12 @@ import (
 )
 
 // action_log.go — append-only in-memory action log substrate driver.
-// Wires twelve event subscribers (Spoke / Paid / PayWithItemResolved /
-// ItemConsumed / OrderDelivered / ActorArrived / ActorLeftStructure /
-// TookBreak / StayingOpen / LaborOfferReceived / LaborOfferAccepted /
-// LaborResolved) to translate engine events into sim.ActionLogEntry rows,
-// and spawns a sweep goroutine that periodically compacts the log via
-// sim.CompactActionLog.
+// Wires thirteen event subscribers (Spoke / Paid / PayWithItemResolved /
+// ItemConsumed / ItemGathered / OrderDelivered / ActorArrived /
+// ActorLeftStructure / TookBreak / StayingOpen / LaborOfferReceived /
+// LaborOfferAccepted / LaborResolved) to translate engine events into
+// sim.ActionLogEntry rows, and spawns a sweep goroutine that periodically
+// compacts the log via sim.CompactActionLog.
 //
 // Subscribers run inline on the world goroutine via emit dispatch;
 // the sweep goroutine runs off-world and routes mutations through
@@ -29,6 +29,7 @@ import (
 //   ├─> w.Subscribe(handlePaidActionLog)
 //   ├─> w.Subscribe(handlePayResolvedActionLog)
 //   ├─> w.Subscribe(handleConsumedActionLog)
+//   ├─> w.Subscribe(handleGatheredActionLog)
 //   ├─> w.Subscribe(handleOrderDeliveredActionLog)
 //   ├─> w.Subscribe(handleActorArrivedActionLog)
 //   ├─> w.Subscribe(handleActorLeftStructureActionLog)
@@ -62,7 +63,7 @@ import (
 // controls how promptly memory is reclaimed.
 const defaultActionLogSweepInterval = 1 * time.Hour
 
-// RegisterActionLog wires the twelve event subscribers and spawns the
+// RegisterActionLog wires the thirteen event subscribers and spawns the
 // compaction sweep goroutine. Must run on the world goroutine — call
 // before World.Run, or from inside a Command.Fn.
 //
@@ -81,6 +82,7 @@ func RegisterActionLog(ctx context.Context, w *sim.World) {
 	w.Subscribe(sim.SubscriberFunc(handlePaidActionLog))
 	w.Subscribe(sim.SubscriberFunc(handlePayResolvedActionLog))
 	w.Subscribe(sim.SubscriberFunc(handleConsumedActionLog))
+	w.Subscribe(sim.SubscriberFunc(handleGatheredActionLog))
 	w.Subscribe(sim.SubscriberFunc(handleOrderDeliveredActionLog))
 	w.Subscribe(sim.SubscriberFunc(handleActorArrivedActionLog))
 	w.Subscribe(sim.SubscriberFunc(handleActorLeftStructureActionLog))
@@ -316,6 +318,72 @@ func handleConsumedActionLog(w *sim.World, evt sim.Event) {
 		HuddleID:    huddleID,
 		Source:      source,
 	})
+}
+
+// handleGatheredActionLog appends a row when a gather commits — an NPC via
+// the `gather` tool or a PC via POST /api/village/pc/gather, both of which
+// emit ItemGathered post-validation. Mirrors handleConsumedActionLog: Text is
+// the harvested item kind (with qty prefix when qty > 1). Text carries the item
+// alone; the source object's display name rides in CounterpartyName so the
+// talk-panel line can read "…from the Well" without overloading the parseable
+// Text field the digest/consolidation readers consume.
+func handleGatheredActionLog(w *sim.World, evt sim.Event) {
+	gathered, ok := evt.(*sim.ItemGathered)
+	if !ok {
+		return
+	}
+	huddleID := sim.HuddleID("")
+	if actor, ok := w.Actors[gathered.ActorID]; ok {
+		huddleID = actor.CurrentHuddleID
+	}
+	sourceName := gatherSourceName(w, gathered.ObjectID)
+	entry := sim.ActionLogEntry{
+		ActorID:          gathered.ActorID,
+		OccurredAt:       gathered.At,
+		ActionType:       sim.ActionTypeGathered,
+		Text:             formatItemQty(gathered.Item, gathered.Qty),
+		HuddleID:         huddleID,
+		CounterpartyName: sourceName,
+	}
+	if _, err := sim.AppendActionLogEntry(entry).Fn(w); err != nil {
+		log.Printf("cascade/action_log: append gathered (actor %q event %d): %v",
+			gathered.ActorID, gathered.EventID(), err)
+		return
+	}
+	// Durable mirror (ZBBS-WORK-376): item + qty as structured fields, plus the
+	// source object's display name when it resolves — "gathered 20 water from the
+	// Well" beats "gathered 20 water" in the dream distiller. `source` is omitted
+	// (not blank) when the object vanished, keeping the common row shape clean.
+	display, src := actorDisplayAndSource(w, gathered.ActorID)
+	payload := map[string]any{"item": string(gathered.Item), "qty": gathered.Qty}
+	if sourceName != "" {
+		payload["source"] = sourceName
+	}
+	w.AppendActionLogDurable(sim.DurableActionLogRow{
+		ActorID:     gathered.ActorID,
+		OccurredAt:  gathered.At,
+		ActionType:  sim.ActionTypeGathered,
+		Payload:     payload,
+		SpeakerName: display,
+		HuddleID:    huddleID,
+		Source:      src,
+	})
+}
+
+// gatherSourceName resolves an ItemGathered's source object to its display
+// name, mirroring the resolution gather_commands.go does at emit time
+// (EffectiveDisplayName over the asset catalog name). Returns "" for a source
+// that no longer resolves in the world — callers attach it conditionally.
+func gatherSourceName(w *sim.World, objID sim.VillageObjectID) string {
+	obj, ok := w.VillageObjects[objID]
+	if !ok || obj == nil {
+		return ""
+	}
+	catalogName := ""
+	if a := w.Assets[obj.AssetID]; a != nil {
+		catalogName = a.Name
+	}
+	return obj.EffectiveDisplayName(catalogName)
 }
 
 // handleOrderDeliveredActionLog appends a row when a deliver_order
