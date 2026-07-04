@@ -854,6 +854,32 @@ var perceptionScenarios = []perceptionScenario{
 		build: ownerAtWornStallWithNailSupplier,
 	},
 	{
+		name: "owner_off_post_at_smith_short_nails",
+		summary: "LLM-277 (the live 2026-07-04 failure): Elizabeth Ellis, owner of the worn Ellis Farm with 0 nails, has " +
+			"walked OFF her farm and shares the smith's huddle with Ezekiel (21 nails, the nail producer). The golden pins " +
+			"the off-post '## Nails to mend your business' cue with the co-present pay_with_item buy-here imperative naming " +
+			"Ezekiel — the second half of LLM-274 — AND the absence of any return-to-post steer (she is on-shift off her " +
+			"post, so the to-work nag WOULD fire, but the active nail-buy errand suppresses it). Before LLM-277 she got no " +
+			"buy cue and a go-home nag here, so she left without buying.",
+		build: ownerOffPostAtSmithShortNails,
+	},
+	{
+		name: "owner_off_post_short_nails_walking",
+		summary: "LLM-277 walk-to arm: Elizabeth, 0 nails, is off her worn farm and NOT co-present with the smith (no shared " +
+			"huddle). The golden pins the same '## Nails to mend your business' cue naming the walk-to destination ('buy from " +
+			"Blacksmith (structure_id: blacksmith)') and no return-to-post steer — the 'while away' half of the errand that " +
+			"persists across the whole walk, not just at the farm. Foil of owner_off_post_at_smith_short_nails.",
+		build: ownerOffPostShortNailsWalking,
+	},
+	{
+		name: "owner_off_post_enough_nails",
+		summary: "LLM-277 negative arm: Elizabeth is off her worn farm but already carries enough nails (5 == NAILS_PER_REPAIR) " +
+			"to mend it, so there is no buy errand — the '## Nails to mend your business' cue is ABSENT. With no errand to " +
+			"defer, the to-work nag correctly fires (head back to the post to mend), pinning that the suppression is " +
+			"conditional on an actual nail shortfall.",
+		build: ownerOffPostEnoughNails,
+	},
+	{
 		name: "owner_at_degraded_stall",
 		summary: "A business owner stands at his own DEGRADED premises (wear past the degrade threshold — closed for " +
 			"trade), carrying enough nails. The golden pins the escalated '## Your business' steer ('too worn to trade … " +
@@ -918,6 +944,24 @@ var perceptionScenarios = []perceptionScenario{
 			"(structure_id: blacksmith)' with move_to + pay_with_item, replacing the dead-end 'from the blacksmith'. " +
 			"Its foil is farm_owner_owes_upkeep, where no supplier exists and the generic sentence is correctly kept.",
 		build: farmOwnerOwesUpkeepWithShovelSupplier,
+	},
+	{
+		name: "farm_owner_owes_upkeep_seller_present",
+		summary: "LLM-277 farm-upkeep co-present arm: the same owing farm owner (Elizabeth, 3 shovels short) now shares the " +
+			"smith's huddle with Ezekiel (12 shovels). The golden pins the '## Farm upkeep' cue flipping from the walk-to " +
+			"list to the concrete co-present pay_with_item buy-here imperative naming Ezekiel — the same fast-path the nail " +
+			"repair-buy uses, closing the same at-the-seller dead-spot where the weak model narrated and walked off. Foil of " +
+			"farm_owner_owes_upkeep_with_shovel_supplier (smith far off → the walk-to destination is named instead).",
+		build: farmOwnerOwesUpkeepSellerPresent,
+	},
+	{
+		name: "farm_owner_off_post_owes_upkeep_no_supplier",
+		summary: "LLM-277 review-caught edge (code_review c11007e7): a farm owner off her post owes 3 upkeep shovels but NO " +
+			"shovel supplier is reachable (findItemVendors empty, none co-present). The '## Farm upkeep' cue keeps its generic " +
+			"'buy … from the blacksmith' fallback (LLM-216), but the to-work steer STILL fires ('away from your post — make " +
+			"your way to the Ellis Farm now') — a dead-end upkeep cue must not suppress the return-to-post nag and strand her. " +
+			"Pins that hasFarmUpkeepErrand is gated on an actionable buy path, not the cue's mere presence.",
+		build: farmOwnerOffPostOwesUpkeepNoSupplier,
 	},
 	{
 		name: "keeper_at_post_onshift",
@@ -2808,6 +2852,48 @@ func TestOwnerShortNailsWithSupplierNamesDestination(t *testing.T) {
 	}
 }
 
+// TestGoldensOwnerOffPostShortNailsSeesBuyErrand is the LLM-277 cross-scenario
+// invariant: whenever the subject OWNS a repairable business, is AWAY from it (not
+// co-located), is short of the nails a repair takes, and has at least one actionable
+// buy path — exactly the state buildStallRepairBuy renders — the prompt must carry the
+// off-post "## Nails to mend your business" errand cue AND must NOT fire the
+// return-to-post to-work steer (the errand suppresses it while she fetches nails). The
+// two properties are the whole point of the ticket: the cue that vanished off-post now
+// persists, and the nag that yanked her home now defers. Keyed off the same
+// buildStallRepairBuy the production render uses, so it holds by construction across the
+// matrix; owner_off_post_at_smith_short_nails / owner_off_post_short_nails_walking are
+// the non-vacuous goldens. The at-business owner is excluded by buildStallRepairBuy's
+// AtBusiness gate — "## Your business" (LLM-274) covers the buy there.
+func TestGoldensOwnerOffPostShortNailsSeesBuyErrand(t *testing.T) {
+	const header = "## Nails to mend your business"
+	var exercised bool
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, warrants := sc.build()
+			a := snap.Actors[actorID]
+			if a == nil {
+				return
+			}
+			if buildStallRepairBuy(snap, actorID, a) == nil {
+				return // no off-post nail-buy errand for this actor — invariant N/A
+			}
+			exercised = true
+			p := Build(snap, actorID, warrants)
+			out := combinedPrompt(Render(p, DefaultRenderConfig()))
+			if !strings.Contains(out, header) {
+				t.Errorf("scenario %q: owner is off her worn business, short of nails, with a buy path, but the prompt omits the %q errand cue (LLM-277)", sc.name, header)
+			}
+			if p.DutySteer != nil && p.DutySteer.ToWork {
+				t.Errorf("scenario %q: owner is on a nail-buy errand but the return-to-post to-work steer still fires — it must defer while she fetches nails (LLM-277)", sc.name)
+			}
+		})
+	}
+	if !exercised {
+		t.Error("matrix must exercise an owner off-post, short of nails, with an actionable buy path (LLM-277)")
+	}
+}
+
 // TestFarmOwnerOwesUpkeepWithSupplierNamesDestination is the LLM-274 cross-scenario
 // invariant for the farm-upkeep cue (the shovel twin of the nail invariant above):
 // whenever the "## Farm upkeep" cue renders AND findItemVendors resolves at least one
@@ -2834,6 +2920,9 @@ func TestFarmOwnerOwesUpkeepWithSupplierNamesDestination(t *testing.T) {
 			if len(v.ShovelVendors) == 0 {
 				return // no resolvable supplier — the generic no-destination sentence is correct here
 			}
+			if v.CoPresentSeller != "" {
+				return // LLM-277: a co-present seller renders the buy-here imperative, which supersedes the walk-to destination
+			}
 			exercised = true
 			token := "(structure_id: " + string(v.ShovelVendors[0].StructureID) + ")"
 			section := promptSection(renderScenario(sc), "## Farm upkeep")
@@ -2857,6 +2946,8 @@ func TestFarmUpkeepCueOnlyForOwingFarmOwner(t *testing.T) {
 	owesUpkeep := map[string]bool{
 		"farm_owner_owes_upkeep":                      true,
 		"farm_owner_owes_upkeep_with_shovel_supplier": true, // LLM-274: same owing owner, now with a resolvable supplier
+		"farm_owner_owes_upkeep_seller_present":       true, // LLM-277: same owing owner, now co-present with the shovel seller
+		"farm_owner_off_post_owes_upkeep_no_supplier": true, // LLM-277: owes shovels, no reachable supplier — generic cue still renders
 	}
 	for _, sc := range perceptionScenarios {
 		sc := sc
@@ -3549,6 +3640,235 @@ func ownerAtWornStallWithNailSupplier() (*sim.Snapshot, sim.ActorID, []sim.Warra
 		},
 	}
 	return snap, "elizabeth", nil
+}
+
+// ellisFarmWorn is the shared LLM-277 fixture spine: Elizabeth Ellis owns the worn
+// (wear 450, past the 400 repair threshold) Ellis Farm and works it as her post
+// (WorkStructureID → the ellis_farm structure, which shares the business object id),
+// on-shift at 10:00. Ezekiel Crane is the nail-producing smith. The caller positions
+// Elizabeth (at the smith in a huddle, walking, etc.), sets her nail count, and whether
+// Ezekiel shares her huddle, to exercise the three off-post arms. Elizabeth having a
+// resolvable work anchor while standing off it is what makes the to-work nag fire in
+// the baseline, so a golden that shows NO nag proves the errand suppressed it.
+func ellisFarmWorn(elizabethPos sim.WorldPos, insideStructure sim.StructureID, huddle sim.HuddleID, nails int) (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	zero := 0
+	start, end := 360, 1080 // 06:00–18:00
+	now := 600              // 10:00 — on shift
+	smithPos := sim.WorldPos{X: 2000, Y: 2000}
+	elizabeth := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Elizabeth Ellis",
+		Role:              "farmer",
+		State:             sim.StateIdle,
+		Pos:               elizabethPos.Tile(),
+		InsideStructureID: insideStructure,
+		WorkStructureID:   "ellis_farm", // her post — she is standing off it below
+		CurrentHuddleID:   huddle,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             39,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"nail": nails},
+		Acquaintances:     map[string]sim.Acquaintance{"Ezekiel Crane": {}},
+	}
+	ezekiel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Ezekiel Crane",
+		Role:              "blacksmith",
+		State:             sim.StateIdle,
+		Pos:               smithPos.Tile(),
+		InsideStructureID: "blacksmith",
+		WorkStructureID:   "blacksmith",
+		CurrentHuddleID:   huddle, // "" when the caller wants him a supplier-of-record, not co-present
+		Coins:             0,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"nail": 21},
+		// The smith PRODUCES nails — the LLM-252 supplier-of-record gate names only
+		// producers/foragers (or the distributor), not a holder of past-bought stock.
+		RestockPolicy: producePolicy("nail", 40),
+		Acquaintances: map[string]sim.Acquaintance{"Elizabeth Ellis": {}},
+	}
+	// Ezekiel shares Elizabeth's huddle only when the caller passes a non-empty huddle
+	// AND he is at it; for the walking/enough-nails arms the caller passes "" so he is a
+	// distant supplier of record. A blank huddle on Ezekiel keeps him out of her huddle.
+	if huddle == "" {
+		ezekiel.CurrentHuddleID = ""
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay:          &now,
+		NeedThresholds:            sim.NeedThresholds{},
+		Assets:                    emptyAssetSet,
+		StallWearRepairThreshold:  400,
+		StallWearDegradeThreshold: 600,
+		StallNailsPerRepair:       5,
+		Actors:                    map[sim.ActorID]*sim.ActorSnapshot{"elizabeth": elizabeth, "ezekiel": ezekiel},
+		Structures: map[sim.StructureID]*sim.Structure{
+			"blacksmith": plainStructure("blacksmith", "Blacksmith"),
+			"ellis_farm": plainStructure("ellis_farm", "Ellis Farm"),
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"ellis_farm": {
+				ID:            "ellis_farm",
+				DisplayName:   "Ellis Farm",
+				Pos:           sim.WorldPos{X: 100, Y: 100},
+				OwnerActorID:  "elizabeth",
+				Tags:          []string{sim.TagBusiness},
+				Wear:          450,
+				LoiterOffsetX: &zero,
+				LoiterOffsetY: &zero,
+			},
+		},
+	}
+	return snap, "elizabeth", nil
+}
+
+// ownerOffPostAtSmithShortNails is the LLM-277 co-present arm — the live 2026-07-04
+// failure the ticket fixes. Elizabeth, 0 nails, has walked off her worn farm and shares
+// the smith's huddle with Ezekiel (21 nails). On-shift and off her post, so the to-work
+// nag WOULD fire — but the active nail-buy errand suppresses it. The golden pins the
+// off-post "## Nails to mend your business" cue with the co-present pay_with_item
+// buy-here imperative naming Ezekiel, and the ABSENCE of any return-to-post steer.
+func ownerOffPostAtSmithShortNails() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return ellisFarmWorn(sim.WorldPos{X: 2000, Y: 2000}, "blacksmith", "smith_huddle", 0)
+}
+
+// ownerOffPostShortNailsWalking is the LLM-277 walk-to arm: Elizabeth, 0 nails, is off
+// her worn farm and NOT co-present with the smith (no shared huddle, Ezekiel far off).
+// The golden pins the same "## Nails to mend your business" cue naming the walk-to
+// destination ("buy from Blacksmith (structure_id: blacksmith)") and no return-to-post
+// steer — the "while away" half of the errand that persists across the walk (LLM-274
+// named this destination for the at-farm cue; here it rides the whole trip).
+func ownerOffPostShortNailsWalking() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return ellisFarmWorn(sim.WorldPos{X: 1000, Y: 1000}, "", "", 0)
+}
+
+// ownerOffPostEnoughNails is the LLM-277 negative arm: Elizabeth is off her worn farm
+// but already carries enough nails (5 == NAILS_PER_REPAIR) to mend it, so there is no
+// buy errand — the "## Nails to mend your business" cue is absent. With no errand to
+// defer, the to-work nag correctly fires (she should head back to her post to mend),
+// the foil that shows the suppression is conditional on an actual shortfall.
+func ownerOffPostEnoughNails() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return ellisFarmWorn(sim.WorldPos{X: 1000, Y: 1000}, "", "", 5)
+}
+
+// farmOwnerOwesUpkeepSellerPresent is the LLM-277 farm-upkeep co-present arm: Elizabeth
+// owes 3 upkeep shovels (95 coins, floor 30, band 20) and holds none, and shares a
+// huddle with Ezekiel — the shovel-producing smith holding 12 — at the Blacksmith. The
+// golden pins the "## Farm upkeep" cue flipping from the walk-to list to the concrete
+// co-present pay_with_item buy-here imperative naming Ezekiel, the same fast-path the
+// nail repair-buy uses. Its foil is farmOwnerOwesUpkeepWithShovelSupplier (smith far
+// off → the walk-to destination is named instead).
+func farmOwnerOwesUpkeepSellerPresent() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const actorID = sim.ActorID("elizabeth")
+	zero := 0
+	start, end := 360, 1080
+	now := 600
+	huddle := sim.HuddleID("smith_huddle")
+	smithPos := sim.WorldPos{X: 2000, Y: 2000}.Tile()
+	elizabeth := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Elizabeth Ellis",
+		Role:              "farmer",
+		State:             sim.StateIdle,
+		Pos:               smithPos,
+		InsideStructureID: "blacksmith",
+		CurrentHuddleID:   huddle,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             95,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"Ezekiel Crane": {}},
+	}
+	ezekiel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Ezekiel Crane",
+		Role:              "blacksmith",
+		State:             sim.StateIdle,
+		Pos:               smithPos,
+		InsideStructureID: "blacksmith",
+		WorkStructureID:   "blacksmith",
+		CurrentHuddleID:   huddle,
+		Coins:             0,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"shovel": 12},
+		RestockPolicy:     producePolicy("shovel", 40),
+		Acquaintances:     map[string]sim.Acquaintance{"Elizabeth Ellis": {}},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay:         &now,
+		NeedThresholds:           sim.NeedThresholds{},
+		Assets:                   emptyAssetSet,
+		FarmUpkeepFloor:          30,
+		FarmUpkeepCoinsPerShovel: 20,
+		Actors:                   map[sim.ActorID]*sim.ActorSnapshot{actorID: elizabeth, "ezekiel": ezekiel},
+		Structures: map[sim.StructureID]*sim.Structure{
+			"blacksmith": plainStructure("blacksmith", "Blacksmith"),
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"ellis_farm": {
+				ID:            "ellis_farm",
+				DisplayName:   "Ellis Farm",
+				Pos:           sim.WorldPos{X: 100, Y: 100},
+				OwnerActorID:  actorID,
+				Tags:          []string{sim.TagFarm},
+				LoiterOffsetX: &zero,
+				LoiterOffsetY: &zero,
+			},
+		},
+	}
+	return snap, actorID, nil
+}
+
+// farmOwnerOffPostOwesUpkeepNoSupplier is the LLM-277 review-caught edge (code_review
+// c11007e7): a farm owner off her post, owing shovels, but with NO reachable shovel
+// supplier anywhere (findItemVendors empty, no co-present seller). buildFarmUpkeep still
+// renders the generic "from the blacksmith" fallback (the LLM-216 keep-the-sentence
+// posture), but that dead-end must NOT suppress the return-to-post nag — suppressing it
+// would strand her off-post with no way to complete the errand. The golden pins BOTH the
+// generic "## Farm upkeep" line AND the to-work steer firing, because hasFarmUpkeepErrand
+// is gated on an actionable buy path, not on the cue's mere presence.
+func farmOwnerOffPostOwesUpkeepNoSupplier() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const actorID = sim.ActorID("elizabeth")
+	zero := 0
+	start, end := 360, 1080
+	now := 600
+	elizabeth := &sim.ActorSnapshot{
+		Kind:             sim.KindNPCStateful,
+		DisplayName:      "Elizabeth Ellis",
+		Role:             "farmer",
+		State:            sim.StateIdle,
+		Pos:              sim.WorldPos{X: 1000, Y: 1000}.Tile(), // off her farm
+		WorkStructureID:  "ellis_farm",
+		ScheduleStartMin: &start,
+		ScheduleEndMin:   &end,
+		Coins:            95,
+		Needs:            map[sim.NeedKey]int{},
+		Inventory:        map[sim.ItemKind]int{},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay:         &now,
+		NeedThresholds:           sim.NeedThresholds{},
+		Assets:                   emptyAssetSet,
+		FarmUpkeepFloor:          30,
+		FarmUpkeepCoinsPerShovel: 20,
+		Actors:                   map[sim.ActorID]*sim.ActorSnapshot{actorID: elizabeth},
+		Structures: map[sim.StructureID]*sim.Structure{
+			"ellis_farm": plainStructure("ellis_farm", "Ellis Farm"),
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"ellis_farm": {
+				ID:            "ellis_farm",
+				DisplayName:   "Ellis Farm",
+				Pos:           sim.WorldPos{X: 100, Y: 100},
+				OwnerActorID:  actorID,
+				Tags:          []string{sim.TagFarm},
+				LoiterOffsetX: &zero,
+				LoiterOffsetY: &zero,
+			},
+		},
+	}
+	return snap, actorID, nil
 }
 
 // passerbyAtWornStall: a non-owner standing at someone else's worn business — the

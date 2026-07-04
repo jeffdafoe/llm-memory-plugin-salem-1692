@@ -195,3 +195,100 @@ func renderStallCondition(b *strings.Builder, v *StallConditionView) {
 		fmt.Fprintf(b, "The %s here looks worn and run-down from hard use.\n", name)
 	}
 }
+
+// StallRepairBuyView is the OFF-POST half of the repair errand (LLM-277): the
+// standing "go buy nails to mend your worn business" cue an owner carries once she
+// steps AWAY from that business, still short of the nails a repair takes. The
+// "## Your business" cue (buildStallRepair) covers the buy while she stands AT the
+// business; this covers it everywhere else, so the errand persists across the walk
+// to the smith instead of vanishing the moment she leaves the farm (the LLM-274
+// half named the destination but the cue disappeared off-post). It names concrete
+// move_to destinations while away and flips to a co-present pay_with_item imperative
+// once she shares the smith's huddle — the same walk-to → buy-here progression the
+// "## Restocking" reseller cue uses. It does NOT gate the `repair` tool: mending
+// happens only on site, so buildStallRepair remains the sole gate for that tool.
+type StallRepairBuyView struct {
+	Name            string          // the worn business's display name (structure/object); "" → generic noun
+	NailsNeeded     int             // nails one repair consumes
+	NailsHeld       int             // nails the actor currently carries
+	NailsShort      int             // NailsNeeded - NailsHeld (> 0 whenever the cue shows)
+	Vendors         []RestockVendor // where to buy nails while away — the move_to destination(s)
+	CoPresentSeller string          // a nail seller sharing the actor's huddle right now; "" when none
+	PendingOffer    bool            // a still-pending nail offer already stands with CoPresentSeller (bide, don't re-offer)
+}
+
+// buildStallRepairBuy returns the off-post nail-buy errand cue, or nil. Pure over the
+// snapshot. Non-nil only when the actor OWNS a repairable worn business (not a hired
+// hand — a hire can't leave the job to shop, the same carve-out buildStallRepair
+// makes for its NailVendors), is NOT standing at that business (buildStallRepair owns
+// the at-business buy), is short of the nails a repair needs, and has at least one
+// actionable buy path — a co-present nail seller or a surviving walk-to supplier (the
+// LLM-216 dead-end drop, mirroring buildRestocking so a broke or supplier-less owner
+// isn't handed an unactionable errand it would tour).
+func buildStallRepairBuy(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSnapshot) *StallRepairBuyView {
+	if snap == nil || actorSnap == nil {
+		return nil
+	}
+	stall, hired := sim.WearableStallToMend(snap.VillageObjects, snap.LaborLedger, actorID)
+	if stall == nil || hired {
+		return nil // not responsible, or a hire who can't leave the job to shop
+	}
+	if sim.AtBusiness(actorSnap.Pos, actorSnap.InsideStructureID, stall.ID, objectLoiterPin(stall), true) {
+		return nil // at the business — "## Your business" (buildStallRepair) owns the buy here
+	}
+	if !sim.StallRepairable(stall, snap.StallWearRepairThreshold, snap.StallWearDegradeThreshold) {
+		return nil // not worn enough to warrant mending
+	}
+	needed := snap.StallNailsPerRepair
+	if needed <= 0 {
+		return nil // a repair costs no nails (feature off / misconfig) — nothing to buy
+	}
+	held := actorSnap.Inventory[sim.NailItemKind]
+	if held >= needed {
+		return nil // already carrying enough to mend — no buy errand
+	}
+	coName, coID := coPresentSellerForItem(snap, actorID, actorSnap, sim.NailItemKind)
+	vendors := findItemVendors(snap, actorID, actorSnap, sim.NailItemKind)
+	if coName == "" && len(vendors) == 0 {
+		return nil // LLM-216: no actionable buy path — don't surface a dead-end errand
+	}
+	return &StallRepairBuyView{
+		Name:            resolveDwellPinLabel(snap, stall.ID),
+		NailsNeeded:     needed,
+		NailsHeld:       held,
+		NailsShort:      needed - held,
+		Vendors:         vendors,
+		CoPresentSeller: coName,
+		PendingOffer:    coID != "" && hasPendingOfferTo(snap, actorID, coID, sim.NailItemKind),
+	}
+}
+
+// renderStallRepairBuy writes the "## Nails to mend your business" section — the
+// off-post half of the repair errand (LLM-277). Content-gated: a nil view writes
+// nothing. When a nail seller shares the huddle it issues the concrete buy-here
+// imperative (renderCoPresentBuy); otherwise it names the walk-to destination(s)
+// (renderWalkToVendors), the same progression "## Restocking" uses. When a nail
+// offer already stands with the co-present seller it renders a bide steer instead,
+// so the owner waits for the answer rather than re-offering and churning (the
+// LLM-64 co-present-offer guard).
+func renderStallRepairBuy(b *strings.Builder, v *StallRepairBuyView) {
+	if v == nil {
+		return
+	}
+	name := v.Name
+	if name == "" {
+		name = "place of business"
+	}
+	b.WriteString("## Nails to mend your business\n")
+	fmt.Fprintf(b, "Your %s is worn and needs mending, but you carry only %d of the %d nails a repair takes. Buy the rest, then return to mend it. ", name, v.NailsHeld, v.NailsNeeded)
+	if v.CoPresentSeller != "" {
+		if v.PendingOffer {
+			fmt.Fprintf(b, "%s is here with you and your nail offer is still with them — wait here for their answer; do not re-offer or leave.\n", sanitizeInline(v.CoPresentSeller))
+			return
+		}
+		renderCoPresentBuy(b, v.CoPresentSeller, "nails", sim.NailItemKind, v.NailsShort)
+		return
+	}
+	b.WriteString("Use move_to to reach a supplier, then pay_with_item once you arrive:\n")
+	renderWalkToVendors(b, v.Vendors)
+}

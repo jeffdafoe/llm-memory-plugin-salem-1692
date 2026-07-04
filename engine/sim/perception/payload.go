@@ -527,6 +527,15 @@ type Payload struct {
 	// LLM-118.
 	StallCondition *StallConditionView
 
+	// StallRepairBuy surfaces the OFF-POST half of the repair errand (LLM-277): an
+	// owner who has stepped away from her worn business, still short of the nails a
+	// repair takes, is shown where to buy them (walk-to destinations, or a co-present
+	// pay_with_item imperative at the smith). nil when at the business (StallRepair
+	// covers the buy there), carrying enough nails, not responsible for a repairable
+	// business, or no actionable buy path. Distinct from StallRepair so it never
+	// gates the on-site-only `repair` tool.
+	StallRepairBuy *StallRepairBuyView
+
 	// FarmUpkeep surfaces, to a farm owner, that the season wore out their upkeep
 	// shovels and they owe fresh ones from the blacksmith (shovel count + buy
 	// steer). nil when not a farm owner or nothing is owed. Not co-location-gated —

@@ -256,12 +256,12 @@ func TestBuildDutySteer_EveningWindow_SuppressesGoHome(t *testing.T) {
 	a := eveningWorker("blacksmith") // 07:00–19:00, away from home (at its post)
 
 	// 20:30 — inside [19:00, 22:00): the go-home steer is suppressed.
-	if v := buildDutySteer(eveningSnap(1230), "ezekiel", a, eveningAnchors, false, false); v != nil {
+	if v := buildDutySteer(eveningSnap(1230), "ezekiel", a, eveningAnchors, false, false, false); v != nil {
 		t.Fatalf("want nil go-home steer inside the evening window, got %+v", v)
 	}
 
 	// 22:30 — past bedtime, no longer the evening: the go-home steer resumes.
-	v := buildDutySteer(eveningSnap(1350), "ezekiel", a, eveningAnchors, false, false)
+	v := buildDutySteer(eveningSnap(1350), "ezekiel", a, eveningAnchors, false, false, false)
 	if v == nil || v.ToWork || v.TargetID != "cottage" {
 		t.Fatalf("want a go-home steer to cottage past bedtime, got %+v", v)
 	}
