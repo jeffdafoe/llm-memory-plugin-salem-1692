@@ -106,6 +106,18 @@ func TestOrdersRepo_Integration_WriteOrderlessSettlement(t *testing.T) {
 		t.Errorf("seed observation = %+v, want alice/8/qty=2/consumers=2", rec.Observation)
 	}
 
+	// The defensive shape guard rejects a take-home single — that row is
+	// the Order checkpoint's to write; an eager 'delivered' insert here
+	// would collide on the id or hide the order from the restart filters.
+	if err := repo.WriteOrderlessSettlement(ctx, &sim.PayLedgerEntry{
+		ID: 503, BuyerID: "alice", SellerID: "bob",
+		ItemKind: "stew", Qty: 1, Amount: 4,
+		State:     sim.PayLedgerStateAccepted,
+		CreatedAt: created,
+	}, at); err == nil {
+		t.Error("WriteOrderlessSettlement accepted a take-home single shape, want shape-guard error")
+	}
+
 	// LoadAll must NOT resurrect either settlement as an in-flight Order.
 	orders, err := repo.LoadAll(ctx)
 	if err != nil {

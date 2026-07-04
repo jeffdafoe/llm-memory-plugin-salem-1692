@@ -515,6 +515,15 @@ func (r *OrdersRepo) WriteOrderlessSettlement(ctx context.Context, e *sim.PayLed
 	if e == nil {
 		return fmt.Errorf("pg orders WriteOrderlessSettlement: nil entry")
 	}
+	// Defensive shape check (code_review, LLM-246): a plain take-home /
+	// lodging single always mints an Order whose pay_ledger row is owned by
+	// the checkpoint upsert — writing it here too would collide on the id
+	// (or, worse, land it pre-stamped 'delivered' and hide it from the
+	// restart/expiry filters). The caller keys on the actual mint outcome;
+	// this rejects any entry that could never legitimately be order-less.
+	if !e.ConsumeNow && len(e.Lines) == 0 {
+		return fmt.Errorf("pg orders WriteOrderlessSettlement: ledger %d is not an order-less settlement shape (take-home single)", e.ID)
+	}
 	var itemKind *string
 	if e.ItemKind != "" {
 		s := string(e.ItemKind)

@@ -103,6 +103,11 @@ func (r *OrdersRepo) WriteOrderlessSettlement(_ context.Context, e *sim.PayLedge
 	if e == nil {
 		return fmt.Errorf("mem orders WriteOrderlessSettlement: nil entry")
 	}
+	// Same defensive shape check as the pg impl (code_review, LLM-246): a
+	// take-home single's row is the Order checkpoint's to write.
+	if !e.ConsumeNow && len(e.Lines) == 0 {
+		return fmt.Errorf("mem orders WriteOrderlessSettlement: ledger %d is not an order-less settlement shape (take-home single)", e.ID)
+	}
 	if e.ItemKind == "" {
 		return nil
 	}

@@ -2538,6 +2538,13 @@ func commitPayTransfer(
 	// the Paid/PaidBy facts below so OrderDelivered fires after the payment facts
 	// exist (ZBBS-HOME-398; code_review).
 	var eagerlyDelivered *Order
+	// orderMinted tracks whether any branch below minted a durable Order —
+	// set beside each mint call rather than inferred from entry shape, so
+	// the LLM-246 order-less write-through at the bottom keys on what
+	// actually happened. An entry-shape predicate (ConsumeNow || Lines)
+	// would silently double-write a pay_ledger id if a future entry shape
+	// with Lines ever started minting Orders (code_review, LLM-246).
+	orderMinted := false
 
 	def := w.ItemKinds[entry.ItemKind]
 	if len(entry.Lines) > 0 {
@@ -2679,6 +2686,7 @@ func commitPayTransfer(
 			// is gated on it. ZBBS-HOME-403 advance booking; see the
 			// salem-engine-v2/lodging codebase note.
 			createOrderForPayWithItem(w, entry, at)
+			orderMinted = true
 			out.booked = true
 		} else {
 			// SAME-DAY walk-in (LLM-84): grant the room NOW, at accept, the same
@@ -2694,6 +2702,7 @@ func commitPayTransfer(
 				return payTransferOutcome{}, err
 			}
 			eagerlyDelivered = o
+			orderMinted = true
 			out.lodgedNow = true
 		}
 	} else {
@@ -2710,6 +2719,7 @@ func commitPayTransfer(
 			return payTransferOutcome{}, err
 		}
 		eagerlyDelivered = o
+		orderMinted = true
 		out.tookHome = true
 	}
 
@@ -2741,15 +2751,12 @@ func commitPayTransfer(
 		flipOrderTerminal(w, eagerlyDelivered, OrderStateDelivered, at)
 	}
 
-	// LLM-246: a settlement that minted no Order — an eat-here single or a
-	// bundle take — writes its durable pay_ledger row here, at accept.
-	// Order-minting settlements persist via the checkpoint upsert instead
-	// (double-writing them here would race the same id). Without this
-	// write the price-book restart seed never sees eat-here trades, so NPC
-	// meal-price recall died on every deploy. Entry shape (not
-	// eagerlyDelivered) is the predicate: the advance-booking branch mints
-	// an Order without setting eagerlyDelivered.
-	if entry.ConsumeNow || len(entry.Lines) > 0 {
+	// LLM-246: a settlement that minted no Order — today an eat-here single
+	// or a bundle take — writes its durable pay_ledger row here, at accept.
+	// Order-minting settlements persist via the checkpoint upsert instead;
+	// double-writing them here would collide on the same id. Keyed on the
+	// per-branch orderMinted outcome, not on entry shape (code_review).
+	if !orderMinted {
 		w.writeOrderlessSettlement(entry, at)
 	}
 	return out, nil

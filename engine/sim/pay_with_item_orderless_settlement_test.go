@@ -174,6 +174,48 @@ func TestOrderlessSettlement_BundleTake_WritesThrough(t *testing.T) {
 	}
 }
 
+func TestOrderlessSettlement_TakeHomeBundle_WritesThrough(t *testing.T) {
+	// A TAKE-HOME bundle also mints no Order (LLM-101) — the write-through
+	// is its only durable pay_ledger trace. This locks the invariant the
+	// write-through's orderMinted predicate depends on: if bundle takes
+	// ever start minting Orders, this fails and forces the sink
+	// interaction to be reconsidered (code_review, LLM-246).
+	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
+		{id: "jeff", displayName: "Jefferey", kind: sim.KindPC, huddleID: "h1", coins: 50},
+		{id: "pru", displayName: "Prudence", kind: sim.KindNPCShared, huddleID: "h1",
+			inventory: map[sim.ItemKind]int{"ale": 3, "bread": 3}},
+	})
+	defer stop()
+	sink := installSettlementSink(t, w)
+
+	at := time.Now().UTC()
+	seedQuote(t, w, sim.SceneQuote{
+		ID:        9,
+		SceneID:   "sc1",
+		SellerID:  "pru",
+		Lines:     []sim.QuoteLine{{ItemKind: "ale", Qty: 1}, {ItemKind: "bread", Qty: 1}},
+		Amount:    6,
+		State:     sim.SceneQuoteStateActive,
+		ExpiresAt: at.Add(10 * time.Minute),
+	})
+
+	if _, err := w.Send(sim.PayWithItem("jeff", "Prudence", "ale", 1, 6, false, nil, nil, 9, 0, "", at)); err != nil {
+		t.Fatalf("PayWithItem (take-home bundle): %v", err)
+	}
+
+	if n := bundleOrderCount(t, w); n != 0 {
+		t.Fatalf("Orders = %d, want 0 — a bundle take minting an Order invalidates the orderless write-through", n)
+	}
+	calls := sink.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("sink calls = %d, want 1 (take-home bundle is order-less)", len(calls))
+	}
+	if calls[0].entry.ConsumeNow || calls[0].entry.ItemKind != "" || len(calls[0].entry.Lines) != 2 {
+		t.Errorf("entry = consume_now=%v item %q lines %d, want false/\"\"/2",
+			calls[0].entry.ConsumeNow, calls[0].entry.ItemKind, len(calls[0].entry.Lines))
+	}
+}
+
 func TestOrderlessSettlement_NoSink_AcceptStillCommits(t *testing.T) {
 	// Nil sink (the default) must stay a no-op — harness worlds settle
 	// in-memory only, and the accept itself must not care.
