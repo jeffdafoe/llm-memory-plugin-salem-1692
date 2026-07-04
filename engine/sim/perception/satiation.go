@@ -174,6 +174,27 @@ func personalOwnStock(items []OwnStockItem) []OwnStockItem {
 	return out
 }
 
+// dropWholesalerProduce removes a wholesaler owner's own produce from the eat cue
+// at EVERY tier — stricter than the LLM-134 TradeStock demotion, which lets trade
+// stock return at the red/distress tier as a last resort. A wholesaler's produce is
+// stock to sell, never its larder (LLM-267), so it must never be offered as food,
+// even at starvation. Keyed on the SAME sim.IsOwnProduce the Consume guard rejects
+// on, so the cue can't offer what the guard would block. No-op for non-wholesalers
+// (SellerAtWholesaler is false), so an ordinary producer's cue is untouched.
+func dropWholesalerProduce(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, items []OwnStockItem) []OwnStockItem {
+	if len(items) == 0 || snap == nil || actorSnap == nil {
+		return items
+	}
+	var out []OwnStockItem
+	for _, it := range items {
+		if sim.IsOwnProduce(snap.VillageObjects, actorSnap.WorkStructureID, actorSnap.RestockPolicy, it.kind) {
+			continue
+		}
+		out = append(out, it)
+	}
+	return out
+}
+
 // holdsBarterableGoods reports whether the actor carries any goods it could put
 // up in a pay_with_item / offer_trade bundle — the "goods" half of the LLM-222
 // means-to-pay gate. Any held ItemKind with a positive quantity counts:
@@ -213,6 +234,11 @@ func buildSatiation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Acto
 			continue
 		}
 		own := gatherOwnStock(snap, actorSnap, need)
+		// LLM-267: a wholesaler owner's own produce is stock to sell, not food —
+		// strip it at EVERY tier, BEFORE the LLM-134 tier demotion below (which
+		// otherwise lets own trade stock return at red). Keyed on sim.IsOwnProduce,
+		// the same predicate the Consume guard blocks on, so cue and block agree.
+		own = dropWholesalerProduce(snap, actorSnap, own)
 		// Demote the actor's own TRADE stock to a desperation-only option
 		// (LLM-134). The own-stock cue exists so a hungry actor eats what it
 		// carries rather than starving en route to a shop (ZBBS-123), but it
