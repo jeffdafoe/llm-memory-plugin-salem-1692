@@ -83,6 +83,7 @@ func ApplyDwellTick(now time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
 			res := DwellTickResult{}
+			nowMinute := localMinuteOfDay(w, now)
 
 			// Iterate actors in sorted order so DwellTickApplied /
 			// DwellEnded event sequencing across actors is deterministic
@@ -95,7 +96,16 @@ func ApplyDwellTick(now time.Time) Command {
 
 			for _, actorID := range actorIDs {
 				actor := w.Actors[actorID]
-				if actor == nil || actor.DwellCredits == nil {
+				if actor == nil {
+					continue
+				}
+				// LLM-281: re-arm the drink for a present, red, credit-less actor
+				// standing on a dwell source's pin. Runs BEFORE the credit walk
+				// (and before the nil-credits skip) so a placed / checkpoint-loaded
+				// actor — one that never fired an ActorArrived and so holds no
+				// credit map at all — still gets the arrival drink applied here.
+				rearmDwellAtSource(w, actor, now, nowMinute)
+				if actor.DwellCredits == nil {
 					continue
 				}
 				processActorDwellTick(w, actor, now, &res)
@@ -299,6 +309,97 @@ func stampDwellEnd(w *World, actor *Actor, credit *DwellCredit, reason DwellEndR
 func actorAtCreditObject(w *World, actor *Actor, credit *DwellCredit) bool {
 	id, ok := resolveLoiteringObject(w, actor.Pos, LoiterAttributionTiles)
 	return ok && id == credit.ObjectID
+}
+
+// rearmDwellAtSource re-applies the arrival drink for an actor standing on a
+// refresh source's loiter pin who is pressed by a red need that source eases and
+// holds no live dwell credit for it (LLM-281). Drinking a well / resting at a
+// tree is arrival-triggered — the SourceActivity completion stamps the open-ended
+// credit — so an actor placed / checkpoint-loaded on the pin (never fired an
+// ActorArrived), or one whose credit already terminated at the floor while it
+// stayed put, never re-arms: move_to no-ops on the pin (LLM-209), so it can never
+// emit a fresh arrival. With no credit ApplyDwellTick has nothing to drip, so the
+// need pins red and the need_threshold warrant re-fires forever (Moses "sits at
+// the fountain").
+//
+// The repair is mechanical — no LLM tick, no fake ActorArrived (drinking a free
+// source is a transition, not a decision): reuse applyObjectRefreshEffect so the
+// re-drink is identical to arriving and drinking. The burst (row Amount) clears
+// the red state at once and the open-ended credit re-arms the per-minute drip
+// that processActorDwellTick then drains to the floor.
+//
+// Gated to the exact trapped case so the normal arrival path is untouched:
+//   - settled (no MoveIntent) and not mid-SourceActivity — a mover is passing
+//     through, and an in-flight drink window stamps the credit itself on
+//     completion, so skipping here avoids a double burst inside that ~3s window.
+//   - actorActionableRedNeed picks the pressing red need using the SAME predicate
+//     the warrant producers use — so the re-drink targets exactly the need that
+//     would otherwise keep re-stamping the warrant, and inherits its sleep /
+//     break / off-shift-tiredness suppression.
+//   - genuinely credit-less for that (source, need): if a live credit already
+//     exists, processActorDwellTick is already dripping it — re-drinking would
+//     double the burst and reset the drip. actorActionableRedNeed only skips
+//     FRESH credits (within the needs-tick window), so a credit whose period
+//     exceeds that window can be ripe-but-stale; the explicit key check below is
+//     what makes "credit-less" true rather than an emergent side effect.
+//   - the source must dwell-ease that need in stock (else the actor is parked at
+//     the WRONG source and should walk to the right one — move_to is not no-op'd
+//     there, so there is no trap to repair).
+//   - owner-gate + the NPC-at-a-finite-bush carve-out mirror the arrival path, so
+//     a re-drink can never do what an arrival wouldn't.
+func rearmDwellAtSource(w *World, actor *Actor, now time.Time, nowMinute int) {
+	if actor.MoveIntent != nil || actor.BusyAtSource(now) {
+		return
+	}
+	need, ok := actorActionableRedNeed(w, actor, now, nowMinute)
+	if !ok {
+		return
+	}
+	objID, obj := findRefreshObjectNear(w, actor.Pos)
+	if obj == nil || obj.OwnedByOther(actor.ID) {
+		return
+	}
+	if actorHoldsObjectDwellCredit(actor, objID, need) {
+		return // drip already armed — let processActorDwellTick run it, don't re-burst
+	}
+	// LLM-87: an NPC gathers→consumes at a finite bush rather than auto-eating in
+	// place; only a well / tree (or a PC) drinks/rests here. Mirror the same
+	// carve-out StartRefreshAtArrival applies so re-drink and arrival agree.
+	if actor.Kind != KindPC && obj.IsFiniteGatherableSource() {
+		return
+	}
+	if !objectHasInStockDwellRowFor(obj, need) {
+		return
+	}
+	applyObjectRefreshEffect(w, actor.ID, objID, obj, now)
+}
+
+// actorHoldsObjectDwellCredit reports whether actor already holds an
+// object-source dwell credit for this (object, need) — i.e. the ongoing drip is
+// already armed, so rearmDwellAtSource must not re-apply the arrival burst. The
+// key matches exactly what applyObjectRefreshEffect stamps. Nil-safe: a nil
+// DwellCredits map indexes to the zero value, reading as "no credit".
+func actorHoldsObjectDwellCredit(actor *Actor, objID VillageObjectID, need NeedKey) bool {
+	_, ok := actor.DwellCredits[DwellCreditKey{ObjectID: objID, Attribute: need, Source: DwellSourceObject}]
+	return ok
+}
+
+// objectHasInStockDwellRowFor reports whether obj carries a dwell-bearing refresh
+// row for need that still has stock to give — the gate for rearmDwellAtSource, so
+// the re-drink only fires when standing here would actually re-arm an ongoing
+// recovery on the pressing need. Mirrors the depleted-finite-row skip in
+// applyObjectRefreshEffect (a dry source gives nothing).
+func objectHasInStockDwellRowFor(obj *VillageObject, need NeedKey) bool {
+	for _, r := range obj.Refreshes {
+		if r == nil || !r.HasDwell() || r.Attribute != need {
+			continue
+		}
+		if r.IsFinite() && (r.AvailableQuantity == nil || *r.AvailableQuantity <= 0) {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // DwellTickerInterval is how often RunDwellTicker wakes. Matches
