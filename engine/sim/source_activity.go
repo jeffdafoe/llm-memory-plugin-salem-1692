@@ -495,16 +495,26 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 	case SourceActivityRepair:
 		// LLM-118 (owner), LLM-271 (hired worker): the mending lands — wear cleared,
 		// the stall trades again. Wear=0 re-arms the owner's edge-triggered warrant
-		// for the next threshold crossing. Re-resolve by the SAME responsibility rule
-		// StartRepair used — owner, or a worker Working a hired job at the owner's
-		// business (WearableStallToMend) — and require it to be the object the window
-		// began at, so start and completion can't drift on who may mend. The
-		// move-cancel belt aborts a window if the mender walks off, so they are still
-		// here. Rare edge: if a hire settles inside the short repair window the reset
-		// is skipped (nails spent, no mend) — the same tolerance as an abandoned
-		// repair; the worker is simply re-wakeable.
-		stall, _ := WearableStallToMend(w.VillageObjects, w.LaborLedger, actorID)
-		if stall == nil || stall.ID != act.ObjectID {
+		// for the next threshold crossing.
+		//
+		// Bind the reset to the object the window BEGAN at (act.ObjectID). StartRepair
+		// already validated responsibility, co-location, wear, and nails at start AND
+		// consumed the nails, so a mend the worker started and paid for must land —
+		// completion is not the place to re-litigate who may mend. The move-cancel
+		// belt aborts the window if the mender walks off, so a surviving window means
+		// they stayed put; IsWearableStall is a cheap sanity guard against an object
+		// that stopped being a business mid-window (owner/tag cleared).
+		//
+		// Was: re-resolve via WearableStallToMend(actorID), which requires the actor
+		// to STILL be Working the hire. When a hired worker's job settled inside the
+		// short repair window — the COMMON path, since a hired hand is only woken to
+		// mend at the tail of the stint — the settle cleared the Working offer,
+		// WearableStallToMend returned nil, and the reset was skipped: nails spent, no
+		// mend. That tear is why the hired repair never once mended a stall in the
+		// wild despite passing every unit/golden test (none drove the mend across the
+		// labor settle).
+		stall := w.VillageObjects[act.ObjectID]
+		if stall == nil || !IsWearableStall(stall) {
 			return
 		}
 		stall.Wear = 0
