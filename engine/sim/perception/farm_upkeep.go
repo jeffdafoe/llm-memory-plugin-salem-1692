@@ -22,9 +22,10 @@ import (
 // FarmUpkeepView is the farm owner's upkeep-buy cue. Non-nil only when the actor
 // owns a farm AND owes more upkeep shovels than they currently carry.
 type FarmUpkeepView struct {
-	ShovelsOwed  int // obligation derived from coins held above the floor
-	ShovelsHeld  int // shovels the owner currently carries
-	ShovelsShort int // ShovelsOwed - ShovelsHeld (> 0 whenever the cue shows)
+	ShovelsOwed   int             // obligation derived from coins held above the floor
+	ShovelsHeld   int             // shovels the owner currently carries
+	ShovelsShort  int             // ShovelsOwed - ShovelsHeld (> 0 whenever the cue shows)
+	ShovelVendors []RestockVendor // where to buy the shovels (LLM-274); the move_to destination(s)
 }
 
 // buildFarmUpkeep returns the owner's upkeep-buy cue, or nil. Pure over the snapshot.
@@ -53,6 +54,12 @@ func buildFarmUpkeep(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 		ShovelsOwed:  owed,
 		ShovelsHeld:  held,
 		ShovelsShort: owed - held,
+		// LLM-274: resolve the shovel supplier(s) so the cue names a move_to destination
+		// instead of the dead-end "the blacksmith". Same restock-directory path the
+		// stall-repair nail cue uses — findItemVendors names only first-hand producers
+		// (the smith produces shovels, LLM-200), drops remembered-shut/unaffordable, and
+		// dedupes by workplace. Empty → render keeps the generic "from the blacksmith".
+		ShovelVendors: findItemVendors(snap, actorID, actorSnap, sim.ShovelItemKind),
 	}
 }
 
@@ -69,9 +76,20 @@ func renderFarmUpkeep(b *strings.Builder, v *FarmUpkeepView) {
 	if v.ShovelsHeld > 0 {
 		fmt.Fprintf(b, "Upkeep calls for %d shovels and you carry %d. ", v.ShovelsOwed, v.ShovelsHeld)
 	}
-	if v.ShovelsShort == 1 {
-		b.WriteString("Buy a fresh shovel from the blacksmith to set the farm right for the season.\n")
+	shovels := "a fresh shovel"
+	if v.ShovelsShort != 1 {
+		shovels = fmt.Sprintf("%d fresh shovels", v.ShovelsShort)
+	}
+	if len(v.ShovelVendors) > 0 {
+		// LLM-274: name the actual shovel supplier(s) — workplace + structure_id — in the
+		// model-proven format so the weak model walks the errand. No "come back" hop: the
+		// daily assessment consumes the held shovels, so buying them IS the whole action
+		// (unlike stall repair, which mends on site).
+		fmt.Fprintf(b, "Buy %s to set the farm right for the season. Use move_to to reach a supplier, then pay_with_item once you arrive:\n", shovels)
+		renderWalkToVendors(b, v.ShovelVendors)
 	} else {
-		fmt.Fprintf(b, "Buy %d fresh shovels from the blacksmith to set the farm right for the season.\n", v.ShovelsShort)
+		// No shovel supplier resolves (none produce them, or all shut/unaffordable) —
+		// keep the generic sentence rather than a dead-end target (LLM-216 posture).
+		fmt.Fprintf(b, "Buy %s from the blacksmith to set the farm right for the season.\n", shovels)
 	}
 }

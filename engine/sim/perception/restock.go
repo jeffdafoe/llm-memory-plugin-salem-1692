@@ -623,17 +623,27 @@ func renderRestocking(b *strings.Builder, v *RestockingView) {
 		// header; LLM-10 moved it here so the header no longer hedges "if a seller is
 		// here / otherwise" and each item line reflects whether a seller is present.
 		b.WriteString(" No seller is here now — use move_to to reach a supplier below, then pay_with_item once you arrive.\n")
-		for _, vd := range it.Vendors {
-			b.WriteString("  - buy from ")
-			b.WriteString(sanitizeInline(vd.StructureLabel))
-			if vd.StructureID != "" {
-				fmt.Fprintf(b, " (structure_id: %s)", vd.StructureID)
-			}
-			if vd.CostText != "" {
-				fmt.Fprintf(b, ", %s", vd.CostText)
-			}
-			b.WriteString("\n")
-		}
+		renderWalkToVendors(b, it.Vendors)
 	}
 	b.WriteString("\n")
+}
+
+// renderWalkToVendors writes the shared walk-to buy bullets — one
+// "  - buy from <workplace> (structure_id: <id>)[, <last-paid>]" line per supplier
+// — used by both the Restocking cue and the stall-repair buy-nails steer (LLM-274).
+// Keeping the two cues on a single renderer guarantees they present the move_to
+// destination in the identical, model-proven format; the structure_id is the token
+// the weak model echoes into move_to (HOME-349).
+func renderWalkToVendors(b *strings.Builder, vendors []RestockVendor) {
+	for _, vd := range vendors {
+		b.WriteString("  - buy from ")
+		b.WriteString(sanitizeInline(vd.StructureLabel))
+		if vd.StructureID != "" {
+			fmt.Fprintf(b, " (structure_id: %s)", vd.StructureID)
+		}
+		if vd.CostText != "" {
+			fmt.Fprintf(b, ", %s", vd.CostText)
+		}
+		b.WriteString("\n")
+	}
 }
