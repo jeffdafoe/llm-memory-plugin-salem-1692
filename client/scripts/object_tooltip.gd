@@ -215,6 +215,14 @@ func _on_count_loaded(result: int, response_code: int, _headers: PackedStringArr
     var n: int = int(json.get("available", 0))
     var item: String = str(json.get("item", "berries"))
     if n <= 0:
+        # A source that still satisfies a need in place — a well you can still
+        # drink from whose water-pail forage stock is spent — is not exhausted,
+        # so suppress the berry-bush "Picked clean" line for it (LLM-282). A
+        # plain berry bush reports no in-place need, so it still reads
+        # "Picked clean". Clear the label first so no prior hover's count lingers.
+        if bool(json.get("serves_in_place", false)):
+            _berry_label.text = ""
+            return
         _berry_label.text = "Picked clean"
     elif n == 1:
         # Singularize the berry family for the "1 X" case:
