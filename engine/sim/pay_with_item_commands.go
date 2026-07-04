@@ -2740,6 +2740,18 @@ func commitPayTransfer(
 	if eagerlyDelivered != nil {
 		flipOrderTerminal(w, eagerlyDelivered, OrderStateDelivered, at)
 	}
+
+	// LLM-246: a settlement that minted no Order — an eat-here single or a
+	// bundle take — writes its durable pay_ledger row here, at accept.
+	// Order-minting settlements persist via the checkpoint upsert instead
+	// (double-writing them here would race the same id). Without this
+	// write the price-book restart seed never sees eat-here trades, so NPC
+	// meal-price recall died on every deploy. Entry shape (not
+	// eagerlyDelivered) is the predicate: the advance-booking branch mints
+	// an Order without setting eagerlyDelivered.
+	if entry.ConsumeNow || len(entry.Lines) > 0 {
+		w.writeOrderlessSettlement(entry, at)
+	}
 	return out, nil
 }
 

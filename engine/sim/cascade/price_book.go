@@ -78,6 +78,13 @@ func handlePayWithItemResolvedPriceBook(w *sim.World, evt sim.Event) {
 	if resolved.Amount <= 0 {
 		return
 	}
+	// A bundle quote-take carries its goods in Lines and leaves ItemKind
+	// empty — the lump Amount has no per-line split, so there is no single
+	// (seller, item) pair to file an observation under. Record nothing
+	// rather than keying the ring on "". LLM-246.
+	if resolved.ItemKind == "" {
+		return
+	}
 	consumers := len(resolved.ConsumerIDs)
 	if consumers < 1 {
 		consumers = 1

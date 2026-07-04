@@ -101,14 +101,26 @@ type OrdersRepo interface {
 
 	// MaxPaidActionLogLedgerID returns the largest ledger_id stamped on any
 	// `paid` agent_action_log row (0 when none). v2 consume_now settlements
-	// mint a LedgerID and write NO pay_ledger row — their only durable record
-	// is the paid action-log row whose payload carries ledger_id (LLM-105) —
-	// so those ids are invisible to MaxLedgerID and the DB max(id) runs BELOW
-	// the true high-water mark. FinalizeLoad floors payLedgerSeq from
-	// GREATEST(MaxLedgerID, this) so a post-restart mint can't reuse a
-	// consume_now id and corrupt the audit join / clobber a later checkpoint's
-	// row. LLM-245.
+	// before LLM-246 minted a LedgerID and wrote NO pay_ledger row — their
+	// only durable record is the paid action-log row whose payload carries
+	// ledger_id (LLM-105) — so those ids are invisible to MaxLedgerID and the
+	// DB max(id) runs BELOW the true high-water mark. FinalizeLoad floors
+	// payLedgerSeq from GREATEST(MaxLedgerID, this) so a post-restart mint
+	// can't reuse a consume_now id and corrupt the audit join / clobber a
+	// later checkpoint's row. LLM-245. (Since LLM-246 new consume_now ids
+	// also land in pay_ledger via WriteOrderlessSettlement, so this floor is
+	// belt-and-braces for the pre-246 historical rows.)
 	MaxPaidActionLogLedgerID(ctx context.Context) (int64, error)
+
+	// WriteOrderlessSettlement durably persists an accepted settlement that
+	// minted no Order — a consume_now eat-here single or a bundle quote-take
+	// (LLM-246). It is the OrdersRepo method that also satisfies the narrow
+	// OrderlessSettlementSink interface (same pattern as WriteTerminal /
+	// TerminalOrderSink), so production wires `repo.Orders` directly as the
+	// World's sink. at is the accept time — the slow accept path stamps
+	// entry.ResolvedAt only after commitPayTransfer returns, so the entry's
+	// own timestamp can't be read at write time.
+	WriteOrderlessSettlement(ctx context.Context, e *PayLedgerEntry, at time.Time) error
 
 	// LoadRecentPrices returns up to perKeyCap most-recent accepted
 	// PayLedger rows per (seller, item) tuple within the time window

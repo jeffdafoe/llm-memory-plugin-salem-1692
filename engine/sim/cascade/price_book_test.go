@@ -187,6 +187,36 @@ func TestHandlePayWithItemResolvedPriceBook_MultiConsumerPreserved(t *testing.T)
 	}
 }
 
+// --- TestHandlePayWithItemResolvedPriceBook_BundleEmptyItemIsNoop ---
+func TestHandlePayWithItemResolvedPriceBook_BundleEmptyItemIsNoop(t *testing.T) {
+	// A bundle quote-take (LLM-101) resolves with ItemKind empty — the
+	// goods ride Lines and the lump Amount has no per-line split, so no
+	// (seller, item) observation exists to record. Without the guard the
+	// handler keyed the ring on "" (LLM-246).
+	w, stop := buildPriceBookCascadeWorld(t)
+	defer stop()
+
+	invokeOnWorld(t, w, func(world *sim.World) {
+		handlePayWithItemResolvedPriceBook(world, &sim.PayWithItemResolved{
+			BuyerID:       "alice",
+			SellerID:      "bob",
+			ItemKind:      "",
+			ConsumeNow:    true,
+			ConsumerIDs:   []sim.ActorID{"alice"},
+			Lines:         []sim.QuoteLine{{ItemKind: "ale", Qty: 1}, {ItemKind: "bread", Qty: 1}},
+			Amount:        6,
+			TerminalState: sim.PayTerminalStateAccepted,
+			At:            time.Now().UTC(),
+		})
+	})
+
+	invokeOnWorld(t, w, func(world *sim.World) {
+		if len(world.PriceBook) != 0 {
+			t.Errorf("bundle resolve (empty ItemKind) should record nothing; got %d keys", len(world.PriceBook))
+		}
+	})
+}
+
 // --- TestRegisterPriceBook_PanicsOnNil ------------------------------
 func TestRegisterPriceBook_PanicsOnNil(t *testing.T) {
 	defer func() {

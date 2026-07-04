@@ -249,8 +249,9 @@ func handlePayResolvedActionLog(w *sim.World, evt sim.Event) {
 	// — a 0-coin barter and a 0-coin free gift both read amount:0; only the goods leg
 	// distinguishes them. pay_items is the barter goods the buyer paid WITH (omitted
 	// for a pure-coin pay); ledger_id joins the row back to its pay-ledger entry;
-	// consume_now marks an eat-here settlement (mints no Order, so it is otherwise
-	// invisible in the deliverable-Order tables). These are audit-only additions — the
+	// consume_now marks an eat-here settlement (mints no Order; its durable
+	// pay_ledger row is written by the accept-time write-through instead —
+	// sim.OrderlessSettlementSink, LLM-246). These are audit-only additions — the
 	// narration keys (recipient/amount/for) the renderer + dream distiller read are
 	// unchanged, so the bare-pay and pay-with-item rows still narrate identically.
 	// ItemKindQty has no json tags, so write the goods in an explicit {item,qty} shape.
