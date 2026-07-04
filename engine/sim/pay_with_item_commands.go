@@ -2693,7 +2693,11 @@ func commitPayTransfer(
 			// branches get this for free — mintAndFulfillOrderNow errors
 			// out itself when the order isn't in w.Orders post-mint.
 			orderMinted = w.Orders[bookedID] != nil
-			out.booked = true
+			// booked reports "an advance-booking Order now exists", not
+			// "this branch ran" — keep it tied to the postcondition so the
+			// buyer's tool feedback can't claim a booking that didn't mint
+			// (code_review R3; today the two are always equal).
+			out.booked = orderMinted
 		} else {
 			// SAME-DAY walk-in (LLM-84): grant the room NOW, at accept, the same
 			// way physical goods are handed over eagerly. mintAndFulfillOrderNow
