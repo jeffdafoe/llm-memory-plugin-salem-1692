@@ -143,7 +143,62 @@ const (
 	// gatherer's huddle at append time. Event-sourced off ItemGathered,
 	// which both actor kinds emit post-validation (LLM-273).
 	ActionTypeGathered ActionType = "gathered"
+
+	// ActionTypeOffered — a buyer's slow-path pay_with_item minted (or renewed,
+	// via in_response_to) a PENDING pay-ledger offer (LLM-283, event-sourced off
+	// PayOfferReceived). ActorID is the BUYER (the offer is theirs);
+	// CounterpartyName is the seller; Amount is the coin offer (0 for a
+	// goods-only barter offer); Text is the item summary ("3x milk"); HuddleID is
+	// the offer's huddle. Fast-path / auto-match quote-takes never sit pending, so
+	// they emit no PayOfferReceived and no offered row — this type marks exactly
+	// the offers that wait on a seller decision (the dead-air the feed was
+	// missing). Gift offers (give_goods, IsGift) are excluded by the subscriber —
+	// they're a one-way flow, not a purchase haggle. FEED-ONLY: the live per-tick
+	// NPC consumers (atmosphere digest + narrative consolidation) drop it via
+	// isNegotiationActionType, and the durable mirror — written for barter tracing
+	// — is dropped from dream narration by the distiller (memory-api), so no
+	// NPC-facing path (live or dream) sees it; only the Village debugging window.
+	ActionTypeOffered ActionType = "offered"
+
+	// ActionTypeDeclined — a seller's decline_pay flipped a pending purchase offer
+	// to the Declined terminal (LLM-283, event-sourced off PayWithItemResolved
+	// with TerminalState=Declined). ActorID is the SELLER (the decline is theirs);
+	// CounterpartyName is the buyer whose offer was declined; HuddleID is the
+	// offer's huddle. No coins move. Gift declines (decline_gift, IsGift) are
+	// excluded by the subscriber. FEED-ONLY (see ActionTypeOffered).
+	ActionTypeDeclined ActionType = "declined"
+
+	// ActionTypeCountered — a seller's counter_pay flipped a pending offer to the
+	// Countered terminal (LLM-283, event-sourced off PayCountered). ActorID is the
+	// SELLER (the counter is theirs); CounterpartyName is the buyer; Amount is the
+	// seller's counter price (CounterAmount, always above the buyer's offer — a
+	// non-increasing counter is coerced to an accept and emits no PayCountered);
+	// HuddleID is the offer's huddle. FEED-ONLY (see ActionTypeOffered).
+	ActionTypeCountered ActionType = "countered"
 )
+
+// isNegotiationActionType reports whether t is one of the pay-ledger negotiation
+// beats (offered / declined / countered, LLM-283). These are FEED-ONLY: they
+// render in the Village debugging window (httpapi.renderActionLogEntry) but are
+// filtered OUT of every LIVE, in-memory NPC-facing consumer of the ring — the
+// atmosphere activity digest (buildVillageContextActivityDigest) and the
+// per-actor narrative consolidation (snapshotEventsForActor / actorHasEventSince).
+// The OTHER NPC-facing path — the durable agent_action_log rows that feed offline
+// dream distillation — is gated separately, distiller-side in memory-api (the
+// sim-conversation distiller drops unmapped kinds rather than narrating them),
+// because this guard only sees the in-process ring. Together they keep a live
+// haggle a debugging affordance rather than a change to NPC perception or memory;
+// surfacing negotiation to co-present NPCs would be a separate, deliberate
+// decision. Single source of truth so a fourth negotiation type can't be added to
+// the vocabulary and silently leak into one of the live consumers.
+func isNegotiationActionType(t ActionType) bool {
+	switch t {
+	case ActionTypeOffered, ActionTypeDeclined, ActionTypeCountered:
+		return true
+	default:
+		return false
+	}
+}
 
 // ActionLogEntry is one row in the in-memory action log. Carries the
 // minimum the in-engine consumers (atmosphere digest + C2

@@ -227,6 +227,12 @@ func buildVillageContextActivityDigest(w *World) []ActivityDigestEntry {
 		if !e.OccurredAt.After(since) {
 			continue
 		}
+		// LLM-283: negotiation beats (offered/declined/countered) are feed-only —
+		// keep them out of the NPC atmosphere digest so a haggle doesn't alter
+		// perceived village activity.
+		if isNegotiationActionType(e.ActionType) {
+			continue
+		}
 		a, ok := w.Actors[e.ActorID]
 		if !ok || a == nil || a.Kind == KindPC {
 			continue

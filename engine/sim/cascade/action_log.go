@@ -10,12 +10,14 @@ import (
 )
 
 // action_log.go — append-only in-memory action log substrate driver.
-// Wires thirteen event subscribers (Spoke / Paid / PayWithItemResolved /
-// ItemConsumed / ItemGathered / OrderDelivered / ActorArrived /
-// ActorLeftStructure / TookBreak / StayingOpen / LaborOfferReceived /
-// LaborOfferAccepted / LaborResolved) to translate engine events into
-// sim.ActionLogEntry rows, and spawns a sweep goroutine that periodically
-// compacts the log via sim.CompactActionLog.
+// Wires sixteen event subscribers (Spoke / Paid / PayOfferReceived /
+// PayWithItemResolved / PayCountered / ItemConsumed / ItemGathered /
+// OrderDelivered / ActorArrived / ActorLeftStructure / TookBreak / StayingOpen /
+// LaborOfferReceived / LaborOfferAccepted / LaborResolved) to translate engine
+// events into sim.ActionLogEntry rows, and spawns a sweep goroutine that
+// periodically compacts the log via sim.CompactActionLog. PayWithItemResolved
+// has two subscribers — one for the Accepted terminal (the settled sale) and one
+// for the Declined terminal (LLM-283 feed-only negotiation beat).
 //
 // Subscribers run inline on the world goroutine via emit dispatch;
 // the sweep goroutine runs off-world and routes mutations through
@@ -27,7 +29,10 @@ import (
 //   RegisterActionLog(ctx, w)
 //   ├─> w.Subscribe(handleSpokeActionLog)
 //   ├─> w.Subscribe(handlePaidActionLog)
+//   ├─> w.Subscribe(handleOfferedActionLog)
 //   ├─> w.Subscribe(handlePayResolvedActionLog)
+//   ├─> w.Subscribe(handleDeclinedActionLog)
+//   ├─> w.Subscribe(handleCounteredActionLog)
 //   ├─> w.Subscribe(handleConsumedActionLog)
 //   ├─> w.Subscribe(handleGatheredActionLog)
 //   ├─> w.Subscribe(handleOrderDeliveredActionLog)
@@ -48,8 +53,13 @@ import (
 //     engine-source enter_huddle rows; v1's chronicler digest didn't
 //     consume them, and v2's MVP consumers don't either. Add when a
 //     concrete consumer wants it.
-//   - No deliberation outcomes (declined / countered pay) — those
-//     handlers haven't ported yet.
+//   - Pay-ledger deliberation outcomes DO port (LLM-283): offered /
+//     declined / countered rows drive the Village activity feed so a
+//     multi-round haggle no longer reads as dead air. They are FEED-ONLY —
+//     isNegotiationActionType filters them out of the atmosphere digest and
+//     narrative consolidation so NPC behavior is unchanged. Gift offers /
+//     declines (IsGift) are skipped: a one-way give isn't a purchase haggle
+//     and would render with backwards buy-phrasing.
 //   - No Summon / SummonFailed — chronicler-dispatch is gone in v2;
 //     summon may never port.
 //   - No durable sink wire-through. The repo's ActionLogSink stays a
@@ -63,7 +73,7 @@ import (
 // controls how promptly memory is reclaimed.
 const defaultActionLogSweepInterval = 1 * time.Hour
 
-// RegisterActionLog wires the thirteen event subscribers and spawns the
+// RegisterActionLog wires the sixteen event subscribers and spawns the
 // compaction sweep goroutine. Must run on the world goroutine — call
 // before World.Run, or from inside a Command.Fn.
 //
@@ -80,7 +90,10 @@ func RegisterActionLog(ctx context.Context, w *sim.World) {
 	}
 	w.Subscribe(sim.SubscriberFunc(handleSpokeActionLog))
 	w.Subscribe(sim.SubscriberFunc(handlePaidActionLog))
+	w.Subscribe(sim.SubscriberFunc(handleOfferedActionLog))
 	w.Subscribe(sim.SubscriberFunc(handlePayResolvedActionLog))
+	w.Subscribe(sim.SubscriberFunc(handleDeclinedActionLog))
+	w.Subscribe(sim.SubscriberFunc(handleCounteredActionLog))
 	w.Subscribe(sim.SubscriberFunc(handleConsumedActionLog))
 	w.Subscribe(sim.SubscriberFunc(handleGatheredActionLog))
 	w.Subscribe(sim.SubscriberFunc(handleOrderDeliveredActionLog))
@@ -273,6 +286,188 @@ func handlePayResolvedActionLog(w *sim.World, evt sim.Event) {
 		Payload:     payload,
 		SpeakerName: display,
 		HuddleID:    resolved.HuddleID,
+		Source:      source,
+	})
+}
+
+// handleOfferedActionLog appends a row when a buyer's slow-path pay_with_item
+// mints (or renews via in_response_to) a pending pay-ledger offer — the
+// PayOfferReceived event (LLM-283). Buyer-side single row: ActorID is the buyer
+// (the offer is theirs), the seller is the counterparty, Amount is the coin offer
+// (0 for goods-only barter), Text is the item summary. The buyer + seller share
+// the offer's HuddleID by construction (co-presence is required to offer), so the
+// same-huddle talk-panel backload reaches the seller. Fast-path / auto-match
+// quote-takes never emit PayOfferReceived (they mint already-accepted), so only a
+// genuinely-pending offer — the dead-air the feed was missing — logs a row.
+//
+// Gift offers (give_goods, IsGift) also emit PayOfferReceived but are skipped:
+// a one-way give isn't a purchase haggle, and the buy-phrasing render would read
+// backwards ("offers X for 3x milk" when the giver is HANDING milk over).
+func handleOfferedActionLog(w *sim.World, evt sim.Event) {
+	offer, ok := evt.(*sim.PayOfferReceived)
+	if !ok {
+		return
+	}
+	if e := w.PayLedger[offer.LedgerID]; e != nil && e.IsGift {
+		return
+	}
+	// Total quantity across consumers (group orders): the event carries
+	// per-consumer qty; the narrated beat states the whole bundle. Empty
+	// ConsumerIDs is the buyer-only shape and counts as one consumer.
+	consumerCount := len(offer.ConsumerIDs)
+	if consumerCount == 0 {
+		consumerCount = 1
+	}
+	qty := offer.QtyPerConsumer * consumerCount
+	entry := sim.ActionLogEntry{
+		ActorID:          offer.BuyerID,
+		OccurredAt:       offer.At,
+		ActionType:       sim.ActionTypeOffered,
+		Text:             formatItemQty(offer.ItemKind, qty),
+		HuddleID:         offer.HuddleID,
+		CounterpartyName: actorDisplayNameOrEmpty(w, offer.SellerID),
+		Amount:           offer.Amount,
+	}
+	if _, err := sim.AppendActionLogEntry(entry).Fn(w); err != nil {
+		log.Printf("cascade/action_log: append offered (buyer %q ledger %d event %d): %v",
+			offer.BuyerID, offer.LedgerID, offer.EventID(), err)
+		return
+	}
+	// Durable mirror (LLM-283): ledger_id + terms so the whole haggle is
+	// reconstructable from agent_action_log alone (the side benefit) — buyer is
+	// the speaker, seller the counterparty. The row lands in agent_action_log for
+	// tracing/audit, but the sim-conversation distiller DROPS these unmapped kinds
+	// from dream narration (memory-api, its unmapped-kind default), so it does NOT
+	// feed NPC dream memory — this is durable audit only, not a dream beat.
+	display, source := actorDisplayAndSource(w, offer.BuyerID)
+	w.AppendActionLogDurable(sim.DurableActionLogRow{
+		ActorID:    offer.BuyerID,
+		OccurredAt: offer.At,
+		ActionType: sim.ActionTypeOffered,
+		Payload: map[string]any{
+			"ledger_id": offer.LedgerID,
+			"item":      string(offer.ItemKind),
+			"qty":       qty,
+			"amount":    offer.Amount,
+			"seller":    actorDisplayName(w, offer.SellerID),
+		},
+		SpeakerName: display,
+		HuddleID:    offer.HuddleID,
+		Source:      source,
+	})
+}
+
+// handleDeclinedActionLog appends a row when a seller's decline_pay flips a
+// pending purchase offer to the Declined terminal — a PayWithItemResolved with
+// TerminalState=Declined (LLM-283). It rides the same event as
+// handlePayResolvedActionLog (which owns the Accepted terminal); the two split by
+// TerminalState so each keeps a single, readable body. Seller-side single row:
+// ActorID is the seller (the decline is theirs), the buyer is the counterparty.
+// No coins move. Other terminals (withdrawn / expired / failed_*) log nothing.
+//
+// Gift declines (decline_gift, IsGift) also reach this terminal but are skipped —
+// a declined give isn't a purchase haggle (see handleOfferedActionLog).
+func handleDeclinedActionLog(w *sim.World, evt sim.Event) {
+	resolved, ok := evt.(*sim.PayWithItemResolved)
+	if !ok {
+		return
+	}
+	if resolved.TerminalState != sim.PayTerminalStateDeclined {
+		return
+	}
+	if e := w.PayLedger[resolved.LedgerID]; e != nil && e.IsGift {
+		return
+	}
+	consumerCount := len(resolved.ConsumerIDs)
+	if consumerCount == 0 {
+		consumerCount = 1
+	}
+	qty := resolved.QtyPerConsumer * consumerCount
+	entry := sim.ActionLogEntry{
+		ActorID:          resolved.SellerID,
+		OccurredAt:       resolved.At,
+		ActionType:       sim.ActionTypeDeclined,
+		Text:             formatItemQty(resolved.ItemKind, qty),
+		HuddleID:         resolved.HuddleID,
+		CounterpartyName: actorDisplayNameOrEmpty(w, resolved.BuyerID),
+		Amount:           resolved.Amount,
+	}
+	if _, err := sim.AppendActionLogEntry(entry).Fn(w); err != nil {
+		log.Printf("cascade/action_log: append declined (seller %q ledger %d event %d): %v",
+			resolved.SellerID, resolved.LedgerID, resolved.EventID(), err)
+		return
+	}
+	display, source := actorDisplayAndSource(w, resolved.SellerID)
+	w.AppendActionLogDurable(sim.DurableActionLogRow{
+		ActorID:    resolved.SellerID,
+		OccurredAt: resolved.At,
+		ActionType: sim.ActionTypeDeclined,
+		Payload: map[string]any{
+			"ledger_id": resolved.LedgerID,
+			"item":      string(resolved.ItemKind),
+			"qty":       qty,
+			"amount":    resolved.Amount,
+			"buyer":     actorDisplayName(w, resolved.BuyerID),
+		},
+		SpeakerName: display,
+		HuddleID:    resolved.HuddleID,
+		Source:      source,
+	})
+}
+
+// handleCounteredActionLog appends a row when a seller's counter_pay flips a
+// pending offer to the Countered terminal — the PayCountered event (LLM-283).
+// Seller-side single row: ActorID is the seller (the counter is theirs), the
+// buyer is the counterparty, Amount is the seller's counter price (CounterAmount;
+// a non-increasing counter is coerced to an accept upstream and emits no
+// PayCountered, so a countered row always carries a genuine new price). ledger_id
+// is the PARENT entry — the buyer's response is a fresh chained entry with its
+// own id. Gift entries aren't counterable in practice, but skip IsGift for
+// symmetry with the offered / declined handlers.
+func handleCounteredActionLog(w *sim.World, evt sim.Event) {
+	countered, ok := evt.(*sim.PayCountered)
+	if !ok {
+		return
+	}
+	if e := w.PayLedger[countered.ParentID]; e != nil && e.IsGift {
+		return
+	}
+	consumerCount := len(countered.ConsumerIDs)
+	if consumerCount == 0 {
+		consumerCount = 1
+	}
+	qty := countered.QtyPerConsumer * consumerCount
+	entry := sim.ActionLogEntry{
+		ActorID:          countered.SellerID,
+		OccurredAt:       countered.At,
+		ActionType:       sim.ActionTypeCountered,
+		Text:             formatItemQty(countered.ItemKind, qty),
+		HuddleID:         countered.HuddleID,
+		CounterpartyName: actorDisplayNameOrEmpty(w, countered.BuyerID),
+		Amount:           countered.CounterAmount,
+	}
+	if _, err := sim.AppendActionLogEntry(entry).Fn(w); err != nil {
+		log.Printf("cascade/action_log: append countered (seller %q ledger %d event %d): %v",
+			countered.SellerID, countered.ParentID, countered.EventID(), err)
+		return
+	}
+	// Durable mirror (LLM-283): original_amount alongside the counter amount so
+	// the durable trail shows the price MOVE, not just the new number.
+	display, source := actorDisplayAndSource(w, countered.SellerID)
+	w.AppendActionLogDurable(sim.DurableActionLogRow{
+		ActorID:    countered.SellerID,
+		OccurredAt: countered.At,
+		ActionType: sim.ActionTypeCountered,
+		Payload: map[string]any{
+			"ledger_id":       countered.ParentID,
+			"item":            string(countered.ItemKind),
+			"qty":             qty,
+			"amount":          countered.CounterAmount,
+			"original_amount": countered.OriginalAmount,
+			"buyer":           actorDisplayName(w, countered.BuyerID),
+		},
+		SpeakerName: display,
+		HuddleID:    countered.HuddleID,
 		Source:      source,
 	})
 }

@@ -709,6 +709,18 @@ func TestRenderActionLogEntry(t *testing.T) {
 		{"hired amount recipient", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeHired, CounterpartyName: "Hannah", Amount: 4}, "Tester", "Tester hires Hannah for 4 coins.", "act", true},
 		{"hired recipient no amount", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeHired, CounterpartyName: "Hannah", Amount: 0}, "Tester", "Tester hires Hannah.", "act", true},
 		{"hired no recipient", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeHired, CounterpartyName: "", Amount: 4}, "Tester", "Tester takes someone on.", "act", true},
+		// LLM-283: pay-ledger negotiation beats (feed-only). Offered degrades like
+		// the paid line; declined/countered name the counterparty.
+		{"offered amount item", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeOffered, CounterpartyName: "Hannah", Amount: 3, Text: "3x milk"}, "Tester", "Tester offers Hannah 3 coins for 3x milk.", "act", true},
+		{"offered one coin", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeOffered, CounterpartyName: "Hannah", Amount: 1, Text: "bread"}, "Tester", "Tester offers Hannah 1 coin for bread.", "act", true},
+		{"offered goods-only drops amount", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeOffered, CounterpartyName: "Hannah", Amount: 0, Text: "3x milk"}, "Tester", "Tester offers Hannah for 3x milk.", "act", true},
+		{"offered no counterparty", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeOffered, CounterpartyName: "", Amount: 3, Text: "3x milk"}, "Tester", "Tester makes an offer.", "act", true},
+		{"declined with buyer", sim.ActionLogEntry{ActorID: "npc", ActionType: sim.ActionTypeDeclined, CounterpartyName: "Tester"}, "Hannah", "Hannah declines Tester's offer.", "act", true},
+		{"declined no counterparty", sim.ActionLogEntry{ActorID: "npc", ActionType: sim.ActionTypeDeclined, CounterpartyName: ""}, "Hannah", "Hannah declines an offer.", "act", true},
+		{"countered amount", sim.ActionLogEntry{ActorID: "npc", ActionType: sim.ActionTypeCountered, CounterpartyName: "Tester", Amount: 5}, "Hannah", "Hannah counters at 5 coins.", "act", true},
+		{"countered one coin", sim.ActionLogEntry{ActorID: "npc", ActionType: sim.ActionTypeCountered, CounterpartyName: "Tester", Amount: 1}, "Hannah", "Hannah counters at 1 coin.", "act", true},
+		{"countered goods-only names buyer", sim.ActionLogEntry{ActorID: "npc", ActionType: sim.ActionTypeCountered, CounterpartyName: "Tester", Amount: 0}, "Hannah", "Hannah counters Tester's offer.", "act", true},
+		{"countered goods-only no counterparty", sim.ActionLogEntry{ActorID: "npc", ActionType: sim.ActionTypeCountered, CounterpartyName: "", Amount: 0}, "Hannah", "Hannah makes a counteroffer.", "act", true},
 		{"unknown actor skipped", sim.ActionLogEntry{ActorID: "ghost", ActionType: sim.ActionTypeSpoke, Text: "boo"}, "", "", "", false},
 	}
 	for _, tc := range cases {
