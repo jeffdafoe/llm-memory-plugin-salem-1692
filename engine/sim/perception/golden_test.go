@@ -883,7 +883,7 @@ var perceptionScenarios = []perceptionScenario{
 		name: "owner_at_degraded_stall",
 		summary: "A business owner stands at his own DEGRADED premises (wear past the degrade threshold — closed for " +
 			"trade), carrying enough nails. The golden pins the escalated '## Your business' steer ('too worn to trade … " +
-			"repair it now') — the seller-facing half of the degrade sales-block (LLM-118).",
+			"use the repair tool now to fix it') — the seller-facing half of the degrade sales-block (LLM-118).",
 		build: ownerAtDegradedStall,
 	},
 	{
@@ -3564,7 +3564,7 @@ func ownerAtWornStall() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 }
 
 // ownerAtDegradedStall: the owner at his own degraded stall with nails in hand —
-// the "too worn to trade … repair it now" steer. wear 650 (>= degrade 600).
+// the "too worn to trade … use the repair tool now to fix it" steer. wear 650 (>= degrade 600).
 func ownerAtDegradedStall() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	return stallWearSnapshot("ezekiel", "ezekiel", "Ezekiel Crane", "blacksmith", 650, 5)
 }

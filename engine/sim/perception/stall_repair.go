@@ -97,7 +97,7 @@ func renderStallRepair(b *strings.Builder, v *StallRepairView) {
 		fmt.Fprintf(b, "Your %s is showing hard use and needs mending. ", name)
 	}
 	if v.HasEnoughNails {
-		fmt.Fprintf(b, "You carry enough nails (%d) to mend it — repair it now (it takes a short while, hammer in hand, on site).\n", v.NailsHeld)
+		fmt.Fprintf(b, "You carry enough nails (%d) to mend it — use the repair tool now to fix it, hammer in hand, on site (it takes a short while).\n", v.NailsHeld)
 	} else if len(v.NailVendors) > 0 {
 		// LLM-274: name the actual nail supplier(s) — workplace + structure_id, resolved
 		// via findItemVendors — in the model-proven Restocking format, plus the repair's
@@ -129,7 +129,7 @@ func renderHiredStallRepair(b *strings.Builder, v *StallRepairView, name string)
 		fmt.Fprintf(b, "The %s you're working at is showing hard use and needs mending. ", name)
 	}
 	if v.HasEnoughNails {
-		fmt.Fprintf(b, "You carry enough nails (%d) to mend it — repair it now (it takes a short while, hammer in hand, on site).\n", v.NailsHeld)
+		fmt.Fprintf(b, "You carry enough nails (%d) to mend it — use the repair tool now to fix it, hammer in hand, on site (it takes a short while).\n", v.NailsHeld)
 	} else {
 		fmt.Fprintf(b, "Mending takes %d nails and you have %d — you'd need more from the smith first.\n", v.NailsNeeded, v.NailsHeld)
 	}
