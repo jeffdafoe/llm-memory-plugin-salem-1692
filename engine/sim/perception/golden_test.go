@@ -691,6 +691,18 @@ var perceptionScenarios = []perceptionScenario{
 		build: producerInputBelowBatchFloorReorders,
 	},
 	{
+		name: "reseller_arrives_at_supplier_buy_here_no_huddle",
+		summary: "LLM-286 arrival tick: John Ellis, a tavernkeeper reselling ale, walked to the Brewery to restock and " +
+			"stands inside it with the brewer Anders (an ale PRODUCER), but NO huddle exists yet — one forms only when " +
+			"someone speaks. pay_with_item bootstraps the co-located huddle on the call itself (withHuddleBootstrap, " +
+			"ZBBS-HOME-400), so the keeper IS reachable this tick. The golden pins that the '## Restocking' section renders " +
+			"the concrete 'Anders Brewer is here with you and sells ale. Buy it now …' imperative, NOT the 'No seller is " +
+			"here now — use move_to …' walk-to list that would wrongly point him to the very Brewery he stands in. Before " +
+			"LLM-286 the huddle-only co-presence gate could not fire on an arrival tick, so the buyer was told to walk to " +
+			"where he already was (live: zbbs-john-ellis, virtual_agent_calls id 63123).",
+		build: resellerArrivesAtSupplierBuyHereNoHuddle,
+	},
+	{
 		name: "keeper_not_pitching_makers_own_ware",
 		summary: "LLM-171 seller side: John Ellis keeps his tavern in company with Ezekiel Crane the smith, and John's " +
 			"stock holds skillet + nail he bought FROM Ezekiel. The '## Custom at hand' cue lists those wares to pitch, so " +
@@ -5423,6 +5435,83 @@ func producerInputBelowBatchFloorReorders() (*sim.Snapshot, sim.ActorID, []sim.W
 		},
 	}
 	return snap, hannahID, nil
+}
+
+// resellerArrivesAtSupplierBuyHereNoHuddle is the LLM-286 arrival tick: John Ellis,
+// a tavernkeeper reselling ale, stepped out mid-shift and walked to the Brewery to
+// restock. He stands INSIDE it with the brewer Anders (a first-hand ale producer),
+// but no huddle exists yet — one forms only when someone speaks. pay_with_item
+// bootstraps the co-located huddle on the call itself (withHuddleBootstrap,
+// ZBBS-HOME-400), so the keeper is reachable this very tick. The golden pins that the
+// "## Restocking" section renders the concrete "Anders Brewer is here with you and
+// sells ale. Buy it now …" imperative rather than the "No seller is here now — use
+// move_to …" walk-to list, which before LLM-286 wrongly told him to walk to the
+// Brewery he already stood in (live: zbbs-john-ellis, virtual_agent_calls id 63123).
+func resellerArrivesAtSupplierBuyHereNoHuddle() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		johnID   = sim.ActorID("john")
+		brewerID = sim.ActorID("anders")
+		tavern   = sim.StructureID("tavern")
+		brewery  = sim.StructureID("brewery")
+	)
+	start, end := 360, 1080 // 06:00-18:00 tavern day shift
+	now := 720              // 12:00 — on shift, stepped out to restock
+	published := time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)
+	john := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "John Ellis",
+		Role:              "tavernkeeper",
+		State:             sim.StateIdle,
+		WorkStructureID:   tavern,
+		InsideStructureID: brewery, // arrived at the supplier's shop, away from his own post
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             40,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"ale": 1}, // below the reorder threshold (cap 20)
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "ale", Source: sim.RestockSourceBuy, Max: 20},
+		}},
+		// World-computed awareness: unhuddled, John's co-located audience in the
+		// Brewery is Anders — the same structure scope pay_with_item's bootstrap
+		// resolves. Stamped here so the "## Around you" line names Anders as it does
+		// in production (hand-built snapshots don't get the world-side republish),
+		// keeping the pinned prompt internally consistent with the buy-here cue.
+		ColocatedAudienceIDs: []sim.ActorID{brewerID},
+	}
+	anders := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Anders Brewer",
+		Role:              "brewer",
+		State:             sim.StateIdle,
+		WorkStructureID:   brewery,
+		InsideStructureID: brewery, // working inside, co-present with John — no huddle yet
+		Coins:             10,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"ale": 40},
+		// Produces ale, so he is a first-hand supplier (LLM-252), not a reseller.
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "ale", Source: sim.RestockSourceProduce, Max: 40},
+		}},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{johnID: john, brewerID: anders},
+		Structures: map[sim.StructureID]*sim.Structure{
+			tavern:  plainStructure(tavern, "Tavern"),
+			brewery: plainStructure(brewery, "The Brewery"),
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"ale": {Name: "ale", DisplayLabel: "ale", Category: sim.ItemCategoryDrink},
+		},
+		RestockReorderPct: 25,
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"ale": {OutputItem: "ale", OutputQty: 1, RateQty: 1, RatePerHours: 1, WholesalePrice: 1, RetailPrice: 2},
+		},
+	}
+	return snap, johnID, nil
 }
 
 // keeperNotPitchingMakersOwnWare is the LLM-171 seller side: John Ellis keeps

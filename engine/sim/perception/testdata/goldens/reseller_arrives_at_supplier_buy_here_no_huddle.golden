@@ -1,0 +1,22 @@
+# Your turn
+
+## What just happened
+(nothing specific — this is a routine check-in)
+
+
+## You
+Coins in your purse: 40.
+You are carrying: ale (x1).
+
+## Around you
+You are inside The Brewery. the brewer is here with you.
+It is midday.
+
+You keep your trade at the Tavern (structure_id: tavern) — you can head back there whenever you wish.
+
+## Restocking
+Your shop stock of these bought-in goods is running low. You choose how much to buy.
+- You have 1 ale on hand and room for 19 more at the most.
+  - Anders Brewer is here with you and sells ale. Buy it now — first call pay_with_item with seller "Anders Brewer", item "ale", a qty up to 19, and a payment: coins (amount), goods you carry (pay_items), or both, with consume_now false. Then also use speak for a brief handoff line as you make the offer. They will accept or counter your offer.
+
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.

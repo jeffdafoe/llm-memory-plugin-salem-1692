@@ -484,22 +484,59 @@ func findItemVendors(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *sim.Act
 	return out
 }
 
+// conversationalScopeStructure resolves the structure an actor is conversationally
+// scoped to, off the perception snapshot: the structure it stands inside, else the
+// named object whose loiter pin it stands within AudienceScopeTiles of — the
+// owner-only-shop commerce position, where the customer converses across the
+// threshold without ever entering (ZBBS-HOME-378). Empty when neither holds (open
+// ground, no stall within the loiter ring). The snapshot mirror of
+// sim.conversationalScopeStructure (the live-World scope EnsureColocatedHuddle
+// forms the co-located huddle on) and of httpapi.pcAudienceStructure — same
+// inside-else-loiter-pin rule, resolved over the same ResolveLoiteringObject, so
+// the buy-here cue and the pay_with_item huddle bootstrap agree on who is co-present.
+func conversationalScopeStructure(snap *sim.Snapshot, a *sim.ActorSnapshot) sim.StructureID {
+	if a.InsideStructureID != "" {
+		return a.InsideStructureID
+	}
+	if id, ok := sim.ResolveLoiteringObject(snap.VillageObjects, snap.Assets, a.Pos, sim.AudienceScopeTiles); ok {
+		return sim.StructureID(string(id))
+	}
+	return ""
+}
+
 // coPresentSellerForItem returns the display name of a seller holding itemKind
-// who shares the reseller's CURRENT huddle — i.e. a pay_with_item(seller: …) for
-// this item resolves this very tick. pay_with_item requires the seller to be "in
-// your conversation", and a shared huddle IS that conversation, so this is the
-// exact precondition for the buy-here imperative (and the same co-presence test
-// deliver_order's gate uses — see absentRecipientNames in build.go). Runs over
-// the shared structural-vendorship scan (eachVendorOffer), like findItemVendors.
-// Returns ("", "") when the reseller is in no huddle, or no co-present seller of
-// itemKind has a usable display name. Deterministic: lowest VendorID among the
-// co-present sellers, so the named seller is stable across snapshots. The id is
-// returned alongside the name so the caller can check for a standing offer to
-// this exact seller (hasPendingOfferTo, LLM-64). ZBBS-HOME-388.
+// who is co-present with the reseller RIGHT NOW — i.e. a pay_with_item(seller: …)
+// for this item resolves this very tick. Co-presence is the exact precondition
+// pay_with_item resolves through withHuddleBootstrap (ZBBS-HOME-400): the pay call
+// runs EnsureColocatedHuddle before its "you're not in a conversation" gate, so a
+// seller is reachable when they EITHER already share the reseller's huddle OR stand
+// in the reseller's conversational structure scope (where the pay call bootstraps
+// the co-located huddle first). The huddle branch covers a seller met away from
+// their shop (the Josiah↔John General Store haggle); the structure-scope branch
+// covers the arrival tick at a quiet shop, where no huddle exists yet — the moment
+// the buy-here imperative was built for, but the old huddle-only gate fired exactly
+// one tick too late for (LLM-286). Runs over the shared structural-vendorship scan
+// (eachVendorOffer), like findItemVendors, and only first-hand suppliers pass
+// (isRestockSupplierOf, LLM-252).
+//
+// The BUYER resolves scope loiter-aware (a customer at an owner-only shop stands at
+// the loiter pin OUTSIDE, InsideStructureID == ""), but the SELLER is tested by its
+// literal InsideStructureID: EnsureColocatedHuddle pulls co-located actors into the
+// huddle by InsideStructureID == scope (colocatedConversationalActors), so a seller
+// merely loitering at the same stall — whom the pay bootstrap would NOT huddle —
+// must not read as co-present and lure a "buy it now" the tool would then reject.
+//
+// Returns ("", "") when the reseller is neither in a huddle nor in a structure
+// scope, or no co-present seller of itemKind has a usable display name.
+// Deterministic: lowest VendorID among the co-present sellers, so the named seller
+// is stable across snapshots. The id is returned alongside the name so the caller
+// can check for a standing offer to this exact seller (hasPendingOfferTo, LLM-64).
+// ZBBS-HOME-388.
 func coPresentSellerForItem(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *sim.ActorSnapshot, itemKind sim.ItemKind) (string, sim.ActorID) {
 	huddle := buyerSnap.CurrentHuddleID
-	if huddle == "" {
-		return "", ""
+	buyerScope := conversationalScopeStructure(snap, buyerSnap)
+	if huddle == "" && buyerScope == "" {
+		return "", "" // neither conversing nor standing in a shop scope — no one to pay here
 	}
 	var bestID sim.ActorID
 	var bestName string
@@ -511,7 +548,16 @@ func coPresentSellerForItem(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *
 			return // LLM-252: only first-hand suppliers (or the distributor), never a reseller's retail stock
 		}
 		seller := snap.Actors[o.VendorID]
-		if seller == nil || seller.DisplayName == "" || seller.CurrentHuddleID != huddle {
+		if seller == nil || seller.DisplayName == "" {
+			return
+		}
+		// LLM-286: co-present via a shared huddle OR the buyer's structure scope —
+		// the two ways withHuddleBootstrap lets the pay call resolve a seller this
+		// tick. Seller scope is its literal InsideStructureID (see the doc comment),
+		// the buyer's is loiter-aware.
+		sharesHuddle := huddle != "" && seller.CurrentHuddleID == huddle
+		sharesScope := buyerScope != "" && seller.InsideStructureID == buyerScope
+		if !sharesHuddle && !sharesScope {
 			return
 		}
 		if bestID == "" || o.VendorID < bestID {
