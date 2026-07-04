@@ -1,0 +1,23 @@
+# Your turn
+
+## What just happened
+1. Hunger is beginning to tug at you, and you have the means to see to it — better to get something to eat now than to let it grow sharp.
+
+
+## You
+You feel peckish.
+Coins in your purse: 5.
+
+## Around you
+You are outdoors, with no one else here to hear you speak.
+It is midday.
+
+Your home is at the Walker House (structure_id: walker_house) — you can head back there whenever you wish.
+
+## What you can eat or drink
+Free to eat nearby:
+- Blueberry Bush — a nibble, free, a long walk southeast (structure_id: blueberry_bush)
+Nearby to buy (hunger):
+- General Store — buy a bowl of porridge (a good meal), ask the seller, to eat there (it can't be carried away) (structure_id: general_store)
+
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.

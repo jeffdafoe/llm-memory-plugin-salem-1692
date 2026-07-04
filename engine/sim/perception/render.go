@@ -2809,6 +2809,13 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 		return renderArrivalWarrantLine(n, nameOf(w.TriggerActorID), r, placeNameOf), false
 	case sim.NeedThresholdWarrantReason:
 		return renderNeedNudgeLine(n, r.Need), false
+	case sim.TendNeedWarrantReason:
+		// LLM-276: the gentle "you've grown peckish and have the means to see to it"
+		// pull for a workless idle worker, stamped by the seek-work backstop in place
+		// of the go-earn impulse. Generic felt line — the actionable targets (what to
+		// eat/drink and where) render from the "## What you can eat or drink" section
+		// and the need-redirect steer, both keyed off this same warrant.
+		return renderTendNeedLine(n, r.Need), false
 	case sim.SceneQuoteTargetedWarrantReason:
 		// A bundle is eat-here if ANY line is non-portable (the whole bundle
 		// was clamped to eat-here at quote creation, LLM-101).
@@ -2934,6 +2941,24 @@ func renderNeedNudgeLine(n int, need sim.NeedKey) string {
 		return fmt.Sprintf("%d. Weariness is settling over you.\n", n)
 	default:
 		return fmt.Sprintf("%d. A need is pressing on you.\n", n)
+	}
+}
+
+// renderTendNeedLine renders a tend-need warrant (LLM-276) as a gentle felt pull to
+// eat or drink before the need grows sharp — the seek-work backstop's redirect for a
+// workless idle worker who has grown hungry/thirsty and can resolve it now. Softer
+// than renderNeedNudgeLine (which is the red-tier "pressing on you" distress beat):
+// this fires below the red-line, so it reads as foresight, not urgency. The
+// actionable specifics (what to eat/drink, where) render from the satiation section
+// + the need-redirect steer. Falls back to a generic pull for an unrecognized need.
+func renderTendNeedLine(n int, need sim.NeedKey) string {
+	switch need {
+	case "hunger":
+		return fmt.Sprintf("%d. Hunger is beginning to tug at you, and you have the means to see to it — better to get something to eat now than to let it grow sharp.\n", n)
+	case "thirst":
+		return fmt.Sprintf("%d. A thirst is creeping up on you, and you have the means to see to it — better to get a drink now than to let it grow sharp.\n", n)
+	default:
+		return fmt.Sprintf("%d. A need is beginning to press, and you have the means to see to it now.\n", n)
 	}
 }
 

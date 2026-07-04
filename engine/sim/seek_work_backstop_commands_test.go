@@ -243,6 +243,162 @@ func TestSeekWorkBackstop_PastTTLPendingOfferDoesNotBlock(t *testing.T) {
 	}
 }
 
+func hasTendNeedWarrant(a *Actor) bool {
+	for _, k := range warrantKinds(a) {
+		if k == WarrantKindTendNeed {
+			return true
+		}
+	}
+	return false
+}
+
+// foodVendorWorld is workerShiftWorld with a stationed keeper selling porridge at
+// retail 5 — the coin arm of LLM-276 resolvability requires a real affordable vendor,
+// not just a positive purse (code_review). The keeper carries no worker attribute, so
+// the sweep skips it and only the subject can stamp.
+func foodVendorWorld(subject *Actor) *World {
+	keeper := &Actor{
+		ID:                "keeper",
+		Kind:              KindNPCShared,
+		WorkStructureID:   "store",
+		InsideStructureID: "store",
+		Inventory:         map[ItemKind]int{"porridge": 5},
+	}
+	w := workerShiftWorld(subject, keeper)
+	w.Structures = map[StructureID]*Structure{"store": {}}
+	w.ItemKinds = map[ItemKind]*ItemKindDef{
+		"porridge": {Satisfies: []ItemSatisfaction{{Attribute: "hunger", Immediate: 8}}},
+	}
+	w.Recipes = map[ItemKind]*ItemRecipe{
+		"porridge": {OutputItem: "porridge", RetailPrice: 5},
+	}
+	return w
+}
+
+// TestSeekWorkBackstop_RedirectsResolvableHungerToEat is the LLM-276 core: a workless
+// idle worker whose hunger sits in the upper felt band (13..17, below the red-line 18)
+// AND who can resolve it now (holds coin, an affordable porridge vendor is stationed)
+// is woken with a TEND-NEED impulse to go eat, NOT the go-earn seek-work one. The
+// redirect rides the same stamp/backoff path, so Stamped is still 1 — only the felt
+// impulse differs.
+func TestSeekWorkBackstop_RedirectsResolvableHungerToEat(t *testing.T) {
+	a := homedWorker("w")
+	a.Needs = map[NeedKey]int{"hunger": 15} // in [18-5, 18) — upper felt, sub-red
+	a.Coins = 5                             // covers the porridge retail (5)
+	w := foodVendorWorld(a)
+	tm := evalSeekWork(t, w, seekNoon)
+	if tm.Stamped != 1 || tm.Redirected != 1 {
+		t.Fatalf("Stamped=%d Redirected=%d, want 1/1; telemetry=%+v", tm.Stamped, tm.Redirected, tm)
+	}
+	if !hasTendNeedWarrant(a) {
+		t.Errorf("warrant is not tend_need; kinds=%v", warrantKinds(a))
+	}
+	if hasSeekWorkWarrant(a) {
+		t.Errorf("stamped a seek_work warrant when it should redirect to eating; kinds=%v", warrantKinds(a))
+	}
+}
+
+// TestSeekWorkBackstop_CoinButUnaffordableSeeksWork: coin in the band is NOT enough on
+// its own — if every sold satisfier costs more than the purse and there is no free
+// source or carried food, the need is unresolvable, so the worker stays on seek-work
+// (goes to earn more). Guards against the coins>0 false-positive code_review flagged.
+func TestSeekWorkBackstop_CoinButUnaffordableSeeksWork(t *testing.T) {
+	a := homedWorker("w")
+	a.Needs = map[NeedKey]int{"hunger": 15}
+	a.Coins = 3 // below the porridge retail (5), no free source, carries nothing
+	w := foodVendorWorld(a)
+	tm := evalSeekWork(t, w, seekNoon)
+	if tm.Stamped != 1 || tm.Redirected != 0 {
+		t.Fatalf("Stamped=%d Redirected=%d, want 1/0; telemetry=%+v", tm.Stamped, tm.Redirected, tm)
+	}
+	if !hasSeekWorkWarrant(a) {
+		t.Errorf("unaffordable coin should fall back to seek_work; kinds=%v", warrantKinds(a))
+	}
+}
+
+// TestSeekWorkBackstop_BelowBandSeeksWork: a hunger below the redirect band
+// (threshold-margin) is not pressing enough to interrupt earning — the worker still
+// gets the ordinary seek-work impulse.
+func TestSeekWorkBackstop_BelowBandSeeksWork(t *testing.T) {
+	a := homedWorker("w")
+	a.Needs = map[NeedKey]int{"hunger": 10} // below 18-5=13 → not in the band
+	a.Coins = 5
+	w := workerShiftWorld(a)
+	tm := evalSeekWork(t, w, seekNoon)
+	if tm.Stamped != 1 || tm.Redirected != 0 {
+		t.Fatalf("Stamped=%d Redirected=%d, want 1/0; telemetry=%+v", tm.Stamped, tm.Redirected, tm)
+	}
+	if !hasSeekWorkWarrant(a) {
+		t.Errorf("warrant is not seek_work; kinds=%v", warrantKinds(a))
+	}
+}
+
+// TestSeekWorkBackstop_UnresolvableHungerSeeksWork: a worker hungry in the band but
+// with NO way to eat now — no coin, no carried food, no free source — stays on
+// seek-work, so it goes and earns meal money. The resolvable gate is what splits the
+// redirect from the fallback.
+func TestSeekWorkBackstop_UnresolvableHungerSeeksWork(t *testing.T) {
+	a := homedWorker("w")
+	a.Needs = map[NeedKey]int{"hunger": 15}
+	a.Coins = 0 // broke; no inventory, no free source in this world → unresolvable
+	w := workerShiftWorld(a)
+	tm := evalSeekWork(t, w, seekNoon)
+	if tm.Stamped != 1 || tm.Redirected != 0 {
+		t.Fatalf("Stamped=%d Redirected=%d, want 1/0; telemetry=%+v", tm.Stamped, tm.Redirected, tm)
+	}
+	if !hasSeekWorkWarrant(a) {
+		t.Errorf("unresolvable hunger should fall back to seek_work; kinds=%v", warrantKinds(a))
+	}
+}
+
+// TestSeekWorkBackstop_RedirectsViaOwnStock: a broke worker that CARRIES a hunger
+// satisfier is resolvable (own stock) and redirected to eat — no coin needed.
+func TestSeekWorkBackstop_RedirectsViaOwnStock(t *testing.T) {
+	a := homedWorker("w")
+	a.Needs = map[NeedKey]int{"hunger": 15}
+	a.Coins = 0
+	a.Inventory = map[ItemKind]int{"bread": 1}
+	w := workerShiftWorld(a)
+	w.ItemKinds = map[ItemKind]*ItemKindDef{
+		"bread": {Satisfies: []ItemSatisfaction{{Attribute: "hunger", Immediate: 4}}},
+	}
+	tm := evalSeekWork(t, w, seekNoon)
+	if tm.Redirected != 1 || !hasTendNeedWarrant(a) {
+		t.Fatalf("carried food should redirect to eating; Redirected=%d kinds=%v", tm.Redirected, warrantKinds(a))
+	}
+}
+
+// TestSeekWorkBackstop_RedirectsViaFreeSource: a broke worker with a free public
+// hunger source (an unowned bush) in the world is resolvable and redirected to eat.
+func TestSeekWorkBackstop_RedirectsViaFreeSource(t *testing.T) {
+	a := homedWorker("w")
+	a.Needs = map[NeedKey]int{"hunger": 15}
+	a.Coins = 0
+	w := workerShiftWorld(a)
+	w.VillageObjects = map[VillageObjectID]*VillageObject{
+		"bush": {Refreshes: []*ObjectRefresh{{Attribute: "hunger", Amount: -5}}}, // unowned, eases hunger
+	}
+	tm := evalSeekWork(t, w, seekNoon)
+	if tm.Redirected != 1 || !hasTendNeedWarrant(a) {
+		t.Fatalf("free source should redirect to eating; Redirected=%d kinds=%v", tm.Redirected, warrantKinds(a))
+	}
+}
+
+// TestSeekWorkBackstop_RespectsTunedNeedMargin: the band reads the LIVE
+// WorldSettings margin. Widened to 10, a hunger of 10 (in [18-10, 18)) now redirects
+// where it wouldn't at the default 5 — proving the live-tune takes effect.
+func TestSeekWorkBackstop_RespectsTunedNeedMargin(t *testing.T) {
+	a := homedWorker("w")
+	a.Needs = map[NeedKey]int{"hunger": 10}
+	a.Coins = 5
+	w := foodVendorWorld(a)
+	w.Settings.SeekWorkNeedYieldMargin = 10 // band becomes [8, 18) → 10 qualifies
+	tm := evalSeekWork(t, w, seekNoon)
+	if tm.Redirected != 1 || !hasTendNeedWarrant(a) {
+		t.Fatalf("tuned margin should redirect hunger 10; Redirected=%d kinds=%v", tm.Redirected, warrantKinds(a))
+	}
+}
+
 // TestSeekWorkBackstop_YieldsToRedNeed: a workless worker that is ALSO red on a
 // need is left to the red-need backstop (eat before work) — no seek-work warrant.
 func TestSeekWorkBackstop_YieldsToRedNeed(t *testing.T) {

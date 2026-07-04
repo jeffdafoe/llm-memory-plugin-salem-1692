@@ -597,6 +597,17 @@ type WorldSettings struct {
 	// snapshot at publish so the perception gates read it without racing on w.Settings.
 	SeekWorkCoinCeiling int
 
+	// SeekWorkNeedYieldMargin is the width, below each need's red-line threshold, of
+	// the upper-felt band in which the seek-work backstop redirects a resolvable-need
+	// worker to eat/drink instead of hunting odd jobs (LLM-276). A workless idle worker
+	// whose hunger/thirst sits in [threshold-margin, threshold) and can resolve it now
+	// is woken with a tend-need felt impulse rather than the seek-work one. <= 0 falls
+	// back to SeekWorkNeedYieldMarginDefault (5) via effectiveSeekWorkNeedYieldMargin.
+	// Live-tunable + persisted (settings/seek-work-need-margin, read side GET /settings).
+	// Engine-side only — perception keys the matching directory suppression + need-
+	// redirect off the stamped tend-need warrant, so no snapshot mirror is needed.
+	SeekWorkNeedYieldMargin int
+
 	// LaborProduceBoostPct is the per-worker production boost (LLM-224): each hired
 	// worker laboring at the keeper's establishment adds this percent of the keeper's
 	// own base rate to the produce tick (50 → one helper makes goods arrive 1.5x as

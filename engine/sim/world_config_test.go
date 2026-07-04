@@ -235,3 +235,43 @@ func TestSetSeekWorkCoinCeiling(t *testing.T) {
 		t.Errorf("ceiling after rejected sets = %d, want 30 (unchanged)", w.Settings.SeekWorkCoinCeiling)
 	}
 }
+
+// TestSetSeekWorkNeedYieldMargin covers the LLM-276 live-tune command: a valid set
+// lands on WorldSettings and echoes in the result; a missing/zero/negative margin is
+// rejected (a zero would collapse the redirect band) and leaves the prior value intact.
+func TestSetSeekWorkNeedYieldMargin(t *testing.T) {
+	ip := func(v int) *int { return &v }
+
+	w := newConfigWorld(t)
+	res, err := sim.SetSeekWorkNeedYieldMargin(ip(7)).Fn(w)
+	if err != nil {
+		t.Fatalf("SetSeekWorkNeedYieldMargin: %v", err)
+	}
+	out, ok := res.(sim.SeekWorkNeedMarginSettingResult)
+	if !ok {
+		t.Fatalf("result %T, want SeekWorkNeedMarginSettingResult", res)
+	}
+	if out.Margin != 7 {
+		t.Errorf("result = %+v, want Margin 7", out)
+	}
+	if w.Settings.SeekWorkNeedYieldMargin != 7 {
+		t.Errorf("settings margin = %d, want 7", w.Settings.SeekWorkNeedYieldMargin)
+	}
+
+	bad := []struct {
+		name   string
+		margin *int
+	}{
+		{"missing", nil},
+		{"zero", ip(0)},
+		{"negative", ip(-3)},
+	}
+	for _, c := range bad {
+		if _, err := sim.SetSeekWorkNeedYieldMargin(c.margin).Fn(w); !errors.Is(err, sim.ErrInvalidSeekWorkNeedMarginSetting) {
+			t.Errorf("%s: err = %v, want ErrInvalidSeekWorkNeedMarginSetting", c.name, err)
+		}
+	}
+	if w.Settings.SeekWorkNeedYieldMargin != 7 {
+		t.Errorf("margin after rejected sets = %d, want 7 (unchanged)", w.Settings.SeekWorkNeedYieldMargin)
+	}
+}

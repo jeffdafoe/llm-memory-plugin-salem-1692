@@ -104,6 +104,15 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// (scene_quote_commands.go), which can only pre-check a targeted quote.
 	p.Warrants = filterHomedLodgingQuoteWarrants(p.Warrants, snap, actorSnap)
 
+	// LLM-276: the seek-work backstop stamps a tend-need warrant (in place of the
+	// go-earn one) when a workless idle worker has grown hungry/thirsty and can
+	// resolve it now. When present, job-hunting yields to eating exactly as a red
+	// need makes it yield — the businesses directory + solicit affordance suppress
+	// and the need-redirect steer fires — so the food cues win. Keyed off the
+	// warrant (which already carries the sim-side "pressing + resolvable" decision)
+	// rather than recomputing the band, so the warrant and the cues can't disagree.
+	tendNeedActive := tendNeedWarrantActive(p.Warrants)
+
 	// ZBBS-HOME-453: the standing seller-side offer view, scanned from
 	// snap.PayLedger every tick. The warrant above only WAKES the seller's
 	// first tick; this scan is what keeps "## Offers awaiting your decision"
@@ -169,6 +178,9 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 		// LLM-210: a red need outranks job-hunting (see the SeekWorkPlaces gate below).
 		// The two seek-work gates suppress symmetrically, as they do for evening leisure.
 		!hasRedNeed(actorSnap, snap) &&
+		// LLM-276: a sub-red but pressing-and-resolvable need does too — the seek-work
+		// backstop has stamped a tend-need warrant, so eating outranks soliciting work.
+		!tendNeedActive &&
 		p.Laboring == nil &&
 		// LLM-229: a worker relocating to an accepted job is already committed —
 		// don't offer the solicit affordance for a second one.
@@ -221,6 +233,9 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 		// rests or eats on its own — subtractive, mirroring the duty-steer and
 		// evening-leisure hasRedNeed gates. The directory resumes the tick it clears.
 		!hasRedNeed(actorSnap, snap) &&
+		// LLM-276: likewise yield the directory to a sub-red pressing-and-resolvable
+		// need (tend-need warrant present) so the eat/drink cue + need-redirect win.
+		!tendNeedActive &&
 		p.Laboring == nil &&
 		// LLM-229: a worker relocating to (or waiting at) an accepted job is
 		// committed — don't push the businesses directory at them. The
@@ -2563,6 +2578,21 @@ func hasRedNeed(a *sim.ActorSnapshot, snap *sim.Snapshot) bool {
 	}
 	for _, n := range sim.Needs {
 		if a.Needs[n.Key] >= snap.NeedThresholds.Get(n.Key) {
+			return true
+		}
+	}
+	return false
+}
+
+// tendNeedWarrantActive reports whether a TendNeedWarrantReason (LLM-276) is in the
+// tick's warrants — the seek-work backstop's signal that this workless idle worker
+// has grown hungry/thirsty and can resolve it now, so job-hunting yields to eating.
+// Perception keys the seek-work directory/affordance suppression and the need-redirect
+// steer off this rather than recomputing the sim-side band, so the warrant and the
+// cues can't disagree (the LLM-168 warrant/directory-must-agree invariant).
+func tendNeedWarrantActive(warrants []sim.WarrantMeta) bool {
+	for _, wm := range warrants {
+		if _, ok := wm.Reason.(sim.TendNeedWarrantReason); ok {
 			return true
 		}
 	}

@@ -75,6 +75,7 @@ const (
 	WarrantKindLaborOffer         WarrantKind = "labor_offer"          // a worker solicited the employer for service-for-pay — wake the employer to accept_work / decline_work (LLM-187)
 	WarrantKindFarmUpkeep         WarrantKind = "farm_upkeep"          // a farm owner owes upkeep shovels (coins above the floor) — wake them to buy from the smith (LLM-215)
 	WarrantKindReturnToPost       WarrantKind = "return_to_post"       // engine-authored felt impulse: a laboring worker has wandered off the post — wake them to head back (LLM-268)
+	WarrantKindTendNeed           WarrantKind = "tend_need"            // engine-authored felt impulse: a workless idle worker has grown hungry/thirsty and can resolve it now — go eat/drink instead of hunting odd jobs (LLM-276)
 )
 
 // WarrantReason is the marker interface for kind-specific warrant payloads.
@@ -556,6 +557,30 @@ type SeekWorkWarrantReason struct{}
 func (SeekWorkWarrantReason) isWarrantReason()           {}
 func (SeekWorkWarrantReason) Kind() WarrantKind          { return WarrantKindSeekWork }
 func (SeekWorkWarrantReason) DedupDiscriminator() uint64 { return 0 }
+
+// TendNeedWarrantReason wakes a workless, idle Worker whose hunger or thirst has
+// climbed into the UPPER part of the felt (sub-red) band AND which it can resolve
+// right now — it carries a satisfier, holds coin, or a free public source is
+// nearby (the coarse pressingResolvableConsumableNeed gate in
+// seek_work_backstop_commands.go). It is stamped by the seek-work backstop IN
+// PLACE OF SeekWorkWarrantReason for such a worker (LLM-276): a hungry villager
+// with the means to eat should go eat, not hunt for odd jobs. Need names which
+// need pressed so perception steers to the right remedy (renderTendNeedLine + the
+// need-redirect coda, both of which key off the stamped warrant). Kind is its OWN
+// WarrantKindTendNeed — SALIENT like SeekWorkWarrantReason (not in
+// isAmbientWarrantKind), paced instead by the seek-work backstop's own exponential
+// backoff. Deliberately NOT WarrantKindNeedThreshold: this is the gentle "you've
+// grown peckish and can see to it" pull, not the red-tier distress the red-need
+// backstop drives. Not event-sourced, so DedupDiscriminator returns 0 (like
+// SeekWork); the backstop's own backoff pre-check prevents a second stamp on an
+// open cycle.
+type TendNeedWarrantReason struct {
+	Need NeedKey
+}
+
+func (TendNeedWarrantReason) isWarrantReason()           {}
+func (TendNeedWarrantReason) Kind() WarrantKind          { return WarrantKindTendNeed }
+func (TendNeedWarrantReason) DedupDiscriminator() uint64 { return 0 }
 
 // ReturnToPostWarrantReason wakes a laboring worker who has wandered off the
 // employer's post (with green needs, while the employer still holds the post) so

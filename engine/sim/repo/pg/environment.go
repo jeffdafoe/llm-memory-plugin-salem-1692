@@ -329,6 +329,11 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	// reports the live value and the checkpoint round-trips a concrete number.
 	s.SeekWorkCoinCeiling = parseIntSetting(values, "seek_work_coin_ceiling", sim.SeekWorkCoinCeilingDefault)
 
+	// Seek-work→eat redirect margin (LLM-276). Seeded like the ceiling so GET /settings
+	// reports the live value and the checkpoint round-trips a concrete number; 0/unset
+	// falls back to the default at read time via effectiveSeekWorkNeedYieldMargin.
+	s.SeekWorkNeedYieldMargin = parseIntSetting(values, "seek_work_need_yield_margin", sim.SeekWorkNeedYieldMarginDefault)
+
 	// Labor produce boost (LLM-224). Unset seeds the default; an explicit 0 sticks
 	// and disables the boost (the off-switch, like farm_upkeep_coins_per_shovel).
 	s.LaborProduceBoostPct = parseIntSetting(values, "labor_produce_boost_pct", sim.DefaultLaborProduceBoostPct)
@@ -567,6 +572,9 @@ func (r *EnvironmentRepo) SaveMutableSettings(ctx context.Context, tx sim.Tx, ms
 		// Seek-work coin ceiling (LLM-194) — live-tuned via the umbilical, persisted
 		// here; the load path parses seek_work_coin_ceiling via parseIntSetting.
 		{"seek_work_coin_ceiling", strconv.Itoa(ms.SeekWorkCoinCeiling)},
+		// Seek-work→eat redirect margin (LLM-276) — live-tuned via the umbilical,
+		// persisted here; the load path parses seek_work_need_yield_margin via parseIntSetting.
+		{"seek_work_need_yield_margin", strconv.Itoa(ms.SeekWorkNeedYieldMargin)},
 		// Labor produce boost (LLM-224) — live-tuned via the umbilical, persisted
 		// here; the load path parses labor_produce_boost_pct via parseIntSetting.
 		{"labor_produce_boost_pct", strconv.Itoa(ms.LaborProduceBoostPct)},
