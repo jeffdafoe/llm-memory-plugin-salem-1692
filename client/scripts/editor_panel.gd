@@ -1665,11 +1665,17 @@ func apply_object_tags_external(object_id: String, tags: Array) -> void:
     _obj_tags_current_list = tags
     _refresh_obj_tags_ui()
 
-## Emits the schedule-changed signal with the current field values.
-## start_min/end_min are -1 when the window is NULL-inheriting dawn/dusk;
-## interval/start/end are -1 when cadence is unchecked. The handler
-## downstream converts -1 to null in the PATCH payload.
+## The explicit Save button commits the displayed window as a concrete
+## schedule even when the admin never touched a spinner (the fields were
+## prepopulated from the dawn/dusk defaults). Flipping the NULL flag false
+## first is what makes the emit send real minutes. Without it, saving an
+## untouched NULL-inheriting NPC re-sent null/null — a silent no-op that
+## left a keeper unscheduled (and, for a non-worker keeper, permanently
+## off-shift and asleep at home).
 func _on_schedule_save_pressed() -> void:
+    if _ignoring_npc_inputs:
+        return
+    _npc_schedule_window_is_null = false
     _emit_schedule_changed()
 
 ## Auto-save on any SpinBox value change for fields that don't affect the
@@ -1693,7 +1699,9 @@ func _on_schedule_window_field_changed(_value: float) -> void:
 func _schedule_save_debounced() -> void:
     _emit_schedule_changed()
 
-## Shared emitter for all three auto-save paths.
+## Shared emitter for all three auto-save paths. Sentinel contract: emits
+## -1/-1 to clear the schedule (NULL-inherit dawn/dusk); otherwise concrete
+## minutes. The downstream handler converts -1 to null in the PATCH payload.
 func _emit_schedule_changed() -> void:
     if _ignoring_npc_inputs:
         return
