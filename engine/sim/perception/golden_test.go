@@ -3042,9 +3042,10 @@ func generalStoreWaterForageAtWell() (*sim.Snapshot, sim.ActorID, []sim.WarrantM
 				LoiterOffsetX: &zero,
 				LoiterOffsetY: &zero,
 				Refreshes: []*sim.ObjectRefresh{
-					// Public drink row: slakes thirst in place, yields no inventory. LLM-254
-					// preserves it so every NPC keeps drinking at the commons Well.
-					{Attribute: "thirst", Amount: -8, AvailableQuantity: intp(10), MaxQuantity: intp(10)},
+					// Public drink row: slakes thirst in place, yields no inventory —
+					// infinite, like the real commons Well. LLM-254 drops its gather_item
+					// so it is drink-only, leaving the yield row below the sole water source.
+					{Attribute: "thirst", Amount: -8},
 					// Yield-only water row: forage-to-sell, unset attribute (LLM-264). A
 					// forage_range holder draws a pail; drinking-in-place never touches this
 					// counter (separate row, gated by Amount==0 in forageStockForItem).
