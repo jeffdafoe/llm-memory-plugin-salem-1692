@@ -349,7 +349,9 @@ func TestObjectRefreshIsYieldOnly(t *testing.T) {
 
 // TestValidateObjectRefreshesYieldOnly covers the amount-rule relaxation
 // (LLM-24): amount=0 is valid only on a gather source with no dwell; amount>0
-// is always invalid; eat+pick (amount<0) stays valid.
+// is always invalid; eat+pick (amount<0) stays valid. It also covers the
+// nullable-attribute rule (LLM-264): a yield-only row needs no attribute, a
+// need-bearing row does, and any attribute that IS present must be a known need.
 func TestValidateObjectRefreshesYieldOnly(t *testing.T) {
 	ip := func(v int) *int { return &v }
 	cases := []struct {
@@ -363,9 +365,28 @@ func TestValidateObjectRefreshesYieldOnly(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			// LLM-264: the clean yield-only shape — no attribute, since the row
+			// eases no need.
+			name:    "yield-only without attribute valid",
+			rows:    []*sim.ObjectRefresh{{Amount: 0, GatherItem: "water"}},
+			wantErr: false,
+		},
+		{
+			// LLM-264: a present attribute is still validated, whichever row type.
+			name:    "yield-only with unknown attribute rejected",
+			rows:    []*sim.ObjectRefresh{{Attribute: "bogus", Amount: 0, GatherItem: "berries"}},
+			wantErr: true,
+		},
+		{
 			name:    "eat+pick valid",
 			rows:    []*sim.ObjectRefresh{{Attribute: "hunger", Amount: -8, GatherItem: "berries"}},
 			wantErr: false,
+		},
+		{
+			// LLM-264: a need-bearing row must still name the need it decrements.
+			name:    "need-bearing without attribute rejected",
+			rows:    []*sim.ObjectRefresh{{Amount: -8}},
+			wantErr: true,
 		},
 		{
 			name:    "zero amount without gather rejected",
@@ -384,6 +405,25 @@ func TestValidateObjectRefreshesYieldOnly(t *testing.T) {
 				DwellDelta: ip(-2), DwellPeriodMinutes: ip(30),
 			}},
 			wantErr: true,
+		},
+		{
+			// LLM-264: two yield-only rows for the same gather item on one object are
+			// rejected (mirrors the object_refresh_yield_key partial unique index).
+			name: "duplicate yield-only gather item rejected",
+			rows: []*sim.ObjectRefresh{
+				{Amount: 0, GatherItem: "water"},
+				{Amount: 0, GatherItem: "water"},
+			},
+			wantErr: true,
+		},
+		{
+			// LLM-264: yield-only rows for DIFFERENT items on one object are fine.
+			name: "distinct yield-only gather items valid",
+			rows: []*sim.ObjectRefresh{
+				{Amount: 0, GatherItem: "water"},
+				{Amount: 0, GatherItem: "milk"},
+			},
+			wantErr: false,
 		},
 	}
 	for _, c := range cases {

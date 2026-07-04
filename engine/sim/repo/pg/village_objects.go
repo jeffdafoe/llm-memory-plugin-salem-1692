@@ -194,17 +194,25 @@ SELECT
     dwell_amount, dwell_period_minutes, gather_item
 FROM object_refresh`
 
-// upsertSQLOR writes one object_refresh row. Composite PK
-// (object_id, attribute) is the conflict target — one row per
-// attribute per parent matches the v1 design and the v2 slice-of-
-// refreshes shape (multi-attribute objects like a shaded oak carry
-// one entry per attribute).
+// upsertNeedSQLOR / upsertYieldSQLOR each write one object_refresh row. LLM-264
+// moved the row's PK to a surrogate id (so attribute could go nullable) and gave
+// each row type its own conflict target so both UPDATE in place on conflict:
+//   - upsertNeedSQLOR: a need-bearing row (attribute IS NOT NULL) conflicts on
+//     (object_id, attribute) — the full UNIQUE constraint
+//     object_refresh_object_attribute_key, via a bare ON CONFLICT (also what the
+//     already-applied LLM-50 / LLM-58 seed migrations rely on).
+//   - upsertYieldSQLOR: a yield-only row (attribute IS NULL, which the constraint
+//     above leaves unconstrained since NULLs are distinct) conflicts on
+//     (object_id, gather_item) — the object_refresh_yield_key partial index.
 //
-// snapshot_gen is included in both INSERT and UPDATE branches; the
-// trailing DELETE step prunes rows absent from the snapshot.
+// Because both update in place, a re-saved row keeps its surrogate id — no churn,
+// no reliance on the trailing delete-stale to dedup a re-inserted NULL row. The
+// save loop picks the statement by whether the row carries an attribute.
 //
-// On conflict, every v2-owned column gets refreshed — the snapshot
-// is authoritative for the full row state.
+// snapshot_gen is included in both INSERT and UPDATE branches; the trailing DELETE
+// step prunes rows absent from the snapshot. On conflict, every mutable v2-owned
+// column is refreshed (the snapshot is authoritative) EXCEPT the row's own conflict
+// key (attribute for a need row, gather_item for a yield row), which never changes.
 //
 // Column-name note (prod baseline ZBBS-090 / ZBBS-172):
 //   - object_refresh's config-rate column is `dwell_amount` (smallint,
@@ -215,7 +223,7 @@ FROM object_refresh`
 //   - refresh_mode is NOT NULL DEFAULT 'continuous' in prod; SaveSnapshot
 //     writes 'continuous' for infinite rows (mode is irrelevant when
 //     available_quantity IS NULL, but the column can't be NULL).
-const upsertSQLOR = `
+const upsertNeedSQLOR = `
 INSERT INTO object_refresh (
     object_id, attribute, amount,
     max_quantity, available_quantity,
@@ -239,6 +247,34 @@ ON CONFLICT (object_id, attribute) DO UPDATE SET
     dwell_amount         = EXCLUDED.dwell_amount,
     dwell_period_minutes = EXCLUDED.dwell_period_minutes,
     gather_item          = EXCLUDED.gather_item,
+    snapshot_gen         = EXCLUDED.snapshot_gen`
+
+// upsertYieldSQLOR — the yield-only row variant. Conflict key is
+// (object_id, gather_item) (attribute is NULL and stays NULL); gather_item is the
+// key so it is NOT in the UPDATE SET.
+const upsertYieldSQLOR = `
+INSERT INTO object_refresh (
+    object_id, attribute, amount,
+    max_quantity, available_quantity,
+    refresh_mode, refresh_period_hours, last_refresh_at,
+    dwell_amount, dwell_period_minutes, gather_item,
+    snapshot_gen
+) VALUES (
+    $1::uuid, $2, $3,
+    $4, $5,
+    $6, $7, $8,
+    $9, $10, $11,
+    $12
+)
+ON CONFLICT (object_id, gather_item) WHERE attribute IS NULL DO UPDATE SET
+    amount               = EXCLUDED.amount,
+    max_quantity         = EXCLUDED.max_quantity,
+    available_quantity   = EXCLUDED.available_quantity,
+    refresh_mode         = EXCLUDED.refresh_mode,
+    refresh_period_hours = EXCLUDED.refresh_period_hours,
+    last_refresh_at      = EXCLUDED.last_refresh_at,
+    dwell_amount         = EXCLUDED.dwell_amount,
+    dwell_period_minutes = EXCLUDED.dwell_period_minutes,
     snapshot_gen         = EXCLUDED.snapshot_gen`
 
 // deleteStaleSQLOR prunes object_refresh rows whose snapshot_gen is
@@ -393,7 +429,7 @@ func (r *VillageObjectsRepo) loadAllRefreshes(ctx context.Context, objects map[s
 	for rows.Next() {
 		var (
 			objectID       string
-			attribute      string
+			attribute      *string // nullable (LLM-264): NULL on a yield-only row
 			amount         int
 			maxQty         *int
 			availableQty   *int
@@ -413,14 +449,21 @@ func (r *VillageObjectsRepo) loadAllRefreshes(ctx context.Context, objects map[s
 			return fmt.Errorf("pg village_objects LoadAll refreshes scan: %w", err)
 		}
 
+		// attribute is nullable (LLM-264): a yield-only row carries NULL, mapped to
+		// the in-memory empty NeedKey.
+		attr := ""
+		if attribute != nil {
+			attr = *attribute
+		}
+
 		parent, ok := objects[sim.VillageObjectID(objectID)]
 		if !ok {
 			// FK CASCADE makes this unreachable from valid writes; log
 			// + skip surfaces schema drift loudly without dropping the
 			// load. Don't fail LoadAll — the engine can come up with
 			// the missing rows pruned.
-			log.Printf("pg village_objects LoadAll: orphan refresh row object_id=%s attribute=%s (parent missing) — skipped",
-				objectID, attribute)
+			log.Printf("pg village_objects LoadAll: orphan refresh row object_id=%s attribute=%q (parent missing) — skipped",
+				objectID, attr)
 			continue
 		}
 
@@ -433,7 +476,7 @@ func (r *VillageObjectsRepo) loadAllRefreshes(ctx context.Context, objects map[s
 			gather = *gatherItem
 		}
 		parent.Refreshes = append(parent.Refreshes, &sim.ObjectRefresh{
-			Attribute:          sim.NeedKey(attribute),
+			Attribute:          sim.NeedKey(attr),
 			Amount:             amount,
 			GatherItem:         sim.ItemKind(gather),
 			AvailableQuantity:  availableQty,
@@ -622,9 +665,22 @@ func (r *VillageObjectsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, object
 			if ref.GatherItem != "" {
 				gatherArg = string(ref.GatherItem)
 			}
-			if _, err := tx.Exec(ctx, upsertSQLOR,
+			// attribute: "" (a yield-only row eases no need — LLM-264) → NULL so the
+			// nullable column carries no placeholder; a need-bearing row writes its need.
+			var attrArg any
+			if ref.Attribute != "" {
+				attrArg = string(ref.Attribute)
+			}
+			// Pick the conflict target by row type (LLM-264): a yield-only row (empty
+			// attribute) upserts on its (object_id, gather_item) natural key, a
+			// need-bearing row on (object_id, attribute). Both update in place.
+			upsertQ := upsertNeedSQLOR
+			if ref.Attribute == "" {
+				upsertQ = upsertYieldSQLOR
+			}
+			if _, err := tx.Exec(ctx, upsertQ,
 				string(obj.ID),         // $1 object_id (UUID)
-				string(ref.Attribute),  // $2 attribute
+				attrArg,                // $2 attribute (nullable — LLM-264)
 				ref.Amount,             // $3 amount
 				ref.MaxQuantity,        // $4 max_quantity (nullable)
 				ref.AvailableQuantity,  // $5 available_quantity (nullable)

@@ -545,12 +545,12 @@ func TestVillageObjectsRepo_LoadAll_WithRefreshes(t *testing.T) {
 		"dwell_delta", "dwell_period_minutes", "gather_item",
 	}).
 		// Well: thirst -8, 7/10 finite, continuous, no dwell, harvestable (water).
-		AddRow(uuidObj1, "thirst", -8,
+		AddRow(uuidObj1, sp("thirst"), -8,
 			&max10, &avail7,
 			&continuousMode, &period12, &wellAnchor,
 			(*int)(nil), (*int)(nil), sp("water")).
 		// Oak (row 1): hunger -3, 0/20 finite, periodic, no dwell, not harvestable.
-		AddRow(uuidObj2, "hunger", -3,
+		AddRow(uuidObj2, sp("hunger"), -3,
 			&max20, &avail0,
 			&periodicMode, &period24, &oakAnchor,
 			(*int)(nil), (*int)(nil), (*string)(nil)).
@@ -558,7 +558,7 @@ func TestVillageObjectsRepo_LoadAll_WithRefreshes(t *testing.T) {
 		// refresh_mode is NOT NULL DEFAULT 'continuous', so an infinite row
 		// carries 'continuous' even though mode is irrelevant when
 		// available_quantity IS NULL.
-		AddRow(uuidObj2, "tiredness", -1,
+		AddRow(uuidObj2, sp("tiredness"), -1,
 			(*int)(nil), (*int)(nil),
 			&continuousMode, (*int)(nil), (*time.Time)(nil),
 			&dwellDelta, &dwellPeriod, (*string)(nil))
@@ -654,11 +654,11 @@ func TestVillageObjectsRepo_LoadAll_RefreshOrphanSkipped(t *testing.T) {
 		"refresh_mode", "refresh_period_hours", "last_refresh_at",
 		"dwell_delta", "dwell_period_minutes", "gather_item",
 	}).
-		AddRow(uuidObj1, "thirst", -4,
+		AddRow(uuidObj1, sp("thirst"), -4,
 			(*int)(nil), (*int)(nil),
 			(*string)(nil), (*int)(nil), (*time.Time)(nil),
-						(*int)(nil), (*int)(nil), (*string)(nil)).
-		AddRow(uuidObj3, "hunger", -3, // uuidObj3 isn't in parent set
+							(*int)(nil), (*int)(nil), (*string)(nil)).
+		AddRow(uuidObj3, sp("hunger"), -3, // uuidObj3 isn't in parent set
 			(*int)(nil), (*int)(nil),
 			(*string)(nil), (*int)(nil), (*time.Time)(nil),
 			(*int)(nil), (*int)(nil), (*string)(nil))
