@@ -36,6 +36,12 @@ var (
 	// ErrUnknownItemKind — the item name doesn't resolve to anything in
 	// w.ItemKinds (case-insensitive). LLM typo or hallucinated kind.
 	ErrUnknownItemKind = errors.New("unknown item kind")
+
+	// ErrOwnProduceStock — the actor works a wholesaler-tagged business and the
+	// item is one of its produce rows, so it is stock to sell, not food for the
+	// producer (LLM-267). Distinct from ErrNotConsumable: the item IS edible
+	// (a farmer's carrots), it just isn't the farmer's to eat.
+	ErrOwnProduceStock = errors.New("item is your wholesale stock, not food for you")
 )
 
 // transferItem moves qty units of kind from `from` to `to`. Unexported —
@@ -211,6 +217,24 @@ func (w *World) inedibleReason(kind ItemKind, label string) error {
 	return notConsumableError{msg: "you cannot eat " + WithIndefiniteArticle(label) + " — " + reason}
 }
 
+// ownProduceStockError carries a model-facing reason that REPLACES a bare rejection
+// when a wholesaler owner tries to eat its own produce (LLM-267). Like
+// notConsumableError, a legible reason steers a weak model to a real food source
+// instead of retrying the same blocked consume. Unwrap keeps
+// errors.Is(err, ErrOwnProduceStock) matching for callers and tests.
+type ownProduceStockError struct{ msg string }
+
+func (e ownProduceStockError) Error() string { return e.msg }
+func (e ownProduceStockError) Unwrap() error { return ErrOwnProduceStock }
+
+// ownProduceReason builds the "you cannot eat your own X — it is stock to sell"
+// rejection for a wholesaler owner's produce item. label is the article-less eaten
+// phrase (e.g. "carrots") the caller already resolved.
+func ownProduceReason(label string) error {
+	return ownProduceStockError{msg: "you cannot eat your own " + label +
+		" — it is stock to sell, not your larder. Buy a meal, forage, or trade for food."}
+}
+
 // Consume returns a Command that consumes qty units of an item from
 // actorID's inventory, applies the immediate satisfaction, stamps any
 // item-source dwell credits, and emits ItemConsumed.
@@ -313,6 +337,14 @@ func Consume(actorID ActorID, itemName string, qty int, at time.Time) Command {
 			}
 			if def == nil || !def.Consumable() {
 				return nil, w.inedibleReason(kind, label)
+			}
+			// LLM-267: a wholesaler owner cannot eat its own produce — the item is
+			// stock to sell, not its larder. Rejected even at starvation (no red-need
+			// escape): forage is free and always legal, and barter works. Keyed on the
+			// same sim.IsOwnProduce the satiation eat-cue filters on, so the cue never
+			// offers what this guard would block.
+			if IsOwnProduce(w.VillageObjects, actor.WorkStructureID, actor.RestockPolicy, kind) {
+				return nil, ownProduceReason(label)
 			}
 			if have < qty {
 				return nil, fmt.Errorf("you only have %d of those to consume, not %d: %w", have, qty, ErrInsufficientInventory)

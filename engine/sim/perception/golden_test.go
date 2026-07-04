@@ -960,6 +960,23 @@ var perceptionScenarios = []perceptionScenario{
 		build: producerStarvingAtPost,
 	},
 	{
+		name: "wholesaler_starving_own_produce_at_post",
+		summary: "A WHOLESALER farmer (Moses James, James Farm tagged wholesaler) at the red/distress hunger tier, carrying " +
+			"nothing but the carrots he grows to sell and no other food (LLM-267). Unlike producer_starving_at_post, the own-" +
+			"stock 'consume to eat' cue is ABSENT even at desperation — a wholesaler's produce is stock to sell, never its " +
+			"larder, with NO red-tier escape hatch (the Consume guard rejects it too). Food must come from buying, foraging, " +
+			"or barter. Pairs with wholesaler_bought_food_at_post (the same wholesaler IS offered a bought loaf).",
+		build: wholesalerStarvingOwnProduceAtPost,
+	},
+	{
+		name: "wholesaler_bought_food_at_post",
+		summary: "The same wholesaler (Moses), mildly hungry, carrying a bought loaf of bread (NOT one of his produce rows) " +
+			"alongside his own carrots (LLM-267 positive control). The own-stock 'consume to eat' cue surfaces the BREAD — real " +
+			"provisions he may eat — while his carrots stay out. Proves the block is own-produce-scoped, not a blanket ban on a " +
+			"wholesaler eating.",
+		build: wholesalerCarryingBoughtFoodAtPost,
+	},
+	{
 		name: "broke_worker_no_employer_seeks_work",
 		summary: "A broke worker (Lewis Walker, a salem-vendor) idle at home with no employer present — the live LLM-160 " +
 			"case. The golden pins the make-it-move fix: the businesses directory renders as a STANDING cue (the town's " +
@@ -3558,6 +3575,83 @@ func producerStarvingAtPost() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	return grazingProducerScenario(sim.DefaultHungerRedThreshold) // 18 — red/desperation tier
 }
 
+// wholesalerGrazingScenario builds the LLM-267 fixture: Moses James at his own
+// farm on shift, carrying only the carrots he grows — but the farm is tagged
+// wholesaler (the farms + mill are the wholesale tier), so those carrots are stock
+// to sell, never his larder. Unlike grazingProducerScenario (LLM-134, which lets
+// the trade stock return at the red tier), his own produce must NOT surface in the
+// eat cue at ANY tier. Same isolation: no other food, vendor, or free source, so the
+// carrots are the only own-stock candidate. Byte-stable (no PriceBook/orders).
+func wholesalerGrazingScenario(hunger int) (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		mosesID = sim.ActorID("moses")
+		farm    = sim.StructureID("james_farm")
+	)
+	start, end := 360, 1080 // 06:00–18:00
+	now := 600              // 10:00 — on shift
+	moses := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Moses James",
+		Role:              "farmer",
+		State:             sim.StateIdle,
+		Pos:               sim.WorldPos{X: 100, Y: 100}.Tile(),
+		WorkStructureID:   farm,
+		InsideStructureID: farm,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             4,
+		Inventory:         map[sim.ItemKind]int{"carrots": 20},
+		Needs:             map[sim.NeedKey]int{"hunger": hunger},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "carrots", Source: sim.RestockSourceProduce, Max: 30},
+		}},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Assets:           emptyAssetSet,
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{mosesID: moses},
+		Structures: map[sim.StructureID]*sim.Structure{
+			farm: plainStructure(farm, "James Farm"),
+		},
+		// The farm carries both tags as the live data does; only wholesaler gates
+		// the own-produce block (IsOwnProduce keys on it, like SellerAtWholesaler).
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			sim.VillageObjectID(farm): {ID: sim.VillageObjectID(farm), OwnerActorID: mosesID, Tags: []string{sim.TagFarm, sim.TagWholesaler}},
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"carrots": {
+				Name: "carrots", DisplayLabel: "Carrots",
+				DisplayLabelSingular: "carrot", DisplayLabelPlural: "carrots",
+				Category:  sim.ItemCategoryFood,
+				Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 3}},
+			},
+		},
+	}
+	return snap, mosesID, nil
+}
+
+func wholesalerStarvingOwnProduceAtPost() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return wholesalerGrazingScenario(sim.DefaultHungerRedThreshold) // 18 — red: STILL not offered its own produce
+}
+
+// wholesalerCarryingBoughtFoodAtPost is the LLM-267 positive control: the same
+// wholesaler, mildly hungry, carrying a bought loaf of bread (NOT one of its produce
+// rows) alongside its own carrots. The bread — real provisions — IS offered in the
+// eat cue; the carrots are not. Proves the block is item-scoped (own produce only),
+// not a blanket "wholesalers never eat".
+func wholesalerCarryingBoughtFoodAtPost() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, id, warr := wholesalerGrazingScenario(14) // mild: felt (>= silent floor 10), below red (18)
+	snap.Actors[id].Inventory["bread"] = 2
+	snap.ItemKinds["bread"] = &sim.ItemKindDef{
+		Name: "bread", DisplayLabel: "Bread",
+		DisplayLabelSingular: "loaf of bread", DisplayLabelPlural: "loaves of bread",
+		Category:  sim.ItemCategoryFood,
+		Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 8}},
+	}
+	return snap, id, warr
+}
+
 // huddleConversationLoopingScenario is the LLM-169 fixture: two idle workers (the
 // Walker sisters) stand together in a huddle going in circles. Patience (the
 // subject) is in an armed conversational loop — ConversationLooping is set, the
@@ -3860,6 +3954,39 @@ func TestOwnTradeStockEatCueOnlyAtDesperation(t *testing.T) {
 	red := renderScenario(perceptionScenario{name: "producer_starving_at_post", build: producerStarvingAtPost})
 	if !strings.Contains(red, cue) {
 		t.Errorf("starving producer was NOT offered its own trade stock as last resort (cue %q should be present):\n%s", cue, red)
+	}
+}
+
+// TestWholesalerNeverCuedToEatOwnProduce is the LLM-267 invariant: a wholesaler
+// owner is NEVER offered its own produce in the eat cue — not even at the red/
+// desperation tier where LLM-134 lets an ORDINARY producer's trade stock return as a
+// last resort. The wholesale gate has no red-tier escape hatch (it pairs with the
+// hard Consume guard). A bought food the wholesaler also carries IS still offered, so
+// the block is own-produce-scoped, not a blanket ban on the wholesaler eating.
+func TestWholesalerNeverCuedToEatOwnProduce(t *testing.T) {
+	const cue = "consume to eat"
+	for _, hunger := range []int{14, sim.DefaultHungerRedThreshold} { // mild AND red
+		hunger := hunger
+		got := renderScenario(perceptionScenario{name: "wholesaler_own_produce", build: func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+			return wholesalerGrazingScenario(hunger)
+		}})
+		if strings.Contains(got, cue) {
+			t.Errorf("wholesaler at hunger %d was offered its own produce to eat (cue %q must be absent — no red-tier escape):\n%s", hunger, cue, got)
+		}
+	}
+	// Positive control: a bought food the wholesaler carries IS offered — and the eat
+	// cue names the BREAD, not the carrots (which stay only in the inventory readout,
+	// so a bare Contains on the whole prompt wouldn't prove the produce is excluded).
+	bought := renderScenario(perceptionScenario{name: "wholesaler_bought_food_at_post", build: wholesalerCarryingBoughtFoodAtPost})
+	eatCue := promptSection(bought, "## What you can eat or drink")
+	if !strings.Contains(eatCue, cue) {
+		t.Fatalf("wholesaler carrying bought bread was NOT offered it to eat (cue %q should be present):\n%s", cue, bought)
+	}
+	if !strings.Contains(eatCue, "Bread") {
+		t.Errorf("eat cue should offer the bought Bread, got:\n%s", eatCue)
+	}
+	if strings.Contains(eatCue, "Carrots") {
+		t.Errorf("eat cue must NOT name own-produce Carrots, got:\n%s", eatCue)
 	}
 }
 

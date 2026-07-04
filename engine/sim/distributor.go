@@ -66,6 +66,27 @@ func SellerAtWholesaler(objects map[VillageObjectID]*VillageObject, workStructur
 	return IsWholesalerStructure(objects[VillageObjectID(workStructureID)])
 }
 
+// IsOwnProduce reports whether kind is a good this actor makes as wholesale stock —
+// it works at a wholesaler-tagged structure AND kind is one of its produce-source
+// restock rows. Such goods are stock to sell, not the actor's larder (LLM-267), so
+// its owner can never consume them: the Consume guard rejects on this predicate and
+// the satiation eat-cue filters on it, keying off the SAME test so cue and block
+// can't drift (the StallRepairable pattern). Takes the object map + work anchor +
+// policy, like SellerAtWholesaler, so it serves both the live World and a perception
+// Snapshot. Nil/empty-safe: no policy, no workplace, or a non-wholesaler workplace
+// all read false, so it is a no-op for every non-wholesale actor.
+func IsOwnProduce(objects map[VillageObjectID]*VillageObject, workStructureID StructureID, policy *RestockPolicy, kind ItemKind) bool {
+	if policy == nil || !SellerAtWholesaler(objects, workStructureID) {
+		return false
+	}
+	for _, e := range policy.ProduceEntries() {
+		if e.Item == kind {
+			return true
+		}
+	}
+	return false
+}
+
 // DistributorSteerLabel names where a wholesale-gated buyer should shop instead — the
 // distributor's keeper (owner of the distributor-tagged structure), falling back
 // to the structure's own display name, then a generic phrase. Best-effort, for the
