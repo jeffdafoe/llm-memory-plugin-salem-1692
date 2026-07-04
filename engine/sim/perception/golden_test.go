@@ -870,6 +870,15 @@ var perceptionScenarios = []perceptionScenario{
 		build: farmOwnerOwesUpkeep,
 	},
 	{
+		name: "farm_owner_owes_upkeep_with_shovel_supplier",
+		summary: "LLM-274: a farm owner (Elizabeth Ellis) owes 3 upkeep shovels and holds none, while a SEPARATE " +
+			"shovel-producing smith (Ezekiel at the Blacksmith) exists. The golden pins the destination-bearing " +
+			"'## Farm upkeep' steer: findItemVendors resolves the smith, so the cue names 'buy from Blacksmith " +
+			"(structure_id: blacksmith)' with move_to + pay_with_item, replacing the dead-end 'from the blacksmith'. " +
+			"Its foil is farm_owner_owes_upkeep, where no supplier exists and the generic sentence is correctly kept.",
+		build: farmOwnerOwesUpkeepWithShovelSupplier,
+	},
+	{
 		name: "keeper_at_post_onshift",
 		summary: "A keeper (shopkeeper) stands at his own store during business hours. The golden pins the " +
 			"'How you trade:' trade-conduct block — the positive case for the operating-hours gate (LLM-123). On shift " +
@@ -2758,6 +2767,45 @@ func TestOwnerShortNailsWithSupplierNamesDestination(t *testing.T) {
 	}
 }
 
+// TestFarmOwnerOwesUpkeepWithSupplierNamesDestination is the LLM-274 cross-scenario
+// invariant for the farm-upkeep cue (the shovel twin of the nail invariant above):
+// whenever the "## Farm upkeep" cue renders AND findItemVendors resolves at least one
+// shovel supplier, the cue must name that supplier's move_to destination
+// ("(structure_id: <id>)") rather than the destination-less "from the blacksmith" dead
+// end. Keyed off the same buildFarmUpkeep the production render uses;
+// farm_owner_owes_upkeep_with_shovel_supplier is the non-vacuous golden. Its foil — an
+// owing farm owner with NO resolvable supplier — is correctly excluded (ShovelVendors
+// empty), where the generic sentence with no dangling target is the intended output.
+func TestFarmOwnerOwesUpkeepWithSupplierNamesDestination(t *testing.T) {
+	var exercised bool
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, _ := sc.build()
+			a := snap.Actors[actorID]
+			if a == nil {
+				return
+			}
+			v := buildFarmUpkeep(snap, actorID, a)
+			if v == nil {
+				return // no upkeep cue for this actor
+			}
+			if len(v.ShovelVendors) == 0 {
+				return // no resolvable supplier — the generic no-destination sentence is correct here
+			}
+			exercised = true
+			token := "(structure_id: " + string(v.ShovelVendors[0].StructureID) + ")"
+			section := promptSection(renderScenario(sc), "## Farm upkeep")
+			if !strings.Contains(section, token) {
+				t.Errorf("scenario %q: farm owner owes upkeep with a resolvable shovel supplier but the '## Farm upkeep' cue omits its move_to destination %q — the model narrates the errand instead of walking it (LLM-274)", sc.name, token)
+			}
+		})
+	}
+	if !exercised {
+		t.Error("matrix must exercise a farm owner owing upkeep with a resolvable shovel supplier (LLM-274)")
+	}
+}
+
 // TestFarmUpkeepCueOnlyForOwingFarmOwner is the LLM-215 cross-scenario invariant: the
 // "## Farm upkeep" cue appears in EXACTLY the scenarios where the actor owns a farm
 // and owes upkeep shovels — never for a non-farm-owner or any unrelated scenario. It
@@ -2765,10 +2813,14 @@ func TestOwnerShortNailsWithSupplierNamesDestination(t *testing.T) {
 // for someone who doesn't own a farm.
 func TestFarmUpkeepCueOnlyForOwingFarmOwner(t *testing.T) {
 	const marker = "## Farm upkeep"
+	owesUpkeep := map[string]bool{
+		"farm_owner_owes_upkeep":                      true,
+		"farm_owner_owes_upkeep_with_shovel_supplier": true, // LLM-274: same owing owner, now with a resolvable supplier
+	}
 	for _, sc := range perceptionScenarios {
 		sc := sc
 		got := renderScenario(sc)
-		want := sc.name == "farm_owner_owes_upkeep"
+		want := owesUpkeep[sc.name]
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: '## Farm upkeep' cue present=%v, want %v", sc.name, has, want)
 		}
@@ -3762,9 +3814,47 @@ func farmUpkeepSnapshot(coins, shovels, floor, coinsPerShovel int) (*sim.Snapsho
 }
 
 // farmOwnerOwesUpkeep: Elizabeth owns Ellis Farm with 95 coins (floor 30, band 20 →
-// owes 3 shovels) and none in hand — the "## Farm upkeep" buy-3-from-the-blacksmith cue.
+// owes 3 shovels) and none in hand, and NO shovel supplier exists in the world. The
+// golden pins the "## Farm upkeep" cue with the GENERIC no-destination steer ("buy 3
+// fresh shovels from the blacksmith") — the LLM-274 no-actionable-supplier arm.
 func farmOwnerOwesUpkeep() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	return farmUpkeepSnapshot(95, 0, 30, 20)
+}
+
+// farmOwnerOwesUpkeepWithShovelSupplier is the LLM-274 farm-upkeep arm: Elizabeth
+// owes 3 upkeep shovels (95 coins, floor 30, band 20) and holds none, while a
+// SEPARATE shovel-producing smith — Ezekiel at the Blacksmith holding 12 shovels —
+// exists. findItemVendors resolves him (he PRODUCES shovels, LLM-200/LLM-252), so the
+// "## Farm upkeep" cue names "buy from Blacksmith (structure_id: blacksmith)" with
+// move_to + pay_with_item instead of the dead-end "from the blacksmith". Ezekiel is
+// placed far from Elizabeth so he is a supplier of record, not co-present. The foil is
+// farmOwnerOwesUpkeep (no smith → the generic sentence is correctly kept).
+func farmOwnerOwesUpkeepWithShovelSupplier() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, actorID, warrants := farmUpkeepSnapshot(95, 0, 30, 20)
+	start, end := 360, 1080
+	snap.Actors["ezekiel"] = &sim.ActorSnapshot{
+		Kind:             sim.KindNPCStateful,
+		DisplayName:      "Ezekiel Crane",
+		Role:             "blacksmith",
+		State:            sim.StateIdle,
+		Pos:              sim.WorldPos{X: 2000, Y: 2000}.Tile(), // far from Elizabeth — a supplier of record, not co-present
+		ScheduleStartMin: &start,
+		ScheduleEndMin:   &end,
+		WorkStructureID:  "blacksmith",
+		Coins:            0,
+		Needs:            map[sim.NeedKey]int{},
+		Inventory:        map[sim.ItemKind]int{"shovel": 12},
+		RestockPolicy:    producePolicy("shovel", 40), // the smith PRODUCES shovels — the LLM-252 supplier-of-record gate
+	}
+	// Add the smith's workplace without clobbering any structures farmUpkeepSnapshot
+	// may seed (it doesn't today — farm ownership keys off village_object.OwnerActorID
+	// + TagFarm, not the structure map — but the nil-guard keeps this robust if that
+	// changes; code_review).
+	if snap.Structures == nil {
+		snap.Structures = map[sim.StructureID]*sim.Structure{}
+	}
+	snap.Structures["blacksmith"] = plainStructure("blacksmith", "Blacksmith")
+	return snap, actorID, warrants
 }
 
 // hungryForagerAtStockedBush is the LLM-113 situation: a hungry forager stands at
