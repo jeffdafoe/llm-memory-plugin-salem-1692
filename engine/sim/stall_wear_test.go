@@ -141,6 +141,51 @@ func TestStartRepair_Rejects(t *testing.T) {
 			t.Fatalf("err = %v, want an insufficient-nails rejection", err)
 		}
 	})
+	t.Run("inside a different structure", func(t *testing.T) {
+		w, cancel := buildStallTestWorld(t)
+		defer cancel()
+		// LLM-266: the inside-structure branch of AtBusiness keys on the business's
+		// OWN id — being inside some other building, off-pin, is still not co-located.
+		mustSend(t, w, func(world *sim.World) {
+			a := world.Actors["ezekiel"]
+			a.Pos = sim.WorldPos{X: 500, Y: 500}.Tile()
+			a.InsideStructureID = "some_other_place"
+		})
+		_, err := w.Send(sim.StartRepair("ezekiel"))
+		if err == nil || !strings.Contains(err.Error(), "walk to your stall") {
+			t.Fatalf("err = %v, want a 'walk to your stall' rejection", err)
+		}
+	})
+}
+
+// TestStartRepair_AcceptsOwnerInsideStructure is the LLM-266 command-side arm: a
+// keeper standing INSIDE their own business structure (InsideStructureID == the
+// business id, since structures share the village_object's id) but NOT at the
+// outdoor loiter pin can still mend it. The old pin-only gate rejected them with
+// "walk to your stall" even though they were at post — the same defect that kept
+// the perception cue and the repair tool from ever firing for an indoor keeper.
+func TestStartRepair_AcceptsOwnerInsideStructure(t *testing.T) {
+	w, cancel := buildStallTestWorld(t)
+	defer cancel()
+	// Inside the business but far from the loiter pin at (100,100): only the
+	// inside-structure branch of AtBusiness can admit this repair.
+	mustSend(t, w, func(world *sim.World) {
+		a := world.Actors["ezekiel"]
+		a.Pos = sim.WorldPos{X: 500, Y: 500}.Tile()
+		a.InsideStructureID = "stall"
+	})
+	res, err := w.Send(sim.StartRepair("ezekiel"))
+	if err != nil {
+		t.Fatalf("StartRepair (inside, off-pin): %v", err)
+	}
+	sr := res.(sim.SourceActivityStartResult)
+	if !sr.Started || sr.ObjectID != "stall" {
+		t.Fatalf("start result = %+v, want Started @ stall", sr)
+	}
+	// Nails consumed up front (10 - 5) confirms the repair actually began.
+	if got := inventoryOf(t, w, "ezekiel", "nail"); got != 5 {
+		t.Errorf("nails = %d, want 5 (consumed at start)", got)
+	}
 }
 
 // degradeBobStall sets the degrade threshold + gives bob a degraded business

@@ -814,6 +814,23 @@ var perceptionScenarios = []perceptionScenario{
 		build: ownerAtWornTavern,
 	},
 	{
+		name: "owner_inside_worn_business",
+		summary: "LLM-266 regression fixture: John Ellis stands INSIDE his own worn Tavern (InsideStructureID == the " +
+			"business id) and AWAY from the outdoor loiter pin — the live keeper-at-post posture the old pin-only " +
+			"co-location gate silently excluded, so the '## Your business' cue had never once rendered for a real NPC. With " +
+			"sim.AtBusiness treating 'inside your business structure' as co-located, the cue (and the repair tool that rides " +
+			"the same StallRepair signal) renders. The non-vacuous anchor for TestGoldensRepairCueWheneverColocatedOwnerRepairable.",
+		build: ownerInsideWornBusiness,
+	},
+	{
+		name: "passerby_inside_worn_business",
+		summary: "LLM-266 non-owner arm: a non-owner (Ezekiel) stands INSIDE someone else's worn business (John's Tavern) " +
+			"and away from the outdoor loiter pin. The golden pins the co-present atmosphere line ('The Tavern here looks " +
+			"worn…') now firing via the inside-structure branch of sim.AtBusiness, and the ABSENCE of the owner-only " +
+			"'## Your business' cue (Ezekiel isn't the owner).",
+		build: passerbyInsideWornBusiness,
+	},
+	{
 		name: "farm_owner_owes_upkeep",
 		summary: "A farm owner (Elizabeth Ellis) with 95 coins (floor 30, band 20 → owes 3 upkeep shovels) and none in " +
 			"hand. The golden pins the '## Farm upkeep' cue: the worn-tools problem AND the buy-N-shovels-from-the-blacksmith " +
@@ -2517,9 +2534,10 @@ func TestCoinQuoteTakeNamesConcreteTerms(t *testing.T) {
 func TestStallRepairCueOnlyAtOwnWornStall(t *testing.T) {
 	const marker = "## Your business"
 	ownWornBusiness := map[string]bool{
-		"owner_at_worn_stall":     true,
-		"owner_at_degraded_stall": true,
-		"owner_at_worn_tavern":    true,
+		"owner_at_worn_stall":        true,
+		"owner_at_degraded_stall":    true,
+		"owner_at_worn_tavern":       true,
+		"owner_inside_worn_business": true, // LLM-266: owner INSIDE their worn business (not at the outdoor pin)
 	}
 	for _, sc := range perceptionScenarios {
 		sc := sc
@@ -2528,6 +2546,45 @@ func TestStallRepairCueOnlyAtOwnWornStall(t *testing.T) {
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: '## Your business' cue present=%v, want %v", sc.name, has, want)
 		}
+	}
+}
+
+// TestGoldensRepairCueWheneverColocatedOwnerRepairable is the LLM-266 cross-scenario
+// invariant: whenever the subject OWNS a repairable business and is co-located with
+// it — standing INSIDE the business structure OR at its outdoor loiter pin — the
+// rendered prompt must carry the "## Your business" repair cue. The repair tool is
+// gated on the very same StallRepair payload signal (handlers/tool_gating.go), so
+// "cue renders" ⇔ "tool advertised". The old pin-only gate silently failed this for
+// every indoor keeper — the cue had never once rendered live. Runs over the whole
+// matrix so a future change can't re-narrow co-location for any owned-business
+// situation, not just the owner_inside_worn_business scenario that anchors it.
+// Keyed off the same sim.AtBusiness predicate the production gate uses, so the two
+// agree by construction; owner_inside_worn_business is the non-vacuous golden that
+// would break if the cue stopped rendering end-to-end while the predicate held.
+func TestGoldensRepairCueWheneverColocatedOwnerRepairable(t *testing.T) {
+	const header = "## Your business"
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, _ := sc.build()
+			a := snap.Actors[actorID]
+			if a == nil {
+				return
+			}
+			stall := sim.OwnedWearableStall(snap.VillageObjects, actorID)
+			if stall == nil {
+				return // subject owns no business — invariant N/A here
+			}
+			if !sim.StallRepairable(stall, snap.StallWearRepairThreshold, snap.StallWearDegradeThreshold) {
+				return // business isn't worn enough to mend — no cue expected
+			}
+			if !sim.AtBusiness(a.Pos, a.InsideStructureID, stall.ID, objectLoiterPin(stall), true) {
+				return // subject isn't co-located with their business — cue correctly absent
+			}
+			if out := renderScenario(sc); !strings.Contains(out, header) {
+				t.Errorf("scenario %q: subject owns a repairable business and is co-located with it (inside or at pin) but the prompt omits the %q repair cue (LLM-266)", sc.name, header)
+			}
+		})
 	}
 }
 
@@ -3145,6 +3202,111 @@ func ownerAtWornTavern() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 		},
 	}
 	return snap, "john", nil
+}
+
+// ownerInsideWornBusiness: the LLM-266 regression fixture — the owner (John Ellis)
+// stands INSIDE his own worn Tavern (InsideStructureID == the business id, since
+// structures share the village_object's id) and AWAY from the outdoor loiter pin.
+// This is the live keeper-at-post posture the old pin-only co-location gate
+// silently excluded, so the "## Your business" cue had never rendered for any real
+// NPC. Pos is deliberately many Chebyshev tiles from the pin (WorldPos{100,100}),
+// so the cue can fire ONLY via the inside-structure branch of sim.AtBusiness — the
+// pin proximity check never passes here. Worn (450 >= repair 400, < degrade 600),
+// short on nails (2 < 5) — the buy-then-mend steer, named from the co-located
+// structure ("Your Tavern is showing hard use…").
+func ownerInsideWornBusiness() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	zero := 0
+	start, end := 360, 1080                          // 06:00–18:00
+	now := 600                                       // 10:00 — on shift
+	insidePos := sim.WorldPos{X: 500, Y: 500}.Tile() // far from the pin at WorldPos{100,100}
+	john := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "John Ellis",
+		Role:              "tavernkeeper",
+		State:             sim.StateIdle,
+		Pos:               insidePos,
+		InsideStructureID: "tavern",
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             8,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"nail": 2},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay:          &now,
+		NeedThresholds:            sim.NeedThresholds{},
+		Assets:                    emptyAssetSet,
+		StallWearRepairThreshold:  400,
+		StallWearDegradeThreshold: 600,
+		StallNailsPerRepair:       5,
+		Actors:                    map[sim.ActorID]*sim.ActorSnapshot{"john": john},
+		Structures: map[sim.StructureID]*sim.Structure{
+			"tavern": plainStructure("tavern", "Tavern"),
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"tavern": {
+				ID:            "tavern",
+				Pos:           sim.WorldPos{X: 100, Y: 100},
+				OwnerActorID:  "john",
+				Tags:          []string{sim.TagBusiness, "lodging", "tavern"},
+				Wear:          450,
+				LoiterOffsetX: &zero,
+				LoiterOffsetY: &zero,
+			},
+		},
+	}
+	return snap, "john", nil
+}
+
+// passerbyInsideWornBusiness: the LLM-266 non-owner arm — a non-owner (Ezekiel)
+// stands INSIDE someone else's worn business (John's Tavern) and away from the
+// outdoor loiter pin. The co-present condition line ("The Tavern here looks
+// worn…") now renders via the inside-structure branch of sim.AtBusiness, while the
+// owner-only "## Your business" cue stays absent (Ezekiel owns nothing). The owner
+// (John) need not be present as an actor — the condition line reads off the object.
+func passerbyInsideWornBusiness() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	zero := 0
+	start, end := 360, 1080                          // 06:00–18:00
+	now := 600                                       // 10:00 — on shift
+	insidePos := sim.WorldPos{X: 500, Y: 500}.Tile() // far from the pin at WorldPos{100,100}
+	ezekiel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Ezekiel Crane",
+		Role:              "blacksmith",
+		State:             sim.StateIdle,
+		Pos:               insidePos,
+		InsideStructureID: "tavern",
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             8,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay:          &now,
+		NeedThresholds:            sim.NeedThresholds{},
+		Assets:                    emptyAssetSet,
+		StallWearRepairThreshold:  400,
+		StallWearDegradeThreshold: 600,
+		StallNailsPerRepair:       5,
+		Actors:                    map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": ezekiel},
+		Structures: map[sim.StructureID]*sim.Structure{
+			"tavern": plainStructure("tavern", "Tavern"),
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"tavern": {
+				ID:            "tavern",
+				DisplayName:   "Tavern",
+				Pos:           sim.WorldPos{X: 100, Y: 100},
+				OwnerActorID:  "john",
+				Tags:          []string{sim.TagBusiness, "lodging", "tavern"},
+				Wear:          450,
+				LoiterOffsetX: &zero,
+				LoiterOffsetY: &zero,
+			},
+		},
+	}
+	return snap, "ezekiel", nil
 }
 
 // farmUpkeepSnapshot: the actor owns a farm-tagged object and, with `coins` held
