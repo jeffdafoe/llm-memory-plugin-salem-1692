@@ -534,6 +534,173 @@ func TestIntegration_VillageObjects_RefreshesCoManaged(t *testing.T) {
 	}
 }
 
+// #9b (LLM-264) A yield-only row carries NO attribute (the column is nullable):
+// it round-trips as an empty NeedKey and is stored as SQL NULL — no vestigial
+// placeholder need — coexisting on one object with a need-bearing drink row (the
+// two-row well shape LLM-254 builds on). Re-saving the identical snapshot keeps
+// exactly one yield row despite its surrogate-id churn (the null attribute never
+// hits the ON CONFLICT (object_id, attribute) arbiter, so it re-inserts while
+// delete-stale prunes the prior copy — atomically, within the one checkpoint Tx).
+func TestIntegration_VillageObjects_YieldOnlyNullAttribute(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	repo := voRepo(f)
+
+	// The need-bearing drink row FKs refresh_attribute(name); the yield-only row
+	// carries no attribute, so it needs no such seed.
+	if _, err := f.Pool.Exec(ctx, `
+		INSERT INTO refresh_attribute (name, display_label) VALUES ('thirst', 'Thirst')`); err != nil {
+		t.Fatalf("seed refresh_attribute: %v", err)
+	}
+
+	max20, avail20, period6 := 20, 20, 6
+	well := map[sim.VillageObjectID]*sim.VillageObject{
+		sim.VillageObjectID(uuidObj1): {
+			ID:           sim.VillageObjectID(uuidObj1),
+			AssetID:      sim.AssetID(uuidAssetWell),
+			CurrentState: "default",
+			EntryPolicy:  sim.EntryPolicyOpen,
+			Refreshes: []*sim.ObjectRefresh{
+				// Public drink row — need-bearing (thirst), infinite supply.
+				{Attribute: "thirst", Amount: -8},
+				// Yield-only water row — NO attribute (LLM-264), finite forage stock.
+				{
+					Amount:             0,
+					GatherItem:         "water",
+					MaxQuantity:        &max20,
+					AvailableQuantity:  &avail20,
+					RefreshMode:        sim.RefreshModeContinuous,
+					RefreshPeriodHours: &period6,
+				},
+			},
+		},
+	}
+	if err := saveSnapshotVO(t, f, repo, well); err != nil {
+		t.Fatalf("SaveSnapshot well: %v", err)
+	}
+
+	// The yield row is stored as NULL attribute — not a placeholder need.
+	assertNullYieldRows := func(when string, want int) {
+		var n int
+		if err := f.Pool.QueryRow(ctx,
+			`SELECT COUNT(*) FROM object_refresh WHERE object_id = $1 AND attribute IS NULL`, uuidObj1).Scan(&n); err != nil {
+			t.Fatalf("count null-attribute rows (%s): %v", when, err)
+		}
+		if n != want {
+			t.Fatalf("null-attribute yield rows (%s) = %d, want %d", when, n, want)
+		}
+	}
+	assertNullYieldRows("after first save", 1)
+
+	got, err := repo.LoadAll(ctx)
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	obj := got[sim.VillageObjectID(uuidObj1)]
+	if obj == nil || len(obj.Refreshes) != 2 {
+		t.Fatalf("well Refreshes = %+v, want 2 rows", obj)
+	}
+	byAttr := refreshByAttr(obj.Refreshes)
+
+	drink := byAttr["thirst"]
+	if drink == nil || drink.Amount != -8 || drink.IsFinite() {
+		t.Errorf("drink row round-trip mismatch: %+v", drink)
+	}
+	water := byAttr[""] // yield-only: empty NeedKey (NULL in the DB)
+	if water == nil || water.Attribute != "" || water.Amount != 0 ||
+		water.GatherItem != "water" || !water.IsYieldOnly() ||
+		water.AvailableQuantity == nil || *water.AvailableQuantity != 20 {
+		t.Errorf("yield-only water row round-trip mismatch: %+v", water)
+	}
+
+	// The yield row upserts on its (object_id, gather_item) key, so a re-save
+	// UPDATES it in place — same surrogate id, no re-insert churn.
+	var yieldID1 int64
+	if err := f.Pool.QueryRow(ctx,
+		`SELECT id FROM object_refresh WHERE object_id = $1 AND attribute IS NULL`, uuidObj1).Scan(&yieldID1); err != nil {
+		t.Fatalf("read yield row id: %v", err)
+	}
+	if err := saveSnapshotVO(t, f, repo, well); err != nil {
+		t.Fatalf("SaveSnapshot well (resave): %v", err)
+	}
+	assertNullYieldRows("after resave", 1)
+	var yieldID2 int64
+	if err := f.Pool.QueryRow(ctx,
+		`SELECT id FROM object_refresh WHERE object_id = $1 AND attribute IS NULL`, uuidObj1).Scan(&yieldID2); err != nil {
+		t.Fatalf("read yield row id after resave: %v", err)
+	}
+	if yieldID1 != yieldID2 {
+		t.Errorf("yield row surrogate id changed across re-save (%d -> %d): expected in-place update, not re-insert churn", yieldID1, yieldID2)
+	}
+}
+
+// #9c (LLM-264) Two yield-only rows on ONE object (different gather_items) each
+// carry NULL attribute and are keyed by the object_refresh_yield_key partial index
+// on (object_id, gather_item), so both persist and both round-trip through LoadAll
+// — a read/save path must not collapse them into one (they differ by gather_item,
+// not attribute). Each upserts on its own key, so a re-save keeps exactly two, each
+// updated in place.
+func TestIntegration_VillageObjects_MultipleNullYieldRows(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	repo := voRepo(f)
+
+	max5, avail5 := 5, 5
+	src := map[sim.VillageObjectID]*sim.VillageObject{
+		sim.VillageObjectID(uuidObj1): {
+			ID:           sim.VillageObjectID(uuidObj1),
+			AssetID:      sim.AssetID(uuidAssetWell),
+			CurrentState: "default",
+			EntryPolicy:  sim.EntryPolicyOpen,
+			Refreshes: []*sim.ObjectRefresh{
+				{Amount: 0, GatherItem: "water", MaxQuantity: &max5, AvailableQuantity: &avail5, RefreshMode: sim.RefreshModeContinuous},
+				{Amount: 0, GatherItem: "milk", MaxQuantity: &max5, AvailableQuantity: &avail5, RefreshMode: sim.RefreshModeContinuous},
+			},
+		},
+	}
+	if err := saveSnapshotVO(t, f, repo, src); err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+
+	countNull := func(when string, want int) {
+		var n int
+		if err := f.Pool.QueryRow(ctx,
+			`SELECT COUNT(*) FROM object_refresh WHERE object_id = $1 AND attribute IS NULL`, uuidObj1).Scan(&n); err != nil {
+			t.Fatalf("count null rows (%s): %v", when, err)
+		}
+		if n != want {
+			t.Fatalf("null-attribute rows (%s) = %d, want %d", when, n, want)
+		}
+	}
+	countNull("after save", 2)
+
+	got, err := repo.LoadAll(ctx)
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	obj := got[sim.VillageObjectID(uuidObj1)]
+	if obj == nil || len(obj.Refreshes) != 2 {
+		t.Fatalf("Refreshes = %+v, want 2 rows", obj)
+	}
+	items := map[sim.ItemKind]bool{}
+	for _, r := range obj.Refreshes {
+		if r.Attribute != "" {
+			t.Errorf("row %+v has attribute %q, want empty (yield-only)", r, r.Attribute)
+		}
+		items[r.GatherItem] = true
+	}
+	if !items["water"] || !items["milk"] {
+		t.Errorf("loaded gather items = %v, want both water and milk", items)
+	}
+
+	// Re-save the identical snapshot: the churn must keep exactly two, not
+	// collapse or duplicate.
+	if err := saveSnapshotVO(t, f, repo, src); err != nil {
+		t.Fatalf("SaveSnapshot (resave): %v", err)
+	}
+	countNull("after resave", 2)
+}
+
 // SaveSnapshot of an overlay (attached_to set) alongside its parent — both
 // in one checkpoint Tx. The attached_to self-FK is DEFERRABLE INITIALLY
 // DEFERRED (ZBBS-WORK-237) and SaveSnapshot orders roots before overlays,

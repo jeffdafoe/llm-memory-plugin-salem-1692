@@ -181,55 +181,79 @@ var ErrInvalidRefresh = errors.New("invalid object refresh")
 //     (dwell_pair). When set: dwell_delta < 0 (dwell_amount_negative),
 //     dwell_period_minutes > 0 (dwell_period_positive).
 func ValidateObjectRefreshes(rows []*ObjectRefresh) error {
-	seen := make(map[NeedKey]bool, len(rows))
+	seen := make(map[NeedKey]bool, len(rows))        // need rows, unique per attribute
+	seenGather := make(map[ItemKind]bool, len(rows)) // clean yield rows, unique per gather_item
 	for _, r := range rows {
 		if r == nil {
 			return fmt.Errorf("%w: nil refresh row", ErrInvalidRefresh)
 		}
-		if r.Attribute == "" {
-			return fmt.Errorf("%w: attribute is required", ErrInvalidRefresh)
-		}
-		if utf8.RuneCountInString(string(r.Attribute)) > MaxRefreshAttributeLen {
-			return fmt.Errorf("%w: attribute %q exceeds %d characters", ErrInvalidRefresh, r.Attribute, MaxRefreshAttributeLen)
-		}
-		if _, known := FindNeed(r.Attribute); !known {
-			return fmt.Errorf("%w: unknown attribute %q", ErrInvalidRefresh, r.Attribute)
-		}
-		if seen[r.Attribute] {
-			return fmt.Errorf("%w: duplicate attribute %q", ErrInvalidRefresh, r.Attribute)
-		}
-		seen[r.Attribute] = true
 
-		// A need-bearing row decrements the actor on arrival, so amount < 0.
-		// LLM-24 carves one exception: a yield-only (forage-to-sell) gather row
-		// carries amount = 0 — it applies no need at the source, so it must be
-		// gatherable and must not also configure a dwell (arrival skips the row,
-		// so a dwell credit could never be stamped). amount > 0 is never valid
-		// (it would RAISE a need).
+		// label names the row in error messages: its need when it carries one, else
+		// its gather item — a yield-only row now carries no attribute (LLM-264).
+		label := string(r.Attribute)
+		if label == "" {
+			label = "gather:" + string(r.GatherItem)
+		}
+
+		// The attribute is optional on a yield-only row (LLM-264 — the column is
+		// nullable, since such a row eases no need) but REQUIRED on a need-bearing
+		// row (checked in the amount branch below). Whenever an attribute IS present
+		// — on either row type — it must be a known, unique need, mirroring the
+		// refresh_attribute FK and the (object_id, attribute) unique constraint.
+		if r.Attribute != "" {
+			if utf8.RuneCountInString(string(r.Attribute)) > MaxRefreshAttributeLen {
+				return fmt.Errorf("%w: attribute %q exceeds %d characters", ErrInvalidRefresh, r.Attribute, MaxRefreshAttributeLen)
+			}
+			if _, known := FindNeed(r.Attribute); !known {
+				return fmt.Errorf("%w: unknown attribute %q", ErrInvalidRefresh, r.Attribute)
+			}
+			if seen[r.Attribute] {
+				return fmt.Errorf("%w: duplicate attribute %q", ErrInvalidRefresh, r.Attribute)
+			}
+			seen[r.Attribute] = true
+		}
+
+		// amount is the mode discriminant (LLM-24): < 0 = need-bearing (decrements
+		// the actor on arrival), == 0 = yield-only (forage-to-sell, no need applied),
+		// > 0 = invalid (it would RAISE a need). A yield-only row must be gatherable
+		// and carry no dwell (arrival skips it, so a dwell credit could never be
+		// stamped); a need-bearing row must name the need it eases.
 		if r.Amount > 0 {
-			return fmt.Errorf("%w: amount for %q must be negative", ErrInvalidRefresh, r.Attribute)
+			return fmt.Errorf("%w: amount for %q must be negative", ErrInvalidRefresh, label)
 		}
 		if r.Amount == 0 {
 			if !r.IsGatherable() {
-				return fmt.Errorf("%w: amount for %q may be zero only on a gather source (set gather_item)", ErrInvalidRefresh, r.Attribute)
+				return fmt.Errorf("%w: amount for %q may be zero only on a gather source (set gather_item)", ErrInvalidRefresh, label)
 			}
 			if r.DwellDelta != nil || r.DwellPeriodMinutes != nil {
-				return fmt.Errorf("%w: yield-only gather source %q must not configure a dwell", ErrInvalidRefresh, r.Attribute)
+				return fmt.Errorf("%w: yield-only gather source %q must not configure a dwell", ErrInvalidRefresh, label)
 			}
+			// A clean yield-only row (no attribute) is unique per (object,
+			// gather_item), mirroring the object_refresh_yield_key partial index. A
+			// legacy yield row still carrying an attribute is deduped by that
+			// attribute in the need branch above (object_refresh_need_key).
+			if r.Attribute == "" {
+				if seenGather[r.GatherItem] {
+					return fmt.Errorf("%w: duplicate yield-only gather item %q", ErrInvalidRefresh, r.GatherItem)
+				}
+				seenGather[r.GatherItem] = true
+			}
+		} else if r.Attribute == "" {
+			return fmt.Errorf("%w: attribute is required on a need-bearing (amount < 0) row", ErrInvalidRefresh)
 		}
 
 		if (r.AvailableQuantity == nil) != (r.MaxQuantity == nil) {
-			return fmt.Errorf("%w: available_quantity and max_quantity for %q must both be set or both omitted", ErrInvalidRefresh, r.Attribute)
+			return fmt.Errorf("%w: available_quantity and max_quantity for %q must both be set or both omitted", ErrInvalidRefresh, label)
 		}
 		if r.AvailableQuantity != nil {
 			if *r.AvailableQuantity < 0 {
-				return fmt.Errorf("%w: available_quantity for %q must be >= 0", ErrInvalidRefresh, r.Attribute)
+				return fmt.Errorf("%w: available_quantity for %q must be >= 0", ErrInvalidRefresh, label)
 			}
 			if *r.MaxQuantity <= 0 {
-				return fmt.Errorf("%w: max_quantity for %q must be > 0", ErrInvalidRefresh, r.Attribute)
+				return fmt.Errorf("%w: max_quantity for %q must be > 0", ErrInvalidRefresh, label)
 			}
 			if *r.AvailableQuantity > *r.MaxQuantity {
-				return fmt.Errorf("%w: available_quantity for %q cannot exceed max_quantity", ErrInvalidRefresh, r.Attribute)
+				return fmt.Errorf("%w: available_quantity for %q cannot exceed max_quantity", ErrInvalidRefresh, label)
 			}
 		}
 
@@ -237,34 +261,34 @@ func ValidateObjectRefreshes(rows []*ObjectRefresh) error {
 			switch r.RefreshMode {
 			case RefreshModeContinuous, RefreshModePeriodic:
 			default:
-				return fmt.Errorf(`%w: refresh_mode for %q must be "continuous" or "periodic"`, ErrInvalidRefresh, r.Attribute)
+				return fmt.Errorf(`%w: refresh_mode for %q must be "continuous" or "periodic"`, ErrInvalidRefresh, label)
 			}
 			if r.RefreshPeriodHours != nil && *r.RefreshPeriodHours <= 0 {
-				return fmt.Errorf("%w: refresh_period_hours for %q must be > 0", ErrInvalidRefresh, r.Attribute)
+				return fmt.Errorf("%w: refresh_period_hours for %q must be > 0", ErrInvalidRefresh, label)
 			}
 		} else {
 			if r.RefreshMode != "" {
-				return fmt.Errorf("%w: refresh_mode for %q is only valid on a finite (available/max) row", ErrInvalidRefresh, r.Attribute)
+				return fmt.Errorf("%w: refresh_mode for %q is only valid on a finite (available/max) row", ErrInvalidRefresh, label)
 			}
 			if r.RefreshPeriodHours != nil {
-				return fmt.Errorf("%w: refresh_period_hours for %q is only valid on a finite (available/max) row", ErrInvalidRefresh, r.Attribute)
+				return fmt.Errorf("%w: refresh_period_hours for %q is only valid on a finite (available/max) row", ErrInvalidRefresh, label)
 			}
 		}
 
 		if (r.DwellDelta == nil) != (r.DwellPeriodMinutes == nil) {
-			return fmt.Errorf("%w: dwell_delta and dwell_period_minutes for %q must both be set or both omitted", ErrInvalidRefresh, r.Attribute)
+			return fmt.Errorf("%w: dwell_delta and dwell_period_minutes for %q must both be set or both omitted", ErrInvalidRefresh, label)
 		}
 		if r.DwellDelta != nil {
 			if *r.DwellDelta >= 0 {
-				return fmt.Errorf("%w: dwell_delta for %q must be negative", ErrInvalidRefresh, r.Attribute)
+				return fmt.Errorf("%w: dwell_delta for %q must be negative", ErrInvalidRefresh, label)
 			}
 			if *r.DwellPeriodMinutes <= 0 {
-				return fmt.Errorf("%w: dwell_period_minutes for %q must be > 0", ErrInvalidRefresh, r.Attribute)
+				return fmt.Errorf("%w: dwell_period_minutes for %q must be > 0", ErrInvalidRefresh, label)
 			}
 		}
 
 		if utf8.RuneCountInString(string(r.GatherItem)) > MaxGatherItemLen {
-			return fmt.Errorf("%w: gather_item %q for %q exceeds %d characters", ErrInvalidRefresh, r.GatherItem, r.Attribute, MaxGatherItemLen)
+			return fmt.Errorf("%w: gather_item %q for %q exceeds %d characters", ErrInvalidRefresh, r.GatherItem, label, MaxGatherItemLen)
 		}
 	}
 	return nil
@@ -396,11 +420,6 @@ func applyObjectRefreshEffect(w *World, actorID ActorID, objID VillageObjectID, 
 		if r.IsFinite() && *r.AvailableQuantity <= 0 {
 			continue // dry well, empty bush
 		}
-		if _, known := FindNeed(r.Attribute); !known {
-			log.Printf("sim/object_refresh: %s has unknown attribute %q (skipped)",
-				objID, r.Attribute)
-			continue
-		}
 		if r.Amount == 0 {
 			// Yield-only (forage-to-sell) gather source (LLM-24): no
 			// consume-in-place need to apply, so skip the need drop, the
@@ -408,7 +427,15 @@ func applyObjectRefreshEffect(w *World, actorID ActorID, objID VillageObjectID, 
 			// draws the stock down and the regen tick refills it. (A
 			// non-gatherable zero-amount row is a misconfiguration the
 			// editor validation rejects; skipping it here is the safe
-			// no-op if one ever slips in.)
+			// no-op if one ever slips in.) Skipped BEFORE the need lookup
+			// below: a yield-only row now carries no attribute (LLM-264),
+			// so FindNeed("") would spuriously log it as an unknown
+			// attribute on every arrival.
+			continue
+		}
+		if _, known := FindNeed(r.Attribute); !known {
+			log.Printf("sim/object_refresh: %s has unknown attribute %q (skipped)",
+				objID, r.Attribute)
 			continue
 		}
 		newValue := ClampNeed(actor.Needs[r.Attribute] + r.Amount)
