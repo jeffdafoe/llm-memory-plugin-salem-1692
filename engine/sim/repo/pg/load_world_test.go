@@ -85,6 +85,9 @@ func (fakeOrders) LoadRecentPrices(_ context.Context, _ time.Time, _ int) ([]sim
 func (fakeOrders) WriteTerminal(_ context.Context, _ *sim.Order) error {
 	return nil
 }
+func (fakeOrders) WriteOrderlessSettlement(_ context.Context, _ *sim.PayLedgerEntry, _ time.Time) error {
+	return nil
+}
 func (f fakeOrders) MaxLedgerID(_ context.Context) (int64, error) {
 	return f.maxID, nil
 }

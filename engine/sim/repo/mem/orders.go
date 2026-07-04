@@ -92,6 +92,42 @@ func (r *OrdersRepo) WriteTerminal(_ context.Context, o *sim.Order) error {
 	return nil
 }
 
+// WriteOrderlessSettlement records an accepted order-less settlement
+// (consume_now single or bundle take, LLM-246). The mem backend has no
+// pay_ledger table — the only read surface the pg row feeds here is
+// LoadRecentPrices — so the write appends the settlement's price
+// observation to the prices slice. A bundle take (empty ItemKind)
+// appends nothing, mirroring the pg row's NULL item_kind falling out of
+// loadRecentPricesSQL's `item_kind IS NOT NULL` filter.
+func (r *OrdersRepo) WriteOrderlessSettlement(_ context.Context, e *sim.PayLedgerEntry, at time.Time) error {
+	if e == nil {
+		return fmt.Errorf("mem orders WriteOrderlessSettlement: nil entry")
+	}
+	// Same defensive shape check as the pg impl (code_review, LLM-246): a
+	// take-home single's row is the Order checkpoint's to write.
+	if !e.ConsumeNow && len(e.Lines) == 0 {
+		return fmt.Errorf("mem orders WriteOrderlessSettlement: ledger %d is not an order-less settlement shape (take-home single)", e.ID)
+	}
+	if e.ItemKind == "" {
+		return nil
+	}
+	consumers := len(e.ConsumerIDs)
+	if consumers < 1 {
+		consumers = 1
+	}
+	r.prices = append(r.prices, sim.PriceBookSeedRecord{
+		Key: sim.PriceBookKey{SellerID: e.SellerID, Item: e.ItemKind},
+		Observation: sim.PriceObservation{
+			BuyerID:   e.BuyerID,
+			Amount:    e.Amount,
+			Qty:       e.Qty,
+			Consumers: consumers,
+			At:        at,
+		},
+	})
+	return nil
+}
+
 // MaxLedgerID returns the largest id in the in-memory orders map (0 when
 // empty). The mem backend has no separate pay_ledger history — its orders
 // map IS the durable set — so the map max is the high-water mark, mirroring

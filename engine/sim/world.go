@@ -1044,6 +1044,14 @@ type World struct {
 	// w.Orders. See TerminalOrderSink doc for the contract.
 	terminalOrderSink TerminalOrderSink
 
+	// orderlessSettlementSink is the synchronous durable-write target for
+	// accepted pay-ledger settlements that mint no Order — consume_now
+	// eat-here singles and bundle quote-takes (LLM-246). Nil by default;
+	// SetOrderlessSettlementSink installs the pg impl at production
+	// startup. When nil, writeOrderlessSettlement is a no-op and those
+	// settlements stay in-memory only (tests, headless worlds).
+	orderlessSettlementSink OrderlessSettlementSink
+
 	// actionLogSink is the async durable-write target for the agent_action_log
 	// audit table (ZBBS-WORK-376). Nil by default; SetActionLogSink installs the
 	// pg impl at production startup. When nil, AppendActionLogDurable is a no-op,
@@ -1218,6 +1226,32 @@ func NewWorld(repo Repository) *World {
 // the next checkpoint reconciles them.
 func (w *World) SetTerminalOrderSink(s TerminalOrderSink) {
 	w.terminalOrderSink = s
+}
+
+// SetOrderlessSettlementSink installs the durable pay_ledger sink for
+// accepted settlements that mint no Order — consume_now eat-here singles
+// and bundle quote-takes (LLM-246). Without it those settlements exist
+// only in memory, so the price-book restart seed (LoadRecentPrices)
+// never sees the village's highest-frequency trades. Passing nil clears
+// it (the default). Safe to call before Run, or from inside a Command.Fn.
+func (w *World) SetOrderlessSettlementSink(s OrderlessSettlementSink) {
+	w.orderlessSettlementSink = s
+}
+
+// writeOrderlessSettlement forwards an accepted order-less settlement to
+// the durable sink when one is installed; a no-op otherwise. Same error
+// posture as finalizeOrderTerminal's write-through: log and continue —
+// the settlement already committed in memory, and the durable row is
+// price-history/audit data whose loss degrades recall, not consistency.
+// Called by commitPayTransfer on the world goroutine.
+func (w *World) writeOrderlessSettlement(e *PayLedgerEntry, at time.Time) {
+	sink := w.orderlessSettlementSink
+	if sink == nil {
+		return
+	}
+	if err := sink.WriteOrderlessSettlement(w.LifecycleContext(), e, at); err != nil {
+		log.Printf("sim: orderless settlement write-through for ledger %d failed: %v", e.ID, err)
+	}
 }
 
 // SetActionLogSink installs the durable agent_action_log sink the world
@@ -1520,10 +1554,14 @@ func (w *World) FinalizeLoad(ctx context.Context) error {
 	// X last time") and seller-side aggregates available without
 	// a thundering herd of "ask the keeper" turns.
 	//
-	// Seed source is pay_ledger (state='accepted') — the source of
-	// truth for accepted transactions across both ConsumeNow and
-	// take-home flows; LoadRecentPrices reads it directly without
-	// going through the (not-yet-loaded) Orders working set.
+	// Seed source is pay_ledger (state='accepted'). Take-home flows land
+	// there via the Order checkpoint upsert; order-less settlements —
+	// consume_now eat-here singles — via the accept-time write-through
+	// (writeOrderlessSettlement, LLM-246). LoadRecentPrices reads it
+	// directly without going through the (not-yet-loaded) Orders working
+	// set. Known gap: consume_now settlements between the v2 cutover
+	// (2026-05-26) and LLM-246 were never persisted anywhere seedable,
+	// so they stay absent; the book refills through play.
 	//
 	// Failures here are non-fatal to LoadWorld: a missing seed
 	// produces "ask the keeper" until the cascade subscriber re-

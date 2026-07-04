@@ -436,10 +436,13 @@ func (r *OrdersRepo) MaxLedgerID(ctx context.Context) (int64, error) {
 }
 
 // maxPaidActionLogLedgerIDSQL reads the largest ledger_id carried by any
-// `paid` agent_action_log payload (0 when none). consume_now settlements mint
-// a LedgerID but write no pay_ledger row, so this is the only durable trace of
-// the ids they consume — the allocator floor must include it or a restart
-// re-mints them (LLM-245). Rows whose payload lacks ledger_id (e.g. the
+// `paid` agent_action_log payload (0 when none). consume_now settlements
+// before LLM-246 minted a LedgerID but wrote no pay_ledger row, so this is
+// the only durable trace of the ids they consumed — the allocator floor must
+// include it or a restart re-mints them (LLM-245). Since LLM-246 the
+// accept-time write-through persists those ids to pay_ledger too, so
+// MaxLedgerID covers new mints and this floor is belt-and-braces for the
+// historical rows. Rows whose payload lacks ledger_id (e.g. the
 // engine-charged lodger-rebook paid rows) drop out via the `~ '^[0-9]+$'`
 // guard; COALESCE floors the empty case to 0. The regex guard also fences the
 // `::bigint` cast off from any malformed/non-numeric audit payload — the audit
@@ -458,6 +461,99 @@ func (r *OrdersRepo) MaxPaidActionLogLedgerID(ctx context.Context) (int64, error
 		return 0, fmt.Errorf("pg orders MaxPaidActionLogLedgerID: %w", err)
 	}
 	return maxID, nil
+}
+
+// insertOrderlessSettlementSQL writes the durable pay_ledger row for an
+// accepted settlement that minted no Order (LLM-246): a consume_now
+// eat-here single, or a bundle quote-take. Fired once at accept via the
+// sim.OrderlessSettlementSink write-through — there is no Order in
+// w.Orders to carry it to the checkpoint upsert.
+//
+// Row shape mirrors upsertSQL's v2 conventions with two deltas:
+//
+//   - fulfillment_status='delivered' + delivered_on stamped at insert:
+//     the settlement completed in the same instant it was accepted, and
+//     'delivered' keeps the row out of LoadAll's restart resurrection
+//     filter (ready/pending only) and out of the expiry sweeps.
+//   - consume_now is written (upsertSQL leaves it at its false default —
+//     every Order is take-home by definition).
+//
+// item_kind/qty are NULL for a bundle take: the lump Amount has no
+// per-line split, so no single (seller, item, price) observation exists
+// to reconstruct — loadRecentPricesSQL's `item_kind IS NOT NULL` filter
+// excludes the row from the seed, matching the live subscriber, which
+// also records nothing for bundles. The row still documents the sale
+// (umbilical sales, audit).
+//
+// Plain INSERT, no ON CONFLICT: the id comes from the payLedgerSeq
+// allocator, floored at boot above every persisted id AND every
+// action-log ledger_id (LLM-245), so a duplicate key here is a real bug
+// worth surfacing, not a condition to paper over.
+const insertOrderlessSettlementSQL = `
+INSERT INTO pay_ledger (
+    id, buyer_id, seller_id, item_kind, qty, offered_amount,
+    consumer_actor_ids, consume_now, state, fulfillment_status,
+    ready_by, created_at, resolved_at, delivered_on
+) VALUES (
+    $1, $2, $3, $4, $5, $6,
+    $7, $8, 'accepted', 'delivered',
+    $9::date, $10, $11, $11
+)`
+
+// WriteOrderlessSettlement persists one accepted order-less settlement
+// (consume_now single or bundle take) — the pg impl of
+// sim.OrderlessSettlementSink. See insertOrderlessSettlementSQL for the
+// row-shape rationale.
+//
+// at is the accept time (resolved_at + delivered_on + the ready_by
+// date); entry.CreatedAt is the offer-mint time and lands in created_at,
+// so a slow-path row records both moments like an Order row does.
+//
+// Runs against the pool directly (no Tx) — one row, one statement, the
+// WriteTerminal posture.
+func (r *OrdersRepo) WriteOrderlessSettlement(ctx context.Context, e *sim.PayLedgerEntry, at time.Time) error {
+	if e == nil {
+		return fmt.Errorf("pg orders WriteOrderlessSettlement: nil entry")
+	}
+	// Defensive shape check (code_review, LLM-246): a plain take-home /
+	// lodging single always mints an Order whose pay_ledger row is owned by
+	// the checkpoint upsert — writing it here too would collide on the id
+	// (or, worse, land it pre-stamped 'delivered' and hide it from the
+	// restart/expiry filters). The caller keys on the actual mint outcome;
+	// this rejects any entry that could never legitimately be order-less.
+	if !e.ConsumeNow && len(e.Lines) == 0 {
+		return fmt.Errorf("pg orders WriteOrderlessSettlement: ledger %d is not an order-less settlement shape (take-home single)", e.ID)
+	}
+	var itemKind *string
+	if e.ItemKind != "" {
+		s := string(e.ItemKind)
+		itemKind = &s
+	}
+	var qty *int
+	if e.Qty > 0 {
+		q := e.Qty
+		qty = &q
+	}
+	consumerIDs := make([]string, len(e.ConsumerIDs))
+	for i, a := range e.ConsumerIDs {
+		consumerIDs[i] = string(a)
+	}
+	if _, err := r.pool.Exec(ctx, insertOrderlessSettlementSQL,
+		int64(e.ID),        // $1 id
+		string(e.BuyerID),  // $2 buyer_id
+		string(e.SellerID), // $3 seller_id
+		itemKind,           // $4 item_kind (NULL for a bundle take)
+		qty,                // $5 qty (NULL for a bundle take)
+		e.Amount,           // $6 offered_amount
+		consumerIDs,        // $7 consumer_actor_ids
+		e.ConsumeNow,       // $8 consume_now
+		at,                 // $9 ready_by (DATE-cast)
+		e.CreatedAt,        // $10 created_at
+		at,                 // $11 resolved_at + delivered_on
+	); err != nil {
+		return fmt.Errorf("pg orders WriteOrderlessSettlement: ledger %d: %w", e.ID, err)
+	}
+	return nil
 }
 
 // loadRecentPricesSQL pulls the top-N most recent accepted rows per

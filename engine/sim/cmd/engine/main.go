@@ -211,6 +211,14 @@ func main() {
 	// restartExpirePendingOrders pass, so there's no before-load ordering to honor.
 	world.SetTerminalOrderSink(repo.Orders)
 
+	// Install the durable order-less settlement sink (LLM-246). consume_now
+	// eat-here settlements and bundle takes mint no Order, so without this
+	// write-through they never reach pay_ledger and the price-book restart
+	// seed above every boot re-loses the village's highest-frequency trades
+	// (tavern meals, stew, porridge). repo.Orders satisfies the narrow
+	// OrderlessSettlementSink via its WriteOrderlessSettlement method.
+	world.SetOrderlessSettlementSink(repo.Orders)
+
 	// Install the durable agent_action_log sink (ZBBS-WORK-376). It feeds the
 	// four stateful NPCs' nightly dream memory via llm-memory-api's daily sim
 	// push. Async: Append enqueues on the world goroutine; the writer goroutine

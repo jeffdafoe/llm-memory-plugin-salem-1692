@@ -33,6 +33,29 @@ type TerminalOrderSink interface {
 	WriteTerminal(ctx context.Context, o *Order) error
 }
 
+// OrderlessSettlementSink is the synchronous durable-write target for
+// accepted pay-ledger settlements that mint no Order: consume_now
+// (eat-here) singles and bundle quote-takes (LLM-101). Order-minting
+// settlements reach pay_ledger via the checkpoint upsert +
+// TerminalOrderSink; without this sink the order-less ones never
+// persisted at all, so the price-book restart seed (LoadRecentPrices)
+// dropped every eat-here price on every engine restart (LLM-246).
+//
+// at is the accept time, passed explicitly: the slow accept path stamps
+// entry.ResolvedAt only AFTER commitPayTransfer (the caller) returns,
+// so the entry's own timestamp can't be trusted at write time.
+//
+// Same blocking + failure posture as TerminalOrderSink: one row, one
+// statement, allowed to block the world goroutine; on error the caller
+// logs and continues — the settlement already committed in memory and
+// the durable row is price-history/audit data, not authoritative state.
+//
+// Wiring: optional, nil by default (harness worlds settle in-memory
+// only). Production wires pg's OrdersRepo via SetOrderlessSettlementSink.
+type OrderlessSettlementSink interface {
+	WriteOrderlessSettlement(ctx context.Context, e *PayLedgerEntry, at time.Time) error
+}
+
 // Order is the post-acceptance fulfillment state machine for take-away
 // pay-with-item transactions (Phase 3 PR S6). Created in
 // `commitPayTransfer`'s !ConsumeNow branch when AcceptPay commits a

@@ -2538,6 +2538,13 @@ func commitPayTransfer(
 	// the Paid/PaidBy facts below so OrderDelivered fires after the payment facts
 	// exist (ZBBS-HOME-398; code_review).
 	var eagerlyDelivered *Order
+	// orderMinted tracks whether any branch below minted a durable Order —
+	// set beside each mint call rather than inferred from entry shape, so
+	// the LLM-246 order-less write-through at the bottom keys on what
+	// actually happened. An entry-shape predicate (ConsumeNow || Lines)
+	// would silently double-write a pay_ledger id if a future entry shape
+	// with Lines ever started minting Orders (code_review, LLM-246).
+	orderMinted := false
 
 	def := w.ItemKinds[entry.ItemKind]
 	if len(entry.Lines) > 0 {
@@ -2678,8 +2685,19 @@ func commitPayTransfer(
 			// (AssignBedroomForLodger) happens there, and the eviction exemption
 			// is gated on it. ZBBS-HOME-403 advance booking; see the
 			// salem-engine-v2/lodging codebase note.
-			createOrderForPayWithItem(w, entry, at)
-			out.booked = true
+			bookedID := createOrderForPayWithItem(w, entry, at)
+			// Postcondition, not trust (code_review R2): orderMinted must
+			// track world state, so a future internal no-op path in the
+			// helper falls back to the order-less write-through below
+			// instead of silently persisting nothing. The two eager
+			// branches get this for free — mintAndFulfillOrderNow errors
+			// out itself when the order isn't in w.Orders post-mint.
+			orderMinted = w.Orders[bookedID] != nil
+			// booked reports "an advance-booking Order now exists", not
+			// "this branch ran" — keep it tied to the postcondition so the
+			// buyer's tool feedback can't claim a booking that didn't mint
+			// (code_review R3; today the two are always equal).
+			out.booked = orderMinted
 		} else {
 			// SAME-DAY walk-in (LLM-84): grant the room NOW, at accept, the same
 			// way physical goods are handed over eagerly. mintAndFulfillOrderNow
@@ -2694,6 +2712,7 @@ func commitPayTransfer(
 				return payTransferOutcome{}, err
 			}
 			eagerlyDelivered = o
+			orderMinted = true
 			out.lodgedNow = true
 		}
 	} else {
@@ -2710,6 +2729,7 @@ func commitPayTransfer(
 			return payTransferOutcome{}, err
 		}
 		eagerlyDelivered = o
+		orderMinted = true
 		out.tookHome = true
 	}
 
@@ -2739,6 +2759,15 @@ func commitPayTransfer(
 	// the handover is a separate later beat with its own facts).
 	if eagerlyDelivered != nil {
 		flipOrderTerminal(w, eagerlyDelivered, OrderStateDelivered, at)
+	}
+
+	// LLM-246: a settlement that minted no Order — today an eat-here single
+	// or a bundle take — writes its durable pay_ledger row here, at accept.
+	// Order-minting settlements persist via the checkpoint upsert instead;
+	// double-writing them here would collide on the same id. Keyed on the
+	// per-branch orderMinted outcome, not on entry shape (code_review).
+	if !orderMinted {
+		w.writeOrderlessSettlement(entry, at)
 	}
 	return out, nil
 }
