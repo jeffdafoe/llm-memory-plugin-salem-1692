@@ -1,5 +1,7 @@
 package sim
 
+import "math"
+
 // derived_demand.go — LLM-260. Derives input-procurement demand from produce
 // recipes, so an NPC that produces a good no longer needs a hand-authored `buy`
 // restock entry mirroring every recipe input it does not self-source.
@@ -47,16 +49,26 @@ const DefaultDerivedDemandBatches = 2
 // run the batches that fill the produce entry's own output cap once —
 // inputQty × ceil(outputCap / OutputQty) — floored at one batch. When the
 // produce entry carries no cap there is no shelf size to fill, so it falls back
-// to DefaultDerivedDemandBatches worth. (Decision on the heuristic: LLM-260.)
+// to DefaultDerivedDemandBatches worth. int64 arithmetic + clamp guards a
+// corrupt/imported catalog with huge caps or quantities from overflowing int —
+// the same posture buildProductionInputs takes on the runway math. (Decision on
+// the heuristic: LLM-260.)
 func derivedInputCap(inputQty int, produceEntry RestockEntry, recipe *ItemRecipe) int {
-	batches := DefaultDerivedDemandBatches
+	if inputQty <= 0 {
+		return 0
+	}
+	batches := int64(DefaultDerivedDemandBatches)
 	if outputCap := produceEntry.Cap(); outputCap > 0 && recipe.OutputQty > 0 {
-		batches = (outputCap + recipe.OutputQty - 1) / recipe.OutputQty
+		batches = (int64(outputCap) + int64(recipe.OutputQty) - 1) / int64(recipe.OutputQty)
 		if batches < 1 {
 			batches = 1
 		}
 	}
-	return inputQty * batches
+	v := int64(inputQty) * batches
+	if v > int64(math.MaxInt32) {
+		v = int64(math.MaxInt32)
+	}
+	return int(v)
 }
 
 // EffectiveBuyEntries returns the policy's buy-side demand: the explicit `buy`

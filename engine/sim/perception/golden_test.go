@@ -1206,7 +1206,10 @@ var perceptionScenarios = []perceptionScenario{
 		summary: "LLM-260 self-source override, the John Ellis water case: a tavernkeeper produces stew (needs water + meat) " +
 			"and ALSO produces his own water — both at zero on hand, with live vendors selling both. The golden pins that " +
 			"meat derives buy demand (runway + restock lines) while water derives NONE despite the vendor and the empty " +
-			"stock: a produce/forage entry for an input means 'I self-source this', so the derived-demand walk skips it.",
+			"stock: a produce/forage entry for an input means 'I self-source this', so the derived-demand walk skips it. " +
+			"The '## Time to produce' forge cue rendering alongside is deliberate: it shows the self-sourced water routed " +
+			"to the PRODUCE path (water listed as craftable, stew annotated short of it — LLM-257) while the bought input " +
+			"routes to the BUY path — the two procurement lanes of the same recipe, side by side.",
 		build: producerSelfSourcedInputNoDemand,
 	},
 }
