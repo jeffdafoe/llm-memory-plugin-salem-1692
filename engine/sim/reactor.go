@@ -965,6 +965,12 @@ func resetReactorStateOnLoad(a *Actor) {
 	// Return-to-post backstop pacing (LLM-268) — ephemeral, same rationale: a
 	// fresh-loaded off-post laboring worker re-engages from base.
 	clearReturnToPostBackstop(a)
+	// Hired-repair backstop pacing (LLM-280) — ephemeral, same rationale: a
+	// fresh-loaded laboring worker at a worn employer business re-engages from base.
+	// This also covers checkpoint resume: reconcileStrandedLaboringOnLoad restores
+	// the laboring window WITHOUT re-running startLaborWork (so it never re-stamps
+	// the one-shot wake), but the sweep re-stamps a resumed worker within a cadence.
+	clearHiredRepairBackstop(a)
 	// Staleness-decay ledger (LLM-233) — ephemeral pacing state; a
 	// fresh-loaded actor re-learns its decay from base rate.
 	clearStaleWake(a)
@@ -1140,10 +1146,15 @@ func actorCanReactNow(w *World, a *Actor, now time.Time) (eligible bool, stale b
 	laboring := a.LaboringUntil != nil && a.LaboringUntil.After(now)
 	if laboring {
 		// hasHiredRepairWarrant (LLM-271): a worker hired at their employer's
-		// already-worn business is woken once, on-post, to mend it — otherwise a
+		// already-worn business is woken, on-post, to mend it — otherwise a
 		// StateLaboring worker is shelved and the surfaced repair tool never gets
-		// used. Scoped to the hired warrant kind (not the owner's) and stamped only
-		// at startLaborWork, so it fires once per hire and cannot re-nag.
+		// used. Scoped to the hired warrant kind (not the owner's). Stamped once at
+		// startLaborWork AND re-stamped by the self-paced hired-repair backstop
+		// (LLM-280, hired_repair_backstop_commands.go) so a worker who declined her
+		// first wake gets another repair-capable tick on a cadence — the exponential
+		// backoff there keeps lifting the shelve on the warrant's presence from
+		// storming into per-tick babble, the same posture as the return-to-post
+		// backstop below.
 		interrupt := hasBreakInterruptingNeedWarrant(a.Warrants) ||
 			hasOperatorNudgeWarrant(a.Warrants) ||
 			hasPCSpeechWarrant(a.Warrants) ||

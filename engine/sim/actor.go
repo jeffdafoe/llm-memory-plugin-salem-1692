@@ -651,6 +651,18 @@ type Actor struct {
 	ReturnToPostNextWarrantAt *time.Time
 	ReturnToPostBackoffLevel  int
 
+	// Hired-repair backstop pacing (LLM-280) — the on-post analog of the
+	// ReturnToPost* fields above, re-waking a laboring hired worker to mend her
+	// employer's still-worn business after she declined the one-shot wake.
+	// HiredRepairNextWarrantAt is the earliest wall-clock the sweep may re-stamp the
+	// hired-repair warrant (nil = eligible immediately); HiredRepairBackoffLevel is
+	// the escalation level (delay is base << level, capped at the idle-backstop
+	// rate). Eligibility is binary (on-post at a worn business with nails), so there
+	// is no last-value to track — going ineligible (mended, job ended, off-post, out
+	// of nails) clears both via clearHiredRepairBackstop. Ephemeral: reset on load.
+	HiredRepairNextWarrantAt *time.Time
+	HiredRepairBackoffLevel  int
+
 	// Degeneracy observer (LLM-94). Per-actor tracking of consecutive
 	// "zero-yield" reactor ticks — substantive (LLM-deliberated) ticks that
 	// accomplished nothing (a present scene baseline showing no change, no
