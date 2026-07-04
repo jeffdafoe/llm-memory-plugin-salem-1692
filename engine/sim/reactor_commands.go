@@ -901,6 +901,22 @@ func hasNPCSpeechWarrant(list []WarrantMeta) bool {
 	return false
 }
 
+// hasHiredRepairWarrant reports whether any meta is the hired-worker repair
+// warrant (WarrantKindStallRepairHired, LLM-271). The laboring shelve-gate uses it
+// to let a worker who just started a job at their employer's already-worn business
+// draw one tick to mend it — a StateLaboring worker is otherwise shelved. Scoped to
+// the hired kind, NOT the owner's WarrantKindStallRepair: an owner mending their own
+// stall is never laboring for someone else, so only the hired warrant should pierce
+// this gate. Mirrors hasPCSpeechWarrant.
+func hasHiredRepairWarrant(list []WarrantMeta) bool {
+	for _, m := range list {
+		if m.Reason != nil && m.Reason.Kind() == WarrantKindStallRepairHired {
+			return true
+		}
+	}
+	return false
+}
+
 // hasForcedWarrant returns true if any meta in the list has Force=true.
 // Linear scan; the list is bounded by Settings.MaxWarrantsPerActor
 // (default 16) so this is cheap.

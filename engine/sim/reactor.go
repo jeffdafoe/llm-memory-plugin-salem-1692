@@ -71,6 +71,7 @@ const (
 	WarrantKindServeHandover      WarrantKind = "serve_handover"       // a buyer instantly took the seller's posted quote — wake the seller to hand over with a word (ZBBS-WORK-423)
 	WarrantKindProductionChoice   WarrantKind = "production_choice"    // multi-output crafter idle at its forge — wake it to pick what to make (LLM-116)
 	WarrantKindStallRepair        WarrantKind = "stall_repair"         // an owned business crossed the wear repair threshold — wake the owner to mend it (LLM-118, LLM-247)
+	WarrantKindStallRepairHired   WarrantKind = "stall_repair_hired"   // a hired worker just started on-post at their employer's already-worn business — wake them to mend it, piercing the laboring shelve-gate (LLM-271)
 	WarrantKindLaborOffer         WarrantKind = "labor_offer"          // a worker solicited the employer for service-for-pay — wake the employer to accept_work / decline_work (LLM-187)
 	WarrantKindFarmUpkeep         WarrantKind = "farm_upkeep"          // a farm owner owes upkeep shovels (coins above the floor) — wake them to buy from the smith (LLM-215)
 )
@@ -1087,9 +1088,15 @@ func actorCanReactNow(w *World, a *Actor, now time.Time) (eligible bool, stale b
 	// (handlers.gateTools). The high-value interrupts below are unchanged.
 	laboring := a.LaboringUntil != nil && a.LaboringUntil.After(now)
 	if laboring {
+		// hasHiredRepairWarrant (LLM-271): a worker hired at their employer's
+		// already-worn business is woken once, on-post, to mend it — otherwise a
+		// StateLaboring worker is shelved and the surfaced repair tool never gets
+		// used. Scoped to the hired warrant kind (not the owner's) and stamped only
+		// at startLaborWork, so it fires once per hire and cannot re-nag.
 		interrupt := hasBreakInterruptingNeedWarrant(a.Warrants) ||
 			hasOperatorNudgeWarrant(a.Warrants) ||
-			hasPCSpeechWarrant(a.Warrants)
+			hasPCSpeechWarrant(a.Warrants) ||
+			hasHiredRepairWarrant(a.Warrants)
 		npcReplyDue := hasNPCSpeechWarrant(a.Warrants) &&
 			laborReplyCadenceElapsed(a, now, w.Settings.laborReplyCadence())
 		if !interrupt && !npcReplyDue {

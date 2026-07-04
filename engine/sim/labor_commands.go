@@ -965,6 +965,11 @@ func startLaborWork(w *World, offer *LaborOffer, worker, employer *Actor, at tim
 	worker.LaborID = offer.ID
 	worker.LaboringUntil = timePtrLabor(workingUntil)
 	worker.State = StateLaboring
+	// LLM-271: the worker is now on-post. If the workplace is a business already
+	// worn to the repair threshold, wake them once to mend it — the wear crossed
+	// before the hire, so there is no owner-style accrual edge to ride, and a
+	// StateLaboring worker is otherwise shelved by the reactor.
+	maybeStampHiredRepairWarrant(w, worker, employer, at)
 }
 
 // sendWorkerToWorkplace walks a hired worker to the employer's workplace to

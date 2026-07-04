@@ -344,11 +344,13 @@ func StartRepair(actorID ActorID) Command {
 					"you are already busy — finish what you're doing before mending the stall.",
 				)
 			}
-			// Resolve the actor's OWN stall first, then check they stand at it —
-			// the same order perception's buildStallRepair uses to advertise the
-			// tool. Resolving "some loitering object" first would diverge from the
-			// cue when objects share a loiter pin (advertised, then rejected here).
-			stall := OwnedWearableStall(w.VillageObjects, actorID)
+			// Resolve the stall the actor may mend — their OWN business, else the
+			// employer's business they are Working at as a hired hand (LLM-271) —
+			// then check they stand at it. Same resolver and order the perception
+			// cue (buildStallRepair) advertises from, so the tool and this command
+			// can't diverge on who may mend or which stall (resolving "some
+			// loitering object" first would diverge when objects share a loiter pin).
+			stall, _ := WearableStallToMend(w.VillageObjects, w.LaborLedger, actorID)
 			if stall == nil {
 				return nil, errors.New("there's no stall of yours to mend here.")
 			}
@@ -491,14 +493,18 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 			At:             now,
 		})
 	case SourceActivityRepair:
-		// LLM-118: the mending lands — wear cleared, the stall trades again. The
-		// waking repair warrant was already consumed by the deliberation tick
-		// that chose repair; Wear=0 re-arms the edge-triggered warrant for the
-		// next time the stall wears through the threshold. Re-resolve by the
-		// object id the window began at (the move-cancel belt already aborts a
-		// window if the owner walks off, so they are still here).
-		stall := w.VillageObjects[act.ObjectID]
-		if stall == nil || stall.OwnerActorID != actorID || !IsWearableStall(stall) {
+		// LLM-118 (owner), LLM-271 (hired worker): the mending lands — wear cleared,
+		// the stall trades again. Wear=0 re-arms the owner's edge-triggered warrant
+		// for the next threshold crossing. Re-resolve by the SAME responsibility rule
+		// StartRepair used — owner, or a worker Working a hired job at the owner's
+		// business (WearableStallToMend) — and require it to be the object the window
+		// began at, so start and completion can't drift on who may mend. The
+		// move-cancel belt aborts a window if the mender walks off, so they are still
+		// here. Rare edge: if a hire settles inside the short repair window the reset
+		// is skipped (nails spent, no mend) — the same tolerance as an abandoned
+		// repair; the worker is simply re-wakeable.
+		stall, _ := WearableStallToMend(w.VillageObjects, w.LaborLedger, actorID)
+		if stall == nil || stall.ID != act.ObjectID {
 			return
 		}
 		stall.Wear = 0

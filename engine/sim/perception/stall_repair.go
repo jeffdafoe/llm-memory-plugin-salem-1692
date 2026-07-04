@@ -8,33 +8,39 @@ import (
 )
 
 // stall_repair.go — LLM-118 owner audience, generalized to all businesses in
-// LLM-247. The "## Your business" section: a standing reminder, shown whenever a
-// business owner stands at their own worn premises (tavern, farm, shop, smithy,
-// stall), that it needs mending and how. A nil view renders nothing (the common
-// case — not at the business, or it isn't worn yet). The SAME non-nil view gates
-// the `repair` tool's advertisement (handlers/tool_gating.go), so the cue and the
-// tool appear together. This is the standing-fact surface that keeps reminding
-// the owner after the one-shot repair warrant (renderWarrantLine) is consumed.
+// LLM-247, and to hired workers in LLM-271. The repair section: a standing
+// reminder, shown whenever the actor stands at a worn business they are
+// responsible for — its owner at their own premises ("## Your business"), or a
+// worker Working a hired job there ("## The business you're working at") — that it
+// needs mending and how. A nil view renders nothing (the common case — not at such
+// a business, or it isn't worn yet). The SAME non-nil view gates the `repair`
+// tool's advertisement (handlers/tool_gating.go), so the cue and the tool appear
+// together. This is the standing-fact surface that keeps reminding after the
+// one-shot repair warrant (renderWarrantLine) is consumed.
 
-// StallRepairView is the owner's at-the-business repair cue. Non-nil only when
-// the actor owns the business they are standing at AND it has worn to the repair
-// threshold.
+// StallRepairView is the at-the-business repair cue. Non-nil only when the actor
+// is responsible for a wearable business they are standing at AND it has worn to
+// the repair threshold — either as its owner, or (LLM-271) as a worker actively
+// Working a hired job there. Hired flips the render from "your business" to "the
+// business you're working at" so the cue states the true relationship.
 type StallRepairView struct {
+	Hired          bool   // resolved through a hire (Working for the owner), not ownership (LLM-271)
 	Degraded       bool   // worn past the degrade threshold: closed for trade until mended
 	NailsNeeded    int    // nails one repair consumes
-	NailsHeld      int    // nails the owner currently carries
+	NailsHeld      int    // nails the actor currently carries
 	HasEnoughNails bool   // NailsHeld >= NailsNeeded
 	Name           string // the business's display name (structure/object); "" → generic noun
 }
 
-// buildStallRepair returns the owner's at-the-business repair cue, or nil. Pure
-// over the snapshot. Gated on: the actor owns a wearable business, is standing at
-// its loiter, and it has worn to the repair threshold.
+// buildStallRepair returns the at-the-business repair cue, or nil. Pure over the
+// snapshot. Gated on: the actor is responsible for a wearable business (owns it,
+// or is Working a hired job there — LLM-271), is standing at/inside it, and it has
+// worn to the repair threshold.
 func buildStallRepair(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSnapshot) *StallRepairView {
 	if snap == nil || actorSnap == nil {
 		return nil
 	}
-	stall := sim.OwnedWearableStall(snap.VillageObjects, actorID)
+	stall, hired := sim.WearableStallToMend(snap.VillageObjects, snap.LaborLedger, actorID)
 	if stall == nil {
 		return nil
 	}
@@ -47,6 +53,7 @@ func buildStallRepair(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 	needed := snap.StallNailsPerRepair
 	held := actorSnap.Inventory[sim.NailItemKind]
 	return &StallRepairView{
+		Hired:          hired,
 		Degraded:       sim.StallDegraded(stall, snap.StallWearDegradeThreshold),
 		NailsNeeded:    needed,
 		NailsHeld:      held,
@@ -68,6 +75,10 @@ func renderStallRepair(b *strings.Builder, v *StallRepairView) {
 	if name == "" {
 		name = "place of business"
 	}
+	if v.Hired {
+		renderHiredStallRepair(b, v, name)
+		return
+	}
 	b.WriteString("## Your business\n")
 	if v.Degraded {
 		fmt.Fprintf(b, "Your %s is too worn to trade — it stays shut until you mend it. ", name)
@@ -78,6 +89,27 @@ func renderStallRepair(b *strings.Builder, v *StallRepairView) {
 		fmt.Fprintf(b, "You carry enough nails (%d) to mend it — repair it now (it takes a short while, hammer in hand, on site).\n", v.NailsHeld)
 	} else {
 		fmt.Fprintf(b, "Mending takes %d nails and you have %d — buy more from the smith, then repair it.\n", v.NailsNeeded, v.NailsHeld)
+	}
+}
+
+// renderHiredStallRepair writes the repair cue for a worker hired to labor at the
+// business (LLM-271): the same actionable mend, framed as the premises they were
+// taken on to help with rather than their own ("## The business you're working
+// at"), so the engine states the situation truthfully instead of calling a hired
+// hand's workplace "your" shop. It still tells them whether they can mend now or
+// are short of nails — the buy-then-mend steer is softened (they can't leave a job
+// to shop), so it just names the shortfall.
+func renderHiredStallRepair(b *strings.Builder, v *StallRepairView, name string) {
+	b.WriteString("## The business you're working at\n")
+	if v.Degraded {
+		fmt.Fprintf(b, "The %s you're working at is too worn to trade — it stays shut until it's mended. ", name)
+	} else {
+		fmt.Fprintf(b, "The %s you're working at is showing hard use and needs mending. ", name)
+	}
+	if v.HasEnoughNails {
+		fmt.Fprintf(b, "You carry enough nails (%d) to mend it — repair it now (it takes a short while, hammer in hand, on site).\n", v.NailsHeld)
+	} else {
+		fmt.Fprintf(b, "Mending takes %d nails and you have %d — you'd need more from the smith first.\n", v.NailsNeeded, v.NailsHeld)
 	}
 }
 
@@ -98,9 +130,17 @@ func buildStallCondition(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim
 	if snap == nil || actorSnap == nil {
 		return nil
 	}
+	// The business the actor is responsible for mending — their own, or (LLM-271)
+	// the one they are Working a hired job at — gets the richer repair cue instead,
+	// so skip it here: a mender shouldn't ALSO be handed the bystander "looks worn"
+	// texture line for the very stall they've been cued to fix.
+	responsible, _ := sim.WearableStallToMend(snap.VillageObjects, snap.LaborLedger, actorID)
 	for _, obj := range snap.VillageObjects {
 		if !sim.IsWearableStall(obj) || obj.OwnerActorID == actorID {
 			continue // non-business/unowned, or my own (## Your business covers me)
+		}
+		if responsible != nil && obj.ID == responsible.ID {
+			continue // I'm hired to mend this one — "## The business you're working at" covers me
 		}
 		if !sim.AtBusiness(actorSnap.Pos, actorSnap.InsideStructureID, obj.ID, objectLoiterPin(obj), true) {
 			continue
