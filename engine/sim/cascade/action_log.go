@@ -335,9 +335,10 @@ func handleOfferedActionLog(w *sim.World, evt sim.Event) {
 	}
 	// Durable mirror (LLM-283): ledger_id + terms so the whole haggle is
 	// reconstructable from agent_action_log alone (the side benefit) — buyer is
-	// the speaker, seller the counterparty. Same {ledger_id,item,qty,amount} shape
-	// as the paid row so the dream distiller reads negotiation and settlement
-	// identically.
+	// the speaker, seller the counterparty. The row lands in agent_action_log for
+	// tracing/audit, but the sim-conversation distiller DROPS these unmapped kinds
+	// from dream narration (memory-api, its unmapped-kind default), so it does NOT
+	// feed NPC dream memory — this is durable audit only, not a dream beat.
 	display, source := actorDisplayAndSource(w, offer.BuyerID)
 	w.AppendActionLogDurable(sim.DurableActionLogRow{
 		ActorID:    offer.BuyerID,
