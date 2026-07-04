@@ -152,6 +152,55 @@ func effectiveLoiterTile(w *World, structureID StructureID) (Position, bool) {
 	return computeLoiterTile(vobj, asset), true
 }
 
+// assetHasDoor reports whether an asset declares a usable door — BOTH door
+// offsets set. The single door/doorless rule, shared so structureEntryTile
+// (returns ok=false without a door) and ActorAtWorkpost (counts loiter proximity
+// as at-post only WITHOUT one) can't drift on what "has a door" means. A partial /
+// malformed asset with only one offset set is treated as doorless, matching
+// structureEntryTile's original `DoorOffsetX == nil || DoorOffsetY == nil` rule.
+func assetHasDoor(asset *Asset) bool {
+	return asset != nil && asset.DoorOffsetX != nil && asset.DoorOffsetY != nil
+}
+
+// ActorAtWorkpost reports whether an actor standing at (insideStructureID, pos)
+// is physically at workStructureID's work post: INSIDE it for a building with a
+// door, or at its loiter pin for a doorless market stall (whose staff pin IS the
+// post — there is no interior to enter). Empty workStructureID (a workless
+// employer) is never a post.
+//
+// Pure over its map inputs so the live world (w.VillageObjects, w.Assets, from
+// inside a Command.Fn) and the published snapshot (snap.VillageObjects,
+// snap.Assets) call the SAME "at post" definition — mirrors the
+// ResolveLoiteringObject dual-caller pattern. This shared definition is
+// load-bearing for LLM-268: the laboring off-post move_to gate + return cue are
+// computed snapshot-side in perception, while the return-to-post backstop that
+// wakes a marooned worker is computed world-side; they must not disagree on what
+// counts as at-post, or the backstop would wake a worker whose move_to is still
+// stripped (a wasted tick), or vice versa. The world-side actorAtWorkpost
+// delegates here so there is one implementation.
+func ActorAtWorkpost(objects map[VillageObjectID]*VillageObject, assets map[AssetID]*Asset, insideStructureID StructureID, pos TilePos, workStructureID StructureID) bool {
+	if workStructureID == "" {
+		return false
+	}
+	if insideStructureID == workStructureID {
+		return true
+	}
+	vobj, ok := objects[VillageObjectID(workStructureID)]
+	if !ok || vobj == nil {
+		return false
+	}
+	asset, ok := assets[vobj.AssetID]
+	if !ok || asset == nil {
+		return false
+	}
+	// A structure WITH a door must be entered — loitering at the door is not
+	// at-post. Only a doorless stall counts loiter proximity as at-post.
+	if assetHasDoor(asset) {
+		return false
+	}
+	return pos.Chebyshev(computeLoiterTile(vobj, asset)) <= LoiterAttributionTiles
+}
+
 // effectiveObjectLoiterTile resolves the loiter pin for a bare village object
 // by its VillageObjectID — the object-keyed sibling of effectiveLoiterTile. A
 // bare named prop (a well, a shade tree) has no Structure entry, so it resolves
@@ -316,7 +365,7 @@ func structureEntryTile(w *World, structureID StructureID) (Position, bool) {
 	if !ok {
 		return Position{}, false
 	}
-	if asset.DoorOffsetX == nil || asset.DoorOffsetY == nil {
+	if !assetHasDoor(asset) {
 		return Position{}, false
 	}
 	anchor := vobj.Pos.Tile()

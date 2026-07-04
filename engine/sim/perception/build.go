@@ -3553,7 +3553,46 @@ func buildLaboring(snap *sim.Snapshot, subject sim.ActorID) *LaboringView {
 	if o == nil {
 		return nil
 	}
-	return &LaboringView{Employer: o.EmployerID, Until: *o.WorkingUntil}
+	v := &LaboringView{Employer: o.EmployerID, Until: *o.WorkingUntil}
+	// Off-post surface (LLM-268): re-grant move_to + a directional cue when the
+	// worker has wandered off the post, or her employer has left it. Resolved from
+	// the same at-post definition (sim.ActorAtWorkpost) the world-side
+	// return-to-post backstop uses, so the tool the gate advertises and the tick
+	// that wakes her can't disagree on where the post is.
+	worker := snap.Actors[subject]
+	employer := snap.Actors[o.EmployerID]
+	if worker == nil || employer == nil {
+		return v
+	}
+	post := employer.WorkStructureID
+	if post == "" {
+		return v // an in-place hire (workless employer) — no post to be off
+	}
+	if label, ok := resolveStructureLabel(snap, post); ok {
+		v.PostLabel = label
+	}
+	v.OffPost = !sim.ActorAtWorkpost(snap.VillageObjects, snap.Assets, worker.InsideStructureID, worker.Pos, post)
+	v.EmployerAway = !sim.ActorAtWorkpost(snap.VillageObjects, snap.Assets, employer.InsideStructureID, employer.Pos, post)
+	if v.EmployerAway {
+		v.EmployerPlace = laboringActorPlaceLabel(snap, employer)
+	}
+	return v
+}
+
+// laboringActorPlaceLabel names where an actor currently is, for the accompany
+// cue (LLM-268): the structure they're inside, else the named structure whose
+// loiter pin they stand at, else "" (the cue then says they've stepped away
+// without naming a destination). Used for the employer's whereabouts.
+func laboringActorPlaceLabel(snap *sim.Snapshot, a *sim.ActorSnapshot) string {
+	if a.InsideStructureID != "" {
+		if label, ok := resolveStructureLabel(snap, a.InsideStructureID); ok && label != "" {
+			return label
+		}
+	}
+	if name, _ := findLoiterStructure(snap, a); name != "" {
+		return name
+	}
+	return ""
 }
 
 // laboringOfferFor returns the live Working LaborOffer that workerID is fulfilling,
@@ -3563,21 +3602,13 @@ func buildLaboring(snap *sim.Snapshot, subject sim.ActorID) *LaboringView {
 // ever coexists with a newer one, the latest WorkingUntil wins, then the lowest
 // LaborID, for determinism. WorkingUntil is non-nil on the returned offer.
 func laboringOfferFor(snap *sim.Snapshot, workerID sim.ActorID) *sim.LaborOffer {
-	if snap == nil || len(snap.LaborLedger) == 0 {
+	if snap == nil {
 		return nil
 	}
-	var best *sim.LaborOffer
-	for _, o := range snap.LaborLedger {
-		if o == nil || o.State != sim.LaborStateWorking || o.WorkerID != workerID || o.WorkingUntil == nil {
-			continue
-		}
-		if best == nil ||
-			o.WorkingUntil.After(*best.WorkingUntil) ||
-			(o.WorkingUntil.Equal(*best.WorkingUntil) && o.ID < best.ID) {
-			best = o
-		}
-	}
-	return best
+	// Delegate to the shared selector so this (which drives OffPost/EmployerAway
+	// + the self-state cue) and the world-side return-to-post backstop pick the
+	// same offer for a worker — same employer, same post, no drift (LLM-268).
+	return sim.WorkerWorkingOffer(snap.LaborLedger, workerID)
 }
 
 // buildLaborEnRoute scans snap.LaborLedger for an EnRoute offer where the

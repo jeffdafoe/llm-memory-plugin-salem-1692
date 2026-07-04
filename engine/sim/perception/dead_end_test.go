@@ -103,6 +103,10 @@ func TestShutBusinessCueOnlyWhenUntended(t *testing.T) {
 	untended := map[string]bool{
 		"customer_at_shut_business_loitering": true,
 		"customer_at_shut_business_inside":    true,
+		// LLM-268: the worker is inside the Tavern while its keeper (John) has
+		// walked off to the General Store — genuinely untended, so the shut cue
+		// correctly fires alongside the accompany cue.
+		"laboring_worker_employer_away": true,
 	}
 	var sawUntended, sawTended bool
 	for _, sc := range perceptionScenarios {

@@ -340,7 +340,14 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 	canSolicitWork := payload.CanSolicitWork
 	hasGift := len(perception.PendingGiftsForMe(payload)) > 0
 	laboring := payload.Laboring != nil
-	laboringMayMove := laboring && laboringMayBreakOffToEat(payload.Actor)
+	// LLM-230 strips a laboring worker's move_to to keep her committed, EXCEPT when
+	// she has a red hunger/thirst need (reach food), OR (LLM-268) she has wandered
+	// off the post (walk back) or her employer has left it (follow along). The
+	// off-post/employer-away flags come from her own LaboringView — the same
+	// predicate renderLaborSelfState renders the head-back / accompany cue from, so
+	// the tool and its cue can't drift.
+	laboringMayMove := laboring && (laboringMayBreakOffToEat(payload.Actor) ||
+		payload.Laboring.OffPost || payload.Laboring.EmployerAway)
 
 	// Single pass over the Available set so each gated group is evaluated
 	// against its OWN condition. We deliberately avoid a "pending offer →
@@ -464,12 +471,12 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 		}
 		// laboring speak-only surface (LLM-230): a worker mid-job stays committed.
 		// Strip the commerce tools that would walk her off the job (laborAbandonTools),
-		// and move_to too — EXCEPT when a red hunger/thirst need is pressing, the one
-		// carve-out the reactor honors so a starving worker can reach food. speak /
-		// consume / done stay, so she answers "can't stop just now" (or, if starving,
-		// walks off to eat). Applies on every laboring tick regardless of what woke
-		// her, which is why move_to keeps the need carve-out; the commerce tools never
-		// serve a need, so they go unconditionally.
+		// and move_to too — EXCEPT the three laboringMayMove cases (LLM-268): a red
+		// hunger/thirst need (reach food), being off the post (walk back), or the
+		// employer having left it (follow along). speak / consume / done stay, so she
+		// answers "can't stop just now" — or, when one of those holds, walks. The
+		// commerce tools (laborAbandonTools) never serve any of those, so they go
+		// unconditionally.
 		if laboring {
 			if _, gated := laborAbandonTools[spec.Name]; gated {
 				continue
