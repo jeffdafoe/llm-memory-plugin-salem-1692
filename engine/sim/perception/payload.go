@@ -777,9 +777,31 @@ type LaborOfferView struct {
 
 // LaboringView carries the subject's OWN in-progress job for the self-state
 // line (LLM-26): who they're working for and when the work window completes.
+//
+// OffPost / EmployerAway + their labels (LLM-268) are the off-post surface: a
+// laboring worker's move_to is stripped while she's committed (LLM-230), EXCEPT
+// when she has wandered off the post (OffPost) or her employer has left it
+// (EmployerAway) — then the tool is re-granted and a directional cue rendered so a
+// marooned worker can walk back and a "come with me" errand can be followed. These
+// flags are the SINGLE predicate that both re-grants the tool (gateTools) and
+// renders the cue (renderLaborSelfState), so the two can't drift — the same at-post
+// definition (sim.ActorAtWorkpost) the world-side return-to-post backstop uses.
 type LaboringView struct {
 	Employer sim.ActorID
 	Until    time.Time
+	// PostLabel is the employer's workplace name, for the return cue. "" when the
+	// post can't be labelled (its structure has no display name).
+	PostLabel string
+	// OffPost is true when the worker is not physically at the post — she has
+	// wandered off (a need-break that left her, or following the employer).
+	OffPost bool
+	// EmployerAway is true when the employer is not at the post — the "come with
+	// me" accompany case; the worker may follow.
+	EmployerAway bool
+	// EmployerPlace is where the employer is now, for the accompany cue ("Josiah
+	// has gone to the General Store"). "" when it can't be resolved — the cue then
+	// says they've stepped away without naming a destination.
+	EmployerPlace string
 }
 
 // LaborEnRouteView carries the subject's OWN accepted-but-not-yet-started job for

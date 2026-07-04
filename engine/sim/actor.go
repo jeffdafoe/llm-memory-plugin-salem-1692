@@ -640,6 +640,17 @@ type Actor struct {
 	SeekWorkNextWarrantAt *time.Time
 	SeekWorkBackoffLevel  int
 
+	// Return-to-post backstop pacing (LLM-268) — the off-post-laboring analog of
+	// the SeekWork* fields above. ReturnToPostNextWarrantAt is the earliest
+	// wall-clock the sweep may stamp the next return-to-post warrant (nil =
+	// eligible immediately); ReturnToPostBackoffLevel is the escalation level
+	// (delay is base << level, capped at the idle-backstop rate). Eligibility is
+	// binary (off-post while the employer still holds the post), so there is no
+	// last-value to track — going ineligible (back at the post, job ended) clears
+	// both via clearReturnToPostBackstop. Ephemeral: reset on load.
+	ReturnToPostNextWarrantAt *time.Time
+	ReturnToPostBackoffLevel  int
+
 	// Degeneracy observer (LLM-94). Per-actor tracking of consecutive
 	// "zero-yield" reactor ticks — substantive (LLM-deliberated) ticks that
 	// accomplished nothing (a present scene baseline showing no change, no

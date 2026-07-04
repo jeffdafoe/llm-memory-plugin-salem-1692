@@ -198,3 +198,77 @@ func TestGateTools_NotLaboring_KeepsCommerceTools(t *testing.T) {
 		}
 	}
 }
+
+// laboringPayloadFlags is laboringPayload with the LLM-268 off-post surface flags
+// set on the LaboringView, so the move_to-gate widening can be exercised.
+func laboringPayloadFlags(redNeed, offPost, employerAway bool) perception.Payload {
+	p := laboringPayload(redNeed)
+	p.Laboring.OffPost = offPost
+	p.Laboring.EmployerAway = employerAway
+	return p
+}
+
+func TestGateTools_LaboringOffPost_KeepsMoveTo(t *testing.T) {
+	r := laborSpeakOnlyRegistry(t)
+	// Wandered off the post, needs green: move_to re-granted so she can walk back
+	// (LLM-268 symptom 1), but the commerce tools stay stripped — she's returning
+	// to the job, not trading.
+	names := specNameSet(gateTools(r, laboringPayloadFlags(false, true, false), nil))
+	if names["move_to"] != 1 {
+		t.Errorf("move_to should be re-granted to an off-post laboring worker (walk back, LLM-268); count %d", names["move_to"])
+	}
+	for _, gated := range []string{"pay", "pay_with_item", "offer_trade", "sell"} {
+		if names[gated] != 0 {
+			t.Errorf("%q advertised to an off-post laboring worker; commerce stays stripped", gated)
+		}
+	}
+}
+
+func TestGateTools_LaboringEmployerAway_KeepsMoveTo(t *testing.T) {
+	r := laborSpeakOnlyRegistry(t)
+	// Employer left the post: move_to re-granted so she can follow when asked
+	// (LLM-268 symptom 2, the accompany case); commerce still stripped.
+	names := specNameSet(gateTools(r, laboringPayloadFlags(false, false, true), nil))
+	if names["move_to"] != 1 {
+		t.Errorf("move_to should be re-granted so the worker can follow an away employer (LLM-268); count %d", names["move_to"])
+	}
+	for _, gated := range []string{"pay", "pay_with_item", "offer_trade", "sell"} {
+		if names[gated] != 0 {
+			t.Errorf("%q advertised to a laboring worker with an away employer; commerce stays stripped", gated)
+		}
+	}
+}
+
+// TestGateTools_Laboring_MoveToInvariant is the LLM-268 cross-condition invariant:
+// for a laboring worker, move_to is advertised IFF at least one of {red
+// hunger/thirst, off-post, employer-away} holds, and stripped when none do (the
+// LLM-230 committed case). Commerce tools stay stripped in every laboring case.
+func TestGateTools_Laboring_MoveToInvariant(t *testing.T) {
+	r := laborSpeakOnlyRegistry(t)
+	for _, tc := range []struct {
+		name                           string
+		redNeed, offPost, employerAway bool
+	}{
+		{"committed", false, false, false},
+		{"red_need", true, false, false},
+		{"off_post", false, true, false},
+		{"employer_away", false, false, true},
+		{"off_post_and_away", false, true, true},
+		{"red_and_off_post", true, true, false},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			names := specNameSet(gateTools(r, laboringPayloadFlags(tc.redNeed, tc.offPost, tc.employerAway), nil))
+			wantMove := tc.redNeed || tc.offPost || tc.employerAway
+			got := names["move_to"] == 1
+			if got != wantMove {
+				t.Errorf("move_to advertised=%v, want %v (red=%v off=%v away=%v)", got, wantMove, tc.redNeed, tc.offPost, tc.employerAway)
+			}
+			for _, gated := range []string{"pay", "pay_with_item", "offer_trade", "sell"} {
+				if names[gated] != 0 {
+					t.Errorf("%q advertised to a laboring worker; commerce stays stripped in all cases", gated)
+				}
+			}
+		})
+	}
+}

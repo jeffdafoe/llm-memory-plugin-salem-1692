@@ -1192,6 +1192,34 @@ var perceptionScenarios = []perceptionScenario{
 		build: laboringWorkerAddressedByEmployer,
 	},
 	{
+		name: "laboring_worker_off_post",
+		summary: "LLM-268 symptom 1 (the marooning): Silence Walker walked off John Ellis's Tavern mid-contract (a " +
+			"need-break that left her, needs now green) while John still holds the post. LLM-230 stripped her move_to when " +
+			"the need cleared and took her tick eligibility with it, so she stood marooned until the completion sweep. The " +
+			"golden pins the two things that recover her: the return-to-post felt-impulse warrant line that wakes her (the " +
+			"backstop's engine-authored nudge) and her self-state cue 'you have wandered off … Head back there with " +
+			"move_to'. The move_to re-grant itself is asserted in handlers/labor_gating_test.go.",
+		build: laboringWorkerOffPost,
+	},
+	{
+		name: "laboring_worker_at_post_employer_present",
+		summary: "LLM-268 regression guard for LLM-230: Silence is inside the Tavern with John present, green needs — the " +
+			"normal committed case. Neither off-post flag holds, so the golden pins the unchanged 'Stay with it until it's " +
+			"done' self-state line with NO directional cue. Widening the move_to gate for the off-post cases must not leak " +
+			"the return/accompany cue (or move_to) into the at-post case; the tool-side half is the move_to-stripped " +
+			"assertion in handlers/labor_gating_test.go.",
+		build: laboringWorkerAtPostEmployerPresent,
+	},
+	{
+		name: "laboring_worker_employer_away",
+		summary: "LLM-268 symptom 2 (accompany): Silence is at the Tavern but John has walked off to the General Store " +
+			"mid-contract (the live Hannah/Lewis case — an employer trying to take her hire along). The golden pins the " +
+			"accompany cue 'they have left the Tavern and gone to the General Store … follow after them with move_to', so a " +
+			"'come with me' errand can be acted on instead of being silently impossible. The tick that lets her act rides " +
+			"the employer's speech reply-cadence (unchanged); the move_to re-grant is asserted in handlers/labor_gating_test.go.",
+		build: laboringWorkerEmployerAway,
+	},
+	{
 		name: "broke_keeper_shut_and_unaffordable_suppliers_no_restock",
 		summary: "LLM-216, the live Josiah Thorne case: a broke (0 coins) general-store keeper whose bought-in carrots " +
 			"and milk are both empty stands alone at his store on shift. His carrot supplier (James Farm) he remembers " +

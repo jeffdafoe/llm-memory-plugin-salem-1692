@@ -917,6 +917,21 @@ func hasHiredRepairWarrant(list []WarrantMeta) bool {
 	return false
 }
 
+// hasReturnToPostWarrant reports whether any meta is a return-to-post impulse
+// (WarrantKindReturnToPost). The laboring tick-shelve (actorCanReactNow, LLM-268)
+// uses it to wake an off-post worker so she walks back — deliberately its own
+// kind, NOT reused by the break / source-activity gates, so a "get back to the
+// job" nudge never cuts short a rester or a mid-bite eater. Mirrors
+// hasNPCSpeechWarrant.
+func hasReturnToPostWarrant(list []WarrantMeta) bool {
+	for _, m := range list {
+		if m.Reason != nil && m.Reason.Kind() == WarrantKindReturnToPost {
+			return true
+		}
+	}
+	return false
+}
+
 // hasForcedWarrant returns true if any meta in the list has Force=true.
 // Linear scan; the list is bounded by Settings.MaxWarrantsPerActor
 // (default 16) so this is cheap.

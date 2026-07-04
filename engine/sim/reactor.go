@@ -74,6 +74,7 @@ const (
 	WarrantKindStallRepairHired   WarrantKind = "stall_repair_hired"   // a hired worker just started on-post at their employer's already-worn business — wake them to mend it, piercing the laboring shelve-gate (LLM-271)
 	WarrantKindLaborOffer         WarrantKind = "labor_offer"          // a worker solicited the employer for service-for-pay — wake the employer to accept_work / decline_work (LLM-187)
 	WarrantKindFarmUpkeep         WarrantKind = "farm_upkeep"          // a farm owner owes upkeep shovels (coins above the floor) — wake them to buy from the smith (LLM-215)
+	WarrantKindReturnToPost       WarrantKind = "return_to_post"       // engine-authored felt impulse: a laboring worker has wandered off the post — wake them to head back (LLM-268)
 )
 
 // WarrantReason is the marker interface for kind-specific warrant payloads.
@@ -556,6 +557,28 @@ func (SeekWorkWarrantReason) isWarrantReason()           {}
 func (SeekWorkWarrantReason) Kind() WarrantKind          { return WarrantKindSeekWork }
 func (SeekWorkWarrantReason) DedupDiscriminator() uint64 { return 0 }
 
+// ReturnToPostWarrantReason wakes a laboring worker who has wandered off the
+// employer's post (with green needs, while the employer still holds the post) so
+// she heads back and actually helps rather than standing marooned wherever a
+// need-break left her until the job's completion sweep clears her (LLM-268).
+// Carries no fields — the impulse text is engine-authored and fixed; the
+// actionable specifics (which post, whose job) render from the worker's own
+// LaboringView self-state, the same predicate that re-grants her move_to, so cue
+// and tool can't drift.
+//
+// Kind is its OWN WarrantKindReturnToPost, deliberately NOT WarrantKindImpulse:
+// like SeekWorkWarrantReason it renders a felt-impulse line but must NOT inherit
+// the operator-nudge kind's rester-interrupting power — it only lifts the
+// laboring tick-shelve (actorCanReactNow), never cuts short a break, a mid-bite
+// source activity, or sleep. Not event-sourced, so DedupDiscriminator returns 0;
+// the backstop's own WarrantedSince pre-check prevents a second stamp on an open
+// cycle.
+type ReturnToPostWarrantReason struct{}
+
+func (ReturnToPostWarrantReason) isWarrantReason()           {}
+func (ReturnToPostWarrantReason) Kind() WarrantKind          { return WarrantKindReturnToPost }
+func (ReturnToPostWarrantReason) DedupDiscriminator() uint64 { return 0 }
+
 // WarrantMeta is one entry in an actor's Warrants list — a signal that
 // fired during the actor's warranted window. The evaluator carries the
 // full list into ReactorTickDue; the prompt builder (PR 3) renders each
@@ -914,6 +937,9 @@ func resetReactorStateOnLoad(a *Actor) {
 	// Seek-work backstop pacing (LLM-141) — ephemeral, same rationale as the
 	// red-need pacing above: a fresh-loaded broke worker re-engages from base.
 	clearSeekWorkBackstop(a)
+	// Return-to-post backstop pacing (LLM-268) — ephemeral, same rationale: a
+	// fresh-loaded off-post laboring worker re-engages from base.
+	clearReturnToPostBackstop(a)
 	// Staleness-decay ledger (LLM-233) — ephemeral pacing state; a
 	// fresh-loaded actor re-learns its decay from base rate.
 	clearStaleWake(a)
@@ -1096,7 +1122,15 @@ func actorCanReactNow(w *World, a *Actor, now time.Time) (eligible bool, stale b
 		interrupt := hasBreakInterruptingNeedWarrant(a.Warrants) ||
 			hasOperatorNudgeWarrant(a.Warrants) ||
 			hasPCSpeechWarrant(a.Warrants) ||
-			hasHiredRepairWarrant(a.Warrants)
+			hasHiredRepairWarrant(a.Warrants) ||
+			// LLM-268: a return-to-post impulse lifts the shelve so an off-post
+			// worker actually wakes to walk back. Kept in lockstep with the
+			// tool surface — gateTools re-grants move_to for the off-post
+			// laboring worker, so she must also be tickable, or she'd hold the
+			// tool but never wake (the marooning). The backstop that stamps this
+			// warrant is self-paced (exponential backoff), so lifting the shelve
+			// on the warrant's presence doesn't uncork a per-tick storm.
+			hasReturnToPostWarrant(a.Warrants)
 		npcReplyDue := hasNPCSpeechWarrant(a.Warrants) &&
 			laborReplyCadenceElapsed(a, now, w.Settings.laborReplyCadence())
 		if !interrupt && !npcReplyDue {

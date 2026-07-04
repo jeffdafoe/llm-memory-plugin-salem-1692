@@ -2296,11 +2296,37 @@ func renderLaborOffers(b *strings.Builder, offers []LaborOfferView, employerCoin
 // line (LLM-26) — who they're working for and roughly how much longer, with the
 // nudge to stay with it. Placed in the self-state block (top) because it is
 // point-in-time "what I'm doing right now." Content-gated on Laboring != nil.
+//
+// Off-post surface (LLM-268): when the worker has wandered off the post (OffPost),
+// or her employer has left it (EmployerAway), the line becomes a directional cue —
+// head back, or follow along — paired with the move_to gateTools re-grants for the
+// same LaboringView predicate, so cue and tool can't drift. The employer-away
+// (accompany) case takes precedence: if the employer has left, there is no held
+// post to return to, so "head back" would be wrong.
 func renderLaborSelfState(b *strings.Builder, laboring *LaboringView, nameOf func(sim.ActorID) string, renderedAt time.Time) {
 	if laboring == nil {
 		return
 	}
 	employer := nameOf(laboring.Employer)
+	post := "the workplace"
+	if laboring.PostLabel != "" {
+		post = sim.WithDefiniteArticle(sanitizeInline(laboring.PostLabel))
+	}
+	switch {
+	case laboring.EmployerAway:
+		if laboring.EmployerPlace != "" {
+			fmt.Fprintf(b, "You are in the middle of a job for %s, but they have left %s and gone to %s. If they want you along, follow after them with move_to; otherwise carry on with the work. You are paid when the job is done.\n",
+				employer, post, sim.WithDefiniteArticle(sanitizeInline(laboring.EmployerPlace)))
+			return
+		}
+		fmt.Fprintf(b, "You are in the middle of a job for %s, but they have stepped away from %s. If they want you along, follow after them with move_to; otherwise carry on with the work. You are paid when the job is done.\n",
+			employer, post)
+		return
+	case laboring.OffPost:
+		fmt.Fprintf(b, "You took on a job for %s at %s, but you have wandered off from it — and you are still on the clock. Head back there with move_to and get on with the work; you are paid when it is done.\n",
+			employer, post)
+		return
+	}
 	mins := minutesUntil(laboring.Until, renderedAt)
 	if mins <= 0 {
 		fmt.Fprintf(b, "You are finishing a job for %s — the work is just about done; you'll be paid as you finish.\n", employer)
@@ -2772,6 +2798,13 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 		// its own, not an empty purse — the nudge fires for a workless worker whether
 		// or not it holds coin (LLM-168).
 		return fmt.Sprintf("%d. You have no work of your own to tend, and you take work for pay — seek out someone who could use a hand and offer your labor.\n", n), false
+	case sim.ReturnToPostWarrantReason:
+		// LLM-268: the felt pull that wakes a laboring worker who has wandered off
+		// the post. Generic — the actionable specifics (which post, whose job, and
+		// the move_to to get there) render from her LaboringView self-state
+		// (renderLaborSelfState), the same predicate that re-grants her move_to, so
+		// this line and the tool can't drift. Mirrors the SeekWork felt-impulse line.
+		return fmt.Sprintf("%d. It weighs on you that you have drifted away from the paid job you are in the middle of — you should get back to it.\n", n), false
 	case sim.ArrivalWarrantReason:
 		return renderArrivalWarrantLine(n, nameOf(w.TriggerActorID), r, placeNameOf), false
 	case sim.NeedThresholdWarrantReason:

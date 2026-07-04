@@ -912,28 +912,37 @@ func workerHasLiveJob(w *World, workerID ActorID) bool {
 // stall's staff/loiter pin, the same place its keeper works from. Shared by the
 // accept-time immediate-start decision, the arrival subscriber's start gate, and
 // the produce boost's helper count, so all three agree on "at the post." An
-// empty workStructureID (a workless employer) is never a post.
+// empty workStructureID (a workless employer) is never a post. Delegates to the
+// map-based ActorAtWorkpost so the perception off-post gate (snapshot-side) shares
+// the exact same definition (LLM-268).
 // World-goroutine-only.
 func actorAtWorkpost(w *World, a *Actor, workStructureID StructureID) bool {
-	if a == nil || workStructureID == "" {
+	if a == nil {
 		return false
 	}
-	if a.InsideStructureID == workStructureID {
-		return true
+	return ActorAtWorkpost(w.VillageObjects, w.Assets, a.InsideStructureID, a.Pos, workStructureID)
+}
+
+// workerWorkingOffer returns the live Working LaborOffer that workerID is
+// fulfilling as the worker, or nil. The world-side sibling of perception's
+// laboringOfferFor — the return-to-post backstop (LLM-268) reads it to recover
+// the employer + post for an off-post laboring worker. A worker holds at most
+// one live job (workerHasLiveJob gates accept); if a stale unswept offer ever
+// coexists with a newer one the latest WorkingUntil wins, then the lowest
+// LaborID, matching laboringOfferFor's determinism. World-goroutine-only.
+func workerWorkingOffer(w *World, workerID ActorID) *LaborOffer {
+	var best *LaborOffer
+	for _, o := range w.LaborLedger {
+		if o == nil || o.State != LaborStateWorking || o.WorkerID != workerID || o.WorkingUntil == nil {
+			continue
+		}
+		if best == nil ||
+			o.WorkingUntil.After(*best.WorkingUntil) ||
+			(o.WorkingUntil.Equal(*best.WorkingUntil) && o.ID < best.ID) {
+			best = o
+		}
 	}
-	// A doorless structure has no interior to be inside — its staff position IS
-	// the loiter pin (the keeper works the stall from there). structureEntryTile
-	// ok=false marks doorless; only then does loiter proximity count as at-post,
-	// so an interior shop still requires actually being inside (a worker
-	// loitering outside the door is NOT at the post).
-	if _, hasDoor := structureEntryTile(w, workStructureID); hasDoor {
-		return false
-	}
-	pin, ok := effectiveLoiterTile(w, workStructureID)
-	if !ok {
-		return false
-	}
-	return a.Pos.Chebyshev(pin) <= LoiterAttributionTiles
+	return best
 }
 
 // startLaborWork begins a hired worker's work window: the offer flips to
