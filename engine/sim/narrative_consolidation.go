@@ -290,6 +290,11 @@ func snapshotEventsForActor(w *World, actorID ActorID, cutoff time.Time) []Actio
 		if !e.OccurredAt.After(cutoff) {
 			continue
 		}
+		// LLM-283: negotiation beats are feed-only — excluded from the NPC's
+		// narrative consolidation memory (isNegotiationActionType).
+		if isNegotiationActionType(e.ActionType) {
+			continue
+		}
 		all = append(all, CloneActionLogEntry(e))
 	}
 	if len(all) == 0 {
@@ -319,7 +324,9 @@ func snapshotEventsForActor(w *World, actorID ActorID, cutoff time.Time) []Actio
 // cutoff) without building or sorting the full slice.
 func actorHasEventSince(w *World, actorID ActorID, cutoff time.Time) bool {
 	for _, e := range w.ActionLog {
-		if e.ActorID == actorID && e.OccurredAt.After(cutoff) {
+		// LLM-283: negotiation beats are feed-only — a haggle alone must not trip
+		// the reflection activity gate (else it burns an LLM re-reflection call).
+		if e.ActorID == actorID && e.OccurredAt.After(cutoff) && !isNegotiationActionType(e.ActionType) {
 			return true
 		}
 	}

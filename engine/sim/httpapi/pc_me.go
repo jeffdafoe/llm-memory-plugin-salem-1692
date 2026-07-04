@@ -814,6 +814,39 @@ func renderActionLogEntry(snap *sim.Snapshot, e sim.ActionLogEntry) (speaker, te
 		default:
 			return name, name + " takes someone on.", "act", true
 		}
+	case sim.ActionTypeOffered:
+		// LLM-283: buyer's pending pay offer. Degrade like the paid line —
+		// "X offers Y N coins for Z." → drop the amount (goods-only barter) →
+		// drop the counterparty.
+		if e.CounterpartyName == "" {
+			return name, name + " makes an offer.", "act", true
+		}
+		line := name + " offers " + e.CounterpartyName
+		if e.Amount > 0 {
+			line += " " + formatCoins(e.Amount)
+		}
+		if e.Text != "" {
+			line += " for " + e.Text
+		}
+		return name, line + ".", "act", true
+	case sim.ActionTypeDeclined:
+		// LLM-283: seller declined the buyer's pending offer.
+		if e.CounterpartyName == "" {
+			return name, name + " declines an offer.", "act", true
+		}
+		return name, name + " declines " + e.CounterpartyName + "'s offer.", "act", true
+	case sim.ActionTypeCountered:
+		// LLM-283: seller countered at a new price. Amount is the counter price
+		// (always > 0 — a non-increasing counter is coerced to an accept and
+		// never emits PayCountered); the goods-only-counter fallbacks below cover
+		// a pure-barter counter (CounterAmount 0).
+		if e.Amount > 0 {
+			return name, name + " counters at " + formatCoins(e.Amount) + ".", "act", true
+		}
+		if e.CounterpartyName != "" {
+			return name, name + " counters " + e.CounterpartyName + "'s offer.", "act", true
+		}
+		return name, name + " makes a counteroffer.", "act", true
 	default:
 		return "", "", "", false
 	}
