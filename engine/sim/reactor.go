@@ -1194,6 +1194,31 @@ func (s WorldSettings) laborReplyCadence() time.Duration {
 	return defaultLaborReplyCadence
 }
 
+// agentRateStarvationReserve / agentRateReserveAgeThreshold /
+// agentRateStarvationCeiling resolve the shared-VA fairness tunables (LLM-258),
+// each falling back to its default when the WorldSettings field is unset — the
+// same value-or-default shape as laborReplyCadence above.
+func (s WorldSettings) agentRateStarvationReserve() int {
+	if s.AgentRateStarvationReserve > 0 {
+		return s.AgentRateStarvationReserve
+	}
+	return defaultAgentRateStarvationReserve
+}
+
+func (s WorldSettings) agentRateReserveAgeThreshold() time.Duration {
+	if s.AgentRateReserveAgeThreshold > 0 {
+		return s.AgentRateReserveAgeThreshold
+	}
+	return defaultAgentRateReserveAgeThreshold
+}
+
+func (s WorldSettings) agentRateStarvationCeiling() time.Duration {
+	if s.AgentRateStarvationCeiling > 0 {
+		return s.AgentRateStarvationCeiling
+	}
+	return defaultAgentRateStarvationCeiling
+}
+
 // laborReplyCadenceElapsed reports whether enough time has passed since the
 // worker's last reactor tick for another NPC-speech reply to be due while she is
 // laboring (LLM-230). Keys on lastReactorTickAt — any recent tick, for any
@@ -1279,27 +1304,110 @@ func (w *World) agentRateCapFor(slug string) (AgentRateLimit, bool) {
 	return rl, true
 }
 
-// checkAgentRateGate mirrors checkRateGate but counts ticks aggregated across
-// EVERY actor sharing the VA slug (the per-agent ring), so a shared VA paces as
-// one bucket — the whole point of LLM-156. Returns true when the agent is below
-// its cap, or ungated. An ungated agent (no installed cap) always passes.
-func checkAgentRateGate(w *World, slug string, now time.Time) bool {
-	rl, ok := w.agentRateCapFor(slug)
+// agentInWindowTickCount counts the slug's ticks that fall inside the cap's
+// rolling window and returns the resolved cap alongside. ok=false means the slug
+// is ungated (no installed cap) — callers treat that as "always admit". Shared by
+// checkAgentRateGate (raw under-cap check) and admitAgentRateFair (the fairness
+// allocation), so both read the bucket the same way.
+func agentInWindowTickCount(w *World, slug string, now time.Time) (count int, rl AgentRateLimit, ok bool) {
+	rl, ok = w.agentRateCapFor(slug)
 	if !ok {
-		return true
+		return 0, AgentRateLimit{}, false
 	}
 	ring := w.agentRecentTicks[slug]
 	if ring == nil {
-		return true
+		return 0, rl, true
 	}
 	cutoff := now.Add(-rl.Window)
-	count := 0
 	for _, t := range ring.Snapshot() {
 		if t.After(cutoff) {
 			count++
 		}
 	}
+	return count, rl, true
+}
+
+// checkAgentRateGate mirrors checkRateGate but counts ticks aggregated across
+// EVERY actor sharing the VA slug (the per-agent ring), so a shared VA paces as
+// one bucket — the whole point of LLM-156. Returns true when the agent is below
+// its cap, or ungated. An ungated agent (no installed cap) always passes. This is
+// the raw under-cap check; the emit loop uses admitAgentRateFair, which layers
+// starvation-age fairness on top of the same count.
+func checkAgentRateGate(w *World, slug string, now time.Time) bool {
+	count, rl, ok := agentInWindowTickCount(w, slug, now)
+	if !ok {
+		return true
+	}
 	return count < rl.Cap
+}
+
+// servedStarvationAge reports how long the actor has waited since its last served
+// reactor tick. served=false means the actor has never ticked this session (its
+// RecentReactorTicks ring is nil/empty) — admitAgentRateFair treats that as
+// maximally starved for the reserved band (but not for the cap-bursting ceiling).
+func servedStarvationAge(a *Actor, now time.Time) (served bool, age time.Duration) {
+	last, ok := lastReactorTickAt(a)
+	if !ok {
+		return false, 0
+	}
+	return true, now.Sub(last)
+}
+
+// admitAgentRateFair decides whether a due actor may consume one of its shared
+// VA's paced tick slots. It replaces the raw under-cap check (checkAgentRateGate)
+// at the emit loop's per-agent gate with weighted starvation-age fairness
+// (LLM-258): a subset of a shared VA's NPCs that warrant constantly (social
+// chatter) otherwise consume the whole budget every window, so quiet on-shift
+// producers on the same slug never win a slot before their warrant ages out and
+// is shed — an NPC only acts when it ticks, so a starved one is functionally
+// frozen (salem-vendor's Moses/Joseph sitting at 0 ticks since boot).
+//
+// The cap itself is unchanged — memory-api still owns the hard limit; only the
+// allocation within it changes:
+//
+//   - Below the general boundary (cap - reserve): admit anyone. Live conversation
+//     keeps the bulk of the budget so a short back-and-forth stays dense.
+//   - In the reserved band [cap-reserve, cap): admit only an actor starved past
+//     agentRateReserveAgeThreshold. Chatter (last tick seconds ago) self-limits to
+//     the general slots, so the tail is always reachable by a producer that has
+//     waited — and because a due producer now passes the gate here, it is served
+//     rather than deferred-then-shed in the first place.
+//   - At/over the cap: admit only a *served* actor starved past the hard
+//     agentRateStarvationCeiling — the Force-equivalent guarantee that a producer
+//     ticks within a bounded window even under sustained chatter. This is the one
+//     path that can push the slug one tick past its paced cap; it mirrors the
+//     existing Force bypass's accepted residual (memory-api's server cooldown plus
+//     the 80% pacing headroom absorb the rare overage). A never-served actor does
+//     NOT burst past the cap — it rides the reserved band, so a newly added
+//     producer waits for a real slot rather than forcing an overage on a full
+//     bucket.
+//
+// Starvation age keys on the last *served* tick (lastReactorTickAt), which
+// persists across the warrantCycleStale shed/re-stamp churn — so even a
+// repeatedly-shed producer keeps accruing age and eventually wins.
+func admitAgentRateFair(w *World, actor *Actor, now time.Time) bool {
+	count, rl, ok := agentInWindowTickCount(w, actor.LLMAgent, now)
+	if !ok {
+		return true // ungated slug — no pacing, so no fairness to arbitrate
+	}
+	reserve := w.Settings.agentRateStarvationReserve()
+	if reserve >= rl.Cap {
+		reserve = rl.Cap - 1 // always leave at least one general slot for conversation
+	}
+	if reserve < 0 {
+		reserve = 0
+	}
+	if count < rl.Cap-reserve {
+		return true
+	}
+	served, age := servedStarvationAge(actor, now)
+	if count >= rl.Cap {
+		return served && age >= w.Settings.agentRateStarvationCeiling()
+	}
+	if !served {
+		return true // never ticked this session — maximally starved, takes a reserved slot
+	}
+	return age >= w.Settings.agentRateReserveAgeThreshold()
 }
 
 // nextAgentRateAllowedAt mirrors nextRateAllowedAt for the per-agent ring: the
@@ -1412,6 +1520,28 @@ const (
 	// WorldSettings.AdmissionBackoff is unset. ≈ the evaluator cadence, so
 	// a deferred warrant is re-examined on roughly the next scan.
 	defaultAdmissionBackoff = 250 * time.Millisecond
+
+	// Weighted starvation-age fairness for shared-VA tick allocation (LLM-258).
+	// The value-or-default helpers (agentRateStarvationReserve etc.) fall back to
+	// these when the matching WorldSettings field is unset.
+	//
+	// defaultAgentRateStarvationReserve: how many of a shared VA's paced slots are
+	// held back from chatter for starved producers. 2 of the ~8 a 10/60s limit
+	// paces to (80% headroom) leaves 6 for live conversation.
+	defaultAgentRateStarvationReserve = 2
+
+	// defaultAgentRateReserveAgeThreshold: how long an actor must have waited since
+	// its last served tick before it may claim one of the reserved slots. 45s —
+	// long enough that an active conversation (ticking every few seconds) never
+	// reaches into the reserve, short enough that a quiet producer claims it well
+	// before the hard ceiling.
+	defaultAgentRateReserveAgeThreshold = 45 * time.Second
+
+	// defaultAgentRateStarvationCeiling: the hard anti-starvation ceiling. A served
+	// actor starved longer than this is admitted unconditionally (the Force-
+	// equivalent), bounding worst-case tick latency for an on-shift producer even
+	// when the slug is saturated by chatter.
+	defaultAgentRateStarvationCeiling = 2 * time.Minute
 
 	// defaultIdleBackstopThreshold is the wall-clock duration an actor
 	// must go without a reactor tick before the idle-backstop sweep

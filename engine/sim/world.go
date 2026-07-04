@@ -221,6 +221,25 @@ type WorldSettings struct {
 	AdmissionBackoff                 time.Duration
 	TickWorkerCount                  int
 
+	// Weighted starvation-age fairness for shared-VA tick allocation (LLM-258).
+	// The per-agent rate gate paces a shared VA (salem-vendor backs many NPCs)
+	// under memory-api's per-agent limit; these govern how the limited slots are
+	// shared so chatty NPCs can't starve quiet on-shift producers on the same
+	// slug. Each falls back to a safe default (the agentRate* helpers in
+	// reactor.go) when unset — the cap itself is unchanged, only the allocation
+	// within it.
+	//
+	//   - AgentRateStarvationReserve: paced slots held back from chatter for
+	//     starved producers (default 2). Clamped to leave >=1 general slot.
+	//   - AgentRateReserveAgeThreshold: min wait since the actor's last served
+	//     tick before it may claim a reserved slot (default 45s).
+	//   - AgentRateStarvationCeiling: a served actor starved longer than this is
+	//     admitted unconditionally — the bounded worst-case tick-latency
+	//     guarantee for an on-shift producer (default 2m).
+	AgentRateStarvationReserve   int
+	AgentRateReserveAgeThreshold time.Duration
+	AgentRateStarvationCeiling   time.Duration
+
 	// Degeneracy observer (LLM-94, engine/sim/degeneracy.go). Detects an
 	// agent stuck burning LLM ticks that accomplish nothing and damps the
 	// waste. Deliberately OFF by default and tuned conservatively — it only

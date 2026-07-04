@@ -559,32 +559,56 @@ func EvaluateReactors(now time.Time) Command {
 				// and drop the whole pool into a silent cooldown. The engine paces
 				// per-agent emission to stay under that cap.
 				//
+				// admitAgentRateFair (LLM-258) allocates the slug's limited slots by
+				// starvation-age fairness instead of first-eligible-wins: the cap is
+				// unchanged, but a reserved tail is held for actors starved past a
+				// threshold so chatty NPCs can't consume the whole budget every
+				// window and freeze quiet on-shift producers. See its doc for the
+				// three bands (general / reserved / hard-ceiling bypass) and the
+				// accepted one-tick overage the ceiling can cause.
+				//
 				// Force bypasses, like the per-actor gate: an admin nudge or a
 				// red-need emergency must fire even when the slug is saturated by
 				// decorative chatter. Forced ticks are still RECORDED at emit
 				// (recordAgentTick below), so they consume the agent's budget and
-				// the gate paces the remaining NON-forced ticks accordingly. The
-				// accepted residual is that a rare forced BURST can still reach
-				// memory-api's limit — the server cooldown is the backstop, and the
-				// headroom (engine paces at 80% of the limit) absorbs the common case.
+				// the gate paces the remaining NON-forced ticks accordingly.
 				//
 				// Bounded-wait-then-shed: a cycle that can't win an agent slot before
 				// it ages out (warrantCycleStale) is dropped rather than deferred
 				// forever — the conversational moment is gone, and unbounded deferral
-				// on a saturated shared slug would pile up.
+				// on a saturated shared slug would pile up. The shed is safe under
+				// fairness because starvation age keys on the last SERVED tick, which
+				// survives the shed/re-stamp churn, so a re-warranting producer keeps
+				// climbing toward the reserved band and the ceiling.
 				if !hasForcedWarrant(actor.Warrants) &&
-					!checkAgentRateGate(w, actor.LLMAgent, now) {
+					!admitAgentRateFair(w, actor, now) {
 					shed := warrantCycleStale(actor, now, w.Settings)
 					if shed {
 						clearWarrant(actor)
 					} else {
+						// Floor re-examination at unavailableBackoff: a reserved-band
+						// gate leaves the bucket UNDER cap, where nextAgentRateAllowedAt
+						// returns now — without the floor the loser of a fairness race
+						// would be re-scanned (and re-emit a deferred record) every
+						// 250ms until its warrant sheds. An at-cap defer is already
+						// further out and dominates the floor.
 						next := nextAgentRateAllowedAt(w, actor.LLMAgent, now)
+						if soon := now.Add(unavailableBackoff); next.Before(soon) {
+							next = soon
+						}
 						actor.WarrantDueAt = &next
 					}
 					if w.repo.TickTelemetry != nil {
 						detail := map[string]string{"gate": "agent_rate"}
 						if shed {
 							detail["outcome"] = "shed"
+						}
+						// Record how long the actor has starved so the fairness gate
+						// is observable in the telemetry stream / umbilical.
+						if served, age := servedStarvationAge(actor, now); served {
+							detail["starved_ms"] = fmt.Sprintf("%d", age.Milliseconds())
+						} else {
+							detail["starved_ms"] = "never"
 						}
 						w.repo.TickTelemetry.WriteTickTelemetry(TickTelemetryRecord{
 							At:      now,
