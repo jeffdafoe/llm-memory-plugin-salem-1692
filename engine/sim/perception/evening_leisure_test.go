@@ -3,6 +3,7 @@ package perception
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
@@ -53,6 +54,42 @@ func eveningWorker(inside sim.StructureID) *sim.ActorSnapshot {
 		Needs:             map[sim.NeedKey]int{},
 	}
 }
+
+// eveningInnRoom is the room the lodger fixtures hold a ledger grant at. Distinct
+// from the room id plainStructure/eveningSnap structures carry, so structureForRoom
+// resolves it uniquely to the Inn.
+const eveningInnRoom sim.RoomID = 42
+
+// withLodgerInn adds an Inn (a lodging house distinct from the tavern venue) holding
+// the room the lodger fixtures rent, plus the publish clock the grant is measured
+// against, and returns the same snapshot. Pair with eveningLodger.
+func withLodgerInn(s *sim.Snapshot) *sim.Snapshot {
+	s.PublishedAt = time.Date(2026, 7, 6, 20, 30, 0, 0, time.UTC)
+	s.Structures["inn"] = &sim.Structure{
+		ID: "inn", DisplayName: "the Inn",
+		Rooms: []*sim.Room{{ID: eveningInnRoom, StructureID: "inn", Name: "private_1"}},
+	}
+	return s
+}
+
+// eveningLodger is a homeless-by-design agent (home NULL) holding an active ledger
+// room grant at the Inn — the canonical rent-a-room NPC (Ezekiel), same 07:00–19:00
+// day shift as eveningWorker. Pair the snapshot with withLodgerInn.
+func eveningLodger(inside sim.StructureID) *sim.ActorSnapshot {
+	a := eveningWorker(inside)
+	a.HomeStructureID = ""
+	expires := time.Date(2026, 7, 7, 3, 0, 0, 0, time.UTC) // after withLodgerInn's PublishedAt
+	a.RoomAccess = map[sim.RoomAccessKey]*sim.RoomAccess{
+		{RoomID: eveningInnRoom, Source: sim.AccessSourceLedger}: {
+			RoomID: eveningInnRoom, Source: sim.AccessSourceLedger, Active: true, ExpiresAt: &expires,
+		},
+	}
+	return a
+}
+
+// eveningLodgerAnchors: a lodger's anchors carry a workplace but no home — buildAnchors
+// only sets HomeID from HomeStructureID, which is empty for a lodger.
+var eveningLodgerAnchors = &AnchorsView{WorkID: "blacksmith", WorkLabel: "the Blacksmith"}
 
 func TestInEveningWindow(t *testing.T) {
 	a := eveningWorker("")
@@ -217,12 +254,38 @@ func TestBuildEveningLeisure(t *testing.T) {
 			t.Fatalf("want nil with a red need, got %+v", v)
 		}
 	})
-	t.Run("nil when unhomed (lodger/homeless out of scope)", func(t *testing.T) {
+	t.Run("nil when homeless (no home, no room grant)", func(t *testing.T) {
 		a := eveningWorker("blacksmith")
 		a.HomeStructureID = ""
 		noHome := &AnchorsView{WorkID: "blacksmith", WorkLabel: "the Blacksmith"}
 		if v := buildEveningLeisure(eveningSnap(1230), a, noHome); v != nil {
-			t.Fatalf("want nil unhomed, got %+v", v)
+			t.Fatalf("want nil for the genuinely homeless (no night-place), got %+v", v)
+		}
+	})
+	t.Run("fires for a lodger with a paid room (night-place = the inn, LLM-311)", func(t *testing.T) {
+		v := buildEveningLeisure(withLodgerInn(eveningSnap(1230)), eveningLodger("blacksmith"), eveningLodgerAnchors)
+		if v == nil {
+			t.Fatal("want the evening cue for an off-shift lodger in-window, got nil")
+		}
+		if v.VenueID != "tavern" {
+			t.Errorf("venue: got id=%q, want tavern", v.VenueID)
+		}
+		// The co-equal "stay in" destination is the rented inn, not an empty token.
+		if v.HomeID != "inn" || v.HomeLabel != "the Inn" {
+			t.Errorf("night-place: got id=%q label=%q, want inn/\"the Inn\"", v.HomeID, v.HomeLabel)
+		}
+	})
+	t.Run("nil for a lodger settled in its rented inn (stay-in chosen)", func(t *testing.T) {
+		if v := buildEveningLeisure(withLodgerInn(eveningSnap(1230)), eveningLodger("inn"), eveningLodgerAnchors); v != nil {
+			t.Fatalf("want nil for a lodger already at its inn, got %+v", v)
+		}
+	})
+	t.Run("nil for a lodger walking to its rented inn (don't re-pump)", func(t *testing.T) {
+		a := eveningLodger("")
+		a.MoveDestKind = sim.MoveDestinationStructureEnter
+		a.MoveDestStructureID = "inn"
+		if v := buildEveningLeisure(withLodgerInn(eveningSnap(1230)), a, eveningLodgerAnchors); v != nil {
+			t.Fatalf("want nil while the lodger walks to its inn, got %+v", v)
 		}
 	})
 	t.Run("nil when unscheduled", func(t *testing.T) {
@@ -264,6 +327,25 @@ func TestBuildDutySteer_EveningWindow_SuppressesGoHome(t *testing.T) {
 	v := buildDutySteer(eveningSnap(1350), "ezekiel", a, eveningAnchors, false, false, false)
 	if v == nil || v.ToWork || v.TargetID != "cottage" {
 		t.Fatalf("want a go-home steer to cottage past bedtime, got %+v", v)
+	}
+}
+
+// TestBuildDutySteer_EveningWindow_SuppressesLodgerWindDown is the LLM-311 companion
+// to the homed suppression above: inside the evening window a LODGER's premature
+// wind-down to its rented inn is suppressed too (mirroring the homed arm), so the
+// evening cue is the single voice; past bedtime it resumes toward the inn.
+func TestBuildDutySteer_EveningWindow_SuppressesLodgerWindDown(t *testing.T) {
+	a := eveningLodger("blacksmith") // off-shift at its post; home NULL; grant at the Inn
+
+	// 20:30 — inside [19:00, 22:00): the lodger wind-down steer is suppressed.
+	if v := buildDutySteer(withLodgerInn(eveningSnap(1230)), "ezekiel", a, eveningLodgerAnchors, false, false, false); v != nil {
+		t.Fatalf("want nil lodger wind-down steer inside the evening window, got %+v", v)
+	}
+
+	// 22:30 — past bedtime: the lodger wind-down steer resumes toward the inn.
+	v := buildDutySteer(withLodgerInn(eveningSnap(1350)), "ezekiel", a, eveningLodgerAnchors, false, false, false)
+	if v == nil || v.ToWork || v.TargetID != "inn" || !v.Lodging {
+		t.Fatalf("want a lodging wind-down steer to the inn past bedtime, got %+v", v)
 	}
 }
 
@@ -407,11 +489,25 @@ func TestInEveningLeisure(t *testing.T) {
 			t.Error("an on-shift worker is not in evening leisure")
 		}
 	})
-	t.Run("unhomed -> false", func(t *testing.T) {
+	t.Run("homeless (no room grant) -> false", func(t *testing.T) {
 		a := eveningWorkerCoins("", 50)
 		a.HomeStructureID = ""
 		if inEveningLeisure(eveningPricedSnap(1230, 3), a) {
-			t.Error("an unhomed worker (lodger/homeless) is out of evening-leisure scope")
+			t.Error("a homeless worker with no room grant has no night-place, so no evening")
+		}
+	})
+	t.Run("lodger with a paid room + affords -> true (LLM-311)", func(t *testing.T) {
+		a := eveningLodger("blacksmith")
+		a.Coins = 5
+		if !inEveningLeisure(withLodgerInn(eveningPricedSnap(1230, 3)), a) {
+			t.Error("a lodging, flush, in-window agent has an evening the same as a homed one")
+		}
+	})
+	t.Run("lodger too broke -> false (LLM-311)", func(t *testing.T) {
+		a := eveningLodger("blacksmith")
+		a.Coins = 2
+		if inEveningLeisure(withLodgerInn(eveningPricedSnap(1230, 3)), a) {
+			t.Error("a lodger too broke for the tavern's cheapest drink is not in evening leisure")
 		}
 	})
 }

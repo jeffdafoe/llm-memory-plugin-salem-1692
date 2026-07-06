@@ -168,11 +168,12 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// (code_review). subjectIsComfortable is the shared predicate (mirrors
 	// sim.workerIsComfortable on the warrant side).
 	comfortableWorklessSeeker := !subjectHasResolvableWorkplace(snap, actorSnap) && subjectIsComfortable(snap, actorSnap)
-	// LLM-205: a homed agent enjoying an affordable evening is off the clock — don't
-	// offer the solicit affordance/tool (this one CanSolicitWork signal gates both).
-	// inEveningLeisure is homed-scoped and afford-gated, so a homeless/lodger worker
-	// (Ezekiel) and a broke homed agent — neither of whom has an affordable evening —
-	// can still bid for work; only the lingering well-off are silenced.
+	// LLM-205: an agent enjoying an affordable evening is off the clock — don't offer
+	// the solicit affordance/tool (this one CanSolicitWork signal gates both).
+	// inEveningLeisure is night-place-scoped and afford-gated (LLM-311 widened it from
+	// homed to homed-OR-lodging), so a genuinely homeless worker (no room grant) and a
+	// broke agent — neither of whom has an affordable evening — can still bid for work;
+	// only the lingering well-off (homed or lodging) are silenced.
 	p.CanSolicitWork = subjectIsWorker(actorSnap) &&
 		!comfortableWorklessSeeker &&
 		!inEveningLeisure(snap, actorSnap) &&
@@ -1951,6 +1952,16 @@ func buildDutySteer(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapsho
 				if a.InsideStructureID == innID {
 					return nil
 				}
+				// LLM-311: inside the affordable evening window a lodger's wind-down is
+				// the same premature "turn in" pressure the epic forbids before the
+				// 22:00 bedtime — suppress it so the evening-leisure cue is the single
+				// voice, mirroring the homed arm above. inEveningLeisure now counts a
+				// lodger with a night-place, so the cue (buildEveningLeisure) and this
+				// suppression fire on the same window, and EveningLeisure holds the
+				// noop-skip gate open in this steer's place.
+				if inEveningLeisure(snap, a) {
+					return nil
+				}
 				if windDownSuppressed(a, snap) {
 					return nil
 				}
@@ -2003,8 +2014,7 @@ func inEveningWindow(snap *sim.Snapshot, a *sim.ActorSnapshot) bool {
 }
 
 // subjectIsHomed reports whether the actor has a home structure that resolves in
-// the snapshot — the same notion buildAnchors uses to set AnchorsView.HomeID, so
-// the evening-leisure scope agrees with the duty steer's homed arm.
+// the snapshot — the same notion buildAnchors uses to set AnchorsView.HomeID.
 func subjectIsHomed(snap *sim.Snapshot, a *sim.ActorSnapshot) bool {
 	if a == nil || a.HomeStructureID == "" {
 		return false
@@ -2013,16 +2023,36 @@ func subjectIsHomed(snap *sim.Snapshot, a *sim.ActorSnapshot) bool {
 	return ok
 }
 
+// subjectNightPlace returns the structure the actor winds down to for the night and
+// a display label for it: its home if homed, else the inn where it holds an active
+// lodging grant (lodgerInn). ok=false when the actor has neither — the genuinely
+// homeless, who have no evening to spend. This is the "has somewhere to pass the
+// evening" notion the living-evening scope keys on (LLM-311): a rent-a-room lodger
+// (Ezekiel) has an evening exactly as a homed agent does, so the social-hour cue and
+// the off-shift wind-down suppression must treat its rented inn as its home for the
+// night. Home wins when both resolve.
+func subjectNightPlace(snap *sim.Snapshot, a *sim.ActorSnapshot) (sim.StructureID, string, bool) {
+	if subjectIsHomed(snap, a) {
+		// resolveStructureLabel is guaranteed ok here — subjectIsHomed just checked it.
+		label, _ := resolveStructureLabel(snap, a.HomeStructureID)
+		return a.HomeStructureID, label, true
+	}
+	return lodgerInn(snap, a)
+}
+
 // inEveningLeisure reports whether the actor is in an AFFORDABLE post-work evening
-// (LLM-205): a homed day-shift agent inside the [shift-end, 22:00) window who can
-// afford a night out. It is the single predicate behind the living-evening gates —
-// the off-shift go-home steer suppression, the "tavern's open" cue
-// (buildEveningLeisure), and the two work-seeking suppressions (CanSolicitWork and
-// the SeekWorkPlaces directory). A broke homed agent is NOT in evening leisure: it
-// has no evening, so the go-home wind-down resumes (it beds at shift-end) and it may
-// still pick up a side job on the way. The rich linger; the poor hustle.
+// (LLM-205): a day-shift agent WITH A NIGHT-PLACE (homed, or a lodger holding an
+// active room grant — LLM-311) inside the [shift-end, 22:00) window who can afford a
+// night out. It is the single predicate behind the living-evening gates — the
+// off-shift wind-down suppression (both the homed and lodger arms), the "tavern's
+// open" cue (buildEveningLeisure), and the two work-seeking suppressions
+// (CanSolicitWork and the SeekWorkPlaces directory). A broke agent, or one with no
+// night-place at all, is NOT in evening leisure: it has no evening, so the wind-down
+// resumes (it beds / heads to its room at shift-end) and it may still pick up a side
+// job on the way. The rich linger; the poor hustle.
 func inEveningLeisure(snap *sim.Snapshot, a *sim.ActorSnapshot) bool {
-	return subjectIsHomed(snap, a) && inEveningWindow(snap, a) && canAffordLeisure(snap, a)
+	_, _, hasNightPlace := subjectNightPlace(snap, a)
+	return hasNightPlace && inEveningWindow(snap, a) && canAffordLeisure(snap, a)
 }
 
 // canAffordLeisure reports whether the actor holds enough coin for a night out at
@@ -2115,9 +2145,9 @@ func nearestTaggedVenue(snap *sim.Snapshot, a *sim.ActorSnapshot, tag string) (s
 // win, matching the duty steer); already at home → chose to stay in, don't pull
 // back out; already at the venue, or walking there → acted on, don't re-pump
 // (the Ezekiel lesson, both sides — the in-flight line + mid-walk coda keep a
-// walking agent on course). Lodgers and the homeless are out of scope (the
-// epic's Lever 2 is the homed agents' evening); their wind-down stays the duty
-// steer's lodger/homeless arms.
+// walking agent on course). A lodger with a paid room is IN scope (LLM-311) — its
+// night-place is the rented inn; only the genuinely homeless (no home, no room
+// grant) stay on the duty steer's placeless wind-down arm.
 func buildEveningLeisure(snap *sim.Snapshot, a *sim.ActorSnapshot, anchors *AnchorsView) *EveningLeisureView {
 	if snap == nil || a == nil || anchors == nil {
 		return nil
@@ -2134,14 +2164,20 @@ func buildEveningLeisure(snap *sim.Snapshot, a *sim.ActorSnapshot, anchors *Anch
 	if a.State == sim.StateSleeping {
 		return nil
 	}
-	// Homed only.
-	if anchors.HomeID == "" {
+	// Night-place: the structure the agent winds down to — its home if homed, else
+	// the inn it holds an active room grant at (LLM-311). The homeless (neither) get
+	// no cue and stay on the placeless wind-down arm. Resolved here rather than off
+	// anchors.HomeID so a lodger (anchors.HomeID == "") is included; for a homed agent
+	// this yields the same id/label buildAnchors set.
+	nightID, nightLabel, ok := subjectNightPlace(snap, a)
+	if !ok {
 		return nil
 	}
 	// Inside an AFFORDABLE post-work evening window (LLM-205): inEveningLeisure adds
 	// the coin gate (canAffordLeisure) to inEveningWindow's day-shift scope guard, so
-	// a homed agent too broke for the tavern's cheapest drink gets no invitation and
-	// winds down home instead. (Re-checks homed too — already guaranteed above.)
+	// an agent too broke for the tavern's cheapest drink gets no invitation and winds
+	// down to its night-place instead. (Re-checks the night-place too — already
+	// guaranteed above.)
 	if !inEveningLeisure(snap, a) {
 		return nil
 	}
@@ -2150,8 +2186,8 @@ func buildEveningLeisure(snap *sim.Snapshot, a *sim.ActorSnapshot, anchors *Anch
 	if hasRedNeed(a, snap) {
 		return nil
 	}
-	// Settled at home → stay-in choice already made; don't re-pump back out.
-	if a.InsideStructureID == anchors.HomeID {
+	// Settled at the night-place → stay-in choice already made; don't re-pump back out.
+	if a.InsideStructureID == nightID {
 		return nil
 	}
 	// Resolve the venue from the snapshot — no tavern placed → no cue.
@@ -2163,19 +2199,19 @@ func buildEveningLeisure(snap *sim.Snapshot, a *sim.ActorSnapshot, anchors *Anch
 	if a.InsideStructureID == venueID {
 		return nil
 	}
-	// Walking to EITHER offered destination — the tavern, or home (the cue gives
-	// the home as an actionable token too) → the choice is made; don't re-pump the
+	// Walking to EITHER offered destination — the tavern, or the night-place (the cue
+	// gives it as an actionable token too) → the choice is made; don't re-pump the
 	// same invitation at the agent's back the whole walk (the Ezekiel lesson; the
 	// in-flight move line + mid-walk coda already keep it on course). code_review.
 	if a.MoveDestKind == sim.MoveDestinationStructureEnter &&
-		(a.MoveDestStructureID == venueID || a.MoveDestStructureID == anchors.HomeID) {
+		(a.MoveDestStructureID == venueID || a.MoveDestStructureID == nightID) {
 		return nil
 	}
 	return &EveningLeisureView{
 		VenueID:    venueID,
 		VenueLabel: venueLabel,
-		HomeID:     anchors.HomeID,
-		HomeLabel:  anchors.HomeLabel,
+		HomeID:     nightID,
+		HomeLabel:  nightLabel,
 	}
 }
 

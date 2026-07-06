@@ -659,6 +659,17 @@ var perceptionScenarios = []perceptionScenario{
 		build: homedWorkersEveningCommonsNoSolicit,
 	},
 	{
+		name: "lodger_evening_tavern_open",
+		summary: "LLM-311: the SAME evening as homed_worker_evening_tavern_open, but the agent (Ezekiel) is homeless-by-design " +
+			"(home NULL) and lodges via an active nightly room grant at the Inn — the canonical rent-a-room NPC. Before LLM-311 the " +
+			"living-evening scope was homed-only, so this agent got no tavern invitation and the off-shift wind-down steered it to " +
+			"its rented room all evening (the live Inn↔Blacksmith oscillation). The golden pins that the evening 'tavern's open' " +
+			"invitation now fires — its co-equal 'stay in' destination is the rented Inn (structure_id: inn), not an empty home token " +
+			"— AND that the go-home/wind-down steer ('Your working hours are over …') is ABSENT: a lodger with a paid room has an " +
+			"evening exactly as a homed peer does. A regression that re-narrowed the scope to homed-only shows in the diff.",
+		build: lodgerEveningTavernOpen,
+	},
+	{
 		name: "workless_tired_rejoiner_self_action_trail",
 		summary: "LLM-217: a workless, tired shared-worker NPC (Patience Walker, the live case) stands back in the Tavern " +
 			"huddle with John Ellis the tavernkeeper after twice announcing 'I'll head home now', walking out, and bouncing " +
@@ -8868,6 +8879,72 @@ func homedWorkerEveningTavernOpen() (*sim.Snapshot, sim.ActorID, []sim.WarrantMe
 		},
 		// The tavern venue: a VillageObject tagged "tavern" bridged to the
 		// same-id Structure (the shared-identity bridge nearestTaggedVenue reads).
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			sim.VillageObjectID(tavern): {Tags: []string{sim.VisitorTagTavern}, Pos: sim.WorldPos{X: 0, Y: 0}},
+		},
+	}
+	return snap, ezekielID, nil
+}
+
+// lodgerEveningTavernOpen is the LLM-311 case: the SAME evening as
+// homedWorkerEveningTavernOpen, but the agent is homeless-by-design (HomeStructureID
+// "") and lodges via an active nightly ledger room grant at the Inn — the canonical
+// rent-a-room NPC (Ezekiel). Before LLM-311 the living-evening scope was homed-only, so
+// this agent got NO tavern invitation and the off-shift wind-down steered it to its
+// rented room the whole evening (the live Inn↔Blacksmith oscillation). With the
+// night-place scope the cue fires exactly as for a homed peer — its co-equal "stay in"
+// destination is the rented Inn (structure_id: inn), not an empty home token — and the
+// go-home/wind-down steer ("Your working hours are over …") is suppressed. Fixed
+// PublishedAt (the grant clock) → byte-stable. Makes TestEveningCueReplacesGoHomeSteer
+// non-vacuous for the lodger arm.
+func lodgerEveningTavernOpen() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		ezekielID = sim.ActorID("ezekiel")
+		forge     = sim.StructureID("blacksmith")
+		inn       = sim.StructureID("inn")
+		tavern    = sim.StructureID("tavern")
+		innRoom   = sim.RoomID(42)
+	)
+	start, end := 420, 1140 // 07:00–19:00
+	now := 1230             // 20:30 — off shift, inside the evening window
+	published := time.Date(2026, 7, 6, 20, 30, 0, 0, time.UTC)
+	grantExpires := published.Add(12 * time.Hour) // active, unexpired
+	ezekiel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Ezekiel Crane",
+		Role:              "blacksmith",
+		State:             sim.StateIdle,
+		WorkStructureID:   forge,
+		InsideStructureID: forge,
+		HomeStructureID:   "", // homeless by design — lodges at the Inn
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             12,
+		Needs:             map[sim.NeedKey]int{},
+		RoomAccess: map[sim.RoomAccessKey]*sim.RoomAccess{
+			{RoomID: innRoom, Source: sim.AccessSourceLedger}: {
+				RoomID: innRoom, Source: sim.AccessSourceLedger, Active: true, ExpiresAt: &grantExpires,
+			},
+		},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay:     &now,
+		LodgingBedtimeMinute: 1320, // 22:00 — the evening window's close
+		PublishedAt:          published,
+		NeedThresholds:       sim.NeedThresholds{},
+		Actors:               map[sim.ActorID]*sim.ActorSnapshot{ezekielID: ezekiel},
+		Structures: map[sim.StructureID]*sim.Structure{
+			forge:  plainStructure(forge, "Blacksmith"),
+			tavern: plainStructure(tavern, "the Tavern"),
+			// The Inn holds the lodger's rented room (room 42, distinct from the room id
+			// plainStructure assigns) so structureForRoom resolves the night-place to it.
+			inn: {
+				ID: inn, DisplayName: "the Inn",
+				Rooms: []*sim.Room{{ID: innRoom, StructureID: inn, Name: "private_1"}},
+			},
+		},
+		// The tavern venue: a VillageObject tagged "tavern" bridged to the same-id
+		// Structure (the shared-identity bridge nearestTaggedVenue reads).
 		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
 			sim.VillageObjectID(tavern): {Tags: []string{sim.VisitorTagTavern}, Pos: sim.WorldPos{X: 0, Y: 0}},
 		},
