@@ -3,6 +3,7 @@ package perception
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
@@ -47,16 +48,42 @@ func TestRenderStallRepairBuy_LowStock_CapsQtyToStock(t *testing.T) {
 	}
 }
 
-func TestRenderStallRepairBuy_Hold_SoftensNoGoad(t *testing.T) {
+func TestRenderStallRepairBuy_CoinBlock_SoftensNoGoad(t *testing.T) {
 	out := renderStallBuy(&StallRepairBuyView{
 		Name: "Ellis Farm", NailsNeeded: 5, NailsHeld: 0, NailsShort: 5,
-		CoPresentSeller: "Ezekiel Crane", SellerStock: 10, Block: stallBuyBlockedHold,
+		CoPresentSeller: "Ezekiel Crane", SellerStock: 10, Block: stallBuyBlockedCoin,
 	})
 	if strings.Contains(out, "Buy it now —") {
-		t.Errorf("a blocked buy must not goad 'Buy it now'; got:\n%s", out)
+		t.Errorf("a coin-blocked buy must not goad 'Buy it now'; got:\n%s", out)
 	}
-	if !strings.Contains(out, "hold off buying") {
-		t.Errorf("a blocked buy should soften to a hold-off; got:\n%s", out)
+	if !strings.Contains(out, "coins recover") {
+		t.Errorf("a coin block should point at the purse; got:\n%s", out)
+	}
+}
+
+func TestRenderStallRepairBuy_TermsBlock_SoftensNoGoad(t *testing.T) {
+	out := renderStallBuy(&StallRepairBuyView{
+		Name: "Ellis Farm", NailsNeeded: 5, NailsHeld: 0, NailsShort: 5,
+		CoPresentSeller: "Ezekiel Crane", SellerStock: 10, Block: stallBuyBlockedTerms,
+	})
+	if strings.Contains(out, "Buy it now —") {
+		t.Errorf("a terms-blocked buy must not goad 'Buy it now'; got:\n%s", out)
+	}
+	if !strings.Contains(out, "aren't finding a deal") {
+		t.Errorf("a terms block should point at the dead-ended negotiation; got:\n%s", out)
+	}
+}
+
+func TestRenderStallRepairBuy_NoStock_SoftensNoGoad(t *testing.T) {
+	out := renderStallBuy(&StallRepairBuyView{
+		Name: "Ellis Farm", NailsNeeded: 5, NailsHeld: 0, NailsShort: 5,
+		CoPresentSeller: "Ezekiel Crane", SellerStock: 0, Block: stallBuyBlockedNoStock,
+	})
+	if strings.Contains(out, "Buy it now —") {
+		t.Errorf("a no-stock seller must not be goaded for a buy; got:\n%s", out)
+	}
+	if !strings.Contains(out, "no nails to spare") {
+		t.Errorf("a no-stock block should say he has none; got:\n%s", out)
 	}
 }
 
@@ -100,14 +127,14 @@ func TestBuildStallRepairBuy_HealthyCoPresent_NoBlock(t *testing.T) {
 	}
 }
 
-func TestBuildStallRepairBuy_TwoDeclines_Holds(t *testing.T) {
+func TestBuildStallRepairBuy_TwoDeclines_TermsBlock(t *testing.T) {
 	snap, actorID, _ := ownerStandoffDeclinedNails()
 	v := buildStallRepairBuy(snap, actorID, snap.Actors[actorID])
 	if v == nil {
 		t.Fatal("expected a nail-buy errand")
 	}
-	if v.Block != stallBuyBlockedHold {
-		t.Errorf("Block = %v, want stallBuyBlockedHold (two declines in this huddle)", v.Block)
+	if v.Block != stallBuyBlockedTerms {
+		t.Errorf("Block = %v, want stallBuyBlockedTerms (two declines in this huddle)", v.Block)
 	}
 }
 
@@ -124,18 +151,35 @@ func TestBuildStallRepairBuy_OneDecline_NoBlock(t *testing.T) {
 	}
 }
 
-func TestBuildStallRepairBuy_InsufficientFunds_FailFastHolds(t *testing.T) {
+func TestBuildStallRepairBuy_InsufficientFunds_FailFastCoinBlock(t *testing.T) {
 	snap, actorID, _ := ownerStandoffDeclinedNails()
 	// A single engine-hard insufficient-funds rejection is definitive on the first hit.
 	snap.PayLedger = map[sim.LedgerID]*sim.PayLedgerEntry{
-		1: {ID: 1, BuyerID: actorID, SellerID: "ezekiel", ItemKind: sim.NailItemKind, State: sim.PayLedgerStateFailedInsufficientFunds, HuddleID: "smith_huddle"},
+		1: {ID: 1, BuyerID: actorID, SellerID: "ezekiel", ItemKind: sim.NailItemKind, State: sim.PayLedgerStateFailedInsufficientFunds, HuddleID: "smith_huddle", ResolvedAt: snap.PublishedAt.Add(-1 * time.Minute)},
 	}
 	v := buildStallRepairBuy(snap, actorID, snap.Actors[actorID])
 	if v == nil {
 		t.Fatal("expected a nail-buy errand")
 	}
-	if v.Block != stallBuyBlockedHold {
-		t.Errorf("Block = %v, want stallBuyBlockedHold (one insufficient-funds is fail-fast)", v.Block)
+	if v.Block != stallBuyBlockedCoin {
+		t.Errorf("Block = %v, want stallBuyBlockedCoin (one insufficient-funds is fail-fast)", v.Block)
+	}
+}
+
+func TestBuildStallRepairBuy_StaleDeclines_NoBlock(t *testing.T) {
+	snap, actorID, _ := ownerStandoffDeclinedNails()
+	// Push the two declines outside recentlyResolvedOfferWindow — a stale standoff (terminal
+	// entries linger up to the 1h reap window) must not keep suppressing the buy.
+	stale := snap.PublishedAt.Add(-1 * time.Hour)
+	for _, e := range snap.PayLedger {
+		e.ResolvedAt = stale
+	}
+	v := buildStallRepairBuy(snap, actorID, snap.Actors[actorID])
+	if v == nil {
+		t.Fatal("expected a nail-buy errand")
+	}
+	if v.Block != stallBuyOK {
+		t.Errorf("Block = %v, want stallBuyOK (declines are older than the recency window)", v.Block)
 	}
 }
 
@@ -154,14 +198,14 @@ func TestBuildStallRepairBuy_DeclinesInOtherHuddle_Ignored(t *testing.T) {
 	}
 }
 
-func TestBuildStallRepairBuy_Conserve_Holds(t *testing.T) {
+func TestBuildStallRepairBuy_Conserve_CoinBlock(t *testing.T) {
 	snap, actorID, _ := keeperConservingOwesNailRepair()
 	v := buildStallRepairBuy(snap, actorID, snap.Actors[actorID])
 	if v == nil {
 		t.Fatal("expected a nail-buy errand")
 	}
-	if v.Block != stallBuyBlockedHold {
-		t.Errorf("Block = %v, want stallBuyBlockedHold (keeper is in working-capital conserve mode)", v.Block)
+	if v.Block != stallBuyBlockedCoin {
+		t.Errorf("Block = %v, want stallBuyBlockedCoin (keeper is in working-capital conserve mode)", v.Block)
 	}
 }
 

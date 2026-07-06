@@ -13,6 +13,9 @@ It is morning in the village.
 
 You keep your trade at the Ellis Farm (structure_id: ellis_farm) — you can head back there whenever you wish.
 
+## Recently settled offers
+1. Your offer to Ezekiel Crane for 5 nail didn't go through — it's closed, so stop waiting on it (offer id 1).
+2. Your offer to Ezekiel Crane for 5 nail didn't go through — it's closed, so stop waiting on it (offer id 2).
 ## Nails to mend your business
-Your Ellis Farm is worn and needs mending, but you carry only 0 of the 5 nails a repair takes. Ezekiel Crane is here with you, but this nail buy isn't one you can close right now — hold off buying and come back once your coins recover, rather than pressing offers into a no.
+Your Ellis Farm is worn and needs mending, but you carry only 0 of the 5 nails a repair takes. Ezekiel Crane is here with you, but your offers for nails aren't finding a deal right now — hold off and come back later rather than pressing them into a no.
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.

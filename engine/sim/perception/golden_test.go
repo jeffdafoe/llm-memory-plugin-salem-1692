@@ -3731,13 +3731,16 @@ func TestGoldensOwnerOffPostShortNailsSeesBuyErrand(t *testing.T) {
 }
 
 // TestGoldensBuyNowGoadNeverBesideHoldOff is the LLM-297 cross-scenario invariant: the
-// co-present "Buy it now —" nail-repair goad (renderCoPresentBuy) and the working-capital
-// "Hold off buying more" restock steer must never render in the same prompt — they are
-// contradictory buy/hold instructions. A keeper who owns a worn business, is off it beside
-// a nail seller, AND is coin-poor+overstocked would emit both before the fix;
-// merchantConserve now softens the goad for exactly that keeper. keeper_conserving_owes_nail_repair
-// is the non-vacuous anchor (it carries the hold-off line), and the guard runs over the
-// whole matrix so no future cue reintroduces the pair for any situation.
+// "## Nails to mend your business" co-present "Buy it now —" goad (renderCoPresentBuy) and
+// the working-capital "Hold off buying more" restock steer must never render in the same
+// prompt — they are contradictory buy/hold instructions. A keeper who owns a worn business,
+// is off it beside a nail seller, AND is coin-poor+overstocked would emit both before the
+// fix; merchantConserve now softens the nail goad for exactly that keeper.
+// keeper_conserving_owes_nail_repair is the non-vacuous anchor (it carries the hold-off
+// line). The goad check is scoped to the nail section because renderCoPresentBuy is shared
+// with other cues (the farm-upkeep and restock co-present buys) that may legitimately say
+// "Buy it now —" elsewhere in the prompt — this invariant is specifically the nail-repair /
+// restock contradiction.
 func TestGoldensBuyNowGoadNeverBesideHoldOff(t *testing.T) {
 	const goad = "Buy it now —"
 	const holdOff = "Hold off buying more"
@@ -3750,8 +3753,8 @@ func TestGoldensBuyNowGoadNeverBesideHoldOff(t *testing.T) {
 				return // no restock hold-off advice in this prompt — invariant N/A here
 			}
 			exercised = true
-			if strings.Contains(out, goad) {
-				t.Errorf("scenario %q: the co-present nail goad (%q) renders in the same prompt as the restock hold-off advice (%q) — two sections issue contradictory buy/hold instructions (LLM-297)", sc.name, goad, holdOff)
+			if strings.Contains(promptSection(out, "## Nails to mend your business"), goad) {
+				t.Errorf("scenario %q: the nail-repair goad (%q) renders in the same prompt as the restock hold-off advice (%q) — two sections issue contradictory buy/hold instructions (LLM-297)", sc.name, goad, holdOff)
 			}
 		})
 	}
@@ -4731,17 +4734,18 @@ func keeperConservingOwesNailRepair() (*sim.Snapshot, sim.ActorID, []sim.Warrant
 // (nailStandoffToSeller), proving the standoff path independent of conserve mode.
 func ownerStandoffDeclinedNails() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	snap, actorID, warrants := ellisFarmWorn(sim.WorldPos{X: 2000, Y: 2000}, "blacksmith", "smith_huddle", 0)
-	snap.PublishedAt = time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
+	published := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
+	snap.PublishedAt = published
 	// Thin purse — the live standoff is purse-driven (the smith declines a short purse),
-	// which is why both offers were turned down and why the soften's "once your coins
-	// recover" reads true here.
+	// which is why both offers were turned down.
 	snap.Actors[actorID].Coins = 3
-	// Two declined nail offers to Ezekiel in the current huddle — the threshold the cue
-	// reads as a standoff. Declined is terminal, so no ExpiresAt is needed (only pending
-	// entries age out).
+	// Two declined nail offers to Ezekiel in the current huddle, resolved a minute ago —
+	// the threshold the cue reads as a standoff, and inside recentlyResolvedOfferWindow so
+	// the recency guard counts them. Declined is terminal, so no ExpiresAt is needed.
+	resolved := published.Add(-1 * time.Minute)
 	snap.PayLedger = map[sim.LedgerID]*sim.PayLedgerEntry{
-		1: {ID: 1, BuyerID: actorID, SellerID: "ezekiel", ItemKind: sim.NailItemKind, State: sim.PayLedgerStateDeclined, HuddleID: "smith_huddle"},
-		2: {ID: 2, BuyerID: actorID, SellerID: "ezekiel", ItemKind: sim.NailItemKind, State: sim.PayLedgerStateDeclined, HuddleID: "smith_huddle"},
+		1: {ID: 1, BuyerID: actorID, SellerID: "ezekiel", ItemKind: sim.NailItemKind, Qty: 5, State: sim.PayLedgerStateDeclined, HuddleID: "smith_huddle", ResolvedAt: resolved},
+		2: {ID: 2, BuyerID: actorID, SellerID: "ezekiel", ItemKind: sim.NailItemKind, Qty: 5, State: sim.PayLedgerStateDeclined, HuddleID: "smith_huddle", ResolvedAt: resolved},
 	}
 	return snap, actorID, warrants
 }

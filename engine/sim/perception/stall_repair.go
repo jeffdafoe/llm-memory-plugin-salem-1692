@@ -233,8 +233,10 @@ type StallRepairBuyView struct {
 type stallBuyBlock int
 
 const (
-	stallBuyOK          stallBuyBlock = iota // seller has stock and a deal is plausible — goad the buy
-	stallBuyBlockedHold                      // purse can't meet it / offers already dead-ended / keeper is conserving — hold off
+	stallBuyOK             stallBuyBlock = iota // seller has stock and a deal is plausible — goad the buy
+	stallBuyBlockedNoStock                      // seller holds nothing right now (defensive — coPresentSellerForItem's qty>0 gate normally prevents it)
+	stallBuyBlockedCoin                         // conserve mode or an empty purse — coins must recover before this buy can close
+	stallBuyBlockedTerms                        // repeated declines / unfilled offers this huddle — the deal isn't meeting; try later
 )
 
 // buildStallRepairBuy returns the off-post nail-buy errand cue, or nil. Pure over the
@@ -282,58 +284,73 @@ func buildStallRepairBuy(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim
 		PendingOffer:    coID != "" && hasPendingOfferTo(snap, actorID, coID, sim.NailItemKind),
 	}
 	// LLM-297: a co-present seller carries the "Buy it now" imperative — make it
-	// situation-aware. Read his live nail stock (coPresentSellerForItem only resolves a
-	// seller holding qty>0, so this is >=1) to cap the suggested qty at what he can
-	// actually deliver, then decide whether the buy is worth goading at all: a keeper
-	// the working-capital gate is already telling to hold off (merchantConserve — the
-	// same signal the "## Restocking" hold-off rides, so the two cues can never
-	// contradict), or a negotiation that has already dead-ended in this huddle. The
-	// PendingOffer bide steer wins first, so skip the block scan under it.
+	// situation-aware. Read his live nail stock to cap the suggested qty at what he can
+	// actually deliver, then decide whether the buy is worth goading at all:
+	//   - no stock (defensive; coPresentSellerForItem's qty>0 gate normally keeps this >=1),
+	//   - the working-capital gate is telling this keeper to hold off (merchantConserve —
+	//     the same signal the "## Restocking" hold-off rides, so the two cues can never
+	//     contradict), which reads as a coin block,
+	//   - or a recent negotiation with him has dead-ended (nailBuyStandoff → coin/terms).
+	// The PendingOffer bide steer wins first, so skip the block scan under it.
 	if coID != "" && !view.PendingOffer {
 		if seller := snap.Actors[coID]; seller != nil {
 			view.SellerStock = seller.Inventory[sim.NailItemKind]
 		}
-		if merchantConserve(snap, actorID, actorSnap).Active ||
-			nailStandoffToSeller(snap, actorID, coID, actorSnap.CurrentHuddleID) {
-			view.Block = stallBuyBlockedHold
+		switch {
+		case view.SellerStock <= 0:
+			view.Block = stallBuyBlockedNoStock
+		case merchantConserve(snap, actorID, actorSnap).Active:
+			view.Block = stallBuyBlockedCoin
+		default:
+			view.Block = nailBuyStandoff(snap, actorID, coID, actorSnap.CurrentHuddleID)
 		}
 	}
 	return view
 }
 
-// nailStandoffDeclineThreshold is how many seller declines / non-funds failures to
-// the same co-present nail seller in the current huddle mark the negotiation as
-// stuck (LLM-297). One decline is ordinary haggling; a second means the terms aren't
-// going to meet. An engine-hard insufficient-funds rejection short-circuits this on
-// the first occurrence — an empty purse won't clear by re-offering the same coins.
+// nailStandoffDeclineThreshold is how many seller declines / unfilled-offer failures to
+// the same co-present nail seller in the current huddle mark the negotiation as stuck
+// (LLM-297). One decline is ordinary haggling; a second means the terms aren't going to
+// meet. An engine-hard insufficient-funds rejection short-circuits to a coin block on the
+// first occurrence — an empty purse won't clear by re-offering the same coins.
 const nailStandoffDeclineThreshold = 2
 
-// nailStandoffToSeller reports whether the owner's nail offers to the co-present
-// seller have already dead-ended in this huddle. Mirrors hasPendingOfferTo's ledger
-// walk (buyer, seller, item, huddle) but keys on the negative terminal states: a
-// single failed_insufficient_funds is definitive, while ordinary declines and
-// stock/goods failures must reach nailStandoffDeclineThreshold before the cue reads
-// the standoff as real. An empty huddle disables the check — co-presence with no
+// nailBuyStandoff classifies how the owner's recent nail offers to the co-present seller
+// have dead-ended in this huddle: stallBuyBlockedCoin when the purse couldn't cover one
+// (a single failed_insufficient_funds is definitive), stallBuyBlockedTerms when he has
+// declined / couldn't fill at least nailStandoffDeclineThreshold offers, or stallBuyOK
+// when neither. Mirrors hasPendingOfferTo's ledger walk (buyer, seller, item, huddle) but
+// keys on the negative terminal states, and — like the buyer's own "## Recently settled
+// offers" view (buildRecentlyResolvedOffersFromMe) — counts only offers resolved within
+// recentlyResolvedOfferWindow of snap.PublishedAt, so a stale decline from earlier (terminal
+// entries linger up to the 1h reap window) can't keep suppressing the buy after coins or
+// stock have since recovered. An empty huddle disables the scan — co-presence with no
 // shared huddle can't scope "this negotiation".
-func nailStandoffToSeller(snap *sim.Snapshot, buyer, seller sim.ActorID, huddle sim.HuddleID) bool {
+func nailBuyStandoff(snap *sim.Snapshot, buyer, seller sim.ActorID, huddle sim.HuddleID) stallBuyBlock {
 	if seller == "" || huddle == "" {
-		return false
+		return stallBuyOK
 	}
 	declines := 0
 	for _, e := range snap.PayLedger {
 		if e == nil || e.BuyerID != buyer || e.SellerID != seller || e.ItemKind != sim.NailItemKind || e.HuddleID != huddle {
 			continue
 		}
+		if e.ResolvedAt.IsZero() || snap.PublishedAt.Sub(e.ResolvedAt) > recentlyResolvedOfferWindow {
+			continue // stale or mid-construction — count only offers the buyer still sees as recently settled
+		}
 		switch e.State {
 		case sim.PayLedgerStateFailedInsufficientFunds:
-			return true
+			return stallBuyBlockedCoin
 		case sim.PayLedgerStateDeclined,
 			sim.PayLedgerStateFailedInsufficientStock,
 			sim.PayLedgerStateFailedInsufficientGoods:
 			declines++
 		}
 	}
-	return declines >= nailStandoffDeclineThreshold
+	if declines >= nailStandoffDeclineThreshold {
+		return stallBuyBlockedTerms
+	}
+	return stallBuyOK
 }
 
 // renderStallRepairBuy writes the "## Nails to mend your business" section — the
@@ -361,12 +378,20 @@ func renderStallRepairBuy(b *strings.Builder, v *StallRepairBuyView) {
 			// A nail offer already stands with the co-present seller — bide, don't
 			// re-offer (the LLM-64 co-present-offer guard).
 			fmt.Fprintf(b, "%s is here with you and your nail offer is still with them — wait here for their answer; do not re-offer or leave.\n", seller)
-		case v.Block == stallBuyBlockedHold:
-			// LLM-297: the buy has dead-ended (unaffordable, already declined, or the
-			// working-capital gate is telling this keeper to hold off) — soften to a
-			// walk-away so the cue stops goading a re-offer into a no, and so it never
-			// contradicts the "## Restocking" hold-off advice.
-			fmt.Fprintf(b, "%s is here with you, but this nail buy isn't one you can close right now — hold off buying and come back once your coins recover, rather than pressing offers into a no.\n", seller)
+		case v.Block == stallBuyBlockedNoStock:
+			// LLM-297 (defensive): a co-present seller normally holds >=1, but if his stock
+			// has emptied, say so instead of goading a buy he can't fill.
+			fmt.Fprintf(b, "%s is here with you but has no nails to spare just now — he's still forging them. Come back once he's made more rather than pressing him for stock he hasn't got.\n", seller)
+		case v.Block == stallBuyBlockedCoin:
+			// LLM-297: the purse can't take this on (conserve mode, or an offer already
+			// failed for want of coin) — soften to a hold-off that harmonizes with the
+			// "## Restocking" advice instead of goading a re-offer it can't afford.
+			fmt.Fprintf(b, "%s is here with you, but your purse can't take on nails just now — hold off buying and let your coins recover before you come back for them.\n", seller)
+		case v.Block == stallBuyBlockedTerms:
+			// LLM-297: repeated offers to him have gone nowhere this huddle — the terms
+			// aren't meeting, so stop pressing and come back later rather than re-offering
+			// into the same no.
+			fmt.Fprintf(b, "%s is here with you, but your offers for nails aren't finding a deal right now — hold off and come back later rather than pressing them into a no.\n", seller)
 		case v.SellerStock > 0 && v.SellerStock < v.NailsShort:
 			// LLM-297: he can't cover the whole shortfall — cap the ask at what he holds
 			// and say so, so the "qty up to N" never exceeds his stock (the live case:
