@@ -1,0 +1,227 @@
+package perception
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
+)
+
+// stall_repair_buy_test.go — LLM-297. Unit coverage for the situation-aware co-present
+// nail goad: buildStallRepairBuy's Block/SellerStock determination and
+// renderStallRepairBuy's branch prose. The golden scenarios pin the assembled prompt;
+// these pin the builder/render decision axes directly.
+
+func renderStallBuy(v *StallRepairBuyView) string {
+	var b strings.Builder
+	renderStallRepairBuy(&b, v)
+	return b.String()
+}
+
+func TestRenderStallRepairBuy_CoPresentFullStock_GoadsBuy(t *testing.T) {
+	out := renderStallBuy(&StallRepairBuyView{
+		Name: "Ellis Farm", NailsNeeded: 5, NailsHeld: 0, NailsShort: 5,
+		CoPresentSeller: "Ezekiel Crane", SellerStock: 21, Block: stallBuyOK,
+	})
+	if !strings.Contains(out, "Buy it now —") {
+		t.Errorf("full-stock co-present buy should goad 'Buy it now'; got:\n%s", out)
+	}
+	if !strings.Contains(out, "a qty up to 5") {
+		t.Errorf("should ask the full shortfall (5); got:\n%s", out)
+	}
+}
+
+func TestRenderStallRepairBuy_LowStock_CapsQtyToStock(t *testing.T) {
+	out := renderStallBuy(&StallRepairBuyView{
+		Name: "Ellis Farm", NailsNeeded: 5, NailsHeld: 0, NailsShort: 5,
+		CoPresentSeller: "Ezekiel Crane", SellerStock: 2, Block: stallBuyOK,
+	})
+	if !strings.Contains(out, "can spare only 2") {
+		t.Errorf("should name the seller's 2-nail stock; got:\n%s", out)
+	}
+	if !strings.Contains(out, "a qty up to 2") {
+		t.Errorf("should cap the ask at his stock (2); got:\n%s", out)
+	}
+	if strings.Contains(out, "up to 5") {
+		t.Errorf("must not ask the full 5 when only 2 are held; got:\n%s", out)
+	}
+}
+
+func TestRenderStallRepairBuy_CoinBlock_SoftensNoGoad(t *testing.T) {
+	out := renderStallBuy(&StallRepairBuyView{
+		Name: "Ellis Farm", NailsNeeded: 5, NailsHeld: 0, NailsShort: 5,
+		CoPresentSeller: "Ezekiel Crane", SellerStock: 10, Block: stallBuyBlockedCoin,
+	})
+	if strings.Contains(out, "Buy it now —") {
+		t.Errorf("a coin-blocked buy must not goad 'Buy it now'; got:\n%s", out)
+	}
+	if !strings.Contains(out, "coins recover") {
+		t.Errorf("a coin block should point at the purse; got:\n%s", out)
+	}
+}
+
+func TestRenderStallRepairBuy_TermsBlock_SoftensNoGoad(t *testing.T) {
+	out := renderStallBuy(&StallRepairBuyView{
+		Name: "Ellis Farm", NailsNeeded: 5, NailsHeld: 0, NailsShort: 5,
+		CoPresentSeller: "Ezekiel Crane", SellerStock: 10, Block: stallBuyBlockedTerms,
+	})
+	if strings.Contains(out, "Buy it now —") {
+		t.Errorf("a terms-blocked buy must not goad 'Buy it now'; got:\n%s", out)
+	}
+	if !strings.Contains(out, "aren't finding a deal") {
+		t.Errorf("a terms block should point at the dead-ended negotiation; got:\n%s", out)
+	}
+}
+
+func TestRenderStallRepairBuy_NoStock_SoftensNoGoad(t *testing.T) {
+	out := renderStallBuy(&StallRepairBuyView{
+		Name: "Ellis Farm", NailsNeeded: 5, NailsHeld: 0, NailsShort: 5,
+		CoPresentSeller: "Ezekiel Crane", SellerStock: 0, Block: stallBuyBlockedNoStock,
+	})
+	if strings.Contains(out, "Buy it now —") {
+		t.Errorf("a no-stock seller must not be goaded for a buy; got:\n%s", out)
+	}
+	if !strings.Contains(out, "no nails to spare") {
+		t.Errorf("a no-stock block should say he has none; got:\n%s", out)
+	}
+}
+
+func TestRenderStallRepairBuy_PendingOffer_Bides(t *testing.T) {
+	out := renderStallBuy(&StallRepairBuyView{
+		Name: "Ellis Farm", NailsNeeded: 5, NailsHeld: 0, NailsShort: 5,
+		CoPresentSeller: "Ezekiel Crane", SellerStock: 10, PendingOffer: true,
+	})
+	if strings.Contains(out, "Buy it now —") {
+		t.Errorf("a standing offer must not re-goad; got:\n%s", out)
+	}
+	if !strings.Contains(out, "wait here for their answer") {
+		t.Errorf("a standing offer should bide; got:\n%s", out)
+	}
+}
+
+func TestRenderStallRepairBuy_WalkTo_NoGoad(t *testing.T) {
+	out := renderStallBuy(&StallRepairBuyView{
+		Name: "Ellis Farm", NailsNeeded: 5, NailsHeld: 0, NailsShort: 5,
+		Vendors: []RestockVendor{{StructureLabel: "Blacksmith", StructureID: "blacksmith"}},
+	})
+	if strings.Contains(out, "Buy it now —") {
+		t.Errorf("the walk-to arm has no co-present seller to 'buy now' from; got:\n%s", out)
+	}
+	if !strings.Contains(out, "Use move_to to reach a supplier") {
+		t.Errorf("the walk-to arm should name the move_to path; got:\n%s", out)
+	}
+}
+
+func TestBuildStallRepairBuy_HealthyCoPresent_NoBlock(t *testing.T) {
+	snap, actorID, _ := ownerOffPostAtSmithShortNails()
+	v := buildStallRepairBuy(snap, actorID, snap.Actors[actorID])
+	if v == nil {
+		t.Fatal("expected a nail-buy errand")
+	}
+	if v.Block != stallBuyOK {
+		t.Errorf("Block = %v, want stallBuyOK (healthy purse, no prior offers, well-stocked smith)", v.Block)
+	}
+	if v.SellerStock != 21 {
+		t.Errorf("SellerStock = %d, want 21 (the smith's held nails)", v.SellerStock)
+	}
+}
+
+func TestBuildStallRepairBuy_TwoDeclines_TermsBlock(t *testing.T) {
+	snap, actorID, _ := ownerStandoffDeclinedNails()
+	v := buildStallRepairBuy(snap, actorID, snap.Actors[actorID])
+	if v == nil {
+		t.Fatal("expected a nail-buy errand")
+	}
+	if v.Block != stallBuyBlockedTerms {
+		t.Errorf("Block = %v, want stallBuyBlockedTerms (two declines in this huddle)", v.Block)
+	}
+}
+
+func TestBuildStallRepairBuy_OneDecline_NoBlock(t *testing.T) {
+	snap, actorID, _ := ownerStandoffDeclinedNails()
+	// A single decline is ordinary haggling, below the standoff threshold.
+	delete(snap.PayLedger, 2)
+	v := buildStallRepairBuy(snap, actorID, snap.Actors[actorID])
+	if v == nil {
+		t.Fatal("expected a nail-buy errand")
+	}
+	if v.Block != stallBuyOK {
+		t.Errorf("Block = %v, want stallBuyOK (one decline is below the standoff threshold)", v.Block)
+	}
+}
+
+func TestBuildStallRepairBuy_InsufficientFunds_FailFastCoinBlock(t *testing.T) {
+	snap, actorID, _ := ownerStandoffDeclinedNails()
+	// A single engine-hard insufficient-funds rejection is definitive on the first hit.
+	snap.PayLedger = map[sim.LedgerID]*sim.PayLedgerEntry{
+		1: {ID: 1, BuyerID: actorID, SellerID: "ezekiel", ItemKind: sim.NailItemKind, State: sim.PayLedgerStateFailedInsufficientFunds, HuddleID: "smith_huddle", ResolvedAt: snap.PublishedAt.Add(-1 * time.Minute)},
+	}
+	v := buildStallRepairBuy(snap, actorID, snap.Actors[actorID])
+	if v == nil {
+		t.Fatal("expected a nail-buy errand")
+	}
+	if v.Block != stallBuyBlockedCoin {
+		t.Errorf("Block = %v, want stallBuyBlockedCoin (one insufficient-funds is fail-fast)", v.Block)
+	}
+}
+
+func TestBuildStallRepairBuy_StaleDeclines_NoBlock(t *testing.T) {
+	snap, actorID, _ := ownerStandoffDeclinedNails()
+	// Push the two declines outside recentlyResolvedOfferWindow — a stale standoff (terminal
+	// entries linger up to the 1h reap window) must not keep suppressing the buy.
+	stale := snap.PublishedAt.Add(-1 * time.Hour)
+	for _, e := range snap.PayLedger {
+		e.ResolvedAt = stale
+	}
+	v := buildStallRepairBuy(snap, actorID, snap.Actors[actorID])
+	if v == nil {
+		t.Fatal("expected a nail-buy errand")
+	}
+	if v.Block != stallBuyOK {
+		t.Errorf("Block = %v, want stallBuyOK (declines are older than the recency window)", v.Block)
+	}
+}
+
+func TestBuildStallRepairBuy_DeclinesInOtherHuddle_Ignored(t *testing.T) {
+	snap, actorID, _ := ownerStandoffDeclinedNails()
+	// Re-stamp the declines under a different huddle — they don't scope this negotiation.
+	for _, e := range snap.PayLedger {
+		e.HuddleID = "some_other_huddle"
+	}
+	v := buildStallRepairBuy(snap, actorID, snap.Actors[actorID])
+	if v == nil {
+		t.Fatal("expected a nail-buy errand")
+	}
+	if v.Block != stallBuyOK {
+		t.Errorf("Block = %v, want stallBuyOK (declines were in a different huddle)", v.Block)
+	}
+}
+
+func TestBuildStallRepairBuy_Conserve_CoinBlock(t *testing.T) {
+	snap, actorID, _ := keeperConservingOwesNailRepair()
+	v := buildStallRepairBuy(snap, actorID, snap.Actors[actorID])
+	if v == nil {
+		t.Fatal("expected a nail-buy errand")
+	}
+	if v.Block != stallBuyBlockedCoin {
+		t.Errorf("Block = %v, want stallBuyBlockedCoin (keeper is in working-capital conserve mode)", v.Block)
+	}
+}
+
+func TestBuildStallRepairBuy_LowStock_CapReflectsSellerStock(t *testing.T) {
+	snap, actorID, _ := ownerShortNailsSellerLowStock()
+	v := buildStallRepairBuy(snap, actorID, snap.Actors[actorID])
+	if v == nil {
+		t.Fatal("expected a nail-buy errand")
+	}
+	if v.Block != stallBuyOK {
+		t.Errorf("Block = %v, want stallBuyOK (affordable, no standoff — the buy stands, just capped)", v.Block)
+	}
+	if v.SellerStock != 2 {
+		t.Errorf("SellerStock = %d, want 2 (the smith's held stock)", v.SellerStock)
+	}
+	if v.SellerStock >= v.NailsShort {
+		t.Errorf("test premise broken: seller stock %d should be below the shortfall %d", v.SellerStock, v.NailsShort)
+	}
+}
