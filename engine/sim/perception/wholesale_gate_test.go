@@ -125,6 +125,16 @@ func TestWholesaleGate_CoPresentPeerCue(t *testing.T) {
 			t.Errorf("a non-wholesale huddled peer must stay offered, got %+v", offers)
 		}
 	})
+	t.Run("workless_peer_unaffected", func(t *testing.T) {
+		// An empty work anchor is never a wholesaler (SellerAtWholesaler's
+		// explicit "" guard) — a workless peer carrying a satisfier keeps
+		// its offer.
+		snap, buyer := peerCueSnap("hannah", "the_inn", false)
+		snap.Actors["ellis"].WorkStructureID = ""
+		if offers := gatherCoPresentPeerOffers(snap, "hannah", buyer, "thirst"); len(offers) != 1 {
+			t.Errorf("a workless huddled peer must stay offered, got %+v", offers)
+		}
+	})
 }
 
 func TestWholesaleGate_SatiationCue(t *testing.T) {
