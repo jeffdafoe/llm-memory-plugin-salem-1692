@@ -174,6 +174,14 @@ type Snapshot struct {
 	FarmUpkeepFloor          int
 	FarmUpkeepCoinsPerShovel int
 
+	// MerchantCoinFloor mirrors WorldSettings.MerchantCoinFloor RAW (LLM-294) — the
+	// working-capital floor below which a stock-rich keeper is steered to conserve
+	// coin. No effective-value fallback (unlike SeekWorkCoinCeiling): the perception
+	// gate reads it as "MerchantCoinFloor > 0 && coins < MerchantCoinFloor", so a 0
+	// here — including a directly-constructed test snapshot that omits it — means the
+	// feature is off. Pure over the snapshot rather than racing on w.Settings.
+	MerchantCoinFloor int
+
 	// DefaultOutdoorSceneRadius mirrors WorldSettings.DefaultOutdoorSceneRadius —
 	// the "what is around me" tile radius the move_to name-resolver and scene
 	// bound use. Carried so perception can bound a proximity scan to the SAME

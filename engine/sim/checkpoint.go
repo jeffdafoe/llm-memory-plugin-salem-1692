@@ -100,6 +100,11 @@ type MutableWorldSettings struct {
 	// worker adds at their employer's establishment. Live-tunable via the umbilical,
 	// persisted here each checkpoint so a live change survives restart.
 	LaborProduceBoostPct int
+
+	// MerchantCoinFloor (LLM-294) — the working-capital floor below which a stock-rich
+	// keeper is steered to conserve coin. Live-tunable via the umbilical, persisted
+	// here each checkpoint so a live change survives restart. 0 = feature off.
+	MerchantCoinFloor int
 }
 
 // DiscoveredKind is the minimal persist-tuple for an engine-minted item kind
@@ -153,6 +158,7 @@ func (w *World) BuildCheckpointSnapshot() *CheckpointSnapshot {
 			SeekWorkCoinCeiling:           w.Settings.SeekWorkCoinCeiling,
 			SeekWorkNeedYieldMargin:       w.Settings.SeekWorkNeedYieldMargin,
 			LaborProduceBoostPct:          w.Settings.LaborProduceBoostPct,
+			MerchantCoinFloor:             w.Settings.MerchantCoinFloor,
 		},
 	}
 	// ZBBS-WORK-412: carry the engine-minted (unknown-category) item kinds so

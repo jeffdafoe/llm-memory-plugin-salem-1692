@@ -62,6 +62,12 @@ type UmbilicalSettingsDTO struct {
 	// writes it). Persisted (checkpoint writes it back), so it survives restart.
 	// 0 means the boost is disabled.
 	LaborProduceBoostPct int `json:"labor_produce_boost_pct"`
+
+	// MerchantCoinFloor (LLM-294) is the working-capital floor below which a keeper
+	// sitting on unsold sellable stock is steered to conserve coin rather than restock
+	// (settings/merchant-coin-floor writes it). Persisted (checkpoint writes it back),
+	// so it survives restart. 0 means the gate is disabled.
+	MerchantCoinFloor int `json:"merchant_coin_floor"`
 }
 
 // handleUmbilicalSettings serves the current live-tunable world settings. Read on
@@ -82,6 +88,7 @@ func (s *Server) handleUmbilicalSettings(w http.ResponseWriter, r *http.Request)
 			FarmUpkeepFloor:               world.Settings.FarmUpkeepFloor,
 			FarmUpkeepCoinsPerShovel:      world.Settings.FarmUpkeepCoinsPerShovel,
 			LaborProduceBoostPct:          world.Settings.LaborProduceBoostPct,
+			MerchantCoinFloor:             world.Settings.MerchantCoinFloor,
 		}
 		for k, v := range world.Settings.NeedThresholds {
 			dto.NeedThresholds[string(k)] = v

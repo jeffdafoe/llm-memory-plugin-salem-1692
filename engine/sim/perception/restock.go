@@ -39,6 +39,14 @@ type RestockingView struct {
 	// per-item affordability fact (ZBBS-HOME-459) when coins are the binding
 	// limit — see RestockItemView.AffordableQty.
 	BuyerCoins int
+
+	// Conserve marks the coin-poor-but-stock-rich keeper (LLM-294): purse below the
+	// operator working-capital floor AND sitting on unsold sellable stock
+	// (merchantConserve). When set, renderRestocking flips the section from a buy
+	// directory to a hold-off-buying steer — the low items are still named (so the
+	// keeper knows what it will need once coin returns) but WITHOUT a buy imperative,
+	// so the cue can't tell the keeper to both buy now and conserve at once.
+	Conserve bool
 }
 
 // RestockItemView is one low `buy` item the reseller could replenish: its label,
@@ -208,6 +216,9 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 	return &RestockingView{
 		Items:      items,
 		BuyerCoins: actorSnap.Coins,
+		// LLM-294: coin-poor + overstocked flips the section to a conserve steer. Shared
+		// with the Tier-2 sell nudge (buildTradeValue) via the same determination.
+		Conserve: merchantConserve(snap, actorID, actorSnap).Active,
 	}
 }
 
@@ -641,7 +652,15 @@ func renderRestocking(b *strings.Builder, v *RestockingView) {
 		return
 	}
 	b.WriteString("## Restocking\n")
-	b.WriteString("Your shop stock of these bought-in goods is running low. You choose how much to buy.\n")
+	if v.Conserve {
+		// LLM-294: coin-poor + overstocked. Lead with the hold-off-buying steer; the
+		// items below are named without a buy imperative so the cue never says "buy now"
+		// and "conserve" in the same breath. Plain modern English + the stake (the
+		// weak-model prose rule): say what to do and why.
+		fmt.Fprintf(b, "Your purse is nearly empty (%s) and your shelves are full of goods still waiting to sell. Hold off buying more for now — sell down what you have and let your coins recover first. You'll want to restock these once you can afford them:\n", coinsPhrase(v.BuyerCoins))
+	} else {
+		b.WriteString("Your shop stock of these bought-in goods is running low. You choose how much to buy.\n")
+	}
 	for _, it := range v.Items {
 		// LLM-64: the reseller already has a standing pay_with_item offer to a
 		// co-present seller for this item. Drop the headroom/cost lines and the
@@ -654,8 +673,24 @@ func renderRestocking(b *strings.Builder, v *RestockingView) {
 			if seller == "" {
 				seller = "the seller"
 			}
-			fmt.Fprintf(b, "- %s is here with you, and your offer for %s is still with them (see Offers you have standing). Wait here for their answer — do not re-offer or leave.\n",
-				seller, sanitizeInline(string(it.kind)))
+			// LLM-294: in conserve mode reinforce "no new buying" while keeping the
+			// LLM-64 anti-churn wait-steer — the offer is already out (coin committed),
+			// so the keeper only waits; it must not stake fresh offers on a thin purse.
+			if v.Conserve {
+				fmt.Fprintf(b, "- %s is here with you, and your offer for %s is still with them (see Offers you have standing). Wait for their answer — and put out no new offers while your purse is thin.\n",
+					seller, sanitizeInline(string(it.kind)))
+			} else {
+				fmt.Fprintf(b, "- %s is here with you, and your offer for %s is still with them (see Offers you have standing). Wait here for their answer — do not re-offer or leave.\n",
+					seller, sanitizeInline(string(it.kind)))
+			}
+			continue
+		}
+		// LLM-294 conserve mode: name the low item but issue NO buy imperative — the
+		// section lead already told the keeper to hold off buying and sell down first.
+		// Drops the headroom/P&L/affordability lines and the co-present/walk-to buy
+		// steer for this item, so the cue is internally consistent.
+		if v.Conserve {
+			fmt.Fprintf(b, "- You are low on %s.\n", sanitizeInline(it.ItemLabel))
 			continue
 		}
 		headroom := it.Cap - it.CurrentQty

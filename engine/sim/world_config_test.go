@@ -275,3 +275,52 @@ func TestSetSeekWorkNeedYieldMargin(t *testing.T) {
 		t.Errorf("margin after rejected sets = %d, want 7 (unchanged)", w.Settings.SeekWorkNeedYieldMargin)
 	}
 }
+
+// TestSetMerchantCoinFloor covers the LLM-294 live-tune command: a valid set lands on
+// WorldSettings and echoes in the result; 0 is VALID (the off-switch, unlike the
+// seek-work ceiling); a missing/negative value is rejected and leaves the prior value
+// intact.
+func TestSetMerchantCoinFloor(t *testing.T) {
+	ip := func(v int) *int { return &v }
+
+	w := newConfigWorld(t)
+	res, err := sim.SetMerchantCoinFloor(ip(15)).Fn(w)
+	if err != nil {
+		t.Fatalf("SetMerchantCoinFloor: %v", err)
+	}
+	out, ok := res.(sim.MerchantCoinFloorSettingResult)
+	if !ok {
+		t.Fatalf("result %T, want MerchantCoinFloorSettingResult", res)
+	}
+	if out.CoinFloor != 15 {
+		t.Errorf("result = %+v, want CoinFloor 15", out)
+	}
+	if w.Settings.MerchantCoinFloor != 15 {
+		t.Errorf("settings floor = %d, want 15", w.Settings.MerchantCoinFloor)
+	}
+
+	// 0 is the explicit off-switch and must be accepted (unlike SeekWorkCoinCeiling).
+	if _, err := sim.SetMerchantCoinFloor(ip(0)).Fn(w); err != nil {
+		t.Errorf("SetMerchantCoinFloor(0) = %v, want nil (0 is the off-switch)", err)
+	}
+	if w.Settings.MerchantCoinFloor != 0 {
+		t.Errorf("settings floor = %d, want 0 after off-switch set", w.Settings.MerchantCoinFloor)
+	}
+
+	bad := []struct {
+		name  string
+		floor *int
+	}{
+		{"missing", nil},
+		{"negative", ip(-5)},
+	}
+	for _, c := range bad {
+		if _, err := sim.SetMerchantCoinFloor(c.floor).Fn(w); !errors.Is(err, sim.ErrInvalidMerchantCoinFloorSetting) {
+			t.Errorf("%s: err = %v, want ErrInvalidMerchantCoinFloorSetting", c.name, err)
+		}
+	}
+	// A rejected set must not mutate the prior value (still 0 from the off-switch set).
+	if w.Settings.MerchantCoinFloor != 0 {
+		t.Errorf("floor after rejected sets = %d, want 0 (unchanged)", w.Settings.MerchantCoinFloor)
+	}
+}

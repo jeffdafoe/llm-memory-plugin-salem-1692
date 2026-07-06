@@ -50,6 +50,17 @@ type TradeValueView struct {
 	// still live. This line rides the wares cue because the sale it guards against
 	// happens exactly where this cue renders: weighing a buyer's offer in company.
 	RepairReserve *RepairReserveView
+
+	// SellFirst marks the coin-poor-but-stock-rich keeper (LLM-294): purse below the
+	// operator working-capital floor AND overstocked (merchantConserve). When set —
+	// and the cue only builds inHuddle, so an audience is co-present — render appends a
+	// nudge to offer the overstocked ware to someone here via the sell tool, the
+	// actionable half of the conserve steer (the buy-cue softening is Tier 1, in
+	// restock.go). SellFirstWare is the display label of the most-overstocked ware;
+	// SellFirstCoins is the purse for the prose.
+	SellFirst      bool
+	SellFirstWare  string
+	SellFirstCoins int
 }
 
 // RepairReserveView is the earmark behind the repair-reserve line: how many nails
@@ -253,7 +264,17 @@ func buildTradeValue(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 		}
 		return items[i].itemKind < items[j].itemKind
 	})
-	return &TradeValueView{Items: items, RepairReserve: reserve}
+	view := &TradeValueView{Items: items, RepairReserve: reserve}
+	// LLM-294 Tier 2: a coin-poor + overstocked keeper is nudged to offer its most-
+	// overstocked ware to whoever is co-present (the cue is inHuddle-gated, so an
+	// audience is present) via the sell tool. Shared determination with the Tier-1
+	// buy-cue softening (buildRestocking).
+	if c := merchantConserve(snap, actorID, actorSnap); c.Active {
+		view.SellFirst = true
+		view.SellFirstWare = c.OverstockedWare
+		view.SellFirstCoins = c.Coins
+	}
+	return view
 }
 
 // buildRepairReserve builds the earmarked-nails view (LLM-292), or nil. Non-nil
@@ -388,6 +409,15 @@ func renderTradeValue(b *strings.Builder, v *TradeValueView) {
 			fmt.Fprintf(b, "- %s: you need %d of these to mend your %s — keep %d back for the mend; only the %d beyond that are yours to sell.\n",
 				label, r.Needed, name, r.Needed, r.Held-r.Needed)
 		}
+	}
+	// LLM-294 Tier 2: coin-poor + overstocked → nudge a sale to someone co-present.
+	// The cue builds only inHuddle, so there IS an audience to offer to; naming the
+	// single most-overstocked ware gives the weak model one concrete thing to act on.
+	// Points at the `sell` tool (scene_quote's model-facing name) — a general commerce
+	// tool available with an audience — not a buy verb. Stake stated (short of coin).
+	if v.SellFirst && v.SellFirstWare != "" {
+		fmt.Fprintf(b, "You are short of coin (%d) and holding more %s than folk have been buying. If anyone here would take some, offer it to them now — use the sell tool to name your price.\n",
+			v.SellFirstCoins, sanitizeInline(v.SellFirstWare))
 	}
 	b.WriteString("\n")
 }
