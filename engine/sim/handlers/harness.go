@@ -1527,6 +1527,26 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 	// offer_trade lowers onto a PayWithItemArgs (ZBBS-HOME-407), so it carries
 	// the same decoded shape and earns the same post-offer steer.
 	if vc.Name == "pay_with_item" || vc.Name == "offer_trade" {
+		// LLM-290: a coin-token "buy" was translated to a plain payment
+		// (HandlePayWithItem builds sim.Pay), so by the time we narrate, the
+		// coins have already moved — the pending-offer echo below would tell
+		// the model to bide for an answer on an offer that doesn't exist.
+		// Voice the settle and steer to done() instead. pay_with_item only:
+		// offer_trade's coin want_item is steered at decode and never commits.
+		if args, ok := vc.DecodedArgs.(PayWithItemArgs); ok && vc.Name == "pay_with_item" && sim.IsCoinToken(args.Item) {
+			coins := args.Amount
+			if coins <= 0 {
+				coins = args.Qty
+			}
+			other := strings.TrimSpace(args.Seller)
+			if other == "" {
+				other = "them"
+			}
+			return fmt.Sprintf(
+				"[ok] Coins are payment, not goods to buy — this settled as a plain payment: you handed %s %d coins; the coins have moved and nothing is owed back. Say a brief word as you hand them over, then call done(). Next time, use pay to give someone coins.",
+				other, coins,
+			)
+		}
 		// ZBBS-WORK-405: when the engine clamped a take-home request to
 		// eat-here (non-portable consumable), the feedback must say so —
 		// same reasoning as the consume clamp above: a silently adjusted

@@ -490,6 +490,39 @@ func HandlePayWithItem(in HandlerInput) (sim.Command, error) {
 			"pay_with_item: item contains a disallowed control character at byte offset %d", i)
 	}
 
+	// LLM-290: coins named as the good to buy are currency, not an item —
+	// observed live as pay_with_item(item:"coins"). The intent is unambiguous
+	// (a closed token list), so TRANSLATE to the pay flow instead of steering:
+	// recipient = seller, coins = amount when set (the schema's "coins offered"
+	// field is authoritative), else qty (the "pay 5 coins" as qty=5 shape; the
+	// schema requires qty >= 1, so the payment is never zero). sim.Pay applies
+	// the full payment validation (huddle gate, recipient resolve, balance,
+	// the quote/lodging/labor mis-pay guards), and commitResultContent voices
+	// the settle so the model doesn't wait on an offer that isn't pending.
+	// consume_now/consumers are meaningless for currency and are dropped;
+	// a coin item alongside pay_items GOODS is a sale shape, steered instead
+	// (offer_trade's want_item=coins case steers at decode, so this branch
+	// only ever sees genuine pay_with_item calls).
+	if sim.IsCoinToken(item) {
+		if len(args.PayItems) > 0 {
+			return sim.Command{}, modelSafef(
+				"pay_with_item: you named coins as the good while also offering goods in payment — that shape is a sale, not a buy. To sell your goods for coins, post them with sell; to just hand over coins, use pay.")
+		}
+		coins := args.Amount
+		if coins <= 0 {
+			coins = args.Qty
+		}
+		forText := strings.Join(strings.Fields(args.For), " ")
+		if forText != "" {
+			if i := indexInvalidControlChar(forText); i >= 0 {
+				return sim.Command{}, modelSafef(
+					"pay_with_item: 'for' contains a disallowed control character at byte offset %d", i)
+			}
+		}
+		now := time.Now().UTC()
+		return withHuddleBootstrap(in.ActorID, now, sim.Pay(in.ActorID, seller, coins, forText, now)), nil
+	}
+
 	// Normalize the consumer list. Per-entry trim + strict-control-char
 	// scan + post-trim non-empty + static dup-name check. The Command
 	// Fn does the ActorID-level dup-check after resolution; the static
@@ -530,7 +563,12 @@ func HandlePayWithItem(in HandlerInput) (sim.Command, error) {
 		}
 	}
 
-	payItems, err := buildPayItemInputs("pay_with_item", "pay_items", args.PayItems)
+	amount, payItemArgs, err := foldCoinPayItems(args.Amount, args.PayItems)
+	if err != nil {
+		return sim.Command{}, err
+	}
+
+	payItems, err := buildPayItemInputs("pay_with_item", "pay_items", payItemArgs)
 	if err != nil {
 		return sim.Command{}, err
 	}
@@ -546,7 +584,7 @@ func HandlePayWithItem(in HandlerInput) (sim.Command, error) {
 		seller,
 		item,
 		args.Qty,
-		args.Amount,
+		amount,
 		args.ConsumeNow,
 		consumers,
 		payItems,
@@ -943,6 +981,35 @@ func validatePayItemsDecode(toolName, fieldName string, items []payItemArg) erro
 		}
 	}
 	return nil
+}
+
+// foldCoinPayItems folds coin-token pay_items rows into the coin amount —
+// "buying bread paying with 3 coins" is amount+=3, not a goods row (LLM-290).
+// Without the fold the row dead-ends on the resolvePayItems coin steer (or,
+// before the phantom-kind cleanup, resolved onto the minted 'coin' kind and
+// staked an offer the holdings check then bounced). Non-coin rows pass
+// through untouched, order preserved. Pure — errors are model-safe statics.
+func foldCoinPayItems(amount int, items []payItemArg) (int, []payItemArg, error) {
+	if len(items) == 0 {
+		return amount, items, nil
+	}
+	goods := make([]payItemArg, 0, len(items))
+	for _, pi := range items {
+		if !sim.IsCoinToken(pi.Item) {
+			goods = append(goods, pi)
+			continue
+		}
+		if pi.Qty < 1 {
+			return 0, nil, modelSafef(
+				"pay_with_item: pay_items coin quantity must be at least 1 (got %d)", pi.Qty)
+		}
+		if amount > sim.MaxPayWithItemAmount-pi.Qty {
+			return 0, nil, modelSafef(
+				"pay_with_item: coins offered exceed the maximum — lower the amount.")
+		}
+		amount += pi.Qty
+	}
+	return amount, goods, nil
 }
 
 // buildPayItemInputs is the pure-builder counterpart to

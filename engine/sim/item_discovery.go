@@ -69,6 +69,13 @@ func normalizeDiscoveredKey(freeText string) string {
 // still-immutable map, and the next republish() aliases the new one. Safe
 // because every mint site runs inside a Command.Fn on the world goroutine.
 func mintDiscoveredKind(w *World, freeText string) (ItemKind, bool) {
+	// Coins are currency, not a good — never mint a coin token as a kind
+	// (LLM-290 removed the phantom 'coin' row an earlier mint created). The
+	// coin steers at the mint call sites fire first with better messages;
+	// this is the backstop that keeps the catalog clean whatever the path.
+	if IsCoinToken(freeText) {
+		return "", false
+	}
 	key := normalizeDiscoveredKey(freeText)
 	if key == "" {
 		return "", false

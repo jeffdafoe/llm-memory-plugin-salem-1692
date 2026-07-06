@@ -172,6 +172,23 @@ func resolveItemKind(w *World, name string) (ItemKind, bool) {
 	return "", false
 }
 
+// IsCoinToken reports whether an item-name argument is really coins/currency
+// rather than a good. A closed allow-list, mirroring isLaborToken (LLM-167):
+// no coin token is an authored item kind, so a match unambiguously means the
+// model conflated currency with goods. Normalized trim + lower +
+// leading-article tolerant, so "the coins" / "a coin" / "Coins" all match.
+// Consumers (LLM-290): the pay_with_item coin-payment translation
+// (handlers.HandlePayWithItem), the pay_items / scene_quote / offer_trade
+// steers, and mintDiscoveredKind's guard — so a coin token can never
+// (re-)mint a phantom 'coin' catalog kind.
+func IsCoinToken(name string) bool {
+	switch stripLeadingArticle(strings.TrimSpace(strings.ToLower(name))) {
+	case "coin", "coins":
+		return true
+	}
+	return false
+}
+
 // consumeItemLabel is the NPC-facing noun for a kind in a Consume failure
 // message (LLM-113): the singular counting phrase ("raspberry", "skillet",
 // "bowl of stew"), falling back to the raw kind key when the def is missing or
