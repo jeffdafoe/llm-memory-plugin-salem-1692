@@ -46,6 +46,12 @@ const merchantConserveSalesWindow = 7 * 24 * time.Hour
 // naming loop and the sim-side actorConserving so the section and the warrant agree.
 func MerchantOverstockThreshold(weeklyUnits int) int {
 	threshold := MerchantOverstockAbsFloor
+	// weeklyUnits is clamped to MaxInt32 upstream, but the velocity term multiplies it
+	// by MerchantOverstockWeeksCover — guard the multiply so it can't overflow int on a
+	// 32-bit build (a saturating count already reads as "overstocked past any shelf").
+	if weeklyUnits > math.MaxInt/MerchantOverstockWeeksCover {
+		return math.MaxInt
+	}
 	if velo := MerchantOverstockWeeksCover * weeklyUnits; velo > threshold {
 		threshold = velo
 	}
