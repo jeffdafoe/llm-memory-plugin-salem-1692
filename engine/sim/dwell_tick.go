@@ -365,7 +365,13 @@ func rearmDwellAtSource(w *World, actor *Actor, now time.Time, nowMinute int) {
 	// LLM-87: an NPC gathers→consumes at a finite bush rather than auto-eating in
 	// place; only a well / tree (or a PC) drinks/rests here. Mirror the same
 	// carve-out StartRefreshAtArrival applies so re-drink and arrival agree.
-	if actor.Kind != KindPC && obj.IsFiniteGatherableSource() {
+	// Row-aware (LLM-288): a finite gatherable row alone doesn't make a bush —
+	// the post-LLM-254 Well carries a finite water-pail yield row NEXT TO its
+	// infinite drink row, and the drink must survive. Only carve out when the
+	// object has no NPC-auto-appliable row for THIS need; the row-level filter
+	// in applyObjectRefreshEffect keeps a mixed object's bush rows safe when
+	// the re-arm fires.
+	if actor.Kind != KindPC && !obj.HasNPCAutoRefreshRow(need) {
 		return
 	}
 	if !objectHasInStockDwellRowFor(obj, need) {

@@ -20,6 +20,14 @@ import (
 // shape from the ticket. Callers mutate the actor/objects to exercise each guard.
 func rearmTestWorld() (*World, *Actor, *VillageObject) {
 	zero := 0
+	// The well mirrors the LIVE post-LLM-254 two-row shape: the infinite
+	// in-place drink row PLUS a finite yield-only water-pail row. The pail row
+	// makes the object an IsFiniteGatherableSource — exactly the shape that
+	// neutered the LLM-281 re-arm on the real Well until the LLM-87 carve-out
+	// went row-aware (LLM-288). Keep both rows so that regression stays caught.
+	pailStock := 20
+	pailMax := 20
+	pailPeriod := 6
 	well := &VillageObject{
 		ID: "well", DisplayName: "Well", AssetID: "well-stone", CurrentState: "default",
 		LoiterOffsetX: &zero, LoiterOffsetY: &zero,
@@ -30,6 +38,14 @@ func rearmTestWorld() (*World, *Actor, *VillageObject) {
 				Amount:             -8, // arrival burst
 				DwellDelta:         intptr(-2),
 				DwellPeriodMinutes: intptr(30),
+			},
+			{
+				Amount:             0, // yield-only water-pail forage row (LLM-254)
+				AvailableQuantity:  &pailStock,
+				MaxQuantity:        &pailMax,
+				RefreshMode:        RefreshModePeriodic,
+				RefreshPeriodHours: &pailPeriod,
+				GatherItem:         "water",
 			},
 		},
 	}
@@ -92,6 +108,69 @@ func TestDwellRearm_ParkedRedCreditlessActor_BurstAndCredit(t *testing.T) {
 	if c.DwellDelta != -2 || c.DwellPeriodMinutes != 30 {
 		t.Errorf("credit dwell config = (%d, %d), want (-2, 30)", c.DwellDelta, c.DwellPeriodMinutes)
 	}
+}
+
+// TestDwellRearm_MixedSource (LLM-288): a MIXED source — the rearm well plus a
+// finite gatherable eat+pick hunger row (a bush row) — re-arms need-specifically
+// and never auto-draws the bush row. Red on hunger alone: no re-arm (the bush
+// row is gather->consume territory, LLM-87). Red on thirst: the burst fires
+// through the drink row, hunger stays put, and the bush stock is untouched
+// (the row-level NPC filter in applyObjectRefreshEffect).
+func TestDwellRearm_MixedSource(t *testing.T) {
+	addBushRow := func(well *VillageObject) {
+		stock := 2
+		max := 4
+		period := 6
+		well.Refreshes = append(well.Refreshes, &ObjectRefresh{
+			Attribute:          "hunger",
+			Amount:             -8, // eat+pick: a REAL bush row, not yield-only
+			AvailableQuantity:  &stock,
+			MaxQuantity:        &max,
+			RefreshMode:        RefreshModeContinuous,
+			RefreshPeriodHours: &period,
+			GatherItem:         "berries",
+		})
+	}
+	now := time.Unix(1_700_000_000, 0).UTC()
+
+	t.Run("red_hunger_alone_no_rearm", func(t *testing.T) {
+		w, actor, well := rearmTestWorld()
+		addBushRow(well)
+		actor.Needs["thirst"] = 5  // under the 12 red-line
+		actor.Needs["hunger"] = 20 // red — but only the bush row eases hunger here
+		if _, err := ApplyDwellTick(now).Fn(w); err != nil {
+			t.Fatalf("ApplyDwellTick: %v", err)
+		}
+		if got := actor.Needs["hunger"]; got != 20 {
+			t.Errorf("hunger = %d, want 20 (bush row must not re-arm for an NPC)", got)
+		}
+		if got := *well.Refreshes[len(well.Refreshes)-1].AvailableQuantity; got != 2 {
+			t.Errorf("bush stock = %d, want 2 (untouched)", got)
+		}
+	})
+
+	t.Run("red_thirst_drinks_without_drawing_bush", func(t *testing.T) {
+		// Thirst red (13, the rearmTestWorld default), hunger sub-red (5): the
+		// actionable-red-need pick lands on thirst, the gate passes through the
+		// drink row, and the burst must not touch the bush row or its stock.
+		// (With BOTH red, the registry-order pick lands on hunger and the gate
+		// correctly refuses the tick — the bush row is gather territory; the
+		// re-arm services one red need per tick by design.)
+		w, actor, well := rearmTestWorld()
+		addBushRow(well)
+		if _, err := ApplyDwellTick(now).Fn(w); err != nil {
+			t.Fatalf("ApplyDwellTick: %v", err)
+		}
+		if got := actor.Needs["thirst"]; got != 5 {
+			t.Errorf("thirst = %d, want 5 (13 - 8 burst through the drink row)", got)
+		}
+		if got := actor.Needs["hunger"]; got != 5 {
+			t.Errorf("hunger = %d, want 5 (bush row must not ride the thirst burst)", got)
+		}
+		if got := *well.Refreshes[len(well.Refreshes)-1].AvailableQuantity; got != 2 {
+			t.Errorf("bush stock = %d, want 2 (untouched)", got)
+		}
+	})
 }
 
 // TestDwellRearm_ThenDripsToFloor: after the re-arm burst, the open-ended credit

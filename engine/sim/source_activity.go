@@ -196,10 +196,14 @@ func StartRefreshAtArrival(actorID ActorID) Command {
 			// LLM-87: an NPC at a BUSH (a finite gatherable source) eats it via
 			// gather -> consume — it has the tools and decides for itself how much to
 			// take — so it does NOT auto-eat on arrival. The PC (no tools) still eats
-			// on arrival here. A WELL is gatherable too but INFINITE, so it's NOT a
-			// bush: NPCs keep their arrival + dwell drink path there. This is the
-			// "unify NPC eating to gather->consume" decision, scoped to bushes.
-			if actor.Kind != KindPC && obj.IsFiniteGatherableSource() {
+			// on arrival here. This is the "unify NPC eating to gather->consume"
+			// decision, scoped to bushes. Row-aware (LLM-288): the post-LLM-254 Well
+			// is a finite gatherable source too (its water-pail yield row), but its
+			// drink row is NPC-auto-appliable, so the arrival drink survives. Only
+			// skip when NO row may auto-apply for an NPC (a pure bush); the
+			// row-level filter in the completion effect keeps a MIXED object's
+			// bush rows safe when the started refresh lands.
+			if actor.Kind != KindPC && !obj.HasNPCAutoRefreshRow("") {
 				return SourceActivityStartResult{}, nil
 			}
 			if !hasApplicableRefreshRow(obj) {

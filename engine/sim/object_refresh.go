@@ -137,6 +137,18 @@ func (r *ObjectRefresh) IsInfiniteInPlaceNeed() bool {
 	return r != nil && r.Amount < 0 && !r.IsFinite()
 }
 
+// npcAutoAppliesRefreshRow reports whether an NPC's in-place refresh paths
+// (arrival, dwell re-arm) may auto-apply row r: a need-bearing row that is
+// NOT a bush row. A bush row — finite AND gatherable, the eat+pick shape —
+// is gather->consume territory for an NPC (LLM-87): the NPC has the tools
+// and decides for itself how much to take, so no in-place path may draw it.
+// Yield-only rows (Amount == 0) never auto-apply for anyone. PCs are not
+// gated by this — they have no gather->consume loop for eating in place.
+// Nil-safe. LLM-288.
+func npcAutoAppliesRefreshRow(r *ObjectRefresh) bool {
+	return r != nil && r.Amount < 0 && !(r.IsFinite() && r.IsGatherable())
+}
+
 // IsForageToSellFor reports whether this row is a forage-to-sell source for item:
 // a finite (tracked-supply) yield-only gather row whose GatherItem is item. This
 // is the single row-shape predicate behind BOTH the forage WARRANT's actionability
@@ -429,6 +441,17 @@ func applyObjectRefreshEffect(w *World, actorID ActorID, objID VillageObjectID, 
 	for _, r := range obj.Refreshes {
 		if r.IsFinite() && *r.AvailableQuantity <= 0 {
 			continue // dry well, empty bush
+		}
+		// LLM-87 row-level enforcement (LLM-288): an NPC never auto-consumes a
+		// BUSH row (finite + gatherable eat+pick) through any in-place path —
+		// arrival or dwell re-arm — it gathers->consumes instead. Filtered here,
+		// at the effect, so a MIXED object (an infinite drink row beside a
+		// finite eat+pick row) can keep its in-place rows working without the
+		// bush row ever being auto-drawn. The call-site gates only decide
+		// whether an in-place refresh is worth starting; this is what makes
+		// applying it safe.
+		if actor.Kind != KindPC && !npcAutoAppliesRefreshRow(r) {
+			continue
 		}
 		if r.Amount == 0 {
 			// Yield-only (forage-to-sell) gather source (LLM-24): no

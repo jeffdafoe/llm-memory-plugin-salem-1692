@@ -121,18 +121,47 @@ func (o *VillageObject) OwnedByOther(actorID ActorID) bool {
 	return o.OwnerActorID != "" && o.OwnerActorID != actorID
 }
 
-// IsFiniteGatherableSource reports whether the object is a FINITE gatherable
-// source — a bush: you pick an exhaustible yield (a finite gather_item row) from
-// it (LLM-87). This distinguishes a bush from a WELL, which is gatherable too
-// (you can draw water) but INFINITE — no stock to exhaust. An NPC eats a bush via
-// gather -> consume (so it does not auto-eat there on arrival), while a well keeps
-// its arrival + dwell drink path. Nil-safe, mirroring OwnedByOther.
+// IsFiniteGatherableSource reports whether the object carries a FINITE
+// gatherable row — a bush's exhaustible pick, or a well's water-pail yield
+// (LLM-254 split the well into an infinite drink row + a finite yield-only
+// pail row, so a well IS a finite gatherable source now). This predicate
+// alone no longer distinguishes a bush from a well; the LLM-87 "NPC eats a
+// bush via gather -> consume, doesn't auto-eat on arrival" carve-out instead
+// checks HasNPCAutoRefreshRow — an object with any NPC-auto-appliable need
+// row keeps its arrival + dwell path regardless of a sibling finite yield
+// row (LLM-288). Nil-safe, mirroring OwnedByOther.
 func (o *VillageObject) IsFiniteGatherableSource() bool {
 	if o == nil {
 		return false
 	}
 	for _, r := range o.Refreshes {
 		if r != nil && r.IsGatherable() && r.IsFinite() {
+			return true
+		}
+	}
+	return false
+}
+
+// HasNPCAutoRefreshRow reports whether the object carries an in-stock row an
+// NPC's in-place refresh may auto-apply (npcAutoAppliesRefreshRow — a need row
+// that isn't a bush row) for `need`, or for ANY need when need is "". This is
+// the row-aware half of the LLM-87 bush test: a finite gatherable row makes an
+// object gather-able, but only the ABSENCE of any NPC-auto-appliable row makes
+// it a bush the NPC must gather->consume at. The live Well (post-LLM-254)
+// carries both a finite water-pail yield row and the infinite thirst drink row
+// — the drink path must survive the pail row (LLM-288: the hud-843da92a
+// "parched at the Well forever" regression). Callers pair this with the
+// row-level NPC filter in applyObjectRefreshEffect, which is what keeps a
+// mixed object's bush row safe when its in-place rows fire. Nil-safe.
+func (o *VillageObject) HasNPCAutoRefreshRow(need NeedKey) bool {
+	if o == nil {
+		return false
+	}
+	for _, r := range o.Refreshes {
+		if !npcAutoAppliesRefreshRow(r) || !r.HasStock() {
+			continue
+		}
+		if need == "" || r.Attribute == need {
 			return true
 		}
 	}

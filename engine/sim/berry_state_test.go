@@ -57,7 +57,12 @@ func buildBerryBushWorld(t *testing.T, available int, currentState string, lastR
 	})
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
 		"forager": {
-			ID:    "forager",
+			ID: "forager",
+			// A PC: the eat-on-arrival vehicle these visual-flip tests ride is
+			// PC-only — an NPC never auto-eats a bush row through any in-place
+			// path (LLM-87, enforced row-level in applyObjectRefreshEffect
+			// since LLM-288); it gathers, which flips the visual on its own.
+			Kind:  sim.KindPC,
 			Needs: map[sim.NeedKey]int{"hunger": 20},
 		},
 	})
