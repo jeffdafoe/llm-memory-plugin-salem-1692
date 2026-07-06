@@ -100,11 +100,53 @@ func TestSetProductionFocusRejectsInputStarvedWhenOtherCraftable(t *testing.T) {
 	if err == nil {
 		t.Fatalf("accepted a sage-less stew while water is makeable; want an error")
 	}
-	if !strings.Contains(err.Error(), "sage") {
-		t.Fatalf("rejection should name the missing input; got %q", err.Error())
+	msg := err.Error()
+	if !strings.Contains(msg, "sage") {
+		t.Fatalf("rejection should name the missing input; got %q", msg)
+	}
+	// LLM-300: the input-short rejection also NAMES the good the cook can make now
+	// (water, the lone alternative) and points the produce tool at it — a copyable
+	// next action, not just "make something else".
+	if !strings.Contains(strings.ToLower(msg), "call produce with water") {
+		t.Fatalf("rejection should name the craftable alternative and point produce at it (call produce with water); got %q", msg)
 	}
 	if _, err := w.Send(sim.SetProductionFocus("cook", "water")); err != nil {
 		t.Fatalf("rejected water (no inputs, makeable): %v", err)
+	}
+}
+
+// With MORE THAN ONE craftable alternative the rejection lists them joined by "or"
+// and uses the "one of those" tail rather than a single copyable noun (LLM-300).
+// stew is input-starved (no sage) while water and pie are both origin goods the
+// cook can make now.
+func TestSetProductionFocusRejectionListsMultipleAlternatives(t *testing.T) {
+	now := time.Now().UTC()
+	recipes := map[sim.ItemKind]*sim.ItemRecipe{
+		"stew":  {OutputItem: "stew", OutputQty: 1, RateQty: 1, RatePerHours: 1, Inputs: []sim.RecipeInput{{Item: "sage", Qty: 2}}},
+		"water": {OutputItem: "water", OutputQty: 1, RateQty: 12, RatePerHours: 1},
+		"pie":   {OutputItem: "pie", OutputQty: 1, RateQty: 1, RatePerHours: 1},
+	}
+	restock := []sim.RestockEntry{
+		{Item: "stew", Source: sim.RestockSourceProduce, Max: 30},
+		{Item: "water", Source: sim.RestockSourceProduce, Max: 30},
+		{Item: "pie", Source: sim.RestockSourceProduce, Max: 30},
+	}
+	w, cancel := buildCookWorld(t, now, recipes, restock, map[sim.ItemKind]int{}, "")
+	defer cancel()
+
+	_, err := w.Send(sim.SetProductionFocus("cook", "stew"))
+	if err == nil {
+		t.Fatalf("accepted a sage-less stew while water and pie are makeable; want an error")
+	}
+	msg := strings.ToLower(err.Error())
+	if !strings.Contains(msg, "water") || !strings.Contains(msg, "pie") {
+		t.Fatalf("rejection should list BOTH craftable alternatives (water, pie); got %q", err.Error())
+	}
+	if !strings.Contains(msg, " or ") {
+		t.Fatalf("rejection should join multiple alternatives with 'or'; got %q", err.Error())
+	}
+	if !strings.Contains(msg, "call produce with one of those") {
+		t.Fatalf("multi-alternative rejection should use the 'one of those' tail; got %q", err.Error())
 	}
 }
 
