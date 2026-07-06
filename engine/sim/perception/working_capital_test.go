@@ -160,8 +160,10 @@ func TestRenderRestocking_ConserveNoBuyImperative(t *testing.T) {
 	if !strings.Contains(out, "Hold off buying more") {
 		t.Errorf("conserve lead missing:\n%s", out)
 	}
-	if !strings.Contains(out, "You are low on milk.") {
-		t.Errorf("low-item note missing:\n%s", out)
+	// LLM-298: the conserve low-item line is self-resolving — it names the lack AND
+	// what to do instead (hold, sell first, restock later), never a bare "low on X".
+	if !strings.Contains(out, "You are low on milk — no errand for it now; sell first, then restock once your purse recovers.") {
+		t.Errorf("self-resolving low-item note missing:\n%s", out)
 	}
 	// No buy imperative of any form — the whole point of conserve mode.
 	for _, banned := range []string{"Buy it now", "pay_with_item", "room for", "buy from", "cover about"} {

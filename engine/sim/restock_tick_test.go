@@ -219,6 +219,96 @@ func TestEvaluateRestock_LowForageStockStamps(t *testing.T) {
 	}
 }
 
+// TestEvaluateRestock_ConservingKeeperNoBuyWarrant: LLM-298 — a conserving keeper
+// (coin-poor + overstocked, sim.actorConserving) is told by "## Restocking" to hold off
+// buying and sell down, so the buy-restock wakeup is suppressed rather than re-firing
+// every minute for a keeper with correctly nothing to do (the live John Ellis carrots
+// nag). The floor-off control proves the conserve gate is what suppresses it.
+func TestEvaluateRestock_ConservingKeeperNoBuyWarrant(t *testing.T) {
+	keeper := &Actor{
+		ID:        "john",
+		Kind:      KindNPCStateful,
+		LLMAgent:  "john-agent",
+		Coins:     8,                                         // below the floor
+		Inventory: map[ItemKind]int{"ale": 20, "carrots": 1}, // ale overstocked (produce ware), carrots low (buy)
+		RestockPolicy: &RestockPolicy{Restock: []RestockEntry{
+			{Item: "ale", Source: RestockSourceProduce, Max: 24},
+			{Item: "carrots", Source: RestockSourceBuy, Max: 6},
+		}},
+	}
+	w := restockWorld(keeper)
+	w.Settings.MerchantCoinFloor = 10
+	addSupplier(w, "grocer", "carrots") // an open buy path — the warrant is otherwise gated on one
+	if res, _ := EvaluateRestock(time.Now().UTC()).Fn(w); res.(int) != 0 {
+		t.Errorf("stamped = %d for a conserving keeper, want 0 (buy wakeup suppressed)", res.(int))
+	}
+	if hasWarrantKind(keeper, WarrantKindRestock) {
+		t.Errorf("conserving keeper got a restock warrant; kinds = %v", warrantKinds(keeper))
+	}
+	// Control: same keeper with the floor disabled → not conserving → the low buy warrants.
+	keeper.Warrants = nil
+	keeper.WarrantedSince = nil
+	w.Settings.MerchantCoinFloor = 0
+	if res, _ := EvaluateRestock(time.Now().UTC()).Fn(w); res.(int) != 1 {
+		t.Errorf("stamped = %d with the floor off, want 1 (the conserve gate is what suppresses)", res.(int))
+	}
+}
+
+// TestEvaluateRestock_CoinPoorEmptyShelfStillWarrants: LLM-298 — the conserve gate is
+// coin-poor AND overstocked. A coin-poor keeper with EMPTY shelves (nothing overstocked)
+// is NOT conserving — it still needs to buy inputs to have anything to sell — so the buy
+// warrant stands (the empty-shelf exception, mirroring merchantConserve).
+func TestEvaluateRestock_CoinPoorEmptyShelfStillWarrants(t *testing.T) {
+	keeper := &Actor{
+		ID:        "john",
+		Kind:      KindNPCStateful,
+		LLMAgent:  "john-agent",
+		Coins:     8, // below the floor, but nothing overstocked
+		Inventory: map[ItemKind]int{"carrots": 1},
+		RestockPolicy: &RestockPolicy{Restock: []RestockEntry{
+			{Item: "carrots", Source: RestockSourceBuy, Max: 6},
+		}},
+	}
+	w := restockWorld(keeper)
+	w.Settings.MerchantCoinFloor = 10
+	addSupplier(w, "grocer", "carrots")
+	if res, _ := EvaluateRestock(time.Now().UTC()).Fn(w); res.(int) != 1 {
+		t.Errorf("stamped = %d for a coin-poor but empty-shelf keeper, want 1 (empty-shelf exception)", res.(int))
+	}
+}
+
+// TestEvaluateRestock_ConservingKeeperForageStillWarrants: LLM-298 — conserve is a COIN
+// gate (don't spend coin buying). Harvesting one's own bushes costs no coin, so a
+// conserving keeper's low FORAGE entry still wakes it to restock — only the buy wakeup is
+// suppressed.
+func TestEvaluateRestock_ConservingKeeperForageStillWarrants(t *testing.T) {
+	keeper := &Actor{
+		ID:        "prudence",
+		Kind:      KindNPCStateful,
+		LLMAgent:  "prudence-agent",
+		Coins:     8,                                                  // below the floor
+		Inventory: map[ItemKind]int{"porridge": 20, "raspberries": 1}, // porridge overstocked (produce), raspberries low (forage)
+		RestockPolicy: &RestockPolicy{Restock: []RestockEntry{
+			{Item: "porridge", Source: RestockSourceProduce, Max: 30},
+			{Item: "raspberries", Source: RestockSourceForage, Max: 10},
+		}},
+	}
+	rememberForageBush(keeper, "raspberries", "bushA")
+	w := restockWorld(keeper)
+	w.Settings.MerchantCoinFloor = 10
+	w.VillageObjects = map[VillageObjectID]*VillageObject{
+		"bushA": forageBushObj("prudence", "raspberries", 10),
+	}
+	if res, _ := EvaluateRestock(time.Now().UTC()).Fn(w); res.(int) != 1 {
+		t.Errorf("stamped = %d for a conserving forager, want 1 (forage wakeup is free, not suppressed)", res.(int))
+	}
+	for _, m := range keeper.Warrants {
+		if r, ok := m.Reason.(RestockWarrantReason); ok && r.Source != RestockSourceForage {
+			t.Errorf("warrant source = %q, want forage", r.Source)
+		}
+	}
+}
+
 // TestEvaluateRestock_ForageNoRememberedBush_NoStamp: the actionability gate
 // (code_review LLM-90). A low forage entry with NO remembered, still-owned bush
 // for the item must NOT warrant — buildForage would render no "## Your bushes to
@@ -419,13 +509,13 @@ func TestFirstActionableLowEntry_BuyDeterministicOrder(t *testing.T) {
 	w := restockWorld(a)
 	addSupplier(w, "salter", "salt")
 	addSupplier(w, "brewer", "ale")
-	if e, src, ok := firstActionableLowEntry(a, w, 25, time.Now().UTC()); !ok || e.Item != "salt" || src != RestockSourceBuy {
+	if e, src, ok := firstActionableLowEntry(a, w, 25, time.Now().UTC(), false); !ok || e.Item != "salt" || src != RestockSourceBuy {
 		t.Errorf("first actionable low = (%q, %q, %v), want (salt, buy, true)", e.Item, src, ok)
 	}
 	// The low buy entry with NO buy path is passed over in favor of a later one
 	// that has a supplier (the LLM-260 buy actionability gate).
 	delete(w.Actors, "salter")
-	if e, _, ok := firstActionableLowEntry(a, w, 25, time.Now().UTC()); !ok || e.Item != "ale" {
+	if e, _, ok := firstActionableLowEntry(a, w, 25, time.Now().UTC(), false); !ok || e.Item != "ale" {
 		t.Errorf("with salt unsourced, first actionable low = (%q, %v), want (ale, true)", e.Item, ok)
 	}
 }
@@ -452,7 +542,7 @@ func TestFirstActionableLowEntry_BuyBeforeForageAndActionability(t *testing.T) {
 	wBoth := restockWorld(both)
 	wBoth.VillageObjects = bushWorld("prudence")
 	addSupplier(wBoth, "dairy", "milk")
-	if e, src, ok := firstActionableLowEntry(both, wBoth, 25, time.Now().UTC()); !ok || e.Item != "milk" || src != RestockSourceBuy {
+	if e, src, ok := firstActionableLowEntry(both, wBoth, 25, time.Now().UTC(), false); !ok || e.Item != "milk" || src != RestockSourceBuy {
 		t.Errorf("mixed low set: got (%q, %q, %v), want (milk, buy, true)", e.Item, src, ok)
 	}
 
@@ -468,7 +558,7 @@ func TestFirstActionableLowEntry_BuyBeforeForageAndActionability(t *testing.T) {
 	rememberForageBush(forageOnly, "raspberries", "bushA")
 	wForage := restockWorld(forageOnly)
 	wForage.VillageObjects = bushWorld("prudence")
-	if e, src, ok := firstActionableLowEntry(forageOnly, wForage, 25, time.Now().UTC()); !ok || e.Item != "raspberries" || src != RestockSourceForage {
+	if e, src, ok := firstActionableLowEntry(forageOnly, wForage, 25, time.Now().UTC(), false); !ok || e.Item != "raspberries" || src != RestockSourceForage {
 		t.Errorf("forage-only low: got (%q, %q, %v), want (raspberries, forage, true)", e.Item, src, ok)
 	}
 
@@ -480,7 +570,7 @@ func TestFirstActionableLowEntry_BuyBeforeForageAndActionability(t *testing.T) {
 			{Item: "raspberries", Source: RestockSourceForage, Max: 10},
 		}},
 	}
-	if _, _, ok := firstActionableLowEntry(noBush, restockWorld(noBush), 25, time.Now().UTC()); ok {
+	if _, _, ok := firstActionableLowEntry(noBush, restockWorld(noBush), 25, time.Now().UTC(), false); ok {
 		t.Error("a low forage entry with no remembered bush must not be actionable")
 	}
 }

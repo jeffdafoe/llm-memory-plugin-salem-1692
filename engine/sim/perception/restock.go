@@ -792,8 +792,14 @@ func renderRestocking(b *strings.Builder, v *RestockingView) {
 		// section lead already told the keeper to hold off buying and sell down first.
 		// Drops the headroom/P&L/affordability lines and the co-present/walk-to buy
 		// steer for this item, so the cue is internally consistent.
+		// LLM-298: the bare "You are low on X" named a want with no outlet — a weak
+		// model (llama-3.3-70b) filled the vacuum by inventing a "Market" to move_to.
+		// Self-resolve the line: say what to do INSTEAD (hold, sell first, restock
+		// later) so it never dangles a lack the model has to improvise a destination
+		// for. The section lead carries the same steer; restating it per-item stops
+		// the model latching onto one item bullet in isolation on a restock-wakeup turn.
 		if v.Conserve {
-			fmt.Fprintf(b, "- You are low on %s.\n", sanitizeInline(it.ItemLabel))
+			fmt.Fprintf(b, "- You are low on %s — no errand for it now; sell first, then restock once your purse recovers.\n", sanitizeInline(it.ItemLabel))
 			continue
 		}
 		headroom := it.Cap - it.CurrentQty

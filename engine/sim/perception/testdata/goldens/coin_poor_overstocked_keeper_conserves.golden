@@ -22,11 +22,8 @@ What your wares fetch in coin — use it to set a fair price or weigh a trade:
 - porridge: 1 to 2 coins each; the makings run you nearly 1 coin each.
 You are short of coin (1) and holding more porridge than folk have been buying. If anyone here would take some, offer it to them now — use the sell tool to name your price.
 
-## Keeping up production
-- You use milk to make porridge — 2 on hand, enough for about 6 more, and you're running low.
-
 ## Restocking
 Your purse is nearly empty (1 coin) and your shelves are full of goods still waiting to sell. Hold off buying more for now — sell down what you have and let your coins recover first. You'll want to restock these once you can afford them:
-- You are low on milk.
+- You are low on milk — no errand for it now; sell first, then restock once your purse recovers.
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.

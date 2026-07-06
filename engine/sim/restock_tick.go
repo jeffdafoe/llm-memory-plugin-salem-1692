@@ -162,7 +162,7 @@ func RestockReorderThresholdMet(currentQty, cap, pct, reorderFloor int) bool {
 // nothing. Derived demand for a vendor-less input (water, today) would have
 // mass-produced that loop.) Order within each source follows the entry order
 // (first wins).
-func firstActionableLowEntry(a *Actor, w *World, pct int, now time.Time) (RestockEntry, RestockSource, bool) {
+func firstActionableLowEntry(a *Actor, w *World, pct int, now time.Time, conserving bool) (RestockEntry, RestockSource, bool) {
 	policy := a.RestockPolicy
 	if policy == nil {
 		return RestockEntry{}, "", false
@@ -171,9 +171,17 @@ func firstActionableLowEntry(a *Actor, w *World, pct int, now time.Time) (Restoc
 	// is not a required recipe input, so forage entries below fall through to the
 	// cap-fraction rule unchanged. Same catalog the perception gates read.
 	floors := ReorderFloors(w.Recipes, policy)
-	for _, e := range EffectiveBuyEntries(w.Recipes, policy) {
-		if RestockReorderThresholdMet(a.Inventory[e.Item], e.Cap(), pct, floors[e.Item]) && actorHasBuyPath(w, a, e.Item, now) {
-			return e, RestockSourceBuy, true
+	// LLM-298: a conserving keeper (coin-poor + overstocked) is told to hold off buying
+	// and sell down — the "## Restocking" section flips to that steer, so waking it to
+	// BUY a low input contradicts the cue and just re-fires every minute for a keeper
+	// with correctly nothing to do (the live John Ellis carrots nag, ~5×/hr). Skip the
+	// buy entries entirely while conserving. Forage entries still wake below: harvesting
+	// one's own bushes costs no coin, so the coin gate does not apply to them.
+	if !conserving {
+		for _, e := range EffectiveBuyEntries(w.Recipes, policy) {
+			if RestockReorderThresholdMet(a.Inventory[e.Item], e.Cap(), pct, floors[e.Item]) && actorHasBuyPath(w, a, e.Item, now) {
+				return e, RestockSourceBuy, true
+			}
 		}
 	}
 	for _, e := range policy.ForageEntries() {
@@ -330,7 +338,7 @@ func EvaluateRestock(now time.Time) Command {
 				if !restockEligible(a, now) {
 					continue
 				}
-				low, src, ok := firstActionableLowEntry(a, w, pct, now)
+				low, src, ok := firstActionableLowEntry(a, w, pct, now, actorConserving(w, a, now))
 				if !ok {
 					continue
 				}

@@ -1,0 +1,23 @@
+# Your turn
+
+## What just happened
+(nothing specific — this is a routine check-in)
+
+
+## You
+Coins in your purse: 8.
+You are carrying: ale (x20), bread (x14), carrots (x1), stew (x13).
+
+## Around you
+You are inside The Tavern, your workplace, with no one else here to hear you speak.
+It is midday.
+
+You're at your workplace.
+
+It is your working hours and you are at your post — stay and look after your work; you close at 6 in the evening. If no one needs you right now, wait here for customers rather than wandering off.
+
+## Restocking
+Your purse is nearly empty (8 coins) and your shelves are full of goods still waiting to sell. Hold off buying more for now — sell down what you have and let your coins recover first. You'll want to restock these once you can afford them:
+- You are low on carrots — no errand for it now; sell first, then restock once your purse recovers.
+
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.

@@ -97,6 +97,15 @@ func buildProductionInputs(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *s
 	if pct <= 0 {
 		return nil // producer/feature disabled
 	}
+	// LLM-298: this section is pure buy-motivation — keep an input stocked so you can
+	// keep making your product. A conserving keeper (coin-poor + overstocked) is told to
+	// hold off buying and sell down first, and the "## Restocking" cue for the same input
+	// already carries that steer; a "you're running low on X" motivate-line here would
+	// dangle a second want with no legal outlet — the live sage→stew case, where it fed
+	// futile `produce Stew` retries. Suppress the whole section while conserving.
+	if merchantConserve(snap, actorID, actorSnap).Active {
+		return nil
+	}
 	// The items the actor restocks by buying, and their caps — the gate for which
 	// inputs are a buy-restock concern (a self-produced input has no buy entry,
 	// derived or otherwise, and is excluded). Mirrors the set "## Restocking"
