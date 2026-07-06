@@ -28,6 +28,15 @@ func TestNeedRedirectFor(t *testing.T) {
 	// marked Barter (it holds goods to trade) — a real, transactable target the
 	// redirect must keep, in lockstep with the rendered buy cue (LLM-222).
 	barterKnown := SatiationVendor{StructureLabel: "Market", StructureID: "market", ItemLabel: "cheese", costCoins: 9, Barter: true}
+	// LLM-307 meal-bridge fixtures: a meal-class vendor / free source (magnitude at
+	// satiationMealFloor) and their snack-class counterparts (a nibble). Under
+	// BridgeToMeal the coda must steer to a MEAL target, never consume the carried
+	// snack or relocate to another snack.
+	mealVendor := SatiationVendor{StructureLabel: "Tavern", StructureID: "tav", ItemLabel: "stew", costCoins: 2, Magnitude: 8}
+	nibbleVendor := SatiationVendor{StructureLabel: "Cart", StructureID: "cart2", ItemLabel: "berries", costCoins: 1, Magnitude: 2}
+	mealFree := SatiationFreeSource{Label: "Orchard", ObjectID: "orchard", Magnitude: 8}
+	nibbleFree := SatiationFreeSource{Label: "Bush", ObjectID: "bush", Magnitude: 2}
+	snack := []OwnStockItem{{Label: "raspberries", Magnitude: 2}}
 
 	cases := []struct {
 		name     string
@@ -44,6 +53,14 @@ func TestNeedRedirectFor(t *testing.T) {
 		{"skip out-of-stock", SatiationNeedView{Need: "hunger", Verb: "eat", Vendors: []SatiationVendor{oos, cheapKnown}}, 5, NeedRedirectBuy, "tav"},
 		{"known-price barter vendor stays eligible", SatiationNeedView{Need: "hunger", Verb: "eat", Vendors: []SatiationVendor{barterKnown}}, 1, NeedRedirectBuy, "market"},
 		{"nothing resolvable → nil", SatiationNeedView{Need: "hunger", Verb: "eat", Vendors: []SatiationVendor{dearKnown}}, 1, "", ""},
+		// LLM-307: under BridgeToMeal the carried snack must NOT win — steer to a meal.
+		{"bridge skips snack own-stock for meal vendor", SatiationNeedView{Need: "hunger", Verb: "eat", OwnStock: snack, Vendors: []SatiationVendor{mealVendor}, BridgeToMeal: true}, 5, NeedRedirectBuy, "tav"},
+		{"bridge skips nibble free source for meal vendor", SatiationNeedView{Need: "hunger", Verb: "eat", OwnStock: snack, FreeSources: []SatiationFreeSource{nibbleFree}, Vendors: []SatiationVendor{mealVendor}, BridgeToMeal: true}, 5, NeedRedirectBuy, "tav"},
+		{"bridge skips snack vendor, continues to later meal vendor", SatiationNeedView{Need: "hunger", Verb: "eat", OwnStock: snack, Vendors: []SatiationVendor{nibbleVendor, mealVendor}, BridgeToMeal: true}, 5, NeedRedirectBuy, "tav"},
+		{"bridge takes meal free source over vendor", SatiationNeedView{Need: "hunger", Verb: "eat", OwnStock: snack, FreeSources: []SatiationFreeSource{mealFree}, Vendors: []SatiationVendor{mealVendor}, BridgeToMeal: true}, 5, NeedRedirectFree, "orchard"},
+		{"bridge with only snack targets → nil", SatiationNeedView{Need: "hunger", Verb: "eat", OwnStock: snack, FreeSources: []SatiationFreeSource{nibbleFree}, Vendors: []SatiationVendor{nibbleVendor}, BridgeToMeal: true}, 5, "", ""},
+		// BridgeToMeal false with a meal on hand keeps the consume-first order.
+		{"no bridge: meal own-stock still consumed", SatiationNeedView{Need: "hunger", Verb: "eat", OwnStock: []OwnStockItem{{Label: "cheese", Magnitude: 8}}, Vendors: []SatiationVendor{mealVendor}}, 5, NeedRedirectConsume, ""},
 	}
 	for _, c := range cases {
 		got := needRedirectFor(c.nv, c.coins)
@@ -219,5 +236,30 @@ func TestNeedRedirectNamesConcreteTarget(t *testing.T) {
 	}
 	if !saw {
 		t.Error("no scenario exercised the need-redirect coda — add one (hungry_looper_at_foodless_home)")
+	}
+}
+
+// TestGoldensNeedRedirectNeverConsumesBridgedSnack is the LLM-307 cross-scenario
+// invariant: when the eat/drink section bridges past snack-only stock to a real
+// meal (SatiationNeedView.BridgeToMeal), the loop-break coda must not tell the
+// actor to consume the very snack the section just called insufficient — the two
+// steers would contradict and re-arm the snacking loop. The redirect view carries
+// no need key, so the consume redirect is matched to its need by Verb (eat/drink).
+// Runs over the whole matrix so no future change reintroduces the contradiction.
+func TestGoldensNeedRedirectNeverConsumesBridgedSnack(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, warrants := sc.build()
+			p := Build(snap, actorID, warrants)
+			if p.NeedRedirect == nil || p.NeedRedirect.Kind != NeedRedirectConsume || p.Satiation == nil {
+				return
+			}
+			for _, n := range p.Satiation.Needs {
+				if n.BridgeToMeal && n.Verb == p.NeedRedirect.Verb {
+					t.Errorf("scenario %q: the eat/drink section bridges snack→meal for %s, but the loop coda still says consume the carried snack — contradictory steers", sc.name, n.Need)
+				}
+			}
+		})
 	}
 }

@@ -748,6 +748,17 @@ var perceptionScenarios = []perceptionScenario{
 		build: hungryHoldingMealKeepsSuppression,
 	},
 	{
+		name: "snack_looper_redirected_to_meal",
+		summary: "LLM-307 loop-coda case: the snack-loop actor (Ezekiel, mild hunger, only raspberries) is ALSO stuck in " +
+			"a looping huddle conversation (ConversationLooping) with a food-less peer — the condition under which the " +
+			"LLM-176 need-redirect coda renders. Before the coda fix it steered 'consume your raspberries now' while the " +
+			"section above said 'for a real meal, see the options below' — a self-contradiction that re-armed the snacking " +
+			"loop. The golden pins that the coda now points at the SAME meal the section does ('go to General Store … buy " +
+			"a wedge of cheese to eat'), NOT the nibble. Grace Bishop makes the huddle real (carries nothing, so no " +
+			"co-present buy offer competes). Fixed PublishedAt keeps the turn-state read byte-stable.",
+		build: snackLooperRedirectedToMeal,
+	},
+	{
 		name: "smith_choosing_at_forge",
 		summary: "A multi-output crafter (Ezekiel the blacksmith: skillet + nail) stands UNFOCUSED at his own forge on " +
 			"shift — the post-restart state the production-choice warrant fires on (LLM-116/LLM-128). The golden pins the " +
@@ -6042,6 +6053,75 @@ func hungryHoldingNibbleSeesMealVendor() (*sim.Snapshot, sim.ActorID, []sim.Warr
 
 func hungryHoldingMealKeepsSuppression() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	return snackLoopScenario("cheese")
+}
+
+// snackLooperRedirectedToMeal is the LLM-307 loop-coda fixture: the snack-loop
+// actor (mild hunger, only raspberries, a reachable cheese seller) is ALSO stuck
+// in a looping huddle conversation, the condition under which the LLM-176
+// need-redirect coda renders. Before the coda fix, needRedirectFor returned
+// "consume your raspberries" — contradicting the eat/drink section's "for a real
+// meal, see the options below" and re-arming the snacking loop. Grace Bishop is a
+// present, food-less huddle peer so the huddle (hence ConversationLooping) is real
+// and no co-present-peer buy offer competes. Fixed PublishedAt so the turn-state
+// read stays byte-stable (no wall-clock read).
+func snackLooperRedirectedToMeal() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		ezekielID = sim.ActorID("ezekiel")
+		graceID   = sim.ActorID("grace")
+		mabelID   = sim.ActorID("mabel")
+		store     = sim.StructureID("general_store")
+		huddleID  = sim.HuddleID("h1")
+	)
+	published := time.Date(2026, 7, 6, 15, 0, 0, 0, time.UTC)
+	ezekiel := &sim.ActorSnapshot{
+		Kind:                sim.KindNPCStateful,
+		DisplayName:         "Ezekiel Crane",
+		Role:                "blacksmith",
+		State:               sim.StateIdle,
+		Pos:                 sim.TilePos{X: 10, Y: 10},
+		CurrentHuddleID:     huddleID,
+		Coins:               59,
+		Inventory:           map[sim.ItemKind]int{"raspberries": 3},
+		Needs:               map[sim.NeedKey]int{"hunger": 14}, // mild: felt, below red 18
+		ConversationLooping: true,
+	}
+	grace := &sim.ActorSnapshot{
+		Kind:            sim.KindNPCStateful,
+		DisplayName:     "Grace Bishop",
+		Role:            "farmer",
+		State:           sim.StateIdle,
+		Pos:             sim.TilePos{X: 11, Y: 10},
+		CurrentHuddleID: huddleID,
+		Coins:           5,
+		Needs:           map[sim.NeedKey]int{},
+	}
+	mabel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Mabel Stone",
+		Role:              "shopkeeper",
+		State:             sim.StateIdle,
+		Pos:               sim.TilePos{X: 40, Y: 40},
+		WorkStructureID:   store,
+		InsideStructureID: store,
+		Coins:             20,
+		Inventory:         map[sim.ItemKind]int{"cheese": 5},
+		Needs:             map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:    published,
+		NeedThresholds: sim.NeedThresholds{},
+		Assets:         emptyAssetSet,
+		Actors:         map[sim.ActorID]*sim.ActorSnapshot{ezekielID: ezekiel, graceID: grace, mabelID: mabel},
+		Structures:     map[sim.StructureID]*sim.Structure{store: plainStructure(store, "General Store")},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddleID: {ID: huddleID, Members: map[sim.ActorID]struct{}{ezekielID: {}, graceID: {}}},
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"raspberries": {Name: "raspberries", DisplayLabel: "Raspberries", DisplayLabelSingular: "raspberry", DisplayLabelPlural: "raspberries", Category: sim.ItemCategoryFood, Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 2}}},
+			"cheese":      {Name: "cheese", DisplayLabel: "Cheese", DisplayLabelSingular: "wedge of cheese", DisplayLabelPlural: "wedges of cheese", Category: sim.ItemCategoryFood, Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 8}}},
+		},
+	}
+	return snap, ezekielID, nil
 }
 
 // grazingProducerScenario builds the LLM-134 fixture: Moses James, a carrot

@@ -2348,12 +2348,29 @@ func buildNeedRedirect(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, sat *Sa
 // skipping it would drift from the rendered buy cue. Remembered-shut vendors never
 // reach this list — the satiation build gate drops them (LLM-222) — so no shut
 // check is needed here. nil when the need has no resolvable target.
+//
+// LLM-307: consume-what-you-carry is skipped when the eat/drink section is
+// bridging past snack-only stock to a real meal (nv.BridgeToMeal). The section
+// tells the actor a nibble won't resolve the need and to look to the meal options
+// below; a coda that then said "consume your nibble now" would contradict it, and
+// re-arm the snacking loop the loop-break exists to end. Under BridgeToMeal the
+// walk-to arms are also restricted to MEAL-class targets — a nibble free source or
+// nibble vendor wouldn't resolve the need any better than the carried snack, so
+// steering to one would just relocate the same contradiction. BridgeToMeal is set
+// only when a meal-class option is actually reachable (buildSatiation's honesty
+// gate), so a meal target is normally found; when the only meal is a co-present
+// peer (which the redirect can't name as a move_to target) the loop falls through
+// to nil and the generic looping coda renders — which does not contradict the
+// section. With BridgeToMeal false (a meal on hand, or no own stock at all) the
+// original order is unchanged.
 func needRedirectFor(nv SatiationNeedView, coins int) *NeedRedirectView {
-	if len(nv.OwnStock) > 0 {
+	if len(nv.OwnStock) > 0 && !nv.BridgeToMeal {
 		return &NeedRedirectView{Kind: NeedRedirectConsume, Verb: nv.Verb, ItemLabel: nv.OwnStock[0].Label}
 	}
-	if len(nv.FreeSources) > 0 {
-		fs := nv.FreeSources[0]
+	for _, fs := range nv.FreeSources {
+		if nv.BridgeToMeal && !isMealClassSatisfier(fs.Magnitude) {
+			continue // a snack source resolves the need no better than the carried snack
+		}
 		return &NeedRedirectView{Kind: NeedRedirectFree, Verb: nv.Verb, TargetLabel: fs.Label, TargetID: string(fs.ObjectID)}
 	}
 	for _, v := range nv.Vendors {
@@ -2362,6 +2379,9 @@ func needRedirectFor(nv SatiationNeedView, coins int) *NeedRedirectView {
 		}
 		if v.costCoins > 0 && coins < v.costCoins && !v.Barter {
 			continue // a remembered price the looping actor can neither meet by coin nor barter (LLM-222)
+		}
+		if nv.BridgeToMeal && !isMealClassSatisfier(v.Magnitude) {
+			continue // under a meal bridge, only a meal-class vendor resolves the need
 		}
 		return &NeedRedirectView{Kind: NeedRedirectBuy, Verb: nv.Verb, ItemLabel: v.ItemLabel, TargetLabel: v.StructureLabel, TargetID: string(v.StructureID)}
 	}
