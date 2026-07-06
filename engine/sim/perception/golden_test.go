@@ -1028,6 +1028,16 @@ var perceptionScenarios = []perceptionScenario{
 		build: ownerAtDegradedStall,
 	},
 	{
+		name: "owner_at_degraded_store_conserving",
+		summary: "LLM-301: Josiah Thorne stands at his own DEGRADED General Store (shut for trade) with 0 of the 5 " +
+			"nails a mend takes, 1 coin (below the 10-coin MerchantCoinFloor) and 17 unsold flour — conserve active — and " +
+			"NO nail supplier survives the LLM-216 drops. The golden pins the vendor-less fallback's sell-first soften " +
+			"('your purse can't take on nails just now') and the ABSENCE of the old destination-less 'buy more from the " +
+			"smith' goad, which llama-3.3-70b answered by inventing 'the Smithy' and burning its turn retrying the move " +
+			"(the live 2026-07-06 scene).",
+		build: ownerAtDegradedStoreConserving,
+	},
+	{
 		name: "passerby_at_worn_stall",
 		summary: "A non-owner (John) stands at someone else's worn business. The golden pins the co-present " +
 			"atmosphere line ('The Blacksmith here looks worn…') and the ABSENCE of the owner '## Your business' cue — a " +
@@ -3630,6 +3640,7 @@ func TestStallRepairCueOnlyAtOwnWornStall(t *testing.T) {
 		"owner_at_worn_stall":                    true,
 		"owner_at_worn_stall_with_nail_supplier": true, // LLM-274: owner short of nails WITH a resolvable supplier
 		"owner_at_degraded_stall":                true,
+		"owner_at_degraded_store_conserving":     true, // LLM-301: vendor-less fallback, conserve arm
 		"owner_at_worn_tavern":                   true,
 		"owner_inside_worn_business":             true, // LLM-266: owner INSIDE their worn business (not at the outdoor pin)
 		"owner_holding_repair_nails_in_company":  true, // LLM-292: owner at own worn store's pin (the earmark fixture)
@@ -3773,6 +3784,50 @@ func TestOwnerShortNailsWithSupplierNamesDestination(t *testing.T) {
 	}
 	if !exercised {
 		t.Error("matrix must exercise an owner short on nails with a resolvable nail supplier (LLM-274)")
+	}
+}
+
+// TestOwnerShortNailsNoVendorFallbackNeverGoads is the LLM-301 cross-scenario
+// invariant: whenever the OWNER "## Your business" cue renders with the owner short
+// of nails and NO resolvable supplier (NailVendors empty — the LLM-216 drops took
+// them all), the section must NOT goad the errand: the old destination-less "buy
+// more from the smith" line is banned (a person-shaped target with no move_to
+// destination — the live model invented "the Smithy" for it), and when the
+// working-capital gate says the keeper should hold off buying (Conserve), the
+// sell-first soften must render in its place. owner_at_degraded_store_conserving is
+// the non-vacuous conserve anchor; owner_at_worn_stall & co are the non-conserve arms.
+func TestOwnerShortNailsNoVendorFallbackNeverGoads(t *testing.T) {
+	var exercised, conserveExercised bool
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, _ := sc.build()
+			a := snap.Actors[actorID]
+			if a == nil {
+				return
+			}
+			v := buildStallRepair(snap, actorID, a)
+			if v == nil || v.Hired || v.HasEnoughNails || len(v.NailVendors) > 0 {
+				return // not the vendor-less owner fallback — invariant N/A
+			}
+			exercised = true
+			section := promptSection(renderScenario(sc), "## Your business")
+			if strings.Contains(section, "buy more from the smith") {
+				t.Errorf("scenario %q: vendor-less repair fallback still goads the destination-less smith errand (LLM-301)", sc.name)
+			}
+			if v.Conserve {
+				conserveExercised = true
+				if !strings.Contains(section, "your purse can't take on nails just now") {
+					t.Errorf("scenario %q: conserve is active with no resolvable supplier but the sell-first soften is missing from the '## Your business' cue (LLM-301)", sc.name)
+				}
+			}
+		})
+	}
+	if !exercised {
+		t.Error("matrix must exercise an owner short on nails with no resolvable supplier (LLM-301)")
+	}
+	if !conserveExercised {
+		t.Error("matrix must exercise the conserve arm of the vendor-less repair fallback (LLM-301)")
 	}
 }
 
@@ -4526,6 +4581,61 @@ func ownerAtDegradedStall() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	return stallWearSnapshot("ezekiel", "ezekiel", "Ezekiel Crane", "blacksmith", 650, 5)
 }
 
+// ownerAtDegradedStoreConserving is the LLM-301 fixture — the live 2026-07-06 Josiah
+// Thorne "the Smithy" case. The owner stands at his own DEGRADED General Store (wear
+// 650 >= degrade 600, shut for trade) carrying 0 of the 5 nails a mend takes, with
+// 1 coin (below the 10-coin MerchantCoinFloor) and 17 unsold flour on the shelf (past
+// the 8-unit dead-stock overstock floor) — so merchantConserve is Active — while NO
+// nail supplier resolves (none exists here; the live case dropped the smith on
+// affordability — either way NailVendors is empty). The golden pins the sell-first
+// soften in the vendor-less fallback instead of the old destination-less "buy more
+// from the smith" goad, which the live model answered by hallucinating a "the Smithy"
+// move_to target and burning its whole turn retrying it.
+func ownerAtDegradedStoreConserving() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	zero := 0
+	start, end := 360, 1080 // 06:00–18:00
+	now := 720              // 12:00 — on shift, at his post
+	storePin := sim.WorldPos{X: 100, Y: 100}.Tile()
+	josiah := &sim.ActorSnapshot{
+		Kind:             sim.KindNPCStateful,
+		DisplayName:      "Josiah Thorne",
+		Role:             "shopkeeper",
+		State:            sim.StateIdle,
+		Pos:              storePin,
+		ScheduleStartMin: &start,
+		ScheduleEndMin:   &end,
+		Coins:            1,
+		Needs:            map[sim.NeedKey]int{},
+		Inventory:        map[sim.ItemKind]int{"nail": 0, "flour": 17},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "flour", Source: sim.RestockSourceBuy, Max: 20},
+		}},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay:          &now,
+		NeedThresholds:            sim.NeedThresholds{},
+		Assets:                    emptyAssetSet,
+		MerchantCoinFloor:         10,
+		StallWearRepairThreshold:  400,
+		StallWearDegradeThreshold: 600,
+		StallNailsPerRepair:       5,
+		Actors:                    map[sim.ActorID]*sim.ActorSnapshot{"josiah": josiah},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"general_store": {
+				ID:            "general_store",
+				DisplayName:   "General Store",
+				Pos:           sim.WorldPos{X: 100, Y: 100},
+				OwnerActorID:  "josiah",
+				Tags:          []string{sim.TagBusiness},
+				Wear:          650,
+				LoiterOffsetX: &zero,
+				LoiterOffsetY: &zero,
+			},
+		},
+	}
+	return snap, "josiah", nil
+}
+
 // ownerAtWornStallWithNailSupplier is the LLM-274 fixture, modeled on the live
 // 2026-07-04 Elizabeth Ellis case: the owner stands at her own worn Ellis Farm
 // (wear 450 >= repair 400, < degrade 600) carrying 0 of the 5 nails a mend needs,
@@ -4831,9 +4941,12 @@ func ownerStandoffDeclinedNails() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta
 	// the threshold the cue reads as a standoff, and inside recentlyResolvedOfferWindow so
 	// the recency guard counts them. Declined is terminal, so no ExpiresAt is needed.
 	resolved := published.Add(-1 * time.Minute)
+	// Amount 3 on each: the offers carried her whole thin purse (a live offer always
+	// carries coins and/or goods), so the LLM-296 settled-offer line reads "Your offer
+	// of 3 coins …" rather than the fixture artifact "of nothing".
 	snap.PayLedger = map[sim.LedgerID]*sim.PayLedgerEntry{
-		1: {ID: 1, BuyerID: actorID, SellerID: "ezekiel", ItemKind: sim.NailItemKind, Qty: 5, State: sim.PayLedgerStateDeclined, HuddleID: "smith_huddle", ResolvedAt: resolved},
-		2: {ID: 2, BuyerID: actorID, SellerID: "ezekiel", ItemKind: sim.NailItemKind, Qty: 5, State: sim.PayLedgerStateDeclined, HuddleID: "smith_huddle", ResolvedAt: resolved},
+		1: {ID: 1, BuyerID: actorID, SellerID: "ezekiel", ItemKind: sim.NailItemKind, Qty: 5, Amount: 3, State: sim.PayLedgerStateDeclined, HuddleID: "smith_huddle", ResolvedAt: resolved},
+		2: {ID: 2, BuyerID: actorID, SellerID: "ezekiel", ItemKind: sim.NailItemKind, Qty: 5, Amount: 3, State: sim.PayLedgerStateDeclined, HuddleID: "smith_huddle", ResolvedAt: resolved},
 	}
 	return snap, actorID, warrants
 }

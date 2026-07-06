@@ -31,6 +31,14 @@ type StallRepairView struct {
 	HasEnoughNails bool            // NailsHeld >= NailsNeeded
 	Name           string          // the business's display name (structure/object); "" → generic noun
 	NailVendors    []RestockVendor // owner's buy-nails destinations (LLM-274); populated only when short of nails and NOT hired
+
+	// Conserve (LLM-301): set only when NailVendors came back EMPTY — every supplier
+	// dropped by the LLM-216 filters (unaffordable / remembered shut / none exist) —
+	// and the working-capital gate says this keeper should hold off buying. Selects
+	// the sell-first soften over the plain shortfall statement in the vendor-less
+	// fallback. Rides merchantConserve, the same signal "## Restocking" uses, so the
+	// two cues can never contradict.
+	Conserve bool
 }
 
 // buildStallRepair returns the at-the-business repair cue, or nil. Pure over the
@@ -69,6 +77,12 @@ func buildStallRepair(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 	// (renderHiredStallRepair).
 	if !view.HasEnoughNails && !hired {
 		view.NailVendors = findItemVendors(snap, actorID, actorSnap, sim.NailItemKind)
+		// LLM-301: every supplier dropped — the render falls back to a destination-less
+		// sentence, so decide its tone here. Computed only on the vendor-less path, so
+		// the common healthy case pays nothing for the conserve scan.
+		if len(view.NailVendors) == 0 {
+			view.Conserve = merchantConserve(snap, actorID, actorSnap).Active
+		}
 	}
 	return view
 }
@@ -106,11 +120,20 @@ func renderStallRepair(b *strings.Builder, v *StallRepairView) {
 		// issuing move_to.
 		fmt.Fprintf(b, "Mending takes %d nails and you have %d — buy them, then come back here and repair. Use move_to to reach a supplier, then pay_with_item once you arrive:\n", v.NailsNeeded, v.NailsHeld)
 		renderWalkToVendors(b, v.NailVendors)
+	} else if v.Conserve {
+		// LLM-301: no reachable supplier AND the working-capital gate says hold off —
+		// state the way out (sell, recover, then buy and mend) instead of goading a
+		// buy the purse can't close, harmonizing with the "## Restocking" hold-off.
+		fmt.Fprintf(b, "Mending takes %d nails and you have %d — but your purse can't take on nails just now. Sell what you can and let your coins recover, then buy nails and come back to mend it.\n", v.NailsNeeded, v.NailsHeld)
 	} else {
-		// No reachable, open, affordable nail supplier on record — keep the generic
-		// sentence rather than a dead-end target (mirrors the Restocking actionability
-		// posture, LLM-216); the cue self-heals when a supplier opens or the purse covers one.
-		fmt.Fprintf(b, "Mending takes %d nails and you have %d — buy more from the smith, then repair it.\n", v.NailsNeeded, v.NailsHeld)
+		// No reachable, open, affordable nail supplier on record — state the shortfall
+		// without a target rather than a dead-end errand (mirrors the Restocking
+		// actionability posture, LLM-216); the cue self-heals when a supplier opens or
+		// the purse covers one. "From the smith" is deliberately NOT said: a person-
+		// shaped target with no move_to destination reads as an errand, and the weak
+		// model invents one — the live Josiah case hallucinated "the Smithy" and burned
+		// his whole turn retrying it (LLM-301).
+		fmt.Fprintf(b, "Mending takes %d nails and you have %d — you'll need to buy more before you can mend it.\n", v.NailsNeeded, v.NailsHeld)
 	}
 }
 
