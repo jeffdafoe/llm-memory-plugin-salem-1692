@@ -454,6 +454,30 @@ func PayWithItem(
 				)
 			}
 
+			// LLM-293: general reverse-pay guard. The seller-side mistake that the
+			// LLM-189 gate (needs a targeted quote / accepted sale) and the LLM-291
+			// arm (wholesale only) both miss: a seller, pressed to consummate a sale
+			// a customer just asked for, fires the BUYER verb and names the CUSTOMER
+			// as `seller` — a phantom reverse offer the customer can't fill. Live:
+			// Hannah (innkeeper, porridge producer) answered "I would like to buy
+			// another bowl" with pay_with_item{seller:"Lewis", item:"porridge"},
+			// offering to buy her own porridge back from her customer. Reject when
+			// the caller deals in `kind` as one of its OWN wares (RestockPolicy.
+			// Manages — any produce/forage/buy entry) AND the named seller can't
+			// actually supply it. The counterparty test is what keeps a legitimate
+			// RESTOCK safe: a reseller buying a good it vends FROM a real supplier
+			// (producer/forager, the distributor, or anyone holding stock) passes,
+			// because that seller can fill the offer; only a phantom buy from a
+			// non-supplier is blocked. Steers to the sell path rather than "wait for
+			// them to pay you" — the customer hasn't offered yet. Covers offer_trade
+			// (lowers onto this command).
+			if buyer.RestockPolicy.Manages(kind) && !counterpartyCanSupply(w, seller, kind) {
+				return nil, fmt.Errorf(
+					"you sell %s — to sell it to %s, offer it with sell or wait for their bid and use accept_pay; pay_with_item is for buying, not selling.",
+					kind, seller.DisplayName,
+				)
+			}
+
 			// Wholesale tier (LLM-223, generalized to the wholesaler tag in
 			// LLM-252): wholesaler-tagged sellers (farms, mill) sell only to the
 			// village distributor. A non-distributor buying from a seller whose
@@ -1837,6 +1861,30 @@ func callerSellsItemTo(
 		}
 	}
 	return false
+}
+
+// counterpartyCanSupply reports whether `seller` (the actor a buyer named) could
+// actually provide `kind` — the escape hatch that keeps the LLM-293 general
+// reverse-pay guard from blocking a legitimate restock. A seller can supply the
+// good if it makes it at first hand (ProducesOrForages), is the village
+// distributor (the standing supplier of everything), or simply holds stock of it
+// right now. Only when NONE of these hold is the named seller a non-supplier —
+// the phantom-offer case the guard rejects. Framed as "can this offer be filled"
+// rather than "is this a sanctioned supply source" on purpose: if the seller
+// holds the good the trade is fillable (odd direction, but not a deadlock), so we
+// don't hard-block it; we block only the genuinely unfillable reverse offer. Nil
+// seller reads as unable to supply.
+func counterpartyCanSupply(w *World, seller *Actor, kind ItemKind) bool {
+	if seller == nil {
+		return false
+	}
+	if seller.RestockPolicy.ProducesOrForages(kind) {
+		return true
+	}
+	if ActorIsDistributor(w.VillageObjects, seller.WorkStructureID) {
+		return true
+	}
+	return seller.Inventory[kind] > 0
 }
 
 // findAutoMatchQuote returns the id of an open quote a bare (quote_id-less)
