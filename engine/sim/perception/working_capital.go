@@ -19,22 +19,10 @@ import (
 // the keeper is TOLD; its own deliberation still chooses. Nothing here touches the
 // engine's buy/sell mechanics.
 
-const (
-	// merchantOverstockWeeksCover is how many weeks of a ware's own recent sell-through
-	// a keeper must hold on hand for that ware to read as overstocked — the
-	// velocity-relative half of the test (honoring "high relative to sales velocity"):
-	// a fast mover must pile up proportionally more before it counts.
-	merchantOverstockWeeksCover = 2
-
-	// merchantOverstockAbsFloor is the absolute on-hand units at which a ware reads as
-	// overstocked regardless of sell-through — the DEAD-STOCK half of the test. A ware
-	// the keeper is not selling at all (weekly sell-through 0) has no velocity to
-	// multiply, so the velocity term collapses to 0 and only this floor catches it;
-	// without it the worst hoarder (full shelves, zero recent sales — the live
-	// miller-flour case) would never flag. The two halves combine with max(), so a
-	// ware is overstocked when its on-hand exceeds EITHER.
-	merchantOverstockAbsFloor = 8
-)
+// The overstock qualifier (the dead-stock floor + velocity-relative bar) lives in
+// sim.MerchantOverstockThreshold (LLM-298), shared with the sim-side actorConserving so
+// the "## Restocking" section and the restock warrant producer agree on who is
+// conserving.
 
 // merchantConserveState carries the conserve-mode determination for a keeper: whether
 // it is coin-poor-and-overstocked, its coin balance (for the render prose), and the
@@ -98,10 +86,7 @@ func merchantConserve(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 		// the weekly window (0 for a good it never sells — an input it buys-and-consumes
 		// self-excludes here unless its raw pile alone clears the absolute floor).
 		weeklyUnits, _ := sellerRecentSales(snap, actorID, item, restockSalesWindow)
-		threshold := merchantOverstockAbsFloor
-		if velo := merchantOverstockWeeksCover * weeklyUnits; velo > threshold {
-			threshold = velo
-		}
+		threshold := sim.MerchantOverstockThreshold(weeklyUnits)
 		if onHand < threshold {
 			return
 		}

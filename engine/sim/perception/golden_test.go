@@ -444,6 +444,71 @@ func TestGoldensConserveKeeperNeverGetsBuyImperative(t *testing.T) {
 	}
 }
 
+// TestGoldensConserveLowItemAlwaysSelfResolves is the LLM-298 cross-scenario
+// invariant: whenever the subject is conserving, every "- You are low on …" bullet in
+// its "## Restocking" section must state what to do INSTEAD (the no-errand-now steer),
+// never a bare lack. Conserve strips the co-present imperative and the walk-to list, so
+// a bare "You are low on X" names a want with no outlet — the vacuum llama-3.3-70b
+// filled by inventing a nonexistent "Market" to move_to (live scene 019f38de). The
+// per-item steer closes the want even on a restock-wakeup turn that points at this
+// section. The complementary non-conserve guarantee (a low item always carries a named
+// destination/seller) is structural: buildRestocking omits any item with neither a
+// co-present seller nor a walk-to vendor, so no bare non-conserve line can exist. Runs
+// over the whole matrix so no future cue can reintroduce the dangling want.
+func TestGoldensConserveLowItemAlwaysSelfResolves(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, _ := sc.build()
+			subj := snap.Actors[actorID]
+			if subj == nil || !merchantConserve(snap, actorID, subj).Active {
+				return // invariant N/A — subject isn't conserving in this scenario
+			}
+			out := renderScenario(sc)
+			const header = "## Restocking\n"
+			idx := strings.Index(out, header)
+			if idx < 0 {
+				return // no restock section rendered (nothing low to buy) — nothing to assert
+			}
+			section := out[idx+len(header):]
+			if next := strings.Index(section, "\n## "); next >= 0 {
+				section = section[:next]
+			}
+			for _, line := range strings.Split(section, "\n") {
+				if !strings.HasPrefix(line, "- You are low on ") {
+					continue // co-present standing-offer line etc. carry their own steer
+				}
+				if !strings.Contains(line, "no errand for it now") {
+					t.Errorf("scenario %q: conserve Restocking names a low item with no no-errand-now steer (LLM-298 dangling want):\n%s", sc.name, line)
+				}
+			}
+		})
+	}
+}
+
+// TestGoldensConserveNoProductionInputsNag is the LLM-298 Phase 3 cross-scenario
+// invariant: a conserving subject (coin-poor + overstocked) never renders the
+// "## Keeping up production" section. That section is pure buy-motivation for a low
+// input, but conserve tells the keeper to hold off buying and sell down — so a
+// "running low on X" line there dangles a second want with no legal outlet (the live
+// sage→stew produce-retry nag). Runs over the whole matrix so no future path
+// reintroduces it for a conserving keeper.
+func TestGoldensConserveNoProductionInputsNag(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, _ := sc.build()
+			subj := snap.Actors[actorID]
+			if subj == nil || !merchantConserve(snap, actorID, subj).Active {
+				return // invariant N/A — subject isn't conserving in this scenario
+			}
+			if out := renderScenario(sc); strings.Contains(out, "## Keeping up production") {
+				t.Errorf("scenario %q: conserving subject still gets the '## Keeping up production' nag (LLM-298):\n%s", sc.name, out)
+			}
+		})
+	}
+}
+
 // TestGoldensUnobtainableInputSurfacesNoDemand is the LLM-260 cross-scenario
 // invariant: an effective buy item (explicit or derived from a produce recipe)
 // that NO other actor in the world holds at a workplace must surface in NEITHER
@@ -1630,6 +1695,18 @@ var perceptionScenarios = []perceptionScenario{
 		build: coinPoorOverstockedKeeperConserves,
 	},
 	{
+		name: "coin_poor_keeper_alone_conserve_low_stock",
+		summary: "LLM-298 dangling-want repro: John Ellis (tavernkeeper) ALONE at his post — the live config (scene 019f38de, " +
+			"2026-07-06) that made llama-3.3-70b invent a nonexistent \"Market\" to move_to. 8 coins (below the 10 floor), " +
+			"shelves overstocked (20 ale / 14 bread / 13 stew, all over the 8 dead-stock floor), low on the carrots he buys " +
+			"in (1 of 6) with his supplier (Josiah, the general-store distributor) NOT co-present. The golden pins the " +
+			"'## Restocking' conserve line self-resolving ('- You are low on carrots — no errand for it now; sell first, then " +
+			"restock once your purse recovers.'): no co-present seller, no walk-to target, no bare lack for the model to " +
+			"improvise a destination for. Cross-scenario guards: TestGoldensConserveKeeperNeverGetsBuyImperative + " +
+			"TestGoldensConserveLowItemAlwaysSelfResolves.",
+		build: coinPoorKeeperAloneConserveLowStock,
+	},
+	{
 		name: "dairy_keeper_out_of_booster_at_post",
 		summary: "LLM-248 optional booster inputs (the LLM-83 dairy sage edge): an Elizabeth-shaped dairy keeper at her farm " +
 			"on shift, milk recipe carrying a sage booster (1 sage per execution → +2 milk), sage a buy entry at 0 on hand. " +
@@ -2236,6 +2313,102 @@ func coinPoorOverstockedKeeperConserves() (*sim.Snapshot, sim.ActorID, []sim.War
 		RestockReorderPct: 25,
 	}
 	return snap, hannahID, nil
+}
+
+// coinPoorKeeperAloneConserveLowStock is the LLM-298 dangling-want repro. It mirrors
+// the live scene (019f38de, 2026-07-06): John Ellis, tavernkeeper, ALONE at his post
+// with a thin purse (8 coins, below the 10 floor) and overstocked shelves (20 ale,
+// 14 bread, 13 stew — all clearing the 8 dead-stock floor, no recent sales) is low on
+// the carrots he buys in (1 of cap 6). His carrot supplier is Josiah, the village
+// DISTRIBUTOR at the general store (a reseller buys from the distributor, not wholesale
+// from a farm), NOT co-present — so the conserve branch strips the walk-to list and the
+// co-present buy imperative alike. The golden pins the self-resolving conserve line:
+// named lack + what to do INSTEAD (hold, sell first, restock later), never a bare want
+// with no outlet — the vacuum that made the live NPC invent a "Market" to move_to.
+// Clock-free render (no price book, no orders), byte-stable.
+func coinPoorKeeperAloneConserveLowStock() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		johnID   = sim.ActorID("john")
+		josiahID = sim.ActorID("josiah")
+		tavern   = sim.StructureID("the_tavern")
+		store    = sim.StructureID("general_store")
+	)
+	start, end := 360, 1080 // 06:00-18:00
+	now := 720              // 12:00 — on shift, at the tavern, alone
+	john := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "John Ellis",
+		Role:              "tavernkeeper",
+		State:             sim.StateIdle,
+		Pos:               sim.TilePos{X: 10, Y: 10},
+		WorkStructureID:   tavern,
+		InsideStructureID: tavern,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             8,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"ale": 20, "bread": 14, "stew": 13, "carrots": 1},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "ale", Source: sim.RestockSourceProduce, Max: 24},
+			{Item: "bread", Source: sim.RestockSourceProduce, Max: 20},
+			{Item: "stew", Source: sim.RestockSourceProduce, Max: 20},
+			{Item: "carrots", Source: sim.RestockSourceBuy, Max: 6},
+		}},
+	}
+	// Josiah runs the general store — the village DISTRIBUTOR, John's carrot supplier
+	// (a reseller buys from the distributor, not wholesale from a farm). NOT co-present,
+	// so the conserve branch strips his walk-to entry too (no destination dangled). John
+	// has never bought from him (no price on record), so the unknown price keeps the
+	// supplier past the affordability drop even on 8 coins. A distributor is a restock
+	// supplier of anything he stocks (isRestockSupplierOf via the TagDistributor store),
+	// so no RestockPolicy is needed on him.
+	josiah := &sim.ActorSnapshot{
+		Kind:            sim.KindNPCStateful,
+		DisplayName:     "Josiah Thorne",
+		Role:            "shopkeeper",
+		State:           sim.StateIdle,
+		Pos:             sim.TilePos{X: 400, Y: 400},
+		WorkStructureID: store,
+		Inventory:       map[sim.ItemKind]int{"carrots": 40},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay:  &now,
+		NeedThresholds:    sim.NeedThresholds{},
+		Assets:            emptyAssetSet,
+		MerchantCoinFloor: 10,
+		Actors:            map[sim.ActorID]*sim.ActorSnapshot{johnID: john, josiahID: josiah},
+		Structures: map[sim.StructureID]*sim.Structure{
+			tavern: plainStructure(tavern, "The Tavern"),
+			store:  plainStructure(store, "General Store"),
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			// The general store is the village distributor — the one carrot source a
+			// plain reseller (John) can see. A wholesaler-tagged farm would be visible
+			// only to the distributor himself (eachVendorOffer), so the reseller's
+			// supply chain runs through the distributor. This surfaces the walk-to path
+			// (which conserve then strips) — the live config where the low-carrots line renders.
+			sim.VillageObjectID(store): {ID: sim.VillageObjectID(store), OwnerActorID: josiahID, Tags: []string{sim.TagDistributor}},
+		},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"ale":     {OutputItem: "ale", OutputQty: 10, WholesalePrice: 1, RetailPrice: 2},
+			"bread":   {OutputItem: "bread", OutputQty: 10, WholesalePrice: 1, RetailPrice: 2},
+			"stew":    {OutputItem: "stew", OutputQty: 10, WholesalePrice: 1, RetailPrice: 2},
+			"carrots": {OutputItem: "carrots", WholesalePrice: 1, RetailPrice: 2},
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"ale":     {Name: "ale", DisplayLabel: "ale", Category: sim.ItemCategoryDrink},
+			"bread":   {Name: "bread", DisplayLabel: "bread", Category: sim.ItemCategoryFood},
+			"stew":    {Name: "stew", DisplayLabel: "stew", Category: sim.ItemCategoryFood},
+			"carrots": {Name: "carrots", DisplayLabel: "carrots", Category: sim.ItemCategoryFood},
+		},
+		RestockReorderPct: 25,
+	}
+	// No restock warrant: LLM-298 Phase 2 suppresses the buy-restock wakeup for a
+	// conserving keeper (sim.actorConserving), so the real steady-state render for John
+	// is a routine at-post turn — the "## Restocking" section still renders (it is
+	// content-gated on low stock, not on the warrant) and carries the self-resolving
+	// line. The producer-side suppression is pinned separately in restock_tick_test.go.
+	return snap, johnID, nil
 }
 
 // distributorRestockSkipsCoPresentReseller is the LLM-252 buy-back-guard fixture:
