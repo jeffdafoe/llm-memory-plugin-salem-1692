@@ -1258,7 +1258,11 @@ func runPayWithItemFastPath(
 //     consumers were specified (buyer-as-implicit-consumer covered by
 //     the co-presence gate).
 //  10. seller.Inventory[ItemKind] >= Qty * effectiveConsumerCount
-//     (stock — flip to failed_insufficient_stock).
+//     (stock — reject the accept_pay call with a retryable
+//     ModelFacingError naming the shortfall + legal alternatives,
+//     LLM-302; NO transition). The failed_insufficient_stock terminal
+//     is retained only for CounterPay's coercion path (see
+//     acceptPendingOffer's viaAcceptTool).
 //  11. buyer.Coins >= entry.Amount (funds — flip to
 //     failed_insufficient_funds).
 //
@@ -1271,11 +1275,12 @@ func runPayWithItemFastPath(
 // consumer apply, flip entry.State to Accepted, emit
 // PayWithItemResolved{Accepted}.
 //
-// On gate 5-11 fail: flip entry to the specific terminal state, emit
-// PayWithItemResolved with matching TerminalState. NOT
-// a tool error — the gate failure IS the terminal resolution. Returns
-// nil err with the PayLedgerEntry's new state so callers can inspect
-// the outcome.
+// On gate 5-9 / 11 fail: flip entry to the specific terminal state, emit
+// PayWithItemResolved with matching TerminalState. NOT a tool error —
+// the gate failure IS the terminal resolution. Returns nil err with the
+// PayLedgerEntry's new state so callers can inspect the outcome. Gate 10
+// (stock) is the exception: through an accept tool call it returns a
+// ModelFacingError and leaves the entry Pending (LLM-302).
 func AcceptPay(callerID ActorID, ledgerID LedgerID, at time.Time) Command {
 	return acceptPayCommand(callerID, ledgerID, at, false)
 }
@@ -1358,8 +1363,10 @@ func acceptPayCommand(callerID ActorID, ledgerID LedgerID, at time.Time, expectG
 			// non-increasing-counter coercion (a seller counter at or
 			// below the offered amount is "yes, deal" and resolves as an
 			// accept). Gates 1-4 above are AcceptPay-specific (auth +
-			// state idempotent rejects) and stay inline.
-			state, err := acceptPendingOffer(w, caller, entry, at)
+			// state idempotent rejects) and stay inline. viaAcceptTool
+			// true (LLM-302): an accept-time stock shortfall surfaces as a
+			// retryable ModelFacingError, not a silent terminal.
+			state, err := acceptPendingOffer(w, caller, entry, at, true)
 			return state, err
 		},
 	}
@@ -1382,7 +1389,23 @@ func acceptPayCommand(callerID ActorID, ledgerID LedgerID, at time.Time, expectG
 // non-increasing-counter coercion. Both reach this point having already
 // verified the same four preconditions, and both want identical
 // accept-time semantics, so the gate matrix lives here once.
-func acceptPendingOffer(w *World, seller *Actor, entry *PayLedgerEntry, at time.Time) (PayLedgerState, error) {
+//
+// viaAcceptTool (LLM-302) distinguishes the two callers at the ONE gate
+// where they should diverge: the bought-item stock check (gate 10). When
+// the seller reached here through their own accept_pay / accept_gift tool
+// call (viaAcceptTool true), a stock shortfall is knowable at accept time
+// and is the seller's to fix — so reject the call with a retryable
+// ModelFacingError naming the shortfall and the legal alternatives
+// (decline_pay / counter_pay) instead of flipping to a silent
+// failed_insufficient_stock terminal. A soft "[ok] … the sale fell
+// through" terminal echo (ZBBS-WORK-432) reads as agreement to the weak
+// stateful model, which kept "accepting" goods it never held (the live
+// Josiah×Elizabeth nails episode). CounterPay's coercion path passes
+// false and keeps the terminal flip — it is the only remaining producer
+// of failed_insufficient_stock, the retained backstop. Every OTHER gate
+// (TTL, co-presence, break, catalog, funds, goods) is unaffected by the
+// flag: those flip to their terminal regardless of caller.
+func acceptPendingOffer(w *World, seller *Actor, entry *PayLedgerEntry, at time.Time, viaAcceptTool bool) (PayLedgerState, error) {
 	// Gate 5: TTL. From here on, gate failures DRIVE terminal
 	// transitions rather than idempotent rejects.
 	if !entry.ExpiresAt.IsZero() && !at.Before(entry.ExpiresAt) {
@@ -1457,8 +1480,18 @@ func acceptPendingOffer(w *World, seller *Actor, entry *PayLedgerEntry, at time.
 		// subtract Ready-Order obligations on this seller+item so
 		// two pending offers against the same physical stock cannot
 		// both accept. See outstandingReadyOrderQty in order.go.
+		have := seller.Inventory[entry.ItemKind]
 		reserved := outstandingReadyOrderQty(w, seller.ID, entry.ItemKind)
-		if seller.Inventory[entry.ItemKind]-reserved < needed {
+		if have-reserved < needed {
+			// LLM-302: a stock shortfall reached through the seller's own
+			// accept tool call is a knowable-now, seller-fixable rejection —
+			// hand the model a retryable error naming the shortfall and its
+			// legal next moves instead of a silent terminal it misreads as a
+			// yes. The counter-coercion caller (viaAcceptTool false) keeps the
+			// terminal flip as the retained backstop.
+			if viaAcceptTool {
+				return entry.State, ModelFacingError{Msg: acceptStockShortfallMessage(entry.ItemKind, have, reserved, needed)}
+			}
 			return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedInsufficientStock, "", at), nil
 		}
 	}
@@ -1535,6 +1568,36 @@ func acceptPendingOffer(w *World, seller *Actor, entry *PayLedgerEntry, at time.
 	w.emit(evt)
 
 	return entry.State, nil
+}
+
+// acceptStockShortfallMessage renders the accept_pay tool-error copy (LLM-302)
+// for a seller who cannot fill the bought item at accept time. It names the
+// shortfall and the two legal next moves (decline_pay / counter_pay) so the
+// weak stateful model has a copyable next action instead of a silent terminal
+// it misreads as agreement. accept_gift rides the same viaAcceptTool=true path
+// but never reaches here — a gift carries no bought item, so gate 10 is skipped
+// for it.
+//
+// have is the seller's physical holding of kind; reserved is the quantity
+// already promised to Ready Orders (outstandingReadyOrderQty); needed is the
+// quantity this offer requires (Qty × effective consumers). The zero-holding
+// case gets the short "you hold no X" phrasing from the ticket; any partial or
+// reservation-driven shortfall gets the transparent (have/reserved/need)
+// breakdown that mirrors the mint-time reject in runPayWithItemFastPath. The
+// item kind renders raw — the display-noun helper lives in the perception
+// package, which sim cannot import, and the sibling commerce rejections render
+// ItemKind the same way.
+func acceptStockShortfallMessage(kind ItemKind, have, reserved, needed int) string {
+	if have <= 0 {
+		return fmt.Sprintf(
+			"you hold no %s — you can't accept this trade; decline_pay it, or counter_pay with what you can actually give.",
+			kind,
+		)
+	}
+	return fmt.Sprintf(
+		"you don't have enough %s to fill this trade (have %d, reserved %d, need %d) — decline_pay it, or counter_pay with what you can actually give.",
+		kind, have, reserved, needed,
+	)
 }
 
 // DeclinePay returns the Command for the seller's pending-decline path.
@@ -1701,7 +1764,10 @@ func CounterPay(callerID ActorID, ledgerID LedgerID, counterAmount int, counterP
 			// flips to Countered for the buyer to weigh.
 			pureCoinHaggle := len(entry.PayItems) == 0 && len(resolvedCounterItems) == 0
 			if pureCoinHaggle && counterAmount <= entry.Amount {
-				state, err := acceptPendingOffer(w, caller, entry, at)
+				// viaAcceptTool false (LLM-302): this coercion is a counter_pay
+				// call, not an accept_pay one, so a stock shortfall keeps the
+				// failed_insufficient_stock terminal flip — the retained backstop.
+				state, err := acceptPendingOffer(w, caller, entry, at, false)
 				return state, err
 			}
 
