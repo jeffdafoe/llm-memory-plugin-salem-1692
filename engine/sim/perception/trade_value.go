@@ -67,6 +67,15 @@ type TradeValueItem struct {
 	CostBatch  int
 	CostQty    int
 	CostFloor  bool
+
+	// WholesaleTo, when non-empty, marks this as a wholesale producer's OWN
+	// produce (sim.IsOwnProduce) and names the village distributor it sells to —
+	// the sole legitimate buyer (LLM-223/252). Render then draws the wholesale-
+	// channel line instead of a retail spread, so a producer isn't nudged to hawk
+	// its produce to whoever it's standing with (the retail negotiation the
+	// PayWithItem wholesale gate then refuses — live hud-9b23…, LLM-291). Low
+	// carries the wholesale unit price (what the distributor pays) for that line.
+	WholesaleTo string
 }
 
 // buildTradeValue builds the wares-worth view for an actor that has goods of its
@@ -79,6 +88,10 @@ func buildTradeValue(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 	if !inHuddle {
 		return nil // no one to trade with — nothing to value against
 	}
+	// Resolved once for the scan: the label a wholesale producer's own-produce
+	// lines route buyers to. Cheap (one object-map pass) and the cue is already
+	// gated to inHuddle + has-own-wares, so it isn't a hot path.
+	distLabel := distributorLabel(snap)
 	var items []TradeValueItem
 	seen := make(map[sim.ItemKind]bool)
 	// valueGood appends the wares-worth line for one of the actor's own goods. isResale
@@ -157,17 +170,35 @@ func buildTradeValue(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 				costQty, costFloor = 0, false
 			}
 		}
+		// LLM-291: a wholesale producer's own produce sells only to the village
+		// distributor, never retail — so this good gets the wholesale-channel line,
+		// not a retail spread + "set a fair price" framing that nudges the producer
+		// to hawk it to whoever it's standing with (the sale the PayWithItem
+		// wholesale gate then refuses). Keyed on the SAME sim.IsOwnProduce the
+		// Consume guard and eat-cue filter on, so cue and block agree; item-scoped,
+		// so a wholesaler's RESOLD retail goods (isResale) are untouched. The retail
+		// spread / recent-sale / cost clauses don't apply to the wholesale line, so
+		// clear them — render draws it from WholesaleTo + Low (the wholesale unit
+		// price) alone. Cost-of-goods for a wholesale-priced input good (the mill's
+		// flour) is out of scope here; the carrot case that motivated this has none.
+		wholesaleTo := ""
+		if sim.IsOwnProduce(snap.VillageObjects, actorSnap.WorkStructureID, actorSnap.RestockPolicy, item) {
+			wholesaleTo = distLabel
+			recentUnit, paidUnit = 0, 0
+			costBatch, costQty, costFloor = 0, 0, false
+		}
 		seen[item] = true
 		items = append(items, TradeValueItem{
-			ItemLabel:  itemDisplayLabel(snap, item),
-			itemKind:   item,
-			Low:        lo,
-			High:       hi,
-			RecentUnit: recentUnit,
-			PaidUnit:   paidUnit,
-			CostBatch:  costBatch,
-			CostQty:    costQty,
-			CostFloor:  costFloor,
+			ItemLabel:   itemDisplayLabel(snap, item),
+			itemKind:    item,
+			Low:         lo,
+			High:        hi,
+			RecentUnit:  recentUnit,
+			PaidUnit:    paidUnit,
+			CostBatch:   costBatch,
+			CostQty:     costQty,
+			CostFloor:   costFloor,
+			WholesaleTo: wholesaleTo,
 		})
 	}
 	// Produced goods first, so a kind somehow listed under both sources values as
@@ -204,6 +235,19 @@ func renderTradeValue(b *strings.Builder, v *TradeValueView) {
 	b.WriteString("## What your wares fetch\n")
 	b.WriteString("What your wares fetch in coin — use it to set a fair price or weigh a trade:\n")
 	for _, it := range v.Items {
+		// LLM-291: a wholesale producer's own produce isn't sold retail — it goes
+		// to the village distributor. Draw the wholesale-channel line (who buys it,
+		// what they pay, where to send other would-be buyers) instead of a retail
+		// spread, so the producer doesn't negotiate a street sale the PayWithItem
+		// wholesale gate then refuses. Low is the wholesale unit price.
+		if it.WholesaleTo != "" {
+			to := sanitizeInline(it.WholesaleTo)
+			fmt.Fprintf(b,
+				"- %s: your own produce, sold wholesale to %s, the village distributor — not retail. The distributor pays about %s each; send other buyers to %s.\n",
+				sanitizeInline(it.ItemLabel), to, coinsPhrase(it.Low), to,
+			)
+			continue
+		}
 		worth := fmt.Sprintf("%s each", coinsPhrase(it.High))
 		if it.Low != it.High {
 			worth = fmt.Sprintf("%d to %s each", it.Low, coinsPhrase(it.High))
@@ -237,6 +281,33 @@ func renderTradeValue(b *strings.Builder, v *TradeValueView) {
 		fmt.Fprintf(b, "- %s: %s%s.\n", sanitizeInline(it.ItemLabel), worth, clauses)
 	}
 	b.WriteString("\n")
+}
+
+// distributorLabel names the village distributor for a wholesale producer's
+// own-produce cue — the person to route would-be buyers to. The snapshot-side
+// sibling of sim.DistributorSteerLabel (which reads live *Actor): prefer the
+// distributor structure's owner display name, fall back to the object's own
+// display name, then a generic phrase. Best-effort — degrades to "the village
+// distributor" when none is configured, matching the engine steer's fallback so
+// cue and reject stay in step. First match wins (one distributor by convention).
+func distributorLabel(snap *sim.Snapshot) string {
+	if snap == nil {
+		return "the village distributor"
+	}
+	for _, obj := range snap.VillageObjects {
+		if !sim.IsDistributorStructure(obj) {
+			continue
+		}
+		if obj.OwnerActorID != "" {
+			if owner := snap.Actors[obj.OwnerActorID]; owner != nil && owner.DisplayName != "" {
+				return owner.DisplayName
+			}
+		}
+		if obj.DisplayName != "" {
+			return obj.DisplayName
+		}
+	}
+	return "the village distributor"
 }
 
 // coinsPhrase renders a coin count with singular/plural unit ("1 coin", "5 coins").

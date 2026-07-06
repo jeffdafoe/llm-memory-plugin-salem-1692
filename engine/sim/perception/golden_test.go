@@ -656,6 +656,17 @@ var perceptionScenarios = []perceptionScenario{
 		build: smithBarteringAtTavern,
 	},
 	{
+		name: "wholesaler_producer_bartering_with_customer",
+		summary: "A WHOLESALE producer (Moses James, James Farm tagged wholesaler; grows carrots + wheat) stands in " +
+			"company with a would-be customer (Silence Walker) — the LLM-291 seller leg of live hud-9b23…, where Moses, " +
+			"pressed to answer a buyer, hawked a retail carrot sale the wholesale gate then refused (and mis-fired the buy " +
+			"verb to 'buy' his own carrots back). His produce sells only to the village distributor (Josiah Thorne), so the " +
+			"'## What your wares fetch' cue draws the WHOLESALE-CHANNEL line for each own crop — who buys it, what the " +
+			"distributor pays (carrots ~2 coins, wheat ~1 coin), and to send other buyers to Josiah — NOT a retail spread " +
+			"that would invite the street sale. Pairs with smith_bartering_at_tavern (the ordinary, retail-priced producer).",
+		build: wholesalerProducerBarteringWithCustomer,
+	},
+	{
 		name: "keeper_reselling_in_company",
 		summary: "A pure RESELLER — Josiah Thorne, general-store keeper, all-`buy` restock (cheese, milk), produces " +
 			"nothing — stands in his store in company with a customer holding bought-in stock. LLM-191: his empty " +
@@ -2668,9 +2679,29 @@ func TestWaresWorthCueOnlyInCompanyWithOwnTrade(t *testing.T) {
 		got := renderScenario(sc)
 		want := sc.name == "smith_bartering_at_tavern" || sc.name == "keeper_reselling_in_company" ||
 			sc.name == "innkeeper_pricing_with_makings_cost" || // LLM-226: producer in company, priced own ware
-			sc.name == "employer_recalls_returning_helper" // LLM-228: producing keeper in company (incidental to the recall it tests)
+			sc.name == "employer_recalls_returning_helper" || // LLM-228: producing keeper in company (incidental to the recall it tests)
+			sc.name == "wholesaler_producer_bartering_with_customer" // LLM-291: wholesale producer in company — cue draws the wholesale-channel line
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: wares-worth cue present=%v, want %v", sc.name, has, want)
+		}
+	}
+}
+
+// TestWholesaleChannelLineOnlyForWholesalerProduce is the LLM-291 cross-scenario
+// invariant: the wholesale-channel wares line ("sold wholesale to …") appears in
+// EXACTLY the scenarios where a wholesale producer prices its own produce in company
+// (wholesaler_producer_bartering_with_customer). It guards both directions — a
+// wholesaler's own produce must never regress to a retail spread (the framing that
+// invited Moses's refused street sale, live hud-9b23…), and no ordinary retail
+// producer (the smith, the innkeeper) may ever pick up the wholesale line.
+func TestWholesaleChannelLineOnlyForWholesalerProduce(t *testing.T) {
+	const marker = "sold wholesale to"
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		got := renderScenario(sc)
+		want := sc.name == "wholesaler_producer_bartering_with_customer"
+		if has := strings.Contains(got, marker); has != want {
+			t.Errorf("scenario %q: wholesale-channel wares line present=%v, want %v", sc.name, has, want)
 		}
 	}
 }
@@ -4533,6 +4564,102 @@ func wholesalerCarryingBoughtFoodAtPost() (*sim.Snapshot, sim.ActorID, []sim.War
 		Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 8}},
 	}
 	return snap, id, warr
+}
+
+// wholesalerProducerBarteringWithCustomer is the LLM-291 fixture: Moses James, a
+// WHOLESALE producer (James Farm tagged wholesaler; grows carrots + wheat), stands
+// in company with a would-be customer (Silence Walker). His produce sells only to
+// the village distributor (Josiah Thorne, keeper of the distributor-tagged General
+// Store), so the '## What your wares fetch' cue must draw the wholesale-channel line
+// — who buys it, what the distributor pays, where to send other buyers — NOT a
+// retail spread that nudges him to hawk carrots to whoever he is standing with (the
+// street sale the PayWithItem wholesale gate then refuses; live hud-9b23…). Off the
+// farm (InsideStructureID = commons) so '## Time to produce' doesn't render; no
+// pressing needs so no eat/drink cues clutter the wares section. Josiah is present
+// only so distributorLabel can resolve a person to route buyers to — not co-present.
+func wholesalerProducerBarteringWithCustomer() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		mosesID   = sim.ActorID("moses")
+		silenceID = sim.ActorID("silence")
+		josiahID  = sim.ActorID("josiah")
+		commons   = sim.StructureID("commons")
+		farm      = sim.StructureID("james_farm")
+		store     = sim.StructureID("general_store")
+		huddle    = sim.HuddleID("h1")
+	)
+	published := time.Date(2026, 7, 6, 11, 0, 0, 0, time.UTC)
+	moses := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Moses James",
+		Role:              "farmer",
+		State:             sim.StateIdle,
+		InsideStructureID: commons,
+		CurrentHuddleID:   huddle,
+		WorkStructureID:   farm,
+		Coins:             38,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"carrots": 30, "wheat": 30},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "carrots", Source: sim.RestockSourceProduce, Max: 30},
+			{Item: "wheat", Source: sim.RestockSourceProduce, Max: 30},
+		}},
+		Acquaintances: map[string]sim.Acquaintance{"Silence Walker": {}},
+	}
+	silence := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Silence Walker",
+		Role:              "villager",
+		State:             sim.StateIdle,
+		InsideStructureID: commons,
+		CurrentHuddleID:   huddle,
+		Coins:             22,
+		Needs:             map[sim.NeedKey]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"Moses James": {}},
+	}
+	josiah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Josiah Thorne",
+		Role:              "distributor",
+		State:             sim.StateIdle,
+		InsideStructureID: store,
+		WorkStructureID:   store,
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:    published,
+		NeedThresholds: sim.NeedThresholds{},
+		Actors:         map[sim.ActorID]*sim.ActorSnapshot{mosesID: moses, silenceID: silence, josiahID: josiah},
+		Structures: map[sim.StructureID]*sim.Structure{
+			commons: plainStructure(commons, "Village Commons"),
+			farm:    plainStructure(farm, "James Farm"),
+			store:   plainStructure(store, "General Store"),
+		},
+		// The farm carries both tags as the live data does; only wholesaler gates the
+		// wholesale channel (IsOwnProduce / SellerAtWholesaler key on it).
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			sim.VillageObjectID(farm):  {ID: sim.VillageObjectID(farm), OwnerActorID: mosesID, Tags: []string{sim.TagFarm, sim.TagWholesaler}},
+			sim.VillageObjectID(store): {ID: sim.VillageObjectID(store), OwnerActorID: josiahID, Tags: []string{sim.TagDistributor}},
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{mosesID: {}, silenceID: {}}},
+		},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"carrots": {OutputItem: "carrots", OutputQty: 1, RateQty: 1, RatePerHours: 1, WholesalePrice: 2, RetailPrice: 4},
+			"wheat":   {OutputItem: "wheat", OutputQty: 1, RateQty: 1, RatePerHours: 1, WholesalePrice: 1, RetailPrice: 2},
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"carrots": {
+				Name: "carrots", DisplayLabel: "Carrots",
+				DisplayLabelSingular: "carrot", DisplayLabelPlural: "carrots",
+				Category: sim.ItemCategoryFood,
+			},
+			"wheat": {
+				Name: "wheat", DisplayLabel: "Wheat",
+				DisplayLabelSingular: "wheat", DisplayLabelPlural: "wheat",
+				Category: sim.ItemCategoryMaterial,
+			},
+		},
+	}
+	return snap, mosesID, nil
 }
 
 // huddleConversationLoopingScenario is the LLM-169 fixture: two idle workers (the

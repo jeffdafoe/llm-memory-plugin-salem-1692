@@ -1,0 +1,21 @@
+# Your turn
+
+## What just happened
+(nothing specific — this is a routine check-in)
+
+
+## You
+Coins in your purse: 38.
+You are carrying: Carrots (x30), Wheat (x30).
+
+## Around you
+You are inside the Village Commons, with Silence Walker.
+
+You keep your trade at the James Farm (structure_id: james_farm) — you can head back there whenever you wish.
+
+## What your wares fetch
+What your wares fetch in coin — use it to set a fair price or weigh a trade:
+- Carrots: your own produce, sold wholesale to Josiah Thorne, the village distributor — not retail. The distributor pays about 2 coins each; send other buyers to Josiah Thorne.
+- Wheat: your own produce, sold wholesale to Josiah Thorne, the village distributor — not retail. The distributor pays about 1 coin each; send other buyers to Josiah Thorne.
+
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.

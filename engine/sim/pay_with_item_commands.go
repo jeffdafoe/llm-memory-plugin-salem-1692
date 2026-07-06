@@ -423,6 +423,37 @@ func PayWithItem(
 				)
 			}
 
+			// LLM-291: a wholesale producer must not fire the buyer verb for
+			// its OWN produce. Live hud-9b23…: Moses (James Farm, wholesaler),
+			// pressed to answer a customer who wanted his carrots, named the
+			// CUSTOMER as "seller" and staked a pay_with_item to "buy" his own
+			// carrots back — a phantom reverse offer the customer could never
+			// fill. Distinct from the two neighbouring gates: the reverse-pay
+			// role-gate above keys on a sale TO this counterparty (Moses had
+			// only spoken, no quote/ledger), and the wholesale gate below keys
+			// on the SELLER arg's workplace (here the wholesaler is the CALLER,
+			// not the arg). Same sim.IsOwnProduce the Consume guard and eat-cue
+			// filter on, so cue and block agree; item-scoped, so a farmhand
+			// buying unrelated goods is untouched. Steer to the wholesale
+			// channel — not "wait for them to pay you" (a retail buyer can't
+			// pay a wholesaler; the wholesale gate would reject them), so the
+			// redirect names what the customer must actually do.
+			//
+			// This is an ABSOLUTE prohibition, not merely a reverse-direction
+			// guard: a wholesale producer never buys its own produce back from
+			// ANYONE — the good it grows is stock to sell (it can't even eat it,
+			// LLM-267), and the only legitimate flow for this kind is the
+			// distributor buying FROM the producer. So the check ignores who is
+			// named as seller (customer, peer, or even the distributor);
+			// buying one's own crop back is not a case we support.
+			if IsOwnProduce(w.VillageObjects, buyer.WorkStructureID, buyer.RestockPolicy, kind) {
+				distributor := DistributorSteerLabel(w.VillageObjects, w.Actors)
+				return nil, fmt.Errorf(
+					"you produce %s to sell — you don't buy it back. Your %s goes wholesale to %s, the village distributor; send buyers to %s.",
+					kind, kind, distributor, distributor,
+				)
+			}
+
 			// Wholesale tier (LLM-223, generalized to the wholesaler tag in
 			// LLM-252): wholesaler-tagged sellers (farms, mill) sell only to the
 			// village distributor. A non-distributor buying from a seller whose
