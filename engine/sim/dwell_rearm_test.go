@@ -110,6 +110,69 @@ func TestDwellRearm_ParkedRedCreditlessActor_BurstAndCredit(t *testing.T) {
 	}
 }
 
+// TestDwellRearm_MixedSource (LLM-288): a MIXED source — the rearm well plus a
+// finite gatherable eat+pick hunger row (a bush row) — re-arms need-specifically
+// and never auto-draws the bush row. Red on hunger alone: no re-arm (the bush
+// row is gather->consume territory, LLM-87). Red on thirst: the burst fires
+// through the drink row, hunger stays put, and the bush stock is untouched
+// (the row-level NPC filter in applyObjectRefreshEffect).
+func TestDwellRearm_MixedSource(t *testing.T) {
+	addBushRow := func(well *VillageObject) {
+		stock := 2
+		max := 4
+		period := 6
+		well.Refreshes = append(well.Refreshes, &ObjectRefresh{
+			Attribute:          "hunger",
+			Amount:             -8, // eat+pick: a REAL bush row, not yield-only
+			AvailableQuantity:  &stock,
+			MaxQuantity:        &max,
+			RefreshMode:        RefreshModeContinuous,
+			RefreshPeriodHours: &period,
+			GatherItem:         "berries",
+		})
+	}
+	now := time.Unix(1_700_000_000, 0).UTC()
+
+	t.Run("red_hunger_alone_no_rearm", func(t *testing.T) {
+		w, actor, well := rearmTestWorld()
+		addBushRow(well)
+		actor.Needs["thirst"] = 5  // under the 12 red-line
+		actor.Needs["hunger"] = 20 // red — but only the bush row eases hunger here
+		if _, err := ApplyDwellTick(now).Fn(w); err != nil {
+			t.Fatalf("ApplyDwellTick: %v", err)
+		}
+		if got := actor.Needs["hunger"]; got != 20 {
+			t.Errorf("hunger = %d, want 20 (bush row must not re-arm for an NPC)", got)
+		}
+		if got := *well.Refreshes[len(well.Refreshes)-1].AvailableQuantity; got != 2 {
+			t.Errorf("bush stock = %d, want 2 (untouched)", got)
+		}
+	})
+
+	t.Run("red_thirst_drinks_without_drawing_bush", func(t *testing.T) {
+		// Thirst red (13, the rearmTestWorld default), hunger sub-red (5): the
+		// actionable-red-need pick lands on thirst, the gate passes through the
+		// drink row, and the burst must not touch the bush row or its stock.
+		// (With BOTH red, the registry-order pick lands on hunger and the gate
+		// correctly refuses the tick — the bush row is gather territory; the
+		// re-arm services one red need per tick by design.)
+		w, actor, well := rearmTestWorld()
+		addBushRow(well)
+		if _, err := ApplyDwellTick(now).Fn(w); err != nil {
+			t.Fatalf("ApplyDwellTick: %v", err)
+		}
+		if got := actor.Needs["thirst"]; got != 5 {
+			t.Errorf("thirst = %d, want 5 (13 - 8 burst through the drink row)", got)
+		}
+		if got := actor.Needs["hunger"]; got != 5 {
+			t.Errorf("hunger = %d, want 5 (bush row must not ride the thirst burst)", got)
+		}
+		if got := *well.Refreshes[len(well.Refreshes)-1].AvailableQuantity; got != 2 {
+			t.Errorf("bush stock = %d, want 2 (untouched)", got)
+		}
+	})
+}
+
 // TestDwellRearm_ThenDripsToFloor: after the re-arm burst, the open-ended credit
 // drains the actor on subsequent ripe ticks until floor-hit clears and deletes
 // it — the "drains over time with no prior arrival" coverage the ticket asks for.

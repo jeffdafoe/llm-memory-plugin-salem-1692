@@ -142,21 +142,23 @@ func (o *VillageObject) IsFiniteGatherableSource() bool {
 	return false
 }
 
-// HasInfiniteInPlaceNeedRow reports whether the object carries an infinite
-// in-place need row (ObjectRefresh.IsInfiniteInPlaceNeed — a well's drink row)
-// for `need`, or for ANY need when need is "". This is the other half of the
-// LLM-87 bush test: a finite gatherable row makes an object gather-able, but
-// only the ABSENCE of an infinite in-place row makes it a bush the NPC must
-// gather->consume at. The live Well (post-LLM-254) carries both a finite
-// water-pail yield row and the infinite thirst drink row — the drink path must
-// survive the pail row (LLM-288: the hud-843da92a "parched at the Well forever"
-// regression). Nil-safe.
-func (o *VillageObject) HasInfiniteInPlaceNeedRow(need NeedKey) bool {
+// HasNPCAutoRefreshRow reports whether the object carries an in-stock row an
+// NPC's in-place refresh may auto-apply (npcAutoAppliesRefreshRow — a need row
+// that isn't a bush row) for `need`, or for ANY need when need is "". This is
+// the row-aware half of the LLM-87 bush test: a finite gatherable row makes an
+// object gather-able, but only the ABSENCE of any NPC-auto-appliable row makes
+// it a bush the NPC must gather->consume at. The live Well (post-LLM-254)
+// carries both a finite water-pail yield row and the infinite thirst drink row
+// — the drink path must survive the pail row (LLM-288: the hud-843da92a
+// "parched at the Well forever" regression). Callers pair this with the
+// row-level NPC filter in applyObjectRefreshEffect, which is what keeps a
+// mixed object's bush row safe when its in-place rows fire. Nil-safe.
+func (o *VillageObject) HasNPCAutoRefreshRow(need NeedKey) bool {
 	if o == nil {
 		return false
 	}
 	for _, r := range o.Refreshes {
-		if !r.IsInfiniteInPlaceNeed() {
+		if !npcAutoAppliesRefreshRow(r) || !r.HasStock() {
 			continue
 		}
 		if need == "" || r.Attribute == need {

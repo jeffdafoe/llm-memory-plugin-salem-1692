@@ -511,28 +511,25 @@ func TestRefresh_NPCDrinksAtWellOnArrival(t *testing.T) {
 	}
 }
 
-// TestRefresh_NPCDrinksAtTwoRowWellOnArrival (LLM-288): the LIVE post-LLM-254
-// Well carries a finite yield-only water-pail row NEXT TO its infinite drink
-// row, which makes the object an IsFiniteGatherableSource. The LLM-87
-// NPC-at-bush suppression must stay row-aware: the infinite in-place drink row
-// keeps the arrival drink alive (the hud-843da92a "parched at the Well forever"
-// regression). The pail stock is 0 — as observed live — so this also proves a
-// dry pail can't block the drink.
-func TestRefresh_NPCDrinksAtTwoRowWellOnArrival(t *testing.T) {
-	w, cancel := buildGatherTestWorld(t)
-	defer cancel()
+// seedTwoRowWell plants the LIVE post-LLM-254 Well shape at a tile clear of
+// every fixture object (the bench sits at 2000,2000): the infinite in-place
+// drink row NEXT TO a finite yield-only water-pail forage row with the given
+// stock. The pail row makes the object an IsFiniteGatherableSource — the shape
+// that neutered the NPC drink paths until LLM-288 made the carve-out row-aware.
+func seedTwoRowWell(t *testing.T, w *sim.World, pailStock int) {
+	t.Helper()
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		zero := 0
 		ip := func(v int) *int { return &v }
 		world.VillageObjects["town_well"] = &sim.VillageObject{
 			ID: "town_well", DisplayName: "Town Well", AssetID: "well-stone", CurrentState: "default",
 			LoiterOffsetX: &zero, LoiterOffsetY: &zero,
-			Pos: sim.WorldPos{X: 3000, Y: 3000}, // clear of every fixture object (the bench sits at 2000,2000)
+			Pos: sim.WorldPos{X: 3000, Y: 3000},
 			Refreshes: []*sim.ObjectRefresh{
 				{Attribute: "thirst", Amount: -8, DwellDelta: ip(-1), DwellPeriodMinutes: ip(2)},
 				{
 					Amount:             0, // yield-only water-pail forage row (LLM-254)
-					AvailableQuantity:  ip(0),
+					AvailableQuantity:  ip(pailStock),
 					MaxQuantity:        ip(20),
 					RefreshMode:        sim.RefreshModePeriodic,
 					RefreshPeriodHours: ip(6),
@@ -544,16 +541,131 @@ func TestRefresh_NPCDrinksAtTwoRowWellOnArrival(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("seed town_well: %v", err)
 	}
+}
+
+// TestRefresh_NPCDrinksAtTwoRowWellOnArrival (LLM-288): the LLM-87 NPC-at-bush
+// suppression must stay row-aware — the infinite in-place drink row keeps the
+// arrival drink alive next to the finite pail row (the hud-843da92a "parched
+// at the Well forever" regression). Both pail states: dry (0, as observed
+// live) and full (20) — the bug was classification-based, not stock-based, so
+// a full pail must not block the drink either. The full-pail case also proves
+// the drink can't draw the pail down: the completed drink leaves the water
+// stock untouched.
+func TestRefresh_NPCDrinksAtTwoRowWellOnArrival(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		pailStock int
+	}{
+		{"dry_pail", 0},
+		{"full_pail", 20},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w, cancel := buildGatherTestWorld(t)
+			defer cancel()
+			seedTwoRowWell(t, w, tc.pailStock)
+			setActorKind(t, w, "hannah", sim.KindNPCStateful)
+			setNeed(t, w, "hannah", "thirst", 14)
+			placeAt(t, w, "hannah", "town_well")
+
+			res, err := w.Send(sim.StartRefreshAtArrival("hannah"))
+			if err != nil {
+				t.Fatalf("StartRefreshAtArrival: %v", err)
+			}
+			if sr := res.(sim.SourceActivityStartResult); !sr.Started {
+				t.Fatal("NPC did not start drinking at the two-row well — the finite pail row must not suppress the infinite drink row (LLM-288)")
+			}
+			if n := forceComplete(t, w); n != 1 {
+				t.Fatalf("completion = %d, want 1", n)
+			}
+			if got := needOf(t, w, "hannah", "thirst"); got != 6 { // 14 - 8
+				t.Errorf("thirst = %d, want 6 (drink applied)", got)
+			}
+			// The drink must ride the infinite row only — the pail stock
+			// (Refreshes[1]) stays exactly where it was seeded.
+			res, err = w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+				return *world.VillageObjects["town_well"].Refreshes[1].AvailableQuantity, nil
+			}})
+			if err != nil {
+				t.Fatalf("read pail stock: %v", err)
+			}
+			if got := res.(int); got != tc.pailStock {
+				t.Errorf("pail stock = %d, want %d (a drink must not draw the pail)", got, tc.pailStock)
+			}
+		})
+	}
+}
+
+// seedMixedSource plants the latent MIXED shape the LLM-288 review flagged:
+// an infinite in-place thirst row (a drink) NEXT TO a finite gatherable
+// eat+pick hunger row (a bush: Amount < 0 AND GatherItem). No such object
+// exists live, but it is one set-refresh call away — the row-level NPC filter
+// in applyObjectRefreshEffect is what keeps the bush row safe here.
+func seedMixedSource(t *testing.T, w *sim.World) {
+	t.Helper()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		zero := 0
+		ip := func(v int) *int { return &v }
+		world.VillageObjects["oasis"] = &sim.VillageObject{
+			ID: "oasis", DisplayName: "Oasis", AssetID: "well-stone", CurrentState: "default",
+			LoiterOffsetX: &zero, LoiterOffsetY: &zero,
+			Pos: sim.WorldPos{X: 3500, Y: 3500},
+			Refreshes: []*sim.ObjectRefresh{
+				{Attribute: "thirst", Amount: -8},
+				{
+					Attribute:          "hunger",
+					Amount:             -8, // eat+pick: a REAL bush row, not yield-only
+					AvailableQuantity:  ip(2),
+					MaxQuantity:        ip(4),
+					RefreshMode:        sim.RefreshModeContinuous,
+					RefreshPeriodHours: ip(6),
+					GatherItem:         "berries",
+				},
+			},
+		}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed oasis: %v", err)
+	}
+}
+
+// TestRefresh_NPCMixedSourceDrinksButNeverAutoEats (LLM-288): at a mixed
+// source an NPC's arrival refresh still fires (the drink row qualifies), but
+// the bush row must NOT ride along — hunger stays put and the bush stock is
+// untouched; the NPC eats that row via gather->consume (LLM-87). This is the
+// case a plain object-level carve-out cannot get right in both directions.
+func TestRefresh_NPCMixedSourceDrinksButNeverAutoEats(t *testing.T) {
+	w, cancel := buildGatherTestWorld(t)
+	defer cancel()
+	seedMixedSource(t, w)
 	setActorKind(t, w, "hannah", sim.KindNPCStateful)
 	setNeed(t, w, "hannah", "thirst", 14)
-	placeAt(t, w, "hannah", "town_well")
+	setNeed(t, w, "hannah", "hunger", 14)
+	placeAt(t, w, "hannah", "oasis")
 
 	res, err := w.Send(sim.StartRefreshAtArrival("hannah"))
 	if err != nil {
 		t.Fatalf("StartRefreshAtArrival: %v", err)
 	}
 	if sr := res.(sim.SourceActivityStartResult); !sr.Started {
-		t.Error("NPC did not start drinking at the two-row well — the finite pail row must not suppress the infinite drink row (LLM-288)")
+		t.Fatal("NPC did not start the in-place refresh at a mixed source — the drink row must keep arrival alive")
+	}
+	if n := forceComplete(t, w); n != 1 {
+		t.Fatalf("completion = %d, want 1", n)
+	}
+	if got := needOf(t, w, "hannah", "thirst"); got != 6 { // 14 - 8
+		t.Errorf("thirst = %d, want 6 (drink applied)", got)
+	}
+	if got := needOf(t, w, "hannah", "hunger"); got != 14 {
+		t.Errorf("hunger = %d, want 14 (bush row must NOT auto-apply for an NPC)", got)
+	}
+	res, err = w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return *world.VillageObjects["oasis"].Refreshes[1].AvailableQuantity, nil
+	}})
+	if err != nil {
+		t.Fatalf("read bush stock: %v", err)
+	}
+	if got := res.(int); got != 2 {
+		t.Errorf("bush stock = %d, want 2 (untouched)", got)
 	}
 }
 

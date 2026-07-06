@@ -368,8 +368,10 @@ func rearmDwellAtSource(w *World, actor *Actor, now time.Time, nowMinute int) {
 	// Row-aware (LLM-288): a finite gatherable row alone doesn't make a bush —
 	// the post-LLM-254 Well carries a finite water-pail yield row NEXT TO its
 	// infinite drink row, and the drink must survive. Only carve out when the
-	// object has no infinite in-place row for THIS need.
-	if actor.Kind != KindPC && obj.IsFiniteGatherableSource() && !obj.HasInfiniteInPlaceNeedRow(need) {
+	// object has no NPC-auto-appliable row for THIS need; the row-level filter
+	// in applyObjectRefreshEffect keeps a mixed object's bush rows safe when
+	// the re-arm fires.
+	if actor.Kind != KindPC && !obj.HasNPCAutoRefreshRow(need) {
 		return
 	}
 	if !objectHasInStockDwellRowFor(obj, need) {
