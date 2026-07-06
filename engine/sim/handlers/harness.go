@@ -1300,6 +1300,38 @@ func selfStateChanged(pre, post *sim.ActorSnapshot) bool {
 
 // --- helpers --------------------------------------------------------------
 
+// paySettlementFellThroughContent renders the seller-facing echo for a pay
+// offer that settled to a NON-accepted terminal (no stock, buyer short of
+// coins/goods, either party moved on, offer lapsed). It is shared by accept_pay
+// and by counter_pay's non-increasing-coercion — a seller "countering" at or
+// below the offered price is a yes, so the coerced accept settles under the
+// counter_pay name and can still fail a gate. Without this echo that path fell
+// through to a bare "[ok]" that reads as a completed sale — the same misread
+// that let a seller "confirm" goods it never held (LLM-302).
+//
+// Returns ("", false) for any state that is not one of these fell-through
+// terminals, so each caller can fall through to its own verb-specific handling
+// (Accepted / Countered / Declined steers). These echoes state the outcome with
+// NO retry verb: the offer is already terminal, so there is nothing left to
+// decline_pay / counter_pay — unlike the still-pending accept_pay stock
+// rejection, which is a retryable ModelFacingError raised upstream (LLM-302) and
+// never reaches this success-path switch.
+func paySettlementFellThroughContent(state sim.PayLedgerState) (string, bool) {
+	switch state {
+	case sim.PayLedgerStateFailedInsufficientStock:
+		return "[ok] You agreed, but you don't have enough stock to fill it — the sale fell through.", true
+	case sim.PayLedgerStateFailedInsufficientFunds:
+		return "[ok] You agreed, but the buyer couldn't cover the price — the sale fell through.", true
+	case sim.PayLedgerStateFailedInsufficientGoods:
+		return "[ok] You agreed, but the buyer no longer had the goods they offered — the sale fell through.", true
+	case sim.PayLedgerStateFailedUnavailable:
+		return "[ok] That sale couldn't be completed — you or the buyer had moved on.", true
+	case sim.PayLedgerStateExpired:
+		return "[ok] That offer had already expired — too late to accept it.", true
+	}
+	return "", false
+}
+
 // commitResultContent builds the "tool" message content a successful commit
 // returns to the model. Most commits return the generic "[ok]"; speak and a
 // newly-placed pay_with_item offer are the exceptions. speak echoes the line it
@@ -1382,13 +1414,16 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 			}
 		}
 	}
-	// accept_pay: a gate-fail resolution (no stock, buyer short of coins/goods,
-	// either party moved on, offer already lapsed) is NOT a tool error —
-	// sim.AcceptPay returns the terminal PayLedgerState with a nil error, so a
-	// bare "[ok]" told the seller "accepted" when the sale actually fell through
+	// accept_pay: a gate-fail resolution (buyer short of coins/goods, either
+	// party moved on, offer already lapsed) is NOT a tool error — sim.AcceptPay
+	// returns the terminal PayLedgerState with a nil error, so a bare "[ok]"
+	// told the seller "accepted" when the sale actually fell through
 	// (ZBBS-WORK-432, the 271 dry-seller case: Josiah "accepted" water he no
 	// longer had, got [ok], learned nothing). Report the real outcome in plain
-	// modern English.
+	// modern English via paySettlementFellThroughContent. (The stock shortfall
+	// is the one exception: LLM-302 makes it a retryable ModelFacingError raised
+	// upstream, so it never reaches this success-path switch — the helper's
+	// stock case is defensive here and live for counter_pay's coercion below.)
 	//
 	// A genuine Accepted (ZBBS-HOME-473) no longer falls through to a bare
 	// [ok] either: the pay response itself passes in silence (the perception's
@@ -1402,19 +1437,11 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 	// scene_quote carry.
 	if vc.Name == "accept_pay" {
 		if state, ok := cmdResult.(sim.PayLedgerState); ok {
-			switch state {
-			case sim.PayLedgerStateAccepted:
+			if state == sim.PayLedgerStateAccepted {
 				return "[ok] The sale is settled. Say a brief word to them as you settle it, then call done(). Do not accept again."
-			case sim.PayLedgerStateFailedInsufficientStock:
-				return "[ok] You agreed, but you don't have enough stock to fill it — the sale fell through."
-			case sim.PayLedgerStateFailedInsufficientFunds:
-				return "[ok] You agreed, but the buyer couldn't cover the price — the sale fell through."
-			case sim.PayLedgerStateFailedInsufficientGoods:
-				return "[ok] You agreed, but the buyer no longer had the goods they offered — the sale fell through."
-			case sim.PayLedgerStateFailedUnavailable:
-				return "[ok] That sale couldn't be completed — you or the buyer had moved on."
-			case sim.PayLedgerStateExpired:
-				return "[ok] That offer had already expired — too late to accept it."
+			}
+			if msg, ok := paySettlementFellThroughContent(state); ok {
+				return msg
 			}
 		}
 	}
@@ -1445,6 +1472,16 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 			// glossed (LLM-13). Voice the settle and steer the handover.
 			case sim.PayLedgerStateAccepted:
 				return "[ok] The sale is settled. Say a brief word as you settle it, then call done(). Do not counter again."
+			default:
+				// That same coercion can fail a gate at settle time (seller has
+				// no stock, buyer is short of coins, either party moved on, offer
+				// lapsed) — it flips to a fell-through terminal that otherwise
+				// dropped to the bare "[ok]" below, reading as a completed sale.
+				// Echo the real outcome, the same fix accept_pay carries (LLM-302).
+				// (Goods-shortfall can't arise: coercion is pure-coin only.)
+				if msg, ok := paySettlementFellThroughContent(state); ok {
+					return msg
+				}
 			}
 		}
 	}
