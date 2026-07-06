@@ -126,10 +126,10 @@ func (o *VillageObject) OwnedByOther(actorID ActorID) bool {
 // (LLM-254 split the well into an infinite drink row + a finite yield-only
 // pail row, so a well IS a finite gatherable source now). This predicate
 // alone no longer distinguishes a bush from a well; the LLM-87 "NPC eats a
-// bush via gather -> consume, doesn't auto-eat on arrival" carve-out must
-// ALSO check HasInfiniteInPlaceNeedRow — an object that can be consumed in
-// place forever keeps its arrival + dwell path regardless of a sibling
-// finite yield row (LLM-288). Nil-safe, mirroring OwnedByOther.
+// bush via gather -> consume, doesn't auto-eat on arrival" carve-out instead
+// checks HasNPCAutoRefreshRow — an object with any NPC-auto-appliable need
+// row keeps its arrival + dwell path regardless of a sibling finite yield
+// row (LLM-288). Nil-safe, mirroring OwnedByOther.
 func (o *VillageObject) IsFiniteGatherableSource() bool {
 	if o == nil {
 		return false
