@@ -3840,7 +3840,7 @@ func TestOwnerShortNailsRepairCueNeverGoadsUnactionableBuy(t *testing.T) {
 				if !strings.Contains(section, "your purse can't take on nails just now") {
 					t.Errorf("scenario %q: conserve is active but the sell-first soften is missing from the '## Your business' cue (LLM-301)", sc.name)
 				}
-				if strings.Contains(section, "Use move_to to reach a supplier") {
+				if strings.Contains(section, "Use move_to to reach a supplier") || strings.Contains(section, "(structure_id:") {
 					t.Errorf("scenario %q: conserve is active but the cue still goads the walk-to nail buy — it must not contradict the '## Restocking' hold-off (LLM-301)", sc.name)
 				}
 				return
