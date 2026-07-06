@@ -791,6 +791,17 @@ var perceptionScenarios = []perceptionScenario{
 		build: peersHoldingSameFood,
 	},
 	{
+		name: "hungry_buyer_with_wholesaler_peer_no_buy_cue",
+		summary: "A hungry buyer (Silence Walker, coins in hand) huddles with a wholesaler-farmer (Moses James, work " +
+			"anchor tagged wholesaler) carrying stew — the LLM-289 shape from live hud-843da92a…, where the co-present " +
+			"peer cue said 'Moses James is here with you, carrying Carrots — you could offer to buy it from them now' and " +
+			"every cued pay_with_item died on the LLM-223/252 wholesale gate (40 of the huddle's 57 turns). The golden " +
+			"pins that the '## What you can eat or drink' section carries NO peer-buy line for the wholesaler's goods: " +
+			"the peer cue now applies the same SellerAtWholesaler/ActorIsDistributor pair as the dispatch gate. A " +
+			"regression would make the doomed buy line reappear in the diff.",
+		build: hungryBuyerWithWholesalerPeer,
+	},
+	{
 		name: "coinless_worker_among_peers",
 		summary: "Two laborers stand together in the commons and the one we render (Goodwife Bishop, a newcomer) has " +
 			"an empty purse — the LLM-153 situation, where 0-coin workers tried to BUY services from each other. The pay " +
@@ -5957,6 +5968,65 @@ func peersHoldingSameFood() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 		ItemKinds: foodDrinkCatalog(),
 	}
 	return snap, ezekielID, nil
+}
+
+// hungryBuyerWithWholesalerPeer is the LLM-289 situation from live hud-843da92a…:
+// a hungry buyer with coins huddles with a wholesaler-farmer carrying food. The
+// dispatch-side wholesale gate (LLM-223/252) keys on the SELLER's work anchor
+// wherever the seller stands, so the peer's goods are a guaranteed pay_with_item
+// rejection for a non-distributor — the co-present peer cue must not advertise
+// them. The buyer holds coin (means-to-pay) and none of the peer's food
+// (degenerate-buy), so the wholesale gate is the only thing suppressing the line.
+// No clock-bound content → byte-stable.
+func hungryBuyerWithWholesalerPeer() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		silenceID = sim.ActorID("silence")
+		mosesID   = sim.ActorID("moses")
+		commons   = sim.StructureID("commons")
+		farm      = sim.StructureID("james_farm")
+		huddle    = sim.HuddleID("h1")
+	)
+	published := time.Date(2026, 7, 6, 11, 0, 0, 0, time.UTC)
+	silence := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Silence Walker",
+		Role:              "villager",
+		State:             sim.StateIdle,
+		InsideStructureID: commons,
+		CurrentHuddleID:   huddle,
+		Coins:             22,
+		Needs:             map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold},
+		Acquaintances:     map[string]sim.Acquaintance{"Moses James": {}},
+	}
+	moses := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Moses James",
+		Role:              "farmer",
+		State:             sim.StateIdle,
+		InsideStructureID: commons,
+		CurrentHuddleID:   huddle,
+		WorkStructureID:   farm,
+		Inventory:         map[sim.ItemKind]int{"stew": 3},
+		Acquaintances:     map[string]sim.Acquaintance{"Silence Walker": {}},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:    published,
+		NeedThresholds: sim.NeedThresholds{},
+		Actors:         map[sim.ActorID]*sim.ActorSnapshot{silenceID: silence, mosesID: moses},
+		Structures: map[sim.StructureID]*sim.Structure{
+			commons: plainStructure(commons, "Village Commons"),
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			// The live James Farm carries market_stall+business+farm+wholesaler;
+			// only the wholesaler tag gates selling.
+			sim.VillageObjectID(farm): {ID: sim.VillageObjectID(farm), OwnerActorID: mosesID, Tags: []string{sim.TagFarm, sim.TagWholesaler}},
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{silenceID: {}, mosesID: {}}},
+		},
+		ItemKinds: foodDrinkCatalog(),
+	}
+	return snap, silenceID, nil
 }
 
 // coinlessWorkerAmongPeers is the LLM-153 situation: two laborers stand together in

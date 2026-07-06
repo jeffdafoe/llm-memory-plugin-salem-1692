@@ -623,6 +623,7 @@ func gatherCoPresentPeerOffers(snap *sim.Snapshot, actorID sim.ActorID, actorSna
 	if actorSnap.Coins <= 0 && !holdsBarterableGoods(actorSnap) {
 		return nil
 	}
+	buyerIsDistributor := sim.ActorIsDistributor(snap.VillageObjects, actorSnap.WorkStructureID)
 	var out []SatiationPeerOffer
 	for peerID := range h.Members {
 		if peerID == actorID {
@@ -630,6 +631,18 @@ func gatherCoPresentPeerOffers(snap *sim.Snapshot, actorID sim.ActorID, actorSna
 		}
 		peer := snap.Actors[peerID]
 		if peer == nil || peer.Kind == sim.KindPC {
+			continue
+		}
+		// Wholesale gate (LLM-289) — the peer-cue sibling of the LLM-223/252
+		// vendor-scan filter in eachVendorOffer. pay_with_item rejects any
+		// non-distributor buying from a seller whose WORK ANCHOR is
+		// wholesaler-tagged, wherever the seller stands (the gate keys on the
+		// anchor, not the venue), so a huddled wholesaler-farmer carrying his
+		// own produce must not be advertised as directly buyable. Live
+		// hud-843da92a: "Moses is here with you, carrying Carrots — buy it now"
+		// → 40 of 57 turns burned on guaranteed wholesale rejections. Same
+		// predicate pair as the dispatch gate so cue and gate can't disagree.
+		if !buyerIsDistributor && sim.SellerAtWholesaler(snap.VillageObjects, peer.WorkStructureID) {
 			continue
 		}
 		// Acquaintance gating mirrors buildSurroundings: the subject knows the
