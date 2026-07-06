@@ -1028,6 +1028,25 @@ var perceptionScenarios = []perceptionScenario{
 		build: ownerAtDegradedStall,
 	},
 	{
+		name: "owner_at_degraded_store_conserving",
+		summary: "LLM-301: Josiah Thorne stands at his own DEGRADED General Store (shut for trade) with 0 of the 5 " +
+			"nails a mend takes, 1 coin (below the 10-coin MerchantCoinFloor) and 17 unsold flour — conserve active — and " +
+			"NO nail supplier survives the LLM-216 drops. The golden pins the vendor-less fallback's sell-first soften " +
+			"('your purse can't take on nails just now') and the ABSENCE of the old destination-less 'buy more from the " +
+			"smith' goad, which llama-3.3-70b answered by inventing 'the Smithy' and burning its turn retrying the move " +
+			"(the live 2026-07-06 scene).",
+		build: ownerAtDegradedStoreConserving,
+	},
+	{
+		name: "owner_conserving_with_nail_supplier",
+		summary: "LLM-301 (code_review arm): a conserving owner at her worn farm while a nail supplier DOES survive " +
+			"findItemVendors (unknown price, so the affordability drop keeps him). Conserve must WIN over the vendor " +
+			"list — the golden pins the sell-first soften and the ABSENCE of the 'Use move_to to reach a supplier' walk-to " +
+			"goad, so this cue can never push a buy while '## Restocking' says hold off (the LLM-297 posture; " +
+			"findItemVendors' affordability drop and the working-capital floor are different filters and can disagree).",
+		build: ownerConservingWithNailSupplier,
+	},
+	{
 		name: "passerby_at_worn_stall",
 		summary: "A non-owner (John) stands at someone else's worn business. The golden pins the co-present " +
 			"atmosphere line ('The Blacksmith here looks worn…') and the ABSENCE of the owner '## Your business' cue — a " +
@@ -3661,6 +3680,8 @@ func TestStallRepairCueOnlyAtOwnWornStall(t *testing.T) {
 		"owner_at_worn_stall":                    true,
 		"owner_at_worn_stall_with_nail_supplier": true, // LLM-274: owner short of nails WITH a resolvable supplier
 		"owner_at_degraded_stall":                true,
+		"owner_at_degraded_store_conserving":     true, // LLM-301: vendor-less fallback, conserve arm
+		"owner_conserving_with_nail_supplier":    true, // LLM-301: conserve wins over a surviving vendor
 		"owner_at_worn_tavern":                   true,
 		"owner_inside_worn_business":             true, // LLM-266: owner INSIDE their worn business (not at the outdoor pin)
 		"owner_holding_repair_nails_in_company":  true, // LLM-292: owner at own worn store's pin (the earmark fixture)
@@ -3765,9 +3786,10 @@ func TestGoldensHiredWorkerSeesRepairCueWhenColocated(t *testing.T) {
 
 // TestOwnerShortNailsWithSupplierNamesDestination is the LLM-274 cross-scenario
 // invariant: whenever the OWNER "## Your business" repair cue renders, the owner is
-// short of nails, AND findItemVendors resolves at least one open nail supplier, the
-// cue must name that supplier's move_to destination ("(structure_id: <id>)") rather
-// than the destination-less "buy more from the smith" dead end that llama-3.3-70b
+// short of nails, findItemVendors resolves at least one open nail supplier, AND the
+// working-capital gate isn't holding buys off (Conserve wins over the vendor list —
+// LLM-301), the cue must name that supplier's move_to destination
+// ("(structure_id: <id>)") rather than the destination-less dead end that llama-3.3-70b
 // narrated but never walked (the live Elizabeth Ellis case). Keyed off the same
 // buildStallRepair the production render uses, so the property holds by construction
 // across the matrix; owner_at_worn_stall_with_nail_supplier is the non-vacuous golden
@@ -3791,6 +3813,9 @@ func TestOwnerShortNailsWithSupplierNamesDestination(t *testing.T) {
 			if len(v.NailVendors) == 0 {
 				return // no resolvable supplier — the generic no-destination sentence is correct here
 			}
+			if v.Conserve {
+				return // LLM-301: conserve wins over the vendor list — the sell-first soften renders instead
+			}
 			exercised = true
 			token := "(structure_id: " + string(v.NailVendors[0].StructureID) + ")"
 			// Scope the assertion to the "## Your business" section so a matching token
@@ -3804,6 +3829,73 @@ func TestOwnerShortNailsWithSupplierNamesDestination(t *testing.T) {
 	}
 	if !exercised {
 		t.Error("matrix must exercise an owner short on nails with a resolvable nail supplier (LLM-274)")
+	}
+}
+
+// TestOwnerShortNailsRepairCueNeverGoadsUnactionableBuy is the LLM-301
+// cross-scenario invariant, two arms:
+//
+//  1. CONSERVE WINS: whenever the owner "## Your business" cue renders short of
+//     nails and the working-capital gate says hold off (Conserve), the sell-first
+//     soften must render and the "Use move_to to reach a supplier" walk-to goad must
+//     NOT — even when a supplier survives findItemVendors (the affordability drop
+//     and the coin floor are different filters), so this cue can never push a buy
+//     while "## Restocking" says hold off (the LLM-297 posture).
+//     owner_conserving_with_nail_supplier / owner_at_degraded_store_conserving are
+//     the non-vacuous anchors.
+//  2. VENDOR-LESS FALLBACK: with no resolvable supplier and no conserve, the
+//     section must state the plain shortfall and must NOT name "the smith" — a
+//     person-shaped target with no move_to destination (the live model invented
+//     "the Smithy" for it and burned its turn retrying the refused move).
+//     owner_at_worn_stall & co are the anchors.
+func TestOwnerShortNailsRepairCueNeverGoadsUnactionableBuy(t *testing.T) {
+	var fallbackExercised, conserveExercised, conserveVendorExercised bool
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, _ := sc.build()
+			a := snap.Actors[actorID]
+			if a == nil {
+				return
+			}
+			v := buildStallRepair(snap, actorID, a)
+			if v == nil || v.Hired || v.HasEnoughNails {
+				return // not the owner short-of-nails cue — invariant N/A
+			}
+			section := promptSection(renderScenario(sc), "## Your business")
+			if v.Conserve {
+				conserveExercised = true
+				if len(v.NailVendors) > 0 {
+					conserveVendorExercised = true
+				}
+				if !strings.Contains(section, "your purse can't take on nails just now") {
+					t.Errorf("scenario %q: conserve is active but the sell-first soften is missing from the '## Your business' cue (LLM-301)", sc.name)
+				}
+				if strings.Contains(section, "Use move_to to reach a supplier") || strings.Contains(section, "(structure_id:") {
+					t.Errorf("scenario %q: conserve is active but the cue still goads the walk-to nail buy — it must not contradict the '## Restocking' hold-off (LLM-301)", sc.name)
+				}
+				return
+			}
+			if len(v.NailVendors) > 0 {
+				return // vendor-list branch — TestOwnerShortNailsWithSupplierNamesDestination covers it
+			}
+			fallbackExercised = true
+			if strings.Contains(section, "from the smith") {
+				t.Errorf("scenario %q: vendor-less repair fallback names a person-shaped smith target with no move_to destination (LLM-301)", sc.name)
+			}
+			if !strings.Contains(section, "you'll need to buy more before you can mend it") {
+				t.Errorf("scenario %q: vendor-less repair fallback is missing the plain shortfall statement (LLM-301)", sc.name)
+			}
+		})
+	}
+	if !fallbackExercised {
+		t.Error("matrix must exercise an owner short on nails with no resolvable supplier and no conserve (LLM-301)")
+	}
+	if !conserveExercised {
+		t.Error("matrix must exercise a conserving owner short on nails (LLM-301)")
+	}
+	if !conserveVendorExercised {
+		t.Error("matrix must exercise conserve winning over a surviving nail supplier (LLM-301)")
 	}
 }
 
@@ -4595,6 +4687,82 @@ func ownerAtDegradedStall() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	return stallWearSnapshot("ezekiel", "ezekiel", "Ezekiel Crane", "blacksmith", 650, 5)
 }
 
+// ownerAtDegradedStoreConserving is the LLM-301 fixture — the live 2026-07-06 Josiah
+// Thorne "the Smithy" case. The owner stands at his own DEGRADED General Store (wear
+// 650 >= degrade 600, shut for trade) carrying 0 of the 5 nails a mend takes, with
+// 1 coin (below the 10-coin MerchantCoinFloor) and 17 unsold flour on the shelf (past
+// the 8-unit dead-stock overstock floor) — so merchantConserve is Active — while NO
+// nail supplier resolves (none exists here; the live case dropped the smith on
+// affordability — either way NailVendors is empty). The golden pins the sell-first
+// soften in the vendor-less fallback instead of the old destination-less "buy more
+// from the smith" goad, which the live model answered by hallucinating a "the Smithy"
+// move_to target and burning its whole turn retrying it.
+func ownerAtDegradedStoreConserving() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	zero := 0
+	start, end := 360, 1080 // 06:00–18:00
+	now := 720              // 12:00 — on shift, at his post
+	storePin := sim.WorldPos{X: 100, Y: 100}.Tile()
+	josiah := &sim.ActorSnapshot{
+		Kind:             sim.KindNPCStateful,
+		DisplayName:      "Josiah Thorne",
+		Role:             "shopkeeper",
+		State:            sim.StateIdle,
+		Pos:              storePin,
+		ScheduleStartMin: &start,
+		ScheduleEndMin:   &end,
+		Coins:            1,
+		Needs:            map[sim.NeedKey]int{},
+		Inventory:        map[sim.ItemKind]int{"nail": 0, "flour": 17},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "flour", Source: sim.RestockSourceBuy, Max: 20},
+		}},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay:          &now,
+		NeedThresholds:            sim.NeedThresholds{},
+		Assets:                    emptyAssetSet,
+		MerchantCoinFloor:         10,
+		StallWearRepairThreshold:  400,
+		StallWearDegradeThreshold: 600,
+		StallNailsPerRepair:       5,
+		Actors:                    map[sim.ActorID]*sim.ActorSnapshot{"josiah": josiah},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"general_store": {
+				ID:            "general_store",
+				DisplayName:   "General Store",
+				Pos:           sim.WorldPos{X: 100, Y: 100},
+				OwnerActorID:  "josiah",
+				Tags:          []string{sim.TagBusiness},
+				Wear:          650,
+				LoiterOffsetX: &zero,
+				LoiterOffsetY: &zero,
+			},
+		},
+	}
+	return snap, "josiah", nil
+}
+
+// ownerConservingWithNailSupplier is the LLM-301 code_review arm: conserve active
+// WHILE a nail supplier survives findItemVendors. Elizabeth is coin-poor (6 < the
+// 10-coin MerchantCoinFloor) and overstocked (17 flour, past the 8-unit dead-stock
+// floor) — conserve Active — but she has never bought nails from Ezekiel, so his
+// price is unknown and the LLM-216 affordability drop KEEPS him (patronage earns the
+// number). The working-capital floor and the affordability drop are different
+// filters, so this state is reachable live; the golden pins that conserve WINS —
+// the sell-first soften renders, not the "Use move_to to reach a supplier" walk-to
+// goad — keeping this cue from pushing a buy while "## Restocking" says hold off.
+func ownerConservingWithNailSupplier() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, actorID, warrants := ownerAtWornStallWithNailSupplier()
+	owner := snap.Actors[actorID]
+	owner.Coins = 6
+	owner.Inventory["flour"] = 17
+	owner.RestockPolicy = &sim.RestockPolicy{Restock: []sim.RestockEntry{
+		{Item: "flour", Source: sim.RestockSourceBuy, Max: 20},
+	}}
+	snap.MerchantCoinFloor = 10
+	return snap, actorID, warrants
+}
+
 // ownerAtWornStallWithNailSupplier is the LLM-274 fixture, modeled on the live
 // 2026-07-04 Elizabeth Ellis case: the owner stands at her own worn Ellis Farm
 // (wear 450 >= repair 400, < degrade 600) carrying 0 of the 5 nails a mend needs,
@@ -4900,9 +5068,12 @@ func ownerStandoffDeclinedNails() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta
 	// the threshold the cue reads as a standoff, and inside recentlyResolvedOfferWindow so
 	// the recency guard counts them. Declined is terminal, so no ExpiresAt is needed.
 	resolved := published.Add(-1 * time.Minute)
+	// Amount 3 on each: the offers carried her whole thin purse (a live offer always
+	// carries coins and/or goods), so the LLM-296 settled-offer line reads "Your offer
+	// of 3 coins …" rather than the fixture artifact "of nothing".
 	snap.PayLedger = map[sim.LedgerID]*sim.PayLedgerEntry{
-		1: {ID: 1, BuyerID: actorID, SellerID: "ezekiel", ItemKind: sim.NailItemKind, Qty: 5, State: sim.PayLedgerStateDeclined, HuddleID: "smith_huddle", ResolvedAt: resolved},
-		2: {ID: 2, BuyerID: actorID, SellerID: "ezekiel", ItemKind: sim.NailItemKind, Qty: 5, State: sim.PayLedgerStateDeclined, HuddleID: "smith_huddle", ResolvedAt: resolved},
+		1: {ID: 1, BuyerID: actorID, SellerID: "ezekiel", ItemKind: sim.NailItemKind, Qty: 5, Amount: 3, State: sim.PayLedgerStateDeclined, HuddleID: "smith_huddle", ResolvedAt: resolved},
+		2: {ID: 2, BuyerID: actorID, SellerID: "ezekiel", ItemKind: sim.NailItemKind, Qty: 5, Amount: 3, State: sim.PayLedgerStateDeclined, HuddleID: "smith_huddle", ResolvedAt: resolved},
 	}
 	return snap, actorID, warrants
 }
