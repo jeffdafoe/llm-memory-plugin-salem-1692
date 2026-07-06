@@ -108,6 +108,69 @@ func TestBuildSatiation_OwnStockHunger(t *testing.T) {
 	}
 }
 
+// TestBuildSatiation_SnackLoopReopensMealDirectory — LLM-307. Below the red tier,
+// the LLM-139 consume-first suppression hides the walk-to directory behind any own
+// stock. This narrows it to be meal-aware: snack-only stock (all below
+// satiationMealFloor) can't resolve a persisting hunger, so it must NOT hide a
+// reachable meal — the directory re-opens with a bridging line. A meal on hand
+// still suppresses; snack-only with no meal reachable still suppresses (the bridge
+// would point at a meal that isn't there); and at the red tier the full directory
+// rides WITHOUT a bridge (the sub-red construct doesn't apply). Uses a free public
+// source as the reachable option — satiationDirectoryHasMeal treats free sources
+// and vendors alike, so it exercises the same gate with minimal fixture.
+func TestBuildSatiation_SnackLoopReopensMealDirectory(t *testing.T) {
+	const mild = 14 // felt (>= silent floor 10), below the red threshold (18)
+	cat := map[sim.ItemKind]*sim.ItemKindDef{
+		"raspberries": {Name: "raspberries", DisplayLabel: "Raspberries", Category: sim.ItemCategoryFood, Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 2}}}, // a nibble
+		"cheese":      {Name: "cheese", DisplayLabel: "Cheese", Category: sim.ItemCategoryFood, Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 8}}},           // a good meal
+	}
+	// freeSource is a public object easing hunger by mag on arrival (Amount is the
+	// negative arrival decrement — a well/orchard shape). mag >= satiationMealFloor
+	// reads as a reachable meal; below it, another snack.
+	freeSource := func(mag int) *sim.VillageObject {
+		z := 0
+		return &sim.VillageObject{
+			ID: "src", DisplayName: "Orchard", Pos: sim.WorldPos{X: 200, Y: 200},
+			LoiterOffsetX: &z, LoiterOffsetY: &z,
+			Refreshes: []*sim.ObjectRefresh{{Attribute: "hunger", Amount: -mag}},
+		}
+	}
+	build := func(carry sim.ItemKind, hunger, sourceMag int) SatiationNeedView {
+		subj := &sim.ActorSnapshot{
+			Pos:       sim.WorldPos{X: 100, Y: 100}.Tile(),
+			Needs:     map[sim.NeedKey]int{"hunger": hunger},
+			Inventory: map[sim.ItemKind]int{carry: 3},
+		}
+		snap := &sim.Snapshot{
+			Actors:         map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj},
+			ItemKinds:      cat,
+			VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{"src": freeSource(sourceMag)},
+		}
+		v := buildSatiation(snap, "ezekiel", subj)
+		if v == nil || len(v.Needs) != 1 {
+			t.Fatalf("carry=%s hunger=%d source=%d: want 1 need, got %+v", carry, hunger, sourceMag, v)
+		}
+		return v.Needs[0]
+	}
+
+	// Snack-only + a reachable MEAL: directory re-opens with the bridge.
+	if n := build("raspberries", mild, 8); !n.BridgeToMeal || len(n.FreeSources) == 0 {
+		t.Errorf("snack + reachable meal: want bridge + directory, got bridge=%v free=%+v", n.BridgeToMeal, n.FreeSources)
+	}
+	// MEAL on hand + a reachable meal: LLM-139 suppression stands (the foil).
+	if n := build("cheese", mild, 8); n.BridgeToMeal || len(n.FreeSources) != 0 {
+		t.Errorf("meal on hand: want suppression, got bridge=%v free=%+v", n.BridgeToMeal, n.FreeSources)
+	}
+	// Snack-only but only a SNACK reachable: still suppressed — no meal to point at.
+	if n := build("raspberries", mild, 2); n.BridgeToMeal || len(n.FreeSources) != 0 {
+		t.Errorf("snack + no reachable meal: want suppression, got bridge=%v free=%+v", n.BridgeToMeal, n.FreeSources)
+	}
+	// Snack-only at the RED tier: full directory rides, but no bridge (sub-red only).
+	if n := build("raspberries", sim.DefaultHungerRedThreshold, 8); n.BridgeToMeal || len(n.FreeSources) == 0 {
+		t.Errorf("snack at red: want directory without bridge, got bridge=%v free=%+v", n.BridgeToMeal, n.FreeSources)
+	}
+}
+
 // Two own-stock item kinds with the SAME display label and SAME magnitude must
 // order deterministically via the ItemKind tie-break, since Inventory is a map.
 // (code_review)
