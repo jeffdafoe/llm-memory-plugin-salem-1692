@@ -85,6 +85,16 @@ type RestockItemView struct {
 	// headroom adds no line.
 	AffordableQty int
 
+	// CatalogUnit is the catalog's per-unit buying-in anchor for this item — the
+	// low end of the item_recipe wholesale–retail band (LLM-292). 0 when the
+	// catalog prices the item not at all (clause omitted). Before this, the cue's
+	// only buy-price signals were the buyer's OWN history (per-vendor last-paid,
+	// AffordableQty) — a self-poisoning anchor: one overpay becomes the reference
+	// for every later offer (the live Josiah milk leg, 2.2/unit against a 1-coin
+	// wholesale rate; and Joseph paying 2 for wheat whose band is flat 1/1). The
+	// catalog rate is the corrective the negotiation can settle back onto.
+	CatalogUnit int
+
 	// RecentSalesUnits / RecentSalesCoins / RecentBuyCost are this item's trailing-
 	// restockSalesWindow economics, read off the price book (LLM-63):
 	//   - RecentSalesUnits: units SOLD (Qty×Consumers per accepted sale, seller view).
@@ -176,6 +186,7 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 			CoPresentSeller:               coName,
 			PendingOfferToCoPresentSeller: coID != "" && hasPendingOfferTo(snap, actorID, coID, e.Item),
 			AffordableQty:                 affordable,
+			CatalogUnit:                   catalogBulkRate(snap, e.Item),
 			RecentSalesUnits:              salesUnits,
 			RecentSalesCoins:              salesCoins,
 			RecentBuyCost:                 buyCost,
@@ -198,6 +209,33 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 		Items:      items,
 		BuyerCoins: actorSnap.Coins,
 	}
+}
+
+// catalogBulkRate is the catalog's per-unit buying-in anchor for kind: the low
+// end of the item_recipe wholesale–retail band, since a merchant buying stock in
+// buys at the producer→merchant end (recipe.go defines WholesalePrice exactly
+// so). Normalizes a swapped band and collapses a single-priced row to its one
+// price, the same way buildTradeValue derives its Low; 0 when the catalog
+// carries no price for the kind (the anchor clause is then omitted). LLM-292.
+func catalogBulkRate(snap *sim.Snapshot, kind sim.ItemKind) int {
+	if snap == nil || snap.Recipes == nil {
+		return 0
+	}
+	recipe := snap.Recipes[kind]
+	if recipe == nil {
+		return 0
+	}
+	lo, hi := recipe.WholesalePrice, recipe.RetailPrice
+	if lo > hi {
+		lo, hi = hi, lo
+	}
+	if lo <= 0 {
+		lo = hi // only one price configured — collapse to it
+	}
+	if lo < 0 {
+		return 0
+	}
+	return lo
 }
 
 // itemHasActionableBuyPath reports whether buildRestocking would render an item
@@ -634,6 +672,18 @@ func renderRestocking(b *strings.Builder, v *RestockingView) {
 		// restates it at the buy moment.
 		fmt.Fprintf(b, "- You have %d %s on hand and room for %d more at the most.",
 			it.CurrentQty, sanitizeInline(it.ItemLabel), headroom)
+		// LLM-292: the catalog buying-in anchor, with its stake. Before this the
+		// only rate in the cue was the buyer's own last-paid — self-poisoning (one
+		// overpay re-anchors every later offer: the live Josiah 2.2/unit milk leg).
+		// Deliberately a per-unit rate and never a fill total — LLM-63 removed the
+		// concrete fill-to-cap figure because the weak model copy-pasted it as a
+		// max offer and drained its purse; a rate to weigh an offer against does
+		// not re-open that. No "ask"/"price" token (the HOME-386 speaking-loop
+		// guard).
+		if it.CatalogUnit > 0 {
+			fmt.Fprintf(b, " The fair bulk rate buying it in is about %s each — pay above that and you are overpaying.",
+				coinsPhrase(it.CatalogUnit))
+		}
 		// The week's demand + P&L the reseller sizes its restock against: units sold,
 		// coins paid restocking, coins taken in selling. Silent at 0 units sold (no
 		// sale on record in the window) so a new or dormant good asserts no rate.

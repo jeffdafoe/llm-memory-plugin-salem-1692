@@ -449,7 +449,7 @@ func PayWithItem(
 			if IsOwnProduce(w.VillageObjects, buyer.WorkStructureID, buyer.RestockPolicy, kind) {
 				distributor := DistributorSteerLabel(w.VillageObjects, w.Actors)
 				return nil, fmt.Errorf(
-					"you produce %s to sell — you don't buy it back. Your %s goes wholesale to %s, the village distributor; send buyers to %s.",
+					"you produce %s to sell — you don't buy it back. Your %s goes wholesale to %s, whose shop stocks it for the village; send buyers to %s.",
 					kind, kind, distributor, distributor,
 				)
 			}
@@ -492,7 +492,7 @@ func PayWithItem(
 				!ActorIsDistributor(w.VillageObjects, buyer.WorkStructureID) {
 				distributor := DistributorSteerLabel(w.VillageObjects, w.Actors)
 				return nil, fmt.Errorf(
-					"wholesale goods are sold only to %s, the village distributor — buy your %s from %s, not straight from the source.",
+					"wholesale goods are sold only to %s, whose shop supplies the village — buy your %s from %s, not straight from the source.",
 					distributor, kind, distributor,
 				)
 			}

@@ -93,7 +93,9 @@ func IsOwnProduce(objects map[VillageObjectID]*VillageObject, workStructureID St
 // reject steer only: the gate still holds if no distributor is configured (the
 // label degrades; the block does not). First match wins — one distributor by data
 // convention, so iteration order only matters if an operator tags two, which the
-// data model doesn't intend.
+// data model doesn't intend. The fallback is deliberately an in-world phrase, not
+// "the village distributor": rendered prose must never hand the NPC's LLM a
+// mechanic-role term (LLM-292) — `distributor` stays an engine/tag concept.
 func DistributorSteerLabel(objects map[VillageObjectID]*VillageObject, actors map[ActorID]*Actor) string {
 	for _, obj := range objects {
 		if !IsDistributorStructure(obj) {
@@ -108,5 +110,5 @@ func DistributorSteerLabel(objects map[VillageObjectID]*VillageObject, actors ma
 			return obj.DisplayName
 		}
 	}
-	return "the village distributor"
+	return "the village storekeeper"
 }

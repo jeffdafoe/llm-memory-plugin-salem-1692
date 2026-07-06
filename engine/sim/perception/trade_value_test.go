@@ -213,7 +213,8 @@ func TestBuildTradeValue_ResoldGoodCostBasis(t *testing.T) {
 	var b strings.Builder
 	renderTradeValue(&b, v)
 	out := b.String()
-	if !strings.Contains(out, "cheese: 3 to 6 coins each; you have lately paid about 2 coins each for it.") {
+	// LLM-292: the cost clause carries its stake for a resold good.
+	if !strings.Contains(out, "cheese: 3 to 6 coins each; you have lately paid about 2 coins each for it — selling below what you paid loses you coin.") {
 		t.Errorf("missing cost-basis clause:\n%s", out)
 	}
 	if strings.Contains(out, "sold for") {
@@ -251,7 +252,8 @@ func TestBuildTradeValue_ResoldGoodBothClauses(t *testing.T) {
 	}
 	var b strings.Builder
 	renderTradeValue(&b, v)
-	if !strings.Contains(b.String(), "you have lately paid about 2 coins each for it; of late you have sold for about 5 coins each.") {
+	// LLM-292: the stake trails BOTH clauses, commenting the paid/sold juxtaposition.
+	if !strings.Contains(b.String(), "you have lately paid about 2 coins each for it; of late you have sold for about 5 coins each — selling below what you paid loses you coin.") {
 		t.Errorf("want paid-then-sold clauses in order:\n%s", b.String())
 	}
 }

@@ -54,8 +54,13 @@ func TestPayWithItem_WholesaleGate(t *testing.T) {
 		w, stop, at := tagWholesaleWorld(t)
 		defer stop()
 		_, err := w.Send(sim.PayWithItem("hannah", "Moses James", "bread", 1, 4, false, nil, nil, 0, 0, "", at))
-		if err == nil || !strings.Contains(err.Error(), "the village distributor") {
+		// LLM-292 copy constraint: the steer speaks in-world ("whose shop supplies
+		// the village"), never the mechanic-role word "distributor".
+		if err == nil || !strings.Contains(err.Error(), "wholesale goods are sold only to") {
 			t.Fatalf("wholesale buy by a non-distributor err = %v, want wholesale-gate steer", err)
+		}
+		if strings.Contains(strings.ToLower(err.Error()), "distributor") {
+			t.Errorf("steer %q carries the mechanic-role term \"distributor\" (LLM-292 copy constraint)", err.Error())
 		}
 		// The steer names the distributor so the model knows where to shop instead.
 		if !strings.Contains(err.Error(), "Josiah Thorne") {

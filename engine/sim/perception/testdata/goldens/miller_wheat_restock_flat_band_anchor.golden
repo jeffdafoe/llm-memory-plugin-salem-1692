@@ -1,0 +1,27 @@
+# Your turn
+
+## What just happened
+(nothing specific — this is a routine check-in)
+
+
+## You
+Coins in your purse: 30.
+You are carrying: wheat (x2).
+
+## Around you
+You are inside The Mill, your workplace, with no one else here to hear you speak.
+It is midday.
+
+You're at your workplace.
+
+It is your working hours and you are at your post — stay and look after your work; you close at 6 in the evening. If no one needs you right now, wait here for customers rather than wandering off.
+
+## Keeping up production
+- You use wheat to make flour — 2 on hand, enough for about 1 more, and you're running low.
+
+## Restocking
+Your shop stock of these bought-in goods is running low. You choose how much to buy.
+- You have 2 wheat on hand and room for 18 more at the most. The fair bulk rate buying it in is about 1 coin each — pay above that and you are overpaying. No seller is here now — use move_to to reach a supplier below, then pay_with_item once you arrive.
+  - buy from General Store (structure_id: general_store)
+
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.

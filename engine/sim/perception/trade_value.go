@@ -37,9 +37,31 @@ import (
 // forge or pitching it across a tavern table.
 
 // TradeValueView is the content-gated "## What your wares fetch" section. A nil
-// view (or empty Items) means render omits the section.
+// view (or empty Items with no RepairReserve) means render omits the section.
 type TradeValueView struct {
 	Items []TradeValueItem
+
+	// RepairReserve, when non-nil, appends the earmarked-goods line (LLM-292): the
+	// actor owns a business worn to the repair threshold and carries some of the
+	// nails the mend takes, so those nails are spoken for — not wares. Live: Josiah
+	// bought repair nails from the smith, then resold 5 of them before mending
+	// (nothing in perception marked them earmarked, and the role-agnostic coin band
+	// made any in-band offer look fair), landing back at 0 nails with the mend nag
+	// still live. This line rides the wares cue because the sale it guards against
+	// happens exactly where this cue renders: weighing a buyer's offer in company.
+	RepairReserve *RepairReserveView
+}
+
+// RepairReserveView is the earmark behind the repair-reserve line: how many nails
+// the standing mend takes, how many the actor carries, and which business needs
+// them. Built only for an OWNER with an active mend obligation (the same
+// WearableStallToMend + StallRepairable pair every repair cue keys on, so earmark
+// and mend nag can't drift) who holds at least one nail.
+type RepairReserveView struct {
+	ItemLabel    string // display label of the repair material ("nails")
+	BusinessName string // the worn business's display name; "" → generic noun
+	Needed       int    // nails one repair consumes
+	Held         int    // nails the actor currently carries (>= 1 when the view exists)
 }
 
 // TradeValueItem is one of the actor's own wares — produced or resold — with its
@@ -80,13 +102,23 @@ type TradeValueItem struct {
 
 // buildTradeValue builds the wares-worth view for an actor that has goods of its
 // own trade AND is in company (inHuddle — the situation where a trade can occur),
-// else nil. Pure over the snapshot.
+// else nil. The repair-reserve earmark (LLM-292) shares the gate: an offer for
+// earmarked nails also arrives in company, so the two surface together. Pure over
+// the snapshot.
 func buildTradeValue(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSnapshot, inHuddle bool) *TradeValueView {
-	if snap == nil || actorSnap == nil || actorSnap.RestockPolicy == nil || snap.Recipes == nil {
+	if snap == nil || actorSnap == nil {
 		return nil
 	}
 	if !inHuddle {
 		return nil // no one to trade with — nothing to value against
+	}
+	if actorSnap.RestockPolicy == nil || snap.Recipes == nil {
+		// No own trade to value — but a worn-business owner still carries the
+		// repair-reserve earmark (it keys on ownership + inventory, not the policy).
+		if reserve := buildRepairReserve(snap, actorID, actorSnap); reserve != nil {
+			return &TradeValueView{RepairReserve: reserve}
+		}
+		return nil
 	}
 	// Resolved once for the scan: the label a wholesale producer's own-produce
 	// lines route buyers to. Cheap (one object-map pass) and the cue is already
@@ -210,7 +242,8 @@ func buildTradeValue(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 	for _, e := range actorSnap.RestockPolicy.BuyEntries() {
 		valueGood(e.Item, true)
 	}
-	if len(items) == 0 {
+	reserve := buildRepairReserve(snap, actorID, actorSnap)
+	if len(items) == 0 && reserve == nil {
 		return nil
 	}
 	// Stable, deterministic order: by label, then kind.
@@ -220,7 +253,38 @@ func buildTradeValue(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 		}
 		return items[i].itemKind < items[j].itemKind
 	})
-	return &TradeValueView{Items: items}
+	return &TradeValueView{Items: items, RepairReserve: reserve}
+}
+
+// buildRepairReserve builds the earmarked-nails view (LLM-292), or nil. Non-nil
+// only when the actor OWNS a business worn to the repair threshold (hired menders
+// are excluded — the nails at stake are the owner's own repair supplies, the same
+// carve-out the buy-nails errand cues make) and carries at least one nail. Keys on
+// the SAME WearableStallToMend + StallRepairable pair as the repair cues, so the
+// earmark appears exactly while the mend nag is live and clears when the mend
+// lands or the wear decays below threshold.
+func buildRepairReserve(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSnapshot) *RepairReserveView {
+	stall, hired := sim.WearableStallToMend(snap.VillageObjects, snap.LaborLedger, actorID)
+	if stall == nil || hired {
+		return nil
+	}
+	if !sim.StallRepairable(stall, snap.StallWearRepairThreshold, snap.StallWearDegradeThreshold) {
+		return nil
+	}
+	needed := snap.StallNailsPerRepair
+	if needed <= 0 {
+		return nil // a repair costs no nails (feature off / misconfig) — nothing to earmark
+	}
+	held := actorSnap.Inventory[sim.NailItemKind]
+	if held <= 0 {
+		return nil // carrying none — the buy-nails errand cues own this state
+	}
+	return &RepairReserveView{
+		ItemLabel:    itemDisplayLabel(snap, sim.NailItemKind),
+		BusinessName: resolveDwellPinLabel(snap, stall.ID),
+		Needed:       needed,
+		Held:         held,
+	}
 }
 
 // renderTradeValue writes the "## What your wares fetch" section. Content-gated:
@@ -229,23 +293,38 @@ func buildTradeValue(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 // price, each when on record. For a resold good the two together bracket the markup:
 // what it cost, what it has fetched.
 func renderTradeValue(b *strings.Builder, v *TradeValueView) {
-	if v == nil || len(v.Items) == 0 {
+	if v == nil || (len(v.Items) == 0 && v.RepairReserve == nil) {
 		return
 	}
 	b.WriteString("## What your wares fetch\n")
 	b.WriteString("What your wares fetch in coin — use it to set a fair price or weigh a trade:\n")
 	for _, it := range v.Items {
 		// LLM-291: a wholesale producer's own produce isn't sold retail — it goes
-		// to the village distributor. Draw the wholesale-channel line (who buys it,
-		// what they pay, where to send other would-be buyers) instead of a retail
-		// spread, so the producer doesn't negotiate a street sale the PayWithItem
-		// wholesale gate then refuses. Low is the wholesale unit price.
+		// in bulk to the shop that stocks it. Draw the wholesale-channel line (who
+		// buys it, what they pay, where to send other would-be buyers) instead of a
+		// retail spread, so the producer doesn't negotiate a street sale the
+		// PayWithItem wholesale gate then refuses. LLM-292 added the two ends of
+		// the band stated by role — folk pay the HIGH end at the shop's shelf, the
+		// fair bulk rate selling TO the shop is the LOW end — so the producer stops
+		// taking a shelf price for a bulk sale (the live Elizabeth milk leg: the
+		// role-agnostic "1 to 2 coins" band let her take 2+ from the store's bulk
+		// buys). Copy constraint (Jeff): never the mechanic-role word
+		// "distributor" — the NPC is told who stocks its goods, not what engine
+		// role that actor holds.
 		if it.WholesaleTo != "" {
 			to := sanitizeInline(it.WholesaleTo)
-			fmt.Fprintf(b,
-				"- %s: your own produce, sold wholesale to %s, the village distributor — not retail. The distributor pays about %s each; send other buyers to %s.\n",
-				sanitizeInline(it.ItemLabel), to, coinsPhrase(it.Low), to,
-			)
+			label := sanitizeInline(it.ItemLabel)
+			if it.High > it.Low {
+				fmt.Fprintf(b,
+					"- %s: your own produce — it sells in bulk to %s, whose shop stocks it for the village, not to folk directly. Folk pay about %s each in the shops, but the fair bulk rate selling to the shop is about %s each. Send other buyers to %s.\n",
+					label, to, coinsPhrase(it.High), coinsPhrase(it.Low), to,
+				)
+			} else {
+				fmt.Fprintf(b,
+					"- %s: your own produce — it sells in bulk to %s, whose shop stocks it for the village, not to folk directly. The fair bulk rate selling to the shop is about %s each. Send other buyers to %s.\n",
+					label, to, coinsPhrase(it.Low), to,
+				)
+			}
 			continue
 		}
 		worth := fmt.Sprintf("%s each", coinsPhrase(it.High))
@@ -260,6 +339,17 @@ func renderTradeValue(b *strings.Builder, v *TradeValueView) {
 		}
 		if it.RecentUnit > 0 {
 			clauses += fmt.Sprintf("; of late you have sold for about %s each", coinsPhrase(it.RecentUnit))
+		}
+		// LLM-292: the resale cost clause carries its stake. The bare fact failed
+		// live — Josiah's rendered line held "paid about 2… sold for about 1" and he
+		// accepted a 1-coin offer on that very prompt; all data, no consequence. Per
+		// the prompt-prose principle the clause says what the number is FOR. Resale
+		// goods only (PaidUnit is only set for them) — the produced-goods makings
+		// clause below deliberately stays a directive-free fact (LLM-227), because a
+		// producer may run a loss-leader; a reseller selling below its own cost is
+		// never that, just a leak.
+		if it.PaidUnit > 0 {
+			clauses += " — selling below what you paid loses you coin"
 		}
 		// A produced good's cost of goods (LLM-226). All arithmetic is done HERE —
 		// the model gets a per-unit phrase to compare against its price, never a
@@ -280,6 +370,25 @@ func renderTradeValue(b *strings.Builder, v *TradeValueView) {
 		}
 		fmt.Fprintf(b, "- %s: %s%s.\n", sanitizeInline(it.ItemLabel), worth, clauses)
 	}
+	// LLM-292: the earmarked repair nails, last — not a ware with a price but a
+	// holding a buyer's offer must be weighed against. States the obligation and
+	// the stake (Jeff's live case: Josiah resold 5 repair nails before mending —
+	// 10 coins lost, shop still broken). When he carries MORE than the mend takes,
+	// the keep-back split is stated so the surplus stays sellable.
+	if r := v.RepairReserve; r != nil {
+		name := sanitizeInline(r.BusinessName)
+		if name == "" {
+			name = "place of business"
+		}
+		label := sanitizeInline(r.ItemLabel)
+		if r.Held <= r.Needed {
+			fmt.Fprintf(b, "- %s: you need %d of these to mend your %s — the %d you carry are for that mend, not for sale. Selling them leaves your business broken.\n",
+				label, r.Needed, name, r.Held)
+		} else {
+			fmt.Fprintf(b, "- %s: you need %d of these to mend your %s — keep %d back for the mend; only the %d beyond that are yours to sell.\n",
+				label, r.Needed, name, r.Needed, r.Held-r.Needed)
+		}
+	}
 	b.WriteString("\n")
 }
 
@@ -288,11 +397,13 @@ func renderTradeValue(b *strings.Builder, v *TradeValueView) {
 // sibling of sim.DistributorSteerLabel (which reads live *Actor): prefer the
 // distributor structure's owner display name, fall back to the object's own
 // display name, then a generic phrase. Best-effort — degrades to "the village
-// distributor" when none is configured, matching the engine steer's fallback so
-// cue and reject stay in step. First match wins (one distributor by convention).
+// storekeeper" when none is configured, matching the engine steer's fallback so
+// cue and reject stay in step (an in-world phrase on purpose: rendered prose
+// never carries the mechanic-role word "distributor", LLM-292). First match wins
+// (one distributor by convention).
 func distributorLabel(snap *sim.Snapshot) string {
 	if snap == nil {
-		return "the village distributor"
+		return "the village storekeeper"
 	}
 	for _, obj := range snap.VillageObjects {
 		if !sim.IsDistributorStructure(obj) {
@@ -307,7 +418,7 @@ func distributorLabel(snap *sim.Snapshot) string {
 			return obj.DisplayName
 		}
 	}
-	return "the village distributor"
+	return "the village storekeeper"
 }
 
 // coinsPhrase renders a coin count with singular/plural unit ("1 coin", "5 coins").

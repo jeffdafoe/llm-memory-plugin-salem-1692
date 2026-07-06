@@ -5,20 +5,20 @@
 
 
 ## You
-Coins in your purse: 0 — you have no coins to spend, but you may be able to offer goods you carry in trade.
-You are carrying: cheese (x4), milk (x6).
+Coins in your purse: 30.
+You are carrying: milk (x2).
 
 ## Around you
-You are inside the General Store, your workplace, with the laborer.
+You are inside the General Store, your workplace, with no one else here to hear you speak.
 It is midday.
 
 You're at your workplace.
 
 It is your working hours and you are at your post — stay and look after your work; you close at 6 in the evening. If no one needs you right now, wait here for customers rather than wandering off.
 
-## What your wares fetch
-What your wares fetch in coin — use it to set a fair price or weigh a trade:
-- cheese: 3 to 6 coins each; you have lately paid about 2 coins each for it — selling below what you paid loses you coin.
-- milk: 1 to 3 coins each; you have lately paid about 1 coin each for it — selling below what you paid loses you coin.
+## Restocking
+Your shop stock of these bought-in goods is running low. You choose how much to buy.
+- You have 2 milk on hand and room for 10 more at the most. The fair bulk rate buying it in is about 1 coin each — pay above that and you are overpaying. No seller is here now — use move_to to reach a supplier below, then pay_with_item once you arrive.
+  - buy from Ellis Farm (structure_id: ellis_farm)
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.
