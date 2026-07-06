@@ -972,6 +972,35 @@ var perceptionScenarios = []perceptionScenario{
 		build: ownerOffPostEnoughNails,
 	},
 	{
+		name: "keeper_conserving_owes_nail_repair",
+		summary: "LLM-297 invariant anchor (the live 2026-07-06 Josiah case): a shopkeeper (Josiah Thorne) whose " +
+			"working capital has collapsed — 1 coin, below the 10-coin floor, a full shelf of unsold cloth — owns his " +
+			"worn General Store and has stepped away from it to the Blacksmith, sharing Ezekiel Crane's huddle. Two " +
+			"standing sections fire: '## Restocking' flips to the coin-poor 'Hold off buying more for now' steer, and the " +
+			"off-post '## Nails to mend your business' errand sits him in front of the nail seller. Before LLM-297 the " +
+			"errand goaded 'Buy it now' into that thin purse, contradicting the restock advice; merchantConserve now softens " +
+			"it to a hold-off, so the two cues agree. The non-vacuous anchor for TestGoldensBuyNowGoadNeverBesideHoldOff.",
+		build: keeperConservingOwesNailRepair,
+	},
+	{
+		name: "owner_standoff_declined_nails",
+		summary: "LLM-297 standoff arm: Elizabeth Ellis, off her worn farm and sharing the smith's huddle with Ezekiel, " +
+			"has already had two nail offers to him declined in this huddle. She is not a keeper (no restock policy, so " +
+			"merchantConserve never fires), so the softening is driven purely by the dead-ended negotiation — the cue drops " +
+			"'Buy it now' for a hold-off rather than goading a third offer into the same no. Foil of " +
+			"owner_off_post_at_smith_short_nails (same co-present setup, no prior offers → the buy imperative still stands).",
+		build: ownerStandoffDeclinedNails,
+	},
+	{
+		name: "owner_short_nails_seller_low_stock",
+		summary: "LLM-297 stock-cap arm: Elizabeth shares the smith's huddle with Ezekiel, but he holds only 2 nails " +
+			"against the 5 a repair needs. Affordable and no prior offers, so the buy still stands — but the qty is capped " +
+			"at his stock ('can spare only 2 … a qty up to 2') instead of goading 'up to 5' for stock he can't deliver (the " +
+			"live smith-held-only-1-nail case). Foil of owner_off_post_at_smith_short_nails (smith well-stocked → the full " +
+			"shortfall is asked).",
+		build: ownerShortNailsSellerLowStock,
+	},
+	{
 		name: "owner_at_degraded_stall",
 		summary: "A business owner stands at his own DEGRADED premises (wear past the degrade threshold — closed for " +
 			"trade), carrying enough nails. The golden pins the escalated '## Your business' steer ('too worn to trade … " +
@@ -3701,6 +3730,36 @@ func TestGoldensOwnerOffPostShortNailsSeesBuyErrand(t *testing.T) {
 	}
 }
 
+// TestGoldensBuyNowGoadNeverBesideHoldOff is the LLM-297 cross-scenario invariant: the
+// co-present "Buy it now —" nail-repair goad (renderCoPresentBuy) and the working-capital
+// "Hold off buying more" restock steer must never render in the same prompt — they are
+// contradictory buy/hold instructions. A keeper who owns a worn business, is off it beside
+// a nail seller, AND is coin-poor+overstocked would emit both before the fix;
+// merchantConserve now softens the goad for exactly that keeper. keeper_conserving_owes_nail_repair
+// is the non-vacuous anchor (it carries the hold-off line), and the guard runs over the
+// whole matrix so no future cue reintroduces the pair for any situation.
+func TestGoldensBuyNowGoadNeverBesideHoldOff(t *testing.T) {
+	const goad = "Buy it now —"
+	const holdOff = "Hold off buying more"
+	var exercised bool
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			out := renderScenario(sc)
+			if !strings.Contains(out, holdOff) {
+				return // no restock hold-off advice in this prompt — invariant N/A here
+			}
+			exercised = true
+			if strings.Contains(out, goad) {
+				t.Errorf("scenario %q: the co-present nail goad (%q) renders in the same prompt as the restock hold-off advice (%q) — two sections issue contradictory buy/hold instructions (LLM-297)", sc.name, goad, holdOff)
+			}
+		})
+	}
+	if !exercised {
+		t.Error("matrix must exercise a keeper in working-capital conserve mode (the 'Hold off buying more' advice) so the buy-now/hold-off invariant isn't vacuous (LLM-297)")
+	}
+}
+
 // TestFarmOwnerOwesUpkeepWithSupplierNamesDestination is the LLM-274 cross-scenario
 // invariant for the farm-upkeep cue (the shovel twin of the nail invariant above):
 // whenever the "## Farm upkeep" cue renders AND findItemVendors resolves at least one
@@ -4556,6 +4615,145 @@ func ownerOffPostShortNailsWalking() (*sim.Snapshot, sim.ActorID, []sim.WarrantM
 // the foil that shows the suppression is conditional on an actual shortfall.
 func ownerOffPostEnoughNails() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	return ellisFarmWorn(sim.WorldPos{X: 1000, Y: 1000}, "", "", 5)
+}
+
+// keeperConservingOwesNailRepair is the LLM-297 invariant anchor — the live 2026-07-06
+// Josiah Thorne standoff. Josiah is a shopkeeper whose working capital has collapsed
+// (1 coin, below the 10-coin MerchantCoinFloor, with 20 unsold cloth on the shelf), so
+// merchantConserve is Active. He owns the worn General Store (his post) but has walked
+// off it to the Blacksmith, where he shares Ezekiel Crane's huddle — Ezekiel produces
+// both nails (10 held, the repair supply) and coal (15 held, Josiah's low restock
+// input). So two standing sections would fire at once: "## Restocking" flips to the
+// coin-poor "Hold off buying more for now" steer (coal is low and Ezekiel is a
+// co-present coal supplier, so the item survives the LLM-216 drop), while the off-post
+// "## Nails to mend your business" errand puts a nail seller in front of him. The fix
+// softens the nail goad under conserve, so the prompt no longer carries "Buy it now"
+// beside "Hold off buying more".
+func keeperConservingOwesNailRepair() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		josiahID  = sim.ActorID("josiah")
+		ezekielID = sim.ActorID("ezekiel")
+		store     = sim.StructureID("general_store")
+		smithy    = sim.StructureID("blacksmith")
+		huddleID  = sim.HuddleID("forge_huddle")
+	)
+	zero := 0
+	start, end := 360, 1080 // 06:00-18:00
+	now := 720              // 12:00 — on shift, off his post at the smith
+	published := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
+	josiah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Josiah Thorne",
+		Role:              "shopkeeper",
+		State:             sim.StateIdle,
+		Pos:               sim.TilePos{X: 200, Y: 200},
+		InsideStructureID: smithy,
+		WorkStructureID:   store, // his post — he is standing off it, at the smith
+		CurrentHuddleID:   huddleID,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             1,
+		Needs:             map[sim.NeedKey]int{},
+		// Overstocked cloth is the conserve trigger; low coal is the surviving Restocking
+		// item (Ezekiel supplies it co-present); 0 nails is the repair shortfall.
+		Inventory: map[sim.ItemKind]int{"cloth": 20, "coal": 1, "nail": 0},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "cloth", Source: sim.RestockSourceBuy, Max: 24},
+			{Item: "coal", Source: sim.RestockSourceBuy, Max: 12},
+		}},
+		Acquaintances: map[string]sim.Acquaintance{"Ezekiel Crane": {}},
+	}
+	ezekiel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Ezekiel Crane",
+		Role:              "blacksmith",
+		State:             sim.StateIdle,
+		Pos:               sim.TilePos{X: 201, Y: 200},
+		InsideStructureID: smithy,
+		WorkStructureID:   smithy,
+		CurrentHuddleID:   huddleID,
+		Coins:             12,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"nail": 10, "coal": 15},
+		// Produces nails AND coal, so the LLM-252 supplier-of-record gate names him for
+		// each — the nail repair-buy and Josiah's coal restock both resolve to him.
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "nail", Source: sim.RestockSourceProduce, Max: 40},
+			{Item: "coal", Source: sim.RestockSourceProduce, Max: 40},
+		}},
+		Acquaintances: map[string]sim.Acquaintance{"Josiah Thorne": {}},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:               published,
+		LocalMinuteOfDay:          &now,
+		NeedThresholds:            sim.NeedThresholds{},
+		Assets:                    emptyAssetSet,
+		MerchantCoinFloor:         10,
+		RestockReorderPct:         25,
+		StallWearRepairThreshold:  400,
+		StallWearDegradeThreshold: 600,
+		StallNailsPerRepair:       5,
+		Actors:                    map[sim.ActorID]*sim.ActorSnapshot{josiahID: josiah, ezekielID: ezekiel},
+		Structures: map[sim.StructureID]*sim.Structure{
+			store:  plainStructure(store, "General Store"),
+			smithy: plainStructure(smithy, "Blacksmith"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddleID: {ID: huddleID, Members: map[sim.ActorID]struct{}{josiahID: {}, ezekielID: {}}},
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			sim.VillageObjectID(store): {
+				ID:            sim.VillageObjectID(store),
+				DisplayName:   "General Store",
+				Pos:           sim.WorldPos{X: 100, Y: 100},
+				OwnerActorID:  josiahID,
+				Tags:          []string{sim.TagBusiness},
+				Wear:          450,
+				LoiterOffsetX: &zero,
+				LoiterOffsetY: &zero,
+			},
+		},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"cloth": {Name: "cloth", DisplayLabel: "cloth"},
+			"coal":  {Name: "coal", DisplayLabel: "coal"},
+			"nail":  {Name: "nail", DisplayLabel: "nails"},
+		},
+	}
+	return snap, josiahID, nil
+}
+
+// ownerStandoffDeclinedNails is the LLM-297 standoff arm: the ownerOffPostAtSmithShortNails
+// co-present setup (Elizabeth off her worn farm, sharing the smith's huddle with Ezekiel,
+// 0 nails), but with two prior nail offers to Ezekiel already declined IN THIS HUDDLE on
+// the pay ledger. Elizabeth is a plain farmer (no restock policy → merchantConserve never
+// fires), so the softening here is driven purely by the dead-ended negotiation
+// (nailStandoffToSeller), proving the standoff path independent of conserve mode.
+func ownerStandoffDeclinedNails() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, actorID, warrants := ellisFarmWorn(sim.WorldPos{X: 2000, Y: 2000}, "blacksmith", "smith_huddle", 0)
+	snap.PublishedAt = time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
+	// Thin purse — the live standoff is purse-driven (the smith declines a short purse),
+	// which is why both offers were turned down and why the soften's "once your coins
+	// recover" reads true here.
+	snap.Actors[actorID].Coins = 3
+	// Two declined nail offers to Ezekiel in the current huddle — the threshold the cue
+	// reads as a standoff. Declined is terminal, so no ExpiresAt is needed (only pending
+	// entries age out).
+	snap.PayLedger = map[sim.LedgerID]*sim.PayLedgerEntry{
+		1: {ID: 1, BuyerID: actorID, SellerID: "ezekiel", ItemKind: sim.NailItemKind, State: sim.PayLedgerStateDeclined, HuddleID: "smith_huddle"},
+		2: {ID: 2, BuyerID: actorID, SellerID: "ezekiel", ItemKind: sim.NailItemKind, State: sim.PayLedgerStateDeclined, HuddleID: "smith_huddle"},
+	}
+	return snap, actorID, warrants
+}
+
+// ownerShortNailsSellerLowStock is the LLM-297 stock-cap arm: the same co-present setup,
+// but Ezekiel holds only 2 nails against the 5 a repair needs. Affordable and no prior
+// offers, so the buy still stands — the render caps the ask at his stock instead of
+// goading the full shortfall (the live case: the smith held only 1 nail).
+func ownerShortNailsSellerLowStock() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, actorID, warrants := ellisFarmWorn(sim.WorldPos{X: 2000, Y: 2000}, "blacksmith", "smith_huddle", 0)
+	snap.Actors["ezekiel"].Inventory[sim.NailItemKind] = 2
+	return snap, actorID, warrants
 }
 
 // farmOwnerOwesUpkeepSellerPresent is the LLM-277 farm-upkeep co-present arm: Elizabeth
