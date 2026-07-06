@@ -511,6 +511,52 @@ func TestRefresh_NPCDrinksAtWellOnArrival(t *testing.T) {
 	}
 }
 
+// TestRefresh_NPCDrinksAtTwoRowWellOnArrival (LLM-288): the LIVE post-LLM-254
+// Well carries a finite yield-only water-pail row NEXT TO its infinite drink
+// row, which makes the object an IsFiniteGatherableSource. The LLM-87
+// NPC-at-bush suppression must stay row-aware: the infinite in-place drink row
+// keeps the arrival drink alive (the hud-843da92a "parched at the Well forever"
+// regression). The pail stock is 0 — as observed live — so this also proves a
+// dry pail can't block the drink.
+func TestRefresh_NPCDrinksAtTwoRowWellOnArrival(t *testing.T) {
+	w, cancel := buildGatherTestWorld(t)
+	defer cancel()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		zero := 0
+		ip := func(v int) *int { return &v }
+		world.VillageObjects["town_well"] = &sim.VillageObject{
+			ID: "town_well", DisplayName: "Town Well", AssetID: "well-stone", CurrentState: "default",
+			LoiterOffsetX: &zero, LoiterOffsetY: &zero,
+			Pos: sim.WorldPos{X: 3000, Y: 3000}, // clear of every fixture object (the bench sits at 2000,2000)
+			Refreshes: []*sim.ObjectRefresh{
+				{Attribute: "thirst", Amount: -8, DwellDelta: ip(-1), DwellPeriodMinutes: ip(2)},
+				{
+					Amount:             0, // yield-only water-pail forage row (LLM-254)
+					AvailableQuantity:  ip(0),
+					MaxQuantity:        ip(20),
+					RefreshMode:        sim.RefreshModePeriodic,
+					RefreshPeriodHours: ip(6),
+					GatherItem:         "water",
+				},
+			},
+		}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed town_well: %v", err)
+	}
+	setActorKind(t, w, "hannah", sim.KindNPCStateful)
+	setNeed(t, w, "hannah", "thirst", 14)
+	placeAt(t, w, "hannah", "town_well")
+
+	res, err := w.Send(sim.StartRefreshAtArrival("hannah"))
+	if err != nil {
+		t.Fatalf("StartRefreshAtArrival: %v", err)
+	}
+	if sr := res.(sim.SourceActivityStartResult); !sr.Started {
+		t.Error("NPC did not start drinking at the two-row well — the finite pail row must not suppress the infinite drink row (LLM-288)")
+	}
+}
+
 // TestRefresh_InfiniteSource_NoAutoRepeat (LLM-55): an INFINITE source (the well)
 // is never auto-repeated — it drinks once on arrival and stops, keeping its
 // arrival + dwell behavior, even though the actor is still thirsty afterward. The

@@ -121,18 +121,45 @@ func (o *VillageObject) OwnedByOther(actorID ActorID) bool {
 	return o.OwnerActorID != "" && o.OwnerActorID != actorID
 }
 
-// IsFiniteGatherableSource reports whether the object is a FINITE gatherable
-// source — a bush: you pick an exhaustible yield (a finite gather_item row) from
-// it (LLM-87). This distinguishes a bush from a WELL, which is gatherable too
-// (you can draw water) but INFINITE — no stock to exhaust. An NPC eats a bush via
-// gather -> consume (so it does not auto-eat there on arrival), while a well keeps
-// its arrival + dwell drink path. Nil-safe, mirroring OwnedByOther.
+// IsFiniteGatherableSource reports whether the object carries a FINITE
+// gatherable row — a bush's exhaustible pick, or a well's water-pail yield
+// (LLM-254 split the well into an infinite drink row + a finite yield-only
+// pail row, so a well IS a finite gatherable source now). This predicate
+// alone no longer distinguishes a bush from a well; the LLM-87 "NPC eats a
+// bush via gather -> consume, doesn't auto-eat on arrival" carve-out must
+// ALSO check HasInfiniteInPlaceNeedRow — an object that can be consumed in
+// place forever keeps its arrival + dwell path regardless of a sibling
+// finite yield row (LLM-288). Nil-safe, mirroring OwnedByOther.
 func (o *VillageObject) IsFiniteGatherableSource() bool {
 	if o == nil {
 		return false
 	}
 	for _, r := range o.Refreshes {
 		if r != nil && r.IsGatherable() && r.IsFinite() {
+			return true
+		}
+	}
+	return false
+}
+
+// HasInfiniteInPlaceNeedRow reports whether the object carries an infinite
+// in-place need row (ObjectRefresh.IsInfiniteInPlaceNeed — a well's drink row)
+// for `need`, or for ANY need when need is "". This is the other half of the
+// LLM-87 bush test: a finite gatherable row makes an object gather-able, but
+// only the ABSENCE of an infinite in-place row makes it a bush the NPC must
+// gather->consume at. The live Well (post-LLM-254) carries both a finite
+// water-pail yield row and the infinite thirst drink row — the drink path must
+// survive the pail row (LLM-288: the hud-843da92a "parched at the Well forever"
+// regression). Nil-safe.
+func (o *VillageObject) HasInfiniteInPlaceNeedRow(need NeedKey) bool {
+	if o == nil {
+		return false
+	}
+	for _, r := range o.Refreshes {
+		if !r.IsInfiniteInPlaceNeed() {
+			continue
+		}
+		if need == "" || r.Attribute == need {
 			return true
 		}
 	}

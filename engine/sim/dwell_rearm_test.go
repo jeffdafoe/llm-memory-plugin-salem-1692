@@ -20,6 +20,14 @@ import (
 // shape from the ticket. Callers mutate the actor/objects to exercise each guard.
 func rearmTestWorld() (*World, *Actor, *VillageObject) {
 	zero := 0
+	// The well mirrors the LIVE post-LLM-254 two-row shape: the infinite
+	// in-place drink row PLUS a finite yield-only water-pail row. The pail row
+	// makes the object an IsFiniteGatherableSource — exactly the shape that
+	// neutered the LLM-281 re-arm on the real Well until the LLM-87 carve-out
+	// went row-aware (LLM-288). Keep both rows so that regression stays caught.
+	pailStock := 20
+	pailMax := 20
+	pailPeriod := 6
 	well := &VillageObject{
 		ID: "well", DisplayName: "Well", AssetID: "well-stone", CurrentState: "default",
 		LoiterOffsetX: &zero, LoiterOffsetY: &zero,
@@ -30,6 +38,14 @@ func rearmTestWorld() (*World, *Actor, *VillageObject) {
 				Amount:             -8, // arrival burst
 				DwellDelta:         intptr(-2),
 				DwellPeriodMinutes: intptr(30),
+			},
+			{
+				Amount:             0, // yield-only water-pail forage row (LLM-254)
+				AvailableQuantity:  &pailStock,
+				MaxQuantity:        &pailMax,
+				RefreshMode:        RefreshModePeriodic,
+				RefreshPeriodHours: &pailPeriod,
+				GatherItem:         "water",
 			},
 		},
 	}
