@@ -22,7 +22,7 @@ func renderStallBuy(v *StallRepairBuyView) string {
 func TestRenderStallRepairBuy_CoPresentFullStock_GoadsBuy(t *testing.T) {
 	out := renderStallBuy(&StallRepairBuyView{
 		Name: "Ellis Farm", NailsNeeded: 5, NailsHeld: 0, NailsShort: 5,
-		CoPresentSeller: "Ezekiel Crane", SellerStock: 21, Block: stallBuyOK,
+		CoPresentSeller: "Ezekiel Crane", SellerStock: 21, Block: copresentBuyOK,
 	})
 	if !strings.Contains(out, "Buy it now —") {
 		t.Errorf("full-stock co-present buy should goad 'Buy it now'; got:\n%s", out)
@@ -35,7 +35,7 @@ func TestRenderStallRepairBuy_CoPresentFullStock_GoadsBuy(t *testing.T) {
 func TestRenderStallRepairBuy_LowStock_CapsQtyToStock(t *testing.T) {
 	out := renderStallBuy(&StallRepairBuyView{
 		Name: "Ellis Farm", NailsNeeded: 5, NailsHeld: 0, NailsShort: 5,
-		CoPresentSeller: "Ezekiel Crane", SellerStock: 2, Block: stallBuyOK,
+		CoPresentSeller: "Ezekiel Crane", SellerStock: 2, Block: copresentBuyOK,
 	})
 	if !strings.Contains(out, "can spare only 2") {
 		t.Errorf("should name the seller's 2-nail stock; got:\n%s", out)
@@ -51,7 +51,7 @@ func TestRenderStallRepairBuy_LowStock_CapsQtyToStock(t *testing.T) {
 func TestRenderStallRepairBuy_CoinBlock_SoftensNoGoad(t *testing.T) {
 	out := renderStallBuy(&StallRepairBuyView{
 		Name: "Ellis Farm", NailsNeeded: 5, NailsHeld: 0, NailsShort: 5,
-		CoPresentSeller: "Ezekiel Crane", SellerStock: 10, Block: stallBuyBlockedCoin,
+		CoPresentSeller: "Ezekiel Crane", SellerStock: 10, Block: copresentBuyBlockedCoin,
 	})
 	if strings.Contains(out, "Buy it now —") {
 		t.Errorf("a coin-blocked buy must not goad 'Buy it now'; got:\n%s", out)
@@ -64,7 +64,7 @@ func TestRenderStallRepairBuy_CoinBlock_SoftensNoGoad(t *testing.T) {
 func TestRenderStallRepairBuy_TermsBlock_SoftensNoGoad(t *testing.T) {
 	out := renderStallBuy(&StallRepairBuyView{
 		Name: "Ellis Farm", NailsNeeded: 5, NailsHeld: 0, NailsShort: 5,
-		CoPresentSeller: "Ezekiel Crane", SellerStock: 10, Block: stallBuyBlockedTerms,
+		CoPresentSeller: "Ezekiel Crane", SellerStock: 10, Block: copresentBuyBlockedTerms,
 	})
 	if strings.Contains(out, "Buy it now —") {
 		t.Errorf("a terms-blocked buy must not goad 'Buy it now'; got:\n%s", out)
@@ -77,7 +77,7 @@ func TestRenderStallRepairBuy_TermsBlock_SoftensNoGoad(t *testing.T) {
 func TestRenderStallRepairBuy_NoStock_SoftensNoGoad(t *testing.T) {
 	out := renderStallBuy(&StallRepairBuyView{
 		Name: "Ellis Farm", NailsNeeded: 5, NailsHeld: 0, NailsShort: 5,
-		CoPresentSeller: "Ezekiel Crane", SellerStock: 0, Block: stallBuyBlockedNoStock,
+		CoPresentSeller: "Ezekiel Crane", SellerStock: 0, Block: copresentBuyBlockedNoStock,
 	})
 	if strings.Contains(out, "Buy it now —") {
 		t.Errorf("a no-stock seller must not be goaded for a buy; got:\n%s", out)
@@ -119,8 +119,8 @@ func TestBuildStallRepairBuy_HealthyCoPresent_NoBlock(t *testing.T) {
 	if v == nil {
 		t.Fatal("expected a nail-buy errand")
 	}
-	if v.Block != stallBuyOK {
-		t.Errorf("Block = %v, want stallBuyOK (healthy purse, no prior offers, well-stocked smith)", v.Block)
+	if v.Block != copresentBuyOK {
+		t.Errorf("Block = %v, want copresentBuyOK (healthy purse, no prior offers, well-stocked smith)", v.Block)
 	}
 	if v.SellerStock != 21 {
 		t.Errorf("SellerStock = %d, want 21 (the smith's held nails)", v.SellerStock)
@@ -133,8 +133,8 @@ func TestBuildStallRepairBuy_TwoDeclines_TermsBlock(t *testing.T) {
 	if v == nil {
 		t.Fatal("expected a nail-buy errand")
 	}
-	if v.Block != stallBuyBlockedTerms {
-		t.Errorf("Block = %v, want stallBuyBlockedTerms (two declines in this huddle)", v.Block)
+	if v.Block != copresentBuyBlockedTerms {
+		t.Errorf("Block = %v, want copresentBuyBlockedTerms (two declines in this huddle)", v.Block)
 	}
 }
 
@@ -146,8 +146,8 @@ func TestBuildStallRepairBuy_OneDecline_NoBlock(t *testing.T) {
 	if v == nil {
 		t.Fatal("expected a nail-buy errand")
 	}
-	if v.Block != stallBuyOK {
-		t.Errorf("Block = %v, want stallBuyOK (one decline is below the standoff threshold)", v.Block)
+	if v.Block != copresentBuyOK {
+		t.Errorf("Block = %v, want copresentBuyOK (one decline is below the standoff threshold)", v.Block)
 	}
 }
 
@@ -161,8 +161,8 @@ func TestBuildStallRepairBuy_InsufficientFunds_FailFastCoinBlock(t *testing.T) {
 	if v == nil {
 		t.Fatal("expected a nail-buy errand")
 	}
-	if v.Block != stallBuyBlockedCoin {
-		t.Errorf("Block = %v, want stallBuyBlockedCoin (one insufficient-funds is fail-fast)", v.Block)
+	if v.Block != copresentBuyBlockedCoin {
+		t.Errorf("Block = %v, want copresentBuyBlockedCoin (one insufficient-funds is fail-fast)", v.Block)
 	}
 }
 
@@ -178,8 +178,8 @@ func TestBuildStallRepairBuy_StaleDeclines_NoBlock(t *testing.T) {
 	if v == nil {
 		t.Fatal("expected a nail-buy errand")
 	}
-	if v.Block != stallBuyOK {
-		t.Errorf("Block = %v, want stallBuyOK (declines are older than the recency window)", v.Block)
+	if v.Block != copresentBuyOK {
+		t.Errorf("Block = %v, want copresentBuyOK (declines are older than the recency window)", v.Block)
 	}
 }
 
@@ -193,8 +193,8 @@ func TestBuildStallRepairBuy_DeclinesInOtherHuddle_Ignored(t *testing.T) {
 	if v == nil {
 		t.Fatal("expected a nail-buy errand")
 	}
-	if v.Block != stallBuyOK {
-		t.Errorf("Block = %v, want stallBuyOK (declines were in a different huddle)", v.Block)
+	if v.Block != copresentBuyOK {
+		t.Errorf("Block = %v, want copresentBuyOK (declines were in a different huddle)", v.Block)
 	}
 }
 
@@ -204,8 +204,8 @@ func TestBuildStallRepairBuy_Conserve_CoinBlock(t *testing.T) {
 	if v == nil {
 		t.Fatal("expected a nail-buy errand")
 	}
-	if v.Block != stallBuyBlockedCoin {
-		t.Errorf("Block = %v, want stallBuyBlockedCoin (keeper is in working-capital conserve mode)", v.Block)
+	if v.Block != copresentBuyBlockedCoin {
+		t.Errorf("Block = %v, want copresentBuyBlockedCoin (keeper is in working-capital conserve mode)", v.Block)
 	}
 }
 
@@ -215,8 +215,8 @@ func TestBuildStallRepairBuy_LowStock_CapReflectsSellerStock(t *testing.T) {
 	if v == nil {
 		t.Fatal("expected a nail-buy errand")
 	}
-	if v.Block != stallBuyOK {
-		t.Errorf("Block = %v, want stallBuyOK (affordable, no standoff — the buy stands, just capped)", v.Block)
+	if v.Block != copresentBuyOK {
+		t.Errorf("Block = %v, want copresentBuyOK (affordable, no standoff — the buy stands, just capped)", v.Block)
 	}
 	if v.SellerStock != 2 {
 		t.Errorf("SellerStock = %d, want 2 (the smith's held stock)", v.SellerStock)

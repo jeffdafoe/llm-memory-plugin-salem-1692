@@ -1096,6 +1096,37 @@ var perceptionScenarios = []perceptionScenario{
 		build: farmOwnerOwesUpkeepSellerPresent,
 	},
 	{
+		name: "farm_owner_owes_upkeep_seller_low_stock",
+		summary: "LLM-299 stock-cap arm (shovel twin of owner_short_nails_seller_low_stock): Elizabeth owes 3 upkeep shovels " +
+			"and shares the smith's huddle with Ezekiel, but he holds only 1 shovel against the 3 she needs. Affordable and " +
+			"no prior offers, so the buy still stands — but the '## Farm upkeep' cue caps the ask at his stock ('can spare " +
+			"only 1 … a qty up to 1') instead of goading 'up to 3' for stock he can't deliver. Foil of " +
+			"farm_owner_owes_upkeep_seller_present (smith well-stocked with 12 → the full shortfall is asked).",
+		build: farmOwnerOwesUpkeepSellerLowStock,
+	},
+	{
+		name: "farm_owner_standoff_declined_shovels",
+		summary: "LLM-299 standoff arm (shovel twin of owner_standoff_declined_nails): Elizabeth owes 3 upkeep shovels and " +
+			"shares the smith's huddle with Ezekiel (well-stocked, 12 shovels), but has already had two shovel offers to him " +
+			"declined in this huddle. She is a plain farmer (no restock policy → merchantConserve never fires), so the " +
+			"softening is driven purely by the dead-ended negotiation — the '## Farm upkeep' cue drops 'Buy it now' for a " +
+			"hold-off rather than goading a third offer into the same no. Foil of farm_owner_owes_upkeep_seller_present " +
+			"(same co-present setup, no prior offers → the buy imperative still stands).",
+		build: farmOwnerStandoffDeclinedShovels,
+	},
+	{
+		name: "farm_owner_conserving_owes_upkeep",
+		summary: "LLM-299 conserve-coupling arm + the non-vacuous anchor for TestGoldensFarmUpkeepGoadNeverBesideHoldOff " +
+			"(the shovel twin of keeper_conserving_owes_nail_repair): Marta Vale is a shopkeeper whose working capital has " +
+			"collapsed (51 coins, below the 60-coin floor, a full shelf of unsold cloth) who ALSO owns a farm and owes 1 " +
+			"upkeep shovel. She has stepped off her farm to the Blacksmith, sharing Ezekiel Crane's huddle — he produces both " +
+			"shovels (12 held, the upkeep supply) and coal (15 held, her low restock input). Two standing sections fire: " +
+			"'## Restocking' flips to the coin-poor 'Hold off buying more for now' steer, and '## Farm upkeep' sits her in " +
+			"front of the shovel seller. merchantConserve now softens the shovel goad to a hold-off, so the two cues agree " +
+			"instead of the '## Farm upkeep' 'Buy it now' contradicting the restock hold-off.",
+		build: farmOwnerConservingOwesUpkeep,
+	},
+	{
 		name: "farm_owner_off_post_owes_upkeep_no_supplier",
 		summary: "LLM-277 review-caught edge (code_review c11007e7): a farm owner off her post owes 3 upkeep shovels but NO " +
 			"shovel supplier is reachable (findItemVendors empty, none co-present). The '## Farm upkeep' cue keeps its generic " +
@@ -3851,6 +3882,41 @@ func TestGoldensBuyNowGoadNeverBesideHoldOff(t *testing.T) {
 	}
 }
 
+// TestGoldensFarmUpkeepGoadNeverBesideHoldOff is the LLM-299 cross-scenario invariant — the
+// shovel twin of TestGoldensBuyNowGoadNeverBesideHoldOff: the "## Farm upkeep" co-present
+// "Buy it now —" goad (renderCoPresentBuy) and the working-capital "Hold off buying more"
+// restock steer must never render in the same prompt. A farm-owning keeper who is off her
+// farm beside a shovel seller AND coin-poor+overstocked would emit both before the fix;
+// merchantConserve now softens the shovel goad for exactly that keeper. The goad check is
+// scoped to the "## Farm upkeep" section because renderCoPresentBuy is shared with other
+// cues (the nail repair-buy and restock co-present buys) that may legitimately say
+// "Buy it now —" elsewhere in the prompt. farm_owner_conserving_owes_upkeep is the
+// non-vacuous anchor (it carries the hold-off line beside the farm-upkeep cue).
+func TestGoldensFarmUpkeepGoadNeverBesideHoldOff(t *testing.T) {
+	const goad = "Buy it now —"
+	const holdOff = "Hold off buying more"
+	var exercised bool
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			out := renderScenario(sc)
+			if !strings.Contains(out, holdOff) {
+				return // no restock hold-off advice in this prompt — invariant N/A here
+			}
+			if !strings.Contains(out, "## Farm upkeep") {
+				return // no farm-upkeep cue here — the shovel goad can't collide with the hold-off
+			}
+			exercised = true
+			if strings.Contains(promptSection(out, "## Farm upkeep"), goad) {
+				t.Errorf("scenario %q: the farm-upkeep goad (%q) renders in the same prompt as the restock hold-off advice (%q) — two sections issue contradictory buy/hold instructions (LLM-299)", sc.name, goad, holdOff)
+			}
+		})
+	}
+	if !exercised {
+		t.Error("matrix must exercise a farm-owning keeper in working-capital conserve mode who owes upkeep (the 'Hold off buying more' advice beside a '## Farm upkeep' cue) so the buy-now/hold-off invariant isn't vacuous (LLM-299)")
+	}
+}
+
 // TestFarmOwnerOwesUpkeepWithSupplierNamesDestination is the LLM-274 cross-scenario
 // invariant for the farm-upkeep cue (the shovel twin of the nail invariant above):
 // whenever the "## Farm upkeep" cue renders AND findItemVendors resolves at least one
@@ -3904,6 +3970,9 @@ func TestFarmUpkeepCueOnlyForOwingFarmOwner(t *testing.T) {
 		"farm_owner_owes_upkeep":                      true,
 		"farm_owner_owes_upkeep_with_shovel_supplier": true, // LLM-274: same owing owner, now with a resolvable supplier
 		"farm_owner_owes_upkeep_seller_present":       true, // LLM-277: same owing owner, now co-present with the shovel seller
+		"farm_owner_owes_upkeep_seller_low_stock":     true, // LLM-299: co-present, seller low on shovels — capped buy still renders the cue
+		"farm_owner_standoff_declined_shovels":        true, // LLM-299: co-present, negotiation dead-ended — softened cue still renders
+		"farm_owner_conserving_owes_upkeep":           true, // LLM-299: farm-owning keeper in conserve mode — softened cue still renders
 		"farm_owner_off_post_owes_upkeep_no_supplier": true, // LLM-277: owes shovels, no reachable supplier — generic cue still renders
 	}
 	for _, sc := range perceptionScenarios {
@@ -4915,6 +4984,145 @@ func farmOwnerOwesUpkeepSellerPresent() (*sim.Snapshot, sim.ActorID, []sim.Warra
 		},
 	}
 	return snap, actorID, nil
+}
+
+// farmOwnerOwesUpkeepSellerLowStock is the LLM-299 stock-cap arm: the
+// farmOwnerOwesUpkeepSellerPresent co-present setup (Elizabeth owes 3 upkeep shovels,
+// sharing the smith's huddle with Ezekiel), but Ezekiel holds only 1 shovel against the 3
+// she needs. Affordable and no prior offers, so the buy still stands — the render caps the
+// ask at his stock instead of goading the full shortfall (the shovel twin of the live
+// smith-held-only-1-nail case).
+func farmOwnerOwesUpkeepSellerLowStock() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, actorID, warrants := farmOwnerOwesUpkeepSellerPresent()
+	snap.Actors["ezekiel"].Inventory[sim.ShovelItemKind] = 1
+	return snap, actorID, warrants
+}
+
+// farmOwnerStandoffDeclinedShovels is the LLM-299 standoff arm: the
+// farmOwnerOwesUpkeepSellerPresent co-present setup (Elizabeth owes 3 upkeep shovels,
+// sharing the smith's huddle with Ezekiel, who is well-stocked at 12), but with two prior
+// shovel offers to Ezekiel already declined IN THIS HUDDLE on the pay ledger. Elizabeth is a
+// plain farmer (no restock policy → merchantConserve never fires), so the softening here is
+// driven purely by the dead-ended negotiation (coPresentBuyStandoff), proving the standoff
+// path independent of conserve mode — the shovel twin of ownerStandoffDeclinedNails.
+func farmOwnerStandoffDeclinedShovels() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, actorID, warrants := farmOwnerOwesUpkeepSellerPresent()
+	published := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
+	snap.PublishedAt = published
+	// Two declined shovel offers to Ezekiel in the current huddle, resolved a minute ago —
+	// the threshold the cue reads as a standoff, and inside recentlyResolvedOfferWindow so the
+	// recency guard counts them. Declined is terminal, so no ExpiresAt is needed.
+	resolved := published.Add(-1 * time.Minute)
+	snap.PayLedger = map[sim.LedgerID]*sim.PayLedgerEntry{
+		1: {ID: 1, BuyerID: actorID, SellerID: "ezekiel", ItemKind: sim.ShovelItemKind, Qty: 3, State: sim.PayLedgerStateDeclined, HuddleID: "smith_huddle", ResolvedAt: resolved},
+		2: {ID: 2, BuyerID: actorID, SellerID: "ezekiel", ItemKind: sim.ShovelItemKind, Qty: 3, State: sim.PayLedgerStateDeclined, HuddleID: "smith_huddle", ResolvedAt: resolved},
+	}
+	return snap, actorID, warrants
+}
+
+// farmOwnerConservingOwesUpkeep is the LLM-299 conserve-coupling arm and the non-vacuous
+// anchor for TestGoldensFarmUpkeepGoadNeverBesideHoldOff — the shovel twin of
+// keeperConservingOwesNailRepair. Marta Vale is a shopkeeper whose working capital has
+// collapsed (51 coins, below the 60-coin MerchantCoinFloor, with 20 unsold cloth on the
+// shelf), so merchantConserve is Active. She ALSO owns Vale Farm and owes 1 upkeep shovel
+// (51 coins over the 30 floor, banded by 20). She has stepped off her farm to the Blacksmith,
+// where she shares Ezekiel Crane's huddle — Ezekiel produces both shovels (12 held, the
+// upkeep supply) and coal (15 held, Marta's low restock input). Two standing sections fire
+// at once: "## Restocking" flips to the coin-poor "Hold off buying more for now" steer (coal
+// is low and Ezekiel is a co-present coal supplier, so the item survives the LLM-216 drop),
+// while "## Farm upkeep" puts a shovel seller in front of her. The fix softens the shovel
+// goad under conserve, so the prompt no longer carries "Buy it now" beside "Hold off buying
+// more". She owns no worn business, so no nail repair cue competes here.
+func farmOwnerConservingOwesUpkeep() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		martaID   = sim.ActorID("marta")
+		ezekielID = sim.ActorID("ezekiel")
+		farm      = sim.StructureID("marta_farm")
+		smithy    = sim.StructureID("blacksmith")
+		huddleID  = sim.HuddleID("forge_huddle")
+	)
+	zero := 0
+	start, end := 360, 1080 // 06:00-18:00
+	now := 720              // 12:00 — on shift, off her farm at the smith
+	published := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
+	marta := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Marta Vale",
+		Role:              "shopkeeper",
+		State:             sim.StateIdle,
+		Pos:               sim.TilePos{X: 200, Y: 200},
+		InsideStructureID: smithy,
+		WorkStructureID:   farm, // her post — she is standing off it, at the smith
+		CurrentHuddleID:   huddleID,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             51, // below the 60 MerchantCoinFloor (conserve) yet above the 30 FarmUpkeepFloor (owes 1 shovel)
+		Needs:             map[sim.NeedKey]int{},
+		// Overstocked cloth is the conserve trigger; low coal is the surviving Restocking
+		// item (Ezekiel supplies it co-present); 0 shovels is the upkeep shortfall.
+		Inventory: map[sim.ItemKind]int{"cloth": 20, "coal": 1, "shovel": 0},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "cloth", Source: sim.RestockSourceBuy, Max: 24},
+			{Item: "coal", Source: sim.RestockSourceBuy, Max: 12},
+		}},
+		Acquaintances: map[string]sim.Acquaintance{"Ezekiel Crane": {}},
+	}
+	ezekiel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Ezekiel Crane",
+		Role:              "blacksmith",
+		State:             sim.StateIdle,
+		Pos:               sim.TilePos{X: 201, Y: 200},
+		InsideStructureID: smithy,
+		WorkStructureID:   smithy,
+		CurrentHuddleID:   huddleID,
+		Coins:             12,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"shovel": 12, "coal": 15},
+		// Produces shovels AND coal, so the LLM-252 supplier-of-record gate names him for
+		// each — the farm-upkeep shovel buy and Marta's coal restock both resolve to him.
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "shovel", Source: sim.RestockSourceProduce, Max: 40},
+			{Item: "coal", Source: sim.RestockSourceProduce, Max: 40},
+		}},
+		Acquaintances: map[string]sim.Acquaintance{"Marta Vale": {}},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:              published,
+		LocalMinuteOfDay:         &now,
+		NeedThresholds:           sim.NeedThresholds{},
+		Assets:                   emptyAssetSet,
+		MerchantCoinFloor:        60,
+		RestockReorderPct:        25,
+		FarmUpkeepFloor:          30,
+		FarmUpkeepCoinsPerShovel: 20,
+		Actors:                   map[sim.ActorID]*sim.ActorSnapshot{martaID: marta, ezekielID: ezekiel},
+		Structures: map[sim.StructureID]*sim.Structure{
+			farm:   plainStructure(farm, "Vale Farm"),
+			smithy: plainStructure(smithy, "Blacksmith"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddleID: {ID: huddleID, Members: map[sim.ActorID]struct{}{martaID: {}, ezekielID: {}}},
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			sim.VillageObjectID(farm): {
+				ID:            sim.VillageObjectID(farm),
+				DisplayName:   "Vale Farm",
+				Pos:           sim.WorldPos{X: 100, Y: 100},
+				OwnerActorID:  martaID,
+				Tags:          []string{sim.TagFarm},
+				LoiterOffsetX: &zero,
+				LoiterOffsetY: &zero,
+			},
+		},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"cloth":  {Name: "cloth", DisplayLabel: "cloth"},
+			"coal":   {Name: "coal", DisplayLabel: "coal"},
+			"shovel": {Name: "shovel", DisplayLabel: "shovels"},
+		},
+	}
+	return snap, martaID, nil
 }
 
 // farmOwnerOffPostOwesUpkeepNoSupplier is the LLM-277 review-caught edge (code_review
