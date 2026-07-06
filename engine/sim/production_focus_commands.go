@@ -71,25 +71,33 @@ func SetProductionFocus(id ActorID, itemName string) Command {
 			// goods it CAN make (John Ellis locked on a sage-less stew, unable to mint
 			// even no-input water). When nothing else is craftable either, allow the
 			// pick — there is nothing better (the all-at-cap / all-starved escape).
-			if !craftableNow(w, a, chosen) && anyOtherCraftable(a, w, kind) {
-				// Branch the message on the ACTUAL failing predicate rather than
-				// inferring "not at cap ⇒ input-short": name the missing inputs only
-				// when inputs are truly the problem; otherwise makeableRecipe passed
-				// and the inputs are in hand, so the block is the carry cap.
-				if recipe := w.Recipes[kind]; !HasProduceInputs(recipe, a.Inventory) {
-					return nil, ModelFacingError{Msg: fmt.Sprintf("you can't make %s right now — you're %s; focus on something you can make now", kind, describeMissingInputs(recipe, a.Inventory))}
+			if !craftableNow(w, a, chosen) {
+				// Name the goods the crafter CAN make now (LLM-300) instead of a bare
+				// "make something else" — a copyable next action for the weak model. An
+				// empty list means nothing else is craftable either: fall through and
+				// allow the pick (the all-at-cap / all-starved escape above).
+				if alternatives := otherCraftableNouns(a, w, kind); len(alternatives) > 0 {
+					// Name the exact good when there's only one ("call produce with
+					// nails"); use "one of those" for a multi-good list. Either way the
+					// tail is a copyable produce argument, not a bare "make something else".
+					tail := "one of those"
+					if len(alternatives) == 1 {
+						tail = alternatives[0]
+					}
+					steer := fmt.Sprintf("you can make %s now — call produce with %s.", joinWithOr(alternatives), tail)
+					// Branch the message on the ACTUAL failing predicate rather than
+					// inferring "not at cap ⇒ input-short": name the missing inputs only
+					// when inputs are truly the problem; otherwise makeableRecipe passed
+					// and the inputs are in hand, so the block is the carry cap.
+					if recipe := w.Recipes[kind]; !HasProduceInputs(recipe, a.Inventory) {
+						return nil, ModelFacingError{Msg: fmt.Sprintf("you can't make %s right now — you're %s; %s", kind, describeMissingInputs(recipe, a.Inventory), steer)}
+					}
+					return nil, ModelFacingError{Msg: fmt.Sprintf("you already have all the %s you can hold — %s", kind, steer)}
 				}
-				return nil, ModelFacingError{Msg: fmt.Sprintf("you already have all the %s you can hold — make something that's still needed", kind)}
 			}
 			switched := a.ProductionFocus != kind
 			a.ProductionFocus = kind
-			noun := string(kind)
-			if def := w.ItemKinds[kind]; def != nil {
-				if p := def.Plural(); p != "" {
-					noun = p
-				}
-			}
-			return ProductionFocusResult{ID: id, Focus: kind, Noun: noun, Switched: switched}, nil
+			return ProductionFocusResult{ID: id, Focus: kind, Noun: producePluralNoun(w, kind), Switched: switched}, nil
 		},
 	}
 }
@@ -110,24 +118,40 @@ func produceEntry(a *Actor, kind ItemKind) (RestockEntry, bool) {
 	return RestockEntry{}, false
 }
 
-// anyOtherCraftable reports whether the actor has some produce good OTHER than
-// `kind` that is craftable right now (makeable, below cap, inputs on hand). Used
-// by SetProductionFocus to decide whether to reject a stuck focus (at cap or
-// input-short) — there is a better pick to steer to — or allow it because nothing
-// else can be made either.
-func anyOtherCraftable(a *Actor, w *World, kind ItemKind) bool {
+// otherCraftableNouns returns the catalog plural display nouns of the actor's
+// produce goods OTHER than `kind` that are craftable right now (makeable, below
+// cap, inputs on hand), in produce-entry order. SetProductionFocus uses it to steer
+// a rejected stuck focus onto named legal alternatives (LLM-300); an empty result
+// means nothing else is craftable either, so the stuck pick is allowed (the
+// all-at-cap / all-starved escape). Supersedes the boolean anyOtherCraftable — the
+// same craftableNow pass, keeping the names instead of reducing them to a flag.
+func otherCraftableNouns(a *Actor, w *World, kind ItemKind) []string {
 	if a.RestockPolicy == nil {
-		return false
+		return nil
 	}
+	var nouns []string
 	for _, e := range a.RestockPolicy.ProduceEntries() {
 		if e.Item == kind {
 			continue
 		}
 		if craftableNow(w, a, e) {
-			return true
+			nouns = append(nouns, producePluralNoun(w, e.Item))
 		}
 	}
-	return false
+	return nouns
+}
+
+// producePluralNoun resolves kind's catalog plural display phrase ("nails",
+// "loaves of bread"), falling back to the raw kind key for a discovery-minted kind
+// that carries no phrase. Shared by the ProductionFocusResult confirmation and the
+// LLM-300 alternatives steer so both name a good the same way.
+func producePluralNoun(w *World, kind ItemKind) string {
+	if def := w.ItemKinds[kind]; def != nil {
+		if p := def.Plural(); p != "" {
+			return p
+		}
+	}
+	return string(kind)
 }
 
 // describeMissingInputs renders the recipe inputs the actor is short of as a

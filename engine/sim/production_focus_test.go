@@ -17,8 +17,8 @@ func buildSmithWorld(t *testing.T, anchor time.Time, restock []sim.RestockEntry,
 	t.Helper()
 	repo, handles := mem.NewRepository()
 	handles.ItemKinds.Seed(map[sim.ItemKind]*sim.ItemKindDef{
-		"skillet":   {Name: "skillet", DisplayLabel: "Skillet", Category: sim.ItemCategoryMaterial, SortOrder: 300},
-		"nail":      {Name: "nail", DisplayLabel: "Nail", Category: sim.ItemCategoryMaterial, SortOrder: 310},
+		"skillet":   {Name: "skillet", DisplayLabel: "Skillet", DisplayLabelSingular: "skillet", DisplayLabelPlural: "skillets", Category: sim.ItemCategoryMaterial, SortOrder: 300},
+		"nail":      {Name: "nail", DisplayLabel: "Nail", DisplayLabelSingular: "nail", DisplayLabelPlural: "nails", Category: sim.ItemCategoryMaterial, SortOrder: 310},
 		"porridge":  {Name: "porridge", DisplayLabel: "Porridge", Category: sim.ItemCategoryFood, SortOrder: 130},
 		"horseshoe": {Name: "horseshoe", DisplayLabel: "Horseshoe", Category: sim.ItemCategoryMaterial, SortOrder: 320}, // item kind, NO recipe seeded
 	})
