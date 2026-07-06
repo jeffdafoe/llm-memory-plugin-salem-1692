@@ -52,3 +52,36 @@ func TestCommitResultContent_CounterPay_CoercedAcceptSteersHandover(t *testing.T
 		}
 	}
 }
+
+// That same coercion can fail a gate at settle time (no stock, buyer short of
+// coins, either party moved on, offer lapsed) — it flips to a fell-through
+// terminal that settles under the counter_pay name. Before LLM-302 that dropped
+// to a bare [ok] reading as a completed sale (the accept_pay misread that let a
+// seller "confirm" goods it never held); commitResultContent now reports the
+// real outcome, reusing accept_pay's fell-through echoes. Goods-shortfall is
+// omitted — the coercion is pure-coin, so the buyer never owes barter goods.
+func TestCommitResultContent_CounterPay_CoercionFellThroughReported(t *testing.T) {
+	cases := []struct {
+		state sim.PayLedgerState
+		want  string
+	}{
+		{sim.PayLedgerStateFailedInsufficientStock, "enough stock"},
+		{sim.PayLedgerStateFailedInsufficientFunds, "couldn't cover"},
+		{sim.PayLedgerStateFailedUnavailable, "moved on"},
+		{sim.PayLedgerStateExpired, "expired"},
+	}
+	for _, tc := range cases {
+		got := commitResultContent(&ValidatedCall{Name: "counter_pay"}, tc.state)
+		if got == "[ok]" {
+			t.Fatalf("state %s: coerced counter_pay returned a bare [ok]", tc.state)
+		}
+		if !strings.Contains(got, "fell through") &&
+			!strings.Contains(got, "couldn't be completed") &&
+			!strings.Contains(got, "too late") {
+			t.Errorf("state %s: result %q should say the sale didn't complete", tc.state, got)
+		}
+		if !strings.Contains(got, tc.want) {
+			t.Errorf("state %s: result %q missing %q", tc.state, got, tc.want)
+		}
+	}
+}
