@@ -119,11 +119,17 @@ func TestRenderRecentlyResolvedOffersFromMe_AcceptedAndClosed(t *testing.T) {
 	}
 	for _, want := range []string{
 		"Josiah Thorne accepted your offer", "you had it right away", "don't offer for it again", "offer id 270",
-		"didn't go through", "the storekeeper", "stop waiting on it", "offer id 271",
+		// LLM-296: the closed line now names what was OFFERED (4 coins for 2
+		// bread), not just the want-item, so two declines aren't byte-identical.
+		"Your offer of 4 coins to the storekeeper for 2 bread", "didn't go through", "stop waiting on it", "offer id 271",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("rendered text missing %q; got:\n%s", want, out)
 		}
+	}
+	// No seller-stock info on these views (SellerStocks false), so no shortfall clause.
+	if strings.Contains(out, "hold only") {
+		t.Errorf("unexpected stock-shortfall clause with no SellerStocks set; got:\n%s", out)
 	}
 }
 
@@ -196,5 +202,87 @@ func TestRenderRecentlyResolvedOffersFromMe_EmptyGated(t *testing.T) {
 	renderRecentlyResolvedOffersFromMe(&b, nil)
 	if b.Len() != 0 {
 		t.Errorf("empty input must render nothing; got %q", b.String())
+	}
+}
+
+// LLM-296: a closed (declined/expired/failed) line names what was OFFERED — not
+// just the want-item — so two declines aren't byte-identical (the repeat the
+// thin line drove), and where the engine knows the seller is short the bought
+// kind, it appends the shortfall as the informed "why". The shortfall only shows
+// when it bites: a close whose seller holds enough names the bundle but no stock.
+func TestRenderRecentlyResolvedOffersFromMe_ClosedNamesOfferAndShortfall(t *testing.T) {
+	var b strings.Builder
+	renderRecentlyResolvedOffersFromMe(&b, []ResolvedOfferView{
+		// The live case: Josiah offered 6 carrots + 1 coin for 5 nails to Ezekiel,
+		// who holds only 1 — the line names the bundle AND the shortfall.
+		{LedgerID: 866, SellerName: "Ezekiel Crane", Item: "nail", Qty: 5, Amount: 1,
+			PayItems: []sim.ItemKindQty{{Kind: "carrots", Qty: 6}}, Accepted: false,
+			SellerStock: 1, SellerStocks: true},
+		// A close where the seller holds enough (Qty <= stock): bundle named, no shortfall.
+		{LedgerID: 867, SellerName: "the storekeeper", Item: "bread", Qty: 2, Amount: 4,
+			Accepted: false, SellerStock: 9, SellerStocks: true},
+	})
+	out := b.String()
+	for _, want := range []string{
+		"Your offer of 6 carrots and 1 coin to Ezekiel Crane for 5 nail", "didn't go through",
+		"they hold only 1 nail", "offer id 866",
+		"Your offer of 4 coins to the storekeeper for 2 bread", "offer id 867",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rendered text missing %q; got:\n%s", want, out)
+		}
+	}
+	// The sufficient-stock close must NOT carry a shortfall clause. Assert the
+	// exact bad clause a regression would emit — the render prints the seller's
+	// actual stock (9), so a wrongly-fired shortfall reads "they hold only 9
+	// bread", not "2 bread". ("they hold only" alone is present from the nail
+	// view above, so a bare substring check would false-fail.)
+	if strings.Contains(out, "they hold only 9 bread") {
+		t.Errorf("sufficient-stock close must not show a shortfall; got:\n%s", out)
+	}
+}
+
+// LLM-296: the build side carries the seller's on-hand of the bought kind onto a
+// CLOSED view (so the render can surface a shortfall), but not onto an accepted
+// one (the reason clause is for closes), and skips a kind the seller doesn't
+// stock (absent/0) so the line never reads "only 0".
+func TestBuildRecentlyResolvedOffersFromMe_SellerStockOnClose(t *testing.T) {
+	now := time.Now().UTC()
+	resolved := now.Add(-20 * time.Second)
+
+	// Declined, seller short: SellerStocks true, count carried.
+	snap := resolvedSnap(now, map[sim.LedgerID]*sim.PayLedgerEntry{
+		880: resolvedEntry(880, "prudence", "elizabeth", "nail", 5, 1, sim.PayLedgerStateDeclined, false, resolved),
+	})
+	snap.Actors["elizabeth"].Inventory = map[sim.ItemKind]int{"nail": 1}
+	v := buildRecentlyResolvedOffersFromMe(snap, "prudence", snap.Actors["prudence"])
+	if len(v) != 1 || v[0].Accepted {
+		t.Fatalf("views = %+v, want one closed view", v)
+	}
+	if !v[0].SellerStocks || v[0].SellerStock != 1 {
+		t.Errorf("closed view must carry seller stock 1; got SellerStocks=%v SellerStock=%d", v[0].SellerStocks, v[0].SellerStock)
+	}
+
+	// Accepted: no seller-stock lookup even when the seller is short.
+	snap = resolvedSnap(now, map[sim.LedgerID]*sim.PayLedgerEntry{
+		881: resolvedEntry(881, "prudence", "elizabeth", "nail", 5, 10, sim.PayLedgerStateAccepted, false, resolved),
+	})
+	snap.Actors["elizabeth"].Inventory = map[sim.ItemKind]int{"nail": 1}
+	v = buildRecentlyResolvedOffersFromMe(snap, "prudence", snap.Actors["prudence"])
+	if len(v) != 1 || !v[0].Accepted {
+		t.Fatalf("views = %+v, want one accepted view", v)
+	}
+	if v[0].SellerStocks {
+		t.Errorf("accepted view must not carry seller-stock reason; got SellerStocks=%v", v[0].SellerStocks)
+	}
+
+	// Declined but the seller stocks none of the kind (absent): skipped, not "only 0".
+	snap = resolvedSnap(now, map[sim.LedgerID]*sim.PayLedgerEntry{
+		882: resolvedEntry(882, "prudence", "elizabeth", "nail", 5, 1, sim.PayLedgerStateDeclined, false, resolved),
+	})
+	snap.Actors["elizabeth"].Inventory = map[sim.ItemKind]int{"milk": 3}
+	v = buildRecentlyResolvedOffersFromMe(snap, "prudence", snap.Actors["prudence"])
+	if len(v) != 1 || v[0].SellerStocks {
+		t.Errorf("seller stocking none of the kind must leave SellerStocks false; got %+v", v)
 	}
 }

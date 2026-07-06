@@ -144,6 +144,26 @@ func TestGoldensTendNeedYieldsToEating(t *testing.T) {
 	}
 }
 
+// TestGoldensSettledCloseNamesTheOffer is the LLM-296 cross-scenario invariant:
+// every "## Recently settled offers" CLOSE line ("didn't go through") must name
+// what the buyer OFFERED ("Your offer of ..."), never the thin want-item-only
+// line that let two declines render byte-identically — so the standing "never
+// repeat what you said" instruction had nothing to bind to and the model
+// re-posted the same bundle. Runs over the whole matrix so a future edit to the
+// close copy can't drop the offered bundle for any situation.
+func TestGoldensSettledCloseNamesTheOffer(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			for _, line := range strings.Split(renderScenario(sc), "\n") {
+				if strings.Contains(line, "didn't go through") && !strings.Contains(line, "Your offer of ") {
+					t.Errorf("scenario %q: a settled-offer close names no offered bundle (LLM-296):\n%s", sc.name, line)
+				}
+			}
+		})
+	}
+}
+
 // TestGoldensEnRouteWorkerNotOfferedNewWork is the LLM-229 cross-scenario
 // invariant: whenever the subject is a WORKER relocating to an accepted job (an
 // EnRoute LaborOffer with the subject as worker), the rendered prompt must offer
@@ -1366,6 +1386,15 @@ var perceptionScenarios = []perceptionScenario{
 			"contradicted the inventory and drove both NPCs to confabulate a missing-blueberry short-count; a regression " +
 			"that dropped the reconciliation would resurface that contradiction in the diff.",
 		build: buyerKeptConsumeRemainderReconciled,
+	},
+	{
+		name: "buyer_offer_declined_seller_short_stock",
+		summary: "LLM-296: a buyer (Josiah Thorne) whose pay offer of 6 carrots + 1 coin for 5 nails to Ezekiel Crane " +
+			"was just declined — Ezekiel holds only 1 nail (the live hud-e7fec94 case). The golden pins that '## Recently " +
+			"settled offers' names the OFFERED bundle (not just the want-item, so two declines aren't byte-identical — the " +
+			"repeat the thin line drove) and appends the engine-known stock shortfall ('they hold only 1 nail') as the " +
+			"informed reason it closed.",
+		build: buyerOfferDeclinedSellerShortStock,
 	},
 	{
 		name: "employer_with_worker_on_job",
@@ -2673,6 +2702,65 @@ func buyerKeptConsumeRemainderReconciled() (*sim.Snapshot, sim.ActorID, []sim.Wa
 		Structures:       map[sim.StructureID]*sim.Structure{apothecary: plainStructure(apothecary, "PW Apothecary")},
 	}
 	return snap, anneID, nil
+}
+
+// buyerOfferDeclinedSellerShortStock is the LLM-296 buyer-POV fixture: Josiah
+// Thorne offered 6 carrots + 1 coin for 5 nails to Ezekiel Crane, who declined —
+// Ezekiel holds only 1 nail. The settled ledger entry is Declined, and the golden
+// pins that "## Recently settled offers" names the OFFERED bundle (so a re-post
+// reads as visibly the same, not a byte-identical thin line the model can't tell
+// apart) and appends the engine-known shortfall "they hold only 1 nail" as the
+// informed reason it closed. Clock-free: the recency window is measured against
+// the fixture's PublishedAt / ResolvedAt and the render path reads no wall clock.
+func buyerOfferDeclinedSellerShortStock() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		josiahID  = sim.ActorID("josiah")
+		ezekielID = sim.ActorID("ezekiel")
+		forge     = sim.StructureID("blacksmith")
+	)
+	now := 1113 // 18:33, the live window
+	published := time.Date(2026, 7, 6, 18, 33, 0, 0, time.UTC)
+	josiah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Josiah Thorne",
+		Role:              "traveler",
+		State:             sim.StateIdle,
+		InsideStructureID: forge,
+		Coins:             1,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"carrots": 6},
+		Acquaintances:     map[string]sim.Acquaintance{"Ezekiel Crane": {}},
+	}
+	ezekiel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Ezekiel Crane",
+		Role:              "blacksmith",
+		State:             sim.StateIdle,
+		InsideStructureID: forge,
+		WorkStructureID:   forge,
+		Coins:             40,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"nail": 1},
+	}
+	declined := &sim.PayLedgerEntry{
+		ID: 866, BuyerID: josiahID, SellerID: ezekielID,
+		ItemKind: "nail", Qty: 5, Amount: 1,
+		PayItems:   []sim.ItemKindQty{{Kind: "carrots", Qty: 6}},
+		State:      sim.PayLedgerStateDeclined,
+		ResolvedAt: published.Add(-30 * time.Second),
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{josiahID: josiah, ezekielID: ezekiel},
+		Quotes:           map[sim.QuoteID]*sim.SceneQuote{},
+		PayLedger:        map[sim.LedgerID]*sim.PayLedgerEntry{866: declined},
+		Scenes:           map[sim.SceneID]*sim.Scene{},
+		Huddles:          map[sim.HuddleID]*sim.Huddle{},
+		Structures:       map[sim.StructureID]*sim.Structure{forge: plainStructure(forge, "Blacksmith")},
+	}
+	return snap, josiahID, nil
 }
 
 // sellerWithTakenQuoteAtPost is the LLM-189 perception regression fixture: a

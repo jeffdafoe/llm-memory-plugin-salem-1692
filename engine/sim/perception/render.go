@@ -2622,8 +2622,19 @@ func renderRecentlyResolvedOffersFromMe(b *strings.Builder, offers []ResolvedOff
 				i+1, seller, payment, o.Qty, item, gotIt, o.LedgerID)
 			continue
 		}
-		fmt.Fprintf(b, "%d. Your offer to %s for %d %s didn't go through — it's closed, so stop waiting on it (offer id %d).\n",
-			i+1, seller, o.Qty, item, o.LedgerID)
+		// LLM-296: name what was OFFERED (not just the want-item) so two declines
+		// aren't byte-identical — the thin line gave the standing "never repeat
+		// what you said" instruction nothing to bind to, and the model re-posted
+		// the same bundle. Where the engine knows the seller is short the bought
+		// kind, append it as the informed "why" the deal closed (the buyer's
+		// mirror of the seller-side "you hold only N"); only when it bites.
+		offered := formatOfferPayment(o.Amount, o.PayItems)
+		reason := "it's closed, so stop waiting on it"
+		if o.SellerStocks && o.Qty > o.SellerStock {
+			reason = fmt.Sprintf("they hold only %d %s, so it's closed; stop waiting on it", o.SellerStock, item)
+		}
+		fmt.Fprintf(b, "%d. Your offer of %s to %s for %d %s didn't go through — %s (offer id %d).\n",
+			i+1, offered, seller, o.Qty, item, reason, o.LedgerID)
 	}
 }
 

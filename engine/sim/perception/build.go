@@ -3270,16 +3270,35 @@ func buildRecentlyResolvedOffersFromMe(snap *sim.Snapshot, subject sim.ActorID, 
 	views := make([]ResolvedOfferView, 0, len(ids))
 	for _, id := range ids {
 		e := snap.PayLedger[id]
+		accepted := e.State == sim.PayLedgerStateAccepted
+		// LLM-296: for a CLOSE (not an accept), carry the seller's current
+		// on-hand of the bought kind so the render can name a stock shortfall as
+		// the engine-known reason the deal fell through — the buyer's mirror of
+		// the seller-side "you hold only N" pay-offer cue. Read straight from the
+		// seller's snapshot inventory; a kind the seller doesn't stock (absent or
+		// 0) leaves SellerStocks false so the render skips it rather than reading
+		// "only 0". The render gates the annotation on the bite (Qty > stock), so
+		// a seller who holds enough carries the count but shows no shortfall.
+		sellerStock, sellerStocks := 0, false
+		if !accepted {
+			if seller := snap.Actors[e.SellerID]; seller != nil {
+				if have, ok := seller.Inventory[e.ItemKind]; ok && have > 0 {
+					sellerStock, sellerStocks = have, true
+				}
+			}
+		}
 		views = append(views, ResolvedOfferView{
-			LedgerID:   e.ID,
-			SellerName: resolveSeller(e.SellerID),
-			Item:       e.ItemKind,
-			Qty:        e.Qty,
-			Amount:     e.Amount,
-			PayItems:   e.PayItems,
-			Accepted:   e.State == sim.PayLedgerStateAccepted,
-			ConsumeNow: e.ConsumeNow,
-			KeptUnits:  e.KeptUnits,
+			LedgerID:     e.ID,
+			SellerName:   resolveSeller(e.SellerID),
+			Item:         e.ItemKind,
+			Qty:          e.Qty,
+			Amount:       e.Amount,
+			PayItems:     e.PayItems,
+			Accepted:     accepted,
+			ConsumeNow:   e.ConsumeNow,
+			KeptUnits:    e.KeptUnits,
+			SellerStock:  sellerStock,
+			SellerStocks: sellerStocks,
 		})
 	}
 	return views

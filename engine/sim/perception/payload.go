@@ -747,6 +747,18 @@ type ResolvedOfferView struct {
 	Accepted   bool
 	ConsumeNow bool
 	KeptUnits  int
+
+	// SellerStock is the seller's current on-hand of Item and SellerStocks
+	// whether the seller carries the kind at all (>0). Populated only for a
+	// CLOSED (non-accepted) view, so the declined line can name a stock
+	// shortfall as the engine-known "why" the deal fell through — the buyer's
+	// mirror of the seller-side "you hold only N" pay-offer cue (LLM-296). The
+	// render gates on the bite (Qty > SellerStock); a kind the seller doesn't
+	// stock (absent or 0) leaves SellerStocks false so it's skipped rather than
+	// read as "only 0". Zero/false for an accepted view — the reason clause is
+	// for closes only.
+	SellerStock  int
+	SellerStocks bool
 }
 
 // CounterOfferView is one entry in CountersAwaitingMyResponse — a seller's
