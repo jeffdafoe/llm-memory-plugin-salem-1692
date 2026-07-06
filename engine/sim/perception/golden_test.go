@@ -2143,7 +2143,11 @@ func distributorRestockingMilkBulkRateAnchor() (*sim.Snapshot, sim.ActorID, []si
 // row), his wheat shelf (2) is below the two-batch floor (2×4=8), and wheat's
 // catalog band is flat 1/1. His supplier is the distributor's store. Pins the
 // anchor clause collapsing a single-priced band to its one price, riding a
-// DERIVED entry, alongside the production runway line. Clock-free render path.
+// DERIVED entry, alongside the production runway line. Also carries a second low
+// buy entry with NO catalog price (sacks, 1 of cap 8, same store supplier) whose
+// line must render anchor-FREE — the mixed priced/unpriced section that keeps the
+// per-line attachment check in TestRestockCatalogAnchorRendersWithCatalogPrice
+// non-vacuous (code_review). Clock-free render path.
 func millerWheatRestockFlatBandAnchor() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	const (
 		josephID = sim.ActorID("joseph")
@@ -2165,9 +2169,10 @@ func millerWheatRestockFlatBandAnchor() (*sim.Snapshot, sim.ActorID, []sim.Warra
 		ScheduleEndMin:    &end,
 		Coins:             30,
 		Needs:             map[sim.NeedKey]int{},
-		Inventory:         map[sim.ItemKind]int{"wheat": 2},
+		Inventory:         map[sim.ItemKind]int{"wheat": 2, "sack": 1},
 		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
 			{Item: "flour", Source: sim.RestockSourceProduce, Max: 10},
+			{Item: "sack", Source: sim.RestockSourceBuy, Max: 8},
 		}},
 	}
 	josiah := &sim.ActorSnapshot{
@@ -2176,7 +2181,7 @@ func millerWheatRestockFlatBandAnchor() (*sim.Snapshot, sim.ActorID, []sim.Warra
 		State:           sim.StateIdle,
 		Pos:             sim.TilePos{X: 200, Y: 200},
 		WorkStructureID: store,
-		Inventory:       map[sim.ItemKind]int{"wheat": 40},
+		Inventory:       map[sim.ItemKind]int{"wheat": 40, "sack": 20},
 	}
 	snap := &sim.Snapshot{
 		LocalMinuteOfDay: &now,
@@ -2200,6 +2205,7 @@ func millerWheatRestockFlatBandAnchor() (*sim.Snapshot, sim.ActorID, []sim.Warra
 		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
 			"wheat": {Name: "wheat", DisplayLabel: "wheat", Category: sim.ItemCategoryMaterial},
 			"flour": {Name: "flour", DisplayLabel: "flour", Category: sim.ItemCategoryMaterial},
+			"sack":  {Name: "sack", DisplayLabel: "sacks", Category: sim.ItemCategoryMaterial},
 		},
 		RestockReorderPct: 25,
 	}
@@ -2994,13 +3000,15 @@ func TestRepairReserveLineOnlyForOwnerWithMendAndNails(t *testing.T) {
 
 // TestRestockCatalogAnchorRendersWithCatalogPrice is the LLM-292 buy-leg
 // invariant, re-derived from each scenario's fixture rather than trusting the
-// build that produced the section: in every rendered "## Restocking" section, the
-// catalog buying-in anchor ("The fair bulk rate buying it in is …") appears iff
-// some effective buy entry of the subject is below its reorder threshold with a
-// catalog-priced kind. Guards both directions — a priced low item must carry the
+// build that produced the section: the catalog buying-in anchor ("The fair bulk
+// rate buying it in is …") appears on a rendered "## Restocking" item line iff
+// that ITEM's kind is catalog-priced — checked per line, not section-wide, so a
+// mixed priced/unpriced section can't hide an anchor attached to the wrong item
+// (code_review). Guards both directions — a priced low item must carry the
 // corrective rate (the self-poisoning last-paid anchor must never again be the
 // cue's only number: the live Josiah 2.2/unit milk leg), and an unpriced catalog
-// must not conjure one.
+// must not conjure one. A fixture that owes an anchor but renders no Restocking
+// section at all fails too (the anchor can't render if the section disappears).
 func TestRestockCatalogAnchorRendersWithCatalogPrice(t *testing.T) {
 	const marker = "The fair bulk rate buying it in is about"
 	for _, sc := range perceptionScenarios {
@@ -3008,24 +3016,28 @@ func TestRestockCatalogAnchorRendersWithCatalogPrice(t *testing.T) {
 		t.Run(sc.name, func(t *testing.T) {
 			snap, actorID, _ := sc.build()
 			subj := snap.Actors[actorID]
-			_, section, found := strings.Cut(renderScenario(sc), "## Restocking\n")
-			if !found {
-				return // no restock section in this situation — invariant N/A here
-			}
-			if idx := strings.Index(section, "\n## "); idx >= 0 {
-				section = section[:idx]
-			}
-			// A priced anchor is expected iff any below-threshold effective buy entry
-			// (the section's own gate) has a catalog rate AND actually renders a full
-			// item line (a pending-offer bide steer replaces the whole line).
+			// Expected-anchor derivation, computed BEFORE looking at the render: an
+			// anchor is owed iff some below-threshold effective buy entry (the
+			// section's own gate) has a catalog rate AND actually renders a full item
+			// line (an unactionable item is omitted per LLM-216; a pending-offer bide
+			// steer replaces the whole line per LLM-64). Also maps each entry's display
+			// label to its rate for the per-line check below.
 			want := false
+			rateByLabel := map[string]int{}
+			labelAmbiguous := map[string]bool{}
 			if subj != nil && subj.RestockPolicy != nil {
 				floors := sim.ReorderFloors(snap.Recipes, subj.RestockPolicy)
 				for _, e := range sim.EffectiveBuyEntries(snap.Recipes, subj.RestockPolicy) {
+					rate := catalogBulkRate(snap, e.Item)
+					label := itemDisplayLabel(snap, e.Item)
+					if prev, ok := rateByLabel[label]; ok && (prev > 0) != (rate > 0) {
+						labelAmbiguous[label] = true // two kinds share a label with differing pricedness — per-line check skips it
+					}
+					rateByLabel[label] = rate
 					if !sim.RestockReorderThresholdMet(subj.Inventory[e.Item], e.Cap(), snap.RestockReorderPct, floors[e.Item]) {
 						continue
 					}
-					if catalogBulkRate(snap, e.Item) <= 0 {
+					if rate <= 0 {
 						continue
 					}
 					if !itemHasActionableBuyPath(snap, actorID, subj, e.Item) {
@@ -3035,11 +3047,41 @@ func TestRestockCatalogAnchorRendersWithCatalogPrice(t *testing.T) {
 						continue // bide steer replaces the item line (LLM-64)
 					}
 					want = true
-					break
 				}
+			}
+			_, section, found := strings.Cut(renderScenario(sc), "## Restocking\n")
+			if !found {
+				if want {
+					t.Errorf("scenario %q: an anchor-owing buy entry exists but no '## Restocking' section rendered (LLM-292)", sc.name)
+				}
+				return
+			}
+			if idx := strings.Index(section, "\n## "); idx >= 0 {
+				section = section[:idx]
 			}
 			if has := strings.Contains(section, marker); has != want {
 				t.Errorf("scenario %q: restock catalog anchor present=%v, want %v (LLM-292)", sc.name, has, want)
+			}
+			// Per-line attachment: every full item line ("- You have N <label> on
+			// hand…") carries the anchor iff ITS kind is priced. Bide steers and the
+			// walk-to sub-bullets don't match the prefix and are skipped by design.
+			for _, line := range strings.Split(section, "\n") {
+				rest, ok := strings.CutPrefix(line, "- You have ")
+				if !ok {
+					continue
+				}
+				head, _, ok := strings.Cut(rest, " on hand")
+				if !ok {
+					continue
+				}
+				label := strings.TrimLeft(head, "0123456789 ")
+				rate, known := rateByLabel[label]
+				if !known || labelAmbiguous[label] {
+					continue // not one of the effective entries (or ambiguous label) — nothing to assert
+				}
+				if has := strings.Contains(line, marker); has != (rate > 0) {
+					t.Errorf("scenario %q: item line %q anchor present=%v, want %v (per-line attachment, LLM-292)", sc.name, line, has, rate > 0)
+				}
 			}
 		})
 	}
