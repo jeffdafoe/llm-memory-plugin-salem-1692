@@ -451,6 +451,19 @@ func TestHandlePayWithItem_CoinTokenWithGoodsSteers(t *testing.T) {
 	}
 }
 
+// TestHandlePayWithItem_CoinTokenWithQuoteSteers (LLM-290): a coin-token item
+// alongside a quote_id must NOT translate — a bare payment would move coins
+// while the quote stays open and the goods never change hands. Steered to the
+// correct quote take naming the quoted good.
+func TestHandlePayWithItem_CoinTokenWithQuoteSteers(t *testing.T) {
+	_, err := HandlePayWithItem(HandlerInput{ActorID: "alice", AttemptID: "tk-test", Args: PayWithItemArgs{
+		Seller: "Bob", Item: "coins", Qty: 1, Amount: 5, QuoteID: 12,
+	}})
+	if err == nil || !strings.Contains(err.Error(), "quote_id 12") {
+		t.Fatalf("want quote-take steer naming the quote id, got %v", err)
+	}
+}
+
 // TestFoldCoinPayItems (LLM-290): coin-token pay_items rows fold into the
 // coin amount; goods rows pass through in order.
 func TestFoldCoinPayItems(t *testing.T) {

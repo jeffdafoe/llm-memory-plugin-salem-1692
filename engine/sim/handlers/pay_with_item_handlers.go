@@ -508,6 +508,16 @@ func HandlePayWithItem(in HandlerInput) (sim.Command, error) {
 			return sim.Command{}, modelSafef(
 				"pay_with_item: you named coins as the good while also offering goods in payment — that shape is a sale, not a buy. To sell your goods for coins, post them with sell; to just hand over coins, use pay.")
 		}
+		// A quote take must name the QUOTED GOOD — translating this shape to a
+		// bare payment would move coins while the quote stays open and the
+		// goods never change hands (sim.Pay's LLM-172 guard only fires when
+		// the pay's for-text names the good, which a coin call's doesn't).
+		// Steer to the correct take instead (code_review, round 1).
+		if args.QuoteID != 0 {
+			return sim.Command{}, modelSafef(
+				"pay_with_item: quote_id %d names goods to receive — coins are the payment amount, not the item. Call pay_with_item with quote_id %d, the quoted item name, and your coins in amount.",
+				args.QuoteID, args.QuoteID)
+		}
 		coins := args.Amount
 		if coins <= 0 {
 			coins = args.Qty
