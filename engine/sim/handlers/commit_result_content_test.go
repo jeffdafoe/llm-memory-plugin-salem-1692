@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -128,6 +129,44 @@ func TestCommitResultContent_PayWithItemSteer(t *testing.T) {
 			got := commitResultContent(&tc.vc, nil)
 			if got != tc.want {
 				t.Errorf("commitResultContent\n got:  %q\n want: %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCommitResultContent_CoinTokenPaymentSettle (LLM-290): a coin-token
+// pay_with_item was translated to sim.Pay, so the coins already moved — the
+// narration must voice the settle, NOT the pending-offer "bide for their
+// answer" echo (there is no offer to answer). The coin count mirrors the
+// translation's amount-else-qty rule.
+func TestCommitResultContent_CoinTokenPaymentSettle(t *testing.T) {
+	cases := []struct {
+		name  string
+		vc    ValidatedCall
+		coins int
+	}{
+		{
+			name:  "amount carries the count",
+			vc:    ValidatedCall{Name: "pay_with_item", DecodedArgs: PayWithItemArgs{Seller: "Moses James", Item: "coins", Qty: 1, Amount: 5}},
+			coins: 5,
+		},
+		{
+			name:  "qty fallback",
+			vc:    ValidatedCall{Name: "pay_with_item", DecodedArgs: PayWithItemArgs{Seller: "Moses James", Item: "a coin", Qty: 3}},
+			coins: 3,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := commitResultContent(&tc.vc, nil)
+			if !strings.Contains(got, "settled as a plain payment") {
+				t.Errorf("want settle narration, got %q", got)
+			}
+			if !strings.Contains(got, fmt.Sprintf("%d coins", tc.coins)) {
+				t.Errorf("want %d coins voiced, got %q", tc.coins, got)
+			}
+			if strings.Contains(got, "bide for their answer") {
+				t.Errorf("pending-offer echo leaked into a settled payment: %q", got)
 			}
 		})
 	}

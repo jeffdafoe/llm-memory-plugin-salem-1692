@@ -371,6 +371,18 @@ func PayWithItem(
 				return nil, fmt.Errorf("PayWithItem: seller %q vanished mid-resolve", sellerID)
 			}
 
+			// LLM-290: coins named as the good to buy are currency, not an item.
+			// The pay_with_item handler translates that shape to a plain payment
+			// before it ever builds this command, so reaching here means another
+			// entrance leaked a coin token through — steer rather than staking a
+			// nonsense goods-offer. Checked BEFORE resolveItemKind so a lingering
+			// phantom 'coin' catalog row can never resolve the call into a real
+			// offer.
+			if IsCoinToken(itemName) {
+				return nil, errors.New(
+					"coins aren't a good to buy — to hand someone coins, use pay (recipient + amount). To sell your goods for coins, post them with sell.",
+				)
+			}
 			// ZBBS-WORK-412 deliberately does NOT mint here. This is the BUY
 			// path (the buyer names the good to receive); unlike the sell /
 			// pay-with sites, a mint wouldn't reject the same tick — PayWithItem
@@ -2000,6 +2012,16 @@ func resolvePayItems(w *World, payItems []PayItemInput) ([]ItemKindQty, error) {
 		// the labor flow exists.
 		if isLaborToken(pi.Item) {
 			return nil, errors.New(laborTradeSteerMsg)
+		}
+		// LLM-290: coins in a goods list are currency, not a good. The
+		// pay_with_item handler folds coin rows into `amount` before building
+		// its command, so reaching here means another entrance (counter_pay,
+		// a future caller) carried one through — steer to the amount field
+		// BEFORE the mint, same posture as the labor steer above.
+		if IsCoinToken(pi.Item) {
+			return nil, errors.New(
+				"coins aren't a pay_items good — put the coin count in 'amount' instead; pay_items is for physical goods you carry.",
+			)
 		}
 		// ZBBS-WORK-412: mint an unknown pay-with good at qty 0 (an NPC offering
 		// to pay with a good it names is a discovery signal). The offerer holds 0

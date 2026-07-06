@@ -177,6 +177,16 @@ func DecodeOfferTradeArgs(raw json.RawMessage) (any, error) {
 			MaxPayWithItemItemChars, n,
 		)
 	}
+	// LLM-290: wanting COINS for your goods is a coin sale, not a trade —
+	// exactly what the tool description already says ("to sell your own wares
+	// to a buyer for coins, use sell instead"). Steer at decode, before the
+	// lowering: offer_trade shares HandlePayWithItem, and letting a coin
+	// want_item through would trip pay_with_item's coin-payment translation
+	// on a proposer who meant to RECEIVE coins, not hand them over.
+	if sim.IsCoinToken(args.WantItem) {
+		return nil, modelSafef(
+			"offer_trade: wanting coins for your goods is a coin sale, not a trade — post your wares with sell and let a buyer offer.")
+	}
 	if args.WantQty < 1 {
 		return nil, modelSafef("offer_trade: want_qty must be at least 1 (got %d)", args.WantQty)
 	}

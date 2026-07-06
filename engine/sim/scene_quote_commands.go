@@ -720,6 +720,15 @@ func resolveQuoteLines(w *World, lines []QuoteLineInput) ([]QuoteLine, error) {
 		if isLaborToken(in.ItemName) {
 			return nil, errors.New(laborTradeSteerMsg)
 		}
+		// LLM-290: a quote FOR coins is never meaningful — the quote's price is
+		// already in coins (amount). Steer BEFORE the mint, so a coin token
+		// can't (re-)mint the phantom 'coin' kind the earlier live occurrence
+		// created.
+		if IsCoinToken(in.ItemName) {
+			return nil, errors.New(
+				"coins aren't a good to quote — a quote's price is already in coins (amount). Name the good you're selling.",
+			)
+		}
 		kind, ok := resolveOrMintItemKind(w, in.ItemName)
 		if !ok {
 			return nil, fmt.Errorf(
