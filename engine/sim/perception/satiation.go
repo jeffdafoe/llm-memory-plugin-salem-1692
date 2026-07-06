@@ -82,6 +82,15 @@ type SatiationNeedView struct {
 	FreeSources []SatiationFreeSource
 
 	Vendors []SatiationVendor // nearby places selling a satisfier (walk to)
+
+	// BridgeToMeal is set when the actor carries only snack-class food for this
+	// need (nothing at satiationMealFloor) yet the walk-to directory offers a real
+	// meal — the LLM-307 snacking-loop case. Render prints a bridging line between
+	// the consume-first own-stock line and the directory, saying plainly that the
+	// snack won't resolve the need and to see the meal options below. False in the
+	// ordinary case (a meal-class satisfier on hand, or the directory already
+	// riding at the red tier), where no bridge is needed.
+	BridgeToMeal bool
 }
 
 // SatiationFreeSource is one free, public refresh source for the need — a well
@@ -212,6 +221,62 @@ func holdsBarterableGoods(actorSnap *sim.ActorSnapshot) bool {
 	return false
 }
 
+// satiationMealFloor is the itemFeltAmount magnitude at which a satisfier reads
+// as a full meal — hunger "a good meal", thirst "a drink" — rather than a snack
+// (a nibble / small bite for hunger, a sip for thirst). LLM-307 keys the
+// consume-first suppression on it: own stock at/above the floor is a meal that can
+// resolve the need; below it is a snack that can't. Kept in lockstep with
+// itemFeltAmount's bands (both use 5 as the snack→meal boundary for hunger and
+// thirst) — recalibrate the two together if the felt scale changes.
+const satiationMealFloor = 5
+
+// isMealClassSatisfier reports whether a per-unit need magnitude reads as a full
+// meal (or a real drink) rather than a snack — see satiationMealFloor.
+func isMealClassSatisfier(magnitude int) bool {
+	return magnitude >= satiationMealFloor
+}
+
+// ownStockIsSnackOnly reports whether EVERY satisfier the actor carries is
+// snack-class (below the meal floor). This is the LLM-307 condition under which
+// the consume-first line must NOT hide the meal directory: nibbling a snack can't
+// resolve a persisting hunger, so a hungry actor holding only berries loops
+// (nibble → still hungry → only own stock shown → nibble again) while a meal it
+// could walk to stays invisible. Callers guard len(own) > 0 first — an empty list
+// satisfies this vacuously, but no own stock opens the directory on its own path.
+func ownStockIsSnackOnly(own []OwnStockItem) bool {
+	for _, it := range own {
+		if isMealClassSatisfier(it.Magnitude) {
+			return false
+		}
+	}
+	return true
+}
+
+// satiationDirectoryHasMeal reports whether the walk-to directory (co-present
+// peers, free sources, vendors) offers at least one meal-class satisfier. LLM-307
+// gates the snack-loop re-open on it: re-opening the directory only helps if it
+// actually holds a meal the snack-carrying actor can move to — with nothing but
+// more snacks out there, the LLM-139 suppression stands (a bridging line pointing
+// at "the options below" must have a meal to point at).
+func satiationDirectoryHasMeal(peers []SatiationPeerOffer, free []SatiationFreeSource, vendors []SatiationVendor) bool {
+	for _, v := range vendors {
+		if isMealClassSatisfier(v.Magnitude) {
+			return true
+		}
+	}
+	for _, p := range peers {
+		if isMealClassSatisfier(p.Magnitude) {
+			return true
+		}
+	}
+	for _, f := range free {
+		if isMealClassSatisfier(f.Magnitude) {
+			return true
+		}
+	}
+	return false
+}
+
 // buildSatiation builds the eat/drink view for actorSnap, or nil when no
 // consumable need is felt or no satisfier exists. Pure over the snapshot.
 func buildSatiation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSnapshot) *SatiationView {
@@ -257,18 +322,38 @@ func buildSatiation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Acto
 		// enough to just eat what you carry — the own-stock "consume to eat" line is
 		// the answer, and the walk-to directory of peers / free sources / vendors is
 		// noise (the 14-line food directory shown to a peckish NPC already carrying
-		// food). So below the red/distress tier, when any personal stock survives,
-		// suppress the directory. Deliberately presence-based, not sufficiency-based:
-		// a mild need doesn't demand a full meal, and if the carried food proves too
-		// little the need climbs to red, where the full list always rides (as it does
-		// when the actor carries nothing personal).
+		// food). So below the red/distress tier, when personal stock survives, suppress
+		// the directory.
+		//
+		// LLM-307 narrows that suppression to be meal-aware. Presence alone isn't
+		// enough: a SNACK-only larder (all nibble/small-bite for hunger, a sip for
+		// thirst — nothing at satiationMealFloor) can't resolve a persisting need, so
+		// hiding the meal directory behind it produces a starvation-by-snacking loop
+		// (nibble → still hungry → only own stock shown → nibble again; the need never
+		// climbs to red, so the directory never returns). When the surviving stock is
+		// snack-only, re-open the directory and flag a bridging line — but only if it
+		// truly offers a meal to walk to (satiationDirectoryHasMeal, checked after
+		// gather); with nothing but more snacks out there, the suppression stands. A
+		// meal-class satisfier on hand still suppresses exactly as before.
+		showDirectory := tier >= sim.NeedRed || len(own) == 0
+		bridgeToMeal := false
+		if !showDirectory && ownStockIsSnackOnly(own) {
+			showDirectory = true
+			bridgeToMeal = true
+		}
 		var peers []SatiationPeerOffer
 		var free []SatiationFreeSource
 		var vendors []SatiationVendor
-		if tier >= sim.NeedRed || len(own) == 0 {
+		if showDirectory {
 			peers = gatherCoPresentPeerOffers(snap, actorID, actorSnap, need)
 			free = gatherFreeSatiationSources(snap, actorID, actorSnap, need)
 			vendors = gatherSatiationVendors(snap, actorID, actorSnap, need)
+		}
+		if bridgeToMeal && !satiationDirectoryHasMeal(peers, free, vendors) {
+			// Nothing but snacks (or nothing) reachable — the bridge would point at a
+			// meal that isn't there, so fall back to the LLM-139 suppression.
+			peers, free, vendors = nil, nil, nil
+			bridgeToMeal = false
 		}
 		if len(own) == 0 && len(peers) == 0 && len(free) == 0 && len(vendors) == 0 {
 			continue
@@ -281,6 +366,7 @@ func buildSatiation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Acto
 			CoPresentPeers: peers,
 			FreeSources:    free,
 			Vendors:        vendors,
+			BridgeToMeal:   bridgeToMeal,
 		})
 	}
 	if len(needs) == 0 {
@@ -746,6 +832,23 @@ func satiationVerb(need sim.NeedKey) string {
 	return "eat"
 }
 
+// satiationBridgeLine is the LLM-307 bridging sentence: the carried snack won't
+// resolve the need, so look to the meal options listed below. Per-need so the
+// prose reads plainly for hunger vs thirst — plain modern English, no invented
+// register (the weak-model copy rule). Explicitly scoped to the needs with
+// authored prose (mirrors needSufficiencyPhrase): an unsupported need returns ""
+// and the caller renders no bridge, rather than emitting hunger prose for it.
+func satiationBridgeLine(need sim.NeedKey) string {
+	switch need {
+	case "hunger":
+		return "A nibble won't quiet this hunger, though — for a real meal, see the options below."
+	case "thirst":
+		return "A sip won't slake this thirst, though — for a real drink, see the options below."
+	default:
+		return ""
+	}
+}
+
 // renderSatiation writes the "## What you can eat or drink" section. Content-
 // gated: a nil/empty view writes nothing. Numeric (~N) magnitudes, matching
 // the recovery-options style.
@@ -757,6 +860,17 @@ func renderSatiation(b *strings.Builder, v *SatiationView) {
 	for _, n := range v.Needs {
 		if len(n.OwnStock) > 0 {
 			fmt.Fprintf(b, "You have %s on hand — consume to %s.\n", renderOwnStockLine(n.OwnStock, n.Need, n.Level), n.Verb)
+		}
+		// LLM-307 bridge: when the own stock is snack-only and a real meal is
+		// reachable, say plainly the snack won't resolve the need and point to the
+		// options below — otherwise the consume-first line reads as the whole answer
+		// and the actor snacks in a loop. Rendered right after the own-stock line and
+		// before the walk-to directory it refers to.
+		if n.BridgeToMeal {
+			if line := satiationBridgeLine(n.Need); line != "" {
+				b.WriteString(line)
+				b.WriteString("\n")
+			}
 		}
 		// Co-present peers come BEFORE the walk-to-vendor list: a peer standing
 		// with you is immediately actionable (pay_with_item resolves them as the

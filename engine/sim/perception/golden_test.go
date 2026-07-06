@@ -728,6 +728,26 @@ var perceptionScenarios = []perceptionScenario{
 		build: hungryForagerAtStockedBush,
 	},
 	{
+		name: "hungry_holding_nibble_sees_meal_vendor",
+		summary: "LLM-307: a mildly-hungry NPC (Ezekiel Crane, hunger 14 — felt, below the red threshold 18) carries " +
+			"ONLY raspberries (a nibble, magnitude 2), with a cheese seller (a good meal, magnitude 8) at the General " +
+			"Store. This is the live starvation-by-snacking loop (2026-07-06): the consume-first suppression used to " +
+			"collapse the section to 'You have Raspberries … consume to eat' the moment he carried any food, hiding the " +
+			"meal vendor for as long as a single berry was held. The golden pins the fix: the own-stock consume line, " +
+			"the bridging line ('A nibble won't quiet this hunger, though — for a real meal, see the options below.'), " +
+			"AND the re-opened cheese buy entry with its structure_id. Pairs with hungry_holding_meal_keeps_suppression.",
+		build: hungryHoldingNibbleSeesMealVendor,
+	},
+	{
+		name: "hungry_holding_meal_keeps_suppression",
+		summary: "LLM-307 foil: the same mildly-hungry NPC and cheese seller, but Ezekiel carries a MEAL-class satisfier " +
+			"(cheese, magnitude 8) instead of a nibble. A meal on hand is the answer, so the LLM-139 consume-first " +
+			"suppression must STAND: the golden pins that the section shows only 'You have Cheese (a good meal) on hand — " +
+			"consume to eat.' with NO bridging line and NO re-opened vendor directory. Guards the fix against over-firing " +
+			"(re-opening the directory whenever any food is carried). Pairs with hungry_holding_nibble_sees_meal_vendor.",
+		build: hungryHoldingMealKeepsSuppression,
+	},
+	{
 		name: "smith_choosing_at_forge",
 		summary: "A multi-output crafter (Ezekiel the blacksmith: skillet + nail) stands UNFOCUSED at his own forge on " +
 			"shift — the post-restart state the production-choice warrant fires on (LLM-116/LLM-128). The golden pins the " +
@@ -5941,6 +5961,87 @@ func hungryForagerAtStockedBush() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta
 		},
 	}
 	return snap, ezekielID, nil
+}
+
+// snackLoopScenario is the LLM-307 fixture: a mildly-hungry stateful NPC (Ezekiel
+// Crane, hunger 14 — felt at/above the silent floor 10, below the red threshold
+// 18) carrying ONLY the food named by `carry`, with a cheese seller (a full meal,
+// magnitude 8) at the General Store nearby. Parameterized by the carried food so
+// the paired goldens differ in exactly one variable — own-stock class:
+//
+//   - a NIBBLE (raspberries, magnitude 2): the consume-first suppression must
+//     re-open the meal directory and print the bridging line — a snack can't quiet
+//     a persisting hunger, so the walk-to meal must stay visible (the live Ezekiel
+//     raspberry loop, 2026-07-06).
+//   - a MEAL (cheese, magnitude 8): the suppression must stand — a meal on hand is
+//     the answer, the directory stays noise (the LLM-139 foil).
+//
+// He holds 59 coins (the live purse he never spent) so the vendor clears the
+// means-to-pay gate. No PriceBook/orders, so the render takes no wall-clock read
+// and stays byte-stable.
+func snackLoopScenario(carry sim.ItemKind) (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		ezekielID = sim.ActorID("ezekiel")
+		mabelID   = sim.ActorID("mabel")
+		store     = sim.StructureID("general_store")
+	)
+	start, end := 360, 1080 // 06:00–18:00
+	now := 600              // 10:00 — daytime
+	ezekiel := &sim.ActorSnapshot{
+		Kind:             sim.KindNPCStateful,
+		DisplayName:      "Ezekiel Crane",
+		Role:             "blacksmith",
+		State:            sim.StateIdle,
+		Pos:              sim.WorldPos{X: 100, Y: 100}.Tile(),
+		ScheduleStartMin: &start,
+		ScheduleEndMin:   &end,
+		Coins:            59,
+		Inventory:        map[sim.ItemKind]int{carry: 3},
+		Needs:            map[sim.NeedKey]int{"hunger": 14},
+	}
+	mabel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Mabel Stone",
+		Role:              "shopkeeper",
+		State:             sim.StateIdle,
+		WorkStructureID:   store,
+		InsideStructureID: store,
+		Coins:             20,
+		Inventory:         map[sim.ItemKind]int{"cheese": 5},
+		Needs:             map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Assets:           emptyAssetSet,
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{ezekielID: ezekiel, mabelID: mabel},
+		Structures: map[sim.StructureID]*sim.Structure{
+			store: plainStructure(store, "General Store"),
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"raspberries": {
+				Name: "raspberries", DisplayLabel: "Raspberries",
+				DisplayLabelSingular: "raspberry", DisplayLabelPlural: "raspberries",
+				Category:  sim.ItemCategoryFood,
+				Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 2}},
+			},
+			"cheese": {
+				Name: "cheese", DisplayLabel: "Cheese",
+				DisplayLabelSingular: "wedge of cheese", DisplayLabelPlural: "wedges of cheese",
+				Category:  sim.ItemCategoryFood,
+				Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 8}},
+			},
+		},
+	}
+	return snap, ezekielID, nil
+}
+
+func hungryHoldingNibbleSeesMealVendor() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return snackLoopScenario("raspberries")
+}
+
+func hungryHoldingMealKeepsSuppression() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return snackLoopScenario("cheese")
 }
 
 // grazingProducerScenario builds the LLM-134 fixture: Moses James, a carrot
