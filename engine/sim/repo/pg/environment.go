@@ -338,6 +338,10 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	// and disables the boost (the off-switch, like farm_upkeep_coins_per_shovel).
 	s.LaborProduceBoostPct = parseIntSetting(values, "labor_produce_boost_pct", sim.DefaultLaborProduceBoostPct)
 
+	// Merchant working-capital floor (LLM-294). Unset seeds the default; an explicit 0
+	// sticks and disables the conserve gate (the off-switch, like labor_produce_boost_pct).
+	s.MerchantCoinFloor = parseIntSetting(values, "merchant_coin_floor", sim.MerchantCoinFloorDefault)
+
 	// Cross-huddle conversation continuity (LLM-170). ON by default — the ring
 	// carry-over is pure perception legibility; the loop-state carry is inert
 	// unless the loop sweep above is enabled.
@@ -578,6 +582,9 @@ func (r *EnvironmentRepo) SaveMutableSettings(ctx context.Context, tx sim.Tx, ms
 		// Labor produce boost (LLM-224) — live-tuned via the umbilical, persisted
 		// here; the load path parses labor_produce_boost_pct via parseIntSetting.
 		{"labor_produce_boost_pct", strconv.Itoa(ms.LaborProduceBoostPct)},
+		// Merchant working-capital floor (LLM-294) — live-tuned via the umbilical,
+		// persisted here; the load path parses merchant_coin_floor via parseIntSetting.
+		{"merchant_coin_floor", strconv.Itoa(ms.MerchantCoinFloor)},
 	}
 	for _, row := range rows {
 		if _, err := tx.Exec(ctx, upsertSettingSQL, row.key, row.val); err != nil {

@@ -386,6 +386,44 @@ func TestGoldensRestockSupplierProducesOrForagesOrIsDistributor(t *testing.T) {
 	}
 }
 
+// TestGoldensConserveKeeperNeverGetsBuyImperative is the LLM-294 cross-scenario
+// invariant: whenever the subject is in conserve mode (coin-poor + overstocked, per
+// merchantConserve), its "## Restocking" section must lead with the hold-off-buying
+// steer and must NEVER carry a "Buy it now" imperative — the cue cannot tell a keeper
+// to conserve and to buy in the same breath, even with a seller co-present. Runs over
+// the whole matrix so no future cue can reintroduce the buy imperative for a conserving
+// keeper.
+func TestGoldensConserveKeeperNeverGetsBuyImperative(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, _ := sc.build()
+			subj := snap.Actors[actorID]
+			if subj == nil || !merchantConserve(snap, actorID, subj).Active {
+				return // invariant N/A — subject isn't conserving in this scenario
+			}
+			out := renderScenario(sc)
+			// Isolate the "## Restocking" section: from its header to the next section
+			// header (or end). The conserve steer is scoped to this section.
+			const header = "## Restocking\n"
+			idx := strings.Index(out, header)
+			if idx < 0 {
+				return // no restock section rendered (nothing low to buy) — nothing to assert
+			}
+			section := out[idx+len(header):]
+			if next := strings.Index(section, "\n## "); next >= 0 {
+				section = section[:next]
+			}
+			if !strings.Contains(section, "Hold off buying") {
+				t.Errorf("scenario %q: subject is conserving but the Restocking section lacks the hold-off-buying steer:\n%s", sc.name, section)
+			}
+			if strings.Contains(section, "Buy it now") {
+				t.Errorf("scenario %q: subject is conserving but the Restocking section still carries a 'Buy it now' imperative (LLM-294):\n%s", sc.name, section)
+			}
+		})
+	}
+}
+
 // TestGoldensUnobtainableInputSurfacesNoDemand is the LLM-260 cross-scenario
 // invariant: an effective buy item (explicit or derived from a produce recipe)
 // that NO other actor in the world holds at a workplace must surface in NEITHER
@@ -1454,6 +1492,16 @@ var perceptionScenarios = []perceptionScenario{
 		build: ownerHoldingRepairNailsInCompany,
 	},
 	{
+		name: "coin_poor_overstocked_keeper_conserves",
+		summary: "LLM-294 working-capital tone gate: a coin-poor keeper (Hannah Boggs, 1 coin — below the 10 floor) sitting " +
+			"on unsold stock (20 porridge, dead-stock over the 8 floor) is low on the milk she buys, with the milk seller " +
+			"(Josiah) co-present in her huddle. The golden pins BOTH tiers: '## Restocking' flips to the hold-off-buying steer " +
+			"(milk named, NO 'Buy it now' imperative despite the co-present seller), and '## What your wares fetch' carries the " +
+			"sell-first nudge pointing at the sell tool for her most-overstocked ware (porridge). Cross-scenario guard: " +
+			"TestGoldensConserveKeeperNeverGetsBuyImperative.",
+		build: coinPoorOverstockedKeeperConserves,
+	},
+	{
 		name: "dairy_keeper_out_of_booster_at_post",
 		summary: "LLM-248 optional booster inputs (the LLM-83 dairy sage edge): an Elizabeth-shaped dairy keeper at her farm " +
 			"on shift, milk recipe carrying a sage booster (1 sage per execution → +2 milk), sage a buy entry at 0 on hand. " +
@@ -1972,6 +2020,90 @@ func resellerRestockRoutedToDistributorNotFarm() (*sim.Snapshot, sim.ActorID, []
 		},
 		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
 			"milk": {Name: "milk", DisplayLabel: "milk", Category: sim.ItemCategoryDrink},
+		},
+		RestockReorderPct: 25,
+	}
+	return snap, hannahID, nil
+}
+
+// coinPoorOverstockedKeeperConserves is the LLM-294 working-capital tone-gate fixture.
+// Hannah Boggs keeps her inn on shift with just 1 coin (below the 10-coin floor) while
+// holding 20 porridge she made and can't move (dead stock — over the absolute 8 floor,
+// no recent sales) and is low on the milk she buys in (2 of 12). Josiah, who produces
+// milk, shares her huddle — the co-present buy path that would normally fire "buy it
+// now". The golden pins both tiers of the gate: "## Restocking" flips to the
+// conserve steer (milk named, no buy imperative) and "## What your wares fetch" gains
+// the sell-first nudge naming porridge (her most-overstocked ware) and the sell tool.
+// Fixed PublishedAt, no price book, no orders → byte-stable, no wall-clock in render.
+func coinPoorOverstockedKeeperConserves() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		hannahID = sim.ActorID("hannah")
+		josiahID = sim.ActorID("josiah")
+		inn      = sim.StructureID("the_inn")
+		store    = sim.StructureID("general_store")
+		huddleID = sim.HuddleID("inn_huddle")
+	)
+	start, end := 360, 1080 // 06:00-18:00
+	now := 720              // 12:00 — on shift, at the inn
+	published := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
+	hannah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Hannah Boggs",
+		Role:              "innkeeper",
+		State:             sim.StateIdle,
+		Pos:               sim.TilePos{X: 10, Y: 10},
+		WorkStructureID:   inn,
+		InsideStructureID: inn,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		CurrentHuddleID:   huddleID,
+		Coins:             1,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"porridge": 20, "milk": 2},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "porridge", Source: sim.RestockSourceProduce, Max: 30},
+			{Item: "milk", Source: sim.RestockSourceBuy, Max: 12},
+		}},
+	}
+	josiah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Josiah Thorne",
+		State:             sim.StateIdle,
+		Pos:               sim.TilePos{X: 11, Y: 10},
+		WorkStructureID:   store,
+		InsideStructureID: inn, // co-present in the inn huddle so the milk buy path resolves this tick
+		CurrentHuddleID:   huddleID,
+		Coins:             40,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"milk": 40},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "milk", Source: sim.RestockSourceProduce, Max: 40},
+		}},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:       published,
+		LocalMinuteOfDay:  &now,
+		NeedThresholds:    sim.NeedThresholds{},
+		Assets:            emptyAssetSet,
+		MerchantCoinFloor: 10,
+		Actors:            map[sim.ActorID]*sim.ActorSnapshot{hannahID: hannah, josiahID: josiah},
+		Structures: map[sim.StructureID]*sim.Structure{
+			inn:   plainStructure(inn, "The Inn"),
+			store: plainStructure(store, "General Store"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddleID: {ID: huddleID, Members: map[sim.ActorID]struct{}{hannahID: {}, josiahID: {}}},
+		},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"porridge": {OutputItem: "porridge", OutputQty: 10, WholesalePrice: 1, RetailPrice: 2,
+				Inputs: []sim.RecipeInput{{Item: "milk", Qty: 3}, {Item: "water", Qty: 5}}},
+			"milk":  {OutputItem: "milk", WholesalePrice: 1, RetailPrice: 2},
+			"water": {OutputItem: "water", WholesalePrice: 1, RetailPrice: 1},
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"porridge": {Name: "porridge", DisplayLabel: "porridge", Category: sim.ItemCategoryFood},
+			"milk":     {Name: "milk", DisplayLabel: "milk", Category: sim.ItemCategoryDrink},
+			"water":    {Name: "water", DisplayLabel: "water", Category: sim.ItemCategoryDrink},
 		},
 		RestockReorderPct: 25,
 	}
@@ -2934,7 +3066,8 @@ func TestWaresWorthCueOnlyInCompanyWithOwnTrade(t *testing.T) {
 			sc.name == "innkeeper_pricing_with_makings_cost" || // LLM-226: producer in company, priced own ware
 			sc.name == "employer_recalls_returning_helper" || // LLM-228: producing keeper in company (incidental to the recall it tests)
 			sc.name == "wholesaler_producer_bartering_with_customer" || // LLM-291: wholesale producer in company — cue draws the wholesale-channel line
-			sc.name == "owner_holding_repair_nails_in_company" // LLM-292: keeper in company with priced ware + the repair-reserve earmark
+			sc.name == "owner_holding_repair_nails_in_company" || // LLM-292: keeper in company with priced ware + the repair-reserve earmark
+			sc.name == "coin_poor_overstocked_keeper_conserves" // LLM-294: producer in company (priced own wares) + the conserve sell-first nudge
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: wares-worth cue present=%v, want %v", sc.name, has, want)
 		}
@@ -3016,12 +3149,19 @@ func TestRestockCatalogAnchorRendersWithCatalogPrice(t *testing.T) {
 		t.Run(sc.name, func(t *testing.T) {
 			snap, actorID, _ := sc.build()
 			subj := snap.Actors[actorID]
+			// LLM-294: a keeper in conserve mode (coin-poor + overstocked) has every
+			// restock item line replaced by the hold-off-buying steer — no full
+			// "- You have N <label>" line, so no catalog anchor is owed regardless of
+			// catalog pricing. The per-line loop below is naturally a no-op then (the
+			// conserve lines don't match the "- You have " prefix).
+			conserve := subj != nil && merchantConserve(snap, actorID, subj).Active
 			// Expected-anchor derivation, computed BEFORE looking at the render: an
 			// anchor is owed iff some below-threshold effective buy entry (the
 			// section's own gate) has a catalog rate AND actually renders a full item
 			// line (an unactionable item is omitted per LLM-216; a pending-offer bide
-			// steer replaces the whole line per LLM-64). Also maps each entry's display
-			// label to its rate for the per-line check below.
+			// steer replaces the whole line per LLM-64; conserve mode replaces every
+			// line per LLM-294). Also maps each entry's display label to its rate for
+			// the per-line check below.
 			want := false
 			rateByLabel := map[string]int{}
 			labelAmbiguous := map[string]bool{}
@@ -3045,6 +3185,9 @@ func TestRestockCatalogAnchorRendersWithCatalogPrice(t *testing.T) {
 					}
 					if _, coID := coPresentSellerForItem(snap, actorID, subj, e.Item); coID != "" && hasPendingOfferTo(snap, actorID, coID, e.Item) {
 						continue // bide steer replaces the item line (LLM-64)
+					}
+					if conserve {
+						continue // conserve mode replaces the item line — no anchor owed (LLM-294)
 					}
 					want = true
 				}

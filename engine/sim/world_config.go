@@ -393,3 +393,34 @@ func SetFarmUpkeepSettings(floor, coinsPerShovel *int) Command {
 		},
 	}
 }
+
+// ErrInvalidMerchantCoinFloorSetting is returned by SetMerchantCoinFloor when the
+// floor is missing or out of range (must be >= 0) — → 400 at the umbilical route.
+var ErrInvalidMerchantCoinFloorSetting = errors.New("invalid merchant coin floor setting")
+
+// MerchantCoinFloorSettingResult echoes the post-change working-capital floor.
+type MerchantCoinFloorSettingResult struct {
+	CoinFloor int
+}
+
+// SetMerchantCoinFloor returns a Command that live-tunes the working-capital floor
+// (LLM-294): the purse balance below which a keeper sitting on unsold sellable stock
+// is steered to conserve coin (hold off buying, sell down its shelves) rather than
+// restock. Required (a single knob, nil = nothing to do) and must be >= 0 — unlike
+// the seek-work ceiling, 0 is the explicit OFF-switch (the perception gate reads the
+// raw value as "floor > 0 && coins < floor", so 0 disables it), mirroring
+// LaborProduceBoostPct==0. The MaxInt32 upper bound keeps the value comfortably inside
+// int. Takes effect immediately — the perception gate reads the next published
+// snapshot (which mirrors the raw value) — AND persists on the next checkpoint via
+// MutableWorldSettings, so a live change survives restart.
+func SetMerchantCoinFloor(floor *int) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			if floor == nil || *floor < 0 || *floor > math.MaxInt32 {
+				return nil, ErrInvalidMerchantCoinFloorSetting
+			}
+			w.Settings.MerchantCoinFloor = *floor
+			return MerchantCoinFloorSettingResult{CoinFloor: w.Settings.MerchantCoinFloor}, nil
+		},
+	}
+}

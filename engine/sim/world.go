@@ -618,6 +618,18 @@ type WorldSettings struct {
 	// perception deliberately carries no hire-value pitch (they hire willingly
 	// without one; the experiential after-the-fact beat is a separate ticket).
 	LaborProduceBoostPct int
+
+	// MerchantCoinFloor is the working-capital floor (LLM-294): a keeper whose purse
+	// dips below this AND is sitting on unsold sellable stock is steered to conserve
+	// coin (hold off buying, sell down its shelves) rather than restock. Unlike the
+	// seek-work knobs there is no effective-value fallback — the pg loader seeds
+	// MerchantCoinFloorDefault when the key is absent, and an explicit 0 STICKS and
+	// disables the gate (the off-switch, mirroring FarmUpkeepCoinsPerShovel==0 /
+	// LaborProduceBoostPct==0). Live-tunable + persisted (settings/merchant-coin-floor,
+	// read side GET /settings). Mirrored raw onto the snapshot at publish so the
+	// perception gates read it without racing on w.Settings; a 0 there (incl. a
+	// directly-constructed test snapshot) means the feature is off.
+	MerchantCoinFloor int
 }
 
 // DefaultOutdoorSceneRadiusValue is the fallback radius used when
@@ -1937,6 +1949,7 @@ func (w *World) republish() {
 		StallNailsPerRepair:       w.Settings.StallNailsPerRepair,
 		FarmUpkeepFloor:           w.Settings.FarmUpkeepFloor,
 		FarmUpkeepCoinsPerShovel:  w.Settings.FarmUpkeepCoinsPerShovel,
+		MerchantCoinFloor:         w.Settings.MerchantCoinFloor,
 		DefaultOutdoorSceneRadius: w.Settings.DefaultOutdoorSceneRadius,
 		Assets:                    w.Assets,
 		ZoomMinAdmin:              w.Settings.ZoomMinAdmin,
