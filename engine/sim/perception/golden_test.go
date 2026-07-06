@@ -1422,6 +1422,38 @@ var perceptionScenarios = []perceptionScenario{
 		build: distributorRestockSkipsCoPresentReseller,
 	},
 	{
+		name: "distributor_restocking_milk_bulk_rate_anchor",
+		summary: "LLM-292 buy-leg anchor (the live Josiah milk leak): the distributor (Josiah Thorne) is low on milk, his " +
+			"supplier is the wholesaler-tagged Ellis Farm, and the catalog prices milk wholesale 1 / retail 2. The golden pins " +
+			"the catalog anchor clause on the '## Restocking' milk line — 'The fair bulk rate buying it in is about 1 coin " +
+			"each — pay above that and you are overpaying.' Before LLM-292 the cue's only rate was the buyer's own last-paid, " +
+			"a self-poisoning anchor (one overpay re-anchors every later offer; live he paid ~2.2/unit against the 1-coin " +
+			"book). No price book in the fixture, so the last-paid CostText and weekly P&L stay silent — isolating the " +
+			"catalog anchor as the line's one rate.",
+		build: distributorRestockingMilkBulkRateAnchor,
+	},
+	{
+		name: "miller_wheat_restock_flat_band_anchor",
+		summary: "LLM-292 flat-band anchor (the live Joseph Scott case): the miller produces flour from bought-in wheat — a " +
+			"DERIVED buy entry (LLM-260) below its two-batch floor (LLM-279) — and wheat's catalog band is FLAT 1/1. Live he " +
+			"paid 2/unit for 20 wheat against the flat 1-coin book; even a degenerate single-point band never reached his " +
+			"buy-side perception. The golden pins the anchor clause on the derived wheat '## Restocking' line (a " +
+			"single-priced band collapses to its one price), the General Store (the distributor holding wheat) as the " +
+			"walk-to supplier, and the '## Keeping up production' runway line the same low state motivates.",
+		build: millerWheatRestockFlatBandAnchor,
+	},
+	{
+		name: "owner_holding_repair_nails_in_company",
+		summary: "LLM-292 repair-reserve earmark (the live Josiah nail resale): Josiah stands at his worn General Store " +
+			"(wear past the repair threshold) holding 3 of the 5 nails a mend takes, in a huddle with John Ellis — the " +
+			"situation where a buyer's offer for the nails lands. Live, nothing marked the nails earmarked and the " +
+			"role-agnostic coin band made any in-band offer look fair, so he resold 5 repair nails before mending (10 coins " +
+			"lost, shop still broken). The golden pins the wares-cue earmark line ('you need 5 of these to mend your General " +
+			"Store — the 3 you carry are for that mend, not for sale') rendering alongside his ordinary ware line (milk) and " +
+			"the '## Your business' mend nag it shares predicates with.",
+		build: ownerHoldingRepairNailsInCompany,
+	},
+	{
 		name: "dairy_keeper_out_of_booster_at_post",
 		summary: "LLM-248 optional booster inputs (the LLM-83 dairy sage edge): an Elizabeth-shaped dairy keeper at her farm " +
 			"on shift, milk recipe carrying a sage booster (1 sage per execution → +2 milk), sage a buy entry at 0 on hand. " +
@@ -1972,7 +2004,7 @@ func distributorRestockSkipsCoPresentReseller() (*sim.Snapshot, sim.ActorID, []s
 	josiah := &sim.ActorSnapshot{
 		Kind:              sim.KindNPCStateful,
 		DisplayName:       "Josiah Thorne",
-		Role:              "distributor",
+		Role:              "shopkeeper",
 		State:             sim.StateIdle,
 		Pos:               sim.TilePos{X: 10, Y: 10},
 		WorkStructureID:   store,
@@ -2032,6 +2064,227 @@ func distributorRestockSkipsCoPresentReseller() (*sim.Snapshot, sim.ActorID, []s
 		},
 		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
 			"carrots": {Name: "carrots", DisplayLabel: "carrots", Category: sim.ItemCategoryFood},
+		},
+		RestockReorderPct: 25,
+	}
+	return snap, josiahID, nil
+}
+
+// distributorRestockingMilkBulkRateAnchor is the LLM-292 buy-leg fixture: the
+// distributor, low on milk (2 of cap 12), with the wholesaler-tagged Ellis Farm
+// as his walk-to supplier and milk priced wholesale 1 / retail 2 in the catalog.
+// Pins the catalog buying-in anchor on the Restocking line. No price book — the
+// per-vendor last-paid CostText, the affordability fact, and the weekly P&L all
+// stay silent, so the anchor is the line's only rate. Clock-free render path.
+func distributorRestockingMilkBulkRateAnchor() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		josiahID    = sim.ActorID("josiah")
+		elizabethID = sim.ActorID("elizabeth")
+		store       = sim.StructureID("general_store")
+		farm        = sim.StructureID("ellis_farm")
+	)
+	start, end := 360, 1080 // 06:00-18:00
+	now := 720              // 12:00 — on shift, at the store
+	josiah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Josiah Thorne",
+		Role:              "shopkeeper",
+		State:             sim.StateIdle,
+		Pos:               sim.TilePos{X: 10, Y: 10},
+		WorkStructureID:   store,
+		InsideStructureID: store,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             30,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"milk": 2},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "milk", Source: sim.RestockSourceBuy, Max: 12},
+		}},
+	}
+	elizabeth := &sim.ActorSnapshot{
+		Kind:            sim.KindNPCStateful,
+		DisplayName:     "Elizabeth Ellis",
+		State:           sim.StateIdle,
+		Pos:             sim.TilePos{X: 400, Y: 400},
+		WorkStructureID: farm,
+		Inventory:       map[sim.ItemKind]int{"milk": 40},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "milk", Source: sim.RestockSourceProduce, Max: 40},
+		}},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			josiahID: josiah, elizabethID: elizabeth,
+		},
+		Structures: map[sim.StructureID]*sim.Structure{
+			store: plainStructure(store, "General Store"),
+			farm:  plainStructure(farm, "Ellis Farm"),
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			sim.VillageObjectID(store): {ID: sim.VillageObjectID(store), OwnerActorID: josiahID, Tags: []string{sim.TagDistributor}},
+			sim.VillageObjectID(farm):  {ID: sim.VillageObjectID(farm), OwnerActorID: elizabethID, Tags: []string{sim.TagFarm, sim.TagWholesaler}},
+		},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"milk": {OutputItem: "milk", OutputQty: 1, RateQty: 4, RatePerHours: 1, WholesalePrice: 1, RetailPrice: 2},
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"milk": {Name: "milk", DisplayLabel: "milk", Category: sim.ItemCategoryDrink},
+		},
+		RestockReorderPct: 25,
+	}
+	return snap, josiahID, nil
+}
+
+// millerWheatRestockFlatBandAnchor is the LLM-292 flat-band fixture: the miller
+// produces flour from bought-in wheat (derived buy entry — no hand-authored wheat
+// row), his wheat shelf (2) is below the two-batch floor (2×4=8), and wheat's
+// catalog band is flat 1/1. His supplier is the distributor's store. Pins the
+// anchor clause collapsing a single-priced band to its one price, riding a
+// DERIVED entry, alongside the production runway line. Also carries a second low
+// buy entry with NO catalog price (sacks, 1 of cap 8, same store supplier) whose
+// line must render anchor-FREE — the mixed priced/unpriced section that keeps the
+// per-line attachment check in TestRestockCatalogAnchorRendersWithCatalogPrice
+// non-vacuous (code_review). Clock-free render path.
+func millerWheatRestockFlatBandAnchor() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		josephID = sim.ActorID("joseph")
+		josiahID = sim.ActorID("josiah")
+		mill     = sim.StructureID("the_mill")
+		store    = sim.StructureID("general_store")
+	)
+	start, end := 360, 1080 // 06:00-18:00
+	now := 720              // 12:00 — on shift, at the mill
+	joseph := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Joseph Scott",
+		Role:              "miller",
+		State:             sim.StateIdle,
+		Pos:               sim.TilePos{X: 10, Y: 10},
+		WorkStructureID:   mill,
+		InsideStructureID: mill,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             30,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"wheat": 2, "sack": 1},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "flour", Source: sim.RestockSourceProduce, Max: 10},
+			{Item: "sack", Source: sim.RestockSourceBuy, Max: 8},
+		}},
+	}
+	josiah := &sim.ActorSnapshot{
+		Kind:            sim.KindNPCStateful,
+		DisplayName:     "Josiah Thorne",
+		State:           sim.StateIdle,
+		Pos:             sim.TilePos{X: 200, Y: 200},
+		WorkStructureID: store,
+		Inventory:       map[sim.ItemKind]int{"wheat": 40, "sack": 20},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			josephID: joseph, josiahID: josiah,
+		},
+		Structures: map[sim.StructureID]*sim.Structure{
+			mill:  plainStructure(mill, "The Mill"),
+			store: plainStructure(store, "General Store"),
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			sim.VillageObjectID(mill):  {ID: sim.VillageObjectID(mill), OwnerActorID: josephID, Tags: []string{sim.TagWholesaler}},
+			sim.VillageObjectID(store): {ID: sim.VillageObjectID(store), OwnerActorID: josiahID, Tags: []string{sim.TagDistributor}},
+		},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"flour": {OutputItem: "flour", OutputQty: 2, RateQty: 2, RatePerHours: 1, WholesalePrice: 2, RetailPrice: 3,
+				Inputs: []sim.RecipeInput{{Item: "wheat", Qty: 4}}},
+			"wheat": {OutputItem: "wheat", OutputQty: 1, RateQty: 4, RatePerHours: 1, WholesalePrice: 1, RetailPrice: 1},
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"wheat": {Name: "wheat", DisplayLabel: "wheat", Category: sim.ItemCategoryMaterial},
+			"flour": {Name: "flour", DisplayLabel: "flour", Category: sim.ItemCategoryMaterial},
+			"sack":  {Name: "sack", DisplayLabel: "sacks", Category: sim.ItemCategoryMaterial},
+		},
+		RestockReorderPct: 25,
+	}
+	return snap, josephID, nil
+}
+
+// ownerHoldingRepairNailsInCompany is the LLM-292 earmark fixture: Josiah on the
+// loiter pin of his worn General Store (wear 450 ≥ repair threshold 400, below
+// degrade 600), holding 3 of the 5 nails a mend takes plus his ordinary milk
+// stock (6 of cap 12 — above the reorder line, so no Restocking section), in a
+// huddle with John Ellis. Pins the wares-cue repair-reserve line alongside the
+// ordinary ware line and the "## Your business" mend nag. Clock-free render path.
+func ownerHoldingRepairNailsInCompany() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		josiahID = sim.ActorID("josiah")
+		johnID   = sim.ActorID("john")
+		store    = sim.VillageObjectID("general_store")
+		huddle   = sim.HuddleID("h1")
+	)
+	zero := 0
+	now := 600 // 10:00
+	storePin := sim.WorldPos{X: 100, Y: 100}.Tile()
+	josiah := &sim.ActorSnapshot{
+		Kind:            sim.KindNPCStateful,
+		DisplayName:     "Josiah Thorne",
+		Role:            "shopkeeper",
+		State:           sim.StateIdle,
+		Pos:             storePin,
+		CurrentHuddleID: huddle,
+		Coins:           20,
+		Needs:           map[sim.NeedKey]int{},
+		Inventory:       map[sim.ItemKind]int{"nail": 3, "milk": 6},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "milk", Source: sim.RestockSourceBuy, Max: 12},
+		}},
+		Acquaintances: map[string]sim.Acquaintance{"John Ellis": {}},
+	}
+	john := &sim.ActorSnapshot{
+		Kind:            sim.KindNPCStateful,
+		DisplayName:     "John Ellis",
+		Role:            "tavernkeeper",
+		State:           sim.StateIdle,
+		Pos:             storePin,
+		CurrentHuddleID: huddle,
+		Coins:           15,
+		Needs:           map[sim.NeedKey]int{},
+		Acquaintances:   map[string]sim.Acquaintance{"Josiah Thorne": {}},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay:          &now,
+		NeedThresholds:            sim.NeedThresholds{},
+		Assets:                    emptyAssetSet,
+		StallWearRepairThreshold:  400,
+		StallWearDegradeThreshold: 600,
+		StallNailsPerRepair:       5,
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			josiahID: josiah, johnID: john,
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			store: {
+				ID:            store,
+				DisplayName:   "General Store",
+				Pos:           sim.WorldPos{X: 100, Y: 100},
+				OwnerActorID:  josiahID,
+				Tags:          []string{sim.TagBusiness},
+				Wear:          450,
+				LoiterOffsetX: &zero,
+				LoiterOffsetY: &zero,
+			},
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{josiahID: {}, johnID: {}}},
+		},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"milk": {OutputItem: "milk", OutputQty: 1, RateQty: 4, RatePerHours: 1, WholesalePrice: 1, RetailPrice: 2},
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"milk": {Name: "milk", DisplayLabel: "milk", Category: sim.ItemCategoryDrink},
+			"nail": {Name: "nail", DisplayLabel: "nails", Category: sim.ItemCategoryMaterial},
 		},
 		RestockReorderPct: 25,
 	}
@@ -2680,7 +2933,8 @@ func TestWaresWorthCueOnlyInCompanyWithOwnTrade(t *testing.T) {
 		want := sc.name == "smith_bartering_at_tavern" || sc.name == "keeper_reselling_in_company" ||
 			sc.name == "innkeeper_pricing_with_makings_cost" || // LLM-226: producer in company, priced own ware
 			sc.name == "employer_recalls_returning_helper" || // LLM-228: producing keeper in company (incidental to the recall it tests)
-			sc.name == "wholesaler_producer_bartering_with_customer" // LLM-291: wholesale producer in company — cue draws the wholesale-channel line
+			sc.name == "wholesaler_producer_bartering_with_customer" || // LLM-291: wholesale producer in company — cue draws the wholesale-channel line
+			sc.name == "owner_holding_repair_nails_in_company" // LLM-292: keeper in company with priced ware + the repair-reserve earmark
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: wares-worth cue present=%v, want %v", sc.name, has, want)
 		}
@@ -2688,14 +2942,15 @@ func TestWaresWorthCueOnlyInCompanyWithOwnTrade(t *testing.T) {
 }
 
 // TestWholesaleChannelLineOnlyForWholesalerProduce is the LLM-291 cross-scenario
-// invariant: the wholesale-channel wares line ("sold wholesale to …") appears in
-// EXACTLY the scenarios where a wholesale producer prices its own produce in company
-// (wholesaler_producer_bartering_with_customer). It guards both directions — a
-// wholesaler's own produce must never regress to a retail spread (the framing that
-// invited Moses's refused street sale, live hud-9b23…), and no ordinary retail
-// producer (the smith, the innkeeper) may ever pick up the wholesale line.
+// invariant: the wholesale-channel wares line ("your own produce — it sells in bulk
+// to …", LLM-292 copy) appears in EXACTLY the scenarios where a wholesale producer
+// prices its own produce in company (wholesaler_producer_bartering_with_customer).
+// It guards both directions — a wholesaler's own produce must never regress to a
+// retail spread (the framing that invited Moses's refused street sale, live
+// hud-9b23…), and no ordinary retail producer (the smith, the innkeeper) may ever
+// pick up the wholesale line.
 func TestWholesaleChannelLineOnlyForWholesalerProduce(t *testing.T) {
-	const marker = "sold wholesale to"
+	const marker = "your own produce — it sells in bulk to"
 	for _, sc := range perceptionScenarios {
 		sc := sc
 		got := renderScenario(sc)
@@ -2703,6 +2958,132 @@ func TestWholesaleChannelLineOnlyForWholesalerProduce(t *testing.T) {
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: wholesale-channel wares line present=%v, want %v", sc.name, has, want)
 		}
+	}
+}
+
+// TestRenderedPromptsNeverSayDistributor is the LLM-292 copy-constraint invariant
+// (Jeff, 2026-07-06): rendered prose must never hand the NPC's LLM a mechanic-role
+// term — "distributor" is an engine/tag concept, and the NPC is told who stocks its
+// goods in in-world relational terms ("whose shop stocks it for the village", "the
+// village storekeeper"), never what engine role that actor holds. Runs the whole
+// matrix so no future cue — or a fixture Role string leaking through a peer label —
+// can reintroduce it.
+func TestRenderedPromptsNeverSayDistributor(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			if got := renderScenario(sc); strings.Contains(strings.ToLower(got), "distributor") {
+				t.Errorf("scenario %q: rendered prompt contains the mechanic-role term %q (LLM-292 copy constraint)", sc.name, "distributor")
+			}
+		})
+	}
+}
+
+// TestRepairReserveLineOnlyForOwnerWithMendAndNails is the LLM-292 cross-scenario
+// invariant: the earmarked repair-nails line ("… of these to mend your …") appears
+// in EXACTLY the scenario where a business OWNER with a live mend obligation holds
+// nails in company (owner_holding_repair_nails_in_company). A hired mender, an
+// owner carrying no nails, an owner out of company, or an unworn business must
+// never pick it up — and the mend-nag scenarios that share its predicates
+// (owner_at_worn_stall & co) stay earmark-free because they render out of company.
+func TestRepairReserveLineOnlyForOwnerWithMendAndNails(t *testing.T) {
+	const marker = "of these to mend your"
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		got := renderScenario(sc)
+		want := sc.name == "owner_holding_repair_nails_in_company"
+		if has := strings.Contains(got, marker); has != want {
+			t.Errorf("scenario %q: repair-reserve earmark line present=%v, want %v", sc.name, has, want)
+		}
+	}
+}
+
+// TestRestockCatalogAnchorRendersWithCatalogPrice is the LLM-292 buy-leg
+// invariant, re-derived from each scenario's fixture rather than trusting the
+// build that produced the section: the catalog buying-in anchor ("The fair bulk
+// rate buying it in is …") appears on a rendered "## Restocking" item line iff
+// that ITEM's kind is catalog-priced — checked per line, not section-wide, so a
+// mixed priced/unpriced section can't hide an anchor attached to the wrong item
+// (code_review). Guards both directions — a priced low item must carry the
+// corrective rate (the self-poisoning last-paid anchor must never again be the
+// cue's only number: the live Josiah 2.2/unit milk leg), and an unpriced catalog
+// must not conjure one. A fixture that owes an anchor but renders no Restocking
+// section at all fails too (the anchor can't render if the section disappears).
+func TestRestockCatalogAnchorRendersWithCatalogPrice(t *testing.T) {
+	const marker = "The fair bulk rate buying it in is about"
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, _ := sc.build()
+			subj := snap.Actors[actorID]
+			// Expected-anchor derivation, computed BEFORE looking at the render: an
+			// anchor is owed iff some below-threshold effective buy entry (the
+			// section's own gate) has a catalog rate AND actually renders a full item
+			// line (an unactionable item is omitted per LLM-216; a pending-offer bide
+			// steer replaces the whole line per LLM-64). Also maps each entry's display
+			// label to its rate for the per-line check below.
+			want := false
+			rateByLabel := map[string]int{}
+			labelAmbiguous := map[string]bool{}
+			if subj != nil && subj.RestockPolicy != nil {
+				floors := sim.ReorderFloors(snap.Recipes, subj.RestockPolicy)
+				for _, e := range sim.EffectiveBuyEntries(snap.Recipes, subj.RestockPolicy) {
+					rate := catalogBulkRate(snap, e.Item)
+					label := itemDisplayLabel(snap, e.Item)
+					if prev, ok := rateByLabel[label]; ok && (prev > 0) != (rate > 0) {
+						labelAmbiguous[label] = true // two kinds share a label with differing pricedness — per-line check skips it
+					}
+					rateByLabel[label] = rate
+					if !sim.RestockReorderThresholdMet(subj.Inventory[e.Item], e.Cap(), snap.RestockReorderPct, floors[e.Item]) {
+						continue
+					}
+					if rate <= 0 {
+						continue
+					}
+					if !itemHasActionableBuyPath(snap, actorID, subj, e.Item) {
+						continue // omitted line (LLM-216) carries no anchor
+					}
+					if _, coID := coPresentSellerForItem(snap, actorID, subj, e.Item); coID != "" && hasPendingOfferTo(snap, actorID, coID, e.Item) {
+						continue // bide steer replaces the item line (LLM-64)
+					}
+					want = true
+				}
+			}
+			_, section, found := strings.Cut(renderScenario(sc), "## Restocking\n")
+			if !found {
+				if want {
+					t.Errorf("scenario %q: an anchor-owing buy entry exists but no '## Restocking' section rendered (LLM-292)", sc.name)
+				}
+				return
+			}
+			if idx := strings.Index(section, "\n## "); idx >= 0 {
+				section = section[:idx]
+			}
+			if has := strings.Contains(section, marker); has != want {
+				t.Errorf("scenario %q: restock catalog anchor present=%v, want %v (LLM-292)", sc.name, has, want)
+			}
+			// Per-line attachment: every full item line ("- You have N <label> on
+			// hand…") carries the anchor iff ITS kind is priced. Bide steers and the
+			// walk-to sub-bullets don't match the prefix and are skipped by design.
+			for _, line := range strings.Split(section, "\n") {
+				rest, ok := strings.CutPrefix(line, "- You have ")
+				if !ok {
+					continue
+				}
+				head, _, ok := strings.Cut(rest, " on hand")
+				if !ok {
+					continue
+				}
+				label := strings.TrimLeft(head, "0123456789 ")
+				rate, known := rateByLabel[label]
+				if !known || labelAmbiguous[label] {
+					continue // not one of the effective entries (or ambiguous label) — nothing to assert
+				}
+				if has := strings.Contains(line, marker); has != (rate > 0) {
+					t.Errorf("scenario %q: item line %q anchor present=%v, want %v (per-line attachment, LLM-292)", sc.name, line, has, rate > 0)
+				}
+			}
+		})
 	}
 }
 
@@ -2786,6 +3167,7 @@ func TestStallRepairCueOnlyAtOwnWornStall(t *testing.T) {
 		"owner_at_degraded_stall":                true,
 		"owner_at_worn_tavern":                   true,
 		"owner_inside_worn_business":             true, // LLM-266: owner INSIDE their worn business (not at the outdoor pin)
+		"owner_holding_repair_nails_in_company":  true, // LLM-292: owner at own worn store's pin (the earmark fixture)
 	}
 	for _, sc := range perceptionScenarios {
 		sc := sc
@@ -4619,7 +5001,7 @@ func wholesalerProducerBarteringWithCustomer() (*sim.Snapshot, sim.ActorID, []si
 	josiah := &sim.ActorSnapshot{
 		Kind:              sim.KindNPCStateful,
 		DisplayName:       "Josiah Thorne",
-		Role:              "distributor",
+		Role:              "shopkeeper",
 		State:             sim.StateIdle,
 		InsideStructureID: store,
 		WorkStructureID:   store,

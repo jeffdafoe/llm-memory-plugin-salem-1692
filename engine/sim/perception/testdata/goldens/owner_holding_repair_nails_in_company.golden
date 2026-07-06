@@ -1,0 +1,22 @@
+# Your turn
+
+## What just happened
+(nothing specific — this is a routine check-in)
+
+
+## You
+Coins in your purse: 20.
+You are carrying: milk (x6), nails (x3).
+
+## Around you
+You are outdoors, with John Ellis.
+It is morning in the village.
+
+## What your wares fetch
+What your wares fetch in coin — use it to set a fair price or weigh a trade:
+- milk: 1 to 2 coins each.
+- nails: you need 5 of these to mend your General Store — the 3 you carry are for that mend, not for sale. Selling them leaves your business broken.
+
+## Your business
+Your General Store is showing hard use and needs mending. Mending takes 5 nails and you have 3 — buy more from the smith, then repair it.
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.
