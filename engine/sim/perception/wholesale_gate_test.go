@@ -85,6 +85,48 @@ func TestWholesaleGate_RestockDirectory(t *testing.T) {
 	})
 }
 
+// TestWholesaleGate_CoPresentPeerCue (LLM-289): the CO-PRESENT PEER arm of the
+// satiation cue must apply the same wholesale gate as the vendor scan. The
+// dispatch gate keys on the SELLER's work anchor wherever the seller stands, so
+// a huddled wholesaler-farmer carrying his own produce is a guaranteed
+// pay_with_item rejection for a non-distributor — the cue must not advertise
+// it (live hud-843da92a: 40 of 57 turns burned on cued wholesale rejections).
+// The distributor keeps the offer.
+func TestWholesaleGate_CoPresentPeerCue(t *testing.T) {
+	peerCueSnap := func(buyerID sim.ActorID, buyerWork sim.StructureID, distributorTagged bool) (*sim.Snapshot, *sim.ActorSnapshot) {
+		snap, buyer := wholesaleGateSnap(buyerID, buyerWork, distributorTagged)
+		// Put the buyer in a huddle with Ellis, thirsty enough to feel it. The
+		// buyer holds coin (means-to-pay) and no milk (degenerate-buy), so the
+		// wholesale gate is the only thing that can drop Ellis's offer.
+		hid, h := huddleWith(buyerID, "ellis")
+		snap.Huddles = map[sim.HuddleID]*sim.Huddle{hid: h}
+		buyer.CurrentHuddleID = hid
+		buyer.Needs = map[sim.NeedKey]int{"thirst": sim.DefaultThirstRedThreshold}
+		buyer.Acquaintances = map[string]sim.Acquaintance{"Ellis Ward": {}}
+		return snap, buyer
+	}
+	t.Run("wholesaler_peer_dropped_for_non_distributor", func(t *testing.T) {
+		snap, buyer := peerCueSnap("hannah", "the_inn", false)
+		if offers := gatherCoPresentPeerOffers(snap, "hannah", buyer, "thirst"); len(offers) != 0 {
+			t.Errorf("huddled wholesaler peer should be dropped for a non-distributor, got %+v", offers)
+		}
+	})
+	t.Run("wholesaler_peer_kept_for_distributor", func(t *testing.T) {
+		snap, buyer := peerCueSnap("josiah", "general_store", true)
+		offers := gatherCoPresentPeerOffers(snap, "josiah", buyer, "thirst")
+		if len(offers) != 1 || offers[0].PeerLabel != "Ellis Ward" {
+			t.Errorf("huddled wholesaler peer should stay visible to the distributor, got %+v", offers)
+		}
+	})
+	t.Run("non_wholesale_peer_unaffected", func(t *testing.T) {
+		snap, buyer := peerCueSnap("hannah", "the_inn", false)
+		snap.VillageObjects["ellis_farm"].Tags = nil
+		if offers := gatherCoPresentPeerOffers(snap, "hannah", buyer, "thirst"); len(offers) != 1 {
+			t.Errorf("a non-wholesale huddled peer must stay offered, got %+v", offers)
+		}
+	})
+}
+
 func TestWholesaleGate_SatiationCue(t *testing.T) {
 	// The satiation/consumption finder rides the SAME eachVendorOffer scan, so the
 	// wholesale source is dropped there too — a thirsty non-distributor is never
