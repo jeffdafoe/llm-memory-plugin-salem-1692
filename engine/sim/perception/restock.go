@@ -673,8 +673,16 @@ func renderRestocking(b *strings.Builder, v *RestockingView) {
 			if seller == "" {
 				seller = "the seller"
 			}
-			fmt.Fprintf(b, "- %s is here with you, and your offer for %s is still with them (see Offers you have standing). Wait here for their answer — do not re-offer or leave.\n",
-				seller, sanitizeInline(string(it.kind)))
+			// LLM-294: in conserve mode reinforce "no new buying" while keeping the
+			// LLM-64 anti-churn wait-steer — the offer is already out (coin committed),
+			// so the keeper only waits; it must not stake fresh offers on a thin purse.
+			if v.Conserve {
+				fmt.Fprintf(b, "- %s is here with you, and your offer for %s is still with them (see Offers you have standing). Wait for their answer — and put out no new offers while your purse is thin.\n",
+					seller, sanitizeInline(string(it.kind)))
+			} else {
+				fmt.Fprintf(b, "- %s is here with you, and your offer for %s is still with them (see Offers you have standing). Wait here for their answer — do not re-offer or leave.\n",
+					seller, sanitizeInline(string(it.kind)))
+			}
 			continue
 		}
 		// LLM-294 conserve mode: name the low item but issue NO buy imperative — the

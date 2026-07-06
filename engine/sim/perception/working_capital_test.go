@@ -171,6 +171,33 @@ func TestRenderRestocking_ConserveNoBuyImperative(t *testing.T) {
 	}
 }
 
+// TestRenderRestocking_ConservePendingOffer: a conserving keeper with a standing
+// buy-offer keeps the LLM-64 anti-churn wait-steer but gains the conserve caveat, and
+// never gets a re-offer/settle nudge (LLM-294 review follow-up).
+func TestRenderRestocking_ConservePendingOffer(t *testing.T) {
+	v := &RestockingView{
+		BuyerCoins: 1,
+		Conserve:   true,
+		Items: []RestockItemView{
+			{ItemLabel: "milk", CurrentQty: 0, Cap: 12, kind: "milk", CoPresentSeller: "Elizabeth Ellis", PendingOfferToCoPresentSeller: true, AffordableQty: -1},
+		},
+	}
+	var b strings.Builder
+	renderRestocking(&b, v)
+	out := b.String()
+	if !strings.Contains(out, "Wait for their answer") {
+		t.Errorf("pending-offer wait-steer missing:\n%s", out)
+	}
+	if !strings.Contains(out, "put out no new offers while your purse is thin") {
+		t.Errorf("conserve caveat missing from pending-offer line:\n%s", out)
+	}
+	for _, banned := range []string{"Buy it now", "pay_with_item", "do not re-offer or leave"} {
+		if strings.Contains(out, banned) {
+			t.Errorf("conserve pending-offer render leaked %q:\n%s", banned, out)
+		}
+	}
+}
+
 // TestRenderRestocking_NonConserveUnchanged: guards that the ordinary buy cue is
 // untouched when Conserve is false (a co-present seller still gets "Buy it now").
 func TestRenderRestocking_NonConserveUnchanged(t *testing.T) {
