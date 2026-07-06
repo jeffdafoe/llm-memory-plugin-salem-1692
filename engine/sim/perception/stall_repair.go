@@ -32,12 +32,13 @@ type StallRepairView struct {
 	Name           string          // the business's display name (structure/object); "" → generic noun
 	NailVendors    []RestockVendor // owner's buy-nails destinations (LLM-274); populated only when short of nails and NOT hired
 
-	// Conserve (LLM-301): set only when NailVendors came back EMPTY — every supplier
-	// dropped by the LLM-216 filters (unaffordable / remembered shut / none exist) —
-	// and the working-capital gate says this keeper should hold off buying. Selects
-	// the sell-first soften over the plain shortfall statement in the vendor-less
-	// fallback. Rides merchantConserve, the same signal "## Restocking" uses, so the
-	// two cues can never contradict.
+	// Conserve (LLM-301): the working-capital gate says this keeper should hold off
+	// buying. Set whenever the owner is short of nails (never for a hired worker).
+	// Rides merchantConserve, the same signal "## Restocking" uses, and WINS over the
+	// vendor-list branch in the render — even with a resolvable supplier, the cue
+	// must not goad a buy while "## Restocking" says hold off (the LLM-297 posture);
+	// findItemVendors' affordability drop is a different, narrower filter than the
+	// working-capital floor, so the two can disagree.
 	Conserve bool
 }
 
@@ -77,12 +78,13 @@ func buildStallRepair(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 	// (renderHiredStallRepair).
 	if !view.HasEnoughNails && !hired {
 		view.NailVendors = findItemVendors(snap, actorID, actorSnap, sim.NailItemKind)
-		// LLM-301: every supplier dropped — the render falls back to a destination-less
-		// sentence, so decide its tone here. Computed only on the vendor-less path, so
-		// the common healthy case pays nothing for the conserve scan.
-		if len(view.NailVendors) == 0 {
-			view.Conserve = merchantConserve(snap, actorID, actorSnap).Active
-		}
+		// LLM-301: the conserve determination is independent of the vendor drops — a
+		// keeper can be under the working-capital floor while a supplier still survives
+		// findItemVendors (unknown price, or a remembered price the purse just covers).
+		// Computed for every short-of-nails owner so the render can let it win over the
+		// vendor list; merchantConserve short-circuits on a healthy purse, so the common
+		// case pays nothing for the scan.
+		view.Conserve = merchantConserve(snap, actorID, actorSnap).Active
 	}
 	return view
 }
@@ -112,6 +114,12 @@ func renderStallRepair(b *strings.Builder, v *StallRepairView) {
 	}
 	if v.HasEnoughNails {
 		fmt.Fprintf(b, "You carry enough nails (%d) to mend it — use the repair tool now to fix it, hammer in hand, on site (it takes a short while).\n", v.NailsHeld)
+	} else if v.Conserve {
+		// LLM-301: the working-capital gate says hold off buying — the soften wins even
+		// over a resolvable supplier (checked BEFORE the vendor list), so this cue can
+		// never goad a nail buy while "## Restocking" says hold off (the LLM-297
+		// posture). State the way out: sell, recover, then buy and mend.
+		fmt.Fprintf(b, "Mending takes %d nails and you have %d — but your purse can't take on nails just now. Sell what you can and let your coins recover, then buy nails and come back to mend it.\n", v.NailsNeeded, v.NailsHeld)
 	} else if len(v.NailVendors) > 0 {
 		// LLM-274: name the actual nail supplier(s) — workplace + structure_id, resolved
 		// via findItemVendors — in the model-proven Restocking format, plus the repair's
@@ -120,11 +128,6 @@ func renderStallRepair(b *strings.Builder, v *StallRepairView) {
 		// issuing move_to.
 		fmt.Fprintf(b, "Mending takes %d nails and you have %d — buy them, then come back here and repair. Use move_to to reach a supplier, then pay_with_item once you arrive:\n", v.NailsNeeded, v.NailsHeld)
 		renderWalkToVendors(b, v.NailVendors)
-	} else if v.Conserve {
-		// LLM-301: no reachable supplier AND the working-capital gate says hold off —
-		// state the way out (sell, recover, then buy and mend) instead of goading a
-		// buy the purse can't close, harmonizing with the "## Restocking" hold-off.
-		fmt.Fprintf(b, "Mending takes %d nails and you have %d — but your purse can't take on nails just now. Sell what you can and let your coins recover, then buy nails and come back to mend it.\n", v.NailsNeeded, v.NailsHeld)
 	} else {
 		// No reachable, open, affordable nail supplier on record — state the shortfall
 		// without a target rather than a dead-end errand (mirrors the Restocking
