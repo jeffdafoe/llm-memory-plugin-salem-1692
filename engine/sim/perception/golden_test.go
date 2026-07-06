@@ -3370,7 +3370,7 @@ func TestRestockBuyAnchorRendersWhenRateKnown(t *testing.T) {
 					// fallback. Same reachable-supplier inputs the build uses.
 					_, coID := coPresentSellerForItem(snap, actorID, subj, e.Item)
 					vendors := findItemVendors(snap, actorID, subj, e.Item)
-					rate, observed := observedSupplierBuyRate(snap, actorID, e.Item, vendors, coID, restockSalesWindow)
+					rate, observed := observedSupplierBuyRate(vendors, coID, snap, e.Item, restockSalesWindow)
 					if !observed {
 						rate = catalogBulkRate(snap, e.Item)
 					}

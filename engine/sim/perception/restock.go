@@ -140,7 +140,12 @@ type RestockItemView struct {
 type RestockVendor struct {
 	StructureLabel string // "Thorne's General Store" — where the reseller walks to
 	StructureID    sim.StructureID
-	CostText       string // per-buyer last-paid "~3 coins", or "" when no price is on record
+	// VendorID is the representative seller at StructureID (lowest-VendorID, the one
+	// whose CostText is shown). Carried so observedSupplierBuyRate (LLM-295) keys the
+	// observed anchor on the EXACT sellers this list points at — not every seller at
+	// the structure — so the anchor can't average in a non-rendered co-worker.
+	VendorID sim.ActorID
+	CostText string // per-buyer last-paid "~3 coins", or "" when no price is on record
 }
 
 // buildRestocking builds the restock view for actorSnap, or nil when the actor
@@ -197,7 +202,7 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 		// LLM-295: observed-first buy anchor, scoped to the reachable suppliers just
 		// resolved (so it agrees with their walk-to prices); catalog seed only until
 		// real transactions exist.
-		buyAnchor, buyAnchorObserved := observedSupplierBuyRate(snap, actorID, e.Item, vendors, coID, restockSalesWindow)
+		buyAnchor, buyAnchorObserved := observedSupplierBuyRate(vendors, coID, snap, e.Item, restockSalesWindow)
 		if !buyAnchorObserved {
 			buyAnchor = catalogBulkRate(snap, e.Item)
 		}
@@ -267,36 +272,31 @@ func catalogBulkRate(snap *sim.Snapshot, kind sim.ItemKind) int {
 
 // observedSupplierBuyRate returns the per-unit rate the item's REACHABLE suppliers
 // have actually been selling `item` for, nearest-rounded to a coin, and whether
-// any such sale is on record (LLM-295). Scoped to exactly the suppliers the cue
-// surfaces as buy destinations — the sellers at the surviving walk-to structures
-// (`vendors`, already through the LLM-216 shut/affordability drops) plus the
-// co-present seller (`coPresentID`) — so the anchor agrees with the walk-to prices
-// beside it instead of averaging in a shut farm the buyer can't reach (which would
-// hand the weak model two conflicting numbers). Their seller-view PriceBook sales
-// are summed. This is the observed anchor that supersedes the hand-authored catalog
-// seed: grounded in the destinations the buyer restocks from, so buying from a
-// producer yields the observed wholesale rate and buying from the distributor
-// yields what the distributor actually charges (the mid-tier price the two-price
-// catalog can't express). Per-supplier by construction, so it barely dents the
-// PriceBook "knowledge earned by patronage" asymmetry. 0/false when no reachable
-// supplier has a sale in the window (caller falls back to seed).
-func observedSupplierBuyRate(snap *sim.Snapshot, buyerID sim.ActorID, item sim.ItemKind, vendors []RestockVendor, coPresentID sim.ActorID, window time.Duration) (int, bool) {
-	structures := make(map[sim.StructureID]bool, len(vendors))
-	for _, v := range vendors {
-		structures[v.StructureID] = true
-	}
+// any such sale is on record (LLM-295). Scoped to EXACTLY the sellers the cue
+// surfaces as buy destinations — the representative vendor of each surviving
+// walk-to structure (`vendors[].VendorID`, already through the LLM-216
+// shut/affordability drops and the one-per-structure dedupe) plus the co-present
+// seller (`coPresentID`) — so the anchor is drawn from the same sellers whose
+// walk-to prices sit beside it, never a shut farm the buyer can't reach nor a
+// non-rendered co-worker at a listed structure (which would hand the weak model a
+// number that disagrees with the line it's on — code_review). Their seller-view
+// PriceBook sales are summed. This is the observed anchor that supersedes the
+// hand-authored catalog seed: grounded in the destinations the buyer restocks
+// from, so buying from a producer yields the observed wholesale rate and buying
+// from the distributor yields what the distributor actually charges (the mid-tier
+// price the two-price catalog can't express). Per-supplier by construction, so it
+// barely dents the PriceBook "knowledge earned by patronage" asymmetry. 0/false
+// when no reachable supplier has a sale in the window (caller falls back to seed).
+func observedSupplierBuyRate(vendors []RestockVendor, coPresentID sim.ActorID, snap *sim.Snapshot, item sim.ItemKind, window time.Duration) (int, bool) {
 	suppliers := map[sim.ActorID]bool{}
+	for _, v := range vendors {
+		if v.VendorID != "" {
+			suppliers[v.VendorID] = true
+		}
+	}
 	if coPresentID != "" {
 		suppliers[coPresentID] = true
 	}
-	eachVendorOffer(snap, buyerID, func(o vendorOffer) {
-		if o.Kind != item || !isRestockSupplierOf(snap, o.VendorID, item) {
-			return
-		}
-		if structures[o.StructureID] {
-			suppliers[o.VendorID] = true
-		}
-	})
 	if len(suppliers) == 0 {
 		return 0, false
 	}
@@ -617,6 +617,7 @@ func findItemVendors(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *sim.Act
 		out = append(out, RestockVendor{
 			StructureLabel: vendorStructureLabel(p.structure),
 			StructureID:    structureID,
+			VendorID:       p.vendorID, // the representative whose CostText below is shown (LLM-295)
 			// Empty fallback when no price is on record (was "ask the supplier",
 			// which invited the reseller to SPEAK a price question instead of
 			// calling pay_with_item — ZBBS-HOME-386). With "", renderRestocking
