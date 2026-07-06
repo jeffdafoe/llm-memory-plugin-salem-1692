@@ -594,7 +594,12 @@ func renderRecoveryOptions(b *strings.Builder, v *RecoveryOptionsView) {
 		b.WriteString(sanitizeInline(o.Label))
 		switch o.Kind {
 		case "inn":
-			b.WriteString(" — rent a room")
+			// State the benefit, not just the price. Without a benefit clause the
+			// inn read as cost-with-nothing next to the free shade-tree catnap's
+			// stated "small revival", so a weak model always picked the tree and
+			// under-rested (a catnap eases ≤4 tiredness; a room is a full recovery).
+			// The clause completes the tradeoff without steering the choice. LLM-305.
+			b.WriteString(" — rent a room for a full night's proper rest")
 		case "home":
 			if o.AfterShiftOnly {
 				// On shift the bed-down is refused until off-shift, so name when it

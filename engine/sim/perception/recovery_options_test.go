@@ -685,7 +685,7 @@ func TestRenderRecoveryOptions_Bullets(t *testing.T) {
 	if !strings.Contains(out, "the old oak — a thorough waking, free, a short walk east") {
 		t.Errorf("rest bullet wrong: %q", out)
 	}
-	if !strings.Contains(out, "Hannah's Inn — rent a room, ask the keeper") {
+	if !strings.Contains(out, "Hannah's Inn — rent a room for a full night's proper rest, ask the keeper") {
 		t.Errorf("inn bullet wrong: %q", out)
 	}
 }
@@ -759,7 +759,7 @@ func TestRenderRecoveryOptions_StructureIDRendered(t *testing.T) {
 		return false
 	}
 	for _, want := range []string{
-		"- Hannah's Inn — rent a room, ask the keeper (structure_id: inn)",
+		"- Hannah's Inn — rent a room for a full night's proper rest, ask the keeper (structure_id: inn)",
 		"- Thorne Cottage — sleep in your own bed, free (structure_id: cottage)",
 		"- PW Apothecary — buy coca tea (a thorough waking), ~2 coins (structure_id: apothecary)",
 		// The free-object rest kind renders its VillageObjectID on the same
