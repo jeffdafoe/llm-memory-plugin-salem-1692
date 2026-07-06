@@ -232,8 +232,12 @@ func TestRenderRecentlyResolvedOffersFromMe_ClosedNamesOfferAndShortfall(t *test
 			t.Errorf("rendered text missing %q; got:\n%s", want, out)
 		}
 	}
-	// The sufficient-stock close must NOT carry a shortfall clause.
-	if strings.Contains(out, "they hold only 2 bread") {
+	// The sufficient-stock close must NOT carry a shortfall clause. Assert the
+	// exact bad clause a regression would emit — the render prints the seller's
+	// actual stock (9), so a wrongly-fired shortfall reads "they hold only 9
+	// bread", not "2 bread". ("they hold only" alone is present from the nail
+	// view above, so a bare substring check would false-fail.)
+	if strings.Contains(out, "they hold only 9 bread") {
 		t.Errorf("sufficient-stock close must not show a shortfall; got:\n%s", out)
 	}
 }
