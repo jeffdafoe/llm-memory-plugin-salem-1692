@@ -2,6 +2,7 @@ package sim_test
 
 import (
 	"context"
+	"errors"
 	"math"
 	"strings"
 	"testing"
@@ -1269,16 +1270,23 @@ func TestAcceptPay_StockReservation_PreventsOverselling(t *testing.T) {
 	}
 
 	// Second accept must FAIL — bob's inventory is now 0, less than the
-	// required 1. Flip to FailedInsufficientStock.
-	if _, err := w.Send(sim.AcceptPay("bob", 2, at)); err != nil {
-		t.Fatalf("second AcceptPay (transitioning): %v", err)
+	// required 1. LLM-302: reached through the accept_pay tool, the shortfall
+	// is a retryable ModelFacingError (naming decline/counter) and the entry
+	// stays Pending rather than flipping to a silent terminal. Over-selling is
+	// still prevented — no transfer fires.
+	_, err := w.Send(sim.AcceptPay("bob", 2, at))
+	if err == nil || !strings.Contains(err.Error(), "you hold no stew") {
+		t.Fatalf("second AcceptPay: want stock-shortfall tool error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "decline_pay") || !strings.Contains(err.Error(), "counter_pay") {
+		t.Errorf("stock-shortfall error should name decline_pay and counter_pay, got %q", err)
 	}
 	ledger = readPayLedger(t, w)
-	if ledger[2].State != sim.PayLedgerStateFailedInsufficientStock {
-		t.Errorf("ledger[2].State = %q, want failed_insufficient_stock (over-selling rejected)", ledger[2].State)
+	if ledger[2].State != sim.PayLedgerStatePending {
+		t.Errorf("ledger[2].State = %q, want pending (tool error leaves the offer open)", ledger[2].State)
 	}
 
-	// Carol got her coins back (atomic transfer didn't fire).
+	// Carol keeps her coins (atomic transfer didn't fire).
 	snap := w.Published()
 	if got := snap.Actors["carol"].Coins; got != 50 {
 		t.Errorf("carol.Coins = %d, want 50 (no transfer on stock-fail)", got)
@@ -1329,12 +1337,17 @@ func TestAcceptPay_StockReservation_OverflowFailsClosed(t *testing.T) {
 		SceneID: "sc1", HuddleID: "h1",
 	})
 
-	if _, err := w.Send(sim.AcceptPay("bob", 7, at.Add(time.Second))); err != nil {
-		t.Fatalf("AcceptPay (transitioning): %v", err)
+	// LLM-302: the accept_pay tool path surfaces the saturated-reservation
+	// shortfall as a retryable ModelFacingError and leaves the entry Pending —
+	// the over-selling protection is unchanged (the accept is refused), only
+	// the feedback shape changed from a silent terminal to a tool error.
+	_, err := w.Send(sim.AcceptPay("bob", 7, at.Add(time.Second)))
+	if err == nil || !strings.Contains(err.Error(), "enough stew") {
+		t.Fatalf("AcceptPay: want stock-shortfall tool error (corrupt-Order overflow must fail closed), got %v", err)
 	}
 	ledger := readPayLedger(t, w)
-	if ledger[7].State != sim.PayLedgerStateFailedInsufficientStock {
-		t.Errorf("ledger[7].State = %q, want failed_insufficient_stock (corrupt-Order overflow must fail closed)",
+	if ledger[7].State != sim.PayLedgerStatePending {
+		t.Errorf("ledger[7].State = %q, want pending (tool error leaves the offer open; accept still refused)",
 			ledger[7].State)
 	}
 }
@@ -1443,14 +1456,12 @@ func TestAcceptPay_TerminalFlips(t *testing.T) {
 			},
 			wantTerminal: sim.PayTerminalStateFailedUnavailable,
 		},
-		"insufficient_stock": {
-			invalidateAfterSeed: func(t *testing.T, w *sim.World, _ time.Time) {
-				mustSend(t, w, func(world *sim.World) {
-					delete(world.Actors["bob"].Inventory, "stew")
-				})
-			},
-			wantTerminal: sim.PayTerminalStateFailedInsufficientStock,
-		},
+		// NOTE (LLM-302): insufficient_stock is no longer a terminal flip via
+		// the accept_pay tool — it surfaces as a retryable ModelFacingError
+		// with the entry left Pending. See
+		// TestAcceptPay_InsufficientStock_ToolErrorNotTerminal (accept path)
+		// and TestCounterPayCoercion_InsufficientStock_FlipsTerminal (the
+		// retained counter-coercion backstop).
 		"insufficient_funds": {
 			invalidateAfterSeed: func(t *testing.T, w *sim.World, _ time.Time) {
 				mustSend(t, w, func(world *sim.World) {
@@ -1498,6 +1509,153 @@ func TestAcceptPay_TerminalFlips(t *testing.T) {
 				t.Errorf("alice.Coins moved on terminal failure: %d → %d", beforeCoins, got)
 			}
 		})
+	}
+}
+
+// TestAcceptPay_InsufficientStock_ToolErrorNotTerminal is the LLM-302 core:
+// a seller who accepts an offer for goods they don't hold gets a retryable
+// ModelFacingError naming the shortfall and the legal alternatives — NOT a
+// silent failed_insufficient_stock terminal that the weak stateful model
+// misreads as agreement. The entry stays Pending, no event is emitted, no
+// coins move, and the seller can still decline the still-open offer.
+func TestAcceptPay_InsufficientStock_ToolErrorNotTerminal(t *testing.T) {
+	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
+		{id: "alice", displayName: "Alice", kind: sim.KindNPCShared, huddleID: "h1", coins: 50},
+		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1"}, // holds no stew
+	})
+	defer stop()
+	at := time.Now().UTC()
+	seedLedgerEntry(t, w, sim.PayLedgerEntry{
+		ID: 1, BuyerID: "alice", SellerID: "bob",
+		ItemKind: "stew", Qty: 1, Amount: 4,
+		State: sim.PayLedgerStatePending, ExpiresAt: at.Add(3 * time.Minute),
+		SceneID: "sc1", HuddleID: "h1",
+	})
+
+	events := capturePayWithItemEvents(t, w)
+	_, err := w.Send(sim.AcceptPay("bob", 1, at))
+	if err == nil {
+		t.Fatalf("AcceptPay on zero stock: want tool error, got nil")
+	}
+	// The error names the shortfall and both legal next moves (copyable
+	// next action, LLM-302).
+	for _, want := range []string{"you hold no stew", "decline_pay", "counter_pay"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err, want)
+		}
+	}
+	// It reaches the model as a ModelFacingError (echoed to the LLM), not a
+	// generic internal error swallowed at dispatch.
+	var mfe sim.ModelFacingError
+	if !errors.As(err, &mfe) {
+		t.Errorf("error is not a sim.ModelFacingError: %T", err)
+	}
+	// The offer stays Pending — the seller can still act on it.
+	if got := readPayLedger(t, w)[1].State; got != sim.PayLedgerStatePending {
+		t.Errorf("ledger.State = %q, want pending (tool error must not transition)", got)
+	}
+	// No resolution event fired (nothing settled).
+	if len(events.Resolved) != 0 {
+		t.Errorf("PayWithItemResolved emitted on a tool-error accept: %+v", events.Resolved)
+	}
+	// No coins moved.
+	if got := w.Published().Actors["alice"].Coins; got != 50 {
+		t.Errorf("alice.Coins = %d, want 50 (no transfer)", got)
+	}
+
+	// decline_pay still resolves the still-open offer (DoD: decline works).
+	if _, err := w.Send(sim.DeclinePay("bob", 1, "sorry, out of stew", at)); err != nil {
+		t.Fatalf("DeclinePay after failed accept: %v", err)
+	}
+	if got := readPayLedger(t, w)[1].State; got != sim.PayLedgerStateDeclined {
+		t.Errorf("ledger.State = %q, want declined", got)
+	}
+}
+
+// TestAcceptPay_Barter_InsufficientStock_ToolError models the live
+// Josiah×Elizabeth episode (pay ledger 869/870/871, 2026-07-06): a proposer
+// offers goods for an item the counterparty does not hold. The offer_trade
+// front door lowers to a barter PayLedger entry where the counterparty is the
+// seller of the wanted item; accepting it with zero stock now returns a tool
+// error naming the item, and counter_pay still works on the still-open barter
+// (DoD: counter works). Uses seeded catalog kinds (stew/bread/ale) in place of
+// the episode's sage/nails, which aren't in the test catalog.
+func TestAcceptPay_Barter_InsufficientStock_ToolError(t *testing.T) {
+	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
+		// Josiah pays 1 bread; Elizabeth is the seller of 5 stew she lacks.
+		{id: "josiah", displayName: "Josiah", kind: sim.KindNPCShared, huddleID: "h1", inventory: map[sim.ItemKind]int{"bread": 1}},
+		{id: "elizabeth", displayName: "Elizabeth", kind: sim.KindNPCShared, huddleID: "h1", inventory: map[sim.ItemKind]int{"ale": 3}},
+	})
+	defer stop()
+	at := time.Now().UTC()
+	seedLedgerEntry(t, w, sim.PayLedgerEntry{
+		ID: 1, BuyerID: "josiah", SellerID: "elizabeth",
+		ItemKind: "stew", Qty: 5, Amount: 0,
+		PayItems:  []sim.ItemKindQty{{Kind: "bread", Qty: 1}},
+		State:     sim.PayLedgerStatePending,
+		CreatedAt: at, ExpiresAt: at.Add(3 * time.Minute),
+		SceneID: "sc1", HuddleID: "h1",
+	})
+
+	_, err := w.Send(sim.AcceptPay("elizabeth", 1, at))
+	if err == nil || !strings.Contains(err.Error(), "you hold no stew") {
+		t.Fatalf("AcceptPay on zero stew: want 'you hold no stew' tool error, got %v", err)
+	}
+	if got := readPayLedger(t, w)[1].State; got != sim.PayLedgerStatePending {
+		t.Errorf("ledger.State = %q, want pending", got)
+	}
+	// Nothing moved — Josiah keeps his bread, Elizabeth's pack is unchanged.
+	j := readHoldings(t, w, "josiah")
+	e := readHoldings(t, w, "elizabeth")
+	if j.inv["bread"] != 1 || e.inv["stew"] != 0 {
+		t.Errorf("goods moved on failed barter accept: josiah.bread=%d elizabeth.stew=%d", j.inv["bread"], e.inv["stew"])
+	}
+
+	// counter_pay still resolves the still-open barter (a goods-bearing counter
+	// is a real counter → Countered terminal).
+	if _, err := w.Send(sim.CounterPay("elizabeth", 1, 0, []sim.PayItemInput{{Item: "ale", Qty: 1}}, "I've no stew, take ale?", at)); err != nil {
+		t.Fatalf("CounterPay after failed accept: %v", err)
+	}
+	if got := readPayLedger(t, w)[1].State; got != sim.PayLedgerStateCountered {
+		t.Errorf("ledger.State = %q, want countered", got)
+	}
+}
+
+// TestCounterPayCoercion_InsufficientStock_FlipsTerminal pins the retained
+// backstop (LLM-302): a stock shortfall reached through counter_pay's
+// non-increasing-coercion (a seller "countering" at or below the offered price
+// is a yes) is NOT an accept_pay tool call, so it keeps the
+// failed_insufficient_stock terminal flip rather than a tool error.
+func TestCounterPayCoercion_InsufficientStock_FlipsTerminal(t *testing.T) {
+	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
+		{id: "alice", displayName: "Alice", kind: sim.KindNPCShared, huddleID: "h1", coins: 50},
+		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1"}, // holds no stew
+	})
+	defer stop()
+	at := time.Now().UTC()
+	// Pure-coin offer (no PayItems) so a non-increasing counter coerces to
+	// accept and takes the shared accept path.
+	seedLedgerEntry(t, w, sim.PayLedgerEntry{
+		ID: 1, BuyerID: "alice", SellerID: "bob",
+		ItemKind: "stew", Qty: 1, Amount: 4,
+		State: sim.PayLedgerStatePending, ExpiresAt: at.Add(3 * time.Minute),
+		SceneID: "sc1", HuddleID: "h1",
+	})
+
+	events := capturePayWithItemEvents(t, w)
+	// Counter at the offered price (4 <= 4) with no goods → coercion to accept.
+	if _, err := w.Send(sim.CounterPay("bob", 1, 4, nil, "deal", at)); err != nil {
+		t.Fatalf("CounterPay coercion: %v", err)
+	}
+	if got := readPayLedger(t, w)[1].State; got != sim.PayLedgerStateFailedInsufficientStock {
+		t.Errorf("ledger.State = %q, want failed_insufficient_stock (backstop retained)", got)
+	}
+	if len(events.Resolved) != 1 || events.Resolved[0].TerminalState != sim.PayTerminalStateFailedInsufficientStock {
+		t.Errorf("Resolved = %+v, want one failed_insufficient_stock", events.Resolved)
+	}
+	// No coins moved.
+	if got := w.Published().Actors["alice"].Coins; got != 50 {
+		t.Errorf("alice.Coins = %d, want 50 (no transfer on coercion stock-fail)", got)
 	}
 }
 
