@@ -109,6 +109,19 @@ type TradeValueItem struct {
 	// PayWithItem wholesale gate then refuses — live hud-9b23…, LLM-291). Low
 	// carries the wholesale unit price (what the distributor pays) for that line.
 	WholesaleTo string
+
+	// BulkUnit / ShopUnit carry the two figures on the wholesale-channel line
+	// (WholesaleTo set), resolved observed-first (LLM-295): BulkUnit is what the
+	// producer has actually been getting selling the good (its own sellerRecentSales),
+	// ShopUnit is what the shops have actually been reselling it for (observedShopSales),
+	// each falling back to the catalog seed (Low / High) only until real transactions
+	// exist. *Observed flags record which source won so render phrases a lived rate
+	// ("the shop has lately paid you about N") apart from a seed estimate ("the fair
+	// bulk rate is about N"). Both 0 only if the good has no catalog price either.
+	BulkUnit     int
+	BulkObserved bool
+	ShopUnit     int
+	ShopObserved bool
 }
 
 // buildTradeValue builds the wares-worth view for an actor that has goods of its
@@ -221,27 +234,48 @@ func buildTradeValue(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 		// Consume guard and eat-cue filter on, so cue and block agree; item-scoped,
 		// so a wholesaler's RESOLD retail goods (isResale) are untouched. The retail
 		// spread / recent-sale / cost clauses don't apply to the wholesale line, so
-		// clear them — render draws it from WholesaleTo + Low (the wholesale unit
-		// price) alone. Cost-of-goods for a wholesale-priced input good (the mill's
-		// flour) is out of scope here; the carrot case that motivated this has none.
+		// clear them — render draws it from WholesaleTo + BulkUnit/ShopUnit. Cost-of-
+		// goods for a wholesale-priced input good (the mill's flour) is out of scope
+		// here; the carrot case that motivated this has none.
 		wholesaleTo := ""
+		bulkUnit, bulkObserved := 0, false
+		shopUnit, shopObserved := 0, false
 		if sim.IsOwnProduce(snap.VillageObjects, actorSnap.WorkStructureID, actorSnap.RestockPolicy, item) {
 			wholesaleTo = distLabel
 			recentUnit, paidUnit = 0, 0
 			costBatch, costQty, costFloor = 0, 0, false
+			// LLM-295: both figures observed-first, catalog band as seed fallback.
+			// Bulk = what the producer has actually been getting for the good (its own
+			// realized sales — i.e. what the shop has paid it). Shop = what the shops
+			// have actually been reselling it for (observedShopSales). The catalog
+			// wholesale (lo) / retail (hi) stand in only until real trades exist.
+			if units, coins := sellerRecentSales(snap, actorID, item, restockSalesWindow); units > 0 {
+				bulkUnit, bulkObserved = (coins+units/2)/units, true
+			} else {
+				bulkUnit = lo
+			}
+			if units, coins := observedShopSales(snap, item, restockSalesWindow); units > 0 {
+				shopUnit, shopObserved = (coins+units/2)/units, true
+			} else {
+				shopUnit = hi
+			}
 		}
 		seen[item] = true
 		items = append(items, TradeValueItem{
-			ItemLabel:   itemDisplayLabel(snap, item),
-			itemKind:    item,
-			Low:         lo,
-			High:        hi,
-			RecentUnit:  recentUnit,
-			PaidUnit:    paidUnit,
-			CostBatch:   costBatch,
-			CostQty:     costQty,
-			CostFloor:   costFloor,
-			WholesaleTo: wholesaleTo,
+			ItemLabel:    itemDisplayLabel(snap, item),
+			itemKind:     item,
+			Low:          lo,
+			High:         hi,
+			RecentUnit:   recentUnit,
+			PaidUnit:     paidUnit,
+			CostBatch:    costBatch,
+			CostQty:      costQty,
+			CostFloor:    costFloor,
+			WholesaleTo:  wholesaleTo,
+			BulkUnit:     bulkUnit,
+			BulkObserved: bulkObserved,
+			ShopUnit:     shopUnit,
+			ShopObserved: shopObserved,
 		})
 	}
 	// Produced goods first, so a kind somehow listed under both sources values as
@@ -329,21 +363,36 @@ func renderTradeValue(b *strings.Builder, v *TradeValueView) {
 		// fair bulk rate selling TO the shop is the LOW end — so the producer stops
 		// taking a shelf price for a bulk sale (the live Elizabeth milk leg: the
 		// role-agnostic "1 to 2 coins" band let her take 2+ from the store's bulk
-		// buys). Copy constraint (Jeff): never the mechanic-role word
-		// "distributor" — the NPC is told who stocks its goods, not what engine
-		// role that actor holds.
+		// buys). LLM-295: both figures are observed-first — a lived rate is phrased as
+		// such ("the shop has lately paid you about N") and a catalog SEED as a
+		// designer estimate ("the fair bulk rate is about N") — so the producer is
+		// never told a hand-authored guess is a rate the market has set. Copy
+		// constraint (Jeff): never the mechanic-role word "distributor" — the NPC is
+		// told who stocks its goods, not what engine role that actor holds.
 		if it.WholesaleTo != "" {
 			to := sanitizeInline(it.WholesaleTo)
 			label := sanitizeInline(it.ItemLabel)
-			if it.High > it.Low {
+			bulk := fmt.Sprintf("the fair bulk rate selling to the shop is about %s each", coinsPhrase(it.BulkUnit))
+			if it.BulkObserved {
+				bulk = fmt.Sprintf("the shop has lately paid you about %s each", coinsPhrase(it.BulkUnit))
+			}
+			if it.ShopUnit > it.BulkUnit {
+				// Shop markup worth naming: folk-pay leads, the bulk rate follows with "but".
+				folk := fmt.Sprintf("Folk pay about %s each in the shops", coinsPhrase(it.ShopUnit))
+				if it.ShopObserved {
+					folk = fmt.Sprintf("Folk have lately paid about %s each in the shops", coinsPhrase(it.ShopUnit))
+				}
 				fmt.Fprintf(b,
-					"- %s: your own produce — it sells in bulk to %s, whose shop stocks it for the village, not to folk directly. Folk pay about %s each in the shops, but the fair bulk rate selling to the shop is about %s each. Send other buyers to %s.\n",
-					label, to, coinsPhrase(it.High), coinsPhrase(it.Low), to,
+					"- %s: your own produce — it sells in bulk to %s, whose shop stocks it for the village, not to folk directly. %s, but %s. Send other buyers to %s.\n",
+					label, to, folk, bulk, to,
 				)
 			} else {
+				// No meaningful markup to show — just the bulk rate, capitalized for the
+				// sentence start (both phrasings begin with the ASCII word "the").
+				bulkLead := strings.ToUpper(bulk[:1]) + bulk[1:]
 				fmt.Fprintf(b,
-					"- %s: your own produce — it sells in bulk to %s, whose shop stocks it for the village, not to folk directly. The fair bulk rate selling to the shop is about %s each. Send other buyers to %s.\n",
-					label, to, coinsPhrase(it.Low), to,
+					"- %s: your own produce — it sells in bulk to %s, whose shop stocks it for the village, not to folk directly. %s. Send other buyers to %s.\n",
+					label, to, bulkLead, to,
 				)
 			}
 			continue

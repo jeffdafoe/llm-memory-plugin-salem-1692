@@ -1471,6 +1471,26 @@ var perceptionScenarios = []perceptionScenario{
 		build: distributorRestockingMilkBulkRateAnchor,
 	},
 	{
+		name: "distributor_restock_observed_supplier_rate",
+		summary: "LLM-295 observed-first buy anchor: the same distributor-buys-milk-from-the-farm shape as " +
+			"distributor_restocking_milk_bulk_rate_anchor, but the PriceBook now carries a real Ellis Farm milk sale at " +
+			"~2 coins/unit — above the catalog wholesale SEED of 1. The golden pins that the '## Restocking' anchor reports the " +
+			"OBSERVED supplier rate in lived phrasing ('Of late it has been going for about 2 coins each'), not the seed 1, once " +
+			"transaction data exists. The sale's buyer is off-snapshot, so the distributor has no last-paid at Ellis and the " +
+			"walk-to line carries no price — isolating the observed anchor as the line's one rate.",
+		build: distributorRestockObservedSupplierRate,
+	},
+	{
+		name: "wholesaler_producer_observed_rates",
+		summary: "LLM-295 observed-first sell figures: the wholesale producer Moses stands with a customer, and the PriceBook " +
+			"carries real transactions for both figures on his wholesale-channel wares line — his own carrot sales to the shop " +
+			"at ~2 coins (bulk) and the shop's carrot resales to folk at ~5 coins (shelf), both above the catalog seed " +
+			"(wholesale 1 / retail 3). The golden pins the OBSERVED rates in lived phrasing ('Folk have lately paid about 5 " +
+			"coins each in the shops, but the shop has lately paid you about 2 coins each'), not the seed. Josiah does not " +
+			"produce carrots, so his sales count as shop (shelf) rate, not the wholesale side.",
+		build: wholesalerProducerObservedRates,
+	},
+	{
 		name: "miller_wheat_restock_flat_band_anchor",
 		summary: "LLM-292 flat-band anchor (the live Joseph Scott case): the miller produces flour from bought-in wheat — a " +
 			"DERIVED buy entry (LLM-260) below its two-batch floor (LLM-279) — and wheat's catalog band is FLAT 1/1. Live he " +
@@ -2270,6 +2290,178 @@ func distributorRestockingMilkBulkRateAnchor() (*sim.Snapshot, sim.ActorID, []si
 	return snap, josiahID, nil
 }
 
+// distributorRestockObservedSupplierRate is the LLM-295 observed-buy-anchor fixture:
+// the distributor-buys-milk-from-the-farm shape, but the PriceBook carries a real
+// Ellis Farm milk sale at ~2 coins/unit (to an off-snapshot villager), above the
+// catalog wholesale seed of 1. Pins that the "## Restocking" buy anchor reports the
+// OBSERVED reachable-supplier rate once transaction data exists. Clock-anchored via
+// PublishedAt so the observation lands inside the sales window.
+func distributorRestockObservedSupplierRate() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		josiahID    = sim.ActorID("josiah")
+		elizabethID = sim.ActorID("elizabeth")
+		store       = sim.StructureID("general_store")
+		farm        = sim.StructureID("ellis_farm")
+	)
+	start, end := 360, 1080 // 06:00-18:00
+	now := 720              // 12:00 — on shift, at the store
+	published := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
+	josiah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Josiah Thorne",
+		Role:              "shopkeeper",
+		State:             sim.StateIdle,
+		Pos:               sim.TilePos{X: 10, Y: 10},
+		WorkStructureID:   store,
+		InsideStructureID: store,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             30,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"milk": 2},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "milk", Source: sim.RestockSourceBuy, Max: 12},
+		}},
+	}
+	elizabeth := &sim.ActorSnapshot{
+		Kind:            sim.KindNPCStateful,
+		DisplayName:     "Elizabeth Ellis",
+		State:           sim.StateIdle,
+		Pos:             sim.TilePos{X: 400, Y: 400},
+		WorkStructureID: farm,
+		Inventory:       map[sim.ItemKind]int{"milk": 40},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "milk", Source: sim.RestockSourceProduce, Max: 40},
+		}},
+	}
+	// Ellis has actually been selling milk at ~2 coins/unit — above the catalog
+	// wholesale seed of 1. The observed rate is what the anchor must report. Buyer
+	// is off-snapshot, so the distributor keeps no last-paid at Ellis (empty CostText).
+	ellisMilkSales := sim.NewRingBuffer[sim.PriceObservation](8)
+	ellisMilkSales.Push(sim.PriceObservation{BuyerID: "mary", Amount: 2, Qty: 1, Consumers: 1, At: published.Add(-6 * time.Hour)})
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			josiahID: josiah, elizabethID: elizabeth,
+		},
+		Structures: map[sim.StructureID]*sim.Structure{
+			store: plainStructure(store, "General Store"),
+			farm:  plainStructure(farm, "Ellis Farm"),
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			sim.VillageObjectID(store): {ID: sim.VillageObjectID(store), OwnerActorID: josiahID, Tags: []string{sim.TagDistributor}},
+			sim.VillageObjectID(farm):  {ID: sim.VillageObjectID(farm), OwnerActorID: elizabethID, Tags: []string{sim.TagFarm, sim.TagWholesaler}},
+		},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"milk": {OutputItem: "milk", OutputQty: 1, RateQty: 4, RatePerHours: 1, WholesalePrice: 1, RetailPrice: 2},
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"milk": {Name: "milk", DisplayLabel: "milk", Category: sim.ItemCategoryDrink},
+		},
+		RestockReorderPct: 25,
+		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+			{SellerID: elizabethID, Item: "milk"}: ellisMilkSales,
+		},
+	}
+	return snap, josiahID, nil
+}
+
+// wholesalerProducerObservedRates is the LLM-295 observed-sell-figures fixture: the
+// wholesale producer Moses stands with a customer, and the PriceBook carries real
+// transactions for both figures on his wholesale-channel wares line — his own carrot
+// sales to the shop at ~2 coins (the bulk rate) and the shop's carrot resales to folk
+// at ~5 coins (the shelf rate), both above the catalog seed (wholesale 1 / retail 3).
+// Josiah does not produce carrots, so his sales count as the shop/shelf side, not the
+// wholesale side. Pins the line reporting the OBSERVED rates in lived phrasing.
+func wholesalerProducerObservedRates() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		mosesID   = sim.ActorID("moses")
+		silenceID = sim.ActorID("silence")
+		josiahID  = sim.ActorID("josiah")
+		commons   = sim.StructureID("commons")
+		farm      = sim.StructureID("james_farm")
+		store     = sim.StructureID("general_store")
+		huddle    = sim.HuddleID("h1")
+	)
+	published := time.Date(2026, 7, 6, 11, 0, 0, 0, time.UTC)
+	moses := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Moses James",
+		Role:              "farmer",
+		State:             sim.StateIdle,
+		InsideStructureID: commons,
+		CurrentHuddleID:   huddle,
+		WorkStructureID:   farm,
+		Coins:             38,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"carrots": 30},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "carrots", Source: sim.RestockSourceProduce, Max: 30},
+		}},
+		Acquaintances: map[string]sim.Acquaintance{"Silence Walker": {}},
+	}
+	silence := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Silence Walker",
+		Role:              "villager",
+		State:             sim.StateIdle,
+		InsideStructureID: commons,
+		CurrentHuddleID:   huddle,
+		Coins:             22,
+		Needs:             map[sim.NeedKey]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"Moses James": {}},
+	}
+	josiah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Josiah Thorne",
+		Role:              "shopkeeper",
+		State:             sim.StateIdle,
+		InsideStructureID: store,
+		WorkStructureID:   store,
+	}
+	// Bulk rate observed: Moses's own carrot sales to the shop at ~2/unit.
+	mosesCarrotSales := sim.NewRingBuffer[sim.PriceObservation](8)
+	mosesCarrotSales.Push(sim.PriceObservation{BuyerID: josiahID, Amount: 2, Qty: 1, Consumers: 1, At: published.Add(-12 * time.Hour)})
+	// Shelf rate observed: the shop's carrot resales to folk at ~5/unit. Josiah does
+	// not produce carrots, so observedShopSales counts him as a shop, not wholesale.
+	shopCarrotSales := sim.NewRingBuffer[sim.PriceObservation](8)
+	shopCarrotSales.Push(sim.PriceObservation{BuyerID: silenceID, Amount: 5, Qty: 1, Consumers: 1, At: published.Add(-6 * time.Hour)})
+	snap := &sim.Snapshot{
+		PublishedAt:    published,
+		NeedThresholds: sim.NeedThresholds{},
+		Actors:         map[sim.ActorID]*sim.ActorSnapshot{mosesID: moses, silenceID: silence, josiahID: josiah},
+		Structures: map[sim.StructureID]*sim.Structure{
+			commons: plainStructure(commons, "Village Commons"),
+			farm:    plainStructure(farm, "James Farm"),
+			store:   plainStructure(store, "General Store"),
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			sim.VillageObjectID(farm):  {ID: sim.VillageObjectID(farm), OwnerActorID: mosesID, Tags: []string{sim.TagFarm, sim.TagWholesaler}},
+			sim.VillageObjectID(store): {ID: sim.VillageObjectID(store), OwnerActorID: josiahID, Tags: []string{sim.TagDistributor}},
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{mosesID: {}, silenceID: {}}},
+		},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"carrots": {OutputItem: "carrots", OutputQty: 1, RateQty: 1, RatePerHours: 1, WholesalePrice: 1, RetailPrice: 3},
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"carrots": {
+				Name: "carrots", DisplayLabel: "Carrots",
+				DisplayLabelSingular: "carrot", DisplayLabelPlural: "carrots",
+				Category: sim.ItemCategoryFood,
+			},
+		},
+		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+			{SellerID: mosesID, Item: "carrots"}:  mosesCarrotSales,
+			{SellerID: josiahID, Item: "carrots"}: shopCarrotSales,
+		},
+	}
+	return snap, mosesID, nil
+}
+
 // millerWheatRestockFlatBandAnchor is the LLM-292 flat-band fixture: the miller
 // produces flour from bought-in wheat (derived buy entry — no hand-authored wheat
 // row), his wheat shelf (2) is below the two-batch floor (2×4=8), and wheat's
@@ -3066,6 +3258,7 @@ func TestWaresWorthCueOnlyInCompanyWithOwnTrade(t *testing.T) {
 			sc.name == "innkeeper_pricing_with_makings_cost" || // LLM-226: producer in company, priced own ware
 			sc.name == "employer_recalls_returning_helper" || // LLM-228: producing keeper in company (incidental to the recall it tests)
 			sc.name == "wholesaler_producer_bartering_with_customer" || // LLM-291: wholesale producer in company — cue draws the wholesale-channel line
+			sc.name == "wholesaler_producer_observed_rates" || // LLM-295: same, with observed rates on both wholesale-line figures
 			sc.name == "owner_holding_repair_nails_in_company" || // LLM-292: keeper in company with priced ware + the repair-reserve earmark
 			sc.name == "coin_poor_overstocked_keeper_conserves" // LLM-294: producer in company (priced own wares) + the conserve sell-first nudge
 		if has := strings.Contains(got, marker); has != want {
@@ -3076,18 +3269,19 @@ func TestWaresWorthCueOnlyInCompanyWithOwnTrade(t *testing.T) {
 
 // TestWholesaleChannelLineOnlyForWholesalerProduce is the LLM-291 cross-scenario
 // invariant: the wholesale-channel wares line ("your own produce — it sells in bulk
-// to …", LLM-292 copy) appears in EXACTLY the scenarios where a wholesale producer
-// prices its own produce in company (wholesaler_producer_bartering_with_customer).
-// It guards both directions — a wholesaler's own produce must never regress to a
-// retail spread (the framing that invited Moses's refused street sale, live
-// hud-9b23…), and no ordinary retail producer (the smith, the innkeeper) may ever
-// pick up the wholesale line.
+// to …") appears in EXACTLY the scenarios where a wholesale producer prices its own
+// produce in company (the LLM-291 seed-copy scenario and the LLM-295 observed-rate
+// scenario). It guards both directions — a wholesaler's own produce must never
+// regress to a retail spread (the framing that invited Moses's refused street sale,
+// live hud-9b23…), and no ordinary retail producer (the smith, the innkeeper) may
+// ever pick up the wholesale line.
 func TestWholesaleChannelLineOnlyForWholesalerProduce(t *testing.T) {
 	const marker = "your own produce — it sells in bulk to"
 	for _, sc := range perceptionScenarios {
 		sc := sc
 		got := renderScenario(sc)
-		want := sc.name == "wholesaler_producer_bartering_with_customer"
+		want := sc.name == "wholesaler_producer_bartering_with_customer" ||
+			sc.name == "wholesaler_producer_observed_rates"
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: wholesale-channel wares line present=%v, want %v", sc.name, has, want)
 		}
@@ -3131,19 +3325,22 @@ func TestRepairReserveLineOnlyForOwnerWithMendAndNails(t *testing.T) {
 	}
 }
 
-// TestRestockCatalogAnchorRendersWithCatalogPrice is the LLM-292 buy-leg
-// invariant, re-derived from each scenario's fixture rather than trusting the
-// build that produced the section: the catalog buying-in anchor ("The fair bulk
-// rate buying it in is …") appears on a rendered "## Restocking" item line iff
-// that ITEM's kind is catalog-priced — checked per line, not section-wide, so a
-// mixed priced/unpriced section can't hide an anchor attached to the wrong item
-// (code_review). Guards both directions — a priced low item must carry the
-// corrective rate (the self-poisoning last-paid anchor must never again be the
-// cue's only number: the live Josiah 2.2/unit milk leg), and an unpriced catalog
-// must not conjure one. A fixture that owes an anchor but renders no Restocking
-// section at all fails too (the anchor can't render if the section disappears).
-func TestRestockCatalogAnchorRendersWithCatalogPrice(t *testing.T) {
-	const marker = "The fair bulk rate buying it in is about"
+// TestRestockBuyAnchorRendersWhenRateKnown is the buy-leg anchor invariant
+// (LLM-292, reworked observed-first in LLM-295), re-derived from each scenario's
+// fixture rather than trusting the build that produced the section: the buying-in
+// anchor ("… above that and you're overpaying") appears on a rendered "##
+// Restocking" item line iff that ITEM has a resolvable rate — an observed
+// supplier rate if one exists, else the catalog seed — checked per line, not
+// section-wide, so a mixed rate/no-rate section can't hide an anchor attached to
+// the wrong item (code_review). Guards both directions — a low item with a known
+// rate must carry the corrective anchor (the self-poisoning last-paid anchor must
+// never again be the cue's only number: the live Josiah 2.2/unit milk leg), and an
+// item with neither an observed rate nor a catalog price must not conjure one. A
+// fixture that owes an anchor but renders no Restocking section at all fails too
+// (the anchor can't render if the section disappears). The marker is the phrase
+// both the observed and the seed phrasings share.
+func TestRestockBuyAnchorRendersWhenRateKnown(t *testing.T) {
+	const marker = "above that and you're overpaying"
 	for _, sc := range perceptionScenarios {
 		sc := sc
 		t.Run(sc.name, func(t *testing.T) {
@@ -3168,7 +3365,15 @@ func TestRestockCatalogAnchorRendersWithCatalogPrice(t *testing.T) {
 			if subj != nil && subj.RestockPolicy != nil {
 				floors := sim.ReorderFloors(snap.Recipes, subj.RestockPolicy)
 				for _, e := range sim.EffectiveBuyEntries(snap.Recipes, subj.RestockPolicy) {
-					rate := catalogBulkRate(snap, e.Item)
+					// The RESOLVED anchor rate the same way buildRestocking derives it:
+					// observed reachable-supplier rate first (LLM-295), catalog seed as
+					// fallback. Same reachable-supplier inputs the build uses.
+					_, coID := coPresentSellerForItem(snap, actorID, subj, e.Item)
+					vendors := findItemVendors(snap, actorID, subj, e.Item)
+					rate, observed := observedSupplierBuyRate(vendors, coID, snap, e.Item, restockSalesWindow)
+					if !observed {
+						rate = catalogBulkRate(snap, e.Item)
+					}
 					label := itemDisplayLabel(snap, e.Item)
 					if prev, ok := rateByLabel[label]; ok && (prev > 0) != (rate > 0) {
 						labelAmbiguous[label] = true // two kinds share a label with differing pricedness — per-line check skips it

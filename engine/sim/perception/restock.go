@@ -93,15 +93,23 @@ type RestockItemView struct {
 	// headroom adds no line.
 	AffordableQty int
 
-	// CatalogUnit is the catalog's per-unit buying-in anchor for this item — the
-	// low end of the item_recipe wholesale–retail band (LLM-292). 0 when the
-	// catalog prices the item not at all (clause omitted). Before this, the cue's
-	// only buy-price signals were the buyer's OWN history (per-vendor last-paid,
-	// AffordableQty) — a self-poisoning anchor: one overpay becomes the reference
-	// for every later offer (the live Josiah milk leg, 2.2/unit against a 1-coin
-	// wholesale rate; and Joseph paying 2 for wheat whose band is flat 1/1). The
-	// catalog rate is the corrective the negotiation can settle back onto.
-	CatalogUnit int
+	// BuyAnchorUnit is the per-unit rate this item is worth buying in at — the
+	// corrective to the buyer's OWN self-poisoning last-paid history (one overpay
+	// re-anchors every later offer: the live Josiah 2.2/unit milk leg). 0 when
+	// neither an observed rate nor a catalog price is on record (clause omitted).
+	//
+	// Resolved observed-first (LLM-295): the rate the item's in-scope suppliers have
+	// actually been selling it for (observedSupplierBuyRate), falling back to the
+	// catalog band's low end (catalogBulkRate) ONLY until real transactions exist —
+	// the catalog prices are hand-authored SEED, not lived rates. BuyAnchorObserved
+	// records which source won, so render can phrase a lived rate ("has lately been
+	// going for about N") differently from a seed estimate ("is generally worth
+	// about N"). Anchoring on the buyer's actual suppliers also auto-scopes the tier:
+	// buying from a producer anchors on the observed wholesale rate, buying from the
+	// distributor on what the distributor actually charges (the mid-tier price the
+	// two-price catalog can't express).
+	BuyAnchorUnit     int
+	BuyAnchorObserved bool
 
 	// RecentSalesUnits / RecentSalesCoins / RecentBuyCost are this item's trailing-
 	// restockSalesWindow economics, read off the price book (LLM-63):
@@ -132,7 +140,12 @@ type RestockItemView struct {
 type RestockVendor struct {
 	StructureLabel string // "Thorne's General Store" — where the reseller walks to
 	StructureID    sim.StructureID
-	CostText       string // per-buyer last-paid "~3 coins", or "" when no price is on record
+	// VendorID is the representative seller at StructureID (lowest-VendorID, the one
+	// whose CostText is shown). Carried so observedSupplierBuyRate (LLM-295) keys the
+	// observed anchor on the EXACT sellers this list points at — not every seller at
+	// the structure — so the anchor can't average in a non-rendered co-worker.
+	VendorID sim.ActorID
+	CostText string // per-buyer last-paid "~3 coins", or "" when no price is on record
 }
 
 // buildRestocking builds the restock view for actorSnap, or nil when the actor
@@ -186,6 +199,13 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 		if len(vendors) == 0 && coName == "" {
 			continue
 		}
+		// LLM-295: observed-first buy anchor, scoped to the reachable suppliers just
+		// resolved (so it agrees with their walk-to prices); catalog seed only until
+		// real transactions exist.
+		buyAnchor, buyAnchorObserved := observedSupplierBuyRate(vendors, coID, snap, e.Item, restockSalesWindow)
+		if !buyAnchorObserved {
+			buyAnchor = catalogBulkRate(snap, e.Item)
+		}
 		items = append(items, RestockItemView{
 			ItemLabel:                     itemDisplayLabel(snap, e.Item),
 			CurrentQty:                    current,
@@ -194,7 +214,8 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 			CoPresentSeller:               coName,
 			PendingOfferToCoPresentSeller: coID != "" && hasPendingOfferTo(snap, actorID, coID, e.Item),
 			AffordableQty:                 affordable,
-			CatalogUnit:                   catalogBulkRate(snap, e.Item),
+			BuyAnchorUnit:                 buyAnchor,
+			BuyAnchorObserved:             buyAnchorObserved,
 			RecentSalesUnits:              salesUnits,
 			RecentSalesCoins:              salesCoins,
 			RecentBuyCost:                 buyCost,
@@ -247,6 +268,87 @@ func catalogBulkRate(snap *sim.Snapshot, kind sim.ItemKind) int {
 		return 0
 	}
 	return lo
+}
+
+// observedSupplierBuyRate returns the per-unit rate the item's REACHABLE suppliers
+// have actually been selling `item` for, nearest-rounded to a coin, and whether
+// any such sale is on record (LLM-295). Scoped to EXACTLY the sellers the cue
+// surfaces as buy destinations — the representative vendor of each surviving
+// walk-to structure (`vendors[].VendorID`, already through the LLM-216
+// shut/affordability drops and the one-per-structure dedupe) plus the co-present
+// seller (`coPresentID`) — so the anchor is drawn from the same sellers whose
+// walk-to prices sit beside it, never a shut farm the buyer can't reach nor a
+// non-rendered co-worker at a listed structure (which would hand the weak model a
+// number that disagrees with the line it's on — code_review). Their seller-view
+// PriceBook sales are summed. This is the observed anchor that supersedes the
+// hand-authored catalog seed: grounded in the destinations the buyer restocks
+// from, so buying from a producer yields the observed wholesale rate and buying
+// from the distributor yields what the distributor actually charges (the mid-tier
+// price the two-price catalog can't express). Per-supplier by construction, so it
+// barely dents the PriceBook "knowledge earned by patronage" asymmetry. 0/false
+// when no reachable supplier has a sale in the window (caller falls back to seed).
+func observedSupplierBuyRate(vendors []RestockVendor, coPresentID sim.ActorID, snap *sim.Snapshot, item sim.ItemKind, window time.Duration) (int, bool) {
+	suppliers := map[sim.ActorID]bool{}
+	for _, v := range vendors {
+		if v.VendorID != "" {
+			suppliers[v.VendorID] = true
+		}
+	}
+	if coPresentID != "" {
+		suppliers[coPresentID] = true
+	}
+	if len(suppliers) == 0 {
+		return 0, false
+	}
+	var units, coins int64
+	for sellerID := range suppliers {
+		u, c := sellerRecentSales(snap, sellerID, item, window)
+		units += int64(u)
+		coins += int64(c)
+	}
+	if units <= 0 {
+		return 0, false
+	}
+	return int((coins + units/2) / units), true // nearest-rounded per-unit
+}
+
+// observedShopSales totals what the item's SHOPS have actually been selling `item`
+// for over the window — every seller of the item that RESELLS it (does not
+// produce/forage it) rather than makes it, from the seller-view PriceBook
+// (LLM-295). The retail-side observed rate behind the wholesale-producer cue's
+// "folk pay about N in the shops" figure; the producer's own wholesale sales are
+// deliberately excluded (they feed the bulk figure, sellerRecentSales on the
+// producer itself). Both 0 when no shop has a sale of the item on record. int64
+// guards the sums; results clamp into int range.
+func observedShopSales(snap *sim.Snapshot, item sim.ItemKind, window time.Duration) (units int, coins int) {
+	if snap == nil || snap.PriceBook == nil {
+		return 0, 0
+	}
+	cutoff := snap.PublishedAt.Add(-window)
+	var u, c int64
+	for key, buf := range snap.PriceBook {
+		if key.Item != item || buf == nil || buf.Len() == 0 {
+			continue
+		}
+		seller := snap.Actors[key.SellerID]
+		if seller == nil || seller.RestockPolicy.ProducesOrForages(item) {
+			continue // no such seller, or a first-hand producer (the wholesale side)
+		}
+		for _, obs := range buf.Snapshot() {
+			if obs.At.Before(cutoff) {
+				continue
+			}
+			u += observationUnits(obs)
+			c += int64(obs.Amount)
+		}
+	}
+	if u > int64(math.MaxInt32) {
+		u = int64(math.MaxInt32)
+	}
+	if c > int64(math.MaxInt32) {
+		c = int64(math.MaxInt32)
+	}
+	return int(u), int(c)
 }
 
 // itemHasActionableBuyPath reports whether buildRestocking would render an item
@@ -515,6 +617,7 @@ func findItemVendors(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *sim.Act
 		out = append(out, RestockVendor{
 			StructureLabel: vendorStructureLabel(p.structure),
 			StructureID:    structureID,
+			VendorID:       p.vendorID, // the representative whose CostText below is shown (LLM-295)
 			// Empty fallback when no price is on record (was "ask the supplier",
 			// which invited the reseller to SPEAK a price question instead of
 			// calling pay_with_item — ZBBS-HOME-386). With "", renderRestocking
@@ -707,17 +810,23 @@ func renderRestocking(b *strings.Builder, v *RestockingView) {
 		// restates it at the buy moment.
 		fmt.Fprintf(b, "- You have %d %s on hand and room for %d more at the most.",
 			it.CurrentQty, sanitizeInline(it.ItemLabel), headroom)
-		// LLM-292: the catalog buying-in anchor, with its stake. Before this the
-		// only rate in the cue was the buyer's own last-paid — self-poisoning (one
-		// overpay re-anchors every later offer: the live Josiah 2.2/unit milk leg).
-		// Deliberately a per-unit rate and never a fill total — LLM-63 removed the
-		// concrete fill-to-cap figure because the weak model copy-pasted it as a
-		// max offer and drained its purse; a rate to weigh an offer against does
-		// not re-open that. No "ask"/"price" token (the HOME-386 speaking-loop
-		// guard).
-		if it.CatalogUnit > 0 {
-			fmt.Fprintf(b, " The fair bulk rate buying it in is about %s each — pay above that and you are overpaying.",
-				coinsPhrase(it.CatalogUnit))
+		// The buying-in anchor, with its stake — the corrective to the buyer's own
+		// self-poisoning last-paid (one overpay re-anchors every later offer: the
+		// live Josiah 2.2/unit milk leg). Deliberately a per-unit rate and never a
+		// fill total — LLM-63 removed the concrete fill-to-cap figure because the
+		// weak model copy-pasted it as a max offer and drained its purse; a rate to
+		// weigh an offer against does not re-open that. No "ask"/"price" token (the
+		// HOME-386 speaking-loop guard). LLM-295: phrase a lived observed rate as
+		// such, and a catalog SEED as a soft estimate — the model must not be told a
+		// hand-authored guess is a rate the market has set.
+		if it.BuyAnchorUnit > 0 {
+			if it.BuyAnchorObserved {
+				fmt.Fprintf(b, " Of late it has been going for about %s each — pay much above that and you're overpaying.",
+					coinsPhrase(it.BuyAnchorUnit))
+			} else {
+				fmt.Fprintf(b, " It is generally worth about %s each — pay much above that and you're overpaying.",
+					coinsPhrase(it.BuyAnchorUnit))
+			}
 		}
 		// The week's demand + P&L the reseller sizes its restock against: units sold,
 		// coins paid restocking, coins taken in selling. Silent at 0 units sold (no

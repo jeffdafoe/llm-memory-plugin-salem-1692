@@ -1142,3 +1142,43 @@ func TestCoPresentSellerForItem_ExcludesReseller(t *testing.T) {
 		t.Errorf("the co-present producer should be the named seller, got %q/%q", name, id)
 	}
 }
+
+// TestObservedSupplierBuyRate_ScopedToListedSellers pins the LLM-295 seller-level
+// scoping (code_review): the observed buy anchor is drawn ONLY from the sellers the
+// walk-to list names (RestockVendor.VendorID) plus the co-present seller, never a
+// non-rendered co-worker at the same structure. Elizabeth (listed) has sold milk at
+// 2; Milo (a co-worker at the same farm that findItemVendors deduped away) at 6. The
+// rate must read 2 (Elizabeth only), not 4 (the structure-wide average) — the case a
+// structure-keyed scan would have gotten wrong. Direct over the helper, so it isn't
+// circular with the invariant that shares it.
+func TestObservedSupplierBuyRate_ScopedToListedSellers(t *testing.T) {
+	published := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
+	elizSales := sim.NewRingBuffer[sim.PriceObservation](8)
+	elizSales.Push(sim.PriceObservation{BuyerID: "x", Amount: 2, Qty: 1, Consumers: 1, At: published.Add(-1 * time.Hour)})
+	miloSales := sim.NewRingBuffer[sim.PriceObservation](8)
+	miloSales.Push(sim.PriceObservation{BuyerID: "x", Amount: 6, Qty: 1, Consumers: 1, At: published.Add(-1 * time.Hour)})
+	snap := &sim.Snapshot{
+		PublishedAt: published,
+		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+			{SellerID: "elizabeth", Item: "milk"}: elizSales,
+			{SellerID: "milo", Item: "milk"}:      miloSales,
+		},
+	}
+	// Only Elizabeth is listed as the walk-to representative; Milo is the co-worker.
+	if rate, ok := observedSupplierBuyRate([]RestockVendor{{StructureID: "ellis_farm", VendorID: "elizabeth"}}, "", snap, "milk", restockSalesWindow); !ok || rate != 2 {
+		t.Fatalf("listed-seller-only rate = %d (ok=%v), want 2 — Milo's 6 must not average in", rate, ok)
+	}
+	// Both listed → the true aggregate (2+6 over 2 units = 4); proves the scoping is
+	// what excludes Milo above, not an unrelated filter.
+	if rate, ok := observedSupplierBuyRate([]RestockVendor{{VendorID: "elizabeth"}, {VendorID: "milo"}}, "", snap, "milk", restockSalesWindow); !ok || rate != 4 {
+		t.Fatalf("both-sellers rate = %d (ok=%v), want 4", rate, ok)
+	}
+	// The co-present seller counts even when not in the vendor list.
+	if rate, ok := observedSupplierBuyRate(nil, "milo", snap, "milk", restockSalesWindow); !ok || rate != 6 {
+		t.Fatalf("co-present rate = %d (ok=%v), want 6", rate, ok)
+	}
+	// No listed or co-present seller → seed fallback (ok=false).
+	if _, ok := observedSupplierBuyRate(nil, "", snap, "milk", restockSalesWindow); ok {
+		t.Fatalf("empty suppliers should yield ok=false")
+	}
+}
