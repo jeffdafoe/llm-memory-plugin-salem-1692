@@ -1,6 +1,9 @@
 package sim
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 // move_to_byname_test.go — resolveStructureByVillageName (LLM-142). White-box
 // (package sim) so it can drive the unexported resolver directly with controlled
@@ -102,6 +105,87 @@ func TestResolveStructureByName_TieBreaksByID(t *testing.T) {
 		got, ok := resolveStructureByVillageName(w, bnActor("", ""), "the well")
 		if !ok || got != "well_aaa" {
 			t.Fatalf("equal-distance tie must break to the lowest id, got %q", got)
+		}
+	}
+}
+
+// namedVillageDestinations backs the LLM-306 unknown-place error: it lists real
+// PUBLIC structure names the model can pick, nearest-first, capped. This pins the
+// public filter (owner-only/closed excluded), the placement + blank-name skips,
+// nearest-first order, dedupe-by-name, and the cap + "more existed" signal — all
+// in one controlled world so the produced error string is byte-stable.
+func TestNamedVillageDestinations_PublicNearestFirstCapped(t *testing.T) {
+	w := bnWorld(5)
+	// Public destinations at increasing distance (bnPlace leaves EntryPolicy at
+	// the default "", which counts as public). Six distinct public names.
+	bnPlace(w, "store", "General Store", 1)
+	bnPlace(w, "tavern", "The Tavern", 2)
+	bnPlace(w, "smithy", "Blacksmith", 3)
+	bnPlace(w, "meeting", "Meeting House", 4)
+	bnPlace(w, "church", "Church", 5)
+	bnPlace(w, "mill", "Mill", 6)
+	// A second "General Store" farther out — must dedupe to the nearest instance.
+	bnPlace(w, "store_far", "General Store", 7)
+	// Excluded: a private home (owner-only) and a closed prop (a well), both near.
+	bnPlace(w, "home", "Thorne Residence", 1)
+	w.VillageObjects["home"].EntryPolicy = EntryPolicyOwner
+	bnPlace(w, "well", "The Well", 1)
+	w.VillageObjects["well"].EntryPolicy = EntryPolicyClosed
+	// Excluded: a structure with no placement (can't walk there), and one with a
+	// blank display name (nothing to name).
+	w.Structures["ghost"] = &Structure{ID: "ghost", DisplayName: "Ghost Hall"}
+	bnPlace(w, "blank", "", 1)
+
+	names, more := namedVillageDestinations(w, bnActor("", ""), moveToDestinationNameCap)
+	want := []string{"General Store", "The Tavern", "Blacksmith", "Meeting House", "Church"}
+	if !reflect.DeepEqual(names, want) {
+		t.Errorf("names = %v, want %v (public only, nearest-first, deduped, capped at %d)", names, want, moveToDestinationNameCap)
+	}
+	if !more {
+		t.Errorf("more = false, want true (Mill is a 6th public destination beyond the cap of %d)", moveToDestinationNameCap)
+	}
+
+	// With a limit above the distinct count, the full deduped list returns and
+	// more is false.
+	all, moreAll := namedVillageDestinations(w, bnActor("", ""), 10)
+	wantAll := append(append([]string{}, want...), "Mill")
+	if !reflect.DeepEqual(all, wantAll) {
+		t.Errorf("full list = %v, want %v", all, wantAll)
+	}
+	if moreAll {
+		t.Errorf("more = true, want false (limit 10 exceeds the 6 distinct public names)")
+	}
+}
+
+// A world with no public destination to name (only a private home and a closed
+// well) yields an empty list, so the caller falls back to the generic hint.
+func TestNamedVillageDestinations_NoPublicStructures(t *testing.T) {
+	w := bnWorld(5)
+	bnPlace(w, "home", "Thorne Residence", 1)
+	w.VillageObjects["home"].EntryPolicy = EntryPolicyOwner
+	bnPlace(w, "well", "The Well", 2)
+	w.VillageObjects["well"].EntryPolicy = EntryPolicyClosed
+
+	names, more := namedVillageDestinations(w, bnActor("", ""), moveToDestinationNameCap)
+	if len(names) != 0 || more {
+		t.Errorf("names = %v more = %v, want empty + false (no public destinations)", names, more)
+	}
+}
+
+// A non-positive cap names nothing (no negative-slice panic) but still reports
+// that public destinations existed.
+func TestNamedVillageDestinations_NonPositiveLimit(t *testing.T) {
+	w := bnWorld(5)
+	bnPlace(w, "store", "General Store", 1)
+	bnPlace(w, "tavern", "The Tavern", 2)
+
+	for _, limit := range []int{0, -1} {
+		names, more := namedVillageDestinations(w, bnActor("", ""), limit)
+		if len(names) != 0 {
+			t.Errorf("limit %d: names = %v, want empty", limit, names)
+		}
+		if !more {
+			t.Errorf("limit %d: more = false, want true (public destinations exist)", limit)
 		}
 	}
 }
