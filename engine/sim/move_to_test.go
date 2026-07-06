@@ -167,6 +167,36 @@ func TestMoveToStructureByName_RejectsUnresolvableName(t *testing.T) {
 	}
 }
 
+// TestMoveToStructureByName_UnresolvableNameListsPublicStructures pins the
+// LLM-306 enrichment end-to-end: an unresolvable place name comes back with a
+// bounded, deterministic list of the REAL public structures in the world so a
+// weak model can self-correct, while still carrying the well/bush source hint.
+// buildMoveTestWorld's public structures are "Inn" (default policy) and "Gazebo"
+// (open); "Well" is closed and "lamp" is a bare prop, so neither is listed.
+func TestMoveToStructureByName_UnresolvableNameListsPublicStructures(t *testing.T) {
+	w, cancel, _ := buildMoveTestWorld(t)
+	defer cancel()
+
+	_, err := w.Send(sim.MoveToStructureByName("walker", "Market", nil, sim.RememberedPlaces{}, time.Now().UTC()))
+	if err == nil {
+		t.Fatal("want error for an unresolvable place name, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "no place called") {
+		t.Errorf("error lacks 'no place called': %v", err)
+	}
+	// The Inn (nearest, X=320) then the Gazebo (X=960); the closed Well is not a
+	// public destination, so exactly these two, in that order (each quoted), with
+	// no "(and more)" (only two public structures exist).
+	if !strings.Contains(msg, `the village includes "Inn", "Gazebo";`) {
+		t.Errorf("error does not name the real public structures in order: %v", err)
+	}
+	// The source hint survives the enrichment.
+	if !strings.Contains(msg, "a well, a bush") {
+		t.Errorf("error dropped the well/bush source hint: %v", err)
+	}
+}
+
 // --- rejects ----------------------------------------------------------
 
 func TestMoveToStructure_RejectsUnknownStructure(t *testing.T) {

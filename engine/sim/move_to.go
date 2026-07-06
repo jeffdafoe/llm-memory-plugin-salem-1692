@@ -2,6 +2,7 @@ package sim
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -107,6 +108,28 @@ func MoveToStructureByName(actorID ActorID, name string, shownObjects []VillageO
 					return MoveActorResult{}, err
 				}
 				return MoveToStructure(actorID, id, now).Fn(w)
+			}
+			// Nothing matched — the model named a place that doesn't exist (a weak
+			// model's hallucinated destination, LLM-306). Hand it a bounded set of
+			// REAL public structure names it CAN pick, so its next turn corrects to a
+			// valid target instead of mutating the same bad string. When the world
+			// has no public destination to name (a degenerate/minimal world), fall
+			// back to the original generic hint so the message stays coherent.
+			if names, more := namedVillageDestinations(w, a, moveToDestinationNameCap); len(names) > 0 {
+				// %q each name: a display name is admin/agent-authored, so escaping it
+				// (matching the target/id rendering in this file) keeps a stray newline
+				// or control char from forging the tool-feedback line, and reads to the
+				// model as a literal token to copy.
+				quoted := make([]string, len(names))
+				for i, n := range names {
+					quoted[i] = fmt.Sprintf("%q", n)
+				}
+				list := strings.Join(quoted, ", ")
+				if more {
+					list += " (and more)"
+				}
+				return MoveActorResult{}, fmt.Errorf(
+					"there is no place called %q — the village includes %s; name one of those, or a source (a well, a bush) you can see or have visited", target, list)
 			}
 			return MoveActorResult{}, fmt.Errorf(
 				"there is no place called %q — name a structure in the village, or a source (a well, a bush) you can see or have visited", target)
@@ -224,6 +247,91 @@ func resolveStructureByVillageName(w *World, a *Actor, name string) (StructureID
 		return "", false
 	}
 	return bestID, true
+}
+
+// moveToDestinationNameCap bounds how many real structure names the unknown-place
+// error lists (LLM-306). Weak-model prompt discipline: enough distinct names to
+// unstick a hallucinated destination without dumping the whole village directory
+// into a retry message.
+const moveToDestinationNameCap = 5
+
+// namedVillageDestinations returns up to limit PUBLIC structure names the actor
+// could pick as a move_to target, nearest-first, plus whether more existed than
+// the cap (so the caller can append an "(and more)" hint instead of implying the
+// list is exhaustive). It backs the unknown-place error in MoveToStructureByName:
+// when the model names a place no structure matches, this hands it a bounded set
+// of REAL names it CAN use, so its next turn corrects to a valid target rather
+// than mutating the same bad string (LLM-306).
+//
+// The set is drawn VILLAGE-WIDE, not from the actor's known/visited places:
+// structures are common-knowledge geography (LLM-142), so every named structure
+// with a placement is already a valid target — a "known places" filter would omit
+// reachable buildings (and structure known-places aren't even threaded to this
+// call; RememberedPlaces carries objects only). This mirrors the set
+// resolveStructureByVillageName resolves against.
+//
+// PUBLIC = entry policy neither owner-only (private homes, which the actor can
+// walk to but not usefully enter) nor closed (wells, decoratives — already
+// covered by the "a well, a bush" source hint). This mirrors the engine's own
+// enter logic and points the model at shops / the tavern / civic buildings, which
+// is what a hallucinated destination ("Market", "the Smithy") is reaching for. A
+// structure with no walkable placement is skipped (can't walk there, can't
+// measure distance), matching the resolver.
+//
+// Order is nearest-first (Chebyshev to the actor; ties break by structure_id),
+// deduplicated by display name (leading-article-insensitive) so a shared name is
+// listed once. Deterministic for a fixed world + actor position, so the error
+// string is byte-stable. MUST be called from inside a Command.Fn.
+func namedVillageDestinations(w *World, a *Actor, limit int) (names []string, more bool) {
+	type candidate struct {
+		id   StructureID
+		name string
+		dist int
+	}
+	candidates := make([]candidate, 0, len(w.Structures))
+	for structureID, st := range w.Structures {
+		if st == nil || strings.TrimSpace(st.DisplayName) == "" {
+			continue
+		}
+		vobj, ok := villageObjectForStructureOnly(w, structureID)
+		if !ok {
+			continue // no placement → can't walk there (and can't measure distance)
+		}
+		if vobj.EntryPolicy == EntryPolicyOwner || vobj.EntryPolicy == EntryPolicyClosed {
+			continue // private home / decorative — not a public destination to name
+		}
+		candidates = append(candidates, candidate{
+			id:   structureID,
+			name: strings.TrimSpace(st.DisplayName),
+			dist: a.Pos.Chebyshev(vobj.Pos.Tile()),
+		})
+	}
+	// Nearest wins; equal distance breaks by lower structure_id, so the list is
+	// stable across map-iteration order (matching resolveStructureByVillageName).
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].dist != candidates[j].dist {
+			return candidates[i].dist < candidates[j].dist
+		}
+		return candidates[i].id < candidates[j].id
+	})
+	seen := make(map[string]bool, len(candidates))
+	for _, c := range candidates {
+		key := strings.ToLower(stripLeadingArticle(c.name))
+		if seen[key] {
+			continue // a shared name (nearest instance already listed)
+		}
+		seen[key] = true
+		names = append(names, c.name)
+	}
+	if limit <= 0 {
+		// Degenerate cap — name nothing (avoids a negative-slice panic on
+		// names[:limit]); still report whether any destination existed.
+		return nil, len(names) > 0
+	}
+	if len(names) > limit {
+		return names[:limit], true
+	}
+	return names, false
 }
 
 // resolveObjectByPerceivableName resolves a place name to a bare refresh-source
