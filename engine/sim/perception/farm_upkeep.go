@@ -37,6 +37,14 @@ type FarmUpkeepView struct {
 	// churn (LLM-64).
 	CoPresentSeller string
 	PendingOffer    bool
+
+	// LLM-299: co-present-buy situation awareness, shared with the nail repair-buy
+	// (copresent_buy.go). SellerStock is the shovels the CoPresentSeller holds right now
+	// (0 when none present); Block selects whether renderFarmUpkeep issues the "Buy it now"
+	// imperative or softens to a hold-off. Both are set only when a seller is co-present and
+	// no offer is already standing (the PendingOffer bide steer wins first).
+	SellerStock int
+	Block       copresentBuyBlock
 }
 
 // buildFarmUpkeep returns the owner's upkeep-buy cue, or nil. Pure over the snapshot.
@@ -62,7 +70,7 @@ func buildFarmUpkeep(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 		return nil // nothing owed beyond what they already carry
 	}
 	coName, coID := coPresentSellerForItem(snap, actorID, actorSnap, sim.ShovelItemKind)
-	return &FarmUpkeepView{
+	view := &FarmUpkeepView{
 		ShovelsOwed:  owed,
 		ShovelsHeld:  held,
 		ShovelsShort: owed - held,
@@ -76,6 +84,15 @@ func buildFarmUpkeep(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 		CoPresentSeller: coName,
 		PendingOffer:    coID != "" && hasPendingOfferTo(snap, actorID, coID, sim.ShovelItemKind),
 	}
+	// LLM-299: make the co-present shovel goad situation-aware via the same shared classifier
+	// the nail repair-buy uses (copresent_buy.go) — cap the ask at the seller's live stock and
+	// hold off under no-stock / conserve or empty purse / a dead-ended negotiation, so the
+	// shovel goad and the "## Restocking" hold-off never contradict. The PendingOffer bide
+	// steer wins first, so skip the block scan under it.
+	if coID != "" && !view.PendingOffer {
+		view.SellerStock, view.Block = classifyCoPresentBuy(snap, actorID, actorSnap, coID, sim.ShovelItemKind)
+	}
+	return view
 }
 
 // renderFarmUpkeep writes the "## Farm upkeep" section. Content-gated: a nil view
@@ -101,12 +118,25 @@ func renderFarmUpkeep(b *strings.Builder, v *FarmUpkeepView) {
 	// "## Restocking" cues use. Placed before the walk-to/generic branches so those
 	// keep their exact wording when no seller is co-present.
 	if v.CoPresentSeller != "" {
-		if v.PendingOffer {
-			fmt.Fprintf(b, "%s is here with you and your shovel offer is still with them — wait here for their answer; do not re-offer or leave.\n", sanitizeInline(v.CoPresentSeller))
-			return
+		switch {
+		case v.PendingOffer:
+			// A shovel offer already stands with the co-present seller — bide, don't
+			// re-offer (the LLM-64 co-present-offer guard).
+			renderCoPresentBuyPending(b, v.CoPresentSeller, "shovel")
+		case v.Block == copresentBuyBlockedNoStock, v.Block == copresentBuyBlockedCoin, v.Block == copresentBuyBlockedTerms:
+			// LLM-299: seller has no stock / the purse can't take it on (conserve or an
+			// insufficient-funds fail) / the negotiation has dead-ended — soften to a
+			// hold-off instead of goading the buy, so it never contradicts the "## Restocking"
+			// hold-off advice.
+			renderCoPresentBuySoften(b, v.CoPresentSeller, "shovels", v.Block)
+		case v.SellerStock > 0 && v.SellerStock < v.ShovelsShort:
+			// LLM-299: he can't cover the whole shortfall — cap the ask at what he holds so
+			// the "qty up to N" never exceeds his stock.
+			renderCoPresentBuyCapped(b, v.CoPresentSeller, "shovels", sim.ShovelItemKind, v.SellerStock)
+		default:
+			fmt.Fprintf(b, "Buy %s to set the farm right for the season. ", shovels)
+			renderCoPresentBuy(b, v.CoPresentSeller, "shovels", sim.ShovelItemKind, v.ShovelsShort)
 		}
-		fmt.Fprintf(b, "Buy %s to set the farm right for the season. ", shovels)
-		renderCoPresentBuy(b, v.CoPresentSeller, "shovels", sim.ShovelItemKind, v.ShovelsShort)
 		return
 	}
 	if len(v.ShovelVendors) > 0 {

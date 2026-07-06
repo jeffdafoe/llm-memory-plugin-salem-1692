@@ -1,0 +1,148 @@
+package perception
+
+import (
+	"fmt"
+	"strings"
+
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
+)
+
+// copresent_buy.go — LLM-299. The shared situation-awareness for an owner supply
+// errand that puts a seller of the needed item in the buyer's huddle: the nail
+// repair-buy ("## Nails to mend your business", stall_repair.go) and the shovel
+// farm-upkeep buy ("## Farm upkeep", farm_upkeep.go). Both errands walk the owner
+// to a producer and, once co-present, issue the shared renderCoPresentBuy "Buy it
+// now" imperative (restock.go). LLM-297 made the nail path situation-aware — cap the
+// ask at the seller's live stock, and drop the goad when the purse can't take it on
+// or the negotiation has dead-ended — as nail-specific code. This file lifts that one
+// mechanism out so nails and shovels run it identically instead of drifting as two
+// parallel copies.
+
+// copresentBuyBlock decides how a co-present-buy render treats a seller sharing the
+// buyer's huddle. The zero value goads the buy; the blocked variants replace the
+// imperative with a hold-off so the cue stops pushing the model to re-offer into an
+// empty forge, an unaffordable / already-declined negotiation, or against the
+// working-capital gate's own hold-off advice.
+type copresentBuyBlock int
+
+const (
+	copresentBuyOK             copresentBuyBlock = iota // seller has stock and a deal is plausible — goad the buy
+	copresentBuyBlockedNoStock                          // seller holds nothing right now (defensive — coPresentSellerForItem's qty>0 gate normally prevents it)
+	copresentBuyBlockedCoin                             // conserve mode or an empty purse — coins must recover before this buy can close
+	copresentBuyBlockedTerms                            // repeated declines / unfilled offers this huddle — the deal isn't meeting; try later
+)
+
+// copresentStandoffDeclineThreshold is how many seller declines / unfilled-offer
+// failures to the same co-present seller in the current huddle mark the negotiation as
+// stuck (LLM-297). One decline is ordinary haggling; a second means the terms aren't
+// going to meet. An engine-hard insufficient-funds rejection short-circuits to a coin
+// block on the first occurrence — an empty purse won't clear by re-offering the same coins.
+const copresentStandoffDeclineThreshold = 2
+
+// classifyCoPresentBuy resolves, for a seller of kind sharing the buyer's huddle, the
+// seller's live stock of that item and whether the buy is worth goading. Shared by the
+// nail repair-buy (buildStallRepairBuy) and the shovel farm-upkeep buy (buildFarmUpkeep)
+// so both run one situation-aware mechanism. Callers invoke it only once a seller is
+// co-present and no offer is already standing (the pending-offer bide steer wins first).
+// The block is chosen in priority order:
+//   - no stock (defensive; coPresentSellerForItem's qty>0 gate normally keeps this >=1),
+//   - the working-capital gate telling this keeper to hold off (merchantConserve — the
+//     same signal the "## Restocking" hold-off rides, so the two cues can never contradict),
+//     which reads as a coin block,
+//   - a recent negotiation with the seller has dead-ended (coPresentBuyStandoff → coin/terms).
+func classifyCoPresentBuy(snap *sim.Snapshot, buyer sim.ActorID, buyerSnap *sim.ActorSnapshot, seller sim.ActorID, kind sim.ItemKind) (int, copresentBuyBlock) {
+	stock := 0
+	if s := snap.Actors[seller]; s != nil {
+		stock = s.Inventory[kind]
+	}
+	switch {
+	case stock <= 0:
+		return stock, copresentBuyBlockedNoStock
+	case merchantConserve(snap, buyer, buyerSnap).Active:
+		return stock, copresentBuyBlockedCoin
+	default:
+		return stock, coPresentBuyStandoff(snap, buyer, seller, buyerSnap.CurrentHuddleID, kind)
+	}
+}
+
+// coPresentBuyStandoff classifies how the buyer's recent offers of kind to the co-present
+// seller have dead-ended in this huddle: copresentBuyBlockedCoin when the purse couldn't
+// cover one (a single failed_insufficient_funds is definitive), copresentBuyBlockedTerms
+// when the seller has declined / couldn't fill at least copresentStandoffDeclineThreshold
+// offers, or copresentBuyOK when neither. Mirrors hasPendingOfferTo's ledger walk (buyer,
+// seller, item, huddle) but keys on the negative terminal states, and — like the buyer's
+// own "## Recently settled offers" view (buildRecentlyResolvedOffersFromMe) — counts only
+// offers resolved within recentlyResolvedOfferWindow of snap.PublishedAt, so a stale decline
+// from earlier (terminal entries linger up to the 1h reap window) can't keep suppressing the
+// buy after coins or stock have since recovered. An empty huddle disables the scan —
+// co-presence with no shared huddle can't scope "this negotiation".
+func coPresentBuyStandoff(snap *sim.Snapshot, buyer, seller sim.ActorID, huddle sim.HuddleID, kind sim.ItemKind) copresentBuyBlock {
+	if seller == "" || huddle == "" {
+		return copresentBuyOK
+	}
+	declines := 0
+	for _, e := range snap.PayLedger {
+		if e == nil || e.BuyerID != buyer || e.SellerID != seller || e.ItemKind != kind || e.HuddleID != huddle {
+			continue
+		}
+		if e.ResolvedAt.IsZero() || snap.PublishedAt.Sub(e.ResolvedAt) > recentlyResolvedOfferWindow {
+			continue // stale or mid-construction — count only offers the buyer still sees as recently settled
+		}
+		switch e.State {
+		case sim.PayLedgerStateFailedInsufficientFunds:
+			return copresentBuyBlockedCoin
+		case sim.PayLedgerStateDeclined,
+			sim.PayLedgerStateFailedInsufficientStock,
+			sim.PayLedgerStateFailedInsufficientGoods:
+			declines++
+		}
+	}
+	if declines >= copresentStandoffDeclineThreshold {
+		return copresentBuyBlockedTerms
+	}
+	return copresentBuyOK
+}
+
+// renderCoPresentBuyPending writes the bide steer for a co-present seller when an offer of
+// the item already stands with them: wait for the answer rather than re-offering and
+// churning (the LLM-64 co-present-offer guard). itemLabel is the singular item noun ("nail",
+// "shovel"). Inputs are sanitized here, so callers pass raw snapshot strings.
+func renderCoPresentBuyPending(b *strings.Builder, seller, itemLabel string) {
+	fmt.Fprintf(b, "%s is here with you and your %s offer is still with them — wait here for their answer; do not re-offer or leave.\n",
+		sanitizeInline(seller), itemLabel)
+}
+
+// renderCoPresentBuySoften writes the hold-off prose that replaces the "Buy it now" goad
+// when the co-present buy is blocked. itemLabel is the plural item noun ("nails", "shovels").
+// A copresentBuyOK block writes nothing (the caller renders the goad / cap instead). Inputs
+// are sanitized here, so callers pass raw snapshot strings.
+func renderCoPresentBuySoften(b *strings.Builder, seller, itemLabel string, block copresentBuyBlock) {
+	s := sanitizeInline(seller)
+	switch block {
+	case copresentBuyBlockedNoStock:
+		// Defensive: a co-present seller normally holds >=1, but if his stock has emptied,
+		// say so instead of goading a buy he can't fill. "still forging them" assumes a
+		// smith-forged item (nails, shovels) — revisit this clause if the helper is ever
+		// reused for a non-forged good.
+		fmt.Fprintf(b, "%s is here with you but has no %s to spare just now — he's still forging them. Come back once he's made more rather than pressing him for stock he hasn't got.\n", s, itemLabel)
+	case copresentBuyBlockedCoin:
+		// The purse can't take this on (conserve mode, or an offer already failed for want
+		// of coin) — soften to a hold-off that harmonizes with the "## Restocking" advice
+		// instead of goading a re-offer it can't afford.
+		fmt.Fprintf(b, "%s is here with you, but your purse can't take on %s just now — hold off buying and let your coins recover before you come back for them.\n", s, itemLabel)
+	case copresentBuyBlockedTerms:
+		// Repeated offers have gone nowhere this huddle — the terms aren't meeting, so stop
+		// pressing and come back later rather than re-offering into the same no.
+		fmt.Fprintf(b, "%s is here with you, but your offers for %s aren't finding a deal right now — hold off and come back later rather than pressing them into a no.\n", s, itemLabel)
+	}
+}
+
+// renderCoPresentBuyCapped writes the partial-fill arm: the seller can't cover the whole
+// shortfall, so name what he holds and cap the pay_with_item "qty up to N" at his stock
+// instead of goading the full shortfall for stock he can't deliver (the live case: the
+// buyer needed 5 nails, the smith held only 1). itemLabel is the plural item noun; stock is
+// the seller's live count. Inputs are sanitized here, so callers pass raw snapshot strings.
+func renderCoPresentBuyCapped(b *strings.Builder, seller, itemLabel string, kind sim.ItemKind, stock int) {
+	fmt.Fprintf(b, "%s can spare only %d just now, so buy what he has and come back for the rest once he's forged more. ", sanitizeInline(seller), stock)
+	renderCoPresentBuy(b, seller, itemLabel, kind, stock)
+}
