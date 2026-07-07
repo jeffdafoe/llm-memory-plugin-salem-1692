@@ -137,7 +137,13 @@ type chatRequest struct {
 	// the API attaches to the current turn but never persists. Sent on every
 	// Complete; absent on persist-only calls (no perception).
 	EphemeralContext string `json:"ephemeral_context,omitempty"`
-	Wait             bool   `json:"wait"`
+	// SimActorID / SimActorName identify the in-world actor this turn is made on
+	// behalf of, so memory-api can attribute a shared-VA (salem-vendor) turn to a
+	// specific character instead of only the switchboard agent. Omitted when the
+	// call acts on behalf of no single actor (village-level cascades). LLM-236.
+	SimActorID   string `json:"sim_actor_id,omitempty"`
+	SimActorName string `json:"sim_actor_name,omitempty"`
+	Wait         bool   `json:"wait"`
 }
 
 // apiTool is the neutral tool spec sent in tools_offered. parameters is
@@ -215,6 +221,8 @@ func (c *Client) Complete(ctx context.Context, req llm.Request) (llm.Response, e
 		SceneID:          req.SceneID,
 		ConversationID:   req.ConversationID,
 		EphemeralContext: req.EphemeralContext,
+		SimActorID:       req.SimActorID,
+		SimActorName:     req.SimActorName,
 		Wait:             true,
 	})
 	if err != nil {

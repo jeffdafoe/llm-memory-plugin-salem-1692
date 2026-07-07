@@ -236,6 +236,8 @@ func TestComplete_IterZeroMessageExtraction(t *testing.T) {
 		Messages:       []llm.Message{{Role: llm.RoleUser, Content: "perception text"}},
 		SceneID:        "scene-uuid",
 		ConversationID: "sc-conv-1",
+		SimActorID:     "actor-123",
+		SimActorName:   "Anne Walker",
 	})
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
@@ -266,6 +268,12 @@ func TestComplete_IterZeroMessageExtraction(t *testing.T) {
 	}
 	if r.Body.ConversationID != "sc-conv-1" {
 		t.Errorf("conversation_id = %q, want sc-conv-1", r.Body.ConversationID)
+	}
+	if r.Body.SimActorID != "actor-123" {
+		t.Errorf("sim_actor_id = %q, want actor-123", r.Body.SimActorID)
+	}
+	if r.Body.SimActorName != "Anne Walker" {
+		t.Errorf("sim_actor_name = %q, want Anne Walker", r.Body.SimActorName)
 	}
 	if !r.Body.Wait {
 		t.Error("wait = false, want true")

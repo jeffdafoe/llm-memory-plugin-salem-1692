@@ -142,6 +142,11 @@ func consolidateOne(ctx context.Context, w *sim.World, client llm.Client, c sim.
 		// (salem-vendor vs salem-visitor). The FakeClient ignores
 		// Model; tests still work.
 		Model: c.ActorLLMAgent,
+		// Attribute this reflection turn to the in-world actor so it's
+		// filterable alongside the actor's deliberation turns rather than
+		// collapsing onto the shared-VA agent (LLM-236).
+		SimActorID:   string(c.ActorID),
+		SimActorName: c.ActorName,
 	}
 	reply, err := client.Complete(ctx, req)
 	if err != nil {
