@@ -36,12 +36,33 @@ func buildAssetWorld(t *testing.T) (*sim.World, *objEventCapture) {
 	return w, cap
 }
 
+// copyTestIntPtr copies an int pointer (sim.copyIntPtr is unexported) so a test
+// never holds a pointer aliasing live World.Assets state.
+func copyTestIntPtr(p *int) *int {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
+}
+
 // assetFromWorld reads an asset off the live catalog through the command channel
-// (World.Assets isn't published in the snapshot). Returns nil if absent.
+// (World.Assets isn't published in the snapshot). Returns a struct copy with its
+// geometry pointer fields copied on the world goroutine, so the test holds
+// nothing aliasing live world state. Returns nil if absent.
 func assetFromWorld(t *testing.T, w *sim.World, id sim.AssetID) *sim.Asset {
 	t.Helper()
 	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		return world.Assets[id], nil
+		a := world.Assets[id]
+		if a == nil {
+			return (*sim.Asset)(nil), nil
+		}
+		cp := *a
+		cp.DoorOffsetX = copyTestIntPtr(cp.DoorOffsetX)
+		cp.DoorOffsetY = copyTestIntPtr(cp.DoorOffsetY)
+		cp.StandOffsetX = copyTestIntPtr(cp.StandOffsetX)
+		cp.StandOffsetY = copyTestIntPtr(cp.StandOffsetY)
+		return &cp, nil
 	}})
 	if err != nil {
 		t.Fatalf("read asset: %v", err)

@@ -63,9 +63,20 @@ func patch(t *testing.T, srv *Server, path, body string) *httptest.ResponseRecor
 	return rec
 }
 
+// copyTestIntPtr copies an int pointer so a test never holds a pointer aliasing
+// live World.Assets state (mirrors sim.copyIntPtr, which is unexported).
+func copyTestIntPtr(p *int) *int {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
+}
+
 // assetDoorOffset reads the live door offset off World.Assets["asset-x"] through
 // the command channel, so a test can assert the in-memory catalog was mutated
-// (not just that the writer was called + the response echoed).
+// (not just that the writer was called + the response echoed). Copies the
+// pointers on the world goroutine so nothing world-owned escapes to the test.
 func assetDoorOffset(t *testing.T, w *sim.World, id sim.AssetID) (*int, *int) {
 	t.Helper()
 	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
@@ -73,7 +84,7 @@ func assetDoorOffset(t *testing.T, w *sim.World, id sim.AssetID) (*int, *int) {
 		if a == nil {
 			return [2]*int{}, nil
 		}
-		return [2]*int{a.DoorOffsetX, a.DoorOffsetY}, nil
+		return [2]*int{copyTestIntPtr(a.DoorOffsetX), copyTestIntPtr(a.DoorOffsetY)}, nil
 	}})
 	if err != nil {
 		t.Fatalf("read door offset: %v", err)
@@ -142,6 +153,21 @@ func TestHandleAssetSetDoor_HalfPairRejected(t *testing.T) {
 	}
 	if writer.doorCalls != 0 {
 		t.Errorf("writer called %d times on a rejected half-pair, want 0", writer.doorCalls)
+	}
+}
+
+// A missing field must be rejected, not read as "clear" — an empty body or a
+// one-field body must never silently wipe the door offset.
+func TestHandleAssetSetDoor_MissingFieldRejected(t *testing.T) {
+	for _, body := range []string{`{}`, `{"x":1}`, `{"y":2}`} {
+		_, srv, writer := newAssetServer(t)
+		rec := patch(t, srv, "/api/assets/asset-x/door", body)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("body %s: status = %d, want 400; body=%s", body, rec.Code, rec.Body.String())
+		}
+		if writer.doorCalls != 0 {
+			t.Errorf("body %s: writer called %d times, want 0 (missing field must not persist)", body, writer.doorCalls)
+		}
 	}
 }
 
@@ -248,6 +274,20 @@ func TestHandleAssetSetFootprint_NegativeRejected(t *testing.T) {
 	}
 	if writer.footCalls != 0 {
 		t.Errorf("writer called %d times on a negative footprint, want 0", writer.footCalls)
+	}
+}
+
+// A missing (or typo'd) footprint side must be rejected, not persisted as a zero.
+func TestHandleAssetSetFootprint_MissingFieldRejected(t *testing.T) {
+	for _, body := range []string{`{"left":2}`, `{"left":2,"right":3,"top":1}`, `{"left":2,"right":3,"top":1,"botom":4}`} {
+		_, srv, writer := newAssetServer(t)
+		rec := patch(t, srv, "/api/assets/asset-x/footprint", body)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("body %s: status = %d, want 400; body=%s", body, rec.Code, rec.Body.String())
+		}
+		if writer.footCalls != 0 {
+			t.Errorf("body %s: writer called %d times, want 0 (missing field must not persist)", body, writer.footCalls)
+		}
 	}
 }
 

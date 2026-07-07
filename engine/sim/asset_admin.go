@@ -12,10 +12,17 @@ import (
 // LoadAll) with no checkpoint path, so — like item_kind / recipe / item_satisfies
 // — the durable write lives in the pg repo (UpdateAsset*, the source of truth the
 // catalog rebuilds from on restart) and these commands are the live-catalog half
-// the httpapi /api/assets/{id}/{door,footprint,stand} handlers apply after the
-// durable write. Each mutates World.Assets[id] in place and emits its Asset*Changed
-// event, which the hub translates to the asset_* WS frame the editor already
-// consumes (event_client.gd) so a co-editing admin's marker refreshes live.
+// the httpapi /api/assets/{id}/{door,footprint,stand} handlers run BEFORE the
+// durable write (apply-then-persist — see the handler comment). Each mutates
+// World.Assets[id] in place and emits its Asset*Changed event, which the hub
+// translates to the asset_* WS frame the editor already consumes
+// (event_client.gd) so a co-editing admin's marker refreshes live.
+//
+// The emitted event and the returned result carry their own copies of the offset
+// pointers (copyIntPtr), not the asset's stored pointers — the same
+// serialization-boundary discipline translate.go uses for slices, so an event
+// consumer (the hub marshals asynchronously) can never observe a pointer that a
+// later catalog write might replace.
 //
 // The mutate-then-emit-then-persist ordering matches the rest of the editor-write
 // family (npc/object admin edits broadcast before their persistence lands); the
@@ -82,11 +89,11 @@ func SetAssetDoorOffset(id AssetID, x, y *int) Command {
 			a.DoorOffsetY = copyIntPtr(y)
 			w.emit(&AssetDoorOffsetChanged{
 				AssetID: id,
-				X:       a.DoorOffsetX,
-				Y:       a.DoorOffsetY,
+				X:       copyIntPtr(a.DoorOffsetX),
+				Y:       copyIntPtr(a.DoorOffsetY),
 				At:      time.Now().UTC(),
 			})
-			return AssetDoorOffsetResult{ID: id, X: a.DoorOffsetX, Y: a.DoorOffsetY}, nil
+			return AssetDoorOffsetResult{ID: id, X: copyIntPtr(a.DoorOffsetX), Y: copyIntPtr(a.DoorOffsetY)}, nil
 		},
 	}
 }
@@ -139,11 +146,11 @@ func SetAssetStandOffset(id AssetID, x, y *int) Command {
 			a.StandOffsetY = copyIntPtr(y)
 			w.emit(&AssetStandOffsetChanged{
 				AssetID: id,
-				X:       a.StandOffsetX,
-				Y:       a.StandOffsetY,
+				X:       copyIntPtr(a.StandOffsetX),
+				Y:       copyIntPtr(a.StandOffsetY),
 				At:      time.Now().UTC(),
 			})
-			return AssetStandOffsetResult{ID: id, X: a.StandOffsetX, Y: a.StandOffsetY}, nil
+			return AssetStandOffsetResult{ID: id, X: copyIntPtr(a.StandOffsetX), Y: copyIntPtr(a.StandOffsetY)}, nil
 		},
 	}
 }

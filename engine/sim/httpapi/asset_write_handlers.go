@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
@@ -48,22 +49,24 @@ type AssetGeometryWriter interface {
 }
 
 // assetOffsetRequest is the PATCH /door and /stand body: a tile offset pair from
-// the asset anchor. Pointers so a JSON null clears the offset (both null) and a
-// missing field is distinguishable from a zero — the command rejects a half-set
-// pair (one null) as 400.
+// the asset anchor. Pointers so an explicit JSON null clears that side; a MISSING
+// field is a 400, not a silent clear (decodeAssetOffset enforces presence) — the
+// door/stand columns are nullable, so an absent key must never be read as "clear
+// the door". The command rejects a half-set pair (exactly one null) as 400.
 type assetOffsetRequest struct {
 	X *int `json:"x"`
 	Y *int `json:"y"`
 }
 
 // assetFootprintRequest is the PATCH /footprint body: the four per-side tile
-// counts. Absent fields default to 0 (the client always sends all four); the
-// command rejects a negative side as 400.
+// counts. Pointers so a MISSING (or typo'd) field is rejected rather than
+// silently persisting a zero for that side — the handler requires all four
+// present. The command rejects a negative side as 400.
 type assetFootprintRequest struct {
-	Left   int `json:"left"`
-	Right  int `json:"right"`
-	Top    int `json:"top"`
-	Bottom int `json:"bottom"`
+	Left   *int `json:"left"`
+	Right  *int `json:"right"`
+	Top    *int `json:"top"`
+	Bottom *int `json:"bottom"`
 }
 
 // assetDoorResponse / assetFootprintResponse / assetStandResponse echo the
@@ -110,11 +113,13 @@ func writeAssetWriteError(w http.ResponseWriter, err error) {
 	}
 }
 
-// assetWriteRequest is the shared front half of every asset-geometry handler:
-// require a valid session, require the durable writer be wired, extract the id,
-// and decode the body. Returns the caller's username (for the adminCommand gate)
-// and ok=false (after writing the error) on any failure.
-func (s *Server) assetWriteRequest(w http.ResponseWriter, r *http.Request, dst any) (string, string, bool) {
+// assetWriteAuth is the shared front half of every asset-geometry handler:
+// require a valid session, require the durable writer be wired (503 before any
+// mutation on a mem-backed deploy), and extract the asset id from the path.
+// Returns the caller's username (for the adminCommand gate) and ok=false (after
+// writing the error) on any failure. Body decoding is per-route (each shape has
+// its own presence checks), so it is NOT done here.
+func (s *Server) assetWriteAuth(w http.ResponseWriter, r *http.Request) (string, string, bool) {
 	user := userFromContext(r.Context())
 	if user == nil {
 		writeAuthError(w, "invalid")
@@ -129,16 +134,44 @@ func (s *Server) assetWriteRequest(w http.ResponseWriter, r *http.Request, dst a
 		writeError(w, http.StatusBadRequest, "asset id is required")
 		return "", "", false
 	}
-	if !decodeAdminBody(w, r, dst) {
-		return "", "", false
-	}
 	return user.Username, id, true
 }
 
+// decodeAssetOffset decodes a door/stand offset body, REQUIRING both x and y to
+// be present. A missing key is a 400 (not a silent clear): the columns are
+// nullable, so an absent field must not be read as "clear this offset". An
+// explicit JSON null is allowed and clears that side (the command then rejects a
+// half-set pair). Presence is checked via a raw-message pre-decode because a
+// plain struct decode can't tell an absent key from a null one.
+func decodeAssetOffset(w http.ResponseWriter, r *http.Request, dst *assetOffsetRequest) bool {
+	var raw map[string]json.RawMessage
+	if !decodeAdminBody(w, r, &raw) {
+		return false
+	}
+	xr, hasX := raw["x"]
+	yr, hasY := raw["y"]
+	if !hasX || !hasY {
+		writeError(w, http.StatusBadRequest, "x and y are required")
+		return false
+	}
+	if err := json.Unmarshal(xr, &dst.X); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid x")
+		return false
+	}
+	if err := json.Unmarshal(yr, &dst.Y); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid y")
+		return false
+	}
+	return true
+}
+
 func (s *Server) handleAssetSetDoor(w http.ResponseWriter, r *http.Request) {
-	var req assetOffsetRequest
-	username, id, ok := s.assetWriteRequest(w, r, &req)
+	username, id, ok := s.assetWriteAuth(w, r)
 	if !ok {
+		return
+	}
+	var req assetOffsetRequest
+	if !decodeAssetOffset(w, r, &req) {
 		return
 	}
 	res, err := s.world.SendContext(r.Context(), adminCommand(username, func(world *sim.World) (any, error) {
@@ -167,13 +200,22 @@ func (s *Server) handleAssetSetDoor(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAssetSetFootprint(w http.ResponseWriter, r *http.Request) {
-	var req assetFootprintRequest
-	username, id, ok := s.assetWriteRequest(w, r, &req)
+	username, id, ok := s.assetWriteAuth(w, r)
 	if !ok {
 		return
 	}
+	var req assetFootprintRequest
+	if !decodeAdminBody(w, r, &req) {
+		return
+	}
+	// Require all four sides — a missing (or typo'd) field must not silently
+	// persist a zero for that side.
+	if req.Left == nil || req.Right == nil || req.Top == nil || req.Bottom == nil {
+		writeError(w, http.StatusBadRequest, "left, right, top, and bottom are required")
+		return
+	}
 	res, err := s.world.SendContext(r.Context(), adminCommand(username, func(world *sim.World) (any, error) {
-		return sim.SetAssetFootprint(sim.AssetID(id), req.Left, req.Right, req.Top, req.Bottom).Fn(world)
+		return sim.SetAssetFootprint(sim.AssetID(id), *req.Left, *req.Right, *req.Top, *req.Bottom).Fn(world)
 	}))
 	if err != nil {
 		writeAssetWriteError(w, err)
@@ -202,9 +244,12 @@ func (s *Server) handleAssetSetFootprint(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) handleAssetSetStand(w http.ResponseWriter, r *http.Request) {
-	var req assetOffsetRequest
-	username, id, ok := s.assetWriteRequest(w, r, &req)
+	username, id, ok := s.assetWriteAuth(w, r)
 	if !ok {
+		return
+	}
+	var req assetOffsetRequest
+	if !decodeAssetOffset(w, r, &req) {
 		return
 	}
 	res, err := s.world.SendContext(r.Context(), adminCommand(username, func(world *sim.World) (any, error) {
