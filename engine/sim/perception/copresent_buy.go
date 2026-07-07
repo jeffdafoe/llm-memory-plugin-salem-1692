@@ -121,10 +121,10 @@ func renderCoPresentBuySoften(b *strings.Builder, seller, itemLabel string, bloc
 	switch block {
 	case copresentBuyBlockedNoStock:
 		// Defensive: a co-present seller normally holds >=1, but if his stock has emptied,
-		// say so instead of goading a buy he can't fill. "still forging them" assumes a
-		// smith-forged item (nails, shovels) — revisit this clause if the helper is ever
-		// reused for a non-forged good.
-		fmt.Fprintf(b, "%s is here with you but has no %s to spare just now — he's still forging them. Come back once he's made more rather than pressing him for stock he hasn't got.\n", s, itemLabel)
+		// say so instead of goading a buy he can't fill. Item-neutral (LLM-308) — the
+		// helper now serves restock goods (sage, milk) as well as the smith-forged nails
+		// and shovels, so no "still forging" verb that only fits a smith.
+		fmt.Fprintf(b, "%s is here with you but has no %s to spare just now — come back once he has more rather than pressing him for stock he hasn't got.\n", s, itemLabel)
 	case copresentBuyBlockedCoin:
 		// The purse can't take this on (conserve mode, or an offer already failed for want
 		// of coin) — soften to a hold-off that harmonizes with the "## Restocking" advice
@@ -141,8 +141,10 @@ func renderCoPresentBuySoften(b *strings.Builder, seller, itemLabel string, bloc
 // shortfall, so name what he holds and cap the pay_with_item "qty up to N" at his stock
 // instead of goading the full shortfall for stock he can't deliver (the live case: the
 // buyer needed 5 nails, the smith held only 1). itemLabel is the plural item noun; stock is
-// the seller's live count. Inputs are sanitized here, so callers pass raw snapshot strings.
+// the seller's live count. Item-neutral "come back once he has more" (LLM-308) — no
+// forge-specific verb, so the arm reads for a restock good as well as a forged one. Inputs
+// are sanitized here, so callers pass raw snapshot strings.
 func renderCoPresentBuyCapped(b *strings.Builder, seller, itemLabel string, kind sim.ItemKind, stock int) {
-	fmt.Fprintf(b, "%s can spare only %d just now, so buy what he has and come back for the rest once he's forged more. ", sanitizeInline(seller), stock)
+	fmt.Fprintf(b, "%s can spare only %d just now, so buy what he has and come back for the rest once he has more. ", sanitizeInline(seller), stock)
 	renderCoPresentBuy(b, seller, itemLabel, kind, stock)
 }

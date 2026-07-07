@@ -1,0 +1,21 @@
+# Your turn
+
+## What just happened
+(nothing specific — this is a routine check-in)
+
+
+## You
+Coins in your purse: 61.
+
+## Around you
+You are inside the General Store, with no one else here to hear you speak.
+It is midday.
+
+You keep your trade at the Ellis Store (structure_id: ellis_store) — you can head back there whenever you wish.
+
+## Restocking
+Your shop stock of these bought-in goods is running low. You choose how much to buy.
+- You have 0 sage on hand and room for 4 more at the most. It is generally worth about 1 coin each — pay much above that and you're overpaying.
+  - Josiah Thorne can spare only 1 just now, so buy what he has and come back for the rest once he has more. Josiah Thorne is here with you and sells sage. Buy it now — call pay_with_item with seller "Josiah Thorne", item "sage", a qty up to 1, and a payment: coins (amount), goods you carry (pay_items), or both, with consume_now false. Then also use speak for a brief handoff line as you make the offer. They will accept or counter your offer.
+
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.
