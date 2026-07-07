@@ -84,6 +84,20 @@ type RestockItemView struct {
 	// (expired/accepted → RecentlyResolvedOffersFromMe), restoring the buy cue. LLM-64.
 	PendingOfferToCoPresentSeller bool
 
+	// SellerStock / Block are the LLM-308 co-present-buy situation awareness, shared with
+	// the nail repair-buy and shovel farm-upkeep buys via the classifier in copresent_buy.go.
+	// SellerStock is how many of this item CoPresentSeller holds right now (0 when none is
+	// co-present); Block selects whether renderRestocking issues the "Buy it now" imperative,
+	// caps its "qty up to N" at the seller's stock, or softens to a hold-off. Both are set only
+	// when a seller is co-present and no offer is already standing (PendingOfferToCoPresentSeller
+	// wins first). The Terms block is the fix for the live sage loop: an unsoftened, uncapped
+	// imperative refired every turn while Josiah declined 11 times, and the weak model obeyed
+	// the freshest cue over its own history. The conserve/coin path is already handled section-
+	// wide by RestockingView.Conserve (LLM-294); Block's coin arm here additionally catches a
+	// hard insufficient-funds failure that conserve mode would not.
+	SellerStock int
+	Block       copresentBuyBlock
+
 	// AffordableQty is how many units the reseller's purse covers at the rate
 	// they last paid for this item (newest price-book observation, across all
 	// sellers). -1 when no price is on record, in which case the
@@ -197,6 +211,19 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 		buyCost := buyerRecentSpend(snap, actorID, e.Item, restockSalesWindow)
 		coName, coID := coPresentSellerForItem(snap, actorID, actorSnap, e.Item)
 		vendors := findItemVendors(snap, actorID, actorSnap, e.Item)
+		// LLM-308: make the co-present buy imperative situation-aware via the same shared
+		// classifier the nail/shovel co-present buys use (copresent_buy.go) — cap the ask at
+		// the seller's live stock and soften to a hold-off when the negotiation has dead-ended
+		// (>=2 recent declines this huddle), the purse can't take it on, or he holds nothing.
+		// This is what stops the live sage offer→decline loop, where the uncapped, unsoftened
+		// imperative refired verbatim through 11 declines. The pending-offer bide steer wins
+		// first, so skip the block scan under it (mirrors buildFarmUpkeep / buildStallRepairBuy).
+		pendingCoPresent := coID != "" && hasPendingOfferTo(snap, actorID, coID, e.Item)
+		sellerStock := 0
+		block := copresentBuyOK
+		if coID != "" && !pendingCoPresent {
+			sellerStock, block = classifyCoPresentBuy(snap, actorID, actorSnap, coID, e.Item)
+		}
 		// LLM-216: omit an item with no actionable buy path — no co-present seller to
 		// transact with here-and-now, and no reachable, open, affordable walk-to
 		// supplier (findItemVendors drops the shut and the unaffordable). A broke or
@@ -219,7 +246,9 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 			Cap:                           cap,
 			Vendors:                       vendors,
 			CoPresentSeller:               coName,
-			PendingOfferToCoPresentSeller: coID != "" && hasPendingOfferTo(snap, actorID, coID, e.Item),
+			PendingOfferToCoPresentSeller: pendingCoPresent,
+			SellerStock:                   sellerStock,
+			Block:                         block,
 			AffordableQty:                 affordable,
 			BuyAnchorUnit:                 buyAnchor,
 			BuyAnchorObserved:             buyAnchorObserved,
@@ -859,12 +888,33 @@ func renderRestocking(b *strings.Builder, v *RestockingView) {
 		if it.AffordableQty >= 1 && it.AffordableQty < headroom {
 			fmt.Fprintf(b, " Your %d coins cover about %d at what you last paid.", v.BuyerCoins, it.AffordableQty)
 		}
-		// A seller of this item is in the conversation right now: give the exact
-		// pay_with_item call and skip the walk-to list — he is already there.
+		// A seller of this item is in the conversation right now. LLM-308: route the buy
+		// imperative through the same block classification the nail/shovel co-present buys
+		// use (copresent_buy.go) so the restock cue can't drive the live sage offer→decline
+		// loop — soften to a hold-off when the negotiation has dead-ended / the purse can't
+		// take it on / he holds nothing, and cap the "qty up to N" at his live stock when he
+		// can't cover the headroom. The sub-bullet indent and the OK-path wording are
+		// unchanged from ZBBS-HOME-388, so a healthy buy still renders byte-identically.
 		if it.CoPresentSeller != "" {
-			seller := sanitizeInline(it.CoPresentSeller)
-			fmt.Fprintf(b, "\n  - %s is here with you and sells %s. Buy it now — first call pay_with_item with seller \"%s\", item \"%s\", a qty up to %d, and a payment: coins (amount), goods you carry (pay_items), or both, with consume_now false. Then also use speak for a brief handoff line as you make the offer. They will accept or counter your offer.\n",
-				seller, sanitizeInline(it.ItemLabel), seller, sanitizeInline(string(it.kind)), headroom)
+			b.WriteString("\n  - ")
+			switch {
+			case it.Block == copresentBuyBlockedNoStock, it.Block == copresentBuyBlockedCoin, it.Block == copresentBuyBlockedTerms:
+				// The negotiation has dead-ended (>=2 declines), the purse can't take it on, or
+				// he's out of stock — soften instead of goading the buy, so the cue stops
+				// pressing the seller into another no (the live 11-round sage standoff).
+				renderCoPresentBuySoften(b, it.CoPresentSeller, it.ItemLabel, it.Block)
+			case it.SellerStock > 0 && it.SellerStock < headroom:
+				// He can't cover the whole headroom — cap the ask at what he holds so "qty up to
+				// N" never exceeds his stock (the live "buy it now … a qty up to 3" against a
+				// seller holding 1).
+				renderCoPresentBuyCapped(b, it.CoPresentSeller, it.ItemLabel, it.kind, it.SellerStock)
+			default:
+				// Stock covers the headroom and the deal is plausible — the exact pay_with_item
+				// call, walk-to list skipped (he is already here).
+				seller := sanitizeInline(it.CoPresentSeller)
+				fmt.Fprintf(b, "%s is here with you and sells %s. Buy it now — first call pay_with_item with seller \"%s\", item \"%s\", a qty up to %d, and a payment: coins (amount), goods you carry (pay_items), or both, with consume_now false. Then also use speak for a brief handoff line as you make the offer. They will accept or counter your offer.\n",
+					seller, sanitizeInline(it.ItemLabel), seller, sanitizeInline(string(it.kind)), headroom)
+			}
 			continue
 		}
 		// Defensive: buildRestocking omits an item that has no co-present seller and

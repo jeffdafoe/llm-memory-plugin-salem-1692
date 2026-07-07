@@ -164,6 +164,75 @@ func TestGoldensSettledCloseNamesTheOffer(t *testing.T) {
 	}
 }
 
+// TestGoldensNoCoPresentBuyGoadAfterTwoDeclines is the LLM-308 cross-scenario invariant, spanning
+// ALL co-present-buy cue families (restock, stall-repair nails, farm-upkeep shovels): whenever the
+// subject has declined an item at least copresentStandoffDeclineThreshold times to a co-present
+// seller in its CURRENT huddle within the recency window, no rendered line may carry the "Buy it
+// now" imperative for THAT item. "Buy it now" plus the exact `item "<kind>"` token is what every
+// co-present goad emits (renderCoPresentBuy and renderRestocking's inline arm), so the pair pins
+// the goad down to the specific kind — a legitimate goad for a DIFFERENT, un-declined item in the
+// same scenario is untouched. This is the growth-loop backstop: the live sage loop was a restock
+// cue re-firing "Buy it now … a qty up to 3" through 11 declines, and this asserts no un-generalized
+// cue can recreate it for any item, in any situation. The decline set mirrors coPresentBuyStandoff
+// (Declined / insufficient-stock / insufficient-goods; a hard insufficient-funds is a coin block,
+// not a terms standoff, so it is excluded here). Non-vacuous: the three *_standoff scenarios each
+// drive the >=2-decline state, so the check exercises a real stonewalled item.
+func TestGoldensNoCoPresentBuyGoadAfterTwoDeclines(t *testing.T) {
+	var exercised bool
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		snap, actorID, _ := sc.build()
+		a := snap.Actors[actorID]
+		if a == nil || a.CurrentHuddleID == "" || snap.PublishedAt.IsZero() {
+			continue // no huddle to scope a standoff, or no clock to age the ledger against
+		}
+		// Count the subject's recent declines per item to each co-present seller in this huddle.
+		type key struct {
+			seller sim.ActorID
+			item   sim.ItemKind
+		}
+		declines := map[key]int{}
+		for _, e := range snap.PayLedger {
+			if e == nil || e.BuyerID != actorID || e.HuddleID != a.CurrentHuddleID {
+				continue
+			}
+			if e.ResolvedAt.IsZero() || snap.PublishedAt.Sub(e.ResolvedAt) > recentlyResolvedOfferWindow {
+				continue // stale or mid-construction — outside the window the cue reads
+			}
+			switch e.State {
+			case sim.PayLedgerStateDeclined,
+				sim.PayLedgerStateFailedInsufficientStock,
+				sim.PayLedgerStateFailedInsufficientGoods:
+				declines[key{e.SellerID, e.ItemKind}]++
+			}
+		}
+		stonewalled := map[sim.ItemKind]bool{}
+		for k, n := range declines {
+			if n >= copresentStandoffDeclineThreshold {
+				stonewalled[k.item] = true
+			}
+		}
+		if len(stonewalled) == 0 {
+			continue // invariant N/A — no item has hit the standoff threshold here
+		}
+		exercised = true
+		for _, line := range strings.Split(renderScenario(sc), "\n") {
+			if !strings.Contains(line, "Buy it now") {
+				continue
+			}
+			for item := range stonewalled {
+				if strings.Contains(line, `item "`+string(item)+`"`) {
+					t.Errorf("scenario %q: a co-present 'Buy it now' still goads %q after >=%d declines in the current huddle (LLM-308):\n%s",
+						sc.name, item, copresentStandoffDeclineThreshold, line)
+				}
+			}
+		}
+	}
+	if !exercised {
+		t.Error("matrix must exercise a scenario with >=2 in-huddle declines to a co-present seller (LLM-308)")
+	}
+}
+
 // TestGoldensEnRouteWorkerNotOfferedNewWork is the LLM-229 cross-scenario
 // invariant: whenever the subject is a WORKER relocating to an accepted job (an
 // EnRoute LaborOffer with the subject as worker), the rendered prompt must offer
@@ -877,6 +946,32 @@ var perceptionScenarios = []perceptionScenario{
 			"LLM-286 the huddle-only co-presence gate could not fire on an arrival tick, so the buyer was told to walk to " +
 			"where he already was (live: zbbs-john-ellis, virtual_agent_calls id 63123).",
 		build: resellerArrivesAtSupplierBuyHereNoHuddle,
+	},
+	{
+		name: "reseller_copresent_sage_seller_present",
+		summary: "LLM-308 goad foil: Elizabeth Ellis, a shopkeeper reselling sage, shares a huddle with Josiah Thorne (a " +
+			"sage forager holding 12) and is out of sage. No prior offers and he is well-stocked, so the '## Restocking' " +
+			"co-present imperative fires clean — 'Josiah Thorne is here with you and sells sage. Buy it now …, a qty up to " +
+			"4 …'. The foil for reseller_copresent_sage_standoff (the same setup after two declines softens the goad away).",
+		build: resellerCoPresentSageSellerPresent,
+	},
+	{
+		name: "reseller_copresent_sage_seller_low_stock",
+		summary: "LLM-308 stock-cap arm: the reseller_copresent_sage_seller_present setup, but Josiah holds only 1 sage " +
+			"against the 4 Elizabeth's shelf has room for. Affordable and no prior offers, so the buy still stands — the " +
+			"render caps 'a qty up to N' at his 1 ('can spare only 1 just now') instead of goading the full 4 for stock he " +
+			"can't deliver (the live 'a qty up to 3' against a seller holding 1).",
+		build: resellerCoPresentSageSellerLowStock,
+	},
+	{
+		name: "reseller_copresent_sage_standoff",
+		summary: "LLM-308 standoff arm (the live sage loop): the reseller_copresent_sage_seller_present setup with two prior " +
+			"sage offers to Josiah already declined IN THIS HUDDLE on the pay ledger — the standoff threshold. The golden " +
+			"pins the '## Restocking' co-present line softening to 'your offers for sage aren't finding a deal right now — " +
+			"hold off and come back later …' and the ABSENCE of 'Buy it now', so the cue stops driving the unbounded " +
+			"offer→decline loop (11 rounds live). Josiah stays well-stocked (12), so the soften is standoff-driven, not the " +
+			"stock cap. Pairs with TestGoldensNoCoPresentBuyGoadAfterTwoDeclines (the matrix-wide exclusion).",
+		build: resellerCoPresentSageStandoff,
 	},
 	{
 		name: "keeper_not_pitching_makers_own_ware",
@@ -7488,6 +7583,109 @@ func resellerArrivesAtSupplierBuyHereNoHuddle() (*sim.Snapshot, sim.ActorID, []s
 		},
 	}
 	return snap, johnID, nil
+}
+
+// resellerCoPresentSageSellerPresent is the LLM-308 goad foil: Elizabeth Ellis, a shopkeeper
+// reselling sage, has stepped into Josiah Thorne's General Store to restock and shares a huddle
+// with him. Josiah forages sage (a first-hand supplier, LLM-252) and holds 12; Elizabeth is out
+// of sage (cap 4, so a 4-unit headroom) and carries a healthy 61 coins with no prior offers on
+// the ledger — so the "## Restocking" co-present branch issues the clean "Buy it now … a qty up
+// to 4" imperative. Its twins derive the low-stock cap (Josiah holds 1) and the standoff soften
+// (two declines) from this base, the reseller counterpart of farmOwnerOwesUpkeepSellerPresent.
+// Josiah forages the sage he sells purely to qualify as a supplier; the scenario exercises the
+// co-present standoff/cap logic, not the supplier-qualification path (covered elsewhere).
+func resellerCoPresentSageSellerPresent() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		elizabethID = sim.ActorID("elizabeth")
+		josiahID    = sim.ActorID("josiah")
+		ellisStore  = sim.StructureID("ellis_store")
+		store       = sim.StructureID("general_store")
+		huddle      = sim.HuddleID("store_huddle")
+	)
+	start, end := 360, 1080 // 06:00-18:00 shopkeeping day
+	now := 720              // 12:00 — on shift, stepped out to restock
+	published := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
+	elizabeth := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Elizabeth Ellis",
+		Role:              "shopkeeper",
+		State:             sim.StateIdle,
+		WorkStructureID:   ellisStore,
+		InsideStructureID: store, // visiting Josiah's store to restock, away from her own post
+		CurrentHuddleID:   huddle,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             61,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"sage": 0}, // below the reorder threshold (cap 4)
+		RestockPolicy:     buyPolicy("sage", 4),
+		Acquaintances:     map[string]sim.Acquaintance{"Josiah Thorne": {}},
+	}
+	josiah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Josiah Thorne",
+		Role:              "storekeeper",
+		State:             sim.StateIdle,
+		WorkStructureID:   store,
+		InsideStructureID: store,
+		CurrentHuddleID:   huddle,
+		Coins:             10,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"sage": 12},
+		// Forages sage, so he is a first-hand supplier (LLM-252), not a reseller of it.
+		RestockPolicy: foragePolicy("sage", 40),
+		Acquaintances: map[string]sim.Acquaintance{"Elizabeth Ellis": {}},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{elizabethID: elizabeth, josiahID: josiah},
+		Structures: map[sim.StructureID]*sim.Structure{
+			ellisStore: plainStructure(ellisStore, "Ellis Store"),
+			store:      plainStructure(store, "General Store"),
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"sage": {Name: "sage", DisplayLabel: "sage", Category: sim.ItemCategoryFood},
+		},
+		RestockReorderPct: 25,
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"sage": {OutputItem: "sage", OutputQty: 1, RateQty: 1, RatePerHours: 1, WholesalePrice: 1, RetailPrice: 2},
+		},
+	}
+	return snap, elizabethID, nil
+}
+
+// resellerCoPresentSageSellerLowStock is the LLM-308 stock-cap arm: the
+// resellerCoPresentSageSellerPresent setup, but Josiah holds only 1 sage against the 4
+// Elizabeth's shelf has room for. Affordable and no prior offers, so the buy still stands — the
+// render caps the ask at his stock instead of goading the full headroom (the reseller counterpart
+// of the live smith-held-only-1-nail case).
+func resellerCoPresentSageSellerLowStock() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, actorID, warrants := resellerCoPresentSageSellerPresent()
+	snap.Actors["josiah"].Inventory["sage"] = 1
+	return snap, actorID, warrants
+}
+
+// resellerCoPresentSageStandoff is the LLM-308 standoff arm — the live sage loop distilled: the
+// resellerCoPresentSageSellerPresent setup with two prior sage offers to Josiah already declined
+// IN THIS HUDDLE on the pay ledger, resolved a minute ago (the standoff threshold, inside
+// recentlyResolvedOfferWindow). Josiah stays well-stocked at 12, so the softening is driven purely
+// by the dead-ended negotiation (coPresentBuyStandoff), not the stock cap — the reseller twin of
+// farmOwnerStandoffDeclinedShovels / ownerStandoffDeclinedNails. Elizabeth is not in conserve mode
+// (MerchantCoinFloor is unset → the working-capital gate is off), isolating the standoff path.
+func resellerCoPresentSageStandoff() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, actorID, warrants := resellerCoPresentSageSellerPresent()
+	// Two declined sage offers to Josiah in the current huddle, resolved a minute ago. Amount 6
+	// for 3 sage on each (the live 3-for offers), so the LLM-296 settled-offer close reads "Your
+	// offer of 6 coins …" rather than the fixture artifact "of nothing". Declined is terminal, so
+	// no ExpiresAt is needed.
+	resolved := snap.PublishedAt.Add(-1 * time.Minute)
+	snap.PayLedger = map[sim.LedgerID]*sim.PayLedgerEntry{
+		1: {ID: 1, BuyerID: actorID, SellerID: "josiah", ItemKind: "sage", Qty: 3, Amount: 6, State: sim.PayLedgerStateDeclined, HuddleID: "store_huddle", ResolvedAt: resolved},
+		2: {ID: 2, BuyerID: actorID, SellerID: "josiah", ItemKind: "sage", Qty: 3, Amount: 6, State: sim.PayLedgerStateDeclined, HuddleID: "store_huddle", ResolvedAt: resolved},
+	}
+	return snap, actorID, warrants
 }
 
 // keeperNotPitchingMakersOwnWare is the LLM-171 seller side: John Ellis keeps
