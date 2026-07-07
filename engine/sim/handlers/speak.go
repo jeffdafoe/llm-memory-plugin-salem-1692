@@ -155,8 +155,10 @@ const speakDescription = "Say one message to the actors currently in your conver
 // rejection (`speak: unknown field "message"`) is fed back to them (live
 // scene 019f3db7-f37b-7ae4-9378-16d330f3ee67: the error came back three
 // times and the model repeated the identical call). Tolerating the alias
-// lets the utterance land. `text` stays canonical — when both are present
-// it wins; the alias only fills an empty Text. Deliberately scoped to
+// lets the utterance land. Precedence: a non-empty `text` always wins; an
+// empty or absent `text` falls back to `message` (so a model that put the
+// real line in `message` and left `text` empty still speaks it, and only a
+// call with neither hits "text is required"). Deliberately scoped to
 // speak: `message` is a real field on the pay-resolution tools
 // (counter_pay), so this must NOT become a shared/global decoder alias.
 //
@@ -195,7 +197,9 @@ func DecodeSpeakArgs(raw json.RawMessage) (any, error) {
 		return nil, fmt.Errorf("speak: malformed trailing data: %w", err)
 	}
 	args := wire.SpeakArgs
-	// `message` alias fills an empty Text only — a real `text` always wins.
+	// A non-empty `text` always wins; an empty or absent `text` falls back
+	// to the `message` alias. Neither present → the "text is required" check
+	// below fires.
 	if args.Text == "" {
 		args.Text = wire.Message
 	}

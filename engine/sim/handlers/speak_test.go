@@ -101,15 +101,29 @@ func TestDecodeSpeakArgs_MessageAlias(t *testing.T) {
 	}
 }
 
-// TestDecodeSpeakArgs_TextWinsOverMessage — when both are present, the
-// canonical `text` wins and `message` is ignored (no unknown-field error).
-func TestDecodeSpeakArgs_TextWinsOverMessage(t *testing.T) {
+// TestDecodeSpeakArgs_NonEmptyTextWinsOverMessage — a non-empty `text` wins
+// and `message` is ignored (not an unknown-field error).
+func TestDecodeSpeakArgs_NonEmptyTextWinsOverMessage(t *testing.T) {
 	args, err := DecodeSpeakArgs(json.RawMessage(`{"text":"canonical","message":"ignored"}`))
 	if err != nil {
 		t.Fatalf("DecodeSpeakArgs with both text and message: %v", err)
 	}
 	if got := args.(SpeakArgs); got.Text != "canonical" {
-		t.Errorf("Text = %q, want %q (text must win over message)", got.Text, "canonical")
+		t.Errorf("Text = %q, want %q (non-empty text must win over message)", got.Text, "canonical")
+	}
+}
+
+// TestDecodeSpeakArgs_EmptyTextFallsBackToMessage — pins the ambiguous
+// precedence case: an explicitly-empty `text` alongside a `message` falls
+// back to the message (rule is "non-empty text wins", not "text presence
+// wins"), so the utterance still lands.
+func TestDecodeSpeakArgs_EmptyTextFallsBackToMessage(t *testing.T) {
+	args, err := DecodeSpeakArgs(json.RawMessage(`{"text":"","message":"fallback"}`))
+	if err != nil {
+		t.Fatalf("DecodeSpeakArgs with empty text + message: %v", err)
+	}
+	if got := args.(SpeakArgs); got.Text != "fallback" {
+		t.Errorf("Text = %q, want %q (empty text falls back to message)", got.Text, "fallback")
 	}
 }
 
@@ -123,6 +137,19 @@ func TestDecodeSpeakArgs_EmptyMessageIsMissingText(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "required") {
 		t.Errorf("error message lacks 'required': %v", err)
+	}
+}
+
+// TestDecodeSpeakArgs_MessageAliasStillRejectsOtherUnknownFields — the alias
+// widens the accepted set by exactly one key; every other unknown field is
+// still rejected by DisallowUnknownFields.
+func TestDecodeSpeakArgs_MessageAliasStillRejectsOtherUnknownFields(t *testing.T) {
+	_, err := DecodeSpeakArgs(json.RawMessage(`{"message":"hi","bogus":1}`))
+	if err == nil {
+		t.Fatal("DecodeSpeakArgs with message + unknown field: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), `unknown field "bogus"`) {
+		t.Errorf("error = %v, want it to name unknown field \"bogus\"", err)
 	}
 }
 
