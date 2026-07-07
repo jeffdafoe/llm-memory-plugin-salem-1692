@@ -2729,7 +2729,7 @@ func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(
 	// Neutral event log, not an imperative: a self-caused beat (you arrived where
 	// you walked to) is nothing to "address", and the act-now coda already carries
 	// the "respond to this" weight, so "— address these" over-claimed (ZBBS-WORK-419).
-	// "Since your last turn", not "Since your last turn" (LLM-316): a carried-forward,
+	// "Since your last turn", not "What just happened" (LLM-316): a carried-forward,
 	// shelve-delayed, or slept-through warrant can be minutes-to-hours old by the
 	// time it renders, and the batch semantics ARE "what accumulated since you last
 	// acted" — the header shouldn't promise a recency the queue can't guarantee.
