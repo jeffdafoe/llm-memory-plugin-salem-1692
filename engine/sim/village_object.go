@@ -387,7 +387,14 @@ func provisionForTag(w *World, obj *VillageObject, tag string) {
 // so a live editor shows "Well"; the rows emit nothing (refresh config is not in
 // ObjectDTO — the editor re-reads). Persists on the next checkpoint, the same
 // restart-loss posture as every other in-memory object mutation.
+// Nil-safe, mirroring the other VillageObject helpers in this file: a nil obj is
+// a no-op, and the display-name event is emitted only when w is present — so the
+// helper is self-contained (a nil w still names the object, it just skips the
+// broadcast) rather than assuming its call boundary.
 func provisionWellDefaults(w *World, obj *VillageObject) {
+	if obj == nil {
+		return
+	}
 	if len(obj.Refreshes) == 0 {
 		rows := wellDefaultRefreshes()
 		if err := ValidateObjectRefreshes(rows); err != nil {
@@ -398,11 +405,13 @@ func provisionWellDefaults(w *World, obj *VillageObject) {
 	}
 	if strings.TrimSpace(obj.DisplayName) == "" {
 		obj.DisplayName = WellDefaultDisplayName
-		w.emit(&VillageObjectDisplayNameChanged{
-			ObjectID:    obj.ID,
-			DisplayName: obj.DisplayName,
-			At:          time.Now().UTC(),
-		})
+		if w != nil {
+			w.emit(&VillageObjectDisplayNameChanged{
+				ObjectID:    obj.ID,
+				DisplayName: obj.DisplayName,
+				At:          time.Now().UTC(),
+			})
+		}
 	}
 }
 

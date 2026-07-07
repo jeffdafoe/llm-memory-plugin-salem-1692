@@ -624,6 +624,31 @@ func TestAddVillageObjectTag_WellNonDestructive(t *testing.T) {
 	}
 }
 
+// TestAddVillageObjectTag_WellNamesRowedButNamelessObject exercises the two
+// non-destructive guards independently: an object that already has rows but no
+// name keeps its rows AND still gets the "Well" name + display-name event. (The
+// _WellNonDestructive test above seeds both rows and a name, so it never covers
+// this rows-present/name-empty path.)
+func TestAddVillageObjectTag_WellNamesRowedButNamelessObject(t *testing.T) {
+	w, cap := buildObjectAdminWorld(t)
+	seedRefreshes(t, w, []*sim.ObjectRefresh{{Attribute: "thirst", Amount: -5}})
+
+	if _, err := w.Send(sim.AddVillageObjectTag("prop-1", "well")); err != nil {
+		t.Fatalf("add well tag: %v", err)
+	}
+
+	rows := readRefreshes(t, w)
+	if len(rows) != 1 || rows[0].Amount != -5 {
+		t.Errorf("rows = %+v, want the pre-seeded {thirst -5} untouched", rows)
+	}
+	if got := w.Published().VillageObjects["prop-1"].DisplayName; got != "Well" {
+		t.Errorf("display_name = %q, want Well (nameless object gets named even with rows)", got)
+	}
+	if n := countDisplayNameChanged(cap.snapshot()); n != 1 {
+		t.Errorf("VillageObjectDisplayNameChanged count = %d, want 1", n)
+	}
+}
+
 // TestAddVillageObjectTag_NonWellNoProvision confirms only `well` triggers
 // provisioning: a different tag leaves a bare object bare.
 func TestAddVillageObjectTag_NonWellNoProvision(t *testing.T) {
