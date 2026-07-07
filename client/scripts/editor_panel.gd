@@ -154,9 +154,14 @@ var _refreshes_current_id: String = ""
 var _refresh_attributes: Array = []
 var _refresh_attributes_loaded: bool = false
 # Per-row edit state. Each entry is a Dictionary with keys:
-#   attribute (String), amount (int, restores-per-use, positive),
-#   infinite (bool), available (int), max (int),
+#   attribute (String), amount (int, restores-per-use, positive MAGNITUDE),
+#   gather_item (String — the harvestable item this source yields; "" = not
+#     a gather source), infinite (bool), available (int), max (int),
 #   mode (String "continuous"|"periodic"), period (int hours)
+# `amount` is held here as a positive magnitude ("restores per use") but the
+# wire contract is NEGATIVE (the on-arrival decrement) — load negates the
+# incoming amount into a magnitude, save negates it back. A yield-only gather
+# source (attribute "" + gather_item set) carries magnitude 0 (wire amount 0).
 # When `infinite` is true, available/max/mode/period are still tracked so
 # unchecking the box restores the prior values, but the saved payload
 # encodes them as null.
@@ -2947,6 +2952,12 @@ func _show_refreshes_for_object(object_id: String, refreshes: Array) -> void:
         return
     if not _refresh_attributes_loaded:
         _fetch_refresh_attributes()
+    # The refresh edit dialog's gather-item dropdown is built from the item
+    # catalog (same source as the NPC inventory dropdown). It's fetched lazily
+    # on NPC selection today; an object selection needs it too. Passing "" means
+    # "just load the catalog" — no inventory follow-up (see _fetch_items_catalog).
+    if not _items_loaded:
+        _fetch_items_catalog("")
 
 ## Parse a refresh set (the ObjectDTO's "refreshes" array, or the echo from a
 ## set-refresh save) into _refresh_rows_state. dwell_delta/dwell_period_minutes
@@ -2964,9 +2975,14 @@ func _load_refresh_rows_from(refreshes: Array) -> void:
         var dwell_delta = entry.get("dwell_delta", null)
         var dwell_period = entry.get("dwell_period_minutes", null)
         var has_dwell := dwell_delta != null
+        # Wire amount is NEGATIVE (on-arrival decrement) or 0 (yield-only). The
+        # panel edits a positive magnitude, so negate on the way in: -8 -> 8,
+        # 0 -> 0. A pre-negative-contract row that somehow carried a positive
+        # amount would flip to negative here, but the server only ever emits <= 0.
         _refresh_rows_state.append({
             "attribute":    str(entry.get("attribute", "")),
-            "amount":       int(entry.get("amount", 1)),
+            "amount":       -int(entry.get("amount", 0)),
+            "gather_item":  str(entry.get("gather_item", "")),
             "infinite":     infinite,
             "available":    (int(available_q) if not infinite else 1),
             "max":          (int(max_q) if not infinite else 10),
@@ -3084,9 +3100,17 @@ func _make_refresh_row_ui(idx: int) -> Control:
 ## "tiredness · -1/use · dwell -1/10min · 10/10 continuous".
 func _refresh_summary_text(row: Dictionary) -> String:
     var attr := str(row.get("attribute", ""))
-    if attr == "":
-        attr = "(no attribute)"
-    var parts: Array = [attr, str(int(row.get("amount", 1))) + "/use"]
+    var gather := str(row.get("gather_item", ""))
+    var parts: Array = []
+    if attr != "":
+        parts.append(attr)
+        parts.append(str(int(row.get("amount", 0))) + "/use")
+    elif gather != "":
+        parts.append("gather-only")
+    else:
+        parts.append("(no attribute)")
+    if gather != "":
+        parts.append("yields " + gather)
     if bool(row.get("has_dwell", false)):
         parts.append("dwell " + str(int(row.get("dwell_delta", -1))) + "/" + str(int(row.get("dwell_period", 10))) + "min")
     if bool(row.get("infinite", false)):
@@ -3152,35 +3176,86 @@ func _open_refresh_dialog(idx: int) -> void:
         c.queue_free()
     _rd = {}
 
-    # Attribute dropdown
+    # Whether this row is (or starts as) a yield-only gather source: no
+    # attribute, so no per-use restore amount and no dwell recovery. Drives the
+    # initial visibility of the amount row and the dwell controls below; the
+    # attribute dropdown's change handler keeps them in sync as the operator edits.
+    var attr_is_none := str(row.get("attribute", "")) == ""
+
+    # Attribute dropdown. A leading "(none — gather-only)" entry (metadata "")
+    # models the yield-only shape; the remaining entries are the need catalog.
     var attr_row := HBoxContainer.new()
     attr_row.add_theme_constant_override("separation", 6)
     attr_row.add_child(_make_refresh_label("Attribute:"))
     var attr_dropdown := OptionButton.new()
     attr_dropdown.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    attr_dropdown.add_item("(none — gather-only)")
+    attr_dropdown.set_item_metadata(0, "")
     var selected_attr_idx := -1
     for ai in range(_refresh_attributes.size()):
         var a: Dictionary = _refresh_attributes[ai]
-        attr_dropdown.add_item(str(a.get("display_label", a.get("name", ""))), ai)
-        attr_dropdown.set_item_metadata(ai, str(a.get("name", "")))
+        var attr_opt_idx := ai + 1
+        attr_dropdown.add_item(str(a.get("display_label", a.get("name", ""))))
+        attr_dropdown.set_item_metadata(attr_opt_idx, str(a.get("name", "")))
         if str(a.get("name", "")) == str(row.get("attribute", "")):
-            selected_attr_idx = ai
+            selected_attr_idx = attr_opt_idx
+    # A matched attribute selects it; a blank or unmatched attribute falls back
+    # to "(none)" rather than silently picking the first need in the catalog.
     if selected_attr_idx >= 0:
         attr_dropdown.selected = selected_attr_idx
-    elif _refresh_attributes.size() > 0:
+    else:
         attr_dropdown.selected = 0
+    attr_dropdown.item_selected.connect(_on_refresh_dialog_attr_changed)
     attr_row.add_child(attr_dropdown)
     _refresh_dialog_content.add_child(attr_row)
     _rd["attr"] = attr_dropdown
 
-    # Restores-per-use
+    # Gather item dropdown — the harvestable item this source yields. "(none)"
+    # for a pure need row; a real item makes the row a gather source (a need row
+    # WITH a gather item is an "eat+pick" source like the well). Sourced from the
+    # item catalog (same as the NPC inventory dropdown). The row's current
+    # gather_item is always kept as an option even if the catalog lacks it, so a
+    # hand-authored / out-of-catalog value round-trips instead of being dropped.
+    var gather_row := HBoxContainer.new()
+    gather_row.add_theme_constant_override("separation", 6)
+    gather_row.add_child(_make_refresh_label("Gather item:"))
+    var gather_dropdown := OptionButton.new()
+    gather_dropdown.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    var current_gather := str(row.get("gather_item", ""))
+    gather_dropdown.add_item("(none)")
+    gather_dropdown.set_item_metadata(0, "")
+    var selected_gather_idx := 0
+    var found_gather := false
+    for gi in range(_items_catalog.size()):
+        var it: Dictionary = _items_catalog[gi]
+        var item_name := str(it.get("name", ""))
+        gather_dropdown.add_item(str(it.get("display_label", item_name)))
+        var gather_opt_idx := gather_dropdown.get_item_count() - 1
+        gather_dropdown.set_item_metadata(gather_opt_idx, item_name)
+        if current_gather != "" and item_name == current_gather:
+            selected_gather_idx = gather_opt_idx
+            found_gather = true
+    if current_gather != "" and not found_gather:
+        gather_dropdown.add_item(current_gather + " (custom)")
+        var custom_gather_idx := gather_dropdown.get_item_count() - 1
+        gather_dropdown.set_item_metadata(custom_gather_idx, current_gather)
+        selected_gather_idx = custom_gather_idx
+    gather_dropdown.selected = selected_gather_idx
+    gather_row.add_child(gather_dropdown)
+    _refresh_dialog_content.add_child(gather_row)
+    _rd["gather"] = gather_dropdown
+
+    # Restores-per-use — only meaningful for a need row; hidden for a yield-only
+    # source (amount 0). Kept in _rd either way so the confirm handler can read it.
     var amt_row := HBoxContainer.new()
     amt_row.add_theme_constant_override("separation", 6)
     amt_row.add_child(_make_refresh_label("Restores per use:"))
-    var amt_spin := _make_refresh_spinbox(int(row.get("amount", 1)), 1, 24)
+    var amt_spin := _make_refresh_spinbox(max(1, int(row.get("amount", 1))), 1, 24)
     amt_row.add_child(amt_spin)
+    amt_row.visible = not attr_is_none
     _refresh_dialog_content.add_child(amt_row)
     _rd["amount"] = amt_spin
+    _rd["amount_row"] = amt_row
 
     # Infinite-supply toggle + supply block
     var inf_check := CheckBox.new()
@@ -3236,6 +3311,9 @@ func _open_refresh_dialog(idx: int) -> void:
     var dwell_check := CheckBox.new()
     dwell_check.text = "Has dwell recovery"
     dwell_check.button_pressed = bool(row.get("has_dwell", false))
+    # A yield-only source can't carry dwell (the server rejects it), so the
+    # toggle is disabled while the row has no attribute.
+    dwell_check.disabled = attr_is_none
     dwell_check.toggled.connect(_on_refresh_dialog_dwell_toggled)
     _refresh_dialog_content.add_child(dwell_check)
     _rd["dwell_check"] = dwell_check
@@ -3275,6 +3353,27 @@ func _on_refresh_dialog_dwell_toggled(pressed: bool) -> void:
         _rd["dwell_block"].visible = pressed
         _refresh_dialog.reset_size()
 
+## When the attribute dropdown changes, reflect the row type. Selecting "(none)"
+## makes the row a yield-only gather source: no per-use restore amount and no
+## dwell recovery (the server rejects both on a yield-only row), so hide the
+## amount row and force dwell off + disabled. Selecting a real attribute restores
+## them. Keeps the dialog in the same shape the save serializer expects.
+func _on_refresh_dialog_attr_changed(_selected: int) -> void:
+    if not (_rd.has("attr") and is_instance_valid(_rd["attr"])):
+        return
+    var meta = _rd["attr"].get_item_metadata(_rd["attr"].selected)
+    var is_none := (meta == null) or (str(meta) == "")
+    if _rd.has("amount_row") and is_instance_valid(_rd["amount_row"]):
+        _rd["amount_row"].visible = not is_none
+    if _rd.has("dwell_check") and is_instance_valid(_rd["dwell_check"]):
+        var dwell_check: CheckBox = _rd["dwell_check"]
+        dwell_check.disabled = is_none
+        if is_none:
+            dwell_check.button_pressed = false
+            if _rd.has("dwell_block") and is_instance_valid(_rd["dwell_block"]):
+                _rd["dwell_block"].visible = false
+    _refresh_dialog.reset_size()
+
 ## Commit the dialog's controls back to the row state on Save (OK), then
 ## re-render the summary list.
 func _on_refresh_dialog_confirmed() -> void:
@@ -3282,15 +3381,27 @@ func _on_refresh_dialog_confirmed() -> void:
     if idx < 0 or idx >= _refresh_rows_state.size():
         return
     var attr_meta = _rd["attr"].get_item_metadata(_rd["attr"].selected) if _rd.has("attr") and _rd["attr"].selected >= 0 else null
+    var attr_str := str(attr_meta) if attr_meta != null else ""
+    var gather_meta = _rd["gather"].get_item_metadata(_rd["gather"].selected) if _rd.has("gather") and _rd["gather"].selected >= 0 else null
+    var gather_str := str(gather_meta) if gather_meta != null else ""
+    # A yield-only gather source (no attribute) carries magnitude 0 and no dwell;
+    # a need row keeps its restore magnitude and dwell toggle. The amount/dwell
+    # controls are hidden/disabled for yield-only, so read them only for a need row.
+    var amount_mag := 0
+    var has_dwell := false
+    if attr_str != "":
+        amount_mag = int(_rd["amount"].value)
+        has_dwell = bool(_rd["dwell_check"].button_pressed)
     var row := {
-        "attribute":    str(attr_meta) if attr_meta != null else "",
-        "amount":       int(_rd["amount"].value),
+        "attribute":    attr_str,
+        "amount":       amount_mag,
+        "gather_item":  gather_str,
         "infinite":     bool(_rd["infinite"].button_pressed),
         "available":    int(_rd["available"].value),
         "max":          int(_rd["max"].value),
         "mode":         str(_rd["mode"].get_item_metadata(_rd["mode"].selected)),
         "period":       int(_rd["period"].value),
-        "has_dwell":    bool(_rd["dwell_check"].button_pressed),
+        "has_dwell":    has_dwell,
         "dwell_delta":  int(_rd["dwell_delta"].value),
         "dwell_period": int(_rd["dwell_period"].value),
     }
@@ -3315,6 +3426,7 @@ func _on_refresh_add_pressed() -> void:
     _refresh_rows_state.append({
         "attribute":    default_attr,
         "amount":       1,
+        "gather_item":  "",
         "infinite":     false,
         "available":    10,
         "max":          10,
@@ -3341,21 +3453,43 @@ func _on_refresh_remove_pressed(idx: int) -> void:
 func _on_refreshes_save_pressed() -> void:
     if _refreshes_current_id == "":
         return
+    # Duplicate keys mirror the server's two conflict targets: need rows are
+    # unique per attribute, yield-only gather rows per gather_item.
     var seen_attrs := {}
+    var seen_gather := {}
     var rows := []
     for state in _refresh_rows_state:
         var attr := str(state.get("attribute", ""))
-        if attr == "":
-            _set_refreshes_status("A row is missing its attribute", true)
+        var gather := str(state.get("gather_item", ""))
+        # A yield-only gather source is a blank attribute WITH a gather item. A
+        # blank attribute and no gather item is neither shape — reject it (mirrors
+        # ValidateObjectRefreshes: attribute required on a need-bearing row).
+        var is_yield_only := attr == "" and gather != ""
+        if attr == "" and gather == "":
+            _set_refreshes_status("A row needs an attribute or a gather item", true)
             return
-        if seen_attrs.has(attr):
-            _set_refreshes_status("Duplicate attribute: " + attr, true)
-            return
-        seen_attrs[attr] = true
-        var amount := int(state.get("amount", 1))
-        if amount <= 0:
-            _set_refreshes_status("Amount must be positive (" + attr + ")", true)
-            return
+        # A label for validation messages: yield-only rows have no attribute, so
+        # name them by their gather item (matches the server's "gather:<item>").
+        var label := attr if attr != "" else ("gather:" + gather)
+        if is_yield_only:
+            if seen_gather.has(gather):
+                _set_refreshes_status("Duplicate gather item: " + gather, true)
+                return
+            seen_gather[gather] = true
+        else:
+            if seen_attrs.has(attr):
+                _set_refreshes_status("Duplicate attribute: " + attr, true)
+                return
+            seen_attrs[attr] = true
+        # Wire amount is NEGATIVE for a need row (the on-arrival decrement) and 0
+        # for a yield-only source. The panel holds a positive magnitude, so negate.
+        var amount := 0
+        if not is_yield_only:
+            var magnitude := int(state.get("amount", 1))
+            if magnitude <= 0:
+                _set_refreshes_status("Restores-per-use must be positive (" + label + ")", true)
+                return
+            amount = -magnitude
         var infinite := bool(state.get("infinite", false))
         var avail_value: Variant = null
         var max_value: Variant = null
@@ -3365,40 +3499,49 @@ func _on_refreshes_save_pressed() -> void:
             var avail := int(state.get("available", 0))
             var max_q := int(state.get("max", 0))
             if max_q <= 0:
-                _set_refreshes_status("Max must be > 0 (" + attr + ")", true)
+                _set_refreshes_status("Max must be > 0 (" + label + ")", true)
                 return
             if avail < 0 or avail > max_q:
-                _set_refreshes_status("Available must be between 0 and Max (" + attr + ")", true)
+                _set_refreshes_status("Available must be between 0 and Max (" + label + ")", true)
                 return
             var period := int(state.get("period", 24))
             if period <= 0:
-                _set_refreshes_status("Period must be > 0 (" + attr + ")", true)
+                _set_refreshes_status("Period must be > 0 (" + label + ")", true)
                 return
             avail_value = avail
             max_value = max_q
             period_value = period
-        # Dwell recovery (optional). dwell_delta + dwell_period_minutes travel
-        # together — null for both when off. Mirrors the server CHECKs
-        # (dwell_delta < 0, dwell_period_minutes > 0) for immediate feedback.
+        # Dwell recovery (optional, need rows only — the confirm handler forces it
+        # off for yield-only). dwell_delta + dwell_period_minutes travel together —
+        # null for both when off. Mirrors the server CHECKs (dwell_delta < 0,
+        # dwell_period_minutes > 0) for immediate feedback.
         var dwell_delta_value: Variant = null
         var dwell_period_value: Variant = null
-        if bool(state.get("has_dwell", false)):
+        if not is_yield_only and bool(state.get("has_dwell", false)):
             var dd := int(state.get("dwell_delta", -1))
             var dp := int(state.get("dwell_period", 10))
             if dd >= 0:
-                _set_refreshes_status("Dwell amount must be negative (" + attr + ")", true)
+                _set_refreshes_status("Dwell amount must be negative (" + label + ")", true)
                 return
             if dp <= 0:
-                _set_refreshes_status("Dwell period must be > 0 (" + attr + ")", true)
+                _set_refreshes_status("Dwell period must be > 0 (" + label + ")", true)
                 return
             dwell_delta_value = dd
             dwell_period_value = dp
+        # refresh_mode/refresh_period_hours are only valid on a finite (tracked-
+        # supply) row — the server rejects a non-empty mode on an infinite row.
+        # Emit an empty mode when infinite so the row round-trips server-valid
+        # (period is already null via period_value). This normalizes a vestigial
+        # mode that seed data can carry on an infinite row (e.g. the well's
+        # infinite drink row ships refresh_mode="continuous").
+        var mode_value := mode if not infinite else ""
         rows.append({
             "attribute":            attr,
             "amount":               amount,
+            "gather_item":          gather,
             "available_quantity":   avail_value,
             "max_quantity":         max_value,
-            "refresh_mode":         mode,
+            "refresh_mode":         mode_value,
             "refresh_period_hours": period_value,
             "dwell_delta":          dwell_delta_value,
             "dwell_period_minutes": dwell_period_value,
