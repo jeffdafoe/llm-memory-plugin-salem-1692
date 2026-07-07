@@ -241,7 +241,7 @@ func renderStallCondition(b *strings.Builder, v *StallConditionView) {
 		// shop is only "run-down" while the owner is told he can still sell. Deliberately
 		// NOT "can sell nothing": degrade blocks refill, not selling, so the on-hand stock
 		// is still for sale (the eachVendorOffer qty>0 gate drops him once sold empty).
-		fmt.Fprintf(b, "The %s here is too worn to keep stock — its keeper can only sell what's on hand, and can't restock or make more until it's mended.\n", name)
+		fmt.Fprintf(b, "The %s here is too worn to restock — its keeper can sell what's on hand, but can't refill the shelves or make more until it's mended.\n", name)
 	} else {
 		fmt.Fprintf(b, "The %s here looks worn and run-down from hard use.\n", name)
 	}
