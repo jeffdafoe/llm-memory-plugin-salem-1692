@@ -131,6 +131,17 @@ type UmbilicalAgentDTO struct {
 	// published snapshot — surfaced here for operator inspection only.
 	SourceActivity *SourceActivityDTO `json:"source_activity,omitempty"`
 
+	// Live labor job (LLM-272) — the worker mirror of an accepted, in-progress
+	// hire. LaborID / LaboringUntil are set only while the worker is Working (the
+	// EnRoute relocation leg leaves them clear per labor_ledger.go); LaborState is
+	// the offer's live state read off World.LaborLedger. All omitted when the
+	// actor is not on a job. The full offer (employer, reward, huddle, timestamps)
+	// is on /labor-ledger — this is just the "what is this actor doing right now"
+	// companion, the natural place to look when the actor reads state=laboring.
+	LaborID       uint64     `json:"labor_id,omitempty"`
+	LaborState    string     `json:"labor_state,omitempty"`
+	LaboringUntil *time.Time `json:"laboring_until,omitempty"`
+
 	// Tick scheduling + reactor-evaluator state — the "is this agent queued /
 	// mid-tick / idle" picture that's NOT on the published snapshot.
 	LastTickedAt   *time.Time `json:"last_ticked_at,omitempty"`
@@ -262,6 +273,15 @@ func (s *Server) handleUmbilicalAgent(w http.ResponseWriter, r *http.Request) {
 				tx, ty := tgt.X, tgt.Y
 				dto.MoveTargetTileX = &tx
 				dto.MoveTargetTileY = &ty
+			}
+		}
+		// Live labor job — the worker mirror is set only while Working; read the
+		// offer's live state off the ledger for the operator (LLM-272).
+		if a.LaborID != 0 {
+			dto.LaborID = uint64(a.LaborID)
+			dto.LaboringUntil = clonePtrTime(a.LaboringUntil)
+			if o := world.LaborLedger[a.LaborID]; o != nil {
+				dto.LaborState = string(o.State)
 			}
 		}
 		return dto, nil
