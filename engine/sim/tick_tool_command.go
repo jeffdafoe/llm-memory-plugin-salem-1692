@@ -166,11 +166,13 @@ func (e TerminalNoOpError) Error() string {
 type NonTerminalNoOpError struct{ Msg string }
 
 // Error returns the model-facing reason. Empty-Msg fallback mirrors
-// TerminalNoOpError — a zero-value construction slip must never surface as a
-// bare "[ok] " with no reason.
+// TerminalNoOpError's guard — a zero-value construction slip must never surface
+// as a bare "[ok] " with no reason. The fallback is a NEUTRAL generic (not the
+// terminal "you are already there" line): this type continues the tick, so a
+// leaked default must not imply a real arrival/satisfaction to the model.
 func (e NonTerminalNoOpError) Error() string {
 	if e.Msg == "" {
-		return "you are already there — nothing to walk to."
+		return "nothing changed."
 	}
 	return e.Msg
 }

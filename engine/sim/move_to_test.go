@@ -201,6 +201,39 @@ func TestMoveToStructureByName_KitchenPhantomNoOp(t *testing.T) {
 	}
 }
 
+// TestMoveToStructureByName_RealKitchenStructureWins — the phantom is a FALLBACK:
+// a structure actually named "Kitchen" resolves to a REAL move, not the no-op.
+// No such structure ships today; this pins the precedence so a future real
+// "Kitchen" routes normally. Renames the open Gazebo to "Kitchen" so the name
+// resolves to a real structure before the phantom check runs.
+func TestMoveToStructureByName_RealKitchenStructureWins(t *testing.T) {
+	w, cancel, _ := buildMoveTestWorld(t)
+	defer cancel()
+
+	if _, err := w.Send(sim.Command{Fn: func(wr *sim.World) (any, error) {
+		s, ok := wr.Structures["gazebo"]
+		if !ok {
+			return nil, fmt.Errorf("test setup: no 'gazebo' structure to rename")
+		}
+		s.DisplayName = "Kitchen"
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("rename Gazebo->Kitchen: %v", err)
+	}
+
+	_, err := w.Send(sim.MoveToStructureByName("walker", "the Kitchen", nil, sim.RememberedPlaces{}, time.Now().UTC()))
+	var noop sim.NonTerminalNoOpError
+	if errors.As(err, &noop) {
+		t.Fatalf("a real structure named Kitchen must win over the phantom; got NonTerminalNoOpError %q", noop.Msg)
+	}
+	if err != nil {
+		t.Fatalf("move to the real Kitchen structure: %v", err)
+	}
+	if mi := moveIntentOf(t, w, "walker"); mi == nil {
+		t.Error("move to the real Kitchen structure stamped no MoveIntent; want a real move")
+	}
+}
+
 // TestMoveToStructureByName_UnresolvableNameListsPublicStructures pins the
 // LLM-306 enrichment end-to-end: an unresolvable place name comes back with a
 // bounded, deterministic list of the REAL public structures in the world so a
