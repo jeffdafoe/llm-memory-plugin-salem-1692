@@ -335,6 +335,12 @@ func EvaluateRestock(now time.Time) Command {
 				if a.RestockPolicy == nil {
 					continue
 				}
+				// LLM-304: a degraded business is shut for restock — no reorder warrant
+				// while it's too worn to keep stock. The owner sells down what's on hand
+				// and mends to reopen the refill; the "## Restocking" cue is suppressed.
+				if ownerStallDegraded(w, a.ID) {
+					continue
+				}
 				if !restockEligible(a, now) {
 					continue
 				}

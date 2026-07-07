@@ -201,13 +201,6 @@ func SceneQuoteCreate(
 					"you're on a break right now — wait until your break ends before posting a quote.",
 				)
 			}
-			// LLM-118 (LLM-247): a degraded business is shut for trade until mended.
-			if sellerStallDegraded(w, sellerID) {
-				return nil, errors.New(
-					"your business is too worn to trade — mend it before you can sell again.",
-				)
-			}
-
 			// Gate 6 (before gate 4 — consumer requires huddle is
 			// a structural prerequisite to the stock-check
 			// arithmetic, since effectiveConsumerCount depends on

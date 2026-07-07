@@ -1054,13 +1054,6 @@ func runPayWithItemFastPath(
 			seller.DisplayName,
 		)
 	}
-	// LLM-118 (LLM-247): a seller whose business is in disrepair can't trade until it's mended.
-	if sellerStallDegraded(w, sellerID) {
-		return nil, fmt.Errorf(
-			"%s's business is in disrepair — they can't trade until it's mended.",
-			seller.DisplayName,
-		)
-	}
 	// Stock reservation accounting (PR S6 R1): accepted-but-not-yet-delivered
 	// Orders keep goods in the seller's inventory, so subtract
 	// outstandingReadyOrderQty before comparing against need — otherwise two
@@ -1435,13 +1428,6 @@ func acceptPendingOffer(w *World, seller *Actor, entry *PayLedgerEntry, at time.
 	// Gate 7: seller break (simple-strict, ledger-substrate § 11).
 	if !entry.IsGift && seller.BreakUntil != nil && seller.BreakUntil.After(at) {
 		return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedUnavailable, "", at), nil
-	}
-
-	// Gate 7b (LLM-118, LLM-247): a degraded business is closed for trade — fail the
-	// accept with a buyer-facing reason until the owner mends it.
-	if !entry.IsGift && sellerStallDegraded(w, seller.ID) {
-		return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedUnavailable,
-			fmt.Sprintf("%s's business is in disrepair — they can't trade until it's mended.", seller.DisplayName), at), nil
 	}
 
 	// Gate 8: ItemKind catalog still has this kind (skipped for a gift — it has

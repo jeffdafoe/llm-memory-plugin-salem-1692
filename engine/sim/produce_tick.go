@@ -217,6 +217,12 @@ func ApplyProduceTick(now time.Time) Command {
 				if !produceTickGate(actor, now) {
 					continue
 				}
+				// LLM-304: a degraded business is shut for production — its shelves
+				// draw down (sell-through still works) until the owner mends it, at
+				// which point production resumes. Same skip as off-shift/sleeping.
+				if ownerStallDegraded(w, actorID) {
+					continue
+				}
 				if actor.RestockPolicy == nil {
 					continue
 				}

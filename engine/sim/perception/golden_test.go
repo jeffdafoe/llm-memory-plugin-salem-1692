@@ -1129,14 +1129,15 @@ var perceptionScenarios = []perceptionScenario{
 	},
 	{
 		name: "owner_at_degraded_stall",
-		summary: "A business owner stands at his own DEGRADED premises (wear past the degrade threshold — closed for " +
-			"trade), carrying enough nails. The golden pins the escalated '## Your business' steer ('too worn to trade … " +
-			"use the repair tool now to fix it') — the seller-facing half of the degrade sales-block (LLM-118).",
+		summary: "A business owner stands at his own DEGRADED premises (wear past the degrade threshold — shut for " +
+			"restock/production, still sells on-hand stock; LLM-304), carrying enough nails. The golden pins the " +
+			"'## Your business' steer ('too worn to keep stock … use the repair tool now to fix it') — degrade blocks " +
+			"refill, not selling.",
 		build: ownerAtDegradedStall,
 	},
 	{
 		name: "owner_at_degraded_store_conserving",
-		summary: "LLM-301: Josiah Thorne stands at his own DEGRADED General Store (shut for trade) with 0 of the 5 " +
+		summary: "LLM-304/301: Josiah Thorne stands at his own DEGRADED General Store (shut for restock, still sells on-hand stock) with 0 of the 5 " +
 			"nails a mend takes, 1 coin (below the 10-coin MerchantCoinFloor) and 17 unsold flour — conserve active — and " +
 			"NO nail supplier survives the LLM-216 drops. The golden pins the vendor-less fallback's sell-first soften " +
 			"('your purse can't take on nails just now') and the ABSENCE of the old destination-less 'buy more from the " +
@@ -4970,14 +4971,14 @@ func ownerAtWornStall() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 }
 
 // ownerAtDegradedStall: the owner at his own degraded stall with nails in hand —
-// the "too worn to trade … use the repair tool now to fix it" steer. wear 650 (>= degrade 600).
+// the "too worn to keep stock … use the repair tool now to fix it" steer. wear 650 (>= degrade 600).
 func ownerAtDegradedStall() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	return stallWearSnapshot("ezekiel", "ezekiel", "Ezekiel Crane", "blacksmith", 650, 5)
 }
 
 // ownerAtDegradedStoreConserving is the LLM-301 fixture — the live 2026-07-06 Josiah
 // Thorne "the Smithy" case. The owner stands at his own DEGRADED General Store (wear
-// 650 >= degrade 600, shut for trade) carrying 0 of the 5 nails a mend takes, with
+// 650 >= degrade 600, shut for restock) carrying 0 of the 5 nails a mend takes, with
 // 1 coin (below the 10-coin MerchantCoinFloor) and 17 unsold flour on the shelf (past
 // the 8-unit dead-stock overstock floor) — so merchantConserve is Active — while NO
 // nail supplier resolves (none exists here; the live case dropped the smith on

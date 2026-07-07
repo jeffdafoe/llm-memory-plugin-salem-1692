@@ -96,11 +96,28 @@ func TestAccrueStallWear_NoOps(t *testing.T) {
 func TestAccrueStallWear_Saturates(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	// An add that would exceed int range saturates at MaxInt rather than wrapping
-	// negative (which could lower Wear or un-degrade a stall).
-	w, owner, stall := stallTestWorld(1, 400, 600, math.MaxInt-5)
-	accrueStallWear(w, owner, 100, now) // (MaxInt-5) + 100 overflows int
+	// negative (which could lower Wear or un-degrade a stall). Start BELOW the degrade
+	// line (500 < 600) so the LLM-304 freeze doesn't short-circuit before the add — a
+	// single astronomically large sale is what pushes an under-degrade stall over int
+	// range.
+	w, owner, stall := stallTestWorld(1, 400, 600, 500)
+	accrueStallWear(w, owner, math.MaxInt, now) // 500 + MaxInt*1 overflows int
 	if stall.Wear != math.MaxInt {
 		t.Errorf("Wear = %d, want saturated math.MaxInt (no negative wrap)", stall.Wear)
+	}
+}
+
+// TestAccrueStallWear_FrozenWhenDegraded pins the LLM-304 freeze: once a stall is
+// worn past the degrade line it is shut for restock/production, so it draws down
+// rather than refilling — further sales must NOT pile on wear (repair zeroes it
+// regardless). Without the freeze the number would climb unbounded as a degraded
+// keeper sells down his remaining stock.
+func TestAccrueStallWear_FrozenWhenDegraded(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	w, owner, stall := stallTestWorld(2, 400, 600, 650) // already degraded (650 >= 600)
+	accrueStallWear(w, owner, 100, now)                 // would add 200 without the freeze
+	if stall.Wear != 650 {
+		t.Errorf("Wear = %d, want 650 (frozen at the degrade line — no accrual while degraded)", stall.Wear)
 	}
 }
 
@@ -191,11 +208,11 @@ func TestStallWearPredicates(t *testing.T) {
 		Settings:       WorldSettings{StallWearDegradeThreshold: 600},
 		VillageObjects: map[VillageObjectID]*VillageObject{"s": {ID: "s", OwnerActorID: "ezekiel", Tags: []string{TagBusiness}, Wear: 650}},
 	}
-	if !sellerStallDegraded(wDeg, "ezekiel") {
-		t.Error("seller with a 650-wear stall (degrade 600) should be degraded")
+	if !ownerStallDegraded(wDeg, "ezekiel") {
+		t.Error("owner of a 650-wear stall (degrade 600) should be degraded")
 	}
-	if sellerStallDegraded(wDeg, "nobody") {
-		t.Error("a seller who owns no stall is never degraded")
+	if ownerStallDegraded(wDeg, "nobody") {
+		t.Error("an actor who owns no stall is never degraded")
 	}
 }
 

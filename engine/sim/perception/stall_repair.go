@@ -25,7 +25,7 @@ import (
 // business you're working at" so the cue states the true relationship.
 type StallRepairView struct {
 	Hired          bool            // resolved through a hire (Working for the owner), not ownership (LLM-271)
-	Degraded       bool            // worn past the degrade threshold: closed for trade until mended
+	Degraded       bool            // worn past the degrade threshold: shut for restock/production until mended, still sells on-hand stock (LLM-304)
 	NailsNeeded    int             // nails one repair consumes
 	NailsHeld      int             // nails the actor currently carries
 	HasEnoughNails bool            // NailsHeld >= NailsNeeded
@@ -42,16 +42,14 @@ type StallRepairView struct {
 	Conserve bool
 }
 
-// ForcesRepair reports whether the owner is standing at their OWN degraded
-// (shut-for-trade) business holding enough nails to mend it now — the state
-// where mending is the one productive move. When true, perception drops the
-// customer-service frame (the waiting pay offers + the "offer your wares" cue)
-// and gateTools strips the matching trade tools off this SAME signal (LLM-312),
-// so a keeper mobbed at a shut shop isn't held in decline/sell turns while the
-// shop earns nothing. Hired workers are excluded — they don't own the shop and
-// can't be its keeper. A nil receiver is false.
-func (v *StallRepairView) ForcesRepair() bool {
-	return v != nil && !v.Hired && v.Degraded && v.HasEnoughNails
+// ownerBusinessDegraded reports whether the actor owns a wearable business worn
+// past the degrade threshold — shut for restock/production until mended (LLM-304).
+// The snapshot-side twin of sim.ownerStallDegraded (the engine refill gate): the
+// refill cues ("## Restocking", "## Keeping up production") suppress on it so they
+// can't steer a buy the degraded shop can't turn into stock. nil-safe via
+// sim.StallDegraded (an actor owning no wearable stall is never degraded).
+func ownerBusinessDegraded(snap *sim.Snapshot, actorID sim.ActorID) bool {
+	return sim.StallDegraded(sim.OwnedWearableStall(snap.VillageObjects, actorID), snap.StallWearDegradeThreshold)
 }
 
 // buildStallRepair returns the at-the-business repair cue, or nil. Pure over the
@@ -119,25 +117,14 @@ func renderStallRepair(b *strings.Builder, v *StallRepairView) {
 		return
 	}
 	b.WriteString("## Your business\n")
-	// Owner path only — the hired-worker branch returned above. ForcesRepair() is
-	// the SAME signal render (this branch), the frame suppression (Render), and
-	// the tool strip (gateTools) all key off, so cue and tool can't drift; here
-	// v is a non-hired owner already, so it reduces to Degraded && HasEnoughNails.
-	if v.ForcesRepair() {
-		// LLM-312: shut for trade AND he holds the nails — mending is the only
-		// move that reopens the doors, so state it as the sole imperative and
-		// tell him plainly to stop tending customers. Perception has suppressed
-		// the customer-service frame this tick (the waiting pay offers + the
-		// offer-wares cue) and gateTools stripped the trade tools off the same
-		// ForcesRepair() signal, so this line stands alone with nothing to
-		// compete against for the 70B's attention (the live Josiah Thorne case:
-		// 37 straight ticks shown "use the repair tool now" with 5 nails in
-		// hand, never calling repair — LLM-312).
-		fmt.Fprintf(b, "Your %s is too worn to trade — it stays shut and earns nothing until you mend it. You carry enough nails (%d): stop tending customers and call the repair tool now — mending is the only thing that reopens your doors, hammer in hand, on site (it takes a short while).\n", name, v.NailsHeld)
-		return
-	}
+	// Owner path only — the hired-worker branch returned above.
 	if v.Degraded {
-		fmt.Fprintf(b, "Your %s is too worn to trade — it stays shut until you mend it. ", name)
+		// LLM-304: a degraded shop is shut for RESTOCK/PRODUCTION, not for selling —
+		// it sells down what's on hand and reopens the refill on repair. State that
+		// plainly so the keeper keeps trading (which earns the coin for the nails)
+		// and treats mending as the way to restore the refill, instead of the old
+		// "stays shut, earns nothing" framing that trapped a broke keeper.
+		fmt.Fprintf(b, "Your %s is too worn to keep stock — you can still sell what's on hand, but you can't restock the shelves or make more until you mend it. ", name)
 	} else {
 		fmt.Fprintf(b, "Your %s is showing hard use and needs mending. ", name)
 	}
@@ -179,7 +166,7 @@ func renderStallRepair(b *strings.Builder, v *StallRepairView) {
 func renderHiredStallRepair(b *strings.Builder, v *StallRepairView, name string) {
 	b.WriteString("## The business you're working at\n")
 	if v.Degraded {
-		fmt.Fprintf(b, "The %s you're working at is too worn to trade — it stays shut until it's mended. ", name)
+		fmt.Fprintf(b, "The %s you're working at is too worn to keep stock — it can still sell what's on hand, but it can't restock or make more until it's mended. ", name)
 	} else {
 		fmt.Fprintf(b, "The %s you're working at is showing hard use and needs mending. ", name)
 	}
@@ -245,7 +232,7 @@ func renderStallCondition(b *strings.Builder, v *StallConditionView) {
 		name = "business"
 	}
 	if v.Degraded {
-		fmt.Fprintf(b, "The %s here is battered and clearly unfit for trade.\n", name)
+		fmt.Fprintf(b, "The %s here is battered and badly in need of repair.\n", name)
 	} else {
 		fmt.Fprintf(b, "The %s here looks worn and run-down from hard use.\n", name)
 	}

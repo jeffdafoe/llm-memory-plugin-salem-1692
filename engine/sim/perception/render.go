@@ -225,19 +225,6 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// uncapped section (rather than as a capped warrant line) guarantees the
 	// ledger_id is present whenever the tools are advertised.
 	payOffers := PendingPayOffers(p)
-	// LLM-312: an owner at their own DEGRADED (shut-for-trade) business with
-	// nails in hand has one productive move — repair. Drop the customer-service
-	// decision frame so it can't hold the model in decline/sell turns while the
-	// shop earns nothing shut: clearing payOffers here suppresses BOTH the
-	// waiting-offers section (renderPayOffers) and its triage reinforcement
-	// (renderTriage's hasPayOffers), and the offer-wares cue is gated below.
-	// gateTools strips the matching trade tools off this SAME
-	// StallRepair.ForcesRepair() signal (discussion-109: cue and tool move
-	// together); renderStallRepair carries the sole imperative.
-	forceRepair := p.StallRepair.ForcesRepair()
-	if forceRepair {
-		payOffers = nil
-	}
 
 	// Ephemeral: self-state first (ZBBS-WORK-410), then identity, surroundings,
 	// anchors, steers, relationships, the offers awaiting this actor's decision,
@@ -285,12 +272,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// whenever the subject is a broke idle worker with no employer present to solicit
 	// (a STANDING cue, see the build-side gate), so move_to always has a real target.
 	renderSeekWorkPlaces(&ephemeral, p.SeekWorkPlaces)
-	if !forceRepair {
-		// LLM-312: suppressed in the shut-shop forced-repair state (see payOffers
-		// above) — a shut shop cannot sell, so the offer-wares cue only competes
-		// with the repair imperative for the model's attention.
-		renderOfferableCustomers(&ephemeral, p.OfferableCustomers)
-	}
+	renderOfferableCustomers(&ephemeral, p.OfferableCustomers)
 	renderTradeValue(&ephemeral, p.TradeValue)
 	renderStandingQuotesFromMe(&ephemeral, p.StandingQuotesFromMe)
 	renderPendingDeliveriesFromMe(&ephemeral, p.PendingDeliveriesFromMe, p.LocalDateUTC, p.RenderedAt)
