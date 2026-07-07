@@ -509,6 +509,58 @@ type VillageObjectTagsUpdated struct {
 
 func (VillageObjectTagsUpdated) isSimEvent() {}
 
+// Asset-geometry editor write events (LLM-263). Each is emitted by the matching
+// SetAsset* command (asset_admin.go) when an admin drags the editor's door /
+// footprint / stand marker, and the httpapi hub translates it to the asset_*
+// WS frame the Godot editor already consumes (event_client.gd
+// _on_asset_door_updated / _on_asset_footprint_updated / _on_asset_stand_updated)
+// so a second admin editing the same asset refreshes live. Keyed on the asset
+// catalog id (the marker is a per-ASSET template offset, not a per-placement
+// override), and all carry the full post-mutation value (not a delta).
+
+// AssetDoorOffsetChanged — the per-asset door tile offset an NPC targets when
+// going home. X/Y are the new offset in tiles from the placement anchor, or nil
+// when the door was cleared back to unset (home-routing then falls back to
+// findPathToAdjacent). Frame: asset_door_updated.
+type AssetDoorOffsetChanged struct {
+	EventBase
+	AssetID AssetID
+	X       *int
+	Y       *int
+	At      time.Time
+}
+
+func (AssetDoorOffsetChanged) isSimEvent() {}
+
+// AssetFootprintChanged — the per-asset footprint tile counts (per side from the
+// anchor, anchor tile always included). All four are non-negative (the asset
+// table CHECKs footprint_* >= 0). Frame: asset_footprint_updated.
+type AssetFootprintChanged struct {
+	EventBase
+	AssetID AssetID
+	Left    int
+	Right   int
+	Top     int
+	Bottom  int
+	At      time.Time
+}
+
+func (AssetFootprintChanged) isSimEvent() {}
+
+// AssetStandOffsetChanged — the per-asset render position for NPCs inside a
+// visible_when_inside structure (the client repositions the sprite to
+// anchor + stand_offset post-arrival). X/Y are the new offset in tiles from the
+// anchor, or nil when cleared. Frame: asset_stand_updated.
+type AssetStandOffsetChanged struct {
+	EventBase
+	AssetID AssetID
+	X       *int
+	Y       *int
+	At      time.Time
+}
+
+func (AssetStandOffsetChanged) isSimEvent() {}
+
 // NPC editor write events (ZBBS-HOME-309). Each is emitted by the matching
 // SetActor* / {Add,Remove}ActorAttribute command in actor_admin.go ONLY on an
 // actual change, and the httpapi hub translates it to the npc_* WS frame the

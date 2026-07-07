@@ -122,6 +122,13 @@ type runtime struct {
 	// umbilical control surface is enabled. Nil in the headless lifecycle test
 	// (mem-backed, no pg) → the route answers 503.
 	ItemKindWriter *pg.ItemKindsRepo
+	// AssetGeometryWriter is the durable asset-geometry UPDATE behind the admin
+	// PATCH /api/assets/{id}/door | /footprint | /stand editor routes (LLM-263).
+	// Unlike the item/recipe writers this is wired whenever pg is present (not
+	// only under the umbilical control flag) — it's a player-admin editor route.
+	// run wires it via SetAssetGeometryWriter. Nil in the headless lifecycle test
+	// (mem-backed, no pg) → those routes answer 503.
+	AssetGeometryWriter *pg.AssetsRepo
 }
 
 func main() {
@@ -266,17 +273,18 @@ func main() {
 		HTTPAddr: ":" + port,
 		// Read-surface auth: verifies session tokens against llm-memory-api's
 		// /v1/auth/verify + the salem-realm gate, caching positive results.
-		Auth:             httpapi.NewTokenVerifier(llmMemoryURL, 0),
-		Umbilical:        umbilical,
-		UmbilicalControl: umbilicalControl,
-		RecipeWriter:     pg.NewRecipesRepo(pool),
-		SatisfiesWriter:  pg.NewItemKindsRepo(pool),
-		ItemKindWriter:   pg.NewItemKindsRepo(pool),
-		PromptRing:       promptRing,
-		ChatRing:         chatRing,
-		MemoryAPIBaseURL: llmMemoryURL,
-		ActionLog:        actionLogSink,
-		SimPush:          simPush,
+		Auth:                httpapi.NewTokenVerifier(llmMemoryURL, 0),
+		Umbilical:           umbilical,
+		UmbilicalControl:    umbilicalControl,
+		RecipeWriter:        pg.NewRecipesRepo(pool),
+		SatisfiesWriter:     pg.NewItemKindsRepo(pool),
+		ItemKindWriter:      pg.NewItemKindsRepo(pool),
+		AssetGeometryWriter: pg.NewAssetsRepo(pool),
+		PromptRing:          promptRing,
+		ChatRing:            chatRing,
+		MemoryAPIBaseURL:    llmMemoryURL,
+		ActionLog:           actionLogSink,
+		SimPush:             simPush,
 	}
 
 	// Shutdown on SIGINT/SIGTERM.
@@ -575,6 +583,14 @@ func run(rt runtime, stop <-chan struct{}) error {
 	if rt.HTTPAddr != "" {
 		server := httpapi.NewServer(rt.World, rt.Auth)
 		server.SetEventsHub(eventsHub)
+		// Backs the admin PATCH /api/assets/{id}/door|footprint|stand editor routes
+		// (LLM-263). Wired whenever pg is present — a player-admin editor route,
+		// independent of the umbilical. Guarded like the ActionLog store below: a
+		// typed-nil *pg.AssetsRepo boxed into the interface would read as non-nil and
+		// defeat the handler's nil-writer 503 guard, so only wire a real one.
+		if rt.AssetGeometryWriter != nil {
+			server.SetAssetGeometryWriter(rt.AssetGeometryWriter)
+		}
 		// Enables the operator-gated umbilical routes. Nil when UMBILICAL_ENABLED
 		// is unset → SetTelemetry not called → routes never registered.
 		if rt.Umbilical != nil {

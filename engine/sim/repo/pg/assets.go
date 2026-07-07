@@ -294,3 +294,72 @@ func (r *AssetsRepo) attachSlots(ctx context.Context, assets map[sim.AssetID]*si
 	}
 	return nil
 }
+
+// --- Asset-geometry editor writes (LLM-263) ---------------------------------
+//
+// The durable half of the door / footprint / stand editor marker drags. Assets
+// are otherwise load-only reference data (no checkpoint path), so these direct
+// UPDATEs are the source of truth the catalog rebuilds from on restart — the
+// same posture as item_kind / recipe / item_satisfies. The httpapi handler runs
+// the in-memory SetAsset* command (mutate + WS broadcast) and then calls one of
+// these to persist. Each targets one asset by id and touches only its own
+// geometry columns.
+//
+// A zero-rows result means the id is absent from the asset table — a catalog/DB
+// drift (the in-memory command already resolved the asset), surfaced as
+// sim.ErrAssetNotFound rather than a silent no-op.
+
+const updateAssetDoorSQL = `
+UPDATE asset SET door_offset_x = $2, door_offset_y = $3 WHERE id = $1`
+
+const updateAssetFootprintSQL = `
+UPDATE asset
+   SET footprint_left = $2, footprint_right = $3,
+       footprint_top = $4, footprint_bottom = $5
+ WHERE id = $1`
+
+const updateAssetStandSQL = `
+UPDATE asset SET stand_offset_x = $2, stand_offset_y = $3 WHERE id = $1`
+
+// UpdateAssetDoorOffset persists the per-asset door tile offset. x/y are nil to
+// clear the door (the columns are nullable). Returns sim.ErrAssetNotFound when
+// no asset row has id.
+func (r *AssetsRepo) UpdateAssetDoorOffset(ctx context.Context, id sim.AssetID, x, y *int) error {
+	tag, err := r.pool.Exec(ctx, updateAssetDoorSQL, string(id), x, y)
+	if err != nil {
+		return fmt.Errorf("pg assets UpdateAssetDoorOffset: exec: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return sim.ErrAssetNotFound
+	}
+	return nil
+}
+
+// UpdateAssetFootprint persists the per-asset footprint tile counts. Callers
+// pass non-negative sides (the asset table CHECKs footprint_* >= 0; the command
+// validates before this runs). Returns sim.ErrAssetNotFound when no asset row
+// has id.
+func (r *AssetsRepo) UpdateAssetFootprint(ctx context.Context, id sim.AssetID, left, right, top, bottom int) error {
+	tag, err := r.pool.Exec(ctx, updateAssetFootprintSQL, string(id), left, right, top, bottom)
+	if err != nil {
+		return fmt.Errorf("pg assets UpdateAssetFootprint: exec: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return sim.ErrAssetNotFound
+	}
+	return nil
+}
+
+// UpdateAssetStandOffset persists the per-asset inside-a-structure render offset.
+// x/y are nil to clear it (the columns are nullable). Returns sim.ErrAssetNotFound
+// when no asset row has id.
+func (r *AssetsRepo) UpdateAssetStandOffset(ctx context.Context, id sim.AssetID, x, y *int) error {
+	tag, err := r.pool.Exec(ctx, updateAssetStandSQL, string(id), x, y)
+	if err != nil {
+		return fmt.Errorf("pg assets UpdateAssetStandOffset: exec: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return sim.ErrAssetNotFound
+	}
+	return nil
+}

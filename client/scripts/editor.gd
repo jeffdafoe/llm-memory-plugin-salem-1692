@@ -1063,9 +1063,10 @@ func refresh_door_marker() -> void:
     _draw_door_marker_contents(asset)
 
 ## Returns the door offset (in tile units) currently stored on the asset. If
-## unset, defaults to (0, +1) — one tile south of anchor — which tends to be
-## the "front" for Salem's building sprites. A ghost styling in the marker
-## tells the user it's the placeholder, not an intentional value.
+## unset, defaults to (0, footprint_bottom + 1) — just south of the footprint —
+## which tends to be the "front" for Salem's building sprites. The marker draws
+## this placeholder as a faint ghost (see _draw_door_marker_contents) so it reads
+## as a starting point, not a persisted value.
 func _current_door_offset_tiles(asset: Dictionary, node: Node2D) -> Vector2:
     var ox = asset.get("door_offset_x", null)
     var oy = asset.get("door_offset_y", null)
@@ -1087,16 +1088,20 @@ func _door_marker_local_from_tile_offset(node: Node2D, offset_tiles: Vector2) ->
     )
     return world_center - node.position
 
-func _draw_door_marker_contents(_asset: Dictionary) -> void:
+func _draw_door_marker_contents(asset: Dictionary) -> void:
     if _door_marker == null:
         return
     var half: float = TILE_SIZE / 2.0 - 2.0
-    # Always blue when shown — non-structure assets skip the marker
-    # entirely (see _add_door_marker), so a separate "unset" styling is
-    # unnecessary. The placeholder position is just a starting point for
-    # the admin to drag onto the actual door tile.
+    # Solid blue when the asset has a SAVED door_offset; a faint "ghost" (low
+    # alpha, thin outline) when it's still the unset placeholder position
+    # (LLM-263) — so an admin can tell a dragged-and-persisted door from the
+    # default (0, footprint_bottom + 1) guess the marker falls back to.
+    var saved: bool = asset.get("door_offset_x", null) != null and asset.get("door_offset_y", null) != null
     var fill := Polygon2D.new()
-    fill.color = Color(0.25, 0.55, 1.0, 0.9)
+    if saved:
+        fill.color = Color(0.25, 0.55, 1.0, 0.9)
+    else:
+        fill.color = Color(0.25, 0.55, 1.0, 0.25)
     fill.polygon = PackedVector2Array([
         Vector2(-half, -half),
         Vector2( half, -half),
@@ -1105,9 +1110,13 @@ func _draw_door_marker_contents(_asset: Dictionary) -> void:
     ])
     _door_marker.add_child(fill)
     var outline := Line2D.new()
-    outline.width = 2.0
-    outline.default_color = Color(0.15, 0.35, 0.85, 1.0)
     outline.closed = true
+    if saved:
+        outline.width = 2.0
+        outline.default_color = Color(0.15, 0.35, 0.85, 1.0)
+    else:
+        outline.width = 1.0
+        outline.default_color = Color(0.15, 0.35, 0.85, 0.5)
     outline.add_point(Vector2(-half, -half))
     outline.add_point(Vector2( half, -half))
     outline.add_point(Vector2( half,  half))
@@ -1240,14 +1249,20 @@ func _current_stand_offset_tiles(asset: Dictionary, node: Node2D) -> Vector2:
         return Vector2(door_tiles.x + 1, door_tiles.y)
     return Vector2(int(sx), int(sy))
 
-func _draw_stand_marker_contents(_asset: Dictionary) -> void:
+func _draw_stand_marker_contents(asset: Dictionary) -> void:
     if _stand_marker == null:
         return
     var half: float = TILE_SIZE / 2.0 - 2.0
-    # Orange — distinct from the blue door marker. Slight transparency so
-    # the tile underneath still reads.
+    # Orange — distinct from the blue door marker. Solid when the asset has a
+    # SAVED stand_offset; a faint "ghost" when it's still the unset placeholder
+    # (door offset + one tile east) (LLM-263), matching the door marker so an
+    # admin can tell a persisted stand position from the default.
+    var saved: bool = asset.get("stand_offset_x", null) != null and asset.get("stand_offset_y", null) != null
     var fill := Polygon2D.new()
-    fill.color = Color(1.0, 0.6, 0.15, 0.85)
+    if saved:
+        fill.color = Color(1.0, 0.6, 0.15, 0.85)
+    else:
+        fill.color = Color(1.0, 0.6, 0.15, 0.25)
     fill.polygon = PackedVector2Array([
         Vector2(-half, -half),
         Vector2( half, -half),
@@ -1256,9 +1271,13 @@ func _draw_stand_marker_contents(_asset: Dictionary) -> void:
     ])
     _stand_marker.add_child(fill)
     var outline := Line2D.new()
-    outline.width = 2.0
-    outline.default_color = Color(0.85, 0.4, 0.1, 1.0)
     outline.closed = true
+    if saved:
+        outline.width = 2.0
+        outline.default_color = Color(0.85, 0.4, 0.1, 1.0)
+    else:
+        outline.width = 1.0
+        outline.default_color = Color(0.85, 0.4, 0.1, 0.5)
     outline.add_point(Vector2(-half, -half))
     outline.add_point(Vector2( half, -half))
     outline.add_point(Vector2( half,  half))
