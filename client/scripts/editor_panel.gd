@@ -3161,11 +3161,12 @@ func _ensure_refresh_dialog() -> void:
 func _open_refresh_dialog(idx: int) -> void:
     if idx < 0 or idx >= _refresh_rows_state.size():
         return
-    # The dialog's attribute dropdown is built from _refresh_attributes; if the
-    # catalog fetch hasn't returned yet the dropdown would be empty and OK would
-    # commit a blank attribute. Refuse to open until it's loaded.
-    if not _refresh_attributes_loaded:
-        _set_refreshes_status("Loading refresh attributes...", false)
+    # The dialog's dropdowns are built from _refresh_attributes and _items_catalog;
+    # if either async fetch hasn't returned yet the dropdown would be empty (and OK
+    # would commit a blank attribute, or a new gather row would be unpickable).
+    # Refuse to open until both are loaded.
+    if not _refresh_attributes_loaded or not _items_loaded:
+        _set_refreshes_status("Loading refresh metadata...", false)
         return
     _ensure_refresh_dialog()
     _refresh_dialog_idx = idx
@@ -3415,10 +3416,11 @@ func _on_refresh_dialog_confirmed() -> void:
 func _on_refresh_add_pressed() -> void:
     if _refreshes_current_id == "":
         return
-    # Don't add until the attribute catalog is loaded — a new row immediately
-    # opens its edit dialog, which needs the dropdown populated.
-    if not _refresh_attributes_loaded:
-        _set_refreshes_status("Loading refresh attributes...", false)
+    # Don't add until both catalogs are loaded — a new row immediately opens its
+    # edit dialog, whose attribute AND gather-item dropdowns need to be populated
+    # (otherwise a fresh gather/yield-only row can't pick an item until reopened).
+    if not _refresh_attributes_loaded or not _items_loaded:
+        _set_refreshes_status("Loading refresh metadata...", false)
         return
     var default_attr := ""
     if _refresh_attributes.size() > 0:
@@ -3511,13 +3513,19 @@ func _on_refreshes_save_pressed() -> void:
             avail_value = avail
             max_value = max_q
             period_value = period
-        # Dwell recovery (optional, need rows only — the confirm handler forces it
-        # off for yield-only). dwell_delta + dwell_period_minutes travel together —
-        # null for both when off. Mirrors the server CHECKs (dwell_delta < 0,
-        # dwell_period_minutes > 0) for immediate feedback.
+        # A yield-only row can't carry dwell (the server rejects it). The dialog
+        # forces dwell off when a row becomes yield-only, so this only fires on
+        # stale/corrupt state — reject it rather than silently dropping the fields,
+        # to strictly mirror ValidateObjectRefreshes.
+        if is_yield_only and bool(state.get("has_dwell", false)):
+            _set_refreshes_status("Yield-only rows cannot have dwell recovery (" + label + ")", true)
+            return
+        # Dwell recovery (optional, need rows only). dwell_delta + dwell_period_minutes
+        # travel together — null for both when off. Mirrors the server CHECKs
+        # (dwell_delta < 0, dwell_period_minutes > 0) for immediate feedback.
         var dwell_delta_value: Variant = null
         var dwell_period_value: Variant = null
-        if not is_yield_only and bool(state.get("has_dwell", false)):
+        if bool(state.get("has_dwell", false)):
             var dd := int(state.get("dwell_delta", -1))
             var dp := int(state.get("dwell_period", 10))
             if dd >= 0:
