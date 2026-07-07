@@ -178,10 +178,12 @@ func renderHiredStallRepair(b *strings.Builder, v *StallRepairView, name string)
 }
 
 // StallConditionView is the co-present world-fact line for an actor — NOT the
-// owner — standing at a worn business. Social texture a passerby can remark
-// on (and the perception twin of the worn sprite, which the art pass defers).
-// nil when the actor isn't at a worn business, or when they ARE its owner (they
-// get the richer "## Your business" cue instead).
+// owner — standing at a worn business. When merely worn it's social texture a
+// passerby can remark on (the perception twin of the worn sprite, which the art
+// pass defers); when DEGRADED (LLM-310) it escalates to the closed-for-restock
+// fact, the faithful mirror of the owner cue so the two audiences agree on the
+// shop's state. nil when the actor isn't at a worn business, or when they ARE its
+// owner (they get the richer "## Your business" cue instead).
 type StallConditionView struct {
 	Degraded bool
 	Name     string // the business's display name (structure/object); "" → generic noun
@@ -220,9 +222,10 @@ func buildStallCondition(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim
 	return nil
 }
 
-// renderStallCondition writes the co-present worn-business atmosphere line. A nil
-// view writes nothing. A bare standing fact (no header) — it's environmental
-// texture, not an actionable cue for this actor.
+// renderStallCondition writes the co-present worn-business line (no header). A nil
+// view writes nothing. When merely worn it's a bare atmosphere fact; when degraded
+// it states the closed-for-restock condition (LLM-310) — still not a per-actor
+// imperative, just the shop's state as it is.
 func renderStallCondition(b *strings.Builder, v *StallConditionView) {
 	if v == nil {
 		return
@@ -232,7 +235,13 @@ func renderStallCondition(b *strings.Builder, v *StallConditionView) {
 		name = "business"
 	}
 	if v.Degraded {
-		fmt.Fprintf(b, "The %s here is battered and badly in need of repair.\n", name)
+		// LLM-310: a degraded business is a closed-for-restock fact, not mere texture —
+		// state it the same way the owner's "## Your business" cue does (LLM-304: sells
+		// on-hand stock, can't refill until mended) so a co-present buyer isn't told the
+		// shop is only "run-down" while the owner is told he can still sell. Deliberately
+		// NOT "can sell nothing": degrade blocks refill, not selling, so the on-hand stock
+		// is still for sale (the eachVendorOffer qty>0 gate drops him once sold empty).
+		fmt.Fprintf(b, "The %s here is too worn to restock — its keeper can sell what's on hand, but can't refill the shelves or make more until it's mended.\n", name)
 	} else {
 		fmt.Fprintf(b, "The %s here looks worn and run-down from hard use.\n", name)
 	}

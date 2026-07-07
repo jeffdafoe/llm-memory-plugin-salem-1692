@@ -1143,6 +1143,69 @@ func TestCoPresentSellerForItem_ExcludesReseller(t *testing.T) {
 	}
 }
 
+// degradeMosesFarm makes Moses's producing farm a degraded owned business (worn
+// past the degrade threshold — shut for refill, still sells its on-hand stock,
+// LLM-304) on a carrotSupplyChainSnap. Shared by the two LLM-310 rescope guards.
+func degradeMosesFarm(snap *sim.Snapshot) {
+	snap.StallWearRepairThreshold = 400
+	snap.StallWearDegradeThreshold = 600
+	snap.VillageObjects["farm"] = &sim.VillageObject{ID: "farm", OwnerActorID: "moses", Tags: []string{sim.TagBusiness}, Wear: 650}
+}
+
+// TestFindItemVendors_DegradedSellerStillListedWhileStocked is the LLM-310 rescope
+// guard for the walk-to directory. Degrade blocks REFILL, not selling (LLM-304), so
+// a degraded keeper who still holds stock stays a valid buy destination — buyers
+// clearing his on-hand shelves is his recovery path. Vendor selection keys on stock
+// (qty>0 via eachVendorOffer), never on the seller's wear state, so the sold-empty
+// dead-end the original ticket wanted to suppress falls out on its own the moment the
+// shelf hits zero. Guards against a future re-add of the dropped degrade-based seller
+// exclusion (fix #2), which would starve the recovery loop.
+func TestFindItemVendors_DegradedSellerStillListedWhileStocked(t *testing.T) {
+	subj := &sim.ActorSnapshot{Coins: 50, Inventory: map[sim.ItemKind]int{"carrots": 1}, RestockPolicy: buyPolicy("carrots", 12)}
+	snap := carrotSupplyChainSnap(subj, false)
+	degradeMosesFarm(snap)
+	listed := func() map[sim.StructureID]bool {
+		got := map[sim.StructureID]bool{}
+		for _, vd := range findItemVendors(snap, "subj", subj, "carrots") {
+			got[vd.StructureID] = true
+		}
+		return got
+	}
+	// Degraded but still holding 40 carrots → still a supplier.
+	if got := listed(); !got["farm"] {
+		t.Errorf("a degraded seller that still holds stock must remain a restock supplier (LLM-304 recovery loop), got %v", got)
+	}
+	// Sold down to empty → drops out via the qty>0 gate, no degrade check needed.
+	snap.Actors["moses"].Inventory["carrots"] = 0
+	if got := listed(); got["farm"] {
+		t.Errorf("a seller sold down to 0 must drop out via the qty>0 gate, got %v", got)
+	}
+}
+
+// TestCoPresentSellerForItem_NamesDegradedSellerWhileStocked is the LLM-310 rescope
+// guard for the co-present buy-here arm — the "## Restocking" imperative that goaded
+// the original Elizabeth↔Josiah loop. Post-LLM-304 a degraded keeper still sells his
+// on-hand stock, so while he holds stock he must still be named as the co-present
+// seller (naming him is exactly what lets a buyer clear his shelves — his recovery
+// path). The helper keys on stock, never on wear; sold empty, he drops out via qty>0.
+func TestCoPresentSellerForItem_NamesDegradedSellerWhileStocked(t *testing.T) {
+	subj := &sim.ActorSnapshot{Coins: 50, Inventory: map[sim.ItemKind]int{"carrots": 1}, RestockPolicy: buyPolicy("carrots", 12)}
+	snap := carrotSupplyChainSnap(subj, true)
+	// Only the producer Moses co-present (drop the reseller + distributor from the huddle).
+	snap.Actors["john"].CurrentHuddleID = "elsewhere"
+	snap.Actors["josiah"].CurrentHuddleID = "elsewhere"
+	degradeMosesFarm(snap)
+	// Degraded but holding 40 carrots → still the named co-present seller.
+	if name, id := coPresentSellerForItem(snap, "subj", subj, "carrots"); id != "moses" || name != "Moses" {
+		t.Errorf("a degraded seller that still holds stock must still be named co-present (LLM-304 recovery), got %q/%q", name, id)
+	}
+	// Sold down to empty → drops out via the qty>0 gate.
+	snap.Actors["moses"].Inventory["carrots"] = 0
+	if name, id := coPresentSellerForItem(snap, "subj", subj, "carrots"); name != "" || id != "" {
+		t.Errorf("a co-present seller sold down to 0 must drop out via qty>0, got %q/%q", name, id)
+	}
+}
+
 // TestObservedSupplierBuyRate_ScopedToListedSellers pins the LLM-295 seller-level
 // scoping (code_review): the observed buy anchor is drawn ONLY from the sellers the
 // walk-to list names (RestockVendor.VendorID) plus the co-present seller, never a

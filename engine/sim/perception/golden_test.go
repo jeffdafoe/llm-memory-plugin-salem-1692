@@ -1272,6 +1272,16 @@ var perceptionScenarios = []perceptionScenario{
 		build: passerbyAtWornStall,
 	},
 	{
+		name: "passerby_at_degraded_stall",
+		summary: "LLM-310: a non-owner (John) stands at someone else's DEGRADED business (wear past the degrade " +
+			"threshold). The golden pins the faithful closed-for-restock condition line ('too worn to keep stock — its " +
+			"keeper can only sell what's on hand, and can't restock or make more until it's mended') — the third-person " +
+			"mirror of the owner cue (LLM-304), NOT the old worn-only texture and NOT a false 'can sell nothing' (degrade " +
+			"blocks refill, not selling). No '## Your business' owner cue, no buy imperative. Foil of passerby_at_worn_stall " +
+			"(worn but not degraded → the plain 'looks worn and run-down' texture).",
+		build: passerbyAtDegradedStall,
+	},
+	{
 		name: "hired_worker_at_employer_worn_business",
 		summary: "LLM-271: Lewis Walker, hired to labor for Prudence Ward (a Working LaborOffer, WorkerID == subject), " +
 			"stands INSIDE her worn PW Apothecary with enough nails to mend it. The golden pins the hired-framed " +
@@ -5751,6 +5761,15 @@ func farmOwnerOffPostOwesUpkeepNoSupplier() (*sim.Snapshot, sim.ActorID, []sim.W
 // business's owner (Ezekiel).
 func passerbyAtWornStall() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	return stallWearSnapshot("john", "ezekiel", "John Ellis", "tavernkeeper", 450, 0)
+}
+
+// passerbyAtDegradedStall is the LLM-310 non-owner arm: a passerby (John) stands at
+// someone else's DEGRADED business (wear 650 >= degrade 600). The golden pins the
+// faithful closed-for-restock condition line (the third-person mirror of the owner
+// cue, LLM-304) instead of the worn-only texture. Foil of passerbyAtWornStall (wear
+// 450 → worn but not degraded).
+func passerbyAtDegradedStall() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return stallWearSnapshot("john", "ezekiel", "John Ellis", "tavernkeeper", 650, 0)
 }
 
 // hiredWorkerAtEmployerWornBusiness is the LLM-271 fixture, modeled on the live
