@@ -1337,6 +1337,16 @@ func (h *Harness) dispatch(ctx context.Context, w *sim.World, job tickJob, vc *V
 			if errors.As(err, &noop) {
 				return fmt.Sprintf("[ok] %s", noop.Error()), dispatchOutcome{success: true, ended: true, terminalStatus: sim.TickStatusSuccess}
 			}
+			// LLM-317: the NON-terminal sibling — a no-op that echoes its [ok] message
+			// but does NOT end the tick (the confabulated "kitchen" phantom arrival).
+			// The actor never moved and may be about to produce/act, so it keeps this
+			// tick. Same success shape as a non-terminal observation/produce round
+			// (success:true, ended:false, nil postSelfState — nothing changed, so the
+			// loop's postSelfState re-perception is correctly skipped).
+			var ntNoop sim.NonTerminalNoOpError
+			if errors.As(err, &ntNoop) {
+				return fmt.Sprintf("[ok] %s", ntNoop.Error()), dispatchOutcome{success: true, ended: false}
+			}
 			// Echo the command validator's rejection reason to the model so it can
 			// correct its next call ("no one named X in this conversation", "use a
 			// structure_id you can see in your perception"). These reasons are
