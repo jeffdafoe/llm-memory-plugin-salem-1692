@@ -60,7 +60,7 @@ func (s *Server) handleUmbilicalEcoMode(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		if errors.Is(err, sim.ErrInvalidEcoModeSetting) {
-			writeError(w, http.StatusBadRequest, "provide at least one of enabled / social_gap_seconds / economy_gap_seconds (gaps >= 0; 0 disables that throttle)")
+			writeError(w, http.StatusBadRequest, "provide at least one of enabled / social_gap_seconds / economy_gap_seconds (gaps >= 0 and below the warrant stale horizon, default 90s; 0 disables that throttle)")
 			return
 		}
 		writeError(w, http.StatusUnprocessableEntity, err.Error())

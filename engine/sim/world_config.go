@@ -395,7 +395,10 @@ func SetFarmUpkeepSettings(floor, coinsPerShovel *int) Command {
 }
 
 // ErrInvalidEcoModeSetting is returned by SetEcoMode when no field is supplied
-// or a gap is out of range (must be >= 0 seconds) — → 400 at the umbilical route.
+// or a gap is out of range (must be >= 0 seconds and strictly below the live
+// warrant stale horizon — a gap at/above MaxWarrantAge would park cycles past
+// the shelved/fairness eviction paths and turn delay-not-drop into drop) —
+// → 400 at the umbilical route.
 var ErrInvalidEcoModeSetting = errors.New("invalid eco mode setting")
 
 // EcoModeSettingsResult echoes the post-change eco knobs, plus whether the
@@ -423,10 +426,17 @@ func SetEcoMode(enabled *bool, socialGapSeconds, economyGapSeconds *int) Command
 			if enabled == nil && socialGapSeconds == nil && economyGapSeconds == nil {
 				return nil, ErrInvalidEcoModeSetting
 			}
-			if socialGapSeconds != nil && (*socialGapSeconds < 0 || *socialGapSeconds > math.MaxInt32) {
+			// Gaps must sit strictly below the live warrant stale horizon
+			// (code_review R1): a parked cycle's age-at-due is bounded by its
+			// gap (WarrantedSince postdates the anchoring last tick), so
+			// gap < MaxWarrantAge guarantees it comes due before the
+			// shelved/fairness stale paths could evict it. 0 stays valid —
+			// it disables that bucket's throttle rather than parking anything.
+			horizon := int(effectiveMaxWarrantAge(w.Settings) / time.Second)
+			if socialGapSeconds != nil && (*socialGapSeconds < 0 || *socialGapSeconds >= horizon) {
 				return nil, ErrInvalidEcoModeSetting
 			}
-			if economyGapSeconds != nil && (*economyGapSeconds < 0 || *economyGapSeconds > math.MaxInt32) {
+			if economyGapSeconds != nil && (*economyGapSeconds < 0 || *economyGapSeconds >= horizon) {
 				return nil, ErrInvalidEcoModeSetting
 			}
 			if enabled != nil {

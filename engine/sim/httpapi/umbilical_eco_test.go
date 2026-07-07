@@ -17,7 +17,7 @@ func TestUmbilicalEcoMode_TunesAndReadsBack(t *testing.T) {
 	srv, h := controlServer(t, operatorPerms)
 
 	rec := postReq(t, h, "/api/village/umbilical/settings/eco-mode", "tok",
-		`{"enabled":true,"social_gap_seconds":120,"economy_gap_seconds":45}`)
+		`{"enabled":true,"social_gap_seconds":75,"economy_gap_seconds":45}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("tune = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
@@ -25,8 +25,8 @@ func TestUmbilicalEcoMode_TunesAndReadsBack(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if !out.Enabled || out.SocialGapSeconds != 120 || out.EconomyGapSeconds != 45 {
-		t.Errorf("response = %+v, want enabled/120/45", out)
+	if !out.Enabled || out.SocialGapSeconds != 75 || out.EconomyGapSeconds != 45 {
+		t.Errorf("response = %+v, want enabled/75/45", out)
 	}
 	// The control world has no PC with a fresh stamp, so eco is engaged.
 	if out.AudienceActive {
@@ -39,7 +39,7 @@ func TestUmbilicalEcoMode_TunesAndReadsBack(t *testing.T) {
 	// Applied to live WorldSettings.
 	res, _ := srv.world.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		return world.Settings.EcoEnabled &&
-			world.Settings.EcoSocialGap.Seconds() == 120 &&
+			world.Settings.EcoSocialGap.Seconds() == 75 &&
 			world.Settings.EcoEconomyGap.Seconds() == 45, nil
 	}})
 	if ok, _ := res.(bool); !ok {
@@ -55,8 +55,8 @@ func TestUmbilicalEcoMode_TunesAndReadsBack(t *testing.T) {
 	if err := json.Unmarshal(grec.Body.Bytes(), &sdto); err != nil {
 		t.Fatalf("decode settings: %v", err)
 	}
-	if !sdto.EcoEnabled || sdto.EcoSocialGapSeconds != 120 || sdto.EcoEconomyGapSeconds != 45 {
-		t.Errorf("GET settings eco block = %+v, want enabled/120/45", sdto)
+	if !sdto.EcoEnabled || sdto.EcoSocialGapSeconds != 75 || sdto.EcoEconomyGapSeconds != 45 {
+		t.Errorf("GET settings eco block = %+v, want enabled/75/45", sdto)
 	}
 	if sdto.EcoAudienceActive {
 		t.Error("GET settings eco_audience_active = true, want false")
@@ -70,7 +70,7 @@ func TestUmbilicalEcoMode_TunesAndReadsBack(t *testing.T) {
 		t.Fatalf("partial tune = %d, want 200", rec.Code)
 	}
 	res, _ = srv.world.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		return !world.Settings.EcoEnabled && world.Settings.EcoSocialGap.Seconds() == 120, nil
+		return !world.Settings.EcoEnabled && world.Settings.EcoSocialGap.Seconds() == 75, nil
 	}})
 	if ok, _ := res.(bool); !ok {
 		t.Error("partial update clobbered the untouched gap or missed the switch")
@@ -87,9 +87,11 @@ func TestUmbilicalEcoMode_TunesAndReadsBack(t *testing.T) {
 func TestUmbilicalEcoMode_Validation(t *testing.T) {
 	_, h := controlServer(t, operatorPerms)
 	bad := []string{
-		`{}`,                         // nothing supplied
-		`{"social_gap_seconds":-5}`,  // negative is rejected
-		`{"economy_gap_seconds":-1}`, // negative is rejected
+		`{}`,                          // nothing supplied
+		`{"social_gap_seconds":-5}`,   // negative is rejected
+		`{"economy_gap_seconds":-1}`,  // negative is rejected
+		`{"social_gap_seconds":90}`,   // at the default warrant stale horizon
+		`{"economy_gap_seconds":600}`, // past the horizon
 	}
 	for _, body := range bad {
 		if rec := postReq(t, h, "/api/village/umbilical/settings/eco-mode", "tok", body); rec.Code != http.StatusBadRequest {

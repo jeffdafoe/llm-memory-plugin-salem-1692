@@ -22,7 +22,7 @@ import (
 // inspectActor (reactor_test.go), same package.
 
 // buildEcoWorld stands up a running world with one shared-VA NPC ("hannah"),
-// one PC ("player"), eco mode armed (social 90s / economy 30s), and the tight
+// one PC ("player"), eco mode armed (social 60s / economy 30s), and the tight
 // reactor jitter the other reactor tests use. The PC's presence stamp starts
 // ABSENT (nil LastPCSeenAt = stale by design), so the world reads unwatched
 // until a test stamps it.
@@ -44,7 +44,7 @@ func buildEcoWorld(t *testing.T) (*sim.World, context.CancelFunc) {
 		world.Settings.ReactorJitterMax = 11 * time.Millisecond
 		world.Settings.MaxWarrantsPerActor = 16
 		world.Settings.EcoEnabled = true
-		world.Settings.EcoSocialGap = 90 * time.Second
+		world.Settings.EcoSocialGap = 60 * time.Second
 		world.Settings.EcoEconomyGap = 30 * time.Second
 		return nil, nil
 	}}); err != nil {
@@ -90,7 +90,7 @@ func TestEcoMode_DefersSocialCycleWhenUnwatched(t *testing.T) {
 	defer cancel()
 	now := time.Now().UTC()
 
-	lastTick := now.Add(-30 * time.Second) // past the 5s min-gap, inside the 90s eco gap
+	lastTick := now.Add(-30 * time.Second) // past the 5s min-gap, inside the 60s eco gap
 	seedLastTick(t, w, "hannah", lastTick)
 	seedDueWarrant(t, w, "hannah", []sim.WarrantMeta{npcSpokeMeta(1)}, now)
 	emitted := subscribeReactorTicks(t, w)
@@ -107,7 +107,7 @@ func TestEcoMode_DefersSocialCycleWhenUnwatched(t *testing.T) {
 		if a.TickInFlight {
 			t.Error("TickInFlight set despite eco deferral (nothing consumed)")
 		}
-		want := lastTick.Add(90 * time.Second)
+		want := lastTick.Add(60 * time.Second)
 		if a.WarrantDueAt == nil || !a.WarrantDueAt.Equal(want) {
 			t.Errorf("WarrantDueAt not pushed to last-tick+gap: got %v want %v", a.WarrantDueAt, want)
 		}
@@ -119,7 +119,7 @@ func TestEcoMode_GapElapsed_Emits(t *testing.T) {
 	defer cancel()
 	now := time.Now().UTC()
 
-	seedLastTick(t, w, "hannah", now.Add(-120*time.Second)) // past the 90s eco gap
+	seedLastTick(t, w, "hannah", now.Add(-120*time.Second)) // past the 60s eco gap
 	seedDueWarrant(t, w, "hannah", []sim.WarrantMeta{npcSpokeMeta(2)}, now)
 	emitted := subscribeReactorTicks(t, w)
 
@@ -305,7 +305,7 @@ func TestSetEcoMode_UpdatesAndEchoes(t *testing.T) {
 	defer cancel()
 
 	enabled := false
-	social := 300
+	social := 45
 	res, err := w.Send(sim.SetEcoMode(&enabled, &social, nil))
 	if err != nil {
 		t.Fatalf("SetEcoMode: %v", err)
@@ -317,8 +317,8 @@ func TestSetEcoMode_UpdatesAndEchoes(t *testing.T) {
 	if out.Enabled {
 		t.Error("Enabled = true, want false")
 	}
-	if out.SocialGapSeconds != 300 {
-		t.Errorf("SocialGapSeconds = %d, want 300", out.SocialGapSeconds)
+	if out.SocialGapSeconds != 45 {
+		t.Errorf("SocialGapSeconds = %d, want 45", out.SocialGapSeconds)
 	}
 	if out.EconomyGapSeconds != 30 {
 		t.Errorf("EconomyGapSeconds = %d, want 30 (unchanged)", out.EconomyGapSeconds)
@@ -331,8 +331,8 @@ func TestSetEcoMode_UpdatesAndEchoes(t *testing.T) {
 		if world.Settings.EcoEnabled {
 			t.Error("world EcoEnabled still true")
 		}
-		if world.Settings.EcoSocialGap != 300*time.Second {
-			t.Errorf("world EcoSocialGap = %v, want 300s", world.Settings.EcoSocialGap)
+		if world.Settings.EcoSocialGap != 45*time.Second {
+			t.Errorf("world EcoSocialGap = %v, want 45s", world.Settings.EcoSocialGap)
 		}
 		return nil, nil
 	}}); err != nil {
@@ -345,6 +345,8 @@ func TestSetEcoMode_Rejects(t *testing.T) {
 	defer cancel()
 
 	neg := -1
+	atHorizon := 90 // == default MaxWarrantAge: a parked cycle could age out
+	pastHorizon := 3600
 	cases := []struct {
 		name    string
 		enabled *bool
@@ -354,6 +356,8 @@ func TestSetEcoMode_Rejects(t *testing.T) {
 		{"all absent", nil, nil, nil},
 		{"negative social", nil, &neg, nil},
 		{"negative economy", nil, nil, &neg},
+		{"social at stale horizon", nil, &atHorizon, nil},
+		{"economy past stale horizon", nil, nil, &pastHorizon},
 	}
 	for _, tc := range cases {
 		if _, err := w.Send(sim.SetEcoMode(tc.enabled, tc.social, tc.economy)); err == nil {

@@ -561,7 +561,7 @@ func EvaluateReactors(now time.Time) Command {
 				// scan and parked cycles were only ever pushed to
 				// last-tick+gap, so the tableau resumes within seconds.
 				if ecoEngaged && !hasForcedWarrant(actor.Warrants) {
-					if ecoGap := ecoCycleGap(actor.Warrants, w.Settings); ecoGap > 0 {
+					if ecoGap := ecoCycleGapClamped(actor.Warrants, w.Settings); ecoGap > 0 {
 						if last, ok := lastReactorTickAt(actor); ok && now.Sub(last) < ecoGap {
 							next := last.Add(ecoGap)
 							actor.WarrantDueAt = &next

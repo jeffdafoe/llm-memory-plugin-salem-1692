@@ -47,10 +47,15 @@ import "time"
 
 const (
 	// DefaultEcoSocialGap is the fallback per-actor pacing floor for a
-	// social-bucket warrant cycle while unwatched. 90s ≈ a chatter response
-	// every minute and a half instead of every few seconds — conversations
-	// still conclude, at a fraction of the token burn.
-	DefaultEcoSocialGap = 90 * time.Second
+	// social-bucket warrant cycle while unwatched. 60s ≈ a chatter response
+	// every minute instead of every few seconds — conversations still
+	// conclude, at a fraction of the token burn. Deliberately BELOW the
+	// default warrant stale horizon (defaultMaxWarrantAge, 90s) with margin:
+	// a cycle parked by the eco gate must come due before it can age out, or
+	// delay-not-drop would silently become drop (code_review R1). SetEcoMode
+	// rejects gaps at/above the live horizon and the reactor gate clamps as
+	// a second line for values that arrived outside the setter.
+	DefaultEcoSocialGap = 60 * time.Second
 
 	// DefaultEcoEconomyGap is the fallback pacing floor for an economy-bucket
 	// cycle while unwatched. Mild: restock/production/upkeep decisions land
@@ -105,6 +110,37 @@ func effectiveEcoEconomyGap(s WorldSettings) time.Duration {
 		return DefaultEcoEconomyGap
 	}
 	return s.EcoEconomyGap
+}
+
+// effectiveMaxWarrantAge is the live warrant stale horizon — the same
+// fallback warrantCycleStale applies. The eco gaps must stay strictly below
+// it: a cycle parked by the eco gate anchors on the actor's last tick, and
+// WarrantedSince always postdates that tick (a tick consumes the prior
+// cycle), so age-at-due < gap — a gap below the horizon guarantees a parked
+// cycle comes due before the shelved/fairness stale paths can evict it,
+// keeping delay-not-drop true. SetEcoMode rejects violating knobs at the
+// door; ecoCycleGapClamped is the defensive second line for values that
+// arrived outside the setter (a direct DB edit, or MaxWarrantAge lowered
+// after the gaps were set).
+func effectiveMaxWarrantAge(s WorldSettings) time.Duration {
+	if s.MaxWarrantAge > 0 {
+		return s.MaxWarrantAge
+	}
+	return defaultMaxWarrantAge
+}
+
+// ecoCycleGapClamped is ecoCycleGap bounded to just under the live warrant
+// stale horizon (see effectiveMaxWarrantAge). The clamp target keeps a
+// one-jitter-scan margin so "comes due" strictly precedes "ages out".
+func ecoCycleGapClamped(warrants []WarrantMeta, s WorldSettings) time.Duration {
+	gap := ecoCycleGap(warrants, s)
+	if gap <= 0 {
+		return gap
+	}
+	if ceiling := effectiveMaxWarrantAge(s) - time.Second; gap > ceiling {
+		return ceiling
+	}
+	return gap
 }
 
 // ecoWarrantGap classifies a warrant kind into its eco pacing bucket and
