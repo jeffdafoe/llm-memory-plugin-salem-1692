@@ -557,6 +557,15 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 	// the tick-open snapshot (actor presence checked in preflight); advanced on
 	// each refresh.
 	lastSelf := snap.Actors[job.actorID]
+	// simActorID / simActorName attribute every deliberation turn this tick to
+	// the acting in-world actor, so a shared-VA (salem-vendor) turn is logged
+	// against the character rather than only the switchboard agent (LLM-236).
+	// Resolved once — the actor's identity is fixed for the whole tick.
+	simActorID := string(job.actorID)
+	simActorName := ""
+	if lastSelf != nil {
+		simActorName = lastSelf.DisplayName
+	}
 	for round := 0; round < maxTotalRounds; round++ {
 		result.IterationCount = round + 1
 
@@ -573,6 +582,8 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 			Messages:         transcript,
 			Tools:            tools,
 			EphemeralContext: ephemeralText,
+			SimActorID:       simActorID,
+			SimActorName:     simActorName,
 		})
 		if err != nil {
 			cls := llm.Classify(err)

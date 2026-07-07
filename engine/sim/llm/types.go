@@ -76,6 +76,22 @@ type Request struct {
 	// Re-sent on every iteration within a tick so each follow-up call still
 	// carries the current options.
 	EphemeralContext string
+
+	// SimActorID / SimActorName identify the in-world actor this call is made
+	// ON BEHALF OF. A shared switchboard VA (salem-vendor / salem-visitor)
+	// backs MANY in-world actors under one agent name, so the logged call row's
+	// actor_id (the VA) can't say which character the turn was for — attribution
+	// was only recoverable by parsing the perception text. The harness stamps
+	// the deliberating actor here; memory-api stores both on the
+	// virtual_agent_calls row and surfaces them on /sim/raw-turns (which the
+	// umbilical /turns proxy relays). Empty for village-level cascades
+	// (atmosphere / noticeboard / narration expansion) that act on behalf of no
+	// single actor. SimActorID is the salem engine actor id — opaque to
+	// memory-api (stored as TEXT, never joined); SimActorName is the display
+	// name (capped at 100 chars server-side). Adapters that don't thread them
+	// ignore them. LLM-236.
+	SimActorID   string
+	SimActorName string
 }
 
 // SoulRequest is the input to a shared-NPC soul synthesis call (LLM-199) —

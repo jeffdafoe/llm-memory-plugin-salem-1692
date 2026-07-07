@@ -352,6 +352,36 @@ func TestHarness_Observation_RunsInlineThenLoops(t *testing.T) {
 	}
 }
 
+// TestHarness_StampsSimActorIdentity pins LLM-236: every deliberation turn a
+// tick emits carries the acting in-world actor's id + display name on the
+// llm.Request, so a shared-VA (salem-vendor) turn logged by memory-api can be
+// attributed to the character rather than only the switchboard agent. The test
+// world's actor is "alice" (DisplayName == id).
+func TestHarness_StampsSimActorIdentity(t *testing.T) {
+	w, cancel := newHarnessWorld(t, "attempt-A")
+	defer cancel()
+
+	client := llm.NewFakeClient(llm.ScriptedTurn{Response: llm.Response{
+		ToolCalls: []llm.RawToolCall{newToolCall("c1", 0, "done", `{}`)},
+	}})
+	h, _ := newTestHarness(t, client, 0, 0)
+
+	if res := h.RunTick(context.Background(), w, newTestJob("attempt-A", nil)); res.TerminalStatus != sim.TickStatusDone {
+		t.Fatalf("tick status = %v, want Done", res.TerminalStatus)
+	}
+
+	reqs := client.Requests()
+	if len(reqs) < 1 {
+		t.Fatalf("client calls: got %d, want >=1", len(reqs))
+	}
+	if reqs[0].SimActorID != "alice" {
+		t.Errorf("SimActorID = %q, want alice", reqs[0].SimActorID)
+	}
+	if reqs[0].SimActorName != "alice" {
+		t.Errorf("SimActorName = %q, want alice", reqs[0].SimActorName)
+	}
+}
+
 // Commit-dispatch end-to-end tests (move_to, note) require a valid
 // rootEventID — sim.RunTickToolCommand wraps via newRootedCommand which
 // rejects root > w.eventSeq. The test world's eventSeq starts at 0 and
