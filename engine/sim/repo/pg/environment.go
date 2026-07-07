@@ -342,6 +342,13 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	// sticks and disables the conserve gate (the off-switch, like labor_produce_boost_pct).
 	s.MerchantCoinFloor = parseIntSetting(values, "merchant_coin_floor", sim.MerchantCoinFloorDefault)
 
+	// Eco mode (LLM-313). ON by default — unset seeds enabled with the default gaps;
+	// an explicit false/0 sticks (eco_enabled false kills the whole feature; a zero
+	// gap disables that bucket's throttle individually).
+	s.EcoEnabled = parseBoolSetting(values, "eco_enabled", true)
+	s.EcoSocialGap = parseDurationSetting(values, "eco_social_gap_seconds", sim.DefaultEcoSocialGap)
+	s.EcoEconomyGap = parseDurationSetting(values, "eco_economy_gap_seconds", sim.DefaultEcoEconomyGap)
+
 	// Cross-huddle conversation continuity (LLM-170). ON by default — the ring
 	// carry-over is pure perception legibility; the loop-state carry is inert
 	// unless the loop sweep above is enabled.
@@ -585,6 +592,12 @@ func (r *EnvironmentRepo) SaveMutableSettings(ctx context.Context, tx sim.Tx, ms
 		// Merchant working-capital floor (LLM-294) — live-tuned via the umbilical,
 		// persisted here; the load path parses merchant_coin_floor via parseIntSetting.
 		{"merchant_coin_floor", strconv.Itoa(ms.MerchantCoinFloor)},
+		// Eco mode knobs (LLM-313) — live-tuned via the umbilical, persisted here.
+		// Gaps stored in seconds; the load path parses eco_enabled via
+		// parseBoolSetting and the gaps via parseDurationSetting.
+		{"eco_enabled", strconv.FormatBool(ms.EcoEnabled)},
+		{"eco_social_gap_seconds", strconv.Itoa(ms.EcoSocialGapSeconds)},
+		{"eco_economy_gap_seconds", strconv.Itoa(ms.EcoEconomyGapSeconds)},
 	}
 	for _, row := range rows {
 		if _, err := tx.Exec(ctx, upsertSettingSQL, row.key, row.val); err != nil {

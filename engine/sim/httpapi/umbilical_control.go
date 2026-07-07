@@ -614,11 +614,12 @@ func (s *Server) handleUmbilicalSetNeeds(w http.ResponseWriter, r *http.Request)
 	auditUmbilical(user.Username, "set-needs", target)
 
 	res, err := s.world.SendContext(r.Context(), sim.Command{Fn: func(world *sim.World) (any, error) {
+		now := time.Now().UTC()
 		out := umbilicalSetNeedsResponse{Actors: []UmbilicalActorRowDTO{}}
 		if req.All {
 			for _, a := range world.Actors {
 				setActorNeeds(world, a, values, zeroAll)
-				out.Actors = append(out.Actors, actorRowDTO(a))
+				out.Actors = append(out.Actors, actorRowDTO(world, a, now))
 			}
 		} else {
 			a, ok := world.Actors[sim.ActorID(req.ActorID)]
@@ -626,7 +627,7 @@ func (s *Server) handleUmbilicalSetNeeds(w http.ResponseWriter, r *http.Request)
 				return nil, errAgentNotFound
 			}
 			setActorNeeds(world, a, values, zeroAll)
-			out.Actors = append(out.Actors, actorRowDTO(a))
+			out.Actors = append(out.Actors, actorRowDTO(world, a, now))
 		}
 		out.Set = len(out.Actors)
 		sort.Slice(out.Actors, func(i, j int) bool { return out.Actors[i].ID < out.Actors[j].ID })

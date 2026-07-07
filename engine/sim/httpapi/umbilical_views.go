@@ -423,6 +423,12 @@ type UmbilicalActorRowDTO struct {
 	Coins       int            `json:"coins"`
 	TileX       int            `json:"tile_x"`
 	TileY       int            `json:"tile_y"`
+	// Present is PC-only (omitted for every other kind): whether the player's
+	// client is currently attached, i.e. the /pc/me presence stamp is fresh by
+	// the same PCPresenceStale gate the ghost-ejection sweep and eco mode
+	// (LLM-313) trust. The read side of "does the village think anyone is
+	// watching."
+	Present *bool `json:"present,omitempty"`
 }
 
 // UmbilicalActorsDTO is the GET /api/village/umbilical/actors response: the full
@@ -436,9 +442,12 @@ type UmbilicalActorsDTO struct {
 }
 
 // actorRowDTO copies one live actor's roster fields into a value DTO. Must run on
-// the world goroutine (it reads an *Actor); no pointer escapes the closure. A
-// nil/empty Needs map yields an omitted needs field (the actor tracks no needs).
-func actorRowDTO(a *sim.Actor) UmbilicalActorRowDTO {
+// the world goroutine (it reads an *Actor and, for a PC's presence, world
+// settings); no pointer escapes the closure. A nil/empty Needs map yields an
+// omitted needs field (the actor tracks no needs). For PCs the row carries
+// present (fresh /pc/me stamp per the shared PCPresenceStale gate); every other
+// kind omits it.
+func actorRowDTO(world *sim.World, a *sim.Actor, now time.Time) UmbilicalActorRowDTO {
 	row := UmbilicalActorRowDTO{
 		ID:          string(a.ID),
 		DisplayName: a.DisplayName,
@@ -454,6 +463,10 @@ func actorRowDTO(a *sim.Actor) UmbilicalActorRowDTO {
 			row.Needs[string(k)] = v
 		}
 	}
+	if a.Kind == sim.KindPC {
+		present := !sim.PCPresenceStale(a.LastPCSeenAt, now, sim.PCPresenceStaleAfter(world))
+		row.Present = &present
+	}
 	return row
 }
 
@@ -468,7 +481,7 @@ func (s *Server) handleUmbilicalActors(w http.ResponseWriter, r *http.Request) {
 			Actors:          make([]UmbilicalActorRowDTO, 0, len(world.Actors)),
 		}
 		for _, a := range world.Actors {
-			dto.Actors = append(dto.Actors, actorRowDTO(a))
+			dto.Actors = append(dto.Actors, actorRowDTO(world, a, dto.Now))
 		}
 		dto.Total = len(dto.Actors)
 		sort.Slice(dto.Actors, func(i, j int) bool { return dto.Actors[i].ID < dto.Actors[j].ID })

@@ -394,6 +394,63 @@ func SetFarmUpkeepSettings(floor, coinsPerShovel *int) Command {
 	}
 }
 
+// ErrInvalidEcoModeSetting is returned by SetEcoMode when no field is supplied
+// or a gap is out of range (must be >= 0 seconds) — → 400 at the umbilical route.
+var ErrInvalidEcoModeSetting = errors.New("invalid eco mode setting")
+
+// EcoModeSettingsResult echoes the post-change eco knobs, plus whether the
+// throttles are engaged at this instant (enabled AND no fresh player presence)
+// so the operator sees cause and effect in one response.
+type EcoModeSettingsResult struct {
+	Enabled           bool
+	SocialGapSeconds  int
+	EconomyGapSeconds int
+	AudienceActive    bool
+	Engaged           bool
+}
+
+// SetEcoMode returns a Command that live-tunes eco mode (LLM-313): the master
+// switch and the per-bucket pacing floors the reactor applies to social/economy
+// warrant cycles while no player is present. All fields optional but at least
+// one must be supplied (nil = leave unchanged); gaps are seconds and must be
+// >= 0 (0 disables that bucket's throttle; eco_enabled=false kills the whole
+// feature). Takes effect on the next reactor scan — the evaluator reads
+// w.Settings each pass — AND persists on the next checkpoint via
+// MutableWorldSettings, so a live change survives restart.
+func SetEcoMode(enabled *bool, socialGapSeconds, economyGapSeconds *int) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			if enabled == nil && socialGapSeconds == nil && economyGapSeconds == nil {
+				return nil, ErrInvalidEcoModeSetting
+			}
+			if socialGapSeconds != nil && (*socialGapSeconds < 0 || *socialGapSeconds > math.MaxInt32) {
+				return nil, ErrInvalidEcoModeSetting
+			}
+			if economyGapSeconds != nil && (*economyGapSeconds < 0 || *economyGapSeconds > math.MaxInt32) {
+				return nil, ErrInvalidEcoModeSetting
+			}
+			if enabled != nil {
+				w.Settings.EcoEnabled = *enabled
+			}
+			if socialGapSeconds != nil {
+				w.Settings.EcoSocialGap = time.Duration(*socialGapSeconds) * time.Second
+			}
+			if economyGapSeconds != nil {
+				w.Settings.EcoEconomyGap = time.Duration(*economyGapSeconds) * time.Second
+			}
+			now := time.Now().UTC()
+			audience := AudienceActive(w, now)
+			return EcoModeSettingsResult{
+				Enabled:           w.Settings.EcoEnabled,
+				SocialGapSeconds:  int(w.Settings.EcoSocialGap / time.Second),
+				EconomyGapSeconds: int(w.Settings.EcoEconomyGap / time.Second),
+				AudienceActive:    audience,
+				Engaged:           w.Settings.EcoEnabled && !audience,
+			}, nil
+		},
+	}
+}
+
 // ErrInvalidMerchantCoinFloorSetting is returned by SetMerchantCoinFloor when the
 // floor is missing or out of range (must be >= 0) — → 400 at the umbilical route.
 var ErrInvalidMerchantCoinFloorSetting = errors.New("invalid merchant coin floor setting")

@@ -630,6 +630,28 @@ type WorldSettings struct {
 	// perception gates read it without racing on w.Settings; a 0 there (incl. a
 	// directly-constructed test snapshot) means the feature is off.
 	MerchantCoinFloor int
+
+	// EcoEnabled is eco mode's master switch (LLM-313): when true and no player
+	// character has a fresh presence stamp (AudienceActive), the reactor paces
+	// social/economy warrant cycles by EcoSocialGap/EcoEconomyGap, the plain idle
+	// backstop stops stamping, and visitor spawning pauses. Survival, duty, and
+	// commerce-commitment warrants are never slowed (see ecoWarrantGap). The pg
+	// loader seeds true when the eco_enabled key is absent; an explicit false
+	// STICKS. Live-tunable + persisted (settings/eco-mode, read side GET
+	// /settings). Engine-side only — perception never sees eco state.
+	EcoEnabled bool
+
+	// EcoSocialGap is the per-actor pacing floor for a social-bucket warrant
+	// cycle (npc_spoke, huddle beats) while eco mode is engaged. 0 disables the
+	// social throttle; a negative value never persists (SetEcoMode validates)
+	// and reads as the default. Seeded DefaultEcoSocialGap when the
+	// eco_social_gap_seconds key is absent.
+	EcoSocialGap time.Duration
+
+	// EcoEconomyGap is EcoSocialGap's economy-bucket twin (restock, production
+	// choice, farm upkeep, stall repair, seek work). Seeded
+	// DefaultEcoEconomyGap when the eco_economy_gap_seconds key is absent.
+	EcoEconomyGap time.Duration
 }
 
 // DefaultOutdoorSceneRadiusValue is the fallback radius used when

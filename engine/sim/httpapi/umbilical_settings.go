@@ -68,6 +68,17 @@ type UmbilicalSettingsDTO struct {
 	// (settings/merchant-coin-floor writes it). Persisted (checkpoint writes it back),
 	// so it survives restart. 0 means the gate is disabled.
 	MerchantCoinFloor int `json:"merchant_coin_floor"`
+
+	// Eco mode (LLM-313) — the knobs settings/eco-mode writes, persisted like the
+	// huddle_loop_* group. eco_audience_active / eco_engaged are LIVE state, not
+	// settings: whether any PC's presence stamp is fresh at this instant, and
+	// whether the throttles are consequently applying (enabled AND no audience) —
+	// the pair makes a "why is/isn't the village slowed right now" read one call.
+	EcoEnabled           bool `json:"eco_enabled"`
+	EcoSocialGapSeconds  int  `json:"eco_social_gap_seconds"`
+	EcoEconomyGapSeconds int  `json:"eco_economy_gap_seconds"`
+	EcoAudienceActive    bool `json:"eco_audience_active"`
+	EcoEngaged           bool `json:"eco_engaged"`
 }
 
 // handleUmbilicalSettings serves the current live-tunable world settings. Read on
@@ -76,6 +87,7 @@ type UmbilicalSettingsDTO struct {
 // mutates nothing.
 func (s *Server) handleUmbilicalSettings(w http.ResponseWriter, r *http.Request) {
 	res, err := s.world.SendContext(r.Context(), sim.Command{Fn: func(world *sim.World) (any, error) {
+		audience := sim.AudienceActive(world, time.Now().UTC())
 		dto := UmbilicalSettingsDTO{
 			ContractVersion:               ContractVersion,
 			NeedThresholds:                make(map[string]int, len(world.Settings.NeedThresholds)),
@@ -89,6 +101,11 @@ func (s *Server) handleUmbilicalSettings(w http.ResponseWriter, r *http.Request)
 			FarmUpkeepCoinsPerShovel:      world.Settings.FarmUpkeepCoinsPerShovel,
 			LaborProduceBoostPct:          world.Settings.LaborProduceBoostPct,
 			MerchantCoinFloor:             world.Settings.MerchantCoinFloor,
+			EcoEnabled:                    world.Settings.EcoEnabled,
+			EcoSocialGapSeconds:           int(world.Settings.EcoSocialGap / time.Second),
+			EcoEconomyGapSeconds:          int(world.Settings.EcoEconomyGap / time.Second),
+			EcoAudienceActive:             audience,
+			EcoEngaged:                    world.Settings.EcoEnabled && !audience,
 		}
 		for k, v := range world.Settings.NeedThresholds {
 			dto.NeedThresholds[string(k)] = v
