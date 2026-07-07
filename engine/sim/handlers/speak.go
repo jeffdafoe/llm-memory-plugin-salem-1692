@@ -143,9 +143,22 @@ const speakDescription = "Say one message to the actors currently in your conver
 // Checks:
 //
 //   - JSON parses, no trailing data
-//   - No unknown fields (DisallowUnknownFields)
+//   - No unknown fields (DisallowUnknownFields), except `message` — an
+//     accepted alias for `text` (see below)
 //   - text field is present (not the zero value)
 //   - text byte length ≤ MaxSpeakTextBytes (defense in depth vs schema)
+//
+// `message` alias for `text` (LLM-315): weak models (llama-3.3-70b)
+// reliably call speak with {"message": ...} instead of the schema's
+// {"text": ...} — the tool description itself says "Say one message..." —
+// and they loop on the same wrong shape even when the LLM-221 model-safe
+// rejection (`speak: unknown field "message"`) is fed back to them (live
+// scene 019f3db7-f37b-7ae4-9378-16d330f3ee67: the error came back three
+// times and the model repeated the identical call). Tolerating the alias
+// lets the utterance land. `text` stays canonical — when both are present
+// it wins; the alias only fills an empty Text. Deliberately scoped to
+// speak: `message` is a real field on the pay-resolution tools
+// (counter_pay), so this must NOT become a shared/global decoder alias.
 //
 // What DecodeSpeakArgs does NOT check (handled in HandleSpeak / Speak
 // command Fn):
@@ -157,10 +170,17 @@ const speakDescription = "Say one message to the actors currently in your conver
 //   - Walk-in-flight / vocative-stale / huddle membership: world-state
 //     checks done by the sim.Speak Command on the world goroutine.
 func DecodeSpeakArgs(raw json.RawMessage) (any, error) {
+	// speakArgsWire is SpeakArgs plus the `message` alias field. Embedding
+	// SpeakArgs promotes its json keys (text/to/mentions) so DisallowUnknown
+	// Fields still rejects everything else; `message` is the only added key.
+	type speakArgsWire struct {
+		SpeakArgs
+		Message string `json:"message"`
+	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
-	var args SpeakArgs
-	if err := dec.Decode(&args); err != nil {
+	var wire speakArgsWire
+	if err := dec.Decode(&wire); err != nil {
 		return nil, fmt.Errorf("speak: malformed arguments: %w", err)
 	}
 	// Trailing-data check: Decoder.More() only reports whether more
@@ -173,6 +193,11 @@ func DecodeSpeakArgs(raw json.RawMessage) (any, error) {
 			return nil, modelSafef("speak: trailing data after JSON object")
 		}
 		return nil, fmt.Errorf("speak: malformed trailing data: %w", err)
+	}
+	args := wire.SpeakArgs
+	// `message` alias fills an empty Text only — a real `text` always wins.
+	if args.Text == "" {
+		args.Text = wire.Message
 	}
 	if args.Text == "" {
 		return nil, modelSafef("speak: text is required")

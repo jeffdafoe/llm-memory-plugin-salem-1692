@@ -84,6 +84,48 @@ func TestDecodeSpeakArgs_UnknownField(t *testing.T) {
 	}
 }
 
+// TestDecodeSpeakArgs_MessageAlias — LLM-315: weak models call speak with
+// {"message": ...} instead of {"text": ...}; the alias populates Text so
+// the utterance lands instead of looping on unknown-field rejection.
+func TestDecodeSpeakArgs_MessageAlias(t *testing.T) {
+	args, err := DecodeSpeakArgs(json.RawMessage(`{"message":"Good morrow."}`))
+	if err != nil {
+		t.Fatalf("DecodeSpeakArgs with message alias: %v", err)
+	}
+	got, ok := args.(SpeakArgs)
+	if !ok {
+		t.Fatalf("Decoded type = %T, want SpeakArgs", args)
+	}
+	if got.Text != "Good morrow." {
+		t.Errorf("Text = %q, want %q (message should alias to text)", got.Text, "Good morrow.")
+	}
+}
+
+// TestDecodeSpeakArgs_TextWinsOverMessage — when both are present, the
+// canonical `text` wins and `message` is ignored (no unknown-field error).
+func TestDecodeSpeakArgs_TextWinsOverMessage(t *testing.T) {
+	args, err := DecodeSpeakArgs(json.RawMessage(`{"text":"canonical","message":"ignored"}`))
+	if err != nil {
+		t.Fatalf("DecodeSpeakArgs with both text and message: %v", err)
+	}
+	if got := args.(SpeakArgs); got.Text != "canonical" {
+		t.Errorf("Text = %q, want %q (text must win over message)", got.Text, "canonical")
+	}
+}
+
+// TestDecodeSpeakArgs_EmptyMessageIsMissingText — an empty `message` with no
+// `text` is still a missing-text error (the alias only fills a non-empty
+// value), so the "text is required" steer is preserved.
+func TestDecodeSpeakArgs_EmptyMessageIsMissingText(t *testing.T) {
+	_, err := DecodeSpeakArgs(json.RawMessage(`{"message":""}`))
+	if err == nil {
+		t.Fatal(`DecodeSpeakArgs({"message":""}): want error, got nil`)
+	}
+	if !strings.Contains(err.Error(), "required") {
+		t.Errorf("error message lacks 'required': %v", err)
+	}
+}
+
 func TestDecodeSpeakArgs_TrailingData(t *testing.T) {
 	_, err := DecodeSpeakArgs(json.RawMessage(`{"text":"Hi"} {"text":"oops"}`))
 	if err == nil {
