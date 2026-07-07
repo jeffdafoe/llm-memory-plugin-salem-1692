@@ -59,10 +59,8 @@ const (
 	WarrantKindSceneQuoteTargeted WarrantKind = "scene_quote_targeted"
 	WarrantKindPayOffer           WarrantKind = "pay_offer"
 	WarrantKindPayResolved        WarrantKind = "pay_resolved"
-	WarrantKindDwellStarted       WarrantKind = "dwell_started"
 	WarrantKindDwellTickApplied   WarrantKind = "dwell_tick_applied"
 	WarrantKindDwellEnded         WarrantKind = "dwell_ended"
-	WarrantKindConsumed           WarrantKind = "consumed"             // immediate consume self-narration beat
 	WarrantKindSourceActivityDone WarrantKind = "source_activity_done" // a timed eat/drink/harvest finished — completion beat (LLM-69)
 	WarrantKindAdmin              WarrantKind = "admin"                // operator forced a bare tick
 	WarrantKindImpulse            WarrantKind = "impulse"              // operator-injected in-world felt impulse (umbilical directive nudge)
@@ -522,7 +520,7 @@ func (StrandedWarrantReason) DedupDiscriminator() uint64 { return 0 }
 // via the umbilical /nudge route (ZBBS-WORK-329 — the "if you see an NPC stuck,
 // prompt it home" capability). It rides the same warrant-reason → perception
 // render rail as the autonomous producers (shift-duty, restock): the operator's
-// Message surfaces in the forced tick's "## What just happened" section, framed
+// Message surfaces in the forced tick's "## Since your last turn" section, framed
 // as an in-world felt impulse rather than an out-of-world meta-instruction (see
 // perception.renderImpulseWarrantLine). Kind is WarrantKindImpulse — a distinct,
 // in-world-neutral tag so the rendered line reads as a feeling, not the bare

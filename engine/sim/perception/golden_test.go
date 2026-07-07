@@ -671,7 +671,7 @@ var perceptionScenarios = []perceptionScenario{
 		name: "visitor_arrives_at_keepers_workplace",
 		summary: "LLM-284: a tavern keeper (John Ellis) arrives at another keeper's workplace — the Blacksmith, " +
 			"kept by the co-present Ezekiel Crane — on an errand. The golden pins the keeper possessive in the " +
-			"'## What just happened' arrival line ('You arrived at Ezekiel Crane's Blacksmith.') so the model reads " +
+			"'## Since your last turn' arrival line ('You arrived at Ezekiel Crane's Blacksmith.') so the model reads " +
 			"whose shop it entered instead of greeting the smith as if hosting its own forge (the live host-role " +
 			"inversion). A regression back to the ownerless 'the Blacksmith' shows in the diff.",
 		build: visitorArrivesAtKeepersWorkplace,
@@ -8941,7 +8941,7 @@ func keeperAloneAtPostOnShift() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) 
 			home:  plainStructure(home, "Thorne Residence"),
 		},
 	}
-	// Self-arrival at the store → "## What just happened: You arrived at General Store."
+	// Self-arrival at the store → "## Since your last turn: You arrived at General Store."
 	warrants := []sim.WarrantMeta{
 		{
 			TriggerActorID: josiahID,
@@ -9012,7 +9012,7 @@ func visitorArrivesAtKeepersWorkplace() (*sim.Snapshot, sim.ActorID, []sim.Warra
 			johnHome:   plainStructure(johnHome, "Ellis Residence"),
 		},
 	}
-	// John just arrived at the Blacksmith → "## What just happened: You arrived at
+	// John just arrived at the Blacksmith → "## Since your last turn: You arrived at
 	// Ezekiel Crane's Blacksmith." (the keeper possessive, LLM-284).
 	warrants := []sim.WarrantMeta{
 		{

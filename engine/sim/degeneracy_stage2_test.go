@@ -17,7 +17,6 @@ func TestIsAmbientWarrantKind(t *testing.T) {
 		WarrantKindStranded,
 		WarrantKindShiftDuty,
 		WarrantKindRestock,
-		WarrantKindDwellStarted,
 		WarrantKindDwellTickApplied,
 		WarrantKindDwellEnded,
 	}

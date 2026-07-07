@@ -10,11 +10,11 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/repo/mem"
 )
 
-// dwell_reactor_test.go — coverage of the three dwell-lifecycle event
-// subscribers (handleDwellStartedWarrants, handleDwellTickAppliedWarrants,
-// handleDwellEndedWarrants). Drives them by sending real Consume + then
-// ApplyDwellTick commands so the test exercises the full wire:
-// emit → subscriber → warrant on actor.
+// dwell_reactor_test.go — coverage of the dwell-lifecycle event
+// subscribers (handleDwellTickAppliedWarrants, handleDwellEndedWarrants).
+// Drives them by sending real Consume + then ApplyDwellTick commands so
+// the test exercises the full wire: emit → subscriber → warrant on actor.
+// DwellStarted mints no warrant (LLM-316) — pinned below.
 //
 // Source-dedup behavior is tested at the substrate level
 // (reactor_pr3a_test.go); these tests only verify the dwell subscribers
@@ -81,11 +81,12 @@ func peekDwellActorWarrants(t *testing.T, w *sim.World, id sim.ActorID) []sim.Wa
 	return v.([]sim.WarrantMeta)
 }
 
-// TestDwellStartedSubscriberStampsWarrant — Consume of a dwell-bearing
-// item triggers DwellStarted, the subscriber stamps a
-// DwellStartedWarrantReason on the eater with the catalog narration
-// pre-rendered.
-func TestDwellStartedSubscriberStampsWarrant(t *testing.T) {
+// TestDwellStartedMintsNoWarrant — LLM-316: Consume of a dwell-bearing item
+// still emits DwellStarted (Hub/HUD, audit) but stamps NO warrant on the
+// eater. The consume was the actor's own tick — the tool result reports the
+// outcome and the standing `## You` dwell line carries "still eating" — so a
+// next-tick self-echo wake is pure noise. Guards against re-subscription.
+func TestDwellStartedMintsNoWarrant(t *testing.T) {
 	w, stop := buildDwellReactorWorld(t)
 	defer stop()
 
@@ -93,27 +94,8 @@ func TestDwellStartedSubscriberStampsWarrant(t *testing.T) {
 		t.Fatalf("Consume: %v", err)
 	}
 	warrants := peekDwellActorWarrants(t, w, "hannah")
-	var got *sim.DwellStartedWarrantReason
-	for _, m := range warrants {
-		if r, ok := m.Reason.(sim.DwellStartedWarrantReason); ok {
-			got = &r
-			break
-		}
-	}
-	if got == nil {
-		t.Fatalf("no DwellStartedWarrantReason on hannah; got %d warrant(s)", len(warrants))
-	}
-	if got.ItemKind != "stew" {
-		t.Errorf("ItemKind = %q, want stew", got.ItemKind)
-	}
-	if got.StructureID != "tavern" {
-		t.Errorf("StructureID = %q, want tavern", got.StructureID)
-	}
-	if got.NarrationText == "" {
-		t.Errorf("NarrationText empty; want catalog hint")
-	}
-	if len(got.Credits) != 1 || got.Credits[0].Attribute != "hunger" {
-		t.Errorf("Credits = %+v, want one hunger credit", got.Credits)
+	if len(warrants) != 0 {
+		t.Fatalf("a consume must stamp no dwell warrants (LLM-316); got %d: %+v", len(warrants), warrants)
 	}
 }
 
@@ -126,8 +108,7 @@ func TestDwellTickAppliedSubscriberStampsWarrant(t *testing.T) {
 	w, stop := buildDwellReactorWorld(t)
 	defer stop()
 
-	// Seed a ripe credit directly to avoid the consume path's
-	// DwellStarted warrant cluttering the assertion target.
+	// Seed a ripe credit directly rather than going through the consume path.
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		remaining := 3
 		world.Actors["hannah"].DwellCredits = map[sim.DwellCreditKey]*sim.DwellCredit{
@@ -396,7 +377,6 @@ func TestDwellEndedSubscriberSkipsEmptyNarration(t *testing.T) {
 // dedup keying and collapse unrelated dwell stamps.
 func TestDwellSubscribersBypassDedup(t *testing.T) {
 	cases := []sim.WarrantReason{
-		sim.DwellStartedWarrantReason{ItemKind: "stew"},
 		sim.DwellTickAppliedWarrantReason{ItemKind: "stew", Attribute: "hunger"},
 		sim.DwellEndedWarrantReason{Reason: sim.DwellEndItemExhausted},
 	}

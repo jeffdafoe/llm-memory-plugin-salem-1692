@@ -88,7 +88,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// consumes it; resolution stamps the BUYER, never the seller's standing
 	// warrant. So an offer that resolves out-of-band (buyer withdrew, TTL
 	// expired, or the seller was rest-gated and couldn't tick) before the
-	// seller consumes it would otherwise render a dead "what just happened"
+	// seller consumes it would otherwise render a dead "since your last turn"
 	// line. Build runs on the immutable snapshot, so checking live ledger
 	// state is race-free here. (Since ZBBS-HOME-453 the decision section and
 	// the tool gate no longer read the warrant batch — see PayOffersForMe
@@ -1694,7 +1694,7 @@ func customerProducedGoods(snap *sim.Snapshot, customer sim.ActorID, goods []Off
 
 // buildWarrantActorNames resolves every OTHER actor referenced by a warrant in
 // the batch to its acquaintance-gated label, so Render never leaks a raw actor
-// UUID into the "## What just happened" lines (ZBBS-HOME-339). The subject's
+// UUID into the "## Since your last turn" lines (ZBBS-HOME-339). The subject's
 // own ID is excluded — Render resolves self to "you". Returns nil when no
 // warrant references another actor (the common single-actor tick).
 func buildWarrantActorNames(snap *sim.Snapshot, subject *sim.ActorSnapshot, subjectID sim.ActorID, warrants []sim.WarrantMeta, payOffers []sim.PayOfferWarrantReason, laborOffers []LaborOfferView, workersForMe []WorkerForMeView, laboring *LaboringView, laborEnRoute *LaborEnRouteView, pendingLaborOut *PendingLaborOfferOutView) map[sim.ActorID]string {
@@ -2941,7 +2941,7 @@ const recentSalientFactsPerPeer = 3
 //
 // Same-tick de-dup (ZBBS-WORK-374): a just-heard utterance is recorded as a
 // `heard` SalientFact on the listener AND surfaced as a speech warrant in this
-// tick's "## What just happened". Rendering it in both places shows the model
+// tick's "## Since your last turn". Rendering it in both places shows the model
 // the same line twice (the live "Hello" duplication) and reinforces it. heardNow
 // maps speaker → the utterances they spoke in THIS batch; we drop a peer's fact
 // whose text matches before taking the recent-N, so the most-recent slot
@@ -2963,7 +2963,7 @@ func buildRelationships(a *sim.ActorSnapshot, members []HuddleMember, heardNow m
 			kept := make([]sim.SalientFact, 0, len(facts))
 			for _, f := range facts {
 				if f.Kind == sim.InteractionHeard && dups[f.Text] {
-					continue // already in "## What just happened" this tick
+					continue // already in "## Since your last turn" this tick
 				}
 				kept = append(kept, f)
 			}
@@ -3000,7 +3000,7 @@ func recentConversationDedupKey(text string) string {
 // buildRelationships — so stateful NPCs and PC-facing vendors get cross-tick
 // conversational continuity (they see their own prior lines and the player's).
 // The subject's own lines are marked IsSelf. A line whose text matches an
-// utterance already surfaced in this tick's "## What just happened" (heardNow) is
+// utterance already surfaced in this tick's "## Since your last turn" (heardNow) is
 // dropped so the live turn isn't shown twice — the same de-dup buildRelationships
 // applies to heard facts (ZBBS-WORK-374). Returns nil when the subject has no
 // huddle or nothing survives the de-dup.
@@ -3016,7 +3016,7 @@ func buildRecentConversation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap 
 	out := make([]UtteranceView, 0, len(h.RecentUtterances))
 	for _, u := range h.RecentUtterances {
 		if dups := heardNow[u.SpeakerID]; dups != nil && dups[recentConversationDedupKey(u.Text)] {
-			continue // already rendered in "## What just happened" this tick
+			continue // already rendered in "## Since your last turn" this tick
 		}
 		out = append(out, UtteranceView{
 			SpeakerName: u.SpeakerName,
@@ -3110,7 +3110,7 @@ func buildSelfActions(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 
 // currentHeardExcerpts indexes the speech utterances in this tick's consumed
 // warrant batch by speaker, so buildRelationships can drop a `heard` SalientFact
-// that the "## What just happened" section already renders (ZBBS-WORK-374). The
+// that the "## Since your last turn" section already renders (ZBBS-WORK-374). The
 // warrant Excerpt and the heard-fact Text are both truncateRunes(spoke.Text,
 // MaxSalientFactTextLen), so an exact string match is reliable. Returns nil when
 // the batch carries no speech (the common non-conversational tick).

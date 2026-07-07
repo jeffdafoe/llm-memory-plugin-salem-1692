@@ -44,7 +44,7 @@ import (
 //
 // Live room-scoped narration ("X settled for another night") is deferred —
 // the ActionLog entry is the durable, perception-visible record (it surfaces
-// in the lodger's "what just happened" and feeds consolidation); the cosmetic
+// in the lodger's "since your last turn" and feeds consolidation); the cosmetic
 // Hub broadcast can ride a follow-on once the engine is live.
 
 // autoRebookLeadTime is how far ahead of a grant's expiry the sweep renews.

@@ -461,7 +461,6 @@ func isAmbientWarrantKind(k WarrantKind) bool {
 		WarrantKindStranded,
 		WarrantKindShiftDuty,
 		WarrantKindRestock,
-		WarrantKindDwellStarted,
 		WarrantKindDwellTickApplied,
 		WarrantKindDwellEnded:
 		return true

@@ -62,7 +62,7 @@ func (c RenderConfig) normalized() RenderConfig {
 // RenderedPrompt is the output of Render: the prompt text plus the
 // accounting the harness loop needs.
 type RenderedPrompt struct {
-	// Text is the DURABLE turn — the "what just happened" events, what the NPC
+	// Text is the DURABLE turn — the "since your last turn" events, what the NPC
 	// should REMEMBER. This is what the chat adapter persists and replays as
 	// conversation history (lean sim-history, ZBBS-WORK-364). Self-state (## You)
 	// was moved OUT of here into EphemeralText by ZBBS-WORK-410 — it is point-in-
@@ -155,7 +155,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	var selfState strings.Builder
 	renderActor(&selfState, p.Actor)
 
-	// Durable: just the turn header here; the "what just happened" events append
+	// Durable: just the turn header here; the "since your last turn" events append
 	// below (## You is ephemeral now — ZBBS-WORK-410).
 	durable.WriteString("# Your turn\n\n")
 
@@ -305,7 +305,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// "## Other scenes in play" (renderSecondary) was dropped — it surfaced raw
 	// scene/huddle UUIDs and a "N signal(s)" count the LLM can't act on
 	// (ZBBS-HOME-339). Secondary-scene warrants still render in the flat
-	// "what just happened" list; only the machine telemetry block is gone.
+	// "since your last turn" list; only the machine telemetry block is gone.
 
 	// Shift-duty warrants drive the wake tick but are NOT rendered — the standing
 	// DutySteer cue (renderDutySteer, above) is the single voice for
@@ -316,13 +316,13 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	if len(payOffers) > 0 {
 		warrants = nonPayOfferWarrants(warrants)
 	}
-	// Durable: the "what just happened" events are the NPC's memory of the
+	// Durable: the "since your last turn" events are the NPC's memory of the
 	// scene. Skip the generic block only when the pay-offer section already
 	// covered the whole batch; otherwise render it (this also preserves the
 	// routine-check-in line for the genuinely-empty case). Warrant caps +
 	// carry-forward accounting land in `out` as before.
 	if len(warrants) > 0 || len(payOffers) == 0 {
-		renderWarrants(&durable, warrants, nameOf, placeNameOf, placeKeeperOf, eatHereKind, buyRedundancy, cfg, &out)
+		renderWarrants(&durable, warrants, nameOf, placeNameOf, placeKeeperOf, eatHereKind, buyRedundancy, p.RenderedAt, cfg, &out)
 	}
 
 	// Ephemeral: the turn-state nudge, the act-now coda, and the rest-first steer
@@ -2044,7 +2044,7 @@ func renderDiff(d *Diff) string {
 	return "What's changed: " + strings.Join(parts, ", ") + "."
 }
 
-// renderWarrants renders the "what just happened" section and fills in the
+// renderWarrants renders the "since your last turn" section and fills in the
 // RenderedPrompt accounting. Warrants arrive already ordered by
 // SourceEventID (Build's job); the caps are applied here, after ordering,
 // and any warrant past a cap is moved to DroppedWarrants for carry-forward.
@@ -2086,7 +2086,7 @@ func PendingLaborOffers(p Payload) []LaborOfferView {
 
 // nonPayOfferWarrants returns the consumed batch with pay-offer warrants
 // removed — they render in the dedicated decision section (renderPayOffers)
-// instead of the generic "what just happened" list, so they must not also
+// instead of the generic "since your last turn" list, so they must not also
 // appear there, nor consume the warrant-section cap / carry-forward budget
 // (a rendered offer is addressed).
 func nonPayOfferWarrants(warrants []sim.WarrantMeta) []sim.WarrantMeta {
@@ -2669,7 +2669,7 @@ func renderCountersAwaitingMyResponse(b *strings.Builder, counters []CounterOffe
 }
 
 // isSectionSurfacedKind reports whether a warrant kind wakes the actor for a
-// tick but must NOT emit a generic "## What just happened" line — rendering one
+// tick but must NOT emit a generic "## Since your last turn" line — rendering one
 // produced the vague "something happened nearby" catch-all (ZBBS-WORK-407).
 // These warrants are still consumed to wake the actor (that is how it ticks to
 // read the rest of the prompt); they just have no standalone event line. Most
@@ -2695,7 +2695,7 @@ func isSectionSurfacedKind(k sim.WarrantKind) bool {
 	}
 }
 
-func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(sim.ActorID) string, placeNameOf func(string) string, placeKeeperOf func(string) string, eatHereKind func(sim.ItemKind) bool, buyRedundancy func(sim.ItemKind) (produced, atCap bool), cfg RenderConfig, out *RenderedPrompt) {
+func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(sim.ActorID) string, placeNameOf func(string) string, placeKeeperOf func(string) string, eatHereKind func(sim.ItemKind) bool, buyRedundancy func(sim.ItemKind) (produced, atCap bool), renderedAt time.Time, cfg RenderConfig, out *RenderedPrompt) {
 	// Nil-safe for direct/test callers — the main Render path always passes
 	// its closure, but the signature grew by a callback (ZBBS-WORK-405) and
 	// a nil here must degrade to "no eat-here tag", not panic (code_review).
@@ -2715,7 +2715,7 @@ func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(
 	// ZBBS-WORK-407: drop warrants already surfaced by a dedicated section so they
 	// don't double-render as the vague "something happened nearby" catch-all. They
 	// still WAKE the actor (the reactor consumed them — that's how it ticks to read
-	// the section); they just have no standalone "what just happened" line. Filter
+	// the section); they just have no standalone "since your last turn" line. Filter
 	// a local copy so the caller's p.Warrants (scene grouping, telemetry) is
 	// untouched and the surviving lines keep contiguous numbering.
 	renderable := warrants[:0:0]
@@ -2729,7 +2729,12 @@ func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(
 	// Neutral event log, not an imperative: a self-caused beat (you arrived where
 	// you walked to) is nothing to "address", and the act-now coda already carries
 	// the "respond to this" weight, so "— address these" over-claimed (ZBBS-WORK-419).
-	b.WriteString("## What just happened\n")
+	// "Since your last turn", not "What just happened" (LLM-316): a carried-forward,
+	// shelve-delayed, or slept-through warrant can be minutes-to-hours old by the
+	// time it renders, and the batch semantics ARE "what accumulated since you last
+	// acted" — the header shouldn't promise a recency the queue can't guarantee.
+	// The per-line agoPhrase stamp below carries the actual staleness.
+	b.WriteString("## Since your last turn\n")
 	if len(warrants) == 0 {
 		b.WriteString("(nothing specific — this is a routine check-in)\n")
 		return
@@ -2747,6 +2752,14 @@ func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(
 			break
 		}
 		line, truncated := renderWarrantLine(i+1, w, nameOf, placeNameOf, placeKeeperOf, eatHereKind, buyRedundancy, cfg.MaxBytesPerWarrant)
+		// Interval-stamp each signal against the render clock (LLM-316), the
+		// LLM-217 treatment the conversation ring and self-action trail already
+		// get: a carried-forward or shelve-delayed warrant renders honestly as
+		// "(4m ago)" instead of masquerading as fresh. agoPhrase returns "" for
+		// zero clocks (hand-built payloads / unstamped metas) — no stamp then.
+		if stamp := agoPhrase(w.OccurredAt, renderedAt); stamp != "" {
+			line = strings.TrimSuffix(line, "\n") + " (" + stamp + ")\n"
+		}
 		if sectionBytes+len(line) > cfg.MaxSectionBytes && i > 0 {
 			// At least one warrant already rendered; this one would
 			// overflow the section cap — stop here and carry the rest.
@@ -2792,10 +2805,6 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 		return renderStrandedWarrantLine(n), false
 	case sim.RestockWarrantReason:
 		return renderRestockWarrantLine(n, r.Item, r.Source), false
-	case sim.ConsumedWarrantReason:
-		return renderNarrationWarrantLine(n, w.Kind(), r.NarrationText, nameOf(w.TriggerActorID), maxTextBytes)
-	case sim.DwellStartedWarrantReason:
-		return renderNarrationWarrantLine(n, w.Kind(), r.NarrationText, nameOf(w.TriggerActorID), maxTextBytes)
 	case sim.DwellEndedWarrantReason:
 		return renderNarrationWarrantLine(n, w.Kind(), r.NarrationText, nameOf(w.TriggerActorID), maxTextBytes)
 	case sim.DwellTickAppliedWarrantReason:
@@ -2803,7 +2812,7 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 		// the vague "something happened" fallback) because it fired every minute.
 		// The wake is now cadenced to the red-tier boundary (handlers/dwell_reactor.go),
 		// so this fires at most once per dwell — render its felt line like its
-		// DwellStarted / DwellEnded siblings.
+		// DwellEnded sibling.
 		return renderNarrationWarrantLine(n, w.Kind(), r.NarrationText, nameOf(w.TriggerActorID), maxTextBytes)
 	case sim.SourceActivityCompletedWarrantReason:
 		// LLM-69: the NPC completion beat for a finished eat/drink/harvest, pre-

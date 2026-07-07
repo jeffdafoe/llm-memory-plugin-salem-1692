@@ -176,7 +176,7 @@ func TestBuild_DedupHeardFactInCurrentBatch(t *testing.T) {
 		},
 	}
 	// "Hello" arrives this tick as bob's speech warrant — so it's already in
-	// "## What just happened" and must not also appear as remembered.
+	// "## Since your last turn" and must not also appear as remembered.
 	p := Build(snap, "hannah", []sim.WarrantMeta{speechWarrant(1, "", "bob", "Hello")})
 
 	var bob *RelationshipPeerView

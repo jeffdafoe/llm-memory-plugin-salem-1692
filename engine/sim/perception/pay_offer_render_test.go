@@ -62,7 +62,7 @@ func TestPendingPayOffers_ReadsStandingViewNotWarrants(t *testing.T) {
 // TestRender_PayOfferDecisionSection — an offer renders in the dedicated
 // "Offers awaiting your decision" section carrying the load-bearing
 // ledger_id plus buyer/qty/item/amount/disposition, and does NOT also appear
-// as a generic "what just happened" warrant line.
+// as a generic "since your last turn" warrant line.
 func TestRender_PayOfferDecisionSection(t *testing.T) {
 	// First-tick shape: the wake-up warrant AND the standing view both carry
 	// the offer (Build scans the ledger on every tick, warranted or not).
@@ -99,7 +99,7 @@ func TestRender_PayOfferDecisionSection(t *testing.T) {
 	}
 	// A solo pay offer covers the whole batch → the generic warrant block is
 	// suppressed (no contradictory "nothing specific" line).
-	if strings.Contains(out, "## What just happened") {
+	if strings.Contains(out, "## Since your last turn") {
 		t.Errorf("generic warrant block should be suppressed for a solo pay offer\n%s", out)
 	}
 	if strings.Contains(out, "nothing specific") {
@@ -414,7 +414,7 @@ func TestRender_PayOffer_Barter(t *testing.T) {
 
 // TestRender_PayOfferPlusOtherWarrant — an offer and a non-offer warrant in
 // the same batch both render: the offer in its decision section, the other in
-// the generic "what just happened" list (which is NOT suppressed).
+// the generic "since your last turn" list (which is NOT suppressed).
 func TestRender_PayOfferPlusOtherWarrant(t *testing.T) {
 	p := Payload{
 		ActorID: "seller",
@@ -430,7 +430,7 @@ func TestRender_PayOfferPlusOtherWarrant(t *testing.T) {
 	if !strings.Contains(out, "## Offers awaiting your decision") || !strings.Contains(out, "offer id 17") {
 		t.Errorf("offer section missing\n%s", out)
 	}
-	if !strings.Contains(out, "## What just happened") {
+	if !strings.Contains(out, "## Since your last turn") {
 		t.Errorf("generic warrant block missing (a non-offer warrant is present)\n%s", out)
 	}
 	if !strings.Contains(out, "good evening") {

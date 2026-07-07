@@ -12,7 +12,7 @@ import (
 //     renderPendingOffersFromMe), the cross-tick repeat-offer-storm fix;
 //   - filterStalePayOfferWarrants, which drops a seller's pay-offer warrant
 //     once its ledger entry has resolved (so a dead offer doesn't render a
-//     stale "what just happened" line); and
+//     stale "since your last turn" line); and
 //   - the seller-side standing offer view (buildPayOffersForMe), the
 //     cross-tick "## Offers awaiting your decision" + response-tool source —
 //     the seller deadlock fix.
