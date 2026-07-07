@@ -654,6 +654,30 @@ type Payload struct {
 	// good — at cap, buying more just overflows what the actor can carry (LLM-171).
 	// Empty when nothing is capped or at cap.
 	AtCapKinds map[sim.ItemKind]bool
+
+	// PayOfferShortfalls carries, per pending pay offer (keyed by LedgerID), the
+	// seller's own shortfall on the asked good — the data renderPayOffers turns
+	// into the "you hold no <good>" / "you hold only N <good>" annotation so the
+	// seller counters or declines against real stock instead of accepting an offer
+	// the deliver gate would bounce. Present only for offers where the asked kind
+	// is a real good (a "service" kind has no inventory backing, so its stock gate
+	// is skipped by the engine and "you hold no X" would be a false alarm —
+	// item_kind.go) AND the buyer asks more than the seller holds. Built in
+	// buildPayOfferShortfalls from the catalog + the subject's inventory, keeping
+	// render catalog-free. Empty when nothing is short. LLM-303 widened this to fire
+	// at zero held (a non-vendor offeree), not just vendors carrying some stock.
+	PayOfferShortfalls map[sim.LedgerID]StockShortfall
+}
+
+// StockShortfall is the seller-side shortfall on a pending pay offer: how many of
+// the asked good the seller actually holds (Held — 0 when none) and the good's
+// plural counting noun for the zero-case copy ("you hold no nails"). Emitted via
+// Payload.PayOfferShortfalls only when the asked kind is a real good and the ask
+// bites; renderPayOffers reads Held to choose the "no <plural>" line (Held 0) vs
+// the existing "only N <kind>" annotation. LLM-303.
+type StockShortfall struct {
+	Held int
+	Noun string
 }
 
 // OrderView is the perception-side projection of one sim.Order.
@@ -748,17 +772,20 @@ type ResolvedOfferView struct {
 	ConsumeNow bool
 	KeptUnits  int
 
-	// SellerStock is the seller's current on-hand of Item and SellerStocks
-	// whether the seller carries the kind at all (>0). Populated only for a
-	// CLOSED (non-accepted) view, so the declined line can name a stock
-	// shortfall as the engine-known "why" the deal fell through — the buyer's
-	// mirror of the seller-side "you hold only N" pay-offer cue (LLM-296). The
-	// render gates on the bite (Qty > SellerStock); a kind the seller doesn't
-	// stock (absent or 0) leaves SellerStocks false so it's skipped rather than
-	// read as "only 0". Zero/false for an accepted view — the reason clause is
-	// for closes only.
-	SellerStock  int
-	SellerStocks bool
+	// SellerStock is the seller's current on-hand of Item; SellerStocks says the
+	// shortfall reason may be named for this view (the asked kind is a real good,
+	// not a service). Populated only for a CLOSED (non-accepted) view, so the
+	// declined line can name a stock shortfall as the engine-known "why" the deal
+	// fell through — the buyer's mirror of the seller-side "you hold only N"
+	// pay-offer cue (LLM-296). The render gates on the bite (Qty > SellerStock);
+	// SellerStockNoun is the plural counting noun for the zero-held copy ("they
+	// hold no nails"). A "service" kind has no inventory backing (item_kind.go), so
+	// SellerStocks stays false and the clause is skipped. Zero/false for an
+	// accepted view — the reason clause is for closes only. LLM-303 widened this to
+	// fire at zero held (a non-vendor seller), not just sellers carrying some stock.
+	SellerStock     int
+	SellerStocks    bool
+	SellerStockNoun string
 }
 
 // CounterOfferView is one entry in CountersAwaitingMyResponse — a seller's

@@ -213,20 +213,6 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 		return p.OwnProducedKinds[kind], p.AtCapKinds[kind]
 	}
 
-	// stockOf reports the subject's current on-hand of a kind and whether they
-	// stock it at all — the seller-side bound for the pay-offer cue
-	// (ZBBS-HOME-459). Built from the standing inventory readout (real goods,
-	// qty>0); a service or never-stocked kind is absent, so stocked is false and
-	// the cue's "you hold only N" annotation is skipped for it.
-	sellerStock := make(map[sim.ItemKind]int, len(p.Actor.Inventory))
-	for _, it := range p.Actor.Inventory {
-		sellerStock[it.kind] = it.Qty
-	}
-	stockOf := func(kind sim.ItemKind) (int, bool) {
-		qty, ok := sellerStock[kind]
-		return qty, ok
-	}
-
 	// Pay offers render as an actionable decision section (renderPayOffers)
 	// so the seller gets the ledger_id it must echo into accept_pay/
 	// decline_pay/counter_pay. Sourced from the standing ledger scan
@@ -285,7 +271,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// seller's own mild needs outrank a waiting customer for whole minutes
 	// (conversation hud-6c849d…, ZBBS-HOME-424). renderTriage reinforces the
 	// same priority at the decision point.
-	renderPayOffers(&ephemeral, payOffers, nameOf, stockOf, p.RoomAlreadySoldOrderByLedger)
+	renderPayOffers(&ephemeral, payOffers, nameOf, p.PayOfferShortfalls, p.RoomAlreadySoldOrderByLedger)
 	// LLM-138: a gift offered TO this actor is the same "someone wants my answer"
 	// decision class as a pay offer, so it renders right alongside.
 	renderGiftsForMe(&ephemeral, p.GiftsForMe)
@@ -2192,7 +2178,7 @@ func formatOfferPayment(amount int, payItems []sim.ItemKindQty) string {
 	}
 }
 
-func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason, nameOf func(sim.ActorID) string, stockOf func(sim.ItemKind) (int, bool), roomAlreadySold map[sim.LedgerID]sim.OrderID) {
+func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason, nameOf func(sim.ActorID) string, shortfalls map[sim.LedgerID]StockShortfall, roomAlreadySold map[sim.LedgerID]sim.OrderID) {
 	if len(offers) == 0 {
 		return
 	}
@@ -2216,12 +2202,14 @@ func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason, nam
 		// ZBBS-HOME-459: when the buyer asks for more than the seller actually
 		// holds, surface the gap so they counter or decline against real stock
 		// instead of accepting an offer the deliver gate would then bounce. Fact
-		// only, and only when it bites — sufficient stock adds nothing. stockOf
-		// reports (on-hand, stocked); a service or never-stocked kind returns
-		// stocked=false and is skipped (no inventory to compare against).
-		if stockOf != nil {
-			if have, stocked := stockOf(o.Item); stocked && o.Qty > have {
-				fmt.Fprintf(b, " — you hold only %d %s", have, item)
+		// only, and only when it bites (buildPayOfferShortfalls carries an entry
+		// only then, services excluded). LLM-303: fire at zero held too — "you hold
+		// no nails" for a non-vendor offeree, not just a vendor short of some stock.
+		if sf, short := shortfalls[o.LedgerID]; short {
+			if sf.Held == 0 {
+				fmt.Fprintf(b, " — you hold no %s", sf.Noun)
+			} else {
+				fmt.Fprintf(b, " — you hold only %d %s", sf.Held, item)
 			}
 		}
 		// LLM-89: this buyer already holds a room from you that you have not
@@ -2649,7 +2637,14 @@ func renderRecentlyResolvedOffersFromMe(b *strings.Builder, offers []ResolvedOff
 		offered := formatOfferPayment(o.Amount, o.PayItems)
 		reason := "it's closed, so stop waiting on it"
 		if o.SellerStocks && o.Qty > o.SellerStock {
-			reason = fmt.Sprintf("they hold only %d %s, so it's closed; stop waiting on it", o.SellerStock, item)
+			// LLM-303: at zero held, name it "they hold no nails" (plural noun)
+			// rather than the awkward "only 0 nail"; above zero keeps the LLM-296
+			// "they hold only N <kind>" form on the raw kind key.
+			if o.SellerStock == 0 {
+				reason = fmt.Sprintf("they hold no %s, so it's closed; stop waiting on it", o.SellerStockNoun)
+			} else {
+				reason = fmt.Sprintf("they hold only %d %s, so it's closed; stop waiting on it", o.SellerStock, item)
+			}
 		}
 		fmt.Fprintf(b, "%d. Your offer of %s to %s for %d %s didn't go through — %s (offer id %d).\n",
 			i+1, offered, seller, o.Qty, item, reason, o.LedgerID)

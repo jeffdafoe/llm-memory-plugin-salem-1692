@@ -107,45 +107,70 @@ func TestRender_PayOfferDecisionSection(t *testing.T) {
 	}
 }
 
-// TestRender_PayOfferStockAnnotation (ZBBS-HOME-459): when a buyer asks for more
-// than the seller holds, the offer line surfaces "you hold only N" so the seller
-// counters/declines against real stock instead of accepting an undeliverable
-// offer. Sufficient stock adds nothing.
+// TestRender_PayOfferStockAnnotation (ZBBS-HOME-459 / LLM-303): renderPayOffers
+// turns a Payload.PayOfferShortfalls entry into the offer-line warning — "you hold
+// only N <kind>" above zero, "you hold no <plural>" at zero (the non-vendor
+// offeree case). No entry → no annotation. The shortfall itself is computed in
+// Build (buildPayOfferShortfalls, tested below); this pins the render copy.
 func TestRender_PayOfferStockAnnotation(t *testing.T) {
-	render := func(askQty, onHand int) string {
+	render := func(item sim.ItemKind, askQty int, sf *StockShortfall) string {
 		p := Payload{
 			ActorID:           "seller",
-			Actor:             ActorView{State: sim.StateIdle, Inventory: []InventoryItem{{Label: "meat", Qty: onHand, kind: "meat"}}},
-			PayOffersForMe:    []sim.PayOfferWarrantReason{payOfferReason(7, "john", "meat", askQty, 250, false)},
+			Actor:             ActorView{State: sim.StateIdle},
+			PayOffersForMe:    []sim.PayOfferWarrantReason{payOfferReason(7, "john", item, askQty, 250, false)},
 			WarrantActorNames: map[sim.ActorID]string{"john": "John Ellis"},
 			Baseline:          BaselinePresent,
 		}
+		if sf != nil {
+			p.PayOfferShortfalls = map[sim.LedgerID]StockShortfall{7: *sf}
+		}
 		return combinedPrompt(Render(p, DefaultRenderConfig()))
 	}
-	// Asked 25, holds 20 → annotate the gap.
-	if out := render(25, 20); !strings.Contains(out, "you hold only 20 meat") {
+	// Short by some (holds 20 of 25 asked) → "you hold only 20 meat".
+	if out := render("meat", 25, &StockShortfall{Held: 20, Noun: "meat"}); !strings.Contains(out, "you hold only 20 meat") {
 		t.Errorf("over-ask offer should surface the stock gap\n%s", out)
 	}
-	// Asked 5, holds 20 → no annotation.
-	if out := render(5, 20); strings.Contains(out, "you hold only") {
-		t.Errorf("sufficient stock should not annotate\n%s", out)
+	// Holds none of the asked kind → "you hold no nails" (the LLM-303 non-vendor case).
+	if out := render("nail", 5, &StockShortfall{Held: 0, Noun: "nails"}); !strings.Contains(out, "you hold no nails") {
+		t.Errorf("zero-held offeree should get the hold-no warning\n%s", out)
+	}
+	// No shortfall entry (sufficient stock) → no annotation at all.
+	if out := render("meat", 5, nil); strings.Contains(out, "you hold only") || strings.Contains(out, "you hold no") {
+		t.Errorf("no shortfall entry should not annotate\n%s", out)
 	}
 }
 
-// TestRender_PayOfferStockAnnotation_SkipsUnstockedKind (ZBBS-HOME-459): an item
-// absent from the seller's standing inventory (e.g. a service grant like
-// nights_stay, which carries no stock) has nothing to compare against, so the
-// annotation is skipped rather than falsely reading "you hold only 0".
-func TestRender_PayOfferStockAnnotation_SkipsUnstockedKind(t *testing.T) {
-	p := Payload{
-		ActorID:           "seller",
-		Actor:             ActorView{State: sim.StateIdle}, // no inventory
-		PayOffersForMe:    []sim.PayOfferWarrantReason{payOfferReason(9, "guest", "nights_stay", 1, 6, false)},
-		WarrantActorNames: map[sim.ActorID]string{"guest": "A Guest"},
-		Baseline:          BaselinePresent,
+// TestBuildPayOfferShortfalls (LLM-303): the seller-side shortfall map fires for
+// any real good the offeree is short on — INCLUDING zero held, the non-vendor case
+// that used to be skipped — and excludes a service kind (no inventory backing) and
+// a good the seller holds enough of.
+func TestBuildPayOfferShortfalls(t *testing.T) {
+	subject := &sim.ActorSnapshot{Inventory: map[sim.ItemKind]int{"meat": 20, "milk": 3}}
+	snap := &sim.Snapshot{
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"nail":        {Name: "nail", DisplayLabelSingular: "nail", DisplayLabelPlural: "nails"},
+			"meat":        {Name: "meat", DisplayLabelSingular: "meat", DisplayLabelPlural: "meat"},
+			"nights_stay": {Name: "nights_stay", Capabilities: []string{"service", "lodging"}},
+		},
 	}
-	if out := combinedPrompt(Render(p, DefaultRenderConfig())); strings.Contains(out, "you hold only") {
-		t.Errorf("unstocked/service kind should not be annotated\n%s", out)
+	offers := []sim.PayOfferWarrantReason{
+		payOfferReason(1, "b", "nail", 5, 1, false),        // holds 0 → short, plural noun
+		payOfferReason(2, "b", "meat", 25, 1, false),       // holds 20 < 25 → short
+		payOfferReason(3, "b", "meat", 5, 1, false),        // holds 20 >= 5 → not short
+		payOfferReason(4, "b", "nights_stay", 1, 6, false), // service → skipped
+	}
+	sf := buildPayOfferShortfalls(snap, offers, subject)
+	if got, ok := sf[1]; !ok || got.Held != 0 || got.Noun != "nails" {
+		t.Errorf("zero-held real good must be short with plural noun; got %+v ok=%v", got, ok)
+	}
+	if got, ok := sf[2]; !ok || got.Held != 20 {
+		t.Errorf("partially-short good must carry the held count; got %+v ok=%v", got, ok)
+	}
+	if _, ok := sf[3]; ok {
+		t.Errorf("a sufficiently-stocked good must not be flagged short")
+	}
+	if _, ok := sf[4]; ok {
+		t.Errorf("a service kind must be skipped (no inventory backing)")
 	}
 }
 

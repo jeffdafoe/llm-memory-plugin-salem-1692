@@ -217,16 +217,22 @@ func TestRenderRecentlyResolvedOffersFromMe_ClosedNamesOfferAndShortfall(t *test
 		// who holds only 1 — the line names the bundle AND the shortfall.
 		{LedgerID: 866, SellerName: "Ezekiel Crane", Item: "nail", Qty: 5, Amount: 1,
 			PayItems: []sim.ItemKindQty{{Kind: "carrots", Qty: 6}}, Accepted: false,
-			SellerStock: 1, SellerStocks: true},
+			SellerStock: 1, SellerStocks: true, SellerStockNoun: "nails"},
 		// A close where the seller holds enough (Qty <= stock): bundle named, no shortfall.
 		{LedgerID: 867, SellerName: "the storekeeper", Item: "bread", Qty: 2, Amount: 4,
-			Accepted: false, SellerStock: 9, SellerStocks: true},
+			Accepted: false, SellerStock: 9, SellerStocks: true, SellerStockNoun: "loaves of bread"},
+		// LLM-303: the non-vendor case — a seller holding NONE of the asked good.
+		// Names it "they hold no nails" (plural noun), not the awkward "only 0 nail".
+		{LedgerID: 871, SellerName: "Elizabeth Reade", Item: "nail", Qty: 5, Amount: 0,
+			PayItems: []sim.ItemKindQty{{Kind: "sage", Qty: 1}}, Accepted: false,
+			SellerStock: 0, SellerStocks: true, SellerStockNoun: "nails"},
 	})
 	out := b.String()
 	for _, want := range []string{
 		"Your offer of 6 carrots and 1 coin to Ezekiel Crane for 5 nail", "didn't go through",
 		"they hold only 1 nail", "offer id 866",
 		"Your offer of 4 coins to the storekeeper for 2 bread", "offer id 867",
+		"Your offer of 1 sage to Elizabeth Reade for 5 nail", "they hold no nails", "offer id 871",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("rendered text missing %q; got:\n%s", want, out)
@@ -242,10 +248,11 @@ func TestRenderRecentlyResolvedOffersFromMe_ClosedNamesOfferAndShortfall(t *test
 	}
 }
 
-// LLM-296: the build side carries the seller's on-hand of the bought kind onto a
-// CLOSED view (so the render can surface a shortfall), but not onto an accepted
-// one (the reason clause is for closes), and skips a kind the seller doesn't
-// stock (absent/0) so the line never reads "only 0".
+// LLM-296/LLM-303: the build side carries the seller's on-hand of the bought kind
+// onto a CLOSED view (so the render can surface a shortfall), but not onto an
+// accepted one (the reason clause is for closes). LLM-303: it names the shortfall
+// for any real good the seller is short on, INCLUDING zero held (a non-vendor
+// seller), and only a service kind (no inventory backing) leaves SellerStocks false.
 func TestBuildRecentlyResolvedOffersFromMe_SellerStockOnClose(t *testing.T) {
 	now := time.Now().UTC()
 	resolved := now.Add(-20 * time.Second)
@@ -276,13 +283,31 @@ func TestBuildRecentlyResolvedOffersFromMe_SellerStockOnClose(t *testing.T) {
 		t.Errorf("accepted view must not carry seller-stock reason; got SellerStocks=%v", v[0].SellerStocks)
 	}
 
-	// Declined but the seller stocks none of the kind (absent): skipped, not "only 0".
+	// LLM-303: declined, seller holds NONE of a real good (asked 5, holds 0 nails):
+	// the shortfall IS named now (SellerStocks true, stock 0, plural noun), so the
+	// render can say "they hold no nails" — the non-vendor case the bare close hid.
 	snap = resolvedSnap(now, map[sim.LedgerID]*sim.PayLedgerEntry{
 		882: resolvedEntry(882, "prudence", "elizabeth", "nail", 5, 1, sim.PayLedgerStateDeclined, false, resolved),
 	})
+	snap.ItemKinds = map[sim.ItemKind]*sim.ItemKindDef{
+		"nail": {Name: "nail", DisplayLabelSingular: "nail", DisplayLabelPlural: "nails"},
+	}
 	snap.Actors["elizabeth"].Inventory = map[sim.ItemKind]int{"milk": 3}
 	v = buildRecentlyResolvedOffersFromMe(snap, "prudence", snap.Actors["prudence"])
+	if len(v) != 1 || !v[0].SellerStocks || v[0].SellerStock != 0 || v[0].SellerStockNoun != "nails" {
+		t.Errorf("real good held at zero must name the shortfall (SellerStocks true, stock 0, noun 'nails'); got %+v", v)
+	}
+
+	// LLM-303: a service kind (nights_stay, no inventory backing) still leaves
+	// SellerStocks false — "they hold no ..." would be a false alarm for a service.
+	snap = resolvedSnap(now, map[sim.LedgerID]*sim.PayLedgerEntry{
+		883: resolvedEntry(883, "prudence", "elizabeth", "nights_stay", 1, 6, sim.PayLedgerStateDeclined, false, resolved),
+	})
+	snap.ItemKinds = map[sim.ItemKind]*sim.ItemKindDef{
+		"nights_stay": {Name: "nights_stay", Capabilities: []string{"service", "lodging"}},
+	}
+	v = buildRecentlyResolvedOffersFromMe(snap, "prudence", snap.Actors["prudence"])
 	if len(v) != 1 || v[0].SellerStocks {
-		t.Errorf("seller stocking none of the kind must leave SellerStocks false; got %+v", v)
+		t.Errorf("a service kind must leave SellerStocks false; got %+v", v)
 	}
 }
