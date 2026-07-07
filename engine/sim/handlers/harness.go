@@ -1082,13 +1082,13 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 				if key, isQuote := sceneQuoteKey(vc); isQuote {
 					quotedThisTick[key] = struct{}{}
 				}
-				// LLM-120: record a started gather / chosen craft-focus so a second of
+				// LLM-120: record a started gather / started batch so a second of
 				// either this tick is rejected by the name-only guards above. Success-
 				// only, like the speak/offer/quote records — a gather that bounced (wrong
-				// spot) or a craft that named an unmakeable good may be retried. gather's
-				// nil-error result is always Started (sim.StartHarvest) and craft's is
-				// always a set focus (sim.SetProductionFocus), so outcome.success alone is
-				// the signal — no result inspection needed.
+				// spot) or a produce that named an unmakeable good may be retried. gather's
+				// nil-error result is always Started (sim.StartHarvest) and produce's is
+				// always an opened cycle (sim.StartProductionCycle), so outcome.success
+				// alone is the signal — no result inspection needed.
 				if vc.Name == "gather" {
 					gatheredThisTick = true
 				}
@@ -1376,19 +1376,12 @@ func (h *Harness) dispatch(ctx context.Context, w *sim.World, job tickJob, vc *V
 		wrapped, _ := cmdResult.(sim.TickToolResult)
 
 		ended := vc.Entry.TerminalPolicy == TerminalOnSuccess
-		// LLM-201: produce is registered non-terminal so a genuine item SWITCH can be
-		// followed by a speak/act in the same tick. But a produce that does NOT change
-		// the active item is a "tend your post" no-op, and the weak model tends to fumble
-		// the needless second round — serializing its calls as raw text content instead of
-		// structured tool_calls, or churning the produce target for no reason. End the tick
-		// on a no-switch produce so that second round never happens: accept one success per
-		// tick, the LLM-184 terminal-flip shape. A bounced produce returns a ModelFacingError
-		// (not a ProductionFocusResult) and never reaches here, so it stays retryable.
-		if !ended && vc.Name == craftToolName {
-			if r, ok := wrapped.Result.(sim.ProductionFocusResult); ok && !r.Switched {
-				ended = true
-			}
-		}
+		// (The LLM-201 no-switch produce terminal-flip is retired with the
+		// continuous focus: under one-shot production (LLM-319) every successful
+		// produce STARTS a batch — real work, never a "tend your post" no-op —
+		// and a mid-cycle re-produce bounces as a ModelFacingError before
+		// reaching here. Non-terminal stands so the actor can speak its social
+		// beat in the same tick.)
 		out := dispatchOutcome{success: true, ended: ended}
 		if ended {
 			out.terminalStatus = sim.TickStatusSuccess
@@ -1436,8 +1429,8 @@ func selfStateChanged(pre, post *sim.ActorSnapshot) bool {
 	if pre.Coins != post.Coins || pre.InventoryHash != post.InventoryHash {
 		return true
 	}
-	if pre.ProductionFocus != post.ProductionFocus {
-		return true // LLM-128: a craft set the focus — re-render so the forge cue flips
+	if pre.ProductionItem != post.ProductionItem {
+		return true // LLM-319: a batch started or landed — re-render so the trade cue / in-progress line flips
 	}
 	if len(pre.Needs) != len(post.Needs) {
 		return true
@@ -1654,19 +1647,24 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 			return fmt.Sprintf("[ok] You start gathering%s. It finishes on its own in a few seconds; the harvest lands in your pack next turn.", at)
 		}
 	}
-	// craft: SetProductionFocus records the good the crafter forges next; the yield
-	// accrues over later ticks via produce_tick, so a bare "[ok]" read as "nothing
-	// happened, try again" and drove a within-tick re-craft loop to the iteration
-	// budget (live: Ezekiel, craft×6 at the forge, LLM-120). Confirm the choice —
-	// named via the catalog plural noun the command resolved — and lead with the
-	// imperative to stop; the genericCallKey same-tick guard is the teeth.
+	// produce: StartProductionCycle opened a batch; the yield lands when the
+	// cycle's work is done, so a bare "[ok]" would read as "nothing happened,
+	// try again" (the LLM-120 re-craft loop). Confirm what was begun — size,
+	// work, ingredients spent — mirroring the gather start confirmation. The
+	// mechanical numbers belong HERE, in the post-decision result, not in the
+	// deliberation scene (LLM-319).
 	if vc.Name == craftToolName {
-		if r, ok := cmdResult.(sim.ProductionFocusResult); ok {
+		if r, ok := cmdResult.(sim.ProductionStartResult); ok {
 			noun := r.Noun
 			if noun == "" {
-				noun = string(r.Focus)
+				noun = string(r.Item)
 			}
-			return fmt.Sprintf("[ok] You're set to produce %s — that is what you make until you choose again. Do not choose again now; tend your post or call done().", noun)
+			msg := fmt.Sprintf("[ok] You start a batch of %s — %d when it's done, about %s of work at your post.",
+				noun, r.BatchQty, sim.HumanizeWorkDuration(r.DurationSeconds))
+			if r.InputsUsed != "" {
+				msg += fmt.Sprintf(" You use %s.", r.InputsUsed)
+			}
+			return msg + " It finishes on its own while you work here — no need to produce again until it lands."
 		}
 	}
 	if vc.Name == "speak" {

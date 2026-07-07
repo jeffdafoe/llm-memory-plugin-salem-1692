@@ -833,19 +833,27 @@ type Actor struct {
 	// re-checked at gather time, so a lingering id is harmless.
 	GatherTargetObjectID VillageObjectID
 
-	// ProduceState carries the per-item production anchor — used by
-	// produce_tick to compute units owed since the last execution.
-	// One entry per item the actor produces; populated lazily on first
-	// observation.
-	ProduceState map[ItemKind]*ProduceState
+	// ProductionActivity is the actor's ONE in-flight production cycle
+	// (LLM-319): a `produce` call consumed the recipe inputs and opened this
+	// window; the batch lands when the remaining work reaches zero. Progress
+	// accrues only while the actor is at its work structure and awake (the
+	// produce tick decrements it), so walking off pauses the batch rather than
+	// cancelling it. nil = nothing in the works — the idle state the trade cue
+	// and the production-choice warrant key off.
+	//
+	// CHECKPOINTED (unlike SourceActivity, whose windows are seconds): a cycle
+	// runs tens of minutes and the inputs are already consumed, so losing the
+	// window on restart would eat the inputs — the exact coin bleed LLM-319
+	// exists to stop. LastProgressAt is the transient exception (see the field).
+	ProductionActivity *ProductionActivity
 
-	// ProductionFocus is the item a multi-output crafter is currently
-	// forging (LLM-116). produce_tick fills ONLY this item for an actor with
-	// more than one produce entry; empty = nothing chosen yet (the forge cue
-	// + craft tool drive the choice). Single-output producers ignore it and
-	// keep auto-producing. Restart-lossy by design (transient intent — the
-	// actor re-decides on its next at-forge tick), so it is NOT checkpointed.
-	ProductionFocus ItemKind
+	// ProductionNagAt is when the production-choice warrant last woke this
+	// actor to decide (or a batch last landed — the completion beat is itself
+	// the wake). EvaluateProductionChoice re-nags an idle producer only after
+	// ProductionRenagInterval, so declining to produce is a decision that
+	// sticks, not one re-litigated every scan (LLM-319). Transient — a restart
+	// re-nags once, which is harmless.
+	ProductionNagAt time.Time
 
 	// RecentProduce is a restart-lossy ring of this actor's ACTUAL production
 	// mints (LLM-116) — what it has forged recently, not at-cap anchor advances —
@@ -921,7 +929,7 @@ func cloneSummonRefusal(r *SummonRefusal) *SummonRefusal {
 
 // CloneActor returns a deep copy of an Actor suitable for the mem-repo
 // serialization boundary. Mutated containers (Needs, Inventory,
-// DwellCredits, RoomAccess, ProduceState, Acquaintances, Relationships)
+// DwellCredits, RoomAccess, Acquaintances, Relationships)
 // and pointer fields commands rebind (BreakUntil, SleepingUntil,
 // LaboringUntil, LastTickedAt, Narrative) are cloned.
 // Attributes is
@@ -1075,15 +1083,10 @@ func CloneActor(a *Actor) *Actor {
 	if a.KnownPlaces != nil {
 		cp.KnownPlaces = cloneKnownPlaces(a.KnownPlaces)
 	}
-	if a.ProduceState != nil {
-		cp.ProduceState = make(map[ItemKind]*ProduceState, len(a.ProduceState))
-		for k, v := range a.ProduceState {
-			if v == nil {
-				continue
-			}
-			vc := *v
-			cp.ProduceState[k] = &vc
-		}
+	if a.ProductionActivity != nil {
+		// Value struct with no nested pointers — a shallow copy breaks aliasing.
+		pa := *a.ProductionActivity
+		cp.ProductionActivity = &pa
 	}
 	if a.RecentProduce != nil {
 		cp.RecentProduce = append([]ProduceEvent(nil), a.RecentProduce...)
@@ -1376,10 +1379,16 @@ type ActorSnapshot struct {
 	// actors with no restock-bearing attribute.
 	RestockPolicy *RestockPolicy
 
-	// ProductionFocus mirrors the live Actor's current craft focus (LLM-116)
-	// so the forge perception cue can show what a multi-output crafter is
-	// working on without a world-goroutine round trip. Empty when unfocused.
-	ProductionFocus ItemKind
+	// ProductionItem / ProductionBatchQty / ProductionRemainingSeconds mirror
+	// the live Actor's in-flight production cycle (LLM-319) so perception can
+	// render the "you are making X — about N minutes of work left" standing
+	// line, and its absence (Item == "") the idle trade cue, without a
+	// world-goroutine round trip. RemainingSeconds is base-rate work left;
+	// hired help (LLM-224) shortens the wall time, so the rendered estimate
+	// reads "about".
+	ProductionItem             ItemKind
+	ProductionBatchQty         int
+	ProductionRemainingSeconds int64
 
 	// RecentProduce mirrors the live actor's recent-production ring (LLM-116) so
 	// the forge-choice cue can read "made N this past week" off the snapshot.

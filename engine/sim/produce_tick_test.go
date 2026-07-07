@@ -9,14 +9,22 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/repo/mem"
 )
 
-// buildProduceTestWorld seeds two recipes and a tavernkeeper actor at
-// work, ready to produce. lastProduced controls how much time has
-// elapsed at the start of the test.
-func buildProduceTestWorld(t *testing.T, lastProduced time.Time, restock []sim.RestockEntry, inv map[sim.ItemKind]int) (*sim.World, context.CancelFunc) {
+// produce_tick_test.go — LLM-319 one-shot production cycle mechanics. The tick
+// is a progress/landing resolver: nothing is made without a produce call
+// (StartProductionCycle), progress accrues only at-post + awake + not-degraded
+// (pause, never cancel), and a due cycle lands exactly one batch then stops.
+
+// buildCycleTestWorld seeds two recipes and an innkeeper actor at work.
+// Recipes: stew (1 per 1h, inputs vegetable+water — cycle 3600s) and bread
+// (batch of 2 per 1h, no inputs — secondsPerUnit 1800, cycle 3600s).
+func buildCycleTestWorld(t *testing.T, restock []sim.RestockEntry, inv map[sim.ItemKind]int) (*sim.World, context.CancelFunc) {
 	t.Helper()
 	repo, handles := mem.NewRepository()
+	handles.ItemKinds.Seed(map[sim.ItemKind]*sim.ItemKindDef{
+		"stew":  {Name: "stew", DisplayLabel: "Stew", DisplayLabelSingular: "bowl of stew", DisplayLabelPlural: "stew", Category: sim.ItemCategoryFood, SortOrder: 100},
+		"bread": {Name: "bread", DisplayLabel: "Bread", DisplayLabelSingular: "loaf of bread", DisplayLabelPlural: "loaves of bread", Category: sim.ItemCategoryFood, SortOrder: 110},
+	})
 	handles.Recipes.Seed(map[sim.ItemKind]*sim.ItemRecipe{
-		// 1 stew per hour, requires 1 vegetable + 1 water per stew.
 		"stew": {
 			OutputItem:     "stew",
 			OutputQty:      1,
@@ -26,7 +34,6 @@ func buildProduceTestWorld(t *testing.T, lastProduced time.Time, restock []sim.R
 			WholesalePrice: 2,
 			RetailPrice:    4,
 		},
-		// Free bread: 2 per hour, no inputs.
 		"bread": {
 			OutputItem:   "bread",
 			OutputQty:    2,
@@ -38,14 +45,11 @@ func buildProduceTestWorld(t *testing.T, lastProduced time.Time, restock []sim.R
 		"hannah": {
 			ID:                "hannah",
 			LLMAgent:          "hannah-innkeeper",
+			Kind:              sim.KindNPCStateful,
 			InsideStructureID: "inn",
 			WorkStructureID:   "inn",
 			Inventory:         inv,
-			ProduceState: map[sim.ItemKind]*sim.ProduceState{
-				"stew":  {Item: "stew", LastProducedAt: lastProduced},
-				"bread": {Item: "bread", LastProducedAt: lastProduced},
-			},
-			RestockPolicy: &sim.RestockPolicy{Restock: restock},
+			RestockPolicy:     &sim.RestockPolicy{Restock: restock},
 		},
 	})
 	w, err := sim.LoadWorld(context.Background(), repo)
@@ -57,56 +61,242 @@ func buildProduceTestWorld(t *testing.T, lastProduced time.Time, restock []sim.R
 	return w, cancel
 }
 
-// TestApplyProduceTickFreeRecipe covers the no-inputs path. Bread @
-// 2/hr, 90 min elapsed → 3 units produced (rounded down? actually with
-// output_qty=2 and rate_qty=2/rate_per_hours=1, seconds_per_unit=1800,
-// 90min=5400s → 3 units owed, executions = 3/2 = 1 execution → +2
-// bread). Anchor advances by exactly 2 units * 1800s = 1h.
-func TestApplyProduceTickFreeRecipe(t *testing.T) {
+// startCycle starts a production cycle and rewinds its progress anchor to
+// `anchor`, so a subsequent ApplyProduceTick(now) sees a deterministic elapsed
+// window (StartProductionCycle stamps the anchor with the wall clock).
+func startCycle(t *testing.T, w *sim.World, actorID sim.ActorID, item string, anchor time.Time) {
+	t.Helper()
+	if _, err := w.Send(sim.StartProductionCycle(actorID, item)); err != nil {
+		t.Fatalf("StartProductionCycle(%s): %v", item, err)
+	}
+	rewindProductionAnchor(t, w, actorID, anchor)
+}
+
+// rewindProductionAnchor overwrites the in-flight cycle's LastProgressAt.
+func rewindProductionAnchor(t *testing.T, w *sim.World, actorID sim.ActorID, anchor time.Time) {
+	t.Helper()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors[actorID].ProductionActivity.LastProgressAt = anchor
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("rewind anchor: %v", err)
+	}
+}
+
+// productionActivityOf reads the actor's live activity (nil when idle).
+func productionActivityOf(t *testing.T, w *sim.World, actorID sim.ActorID) *sim.ProductionActivity {
+	t.Helper()
+	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		if pa := world.Actors[actorID].ProductionActivity; pa != nil {
+			cp := *pa
+			return &cp, nil
+		}
+		return (*sim.ProductionActivity)(nil), nil
+	}})
+	if err != nil {
+		t.Fatalf("read activity: %v", err)
+	}
+	return res.(*sim.ProductionActivity)
+}
+
+// (inventoryOf is shared from gather_commands_test.go.)
+
+// TestProduceTickNothingWithoutCycle is the LLM-319 headline: NO good is
+// produced without a produce call — the continuous auto-fill is gone for
+// single-output producers too. Hannah stands at her post with a producible
+// entry and plenty of elapsed time; the tick mints nothing.
+func TestProduceTickNothingWithoutCycle(t *testing.T) {
 	now := time.Now().UTC()
-	anchor := now.Add(-90 * time.Minute)
-	w, cancel := buildProduceTestWorld(t, anchor, []sim.RestockEntry{
+	w, cancel := buildCycleTestWorld(t, []sim.RestockEntry{
 		{Item: "bread", Source: sim.RestockSourceProduce, Max: 10},
 	}, map[sim.ItemKind]int{})
 	defer cancel()
 
+	res, err := w.Send(sim.ApplyProduceTick(now.Add(4 * time.Hour)))
+	if err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if r := res.(sim.ProduceTickResult); r.Executions != 0 {
+		t.Errorf("Executions = %d with no cycle started, want 0 (auto-produce is retired)", r.Executions)
+	}
+	if got := inventoryOf(t, w, "hannah", "bread"); got != 0 {
+		t.Errorf("bread = %d, want 0", got)
+	}
+}
+
+// TestProduceTickProgressesThenLands drives one full cycle: a bread batch
+// (3600s of work) progresses without landing at 30 min, then lands at 70 min —
+// +2 bread, window cleared, the landing recorded on the RecentProduce ring and
+// the re-decide pacing stamp (ProductionNagAt) set.
+func TestProduceTickProgressesThenLands(t *testing.T) {
+	now := time.Now().UTC()
+	w, cancel := buildCycleTestWorld(t, []sim.RestockEntry{
+		{Item: "bread", Source: sim.RestockSourceProduce, Max: 10},
+	}, map[sim.ItemKind]int{})
+	defer cancel()
+
+	startCycle(t, w, "hannah", "bread", now.Add(-30*time.Minute))
+
+	// 30 minutes of the 60-minute cycle done — no landing yet.
 	res, err := w.Send(sim.ApplyProduceTick(now))
+	if err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if r := res.(sim.ProduceTickResult); r.Executions != 0 {
+		t.Fatalf("Executions = %d at half-cycle, want 0", r.Executions)
+	}
+	act := productionActivityOf(t, w, "hannah")
+	if act == nil {
+		t.Fatalf("activity cleared at half-cycle; want in flight")
+	}
+	if act.RemainingSeconds != 3600-1800 {
+		t.Errorf("RemainingSeconds = %d, want 1800 (30 of 60 min credited)", act.RemainingSeconds)
+	}
+
+	// 40 more minutes — the cycle is due; the batch lands.
+	later := now.Add(40 * time.Minute)
+	res, err = w.Send(sim.ApplyProduceTick(later))
 	if err != nil {
 		t.Fatalf("tick: %v", err)
 	}
 	r := res.(sim.ProduceTickResult)
 	if r.Executions != 1 {
-		t.Errorf("Executions = %d, want 1", r.Executions)
+		t.Fatalf("Executions = %d at cycle end, want 1", r.Executions)
 	}
-
-	snap := w.Published().Actors["hannah"]
-	// ActorSnapshot.InventoryHash is sum of quantities; check the
-	// underlying actor.
-	inv, _ := w.Send(sim.Command{
-		Fn: func(world *sim.World) (any, error) {
-			return world.Actors["hannah"].Inventory["bread"], nil
-		},
-	})
-	if inv.(int) != 2 {
-		t.Errorf("bread inventory = %d, want 2", inv.(int))
+	if got := inventoryOf(t, w, "hannah", "bread"); got != 2 {
+		t.Errorf("bread = %d, want 2 (one batch of OutputQty 2)", got)
 	}
-	_ = snap
+	if productionActivityOf(t, w, "hannah") != nil {
+		t.Errorf("activity still set after landing; want nil (one cycle per call)")
+	}
+	stamped, _ := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Actors["hannah"]
+		return [2]bool{len(a.RecentProduce) == 1, a.ProductionNagAt.Equal(later)}, nil
+	}})
+	got := stamped.([2]bool)
+	if !got[0] {
+		t.Errorf("RecentProduce ring not recorded on landing")
+	}
+	if !got[1] {
+		t.Errorf("ProductionNagAt not stamped on landing (the completion beat is the wake)")
+	}
 }
 
-// TestApplyProduceTick_DegradedBusinessSkips — LLM-304: a degraded business is shut
-// for production. Its owner's produce tick is skipped (the same skip as off-shift /
-// sleeping), so its shelves draw down until mended, at which point production
-// resumes. Identical setup to TestApplyProduceTickFreeRecipe (which produces 2
-// bread) — the only difference is the degraded business, so 0 units is the gate.
-func TestApplyProduceTick_DegradedBusinessSkips(t *testing.T) {
+// TestProduceTickLandsExactlyOneBatch — one call, ONE batch: after the landing,
+// further elapsed time mints nothing until produce is called again.
+func TestProduceTickLandsExactlyOneBatch(t *testing.T) {
 	now := time.Now().UTC()
-	anchor := now.Add(-90 * time.Minute)
-	w, cancel := buildProduceTestWorld(t, anchor, []sim.RestockEntry{
+	w, cancel := buildCycleTestWorld(t, []sim.RestockEntry{
 		{Item: "bread", Source: sim.RestockSourceProduce, Max: 10},
 	}, map[sim.ItemKind]int{})
 	defer cancel()
 
-	// hannah's workplace is a degraded business she owns — LLM-304 shuts production.
+	startCycle(t, w, "hannah", "bread", now.Add(-2*time.Hour))
+	if _, err := w.Send(sim.ApplyProduceTick(now)); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if got := inventoryOf(t, w, "hannah", "bread"); got != 2 {
+		t.Fatalf("bread = %d after landing, want 2", got)
+	}
+
+	// Hours pass; no new cycle was started — nothing more is made.
+	res, err := w.Send(sim.ApplyProduceTick(now.Add(6 * time.Hour)))
+	if err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if r := res.(sim.ProduceTickResult); r.Executions != 0 {
+		t.Errorf("Executions = %d after the batch landed, want 0 (no continuation)", r.Executions)
+	}
+	if got := inventoryOf(t, w, "hannah", "bread"); got != 2 {
+		t.Errorf("bread = %d, want still 2", got)
+	}
+}
+
+// TestProduceTickPausesAwayFromPost — leaving the post PAUSES the batch: the
+// away tick discards the elapsed time (no credit, no cancel), and the batch
+// resumes when the actor is back.
+func TestProduceTickPausesAwayFromPost(t *testing.T) {
+	now := time.Now().UTC()
+	w, cancel := buildCycleTestWorld(t, []sim.RestockEntry{
+		{Item: "bread", Source: sim.RestockSourceProduce, Max: 10},
+	}, map[sim.ItemKind]int{})
+	defer cancel()
+
+	startCycle(t, w, "hannah", "bread", now.Add(-45*time.Minute))
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		sim.SetActorInsideStructure(world, world.Actors["hannah"], "tavern")
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("move: %v", err)
+	}
+
+	if _, err := w.Send(sim.ApplyProduceTick(now)); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	act := productionActivityOf(t, w, "hannah")
+	if act == nil {
+		t.Fatalf("activity cancelled by leaving the post; want paused")
+	}
+	if act.RemainingSeconds != 3600 {
+		t.Errorf("RemainingSeconds = %d after away tick, want 3600 (away time discarded)", act.RemainingSeconds)
+	}
+	if !act.LastProgressAt.Equal(now) {
+		t.Errorf("anchor = %v after away tick, want %v (advanced so the away time never banks)", act.LastProgressAt, now)
+	}
+
+	// Back at the post: a full cycle of at-post time lands the batch.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		sim.SetActorInsideStructure(world, world.Actors["hannah"], "inn")
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("move back: %v", err)
+	}
+	rewindProductionAnchor(t, w, "hannah", now.Add(-61*time.Minute))
+	if _, err := w.Send(sim.ApplyProduceTick(now)); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if got := inventoryOf(t, w, "hannah", "bread"); got != 2 {
+		t.Errorf("bread = %d after resumed cycle, want 2", got)
+	}
+}
+
+// TestProduceTickPausesWhileSleeping — the awake gate pauses progress (no
+// overnight free goods for an innkeeper sleeping at her workplace).
+func TestProduceTickPausesWhileSleeping(t *testing.T) {
+	now := time.Now().UTC()
+	w, cancel := buildCycleTestWorld(t, []sim.RestockEntry{
+		{Item: "bread", Source: sim.RestockSourceProduce, Max: 10},
+	}, map[sim.ItemKind]int{})
+	defer cancel()
+
+	startCycle(t, w, "hannah", "bread", now.Add(-2*time.Hour))
+	future := now.Add(time.Hour)
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["hannah"].SleepingUntil = &future
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("sleep: %v", err)
+	}
+
+	if _, err := w.Send(sim.ApplyProduceTick(now)); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	act := productionActivityOf(t, w, "hannah")
+	if act == nil || act.RemainingSeconds != 3600 {
+		t.Errorf("sleeping tick credited work (activity=%+v); want untouched 3600s", act)
+	}
+}
+
+// TestProduceTickPausesWhileDegraded — LLM-304: a degraded business is shut
+// for production; the batch pauses until the owner mends it.
+func TestProduceTickPausesWhileDegraded(t *testing.T) {
+	now := time.Now().UTC()
+	w, cancel := buildCycleTestWorld(t, []sim.RestockEntry{
+		{Item: "bread", Source: sim.RestockSourceProduce, Max: 10},
+	}, map[sim.ItemKind]int{})
+	defer cancel()
+
+	startCycle(t, w, "hannah", "bread", now.Add(-2*time.Hour))
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		world.Settings.StallWearDegradeThreshold = 600
 		if world.VillageObjects == nil {
@@ -120,230 +310,59 @@ func TestApplyProduceTick_DegradedBusinessSkips(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	res, err := w.Send(sim.ApplyProduceTick(now))
-	if err != nil {
+	if _, err := w.Send(sim.ApplyProduceTick(now)); err != nil {
 		t.Fatalf("tick: %v", err)
 	}
-	if r := res.(sim.ProduceTickResult); r.Executions != 0 {
-		t.Errorf("Executions = %d, want 0 (a degraded business produces nothing)", r.Executions)
+	act := productionActivityOf(t, w, "hannah")
+	if act == nil || act.RemainingSeconds != 3600 {
+		t.Errorf("degraded-business tick credited work (activity=%+v); want untouched 3600s", act)
 	}
-	inv, _ := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		return world.Actors["hannah"].Inventory["bread"], nil
-	}})
-	if inv.(int) != 0 {
-		t.Errorf("bread = %d, want 0 (no production while degraded)", inv.(int))
+	if got := inventoryOf(t, w, "hannah", "bread"); got != 0 {
+		t.Errorf("bread = %d while degraded, want 0", got)
 	}
 }
 
-// TestApplyProduceTickWithInputs covers the input-required path. Stew
-// @ 1/hr, 90 min elapsed, but only 1 vegetable + 1 water available, so
-// 1 execution → consume both inputs, +1 stew.
-func TestApplyProduceTickWithInputs(t *testing.T) {
+// TestProduceTickZeroAnchorStampsWithoutCredit — the post-restart posture: the
+// pg loader leaves LastProgressAt zero, so the first tick stamps the anchor
+// without crediting and engine downtime never counts as work.
+func TestProduceTickZeroAnchorStampsWithoutCredit(t *testing.T) {
 	now := time.Now().UTC()
-	anchor := now.Add(-90 * time.Minute)
-	w, cancel := buildProduceTestWorld(t, anchor, []sim.RestockEntry{
-		{Item: "stew", Source: sim.RestockSourceProduce, Max: 5},
-	}, map[sim.ItemKind]int{"vegetable": 1, "water": 1})
-	defer cancel()
-
-	res, _ := w.Send(sim.ApplyProduceTick(now))
-	r := res.(sim.ProduceTickResult)
-	if r.Executions != 1 {
-		t.Errorf("Executions = %d, want 1", r.Executions)
-	}
-
-	inv, _ := w.Send(sim.Command{
-		Fn: func(world *sim.World) (any, error) {
-			return map[string]int{
-				"stew":      world.Actors["hannah"].Inventory["stew"],
-				"vegetable": world.Actors["hannah"].Inventory["vegetable"],
-				"water":     world.Actors["hannah"].Inventory["water"],
-			}, nil
-		},
-	})
-	got := inv.(map[string]int)
-	if got["stew"] != 1 {
-		t.Errorf("stew = %d, want 1", got["stew"])
-	}
-	if got["vegetable"] != 0 || got["water"] != 0 {
-		t.Errorf("inputs not consumed cleanly: %v", got)
-	}
-}
-
-// TestApplyProduceTickSkipsOnInputShortage covers design decision #7 —
-// missing input means skip entirely, anchor doesn't advance.
-func TestApplyProduceTickSkipsOnInputShortage(t *testing.T) {
-	now := time.Now().UTC()
-	anchor := now.Add(-90 * time.Minute)
-	w, cancel := buildProduceTestWorld(t, anchor, []sim.RestockEntry{
-		{Item: "stew", Source: sim.RestockSourceProduce, Max: 5},
-	}, map[sim.ItemKind]int{"vegetable": 1}) // no water
-	defer cancel()
-
-	res, _ := w.Send(sim.ApplyProduceTick(now))
-	if res.(sim.ProduceTickResult).Executions != 0 {
-		t.Errorf("Executions = %d, want 0 (input short)", res.(sim.ProduceTickResult).Executions)
-	}
-	// Anchor should NOT have advanced.
-	state, _ := w.Send(sim.Command{
-		Fn: func(world *sim.World) (any, error) {
-			return world.Actors["hannah"].ProduceState["stew"].LastProducedAt, nil
-		},
-	})
-	if !state.(time.Time).Equal(anchor) {
-		t.Errorf("anchor advanced despite skip: %v vs %v", state.(time.Time), anchor)
-	}
-	// Vegetable preserved (no partial consumption).
-	veg, _ := w.Send(sim.Command{
-		Fn: func(world *sim.World) (any, error) {
-			return world.Actors["hannah"].Inventory["vegetable"], nil
-		},
-	})
-	if veg.(int) != 1 {
-		t.Errorf("vegetable consumed despite skip: %d", veg.(int))
-	}
-}
-
-// TestApplyProduceTickGateOffShift covers the gate — actor NOT inside
-// their work structure → no production.
-func TestApplyProduceTickGateOffShift(t *testing.T) {
-	now := time.Now().UTC()
-	anchor := now.Add(-90 * time.Minute)
-	w, cancel := buildProduceTestWorld(t, anchor, []sim.RestockEntry{
+	w, cancel := buildCycleTestWorld(t, []sim.RestockEntry{
 		{Item: "bread", Source: sim.RestockSourceProduce, Max: 10},
 	}, map[sim.ItemKind]int{})
 	defer cancel()
 
-	// Move hannah away from work.
-	_, _ = w.Send(sim.Command{
-		Fn: func(world *sim.World) (any, error) {
-			sim.SetActorInsideStructure(world, world.Actors["hannah"], "tavern")
-			return nil, nil
-		},
-	})
-
-	res, _ := w.Send(sim.ApplyProduceTick(now))
-	if res.(sim.ProduceTickResult).Executions != 0 {
-		t.Errorf("Executions = %d off-shift, want 0", res.(sim.ProduceTickResult).Executions)
+	// Simulate the loader's rehydrated window: fields set, anchor zero.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["hannah"].ProductionActivity = &sim.ProductionActivity{
+			Item: "bread", BatchQty: 2, RemainingSeconds: 1800,
+		}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed activity: %v", err)
 	}
-}
 
-// TestApplyProduceTickGateSleeping covers the sleep gate.
-func TestApplyProduceTickGateSleeping(t *testing.T) {
-	now := time.Now().UTC()
-	anchor := now.Add(-90 * time.Minute)
-	w, cancel := buildProduceTestWorld(t, anchor, []sim.RestockEntry{
-		{Item: "bread", Source: sim.RestockSourceProduce, Max: 10},
-	}, map[sim.ItemKind]int{})
-	defer cancel()
-
-	// Mark sleeping until 1h in the future.
-	future := now.Add(1 * time.Hour)
-	_, _ = w.Send(sim.Command{
-		Fn: func(world *sim.World) (any, error) {
-			world.Actors["hannah"].SleepingUntil = &future
-			return nil, nil
-		},
-	})
-
-	res, _ := w.Send(sim.ApplyProduceTick(now))
-	if res.(sim.ProduceTickResult).Executions != 0 {
-		t.Errorf("Executions = %d while sleeping, want 0", res.(sim.ProduceTickResult).Executions)
+	if _, err := w.Send(sim.ApplyProduceTick(now)); err != nil {
+		t.Fatalf("tick: %v", err)
 	}
-}
-
-// TestApplyProduceTickCapAdvancesAnchor covers the at-cap case: anchor
-// jumps to now (no back-credit) when there's no headroom.
-func TestApplyProduceTickCapAdvancesAnchor(t *testing.T) {
-	now := time.Now().UTC()
-	anchor := now.Add(-90 * time.Minute)
-	w, cancel := buildProduceTestWorld(t, anchor, []sim.RestockEntry{
-		{Item: "bread", Source: sim.RestockSourceProduce, Max: 5},
-	}, map[sim.ItemKind]int{"bread": 5}) // already at cap
-	defer cancel()
-
-	res, _ := w.Send(sim.ApplyProduceTick(now))
-	if res.(sim.ProduceTickResult).Executions != 0 {
-		t.Errorf("Executions = %d at cap, want 0", res.(sim.ProduceTickResult).Executions)
+	act := productionActivityOf(t, w, "hannah")
+	if act == nil {
+		t.Fatalf("activity gone after first post-restart tick")
 	}
-	// Anchor advanced to now (no back-credit).
-	state, _ := w.Send(sim.Command{
-		Fn: func(world *sim.World) (any, error) {
-			return world.Actors["hannah"].ProduceState["bread"].LastProducedAt, nil
-		},
-	})
-	if !state.(time.Time).Equal(now) {
-		t.Errorf("anchor at cap = %v, want %v (now)", state.(time.Time), now)
+	if act.RemainingSeconds != 1800 {
+		t.Errorf("RemainingSeconds = %d, want untouched 1800 (zero anchor stamps only)", act.RemainingSeconds)
 	}
-}
-
-// TestApplyProduceTickFirstObservation covers the no-prior-state case:
-// first encounter stamps the anchor without producing.
-func TestApplyProduceTickFirstObservation(t *testing.T) {
-	now := time.Now().UTC()
-	repo, handles := mem.NewRepository()
-	handles.Recipes.Seed(map[sim.ItemKind]*sim.ItemRecipe{
-		"bread": {OutputItem: "bread", OutputQty: 2, RateQty: 2, RatePerHours: 1},
-	})
-	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
-		"hannah": {
-			ID:                "hannah",
-			LLMAgent:          "hannah-innkeeper",
-			InsideStructureID: "inn",
-			WorkStructureID:   "inn",
-			Inventory:         map[sim.ItemKind]int{},
-			// No ProduceState seeded — should be initialized on first tick.
-			RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
-				{Item: "bread", Source: sim.RestockSourceProduce, Max: 10},
-			}},
-		},
-	})
-	w, err := sim.LoadWorld(context.Background(), repo)
-	if err != nil {
-		t.Fatalf("LoadWorld: %v", err)
+	if !act.LastProgressAt.Equal(now) {
+		t.Errorf("anchor = %v, want %v", act.LastProgressAt, now)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go w.Run(ctx)
 
-	res, _ := w.Send(sim.ApplyProduceTick(now))
-	if res.(sim.ProduceTickResult).Executions != 0 {
-		t.Errorf("first observation Executions = %d, want 0 (anchor stamp only)", res.(sim.ProduceTickResult).Executions)
+	// The second tick credits normally from the stamped anchor.
+	later := now.Add(31 * time.Minute)
+	if _, err := w.Send(sim.ApplyProduceTick(later)); err != nil {
+		t.Fatalf("tick 2: %v", err)
 	}
-	// State now exists with anchor=now.
-	state, _ := w.Send(sim.Command{
-		Fn: func(world *sim.World) (any, error) {
-			return world.Actors["hannah"].ProduceState["bread"].LastProducedAt, nil
-		},
-	})
-	if !state.(time.Time).Equal(now) {
-		t.Errorf("first-pass anchor = %v, want %v", state.(time.Time), now)
-	}
-}
-
-// TestApplyProduceTickAdvancesByExactConsumedTime covers anchor math:
-// bread, 90 min elapsed, output_qty=2, seconds_per_unit=1800. 1
-// execution consumes 2 units * 1800 = 3600s, so anchor advances by
-// exactly 1h and the remaining 30 min residual stays.
-func TestApplyProduceTickAdvancesByExactConsumedTime(t *testing.T) {
-	now := time.Now().UTC()
-	anchor := now.Add(-90 * time.Minute)
-	w, cancel := buildProduceTestWorld(t, anchor, []sim.RestockEntry{
-		{Item: "bread", Source: sim.RestockSourceProduce, Max: 10},
-	}, map[sim.ItemKind]int{})
-	defer cancel()
-
-	_, _ = w.Send(sim.ApplyProduceTick(now))
-
-	state, _ := w.Send(sim.Command{
-		Fn: func(world *sim.World) (any, error) {
-			return world.Actors["hannah"].ProduceState["bread"].LastProducedAt, nil
-		},
-	})
-	wantAnchor := anchor.Add(1 * time.Hour) // exactly one execution worth
-	if !state.(time.Time).Equal(wantAnchor) {
-		t.Errorf("anchor advanced to %v, want %v (residual 30 min preserved)",
-			state.(time.Time), wantAnchor)
+	if got := inventoryOf(t, w, "hannah", "bread"); got != 2 {
+		t.Errorf("bread = %d after resumed remainder, want 2", got)
 	}
 }
 

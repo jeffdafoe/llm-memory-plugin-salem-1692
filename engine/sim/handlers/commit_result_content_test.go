@@ -514,27 +514,37 @@ func TestCommitResultContent_GatherSteer(t *testing.T) {
 	}
 }
 
-// TestCommitResultContent_CraftSteer pins the LLM-120 post-craft copy: a set
-// focus is confirmed by name (the catalog plural noun the command resolved) and
-// leads with the imperative to stop, instead of the bare [ok] that drove the
-// craft×6 forge loop. A missing noun falls back to the raw kind key; a
-// wrong-typed payload or nil result degrade to generic [ok].
-func TestCommitResultContent_CraftSteer(t *testing.T) {
+// TestCommitResultContent_ProduceBatchStart pins the LLM-319 post-produce copy:
+// a started one-shot batch is confirmed by name with its size and humanized
+// work duration, the consumed inputs when the recipe has any, and the "it
+// finishes on its own" closer that stops the model from re-calling produce
+// mid-cycle (the LLM-120 re-craft loop, one-shot edition). A missing noun
+// falls back to the raw kind key; a wrong-typed payload or nil result degrade
+// to generic [ok].
+func TestCommitResultContent_ProduceBatchStart(t *testing.T) {
 	vc := ValidatedCall{Name: "produce", DecodedArgs: CraftArgs{Item: "Nail"}}
+	const closer = " It finishes on its own while you work here — no need to produce again until it lands."
 
-	got := commitResultContent(&vc, sim.ProductionFocusResult{Focus: "nail", Noun: "nails"})
-	want := "[ok] You're set to produce nails — that is what you make until you choose again. Do not choose again now; tend your post or call done()."
+	got := commitResultContent(&vc, sim.ProductionStartResult{Item: "nail", Noun: "nails", BatchQty: 24, DurationSeconds: 4500, InputsUsed: "3 iron"})
+	want := "[ok] You start a batch of nails — 24 when it's done, about an hour and a quarter of work at your post. You use 3 iron." + closer
 	if got != want {
-		t.Errorf("craft steer:\n got %q\nwant %q", got, want)
+		t.Errorf("produce batch start:\n got %q\nwant %q", got, want)
+	}
+
+	// An origin producer's recipe has no inputs — the "You use ..." clause is
+	// omitted entirely, no dangling "You use ." fragment.
+	got = commitResultContent(&vc, sim.ProductionStartResult{Item: "nail", Noun: "nails", BatchQty: 10, DurationSeconds: 1200})
+	want = "[ok] You start a batch of nails — 10 when it's done, about 20 minutes of work at your post." + closer
+	if got != want {
+		t.Errorf("produce batch start (no inputs):\n got %q\nwant %q", got, want)
 	}
 
 	// No noun on the result (a discovery-minted kind with no catalog phrase) →
-	// fall back to the raw kind key rather than render an empty good. The steer
-	// is pronoun-free so the singular fallback reads correctly too.
-	got = commitResultContent(&vc, sim.ProductionFocusResult{Focus: "nail"})
-	want = "[ok] You're set to produce nail — that is what you make until you choose again. Do not choose again now; tend your post or call done()."
+	// fall back to the raw kind key rather than render an empty good.
+	got = commitResultContent(&vc, sim.ProductionStartResult{Item: "nail", BatchQty: 10, DurationSeconds: 1200})
+	want = "[ok] You start a batch of nail — 10 when it's done, about 20 minutes of work at your post." + closer
 	if got != want {
-		t.Errorf("craft steer noun fallback:\n got %q\nwant %q", got, want)
+		t.Errorf("produce batch start noun fallback:\n got %q\nwant %q", got, want)
 	}
 
 	if got := commitResultContent(&vc, struct{ X int }{X: 1}); got != "[ok]" {

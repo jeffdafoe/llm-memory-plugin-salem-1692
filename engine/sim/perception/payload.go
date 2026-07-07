@@ -502,10 +502,13 @@ type Payload struct {
 	// when no produced recipe has a low bought input, or restock is disabled. LLM-82.
 	ProductionInputs *ProductionInputsView
 
-	// ForgeChoice surfaces, to a multi-output crafter at its workplace, every
-	// good it can forge (per-unit time, stock vs cap, recent sales) so it can
-	// pick one via the craft tool — produce_tick then fills only that good. nil
-	// for a single-output producer or when away from the forge. LLM-116.
+	// ForgeChoice is the "## Your trade" scene (LLM-116, redesigned LLM-319):
+	// to ANY producer idle at its workplace — nothing in the works — each good
+	// it makes, compiled into tiered felt language (stock, sell-through, batch
+	// cost/means), so it decides whether to start a batch via the produce tool.
+	// Its presence gates that tool, so mid-batch (or away from the post, or
+	// degraded-shut) both the cue and the tool disappear together. nil in all
+	// those states.
 	ForgeChoice *ForgeChoiceView
 
 	// TradeValue surfaces, to an actor in company, the coin worth of the goods of
@@ -1018,13 +1021,14 @@ type ActorView struct {
 	// — replaces the raw "needs: hunger=24" dump with felt language.
 	NeedThresholds sim.NeedThresholds
 
-	// ProductionFocusLabel is the display label of the good a multi-output
-	// crafter is currently forging (LLM-116), empty when unfocused or a single-
-	// output producer. Rendered as a standing "You are forging X." self-state
-	// line on EVERY tick — including a social tick when someone approaches — so
-	// the crafter always knows its own current work (a PC walking up to ask
-	// "what are you making?" gets a real answer).
-	ProductionFocusLabel string
+	// InFlightProduction is the actor's in-progress production cycle (LLM-319),
+	// nil when nothing is in the works. Rendered as a standing "You are making a
+	// batch of X — about N minutes of work left" self-state line on EVERY tick —
+	// including a social tick when someone approaches — so the producer always
+	// knows its own current work (a PC walking up to ask "what are you making?"
+	// gets a real answer), and a tick firing mid-batch doesn't walk off the post
+	// unawares.
+	InFlightProduction *InFlightProductionView
 
 	// ActiveDwellCredits is the actor's in-progress dwell credits at
 	// snapshot time — meals being eaten, rests being taken. Renders as
@@ -1114,6 +1118,16 @@ type InFlightSourceActivityView struct {
 	Kind        sim.SourceActivityKind
 	SourceLabel string
 	Attribute   sim.NeedKey
+}
+
+// InFlightProductionView is the perception-side projection of the subject's
+// in-flight production cycle (LLM-319). ItemLabel is the batch good's display
+// label; WorkLeft is the humanized base-rate work remaining ("about 40
+// minutes" reads as an estimate on purpose — hired help shortens the real wall
+// time). Resolved at build time so render stays a pure formatter.
+type InFlightProductionView struct {
+	ItemLabel string
+	WorkLeft  string
 }
 
 // DwellCreditView is the perception-side projection of one

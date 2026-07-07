@@ -19,6 +19,10 @@ It is your working hours and you are at your post — stay and look after your w
 ## Keeping up production
 - You use milk to make porridge — 0 on hand, enough for about 0 more, and you're running low.
 
+## Your trade
+You have a fair stock of porridge, and none sold this past week. A batch would take about an hour, but you'd need more milk and water first.
+Start a batch with produce, or see to other things.
+
 ## Restocking
 Your shop stock of these bought-in goods is running low. You choose how much to buy.
 - You have 0 milk on hand and room for 9 more at the most. No seller is here now — use move_to to reach a supplier below, then pay_with_item once you arrive.

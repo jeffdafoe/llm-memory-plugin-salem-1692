@@ -270,8 +270,8 @@ func TestUmbilical_Agent(t *testing.T) {
 }
 
 // TestUmbilical_AgentRestockProduce: the agent view surfaces an actor's restock
-// policy (item/source/cap, in policy order) and per-item produce-state anchors
-// (LLM-111), and omits both for an actor that manages nothing.
+// policy (item/source/cap, in policy order, LLM-111) and the in-flight one-shot
+// production cycle (LLM-319), and omits both for an actor that manages nothing.
 func TestUmbilical_AgentRestockProduce(t *testing.T) {
 	w := seededWorld(t)
 	anchor := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
@@ -281,12 +281,12 @@ func TestUmbilical_AgentRestockProduce(t *testing.T) {
 			{Item: "horseshoe", Source: sim.RestockSourceProduce, Max: 5},
 			{Item: "ale", Source: sim.RestockSourceBuy, Max: 12},
 		}}
-		a.ProduceState = map[sim.ItemKind]*sim.ProduceState{
-			"horseshoe": {Item: "horseshoe", LastProducedAt: anchor},
+		a.ProductionActivity = &sim.ProductionActivity{
+			Item: "horseshoe", BatchQty: 4, RemainingSeconds: 900, LastProgressAt: anchor,
 		}
 		return nil, nil
 	}}); err != nil {
-		t.Fatalf("seed restock/produce: %v", err)
+		t.Fatalf("seed restock/production: %v", err)
 	}
 	srv := NewServer(w, permAuth{operatorPerms})
 	srv.SetTelemetry(telemetry.New(8))
@@ -310,21 +310,40 @@ func TestUmbilical_AgentRestockProduce(t *testing.T) {
 	if out.RestockPolicy[1].Item != "ale" || out.RestockPolicy[1].Source != "buy" || out.RestockPolicy[1].Cap != 12 {
 		t.Errorf("entry[1] = %+v, want ale/buy/12", out.RestockPolicy[1])
 	}
-	if len(out.ProduceState) != 1 || out.ProduceState[0].Item != "horseshoe" {
-		t.Fatalf("produce_state = %+v, want one horseshoe anchor", out.ProduceState)
+	if out.Production == nil || out.Production.Item != "horseshoe" ||
+		out.Production.BatchQty != 4 || out.Production.RemainingSeconds != 900 {
+		t.Fatalf("production = %+v, want horseshoe/4/900 (LLM-319)", out.Production)
 	}
-	if out.ProduceState[0].LastProducedAt == nil || !out.ProduceState[0].LastProducedAt.Equal(anchor) {
-		t.Errorf("last_produced_at = %v, want %v", out.ProduceState[0].LastProducedAt, anchor)
+	if out.Production.LastProgressAt == nil || !out.Production.LastProgressAt.Equal(anchor) {
+		t.Errorf("last_progress_at = %v, want %v", out.Production.LastProgressAt, anchor)
 	}
 
-	// An actor with no policy omits both fields.
+	// A zero LastProgressAt (the post-restart posture — LoadAll leaves it
+	// unstamped so downtime never counts as work) is omitted from the wire, not
+	// rendered as a zero timestamp.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["hannah"].ProductionActivity.LastProgressAt = time.Time{}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("clear progress anchor: %v", err)
+	}
+	rec = req(t, h, "/api/village/umbilical/agent?id=hannah", "tok")
+	out = UmbilicalAgentDTO{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode hannah (zero anchor): %v", err)
+	}
+	if out.Production == nil || out.Production.LastProgressAt != nil {
+		t.Errorf("zero-anchor production = %+v, want non-nil with last_progress_at omitted", out.Production)
+	}
+
+	// An actor with no policy and nothing in the works omits both fields.
 	rec = req(t, h, "/api/village/umbilical/agent?id=bram", "tok")
 	out = UmbilicalAgentDTO{}
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatalf("decode bram: %v", err)
 	}
-	if len(out.RestockPolicy) != 0 || len(out.ProduceState) != 0 {
-		t.Errorf("bram (no policy) = restock %v produce %v, want both empty", out.RestockPolicy, out.ProduceState)
+	if len(out.RestockPolicy) != 0 || out.Production != nil {
+		t.Errorf("bram (no policy) = restock %v production %v, want both absent", out.RestockPolicy, out.Production)
 	}
 }
 

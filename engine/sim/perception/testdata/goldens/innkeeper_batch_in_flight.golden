@@ -5,24 +5,15 @@
 
 
 ## You
-Coins in your purse: 20.
-You are carrying: milk (x9), porridge (x30), water (x4).
+Coins in your purse: 12.
 You are making a batch of porridge — about 40 minutes of work left; it only moves along while you're at your post.
 
 ## Around you
-You are inside the Inn, your workplace, with no one else here to hear you speak.
+You are inside the Boggs Inn, your workplace, with no one else here to hear you speak.
 It is morning in the village.
 
 You're at your workplace.
 
 It is your working hours and you are at your post — stay and look after your work; you close at 8 in the evening. If no one needs you right now, wait here for customers rather than wandering off.
-
-## Keeping up production
-- You use water to make porridge — 4 on hand, enough for about 8 more, and you're running low.
-
-## Restocking
-Your shop stock of these bought-in goods is running low. You choose how much to buy.
-- You have 4 water on hand and room for 11 more at the most. It is generally worth about 1 coin each — pay much above that and you're overpaying. No seller is here now — use move_to to reach a supplier below, then pay_with_item once you arrive.
-  - buy from Village Well (structure_id: well)
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.

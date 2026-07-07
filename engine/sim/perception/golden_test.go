@@ -855,53 +855,51 @@ var perceptionScenarios = []perceptionScenario{
 	},
 	{
 		name: "smith_choosing_at_forge",
-		summary: "A multi-output crafter (Ezekiel the blacksmith: skillet + nail) stands UNFOCUSED at his own forge on " +
-			"shift — the post-restart state the production-choice warrant fires on (LLM-116/LLM-128). The golden pins the " +
-			"'## Time to produce' CHOOSE menu — each makeable good with its per-unit time, stock vs cap, and weekly made/sold " +
-			"counts — under the 'Choose what to produce next' header, plus the 'decide what to make next' wake warrant. With no " +
-			"focus set, the steer cue and the standing 'You are making nail.' line do NOT render here (see " +
-			"smith_forging_focused). A single-output producer never gets this section (see " +
-			"TestForgeCueOnlyForMultiOutputCrafterAtForge).",
+		summary: "A multi-output producer (Ezekiel the blacksmith: skillet + nail) stands IDLE at his own forge on " +
+			"shift — nothing in the works, the state the production-choice warrant fires on (LLM-116, redesigned LLM-319). " +
+			"The golden pins the '## Your trade' scene: one paragraph per good (stock + sell-through in felt language, then " +
+			"the batch affordance), the neutral 'Start a batch with produce, or see to other things.' close, and the " +
+			"'thoughts turn to your trade' wake warrant. Skillet at cap reads 'stores are full' with NO affordance (a batch " +
+			"can't start); empty nail gets the plain batch offer. Pairs with smith_batch_in_flight (mid-batch -> cue gone).",
 		build: smithChoosingAtForge,
 	},
 	{
-		name: "smith_forging_focused",
-		summary: "The same multi-output crafter (Ezekiel) at his forge WITH a productive focus already set (nail, below " +
-			"cap) and no production-choice warrant — the steady state after he has chosen (LLM-128). The golden pins the " +
-			"focus-aware cue: the '## Time to produce' section leads with 'You are producing nails now — tend your post or call " +
-			"done()' INSTEAD of the choose menu, so the weak model isn't re-invited to pick what it is already forging. The " +
-			"standing 'You are making nail.' self-state line renders too. Pairs with smith_choosing_at_forge (unfocused -> " +
-			"menu) to pin both halves of the cue.",
-		build: smithForgingFocused,
+		name: "smith_batch_in_flight",
+		summary: "The same producer (Ezekiel) at his forge with a BATCH IN FLIGHT (nail, ~30 minutes of work left) — the " +
+			"steady state after a produce call (LLM-319: one-shot timed cycles replaced the continuous focus). The golden " +
+			"pins that the standing 'You are making a batch of Nail — about 30 minutes of work left; it only moves along " +
+			"while you're at your post.' self-state line renders, and the '## Your trade' cue (and with it the produce tool) " +
+			"is GONE mid-batch — the model isn't re-invited to start what is already running. Pairs with " +
+			"smith_choosing_at_forge (idle -> scene) to pin both halves of the cycle.",
+		build: smithBatchInFlight,
 	},
 	{
-		name: "tavernkeeper_starved_focus_at_forge",
-		summary: "A multi-output crafter whose chosen focus is INPUT-STARVED — John Ellis at his tavern on shift, focus=stew " +
-			"but holding no sage — the live LLM-257 deadlock that froze his production for a week. The golden pins the fix: " +
-			"the '## Time to produce' cue does NOT lead with the 'You are producing stew now' steer (a starved focus isn't " +
-			"productive) but falls through to the CHOOSE menu, with stew annotated 'can't make now: short of Sage (need 2, " +
-			"have 0)' (meat, held in full, omitted) and no-input Water offered plainly; the standing 'You are making Stew.' " +
-			"phantom self-state line is suppressed (forgeFocusLabel now inputs-gated); and the production-choice wake warrant " +
-			"fires so he re-picks a good he can actually make. Contrast smith_forging_focused (a craftable focus DOES lead " +
-			"with the steer).",
-		build: tavernkeeperStarvedFocusAtForge,
+		name: "tavernkeeper_missing_input_at_post",
+		summary: "A multi-output producer short of an input — John Ellis idle at his tavern on shift, stew needing sage he " +
+			"doesn't hold (the live LLM-257 starvation shape, re-expressed for LLM-319 one-shot batches). The golden pins " +
+			"the missing-inputs clause of the '## Your trade' scene: stew renders 'A batch would take about an hour, but " +
+			"you'd need more Sage first.' (meat, held in full, is NOT named), while no-input water gets the plain batch " +
+			"offer — so the model steers to the makeable good or to procuring sage, never to a doomed produce call. The " +
+			"production-choice wake warrant fires (water IS craftable, so there is a real decision).",
+		build: tavernkeeperMissingInputAtPost,
 	},
 	{
-		name: "smith_off_work_focus_hidden",
-		summary: "The same multi-output crafter (Ezekiel, focus still nail) is NOT at his forge — he is at the Tavern " +
-			"after his shift (the live Tavern bug, LLM-121). produce_tick makes nothing away from the workplace, so the " +
-			"standing 'You are making nail.' self-state line must NOT render here, and the '## Time to produce' cue is " +
-			"likewise absent. The golden pins that neither leaks into an off-work turn; a regression to the work-structure " +
-			"gate would make the line reappear in the diff (see TestProductionFocusLineOnlyAtWork).",
-		build: smithOffWorkFocusHidden,
+		name: "smith_batch_in_flight_off_post",
+		summary: "The same producer (Ezekiel) with a batch in flight but NOT at his forge — he is at the Tavern. LLM-319: " +
+			"the batch exists wherever he is (its inputs are already spent), so the standing 'You are making a batch of " +
+			"nail…' line RENDERS here too — its 'it only moves along while you're at your post' tail is what tells him " +
+			"progress is paused until he goes back (produce_tick's gate). The '## Your trade' cue stays absent away from " +
+			"the post. Inverts the retired LLM-121 focus-hiding behavior, which suppressed the line off-post " +
+			"(see TestInFlightProductionLineTracksBatch).",
+		build: smithBatchInFlightOffPost,
 	},
 	{
 		name: "smith_bartering_at_tavern",
 		summary: "A smith (Ezekiel) carrying his own wares stands in the Tavern in company with John Ellis the " +
-			"tavernkeeper — the live LLM-125 barter scene. Off shift and away from the forge, so neither '## Time to " +
-			"produce' nor the 'You are making nail.' line render; the new '## What your wares fetch' cue DOES, valuing his " +
-			"own-trade goods (nail 1-2, skillet 5-10 from the recipe wholesale-retail spread) so a barter has a coin " +
-			"yardstick instead of an invented number. No coin sales history yet (empty PriceBook), so no recent-price clause.",
+			"tavernkeeper — the live LLM-125 barter scene. Off shift, away from the forge, and nothing in the works, so " +
+			"neither the '## Your trade' cue nor the in-flight batch line render; the '## What your wares fetch' cue DOES, " +
+			"valuing his own-trade goods (nail 1-2, skillet 5-10 from the recipe wholesale-retail spread) so a barter has a " +
+			"coin yardstick instead of an invented number. No coin sales history yet (empty PriceBook), so no recent-price clause.",
 		build: smithBarteringAtTavern,
 	},
 	{
@@ -934,9 +932,10 @@ var perceptionScenarios = []perceptionScenario{
 			"porridge against an 0.8-coin makings cost). The golden pins the makings clause: inputs priced from catalog " +
 			"wholesale with no purchase history (8 coins a batch), spoken per-unit as 'nearly 1 coin each' — the engine " +
 			"does the division and rounds the prose UP, never down to a break-even-erasing 'about 1'. Stated as a fact " +
-			"with no pricing directive (LLM-227) — the NPC decides what to do with its cost. Pairs with " +
-			"keeper_reselling_in_company (the resale cost basis) and smith_bartering_at_tavern (the no-inputs producer, " +
-			"no makings clause).",
+			"with no pricing directive (LLM-227) — the NPC decides what to do with its cost. She has a porridge batch in " +
+			"flight (LLM-319), so the standing in-progress line renders and the '## Your trade' cue stays out of the " +
+			"company scene. Pairs with keeper_reselling_in_company (the resale cost basis) and smith_bartering_at_tavern " +
+			"(the no-inputs producer, no makings clause).",
 		build: innkeeperPricingWithMakingsCost,
 	},
 	{
@@ -947,7 +946,9 @@ var perceptionScenarios = []perceptionScenario{
 			"rule would never reorder her. A well-keeper sells water. The golden pins that BOTH the '## Restocking' cue " +
 			"(walk-to the well for water) AND the '## Keeping up production' runway line now render for water — the batch " +
 			"floor (2×5=10) catching what the fraction skipped — while MILK, stocked at 9 (above its 2×3=6 floor), stays " +
-			"silent. Guards the reorder-on-batch-coverage fix end to end at the perception layer.",
+			"silent. She has a porridge batch in flight (LLM-319: the state in which input runway matters most), so the " +
+			"standing in-progress line renders and the '## Your trade' cue is gated off. Guards the " +
+			"reorder-on-batch-coverage fix end to end at the perception layer.",
 		build: producerInputBelowBatchFloorReorders,
 	},
 	{
@@ -1041,11 +1042,12 @@ var perceptionScenarios = []perceptionScenario{
 	{
 		name: "dairy_choosing_at_farm",
 		summary: "LLM-144: a NON-smith multi-output producer (Elizabeth Ellis at Ellis Farm: milk + meat + cheese) stands " +
-			"UNFOCUSED at her own workplace on shift — the same production-choice state smith_choosing_at_forge pins for the " +
-			"blacksmith, but for a dairy/farm trade. The golden proves the cue and wake warrant render trade-neutrally: the " +
-			"'## Time to produce' header, the 'Choose what to produce next' menu, and the 'It's time to produce — decide what to " +
-			"make next' warrant — NOT the blacksmith-only 'forge' wording a dairywoman was wrongly shown (the live Elizabeth " +
-			"cheese scene 019f0969). Mirrors smithChoosingAtForge; byte-stable.",
+			"IDLE at her own workplace on shift — the same production-choice state smith_choosing_at_forge pins for the " +
+			"blacksmith, but for a dairy/farm trade. The golden proves the '## Your trade' scene and wake warrant render " +
+			"trade-neutrally (LLM-319) — one stock/sales/affordance paragraph per good across three stock tiers (empty " +
+			"meat, low cheese, fair milk) and the 'thoughts turn to your trade' warrant — NOT blacksmith-only 'forge' " +
+			"wording a dairywoman was wrongly shown (the live Elizabeth cheese scene 019f0969). Mirrors " +
+			"smithChoosingAtForge; byte-stable.",
 		build: dairyChoosingAtFarm,
 	},
 	{
@@ -1907,10 +1909,40 @@ var perceptionScenarios = []perceptionScenario{
 			"and ALSO produces his own water — both at zero on hand, with live vendors selling both. The golden pins that " +
 			"meat derives buy demand (runway + restock lines) while water derives NONE despite the vendor and the empty " +
 			"stock: a produce/forage entry for an input means 'I self-source this', so the derived-demand walk skips it. " +
-			"The '## Time to produce' forge cue rendering alongside is deliberate: it shows the self-sourced water routed " +
-			"to the PRODUCE path (water listed as craftable, stew annotated short of it — LLM-257) while the bought input " +
-			"routes to the BUY path — the two procurement lanes of the same recipe, side by side.",
+			"The '## Your trade' cue rendering alongside is deliberate: it shows the self-sourced water routed " +
+			"to the PRODUCE path (water offered as a plain batch, stew short of it — the 'you'd need more' clause) while " +
+			"the bought input routes to the BUY path — the two procurement lanes of the same recipe, side by side.",
 		build: producerSelfSourcedInputNoDemand,
+	},
+	{
+		name: "innkeeper_idle_at_post_trade_scene",
+		summary: "LLM-319 headline change: a SINGLE-output producer — Hannah Boggs, porridge only, idle at her inn with " +
+			"the makings on hand and nothing in the works — now gets the '## Your trade' cue too (the old forge-choice cue " +
+			"was multi-output-gated, so a one-good keeper never saw a production decision). The golden pins the full scene " +
+			"for the quietest tier: 'You have no porridge on hand, and none sold this past week. A batch — 10 more — takes " +
+			"about an hour and a quarter, and you have the makings.', the neutral 'Start a batch with produce, or see to " +
+			"other things.' close (never an imperative — declining is a legitimate outcome), and the 'Your thoughts turn " +
+			"to your trade — nothing is in the works right now.' wake warrant. Pairs with innkeeper_batch_in_flight.",
+		build: innkeeperIdleAtPostTradeScene,
+	},
+	{
+		name: "innkeeper_batch_in_flight",
+		summary: "The same single-output producer (Hannah) mid-batch: she called produce, the inputs are in the pot, and " +
+			"~40 minutes of work remain (LLM-319 one-shot cycles). The golden pins the standing 'You are making a batch of " +
+			"porridge — about 40 minutes of work left; it only moves along while you're at your post.' self-state line and " +
+			"the ABSENCE of the '## Your trade' cue (and so of the produce tool) while the batch runs — the mid-batch half " +
+			"of the innkeeper_idle_at_post_trade_scene pair.",
+		build: innkeeperBatchInFlight,
+	},
+	{
+		name: "innkeeper_batch_done_beat",
+		summary: "LLM-319 completion beat: Hannah's porridge batch just LANDED — 10 bowls minted into her stores, the " +
+			"in-flight window cleared — and the ProductionCycleCompleted reactor woke her with the pre-rendered narration " +
+			"warrant. The golden pins the 'You finish the batch — 10 porridge ready in your stores.' warrant line (the " +
+			"renderNarrationWarrantLine path, new for WarrantKindProductionDone) and that the '## Your trade' cue is back " +
+			"in the same prompt — stores now read 'running low' rather than empty — so the very tick that celebrates the " +
+			"batch is the tick that grants the next go/no-go decision.",
+		build: innkeeperBatchDoneBeat,
 	},
 }
 
@@ -3685,37 +3717,50 @@ func brokeBuyerNoGoodsNoPeerBuy() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta
 	return snap, ezekielID, nil
 }
 
-// TestForgeCueOnlyForMultiOutputCrafterAtForge is the LLM-116 cross-scenario
-// invariant: the "## Time to produce" cue appears in EXACTLY the multi-output-producer-
-// at-workplace scenarios and no other — whether unfocused (choose menu,
-// smith_choosing_at_forge / the non-smith dairy_choosing_at_farm), focused-and-
-// productive (the LLM-128 continue-and-stop steer, smith_forging_focused), or
-// focused-but-input-starved (falls back to the choose menu, LLM-257
-// tavernkeeper_starved_focus_at_forge). A single-output producer or a non-crafter
-// must never see it — the structural property the per-builder gate (>1 produce entry
-// AND at workplace) is meant to hold across the whole matrix.
-func TestForgeCueOnlyForMultiOutputCrafterAtForge(t *testing.T) {
-	const marker = "## Time to produce"
+// TestTradeCueOnlyForIdleProducerAtPost is the LLM-116/LLM-319 cross-scenario
+// invariant: the "## Your trade" cue appears in EXACTLY the scenarios whose subject
+// is (a) physically inside its own work structure, (b) a producer — at least one
+// recipe-backed produce entry — and (c) IDLE, nothing in the works (ProductionItem
+// empty; mid-batch the cue and its produce tool yield to the standing in-progress
+// line). The predicate is re-derived from the fixture here rather than hardcoded
+// per name, so a new scenario can't silently join or leave the cue set: any
+// producer standing idle at its post — single- OR multi-output, the LLM-319
+// headline change — must see the scene, and nobody else ever does.
+func TestTradeCueOnlyForIdleProducerAtPost(t *testing.T) {
+	const marker = "## Your trade"
 	for _, sc := range perceptionScenarios {
 		sc := sc
-		got := renderScenario(sc)
-		want := sc.name == "smith_choosing_at_forge" || sc.name == "smith_forging_focused" || sc.name == "dairy_choosing_at_farm" || sc.name == "tavernkeeper_starved_focus_at_forge" ||
-			sc.name == "producer_self_sourced_input_no_demand" // multi-output (stew + water) keeper at his forge, LLM-260
-		if has := strings.Contains(got, marker); has != want {
-			t.Errorf("scenario %q: forge cue present=%v, want %v", sc.name, has, want)
-		}
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, _ := sc.build()
+			a := snap.Actors[actorID]
+			want := false
+			if a != nil && a.RestockPolicy != nil &&
+				a.WorkStructureID != "" && a.InsideStructureID == a.WorkStructureID &&
+				a.ProductionItem == "" {
+				for _, e := range a.RestockPolicy.ProduceEntries() {
+					r := snap.Recipes[e.Item]
+					if r != nil && r.RateQty > 0 && r.RatePerHours > 0 {
+						want = true // ≥1 recipe-backed produce good — a producer with a decision to grant
+						break
+					}
+				}
+			}
+			if has := strings.Contains(renderScenario(sc), marker); has != want {
+				t.Errorf("scenario %q: trade cue present=%v, want %v (idle-producer-at-post predicate)", sc.name, has, want)
+			}
+		})
 	}
 }
 
 // TestGoldensNoInputGoodAlwaysCraftable is the LLM-257 cross-scenario invariant:
-// in any scenario's forge-choice view, a good whose recipe has NO inputs must never
+// in any scenario's trade-scene view, a good whose recipe has NO inputs must never
 // be flagged not-craftable. An origin producer (nail, water) makes its good from
 // nothing, so HasProduceInputs is always satisfied for it — the "always makeable"
 // property the inputs-aware gate must preserve. Guards against a future change that
-// mistakes a no-input recipe for a starved one, which would drop the no-input good
-// from the choose menu and could re-freeze a keeper behind an unmakeable focus with
-// no fallback. White-box over buildForgeChoice so it reads the structured
-// InputsReady flag rather than parsing rendered text.
+// mistakes a no-input recipe for a starved one, which would hang the "you'd need
+// more … first" clause on a good the keeper can in fact batch at will (LLM-319).
+// White-box over buildForgeChoice so it reads the structured InputsReady flag
+// rather than parsing rendered text.
 func TestGoldensNoInputGoodAlwaysCraftable(t *testing.T) {
 	for _, sc := range perceptionScenarios {
 		sc := sc
@@ -3727,7 +3772,7 @@ func TestGoldensNoInputGoodAlwaysCraftable(t *testing.T) {
 			}
 			view := buildForgeChoice(snap, actorID, as)
 			if view == nil {
-				return // not a multi-output crafter at its forge — no forge choice here
+				return // not an idle producer at its post — no trade scene here (LLM-319)
 			}
 			for _, it := range view.Items {
 				recipe := snap.Recipes[it.itemKind]
@@ -3749,29 +3794,31 @@ func TestGoldensNoInputGoodAlwaysCraftable(t *testing.T) {
 	}
 }
 
-// TestProductionFocusLineOnlyAtWork is the LLM-121 cross-scenario invariant: the
-// standing "You are making X." self-state line appears in EXACTLY the scenario where
-// the crafter has a focus set AND is at its own work structure (smith_forging_focused)
-// and never away from it. The off-work smith (same focus, at the Tavern) must not
-// carry it — produce_tick makes nothing there, so the present-tense line would
-// misstate the situation; the unfocused smith (smith_choosing_at_forge) has no focus
-// to state. Mirrors the forge-cue invariant; both express the "only at the forge"
-// gate as a property over the whole matrix.
-func TestProductionFocusLineOnlyAtWork(t *testing.T) {
-	const marker = "You are making"
+// TestInFlightProductionLineTracksBatch is the LLM-319 cross-scenario invariant:
+// the standing "You are making a batch of X" self-state line renders EXACTLY when
+// the subject has a production cycle in flight (ProductionItem non-empty) —
+// WHEREVER the actor is. Unlike the retired focus line (LLM-121 gated it to the
+// work structure), the batch is a fact everywhere: its inputs are already spent,
+// and the line's own "it only moves along while you're at your post" tail carries
+// the pause semantics, so hiding it off-post would misstate the situation (the
+// actor could no longer answer "what are you making?" — or remember to go back).
+// Re-derived from the fixture rather than hardcoded per name.
+func TestInFlightProductionLineTracksBatch(t *testing.T) {
+	const marker = "You are making a batch of"
 	for _, sc := range perceptionScenarios {
 		sc := sc
-		got := renderScenario(sc)
-		// innkeeper_pricing_with_makings_cost (LLM-226) and
-		// producer_input_below_batch_floor_reorders (LLM-279) are both Hannah focused
-		// on porridge AT her inn — the same focus-at-work state as the forging smith,
-		// so the line is correct there too.
-		want := sc.name == "smith_forging_focused" ||
-			sc.name == "innkeeper_pricing_with_makings_cost" ||
-			sc.name == "producer_input_below_batch_floor_reorders"
-		if has := strings.Contains(got, marker); has != want {
-			t.Errorf("scenario %q: production-focus line present=%v, want %v", sc.name, has, want)
-		}
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, _ := sc.build()
+			a := snap.Actors[actorID]
+			item := sim.ItemKind("")
+			if a != nil {
+				item = a.ProductionItem
+			}
+			want := item != ""
+			if has := strings.Contains(renderScenario(sc), marker); has != want {
+				t.Errorf("scenario %q: in-flight batch line present=%v, want %v (ProductionItem=%q)", sc.name, has, want, item)
+			}
+		})
 	}
 }
 
@@ -6541,7 +6588,7 @@ func wholesalerCarryingBoughtFoodAtPost() (*sim.Snapshot, sim.ActorID, []sim.War
 // — who buys it, what the distributor pays, where to send other buyers — NOT a
 // retail spread that nudges him to hawk carrots to whoever he is standing with (the
 // street sale the PayWithItem wholesale gate then refuses; live hud-9b23…). Off the
-// farm (InsideStructureID = commons) so '## Time to produce' doesn't render; no
+// farm (InsideStructureID = commons) so '## Your trade' doesn't render; no
 // pressing needs so no eat/drink cues clutter the wares section. Josiah is present
 // only so distributorLabel can resolve a person to route buyers to — not co-present.
 func wholesalerProducerBarteringWithCustomer() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
@@ -6967,16 +7014,17 @@ func TestWholesalerNeverCuedToEatOwnProduce(t *testing.T) {
 	}
 }
 
-// smithChoosingAtForge is the LLM-116/LLM-128 situation: Ezekiel, a multi-output
-// crafter, stands inside his own forge on shift with two produce goods (skillet at
-// cap, nail empty) and NO focus set yet — the realistic post-restart state the
-// production-choice warrant fires on. The "## Time to produce" cue lists both makeable
-// goods (time cost, stock vs cap, empty weekly made/sold counts) under the "Choose
-// what to produce next" header, and the production-choice wake warrant renders. With
-// no focus, neither the "— making this now" marker nor the standing "You are making
-// nail." line appears — those move to smithForgingFocused. No orders, no clock read
-// (PriceBook/RecentProduce empty so the windowed counts are 0 regardless of
-// PublishedAt) → byte-stable.
+// smithChoosingAtForge is the LLM-116 situation, redesigned for LLM-319 one-shot
+// batches: Ezekiel, a multi-output producer, stands inside his own forge on shift
+// with two produce goods (skillet at cap, nail empty) and NOTHING in the works —
+// the idle-at-post state the production-choice warrant fires on. The "## Your
+// trade" cue renders one felt-language scene per good (stock tier + sell-through
+// + batch affordance): full skillet stores get NO affordance sentence (a batch
+// can't start at cap), empty nail gets the plain batch offer; the section closes
+// with the neutral produce line and the "thoughts turn to your trade" warrant
+// renders. The standing in-flight batch line does not appear — that moves to
+// smithBatchInFlight. No orders, no clock read (PriceBook/RecentProduce empty so
+// the windowed sales are 0 regardless of PublishedAt) → byte-stable.
 func smithChoosingAtForge() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	const (
 		ezekielID = sim.ActorID("ezekiel")
@@ -6997,7 +7045,8 @@ func smithChoosingAtForge() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 		Coins:             0,
 		Needs:             map[sim.NeedKey]int{},
 		Inventory:         map[sim.ItemKind]int{"skillet": 5},
-		ProductionFocus:   "", // unfocused — the post-restart state the warrant fires on (LLM-128)
+		// ProductionItem empty — nothing in the works, the idle state the
+		// production-choice warrant grants a decision in (LLM-319).
 		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
 			{Item: "skillet", Source: sim.RestockSourceProduce, Max: 5},
 			{Item: "nail", Source: sim.RestockSourceProduce, Max: 20},
@@ -7022,15 +7071,16 @@ func smithChoosingAtForge() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	return snap, ezekielID, warrants
 }
 
-// dairyChoosingAtFarm is the LLM-144 trade-neutral-wording pin: a NON-smith
-// multi-output producer (Elizabeth Ellis at Ellis Farm: milk + meat + cheese)
-// stands UNFOCUSED at her own workplace on shift — the same production-choice
-// state smithChoosingAtForge pins for the blacksmith, but for a dairy/farm trade.
-// The golden proves the cue and the wake warrant render trade-neutrally: the
-// "## Time to produce" header, the "Choose what to produce next" menu, and the
-// "It's time to produce — decide what to make next" warrant — NOT the blacksmith-only
-// "forge" wording a dairywoman was wrongly shown (the live Elizabeth cheese scene
-// 019f0969). Mirrors smithChoosingAtForge; byte-stable.
+// dairyChoosingAtFarm is the LLM-144 trade-neutral-wording pin, re-expressed for
+// LLM-319 one-shot batches: a NON-smith multi-output producer (Elizabeth Ellis at
+// Ellis Farm: milk + meat + cheese) stands IDLE at her own workplace on shift —
+// the same production-choice state smithChoosingAtForge pins for the blacksmith,
+// but for a dairy/farm trade. The golden proves the "## Your trade" scene and the
+// "thoughts turn to your trade" wake warrant render trade-neutrally — and pins
+// all three non-full stock tiers at once (meat empty, cheese low, milk fair) —
+// with none of the blacksmith-only "forge" wording a dairywoman was wrongly shown
+// (the live Elizabeth cheese scene 019f0969). Mirrors smithChoosingAtForge;
+// byte-stable.
 func dairyChoosingAtFarm() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	const (
 		elizabethID = sim.ActorID("elizabeth")
@@ -7051,7 +7101,7 @@ func dairyChoosingAtFarm() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 		Coins:             0,
 		Needs:             map[sim.NeedKey]int{},
 		Inventory:         map[sim.ItemKind]int{"milk": 4, "cheese": 2},
-		ProductionFocus:   "", // unfocused — the post-restart production-choice state
+		// ProductionItem empty — idle at the post, the production-choice state (LLM-319).
 		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
 			{Item: "milk", Source: sim.RestockSourceProduce, Max: 10},
 			{Item: "cheese", Source: sim.RestockSourceProduce, Max: 8},
@@ -7078,16 +7128,17 @@ func dairyChoosingAtFarm() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	return snap, elizabethID, warrants
 }
 
-// smithForgingFocused is the LLM-128 steady state: Ezekiel at his own forge on
-// shift WITH a productive focus already set (nail, below cap) and NO production-
-// choice warrant — the consistent state once he has chosen (shouldChooseProduction
-// gates the warrant off for a productive focus, so no "decide what to make next").
-// The "## Time to produce" cue leads with the "You are producing nails now — tend your
-// post or call done()" steer instead of the choose menu, and the standing "You are
-// making nail." self-state line renders. ItemKinds carry the singular/plural
-// counting phrases (LLM-113) so the steer reads "nails", as the live catalog does.
-// Byte-stable.
-func smithForgingFocused() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+// smithBatchInFlight is the LLM-319 mid-batch steady state: Ezekiel at his own
+// forge on shift with a production cycle IN FLIGHT (a nail batch, ~30 minutes of
+// base-rate work left) and NO production-choice warrant — shouldChooseProduction
+// gates the wake off while a batch runs, and buildForgeChoice returns nil, so
+// neither the "## Your trade" scene nor the produce tool re-appear mid-batch.
+// What renders instead is the standing self-state line: "You are making a batch
+// of Nail — about 30 minutes of work left; it only moves along while you're at
+// your post." ItemKinds carry the display labels (LLM-113) so the line names the
+// good as the live catalog does. Byte-stable (RemainingSeconds is a snapshot
+// field, not a clock read).
+func smithBatchInFlight() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	const (
 		ezekielID = sim.ActorID("ezekiel")
 		forge     = sim.StructureID("blacksmith")
@@ -7107,7 +7158,11 @@ func smithForgingFocused() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 		Coins:             0,
 		Needs:             map[sim.NeedKey]int{},
 		Inventory:         map[sim.ItemKind]int{"skillet": 5},
-		ProductionFocus:   "nail",
+		// A produce call opened this cycle: inputs (none — nail is an origin
+		// good) consumed, one batch of work owed (LLM-319).
+		ProductionItem:             "nail",
+		ProductionBatchQty:         1,
+		ProductionRemainingSeconds: 1800, // 30 minutes of base-rate work left
 		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
 			{Item: "skillet", Source: sim.RestockSourceProduce, Max: 5},
 			{Item: "nail", Source: sim.RestockSourceProduce, Max: 20},
@@ -7133,20 +7188,19 @@ func smithForgingFocused() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	return snap, ezekielID, nil
 }
 
-// tavernkeeperStarvedFocusAtForge is the LLM-257 deadlock: John Ellis, a
-// multi-output tavernkeeper (stew + water), stands at his tavern on shift with
-// focus=stew but NO sage, so stew is input-starved. produce_tick fills only the
-// focus and skips an input-short entry, so the tavern makes nothing — not even the
-// no-input water — which is exactly how his live production froze for a week. The
-// golden pins the FIX across the cue surfaces: the "## Time to produce" section
-// falls through to the CHOOSE menu (a starved focus is not "productive", so it does
-// NOT lead with "You are producing stew now"), stew is annotated "can't make now:
-// short of Sage (need 2, have 0)" (meat, held in full, is omitted), water is
-// offered plainly, the standing "You are making Stew." self-state line is suppressed
-// (forgeFocusLabel is now inputs-gated), and the production-choice wake warrant fires
-// so he re-picks a makeable good. Byte-stable: on shift, idle, empty
+// tavernkeeperMissingInputAtPost is the LLM-257 input-starvation shape,
+// re-expressed for LLM-319 one-shot batches: John Ellis, a multi-output
+// tavernkeeper (stew + water), stands idle at his tavern on shift holding NO
+// sage, so a stew batch cannot start (its inputs are consumed up front). The
+// golden pins the missing-inputs leg of the "## Your trade" scene: stew renders
+// "A batch would take about an hour, but you'd need more Sage first." — only the
+// SHORT input is named (meat, held in full, is omitted) — while the no-input
+// water gets the plain batch offer, so the model is steered to a good it CAN
+// make or to procuring sage, never into a doomed produce call. The
+// production-choice wake warrant fires (water is craftable, so there is a real
+// decision to grant). Byte-stable: on shift, idle, empty
 // PriceBook/RecentProduce, single-item inventory.
-func tavernkeeperStarvedFocusAtForge() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+func tavernkeeperMissingInputAtPost() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	const (
 		johnID = sim.ActorID("john")
 		tavern = sim.StructureID("tavern")
@@ -7165,8 +7219,8 @@ func tavernkeeperStarvedFocusAtForge() (*sim.Snapshot, sim.ActorID, []sim.Warran
 		ScheduleEndMin:    &end,
 		Coins:             0,
 		Needs:             map[sim.NeedKey]int{},
-		Inventory:         map[sim.ItemKind]int{"meat": 10}, // has meat, NO sage → stew input-starved
-		ProductionFocus:   "stew",
+		Inventory:         map[sim.ItemKind]int{"meat": 10}, // has meat, NO sage → a stew batch can't start
+		// ProductionItem empty — idle; a batch missing its inputs can never be in flight (LLM-319).
 		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
 			{Item: "stew", Source: sim.RestockSourceProduce, Max: 30},
 			{Item: "water", Source: sim.RestockSourceProduce, Max: 30},
@@ -7197,14 +7251,17 @@ func tavernkeeperStarvedFocusAtForge() (*sim.Snapshot, sim.ActorID, []sim.Warran
 	return snap, johnID, warrants
 }
 
-// smithOffWorkFocusHidden is the LLM-121 regression: the same multi-output crafter
-// (Ezekiel, focus still nail) is NOT at his forge — he is at the Tavern after his
-// shift. produce_tick makes nothing away from the workplace, so the standing
-// "You are making nail." self-state line must NOT render (the live Tavern bug), and
-// the "## Time to produce" choice cue is likewise gated off. Mirrors smithChoosingAtForge
-// but with InsideStructureID = the tavern and off-shift, no production-choice warrant.
-// No orders, no clock read → byte-stable.
-func smithOffWorkFocusHidden() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+// smithBatchInFlightOffPost pins the LLM-319 away-from-post truthfulness: the same
+// producer (Ezekiel) has a nail batch in flight but is NOT at his forge — he is at
+// the Tavern after his shift. The batch is a fact wherever he stands (its inputs
+// are already spent), so the standing "You are making a batch of nail — about 45
+// minutes of work left; it only moves along while you're at your post." line
+// RENDERS here — the tail is what tells him progress is paused until he returns
+// (produce_tick's gate). The "## Your trade" cue stays gated off away from the
+// post. Inverts the retired LLM-121 focus-hiding rule, which suppressed the old
+// focus line off-post because continuous production there would have been a lie;
+// a paused batch is not. No orders, no clock read → byte-stable.
+func smithBatchInFlightOffPost() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	const (
 		ezekielID = sim.ActorID("ezekiel")
 		forge     = sim.StructureID("blacksmith")
@@ -7225,7 +7282,12 @@ func smithOffWorkFocusHidden() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 		Coins:             0,
 		Needs:             map[sim.NeedKey]int{},
 		Inventory:         map[sim.ItemKind]int{"skillet": 5},
-		ProductionFocus:   "nail",
+		// The batch travels with him: opened at the forge, paused while he is
+		// here at the Tavern (LLM-319). No ItemKinds map, so the line names the
+		// raw kind — the catalog-less fallback.
+		ProductionItem:             "nail",
+		ProductionBatchQty:         1,
+		ProductionRemainingSeconds: 2700, // 45 minutes owed — none of it accruing off-post
 		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
 			{Item: "skillet", Source: sim.RestockSourceProduce, Max: 5},
 			{Item: "nail", Source: sim.RestockSourceProduce, Max: 20},
@@ -7250,12 +7312,12 @@ func smithOffWorkFocusHidden() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 
 // smithBarteringAtTavern is the LLM-125 situation: Ezekiel, a smith carrying his
 // own wares, stands in the Tavern in company with John Ellis the tavernkeeper —
-// the live barter scene. Off his shift and away from the forge, so neither the
-// "## Time to produce" cue nor the "You are making nail." line render; what DOES
-// render is the new "## What your wares fetch" cue, valuing his own-trade goods
-// (nail 1-2, skillet 5-10 from the recipe wholesale-retail spread) so a barter has
-// a coin yardstick. Empty PriceBook → no recent-price clause; no orders, no clock
-// read → byte-stable.
+// the live barter scene. Off his shift, away from the forge, and with nothing in
+// the works (LLM-319), so neither the "## Your trade" cue nor the in-flight batch
+// line render; what DOES render is the "## What your wares fetch" cue, valuing
+// his own-trade goods (nail 1-2, skillet 5-10 from the recipe wholesale-retail
+// spread) so a barter has a coin yardstick. Empty PriceBook → no recent-price
+// clause; no orders, no clock read → byte-stable.
 func smithBarteringAtTavern() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	const (
 		ezekielID = sim.ActorID("ezekiel")
@@ -7280,7 +7342,6 @@ func smithBarteringAtTavern() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 		Coins:             0,
 		Needs:             map[sim.NeedKey]int{},
 		Inventory:         map[sim.ItemKind]int{"skillet": 5},
-		ProductionFocus:   "nail",
 		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
 			{Item: "skillet", Source: sim.RestockSourceProduce, Max: 5},
 			{Item: "nail", Source: sim.RestockSourceProduce, Max: 20},
@@ -7407,7 +7468,10 @@ func keeperResellingInCompany() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) 
 // an 0.8-coin makings cost). The golden pins the makings clause: with no purchase
 // history the inputs price from catalog wholesale (3×1 + 5×1 = 8 a batch), and 8/10
 // is spoken as "nearly 1 coin each" — rounded UP in prose, never down to a
-// break-even-erasing "about 1". A fact with no pricing directive (LLM-227).
+// break-even-erasing "about 1". A fact with no pricing directive (LLM-227). She has
+// a porridge batch in flight (LLM-319) — the realistic keeping-the-inn-fed state —
+// so the standing in-progress line renders and the "## Your trade" cue stays out of
+// this company-focused golden.
 func innkeeperPricingWithMakingsCost() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	const (
 		hannahID = sim.ActorID("hannah")
@@ -7431,7 +7495,11 @@ func innkeeperPricingWithMakingsCost() (*sim.Snapshot, sim.ActorID, []sim.Warran
 		Coins:             10,
 		Needs:             map[sim.NeedKey]int{},
 		Inventory:         map[sim.ItemKind]int{"porridge": 30},
-		ProductionFocus:   "porridge",
+		// A porridge batch in flight (LLM-319): inputs already in the pot, so the
+		// trade cue yields to the standing in-progress line for this golden.
+		ProductionItem:             "porridge",
+		ProductionBatchQty:         10,
+		ProductionRemainingSeconds: 2400, // about 40 minutes of work left
 		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
 			{Item: "porridge", Source: sim.RestockSourceProduce, Max: 30},
 		}},
@@ -7476,7 +7544,9 @@ func innkeeperPricingWithMakingsCost() (*sim.Snapshot, sim.ActorID, []sim.Warran
 // A well-keeper sells water, so the buy path is actionable. Milk at 9 is above its
 // 2×3=6 floor, so it stays silent. Pins that the batch floor (2×5=10) surfaces both
 // the "## Restocking" walk-to and the "## Keeping up production" runway for water.
-// Clock-free: no pending orders/deliveries.
+// She has a porridge batch in flight (LLM-319) — the state in which input runway
+// matters most — which also keeps the "## Your trade" cue out of this
+// restock-focused golden. Clock-free: no pending orders/deliveries.
 func producerInputBelowBatchFloorReorders() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	const (
 		hannahID   = sim.ActorID("hannah")
@@ -7500,7 +7570,11 @@ func producerInputBelowBatchFloorReorders() (*sim.Snapshot, sim.ActorID, []sim.W
 		Coins:             20,
 		Needs:             map[sim.NeedKey]int{},
 		Inventory:         map[sim.ItemKind]int{"porridge": 30, "milk": 9, "water": 4},
-		ProductionFocus:   "porridge",
+		// Mid-batch (LLM-319): the input-runway question is live exactly while
+		// she is producing, and the in-flight state gates the trade cue off.
+		ProductionItem:             "porridge",
+		ProductionBatchQty:         10,
+		ProductionRemainingSeconds: 2400,
 		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
 			{Item: "porridge", Source: sim.RestockSourceProduce, Max: 30},
 		}},
@@ -7540,6 +7614,124 @@ func producerInputBelowBatchFloorReorders() (*sim.Snapshot, sim.ActorID, []sim.W
 		},
 	}
 	return snap, hannahID, nil
+}
+
+// innkeeperTradeSceneBase is the shared LLM-319 single-output-producer fixture:
+// Hannah Boggs, porridge only (10 bowls a batch from 3 milk + 5 water, ~75 min of
+// work — the live catalog shape), alone at her inn on shift. The three LLM-319
+// goldens (idle scene / batch in flight / batch landed) each start here and set
+// only the production state, so their diffs isolate exactly what the cycle state
+// changes in the prompt. No vendors exist, so the empty input stocks derive no
+// restock/runway sections (LLM-260 gates demand on an actionable buy path);
+// PriceBook/RecentProduce empty and no clock read → byte-stable.
+func innkeeperTradeSceneBase() (*sim.Snapshot, sim.ActorID) {
+	const (
+		hannahID = sim.ActorID("hannah")
+		inn      = sim.StructureID("inn")
+	)
+	start, end := 360, 1200 // 06:00-20:00 — the innkeeper day shift
+	now := 480              // 08:00 — breakfast custom ahead
+	published := time.Date(2026, 7, 6, 8, 0, 0, 0, time.UTC)
+	hannah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Hannah Boggs",
+		Role:              "innkeeper",
+		State:             sim.StateIdle,
+		WorkStructureID:   inn,
+		InsideStructureID: inn,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             12,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"milk": 3, "water": 5}, // exactly one batch's makings, no porridge
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "porridge", Source: sim.RestockSourceProduce, Max: 30},
+		}},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{hannahID: hannah},
+		Structures: map[sim.StructureID]*sim.Structure{
+			inn: plainStructure(inn, "Boggs Inn"),
+		},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"porridge": {OutputItem: "porridge", OutputQty: 10, RateQty: 8, RatePerHours: 1, WholesalePrice: 1, RetailPrice: 2,
+				Inputs: []sim.RecipeInput{{Item: "milk", Qty: 3}, {Item: "water", Qty: 5}}},
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"porridge": {Name: "porridge", DisplayLabel: "porridge", DisplayLabelSingular: "bowl of porridge", DisplayLabelPlural: "porridge", Category: sim.ItemCategoryFood},
+			"milk":     {Name: "milk", DisplayLabel: "milk", Category: sim.ItemCategoryDrink},
+			"water":    {Name: "water", DisplayLabel: "water", Category: sim.ItemCategoryDrink},
+		},
+	}
+	return snap, hannahID
+}
+
+// innkeeperIdleAtPostTradeScene is the LLM-319 headline golden: a SINGLE-output
+// producer idle at her post now gets the "## Your trade" scene (the retired
+// forge-choice cue was multi-output-gated, so a one-good keeper never saw a
+// production decision at all — she was auto-produced at). Empty stores, no sales
+// this window, makings on hand → the quietest full scene: "You have no porridge
+// on hand, and none sold this past week. A batch — 10 more — takes about an hour
+// and a quarter, and you have the makings.", the neutral close naming the produce
+// tool, and the production-choice warrant's "Your thoughts turn to your trade —
+// nothing is in the works right now." beat.
+func innkeeperIdleAtPostTradeScene() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, hannahID := innkeeperTradeSceneBase()
+	warrants := []sim.WarrantMeta{
+		{TriggerActorID: hannahID, Reason: sim.ProductionChoiceWarrantReason{}, SourceEventID: 1},
+	}
+	return snap, hannahID, warrants
+}
+
+// innkeeperBatchInFlight is the mid-batch half of the LLM-319 pair: the same
+// innkeeper called produce — the makings went into the pot (inventory emptied),
+// ProductionItem opened — and ~40 minutes of base-rate work remain. The standing
+// "You are making a batch of porridge — about 40 minutes of work left; it only
+// moves along while you're at your post." line renders, and the "## Your trade"
+// cue (with it the produce tool) is gone until the batch lands. No warrant — a
+// routine mid-batch check-in.
+func innkeeperBatchInFlight() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, hannahID := innkeeperTradeSceneBase()
+	hannah := snap.Actors[hannahID]
+	hannah.Inventory = map[sim.ItemKind]int{} // the makings were consumed at produce time
+	hannah.ProductionItem = "porridge"
+	hannah.ProductionBatchQty = 10
+	hannah.ProductionRemainingSeconds = 2400 // about 40 minutes of the ~75-minute cycle left
+	return snap, hannahID, nil
+}
+
+// innkeeperBatchDoneBeat is the LLM-319 completion beat: the batch just LANDED —
+// 10 porridge minted into her stores, the in-flight window cleared — and the
+// ProductionCycleCompleted reactor woke her with the pre-rendered narration
+// (ProductionCompletionNarration, the SourceActivityCompleted posture). The
+// golden pins the "You finish the batch — 10 porridge ready in your stores."
+// warrant line (renderNarrationWarrantLine's WarrantKindProductionDone path) and
+// that the SAME prompt re-opens the "## Your trade" scene — stores now "running
+// low" (10 of 30), makings spent so the batch offer carries the "you'd need more
+// milk and water first" clause — granting the next go/no-go in the very tick that
+// reports the landing.
+func innkeeperBatchDoneBeat() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, hannahID := innkeeperTradeSceneBase()
+	hannah := snap.Actors[hannahID]
+	hannah.Inventory = map[sim.ItemKind]int{"porridge": 10} // the landed batch; the makings are spent
+	hannah.RecentProduce = []sim.ProduceEvent{
+		{Item: "porridge", Qty: 10, At: snap.PublishedAt.Add(-time.Minute)},
+	}
+	warrants := []sim.WarrantMeta{
+		{
+			TriggerActorID: hannahID,
+			Reason: sim.ProductionDoneWarrantReason{
+				Item:          "porridge",
+				Qty:           10,
+				NarrationText: sim.ProductionCompletionNarration("porridge", 10),
+			},
+			SourceEventID: 1,
+		},
+	}
+	return snap, hannahID, warrants
 }
 
 // resellerArrivesAtSupplierBuyHereNoHuddle is the LLM-286 arrival tick: John Ellis,

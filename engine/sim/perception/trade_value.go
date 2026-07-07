@@ -32,7 +32,7 @@ import (
 // lacked entirely (LLM-191). A PRODUCED good whose recipe has inputs gets the
 // matching cost anchor from its ingredient side (LLM-226): each input priced by the
 // actor's own purchase history, recipe wholesale as the fallback, spoken per-unit so
-// the model never divides. Unlike "## Time to produce" this is NOT gated on being
+// the model never divides. Unlike "## Your trade" this is NOT gated on being
 // at the workplace: a smith knows a nail is worth 1–2 coins whether stood at the
 // forge or pitching it across a tavern table.
 

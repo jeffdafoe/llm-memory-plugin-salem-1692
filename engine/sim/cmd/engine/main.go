@@ -474,7 +474,8 @@ func run(rt runtime, stop <-chan struct{}) error {
 	handlers.RegisterSpeechHandlers(rt.World)
 	handlers.RegisterPayHandlers(rt.World)
 	handlers.RegisterDwellHandlers(rt.World)
-	handlers.RegisterSourceActivityHandlers(rt.World) // LLM-69: NPC completion beat for timed eat/drink/harvest
+	handlers.RegisterSourceActivityHandlers(rt.World)  // LLM-69: NPC completion beat for timed eat/drink/harvest
+	handlers.RegisterProductionCycleHandlers(rt.World) // LLM-319: NPC completion beat for a landed production batch — the wake to decide about the next one
 	handlers.RegisterSceneQuoteHandlers(rt.World)
 	handlers.RegisterPayWithItemHandlers(rt.World)
 	handlers.RegisterLaborHandlers(rt.World) // LLM-187: wake the employer when a worker solicits work (accept_work/decline_work)

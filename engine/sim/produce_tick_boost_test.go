@@ -9,21 +9,24 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/repo/mem"
 )
 
-// produce_tick_boost_test.go — LLM-224. A worker laboring AT the keeper's
-// establishment scales the keeper's produce tick: rateScalePct = 100 +
-// helpers × LaborProduceBoostPct, applied by shrinking secondsPerUnit.
+// produce_tick_boost_test.go — LLM-224 under one-shot cycles (LLM-319). A
+// worker laboring AT the keeper's establishment scales the keeper's per-tick
+// progress credit: credit = elapsed × (100 + helpers × LaborProduceBoostPct) /
+// 100, re-sampled per tick so a helper hired mid-batch speeds the remainder.
 //
-// The fixture: hannah keeps the inn and produces bread (2/hr batch of 2 →
-// secondsPerUnit 1800, no inputs), anchor 90 min back. Base yield for 5400s
-// is 3 units owed → 1 execution → +2 bread. With one boost-50 helper,
-// secondsPerUnit becomes 1200 → 4 units owed → 2 executions → +4; two
-// helpers → 900 → 6 owed → 3 executions → +6.
+// The fixture: hannah keeps the inn with a bread cycle in flight (batch of 2 @
+// 2/hr → cycle 3600s of base work). With 40 minutes elapsed (2400s): base
+// credit 2400 leaves the batch unfinished; one boost-50 helper credits 3600 —
+// the cycle lands; two helpers credit 4800 — it lands with room to spare.
 
 // buildBoostTestWorld seeds hannah (keeper, at the inn, bread producer) plus
 // lewis and anne as potential helpers, standing where the test says.
-func buildBoostTestWorld(t *testing.T, anchor time.Time, breadCap int, lewisInside, anneInside sim.StructureID) (*sim.World, context.CancelFunc) {
+func buildBoostTestWorld(t *testing.T, breadCap int, lewisInside, anneInside sim.StructureID) (*sim.World, context.CancelFunc) {
 	t.Helper()
 	repo, handles := mem.NewRepository()
+	handles.ItemKinds.Seed(map[sim.ItemKind]*sim.ItemKindDef{
+		"bread": {Name: "bread", DisplayLabel: "Bread", DisplayLabelSingular: "loaf of bread", DisplayLabelPlural: "loaves of bread", Category: sim.ItemCategoryFood, SortOrder: 110},
+	})
 	handles.Recipes.Seed(map[sim.ItemKind]*sim.ItemRecipe{
 		"bread": {
 			OutputItem:   "bread",
@@ -36,12 +39,10 @@ func buildBoostTestWorld(t *testing.T, anchor time.Time, breadCap int, lewisInsi
 		"hannah": {
 			ID:                "hannah",
 			LLMAgent:          "hannah-innkeeper",
+			Kind:              sim.KindNPCStateful,
 			InsideStructureID: "inn",
 			WorkStructureID:   "inn",
 			Inventory:         map[sim.ItemKind]int{},
-			ProduceState: map[sim.ItemKind]*sim.ProduceState{
-				"bread": {Item: "bread", LastProducedAt: anchor},
-			},
 			RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
 				{Item: "bread", Source: sim.RestockSourceProduce, Max: breadCap},
 			}},
@@ -86,114 +87,147 @@ func breadCount(t *testing.T, w *sim.World) int {
 	return inv.(int)
 }
 
-func TestProduceTickLaborBoost(t *testing.T) {
-	now := time.Now().UTC()
-	anchor := now.Add(-90 * time.Minute)
+// startBoostCycle opens hannah's bread cycle and rewinds its anchor 40 minutes
+// (2400s of elapsed wall time against a 3600s cycle — the base rate cannot
+// finish it, the boosted rates can).
+func startBoostCycle(t *testing.T, w *sim.World, now time.Time) {
+	t.Helper()
+	if _, err := w.Send(sim.StartProductionCycle("hannah", "bread")); err != nil {
+		t.Fatalf("StartProductionCycle: %v", err)
+	}
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["hannah"].ProductionActivity.LastProgressAt = now.Add(-40 * time.Minute)
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("rewind anchor: %v", err)
+	}
+}
 
-	t.Run("one helper at the establishment speeds production", func(t *testing.T) {
-		w, cancel := buildBoostTestWorld(t, anchor, 10, "inn", "")
+func TestProduceTickLaborBoost(t *testing.T) {
+	t.Run("one helper at the establishment lands the batch sooner", func(t *testing.T) {
+		now := time.Now().UTC()
+		w, cancel := buildBoostTestWorld(t, 10, "inn", "")
 		defer cancel()
 		setLaborBoost(t, w, 50)
 		seedLaborOffer(t, w, workingOffer(1, "lewis", "hannah"))
+		startBoostCycle(t, w, now)
 
 		if _, err := w.Send(sim.ApplyProduceTick(now)); err != nil {
 			t.Fatalf("tick: %v", err)
 		}
-		if got := breadCount(t, w); got != 4 {
-			t.Errorf("bread = %d, want 4 (1.5x rate: 4 units owed → 2 executions)", got)
+		if got := breadCount(t, w); got != 2 {
+			t.Errorf("bread = %d, want 2 (1.5x credit 3600 ≥ 3600s cycle — landed)", got)
 		}
 	})
 
-	t.Run("two helpers stack", func(t *testing.T) {
-		w, cancel := buildBoostTestWorld(t, anchor, 10, "inn", "inn")
+	t.Run("base rate alone has not finished the cycle yet", func(t *testing.T) {
+		now := time.Now().UTC()
+		w, cancel := buildBoostTestWorld(t, 10, "well", "")
 		defer cancel()
 		setLaborBoost(t, w, 50)
-		seedLaborOffer(t, w, workingOffer(1, "lewis", "hannah"))
-		seedLaborOffer(t, w, workingOffer(2, "anne", "hannah"))
+		startBoostCycle(t, w, now)
 
 		if _, err := w.Send(sim.ApplyProduceTick(now)); err != nil {
 			t.Fatalf("tick: %v", err)
 		}
-		if got := breadCount(t, w); got != 6 {
-			t.Errorf("bread = %d, want 6 (2x rate: 6 units owed → 3 executions)", got)
+		if got := breadCount(t, w); got != 0 {
+			t.Errorf("bread = %d, want 0 (base credit 2400 < 3600s cycle)", got)
 		}
 	})
 
 	t.Run("helper elsewhere does not boost", func(t *testing.T) {
 		// A deal struck away from the establishment speeds nothing until the
 		// worker is actually there — the location gate in laboringHelperCount.
-		w, cancel := buildBoostTestWorld(t, anchor, 10, "well", "")
+		now := time.Now().UTC()
+		w, cancel := buildBoostTestWorld(t, 10, "well", "")
 		defer cancel()
 		setLaborBoost(t, w, 50)
 		seedLaborOffer(t, w, workingOffer(1, "lewis", "hannah"))
+		startBoostCycle(t, w, now)
 
 		if _, err := w.Send(sim.ApplyProduceTick(now)); err != nil {
 			t.Fatalf("tick: %v", err)
 		}
-		if got := breadCount(t, w); got != 2 {
-			t.Errorf("bread = %d, want 2 (base rate — helper is not at the inn)", got)
+		if got := breadCount(t, w); got != 0 {
+			t.Errorf("bread = %d, want 0 (base credit — helper is not at the inn)", got)
 		}
 	})
 
 	t.Run("worker for another employer does not boost", func(t *testing.T) {
-		w, cancel := buildBoostTestWorld(t, anchor, 10, "inn", "")
+		now := time.Now().UTC()
+		w, cancel := buildBoostTestWorld(t, 10, "inn", "")
 		defer cancel()
 		setLaborBoost(t, w, 50)
 		seedLaborOffer(t, w, workingOffer(1, "lewis", "josiah"))
+		startBoostCycle(t, w, now)
 
 		if _, err := w.Send(sim.ApplyProduceTick(now)); err != nil {
 			t.Fatalf("tick: %v", err)
 		}
-		if got := breadCount(t, w); got != 2 {
-			t.Errorf("bread = %d, want 2 (base rate — lewis works for someone else)", got)
+		if got := breadCount(t, w); got != 0 {
+			t.Errorf("bread = %d, want 0 (base credit — lewis works for someone else)", got)
 		}
 	})
 
 	t.Run("pct 0 disables the boost", func(t *testing.T) {
-		w, cancel := buildBoostTestWorld(t, anchor, 10, "inn", "")
+		now := time.Now().UTC()
+		w, cancel := buildBoostTestWorld(t, 10, "inn", "")
 		defer cancel()
 		setLaborBoost(t, w, 0)
 		seedLaborOffer(t, w, workingOffer(1, "lewis", "hannah"))
+		startBoostCycle(t, w, now)
 
 		if _, err := w.Send(sim.ApplyProduceTick(now)); err != nil {
 			t.Fatalf("tick: %v", err)
 		}
-		if got := breadCount(t, w); got != 2 {
-			t.Errorf("bread = %d, want 2 (base rate — boost disabled)", got)
+		if got := breadCount(t, w); got != 0 {
+			t.Errorf("bread = %d, want 0 (boost disabled — base credit only)", got)
 		}
 	})
 
-	t.Run("boosted production still respects the cap", func(t *testing.T) {
-		// Cap 3 leaves headroom for one execution (batch of 2) — the boost
-		// accelerates refill but never overstocks.
-		w, cancel := buildBoostTestWorld(t, anchor, 3, "inn", "inn")
+	t.Run("two helpers stack", func(t *testing.T) {
+		now := time.Now().UTC()
+		w, cancel := buildBoostTestWorld(t, 10, "inn", "inn")
 		defer cancel()
 		setLaborBoost(t, w, 50)
 		seedLaborOffer(t, w, workingOffer(1, "lewis", "hannah"))
 		seedLaborOffer(t, w, workingOffer(2, "anne", "hannah"))
+		// A shorter window than the one-helper case still lands at 2x:
+		// 31 min elapsed → credit 3720 ≥ 3600.
+		if _, err := w.Send(sim.StartProductionCycle("hannah", "bread")); err != nil {
+			t.Fatalf("StartProductionCycle: %v", err)
+		}
+		if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+			world.Actors["hannah"].ProductionActivity.LastProgressAt = now.Add(-31 * time.Minute)
+			return nil, nil
+		}}); err != nil {
+			t.Fatalf("rewind anchor: %v", err)
+		}
 
 		if _, err := w.Send(sim.ApplyProduceTick(now)); err != nil {
 			t.Fatalf("tick: %v", err)
 		}
 		if got := breadCount(t, w); got != 2 {
-			t.Errorf("bread = %d, want 2 (headroom 3 → 1 execution despite 3 owed)", got)
+			t.Errorf("bread = %d, want 2 (2x credit 3720 ≥ 3600s cycle)", got)
 		}
 	})
 
 	t.Run("pending offer does not boost", func(t *testing.T) {
 		// Only an ACCEPTED job helps — a pending solicitation is just talk.
-		w, cancel := buildBoostTestWorld(t, anchor, 10, "inn", "")
+		now := time.Now().UTC()
+		w, cancel := buildBoostTestWorld(t, 10, "inn", "")
 		defer cancel()
 		setLaborBoost(t, w, 50)
 		o := workingOffer(1, "lewis", "hannah")
 		o.State = sim.LaborStatePending
 		seedLaborOffer(t, w, o)
+		startBoostCycle(t, w, now)
 
 		if _, err := w.Send(sim.ApplyProduceTick(now)); err != nil {
 			t.Fatalf("tick: %v", err)
 		}
-		if got := breadCount(t, w); got != 2 {
-			t.Errorf("bread = %d, want 2 (base rate — offer still pending)", got)
+		if got := breadCount(t, w); got != 0 {
+			t.Errorf("bread = %d, want 0 (base credit — offer still pending)", got)
 		}
 	})
 }

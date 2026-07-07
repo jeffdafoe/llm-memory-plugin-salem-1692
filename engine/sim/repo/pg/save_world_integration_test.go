@@ -112,25 +112,32 @@ func TestIntegration_SaveWorld_PopulatedRoundTrip(t *testing.T) {
 	}
 }
 
-// TestIntegration_SaveWorld_ProductionFocusRoundTrip is the LLM-128 regression: a
-// crafter's ProductionFocus must survive a checkpoint + reload. Pre-fix it was an
-// in-memory-only field — no actor column, absent from the checkpoint upsert — so
-// every engine restart wiped it, re-warranting the production-choice tick and
-// driving the weak model to re-spam craft after each deploy. A focused actor must
-// come back focused; an unfocused one must come back empty (the NOT NULL DEFAULT '').
-func TestIntegration_SaveWorld_ProductionFocusRoundTrip(t *testing.T) {
+// TestIntegration_SaveWorld_ProductionActivityRoundTrip is the LLM-319
+// checkpoint contract for the one-shot production cycle. A cycle runs tens of
+// minutes and its recipe inputs are consumed AT START, so the in-flight window
+// (Item / BatchQty / RemainingSeconds, riding the actor row's three production
+// columns) must survive a checkpoint + reload — a transient window would eat
+// the inputs on every deploy. LastProgressAt is deliberately NOT persisted: it
+// must come back ZERO so the first post-restart produce tick stamps the anchor
+// without crediting, and engine downtime never counts as work. An idle actor
+// (nil activity) writes the ” / 0 / 0 sentinel and must come back nil.
+func TestIntegration_SaveWorld_ProductionActivityRoundTrip(t *testing.T) {
 	f := newFixture(t)
 	ctx := t.Context()
 	repo := NewRepository(f.Pool)
 
 	const (
-		smithID = sim.ActorID("dddddddd-0000-0000-0000-00000000d128")
-		bareID  = sim.ActorID("eeeeeeee-0000-0000-0000-00000000e128")
+		cookID = sim.ActorID("dddddddd-0000-0000-0000-00000000d319")
+		bareID = sim.ActorID("eeeeeeee-0000-0000-0000-00000000e319")
 	)
+	started := time.Date(2026, 7, 6, 9, 30, 0, 0, time.UTC)
 	w := checkpointableWorld(repo)
 	w.Actors = map[sim.ActorID]*sim.Actor{
-		smithID: {ID: smithID, DisplayName: "Smith", State: sim.StateIdle, ProductionFocus: "nail"},
-		bareID:  {ID: bareID, DisplayName: "Bare", State: sim.StateIdle},
+		cookID: {ID: cookID, DisplayName: "Cook", State: sim.StateIdle,
+			ProductionActivity: &sim.ProductionActivity{
+				Item: "stew", BatchQty: 5, RemainingSeconds: 1800, LastProgressAt: started,
+			}},
+		bareID: {ID: bareID, DisplayName: "Bare", State: sim.StateIdle},
 	}
 	if err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
 		t.Fatalf("SaveWorld: %v", err)
@@ -140,19 +147,26 @@ func TestIntegration_SaveWorld_ProductionFocusRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadWorld: %v", err)
 	}
-	smith := loaded.Actors[smithID]
-	if smith == nil {
-		t.Fatalf("smith actor did not round-trip")
+	cook := loaded.Actors[cookID]
+	if cook == nil {
+		t.Fatalf("cook actor did not round-trip")
 	}
-	if smith.ProductionFocus != "nail" {
-		t.Errorf("ProductionFocus = %q after reload, want %q — focus must survive restart (LLM-128)", smith.ProductionFocus, "nail")
+	pa := cook.ProductionActivity
+	if pa == nil {
+		t.Fatalf("ProductionActivity = nil after reload — the in-flight cycle must survive restart (its inputs are already spent)")
+	}
+	if pa.Item != "stew" || pa.BatchQty != 5 || pa.RemainingSeconds != 1800 {
+		t.Errorf("ProductionActivity = %s/%d/%d after reload, want stew/5/1800", pa.Item, pa.BatchQty, pa.RemainingSeconds)
+	}
+	if !pa.LastProgressAt.IsZero() {
+		t.Errorf("LastProgressAt = %v after reload, want zero — downtime must never count as work (LLM-319)", pa.LastProgressAt)
 	}
 	bare := loaded.Actors[bareID]
 	if bare == nil {
 		t.Fatalf("bare actor did not round-trip")
 	}
-	if bare.ProductionFocus != "" {
-		t.Errorf("unfocused ProductionFocus = %q after reload, want empty", bare.ProductionFocus)
+	if bare.ProductionActivity != nil {
+		t.Errorf("idle ProductionActivity = %+v after reload, want nil (the '' / 0 / 0 sentinel)", bare.ProductionActivity)
 	}
 }
 
