@@ -228,6 +228,17 @@ func TestTerminalNoOpError_EmptyMsgFallback(t *testing.T) {
 	}
 }
 
+func TestNonTerminalNoOpError_EmptyMsgFallback(t *testing.T) {
+	// Mirrors TerminalNoOpError: a zero-value NonTerminalNoOpError still changes
+	// tick behavior, so its message must never surface as a bare "[ok] " (LLM-317).
+	if got := (sim.NonTerminalNoOpError{}).Error(); got == "" {
+		t.Fatal("empty-Msg NonTerminalNoOpError.Error() must fall back to a non-empty reason")
+	}
+	if got := (sim.NonTerminalNoOpError{Msg: "You are now in the kitchen."}).Error(); got != "You are now in the kitchen." {
+		t.Fatalf("Error() should pass a set Msg through unchanged, got %q", got)
+	}
+}
+
 func TestRunTickToolCommandWrapperErrorsNotModelFacing(t *testing.T) {
 	w, cancel, root := buildToolCmdWorld(t, "A1")
 	defer cancel()

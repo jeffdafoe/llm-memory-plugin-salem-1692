@@ -357,3 +357,61 @@ func TestHarnessPool_TerminalNoOpEndsTickNotBudgetForced(t *testing.T) {
 		t.Errorf("commit runs: got %d, want 1 — the no-op command runs once then ends the tick", got)
 	}
 }
+
+// --- LLM-317: a NonTerminalNoOpError does NOT end the tick ---------------
+
+// The non-terminal sibling of the test above. A commit whose command returns a
+// sim.NonTerminalNoOpError — the shape of the confabulated "kitchen" phantom
+// arrival — echoes its [ok] message but must NOT end the tick, even though
+// move_to is registered terminal-on-success (the non-terminal outcome comes from
+// the error path, overriding the registration). The tick continues to the next
+// round, where a terminal done() ends it: 2 LLM rounds, terminal_status "done".
+// If the no-op wrongly ended the tick, done() would never be requested (1 round,
+// terminal_status "success").
+func TestHarnessPool_NonTerminalNoOpContinuesTick(t *testing.T) {
+	var commitRuns atomic.Int32
+	r := NewRegistry()
+	noopFn := func(_ HandlerInput) (sim.Command, error) {
+		return sim.Command{Fn: func(*sim.World) (any, error) {
+			commitRuns.Add(1)
+			return nil, sim.NonTerminalNoOpError{Msg: "You are now in the kitchen."}
+		}}, nil
+	}
+	// terminalOnSuccess=true: move_to is a terminal tool; the non-terminal outcome
+	// must come from the NonTerminalNoOpError path, NOT the registration.
+	if err := r.RegisterCommit("move_to", json.RawMessage(`{"type":"object"}`), passthroughDecode, noopFn, true); err != nil {
+		t.Fatalf("register move_to: %v", err)
+	}
+	if err := r.RegisterTerminal("done"); err != nil {
+		t.Fatalf("register done: %v", err)
+	}
+
+	// Round 1: the kitchen no-op (must NOT end the tick). Round 2: done ends it.
+	client := llm.NewFakeClient(
+		callTurn("c1", "move_to", `{}`),
+		callTurn("c2", "done", `{}`),
+	)
+
+	f := newIntegrationFixture(t, r, client)
+	defer f.stop()
+
+	now := time.Now()
+	seedDueWarrant(t, f.world, now)
+	if _, err := f.world.Send(sim.EvaluateReactors(now)); err != nil {
+		t.Fatalf("EvaluateReactors: %v", err)
+	}
+
+	rec := f.waitForTerminalTelemetry(t)
+	if rec.Kind != "completed" {
+		t.Fatalf("tick did not complete cleanly: kind=%q", rec.Kind)
+	}
+	if got := rec.Detail["terminal_status"]; got != "done" {
+		t.Errorf("terminal_status: got %q, want \"done\" — the non-terminal no-op continues the tick, which ends on the following done()", got)
+	}
+	if n := len(client.Requests()); n != 2 {
+		t.Errorf("LLM rounds: got %d, want 2 — the kitchen no-op does NOT end the tick, so the harness proceeds to the done round", n)
+	}
+	if got := commitRuns.Load(); got != 1 {
+		t.Errorf("commit runs: got %d, want 1", got)
+	}
+}

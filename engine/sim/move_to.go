@@ -109,6 +109,16 @@ func MoveToStructureByName(actorID ActorID, name string, shownObjects []VillageO
 				}
 				return MoveToStructure(actorID, id, now).Fn(w)
 			}
+			// LLM-317: "the kitchen" is a confabulated interior room — weak models
+			// routinely try to walk to it (the LLM-176 "food in the kitchen"
+			// hallucination) though it names no navigable place. Indulge the fiction
+			// with a NON-terminal no-op: the actor does not move, but "arrives" and
+			// keeps its tick (it may be about to produce/act). A reserved-keyword
+			// fallback like anchorKeywordTarget above, so a real structure actually
+			// named "kitchen" (none ship today) would still win.
+			if isKitchenPhantom(target) {
+				return MoveActorResult{}, NonTerminalNoOpError{Msg: kitchenPhantomMessage}
+			}
 			// Nothing matched — the model named a place that doesn't exist (a weak
 			// model's hallucinated destination, LLM-306). Hand it a bounded set of
 			// REAL public structure names it CAN pick, so its next turn corrects to a
@@ -135,6 +145,21 @@ func MoveToStructureByName(actorID ActorID, name string, shownObjects []VillageO
 				"there is no place called %q — name a structure in the village, or a source (a well, a bush) you can see or have visited", target)
 		},
 	}
+}
+
+// kitchenPhantomMessage is the model-facing line the LLM-317 kitchen no-op
+// echoes. The actor has not moved — this is a deliberate fiction, since the
+// "kitchen" it names does not exist as a place in the village.
+const kitchenPhantomMessage = "You are now in the kitchen."
+
+// isKitchenPhantom reports whether target names the confabulated "kitchen" — an
+// interior room weak models hallucinate and try to move_to, which is not a
+// navigable place in the village. Article-stripped + case-folded (reusing
+// stripLeadingArticle), so "kitchen", "the kitchen", "a kitchen" all match.
+// A match is answered with a NON-terminal no-op (kitchenPhantomMessage), not the
+// "no such place" error a weak model loops on. Only "kitchen" for now (LLM-317).
+func isKitchenPhantom(target string) bool {
+	return strings.EqualFold(stripLeadingArticle(strings.TrimSpace(target)), "kitchen")
 }
 
 // anchorKeywordTarget resolves a reserved relationship KEYWORD — the way an NPC

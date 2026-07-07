@@ -155,3 +155,22 @@ func (e TerminalNoOpError) Error() string {
 	}
 	return e.Msg
 }
+
+// NonTerminalNoOpError is the non-terminal sibling of TerminalNoOpError: a
+// command that did NOT change the world and wants its Msg echoed to the model
+// as an [ok] result, but — unlike TerminalNoOpError — must NOT end the tick.
+// The acting NPC keeps its turn and can act again this round. Used for the
+// LLM-317 confabulated-"kitchen" move_to no-op: the actor "arrives" without
+// moving (it may be about to produce/act), so ending the tick would waste that
+// intent. Compared on type via errors.As, so it survives %w wrapping.
+type NonTerminalNoOpError struct{ Msg string }
+
+// Error returns the model-facing reason. Empty-Msg fallback mirrors
+// TerminalNoOpError — a zero-value construction slip must never surface as a
+// bare "[ok] " with no reason.
+func (e NonTerminalNoOpError) Error() string {
+	if e.Msg == "" {
+		return "you are already there — nothing to walk to."
+	}
+	return e.Msg
+}
