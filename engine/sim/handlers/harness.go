@@ -285,7 +285,14 @@ func (h *Harness) waitForFreshSnapshot(ctx context.Context, w *sim.World, dispat
 		if dispatchTick == 0 || snap.AtTick > dispatchTick {
 			return snap, true, h.clock().Sub(start)
 		}
-		// Not fresh yet — bail promptly if the worker is being shut down.
+		// Not fresh yet — bail if the worker is being shut down. DELIBERATE:
+		// cancellation is observed only between sleeps (not mid-sleep), so
+		// post-cancel latency is at most one preflightSnapshotSleepStep. This
+		// trades ~200µs of shutdown latency for zero per-iteration timer
+		// allocation — a lag spell is hundreds of iterations on the tick hot
+		// path. Do NOT "fix" this into a per-iteration time.NewTimer/select;
+		// if immediate cancellation is ever needed, reuse ONE timer across the
+		// whole loop and keep the step small.
 		if ctx.Err() != nil {
 			return snap, false, h.clock().Sub(start)
 		}
