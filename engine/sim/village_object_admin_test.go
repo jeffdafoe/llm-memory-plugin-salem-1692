@@ -542,6 +542,128 @@ func TestAddVillageObjectTag_NotFound(t *testing.T) {
 	}
 }
 
+// TestAddVillageObjectTag_WellProvisionsDefaults covers the LLM-269 fix: tagging a
+// bare placement `well` auto-provisions the canonical two-row water model (an
+// infinite thirst drink row + a finite yield-only water row) and a "Well" name,
+// so a dropped Well asset works without hand-editing the DB. prop-1 ships bare
+// (no refresh rows, no display name).
+func TestAddVillageObjectTag_WellProvisionsDefaults(t *testing.T) {
+	w, cap := buildObjectAdminWorld(t)
+	if _, err := w.Send(sim.AddVillageObjectTag("prop-1", "well")); err != nil {
+		t.Fatalf("add well tag: %v", err)
+	}
+
+	rows := readRefreshes(t, w)
+	if len(rows) != 2 {
+		t.Fatalf("provisioned %d rows, want 2 (drink + water yield): %+v", len(rows), rows)
+	}
+	// Row 0: infinite thirst drink, not gatherable.
+	drink := rows[0]
+	if drink.Attribute != "thirst" || drink.Amount != -8 {
+		t.Errorf("drink row = {attr %q amount %d}, want {thirst -8}", drink.Attribute, drink.Amount)
+	}
+	if drink.IsFinite() {
+		t.Error("drink row should be infinite (nil supply), got finite")
+	}
+	if drink.IsGatherable() {
+		t.Error("drink row must not be gatherable (no gather_item)")
+	}
+	// Row 1: finite yield-only water, gather_item=water, 20/20, periodic 6h.
+	water := rows[1]
+	if water.Attribute != "" || water.Amount != 0 {
+		t.Errorf(`water row = {attr %q amount %d}, want yield-only {"" 0}`, water.Attribute, water.Amount)
+	}
+	if !water.IsYieldOnly() || string(water.GatherItem) != "water" {
+		t.Errorf("water row should be yield-only gather_item=water, got gather_item %q", water.GatherItem)
+	}
+	if !water.IsFinite() || water.AvailableQuantity == nil || *water.AvailableQuantity != 20 ||
+		water.MaxQuantity == nil || *water.MaxQuantity != 20 {
+		t.Errorf("water row supply = %v/%v, want 20/20", water.AvailableQuantity, water.MaxQuantity)
+	}
+	if water.RefreshMode != sim.RefreshModePeriodic || water.RefreshPeriodHours == nil || *water.RefreshPeriodHours != 6 {
+		t.Errorf("water row regen = {mode %q period %v}, want {periodic 6}", water.RefreshMode, water.RefreshPeriodHours)
+	}
+	// The set must satisfy the same validation the editor's set-refresh route uses.
+	if err := sim.ValidateObjectRefreshes(rows); err != nil {
+		t.Errorf("provisioned rows fail ValidateObjectRefreshes: %v", err)
+	}
+	// Named "Well" so move_to and the gather resolver can reach it.
+	if got := w.Published().VillageObjects["prop-1"].DisplayName; got != "Well" {
+		t.Errorf("display_name = %q, want Well", got)
+	}
+	// The name change is client-visible → exactly one display-name event.
+	if n := countDisplayNameChanged(cap.snapshot()); n != 1 {
+		t.Errorf("VillageObjectDisplayNameChanged count = %d, want 1", n)
+	}
+}
+
+// TestAddVillageObjectTag_WellNonDestructive proves provisioning never clobbers an
+// operator's existing setup: a `well` tag added to an object that already has
+// refresh rows and a name leaves both untouched.
+func TestAddVillageObjectTag_WellNonDestructive(t *testing.T) {
+	w, cap := buildObjectAdminWorld(t)
+	seedRefreshes(t, w, []*sim.ObjectRefresh{{Attribute: "thirst", Amount: -5}})
+	if _, err := w.Send(sim.SetVillageObjectDisplayName("prop-1", "Old Cistern")); err != nil {
+		t.Fatalf("seed name: %v", err)
+	}
+	nameEventsBefore := countDisplayNameChanged(cap.snapshot())
+
+	if _, err := w.Send(sim.AddVillageObjectTag("prop-1", "well")); err != nil {
+		t.Fatalf("add well tag: %v", err)
+	}
+
+	rows := readRefreshes(t, w)
+	if len(rows) != 1 || rows[0].Amount != -5 {
+		t.Errorf("rows = %+v, want the pre-seeded single {thirst -5} untouched", rows)
+	}
+	if got := w.Published().VillageObjects["prop-1"].DisplayName; got != "Old Cistern" {
+		t.Errorf("display_name = %q, want pre-existing 'Old Cistern' (not clobbered)", got)
+	}
+	if n := countDisplayNameChanged(cap.snapshot()); n != nameEventsBefore {
+		t.Errorf("display-name events = %d, want unchanged %d (non-destructive name skip)", n, nameEventsBefore)
+	}
+}
+
+// TestAddVillageObjectTag_WellNamesRowedButNamelessObject exercises the two
+// non-destructive guards independently: an object that already has rows but no
+// name keeps its rows AND still gets the "Well" name + display-name event. (The
+// _WellNonDestructive test above seeds both rows and a name, so it never covers
+// this rows-present/name-empty path.)
+func TestAddVillageObjectTag_WellNamesRowedButNamelessObject(t *testing.T) {
+	w, cap := buildObjectAdminWorld(t)
+	seedRefreshes(t, w, []*sim.ObjectRefresh{{Attribute: "thirst", Amount: -5}})
+
+	if _, err := w.Send(sim.AddVillageObjectTag("prop-1", "well")); err != nil {
+		t.Fatalf("add well tag: %v", err)
+	}
+
+	rows := readRefreshes(t, w)
+	if len(rows) != 1 || rows[0].Amount != -5 {
+		t.Errorf("rows = %+v, want the pre-seeded {thirst -5} untouched", rows)
+	}
+	if got := w.Published().VillageObjects["prop-1"].DisplayName; got != "Well" {
+		t.Errorf("display_name = %q, want Well (nameless object gets named even with rows)", got)
+	}
+	if n := countDisplayNameChanged(cap.snapshot()); n != 1 {
+		t.Errorf("VillageObjectDisplayNameChanged count = %d, want 1", n)
+	}
+}
+
+// TestAddVillageObjectTag_NonWellNoProvision confirms only `well` triggers
+// provisioning: a different tag leaves a bare object bare.
+func TestAddVillageObjectTag_NonWellNoProvision(t *testing.T) {
+	w, _ := buildObjectAdminWorld(t)
+	if _, err := w.Send(sim.AddVillageObjectTag("prop-1", "vendor")); err != nil {
+		t.Fatalf("add vendor tag: %v", err)
+	}
+	if rows := readRefreshes(t, w); len(rows) != 0 {
+		t.Errorf("vendor tag provisioned %d refresh rows, want 0", len(rows))
+	}
+	if got := w.Published().VillageObjects["prop-1"].DisplayName; got != "" {
+		t.Errorf("vendor tag set display_name %q, want empty", got)
+	}
+}
+
 func TestRemoveVillageObjectTag_Applied(t *testing.T) {
 	w, cap := buildObjectAdminWorld(t)
 	if _, err := w.Send(sim.AddVillageObjectTag("prop-1", "vendor")); err != nil {
