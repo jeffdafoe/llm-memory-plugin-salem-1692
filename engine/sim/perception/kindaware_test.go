@@ -382,7 +382,7 @@ func TestRender_RecentConversationSection_StatefulSubject(t *testing.T) {
 }
 
 // A ring line that is ALSO the current speech warrant this tick is shown only
-// once — under "## What just happened", de-duped out of "## Recent conversation
+// once — under "## Since your last turn", de-duped out of "## Recent conversation
 // here" (ZBBS-HOME-412, mirroring the heard-fact de-dup WORK-374 added). Pins the
 // truncation-key match between the ring text and the warrant excerpt.
 func TestRender_RecentConversation_DedupsCurrentWarrant(t *testing.T) {
@@ -407,8 +407,8 @@ func TestRender_RecentConversation_DedupsCurrentWarrant(t *testing.T) {
 	warrants := []sim.WarrantMeta{speechWarrant(1, "s1", "hannah", line)}
 
 	combined := combinedPrompt(Render(Build(snap, "ezekiel", warrants), DefaultRenderConfig()))
-	if !strings.Contains(combined, "## What just happened") {
-		t.Fatalf("the warrant should render in '## What just happened', got:\n%s", combined)
+	if !strings.Contains(combined, "## Since your last turn") {
+		t.Fatalf("the warrant should render in '## Since your last turn', got:\n%s", combined)
 	}
 	if strings.Contains(combined, "## Recent conversation here") {
 		t.Errorf("the only ring line matched the current warrant and must be de-duped, so the section should be absent, got:\n%s", combined)

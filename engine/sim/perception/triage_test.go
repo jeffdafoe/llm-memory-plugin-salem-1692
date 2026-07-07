@@ -39,7 +39,7 @@ func TestRender_TriageInstructionAlwaysPresent(t *testing.T) {
 }
 
 // TestRender_TriageInstructionIsLast: the triage line is the closing instruction
-// — it must come after every context section (here, the "what just happened"
+// — it must come after every context section (here, the "since your last turn"
 // warrant block) so the model reads the directive last, right before it acts.
 // ZBBS-HOME-355.
 func TestRender_TriageInstructionIsLast(t *testing.T) {
@@ -51,7 +51,7 @@ func TestRender_TriageInstructionIsLast(t *testing.T) {
 	}
 	got := combinedPrompt(Render(p, DefaultRenderConfig()))
 	triageIdx := strings.Index(got, triageMarker)
-	warrantIdx := strings.Index(got, "What just happened")
+	warrantIdx := strings.Index(got, "Since your last turn")
 	if triageIdx < 0 || warrantIdx < 0 {
 		t.Fatalf("expected both the warrant block and the triage line, got:\n%s", got)
 	}

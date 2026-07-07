@@ -1,6 +1,6 @@
 # Your turn
 
-## What just happened
+## Since your last turn
 1. John Ellis offers you stew for 4 coins. To take this coin quote, call pay_with_item with quote_id 1, item "stew", qty 1, and amount 4 — it settles at once. Don't put goods on a quote_id; if you lack coins but have goods to offer, propose a separate trade instead — call offer_trade with the goods you'll give and want_item "stew"; they can accept or counter.
 
 

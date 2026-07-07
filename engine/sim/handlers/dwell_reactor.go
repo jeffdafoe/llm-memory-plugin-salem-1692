@@ -8,11 +8,19 @@ import (
 )
 
 // dwell_reactor.go — Phase 3 dwell perception PR. Subscribers for the
-// three dwell-lifecycle events (DwellStarted / DwellTickApplied /
-// DwellEnded). Each stamps a self-perception warrant on the eating
-// (or resting) actor so the LLM's next reactor tick perceives the cue
-// text — keeping NPCs parked at the structure to finish dwell-bearing
-// meals.
+// dwell-lifecycle decision points (DwellTickApplied / DwellEnded).
+// Each stamps a self-perception warrant on the eating (or resting)
+// actor so the LLM's next reactor tick perceives the cue text.
+//
+// DwellStarted deliberately mints NO warrant (LLM-316): the start of a
+// meal is the actor's own just-committed action — the consume tool
+// result already reports the outcome in-tick, and the standing `## You`
+// dwell line ("You are eating stew …, ~N minute(s) remaining") carries
+// the keep-eating signal every tick after. Echoing it as a next-tick
+// wake burned an LLM call to contemplate a meal already underway and
+// pushed PC-HUD flavor copy ("this stew looks really good…") into NPC
+// perception. The DwellStarted event itself still fires for the
+// Hub/HUD layer and audit.
 //
 // Targeting policy: self only. The eater/rester gets the warrant; no
 // fan-out to co-located peers in this PR (visible-to-others is a
@@ -38,46 +46,6 @@ import (
 // or already-sated need stamps nothing, so a long meal or a rest under the shade
 // tree no longer burns an LLM call every minute. Completion is its own beat
 // (DwellEnded), so the terminal tick defers to it rather than double-waking.
-
-// handleDwellStartedWarrants is the DwellStarted subscriber. Stamps
-// DwellStartedWarrantReason on the eater. Skip emit when the event
-// carries no credits (defensive — Consume + commitPayTransfer skip
-// emitting DwellStarted with empty credits, but the event arriving
-// here with zero would mean an upstream change broke the contract).
-func handleDwellStartedWarrants(w *sim.World, evt sim.Event) {
-	started, ok := evt.(*sim.DwellStarted)
-	if !ok {
-		return
-	}
-	if started.ActorID == "" || len(started.Credits) == 0 {
-		return
-	}
-	actor, ok := w.Actors[started.ActorID]
-	if !ok || actor == nil {
-		return
-	}
-	now := time.Now().UTC()
-	meta := sim.WarrantMeta{
-		TriggerActorID: started.ActorID,
-		Force:          false,
-		Reason: sim.DwellStartedWarrantReason{
-			ItemKind:      started.Kind,
-			StructureID:   started.StructureID,
-			Credits:       cloneDwellCreditSnapshots(started.Credits),
-			NarrationText: started.NarrationText,
-		},
-		SourceEventID: started.EventID(),
-		RootEventID:   started.RootEventID(),
-		SourceActorID: started.ActorID,
-		OccurredAt:    started.At,
-	}
-	if _, err := sim.StampWarrant(started.ActorID, meta, now).Fn(w); err != nil {
-		log.Printf(
-			"handlers: dwell-reactor StampWarrant for eater %q on DwellStarted (event %d): %v",
-			started.ActorID, started.EventID(), err,
-		)
-	}
-}
 
 // handleDwellTickAppliedWarrants is the DwellTickApplied subscriber. It stamps
 // DwellTickAppliedWarrantReason on the eater/rester ONLY when this tick crosses
@@ -216,9 +184,9 @@ func handleDwellEndedWarrants(w *sim.World, evt sim.Event) {
 	}
 }
 
-// RegisterDwellHandlers wires the three dwell-lifecycle event
-// subscribers into the world (DwellStarted, DwellTickApplied,
-// DwellEnded). Separate from RegisterPayHandlers / RegisterSpeechHandlers
+// RegisterDwellHandlers wires the dwell-lifecycle event subscribers
+// into the world (DwellTickApplied, DwellEnded).
+// Separate from RegisterPayHandlers / RegisterSpeechHandlers
 // / RegisterSceneQuoteHandlers / RegisterPayWithItemHandlers for the
 // same opt-in-piecewise reason — a build that wants commerce but not
 // the dwell cues (or vice versa) can compose. Must run on the world
@@ -234,28 +202,6 @@ func RegisterDwellHandlers(w *sim.World) {
 	if w == nil {
 		panic("handlers: RegisterDwellHandlers requires a non-nil world")
 	}
-	w.Subscribe(sim.SubscriberFunc(handleDwellStartedWarrants))
 	w.Subscribe(sim.SubscriberFunc(handleDwellTickAppliedWarrants))
 	w.Subscribe(sim.SubscriberFunc(handleDwellEndedWarrants))
-}
-
-// cloneDwellCreditSnapshots returns an independent copy of credits.
-// Used by the DwellStarted subscriber to snapshot the event's payload
-// onto the warrant Reason — a subsequent mutation of the event's slice
-// (none today, but the contract is value semantics) must not reach the
-// warrant. RemainingTicks is the only pointer field; deep-copy it.
-func cloneDwellCreditSnapshots(src []sim.DwellCreditSnapshot) []sim.DwellCreditSnapshot {
-	if len(src) == 0 {
-		return nil
-	}
-	out := make([]sim.DwellCreditSnapshot, len(src))
-	for i, c := range src {
-		cp := c
-		if c.RemainingTicks != nil {
-			rt := *c.RemainingTicks
-			cp.RemainingTicks = &rt
-		}
-		out[i] = cp
-	}
-	return out
 }

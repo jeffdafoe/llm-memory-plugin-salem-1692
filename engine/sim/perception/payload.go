@@ -607,7 +607,7 @@ type Payload struct {
 	// offer) in this payload to its acquaintance-gated display label —
 	// DisplayName when the subject knows them, else "the <role>", else "a
 	// stranger". The same name-vs-descriptor gating SurroundingsView's
-	// HuddleMembers use. Render consults this so a "## What just happened"
+	// HuddleMembers use. Render consults this so a "## Since your last turn"
 	// line reads "Goodwife Ellis arrived nearby" instead of leaking the raw
 	// actor UUID (ZBBS-HOME-339). The subject's own ID is deliberately
 	// absent — Render resolves self to "you". Empty when no warrant
