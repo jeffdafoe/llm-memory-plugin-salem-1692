@@ -53,8 +53,9 @@ const (
 	// default warrant stale horizon (defaultMaxWarrantAge, 90s) with margin:
 	// a cycle parked by the eco gate must come due before it can age out, or
 	// delay-not-drop would silently become drop (code_review R1). SetEcoMode
-	// rejects gaps at/above the live horizon and the reactor gate clamps as
-	// a second line for values that arrived outside the setter.
+	// rejects gaps above the live ceiling (maxEcoGap: horizon minus the
+	// scan-lateness margin) and the reactor gate clamps to the same ceiling
+	// as a second line for values that arrived outside the setter.
 	DefaultEcoSocialGap = 60 * time.Second
 
 	// DefaultEcoEconomyGap is the fallback pacing floor for an economy-bucket
@@ -129,15 +130,44 @@ func effectiveMaxWarrantAge(s WorldSettings) time.Duration {
 	return defaultMaxWarrantAge
 }
 
-// ecoCycleGapClamped is ecoCycleGap bounded to just under the live warrant
-// stale horizon (see effectiveMaxWarrantAge). The clamp target keeps a
-// one-jitter-scan margin so "comes due" strictly precedes "ages out".
+// ecoStaleMargin is the safety margin the eco ceiling keeps under the warrant
+// stale horizon: the worst-case lateness between a parked cycle coming due and
+// the scan that would emit it — the configured warrant jitter and evaluator
+// cadence, floored at one second (code_review R2: a fixed 1s margin was not a
+// guarantee under a >1s jitter or scan cadence).
+func ecoStaleMargin(s WorldSettings) time.Duration {
+	margin := time.Second
+	if s.ReactorJitterMax > margin {
+		margin = s.ReactorJitterMax
+	}
+	if s.ReactorEvaluatorCadence > margin {
+		margin = s.ReactorEvaluatorCadence
+	}
+	return margin
+}
+
+// maxEcoGap is the ceiling an eco gap may reach: the live warrant stale
+// horizon minus the scan-lateness margin, so "comes due" strictly precedes
+// "ages out" even on a late scan. Can be <= 0 under a pathologically small
+// MaxWarrantAge — callers treat that as "no room to throttle at all".
+func maxEcoGap(s WorldSettings) time.Duration {
+	return effectiveMaxWarrantAge(s) - ecoStaleMargin(s)
+}
+
+// ecoCycleGapClamped is ecoCycleGap bounded to maxEcoGap (see above). A
+// non-positive ceiling disables the throttle outright — with a stale horizon
+// that tight there is no parking window in which a delayed cycle would still
+// be alive.
 func ecoCycleGapClamped(warrants []WarrantMeta, s WorldSettings) time.Duration {
 	gap := ecoCycleGap(warrants, s)
 	if gap <= 0 {
 		return gap
 	}
-	if ceiling := effectiveMaxWarrantAge(s) - time.Second; gap > ceiling {
+	ceiling := maxEcoGap(s)
+	if ceiling <= 0 {
+		return 0
+	}
+	if gap > ceiling {
 		return ceiling
 	}
 	return gap

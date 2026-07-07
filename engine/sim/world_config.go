@@ -426,17 +426,24 @@ func SetEcoMode(enabled *bool, socialGapSeconds, economyGapSeconds *int) Command
 			if enabled == nil && socialGapSeconds == nil && economyGapSeconds == nil {
 				return nil, ErrInvalidEcoModeSetting
 			}
-			// Gaps must sit strictly below the live warrant stale horizon
-			// (code_review R1): a parked cycle's age-at-due is bounded by its
-			// gap (WarrantedSince postdates the anchoring last tick), so
-			// gap < MaxWarrantAge guarantees it comes due before the
-			// shelved/fairness stale paths could evict it. 0 stays valid —
-			// it disables that bucket's throttle rather than parking anything.
-			horizon := int(effectiveMaxWarrantAge(w.Settings) / time.Second)
-			if socialGapSeconds != nil && (*socialGapSeconds < 0 || *socialGapSeconds >= horizon) {
-				return nil, ErrInvalidEcoModeSetting
+			// Gaps must fit under the eco ceiling (code_review R1+R2): the
+			// live warrant stale horizon minus the scan-lateness margin
+			// (maxEcoGap), so a parked cycle always comes due — and gets
+			// scanned — before the shelved/fairness stale paths could evict
+			// it (age-at-due is bounded by the gap, since WarrantedSince
+			// postdates the anchoring last tick). 0 is checked FIRST: it
+			// disables that bucket's throttle and stays valid even under a
+			// horizon too tight to fit any positive gap.
+			validGap := func(v *int) bool {
+				if v == nil || *v == 0 {
+					return true
+				}
+				if *v < 0 {
+					return false
+				}
+				return time.Duration(*v)*time.Second <= maxEcoGap(w.Settings)
 			}
-			if economyGapSeconds != nil && (*economyGapSeconds < 0 || *economyGapSeconds >= horizon) {
+			if !validGap(socialGapSeconds) || !validGap(economyGapSeconds) {
 				return nil, ErrInvalidEcoModeSetting
 			}
 			if enabled != nil {

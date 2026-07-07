@@ -366,6 +366,30 @@ func TestSetEcoMode_Rejects(t *testing.T) {
 	}
 }
 
+// TestSetEcoMode_ZeroValidUnderTightHorizon: 0 (the explicit off-switch) must
+// stay accepted even when MaxWarrantAge is configured so tight that no
+// positive gap fits under the eco ceiling (code_review R2 — the horizon
+// comparison used to reject 0 when the horizon rounded to 0).
+func TestSetEcoMode_ZeroValidUnderTightHorizon(t *testing.T) {
+	w, cancel := buildEcoWorld(t)
+	defer cancel()
+
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Settings.MaxWarrantAge = 500 * time.Millisecond
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("tighten MaxWarrantAge: %v", err)
+	}
+	zero := 0
+	if _, err := w.Send(sim.SetEcoMode(nil, &zero, &zero)); err != nil {
+		t.Errorf("zero gaps under a tight horizon must stay valid: %v", err)
+	}
+	one := 1
+	if _, err := w.Send(sim.SetEcoMode(nil, &one, nil)); err == nil {
+		t.Error("a positive gap that cannot fit under the ceiling must be rejected")
+	}
+}
+
 // ---- Idle backstop eco pause ---------------------------------------------
 
 func TestEvaluateIdleBackstop_EcoSkipsPlainIdle(t *testing.T) {
