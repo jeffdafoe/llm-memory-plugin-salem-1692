@@ -128,6 +128,12 @@ func harnessResultDetail(result sim.TickResult) map[string]string {
 	if result.Duration > 0 {
 		d["duration_ms"] = strconv.FormatInt(result.Duration.Milliseconds(), 10)
 	}
+	// LLM-275: how long preflight waited for the published snapshot to catch
+	// up to the dispatch. On a stale_stage=snapshot_lag record this sits at
+	// the wait ceiling and flags that the world goroutine's lag exceeds it.
+	if result.PreflightWait > 0 {
+		d["preflight_wait_ms"] = strconv.FormatInt(result.PreflightWait.Milliseconds(), 10)
+	}
 	if len(result.ToolsRequested) > 0 {
 		d["tools_requested"] = strings.Join(result.ToolsRequested, ",")
 	}

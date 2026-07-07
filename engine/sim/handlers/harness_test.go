@@ -207,31 +207,72 @@ func TestHarness_Preflight_AttemptIDMismatch(t *testing.T) {
 	}
 }
 
-// TestHarness_Preflight_FreshnessWaitIsBounded guards the dispatch→republish
-// freshness wait in RunTick's preflight (the fix for the
-// TestHarnessPool_LLMErrorPath flake — a worker reading a pre-dispatch
-// snapshot would false-classify a live tick Stale). The wait re-reads the
-// published snapshot while AtTick <= job.dispatchTick. Here dispatchTick is
-// max uint64 and nothing will republish to advance AtTick, so the wait can
-// never be satisfied — it MUST bound out at maxPreflightSnapshotSpins and
-// fall through to the normal check rather than spin forever. With alice
-// genuinely in-flight under the job's attempt, falling through means the tick
-// proceeds and the scripted transport error classifies it FailedBeforeRender.
-//
-// If the spin's bound is ever removed, this test hangs (caught by the test
-// timeout) instead of passing — that is the regression it guards.
-func TestHarness_Preflight_FreshnessWaitIsBounded(t *testing.T) {
+// newTestHarnessWithWaitMax builds a harness with an explicit preflight
+// freshness-wait ceiling — used by the snapshot-lag tests to bound the wait
+// tightly so they don't spend the default 75ms sleeping.
+func newTestHarnessWithWaitMax(t *testing.T, client llm.Client, waitMax time.Duration) *Harness {
+	t.Helper()
+	tr := newTestRegistry(t)
+	h, err := NewHarness(HarnessConfig{Client: client, Registry: tr.r, PreflightSnapshotWaitMax: waitMax})
+	if err != nil {
+		t.Fatalf("NewHarness: %v", err)
+	}
+	return h
+}
+
+// A published snapshot that never catches up to the job's dispatch (a wedged /
+// saturated world goroutine) must NOT be read as a supersession: it predates
+// the dispatch and cannot witness one. RunTick returns a snapshot-lag retry
+// (TickStatusStale + StaleStageSnapshotLag) with the full batch carried
+// forward and never calls the LLM — distinct from a genuine before-render
+// stale. dispatchTick is max uint64, so the published AtTick can never exceed
+// it and the freshness wait must time out (also proving the wait is bounded:
+// an unbounded wait would hang and trip the test timeout). Regression guard
+// for LLM-275.
+func TestHarness_Preflight_SnapshotLag_LiveAttempt(t *testing.T) {
+	w, cancel := newHarnessWorld(t, "attempt-A") // alice genuinely in-flight under attempt-A
+	defer cancel()
+
+	// No scripted turns: if the harness reached the LLM this fake would error,
+	// but the snapshot-lag return happens before render, so it is never called.
+	h := newTestHarnessWithWaitMax(t, llm.NewFakeClient(), 2*time.Millisecond)
+
+	warrants := []sim.WarrantMeta{{TriggerActorID: "bob", Reason: sim.BasicWarrantReason{K: sim.WarrantKindNPCSpoke}}}
+	job := tickJob{actorID: "alice", attemptID: "attempt-A", rootEventID: 42, warrants: warrants, dispatchTick: ^uint64(0)}
+
+	result := h.RunTick(context.Background(), w, job)
+	if result.TerminalStatus != sim.TickStatusStale {
+		t.Errorf("terminal status: got %v, want Stale", result.TerminalStatus)
+	}
+	if result.StaleStage != sim.StaleStageSnapshotLag {
+		t.Errorf("StaleStage: got %v, want snapshot_lag", result.StaleStage)
+	}
+	if result.IterationCount != 0 {
+		t.Errorf("IterationCount: got %d, want 0 (LLM must not be called on snapshot lag)", result.IterationCount)
+	}
+	if len(result.UnaddressedWarrants) != 1 {
+		t.Errorf("UnaddressedWarrants: got %d, want 1 (full carry-forward)", len(result.UnaddressedWarrants))
+	}
+	if result.PreflightWait <= 0 {
+		t.Errorf("PreflightWait: got %v, want > 0 (the wait was measured)", result.PreflightWait)
+	}
+}
+
+// Actor absence is only authoritative from a FRESH snapshot. When the snapshot
+// still predates the dispatch, a missing actor is snapshot lag, not a deleted
+// actor — RunTick must retry (StaleStageSnapshotLag), NOT fail-before-render.
+// Guards that the freshness gate runs BEFORE the actor-presence check (LLM-275).
+func TestHarness_Preflight_SnapshotLag_ActorMissingIsNotGone(t *testing.T) {
 	w, cancel := newHarnessWorld(t, "attempt-A")
 	defer cancel()
 
-	client := llm.NewFakeClient(llm.ScriptedTurn{Err: &llm.Error{Class: llm.ErrorTransport, Message: "boom"}})
-	h, _ := newTestHarness(t, client, 0, 0)
-
-	job := tickJob{actorID: "alice", attemptID: "attempt-A", rootEventID: 42, dispatchTick: ^uint64(0)}
+	h := newTestHarnessWithWaitMax(t, llm.NewFakeClient(), 2*time.Millisecond)
+	job := tickJob{actorID: "ghost", attemptID: "attempt-A", rootEventID: 1, dispatchTick: ^uint64(0)}
 
 	result := h.RunTick(context.Background(), w, job)
-	if result.TerminalStatus != sim.TickStatusFailedBeforeRender {
-		t.Errorf("bounded wait must fall through to the live check: got %v, want FailedBeforeRender", result.TerminalStatus)
+	if result.TerminalStatus != sim.TickStatusStale || result.StaleStage != sim.StaleStageSnapshotLag {
+		t.Errorf("missing actor on a stale snapshot: got %v/%v, want Stale/snapshot_lag",
+			result.TerminalStatus, result.StaleStage)
 	}
 }
 

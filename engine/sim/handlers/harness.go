@@ -18,16 +18,37 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/perception"
 )
 
-// maxPreflightSnapshotSpins bounds the busy-wait in RunTick's preflight that
-// waits for the published snapshot to catch up to this job's dispatch (the
-// enqueue→republish lag — see RunTick). Each spin is a runtime.Gosched +
-// re-read; the wait normally resolves in a handful of spins because the
-// dispatching command's republish is microseconds away on the world
-// goroutine (which Gosched yields to). The cap is a safety ceiling for a
-// wedged/lagging world goroutine, after which the preflight falls through to
-// the check against whatever snapshot it has (degrading to the prior, racy
-// behavior rather than spinning forever).
-const maxPreflightSnapshotSpins = 1000
+// Preflight snapshot freshness wait (LLM-275). RunTick must not classify a
+// tick stale/superseded from a published snapshot that predates the tick's
+// own dispatch: such a snapshot reflects nothing at or after the dispatch, so
+// a "not in flight" / mismatched-attempt reading off it is just pre-dispatch
+// state, not evidence of supersession. waitForFreshSnapshot waits for AtTick
+// to pass dispatchTick before any preflight stale decision is made.
+//
+// The wait is a fast path of runtime.Gosched() yields — the dispatching
+// command's republish is normally microseconds away on the world goroutine,
+// which Gosched yields to — followed, if that doesn't resolve, by short
+// sleeps up to a ceiling. Gosched alone is unsound as a bound: it yields but
+// does not force the (possibly saturated) world goroutine to be scheduled, so
+// a fixed spin count can expire in microseconds under exactly the high-churn
+// load where the snapshot lags most (the false-stale storm LLM-275 fixed).
+// Sleeping parks the worker so the scheduler runs the world goroutine.
+const (
+	// preflightSnapshotGoschedSpins is how many Gosched yields the freshness
+	// wait tries before switching to sleeps.
+	preflightSnapshotGoschedSpins = 16
+
+	// preflightSnapshotSleepStep is the per-iteration sleep once the Gosched
+	// fast path is exhausted, applied until the wait ceiling.
+	preflightSnapshotSleepStep = 200 * time.Microsecond
+
+	// DefaultPreflightSnapshotWaitMax is the default ceiling on the freshness
+	// wait (HarnessConfig.PreflightSnapshotWaitMax overrides). A tick's LLM
+	// call dominates total latency, so tens of ms spent letting a lagging
+	// snapshot catch up is cheap next to the seconds a false-stale retry
+	// costs via re-emit + reactor jitter.
+	DefaultPreflightSnapshotWaitMax = 75 * time.Millisecond
+)
 
 // Per-tick default budgets. Settle exact values empirically during PR 3d
 // integration; the defaults are conservative.
@@ -114,6 +135,13 @@ type HarnessConfig struct {
 	// Zero → no harness-imposed timeout beyond the parent ctx.
 	ToolDispatchTimeout time.Duration
 
+	// PreflightSnapshotWaitMax caps how long RunTick's preflight waits for
+	// the published snapshot to catch up to the tick's dispatch before it
+	// gives up and treats the tick as a snapshot-lag retry (LLM-275). Zero →
+	// DefaultPreflightSnapshotWaitMax. A worker-side timing knob, kept here
+	// (like ToolDispatchTimeout) rather than in world-goroutine WorldSettings.
+	PreflightSnapshotWaitMax time.Duration
+
 	// PromptSink, when set, receives each tick's rendered deliberation prompt
 	// for the operator-gated umbilical debug surface (ZBBS-HOME-360). Nil (the
 	// umbilical-disabled default) means prompts are not captured — zero cost.
@@ -142,12 +170,13 @@ type Harness struct {
 	registry  *Registry
 	validator *Validator
 
-	iterationBudget         int
-	maxObservationRounds    int
-	maxToolCallsPerResponse int
-	maxSpeaksPerTick        int
-	renderConfig            perception.RenderConfig
-	toolDispatchTimeout     time.Duration
+	iterationBudget          int
+	maxObservationRounds     int
+	maxToolCallsPerResponse  int
+	maxSpeaksPerTick         int
+	renderConfig             perception.RenderConfig
+	toolDispatchTimeout      time.Duration
+	preflightSnapshotWaitMax time.Duration
 
 	// promptSink captures rendered deliberation prompts for the umbilical
 	// (ZBBS-HOME-360); nil when the umbilical is disabled.
@@ -186,24 +215,72 @@ func NewHarness(cfg HarnessConfig) (*Harness, error) {
 	if cfg.MaxSpeaksPerTick <= 0 {
 		cfg.MaxSpeaksPerTick = DefaultMaxSpeaksPerTick
 	}
+	if cfg.PreflightSnapshotWaitMax <= 0 {
+		cfg.PreflightSnapshotWaitMax = DefaultPreflightSnapshotWaitMax
+	}
 	clk := cfg.Clock
 	if clk == nil {
 		clk = time.Now
 	}
 	return &Harness{
-		client:                  cfg.Client,
-		registry:                cfg.Registry,
-		validator:               v,
-		iterationBudget:         cfg.IterationBudget,
-		maxObservationRounds:    cfg.MaxObservationRounds,
-		maxToolCallsPerResponse: cfg.MaxToolCallsPerResponse,
-		maxSpeaksPerTick:        cfg.MaxSpeaksPerTick,
-		renderConfig:            cfg.PerceptionRenderConfig,
-		toolDispatchTimeout:     cfg.ToolDispatchTimeout,
-		promptSink:              cfg.PromptSink,
-		chatSink:                cfg.ChatSink,
-		clock:                   clk,
+		client:                   cfg.Client,
+		registry:                 cfg.Registry,
+		validator:                v,
+		iterationBudget:          cfg.IterationBudget,
+		maxObservationRounds:     cfg.MaxObservationRounds,
+		maxToolCallsPerResponse:  cfg.MaxToolCallsPerResponse,
+		maxSpeaksPerTick:         cfg.MaxSpeaksPerTick,
+		renderConfig:             cfg.PerceptionRenderConfig,
+		toolDispatchTimeout:      cfg.ToolDispatchTimeout,
+		preflightSnapshotWaitMax: cfg.PreflightSnapshotWaitMax,
+		promptSink:               cfg.PromptSink,
+		chatSink:                 cfg.ChatSink,
+		clock:                    clk,
 	}, nil
+}
+
+// waitForFreshSnapshot returns the newest published snapshot together with
+// whether it is fresh enough to make a preflight stale/superseded decision
+// for a job dispatched at dispatchTick — i.e. its AtTick is strictly past
+// dispatchTick, so it reflects world state at or after this attempt's
+// dispatch. A snapshot at or below dispatchTick predates the dispatch and
+// therefore cannot witness a supersession of this attempt; classifying the
+// attempt stale from it is the LLM-275 false positive.
+//
+// The wait starts with runtime.Gosched() yields (the dispatching command's
+// republish is normally microseconds away on the world goroutine, which
+// Gosched yields to, so this resolves without sleeping in the common case),
+// then backs off to short sleeps up to h.preflightSnapshotWaitMax. Sleeping —
+// unlike Gosched, which merely offers to yield — parks the worker so the
+// scheduler runs a saturated world goroutine. The returned duration is how
+// long the wait took, surfaced on TickResult.PreflightWait for tuning.
+//
+// dispatchTick == 0 marks a hand-built test job with no real dispatch: there
+// is nothing to wait for, so the current snapshot is reported fresh.
+func (h *Harness) waitForFreshSnapshot(w *sim.World, dispatchTick uint64) (snap *sim.Snapshot, fresh bool, waited time.Duration) {
+	waitMax := h.preflightSnapshotWaitMax
+	if waitMax <= 0 {
+		waitMax = DefaultPreflightSnapshotWaitMax
+	}
+	start := h.clock()
+	deadline := start.Add(waitMax)
+	for spins := 0; ; spins++ {
+		snap = w.Published()
+		if snap == nil {
+			return nil, false, h.clock().Sub(start)
+		}
+		if dispatchTick == 0 || snap.AtTick > dispatchTick {
+			return snap, true, h.clock().Sub(start)
+		}
+		if !h.clock().Before(deadline) {
+			return snap, false, h.clock().Sub(start)
+		}
+		if spins < preflightSnapshotGoschedSpins {
+			runtime.Gosched()
+		} else {
+			time.Sleep(preflightSnapshotSleepStep)
+		}
+	}
 }
 
 // RunTick implements the tickRunner interface. Always returns a populated
@@ -230,41 +307,51 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 
 	// --- preflight: snapshot read + stale check ---
 	// Cheap: no world goroutine round-trip, no LLM tokens spent.
-	snap := w.Published()
-	// Wait out the dispatch→republish lag. This job was enqueued from inside
-	// the dispatching command's synchronous emit (subscriber.go's handleEvent
-	// runs inline on the world goroutine), but the snapshot reflecting our
-	// TickInFlight dispatch is not republished until that command returns
-	// (world.go command loop: Fn → TickCounter++ → republish). A fast worker
-	// can read the published snapshot in that enqueue→republish window and see
-	// a pre-dispatch view (TickInFlight=false) — not because the tick was
-	// superseded, but because the snapshot hasn't caught up. The stale check
-	// below would then false-classify a perfectly live tick as Stale.
 	//
-	// job.dispatchTick is World.TickCounter at enqueue; the dispatching
-	// command's republish stamps Snapshot.AtTick = dispatchTick+1. So while
-	// AtTick <= dispatchTick the snapshot predates our dispatch — re-read
-	// until it catches up (bounded; the republish is unconditional and
-	// imminent). dispatchTick == 0 means a hand-built test job (no real
-	// dispatch) — skip the wait so unit tests don't spin.
-	for spins := 0; job.dispatchTick > 0 && snap != nil && snap.AtTick <= job.dispatchTick && spins < maxPreflightSnapshotSpins; spins++ {
-		runtime.Gosched()
-		snap = w.Published()
-	}
+	// This job was enqueued from inside the dispatching command's synchronous
+	// emit (subscriber.go's handleEvent runs inline on the world goroutine),
+	// but the snapshot reflecting our TickInFlight dispatch is not republished
+	// until that command returns (world.go command loop: Fn → TickCounter++ →
+	// republish). Until then the newest published snapshot still shows the
+	// PRE-dispatch actor state (TickInFlight=false), which must NOT be read as
+	// a supersession. waitForFreshSnapshot blocks (Gosched fast path, then
+	// short sleeps) until the snapshot reaches past our dispatch tick, so the
+	// stale check below only ever runs against a snapshot fresh enough to
+	// witness it (LLM-275).
+	snap, fresh, wait := h.waitForFreshSnapshot(w, job.dispatchTick)
+	result.PreflightWait = wait
 	if snap == nil {
 		// Defensive: a missing published snapshot means the world has not
 		// been initialized for snapshots, which is a wiring bug. Carry the
 		// batch forward as before-render.
 		return failBeforeRender(result, job, "")
 	}
+	if !fresh {
+		// The freshness wait expired with the snapshot still predating our
+		// dispatch — the world goroutine is lagging (a high-churn actor
+		// saturates it). A snapshot older than our own dispatch cannot
+		// witness a supersession of this attempt, so reading TickInFlight /
+		// TickAttemptID / actor-presence off it would be a false-positive
+		// stale (the LLM-275 storm). Carry the whole consumed batch forward
+		// for a clean retry under a distinct label; the world-goroutine guards
+		// (RunTickToolCommand, CompleteReactorTick) remain the authoritative
+		// supersession protection. No LLM call happened; nothing was addressed.
+		result.TerminalStatus = sim.TickStatusStale
+		result.StaleStage = sim.StaleStageSnapshotLag
+		result.UnaddressedWarrants = copyWarrants(job.warrants)
+		return result
+	}
 	actor, ok := snap.Actors[job.actorID]
 	if !ok {
+		// Actor absent from a FRESH snapshot: genuinely gone (deleted /
+		// off-stage since dispatch). An old snapshot could not prove this,
+		// which is why the freshness gate above runs first.
 		return failBeforeRender(result, job, "")
 	}
 	if !actor.TickInFlight || actor.TickAttemptID != job.attemptID {
-		// The world has already moved past this attempt (typed out,
-		// superseded). All consumed warrants carry forward — none of
-		// them have been addressed.
+		// The world has moved past this attempt (typed out, superseded),
+		// witnessed by a snapshot fresh enough to prove it. All consumed
+		// warrants carry forward — none of them have been addressed.
 		result.TerminalStatus = sim.TickStatusStale
 		result.StaleStage = sim.StaleStageBeforeRender
 		result.UnaddressedWarrants = copyWarrants(job.warrants)
