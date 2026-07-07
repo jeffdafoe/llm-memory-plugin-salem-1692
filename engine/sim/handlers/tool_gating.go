@@ -42,6 +42,23 @@ var payOfferResponseTools = map[string]struct{}{
 	"counter_pay": {},
 }
 
+// shutShopSuppressedTools are the customer-service decision tools stripped from a
+// keeper standing at their OWN degraded (shut-for-trade) business with enough
+// nails to mend it — the StallRepairView.ForcesRepair() state (LLM-312). Their
+// cues are dropped from perception on the same signal (renderPayOffers, the
+// waiting offers; renderOfferableCustomers, the offer-wares cue), so cue and
+// tool move together (discussion-109). Stripping them stops the 70B being held
+// in decline/sell turns it cannot honor while the shop earns nothing shut;
+// repair (offered via the "## Your business" cue) is the productive move left,
+// and speak/consume/move_to stay for a word or a red survival need.
+var shutShopSuppressedTools = map[string]struct{}{
+	"sell":        {},
+	"offer_trade": {},
+	"accept_pay":  {},
+	"decline_pay": {},
+	"counter_pay": {},
+}
+
 // laborResponseTools are the employer-side labor-decision tools advertised ONLY
 // when the actor's perception carries a pending labor offer staked against them
 // (perception.PendingLaborOffers — the standing LaborLedger view). The labor
@@ -336,6 +353,11 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 	flaggedDegenerate := actorIsFlaggedDegenerate(payload.ActorID, snap)
 	offerCraft := payload.ForgeChoice != nil && len(payload.ForgeChoice.Items) > 0
 	offerRepair := payload.StallRepair != nil
+	// LLM-312: the shut-shop forced-repair state — owner at their own degraded
+	// business with nails in hand. Perception drops the customer-service cues on
+	// this same signal, so strip the matching trade tools below (repair itself is
+	// gated separately by offerRepair and stays).
+	forceRepair := offerRepair && payload.StallRepair.ForcesRepair()
 	hasLaborOffer := len(perception.PendingLaborOffers(payload)) > 0
 	canSolicitWork := payload.CanSolicitWork
 	hasGift := len(perception.PendingGiftsForMe(payload)) > 0
@@ -357,6 +379,16 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 	// consumers are added (pay-response group, recall, …).
 	out := make([]llm.ToolSpec, 0, len(all))
 	for _, spec := range all {
+		// shut-shop forced-repair gate (LLM-312): at a degraded business with
+		// nails in hand, strip the customer-service decision tools whose cues
+		// perception dropped this tick, so repair stands alone as the move. Runs
+		// before the pay-response gate below, which would otherwise re-admit
+		// accept/decline/counter_pay off a live (but unhonorable) pending offer.
+		if forceRepair {
+			if _, gated := shutShopSuppressedTools[spec.Name]; gated {
+				continue
+			}
+		}
 		// walking gate (ZBBS-HOME-337): while the actor is mid-walk, drop the
 		// action tools the substrate rejects on MoveIntent != nil — the model
 		// can't use them until it arrives or stops, so advertising them only

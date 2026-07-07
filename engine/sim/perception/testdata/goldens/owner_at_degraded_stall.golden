@@ -13,5 +13,5 @@ You are outdoors, with no one else here to hear you speak.
 It is morning in the village.
 
 ## Your business
-Your Blacksmith is too worn to trade — it stays shut until you mend it. You carry enough nails (5) to mend it — use the repair tool now to fix it, hammer in hand, on site (it takes a short while).
+Your Blacksmith is too worn to trade — it stays shut and earns nothing until you mend it. You carry enough nails (5): stop tending customers and call the repair tool now — mending is the only thing that reopens your doors, hammer in hand, on site (it takes a short while).
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.
