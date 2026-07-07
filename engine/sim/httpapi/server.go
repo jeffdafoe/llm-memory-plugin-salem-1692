@@ -81,6 +81,15 @@ type Server struct {
 	// checkpoint path, so this direct write is the edit's durable half. Nil when
 	// unwired → the /item/set handler answers 503.
 	itemKindWriter ItemKindWriter
+	// assetGeometryWriter backs the admin-gated PATCH /api/assets/{id}/door
+	// | /footprint | /stand editor routes (LLM-263) — the durable asset-geometry
+	// UPDATE. Injected (set by cmd/engine via SetAssetGeometryWriter) so httpapi
+	// does not import the pg package. asset is reference data with no checkpoint
+	// path, so this direct write is the edit's durable half. Nil when unwired →
+	// those routes answer 503. Unlike the recipe/item writers this is wired
+	// whenever pg is present (not only under the umbilical control flag) — it's a
+	// player-admin editor route, not an operator route.
+	assetGeometryWriter AssetGeometryWriter
 }
 
 // NewServer builds a Server for w, authenticating every route via auth. Panics
@@ -261,6 +270,17 @@ func (s *Server) SetItemKindWriter(wr ItemKindWriter) {
 	s.itemKindWriter = wr
 }
 
+// SetAssetGeometryWriter injects the durable asset-geometry UPDATE behind the
+// admin PATCH /api/assets/{id}/door | /footprint | /stand routes (LLM-263).
+// asset is reference data with no checkpoint path, so the edit's durable half is
+// this direct write (the in-memory World.Assets update + WS broadcast is the
+// adminCommand in the handler). Optional: unset → those routes answer 503. Same
+// wiring-time-only contract as the other writers — call before Handler, never
+// concurrently with serving.
+func (s *Server) SetAssetGeometryWriter(wr AssetGeometryWriter) {
+	s.assetGeometryWriter = wr
+}
+
 // Handler returns the read-surface routes: the static-render read set
 // (world / agents / objects off the published snapshot; terrain / assets /
 // sprites off *sim.World reference state), plus the WS /events push channel
@@ -296,6 +316,14 @@ func (s *Server) Handler() http.Handler {
 	// Hardcoded reference data — no World map, no DB; see catalog_tags.go.
 	mux.HandleFunc("GET /api/village/object-tags", s.requireAuth(s.handleObjectTags))
 	mux.HandleFunc("GET /api/assets/state-tags", s.requireAuth(s.handleStateTags))
+	// Asset-geometry editor writes (LLM-263) — the editor's draggable door /
+	// footprint / stand markers PATCH these on release; each is admin-gated
+	// (adminCommand) inside the handler and persists via the injected
+	// AssetGeometryWriter. See asset_write_handlers.go. requireAuth first (valid
+	// salem session), then the in-world admin gate.
+	mux.HandleFunc("PATCH /api/assets/{id}/door", s.requireAuth(s.handleAssetSetDoor))
+	mux.HandleFunc("PATCH /api/assets/{id}/footprint", s.requireAuth(s.handleAssetSetFootprint))
+	mux.HandleFunc("PATCH /api/assets/{id}/stand", s.requireAuth(s.handleAssetSetStand))
 	// Client-reported error feed (clientlog.go). Authed write; records browser-
 	// runtime failures the engine/nginx can't see into a pull-only ring surfaced
 	// via the umbilical. Untrusted — kept separate from the server-observed ring.

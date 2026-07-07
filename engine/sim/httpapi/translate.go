@@ -487,6 +487,34 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			StructureID: string(e.StructureID),
 			At:          e.At.UTC().Format(time.RFC3339),
 		}}, true
+	case *sim.AssetDoorOffsetChanged:
+		// LLM-263: an admin dragged the editor's door marker. x/y are the new tile
+		// offset from the asset anchor, or null when the door was cleared — the
+		// client's _on_asset_door_updated patches the catalog and refreshes the
+		// marker if the asset is selected. Pointers (no omitempty) so a cleared
+		// door marshals x/y as JSON null, which the client reads as "unset".
+		return WireFrame{Type: "asset_door_updated", Data: assetDoorUpdatedWireDTO{
+			AssetID: string(e.AssetID),
+			X:       e.X,
+			Y:       e.Y,
+		}}, true
+	case *sim.AssetFootprintChanged:
+		return WireFrame{Type: "asset_footprint_updated", Data: assetFootprintUpdatedWireDTO{
+			AssetID: string(e.AssetID),
+			Left:    e.Left,
+			Right:   e.Right,
+			Top:     e.Top,
+			Bottom:  e.Bottom,
+		}}, true
+	case *sim.AssetStandOffsetChanged:
+		// Twin of asset_door_updated for the orange stand marker (the render offset
+		// for NPCs inside a visible_when_inside structure). x/y null = cleared; the
+		// client's _on_asset_stand_updated repositions any currently-inside NPC.
+		return WireFrame{Type: "asset_stand_updated", Data: assetStandUpdatedWireDTO{
+			AssetID: string(e.AssetID),
+			X:       e.X,
+			Y:       e.Y,
+		}}, true
 	default:
 		return WireFrame{}, false
 	}
@@ -805,6 +833,32 @@ type objectLoiterOffsetChangedWireDTO struct {
 	LoiterOffsetY          *int   `json:"loiter_offset_y"`
 	EffectiveLoiterOffsetX int    `json:"effective_loiter_offset_x"`
 	EffectiveLoiterOffsetY int    `json:"effective_loiter_offset_y"`
+}
+
+// Asset-geometry editor write frames (LLM-263) — the door / footprint / stand
+// marker drags. Keyed on asset_id (the catalog template, not a placement). The
+// client's _on_asset_{door,footprint,stand}_updated handlers patch Catalog.assets
+// and refresh the editor marker. door/stand x/y are pointers with NO omitempty so
+// a cleared offset marshals as JSON null (the client reads null as "unset"); the
+// footprint sides are always present non-negative ints.
+type assetDoorUpdatedWireDTO struct {
+	AssetID string `json:"asset_id"`
+	X       *int   `json:"x"`
+	Y       *int   `json:"y"`
+}
+
+type assetFootprintUpdatedWireDTO struct {
+	AssetID string `json:"asset_id"`
+	Left    int    `json:"left"`
+	Right   int    `json:"right"`
+	Top     int    `json:"top"`
+	Bottom  int    `json:"bottom"`
+}
+
+type assetStandUpdatedWireDTO struct {
+	AssetID string `json:"asset_id"`
+	X       *int   `json:"x"`
+	Y       *int   `json:"y"`
 }
 
 // payOfferWireDTO is the pay_offer payload — a buyer (PC or NPC) has
