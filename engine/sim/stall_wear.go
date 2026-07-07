@@ -261,7 +261,7 @@ func accrueStallWear(w *World, seller *Actor, amount int, at time.Time) {
 	// LLM-304: a degraded stall is shut for restock/production, so it draws down
 	// toward empty rather than refilling — freeze its wear here so continued
 	// sell-down of remaining stock doesn't pile wear on past the degrade line.
-	// Repair zeroes Wear regardless; this just keeps the number stable at degrade.
+	// Repair zeroes Wear regardless; this just keeps the number stable once degraded.
 	if StallDegraded(stall, w.Settings.StallWearDegradeThreshold) {
 		return
 	}
