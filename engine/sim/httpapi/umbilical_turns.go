@@ -54,7 +54,14 @@ type rawTurnsUpstreamRequest struct {
 	// single-call "what happened in this huddle" lookup (ZBBS-WORK-431) that
 	// otherwise needed a cross-DB dig; durable, so it answers for a PAST huddle.
 	Conversation string `json:"conversation,omitempty"`
-	Since        string `json:"since,omitempty"`
+	// SimActor filters to one in-world actor: the salem engine actor id the turn
+	// was made ON BEHALF OF, stamped on virtual_agent_calls.sim_actor_id via
+	// /v1/chat/send (LLM-236). This is the attribution the `agent` filter can't
+	// give for a SHARED VA — agent=salem-vendor returns every character that VA
+	// backs; sim_actor=<id> returns just this one. Indexed upstream
+	// (idx_va_calls_sim_actor).
+	SimActor string `json:"sim_actor,omitempty"`
+	Since    string `json:"since,omitempty"`
 	// Until is the EXCLUSIVE created_at upper bound (ZBBS-WORK-391) — the
 	// walk-back cursor for episodes buried behind newer turns, since
 	// memory-api returns newest-first with no offset pagination. Exclusive so
@@ -67,8 +74,9 @@ type rawTurnsUpstreamRequest struct {
 
 // handleUmbilicalTurns proxies a raw-LLM-turn query to memory-api, forwarding the
 // operator's bearer token. Query params (all optional): scene, agent, conversation
-// (a hud-<hex> huddle id — every turn in that conversation), since, until, status,
-// limit. memory-api owns the response contract (it returns the
+// (a hud-<hex> huddle id — every turn in that conversation), sim_actor (one
+// in-world actor id — the shared-VA attribution `agent` can't give), since,
+// until, status, limit. memory-api owns the response contract (it returns the
 // virtual_agent_calls rows), so the engine relays its status + body verbatim
 // rather than re-modeling the row schema — deliberately the one umbilical read
 // that doesn't wrap its payload in a contract_version DTO.
@@ -87,6 +95,7 @@ func (s *Server) handleUmbilicalTurns(w http.ResponseWriter, r *http.Request) {
 		SceneID:      q.Get("scene"),
 		Agent:        q.Get("agent"),
 		Conversation: q.Get("conversation"),
+		SimActor:     q.Get("sim_actor"),
 		Since:        q.Get("since"),
 		Until:        q.Get("until"),
 		Status:       q.Get("status"),

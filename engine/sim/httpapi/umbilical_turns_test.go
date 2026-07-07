@@ -37,7 +37,7 @@ func TestUmbilicalTurns_ProxiesAndForwardsToken(t *testing.T) {
 	defer upstream.Close()
 
 	h := turnsServer(t, upstream.URL)
-	rec := req(t, h, "/api/village/umbilical/turns?scene=019e97d3-0000-7000-8000-000000000000&agent=zbbs-ezekiel&status=error&limit=3", "operator-tok")
+	rec := req(t, h, "/api/village/umbilical/turns?scene=019e97d3-0000-7000-8000-000000000000&agent=zbbs-ezekiel&sim_actor=actor-anne&status=error&limit=3", "operator-tok")
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("turns = %d, want 200; body=%s", rec.Code, rec.Body.String())
@@ -53,6 +53,9 @@ func TestUmbilicalTurns_ProxiesAndForwardsToken(t *testing.T) {
 	// Query params mapped into the upstream JSON body.
 	if gotBody.SceneID != "019e97d3-0000-7000-8000-000000000000" || gotBody.Agent != "zbbs-ezekiel" {
 		t.Errorf("upstream body scene/agent = %q/%q, want the query values", gotBody.SceneID, gotBody.Agent)
+	}
+	if gotBody.SimActor != "actor-anne" {
+		t.Errorf("upstream body sim_actor = %q, want actor-anne", gotBody.SimActor)
 	}
 	if gotBody.Status != "error" || gotBody.Limit != 3 {
 		t.Errorf("upstream body status/limit = %q/%d, want error/3", gotBody.Status, gotBody.Limit)
