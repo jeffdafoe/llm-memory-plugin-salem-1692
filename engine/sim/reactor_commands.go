@@ -116,6 +116,17 @@ const (
 	// (which calls CompleteReactorTick) does, and may overwrite the
 	// staged StaleStage on the telemetry record.
 	StaleStageAtComplete
+
+	// StaleStageSnapshotLag — NOT a genuine supersession. The preflight
+	// freshness wait expired with the newest published snapshot still
+	// predating this attempt's dispatch (AtTick <= dispatchTick), so the
+	// snapshot could not witness a stale/superseded verdict either way — a
+	// snapshot older than our own dispatch reflects nothing at or after it
+	// (LLM-275). The consumed batch carries forward for a clean retry;
+	// telemetry consumers MUST treat this separately from the real-stale
+	// stages above (it means "world goroutine lagging, re-attempt", not
+	// "the actor moved on"). The LLM was not called.
+	StaleStageSnapshotLag
 )
 
 // String renders the stage as a stable lowercase label.
@@ -129,6 +140,8 @@ func (s StaleStage) String() string {
 		return "at_tool"
 	case StaleStageAtComplete:
 		return "at_complete"
+	case StaleStageSnapshotLag:
+		return "snapshot_lag"
 	default:
 		return "unknown"
 	}
@@ -216,6 +229,14 @@ type TickResult struct {
 	// Duration is the wall-clock time spent inside RunTick (preflight
 	// through final return). Telemetry consumes it directly.
 	Duration time.Duration
+
+	// PreflightWait is how long RunTick spent waiting for the published
+	// snapshot to catch up to this attempt's dispatch (the freshness wait —
+	// see the harness preflight and LLM-275). Zero when the first read was
+	// already fresh. Telemetry surfaces it so the wait ceiling can be tuned:
+	// a StaleStageSnapshotLag whose PreflightWait sits at the ceiling means
+	// the ceiling is too low for the world goroutine's lag under load.
+	PreflightWait time.Duration
 
 	// UnaddressedWarrants are warrants the turn consumed but could not
 	// address — dropped by a prompt length/size cap, never rendered, or
