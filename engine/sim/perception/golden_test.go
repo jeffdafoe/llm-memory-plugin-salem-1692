@@ -1583,6 +1583,17 @@ var perceptionScenarios = []perceptionScenario{
 		build: buyerOfferDeclinedSellerShortStock,
 	},
 	{
+		name: "offeree_short_of_asked_good_pending",
+		summary: "LLM-303, the live 2026-07-06 General Store case: Elizabeth Reade — NOT a nail vendor, holding ZERO " +
+			"nails — has a standing pay offer from Josiah Thorne of 1 sage for 5 nails to keep. Before the fix the " +
+			"seller-side stock warning fired only for a vendor already carrying some of the kind, so Elizabeth saw the " +
+			"bare offer and fabricated stock she never had (then accept_pay'd three offers she couldn't fill). The golden " +
+			"pins that '## Offers awaiting your decision' now carries '— you hold no nails', the fact that grounds a " +
+			"decline or counter instead of a confabulated accept. A regression that re-gated the warning on vendor status " +
+			"would drop the clause in the diff.",
+		build: offereeShortOfAskedGoodPending,
+	},
+	{
 		name: "employer_with_worker_on_job",
 		summary: "An employer (John Ellis the tavernkeeper) stands with a worker (Silence Walker) who is mid-contract " +
 			"for him — a Working labor offer, ~90 minutes left (the live LLM-202 case). The golden pins the new " +
@@ -3055,6 +3066,68 @@ func buyerOfferDeclinedSellerShortStock() (*sim.Snapshot, sim.ActorID, []sim.War
 		Structures:       map[sim.StructureID]*sim.Structure{forge: plainStructure(forge, "Blacksmith")},
 	}
 	return snap, josiahID, nil
+}
+
+// offereeShortOfAskedGoodPending is the LLM-303 seller-POV fixture: Elizabeth
+// Reade, who is NOT a nail vendor and holds ZERO nails, has a standing pay offer
+// from Josiah Thorne — 1 sage for 5 nails to keep. Before the fix the seller-side
+// stock warning fired only for a vendor already carrying some of the kind, so
+// Elizabeth saw the bare offer and fabricated stock she never had. The golden pins
+// that the offer line now carries "— you hold no nails" (plural noun from the
+// catalog), the fact that grounds a decline/counter instead of a confabulated
+// accept. Clock-free: the offer section reads no wall clock.
+func offereeShortOfAskedGoodPending() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		elizabethID = sim.ActorID("elizabeth")
+		josiahID    = sim.ActorID("josiah")
+		store       = sim.StructureID("general_store")
+	)
+	now := 1220 // 20:20, the live window
+	published := time.Date(2026, 7, 6, 20, 20, 0, 0, time.UTC)
+	elizabeth := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Elizabeth Reade",
+		Role:              "villager",
+		State:             sim.StateIdle,
+		InsideStructureID: store,
+		Coins:             8,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"sage": 2}, // holds no nails
+		Acquaintances:     map[string]sim.Acquaintance{"Josiah Thorne": {}},
+	}
+	josiah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Josiah Thorne",
+		Role:              "traveler",
+		State:             sim.StateIdle,
+		InsideStructureID: store,
+		Coins:             1,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"sage": 3},
+	}
+	pending := &sim.PayLedgerEntry{
+		ID: 871, BuyerID: josiahID, SellerID: elizabethID,
+		ItemKind: "nail", Qty: 5, Amount: 0,
+		PayItems:  []sim.ItemKindQty{{Kind: "sage", Qty: 1}},
+		State:     sim.PayLedgerStatePending,
+		ExpiresAt: published.Add(3 * time.Minute),
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{elizabethID: elizabeth, josiahID: josiah},
+		Quotes:           map[sim.QuoteID]*sim.SceneQuote{},
+		PayLedger:        map[sim.LedgerID]*sim.PayLedgerEntry{871: pending},
+		Scenes:           map[sim.SceneID]*sim.Scene{},
+		Huddles:          map[sim.HuddleID]*sim.Huddle{},
+		Structures:       map[sim.StructureID]*sim.Structure{store: plainStructure(store, "General Store")},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"nail": {Name: "nail", DisplayLabelSingular: "nail", DisplayLabelPlural: "nails", Category: "material"},
+			"sage": {Name: "sage", DisplayLabelSingular: "sage", DisplayLabelPlural: "sage", Category: "material"},
+		},
+	}
+	return snap, elizabethID, nil
 }
 
 // sellerWithTakenQuoteAtPost is the LLM-189 perception regression fixture: a

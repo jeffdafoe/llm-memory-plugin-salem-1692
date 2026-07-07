@@ -120,6 +120,11 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// Pending, so a seller who speaks through the warranted tick instead of
 	// resolving can still settle the offer on any later tick.
 	p.PayOffersForMe = buildPayOffersForMe(snap, actorID, o.resolvedPayOffers)
+	// LLM-303: per-offer stock shortfall on the asked good, so renderPayOffers can
+	// warn "you hold no/only N <good>" for ANY offeree short of the ask — not just
+	// a vendor already carrying some of the kind. Read from the subject's own
+	// inventory + the catalog (services excluded); render stays catalog-free.
+	p.PayOfferShortfalls = buildPayOfferShortfalls(snap, p.PayOffersForMe, actorSnap)
 	p.RoomAlreadySoldOrderByLedger = buildRoomAlreadySold(snap, actorID, p.PayOffersForMe)
 	// LLM-138: the recipient-side gift decision view (gifts offered TO me),
 	// the gift counterpart to PayOffersForMe. Drives the "## Gifts offered to
@@ -3270,6 +3275,51 @@ func absentRecipientNames(snap *sim.Snapshot, seller *sim.ActorSnapshot, o *sim.
 // PayLedgerTerminalRetention (1h), far longer than we want to keep narrating it.
 const recentlyResolvedOfferWindow = 3 * time.Minute
 
+// stockShortNoun is the plural counting noun for the pay-offer "hold no <plural>"
+// shortfall copy (e.g. "nails"), used by both the seller-side pending cue
+// (buildPayOfferShortfalls) and the buyer-side settled reason
+// (buildRecentlyResolvedOffersFromMe) at zero held. Falls back to the raw kind key
+// when the catalog carries no plural phrase (a discovery-minted kind,
+// ZBBS-WORK-412) or the def is absent. ItemKindDef.Plural is nil-safe. LLM-303.
+func stockShortNoun(def *sim.ItemKindDef, kind sim.ItemKind) string {
+	if n := def.Plural(); n != "" {
+		return n
+	}
+	return string(kind)
+}
+
+// buildPayOfferShortfalls computes, per pending pay offer, the seller's shortfall
+// on the asked good — the data renderPayOffers turns into the "you hold no/only N"
+// annotation (Payload.PayOfferShortfalls). An offer is included only when the
+// asked kind is a real good (a "service" kind has no inventory backing, so the
+// engine skips its accept_pay stock gate — item_kind.go — and "you hold no X"
+// would be a false alarm) AND the buyer asks more than the seller holds (Held read
+// from the subject's own inventory, 0 when the seller carries none). Returns nil
+// when nothing is short, keeping render catalog-free. LLM-303: this is what makes
+// the warning fire for a non-vendor offeree holding zero of the asked item, the
+// gap that let a live NPC confabulate stock it never had.
+func buildPayOfferShortfalls(snap *sim.Snapshot, offers []sim.PayOfferWarrantReason, actorSnap *sim.ActorSnapshot) map[sim.LedgerID]StockShortfall {
+	if snap == nil || actorSnap == nil || len(offers) == 0 {
+		return nil
+	}
+	var out map[sim.LedgerID]StockShortfall
+	for _, o := range offers {
+		def := snap.ItemKinds[o.Item]
+		if def != nil && def.HasCapability("service") {
+			continue // no inventory backing — stock is meaningless
+		}
+		held := actorSnap.Inventory[o.Item] // 0 when the seller holds none
+		if o.Qty <= held {
+			continue // the ask doesn't bite — sufficient stock adds nothing
+		}
+		if out == nil {
+			out = make(map[sim.LedgerID]StockShortfall)
+		}
+		out[o.LedgerID] = StockShortfall{Held: held, Noun: stockShortNoun(def, o.Item)}
+	}
+	return out
+}
+
 // buildRecentlyResolvedOffersFromMe scans snap.PayLedger for the subject's OWN
 // offers that left Pending within recentlyResolvedOfferWindow of
 // snap.PublishedAt — entries where the subject is the BUYER and the state is a
@@ -3327,34 +3377,45 @@ func buildRecentlyResolvedOffersFromMe(snap *sim.Snapshot, subject sim.ActorID, 
 	for _, id := range ids {
 		e := snap.PayLedger[id]
 		accepted := e.State == sim.PayLedgerStateAccepted
-		// LLM-296: for a CLOSE (not an accept), carry the seller's current
-		// on-hand of the bought kind so the render can name a stock shortfall as
-		// the engine-known reason the deal fell through — the buyer's mirror of
-		// the seller-side "you hold only N" pay-offer cue. Read straight from the
-		// seller's snapshot inventory; a kind the seller doesn't stock (absent or
-		// 0) leaves SellerStocks false so the render skips it rather than reading
-		// "only 0". The render gates the annotation on the bite (Qty > stock), so
-		// a seller who holds enough carries the count but shows no shortfall.
-		sellerStock, sellerStocks := 0, false
+		// LLM-296: for a CLOSE (not an accept), carry the seller's current on-hand
+		// of the bought kind so the render can name a stock shortfall as the
+		// engine-known reason the deal fell through — the buyer's mirror of the
+		// seller-side "you hold only N" pay-offer cue. Read straight from the
+		// seller's snapshot inventory (0 when they hold none). LLM-303: name the
+		// shortfall for ANY real good the seller is short on, including zero held —
+		// the live case was a non-vendor seller holding no nails, whose bare "it's
+		// closed" left the buyer to re-offer into the void. Only a "service" kind
+		// (no inventory backing — item_kind.go) leaves SellerStocks false, since
+		// its stock is meaningless. The render gates the annotation on the bite
+		// (Qty > stock), so a seller who holds enough carries the count but shows
+		// no shortfall.
+		sellerStock, sellerStocks, sellerStockNoun := 0, false, ""
 		if !accepted {
-			if seller := snap.Actors[e.SellerID]; seller != nil {
-				if have, ok := seller.Inventory[e.ItemKind]; ok && have > 0 {
-					sellerStock, sellerStocks = have, true
-				}
+			def := snap.ItemKinds[e.ItemKind]
+			isService := def != nil && def.HasCapability("service")
+			// Name the shortfall only when we can actually read the seller's stock
+			// (a non-nil snapshot) and the asked kind carries inventory (not a
+			// service) — otherwise fall back to the bare "it's closed" rather than
+			// assert a stock level we never inspected.
+			if seller := snap.Actors[e.SellerID]; seller != nil && !isService {
+				sellerStocks = true
+				sellerStock = seller.Inventory[e.ItemKind] // 0 when the seller holds none
+				sellerStockNoun = stockShortNoun(def, e.ItemKind)
 			}
 		}
 		views = append(views, ResolvedOfferView{
-			LedgerID:     e.ID,
-			SellerName:   resolveSeller(e.SellerID),
-			Item:         e.ItemKind,
-			Qty:          e.Qty,
-			Amount:       e.Amount,
-			PayItems:     e.PayItems,
-			Accepted:     accepted,
-			ConsumeNow:   e.ConsumeNow,
-			KeptUnits:    e.KeptUnits,
-			SellerStock:  sellerStock,
-			SellerStocks: sellerStocks,
+			LedgerID:        e.ID,
+			SellerName:      resolveSeller(e.SellerID),
+			Item:            e.ItemKind,
+			Qty:             e.Qty,
+			Amount:          e.Amount,
+			PayItems:        e.PayItems,
+			Accepted:        accepted,
+			ConsumeNow:      e.ConsumeNow,
+			KeptUnits:       e.KeptUnits,
+			SellerStock:     sellerStock,
+			SellerStocks:    sellerStocks,
+			SellerStockNoun: sellerStockNoun,
 		})
 	}
 	return views
