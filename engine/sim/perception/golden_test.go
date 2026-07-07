@@ -166,17 +166,21 @@ func TestGoldensSettledCloseNamesTheOffer(t *testing.T) {
 
 // TestGoldensNoCoPresentBuyGoadAfterTwoDeclines is the LLM-308 cross-scenario invariant, spanning
 // ALL co-present-buy cue families (restock, stall-repair nails, farm-upkeep shovels): whenever the
-// subject has declined an item at least copresentStandoffDeclineThreshold times to a co-present
-// seller in its CURRENT huddle within the recency window, no rendered line may carry the "Buy it
-// now" imperative for THAT item. "Buy it now" plus the exact `item "<kind>"` token is what every
-// co-present goad emits (renderCoPresentBuy and renderRestocking's inline arm), so the pair pins
-// the goad down to the specific kind — a legitimate goad for a DIFFERENT, un-declined item in the
-// same scenario is untouched. This is the growth-loop backstop: the live sage loop was a restock
-// cue re-firing "Buy it now … a qty up to 3" through 11 declines, and this asserts no un-generalized
-// cue can recreate it for any item, in any situation. The decline set mirrors coPresentBuyStandoff
-// (Declined / insufficient-stock / insufficient-goods; a hard insufficient-funds is a coin block,
-// not a terms standoff, so it is excluded here). Non-vacuous: the three *_standoff scenarios each
-// drive the >=2-decline state, so the check exercises a real stonewalled item.
+// subject has declined an item at least copresentStandoffDeclineThreshold times to a STILL-CO-PRESENT
+// seller in its CURRENT huddle within the recency window, no rendered line may goad "Buy it now" for
+// THAT (seller, item) pair. The scoping is seller-AND-item because coPresentBuyStandoff itself is
+// seller-scoped: the same item can be legitimately goaded from a DIFFERENT co-present seller the
+// subject has NOT stonewalled. So the assertion fires only when a "Buy it now" line carries both the
+// stonewalled seller's rendered display name AND the exact `item "<kind>"` token — the two tokens
+// every co-present goad emits (renderCoPresentBuy and renderRestocking's inline arm). Item-only would
+// false-fail a valid two-seller prompt (code_review). This is the growth-loop backstop: the live sage
+// loop was a restock cue re-firing "Buy it now … a qty up to 3" through 11 declines, and this asserts
+// no un-generalized cue can recreate it, in any situation. The decline set mirrors coPresentBuyStandoff
+// (Declined / insufficient-stock / insufficient-goods; a hard insufficient-funds is a coin block, not
+// a terms standoff, so it is excluded here). Non-vacuous: the three *_standoff scenarios each drive the
+// >=2-decline state, so the check exercises a real stonewalled seller. Caveat: matching on rendered
+// display name is imperfect if two co-present sellers share a name; a strict version would inspect the
+// built view/cue data, at the cost of the cross-family uniformity a single text scan gives.
 func TestGoldensNoCoPresentBuyGoadAfterTwoDeclines(t *testing.T) {
 	var exercised bool
 	for _, sc := range perceptionScenarios {
@@ -206,24 +210,35 @@ func TestGoldensNoCoPresentBuyGoadAfterTwoDeclines(t *testing.T) {
 				declines[key{e.SellerID, e.ItemKind}]++
 			}
 		}
-		stonewalled := map[sim.ItemKind]bool{}
+		stonewalled := map[key]bool{}
 		for k, n := range declines {
-			if n >= copresentStandoffDeclineThreshold {
-				stonewalled[k.item] = true
+			if n < copresentStandoffDeclineThreshold {
+				continue
+			}
+			// Only a seller STILL co-present in this huddle can be goaded, so scope the assertion to
+			// those: a seller who declined then left can't be re-goaded, and keeping its departed name
+			// in the set would let it shadow a legitimate goad of the same item by a different seller.
+			if s := snap.Actors[k.seller]; s != nil && s.CurrentHuddleID == a.CurrentHuddleID {
+				stonewalled[k] = true
 			}
 		}
 		if len(stonewalled) == 0 {
-			continue // invariant N/A — no item has hit the standoff threshold here
+			continue // invariant N/A — no co-present seller has stonewalled an item here
 		}
 		exercised = true
 		for _, line := range strings.Split(renderScenario(sc), "\n") {
 			if !strings.Contains(line, "Buy it now") {
 				continue
 			}
-			for item := range stonewalled {
-				if strings.Contains(line, `item "`+string(item)+`"`) {
-					t.Errorf("scenario %q: a co-present 'Buy it now' still goads %q after >=%d declines in the current huddle (LLM-308):\n%s",
-						sc.name, item, copresentStandoffDeclineThreshold, line)
+			for k := range stonewalled {
+				s := snap.Actors[k.seller]
+				if s == nil {
+					continue
+				}
+				sellerName := sanitizeInline(s.DisplayName)
+				if sellerName != "" && strings.Contains(line, sellerName) && strings.Contains(line, `item "`+string(k.item)+`"`) {
+					t.Errorf("scenario %q: a co-present 'Buy it now' still goads %q from %q after >=%d declines in the current huddle (LLM-308):\n%s",
+						sc.name, k.item, sellerName, copresentStandoffDeclineThreshold, line)
 				}
 			}
 		}
