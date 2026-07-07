@@ -3,6 +3,7 @@ package sim
 import (
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"sort"
 	"strings"
@@ -192,7 +193,7 @@ func (o *VillageObject) HasForageSourceFor(item ItemKind) bool {
 // umbilical /state read (so a defect introduced by a migration is visible without
 // SSH access).
 //
-// Sole check today (LLM-60): a refresh-bearing object (a gather/eat source) with
+// First check (LLM-60): a refresh-bearing object (a gather/eat source) with
 // an empty DisplayName. The command-side resolver resolveLoiteringObject skips
 // nameless objects, so neither the gather verb (Gather/StartHarvest) nor passive
 // eat-on-arrival (ApplyObjectRefreshAtArrival) can resolve it — yet the perception
@@ -201,11 +202,30 @@ func (o *VillageObject) HasForageSourceFor(item ItemKind) bool {
 // refuses, trapping an NPC in a gather/eat loop. Naming the object is the fix; the
 // name requirement in the resolver is intentional (v1 "you are at X" attribution).
 //
+// Second check (LLM-269): a `well`-tagged placement with zero object_refresh rows
+// — a dead water source that slakes no thirst and yields no water. Tagging `well`
+// auto-provisions the two-row model (AddVillageObjectTag → provisionWellDefaults),
+// so this is a backstop for a well whose rows were later cleared, or one tagged
+// before provisioning existed — surfacing a silent dead shell rather than a
+// working source.
+//
 // Sorted by object id for a stable order across reads.
 func ConfigWarnings(objects map[VillageObjectID]*VillageObject) []string {
 	var warnings []string
 	for id, obj := range objects {
-		if obj == nil || len(obj.Refreshes) == 0 {
+		if obj == nil {
+			continue
+		}
+		// A `well`-tagged placement with no refresh rows never drinks or yields
+		// water — provisioning fills these on tag-add, so this catches a well that
+		// lost its rows or predates provisioning (LLM-269). Mutually exclusive with
+		// the nameless-source check below (that one needs rows; this one needs none).
+		if obj.HasTag(TagWell) && len(obj.Refreshes) == 0 {
+			warnings = append(warnings, fmt.Sprintf(
+				"village_object %s is tagged %q but has no object_refresh rows — it slakes no thirst and yields no water (a dead water source)",
+				id, TagWell))
+		}
+		if len(obj.Refreshes) == 0 {
 			continue
 		}
 		if strings.TrimSpace(obj.DisplayName) != "" {
@@ -292,6 +312,99 @@ func CloneVillageObject(v *VillageObject) *VillageObject {
 // objects through the editor's tag tool; read by the seek-work directional cue
 // (LLM-152).
 const TagBusiness = "business"
+
+// TagWell marks a placement as a well — a public water source. Applying it in the
+// editor auto-provisions the canonical two-row water model + a "Well" name on a
+// placement that shipped bare, so a dropped Well asset works without hand-editing
+// the DB (LLM-269). Backfilled onto the seeded town Well by ZBBS-WORK-328; it
+// carried no runtime behavior before provisioning was hung off it here.
+const TagWell = "well"
+
+// WellDefaultDisplayName is the name provisionWellDefaults gives a bare well —
+// matching the seeded town Well so move_to("Well") resolves either.
+const WellDefaultDisplayName = "Well"
+
+// Canonical Well parameters, mirroring the LLM-254 water-economy migration: an
+// infinite thirst drink row (amount -8, no gather_item) plus a separate finite
+// yield-only water row (amount 0, gather_item=water, 20/20, periodic 6h). Named
+// so the provisioning defaults read from one place.
+const (
+	wellDrinkThirstAmount = -8
+	wellWaterYieldItem    = "water"
+	wellWaterYieldStock   = 20
+	wellWaterYieldPeriodH = 6
+)
+
+// wellDefaultRefreshes builds a fresh copy of the two-row Well model (LLM-254):
+// an infinite thirst DRINK row (nil supply ⇒ no regen mode/period, no gather_item)
+// and a finite YIELD-ONLY water row (amount 0, null attribute per LLM-264, a
+// periodically-regenerating pail stock). Two rows because at-source Gather
+// resolves to the first gatherable row and a finite cap can't share the infinite
+// drink counter (LLM-254). Fresh pointers on every call so the world never aliases
+// a shared default; designed to pass ValidateObjectRefreshes.
+func wellDefaultRefreshes() []*ObjectRefresh {
+	avail := wellWaterYieldStock
+	maxStock := wellWaterYieldStock
+	periodH := wellWaterYieldPeriodH
+	return []*ObjectRefresh{
+		{
+			Attribute: "thirst",
+			Amount:    wellDrinkThirstAmount,
+			// infinite supply: no available/max ⇒ no regen mode/period, not gatherable
+		},
+		{
+			Attribute:          "", // yield-only carries no need (LLM-264)
+			Amount:             0,
+			AvailableQuantity:  &avail,
+			MaxQuantity:        &maxStock,
+			RefreshMode:        RefreshModePeriodic,
+			RefreshPeriodHours: &periodH,
+			GatherItem:         wellWaterYieldItem,
+		},
+	}
+}
+
+// provisionForTag applies any placement template associated with a freshly-added
+// tag. Today only `well` carries one; every other tag is a plain marker and this
+// is a no-op. Called from AddVillageObjectTag AFTER the tag is appended (so the
+// object already carries it). A `bush`/berry template would slot in the same way —
+// it needs a per-placement owner + item kind, so it stays a separate follow-up
+// (LLM-269).
+func provisionForTag(w *World, obj *VillageObject, tag string) {
+	if tag == TagWell {
+		provisionWellDefaults(w, obj)
+	}
+}
+
+// provisionWellDefaults fills in the canonical Well underpinnings on a placement
+// just tagged `well`: the two-row LLM-254 water model and a "Well" name.
+// NON-DESTRUCTIVE — it provisions the rows only when the object has NONE (never
+// clobbering an operator's hand-authored refresh set) and names the object only
+// when it has no name yet. The default set is validated defensively before it is
+// applied; an invalid set (a programming error in the constants above) is logged
+// and skipped rather than stored. Naming the object emits
+// VillageObjectDisplayNameChanged (→ the object_display_name_changed client frame)
+// so a live editor shows "Well"; the rows emit nothing (refresh config is not in
+// ObjectDTO — the editor re-reads). Persists on the next checkpoint, the same
+// restart-loss posture as every other in-memory object mutation.
+func provisionWellDefaults(w *World, obj *VillageObject) {
+	if len(obj.Refreshes) == 0 {
+		rows := wellDefaultRefreshes()
+		if err := ValidateObjectRefreshes(rows); err != nil {
+			log.Printf("sim/village_object: well default refresh set is invalid, skipping provisioning for %s: %v", obj.ID, err)
+		} else {
+			obj.Refreshes = rows
+		}
+	}
+	if strings.TrimSpace(obj.DisplayName) == "" {
+		obj.DisplayName = WellDefaultDisplayName
+		w.emit(&VillageObjectDisplayNameChanged{
+			ObjectID:    obj.ID,
+			DisplayName: obj.DisplayName,
+			At:          time.Now().UTC(),
+		})
+	}
+}
 
 // HasTag returns true if this instance carries tag.
 func (o *VillageObject) HasTag(tag string) bool {
@@ -836,6 +949,10 @@ func AddVillageObjectTag(id VillageObjectID, tag string) Command {
 				return SetTagsResult{ID: id, Tags: append([]string(nil), obj.Tags...)}, nil
 			}
 			obj.Tags = append(obj.Tags, trimmed)
+			// Some tags carry a placement template: applying `well` auto-provisions
+			// the canonical water underpinnings + name on a bare placement (LLM-269).
+			// Runs only on an actual add (a duplicate returned above); non-destructive.
+			provisionForTag(w, obj, trimmed)
 			tagsCopy := append([]string(nil), obj.Tags...)
 			w.emit(&VillageObjectTagsUpdated{
 				ObjectID: id,

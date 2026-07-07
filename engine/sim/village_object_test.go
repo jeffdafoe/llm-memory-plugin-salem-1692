@@ -75,6 +75,29 @@ func TestConfigWarnings(t *testing.T) {
 	}
 }
 
+// TestConfigWarnings_WellNoRows covers the LLM-269 backstop: a `well`-tagged
+// placement with zero refresh rows is flagged as a dead water source, while a
+// well-tagged object that HAS rows (provisioning gave it them) is not.
+func TestConfigWarnings_WellNoRows(t *testing.T) {
+	objects := map[sim.VillageObjectID]*sim.VillageObject{
+		// tagged well, no rows → flagged (dead water source)
+		"dry-well": {ID: "dry-well", DisplayName: "Well", Tags: []string{"well"}},
+		// tagged well, has rows → NOT flagged by the well check (named + rowed)
+		"live-well": {ID: "live-well", DisplayName: "Well", Tags: []string{"well"},
+			Refreshes: []*sim.ObjectRefresh{{Attribute: "thirst", Amount: -8}}},
+		// no well tag, no rows → NOT flagged (plain prop)
+		"plain-prop": {ID: "plain-prop"},
+	}
+
+	warnings := sim.ConfigWarnings(objects)
+	if len(warnings) != 1 {
+		t.Fatalf("got %d warnings, want 1: %v", len(warnings), warnings)
+	}
+	if !strings.Contains(warnings[0], "dry-well") || !strings.Contains(warnings[0], "no object_refresh rows") {
+		t.Errorf("warning = %q, want dry-well flagged for no object_refresh rows", warnings[0])
+	}
+}
+
 // TestAssetFindState exercises the per-state lookup.
 func TestAssetFindState(t *testing.T) {
 	a := &sim.Asset{
