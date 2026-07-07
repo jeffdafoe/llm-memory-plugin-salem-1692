@@ -255,9 +255,22 @@ func NewHarness(cfg HarnessConfig) (*Harness, error) {
 // scheduler runs a saturated world goroutine. The returned duration is how
 // long the wait took, surfaced on TickResult.PreflightWait for tuning.
 //
+// ctx cancellation (worker-pool shutdown) is observed once the snapshot has
+// been read and is still not fresh, so a cancelled worker returns within at
+// most one sleep step (preflightSnapshotSleepStep) instead of sitting out the
+// whole ceiling — which matters because PreflightSnapshotWaitMax is
+// operator-configurable. The check follows the Published() read so the
+// returned snap is non-nil (letting the caller reach the shutdown branch
+// rather than the missing-snapshot branch); a ready-fresh snapshot always
+// wins, since RunTick's own iteration loop then observes the cancellation. A
+// cancelled wait returns fresh=false; the caller distinguishes it from a plain
+// lag timeout via ctx.Err() and maps it to TickStatusShutdown. The small fixed
+// sleep step keeps cancel latency tight without allocating a timer per
+// iteration (a lag spell can be hundreds of iterations, all on the hot path).
+//
 // dispatchTick == 0 marks a hand-built test job with no real dispatch: there
 // is nothing to wait for, so the current snapshot is reported fresh.
-func (h *Harness) waitForFreshSnapshot(w *sim.World, dispatchTick uint64) (snap *sim.Snapshot, fresh bool, waited time.Duration) {
+func (h *Harness) waitForFreshSnapshot(ctx context.Context, w *sim.World, dispatchTick uint64) (snap *sim.Snapshot, fresh bool, waited time.Duration) {
 	waitMax := h.preflightSnapshotWaitMax
 	if waitMax <= 0 {
 		waitMax = DefaultPreflightSnapshotWaitMax
@@ -272,14 +285,25 @@ func (h *Harness) waitForFreshSnapshot(w *sim.World, dispatchTick uint64) (snap 
 		if dispatchTick == 0 || snap.AtTick > dispatchTick {
 			return snap, true, h.clock().Sub(start)
 		}
-		if !h.clock().Before(deadline) {
+		// Not fresh yet — bail promptly if the worker is being shut down.
+		if ctx.Err() != nil {
 			return snap, false, h.clock().Sub(start)
+		}
+		now := h.clock()
+		if !now.Before(deadline) {
+			return snap, false, now.Sub(start)
 		}
 		if spins < preflightSnapshotGoschedSpins {
 			runtime.Gosched()
-		} else {
-			time.Sleep(preflightSnapshotSleepStep)
+			continue
 		}
+		// Clamp the final sleep so the wait never overshoots the ceiling by
+		// more than scheduler slop.
+		sleep := preflightSnapshotSleepStep
+		if remaining := deadline.Sub(now); remaining < sleep {
+			sleep = remaining
+		}
+		time.Sleep(sleep)
 	}
 }
 
@@ -318,7 +342,7 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 	// short sleeps) until the snapshot reaches past our dispatch tick, so the
 	// stale check below only ever runs against a snapshot fresh enough to
 	// witness it (LLM-275).
-	snap, fresh, wait := h.waitForFreshSnapshot(w, job.dispatchTick)
+	snap, fresh, wait := h.waitForFreshSnapshot(ctx, w, job.dispatchTick)
 	result.PreflightWait = wait
 	if snap == nil {
 		// Defensive: a missing published snapshot means the world has not
@@ -327,6 +351,19 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 		return failBeforeRender(result, job, "")
 	}
 	if !fresh {
+		if ctx.Err() != nil {
+			// Worker-pool shutdown / cancellation interrupted the freshness
+			// wait before this tick rendered. Classify as shutdown (mirroring
+			// the iteration-loop cancellation path below), NOT a snapshot-lag
+			// retry — the world is going away. Carry the consumed batch
+			// forward for symmetry with the other before-render exits; the
+			// completion won't land anyway (SendContext fails on the dead
+			// ctx) and post-restart re-engagement re-warrants the actor.
+			result.TerminalStatus = sim.TickStatusShutdown
+			result.LLMErrorClass = llm.ErrorContextCancelled.String()
+			result.UnaddressedWarrants = copyWarrants(job.warrants)
+			return result
+		}
 		// The freshness wait expired with the snapshot still predating our
 		// dispatch — the world goroutine is lagging (a high-churn actor
 		// saturates it). A snapshot older than our own dispatch cannot

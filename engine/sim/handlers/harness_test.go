@@ -276,6 +276,37 @@ func TestHarness_Preflight_SnapshotLag_ActorMissingIsNotGone(t *testing.T) {
 	}
 }
 
+// A cancelled worker context (pool shutdown) must interrupt the freshness wait
+// promptly rather than sit out the ceiling, and classify as Shutdown, not a
+// snapshot-lag retry. Uses a 1h ceiling + a never-fresh snapshot so the wait
+// would block ~forever if it ignored ctx; the pre-cancelled ctx must make
+// RunTick return immediately. Guards the worker-starvation-on-shutdown concern.
+func TestHarness_Preflight_ContextCanceledDuringWaitIsShutdown(t *testing.T) {
+	w, cancel := newHarnessWorld(t, "attempt-A")
+	defer cancel()
+
+	h := newTestHarnessWithWaitMax(t, llm.NewFakeClient(), time.Hour)
+
+	ctx, cancelCtx := context.WithCancel(context.Background())
+	cancelCtx() // cancelled before RunTick even starts
+
+	job := tickJob{actorID: "alice", attemptID: "attempt-A", rootEventID: 42, dispatchTick: ^uint64(0)}
+
+	done := make(chan sim.TickResult, 1)
+	go func() { done <- h.RunTick(ctx, w, job) }()
+	select {
+	case result := <-done:
+		if result.TerminalStatus != sim.TickStatusShutdown {
+			t.Errorf("cancelled preflight: got %v, want Shutdown", result.TerminalStatus)
+		}
+		if result.StaleStage == sim.StaleStageSnapshotLag {
+			t.Errorf("cancelled preflight must not be classified snapshot_lag")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunTick did not return promptly on a cancelled ctx — the freshness wait ignored cancellation")
+	}
+}
+
 // --- successful tick paths ----------------------------------------------
 
 func TestHarness_Done_TerminatesAsDone(t *testing.T) {
