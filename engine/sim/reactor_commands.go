@@ -468,6 +468,11 @@ func EvaluateReactors(now time.Time) Command {
 		Fn: func(w *World) (any, error) {
 			rateCap := w.Settings.MaxReactorTicksPerActorPerMinute
 			window := defaultRateWindow
+			// Eco mode (LLM-313): computed once per scan — O(actors) over the
+			// PC presence stamps, trivial at village scale. True means "master
+			// switch on AND no fresh player presence"; the per-cycle gap below
+			// decides whether a given actor is actually paced.
+			ecoEngaged := ecoModeEngaged(w, now)
 
 			for _, actor := range w.Actors {
 				if !actorReactorDue(actor, now) {
@@ -534,6 +539,34 @@ func EvaluateReactors(now time.Time) Command {
 						next := last.Add(gap)
 						actor.WarrantDueAt = &next
 						continue
+					}
+				}
+
+				// Eco pacing floor (LLM-313). While unwatched, a cycle whose
+				// every warrant sits in a throttled bucket (ecoCycleGap > 0 —
+				// any survival/duty/commerce warrant in the pile returns 0 and
+				// exempts the whole cycle) waits out a wider per-actor gap
+				// before emitting. Same push-WarrantDueAt idiom as the min-gap
+				// above: the warrants survive, just delayed. The salient
+				// re-arm in tryStampWarrant may pull a pushed due time back in
+				// when a fresh warrant appends — that's fine: the pulled cycle
+				// re-enters this gate on the next scan, and either the fresh
+				// kind re-classified it to full speed (gap 0, emits) or it's
+				// still all-throttled and re-pushes. The gate is the
+				// enforcement point; the due time is just scheduling. Force
+				// bypasses, like every pacing gate. An actor with no tick
+				// history (fresh boot) emits immediately — eco is a rate
+				// bound, not added latency for a quiet actor. When the
+				// audience returns, ecoEngaged reads false on the very next
+				// scan and parked cycles were only ever pushed to
+				// last-tick+gap, so the tableau resumes within seconds.
+				if ecoEngaged && !hasForcedWarrant(actor.Warrants) {
+					if ecoGap := ecoCycleGapClamped(actor.Warrants, w.Settings); ecoGap > 0 {
+						if last, ok := lastReactorTickAt(actor); ok && now.Sub(last) < ecoGap {
+							next := last.Add(ecoGap)
+							actor.WarrantDueAt = &next
+							continue
+						}
 					}
 				}
 

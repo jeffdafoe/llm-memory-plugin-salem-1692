@@ -77,6 +77,7 @@ type IdleBackstopTelemetry struct {
 	SkippedRecentlyTicked int // lastReactorTickAt within threshold
 	SkippedWarranted      int // open WarrantedSince cycle
 	SkippedTickInFlight   int // mid-tick
+	SkippedEco            int // eco mode engaged, plain idle stamp withheld (LLM-313)
 }
 
 // strandedWarrantCooldown bounds how often the anomalous-position backstop
@@ -158,6 +159,13 @@ func EvaluateIdleBackstop(now time.Time) Command {
 			if threshold <= 0 {
 				threshold = defaultIdleBackstopThreshold
 			}
+			// Eco mode (LLM-313): while unwatched, withhold the PLAIN idle
+			// stamp — engine-injected liveness exists for an audience, and an
+			// idle NPC costs nothing until poked. The stranded-recovery
+			// upgrade below still fires (world integrity is not
+			// audience-dependent), so the eco check happens per-actor after
+			// the stranded classification, not as a sweep-level early return.
+			ecoEngaged := ecoModeEngaged(w, now)
 			var t IdleBackstopTelemetry
 			for _, a := range w.Actors {
 				if a.Kind != KindNPCStateful && a.Kind != KindNPCShared {
@@ -233,6 +241,12 @@ func EvaluateIdleBackstop(now time.Time) Command {
 					reason = StrandedWarrantReason{}
 					a.lastStrandedWarrantAt = now
 					t.StampedStranded++
+				} else if ecoEngaged {
+					// Plain idle poke with nobody watching: skip (LLM-313).
+					// The actor re-qualifies on every sweep, so the first
+					// sweep after the audience returns stamps as usual.
+					t.SkippedEco++
+					continue
 				}
 				tryStampWarrant(w, a, WarrantMeta{
 					TriggerActorID: a.ID,

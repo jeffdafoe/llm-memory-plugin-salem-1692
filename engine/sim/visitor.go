@@ -254,7 +254,13 @@ func TickVisitorCascade(inputs VisitorTickInputs) Command {
 			t := VisitorCascadeTelemetry{}
 			dispatchVisitorDespawn(w, inputs, &t)
 			dispatchVisitorCleanup(w, inputs.Now, &t)
-			dispatchVisitorSpawn(w, inputs, &t)
+			// Eco mode (LLM-313): visitors exist to be seen — pause SPAWNING
+			// while unwatched. Despawn/cleanup above keep running so existing
+			// visitors age out normally; spawning resumes on the first tick
+			// after a player's presence stamp is fresh again.
+			if !ecoModeEngaged(w, inputs.Now) {
+				dispatchVisitorSpawn(w, inputs, &t)
+			}
 			return t, nil
 		},
 	}
