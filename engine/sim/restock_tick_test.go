@@ -182,6 +182,37 @@ func TestEvaluateRestock_LowStockStamps(t *testing.T) {
 	}
 }
 
+// TestEvaluateRestock_DegradedBusinessNoWarrant — LLM-304: a degraded business is
+// shut for restock. Its owner gets NO reorder warrant even below the threshold with
+// an actionable supplier present — he sells down what's on hand and mends to reopen
+// the refill (the "## Restocking" cue is suppressed on the same signal). The foil of
+// TestEvaluateRestock_LowStockStamps: identical low-stock setup, only degraded.
+func TestEvaluateRestock_DegradedBusinessNoWarrant(t *testing.T) {
+	a := reseller("merchant", KindNPCStateful, "ale", 20, 3) // 15% < 25% — would stamp
+	w := restockWorld(a)
+	addSupplier(w, "brewer", "ale")
+	// merchant owns a degraded business (wear 650 >= degrade 600).
+	w.Settings.StallWearDegradeThreshold = 600
+	if w.VillageObjects == nil {
+		w.VillageObjects = map[VillageObjectID]*VillageObject{}
+	}
+	w.VillageObjects["merchant_shop"] = &VillageObject{
+		ID: "merchant_shop", OwnerActorID: "merchant", Tags: []string{TagBusiness}, Wear: 650,
+	}
+	now := time.Now().UTC()
+
+	res, err := EvaluateRestock(now).Fn(w)
+	if err != nil {
+		t.Fatalf("EvaluateRestock: %v", err)
+	}
+	if res.(int) != 0 {
+		t.Errorf("stamped = %d, want 0 (a degraded business gets no reorder warrant)", res.(int))
+	}
+	if hasWarrantKind(a, WarrantKindRestock) {
+		t.Fatalf("a degraded business must not get a restock warrant; kinds = %v", warrantKinds(a))
+	}
+}
+
 // TestEvaluateRestock_LowForageStockStamps: a grower whose own HARVESTED sell-
 // stock runs low warrants restock the same way a buy-side reseller does (LLM-90),
 // with the forage Source so the cue line routes to "## Your bushes to harvest".

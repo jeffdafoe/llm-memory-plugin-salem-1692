@@ -164,15 +164,19 @@ func AtBusiness(actorPos TilePos, insideStructureID StructureID, businessID Vill
 	return pinValid && actorPos.Chebyshev(pin) <= LoiterAttributionTiles
 }
 
-// sellerStallDegraded reports whether the seller owns a market stall worn past
-// the degrade threshold — closed for trade until mended (LLM-118). The
-// sale-blocking gate at quote-post, fast-path take, and slow accept. nil-safe: a
-// seller who owns no stall is never degraded.
-func sellerStallDegraded(w *World, sellerID ActorID) bool {
+// ownerStallDegraded reports whether the actor owns a market stall worn past the
+// degrade threshold — shut for restock/production until mended (LLM-118, LLM-304).
+// The refill-blocking gate: it suppresses the produce tick (produce_tick.go) and
+// the restock warrant (restock_tick.go) and freezes further wear accrual
+// (accrueStallWear). Selling from remaining stock is NOT gated — a degraded shop
+// draws down what's on hand and reopens its refill on repair. (LLM-304 replaced the
+// original LLM-118 sale-block, which trapped a broke keeper who could no longer earn
+// the coin to buy the nails.) nil-safe: an actor who owns no stall is never degraded.
+func ownerStallDegraded(w *World, actorID ActorID) bool {
 	if w == nil {
 		return false
 	}
-	return StallDegraded(OwnedWearableStall(w.VillageObjects, sellerID), w.Settings.StallWearDegradeThreshold)
+	return StallDegraded(OwnedWearableStall(w.VillageObjects, actorID), w.Settings.StallWearDegradeThreshold)
 }
 
 // StallRepairWarrantReason is stamped on a stall owner when their stall's wear
@@ -252,6 +256,13 @@ func accrueStallWear(w *World, seller *Actor, amount int, at time.Time) {
 	}
 	stall := OwnedWearableStall(w.VillageObjects, seller.ID)
 	if stall == nil {
+		return
+	}
+	// LLM-304: a degraded stall is shut for restock/production, so it draws down
+	// toward empty rather than refilling — freeze its wear here so continued
+	// sell-down of remaining stock doesn't pile wear on past the degrade line.
+	// Repair zeroes Wear regardless; this just keeps the number stable once degraded.
+	if StallDegraded(stall, w.Settings.StallWearDegradeThreshold) {
 		return
 	}
 	before := stall.Wear
@@ -347,7 +358,7 @@ func emitStallConditionNarration(w *World, actor *Actor, arrivedEvt *ActorArrive
 	}
 	text := fmt.Sprintf("The %s here looks worn and run-down from hard use.", name)
 	if StallDegraded(stall, w.Settings.StallWearDegradeThreshold) {
-		text = fmt.Sprintf("The %s here is battered and clearly unfit for trade.", name)
+		text = fmt.Sprintf("The %s here is battered and badly in need of repair.", name)
 	}
 	w.emit(&StallConditionNarrated{
 		ActorID:     actor.ID,

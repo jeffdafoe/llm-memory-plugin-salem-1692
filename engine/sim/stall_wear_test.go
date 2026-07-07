@@ -190,7 +190,8 @@ func TestStartRepair_AcceptsOwnerInsideStructure(t *testing.T) {
 
 // degradeBobStall sets the degrade threshold + gives bob a degraded business
 // (business-tagged, not market_stall — the LLM-247 generalized gate) in the
-// pay-with-item fixture, so his trades should be blocked.
+// pay-with-item fixture. LLM-304: degrade blocks REFILL (restock/production), not
+// selling — so his on-hand sales still go through.
 func degradeBobStall(t *testing.T, w *sim.World) {
 	t.Helper()
 	mustSend(t, w, func(world *sim.World) {
@@ -201,30 +202,34 @@ func degradeBobStall(t *testing.T, w *sim.World) {
 	})
 }
 
-func TestDegradedStall_BlocksQuotePost(t *testing.T) {
+func TestDegradedStall_AllowsQuotePost(t *testing.T) {
+	// LLM-304: a degraded shop still sells what's on hand — degrade blocks refill
+	// (restock/production), not selling — so posting a sell quote succeeds.
 	w, stop, at := buildFastPathFixture(t, 7)
 	defer stop()
 	degradeBobStall(t, w)
-	_, err := w.Send(sim.SceneQuoteCreate("bob",
-		[]sim.QuoteLineInput{{ItemName: "stew", Qty: 1}}, 4, true, "", nil, at))
-	if err == nil || !strings.Contains(err.Error(), "too worn to trade") {
-		t.Fatalf("err = %v, want a degraded-stall quote-post rejection", err)
+	if _, err := w.Send(sim.SceneQuoteCreate("bob",
+		[]sim.QuoteLineInput{{ItemName: "stew", Qty: 1}}, 4, true, "", nil, at)); err != nil {
+		t.Fatalf("SceneQuoteCreate at a degraded stall: unexpected error %v (LLM-304: degrade no longer blocks selling)", err)
 	}
 }
 
-func TestDegradedStall_BlocksFastPathTake(t *testing.T) {
+func TestDegradedStall_AllowsFastPathTake(t *testing.T) {
+	// LLM-304: a buyer takes Bob's on-hand stew against his standing quote even while
+	// his stall is degraded — selling from remaining stock is no longer blocked.
 	w, stop, at := buildFastPathFixture(t, 7)
 	defer stop()
 	degradeBobStall(t, w)
-	_, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, nil, 7, 0, "", at))
-	if err == nil || !strings.Contains(err.Error(), "disrepair") {
-		t.Fatalf("err = %v, want a degraded-stall take rejection", err)
+	if _, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, nil, 7, 0, "", at)); err != nil {
+		t.Fatalf("PayWithItem take at a degraded stall: unexpected error %v (LLM-304)", err)
 	}
 }
 
-func TestDegradedStall_BlocksSlowAccept(t *testing.T) {
-	// No standing quote here (buildPayWithItemWorld, not the fast-path fixture) so
-	// alice's bare offer stays pending instead of auto-matching a quote.
+func TestDegradedStall_AllowsSlowAccept(t *testing.T) {
+	// LLM-304: Bob accepts a pending pay offer and hands over on-hand stew even after
+	// his stall degrades — no disrepair block, and the sale completes (physical
+	// handover is immediate at accept). No standing quote here (buildPayWithItemWorld)
+	// so alice's bare offer stays pending instead of auto-matching a quote.
 	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
 		{id: "alice", displayName: "Alice", kind: sim.KindNPCShared, huddleID: "h1", coins: 50},
 		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1", inventory: map[sim.ItemKind]int{"stew": 5}},
@@ -238,7 +243,7 @@ func TestDegradedStall_BlocksSlowAccept(t *testing.T) {
 	}
 	ledgerID := res.(sim.PayWithItemResult).LedgerID
 
-	degradeBobStall(t, w) // bob's stall degrades before he can accept
+	degradeBobStall(t, w) // bob's stall degrades before he accepts — no longer blocks the sale
 	if _, err := w.Send(sim.AcceptPay("bob", ledgerID, at)); err != nil {
 		t.Fatalf("AcceptPay: unexpected tool error %v", err)
 	}
@@ -249,10 +254,10 @@ func TestDegradedStall_BlocksSlowAccept(t *testing.T) {
 		msg = world.PayLedger[ledgerID].Message
 		stew = world.Actors["bob"].Inventory["stew"]
 	})
-	if !strings.Contains(msg, "disrepair") {
-		t.Fatalf("accept terminal message = %q, want a disrepair reason", msg)
+	if strings.Contains(msg, "disrepair") {
+		t.Fatalf("accept message = %q, want no disrepair block (LLM-304: degrade no longer blocks selling)", msg)
 	}
-	if stew != 5 {
-		t.Errorf("bob's stew = %d, want 5 (no transfer on a blocked accept)", stew)
+	if stew != 4 {
+		t.Errorf("bob's stew = %d, want 4 (1 transferred on the now-allowed sale)", stew)
 	}
 }

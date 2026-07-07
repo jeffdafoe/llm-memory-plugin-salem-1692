@@ -160,6 +160,13 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 	if pct <= 0 {
 		return nil // producer/feature disabled
 	}
+	// LLM-304: a degraded business is shut for restock — it can't turn a buy into
+	// shelf stock until it's mended. Suppress the buy directory so it can't steer a
+	// restock the shop can't act on (which would fight the "## Your business" cue's
+	// "can't restock until mended"). The keeper sells down what's on hand and mends.
+	if ownerBusinessDegraded(snap, actorID) {
+		return nil
+	}
 	// The effective buy demand (LLM-260): explicit `buy` entries plus the ones
 	// derived from the actor's produce recipes' unsourced inputs — the same set
 	// the warrant producer (restock_tick.go firstActionableLowEntry) scans, so

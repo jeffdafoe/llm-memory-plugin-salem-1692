@@ -80,6 +80,36 @@ func addSnapSupplier(snap *sim.Snapshot, item sim.ItemKind) {
 	snap.Structures[sid] = plainStructure(sid, "Shop of "+string(item))
 }
 
+// TestBuildRefillCues_DegradedBusinessSuppressed — LLM-304: a degraded business is
+// shut for restock/production, so BOTH refill cues ("## Restocking" and "## Keeping
+// up production") go silent — neither may steer a buy the shut shop can't turn into
+// stock, which would fight the "## Your business" cue's "can't restock until mended".
+// Same low-on-a-bought-input producer renders both cues until the business degrades.
+func TestBuildRefillCues_DegradedBusinessSuppressed(t *testing.T) {
+	subj := makesStewBuying("skillet", 10, 1) // 1/10 = 10% < 25% → low
+	snap := productionSnap(subj, stewRecipe("skillet", 1), "skillet")
+
+	// Baseline: both refill cues render for the low-on-input producer.
+	if buildRestocking(snap, "john", subj) == nil {
+		t.Fatal("baseline: buildRestocking should render for a low bought input")
+	}
+	if buildProductionInputs(snap, "john", subj) == nil {
+		t.Fatal("baseline: buildProductionInputs should render for a low bought input")
+	}
+
+	// Degrade john's own business — both refill cues must go silent.
+	snap.StallWearDegradeThreshold = 600
+	snap.VillageObjects = map[sim.VillageObjectID]*sim.VillageObject{
+		"johns_shop": {ID: "johns_shop", OwnerActorID: "john", Tags: []string{sim.TagBusiness}, Wear: 650},
+	}
+	if v := buildRestocking(snap, "john", subj); v != nil {
+		t.Errorf("degraded business: buildRestocking must be suppressed, got %+v", v)
+	}
+	if v := buildProductionInputs(snap, "john", subj); v != nil {
+		t.Errorf("degraded business: buildProductionInputs must be suppressed, got %+v", v)
+	}
+}
+
 // A tool consumed 1-per-batch (skillet) surfaces at the last unit with the exact
 // wear runway (1 skillet × 30-stew batch = 30 stews).
 func TestBuildProductionInputs_SkilletLowSurfacesRunway(t *testing.T) {

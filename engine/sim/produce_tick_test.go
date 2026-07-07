@@ -93,6 +93,48 @@ func TestApplyProduceTickFreeRecipe(t *testing.T) {
 	_ = snap
 }
 
+// TestApplyProduceTick_DegradedBusinessSkips — LLM-304: a degraded business is shut
+// for production. Its owner's produce tick is skipped (the same skip as off-shift /
+// sleeping), so its shelves draw down until mended, at which point production
+// resumes. Identical setup to TestApplyProduceTickFreeRecipe (which produces 2
+// bread) — the only difference is the degraded business, so 0 units is the gate.
+func TestApplyProduceTick_DegradedBusinessSkips(t *testing.T) {
+	now := time.Now().UTC()
+	anchor := now.Add(-90 * time.Minute)
+	w, cancel := buildProduceTestWorld(t, anchor, []sim.RestockEntry{
+		{Item: "bread", Source: sim.RestockSourceProduce, Max: 10},
+	}, map[sim.ItemKind]int{})
+	defer cancel()
+
+	// hannah's workplace is a degraded business she owns — LLM-304 shuts production.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Settings.StallWearDegradeThreshold = 600
+		if world.VillageObjects == nil {
+			world.VillageObjects = map[sim.VillageObjectID]*sim.VillageObject{}
+		}
+		world.VillageObjects["inn"] = &sim.VillageObject{
+			ID: "inn", OwnerActorID: "hannah", Tags: []string{sim.TagBusiness}, Wear: 650,
+		}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	res, err := w.Send(sim.ApplyProduceTick(now))
+	if err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if r := res.(sim.ProduceTickResult); r.Executions != 0 {
+		t.Errorf("Executions = %d, want 0 (a degraded business produces nothing)", r.Executions)
+	}
+	inv, _ := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return world.Actors["hannah"].Inventory["bread"], nil
+	}})
+	if inv.(int) != 0 {
+		t.Errorf("bread = %d, want 0 (no production while degraded)", inv.(int))
+	}
+}
+
 // TestApplyProduceTickWithInputs covers the input-required path. Stew
 // @ 1/hr, 90 min elapsed, but only 1 vegetable + 1 water available, so
 // 1 execution → consume both inputs, +1 stew.
