@@ -357,6 +357,21 @@ func HuddleLoopContentPresent(s WorldSettings, h *Huddle) bool {
 	return huddleLoopContentPresent(s, h)
 }
 
+// Transactional-futility arm (LLM-309) — wrappers for direct tests.
+//
+// HuddleLoopLedgerMinTerminals is the standoff threshold so tests don't hardcode it.
+const HuddleLoopLedgerMinTerminals = huddleLoopLedgerMinTerminals
+
+// HuddleLoopLedgerFutileState exposes the non-completed-terminal classifier.
+func HuddleLoopLedgerFutileState(st PayLedgerState) bool { return huddleLoopLedgerFutileState(st) }
+
+// LedgerStandoffHuddles exposes the one-pass ledger-standoff scan (present = durable
+// onset set, armed = live conclude/steer set). MUST run inside a Command.Fn (reads
+// w.PayLedger + w.Huddles on the world goroutine).
+func LedgerStandoffHuddles(w *World, now time.Time) (present, armed map[HuddleID]struct{}) {
+	return ledgerStandoffHuddles(w, now)
+}
+
 // CarryoverLoopingSince returns the per-structure conversation carry-over's loop
 // clock (LLM-170): (ls, true) when a carry-over exists for structureID, (nil, false)
 // when none does. MUST run inside a Command.Fn (touches world-goroutine state).

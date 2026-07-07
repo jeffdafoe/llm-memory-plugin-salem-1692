@@ -1985,6 +1985,14 @@ func (w *World) republish() {
 		Recipes:    w.Recipes,
 		RecipeUses: w.ensureRecipeUses(),
 	}
+	// LLM-309: the huddles in a silent transactional-futility loop, computed once
+	// per publish (a single O(ledger) pass) so the per-actor steer below is a map
+	// lookup rather than a per-member ledger walk in this hot, per-command path.
+	// Gated on the loop sweep's master enable — the same gate the utterance steer reads.
+	var ledgerLoopHuddles map[HuddleID]struct{}
+	if huddleLoopEnabled(w.Settings) {
+		_, ledgerLoopHuddles = ledgerStandoffHuddles(w, now)
+	}
 	for id, a := range w.Actors {
 		sa := snapshotActor(a, w.TickCounter, w.Settings.degeneracyEnabled())
 		// Co-presence for the unhuddled (ZBBS-WORK-407): precompute who an
@@ -2042,8 +2050,14 @@ func (w *World) republish() {
 		// kinds — Render is the NPC reactor-tick path (never a PC or decorative), so
 		// the flag would be inert noise on any other kind (matches the co-presence gate above).
 		if huddleLoopEnabled(w.Settings) && (a.Kind == KindNPCStateful || a.Kind == KindNPCShared) && a.CurrentHuddleID != "" {
-			if h := w.Huddles[a.CurrentHuddleID]; h != nil && huddleLoopArmed(w.Settings, h, now) && !huddlePCAttended(h, now) {
-				sa.ConversationLooping = true
+			if h := w.Huddles[a.CurrentHuddleID]; h != nil && !huddlePCAttended(h, now) {
+				// The steer arms on EITHER a repetitive utterance loop or a silent
+				// transactional-futility loop (LLM-309), so an all-mechanical
+				// offer→decline standoff gets the same gentle nudge as a chatty one.
+				_, ledgerArmed := ledgerLoopHuddles[a.CurrentHuddleID]
+				if huddleLoopArmed(w.Settings, h, now) || ledgerArmed {
+					sa.ConversationLooping = true
+				}
 			}
 		}
 		snap.Actors[id] = sa

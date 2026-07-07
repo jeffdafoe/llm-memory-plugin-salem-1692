@@ -88,6 +88,24 @@ const huddleLoopLiveWindow = 90 * time.Second
 // to the market" clusters; two turns about different topics do not.
 const huddleLoopNearDupJaccard = 0.5
 
+// huddleLoopLedgerMinTerminals is how many non-completed pay-ledger terminals
+// (huddleLoopLedgerFutileState) between the SAME buyer→seller pair for the SAME
+// item must pile up within one huddle before the transactional-futility arm
+// (LLM-309) reads the negotiation as a silent livelock. One decline is ordinary
+// haggling; two is a pattern; three is a loop that isn't going to converge (the
+// live Elizabeth→Josiah incident ran to eleven). This is the ledger analog of
+// huddleLoopMinUtterances — a shape constant, not a live knob: the arm rides the
+// loop sweep's master enable (HuddleLoopTimeout) and shared persistence gate.
+const huddleLoopLedgerMinTerminals = 3
+
+// huddleLoopLedgerRecencyWindow bounds how far back a terminal counts toward the
+// standoff: only terminals resolved within this window of `now` are tallied, so an
+// old cluster of declines that has since gone quiet decays out of the signal
+// instead of pinning the huddle. Wider than huddleLoopLiveWindow (a slow loop
+// still accumulates) but far inside the pay ledger's 1h terminal-retention reap.
+// Mirrors coPresentBuyStandoff's recentlyResolvedOfferWindow role (LLM-297).
+const huddleLoopLedgerRecencyWindow = 5 * time.Minute
+
 // huddleLoopEnabled reports whether the loop sweep is active. OFF unless
 // HuddleLoopTimeout is positive — the master enable, mirroring the degeneracy
 // observer's single-positive-number posture. The timeout doubles as the
@@ -220,6 +238,11 @@ func EvaluateHuddleLoopSweep(now time.Time) Command {
 				return nil, nil
 			}
 			timeout := w.Settings.HuddleLoopTimeout
+			// LLM-309: the silent transactional-futility signal, computed once for
+			// every huddle so the per-huddle loop below is a map lookup rather than a
+			// per-huddle ledger walk. OR'd into the utterance arm's onset + conclude
+			// gates so a zero-utterance offer→decline loop rides the same machinery.
+			ledgerPresentHuddles, ledgerArmedHuddles := ledgerStandoffHuddles(w, now)
 			var looping []HuddleID
 			for id, h := range w.Huddles {
 				if h == nil || h.ConcludedAt != nil {
@@ -242,7 +265,12 @@ func EvaluateHuddleLoopSweep(now time.Time) Command {
 					h.LoopingSince = nil
 					continue
 				}
-				if !huddleLoopContentPresent(w.Settings, h) {
+				// LLM-309: OR the durable transactional-futility condition into the
+				// onset gate — a silent decline loop holds LoopingSince exactly as a
+				// repetitive utterance ring does, and a huddle that is neither
+				// content-present nor in a ledger standoff has its spell cleared.
+				_, ledgerPresent := ledgerPresentHuddles[id]
+				if !huddleLoopContentPresent(w.Settings, h) && !ledgerPresent {
 					h.LoopingSince = nil
 					continue
 				}
@@ -256,7 +284,8 @@ func EvaluateHuddleLoopSweep(now time.Time) Command {
 				// (content-present + live) is the same signal the LLM-169 per-tick
 				// steer arms on, so the gentle nudge and this destructive conclude
 				// stay coupled.
-				if now.Sub(*h.LoopingSince) >= timeout && huddleLoopArmed(w.Settings, h, now) {
+				_, ledgerArmed := ledgerArmedHuddles[id]
+				if now.Sub(*h.LoopingSince) >= timeout && (huddleLoopArmed(w.Settings, h, now) || ledgerArmed) {
 					looping = append(looping, id)
 				}
 			}
@@ -272,7 +301,16 @@ func EvaluateHuddleLoopSweep(now time.Time) Command {
 					continue
 				}
 				// Telemetry BEFORE conclude — concludeHuddleInner clears Members.
-				emitHuddleLoopTelemetry(w, h, now)
+				// Tag the record "huddle_loop_ledger" whenever the transactional arm
+				// (LLM-309) contributed to the conclusion, so the ledger shape is never
+				// hidden in a mixed chatty+transactional loop; the per-record
+				// `utterances` count still distinguishes a truly silent loop (0) from a
+				// mixed one (>0).
+				reason := "huddle_loop"
+				if _, ok := ledgerArmedHuddles[id]; ok {
+					reason = "huddle_loop_ledger"
+				}
+				emitHuddleLoopTelemetry(w, h, now, reason)
 				structureID := h.StructureID
 				concludeHuddleInner(w, id, now, false)
 				// concludeHuddleInner wrote a carry-over (LLM-170). Keep its ring (so a
@@ -381,6 +419,135 @@ func huddlePCAttended(h *Huddle, now time.Time) bool {
 
 func huddleLoopArmed(s WorldSettings, h *Huddle, now time.Time) bool {
 	return huddleLoopContentPresent(s, h) && huddleNewestUtteranceLive(h, now)
+}
+
+// --- transactional-futility arm (LLM-309) ---
+//
+// The utterance arm above is blind to an all-mechanical offer→decline loop: with
+// zero spoken lines the RecentUtterances ring never fills, so huddleLoopRepetitive
+// is always false. The live case (Elizabeth Ellis → Josiah Thorne, General Store,
+// 2026-07-06) ran eleven pay_with_item→decline_pay rounds in five minutes with
+// recent_utterance_count 0 the whole time — every tool call SUCCEEDED (a valid
+// ledger entry, an audience, no movement), so the per-actor degeneracy observer
+// scored each tick productive too. This arm gives the sweep a second, ledger-based
+// signal with the SAME durable/live split, OR'd into the same LoopingSince onset,
+// silent-conclude, and per-tick ConversationLooping steer as the utterance arm.
+
+// huddleLoopLedgerFutileState reports whether a pay-ledger state is a non-completed
+// terminal that signals a stuck negotiation — a seller decline or a buyer/seller
+// material shortfall. Accepted is the completed sale (progress, not futility);
+// Pending is non-terminal; Countered is a live negotiation move, not a dead-end;
+// Expired and WithdrawnByBuyer are abandonment rather than repeated rejection; and
+// FailedUnavailable is a one-off broken-context terminal. The counted set mirrors
+// exactly the terminals coPresentBuyStandoff (LLM-297) treats as a standoff —
+// declined plus the three insufficient-* failures — so the detector and the
+// buyer-side "the deal isn't meeting" cue read the same dead-ends.
+func huddleLoopLedgerFutileState(st PayLedgerState) bool {
+	switch st {
+	case PayLedgerStateDeclined,
+		PayLedgerStateFailedInsufficientFunds,
+		PayLedgerStateFailedInsufficientStock,
+		PayLedgerStateFailedInsufficientGoods:
+		return true
+	default:
+		return false
+	}
+}
+
+// withinHuddleLoopLiveWindow reports whether t is recent enough (within
+// huddleLoopLiveWindow of now, and not in the future) to count as live — the same
+// "actively happening right now" bound huddleNewestUtteranceLive applies to the
+// newest spoken line, applied here to the newest futile pay terminal. A negative
+// age (out-of-order / replayed clock) reads as not-live, matching the utterance side.
+func withinHuddleLoopLiveWindow(t, now time.Time) bool {
+	if t.IsZero() {
+		return false
+	}
+	age := now.Sub(t)
+	return age >= 0 && age <= huddleLoopLiveWindow
+}
+
+// ledgerStandoffHuddles does ONE pass over the pay ledger and returns the huddles
+// caught in a silent transactional-futility loop — the ledger analog of the
+// utterance arm's content-present / armed split, computed for every huddle at once.
+//
+// A huddle enters `present` (the DURABLE onset condition, gating LoopingSince) when
+// some (buyer, seller, item) negotiation inside it has amassed at least
+// huddleLoopLedgerMinTerminals futile terminals resolved within
+// huddleLoopLedgerRecencyWindow of now, all post-dating the huddle's LastProgressAt.
+// It additionally enters `armed` (the LIVE conclude + steer condition) when that
+// negotiation's newest terminal is within huddleLoopLiveWindow — the loop is still
+// rejecting right now, not a stale cluster.
+//
+// The progress guard reuses Huddle.LastProgressAt, which is stamped ONLY by a
+// completed transaction (touchHuddleProgress) or a genuinely-new member joining
+// (JoinHuddle) — never by a decline (finalizePayLedgerTerminal touches only the
+// entry's own ResolvedAt). So a negotiation that actually closed, or a huddle whose
+// composition changed, drops every pre-progress terminal from the tally and is not
+// read as a loop — exactly the "no intervening completed transaction or membership
+// change" requirement, satisfied by the same field the utterance arm uses.
+//
+// One shared O(ledger) pass — rather than a per-huddle / per-actor walk — keeps the
+// hot republish path cheap (a busy village's terminal-retention window can hold
+// hundreds of entries). Generalizes LLM-297's coPresentBuyStandoff ledger walk (a
+// perception-snapshot walk over a single buyer→seller pair) to every huddle on the
+// world map. MUST run on the world goroutine (reads w.PayLedger + w.Huddles).
+func ledgerStandoffHuddles(w *World, now time.Time) (present, armed map[HuddleID]struct{}) {
+	if len(w.PayLedger) == 0 {
+		return nil, nil
+	}
+	type standoffKey struct {
+		huddle HuddleID
+		buyer  ActorID
+		seller ActorID
+		item   ItemKind
+	}
+	counts := make(map[standoffKey]int)
+	newest := make(map[standoffKey]time.Time)
+	cutoff := now.Add(-huddleLoopLedgerRecencyWindow)
+	for _, e := range w.PayLedger {
+		if e == nil || e.HuddleID == "" || !huddleLoopLedgerFutileState(e.State) {
+			continue
+		}
+		// A zero ResolvedAt is a still-pending / mid-construction entry; an older
+		// one has decayed out of the recency window; a future-dated one (out-of-
+		// order / replayed clock) must not count toward the durable `present` set
+		// either, matching withinHuddleLoopLiveWindow's negative-age rejection on
+		// the live side — otherwise a replay could stamp LoopingSince early.
+		if e.ResolvedAt.IsZero() || e.ResolvedAt.Before(cutoff) || e.ResolvedAt.After(now) {
+			continue
+		}
+		h := w.Huddles[e.HuddleID]
+		if h == nil || h.ConcludedAt != nil {
+			continue
+		}
+		// A terminal at or before the huddle's last completed progress is
+		// pre-progress and does not count — the deal advanced or the room changed.
+		if !h.LastProgressAt.IsZero() && !e.ResolvedAt.After(h.LastProgressAt) {
+			continue
+		}
+		k := standoffKey{e.HuddleID, e.BuyerID, e.SellerID, e.ItemKind}
+		counts[k]++
+		if e.ResolvedAt.After(newest[k]) {
+			newest[k] = e.ResolvedAt
+		}
+	}
+	for k, c := range counts {
+		if c < huddleLoopLedgerMinTerminals {
+			continue
+		}
+		if present == nil {
+			present = make(map[HuddleID]struct{})
+		}
+		present[k.huddle] = struct{}{}
+		if withinHuddleLoopLiveWindow(newest[k], now) {
+			if armed == nil {
+				armed = make(map[HuddleID]struct{})
+			}
+			armed[k.huddle] = struct{}{}
+		}
+	}
+	return present, armed
 }
 
 // huddleUtteranceRepetition returns the fraction (0..1) of the ring's content-
@@ -501,9 +668,11 @@ var huddleLoopStopwords = map[string]struct{}{
 // emitHuddleLoopTelemetry writes a `stuck` tick-telemetry record per member of a
 // huddle being concluded as a livelock, so the loop surfaces in the umbilical
 // the same way the degeneracy observer's escalations do. Kind reuses "stuck";
-// Detail.reason="huddle_loop" distinguishes it. Best-effort and redacted (labels
-// only) like all tick telemetry; no-op when no sink is wired.
-func emitHuddleLoopTelemetry(w *World, h *Huddle, now time.Time) {
+// reason is "huddle_loop" for the chatty utterance arm and "huddle_loop_ledger"
+// for the silent transactional arm (LLM-309), so the two shapes stay separable.
+// Best-effort and redacted (labels only) like all tick telemetry; no-op when no
+// sink is wired.
+func emitHuddleLoopTelemetry(w *World, h *Huddle, now time.Time, reason string) {
 	if w.repo.TickTelemetry == nil {
 		return
 	}
@@ -515,7 +684,7 @@ func emitHuddleLoopTelemetry(w *World, h *Huddle, now time.Time) {
 			ActorID: id,
 			Kind:    "stuck",
 			Detail: map[string]string{
-				"reason":     "huddle_loop",
+				"reason":     reason,
 				"huddle":     string(h.ID),
 				"members":    members,
 				"utterances": utterances,
