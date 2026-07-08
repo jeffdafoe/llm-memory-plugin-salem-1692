@@ -121,9 +121,11 @@ const loadAllNeedsSQLA = `
 SELECT actor_id::text, key, value
   FROM actor_need`
 
-// loadAllInventorySQLA selects every actor_inventory row.
+// loadAllInventorySQLA selects every actor_inventory row. uses_left is the
+// durable-tool wear on the in-use unit (LLM-330) — NULL for ordinary stock
+// and for a tool no execution has worn yet.
 const loadAllInventorySQLA = `
-SELECT actor_id::text, item_kind, quantity
+SELECT actor_id::text, item_kind, quantity, uses_left
   FROM actor_inventory`
 
 // upsertSQLA writes one actor row. Column list = v2-owned subset only
@@ -206,14 +208,17 @@ ON CONFLICT (actor_id, key) DO UPDATE SET
 // upsertInventorySQLA writes one actor_inventory row. PK is
 // (actor_id, item_kind). quantity > 0 enforced by table CHECK plus
 // repo-side pre-pass (zero-qty entries dropped before this Exec).
+// uses_left is the durable-tool wear on the in-use unit (LLM-330),
+// NULL for ordinary stock / an unworn tool.
 const upsertInventorySQLA = `
 INSERT INTO actor_inventory (
-    actor_id, item_kind, quantity, snapshot_gen
+    actor_id, item_kind, quantity, uses_left, snapshot_gen
 ) VALUES (
-    $1, $2, $3, $4
+    $1, $2, $3, $4, $5
 )
 ON CONFLICT (actor_id, item_kind) DO UPDATE SET
     quantity     = EXCLUDED.quantity,
+    uses_left    = EXCLUDED.uses_left,
     snapshot_gen = EXCLUDED.snapshot_gen`
 
 const deleteStaleSQLA = `DELETE FROM actor             WHERE snapshot_gen < $1`
@@ -681,8 +686,9 @@ func (r *ActorsRepo) loadAllInventory(ctx context.Context, actors map[sim.ActorI
 			actorID  string
 			itemKind string
 			quantity int
+			usesLeft *int
 		)
-		if err := rows.Scan(&actorID, &itemKind, &quantity); err != nil {
+		if err := rows.Scan(&actorID, &itemKind, &quantity, &usesLeft); err != nil {
 			return fmt.Errorf("pg actors LoadAll inventory scan: %w", err)
 		}
 		parent, ok := actors[sim.ActorID(actorID)]
@@ -691,6 +697,15 @@ func (r *ActorsRepo) loadAllInventory(ctx context.Context, actors map[sim.ActorI
 				actorID, itemKind)
 		}
 		parent.Inventory[sim.ItemKind(itemKind)] = quantity
+		// Durable-tool wear (LLM-330): a positive uses_left restores the
+		// in-use unit's remaining uses. NULL / non-positive means fresh —
+		// applyToolWear treats a missing entry as full durability.
+		if usesLeft != nil && *usesLeft > 0 {
+			if parent.ToolWear == nil {
+				parent.ToolWear = make(map[sim.ItemKind]int)
+			}
+			parent.ToolWear[sim.ItemKind(itemKind)] = *usesLeft
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("pg actors LoadAll inventory iter: %w", err)
@@ -1271,6 +1286,19 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 					a.ID, kind, qty)
 			}
 		}
+		// Tool wear (LLM-330): entries must be positive — applyToolWear
+		// deletes at zero, so a non-positive entry is a mechanics bug. A
+		// wear entry for a kind with no inventory row is tolerated (the
+		// sold-every-unit corner); it simply isn't persisted.
+		for kind, wear := range a.ToolWear {
+			if strings.TrimSpace(string(kind)) == "" {
+				return fmt.Errorf("pg actors SaveSnapshot: id=%s has empty tool-wear item kind", a.ID)
+			}
+			if wear <= 0 {
+				return fmt.Errorf("pg actors SaveSnapshot: id=%s tool wear item=%s uses_left=%d out of range (must be > 0)",
+					a.ID, kind, wear)
+			}
+		}
 		// Relationships: peer key non-empty, no self-row (matches the
 		// actor_relationship_no_self CHECK — catch in Go so it doesn't
 		// trip mid-Tx as a worse error), non-negative counts. nil entries
@@ -1514,17 +1542,26 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 	// Step 9: upsert each non-zero inventory entry. quantity > 0 is the
 	// CHECK invariant — zero-qty entries are deleted (the validation
 	// pre-pass already rejected negative quantities, so qty == 0 is
-	// the only skip case here).
+	// the only skip case here). uses_left carries the durable-tool wear
+	// on the kind's in-use unit (LLM-330) — NULL when unworn; a wear
+	// entry without a live inventory row rides nothing and is dropped.
 	for _, a := range persisted {
 		for kind, qty := range a.Inventory {
 			if qty == 0 {
 				continue
 			}
+			// Nullable-write idiom (village_objects precedent): nil interface
+			// → SQL NULL for ordinary stock / an unworn tool.
+			var usesLeft any
+			if wear, ok := a.ToolWear[kind]; ok && wear > 0 {
+				usesLeft = wear
+			}
 			if _, err := tx.Exec(ctx, upsertInventorySQLA,
 				string(a.ID), // $1 actor_id
 				string(kind), // $2 item_kind
 				qty,          // $3 quantity
-				invGen,       // $4 snapshot_gen
+				usesLeft,     // $4 uses_left (nil → NULL)
+				invGen,       // $5 snapshot_gen
 			); err != nil {
 				return fmt.Errorf("pg actors SaveSnapshot: upsert inventory actor=%s item=%s: %w", a.ID, kind, err)
 			}

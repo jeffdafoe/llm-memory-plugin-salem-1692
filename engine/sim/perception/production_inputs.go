@@ -68,13 +68,22 @@ type ProductionInputView struct {
 	OutputKind  sim.ItemKind // tie-break sort key
 
 	// RunwayUnits is how many more of the output good the current input stock can
-	// back: currentQty * outputQty / inputQtyPerBatch. For a tool consumed 1 per
-	// batch (skillet: 1 per 30-stew batch) this is the exact wear runway (1 skillet
-	// = 30 stews). For a bulk input consumed in step with the output (carrots: 30
-	// per 30-stew batch) it is the effective per-unit rate. A soft signal, not a
-	// guarantee — production is batch-atomic, so a sub-batch input stock can't
-	// actually mint a partial batch; the number conveys relative urgency.
+	// back: currentQty * outputQty / inputQtyPerBatch. For a bulk input consumed
+	// in step with the output (carrots: 30 per 30-stew batch) it is the effective
+	// per-unit rate. A soft signal, not a guarantee — production is batch-atomic,
+	// so a sub-batch input stock can't actually mint a partial batch; the number
+	// conveys relative urgency.
+	//
+	// For a durable TOOL input (LLM-330, Tool true) the math is wear-based
+	// instead: sim.ToolRunwayUses (spares at full durability plus the wear left
+	// on the in-use unit) × outputQty per execution — the recipe's input qty is
+	// an on-hand requirement, not a per-batch draw, so it doesn't divide.
 	RunwayUnits int
+
+	// Tool marks a durable-tool input (catalog DurabilityUses > 0, LLM-330):
+	// the line phrases wear ("wearing down"), not stock burn, and RunwayUnits
+	// carries the wear-based runway above.
+	Tool bool
 }
 
 // buildProductionInputs builds the producer-input view for actorSnap, or nil when
@@ -187,7 +196,23 @@ func buildProductionInputs(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *s
 			// int64 multiply + clamp guards a corrupt/imported catalog with huge
 			// quantities from overflowing int before the divide — the same posture
 			// RestockReorderThresholdMet and buyerLastPaidAffordableQty take.
-			runway := int64(current) * int64(recipe.OutputQty) / int64(in.Qty)
+			// A durable tool (LLM-330) runs on wear, not per-batch draw: uses
+			// left across the on-hand stock, over the recipe's per-execution
+			// draw (in.Qty uses per execution), × outputQty. The uses figure is
+			// clamped BEFORE the multiply so huge onHand × durability values
+			// can't overflow int64 mid-expression.
+			var runway int64
+			tool := false
+			if durability := sim.DurableToolUses(snap.ItemKinds, in.Item); durability > 0 {
+				tool = true
+				uses := sim.ToolRunwayUses(current, actorSnap.ToolWear[in.Item], durability)
+				if uses > int64(math.MaxInt32) {
+					uses = int64(math.MaxInt32)
+				}
+				runway = uses * int64(recipe.OutputQty) / int64(in.Qty)
+			} else {
+				runway = int64(current) * int64(recipe.OutputQty) / int64(in.Qty)
+			}
 			if runway > int64(math.MaxInt32) {
 				runway = int64(math.MaxInt32)
 			}
@@ -198,6 +223,7 @@ func buildProductionInputs(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *s
 				OutputLabel: itemDisplayLabel(snap, pe.Item),
 				OutputKind:  pe.Item,
 				RunwayUnits: int(runway),
+				Tool:        tool,
 			})
 		}
 	}
@@ -245,6 +271,14 @@ func renderProductionInputs(b *strings.Builder, v *ProductionInputsView) {
 	}
 	b.WriteString("## Keeping up production\n")
 	for _, it := range v.Items {
+		// A durable tool (LLM-330) wears; it isn't burned per batch. Same
+		// count-led shape, wear-phrased, so the model reads "replace soon",
+		// not "consumed with the pot".
+		if it.Tool {
+			fmt.Fprintf(b, "- The %s you make %s with is wearing down — %d on hand, good for about %d more before you need another.\n",
+				sanitizeInline(it.InputLabel), sanitizeInline(it.OutputLabel), it.CurrentQty, it.RunwayUnits)
+			continue
+		}
 		fmt.Fprintf(b, "- You use %s to make %s — %d on hand, enough for about %d more, and you're running low.\n",
 			sanitizeInline(it.InputLabel), sanitizeInline(it.OutputLabel), it.CurrentQty, it.RunwayUnits)
 	}

@@ -39,13 +39,16 @@ type umbilicalSatisfactionDTO struct {
 // satiation entries. eat_here_only flags a consumable that can't leave the
 // seller's premises (stew, a poured drink) — derived, not stored.
 type umbilicalItemDTO struct {
-	Name         string                     `json:"name"`
-	Label        string                     `json:"label"`
-	Category     string                     `json:"category"`
-	SortOrder    int                        `json:"sort_order"`
-	Capabilities []string                   `json:"capabilities,omitempty"`
-	EatHereOnly  bool                       `json:"eat_here_only"`
-	Satisfies    []umbilicalSatisfactionDTO `json:"satisfies"`
+	Name         string   `json:"name"`
+	Label        string   `json:"label"`
+	Category     string   `json:"category"`
+	SortOrder    int      `json:"sort_order"`
+	Capabilities []string `json:"capabilities,omitempty"`
+	EatHereOnly  bool     `json:"eat_here_only"`
+	// DurabilityUses > 0 marks a durable tool: produce executions one unit
+	// lasts (LLM-330). The read side of item/set's durability_uses knob.
+	DurabilityUses int                        `json:"durability_uses,omitempty"`
+	Satisfies      []umbilicalSatisfactionDTO `json:"satisfies"`
 }
 
 // UmbilicalItemsDTO is the GET /api/village/umbilical/items response: the live
@@ -68,9 +71,10 @@ func itemRowDTO(def *sim.ItemKindDef) umbilicalItemDTO {
 		// encoding runs after SendContext returns (off the world goroutine), so
 		// an aliased slice could race a concurrent catalog writer. Same rationale
 		// as the Satisfies copy below. nil in → nil out (omitempty drops it).
-		Capabilities: append([]string(nil), def.Capabilities...),
-		EatHereOnly:  def.EatHereOnly(),
-		Satisfies:    make([]umbilicalSatisfactionDTO, 0, len(def.Satisfies)),
+		Capabilities:   append([]string(nil), def.Capabilities...),
+		EatHereOnly:    def.EatHereOnly(),
+		DurabilityUses: def.DurabilityUses,
+		Satisfies:      make([]umbilicalSatisfactionDTO, 0, len(def.Satisfies)),
 	}
 	for _, s := range def.Satisfies {
 		out.Satisfies = append(out.Satisfies, umbilicalSatisfactionDTO{
@@ -149,6 +153,10 @@ type umbilicalItemSetRequest struct {
 	DisplayLabelSingular  string   `json:"display_label_singular"`
 	DisplayLabelPlural    string   `json:"display_label_plural"`
 	ConsumeDwellNarration string   `json:"consume_dwell_narration"`
+	// DurabilityUses > 0 makes the kind a durable tool lasting that many
+	// produce executions (LLM-330) — the live tuning knob for tool lifetimes.
+	// 0 (or omitted) keeps plain consumed-input semantics.
+	DurabilityUses int `json:"durability_uses"`
 }
 
 // handleUmbilicalItemSet upserts one item_kind definition — the create/edit leg
@@ -219,6 +227,10 @@ func (s *Server) handleUmbilicalItemSet(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "sort_order must be between 0 and 32767")
 		return
 	}
+	if req.DurabilityUses < 0 {
+		writeError(w, http.StatusBadRequest, "durability_uses must be 0 or greater")
+		return
+	}
 	// capabilities is a soft token set; trim each and reject a blank token so a
 	// stray "" can't pollute the array.
 	capabilities := make([]string, 0, len(req.Capabilities))
@@ -248,6 +260,7 @@ func (s *Server) handleUmbilicalItemSet(w http.ResponseWriter, r *http.Request) 
 		SortOrder:             req.SortOrder,
 		Capabilities:          capabilities,
 		ConsumeDwellNarration: narration,
+		DurabilityUses:        req.DurabilityUses,
 	}
 
 	// 1) Durable write FIRST — item_kind is the source of truth (the catalog

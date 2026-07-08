@@ -110,8 +110,10 @@ func TestBuildRefillCues_DegradedBusinessSuppressed(t *testing.T) {
 	}
 }
 
-// A tool consumed 1-per-batch (skillet) surfaces at the last unit with the exact
-// wear runway (1 skillet × 30-stew batch = 30 stews).
+// An input consumed 1-per-batch surfaces at the last unit with the per-batch
+// runway (1 × 30-stew batch = 30 stews). This catalog carries NO durability, so
+// the skillet here exercises the plain consumed-input path — the durable-tool
+// wear runway (LLM-330) is pinned separately below.
 func TestBuildProductionInputs_SkilletLowSurfacesRunway(t *testing.T) {
 	subj := makesStewBuying("skillet", 2, 1) // cap 2 @ 25% = 0.5 → fires at the last unit
 	snap := productionSnap(subj, stewRecipe("skillet", 1), "skillet")
@@ -147,6 +149,60 @@ func TestBuildProductionInputs_BulkInputRunway(t *testing.T) {
 	}
 	if got := v.Items[0].RunwayUnits; got != 7 {
 		t.Errorf("carrots runway = %d, want 7 (7 × 30 / 30)", got)
+	}
+}
+
+// ---- Durable tools (LLM-330) ---------------------------------------------
+
+// durableToolSnap is productionSnap with the skillet carrying durability 20 —
+// the tool path: runway = wear-based uses × outputQty, not on-hand ÷ per-batch.
+func durableToolSnap(subj *sim.ActorSnapshot) *sim.Snapshot {
+	snap := productionSnap(subj, stewRecipe("skillet", 1), "skillet")
+	snap.ItemKinds["skillet"] = &sim.ItemKindDef{Name: "skillet", DisplayLabel: "skillet", DurabilityUses: 20}
+	return snap
+}
+
+// A durable tool's runway is wear-based: the last skillet with 5 uses left on
+// it backs 5 executions × 30 stew, and the line phrases wear, not stock burn.
+func TestBuildProductionInputs_DurableToolWearRunway(t *testing.T) {
+	subj := makesStewBuying("skillet", 2, 1)
+	subj.ToolWear = map[sim.ItemKind]int{"skillet": 5}
+	snap := durableToolSnap(subj)
+
+	v := buildProductionInputs(snap, "john", subj)
+	if v == nil || len(v.Items) != 1 {
+		t.Fatalf("expected one production-input item, got %+v", v)
+	}
+	it := v.Items[0]
+	if !it.Tool || it.CurrentQty != 1 || it.RunwayUnits != 150 {
+		t.Fatalf("got %+v, want tool, 1 on hand, runway 150 (5 uses × 30)", it)
+	}
+
+	var b strings.Builder
+	renderProductionInputs(&b, v)
+	out := b.String()
+	for _, want := range []string{"## Keeping up production", "The skillet you make stew with is wearing down", "1 on hand", "about 150 more before you need another"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("render missing %q\n--- got ---\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "You use skillet") {
+		t.Errorf("tool line must not use the consumed-input phrasing:\n%s", out)
+	}
+}
+
+// An unworn tool reads fresh: full durability per unit (1 skillet × 20 uses ×
+// 30 stew = 600).
+func TestBuildProductionInputs_DurableToolFreshRunway(t *testing.T) {
+	subj := makesStewBuying("skillet", 2, 1) // no ToolWear entry
+	snap := durableToolSnap(subj)
+
+	v := buildProductionInputs(snap, "john", subj)
+	if v == nil || len(v.Items) != 1 {
+		t.Fatalf("expected one production-input item, got %+v", v)
+	}
+	if it := v.Items[0]; !it.Tool || it.RunwayUnits != 600 {
+		t.Fatalf("got %+v, want tool runway 600 (20 fresh uses × 30)", it)
 	}
 }
 

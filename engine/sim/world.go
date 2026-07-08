@@ -2257,6 +2257,13 @@ func snapshotActor(a *Actor, atTick uint64, degeneracyEnabled bool) *ActorSnapsh
 		hash += uint64(q)
 		inventoryCopy[k] = q
 	}
+	var toolWearCopy map[ItemKind]int
+	if len(a.ToolWear) > 0 {
+		toolWearCopy = make(map[ItemKind]int, len(a.ToolWear))
+		for k, v := range a.ToolWear {
+			toolWearCopy[k] = v
+		}
+	}
 	needsCopy := make(map[NeedKey]int, len(a.Needs))
 	for k, v := range a.Needs {
 		needsCopy[k] = v
@@ -2339,6 +2346,7 @@ func snapshotActor(a *Actor, atTick uint64, degeneracyEnabled bool) *ActorSnapsh
 		Needs:                      needsCopy,
 		InventoryHash:              hash,
 		Inventory:                  inventoryCopy,
+		ToolWear:                   toolWearCopy,
 		Coins:                      a.Coins,
 		Acquaintances:              cloneAcquaintances(a.Acquaintances),
 		Relationships:              cloneRelationships(a.Relationships),

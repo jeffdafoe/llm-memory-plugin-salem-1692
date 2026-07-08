@@ -21,7 +21,9 @@ import (
 // phrased world-side (where the item catalog is in hand) so the harness can
 // narrate the confirmation without re-plumbing the catalog. InputsUsed is the
 // pre-phrased consumed-inputs clause ("3 milk and 5 water"); empty for an
-// origin producer whose recipe has no inputs.
+// origin producer whose recipe has no inputs. ToolWear is the pre-phrased
+// durable-tool wear clause (LLM-330, "Your skillet has about 12 more uses in
+// it"); empty when the recipe uses no durable tool.
 type ProductionStartResult struct {
 	ID              ActorID
 	Item            ItemKind
@@ -29,6 +31,7 @@ type ProductionStartResult struct {
 	BatchQty        int
 	DurationSeconds int64
 	InputsUsed      string
+	ToolWear        string
 }
 
 // StartProductionCycle validates and begins one production cycle of itemName
@@ -121,9 +124,17 @@ func StartProductionCycle(id ActorID, itemName string) Command {
 			// craftableNow already confirmed they're all on hand. The narration
 			// phrase resolves catalog counting nouns ("3 pails of milk"), not raw
 			// kind keys — it is model-facing via the tool result (code_review).
+			// A durable-tool input (catalog DurabilityUses > 0, LLM-330) is not
+			// consumed: it wears 1 use per execution instead, and its clause
+			// rides the result separately so the model reads wear, not spend.
 			var used []string
+			var wornTools []string
 			for _, in := range recipe.Inputs {
 				if in.Qty <= 0 {
+					continue
+				}
+				if durability := DurableToolUses(w.ItemKinds, in.Item); durability > 0 {
+					wornTools = append(wornTools, toolWearPhrase(w, applyToolWear(a, in.Item, durability, in.Qty)))
 					continue
 				}
 				a.Inventory[in.Item] -= in.Qty
@@ -154,6 +165,7 @@ func StartProductionCycle(id ActorID, itemName string) Command {
 				BatchQty:        batchQty,
 				DurationSeconds: duration,
 				InputsUsed:      joinWithAnd(used),
+				ToolWear:        strings.Join(wornTools, " "),
 			}, nil
 		},
 	}
@@ -232,6 +244,29 @@ func describeMissingInputs(recipe *ItemRecipe, inventory map[ItemKind]int) strin
 		return "missing inputs"
 	}
 	return "short of " + strings.Join(parts, ", ")
+}
+
+// toolWearPhrase renders one execution's durable-tool wear (LLM-330) as a
+// model-facing result clause. The mechanical numbers belong here, in the
+// post-decision result, not the deliberation scene: "Your skillet has about
+// 12 more uses in it." — or, when the unit gave out with this use — "Your
+// skillet gives out with this batch — you have a spare." / "…— that was your
+// last one." The kind's singular counting noun keeps the exact item name a
+// rebuy decision needs.
+func toolWearPhrase(w *World, wear toolWearResult) string {
+	noun := string(wear.Item)
+	if def := w.ItemKinds[wear.Item]; def != nil {
+		if s := def.Singular(); s != "" {
+			noun = s
+		}
+	}
+	if wear.Spent {
+		if wear.OnHand > 0 {
+			return fmt.Sprintf("Your %s gives out with this batch — you have a spare.", noun)
+		}
+		return fmt.Sprintf("Your %s gives out with this batch — that was your last one.", noun)
+	}
+	return fmt.Sprintf("Your %s has about %d more uses in it.", noun, wear.UsesLeft)
 }
 
 // inputCountPhrase renders one consumed input as a counted catalog phrase —
