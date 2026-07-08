@@ -62,7 +62,7 @@ const (
 	// any hour of the day (LLM-331). At weary, the ~1/hr climb reaches the floor
 	// only late in a long day — a natural bedtime with no clock window, so
 	// late-night players still bed whenever they're actually weary.
-	DefaultPCIdleSleepMinTiredness = 16
+	DefaultPCIdleSleepMinTiredness = DefaultTirednessRedThreshold
 )
 
 // ErrPCCannotSleepHere is returned by SleepPC when the PC holds no active
