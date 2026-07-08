@@ -66,16 +66,15 @@ const (
 // argument (resolveItemKind matches plural phrases, LLM-113), so the scene
 // keeps the tool binding exact without quoting numbers.
 type ForgeChoiceItem struct {
-	Noun          string
-	itemKind      sim.ItemKind // unexported sort tiebreak
-	BatchQty      int
-	WorkPhrase    string // humanized cycle work ("an hour and a quarter")
-	Stock         StockTier
-	Movement      MovementTier
-	HasInputs     bool     // the recipe requires inputs at all
-	InputsReady   bool     // one batch's inputs are on hand (LLM-257)
-	MissingLabels []string // display labels of the inputs short, for the "you'd need more X" clause
-	SoldUnits     int      // raw units for narration order (demand first)
+	Noun        string
+	itemKind    sim.ItemKind // unexported sort tiebreak
+	BatchQty    int
+	WorkPhrase  string // humanized cycle work ("an hour and a quarter")
+	Stock       StockTier
+	Movement    MovementTier
+	HasInputs   bool // the recipe requires inputs at all
+	InputsReady bool // one batch's inputs are on hand (LLM-257); always true for a listed good — LLM-324 drops input-short ones
+	SoldUnits   int  // raw units for narration order (demand first)
 }
 
 // buildForgeChoice builds the trade-scene view for a producer AT its
@@ -85,6 +84,13 @@ type ForgeChoiceItem struct {
 // (production only advances there — produce_tick's own gate), and NO in-flight
 // production cycle (the tool must not be re-offered mid-batch; its cue
 // carries the tool, LLM-319).
+//
+// The menu lists ONLY goods the actor could start a batch of right now — the
+// same craftableNow gate shouldChooseProduction (the wake warrant) and
+// StartProductionCycle (the produce tool) apply. A good at cap or short an input
+// is dropped, and when none survive the view is nil → offerCraft false → the
+// produce tool is not advertised, so the cue can never invite a batch the tool
+// would then reject (LLM-324).
 func buildForgeChoice(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSnapshot) *ForgeChoiceView {
 	if snap == nil || actorSnap == nil || actorSnap.RestockPolicy == nil || snap.Recipes == nil {
 		return nil
@@ -112,29 +118,35 @@ func buildForgeChoice(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 		if batchQty < 1 {
 			batchQty = 1
 		}
-		soldUnits, _ := sellerRecentSales(snap, actorID, e.Item, restockSalesWindow)
+		// Craftability filter (LLM-324): mirror craftableNow's two snapshot-visible
+		// axes — a whole batch must fit under the carry cap AND the inputs must be on
+		// hand (the same HasProduceInputs the tool consumes on). makeableRecipe, its
+		// third axis, is the recipe-validity continue above. The cap headroom is
+		// computed DIRECTLY (batchFitsCap: uncapped, else onHand+batch <= cap), NOT
+		// read off stockTier — stockTier short-circuits to StockEmpty at zero on hand,
+		// which would hide a batch larger than the whole cap (batchQty > cap) and
+		// wrongly list a good the tool rejects (code_review). A capped or input-short
+		// good is dropped so it never enters the menu that advertises the produce tool.
+		fitsCap := e.Cap() <= 0 || actorSnap.Inventory[e.Item]+batchQty <= e.Cap()
 		inputsReady := sim.HasProduceInputs(recipe, actorSnap.Inventory)
-		var missing []string
-		if !inputsReady {
-			for _, m := range missingInputs(snap, recipe, actorSnap.Inventory) {
-				missing = append(missing, m.Label)
-			}
+		if !fitsCap || !inputsReady {
+			continue
 		}
+		soldUnits, _ := sellerRecentSales(snap, actorID, e.Item, restockSalesWindow)
 		items = append(items, ForgeChoiceItem{
-			Noun:          itemPlural(snap, e.Item),
-			itemKind:      e.Item,
-			BatchQty:      batchQty,
-			WorkPhrase:    sim.HumanizeWorkDuration(sim.CycleDurationSeconds(recipe)),
-			Stock:         stockTier(actorSnap.Inventory[e.Item], e.Cap(), batchQty),
-			Movement:      movementTier(soldUnits, batchQty),
-			HasInputs:     len(recipe.Inputs) > 0,
-			InputsReady:   inputsReady,
-			MissingLabels: missing,
-			SoldUnits:     soldUnits,
+			Noun:        itemPlural(snap, e.Item),
+			itemKind:    e.Item,
+			BatchQty:    batchQty,
+			WorkPhrase:  sim.HumanizeWorkDuration(sim.CycleDurationSeconds(recipe)),
+			Stock:       stockTier(actorSnap.Inventory[e.Item], e.Cap(), batchQty),
+			Movement:    movementTier(soldUnits, batchQty),
+			HasInputs:   len(recipe.Inputs) > 0,
+			InputsReady: inputsReady,
+			SoldUnits:   soldUnits,
 		})
 	}
 	if len(items) == 0 {
-		return nil // not a producer
+		return nil // not a producer, or nothing craftable right now (LLM-324)
 	}
 	// Highest recent demand narrated first, then noun, then kind.
 	sort.Slice(items, func(i, j int) bool {
@@ -149,12 +161,13 @@ func buildForgeChoice(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 	return &ForgeChoiceView{Items: items}
 }
 
-// stockTier reduces on-hand vs cap to the scene's fullness judgment. Full
-// means a WHOLE batch wouldn't fit under the cap — the same headroom test
-// StartProductionCycle rejects on (sim craftableNow/batchFitsCap), so the
-// Full sentence and its omitted affordance line track exactly the state where
-// a produce call would bounce. An uncapped good (cap 0) never reads Full —
-// there is no shelf to fill.
+// stockTier reduces on-hand vs cap to the scene's fullness judgment, used for
+// NARRATION only. Full means a whole batch wouldn't fit from a POSITIVE on-hand;
+// the cue does NOT gate on it — buildForgeChoice computes batchFitsCap directly,
+// because stockTier short-circuits to Empty at zero on hand and would miss a batch
+// larger than the whole cap. A listed good is therefore never Full (the upstream
+// filter dropped it), so the rendered tiers are Empty/Low/Ample. An uncapped good
+// (cap 0) never reads Full — there is no shelf to fill.
 func stockTier(onHand, cap, batchQty int) StockTier {
 	if onHand <= 0 {
 		return StockEmpty
@@ -216,7 +229,9 @@ func tradeGoodScene(it ForgeChoiceItem) string {
 	noun := sanitizeInline(it.Noun)
 	var s strings.Builder
 
-	// The situation: stock fullness, then sell-through.
+	// The situation: stock fullness, then sell-through. Only craftable goods reach
+	// the scene (buildForgeChoice drops Full stores, LLM-324), so there is no
+	// "no room for another batch" tier here — a good with no headroom isn't offered.
 	switch it.Stock {
 	case StockEmpty:
 		s.WriteString("You have no " + noun + " on hand")
@@ -224,8 +239,6 @@ func tradeGoodScene(it ForgeChoiceItem) string {
 		s.WriteString("Your stock of " + noun + " is running low")
 	case StockAmple:
 		s.WriteString("You have a fair stock of " + noun)
-	case StockFull:
-		s.WriteString("Your stores of " + noun + " have no room for another batch")
 	}
 	switch it.Movement {
 	case MovementBrisk:
@@ -238,18 +251,13 @@ func tradeGoodScene(it ForgeChoiceItem) string {
 		s.WriteString(", and none sold this past week.")
 	}
 
-	// The affordance: what another batch takes. Omitted entirely at full
-	// stores — a batch can't start, so there is nothing to weigh.
-	if it.Stock == StockFull {
-		return s.String()
-	}
+	// The affordance: what another batch takes. The inputs are on hand by
+	// construction (LLM-324 drops input-short goods), so an inputs recipe notes the
+	// makings are ready and an origin recipe (no inputs) reads plain.
 	work := it.WorkPhrase
-	switch {
-	case !it.InputsReady:
-		s.WriteString(" A batch would take about " + work + ", but you'd need more " + joinLabelsWithAnd(it.MissingLabels) + " first.")
-	case it.HasInputs:
+	if it.HasInputs {
 		s.WriteString(" A batch — " + countPhrase(it.BatchQty) + " more — takes about " + work + ", and you have the makings.")
-	default:
+	} else {
 		s.WriteString(" A batch — " + countPhrase(it.BatchQty) + " more — takes about " + work + ".")
 	}
 	return s.String()
@@ -260,57 +268,6 @@ func tradeGoodScene(it ForgeChoiceItem) string {
 // templates.
 func countPhrase(n int) string {
 	return strconv.Itoa(n)
-}
-
-// joinLabelsWithAnd renders missing-input display labels as a natural list:
-// "milk", "milk and sage", "milk, sage, and meat".
-func joinLabelsWithAnd(labels []string) string {
-	clean := make([]string, 0, len(labels))
-	for _, l := range labels {
-		clean = append(clean, sanitizeInline(l))
-	}
-	switch len(clean) {
-	case 0:
-		return "of what it needs"
-	case 1:
-		return clean[0]
-	case 2:
-		return clean[0] + " and " + clean[1]
-	default:
-		return strings.Join(clean[:len(clean)-1], ", ") + ", and " + clean[len(clean)-1]
-	}
-}
-
-// missingInputs lists the recipe inputs actorSnap's inventory is short of,
-// resolving each to its catalog display label for the trade-scene "you'd need
-// more X first" clause (LLM-257). Mirrors sim.HasProduceInputs's per-input test.
-func missingInputs(snap *sim.Snapshot, recipe *sim.ItemRecipe, inventory map[sim.ItemKind]int) []MissingInput {
-	if recipe == nil {
-		return nil
-	}
-	var out []MissingInput
-	for _, in := range recipe.Inputs {
-		if in.Qty <= 0 {
-			continue
-		}
-		if have := inventory[in.Item]; have < in.Qty {
-			out = append(out, MissingInput{
-				Label: itemDisplayLabel(snap, in.Item),
-				Need:  in.Qty,
-				Have:  have,
-			})
-		}
-	}
-	return out
-}
-
-// MissingInput is one recipe input the producer is short of, resolved to its
-// catalog display label (LLM-257). Need/Have stay for the umbilical/testing
-// surface; the scene renders labels only.
-type MissingInput struct {
-	Label string
-	Need  int
-	Have  int
 }
 
 // recentProducedUnits totals the units of `item` the actor actually made within
