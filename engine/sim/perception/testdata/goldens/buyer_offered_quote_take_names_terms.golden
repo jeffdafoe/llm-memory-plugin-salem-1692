@@ -14,4 +14,4 @@ Evening settles over the village.
 
 You keep your trade at the Blacksmith (destination: blacksmith) — you can head back there whenever you wish.
 
-Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

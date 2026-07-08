@@ -18,4 +18,4 @@ Your day's work is done, and the tavern is open of an evening — you might make
 ## Your lodging
 Your room at the Inn is paid — you are settled here for now, no need to arrange another.
 
-Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

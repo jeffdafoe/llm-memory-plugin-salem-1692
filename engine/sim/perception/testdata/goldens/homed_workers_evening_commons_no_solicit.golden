@@ -15,4 +15,4 @@ You keep your trade at the Blacksmith (destination: blacksmith), and your home i
 
 Your day's work is done, and the tavern is open of an evening — you might make your way to the Tavern (destination: tavern) for company, pass a quiet evening at the Crane Cottage (destination: crane_cottage), or turn in for the night, as you please.
 
-Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

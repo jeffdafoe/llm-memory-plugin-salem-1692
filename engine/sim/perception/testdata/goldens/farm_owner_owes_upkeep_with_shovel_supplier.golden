@@ -14,4 +14,4 @@ It is morning in the village.
 ## Farm upkeep
 The season's work has worn your farm tools. Buy 3 fresh shovels to set the farm right for the season. Use move_to to reach a supplier, then pay_with_item once you arrive:
   - buy from Blacksmith (destination: blacksmith)
-Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

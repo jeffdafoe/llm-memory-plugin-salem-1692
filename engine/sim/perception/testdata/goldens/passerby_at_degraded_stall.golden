@@ -12,4 +12,4 @@ You are outdoors, with no one else here to hear you speak.
 It is morning in the village.
 
 The Blacksmith here is too worn to restock — its keeper can sell what's on hand, but can't refill the shelves or make more until it's mended.
-Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

@@ -25,4 +25,4 @@ Your shop stock of these bought-in goods is running low. You choose how much to 
 - You have 4 water on hand and room for 11 more at the most. It is generally worth about 1 coin each — pay much above that and you're overpaying. No seller is here now — use move_to to reach a supplier below, then pay_with_item once you arrive.
   - buy from Village Well (destination: well)
 
-Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

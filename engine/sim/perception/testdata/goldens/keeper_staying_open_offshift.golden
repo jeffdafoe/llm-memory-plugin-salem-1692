@@ -19,4 +19,4 @@ Night lies over the village.
 
 You're at your workplace. Your home is at the James Farm (destination: james_farm) — you can head home whenever you wish.
 
-Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

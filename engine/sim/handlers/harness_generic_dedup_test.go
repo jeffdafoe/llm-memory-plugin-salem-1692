@@ -87,9 +87,10 @@ func TestGenericCallKey(t *testing.T) {
 		t.Error("consume must be excluded — its result-aware guard owns it")
 	}
 
-	// Excluded: speak (owned by speakUtteranceKey).
+	// Excluded: speak is not on the allowlist (and is terminal-on-success, so a
+	// repeat speak can never reach this guard anyway — LLM-321).
 	if _, ok := genericCallKey(&ValidatedCall{Name: "speak", Entry: commit, DecodedArgs: SpeakArgs{Text: "hi"}}); ok {
-		t.Error("speak must be excluded — its own guard owns it")
+		t.Error("speak must be excluded from genericCallKey")
 	}
 	// Excluded: the offer family (owned by payOfferKey). offer_trade lowers onto
 	// PayWithItemArgs, so it is covered too.

@@ -17,4 +17,4 @@ You keep your trade at the James Farm (destination: james_farm) — you can head
 What your wares fetch in coin — use it to set a fair price or weigh a trade:
 - Carrots: your own produce — it sells in bulk to Josiah Thorne, whose shop stocks it for the village, not to folk directly. Folk have lately paid about 5 coins each in the shops, but the shop has lately paid you about 2 coins each. Send other buyers to Josiah Thorne.
 
-Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

@@ -16,4 +16,4 @@ It is morning in the village.
 2. Your offer of nothing to Ezekiel Crane for 3 shovel didn't go through — it's closed, so stop waiting on it (offer id 2).
 ## Farm upkeep
 The season's work has worn your farm tools. Ezekiel Crane is here with you, but your offers for shovels aren't finding a deal right now — hold off and come back later rather than pressing them into a no.
-Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

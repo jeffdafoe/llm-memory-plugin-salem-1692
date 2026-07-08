@@ -83,16 +83,3 @@ func TestRestMenuMoveToLineSkipsAfterShiftOnlyHome(t *testing.T) {
 		t.Errorf("after-shift-only menu must not render the move_to-now line:\n%s", out)
 	}
 }
-
-// TestContinuationCodaNamesNoBareRestVerb guards the post-speak decision coda: it
-// must frame moving as the action and must not name a bare "resting" verb. The old
-// "(such as moving or resting)" wording drove tired NPCs to call an unregistered
-// rest() (Ezekiel at the Inn, LLM-178).
-func TestContinuationCodaNamesNoBareRestVerb(t *testing.T) {
-	if strings.Contains(continuationDecisionText, "or resting") {
-		t.Errorf("continuation coda invites a bare rest verb: %q", continuationDecisionText)
-	}
-	if !strings.Contains(continuationDecisionText, "moving to where you can rest") {
-		t.Errorf("continuation coda should frame moving as the rest action: %q", continuationDecisionText)
-	}
-}

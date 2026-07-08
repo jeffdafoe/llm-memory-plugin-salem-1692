@@ -9,12 +9,11 @@ import (
 )
 
 // TestCommitResultContent_SpeakEchoesLine pins the speak tool result: a
-// successful speak returns its own line back to the model (quoted, the
-// ZBBS-WORK-368 within-tick salience echo) plus the ZBBS-WORK-375 post-speak
-// continuation steer (bias to done(), forbid re-greet/re-pitch/rephrase),
-// instead of the generic "[ok]" every other commit returns. With HOME-381's
-// hard cap gone, this tool result is the recency-dominant message the model
-// reads before deciding whether to speak again or end the turn.
+// successful speak returns its own line back to the model, quoted, instead of
+// the generic "[ok]" every other commit returns. This is a plain commit
+// acknowledgment — speak is terminal-on-success (LLM-321), so the tick ends on
+// it and the old ZBBS-WORK-375 "call done() now" continuation steer is gone
+// (there is no second within-tick round for the model to read it).
 func TestCommitResultContent_SpeakEchoesLine(t *testing.T) {
 	cases := []struct {
 		name string
@@ -22,21 +21,21 @@ func TestCommitResultContent_SpeakEchoesLine(t *testing.T) {
 		want string
 	}{
 		{
-			name: "speak echoes the line + continuation steer",
+			name: "speak echoes the line",
 			vc:   ValidatedCall{Name: "speak", DecodedArgs: SpeakArgs{Text: "Welcome, friend"}},
-			want: `[ok] You said: "Welcome, friend". You have spoken — call done() now unless a new event has arrived or someone asked you something distinct you have not yet answered. Do not greet again, re-pitch, or rephrase what you just said.`,
+			want: `[ok] You said: "Welcome, friend".`,
 		},
 		{
 			name: "speak text is trimmed to match what was actually spoken",
 			vc:   ValidatedCall{Name: "speak", DecodedArgs: SpeakArgs{Text: "  good morrow  "}},
-			want: `[ok] You said: "good morrow". You have spoken — call done() now unless a new event has arrived or someone asked you something distinct you have not yet answered. Do not greet again, re-pitch, or rephrase what you just said.`,
+			want: `[ok] You said: "good morrow".`,
 		},
 		{
 			// %q quotes + escapes, so an utterance containing a double quote
 			// can't break out of the echo's "..." framing.
 			name: "embedded quote is escaped, framing holds",
 			vc:   ValidatedCall{Name: "speak", DecodedArgs: SpeakArgs{Text: `say "hi"`}},
-			want: `[ok] You said: "say \"hi\"". You have spoken — call done() now unless a new event has arrived or someone asked you something distinct you have not yet answered. Do not greet again, re-pitch, or rephrase what you just said.`,
+			want: `[ok] You said: "say \"hi\"".`,
 		},
 		{
 			// Defensive: can't happen on the success path (sim.Speak rejects

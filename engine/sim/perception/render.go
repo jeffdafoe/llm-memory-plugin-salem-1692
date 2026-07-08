@@ -79,18 +79,6 @@ type RenderedPrompt struct {
 	// state can pile up once per historical tick.
 	EphemeralText string
 
-	// ContinuationText is the lean post-speak decision body the harness swaps in
-	// after the actor's first committed speak this tick (ZBBS-HOME-411). It leads
-	// with the current ## You self-state (ZBBS-WORK-410, so a multi-round tick
-	// keeps live coins/needs in view once EphemeralText is swapped out), then
-	// drops the actionable affordances EphemeralText carries — the inn/food/rest
-	// cues and the act-now coda that prime a re-pitch — for a stop-biased decision
-	// instead. Round 1 sends EphemeralText (the model may act); once the actor has
-	// spoken, the recency-dominant text biases it to done() rather than re-offer
-	// what it just said. Pairs with HOME-402's speak cap (the backstop) and the
-	// WORK-375 per-speak tool-result steer.
-	ContinuationText string
-
 	// RenderedWarrantCount is how many warrants made it into the prompt.
 	RenderedWarrantCount int
 
@@ -107,18 +95,6 @@ type RenderedPrompt struct {
 	// exists to eliminate.
 	DroppedWarrants []sim.WarrantMeta
 }
-
-// continuationDecisionText is the recency-dominant body the harness sends on
-// rounds AFTER the actor has already spoken this tick (RenderedPrompt.
-// ContinuationText, ZBBS-HOME-411). It replaces EphemeralText's affordances +
-// act-now coda with a stop-biased decision, mirroring the WORK-375 per-speak
-// tool-result steer so the two stop-signals agree. It deliberately omits any
-// "unless something new arrived" clause: within a single tick no new external
-// event is incorporated (the prompt is rendered once; new events spawn separate
-// ticks via the reactor), so there is nothing new for the model to inspect, and
-// naming the possibility would only invite it to invent one (code_review, HOME-411).
-const continuationDecisionText = "## Decide\n" +
-	"You have already spoken this turn — let others respond. Call done() unless a prior tool result needs a word, you owe a distinct answer someone asked of you, or a needed non-speaking action remains (such as moving to where you can rest or tend a need). Do not greet again, re-pitch, or rephrase what you have already said.\n"
 
 // Render turns a Payload into a prompt string. It is a pure function:
 // deterministic ordering (already applied in Build) is preserved, the
@@ -343,10 +319,6 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 
 	out.Text = durable.String()
 	out.EphemeralText = ephemeral.String()
-	// The post-speak continuation body also leads with current self-state so a
-	// multi-round tick keeps live coins/needs in view when EphemeralText's
-	// affordance furniture is swapped out (ZBBS-WORK-410).
-	out.ContinuationText = selfState.String() + continuationDecisionText
 	return out
 }
 
@@ -556,15 +528,14 @@ func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.
 		b.WriteString("Weigh everything above. If the most pressing matter is simply awaiting someone's reply, do not repeat yourself — wait and call done(). Otherwise act on what matters most: obligations to others and pressing needs come before idle matters.\n")
 	default:
 		// Universal decision section (ZBBS-WORK-374), replacing the bare HOME-355
-		// "choose one thing and do it" coda. Same intent — weigh the context, act
-		// on what matters — but it now carries the turn-discipline at the decision
-		// point: after one utterance, default to done() and let others answer,
-		// speaking again only on genuinely new input. The live storm (Hannah's six
-		// room-pitches in one tick) read the old action-command coda every round
-		// and re-pitched; this makes "say your piece, then yield" the recency-
-		// dominant instruction. (The hard within-tick stop is WORK-375; this is the
-		// prompt half.)
-		b.WriteString("Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.\n")
+		// "choose one thing and do it" coda. Weigh the context, act on what matters,
+		// take one action. Speaking is terminal (LLM-321): a successful speak ends
+		// the tick on its own, so the old "after you speak, call done()" turn-
+		// discipline — the prompt half of the WORK-375 re-pitch fix — is now
+		// enforced by the engine rather than the prompt, and is dropped here so the
+		// instruction doesn't contradict the mechanic. done() still ends a turn that
+		// took a non-terminal action (or none).
+		b.WriteString("Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.\n")
 	}
 	// Rest-first steer (ZBBS-WORK-354). When the actor is deeply fatigued AND
 	// another need is also pressing, the model otherwise flip-flops between "buy
