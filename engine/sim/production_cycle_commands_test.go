@@ -25,7 +25,7 @@ func buildCookWorld(t *testing.T, recipes map[sim.ItemKind]*sim.ItemRecipe, rest
 	handles.ItemKinds.Seed(map[sim.ItemKind]*sim.ItemKindDef{
 		"stew":      {Name: "stew", DisplayLabel: "Stew", DisplayLabelSingular: "bowl of stew", DisplayLabelPlural: "stew", Category: sim.ItemCategoryFood, SortOrder: 140},
 		"water":     {Name: "water", DisplayLabel: "Water", DisplayLabelSingular: "pail of water", DisplayLabelPlural: "water", Category: sim.ItemCategoryDrink, SortOrder: 20},
-		"sage":      {Name: "sage", DisplayLabel: "Sage", Category: sim.ItemCategoryMaterial, SortOrder: 240},
+		"sage":      {Name: "sage", DisplayLabel: "Sage", DisplayLabelSingular: "sage", DisplayLabelPlural: "sage", Category: sim.ItemCategoryMaterial, SortOrder: 240},
 		"pie":       {Name: "pie", DisplayLabel: "Pie", DisplayLabelSingular: "pie", DisplayLabelPlural: "pies", Category: sim.ItemCategoryFood, SortOrder: 150},
 		"flour":     {Name: "flour", DisplayLabel: "Flour", Category: sim.ItemCategoryMaterial, SortOrder: 250},
 		"porridge":  {Name: "porridge", DisplayLabel: "Porridge", Category: sim.ItemCategoryFood, SortOrder: 130},
