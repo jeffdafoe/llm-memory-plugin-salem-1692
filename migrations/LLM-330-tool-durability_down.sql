@@ -7,6 +7,12 @@
 
 BEGIN;
 
+-- Restore stew's pre-330 batch (output_qty 10 + original per-batch inputs).
+UPDATE item_recipe
+   SET output_qty = 10,
+       inputs = '[{"item": "meat", "qty": 3}, {"item": "water", "qty": 5}, {"item": "milk", "qty": 3}, {"item": "carrots", "qty": 5}, {"item": "skillet", "qty": 1}, {"item": "sage", "qty": 1}]'::jsonb
+ WHERE output_item = 'stew';
+
 UPDATE item_recipe
    SET inputs = (
        SELECT COALESCE(jsonb_agg(elem), '[]'::jsonb)

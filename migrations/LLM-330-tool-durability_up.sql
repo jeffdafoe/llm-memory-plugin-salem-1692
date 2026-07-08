@@ -18,6 +18,17 @@
 --    wear) now gains its skillet input under the sane per-use rate. Stew
 --    already lists skillet — its wear drops from 1 skillet per batch to 1 use
 --    per batch with no recipe change.
+--
+-- 4. Stew batch retune: output_qty was inflated to 10 solely to amortize the
+--    old per-batch skillet CONSUMPTION (1 skillet / 10 stew). Per-use wear
+--    retires that kludge, so the batch shrinks to 6 (shorter ~72-min cycles,
+--    more frequent restock decisions). The consumed inputs scale DOWN with the
+--    batch to hold stew's per-bowl ingredient cost stable — dropping output_qty
+--    alone would nearly double the ingredient cost per bowl, since inputs are
+--    charged per batch. Water/carrots scale exactly (5→3 at 0.6×); meat/milk
+--    round 1.8→2; sage stays 1 (already a floor). Skillet stays as a wear
+--    input. Reorder floors and derived-demand caps rescale automatically off
+--    the new quantities.
 
 BEGIN;
 
@@ -35,5 +46,10 @@ UPDATE item_recipe
    SET inputs = inputs || '[{"item": "skillet", "qty": 1}]'::jsonb
  WHERE output_item = 'fried_meat'
    AND NOT inputs @> '[{"item": "skillet"}]';
+
+UPDATE item_recipe
+   SET output_qty = 6,
+       inputs = '[{"item": "meat", "qty": 2}, {"item": "water", "qty": 3}, {"item": "milk", "qty": 2}, {"item": "carrots", "qty": 3}, {"item": "skillet", "qty": 1}, {"item": "sage", "qty": 1}]'::jsonb
+ WHERE output_item = 'stew';
 
 COMMIT;
