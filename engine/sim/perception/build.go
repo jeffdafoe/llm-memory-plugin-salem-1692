@@ -2896,6 +2896,17 @@ func buildNarrativeState(a *sim.ActorSnapshot) *NarrativeStateView {
 // stored oldest-first SalientFacts, reversed to most-recent-first.
 const recentSalientFactsPerPeer = 3
 
+// maxRenderedRelationshipPeers caps how many co-present peers' remembered
+// impressions render in "## What you remember of those here" (LLM-322). That
+// section re-sends each peer's consolidated summary every tick, so its cost
+// scales with co-presence and spikes in a crowded morning-rush huddle. When a
+// huddle holds more known peers than this, keep the impressions of the peers
+// the subject has most recently dealt with and let the rest fall back to the
+// bare "## Around you" name line (graceful degradation — they're still named,
+// just without the remembered impression). Chosen so a normal conversation (a
+// handful of people) is untouched and only a genuine crowd is trimmed.
+const maxRenderedRelationshipPeers = 4
+
 // buildRelationships projects per-co-huddle-peer relationship views
 // from the subject actor's Relationships map. Populated only for
 // shared-VA actors. Peers in the huddle without a Relationship row
@@ -2943,10 +2954,63 @@ func buildRelationships(a *sim.ActorSnapshot, members []HuddleMember, heardNow m
 			RecentFacts: recentFactsMostRecentFirst(facts, recentSalientFactsPerPeer),
 		})
 	}
+	// LLM-322: in a crowded huddle, cap to the peers the subject has most
+	// recently dealt with so the re-sent-every-tick impression blobs can't
+	// balloon the prompt. A no-op when the huddle holds few enough peers.
+	out = capRelationshipsToMostRecent(out, a.Relationships, maxRenderedRelationshipPeers)
 	if len(out) == 0 {
 		return nil
 	}
 	return out
+}
+
+// capRelationshipsToMostRecent trims the relationship views to at most `limit`,
+// keeping the peers the subject most recently interacted with, so a crowded
+// huddle can't balloon the re-sent-every-tick "## What you remember of those
+// here" section (LLM-322). A peer that carries a consolidated summary — the only
+// kind that renders a line, since renderRelationships skips an empty summary —
+// is preferred over a summary-less row, so a freshly-met peer with no summary
+// yet never displaces one the subject actually remembers. Among peers on equal
+// footing, most-recent LastInteractionAt wins, then higher InteractionCount,
+// then PeerID for a stable order. The kept set is returned in PeerID order so
+// the block still matches "## Around you"'s peer ordering.
+func capRelationshipsToMostRecent(views []RelationshipPeerView, rels map[sim.ActorID]*sim.Relationship, limit int) []RelationshipPeerView {
+	if len(views) <= limit {
+		return views
+	}
+	sort.SliceStable(views, func(i, j int) bool {
+		si := strings.TrimSpace(views[i].SummaryText) != ""
+		sj := strings.TrimSpace(views[j].SummaryText) != ""
+		if si != sj {
+			return si // a peer that will render a line sorts ahead of one that won't
+		}
+		ti, ci := relationshipRecency(rels[views[i].PeerID])
+		tj, cj := relationshipRecency(rels[views[j].PeerID])
+		if !ti.Equal(tj) {
+			return ti.After(tj)
+		}
+		if ci != cj {
+			return ci > cj
+		}
+		return views[i].PeerID < views[j].PeerID
+	})
+	kept := views[:limit]
+	sort.SliceStable(kept, func(i, j int) bool { return kept[i].PeerID < kept[j].PeerID })
+	return kept
+}
+
+// relationshipRecency returns the peer's last-interaction time and interaction
+// count for the cap sort, tolerating a nil relationship / nil timestamp (a zero
+// time sorts last).
+func relationshipRecency(rel *sim.Relationship) (time.Time, int) {
+	if rel == nil {
+		return time.Time{}, 0
+	}
+	var last time.Time
+	if rel.LastInteractionAt != nil {
+		last = *rel.LastInteractionAt
+	}
+	return last, rel.InteractionCount
 }
 
 // recentConversationDedupKey truncates an utterance to MaxSalientFactTextLen the
@@ -2960,6 +3024,14 @@ func recentConversationDedupKey(text string) string {
 	}
 	return text
 }
+
+// maxRenderedConversationLines caps how many lines of the current huddle's
+// RecentUtterances ring render into "## Recent conversation here" (LLM-322). The
+// ring holds up to MaxRecentUtterancesPerHuddle (8); the last few turns are the
+// live thread the model needs to avoid re-pitching, so the older tail is dropped
+// to save per-tick input tokens. Kept near maxSelfActionTrail — the same "last
+// handful is enough" posture.
+const maxRenderedConversationLines = 5
 
 // buildRecentConversation projects the subject's current-huddle RecentUtterances
 // ring into the "## Recent conversation here" view (ZBBS-HOME-412), oldest-first.
@@ -2980,8 +3052,17 @@ func buildRecentConversation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap 
 	if h == nil || len(h.RecentUtterances) == 0 {
 		return nil
 	}
-	out := make([]UtteranceView, 0, len(h.RecentUtterances))
-	for _, u := range h.RecentUtterances {
+	// LLM-322: consider only the most recent lines of the ring, THEN drop any
+	// already shown this tick in "## Since your last turn". The ring is
+	// oldest-first, so slice the tail before de-duping — capping AFTER the de-dup
+	// would let an older ring line leak in when the newest lines de-dup out (they
+	// shrink `out` below the cap, so the tail slice never triggers).
+	utts := h.RecentUtterances
+	if len(utts) > maxRenderedConversationLines {
+		utts = utts[len(utts)-maxRenderedConversationLines:]
+	}
+	out := make([]UtteranceView, 0, len(utts))
+	for _, u := range utts {
 		if dups := heardNow[u.SpeakerID]; dups != nil && dups[recentConversationDedupKey(u.Text)] {
 			continue // already rendered in "## Since your last turn" this tick
 		}
@@ -3011,8 +3092,9 @@ const selfActionTrailWindow = 30 * time.Minute
 // maxSelfActionTrail caps the trail's line count. Small on purpose, matching
 // the MaxRecentUtterancesPerHuddle posture: the last handful of deeds is what
 // self-loop detection needs; anything durable is the consolidation cascade's
-// job. LLM-217.
-const maxSelfActionTrail = 6
+// job. Trimmed 6→5 in LLM-322 to shave per-tick input tokens — still wide
+// enough to show a repeating oscillation. LLM-217.
+const maxSelfActionTrail = 5
 
 // selfActionTrailTypes is the set of committed actions the trail renders — the
 // deed types renderSelfActions has second-person phrasing for. Notably absent:

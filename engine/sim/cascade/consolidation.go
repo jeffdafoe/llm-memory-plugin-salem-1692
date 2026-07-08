@@ -201,9 +201,13 @@ func consolidateOne(ctx context.Context, w *sim.World, client llm.Client, c sim.
 // lines. Independent of any upstream pollution cleanup — protects
 // prompt quality regardless of fact-trail provenance.
 //
-// Word-count cap (~200 words) is a soft target — the LLM tends to
+// Length target (one or two sentences) is a soft cap — the LLM tends to
 // honor "brief" but not strict counts. Long replies parse fine; they
-// just consume more perception budget on subsequent ticks.
+// just consume more perception budget on subsequent ticks. Tightened from
+// the prior ~200-word paragraph in LLM-322: the summary is re-sent verbatim
+// every tick two NPCs are co-present, so a shorter coherent impression is
+// the bigger per-tick input-token lever (and reads more like a scene than a
+// dossier). Takes effect as the daily sweep rewrites each pair's summary.
 func buildConsolidationPrompt(c sim.ConsolidationCandidate) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "You are %s. This is not a scene — you are reflecting privately on your acquaintance with %s. There are no tools available for this turn; respond with prose only.\n\n",
@@ -234,7 +238,7 @@ func buildConsolidationPrompt(c sim.ConsolidationCandidate) string {
 		b.WriteString(line)
 		b.WriteString("\n")
 	}
-	fmt.Fprintf(&b, "\nWrite a brief paragraph (under 200 words) capturing your current sense of %s — a coherent impression, not a list of events. Past or present tense, whichever fits. Just the paragraph, no preamble or sign-off.",
+	fmt.Fprintf(&b, "\nWrite one or two sentences capturing your current sense of %s — a coherent impression, not a list of events. Past or present tense, whichever fits. Just those sentences, no preamble or sign-off.",
 		c.PeerName)
 	return b.String()
 }
