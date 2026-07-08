@@ -1,6 +1,7 @@
 package sim_test
 
 import (
+	"math"
 	"strings"
 	"testing"
 
@@ -209,10 +210,13 @@ func TestProduceClampsRetunedWear(t *testing.T) {
 
 // TestToolRunwayUses pins the cue-side runway math: spares at full durability
 // plus the wear left on the in-use unit; missing/oversized wear reads fresh.
+// int64 so huge corrupt-catalog values can't overflow before the caller's
+// clamp (code_review).
 func TestToolRunwayUses(t *testing.T) {
 	cases := []struct {
-		name                           string
-		onHand, wear, durability, want int
+		name                     string
+		onHand, wear, durability int
+		want                     int64
 	}{
 		{"two fresh", 2, 0, 20, 40},
 		{"in-use worn", 2, 5, 20, 25},
@@ -220,10 +224,52 @@ func TestToolRunwayUses(t *testing.T) {
 		{"oversized wear clamps", 1, 99, 20, 20},
 		{"nothing on hand", 0, 5, 20, 0},
 		{"not a tool", 3, 0, 0, 0},
+		{"huge values do not overflow", math.MaxInt32, 0, math.MaxInt32, (int64(math.MaxInt32)-1)*int64(math.MaxInt32) + int64(math.MaxInt32)},
 	}
 	for _, c := range cases {
 		if got := sim.ToolRunwayUses(c.onHand, c.wear, c.durability); got != c.want {
 			t.Errorf("%s: ToolRunwayUses(%d, %d, %d) = %d, want %d", c.name, c.onHand, c.wear, c.durability, got, c.want)
 		}
+	}
+}
+
+// TestProduceMultiToolInputWearsQtyUses — a recipe listing Qty > 1 of a tool
+// draws that many USES per execution (code_review: wear and the on-hand
+// requirement stay in the same currency). Durability 3, Qty 2: the first
+// execution takes up a unit and wears it to 1; the second crosses a unit
+// boundary — spends the in-use one mid-execution and finishes on a fresh one.
+func TestProduceMultiToolInputWearsQtyUses(t *testing.T) {
+	recipes := map[sim.ItemKind]*sim.ItemRecipe{
+		"pie": {OutputItem: "pie", OutputQty: 1, RateQty: 1, RatePerHours: 1,
+			Inputs: []sim.RecipeInput{{Item: "skillet", Qty: 2}}},
+	}
+	restock := []sim.RestockEntry{{Item: "pie", Source: sim.RestockSourceProduce, Max: 30}}
+	w, cancel := buildCookWorld(t, recipes, restock, map[sim.ItemKind]int{"skillet": 2})
+	defer cancel()
+
+	if _, err := w.Send(sim.StartProductionCycle("cook", "pie")); err != nil {
+		t.Fatalf("first start: %v", err)
+	}
+	if got := toolWearOf(t, w, "cook", "skillet"); got != 1 {
+		t.Errorf("ToolWear[skillet] = %d after 2 uses of a fresh 3, want 1", got)
+	}
+	if got := inventoryOf(t, w, "cook", "skillet"); got != 2 {
+		t.Errorf("skillet = %d, want 2 (no unit spent yet)", got)
+	}
+
+	clearProductionWindow(t, w, "cook")
+	res, err := w.Send(sim.StartProductionCycle("cook", "pie"))
+	if err != nil {
+		t.Fatalf("second start: %v", err)
+	}
+	r := res.(sim.ProductionStartResult)
+	if !strings.Contains(r.ToolWear, "gives out") {
+		t.Errorf("ToolWear = %q, want the mid-execution give-out named", r.ToolWear)
+	}
+	if got := inventoryOf(t, w, "cook", "skillet"); got != 1 {
+		t.Errorf("skillet = %d, want 1 (the worn unit spent crossing the boundary)", got)
+	}
+	if got := toolWearOf(t, w, "cook", "skillet"); got != 2 {
+		t.Errorf("ToolWear[skillet] = %d, want 2 (fresh unit, one boundary use taken)", got)
 	}
 }

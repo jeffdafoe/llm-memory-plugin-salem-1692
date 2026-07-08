@@ -197,12 +197,19 @@ func buildProductionInputs(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *s
 			// quantities from overflowing int before the divide — the same posture
 			// RestockReorderThresholdMet and buyerLastPaidAffordableQty take.
 			// A durable tool (LLM-330) runs on wear, not per-batch draw: uses
-			// left across the on-hand stock × outputQty per execution.
+			// left across the on-hand stock, over the recipe's per-execution
+			// draw (in.Qty uses per execution), × outputQty. The uses figure is
+			// clamped BEFORE the multiply so huge onHand × durability values
+			// can't overflow int64 mid-expression.
 			var runway int64
 			tool := false
 			if durability := sim.DurableToolUses(snap.ItemKinds, in.Item); durability > 0 {
 				tool = true
-				runway = int64(sim.ToolRunwayUses(current, actorSnap.ToolWear[in.Item], durability)) * int64(recipe.OutputQty)
+				uses := sim.ToolRunwayUses(current, actorSnap.ToolWear[in.Item], durability)
+				if uses > int64(math.MaxInt32) {
+					uses = int64(math.MaxInt32)
+				}
+				runway = uses * int64(recipe.OutputQty) / int64(in.Qty)
 			} else {
 				runway = int64(current) * int64(recipe.OutputQty) / int64(in.Qty)
 			}

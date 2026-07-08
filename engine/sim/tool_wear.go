@@ -21,7 +21,10 @@ package sim
 // corner (selling every unit while wear remains, then rebuying) carries the
 // old wear onto the replacement and self-corrects within one tool's life.
 // A wear entry above the kind's current durability (an operator retuned N
-// down live) clamps at next use.
+// down live) clamps at next use. Retuning durability to 0 returns the kind to
+// plain consumed-input semantics on the next execution; an existing wear
+// entry for it becomes inert — ignored by the produce path, persisted
+// harmlessly while stock remains, gone with the stock's inventory row.
 
 // DurableToolUses resolves kind's per-unit durability from the catalog:
 // > 0 means the kind is a durable tool lasting that many produce executions.
@@ -41,52 +44,67 @@ func DurableToolUses(kinds map[ItemKind]*ItemKindDef, kind ItemKind) int {
 type toolWearResult struct {
 	Item     ItemKind
 	UsesLeft int  // uses remaining on the in-use unit after this execution
-	Spent    bool // this execution used the unit up (inventory already decremented)
+	Spent    bool // this execution used a unit up (inventory already decremented)
 	OnHand   int  // units still in inventory after any spend (includes the in-use one)
 }
 
-// applyToolWear wears the actor's in-use unit of a durable tool kind by one
-// produce execution: a missing/zero wear entry means a fresh unit is taken up
-// at full durability first (an entry above durability clamps — the live-retune
-// case). At 0 the unit is spent — inventory decrements with the delete-on-zero
-// invariant and the wear entry clears so the next execution starts a fresh
-// unit. The caller (StartProductionCycle) has already verified the tool is on
-// hand via HasProduceInputs; durability must be > 0 (the caller gates on
-// DurableToolUses).
-func applyToolWear(a *Actor, kind ItemKind, durability int) toolWearResult {
+// applyToolWear wears the actor's in-use unit of a durable tool kind by `uses`
+// (the recipe input's Qty — a recipe listing 2 of a tool draws 2 uses per
+// execution, so wear and the on-hand requirement stay in the same currency).
+// A missing/zero wear entry means a fresh unit is taken up at full durability
+// first (an entry above durability clamps — the live-retune case). Each time
+// wear reaches 0 the unit is spent and the next use takes up a fresh one;
+// spent units decrement inventory with the delete-on-zero invariant. The
+// caller (StartProductionCycle) has already verified inventory >= uses via
+// HasProduceInputs, which bounds the spends; durability must be > 0 (the
+// caller gates on DurableToolUses).
+func applyToolWear(a *Actor, kind ItemKind, durability, uses int) toolWearResult {
 	if a.ToolWear == nil {
 		a.ToolWear = make(map[ItemKind]int)
 	}
 	wear := a.ToolWear[kind]
-	if wear <= 0 || wear > durability {
+	if wear < 0 || wear > durability {
 		wear = durability
 	}
-	wear--
-	if wear <= 0 {
-		delete(a.ToolWear, kind)
-		a.Inventory[kind]--
+	spent := 0
+	for i := 0; i < uses; i++ {
+		if wear <= 0 {
+			wear = durability // take up a fresh unit
+		}
+		wear--
+		if wear == 0 {
+			spent++
+		}
+	}
+	if spent > 0 {
+		a.Inventory[kind] -= spent
 		if a.Inventory[kind] <= 0 {
 			delete(a.Inventory, kind)
 		}
-		return toolWearResult{Item: kind, UsesLeft: 0, Spent: true, OnHand: a.Inventory[kind]}
 	}
-	a.ToolWear[kind] = wear
-	return toolWearResult{Item: kind, UsesLeft: wear, Spent: false, OnHand: a.Inventory[kind]}
+	if wear > 0 {
+		a.ToolWear[kind] = wear
+	} else {
+		delete(a.ToolWear, kind)
+	}
+	return toolWearResult{Item: kind, UsesLeft: wear, Spent: spent > 0, OnHand: a.Inventory[kind]}
 }
 
-// ToolRunwayUses is how many more produce executions the actor's stock of a
-// durable tool kind can back: full durability for every spare unit plus the
-// wear remaining on the in-use one (a missing/zero wear entry means no unit
-// has been taken up — all units are fresh; an entry above durability clamps,
-// matching applyToolWear). 0 when nothing is on hand. Shared by the
-// "## Keeping up production" cue's tool runway so perception and the wear
-// mechanics can't drift on what the stock is worth.
-func ToolRunwayUses(onHand, wearRemaining, durability int) int {
+// ToolRunwayUses is how many more USES the actor's stock of a durable tool
+// kind can back: full durability for every spare unit plus the wear remaining
+// on the in-use one (a missing/zero wear entry means no unit has been taken up
+// — all units are fresh; an entry above durability clamps, matching
+// applyToolWear). 0 when nothing is on hand. int64 so a corrupt/imported
+// catalog with huge on-hand or durability values can't overflow before the
+// caller's clamp — the same posture the perception runway math takes. Shared
+// by the "## Keeping up production" cue's tool runway so perception and the
+// wear mechanics can't drift on what the stock is worth.
+func ToolRunwayUses(onHand, wearRemaining, durability int) int64 {
 	if onHand <= 0 || durability <= 0 {
 		return 0
 	}
 	if wearRemaining <= 0 || wearRemaining > durability {
 		wearRemaining = durability
 	}
-	return (onHand-1)*durability + wearRemaining
+	return int64(onHand-1)*int64(durability) + int64(wearRemaining)
 }

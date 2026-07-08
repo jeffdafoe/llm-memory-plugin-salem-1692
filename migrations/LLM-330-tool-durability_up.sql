@@ -23,7 +23,11 @@ BEGIN;
 
 ALTER TABLE item_kind ADD COLUMN durability_uses INTEGER NOT NULL DEFAULT 0;
 
-ALTER TABLE actor_inventory ADD COLUMN uses_left INTEGER;
+-- uses_left NULL = ordinary stock / an unworn tool; a set value must be a
+-- live counter (the engine deletes wear entries at zero), so guard the
+-- invariant against out-of-band writes.
+ALTER TABLE actor_inventory ADD COLUMN uses_left INTEGER
+    CONSTRAINT actor_inventory_uses_left_positive CHECK (uses_left IS NULL OR uses_left > 0);
 
 UPDATE item_kind SET durability_uses = 20 WHERE name = 'skillet';
 

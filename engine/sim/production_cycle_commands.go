@@ -134,7 +134,7 @@ func StartProductionCycle(id ActorID, itemName string) Command {
 					continue
 				}
 				if durability := DurableToolUses(w.ItemKinds, in.Item); durability > 0 {
-					wornTools = append(wornTools, toolWearPhrase(w, applyToolWear(a, in.Item, durability)))
+					wornTools = append(wornTools, toolWearPhrase(w, applyToolWear(a, in.Item, durability, in.Qty)))
 					continue
 				}
 				a.Inventory[in.Item] -= in.Qty
