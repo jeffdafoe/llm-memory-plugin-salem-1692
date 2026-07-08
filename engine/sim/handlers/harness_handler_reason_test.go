@@ -66,7 +66,7 @@ func TestHarness_HandlerModelSafeError_ObservationSurfaced(t *testing.T) {
 }
 
 // Commit branch through the REAL scene_quote handler: a whitespace-only
-// item_kind passes decode (non-empty) but HandleSceneQuote rejects it
+// item passes decode (non-empty) but HandleSceneQuote rejects it
 // empty-after-trim with a modelSafeError, which must surface.
 func TestHarness_HandlerModelSafeError_RealSceneQuoteSurfaced(t *testing.T) {
 	w, cancel := newHarnessWorld(t, "attempt-A")
@@ -78,7 +78,7 @@ func TestHarness_HandlerModelSafeError_RealSceneQuoteSurfaced(t *testing.T) {
 	}
 	client := llm.NewFakeClient(
 		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{
-			newToolCall("c1", 0, "sell", `{"lines":[{"item_kind":"   ","qty":1}],"amount":4}`),
+			newToolCall("c1", 0, "sell", `{"lines":[{"item":"   ","qty":1}],"amount":4}`),
 		}}},
 		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c2", 0, "done", `{}`)}}},
 	)
@@ -89,7 +89,7 @@ func TestHarness_HandlerModelSafeError_RealSceneQuoteSurfaced(t *testing.T) {
 	_ = h.RunTick(context.Background(), w, newTestJob("attempt-A", nil))
 
 	got := toolResultForCall(t, client, "c1")
-	if !strings.Contains(got, "item_kind is empty after trim") {
+	if !strings.Contains(got, "item is empty after trim") {
 		t.Errorf("real handler static-validation reason should reach the model; got %q", got)
 	}
 	if strings.Contains(got, "handler_failed") {
