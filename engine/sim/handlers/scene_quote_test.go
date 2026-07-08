@@ -143,6 +143,45 @@ func TestDecodeSceneQuoteArgs_ItemWinsOverAlias(t *testing.T) {
 	}
 }
 
+// LLM-326: an exact-empty canonical `item` falls back to the `item_kind` alias.
+func TestDecodeSceneQuoteArgs_EmptyItemFallsBackToAlias(t *testing.T) {
+	args, err := DecodeSceneQuoteArgs(json.RawMessage(
+		`{"lines":[{"item":"","item_kind":"ale","qty":1}],"amount":2,"consume_now":false}`))
+	if err != nil {
+		t.Fatalf("DecodeSceneQuoteArgs: %v", err)
+	}
+	got := args.(SceneQuoteArgs)
+	if got.Lines[0].ItemKind != "ale" {
+		t.Fatalf("empty item should fall back to item_kind alias, got %q", got.Lines[0].ItemKind)
+	}
+}
+
+// LLM-326: selection is exact-empty, not trimmed — a whitespace-only canonical
+// `item` still selects (over a usable alias) and passes decode; HandleSceneQuote
+// is what rejects it "empty after trim". Locks in the decode/handler split.
+func TestDecodeSceneQuoteArgs_WhitespaceItemWinsOverAlias(t *testing.T) {
+	args, err := DecodeSceneQuoteArgs(json.RawMessage(
+		`{"lines":[{"item":"   ","item_kind":"ale","qty":1}],"amount":2,"consume_now":false}`))
+	if err != nil {
+		t.Fatalf("DecodeSceneQuoteArgs: %v", err)
+	}
+	got := args.(SceneQuoteArgs)
+	if got.Lines[0].ItemKind != "   " {
+		t.Fatalf("canonical whitespace item should win before handler trim, got %q", got.Lines[0].ItemKind)
+	}
+}
+
+// LLM-326: strict-decode posture — an over-cap alias is rejected even when the
+// canonical `item` would win, since every present item field is cap-validated.
+func TestDecodeSceneQuoteArgs_OverCapAliasRejectedEvenWhenItemPresent(t *testing.T) {
+	long := strings.Repeat("a", MaxSceneQuoteItemChars+1)
+	raw := `{"lines":[{"item":"ale","item_kind":"` + long + `","qty":1}],"amount":2,"consume_now":false}`
+	_, err := DecodeSceneQuoteArgs(json.RawMessage(raw))
+	if err == nil || !strings.Contains(err.Error(), "lines[0].item_kind exceeds") {
+		t.Fatalf("err = %v, want item_kind cap reject", err)
+	}
+}
+
 // ---- HandleSceneQuote (pure builder) ----
 
 func TestHandleSceneQuote_HappyPath_BuildsCommand(t *testing.T) {
