@@ -62,7 +62,7 @@ func sceneQuoteJSON(item string, qty, amount int, consumeNow bool) string {
 // silently disable for the real tool and the storm could return. Mirrors
 // TestPayOfferKey_ProductionDecoderShape.
 func TestSceneQuoteKey_ProductionDecoderShape(t *testing.T) {
-	decoded, err := DecodeSceneQuoteArgs(json.RawMessage(`{"lines":[{"item_kind":"Bread","qty":1}],"amount":4,"consume_now":false}`))
+	decoded, err := DecodeSceneQuoteArgs(json.RawMessage(`{"lines":[{"item":"Bread","qty":1}],"amount":4,"consume_now":false}`))
 	if err != nil {
 		t.Fatalf("DecodeSceneQuoteArgs: %v", err)
 	}

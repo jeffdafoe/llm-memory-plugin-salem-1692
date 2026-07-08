@@ -48,7 +48,7 @@ func TestValidator_Validate_SurfacesModelSafeDecodeReason(t *testing.T) {
 			// "argument decode failed", and kept retrying.
 			name:    "scene_quote amount below minimum",
 			tool:    "sell",
-			args:    `{"lines":[{"item_kind":"Porridge","qty":1}],"amount":0}`,
+			args:    `{"lines":[{"item":"Porridge","qty":1}],"amount":0}`,
 			wantSub: "amount",
 		},
 		{
@@ -64,7 +64,7 @@ func TestValidator_Validate_SurfacesModelSafeDecodeReason(t *testing.T) {
 			// must name the offending key so the model drops it.
 			name:    "unknown field names the key",
 			tool:    "sell",
-			args:    `{"lines":[{"item_kind":"Porridge","qty":1}],"amount":1,"message":"hi"}`,
+			args:    `{"lines":[{"item":"Porridge","qty":1}],"amount":1,"message":"hi"}`,
 			wantSub: `unknown field "message"`,
 		},
 		{
@@ -72,7 +72,7 @@ func TestValidator_Validate_SurfacesModelSafeDecodeReason(t *testing.T) {
 			// cited offenders ("consume_now":"true").
 			name:    "bool field given a string",
 			tool:    "sell",
-			args:    `{"lines":[{"item_kind":"Porridge","qty":1}],"amount":1,"consume_now":"true"}`,
+			args:    `{"lines":[{"item":"Porridge","qty":1}],"amount":1,"consume_now":"true"}`,
 			wantSub: "consume_now",
 		},
 		{
@@ -80,7 +80,7 @@ func TestValidator_Validate_SurfacesModelSafeDecodeReason(t *testing.T) {
 			// (another cited offender, "mentions":"" — here consumers).
 			name:    "array field given a string",
 			tool:    "sell",
-			args:    `{"lines":[{"item_kind":"Porridge","qty":1}],"amount":1,"consumers":"Ezekiel"}`,
+			args:    `{"lines":[{"item":"Porridge","qty":1}],"amount":1,"consumers":"Ezekiel"}`,
 			wantSub: "consumers",
 		},
 		{
@@ -88,7 +88,7 @@ func TestValidator_Validate_SurfacesModelSafeDecodeReason(t *testing.T) {
 			// path still names the offender (qty lives inside lines[]).
 			name:    "nested number field given a string",
 			tool:    "sell",
-			args:    `{"lines":[{"item_kind":"Porridge","qty":"lots"}],"amount":1}`,
+			args:    `{"lines":[{"item":"Porridge","qty":"lots"}],"amount":1}`,
 			wantSub: "qty",
 		},
 	}
@@ -128,11 +128,11 @@ func TestValidator_Validate_RawDecodeStaysGeneric(t *testing.T) {
 		name string
 		args string
 	}{
-		{"truncated json", `{"lines":[{"item_kind":"` + sentinel + `",`},
+		{"truncated json", `{"lines":[{"item":"` + sentinel + `",`},
 		{"invalid syntax", `{"amount": ` + sentinel + `}`},
 		// Unknown key that is not a plain identifier (contains a space) must
 		// fall back to generic rather than echo the model's raw key.
-		{"unknown field non-identifier key", `{"lines":[{"item_kind":"P","qty":1}],"amount":1,"` + sentinel + ` z":"y"}`},
+		{"unknown field non-identifier key", `{"lines":[{"item":"P","qty":1}],"amount":1,"` + sentinel + ` z":"y"}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -213,7 +213,7 @@ func TestValidator_Validate_TypeMismatchDoesNotLeakValue(t *testing.T) {
 			// Fractional value into the int `amount` field triggers the
 			// "number 3.5" Value path.
 			name:    "fractional into int",
-			args:    `{"lines":[{"item_kind":"Porridge","qty":1}],"amount":3.5}`,
+			args:    `{"lines":[{"item":"Porridge","qty":1}],"amount":3.5}`,
 			leak:    "3.5",
 			wantSub: "amount",
 		},
@@ -221,7 +221,7 @@ func TestValidator_Validate_TypeMismatchDoesNotLeakValue(t *testing.T) {
 			// Overflowing literal into the int `amount` field triggers the
 			// "number <literal>" Value path with a long, distinctive token.
 			name:    "overflow into int",
-			args:    `{"lines":[{"item_kind":"Porridge","qty":1}],"amount":99999999999999999999}`,
+			args:    `{"lines":[{"item":"Porridge","qty":1}],"amount":99999999999999999999}`,
 			leak:    "99999999999999999999",
 			wantSub: "amount",
 		},

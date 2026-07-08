@@ -17,7 +17,7 @@ import (
 
 func TestDecodeSceneQuoteArgs_Valid_Minimal(t *testing.T) {
 	args, err := DecodeSceneQuoteArgs(json.RawMessage(
-		`{"lines":[{"item_kind":"ale","qty":1}],"amount":2,"consume_now":false}`))
+		`{"lines":[{"item":"ale","qty":1}],"amount":2,"consume_now":false}`))
 	if err != nil {
 		t.Fatalf("DecodeSceneQuoteArgs: %v", err)
 	}
@@ -34,7 +34,7 @@ func TestDecodeSceneQuoteArgs_Valid_Minimal(t *testing.T) {
 }
 
 func TestDecodeSceneQuoteArgs_Valid_Full(t *testing.T) {
-	raw := `{"lines":[{"item_kind":"stew","qty":2}],"amount":10,"consume_now":true,"target_buyer":"Bea","consumers":["Bea","Cyrus"]}`
+	raw := `{"lines":[{"item":"stew","qty":2}],"amount":10,"consume_now":true,"target_buyer":"Bea","consumers":["Bea","Cyrus"]}`
 	args, err := DecodeSceneQuoteArgs(json.RawMessage(raw))
 	if err != nil {
 		t.Fatalf("DecodeSceneQuoteArgs: %v", err)
@@ -50,34 +50,34 @@ func TestDecodeSceneQuoteArgs_Valid_Full(t *testing.T) {
 
 func TestDecodeSceneQuoteArgs_MissingItemKind(t *testing.T) {
 	_, err := DecodeSceneQuoteArgs(json.RawMessage(`{"lines":[{"qty":1}],"amount":2,"consume_now":false}`))
-	if err == nil || !strings.Contains(err.Error(), "item_kind") {
-		t.Fatalf("err = %v, want item_kind required", err)
+	if err == nil || !strings.Contains(err.Error(), "item is required") {
+		t.Fatalf("err = %v, want item required", err)
 	}
 }
 
 func TestDecodeSceneQuoteArgs_QtyZero(t *testing.T) {
-	_, err := DecodeSceneQuoteArgs(json.RawMessage(`{"lines":[{"item_kind":"ale","qty":0}],"amount":2,"consume_now":false}`))
+	_, err := DecodeSceneQuoteArgs(json.RawMessage(`{"lines":[{"item":"ale","qty":0}],"amount":2,"consume_now":false}`))
 	if err == nil || !strings.Contains(err.Error(), "qty must be at least 1") {
 		t.Fatalf("err = %v", err)
 	}
 }
 
 func TestDecodeSceneQuoteArgs_NegativeAmount(t *testing.T) {
-	_, err := DecodeSceneQuoteArgs(json.RawMessage(`{"lines":[{"item_kind":"ale","qty":1}],"amount":-5,"consume_now":false}`))
+	_, err := DecodeSceneQuoteArgs(json.RawMessage(`{"lines":[{"item":"ale","qty":1}],"amount":-5,"consume_now":false}`))
 	if err == nil || !strings.Contains(err.Error(), "amount must be at least 1") {
 		t.Fatalf("err = %v", err)
 	}
 }
 
 func TestDecodeSceneQuoteArgs_AmountOverMax(t *testing.T) {
-	_, err := DecodeSceneQuoteArgs(json.RawMessage(`{"lines":[{"item_kind":"ale","qty":1}],"amount":2147483648,"consume_now":false}`))
+	_, err := DecodeSceneQuoteArgs(json.RawMessage(`{"lines":[{"item":"ale","qty":1}],"amount":2147483648,"consume_now":false}`))
 	if err == nil || !strings.Contains(err.Error(), "exceeds maximum") {
 		t.Fatalf("err = %v", err)
 	}
 }
 
 func TestDecodeSceneQuoteArgs_TooManyConsumers(t *testing.T) {
-	raw := `{"lines":[{"item_kind":"ale","qty":1}],"amount":2,"consume_now":false,"consumers":["a","b","c","d","e","f","g","h","i"]}`
+	raw := `{"lines":[{"item":"ale","qty":1}],"amount":2,"consume_now":false,"consumers":["a","b","c","d","e","f","g","h","i"]}`
 	_, err := DecodeSceneQuoteArgs(json.RawMessage(raw))
 	if err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("err = %v, want too-many-consumers cap", err)
@@ -85,7 +85,7 @@ func TestDecodeSceneQuoteArgs_TooManyConsumers(t *testing.T) {
 }
 
 func TestDecodeSceneQuoteArgs_UnknownField(t *testing.T) {
-	_, err := DecodeSceneQuoteArgs(json.RawMessage(`{"lines":[{"item_kind":"ale","qty":1}],"amount":2,"consume_now":false,"sneaky":"x"}`))
+	_, err := DecodeSceneQuoteArgs(json.RawMessage(`{"lines":[{"item":"ale","qty":1}],"amount":2,"consume_now":false,"sneaky":"x"}`))
 	if err == nil {
 		t.Fatal("DecodeSceneQuoteArgs with unknown field: want error")
 	}
@@ -100,7 +100,7 @@ func TestDecodeSceneQuoteArgs_NonObject(t *testing.T) {
 }
 
 func TestDecodeSceneQuoteArgs_TrailingData(t *testing.T) {
-	_, err := DecodeSceneQuoteArgs(json.RawMessage(`{"lines":[{"item_kind":"ale","qty":1}],"amount":2,"consume_now":false}{"x":1}`))
+	_, err := DecodeSceneQuoteArgs(json.RawMessage(`{"lines":[{"item":"ale","qty":1}],"amount":2,"consume_now":false}{"x":1}`))
 	if err == nil || !strings.Contains(err.Error(), "trailing data") {
 		t.Fatalf("err = %v, want trailing data reject", err)
 	}
@@ -108,10 +108,38 @@ func TestDecodeSceneQuoteArgs_TrailingData(t *testing.T) {
 
 func TestDecodeSceneQuoteArgs_LongItemKind(t *testing.T) {
 	long := strings.Repeat("a", MaxSceneQuoteItemChars+1)
-	raw := `{"lines":[{"item_kind":"` + long + `","qty":1}],"amount":2,"consume_now":false}`
+	raw := `{"lines":[{"item":"` + long + `","qty":1}],"amount":2,"consume_now":false}`
 	_, err := DecodeSceneQuoteArgs(json.RawMessage(raw))
 	if err == nil || !strings.Contains(err.Error(), "exceeds") {
-		t.Fatalf("err = %v, want item_kind cap reject", err)
+		t.Fatalf("err = %v, want item cap reject", err)
+	}
+}
+
+// LLM-326: the canonical per-line field is `item`, but `item_kind` (the older
+// engine-jargon name) is tolerated as a decode-only alias so a model that
+// reaches for it still lands the sell. It folds into the same Go field.
+func TestDecodeSceneQuoteArgs_ItemKindAlias(t *testing.T) {
+	args, err := DecodeSceneQuoteArgs(json.RawMessage(
+		`{"lines":[{"item_kind":"ale","qty":1}],"amount":2,"consume_now":false}`))
+	if err != nil {
+		t.Fatalf("DecodeSceneQuoteArgs with item_kind alias: %v", err)
+	}
+	got := args.(SceneQuoteArgs)
+	if len(got.Lines) != 1 || got.Lines[0].ItemKind != "ale" {
+		t.Errorf("item_kind alias not folded to canonical: %+v", got)
+	}
+}
+
+// LLM-326: when both are present the canonical `item` wins over the alias.
+func TestDecodeSceneQuoteArgs_ItemWinsOverAlias(t *testing.T) {
+	args, err := DecodeSceneQuoteArgs(json.RawMessage(
+		`{"lines":[{"item":"ale","item_kind":"beer","qty":1}],"amount":2,"consume_now":false}`))
+	if err != nil {
+		t.Fatalf("DecodeSceneQuoteArgs: %v", err)
+	}
+	got := args.(SceneQuoteArgs)
+	if got.Lines[0].ItemKind != "ale" {
+		t.Errorf("canonical item should win over alias, got %q", got.Lines[0].ItemKind)
 	}
 }
 
