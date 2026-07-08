@@ -188,6 +188,59 @@ func TestRegisterTools_RegistersBareCoinPay(t *testing.T) {
 	}
 }
 
+// TestRegisterTools_CacheStableOrder guards LLM-328: the tools present for
+// essentially every stationary, non-laboring actor (the common head) are
+// registered — and therefore advertised — BEFORE every situationally-gated
+// tool. Registration order is the advertised order (AdvertisedSpecs preserves
+// it) and provider prompt-prefix caching only catches up to the first byte
+// divergence between two requests, so a gated tool that appears for one actor
+// but not another must fall at the TAIL of the tools block to keep the common
+// head warm and shared across a burst of co-ticking NPCs. If a future tool is
+// added, place it in the right section and extend the lists here.
+func TestRegisterTools_CacheStableOrder(t *testing.T) {
+	r := handlers.NewRegistry()
+	if err := registerTools(r, stubSearcher{}); err != nil {
+		t.Fatalf("registerTools: %v", err)
+	}
+	idx := map[string]int{}
+	for i, spec := range r.AdvertisedSpecs() {
+		idx[spec.Name] = i
+	}
+
+	commonHead := []string{"speak", "move_to", "consume", "pay", "sell", "offer_trade", "pay_with_item", "give"}
+	// The situationally-gated tools (gateTools turns each on only for some
+	// actors). `done`/`recall` are excluded — done is the terminal kept last by
+	// convention, recall is registered separately; neither is part of the
+	// cross-actor common/situational cache seam.
+	situationalTail := []string{
+		"gather", "produce", "repair", "take_break", "stay_open", "deliver_order", "stop",
+		"solicit_work", "accept_work", "decline_work",
+		"accept_pay", "decline_pay", "counter_pay", "withdraw_pay",
+		"accept_gift", "decline_gift", "summon",
+	}
+
+	maxCommon, maxCommonName := -1, ""
+	for _, n := range commonHead {
+		i, ok := idx[n]
+		if !ok {
+			t.Fatalf("common-head tool %q not advertised", n)
+		}
+		if i > maxCommon {
+			maxCommon, maxCommonName = i, n
+		}
+	}
+	for _, n := range situationalTail {
+		i, ok := idx[n]
+		if !ok {
+			t.Fatalf("situational-tail tool %q not advertised", n)
+		}
+		if i < maxCommon {
+			t.Errorf("situational tool %q at index %d precedes common-head tool %q at index %d — "+
+				"a per-actor gate on %q would truncate the shared cacheable prefix (LLM-328)", n, i, maxCommonName, maxCommon, n)
+		}
+	}
+}
+
 // TestRun_WiresOffWorldCascades proves run() reaches the off-world LLM cascade
 // set (RegisterProductionCascades wires atmosphere / consolidation / narrative
 // consolidation / noticeboard + the ActionLog substrate) into the live runtime
