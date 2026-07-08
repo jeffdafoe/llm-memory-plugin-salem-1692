@@ -729,12 +729,17 @@ func registerTools(r *handlers.Registry, searcher llm.MemorySearcher) error {
 	// a gate turns on for only some actors trail. That way a per-actor divergence
 	// (one actor has produce / accept_pay / solicit_work, another doesn't) falls
 	// at the TAIL of the tools block, leaving the whole common head warm and
-	// shared across a morning burst of co-ticking NPCs. Behavior-neutral: this is
-	// order only — the same tools are registered and the same gates apply. The
-	// family composites (RegisterPayWithItemFamily / …Labor / …Give) are bypassed
-	// here in favor of the granular registrars so each member lands in its
-	// cache-appropriate section; the full family is still registered (no dangling
-	// offer surface), just not contiguously.
+	// shared across a morning burst of co-ticking NPCs. This is ORDER only — the
+	// same tools are registered and the same gates apply, so it is intended to be
+	// behavior-preserving; but tool order IS model-facing (the model reads an
+	// ordered array), so it is not a strict guarantee — the deepseek behavior
+	// soak (LLM-325) is the backstop. pay_with_item leads bare `pay` so the model
+	// meets the purchase path before the bare-coin one (the LLM-99 double-pay
+	// safety argument). The family composites (RegisterPayWithItemFamily / …Labor
+	// / …Give) are bypassed here in favor of the granular registrars so each
+	// member lands in its cache-appropriate section; the full family is still
+	// registered (no dangling offer surface), just not contiguously —
+	// TestRegisterTools_*FamilyMembership pins granular == composite.
 	register := []struct {
 		name string
 		fn   func(*handlers.Registry) error
@@ -743,6 +748,9 @@ func registerTools(r *handlers.Registry, searcher llm.MemorySearcher) error {
 		{"speak", handlers.RegisterSpeak},
 		{"move_to", handlers.RegisterMoveTo}, // ZBBS-HOME-285
 		{"consume", handlers.RegisterConsume},
+		// pay_with_item — the commerce/purchase path; leads bare `pay` so the
+		// model meets it first (family split for cache order, LLM-328).
+		{"pay_with_item", handlers.RegisterPayWithItem},
 		// `pay` (bare-coin transfer) — wages, tips, gifts (LLM-99). Pulled in
 		// ZBBS-HOME-430 because it was then the only coin tool, so NPCs reached
 		// for it to settle purchases and double-charged on buy-then-pay.
@@ -752,9 +760,8 @@ func registerTools(r *handlers.Registry, searcher llm.MemorySearcher) error {
 		// speech. PCs pay via /pc/pay.
 		{"pay", handlers.RegisterPay},
 		{"sell", handlers.RegisterSceneQuote},
-		{"offer_trade", handlers.RegisterOfferTrade},    // ZBBS-HOME-407
-		{"pay_with_item", handlers.RegisterPayWithItem}, // commerce path; family split for cache order (LLM-328)
-		{"give", handlers.RegisterGive},                 // LLM-138 (family split for cache order, LLM-328)
+		{"offer_trade", handlers.RegisterOfferTrade}, // ZBBS-HOME-407
+		{"give", handlers.RegisterGive},              // LLM-138 (family split for cache order, LLM-328)
 
 		// ── Situational tail: each advertised only when its perception gate
 		// fires, so it appears for some actors and not others. Kept after the
