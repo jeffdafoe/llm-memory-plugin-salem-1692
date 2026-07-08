@@ -68,18 +68,49 @@ func MoveToDestination(actorID ActorID, destination string, shownObjects []Villa
 			// Id-first: an exact structure id the model copied from a cue → the id
 			// path, with its full enter-vs-visit + no-op handling.
 			if _, ok := w.Structures[StructureID(target)]; ok {
-				return MoveToStructure(actorID, StructureID(target), now).Fn(w)
+				return moveToStructureLabeled(actorID, StructureID(target), target, now).Fn(w)
 			}
 			// An exact bare-object id (a free refresh source or a gatherable bush the
 			// model saw in a cue) → the object visit path.
 			if obj := w.VillageObjects[VillageObjectID(target)]; obj != nil &&
 				(objectIsRefreshSource(obj) || obj.IsFiniteGatherableSource()) {
-				return MoveToObject(actorID, VillageObjectID(target), now).Fn(w)
+				return moveToObjectLabeled(actorID, VillageObjectID(target), target, now).Fn(w)
 			}
 			// Otherwise treat it as a place NAME (or a home/work keyword).
 			return MoveToStructureByName(actorID, target, shownObjects, remembered, now).Fn(w)
 		},
 	}
+}
+
+// moveToLabel picks the name to echo back to the model in a move_to no-op: the
+// literal string the model called the place (spokenAs), else the resolved
+// structure/object id for an internal caller that passed none (LLM-327). The
+// model now names a place ("the Tavern"), so echoing the resolved id read as an
+// unfamiliar token it didn't recognize as where it already stood.
+func moveToLabel(spokenAs, fallback string) string {
+	if s := strings.TrimSpace(spokenAs); s != "" {
+		return s
+	}
+	return fallback
+}
+
+// alreadyAtMsg builds the "already at" no-op text (LLM-327): echo the label the
+// model used, and when the place is a keeperless BUSINESS say it is shut so a
+// socially-lured NPC standing at a closed shop learns the dead end instead of
+// re-walking there. The shut predicate mirrors perception's isShutBusiness
+// (build.go) exactly: someone works it (structureHasWorker), no awake worker is
+// tending it (keeperPresentAt), AND it is not the actor's OWN workplace — you
+// don't tell a keeper their own post is shut (guards the abed-innkeeper edge;
+// it also keeps a move_to("work") that lands on the actor's own post from
+// reading "your work is shut"). structureHasWorker / keeperPresentAt are the
+// same world-goroutine checks the closed-business arrival memory uses.
+func alreadyAtMsg(w *World, a *Actor, structureID StructureID, label string) string {
+	if structureHasWorker(w, structureID) && !keeperPresentAt(w, structureID) && a.WorkStructureID != structureID {
+		return fmt.Sprintf(
+			"you are already at %q, and it is shut just now — no one is tending it, so there's nothing to do here.", label)
+	}
+	return fmt.Sprintf(
+		"you are already at %q — you're right where you meant to be; nothing more to do here.", label)
 }
 
 // MoveToStructureByName returns a Command that resolves a place NAME to a
@@ -131,16 +162,16 @@ func MoveToStructureByName(actorID ActorID, name string, shownObjects []VillageO
 			// every named structure in the village. A structure wins a name it
 			// shares with a bare object — the structure resolver runs first.
 			if structureID, ok := resolveStructureByVillageName(w, a, target); ok {
-				return MoveToStructure(actorID, structureID, now).Fn(w)
+				return moveToStructureLabeled(actorID, structureID, target, now).Fn(w)
 			}
 			// No structure by that name — try a bare refresh source (a well, a
 			// fruit tree), which IS still discovered: shown this tick (ZBBS-HOME-359)
 			// or personally experienced (LLM-78), live winning a shared name.
 			if objID, ok := resolveObjectByPerceivableName(w, a, target, shownObjects); ok {
-				return MoveToObject(actorID, objID, now).Fn(w)
+				return moveToObjectLabeled(actorID, objID, target, now).Fn(w)
 			}
 			if objID, ok := resolveObjectByRememberedName(w, a, target, remembered.ObjectIDs); ok {
-				return MoveToObject(actorID, objID, now).Fn(w)
+				return moveToObjectLabeled(actorID, objID, target, now).Fn(w)
 			}
 			// LLM-212: reserved relationship keywords ("home"/"work" + synonyms), as a
 			// FALLBACK only — after no real structure or object matched the word, so a
@@ -153,7 +184,7 @@ func MoveToStructureByName(actorID ActorID, name string, shownObjects []VillageO
 				if err != nil {
 					return MoveActorResult{}, err
 				}
-				return MoveToStructure(actorID, id, now).Fn(w)
+				return moveToStructureLabeled(actorID, id, target, now).Fn(w)
 			}
 			// LLM-317: "the kitchen" is a confabulated interior room — weak models
 			// routinely try to walk to it (the LLM-176 "food in the kitchen"
@@ -562,6 +593,14 @@ func objectIsRefreshSource(obj *VillageObject) bool {
 //
 // Runs on the world goroutine.
 func MoveToObject(actorID ActorID, objID VillageObjectID, now time.Time) Command {
+	return moveToObjectLabeled(actorID, objID, "", now)
+}
+
+// moveToObjectLabeled is MoveToObject carrying the model's spoken label
+// (LLM-327): the literal string the model named the place, echoed in the no-op
+// messages instead of the resolved object id so a by-name call ("the well") is
+// reflected back by its name. spokenAs "" (internal callers) falls back to the id.
+func moveToObjectLabeled(actorID ActorID, objID VillageObjectID, spokenAs string, now time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
 			a, ok := w.Actors[actorID]
@@ -579,12 +618,12 @@ func MoveToObject(actorID ActorID, objID VillageObjectID, now time.Time) Command
 				// LLM-209: a no-op walk — TerminalNoOpError so the harness ends the
 				// tick rather than the model re-firing move_to(here) to the budget.
 				return MoveActorResult{}, TerminalNoOpError{Msg: fmt.Sprintf(
-					"you are already at %q — you're right where you meant to be; nothing more to do here.", objID)}
+					"you are already at %q — you're right where you meant to be; nothing more to do here.", moveToLabel(spokenAs, string(objID)))}
 			}
 			if a.MoveIntent != nil && a.MoveIntent.Destination.ObjectID != nil &&
 				*a.MoveIntent.Destination.ObjectID == objID {
 				return MoveActorResult{}, TerminalNoOpError{Msg: fmt.Sprintf(
-					"you are already on your way to %q — keep walking; you'll arrive shortly.", objID)}
+					"you are already on your way to %q — keep walking; you'll arrive shortly.", moveToLabel(spokenAs, string(objID)))}
 			}
 			// leaveHuddleFirst=true mirrors MoveToStructure: choosing to walk
 			// somewhere ends any conversation the actor is in.
@@ -612,6 +651,16 @@ func MoveToObject(actorID ActorID, objID VillageObjectID, now time.Time) Command
 //     re-emitting ActorMoveStarted) every tick.
 //   - destination unreachable — surfaced by MoveActor's path check.
 func MoveToStructure(actorID ActorID, structureID StructureID, now time.Time) Command {
+	return moveToStructureLabeled(actorID, structureID, "", now)
+}
+
+// moveToStructureLabeled is MoveToStructure carrying the model's spoken label
+// (LLM-327): the literal string the model named the place. Echoed in the
+// "already at" / "already on your way" no-ops instead of the resolved structure
+// id, and — for an "already at" a keeperless business — the message says it is
+// shut so a socially-lured NPC learns the dead end instead of re-walking there.
+// spokenAs "" (internal callers) falls back to the id.
+func moveToStructureLabeled(actorID ActorID, structureID StructureID, spokenAs string, now time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
 			a, ok := w.Actors[actorID]
@@ -632,7 +681,7 @@ func MoveToStructure(actorID ActorID, structureID StructureID, now time.Time) Co
 					if err != nil {
 						return MoveActorResult{}, err
 					}
-					return MoveToStructure(actorID, id, now).Fn(w)
+					return moveToStructureLabeled(actorID, id, spokenAs, now).Fn(w)
 				}
 				// Not a structure — it may be a bare placement the actor saw in a cue,
 				// whose id rides the same structure_id field: a need-easing refresh
@@ -645,7 +694,7 @@ func MoveToStructure(actorID ActorID, structureID StructureID, now time.Time) Co
 				// remembered gather patch ungated (LLM-78/92). ZBBS-HOME-359.
 				if obj := w.VillageObjects[VillageObjectID(structureID)]; obj != nil &&
 					(objectIsRefreshSource(obj) || obj.IsFiniteGatherableSource()) {
-					return MoveToObject(actorID, VillageObjectID(structureID), now).Fn(w)
+					return moveToObjectLabeled(actorID, VillageObjectID(structureID), spokenAs, now).Fn(w)
 				}
 				return MoveActorResult{}, fmt.Errorf(
 					"there is no structure %q to walk to — name a destination you can see in your perception", structureID)
@@ -665,13 +714,12 @@ func MoveToStructure(actorID ActorID, structureID StructureID, now time.Time) Co
 			if a.InsideStructureID == structureID {
 				// LLM-209: a no-op walk — TerminalNoOpError ends the tick (the model
 				// was re-firing move_to(home) here to the budget while already home).
-				return MoveActorResult{}, TerminalNoOpError{Msg: fmt.Sprintf(
-					"you are already at %q — you're right where you meant to be; nothing more to do here.", structureID)}
+				return MoveActorResult{}, TerminalNoOpError{Msg: alreadyAtMsg(w, a, structureID, moveToLabel(spokenAs, string(structureID)))}
 			}
 			if a.MoveIntent != nil && a.MoveIntent.Destination.StructureID != nil &&
 				*a.MoveIntent.Destination.StructureID == structureID {
 				return MoveActorResult{}, TerminalNoOpError{Msg: fmt.Sprintf(
-					"you are already on your way to %q — keep walking; you'll arrive shortly.", structureID)}
+					"you are already on your way to %q — keep walking; you'll arrive shortly.", moveToLabel(spokenAs, string(structureID)))}
 			}
 			dest := moveToDestinationFor(w, a, structureID, now)
 			// A move that resolves to a VISIT of a structure the actor already
@@ -687,8 +735,7 @@ func MoveToStructure(actorID ActorID, structureID StructureID, now time.Time) Co
 			// guard; LoiterAttributionTiles = "standing AT" the pin.
 			if dest.Kind == MoveDestinationStructureVisit {
 				if pin, ok := effectiveLoiterTile(w, structureID); ok && a.Pos.Chebyshev(pin) <= LoiterAttributionTiles {
-					return MoveActorResult{}, TerminalNoOpError{Msg: fmt.Sprintf(
-						"you are already at %q — you're right where you meant to be; nothing more to do here.", structureID)}
+					return MoveActorResult{}, TerminalNoOpError{Msg: alreadyAtMsg(w, a, structureID, moveToLabel(spokenAs, string(structureID)))}
 				}
 			}
 			// The actor has chosen to walk to structureID — deciding to GO there
