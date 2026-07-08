@@ -131,6 +131,39 @@ func TestMoveToDestination_Routing(t *testing.T) {
 	})
 }
 
+// TestMoveToDestination_AlreadyAtShutBusiness_EchoesNameAndSaysShut (LLM-327):
+// the move_to "already at" no-op must echo the LITERAL name the model used (not
+// the resolved structure id), and — because the place is a keeperless business —
+// say it is shut, so a socially-lured NPC standing at a closed shop learns the
+// dead end instead of re-walking there. buildShutTavernWorld has the Tavern's
+// only keeper (John) asleep → keeperPresentAt reads it shut.
+func TestMoveToDestination_AlreadyAtShutBusiness_EchoesNameAndSaysShut(t *testing.T) {
+	w, cancel := buildShutTavernWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	// Park hannah inside the (keeperless) Tavern so move_to("the Tavern") hits the
+	// already-there no-op rather than starting a fresh walk.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["hannah"].InsideStructureID = "tavern"
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed inside-tavern: %v", err)
+	}
+
+	_, err := w.Send(sim.MoveToDestination("hannah", "the Tavern", nil, sim.RememberedPlaces{}, now))
+	if err == nil {
+		t.Fatal("want an already-at no-op error, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "the Tavern") {
+		t.Errorf("no-op must echo the model's literal destination \"the Tavern\", not the id; got: %s", msg)
+	}
+	if !strings.Contains(msg, "shut") {
+		t.Errorf("no-op at a keeperless business must say it is shut; got: %s", msg)
+	}
+}
+
 // buildMoveToOwnerTestWorld seeds a world with a single owner-only structure
 // "manor" (house asset, has a door) owned by "lord", plus three actors at the
 // pad with a clear path: "lord" (owner), "resident" (home == manor), and

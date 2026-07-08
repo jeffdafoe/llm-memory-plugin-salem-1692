@@ -1389,8 +1389,9 @@ func findGatherableCue(snap *sim.Snapshot, subjectID sim.ActorID, a *sim.ActorSn
 // loiter slot the subject is standing at (nearest within
 // sim.LoiterAttributionTiles, Chebyshev), or ("", "") when none. A structure
 // shares its id with a VillageObject (the placement), so the loiter pin is that
-// object's tile anchor plus its loiter offset — the same asset-free derivation
-// findGatherableCue uses for gatherable props. The name drives the OUTDOORS
+// object's tile anchor plus its EFFECTIVE loiter offset (sim.EffectiveLoiterOffset:
+// per-instance → door → footprint fallback) — the same pin the substrate parks
+// visitors on and move_to's effectiveLoiterTile checks against. The name drives the OUTDOORS
 // position phrasing; the id is what the dead-end check (LLM-154) keys on. When
 // the actor is genuinely inside a structure the caller reads InsideStructureID
 // instead. Ties break by lowest structure id for determinism.
@@ -1406,15 +1407,18 @@ func findLoiterStructure(snap *sim.Snapshot, a *sim.ActorSnapshot) (string, sim.
 		if vobj == nil {
 			continue
 		}
-		pin := vobj.Pos.Tile()
-		off := sim.TileOffset{}
-		if vobj.LoiterOffsetX != nil {
-			off.DX = *vobj.LoiterOffsetX
-		}
-		if vobj.LoiterOffsetY != nil {
-			off.DY = *vobj.LoiterOffsetY
-		}
-		pin = pin.Add(off)
+		// Attribute the actor using the SAME effective loiter pin the substrate
+		// parks visitors on — per-instance → door → footprint fallback
+		// (sim.EffectiveLoiterOffset) — NOT the raw per-instance offset. A structure
+		// with no explicit loiter override (the common case) parks visitors below
+		// its door, several tiles from the anchor; reading the raw offset defaulted
+		// the pin to the anchor tile, so an actor standing where move_to actually put
+		// it (the door-pin) fell outside LoiterAttributionTiles and was never
+		// attributed — the "outdoors by X" line AND the DeadEndShutBusiness shut cue
+		// both silently dropped (LLM-327). EffectiveLoiterOffset is the single source
+		// of truth move_to's effectiveLoiterTile resolves through.
+		offX, offY := sim.EffectiveLoiterOffset(vobj, snap.Assets[vobj.AssetID])
+		pin := vobj.Pos.Tile().Add(sim.TileOffset{DX: offX, DY: offY})
 		cheb := a.Pos.Chebyshev(pin)
 		if cheb > sim.LoiterAttributionTiles {
 			continue

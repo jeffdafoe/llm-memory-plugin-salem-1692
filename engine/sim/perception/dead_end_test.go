@@ -92,6 +92,46 @@ func customerAtOpenBusiness() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	return snap, id, nil
 }
 
+// TestFindLoiterStructure_EffectivePin (LLM-327) pins the loiter-attribution fix:
+// findLoiterStructure must use the EFFECTIVE loiter pin the substrate parks
+// visitors on (per-instance → door → footprint fallback via
+// sim.EffectiveLoiterOffset), not the raw per-instance offset. A structure with
+// no explicit loiter override parks visitors at its door-pin; the old code looked
+// at the anchor tile, so an actor standing where move_to actually put it (the
+// door, > LoiterAttributionTiles from the anchor) was never attributed — and the
+// "outdoors by X" line plus the DeadEndShutBusiness shut cue both silently dropped
+// (the live Silence-at-the-closed-Tavern case).
+func TestFindLoiterStructure_EffectivePin(t *testing.T) {
+	const tavern = sim.StructureID("tavern")
+	anchor := sim.WorldPos{X: 320, Y: 320}
+	dx, dy := 0, 3 // asset door offset; computeLoiterTile parks visitors at anchor+(0, dy+1)
+	snap := &sim.Snapshot{
+		Assets: map[sim.AssetID]*sim.Asset{
+			"tavern-asset": {ID: "tavern-asset", DoorOffsetX: &dx, DoorOffsetY: &dy},
+		},
+		Structures: map[sim.StructureID]*sim.Structure{
+			tavern: {ID: tavern, DisplayName: "Tavern"},
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			sim.VillageObjectID(tavern): {
+				ID: sim.VillageObjectID(tavern), DisplayName: "Tavern",
+				AssetID: "tavern-asset", Pos: anchor, // LoiterOffset nil → door fallback
+			},
+		},
+	}
+	pin := anchor.Tile().Add(sim.TileOffset{DX: dx, DY: dy + 1}) // the effective visitor pin
+
+	// Standing at the door-pin (where move_to parks a visitor) → attributed.
+	if name, id := findLoiterStructure(snap, &sim.ActorSnapshot{Pos: pin}); id != tavern || name != "Tavern" {
+		t.Errorf("at door-pin: got (%q, %q), want (Tavern, tavern) — must attribute via the effective pin", name, id)
+	}
+	// Standing at the anchor (where the old raw-offset code looked) → NOT attributed:
+	// the door-pin is dy+1=4 tiles away, past LoiterAttributionTiles (1).
+	if name, id := findLoiterStructure(snap, &sim.ActorSnapshot{Pos: anchor.Tile()}); id != "" || name != "" {
+		t.Errorf("at anchor: got (%q, %q), want empty — anchor is out of loiter range of the door-pin", name, id)
+	}
+}
+
 // TestShutBusinessCueOnlyWhenUntended is the LLM-154 cross-scenario invariant: the
 // at-location "is shut — no one is tending it" clause appears in EXACTLY the scenarios
 // where the actor stands at a business no awake keeper is tending, and never at an
