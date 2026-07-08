@@ -87,8 +87,8 @@ func TestGenericCallKey(t *testing.T) {
 		t.Error("consume must be excluded — its result-aware guard owns it")
 	}
 
-	// Excluded: speak is not on the allowlist (and is terminal-on-success, so a
-	// repeat speak can never reach this guard anyway — LLM-321).
+	// Excluded: speak has an explicit name guard in genericCallKey — speech cadence
+	// is not generic dedup's to own, and speak is terminal-on-success (LLM-321).
 	if _, ok := genericCallKey(&ValidatedCall{Name: "speak", Entry: commit, DecodedArgs: SpeakArgs{Text: "hi"}}); ok {
 		t.Error("speak must be excluded from genericCallKey")
 	}

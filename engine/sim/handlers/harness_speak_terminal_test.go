@@ -71,6 +71,50 @@ func TestHarness_SpeakSuccess_EndsTick(t *testing.T) {
 	}
 }
 
+// A FAILED speak does NOT end the tick: terminal-on-SUCCESS, not terminal-on-
+// attempt. Round 1's speak command bounces (a ModelFacingError, e.g. nobody to
+// address), the tick continues, and round 2's done() ends it — two LLM rounds,
+// terminal_status "done". If a bounced speak wrongly ended the tick, the done
+// round would never be requested (this is the retry contract the harness
+// preserves for every failed commit).
+func TestHarness_SpeakBounce_StaysNonTerminal(t *testing.T) {
+	r := NewRegistry()
+	speakFn := func(HandlerInput) (sim.Command, error) {
+		return sim.Command{Fn: func(*sim.World) (any, error) {
+			return nil, sim.ModelFacingError{Msg: "there is no one here to hear you"}
+		}}, nil
+	}
+	if err := r.RegisterCommit("speak", speakSchema, DecodeSpeakArgs, speakFn, true); err != nil {
+		t.Fatalf("register speak: %v", err)
+	}
+	if err := r.RegisterTerminal("done"); err != nil {
+		t.Fatalf("register done: %v", err)
+	}
+
+	client := llm.NewFakeClient(
+		callTurn("c1", "speak", `{"text":"Good evening to you."}`), // bounces -> non-terminal
+		doneTurn("d1"), // round 2 runs: the model ends the tick
+	)
+	f := newIntegrationFixture(t, r, client)
+	defer f.stop()
+
+	now := time.Now()
+	seedDueWarrant(t, f.world, now)
+	if _, err := f.world.Send(sim.EvaluateReactors(now)); err != nil {
+		t.Fatalf("EvaluateReactors: %v", err)
+	}
+	rec := f.waitForTerminalTelemetry(t)
+	if rec.Kind != "completed" {
+		t.Fatalf("tick did not complete cleanly: kind=%q", rec.Kind)
+	}
+	if got := rec.Detail["terminal_status"]; got != "done" {
+		t.Errorf("terminal_status: got %q, want \"done\" — a bounced speak is non-terminal, so the model's done() ends the tick", got)
+	}
+	if n := len(client.Requests()); n != 2 {
+		t.Errorf("LLM rounds: got %d, want 2 — a failed speak must not end the tick (terminal on success, not on attempt)", n)
+	}
+}
+
 // A single response that emits [speak, done] commits the speak and ends the tick
 // on it; the done in the same batch is skipped as post_terminal. Still one round,
 // and the tick ends as "success" (the speak ended it), not "done". This pins the

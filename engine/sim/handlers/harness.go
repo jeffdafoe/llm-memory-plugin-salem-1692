@@ -2077,8 +2077,9 @@ func sceneQuoteKey(vc *ValidatedCall) (string, bool) {
 // boundary this comment documents (code_review HOME-414). The offer family is
 // also excluded — it owns its own broader, success-only same-tick guard
 // (payOfferKey) — as are observation-class calls (pure thinking is not
-// penalized, ZBBS-WORK-321). speak needs no exclusion: it is terminal-on-success
-// (LLM-321), so a repeat speak can never reach this guard. consume is also excluded
+// penalized, ZBBS-WORK-321). speak is excluded by an explicit name guard below:
+// speech cadence is not generic dedup's to own, and a production speak is
+// terminal-on-success (LLM-321) so a repeat can't reach here anyway. consume is also excluded
 // (LLM-91): a byte-identical repeat consume while still in need is PRODUCTIVE
 // (it eats another unit and eases the need further), so the syntactic "identical
 // = useless" premise is false for it. It has its own result-aware guard keyed on
@@ -2090,6 +2091,13 @@ func sceneQuoteKey(vc *ValidatedCall) (string, bool) {
 // relying on the implicit invariant that every arg type is a flat struct.
 func genericCallKey(vc *ValidatedCall) (string, bool) {
 	if vc == nil || vc.Entry == nil {
+		return "", false
+	}
+	// speak is never generically deduped: speech cadence is not a "byte-identical
+	// = useless" case, and a production speak is terminal-on-success (LLM-321) so a
+	// repeat can't reach here. Explicit name guard so the boundary holds regardless
+	// of how a test or custom registry classes a tool named speak.
+	if vc.Name == "speak" {
 		return "", false
 	}
 	if _, isOffer := payOfferKey(vc); isOffer {
