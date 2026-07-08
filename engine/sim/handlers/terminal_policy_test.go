@@ -12,9 +12,10 @@ import "testing"
 //
 // Why these are terminal: a placed or answered economic offer ends the tick —
 // nothing useful chains after it, and the courtesy after-word was the re-fire
-// vector a weak model stormed to the round budget (LLM-184). speak / pay /
-// consume stay non-terminal (each has a real same-tick follow-on) and are pinned
-// here as the guard against an over-broad future flip.
+// vector a weak model stormed to the round budget (LLM-184). speak is also
+// terminal-on-success (LLM-321): the trailing done() round it used to cost is
+// gone. pay / consume stay non-terminal (each has a real same-tick follow-on)
+// and are pinned here as the guard against an over-broad future flip.
 func TestCommitVerbs_TerminalPolicy(t *testing.T) {
 	r := NewRegistry()
 	registrations := []struct {
@@ -50,9 +51,11 @@ func TestCommitVerbs_TerminalPolicy(t *testing.T) {
 		{"solicit_work", TerminalOnSuccess},
 		{"accept_work", TerminalOnSuccess},
 		{"decline_work", TerminalOnSuccess},
+		// Terminal (LLM-321): a successful speak ends the tick — the trailing
+		// done() round it used to cost is gone.
+		{"speak", TerminalOnSuccess},
 		// Non-terminal: a legitimate same-tick follow-on. Pinned so an over-broad
 		// flip of the whole commit class can't slip through.
-		{"speak", TerminalNever},
 		{"pay", TerminalNever},
 		{"consume", TerminalNever},
 	}

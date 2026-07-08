@@ -13,4 +13,4 @@ That work is already covered and the pay settles on its own when it's finished �
 ## Around you
 You are inside the Tavern, with Silence Walker.
 
-Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

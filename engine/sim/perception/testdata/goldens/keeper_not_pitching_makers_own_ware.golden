@@ -28,4 +28,4 @@ If one of them is carrying something you would rather have than coin, you can in
 Your goods to sell: nail (38 on hand), skillet (4 on hand).
 Ezekiel Crane makes nail and skillet themselves — don't pitch those back to their own maker; offer them to other customers instead.
 
-Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

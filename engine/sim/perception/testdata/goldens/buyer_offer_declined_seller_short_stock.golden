@@ -14,4 +14,4 @@ Evening settles over the village.
 
 ## Recently settled offers
 1. Your offer of 6 carrots and 1 coin to Ezekiel Crane for 5 nail didn't go through — they hold only 1 nail, so it's closed; stop waiting on it (offer id 866).
-Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

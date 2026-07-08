@@ -7,7 +7,7 @@ import (
 
 // register_speak_test.go — verifies the RegisterSpeak helper produces a
 // registry entry with the expected shape: ClassCommit,
-// AvailabilityAvailable, terminal-on-success FALSE, schema bytes are
+// AvailabilityAvailable, terminal-on-success TRUE (LLM-321), schema bytes are
 // valid JSON, decode + handler wired through.
 
 func TestRegisterSpeak_AddsAvailableCommitEntry(t *testing.T) {
@@ -22,8 +22,8 @@ func TestRegisterSpeak_AddsAvailableCommitEntry(t *testing.T) {
 	if entry.Class != ClassCommit {
 		t.Errorf("Class = %v, want ClassCommit", entry.Class)
 	}
-	if entry.TerminalPolicy != TerminalNever {
-		t.Errorf("TerminalPolicy = %v, want TerminalNever (speak is non-terminal)", entry.TerminalPolicy)
+	if entry.TerminalPolicy != TerminalOnSuccess {
+		t.Errorf("TerminalPolicy = %v, want TerminalOnSuccess (speak is terminal-on-success, LLM-321)", entry.TerminalPolicy)
 	}
 	if entry.Availability != AvailabilityAvailable {
 		t.Errorf("Availability = %v, want AvailabilityAvailable", entry.Availability)

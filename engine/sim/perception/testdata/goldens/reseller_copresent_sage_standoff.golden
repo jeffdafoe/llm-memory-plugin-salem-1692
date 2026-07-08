@@ -21,4 +21,4 @@ Your shop stock of these bought-in goods is running low. You choose how much to 
 - You have 0 sage on hand and room for 4 more at the most. It is generally worth about 1 coin each — pay much above that and you're overpaying.
   - Josiah Thorne is here with you, but your offers for sage aren't finding a deal right now — hold off and come back later rather than pressing them into a no.
 
-Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

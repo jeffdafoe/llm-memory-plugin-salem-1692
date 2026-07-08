@@ -25,15 +25,18 @@ package handlers
 // commit handler is HandleSpeak; the decoder is DecodeSpeakArgs; both
 // live in speak.go.
 //
-// terminalOnSuccess is FALSE: speak is non-terminal so the model can
-// follow through with a move/chore inside the same tick (the iteration-
-// loop behavior v1's executeAgentCommit already had — see the harness
-// doc on Multi-tool turns at handlers/harness.go). A speak does NOT end
-// the tick: the model ends the turn by calling done() after it has nothing
-// new to say. The within-tick repeat that this freedom risks is held by the
-// ZBBS-WORK-375 same-tick dedup guard + post-speak continuation steer in the
-// harness, NOT by a per-tool cap (HOME-381's cap was removed in WORK-375
-// because it also cut legitimate two-beat turns, e.g. greet THEN answer).
+// terminalOnSuccess is TRUE: a successful speak ends the tick (LLM-321).
+// The turn prompt previously told the model to call done() after speaking,
+// costing a second full LLM round whose only job was to emit done() —
+// ~22% of all reactor-tick calls were that trailing termination. Ending on
+// the speak commit itself kills that round: one social action per tick, the
+// accept-one-success-per-tick shape already used by the LLM-184 commit verbs
+// and the LLM-201 produce flip. A model that wants to speak AND then act is
+// split across two ticks; the second beat re-fires for free on the next scan,
+// and multi-actor conversation still advances because each utterance spawns
+// the other party's own reply tick. The same-tick repeat that non-terminal
+// speak risked no longer exists — the first successful speak ends the tick,
+// so a second speak (in the same batch or a later round) is unreachable.
 //
 // Returns an error on registration failure (duplicate name, malformed
 // schema bytes — both startup bugs the caller should panic/exit on).
@@ -43,7 +46,7 @@ func RegisterSpeak(r *Registry) error {
 		speakSchema,
 		DecodeSpeakArgs,
 		HandleSpeak,
-		false, // non-terminal: speak is a within-tick step, not a tick-ender
+		true, // terminal-on-success: a successful speak ends the tick (LLM-321)
 		WithDescription(speakDescription),
 	)
 }

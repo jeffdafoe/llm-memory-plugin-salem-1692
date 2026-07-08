@@ -17,4 +17,4 @@ You're at your workplace.
 ## How you can rest
 - Close up and rest where you are — call take_break to recover without leaving your post.
 
-Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

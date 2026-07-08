@@ -22,4 +22,4 @@ You have no meat on hand, and none sold this past week. A batch — 1 more — t
 You have a fair stock of milk, and none sold this past week. A batch — 1 more — takes about 2 hours.
 Start a batch with produce, or see to other things.
 
-Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

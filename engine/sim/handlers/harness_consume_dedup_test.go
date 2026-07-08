@@ -32,8 +32,8 @@ func TestConsumeItemKey(t *testing.T) {
 	if k, ok := consumeItemKey(&ValidatedCall{Name: "consume", DecodedArgs: ConsumeArgs{Item: "Cheese", Qty: 1}}); !ok || k != "cheese" {
 		t.Errorf("consume Cheese: got (%q,%v), want (\"cheese\",true)", k, ok)
 	}
-	// Lowercase + inner-whitespace-collapse, mirroring speakUtteranceKey, so a
-	// re-eat with cosmetic spacing/case drift still matches the recorded no-op.
+	// Lowercase + inner-whitespace-collapse, so a re-eat with cosmetic
+	// spacing/case drift still matches the recorded no-op.
 	if k, ok := consumeItemKey(&ValidatedCall{Name: "consume", DecodedArgs: ConsumeArgs{Item: "  Sharp   Cheddar ", Qty: 1}}); !ok || k != "sharp cheddar" {
 		t.Errorf("consume normalization: got (%q,%v), want (\"sharp cheddar\",true)", k, ok)
 	}

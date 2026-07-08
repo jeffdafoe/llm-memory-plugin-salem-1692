@@ -21,4 +21,4 @@ What your wares fetch in coin — use it to set a fair price or weigh a trade:
 - cheese: 3 to 6 coins each; you have lately paid about 2 coins each for it — selling below what you paid loses you coin.
 - milk: 1 to 3 coins each; you have lately paid about 1 coin each for it — selling below what you paid loses you coin.
 
-Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

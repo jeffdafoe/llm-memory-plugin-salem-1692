@@ -19,4 +19,4 @@ Free to drink nearby:
 ## Free sources you can gather from
 You know of these unowned sources out in the town and countryside. No one owns them, so you may take freely — walk out to gather when your own stock runs low. You choose how much to take.
 - water: 0 on hand of 20 cap (room for 20 more). The Well is a short walk to the northwest, 20 ready to gather now. Use move_to with destination "town_well" to walk out to it.
-Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.
