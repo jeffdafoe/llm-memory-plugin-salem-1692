@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"reflect"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -185,6 +187,166 @@ func TestRegisterTools_RegistersBareCoinPay(t *testing.T) {
 	}
 	if !advertisedPayWithItem {
 		t.Error("`pay_with_item` registered but not advertised to the model — the model needs the commerce path alongside bare pay")
+	}
+}
+
+// TestRegisterTools_CacheStableOrder guards LLM-328: the tools present for
+// essentially every stationary, non-laboring actor (the common head) are
+// registered — and therefore advertised — BEFORE every situationally-gated
+// tool. Registration order is the advertised order (AdvertisedSpecs preserves
+// it) and provider prompt-prefix caching only catches up to the first byte
+// divergence between two requests, so a gated tool that appears for one actor
+// but not another must fall at the TAIL of the tools block to keep the common
+// head warm and shared across a burst of co-ticking NPCs. If a future tool is
+// added, place it in the right section and extend the lists here.
+func TestRegisterTools_CacheStableOrder(t *testing.T) {
+	r := handlers.NewRegistry()
+	if err := registerTools(r, stubSearcher{}); err != nil {
+		t.Fatalf("registerTools: %v", err)
+	}
+	idx := map[string]int{}
+	for i, spec := range r.AdvertisedSpecs() {
+		idx[spec.Name] = i
+	}
+
+	commonHead := []string{"speak", "move_to", "consume", "pay", "sell", "offer_trade", "pay_with_item", "give"}
+	// The situationally-gated tools (gateTools turns each on only for some
+	// actors). `done`/`recall` are excluded — done is the terminal kept last by
+	// convention, recall is registered separately; neither is part of the
+	// cross-actor common/situational cache seam.
+	situationalTail := []string{
+		"gather", "produce", "repair", "take_break", "stay_open", "deliver_order", "stop",
+		"solicit_work", "accept_work", "decline_work",
+		"accept_pay", "decline_pay", "counter_pay", "withdraw_pay",
+		"accept_gift", "decline_gift", "summon",
+	}
+
+	maxCommon, maxCommonName := -1, ""
+	for _, n := range commonHead {
+		i, ok := idx[n]
+		if !ok {
+			t.Fatalf("common-head tool %q not advertised", n)
+		}
+		if i > maxCommon {
+			maxCommon, maxCommonName = i, n
+		}
+	}
+	for _, n := range situationalTail {
+		i, ok := idx[n]
+		if !ok {
+			t.Fatalf("situational-tail tool %q not advertised", n)
+		}
+		if i < maxCommon {
+			t.Errorf("situational tool %q at index %d precedes common-head tool %q at index %d — "+
+				"a per-actor gate on %q would truncate the shared cacheable prefix (LLM-328)", n, i, maxCommonName, maxCommon, n)
+		}
+	}
+}
+
+// TestRegisterTools_AdvertisedToolNamesExact pins the FULL advertised tool
+// sequence (LLM-328). The section-order test above proves common-before-
+// situational but is blind to a dropped, duplicated, or newly-scattered tool;
+// this asserts the exact list so any of those fails loudly and the reorder's
+// "same tools, only order changed" claim stays honest. `recall` is registered
+// inside registerTools (it needs the searcher) so it appears last.
+func TestRegisterTools_AdvertisedToolNamesExact(t *testing.T) {
+	r := handlers.NewRegistry()
+	if err := registerTools(r, stubSearcher{}); err != nil {
+		t.Fatalf("registerTools: %v", err)
+	}
+
+	var got []string
+	seen := map[string]bool{}
+	for _, spec := range r.AdvertisedSpecs() {
+		if seen[spec.Name] {
+			t.Fatalf("duplicate advertised tool %q", spec.Name)
+		}
+		seen[spec.Name] = true
+		got = append(got, spec.Name)
+	}
+
+	want := []string{
+		"speak", "move_to", "consume", "pay_with_item", "pay", "sell", "offer_trade", "give",
+		"gather", "produce", "repair", "take_break", "stay_open", "deliver_order", "stop",
+		"solicit_work", "accept_work", "decline_work",
+		"accept_pay", "decline_pay", "counter_pay", "withdraw_pay",
+		"accept_gift", "decline_gift", "summon", "done", "recall",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("advertised tool sequence drifted (LLM-328):\ngot  %v\nwant %v", got, want)
+	}
+}
+
+// advertisedNameSet returns the sorted advertised tool names of r.
+func advertisedNameSet(t *testing.T, r *handlers.Registry) []string {
+	t.Helper()
+	var names []string
+	for _, spec := range r.AdvertisedSpecs() {
+		names = append(names, spec.Name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// registerAll runs each registrar into r, failing the test on the first error.
+func registerAll(t *testing.T, r *handlers.Registry, fns ...func(*handlers.Registry) error) {
+	t.Helper()
+	for _, fn := range fns {
+		if err := fn(r); err != nil {
+			t.Fatalf("register: %v", err)
+		}
+	}
+}
+
+// TestRegisterTools_FamilyMembership guards the LLM-328 reorder's one
+// structural risk: production now bypasses the family composites
+// (RegisterPayWithItemFamily / …Give / …Labor) for the granular registrars so
+// each member can land in its cache-appropriate section. That is only safe if
+// the granular set is EXACTLY the composite's set — if a composite ever wires
+// an extra tool (or shared setup that mints one), the granular path would drop
+// it silently. Assert composite == granular membership for each split family.
+func TestRegisterTools_FamilyMembership(t *testing.T) {
+	cases := []struct {
+		name     string
+		family   func(*handlers.Registry) error
+		granular []func(*handlers.Registry) error
+	}{
+		{
+			"pay_with_item",
+			handlers.RegisterPayWithItemFamily,
+			[]func(*handlers.Registry) error{
+				handlers.RegisterPayWithItem, handlers.RegisterAcceptPay, handlers.RegisterDeclinePay,
+				handlers.RegisterCounterPay, handlers.RegisterWithdrawPay,
+			},
+		},
+		{
+			"give",
+			handlers.RegisterGiveFamily,
+			[]func(*handlers.Registry) error{
+				handlers.RegisterGive, handlers.RegisterAcceptGift, handlers.RegisterDeclineGift,
+			},
+		},
+		{
+			"labor",
+			handlers.RegisterLaborFamily,
+			[]func(*handlers.Registry) error{
+				handlers.RegisterSolicitWork, handlers.RegisterAcceptWork, handlers.RegisterDeclineWork,
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			composite := handlers.NewRegistry()
+			registerAll(t, composite, tc.family)
+
+			granular := handlers.NewRegistry()
+			registerAll(t, granular, tc.granular...)
+
+			c, g := advertisedNameSet(t, composite), advertisedNameSet(t, granular)
+			if !reflect.DeepEqual(c, g) {
+				t.Fatalf("%s family membership drifted from granular registrars (LLM-328):\ncomposite %v\ngranular  %v", tc.name, c, g)
+			}
+		})
 	}
 }
 

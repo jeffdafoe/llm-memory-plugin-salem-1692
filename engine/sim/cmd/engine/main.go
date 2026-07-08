@@ -719,11 +719,38 @@ func run(rt runtime, stop <-chan struct{}) error {
 // surface is a composition choice the entrypoint owns. A registration failure
 // is a wiring bug, surfaced to the caller to fail loudly at startup.
 func registerTools(r *handlers.Registry, searcher llm.MemorySearcher) error {
+	// Registration order IS the advertised-tool order (AdvertisedSpecs preserves
+	// it) and gateTools drops a gated-off tool in place, so the advertised set
+	// is registration order with holes. Provider prompt-prefix caching keys on a
+	// byte-identical LEADING span, and caching only catches up to the FIRST
+	// divergence between two requests — so the order is tuned for cache stability
+	// (LLM-328): the tools present for essentially every stationary, non-laboring
+	// actor regardless of role/needs/offers lead, and the situational tools that
+	// a gate turns on for only some actors trail. That way a per-actor divergence
+	// (one actor has produce / accept_pay / solicit_work, another doesn't) falls
+	// at the TAIL of the tools block, leaving the whole common head warm and
+	// shared across a morning burst of co-ticking NPCs. This is ORDER only — the
+	// same tools are registered and the same gates apply, so it is intended to be
+	// behavior-preserving; but tool order IS model-facing (the model reads an
+	// ordered array), so it is not a strict guarantee — the deepseek behavior
+	// soak (LLM-325) is the backstop. pay_with_item leads bare `pay` so the model
+	// meets the purchase path before the bare-coin one (the LLM-99 double-pay
+	// safety argument). The family composites (RegisterPayWithItemFamily / …Labor
+	// / …Give) are bypassed here in favor of the granular registrars so each
+	// member lands in its cache-appropriate section; the full family is still
+	// registered (no dangling offer surface), just not contiguously —
+	// TestRegisterTools_*FamilyMembership pins granular == composite.
 	register := []struct {
 		name string
 		fn   func(*handlers.Registry) error
 	}{
+		// ── Common head: advertised to any stationary, non-laboring actor. ──
 		{"speak", handlers.RegisterSpeak},
+		{"move_to", handlers.RegisterMoveTo}, // ZBBS-HOME-285
+		{"consume", handlers.RegisterConsume},
+		// pay_with_item — the commerce/purchase path; leads bare `pay` so the
+		// model meets it first (family split for cache order, LLM-328).
+		{"pay_with_item", handlers.RegisterPayWithItem},
 		// `pay` (bare-coin transfer) — wages, tips, gifts (LLM-99). Pulled in
 		// ZBBS-HOME-430 because it was then the only coin tool, so NPCs reached
 		// for it to settle purchases and double-charged on buy-then-pay.
@@ -732,28 +759,44 @@ func registerTools(r *handlers.Registry, searcher llm.MemorySearcher) error {
 		// John→Ezekiel wages-for-chores case that otherwise lands as empty
 		// speech. PCs pay via /pc/pay.
 		{"pay", handlers.RegisterPay},
-		{"consume", handlers.RegisterConsume},
 		{"sell", handlers.RegisterSceneQuote},
-		{"deliver_order", handlers.RegisterDeliverOrder},
-		{"pay_with_item_family", handlers.RegisterPayWithItemFamily},
-		{"labor_family", handlers.RegisterLaborFamily}, // LLM-26: solicit_work / accept_work / decline_work
-		{"offer_trade", handlers.RegisterOfferTrade},   // ZBBS-HOME-407
-		{"give_family", handlers.RegisterGiveFamily},   // LLM-138: give / accept_gift / decline_gift
-		{"take_break", handlers.RegisterTakeBreak},     // ZBBS-HOME-284 #4
-		{"stay_open", handlers.RegisterStayOpen},       // ZBBS-WORK-387
-		{"move_to", handlers.RegisterMoveTo},           // ZBBS-HOME-285
-		{"summon", handlers.RegisterSummon},            // ZBBS-HOME-311
-		{"gather", handlers.RegisterGather},            // ZBBS-WORK-328
-		{"produce", handlers.RegisterCraft},            // LLM-116: producer picks what to produce next
-		{"repair", handlers.RegisterRepair},            // LLM-118: owner mends their worn market stall
-		{"stop", handlers.RegisterStop},                // ZBBS-HOME-338
+		{"offer_trade", handlers.RegisterOfferTrade}, // ZBBS-HOME-407
+		{"give", handlers.RegisterGive},              // LLM-138 (family split for cache order, LLM-328)
+
+		// ── Situational tail: each advertised only when its perception gate
+		// fires, so it appears for some actors and not others. Kept after the
+		// common head so that divergence truncates the shared prefix only here.
+		{"gather", handlers.RegisterGather},              // ZBBS-WORK-328: only at a gatherable source
+		{"produce", handlers.RegisterCraft},              // LLM-116: only a producer idle at its post
+		{"repair", handlers.RegisterRepair},              // LLM-118: only an owner at their worn business
+		{"take_break", handlers.RegisterTakeBreak},       // ZBBS-HOME-284 #4: only tired at post/home
+		{"stay_open", handlers.RegisterStayOpen},         // ZBBS-WORK-387: only on the off-shift wind-down cue
+		{"deliver_order", handlers.RegisterDeliverOrder}, // ZBBS-HOME-398: only a keeper with a Ready order
+		{"stop", handlers.RegisterStop},                  // ZBBS-HOME-338: only while moving
+		// labor group (LLM-26): solicit_work only for a free worker with an
+		// audience; accept/decline_work only for an employer with a pending offer.
+		{"solicit_work", handlers.RegisterSolicitWork},
+		{"accept_work", handlers.RegisterAcceptWork},
+		{"decline_work", handlers.RegisterDeclineWork},
+		// pay-with-item resolution group: advertised only to a seller with a
+		// pending offer (accept/decline/counter) or a buyer with a standing one
+		// (withdraw) — the pay_with_item head itself is in the common block above.
+		{"accept_pay", handlers.RegisterAcceptPay},
+		{"decline_pay", handlers.RegisterDeclinePay},
+		{"counter_pay", handlers.RegisterCounterPay},
+		{"withdraw_pay", handlers.RegisterWithdrawPay},
+		// gift resolution group (LLM-138): only a recipient with a pending gift.
+		{"accept_gift", handlers.RegisterAcceptGift},
+		{"decline_gift", handlers.RegisterDeclineGift},
+		{"summon", handlers.RegisterSummon}, // ZBBS-HOME-311: currently gated off for everyone (LLM-322)
 		// `done` — the universal terminal tool. The NPC's instructions tell it
 		// to end its turn with done, and the v2 harness ends the tick on a
 		// ClassTerminal dispatch (sim.TickStatusDone, see sim/reactor_commands.go).
 		// Every handler test and the register_*.go composition docs wire this,
 		// but production registration omitted it — so a `done` call errored with
 		// unknown_tool and the NPC was forced into another tool (typically a
-		// walk-off), manufacturing goal-thrash. ZBBS-HOME-369.
+		// walk-off), manufacturing goal-thrash. ZBBS-HOME-369. Kept last so it is
+		// the terminal option the model reads after every action tool.
 		{"done", func(r *handlers.Registry) error { return r.RegisterTerminal("done") }},
 	}
 	for _, t := range register {
