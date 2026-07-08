@@ -1940,9 +1940,18 @@ var perceptionScenarios = []perceptionScenario{
 			"in-flight window cleared — and the ProductionCycleCompleted reactor woke her with the pre-rendered narration " +
 			"warrant. The golden pins the 'You finish the batch — 10 porridge ready in your stores.' warrant line (the " +
 			"renderNarrationWarrantLine path, new for WarrantKindProductionDone) and that the '## Your trade' cue is back " +
-			"in the same prompt — stores now read 'running low' rather than empty — so the very tick that celebrates the " +
-			"batch is the tick that grants the next go/no-go decision.",
+			"in the same prompt — stores now read 'running low' rather than empty, makings on hand — so the very tick that " +
+			"celebrates the batch is the tick that grants the next go/no-go decision.",
 		build: innkeeperBatchDoneBeat,
+	},
+	{
+		name: "producer_all_goods_at_cap",
+		summary: "LLM-324 regression pin: Moses James, a two-good farm producer (carrots + wheat), idle inside his farm " +
+			"on shift with BOTH goods at cap — nothing craftable. The golden proves the '## Your trade' cue is SUPPRESSED " +
+			"(buildForgeChoice returns nil) so the produce tool is not advertised, killing the at-cap produce-reject loop " +
+			"that burned 6-iteration budget_forced ticks live. Contrast smith_choosing_at_forge (one at cap, one craftable) " +
+			"where only the craftable good is listed.",
+		build: producerAllGoodsAtCap,
 	},
 }
 
@@ -3718,14 +3727,16 @@ func brokeBuyerNoGoodsNoPeerBuy() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta
 }
 
 // TestTradeCueOnlyForIdleProducerAtPost is the LLM-116/LLM-319 cross-scenario
-// invariant: the "## Your trade" cue appears in EXACTLY the scenarios whose subject
-// is (a) physically inside its own work structure, (b) a producer — at least one
-// recipe-backed produce entry — and (c) IDLE, nothing in the works (ProductionItem
-// empty; mid-batch the cue and its produce tool yield to the standing in-progress
-// line). The predicate is re-derived from the fixture here rather than hardcoded
-// per name, so a new scenario can't silently join or leave the cue set: any
-// producer standing idle at its post — single- OR multi-output, the LLM-319
-// headline change — must see the scene, and nobody else ever does.
+// invariant, refined by LLM-324: the "## Your trade" cue appears in EXACTLY the
+// scenarios whose subject is (a) physically inside its own work structure, (b) a
+// producer, (c) IDLE with nothing in the works (ProductionItem empty; mid-batch the
+// cue and its produce tool yield to the standing in-progress line), AND (d) has at
+// least one good it could start a batch of right now — recipe-backed AND a whole
+// batch fits under the carry cap AND the inputs are on hand (the craftableNow gate).
+// A producer with every good at cap or input-starved gets NO cue, so the produce
+// tool the cue gates is not advertised (LLM-324). The predicate is re-derived from
+// the fixture here rather than hardcoded per name, so a new scenario can't silently
+// join or leave the cue set.
 func TestTradeCueOnlyForIdleProducerAtPost(t *testing.T) {
 	const marker = "## Your trade"
 	for _, sc := range perceptionScenarios {
@@ -3739,14 +3750,22 @@ func TestTradeCueOnlyForIdleProducerAtPost(t *testing.T) {
 				a.ProductionItem == "" {
 				for _, e := range a.RestockPolicy.ProduceEntries() {
 					r := snap.Recipes[e.Item]
-					if r != nil && r.RateQty > 0 && r.RatePerHours > 0 {
-						want = true // ≥1 recipe-backed produce good — a producer with a decision to grant
+					if r == nil || r.RateQty <= 0 || r.RatePerHours <= 0 {
+						continue // not makeable
+					}
+					batchQty := r.OutputQty
+					if batchQty < 1 {
+						batchQty = 1
+					}
+					fitsCap := e.Cap() <= 0 || a.Inventory[e.Item]+batchQty <= e.Cap()
+					if fitsCap && sim.HasProduceInputs(r, a.Inventory) {
+						want = true // ≥1 craftable good — a producer with a real decision to grant (LLM-324)
 						break
 					}
 				}
 			}
 			if has := strings.Contains(renderScenario(sc), marker); has != want {
-				t.Errorf("scenario %q: trade cue present=%v, want %v (idle-producer-at-post predicate)", sc.name, has, want)
+				t.Errorf("scenario %q: trade cue present=%v, want %v (idle-craftable-producer-at-post predicate)", sc.name, has, want)
 			}
 		})
 	}
@@ -3791,6 +3810,107 @@ func TestGoldensNoInputGoodAlwaysCraftable(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestGoldensTradeCueOnlyCraftableGoods is the LLM-324 cross-scenario invariant:
+// every good the "## Your trade" cue lists must be craftable right now — a whole
+// batch fits under its carry cap AND its inputs are on hand. The cue's presence is
+// what advertises the produce tool (gateTools offerCraft reads the same Items), so a
+// listed-but-uncraftable good is exactly the self-contradiction that steered a
+// keeper into an at-cap / input-starved produce-reject loop (live: Moses James,
+// 6-iteration budget_forced ticks). Runs over the whole matrix so no future scenario
+// can reintroduce a good the cue offers but StartProductionCycle would reject.
+//
+// The cap check RECOMPUTES batchFitsCap from the fixture (entry cap + recipe batch +
+// on-hand) rather than trusting it.Stock != StockFull: stockTier reports StockEmpty
+// (not Full) at zero on hand, so a batch larger than the whole cap (batchQty > cap)
+// would slip past a tier-based assertion — the exact blind spot code_review caught
+// in the first cut of the production gate.
+func TestGoldensTradeCueOnlyCraftableGoods(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, _ := sc.build()
+			as := snap.Actors[actorID]
+			if as == nil {
+				return
+			}
+			view := buildForgeChoice(snap, actorID, as)
+			if view == nil {
+				return // no trade cue here — nothing to constrain
+			}
+			for _, it := range view.Items {
+				r := snap.Recipes[it.itemKind]
+				if r == nil {
+					t.Errorf("scenario %q: trade cue lists %q with no recipe", sc.name, it.itemKind)
+					continue
+				}
+				batchQty := r.OutputQty
+				if batchQty < 1 {
+					batchQty = 1
+				}
+				cap, found := 0, false
+				for _, e := range as.RestockPolicy.ProduceEntries() {
+					if e.Item == it.itemKind {
+						cap, found = e.Cap(), true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("scenario %q: trade cue lists %q that isn't in the actor's produce policy", sc.name, it.itemKind)
+					continue
+				}
+				if fitsCap := cap <= 0 || as.Inventory[it.itemKind]+batchQty <= cap; !fitsCap {
+					t.Errorf("scenario %q: trade cue lists %q but a whole batch overshoots the carry cap — the produce tool would reject it (LLM-324)", sc.name, it.itemKind)
+				}
+				if !sim.HasProduceInputs(r, as.Inventory) {
+					t.Errorf("scenario %q: trade cue lists %q with inputs short — the produce tool would reject it (LLM-324)", sc.name, it.itemKind)
+				}
+			}
+		})
+	}
+}
+
+// TestForgeChoiceDropsBatchLargerThanCap is the LLM-324 edge case code_review
+// flagged: a good with ZERO on hand but a batch size that exceeds the whole carry
+// cap is NOT craftable (batchFitsCap: 0+batch > cap → the landed batch would
+// overshoot), yet stockTier reads it StockEmpty via its onHand<=0 short-circuit. A
+// StockFull-proxy gate would therefore wrongly list it and advertise produce;
+// buildForgeChoice must gate on the exact cap predicate and drop it. The cap-5
+// positive control proves the drop is the cap predicate's doing, not some other gate.
+func TestForgeChoiceDropsBatchLargerThanCap(t *testing.T) {
+	const (
+		bakerID = sim.ActorID("baker")
+		bakery  = sim.StructureID("bakery")
+	)
+	build := func(cap int) (*sim.Snapshot, sim.ActorID, *sim.ActorSnapshot) {
+		as := &sim.ActorSnapshot{
+			WorkStructureID:   bakery,
+			InsideStructureID: bakery,
+			Inventory:         map[sim.ItemKind]int{}, // zero on hand
+			RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+				{Item: "loaf", Source: sim.RestockSourceProduce, Max: cap},
+			}},
+		}
+		snap := &sim.Snapshot{
+			Actors:     map[sim.ActorID]*sim.ActorSnapshot{bakerID: as},
+			Structures: map[sim.StructureID]*sim.Structure{bakery: plainStructure(bakery, "Bakery")},
+			Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+				"loaf": {OutputItem: "loaf", OutputQty: 5, RateQty: 5, RatePerHours: 1}, // batch of 5
+			},
+		}
+		return snap, bakerID, as
+	}
+	// Batch of 5 from empty overshoots cap 3 → not craftable → cue suppressed.
+	snap, id, as := build(3)
+	if view := buildForgeChoice(snap, id, as); view != nil {
+		t.Errorf("cap 3: buildForgeChoice = %+v, want nil (a 5-loaf batch overshoots cap 3 from empty)", view)
+	}
+	// Positive control: cap 5 fits the whole batch → cue lists loaf.
+	snap, id, as = build(5)
+	if view := buildForgeChoice(snap, id, as); view == nil {
+		t.Fatal("cap 5: buildForgeChoice = nil, want a cue (a 5-loaf batch fits cap 5 from empty)")
 	}
 }
 
@@ -7710,13 +7830,16 @@ func innkeeperBatchInFlight() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 // golden pins the "You finish the batch — 10 porridge ready in your stores."
 // warrant line (renderNarrationWarrantLine's WarrantKindProductionDone path) and
 // that the SAME prompt re-opens the "## Your trade" scene — stores now "running
-// low" (10 of 30), makings spent so the batch offer carries the "you'd need more
-// milk and water first" clause — granting the next go/no-go in the very tick that
-// reports the landing.
+// low" (10 of 30) with a fresh batch's makings still on hand, so the offer reads
+// "and you have the makings" — granting the next go/no-go in the very tick that
+// reports the landing. She holds one batch of milk+water because LLM-324 only
+// offers a good the actor could actually start: a beat that showed "running low …
+// but you'd need more milk and water first. Start a batch with produce" would be
+// the very at-cap/starved self-contradiction LLM-324 removes.
 func innkeeperBatchDoneBeat() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	snap, hannahID := innkeeperTradeSceneBase()
 	hannah := snap.Actors[hannahID]
-	hannah.Inventory = map[sim.ItemKind]int{"porridge": 10} // the landed batch; the makings are spent
+	hannah.Inventory = map[sim.ItemKind]int{"porridge": 10, "milk": 3, "water": 5} // the landed batch, plus one more batch's makings on hand
 	hannah.RecentProduce = []sim.ProduceEvent{
 		{Item: "porridge", Qty: 10, At: snap.PublishedAt.Add(-time.Minute)},
 	}
@@ -7732,6 +7855,59 @@ func innkeeperBatchDoneBeat() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 		},
 	}
 	return snap, hannahID, warrants
+}
+
+// producerAllGoodsAtCap is the LLM-324 regression pin: Moses James, a two-good
+// farm producer (carrots + wheat), stands idle inside his own farm on shift with
+// BOTH goods at their carry cap — no batch of either can start. Before LLM-324 the
+// "## Your trade" cue still listed both ("no room for another batch") and closed
+// with "Start a batch with produce", advertising the produce tool into an
+// all-at-cap reject loop (live: Moses James burned 6-iteration budget_forced ticks
+// on produce→reject). buildForgeChoice now drops both capped goods and returns
+// nil, so the golden has NO "## Your trade" section and the produce tool is not
+// offered — he is left to see to other things. No production-choice warrant:
+// shouldChooseProduction gates the wake off when nothing's craftable, the same
+// craftableNow the cue now mirrors. He woke on a plain arrival, not a trade
+// prompt.
+func producerAllGoodsAtCap() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		mosesID = sim.ActorID("moses")
+		farm    = sim.StructureID("james_farm")
+	)
+	start, end := 360, 1080 // 06:00–18:00
+	now := 600              // 10:00 — on shift
+	published := time.Date(2026, 6, 25, 10, 0, 0, 0, time.UTC)
+	moses := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Moses James",
+		Role:              "farmer",
+		State:             sim.StateIdle,
+		WorkStructureID:   farm,
+		InsideStructureID: farm,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             0,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"carrot": 30, "wheat": 30}, // both at cap — nothing craftable
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "carrot", Source: sim.RestockSourceProduce, Max: 30},
+			{Item: "wheat", Source: sim.RestockSourceProduce, Max: 30},
+		}},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{mosesID: moses},
+		Structures: map[sim.StructureID]*sim.Structure{
+			farm: plainStructure(farm, "James Farm"),
+		},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"carrot": {OutputItem: "carrot", OutputQty: 5, RateQty: 5, RatePerHours: 1, WholesalePrice: 1, RetailPrice: 2},
+			"wheat":  {OutputItem: "wheat", OutputQty: 5, RateQty: 5, RatePerHours: 1, WholesalePrice: 1, RetailPrice: 2},
+		},
+	}
+	return snap, mosesID, nil
 }
 
 // resellerArrivesAtSupplierBuyHereNoHuddle is the LLM-286 arrival tick: John Ellis,
