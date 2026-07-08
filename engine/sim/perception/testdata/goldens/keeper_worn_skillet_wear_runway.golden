@@ -1,0 +1,31 @@
+# Your turn
+
+## Since your last turn
+(nothing specific — this is a routine check-in)
+
+
+## You
+Coins in your purse: 30.
+You are carrying: skillet (x1), stew (x6).
+
+## Around you
+You are inside the Ellis Tavern, your workplace, with no one else here to hear you speak.
+It is morning in the village.
+
+You're at your workplace.
+
+It is your working hours and you are at your post — stay and look after your work; you close at 6 in the evening. If no one needs you right now, wait here for customers rather than wandering off.
+
+## Keeping up production
+- The skillet you make stew with is wearing down — 1 on hand, good for about 50 more before you need another.
+
+## Your trade
+Your stock of stew is running low, and none sold this past week. A batch — 10 more — takes about 2 hours, and you have the makings.
+Start a batch with produce, or see to other things.
+
+## Restocking
+Your shop stock of these bought-in goods is running low. You choose how much to buy.
+- You have 1 skillet on hand and room for 1 more at the most. No seller is here now — use move_to to reach a supplier below, then pay_with_item once you arrive.
+  - buy from Crane Forge (destination: crane_forge)
+
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

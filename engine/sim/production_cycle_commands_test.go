@@ -30,6 +30,10 @@ func buildCookWorld(t *testing.T, recipes map[sim.ItemKind]*sim.ItemRecipe, rest
 		"flour":     {Name: "flour", DisplayLabel: "Flour", Category: sim.ItemCategoryMaterial, SortOrder: 250},
 		"porridge":  {Name: "porridge", DisplayLabel: "Porridge", Category: sim.ItemCategoryFood, SortOrder: 130},
 		"horseshoe": {Name: "horseshoe", DisplayLabel: "Horseshoe", Category: sim.ItemCategoryMaterial, SortOrder: 320}, // item kind, NO recipe seeded
+		// Durable tools (LLM-330): a skillet lasts 3 produce executions; the
+		// mallet's durability 1 pins the consumed-every-use degenerate case.
+		"skillet": {Name: "skillet", DisplayLabel: "Skillet", DisplayLabelSingular: "skillet", DisplayLabelPlural: "skillets", Category: "tool", SortOrder: 400, DurabilityUses: 3},
+		"mallet":  {Name: "mallet", DisplayLabel: "Mallet", DisplayLabelSingular: "mallet", DisplayLabelPlural: "mallets", Category: "tool", SortOrder: 410, DurabilityUses: 1},
 	})
 	handles.Recipes.Seed(recipes)
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{

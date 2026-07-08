@@ -546,6 +546,15 @@ func TestCommitResultContent_ProduceBatchStart(t *testing.T) {
 		t.Errorf("produce batch start noun fallback:\n got %q\nwant %q", got, want)
 	}
 
+	// Durable-tool wear (LLM-330): the world-side pre-phrased wear clause rides
+	// after the consumed inputs, before the closer.
+	got = commitResultContent(&vc, sim.ProductionStartResult{Item: "stew", Noun: "stew", BatchQty: 10, DurationSeconds: 4500,
+		InputsUsed: "2 sage", ToolWear: "Your skillet has about 12 more uses in it."})
+	want = "[ok] You start a batch of stew — 10 when it's done, about an hour and a quarter of work at your post. You use 2 sage. Your skillet has about 12 more uses in it." + closer
+	if got != want {
+		t.Errorf("produce batch start (tool wear):\n got %q\nwant %q", got, want)
+	}
+
 	if got := commitResultContent(&vc, struct{ X int }{X: 1}); got != "[ok]" {
 		t.Errorf("wrong result type = %q, want generic [ok]", got)
 	}

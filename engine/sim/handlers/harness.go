@@ -1535,6 +1535,11 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 			if r.InputsUsed != "" {
 				msg += fmt.Sprintf(" You use %s.", r.InputsUsed)
 			}
+			// Durable-tool wear (LLM-330): pre-phrased world-side, where the
+			// wear counter and catalog nouns live.
+			if r.ToolWear != "" {
+				msg += " " + r.ToolWear
+			}
 			return msg + " It finishes on its own while you work here — no need to produce again until it lands."
 		}
 	}

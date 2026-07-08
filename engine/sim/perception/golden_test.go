@@ -1893,6 +1893,17 @@ var perceptionScenarios = []perceptionScenario{
 		build: dairyKeeperOutOfBoosterAtPost,
 	},
 	{
+		name: "keeper_worn_skillet_wear_runway",
+		summary: "LLM-330 per-use tool durability: a John-shaped tavernkeeper at his tavern on shift, stew recipe " +
+			"carrying a skillet TOOL input (durability 20), down to his last skillet with 5 uses left on it (ToolWear). " +
+			"The golden pins the wear-phrased '## Keeping up production' line — 'The skillet you make stew with is " +
+			"wearing down — 1 on hand, good for about 50 more before you need another.' (5 uses × 10-stew batches), NOT " +
+			"the consumed-input 'You use X to make Y' phrasing — alongside the '## Restocking' walk-to line for the " +
+			"skillet (the smith sells them), the LLM-64 motivate/act split under the wear model. Matrix-wide guard: " +
+			"TestGoldensToolWearLineOnlyForDurableTools.",
+		build: keeperWornSkilletWearRunway,
+	},
+	{
 		name: "producer_derived_input_demand",
 		summary: "LLM-260 derived procurement, the live Hannah Boggs case: an innkeeper with `porridge: produce` and NO " +
 			"hand-authored buy entries stands at her inn with zero milk and zero water (porridge needs both). A dairy farm " +
@@ -2170,6 +2181,76 @@ func dairyKeeperOutOfBoosterAtPost() (*sim.Snapshot, sim.ActorID, []sim.WarrantM
 		RestockReorderPct: 25,
 	}
 	return snap, elizabethID, nil
+}
+
+// keeperWornSkilletWearRunway is the LLM-330 durable-tool fixture: John Ellis
+// at his tavern with the stew recipe's skillet input under the wear model
+// (durability 20), holding his LAST skillet with 5 uses left on it. The reorder
+// floor (2 × per-batch draw = 2) trips at 1 on hand, so the wear runway line
+// and the skillet Restocking line render together — motivate + act, with the
+// runway wear-based (5 uses × 10-stew batch = 50), not the consumed-per-batch
+// figure the pre-330 stopgap would have shown.
+func keeperWornSkilletWearRunway() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		johnID    = sim.ActorID("john")
+		ezekielID = sim.ActorID("ezekiel")
+		tavern    = sim.StructureID("ellis_tavern")
+		forge     = sim.StructureID("crane_forge")
+	)
+	start, end := 360, 1080 // 06:00–18:00
+	now := 600              // 10:00 — on shift
+	john := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "John Ellis",
+		Role:              "tavernkeeper",
+		State:             sim.StateIdle,
+		WorkStructureID:   tavern,
+		InsideStructureID: tavern,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             30,
+		Inventory:         map[sim.ItemKind]int{"stew": 6, "skillet": 1},
+		ToolWear:          map[sim.ItemKind]int{"skillet": 5},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "stew", Source: sim.RestockSourceProduce, Max: 30},
+			{Item: "skillet", Source: sim.RestockSourceBuy, Target: 2},
+		}},
+	}
+	// The skillet supplier: a stocked smith at his forge — the actionable buy
+	// path the runway line (and the skillet Restocking line) is gated on.
+	ezekiel := &sim.ActorSnapshot{
+		Kind:            sim.KindNPCStateful,
+		DisplayName:     "Ezekiel Crane",
+		Role:            "blacksmith",
+		State:           sim.StateIdle,
+		WorkStructureID: forge,
+		Inventory:       map[sim.ItemKind]int{"skillet": 4},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "skillet", Source: sim.RestockSourceProduce, Max: 5},
+		}},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{johnID: john, ezekielID: ezekiel},
+		Structures: map[sim.StructureID]*sim.Structure{
+			tavern: plainStructure(tavern, "Ellis Tavern"),
+			forge:  plainStructure(forge, "Crane Forge"),
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"stew":    {Name: "stew", DisplayLabel: "stew", DisplayLabelSingular: "bowl of stew", DisplayLabelPlural: "stew", Category: sim.ItemCategoryFood},
+			"skillet": {Name: "skillet", DisplayLabel: "skillet", DisplayLabelSingular: "skillet", DisplayLabelPlural: "skillets", Category: "tool", DurabilityUses: 20},
+		},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"stew": {
+				OutputItem: "stew", OutputQty: 10, RateQty: 30, RatePerHours: 6,
+				Inputs:         []sim.RecipeInput{{Item: "skillet", Qty: 1}},
+				WholesalePrice: 3, RetailPrice: 5,
+			},
+		},
+		RestockReorderPct: 25,
+	}
+	return snap, johnID, nil
 }
 
 // brokeKeeperShutAndUnaffordableSuppliersNoRestock is the LLM-216 live fixture:
@@ -3957,6 +4038,25 @@ func TestGoldensBoosterLineOnlyForBoostedRecipes(t *testing.T) {
 		want := sc.name == "dairy_keeper_out_of_booster_at_post"
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: booster line present=%v, want %v", sc.name, has, want)
+		}
+	}
+}
+
+// TestGoldensToolWearLineOnlyForDurableTools is the LLM-330 cross-scenario
+// invariant: the wear-phrased production-input line ("is wearing down") renders
+// in EXACTLY the scenarios whose subject produces with a low durable-tool input
+// (keeper_worn_skillet_wear_runway) and nowhere else in the matrix. A wear line
+// leaking elsewhere would mean the Tool flag regressed to firing on plain
+// consumed inputs; consumed-input scenarios keep their "You use X to make Y"
+// runway phrasing and never the wear one.
+func TestGoldensToolWearLineOnlyForDurableTools(t *testing.T) {
+	const marker = "is wearing down"
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		got := renderScenario(sc)
+		want := sc.name == "keeper_worn_skillet_wear_runway"
+		if has := strings.Contains(got, marker); has != want {
+			t.Errorf("scenario %q: tool-wear line present=%v, want %v", sc.name, has, want)
 		}
 	}
 }

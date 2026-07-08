@@ -54,6 +54,17 @@ type ItemKindDef struct {
 	// v1 read these via hasCapability(); v2 models the column on the def.
 	Capabilities []string
 
+	// DurabilityUses marks this kind a durable TOOL when > 0: how many produce
+	// executions one unit lasts (LLM-330). A recipe input of a durable kind is
+	// required on hand at produce start but NOT consumed; instead the actor's
+	// per-kind wear counter (Actor.ToolWear) decrements 1 per execution, and at
+	// 0 the unit is spent (inventory -1, next use takes up a fresh unit at full
+	// durability). 1 degenerates to the old consumed-per-execution behavior;
+	// 0 (the default) keeps plain consumed-input semantics. From
+	// item_kind.durability_uses; tunable per kind via the umbilical item/set
+	// route.
+	DurabilityUses int
+
 	// Satisfies is the per-need effect of consuming one unit of this item.
 	// Port of v1's item_satisfies table (PK (item_kind, attribute), one row
 	// per attribute), embedded here because the v2 single-goroutine substrate

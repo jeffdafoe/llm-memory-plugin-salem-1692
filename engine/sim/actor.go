@@ -452,6 +452,16 @@ type Actor struct {
 	Inventory map[ItemKind]int
 	Coins     int
 
+	// ToolWear is the per-kind wear state of this actor's durable tools
+	// (LLM-330): uses REMAINING on the in-use unit of each tool kind. A
+	// missing entry means no unit has been taken up — all on-hand units are
+	// fresh. Worn by applyToolWear once per produce execution; the entry
+	// clears when the unit is spent (and its inventory count drops). Only
+	// kinds with catalog DurabilityUses > 0 ever get entries. Checkpointed as
+	// actor_inventory.uses_left on the kind's inventory row, so wear dies with
+	// the stock that carries it.
+	ToolWear map[ItemKind]int
+
 	// Activity windows.
 	BreakUntil    *time.Time
 	SleepingUntil *time.Time
@@ -966,6 +976,12 @@ func CloneActor(a *Actor) *Actor {
 			cp.Inventory[k] = v
 		}
 	}
+	if a.ToolWear != nil {
+		cp.ToolWear = make(map[ItemKind]int, len(a.ToolWear))
+		for k, v := range a.ToolWear {
+			cp.ToolWear[k] = v
+		}
+	}
 	if a.BreakUntil != nil {
 		t := *a.BreakUntil
 		cp.BreakUntil = &t
@@ -1370,6 +1386,14 @@ type ActorSnapshot struct {
 	// cloning needed), the same posture as Needs. Empty/nil for actors with
 	// no items.
 	Inventory map[ItemKind]int
+
+	// ToolWear mirrors the live Actor's durable-tool wear map (LLM-330) —
+	// uses remaining on the in-use unit per tool kind — so the "## Keeping up
+	// production" cue can render a tool input's true runway
+	// (sim.ToolRunwayUses) without a world-goroutine round trip. Value-typed
+	// map copied per-entry by snapshotActor, the same posture as Inventory.
+	// Empty/nil for actors that have never worn a tool.
+	ToolWear map[ItemKind]int
 
 	// RestockPolicy mirrors the live Actor's RestockPolicy at snapshot time so
 	// the "## Restocking" perception section can surface a reseller's low

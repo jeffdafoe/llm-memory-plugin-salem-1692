@@ -111,7 +111,7 @@ func emptyNeedRows() *pgxmock.Rows {
 }
 
 func emptyInvRows() *pgxmock.Rows {
-	return pgxmock.NewRows([]string{"actor_id", "item_kind", "quantity"})
+	return pgxmock.NewRows([]string{"actor_id", "item_kind", "quantity", "uses_left"})
 }
 
 // --- Slice 2 continuity-tier column lists + empty-row builders -----------
@@ -336,10 +336,12 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 			AddRow(actA, "hunger", 4).
 			AddRow(actA, "tiredness", 18))
 
+	usesLeft := 5
 	mock.ExpectQuery(`FROM actor_inventory\b`).
-		WillReturnRows(pgxmock.NewRows([]string{"actor_id", "item_kind", "quantity"}).
-			AddRow(actA, "ale", 3).
-			AddRow(actA, "coin_purse", 1))
+		WillReturnRows(pgxmock.NewRows([]string{"actor_id", "item_kind", "quantity", "uses_left"}).
+			AddRow(actA, "ale", 3, (*int)(nil)).
+			AddRow(actA, "coin_purse", 1, (*int)(nil)).
+			AddRow(actA, "skillet", 2, &usesLeft)) // durable-tool wear (LLM-330)
 
 	expectLoadAllContinuityEmpty(mock)
 	expectLoadAllSlice3Empty(mock)
@@ -434,8 +436,13 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 	if len(a.Needs) != 2 || a.Needs["hunger"] != 4 || a.Needs["tiredness"] != 18 {
 		t.Errorf("Needs = %v", a.Needs)
 	}
-	if len(a.Inventory) != 2 || a.Inventory["ale"] != 3 {
+	if len(a.Inventory) != 3 || a.Inventory["ale"] != 3 || a.Inventory["skillet"] != 2 {
 		t.Errorf("Inventory = %v", a.Inventory)
+	}
+	// LLM-330: a non-NULL uses_left restores the in-use tool's wear; NULL rows
+	// leave no entry.
+	if len(a.ToolWear) != 1 || a.ToolWear["skillet"] != 5 {
+		t.Errorf("ToolWear = %v, want skillet:5", a.ToolWear)
 	}
 
 	// Bare actor with all-NULL nullable fields.
@@ -529,8 +536,8 @@ func TestActorsRepo_LoadAll_OrphanInventory(t *testing.T) {
 		WillReturnRows(emptyNeedRows())
 
 	mock.ExpectQuery(`FROM actor_inventory\b`).
-		WillReturnRows(pgxmock.NewRows([]string{"actor_id", "item_kind", "quantity"}).
-			AddRow(actA, "ale", 3))
+		WillReturnRows(pgxmock.NewRows([]string{"actor_id", "item_kind", "quantity", "uses_left"}).
+			AddRow(actA, "ale", 3, (*int)(nil)))
 
 	_, err := repo.LoadAll(context.Background())
 	if err == nil {
@@ -604,7 +611,7 @@ func TestActorsRepo_SaveSnapshot_FullActor(t *testing.T) {
 	mock.ExpectQuery(`SELECT nextval\('actor_inventory_snapshot_gen_seq`).
 		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(int64(301)))
 	mock.ExpectExec(`INSERT INTO actor_inventory `).
-		WithArgs(actA, "ale", 3, int64(301)).
+		WithArgs(actA, "ale", 3, nil, int64(301)).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor_inventory .*WHERE snapshot_gen < \$1`).
 		WithArgs(int64(301)).
@@ -794,7 +801,7 @@ func TestActorsRepo_SaveSnapshot_ZeroQtyInventoryDropped(t *testing.T) {
 	mock.ExpectQuery(`SELECT nextval\('actor_inventory_snapshot_gen_seq`).
 		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(int64(305)))
 	mock.ExpectExec(`INSERT INTO actor_inventory `).
-		WithArgs(actA, "ale", 3, int64(305)).
+		WithArgs(actA, "ale", 3, nil, int64(305)).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor_inventory .*WHERE snapshot_gen < \$1`).
 		WithArgs(int64(305)).
@@ -812,6 +819,72 @@ func TestActorsRepo_SaveSnapshot_ZeroQtyInventoryDropped(t *testing.T) {
 			Inventory: map[sim.ItemKind]int{
 				"ale":   3,
 				"bread": 0, // zero qty → skip UPSERT, swept by DELETE
+			},
+		},
+	}
+	if err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors); err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+}
+
+// TestActorsRepo_SaveSnapshot_ToolWearUsesLeft — LLM-330: a ToolWear entry
+// rides the kind's inventory row as uses_left; a wear entry whose kind has no
+// inventory row (the sold-every-unit corner) is dropped, not written.
+func TestActorsRepo_SaveSnapshot_ToolWearUsesLeft(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+
+	expectActorSaveSnapshotPrelude(mock, 106)
+
+	mock.ExpectExec(`INSERT INTO actor `).
+		WithArgs(
+			actA, "Mira", 0, 0,
+			nil, nil, nil,
+			nil, nil,
+			20, nil, nil, nil,
+			nil, nil,
+			(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
+			int64(0), "idle",
+			nil, "south",
+			int64(106),
+			nil,
+			"", 0, int64(0), // production_item / batch_qty / remaining_seconds — idle sentinel (LLM-319)
+		).
+		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
+	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
+		WithArgs(int64(106)).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+
+	mock.ExpectQuery(`SELECT nextval\('actor_need_snapshot_gen_seq`).
+		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(int64(206)))
+	mock.ExpectExec(`DELETE FROM actor_need .*WHERE snapshot_gen < \$1`).
+		WithArgs(int64(206)).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+
+	mock.ExpectQuery(`SELECT nextval\('actor_inventory_snapshot_gen_seq`).
+		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(int64(306)))
+	mock.ExpectExec(`INSERT INTO actor_inventory `).
+		WithArgs(actA, "skillet", 2, 5, int64(306)).
+		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
+	mock.ExpectExec(`DELETE FROM actor_inventory .*WHERE snapshot_gen < \$1`).
+		WithArgs(int64(306)).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+
+	expectActorContinuityTailsEmpty(mock, 406, 506, 606)
+	expectActorSlice3TailsEmpty(mock, 4006, 6006, 7006)
+
+	actors := map[sim.ActorID]*sim.Actor{
+		actA: {
+			ID:          actA,
+			DisplayName: "Mira",
+			Coins:       20,
+			State:       "idle",
+			Inventory:   map[sim.ItemKind]int{"skillet": 2},
+			ToolWear: map[sim.ItemKind]int{
+				"skillet": 5,
+				"mallet":  2, // no mallet inventory row — wear rides nothing, dropped
 			},
 		},
 	}
@@ -983,6 +1056,22 @@ func TestActorsRepo_SaveSnapshot_NegativeInventoryQuantity(t *testing.T) {
 	}
 	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
 	assertValidationOnly(t, mock, err, "quantity=-1")
+}
+
+// TestActorsRepo_SaveSnapshot_NonPositiveToolWear — LLM-330: applyToolWear
+// deletes a wear entry at zero, so a non-positive value is a mechanics bug;
+// reject rather than persist a broken counter.
+func TestActorsRepo_SaveSnapshot_NonPositiveToolWear(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+	actors := map[sim.ActorID]*sim.Actor{
+		actA: {
+			ID: actA, DisplayName: "X", State: "idle",
+			Inventory: map[sim.ItemKind]int{"skillet": 1},
+			ToolWear:  map[sim.ItemKind]int{"skillet": 0},
+		},
+	}
+	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
+	assertValidationOnly(t, mock, err, "uses_left=0")
 }
 
 // TestActorsRepo_SaveSnapshot_EmptyInventoryKind — guards whitespace /
