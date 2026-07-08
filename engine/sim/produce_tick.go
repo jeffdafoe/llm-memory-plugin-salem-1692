@@ -192,39 +192,59 @@ func HasProduceInputs(recipe *ItemRecipe, inventory map[ItemKind]int) bool {
 }
 
 // craftableNow reports whether the actor could actually start a cycle of
-// entry.Item right now: it is makeableRecipe (recipe with positive rate), still
-// below its carry cap, AND the actor holds the inputs for one cycle. The
-// shared choice-worthiness gate that keeps the production-choice warrant
-// (shouldChooseProduction) and the produce tool (StartProductionCycle) from
-// steering a keeper onto a good it cannot presently make, and that the trade
-// cue mirrors via HasProduceInputs (LLM-257).
+// entry.Item right now: it is makeableRecipe (recipe with positive rate), a
+// WHOLE batch fits under its carry cap, AND the actor holds the inputs for one
+// cycle. Whole-batch headroom (not merely below-cap) because a landed cycle
+// mints its full BatchQty — a start from one-below-cap would overshoot the cap
+// by nearly a batch, stock the old continuous clamp never allowed
+// (code_review). The shared choice-worthiness gate that keeps the
+// production-choice warrant (shouldChooseProduction) and the produce tool
+// (StartProductionCycle) from steering a keeper onto a good it cannot
+// presently make, and that the trade cue mirrors via HasProduceInputs +
+// the same headroom test in its Full tier (LLM-257).
 func craftableNow(w *World, a *Actor, entry RestockEntry) bool {
 	if !makeableRecipe(w, entry.Item) {
 		return false
 	}
-	if cap := entry.Cap(); cap > 0 && a.Inventory[entry.Item] >= cap {
+	if !batchFitsCap(a.Inventory[entry.Item], entry.Cap(), recipeBatchQty(w.Recipes[entry.Item])) {
 		return false
 	}
 	return HasProduceInputs(w.Recipes[entry.Item], a.Inventory)
 }
 
+// batchFitsCap reports whether a whole batch of batchQty lands at or under
+// cap from onHand. Uncapped (cap <= 0) always fits. Exported to perception in
+// spirit via the trade cue's Full tier, which applies the same test so the cue
+// and the tool can't drift on "room for another batch".
+func batchFitsCap(onHand, cap, batchQty int) bool {
+	if cap <= 0 {
+		return true
+	}
+	return onHand+batchQty <= cap
+}
+
+// recipeBatchQty is the units one cycle of recipe mints (OutputQty floored at
+// 1) — the same figure StartProductionCycle captures into the window.
+func recipeBatchQty(recipe *ItemRecipe) int {
+	if recipe == nil || recipe.OutputQty < 1 {
+		return 1
+	}
+	return recipe.OutputQty
+}
+
 // CycleDurationSeconds is the base-rate work one production cycle of recipe
-// takes: OutputQty units at secondsPerUnit (rate_per_hours×3600 / rate_qty).
-// Porridge (10 per cycle, 8/h) → 10 × 450s = 4500s ≈ 75 min. Returns 0 for a
+// takes: OutputQty units at the recipe rate (rate_qty per rate_per_hours
+// hours). Porridge (10 per cycle, 8/h) → 4500s ≈ 75 min. Computed as one
+// rounded division over the whole batch — dividing per-unit first truncates
+// (7 units at 7/h came out 3598s, not 3600 — code_review). Returns 0 for a
 // nil or rate-less recipe (not makeable — the caller gates on makeableRecipe).
 func CycleDurationSeconds(recipe *ItemRecipe) int64 {
 	if recipe == nil || recipe.RateQty <= 0 || recipe.RatePerHours <= 0 {
 		return 0
 	}
-	secondsPerUnit := int64(recipe.RatePerHours) * 3600 / int64(recipe.RateQty)
-	if secondsPerUnit <= 0 {
-		return 0
-	}
-	units := int64(1)
-	if recipe.OutputQty > 1 {
-		units = int64(recipe.OutputQty)
-	}
-	return units * secondsPerUnit
+	period := int64(recipe.RatePerHours) * 3600
+	units := int64(recipeBatchQty(recipe))
+	return (period*units + int64(recipe.RateQty)/2) / int64(recipe.RateQty)
 }
 
 // ProductionCycleStarted / ProductionCycleCompleted are the lifecycle seams of
@@ -317,10 +337,13 @@ func ApplyProduceTick(now time.Time) Command {
 				}
 				// LLM-224: hired help speeds the batch — each worker laboring at
 				// the establishment scales this tick's credit. Re-sampled per tick
-				// so a helper hired mid-batch speeds the remainder.
+				// so a helper hired mid-batch speeds the remainder. Rounded
+				// division so a non-multiple-of-100 scale (the knob is
+				// configurable) doesn't shed a fraction of a second every tick
+				// (~48s/h at 133% — code_review).
 				credit := elapsed
 				if scale := produceRateScalePct(w, actorID, actor); scale > 100 {
-					credit = elapsed * int64(scale) / 100
+					credit = (elapsed*int64(scale) + 50) / 100
 				}
 				act.RemainingSeconds -= credit
 				if act.RemainingSeconds <= 0 {

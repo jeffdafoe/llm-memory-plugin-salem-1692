@@ -212,11 +212,31 @@ func TestStartProductionCycleRejectsAtCapWithSteer(t *testing.T) {
 		t.Fatalf("accepted an at-cap water batch; want rejection")
 	}
 	msg := strings.ToLower(err.Error())
-	if !strings.Contains(msg, "all the water you can hold") {
-		t.Errorf("rejection should state the cap; got %q", msg)
+	if !strings.Contains(msg, "too full to fit another batch") {
+		t.Errorf("rejection should state the headroom block; got %q", msg)
 	}
 	if !strings.Contains(msg, "call produce with stew") {
 		t.Errorf("rejection should steer to stew (craftable — sage in hand); got %q", msg)
+	}
+}
+
+// TestStartProductionCycleRejectsWithoutWholeBatchHeadroom — code_review: a
+// start from one-below-cap must NOT overshoot. Water batches are 12; at 25 of
+// 30 a whole batch doesn't fit, so the start is rejected BEFORE any inputs are
+// spent, matching the old continuous clamp's never-exceed-cap invariant.
+func TestStartProductionCycleRejectsWithoutWholeBatchHeadroom(t *testing.T) {
+	w, cancel := buildCookWorld(t, stewWaterRecipes(), stewWaterRestock(), map[sim.ItemKind]int{"water": 25})
+	defer cancel()
+
+	_, err := w.Send(sim.StartProductionCycle("cook", "water"))
+	if err == nil {
+		t.Fatalf("accepted a batch that would overshoot the cap (25+12 > 30); want rejection")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "too full to fit another batch") {
+		t.Errorf("rejection = %q, want the headroom block named", err.Error())
+	}
+	if got := inventoryOf(t, w, "cook", "water"); got != 25 {
+		t.Errorf("water = %d, want untouched 25", got)
 	}
 }
 

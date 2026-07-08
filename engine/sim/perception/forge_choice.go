@@ -44,8 +44,8 @@ type StockTier int
 const (
 	StockEmpty StockTier = iota // none on hand
 	StockLow                    // at or below a third of cap
-	StockAmple                  // below cap
-	StockFull                   // at cap — a batch can't start
+	StockAmple                  // below cap with room for a whole batch
+	StockFull                   // a whole batch wouldn't fit — a start would be rejected
 )
 
 // MovementTier is the engine-computed judgment of the good's recent
@@ -125,7 +125,7 @@ func buildForgeChoice(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 			itemKind:      e.Item,
 			BatchQty:      batchQty,
 			WorkPhrase:    sim.HumanizeWorkDuration(sim.CycleDurationSeconds(recipe)),
-			Stock:         stockTier(actorSnap.Inventory[e.Item], e.Cap()),
+			Stock:         stockTier(actorSnap.Inventory[e.Item], e.Cap(), batchQty),
 			Movement:      movementTier(soldUnits, batchQty),
 			HasInputs:     len(recipe.Inputs) > 0,
 			InputsReady:   inputsReady,
@@ -149,16 +149,20 @@ func buildForgeChoice(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 	return &ForgeChoiceView{Items: items}
 }
 
-// stockTier reduces on-hand vs cap to the scene's fullness judgment. An
-// uncapped good (cap 0) never reads Full — there is no shelf to fill.
-func stockTier(onHand, cap int) StockTier {
+// stockTier reduces on-hand vs cap to the scene's fullness judgment. Full
+// means a WHOLE batch wouldn't fit under the cap — the same headroom test
+// StartProductionCycle rejects on (sim craftableNow/batchFitsCap), so the
+// Full sentence and its omitted affordance line track exactly the state where
+// a produce call would bounce. An uncapped good (cap 0) never reads Full —
+// there is no shelf to fill.
+func stockTier(onHand, cap, batchQty int) StockTier {
 	if onHand <= 0 {
 		return StockEmpty
 	}
 	if cap <= 0 {
 		return StockAmple
 	}
-	if onHand >= cap {
+	if onHand+batchQty > cap {
 		return StockFull
 	}
 	if onHand*3 <= cap {
@@ -221,7 +225,7 @@ func tradeGoodScene(it ForgeChoiceItem) string {
 	case StockAmple:
 		s.WriteString("You have a fair stock of " + noun)
 	case StockFull:
-		s.WriteString("Your stores of " + noun + " are full")
+		s.WriteString("Your stores of " + noun + " have no room for another batch")
 	}
 	switch it.Movement {
 	case MovementBrisk:

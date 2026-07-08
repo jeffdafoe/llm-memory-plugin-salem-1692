@@ -107,7 +107,9 @@ func StartProductionCycle(id ActorID, itemName string) Command {
 				if !HasProduceInputs(recipe, a.Inventory) {
 					return nil, ModelFacingError{Msg: fmt.Sprintf("you can't make %s right now — you're %s.%s", kind, describeMissingInputs(recipe, a.Inventory), steer)}
 				}
-				return nil, ModelFacingError{Msg: fmt.Sprintf("you already have all the %s you can hold.%s", kind, steer)}
+				// Inputs are in hand, so the block is headroom: a whole batch must
+				// fit under the carry cap (craftableNow's batchFitsCap).
+				return nil, ModelFacingError{Msg: fmt.Sprintf("your stores of %s are too full to fit another batch.%s", kind, steer)}
 			}
 			duration := CycleDurationSeconds(recipe)
 			if duration <= 0 {
@@ -116,7 +118,9 @@ func StartProductionCycle(id ActorID, itemName string) Command {
 				return nil, fmt.Errorf("StartProductionCycle: zero cycle duration for makeable %q", kind)
 			}
 			// Consume the inputs up front (delete-on-zero inventory invariant).
-			// craftableNow already confirmed they're all on hand.
+			// craftableNow already confirmed they're all on hand. The narration
+			// phrase resolves catalog counting nouns ("3 pails of milk"), not raw
+			// kind keys — it is model-facing via the tool result (code_review).
 			var used []string
 			for _, in := range recipe.Inputs {
 				if in.Qty <= 0 {
@@ -126,12 +130,9 @@ func StartProductionCycle(id ActorID, itemName string) Command {
 				if a.Inventory[in.Item] <= 0 {
 					delete(a.Inventory, in.Item)
 				}
-				used = append(used, fmt.Sprintf("%d %s", in.Qty, in.Item))
+				used = append(used, inputCountPhrase(w, in.Item, in.Qty))
 			}
-			batchQty := recipe.OutputQty
-			if batchQty < 1 {
-				batchQty = 1
-			}
+			batchQty := recipeBatchQty(recipe)
 			now := time.Now().UTC()
 			a.ProductionActivity = &ProductionActivity{
 				Item:             kind,
@@ -231,6 +232,18 @@ func describeMissingInputs(recipe *ItemRecipe, inventory map[ItemKind]int) strin
 		return "missing inputs"
 	}
 	return "short of " + strings.Join(parts, ", ")
+}
+
+// inputCountPhrase renders one consumed input as a counted catalog phrase —
+// "3 pails of milk", "1 sage" — via ItemKindDef.CountNoun, falling back to the
+// raw kind key for a discovery-minted kind with no catalog entry.
+func inputCountPhrase(w *World, kind ItemKind, qty int) string {
+	if def := w.ItemKinds[kind]; def != nil {
+		if noun := def.CountNoun(qty); noun != "" {
+			return fmt.Sprintf("%d %s", qty, noun)
+		}
+	}
+	return fmt.Sprintf("%d %s", qty, kind)
 }
 
 // joinWithAnd renders a slice as an "and"-terminated list: "a", "a and b",
