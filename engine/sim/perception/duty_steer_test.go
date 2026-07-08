@@ -585,17 +585,17 @@ func TestRenderDutySteer(t *testing.T) {
 	}
 
 	work := render(&DutySteerView{ToWork: true, TargetID: "tavern", TargetLabel: "the Tavern"})
-	if !strings.Contains(work, "working hours") || !strings.Contains(work, "the Tavern") || !strings.Contains(work, "structure_id: tavern") {
+	if !strings.Contains(work, "working hours") || !strings.Contains(work, "the Tavern") || !strings.Contains(work, "destination: tavern") {
 		t.Errorf("toWork prose missing pieces, got %q", work)
 	}
 
 	home := render(&DutySteerView{ToWork: false, TargetID: "cottage", TargetLabel: "Ellis Cottage"})
-	if !strings.Contains(home, "head home to Ellis Cottage") || !strings.Contains(home, "structure_id: cottage") {
+	if !strings.Contains(home, "head home to Ellis Cottage") || !strings.Contains(home, "destination: cottage") {
 		t.Errorf("home prose missing pieces, got %q", home)
 	}
 
 	homeNoLabel := render(&DutySteerView{ToWork: false, TargetID: "cottage"})
-	if !strings.Contains(homeNoLabel, "head home (structure_id: cottage)") {
+	if !strings.Contains(homeNoLabel, "head home (destination: cottage)") {
 		t.Errorf("home no-label fallback missing id, got %q", homeNoLabel)
 	}
 
@@ -605,7 +605,7 @@ func TestRenderDutySteer(t *testing.T) {
 	if !strings.Contains(atPost, "at your post") || !strings.Contains(atPost, "wandering off") {
 		t.Errorf("atPost prose missing pieces, got %q", atPost)
 	}
-	if strings.Contains(atPost, "structure_id") {
+	if strings.Contains(atPost, "destination") {
 		t.Errorf("atPost prose should be placeless (no structure_id), got %q", atPost)
 	}
 	if strings.Contains(atPost, "you close at") {
@@ -645,7 +645,7 @@ func TestRender_DutySteerCarriesStructureID(t *testing.T) {
 		DutySteer: &DutySteerView{ToWork: true, TargetID: "tavern", TargetLabel: "the Tavern"},
 	}
 	out := Render(p, DefaultRenderConfig())
-	if !strings.Contains(combinedPrompt(out), "structure_id: tavern") {
+	if !strings.Contains(combinedPrompt(out), "destination: tavern") {
 		t.Errorf("rendered prompt must carry the duty target structure_id, got:\n%s", combinedPrompt(out))
 	}
 }
@@ -786,12 +786,12 @@ func TestRenderDutySteer_WindDownVariants(t *testing.T) {
 	}
 
 	lodger := render(&DutySteerView{TargetID: "inn", TargetLabel: "Hannah's Inn", Lodging: true})
-	if !strings.Contains(lodger, "rented room at Hannah's Inn") || !strings.Contains(lodger, "structure_id: inn") {
+	if !strings.Contains(lodger, "rented room at Hannah's Inn") || !strings.Contains(lodger, "destination: inn") {
 		t.Errorf("lodger prose missing pieces, got %q", lodger)
 	}
 
 	homeless := render(&DutySteerView{})
-	if !strings.Contains(homeless, "find yourself a place to rest") || strings.Contains(homeless, "structure_id") {
+	if !strings.Contains(homeless, "find yourself a place to rest") || strings.Contains(homeless, "destination") {
 		t.Errorf("homeless prose should be placeless, got %q", homeless)
 	}
 

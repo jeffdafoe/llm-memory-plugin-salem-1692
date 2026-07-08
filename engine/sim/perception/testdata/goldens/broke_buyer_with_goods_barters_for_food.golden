@@ -15,6 +15,6 @@ It is morning in the village.
 
 ## What you can eat or drink
 Nearby to buy (hunger):
-- General Store — buy a wedge of cheese (a good meal), which your coins won't cover — offer goods you carry in trade instead (use pay_with_item with pay_items), to eat there (it can't be carried away) (structure_id: general_store)
+- General Store — buy a wedge of cheese (a good meal), which your coins won't cover — offer goods you carry in trade instead (use pay_with_item with pay_items), to eat there (it can't be carried away) (destination: general_store)
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.

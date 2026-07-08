@@ -901,7 +901,7 @@ func renderSatiation(b *strings.Builder, v *SatiationView) {
 					}
 				}
 				if fs.ObjectID != "" {
-					fmt.Fprintf(b, " (structure_id: %s)", fs.ObjectID)
+					fmt.Fprintf(b, " (destination: %s)", fs.ObjectID)
 				}
 				b.WriteString("\n")
 			}
@@ -935,7 +935,7 @@ func renderSatiation(b *strings.Builder, v *SatiationView) {
 				// is how the buyer actually walks here, and the tool rejects a bare
 				// name. Same id-in-perception contract restock + shift_duty use.
 				if vd.StructureID != "" {
-					fmt.Fprintf(b, " (structure_id: %s)", vd.StructureID)
+					fmt.Fprintf(b, " (destination: %s)", vd.StructureID)
 				}
 				if vd.OutOfStock {
 					b.WriteString(outOfStockAnnotation)

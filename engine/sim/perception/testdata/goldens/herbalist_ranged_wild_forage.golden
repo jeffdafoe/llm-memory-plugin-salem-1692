@@ -13,5 +13,5 @@ It is morning in the village.
 
 ## Free sources you can gather from
 You know of these unowned sources out in the town and countryside. No one owns them, so you may take freely — walk out to gather when your own stock runs low. You choose how much to take.
-- sage: 0 on hand of 5 cap (room for 5 more). The Sage Bush is a long walk to the northeast, 10 ready to gather now. Use move_to with structure_id "sage_bush" to walk out to it.
+- sage: 0 on hand of 5 cap (room for 5 more). The Sage Bush is a long walk to the northeast, 10 ready to gather now. Use move_to with destination "sage_bush" to walk out to it.
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.

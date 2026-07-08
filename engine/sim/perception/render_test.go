@@ -665,7 +665,7 @@ func TestRender_ShiftDutyWarrantFiltered(t *testing.T) {
 			"Your shift has started",
 			"Your shift has ended",
 			"head to your workplace",
-			"structure_id: smithy",
+			"destination: smithy",
 		} {
 			if strings.Contains(out.Text, banned) {
 				t.Errorf("toWork=%v: shift-duty warrant should not render; found %q in:\n%s", toWork, banned, out.Text)

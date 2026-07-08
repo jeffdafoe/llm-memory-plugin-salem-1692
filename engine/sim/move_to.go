@@ -36,6 +36,52 @@ import (
 // (ZBBS-HOME-237), which avoids a post-move speak landing at the room the
 // actor just left. Confirmed with work for the duty-warrant seam.
 
+// MoveToDestination resolves the move_to tool's single free-form `destination`
+// arg (LLM-320) to a walk. It replaces the former split structure_id /
+// structure_name model surface with ONE value the model fills with a place name,
+// a "home"/"work" keyword, or an id it was shown. Resolution is id-first, else
+// name:
+//
+//  1. An exact structure id → the structure path (MoveToStructure: enter-vs-visit
+//     derivation, already-there / in-flight no-ops, keeper-abed lock, etc.).
+//  2. An exact bare-object id that is a usable refresh source or a gatherable
+//     bush (a well / fruit tree whose id rode a free-source cue) → the object
+//     visit path (MoveToObject). Mirrors MoveToStructure's own by-id object
+//     fallthrough, so move_to(<objId>) still reaches it.
+//  3. Otherwise a place NAME (or a home/work keyword) → MoveToStructureByName,
+//     which resolves structures + objects by name, the anchor keywords, the
+//     kitchen phantom, and hands back the bounded real-names steer on a miss.
+//
+// The id-first ordering matters: a value that names a real structure takes the
+// id path with its full enter/visit + no-op handling, rather than being
+// re-resolved by name. Runs on the world goroutine.
+func MoveToDestination(actorID ActorID, destination string, shownObjects []VillageObjectID, remembered RememberedPlaces, now time.Time) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			if _, ok := w.Actors[actorID]; !ok {
+				return MoveActorResult{}, fmt.Errorf("MoveToDestination: actor %q not in world", actorID)
+			}
+			target := strings.TrimSpace(destination)
+			if target == "" {
+				return MoveActorResult{}, fmt.Errorf("move_to: destination is required")
+			}
+			// Id-first: an exact structure id the model copied from a cue → the id
+			// path, with its full enter-vs-visit + no-op handling.
+			if _, ok := w.Structures[StructureID(target)]; ok {
+				return MoveToStructure(actorID, StructureID(target), now).Fn(w)
+			}
+			// An exact bare-object id (a free refresh source or a gatherable bush the
+			// model saw in a cue) → the object visit path.
+			if obj := w.VillageObjects[VillageObjectID(target)]; obj != nil &&
+				(objectIsRefreshSource(obj) || obj.IsFiniteGatherableSource()) {
+				return MoveToObject(actorID, VillageObjectID(target), now).Fn(w)
+			}
+			// Otherwise treat it as a place NAME (or a home/work keyword).
+			return MoveToStructureByName(actorID, target, shownObjects, remembered, now).Fn(w)
+		},
+	}
+}
+
 // MoveToStructureByName returns a Command that resolves a place NAME to a
 // structure_id and walks there exactly as MoveToStructure does. It exists
 // because prose perception (ZBBS-HOME-351..355) makes the model answer in
@@ -79,7 +125,7 @@ func MoveToStructureByName(actorID ActorID, name string, shownObjects []VillageO
 			}
 			target := strings.TrimSpace(name)
 			if target == "" {
-				return MoveActorResult{}, fmt.Errorf("move_to: structure_name is required")
+				return MoveActorResult{}, fmt.Errorf("move_to: destination is required")
 			}
 			// Structures are common-knowledge geography (LLM-142): resolve against
 			// every named structure in the village. A structure wins a name it
@@ -527,7 +573,7 @@ func MoveToObject(actorID ActorID, objID VillageObjectID, now time.Time) Command
 			}
 			if _, ok := w.VillageObjects[objID]; !ok {
 				return MoveActorResult{}, fmt.Errorf(
-					"there is no place %q to walk to — use a structure_id or name you can see in your perception", objID)
+					"there is no place %q to walk to — name a destination you can see in your perception", objID)
 			}
 			if pin, ok := effectiveObjectLoiterTile(w, objID); ok && a.Pos.Chebyshev(pin) <= LoiterAttributionTiles {
 				// LLM-209: a no-op walk — TerminalNoOpError so the harness ends the
@@ -573,7 +619,7 @@ func MoveToStructure(actorID ActorID, structureID StructureID, now time.Time) Co
 				return MoveActorResult{}, fmt.Errorf("MoveToStructure: actor %q not in world", actorID)
 			}
 			if structureID == "" {
-				return MoveActorResult{}, fmt.Errorf("move_to: structure_id is required")
+				return MoveActorResult{}, fmt.Errorf("move_to: destination is required")
 			}
 			if _, ok := w.Structures[structureID]; !ok {
 				// LLM-212: a reserved relationship keyword ("home"/"work"/…) can ride
@@ -602,7 +648,7 @@ func MoveToStructure(actorID ActorID, structureID StructureID, now time.Time) Co
 					return MoveToObject(actorID, VillageObjectID(structureID), now).Fn(w)
 				}
 				return MoveActorResult{}, fmt.Errorf(
-					"there is no structure %q to walk to — use a structure_id you can see in your perception", structureID)
+					"there is no structure %q to walk to — name a destination you can see in your perception", structureID)
 			}
 			// A structure record with no backing VillageObject placement can't
 			// be walked to: moveToCanEnter would silently fall back to a visit
@@ -614,7 +660,7 @@ func MoveToStructure(actorID ActorID, structureID StructureID, now time.Time) Co
 			// guards partial/desynced world state (code_review, ZBBS-HOME-285).
 			if _, _, ok := villageObjectForStructure(w, structureID); !ok {
 				return MoveActorResult{}, fmt.Errorf(
-					"structure %q has no placement in the village to walk to — pick a different structure_id from your perception", structureID)
+					"structure %q has no placement in the village to walk to — pick a different destination from your perception", structureID)
 			}
 			if a.InsideStructureID == structureID {
 				// LLM-209: a no-op walk — TerminalNoOpError ends the tick (the model

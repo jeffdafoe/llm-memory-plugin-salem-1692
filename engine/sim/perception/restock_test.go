@@ -728,7 +728,7 @@ func TestRenderRestocking_Shape(t *testing.T) {
 	if strings.Contains(out, "Filling to cap") || strings.Contains(out, "of 20 cap") {
 		t.Errorf("LLM-63: the fill-to-cap price anchor must be gone:\n%s", out)
 	}
-	if !strings.Contains(out, "buy from The Brewery (structure_id: brewery), ~2 coins") {
+	if !strings.Contains(out, "buy from The Brewery (destination: brewery), ~2 coins") {
 		t.Errorf("missing vendor line:\n%s", out)
 	}
 	if !strings.Contains(out, "You have 0 salt on hand and room for 10 more at the most.") {
@@ -763,11 +763,11 @@ func TestRenderRestocking_NoPriceOmitsCost(t *testing.T) {
 	var b strings.Builder
 	renderRestocking(&b, v)
 	out := b.String()
-	if !strings.Contains(out, "buy from Ellis Farm (structure_id: ellis)") {
+	if !strings.Contains(out, "buy from Ellis Farm (destination: ellis)") {
 		t.Errorf("missing vendor destination line:\n%s", out)
 	}
 	// Empty CostText must not render a trailing ", <cost>" clause after the id.
-	if strings.Contains(out, "(structure_id: ellis),") {
+	if strings.Contains(out, "(destination: ellis),") {
 		t.Errorf("empty CostText should not render a trailing cost clause:\n%s", out)
 	}
 }

@@ -11,7 +11,7 @@ Coins in your purse: 61.
 You are inside the General Store, with no one else here to hear you speak.
 It is midday.
 
-You keep your trade at the Ellis Store (structure_id: ellis_store) — you can head back there whenever you wish.
+You keep your trade at the Ellis Store (destination: ellis_store) — you can head back there whenever you wish.
 
 ## Recently settled offers
 1. Your offer of 6 coins to Josiah Thorne for 3 sage didn't go through — it's closed, so stop waiting on it (offer id 1).

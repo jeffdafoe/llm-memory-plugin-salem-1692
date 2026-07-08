@@ -11,8 +11,8 @@ Coins in your purse: 12.
 You are inside the Blacksmith, your workplace, with no one else here to hear you speak.
 Evening settles over the village.
 
-You're at your workplace. Your home is at the Crane Cottage (structure_id: crane_cottage) — you can head home whenever you wish.
+You're at your workplace. Your home is at the Crane Cottage (destination: crane_cottage) — you can head home whenever you wish.
 
-Your day's work is done, and the tavern is open of an evening — you might make your way to the Tavern (structure_id: tavern) for company, pass a quiet evening at the Crane Cottage (structure_id: crane_cottage), or turn in for the night, as you please.
+Your day's work is done, and the tavern is open of an evening — you might make your way to the Tavern (destination: tavern) for company, pass a quiet evening at the Crane Cottage (destination: crane_cottage), or turn in for the night, as you please.
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.

@@ -12,7 +12,7 @@ You are carrying: ale (x1).
 You are inside The Brewery. the brewer is here with you.
 It is midday.
 
-You keep your trade at the Tavern (structure_id: tavern) — you can head back there whenever you wish.
+You keep your trade at the Tavern (destination: tavern) — you can head back there whenever you wish.
 
 ## Restocking
 Your shop stock of these bought-in goods is running low. You choose how much to buy.

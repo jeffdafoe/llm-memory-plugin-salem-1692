@@ -12,7 +12,7 @@ You are carrying: cloth (x20), coal (x1).
 You are inside the Blacksmith, with Ezekiel Crane.
 It is midday.
 
-You keep your trade at the General Store (structure_id: general_store) — you can head back there whenever you wish.
+You keep your trade at the General Store (destination: general_store) — you can head back there whenever you wish.
 
 ## Nails to mend your business
 Your General Store is worn and needs mending, but you carry only 0 of the 5 nails a repair takes. Ezekiel Crane is here with you, but your purse can't take on nails just now — hold off buying and let your coins recover before you come back for them.

@@ -452,10 +452,10 @@ func renderNeedRedirect(v NeedRedirectView) string {
 		return fmt.Sprintf("You and the others here keep saying the same thing, but you already carry %s. Don't talk it over again — consume it now to %s.\n",
 			sanitizeInline(v.ItemLabel), v.Verb)
 	case NeedRedirectBuy:
-		return fmt.Sprintf("You and the others here keep saying the same thing, but there is nothing to %s here. Don't talk it over again — go to %s (structure_id: %s) now and buy %s to %s.\n",
+		return fmt.Sprintf("You and the others here keep saying the same thing, but there is nothing to %s here. Don't talk it over again — go to %s (destination: %s) now and buy %s to %s.\n",
 			v.Verb, sanitizeInline(v.TargetLabel), sanitizeInline(v.TargetID), sanitizeInline(v.ItemLabel), v.Verb)
 	default: // NeedRedirectFree
-		return fmt.Sprintf("You and the others here keep saying the same thing, but there is nothing to %s here. Don't talk it over again — go to %s (structure_id: %s) now and %s.\n",
+		return fmt.Sprintf("You and the others here keep saying the same thing, but there is nothing to %s here. Don't talk it over again — go to %s (destination: %s) now and %s.\n",
 			v.Verb, sanitizeInline(v.TargetLabel), sanitizeInline(v.TargetID), v.Verb)
 	}
 }
@@ -1199,7 +1199,7 @@ func renderAnchors(b *strings.Builder, v *AnchorsView, atPost bool, insideID sim
 		if insideHome { // SamePlace ⇒ insideHome and insideWork coincide
 			b.WriteString("You're at your home and workplace.\n\n")
 		} else {
-			fmt.Fprintf(b, "Your home and your trade are both at %s (structure_id: %s) — you can head back there whenever you wish.\n\n", work, v.WorkID)
+			fmt.Fprintf(b, "Your home and your trade are both at %s (destination: %s) — you can head back there whenever you wish.\n\n", work, v.WorkID)
 		}
 	case v.WorkID != "" && v.HomeID != "":
 		switch {
@@ -1209,29 +1209,29 @@ func renderAnchors(b *strings.Builder, v *AnchorsView, atPost bool, insideID sim
 			// oscillation, ZBBS-WORK-431). Keep both structure_ids — they are the
 			// load-bearing move_to tokens (HOME-349) — but frame home as after-hours
 			// rather than an open door; the at-post duty steer carries "stay put".
-			fmt.Fprintf(b, "You keep your trade at %s (structure_id: %s); your home is at %s (structure_id: %s) — head home once your work is done.\n\n", work, v.WorkID, home, v.HomeID)
+			fmt.Fprintf(b, "You keep your trade at %s (destination: %s); your home is at %s (destination: %s) — head home once your work is done.\n\n", work, v.WorkID, home, v.HomeID)
 		case insideHome:
 			// Standing at home: its id is a no-op move target, so state it in-place and
 			// keep the workplace as the reachable anchor (LLM-214).
-			fmt.Fprintf(b, "You're home. You keep your trade at %s (structure_id: %s) — you can head there whenever you wish.\n\n", work, v.WorkID)
+			fmt.Fprintf(b, "You're home. You keep your trade at %s (destination: %s) — you can head there whenever you wish.\n\n", work, v.WorkID)
 		case insideWork:
 			// Standing at the workplace off-shift (atPost handles on-shift above): state
 			// it in-place and keep home as the reachable anchor (LLM-214).
-			fmt.Fprintf(b, "You're at your workplace. Your home is at %s (structure_id: %s) — you can head home whenever you wish.\n\n", home, v.HomeID)
+			fmt.Fprintf(b, "You're at your workplace. Your home is at %s (destination: %s) — you can head home whenever you wish.\n\n", home, v.HomeID)
 		default:
-			fmt.Fprintf(b, "You keep your trade at %s (structure_id: %s), and your home is at %s (structure_id: %s) — you can head to either whenever you wish.\n\n", work, v.WorkID, home, v.HomeID)
+			fmt.Fprintf(b, "You keep your trade at %s (destination: %s), and your home is at %s (destination: %s) — you can head to either whenever you wish.\n\n", work, v.WorkID, home, v.HomeID)
 		}
 	case v.WorkID != "":
 		if insideWork {
 			b.WriteString("You're at your workplace.\n\n")
 		} else {
-			fmt.Fprintf(b, "You keep your trade at %s (structure_id: %s) — you can head back there whenever you wish.\n\n", work, v.WorkID)
+			fmt.Fprintf(b, "You keep your trade at %s (destination: %s) — you can head back there whenever you wish.\n\n", work, v.WorkID)
 		}
 	case v.HomeID != "":
 		if insideHome {
 			b.WriteString("You're home.\n\n")
 		} else {
-			fmt.Fprintf(b, "Your home is at %s (structure_id: %s) — you can head back there whenever you wish.\n\n", home, v.HomeID)
+			fmt.Fprintf(b, "Your home is at %s (destination: %s) — you can head back there whenever you wish.\n\n", home, v.HomeID)
 		}
 	}
 }
@@ -1294,7 +1294,7 @@ func renderDutySteer(b *strings.Builder, v *DutySteerView) {
 		return
 	}
 	if v.ToWork {
-		fmt.Fprintf(b, "It is your working hours, yet you are away from your post — make your way to %s (structure_id: %s) now.\n\n",
+		fmt.Fprintf(b, "It is your working hours, yet you are away from your post — make your way to %s (destination: %s) now.\n\n",
 			anchorPlace(v.TargetLabel, "your workplace"), v.TargetID)
 		return
 	}
@@ -1307,15 +1307,15 @@ func renderDutySteer(b *strings.Builder, v *DutySteerView) {
 		b.WriteString("Your working hours are over — it is time to close up for the night and find yourself a place to rest.")
 	case v.Lodging:
 		if l := sanitizeInline(v.TargetLabel); l != "" {
-			fmt.Fprintf(b, "Your working hours are over — close up and head to your rented room at %s (structure_id: %s) to rest for the night.", l, v.TargetID)
+			fmt.Fprintf(b, "Your working hours are over — close up and head to your rented room at %s (destination: %s) to rest for the night.", l, v.TargetID)
 		} else {
-			fmt.Fprintf(b, "Your working hours are over — close up and head to your rented room at the inn (structure_id: %s) to rest for the night.", v.TargetID)
+			fmt.Fprintf(b, "Your working hours are over — close up and head to your rented room at the inn (destination: %s) to rest for the night.", v.TargetID)
 		}
 	default:
 		if l := sanitizeInline(v.TargetLabel); l != "" {
-			fmt.Fprintf(b, "Your working hours are over and you are not yet home — head home to %s (structure_id: %s) now.", l, v.TargetID)
+			fmt.Fprintf(b, "Your working hours are over and you are not yet home — head home to %s (destination: %s) now.", l, v.TargetID)
 		} else {
-			fmt.Fprintf(b, "Your working hours are over and you are not yet home — head home (structure_id: %s) now.", v.TargetID)
+			fmt.Fprintf(b, "Your working hours are over and you are not yet home — head home (destination: %s) now.", v.TargetID)
 		}
 	}
 	// The stay-open choice: encouraged when a concrete reason is present, else
@@ -1346,7 +1346,7 @@ func renderEveningLeisure(b *strings.Builder, v *EveningLeisureView) {
 	}
 	venue := anchorPlace(v.VenueLabel, "the tavern")
 	home := anchorPlace(v.HomeLabel, "your home")
-	fmt.Fprintf(b, "Your day's work is done, and the tavern is open of an evening — you might make your way to %s (structure_id: %s) for company, pass a quiet evening at %s (structure_id: %s), or turn in for the night, as you please.\n\n",
+	fmt.Fprintf(b, "Your day's work is done, and the tavern is open of an evening — you might make your way to %s (destination: %s) for company, pass a quiet evening at %s (destination: %s), or turn in for the night, as you please.\n\n",
 		venue, v.VenueID, home, v.HomeID)
 }
 

@@ -16,6 +16,6 @@ You are outdoors, with the farmer.
 You have Raspberries (a nibble) on hand — consume to eat.
 A nibble won't quiet this hunger, though — for a real meal, see the options below.
 Nearby to buy (hunger):
-- General Store — buy a wedge of cheese (a good meal), ask the seller, to eat there (it can't be carried away) (structure_id: general_store)
+- General Store — buy a wedge of cheese (a good meal), ask the seller, to eat there (it can't be carried away) (destination: general_store)
 
-You and the others here keep saying the same thing, but there is nothing to eat here. Don't talk it over again — go to General Store (structure_id: general_store) now and buy a wedge of cheese to eat.
+You and the others here keep saying the same thing, but there is nothing to eat here. Don't talk it over again — go to General Store (destination: general_store) now and buy a wedge of cheese to eat.

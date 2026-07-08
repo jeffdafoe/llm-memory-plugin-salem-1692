@@ -11,8 +11,8 @@ Coins in your purse: 40.
 You are inside the Blacksmith. Ezekiel Crane is here with you.
 It is morning in the village.
 
-You keep your trade at the Tavern (structure_id: tavern), and your home is at the Ellis Residence (structure_id: ellis_residence) — you can head to either whenever you wish.
+You keep your trade at the Tavern (destination: tavern), and your home is at the Ellis Residence (destination: ellis_residence) — you can head to either whenever you wish.
 
-It is your working hours, yet you are away from your post — make your way to the Tavern (structure_id: tavern) now.
+It is your working hours, yet you are away from your post — make your way to the Tavern (destination: tavern) now.
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.

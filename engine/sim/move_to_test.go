@@ -87,6 +87,50 @@ func TestMoveToStructure_VisitsDoorlessStructure(t *testing.T) {
 	}
 }
 
+// TestMoveToDestination_Routing pins the LLM-320 unified `destination` arg's
+// id-first-else-name resolution: an exact structure id takes the id path, a
+// place name resolves via the name path, and an unknown value errors. The two
+// underlying resolvers (MoveToStructure / MoveToStructureByName) are covered
+// exhaustively elsewhere in this file; this pins the router that picks between
+// them.
+func TestMoveToDestination_Routing(t *testing.T) {
+	now := time.Now().UTC()
+
+	t.Run("exact id takes the id path (enter)", func(t *testing.T) {
+		w, cancel, _ := buildMoveTestWorld(t)
+		defer cancel()
+		if _, err := w.Send(sim.MoveToDestination("walker", "inn", nil, sim.RememberedPlaces{}, now)); err != nil {
+			t.Fatalf("MoveToDestination(inn): %v", err)
+		}
+		kind, sid := destKindOf(t, w, "walker")
+		if kind != sim.MoveDestinationStructureEnter || sid != "inn" {
+			t.Errorf("got (%q, %q), want (structure_enter, inn) — an exact id must take the id path", kind, sid)
+		}
+	})
+
+	t.Run("place name takes the name path", func(t *testing.T) {
+		w, cancel, _ := buildMoveTestWorld(t)
+		defer cancel()
+		// "the Well" is no structure id; the name path resolves it by DisplayName
+		// to the closed "well" structure → a visit.
+		if _, err := w.Send(sim.MoveToDestination("walker", "the Well", nil, sim.RememberedPlaces{}, now)); err != nil {
+			t.Fatalf("MoveToDestination(the Well): %v", err)
+		}
+		_, sid := destKindOf(t, w, "walker")
+		if sid != "well" {
+			t.Errorf("dest structure = %q, want well — a name must resolve via the name path", sid)
+		}
+	})
+
+	t.Run("unknown destination errors", func(t *testing.T) {
+		w, cancel, _ := buildMoveTestWorld(t)
+		defer cancel()
+		if _, err := w.Send(sim.MoveToDestination("walker", "Nowhere At All", nil, sim.RememberedPlaces{}, now)); err == nil {
+			t.Fatal("want error for an unknown destination, got nil")
+		}
+	})
+}
+
 // buildMoveToOwnerTestWorld seeds a world with a single owner-only structure
 // "manor" (house asset, has a door) owned by "lord", plus three actors at the
 // pad with a clear path: "lord" (owner), "resident" (home == manor), and

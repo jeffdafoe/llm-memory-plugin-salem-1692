@@ -12,7 +12,7 @@ Coins in your purse: 3.
 You are inside the Tavern, with the tavernkeeper.
 The afternoon wears on.
 
-Your home is at the Walker Residence (structure_id: walker_residence) — you can head back there whenever you wish.
+Your home is at the Walker Residence (destination: walker_residence) — you can head back there whenever you wish.
 
 ## What you've recently done
 Most recent first.
@@ -28,7 +28,7 @@ Most recent first.
 - John Ellis said (just now): Welcome back to the tavern, Patience!
 
 ## How you can rest
-For a place you can go to now, call move_to with the structure_id listed for it.
-- Walker Residence — sleep in your own bed, free (structure_id: walker_residence)
+For a place you can go to now, call move_to with the destination listed for it.
+- Walker Residence — sleep in your own bed, free (destination: walker_residence)
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.
