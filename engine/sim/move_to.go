@@ -95,13 +95,17 @@ func moveToLabel(spokenAs, fallback string) string {
 }
 
 // alreadyAtMsg builds the "already at" no-op text (LLM-327): echo the label the
-// model used, and when the place is a keeperless BUSINESS (someone works it but
-// no awake worker is tending it — the isShutBusiness condition), say it is shut
-// so a socially-lured NPC standing at a closed shop learns the dead end instead
-// of re-walking there. structureHasWorker / keeperPresentAt are the same
-// world-goroutine checks the closed-business arrival memory uses.
-func alreadyAtMsg(w *World, structureID StructureID, label string) string {
-	if structureHasWorker(w, structureID) && !keeperPresentAt(w, structureID) {
+// model used, and when the place is a keeperless BUSINESS say it is shut so a
+// socially-lured NPC standing at a closed shop learns the dead end instead of
+// re-walking there. The shut predicate mirrors perception's isShutBusiness
+// (build.go) exactly: someone works it (structureHasWorker), no awake worker is
+// tending it (keeperPresentAt), AND it is not the actor's OWN workplace — you
+// don't tell a keeper their own post is shut (guards the abed-innkeeper edge;
+// it also keeps a move_to("work") that lands on the actor's own post from
+// reading "your work is shut"). structureHasWorker / keeperPresentAt are the
+// same world-goroutine checks the closed-business arrival memory uses.
+func alreadyAtMsg(w *World, a *Actor, structureID StructureID, label string) string {
+	if structureHasWorker(w, structureID) && !keeperPresentAt(w, structureID) && a.WorkStructureID != structureID {
 		return fmt.Sprintf(
 			"you are already at %q, and it is shut just now — no one is tending it, so there's nothing to do here.", label)
 	}
@@ -710,7 +714,7 @@ func moveToStructureLabeled(actorID ActorID, structureID StructureID, spokenAs s
 			if a.InsideStructureID == structureID {
 				// LLM-209: a no-op walk — TerminalNoOpError ends the tick (the model
 				// was re-firing move_to(home) here to the budget while already home).
-				return MoveActorResult{}, TerminalNoOpError{Msg: alreadyAtMsg(w, structureID, moveToLabel(spokenAs, string(structureID)))}
+				return MoveActorResult{}, TerminalNoOpError{Msg: alreadyAtMsg(w, a, structureID, moveToLabel(spokenAs, string(structureID)))}
 			}
 			if a.MoveIntent != nil && a.MoveIntent.Destination.StructureID != nil &&
 				*a.MoveIntent.Destination.StructureID == structureID {
@@ -731,7 +735,7 @@ func moveToStructureLabeled(actorID ActorID, structureID StructureID, spokenAs s
 			// guard; LoiterAttributionTiles = "standing AT" the pin.
 			if dest.Kind == MoveDestinationStructureVisit {
 				if pin, ok := effectiveLoiterTile(w, structureID); ok && a.Pos.Chebyshev(pin) <= LoiterAttributionTiles {
-					return MoveActorResult{}, TerminalNoOpError{Msg: alreadyAtMsg(w, structureID, moveToLabel(spokenAs, string(structureID)))}
+					return MoveActorResult{}, TerminalNoOpError{Msg: alreadyAtMsg(w, a, structureID, moveToLabel(spokenAs, string(structureID)))}
 				}
 			}
 			// The actor has chosen to walk to structureID — deciding to GO there
