@@ -29,13 +29,9 @@ import (
 // purely at the advertising layer (here) gives "only offered when relevant"
 // without breaking dispatch.
 //
-// withdraw_pay is intentionally NOT gated here: it is buyer-side, and the
-// buyer holds no PayOfferWarrantReason (the offer warrant lands on the seller
-// only — engine/sim/handlers/pay_with_item_reactor.go), so there is no
-// seller-side signal to gate it on. It stays unconditionally advertised.
-// Gating it correctly needs a buyer-side "your outstanding offers" perception
-// view that does not exist yet (out of scope; discussion 109 point 4 as
-// amended).
+// withdraw_pay (buyer-side) is NOT in this seller-response set — it is the
+// buyer retracting an offer THEY placed, gated separately on the buyer's own
+// standing offers (see withdrawPayToolName / gateTools, LLM-322).
 var payOfferResponseTools = map[string]struct{}{
 	"accept_pay":  {},
 	"decline_pay": {},
@@ -92,6 +88,26 @@ const solicitWorkToolName = "solicit_work"
 // counterPayToolName is the seller's counter tool — gated more tightly than
 // the rest of the seller-response group (see gateTools / scar #4).
 const counterPayToolName = "counter_pay"
+
+// withdrawPayToolName is the buyer's retract-my-offer tool. Advertised ONLY
+// when the buyer holds an own still-pending pay-with-item offer to withdraw —
+// payload.PendingOffersFromMe, the per-tick PayLedger scan that also drives the
+// "## Offers you have standing" cue (buildPendingOffersFromMe, ZBBS-HOME-413).
+// Reading the SAME view the cue renders from keeps the tool and its cue from
+// drifting (the discussion-109 invariant), mirroring the seller-side
+// accept/decline/counter gate. Before LLM-322 it was advertised to every actor
+// every tick, because this buyer-side standing view did not yet exist.
+const withdrawPayToolName = "withdraw_pay"
+
+// summonToolName is the messenger-errand tool (send a courier to fetch someone,
+// ZBBS-HOME-311). Advertised to NOBODY right now (LLM-322): the errand
+// substrate exists but no NPC carries AttrMessenger in the live village, so
+// DispatchSummon's "a messenger is free" precheck always fails and every summon
+// refuses — a dead ~350-char schema on every tick. Gated out until LLM-323
+// provisions a messenger; REMOVE this gate when LLM-323 lands. Advertising-only
+// like every gate here: the tool stays registered/dispatchable
+// (register_summon.go), so a stray call still reaches sim.DispatchSummon.
+const summonToolName = "summon"
 
 // recallToolName is the recall observation tool — advertised ONLY to agents
 // with a dedicated VA / own memory namespace (ZBBS-WORK-321). A shared-VA NPC
@@ -327,6 +343,7 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 	offers := perception.PendingPayOffers(payload)
 	hasPayOffer := len(offers) > 0
 	canCounter := anyOfferCounterable(offers)
+	hasOwnPendingOffer := len(payload.PendingOffersFromMe) > 0
 	dedicatedVA := actorHasDedicatedVA(payload.ActorID, snap)
 	atGatherableSource := payload.Surroundings.GatherableItem != ""
 	moving := actorIsMoving(payload.ActorID, snap)
@@ -369,6 +386,12 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 		// stop consumer (ZBBS-HOME-338): the inverse — advertise the voluntary
 		// halt tool ONLY while moving (a stationary actor has nothing to stop).
 		if spec.Name == stopToolName && !moving {
+			continue
+		}
+		// summon gate (LLM-322): dead affordance in the live village — no NPC
+		// carries AttrMessenger, so DispatchSummon always refuses. Drop it for
+		// everyone until LLM-323 provisions a messenger. Remove this block then.
+		if spec.Name == summonToolName {
 			continue
 		}
 		// recall consumer (ZBBS-WORK-321): advertise only to dedicated-VA
@@ -447,6 +470,13 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 				// answered. Drop counter_pay (keep accept_pay / decline_pay).
 				continue
 			}
+		}
+		// withdraw_pay consumer (LLM-322): advertise only when the buyer holds an
+		// own still-pending offer to retract (payload.PendingOffersFromMe — the
+		// same standing view the "## Offers you have standing" cue renders from).
+		// No own pending offer → nothing to withdraw.
+		if spec.Name == withdrawPayToolName && !hasOwnPendingOffer {
+			continue
 		}
 		// solicit_work consumer (LLM-26): advertise only to a free worker with an
 		// audience — the same CanSolicitWork signal the affordance cue renders

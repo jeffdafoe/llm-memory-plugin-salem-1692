@@ -371,7 +371,7 @@ func TestBuildConsolidationPrompt_StructureAndDedup(t *testing.T) {
 		"Recent interactions, oldest first:",
 		"- Good evening, Wendy.",
 		"- She ordered ale.",
-		"under 200 words",
+		"one or two sentences",
 		"a coherent impression, not a list of events",
 	} {
 		if !strings.Contains(prompt, must) {

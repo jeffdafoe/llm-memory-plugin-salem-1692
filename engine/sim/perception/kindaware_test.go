@@ -195,6 +195,157 @@ func TestBuild_RecentFactsMostRecentFirstAndCapped(t *testing.T) {
 	}
 }
 
+// LLM-322: a crowded huddle can't balloon "## What you remember of those here".
+// With more known peers than maxRenderedRelationshipPeers, only the ones the
+// subject has most recently interacted with survive, returned in PeerID order.
+func TestBuild_RelationshipsCappedToMostRecentPeers(t *testing.T) {
+	at := time.Now().UTC()
+	tp := func(d time.Duration) *time.Time { u := at.Add(d); return &u }
+	a := sharedSnap("hannah", "Hannah", "h1")
+	// Five co-huddle peers, each with a summary and a distinct last-interaction
+	// time. p1 is the least-recent and should be dropped by the cap of 4.
+	a.Relationships = map[sim.ActorID]*sim.Relationship{
+		"p1": {SummaryText: "one", LastInteractionAt: tp(-5 * time.Minute)},
+		"p2": {SummaryText: "two", LastInteractionAt: tp(-4 * time.Minute)},
+		"p3": {SummaryText: "three", LastInteractionAt: tp(-3 * time.Minute)},
+		"p4": {SummaryText: "four", LastInteractionAt: tp(-2 * time.Minute)},
+		"p5": {SummaryText: "five", LastInteractionAt: tp(-1 * time.Minute)},
+	}
+	members := map[sim.ActorID]struct{}{"hannah": {}}
+	actors := map[sim.ActorID]*sim.ActorSnapshot{"hannah": a}
+	for _, id := range []sim.ActorID{"p1", "p2", "p3", "p4", "p5"} {
+		members[id] = struct{}{}
+		actors[id] = peerSnap(id, string(id), "farmer", sim.KindNPCStateful, "h1")
+	}
+	snap := &sim.Snapshot{
+		Actors:  actors,
+		Huddles: map[sim.HuddleID]*sim.Huddle{"h1": {ID: "h1", Members: members}},
+	}
+
+	p := Build(snap, "hannah", nil)
+	if len(p.Relationships) != maxRenderedRelationshipPeers {
+		t.Fatalf("Relationships len = %d, want %d (capped)", len(p.Relationships), maxRenderedRelationshipPeers)
+	}
+	got := make([]string, len(p.Relationships))
+	for i, r := range p.Relationships {
+		got[i] = string(r.PeerID)
+	}
+	want := []string{"p2", "p3", "p4", "p5"} // p1 (least recent) dropped; kept in PeerID order
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("kept[%d] = %q, want %q (full: %v)", i, got[i], want[i], got)
+		}
+	}
+}
+
+// LLM-322: the cap prefers a peer with a consolidated summary over a recent but
+// summary-less row — an unsummarized peer renders no line, so it must never
+// displace one the subject actually remembers (which would empty the section).
+func TestBuild_RelationshipsCapPrefersSummarizedPeers(t *testing.T) {
+	at := time.Now().UTC()
+	tp := func(d time.Duration) *time.Time { u := at.Add(d); return &u }
+	a := sharedSnap("hannah", "Hannah", "h1")
+	// One summarized-but-old peer among four recent-but-unsummarized rows. Without
+	// the summary preference the cap of 4 would keep the four recent line-less
+	// peers and drop the remembered one, emptying the section.
+	a.Relationships = map[sim.ActorID]*sim.Relationship{
+		"remembered": {SummaryText: "an old friend", LastInteractionAt: tp(-9 * time.Minute)},
+		"r1":         {LastInteractionAt: tp(-4 * time.Minute)},
+		"r2":         {LastInteractionAt: tp(-3 * time.Minute)},
+		"r3":         {LastInteractionAt: tp(-2 * time.Minute)},
+		"r4":         {LastInteractionAt: tp(-1 * time.Minute)},
+	}
+	members := map[sim.ActorID]struct{}{"hannah": {}}
+	actors := map[sim.ActorID]*sim.ActorSnapshot{"hannah": a}
+	for _, id := range []sim.ActorID{"remembered", "r1", "r2", "r3", "r4"} {
+		members[id] = struct{}{}
+		actors[id] = peerSnap(id, string(id), "farmer", sim.KindNPCStateful, "h1")
+	}
+	snap := &sim.Snapshot{
+		Actors:  actors,
+		Huddles: map[sim.HuddleID]*sim.Huddle{"h1": {ID: "h1", Members: members}},
+	}
+
+	p := Build(snap, "hannah", nil)
+	if len(p.Relationships) != maxRenderedRelationshipPeers {
+		t.Fatalf("Relationships len = %d, want %d", len(p.Relationships), maxRenderedRelationshipPeers)
+	}
+	found := false
+	for _, r := range p.Relationships {
+		if r.PeerID == "remembered" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("the summarized peer was displaced by recent line-less peers; kept = %+v", p.Relationships)
+	}
+}
+
+// LLM-322: "## Recent conversation here" keeps only the last
+// maxRenderedConversationLines of the huddle ring (oldest-first within that
+// window); the older tail is dropped to save per-tick input tokens.
+func TestBuildRecentConversation_CapsToMostRecentLines(t *testing.T) {
+	now := time.Now().UTC()
+	texts := []string{"u0", "u1", "u2", "u3", "u4", "u5", "u6", "u7"} // 8 = MaxRecentUtterancesPerHuddle
+	var utts []sim.Utterance
+	for i, txt := range texts {
+		utts = append(utts, sim.Utterance{
+			SpeakerID:   "hannah",
+			SpeakerName: "Hannah",
+			Text:        txt,
+			At:          now.Add(time.Duration(i) * time.Minute),
+		})
+	}
+	subject := sharedSnap("ezekiel", "Ezekiel", "h1")
+	snap := &sim.Snapshot{
+		Actors:  map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subject},
+		Huddles: map[sim.HuddleID]*sim.Huddle{"h1": {ID: "h1", RecentUtterances: utts}},
+	}
+
+	got := buildRecentConversation(snap, "ezekiel", subject, nil)
+	if len(got) != maxRenderedConversationLines {
+		t.Fatalf("len = %d, want %d (capped)", len(got), maxRenderedConversationLines)
+	}
+	want := texts[len(texts)-maxRenderedConversationLines:] // the most recent window, oldest-first
+	for i, u := range got {
+		if u.Text != want[i] {
+			t.Errorf("kept[%d].Text = %q, want %q", i, u.Text, want[i])
+		}
+	}
+}
+
+// LLM-322 (review follow-up): the cap window is the last maxRenderedConversationLines
+// RING lines, applied BEFORE the de-dup. When the newest ring lines are all de-duped
+// (already shown in "## Since your last turn"), older ring lines outside the window
+// must NOT leak back in. Regression for the cap-after-de-dup ordering bug.
+func TestBuildRecentConversation_RecentDedupedDoesNotLeakOlder(t *testing.T) {
+	now := time.Now().UTC()
+	texts := []string{"u0", "u1", "u2", "u3", "u4", "u5", "u6", "u7"}
+	var utts []sim.Utterance
+	for i, txt := range texts {
+		utts = append(utts, sim.Utterance{
+			SpeakerID:   "hannah",
+			SpeakerName: "Hannah",
+			Text:        txt,
+			At:          now.Add(time.Duration(i) * time.Minute),
+		})
+	}
+	subject := sharedSnap("ezekiel", "Ezekiel", "h1")
+	snap := &sim.Snapshot{
+		Actors:  map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subject},
+		Huddles: map[sim.HuddleID]*sim.Huddle{"h1": {ID: "h1", RecentUtterances: utts}},
+	}
+	// The whole most-recent window (u3..u7) is already surfaced this tick, so it
+	// de-dups out. The older tail (u0..u2) is outside the window and must stay hidden.
+	heardNow := map[sim.ActorID]map[string]bool{
+		"hannah": {"u3": true, "u4": true, "u5": true, "u6": true, "u7": true},
+	}
+	got := buildRecentConversation(snap, "ezekiel", subject, heardNow)
+	if len(got) != 0 {
+		t.Fatalf("expected no lines (recent window fully de-duped, older must not leak), got %d: %+v", len(got), got)
+	}
+}
+
 func TestBuild_HuddleMembersCarryAcquaintanceFlag(t *testing.T) {
 	a := sharedSnap("hannah", "Hannah", "h1")
 	a.Acquaintances = map[string]sim.Acquaintance{

@@ -68,35 +68,41 @@ func payOfferPayloadDepths(depths ...int) perception.Payload {
 
 // TestGateTools_NoOffer_DropsSellerResponseTools — with no pending offer in
 // the payload, the seller-response tools (accept/decline/counter) are not
-// advertised; everything else (incl. buyer-side withdraw_pay) still is.
+// advertised, and neither is buyer-side withdraw_pay (no own offer to retract,
+// LLM-322); the ungated commerce/utility tools still are.
 func TestGateTools_NoOffer_DropsSellerResponseTools(t *testing.T) {
 	r := gatingTestRegistry(t)
 	specs := gateTools(r, perception.Payload{ActorID: "seller", Surroundings: speakAudience()}, nil)
 	names := specNameSet(specs)
 
-	for _, gated := range []string{"accept_pay", "decline_pay", "counter_pay"} {
+	for _, gated := range []string{"accept_pay", "decline_pay", "counter_pay", "withdraw_pay"} {
 		if names[gated] != 0 {
 			t.Errorf("%q advertised with no pending offer (count %d)", gated, names[gated])
 		}
 	}
-	for _, always := range []string{"speak", "pay_with_item", "withdraw_pay", "done"} {
+	for _, always := range []string{"speak", "pay_with_item", "done"} {
 		if names[always] != 1 {
 			t.Errorf("%q should always be advertised; count %d", always, names[always])
 		}
 	}
 }
 
-// TestGateTools_PendingOffer_AddsSellerResponseTools — a pending offer in the
-// payload re-adds the seller-response tools.
+// TestGateTools_PendingOffer_AddsSellerResponseTools — a pending offer against
+// the seller (PayOffersForMe) re-adds the seller-response tools. It does NOT
+// unlock buyer-side withdraw_pay, which keys off the actor's OWN outgoing offers
+// (PendingOffersFromMe) — see TestGateTools_WithdrawPay_* (LLM-322).
 func TestGateTools_PendingOffer_AddsSellerResponseTools(t *testing.T) {
 	r := gatingTestRegistry(t)
 	specs := gateTools(r, payOfferPayload(17), nil)
 	names := specNameSet(specs)
 
-	for _, want := range []string{"accept_pay", "decline_pay", "counter_pay", "withdraw_pay", "speak", "pay_with_item", "done"} {
+	for _, want := range []string{"accept_pay", "decline_pay", "counter_pay", "speak", "pay_with_item", "done"} {
 		if names[want] != 1 {
 			t.Errorf("%q should be advertised when an offer is pending; count %d", want, names[want])
 		}
+	}
+	if names["withdraw_pay"] != 0 {
+		t.Errorf("withdraw_pay should NOT be advertised for a seller-side offer with no own outgoing offer; count %d", names["withdraw_pay"])
 	}
 }
 
@@ -114,12 +120,16 @@ func TestGateTools_MultipleOffers_NoDuplicateTools(t *testing.T) {
 	}
 }
 
-// TestGateTools_PendingOffer_MatchesAdvertisedSpecs — when an offer is
-// present the gate returns exactly the registry's full Available set, in
-// registration order (prompt-cache stability).
+// TestGateTools_PendingOffer_MatchesAdvertisedSpecs — when the actor holds both
+// a seller-side pending offer (PayOffersForMe) and an own outgoing offer
+// (PendingOffersFromMe), every gated pay tool is satisfied, so the gate returns
+// exactly the registry's full Available set, in registration order (prompt-cache
+// stability).
 func TestGateTools_PendingOffer_MatchesAdvertisedSpecs(t *testing.T) {
 	r := gatingTestRegistry(t)
-	got := gateTools(r, payOfferPayload(1), nil)
+	payload := payOfferPayload(1)
+	payload.PendingOffersFromMe = []perception.PendingOfferView{{}} // unlock withdraw_pay too (LLM-322)
+	got := gateTools(r, payload, nil)
 	want := r.AdvertisedSpecs()
 	if len(got) != len(want) {
 		t.Fatalf("len(gated)=%d, len(advertised)=%d", len(got), len(want))
@@ -141,6 +151,9 @@ func TestGateTools_NoOffer_PreservesOrderOfRemaining(t *testing.T) {
 	for _, s := range r.AdvertisedSpecs() {
 		if _, gated := payOfferResponseTools[s.Name]; gated {
 			continue
+		}
+		if s.Name == withdrawPayToolName {
+			continue // buyer-side, gated on own pending offer (none in this payload) — LLM-322
 		}
 		want = append(want, s.Name)
 	}
@@ -438,5 +451,66 @@ func TestGateTools_Speak_DroppedWhenNoAudience(t *testing.T) {
 	}, nil))
 	if restingOnly[speakToolName] != 0 {
 		t.Errorf("speak advertised with only a resting actor present (not addressable); count %d", restingOnly[speakToolName])
+	}
+}
+
+// TestGateTools_WithdrawPay_AdvertisedOnlyWithOwnPendingOffer — LLM-322:
+// withdraw_pay (buyer-side) is advertised only when the actor holds an own
+// still-pending offer to retract (payload.PendingOffersFromMe, the same standing
+// view the "## Offers you have standing" cue renders from). A seller-side
+// pending offer (PayOffersForMe) does NOT unlock it — that gates the
+// accept/decline/counter group. Before LLM-322 it was advertised every tick.
+func TestGateTools_WithdrawPay_AdvertisedOnlyWithOwnPendingOffer(t *testing.T) {
+	r := gatingTestRegistry(t) // RegisterPayWithItemFamily registers withdraw_pay
+
+	// A seller-side offer present but no OWN outgoing offer → dropped.
+	none := specNameSet(gateTools(r, payOfferPayload(1), nil))
+	if none[withdrawPayToolName] != 0 {
+		t.Errorf("withdraw_pay advertised with no own pending offer; count %d", none[withdrawPayToolName])
+	}
+
+	// The actor holds an own pending offer → advertised.
+	withOwn := specNameSet(gateTools(r, perception.Payload{
+		ActorID:             "buyer",
+		PendingOffersFromMe: []perception.PendingOfferView{{}},
+	}, nil))
+	if withOwn[withdrawPayToolName] != 1 {
+		t.Errorf("withdraw_pay should be advertised when the buyer holds an own pending offer; count %d", withOwn[withdrawPayToolName])
+	}
+}
+
+// gatingRegistryWithSummon extends the gating test registry with the summon
+// tool, for the LLM-322 dead-affordance gate.
+func gatingRegistryWithSummon(t *testing.T) *Registry {
+	t.Helper()
+	r := gatingTestRegistry(t)
+	if err := RegisterSummon(r); err != nil {
+		t.Fatalf("RegisterSummon: %v", err)
+	}
+	return r
+}
+
+// TestGateTools_Summon_NeverAdvertised — LLM-322: summon is a dead affordance in
+// the live village (no NPC carries AttrMessenger, so DispatchSummon always
+// refuses). It is gated out of the advertised set for every actor until LLM-323
+// provisions a messenger, even though it stays registered/dispatchable — an
+// advertising-layer gate. Remove this test (and the gate) when LLM-323 lands.
+func TestGateTools_Summon_NeverAdvertised(t *testing.T) {
+	r := gatingRegistryWithSummon(t)
+
+	// Precondition: summon IS in the registry's raw advertised specs.
+	if specNameSet(r.AdvertisedSpecs())[summonToolName] != 1 {
+		t.Fatalf("precondition: summon should be registered in AdvertisedSpecs")
+	}
+
+	// ...but gateTools drops it for everyone, regardless of situation.
+	payloads := []perception.Payload{
+		{ActorID: "npc", Surroundings: speakAudience()},
+		payOfferPayload(1),
+	}
+	for i, p := range payloads {
+		if got := specNameSet(gateTools(r, p, nil))[summonToolName]; got != 0 {
+			t.Errorf("payload %d: summon should never be advertised (LLM-322); count %d", i, got)
+		}
 	}
 }
