@@ -115,9 +115,9 @@ func TestRenderNeedRedirect(t *testing.T) {
 		{"consume", NeedRedirectView{Kind: NeedRedirectConsume, Verb: "eat", ItemLabel: "bread"},
 			[]string{"you already carry bread", "consume it now to eat"}},
 		{"free", NeedRedirectView{Kind: NeedRedirectFree, Verb: "eat", TargetLabel: "Raspberry Bush", TargetID: "wild_bush"},
-			[]string{"nothing to eat here", "go to Raspberry Bush (structure_id: wild_bush) now and eat"}},
+			[]string{"nothing to eat here", "go to Raspberry Bush (destination: wild_bush) now and eat"}},
 		{"buy", NeedRedirectView{Kind: NeedRedirectBuy, Verb: "drink", ItemLabel: "a tankard of ale", TargetLabel: "Blacksmith", TargetID: "smith"},
-			[]string{"nothing to drink here", "go to Blacksmith (structure_id: smith) now and buy a tankard of ale to drink"}},
+			[]string{"nothing to drink here", "go to Blacksmith (destination: smith) now and buy a tankard of ale to drink"}},
 	}
 	for _, c := range cases {
 		got := renderNeedRedirect(c.v)
@@ -226,7 +226,7 @@ func TestNeedRedirectNamesConcreteTarget(t *testing.T) {
 				t.Errorf("scenario %q: consume redirect missing the consume imperative:\n%s", sc.name, coda)
 			}
 		default:
-			if !strings.Contains(coda, "(structure_id: "+p.NeedRedirect.TargetID+")") {
+			if !strings.Contains(coda, "(destination: "+p.NeedRedirect.TargetID+")") {
 				t.Errorf("scenario %q: move redirect missing structure_id %q:\n%s", sc.name, p.NeedRedirect.TargetID, coda)
 			}
 			if !strings.Contains(coda, "go to "+p.NeedRedirect.TargetLabel) {

@@ -290,7 +290,7 @@ func TestBuildRecoveryOptions_TiredInOwnHome_SuppressesHomeMoveOption(t *testing
 	// And it must not surface anywhere in the rendered section as a move target.
 	var b strings.Builder
 	renderRecoveryOptions(&b, v)
-	if strings.Contains(b.String(), "structure_id: home-1") {
+	if strings.Contains(b.String(), "destination: home-1") {
 		t.Errorf("current home structure must not be advertised as a move target; got:\n%s", b.String())
 	}
 }

@@ -587,7 +587,7 @@ func renderRecoveryOptions(b *strings.Builder, v *RecoveryOptionsView) {
 		}
 	}
 	if hasMoveToNow {
-		b.WriteString("For a place you can go to now, call move_to with the structure_id listed for it.\n")
+		b.WriteString("For a place you can go to now, call move_to with the destination listed for it.\n")
 	}
 	for _, o := range v.Options {
 		b.WriteString("- ")
@@ -640,11 +640,11 @@ func renderRecoveryOptions(b *strings.Builder, v *RecoveryOptionsView) {
 		switch o.Kind {
 		case "inn", "home", "remedy":
 			if o.StructureID != "" {
-				fmt.Fprintf(b, " (structure_id: %s)", o.StructureID)
+				fmt.Fprintf(b, " (destination: %s)", o.StructureID)
 			}
 		case "rest":
 			if o.ObjectID != "" {
-				fmt.Fprintf(b, " (structure_id: %s)", o.ObjectID)
+				fmt.Fprintf(b, " (destination: %s)", o.ObjectID)
 			}
 		}
 		// On-shift home bed: the structure_id keeps the bed a real move_to target

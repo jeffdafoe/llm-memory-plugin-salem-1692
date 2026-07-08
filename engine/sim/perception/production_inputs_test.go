@@ -248,7 +248,7 @@ func TestRenderProductionInputs_NoBuyMechanics(t *testing.T) {
 	var b strings.Builder
 	renderProductionInputs(&b, buildProductionInputs(snap, "john", subj))
 	out := b.String()
-	for _, forbidden := range []string{"structure_id", "pay_with_item", "buy from", "move_to"} {
+	for _, forbidden := range []string{"destination", "pay_with_item", "buy from", "move_to"} {
 		if strings.Contains(out, forbidden) {
 			t.Errorf("producer cue must not carry buy mechanics, found %q in:\n%s", forbidden, out)
 		}
@@ -367,7 +367,7 @@ func TestRenderProductionInputs_BoosterNoBuyMechanics(t *testing.T) {
 	var b strings.Builder
 	renderProductionInputs(&b, buildProductionInputs(snap, "elizabeth", subj))
 	out := b.String()
-	for _, forbidden := range []string{"structure_id", "pay_with_item", "buy from", "move_to"} {
+	for _, forbidden := range []string{"destination", "pay_with_item", "buy from", "move_to"} {
 		if strings.Contains(out, forbidden) {
 			t.Errorf("booster cue must not carry buy mechanics, found %q in:\n%s", forbidden, out)
 		}

@@ -192,7 +192,7 @@ func TestRenderForage_LowStock(t *testing.T) {
 		"raspberries: 2 on hand of 10 cap (room for 8 more)",
 		"You own 2 bush(es)",
 		"14 ripe to pick now",
-		`structure_id "bushB"`,
+		`destination "bushB"`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("render missing %q in:\n%s", want, out)
@@ -374,7 +374,7 @@ func TestRenderForage_NoGatherMention_MoveToOnly(t *testing.T) {
 	if strings.Contains(out, "gather") {
 		t.Errorf("forage cue must not name the gather tool (LLM-79 steering fix):\n%s", out)
 	}
-	if !strings.Contains(out, `Use move_to with structure_id "bushB" to walk out to them.`) {
+	if !strings.Contains(out, `Use move_to with destination "bushB" to walk out to them.`) {
 		t.Errorf("forage cue must steer move_to:\n%s", out)
 	}
 }

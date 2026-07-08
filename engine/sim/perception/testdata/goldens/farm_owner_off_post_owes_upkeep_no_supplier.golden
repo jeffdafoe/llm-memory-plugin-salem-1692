@@ -11,9 +11,9 @@ Coins in your purse: 95.
 You are outdoors, with no one else here to hear you speak.
 It is morning in the village.
 
-You keep your trade at the Ellis Farm (structure_id: ellis_farm) — you can head back there whenever you wish.
+You keep your trade at the Ellis Farm (destination: ellis_farm) — you can head back there whenever you wish.
 
-It is your working hours, yet you are away from your post — make your way to the Ellis Farm (structure_id: ellis_farm) now.
+It is your working hours, yet you are away from your post — make your way to the Ellis Farm (destination: ellis_farm) now.
 
 ## Farm upkeep
 The season's work has worn your farm tools. Buy 3 fresh shovels from the blacksmith to set the farm right for the season.

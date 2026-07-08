@@ -17,6 +17,6 @@ It is morning in the village.
 You have Raspberries (a nibble) on hand — consume to eat.
 A nibble won't quiet this hunger, though — for a real meal, see the options below.
 Nearby to buy (hunger):
-- General Store — buy a wedge of cheese (a good meal), ask the seller, to eat there (it can't be carried away) (structure_id: general_store)
+- General Store — buy a wedge of cheese (a good meal), ask the seller, to eat there (it can't be carried away) (destination: general_store)
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.

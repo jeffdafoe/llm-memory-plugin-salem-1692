@@ -358,8 +358,8 @@ func TestRenderEveningLeisure(t *testing.T) {
 	out := b.String()
 	for _, want := range []string{
 		"the tavern is open of an evening",
-		"(structure_id: tavern)",  // the venue move_to token
-		"(structure_id: cottage)", // the co-equal stay-home token
+		"(destination: tavern)",  // the venue move_to token
+		"(destination: cottage)", // the co-equal stay-home token
 		"turn in for the night",
 	} {
 		if !strings.Contains(out, want) {

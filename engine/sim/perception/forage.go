@@ -343,7 +343,7 @@ func renderForage(b *strings.Builder, v *ForageView) {
 				// once the grower arrives; naming it here, where gather isn't callable
 				// yet, drove the weak model to fixate on gather and skip the walk (the
 				// LLM-59 reject-retry loop).
-				fmt.Fprintf(b, ", %d ripe to pick now. Use move_to with structure_id \"%s\" to walk out to them.\n",
+				fmt.Fprintf(b, ", %d ripe to pick now. Use move_to with destination \"%s\" to walk out to them.\n",
 					it.RipeUnits, it.MoveHandle)
 			} else {
 				b.WriteString(", none ripe yet — they will regrow, so check back later.\n")
@@ -377,7 +377,7 @@ func renderWildForage(b *strings.Builder, sources []WildForageItemView) {
 		if it.Direction != "" {
 			where = it.Distance + " to the " + it.Direction
 		}
-		fmt.Fprintf(b, "- %s: %d on hand of %d cap (room for %d more). The %s is %s, %d ready to gather now. Use move_to with structure_id \"%s\" to walk out to it.\n",
+		fmt.Fprintf(b, "- %s: %d on hand of %d cap (room for %d more). The %s is %s, %d ready to gather now. Use move_to with destination \"%s\" to walk out to it.\n",
 			sanitizeInline(it.ItemLabel), it.CurrentQty, it.Cap, headroom,
 			sanitizeInline(it.SourceLabel), where, it.RipeUnits, it.MoveHandle)
 	}

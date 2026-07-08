@@ -26,8 +26,8 @@ Start a batch with produce, or see to other things.
 ## Restocking
 Your shop stock of these bought-in goods is running low. You choose how much to buy.
 - You have 1 sacks on hand and room for 7 more at the most. No seller is here now — use move_to to reach a supplier below, then pay_with_item once you arrive.
-  - buy from General Store (structure_id: general_store)
+  - buy from General Store (destination: general_store)
 - You have 2 wheat on hand and room for 18 more at the most. It is generally worth about 1 coin each — pay much above that and you're overpaying. No seller is here now — use move_to to reach a supplier below, then pay_with_item once you arrive.
-  - buy from General Store (structure_id: general_store)
+  - buy from General Store (destination: general_store)
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.

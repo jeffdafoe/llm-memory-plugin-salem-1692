@@ -713,7 +713,7 @@ func TestRenderRecoveryOptions_HomeBedAfterShiftOnly(t *testing.T) {
 		Options: []RecoveryOption{{Kind: "home", Label: "Thorne Cottage", CostText: "free", StructureID: "cottage", AfterShiftOnly: true}},
 	})
 	out := b.String()
-	if !strings.Contains(out, "Thorne Cottage — sleep in your own bed once your shift ends, free (structure_id: cottage) — stay at your post until then") {
+	if !strings.Contains(out, "Thorne Cottage — sleep in your own bed once your shift ends, free (destination: cottage) — stay at your post until then") {
 		t.Errorf("on-shift home bullet wrong: %q", out)
 	}
 }
@@ -730,7 +730,7 @@ func TestRenderRecoveryOptions_RemedyBullet(t *testing.T) {
 }
 
 // TestRenderRecoveryOptions_StructureIDRendered pins the move_to contract: the
-// Every rest-cue kind renders a trailing (structure_id: …) handle the model
+// Every rest-cue kind renders a trailing (destination: …) handle the model
 // passes straight to move_to — the tool rejects a bare name, so without it the
 // cue is unactionable. The structure-backed kinds (inn / home / remedy) emit
 // StructureID; the free-object "rest" kind emits its VillageObjectID, which
@@ -759,12 +759,12 @@ func TestRenderRecoveryOptions_StructureIDRendered(t *testing.T) {
 		return false
 	}
 	for _, want := range []string{
-		"- Hannah's Inn — rent a room for a full night's proper rest, ask the keeper (structure_id: inn)",
-		"- Thorne Cottage — sleep in your own bed, free (structure_id: cottage)",
-		"- PW Apothecary — buy coca tea (a thorough waking), ~2 coins (structure_id: apothecary)",
+		"- Hannah's Inn — rent a room for a full night's proper rest, ask the keeper (destination: inn)",
+		"- Thorne Cottage — sleep in your own bed, free (destination: cottage)",
+		"- PW Apothecary — buy coca tea (a thorough waking), ~2 coins (destination: apothecary)",
 		// The free-object rest kind renders its VillageObjectID on the same
 		// structure_id field — move_to falls through to an object visit (HOME-359).
-		"- the old oak — a thorough waking, free, a short walk east (structure_id: oak)",
+		"- the old oak — a thorough waking, free, a short walk east (destination: oak)",
 	} {
 		if !hasLine(want) {
 			t.Errorf("missing exact bullet %q in:\n%s", want, out)
@@ -777,8 +777,8 @@ func TestRenderRecoveryOptions_StructureIDRendered(t *testing.T) {
 		{Kind: "rest", Label: "a nameless spot", Magnitude: 12, CostText: "free", Distance: "a short walk", Direction: "east"},
 	}})
 	for _, line := range strings.Split(b2.String(), "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "- a nameless spot") && strings.Contains(line, "structure_id") {
-			t.Errorf("rest bullet with empty ObjectID must not render a structure_id: %q", line)
+		if strings.HasPrefix(strings.TrimSpace(line), "- a nameless spot") && strings.Contains(line, "destination") {
+			t.Errorf("rest bullet with empty ObjectID must not render a destination: %q", line)
 		}
 	}
 }

@@ -11,7 +11,7 @@ Coins in your purse: 3.
 You are inside the Blacksmith, with no one else here to hear you speak.
 It is morning in the village.
 
-You keep your trade at the Ellis Farm (structure_id: ellis_farm) — you can head back there whenever you wish.
+You keep your trade at the Ellis Farm (destination: ellis_farm) — you can head back there whenever you wish.
 
 ## Recently settled offers
 1. Your offer of 3 coins to Ezekiel Crane for 5 nail didn't go through — it's closed, so stop waiting on it (offer id 1).

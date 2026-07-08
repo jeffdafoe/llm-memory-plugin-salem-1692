@@ -431,7 +431,7 @@ func TestBuildSatiation_CoPresentPeer_Acquainted(t *testing.T) {
 	if !strings.Contains(out, want) {
 		t.Errorf("co-present line missing/!exact:\nwant: %s\ngot:\n%s", want, out)
 	}
-	if strings.Contains(out, "structure_id") {
+	if strings.Contains(out, "destination") {
 		t.Errorf("co-present peer line must carry NO structure_id, got:\n%s", out)
 	}
 }
@@ -648,7 +648,7 @@ func TestBuildSatiation_FreeSourceThirst(t *testing.T) {
 	if !strings.Contains(out, "Free to drink nearby:") {
 		t.Errorf("missing free-source header:\n%s", out)
 	}
-	if !strings.Contains(out, "- Well — a deep drink, free, right nearby east (structure_id: well)") {
+	if !strings.Contains(out, "- Well — a deep drink, free, right nearby east (destination: well)") {
 		t.Errorf("free-source bullet missing/!exact:\n%s", out)
 	}
 }
@@ -777,7 +777,7 @@ func TestRenderSatiation_FreeSourceBeforeVendor(t *testing.T) {
 	if freeIdx < 0 || vendIdx < 0 || freeIdx > vendIdx {
 		t.Errorf("free sources must render before vendors:\n%s", out)
 	}
-	if !strings.Contains(out, "- Well — a deep drink, free, right nearby north (structure_id: well)") {
+	if !strings.Contains(out, "- Well — a deep drink, free, right nearby north (destination: well)") {
 		t.Errorf("free-source bullet wrong:\n%s", out)
 	}
 }
@@ -818,7 +818,7 @@ func TestRenderSatiation_Bullets(t *testing.T) {
 
 // TestRenderSatiation_StructureIDRendered pins the move_to contract for the
 // eat/drink vendor bullets: a vendor whose workplace resolved renders a
-// trailing (structure_id: …) the buyer passes straight to move_to (the tool
+// trailing (destination: …) the buyer passes straight to move_to (the tool
 // rejects a bare name). An empty StructureID renders no suffix — and is only
 // reachable via a malformed/manually-built view, since gatherSatiationVendors
 // drops unactionable (no-workplace) vendors at build. Regression guard for the
@@ -843,14 +843,14 @@ func TestRenderSatiation_StructureIDRendered(t *testing.T) {
 		}
 		return false
 	}
-	if !hasLine("- The Tavern — buy ale (a small bite), ~2 coins (structure_id: tavern)") {
+	if !hasLine("- The Tavern — buy ale (a small bite), ~2 coins (destination: tavern)") {
 		t.Errorf("vendor bullet missing/!exact structure_id in:\n%s", out)
 	}
 	// A vendor whose workplace didn't resolve carries no id — no dangling suffix
 	// (this empty-id row only reaches render via a manual view; build filters it).
 	for _, line := range strings.Split(out, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "- Roadside Stall") && strings.Contains(line, "structure_id") {
-			t.Errorf("vendor with empty StructureID must not render a structure_id: %q", line)
+		if strings.HasPrefix(strings.TrimSpace(line), "- Roadside Stall") && strings.Contains(line, "destination") {
+			t.Errorf("vendor with empty StructureID must not render a destination: %q", line)
 		}
 	}
 }

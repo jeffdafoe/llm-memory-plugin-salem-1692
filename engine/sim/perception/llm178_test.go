@@ -33,7 +33,7 @@ func TestRestMenuNamesMoveToForPlaces(t *testing.T) {
 		if end := strings.Index(section, "\n\n"); end >= 0 {
 			section = section[:end]
 		}
-		if !strings.Contains(section, "(structure_id:") {
+		if !strings.Contains(section, "(destination:") {
 			continue // a menu with no place bullet (e.g. own-stock only) — no move_to needed
 		}
 		sawPlaces = true

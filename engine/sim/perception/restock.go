@@ -946,7 +946,7 @@ func renderWalkToVendors(b *strings.Builder, vendors []RestockVendor) {
 		b.WriteString("  - buy from ")
 		b.WriteString(sanitizeInline(vd.StructureLabel))
 		if vd.StructureID != "" {
-			fmt.Fprintf(b, " (structure_id: %s)", vd.StructureID)
+			fmt.Fprintf(b, " (destination: %s)", vd.StructureID)
 		}
 		if vd.CostText != "" {
 			fmt.Fprintf(b, ", %s", vd.CostText)

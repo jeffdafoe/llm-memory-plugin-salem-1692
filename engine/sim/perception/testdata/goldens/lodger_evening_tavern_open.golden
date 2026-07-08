@@ -13,7 +13,7 @@ Evening settles over the village.
 
 You're at your workplace.
 
-Your day's work is done, and the tavern is open of an evening — you might make your way to the Tavern (structure_id: tavern) for company, pass a quiet evening at the Inn (structure_id: inn), or turn in for the night, as you please.
+Your day's work is done, and the tavern is open of an evening — you might make your way to the Tavern (destination: tavern) for company, pass a quiet evening at the Inn (destination: inn), or turn in for the night, as you please.
 
 ## Your lodging
 Your room at the Inn is paid — you are settled here for now, no need to arrange another.

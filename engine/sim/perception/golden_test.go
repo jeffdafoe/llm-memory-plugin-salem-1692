@@ -90,7 +90,7 @@ func TestPerceptionGoldens(t *testing.T) {
 // TestGoldensNeverAdvertiseHomeAsMoveTargetWhenInside is the LLM-214 cross-scenario
 // invariant: whenever the subject actor is standing INSIDE its own home, the
 // rendered prompt must never advertise that home's structure_id as a move target.
-// "(structure_id: <id>)" is the load-bearing token the model echoes into move_to
+// "(destination: <id>)" is the load-bearing token the model echoes into move_to
 // (HOME-349), and you can't move to where you already are — the no-op the model
 // looped on (Lewis Walker calling move_to{residence} every tick). Runs over the
 // whole matrix so a future cue can't reintroduce the current-home move target for
@@ -104,7 +104,7 @@ func TestGoldensNeverAdvertiseHomeAsMoveTargetWhenInside(t *testing.T) {
 			if a == nil || a.HomeStructureID == "" || a.InsideStructureID != a.HomeStructureID {
 				return // subject isn't inside its own home — invariant N/A here
 			}
-			token := "(structure_id: " + string(a.HomeStructureID) + ")"
+			token := "(destination: " + string(a.HomeStructureID) + ")"
 			if out := renderScenario(sc); strings.Contains(out, token) {
 				t.Errorf("scenario %q: subject stands inside its own home but the prompt advertises that home as a move target %q — you can't move_to where you stand (LLM-214)", sc.name, token)
 			}
@@ -352,7 +352,7 @@ func TestGoldensConversationLinesCarryIntervalStamps(t *testing.T) {
 // TestGoldensRestockNeverTargetsRememberedShutSupplier is the LLM-216 cross-scenario
 // invariant: within the "## Restocking" section of any scenario, a structure the
 // subject remembers finding shut (a live ObservedClosed memory) must never appear as
-// a "(structure_id: <id>)" walk-to target. A shut supplier is a dead end the weak
+// a "(destination: <id>)" walk-to target. A shut supplier is a dead end the weak
 // model toured on (Josiah's every-tick move_to loop among shut farms), so the restock
 // builder DROPS it rather than annotating it. Runs over the whole matrix so a future
 // restock cue change can't reintroduce a shut supplier as a target for any situation,
@@ -383,7 +383,7 @@ func TestGoldensRestockNeverTargetsRememberedShutSupplier(t *testing.T) {
 				if !businessRememberedShut(snap, a, structureID) {
 					continue
 				}
-				token := "(structure_id: " + string(structureID) + ")"
+				token := "(destination: " + string(structureID) + ")"
 				if strings.Contains(section, token) {
 					t.Errorf("scenario %q: the restock section advertises remembered-shut supplier %q as a move target — a shut supplier is a dead end and must be dropped (LLM-216)", sc.name, token)
 				}
@@ -413,7 +413,7 @@ func TestGoldensNeverCoachSpeakingAtCompany(t *testing.T) {
 // TestGoldensNonDistributorRestockNeverTargetsFarm is the LLM-223 cross-scenario
 // invariant: within the "## Restocking" section of any scenario whose subject is
 // NOT the village distributor, a farm-tagged structure must never appear as a
-// "(structure_id: <id>)" walk-to target. Farm-origin goods flow farms → distributor
+// "(destination: <id>)" walk-to target. Farm-origin goods flow farms → distributor
 // → everyone else, so perception routes a non-distributor's restock through the
 // distributor, never straight to a farm the PayWithItem backstop would refuse. Runs
 // over the whole matrix so a future restock/vendor cue change can't reintroduce a
@@ -442,7 +442,7 @@ func TestGoldensNonDistributorRestockNeverTargetsFarm(t *testing.T) {
 				if !sim.IsFarmStructure(obj) {
 					continue
 				}
-				token := "(structure_id: " + string(id) + ")"
+				token := "(destination: " + string(id) + ")"
 				if strings.Contains(section, token) {
 					t.Errorf("scenario %q: the restock section advertises farm %q as a move target for a non-distributor — farm goods must route through the distributor (LLM-223)", sc.name, token)
 				}
@@ -748,7 +748,7 @@ var perceptionScenarios = []perceptionScenario{
 			"(home NULL) and lodges via an active nightly room grant at the Inn — the canonical rent-a-room NPC. Before LLM-311 the " +
 			"living-evening scope was homed-only, so this agent got no tavern invitation and the off-shift wind-down steered it to " +
 			"its rented room all evening (the live Inn↔Blacksmith oscillation). The golden pins that the evening 'tavern's open' " +
-			"invitation now fires — its co-equal 'stay in' destination is the rented Inn (structure_id: inn), not an empty home token " +
+			"invitation now fires — its co-equal 'stay in' destination is the rented Inn (destination: inn), not an empty home token " +
 			"— AND that the go-home/wind-down steer ('Your working hours are over …') is ABSENT: a lodger with a paid room has an " +
 			"evening exactly as a homed peer does. A regression that re-narrowed the scope to homed-only shows in the diff.",
 		build: lodgerEveningTavernOpen,
@@ -1179,7 +1179,7 @@ var perceptionScenarios = []perceptionScenario{
 		summary: "LLM-274: a business owner (Elizabeth Ellis) stands at her own worn Ellis Farm with 0 nails while a " +
 			"SEPARATE open nail supplier — Ezekiel, the blacksmith, holding 21 nails at the Blacksmith — exists in the " +
 			"world. The golden pins the destination-bearing '## Your business' steer: findItemVendors resolves the smith, " +
-			"so the cue names 'buy from Blacksmith (structure_id: blacksmith)' with move_to + pay_with_item, replacing the " +
+			"so the cue names 'buy from Blacksmith (destination: blacksmith)' with move_to + pay_with_item, replacing the " +
 			"dead-end 'the smith' that llama-3.3-70b narrated but never walked (the live 2026-07-04 case). Its foil is " +
 			"owner_at_worn_stall, where no other supplier exists and the generic sentence is correctly kept.",
 		build: ownerAtWornStallWithNailSupplier,
@@ -1198,7 +1198,7 @@ var perceptionScenarios = []perceptionScenario{
 		name: "owner_off_post_short_nails_walking",
 		summary: "LLM-277 walk-to arm: Elizabeth, 0 nails, is off her worn farm and NOT co-present with the smith (no shared " +
 			"huddle). The golden pins the same '## Nails to mend your business' cue naming the walk-to destination ('buy from " +
-			"Blacksmith (structure_id: blacksmith)') and no return-to-post steer — the 'while away' half of the errand that " +
+			"Blacksmith (destination: blacksmith)') and no return-to-post steer — the 'while away' half of the errand that " +
 			"persists across the whole walk, not just at the farm. Foil of owner_off_post_at_smith_short_nails.",
 		build: ownerOffPostShortNailsWalking,
 	},
@@ -1331,7 +1331,7 @@ var perceptionScenarios = []perceptionScenario{
 		summary: "LLM-274: a farm owner (Elizabeth Ellis) owes 3 upkeep shovels and holds none, while a SEPARATE " +
 			"shovel-producing smith (Ezekiel at the Blacksmith) exists. The golden pins the destination-bearing " +
 			"'## Farm upkeep' steer: findItemVendors resolves the smith, so the cue names 'buy from Blacksmith " +
-			"(structure_id: blacksmith)' with move_to + pay_with_item, replacing the dead-end 'from the blacksmith'. " +
+			"(destination: blacksmith)' with move_to + pay_with_item, replacing the dead-end 'from the blacksmith'. " +
 			"Its foil is farm_owner_owes_upkeep, where no supplier exists and the generic sentence is correctly kept.",
 		build: farmOwnerOwesUpkeepWithShovelSupplier,
 	},
@@ -1648,7 +1648,7 @@ var perceptionScenarios = []perceptionScenario{
 			"armed conversational loop, feels hunger, holds nothing edible, has 1 coin, and a free Raspberry Bush sits a " +
 			"walk away. The golden pins BOTH LLM-176 cues: the at-location dead-end ('There's no food to be had here — " +
 			"you'll need to forage or buy a meal elsewhere.') that kills the confabulation, and the need-redirect coda " +
-			"(swapping the generic 'do what you've agreed' line for 'go to Raspberry Bush (structure_id: …) now and eat') " +
+			"(swapping the generic 'do what you've agreed' line for 'go to Raspberry Bush (destination: …) now and eat') " +
 			"that names the engine's known affordance. A regression that dropped either would bring back the silent dead " +
 			"end or the plan-endorsing generic coda.",
 		build: hungryLooperAtFoodlessHome,
@@ -4245,7 +4245,7 @@ func TestGoldensHiredWorkerSeesRepairCueWhenColocated(t *testing.T) {
 // short of nails, findItemVendors resolves at least one open nail supplier, AND the
 // working-capital gate isn't holding buys off (Conserve wins over the vendor list —
 // LLM-301), the cue must name that supplier's move_to destination
-// ("(structure_id: <id>)") rather than the destination-less dead end that llama-3.3-70b
+// ("(destination: <id>)") rather than the destination-less dead end that llama-3.3-70b
 // narrated but never walked (the live Elizabeth Ellis case). Keyed off the same
 // buildStallRepair the production render uses, so the property holds by construction
 // across the matrix; owner_at_worn_stall_with_nail_supplier is the non-vacuous golden
@@ -4273,7 +4273,7 @@ func TestOwnerShortNailsWithSupplierNamesDestination(t *testing.T) {
 				return // LLM-301: conserve wins over the vendor list — the sell-first soften renders instead
 			}
 			exercised = true
-			token := "(structure_id: " + string(v.NailVendors[0].StructureID) + ")"
+			token := "(destination: " + string(v.NailVendors[0].StructureID) + ")"
 			// Scope the assertion to the "## Your business" section so a matching token
 			// in some other section (e.g. a co-rendered Restocking cue) can't mask a
 			// regression of the repair cue itself (code_review).
@@ -4327,7 +4327,7 @@ func TestOwnerShortNailsRepairCueNeverGoadsUnactionableBuy(t *testing.T) {
 				if !strings.Contains(section, "your purse can't take on nails just now") {
 					t.Errorf("scenario %q: conserve is active but the sell-first soften is missing from the '## Your business' cue (LLM-301)", sc.name)
 				}
-				if strings.Contains(section, "Use move_to to reach a supplier") || strings.Contains(section, "(structure_id:") {
+				if strings.Contains(section, "Use move_to to reach a supplier") || strings.Contains(section, "(destination:") {
 					t.Errorf("scenario %q: conserve is active but the cue still goads the walk-to nail buy — it must not contradict the '## Restocking' hold-off (LLM-301)", sc.name)
 				}
 				return
@@ -4469,7 +4469,7 @@ func TestGoldensFarmUpkeepGoadNeverBesideHoldOff(t *testing.T) {
 // invariant for the farm-upkeep cue (the shovel twin of the nail invariant above):
 // whenever the "## Farm upkeep" cue renders AND findItemVendors resolves at least one
 // shovel supplier, the cue must name that supplier's move_to destination
-// ("(structure_id: <id>)") rather than the destination-less "from the blacksmith" dead
+// ("(destination: <id>)") rather than the destination-less "from the blacksmith" dead
 // end. Keyed off the same buildFarmUpkeep the production render uses;
 // farm_owner_owes_upkeep_with_shovel_supplier is the non-vacuous golden. Its foil — an
 // owing farm owner with NO resolvable supplier — is correctly excluded (ShovelVendors
@@ -4495,7 +4495,7 @@ func TestFarmOwnerOwesUpkeepWithSupplierNamesDestination(t *testing.T) {
 				return // LLM-277: a co-present seller renders the buy-here imperative, which supersedes the walk-to destination
 			}
 			exercised = true
-			token := "(structure_id: " + string(v.ShovelVendors[0].StructureID) + ")"
+			token := "(destination: " + string(v.ShovelVendors[0].StructureID) + ")"
 			section := promptSection(renderScenario(sc), "## Farm upkeep")
 			if !strings.Contains(section, token) {
 				t.Errorf("scenario %q: farm owner owes upkeep with a resolvable shovel supplier but the '## Farm upkeep' cue omits its move_to destination %q — the model narrates the errand instead of walking it (LLM-274)", sc.name, token)
@@ -4584,7 +4584,7 @@ func TestLodgingDeskShutCueOnlyWhenRemembered(t *testing.T) {
 // TestGoldensSatiationBuyCueNeverTargetsRememberedShutVendor is the LLM-222 cross-
 // scenario invariant: within the "## What you can eat or drink" section of any
 // scenario, a vendor the buyer remembers finding shut must never appear as a
-// "(structure_id: <id>)" buy target. A remembered-shut vendor is a seller-
+// "(destination: <id>)" buy target. A remembered-shut vendor is a seller-
 // availability dead end the weak model toured on (Ezekiel's asleep-Inn walk), so
 // the buy cue DROPS it rather than annotating it "found it shut up" — mirroring
 // LLM-216's restock drop (TestGoldensRestockNeverTargetsRememberedShutSupplier).
@@ -4615,7 +4615,7 @@ func TestGoldensSatiationBuyCueNeverTargetsRememberedShutVendor(t *testing.T) {
 				if !businessRememberedShut(snap, a, structureID) {
 					continue
 				}
-				token := "(structure_id: " + string(structureID) + ")"
+				token := "(destination: " + string(structureID) + ")"
 				if strings.Contains(section, token) {
 					t.Errorf("scenario %q: the eat/drink buy cue advertises remembered-shut vendor %q as a move target — a shut vendor is a dead end and must be dropped (LLM-222)", sc.name, token)
 				}
@@ -5041,7 +5041,7 @@ func TestRangedWildForageRequiresTag(t *testing.T) {
 	if !strings.Contains(tagged, header) {
 		t.Fatalf("tagged herbalist: expected the ranged wild-forage section %q, got:\n%s", header, tagged)
 	}
-	if !strings.Contains(tagged, `move_to with structure_id "sage_bush"`) {
+	if !strings.Contains(tagged, `move_to with destination "sage_bush"`) {
 		t.Errorf("tagged herbalist: expected a move_to handle to the Sage Bush, got:\n%s", tagged)
 	}
 	if !strings.Contains(tagged, "a long walk to the northeast") {
@@ -5385,7 +5385,7 @@ func ownerOffPostAtSmithShortNails() (*sim.Snapshot, sim.ActorID, []sim.WarrantM
 // ownerOffPostShortNailsWalking is the LLM-277 walk-to arm: Elizabeth, 0 nails, is off
 // her worn farm and NOT co-present with the smith (no shared huddle, Ezekiel far off).
 // The golden pins the same "## Nails to mend your business" cue naming the walk-to
-// destination ("buy from Blacksmith (structure_id: blacksmith)") and no return-to-post
+// destination ("buy from Blacksmith (destination: blacksmith)") and no return-to-post
 // steer — the "while away" half of the errand that persists across the walk (LLM-274
 // named this destination for the at-farm cue; here it rides the whole trip).
 func ownerOffPostShortNailsWalking() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
@@ -6127,7 +6127,7 @@ func farmOwnerOwesUpkeep() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 // owes 3 upkeep shovels (95 coins, floor 30, band 20) and holds none, while a
 // SEPARATE shovel-producing smith — Ezekiel at the Blacksmith holding 12 shovels —
 // exists. findItemVendors resolves him (he PRODUCES shovels, LLM-200/LLM-252), so the
-// "## Farm upkeep" cue names "buy from Blacksmith (structure_id: blacksmith)" with
+// "## Farm upkeep" cue names "buy from Blacksmith (destination: blacksmith)" with
 // move_to + pay_with_item instead of the dead-end "from the blacksmith". Ezekiel is
 // placed far from Elizabeth so he is a supplier of record, not co-present. The foil is
 // farmOwnerOwesUpkeep (no smith → the generic sentence is correctly kept).
@@ -9471,7 +9471,7 @@ func homedWorkerEveningTavernOpen() (*sim.Snapshot, sim.ActorID, []sim.WarrantMe
 // this agent got NO tavern invitation and the off-shift wind-down steered it to its
 // rented room the whole evening (the live Inn↔Blacksmith oscillation). With the
 // night-place scope the cue fires exactly as for a homed peer — its co-equal "stay in"
-// destination is the rented Inn (structure_id: inn), not an empty home token — and the
+// destination is the rented Inn (destination: inn), not an empty home token — and the
 // go-home/wind-down steer ("Your working hours are over …") is suppressed. Fixed
 // PublishedAt (the grant clock) → byte-stable. Makes TestEveningCueReplacesGoHomeSteer
 // non-vacuous for the lodger arm.

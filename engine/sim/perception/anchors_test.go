@@ -69,7 +69,7 @@ func TestRenderAnchors_SamePlace_carriesProseAndId(t *testing.T) {
 	var b strings.Builder
 	renderAnchors(&b, &AnchorsView{WorkLabel: "Tavern", WorkID: "019dbcd2", HomeLabel: "Tavern", HomeID: "019dbcd2", SamePlace: true}, false, "")
 	out := b.String()
-	if !strings.Contains(out, "structure_id: 019dbcd2") {
+	if !strings.Contains(out, "destination: 019dbcd2") {
 		t.Errorf("missing structure_id; got %q", out)
 	}
 	if !strings.Contains(out, "Tavern") {
@@ -82,7 +82,7 @@ func TestRenderAnchors_Different_bothIds(t *testing.T) {
 	var b strings.Builder
 	renderAnchors(&b, &AnchorsView{WorkLabel: "General Store", WorkID: "gstore", HomeLabel: "Thorne Residence", HomeID: "thorne"}, false, "")
 	out := b.String()
-	if !strings.Contains(out, "structure_id: gstore") || !strings.Contains(out, "structure_id: thorne") {
+	if !strings.Contains(out, "destination: gstore") || !strings.Contains(out, "destination: thorne") {
 		t.Errorf("missing one of the ids; got %q", out)
 	}
 	if !strings.Contains(out, "whenever you wish") {
@@ -99,7 +99,7 @@ func TestRenderAnchors_AtPost_reframesDeparture(t *testing.T) {
 	var b strings.Builder
 	renderAnchors(&b, &AnchorsView{WorkLabel: "General Store", WorkID: "gstore", HomeLabel: "Thorne Residence", HomeID: "thorne"}, true, "")
 	out := b.String()
-	if !strings.Contains(out, "structure_id: gstore") || !strings.Contains(out, "structure_id: thorne") {
+	if !strings.Contains(out, "destination: gstore") || !strings.Contains(out, "destination: thorne") {
 		t.Errorf("at-post anchors must still carry both ids (move_to tokens); got %q", out)
 	}
 	if strings.Contains(out, "whenever you wish") {
@@ -115,7 +115,7 @@ func TestRenderAnchors_WorkOnly_emptyLabelFallback(t *testing.T) {
 	var b strings.Builder
 	renderAnchors(&b, &AnchorsView{WorkID: "x"}, false, "")
 	out := b.String()
-	if !strings.Contains(out, "your workplace") || !strings.Contains(out, "structure_id: x") {
+	if !strings.Contains(out, "your workplace") || !strings.Contains(out, "destination: x") {
 		t.Errorf("expected generic fallback + id; got %q", out)
 	}
 }
@@ -137,7 +137,7 @@ func TestRenderAnchors_InsideHome_marksInPlace(t *testing.T) {
 	if !strings.Contains(out, "You're home") {
 		t.Errorf("want an in-place 'You're home' line; got %q", out)
 	}
-	if strings.Contains(out, "structure_id") {
+	if strings.Contains(out, "destination") {
 		t.Errorf("must NOT advertise the current structure as a move target; got %q", out)
 	}
 	if strings.Contains(out, "whenever you wish") {
@@ -154,10 +154,10 @@ func TestRenderAnchors_InsideHome_bothAnchors_keepsWorkTargetOnly(t *testing.T) 
 	if !strings.Contains(out, "You're home") {
 		t.Errorf("want an in-place 'You're home' line; got %q", out)
 	}
-	if !strings.Contains(out, "structure_id: gstore") {
+	if !strings.Contains(out, "destination: gstore") {
 		t.Errorf("workplace must stay a reachable move target; got %q", out)
 	}
-	if strings.Contains(out, "structure_id: thorne") {
+	if strings.Contains(out, "destination: thorne") {
 		t.Errorf("home (current structure) must NOT be advertised as a move target; got %q", out)
 	}
 }
@@ -171,10 +171,10 @@ func TestRenderAnchors_InsideWorkOffShift_keepsHomeTargetOnly(t *testing.T) {
 	if !strings.Contains(out, "You're at your workplace") {
 		t.Errorf("want an in-place workplace line; got %q", out)
 	}
-	if !strings.Contains(out, "structure_id: thorne") {
+	if !strings.Contains(out, "destination: thorne") {
 		t.Errorf("home must stay a reachable move target; got %q", out)
 	}
-	if strings.Contains(out, "structure_id: gstore") {
+	if strings.Contains(out, "destination: gstore") {
 		t.Errorf("workplace (current structure) must NOT be advertised as a move target; got %q", out)
 	}
 }
@@ -188,7 +188,7 @@ func TestRenderAnchors_InsideSamePlace_marksInPlace(t *testing.T) {
 	if !strings.Contains(out, "home and workplace") {
 		t.Errorf("want an in-place home-and-workplace line; got %q", out)
 	}
-	if strings.Contains(out, "structure_id") {
+	if strings.Contains(out, "destination") {
 		t.Errorf("must NOT advertise the current structure as a move target; got %q", out)
 	}
 }
