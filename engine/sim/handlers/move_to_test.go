@@ -76,6 +76,40 @@ func TestDecodeMoveToArgs_DestinationWinsOverAlias(t *testing.T) {
 	}
 }
 
+// A whitespace-only field is treated as ABSENT: a blank canonical destination
+// alongside a valid alias still lands the walk (forgiving on emptiness).
+func TestDecodeMoveToArgs_WhitespaceCanonicalFallsToAlias(t *testing.T) {
+	args, err := DecodeMoveToArgs(json.RawMessage(`{"destination":"   ","location":"inn"}`))
+	if err != nil {
+		t.Fatalf("DecodeMoveToArgs: %v", err)
+	}
+	if got := args.(MoveToArgs); got.Destination != "inn" {
+		t.Errorf("Destination = %q, want 'inn' (blank canonical falls to a valid alias)", got.Destination)
+	}
+}
+
+// Every field the model sends is validated, even an alias that won't be
+// selected — a malformed alias is a malformed tool call (strict on content).
+func TestDecodeMoveToArgs_InvalidUnusedAliasRejected(t *testing.T) {
+	// Valid canonical + a control-char-bearing alias → rejected, naming the alias.
+	raw, err := json.Marshal(map[string]string{"destination": "inn", "location": "bad\x00name"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	_, err = DecodeMoveToArgs(json.RawMessage(raw))
+	if err == nil || !strings.Contains(err.Error(), "location") || !strings.Contains(err.Error(), "control character") {
+		t.Fatalf("want 'location ... control character' rejection, got %v", err)
+	}
+}
+
+func TestDecodeMoveToArgs_OverCapUnusedAliasRejected(t *testing.T) {
+	long := strings.Repeat("z", MaxMoveToDestinationChars+1)
+	_, err := DecodeMoveToArgs(json.RawMessage(`{"destination":"inn","structure_id":"` + long + `"}`))
+	if err == nil || !strings.Contains(err.Error(), "structure_id") {
+		t.Fatalf("want 'structure_id exceeds cap' rejection, got %v", err)
+	}
+}
+
 func TestDecodeMoveToArgs_MissingDestination(t *testing.T) {
 	_, err := DecodeMoveToArgs(json.RawMessage(`{}`))
 	if err == nil {

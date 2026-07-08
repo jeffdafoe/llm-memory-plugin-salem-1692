@@ -121,35 +121,47 @@ func DecodeMoveToArgs(raw json.RawMessage) (any, error) {
 		}
 		return nil, fmt.Errorf("move_to: malformed trailing data: %w", err)
 	}
-	// Canonical `destination` wins; else the first non-empty alias in a stable
-	// precedence order (the natural synonyms before the engine-jargon fields).
-	dest := strings.TrimSpace(wire.Destination)
-	if dest == "" {
-		dest = strings.TrimSpace(wire.Location)
+	// Validate EVERY field the model actually sent (any non-empty-after-trim
+	// value), then select canonical-first. Validating all present fields — not
+	// just the selected one — keeps the engine's strict-decode posture: a
+	// malformed alias (a NUL, an over-cap value) is a malformed tool call even
+	// when another field would win, so we surface it rather than silently
+	// ignoring it. A whitespace-only field is treated as ABSENT (trimmed empty →
+	// skipped), so a blank canonical alongside a real alias still lands the walk —
+	// strict on content, forgiving on emptiness. Canonical `destination` wins;
+	// else the first non-empty alias in order (natural synonyms before jargon).
+	fields := []struct {
+		name string
+		val  string
+	}{
+		{"destination", wire.Destination},
+		{"location", wire.Location},
+		{"place", wire.Place},
+		{"structure_id", wire.StructureID},
+		{"structure_name", wire.StructureName},
 	}
-	if dest == "" {
-		dest = strings.TrimSpace(wire.Place)
-	}
-	if dest == "" {
-		dest = strings.TrimSpace(wire.StructureID)
-	}
-	if dest == "" {
-		dest = strings.TrimSpace(wire.StructureName)
+	dest := ""
+	for _, f := range fields {
+		trimmed := strings.TrimSpace(f.val)
+		if trimmed == "" {
+			continue
+		}
+		if n := utf8.RuneCountInString(trimmed); n > MaxMoveToDestinationChars {
+			return nil, modelSafef(
+				"move_to: %s exceeds %d-character cap (got %d characters)",
+				f.name, MaxMoveToDestinationChars, n,
+			)
+		}
+		// Control-char scan (an identifier / a name never contains C0 controls).
+		if i := indexInvalidControlChar(trimmed); i >= 0 {
+			return nil, modelSafef("move_to: %s contains a disallowed control character at byte offset %d", f.name, i)
+		}
+		if dest == "" {
+			dest = trimmed
+		}
 	}
 	if dest == "" {
 		return nil, modelSafef("move_to: destination is required")
-	}
-	if n := utf8.RuneCountInString(dest); n > MaxMoveToDestinationChars {
-		return nil, modelSafef(
-			"move_to: destination exceeds %d-character cap (got %d characters)",
-			MaxMoveToDestinationChars, n,
-		)
-	}
-	// Control-char scan (an identifier / a name never contains C0 controls). Done
-	// here at decode so an invalid value is rejected regardless of which resolver
-	// consumes it; HandleMoveTo keeps a defensive re-check.
-	if i := indexInvalidControlChar(dest); i >= 0 {
-		return nil, modelSafef("move_to: destination contains a disallowed control character at byte offset %d", i)
 	}
 	return MoveToArgs{Destination: dest}, nil
 }
