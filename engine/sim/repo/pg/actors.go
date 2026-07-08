@@ -110,7 +110,9 @@ SELECT
     facing,
     admin,
     move_destination,
-    production_focus
+    production_item,
+    production_batch_qty,
+    production_remaining_seconds
   FROM actor`
 
 // loadAllNeedsSQLA selects every actor_need row. Joined to actors in
@@ -146,7 +148,8 @@ INSERT INTO actor (
     last_agent_tick_at, break_until, sleeping_until,
     move_attempt_counter, sim_state,
     sprite_id, facing,
-    snapshot_gen, move_destination, production_focus
+    snapshot_gen, move_destination,
+    production_item, production_batch_qty, production_remaining_seconds
 ) VALUES (
     $1, $2, $3, $4,
     $5, $6, $7,
@@ -156,7 +159,8 @@ INSERT INTO actor (
     $16, $17, $18,
     $19, $20,
     $21, $22,
-    $23, $24, $25
+    $23, $24,
+    $25, $26, $27
 )
 ON CONFLICT (id) DO UPDATE SET
     display_name           = EXCLUDED.display_name,
@@ -182,7 +186,9 @@ ON CONFLICT (id) DO UPDATE SET
     facing                 = EXCLUDED.facing,
     snapshot_gen           = EXCLUDED.snapshot_gen,
     move_destination       = EXCLUDED.move_destination,
-    production_focus       = EXCLUDED.production_focus`
+    production_item        = EXCLUDED.production_item,
+    production_batch_qty   = EXCLUDED.production_batch_qty,
+    production_remaining_seconds = EXCLUDED.production_remaining_seconds`
 
 // upsertNeedSQLA writes one actor_need row. PK is (actor_id, key)
 // per the table definition — UPSERT inserts new (actor, need)
@@ -334,13 +340,6 @@ SELECT
     last_credited_at, remaining_ticks, dwell_delta, dwell_period_minutes
   FROM actor_dwell_credit`
 
-// loadAllProduceStateSQLA selects every actor_produce_state row.
-// last_produced_at is nullable (the produce anchor before first run);
-// NULL maps to the Go zero time.Time.
-const loadAllProduceStateSQLA = `
-SELECT actor_id::text, item_kind, last_produced_at
-  FROM actor_produce_state`
-
 // loadAllRoomAccessSQLA selects every room_access row. `kind` is NOT
 // selected — it's the room category (common/private/staff), recomputed
 // by canEnterRoom from the loaded Room at access-check time, and is not
@@ -389,19 +388,6 @@ ON CONFLICT (actor_id, object_id, attribute, source) DO UPDATE SET
     dwell_period_minutes = EXCLUDED.dwell_period_minutes,
     snapshot_gen         = EXCLUDED.snapshot_gen`
 
-// upsertProduceStateSQLA writes one actor_produce_state row. PK is
-// (actor_id, item_kind). last_produced_at is nilOnZeroTime'd — the Go
-// zero time round-trips through SQL NULL.
-const upsertProduceStateSQLA = `
-INSERT INTO actor_produce_state (
-    actor_id, item_kind, last_produced_at, snapshot_gen
-) VALUES (
-    $1, $2, $3, $4
-)
-ON CONFLICT (actor_id, item_kind) DO UPDATE SET
-    last_produced_at = EXCLUDED.last_produced_at,
-    snapshot_gen     = EXCLUDED.snapshot_gen`
-
 // upsertRoomAccessSQLA writes one room_access row. PK is
 // (room_id, actor_id) — so an actor holds at most ONE row per room
 // regardless of source (the SaveSnapshot pre-pass rejects two in-memory
@@ -444,12 +430,10 @@ ON CONFLICT (actor_id, slug) DO UPDATE SET
     snapshot_gen = EXCLUDED.snapshot_gen`
 
 const deleteStaleDwellCreditSQLA = `DELETE FROM actor_dwell_credit  WHERE snapshot_gen < $1`
-const deleteStaleProduceStateSQLA = `DELETE FROM actor_produce_state WHERE snapshot_gen < $1`
 const deleteStaleRoomAccessSQLA = `DELETE FROM room_access         WHERE snapshot_gen < $1`
 const deleteStaleAttributeSQLA = `DELETE FROM actor_attribute     WHERE snapshot_gen < $1`
 
 const nextGenDwellCreditSQLA = `SELECT nextval('actor_dwell_credit_snapshot_gen_seq')`
-const nextGenProduceStateSQLA = `SELECT nextval('actor_produce_state_snapshot_gen_seq')`
 const nextGenRoomAccessSQLA = `SELECT nextval('room_access_snapshot_gen_seq')`
 const nextGenAttributeSQLA = `SELECT nextval('actor_attribute_snapshot_gen_seq')`
 
@@ -514,30 +498,32 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 	out := make(map[sim.ActorID]*sim.Actor)
 	for rows.Next() {
 		var (
-			id                   string
-			displayName          string
-			currentX, currentY   int
-			insideStructureID    *string
-			currentHuddleID      *string
-			insideRoomID         *int64
-			homeStructureID      *string
-			workStructureID      *string
-			coins                int
-			llmMemoryAgent       *string
-			role                 *string
-			loginUsername        *string
-			scheduleStartMinute  *int16
-			scheduleEndMinute    *int16
-			lastAgentTickAt      *time.Time
-			breakUntil           *time.Time
-			sleepingUntil        *time.Time
-			moveAttemptCounter   int64
-			simState             string
-			spriteID             *string
-			facing               string
-			isAdmin              bool
-			moveDestination      []byte
-			productionFocus      string
+			id                  string
+			displayName         string
+			currentX, currentY  int
+			insideStructureID   *string
+			currentHuddleID     *string
+			insideRoomID        *int64
+			homeStructureID     *string
+			workStructureID     *string
+			coins               int
+			llmMemoryAgent      *string
+			role                *string
+			loginUsername       *string
+			scheduleStartMinute *int16
+			scheduleEndMinute   *int16
+			lastAgentTickAt     *time.Time
+			breakUntil          *time.Time
+			sleepingUntil       *time.Time
+			moveAttemptCounter  int64
+			simState            string
+			spriteID            *string
+			facing              string
+			isAdmin             bool
+			moveDestination     []byte
+			productionItem      string
+			productionBatchQty  int
+			productionRemaining int64
 		)
 		if err := rows.Scan(
 			&id, &displayName, &currentX, &currentY,
@@ -548,9 +534,22 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			&lastAgentTickAt, &breakUntil, &sleepingUntil,
 			&moveAttemptCounter, &simState,
 			&spriteID, &facing,
-			&isAdmin, &moveDestination, &productionFocus,
+			&isAdmin, &moveDestination,
+			&productionItem, &productionBatchQty, &productionRemaining,
 		); err != nil {
 			return nil, fmt.Errorf("pg actors LoadAll scan: %w", err)
+		}
+
+		// Rehydrate an in-flight production cycle (LLM-319). LastProgressAt is
+		// deliberately left zero: the first post-restart produce tick stamps the
+		// anchor without crediting, so engine downtime never counts as work.
+		var productionActivity *sim.ProductionActivity
+		if productionItem != "" && productionRemaining > 0 {
+			productionActivity = &sim.ProductionActivity{
+				Item:             sim.ItemKind(productionItem),
+				BatchQty:         productionBatchQty,
+				RemainingSeconds: productionRemaining,
+			}
 		}
 
 		resumeDest, err := decodeMoveDestination(moveDestination)
@@ -567,40 +566,39 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 		}
 
 		a := &sim.Actor{
-			ID:                   sim.ActorID(id),
-			DisplayName:          displayName,
-			Kind:                 sim.ClassifyActorKind(deref(loginUsername), deref(llmMemoryAgent)),
-			Pos:                  sim.TilePos{X: currentX, Y: currentY},
-			InsideStructureID:    sim.StructureID(deref(insideStructureID)),
-			CurrentHuddleID:      sim.HuddleID(deref(currentHuddleID)),
-			InsideRoomID:         roomID,
-			HomeStructureID:      sim.StructureID(deref(homeStructureID)),
-			WorkStructureID:      sim.StructureID(deref(workStructureID)),
-			Coins:                coins,
-			LLMAgent:             deref(llmMemoryAgent),
-			Role:                 deref(role),
-			LoginUsername:        deref(loginUsername),
-			ScheduleStartMin:     derefInt16(scheduleStartMinute),
-			ScheduleEndMin:       derefInt16(scheduleEndMinute),
-			LastTickedAt:         lastAgentTickAt,
-			BreakUntil:           breakUntil,
-			SleepingUntil:        sleepingUntil,
-			MoveAttemptCounter:   sim.MovementAttemptID(moveAttemptCounter),
-			State:                sim.ActorState(simState),
-			SpriteID:             sim.SpriteID(deref(spriteID)),
-			Facing:               facing,
-			IsAdmin:              isAdmin,
-			ProductionFocus:      sim.ItemKind(productionFocus),
-			ResumeDestination:    resumeDest,
-			Needs:                make(map[sim.NeedKey]int),
-			Inventory:            make(map[sim.ItemKind]int),
-			Relationships:        make(map[sim.ActorID]*sim.Relationship),
-			Acquaintances:        make(map[string]sim.Acquaintance),
-			DwellCredits:         make(map[sim.DwellCreditKey]*sim.DwellCredit),
-			ProduceState:         make(map[sim.ItemKind]*sim.ProduceState),
-			RoomAccess:           make(map[sim.RoomAccessKey]*sim.RoomAccess),
-			Attributes:           make(map[string][]byte),
-			KnownPlaces:          make(map[sim.PlaceRef]*sim.KnownPlace),
+			ID:                 sim.ActorID(id),
+			DisplayName:        displayName,
+			Kind:               sim.ClassifyActorKind(deref(loginUsername), deref(llmMemoryAgent)),
+			Pos:                sim.TilePos{X: currentX, Y: currentY},
+			InsideStructureID:  sim.StructureID(deref(insideStructureID)),
+			CurrentHuddleID:    sim.HuddleID(deref(currentHuddleID)),
+			InsideRoomID:       roomID,
+			HomeStructureID:    sim.StructureID(deref(homeStructureID)),
+			WorkStructureID:    sim.StructureID(deref(workStructureID)),
+			Coins:              coins,
+			LLMAgent:           deref(llmMemoryAgent),
+			Role:               deref(role),
+			LoginUsername:      deref(loginUsername),
+			ScheduleStartMin:   derefInt16(scheduleStartMinute),
+			ScheduleEndMin:     derefInt16(scheduleEndMinute),
+			LastTickedAt:       lastAgentTickAt,
+			BreakUntil:         breakUntil,
+			SleepingUntil:      sleepingUntil,
+			MoveAttemptCounter: sim.MovementAttemptID(moveAttemptCounter),
+			State:              sim.ActorState(simState),
+			SpriteID:           sim.SpriteID(deref(spriteID)),
+			Facing:             facing,
+			IsAdmin:            isAdmin,
+			ProductionActivity: productionActivity,
+			ResumeDestination:  resumeDest,
+			Needs:              make(map[sim.NeedKey]int),
+			Inventory:          make(map[sim.ItemKind]int),
+			Relationships:      make(map[sim.ActorID]*sim.Relationship),
+			Acquaintances:      make(map[string]sim.Acquaintance),
+			DwellCredits:       make(map[sim.DwellCreditKey]*sim.DwellCredit),
+			RoomAccess:         make(map[sim.RoomAccessKey]*sim.RoomAccess),
+			Attributes:         make(map[string][]byte),
+			KnownPlaces:        make(map[sim.PlaceRef]*sim.KnownPlace),
 		}
 		out[a.ID] = a
 	}
@@ -624,9 +622,6 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 		return nil, err
 	}
 	if err := r.loadAllDwellCredits(ctx, out); err != nil {
-		return nil, err
-	}
-	if err := r.loadAllProduceState(ctx, out); err != nil {
 		return nil, err
 	}
 	if err := r.loadAllRoomAccess(ctx, out); err != nil {
@@ -932,42 +927,29 @@ func (r *ActorsRepo) loadAllDwellCredits(ctx context.Context, actors map[sim.Act
 	return nil
 }
 
-// loadAllProduceState reads every actor_produce_state row and attaches it
-// to the owning actor's ProduceState map (keyed by item). Orphan rows
-// return an error. last_produced_at NULL → Go zero time.Time.
-func (r *ActorsRepo) loadAllProduceState(ctx context.Context, actors map[sim.ActorID]*sim.Actor) error {
-	rows, err := r.pool.Query(ctx, loadAllProduceStateSQLA)
-	if err != nil {
-		return fmt.Errorf("pg actors LoadAll produce state query: %w", err)
+// productionItemArg / productionBatchQtyArg / productionRemainingArg project
+// an actor's in-flight production cycle (LLM-319) onto the actor row's three
+// production columns. A nil activity writes the idle sentinel (”, 0, 0) —
+// the same shape the load side reads back as "no cycle".
+func productionItemArg(pa *sim.ProductionActivity) string {
+	if pa == nil {
+		return ""
 	}
-	defer rows.Close()
+	return string(pa.Item)
+}
 
-	for rows.Next() {
-		var (
-			actorID        string
-			itemKind       string
-			lastProducedAt *time.Time
-		)
-		if err := rows.Scan(&actorID, &itemKind, &lastProducedAt); err != nil {
-			return fmt.Errorf("pg actors LoadAll produce state scan: %w", err)
-		}
-		parent, ok := actors[sim.ActorID(actorID)]
-		if !ok {
-			return fmt.Errorf("pg actors LoadAll: orphan produce state row actor_id=%s item=%s (parent missing — schema drift or out-of-band write)",
-				actorID, itemKind)
-		}
-		if strings.TrimSpace(itemKind) == "" {
-			return fmt.Errorf("pg actors LoadAll: produce state actor_id=%s has empty item_kind", actorID)
-		}
-		parent.ProduceState[sim.ItemKind(itemKind)] = &sim.ProduceState{
-			Item:           sim.ItemKind(itemKind),
-			LastProducedAt: derefTime(lastProducedAt),
-		}
+func productionBatchQtyArg(pa *sim.ProductionActivity) int {
+	if pa == nil {
+		return 0
 	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("pg actors LoadAll produce state iter: %w", err)
+	return pa.BatchQty
+}
+
+func productionRemainingArg(pa *sim.ProductionActivity) int64 {
+	if pa == nil {
+		return 0
 	}
-	return nil
+	return pa.RemainingSeconds
 }
 
 // loadAllRoomAccess reads every room_access row and attaches it to the
@@ -1175,12 +1157,15 @@ func (r *ActorsRepo) loadAllKnownPlaces(ctx context.Context, actors map[sim.Acto
 //     relationship peer key, self-relationship, negative relationship
 //     counts, empty / over-length acquaintance name, dwell-credit shape
 //     (source allowlist, remaining↔source pairing, dwell_delta < 0,
-//     period > 0), empty produce item / item-key mismatch, room-access
+//     period > 0), malformed production activity (empty item /
+//     non-positive batch or remaining — LLM-319), room-access
 //     room>0 + source/ledger-id pairing + per-room single-source, empty
 //     attribute slug / over-length / invalid JSON params.
-//  1. Advisory lock — shared by all ten tables.
+//  1. Advisory lock — shared by all nine tables.
 //     2-4.   actor  : nextval → UPSERT → DELETE stale (FK CASCADE drops
-//     children of absent parents).
+//     children of absent parents). The in-flight production cycle
+//     (LLM-319) rides the actor row itself (production_item /
+//     production_batch_qty / production_remaining_seconds).
 //     5-7.   actor_need        : nextval → UPSERT → DELETE stale.
 //     8-10.  actor_inventory   : nextval → UPSERT (skip zero-qty) → DELETE.
 //     11-13. actor_relationship: nextval → UPSERT (skip nil) → DELETE.
@@ -1188,11 +1173,10 @@ func (r *ActorsRepo) loadAllKnownPlaces(ctx context.Context, actors map[sim.Acto
 //     → DELETE.
 //     17-19. npc_acquaintance  : nextval → UPSERT → DELETE stale.
 //     20-22. actor_dwell_credit : nextval → UPSERT → DELETE stale.
-//     23-25. actor_produce_state: nextval → UPSERT (skip nil) → DELETE.
-//     26-28. room_access        : nextval → UPSERT (skip nil) → DELETE.
-//     29-31. actor_attribute    : nextval → UPSERT → DELETE stale.
+//     23-25. room_access        : nextval → UPSERT (skip nil) → DELETE.
+//     26-28. actor_attribute    : nextval → UPSERT → DELETE stale.
 //
-// Empty actors map: all ten gens still bump, no UPSERTs run, all ten
+// Empty actors map: all nine gens still bump, no UPSERTs run, all nine
 // DELETEs sweep their tables.
 //
 // nil actor entries surface as an error (structures.go precedent;
@@ -1341,17 +1325,16 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 				return fmt.Errorf("pg actors SaveSnapshot: id=%s dwell credit obj=%s attr=%s has zero LastCreditedAt (last_credited_at is NOT NULL)", a.ID, dk.ObjectID, dk.Attribute)
 			}
 		}
-		// Produce state: non-empty item key; struct Item must agree with key.
-		// nil values skipped at write.
-		for item, ps := range a.ProduceState {
-			if ps == nil {
-				continue
+		// Production activity (LLM-319): a live cycle must carry a non-empty
+		// item and positive batch/remaining — the load side treats item==""
+		// or remaining<=0 as "no cycle", so a malformed window would silently
+		// vanish on the next boot instead of surfacing here.
+		if pa := a.ProductionActivity; pa != nil {
+			if strings.TrimSpace(string(pa.Item)) == "" {
+				return fmt.Errorf("pg actors SaveSnapshot: id=%s has production activity with empty item", a.ID)
 			}
-			if strings.TrimSpace(string(item)) == "" {
-				return fmt.Errorf("pg actors SaveSnapshot: id=%s has empty produce-state item key", a.ID)
-			}
-			if ps.Item != "" && ps.Item != item {
-				return fmt.Errorf("pg actors SaveSnapshot: id=%s produce-state struct Item=%s disagrees with map key=%s", a.ID, ps.Item, item)
+			if pa.BatchQty <= 0 || pa.RemainingSeconds <= 0 {
+				return fmt.Errorf("pg actors SaveSnapshot: id=%s production activity item=%s has non-positive batch_qty=%d / remaining_seconds=%d", a.ID, pa.Item, pa.BatchQty, pa.RemainingSeconds)
 			}
 		}
 		// Room access: struct must agree with key; source↔ledger-id pairing
@@ -1455,31 +1438,33 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 			return fmt.Errorf("pg actors SaveSnapshot: actor id=%s: %w", a.ID, err)
 		}
 		if _, err := tx.Exec(ctx, upsertSQLA,
-			string(a.ID),                            // $1 id
-			a.DisplayName,                           // $2 display_name
-			a.Pos.X,                                 // $3 current_x
-			a.Pos.Y,                                 // $4 current_y
-			nilOnEmpty(string(a.InsideStructureID)), // $5 inside_structure_id
-			nilOnEmpty(string(a.CurrentHuddleID)),   // $6 current_huddle_id
-			nilOnZero(int64(a.InsideRoomID)),        // $7 inside_room_id
-			nilOnEmpty(string(a.HomeStructureID)),   // $8 home_structure_id
-			nilOnEmpty(string(a.WorkStructureID)),   // $9 work_structure_id
-			a.Coins,                                 // $10 coins
-			nilOnEmpty(a.LLMAgent),                  // $11 llm_memory_agent
-			nilOnEmpty(a.Role),                      // $12 role
-			nilOnEmpty(a.LoginUsername),             // $13 login_username
-			intPtrToSQL(a.ScheduleStartMin),         // $14 schedule_start_minute
-			intPtrToSQL(a.ScheduleEndMin),           // $15 schedule_end_minute
-			a.LastTickedAt,                          // $16 last_agent_tick_at
-			a.BreakUntil,                            // $17 break_until
-			a.SleepingUntil,                         // $18 sleeping_until
-			int64(a.MoveAttemptCounter),             // $19 move_attempt_counter
-			string(a.State),                         // $20 sim_state
-			nilOnEmpty(string(a.SpriteID)),          // $21 sprite_id (nullable uuid)
-			facing,                                  // $22 facing (validated above)
-			actorGen,                                // $23 snapshot_gen
-			encodeMoveDestination(a.MoveIntent),     // $24 move_destination
-			string(a.ProductionFocus),               // $25 production_focus
+			string(a.ID),                                 // $1 id
+			a.DisplayName,                                // $2 display_name
+			a.Pos.X,                                      // $3 current_x
+			a.Pos.Y,                                      // $4 current_y
+			nilOnEmpty(string(a.InsideStructureID)),      // $5 inside_structure_id
+			nilOnEmpty(string(a.CurrentHuddleID)),        // $6 current_huddle_id
+			nilOnZero(int64(a.InsideRoomID)),             // $7 inside_room_id
+			nilOnEmpty(string(a.HomeStructureID)),        // $8 home_structure_id
+			nilOnEmpty(string(a.WorkStructureID)),        // $9 work_structure_id
+			a.Coins,                                      // $10 coins
+			nilOnEmpty(a.LLMAgent),                       // $11 llm_memory_agent
+			nilOnEmpty(a.Role),                           // $12 role
+			nilOnEmpty(a.LoginUsername),                  // $13 login_username
+			intPtrToSQL(a.ScheduleStartMin),              // $14 schedule_start_minute
+			intPtrToSQL(a.ScheduleEndMin),                // $15 schedule_end_minute
+			a.LastTickedAt,                               // $16 last_agent_tick_at
+			a.BreakUntil,                                 // $17 break_until
+			a.SleepingUntil,                              // $18 sleeping_until
+			int64(a.MoveAttemptCounter),                  // $19 move_attempt_counter
+			string(a.State),                              // $20 sim_state
+			nilOnEmpty(string(a.SpriteID)),               // $21 sprite_id (nullable uuid)
+			facing,                                       // $22 facing (validated above)
+			actorGen,                                     // $23 snapshot_gen
+			encodeMoveDestination(a.MoveIntent),          // $24 move_destination
+			productionItemArg(a.ProductionActivity),      // $25 production_item
+			productionBatchQtyArg(a.ProductionActivity),  // $26 production_batch_qty
+			productionRemainingArg(a.ProductionActivity), // $27 production_remaining_seconds
 		); err != nil {
 			return fmt.Errorf("pg actors SaveSnapshot: upsert actor id=%s: %w", a.ID, err)
 		}
@@ -1685,36 +1670,10 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 		return fmt.Errorf("pg actors SaveSnapshot: delete stale dwell credit: %w", err)
 	}
 
-	// Step 23: produce-state gen — independent tier (Slice 3).
-	var produceGen int64
-	if err := tx.QueryRow(ctx, nextGenProduceStateSQLA).Scan(&produceGen); err != nil {
-		return fmt.Errorf("pg actors SaveSnapshot: nextval produce state: %w", err)
-	}
+	// (The actor_produce_state tier is retired with continuous auto-produce —
+	// LLM-319. The in-flight production cycle rides the actor row itself.)
 
-	// Step 24: upsert each produce-state entry. nil skipped. The map key
-	// supplies item_kind; zero LastProducedAt round-trips through NULL.
-	for _, a := range persisted {
-		for item, ps := range a.ProduceState {
-			if ps == nil {
-				continue
-			}
-			if _, err := tx.Exec(ctx, upsertProduceStateSQLA,
-				string(a.ID),                     // $1 actor_id
-				string(item),                     // $2 item_kind
-				nilOnZeroTime(ps.LastProducedAt), // $3 last_produced_at
-				produceGen,                       // $4 snapshot_gen
-			); err != nil {
-				return fmt.Errorf("pg actors SaveSnapshot: upsert produce state actor=%s item=%s: %w", a.ID, item, err)
-			}
-		}
-	}
-
-	// Step 25: prune absent produce-state rows.
-	if _, err := tx.Exec(ctx, deleteStaleProduceStateSQLA, produceGen); err != nil {
-		return fmt.Errorf("pg actors SaveSnapshot: delete stale produce state: %w", err)
-	}
-
-	// Step 26: room-access gen — independent tier (Slice 3).
+	// Step 23: room-access gen — independent tier (Slice 3).
 	var roomGen int64
 	if err := tx.QueryRow(ctx, nextGenRoomAccessSQLA).Scan(&roomGen); err != nil {
 		return fmt.Errorf("pg actors SaveSnapshot: nextval room access: %w", err)

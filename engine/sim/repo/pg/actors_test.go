@@ -99,7 +99,8 @@ func actorParentColumns() []string {
 		"last_agent_tick_at", "break_until", "sleeping_until",
 		"move_attempt_counter", "sim_state",
 		"sprite_id", "facing",
-		"admin", "move_destination", "production_focus",
+		"admin", "move_destination",
+		"production_item", "production_batch_qty", "production_remaining_seconds",
 	}
 }
 
@@ -151,7 +152,7 @@ func oneBareActorRows() *pgxmock.Rows {
 		(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
 		int64(0), "idle",
 		(*string)(nil), "south",
-		false, []byte(nil), "",
+		false, []byte(nil), "", 0, int64(0),
 	)
 }
 
@@ -222,10 +223,6 @@ func dwellCreditColumns() []string {
 	}
 }
 
-func produceStateColumns() []string {
-	return []string{"actor_id", "item_kind", "last_produced_at"}
-}
-
 func roomAccessColumns() []string {
 	return []string{
 		"actor_id", "room_id", "granted_via_ledger_id",
@@ -238,7 +235,6 @@ func attributeColumns() []string {
 }
 
 func emptyDwellRows() *pgxmock.Rows      { return pgxmock.NewRows(dwellCreditColumns()) }
-func emptyProduceRows() *pgxmock.Rows    { return pgxmock.NewRows(produceStateColumns()) }
 func emptyRoomAccessRows() *pgxmock.Rows { return pgxmock.NewRows(roomAccessColumns()) }
 func emptyAttrRows() *pgxmock.Rows       { return pgxmock.NewRows(attributeColumns()) }
 
@@ -247,32 +243,27 @@ func knownPlaceColumns() []string {
 }
 func emptyKnownPlaceRows() *pgxmock.Rows { return pgxmock.NewRows(knownPlaceColumns()) }
 
-// expectLoadAllSlice3Empty programs empty result sets for the four Slice 3
-// child queries (dwell credit / produce state / room access / attribute),
-// in LoadAll order. Pairs with expectLoadAllContinuityEmpty for the full
-// post-inventory child suffix.
+// expectLoadAllSlice3Empty programs empty result sets for the Slice 3 child
+// queries (dwell credit / room access / attribute), in LoadAll order. Pairs
+// with expectLoadAllContinuityEmpty for the full post-inventory child suffix.
+// (The actor_produce_state tier is retired with continuous auto-produce —
+// LLM-319; the in-flight production cycle rides the actor row itself.)
 func expectLoadAllSlice3Empty(mock pgxmock.PgxPoolIface) {
 	mock.ExpectQuery(`FROM actor_dwell_credit\b`).WillReturnRows(emptyDwellRows())
-	mock.ExpectQuery(`FROM actor_produce_state\b`).WillReturnRows(emptyProduceRows())
 	mock.ExpectQuery(`FROM room_access\b`).WillReturnRows(emptyRoomAccessRows())
 	mock.ExpectQuery(`FROM actor_attribute\b`).WillReturnRows(emptyAttrRows())
 	mock.ExpectQuery(`FROM actor_known_place\b`).WillReturnRows(emptyKnownPlaceRows())
 }
 
-// expectActorSlice3TailsEmpty programs the dwell-credit + produce-state +
-// room-access + attribute nextval/delete tails with no UPSERTs (the
-// standard suffix when the snapshot has no Slice 3 rows). Mirrors
-// expectActorContinuityTailsEmpty for the Slice 3 tiers.
-func expectActorSlice3TailsEmpty(mock pgxmock.PgxPoolIface, dwellGen, produceGen, roomGen, attrGen int64) {
+// expectActorSlice3TailsEmpty programs the dwell-credit + room-access +
+// attribute nextval/delete tails with no UPSERTs (the standard suffix when
+// the snapshot has no Slice 3 rows). Mirrors expectActorContinuityTailsEmpty
+// for the Slice 3 tiers. (No produce-state tier — retired by LLM-319.)
+func expectActorSlice3TailsEmpty(mock pgxmock.PgxPoolIface, dwellGen, roomGen, attrGen int64) {
 	mock.ExpectQuery(`SELECT nextval\('actor_dwell_credit_snapshot_gen_seq`).
 		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(dwellGen))
 	mock.ExpectExec(`DELETE FROM actor_dwell_credit .*WHERE snapshot_gen < \$1`).
 		WithArgs(dwellGen).
-		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
-	mock.ExpectQuery(`SELECT nextval\('actor_produce_state_snapshot_gen_seq`).
-		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(produceGen))
-	mock.ExpectExec(`DELETE FROM actor_produce_state .*WHERE snapshot_gen < \$1`).
-		WithArgs(produceGen).
 		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
 	mock.ExpectQuery(`SELECT nextval\('room_access_snapshot_gen_seq`).
 		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(roomGen))
@@ -325,7 +316,8 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 				&tsTickedAt, &tsBreak, &tsSleep,
 				int64(7), "working",
 				ptrStr("00000000-0000-0000-0000-5555eeeeeeee"), "east",
-				true, []byte(`{"kind":"structure_enter","structure_id":"00000000-0000-0000-0000-3333cccccccc"}`), "",
+				true, []byte(`{"kind":"structure_enter","structure_id":"00000000-0000-0000-0000-3333cccccccc"}`),
+				"horseshoe", 4, int64(900), // in-flight production cycle (LLM-319)
 			).
 			AddRow(
 				actB, "Bare", 0, 0,
@@ -336,7 +328,7 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 				(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
 				int64(0), "idle",
 				(*string)(nil), "south",
-				false, []byte(nil), "",
+				false, []byte(nil), "", 0, int64(0), // idle production sentinel (LLM-319)
 			))
 
 	mock.ExpectQuery(`FROM actor_need\b`).
@@ -430,6 +422,15 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 		string(*a.ResumeDestination.StructureID) != homeStr {
 		t.Errorf("ResumeDestination = %+v, want structure_enter %q (ZBBS-HOME-449)", a.ResumeDestination, homeStr)
 	}
+	// LLM-319: the in-flight production cycle rehydrates from the actor row's
+	// three production columns; LastProgressAt is deliberately left ZERO so the
+	// first post-restart produce tick stamps the anchor without crediting —
+	// engine downtime never counts as work.
+	if pa := a.ProductionActivity; pa == nil || pa.Item != "horseshoe" || pa.BatchQty != 4 || pa.RemainingSeconds != 900 {
+		t.Errorf("ProductionActivity = %+v, want horseshoe/4/900 (LLM-319)", a.ProductionActivity)
+	} else if !pa.LastProgressAt.IsZero() {
+		t.Errorf("LastProgressAt = %v, want zero on load — downtime never counts as work (LLM-319)", pa.LastProgressAt)
+	}
 	if len(a.Needs) != 2 || a.Needs["hunger"] != 4 || a.Needs["tiredness"] != 18 {
 		t.Errorf("Needs = %v", a.Needs)
 	}
@@ -478,6 +479,9 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 	}
 	if int64(b.MoveAttemptCounter) != 0 {
 		t.Errorf("actB MoveAttemptCounter = %d", b.MoveAttemptCounter)
+	}
+	if b.ProductionActivity != nil {
+		t.Errorf("actB ProductionActivity = %+v, want nil (idle ''/0/0 sentinel — LLM-319)", b.ProductionActivity)
 	}
 	if len(b.Needs) != 0 || len(b.Inventory) != 0 {
 		t.Errorf("actB Needs=%v Inventory=%v", b.Needs, b.Inventory)
@@ -580,7 +584,7 @@ func TestActorsRepo_SaveSnapshot_FullActor(t *testing.T) {
 			"00000000-0000-0000-0000-5555eeeeeeee", "east",
 			int64(101),
 			nil,
-			"", // production_focus (LLM-128)
+			"", 0, int64(0), // production_item / batch_qty / remaining_seconds — idle sentinel (LLM-319)
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 
@@ -607,33 +611,33 @@ func TestActorsRepo_SaveSnapshot_FullActor(t *testing.T) {
 		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
 
 	expectActorContinuityTailsEmpty(mock, 401, 501, 601)
-	expectActorSlice3TailsEmpty(mock, 4001, 5001, 6001, 7001)
+	expectActorSlice3TailsEmpty(mock, 4001, 6001, 7001)
 
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
-			ID:                   actA,
-			DisplayName:          "Mira",
-			Pos:                  sim.TilePos{X: 5, Y: 10},
-			InsideStructureID:    "00000000-0000-0000-0000-1111aaaaaaaa",
-			CurrentHuddleID:      "00000000-0000-0000-0000-2222bbbbbbbb",
-			InsideRoomID:         42,
-			HomeStructureID:      "00000000-0000-0000-0000-3333cccccccc",
-			WorkStructureID:      "00000000-0000-0000-0000-4444dddddddd",
-			Coins:                20,
-			LLMAgent:             "mira-agent",
-			Role:                 "tavernkeeper",
-			LoginUsername:        "",
-			ScheduleStartMin:     &startMin,
-			ScheduleEndMin:       &endMin,
-			LastTickedAt:         &tsTickedAt,
-			BreakUntil:           &tsBreak,
-			SleepingUntil:        &tsSleep,
-			MoveAttemptCounter:   7,
-			State:                "working",
-			SpriteID:             "00000000-0000-0000-0000-5555eeeeeeee",
-			Facing:               "east",
-			Needs:                map[sim.NeedKey]int{"hunger": 4},
-			Inventory:            map[sim.ItemKind]int{"ale": 3},
+			ID:                 actA,
+			DisplayName:        "Mira",
+			Pos:                sim.TilePos{X: 5, Y: 10},
+			InsideStructureID:  "00000000-0000-0000-0000-1111aaaaaaaa",
+			CurrentHuddleID:    "00000000-0000-0000-0000-2222bbbbbbbb",
+			InsideRoomID:       42,
+			HomeStructureID:    "00000000-0000-0000-0000-3333cccccccc",
+			WorkStructureID:    "00000000-0000-0000-0000-4444dddddddd",
+			Coins:              20,
+			LLMAgent:           "mira-agent",
+			Role:               "tavernkeeper",
+			LoginUsername:      "",
+			ScheduleStartMin:   &startMin,
+			ScheduleEndMin:     &endMin,
+			LastTickedAt:       &tsTickedAt,
+			BreakUntil:         &tsBreak,
+			SleepingUntil:      &tsSleep,
+			MoveAttemptCounter: 7,
+			State:              "working",
+			SpriteID:           "00000000-0000-0000-0000-5555eeeeeeee",
+			Facing:             "east",
+			Needs:              map[sim.NeedKey]int{"hunger": 4},
+			Inventory:          map[sim.ItemKind]int{"ale": 3},
 		},
 	}
 
@@ -665,7 +669,7 @@ func TestActorsRepo_SaveSnapshot_BareActor(t *testing.T) {
 			nil, "south", // sprite_id (empty→NULL), facing (empty→default 'south')
 			int64(102),
 			nil,
-			"", // production_focus (LLM-128)
+			"", 0, int64(0), // production_item / batch_qty / remaining_seconds — idle sentinel (LLM-319)
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
@@ -674,7 +678,7 @@ func TestActorsRepo_SaveSnapshot_BareActor(t *testing.T) {
 
 	expectActorSaveSnapshotChildTails(mock, 202, 302)
 	expectActorContinuityTailsEmpty(mock, 402, 502, 602)
-	expectActorSlice3TailsEmpty(mock, 4002, 5002, 6002, 7002)
+	expectActorSlice3TailsEmpty(mock, 4002, 6002, 7002)
 
 	actors := map[sim.ActorID]*sim.Actor{
 		actB: {
@@ -711,7 +715,7 @@ func TestActorsRepo_SaveSnapshot_VisitorFiltered(t *testing.T) {
 		WillReturnResult(pgconn.NewCommandTag("DELETE 1"))
 	expectActorSaveSnapshotChildTails(mock, 203, 303)
 	expectActorContinuityTailsEmpty(mock, 403, 503, 603)
-	expectActorSlice3TailsEmpty(mock, 4003, 5003, 6003, 7003)
+	expectActorSlice3TailsEmpty(mock, 4003, 6003, 7003)
 
 	actors := map[sim.ActorID]*sim.Actor{
 		actV: {
@@ -741,7 +745,7 @@ func TestActorsRepo_SaveSnapshot_EmptyMap(t *testing.T) {
 		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
 	expectActorSaveSnapshotChildTails(mock, 204, 304)
 	expectActorContinuityTailsEmpty(mock, 404, 504, 604)
-	expectActorSlice3TailsEmpty(mock, 4004, 5004, 6004, 7004)
+	expectActorSlice3TailsEmpty(mock, 4004, 6004, 7004)
 
 	if err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, map[sim.ActorID]*sim.Actor{}); err != nil {
 		t.Fatalf("SaveSnapshot: %v", err)
@@ -773,7 +777,7 @@ func TestActorsRepo_SaveSnapshot_ZeroQtyInventoryDropped(t *testing.T) {
 			nil, "south",
 			int64(105),
 			nil,
-			"", // production_focus (LLM-128)
+			"", 0, int64(0), // production_item / batch_qty / remaining_seconds — idle sentinel (LLM-319)
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
@@ -797,7 +801,7 @@ func TestActorsRepo_SaveSnapshot_ZeroQtyInventoryDropped(t *testing.T) {
 		WillReturnResult(pgconn.NewCommandTag("DELETE 1")) // bread row swept
 
 	expectActorContinuityTailsEmpty(mock, 405, 505, 605)
-	expectActorSlice3TailsEmpty(mock, 4005, 5005, 6005, 7005)
+	expectActorSlice3TailsEmpty(mock, 4005, 6005, 7005)
 
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
@@ -1078,7 +1082,7 @@ func TestActorsRepo_LoadAll_Continuity(t *testing.T) {
 				(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
 				int64(0), "idle",
 				(*string)(nil), "south",
-				false, []byte(nil), "",
+				false, []byte(nil), "", 0, int64(0), // idle production sentinel (LLM-319)
 			))
 	mock.ExpectQuery(`FROM actor_need\b`).WillReturnRows(emptyNeedRows())
 	mock.ExpectQuery(`FROM actor_inventory\b`).WillReturnRows(emptyInvRows())
@@ -1277,7 +1281,7 @@ func TestActorsRepo_SaveSnapshot_Continuity(t *testing.T) {
 			nil, "south",
 			int64(701),
 			nil,
-			"", // production_focus (LLM-128)
+			"", 0, int64(0), // production_item / batch_qty / remaining_seconds — idle sentinel (LLM-319)
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
@@ -1323,7 +1327,7 @@ func TestActorsRepo_SaveSnapshot_Continuity(t *testing.T) {
 	mock.ExpectExec(`DELETE FROM npc_acquaintance .*WHERE snapshot_gen < \$1`).
 		WithArgs(int64(1201)).
 		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
-	expectActorSlice3TailsEmpty(mock, 1301, 1401, 1501, 1601)
+	expectActorSlice3TailsEmpty(mock, 1301, 1501, 1601)
 
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
@@ -1380,7 +1384,7 @@ func TestActorsRepo_SaveSnapshot_EmptySalientFacts(t *testing.T) {
 			nil, "south",
 			int64(702),
 			nil,
-			"", // production_focus (LLM-128)
+			"", 0, int64(0), // production_item / batch_qty / remaining_seconds — idle sentinel (LLM-319)
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
@@ -1412,7 +1416,7 @@ func TestActorsRepo_SaveSnapshot_EmptySalientFacts(t *testing.T) {
 	mock.ExpectExec(`DELETE FROM npc_acquaintance .*WHERE snapshot_gen < \$1`).
 		WithArgs(int64(1202)).
 		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
-	expectActorSlice3TailsEmpty(mock, 1302, 1402, 1502, 1602)
+	expectActorSlice3TailsEmpty(mock, 1302, 1502, 1602)
 
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
@@ -1555,7 +1559,7 @@ func TestActorsRepo_SaveSnapshot_AcquaintanceMultibyteWithinLimit(t *testing.T) 
 			nil, "south",
 			int64(706),
 			nil,
-			"", // production_focus (LLM-128)
+			"", 0, int64(0), // production_item / batch_qty / remaining_seconds — idle sentinel (LLM-319)
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
@@ -1584,7 +1588,7 @@ func TestActorsRepo_SaveSnapshot_AcquaintanceMultibyteWithinLimit(t *testing.T) 
 	mock.ExpectExec(`DELETE FROM npc_acquaintance .*WHERE snapshot_gen < \$1`).
 		WithArgs(int64(1206)).
 		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
-	expectActorSlice3TailsEmpty(mock, 1306, 1406, 1506, 1606)
+	expectActorSlice3TailsEmpty(mock, 1306, 1506, 1606)
 
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
@@ -1615,14 +1619,16 @@ func TestActorsRepo_SaveSnapshot_AcquaintanceOverLongRunes(t *testing.T) {
 	assertValidationOnly(t, mock, err, "exceeds 100 chars")
 }
 
-// --- Slice 3 (ZBBS-WORK-245): dwell / produce / room_access / attribute ---
+// --- Slice 3 (ZBBS-WORK-245): dwell / room_access / attribute ---
+// (The produce-state tier was retired by LLM-319 — the in-flight production
+// cycle rides the actor row itself; see the LoadAll happy path + the
+// SaveSnapshot production-activity tests.)
 
 // TestActorsRepo_LoadAll_Slice3 — round-trips one of each Slice 3 child
 // onto a bare actor: an object-source and an item-source dwell credit
 // (covering the remaining_ticks NULL/non-NULL pairing + the Kind-not-
-// persisted gap), a produce-state anchor, a ledger room-access grant and
-// a staff one (covering the Source derivation from granted_via_ledger_id),
-// and a raw attribute blob.
+// persisted gap), a ledger room-access grant and a staff one (covering the
+// Source derivation from granted_via_ledger_id), and a raw attribute blob.
 func TestActorsRepo_LoadAll_Slice3(t *testing.T) {
 	mock, repo := newMockPoolA(t)
 
@@ -1636,9 +1642,6 @@ func TestActorsRepo_LoadAll_Slice3(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows(dwellCreditColumns()).
 			AddRow(actA, objX, "tiredness", "object", tsTickedAt, (*int)(nil), -2, 10).
 			AddRow(actA, objX, "hunger", "item", tsBreak, &rem, -1, 5))
-	mock.ExpectQuery(`FROM actor_produce_state\b`).
-		WillReturnRows(pgxmock.NewRows(produceStateColumns()).
-			AddRow(actA, "bread", &tsTickedAt))
 	mock.ExpectQuery(`FROM room_access\b`).
 		WillReturnRows(pgxmock.NewRows(roomAccessColumns()).
 			AddRow(actA, int64(42), ptrInt64(77), tsEntered, &tsSleep, true).
@@ -1674,11 +1677,6 @@ func TestActorsRepo_LoadAll_Slice3(t *testing.T) {
 		if dc.Kind != "" {
 			t.Errorf("item dwell Kind = %q, want empty (not persisted)", dc.Kind)
 		}
-	}
-
-	// Produce state.
-	if ps := a.ProduceState["bread"]; ps == nil || !ps.LastProducedAt.Equal(tsTickedAt) {
-		t.Errorf("produce state bread = %+v", ps)
 	}
 
 	// Room access — ledger Source derived from non-NULL ledger id, staff
@@ -1750,7 +1748,6 @@ func TestActorsRepo_LoadAll_RoomAccessNonPositiveLedger(t *testing.T) {
 	mock.ExpectQuery(`FROM actor_inventory\b`).WillReturnRows(emptyInvRows())
 	expectLoadAllContinuityEmpty(mock)
 	mock.ExpectQuery(`FROM actor_dwell_credit\b`).WillReturnRows(emptyDwellRows())
-	mock.ExpectQuery(`FROM actor_produce_state\b`).WillReturnRows(emptyProduceRows())
 	mock.ExpectQuery(`FROM room_access\b`).
 		WillReturnRows(pgxmock.NewRows(roomAccessColumns()).
 			AddRow(actA, int64(42), ptrInt64(0), tsEntered, (*time.Time)(nil), true))
@@ -1771,7 +1768,6 @@ func TestActorsRepo_LoadAll_AttributeInvalidJSON(t *testing.T) {
 	mock.ExpectQuery(`FROM actor_inventory\b`).WillReturnRows(emptyInvRows())
 	expectLoadAllContinuityEmpty(mock)
 	mock.ExpectQuery(`FROM actor_dwell_credit\b`).WillReturnRows(emptyDwellRows())
-	mock.ExpectQuery(`FROM actor_produce_state\b`).WillReturnRows(emptyProduceRows())
 	mock.ExpectQuery(`FROM room_access\b`).WillReturnRows(emptyRoomAccessRows())
 	mock.ExpectQuery(`FROM actor_attribute\b`).
 		WillReturnRows(pgxmock.NewRows(attributeColumns()).
@@ -1794,7 +1790,6 @@ func TestActorsRepo_LoadAll_OrphanAttribute(t *testing.T) {
 	mock.ExpectQuery(`FROM actor_inventory\b`).WillReturnRows(emptyInvRows())
 	expectLoadAllContinuityEmpty(mock)
 	mock.ExpectQuery(`FROM actor_dwell_credit\b`).WillReturnRows(emptyDwellRows())
-	mock.ExpectQuery(`FROM actor_produce_state\b`).WillReturnRows(emptyProduceRows())
 	mock.ExpectQuery(`FROM room_access\b`).WillReturnRows(emptyRoomAccessRows())
 	mock.ExpectQuery(`FROM actor_attribute\b`).
 		WillReturnRows(pgxmock.NewRows(attributeColumns()).
@@ -1808,8 +1803,11 @@ func TestActorsRepo_LoadAll_OrphanAttribute(t *testing.T) {
 
 // TestActorsRepo_SaveSnapshot_Slice3 — full write path for one of each
 // Slice 3 child (single-entry maps keep the UPSERT order deterministic
-// under pgxmock's ordered matching). Asserts SQL shape + arg bindings
-// including kind synthesis (ledger→private) and the jsonb params cast.
+// under pgxmock's ordered matching) plus an in-flight production cycle
+// (LLM-319: rides the actor row itself — Item/BatchQty/RemainingSeconds are
+// checkpointed, LastProgressAt deliberately is NOT). Asserts SQL shape +
+// arg bindings including kind synthesis (ledger→private) and the jsonb
+// params cast.
 func TestActorsRepo_SaveSnapshot_Slice3(t *testing.T) {
 	mock, repo := newMockPoolA(t)
 
@@ -1826,7 +1824,7 @@ func TestActorsRepo_SaveSnapshot_Slice3(t *testing.T) {
 			nil, "south",
 			int64(710),
 			nil,
-			"", // production_focus (LLM-128)
+			"stew", 5, int64(1800), // production_item / batch_qty / remaining_seconds — live cycle (LLM-319)
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
@@ -1844,16 +1842,6 @@ func TestActorsRepo_SaveSnapshot_Slice3(t *testing.T) {
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor_dwell_credit .*WHERE snapshot_gen < \$1`).
 		WithArgs(int64(1110)).
-		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
-
-	// Produce state tier.
-	mock.ExpectQuery(`SELECT nextval\('actor_produce_state_snapshot_gen_seq`).
-		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(int64(1210)))
-	mock.ExpectExec(`INSERT INTO actor_produce_state `).
-		WithArgs(actA, "bread", tsTickedAt, int64(1210)).
-		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
-	mock.ExpectExec(`DELETE FROM actor_produce_state .*WHERE snapshot_gen < \$1`).
-		WithArgs(int64(1210)).
 		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
 
 	// Room access tier (ledger grant → kind synthesized as private).
@@ -1892,8 +1880,10 @@ func TestActorsRepo_SaveSnapshot_Slice3(t *testing.T) {
 					LastCreditedAt: tsTickedAt, RemainingTicks: &rem, DwellDelta: -1, DwellPeriodMinutes: 5,
 				},
 			},
-			ProduceState: map[sim.ItemKind]*sim.ProduceState{
-				"bread": {Item: "bread", LastProducedAt: tsTickedAt},
+			// LastProgressAt rides along in memory but has no column — the load
+			// side re-anchors from zero so downtime never counts as work.
+			ProductionActivity: &sim.ProductionActivity{
+				Item: "stew", BatchQty: 5, RemainingSeconds: 1800, LastProgressAt: tsTickedAt,
 			},
 			RoomAccess: map[sim.RoomAccessKey]*sim.RoomAccess{
 				{RoomID: 42, Source: sim.AccessSourceLedger}: {
@@ -1933,6 +1923,48 @@ func TestActorsRepo_SaveSnapshot_DwellCreditItemNilRemaining(t *testing.T) {
 	}
 	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
 	assertValidationOnly(t, mock, err, "nil remaining_ticks")
+}
+
+// TestActorsRepo_SaveSnapshot_ProductionActivityEmptyItem — LLM-319 pre-pass:
+// a non-nil production activity must carry a non-empty item. An empty item
+// would collide with the idle sentinel (” / 0 / 0) and read back as "no
+// cycle" while the consumed inputs stay spent — clean substrate rejection
+// before any SQL fires.
+func TestActorsRepo_SaveSnapshot_ProductionActivityEmptyItem(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+	actors := map[sim.ActorID]*sim.Actor{
+		actA: {
+			ID: actA, DisplayName: "X", State: "idle",
+			ProductionActivity: &sim.ProductionActivity{Item: "", BatchQty: 5, RemainingSeconds: 1800},
+		},
+	}
+	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
+	assertValidationOnly(t, mock, err, "production activity with empty item")
+}
+
+// TestActorsRepo_SaveSnapshot_ProductionActivityNonPositive — LLM-319
+// pre-pass: a live cycle must carry a positive batch_qty AND positive
+// remaining_seconds (a landed cycle clears the whole window to nil, never to
+// zeros; zeros here are corruption).
+func TestActorsRepo_SaveSnapshot_ProductionActivityNonPositive(t *testing.T) {
+	cases := []struct {
+		name string
+		pa   *sim.ProductionActivity
+	}{
+		{"zero batch_qty", &sim.ProductionActivity{Item: "stew", BatchQty: 0, RemainingSeconds: 1800}},
+		{"zero remaining_seconds", &sim.ProductionActivity{Item: "stew", BatchQty: 5, RemainingSeconds: 0}},
+		{"negative remaining_seconds", &sim.ProductionActivity{Item: "stew", BatchQty: 5, RemainingSeconds: -1}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mock, repo := newMockPoolA(t)
+			actors := map[sim.ActorID]*sim.Actor{
+				actA: {ID: actA, DisplayName: "X", State: "idle", ProductionActivity: tc.pa},
+			}
+			err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
+			assertValidationOnly(t, mock, err, "non-positive batch_qty")
+		})
+	}
 }
 
 // TestActorsRepo_SaveSnapshot_RoomAccessNonPositiveRoom — a room-access

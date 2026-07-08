@@ -746,63 +746,26 @@ func buildActorView(snap *sim.Snapshot, a *sim.ActorSnapshot) ActorView {
 		InFlightSourceActivity: buildInFlightSourceActivity(snap, a),
 		Inventory:              buildInventoryView(snap, a),
 		HoursAwake:             computeHoursAwake(snap.LocalMinuteOfDay, a.ScheduleStartMin, a.ScheduleEndMin),
-		ProductionFocusLabel:   forgeFocusLabel(snap, a),
+		InFlightProduction:     buildInFlightProduction(snap, a),
 	}
 }
 
-// forgeFocusLabel resolves the display label of a crafter's current production
-// focus for the standing "## You" self-state line, or "" when unfocused or away
-// from its work so the line is omitted. LLM-116 / LLM-121. Surfaced only while the
-// crafter is physically at its own work structure (its forge) — so a visitor who
-// approaches at the shop and asks gets an answer, while the present-tense "making
-// X" line never appears out in the world (Tavern, street) where nothing is forged.
-func forgeFocusLabel(snap *sim.Snapshot, a *sim.ActorSnapshot) string {
-	if a.ProductionFocus == "" {
-		return ""
+// buildInFlightProduction projects the subject's in-progress production cycle
+// (LLM-319) into a render-ready view, or nil when nothing is in the works.
+// Truthful wherever the actor is: the batch exists (its inputs are spent)
+// whether or not the actor is at the post, and the WorkLeft phrase is the
+// base-rate estimate, so away-from-post the line reads as work still owed —
+// progress simply isn't accruing until the actor is back (the produce-tick
+// pause). Its presence is also what keeps buildForgeChoice nil, so the trade
+// cue and this standing line never show together.
+func buildInFlightProduction(snap *sim.Snapshot, a *sim.ActorSnapshot) *InFlightProductionView {
+	if a.ProductionItem == "" {
+		return nil
 	}
-	// Only while physically at its own work structure: produce_tick fills the
-	// focus only there (produceTickGate), so the standing line stays truthful and
-	// the model is never told it is "making X" away from the forge.
-	if a.WorkStructureID == "" || a.InsideStructureID != a.WorkStructureID {
-		return ""
+	return &InFlightProductionView{
+		ItemLabel: itemDisplayLabel(snap, a.ProductionItem),
+		WorkLeft:  sim.HumanizeWorkDuration(a.ProductionRemainingSeconds),
 	}
-	// Only surface a focus the actor can actually make (recipe-backed, positive
-	// rate), so the standing line never claims "making X" for a good produce_tick
-	// will skip. Mirrors the sim-side makeable check.
-	r := snap.Recipes[a.ProductionFocus]
-	if r == nil || r.RateQty <= 0 || r.RatePerHours <= 0 {
-		return ""
-	}
-	// For a MULTI-output crafter, the standing line must agree with the "## Time to
-	// produce" choose menu: when the focus is input-starved that menu flags it
-	// "can't make now" (LLM-257), so the standing "You are making X" must not also
-	// claim it — the phantom "You are making Stew" with no sage in the pot. A
-	// single-output producer has no such menu; its line is trade identity ("I make
-	// porridge"), kept even while momentarily short an input.
-	if multiOutputCrafter(snap, a) && !sim.HasProduceInputs(r, a.Inventory) {
-		return ""
-	}
-	return itemDisplayLabel(snap, a.ProductionFocus)
-}
-
-// multiOutputCrafter reports whether the actor makes more than one recipe-backed
-// good — the case where a production choice (and its "## Time to produce" menu)
-// exists, so the standing focus line and the menu must not disagree (LLM-257).
-// Mirrors buildForgeChoice's own multi-output gate, on the snapshot side.
-func multiOutputCrafter(snap *sim.Snapshot, a *sim.ActorSnapshot) bool {
-	if a.RestockPolicy == nil {
-		return false
-	}
-	n := 0
-	for _, e := range a.RestockPolicy.ProduceEntries() {
-		if r := snap.Recipes[e.Item]; r != nil && r.RateQty > 0 && r.RatePerHours > 0 {
-			n++
-			if n > 1 {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // computeHoursAwake returns whole hours the actor has been awake, measured from

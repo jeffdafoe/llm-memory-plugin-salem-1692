@@ -117,10 +117,10 @@ type UmbilicalAgentDTO struct {
 	// restock/set control route (LLM-111). RestockPolicy lists the managed items
 	// + supply mode (produce/buy/forage) + personal-carry cap; it reuses the
 	// control route's umbilicalRestockEntry wire type so the read and write sides
-	// can't drift. ProduceState carries the per-item last-produced anchor the
-	// produce tick advances. Both empty when the actor manages nothing.
+	// can't drift. Production is the in-flight one-shot batch (LLM-319), nil when
+	// nothing is in the works. Both empty when the actor manages nothing.
 	RestockPolicy []umbilicalRestockEntry `json:"restock_policy,omitempty"`
-	ProduceState  []ProduceStateDTO       `json:"produce_state,omitempty"`
+	Production    *ProductionActivityDTO  `json:"production,omitempty"`
 
 	// Rest windows (nil = not resting).
 	BreakUntil    *time.Time `json:"break_until,omitempty"`
@@ -167,12 +167,16 @@ type UmbilicalAgentDTO struct {
 	RecentActions []ActionLogEntryDTO  `json:"recent_actions"`
 }
 
-// ProduceStateDTO is one per-item production anchor: the item and when the actor
-// last minted it (the produce-tick carry-forward clock). last_produced_at is
-// omitted when unset.
-type ProduceStateDTO struct {
-	Item           string     `json:"item"`
-	LastProducedAt *time.Time `json:"last_produced_at,omitempty"`
+// ProductionActivityDTO is the operator view of an actor's in-flight one-shot
+// production cycle (LLM-319): what's cooking, the batch size that lands, and
+// the base-rate work remaining (the labor boost shortens the real wall time).
+// last_progress_at is the transient tick anchor — omitted when it hasn't been
+// stamped since a restart.
+type ProductionActivityDTO struct {
+	Item             string     `json:"item"`
+	BatchQty         int        `json:"batch_qty"`
+	RemainingSeconds int64      `json:"remaining_seconds"`
+	LastProgressAt   *time.Time `json:"last_progress_at,omitempty"`
 }
 
 // errAgentNotFound is returned by the agent-view command when the id is unknown.
@@ -246,21 +250,13 @@ func (s *Server) handleUmbilicalAgent(w http.ResponseWriter, r *http.Request) {
 				})
 			}
 		}
-		if len(a.ProduceState) > 0 {
-			dto.ProduceState = make([]ProduceStateDTO, 0, len(a.ProduceState))
-			for _, ps := range a.ProduceState {
-				if ps == nil {
-					continue
-				}
-				dto.ProduceState = append(dto.ProduceState, ProduceStateDTO{
-					Item:           string(ps.Item),
-					LastProducedAt: ptrTimeIfSet(ps.LastProducedAt),
-				})
+		if pa := a.ProductionActivity; pa != nil {
+			dto.Production = &ProductionActivityDTO{
+				Item:             string(pa.Item),
+				BatchQty:         pa.BatchQty,
+				RemainingSeconds: pa.RemainingSeconds,
+				LastProgressAt:   ptrTimeIfSet(pa.LastProgressAt),
 			}
-			// Map iteration is unordered — sort by item for a stable read.
-			sort.Slice(dto.ProduceState, func(i, j int) bool {
-				return dto.ProduceState[i].Item < dto.ProduceState[j].Item
-			})
 		}
 		if a.MoveIntent != nil {
 			dto.Moving = true

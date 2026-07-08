@@ -188,16 +188,16 @@ const speakToolName = "speak"
 // substrate stays authoritative, and the gate lifts the moment the flag clears.
 const moveToToolName = "move_to"
 
-// craftToolName — the model-facing name of the multi-output producer's production-
-// choice tool (LLM-116). The internal identifiers keep the "craft" codename to
-// avoid colliding with the produce_tick auto-fill machinery (ProduceState etc.).
-// Advertised ONLY when the "## Time to produce" cue is present (payload.ForgeChoice
-// non-empty), which itself fires only for a >1-produce-entry crafter AT its
-// workplace. Reading the SAME signal the cue renders from keeps the tool and its
-// cue in lockstep — the discussion-109 "advertise a tool only with its triggering
-// perception" invariant. A single-output producer never sees it; the
-// sim.SetProductionFocus Command stays the authoritative gate for any call that
-// arrives anyway.
+// craftToolName — the model-facing name of the start-one-batch production tool
+// (LLM-116, one-shot semantics since LLM-319). The internal identifiers keep
+// the "craft" codename for file/handler continuity. Advertised ONLY when the
+// "## Your trade" cue is present (payload.ForgeChoice non-empty), which itself
+// fires for ANY producer AT its workplace with nothing already in the works —
+// so the tool disappears mid-batch along with the cue. Reading the SAME signal
+// the cue renders from keeps the tool and its cue in lockstep — the
+// discussion-109 "advertise a tool only with its triggering perception"
+// invariant. The sim.StartProductionCycle Command stays the authoritative gate
+// for any call that arrives anyway.
 const craftToolName = "produce"
 
 // repairToolName — the business owner's "mend your worn premises" tool (LLM-118,
@@ -421,10 +421,11 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 		if spec.Name == moveToToolName && flaggedDegenerate {
 			continue
 		}
-		// craft consumer (LLM-116): advertise only when the "## Time to produce" cue
-		// is present — the same ForgeChoice signal the cue renders from — so a
-		// crafter is handed the tool exactly when it has a choice to make, and no
-		// other actor ever sees it.
+		// produce consumer (LLM-116/LLM-319): advertise only when the "## Your
+		// trade" cue is present — the same ForgeChoice signal the cue renders
+		// from — so a producer is handed the tool exactly when idle at its post
+		// with a batch to consider, never mid-batch, and no other actor ever
+		// sees it.
 		if spec.Name == craftToolName && !offerCraft {
 			continue
 		}

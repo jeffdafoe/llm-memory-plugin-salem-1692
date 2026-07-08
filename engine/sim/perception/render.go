@@ -661,11 +661,13 @@ func renderActor(b *strings.Builder, a ActorView) {
 		}
 		b.WriteString(".\n")
 	}
-	// Standing production focus (LLM-116): a multi-output crafter's chosen work,
+	// Standing in-progress batch (LLM-319): the producer's current work,
 	// surfaced on EVERY tick — including a social one when someone approaches —
-	// so the crafter can always say what it is making (a PC can ask).
-	if a.ProductionFocusLabel != "" {
-		fmt.Fprintf(b, "You are making %s.\n", sanitizeInline(a.ProductionFocusLabel))
+	// so it can always say what it is making (a PC can ask), and a tick firing
+	// mid-batch knows to stay at the post rather than re-decide from scratch.
+	if a.InFlightProduction != nil {
+		fmt.Fprintf(b, "You are making a batch of %s — about %s of work left; it only moves along while you're at your post.\n",
+			sanitizeInline(a.InFlightProduction.ItemLabel), a.InFlightProduction.WorkLeft)
 	}
 	// In-progress activity reads as felt self-state. A meal/rest/walk already
 	// under way is surfaced so a tick firing mid-activity doesn't re-pick a
@@ -2869,10 +2871,16 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 	case sim.ServeHandoverWarrantReason:
 		return renderServeHandoverWarrantLine(n, nameOf(r.Buyer), r), false
 	case sim.ProductionChoiceWarrantReason:
-		// LLM-116: the workplace is free and there's work to do — the "## Time to
-		// produce" cue carries the options + the produce tool; this line is just the
-		// "why you ticked" beat, like the idle-backstop / need-nudge lines.
-		return fmt.Sprintf("%d. It's time to produce — decide what to make next.\n", n), false
+		// LLM-116/LLM-319: nothing is in the works at the actor's post — the
+		// "## Your trade" cue carries the scene + the produce tool; this line is
+		// just the "why you ticked" beat, like the idle-backstop / need-nudge
+		// lines. Deliberately not an instruction to produce: whether to make
+		// more is the decision the tick exists to grant.
+		return fmt.Sprintf("%d. Your thoughts turn to your trade — nothing is in the works right now.\n", n), false
+	case sim.ProductionDoneWarrantReason:
+		// LLM-319: a production cycle landed its batch — pre-rendered at the
+		// subscriber, same narration-line path as the source-activity beat.
+		return renderNarrationWarrantLine(n, w.Kind(), r.NarrationText, nameOf(w.TriggerActorID), maxTextBytes)
 	case sim.StallRepairWarrantReason:
 		// LLM-118 (generalized LLM-247): the business just wore through the repair
 		// threshold. At the business the "## Your business" cue carries the nail

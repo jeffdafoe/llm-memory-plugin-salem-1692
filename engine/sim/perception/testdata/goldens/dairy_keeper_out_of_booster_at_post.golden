@@ -19,6 +19,10 @@ It is your working hours and you are at your post — stay and look after your w
 ## Keeping up production
 - A measure of sage in each batch of milk adds 2 extra to the yield — 0 on hand, and you're running low.
 
+## Your trade
+Your stock of milk is running low, and none sold this past week. A batch — 4 more — takes about an hour.
+Start a batch with produce, or see to other things.
+
 ## Restocking
 Your shop stock of these bought-in goods is running low. You choose how much to buy.
 - You have 0 sage on hand and room for 3 more at the most. No seller is here now — use move_to to reach a supplier below, then pay_with_item once you arrive.

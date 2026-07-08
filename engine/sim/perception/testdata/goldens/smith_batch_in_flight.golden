@@ -1,24 +1,20 @@
 # Your turn
 
 ## Since your last turn
-1. It's time to produce — decide what to make next.
+(nothing specific — this is a routine check-in)
 
 
 ## You
 Coins in your purse: 0 — you have no coins to spend, but you may be able to offer goods you carry in trade.
-You are carrying: Meat (x10).
+You are carrying: Skillet (x5).
+You are making a batch of Nail — about 30 minutes of work left; it only moves along while you're at your post.
 
 ## Around you
-You are inside the Tavern, your workplace, with no one else here to hear you speak.
+You are inside the Blacksmith, your workplace, with no one else here to hear you speak.
 It is morning in the village.
 
 You're at your workplace.
 
 It is your working hours and you are at your post — stay and look after your work; you close at 6 in the evening. If no one needs you right now, wait here for customers rather than wandering off.
-
-## Time to produce
-You make one thing at a time. Choose what to produce next — you keep making it until you choose again.
-- Stew: about 1h each, 0 of 30 on hand, made 0 and sold 0 this past week — can't make now: short of Sage (need 2, have 0).
-- Water: 12 every 1h, 0 of 30 on hand, made 0 and sold 0 this past week.
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.

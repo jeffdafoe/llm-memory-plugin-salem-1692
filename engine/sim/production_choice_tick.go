@@ -6,30 +6,30 @@ import (
 	"time"
 )
 
-// production_choice_tick.go — tick-driver producer (LLM-116): the production-
-// choice producer. A multi-output crafter (the smith: skillet + nail) no longer
-// auto-produces every good in parallel; produce_tick fills only its chosen
-// ProductionFocus. That makes production depend on the crafter ticking to PICK —
-// but once it is already at its post, no other producer wakes it (shift-duty only
-// drives an actor TO work, not while there; needs/restock/social fire only on
-// their own stimulus). Without this producer an idle smith — needs met, no
-// customers — would sit unfocused and forge nothing, a regression from the old
-// silent auto-produce. This level-triggered producer wakes such a crafter so it
-// sees the "## Time to produce" cue and chooses via the produce tool.
+// production_choice_tick.go — the production-choice producer (LLM-116,
+// generalized to ALL producers in LLM-319). Production is opt-in per batch:
+// nothing is made unless the actor calls `produce`, so an idle producer at its
+// post — nothing in the works, something craftable — must occasionally be
+// GIVEN the decision or the economy starves on model forgetfulness. This
+// level-triggered producer wakes such an actor so it sees the "## Your trade"
+// scene and decides.
 //
-// LLM-DECIDED, like the restock/shift producers: it does NOT pick for the actor.
-// It stamps a WarrantKindProductionChoice warrant (high-information, so it bypasses
-// the noop-skip gate and forces the tick); the forge cue carries the options and
-// the model calls craft. LEVEL-TRIGGERED: each scan re-checks the standing
-// condition, so the warrant keeps re-firing until the crafter actually picks a
-// productive focus (or every good is at cap, at which point there's nothing to
-// make and it stops).
+// LLM-DECIDED, like the restock/shift producers: it does NOT pick for the
+// actor, and it does not even urge production — the warrant line is "your
+// thoughts turn to your trade"; the trade cue carries the situation and the
+// model draws the conclusion. Declining to produce is a legitimate outcome
+// (the whole point of LLM-319's agency), which is why the wake is PACED:
+// re-granting the same decision every scan would be the old auto-produce
+// wearing a decision costume — a weak model nagged every minute eventually
+// complies, every time. ProductionNagAt (stamped here on wake, and by
+// landProductionCycle on batch landing, whose completion warrant is itself the
+// going-idle wake) holds the re-nag off for ProductionRenagInterval.
 
-// ProductionChoiceWarrantReason is stamped when a multi-output crafter is idle at
-// its forge with a choice to make (unfocused, or its focus has hit cap) and at
-// least one good still below cap. Zero-sourced (a standing condition is not an
-// event), so DedupDiscriminator returns 0 and the per-actor WarrantedSince gate in
-// the producer prevents double-stamp. Mirrors RestockWarrantReason /
+// ProductionChoiceWarrantReason is stamped when a producer is idle at its post
+// (no ProductionActivity) with at least one good craftable right now and its
+// re-nag interval elapsed. Zero-sourced (a standing condition is not an
+// event), so DedupDiscriminator returns 0 and the per-actor WarrantedSince gate
+// in the producer prevents double-stamp. Mirrors RestockWarrantReason /
 // ShiftDutyWarrantReason — the other condition-driven, zero-sourced reasons.
 type ProductionChoiceWarrantReason struct{}
 
@@ -37,50 +37,55 @@ func (ProductionChoiceWarrantReason) isWarrantReason()           {}
 func (ProductionChoiceWarrantReason) Kind() WarrantKind          { return WarrantKindProductionChoice }
 func (ProductionChoiceWarrantReason) DedupDiscriminator() uint64 { return 0 }
 
-// shouldChooseProduction reports whether a multi-output crafter is standing at its
-// forge with a production choice worth a tick: it has more than one recipe-backed
-// produce entry, is physically inside its work structure, at least one good is
-// craftable right now (makeable, below cap, AND inputs on hand — LLM-257), and
-// either it has no focus or its current focus is no longer craftable (at cap OR
-// its inputs ran out). When nothing is craftable there is nothing to make, so it
-// is left alone. Pure read.
+// ProductionRenagInterval is how long a production-choice wake (or a landed
+// batch, whose completion beat is the same decision moment) holds off the next
+// one. The pacing that makes "no" a decision that sticks instead of one
+// re-litigated every scan. Guesstimate against cycle durations measured in
+// tens of minutes; tune live if producers over- or under-supply.
+const ProductionRenagInterval = 30 * time.Minute
+
+// shouldChooseProduction reports whether a producer is standing at its post
+// with a production decision worth a tick: it has at least one recipe-backed
+// produce entry, is physically inside its work structure, has NOTHING in the
+// works (no ProductionActivity), and at least one good is craftable right now
+// (makeable, below cap, inputs on hand — LLM-257). When nothing is craftable
+// there is nothing to decide, so it is left alone. Pure read; pacing is the
+// caller's (EvaluateProductionChoice reads ProductionNagAt).
+//
+// Since LLM-319 this fires for single- and multi-output producers alike — a
+// one-good keeper's "choice" is the go/no-go on another batch, and that
+// go/no-go is exactly the agency the redesign grants.
 func shouldChooseProduction(a *Actor, w *World) bool {
 	if a.RestockPolicy == nil {
 		return false
 	}
 	if a.WorkStructureID == "" || a.InsideStructureID != a.WorkStructureID {
-		return false // only at the forge
+		return false // only at the post
+	}
+	if a.ProductionActivity != nil {
+		return false // a batch is in the works — nothing to decide until it lands
+	}
+	if ownerStallDegraded(w, a.ID) {
+		return false // degraded = shut for refill (LLM-304) — the repair warrant owns this wake
 	}
 	produce := a.RestockPolicy.ProduceEntries()
-	if makeableProduceCount(w, produce) <= 1 {
-		return false // 0-or-1 makeable goods — no choice to make (matches produce_tick)
+	if makeableProduceCount(w, produce) < 1 {
+		return false // not a producer
 	}
-	anyCraftable := false
-	focusCraftable := false
 	for _, e := range produce {
-		if !craftableNow(w, a, e) {
-			continue // at cap, no recipe, or inputs short — not pickable now (LLM-257)
-		}
-		anyCraftable = true
-		if a.ProductionFocus == e.Item {
-			focusCraftable = true
+		if craftableNow(w, a, e) {
+			return true
 		}
 	}
-	if !anyCraftable {
-		return false // nothing makeable right now — don't wake to an impossible choice
-	}
-	// Wake when unfocused, or when the current focus can no longer be made right
-	// now (at cap, no recipe, OR its inputs ran out — LLM-257) so the crafter
-	// picks a good it can actually make instead of starving behind an unmakeable
-	// focus (the John-Ellis-frozen-behind-stew deadlock).
-	return a.ProductionFocus == "" || !focusCraftable
+	return false // nothing makeable right now — don't wake to an impossible choice
 }
 
 // EvaluateProductionChoice returns a Command that applies one pass: stamp a
-// production-choice warrant on every eligible crafter that should choose. Runs on
-// the world goroutine, so the tryStampWarrant calls are serialized. Reuses
-// restockEligible (the same agent-backed / not-resting / not-walking / not-already-
-// ticking gate the restock producer uses).
+// production-choice warrant on every eligible producer that should choose and
+// whose re-nag interval has elapsed. Runs on the world goroutine, so the
+// tryStampWarrant calls are serialized. Reuses restockEligible (the same
+// agent-backed / not-resting / not-walking / not-already-ticking gate the
+// restock producer uses).
 func EvaluateProductionChoice(now time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
@@ -89,6 +94,9 @@ func EvaluateProductionChoice(now time.Time) Command {
 				if !restockEligible(a, now) {
 					continue
 				}
+				if !a.ProductionNagAt.IsZero() && now.Sub(a.ProductionNagAt) < ProductionRenagInterval {
+					continue // decision recently granted (or a batch just landed) — let it stand
+				}
 				if !shouldChooseProduction(a, w) {
 					continue
 				}
@@ -96,6 +104,7 @@ func EvaluateProductionChoice(now time.Time) Command {
 					TriggerActorID: a.ID,
 					Reason:         ProductionChoiceWarrantReason{},
 				}, now)
+				a.ProductionNagAt = now
 				stamped++
 			}
 			return stamped, nil
@@ -104,7 +113,8 @@ func EvaluateProductionChoice(now time.Time) Command {
 }
 
 // ProductionChoiceTickerInterval — once a minute, matching RunProduceTicker /
-// RunRestockTicker / RunShiftTicker.
+// RunRestockTicker / RunShiftTicker. The scan is cheap; ProductionRenagInterval
+// is what paces the actual wakes.
 const ProductionChoiceTickerInterval = time.Minute
 
 // RunProductionChoiceTicker owns the production-choice producer goroutine: once a
