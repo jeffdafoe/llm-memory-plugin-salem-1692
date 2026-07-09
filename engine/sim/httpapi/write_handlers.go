@@ -1265,6 +1265,7 @@ func (s *Server) handleAdminObjectPromoteToStructure(w http.ResponseWriter, r *h
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	req.ObjectID = strings.TrimSpace(req.ObjectID)
 	if req.ObjectID == "" {
 		writeError(w, http.StatusBadRequest, "object_id is required")
 		return
@@ -1291,6 +1292,12 @@ func (s *Server) handleAdminObjectPromoteToStructure(w http.ResponseWriter, r *h
 		}
 		if errors.Is(err, sim.ErrInvalidDisplayName) || errors.Is(err, sim.ErrInvalidTag) {
 			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		// Object exists but isn't a root structure-category placement (a prop,
+		// nature object, or overlay) — unprocessable, not malformed.
+		if errors.Is(err, sim.ErrObjectNotPromotable) {
+			writeError(w, http.StatusUnprocessableEntity, err.Error())
 			return
 		}
 		writeError(w, http.StatusUnprocessableEntity, err.Error())

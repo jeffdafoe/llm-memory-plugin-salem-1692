@@ -35,6 +35,14 @@ import (
 // layer).
 var ErrVillageObjectIsAlreadyStructure = errors.New("village object already backs a structure")
 
+// ErrObjectNotPromotable is returned by PromoteObjectToStructure when the target
+// is not a ROOT structure-category placement — a bare prop (well, bench, sign),
+// a nature/tree object, or an overlay attached to a parent. Only a building
+// (a root structure-category asset) becomes a Structure; promoting anything else
+// would create a dead or harmful structure (e.g. a promoted refresh-source well
+// drops out of the bare-object move_to path). → 422 at the HTTP layer.
+var ErrObjectNotPromotable = errors.New("only a root structure-category placement can be promoted to a structure")
+
 // PromoteStructureResult reports the promoted structure's id, resolved display
 // name, and tags.
 type PromoteStructureResult struct {
@@ -53,10 +61,18 @@ type PromoteStructureResult struct {
 // way as SetVillageObjectDisplayName (length + control chars) so promote can't
 // introduce a name the rename route would reject.
 //
+// Only a ROOT, structure-category placement is promotable — the same invariant
+// the Godot editor applies (it auto-promotes only category=structure drops).
+// Enforcing it server-side keeps any admin/API caller from turning a
+// well/bench/overlay into a "structure": a promoted refresh-source object would
+// silently drop out of the bare-object move_to path (resolveObjectByPerceivableName
+// excludes structure-backed placements), and an overlay is never a building. A
+// non-promotable target returns ErrObjectNotPromotable.
+//
 // tags land on the Structure (forward-compat; no engine consumer today — the
 // load-bearing 'business' tag lives on the VillageObject, read there by
-// move_to's open-business logic). nil/empty is fine; each element is trimmed
-// and validated like an object tag.
+// move_to's open-business logic). nil/empty is fine; each element is trimmed,
+// validated, and de-duplicated like an object tag.
 //
 // The Structure is created with NO Rooms: a plain navigable workplace needs
 // none (an entered actor sits at InsideRoomID 0 = common/public scope). Rooms
@@ -69,6 +85,13 @@ func PromoteObjectToStructure(objectID VillageObjectID, displayName string, tags
 			if !ok {
 				return nil, ErrVillageObjectNotFound
 			}
+			// Eligibility: root (no parent) + structure-category asset. A missing
+			// asset can't be a structure-category building, so it's rejected here
+			// too (and the asset is dereferenced below for the name fallback).
+			asset, assetOK := w.Assets[obj.AssetID]
+			if !assetOK || asset == nil || asset.Category != "structure" || obj.AttachedTo != "" {
+				return nil, ErrObjectNotPromotable
+			}
 			sid := StructureID(objectID)
 			if _, exists := w.Structures[sid]; exists {
 				return nil, ErrVillageObjectIsAlreadyStructure
@@ -79,9 +102,7 @@ func PromoteObjectToStructure(objectID VillageObjectID, displayName string, tags
 				name = strings.TrimSpace(obj.DisplayName)
 			}
 			if name == "" {
-				if asset, ok := w.Assets[obj.AssetID]; ok && asset != nil {
-					name = strings.TrimSpace(asset.Name)
-				}
+				name = strings.TrimSpace(asset.Name)
 			}
 			if name == "" {
 				return nil, ErrInvalidDisplayName
@@ -92,14 +113,19 @@ func PromoteObjectToStructure(objectID VillageObjectID, displayName string, tags
 
 			// Copy tags defensively and keep the slice non-nil: the checkpoint's
 			// tags TEXT[] NOT NULL column rejects a nil slice (see
-			// CloneStructure), and validating each element here matches the
-			// object-tag route rather than letting a bad tag reach the DB.
+			// CloneStructure). Validate + de-dupe each element, matching the
+			// object-tag route rather than letting a bad/duplicate tag reach the DB.
 			cleanTags := make([]string, 0, len(tags))
+			seen := make(map[string]struct{}, len(tags))
 			for _, t := range tags {
 				t = strings.TrimSpace(t)
 				if t == "" || utf8.RuneCountInString(t) > MaxVillageObjectTagLen || containsControlChar(t) {
 					return nil, ErrInvalidTag
 				}
+				if _, dup := seen[t]; dup {
+					continue
+				}
+				seen[t] = struct{}{}
 				cleanTags = append(cleanTags, t)
 			}
 

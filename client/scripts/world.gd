@@ -1702,7 +1702,12 @@ func _promote_to_structure(object_id: String, node: Node2D) -> void:
             node.set_meta("has_interior", true)
     )
     var headers_arr = Auth.auth_headers()
-    http.request(api_base + "/api/village/admin/object/promote-to-structure", headers_arr, HTTPClient.METHOD_POST, payload)
+    var err := http.request(api_base + "/api/village/admin/object/promote-to-structure", headers_arr, HTTPClient.METHOD_POST, payload)
+    if err != OK:
+        # request() never started, so request_completed will never fire — free the
+        # node now instead of leaking it.
+        http.queue_free()
+        push_error("Failed to start promote object-to-structure request: " + str(err))
 
 ## Remove an object from the world and the server. Single chokepoint for
 ## every delete path (keyboard shortcut, sidebar Delete button, anything

@@ -922,7 +922,9 @@ func containsControlChar(s string) bool {
 // the next checkpoint. Because the structure's display_name is a non-empty
 // NOT-NULL invariant (DB CHECK + SaveSnapshot pre-pass), a cleared object name
 // ("" — a valid object state) falls the structure back to the asset catalog name
-// rather than propagating the empty string.
+// rather than propagating the empty string; if no non-empty fallback resolves (a
+// data-corrupt building with a dangling/blank asset), the clear is rejected with
+// ErrInvalidDisplayName rather than silently leaving the structure name stale.
 func SetVillageObjectDisplayName(id VillageObjectID, name string) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
@@ -937,18 +939,25 @@ func SetVillageObjectDisplayName(id VillageObjectID, name string) Command {
 
 			// Resolve the name the backing structure (if any) should carry: the
 			// object's new name, or — when cleared to "" — the asset catalog
-			// fallback, so the structure never goes empty. A dangling asset_id
-			// leaves structTarget "" and the structure name is kept unchanged.
+			// fallback, so the structure never violates its non-empty invariant.
 			st, hasStructure := w.Structures[StructureID(id)]
 			structTarget := trimmed
 			if hasStructure && structTarget == "" {
 				if asset, ok := w.Assets[obj.AssetID]; ok && asset != nil {
 					structTarget = strings.TrimSpace(asset.Name)
 				}
+				// No resolvable non-empty fallback (a dangling / blank-named
+				// asset): reject BEFORE mutating rather than silently leaving the
+				// structure name stale, which would break the "object is the
+				// source of truth" guarantee. Only reachable for a data-corrupt
+				// building — a valid asset name is NOT NULL / non-empty.
+				if structTarget == "" {
+					return nil, ErrInvalidDisplayName
+				}
 			}
 
 			objSame := obj.DisplayName == trimmed
-			structSame := !hasStructure || structTarget == "" || st.DisplayName == structTarget
+			structSame := !hasStructure || st.DisplayName == structTarget
 			if objSame && structSame {
 				return SetDisplayNameResult{ID: id, DisplayName: trimmed}, nil
 			}
@@ -960,7 +969,7 @@ func SetVillageObjectDisplayName(id VillageObjectID, name string) Command {
 					At:          time.Now().UTC(),
 				})
 			}
-			if hasStructure && structTarget != "" && st.DisplayName != structTarget {
+			if hasStructure && st.DisplayName != structTarget {
 				st.DisplayName = structTarget
 			}
 			return SetDisplayNameResult{ID: id, DisplayName: trimmed}, nil
