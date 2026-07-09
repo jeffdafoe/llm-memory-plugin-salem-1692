@@ -184,16 +184,10 @@ func ecoCycleGapClamped(warrants []WarrantMeta, s WorldSettings) time.Duration {
 // fall through to it, as does any future kind nobody classified — a new kind
 // is never slowed by accident.
 func ecoWarrantGap(k WarrantKind, s WorldSettings) time.Duration {
-	switch k {
-	// Social cadence: the self-sustaining NPC-to-NPC chatter engine and the
-	// huddle membership beats that fund greet/farewell rounds.
-	case WarrantKindNPCSpoke,
-		WarrantKindHuddleJoined,
-		WarrantKindHuddlePeerJoined,
-		WarrantKindHuddleLeft,
-		WarrantKindHuddlePeerLeft,
-		WarrantKindHuddleConcluded:
+	if isSocialCadenceWarrantKind(k) {
 		return effectiveEcoSocialGap(s)
+	}
+	switch k {
 	// Economy pacing: periodic economic housekeeping with no counterparty
 	// blocked on the answer.
 	case WarrantKindRestock,
@@ -202,12 +196,32 @@ func ecoWarrantGap(k WarrantKind, s WorldSettings) time.Duration {
 		WarrantKindStallRepair,
 		WarrantKindSeekWork:
 		return effectiveEcoEconomyGap(s)
-	// The idle backstop stops STAMPING while unwatched (EvaluateIdleBackstop),
-	// but a pre-eco cycle may still hold one — pace it like social liveness.
-	case WarrantKindIdleBackstop:
-		return effectiveEcoSocialGap(s)
 	default:
 		return 0
+	}
+}
+
+// isSocialCadenceWarrantKind reports whether k belongs to the social-cadence
+// bucket: the self-sustaining NPC-to-NPC chatter engine (npc_spoke), the huddle
+// membership beats that fund greet/farewell rounds, and the idle backstop (it
+// stops STAMPING while unwatched — EvaluateIdleBackstop — but a pre-eco cycle
+// may still hold one, so it paces like social liveness). Two consumers: the eco
+// pacing gate above, and the loop sweep's post-conclude warrant clearing
+// (LLM-333) — a cycle made ONLY of these kinds is decorative conversation beats
+// whose moment has passed once its huddle is concluded as a livelock. Every
+// commerce, survival, duty, and player-driven kind is deliberately NOT here.
+func isSocialCadenceWarrantKind(k WarrantKind) bool {
+	switch k {
+	case WarrantKindNPCSpoke,
+		WarrantKindHuddleJoined,
+		WarrantKindHuddlePeerJoined,
+		WarrantKindHuddleLeft,
+		WarrantKindHuddlePeerLeft,
+		WarrantKindHuddleConcluded,
+		WarrantKindIdleBackstop:
+		return true
+	default:
+		return false
 	}
 }
 

@@ -34,6 +34,12 @@ type UmbilicalSettingsDTO struct {
 	HuddleLoopTimeoutSeconds      int  `json:"huddle_loop_timeout_seconds"`
 	HuddleLoopRepeatPercent       int  `json:"huddle_loop_repeat_percent"`
 	HuddleLoopSweepCadenceSeconds int  `json:"huddle_loop_sweep_cadence_seconds"`
+	// HuddleLoopMaxTurns (LLM-333) is the endurance arm's no-progress turn
+	// budget — spoken lines with no completed transaction, genuine membership
+	// change, or player line before the huddle reads as stuck regardless of
+	// wording. Reported as the EFFECTIVE value (a stored 0 resolves to the
+	// default), matching the other seeded knobs.
+	HuddleLoopMaxTurns int `json:"huddle_loop_max_turns"`
 
 	// SeekWorkCoinCeiling (LLM-194) is the coin balance at/above which a workless
 	// worker stops seeking/soliciting work (settings/seek-work-ceiling writes it). Like
@@ -88,6 +94,10 @@ type UmbilicalSettingsDTO struct {
 func (s *Server) handleUmbilicalSettings(w http.ResponseWriter, r *http.Request) {
 	res, err := s.world.SendContext(r.Context(), sim.Command{Fn: func(world *sim.World) (any, error) {
 		audience := sim.AudienceActive(world, time.Now().UTC())
+		maxTurns := world.Settings.HuddleLoopMaxTurns
+		if maxTurns <= 0 {
+			maxTurns = sim.HuddleLoopMaxTurnsDefault
+		}
 		dto := UmbilicalSettingsDTO{
 			ContractVersion:               ContractVersion,
 			NeedThresholds:                make(map[string]int, len(world.Settings.NeedThresholds)),
@@ -95,6 +105,7 @@ func (s *Server) handleUmbilicalSettings(w http.ResponseWriter, r *http.Request)
 			HuddleLoopTimeoutSeconds:      int(world.Settings.HuddleLoopTimeout / time.Second),
 			HuddleLoopRepeatPercent:       world.Settings.HuddleLoopRepeatPercent,
 			HuddleLoopSweepCadenceSeconds: int(world.Settings.HuddleLoopSweepCadence / time.Second),
+			HuddleLoopMaxTurns:            maxTurns,
 			SeekWorkCoinCeiling:           world.Settings.SeekWorkCoinCeiling,
 			SeekWorkNeedYieldMargin:       world.Settings.SeekWorkNeedYieldMargin,
 			FarmUpkeepFloor:               world.Settings.FarmUpkeepFloor,

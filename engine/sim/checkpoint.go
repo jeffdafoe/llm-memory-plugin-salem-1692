@@ -81,9 +81,12 @@ type MutableWorldSettings struct {
 	// — live-tunable, persisted here each checkpoint so a live change survives
 	// restart. HuddleLoopTimeoutSeconds is the master enable (0 = sweep off). Stored
 	// in seconds to match the huddle_loop_*_seconds setting keys.
+	// HuddleLoopMaxTurns is the LLM-333 endurance arm's no-progress turn budget
+	// (0 = default, HuddleLoopMaxTurnsDefault).
 	HuddleLoopTimeoutSeconds      int
 	HuddleLoopRepeatPercent       int
 	HuddleLoopSweepCadenceSeconds int
+	HuddleLoopMaxTurns            int
 
 	// SeekWorkCoinCeiling (LLM-194) — the coin balance at/above which a workless
 	// worker stops seeking/soliciting work. Live-tunable via the umbilical, persisted
@@ -163,6 +166,7 @@ func (w *World) BuildCheckpointSnapshot() *CheckpointSnapshot {
 			HuddleLoopTimeoutSeconds:      int(w.Settings.HuddleLoopTimeout / time.Second),
 			HuddleLoopRepeatPercent:       w.Settings.HuddleLoopRepeatPercent,
 			HuddleLoopSweepCadenceSeconds: int(w.Settings.HuddleLoopSweepCadence / time.Second),
+			HuddleLoopMaxTurns:            w.Settings.HuddleLoopMaxTurns,
 			SeekWorkCoinCeiling:           w.Settings.SeekWorkCoinCeiling,
 			SeekWorkNeedYieldMargin:       w.Settings.SeekWorkNeedYieldMargin,
 			LaborProduceBoostPct:          w.Settings.LaborProduceBoostPct,

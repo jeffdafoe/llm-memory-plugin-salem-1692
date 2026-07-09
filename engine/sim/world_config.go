@@ -185,15 +185,16 @@ func SetAgentTicksPaused(paused bool) Command {
 
 // ErrInvalidHuddleLoopSetting is returned by SetHuddleLoopSettings when no knob is
 // provided, or a value is out of range (a negative timeout, a repeat_percent outside
-// 1-100, a non-positive cadence) — all → 400 at the umbilical route.
+// 1-100, a non-positive cadence or max_turns) — all → 400 at the umbilical route.
 var ErrInvalidHuddleLoopSetting = errors.New("invalid huddle loop setting")
 
 // HuddleLoopSettingsResult echoes the post-change huddle loop-sweep knobs in wire
-// units (seconds + percent).
+// units (seconds + percent + turns).
 type HuddleLoopSettingsResult struct {
 	TimeoutSeconds int
 	RepeatPercent  int
 	CadenceSeconds int
+	MaxTurns       int
 }
 
 // SetHuddleLoopSettings returns a Command that live-tunes the huddle
@@ -201,9 +202,10 @@ type HuddleLoopSettingsResult struct {
 // leave that knob unchanged) so the operator can flip the master enable or nudge a
 // single threshold; at least one must be present. Range rules: timeoutSeconds >= 0
 // (0 disables the whole sweep AND the per-tick ConversationLooping steer — the
-// master off-switch); repeatPercent in [1,100]; cadenceSeconds > 0. The MaxInt32
-// upper bound on the two second-valued knobs keeps seconds*time.Second well inside
-// int64.
+// master off-switch); repeatPercent in [1,100]; cadenceSeconds > 0; maxTurns > 0
+// (the LLM-333 endurance turn budget — it has no independent off-switch, riding
+// the master enable like the other arms). The MaxInt32 upper bound on the two
+// second-valued knobs keeps seconds*time.Second well inside int64.
 //
 // Takes effect immediately: huddleLoopEnabled (HuddleLoopTimeout > 0) is re-read
 // every sweep scan and every republish, so flipping timeout on arms the sweep + the
@@ -212,7 +214,7 @@ type HuddleLoopSettingsResult struct {
 // timer. Durability rides the periodic checkpoint (MutableWorldSettings →
 // SaveMutableSettings upserts huddle_loop_*_seconds / huddle_loop_repeat_percent
 // into the setting table), so a live change survives restart.
-func SetHuddleLoopSettings(timeoutSeconds, repeatPercent, cadenceSeconds *int) Command {
+func SetHuddleLoopSettings(timeoutSeconds, repeatPercent, cadenceSeconds, maxTurns *int) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
 			hasOne := false
@@ -234,6 +236,12 @@ func SetHuddleLoopSettings(timeoutSeconds, repeatPercent, cadenceSeconds *int) C
 					return nil, ErrInvalidHuddleLoopSetting
 				}
 			}
+			if maxTurns != nil {
+				hasOne = true
+				if *maxTurns <= 0 || *maxTurns > math.MaxInt32 {
+					return nil, ErrInvalidHuddleLoopSetting
+				}
+			}
 			if !hasOne {
 				return nil, ErrInvalidHuddleLoopSetting
 			}
@@ -246,10 +254,14 @@ func SetHuddleLoopSettings(timeoutSeconds, repeatPercent, cadenceSeconds *int) C
 			if cadenceSeconds != nil {
 				w.Settings.HuddleLoopSweepCadence = time.Duration(*cadenceSeconds) * time.Second
 			}
+			if maxTurns != nil {
+				w.Settings.HuddleLoopMaxTurns = *maxTurns
+			}
 			return HuddleLoopSettingsResult{
 				TimeoutSeconds: int(w.Settings.HuddleLoopTimeout / time.Second),
 				RepeatPercent:  w.Settings.HuddleLoopRepeatPercent,
 				CadenceSeconds: int(w.Settings.HuddleLoopSweepCadence / time.Second),
+				MaxTurns:       effectiveHuddleLoopMaxTurns(w.Settings),
 			}, nil
 		},
 	}
