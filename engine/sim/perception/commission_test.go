@@ -119,3 +119,25 @@ func TestRenderOrdersReady_MixedMakeAndDeliverable(t *testing.T) {
 		t.Errorf("the in-stock order is deliverable; instruction must surface; got:\n%s", out)
 	}
 }
+
+// TestOrderView_DeliverableNow — the shared predicate the "## Orders to deliver"
+// instruction and the deliver_order tool-advertising gate both read (LLM-338):
+// deliverable iff the good is on hand (not AwaitingMake) AND the recipient is
+// co-present (no AbsentRecipientNames).
+func TestOrderView_DeliverableNow(t *testing.T) {
+	cases := []struct {
+		name string
+		o    OrderView
+		want bool
+	}{
+		{"good on hand, recipient present", OrderView{ID: 1, Item: "nails"}, true},
+		{"unforged commission", OrderView{ID: 1, Item: "shovel", AwaitingMake: true}, false},
+		{"absent recipient", OrderView{ID: 1, Item: "stew", AbsentRecipientNames: []string{"Jefferey"}}, false},
+		{"both unforged and absent", OrderView{ID: 1, Item: "shovel", AwaitingMake: true, AbsentRecipientNames: []string{"Jefferey"}}, false},
+	}
+	for _, tc := range cases {
+		if got := tc.o.DeliverableNow(); got != tc.want {
+			t.Errorf("%s: DeliverableNow() = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

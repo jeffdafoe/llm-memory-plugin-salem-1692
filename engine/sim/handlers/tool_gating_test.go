@@ -282,27 +282,46 @@ func gatingRegistryWithDeliverOrder(t *testing.T) *Registry {
 	return r
 }
 
-// TestGateTools_DeliverOrder_AdvertisedOnlyWithReadyOrder — ZBBS-HOME-398:
-// deliver_order is advertised only to a keeper who actually has a Ready order
-// to fulfill (a pending delivery in the payload). After 397 that's a lodging
-// check-in; physical takeaway delivers at accept and never sits Ready, so a
-// keeper with no pending delivery never sees the tool — it's no longer
-// advertised every tick to every NPC.
-func TestGateTools_DeliverOrder_AdvertisedOnlyWithReadyOrder(t *testing.T) {
+// TestGateTools_DeliverOrder_AdvertisedOnlyWhenDeliverableNow — ZBBS-HOME-398 +
+// LLM-338: deliver_order is advertised only to a keeper who has a Ready order
+// deliverable RIGHT NOW (OrderView.DeliverableNow — good on hand, recipient
+// co-present), NOT merely any Ready order. An unforged commission (AwaitingMake)
+// or an absent-recipient order would bounce DeliverOrder's gate 5 / gate 6, so
+// the tool is withheld until it can be used — locking the tool to the same
+// DeliverableNow predicate the "## Orders to deliver" instruction reads (they
+// can't drift). A keeper with no pending delivery still never sees the tool.
+func TestGateTools_DeliverOrder_AdvertisedOnlyWhenDeliverableNow(t *testing.T) {
 	r := gatingRegistryWithDeliverOrder(t)
 
-	none := specNameSet(gateTools(r, perception.Payload{ActorID: "keeper"}, nil))
-	if none[deliverOrderToolName] != 0 {
-		t.Errorf("deliver_order advertised with no pending delivery; count %d", none[deliverOrderToolName])
+	adForOrders := func(orders []perception.OrderView) int {
+		p := perception.Payload{ActorID: "keeper", PendingDeliveriesFromMe: orders}
+		return specNameSet(gateTools(r, p, nil))[deliverOrderToolName]
 	}
 
-	withOrder := perception.Payload{
-		ActorID:                 "keeper",
-		PendingDeliveriesFromMe: []perception.OrderView{{ID: 1, Item: "nights_stay", Qty: 1}},
+	// No pending delivery: never advertised.
+	if got := adForOrders(nil); got != 0 {
+		t.Errorf("deliver_order advertised with no pending delivery; count %d", got)
 	}
-	got := specNameSet(gateTools(r, withOrder, nil))
-	if got[deliverOrderToolName] != 1 {
-		t.Errorf("deliver_order should be advertised when a Ready order is pending; count %d", got[deliverOrderToolName])
+	// A deliverable order (good on hand, recipient present): advertised.
+	if got := adForOrders([]perception.OrderView{{ID: 1, Item: "nights_stay", Qty: 1}}); got != 1 {
+		t.Errorf("deliver_order should be advertised when a deliverable order is pending; count %d", got)
+	}
+	// An unforged commission (AwaitingMake) is the ONLY order: withheld.
+	if got := adForOrders([]perception.OrderView{{ID: 1, Item: "shovel", Qty: 1, AwaitingMake: true}}); got != 0 {
+		t.Errorf("deliver_order advertised for an unforged commission (gate 5 would bounce); count %d", got)
+	}
+	// An absent-recipient order is the ONLY order: withheld.
+	if got := adForOrders([]perception.OrderView{{ID: 1, Item: "stew", Qty: 1, AbsentRecipientNames: []string{"Jefferey"}}}); got != 0 {
+		t.Errorf("deliver_order advertised for an absent-recipient order (gate 6 would bounce); count %d", got)
+	}
+	// Mixed — one unforged commission + one deliverable order: advertised
+	// (there IS something to hand over).
+	mixed := []perception.OrderView{
+		{ID: 1, Item: "shovel", Qty: 1, AwaitingMake: true},
+		{ID: 2, Item: "nails", Qty: 5},
+	}
+	if got := adForOrders(mixed); got != 1 {
+		t.Errorf("deliver_order should be advertised when at least one order is deliverable now; count %d", got)
 	}
 }
 
