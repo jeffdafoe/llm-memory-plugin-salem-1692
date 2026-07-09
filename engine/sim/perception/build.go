@@ -2181,6 +2181,25 @@ func buildEveningLeisure(snap *sim.Snapshot, a *sim.ActorSnapshot, anchors *Anch
 		(a.MoveDestStructureID == venueID || a.MoveDestStructureID == nightID) {
 		return nil
 	}
+	// LLM-335: a keeper standing at its post with a batch in the works is pinned
+	// there — under the LLM-319 pause model production only advances while it stays
+	// inside its work structure, and the standing "you are making a batch of X — it
+	// only moves along while you're at your post" line renders alongside. Handed the
+	// tavern invitation on the same tick, the scene pulls the keeper two ways at once
+	// (the pester that surfaced live: nagged to the tavern AND to stay for the cheese).
+	// Yield to a quiet diegetic hold — the batch still wants their eye — and let the
+	// invitation return once nothing is in the works. Checked here, past all the
+	// invitation's own clear conditions, so the hold appears in exactly the states the
+	// invitation would have (in-window, awake, affordable, a venue placed) and nowhere
+	// new. AT-POST only: a keeper that wandered off with a paused batch is free to pass
+	// the evening as it likes. Engine computes the pin; render picks ONE steer.
+	atPost := a.WorkStructureID != "" && a.InsideStructureID == a.WorkStructureID
+	if atPost && a.ProductionItem != "" {
+		return &EveningLeisureView{
+			BatchHold:      true,
+			BatchItemLabel: itemDisplayLabel(snap, a.ProductionItem),
+		}
+	}
 	return &EveningLeisureView{
 		VenueID:    venueID,
 		VenueLabel: venueLabel,

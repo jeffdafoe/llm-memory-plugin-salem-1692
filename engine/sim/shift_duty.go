@@ -389,6 +389,26 @@ func shiftDutyTarget(w *World, a *Actor, nowMinute int, now time.Time) (target S
 		if a.OpenUntil != nil && a.OpenUntil.After(now) && !atPeakTiredness(w, a) {
 			return "", false, false
 		}
+		// A batch in the works pins a keeper to its post: under the LLM-319 pause
+		// model production only advances while the actor stays inside its work
+		// structure, so the routine wind-down go-home duty would drag it off a batch
+		// it must babysit and — worse — re-litigate that same "no, the batch needs me"
+		// decision every minute of the shift/batch overlap (a real LLM turn each time,
+		// the LLM-335 pester). Leave a mid-batch keeper at its post alone. Safe to
+		// suppress: the batch is finite and its landing emits a guaranteed self-wake
+		// (ProductionCycleCompleted → production-done warrant), on which the now-idle
+		// keeper re-decides tavern/home/bed with fresh eyes; if it then lingers with
+		// nothing in the works the next scan resumes the duty — bounded. AT-POST only
+		// (atWork): a keeper that wandered off mid-batch has paused it (a paused batch
+		// waits indefinitely by design), so the nag must stay live to send it home.
+		// Yields to the red-tiredness rest floor, though — an exhausted keeper is still
+		// marched home mechanically (classifyAgentDuty), pausing the batch to resume
+		// after sleep, the same "needs trump duty" layering the OpenUntil commit window
+		// and the to-work red-need gate honor. Mirrors the shouldChooseProduction idiom
+		// (production_choice_tick.go:65-67).
+		if atWork && a.ProductionActivity != nil && !atRedTiredness(w, a) {
+			return "", false, false
+		}
 		// Heading to the wind-down target is NOT need-suppressed; resting is how an
 		// NPC recovers. But a mid-meal NPC is left alone (same "busy, leave it
 		// alone" class as the rest suppressors above): while an item-source dwell

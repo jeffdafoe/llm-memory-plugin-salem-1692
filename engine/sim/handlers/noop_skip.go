@@ -124,7 +124,15 @@ func shouldSkipNoop(payload perception.Payload, thresholds sim.NeedThresholds, w
 	// (HOME-441). Without this an evening agent with only idle-backstop warrants
 	// would skip-lock and never see the invitation. It self-extinguishes when the
 	// agent commits (the cue clears at the tavern or home).
-	if (payload.DutySteer != nil && !payload.DutySteer.AtPost) || payload.DutyPending || payload.EveningLeisure != nil {
+	//
+	// LLM-335: the BatchHold variant is EXEMPT — like the at-post steer above, it is
+	// render-only, not a reason to force a tick. A keeper mid-batch at its post is
+	// pinned there and has nothing to act on, so its idle-backstop no-op ticks should
+	// still skip (that constant deliberation is the pester the ticket removes). The
+	// batch's own landing wake is a high-info ProductionDone warrant, so it keeps the
+	// gate open on its own the tick the batch finishes — this exemption can't strand it.
+	if (payload.DutySteer != nil && !payload.DutySteer.AtPost) || payload.DutyPending ||
+		(payload.EveningLeisure != nil && !payload.EveningLeisure.BatchHold) {
 		return false
 	}
 	return true

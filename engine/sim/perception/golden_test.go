@@ -723,6 +723,20 @@ var perceptionScenarios = []perceptionScenario{
 		build: homedWorkerEveningTavernOpen,
 	},
 	{
+		name: "homed_worker_evening_batch_holds_leisure",
+		summary: "LLM-335: the SAME homed day-shift agent and evening as homed_worker_evening_tavern_open (Ezekiel at his " +
+			"forge at 20:30, inside the [shift-end, 22:00) window, flush enough for a drink), but with a Cheese batch in the " +
+			"works AT his post. The batch pins him there (LLM-319 pause model), so the evening 'tavern's open' invitation YIELDS " +
+			"to a quiet diegetic hold ('… the batch of Cheese still wants a few more minutes of your eye …') rather than pulling " +
+			"him two ways at once — the live pester that surfaced (nagged to the tavern AND to stay for the cheese). The golden " +
+			"pins the hold line PRESENT, the tavern invitation ('the tavern is open of an evening') and the off-shift go-home " +
+			"WIND-DOWN steer ('Your working hours are over …') BOTH ABSENT, and the standing 'You are making a batch of Cheese …' " +
+			"self-state line still rendering. The at-post anchors line ('you can head home whenever you wish') is a separate, " +
+			"permissive home-location reference — NOT a wind-down steer — and correctly stays: it names no pressure and doesn't " +
+			"pull against the hold. Mirror of homed_worker_evening_tavern_open (same evening, no batch → the invitation).",
+		build: homedWorkerEveningBatchHoldsLeisure,
+	},
+	{
 		name: "homed_worker_evening_too_broke_for_tavern",
 		summary: "A homed day-shift agent (Ezekiel, 07:00–19:00) off-shift at 20:30 — inside the evening window — but " +
 			"holding only 2 coins, below the tavern's cheapest drink (ale, retail 3, sold by the co-located keeper). LLM-205: " +
@@ -9733,6 +9747,61 @@ func homedWorkerEveningTavernOpen() (*sim.Snapshot, sim.ActorID, []sim.WarrantMe
 		},
 		// The tavern venue: a VillageObject tagged "tavern" bridged to the
 		// same-id Structure (the shared-identity bridge nearestTaggedVenue reads).
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			sim.VillageObjectID(tavern): {Tags: []string{sim.VisitorTagTavern}, Pos: sim.WorldPos{X: 0, Y: 0}},
+		},
+	}
+	return snap, ezekielID, nil
+}
+
+// homedWorkerEveningBatchHoldsLeisure is the LLM-335 case: the SAME homed day-shift
+// agent and evening as homedWorkerEveningTavernOpen (Ezekiel at his forge at 20:30, in
+// the [shift-end, 22:00) window, affordably), but with a Cheese batch in the works at
+// his post. The batch pins him there (LLM-319 pause model), so buildEveningLeisure
+// returns the BatchHold variant: the "tavern's open" invitation yields to a quiet hold
+// and the standing "You are making a batch of Cheese …" line still renders, so the scene
+// speaks with ONE voice (stay a little longer) instead of nagging him to the tavern AND
+// to mind the cheese. No RestockPolicy → the "## Your trade" cue is out of scope here
+// (it is already gone mid-batch anyway); the evening hold is the point.
+func homedWorkerEveningBatchHoldsLeisure() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		ezekielID = sim.ActorID("ezekiel")
+		forge     = sim.StructureID("blacksmith")
+		home      = sim.StructureID("crane_cottage")
+		tavern    = sim.StructureID("tavern")
+	)
+	start, end := 420, 1140 // 07:00–19:00
+	now := 1230             // 20:30 — off shift, inside the evening window
+	ezekiel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Ezekiel Crane",
+		Role:              "blacksmith",
+		State:             sim.StateIdle,
+		WorkStructureID:   forge,
+		InsideStructureID: forge,
+		HomeStructureID:   home,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             12,
+		Needs:             map[sim.NeedKey]int{},
+		// A produce call opened this cycle (LLM-319): cheese in the works at the post.
+		ProductionItem:             "cheese",
+		ProductionBatchQty:         1,
+		ProductionRemainingSeconds: 600, // ~10 minutes of base-rate work left
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay:     &now,
+		LodgingBedtimeMinute: 1320, // 22:00 — the evening window's close
+		NeedThresholds:       sim.NeedThresholds{},
+		Actors:               map[sim.ActorID]*sim.ActorSnapshot{ezekielID: ezekiel},
+		Structures: map[sim.StructureID]*sim.Structure{
+			forge:  plainStructure(forge, "Blacksmith"),
+			home:   plainStructure(home, "Crane Cottage"),
+			tavern: plainStructure(tavern, "the Tavern"),
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{"cheese": cheeseKind()},
+		// The tavern venue: a VillageObject tagged "tavern" bridged to the same-id
+		// Structure (the shared-identity bridge nearestTaggedVenue reads).
 		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
 			sim.VillageObjectID(tavern): {Tags: []string{sim.VisitorTagTavern}, Pos: sim.WorldPos{X: 0, Y: 0}},
 		},
