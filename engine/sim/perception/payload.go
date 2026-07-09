@@ -1233,6 +1233,13 @@ type SurroundingsView struct {
 	// (the subject actor is excluded), sorted by ID for determinism.
 	// Each carries acquaintance info so Render can pick name vs.
 	// descriptor without re-reading the snapshot.
+	//
+	// Populated ONLY when the actor is in a huddle (CurrentHuddleID != ""),
+	// empty otherwise — the mutually exclusive counterpart of CoPresent below
+	// (Build fills exactly one of the two). Gates that key on huddle membership
+	// rely on this: non-empty ⇒ the actor is huddled with a resolvable peer
+	// (e.g. the pay-verb tool gate, LLM-329 — both pay verbs reject a
+	// non-huddled buyer at the substrate).
 	HuddleMembers []HuddleMember
 
 	// CoPresent are the other conversational actors within earshot when the

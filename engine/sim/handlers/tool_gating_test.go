@@ -33,13 +33,17 @@ func specNameSet(specs []llm.ToolSpec) map[string]int {
 	return counts
 }
 
-// speakAudience is a SurroundingsView carrying one awake co-present actor, so the
-// LLM-106 speak gate keeps speak advertised. Used by gating tests that assert
-// speak presence but are not about the speak gate itself (a pending pay offer
-// implies the buyer is co-present anyway — pay_with_item_reactor stamps the offer
-// only when buyer and seller share a huddle).
+// speakAudience is a SurroundingsView carrying one awake huddle peer — enough to
+// satisfy BOTH the LLM-106 speak gate (HasAudience) and the LLM-329 pay-verb gate
+// (HuddleMembers non-empty). Used by gating tests that assert commerce/speak tool
+// presence but are not about the co-presence gates themselves. A huddle peer, not a
+// bare CoPresent walk-in, is the realistic co-presence for these scenarios: the pay
+// substrate resolves against huddle peers, and pay_with_item_reactor stamps an
+// offer only when buyer and seller share a huddle — so a pending offer implies the
+// parties are huddled. (The dedicated speak gate test builds its own CoPresent
+// fixture to cover the not-yet-huddled walk-in path.)
 func speakAudience() perception.SurroundingsView {
-	return perception.SurroundingsView{CoPresent: []perception.HuddleMember{{ID: "bystander"}}}
+	return perception.SurroundingsView{HuddleMembers: []perception.HuddleMember{{ID: "peer"}}}
 }
 
 // payOfferPayload builds a payload whose standing ledger view carries one
@@ -470,6 +474,66 @@ func TestGateTools_Speak_DroppedWhenNoAudience(t *testing.T) {
 	}, nil))
 	if restingOnly[speakToolName] != 0 {
 		t.Errorf("speak advertised with only a resting actor present (not addressable); count %d", restingOnly[speakToolName])
+	}
+}
+
+// gatingRegistryWithPay extends the gating test registry with the bare-coin pay
+// tool. RegisterPayWithItemFamily registers pay_with_item but NOT bare pay (that's
+// RegisterPay), so the LLM-329 test registers it to exercise both pay verbs.
+func gatingRegistryWithPay(t *testing.T) *Registry {
+	t.Helper()
+	r := gatingTestRegistry(t)
+	if err := RegisterPay(r); err != nil {
+		t.Fatalf("RegisterPay: %v", err)
+	}
+	return r
+}
+
+// TestGateTools_PayVerbs_DroppedWithoutHuddlePeer — LLM-329: pay / pay_with_item
+// are advertised only when the actor has a co-present huddle peer to transact with
+// (Surroundings.HuddleMembers non-empty). Both hard-require CurrentHuddleID != ""
+// at the substrate — pay resolves the recipient among huddle peers, pay_with_item
+// (offer and quote fast-path alike) rejects a non-huddled buyer — so a not-huddled
+// actor cued to restock/settle storms a doomed call across ticks (Hannah Boggs:
+// pay_with_item at an absent seller 23× / 4 min). The pay analog of the speak
+// audience gate, narrowed to the huddle subset: a co-present but NOT-yet-huddled
+// walk-in (CoPresent) can be greeted but not paid — speak stays, the pay verbs do
+// not — because the buyer must form the conversation before a payment can resolve.
+func TestGateTools_PayVerbs_DroppedWithoutHuddlePeer(t *testing.T) {
+	r := gatingRegistryWithPay(t)
+
+	// Alone with no audience at all → both pay verbs dropped.
+	alone := specNameSet(gateTools(r, perception.Payload{ActorID: "keeper"}, nil))
+	for _, v := range []string{"pay", "pay_with_item"} {
+		if alone[v] != 0 {
+			t.Errorf("%q advertised to a lone actor with no huddle peer; count %d", v, alone[v])
+		}
+	}
+
+	// A co-present but not-yet-huddled walk-in (CoPresent) enables speak (greet the
+	// newcomer) but NOT the pay verbs — the buyer isn't in a huddle yet.
+	walkin := specNameSet(gateTools(r, perception.Payload{
+		ActorID:      "keeper",
+		Surroundings: perception.SurroundingsView{CoPresent: []perception.HuddleMember{{ID: "customer"}}},
+	}, nil))
+	for _, v := range []string{"pay", "pay_with_item"} {
+		if walkin[v] != 0 {
+			t.Errorf("%q advertised with only a not-yet-huddled walk-in present; count %d", v, walkin[v])
+		}
+	}
+	if walkin["speak"] != 1 {
+		t.Errorf("speak should stay advertised to greet a co-present walk-in; count %d", walkin["speak"])
+	}
+
+	// In a huddle with a peer → both pay verbs advertised (a resolvable co-present party).
+	huddled := specNameSet(gateTools(r, perception.Payload{
+		ActorID:      "keeper",
+		Surroundings: perception.SurroundingsView{HuddleMembers: []perception.HuddleMember{{ID: "peer"}}},
+	}, nil))
+	for _, v := range []string{"pay", "pay_with_item"} {
+		if huddled[v] != 1 {
+			t.Errorf("%q should be advertised to a huddled actor with a co-present peer; count %d", v, huddled[v])
+		}
 	}
 }
 
