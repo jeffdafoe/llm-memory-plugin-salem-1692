@@ -214,7 +214,7 @@ func TestBuildTradeValue_ResoldGoodCostBasis(t *testing.T) {
 	renderTradeValue(&b, v)
 	out := b.String()
 	// LLM-292: the cost clause carries its stake for a resold good.
-	if !strings.Contains(out, "cheese: 3 to 6 coins each; you have lately paid about 2 coins each for it — selling below what you paid loses you coin.") {
+	if !strings.Contains(out, "cheese: 3 to 6 coins each; you have lately paid about 2 coins each for it — selling below your costs loses you coin.") {
 		t.Errorf("missing cost-basis clause:\n%s", out)
 	}
 	if strings.Contains(out, "sold for") {
@@ -253,8 +253,54 @@ func TestBuildTradeValue_ResoldGoodBothClauses(t *testing.T) {
 	var b strings.Builder
 	renderTradeValue(&b, v)
 	// LLM-292: the stake trails BOTH clauses, commenting the paid/sold juxtaposition.
-	if !strings.Contains(b.String(), "you have lately paid about 2 coins each for it; of late you have sold for about 5 coins each — selling below what you paid loses you coin.") {
+	if !strings.Contains(b.String(), "you have lately paid about 2 coins each for it; of late you have sold for about 5 coins each — selling below your costs loses you coin.") {
 		t.Errorf("want paid-then-sold clauses in order:\n%s", b.String())
+	}
+	// LLM-332: a healthy markup (sold 5 > paid 2) is NOT underwater — the two-lever
+	// hint must NOT append. The trailing "." in the assertion above already fails if
+	// it does; assert the negative explicitly too.
+	if strings.Contains(b.String(), "negotiate lower costs or raise your price") {
+		t.Errorf("healthy markup should not get the underwater lever hint:\n%s", b.String())
+	}
+}
+
+// TestBuildTradeValue_ResoldGoodUnderwater: a resold good whose realized sale price sits
+// BELOW its realized buy cost (RecentUnit < PaidUnit) is demonstrably underwater, so
+// render escalates past the bare caution to name the two levers a merchant holds — buy
+// cheaper or charge more (LLM-332). The live case that motivated it: Josiah the
+// distributor's milk, bought ~2, sold ~1, which he rationally cut rather than carry at a
+// loss. Buy 8/4 = 2, sale 4/4 = 1.
+func TestBuildTradeValue_ResoldGoodUnderwater(t *testing.T) {
+	subj := &sim.ActorSnapshot{RestockPolicy: buyPolicy("milk", 10)}
+	published := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	buys := sim.NewRingBuffer[sim.PriceObservation](4)
+	buys.Push(sim.PriceObservation{BuyerID: "josiah", Amount: 8, Qty: 4, Consumers: 1, At: published.Add(-24 * time.Hour)})
+	sales := sim.NewRingBuffer[sim.PriceObservation](4)
+	sales.Push(sim.PriceObservation{BuyerID: "martha", Amount: 4, Qty: 4, Consumers: 1, At: published.Add(-12 * time.Hour)})
+	snap := &sim.Snapshot{
+		PublishedAt: published,
+		Actors:      map[sim.ActorID]*sim.ActorSnapshot{"josiah": subj},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"milk": {OutputItem: "milk", WholesalePrice: 1, RetailPrice: 2},
+		},
+		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+			{SellerID: "ellis_farm", Item: "milk"}: buys,  // josiah as buyer (cost)
+			{SellerID: "josiah", Item: "milk"}:     sales, // josiah as seller (realized)
+		},
+	}
+	v := buildTradeValue(snap, "josiah", subj, true)
+	if v == nil || len(v.Items) != 1 {
+		t.Fatalf("want 1 item, got %+v", v)
+	}
+	if got := v.Items[0]; got.PaidUnit != 2 || got.RecentUnit != 1 {
+		t.Fatalf("want PaidUnit=2 RecentUnit=1, got %+v", got)
+	}
+	var b strings.Builder
+	renderTradeValue(&b, v)
+	out := b.String()
+	// LLM-332: underwater → the bare caution gains the two-lever hint.
+	if !strings.Contains(out, "of late you have sold for about 1 coin each — selling below your costs loses you coin; you may need to negotiate lower costs or raise your price.") {
+		t.Errorf("want underwater two-lever hint:\n%s", out)
 	}
 }
 

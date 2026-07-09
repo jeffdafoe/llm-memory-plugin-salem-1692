@@ -418,8 +418,21 @@ func renderTradeValue(b *strings.Builder, v *TradeValueView) {
 		// clause below deliberately stays a directive-free fact (LLM-227), because a
 		// producer may run a loss-leader; a reseller selling below its own cost is
 		// never that, just a leak.
+		//
+		// LLM-332: when the good is DEMONSTRABLY underwater — a realized sale price
+		// below the realized buy cost (RecentUnit < PaidUnit) — escalate from the bare
+		// caution to the two levers a merchant actually holds: buy cheaper or charge
+		// more. Live case: Josiah the distributor cut milk (paid ~2, sold ~1, −51 coins
+		// over the week) as a rational loss-cut rather than carry a losing line, which
+		// starved the stew chain downstream. The caution alone gave him no path back to
+		// margin; naming the levers does. Advisory ("you may need to"), not a number to
+		// anchor haggling on — this reseller-leak case is exactly the exception the
+		// block above carves out of LLM-227's no-directive rule.
 		if it.PaidUnit > 0 {
-			clauses += " — selling below what you paid loses you coin"
+			clauses += " — selling below your costs loses you coin"
+			if it.RecentUnit > 0 && it.RecentUnit < it.PaidUnit {
+				clauses += "; you may need to negotiate lower costs or raise your price"
+			}
 		}
 		// A produced good's cost of goods (LLM-226). All arithmetic is done HERE —
 		// the model gets a per-unit phrase to compare against its price, never a
