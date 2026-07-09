@@ -41,9 +41,18 @@ type consumeObjectSpec struct {
 }
 
 func buildConsumeTestWorld(t *testing.T, actors []consumeActorSpec, objects []consumeObjectSpec) (*sim.World, func()) {
+	return buildConsumeTestWorldItems(t, actors, objects, mem.SeedItemKinds())
+}
+
+// buildConsumeTestWorldItems is buildConsumeTestWorld with an explicit item
+// catalog, for tests that need a kind the default seed doesn't carry (LLM-318:
+// a drink whose PRIMARY eased need is hunger, to prove the consume verb follows
+// the item category rather than the need). The default caller passes
+// mem.SeedItemKinds().
+func buildConsumeTestWorldItems(t *testing.T, actors []consumeActorSpec, objects []consumeObjectSpec, items map[sim.ItemKind]*sim.ItemKindDef) (*sim.World, func()) {
 	t.Helper()
 	repo, handles := mem.NewRepository()
-	handles.ItemKinds.Seed(mem.SeedItemKinds())
+	handles.ItemKinds.Seed(items)
 
 	actorSeed := make(map[sim.ActorID]*sim.Actor, len(actors))
 	for _, s := range actors {
@@ -248,6 +257,53 @@ func TestConsume_QtyMultiplier(t *testing.T) {
 	}
 	if got := view.Needs["thirst"]; got != 0 {
 		t.Errorf("hannah.Needs[thirst] post-consume = %d, want 0 (clamp)", got)
+	}
+}
+
+// TestConsume_DrinkEasingHunger_VerbFromCategory — LLM-318. A belly-filling ale
+// whose PRIMARY eased need is hunger still consumes as a "drink": the real
+// Consume path populates ConsumeResult.Verb from the item's category via
+// ConsumeVerb(def), independent of SatisfiesNeed. Proves the end-to-end wiring,
+// where the handler test only proves the renderer honors a hand-set Verb. Fully
+// sates hunger so SatisfiesNeed=hunger and FeltAfter="" — the exact state the
+// consume suffix voices as "Your hunger is met — drink no more now".
+func TestConsume_DrinkEasingHunger_VerbFromCategory(t *testing.T) {
+	items := mem.SeedItemKinds()
+	items["ale"] = &sim.ItemKindDef{
+		Name:         "ale",
+		DisplayLabel: "Ale",
+		Category:     sim.ItemCategoryDrink,
+		// Hunger primary (> thirst) so the need-keyed verb would have said "eat".
+		Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 6}, {Attribute: "thirst", Immediate: 2}},
+	}
+	w, stop := buildConsumeTestWorldItems(t,
+		[]consumeActorSpec{{
+			id:          "hannah",
+			displayName: "Hannah",
+			inventory:   map[sim.ItemKind]int{"ale": 1},
+			needs:       map[sim.NeedKey]int{"hunger": 6, "thirst": 0}, // ale zeroes hunger
+		}},
+		nil,
+		items,
+	)
+	defer stop()
+
+	res, err := w.Send(sim.Consume("hannah", "ale", 1, time.Now().UTC()))
+	if err != nil {
+		t.Fatalf("Consume: %v", err)
+	}
+	cr, ok := res.(sim.ConsumeResult)
+	if !ok {
+		t.Fatalf("Consume result type = %T, want sim.ConsumeResult", res)
+	}
+	if cr.SatisfiesNeed != "hunger" {
+		t.Fatalf("SatisfiesNeed = %q, want hunger (fixture makes hunger primary)", cr.SatisfiesNeed)
+	}
+	if cr.FeltAfter != "" {
+		t.Errorf("FeltAfter = %q, want empty (hunger fully sated)", cr.FeltAfter)
+	}
+	if cr.Verb != "drink" {
+		t.Errorf("ConsumeResult.Verb = %q, want drink (ale is a drink, though it eases hunger)", cr.Verb)
 	}
 }
 
