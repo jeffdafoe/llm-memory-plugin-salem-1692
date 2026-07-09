@@ -346,10 +346,13 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 
 	// Eco mode (LLM-313). ON by default — unset seeds enabled with the default gaps;
 	// an explicit false/0 sticks (eco_enabled false kills the whole feature; a zero
-	// gap disables that bucket's throttle individually).
+	// gap disables that bucket's throttle individually). The conversation arc
+	// (LLM-334) follows the same posture: unset seeds the default, explicit 0
+	// disables the eco-conclude sweep.
 	s.EcoEnabled = parseBoolSetting(values, "eco_enabled", true)
 	s.EcoSocialGap = parseDurationSetting(values, "eco_social_gap_seconds", sim.DefaultEcoSocialGap)
 	s.EcoEconomyGap = parseDurationSetting(values, "eco_economy_gap_seconds", sim.DefaultEcoEconomyGap)
+	s.EcoConversationMax = parseDurationSetting(values, "eco_conversation_max_seconds", sim.DefaultEcoConversationMax)
 
 	// Cross-huddle conversation continuity (LLM-170). ON by default — the ring
 	// carry-over is pure perception legibility; the loop-state carry is inert
@@ -601,6 +604,7 @@ func (r *EnvironmentRepo) SaveMutableSettings(ctx context.Context, tx sim.Tx, ms
 		{"eco_enabled", strconv.FormatBool(ms.EcoEnabled)},
 		{"eco_social_gap_seconds", strconv.Itoa(ms.EcoSocialGapSeconds)},
 		{"eco_economy_gap_seconds", strconv.Itoa(ms.EcoEconomyGapSeconds)},
+		{"eco_conversation_max_seconds", strconv.Itoa(ms.EcoConversationMaxSeconds)},
 	}
 	for _, row := range rows {
 		if _, err := tx.Exec(ctx, upsertSettingSQL, row.key, row.val); err != nil {

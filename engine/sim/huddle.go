@@ -110,6 +110,19 @@ type Huddle struct {
 	// carried across same-clique re-formation by the LLM-170 carry-over so
 	// churn can't evade the arm.
 	TurnsSinceProgress int
+
+	// EcoUnwatchedSince marks when the eco-conclude sweep (LLM-334) first saw
+	// this huddle with eco engaged (EcoEnabled AND no fresh player presence)
+	// and no live commerce. Once the stamp is older than the eco conversation
+	// arc (eco_conversation_max_seconds) the sweep silently concludes the
+	// huddle — an unwatched conversation gets a bounded scene, not an
+	// indefinite meter (eco's pacing can slow beats but npc_spoke re-stamps
+	// every reply, so only ending the scene reduces total calls). nil while
+	// watched, while the huddle carries live commerce (the sweep re-stamps to
+	// now, restarting the arc when the deal settles), or when eco disengages.
+	// In-memory only, not checkpointed; NOT carried by the LLM-170 carry-over
+	// — a re-formed huddle earns a fresh arc from the sweep's next pass.
+	EcoUnwatchedSince *time.Time
 }
 
 // Utterance is one spoken line recorded in a Huddle's RecentUtterances ring.
@@ -151,6 +164,10 @@ func CloneHuddle(h *Huddle) *Huddle {
 	if h.LoopingSince != nil {
 		t := *h.LoopingSince
 		cp.LoopingSince = &t
+	}
+	if h.EcoUnwatchedSince != nil {
+		t := *h.EcoUnwatchedSince
+		cp.EcoUnwatchedSince = &t
 	}
 	// Utterance is a pure value type (no pointers/maps), so a slice copy fully
 	// isolates the published snapshot from later world-goroutine appends.

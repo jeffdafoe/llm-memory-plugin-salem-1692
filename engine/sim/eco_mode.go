@@ -62,6 +62,19 @@ const (
 	// cycle while unwatched. Mild: restock/production/upkeep decisions land
 	// within half a minute of their trigger instead of seconds.
 	DefaultEcoEconomyGap = 30 * time.Second
+
+	// DefaultEcoConversationMax is the fallback eco conversation arc (LLM-334):
+	// how long an unwatched huddle may run before the eco-conclude sweep ends
+	// the scene. The eco social gap bounds a conversation's RATE, but npc_spoke
+	// re-stamps on every reply, so its total call count is turn-bound — live
+	// 2026-07-08 marathons ran 54-143 minutes at exactly the eco cadence (110
+	// spokes for one pair) and ended only on schedule events. 3 minutes ≈ 3-6
+	// paced beats: the scene happens, memories form, then everyone goes quiet
+	// until something real (a schedule move, a greet, a player) starts a new
+	// one. Matches the loop sweep's live timeout scale. Tunable via
+	// eco_conversation_max_seconds; 0 disables the sweep (meter-forever, the
+	// pre-LLM-334 behavior).
+	DefaultEcoConversationMax = 3 * time.Minute
 )
 
 // AudienceActive reports whether any player character has a fresh presence
@@ -111,6 +124,17 @@ func effectiveEcoEconomyGap(s WorldSettings) time.Duration {
 		return DefaultEcoEconomyGap
 	}
 	return s.EcoEconomyGap
+}
+
+// effectiveEcoConversationMax returns the configured eco conversation arc
+// (LLM-334), falling back to DefaultEcoConversationMax when unset. Same
+// convention as the gaps: negative = unset (parse seeds the default, so this
+// is belt-and-braces), zero = the eco-conclude sweep is off.
+func effectiveEcoConversationMax(s WorldSettings) time.Duration {
+	if s.EcoConversationMax < 0 {
+		return DefaultEcoConversationMax
+	}
+	return s.EcoConversationMax
 }
 
 // effectiveMaxWarrantAge is the live warrant stale horizon — the same
@@ -219,6 +243,28 @@ func isSocialCadenceWarrantKind(k WarrantKind) bool {
 		WarrantKindHuddlePeerLeft,
 		WarrantKindHuddleConcluded,
 		WarrantKindIdleBackstop:
+		return true
+	default:
+		return false
+	}
+}
+
+// isCommerceCommitmentWarrantKind reports whether k signals a counterparty
+// blocked on this actor's answer — the always-full-speed commerce kinds from
+// ecoWarrantGap's default bucket. The eco-conclude sweep (LLM-334) treats a
+// huddle whose member holds one as commerce-carrying and restarts its arc
+// instead of concluding it: nothing may strand a sale mid-flight. Deliberately
+// narrower than "not social" — a red need or a duty beat does not hold a
+// conversation open, only a live deal does.
+func isCommerceCommitmentWarrantKind(k WarrantKind) bool {
+	switch k {
+	case WarrantKindPayOffer,
+		WarrantKindPaid,
+		WarrantKindPayResolved,
+		WarrantKindSceneQuoteTargeted,
+		WarrantKindLaborOffer,
+		WarrantKindServeHandover,
+		WarrantKindStallRepairHired:
 		return true
 	default:
 		return false

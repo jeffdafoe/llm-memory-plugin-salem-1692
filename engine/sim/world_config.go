@@ -417,25 +417,30 @@ var ErrInvalidEcoModeSetting = errors.New("invalid eco mode setting")
 // throttles are engaged at this instant (enabled AND no fresh player presence)
 // so the operator sees cause and effect in one response.
 type EcoModeSettingsResult struct {
-	Enabled           bool
-	SocialGapSeconds  int
-	EconomyGapSeconds int
-	AudienceActive    bool
-	Engaged           bool
+	Enabled                bool
+	SocialGapSeconds       int
+	EconomyGapSeconds      int
+	ConversationMaxSeconds int
+	AudienceActive         bool
+	Engaged                bool
 }
 
 // SetEcoMode returns a Command that live-tunes eco mode (LLM-313): the master
 // switch and the per-bucket pacing floors the reactor applies to social/economy
-// warrant cycles while no player is present. All fields optional but at least
-// one must be supplied (nil = leave unchanged); gaps are seconds and must be
-// >= 0 (0 disables that bucket's throttle; eco_enabled=false kills the whole
-// feature). Takes effect on the next reactor scan — the evaluator reads
-// w.Settings each pass — AND persists on the next checkpoint via
-// MutableWorldSettings, so a live change survives restart.
-func SetEcoMode(enabled *bool, socialGapSeconds, economyGapSeconds *int) Command {
+// warrant cycles while no player is present, plus the conversation arc
+// (LLM-334) the eco-conclude sweep applies to unwatched huddles. All fields
+// optional but at least one must be supplied (nil = leave unchanged); gaps are
+// seconds and must be >= 0 (0 disables that bucket's throttle;
+// eco_enabled=false kills the whole feature). conversationMaxSeconds >= 0 (0
+// disables the arc sweep — meter-forever); unlike the gaps it is NOT bounded
+// by the warrant stale horizon, since it delays no warrant — it ends scenes.
+// Takes effect on the next reactor scan / sweep pass AND persists on the next
+// checkpoint via MutableWorldSettings, so a live change survives restart.
+func SetEcoMode(enabled *bool, socialGapSeconds, economyGapSeconds, conversationMaxSeconds *int) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
-			if enabled == nil && socialGapSeconds == nil && economyGapSeconds == nil {
+			if enabled == nil && socialGapSeconds == nil && economyGapSeconds == nil &&
+				conversationMaxSeconds == nil {
 				return nil, ErrInvalidEcoModeSetting
 			}
 			// Gaps must fit under the eco ceiling (code_review R1+R2): the
@@ -458,6 +463,10 @@ func SetEcoMode(enabled *bool, socialGapSeconds, economyGapSeconds *int) Command
 			if !validGap(socialGapSeconds) || !validGap(economyGapSeconds) {
 				return nil, ErrInvalidEcoModeSetting
 			}
+			if conversationMaxSeconds != nil &&
+				(*conversationMaxSeconds < 0 || *conversationMaxSeconds > math.MaxInt32) {
+				return nil, ErrInvalidEcoModeSetting
+			}
 			if enabled != nil {
 				w.Settings.EcoEnabled = *enabled
 			}
@@ -467,14 +476,18 @@ func SetEcoMode(enabled *bool, socialGapSeconds, economyGapSeconds *int) Command
 			if economyGapSeconds != nil {
 				w.Settings.EcoEconomyGap = time.Duration(*economyGapSeconds) * time.Second
 			}
+			if conversationMaxSeconds != nil {
+				w.Settings.EcoConversationMax = time.Duration(*conversationMaxSeconds) * time.Second
+			}
 			now := time.Now().UTC()
 			audience := AudienceActive(w, now)
 			return EcoModeSettingsResult{
-				Enabled:           w.Settings.EcoEnabled,
-				SocialGapSeconds:  int(w.Settings.EcoSocialGap / time.Second),
-				EconomyGapSeconds: int(w.Settings.EcoEconomyGap / time.Second),
-				AudienceActive:    audience,
-				Engaged:           w.Settings.EcoEnabled && !audience,
+				Enabled:                w.Settings.EcoEnabled,
+				SocialGapSeconds:       int(w.Settings.EcoSocialGap / time.Second),
+				EconomyGapSeconds:      int(w.Settings.EcoEconomyGap / time.Second),
+				ConversationMaxSeconds: int(effectiveEcoConversationMax(w.Settings) / time.Second),
+				AudienceActive:         audience,
+				Engaged:                w.Settings.EcoEnabled && !audience,
 			}, nil
 		},
 	}
