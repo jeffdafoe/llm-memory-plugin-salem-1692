@@ -912,6 +912,19 @@ func containsControlChar(s string) bool {
 // ErrInvalidDisplayName. Returns ErrVillageObjectNotFound if the object is
 // absent. Emits VillageObjectDisplayNameChanged ONLY when the name actually
 // changes — a same-name call is a no-op that emits nothing.
+//
+// When the object backs a Structure (the Shared-Identity Bridge — a building),
+// this ALSO keeps the structure's DisplayName in lockstep. A building is
+// navigated by move_to via Structure.DisplayName (move_to.go), while clients
+// render VillageObject.DisplayName, so a rename that touched only the object
+// would leave NPCs walking to the stale name (LLM-249). The object's name is the
+// source of truth, mirrored onto the structure; the structure field persists via
+// the next checkpoint. Because the structure's display_name is a non-empty
+// NOT-NULL invariant (DB CHECK + SaveSnapshot pre-pass), a cleared object name
+// ("" — a valid object state) falls the structure back to the asset catalog name
+// rather than propagating the empty string; if no non-empty fallback resolves (a
+// data-corrupt building with a dangling/blank asset), the clear is rejected with
+// ErrInvalidDisplayName rather than silently leaving the structure name stale.
 func SetVillageObjectDisplayName(id VillageObjectID, name string) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
@@ -923,15 +936,42 @@ func SetVillageObjectDisplayName(id VillageObjectID, name string) Command {
 			if !ok {
 				return nil, ErrVillageObjectNotFound
 			}
-			if obj.DisplayName == trimmed {
+
+			// Resolve the name the backing structure (if any) should carry: the
+			// object's new name, or — when cleared to "" — the asset catalog
+			// fallback, so the structure never violates its non-empty invariant.
+			st, hasStructure := w.Structures[StructureID(id)]
+			structTarget := trimmed
+			if hasStructure && structTarget == "" {
+				if asset, ok := w.Assets[obj.AssetID]; ok && asset != nil {
+					structTarget = strings.TrimSpace(asset.Name)
+				}
+				// No resolvable non-empty fallback (a dangling / blank-named
+				// asset): reject BEFORE mutating rather than silently leaving the
+				// structure name stale, which would break the "object is the
+				// source of truth" guarantee. Only reachable for a data-corrupt
+				// building — a valid asset name is NOT NULL / non-empty.
+				if structTarget == "" {
+					return nil, ErrInvalidDisplayName
+				}
+			}
+
+			objSame := obj.DisplayName == trimmed
+			structSame := !hasStructure || st.DisplayName == structTarget
+			if objSame && structSame {
 				return SetDisplayNameResult{ID: id, DisplayName: trimmed}, nil
 			}
-			obj.DisplayName = trimmed
-			w.emit(&VillageObjectDisplayNameChanged{
-				ObjectID:    id,
-				DisplayName: trimmed,
-				At:          time.Now().UTC(),
-			})
+			if !objSame {
+				obj.DisplayName = trimmed
+				w.emit(&VillageObjectDisplayNameChanged{
+					ObjectID:    id,
+					DisplayName: trimmed,
+					At:          time.Now().UTC(),
+				})
+			}
+			if hasStructure && st.DisplayName != structTarget {
+				st.DisplayName = structTarget
+			}
 			return SetDisplayNameResult{ID: id, DisplayName: trimmed}, nil
 		},
 	}

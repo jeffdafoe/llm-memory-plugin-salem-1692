@@ -625,6 +625,75 @@ func TestHandleAdminObjectSetEntryPolicy_Forbidden(t *testing.T) {
 	}
 }
 
+// --- promote-to-structure (LLM-249) ---
+
+func TestHandleAdminObjectPromoteToStructure_Accepted(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+
+	// obj1 is a bare object (DisplayName "Tavern") with no backing structure.
+	rec := post(t, srv, "/api/village/admin/object/promote-to-structure", `{"object_id":"obj1"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var res adminObjectPromoteResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if res.ID != "obj1" || res.DisplayName != "Tavern" {
+		t.Errorf("response = %+v, want id obj1 name Tavern (defaulted from object)", res)
+	}
+	if st := w.Published().Structures["obj1"]; st == nil {
+		t.Error("structure obj1 not registered live")
+	}
+}
+
+func TestHandleAdminObjectPromoteToStructure_AlreadyStructure(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+
+	if rec := post(t, srv, "/api/village/admin/object/promote-to-structure", `{"object_id":"obj1"}`); rec.Code != http.StatusOK {
+		t.Fatalf("first promote status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	// Promoting the same object again conflicts with the existing structure.
+	rec := post(t, srv, "/api/village/admin/object/promote-to-structure", `{"object_id":"obj1"}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("second promote status = %d, want 409; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleAdminObjectPromoteToStructure_NotFound(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+
+	rec := post(t, srv, "/api/village/admin/object/promote-to-structure", `{"object_id":"ghost"}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleAdminObjectPromoteToStructure_MissingObjectID(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+
+	rec := post(t, srv, "/api/village/admin/object/promote-to-structure", `{"display_name":"Mill"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleAdminObjectPromoteToStructure_Forbidden(t *testing.T) {
+	srv := NewServer(seededWorld(t), okAuth{})
+	rec := post(t, srv, "/api/village/admin/object/promote-to-structure", `{"object_id":"obj1"}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 // TestValidateObjectPosition unit-tests the move position guard directly: the
 // non-finite path (400) can't be reached through the JSON decoder (NaN/Inf
 // aren't valid JSON numbers), so it's exercised here alongside the bounds rule.

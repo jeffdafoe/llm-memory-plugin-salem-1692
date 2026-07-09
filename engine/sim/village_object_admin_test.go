@@ -44,8 +44,12 @@ func buildObjectAdminWorld(t *testing.T) (*sim.World, *objEventCapture) {
 	t.Helper()
 	repo, handles := mem.NewRepository()
 	handles.Assets.Seed(map[sim.AssetID]*sim.Asset{
-		"prop": {ID: "prop", Name: "Bench", Category: "prop", DefaultState: "default", States: []sim.AssetState{{ID: 1, State: "default"}}},
-		"bldg": {ID: "bldg", Name: "Tavern", Category: "structure", DefaultState: "default", States: []sim.AssetState{{ID: 2, State: "default"}}},
+		"prop":      {ID: "prop", Name: "Bench", Category: "prop", DefaultState: "default", States: []sim.AssetState{{ID: 1, State: "default"}}},
+		"bldg":      {ID: "bldg", Name: "Tavern", Category: "structure", DefaultState: "default", States: []sim.AssetState{{ID: 2, State: "default"}}},
+		"millhouse": {ID: "millhouse", Name: "Mill", Category: "structure", DefaultState: "default", States: []sim.AssetState{{ID: 3, State: "default"}}},
+		// A structure asset with a BLANK name — used only to exercise the
+		// display-name-clear guard (no asset-name fallback available).
+		"blank": {ID: "blank", Name: "", Category: "structure", DefaultState: "default", States: []sim.AssetState{{ID: 4, State: "default"}}},
 	})
 	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
 		"prop-1":  {ID: "prop-1", AssetID: "prop", CurrentState: "default", Pos: sim.WorldPos{X: 100, Y: 100}},
@@ -53,9 +57,17 @@ func buildObjectAdminWorld(t *testing.T) (*sim.World, *objEventCapture) {
 		"post":    {ID: "post", AssetID: "prop", CurrentState: "default", Pos: sim.WorldPos{X: 300, Y: 300}},
 		"sign":    {ID: "sign", AssetID: "prop", CurrentState: "default", Pos: sim.WorldPos{X: 305, Y: 295}, AttachedTo: "post"},
 		"lantern": {ID: "lantern", AssetID: "prop", CurrentState: "default", Pos: sim.WorldPos{X: 306, Y: 290}, AttachedTo: "sign"},
+		// Root structure-category placements with NO backing Structure — the
+		// promote-to-structure targets (LLM-249).
+		"mill":  {ID: "mill", AssetID: "millhouse", CurrentState: "default", Pos: sim.WorldPos{X: 400, Y: 400}},
+		"mill2": {ID: "mill2", AssetID: "millhouse", CurrentState: "default", Pos: sim.WorldPos{X: 420, Y: 400}},
+		// A building whose asset has a blank name — the display-name-clear guard
+		// fixture (clearing has no non-empty structure fallback).
+		"corrupt-bld": {ID: "corrupt-bld", AssetID: "blank", CurrentState: "default", Pos: sim.WorldPos{X: 440, Y: 400}},
 	})
 	handles.Structures.Seed(map[sim.StructureID]*sim.Structure{
-		"tavern": {ID: "tavern", DisplayName: "Tavern"},
+		"tavern":      {ID: "tavern", DisplayName: "Tavern"},
+		"corrupt-bld": {ID: "corrupt-bld", DisplayName: "Corrupt Hall"},
 	})
 
 	w, err := sim.LoadWorld(context.Background(), repo)

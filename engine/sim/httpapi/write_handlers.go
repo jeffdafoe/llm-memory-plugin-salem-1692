@@ -1224,6 +1224,98 @@ func validEntryPolicy(s string) bool {
 	}
 }
 
+// adminObjectPromoteRequest is the POST /api/village/admin/object/promote-to-structure
+// body (LLM-249): promote an already-placed object into a navigable Structure
+// sharing its id. display_name + tags are OPTIONAL — display_name defaults to the
+// object's current name / asset catalog name; tags default to empty.
+type adminObjectPromoteRequest struct {
+	ObjectID    string   `json:"object_id"`
+	DisplayName string   `json:"display_name"`
+	Tags        []string `json:"tags"`
+}
+
+// adminObjectPromoteResponse echoes the created structure's id, resolved display
+// name, and tags. The placing client adopts has_interior locally off a 200; the
+// live push of the promotion to OTHER connected clients is LLM-250.
+type adminObjectPromoteResponse struct {
+	ID          string   `json:"id"`
+	DisplayName string   `json:"display_name"`
+	Tags        []string `json:"tags"`
+}
+
+// handleAdminObjectPromoteToStructure promotes a placed object into a Structure
+// (LLM-249). Admin-only: requireAuth + adminCommand. 400 malformed / missing id /
+// invalid name or tag; 403 not admin; 404 object not found; 409 object already
+// backs a structure; 200 ok.
+func (s *Server) handleAdminObjectPromoteToStructure(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	if user == nil {
+		writeAuthError(w, "invalid")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxAdminBodyBytes)
+	dec := json.NewDecoder(r.Body)
+	var req adminObjectPromoteRequest
+	if err := dec.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	req.ObjectID = strings.TrimSpace(req.ObjectID)
+	if req.ObjectID == "" {
+		writeError(w, http.StatusBadRequest, "object_id is required")
+		return
+	}
+
+	res, err := s.world.SendContext(r.Context(), adminCommand(user.Username, func(world *sim.World) (any, error) {
+		return sim.PromoteObjectToStructure(sim.VillageObjectID(req.ObjectID), req.DisplayName, req.Tags).Fn(world)
+	}))
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
+		if errors.Is(err, errAdminForbidden) {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
+		if errors.Is(err, sim.ErrVillageObjectNotFound) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		if errors.Is(err, sim.ErrVillageObjectIsAlreadyStructure) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		if errors.Is(err, sim.ErrInvalidDisplayName) || errors.Is(err, sim.ErrInvalidTag) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		// Object exists but isn't a root structure-category placement (a prop,
+		// nature object, or overlay) — unprocessable, not malformed.
+		if errors.Is(err, sim.ErrObjectNotPromotable) {
+			writeError(w, http.StatusUnprocessableEntity, err.Error())
+			return
+		}
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+
+	out, ok := res.(sim.PromoteStructureResult)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "unexpected promote result")
+		return
+	}
+	writeJSON(w, adminObjectPromoteResponse{
+		ID:          string(out.ID),
+		DisplayName: out.DisplayName,
+		Tags:        out.Tags,
+	})
+}
+
 // adminObjectDisplayNameRequest is the POST .../set-display-name body: the
 // target object id + the new display name. An empty display_name clears the
 // override (the client falls back to the catalog name).

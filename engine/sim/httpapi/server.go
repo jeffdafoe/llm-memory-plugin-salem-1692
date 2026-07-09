@@ -381,6 +381,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/village/admin/object/add-tag", s.requireAuth(s.handleAdminObjectAddTag))
 	mux.HandleFunc("POST /api/village/admin/object/remove-tag", s.requireAuth(s.handleAdminObjectRemoveTag))
 	mux.HandleFunc("POST /api/village/admin/object/set-refresh", s.requireAuth(s.handleAdminObjectSetRefresh))
+	mux.HandleFunc("POST /api/village/admin/object/promote-to-structure", s.requireAuth(s.handleAdminObjectPromoteToStructure))
 	// NPC editor write routes (ZBBS-HOME-309) — author/edit NPC metadata; the
 	// write half of AgentDTO's read surface. Same admin gate as object/*.
 	mux.HandleFunc("POST /api/village/admin/npc/set-display-name", s.requireAuth(s.handleAdminNPCSetDisplayName))
