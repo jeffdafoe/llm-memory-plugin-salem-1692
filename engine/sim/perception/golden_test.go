@@ -925,6 +925,18 @@ var perceptionScenarios = []perceptionScenario{
 		build: keeperResellingInCompany,
 	},
 	{
+		name: "distributor_underwater_resale",
+		summary: "LLM-332 underwater escalation: the same reseller shape as keeper_reselling_in_company, now with realized " +
+			"SALE history that makes one line demonstrably underwater. Josiah bought milk at ~2 and has been selling it at " +
+			"~1 (the live −51-coin milk leak that drove him to rationally cut the line, starving the stew chain), while " +
+			"cheese carries a healthy markup (bought ~2, sold ~4). The golden pins BOTH branches: the underwater milk line " +
+			"escalates past the bare caution to name the two levers a merchant holds ('you may need to negotiate lower " +
+			"costs or raise your price'); the healthy cheese line keeps only the caution. The lever hint fires strictly on " +
+			"RecentUnit < PaidUnit, so it is the cue that gives a rational loss-cutter a path back to margin instead of " +
+			"abandoning a good the village needs.",
+		build: distributorUnderwaterResale,
+	},
+	{
 		name: "innkeeper_pricing_with_makings_cost",
 		summary: "A PRODUCER whose recipe has real inputs — Hannah Boggs keeping her inn in company with a guest, " +
 			"porridge made 10 bowls at a time from 3 milk + 5 water (the live catalog shape). LLM-226: the wares-worth " +
@@ -4103,7 +4115,8 @@ func TestWaresWorthCueOnlyInCompanyWithOwnTrade(t *testing.T) {
 			sc.name == "wholesaler_producer_bartering_with_customer" || // LLM-291: wholesale producer in company — cue draws the wholesale-channel line
 			sc.name == "wholesaler_producer_observed_rates" || // LLM-295: same, with observed rates on both wholesale-line figures
 			sc.name == "owner_holding_repair_nails_in_company" || // LLM-292: keeper in company with priced ware + the repair-reserve earmark
-			sc.name == "coin_poor_overstocked_keeper_conserves" // LLM-294: producer in company (priced own wares) + the conserve sell-first nudge
+			sc.name == "coin_poor_overstocked_keeper_conserves" || // LLM-294: producer in company (priced own wares) + the conserve sell-first nudge
+			sc.name == "distributor_underwater_resale" // LLM-332: reseller in company with priced resale wares, one underwater
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: wares-worth cue present=%v, want %v", sc.name, has, want)
 		}
@@ -7675,6 +7688,93 @@ func keeperResellingInCompany() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) 
 		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
 			{SellerID: supplier, Item: "cheese"}: cheeseBuys,
 			{SellerID: supplier, Item: "milk"}:   milkBuys,
+		},
+	}
+	return snap, josiahID, nil
+}
+
+// distributorUnderwaterResale is the LLM-332 leg: the same reseller shape as
+// keeperResellingInCompany, but now with realized SALE history that makes one line
+// demonstrably underwater. Josiah the distributor bought milk at ~2 and has been selling
+// it at ~1 (the live −51-coin milk leak that drove him to cut the line rather than carry
+// a loss), while cheese carries a healthy markup (bought ~2, sold ~4). The golden pins
+// BOTH branches of the LLM-332 escalation: the underwater milk line gains the two-lever
+// hint ("negotiate lower costs or raise your price"); the healthy cheese line keeps only
+// the bare caution. In company with Martha so the "## What your wares fetch" cue renders.
+func distributorUnderwaterResale() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		josiahID = sim.ActorID("josiah")
+		marthaID = sim.ActorID("martha")
+		store    = sim.StructureID("general_store")
+		supplier = sim.ActorID("ellis_farm")
+		huddle   = sim.HuddleID("h1")
+	)
+	start, end := 360, 1080 // 06:00-18:00
+	now := 720              // 12:00 — on shift, at the store
+	published := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	josiah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Josiah Thorne",
+		Role:              "shopkeeper",
+		State:             sim.StateIdle,
+		WorkStructureID:   store,
+		InsideStructureID: store,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		CurrentHuddleID:   huddle,
+		Coins:             0,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"cheese": 4, "milk": 6},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "cheese", Source: sim.RestockSourceBuy, Max: 10},
+			{Item: "milk", Source: sim.RestockSourceBuy, Max: 12},
+		}},
+	}
+	martha := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Martha Bishop",
+		Role:              "laborer",
+		State:             sim.StateIdle,
+		InsideStructureID: store,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		CurrentHuddleID:   huddle,
+		Coins:             20,
+		Needs:             map[sim.NeedKey]int{},
+	}
+	// Buyer-side cost basis (keyed by the SELLER supplier ring; buyerRecentPurchases
+	// reads obs.BuyerID == josiah): cheese 8/4 = 2 each, milk 8/4 = 2 each.
+	cheeseBuys := sim.NewRingBuffer[sim.PriceObservation](8)
+	cheeseBuys.Push(sim.PriceObservation{BuyerID: josiahID, Amount: 8, Qty: 4, Consumers: 1, At: published.Add(-2 * 24 * time.Hour)})
+	milkBuys := sim.NewRingBuffer[sim.PriceObservation](8)
+	milkBuys.Push(sim.PriceObservation{BuyerID: josiahID, Amount: 8, Qty: 4, Consumers: 1, At: published.Add(-1 * 24 * time.Hour)})
+	// Seller-side realized sales (keyed by josiah as SELLER): cheese 16/4 = 4 each (a
+	// healthy markup over its cost 2 → bare caution only), milk 4/4 = 1 each (BELOW its
+	// cost 2 → underwater, so the two-lever hint appends).
+	cheeseSales := sim.NewRingBuffer[sim.PriceObservation](8)
+	cheeseSales.Push(sim.PriceObservation{BuyerID: marthaID, Amount: 16, Qty: 4, Consumers: 1, At: published.Add(-12 * time.Hour)})
+	milkSales := sim.NewRingBuffer[sim.PriceObservation](8)
+	milkSales.Push(sim.PriceObservation{BuyerID: marthaID, Amount: 4, Qty: 4, Consumers: 1, At: published.Add(-12 * time.Hour)})
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{josiahID: josiah, marthaID: martha},
+		Structures: map[sim.StructureID]*sim.Structure{
+			store: plainStructure(store, "General Store"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{josiahID: {}, marthaID: {}}},
+		},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"cheese": {OutputItem: "cheese", OutputQty: 1, RateQty: 1, RatePerHours: 3, WholesalePrice: 3, RetailPrice: 6},
+			"milk":   {OutputItem: "milk", OutputQty: 1, RateQty: 1, RatePerHours: 2, WholesalePrice: 1, RetailPrice: 3},
+		},
+		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+			{SellerID: supplier, Item: "cheese"}: cheeseBuys,
+			{SellerID: supplier, Item: "milk"}:   milkBuys,
+			{SellerID: josiahID, Item: "cheese"}: cheeseSales,
+			{SellerID: josiahID, Item: "milk"}:   milkSales,
 		},
 	}
 	return snap, josiahID, nil
