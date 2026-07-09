@@ -119,6 +119,14 @@ const huddleLoopLedgerRecencyWindow = 5 * time.Minute
 // uncaught loops ran 24-110. Tunable via huddle_loop_max_turns.
 const HuddleLoopMaxTurnsDefault = 16
 
+// huddleLoopTurnsPerMember scales the endurance budget for crowded huddles: the
+// effective budget is max(configured, members × this), so a 5+-actor scene gets
+// roughly this many progress-free turns per participant before it reads as
+// stuck, while the configured budget stays the floor for the common 2-4 actor
+// case (code_review: 16 total is aggressive across many actors, and the
+// wind-down steer starts the moment the budget is exhausted).
+const huddleLoopTurnsPerMember = 4
+
 // huddleLoopEnabled reports whether the loop sweep is active. OFF unless
 // HuddleLoopTimeout is positive — the master enable, mirroring the degeneracy
 // observer's single-positive-number posture. The timeout doubles as the
@@ -288,6 +296,7 @@ func EvaluateHuddleLoopSweep(now time.Time) Command {
 				// permanently immune.
 				if huddlePCAttended(h, now) {
 					h.LoopingSince = nil
+					h.LoopingReason = ""
 					continue
 				}
 				// LLM-309: OR the durable transactional-futility condition into the
@@ -300,11 +309,25 @@ func EvaluateHuddleLoopSweep(now time.Time) Command {
 				if !huddleLoopContentPresent(w.Settings, h) && !ledgerPresent &&
 					!huddleEndurancePresent(w.Settings, h) {
 					h.LoopingSince = nil
+					h.LoopingReason = ""
 					continue
 				}
 				if h.LoopingSince == nil {
 					t := now
 					h.LoopingSince = &t
+					// Latch the onset cause for the conclusion telemetry — the arms
+					// can drift apart over a spell, and re-diagnosing at conclude
+					// time would misattribute which detector caught the incident
+					// (LLM-333 code_review). Precedence mirrors the conclude tag:
+					// ledger > lexical > endurance.
+					switch {
+					case ledgerPresent:
+						h.LoopingReason = "huddle_loop_ledger"
+					case huddleLoopContentPresent(w.Settings, h):
+						h.LoopingReason = "huddle_loop"
+					default:
+						h.LoopingReason = "huddle_loop_endurance"
+					}
 				}
 				// Conclude only a spell that has BOTH persisted past the gate AND is
 				// live right now — a repetitive huddle that has merely gone quiet is
@@ -331,18 +354,21 @@ func EvaluateHuddleLoopSweep(now time.Time) Command {
 					continue
 				}
 				// Telemetry BEFORE conclude — concludeHuddleInner clears Members.
-				// Tag the record "huddle_loop_ledger" whenever the transactional arm
-				// (LLM-309) contributed to the conclusion, so the ledger shape is never
-				// hidden in a mixed chatty+transactional loop; the per-record
-				// `utterances` count still distinguishes a truly silent loop (0) from a
-				// mixed one (>0). "huddle_loop_endurance" (LLM-333) marks a conclusion
-				// only the turn budget could see — neither the lexical nor the ledger
-				// arm was armed — so paraphrase-loop kills stay separable in the ring.
-				reason := "huddle_loop"
+				// The reason is the LATCHED onset cause (h.LoopingReason) so the
+				// record names the arm that actually caught the incident, not a
+				// re-diagnosis at conclude time. One override: tag
+				// "huddle_loop_ledger" whenever the transactional arm (LLM-309) is
+				// armed at conclusion, so the ledger shape is never hidden in a
+				// mixed chatty+transactional loop; the per-record `utterances`
+				// count still distinguishes a truly silent loop (0) from a mixed
+				// one (>0). "huddle_loop_endurance" (LLM-333) marks an incident only
+				// the turn budget could see, keeping paraphrase-loop kills separable.
+				reason := h.LoopingReason
 				if _, ok := ledgerArmedHuddles[id]; ok {
 					reason = "huddle_loop_ledger"
-				} else if !huddleLoopArmed(w.Settings, h, now) {
-					reason = "huddle_loop_endurance"
+				}
+				if reason == "" {
+					reason = "huddle_loop"
 				}
 				emitHuddleLoopTelemetry(w, h, now, reason)
 				// Member set BEFORE conclude, for the post-conclude warrant clear.
@@ -364,12 +390,15 @@ func EvaluateHuddleLoopSweep(now time.Time) Command {
 				// real work, not an echo of the dead conversation.
 				clearSocialWarrantCycles(w, members)
 				// concludeHuddleInner wrote a carry-over (LLM-170). Keep its ring (so a
-				// re-form doesn't re-greet) but reset the carried loop clock: a silent
-				// conclude is meant to give the clique a fresh chance, so if they
-				// re-form and resume looping the NEXT gate catches them, not an
-				// instantly-elapsed inherited spell.
+				// re-form doesn't re-greet) but reset the carried loop clock + latched
+				// reason: a silent conclude is meant to give the clique a fresh chance,
+				// so if they re-form and resume looping the NEXT gate catches them, not
+				// an instantly-elapsed inherited spell. The endurance counter is NOT
+				// reset — it is the durable CONDITION (like the carried ring), so a
+				// re-formed loop re-arms and earns exactly one fresh timeout.
 				if cb := w.carryoverByStructure[structureID]; cb != nil {
 					cb.loopingSince = nil
+					cb.loopingReason = ""
 				}
 			}
 			return nil, nil
@@ -493,11 +522,18 @@ func huddleLoopArmed(s WorldSettings, h *Huddle, now time.Time) bool {
 // spend-without-progress budget is exhausted. Counter-based, so it stays true
 // across a churned clique's brief silence (the LLM-170 carry-over carries the
 // counter) exactly as the carried ring keeps huddleLoopContentPresent true.
+// The budget scales with the member count (huddleLoopTurnsPerMember, floored at
+// the configured budget) so a crowded-but-healthy scene isn't read as stuck at
+// a per-actor allowance the 2-actor default never intended.
 func huddleEndurancePresent(s WorldSettings, h *Huddle) bool {
 	if h == nil || h.ConcludedAt != nil {
 		return false
 	}
-	return h.TurnsSinceProgress >= effectiveHuddleLoopMaxTurns(s)
+	budget := effectiveHuddleLoopMaxTurns(s)
+	if scaled := len(h.Members) * huddleLoopTurnsPerMember; scaled > budget {
+		budget = scaled
+	}
+	return h.TurnsSinceProgress >= budget
 }
 
 // huddleEnduranceArmed is the endurance arm's LIVE conclude + steer condition:

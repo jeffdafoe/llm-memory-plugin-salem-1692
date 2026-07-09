@@ -74,6 +74,16 @@ type Huddle struct {
 	// spell has persisted HuddleLoopTimeout. In-memory only, not checkpointed.
 	LoopingSince *time.Time
 
+	// LoopingReason latches WHICH arm stamped LoopingSince ("huddle_loop" /
+	// "huddle_loop_ledger" / "huddle_loop_endurance") so the conclusion
+	// telemetry reports the onset cause rather than re-diagnosing at conclude
+	// time — the arms can drift apart over a spell (a lexically-armed ring can
+	// churn into varied-but-over-budget lines) and the reason is used to
+	// validate which detector caught an incident (LLM-333 code_review). Empty
+	// whenever LoopingSince is nil; cleared and carried everywhere LoopingSince
+	// is. In-memory only, not checkpointed.
+	LoopingReason string
+
 	// LastPCUtteranceAt is the wall-clock time a PLAYER (KindPC) member last spoke
 	// in this huddle. The loop sweep + the per-tick ConversationLooping steer
 	// (LLM-185) treat the huddle as player-attended while now-LastPCUtteranceAt is

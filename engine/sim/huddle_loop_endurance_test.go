@@ -196,6 +196,72 @@ func TestHuddleLoopSweep_EnduranceConcludesFarewellLoop(t *testing.T) {
 	}
 }
 
+// TestHuddleLoopSweep_LatchedReasonSurvivesArmDrift (code_review R1): a spell
+// stamped by the LEXICAL arm whose ring then churns into varied-but-over-budget
+// lines must still conclude tagged "huddle_loop" — the latched onset cause —
+// not be re-diagnosed as an endurance kill at conclude time.
+func TestHuddleLoopSweep_LatchedReasonSurvivesArmDrift(t *testing.T) {
+	w, cancel := buildHuddleTestWorld(t)
+	defer cancel()
+	sink := wireLoopTelemetry(t, w)
+	t0 := time.Now().UTC()
+
+	h := sendT(t, w, sim.JoinHuddle("alice", "tavern", "", t0)).(sim.JoinHuddleResult).HuddleID
+	sendT(t, w, sim.JoinHuddle("bob", "tavern", "", t0))
+	enduranceSettings(t, w, 16)
+
+	// Onset: a lexically repetitive ring, budget NOT yet exhausted.
+	setHuddleLoopState(t, w, h, loopingLines(t0), nil, time.Time{})
+	sendT(t, w, sim.EvaluateHuddleLoopSweep(t0))
+	if huddleLoopingSince(t, w, h) == nil {
+		t.Fatal("lexical ring should stamp the spell")
+	}
+
+	// Drift: the ring churns varied while the turn budget exhausts (18 paraphrase
+	// lines through AppendUtterance — the ring keeps only the last 8, which are
+	// varied, so the lexical arm is no longer armed at conclude time).
+	t1 := t0.Add(3 * time.Minute)
+	feedTranscript(t, w, h, "alice", "bob", farewellLoopLines, t1.Add(-10*time.Second), time.Second)
+	sendT(t, w, sim.EvaluateHuddleLoopSweep(t1))
+	if huddleConcludedAt(t, w, h) == nil {
+		t.Fatal("the drifted spell should still conclude (endurance keeps the durable condition true)")
+	}
+	for _, rec := range sink.snapshot() {
+		if rec.Kind == "stuck" && rec.Detail["reason"] != "huddle_loop" {
+			t.Errorf("telemetry reason = %q, want huddle_loop (latched onset cause)", rec.Detail["reason"])
+		}
+	}
+}
+
+// TestHuddleEndurancePresent_ScalesWithMembers (code_review R2): the effective
+// budget is max(configured, members × 4), so a crowded scene gets a per-actor
+// allowance instead of the 2-actor default total.
+func TestHuddleEndurancePresent_ScalesWithMembers(t *testing.T) {
+	s := sim.WorldSettings{HuddleLoopTimeout: 3 * time.Minute, HuddleLoopMaxTurns: 16}
+	members := func(n int) map[sim.ActorID]struct{} {
+		m := make(map[sim.ActorID]struct{}, n)
+		for i := 0; i < n; i++ {
+			m[sim.ActorID(rune('a'+i))] = struct{}{}
+		}
+		return m
+	}
+
+	// 2 members: floor holds — 16 turns arms.
+	h := &sim.Huddle{Members: members(2), TurnsSinceProgress: 16}
+	if !sim.HuddleEndurancePresent(s, h) {
+		t.Error("2-member huddle at the configured budget should arm")
+	}
+	// 6 members: scaled budget 24 — 16 turns must NOT arm, 24 does.
+	h = &sim.Huddle{Members: members(6), TurnsSinceProgress: 16}
+	if sim.HuddleEndurancePresent(s, h) {
+		t.Error("6-member huddle at 16 turns must not arm (scaled budget 24)")
+	}
+	h.TurnsSinceProgress = 24
+	if !sim.HuddleEndurancePresent(s, h) {
+		t.Error("6-member huddle at 24 turns should arm")
+	}
+}
+
 // TestHuddleLoopSweep_EnduranceSparesProgressingHuddle: the same volume of talk
 // WITH a progress event resetting the counter mid-way never arms — a busy
 // vendor scene outlives any budget as long as deals keep landing.

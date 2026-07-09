@@ -50,6 +50,7 @@ type conversationCarryover struct {
 	utterances     []Utterance
 	members        map[ActorID]struct{}
 	loopingSince   *time.Time
+	loopingReason  string
 	lastProgressAt time.Time
 	concludedAt    time.Time
 
@@ -144,6 +145,7 @@ func writeConversationCarryover(w *World, h *Huddle, now time.Time) {
 		utterances:         append([]Utterance(nil), h.RecentUtterances...),
 		members:            members,
 		loopingSince:       loopingSince,
+		loopingReason:      h.LoopingReason,
 		lastProgressAt:     h.LastProgressAt,
 		concludedAt:        now,
 		turnsSinceProgress: h.TurnsSinceProgress,
@@ -170,6 +172,7 @@ func seedHuddleFromContinuity(w *World, huddle *Huddle, structureID StructureID,
 	if cb.loopingSince != nil {
 		t := *cb.loopingSince
 		huddle.LoopingSince = &t
+		huddle.LoopingReason = cb.loopingReason
 	}
 	huddle.LastProgressAt = cb.lastProgressAt
 	huddle.TurnsSinceProgress = cb.turnsSinceProgress
