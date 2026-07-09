@@ -1525,11 +1525,23 @@ type DutySteerView struct {
 // option so the cue is self-sufficient — it does not depend on the anchors line
 // rendering the home id, matching the duty steer's inline-structure_id
 // convention. See buildEveningLeisure / renderEveningLeisure.
+//
+// BatchHold is the LLM-335 variant: a keeper standing at its post with a batch
+// in the works is pinned there (the LLM-319 pause model), so the tavern
+// invitation would contradict the standing "you are making a batch of X" line.
+// The view then carries only BatchHold + BatchItemLabel and render writes a
+// quiet diegetic hold instead of the invitation; the venue/home fields are
+// unused. Unlike the invitation this variant is render-only — it does NOT hold
+// the noop-skip gate open (noop_skip.go), so a busy keeper still skips idle
+// no-op ticks, mirroring the at-post duty-steer exclusion.
 type EveningLeisureView struct {
 	VenueID    sim.StructureID
 	VenueLabel string // resolved venue DisplayName; render falls back to "the tavern"
 	HomeID     sim.StructureID
 	HomeLabel  string // resolved home DisplayName; render falls back to "your home"
+
+	BatchHold      bool   // LLM-335: pinned by an in-flight batch at post — render the hold, not the invitation
+	BatchItemLabel string // the batch good's display label, for the hold line ("the batch of Cheese …")
 }
 
 // SceneView describes the primary scene and, when a baseline could be

@@ -321,6 +321,71 @@ func TestShiftDutyTarget_MidMealSuppressesGoHome(t *testing.T) {
 	}
 }
 
+// TestShiftDutyTarget_MidBatchAtPostSuppressesGoHome (LLM-335): a keeper standing
+// at its post with a batch in the works is pinned there (the LLM-319 pause model),
+// so the routine off-shift go-home duty is suppressed rather than re-litigated every
+// minute of the shift/batch overlap. The suppression lifts the moment the batch lands
+// (ProductionActivity cleared), so the keeper is then free to wind down.
+func TestShiftDutyTarget_MidBatchAtPostSuppressesGoHome(t *testing.T) {
+	a := shiftNPC("n", KindNPCStateful, "shop", "home", "shop") // at post, off shift
+	a.ScheduleStartMin = intptr(420)
+	a.ScheduleEndMin = intptr(960)
+	w := sleepTestWorld(a)
+
+	// Precondition: off-shift at post with nothing in the works → go-home duty.
+	if target, toWork, ok := shiftDutyTarget(w, a, 1300, time.Now()); !ok || target != "home" || toWork {
+		t.Fatalf("precondition: want (home,false,true); got (%q,%v,%v)", target, toWork, ok)
+	}
+
+	// A batch in the works at the post suppresses the go-home duty.
+	a.ProductionActivity = &ProductionActivity{Item: "cheese", BatchQty: 1, RemainingSeconds: 600}
+	if _, _, ok := shiftDutyTarget(w, a, 1300, time.Now()); ok {
+		t.Error("mid-batch keeper at its post should not be sent home; want go-home duty suppressed")
+	}
+
+	// Batch lands → the pin lifts and the wind-down duty resumes on the next scan.
+	a.ProductionActivity = nil
+	if _, _, ok := shiftDutyTarget(w, a, 1300, time.Now()); !ok {
+		t.Error("with the batch landed the go-home duty should resume")
+	}
+}
+
+// TestShiftDutyTarget_MidBatchNotAtPostStillWindsDown (LLM-335): the batch pin is
+// AT-POST only. A keeper that wandered off mid-batch has paused it (it advances only
+// at the post), so the go-home nag must stay live to bring it home — a paused batch
+// waits indefinitely by design.
+func TestShiftDutyTarget_MidBatchNotAtPostStillWindsDown(t *testing.T) {
+	a := shiftNPC("n", KindNPCStateful, "shop", "home", "") // off shift, wandered off post
+	a.ScheduleStartMin = intptr(420)
+	a.ScheduleEndMin = intptr(960)
+	a.ProductionActivity = &ProductionActivity{Item: "cheese", BatchQty: 1, RemainingSeconds: 600}
+	w := sleepTestWorld(a)
+	if target, toWork, ok := shiftDutyTarget(w, a, 1300, time.Now()); !ok || target != "home" || toWork {
+		t.Errorf("off-post mid-batch keeper: got (%q,%v,%v), want (home,false,true)", target, toWork, ok)
+	}
+}
+
+// TestShiftDutyTarget_MidBatchRedTiredStillMarchesHome (LLM-335): the batch pin
+// yields to the LLM-62 red-tiredness rest floor. An exhausted keeper mid-batch at
+// its post is NOT suppressed here — shiftDutyTarget returns the go-home duty so
+// classifyAgentDuty can march it home mechanically (pausing the batch to resume
+// after sleep), the same "needs trump duty" layering the OpenUntil window honors.
+func TestShiftDutyTarget_MidBatchRedTiredStillMarchesHome(t *testing.T) {
+	a := shiftNPC("n", KindNPCStateful, "shop", "home", "shop") // at post, off shift
+	a.ScheduleStartMin = intptr(420)
+	a.ScheduleEndMin = intptr(960)
+	a.ProductionActivity = &ProductionActivity{Item: "cheese", BatchQty: 1, RemainingSeconds: 600}
+	a.Needs["tiredness"] = 23 // red, one below peak — the LLM-62 dead zone
+	w := sleepTestWorld(a)
+	target, toWork, ok := shiftDutyTarget(w, a, 1300, time.Now())
+	if !ok || target != "home" || toWork {
+		t.Errorf("red-tired mid-batch keeper: got (%q,%v,%v), want (home,false,true)", target, toWork, ok)
+	}
+	if got := classifyAgentDuty(w, a, target, toWork); got != agentDutyMarchHome {
+		t.Errorf("red-tired mid-batch keeper: classifyAgentDuty = %v, want agentDutyMarchHome", got)
+	}
+}
+
 func TestShiftDutyTarget_ScopeExclusions(t *testing.T) {
 	w := sleepTestWorld()
 	// PC excluded.

@@ -1339,6 +1339,18 @@ func renderEveningLeisure(b *strings.Builder, v *EveningLeisureView) {
 	if v == nil {
 		return
 	}
+	// LLM-335: a batch in the works pins the keeper to its post, so the invitation
+	// yields to a quiet diegetic hold that agrees with the standing "you are making a
+	// batch of X" line rather than contradicting it. Hung on "the batch" (singular) so
+	// it reads for mass nouns (cheese) and count nouns (nails) alike, and names the
+	// good the same way the in-flight line does ("a batch of Cheese"). No destination —
+	// the steer is "stay put a little longer", and the invitation returns on the tick
+	// the batch lands.
+	if v.BatchHold {
+		fmt.Fprintf(b, "Your day's work is nearly done, but the batch of %s still wants a few more minutes of your eye before you can call it a day.\n\n",
+			sanitizeInline(v.BatchItemLabel))
+		return
+	}
 	venue := anchorPlace(v.VenueLabel, "the tavern")
 	home := anchorPlace(v.HomeLabel, "your home")
 	fmt.Fprintf(b, "Your day's work is done, and the tavern is open of an evening — you might make your way to %s (destination: %s) for company, pass a quiet evening at %s (destination: %s), or turn in for the night, as you please.\n\n",
