@@ -466,18 +466,33 @@ func TestCommitResultContent_ConsumeNeedFeedback(t *testing.T) {
 	}{
 		{
 			name:   "hunger sated → stop steer",
-			result: sim.ConsumeResult{Kind: "bread", Requested: 1, Consumed: 1, Kept: 0, SatisfiesNeed: "hunger"},
+			result: sim.ConsumeResult{Kind: "bread", Requested: 1, Consumed: 1, Kept: 0, SatisfiesNeed: "hunger", Verb: "eat"},
 			want:   "[ok] You consume 1 bread. Your hunger is met — eat no more now.",
 		},
 		{
 			name:   "still hungry → honest felt, no stop steer",
-			result: sim.ConsumeResult{Kind: "bread", Requested: 1, Consumed: 1, Kept: 0, SatisfiesNeed: "hunger", FeltAfter: "peckish"},
+			result: sim.ConsumeResult{Kind: "bread", Requested: 1, Consumed: 1, Kept: 0, SatisfiesNeed: "hunger", FeltAfter: "peckish", Verb: "eat"},
 			want:   "[ok] You consume 1 bread. You still feel peckish.",
 		},
 		{
 			name:   "thirst sated → drink wording",
-			result: sim.ConsumeResult{Kind: "water", Requested: 1, Consumed: 1, Kept: 0, SatisfiesNeed: "thirst"},
+			result: sim.ConsumeResult{Kind: "water", Requested: 1, Consumed: 1, Kept: 0, SatisfiesNeed: "thirst", Verb: "drink"},
 			want:   "[ok] You consume 1 water. Your thirst is met — drink no more now.",
+		},
+		{
+			// LLM-318: a belly-filling ale eases hunger (SatisfiesNeed) but is a
+			// drink (Verb) — the need clause names hunger, the verb follows the
+			// category, so it reads "drink no more now", not "eat".
+			name:   "drink easing hunger → drink verb, hunger clause",
+			result: sim.ConsumeResult{Kind: "ale", Requested: 1, Consumed: 1, Kept: 0, SatisfiesNeed: "hunger", Verb: "drink"},
+			want:   "[ok] You consume 1 ale. Your hunger is met — drink no more now.",
+		},
+		{
+			// Empty Verb (legacy/zero-consume literal) falls back to the need-keyed
+			// verb, preserving the pre-LLM-318 wording.
+			name:   "empty verb → need-keyed fallback",
+			result: sim.ConsumeResult{Kind: "bread", Requested: 1, Consumed: 1, Kept: 0, SatisfiesNeed: "hunger"},
+			want:   "[ok] You consume 1 bread. Your hunger is met — eat no more now.",
 		},
 	}
 	for _, tc := range cases {

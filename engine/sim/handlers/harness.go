@@ -1417,11 +1417,23 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 				if r.FeltAfter != "" {
 					fmt.Fprintf(&b, " You still feel %s.", r.FeltAfter)
 				} else {
+					// The need clause names the eased need; the verb follows the
+					// item's CATEGORY (r.Verb), not the need, so a belly-filling
+					// ale reads "Your hunger is met — drink no more now" (LLM-318).
+					// Verb is empty only on legacy/zero-consume results this branch
+					// never voices; fall back to the need-keyed verb there.
+					verb := r.Verb
 					switch r.SatisfiesNeed {
 					case "hunger":
-						b.WriteString(" Your hunger is met — eat no more now.")
+						if verb == "" {
+							verb = "eat"
+						}
+						fmt.Fprintf(&b, " Your hunger is met — %s no more now.", verb)
 					case "thirst":
-						b.WriteString(" Your thirst is met — drink no more now.")
+						if verb == "" {
+							verb = "drink"
+						}
+						fmt.Fprintf(&b, " Your thirst is met — %s no more now.", verb)
 					default:
 						b.WriteString(" That need is met — consume no more now.")
 					}

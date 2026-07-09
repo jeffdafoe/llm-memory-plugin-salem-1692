@@ -13,13 +13,16 @@ import (
 // shared finder, tiredness-isolation (tiredness items don't leak into the
 // eat/drink section), and the render shape.
 
-// foodDrinkCatalog: bread/stew ease hunger, water/ale ease thirst, coca_tea
-// eases tiredness (the isolation control — must NOT appear in satiation).
+// foodDrinkCatalog: bread/stew ease hunger, water eases thirst, ale is a belly-
+// filling DRINK easing both thirst and hunger (the LLM-318 mixed-attribute case —
+// a drink whose hunger relief is a bonus), coca_tea eases tiredness (the
+// isolation control — must NOT appear in satiation).
 func foodDrinkCatalog() map[sim.ItemKind]*sim.ItemKindDef {
 	return map[sim.ItemKind]*sim.ItemKindDef{
 		"bread":    {Name: "bread", DisplayLabel: "bread", Category: sim.ItemCategoryFood, Capabilities: []string{"portable"}, Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 6}}},
 		"stew":     {Name: "stew", DisplayLabel: "stew", Category: sim.ItemCategoryFood, Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 12}}},
 		"water":    {Name: "water", DisplayLabel: "water", Category: sim.ItemCategoryDrink, Satisfies: []sim.ItemSatisfaction{{Attribute: "thirst", Immediate: 5}}},
+		"ale":      {Name: "ale", DisplayLabel: "ale", Category: sim.ItemCategoryDrink, Satisfies: []sim.ItemSatisfaction{{Attribute: "thirst", Immediate: 4}, {Attribute: "hunger", Immediate: 2}}},
 		"coca_tea": {Name: "coca_tea", DisplayLabel: "coca tea", Category: sim.ItemCategoryDrink, Satisfies: []sim.ItemSatisfaction{{Attribute: "tiredness", Immediate: 12}}},
 	}
 }
@@ -105,6 +108,62 @@ func TestBuildSatiation_OwnStockHunger(t *testing.T) {
 	// Strongest first: stew (12) before bread (6).
 	if n.OwnStock[0].Label != "stew" || n.OwnStock[0].Magnitude != 12 || n.OwnStock[1].Label != "bread" {
 		t.Errorf("own-stock order wrong (want stew then bread): %+v", n.OwnStock)
+	}
+}
+
+// TestBuildSatiation_DrinkNotOfferedAsFood — LLM-318. A belly-filling drink
+// (ale eases thirst AND hunger) is not food: its hunger relief is a bonus, so it
+// must NOT appear in the hunger "what you can eat" line next to bread. It still
+// surfaces under thirst as a drink ("consume to drink"). Guards both the
+// dropDrinkSatisfiers hunger filter and that thirst is left untouched.
+func TestBuildSatiation_DrinkNotOfferedAsFood(t *testing.T) {
+	// Hungry-only actor holding bread + ale: the hunger own-stock line shows
+	// bread alone — ale, a drink, is dropped and never rendered here.
+	hungry := &sim.ActorSnapshot{
+		Needs:     map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold},
+		Inventory: map[sim.ItemKind]int{"bread": 2, "ale": 3},
+	}
+	snap := &sim.Snapshot{
+		Actors:    map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": hungry},
+		ItemKinds: foodDrinkCatalog(),
+	}
+	v := buildSatiation(snap, "ezekiel", hungry)
+	if v == nil || len(v.Needs) != 1 || v.Needs[0].Need != "hunger" {
+		t.Fatalf("want 1 pressing need (hunger), got %+v", v)
+	}
+	if own := v.Needs[0].OwnStock; len(own) != 1 || own[0].Label != "bread" {
+		t.Fatalf("hunger own-stock: want [bread] only (ale is a drink, dropped), got %+v", own)
+	}
+	var hb strings.Builder
+	renderSatiation(&hb, v)
+	if got := hb.String(); !strings.Contains(got, "consume to eat") || strings.Contains(got, "ale") {
+		t.Errorf("hunger render should read 'consume to eat' with no ale, got:\n%s", got)
+	}
+
+	// Thirsty-only actor holding ale: ale surfaces under thirst, reading "drink".
+	thirsty := &sim.ActorSnapshot{
+		Needs:     map[sim.NeedKey]int{"thirst": sim.DefaultThirstRedThreshold},
+		Inventory: map[sim.ItemKind]int{"ale": 3},
+	}
+	snap2 := &sim.Snapshot{
+		Actors:    map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": thirsty},
+		ItemKinds: foodDrinkCatalog(),
+	}
+	v2 := buildSatiation(snap2, "ezekiel", thirsty)
+	if v2 == nil || len(v2.Needs) != 1 || v2.Needs[0].Need != "thirst" {
+		t.Fatalf("want 1 pressing need (thirst), got %+v", v2)
+	}
+	tn := v2.Needs[0]
+	if tn.Verb != "drink" {
+		t.Errorf("thirst verb = %q, want drink", tn.Verb)
+	}
+	if len(tn.OwnStock) != 1 || tn.OwnStock[0].Label != "ale" {
+		t.Fatalf("thirst own-stock: want [ale], got %+v", tn.OwnStock)
+	}
+	var tb strings.Builder
+	renderSatiation(&tb, v2)
+	if got := tb.String(); !strings.Contains(got, "ale") || !strings.Contains(got, "consume to drink") {
+		t.Errorf("thirst render should read 'ale ... consume to drink', got:\n%s", got)
 	}
 }
 

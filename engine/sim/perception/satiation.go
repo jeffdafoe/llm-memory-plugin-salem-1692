@@ -204,6 +204,28 @@ func dropWholesalerProduce(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, ite
 	return out
 }
 
+// dropDrinkSatisfiers removes drink-category satisfiers from an own-stock list —
+// the LLM-318 hunger-line filter. A drink that also eases hunger (ale is belly-
+// filling) is a bonus source of hunger relief, not food, so the "what you can
+// eat" hunger line must not offer it alongside real food; the caller applies
+// this to the hunger group only. Keyed on the intrinsic item category
+// (ItemKindDef.IsDrink), nil-safe for a discovery-minted kind absent from the
+// catalog (kept, since it isn't a known drink). Returns nil when nothing
+// survives, so the caller's empty-section gate omits the cue.
+func dropDrinkSatisfiers(snap *sim.Snapshot, items []OwnStockItem) []OwnStockItem {
+	if len(items) == 0 || snap == nil {
+		return items
+	}
+	var out []OwnStockItem
+	for _, it := range items {
+		if snap.ItemKinds[it.kind].IsDrink() {
+			continue
+		}
+		out = append(out, it)
+	}
+	return out
+}
+
 // holdsBarterableGoods reports whether the actor carries any goods it could put
 // up in a pay_with_item / offer_trade bundle — the "goods" half of the LLM-222
 // means-to-pay gate. Any held ItemKind with a positive quantity counts:
@@ -299,6 +321,17 @@ func buildSatiation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Acto
 			continue
 		}
 		own := gatherOwnStock(snap, actorSnap, need)
+		// LLM-318: a drink that also eases hunger (belly-filling ale) is not food.
+		// Its hunger relief is a bonus, not what it's for — so keep it OUT of the
+		// hunger "what you can eat" line, where it would otherwise sit next to bread
+		// as if it were a meal. It still surfaces under thirst (its own identity)
+		// and still eases hunger when consumed; this only stops perception from
+		// advertising a drink as a hunger solution. Thirst is untouched (drinks
+		// belong there). Applied before the trade/tier demotions below — a drink is
+		// never a hunger option at any tier.
+		if need == "hunger" {
+			own = dropDrinkSatisfiers(snap, own)
+		}
 		// LLM-267: a wholesaler owner's own produce is stock to sell, not food —
 		// strip it at EVERY tier, BEFORE the LLM-134 tier demotion below (which
 		// otherwise lets own trade stock return at red). Keyed on sim.IsOwnProduce,
