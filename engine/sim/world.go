@@ -661,6 +661,16 @@ type WorldSettings struct {
 	// choice, farm upkeep, stall repair, seek work). Seeded
 	// DefaultEcoEconomyGap when the eco_economy_gap_seconds key is absent.
 	EcoEconomyGap time.Duration
+
+	// EcoConversationMax is the eco conversation arc (LLM-334): how long a
+	// huddle may run continuously unwatched (and commerce-free) before the
+	// eco-conclude sweep silently ends the scene and quiets its members. The
+	// eco gaps bound a conversation's rate; this bounds its lifetime — the
+	// only thing that reduces a self-sustaining npc_spoke chain's total call
+	// count. 0 disables the sweep (meter-forever); seeded
+	// DefaultEcoConversationMax when the eco_conversation_max_seconds key is
+	// absent. Live-tunable + persisted (settings/eco-mode).
+	EcoConversationMax time.Duration
 }
 
 // DefaultOutdoorSceneRadiusValue is the fallback radius used when
@@ -741,6 +751,13 @@ type huddleSilenceSweepState struct {
 // loop-conclusion sweep's AfterFunc self-rearm chain (LLM-159). Same shape
 // and rules as payLedgerSweepState.
 type huddleLoopSweepState struct {
+	scheduled bool
+}
+
+// ecoConcludeSweepState carries the coalescing flag for the eco
+// conversation-arc sweep's AfterFunc self-rearm chain (LLM-334). Same shape
+// and rules as payLedgerSweepState.
+type ecoConcludeSweepState struct {
 	scheduled bool
 }
 
@@ -1069,6 +1086,7 @@ type World struct {
 	orderSweep         orderSweepState
 	huddleSilenceSweep huddleSilenceSweepState
 	huddleLoopSweep    huddleLoopSweepState
+	ecoConcludeSweep   ecoConcludeSweepState
 
 	// quoteSeq is the monotonic per-run QuoteID counter — same shape
 	// and rules as eventSeq. Incremented before assignment; first

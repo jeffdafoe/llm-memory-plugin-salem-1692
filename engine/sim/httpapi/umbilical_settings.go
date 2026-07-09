@@ -83,8 +83,11 @@ type UmbilicalSettingsDTO struct {
 	EcoEnabled           bool `json:"eco_enabled"`
 	EcoSocialGapSeconds  int  `json:"eco_social_gap_seconds"`
 	EcoEconomyGapSeconds int  `json:"eco_economy_gap_seconds"`
-	EcoAudienceActive    bool `json:"eco_audience_active"`
-	EcoEngaged           bool `json:"eco_engaged"`
+	// EcoConversationMaxSeconds (LLM-334) is the unwatched conversation arc the
+	// eco-conclude sweep applies (0 = sweep off, meter-forever).
+	EcoConversationMaxSeconds int  `json:"eco_conversation_max_seconds"`
+	EcoAudienceActive         bool `json:"eco_audience_active"`
+	EcoEngaged                bool `json:"eco_engaged"`
 }
 
 // handleUmbilicalSettings serves the current live-tunable world settings. Read on
@@ -115,6 +118,7 @@ func (s *Server) handleUmbilicalSettings(w http.ResponseWriter, r *http.Request)
 			EcoEnabled:                    world.Settings.EcoEnabled,
 			EcoSocialGapSeconds:           int(world.Settings.EcoSocialGap / time.Second),
 			EcoEconomyGapSeconds:          int(world.Settings.EcoEconomyGap / time.Second),
+			EcoConversationMaxSeconds:     int(world.Settings.EcoConversationMax / time.Second),
 			EcoAudienceActive:             audience,
 			EcoEngaged:                    world.Settings.EcoEnabled && !audience,
 		}

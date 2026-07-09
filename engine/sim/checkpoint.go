@@ -112,10 +112,12 @@ type MutableWorldSettings struct {
 	// Eco mode knobs (LLM-313) — throttle LLM deliberation cadence while no player
 	// is present. Live-tunable via the umbilical, persisted here each checkpoint so
 	// a live change survives restart. Gaps stored in seconds to match the
-	// eco_*_gap_seconds setting keys.
-	EcoEnabled           bool
-	EcoSocialGapSeconds  int
-	EcoEconomyGapSeconds int
+	// eco_*_gap_seconds setting keys. EcoConversationMaxSeconds (LLM-334) is the
+	// unwatched conversation arc (0 = arc sweep off).
+	EcoEnabled                bool
+	EcoSocialGapSeconds       int
+	EcoEconomyGapSeconds      int
+	EcoConversationMaxSeconds int
 }
 
 // DiscoveredKind is the minimal persist-tuple for an engine-minted item kind
@@ -174,6 +176,7 @@ func (w *World) BuildCheckpointSnapshot() *CheckpointSnapshot {
 			EcoEnabled:                    w.Settings.EcoEnabled,
 			EcoSocialGapSeconds:           int(w.Settings.EcoSocialGap / time.Second),
 			EcoEconomyGapSeconds:          int(w.Settings.EcoEconomyGap / time.Second),
+			EcoConversationMaxSeconds:     int(w.Settings.EcoConversationMax / time.Second),
 		},
 	}
 	// ZBBS-WORK-412: carry the engine-minted (unknown-category) item kinds so
