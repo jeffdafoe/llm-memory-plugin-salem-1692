@@ -63,6 +63,19 @@ type SceneQuoteCreateResult struct {
 	// adjusted disposition instead of leaving it believing it posted a
 	// take-home quote.
 	EatHereClamped bool
+	// Announced is true when the seller's `say` line was spoken alongside the
+	// quote (LLM-343). The speech is best-effort: a quote that posts but whose
+	// words are refused still stands, so the seller's tool feedback must not
+	// claim it was heard. Set by HandleSceneQuote after SpeakTo, not by
+	// SceneQuoteCreate itself.
+	Announced bool
+	// SayRefused carries SpeakTo's model-facing reason when the quote posted but
+	// the words did not go out — the line named someone who has left the
+	// conversation, or the seller has already spoken and is owed a reply. Empty
+	// when Announced, or when no `say` was offered. Echoed verbatim in the tool
+	// result: guessing at the reason would tell the seller the wrong thing to
+	// fix.
+	SayRefused string
 }
 
 // SceneQuoteCreate returns a Command that mints a SceneQuote on the

@@ -258,8 +258,17 @@ func TestRenderOfferableCustomers_SingleCustomer(t *testing.T) {
 	for _, want := range []string{
 		"## Custom at hand",
 		"Goodwife Mary is here with you",
-		"call sell with",
+		"call sell",
 		"target_buyer",
+		// LLM-343: the cue must point at exactly one tool. speak and sell are
+		// both tick-terminal, so a cue that asks for a spoken price AND a sell
+		// gets only the speech — the offer never posts. The words ride on
+		// sell's `say`, and the cue says so out loud.
+		"the words you speak aloud in say",
+		"Do not name a price with the speak tool",
+		// The observed failure was a two-item order ("a bowl of soup and a loaf
+		// of bread"); the seller must know the bundle goes in one offer.
+		"give each its own line in the SAME offer under one total price",
 		// ZBBS-HOME-467: quote trigger gated on a named good; a generic opener
 		// gets the menu (present wares + let them choose), not a guessed-item quote.
 		"names a specific good they want",
