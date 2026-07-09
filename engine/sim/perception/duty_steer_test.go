@@ -600,10 +600,15 @@ func TestRenderDutySteer(t *testing.T) {
 	}
 
 	// ZBBS-WORK-431: the at-post stabilizer is placeless (the actor is already
-	// there) and tells it to stay put rather than wander.
+	// there) and tells it to stay and mind its work. LLM-337 dropped the explicit
+	// "wait here ... wandering off" anti-wander pin (a weak-model crutch), so the
+	// line carries the mild duty steer but no longer that pin.
 	atPost := render(&DutySteerView{AtPost: true})
-	if !strings.Contains(atPost, "at your post") || !strings.Contains(atPost, "wandering off") {
+	if !strings.Contains(atPost, "at your post") || !strings.Contains(atPost, "stay and look after your work") {
 		t.Errorf("atPost prose missing pieces, got %q", atPost)
+	}
+	if strings.Contains(atPost, "wandering off") {
+		t.Errorf("atPost should no longer carry the removed anti-wander pin, got %q", atPost)
 	}
 	if strings.Contains(atPost, "destination") {
 		t.Errorf("atPost prose should be placeless (no structure_id), got %q", atPost)
@@ -620,9 +625,9 @@ func TestRenderDutySteer(t *testing.T) {
 	}
 
 	// LLM-90: an at-post grower with a bare sell-shelf gets the step-out-and-return
-	// line instead of "wait here ... wandering off", so the stabilizer agrees with
-	// the "## Your bushes to harvest" cue rather than pinning her against it. The
-	// close time still renders.
+	// line instead of the generic "stay and look after your work" steer, so the
+	// stabilizer agrees with the "## Your bushes to harvest" cue rather than pinning
+	// her against it. The close time still renders.
 	atPostForage := render(&DutySteerView{AtPost: true, ForageErrand: true, ShiftEndMin: dutyMinPtr(1260)})
 	if !strings.Contains(atPostForage, "your shelves are bare") || !strings.Contains(atPostForage, "step out to your own bushes") {
 		t.Errorf("atPost+forage prose missing the step-out pieces, got %q", atPostForage)

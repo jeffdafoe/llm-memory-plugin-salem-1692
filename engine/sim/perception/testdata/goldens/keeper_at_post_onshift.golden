@@ -19,6 +19,6 @@ It is morning in the village.
 
 You keep your trade at the General Store (destination: general_store); your home is at the James Farm (destination: james_farm) — head home once your work is done.
 
-It is your working hours and you are at your post — stay and look after your work; you close at 6 in the evening. If no one needs you right now, wait here for customers rather than wandering off.
+It is your working hours and you are at your post — stay and look after your work; you close at 6 in the evening.
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

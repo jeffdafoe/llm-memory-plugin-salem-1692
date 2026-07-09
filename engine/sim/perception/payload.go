@@ -1496,8 +1496,8 @@ type DutySteerView struct {
 	// an active forage errand this tick (p.Forage != nil — a bare sell-shelf plus
 	// ripe owned bushes, and NOT mid-customer, since buildForage defers the harvest
 	// cue while a customer is engaged at the stall). It flips the stabilizer's
-	// "wait here rather than wandering off" line for a "step out to your bushes and
-	// return" line, so the at-post cue AGREES with the "## Your bushes to harvest"
+	// default "stay and look after your work" steer for a "step out to your bushes
+	// and return" line, so the at-post cue AGREES with the "## Your bushes to harvest"
 	// section instead of pinning her against it (LLM-90). Only meaningful when
 	// AtPost; the to-work arm separately defers a forage errand so she isn't yanked
 	// back mid-trip.
