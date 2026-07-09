@@ -1793,7 +1793,10 @@ func _load_agent_drivers() -> void:
     var headers: PackedStringArray = Auth.auth_headers(false)
     var err = http.request(api_base + "/api/village/agent-drivers", headers)
     if err != OK:
+        # request() failed synchronously, so request_completed never fires —
+        # free the node here or it leaks.
         push_error("Failed to request agent drivers: " + str(err))
+        http.queue_free()
 
 func _on_agent_drivers_loaded(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:
     http.queue_free()
