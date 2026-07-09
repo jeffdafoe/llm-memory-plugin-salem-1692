@@ -66,6 +66,27 @@ var laborAbandonTools = map[string]struct{}{
 	"sell":          {}, // the seller quote tool's model-facing name (scene_quote, renamed in LLM-184)
 }
 
+// payVerbTools are the buyer-initiated payment tools advertised ONLY when the
+// actor has a co-present huddle peer to transact with (Surroundings.HuddleMembers
+// non-empty). Both hard-require CurrentHuddleID != "" at the substrate — sim.Pay
+// resolves the recipient among huddle peers, and sim.PayWithItem (the barter/offer
+// slow path AND the quote fast-path) rejects a non-huddled buyer — so an actor
+// with no huddle peer storms a doomed call up to the per-tick iteration cap
+// (→ budget_forced) and, carrying no memory of the failure, re-storms it next tick
+// (LLM-329: Hannah Boggs fired pay_with_item at an absent seller 23× / 4 min while
+// cued to restock but not co-present with any seller). HuddleMembers is the huddle
+// subset of the speak gate's audience set — a not-yet-huddled walk-in (CoPresent)
+// can be greeted but not paid until a conversation forms — and the same
+// co-presence the restock/satiation buy cues read, so tool and cue can't drift
+// (the discussion-109 invariant). A necessary-condition gate: no huddle peer means
+// a guaranteed substrate reject, so there are no false drops. Advertising-only:
+// the tools stay AvailabilityAvailable and sim.Pay / sim.PayWithItem stay
+// authoritative for any call that arrives.
+var payVerbTools = map[string]struct{}{
+	"pay":           {},
+	"pay_with_item": {},
+}
+
 // giftResponseTools are the recipient-side gift-decision tools advertised ONLY
 // when the actor's perception carries a pending gift offered to them
 // (perception.PendingGiftsForMe — the standing IsGift ledger view). The gift
@@ -350,6 +371,11 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 	offerStayOpen := payload.DutySteer != nil && payload.DutySteer.OfferStayOpen
 	offerTakeBreak := payload.RecoveryOptions.OffersTakeBreak()
 	hasAudience := payload.Surroundings.HasAudience()
+	// hasHuddlePeer gates the pay verbs (LLM-329): both require the actor to be in
+	// a huddle at the substrate, and HuddleMembers is populated only then. The
+	// huddle subset of hasAudience — a not-yet-huddled CoPresent walk-in enables
+	// speak but not pay (start the conversation first).
+	hasHuddlePeer := len(payload.Surroundings.HuddleMembers) > 0
 	flaggedDegenerate := actorIsFlaggedDegenerate(payload.ActorID, snap)
 	offerCraft := payload.ForgeChoice != nil && len(payload.ForgeChoice.Items) > 0
 	offerRepair := payload.StallRepair != nil
@@ -435,6 +461,16 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 		// room case). Same audience set as the co-presence cue → cue and tool can't
 		// drift; a co-present walk-in re-enables it so a keeper can greet a newcomer.
 		if spec.Name == speakToolName && !hasAudience {
+			continue
+		}
+		// pay-verb consumer (LLM-329): advertise pay / pay_with_item only when the
+		// actor has a co-present huddle peer. Both hard-require CurrentHuddleID != ""
+		// at the substrate, so an actor with no huddle peer storms a doomed call every
+		// tick with no memory of the failure (the Hannah Boggs absent-seller storm).
+		// hasHuddlePeer is the huddle subset of the speak audience set — the same
+		// co-presence the restock/satiation buy cues read — so tool and cue can't
+		// drift. A necessary-condition gate, so no false drops.
+		if _, gated := payVerbTools[spec.Name]; gated && !hasHuddlePeer {
 			continue
 		}
 		// degeneracy Stage-1 gate (LLM-94): drop move_to from a flagged actor's
