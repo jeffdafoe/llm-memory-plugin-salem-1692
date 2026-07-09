@@ -314,16 +314,16 @@ func TestMoveToStructureByName_RealKitchenStructureWins(t *testing.T) {
 // TestMoveToStructureByName_UnresolvableNameListsPublicStructures pins the
 // LLM-306 enrichment end-to-end: an unresolvable place name comes back with a
 // bounded, deterministic list of REAL destinations so a weak model can
-// self-correct, while still carrying the well/bush source hint. LLM-336 narrowed
-// the listed set to currently-OPEN businesses (tagged TagBusiness with a keeper
-// tending them), so this seeds the Inn and Gazebo as keeper-present businesses;
-// the closed Well and the bare lamp prop are still not listed.
+// self-correct, while still carrying the well/bush source hint. The listed set is
+// the village's businesses (tagged TagBusiness, keeper-present or not — LLM-341),
+// so this tags the Inn and Gazebo as businesses; the Well and the bare lamp prop
+// are not businesses, so they stay off the list.
 func TestMoveToStructureByName_UnresolvableNameListsPublicStructures(t *testing.T) {
 	w, cancel, _ := buildMoveTestWorld(t)
 	defer cancel()
 
-	// Make the Inn and Gazebo open businesses: tag their placements and stand an
-	// awake keeper inside each so keeperPresentAt reports them as tended.
+	// Tag the Inn and Gazebo placements as businesses. No keeper is seeded — after
+	// LLM-341 an untended business still lists, so this also proves that end-to-end.
 	if _, err := w.Send(sim.Command{Fn: func(wr *sim.World) (any, error) {
 		for _, id := range []sim.StructureID{"inn", "gazebo"} {
 			obj, ok := wr.VillageObjects[sim.VillageObjectID(id)]
@@ -331,12 +331,10 @@ func TestMoveToStructureByName_UnresolvableNameListsPublicStructures(t *testing.
 				return nil, fmt.Errorf("test setup: no %q placement", id)
 			}
 			obj.Tags = append(obj.Tags, sim.TagBusiness)
-			keeperID := sim.ActorID("keeper_" + string(id))
-			wr.Actors[keeperID] = &sim.Actor{ID: keeperID, WorkStructureID: id, InsideStructureID: id, State: sim.StateIdle}
 		}
 		return nil, nil
 	}}); err != nil {
-		t.Fatalf("seed open businesses: %v", err)
+		t.Fatalf("seed businesses: %v", err)
 	}
 
 	_, err := w.Send(sim.MoveToStructureByName("walker", "Market", nil, sim.RememberedPlaces{}, time.Now().UTC()))
@@ -347,8 +345,8 @@ func TestMoveToStructureByName_UnresolvableNameListsPublicStructures(t *testing.
 	if !strings.Contains(msg, "no place called") {
 		t.Errorf("error lacks 'no place called': %v", err)
 	}
-	// The Inn (nearest, X=320) then the Gazebo (X=960); the closed Well and bare
-	// lamp prop are not open businesses, so exactly these two, in that order.
+	// The Inn (nearest, X=320) then the Gazebo (X=960); the Well and bare lamp prop
+	// are not businesses, so exactly these two, in that order.
 	if !strings.Contains(msg, `the village includes "Inn", "Gazebo";`) {
 		t.Errorf("error does not name the open businesses in order: %v", err)
 	}
