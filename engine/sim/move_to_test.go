@@ -348,7 +348,7 @@ func TestMoveToStructureByName_UnresolvableNameListsPublicStructures(t *testing.
 	// The Inn (nearest, X=320) then the Gazebo (X=960); the Well and bare lamp prop
 	// are not businesses, so exactly these two, in that order.
 	if !strings.Contains(msg, `the village includes "Inn", "Gazebo";`) {
-		t.Errorf("error does not name the open businesses in order: %v", err)
+		t.Errorf("error does not name the businesses in order: %v", err)
 	}
 	// The source hint survives the enrichment.
 	if !strings.Contains(msg, "a well, a bush") {
