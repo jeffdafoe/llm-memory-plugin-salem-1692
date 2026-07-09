@@ -1813,13 +1813,20 @@ func renderOrdersReadyToHandOver(b *strings.Builder, orders []OrderView, now tim
 		if len(o.ConsumerNames) > 0 {
 			fmt.Fprintf(b, " (to deliver to: %s)", sanitizeInline(strings.Join(o.ConsumerNames, ", ")))
 		}
-		// Co-presence gate (ZBBS-WORK-373): an order whose recipient isn't in
-		// the seller's huddle can't be delivered now — DeliverOrder gate 6
-		// would reject it — so render it passively rather than as an action,
-		// and never name the absent buyer as a chase target.
-		if len(o.AbsentRecipientNames) > 0 {
+		// Two gates decide whether this order is deliverable NOW — if not, render
+		// it passively and don't count it toward the deliver_order instruction:
+		//   - Commission not yet forged (LLM-338): the seller took payment for a
+		//     good it still has to make, so DeliverOrder gate 5 (stock) would bounce
+		//     a deliver_order call. Steer to making it, not into a bounce loop.
+		//   - Absent recipient (ZBBS-WORK-373): the recipient isn't in the seller's
+		//     huddle, so gate 6 (co-presence) would reject the handover — never name
+		//     the absent buyer as a chase target.
+		switch {
+		case o.AwaitingMake:
+			b.WriteString(" — you've yet to make it")
+		case len(o.AbsentRecipientNames) > 0:
 			fmt.Fprintf(b, " — waiting for %s to return", sanitizeInline(strings.Join(o.AbsentRecipientNames, ", ")))
-		} else {
+		default:
 			anyDeliverable = true
 		}
 		if clause, ok := expiryClause(o.ExpiresAt, now); ok {

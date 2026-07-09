@@ -3297,6 +3297,7 @@ func buildPendingOrderViews(snap *sim.Snapshot, subject sim.ActorID) (fromMe, to
 			o := snap.Orders[id]
 			v := toView(o)
 			v.AbsentRecipientNames = absentRecipientNames(snap, seller, o, resolveName)
+			v.AwaitingMake = orderAwaitingMake(seller, o)
 			fromMe = append(fromMe, v)
 		}
 	}
@@ -3335,6 +3336,26 @@ func absentRecipientNames(snap *sim.Snapshot, seller *sim.ActorSnapshot, o *sim.
 	}
 	sort.Strings(absent)
 	return absent
+}
+
+// orderAwaitingMake reports whether a seller-side Ready order is a commission
+// (LLM-338) the seller has taken payment for but doesn't yet hold the goods to
+// fulfil: a good it PRODUCES, with stock below the order's need. Mirrors
+// DeliverOrder's gate-5 stock check (seller.Inventory[Item] >= Qty *
+// len(ConsumerIDs)) so the cue and the substrate agree on "can this be handed
+// over yet." A seller holding enough is not awaiting a make; a shortfall on a
+// good the seller doesn't make never reaches here (such an offer rejects at
+// accept rather than minting a Ready order). Seller-relative — meaningful only
+// for the PendingDeliveriesFromMe bucket. Nil seller / policy makes nothing.
+func orderAwaitingMake(seller *sim.ActorSnapshot, o *sim.Order) bool {
+	if seller == nil || o == nil {
+		return false
+	}
+	if !seller.RestockPolicy.Produces(o.Item) {
+		return false
+	}
+	needed := o.Qty * len(o.ConsumerIDs)
+	return seller.Inventory[o.Item] < needed
 }
 
 // recentlyResolvedOfferWindow bounds how long a just-settled offer stays in the

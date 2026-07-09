@@ -245,6 +245,38 @@ func orderExpiresAt(w *World, item ItemKind, readyBy, at time.Time) time.Time {
 	return at.Add(effectiveOrderTTL(w.Settings))
 }
 
+const (
+	// CommissionOrderSlack scales a made-to-order commission's base forge time
+	// (CycleDurationSeconds — WORK seconds accrued only at the post) into a
+	// wall-clock Ready window, since the keeper also serves guests, sleeps, and
+	// walks between batches. Generous by design: refund-on-expiry (ZBBS-HOME-403)
+	// makes an under-estimate non-catastrophic — the buyer is made whole — so we
+	// err long rather than expire a commission the keeper was still working on.
+	CommissionOrderSlack = 4
+	// CommissionOrderGrace pads the window on top of the scaled forge time so
+	// even a quick recipe leaves room to forge and rendezvous before the sweep.
+	CommissionOrderGrace = time.Hour
+	// CommissionOrderWindowFloor is the minimum a commission stays Ready
+	// regardless of how fast the recipe is.
+	CommissionOrderWindowFloor = 2 * time.Hour
+)
+
+// commissionOrderExpiresAt sizes the Ready window for a made-to-order commission
+// (LLM-338) from the recipe's forge lead time, floored and padded (see the
+// Commission* constants). Unlike a normal take-home Order — delivered in the
+// same tick, so its 10-minute OrderTTL never matters — a commission sits Ready
+// while the keeper forges the good, so it needs a window that outlasts the
+// batch. A missing / rate-less recipe (shouldn't reach here — isCommissionOrder
+// gates on makeableRecipe) yields a zero lead time and falls to the floor.
+func commissionOrderExpiresAt(w *World, item ItemKind, at time.Time) time.Time {
+	lead := time.Duration(CycleDurationSeconds(w.Recipes[item])) * time.Second
+	window := lead*CommissionOrderSlack + CommissionOrderGrace
+	if window < CommissionOrderWindowFloor {
+		window = CommissionOrderWindowFloor
+	}
+	return at.Add(window)
+}
+
 // finalizeOrderTerminal flips an Order to a terminal state, stamps the
 // terminal timestamps, emits the matching event, and (when a sink is
 // installed) write-through-prunes the entry from World.Orders. Shared

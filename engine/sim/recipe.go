@@ -173,3 +173,21 @@ func (p *RestockPolicy) ProducesOrForages(kind ItemKind) bool {
 	}
 	return false
 }
+
+// Produces reports whether this item kind is one the actor MAKES — it has a
+// `produce` restock entry for it — as distinct from ProducesOrForages, which
+// also counts harvested (forage) goods. The commission path (LLM-338) uses it
+// to decide whether a stockless take-home offer is a made-to-order forge the
+// seller can fulfil by producing, rather than a plain out-of-stock reject.
+// Nil-safe — a policy-less actor makes nothing.
+func (p *RestockPolicy) Produces(kind ItemKind) bool {
+	if p == nil {
+		return false
+	}
+	for _, e := range p.Restock {
+		if e.Item == kind && e.Source == RestockSourceProduce {
+			return true
+		}
+	}
+	return false
+}
