@@ -23,7 +23,7 @@ Evening settles over the village.
 
 You're at your workplace.
 
-It is your working hours and you are at your post — stay and look after your work; you close at 10 at night. If no one needs you right now, wait here for customers rather than wandering off.
+It is your working hours and you are at your post — stay and look after your work; you close at 10 at night.
 
 ## Custom at hand
 Grace Bishop is here with you. If one of them names a specific good they want, or asks the price of a specific good, say your price for it plainly in your reply — name the coins outright, do not ask whether they would like to hear it — and call sell with that named item, the quantity, and your price in coins to post the offer (the buyer can take it on their own pay screen). If they speak only in general — that they are hungry, ask what you have, or ask the cost of a meal without naming a dish — tell them what is for sale and let them choose; do not sell unless the buyer has named the good. Use target_buyer only for a named person you know; for a stranger or someone known only by trade, omit target_buyer to offer the whole room. The buyer is then free to take it or leave it.

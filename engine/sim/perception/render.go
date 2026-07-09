@@ -1249,6 +1249,13 @@ func renderDutySteer(b *strings.Builder, v *DutySteerView) {
 	// with no custom wanders off and the away-from-post arm drags it back
 	// (Prudence shop↔house). The anchors line is reframed in tandem (renderAnchors
 	// atPost) so the two cues agree: you belong here right now.
+	//
+	// LLM-337: dropped the explicit "wait here for customers rather than wandering
+	// off" pin — a llama-era crutch that also suppressed legitimate restock trips
+	// (a keeper leaving post to buy an off-circuit input, e.g. sage from the
+	// apothecary). The stronger model doesn't need it: the mild "stay and look
+	// after your work" steer plus the close time remain, and the away-from-post
+	// arm still recovers a keeper that genuinely wandered.
 	if v.AtPost {
 		// State the close time (LLM-40) so "stay open later" is a bounded
 		// decision — the model otherwise read the diligence cues as license to
@@ -1260,12 +1267,12 @@ func renderDutySteer(b *strings.Builder, v *DutySteerView) {
 		if v.ForageErrand {
 			// LLM-90: a bare sell-shelf plus ripe own bushes, and NOT mid-customer
 			// (buildForage defers the harvest cue while a customer is engaged at the
-			// stall). The default stabilizer's "wait here rather than wandering off"
-			// line directly contradicts the "## Your bushes to harvest" cue's
-			// "walk out to your bushes" — so swap it for a step-out-and-return line
-			// the two cues agree on. Stepping out to one's OWN bushes to restock an
-			// empty shelf is tending the trade, not wandering off; the post stays the
-			// home base she returns to. The to-work arm defers a forage errand
+			// stall). The default stabilizer's "stay and look after your work" steer
+			// pulls against the "## Your bushes to harvest" cue's "walk out to your
+			// bushes" — so swap it for a step-out-and-return line the two cues agree
+			// on. Stepping out to one's OWN bushes to restock an empty shelf is tending
+			// the trade; the post stays the home base she returns to. The to-work arm
+			// defers a forage errand
 			// (buildDutySteer), so she isn't yanked back once she sets off.
 			if closeAt != "" {
 				fmt.Fprintf(b, "It is your working hours and you are at your post (you close at %s), but your shelves are bare — step out to your own bushes to restock, then return to your post.\n\n", closeAt)
@@ -1275,9 +1282,9 @@ func renderDutySteer(b *strings.Builder, v *DutySteerView) {
 			return
 		}
 		if closeAt != "" {
-			fmt.Fprintf(b, "It is your working hours and you are at your post — stay and look after your work; you close at %s. If no one needs you right now, wait here for customers rather than wandering off.\n\n", closeAt)
+			fmt.Fprintf(b, "It is your working hours and you are at your post — stay and look after your work; you close at %s.\n\n", closeAt)
 		} else {
-			b.WriteString("It is your working hours and you are at your post — stay and look after your work. If no one needs you right now, wait here for customers rather than wandering off.\n\n")
+			b.WriteString("It is your working hours and you are at your post — stay and look after your work.\n\n")
 		}
 		return
 	}

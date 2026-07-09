@@ -1871,8 +1871,8 @@ func buildDutySteer(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapsho
 		//
 		// ForageErrand (LLM-90): when this same at-post grower has a bare sell-shelf
 		// and ripe own bushes (hasForageErrand → p.Forage != nil, which already
-		// excludes the mid-customer case), render flips the "wait here rather than
-		// wandering off" line for a "step out to your bushes and return" line, so the
+		// excludes the mid-customer case), render flips the default "stay and look
+		// after your work" steer for a "step out to your bushes and return" line, so the
 		// stabilizer agrees with the "## Your bushes to harvest" cue instead of
 		// contradicting it. She's woken by the (now forage-aware) restock warrant,
 		// so this still renders only on a tick that already runs.
