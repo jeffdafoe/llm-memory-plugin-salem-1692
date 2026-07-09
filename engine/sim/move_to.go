@@ -357,8 +357,8 @@ func resolveStructureByVillageName(w *World, a *Actor, name string) (StructureID
 // into a retry message.
 const moveToDestinationNameCap = 5
 
-// namedVillageDestinations returns up to limit PUBLIC structure names the actor
-// could pick as a move_to target, nearest-first, plus whether more existed than
+// namedVillageDestinations returns up to limit currently-OPEN business names the
+// actor could pick as a move_to target, nearest-first, plus whether more existed than
 // the cap (so the caller can append an "(and more)" hint instead of implying the
 // list is exhaustive). It backs the unknown-place error in MoveToStructureByName:
 // when the model names a place no structure matches, this hands it a bounded set
@@ -372,13 +372,20 @@ const moveToDestinationNameCap = 5
 // call; RememberedPlaces carries objects only). This mirrors the set
 // resolveStructureByVillageName resolves against.
 //
-// PUBLIC = entry policy neither owner-only (private homes, which the actor can
-// walk to but not usefully enter) nor closed (wells, decoratives — already
-// covered by the "a well, a bush" source hint). This mirrors the engine's own
-// enter logic and points the model at shops / the tavern / civic buildings, which
-// is what a hallucinated destination ("Market", "the Smithy") is reaching for. A
-// structure with no walkable placement is skipped (can't walk there, can't
-// measure distance), matching the resolver.
+// A destination is a currently-OPEN business: its placed object is tagged
+// TagBusiness AND a keeper is tending it right now (keeperPresentAt — an awake
+// worker of the structure at it; the same shut-business test LLM-327's move_to
+// no-op and the seek-work cue use). This points a hallucinated destination
+// ("Market", "the Smithy") at the shop/tavern it's reaching for. Unlike the earlier
+// entry-policy filter, it INCLUDES owner-only shops (blacksmith, store, apothecary,
+// farms) — those read owner-only for ENTRY but are public places to walk TO
+// (LLM-336). Residences drop out (not TagBusiness), and an untended or shut
+// business drops until its keeper returns, so a lost NPC is never pointed at an
+// empty shop; when nothing is open the list is empty and MoveToStructureByName
+// falls through to the generic hint. current_state is deliberately NOT consulted —
+// it is a visual/asset-state field (sprite variant), not an open/closed signal. A
+// structure with no walkable placement is skipped (can't walk there, can't measure
+// distance), matching the resolver.
 //
 // Order is nearest-first (Chebyshev to the actor; ties break by structure_id),
 // deduplicated by display name (leading-article-insensitive) so a shared name is
@@ -399,8 +406,8 @@ func namedVillageDestinations(w *World, a *Actor, limit int) (names []string, mo
 		if !ok {
 			continue // no placement → can't walk there (and can't measure distance)
 		}
-		if vobj.EntryPolicy == EntryPolicyOwner || vobj.EntryPolicy == EntryPolicyClosed {
-			continue // private home / decorative — not a public destination to name
+		if !vobj.HasTag(TagBusiness) || !keeperPresentAt(w, structureID) {
+			continue // only a currently-tended business is a place to send a lost NPC
 		}
 		candidates = append(candidates, candidate{
 			id:   structureID,
