@@ -822,7 +822,18 @@ func buildInventoryView(snap *sim.Snapshot, a *sim.ActorSnapshot) []InventoryIte
 		if qty <= 0 {
 			continue
 		}
-		out = append(out, InventoryItem{Label: itemDisplayLabel(snap, kind), Qty: qty, Use: inventoryItemUse(snap, kind), kind: kind})
+		label := itemDisplayLabel(snap, kind)
+		// Count-aware noun for the carry line so a liquid/mass good reads with
+		// its period vessel ("flasks of water") instead of a bare label the model
+		// fills with an invented container ("buckets"). Falls back to the display
+		// label for a kind with no authored singular/plural (LLM-113).
+		noun := label
+		if def := snap.ItemKinds[kind]; def != nil {
+			if cn := def.CountNoun(qty); cn != "" {
+				noun = cn
+			}
+		}
+		out = append(out, InventoryItem{Label: label, CountNoun: noun, Qty: qty, Use: inventoryItemUse(snap, kind), kind: kind})
 	}
 	if len(out) == 0 {
 		return nil

@@ -638,13 +638,21 @@ func renderActor(b *strings.Builder, a ActorView) {
 			if i > 0 {
 				b.WriteString(", ")
 			}
+			// Count-aware noun (LLM-339): "flasks of water (x20)" not "Water
+			// (x20)", so the model isn't left inventing a container ("buckets").
+			// Fall back to the display label for a directly-constructed item that
+			// didn't resolve a count noun (e.g. the for-sale test fixtures).
+			noun := it.CountNoun
+			if noun == "" {
+				noun = it.Label
+			}
 			// The use annotation folds into the quantity parens (LLM-166) so the
-			// comma-separated item list stays unambiguous: "Meat (x7, used to
-			// produce stew)". Empty for edibles / non-ingredients.
+			// comma-separated item list stays unambiguous: "cuts of meat (x7, used
+			// to produce stew)". Empty for edibles / non-ingredients.
 			if it.Use != "" {
-				fmt.Fprintf(b, "%s (x%d, %s)", sanitizeInline(it.Label), it.Qty, sanitizeInline(it.Use))
+				fmt.Fprintf(b, "%s (x%d, %s)", sanitizeInline(noun), it.Qty, sanitizeInline(it.Use))
 			} else {
-				fmt.Fprintf(b, "%s (x%d)", sanitizeInline(it.Label), it.Qty)
+				fmt.Fprintf(b, "%s (x%d)", sanitizeInline(noun), it.Qty)
 			}
 		}
 		b.WriteString(".\n")

@@ -94,6 +94,38 @@ func TestRenderActor_CarryingLine(t *testing.T) {
 	}
 }
 
+// LLM-339: the carry line renders the qty-aware count noun ("flasks of water"),
+// not the bare display label ("Water") that left NPCs inventing a container
+// ("buckets of water"). Driven end-to-end through buildActorView so the
+// build-side resolution (ItemKindDef.CountNoun via buildInventoryView) is
+// covered alongside the render.
+func TestRenderActor_CarryingLine_CountNoun(t *testing.T) {
+	kinds := map[sim.ItemKind]*sim.ItemKindDef{
+		"water": {
+			Name:                 "water",
+			DisplayLabel:         "Water",
+			DisplayLabelSingular: "flask of water",
+			DisplayLabelPlural:   "flasks of water",
+		},
+	}
+	cases := []struct {
+		qty  int
+		want string
+	}{
+		{20, "You are carrying: flasks of water (x20)."},
+		{1, "You are carrying: flask of water (x1)."},
+	}
+	for _, tc := range cases {
+		snap := invSnap(map[sim.ItemKind]int{"water": tc.qty}, kinds)
+		av := buildActorView(snap, snap.Actors["josiah"])
+		var b strings.Builder
+		renderActor(&b, av)
+		if out := b.String(); !strings.Contains(out, tc.want) {
+			t.Errorf("qty %d: want %q in carry line, got:\n%s", tc.qty, tc.want, out)
+		}
+	}
+}
+
 func TestRenderActor_NoCarryingLineWhenEmpty(t *testing.T) {
 	var b strings.Builder
 	renderActor(&b, ActorView{State: sim.StateIdle})

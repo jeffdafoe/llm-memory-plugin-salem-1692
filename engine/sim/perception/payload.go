@@ -1088,6 +1088,14 @@ type ActorView struct {
 type InventoryItem struct {
 	Label string
 	Qty   int
+	// CountNoun is the qty-aware counting phrase for the carry readout —
+	// def.CountNoun(qty) ("flask of water" / "flasks of water"), so the model is
+	// handed the period vessel word instead of a bare label it must invent a
+	// container for ("Water (x20)" led NPCs to say "buckets of water"). Falls
+	// back to Label for a kind with no authored singular/plural (LLM-113).
+	// Distinct from Label, which stays the display label used for the
+	// deterministic sort and the for-sale (offerable-goods) listing.
+	CountNoun string
 	// Use is the "used to produce X" annotation for an INEDIBLE carried
 	// ingredient (LLM-166), so a hungry model doesn't mistake it for food.
 	// Empty for an edible item (the satiation cue owns those) or a non-ingredient
