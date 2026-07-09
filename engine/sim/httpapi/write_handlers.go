@@ -1235,8 +1235,9 @@ type adminObjectPromoteRequest struct {
 }
 
 // adminObjectPromoteResponse echoes the created structure's id, resolved display
-// name, and tags. The placing client adopts has_interior locally off a 200; the
-// live push of the promotion to OTHER connected clients is LLM-250.
+// name, and tags. The placing client adopts has_interior locally off a 200; every
+// other connected client learns of the promotion from the
+// object_promoted_to_structure broadcast the command emits (LLM-250).
 type adminObjectPromoteResponse struct {
 	ID          string   `json:"id"`
 	DisplayName string   `json:"display_name"`

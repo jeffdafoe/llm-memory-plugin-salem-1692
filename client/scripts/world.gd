@@ -1683,8 +1683,10 @@ func _on_object_saved(result: int, response_code: int, headers: PackedStringArra
 ## (the shared-identity bridge) so NPCs can move_to it by name and it can be set
 ## as a home/work anchor — navigable immediately, no engine restart. On success
 ## the placing client flips the node to has_interior locally so clicking it now
-## walks INSIDE (structure_enter) instead of to a loiter slot. The live push of
-## the promotion to OTHER connected clients is LLM-250.
+## walks INSIDE (structure_enter) instead of to a loiter slot. Other connected
+## clients flip the same meta off the object_promoted_to_structure broadcast
+## (event_client.gd), so this local write is only a latency shortcut for the
+## placing client, not the sole path.
 func _promote_to_structure(object_id: String, node: Node2D) -> void:
     var http = HTTPRequest.new()
     http.accept_gzip = false
@@ -1930,11 +1932,11 @@ func set_npc_agent(container: Node2D, agent: String) -> void:
 
 ## Link or unlink the home structure for an NPC. Empty string unlinks.
 func set_npc_home_structure(container: Node2D, structure_id: String) -> void:
-    _set_npc_structure(container, "set-home-structure", "home_structure_id", structure_id)
+    _set_npc_structure(container, "set-home-structure", structure_id)
 
 ## Link or unlink the work structure for an NPC. Empty string unlinks.
 func set_npc_work_structure(container: Node2D, structure_id: String) -> void:
-    _set_npc_structure(container, "set-work-structure", "work_structure_id", structure_id)
+    _set_npc_structure(container, "set-work-structure", structure_id)
 
 ## Update the NPC's schedule in one atomic PATCH. start_min/end_min are
 ## sent as null when -1 (worker inherits dawn/dusk); otherwise as
@@ -2485,17 +2487,24 @@ func _npc_sprite(container: Node2D) -> AnimatedSprite2D:
             return child
     return null
 
-## route is the admin/npc action ("set-home-structure" / "set-work-structure");
-## field is the local container meta key (home_structure_id / work_structure_id).
+## route is the admin/npc action ("set-home-structure" / "set-work-structure").
 ## The route body keys the value as structure_id (null clears the anchor).
-func _set_npc_structure(container: Node2D, route: String, field: String, structure_id: String) -> void:
+##
+## The container meta is NOT written here. The engine emits NPCHome/WorkStructureChanged
+## on an accepted change, which returns as the npc_home/work_structure_changed frame
+## and lands in _apply_npc_structure_meta — that echo is the authoritative write, and
+## it also fires npc_metadata_changed so the editor panel repaints. Writing the meta
+## optimistically up front (as this did before LLM-250) made a REJECTED assignment
+## indistinguishable from an accepted one: the server 404s on a placement that backs
+## no structure, nothing echoes back, and the panel goes on reporting an anchor the
+## engine never recorded.
+func _set_npc_structure(container: Node2D, route: String, structure_id: String) -> void:
     var npc_id = container.get_meta("npc_id", null)
     if npc_id == null:
         return
     var value = null
     if structure_id != "":
         value = structure_id
-    container.set_meta(field, structure_id)
     _post_npc_admin(npc_id, route, {"structure_id": value})
 
 ## Returns all placed objects in the 'structure' asset category as
@@ -2525,26 +2534,61 @@ func get_structure_objects() -> Array:
 ## POST an NPC edit to the v2 admin surface (ZBBS-HOME-309). route is the
 ## admin/npc action (e.g. "set-display-name"); the target id rides in the body
 ## as npc_id, matching the admin/object/* convention. Replaces the dead v1
-## PATCH /api/village/npcs/{id}/{field}. State stays via optimistic local apply
-## + the per-field npc_* WS echo the routes broadcast.
+## PATCH /api/village/npcs/{id}/{field}. State lands via the per-field npc_* WS
+## echo the routes broadcast.
+##
+## LLM-250: a non-2xx now raises a Toast. This callback used to call
+## Auth.check_response and nothing else, so every rejection but a 401 vanished —
+## a 404 from set-work-structure (the placement backs no Structure) left the admin
+## staring at a click that silently did nothing.
 func _post_npc_admin(npc_id, route: String, payload_dict: Dictionary) -> void:
     var http = HTTPRequest.new()
     http.accept_gzip = false
     add_child(http)
 
     var headers_arr = Auth.auth_headers()
-    http.request_completed.connect(func(r, c, h, b):
+    http.request_completed.connect(func(result, code, _headers, response_body):
         http.queue_free()
-        Auth.check_response(c)
+        # A 401 already surfaces as the session-expired flow; don't double-report it.
+        if not Auth.check_response(code):
+            return
+        if result != HTTPRequest.RESULT_SUCCESS:
+            Toast.error("Could not reach the server to " + _humanize_admin_route(route) + ".")
+            return
+        if code < 200 or code >= 300:
+            Toast.error("Could not " + _humanize_admin_route(route) + ": " + _admin_error_detail(response_body, code))
     )
     var body: Dictionary = payload_dict.duplicate()
     body["npc_id"] = str(npc_id)
-    http.request(
+    # request() reports a start failure synchronously, and request_completed then never
+    # fires — so the node must be freed here or it leaks, and the admin would be left
+    # with no feedback at all. Mirrors _promote_to_structure (code_review, LLM-250).
+    var err := http.request(
         api_base + "/api/village/admin/npc/" + route,
         headers_arr,
         HTTPClient.METHOD_POST,
         JSON.stringify(body)
     )
+    if err != OK:
+        http.queue_free()
+        Toast.error("Could not start the request to " + _humanize_admin_route(route) + ".")
+        return
+
+## Render an admin route slug as something an admin would recognise in a sentence
+## ("set-work-structure" -> "set work structure").
+func _humanize_admin_route(route: String) -> String:
+    return route.replace("-", " ")
+
+## Pull the engine's error message out of a writeError body ({"error": "..."}),
+## falling back to the bare status when the body is missing or malformed — a
+## failure the admin can't read is barely better than the silent drop this replaces.
+func _admin_error_detail(body: PackedByteArray, code: int) -> String:
+    var parsed = JSON.parse_string(body.get_string_from_utf8())
+    if parsed is Dictionary:
+        var detail: String = str(parsed.get("error", ""))
+        if detail != "":
+            return detail
+    return "HTTP " + str(code)
 
 ## Resolve an owner identifier to a display name.
 ## Returns the display name if found, otherwise the raw owner string.

@@ -465,6 +465,36 @@ func TestTranslateEvent_NPCCoinsChanged(t *testing.T) {
 	}
 }
 
+// LLM-250 — the promotion frame carries the id and nothing else; display_name and
+// tags stay off the wire so the client can't mistake the STRUCTURE's name for the
+// village object's own display_name override.
+func TestTranslateEvent_VillageObjectPromotedToStructure(t *testing.T) {
+	frame, ok := TranslateEvent(&sim.VillageObjectPromotedToStructure{
+		ObjectID:    "mill",
+		DisplayName: "Mill",
+		Tags:        []string{"business"},
+	})
+	if !ok {
+		t.Fatal("VillageObjectPromotedToStructure should translate")
+	}
+	if frame.Type != "object_promoted_to_structure" {
+		t.Fatalf("type = %q, want object_promoted_to_structure", frame.Type)
+	}
+	d, isType := frame.Data.(objectPromotedToStructureWireDTO)
+	if !isType {
+		t.Fatalf("data type = %T, want objectPromotedToStructureWireDTO", frame.Data)
+	}
+	// The payload must marshal to exactly {"id": ...}. A display_name or tags key
+	// leaking onto the wire would hand the client a field it would be wrong to apply.
+	blob, err := json.Marshal(d)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if got, want := string(blob), `{"id":"mill"}`; got != want {
+		t.Errorf("payload = %s, want %s", got, want)
+	}
+}
+
 func TestTranslateEvent_VillageObjectDisplayNameChanged(t *testing.T) {
 	frame, ok := TranslateEvent(&sim.VillageObjectDisplayNameChanged{
 		ObjectID:    "tavern",
