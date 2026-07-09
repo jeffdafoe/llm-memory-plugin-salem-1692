@@ -789,6 +789,16 @@ var perceptionScenarios = []perceptionScenario{
 		build: keeperWithReadyOrder,
 	},
 	{
+		name: "smith_commission_awaiting_forge",
+		summary: "LLM-338. A blacksmith (Ezekiel) has taken a co-present customer's (Elizabeth's) prepayment for a " +
+			"shovel he doesn't yet hold — a commission Order sits Ready but he holds 0 shovels, so DeliverOrder gate 5 " +
+			"would bounce a deliver_order. The '## Orders to deliver' line must render passively ('you've yet to make " +
+			"it') with NO deliver_order instruction, steering him to forge it first rather than into a bounce loop. The " +
+			"live Elizabeth Ellis <-> Ezekiel Crane case. A regression that re-emits the deliver_order cue on an unforged " +
+			"commission shows in the diff.",
+		build: smithCommissionAwaitingForge,
+	},
+	{
 		name: "grower_at_stripped_bush",
 		summary: "A forager stands at her own raspberry bush after harvesting it clean (the live Prudence case, " +
 			"LLM-98). Her bushes sit wider apart than LoiterAttributionTiles, so the only in-reach gather candidate " +
@@ -10257,6 +10267,77 @@ func keeperWithReadyOrder() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 		},
 	}
 	return snap, hannahID, nil
+}
+
+// smithCommissionAwaitingForge is the LLM-338 golden: a blacksmith (Ezekiel) has
+// taken a co-present customer's (Elizabeth's) prepayment for a shovel he doesn't
+// yet hold — a commission Order sits Ready but he holds 0 shovels, so
+// DeliverOrder's gate 5 would bounce a deliver_order call. The "## Orders to
+// deliver" line must render passively ("you've yet to make it") with NO
+// deliver_order instruction, steering him to forge it first. The live Elizabeth
+// Ellis <-> Ezekiel Crane case. snap.Recipes is left nil so the forge/trade cues
+// stay out and the golden stays focused on the order book; ExpiresAt is anchored
+// to PublishedAt for byte stability.
+func smithCommissionAwaitingForge() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		smithID = sim.ActorID("ezekiel")
+		buyerID = sim.ActorID("elizabeth")
+		forge   = sim.StructureID("ezekiels_forge")
+		huddle  = sim.HuddleID("h1")
+	)
+	start, end := 420, 960 // 07:00–16:00
+	nowMin := 600          // 10:00, on shift
+	published := time.Date(2026, 7, 9, 10, 0, 0, 0, time.UTC)
+	ezekiel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Ezekiel Crane",
+		Role:              "blacksmith",
+		State:             sim.StateIdle,
+		WorkStructureID:   forge,
+		InsideStructureID: forge,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		CurrentHuddleID:   huddle,
+		Coins:             30,
+		Needs:             map[sim.NeedKey]int{},
+		RestockPolicy:     &sim.RestockPolicy{Restock: []sim.RestockEntry{{Item: "shovel", Source: sim.RestockSourceProduce, Max: 10}}},
+	}
+	elizabeth := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Elizabeth Ellis",
+		Role:              "villager",
+		State:             sim.StateIdle,
+		InsideStructureID: forge,
+		CurrentHuddleID:   huddle,
+		Needs:             map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalDateUTC:     time.Date(2026, 7, 9, 0, 0, 0, 0, time.UTC),
+		LocalMinuteOfDay: &nowMin,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{smithID: ezekiel, buyerID: elizabeth},
+		Structures: map[sim.StructureID]*sim.Structure{
+			forge: plainStructure(forge, "Ezekiel's Forge"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{smithID: {}, buyerID: {}}},
+		},
+		Orders: map[sim.OrderID]*sim.Order{
+			1: {
+				ID:          1,
+				State:       sim.OrderStateReady,
+				SellerID:    smithID,
+				BuyerID:     buyerID,
+				Item:        "shovel",
+				Qty:         1,
+				ConsumerIDs: []sim.ActorID{buyerID},
+				CreatedAt:   published.Add(-30 * time.Minute),
+				ExpiresAt:   published.Add(5 * time.Hour),
+			},
+		},
+	}
+	return snap, smithID, nil
 }
 
 // operatingKeeperSnapshot builds a one-actor snapshot for the LLM-123 operating-

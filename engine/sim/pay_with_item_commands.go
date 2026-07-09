@@ -1468,7 +1468,13 @@ func acceptPendingOffer(w *World, seller *Actor, entry *PayLedgerEntry, at time.
 		// both accept. See outstandingReadyOrderQty in order.go.
 		have := seller.Inventory[entry.ItemKind]
 		reserved := outstandingReadyOrderQty(w, seller.ID, entry.ItemKind)
-		if have-reserved < needed {
+		// LLM-338: a stock shortfall on a good the seller MAKES is a commission,
+		// not a dead-end — accept it and let commitPayTransfer mint a deferred
+		// Order the keeper forges and hands over via deliver_order (gate 5 stock
+		// is the readiness gate; refund-on-expiry covers "never made"). Only a
+		// NON-commission shortfall (a good the seller doesn't produce, a barter
+		// offer, a service/lodging item) still rejects here.
+		if have-reserved < needed && !isCommissionOrder(w, seller, entry) {
 			// LLM-302: a stock shortfall reached through the seller's own
 			// accept tool call is a knowable-now, seller-fixable rejection —
 			// hand the model a retryable error naming the shortfall and its
@@ -2484,6 +2490,53 @@ func isAdvanceLodgingBooking(w *World, entry *PayLedgerEntry, at time.Time) bool
 	return entry.ReadyBy.After(orderDateUTC(at, w.Settings.Location))
 }
 
+// isCommissionOrder reports whether an accepted take-home offer should mint a
+// DEFERRED "commission" Order rather than reject for lack of stock or deliver at
+// accept: the seller MAKES the good (a produce entry + a makeable recipe) but
+// doesn't currently hold enough to hand over, so it must still be forged
+// (LLM-338). When true, the accept skips the stock reject (acceptPendingOffer
+// gate 10) and commitPayTransfer mints a Ready Order the keeper fulfils via
+// deliver_order once produced (gate 5 stock is the readiness gate);
+// refund-on-expiry (ZBBS-HOME-403) returns the buyer's coins if it's never made.
+//
+// Constraints, each load-bearing:
+//   - Non-gift, non-consume-now: a commission is a take-home purchase.
+//   - Coin-only (no pay_items): a commission that expires refunds COINS; a
+//     barter leg couldn't be reversed, so a goods-paid stockless offer is NOT a
+//     commission and falls through to the normal stock reject (mirrors the
+//     advance-lodging coin-only rule).
+//   - Not service / lodging: those carry no inventory and own their fulfilment
+//     paths; the stock gate already skips them.
+//   - Seller Produces(kind) AND makeableRecipe: only a good the seller can
+//     actually forge — otherwise the order could never be fulfilled and would
+//     only ever expire-and-refund.
+//   - Stock short (have − reserved < needed): with stock on hand it's a normal
+//     deliver-at-accept take-home sale, not a commission.
+//
+// MUST run inside a Command.Fn (reads w.Orders / w.Recipes).
+func isCommissionOrder(w *World, seller *Actor, entry *PayLedgerEntry) bool {
+	if entry == nil || seller == nil || entry.IsGift || entry.ConsumeNow {
+		return false
+	}
+	if len(entry.PayItems) > 0 {
+		return false
+	}
+	kind := entry.ItemKind
+	if itemHasCapability(w, kind, "service") || itemHasCapability(w, kind, "lodging") {
+		return false
+	}
+	if !makeableRecipe(w, kind) || !seller.RestockPolicy.Produces(kind) {
+		return false
+	}
+	effConsumers := effectivePayConsumerCount(entry.ConsumerIDs)
+	if effConsumers <= 0 || entry.Qty > math.MaxInt/effConsumers {
+		return false
+	}
+	needed := entry.Qty * effConsumers
+	have := seller.Inventory[kind] - outstandingReadyOrderQty(w, seller.ID, kind)
+	return have < needed
+}
+
 // maxDwellMinutes returns the longest remaining dwell duration in minutes across
 // the stamped item-dwell snapshots (0 when none carry a countdown). An eat-here
 // meal or drink keeps easing a need for this long after the first bite, but the
@@ -2868,6 +2921,21 @@ func commitPayTransfer(
 			orderMinted = true
 			out.lodgedNow = true
 		}
+	} else if isCommissionOrder(w, seller, entry) {
+		// Commission (LLM-338): the seller MAKES this good but doesn't hold enough
+		// to hand over now, so mint a DEFERRED Ready Order — the same shape as an
+		// advance lodging booking — instead of transferring stock that doesn't
+		// exist. The keeper forges it and hands it over via deliver_order once made
+		// (gate 5 stock is the readiness gate); refund-on-expiry (ZBBS-HOME-403)
+		// returns the buyer's coins if it's never delivered. eagerlyDelivered stays
+		// nil, so nothing flips to Delivered below — the Order sits Ready. Restamp
+		// ExpiresAt from the recipe's forge lead time: a commission needs far
+		// longer than the 10-minute takeaway TTL the mint gives a non-lodging Order.
+		bookedID := createOrderForPayWithItem(w, entry, at)
+		if o := w.Orders[bookedID]; o != nil {
+			o.ExpiresAt = commissionOrderExpiresAt(w, entry.ItemKind, at)
+		}
+		orderMinted = w.Orders[bookedID] != nil
 	} else {
 		// Physical take-home (ZBBS-HOME-398): mint the Order and move the goods
 		// to the buyer right now, at accept, while the parties are co-present and

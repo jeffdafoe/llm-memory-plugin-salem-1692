@@ -3308,6 +3308,7 @@ func buildPendingOrderViews(snap *sim.Snapshot, subject sim.ActorID) (fromMe, to
 			o := snap.Orders[id]
 			v := toView(o)
 			v.AbsentRecipientNames = absentRecipientNames(snap, seller, o, resolveName)
+			v.AwaitingMake = orderAwaitingMake(seller, o)
 			fromMe = append(fromMe, v)
 		}
 	}
@@ -3346,6 +3347,39 @@ func absentRecipientNames(snap *sim.Snapshot, seller *sim.ActorSnapshot, o *sim.
 	}
 	sort.Strings(absent)
 	return absent
+}
+
+// orderAwaitingMake reports whether a seller-side Ready order can't be handed
+// over yet but the seller could MAKE the good: one it PRODUCES, held below the
+// order's need — so DeliverOrder's gate-5 stock check would bounce a
+// deliver_order call. Mirrors that gate (seller.Inventory[Item] >= Qty *
+// len(ConsumerIDs)) so the cue and the substrate agree on "can this be handed
+// over now." In practice this is exactly a made-to-order commission (LLM-338): a
+// normal produced-good take-home is delivered at accept (never Ready here) and
+// service / lodging orders aren't Produces()'d. But the check is behavioral, not
+// order-identity-based — Produces(o.Item) alone can't prove commission origin — so
+// it also correctly steers "make it first" for ANY Ready produced-good order gate
+// 5 would reject (e.g. a seller who lost stock after accept), which is the right
+// behavior in every case. Seller-relative — meaningful only for the
+// PendingDeliveriesFromMe bucket. Nil seller / policy, or a malformed order shape,
+// makes nothing.
+func orderAwaitingMake(seller *sim.ActorSnapshot, o *sim.Order) bool {
+	if seller == nil || o == nil {
+		return false
+	}
+	if !seller.RestockPolicy.Produces(o.Item) {
+		return false
+	}
+	// Defensive against a malformed order shape (mirrors isCommissionOrder and
+	// DeliverOrder's own guards): reject non-positive qty/consumers and the
+	// multiplication overflow rather than let `needed` wrap negative and mark an
+	// unfulfillable order deliverable.
+	consumers := len(o.ConsumerIDs)
+	if consumers <= 0 || o.Qty <= 0 || o.Qty > math.MaxInt/consumers {
+		return false
+	}
+	needed := o.Qty * consumers
+	return seller.Inventory[o.Item] < needed
 }
 
 // recentlyResolvedOfferWindow bounds how long a just-settled offer stays in the

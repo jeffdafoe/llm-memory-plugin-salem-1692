@@ -713,6 +713,13 @@ type OrderView struct {
 	// ready-to-hand-over-now vs upcoming reservations, and the buyer view into
 	// waiting-on vs overdue. ZBBS-HOME-403.
 	ReadyBy time.Time
+	// AwaitingMake marks a commission (LLM-338) the seller has taken payment for
+	// but doesn't yet hold the goods to fulfil — DeliverOrder's gate-5 stock check
+	// would bounce a deliver_order call. Populated only for the seller-side
+	// PendingDeliveriesFromMe bucket. When set, render shows the order passively
+	// ("you've yet to make it") and does NOT cue deliver_order, so the keeper is
+	// steered to forge it first rather than into a bounce loop.
+	AwaitingMake bool
 }
 
 // PendingOfferView is the buyer-side projection of one of the subject's own
