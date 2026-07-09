@@ -199,6 +199,24 @@ func TestNamedVillageDestinations_KeeperPresenceGatesBusiness(t *testing.T) {
 	}
 }
 
+// LLM-336: the business tag is read off the PLACED OBJECT (vobj.HasTag), not
+// Structure.Tags, which is stale in the live world (the Inn's structure row even
+// omits "business"). A structure whose ROW carries TagBusiness but whose placed
+// object is untagged is not eligible even with a keeper present — pinning the
+// placed-object-is-authoritative data-source choice (code_review).
+func TestNamedVillageDestinations_StructureTagsNotConsulted(t *testing.T) {
+	w := bnWorld(5)
+	bnPlace(w, "smithy", "Blacksmith", 2)               // placed object left UNtagged
+	w.Structures["smithy"].Tags = []string{TagBusiness} // stale structure-level tag
+	// A keeper is present, so the untagged placed object is the only disqualifier.
+	w.Actors["keeper_smithy"] = &Actor{ID: "keeper_smithy", WorkStructureID: "smithy", InsideStructureID: "smithy", State: StateIdle}
+
+	names, more := namedVillageDestinations(w, bnActor("", ""), moveToDestinationNameCap)
+	if len(names) != 0 || more {
+		t.Errorf("names = %v more = %v, want empty + false (Structure.Tags must not make an untagged placed object eligible)", names, more)
+	}
+}
+
 // A world with no OPEN business to name — only a residence and a shut shop (no
 // keeper present) — yields an empty list, so MoveToStructureByName falls through
 // to the generic hint. LLM-336.
