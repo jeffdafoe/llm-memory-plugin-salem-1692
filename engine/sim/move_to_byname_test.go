@@ -126,18 +126,19 @@ func TestResolveStructureByName_TieBreaksByID(t *testing.T) {
 }
 
 // namedVillageDestinations backs the LLM-306 unknown-place error: it lists real
-// names the model can pick, nearest-first, capped. LLM-336 narrowed the set to
-// currently-OPEN businesses — an object tagged TagBusiness with a keeper tending
-// it (keeperPresentAt) — so an owner-only shop is now listed (the reported
-// Blacksmith bug the old entry-policy filter dropped) while a shut business, a
-// residence, and a placement-less/blank structure are not. This pins that
-// predicate, the skips, nearest-first order, dedupe-by-name, and the cap + "more
-// existed" signal in one controlled world so the produced error string is stable.
-func TestNamedVillageDestinations_OpenBusinessesNearestFirstCapped(t *testing.T) {
+// names the model can pick, nearest-first, capped. The set is every business — an
+// object tagged TagBusiness, INCLUDING owner-only shops (blacksmith, store,
+// apothecary) and regardless of whether a keeper tends it right now (LLM-341, which
+// reverted the LLM-336 keeperPresentAt gate). A residence and a placement-less or
+// blank-named structure are not. Cooper Shop here is a keeperless business and
+// still lists. This pins the predicate, the skips, nearest-first order,
+// dedupe-by-name, and the cap + "more existed" signal in one controlled world so
+// the produced error string is stable.
+func TestNamedVillageDestinations_BusinessesNearestFirstCapped(t *testing.T) {
 	w := bnWorld(5)
-	// Open businesses at increasing distance. Blacksmith / General Store / PW
-	// Apothecary are owner-only AND open — the LLM-336 case the old entry-policy
-	// filter wrongly dropped; Tavern / Inn / Mill are open-policy. Six names.
+	// Businesses at increasing distance. Blacksmith / General Store / PW Apothecary
+	// are owner-only (public to walk TO, LLM-336); Tavern / Inn / Mill are
+	// open-policy. All keeper-tended except Cooper Shop below.
 	bnBusiness(w, "store", "General Store", 1, EntryPolicyOwner, true)
 	bnBusiness(w, "tavern", "The Tavern", 2, EntryPolicyOpen, true)
 	bnBusiness(w, "smithy", "Blacksmith", 3, EntryPolicyOwner, true)
@@ -146,9 +147,11 @@ func TestNamedVillageDestinations_OpenBusinessesNearestFirstCapped(t *testing.T)
 	bnBusiness(w, "mill", "Mill", 6, EntryPolicyOpen, true)
 	// A second "General Store" farther out — must dedupe to the nearest instance.
 	bnBusiness(w, "store_far", "General Store", 7, EntryPolicyOwner, true)
-	// Excluded: a shut business (tagged, but no keeper present), a residence (not
-	// a business), a structure with no placement, and one with a blank name.
-	bnBusiness(w, "cooper", "Cooper Shop", 1, EntryPolicyOwner, false)
+	// A keeperless business still lists after LLM-341 — placed farthest out so it
+	// appends to the full list without disturbing the nearest-cap assertion.
+	bnBusiness(w, "cooper", "Cooper Shop", 8, EntryPolicyOwner, false)
+	// Excluded: a residence (not a business), a structure with no placement, and
+	// one with a blank name.
 	bnPlace(w, "home", "Thorne Residence", 1)
 	w.VillageObjects["home"].EntryPolicy = EntryPolicyOwner
 	w.Structures["ghost"] = &Structure{ID: "ghost", DisplayName: "Ghost Hall"}
@@ -157,59 +160,58 @@ func TestNamedVillageDestinations_OpenBusinessesNearestFirstCapped(t *testing.T)
 	names, more := namedVillageDestinations(w, bnActor("", ""), moveToDestinationNameCap)
 	want := []string{"General Store", "The Tavern", "Blacksmith", "Inn", "PW Apothecary"}
 	if !reflect.DeepEqual(names, want) {
-		t.Errorf("names = %v, want %v (open businesses, nearest-first, deduped, capped at %d)", names, want, moveToDestinationNameCap)
+		t.Errorf("names = %v, want %v (businesses, nearest-first, deduped, capped at %d)", names, want, moveToDestinationNameCap)
 	}
 	if !more {
-		t.Errorf("more = false, want true (Mill is a 6th open business beyond the cap of %d)", moveToDestinationNameCap)
+		t.Errorf("more = false, want true (Mill and Cooper Shop are beyond the cap of %d)", moveToDestinationNameCap)
 	}
 
-	// With a limit above the distinct count, the full deduped list returns and
-	// more is false.
+	// With a limit above the distinct count, the full deduped list returns (the
+	// keeperless Cooper Shop last, farthest out) and more is false.
 	all, moreAll := namedVillageDestinations(w, bnActor("", ""), 10)
-	wantAll := append(append([]string{}, want...), "Mill")
+	wantAll := append(append([]string{}, want...), "Mill", "Cooper Shop")
 	if !reflect.DeepEqual(all, wantAll) {
 		t.Errorf("full list = %v, want %v", all, wantAll)
 	}
 	if moreAll {
-		t.Errorf("more = true, want false (limit 10 exceeds the 6 distinct open businesses)")
+		t.Errorf("more = true, want false (limit 10 exceeds the 7 distinct businesses)")
 	}
 }
 
-// LLM-336: the open/closed test is ground-truth keeper presence, not entry policy
-// or current_state. An owner-only business is listed while a keeper tends it and
-// drops the instant the keeper is gone — the same keeperPresentAt signal the
-// move_to shut-note and seek-work cue use. (A failed move_to is already a confused
-// model, so the recovery hint reads true world state rather than earned memory.)
-func TestNamedVillageDestinations_KeeperPresenceGatesBusiness(t *testing.T) {
+// LLM-341: keeper presence does NOT gate the recovery hint. An owner-only business
+// lists whether or not a keeper tends it right now — move_to walks an NPC there at
+// any hour (open/closed is learned on arrival, LLM-142), so hiding an untended shop
+// from the hint only left a lost NPC (the live forge / "wrong name" case) guessing
+// at a name it was never shown. This reverts the LLM-336 keeperPresentAt gate.
+func TestNamedVillageDestinations_ListsUntendedBusiness(t *testing.T) {
 	w := bnWorld(5)
 	bnBusiness(w, "smithy", "Blacksmith", 2, EntryPolicyOwner, true) // owner-only, keeper in
 
 	names, _ := namedVillageDestinations(w, bnActor("", ""), moveToDestinationNameCap)
 	if !reflect.DeepEqual(names, []string{"Blacksmith"}) {
-		t.Fatalf("keeper present: names = %v, want [Blacksmith] (owner-only business listed while tended)", names)
+		t.Fatalf("keeper present: names = %v, want [Blacksmith]", names)
 	}
 
-	// Keeper leaves the forge — no longer inside it, nor loitering at its pin.
+	// Keeper leaves the forge — no longer inside it, nor loitering at its pin. The
+	// blacksmith is still a business, so it still lists.
 	w.Actors["keeper_smithy"].InsideStructureID = ""
 	w.Actors["keeper_smithy"].Pos = WorldPos{X: 999 * TileSize, Y: 0}.Tile()
 
 	names, more := namedVillageDestinations(w, bnActor("", ""), moveToDestinationNameCap)
-	if len(names) != 0 || more {
-		t.Fatalf("keeper gone: names = %v more = %v, want empty + false (shut business dropped)", names, more)
+	if !reflect.DeepEqual(names, []string{"Blacksmith"}) || more {
+		t.Fatalf("keeper gone: names = %v more = %v, want [Blacksmith] + false (untended business still lists)", names, more)
 	}
 }
 
-// LLM-336: the business tag is read off the PLACED OBJECT (vobj.HasTag), not
-// Structure.Tags, which is stale in the live world (the Inn's structure row even
-// omits "business"). A structure whose ROW carries TagBusiness but whose placed
-// object is untagged is not eligible even with a keeper present — pinning the
-// placed-object-is-authoritative data-source choice (code_review).
+// The business tag is read off the PLACED OBJECT (vobj.HasTag), not Structure.Tags,
+// which is stale in the live world (the Inn's structure row even omits "business").
+// A structure whose ROW carries TagBusiness but whose placed object is untagged is
+// not eligible — pinning the placed-object-is-authoritative data-source choice
+// (LLM-336 code_review).
 func TestNamedVillageDestinations_StructureTagsNotConsulted(t *testing.T) {
 	w := bnWorld(5)
 	bnPlace(w, "smithy", "Blacksmith", 2)               // placed object left UNtagged
 	w.Structures["smithy"].Tags = []string{TagBusiness} // stale structure-level tag
-	// A keeper is present, so the untagged placed object is the only disqualifier.
-	w.Actors["keeper_smithy"] = &Actor{ID: "keeper_smithy", WorkStructureID: "smithy", InsideStructureID: "smithy", State: StateIdle}
 
 	names, more := namedVillageDestinations(w, bnActor("", ""), moveToDestinationNameCap)
 	if len(names) != 0 || more {
@@ -217,23 +219,22 @@ func TestNamedVillageDestinations_StructureTagsNotConsulted(t *testing.T) {
 	}
 }
 
-// A world with no OPEN business to name — only a residence and a shut shop (no
-// keeper present) — yields an empty list, so MoveToStructureByName falls through
-// to the generic hint. LLM-336.
-func TestNamedVillageDestinations_NoOpenBusinesses(t *testing.T) {
+// A world with no business to name — only a residence — yields an empty list, so
+// MoveToStructureByName falls through to the generic hint. An untended shop DOES
+// list now (LLM-341), so "no business at all" is the only empty case left.
+func TestNamedVillageDestinations_NoBusinesses(t *testing.T) {
 	w := bnWorld(5)
 	bnPlace(w, "home", "Thorne Residence", 1)
 	w.VillageObjects["home"].EntryPolicy = EntryPolicyOwner
-	bnBusiness(w, "smithy", "Blacksmith", 2, EntryPolicyOwner, false) // shut: no keeper
 
 	names, more := namedVillageDestinations(w, bnActor("", ""), moveToDestinationNameCap)
 	if len(names) != 0 || more {
-		t.Errorf("names = %v more = %v, want empty + false (no open businesses)", names, more)
+		t.Errorf("names = %v more = %v, want empty + false (no business to name)", names, more)
 	}
 }
 
 // A non-positive cap names nothing (no negative-slice panic) but still reports
-// that open businesses existed.
+// that businesses existed.
 func TestNamedVillageDestinations_NonPositiveLimit(t *testing.T) {
 	w := bnWorld(5)
 	bnBusiness(w, "store", "General Store", 1, EntryPolicyOwner, true)
@@ -245,7 +246,7 @@ func TestNamedVillageDestinations_NonPositiveLimit(t *testing.T) {
 			t.Errorf("limit %d: names = %v, want empty", limit, names)
 		}
 		if !more {
-			t.Errorf("limit %d: more = false, want true (open businesses exist)", limit)
+			t.Errorf("limit %d: more = false, want true (businesses exist)", limit)
 		}
 	}
 }

@@ -357,9 +357,9 @@ func resolveStructureByVillageName(w *World, a *Actor, name string) (StructureID
 // into a retry message.
 const moveToDestinationNameCap = 5
 
-// namedVillageDestinations returns up to limit currently-OPEN business names the
-// actor could pick as a move_to target, nearest-first, plus whether more existed than
-// the cap (so the caller can append an "(and more)" hint instead of implying the
+// namedVillageDestinations returns up to limit business names the actor could pick
+// as a move_to target, nearest-first, plus whether more existed than the cap (so
+// the caller can append an "(and more)" hint instead of implying the
 // list is exhaustive). It backs the unknown-place error in MoveToStructureByName:
 // when the model names a place no structure matches, this hands it a bounded set
 // of REAL names it CAN use, so its next turn corrects to a valid target rather
@@ -372,20 +372,21 @@ const moveToDestinationNameCap = 5
 // call; RememberedPlaces carries objects only). This mirrors the set
 // resolveStructureByVillageName resolves against.
 //
-// A destination is a currently-OPEN business: its placed object is tagged
-// TagBusiness AND a keeper is tending it right now (keeperPresentAt — an awake
-// worker of the structure at it; the same shut-business test LLM-327's move_to
-// no-op and the seek-work cue use). This points a hallucinated destination
-// ("Market", "the Smithy") at the shop/tavern it's reaching for. Unlike the earlier
-// entry-policy filter, it INCLUDES owner-only shops (blacksmith, store, apothecary,
+// A destination is any business: its placed object is tagged TagBusiness. This
+// points a hallucinated destination ("Market", "the Smithy") at the shop/tavern
+// it's reaching for. It INCLUDES owner-only shops (blacksmith, store, apothecary,
 // farms) — those read owner-only for ENTRY but are public places to walk TO
-// (LLM-336). Residences drop out (not TagBusiness), and an untended or shut
-// business drops until its keeper returns, so a lost NPC is never pointed at an
-// empty shop; when nothing is open the list is empty and MoveToStructureByName
-// falls through to the generic hint. current_state is deliberately NOT consulted —
-// it is a visual/asset-state field (sprite variant), not an open/closed signal. A
+// (LLM-336). Keeper presence is deliberately NOT gated (LLM-341): move_to walks an
+// NPC to a business at any hour regardless of open/closed (LLM-142), and it learns
+// the shop is shut on arrival, so gating this hint on keeperPresentAt made it
+// NARROWER than the move path it teaches — a lost NPC naming a shop whose keeper
+// was away (the live forge / "wrong name" case) never saw the shop's real name and
+// kept mutating the same bad string. Residences drop out (not TagBusiness); a
 // structure with no walkable placement is skipped (can't walk there, can't measure
-// distance), matching the resolver.
+// distance), matching the resolver; when the village holds no business the list is
+// empty and MoveToStructureByName falls through to the generic hint. current_state
+// is deliberately NOT consulted — it is a visual/asset-state field (sprite variant),
+// not an open/closed signal.
 //
 // Order is nearest-first (Chebyshev to the actor; ties break by structure_id),
 // deduplicated by display name (leading-article-insensitive) so a shared name is
@@ -406,8 +407,8 @@ func namedVillageDestinations(w *World, a *Actor, limit int) (names []string, mo
 		if !ok {
 			continue // no placement → can't walk there (and can't measure distance)
 		}
-		if !vobj.HasTag(TagBusiness) || !keeperPresentAt(w, structureID) {
-			continue // only a currently-tended business is a place to send a lost NPC
+		if !vobj.HasTag(TagBusiness) {
+			continue // any business is a place to send a lost NPC; open/closed is discovered on arrival
 		}
 		candidates = append(candidates, candidate{
 			id:   structureID,
