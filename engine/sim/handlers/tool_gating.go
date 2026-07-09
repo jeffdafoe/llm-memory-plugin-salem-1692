@@ -152,13 +152,15 @@ var walkIncompatibleTools = map[string]struct{}{
 const stopToolName = "stop"
 
 // deliverOrderToolName — the seller's order check-in/handover tool. Advertised
-// ONLY when the keeper actually has a Ready order to fulfill (a pending
-// delivery in the perception payload). After ZBBS-HOME-398 the only Ready
-// orders are lodging bookings awaiting check-in (physical takeaway hands over
-// immediately at accept, so it never mints a Ready order), so this keeps
-// deliver_order out of every other NPC's prompt instead of advertising it
-// every tick to everyone — the discussion-109 "advertise a tool only with its
-// triggering perception" invariant.
+// ONLY when the keeper has a Ready order that is deliverable RIGHT NOW — the good
+// on hand and the recipient co-present (OrderView.DeliverableNow). Ready orders
+// are lodging check-ins (ZBBS-HOME-398) and made-to-order commissions (LLM-338);
+// an unforged commission (AwaitingMake) or an order whose recipient stepped away
+// would bounce DeliverOrder's gate 5 / gate 6, so the tool is withheld until it
+// can actually be used — matching the "## Orders to deliver" instruction, which
+// reads the same DeliverableNow predicate. This is the discussion-109 "advertise
+// a tool only with its triggering perception" invariant: tool and cue surface
+// together or not at all.
 const deliverOrderToolName = "deliver_order"
 
 // stayOpenToolName — the keeper's keep-shop-open-past-close tool. Advertised
@@ -338,6 +340,20 @@ func laboringMayBreakOffToEat(a perception.ActorView) bool {
 // channel for future consumers needing world state the warrant batch doesn't
 // carry (e.g. shift state for speak gating); the pay consumer reads only the
 // payload.
+// hasDeliverableOrder reports whether the keeper holds at least one Ready order
+// that can be handed over this tick (OrderView.DeliverableNow: good on hand +
+// recipient co-present). Drives the deliver_order advertising gate off the SAME
+// predicate the "## Orders to deliver" instruction uses, so tool and cue stay in
+// lockstep (LLM-338).
+func hasDeliverableOrder(orders []perception.OrderView) bool {
+	for _, o := range orders {
+		if o.DeliverableNow() {
+			return true
+		}
+	}
+	return false
+}
+
 func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []llm.ToolSpec {
 	all := r.AdvertisedSpecs()
 	offers := perception.PendingPayOffers(payload)
@@ -404,14 +420,14 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 		if spec.Name == gatherToolName && !atGatherableSource {
 			continue
 		}
-		// deliver_order consumer (ZBBS-HOME-398): advertise only to a keeper
-		// who has a Ready order to fulfill. Post-397 that means a lodging
-		// booking awaiting check-in; physical takeaway delivers at accept and
-		// never sits Ready, so this stops advertising the tool every tick to
-		// every NPC. PendingDeliveriesFromMe is the seller-side Ready-order
-		// view that also drives the "Orders to deliver" perception section, so
-		// the tool and its cue can't drift.
-		if spec.Name == deliverOrderToolName && len(payload.PendingDeliveriesFromMe) == 0 {
+		// deliver_order consumer (ZBBS-HOME-398, LLM-338): advertise only to a
+		// keeper who has a Ready order deliverable RIGHT NOW — the good on hand and
+		// the recipient co-present (OrderView.DeliverableNow). An unforged
+		// commission (AwaitingMake) or an absent-recipient order would bounce
+		// DeliverOrder's gate 5 / gate 6, so the tool stays out of the prompt until
+		// it can be used. DeliverableNow is the SAME predicate the "## Orders to
+		// deliver" instruction reads, so the tool and its cue can't drift.
+		if spec.Name == deliverOrderToolName && !hasDeliverableOrder(payload.PendingDeliveriesFromMe) {
 			continue
 		}
 		// stay_open consumer (LLM-66): advertise only on the off-shift wind-down

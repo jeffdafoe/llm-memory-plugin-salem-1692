@@ -1834,7 +1834,11 @@ func renderOrdersReadyToHandOver(b *strings.Builder, orders []OrderView, now tim
 			b.WriteString(" — you've yet to make it")
 		case len(o.AbsentRecipientNames) > 0:
 			fmt.Fprintf(b, " — waiting for %s to return", sanitizeInline(strings.Join(o.AbsentRecipientNames, ", ")))
-		default:
+		}
+		// The same DeliverableNow predicate the deliver_order tool-advertising gate
+		// reads (handlers.gateTools), so the cue's instruction and the tool surface
+		// together — never one without the other.
+		if o.DeliverableNow() {
 			anyDeliverable = true
 		}
 		if clause, ok := expiryClause(o.ExpiresAt, now); ok {

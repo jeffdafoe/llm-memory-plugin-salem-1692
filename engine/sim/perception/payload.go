@@ -722,6 +722,19 @@ type OrderView struct {
 	AwaitingMake bool
 }
 
+// DeliverableNow reports whether this seller-side order can be handed over on
+// this tick: the good is on hand (not AwaitingMake — LLM-338) AND every
+// recipient is co-present (no AbsentRecipientNames — ZBBS-WORK-373), so neither
+// DeliverOrder's gate-5 (stock) nor gate-6 (co-presence) would bounce a
+// deliver_order call. The single predicate shared by the "## Orders to deliver"
+// instruction (render) and the deliver_order tool-advertising gate
+// (handlers.gateTools), so the tool and its triggering cue can't drift — the
+// "advertise a tool only with its triggering perception" invariant (discussion
+// 109). Seller-relative — meaningful only for the PendingDeliveriesFromMe bucket.
+func (o OrderView) DeliverableNow() bool {
+	return !o.AwaitingMake && len(o.AbsentRecipientNames) == 0
+}
+
 // PendingOfferView is the buyer-side projection of one of the subject's own
 // pending pay-with-item offers (ZBBS-HOME-413). Renders in "## Your pending
 // offers" as a "you already offered X for Y — wait, don't re-offer" cue. The
