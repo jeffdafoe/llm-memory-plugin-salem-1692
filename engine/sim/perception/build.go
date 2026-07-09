@@ -3338,15 +3338,20 @@ func absentRecipientNames(snap *sim.Snapshot, seller *sim.ActorSnapshot, o *sim.
 	return absent
 }
 
-// orderAwaitingMake reports whether a seller-side Ready order is a commission
-// (LLM-338) the seller has taken payment for but doesn't yet hold the goods to
-// fulfil: a good it PRODUCES, with stock below the order's need. Mirrors
-// DeliverOrder's gate-5 stock check (seller.Inventory[Item] >= Qty *
+// orderAwaitingMake reports whether a seller-side Ready order can't be handed
+// over yet but the seller could MAKE the good: one it PRODUCES, held below the
+// order's need — so DeliverOrder's gate-5 stock check would bounce a
+// deliver_order call. Mirrors that gate (seller.Inventory[Item] >= Qty *
 // len(ConsumerIDs)) so the cue and the substrate agree on "can this be handed
-// over yet." A seller holding enough is not awaiting a make; a shortfall on a
-// good the seller doesn't make never reaches here (such an offer rejects at
-// accept rather than minting a Ready order). Seller-relative — meaningful only
-// for the PendingDeliveriesFromMe bucket. Nil seller / policy makes nothing.
+// over now." In practice this is exactly a made-to-order commission (LLM-338): a
+// normal produced-good take-home is delivered at accept (never Ready here) and
+// service / lodging orders aren't Produces()'d. But the check is behavioral, not
+// order-identity-based — Produces(o.Item) alone can't prove commission origin — so
+// it also correctly steers "make it first" for ANY Ready produced-good order gate
+// 5 would reject (e.g. a seller who lost stock after accept), which is the right
+// behavior in every case. Seller-relative — meaningful only for the
+// PendingDeliveriesFromMe bucket. Nil seller / policy, or a malformed order shape,
+// makes nothing.
 func orderAwaitingMake(seller *sim.ActorSnapshot, o *sim.Order) bool {
 	if seller == nil || o == nil {
 		return false
@@ -3354,7 +3359,15 @@ func orderAwaitingMake(seller *sim.ActorSnapshot, o *sim.Order) bool {
 	if !seller.RestockPolicy.Produces(o.Item) {
 		return false
 	}
-	needed := o.Qty * len(o.ConsumerIDs)
+	// Defensive against a malformed order shape (mirrors isCommissionOrder and
+	// DeliverOrder's own guards): reject non-positive qty/consumers and the
+	// multiplication overflow rather than let `needed` wrap negative and mark an
+	// unfulfillable order deliverable.
+	consumers := len(o.ConsumerIDs)
+	if consumers <= 0 || o.Qty <= 0 || o.Qty > math.MaxInt/consumers {
+		return false
+	}
+	needed := o.Qty * consumers
 	return seller.Inventory[o.Item] < needed
 }
 

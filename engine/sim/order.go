@@ -259,6 +259,11 @@ const (
 	// CommissionOrderWindowFloor is the minimum a commission stays Ready
 	// regardless of how fast the recipe is.
 	CommissionOrderWindowFloor = 2 * time.Hour
+	// CommissionOrderWindowMax caps the derived window so a malformed recipe (an
+	// absurd rate) can't overflow the duration arithmetic in
+	// commissionOrderExpiresAt. A week is far beyond any real forge; the
+	// refund-on-expiry safety net makes an over-long clamp harmless.
+	CommissionOrderWindowMax = 7 * 24 * time.Hour
 )
 
 // commissionOrderExpiresAt sizes the Ready window for a made-to-order commission
@@ -269,8 +274,19 @@ const (
 // batch. A missing / rate-less recipe (shouldn't reach here — isCommissionOrder
 // gates on makeableRecipe) yields a zero lead time and falls to the floor.
 func commissionOrderExpiresAt(w *World, item ItemKind, at time.Time) time.Time {
-	lead := time.Duration(CycleDurationSeconds(w.Recipes[item])) * time.Second
-	window := lead*CommissionOrderSlack + CommissionOrderGrace
+	seconds := CycleDurationSeconds(w.Recipes[item])
+	if seconds <= 0 {
+		// No / rate-less recipe (shouldn't reach here — isCommissionOrder gates on
+		// makeableRecipe). Fall to the floor rather than compute from zero.
+		return at.Add(CommissionOrderWindowFloor)
+	}
+	// Guard the arithmetic: cap the lead before scaling so a malformed recipe
+	// (an absurd rate) can't overflow int64 in time.Duration(seconds)*Second*Slack.
+	maxLeadSeconds := int64(CommissionOrderWindowMax / time.Second / CommissionOrderSlack)
+	if seconds > maxLeadSeconds {
+		return at.Add(CommissionOrderWindowMax)
+	}
+	window := time.Duration(seconds)*time.Second*CommissionOrderSlack + CommissionOrderGrace
 	if window < CommissionOrderWindowFloor {
 		window = CommissionOrderWindowFloor
 	}

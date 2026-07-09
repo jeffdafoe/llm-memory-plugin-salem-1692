@@ -346,3 +346,45 @@ func TestCommission_ExpiryRefundsBuyer(t *testing.T) {
 		t.Errorf("order still Ready after expiry sweep: %+v", o)
 	}
 }
+
+// TestAcceptPay_Commission_ReservedStockMintsCommission: smith produces nail and
+// holds exactly 1, but it is already reserved by an existing Ready order. A new
+// offer for a nail must NOT deliver the spoken-for unit — the commission stock
+// check subtracts outstandingReadyOrderQty, so available is 0 and a deferred
+// commission is minted instead. Locks the reservation-accounting edge.
+func TestAcceptPay_Commission_ReservedStockMintsCommission(t *testing.T) {
+	w, stop := buildCommissionWorld(t, produceNail(), map[sim.ItemKind]int{"nail": 1}, 50, nil)
+	defer stop()
+	at := time.Now().UTC()
+	// Existing Ready order (id 2) reserves smith's only nail (buyer carol is a
+	// reservation placeholder — outstandingReadyOrderQty reads the order, not the
+	// actor).
+	mustSend(t, w, func(world *sim.World) {
+		world.Orders[2] = &sim.Order{
+			ID: 2, State: sim.OrderStateReady,
+			SellerID: "smith", BuyerID: "carol",
+			Item: "nail", Qty: 1, ConsumerIDs: []sim.ActorID{"carol"},
+			CreatedAt: at, ExpiresAt: at.Add(time.Hour),
+		}
+	})
+	commissionOffer(t, w, 1, "nail", 1, 6, at)
+
+	if _, err := w.Send(sim.AcceptPay("smith", 1, at)); err != nil {
+		t.Fatalf("AcceptPay: %v", err)
+	}
+	alice := readHoldings(t, w, "alice")
+	smith := readHoldings(t, w, "smith")
+	if alice.inv["nail"] != 0 {
+		t.Errorf("alice.nail = %d, want 0 (the on-hand nail is reserved — not delivered)", alice.inv["nail"])
+	}
+	if smith.inv["nail"] != 1 {
+		t.Errorf("smith.nail = %d, want 1 (still held, reserved for the other order)", smith.inv["nail"])
+	}
+	if alice.Coins != 44 {
+		t.Errorf("alice.Coins = %d, want 44 (prepaid the commission)", alice.Coins)
+	}
+	o, ok := readOrders(t, w)[1]
+	if !ok || o.State != sim.OrderStateReady {
+		t.Errorf("commission order 1 = %+v (ok=%v), want a Ready deferred commission", o, ok)
+	}
+}
