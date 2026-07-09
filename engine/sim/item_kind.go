@@ -202,6 +202,29 @@ func (d *ItemKindDef) EatHereOnly() bool {
 		!d.HasCapability("portable")
 }
 
+// IsDrink reports whether this kind is a drink by its intrinsic category —
+// the food/drink identity that fixes how a consume reads, INDEPENDENT of which
+// need a unit happens to ease. A belly-filling ale (Category drink, primary
+// Satisfies hunger) is still a drink: you drink it, and its hunger relief is a
+// bonus, not what makes it food (LLM-318). Nil-safe. Off-vocabulary categories
+// (material/craft/unknown) are not drinks — only the explicit drink category
+// counts, so the default stays "eat".
+func (d *ItemKindDef) IsDrink() bool {
+	return d != nil && d.Category == ItemCategoryDrink
+}
+
+// ConsumeVerb is the second-person verb for consuming a unit of this kind:
+// "drink" for a drink, "eat" for everything else. Keyed on the item's own
+// category (IsDrink), NOT on the need eased, so a hunger-restoring ale reads
+// "drink ale" (LLM-318). Shared by the consume-result suffix and any other
+// consume-facing copy so the verb can't drift between them.
+func ConsumeVerb(def *ItemKindDef) string {
+	if def.IsDrink() {
+		return "drink"
+	}
+	return "eat"
+}
+
 // HasCapability reports whether this item kind carries the given capability
 // token (e.g. "service", "lodging", "portable"). Linear over the small
 // Capabilities slice — capability sets are tiny (a handful of tokens).

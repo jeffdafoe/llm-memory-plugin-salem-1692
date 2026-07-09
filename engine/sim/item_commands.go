@@ -452,7 +452,7 @@ func Consume(actorID ActorID, itemName string, qty int, at time.Time) Command {
 			// pay_with_item eat path uses) so the harness can steer a sated NPC to
 			// stop, instead of a bare [ok] that the stale eat-affordance furniture
 			// overrides into a re-eat loop. Only meaningful when something was eaten.
-			res := ConsumeResult{Kind: kind, Requested: qty, Consumed: eat, Kept: qty - eat, EasedNeed: len(applied) > 0, ConsumedNoun: def.CountNoun(eat)}
+			res := ConsumeResult{Kind: kind, Requested: qty, Consumed: eat, Kept: qty - eat, EasedNeed: len(applied) > 0, ConsumedNoun: def.CountNoun(eat), Verb: ConsumeVerb(def)}
 			if eat > 0 {
 				res.SatisfiesNeed, res.FeltAfter = buyerFeltAfterConsume(actor, def, w.Settings.NeedThresholds)
 			}
@@ -485,6 +485,12 @@ type ConsumeResult struct {
 	// within-tick eat-affordance furniture stops priming a re-eat loop.
 	SatisfiesNeed NeedKey
 	FeltAfter     string
+	// Verb is the consume verb keyed on the item's CATEGORY (ConsumeVerb):
+	// "drink" for a drink, "eat" otherwise — independent of SatisfiesNeed, so a
+	// belly-filling ale (eases hunger, but a drink) reads "drink no more now"
+	// rather than "eat" (LLM-318). commitResultContent reads it for the sated
+	// stop-steer; empty only on a zero-consume result the suffix never voices.
+	Verb string
 	// EasedNeed reports whether this consume actually moved at least one need
 	// (len(applied) > 0). It is the senseless-repeat signal the LLM-91 harness
 	// guard arms on. NOTE it is NOT "Consumed == 0": a sated actor's consume
