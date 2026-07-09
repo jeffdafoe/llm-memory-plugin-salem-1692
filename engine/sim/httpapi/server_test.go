@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 
@@ -180,6 +181,25 @@ func TestHandleWorld(t *testing.T) {
 	}
 	if dto.Atmosphere != "a hush over the square" {
 		t.Errorf("atmosphere = %q", dto.Atmosphere)
+	}
+}
+
+func TestHandleAgentDrivers(t *testing.T) {
+	// The seeded world has bram (pc, no VA) and hannah (llm_memory_agent
+	// "hannah-va"). The assignable-driver catalog is the canonical shared VAs
+	// unioned with every distinct actor VA, de-duplicated and sorted — so the
+	// three shared slugs appear even though no seeded actor points at them, and
+	// hannah-va appears exactly once. LLM-256.
+	srv := NewServer(seededWorld(t), okAuth{})
+	rec := get(t, srv, "/api/village/agent-drivers")
+
+	var drivers []string
+	if err := json.Unmarshal(rec.Body.Bytes(), &drivers); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	want := []string{"hannah-va", "salem-generic", "salem-vendor", "salem-visitor"}
+	if !reflect.DeepEqual(drivers, want) {
+		t.Fatalf("drivers = %v, want %v", drivers, want)
 	}
 }
 

@@ -302,6 +302,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/village/sprites", s.requireAuth(s.handleSprites))
 	mux.HandleFunc("GET /api/village/npc-behaviors", s.requireAuth(s.handleNPCBehaviors))
 	mux.HandleFunc("GET /api/village/refresh-attributes", s.requireAuth(s.handleRefreshAttributes))
+	// Assignable-driver catalog for the editor's NPC "agent" picker (LLM-256):
+	// the de-duplicated set of driver slugs an NPC may be linked to, sourced
+	// authoritatively server-side rather than derived from actor assignments.
+	mux.HandleFunc("GET /api/village/agent-drivers", s.requireAuth(s.handleAgentDrivers))
 	// Item-kind catalog for the Pay modal's compose-an-offer dropdown
 	// (ZBBS-HOME-423) — lean reference data, see items.go. No longer
 	// boot-immutable: ZBBS-WORK-412 mints discovered kinds at runtime, so the
@@ -430,6 +434,17 @@ func (s *Server) handleAgents(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, agentsFromSnapshot(snap, s.world.Sprites))
 }
 
+// handleAgentDrivers serves the assignable-driver catalog — the editor's NPC
+// "agent" picker source. Unlike /agents (one row per actor), this is the
+// de-duplicated set of driver identities an NPC may be linked to. Sourcing it
+// this way makes a shared VA a single clean entry and keeps an unassigned shared
+// VA selectable (LLM-256) — the same defect LLM-122 fixed for the owner dropdown,
+// which the agent dropdown never got.
+func (s *Server) handleAgentDrivers(w http.ResponseWriter, _ *http.Request) {
+	snap := s.world.Published()
+	writeJSON(w, agentDriversFromSnapshot(snap))
+}
+
 func (s *Server) handleObjects(w http.ResponseWriter, _ *http.Request) {
 	snap := s.world.Published()
 	writeJSON(w, objectsFromSnapshot(snap, s.world.Assets))
@@ -531,6 +546,37 @@ func agentsFromSnapshot(s *sim.Snapshot, sprites map[sim.SpriteID]*sim.Sprite) [
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+// agentDriversFromSnapshot builds the de-duplicated, sorted set of assignable
+// driver slugs: the canonical shared VAs unioned with every distinct non-empty
+// Actor.LLMAgent in the snapshot. Mirrors cmd/engine.agentSlugsToQuery, but for
+// the editor's agent picker rather than the boot rate-limit query. Labels are
+// the slugs themselves (the client renders the agent identity), so the wire
+// shape is a flat string array. The shared VAs are always present, so an
+// unassigned shared VA stays selectable; the dedup collapses a shared VA linked
+// to many actors down to one entry (LLM-256).
+func agentDriversFromSnapshot(s *sim.Snapshot) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0, len(sim.SharedVASlugs())+len(s.Actors))
+	add := func(slug string) {
+		if slug == "" {
+			return
+		}
+		if _, ok := seen[slug]; ok {
+			return
+		}
+		seen[slug] = struct{}{}
+		out = append(out, slug)
+	}
+	for _, slug := range sim.SharedVASlugs() {
+		add(slug)
+	}
+	for _, a := range s.Actors {
+		add(a.LLMAgent)
+	}
+	sort.Strings(out)
 	return out
 }
 

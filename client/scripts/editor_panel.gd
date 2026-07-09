@@ -2606,8 +2606,10 @@ func show_npc_selection(info: Dictionary) -> void:
     _npc_attributes_current_list = attrs_raw if attrs_raw is Array else []
     _refresh_npc_attributes_ui()
 
-    # Agent dropdown reuses the same village_agent list that powers the owner
-    # dropdown on assets. Index 0 is "(none)" → unlink.
+    # Agent dropdown lists the assignable drivers from world.agent_list — the
+    # server-authoritative, de-duplicated slug catalog (/api/village/agent-drivers).
+    # Each entry is labeled by its agent identity (the slug itself). Index 0 is
+    # "(none)" → unlink. LLM-256.
     _npc_agent_dropdown.clear()
     _npc_agent_dropdown.add_item("(none)", 0)
     _npc_agent_dropdown.set_item_metadata(0, "")
@@ -2616,8 +2618,7 @@ func show_npc_selection(info: Dictionary) -> void:
     if world != null:
         var ai: int = 1
         for agent_key in world.agent_list:
-            var display: String = world.agent_names.get(agent_key, agent_key)
-            _npc_agent_dropdown.add_item(display, ai)
+            _npc_agent_dropdown.add_item(agent_key, ai)
             _npc_agent_dropdown.set_item_metadata(ai, agent_key)
             if agent_key == current_agent:
                 selected_agent_index = ai

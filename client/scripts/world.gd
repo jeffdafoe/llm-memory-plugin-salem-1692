@@ -95,13 +95,13 @@ var _npcs_response_received: bool = false
 var _npcs_render_complete: bool = false
 var _world_ready_emitted: bool = false
 
-# Agent lookup: llm_memory_agent name → display name
-var agent_names: Dictionary = {}
 # Owner lookup: actor GUID → display name. Structure/object owner refs are
 # stored as owner_actor_id (a GUID), so owner-name resolution keys on id, not
 # the llm_memory_agent slug (which is absent for non-VA owners).
 var actor_names: Dictionary = {}
-# Ordered list of agent keys (VA slugs) for the NPC-link dropdown.
+# Ordered list of assignable driver slugs for the NPC "agent" dropdown, loaded
+# from /api/village/agent-drivers (server-authoritative, de-duplicated). Each
+# entry is labeled by its slug in the editor. LLM-256.
 var agent_list: Array = []
 # Ordered list of actor GUIDs for the object-owner dropdown. Any actor can own an
 # object (owner_actor_id is a per-actor GUID), so this lists every actor — not just
@@ -162,6 +162,7 @@ func load_objects() -> void:
     _objects_loaded = true
     _load_village()
     _load_agents()
+    _load_agent_drivers()
     # ZBBS-HOME-211: defer NPC fetch until the village fetch returns.
     # /api/village/npcs has a smaller response than /api/village/objects,
     # so when fired in parallel NPCs land first and render against an
@@ -1756,15 +1757,12 @@ func _on_agents_loaded(result: int, response_code: int, headers: PackedStringArr
     if json == null or not (json is Array):
         return
 
-    # Reset before refilling — load_agents can run again (WS reconnect
-    # resync, re-auth flow) and appending would leave duplicates in the
-    # editor panel's agent dropdown.
-    agent_list.clear()
-    agent_names.clear()
+    # Reset before refilling — load_agents can run again (WS reconnect resync,
+    # re-auth flow) and appending would leave duplicate rows in the owner
+    # dropdown. The agent dropdown is fed separately by _load_agent_drivers.
     actor_names.clear()
     for agent in json:
         var actor_id: String = agent.get("id", "")
-        var llm_name: String = agent.get("llm_memory_agent", "")
         # v2 AgentDTO carries display_name (v1 used "name").
         var display_name: String = agent.get("display_name", "")
         if display_name == "":
@@ -1772,17 +1770,50 @@ func _on_agents_loaded(result: int, response_code: int, headers: PackedStringArr
         # Every actor has an id; owner refs resolve against this map.
         if actor_id != "":
             actor_names[actor_id] = display_name
-        # The agent dropdown only lists VA-backed actors (keyed by slug).
-        if llm_name != "":
-            agent_names[llm_name] = display_name
-            agent_list.append(llm_name)
-    agent_list.sort()
     # The owner dropdown lists every actor (by GUID), sorted by display name —
     # ownership is a per-actor owner_actor_id, so any actor is a valid owner. LLM-122.
     actor_list = actor_names.keys()
     # str()-wrap defends the comparator against any non-String value sneaking into
     # actor_names (display names are Strings today; this stays robust if that changes).
     actor_list.sort_custom(func(a, b): return str(actor_names.get(a, a)).naturalnocasecmp_to(str(actor_names.get(b, b))) < 0)
+
+## Load the assignable-driver catalog for the NPC "agent" dropdown from
+## /api/village/agent-drivers. The server returns a de-duplicated, sorted list
+## of driver slugs (the shared VAs plus every distinct dedicated VA in use),
+## independent of which actors currently use them. This replaces the old
+## per-actor derivation that duplicated shared VAs and mislabeled them with an
+## actor's display name (LLM-256), mirroring the LLM-122 fix for the owner
+## dropdown. Can run again on WS reconnect / re-auth, so it resets first.
+func _load_agent_drivers() -> void:
+    var http = HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+
+    http.request_completed.connect(_on_agent_drivers_loaded.bind(http))
+    var headers: PackedStringArray = Auth.auth_headers(false)
+    var err = http.request(api_base + "/api/village/agent-drivers", headers)
+    if err != OK:
+        push_error("Failed to request agent drivers: " + str(err))
+
+func _on_agent_drivers_loaded(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:
+    http.queue_free()
+
+    if not Auth.check_response(response_code):
+        return
+    if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
+        push_error("Failed to load agent drivers: result=" + str(result) + " code=" + str(response_code))
+        return
+
+    var json = JSON.parse_string(body.get_string_from_utf8())
+    if json == null or not (json is Array):
+        return
+
+    # Server sends a de-duplicated, sorted slug list; the dropdown labels each
+    # entry by its slug. Reset first so a reconnect resync doesn't stack a copy.
+    agent_list.clear()
+    for slug in json:
+        if slug is String and slug != "":
+            agent_list.append(slug)
 
 ## Set the owner of an object and persist to the server.
 func set_object_owner(node: Node2D, owner: String) -> void:
@@ -2477,5 +2508,5 @@ func get_owner_display_name(owner: String) -> String:
     if owner == "":
         return ""
     # owner is an actor GUID (owner_actor_id) — resolve against the id-keyed
-    # map, not agent_names (which keys on the llm_memory_agent slug).
+    # actor_names map (owner refs are GUIDs, not llm_memory_agent slugs).
     return actor_names.get(owner, owner)
