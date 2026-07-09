@@ -10894,8 +10894,11 @@ func TestGoldensSellerCueNamesOneTerminalVerb(t *testing.T) {
 		sc := sc
 		t.Run(sc.name, func(t *testing.T) {
 			out := renderScenario(sc)
-			if !strings.Contains(out, "## Custom at hand") {
-				return // invariant N/A — no seller cue in this scenario
+			// Key off the cue's BODY, not just its title: a future section that
+			// reused the "## Custom at hand" header would otherwise be dragged
+			// into an invariant that is only about the sell cue.
+			if !strings.Contains(out, "## Custom at hand") || !strings.Contains(out, "Your goods to sell:") {
+				return // invariant N/A — renderOfferableCustomers did not fire here
 			}
 			// The words must ride on sell itself.
 			if !strings.Contains(out, "the words you speak aloud in say") {

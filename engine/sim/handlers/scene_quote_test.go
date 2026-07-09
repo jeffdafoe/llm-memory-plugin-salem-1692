@@ -320,6 +320,23 @@ func TestSceneQuoteSchema_CapsMatchSubstrate(t *testing.T) {
 		t.Errorf("MaxSceneQuoteConsumers = %d, sim.SceneQuoteMaxConsumers = %d (must stay in sync)",
 			MaxSceneQuoteConsumers, sim.SceneQuoteMaxConsumers)
 	}
+	// The schema is a static literal, so say's ADVERTISED cap can drift away
+	// from the cap the decoder enforces (LLM-343) — the model would be told it
+	// may send 1000 runes and then be rejected at some other number.
+	var schema struct {
+		Properties struct {
+			Say struct {
+				MaxLength int `json:"maxLength"`
+			} `json:"say"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(sceneQuoteSchema, &schema); err != nil {
+		t.Fatalf("unmarshal sceneQuoteSchema: %v", err)
+	}
+	if schema.Properties.Say.MaxLength != MaxSpeakTextChars {
+		t.Errorf("schema say.maxLength = %d, MaxSpeakTextChars = %d (must stay in sync)",
+			schema.Properties.Say.MaxLength, MaxSpeakTextChars)
+	}
 }
 
 // ---- say (LLM-343) ----

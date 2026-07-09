@@ -24,18 +24,36 @@ import (
 //  2. The quote is minted BEFORE the words go out, so a rejected quote leaves
 //     the keeper silent rather than quoting a price against nothing.
 
+// stockSeller adds an item to the fixture seller's inventory. buildArrivalWorld
+// stocks stew only; the live failure was a TWO-good order, so the repro needs a
+// second ware to bundle.
+func stockSeller(t *testing.T, w *sim.World, kind sim.ItemKind, qty int) {
+	t.Helper()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["seller"].Inventory[kind] = qty
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("stocking seller with %s: %v", kind, err)
+	}
+}
+
 // TestSceneQuoteSay_PostsOfferAndSpeaksInOneCall is the repro: the exact shape
-// of the tavern order (two goods, one total price, one spoken line) must leave
-// both a live quote and a heard utterance behind after a single tool call.
+// of the tavern order — two goods bundled under one total price, announced in
+// one spoken line — must leave both a live quote and a heard utterance behind
+// after a SINGLE tool call.
 func TestSceneQuoteSay_PostsOfferAndSpeaksInOneCall(t *testing.T) {
 	w, stop := buildArrivalWorld(t)
 	defer stop()
+	stockSeller(t, w, "bread", 3)
 
 	const line = "A bowl of stew runs four coins, and a loaf of bread two — six coins for the both of them together."
 	cmd, err := handlers.HandleSceneQuote(handlers.HandlerInput{
 		ActorID: "seller", AttemptID: "tk-1",
 		Args: handlers.SceneQuoteArgs{
-			Lines:      []handlers.SceneQuoteLineArg{{ItemKind: "stew", Qty: 1}},
+			Lines: []handlers.SceneQuoteLineArg{
+				{ItemKind: "stew", Qty: 1},
+				{ItemKind: "bread", Qty: 1},
+			},
 			Amount:     6,
 			ConsumeNow: true,
 			Say:        line,
@@ -46,7 +64,7 @@ func TestSceneQuoteSay_PostsOfferAndSpeaksInOneCall(t *testing.T) {
 	}
 	res, err := w.Send(cmd)
 	if err != nil {
-		t.Fatalf("sell with say rejected: %v", err)
+		t.Fatalf("two-line sell with say rejected: %v", err)
 	}
 
 	created, ok := res.(sim.SceneQuoteCreateResult)
@@ -205,5 +223,56 @@ func TestSceneQuoteSay_RefusedSayStillPostsTheOfferAndReportsWhy(t *testing.T) {
 	}
 	if !strings.Contains(created.SayRefused, "already spoke") {
 		t.Errorf("SayRefused = %q, want SpeakTo's own turn-state reason", created.SayRefused)
+	}
+}
+
+// TestSceneQuoteSay_TargetedBuyerHearsTheLine covers the targeted-offer path.
+// target_buyer doubles as the speak addressee, and the two resolvers are
+// different functions: resolveQuoteTargetBuyer (scene participants, exact
+// DisplayName) and resolveAddressee (huddle peers, DisplayName or first name).
+// If those shapes ever diverge, a targeted sell would post the offer and
+// silently drop the words, which is this ticket's bug wearing a smaller hat.
+func TestSceneQuoteSay_TargetedBuyerHearsTheLine(t *testing.T) {
+	w, stop := buildArrivalWorld(t)
+	defer stop()
+
+	cmd, err := handlers.HandleSceneQuote(handlers.HandlerInput{
+		ActorID: "seller", AttemptID: "tk-1",
+		Args: handlers.SceneQuoteArgs{
+			Lines:       []handlers.SceneQuoteLineArg{{ItemKind: "stew", Qty: 1}},
+			Amount:      4,
+			ConsumeNow:  true,
+			TargetBuyer: "Josiah", // the buyer's DisplayName
+			Say:         "Four coins the bowl, and worth every one.",
+		},
+	})
+	if err != nil {
+		t.Fatalf("HandleSceneQuote: %v", err)
+	}
+	res, err := w.Send(cmd)
+	if err != nil {
+		t.Fatalf("targeted sell with say rejected: %v", err)
+	}
+	created := res.(sim.SceneQuoteCreateResult)
+	if created.QuoteID == 0 {
+		t.Fatal("targeted sell minted no quote")
+	}
+	if !created.Announced {
+		t.Fatalf("targeted sell posted the offer but the words were refused: %s", created.SayRefused)
+	}
+
+	snap := w.Published()
+	h := snap.Huddles[snap.Actors["seller"].CurrentHuddleID]
+	if h == nil {
+		t.Fatal("no huddle after targeted sell")
+	}
+	var heard bool
+	for _, u := range h.RecentUtterances {
+		if u.SpeakerID == "seller" && strings.Contains(u.Text, "Four coins the bowl") {
+			heard = true
+		}
+	}
+	if !heard {
+		t.Errorf("targeted sell's say never reached the conversation; ring = %+v", h.RecentUtterances)
 	}
 }
