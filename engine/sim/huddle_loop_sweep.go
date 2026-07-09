@@ -27,18 +27,22 @@ import (
 // (the conversation produces no action), not of any single actor, so the
 // detection and the response both live here, at the huddle level.
 //
-// Detection is deterministic and content-based: a huddle is "looping" when its
-// RecentUtterances ring is highly repetitive (most turns near-duplicate another
-// turn — see huddleUtteranceRepetition) AND no non-conversational progress (a
-// transaction or membership change — Huddle.LastProgressAt) has happened during
-// the repetition spell. A persistence gate (Huddle.LoopingSince, must hold for
+// Detection is deterministic, via three OR'd arms sharing one LoopingSince
+// onset + persistence gate: the LEXICAL arm (a highly repetitive
+// RecentUtterances ring — huddleUtteranceRepetition — with no progress newer
+// than it), the LEDGER arm (LLM-309, a silent offer→decline standoff), and the
+// ENDURANCE arm (LLM-333, HuddleLoopMaxTurns spoken lines with no progress —
+// content-blind, because a creative model paraphrases past any lexical
+// threshold). A persistence gate (Huddle.LoopingSince, must hold for
 // HuddleLoopTimeout) keeps it high-precision: a brief repetitive patch is spared,
 // only a sustained livelock is concluded. Conclusion is SILENT (no per-member
 // warrant), like the silence sweep — breaking the loop must not itself wake the
 // members into a fresh re-pitch round; their next genuine warrant (a need, a
-// schedule duty) drives real behavior. A `stuck` tick-telemetry record is
-// emitted per member so the loop surfaces in the umbilical exactly where the
-// degeneracy observer's records do.
+// schedule duty) drives real behavior. Members' pending social-cadence-only
+// warrant cycles are also cleared at conclusion (LLM-333) so the leftover
+// npc_spoke beats of the dead conversation can't tick once more and re-form it.
+// A `stuck` tick-telemetry record is emitted per member so the loop surfaces in
+// the umbilical exactly where the degeneracy observer's records do.
 //
 // Posture: OFF by default. The master knob HuddleLoopTimeout env-defaults to 0
 // (disabled); an operator turns it on and tunes it live, the same opt-in shape
@@ -106,6 +110,15 @@ const huddleLoopLedgerMinTerminals = 3
 // Mirrors coPresentBuyStandoff's recentlyResolvedOfferWindow role (LLM-297).
 const huddleLoopLedgerRecencyWindow = 5 * time.Minute
 
+// HuddleLoopMaxTurnsDefault is the endurance arm's default turn budget (LLM-333)
+// when WorldSettings.HuddleLoopMaxTurns is unset: how many spoken lines a huddle
+// may accumulate with no progress event (completed transaction, genuine
+// membership change, player line) before it reads as stuck regardless of
+// content. 16 = two ring-fulls — the live huddles in the 2026-07-08 telemetry
+// window that were healthy ran 2-10 spokes between progress events, while the
+// uncaught loops ran 24-110. Tunable via huddle_loop_max_turns.
+const HuddleLoopMaxTurnsDefault = 16
+
 // huddleLoopEnabled reports whether the loop sweep is active. OFF unless
 // HuddleLoopTimeout is positive — the master enable, mirroring the degeneracy
 // observer's single-positive-number posture. The timeout doubles as the
@@ -122,6 +135,18 @@ func effectiveHuddleLoopSweepCadence(s WorldSettings) time.Duration {
 		return s.HuddleLoopSweepCadence
 	}
 	return HuddleLoopSweepCadenceDefault
+}
+
+// effectiveHuddleLoopMaxTurns returns the configured endurance turn budget or
+// the default when WorldSettings.HuddleLoopMaxTurns is zero/unset. The arm has
+// no independent off-switch — it rides the sweep's master enable
+// (HuddleLoopTimeout), like the ledger arm; an operator who wants it inert can
+// set the budget absurdly high.
+func effectiveHuddleLoopMaxTurns(s WorldSettings) int {
+	if s.HuddleLoopMaxTurns > 0 {
+		return s.HuddleLoopMaxTurns
+	}
+	return HuddleLoopMaxTurnsDefault
 }
 
 // effectiveHuddleLoopRepeatFraction returns the configured near-duplicate
@@ -267,10 +292,13 @@ func EvaluateHuddleLoopSweep(now time.Time) Command {
 				}
 				// LLM-309: OR the durable transactional-futility condition into the
 				// onset gate — a silent decline loop holds LoopingSince exactly as a
-				// repetitive utterance ring does, and a huddle that is neither
-				// content-present nor in a ledger standoff has its spell cleared.
+				// repetitive utterance ring does. LLM-333: the endurance arm's
+				// exhausted turn budget ORs in the same way. A huddle that is none of
+				// content-present, ledger-standoff, or budget-exhausted has its spell
+				// cleared.
 				_, ledgerPresent := ledgerPresentHuddles[id]
-				if !huddleLoopContentPresent(w.Settings, h) && !ledgerPresent {
+				if !huddleLoopContentPresent(w.Settings, h) && !ledgerPresent &&
+					!huddleEndurancePresent(w.Settings, h) {
 					h.LoopingSince = nil
 					continue
 				}
@@ -285,7 +313,9 @@ func EvaluateHuddleLoopSweep(now time.Time) Command {
 				// steer arms on, so the gentle nudge and this destructive conclude
 				// stay coupled.
 				_, ledgerArmed := ledgerArmedHuddles[id]
-				if now.Sub(*h.LoopingSince) >= timeout && (huddleLoopArmed(w.Settings, h, now) || ledgerArmed) {
+				if now.Sub(*h.LoopingSince) >= timeout &&
+					(huddleLoopArmed(w.Settings, h, now) || ledgerArmed ||
+						huddleEnduranceArmed(w.Settings, h, now)) {
 					looping = append(looping, id)
 				}
 			}
@@ -305,14 +335,34 @@ func EvaluateHuddleLoopSweep(now time.Time) Command {
 				// (LLM-309) contributed to the conclusion, so the ledger shape is never
 				// hidden in a mixed chatty+transactional loop; the per-record
 				// `utterances` count still distinguishes a truly silent loop (0) from a
-				// mixed one (>0).
+				// mixed one (>0). "huddle_loop_endurance" (LLM-333) marks a conclusion
+				// only the turn budget could see — neither the lexical nor the ledger
+				// arm was armed — so paraphrase-loop kills stay separable in the ring.
 				reason := "huddle_loop"
 				if _, ok := ledgerArmedHuddles[id]; ok {
 					reason = "huddle_loop_ledger"
+				} else if !huddleLoopArmed(w.Settings, h, now) {
+					reason = "huddle_loop_endurance"
 				}
 				emitHuddleLoopTelemetry(w, h, now, reason)
+				// Member set BEFORE conclude, for the post-conclude warrant clear.
+				members := make([]ActorID, 0, len(h.Members))
+				for memberID := range h.Members {
+					members = append(members, memberID)
+				}
 				structureID := h.StructureID
 				concludeHuddleInner(w, id, now, false)
+				// LLM-333: make the conclusion stick. Pending npc_spoke warrants
+				// survive concludeHuddleInner (nothing filters them downstream), so
+				// each member would burn one more paced tick and a re-speak would
+				// re-form the huddle with the carried ring — the conclusion leaks.
+				// Drop each member's pending cycle when it consists ONLY of
+				// social-cadence kinds: those are beats of the conversation the sweep
+				// just ended, the exact "moment has passed" case the staleness paths
+				// clear at zero cost. A cycle holding ANY other kind (a red need, a
+				// pay offer, a Force nudge) is left whole — the tick it drives is
+				// real work, not an echo of the dead conversation.
+				clearSocialWarrantCycles(w, members)
 				// concludeHuddleInner wrote a carry-over (LLM-170). Keep its ring (so a
 				// re-form doesn't re-greet) but reset the carried loop clock: a silent
 				// conclude is meant to give the clique a fresh chance, so if they
@@ -419,6 +469,43 @@ func huddlePCAttended(h *Huddle, now time.Time) bool {
 
 func huddleLoopArmed(s WorldSettings, h *Huddle, now time.Time) bool {
 	return huddleLoopContentPresent(s, h) && huddleNewestUtteranceLive(h, now)
+}
+
+// --- endurance arm (LLM-333) ---
+//
+// The utterance arm is lexical: it needs most ring turns to share half their
+// vocabulary with a twin (Jaccard >= 0.5). The 2026-07-08 live loops proved a
+// creative model never re-words a farewell closely enough to trip it — the
+// John+Elizabeth loop ("Safe home… give the cows a scratch" / "Godspeed…
+// mind the muddy spots") measured 0.00 repetition in EVERY ring window against
+// the 0.60 threshold, and no threshold tune fixes that without also catching
+// healthy talk. This arm is content-BLIND: a huddle that has accumulated
+// HuddleLoopMaxTurns spoken lines with no progress event (completed
+// transaction, genuine membership change, player line — the TurnsSinceProgress
+// resets) is stuck no matter how varied its wording, because an unbounded loop
+// always exceeds any turn budget while a healthy scene keeps producing progress
+// or ends. Same durable/live split as the other two arms, OR'd into the same
+// LoopingSince onset, silent conclude, and per-tick steer — the steer renders
+// its own wind-down line (ConversationRunLong) rather than the loop arm's
+// "you keep saying the same thing", which would be false for varied talk.
+
+// huddleEndurancePresent is the endurance arm's DURABLE onset condition: the
+// spend-without-progress budget is exhausted. Counter-based, so it stays true
+// across a churned clique's brief silence (the LLM-170 carry-over carries the
+// counter) exactly as the carried ring keeps huddleLoopContentPresent true.
+func huddleEndurancePresent(s WorldSettings, h *Huddle) bool {
+	if h == nil || h.ConcludedAt != nil {
+		return false
+	}
+	return h.TurnsSinceProgress >= effectiveHuddleLoopMaxTurns(s)
+}
+
+// huddleEnduranceArmed is the endurance arm's LIVE conclude + steer condition:
+// budget exhausted AND the conversation is still speaking right now. A huddle
+// that overran its budget and then went quiet is the silence sweep's domain,
+// matching the other arms' live gates.
+func huddleEnduranceArmed(s WorldSettings, h *Huddle, now time.Time) bool {
+	return huddleEndurancePresent(s, h) && huddleNewestUtteranceLive(h, now)
 }
 
 // --- transactional-futility arm (LLM-309) ---
@@ -663,6 +750,32 @@ var huddleLoopStopwords = map[string]struct{}{
 	"doesnt": {}, "isnt": {}, "arent": {}, "wasnt": {}, "werent": {}, "havent": {},
 	"hasnt": {}, "hadnt": {}, "shouldnt": {}, "couldnt": {}, "wouldnt": {},
 	"thats": {}, "whats": {}, "hes": {}, "shes": {}, "theres": {}, "heres": {},
+}
+
+// clearSocialWarrantCycles drops each listed actor's pending warrant cycle when
+// every warrant in it is a social-cadence kind (isSocialCadenceWarrantKind) and
+// none is Force — see the callsite in EvaluateHuddleLoopSweep for the why. A
+// mixed cycle is kept WHOLE rather than filtered down: partial pruning is the
+// shelved-stale path's semantics (retainForcedWarrants), and here the non-social
+// warrant will drive a tick within seconds anyway, consuming the batch. MUST run
+// on the world goroutine.
+func clearSocialWarrantCycles(w *World, members []ActorID) {
+	for _, id := range members {
+		a := w.Actors[id]
+		if a == nil || len(a.Warrants) == 0 {
+			continue
+		}
+		droppable := true
+		for _, m := range a.Warrants {
+			if m.Force || !isSocialCadenceWarrantKind(m.Kind()) {
+				droppable = false
+				break
+			}
+		}
+		if droppable {
+			clearWarrant(a)
+		}
+	}
 }
 
 // emitHuddleLoopTelemetry writes a `stuck` tick-telemetry record per member of a

@@ -319,10 +319,12 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.HuddleSilenceSweepCadence = parseDurationSetting(values, "huddle_silence_sweep_cadence_seconds", sim.HuddleSilenceSweepCadenceDefault)
 
 	// Huddle loop conclusion (LLM-159). huddle_loop_timeout_seconds is the master
-	// enable: 0/unset leaves the loop sweep OFF.
+	// enable: 0/unset leaves the loop sweep OFF. huddle_loop_max_turns is the
+	// LLM-333 endurance arm's no-progress turn budget.
 	s.HuddleLoopTimeout = parseDurationSetting(values, "huddle_loop_timeout_seconds", 0)
 	s.HuddleLoopRepeatPercent = parseIntSetting(values, "huddle_loop_repeat_percent", sim.HuddleLoopRepeatPercentDefault)
 	s.HuddleLoopSweepCadence = parseDurationSetting(values, "huddle_loop_sweep_cadence_seconds", sim.HuddleLoopSweepCadenceDefault)
+	s.HuddleLoopMaxTurns = parseIntSetting(values, "huddle_loop_max_turns", sim.HuddleLoopMaxTurnsDefault)
 
 	// Seek-work coin ceiling (LLM-194). 0/unset falls back to the default at read time
 	// via effectiveSeekWorkCoinCeiling, but seed the default here too so GET /settings
@@ -580,6 +582,7 @@ func (r *EnvironmentRepo) SaveMutableSettings(ctx context.Context, tx sim.Tx, ms
 		{"huddle_loop_timeout_seconds", strconv.Itoa(ms.HuddleLoopTimeoutSeconds)},
 		{"huddle_loop_repeat_percent", strconv.Itoa(ms.HuddleLoopRepeatPercent)},
 		{"huddle_loop_sweep_cadence_seconds", strconv.Itoa(ms.HuddleLoopSweepCadenceSeconds)},
+		{"huddle_loop_max_turns", strconv.Itoa(ms.HuddleLoopMaxTurns)},
 		// Seek-work coin ceiling (LLM-194) — live-tuned via the umbilical, persisted
 		// here; the load path parses seek_work_coin_ceiling via parseIntSetting.
 		{"seek_work_coin_ceiling", strconv.Itoa(ms.SeekWorkCoinCeiling)},

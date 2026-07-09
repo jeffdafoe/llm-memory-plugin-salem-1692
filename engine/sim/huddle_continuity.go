@@ -52,6 +52,15 @@ type conversationCarryover struct {
 	loopingSince   *time.Time
 	lastProgressAt time.Time
 	concludedAt    time.Time
+
+	// turnsSinceProgress carries the LLM-333 endurance counter across the churn,
+	// exactly as the ring carries the utterance arm's durable condition — a clique
+	// that concludes and re-forms every couple of minutes must not reset its
+	// spend-without-progress tally each cycle. The loop sweep's post-conclude
+	// carry-over reset deliberately clears loopingSince (the CLOCK gets a fresh
+	// chance) but NOT this counter (the CONDITION persists), matching how the
+	// carried ring keeps huddleLoopContentPresent true across a sweep conclude.
+	turnsSinceProgress int
 }
 
 // effectiveHuddleContinuityWindow returns the configured continuity window or the
@@ -132,11 +141,12 @@ func writeConversationCarryover(w *World, h *Huddle, now time.Time) {
 		loopingSince = &t
 	}
 	w.carryoverByStructure[h.StructureID] = &conversationCarryover{
-		utterances:     append([]Utterance(nil), h.RecentUtterances...),
-		members:        members,
-		loopingSince:   loopingSince,
-		lastProgressAt: h.LastProgressAt,
-		concludedAt:    now,
+		utterances:         append([]Utterance(nil), h.RecentUtterances...),
+		members:            members,
+		loopingSince:       loopingSince,
+		lastProgressAt:     h.LastProgressAt,
+		concludedAt:        now,
+		turnsSinceProgress: h.TurnsSinceProgress,
 	}
 }
 
@@ -162,4 +172,5 @@ func seedHuddleFromContinuity(w *World, huddle *Huddle, structureID StructureID,
 		huddle.LoopingSince = &t
 	}
 	huddle.LastProgressAt = cb.lastProgressAt
+	huddle.TurnsSinceProgress = cb.turnsSinceProgress
 }

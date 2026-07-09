@@ -1335,6 +1335,14 @@ type TurnStateView struct {
 	// manufactures the echo) AND swap the coda for an "you've agreed, act now or
 	// done()" steer — the social-loop analogue of the LLM-160 seek-work directive.
 	ConversationLooping bool
+
+	// ConversationRunLong is ConversationLooping's endurance-arm sibling
+	// (LLM-333, sim.ActorSnapshot.ConversationRunLong): the conversation has
+	// exhausted its no-progress turn budget without reading as a lexical loop.
+	// Same reply-nag suppression, but the coda renders a wind-down line — the
+	// scene's truth is "this has gone on with nothing coming of it", not "you
+	// keep saying the same thing". Never true alongside ConversationLooping.
+	ConversationRunLong bool
 }
 
 // AwaitingReply reports whether the subject is awaiting at least one live reply

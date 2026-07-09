@@ -275,8 +275,12 @@ func SpeakTo(speakerID ActorID, text, to string, mentions []SpeakMention, hasNew
 						// player-attended, exempting it from the loop sweep + the
 						// ConversationLooping steer for huddlePCAttentionWindow so an
 						// active conversation isn't concluded or nudged to wrap up.
+						// LLM-333: it also resets the endurance counter — a player's
+						// words genuinely redirect a conversation, so NPC-only drift
+						// is measured from the last player line, not across it.
 						if actor.Kind == KindPC {
 							h.LastPCUtteranceAt = at
+							h.TurnsSinceProgress = 0
 						}
 					}
 				}

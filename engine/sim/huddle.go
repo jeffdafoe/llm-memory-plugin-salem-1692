@@ -84,6 +84,22 @@ type Huddle struct {
 	// never be swept. Zero until a PC speaks. In-memory only, not checkpointed —
 	// same transient posture as LastActivityAt.
 	LastPCUtteranceAt time.Time
+
+	// TurnsSinceProgress counts spoken lines since the huddle's last progress
+	// event (a completed transaction, a genuine membership change) or a player
+	// line — the loop sweep's endurance arm (LLM-333). The two 2026-07-08 live
+	// loops proved the utterance arm's word-overlap metric cannot see paraphrase
+	// repetition (the farewell loop measured 0.00 against the 0.60 threshold —
+	// the model never words the same farewell twice), so this arm is content-
+	// blind: a conversation where nothing has HAPPENED for HuddleLoopMaxTurns
+	// spoken turns is stuck no matter how varied its wording. Incremented by
+	// AppendUtterance; reset wherever LastProgressAt is stamped and on a PC
+	// line (a player's words genuinely redirect a conversation, and the ring
+	// cannot serve as the counter — it caps at 8, below any sane threshold).
+	// In-memory only, not checkpointed — same transient posture as the ring;
+	// carried across same-clique re-formation by the LLM-170 carry-over so
+	// churn can't evade the arm.
+	TurnsSinceProgress int
 }
 
 // Utterance is one spoken line recorded in a Huddle's RecentUtterances ring.
@@ -138,10 +154,17 @@ func CloneHuddle(h *Huddle) *Huddle {
 // ring, trimming the oldest when over MaxRecentUtterancesPerHuddle. Oldest-first
 // so a reader sees the turns in order. No-ops on a nil huddle or empty text (the
 // speak command already rejects empty utterances; this is defensive).
+//
+// Every recorded line also advances TurnsSinceProgress (the LLM-333 endurance
+// counter) — including filler-only lines the repetition metric excludes: each
+// spoken turn burned an LLM call, and spend-without-progress is exactly what
+// the counter measures. A PC line increments here and is reset to zero at the
+// speak site (the PC branch runs after this call).
 func (h *Huddle) AppendUtterance(speakerID ActorID, speakerName, text string, at time.Time) {
 	if h == nil || text == "" {
 		return
 	}
+	h.TurnsSinceProgress++
 	h.RecentUtterances = append(h.RecentUtterances, Utterance{
 		SpeakerID:   speakerID,
 		SpeakerName: speakerName,

@@ -357,6 +357,38 @@ func HuddleLoopContentPresent(s WorldSettings, h *Huddle) bool {
 	return huddleLoopContentPresent(s, h)
 }
 
+// Endurance arm (LLM-333) — wrappers for direct predicate tests.
+func HuddleEndurancePresent(s WorldSettings, h *Huddle) bool {
+	return huddleEndurancePresent(s, h)
+}
+func HuddleEnduranceArmed(s WorldSettings, h *Huddle, now time.Time) bool {
+	return huddleEnduranceArmed(s, h, now)
+}
+func EffectiveHuddleLoopMaxTurns(s WorldSettings) int { return effectiveHuddleLoopMaxTurns(s) }
+
+// HuddleLoopRepetitive exposes the lexical arm's content-shape predicate so the
+// LLM-333 regression can pin that the live paraphrase loops do NOT trip it (the
+// gap the endurance arm covers). If a future similarity upgrade makes these
+// transcripts trip lexically, the pin fails and should be revisited — that's a
+// signal of redundancy, not a bug.
+func HuddleLoopRepetitive(s WorldSettings, h *Huddle) bool { return huddleLoopRepetitive(s, h) }
+
+// TouchHuddleProgress exposes the transaction-progress stamp (the same helper the
+// pay/labor accept sites call). MUST run inside a Command.Fn.
+func TouchHuddleProgress(w *World, id HuddleID, now time.Time) {
+	touchHuddleProgress(w, id, now)
+}
+
+// CarryoverTurnsSinceProgress returns the carry-over's endurance counter for
+// structureID, (0, false) when none exists. MUST run inside a Command.Fn.
+func CarryoverTurnsSinceProgress(w *World, structureID StructureID) (int, bool) {
+	cb := w.carryoverByStructure[structureID]
+	if cb == nil {
+		return 0, false
+	}
+	return cb.turnsSinceProgress, true
+}
+
 // Transactional-futility arm (LLM-309) — wrappers for direct tests.
 //
 // HuddleLoopLedgerMinTerminals is the standoff threshold so tests don't hardcode it.

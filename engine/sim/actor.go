@@ -1170,6 +1170,15 @@ type ActorSnapshot struct {
 	// (LLM-169), well before the sweep's persistence gate silently concludes the
 	// huddle. False for an unhuddled actor or a healthy, advancing conversation.
 	ConversationLooping bool
+	// ConversationRunLong is ConversationLooping's endurance-arm sibling
+	// (LLM-333): the huddle has exhausted its no-progress turn budget
+	// (huddleEnduranceArmed) without reading as a lexical or ledger loop.
+	// Perception renders a wind-down steer ("this has run its course") rather
+	// than the loop arm's "you keep saying the same thing", which would be
+	// false of a varied conversation. Mutually exclusive with
+	// ConversationLooping at publish — looping wins as the more specific
+	// diagnosis.
+	ConversationRunLong bool
 	Needs               map[NeedKey]int
 	InventoryHash       uint64 // fast-compare; computed at snapshot time
 	Coins               int

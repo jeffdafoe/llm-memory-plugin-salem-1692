@@ -314,8 +314,12 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// suppresses the owed-reply nag — that nag is exactly what manufactures the
 	// echo — while renderTriage's coda swaps to an "act now or done()" steer below.
 	conversationLooping := p.TurnState.ConversationLooping
-	renderTurnState(&ephemeral, p.TurnState, seekWorkDirective || conversationLooping)
-	renderTriage(&ephemeral, p.Actor.Needs, p.Actor.NeedThresholds, p.TurnState.AwaitingReply(), conversationLooping, p.NeedRedirect, seekWorkDirective, len(payOffers) > 0, p.Actor.InFlightMove, p.Actor.InFlightSourceActivity)
+	// LLM-333: the endurance wind-down suppresses the owed-reply nag for the same
+	// reason the loop steer does — reply-pressure is what keeps the over-long
+	// conversation alive.
+	conversationRunLong := p.TurnState.ConversationRunLong
+	renderTurnState(&ephemeral, p.TurnState, seekWorkDirective || conversationLooping || conversationRunLong)
+	renderTriage(&ephemeral, p.Actor.Needs, p.Actor.NeedThresholds, p.TurnState.AwaitingReply(), conversationLooping, conversationRunLong, p.NeedRedirect, seekWorkDirective, len(payOffers) > 0, p.Actor.InFlightMove, p.Actor.InFlightSourceActivity)
 
 	out.Text = durable.String()
 	out.EphemeralText = ephemeral.String()
@@ -444,7 +448,7 @@ func renderNeedRedirect(v NeedRedirectView) string {
 // wandering exposed: obligations to others and pressing needs over idle drift.
 // Rendered unconditionally — Render is only called on the NPC reactor-tick path
 // (handlers.Harness.RunTick), never for a PC.
-func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.NeedThresholds, awaitingReply bool, conversationLooping bool, needRedirect *NeedRedirectView, seekWork bool, hasPayOffers bool, inFlightMove *InFlightMoveView, inFlightSourceActivity *InFlightSourceActivityView) {
+func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.NeedThresholds, awaitingReply bool, conversationLooping bool, conversationRunLong bool, needRedirect *NeedRedirectView, seekWork bool, hasPayOffers bool, inFlightMove *InFlightMoveView, inFlightSourceActivity *InFlightSourceActivityView) {
 	// A buyer's offer awaiting this actor's answer outranks everything below —
 	// including the actor's own felt needs, which the coda's "pressing needs"
 	// phrasing otherwise licenses to win. Without this, a starving seller read
@@ -517,6 +521,19 @@ func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.
 		} else {
 			b.WriteString("You and the others here keep saying the same thing — the matter is already settled between you. Don't say it again: do what you've agreed — move, tend your work or a need — or call done() and let the moment rest. Speak again only if you truly have something new.\n")
 		}
+	case conversationRunLong:
+		// Endurance wind-down coda (LLM-333): the huddle has talked for a long
+		// stretch with nothing coming of it — no trade, no one new, no player —
+		// without lexically looping (the model paraphrases, so the case above
+		// never fires; the live farewell loop measured 0.00 repetition). The
+		// scene's truth is "this has run its course", so say exactly that and
+		// make ending it the imperative. Ordered below conversationLooping
+		// (never true together — publish picks the more specific diagnosis) and
+		// above awaitingReply for the same reason the loop coda is: "run long"
+		// is the more specific read of why a reply is pending. The needRedirect
+		// swap is deliberately NOT applied here — it exists to break a
+		// confabulated plan-loop, and this case is by definition not a loop.
+		b.WriteString("This conversation has gone on a good while and nothing new is coming of it. Bring it to a close — say a brief farewell or simply turn to your own affairs, then call done(). Do not start a new topic.\n")
 	case awaitingReply:
 		// Turn-state coda (ZBBS-WORK-370): the actor has spoken and is awaiting a
 		// reply. The default "choose one thing and do it" imperative is exactly

@@ -372,6 +372,7 @@ func JoinHuddle(actorID ActorID, structureID StructureID, sceneID SceneID, now t
 			// added to Members (joinContinuesClique includes it in the check).
 			if !w.joinContinuesClique(huddle, structureID, actorID, now) {
 				huddle.LastProgressAt = now
+				huddle.TurnsSinceProgress = 0
 			}
 			if w.actorsByHuddle[huddleID] == nil {
 				w.actorsByHuddle[huddleID] = make(map[ActorID]struct{})
@@ -608,6 +609,7 @@ func touchHuddleProgress(w *World, huddleID HuddleID, now time.Time) {
 	if h, ok := w.Huddles[huddleID]; ok && h.ConcludedAt == nil {
 		h.LastActivityAt = now
 		h.LastProgressAt = now
+		h.TurnsSinceProgress = 0
 	}
 }
 

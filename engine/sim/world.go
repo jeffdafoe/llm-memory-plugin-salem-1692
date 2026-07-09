@@ -572,9 +572,18 @@ type WorldSettings struct {
 	// 30s (HuddleLoopSweepCadenceDefault) — finer than the silence sweep's 60s
 	// because the persistence gate is minutes, not hours. Tunable via
 	// huddle_loop_sweep_cadence_seconds.
+	//
+	// HuddleLoopMaxTurns is the endurance arm's turn budget (LLM-333): spoken
+	// lines a huddle may accumulate with no progress event before it reads as
+	// stuck regardless of wording — the content-blind arm that catches the
+	// paraphrase loops the repetition metric measurably cannot (0.00 vs the
+	// 0.60 threshold on the live farewell loop). <= 0 falls back to
+	// HuddleLoopMaxTurnsDefault (16); rides the sweep's master enable. Tunable
+	// via huddle_loop_max_turns.
 	HuddleLoopTimeout       time.Duration
 	HuddleLoopRepeatPercent int
 	HuddleLoopSweepCadence  time.Duration
+	HuddleLoopMaxTurns      int
 
 	// HuddleContinuityWindow is how long after a structure huddle concludes a
 	// re-formation among the same speakers still counts as the SAME conversation
@@ -2054,9 +2063,16 @@ func (w *World) republish() {
 				// The steer arms on EITHER a repetitive utterance loop or a silent
 				// transactional-futility loop (LLM-309), so an all-mechanical
 				// offer→decline standoff gets the same gentle nudge as a chatty one.
+				// The endurance arm (LLM-333) steers through the separate
+				// ConversationRunLong flag — its situation is "this has gone on and
+				// on", not "you keep saying the same thing", and the render line must
+				// state what is actually true of the scene. Looping wins when both
+				// hold: it is the more specific diagnosis.
 				_, ledgerArmed := ledgerLoopHuddles[a.CurrentHuddleID]
 				if huddleLoopArmed(w.Settings, h, now) || ledgerArmed {
 					sa.ConversationLooping = true
+				} else if huddleEnduranceArmed(w.Settings, h, now) {
+					sa.ConversationRunLong = true
 				}
 			}
 		}
