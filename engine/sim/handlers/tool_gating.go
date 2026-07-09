@@ -464,12 +464,7 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 			continue
 		}
 		// pay-verb consumer (LLM-329): advertise pay / pay_with_item only when the
-		// actor has a co-present huddle peer. Both hard-require CurrentHuddleID != ""
-		// at the substrate, so an actor with no huddle peer storms a doomed call every
-		// tick with no memory of the failure (the Hannah Boggs absent-seller storm).
-		// hasHuddlePeer is the huddle subset of the speak audience set — the same
-		// co-presence the restock/satiation buy cues read — so tool and cue can't
-		// drift. A necessary-condition gate, so no false drops.
+		// actor has a co-present huddle peer — see payVerbTools for the rationale.
 		if _, gated := payVerbTools[spec.Name]; gated && !hasHuddlePeer {
 			continue
 		}
