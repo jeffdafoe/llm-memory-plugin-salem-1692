@@ -1708,6 +1708,7 @@ func _promote_to_structure(object_id: String, node: Node2D) -> void:
         # node now instead of leaking it.
         http.queue_free()
         push_error("Failed to start promote object-to-structure request: " + str(err))
+        return
 
 ## Remove an object from the world and the server. Single chokepoint for
 ## every delete path (keyboard shortcut, sidebar Delete button, anything
