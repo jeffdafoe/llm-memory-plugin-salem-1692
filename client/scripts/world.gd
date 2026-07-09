@@ -1668,6 +1668,41 @@ func _on_object_saved(result: int, response_code: int, headers: PackedStringArra
         # Mark as locally created so any late WS echo is ignored
         if event_client != null:
             event_client.mark_local_object(obj_id)
+        # LLM-249: a structure-category asset must ALSO become a first-class
+        # Structure, or it stays a dead decorative object NPCs can't move_to and
+        # can't be assigned as a home/work anchor. Auto-promote on placement
+        # (root placements only — an overlay is never a building). Bare props
+        # (wells, benches, signs) stay plain village_objects.
+        var asset_id_meta: String = str(node.get_meta("asset_id", ""))
+        var asset_cat: String = str(Catalog.assets.get(asset_id_meta, {}).get("category", ""))
+        if asset_cat == "structure" and str(node.get_meta("attached_to", "")) == "":
+            _promote_to_structure(obj_id, node)
+
+## Promote a freshly-placed structure-category object into a first-class
+## Structure (LLM-249). The engine mints a Structure sharing the object's id
+## (the shared-identity bridge) so NPCs can move_to it by name and it can be set
+## as a home/work anchor — navigable immediately, no engine restart. On success
+## the placing client flips the node to has_interior locally so clicking it now
+## walks INSIDE (structure_enter) instead of to a loiter slot. The live push of
+## the promotion to OTHER connected clients is LLM-250.
+func _promote_to_structure(object_id: String, node: Node2D) -> void:
+    var http = HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+
+    var payload = JSON.stringify({"object_id": object_id})
+    http.request_completed.connect(func(result, response_code, _headers, _body):
+        http.queue_free()
+        if not Auth.check_response(response_code):
+            return
+        if result != HTTPRequest.RESULT_SUCCESS or response_code < 200 or response_code >= 300:
+            push_error("Failed to promote object to structure")
+            return
+        if is_instance_valid(node):
+            node.set_meta("has_interior", true)
+    )
+    var headers_arr = Auth.auth_headers()
+    http.request(api_base + "/api/village/admin/object/promote-to-structure", headers_arr, HTTPClient.METHOD_POST, payload)
 
 ## Remove an object from the world and the server. Single chokepoint for
 ## every delete path (keyboard shortcut, sidebar Delete button, anything

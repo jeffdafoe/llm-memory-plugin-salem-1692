@@ -912,6 +912,17 @@ func containsControlChar(s string) bool {
 // ErrInvalidDisplayName. Returns ErrVillageObjectNotFound if the object is
 // absent. Emits VillageObjectDisplayNameChanged ONLY when the name actually
 // changes — a same-name call is a no-op that emits nothing.
+//
+// When the object backs a Structure (the Shared-Identity Bridge — a building),
+// this ALSO keeps the structure's DisplayName in lockstep. A building is
+// navigated by move_to via Structure.DisplayName (move_to.go), while clients
+// render VillageObject.DisplayName, so a rename that touched only the object
+// would leave NPCs walking to the stale name (LLM-249). The object's name is the
+// source of truth, mirrored onto the structure; the structure field persists via
+// the next checkpoint. Because the structure's display_name is a non-empty
+// NOT-NULL invariant (DB CHECK + SaveSnapshot pre-pass), a cleared object name
+// ("" — a valid object state) falls the structure back to the asset catalog name
+// rather than propagating the empty string.
 func SetVillageObjectDisplayName(id VillageObjectID, name string) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
@@ -923,15 +934,35 @@ func SetVillageObjectDisplayName(id VillageObjectID, name string) Command {
 			if !ok {
 				return nil, ErrVillageObjectNotFound
 			}
-			if obj.DisplayName == trimmed {
+
+			// Resolve the name the backing structure (if any) should carry: the
+			// object's new name, or — when cleared to "" — the asset catalog
+			// fallback, so the structure never goes empty. A dangling asset_id
+			// leaves structTarget "" and the structure name is kept unchanged.
+			st, hasStructure := w.Structures[StructureID(id)]
+			structTarget := trimmed
+			if hasStructure && structTarget == "" {
+				if asset, ok := w.Assets[obj.AssetID]; ok && asset != nil {
+					structTarget = strings.TrimSpace(asset.Name)
+				}
+			}
+
+			objSame := obj.DisplayName == trimmed
+			structSame := !hasStructure || structTarget == "" || st.DisplayName == structTarget
+			if objSame && structSame {
 				return SetDisplayNameResult{ID: id, DisplayName: trimmed}, nil
 			}
-			obj.DisplayName = trimmed
-			w.emit(&VillageObjectDisplayNameChanged{
-				ObjectID:    id,
-				DisplayName: trimmed,
-				At:          time.Now().UTC(),
-			})
+			if !objSame {
+				obj.DisplayName = trimmed
+				w.emit(&VillageObjectDisplayNameChanged{
+					ObjectID:    id,
+					DisplayName: trimmed,
+					At:          time.Now().UTC(),
+				})
+			}
+			if hasStructure && structTarget != "" && st.DisplayName != structTarget {
+				st.DisplayName = structTarget
+			}
 			return SetDisplayNameResult{ID: id, DisplayName: trimmed}, nil
 		},
 	}
