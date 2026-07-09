@@ -242,10 +242,20 @@ func ledgerCommerceHuddles(w *World) map[HuddleID]struct{} {
 }
 
 // huddleMemberHoldsCommerceWarrant reports whether any member's pending warrant
-// cycle contains a commerce-commitment kind — a counterparty is blocked on that
-// member's answer, so the conversation is commerce-carrying even if the ledger
-// entry has already resolved (handover/thanks beats ride paid/pay_resolved/
-// serve_handover warrants). MUST run on the world goroutine.
+// cycle contains a commerce-commitment kind belonging to THIS conversation — a
+// counterparty is blocked on that member's answer, so the conversation is
+// commerce-carrying even if the ledger entry has already resolved
+// (handover/thanks beats ride paid/pay_resolved/serve_handover warrants).
+//
+// Scoped, not blanket (code_review): a commerce warrant stamped with a
+// DIFFERENT HuddleID belongs to another conversation and must not hold this
+// one open — otherwise an actor carrying a stale pay_offer from elsewhere
+// would commerce-protect every huddle it joins and the arc would never run. A
+// warrant with huddle identity counts only on an exact match; a warrant
+// WITHOUT one (not every commerce mint site stamps meta.HuddleID) counts only
+// when its counterparty (TriggerActorID / SourceActorID) is another member of
+// this huddle — the deal is between people in this room. MUST run on the
+// world goroutine.
 func huddleMemberHoldsCommerceWarrant(w *World, h *Huddle) bool {
 	for memberID := range h.Members {
 		a := w.Actors[memberID]
@@ -253,10 +263,31 @@ func huddleMemberHoldsCommerceWarrant(w *World, h *Huddle) bool {
 			continue
 		}
 		for _, m := range a.Warrants {
-			if isCommerceCommitmentWarrantKind(m.Kind()) {
+			if !isCommerceCommitmentWarrantKind(m.Kind()) {
+				continue
+			}
+			if m.HuddleID == h.ID {
+				return true
+			}
+			if m.HuddleID != "" {
+				continue // scoped to another conversation
+			}
+			if counterpartyInHuddle(h, memberID, m.TriggerActorID) ||
+				counterpartyInHuddle(h, memberID, m.SourceActorID) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// counterpartyInHuddle reports whether id names a huddle member OTHER than the
+// warrant holder — the "the deal's other side is in this room" test for
+// commerce warrants that carry no huddle identity.
+func counterpartyInHuddle(h *Huddle, holder, id ActorID) bool {
+	if id == "" || id == holder {
+		return false
+	}
+	_, ok := h.Members[id]
+	return ok
 }

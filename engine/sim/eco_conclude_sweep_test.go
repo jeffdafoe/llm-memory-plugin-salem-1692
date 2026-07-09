@@ -230,6 +230,44 @@ func TestEcoConcludeSweep_CommerceGuard(t *testing.T) {
 	}
 }
 
+// TestEcoConcludeSweep_ForeignCommerceDoesNotProtect (code_review): a member
+// carrying a commerce warrant scoped to a DIFFERENT huddle — or an unscoped one
+// whose counterparty is not in the room — must not hold this conversation open;
+// otherwise stale commerce from elsewhere commerce-protects every huddle the
+// actor joins and the arc never runs.
+func TestEcoConcludeSweep_ForeignCommerceDoesNotProtect(t *testing.T) {
+	w, cancel := buildHuddleTestWorld(t)
+	defer cancel()
+	t0 := time.Now().UTC()
+
+	h := sendT(t, w, sim.JoinHuddle("alice", "tavern", "", t0)).(sim.JoinHuddleResult).HuddleID
+	sendT(t, w, sim.JoinHuddle("bob", "tavern", "", t0))
+	enableEcoArc(t, w, 3*time.Minute)
+
+	// Bob carries a pay_offer scoped to another huddle, plus an unscoped one
+	// whose counterparty (charlie) is not a member here.
+	sendT(t, w, sim.StampWarrant("bob", sim.WarrantMeta{
+		TriggerActorID: "charlie",
+		Reason:         sim.BasicWarrantReason{K: sim.WarrantKindPayOffer},
+		SourceEventID:  31,
+		HuddleID:       "hud-somewhere-else",
+		OccurredAt:     t0,
+	}, t0))
+	sendT(t, w, sim.StampWarrant("bob", sim.WarrantMeta{
+		TriggerActorID: "charlie",
+		Reason:         sim.BasicWarrantReason{K: sim.WarrantKindServeHandover},
+		SourceEventID:  32,
+		OccurredAt:     t0,
+	}, t0))
+
+	sendT(t, w, sim.EvaluateEcoConcludeSweep(t0))
+	t1 := t0.Add(3 * time.Minute)
+	sendT(t, w, sim.EvaluateEcoConcludeSweep(t1))
+	if huddleConcludedAt(t, w, h) == nil {
+		t.Error("foreign commerce warrants must not protect this huddle — the arc should conclude it")
+	}
+}
+
 func TestEcoConcludeSweep_DisabledNoop(t *testing.T) {
 	w, cancel := buildHuddleTestWorld(t)
 	defer cancel()
