@@ -347,7 +347,7 @@ func pacedCap(limit int) int {
 // actor of the slug exists at boot (visitors spawn on demand), so the slug is
 // already gated the moment its first NPC ticks.
 func sharedVASlugs() []string {
-	return []string{sim.VendorAgentName, sim.VisitorAgentName, sim.GenericAgentName}
+	return sim.SharedVASlugs()
 }
 
 // installAgentRateLimits queries memory-api for the effective rate limit of the

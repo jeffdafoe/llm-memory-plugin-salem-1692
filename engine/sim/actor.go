@@ -31,6 +31,16 @@ const (
 	GenericAgentName = "salem-generic"
 )
 
+// SharedVASlugs returns the canonical shared-VA driver slugs — the stateless
+// switchboard VAs any actor may be linked to (vendor / visitor / generic), as
+// opposed to a dedicated 1:1 persistent VA. Order is not guaranteed; callers
+// that need determinism sort. Used by the boot rate-limit query
+// (cmd/engine.agentSlugsToQuery) and the editor's assignable-driver catalog
+// (GET /api/village/agent-drivers, LLM-256).
+func SharedVASlugs() []string {
+	return []string{VendorAgentName, VisitorAgentName, GenericAgentName}
+}
+
 // isSharedVAAgent reports whether an llm_memory_agent slug is one of the
 // shared switchboard VAs rather than an actor's own private VA.
 func isSharedVAAgent(agent string) bool {
