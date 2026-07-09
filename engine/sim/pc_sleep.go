@@ -55,9 +55,14 @@ const (
 	DefaultPCIdleSleepMinutes = 15
 
 	// DefaultPCIdleSleepMinTiredness is the tiredness floor for idle auto-bed —
-	// a PC who sat down fresh in their room isn't knocked out. Mirrors v1's
-	// pc_idle_sleep_min_tiredness (default 10).
-	DefaultPCIdleSleepMinTiredness = 10
+	// a PC who isn't genuinely tired isn't knocked out. Set at the tiredness
+	// red/"weary" line (DefaultTirednessRedThreshold): mild daytime tiredness
+	// plateaus at ~10-11 on the 0-24 scale (see DefaultTirednessAwarenessFloor),
+	// so v1's floor of 10 was always satisfied and idle lodgers were bedded at
+	// any hour of the day (LLM-331). At weary, the ~1/hr climb reaches the floor
+	// only late in a long day — a natural bedtime with no clock window, so
+	// late-night players still bed whenever they're actually weary.
+	DefaultPCIdleSleepMinTiredness = DefaultTirednessRedThreshold
 )
 
 // ErrPCCannotSleepHere is returned by SleepPC when the PC holds no active
