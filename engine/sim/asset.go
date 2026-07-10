@@ -109,6 +109,15 @@ type Asset struct {
 	Pack   *TilesetPack
 	States []AssetState
 	Slots  []AssetSlot
+
+	// RefreshDefaults is the per-asset TEMPLATE refresh-policy set (LLM-363),
+	// loaded from asset_refresh_default at boot/SIGHUP. When a new placement of
+	// this asset is created, CreateVillageObject seeds the object's Refreshes
+	// from these rows (a fresh, full source) so a forageable lands working
+	// instead of inert. Empty for the common non-refreshing asset. Authored via
+	// SetAssetRefreshDefaults; reference data with no checkpoint path, persisted
+	// by a direct write-through like the geometry columns.
+	RefreshDefaults []*ObjectRefresh
 }
 
 // FindState returns the AssetState with the given state name, or nil.

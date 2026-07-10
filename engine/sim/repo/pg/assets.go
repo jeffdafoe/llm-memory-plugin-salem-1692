@@ -84,9 +84,21 @@ SELECT asset_id, slot_name, offset_x, offset_y
   FROM asset_slot
  ORDER BY asset_id, slot_name`
 
+// loadAllRefreshDefaultsSQL pulls every asset_refresh_default row (LLM-363) — the
+// per-asset TEMPLATE seeded onto new placements. No last_refresh_at (a template has
+// no regen anchor) and no snapshot_gen (reference data, not checkpointed). Ordered
+// by id so an asset's default rows load in a stable order.
+const loadAllRefreshDefaultsSQL = `
+SELECT asset_id, attribute, amount,
+       max_quantity, available_quantity,
+       refresh_mode, refresh_period_hours,
+       dwell_amount, dwell_period_minutes, gather_item
+  FROM asset_refresh_default
+ ORDER BY asset_id, id`
+
 // LoadAll assembles the asset catalog: load packs, load the asset rows
-// (attaching the Pack pointer), then attach states (with light + tags)
-// and slots to their parent. Four queries, no N+1.
+// (attaching the Pack pointer), then attach states (with light + tags),
+// slots, and refresh-default templates to their parent. Five queries, no N+1.
 //
 // Runs against the pool directly (no Tx) — read-only restart path, same
 // posture as the other read-side repos.
@@ -111,6 +123,9 @@ func (r *AssetsRepo) LoadAll(ctx context.Context) (map[sim.AssetID]*sim.Asset, e
 		return nil, err
 	}
 	if err := r.attachSlots(ctx, assets); err != nil {
+		return nil, err
+	}
+	if err := r.attachRefreshDefaults(ctx, assets); err != nil {
 		return nil, err
 	}
 	return assets, nil
@@ -295,6 +310,100 @@ func (r *AssetsRepo) attachSlots(ctx context.Context, assets map[sim.AssetID]*si
 	return nil
 }
 
+// attachRefreshDefaults reads asset_refresh_default and appends each row to its
+// parent asset's RefreshDefaults slice (LLM-363). Orphan rows (asset_id not in the
+// map) are skipped with a warning — see LoadAll's orphan note; the FK to asset(id)
+// ON DELETE CASCADE makes it unreachable from valid writes. Column mapping mirrors
+// loadAllRefreshes (village_objects.go): a NULL attribute / gather_item maps to the
+// empty in-memory value, and refresh_mode round-trips as stored ('continuous' on an
+// infinite row, inert since regen ignores an untracked supply).
+func (r *AssetsRepo) attachRefreshDefaults(ctx context.Context, assets map[sim.AssetID]*sim.Asset) error {
+	rows, err := r.pool.Query(ctx, loadAllRefreshDefaultsSQL)
+	if err != nil {
+		return fmt.Errorf("pg assets LoadAll: asset_refresh_default query: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			assetID        string
+			attribute      *string // nullable: NULL on a yield-only row
+			amount         int
+			maxQty         *int
+			availableQty   *int
+			refreshMode    *string
+			periodHours    *int
+			dwellDelta     *int
+			dwellPeriodMin *int
+			gatherItem     *string
+		)
+		if err := rows.Scan(
+			&assetID, &attribute, &amount,
+			&maxQty, &availableQty,
+			&refreshMode, &periodHours,
+			&dwellDelta, &dwellPeriodMin, &gatherItem,
+		); err != nil {
+			return fmt.Errorf("pg assets LoadAll: asset_refresh_default scan: %w", err)
+		}
+		attr := ""
+		if attribute != nil {
+			attr = *attribute
+		}
+		mode := ""
+		if refreshMode != nil {
+			mode = *refreshMode
+		}
+		// An infinite (untracked-supply) row carries no regen schedule. object_refresh
+		// stores 'continuous' on it to satisfy its NOT NULL column, but the canonical
+		// in-memory shape ValidateObjectRefreshes accepts is an EMPTY mode, so
+		// normalize it back (mirrors the editor's infinite-row mode normalization).
+		// Without this the per-asset validation below would reject a valid template.
+		if availableQty == nil {
+			mode = ""
+		}
+		gather := ""
+		if gatherItem != nil {
+			gather = *gatherItem
+		}
+		a, ok := assets[sim.AssetID(assetID)]
+		if !ok {
+			log.Printf("pg assets LoadAll: asset_refresh_default references unknown asset %s — skipping", assetID)
+			continue
+		}
+		a.RefreshDefaults = append(a.RefreshDefaults, &sim.ObjectRefresh{
+			Attribute:          sim.NeedKey(attr),
+			Amount:             amount,
+			GatherItem:         sim.ItemKind(gather),
+			AvailableQuantity:  availableQty,
+			MaxQuantity:        maxQty,
+			RefreshMode:        sim.RefreshMode(mode),
+			RefreshPeriodHours: periodHours,
+			DwellDelta:         dwellDelta,
+			DwellPeriodMinutes: dwellPeriodMin,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("pg assets LoadAll: asset_refresh_default iter: %w", err)
+	}
+	// Validate each asset's assembled template against the authoring invariants
+	// (ValidateObjectRefreshes) — the DB CHECKs cover structure but not e.g. an
+	// unknown need name. A drifted / hand-edited template would otherwise seed
+	// invalid rows onto every future placement. On failure, drop that asset's
+	// defaults with a loud warning (skip-and-warn, this file's orphan posture) so
+	// one bad template can't crash engine boot — those placements just fall back to
+	// inert until the template is re-authored.
+	for id, a := range assets {
+		if len(a.RefreshDefaults) == 0 {
+			continue
+		}
+		if err := sim.ValidateObjectRefreshes(a.RefreshDefaults); err != nil {
+			log.Printf("pg assets LoadAll: dropping invalid asset_refresh_default template for asset %s: %v", id, err)
+			a.RefreshDefaults = nil
+		}
+	}
+	return nil
+}
+
 // --- Asset-geometry editor writes (LLM-263) ---------------------------------
 //
 // The durable half of the door / footprint / stand editor marker drags. Assets
@@ -360,6 +469,81 @@ func (r *AssetsRepo) UpdateAssetStandOffset(ctx context.Context, id sim.AssetID,
 	}
 	if tag.RowsAffected() == 0 {
 		return sim.ErrAssetNotFound
+	}
+	return nil
+}
+
+// --- Asset refresh-default editor writes (LLM-363) ---------------------------
+//
+// The durable half of the set-refresh-default editor write. Like the geometry
+// writes above, asset_refresh_default is reference data with no checkpoint path, so
+// this direct write is the edit's source of truth on restart. The httpapi handler
+// runs the in-memory SetAssetRefreshDefaults command (mutate World.Assets) and then
+// calls this to persist. The set replaces the asset's template WHOLESALE in one
+// transaction (DELETE all, then INSERT each row) so a partial failure can't leave a
+// half-applied template.
+
+const deleteAssetRefreshDefaultsSQL = `DELETE FROM asset_refresh_default WHERE asset_id = $1`
+
+const insertAssetRefreshDefaultSQL = `
+INSERT INTO asset_refresh_default (
+    asset_id, attribute, amount, available_quantity, max_quantity,
+    refresh_mode, refresh_period_hours, dwell_amount, dwell_period_minutes, gather_item)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`
+
+// UpdateAssetRefreshDefaults persists an asset's refresh-default template, replacing
+// the whole set atomically. rows is the applied set from the SetAssetRefreshDefaults
+// command (already validated + supply-normalized); a nil/empty rows clears the
+// asset's defaults. Column mapping mirrors the object_refresh checkpoint upsert: an
+// empty attribute / gather_item persists as NULL (LLM-264), and an empty
+// (infinite-row) refresh_mode persists as 'continuous' to satisfy the NOT NULL +
+// mode CHECK. Wrapped in a Tx so the delete + inserts land atomically — a mid-set
+// failure rolls back rather than leaving a partial template.
+func (r *AssetsRepo) UpdateAssetRefreshDefaults(ctx context.Context, id sim.AssetID, rows []*sim.ObjectRefresh) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("pg assets UpdateAssetRefreshDefaults: begin: %w", err)
+	}
+	// Rollback is a no-op after a successful Commit; safe to always defer.
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, deleteAssetRefreshDefaultsSQL, string(id)); err != nil {
+		return fmt.Errorf("pg assets UpdateAssetRefreshDefaults: delete: %w", err)
+	}
+	for _, ref := range rows {
+		if ref == nil {
+			continue
+		}
+		// Mirror the object_refresh upsert's NULL/mode handling (village_objects.go).
+		modeArg := string(ref.RefreshMode)
+		if modeArg == "" {
+			modeArg = string(sim.RefreshModeContinuous)
+		}
+		var attrArg any
+		if ref.Attribute != "" {
+			attrArg = string(ref.Attribute)
+		}
+		var gatherArg any
+		if ref.GatherItem != "" {
+			gatherArg = string(ref.GatherItem)
+		}
+		if _, err := tx.Exec(ctx, insertAssetRefreshDefaultSQL,
+			string(id),             // $1 asset_id
+			attrArg,                // $2 attribute (nullable)
+			ref.Amount,             // $3 amount
+			ref.AvailableQuantity,  // $4 available_quantity (nullable)
+			ref.MaxQuantity,        // $5 max_quantity (nullable)
+			modeArg,                // $6 refresh_mode
+			ref.RefreshPeriodHours, // $7 refresh_period_hours (nullable)
+			ref.DwellDelta,         // $8 dwell_amount (nullable; prod col name)
+			ref.DwellPeriodMinutes, // $9 dwell_period_minutes (nullable)
+			gatherArg,              // $10 gather_item (nullable)
+		); err != nil {
+			return fmt.Errorf("pg assets UpdateAssetRefreshDefaults: insert asset=%s: %w", id, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("pg assets UpdateAssetRefreshDefaults: commit: %w", err)
 	}
 	return nil
 }

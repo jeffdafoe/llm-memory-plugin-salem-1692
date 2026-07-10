@@ -146,8 +146,14 @@ var _refreshes_section: VBoxContainer = null
 var _refreshes_rows_box: VBoxContainer = null
 var _refreshes_add_button: Button = null
 var _refreshes_save_button: Button = null
+# "Save as asset default" (LLM-363): promotes the current object's refresh set to
+# its asset's default template, copied onto future placements of that asset.
+var _refreshes_save_default_button: Button = null
 var _refreshes_status: Label = null
 var _refreshes_current_id: String = ""
+# The asset_id of the object whose refresh rows are shown, so "Save as asset
+# default" knows which asset to write (LLM-363).
+var _refreshes_current_asset_id: String = ""
 # {name, display_label, sort_order} from /api/refresh-attributes. Loaded
 # once and cached for the editor session — adding a new attribute is rare
 # enough that a refresh-on-startup is fine.
@@ -548,6 +554,12 @@ func _ready() -> void:
     _refreshes_save_button = _make_refreshes_button("Save")
     _refreshes_save_button.pressed.connect(_on_refreshes_save_pressed)
     refreshes_btn_row.add_child(_refreshes_save_button)
+
+    # LLM-363: promote the current rows to the asset's default template, so every
+    # future placement of this asset drops in already carrying them.
+    _refreshes_save_default_button = _make_refreshes_button("Save as asset default")
+    _refreshes_save_default_button.pressed.connect(_on_refreshes_save_default_pressed)
+    refreshes_btn_row.add_child(_refreshes_save_default_button)
 
     _refreshes_status = Label.new()
     _refreshes_status.text = ""
@@ -2550,7 +2562,7 @@ func show_selection(info: Dictionary) -> void:
     # rows ride the ObjectDTO (set on the object node's "refreshes" meta), so
     # read them straight off the selection info rather than fetching.
     var refreshes_raw = info.get("refreshes", [])
-    _show_refreshes_for_object(info.get("object_id", ""), refreshes_raw if refreshes_raw is Array else [])
+    _show_refreshes_for_object(info.get("object_id", ""), asset_id, refreshes_raw if refreshes_raw is Array else [])
 
 ## Called by editor when an NPC is selected/deselected. Reuses the selection
 ## panel but swaps to NPC-only fields (no owner, no attachments, no delete
@@ -2952,8 +2964,9 @@ func _make_refreshes_button(text: String) -> Button:
 ## from the ObjectDTO (passed in by show_selection); v2 has no standalone GET.
 ## The attribute catalog (dropdown labels for the edit dialog) is lazy-loaded
 ## once on first selection.
-func _show_refreshes_for_object(object_id: String, refreshes: Array) -> void:
+func _show_refreshes_for_object(object_id: String, asset_id: String, refreshes: Array) -> void:
     _refreshes_current_id = object_id
+    _refreshes_current_asset_id = asset_id
     _load_refresh_rows_from(refreshes)
     _set_refreshes_status("", false)
     _render_refresh_rows()
@@ -3005,6 +3018,7 @@ func _load_refresh_rows_from(refreshes: Array) -> void:
 func _clear_refreshes_panel() -> void:
     _reset_refresh_dialog()
     _refreshes_current_id = ""
+    _refreshes_current_asset_id = ""
     _refresh_rows_state.clear()
     _set_refreshes_status("", false)
     _render_refresh_rows()
@@ -3458,12 +3472,12 @@ func _on_refresh_remove_pressed(idx: int) -> void:
     _refresh_rows_state.remove_at(idx)
     _render_refresh_rows()
 
-## Send the whole row set to the server. Validation mirrors the API's
-## checks so the operator gets immediate feedback rather than a 400 round
-## trip; the server still validates because the client is untrusted.
-func _on_refreshes_save_pressed() -> void:
-    if _refreshes_current_id == "":
-        return
+## Build + validate the wire rows from _refresh_rows_state. Validation mirrors the
+## API's checks so the operator gets immediate feedback rather than a 400 round
+## trip; the server still validates because the client is untrusted. Returns the
+## rows Array on success, or null after setting an inline error status. Shared by
+## the per-object Save and the "Save as asset default" save (LLM-363).
+func _build_refresh_rows_payload() -> Variant:
     # Duplicate keys mirror the server's two conflict targets: need rows are
     # unique per attribute, yield-only gather rows per gather_item.
     var seen_attrs := {}
@@ -3478,19 +3492,19 @@ func _on_refreshes_save_pressed() -> void:
         var is_yield_only := attr == "" and gather != ""
         if attr == "" and gather == "":
             _set_refreshes_status("A row needs an attribute or a gather item", true)
-            return
+            return null
         # A label for validation messages: yield-only rows have no attribute, so
         # name them by their gather item (matches the server's "gather:<item>").
         var label := attr if attr != "" else ("gather:" + gather)
         if is_yield_only:
             if seen_gather.has(gather):
                 _set_refreshes_status("Duplicate gather item: " + gather, true)
-                return
+                return null
             seen_gather[gather] = true
         else:
             if seen_attrs.has(attr):
                 _set_refreshes_status("Duplicate attribute: " + attr, true)
-                return
+                return null
             seen_attrs[attr] = true
         # Wire amount is NEGATIVE for a need row (the on-arrival decrement) and 0
         # for a yield-only source. The panel holds a positive magnitude, so negate.
@@ -3499,7 +3513,7 @@ func _on_refreshes_save_pressed() -> void:
             var magnitude := int(state.get("amount", 1))
             if magnitude <= 0:
                 _set_refreshes_status("Restores-per-use must be positive (" + label + ")", true)
-                return
+                return null
             amount = -magnitude
         var infinite := bool(state.get("infinite", false))
         var avail_value: Variant = null
@@ -3511,14 +3525,14 @@ func _on_refreshes_save_pressed() -> void:
             var max_q := int(state.get("max", 0))
             if max_q <= 0:
                 _set_refreshes_status("Max must be > 0 (" + label + ")", true)
-                return
+                return null
             if avail < 0 or avail > max_q:
                 _set_refreshes_status("Available must be between 0 and Max (" + label + ")", true)
-                return
+                return null
             var period := int(state.get("period", 24))
             if period <= 0:
                 _set_refreshes_status("Period must be > 0 (" + label + ")", true)
-                return
+                return null
             avail_value = avail
             max_value = max_q
             period_value = period
@@ -3528,7 +3542,7 @@ func _on_refreshes_save_pressed() -> void:
         # to strictly mirror ValidateObjectRefreshes.
         if is_yield_only and bool(state.get("has_dwell", false)):
             _set_refreshes_status("Yield-only rows cannot have dwell recovery (" + label + ")", true)
-            return
+            return null
         # Dwell recovery (optional, need rows only). dwell_delta + dwell_period_minutes
         # travel together — null for both when off. Mirrors the server CHECKs
         # (dwell_delta < 0, dwell_period_minutes > 0) for immediate feedback.
@@ -3539,10 +3553,10 @@ func _on_refreshes_save_pressed() -> void:
             var dp := int(state.get("dwell_period", 10))
             if dd >= 0:
                 _set_refreshes_status("Dwell amount must be negative (" + label + ")", true)
-                return
+                return null
             if dp <= 0:
                 _set_refreshes_status("Dwell period must be > 0 (" + label + ")", true)
-                return
+                return null
             dwell_delta_value = dd
             dwell_period_value = dp
         # refresh_mode/refresh_period_hours are only valid on a finite (tracked-
@@ -3563,7 +3577,15 @@ func _on_refreshes_save_pressed() -> void:
             "dwell_delta":          dwell_delta_value,
             "dwell_period_minutes": dwell_period_value,
         })
+    return rows
 
+## Send the whole row set to the server for THIS object (per-instance set-refresh).
+func _on_refreshes_save_pressed() -> void:
+    if _refreshes_current_id == "":
+        return
+    var rows = _build_refresh_rows_payload()
+    if rows == null:
+        return
     # v2 set-refresh: POST the whole set with the object id in the body
     # (replaces the v1 PUT /objects/{id}/refresh, which the v2 server doesn't
     # serve). The admin gate is enforced server-side in the command handler.
@@ -3576,6 +3598,42 @@ func _on_refreshes_save_pressed() -> void:
     http.request(Auth.api_base + "/api/village/admin/object/set-refresh",
         headers, HTTPClient.METHOD_POST, payload)
     _set_refreshes_status("Saving...", false)
+
+## LLM-363: promote the current rows to the selected object's ASSET default template
+## (POST /admin/asset/set-refresh-default). Same validated row set as the per-object
+## save; future placements of the asset are seeded from it. There's no object-node
+## meta to persist (the default lives on the asset), so the response only reports status.
+func _on_refreshes_save_default_pressed() -> void:
+    if _refreshes_current_id == "" or _refreshes_current_asset_id == "":
+        return
+    var rows = _build_refresh_rows_payload()
+    if rows == null:
+        return
+    var payload := JSON.stringify({"asset_id": _refreshes_current_asset_id, "rows": rows})
+    var http := HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    # Bind the asset id so a response arriving after the operator selects a
+    # different object doesn't write status onto the wrong panel (mirrors the
+    # per-object save's still-selected guard).
+    http.request_completed.connect(_on_refreshes_save_default_response.bind(http, _refreshes_current_asset_id))
+    var headers := Auth.auth_headers()
+    http.request(Auth.api_base + "/api/village/admin/asset/set-refresh-default",
+        headers, HTTPClient.METHOD_POST, payload)
+    _set_refreshes_status("Saving asset default...", false)
+
+func _on_refreshes_save_default_response(_result: int, response_code: int, _headers: PackedStringArray, _body: PackedByteArray, http: HTTPRequest, saved_asset_id: String) -> void:
+    http.queue_free()
+    if not Auth.check_response(response_code):
+        return
+    # Only touch the status line if we're still on the asset that was saved — the
+    # operator may have reselected a different object while the save was in flight.
+    if saved_asset_id != _refreshes_current_asset_id:
+        return
+    if response_code == 200:
+        _set_refreshes_status("Saved as asset default", false)
+    else:
+        _set_refreshes_status("Save failed (%d)" % response_code, true)
 
 func _on_refreshes_save_response(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest, saved_id: String) -> void:
     http.queue_free()

@@ -90,6 +90,13 @@ type Server struct {
 	// whenever pg is present (not only under the umbilical control flag) — it's a
 	// player-admin editor route, not an operator route.
 	assetGeometryWriter AssetGeometryWriter
+	// assetRefreshDefaultWriter backs the admin-gated POST
+	// /api/village/admin/asset/set-refresh-default route (LLM-363) — the durable
+	// write of an asset's default refresh-policy template (copied onto new
+	// placements). Same posture as assetGeometryWriter: reference data with no
+	// checkpoint path, injected by cmd/engine via SetAssetRefreshDefaultWriter (the
+	// same concrete pg.AssetsRepo). Nil when unwired → the route answers 503.
+	assetRefreshDefaultWriter AssetRefreshDefaultWriter
 }
 
 // NewServer builds a Server for w, authenticating every route via auth. Panics
@@ -281,6 +288,16 @@ func (s *Server) SetAssetGeometryWriter(wr AssetGeometryWriter) {
 	s.assetGeometryWriter = wr
 }
 
+// SetAssetRefreshDefaultWriter injects the durable write behind the admin POST
+// /api/village/admin/asset/set-refresh-default route (LLM-363) — an asset's default
+// refresh template, reference data with no checkpoint path (the in-memory
+// World.Assets update is the adminCommand in the handler). Optional: unset → the
+// route answers 503. Same wiring-time-only contract as the other writers — call
+// before Handler, never concurrently with serving.
+func (s *Server) SetAssetRefreshDefaultWriter(wr AssetRefreshDefaultWriter) {
+	s.assetRefreshDefaultWriter = wr
+}
+
 // Handler returns the read-surface routes: the static-render read set
 // (world / agents / objects off the published snapshot; terrain / assets /
 // sprites off *sim.World reference state), plus the WS /events push channel
@@ -382,6 +399,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/village/admin/object/remove-tag", s.requireAuth(s.handleAdminObjectRemoveTag))
 	mux.HandleFunc("POST /api/village/admin/object/set-refresh", s.requireAuth(s.handleAdminObjectSetRefresh))
 	mux.HandleFunc("POST /api/village/admin/object/promote-to-structure", s.requireAuth(s.handleAdminObjectPromoteToStructure))
+	// Asset-level refresh-default template (LLM-363) — the default copied onto new
+	// placements of the asset. The asset-level sibling of object/set-refresh.
+	mux.HandleFunc("POST /api/village/admin/asset/set-refresh-default", s.requireAuth(s.handleAdminAssetSetRefreshDefault))
 	// NPC editor write routes (ZBBS-HOME-309) — author/edit NPC metadata; the
 	// write half of AgentDTO's read surface. Same admin gate as object/*.
 	mux.HandleFunc("POST /api/village/admin/npc/set-display-name", s.requireAuth(s.handleAdminNPCSetDisplayName))
