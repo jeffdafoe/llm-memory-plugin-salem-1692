@@ -383,6 +383,61 @@ func TestRegisterAtmosphere_RefreshesOnPhaseFlip(t *testing.T) {
 	t.Fatalf("phase flip did not trigger a refresh sweep; CallCount=%d, want >= 2", client.CallCount())
 }
 
+// TestRegisterAtmosphere_RefreshesOnWeatherChange covers the weather-driven
+// refresh (LLM-364): a WeatherChanged event nudges an out-of-cadence sweep — the
+// same hook a phase flip uses — so the mood line re-authors the moment a storm
+// starts or clears instead of lagging the sky by up to a refresh interval. The
+// ticker is pinned to an hour so the only thing that can produce a second sweep
+// inside the test window is the weather transition itself.
+func TestRegisterAtmosphere_RefreshesOnWeatherChange(t *testing.T) {
+	w, stop := buildAtmosphereDriverWorld(t)
+	defer stop()
+
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Settings.AtmosphereRefreshInterval = time.Hour
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed settings: %v", err)
+	}
+
+	client := llm.NewFakeClient()
+	for i := 0; i < 20; i++ {
+		client.Push(llm.ScriptedTurn{Response: llm.Response{Content: "prose-" + string(rune('A'+i))}})
+	}
+
+	driverCtx, driverCancel := context.WithCancel(context.Background())
+	defer driverCancel()
+	RegisterAtmosphere(driverCtx, w, client)
+
+	// Wait for the immediate first sweep to land.
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if client.CallCount() >= 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if client.CallCount() < 1 {
+		t.Fatal("immediate first sweep did not run")
+	}
+
+	// A storm rolls in. ApplyWeatherChange emits WeatherChanged on a real
+	// transition (the world default weather is empty, so clear→storm is real).
+	if _, err := w.Send(sim.ApplyWeatherChange(sim.WeatherStorm, time.Now().UTC())); err != nil {
+		t.Fatalf("apply weather change: %v", err)
+	}
+
+	// The transition should drive a second sweep well before the 1h ticker would.
+	deadline = time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if client.CallCount() >= 2 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("weather change did not trigger a refresh sweep; CallCount=%d, want >= 2", client.CallCount())
+}
+
 func TestRegisterAtmosphere_CtxCancelExitsGoroutine(t *testing.T) {
 	w, stop := buildAtmosphereDriverWorld(t)
 	defer stop()

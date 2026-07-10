@@ -1007,6 +1007,31 @@ func timeOfDayProse(minute int) string {
 	}
 }
 
+// weatherStormProse is the felt line an NPC reads when a storm is overhead — the
+// perception-side analogue of the client's rain / scene-darkening / lightning FX
+// (LLM-117). A plain scene, not a "weather: storm" stat: it hands the model
+// something concrete to reason over (shelter, mud) and lets the scene be the
+// argument, with no imperative. A named const so the golden invariant
+// (TestGoldensRainLineIffStorm) and weatherProse can't drift on the wording.
+const weatherStormProse = "Rain falls steady over the village, and the lanes are turning to mud."
+
+// weatherProse maps World.Environment.Weather to a felt ambient sentence — the
+// deterministic, in-world weather analogue of timeOfDayProse. Only the active
+// storm state renders (LLM-364); clear / empty (the calm default) render
+// nothing, matching how the atmosphere prompt treats clear as "no weather line"
+// (cascade/atmosphere.go). An unrecognized future token (fog, snow) also renders
+// nothing rather than leak a raw stat — additive by design: a new state surfaces
+// once its scene is added here, the same graceful-degradation posture as the
+// atmosphere digest's verb map.
+func weatherProse(weather string) string {
+	switch strings.TrimSpace(weather) {
+	case sim.WeatherStorm:
+		return weatherStormProse
+	default:
+		return ""
+	}
+}
+
 // deadEndClause renders the at-location dead-end sentence for the place the
 // actor is physically at (LLM-154), or "" when the place can serve them. The
 // place is named from the same SurroundingsView fields the location line uses
@@ -1174,6 +1199,16 @@ func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 			b.WriteString(prose)
 			b.WriteString("\n")
 		}
+	}
+
+	// Weather as ambient prose (LLM-364), right after the time-of-day line so the
+	// two read as one ambient frame ("It is morning in the village. / Rain falls
+	// steady …"). Read from the live Environment.Weather snapshot, so — unlike the
+	// LLM-authored atmosphere line removed below — it's deterministic and never
+	// lags the sky. Clear / empty renders nothing.
+	if prose := weatherProse(s.Weather); prose != "" {
+		b.WriteString(prose)
+		b.WriteString("\n")
 	}
 
 	// ZBBS-WORK-374: the LLM-authored literary atmosphere line (ZBBS-WORK-327,

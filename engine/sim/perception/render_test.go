@@ -148,6 +148,30 @@ func TestRenderSurroundings_AtmosphereLine(t *testing.T) {
 	}
 }
 
+// TestRenderSurroundings_WeatherLine: LLM-364 renders a deterministic felt rain
+// line for an active storm and renders nothing for the calm default (clear /
+// empty) or an unrecognized future token. This is the perception-side surfacing
+// the client's storm FX never gave a deciding NPC — and, unlike the atmosphere
+// line above, it IS spent on the decision prompt because it's live and cheap.
+func TestRenderSurroundings_WeatherLine(t *testing.T) {
+	render := func(weather string) string {
+		var b strings.Builder
+		renderSurroundings(&b, SurroundingsView{Weather: weather})
+		return b.String()
+	}
+
+	if got := render(sim.WeatherStorm); !strings.Contains(got, weatherStormProse) {
+		t.Errorf("storm weather should render the felt rain line %q:\n%s", weatherStormProse, got)
+	}
+	// Clear (the calm default), empty, whitespace, and an unknown future token all
+	// render no line — additive by design (a new state surfaces once its scene is added).
+	for _, calm := range []string{sim.WeatherClear, "", "  ", "fog"} {
+		if got := render(calm); strings.Contains(got, weatherStormProse) {
+			t.Errorf("weather %q should render no rain line:\n%s", calm, got)
+		}
+	}
+}
+
 func TestRender_NarrationWarrants(t *testing.T) {
 	render := func(reason sim.WarrantReason) string {
 		p := Payload{

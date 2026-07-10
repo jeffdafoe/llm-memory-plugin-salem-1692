@@ -1374,6 +1374,15 @@ type SurroundingsView struct {
 	// fires (restart-lossy by design) → the render omits the line.
 	Atmosphere string
 
+	// Weather is the live village weather token (World.Environment.Weather —
+	// "clear" | "storm"; a free string, additive for future fog/snow), copied
+	// from Snapshot.Environment.Weather. renderSurroundings turns a storm into a
+	// felt rain line (weatherProse) right beside the time-of-day line; clear /
+	// empty render nothing. Unlike Atmosphere this is deterministic and always
+	// current — no LLM call, no refresh lag — which is why it (not the atmosphere
+	// line, WORK-374) is what puts the weather in front of a deciding NPC. LLM-364.
+	Weather string
+
 	// LocalMinuteOfDay is the village wall-clock minute (0–1439), copied from
 	// Snapshot.LocalMinuteOfDay, or nil when the clock isn't established.
 	// renderSurroundings turns it into a time-of-day prose line (timeOfDayProse).
