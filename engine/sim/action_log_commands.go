@@ -22,9 +22,11 @@ import (
 //   - ActorID empty → error (caller bug; surfaces in the subscriber's
 //     log line so we don't silently drop a row).
 //   - OccurredAt zero → error (same).
-//   - Text rune-truncated to MaxActionLogTextLen at the boundary so
-//     the substrate can't accumulate oversized rows even if a
-//     subscriber forgot to truncate.
+//   - Text rune-truncated at the boundary so the substrate can't
+//     accumulate oversized rows even if a subscriber forgot to
+//     truncate: MaxSpokenActionLogTextLen for spoken lines (kept full
+//     for the player-facing talk-panel backload), the tighter
+//     MaxActionLogTextLen for every other action type.
 //
 // Append-only — no dedup, no ordering pass. The slice grows
 // monotonically until CompactActionLog drops entries past the
@@ -40,9 +42,18 @@ func AppendActionLogEntry(entry ActionLogEntry) Command {
 			if entry.OccurredAt.IsZero() {
 				return nil, fmt.Errorf("sim.AppendActionLogEntry: zero OccurredAt")
 			}
-			if utf8.RuneCountInString(entry.Text) > MaxActionLogTextLen {
+			// Spoken lines keep the full utterance for the player-facing
+			// talk-panel backload; every other type stays at the tighter
+			// budget the C2 consolidation prompt shares. Both are catch-all
+			// bounds — the speak handler already validates the utterance to
+			// MaxSpeakTextChars upstream, so this only fires as a safety net.
+			maxLen := MaxActionLogTextLen
+			if entry.ActionType == ActionTypeSpoke {
+				maxLen = MaxSpokenActionLogTextLen
+			}
+			if utf8.RuneCountInString(entry.Text) > maxLen {
 				runes := []rune(entry.Text)
-				entry.Text = string(runes[:MaxActionLogTextLen])
+				entry.Text = string(runes[:maxLen])
 			}
 			// Stamp the actor's conversational scope at action time
 			// (ZBBS-HOME-437) — append runs synchronously in the emitting

@@ -45,9 +45,10 @@ type ActionType string
 
 const (
 	// ActionTypeSpoke — committed speak tool call. ActorID is the
-	// speaker; Text is the utterance (rune-truncated to
-	// MaxActionLogTextLen); HuddleID is the speaker's huddle at emit
-	// time.
+	// speaker; Text is the full utterance (rune-bounded to
+	// MaxSpokenActionLogTextLen, not the tighter MaxActionLogTextLen the
+	// other types share, so the PC talk-panel backload renders the whole
+	// line); HuddleID is the speaker's huddle at emit time.
 	ActionTypeSpoke ActionType = "spoke"
 
 	// ActionTypePaid — committed pay tool call. ActorID is the
@@ -274,10 +275,26 @@ type ActionLogEntry struct {
 	Amount int
 }
 
-// MaxActionLogTextLen bounds the Text field at write time. Same value
-// as MaxSalientFactTextLen — both feed the LLM and share a
-// per-token-budget concern.
+// MaxActionLogTextLen bounds the Text field at write time for every
+// action type EXCEPT ActionTypeSpoke. Same value as MaxSalientFactTextLen
+// — both feed the LLM and share a per-token-budget concern.
 const MaxActionLogTextLen = MaxSalientFactTextLen
+
+// MaxSpokenActionLogTextLen is the wider bound for ActionTypeSpoke rows.
+// A spoken line is player-facing: the PC talk-panel backload renders it
+// verbatim (httpapi.renderActionLogEntry), so clipping it to the 220-rune
+// MaxActionLogTextLen budget cut long utterances off mid-word in the panel
+// history (the live npc_spoke frame already carries the full text, so only
+// the history backload showed the clip). Set to the utterance's own
+// upstream validation bound, so the ring stores exactly what the speak
+// handler accepted. The one LLM-facing reader of this text — the C2
+// narrative/soul consolidation (cascade.buildSoulDaySnapshot) — is
+// count-capped (NarrativeEventsLimit) and typical utterances fall well
+// under 220, so the wider bound only lengthens genuinely long lines, which
+// are the ones truncation was losing in both the panel and the NPC's own
+// memory. Mirrors handlers.MaxSpeakTextChars — a separate sim-package
+// constant to avoid a sim→handlers import cycle.
+const MaxSpokenActionLogTextLen = 1000
 
 // DefaultActionLogRetention is the fallback for
 // WorldSettings.ActionLogRetention when unset. 48h covers atmosphere's

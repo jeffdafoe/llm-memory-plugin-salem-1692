@@ -13,6 +13,21 @@ import (
 // vocative-stale, recipient set, RecordInteraction matrix) is tested at
 // the sim.Speak Command level in sim/speak_commands_test.go.
 
+// TestMaxSpokenActionLogTextLenMatchesSpeakBound guards the mirrored constant
+// (LLM-358). sim.MaxSpokenActionLogTextLen is a hand-copied duplicate of
+// MaxSpeakTextChars — kept a separate sim-package constant to avoid a
+// sim→handlers import cycle — so the two can drift silently. handlers already
+// imports sim in production, so this parity check adds no new edge to the
+// import graph. If it fails, the action-log speech bound has diverged from the
+// speak validation bound and a spoken line the handler accepts could still be
+// clipped in the talk-panel backload.
+func TestMaxSpokenActionLogTextLenMatchesSpeakBound(t *testing.T) {
+	if sim.MaxSpokenActionLogTextLen != MaxSpeakTextChars {
+		t.Errorf("sim.MaxSpokenActionLogTextLen = %d, want %d (== handlers.MaxSpeakTextChars)",
+			sim.MaxSpokenActionLogTextLen, MaxSpeakTextChars)
+	}
+}
+
 // --- DecodeSpeakArgs --------------------------------------------------
 
 func TestDecodeSpeakArgs_Valid(t *testing.T) {

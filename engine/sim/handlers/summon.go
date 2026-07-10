@@ -46,9 +46,10 @@ type SummonArgs struct {
 const MaxSummonTargetChars = 128
 
 // MaxSummonReasonChars caps the optional reason. The reason rides into a
-// canned Spoke line (bounded at MaxActionLogTextLen = 220 runes downstream);
-// 220 here keeps the model-facing bound aligned with the speech truncation
-// so the model isn't told it can write more than the engine will speak.
+// canned Spoke line, staying well within the MaxSpokenActionLogTextLen bound
+// on spoken text downstream; 220 here keeps the model-facing bound aligned
+// with the MaxSalientFactTextLen excerpt a peer forms from the line, so the
+// model isn't told it can write more than a listener will remember.
 const MaxSummonReasonChars = 220
 
 // summonSchema is the JSON Schema bytes shipped to the LLM provider. The

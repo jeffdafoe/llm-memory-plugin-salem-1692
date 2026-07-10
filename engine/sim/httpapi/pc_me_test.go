@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -660,6 +661,11 @@ func TestRenderActionLogEntry(t *testing.T) {
 			"ale":         {Name: "ale", DisplayLabel: "Ale"},
 		},
 	}
+	// LLM-358: a spoken line longer than the old 220-rune ring clip must render
+	// in full. The backload's original symptom was this renderer returning a
+	// clipped line, so guard against a clamp reappearing on the render path even
+	// though the ring now stores the whole utterance.
+	longSpeech := strings.Repeat("a", sim.MaxActionLogTextLen+300)
 	cases := []struct {
 		name        string
 		entry       sim.ActionLogEntry
@@ -671,6 +677,7 @@ func TestRenderActionLogEntry(t *testing.T) {
 		{"npc speech", sim.ActionLogEntry{ActorID: "npc", ActionType: sim.ActionTypeSpoke, Text: "Hi"}, "Hannah", "Hi", "speech_npc", true},
 		{"pc speech", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeSpoke, Text: "Yo"}, "Tester", "Yo", "speech_player", true},
 		{"empty speech skipped", sim.ActionLogEntry{ActorID: "npc", ActionType: sim.ActionTypeSpoke, Text: ""}, "", "", "", false},
+		{"long speech renders in full", sim.ActionLogEntry{ActorID: "npc", ActionType: sim.ActionTypeSpoke, Text: longSpeech}, "Hannah", longSpeech, "speech_npc", true},
 		{"paid recipient amount for", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypePaid, CounterpartyName: "Hannah", Amount: 3, Text: "a round"}, "Tester", "Tester pays Hannah 3 coins for a round.", "act", true},
 		{"paid recipient amount no for", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypePaid, CounterpartyName: "Hannah", Amount: 3, Text: ""}, "Tester", "Tester pays Hannah 3 coins.", "act", true},
 		{"paid recipient one coin", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypePaid, CounterpartyName: "Hannah", Amount: 1, Text: "bread"}, "Tester", "Tester pays Hannah 1 coin for bread.", "act", true},
