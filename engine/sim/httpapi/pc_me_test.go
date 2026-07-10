@@ -684,6 +684,11 @@ func TestRenderActionLogEntry(t *testing.T) {
 		{"gathered qty1 already-articled source", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeGathered, Text: "water", CounterpartyName: "the Village Well"}, "Tester", "Tester gathers water from the Village Well.", "act", true},
 		{"gathered no source drops clause", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeGathered, Text: "5x berries", CounterpartyName: ""}, "Tester", "Tester gathers 5x berries.", "act", true},
 		{"gathered empty skipped", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeGathered, Text: ""}, "", "", "", false},
+		// LLM-354: a started mend names the business (never "his stall" — a hired
+		// hand mends someone else's), with the walked-line article treatment.
+		{"repairing names common-noun business", sim.ActionLogEntry{ActorID: "npc", ActionType: sim.ActionTypeRepairing, Text: "General Store"}, "Hannah", "Hannah is mending the General Store.", "act", true},
+		{"repairing possessive keeps no article", sim.ActionLogEntry{ActorID: "npc", ActionType: sim.ActionTypeRepairing, Text: "Hannah's Inn"}, "Hannah", "Hannah is mending Hannah's Inn.", "act", true},
+		{"repairing no business drops clause", sim.ActionLogEntry{ActorID: "npc", ActionType: sim.ActionTypeRepairing, Text: ""}, "Hannah", "Hannah is making repairs.", "act", true},
 		{"delivered with recipient", sim.ActionLogEntry{ActorID: "npc", ActionType: sim.ActionTypeDelivered, Text: "ale", CounterpartyName: "Tester"}, "Hannah", "Hannah delivers ale to Tester.", "act", true},
 		{"delivered no recipient", sim.ActionLogEntry{ActorID: "npc", ActionType: sim.ActionTypeDelivered, Text: "ale"}, "Hannah", "Hannah delivers ale.", "act", true},
 		// ZBBS-HOME-432: a lodging-capability delivery narrates as a check-in,

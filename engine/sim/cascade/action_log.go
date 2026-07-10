@@ -10,10 +10,11 @@ import (
 )
 
 // action_log.go — append-only in-memory action log substrate driver.
-// Wires sixteen event subscribers (Spoke / Paid / PayOfferReceived /
+// Wires seventeen event subscribers (Spoke / Paid / PayOfferReceived /
 // PayWithItemResolved / PayCountered / ItemConsumed / ItemGathered /
-// OrderDelivered / ActorArrived / ActorLeftStructure / TookBreak / StayingOpen /
-// LaborOfferReceived / LaborOfferAccepted / LaborResolved) to translate engine
+// SourceActivityStarted / OrderDelivered / ActorArrived / ActorLeftStructure /
+// TookBreak / StayingOpen / LaborOfferReceived / LaborOfferAccepted /
+// LaborResolved) to translate engine
 // events into sim.ActionLogEntry rows, and spawns a sweep goroutine that
 // periodically compacts the log via sim.CompactActionLog. PayWithItemResolved
 // has two subscribers — one for the Accepted terminal (the settled sale) and one
@@ -35,6 +36,7 @@ import (
 //   ├─> w.Subscribe(handleCounteredActionLog)
 //   ├─> w.Subscribe(handleConsumedActionLog)
 //   ├─> w.Subscribe(handleGatheredActionLog)
+//   ├─> w.Subscribe(handleRepairingActionLog)
 //   ├─> w.Subscribe(handleOrderDeliveredActionLog)
 //   ├─> w.Subscribe(handleActorArrivedActionLog)
 //   ├─> w.Subscribe(handleActorLeftStructureActionLog)
@@ -96,6 +98,7 @@ func RegisterActionLog(ctx context.Context, w *sim.World) {
 	w.Subscribe(sim.SubscriberFunc(handleCounteredActionLog))
 	w.Subscribe(sim.SubscriberFunc(handleConsumedActionLog))
 	w.Subscribe(sim.SubscriberFunc(handleGatheredActionLog))
+	w.Subscribe(sim.SubscriberFunc(handleRepairingActionLog))
 	w.Subscribe(sim.SubscriberFunc(handleOrderDeliveredActionLog))
 	w.Subscribe(sim.SubscriberFunc(handleActorArrivedActionLog))
 	w.Subscribe(sim.SubscriberFunc(handleActorLeftStructureActionLog))
@@ -531,7 +534,7 @@ func handleGatheredActionLog(w *sim.World, evt sim.Event) {
 	if actor, ok := w.Actors[gathered.ActorID]; ok {
 		huddleID = actor.CurrentHuddleID
 	}
-	sourceName := gatherSourceName(w, gathered.ObjectID)
+	sourceName := objectDisplayName(w, gathered.ObjectID)
 	entry := sim.ActionLogEntry{
 		ActorID:          gathered.ActorID,
 		OccurredAt:       gathered.At,
@@ -565,11 +568,13 @@ func handleGatheredActionLog(w *sim.World, evt sim.Event) {
 	})
 }
 
-// gatherSourceName resolves an ItemGathered's source object to its display
-// name, mirroring the resolution gather_commands.go does at emit time
-// (EffectiveDisplayName over the asset catalog name). Returns "" for a source
-// that no longer resolves in the world — callers attach it conditionally.
-func gatherSourceName(w *sim.World, objID sim.VillageObjectID) string {
+// objectDisplayName resolves a village object to its display name, mirroring the
+// resolution gather_commands.go does at emit time and sourceActivityObjectName
+// does engine-side (EffectiveDisplayName over the asset catalog name). Returns ""
+// for an object that no longer resolves in the world — callers attach the name
+// conditionally rather than rendering an empty clause. Shared by the gathered row
+// (the harvest source) and the repairing row (the business being mended).
+func objectDisplayName(w *sim.World, objID sim.VillageObjectID) string {
 	obj, ok := w.VillageObjects[objID]
 	if !ok || obj == nil {
 		return ""
@@ -579,6 +584,56 @@ func gatherSourceName(w *sim.World, objID sim.VillageObjectID) string {
 		catalogName = a.Name
 	}
 	return obj.EffectiveDisplayName(catalogName)
+}
+
+// handleRepairingActionLog appends a row when a `repair` tool call opens the
+// mending window (LLM-354). Filtered to SourceActivityRepair: the harvest and
+// refresh kinds share SourceActivityStarted but have no observer-facing beat —
+// gather logs its yield at the mint instead, and eating is the actor's own affair.
+//
+// Logged at the START, which is a committed act even though the window may never
+// finish: StartRepair validates responsibility, co-location, wear, and nails and
+// consumes the nails before emitting. A mender who walks off has still spent them
+// (no refund, wear unreset), so the row is never retracted and there is no
+// cancellation beat to pair with it.
+func handleRepairingActionLog(w *sim.World, evt sim.Event) {
+	started, ok := evt.(*sim.SourceActivityStarted)
+	if !ok || started.Kind != sim.SourceActivityRepair {
+		return
+	}
+	huddleID := sim.HuddleID("")
+	if actor, ok := w.Actors[started.ActorID]; ok {
+		huddleID = actor.CurrentHuddleID
+	}
+	businessName := objectDisplayName(w, started.ObjectID)
+	entry := sim.ActionLogEntry{
+		ActorID:    started.ActorID,
+		OccurredAt: started.At,
+		ActionType: sim.ActionTypeRepairing,
+		Text:       businessName,
+		HuddleID:   huddleID,
+	}
+	if _, err := sim.AppendActionLogEntry(entry).Fn(w); err != nil {
+		log.Printf("cascade/action_log: append repairing (actor %q event %d): %v",
+			started.ActorID, started.EventID(), err)
+		return
+	}
+	// Durable mirror: the business name as a structured field, omitted (not blank)
+	// when the object no longer resolves, keeping the common row shape clean.
+	display, src := actorDisplayAndSource(w, started.ActorID)
+	payload := map[string]any{}
+	if businessName != "" {
+		payload["business"] = businessName
+	}
+	w.AppendActionLogDurable(sim.DurableActionLogRow{
+		ActorID:     started.ActorID,
+		OccurredAt:  started.At,
+		ActionType:  sim.ActionTypeRepairing,
+		Payload:     payload,
+		SpeakerName: display,
+		HuddleID:    huddleID,
+		Source:      src,
+	})
 }
 
 // handleOrderDeliveredActionLog appends a row when a deliver_order

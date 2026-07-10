@@ -1020,3 +1020,39 @@ func TestTranslateEvent_SpokeNoMentions(t *testing.T) {
 		t.Errorf("mentions/mention_prices = %+v/%+v, want nil/nil", d.Mentions, d.MentionPrices)
 	}
 }
+
+// TestTranslateEvent_ActorRepairNarrated (LLM-354): a started mend renders as a
+// NON-private, structure-scoped room_event so the talk panel surfaces it to
+// co-present PCs as a narration line, like the peer arrival/departure lines.
+func TestTranslateEvent_ActorRepairNarrated(t *testing.T) {
+	at := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	frame, ok := TranslateEvent(&sim.ActorRepairNarrated{
+		ActorID:     "josiah",
+		ActorName:   "Josiah Thorne",
+		StructureID: "general-store",
+		Text:        "Josiah Thorne is mending the General Store.",
+		At:          at,
+	})
+	if !ok {
+		t.Fatal("ActorRepairNarrated should translate")
+	}
+	if frame.Type != "room_event" {
+		t.Fatalf("type = %q, want room_event", frame.Type)
+	}
+	d, isType := frame.Data.(roomEventWireDTO)
+	if !isType {
+		t.Fatalf("data type = %T, want roomEventWireDTO", frame.Data)
+	}
+	want := roomEventWireDTO{
+		ActorID:     "josiah",
+		ActorName:   "Josiah Thorne",
+		Kind:        "peer_repair",
+		Text:        "Josiah Thorne is mending the General Store.",
+		Private:     false,
+		StructureID: "general-store",
+		At:          at.UTC().Format(time.RFC3339),
+	}
+	if d != want {
+		t.Errorf("room_event payload = %+v, want %+v", d, want)
+	}
+}

@@ -138,6 +138,31 @@ type SourceActivityCancelled struct {
 
 func (SourceActivityCancelled) isSimEvent() {}
 
+// ActorRepairNarrated is a WIRE-ONLY event (no engine subscriber) carrying the
+// observer-facing "X is mending the Y" narration for a started repair to
+// co-present PCs (LLM-354) — the source-activity sibling of
+// ActorArrivalNarrated. StartRepair emits it right after SourceActivityStarted,
+// gated by emitRepairNarration to a conversational mender standing in a PUBLIC
+// structure or loiter scope with at least one PC in earshot. TranslateEvent maps
+// it to a non-private room_event the talk panel renders as a narration line.
+//
+// It is separate from SourceActivityStarted for the same reason ActorArrivalNarrated
+// is separate from ActorArrived: that event is the always-on substrate seam (it
+// drives the action-log row, and thus the panel backload, for every repair —
+// public or private scope), while this is the audience-gated live line. No RoomID:
+// the emit is public-scope only, so the structure-scoped frame reaches co-present
+// common-room PCs without leaking a back-room mend to them.
+type ActorRepairNarrated struct {
+	EventBase
+	ActorID     ActorID
+	ActorName   string
+	StructureID StructureID
+	Text        string // pre-rendered "X is mending the Y." — matches the action-log backload phrasing
+	At          time.Time
+}
+
+func (ActorRepairNarrated) isSimEvent() {}
+
 // hasApplicableRefreshRow reports whether obj carries at least one refresh row
 // an actor could actually consume in place right now: a need-bearing row
 // (Amount < 0 — a yield-only forage-to-sell row is Amount == 0 and skipped), a
@@ -384,6 +409,9 @@ func StartRepair(actorID ActorID) Command {
 				StartedAt: now,
 				Until:     now.Add(time.Duration(w.Settings.StallRepairDurationSeconds) * time.Second),
 			}
+			businessName := sourceActivityObjectName(w, stall)
+			// Emit the substrate seam first: its action-log subscriber stamps the
+			// mender's conversational scope, which the narration gate below reads.
 			w.emit(&SourceActivityStarted{
 				ActorID:  actorID,
 				ObjectID: objID,
@@ -391,15 +419,62 @@ func StartRepair(actorID ActorID) Command {
 				Until:    actor.SourceActivity.Until,
 				At:       now,
 			})
+			emitRepairNarration(w, actor, businessName, now)
 			return SourceActivityStartResult{
 				Started:    true,
 				Kind:       SourceActivityRepair,
 				ObjectID:   objID,
-				SourceName: sourceActivityObjectName(w, stall),
+				SourceName: businessName,
 				Until:      actor.SourceActivity.Until,
 			}, nil
 		},
 	}
+}
+
+// emitRepairNarration surfaces a started mend to co-present PCs as a live
+// talk-panel line (LLM-354) — the source-activity sibling of
+// emitArrivalNarration, and it carries the same three gates for the same reasons:
+//
+//   - conversational mender only (a decorative NPC is scenery);
+//   - a PUBLIC structure or loiter scope — a private/staff room is left to the
+//     panel backload, since the room_id-less wire frame would otherwise leak the
+//     line to common-room observers who can't see into the back room;
+//   - at least one PC in earshot — no point narrating to no one.
+//
+// The text mirrors renderActionLogEntry's "<name> is mending the <place>."
+// (httpapi/pc_me.go) so a live line and a later panel-open backload of the same
+// mend read identically — keep in sync.
+func emitRepairNarration(w *World, actor *Actor, businessName string, now time.Time) {
+	switch actor.Kind {
+	case KindPC, KindNPCStateful, KindNPCShared:
+	default:
+		return
+	}
+	structureID := conversationalScopeStructure(w, actor)
+	if structureID == "" {
+		return
+	}
+	if audienceRoomScope(w, actor) != 0 {
+		return
+	}
+	if len(pcBystanders(w, actor, nil)) == 0 {
+		return
+	}
+	// WithDefiniteArticle adds "the" for a common-noun business ("the General
+	// Store") and leaves possessives / already-articled names alone ("Hannah's
+	// Inn"). An unresolvable business name drops the clause rather than naming
+	// nothing.
+	text := actor.DisplayName + " is making repairs."
+	if businessName != "" {
+		text = actor.DisplayName + " is mending " + WithDefiniteArticle(businessName) + "."
+	}
+	w.emit(&ActorRepairNarrated{
+		ActorID:     actor.ID,
+		ActorName:   actor.DisplayName,
+		StructureID: structureID,
+		Text:        text,
+		At:          now,
+	})
 }
 
 // applyCompletedSourceActivity lands the effect of a finished activity. It

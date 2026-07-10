@@ -739,6 +739,16 @@ func renderActionLogEntry(snap *sim.Snapshot, e sim.ActionLogEntry) (speaker, te
 			return name, name + " gathers " + e.Text + " from " + sim.WithDefiniteArticle(e.CounterpartyName) + ".", "act", true
 		}
 		return name, name + " gathers " + e.Text + ".", "act", true
+	case sim.ActionTypeRepairing:
+		// LLM-354: the mender opened a repair window on a worn business. Text is
+		// the business's display name — named rather than possessive ("his stall")
+		// so the line stays right when a hired hand mends the employer's business.
+		// Same WithDefiniteArticle treatment as the walked/departed place names.
+		// Kept in sync with the live line (emitRepairNarration).
+		if e.Text != "" {
+			return name, name + " is mending " + sim.WithDefiniteArticle(e.Text) + ".", "act", true
+		}
+		return name, name + " is making repairs.", "act", true
 	case sim.ActionTypeDelivered:
 		if e.Text == "" {
 			return "", "", "", false

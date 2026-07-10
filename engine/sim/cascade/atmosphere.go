@@ -367,6 +367,11 @@ var atmosphereDigestVerbs = map[sim.ActionType]string{
 	sim.ActionTypePaid:      "paid",
 	sim.ActionTypeDelivered: "delivered",
 	sim.ActionTypeLabored:   "labored",
+	// LLM-354: a mend is the one source-activity beat other NPCs perceive. Without
+	// an entry here the repairing row reaches only the mender's own consolidation
+	// (which filters to its own actor), so the verb is what makes a neighbour
+	// notice the hammer at all.
+	sim.ActionTypeRepairing: "mended",
 }
 
 // digestActorParts renders one actor's per-action-type counts as

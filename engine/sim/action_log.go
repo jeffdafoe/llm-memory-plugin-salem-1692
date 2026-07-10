@@ -144,6 +144,26 @@ const (
 	// which both actor kinds emit post-validation (LLM-273).
 	ActionTypeGathered ActionType = "gathered"
 
+	// ActionTypeRepairing — a committed `repair` tool call opened the mending
+	// window on a worn business (LLM-354). ActorID is the mender: the owner, or
+	// the hired hand mending the employer's business (LLM-271). Text is the
+	// business's display name — named, not possessive, so the rendered line stays
+	// right for a hired hand; HuddleID is the mender's huddle at append time.
+	//
+	// Event-sourced off SourceActivityStarted with Kind==SourceActivityRepair —
+	// the START of the window, not its completion. The start is where StartRepair
+	// has already validated responsibility, co-location, wear, and nails, and
+	// where the nails are consumed; the ninety-second window that follows is what
+	// an onlooker actually sees. The harvest/refresh starts share the event and
+	// are deliberately NOT logged — eating and foraging are the actor's own
+	// business, and gather already logs its yield at the mint (ActionTypeGathered).
+	//
+	// NOT feed-only (contrast ActionTypeOffered): a shopkeeper busy with a hammer
+	// is ordinary village awareness, so this reaches the atmosphere digest (via an
+	// atmosphereDigestVerbs entry) and the mender's own narrative consolidation
+	// like any other beat.
+	ActionTypeRepairing ActionType = "repairing"
+
 	// ActionTypeOffered — a buyer's slow-path pay_with_item minted (or renewed,
 	// via in_response_to) a PENDING pay-ledger offer (LLM-283, event-sourced off
 	// PayOfferReceived). ActorID is the BUYER (the offer is theirs);
