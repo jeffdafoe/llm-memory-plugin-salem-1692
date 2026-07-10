@@ -161,10 +161,16 @@ func TestAcceptWork_EmployerDroppedItems_FailsUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AcceptWork: %v", err)
 	}
-	// A gate-driven flip returns the terminal state directly (the gate
-	// failure IS the resolution), not a LaborAcceptResult.
-	if state, ok := res.(sim.LaborLedgerState); !ok || state != sim.LaborStateFailedUnavailable {
-		t.Errorf("accept result = %v (%T), want failed_unavailable state (goods leg short)", res, res)
+	// A gate-driven flip is still a resolution (the gate failure IS the
+	// resolution), but it speaks in AcceptWork's success voice — a
+	// LaborAcceptResult carrying the terminal. Returning a bare
+	// LaborLedgerState here cost the acceptor the no-hire copy (LLM-351).
+	out, ok := res.(sim.LaborAcceptResult)
+	if !ok {
+		t.Fatalf("accept result = %v (%T), want sim.LaborAcceptResult", res, res)
+	}
+	if out.State != sim.LaborStateFailedUnavailable {
+		t.Errorf("accept state = %q, want failed_unavailable (goods leg short)", out.State)
 	}
 }
 

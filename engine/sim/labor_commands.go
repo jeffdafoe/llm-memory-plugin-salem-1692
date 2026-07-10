@@ -65,8 +65,10 @@ type LaborSolicitResult struct {
 	EmployerName string
 }
 
-// LaborAcceptResult is AcceptWork's value. On a gate-driven terminal flip
-// (expired / failed) State carries that terminal and WorkingUntil is zero.
+// LaborAcceptResult is AcceptWork's value on EVERY non-error path. On a
+// gate-driven terminal flip (expired / failed) State carries that terminal,
+// WorkingUntil is zero, and Announced is false — the gates run before the
+// acceptor's `say` goes out, so nothing was spoken (laborAcceptTerminal).
 // On a real accept: State is Working with WorkingUntil the completion deadline
 // when work started immediately (on-site hire / workless employer), or EnRoute
 // with a zero WorkingUntil when the worker must first relocate to the workplace
@@ -716,7 +718,7 @@ func AcceptWorkSaying(callerID ActorID, laborID LaborID, say string, hasNewNews 
 
 			// Gate 5: TTL. From here gate failures drive terminal transitions.
 			if !offer.ExpiresAt.IsZero() && !at.Before(offer.ExpiresAt) {
-				return finalizeLaborTerminal(w, offer, LaborTerminalStateExpired, false, at), nil
+				return laborAcceptTerminal(w, offer, LaborTerminalStateExpired, at), nil
 			}
 
 			// Gate 6: co-presence. Worker and employer must both still be in
@@ -730,7 +732,7 @@ func AcceptWorkSaying(callerID ActorID, laborID LaborID, say string, hasNewNews 
 				offer.HuddleID == "" ||
 				worker.CurrentHuddleID != offer.HuddleID ||
 				employer.CurrentHuddleID != offer.HuddleID {
-				return finalizeLaborTerminal(w, offer, LaborTerminalStateFailedUnavailable, false, at), nil
+				return laborAcceptTerminal(w, offer, LaborTerminalStateFailedUnavailable, at), nil
 			}
 
 			// Gate 7: worker free. Ledger-authoritative — a worker with ANY
@@ -739,7 +741,7 @@ func AcceptWorkSaying(callerID ActorID, laborID LaborID, say string, hasNewNews 
 			// timestamp here would let a second job slip in during sweep lag and
 			// orphan the first job's mirror (code_review).
 			if workerHasLiveJob(w, offer.WorkerID) {
-				return finalizeLaborTerminal(w, offer, LaborTerminalStateFailedUnavailable, false, at), nil
+				return laborAcceptTerminal(w, offer, LaborTerminalStateFailedUnavailable, at), nil
 			}
 
 			// Gate 8: funds + goods (courtesy check, NOT authoritative). Nothing
@@ -753,7 +755,7 @@ func AcceptWorkSaying(callerID ActorID, laborID LaborID, say string, hasNewNews 
 			// long work window. Checked against the offer's EMPLOYER, who is not the
 			// caller when the worker is the one accepting (LLM-346).
 			if !employerCanCoverLaborReward(employer, offer) {
-				return finalizeLaborTerminal(w, offer, LaborTerminalStateFailedUnavailable, false, at), nil
+				return laborAcceptTerminal(w, offer, LaborTerminalStateFailedUnavailable, at), nil
 			}
 
 			// All gates pass. The employer has accepted — stamp AcceptedAt and,
@@ -845,6 +847,33 @@ func AcceptWorkSaying(callerID ActorID, laborID LaborID, say string, hasNewNews 
 				SayRefused:       sayRefused,
 			}, nil
 		},
+	}
+}
+
+// laborAcceptTerminal is AcceptWork's gate-driven exit (gates 5-8): it flips the
+// offer to `terminal` and returns the SAME result type the success path returns,
+// carrying that terminal in State.
+//
+// Returning finalizeLaborTerminal's bare LaborLedgerState instead — as the four
+// gates did until LLM-351 — type-asserted away in the harness, which reads the
+// outcome off a LaborAcceptResult. The no-hire copy was unreachable and the
+// acceptor got a bare "[ok]", the one thing that reads as "hired". A Command's
+// gate failures must speak in its success path's voice or its tool feedback is
+// lost in the assertion.
+//
+// The reward legs and both party names ride along for shape-parity with a real
+// accept, so the harness can name the terms of the deal that fell through. No
+// work started, so WorkingUntil is zero, and the acceptor's `say` never went out
+// (SpeakAlongside sits below these gates), so Announced is false.
+func laborAcceptTerminal(w *World, offer *LaborOffer, terminal LaborTerminalState, at time.Time) LaborAcceptResult {
+	return LaborAcceptResult{
+		ID:               offer.ID,
+		State:            finalizeLaborTerminal(w, offer, terminal, false, at),
+		WorkerName:       actorDisplayName(w, offer.WorkerID),
+		EmployerName:     actorDisplayName(w, offer.EmployerID),
+		AcceptorIsWorker: offer.EmployerInitiated(),
+		Reward:           offer.Reward,
+		Payment:          formatPayment(offer.Reward, offer.RewardItems),
 	}
 }
 
