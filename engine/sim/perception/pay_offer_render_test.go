@@ -91,11 +91,20 @@ func TestRender_PayOfferDecisionSection(t *testing.T) {
 	if !strings.Contains(out, "accept_pay") || !strings.Contains(out, "ledger_id") {
 		t.Errorf("respond instruction missing\n%s", out)
 	}
-	// ZBBS-HOME-388: order the pay response before speech and name the speak TOOL
-	// explicitly, so an NPC-to-NPC trade is visible as a bubble (bubbles spawn only
-	// from speak; the pay_* frames render only for the PC's own transactions).
-	if !strings.Contains(out, "Respond first with accept_pay") || !strings.Contains(out, "use speak") {
-		t.Errorf("pay offer response should order pay response before speech\n%s", out)
+	// ZBBS-HOME-388 wanted the trade visible as a speech bubble and asked for the
+	// speak TOOL by name, after the response. Since LLM-321 made speak terminal,
+	// that instruction could not be followed: the response ended the tick and the
+	// speak was skipped, or the speak ended it and the offer went unanswered.
+	// LLM-350 folds the words into the response tool's own `say`, which reaches the
+	// same utterance path — so the bubble still spawns, from a single call.
+	if !strings.Contains(out, "Respond with accept_pay") {
+		t.Errorf("pay offer response instruction missing\n%s", out)
+	}
+	if !strings.Contains(out, "the words you speak aloud in say") {
+		t.Errorf("pay offer cue does not route the reply through `say`\n%s", out)
+	}
+	if strings.Contains(out, "Then also use speak") {
+		t.Errorf("pay offer cue asks for a second terminal verb (LLM-350)\n%s", out)
 	}
 	// A solo pay offer covers the whole batch → the generic warrant block is
 	// suppressed (no contradictory "nothing specific" line).
@@ -461,7 +470,7 @@ func TestRender_StandingOfferWithoutWarrant(t *testing.T) {
 	if !strings.Contains(out, "## Offers awaiting your decision") || !strings.Contains(out, "offer id 17") {
 		t.Errorf("standing offer section missing on a warrant-less tick\n%s", out)
 	}
-	if !strings.Contains(out, "Respond first with accept_pay") {
+	if !strings.Contains(out, "Respond with accept_pay") {
 		t.Errorf("response instruction missing on a warrant-less tick\n%s", out)
 	}
 	// The triage coda keeps the settle-first imperative standing too.

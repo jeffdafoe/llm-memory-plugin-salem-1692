@@ -12,6 +12,6 @@ Evening settles over the village.
 
 ## Offers awaiting your decision
 1. Josiah Thorne offers 1 sage for 5 nail to keep (offer id 871) — you hold no nails
-Respond first with accept_pay, decline_pay, or counter_pay, passing the offer id as ledger_id. Then also use speak for a brief reply, because the pay response itself passes in silence.
+Respond with accept_pay, decline_pay, or counter_pay, passing the offer id as ledger_id and the words you speak aloud in say. Do not reply with the speak tool: speaking ends your turn, and the offer would go unanswered.
 A buyer's offer awaits your answer — settle it first with accept_pay, decline_pay, or counter_pay, before tending to your own needs.
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

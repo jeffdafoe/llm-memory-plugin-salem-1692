@@ -79,6 +79,9 @@ type LaborSolicitResult struct {
 // and the tool feedback addresses whoever called: an employer accepting a
 // solicitation hired someone, a worker accepting an offered job took a job on.
 // AcceptorIsWorker says which sentence to write.
+//
+// Announced / SayRefused carry the fate of the optional spoken line accept_work
+// folds in, mirroring LaborOfferResult and SceneQuoteCreateResult. LLM-350.
 type LaborAcceptResult struct {
 	ID               LaborID
 	State            LaborLedgerState
@@ -88,12 +91,25 @@ type LaborAcceptResult struct {
 	Reward           int
 	Payment          string
 	WorkingUntil     time.Time
+
+	// Announced is true when the acceptor's `say` line went out alongside the
+	// hire. False when no line was passed, or when SpeakTo refused it — in which
+	// case SayRefused carries its reason. The hire stands either way.
+	Announced  bool
+	SayRefused string
 }
 
-// LaborDeclineResult is DeclineWork's value.
+// LaborDeclineResult is DeclineWork's value. Announced / SayRefused carry the
+// fate of decline_work's optional spoken line, which the HANDLER speaks after
+// this Command returns (a decline moves no one, so nothing it does can gate the
+// utterance — unlike AcceptWork, which relocates the worker and must therefore
+// speak from inside the Command). LLM-350.
 type LaborDeclineResult struct {
 	ID    LaborID
 	State LaborLedgerState
+
+	Announced  bool
+	SayRefused string
 }
 
 // LaborOfferResult is OfferWork's success value — the minted pending offer's id
@@ -653,6 +669,17 @@ func offerWorkCannotCoverError(employer *Actor, offer *LaborOffer) error {
 // settles atomically when the completion sweep (labor_settle.go) fires, after
 // the worker has put in the time.
 func AcceptWork(callerID ActorID, laborID LaborID, at time.Time) Command {
+	return AcceptWorkSaying(callerID, laborID, "", false, at)
+}
+
+// AcceptWorkSaying is AcceptWork with the acceptor's spoken line folded in
+// (LLM-350). say is the utterance — already trimmed, empty for a silent accept —
+// and hasNewNews is SpeakTo's turn-state exemption, threaded from the tick.
+//
+// The utterance CANNOT ride in a handler-level composite the way sell's and
+// offer_work's do. Those tools leave their caller standing where they were; a
+// relocating accept does not. See the speak site below.
+func AcceptWorkSaying(callerID ActorID, laborID LaborID, say string, hasNewNews bool, at time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
 			// Gate 1: caller exists.
@@ -738,6 +765,24 @@ func AcceptWork(callerID ActorID, laborID LaborID, at time.Time) Command {
 			offer.AcceptedAt = timePtrLabor(at)
 			touchHuddleProgress(w, offer.HuddleID, at)
 
+			// The acceptor's word goes out HERE, while both parties still stand
+			// together and neither is walking (LLM-350). Every gate has passed, so
+			// the hire is certain and the line cannot be spoken against a deal that
+			// then fails; and the relocation below sets the worker's MoveIntent and
+			// drops them from the huddle, either of which SpeakTo refuses outright.
+			// A worker accepting an employer's offer struck away from the shop would
+			// therefore ALWAYS be silenced if we spoke after the walk — the exact
+			// failure this ticket exists to kill, one branch deeper. The addressee is
+			// the party who made the offer; the acceptor is its responder.
+			var announced bool
+			var sayRefused string
+			if say != "" {
+				announced, sayRefused = SpeakAlongside(
+					w, callerID, say, actorDisplayName(w, offer.Initiator()),
+					hasNewNews, at, fmt.Sprintf("accept_work took offer %d", offer.ID),
+				)
+			}
+
 			// LLM-229: decide where the work happens. Accept used to flip the
 			// worker to StateLaboring IN PLACE, which paid for presence rather
 			// than help whenever the deal was struck away from the employer's shop
@@ -796,6 +841,8 @@ func AcceptWork(callerID ActorID, laborID LaborID, at time.Time) Command {
 				Reward:           offer.Reward,
 				Payment:          formatPayment(offer.Reward, offer.RewardItems),
 				WorkingUntil:     resultWorkingUntil,
+				Announced:        announced,
+				SayRefused:       sayRefused,
 			}, nil
 		},
 	}

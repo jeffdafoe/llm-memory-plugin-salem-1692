@@ -257,8 +257,11 @@ func TestPayOfferKey_OfferTrade(t *testing.T) {
 }
 
 // TestCommitResultContent_OfferTradeSteer — a placed offer_trade gets the
-// "before them, call done()" steer (storm-prevention), phrased as a
+// "before them, bide for their answer" steer (storm-prevention), phrased as a
 // trade rather than a buy.
+//
+// It no longer asks for done(): offer_trade is terminal-on-success, so the tick
+// has already ended by the time the model reads this (LLM-350).
 func TestCommitResultContent_OfferTradeSteer(t *testing.T) {
 	decoded, err := DecodeOfferTradeArgs(json.RawMessage(`{
         "with":"Josiah Thorne","give":[{"item":"milk","qty":5}],
@@ -268,10 +271,13 @@ func TestCommitResultContent_OfferTradeSteer(t *testing.T) {
 		t.Fatalf("DecodeOfferTradeArgs: %v", err)
 	}
 	got := commitResultContent(&ValidatedCall{Name: "offer_trade", DecodedArgs: decoded.(PayWithItemArgs)}, nil)
-	for _, want := range []string{"trade for 5 bread", "before Josiah Thorne", "call done()", "accept, decline, or counter"} {
+	for _, want := range []string{"trade for 5 bread", "before Josiah Thorne", "bide for their answer", "accept, decline, or counter"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("steer missing %q\ngot: %s", want, got)
 		}
+	}
+	if strings.Contains(got, "done()") {
+		t.Errorf("steer asks for done() after a terminal offer_trade (LLM-350)\ngot: %s", got)
 	}
 }
 

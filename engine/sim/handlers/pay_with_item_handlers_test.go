@@ -574,13 +574,17 @@ func TestDecodeDeclinePay(t *testing.T) {
 		raw  string
 		want string
 	}{
-		{"valid_with_reason", `{"ledger_id":42,"reason":"too low"}`, ""},
+		{"valid_with_say", `{"ledger_id":42,"say":"too low"}`, ""},
+		// `reason` survives as a decode-only alias for `say` (LLM-350).
+		{"valid_with_reason_alias", `{"ledger_id":42,"reason":"too low"}`, ""},
 		{"valid_no_reason", `{"ledger_id":42}`, ""},
 		{"null", `null`, "must be a JSON object"},
 		{"unknown_field", `{"ledger_id":42,"x":1}`, "malformed arguments"},
 		{"zero_ledger", `{"ledger_id":0}`, "at least 1"},
-		{"reason_over_cap", `{"ledger_id":42,"reason":"` + strings.Repeat("a", 221) + `"}`, "reason exceeds"},
-		{"missing_ledger", `{"reason":"too low"}`, "at least 1"},
+		{"say_over_cap", `{"ledger_id":42,"say":"` + strings.Repeat("a", MaxSpeakTextChars+1) + `"}`, "say exceeds"},
+		// The alias is capped under its OWN name, so the model can map the error back.
+		{"reason_alias_over_cap", `{"ledger_id":42,"reason":"` + strings.Repeat("a", MaxSpeakTextChars+1) + `"}`, "reason exceeds"},
+		{"missing_ledger", `{"say":"too low"}`, "at least 1"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -604,7 +608,7 @@ func TestDecodeDeclinePay(t *testing.T) {
 func TestHandleDeclinePay(t *testing.T) {
 	cmd, err := HandleDeclinePay(HandlerInput{
 		ActorID: "bob", AttemptID: "tk-test",
-		Args: DeclinePayArgs{LedgerID: 42, Reason: "  too low  "},
+		Args: DeclinePayArgs{LedgerID: 42, Say: "  too low  "},
 	})
 	if err != nil {
 		t.Fatalf("HandleDeclinePay: %v", err)
@@ -612,10 +616,10 @@ func TestHandleDeclinePay(t *testing.T) {
 	if cmd.Fn == nil {
 		t.Fatal("nil Fn")
 	}
-	// Control char in reason is rejected.
+	// Control char in the spoken line is rejected.
 	_, err = HandleDeclinePay(HandlerInput{
 		ActorID: "bob", AttemptID: "tk-test",
-		Args: DeclinePayArgs{LedgerID: 42, Reason: "too low\x01"},
+		Args: DeclinePayArgs{LedgerID: 42, Say: "too low\x01"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "control character") {
 		t.Errorf("want control-char error, got %v", err)
@@ -641,7 +645,8 @@ func TestDecodeCounterPay(t *testing.T) {
 		{"over_max_amount", `{"ledger_id":42,"amount":2147483648}`, "amount exceeds maximum"},
 		{"missing_ledger", `{"amount":7}`, "at least 1"},
 		{"zero_ledger", `{"ledger_id":0,"amount":7}`, "at least 1"},
-		{"message_over_cap", `{"ledger_id":42,"amount":7,"message":"` + strings.Repeat("a", 221) + `"}`, "message exceeds"},
+		{"say_over_cap", `{"ledger_id":42,"amount":7,"say":"` + strings.Repeat("a", MaxSpeakTextChars+1) + `"}`, "say exceeds"},
+		{"message_alias_over_cap", `{"ledger_id":42,"amount":7,"message":"` + strings.Repeat("a", MaxSpeakTextChars+1) + `"}`, "message exceeds"},
 		{"unknown_field", `{"ledger_id":42,"amount":7,"x":1}`, "malformed arguments"},
 	}
 	for _, tc := range cases {
@@ -666,7 +671,7 @@ func TestDecodeCounterPay(t *testing.T) {
 func TestHandleCounterPay(t *testing.T) {
 	cmd, err := HandleCounterPay(HandlerInput{
 		ActorID: "bob", AttemptID: "tk-test",
-		Args: CounterPayArgs{LedgerID: 42, Amount: 7, Message: "  how about seven  "},
+		Args: CounterPayArgs{LedgerID: 42, Amount: 7, Say: "  how about seven  "},
 	})
 	if err != nil {
 		t.Fatalf("HandleCounterPay: %v", err)

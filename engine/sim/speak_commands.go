@@ -81,6 +81,32 @@ import (
 // turn-state gates: a human may speak to anyone, anytime. This supersedes the
 // old "speaking to no one is a legitimate narrative beat" allowance, which only
 // ever produced inert void lines.
+// SpeakAlongside speaks text as part of a tool call whose own act has already
+// committed — sell's posted quote, offer_work's minted offer, a pay or labor
+// RESPONSE (LLM-350). It exists because speak is terminal-on-success (LLM-321):
+// a tool that told the model to speak first and act second would end the tick on
+// the speech and never act, while one that told it to act and then speak would
+// have the speak skipped as post_terminal. Folding the utterance into the acting
+// tool makes the two one act, which is what they are in the fiction.
+//
+// Best-effort by design, and that asymmetry is the point. SpeakTo keeps gates the
+// acting command does not (the vocative gate; the turn-state "you are owed a
+// reply" gate), and a sale, a hire, or an answer to an offer must not be lost to
+// a conversational-discipline rule. So a refusal is reported, never propagated:
+// announced comes back false and reason carries SpeakTo's own model-facing text,
+// rather than the caller guessing which gate refused it.
+//
+// text must be non-empty and already trimmed; `to` names the addressee, or is
+// empty to address the whole huddle. act names the caller's completed act for the
+// log line ("sell posted quote 5").
+func SpeakAlongside(w *World, speakerID ActorID, text, to string, hasNewNews bool, at time.Time, act string) (announced bool, reason string) {
+	if _, err := SpeakTo(speakerID, text, to, nil, hasNewNews, at).Fn(w); err != nil {
+		log.Printf("sim: %s but its say was refused: %v", act, err)
+		return false, err.Error()
+	}
+	return true, ""
+}
+
 func SpeakTo(speakerID ActorID, text, to string, mentions []SpeakMention, hasNewNews bool, at time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {

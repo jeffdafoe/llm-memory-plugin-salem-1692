@@ -16,6 +16,6 @@ You keep your trade at the Ellis Store (destination: ellis_store) — you can he
 ## Restocking
 Your shop stock of these bought-in goods is running low. You choose how much to buy.
 - You have 0 sage on hand and room for 4 more at the most. It is generally worth about 1 coin each — pay much above that and you're overpaying.
-  - Josiah Thorne is here with you and sells sage. Buy it now — first call pay_with_item with seller "Josiah Thorne", item "sage", a qty up to 4, and a payment: coins (amount), goods you carry (pay_items), or both, with consume_now false. Then also use speak for a brief handoff line as you make the offer. They will accept or counter your offer.
+  - Josiah Thorne is here with you and sells sage. Buy it now — call pay_with_item with seller "Josiah Thorne", item "sage", a qty up to 4, a payment: coins (amount), goods you carry (pay_items), or both, with consume_now false, and your handoff line in say. Do not speak first: speaking ends your turn, and the offer would never be made. They will accept or counter your offer.
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

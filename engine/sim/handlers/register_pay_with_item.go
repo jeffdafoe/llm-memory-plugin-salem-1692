@@ -50,8 +50,16 @@ func RegisterPayWithItem(r *Registry) error {
 // terminalOnSuccess is TRUE (LLM-184): accepting settles the sale atomically,
 // so there is nothing mechanical left to do this tick. The courtesy after-word
 // ("thank you, here's your stew") is exactly the re-fire vector the weak model
-// stormed; the seller's before-speak is preserved (speak is non-terminal). The
-// already_answered guard stays a backstop.
+// stormed. The already_answered guard stays a backstop.
+//
+// The seller answers through accept_pay's own `say`, NOT a speak before or after
+// it (LLM-350). The comment here used to claim "the seller's before-speak is
+// preserved (speak is non-terminal)" — true when LLM-184 landed, false since
+// LLM-321 made speak terminal, and nothing back-propagated the change. Either
+// order lost something: a speak first ended the tick and the offer went
+// unanswered; an accept first had the speak skipped as post_terminal and the
+// sale settled in silence. The same rot LLM-343 found in register_scene_quote.go
+// and LLM-346 found in register_labor.go.
 func RegisterAcceptPay(r *Registry) error {
 	return r.RegisterCommit(
 		"accept_pay",
@@ -68,6 +76,9 @@ func RegisterAcceptPay(r *Registry) error {
 // terminalOnSuccess is TRUE (LLM-184): a decline is instant and final for this
 // tick — nothing to chain — so ending the tick here kills the decline_pay x6
 // storm (observed live) at the source. The already_X guard stays a backstop.
+//
+// The refusal is spoken through decline_pay's own `say` (LLM-350), which also
+// subsumes the old silent `reason` field — see DeclinePayArgs.
 func RegisterDeclinePay(r *Registry) error {
 	return r.RegisterCommit(
 		"decline_pay",
@@ -84,6 +95,9 @@ func RegisterDeclinePay(r *Registry) error {
 // terminalOnSuccess is TRUE (LLM-184): a counter places a fresh offer that
 // stands until the other party answers on THEIR turn — same shape as
 // pay_with_item — so there is nothing to chain after it this tick.
+//
+// The counter's terms are spoken through its own `say` (LLM-350), which also
+// subsumes the old silent `message` field — see CounterPayArgs.
 func RegisterCounterPay(r *Registry) error {
 	return r.RegisterCommit(
 		"counter_pay",

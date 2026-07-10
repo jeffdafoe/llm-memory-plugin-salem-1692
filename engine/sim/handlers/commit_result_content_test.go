@@ -75,7 +75,7 @@ func TestCommitResultContent_SpeakEchoesLine(t *testing.T) {
 // quote-take and counter-response paths keep the generic "[ok]" (they don't
 // storm), and any non-offer or wrong-typed call degrades to "[ok]".
 func TestCommitResultContent_PayWithItemSteer(t *testing.T) {
-	const steer = "[ok] Your offer to buy 20 carrots is before Moses James — bide for their answer. Make no second offer; call done() and let them accept, decline, or counter."
+	const steer = "[ok] Your offer to buy 20 carrots is before Moses James — bide for their answer. Make no second offer; let them accept, decline, or counter."
 	cases := []struct {
 		name string
 		vc   ValidatedCall
@@ -114,7 +114,7 @@ func TestCommitResultContent_PayWithItemSteer(t *testing.T) {
 			// it), but the steer must not render "buy 1 " with a gap.
 			name: "empty item falls back to those goods",
 			vc:   ValidatedCall{Name: "pay_with_item", DecodedArgs: PayWithItemArgs{Seller: "Moses James", Item: "", Qty: 1}},
-			want: "[ok] Your offer to buy 1 those goods is before Moses James — bide for their answer. Make no second offer; call done() and let them accept, decline, or counter.",
+			want: "[ok] Your offer to buy 1 those goods is before Moses James — bide for their answer. Make no second offer; let them accept, decline, or counter.",
 		},
 		{
 			name: "wrong args type falls back to generic ok",
@@ -245,7 +245,7 @@ func TestCommitResultContent_PayEatHereClampNote(t *testing.T) {
 	// Pending-offer steer carries the note.
 	vc := ValidatedCall{Name: "pay_with_item", DecodedArgs: PayWithItemArgs{Seller: "Moses James", Item: "Stew", Qty: 1, Amount: 4}}
 	got := commitResultContent(&vc, sim.PayWithItemResult{State: sim.PayLedgerStatePending, EatHereClamped: true})
-	want := "[ok] Your offer to buy 1 stew is before Moses James — bide for their answer. Make no second offer; call done() and let them accept, decline, or counter." + note
+	want := "[ok] Your offer to buy 1 stew is before Moses James — bide for their answer. Make no second offer; let them accept, decline, or counter." + note
 	if got != want {
 		t.Errorf("clamped steer:\n got %q\nwant %q", got, want)
 	}

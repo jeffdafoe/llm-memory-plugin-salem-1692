@@ -14,5 +14,5 @@ It is morning in the village.
 You keep your trade at the Ellis Farm (destination: ellis_farm) — you can head back there whenever you wish.
 
 ## Nails to mend your business
-Your Ellis Farm is worn and needs mending, but you carry only 0 of the 5 nails a repair takes. Buy the rest, then return to mend it. Ezekiel Crane is here with you and sells nails. Buy it now — call pay_with_item with seller "Ezekiel Crane", item "nail", a qty up to 5, and a payment: coins (amount), goods you carry (pay_items), or both, with consume_now false. Then also use speak for a brief handoff line as you make the offer. They will accept or counter your offer.
+Your Ellis Farm is worn and needs mending, but you carry only 0 of the 5 nails a repair takes. Buy the rest, then return to mend it. Ezekiel Crane is here with you and sells nails. Buy it now — call pay_with_item with seller "Ezekiel Crane", item "nail", a qty up to 5, a payment: coins (amount), goods you carry (pay_items), or both, with consume_now false, and your handoff line in say. Do not speak first: speaking ends your turn, and the offer would never be made. They will accept or counter your offer.
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

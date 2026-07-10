@@ -856,7 +856,10 @@ func TestRenderLaborOffers_AffordabilitySteer(t *testing.T) {
 	}
 	const (
 		acceptFooter = "Respond with accept_work or decline_work"
-		speakNamed   = "then use speak to tell them"
+		// LLM-350: the spoken reason rides in decline_work's own `say`. The cue used
+		// to read "call decline_work …, then use speak to tell them" — two terminal
+		// verbs, so whichever landed first ended the tick and the other was skipped.
+		speakNamed = "telling them in say"
 	)
 
 	t.Run("broke employer: decline steer with spoken reason, no accept footer", func(t *testing.T) {

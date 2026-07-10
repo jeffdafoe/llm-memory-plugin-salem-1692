@@ -20,8 +20,10 @@ import (
 //                    duration_minutes}.
 //   - offer_work   — employer-side mint, proposes {worker, reward,
 //                    duration_minutes, say} (LLM-346).
-//   - accept_work  — responder-side, accepts a pending offer by labor_id.
-//   - decline_work — responder-side, declines a pending offer by labor_id.
+//   - accept_work  — responder-side, accepts a pending offer by labor_id,
+//                    speaking its `say` as the hire is struck (LLM-350).
+//   - decline_work — responder-side, declines a pending offer by labor_id,
+//                    speaking its `say` as it refuses (LLM-350).
 //
 // Same three-stage split as the pay family (pay_with_item_handlers.go):
 // narrow JSON schema → hardening decoder (null / bare-value / unknown-field
@@ -44,6 +46,9 @@ import (
 //     ends her turn and the offer is never posted. Folding the utterance into the
 //     tool makes asking and offering one act, which is what they are in the
 //     fiction. Exactly the shape LLM-343 gave sell.
+//   - the same `say`, on accept_work and decline_work (LLM-350): the answer to an
+//     offer is terminal too, so an NPC could take a job or refuse one but never
+//     say so. The cue told it to do both and one of the two was always skipped.
 //
 // solicit_work is NOT given a `say` here. It carries the same latent collision —
 // it has been terminal since LLM-180, speak became terminal in LLM-321 — but
@@ -469,6 +474,9 @@ func HandleOfferWork(in HandlerInput) (sim.Command, error) {
 // AcceptWorkArgs is the decoded shape of the accept_work tool's arguments.
 type AcceptWorkArgs struct {
 	LaborID LenientID `json:"labor_id"`
+	// Say is the acceptor's spoken line, delivered as the hire is struck
+	// (LLM-350). Optional — a wordless accept is legal, if a little cold.
+	Say string `json:"say"`
 }
 
 var acceptWorkSchema = json.RawMessage(`{
@@ -478,32 +486,50 @@ var acceptWorkSchema = json.RawMessage(`{
             "type": "integer",
             "minimum": 1,
             "description": "The numeric labor ID of the pending work offer to accept. You'll see this in your perception of the worker's offer."
+        },
+        "say": {
+            "type": "string",
+            "maxLength": 1000,
+            "description": "What you say aloud as you agree, in your own voice (e.g. 'Aye, I'll lend a hand — lead on.'). Spoken to the other party. Optional: omit to accept without a word."
         }
     },
     "required": ["labor_id"],
     "additionalProperties": false
 }`)
 
-const acceptWorkDescription = "Accept a pending work offer from a worker in your current conversation. " +
-	"At acceptance the engine verifies you're both still in the same conversation and that you hold the offered reward — the coins and any goods asked for — and if a check fails the offer flips to a terminal failed state and nobody is hired. " +
-	"On success the worker starts the job; nothing is taken from you now, but the reward is handed over when the work finishes, so you must still hold it then."
+const acceptWorkDescription = "Accept a pending work offer from someone in your current conversation. " +
+	"At acceptance the engine verifies you're both still in the same conversation and that the employer holds the offered reward — the coins and any goods asked for — and if a check fails the offer flips to a terminal failed state and nobody is hired. " +
+	"On success the work begins; nothing changes hands now, but the reward is handed over when the work finishes. " +
+	"Agree aloud in the same breath by passing `say` — do NOT reply with the speak tool, because speaking ends your turn and the offer would go unanswered."
 
 // DecodeAcceptWorkArgs parses raw args into an AcceptWorkArgs.
 func DecodeAcceptWorkArgs(raw json.RawMessage) (any, error) {
-	id, err := decodeLaborIDOnly(raw, "accept_work")
+	id, say, err := decodeLaborIDAndSay(raw, "accept_work")
 	if err != nil {
 		return nil, err
 	}
-	return AcceptWorkArgs{LaborID: id}, nil
+	return AcceptWorkArgs{LaborID: id, Say: say}, nil
 }
 
 // HandleAcceptWork is the CommitFn for the accept_work tool. Pure builder.
+//
+// Unlike the pay responses, accept_work's spoken line is threaded INTO the
+// substrate Command rather than wrapped around it. A relocating accept sends the
+// worker walking to the employer's post and drops them out of the huddle
+// (sendWorkerToWorkplace), and SpeakTo refuses a walker and refuses a speaker with
+// no audience — so a line spoken after this Command returns would be lost exactly
+// when a worker takes a job offered away from the shop. sim.AcceptWorkSaying
+// speaks it while they still stand together. LLM-350.
 func HandleAcceptWork(in HandlerInput) (sim.Command, error) {
 	args, ok := in.Args.(AcceptWorkArgs)
 	if !ok {
 		return sim.Command{}, fmt.Errorf("accept_work: handler received unexpected args type %T", in.Args)
 	}
-	return sim.AcceptWork(in.ActorID, sim.LaborID(args.LaborID), time.Now().UTC()), nil
+	say, err := normalizeSayLine("accept_work", args.Say)
+	if err != nil {
+		return sim.Command{}, err
+	}
+	return sim.AcceptWorkSaying(in.ActorID, sim.LaborID(args.LaborID), say, in.HasNewNews, time.Now().UTC()), nil
 }
 
 // ====================================================================
@@ -514,6 +540,11 @@ func HandleAcceptWork(in HandlerInput) (sim.Command, error) {
 // arguments.
 type DeclineWorkArgs struct {
 	LaborID LenientID `json:"labor_id"`
+	// Say is the refusal, spoken as the offer is declined (LLM-350). The old
+	// tool description told the caller to "just say so in conversation" — which
+	// speak, being terminal, could not do after the decline and would have
+	// skipped the decline if done before it.
+	Say string `json:"say"`
 }
 
 var declineWorkSchema = json.RawMessage(`{
@@ -523,62 +554,128 @@ var declineWorkSchema = json.RawMessage(`{
             "type": "integer",
             "minimum": 1,
             "description": "The numeric labor ID of the pending work offer to decline."
+        },
+        "say": {
+            "type": "string",
+            "maxLength": 1000,
+            "description": "What you say aloud as you refuse, in your own voice (e.g. 'Not today — I've not the coin to spare.'). Spoken to the other party. Optional: omit to decline without a word."
         }
     },
     "required": ["labor_id"],
     "additionalProperties": false
 }`)
 
-const declineWorkDescription = "Decline a pending work offer from a worker in your current conversation. " +
-	"No coins move and nobody is hired. If you want to explain or propose different terms, just say so in conversation."
+const declineWorkDescription = "Decline a pending work offer from someone in your current conversation. No coins move and nobody is hired. " +
+	"Refuse them aloud in the same breath by passing `say` — do NOT reply with the speak tool, because speaking ends your turn and the offer would go unanswered. " +
+	"To propose different terms instead, decline and name them in your `say`."
 
 // DecodeDeclineWorkArgs parses raw args into a DeclineWorkArgs.
 func DecodeDeclineWorkArgs(raw json.RawMessage) (any, error) {
-	id, err := decodeLaborIDOnly(raw, "decline_work")
+	id, say, err := decodeLaborIDAndSay(raw, "decline_work")
 	if err != nil {
 		return nil, err
 	}
-	return DeclineWorkArgs{LaborID: id}, nil
+	return DeclineWorkArgs{LaborID: id, Say: say}, nil
 }
 
-// HandleDeclineWork is the CommitFn for the decline_work tool. Pure builder.
+// HandleDeclineWork is the CommitFn for the decline_work tool.
+//
+// A decline moves no one and dissolves no huddle, so the refusal can be spoken
+// after the Command commits — the handler-level composite the pay responses use,
+// not accept_work's threaded one. Silence on a refused decline: an offer that was
+// no longer the caller's to answer errors out before the words go anywhere.
 func HandleDeclineWork(in HandlerInput) (sim.Command, error) {
 	args, ok := in.Args.(DeclineWorkArgs)
 	if !ok {
 		return sim.Command{}, fmt.Errorf("decline_work: handler received unexpected args type %T", in.Args)
 	}
-	return sim.DeclineWork(in.ActorID, sim.LaborID(args.LaborID), time.Now().UTC()), nil
+	say, err := normalizeSayLine("decline_work", args.Say)
+	if err != nil {
+		return sim.Command{}, err
+	}
+	actorID := in.ActorID
+	hasNewNews := in.HasNewNews
+	now := time.Now().UTC()
+	laborID := sim.LaborID(args.LaborID)
+	decline := sim.DeclineWork(actorID, laborID, now)
+	if say == "" {
+		return decline, nil
+	}
+	return sim.Command{Fn: func(w *sim.World) (any, error) {
+		to := laborCounterpartyName(w, actorID, laborID)
+		res, err := decline.Fn(w)
+		if err != nil {
+			return nil, err
+		}
+		declined, ok := res.(sim.LaborDeclineResult)
+		if !ok {
+			return res, nil
+		}
+		declined.Announced, declined.SayRefused = sim.SpeakAlongside(
+			w, actorID, say, to, hasNewNews, now,
+			fmt.Sprintf("decline_work refused offer %d", laborID),
+		)
+		return declined, nil
+	}}, nil
 }
 
 // ---- shared helpers --------------------------------------------------
 
-// decodeLaborIDOnly handles the strict-object / no-trailing / unknown-
+// laborCounterpartyName resolves the display name of the party on the other side
+// of laborID from callerID. Empty when it can't be resolved, which addresses the
+// utterance to the whole huddle rather than failing — SpeakTo's vocative gate
+// must never cost the caller their answer.
+func laborCounterpartyName(w *sim.World, callerID sim.ActorID, laborID sim.LaborID) string {
+	offer, ok := w.LaborLedger[laborID]
+	if !ok || offer == nil {
+		return ""
+	}
+	other := offer.Initiator()
+	if other == callerID {
+		other = offer.Responder()
+	}
+	peer, ok := w.Actors[other]
+	if !ok || peer == nil {
+		return ""
+	}
+	return peer.DisplayName
+}
+
+// decodeLaborIDAndSay handles the strict-object / no-trailing / unknown-
 // fields / minimum-1 boilerplate for the two tools (accept_work,
-// decline_work) that take only a labor_id. The labor analog of
-// decodeLedgerOnly; LaborID is decoded via LenientID so the same weak-model
-// "null" / numeric-string tolerance applies (LLM-42 readback).
-func decodeLaborIDOnly(raw json.RawMessage, toolName string) (LenientID, error) {
+// decline_work) that take a labor_id and an optional spoken line. The labor
+// analog of decodeLedgerOnly; LaborID is decoded via LenientID so the same
+// weak-model "null" / numeric-string tolerance applies (LLM-42 readback).
+//
+// say shares speak's rune cap — it lands on the same utterance path, so a line
+// speak would refuse must not sneak in through a labor response (mirrors sell).
+func decodeLaborIDAndSay(raw json.RawMessage, toolName string) (LenientID, string, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return 0, modelSafef("%s: arguments must be a JSON object", toolName)
+		return 0, "", modelSafef("%s: arguments must be a JSON object", toolName)
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	var args struct {
 		LaborID LenientID `json:"labor_id"`
+		Say     string    `json:"say"`
 	}
 	if err := dec.Decode(&args); err != nil {
-		return 0, fmt.Errorf("%s: malformed arguments: %w", toolName, err)
+		return 0, "", fmt.Errorf("%s: malformed arguments: %w", toolName, err)
 	}
 	var extra any
 	if err := dec.Decode(&extra); err != io.EOF {
 		if err == nil {
-			return 0, modelSafef("%s: trailing data after JSON object", toolName)
+			return 0, "", modelSafef("%s: trailing data after JSON object", toolName)
 		}
-		return 0, fmt.Errorf("%s: malformed trailing data: %w", toolName, err)
+		return 0, "", fmt.Errorf("%s: malformed trailing data: %w", toolName, err)
 	}
 	if args.LaborID < 1 {
-		return 0, modelSafef("%s: labor_id must be at least 1 (got %d)", toolName, args.LaborID)
+		return 0, "", modelSafef("%s: labor_id must be at least 1 (got %d)", toolName, args.LaborID)
 	}
-	return args.LaborID, nil
+	if n := utf8.RuneCountInString(args.Say); n > MaxSpeakTextChars {
+		return 0, "", modelSafef(
+			"%s: say exceeds %d-character cap (got %d characters)", toolName, MaxSpeakTextChars, n)
+	}
+	return args.LaborID, args.Say, nil
 }
