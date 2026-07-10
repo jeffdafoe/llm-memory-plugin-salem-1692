@@ -659,7 +659,11 @@ func recordExpiredDepositFacts(w *World, o *Order, forfeited bool, at time.Time)
 	if o.Qty > 1 {
 		itemDesc = fmt.Sprintf("%d %s", o.Qty, o.Item)
 	}
-	deposit := orderAmountPaidAtAccept(o)
+	// The fact is specifically about the deposit; read it straight off the order
+	// rather than through orderAmountPaidAtAccept so the narration can't drift
+	// from the actual sum with any future accept-time pricing change (they are
+	// equal here — the caller guards 0 < Deposit < Amount). LLM-357.
+	deposit := o.Deposit
 	var sellerKind, buyerKind InteractionKind
 	var sellerFact, buyerFact string
 	if forfeited {

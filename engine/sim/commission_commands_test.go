@@ -616,3 +616,52 @@ func TestCommission_PartialPayment_InStockIgnoresDeposit(t *testing.T) {
 		}
 	}
 }
+
+// TestCommission_PartialPayment_ExpiryNarratesBothSides_Forfeit: with BOTH
+// parties shared-VA (so both directions of the salient_facts write are
+// observable — a stateful NPC carries its side through the dream path instead),
+// a buyer-fault forfeit leaves a memory beat on each side. LLM-357.
+func TestCommission_PartialPayment_ExpiryNarratesBothSides_Forfeit(t *testing.T) {
+	w, stop := buildCommissionWorld(t, produceNail(), nil, 50, nil)
+	defer stop()
+	mustSend(t, w, func(world *sim.World) { world.Actors["smith"].Kind = sim.KindNPCShared })
+	at := time.Now().UTC()
+	commissionOfferWithDeposit(t, w, 1, "nail", 1, 15, 5, at)
+	if _, err := w.Send(sim.AcceptPay("smith", 1, at)); err != nil {
+		t.Fatalf("AcceptPay: %v", err)
+	}
+	// smith forges it but the buyer never collects → buyer-fault forfeit.
+	mustSend(t, w, func(world *sim.World) { world.Actors["smith"].Inventory = map[sim.ItemKind]int{"nail": 1} })
+	if _, err := w.Send(sim.EvaluateOrderSweep(commissionExpiry(at))); err != nil {
+		t.Fatalf("EvaluateOrderSweep: %v", err)
+	}
+	if joined := strings.Join(readSalientFacts(t, w, "smith", "alice"), " | "); !strings.Contains(joined, "kept their") {
+		t.Errorf("smith's memory of alice should record keeping the deposit, got %q", joined)
+	}
+	if joined := strings.Join(readSalientFacts(t, w, "alice", "smith"), " | "); !strings.Contains(joined, "forfeited") {
+		t.Errorf("alice's memory of smith should record the forfeit, got %q", joined)
+	}
+}
+
+// TestCommission_PartialPayment_ExpiryNarratesBothSides_Refund: the seller-fault
+// (never forged) counterpart — both sides record the refund. LLM-357.
+func TestCommission_PartialPayment_ExpiryNarratesBothSides_Refund(t *testing.T) {
+	w, stop := buildCommissionWorld(t, produceNail(), nil, 50, nil)
+	defer stop()
+	mustSend(t, w, func(world *sim.World) { world.Actors["smith"].Kind = sim.KindNPCShared })
+	at := time.Now().UTC()
+	commissionOfferWithDeposit(t, w, 1, "nail", 1, 15, 5, at)
+	if _, err := w.Send(sim.AcceptPay("smith", 1, at)); err != nil {
+		t.Fatalf("AcceptPay: %v", err)
+	}
+	// smith never forges → seller-fault refund on expiry.
+	if _, err := w.Send(sim.EvaluateOrderSweep(commissionExpiry(at))); err != nil {
+		t.Fatalf("EvaluateOrderSweep: %v", err)
+	}
+	if joined := strings.Join(readSalientFacts(t, w, "smith", "alice"), " | "); !strings.Contains(joined, "deposit went back") {
+		t.Errorf("smith's memory of alice should record refunding the deposit, got %q", joined)
+	}
+	if joined := strings.Join(readSalientFacts(t, w, "alice", "smith"), " | "); !strings.Contains(joined, "deposit came back") {
+		t.Errorf("alice's memory of smith should record the refund, got %q", joined)
+	}
+}
