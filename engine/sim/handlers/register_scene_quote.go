@@ -26,21 +26,26 @@ package handlers
 // Same opt-in-piecewise pattern as register_pay.go / register_consume.go.
 
 // RegisterSceneQuote adds the scene_quote tool to r as a ClassCommit
-// entry, AvailabilityAvailable. The schema is the narrow PR S3 form
-// (advertises item / qty / amount / consume_now /
-// target_buyer / consumers — buyer-side pay_with_item fast-path
-// references quote_id from the buyer's perspective, which is a
-// separate tool landing in PR S4). The commit handler is
-// HandleSceneQuote; the decoder is DecodeSceneQuoteArgs; both live
-// in scene_quote.go.
+// entry, AvailabilityAvailable. The schema advertises lines / amount /
+// consume_now / target_buyer / consumers / say — buyer-side pay_with_item
+// fast-path references quote_id from the buyer's perspective, which is a
+// separate tool. The commit handler is HandleSceneQuote; the decoder is
+// DecodeSceneQuoteArgs; both live in scene_quote.go.
 //
 // terminalOnSuccess is TRUE (LLM-184): a posted quote stands until a buyer
 // answers on THEIR turn, so there is nothing useful to chain after it — a
 // second sell of the same lot is a no-op (the same-tick quote guard rejects it)
 // and the courtesy after-word ("I'm running a special on stew tonight, quote
 // #5") is the re-pitch the weak model stormed to the round budget (sell x3,
-// observed live). The seller still announces BEFORE quoting (speak is
-// non-terminal); only the after-word is dropped. Mirrors solicit_work (LLM-180).
+// observed live). Mirrors solicit_work (LLM-180).
+//
+// The seller announces through sell's own `say` argument, NOT a preceding speak
+// (LLM-343). speak became terminal-on-success in LLM-321, which silently made
+// the original "announce first, then quote" shape unreachable: the speak ended
+// the tick, the quote was never posted, and a keeper who answered "six coins for
+// the both of them" left the buyer's pay screen empty. HandleSceneQuote now
+// mints the quote and speaks the line inside one terminal commit — quote first,
+// so a price is never voiced against an offer that failed to post.
 //
 // Returns an error on registration failure (duplicate name, malformed
 // schema bytes — both startup bugs the caller should panic/exit on).

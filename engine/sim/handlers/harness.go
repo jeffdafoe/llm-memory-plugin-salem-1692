@@ -1577,6 +1577,24 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 		// actually created (code_review #415) — an unexpected result shape
 		// still steers, but doesn't assert state without evidence.
 		if r, ok := cmdResult.(sim.SceneQuoteCreateResult); ok {
+			// LLM-343: echo the spoken line so the seller sees its own words
+			// land, the same acknowledgment a bare speak returns. Announced is
+			// false when the quote posted but SpeakTo refused the line — the
+			// offer stands, so say so, and pass SpeakTo's own reason through
+			// rather than guessing at which gate rejected it.
+			said := ""
+			if args, ok := vc.DecodedArgs.(SceneQuoteArgs); ok {
+				if s := strings.TrimSpace(args.Say); s != "" {
+					switch {
+					case r.Announced:
+						said = fmt.Sprintf("You said: %q. ", s)
+					case r.SayRefused != "":
+						said = fmt.Sprintf("Your words went unsaid: %s ", r.SayRefused)
+					default:
+						said = "Your words went unsaid. "
+					}
+				}
+			}
 			if r.EatHereClamped {
 				item := "those goods"
 				if args, ok := vc.DecodedArgs.(SceneQuoteArgs); ok && len(args.Lines) == 1 {
@@ -1585,11 +1603,11 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 					}
 				}
 				return fmt.Sprintf(
-					"[ok] Mind: %s can't be carried away — your offer stands as eat-here, taken on the spot. %s",
-					item, quoteSteer,
+					"[ok] %sMind: %s can't be carried away — your offer stands as eat-here, taken on the spot. %s",
+					said, item, quoteSteer,
 				)
 			}
-			return "[ok] Your offer now stands. " + quoteSteer
+			return "[ok] " + said + "Your offer now stands. " + quoteSteer
 		}
 		return "[ok] " + quoteSteer
 	}

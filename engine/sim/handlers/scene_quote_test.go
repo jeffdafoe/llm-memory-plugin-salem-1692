@@ -320,4 +320,60 @@ func TestSceneQuoteSchema_CapsMatchSubstrate(t *testing.T) {
 		t.Errorf("MaxSceneQuoteConsumers = %d, sim.SceneQuoteMaxConsumers = %d (must stay in sync)",
 			MaxSceneQuoteConsumers, sim.SceneQuoteMaxConsumers)
 	}
+	// The schema is a static literal, so say's ADVERTISED cap can drift away
+	// from the cap the decoder enforces (LLM-343) — the model would be told it
+	// may send 1000 runes and then be rejected at some other number.
+	var schema struct {
+		Properties struct {
+			Say struct {
+				MaxLength int `json:"maxLength"`
+			} `json:"say"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(sceneQuoteSchema, &schema); err != nil {
+		t.Fatalf("unmarshal sceneQuoteSchema: %v", err)
+	}
+	if schema.Properties.Say.MaxLength != MaxSpeakTextChars {
+		t.Errorf("schema say.maxLength = %d, MaxSpeakTextChars = %d (must stay in sync)",
+			schema.Properties.Say.MaxLength, MaxSpeakTextChars)
+	}
+}
+
+// ---- say (LLM-343) ----
+
+func TestDecodeSceneQuoteArgs_Say(t *testing.T) {
+	args, err := DecodeSceneQuoteArgs(json.RawMessage(
+		`{"lines":[{"item":"stew","qty":1}],"amount":4,"consume_now":true,"say":"Four coins the bowl."}`))
+	if err != nil {
+		t.Fatalf("DecodeSceneQuoteArgs: %v", err)
+	}
+	if got := args.(SceneQuoteArgs).Say; got != "Four coins the bowl." {
+		t.Errorf("Say = %q", got)
+	}
+}
+
+func TestDecodeSceneQuoteArgs_SayOverMax(t *testing.T) {
+	long := strings.Repeat("a", MaxSpeakTextChars+1)
+	_, err := DecodeSceneQuoteArgs(json.RawMessage(
+		`{"lines":[{"item":"stew","qty":1}],"amount":4,"consume_now":true,"say":"` + long + `"}`))
+	if err == nil || !strings.Contains(err.Error(), "say exceeds") {
+		t.Fatalf("err = %v, want a say length rejection", err)
+	}
+}
+
+// A say carrying control characters must be refused for the same reason speak
+// refuses one: it is re-rendered into every listener's perception prompt.
+func TestHandleSceneQuote_SayControlChar(t *testing.T) {
+	_, err := HandleSceneQuote(HandlerInput{
+		ActorID: "seller",
+		Args: SceneQuoteArgs{
+			Lines:      []SceneQuoteLineArg{{ItemKind: "stew", Qty: 1}},
+			Amount:     4,
+			ConsumeNow: true,
+			Say:        "Four coins\x00the bowl.",
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "say contains a disallowed control character") {
+		t.Fatalf("err = %v, want a control-char rejection", err)
+	}
 }

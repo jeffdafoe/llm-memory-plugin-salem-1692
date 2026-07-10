@@ -10875,3 +10875,49 @@ func TestSeekWorkSuppressedByRedNeed(t *testing.T) {
 		t.Errorf("rested workless worker: seek-work directory absent, want present")
 	}
 }
+
+// TestGoldensSellerCueNamesOneTerminalVerb is the LLM-343 cross-scenario
+// invariant. speak and sell are BOTH terminal-on-success (LLM-321 and LLM-184
+// respectively), so whichever lands first ends the tick. Any cue that tells a
+// keeper to speak a price AND then call sell is therefore unfollowable: the
+// keeper obeys the first clause, the turn ends, and no payable offer is ever
+// posted. That is exactly what happened live on 2026-07-09 — John Ellis quoted
+// "six coins for the both of them together" and the player's pay screen stayed
+// empty.
+//
+// So: wherever the seller cue renders, it must point at ONE tool. It must route
+// the spoken price through sell's `say` argument, and it must warn the keeper
+// off naming a price with speak. This runs over the whole matrix so no future
+// edit to the cue can quietly reintroduce the two-terminal-verb instruction.
+func TestGoldensSellerCueNamesOneTerminalVerb(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			out := renderScenario(sc)
+			// Key off the cue's BODY, not just its title: a future section that
+			// reused the "## Custom at hand" header would otherwise be dragged
+			// into an invariant that is only about the sell cue.
+			if !strings.Contains(out, "## Custom at hand") || !strings.Contains(out, "Your goods to sell:") {
+				return // invariant N/A — renderOfferableCustomers did not fire here
+			}
+			// The words must ride on sell itself.
+			if !strings.Contains(out, "the words you speak aloud in say") {
+				t.Errorf("scenario %q: seller cue does not route the spoken price through sell's `say` (LLM-343)", sc.name)
+			}
+			// And the cue must actively steer off the terminal speak.
+			if !strings.Contains(out, "Do not name a price with the speak tool") {
+				t.Errorf("scenario %q: seller cue does not warn against naming a price with the terminal speak tool (LLM-343)", sc.name)
+			}
+			// The pre-LLM-343 phrasing, which asked for a speech AND a sell.
+			for _, banned := range []string{
+				"say your price for it plainly in your reply",
+				"and call sell with that named item",
+			} {
+				if strings.Contains(out, banned) {
+					t.Errorf("scenario %q: seller cue reintroduces the two-terminal-verb instruction %q — "+
+						"the speech ends the tick and the offer never posts (LLM-343)", sc.name, banned)
+				}
+			}
+		})
+	}
+}

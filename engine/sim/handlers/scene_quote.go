@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -55,12 +56,21 @@ type SceneQuoteLineArg struct {
 //   - target_buyer: maxLength MaxSceneQuoteNameChars (optional)
 //   - consumers:   array (optional), maxItems MaxSceneQuoteConsumers,
 //     each item minLength 1, maxLength MaxSceneQuoteNameChars
+//   - say:         maxLength MaxSpeakTextChars (optional)
 type SceneQuoteArgs struct {
 	Lines       []SceneQuoteLineArg `json:"lines"`
 	Amount      int                 `json:"amount"`
 	ConsumeNow  bool                `json:"consume_now"`
 	TargetBuyer string              `json:"target_buyer"`
 	Consumers   []string            `json:"consumers"`
+	// Say is the seller's spoken line, delivered as the offer is posted
+	// (LLM-343). Both speak and sell are tick-terminal, so a keeper who
+	// answers "what's the stew?" with a speak never reaches sell — the price
+	// is voiced and no payable offer exists. Folding the utterance into the
+	// quote makes naming the price and posting the offer one act, which is
+	// what they are in the fiction. Optional: a cold offer (no words) is still
+	// the common shape.
+	Say string `json:"say"`
 }
 
 // MaxSceneQuoteLines caps len(lines[]) in the schema. Mirrors
@@ -150,6 +160,11 @@ var sceneQuoteSchema = json.RawMessage(`{
                 "maxLength": 100
             },
             "description": "Optional list of display names for a group order (e.g. 'a round of ale for the table'). Empty means the buyer is the sole consumer. All consumers must be in your current conversation."
+        },
+        "say": {
+            "type": "string",
+            "maxLength": 1000,
+            "description": "What you say aloud as you make the offer, in your own voice (e.g. 'A bowl of stew runs four coins, and a loaf two — six for the both.'). Spoken to the room, or to target_buyer if you named one. Optional: omit to set out goods without a word."
         }
     },
     "required": ["lines", "amount", "consume_now"],
@@ -164,6 +179,7 @@ const sceneQuoteDescription = "Post an offer to sell items from your inventory t
 	"This is the transactional surface — speech that mentions a price is just flavor, this is what a buyer can actually pay against. " +
 	"You set the item lines (one or more item kinds, each with a per-consumer quantity), one total price for the whole offer, and whether it's eat-here or takeaway. " +
 	"Bundle several kinds in one offer when a buyer wants some of each (e.g. 2 blueberries + 2 raspberries for 8 coins). " +
+	"Say your price aloud in the same breath by passing `say` — do NOT name a price with the speak tool and then call this, because speaking ends your turn and the offer would never be posted. " +
 	"Optionally target a specific buyer or specify consumers for a group order. " +
 	"Quotes expire after about 10 minutes; posting the same shape again replaces the old quote."
 
@@ -226,6 +242,7 @@ func DecodeSceneQuoteArgs(raw json.RawMessage) (any, error) {
 		ConsumeNow  bool                 `json:"consume_now"`
 		TargetBuyer string               `json:"target_buyer"`
 		Consumers   []string             `json:"consumers"`
+		Say         string               `json:"say"`
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
@@ -265,6 +282,7 @@ func DecodeSceneQuoteArgs(raw json.RawMessage) (any, error) {
 		ConsumeNow:  wire.ConsumeNow,
 		TargetBuyer: wire.TargetBuyer,
 		Consumers:   wire.Consumers,
+		Say:         wire.Say,
 	}
 	for i, ln := range wire.Lines {
 		item := ""
@@ -324,6 +342,14 @@ func DecodeSceneQuoteArgs(raw json.RawMessage) (any, error) {
 				i, MaxSceneQuoteNameChars, n,
 			)
 		}
+	}
+	// say shares speak's rune cap — it lands on the same utterance path, so a
+	// line that speak would refuse must not sneak in through sell (LLM-343).
+	if n := utf8.RuneCountInString(args.Say); n > MaxSpeakTextChars {
+		return nil, modelSafef(
+			"sell: say exceeds %d-character cap (got %d characters)",
+			MaxSpeakTextChars, n,
+		)
 	}
 	return args, nil
 }
@@ -409,17 +435,72 @@ func HandleSceneQuote(in HandlerInput) (sim.Command, error) {
 		}
 	}
 
+	// Normalize the optional spoken line (LLM-343). Prose, so it takes speak's
+	// permissive control-char scan (\n \r \t allowed) rather than the strict
+	// identifier scan the item/name fields above use.
+	say := strings.TrimSpace(args.Say)
+	if say != "" {
+		if i := indexInvalidControlChar(say); i >= 0 {
+			return sim.Command{}, modelSafef(
+				"sell: say contains a disallowed control character at byte offset %d "+
+					"(only \\n, \\r, \\t allowed)", i)
+		}
+	}
+
+	// Captured outside the closure — the harness may reuse `in` across
+	// iterations (same rationale as HandleSpeak).
+	actorID := in.ActorID
+	hasNewNews := in.HasNewNews
+
 	// ZBBS-HOME-400: form/join the co-located huddle on the quote itself so a
 	// seller can post a quote to a customer present at the stall without a
 	// separate prior speak. No-op when already huddled, alone, or out of scope.
 	now := time.Now().UTC()
-	return withHuddleBootstrap(in.ActorID, now, sim.SceneQuoteCreate(
-		in.ActorID,
+	quote := sim.SceneQuoteCreate(
+		actorID,
 		lines,
 		args.Amount,
 		args.ConsumeNow,
 		targetBuyer,
 		consumers,
 		now,
-	)), nil
+	)
+	if say == "" {
+		return withHuddleBootstrap(actorID, now, quote), nil
+	}
+
+	// Quote FIRST, then speak (LLM-343). The order is the whole point: if the
+	// quote fails (no stock, unknown item, no scene) nothing has been said, and
+	// the seller never voices a price against an offer that doesn't exist —
+	// which is the failure this ticket exists to kill. The reverse order would
+	// reproduce it exactly.
+	//
+	// The speak is best-effort. Once the quote is minted the world has moved;
+	// there is no rollback, and returning an error here would leave a posted
+	// quote behind a tool the model believes failed (it would re-sell, and the
+	// same-tick quote guard would bounce it). SpeakTo still has reachable
+	// rejections — the vocative gate (the line names someone who has left the
+	// conversation) and the turn-state gate (the seller already spoke and is
+	// owed a reply). In those cases the offer stands, Announced stays false, and
+	// SpeakTo's own reason rides back on the result so the tool feedback tells
+	// the seller what actually happened rather than guessing.
+	return withHuddleBootstrap(actorID, now, sim.Command{Fn: func(w *sim.World) (any, error) {
+		res, err := quote.Fn(w)
+		if err != nil {
+			return nil, err
+		}
+		created, ok := res.(sim.SceneQuoteCreateResult)
+		if !ok {
+			return res, nil
+		}
+		// targetBuyer doubles as the speak addressee: an offer made to one named
+		// buyer is spoken to them, a public offer is spoken to the room.
+		if _, serr := sim.SpeakTo(actorID, say, targetBuyer, nil, hasNewNews, now).Fn(w); serr != nil {
+			log.Printf("sim/handlers: sell posted quote %d but its say was refused: %v", created.QuoteID, serr)
+			created.SayRefused = serr.Error()
+			return created, nil
+		}
+		created.Announced = true
+		return created, nil
+	}}), nil
 }
