@@ -1384,6 +1384,16 @@ func payResponseSayEcho(vc *ValidatedCall, announced bool, sayRefused string) st
 	}
 }
 
+// laborNoHireContent renders accept_work's no-hire outcomes: the reason nobody
+// was taken on, then the fate of the words the acceptor tried to say in the same
+// breath. A gate-driven flip resolves before the utterance goes out, so the line
+// is never spoken — say so, rather than let the acceptor believe the room heard
+// her thank a worker she never hired (LLM-351). said carries sayEcho's own
+// trailing space and is "" for a wordless accept; trim the tail either way.
+func laborNoHireContent(reason, said string) string {
+	return strings.TrimRight("[ok] "+reason+" "+said, " ")
+}
+
 func paySettlementFellThroughContent(state sim.PayLedgerState) (string, bool) {
 	switch state {
 	case sim.PayLedgerStateFailedInsufficientStock:
@@ -1856,9 +1866,9 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 				// hasn't started).
 				return fmt.Sprintf("[ok] You hired %s — they will make their way to your workplace and get to work once you're both there, paid %s when they finish. %sDo not accept again.", r.WorkerName, payment, said)
 			case r.State == sim.LaborStateExpired:
-				return "[ok] That offer had already expired — too late to take it up."
+				return laborNoHireContent("That offer had already expired — too late to take it up.", said)
 			case r.State == sim.LaborStateFailedUnavailable:
-				return "[ok] That couldn't be arranged — one of you was no longer available, the worker was already at a job, or the employer couldn't cover the pay agreed."
+				return laborNoHireContent("That couldn't be arranged — one of you was no longer available, the worker was already at a job, or the employer couldn't cover the pay agreed.", said)
 			}
 		}
 	}
