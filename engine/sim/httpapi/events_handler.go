@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
 
 // upgrader promotes the GET /api/village/events request to a WebSocket.
@@ -97,6 +99,18 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	case s.hub.register <- c:
 		go c.writePump()
 		go c.readPump()
+		// Stamp presence immediately on connect (LLM-342). The heartbeat only
+		// re-stamps on its next tick, so a freshly connected or reconnected PC —
+		// whose LastPCSeenAt is nil (never attached this session) or already stale
+		// — could be swept from its huddle in the gap before the first tick, the
+		// very ejection this ticket removes. Synchronous like the old /pc/me stamp,
+		// on the still-live request context; a no-op login or a caller with no PC
+		// stamps nothing.
+		if login != "" {
+			if _, err := s.world.SendContext(r.Context(), sim.StampConnectedPCsSeen(map[string]struct{}{login: {}})); err != nil {
+				log.Printf("httpapi: initial presence stamp for %q failed: %v", login, err)
+			}
+		}
 	case <-s.hub.done:
 		_ = conn.Close()
 	case <-r.Context().Done():

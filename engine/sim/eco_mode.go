@@ -16,8 +16,8 @@ import "time"
 // PCPresenceStale, 40s staleness over the WS presence heartbeat, LLM-342).
 // Watching and playing are the same thing (admins use the same Godot client; the
 // umbilical's JSON reads deliberately do NOT count as audience). Wake is instant
-// and free: a connecting client's socket stamps presence and the next reactor
-// scan runs at full cadence.
+// and free: a connecting client stamps presence on register (LLM-342) and the
+// next reactor scan runs at full cadence.
 //
 // Mechanism: DELAY, not drop. Warrants mint exactly as today — dedup,
 // perception build, and staleness handling unchanged. When no audience is

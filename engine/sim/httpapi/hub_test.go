@@ -313,3 +313,45 @@ func waitForConnectedLogin(t *testing.T, hub *Hub, login string, want bool) {
 	}
 	t.Fatalf("login %q connected=%v not reached within deadline", login, want)
 }
+
+// A WS connection stamps its PC's presence immediately on register (LLM-342), not
+// only on the next heartbeat tick — so a freshly connected or reconnected PC
+// whose LastPCSeenAt is nil/stale can't be swept in the gap before the first tick
+// (code_review finding). No heartbeat runs in this test, so a non-nil stamp
+// proves the on-connect path fired, not a background ticker.
+func TestHandleEvents_StampsPresenceOnConnect(t *testing.T) {
+	w := seededWorld(t)
+	// Give the seeded PC (bram) the login okAuth resolves every token to, so the
+	// connecting socket maps to it.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["bram"].LoginUsername = "tester"
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed bram login: %v", err)
+	}
+	if seen := w.Published().Actors["bram"].LastPCSeenAt; seen != nil {
+		t.Fatalf("precondition: bram already stamped (%v), want nil", seen)
+	}
+
+	hub := NewHub(dropTranslator)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go hub.Run(ctx)
+	srv := NewServer(w, okAuth{})
+	srv.SetEventsHub(hub)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	_ = dialEvents(t, ts)
+
+	// The stamp is a world command sent from the register path; poll the published
+	// snapshot until it lands (Dial can return before the command executes).
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if w.Published().Actors["bram"].LastPCSeenAt != nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("bram not stamped present after WS connect (on-connect stamp missing)")
+}

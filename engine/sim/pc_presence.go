@@ -20,9 +20,10 @@ import (
 // actions (TouchPCInput) also stamp presence, as defence in depth against a
 // momentary socket blip.
 //
-// When the player closes the tab, sleeps the machine, or loses the network the
-// socket drops within ~pongWait (~60s), the heartbeat stops stamping it, and the
-// stamp goes stale. Without cleanup a stale (ghost) PC stays pinned in whatever
+// When the player closes the tab the socket's close frame drops it at once; a
+// silent loss (sleep, network) is caught within ~pongWait (~60s) via the missed
+// pong. Either way the heartbeat then stops stamping it and the stamp goes stale.
+// Without cleanup a stale (ghost) PC stays pinned in whatever
 // conversational huddle it was in, and co-located LLM-NPCs keep getting warranted
 // to greet a player who isn't actually there — a real prod cost bug (2026-05-11/12).
 // The sweep ejects stale PCs from their huddles, and the encounter cascades skip
@@ -170,7 +171,7 @@ func StampConnectedPCsSeen(connectedLogins map[string]struct{}) Command {
 			now := time.Now().UTC()
 			stamped := 0
 			for _, a := range w.Actors {
-				if a.Kind != KindPC {
+				if a.Kind != KindPC || a.LoginUsername == "" {
 					continue
 				}
 				if _, ok := connectedLogins[a.LoginUsername]; !ok {
@@ -186,12 +187,17 @@ func StampConnectedPCsSeen(connectedLogins map[string]struct{}) Command {
 
 // RunPCPresenceHeartbeat re-stamps presence for every WS-connected PC on
 // PCPresenceHeartbeatInterval (LLM-342). Started only when the WS surface exists
-// (the hub is the ConnectedPCSource). When a socket drops (closed tab, sleep,
-// network loss) the hub removes the login within ~pongWait (~60s) and the stamps
-// stop, so the existing SweepStalePCPresence reclaims the ghost within the stale
-// threshold — the closed-tab cleanup ZBBS-WORK-326 added is preserved, now keyed
-// on the socket instead of the render-loop poll. SendContext so shutdown unblocks
-// cleanly. Mirrors RunPCPresenceSweep.
+// (the hub is the ConnectedPCSource). Cleanup after the client goes away: a clean
+// tab close sends a close frame, so the read pump drops the login at once; a
+// silent drop (sleep, network loss) is caught within ~pongWait (~60s) via the
+// missed pong, and the heartbeat keeps stamping until then. Once the login is
+// gone the stamps stop and the existing SweepStalePCPresence reclaims the ghost
+// within staleAfter + one sweep interval — so worst-case cleanup for a silent
+// drop is ~pongWait + staleAfter + PCPresenceSweepInterval (~115s). That is
+// slower than the old poll on a silent drop, but the ticket accepts the WS blind
+// spots; not ejecting a still-present player is the point. The ZBBS-WORK-326 cost
+// guard is preserved, now keyed on the socket instead of the render-loop poll.
+// SendContext so shutdown unblocks cleanly. Mirrors RunPCPresenceSweep.
 func RunPCPresenceHeartbeat(ctx context.Context, w *World, src ConnectedPCSource) {
 	t := time.NewTicker(PCPresenceHeartbeatInterval)
 	defer t.Stop()
