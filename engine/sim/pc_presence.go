@@ -98,18 +98,23 @@ func StampPCSeen(actorID ActorID) Command {
 	}
 }
 
-// SweepStalePCPresence ejects every stale PC from its current huddle, returning
-// the count ejected. Only PCs actually in a huddle are touched — an absent PC
-// standing alone costs nothing, so there's nothing to clear. leaveCurrentHuddle
-// emits HuddleLeft (remaining NPCs notice the player left once, then settle) and
-// clears CurrentHuddleID; the PC itself stays in the world. Safe to iterate
-// w.Actors while calling leaveCurrentHuddle — it mutates huddle membership, not
-// the actor map.
+// SweepStalePCPresence marks every stale PC that is in a huddle as absent —
+// co-present but quiet — returning the count marked (LLM-342). It does NOT evict
+// the PC: eviction was a heavy hammer (a HuddlePeerLeft to every peer, killed
+// in-flight commerce, and leave/join churn the moment the client reconnected) for
+// what is fundamentally a cost guard. markPCAbsentInHuddle instead keeps the PC in
+// the huddle and just lets the conversation let go of it, so perception can render
+// it "stepped away" (out of the addressable set) while a genuinely departed player
+// is concluded by the huddle silence sweep and a returning one resumes seamlessly.
+// Only PCs actually in a huddle are touched — an absent PC standing alone costs
+// nothing. Idempotent across the 15s re-runs: an absent PC sources no new warrants,
+// so a later pass finds nothing to clear. Safe to iterate w.Actors while mutating
+// warrants (not the actor map).
 func SweepStalePCPresence(now time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
 			staleAfter := PCPresenceStaleAfter(w)
-			ejected := 0
+			marked := 0
 			for _, a := range w.Actors {
 				if a.Kind != KindPC || a.CurrentHuddleID == "" {
 					continue
@@ -117,12 +122,65 @@ func SweepStalePCPresence(now time.Time) Command {
 				if !PCPresenceStale(a.LastPCSeenAt, now, staleAfter) {
 					continue
 				}
-				leaveCurrentHuddle(w, a, now)
-				ejected++
+				markPCAbsentInHuddle(w, a)
+				marked++
 			}
-			return ejected, nil
+			return marked, nil
 		},
 	}
+}
+
+// markPCAbsentInHuddle quiets the huddle around a stale PC without evicting it
+// (LLM-342). The PC keeps its membership — perception renders it "stepped away" —
+// but the conversation releases it: its own outgoing reply edges and warrant cycle
+// are dropped (it will not act), and every huddle-mate's warrants that were
+// TRIGGERED BY this PC (its speech, its join) are cleared so no one is driven to
+// keep addressing an absent player. Warrants a peer holds for its own reasons or
+// for another NPC are left untouched, so NPC↔NPC threads continue. MUST run on the
+// world goroutine.
+func markPCAbsentInHuddle(w *World, pc *Actor) {
+	pc.dropAwaitingReplies()
+	clearWarrant(pc)
+	h := w.Huddles[pc.CurrentHuddleID]
+	if h == nil {
+		return
+	}
+	for peerID := range h.Members {
+		if peerID == pc.ID {
+			continue
+		}
+		if peer := w.Actors[peerID]; peer != nil {
+			dropWarrantsSourcedBy(peer, pc.ID)
+		}
+	}
+}
+
+// dropWarrantsSourcedBy removes from an actor's warrant cycle every non-Force
+// warrant whose source event was produced by sourceID (a huddle-mate's speech or
+// join, whose WarrantMeta.SourceActorID is the speaker/joiner). Clears the whole
+// cycle when nothing survives; leaves it untouched when nothing matched (the cheap
+// idempotent path). Force warrants (operator nudges) always survive. The cycle
+// clock (WarrantedSince/WarrantDueAt) stays put for the surviving warrants — they
+// are still pending and will fire on schedule.
+func dropWarrantsSourcedBy(a *Actor, sourceID ActorID) {
+	if len(a.Warrants) == 0 {
+		return
+	}
+	kept := make([]WarrantMeta, 0, len(a.Warrants))
+	for _, wm := range a.Warrants {
+		if wm.SourceActorID == sourceID && !wm.Force {
+			continue
+		}
+		kept = append(kept, wm)
+	}
+	if len(kept) == len(a.Warrants) {
+		return
+	}
+	if len(kept) == 0 {
+		clearWarrant(a)
+		return
+	}
+	a.Warrants = kept
 }
 
 // RunPCPresenceSweep ticks SweepStalePCPresence every PCPresenceSweepInterval.

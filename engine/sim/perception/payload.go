@@ -1321,6 +1321,16 @@ type SurroundingsView struct {
 	// non-huddled buyer at the substrate).
 	HuddleMembers []HuddleMember
 
+	// HuddleAway are co-present huddle members who have stepped away — a PC whose
+	// client has gone quiet (WS dropped, presence stamp stale; LLM-342). They keep
+	// their huddle membership but are deliberately NOT in HuddleMembers, so they
+	// drop out of every addressable cue that reads it (offerable customers,
+	// greet/respond, HasAudience) while Render still names them "(stepped away)" in
+	// "## Around you" — co-present but not someone to address. Populated only in the
+	// huddle branch; empty otherwise. A returning player re-enters HuddleMembers the
+	// moment its socket re-stamps presence.
+	HuddleAway []HuddleMember
+
 	// CoPresent are the other conversational actors within earshot when the
 	// subject is NOT in a huddle — the read projection of ActorSnapshot.
 	// ColocatedAudienceIDs (the set the speak path would reach), each carrying the

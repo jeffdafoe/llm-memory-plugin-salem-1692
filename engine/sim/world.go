@@ -1989,6 +1989,7 @@ func (w *World) republish() {
 		DuskMinute:                duskMin,
 		DawnDuskMinuteOK:          dawnOK && duskOK,
 		NeedThresholds:            w.Settings.NeedThresholds.Clone(),
+		PCPresenceStaleAfter:      PCPresenceStaleAfter(w),
 		SeekWorkCoinCeiling:       effectiveSeekWorkCoinCeiling(w.Settings),
 		LodgingDefaultWeeklyRate:  w.Settings.LodgingDefaultWeeklyRate,
 		LodgingBedtimeMinute:      lodgerBedtimeMinute(w),

@@ -94,24 +94,86 @@ func huddlePlayerAndNora(t *testing.T, w *sim.World, now time.Time) sim.HuddleID
 	return pc.CurrentHuddleID
 }
 
-// A never-polled PC (nil LastPCSeenAt) is stale, so the sweep ejects it from its
-// huddle while leaving the NPC behind.
-func TestSweepStalePCPresence_EjectsGhostFromHuddle(t *testing.T) {
+// probeHuddle / probeWarrantCount read live actor state on the world goroutine
+// (the published snapshot doesn't carry the warrant cycle), so a test can assert
+// mark-absent left the PC in its huddle and cleared a peer's PC-sourced warrant.
+func probeHuddle(t *testing.T, w *sim.World, id sim.ActorID) sim.HuddleID {
+	t.Helper()
+	return sendPresence(t, w, sim.Command{Fn: func(wo *sim.World) (any, error) {
+		return wo.Actors[id].CurrentHuddleID, nil
+	}}).(sim.HuddleID)
+}
+
+// probeWarrantsBySource counts how many of an actor's warrants were triggered by
+// sourceID, so a test can assert mark-absent cleared exactly the absent PC's
+// warrants and left the rest.
+func probeWarrantsBySource(t *testing.T, w *sim.World, id, sourceID sim.ActorID) int {
+	t.Helper()
+	return sendPresence(t, w, sim.Command{Fn: func(wo *sim.World) (any, error) {
+		n := 0
+		for _, wm := range wo.Actors[id].Warrants {
+			if wm.SourceActorID == sourceID {
+				n++
+			}
+		}
+		return n, nil
+	}}).(int)
+}
+
+// A never-polled PC (nil LastPCSeenAt) is stale, so the sweep marks it absent —
+// but LLM-342 no longer EVICTS it: it stays in the huddle (perception renders it
+// "stepped away"), and the NPC stays too. The old eviction is gone.
+func TestSweepStalePCPresence_MarksGhostAbsentNotEjected(t *testing.T) {
 	w, cancel := buildPresenceTestWorld(t)
 	defer cancel()
 	now := time.Now().UTC()
 	huddleID := huddlePlayerAndNora(t, w, now)
 
-	ejected := sendPresence(t, w, sim.SweepStalePCPresence(now)).(int)
-	if ejected != 1 {
-		t.Fatalf("ejected = %d, want 1", ejected)
+	marked := sendPresence(t, w, sim.SweepStalePCPresence(now)).(int)
+	if marked != 1 {
+		t.Fatalf("marked = %d, want 1", marked)
 	}
 	snap := w.Published()
-	if got := snap.Actors["player"].CurrentHuddleID; got != "" {
-		t.Errorf("ghost PC still in huddle %q, want ejected", got)
+	if got := snap.Actors["player"].CurrentHuddleID; got != huddleID {
+		t.Errorf("ghost PC ejected (%q), want kept in huddle %q — marked absent, not evicted", got, huddleID)
 	}
 	if got := snap.Actors["nora"].CurrentHuddleID; got != huddleID {
 		t.Errorf("nora left the huddle (%q), should remain", got)
+	}
+}
+
+// Marking a PC absent clears its huddle-mates' warrants that were triggered BY the
+// PC (LLM-342 "suppress warrants that address him"), so no NPC is driven to keep
+// addressing an absent player — while the PC itself stays in the huddle, not
+// ejected, and warrants sourced by anyone else are left intact.
+func TestSweepStalePCPresence_ClearsPeerWarrantsFromAbsentPC(t *testing.T) {
+	w, cancel := buildPresenceTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+	huddleID := huddlePlayerAndNora(t, w, now)
+
+	// nora holds a warrant triggered by the player's speech (SourceActorID = player).
+	meta := sim.WarrantMeta{
+		TriggerActorID: "player",
+		SourceActorID:  "player",
+		Reason:         sim.PCSpeechWarrantReason{SpeechID: 1, Speaker: "player"},
+	}
+	if _, err := w.Send(sim.StampWarrant("nora", meta, now)); err != nil {
+		t.Fatalf("stamp warrant: %v", err)
+	}
+	if n := probeWarrantsBySource(t, w, "nora", "player"); n == 0 {
+		t.Fatalf("precondition: nora holds no player-sourced warrant, want >= 1")
+	}
+
+	marked := sendPresence(t, w, sim.SweepStalePCPresence(now)).(int)
+	if marked != 1 {
+		t.Fatalf("marked = %d, want 1 (stale player marked absent)", marked)
+	}
+	if got := probeHuddle(t, w, "player"); got != huddleID {
+		t.Errorf("player ejected (%q), want kept in huddle — marked absent, not evicted", got)
+	}
+	if n := probeWarrantsBySource(t, w, "nora", "player"); n != 0 {
+		t.Errorf("nora still holds %d player-sourced warrant(s), want 0 cleared", n)
 	}
 }
 
@@ -130,32 +192,36 @@ func TestStampConnectedPCsSeen_KeepsWSConnectedPC(t *testing.T) {
 	if stamped != 1 {
 		t.Fatalf("stamped = %d, want 1 (player login is connected)", stamped)
 	}
-	ejected := sendPresence(t, w, sim.SweepStalePCPresence(now)).(int)
-	if ejected != 0 {
-		t.Fatalf("ejected = %d, want 0 (WS-connected PC must stay)", ejected)
+	marked := sendPresence(t, w, sim.SweepStalePCPresence(now)).(int)
+	if marked != 0 {
+		t.Fatalf("marked = %d, want 0 (WS-connected PC is present, not absent)", marked)
 	}
 	if got := w.Published().Actors["player"].CurrentHuddleID; got != huddleID {
-		t.Errorf("WS-connected PC was ejected (%q), should remain in %q", got, huddleID)
+		t.Errorf("WS-connected PC left huddle (%q), should remain in %q", got, huddleID)
 	}
 }
 
 // The inverse: a PC whose login holds no live socket is not refreshed by the
-// heartbeat, so it stays stale and the sweep reclaims it — the closed-tab /
+// heartbeat, so it stays stale and the sweep marks it absent — the closed-tab /
 // dropped-socket cleanup ZBBS-WORK-326 introduced, now keyed on the WS instead of
-// the poll. A different login being connected must not spare it.
-func TestStampConnectedPCsSeen_DisconnectedPCSwept(t *testing.T) {
+// the poll (and softened from eviction to mark-absent, LLM-342). A different login
+// being connected must not spare it; the PC stays co-present in its huddle.
+func TestStampConnectedPCsSeen_DisconnectedPCMarkedAbsent(t *testing.T) {
 	w, cancel := buildPresenceTestWorld(t)
 	defer cancel()
 	now := time.Now().UTC()
-	huddlePlayerAndNora(t, w, now)
+	huddleID := huddlePlayerAndNora(t, w, now)
 
 	stamped := sendPresence(t, w, sim.StampConnectedPCsSeen(map[string]struct{}{"someone-else": {}})).(int)
 	if stamped != 0 {
 		t.Fatalf("stamped = %d, want 0 (player login not connected)", stamped)
 	}
-	ejected := sendPresence(t, w, sim.SweepStalePCPresence(now)).(int)
-	if ejected != 1 {
-		t.Fatalf("ejected = %d, want 1 (disconnected ghost reclaimed)", ejected)
+	marked := sendPresence(t, w, sim.SweepStalePCPresence(now)).(int)
+	if marked != 1 {
+		t.Fatalf("marked = %d, want 1 (disconnected ghost marked absent)", marked)
+	}
+	if got := w.Published().Actors["player"].CurrentHuddleID; got != huddleID {
+		t.Errorf("disconnected PC ejected (%q), want kept in huddle %q — marked absent, not evicted", got, huddleID)
 	}
 }
 
@@ -182,29 +248,29 @@ func TestSweepStalePCPresence_KeepsFreshPC(t *testing.T) {
 	huddleID := huddlePlayerAndNora(t, w, now)
 
 	sendPresence(t, w, sim.StampPCSeen("player"))
-	ejected := sendPresence(t, w, sim.SweepStalePCPresence(now)).(int)
-	if ejected != 0 {
-		t.Fatalf("ejected = %d, want 0 (PC was just seen)", ejected)
+	marked := sendPresence(t, w, sim.SweepStalePCPresence(now)).(int)
+	if marked != 0 {
+		t.Fatalf("marked = %d, want 0 (PC was just seen)", marked)
 	}
 	if got := w.Published().Actors["player"].CurrentHuddleID; got != huddleID {
-		t.Errorf("fresh PC was ejected (%q), should remain in %q", got, huddleID)
+		t.Errorf("fresh PC left huddle (%q), should remain in %q", got, huddleID)
 	}
 }
 
-// A stale PC standing alone (no huddle) is left untouched — nothing to clear.
+// A stale PC standing alone (no huddle) is left untouched — nothing to quiet.
 func TestSweepStalePCPresence_IgnoresPCNotInHuddle(t *testing.T) {
 	w, cancel := buildPresenceTestWorld(t)
 	defer cancel()
 	now := time.Now().UTC()
 
-	ejected := sendPresence(t, w, sim.SweepStalePCPresence(now)).(int)
-	if ejected != 0 {
-		t.Fatalf("ejected = %d, want 0 (no PC in a huddle)", ejected)
+	marked := sendPresence(t, w, sim.SweepStalePCPresence(now)).(int)
+	if marked != 0 {
+		t.Fatalf("marked = %d, want 0 (no PC in a huddle)", marked)
 	}
 }
 
 // StampPCSeen no-ops on an NPC id: an NPC in a huddle is never treated as a PC
-// and never ejected by the presence sweep regardless of timing.
+// and never marked absent by the presence sweep regardless of timing.
 func TestStampPCSeen_NPCUnaffectedBySweep(t *testing.T) {
 	w, cancel := buildPresenceTestWorld(t)
 	defer cancel()

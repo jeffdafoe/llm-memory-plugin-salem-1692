@@ -404,6 +404,29 @@ func dormantClause(asleep, resting []HuddleMember) string {
 	return fmt.Sprintf(" %s; %s.", strings.Join(groups, " and "), tail)
 }
 
+// steppedAwayClause renders co-present huddle members who have gone quiet — a
+// player whose client dropped (LLM-342) — as a single not-addressable clause,
+// e.g. " Jefferey has stepped away." (leading space, trailing period, so it
+// appends cleanly after a presence line). Same name-vs-descriptor gating as the
+// dormant clause; "has"/"have" agrees in number. Empty when none.
+func steppedAwayClause(away []HuddleMember) string {
+	if len(away) == 0 {
+		return ""
+	}
+	names := make([]string, len(away))
+	for i, m := range away {
+		names[i] = descriptorLabel(m.DisplayName, m.Role, m.Acquainted)
+	}
+	verb := "has"
+	if len(names) > 1 {
+		verb = "have"
+	}
+	// The clause always follows a period (both the company line and the away-only
+	// line end with one), so it starts a new sentence — capitalize the first word,
+	// which may be a lowercase descriptor ("a stranger") rather than a name.
+	return " " + capitalizeFirst(fmt.Sprintf("%s %s stepped away.", joinNames(names), verb))
+}
+
 // stateGroup renders one same-state set of dormant actors with name-vs-descriptor
 // gating, e.g. "Prudence Ward and the farmer are asleep" / "Goodman Stark is
 // resting". ZBBS-WORK-426.
@@ -1072,13 +1095,23 @@ func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 	// not-addressable clause so the actor doesn't talk to someone who won't
 	// answer and read the silence as rudeness (ZBBS-WORK-426).
 	dormant := dormantClause(s.CoPresentAsleep, s.CoPresentResting)
+	// A stepped-away huddle member (a player whose client went quiet, LLM-342) is
+	// named but not addressable — appended after the company line so the NPC reads
+	// the room as briefly without an answer, not as someone ignoring it.
+	away := steppedAwayClause(s.HuddleAway)
 	switch {
 	case len(s.HuddleMembers) > 0:
 		// A huddle is a conversational cluster, so "with" names who the actor
 		// is gathered with — the speak tool reaches exactly these people.
 		// (CoPresentAsleep/Resting are only populated for an unhuddled actor, so
 		// there is no dormant clause to append in this case.)
-		fmt.Fprintf(b, "You are %s, with %s.\n", location, joinHuddleMembers(s.HuddleMembers))
+		fmt.Fprintf(b, "You are %s, with %s.%s\n", location, joinHuddleMembers(s.HuddleMembers), away)
+	case len(s.HuddleAway) > 0:
+		// Huddled, but the only other member(s) have stepped away — no one live to
+		// converse with right now. Name them as away so the NPC doesn't keep
+		// addressing an absent player; a returning player becomes addressable again
+		// the moment its socket re-stamps presence.
+		fmt.Fprintf(b, "You are %s.%s\n", location, away)
 	case len(s.CoPresent) > 0:
 		// Not conversing, but others are within earshot. Name them (every turn) so
 		// the actor can address someone and start conversing, instead of

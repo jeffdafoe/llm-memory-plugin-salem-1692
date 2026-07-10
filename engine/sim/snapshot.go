@@ -115,6 +115,15 @@ type Snapshot struct {
 	// rather than racing on w.Settings directly.
 	NeedThresholds NeedThresholds
 
+	// PCPresenceStaleAfter mirrors the effective PC-presence stale threshold
+	// (PCPresenceStaleAfter(w), always > 0 on a published snapshot) so perception
+	// can classify a co-present PC as present or stepped-away off the snapshot
+	// rather than racing on w.Settings (LLM-342). Same mirror pattern as
+	// NeedThresholds. A directly-constructed test snapshot that omits it reads 0,
+	// which turns away-routing OFF (co-present PCs stay addressable — the legacy
+	// behavior), matching the SeekWorkCoinCeiling test-snapshot convention.
+	PCPresenceStaleAfter time.Duration
+
 	// SeekWorkCoinCeiling mirrors the EFFECTIVE WorldSettings.SeekWorkCoinCeiling
 	// (LLM-194), copied at publish via effectiveSeekWorkCoinCeiling so it is the
 	// resolved shelf value (never 0 on a published snapshot). The perception seek-work
