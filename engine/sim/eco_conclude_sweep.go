@@ -33,11 +33,12 @@ import (
 // are simply quiet and respond to greetings like any other quiet moment.
 //
 // Commerce guard: a huddle carrying a live deal — a pending/countered
-// pay-ledger entry stamped with its HuddleID, or a member holding a
-// commerce-commitment warrant (isCommerceCommitmentWarrantKind) — is never
-// concluded; its arc stamp is pushed to now, so the clock effectively starts
-// when the deal settles. Commerce was always exempt from eco (a counterparty
-// is blocked); this keeps that contract.
+// pay-ledger entry or a non-terminal labor offer (pending/en_route/working)
+// stamped with its HuddleID, or a member holding a commerce-commitment warrant
+// (isCommerceCommitmentWarrantKind) — is never concluded; its arc stamp is
+// pushed to now, so the clock effectively starts when the deal settles.
+// Commerce was always exempt from eco (a counterparty is blocked); this keeps
+// that contract.
 //
 // Cadence + lifecycle mirror the loop sweep's coalesced AfterFunc self-rearm
 // chain:
@@ -218,12 +219,21 @@ func EvaluateEcoConcludeSweep(now time.Time) Command {
 	}
 }
 
-// ledgerCommerceHuddles returns the set of huddles carrying a LIVE pay-ledger
-// negotiation — a pending or countered entry stamped with the huddle's ID. One
-// O(ledger) pass shared by the whole scan, mirroring ledgerStandoffHuddles'
-// posture. Terminal states (accepted/declined/failed/expired/withdrawn) do not
-// hold a conversation open; the completed-sale handover beats are covered by
-// the member-warrant check (serve_handover, paid, pay_resolved).
+// ledgerCommerceHuddles returns the set of huddles carrying a LIVE commitment
+// negotiation — a pay-ledger entry that is pending or countered, or a labor
+// offer in a non-terminal state (pending / en_route / working) — each stamped
+// with the huddle's ID. One O(ledger) pass per ledger, shared by the whole
+// scan, mirroring ledgerStandoffHuddles' posture. Terminal states do not hold a
+// conversation open: a settled sale's handover beats are covered by the
+// member-warrant check (serve_handover, paid, pay_resolved), and a settled hire
+// is a terminal labor state (completed/declined/expired/failed_unavailable)
+// whose scene is already done.
+//
+// Labor parity (LLM-348): a hire negotiated over several beats consumes its
+// LaborOffer warrant on the first tick, so by the time the arc elapses the
+// remaining beats are social-only and huddleMemberHoldsCommerceWarrant no
+// longer fires. The live ledger entry is what keeps the scene from being cut
+// mid-hire — exactly as a pending pay entry does for a sale.
 func ledgerCommerceHuddles(w *World) map[HuddleID]struct{} {
 	var out map[HuddleID]struct{}
 	for _, e := range w.PayLedger {
@@ -237,6 +247,18 @@ func ledgerCommerceHuddles(w *World) map[HuddleID]struct{} {
 			out = make(map[HuddleID]struct{})
 		}
 		out[e.HuddleID] = struct{}{}
+	}
+	for _, o := range w.LaborLedger {
+		if o == nil || o.HuddleID == "" {
+			continue
+		}
+		if o.State != LaborStatePending && o.State != LaborStateEnRoute && o.State != LaborStateWorking {
+			continue
+		}
+		if out == nil {
+			out = make(map[HuddleID]struct{})
+		}
+		out[o.HuddleID] = struct{}{}
 	}
 	return out
 }
