@@ -354,6 +354,33 @@ func DeliverOrder(sellerID ActorID, orderID OrderID, at time.Time) Command {
 				return nil, fmt.Errorf("deliver_order: item %q no longer in catalog", o.Item)
 			}
 
+			// Gate 8: the outstanding balance is affordable (LLM-357). A
+			// partial-payment commission collected only a deposit at accept; the
+			// balance (orderBalanceDue) is settled below as an atomic coin↔goods
+			// swap once the goods move. The BUYER funds it, so they must be
+			// co-present with the seller and hold the coins — a short or absent
+			// buyer bounces the delivery HERE, before any goods move, and the
+			// order rides to expiry (forged-but-uncollected → deposit forfeit).
+			// Zero for every full-prepay order, so this is a no-op there.
+			var balanceBuyer *Actor
+			balanceDue := orderBalanceDue(o)
+			if balanceDue > 0 {
+				buyer, ok := w.Actors[o.BuyerID]
+				if !ok || buyer == nil {
+					return nil, fmt.Errorf("deliver_order: buyer %q not found to settle the %d-coin balance on order %d", o.BuyerID, balanceDue, orderID)
+				}
+				if buyer.CurrentHuddleID == "" || buyer.CurrentHuddleID != seller.CurrentHuddleID {
+					return nil, fmt.Errorf("deliver_order: buyer %q is not here to pay the %d-coin balance on order %d", o.BuyerID, balanceDue, orderID)
+				}
+				if buyer.Coins < balanceDue {
+					return nil, fmt.Errorf("deliver_order: buyer %q has %d coins, needs %d to settle the balance on order %d", o.BuyerID, buyer.Coins, balanceDue, orderID)
+				}
+				if seller.Coins > math.MaxInt-balanceDue {
+					return nil, fmt.Errorf("deliver_order: settling %d would overflow seller %q coins on order %d", balanceDue, sellerID, orderID)
+				}
+				balanceBuyer = buyer
+			}
+
 			// Fulfillment — shared with the ZBBS-HOME-398 immediate-handover
 			// path (commitPayTransfer). transferOrderGoods grants the lodging
 			// room or moves the goods to each consumer. Co-presence (gate 6),
@@ -361,6 +388,16 @@ func DeliverOrder(sellerID ActorID, orderID OrderID, at time.Time) Command {
 			// stay on this deferred-delivery caller.
 			if err := transferOrderGoods(w, o, seller, consumers, at); err != nil {
 				return nil, err
+			}
+
+			// LLM-357: the goods are handed over — settle the outstanding
+			// balance now (validated affordable in gate 8; the world is
+			// single-goroutine, so the buyer's coins can't have moved since).
+			// The deposit taken at accept plus this balance equal the full price.
+			if balanceDue > 0 && balanceBuyer != nil {
+				balanceBuyer.Coins -= balanceDue
+				seller.Coins += balanceDue
+				accrueStallWear(w, seller, balanceDue, at)
 			}
 
 			// Bidirectional buyer↔seller SalientFacts. Multi-consumer

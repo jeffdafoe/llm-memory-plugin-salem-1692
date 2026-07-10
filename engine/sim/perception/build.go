@@ -3426,14 +3426,16 @@ func buildPendingOrderViews(snap *sim.Snapshot, subject sim.ActorID) (fromMe, to
 
 	toView := func(o *sim.Order) OrderView {
 		v := OrderView{
-			ID:         o.ID,
-			Item:       o.Item,
-			Qty:        o.Qty,
-			BuyerName:  resolveName(o.BuyerID),
-			SellerName: resolveName(o.SellerID),
-			CreatedAt:  o.CreatedAt,
-			ExpiresAt:  o.ExpiresAt,
-			ReadyBy:    o.ReadyBy,
+			ID:          o.ID,
+			Item:        o.Item,
+			Qty:         o.Qty,
+			BuyerName:   resolveName(o.BuyerID),
+			SellerName:  resolveName(o.SellerID),
+			CreatedAt:   o.CreatedAt,
+			ExpiresAt:   o.ExpiresAt,
+			ReadyBy:     o.ReadyBy,
+			BalanceDue:  sim.OrderBalanceDue(o),
+			DepositPaid: o.Deposit,
 		}
 		// Only populate ConsumerNames when there's more than just
 		// the implicit buyer-as-consumer entry.
@@ -3982,6 +3984,7 @@ func buildPayOffersForMe(snap *sim.Snapshot, subject sim.ActorID, resolvedThisTi
 			Item:        e.ItemKind,
 			Qty:         e.Qty,
 			Amount:      e.Amount,
+			Deposit:     e.Deposit,
 			PayItems:    e.PayItems,
 			ConsumeNow:  e.ConsumeNow,
 			ConsumerIDs: e.ConsumerIDs,

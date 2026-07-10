@@ -1858,6 +1858,9 @@ func renderOrdersReadyToHandOver(b *strings.Builder, orders []OrderView, now tim
 		// The same DeliverableNow predicate the deliver_order tool-advertising gate
 		// reads (handlers.gateTools), so the cue's instruction and the tool surface
 		// together — never one without the other.
+		// Partial-payment commission (LLM-357): show what's still owed so the
+		// keeper knows to collect the balance when handing it over.
+		b.WriteString(balanceClause(o, false))
 		if o.DeliverableNow() {
 			anyDeliverable = true
 		}
@@ -1946,6 +1949,9 @@ func renderOrdersWaitingOn(b *strings.Builder, orders []OrderView, now time.Time
 		}
 		seller := sanitizeInline(o.SellerName)
 		fmt.Fprintf(b, "- #%d: %s from %s", uint64(o.ID), itemDesc, seller)
+		// Partial-payment commission (LLM-357): the balance the buyer still owes
+		// and must bring to collect.
+		b.WriteString(balanceClause(o, true))
 		if clause, ok := expiryClause(o.ExpiresAt, now); ok {
 			b.WriteString(clause)
 		}
@@ -1976,6 +1982,21 @@ func renderOverdueOrders(b *strings.Builder, orders []OrderView) {
 			uint64(o.ID), itemDesc, seller, o.ReadyBy.Format("Mon Jan 2"))
 	}
 	b.WriteString("\n")
+}
+
+// balanceClause renders the partial-payment scene (LLM-357) for an open order
+// that still carries an unpaid balance — a diegetic "N down, M to come" line,
+// not a stat dump. Empty for a full-prepay order (BalanceDue == 0). isBuyer
+// flips the voice: the buyer owes the balance and brings it; the seller collects
+// it on handover.
+func balanceClause(o OrderView, isBuyer bool) string {
+	if o.BalanceDue <= 0 {
+		return ""
+	}
+	if isBuyer {
+		return fmt.Sprintf(" — you've put %d coins down; %d still to settle when you collect", o.DepositPaid, o.BalanceDue)
+	}
+	return fmt.Sprintf(" — %d coins down; %d still to collect when you hand it over", o.DepositPaid, o.BalanceDue)
 }
 
 // startOfUTCDay returns midnight UTC of the calendar date `t` falls on. Shared
@@ -2229,6 +2250,12 @@ func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason, nam
 		payment := formatOfferPayment(o.Amount, o.PayItems)
 		fmt.Fprintf(b, "%d. %s offers %s for %d %s %s (offer id %d)",
 			i+1, buyer, payment, o.Qty, item, disposition, o.LedgerID)
+		// LLM-357: a partial-payment commission — surface that only the deposit
+		// lands now and the rest comes at collection, so the seller weighs the
+		// deal honestly rather than as a full-price sale.
+		if o.Deposit > 0 && o.Deposit < o.Amount {
+			fmt.Fprintf(b, " — %d down now as a deposit, the remaining %d when they collect", o.Deposit, o.Amount-o.Deposit)
+		}
 		// ZBBS-HOME-459: when the buyer asks for more than the seller actually
 		// holds, surface the gap so they counter or decline against real stock
 		// instead of accepting an offer the deliver gate would then bounce. Fact

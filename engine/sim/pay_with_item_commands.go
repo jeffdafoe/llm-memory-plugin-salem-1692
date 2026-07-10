@@ -243,11 +243,12 @@ func PayWithItem(
 	parentID LedgerID,
 	forText string,
 	at time.Time,
-	// readyInDays is the optional advance-booking offset (ZBBS-HOME-403):
-	// 0/absent = deliver/check-in today, N = book N days ahead (lodging only).
-	// Variadic so the ~30 existing call sites that don't book ahead compile
-	// unchanged; only the buyer-facing tool + PC routes pass it.
-	readyInDays ...int,
+	// opts carries the optional buyer-facing extras — the advance-booking offset
+	// (ReadyInDays; ZBBS-HOME-403) and the partial-payment deposit (Deposit;
+	// LLM-357). Variadic so the many call sites that set neither compile
+	// unchanged; only the buyer-facing tool + PC routes pass one, and at most one
+	// value may be passed. See PayWithItemOpts.
+	opts ...PayWithItemOpts,
 ) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
@@ -646,12 +647,36 @@ func PayWithItem(
 			// order — and a counter-response carries the parent's booked date
 			// forward (a price haggle never moves the date the buyer asked
 			// for). Validated here, before any entry is staked.
-			if len(readyInDays) > 1 {
-				return nil, errors.New("PayWithItem: at most one ready_in_days value may be passed")
+			if len(opts) > 1 {
+				return nil, errors.New("PayWithItem: at most one options value may be passed")
 			}
-			days := 0
-			if len(readyInDays) == 1 {
-				days = readyInDays[0]
+			var days, depositArg int
+			if len(opts) == 1 {
+				days = opts[0].ReadyInDays
+				depositArg = opts[0].Deposit
+			}
+			// Deposit (partial-payment commission, LLM-357): a coin-only,
+			// take-home offer may put money down now and settle the balance at
+			// deliver_order. Guard the shape here; it's only HONORED when the
+			// offer resolves to a commission at accept (depositChargeForEntry
+			// re-checks), so an unmet deposit degrades harmlessly to full prepay.
+			if depositArg < 0 {
+				return nil, fmt.Errorf("PayWithItem: deposit cannot be negative (got %d)", depositArg)
+			}
+			if depositArg > amount {
+				return nil, fmt.Errorf("PayWithItem: deposit %d cannot exceed the total price %d", depositArg, amount)
+			}
+			if depositArg > 0 && consumeNow {
+				return nil, errors.New("a deposit needs consume_now=false — you can only put money down on a made-to-order good you'll collect later.")
+			}
+			if depositArg > 0 && len(payItems) > 0 {
+				return nil, errors.New("a deposit must be coin-only — pay the down payment in coins, not goods.")
+			}
+			// Only a genuine partial (0 < deposit < total) rides onto the entry;
+			// 0 and "deposit == full price" both mean full prepay (sentinel 0).
+			depositForEntry := 0
+			if depositArg > 0 && depositArg < amount {
+				depositForEntry = depositArg
 			}
 			// Advance booking requires a deferred order to hold the future date;
 			// a consume_now (eat/check-in-on-the-spot) offer mints no Order, so a
@@ -846,6 +871,7 @@ func PayWithItem(
 				ConsumerIDs: append([]ActorID(nil), consumerIDs...),
 				ReadyBy:     readyBy,
 				Amount:      amount,
+				Deposit:     depositForEntry,
 				PayItems:    cloneItemKindQtys(resolvedPayItems),
 				QuoteID:     0, // slow path didn't reference a quote
 				ParentID:    parentRefForLineage,
@@ -1512,7 +1538,11 @@ func acceptPendingOffer(w *World, seller *Actor, entry *PayLedgerEntry, at time.
 	// Gate 11: funds. buyerCanAfford is the shared predicate; the
 	// failure ACTION here is a terminal flip (an entry already
 	// exists), not the tool-error reject the offer-time sites use.
-	if !buyerCanAfford(buyer, entry.Amount) {
+	// LLM-357: a partial-payment commission only needs the deposit up front —
+	// the balance is gated again at deliver_order. depositCharge is the full
+	// Amount for every non-partial offer.
+	depositCharge := depositChargeForEntry(w, seller, entry)
+	if !buyerCanAfford(buyer, depositCharge) {
 		return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedInsufficientFunds, "", at), nil
 	}
 	// Gate 12: barter goods (ZBBS-HOME-393). The buyer must still hold
@@ -1525,8 +1555,9 @@ func acceptPendingOffer(w *World, seller *Actor, entry *PayLedgerEntry, at time.
 		return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedInsufficientGoods, "", at), nil
 	}
 	// Seller balance overflow guard — symmetric with PR B's Pay
-	// and the fast-path predicate 6.
-	if seller.Coins > math.MaxInt-entry.Amount {
+	// and the fast-path predicate 6. Guards the coin actually credited now
+	// (the deposit for a partial-payment commission; LLM-357).
+	if seller.Coins > math.MaxInt-depositCharge {
 		return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedUnavailable, "", at), nil
 	}
 
@@ -2544,6 +2575,25 @@ func isCommissionOrder(w *World, seller *Actor, entry *PayLedgerEntry) bool {
 	return have < needed
 }
 
+// depositChargeForEntry returns the coins to move buyer→seller at accept. For a
+// partial-payment commission (LLM-357) with a valid deposit (0 < Deposit <
+// Amount) it is the Deposit — the balance is collected later at deliver_order.
+// Every other case (a full-prepay commission, a normal sale, a barter, a gift)
+// charges the full Amount. The isCommissionOrder re-check is load-bearing: a
+// stray Deposit on an offer that does NOT resolve to a commission at accept
+// (e.g. the seller turned out to hold stock, so it delivers now) still charges
+// the full price rather than under-charging for goods handed over immediately.
+// MUST run inside a Command.Fn (isCommissionOrder reads w.Orders / w.Recipes).
+func depositChargeForEntry(w *World, seller *Actor, entry *PayLedgerEntry) int {
+	if entry == nil {
+		return 0
+	}
+	if entry.Deposit > 0 && entry.Deposit < entry.Amount && isCommissionOrder(w, seller, entry) {
+		return entry.Deposit
+	}
+	return entry.Amount
+}
+
 // maxDwellMinutes returns the longest remaining dwell duration in minutes across
 // the stamped item-dwell snapshots (0 when none carry a countdown). An eat-here
 // meal or drink keeps easing a need for this long after the first bite, but the
@@ -2698,12 +2748,15 @@ func commitPayTransfer(
 	}
 
 	// All legs validated — apply coins + goods together. Coin overflow
-	// guarded by caller.
-	buyer.Coins -= entry.Amount
-	seller.Coins += entry.Amount
+	// guarded by caller. LLM-357: a partial-payment commission moves only the
+	// deposit now; the balance is collected at deliver_order.
+	// depositChargeForEntry is the full Amount for every non-partial offer.
+	charge := depositChargeForEntry(w, seller, entry)
+	buyer.Coins -= charge
+	seller.Coins += charge
 	// LLM-118: a market stall wears in proportion to the coin its owner takes
 	// in here; crossing the repair threshold wakes them to mend it.
-	accrueStallWear(w, seller, entry.Amount, at)
+	accrueStallWear(w, seller, charge, at)
 	for _, m := range moves {
 		if m.buyerPostQty == 0 {
 			delete(buyer.Inventory, m.kind) // delete-on-zero invariant
@@ -2941,6 +2994,17 @@ func commitPayTransfer(
 		bookedID := createOrderForPayWithItem(w, entry, at)
 		if o := w.Orders[bookedID]; o != nil {
 			o.ExpiresAt = commissionOrderExpiresAt(w, entry.ItemKind, at)
+			// LLM-357: record the deposit ONLY for a genuine partial payment
+			// (0 < deposit < total), where depositChargeForEntry charged just the
+			// deposit at accept and orderBalanceDue must collect the rest at
+			// deliver_order. A full-prepay commission leaves Deposit at the zero
+			// sentinel. This lives on the commission branch — NOT in
+			// createOrderForPayWithItem, which the lodging path also uses and where
+			// the full amount is always charged — so a deposit can never attach to
+			// an order that was already paid in full.
+			if entry.Deposit > 0 && entry.Deposit < entry.Amount {
+				o.Deposit = entry.Deposit
+			}
 		}
 		orderMinted = w.Orders[bookedID] != nil
 	} else {

@@ -49,7 +49,8 @@ SELECT
     created_at,
     delivered_on,
     expires_at,
-    COALESCE(ready_by, (created_at AT TIME ZONE 'UTC')::date)
+    COALESCE(ready_by, (created_at AT TIME ZONE 'UTC')::date),
+    COALESCE(deposit_amount, 0)
 FROM pay_ledger
 WHERE state = 'accepted'
   AND fulfillment_status IN ('ready', 'pending')
@@ -79,18 +80,21 @@ ORDER BY id`
 //
 // On conflict, only the fields the in-memory Order owns get updated.
 // We deliberately don't UPDATE buyer_id, seller_id, item_kind, qty,
-// offered_amount, consumer_actor_ids, created_at — those are
-// immutable post-acceptance and re-asserting them in the UPDATE risks
-// papering over a real corruption.
+// offered_amount, consumer_actor_ids, created_at, deposit_amount —
+// those are immutable post-acceptance (the deposit is set once at
+// accept, LLM-357) and re-asserting them in the UPDATE risks papering
+// over a real corruption.
 const upsertSQL = `
 INSERT INTO pay_ledger (
     id, buyer_id, seller_id, item_kind, qty, offered_amount,
     consumer_actor_ids, state, fulfillment_status,
-    ready_by, expires_at, created_at, resolved_at, delivered_on
+    ready_by, expires_at, created_at, resolved_at, delivered_on,
+    deposit_amount
 ) VALUES (
     $1, $2, $3, $4, $5, $6,
     $7, 'accepted', $8,
-    $9::date, $10, $11, $11, $12
+    $9::date, $10, $11, $11, $12,
+    $13
 )
 ON CONFLICT (id) DO UPDATE SET
     fulfillment_status = EXCLUDED.fulfillment_status,
@@ -209,6 +213,7 @@ func (r *OrdersRepo) LoadAll(ctx context.Context) (map[sim.OrderID]*sim.Order, e
 			itemKind    string
 			qty         int
 			offeredAmt  int
+			depositAmt  int
 			consumerIDs []string
 			status      string
 			createdAt   time.Time
@@ -219,6 +224,7 @@ func (r *OrdersRepo) LoadAll(ctx context.Context) (map[sim.OrderID]*sim.Order, e
 		if err := rows.Scan(
 			&id, &buyerID, &sellerID, &itemKind, &qty, &offeredAmt,
 			&consumerIDs, &status, &createdAt, &deliveredOn, &expiresAt, &readyBy,
+			&depositAmt,
 		); err != nil {
 			return nil, fmt.Errorf("pg orders LoadAll scan: %w", err)
 		}
@@ -227,6 +233,12 @@ func (r *OrdersRepo) LoadAll(ctx context.Context) (map[sim.OrderID]*sim.Order, e
 		// a valid order — surface it loudly rather than materialize a bad order.
 		if offeredAmt < 0 {
 			return nil, fmt.Errorf("pg orders LoadAll: order id=%d has negative offered_amount %d", id, offeredAmt)
+		}
+		// deposit_amount feeds Order.Deposit (the partial-payment obligation,
+		// LLM-357). NULL / legacy rows COALESCE to 0 (= full prepay). A negative
+		// value is corrupt — surface it rather than materialize a bad balance.
+		if depositAmt < 0 {
+			return nil, fmt.Errorf("pg orders LoadAll: order id=%d has negative deposit_amount %d", id, depositAmt)
 		}
 		state, err := fulfillmentToOrderState(status)
 		if err != nil {
@@ -261,6 +273,7 @@ func (r *OrdersRepo) LoadAll(ctx context.Context) (map[sim.OrderID]*sim.Order, e
 			Item:        sim.ItemKind(itemKind),
 			Qty:         qty,
 			Amount:      offeredAmt,
+			Deposit:     depositAmt,
 			ConsumerIDs: consumers,
 			LedgerID:    sim.LedgerID(id),
 			CreatedAt:   createdAt,
@@ -369,6 +382,7 @@ func (r *OrdersRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, orders map[sim
 			o.ExpiresAt,        // $10 expires_at
 			o.CreatedAt,        // $11 created_at + resolved_at
 			o.DeliveredAt,      // $12 delivered_on
+			o.Deposit,          // $13 deposit_amount (0 = full prepay) — LLM-357
 		); err != nil {
 			return fmt.Errorf("pg orders SaveSnapshot: upsert id=%d: %w", o.ID, err)
 		}

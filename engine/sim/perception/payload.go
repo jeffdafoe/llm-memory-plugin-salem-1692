@@ -741,6 +741,15 @@ type OrderView struct {
 	// ("you've yet to make it") and does NOT cue deliver_order, so the keeper is
 	// steered to forge it first rather than into a bounce loop.
 	AwaitingMake bool
+	// BalanceDue is the coin still owed on a partial-payment commission
+	// (LLM-357), collected from the buyer at deliver_order; DepositPaid is what
+	// was already put down at accept, so the full price is DepositPaid +
+	// BalanceDue. Both zero for a full-prepay order. Render surfaces them as a
+	// scene ("five down, ten to come") on the seller and buyer sides when
+	// BalanceDue > 0 — so the keeper knows to collect the rest and the buyer
+	// knows to bring it.
+	BalanceDue  int
+	DepositPaid int
 }
 
 // DeliverableNow reports whether this seller-side order can be handed over on

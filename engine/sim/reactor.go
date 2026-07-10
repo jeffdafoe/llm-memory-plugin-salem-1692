@@ -314,6 +314,12 @@ type PayOfferWarrantReason struct {
 	Item     ItemKind
 	Qty      int
 	Amount   int
+	// Deposit is the coins the buyer puts down NOW on a partial-payment
+	// commission (LLM-357); the balance (Amount - Deposit) settles at
+	// deliver_order. Zero for a full-prepay offer. Carried on the warrant so the
+	// seller's offer-decision section (renderPayOffers) can show the payment is a
+	// deposit — not a full-price sale — without a live ledger lookup.
+	Deposit int
 	// PayItems are the goods the buyer offered to pay WITH (barter leg,
 	// ZBBS-HOME-393). Empty for a pure-coin offer. Carried on the warrant
 	// so the seller's offer-decision section (renderPayOffers) can show

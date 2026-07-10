@@ -134,8 +134,17 @@ type Order struct {
 	SellerID    ActorID
 	Item        ItemKind
 	Qty         int // per-consumer count; total goods = Qty * len(ConsumerIDs)
-	Amount      int // coin total, debited at accept (S4) — informational here
+	Amount      int // coin total (full agreed price); a partial-payment commission pays Deposit now and the balance at deliver_order — LLM-357
 	ConsumerIDs []ActorID
+
+	// Deposit is the coin actually charged to the buyer at accept. LLM-357
+	// partial-payment commissions: the buyer pays Deposit up front and the
+	// balance (Amount - Deposit) settles as a coin↔goods swap at deliver_order.
+	// Zero is the "full prepay" sentinel — every non-commission order and a
+	// full-prepay commission leaves it zero (the whole Amount was charged at
+	// accept). Read it through orderAmountPaidAtAccept / orderBalanceDue rather
+	// than directly. Persisted so a deposit obligation survives restart.
+	Deposit int
 
 	// LedgerID back-references the originating PayLedger entry. Used by
 	// InteractionDelivered fact text + admin replay; not part of any
@@ -413,12 +422,15 @@ func flipOrderTerminal(w *World, o *Order, terminal OrderState, at time.Time) bo
 			At:          at,
 		})
 	case OrderStateExpired:
-		// Refund the buyer's coins before the event fires so any
-		// OrderExpired subscriber observes the reversed balances. The
-		// caller (finalizeOrderTerminal) skips the eager durable
-		// write-through for Expired so this refund + the terminal status
-		// persist together at the next checkpoint. ZBBS-HOME-403.
-		refundExpiredOrder(w, o)
+		// Settle the coin leg before the event fires so any OrderExpired
+		// subscriber observes the reversed/kept balances. Seller-fault refunds
+		// what the buyer paid; buyer-fault on a partial-payment commission
+		// forfeits the deposit to the seller and lets the reserved goods return
+		// to sellable stock (the order leaves Ready). The caller
+		// (finalizeOrderTerminal) skips the eager durable write-through for
+		// Expired so this settlement + the terminal status persist together at
+		// the next checkpoint. LLM-357 / ZBBS-HOME-403.
+		forfeited := settleExpiredOrder(w, o)
 		w.emit(&OrderExpired{
 			OrderID:     o.ID,
 			BuyerID:     o.BuyerID,
@@ -427,29 +439,116 @@ func flipOrderTerminal(w *World, o *Order, terminal OrderState, at time.Time) bo
 			Qty:         o.Qty,
 			ConsumerIDs: append([]ActorID(nil), o.ConsumerIDs...),
 			LedgerID:    o.LedgerID,
+			Forfeited:   forfeited,
 			At:          at,
 		})
 	}
 	return true
 }
 
-// refundExpiredOrder returns the coins a buyer paid for an order that expired
-// undelivered — the deferred-path counterpart to ZBBS-HOME-398's immediate
-// handover (which closed the robbery window for in-stock take-home). In v2 the
-// only orders that defer to a later deliver_order are lodging bookings (a
-// service item paid in coins), so a Ready→Expired transition means the buyer
-// paid for a room the keeper never checked them into; reverse the coin leg the
-// accept committed (buyer += Amount, seller -= Amount). Goods never moved on a
-// deferred order (they transfer at deliver_order), so only coins need
-// reversing.
+// orderAmountPaidAtAccept returns the coins the buyer was actually charged when
+// the order was accepted. For a partial-payment commission (LLM-357) that is the
+// Deposit; the zero-Deposit sentinel (and a Deposit >= Amount) means a full
+// prepay, so the whole Amount was taken. Never exceeds Amount.
+func orderAmountPaidAtAccept(o *Order) int {
+	if o == nil {
+		return 0
+	}
+	if o.Deposit > 0 && o.Deposit < o.Amount {
+		return o.Deposit
+	}
+	return o.Amount
+}
+
+// orderBalanceDue returns the coins still owed on an order — the balance a
+// partial-payment commission (LLM-357) collects from the buyer at deliver_order.
+// Zero for a full-prepay order (the Deposit sentinel is zero, or Deposit >=
+// Amount).
+func orderBalanceDue(o *Order) int {
+	if o == nil || o.Deposit <= 0 || o.Deposit >= o.Amount {
+		return 0
+	}
+	return o.Amount - o.Deposit
+}
+
+// OrderBalanceDue exports orderBalanceDue for the perception layer, which
+// renders the open partial-payment order as a scene ("five down, ten to come")
+// on both the seller's and the buyer's side. LLM-357.
+func OrderBalanceDue(o *Order) int { return orderBalanceDue(o) }
+
+// sellerHoldsOrderGoods reports whether the seller currently holds enough
+// physical stock to fulfil the order — the "the good was actually forged"
+// signal that tells buyer-fault (forged but uncollected) from seller-fault
+// (never made) at expiry (LLM-357). Mirrors DeliverOrder's gate-5 stock check
+// (raw inventory vs Qty*consumers). A service/lodging item carries no inventory
+// and is treated as always-held (never reached by a commission, which is
+// non-service by construction). MUST run on the world goroutine.
+func sellerHoldsOrderGoods(w *World, o *Order) bool {
+	if w == nil || o == nil {
+		return false
+	}
+	seller := w.Actors[o.SellerID]
+	if seller == nil {
+		return false
+	}
+	if itemHasCapability(w, o.Item, "service") {
+		return true
+	}
+	consumers := len(o.ConsumerIDs)
+	if consumers <= 0 || o.Qty <= 0 || o.Qty > math.MaxInt/consumers {
+		return false
+	}
+	return seller.Inventory[o.Item] >= o.Qty*consumers
+}
+
+// settleExpiredOrder settles an order that expired at Ready and reports whether
+// the deposit was FORFEITED to the seller (true) rather than REFUNDED to the
+// buyer (false). LLM-357 splits expiry by fault:
+//
+//   - Seller-fault — the seller never forged the good (gate-5 stock short, still
+//     owed). Make the buyer whole: refund what they paid at accept
+//     (orderAmountPaidAtAccept — the deposit on a partial order, the full price
+//     on a full-prepay one). The ZBBS-HOME-403 behavior, generalized to the
+//     amount actually charged.
+//   - Buyer-fault — ONLY on a partial-payment commission (a balance is still
+//     due) whose seller HAS forged the good (holds the stock) but the buyer
+//     never returned to collect / pay the balance. The seller keeps the deposit
+//     (no refund) and the forged goods return to sellable stock automatically:
+//     the order leaves Ready, so outstandingReadyOrderQty stops reserving the
+//     units — no explicit goods move.
+//
+// A full-prepay order (no balance due) always refunds, whatever the seller
+// holds — a fully-paid buyer who missed the pickup window is not punished; only
+// a small at-risk deposit is forfeitable. No goods ever move here. MUST run on
+// the world goroutine.
+func settleExpiredOrder(w *World, o *Order) (forfeited bool) {
+	if o == nil {
+		return false
+	}
+	if orderBalanceDue(o) > 0 && sellerHoldsOrderGoods(w, o) {
+		log.Printf("sim/order: expired order %d forfeited — buyer %q never collected the forged %s; seller %q keeps the %d-coin deposit, goods return to stock",
+			o.ID, o.BuyerID, o.Item, o.SellerID, orderAmountPaidAtAccept(o))
+		return true
+	}
+	refundOrderPayment(w, o, orderAmountPaidAtAccept(o))
+	return false
+}
+
+// refundOrderPayment returns `amount` coins to the buyer for an order that
+// expired undelivered — the deferred-path counterpart to ZBBS-HOME-398's
+// immediate handover. It reverses the coin leg the accept committed (buyer +=
+// amount, seller -= amount); goods never moved on a deferred order, so only
+// coins need reversing. `amount` is the coins actually charged at accept
+// (orderAmountPaidAtAccept) — the deposit for a partial-payment commission, the
+// full price otherwise.
 //
 // Conserves the closed economy's coin supply: the seller is debited exactly
 // what the buyer is credited, even if that briefly pushes the seller negative
 // (a debt they earn back) — making the buyer whole is the point of the refund.
 //
-// Lodging in the live economy is coin-paid, so a barter (pay_items) leg can't
-// reach here — the intake rejects a goods-paid lodging booking (ZBBS-HOME-403),
-// keeping every deferred order coin-only and fully reversible.
+// Every deferred order is coin-only (a barter leg can't reach here — the intake
+// rejects a goods-paid lodging booking or commission), so the reversal is always
+// fully reversible.
 //
 // Best-effort per leg so the make-whole guarantee never hinges on the seller:
 //   - Credit the buyer (the leg that matters). Skipped only on the pathological
@@ -459,11 +558,10 @@ func flipOrderTerminal(w *World, o *Order, terminal OrderState, at time.Time) bo
 //     underflow or an absent seller — a credited-buyer / absent-seller refund
 //     is a touch of inflation, which beats failing to make the buyer whole.
 //
-// So a real buyer with a real booking is ALWAYS refunded; only the
-// pathological / actor-gone edges fall back, all logged. No-op when Amount <= 0.
-// MUST run on the world goroutine (mutates Actor balances).
-func refundExpiredOrder(w *World, o *Order) {
-	if o == nil || o.Amount <= 0 {
+// So a real buyer is ALWAYS refunded; only the pathological / actor-gone edges
+// fall back, all logged. No-op when amount <= 0. MUST run on the world goroutine.
+func refundOrderPayment(w *World, o *Order, amount int) {
+	if o == nil || amount <= 0 {
 		return
 	}
 	buyer := w.Actors[o.BuyerID]
@@ -472,13 +570,13 @@ func refundExpiredOrder(w *World, o *Order) {
 	switch {
 	case buyer == nil:
 		log.Printf("sim/order: expired order %d buyer %q is gone — no one to refund", o.ID, o.BuyerID)
-	case buyer.Coins > math.MaxInt-o.Amount:
+	case buyer.Coins > math.MaxInt-amount:
 		log.Printf("sim/order: refund of expired order %d would overflow buyer %q (have %d, +%d) — buyer not credited",
-			o.ID, o.BuyerID, buyer.Coins, o.Amount)
+			o.ID, o.BuyerID, buyer.Coins, amount)
 	default:
-		buyer.Coins += o.Amount
+		buyer.Coins += amount
 		credited = true
-		log.Printf("sim/order: refunded %d coins to buyer %q for expired order %d", o.Amount, o.BuyerID, o.ID)
+		log.Printf("sim/order: refunded %d coins to buyer %q for expired order %d", amount, o.BuyerID, o.ID)
 	}
 	// Only debit the seller when the buyer was actually credited — a debit
 	// without a matching credit would destroy coins and penalize the seller for
@@ -489,11 +587,11 @@ func refundExpiredOrder(w *World, o *Order) {
 	switch {
 	case seller == nil:
 		log.Printf("sim/order: expired order %d seller %q is gone — buyer credited, debit skipped (slight inflation)", o.ID, o.SellerID)
-	case seller.Coins < math.MinInt+o.Amount:
+	case seller.Coins < math.MinInt+amount:
 		log.Printf("sim/order: refund of expired order %d would underflow seller %q (have %d, -%d) — seller not debited",
-			o.ID, o.SellerID, seller.Coins, o.Amount)
+			o.ID, o.SellerID, seller.Coins, amount)
 	default:
-		seller.Coins -= o.Amount
+		seller.Coins -= amount
 	}
 }
 
