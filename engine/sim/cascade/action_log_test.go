@@ -987,3 +987,94 @@ func TestSubscribers_EmitDurableRows(t *testing.T) {
 		t.Errorf("row 6 PC spoke source/speaker = %q/%q, want player/Jefferey", rows[6].Source, rows[6].SpeakerName)
 	}
 }
+
+// --- TestHandleRepairingActionLog_NamesBusinessAndIgnoresOtherKinds ---
+// LLM-354: a repair start appends a row naming the business being mended, and
+// the harvest/refresh starts that share SourceActivityStarted append nothing —
+// only the repair kind has an observer-facing beat.
+func TestHandleRepairingActionLog_NamesBusinessAndIgnoresOtherKinds(t *testing.T) {
+	w, stop := buildActionLogCascadeWorld(t)
+	defer stop()
+
+	cases := []struct {
+		name     string
+		kind     sim.SourceActivityKind
+		objID    sim.VillageObjectID
+		wantRow  bool
+		wantText string
+	}{
+		{"repair names the business", sim.SourceActivityRepair, "well", true, "the well"},
+		{"vanished business drops the name", sim.SourceActivityRepair, "ghost", true, ""},
+		{"harvest start logs nothing", sim.SourceActivityHarvest, "well", false, ""},
+		{"refresh start logs nothing", sim.SourceActivityRefresh, "well", false, ""},
+	}
+	var want []string
+	for _, c := range cases {
+		if c.wantRow {
+			want = append(want, c.wantText)
+		}
+		invokeOnWorld(t, w, func(world *sim.World) {
+			handleRepairingActionLog(world, &sim.SourceActivityStarted{
+				ActorID:  "hannah",
+				ObjectID: c.objID,
+				Kind:     c.kind,
+				At:       time.Now().UTC(),
+			})
+		})
+	}
+	got := readActionLog(t, w)
+	if len(got) != len(want) {
+		t.Fatalf("len(ActionLog) = %d, want %d (only repair starts log)", len(got), len(want))
+	}
+	for i, wantText := range want {
+		if got[i].ActionType != sim.ActionTypeRepairing {
+			t.Errorf("row %d: ActionType = %q, want %q", i, got[i].ActionType, sim.ActionTypeRepairing)
+		}
+		if got[i].Text != wantText {
+			t.Errorf("row %d: Text = %q, want %q", i, got[i].Text, wantText)
+		}
+		if got[i].HuddleID != "h1" {
+			t.Errorf("row %d: HuddleID = %q, want h1", i, got[i].HuddleID)
+		}
+	}
+}
+
+// --- TestHandleRepairingActionLog_EmitsDurableRow ------------------
+// The durable mirror carries the business name; an unresolvable object omits the
+// key rather than writing a blank one.
+func TestHandleRepairingActionLog_EmitsDurableRow(t *testing.T) {
+	w, stop := buildActionLogCascadeWorld(t)
+	defer stop()
+
+	rec := &recordingActionLogSink{}
+	invokeOnWorld(t, w, func(world *sim.World) {
+		world.SetActionLogSink(rec)
+	})
+	at := time.Now().UTC()
+	invokeOnWorld(t, w, func(world *sim.World) {
+		handleRepairingActionLog(world, &sim.SourceActivityStarted{
+			ActorID: "hannah", ObjectID: "well", Kind: sim.SourceActivityRepair, At: at,
+		})
+	})
+	invokeOnWorld(t, w, func(world *sim.World) {
+		handleRepairingActionLog(world, &sim.SourceActivityStarted{
+			ActorID: "hannah", ObjectID: "ghost", Kind: sim.SourceActivityRepair, At: at,
+		})
+	})
+
+	rows := rec.snapshot()
+	if len(rows) != 2 {
+		t.Fatalf("recorded %d durable rows, want 2", len(rows))
+	}
+	r := rows[0]
+	if r.ActorID != "hannah" || r.ActionType != sim.ActionTypeRepairing ||
+		r.Source != "agent" || r.SpeakerName != "Hannah" || r.HuddleID != "h1" {
+		t.Errorf("durable repairing header = %+v", r)
+	}
+	if got, _ := r.Payload["business"].(string); got != "the well" {
+		t.Errorf("payload[business] = %q, want %q", got, "the well")
+	}
+	if _, present := rows[1].Payload["business"]; present {
+		t.Errorf("vanished business should omit payload[business], got %v", rows[1].Payload)
+	}
+}

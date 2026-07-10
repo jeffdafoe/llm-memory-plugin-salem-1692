@@ -458,6 +458,24 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			StructureID: string(e.StructureID),
 			At:          e.At.UTC().Format(time.RFC3339),
 		}}, true
+	case *sim.ActorRepairNarrated:
+		// LLM-354: observer-facing "X is mending the Y" line for co-present PCs,
+		// rendered by the talk panel's _on_room_event as a narration line (any kind
+		// that isn't a known speech kind falls through to the narration style, so
+		// `peer_repair` needs no client patch). NON-private + structure-scoped: the
+		// engine emits this only for a public-scope mend, so the client's structure
+		// filter delivers it to co-present common-room PCs (no room_id needed —
+		// public scope is room_id=""). actor_name satisfies the client's non-private
+		// non-empty-actor guard; the narration render shows Text.
+		return WireFrame{Type: "room_event", Data: roomEventWireDTO{
+			ActorID:     string(e.ActorID),
+			ActorName:   e.ActorName,
+			Kind:        "peer_repair",
+			Text:        e.Text,
+			Private:     false,
+			StructureID: string(e.StructureID),
+			At:          e.At.UTC().Format(time.RFC3339),
+		}}, true
 	case *sim.ActorDepartureNarrated:
 		// Departure twin of ActorArrivalNarrated: observer-facing "X leaves Y" line
 		// for co-present PCs, rendered by the talk panel's _on_room_event as a narration
