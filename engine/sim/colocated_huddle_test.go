@@ -372,6 +372,10 @@ func TestEnsureColocatedHuddle_LoiterStallJoinsOwner(t *testing.T) {
 	setActor(t, w, "bob", func(a *sim.Actor) {
 		a.Kind = sim.KindNPCStateful
 		a.InsideStructureID = "tavern" // owner working inside
+		// LLM-359: the cross-threshold loiter-pin scope now requires the shop to
+		// be OPEN — a keeper of it present and awake. bob IS that keeper, so the
+		// customer at the pin reaches him across the threshold.
+		a.WorkStructureID = "tavern"
 	})
 
 	ensureColocated(t, w, "alice")
@@ -390,6 +394,56 @@ func TestEnsureColocatedHuddle_LoiterStallJoinsOwner(t *testing.T) {
 	}}).(sim.StructureID)
 	if inside != "" {
 		t.Errorf("loitering customer was moved inside the stall (InsideStructureID=%q); should stay outside", inside)
+	}
+}
+
+// TestEnsureColocatedHuddle_LoiterShutStallNoHuddle: LLM-359. An actor standing
+// at a business's loiter pin must NOT be scoped across the threshold when the
+// shop is SHUT — no keeper present and awake. The live bug: an idle NPC (Patience
+// Walker) at the closed Tavern's outdoor pin greeted the player standing inside,
+// through the wall, repeatedly. Here the tavern's only keeper is abed, so the
+// outside speaker forms no huddle with the inside occupant. The open-shop
+// counterpart is TestEnsureColocatedHuddle_LoiterStallJoinsOwner.
+func TestEnsureColocatedHuddle_LoiterShutStallNoHuddle(t *testing.T) {
+	w, cancel := buildHuddleTestWorld(t)
+	defer cancel()
+	// Make the tavern resolvable as a loiter object (zero loiter offsets → pin ==
+	// anchor tile), same setup as the open-shop test.
+	sendT(t, w, sim.Command{Fn: func(world *sim.World) (any, error) {
+		v := world.VillageObjects["tavern"]
+		v.DisplayName = "Tavern"
+		z := 0
+		v.LoiterOffsetX, v.LoiterOffsetY = &z, &z
+		return nil, nil
+	}})
+	loiterPin := sim.WorldPos{X: 160, Y: 160}.Tile()
+	// The speaker: an NPC idling at the shut Tavern's loiter pin (Patience's role).
+	setActor(t, w, "alice", func(a *sim.Actor) {
+		a.Kind = sim.KindNPCShared
+		a.InsideStructureID = "" // OUTSIDE, at the pin
+		a.Pos = loiterPin
+	})
+	// The occupant inside the shut Tavern (the player's role).
+	setActor(t, w, "bob", func(a *sim.Actor) {
+		a.Kind = sim.KindPC
+		a.LoginUsername = "tester"
+		a.InsideStructureID = "tavern"
+	})
+	// The Tavern's only keeper is abed — the shop is shut (keeperPresentAt false).
+	setActor(t, w, "charlie", func(a *sim.Actor) {
+		a.Kind = sim.KindNPCStateful
+		a.WorkStructureID = "tavern"
+		a.InsideStructureID = "tavern"
+		a.State = sim.StateSleeping
+	})
+
+	ensureColocated(t, w, "alice")
+
+	if h := huddleOf(t, w, "alice"); h != "" {
+		t.Errorf("outside speaker at a SHUT shop formed a cross-threshold huddle %q; the wall should block it", h)
+	}
+	if h := huddleOf(t, w, "bob"); h != "" {
+		t.Errorf("inside occupant was pulled into a cross-threshold huddle %q at a shut shop; should not be", h)
 	}
 }
 

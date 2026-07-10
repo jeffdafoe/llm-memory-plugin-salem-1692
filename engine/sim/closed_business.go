@@ -129,21 +129,70 @@ func structureHasWorker(w *World, structureID StructureID) bool {
 // on break (StateResting) still counts as present (the business is open, just
 // quiet). A worker who has wandered off (the drifted Ellis Farm dairyer) is not
 // present, so the business reads shut.
+//
+// Shares the per-worker rule with KeeperPresentInSnapshot (the read-path
+// counterpart) via workerTendsStructure, so the write path (found-it-shut memory,
+// cross-threshold huddle scope) and the read path (PC talk roster) can't drift on
+// what "open" means.
 func keeperPresentAt(w *World, structureID StructureID) bool {
 	for _, worker := range w.Actors {
-		if worker == nil || worker.WorkStructureID != structureID {
+		if worker == nil {
 			continue
 		}
-		if worker.State == StateSleeping {
-			continue // abed ⇒ not tending, though bedded down AT the inn (LLM-126)
-		}
-		if worker.InsideStructureID == structureID {
+		if workerTendsStructure(w.VillageObjects, w.Assets, worker.WorkStructureID,
+			worker.State, worker.InsideStructureID, worker.Pos, structureID) {
 			return true
 		}
-		if objID, ok := resolveLoiteringObject(w, worker.Pos, LoiterAttributionTiles); ok &&
-			StructureID(objID) == structureID {
+	}
+	return false
+}
+
+// keeperPresentInSnapshot is keeperPresentAt over a published Snapshot — the
+// read-path counterpart that backs LoiterScopeConversableInSnapshot's shut-shop
+// gate for the PC's cross-threshold conversational scope (httpapi
+// pcAudienceStructure, LLM-359). The snapshot doesn't carry the asset catalog
+// inline, so it is passed in — the same reference catalog ResolveLoiteringObject
+// already needs. Shares workerTendsStructure with the live-world keeperPresentAt
+// so the two agree on what "tending" means. Guards a nil snapshot (fail-closed:
+// unknown ⇒ not tended) since it's reachable from an exported helper.
+func keeperPresentInSnapshot(snap *Snapshot, assets map[AssetID]*Asset, structureID StructureID) bool {
+	if snap == nil {
+		return false
+	}
+	for _, a := range snap.Actors {
+		if a == nil {
+			continue
+		}
+		if workerTendsStructure(snap.VillageObjects, assets, a.WorkStructureID,
+			a.State, a.InsideStructureID, a.Pos, structureID) {
 			return true
 		}
+	}
+	return false
+}
+
+// workerTendsStructure reports whether one worker — identified by its work anchor,
+// wake state, and position — is currently tending structureID: it works there, is
+// awake, and is physically at it (inside its interior, or loitering at its pin).
+// The shared per-worker core of keeperPresentAt (live world) and
+// KeeperPresentInSnapshot (published snapshot); pure over its map inputs so both
+// callers run the identical rule (the ResolveLoiteringObject / ActorAtWorkpost
+// dual-caller pattern).
+func workerTendsStructure(objects map[VillageObjectID]*VillageObject, assets map[AssetID]*Asset,
+	workStructureID StructureID, state ActorState, insideStructureID StructureID, pos TilePos,
+	structureID StructureID) bool {
+	if workStructureID != structureID {
+		return false
+	}
+	if state == StateSleeping {
+		return false // abed ⇒ not tending, though bedded down AT the inn (LLM-126)
+	}
+	if insideStructureID == structureID {
+		return true
+	}
+	if objID, ok := ResolveLoiteringObject(objects, assets, pos, LoiterAttributionTiles); ok &&
+		StructureID(objID) == structureID {
+		return true
 	}
 	return false
 }

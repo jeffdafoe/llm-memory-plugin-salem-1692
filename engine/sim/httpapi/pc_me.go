@@ -405,11 +405,19 @@ func objectDisplayName(snap *sim.Snapshot, id sim.StructureID) string {
 // whose loiter pin is within AudienceScopeTiles of the PC's tile (the v1
 // "loitering at a booth" 64px ring). ok=false when in transit (nothing in
 // range and not inside) → the talk panel shows no room scope.
+//
+// LLM-359: the loiter-pin (cross-threshold) branch is gated by
+// sim.LoiterScopeConversableInSnapshot, mirroring the engine's
+// conversationalScopeStructure so the WRITE (huddle) and READ (talk roster) paths
+// stay in lockstep. A bare prop (a well) keeps its loiter scope; a STRUCTURE must
+// be OPEN — a SHUT shop's wall blocks the PC from the occupants inside, so a PC in
+// the street at a closed shop's door gets no cross-threshold scope.
 func pcAudienceStructure(snap *sim.Snapshot, pc *sim.ActorSnapshot, assets map[sim.AssetID]*sim.Asset) (string, bool) {
 	if pc.InsideStructureID != "" {
 		return string(pc.InsideStructureID), true
 	}
-	if id, ok := sim.ResolveLoiteringObject(snap.VillageObjects, assets, pc.Pos, sim.AudienceScopeTiles); ok {
+	if id, ok := sim.ResolveLoiteringObject(snap.VillageObjects, assets, pc.Pos, sim.AudienceScopeTiles); ok &&
+		sim.LoiterScopeConversableInSnapshot(snap, assets, sim.StructureID(id)) {
 		return string(id), true
 	}
 	return "", false
