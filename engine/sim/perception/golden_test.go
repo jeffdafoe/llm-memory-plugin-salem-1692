@@ -1694,6 +1694,16 @@ var perceptionScenarios = []perceptionScenario{
 		build: comfortableWorkerNoSeekWork,
 	},
 	{
+		name: "comfortable_worker_at_ease",
+		summary: "LLM-352: the comfortable (coin-rich, workless) Walker from comfortable_worker_no_seek_work, standing out " +
+			"in the village at 09:00 and carrying the at-ease warrant the seek-work backstop now stamps for it in place of the " +
+			"freeze the coin ceiling (LLM-194) otherwise left it in. The golden pins BOTH halves: the 'the day is your own' " +
+			"leisure line renders (pass time with neighbors, look in at the tavern, or see to a want), AND there is still NO " +
+			"seek-work directory / solicit affordance (194's suppression holds). A regression that dropped the at-ease arm loses " +
+			"the line and re-strands the worker.",
+		build: comfortableWorkerAtEase,
+	},
+	{
 		name: "worker_seeks_work_after_employer_declines",
 		summary: "The LLM-181 live case (Lewis Walker at the General Store, hud-8db08741…), reduced: a workless worker shares a " +
 			"huddle with a co-present stranger employer (Josiah Thorne) who has ALREADY declined his labor offer. Pre-fix, the " +
@@ -10829,6 +10839,50 @@ func comfortableWorkerNoSeekWork() (*sim.Snapshot, sim.ActorID, []sim.WarrantMet
 		},
 	}
 	return snap, silenceID, nil
+}
+
+// comfortableWorkerAtEase is the LLM-352 companion to comfortableWorkerNoSeekWork: the
+// SAME comfortable (coin-rich, workless) Walker, standing out in the village in the
+// daytime and carrying the at-ease warrant the seek-work backstop now stamps for it in
+// place of leaving it to freeze. The golden pins both halves of the comfortable-worker
+// picture — the "the day is your own" leisure line renders, AND there is still NO
+// seek-work directory / solicit affordance (LLM-194's suppression holds). A regression
+// that dropped the at-ease arm loses the line and re-strands the worker; one that
+// re-added the seek-work cue for a comfortable worker would surface the directory here.
+func comfortableWorkerAtEase() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		silenceID = sim.ActorID("silence")
+		residence = sim.StructureID("walker_residence")
+		tavern    = sim.StructureID("tavern")
+		store     = sim.StructureID("general_store")
+	)
+	now := 540 // 09:00 — daytime, day-active on the dawn/dusk window
+	silence := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Silence Walker",
+		State:             sim.StateIdle,
+		InsideStructureID: "", // out in the village, NOT settled at home
+		HomeStructureID:   residence,
+		Coins:             40, // at/above the default seek-work ceiling (25) → comfortable
+		AttributeSlugs:    []string{sim.AttrWorker},
+		Needs:             map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{silenceID: silence},
+		Structures: map[sim.StructureID]*sim.Structure{
+			residence: plainStructure(residence, "Walker Residence"),
+			tavern:    plainStructure(tavern, "the Tavern"),
+			store:     plainStructure(store, "General Store"),
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			sim.VillageObjectID(tavern): {ID: sim.VillageObjectID(tavern), Tags: []string{"business", "tavern"}},
+			sim.VillageObjectID(store): {ID: sim.VillageObjectID(store), Tags: []string{"business", "shop"}},
+		},
+	}
+	warrants := []sim.WarrantMeta{{TriggerActorID: silenceID, Reason: sim.AtEaseWarrantReason{}}}
+	return snap, silenceID, warrants
 }
 
 // workerSeeksWorkAfterEmployerDeclines is the LLM-181 live case (Lewis Walker at the

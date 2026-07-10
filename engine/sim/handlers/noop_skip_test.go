@@ -65,6 +65,25 @@ func TestShouldSkipNoop_SeekWorkAlone_NoPeerNoNeeds_DoesNotSkip(t *testing.T) {
 	}
 }
 
+// TestShouldSkipNoop_AtEaseAlone_NoPeerNoNeeds_DoesNotSkip: the at-ease warrant is
+// HIGH-info too — a comfortable idle worker alone, no peer, no red need must STILL
+// tick so it perceives "the day is your own" and does something (wander/visit/consume)
+// instead of freezing. Proves WarrantKindAtEase is NOT in isLowInfoWarrantKind — the
+// default-behavior invariant the whole LLM-352 daytime fix rests on, locked through the
+// gate (not just renderWarrantLine).
+func TestShouldSkipNoop_AtEaseAlone_NoPeerNoNeeds_DoesNotSkip(t *testing.T) {
+	w := sim.WarrantMeta{
+		TriggerActorID: "alice",
+		Reason:         sim.AtEaseWarrantReason{},
+	}
+	if w.Kind() != sim.WarrantKindAtEase {
+		t.Fatalf("WarrantMeta.Kind() = %q, want %q", w.Kind(), sim.WarrantKindAtEase)
+	}
+	if shouldSkipNoop(quietPayload(), defaultThresholds(), []sim.WarrantMeta{w}) {
+		t.Fatalf("expected skip=false for a lone comfortable idler — at-ease must tick (high-info)")
+	}
+}
+
 func TestShouldSkipNoop_HuddleConcludedAlone_NoPeerNoNeeds_Skips(t *testing.T) {
 	w := sim.WarrantMeta{
 		TriggerActorID: "",

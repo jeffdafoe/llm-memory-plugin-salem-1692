@@ -2935,6 +2935,13 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 		// its own, not an empty purse — the nudge fires for a workless worker whether
 		// or not it holds coin (LLM-168).
 		return fmt.Sprintf("%d. You have no work of your own to tend, and you take work for pay — seek out someone who could use a hand and offer your labor.\n", n), false
+	case sim.AtEaseWarrantReason:
+		// LLM-352: a comfortable (coin-rich) workless worker with nothing pressing.
+		// No go-earn nudge (it doesn't need the work) — a diegetic "the day is your
+		// own" scene that leaves the choice open: pass time with neighbors, look in at
+		// the tavern, or see to a want of its own. No named target; the model draws its
+		// own conclusion, the same no-coercion register as the seek-work line.
+		return fmt.Sprintf("%d. Your purse is easy enough for now and no one is looking to hire — the day is your own. You might pass a while with the neighbors, look in at the tavern, or see to some want of your own.\n", n), false
 	case sim.ReturnToPostWarrantReason:
 		// LLM-268: the felt pull that wakes a laboring worker who has wandered off
 		// the post. Generic — the actionable specifics (which post, whose job, and

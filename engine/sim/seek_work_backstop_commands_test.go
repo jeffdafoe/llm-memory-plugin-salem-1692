@@ -49,6 +49,15 @@ func hasSeekWorkWarrant(a *Actor) bool {
 	return false
 }
 
+func hasAtEaseWarrant(a *Actor) bool {
+	for _, k := range warrantKinds(a) {
+		if k == WarrantKindAtEase {
+			return true
+		}
+	}
+	return false
+}
+
 // TestSeekWorkBackstop_StampsWorklessIdleWorker: a workless, on-shift, idle
 // worker gets a seek_work warrant, and the backoff initializes (level 0, base timer).
 func TestSeekWorkBackstop_StampsWorklessIdleWorker(t *testing.T) {
@@ -130,21 +139,65 @@ func TestSeekWorkBackstop_StampsWorklessWorkerWithCoins(t *testing.T) {
 	}
 }
 
-// TestSeekWorkBackstop_SkipsComfortableWorker is the LLM-194 gate: a workless worker
-// holding coin AT OR ABOVE the seek-work ceiling is NOT nudged to seek work — it's
-// comfortable, so it drains its purse via consumption rather than hustling for odd jobs
-// it doesn't need. The complement of TestSeekWorkBackstop_StampsWorklessWorkerWithCoins
-// (a few coins, under the ceiling, still seeks).
-func TestSeekWorkBackstop_SkipsComfortableWorker(t *testing.T) {
+// TestSeekWorkBackstop_ComfortableWorkerTakesEase (LLM-352): a workless worker AT OR
+// ABOVE the seek-work ceiling still doesn't SEEK work (LLM-194 stops it hustling) — but
+// it no longer freezes either. Instead of being skipped entirely it gets the at-ease
+// liveness impulse, so it stays a live idle villager (wander/visit/consume) and drains
+// its purse back under the ceiling. The complement of StampsWorklessWorkerWithCoins
+// (a few coins, under the ceiling → still seeks work).
+func TestSeekWorkBackstop_ComfortableWorkerTakesEase(t *testing.T) {
 	a := homedWorker("w")
 	a.Coins = SeekWorkCoinCeilingDefault // 25 — at the ceiling → comfortable
-	w := workerShiftWorld(a)
+	w := workerShiftWorld(a)             // eco off (watched) → the cosmetic at-ease impulse fires
 	tm := evalSeekWork(t, w, seekNoon)
-	if tm.Stamped != 0 || tm.SkippedNotEligible != 1 {
-		t.Errorf("Stamped=%d SkippedNotEligible=%d, want 0/1 (comfortable worker at the ceiling)", tm.Stamped, tm.SkippedNotEligible)
+	if tm.Stamped != 1 || tm.AtEase != 1 {
+		t.Errorf("Stamped=%d AtEase=%d, want 1/1 (comfortable worker takes its ease); telemetry=%+v", tm.Stamped, tm.AtEase, tm)
 	}
 	if hasSeekWorkWarrant(a) {
-		t.Errorf("comfortable worker got a seek_work warrant; kinds=%v", warrantKinds(a))
+		t.Errorf("comfortable worker got a seek_work warrant; want at_ease; kinds=%v", warrantKinds(a))
+	}
+	if !hasAtEaseWarrant(a) {
+		t.Errorf("comfortable worker did not get an at_ease warrant; kinds=%v", warrantKinds(a))
+	}
+}
+
+// TestSeekWorkBackstop_AtEaseWithheldWhileUnwatched (LLM-352): the at-ease impulse is
+// cosmetic liveness for a watcher, so it is AUDIENCE-GATED — under eco (no PC present)
+// a comfortable worker is SkippedEco, not stamped, and burns no LLM call for a village
+// nobody is looking at. It re-qualifies every sweep, so the first sweep after the
+// audience returns stamps as usual (the eco-off sibling above). Seek-work itself is NOT
+// eco-gated (economy housekeeping), so only the comfortable arm changes.
+func TestSeekWorkBackstop_AtEaseWithheldWhileUnwatched(t *testing.T) {
+	a := homedWorker("w")
+	a.Coins = SeekWorkCoinCeilingDefault
+	w := workerShiftWorld(a)
+	w.Settings.EcoEnabled = true // eco enabled + no PC present ⇒ ecoModeEngaged
+	tm := evalSeekWork(t, w, seekNoon)
+	if tm.Stamped != 0 || tm.SkippedEco != 1 {
+		t.Errorf("Stamped=%d SkippedEco=%d, want 0/1 (at-ease withheld while unwatched); telemetry=%+v", tm.Stamped, tm.SkippedEco, tm)
+	}
+	if a.WarrantedSince != nil {
+		t.Error("comfortable worker warranted under eco; want withheld")
+	}
+	if a.SeekWorkNextWarrantAt != nil {
+		t.Error("eco-skip advanced the backoff timer; want untouched so recovery is prompt when watched")
+	}
+}
+
+// TestSeekWorkBackstop_BrokeWorkerNotEcoGated (LLM-352): seek-work is economy
+// housekeeping, not cosmetic liveness — a below-ceiling worker is nudged to earn even
+// while unwatched, so the eco-gate added for at-ease must not leak onto the seek-work
+// arm.
+func TestSeekWorkBackstop_BrokeWorkerNotEcoGated(t *testing.T) {
+	a := homedWorker("w") // 0 coins → below ceiling
+	w := workerShiftWorld(a)
+	w.Settings.EcoEnabled = true // unwatched
+	tm := evalSeekWork(t, w, seekNoon)
+	if tm.Stamped != 1 || tm.AtEase != 0 {
+		t.Errorf("Stamped=%d AtEase=%d, want 1/0 (broke worker seeks work even unwatched); telemetry=%+v", tm.Stamped, tm.AtEase, tm)
+	}
+	if !hasSeekWorkWarrant(a) {
+		t.Errorf("broke worker under eco did not get seek_work; kinds=%v", warrantKinds(a))
 	}
 }
 
