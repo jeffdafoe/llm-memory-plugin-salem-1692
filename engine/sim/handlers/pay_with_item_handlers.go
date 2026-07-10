@@ -572,8 +572,10 @@ func HandlePayWithItem(in HandlerInput) (sim.Command, error) {
 			if err != nil {
 				return nil, err
 			}
-			sim.SpeakAlongside(w, actorID, say, seller, hasNewNews, now, "pay_with_item handed over coins")
-			return res, nil
+			out := payCoinTranslationResult{Result: res}
+			out.Announced, out.SayRefused = sim.SpeakAlongside(
+				w, actorID, say, seller, hasNewNews, now, "pay_with_item handed over coins")
+			return out, nil
 		}}), nil
 	}
 
@@ -672,11 +674,20 @@ func HandlePayWithItem(in HandlerInput) (sim.Command, error) {
 		if !ok {
 			return res, nil
 		}
-		// The offer names one seller, so the buyer's line is spoken to them.
-		placed.Announced, placed.SayRefused = sim.SpeakAlongside(
-			w, actorID, say, seller, hasNewNews, now,
-			fmt.Sprintf("pay_with_item placed offer %d", placed.LedgerID),
-		)
+		// Speak only for an offer that actually stands: Pending (the slow path) or
+		// Accepted (a quote take, settled inside this call). sim.PayWithItem returns
+		// no other state on a nil error today — the failure modes reject before
+		// minting — but the wrapper must not ASSUME that, or a future failed-terminal
+		// return would have the buyer haggling over a dead offer. The assumption is
+		// pinned by TestPayWithItem_ReturnsOnlyLivedStatesOnSuccess (code_review).
+		switch placed.State {
+		case sim.PayLedgerStatePending, sim.PayLedgerStateAccepted:
+			// The offer names one seller, so the buyer's line is spoken to them.
+			placed.Announced, placed.SayRefused = sim.SpeakAlongside(
+				w, actorID, say, seller, hasNewNews, now,
+				fmt.Sprintf("pay_with_item placed offer %d", placed.LedgerID),
+			)
+		}
 		return placed, nil
 	}}), nil
 }
@@ -695,6 +706,19 @@ func HandlePayWithItem(in HandlerInput) (sim.Command, error) {
 // before this ticket — payResponseState unwraps both shapes for the harness.
 type payResponseResult struct {
 	State      sim.PayLedgerState
+	Announced  bool
+	SayRefused string
+}
+
+// payCoinTranslationResult wraps sim.Pay's result on pay_with_item's coin-token
+// translation path (LLM-290), so the buyer's folded `say` can be echoed back the
+// way every other folded line is. sim.Pay has no result shape of its own to carry
+// Announced / SayRefused, and the translated call is still a pay_with_item — a
+// terminal tool — so its speech has nowhere else to be reported. Without this the
+// one path that speaks would be the one path that never told the model whether the
+// room heard it (code_review).
+type payCoinTranslationResult struct {
+	Result     any
 	Announced  bool
 	SayRefused string
 }
@@ -1234,13 +1258,19 @@ func normalizeShortMessage(s string) string {
 
 // selectSayAlias picks the spoken line from the canonical `say` and a tool's
 // legacy alias for it (decline_pay's `reason`, counter_pay's `message` —
-// LLM-350). Non-empty `say` wins; otherwise the alias. Emptiness is judged
-// exact, NOT trimmed: a whitespace-only value still selects and the handler does
-// the trim, preserving the decode/handler split the rest of the pay family uses.
+// LLM-350). A `say` with actual content wins; otherwise the alias.
 //
-// Both names are rune-capped here even when the other one wins, matching the
-// strict-decode posture of sell's item/item_kind pair: an over-cap value the
-// model actually sent is a malformed call, not something to silently ignore.
+// Selection is TRIMMED, unlike sell's item/item_kind alias which selects on exact
+// emptiness. There, a whitespace-only `item` still selects and the handler rejects
+// it as empty-after-trim, so nothing is lost. Here the handler would silently drop
+// a whitespace-only `say` and speak nothing — so `{"say":"   ","reason":"No bread
+// today."}` would swallow a real refusal. A semantically empty canonical field must
+// not beat a meaningful legacy one (code_review).
+//
+// Both names are rune-capped even when the other wins, matching the strict-decode
+// posture of the sell alias: an over-cap value the model actually sent is a
+// malformed call, not something to silently ignore. Each is capped under its own
+// name so the model can map the error back to the field it sent.
 func selectSayAlias(toolName, aliasName, say, alias string) (string, error) {
 	for _, f := range []struct{ name, val string }{{"say", say}, {aliasName, alias}} {
 		if f.val == "" {
@@ -1253,7 +1283,7 @@ func selectSayAlias(toolName, aliasName, say, alias string) (string, error) {
 			)
 		}
 	}
-	if say != "" {
+	if strings.TrimSpace(say) != "" {
 		return say, nil
 	}
 	return alias, nil

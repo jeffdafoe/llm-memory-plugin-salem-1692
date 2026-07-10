@@ -11060,11 +11060,36 @@ var terminalToolNames = []string{
 	"solicit_work", "speak", "stop", "summon", "withdraw_pay",
 }
 
-// negatedSpeakRe matches a line that FORBIDS the speak tool rather than asking
-// for it. The cues that legitimately name speak alongside another terminal verb
-// all do so to warn the model off it ("Do not reply with the speak tool"), which
-// is the opposite instruction and must stay allowed.
-var negatedSpeakRe = regexp.MustCompile(`(?i)\b(do not|don't|never)\b`)
+// affirmativeSpeakRe matches an instruction to CALL the speak tool: "use speak",
+// "call speak", "then speak", "also speak". It deliberately does NOT match speak
+// used as an ordinary verb ("the words you speak aloud in say"), nor speak named
+// inside a prohibition ("Do not name a price with the speak tool") — those are the
+// two ways a legitimate cue mentions it.
+var affirmativeSpeakRe = regexp.MustCompile(`(?i)\b(use|call)\s+(the\s+)?speak\b|\b(then|also)\s+speak\b`)
+
+// negationRe matches a prohibition marker.
+var negationRe = regexp.MustCompile(`(?i)\b(do not|don't|never)\b`)
+
+// clauseSplitRe splits a cue line into clauses on sentence/clause punctuation.
+//
+// Scoping the negation check to the clause carrying the speak instruction — rather
+// than to the whole line — is what makes the invariant sound. A line reading "Do
+// not delay; call accept_pay, then use speak." carries a negation AND a live
+// two-terminal-verb instruction; a line-wide negation check waves it through, and
+// so does a proximity window, because the negation sits within a few words of the
+// speak (code_review).
+var clauseSplitRe = regexp.MustCompile(`[.;:]`)
+
+// instructsSpeakAlongside reports whether line tells the model to CALL speak from a
+// clause that does not forbid it.
+func instructsSpeakAlongside(line string) bool {
+	for _, clause := range clauseSplitRe.Split(line, -1) {
+		if affirmativeSpeakRe.MatchString(clause) && !negationRe.MatchString(clause) {
+			return true
+		}
+	}
+	return false
+}
 
 // TestGoldensNoCueInstructsTwoTerminalVerbs is the LLM-350 cross-scenario
 // invariant, generalized from the LLM-343 seller-only version it replaces.
@@ -11076,11 +11101,13 @@ var negatedSpeakRe = regexp.MustCompile(`(?i)\b(do not|don't|never)\b`)
 // something. Speak-then-act loses the act — the offer goes unanswered, the sale
 // expires. Act-then-speak loses the words — the village transacts in silence.
 //
-// The rule: on any single rendered line, the speak TOOL may be named beside
-// another terminal verb only to forbid it. Line granularity is the right unit
-// because each cue writes one \n-terminated line, and the two-verb instructions
-// this catches ("Respond with accept_pay… Then also use speak") split their two
-// clauses across sentences within one line.
+// The rule: on any single rendered line that names another terminal verb, no
+// clause may instruct a call to speak unless that same clause forbids it. Line
+// granularity is the right unit for finding the cue, because each cue writes one
+// \n-terminated line and the two-verb instructions this catches ("Respond with
+// accept_pay… Then also use speak") split their clauses across sentences within
+// one line; clause granularity is the right unit for judging it, so a negation
+// elsewhere on the line cannot launder a live instruction.
 //
 // Not a lint: it renders the whole matrix, so it fires on the cue as an NPC
 // actually receives it. accept_gift / decline_gift deliberately pair with a
@@ -11097,11 +11124,11 @@ func TestGoldensNoCueInstructsTwoTerminalVerbs(t *testing.T) {
 					continue
 				}
 				checked++
-				if !negatedSpeakRe.MatchString(line) {
-					t.Errorf("scenario %q: cue names the terminal speak tool alongside %v "+
-						"without forbidding it — whichever lands first ends the tick and the other "+
-						"is skipped as post_terminal (LLM-350). Fold the utterance into the tool's "+
-						"`say` argument instead.\n    %s",
+				if instructsSpeakAlongside(line) {
+					t.Errorf("scenario %q: cue instructs a call to the terminal speak tool alongside %v "+
+						"— whichever lands first ends the tick and the other is skipped as "+
+						"post_terminal (LLM-350). Fold the utterance into the tool's `say` argument "+
+						"instead.\n    %s",
 						sc.name, without(named, "speak"), line)
 				}
 			}
@@ -11199,5 +11226,45 @@ func TestGoldensTransactionCuesRouteWordsThroughSay(t *testing.T) {
 				t.Errorf("no scenario rendered this cue (marker %q) — the assertion is vacuous", cue.present)
 			}
 		})
+	}
+}
+
+// TestInstructsSpeakAlongside pins the detector behind the LLM-350 invariant. It
+// is the piece most likely to rot into a rubber stamp, so its two failure modes
+// are pinned directly: waving through a live instruction (false negative) and
+// tripping on a cue that only names speak to forbid it (false positive).
+func TestInstructsSpeakAlongside(t *testing.T) {
+	instructs := []string{
+		// The pre-LLM-350 cues, verbatim.
+		"Respond first with accept_pay, decline_pay, or counter_pay, passing the offer id as ledger_id. Then also use speak for a brief reply, because the pay response itself passes in silence.",
+		"Respond with accept_work or decline_work, passing the offer id as labor_id. Then also use speak for a brief reply, because the work response itself passes in silence.",
+		"call decline_work (offer id 1), then use speak to tell them you cannot pay what they ask.",
+		"Buy it now — first call pay_with_item with seller \"Anders Brewer\". Then also use speak for a brief handoff line as you make the offer.",
+		"Now call speak to say a brief word about it, then call done().",
+		// A negation elsewhere on the line must NOT launder a live instruction. This
+		// is the case a line-wide check — and a proximity window — both miss.
+		"Do not delay; call accept_pay, then use speak.",
+		"Never dawdle. Then also use speak.",
+	}
+	for _, line := range instructs {
+		if !instructsSpeakAlongside(line) {
+			t.Errorf("missed a live speak instruction:\n    %s", line)
+		}
+	}
+
+	forbids := []string{
+		// The shipped cues. Each names speak only to warn the model off it.
+		"Respond with accept_pay, decline_pay, or counter_pay, passing the offer id as ledger_id and the words you speak aloud in say. Do not reply with the speak tool: speaking ends your turn, and the offer would go unanswered.",
+		"call sell — the named item and quantity in lines, your price in coins in amount, and the words you speak aloud in say. Do not name a price with the speak tool: speaking ends your turn, and the offer would never be made.",
+		"Put what you say to them in offer_work's `say`, in your own voice; do NOT ask with speak first, because speaking ends your turn and the offer would never reach them.",
+		"call pay_with_item with seller \"Ezekiel Crane\", and your handoff line in say. Do not speak first: speaking ends your turn, and the offer would never be made.",
+		"call decline_work (offer id 1), telling them in say that you cannot pay what they ask.",
+		// speak as an ordinary verb, not a tool call.
+		"the words you speak aloud in say",
+	}
+	for _, line := range forbids {
+		if instructsSpeakAlongside(line) {
+			t.Errorf("false positive on a cue that does not instruct a speak call:\n    %s", line)
+		}
 	}
 }

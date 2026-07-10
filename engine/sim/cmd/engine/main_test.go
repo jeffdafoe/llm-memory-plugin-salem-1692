@@ -492,6 +492,11 @@ func TestTerminalToolsMatchPerceptionInvariantList(t *testing.T) {
 		"gather", "move_to", "offer_trade", "offer_work", "pay_with_item", "sell",
 		"solicit_work", "speak", "stop", "summon", "withdraw_pay",
 	}
+	// The comparison below sorts only `got`, so an out-of-order insertion here would
+	// fail with a confusing diff rather than an honest one (code_review).
+	if !sort.StringsAreSorted(wantTerminal) {
+		t.Fatalf("wantTerminal must stay sorted; got %v", wantTerminal)
+	}
 
 	r := handlers.NewRegistry()
 	if err := registerTools(r, stubSearcher{}); err != nil {

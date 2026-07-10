@@ -1650,9 +1650,13 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 			if other == "" {
 				other = "them"
 			}
+			said := ""
+			if r, ok := cmdResult.(payCoinTranslationResult); ok {
+				said = sayEcho(args.Say, r.Announced, r.SayRefused)
+			}
 			return fmt.Sprintf(
-				"[ok] Coins are payment, not goods to buy — this settled as a plain payment: you handed %s %d coins; the coins have moved and nothing is owed back. Next time, use pay to give someone coins.",
-				other, coins,
+				"[ok] Coins are payment, not goods to buy — this settled as a plain payment: you handed %s %d coins; the coins have moved and nothing is owed back. %sNext time, use pay to give someone coins.",
+				other, coins, said,
 			)
 		}
 		// ZBBS-WORK-405: when the engine clamped a take-home request to
@@ -1728,7 +1732,7 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 				// period voice (ZBBS-HOME-421): NPCs mirror the register of what
 				// they read, and the old contract language came back out of their
 				// mouths verbatim. Keep the functional tokens (qty, item, seller,
-				// done(), accept/decline/counter) intact in any rewording.
+				// accept/decline/counter) intact in any rewording.
 				lead := fmt.Sprintf("Your offer to buy %d %s", args.Qty, item)
 				if vc.Name == "offer_trade" {
 					lead = fmt.Sprintf("Your offer to trade for %d %s", args.Qty, item)
@@ -1736,13 +1740,18 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 				// Echo the buyer's own words back (LLM-350) — pay_with_item now
 				// carries them; offer_trade does not, so said is "" there and the
 				// sentence is unchanged.
+				//
+				// "call done()" is gone from this line for the same reason it left the
+				// response results: pay_with_item and offer_trade are both
+				// terminal-on-success, so the tick has already ended by the time the
+				// model reads this (code_review).
 				said := ""
 				if r, ok := cmdResult.(sim.PayWithItemResult); ok {
 					said = sayEcho(args.Say, r.Announced, r.SayRefused)
 				}
 				return fmt.Sprintf(
 					"[ok] %s is before %s — bide for their answer. %sMake no second "+
-						"offer; call done() and let them accept, decline, or counter.%s",
+						"offer; let them accept, decline, or counter.%s",
 					lead, other, said, clampNote,
 				)
 			}

@@ -444,3 +444,106 @@ func TestResponseSaySchemas_CapMatchesSubstrate(t *testing.T) {
 		}
 	}
 }
+
+// TestPayWithItem_ReturnsOnlyLiveStatesOnSuccess pins the assumption
+// HandlePayWithItem's speak wrapper makes: whenever sim.PayWithItem returns a nil
+// error, the offer it reports actually stands — Pending on the slow path, Accepted
+// on a quote take. Its failure modes REJECT (a tool error) rather than resolving to
+// a failed terminal the way accept_pay's gates do.
+//
+// That distinction is what lets the buyer speak on a nil error at all. The wrapper
+// guards on the state anyway, so this test is what keeps that guard a belt rather
+// than a suspender: if a future change starts returning a failed terminal with a
+// nil error, the guard silently starts doing real work and this test says so
+// (code_review).
+//
+// Note a seller who holds none of the good still mints a PENDING offer — stock is
+// checked at accept, not at offer — so that is a live offer, and speaking over it
+// is correct.
+func TestPayWithItem_ReturnsOnlyLiveStatesOnSuccess(t *testing.T) {
+	now := time.Now().UTC()
+	for _, tc := range []struct {
+		name   string
+		seller string
+		item   string
+		amount int
+	}{
+		{"slow path, seller holds the good", "Bob", "bread", 4},
+		{"seller holds none of it — still a live pending offer", "Bob", "ale", 4},
+		{"unknown seller", "Nobody At All", "bread", 4},
+		{"zero payment", "Bob", "bread", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := buildPayResponseWorld(t)
+			if _, err := sim.EnsureColocatedHuddle("alice", now).Fn(w); err != nil {
+				t.Fatalf("EnsureColocatedHuddle: %v", err)
+			}
+			res, err := sim.PayWithItem("alice", tc.seller, tc.item, 1, tc.amount, false, nil, nil, 0, 0, "", now, 0).Fn(w)
+			if err != nil {
+				return // a rejection is fine — nothing was minted, so nothing is said
+			}
+			placed, ok := res.(sim.PayWithItemResult)
+			if !ok {
+				t.Fatalf("result = %T, want sim.PayWithItemResult", res)
+			}
+			switch placed.State {
+			case sim.PayLedgerStatePending, sim.PayLedgerStateAccepted:
+			default:
+				t.Errorf("PayWithItem returned state %q with a nil error. HandlePayWithItem's "+
+					"wrapper only speaks for pending/accepted; a failed terminal arriving as a "+
+					"SUCCESS would have the buyer haggling over an offer that never landed", placed.State)
+			}
+		})
+	}
+}
+
+// TestSelectSayAlias_WhitespaceSayDoesNotSwallowTheAlias is the code_review
+// regression: a whitespace-only canonical `say` is semantically empty, and must not
+// beat a legacy `reason` / `message` that actually carries the refusal. Selecting on
+// exact emptiness (sell's item/item_kind rule) would drop the words silently, since
+// the handler trims `say` to nothing and speaks it.
+func TestSelectSayAlias_WhitespaceSayDoesNotSwallowTheAlias(t *testing.T) {
+	got, err := DecodeDeclinePayArgs([]byte(`{"ledger_id":5,"say":"   ","reason":"No bread today."}`))
+	if err != nil {
+		t.Fatalf("DecodeDeclinePayArgs: %v", err)
+	}
+	if args := got.(DeclinePayArgs); args.Say != "No bread today." {
+		t.Errorf("Say = %q; a whitespace-only `say` swallowed the meaningful `reason` alias", args.Say)
+	}
+
+	got, err = DecodeCounterPayArgs([]byte(`{"ledger_id":5,"amount":6,"say":"\n\t","message":"Six, and it's yours."}`))
+	if err != nil {
+		t.Fatalf("DecodeCounterPayArgs: %v", err)
+	}
+	if args := got.(CounterPayArgs); args.Say != "Six, and it's yours." {
+		t.Errorf("Say = %q; a whitespace-only `say` swallowed the meaningful `message` alias", args.Say)
+	}
+}
+
+// TestPayWithItemCoinTranslation_EchoesSaid is the code_review regression for the
+// one folded-say path that reported nothing back. A buyer who names "coins" as the
+// good is translated to a plain sim.Pay (LLM-290), but the CALL is still
+// pay_with_item — terminal — so its `say` rides along. sim.Pay has no result shape
+// to carry the outcome, so payCoinTranslationResult wraps it, and the harness echoes
+// from that. Without it, the model was told nothing about whether the room heard it.
+func TestPayWithItemCoinTranslation_EchoesSaid(t *testing.T) {
+	vc := &ValidatedCall{
+		Name:        "pay_with_item",
+		DecodedArgs: PayWithItemArgs{Seller: "Bob", Item: "coins", Qty: 3, Say: "Here, for your trouble."},
+	}
+	got := commitResultContent(vc, payCoinTranslationResult{Announced: true})
+	if !strings.Contains(got, `You said: "Here, for your trouble."`) {
+		t.Errorf("coin-translation result %q does not echo the buyer's spoken line", got)
+	}
+	if !strings.Contains(got, "settled as a plain payment") {
+		t.Errorf("coin-translation result %q lost its own explanation", got)
+	}
+	if strings.Contains(got, "done()") {
+		t.Errorf("coin-translation result %q asks for done() after a terminal pay_with_item (LLM-350)", got)
+	}
+
+	got = commitResultContent(vc, payCoinTranslationResult{SayRefused: "you are walking"})
+	if !strings.Contains(got, "Your words went unsaid: you are walking") {
+		t.Errorf("coin-translation result %q does not report the refused line", got)
+	}
+}
