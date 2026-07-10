@@ -446,6 +446,68 @@ func TestHandlePCMe_LoiterStallRosterShowsOwner(t *testing.T) {
 	}
 }
 
+// TestHandlePCMe_LoiterShutStructureNoAudienceScope: LLM-359. A PC standing at a
+// STRUCTURE's loiter pin is scoped to it (cross-threshold) only while the shop is
+// OPEN — a keeper present and awake. When the keeper is abed the shop is shut and
+// the PC gets no audience scope: the read-path mirror of the engine's
+// conversationalScopeStructure gate, so a PC can no more talk through a closed
+// shop's wall than an NPC can. (A bare prop like a well is exempt — see
+// TestHandlePCMe_OutdoorAudienceScopeAndRoster, which keeps its well scope.)
+func TestHandlePCMe_LoiterShutStructureNoAudienceScope(t *testing.T) {
+	repo, _ := mem.NewRepository()
+	w, err := sim.LoadWorld(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go w.Run(ctx)
+
+	pin := sim.TilePos{X: 70, Y: 120}
+	_, err = w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		// A real structure (has a Structure entry → the open/closed gate applies).
+		world.Structures["shop"] = &sim.Structure{ID: "shop", DisplayName: "Tavern"}
+		world.Actors["p1"] = &sim.Actor{
+			ID: "p1", DisplayName: "Tester", Kind: sim.KindPC,
+			State: sim.StateIdle, LoginUsername: "tester", Pos: pin,
+		}
+		// The shop's only keeper, abed inside → shop shut.
+		world.Actors["keeper"] = &sim.Actor{
+			ID: "keeper", DisplayName: "Keeper", Kind: sim.KindNPCStateful,
+			State: sim.StateSleeping, WorkStructureID: "shop", InsideStructureID: "shop",
+		}
+		zero := 0
+		world.VillageObjects["shop"] = &sim.VillageObject{
+			ID: "shop", AssetID: "shop-asset", DisplayName: "Tavern",
+			Pos:           pin.Center(), // loiter pin == anchor == PC tile
+			LoiterOffsetX: &zero, LoiterOffsetY: &zero,
+		}
+		world.Assets = map[sim.AssetID]*sim.Asset{
+			"shop-asset": {ID: "shop-asset", Name: "Tavern", Category: "structure"},
+		}
+		return nil, nil
+	}})
+	if err != nil {
+		t.Fatalf("seed shut-shop pc/me world: %v", err)
+	}
+
+	srv := NewServer(w, okAuth{})
+	if resp := pcMe(t, srv); resp.AudienceStructureID != nil {
+		t.Errorf("shut shop: audience_structure_id = %v, want nil (the wall blocks the PC)", *resp.AudienceStructureID)
+	}
+
+	// Wake the keeper → shop OPEN → the PC is now scoped across the threshold.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["keeper"].State = sim.StateIdle
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("wake keeper: %v", err)
+	}
+	if resp := pcMe(t, srv); resp.AudienceStructureID == nil || *resp.AudienceStructureID != "shop" {
+		t.Errorf("open shop: audience_structure_id = %v, want shop", resp.AudienceStructureID)
+	}
+}
+
 // indoorNoHuddlePCMeWorld stands up a PC inside the inn with NO huddle, plus
 // co-located/nearby actors exercising every indoor-roster eligibility rule:
 // a conversational NPC and a fresh PC (included); a decorative NPC, a sleeping

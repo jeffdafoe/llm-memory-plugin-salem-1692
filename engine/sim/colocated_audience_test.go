@@ -80,6 +80,46 @@ func TestColocatedAudienceIDs_ExcludesSleeperAndDecorative(t *testing.T) {
 	}
 }
 
+// TestColocatedAudienceIDs_ShutShopBlocksCrossThreshold: LLM-359. An outside
+// actor at a business's loiter pin must not have the occupants inside in its
+// audience when the shop is SHUT (no keeper present + awake) — perception renders
+// this list as "## Around you", so a leak here is why the idle NPC kept
+// perceiving the player inside the closed Tavern and greeting them through the
+// wall. When the shop is OPEN the cross-threshold audience returns (thin walls at
+// an open shop are by design), so the gate is on open/closed, not on the bridge
+// itself.
+func TestColocatedAudienceIDs_ShutShopBlocksCrossThreshold(t *testing.T) {
+	w := audienceTestWorld()
+	z := 0
+	w.Assets["a"] = &Asset{ID: "a", Category: "structure"}
+	// A named business whose loiter pin == its anchor tile (zero offsets). It has a
+	// Structure entry — the open/closed gate only applies to structures (a bare
+	// prop keeps its loiter scope unconditionally).
+	w.Structures = map[StructureID]*Structure{"shop": {ID: "shop"}}
+	w.VillageObjects["shop"] = &VillageObject{ID: "shop", AssetID: "a", DisplayName: "Shop",
+		Pos: WorldPos{X: 160, Y: 160}, LoiterOffsetX: &z, LoiterOffsetY: &z}
+	pin := WorldPos{X: 160, Y: 160}.Tile()
+	now := audienceNow()
+	// Speaker at the loiter pin, outside (Patience's role).
+	w.Actors["patience"] = &Actor{ID: "patience", Kind: KindNPCShared, Pos: pin}
+	// The occupant inside the shop — a present player (the through-the-wall target).
+	w.Actors["player"] = &Actor{ID: "player", Kind: KindPC, InsideStructureID: "shop", LastPCSeenAt: &now}
+	// The shop's only keeper is abed → shut.
+	w.Actors["keeper"] = &Actor{ID: "keeper", Kind: KindNPCStateful, WorkStructureID: "shop",
+		InsideStructureID: "shop", State: StateSleeping}
+
+	if got := colocatedAudienceIDs(w, w.Actors["patience"], now); got != nil {
+		t.Errorf("shut shop: outside speaker's audience = %v, want nil (wall blocks cross-threshold)", got)
+	}
+
+	// Wake the keeper → shop OPEN → the cross-threshold audience returns, now
+	// reaching the keeper AND the inside player.
+	w.Actors["keeper"].State = StateIdle
+	if got := colocatedAudienceIDs(w, w.Actors["patience"], now); !sameIDs(got, "keeper", "player") {
+		t.Errorf("open shop: audience = %v, want [keeper player]", got)
+	}
+}
+
 // ZBBS-WORK-426. colocatedSleeperIDs is the asleep counterpart to
 // colocatedAudienceIDs: co-present SLEEPING conversational actors in the same
 // scope, surfaced so perception can mark them "(asleep)" while they stay OUT of

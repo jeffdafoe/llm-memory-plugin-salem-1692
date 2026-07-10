@@ -145,24 +145,63 @@ func EnsureColocatedHuddle(actorID ActorID, now time.Time) Command {
 }
 
 // conversationalScopeStructure returns the structure an actor is conversationally
-// scoped to: the structure it stands inside, or — when it is standing at a stall's
-// loiter point (the commerce position for an owner-only shop, where the customer
-// stays outside) — that stall, so a loitering customer is scoped to the owner
-// working within. Empty when the actor is neither inside a structure nor within
-// AudienceScopeTiles of a named object's loiter pin.
+// scoped to: the structure it stands inside, or — when it is standing at an OPEN
+// stall's loiter point (the commerce position for an owner-only shop, where the
+// customer stays outside) — that stall, so a loitering customer is scoped to the
+// owner working within. Empty when the actor is neither inside a structure nor
+// within AudienceScopeTiles of a loiter pin whose object is conversable.
 //
 // ZBBS-HOME-378: the engine-side mirror of httpapi.pcAudienceStructure, so the
 // speak/huddle WRITE path and the talk-roster READ path agree on who a loitering
 // customer can address. (StructureID and VillageObjectID share an id under the
 // WORK-342 shared-identity bridge, so the cast is exact.)
+//
+// LLM-359: the loiter-pin (cross-threshold) branch is gated by
+// loiterScopeConversable — a STRUCTURE must be OPEN (a keeper present and awake)
+// for its threshold to carry conversation, since a shut shop's wall blocks an
+// outside loiterer from whoever is inside (the live case: an idle NPC at a closed
+// Tavern's pin greeting the player standing inside, through the wall). A shut shop
+// resolves to open-ground scope ("") instead, so no cross-threshold huddle forms
+// and the inside occupant never enters the loiterer's audience. The inside-
+// structure branch above is untouched: two actors inside the same building
+// converse whether it is open or closed.
 func conversationalScopeStructure(w *World, a *Actor) StructureID {
 	if a.InsideStructureID != "" {
 		return a.InsideStructureID
 	}
-	if id, ok := ResolveLoiteringObject(w.VillageObjects, w.Assets, a.Pos, AudienceScopeTiles); ok {
+	if id, ok := ResolveLoiteringObject(w.VillageObjects, w.Assets, a.Pos, AudienceScopeTiles); ok &&
+		loiterScopeConversable(w, StructureID(string(id))) {
 		return StructureID(string(id))
 	}
 	return ""
+}
+
+// loiterScopeConversable reports whether an actor standing at the loiter pin of
+// the resolved object sid should be conversationally scoped to it (LLM-359). A
+// bare named prop — a well, a shade tree, anything with no Structure entry — has
+// no interior and no open/closed state, so its loiter scope always holds: it is
+// only a location label, and nobody is ever "inside" it to be reached across a
+// wall. A STRUCTURE must be OPEN (a keeper present and awake, keeperPresentAt) for
+// its threshold to carry conversation; a shut shop blocks the cross-threshold
+// scope. Live-world twin of LoiterScopeConversableInSnapshot — the two must gate a
+// shut shop identically or the huddle WRITE scope and the talk-roster READ scope
+// drift.
+func loiterScopeConversable(w *World, sid StructureID) bool {
+	if _, isStructure := w.Structures[sid]; !isStructure {
+		return true
+	}
+	return keeperPresentAt(w, sid)
+}
+
+// LoiterScopeConversableInSnapshot is loiterScopeConversable over a published
+// Snapshot — the read-path (httpapi pcAudienceStructure) twin. assets is the
+// reference catalog KeeperPresentInSnapshot needs (the snapshot doesn't carry it
+// inline).
+func LoiterScopeConversableInSnapshot(snap *Snapshot, assets map[AssetID]*Asset, sid StructureID) bool {
+	if _, isStructure := snap.Structures[sid]; !isStructure {
+		return true
+	}
+	return KeeperPresentInSnapshot(snap, assets, sid)
 }
 
 // colocatedConversationalActors returns the ids (sorted) of conversational,
