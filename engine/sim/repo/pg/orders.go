@@ -240,6 +240,13 @@ func (r *OrdersRepo) LoadAll(ctx context.Context) (map[sim.OrderID]*sim.Order, e
 		if depositAmt < 0 {
 			return nil, fmt.Errorf("pg orders LoadAll: order id=%d has negative deposit_amount %d", id, depositAmt)
 		}
+		// The migration CHECK forbids deposit_amount > offered_amount, but LoadAll
+		// validates the full invariant it relies on: a deposit exceeding the total
+		// would otherwise be read as "full prepay" (orderBalanceDue treats
+		// deposit >= Amount as zero), silently swallowing a corrupt row.
+		if depositAmt > offeredAmt {
+			return nil, fmt.Errorf("pg orders LoadAll: order id=%d has deposit_amount %d greater than offered_amount %d", id, depositAmt, offeredAmt)
+		}
 		state, err := fulfillmentToOrderState(status)
 		if err != nil {
 			// loadAllSQL filters fulfillment_status IN

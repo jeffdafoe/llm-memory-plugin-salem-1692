@@ -494,8 +494,8 @@ func DecodePayWithItemArgs(raw json.RawMessage) (any, error) {
 	if args.Deposit < 0 {
 		return nil, modelSafef("pay_with_item: deposit cannot be negative (got %d)", args.Deposit)
 	}
-	if args.Deposit > args.Amount {
-		return nil, modelSafef("pay_with_item: deposit %d cannot exceed the amount %d", args.Deposit, args.Amount)
+	if args.Deposit > 0 && args.Deposit >= args.Amount {
+		return nil, modelSafef("pay_with_item: deposit %d must be less than the amount %d — a deposit is a partial payment; omit it to pay in full", args.Deposit, args.Amount)
 	}
 	// say shares speak's rune cap — it lands on the same utterance path (LLM-350).
 	if n := utf8.RuneCountInString(args.Say); n > MaxSpeakTextChars {

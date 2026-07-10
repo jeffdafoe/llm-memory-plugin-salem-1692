@@ -71,3 +71,43 @@ func TestRenderOrders_PartialPaymentBalanceClauses(t *testing.T) {
 		t.Errorf("full-prepay order should not render a balance clause:\n%s", got)
 	}
 }
+
+// TestOfferIsCommissionShaped: the seller's deposit clause is carried onto the
+// offer cue ONLY when the offer would resolve to a commission — the seller
+// produces the good and is short of it. An in-stock sale, a non-producer
+// (service/lodging), a barter, or an eat-here offer must NOT be framed as a
+// deposit, since accept would charge in full (LLM-357, code_review finding).
+func TestOfferIsCommissionShaped(t *testing.T) {
+	producer := func(inv int) *sim.ActorSnapshot {
+		return &sim.ActorSnapshot{
+			Inventory:     map[sim.ItemKind]int{"shovel": inv},
+			RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{{Item: "shovel", Source: sim.RestockSourceProduce, Max: 20}}},
+		}
+	}
+	base := func() *sim.PayLedgerEntry {
+		return &sim.PayLedgerEntry{ItemKind: "shovel", Qty: 3, Amount: 15, Deposit: 5, ConsumerIDs: []sim.ActorID{"buyer"}}
+	}
+	cases := []struct {
+		name   string
+		seller *sim.ActorSnapshot
+		mutate func(*sim.PayLedgerEntry)
+		want   bool
+	}{
+		{"producer_short", producer(0), nil, true},
+		{"producer_in_stock", producer(3), nil, false},
+		{"non_producer", &sim.ActorSnapshot{Inventory: map[sim.ItemKind]int{}, RestockPolicy: &sim.RestockPolicy{}}, nil, false},
+		{"barter", producer(0), func(e *sim.PayLedgerEntry) { e.PayItems = []sim.ItemKindQty{{Kind: "pebble", Qty: 1}} }, false},
+		{"consume_now", producer(0), func(e *sim.PayLedgerEntry) { e.ConsumeNow = true }, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := base()
+			if tc.mutate != nil {
+				tc.mutate(e)
+			}
+			if got := offerIsCommissionShaped(tc.seller, e); got != tc.want {
+				t.Errorf("offerIsCommissionShaped = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

@@ -245,9 +245,12 @@ func PayWithItem(
 	at time.Time,
 	// opts carries the optional buyer-facing extras — the advance-booking offset
 	// (ReadyInDays; ZBBS-HOME-403) and the partial-payment deposit (Deposit;
-	// LLM-357). Variadic so the many call sites that set neither compile
+	// LLM-357). Variadic so the many call sites that pass NO options compile
 	// unchanged; only the buyer-facing tool + PC routes pass one, and at most one
-	// value may be passed. See PayWithItemOpts.
+	// value may be passed. This replaced the prior `readyInDays ...int` tail — a
+	// source-breaking change, but PayWithItem is engine-internal with no external
+	// consumers, so the few callers that passed a bare int were migrated to
+	// PayWithItemOpts{ReadyInDays: N} within this repo. See PayWithItemOpts.
 	opts ...PayWithItemOpts,
 ) Command {
 	return Command{
@@ -663,8 +666,8 @@ func PayWithItem(
 			if depositArg < 0 {
 				return nil, fmt.Errorf("PayWithItem: deposit cannot be negative (got %d)", depositArg)
 			}
-			if depositArg > amount {
-				return nil, fmt.Errorf("PayWithItem: deposit %d cannot exceed the total price %d", depositArg, amount)
+			if depositArg > 0 && depositArg >= amount {
+				return nil, fmt.Errorf("PayWithItem: deposit %d must be less than the total price %d (a deposit is a partial payment)", depositArg, amount)
 			}
 			if depositArg > 0 && consumeNow {
 				return nil, errors.New("a deposit needs consume_now=false — you can only put money down on a made-to-order good you'll collect later.")

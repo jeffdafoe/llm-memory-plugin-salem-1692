@@ -413,6 +413,13 @@ func DeliverOrder(sellerID ActorID, orderID OrderID, at time.Time) Command {
 			}
 			sellerFact := orderDeliveredFactText(buyerName, o.Item, o.Qty, len(o.ConsumerIDs), false)
 			buyerFact := orderDeliveredFactText(sellerName, o.Item, o.Qty, len(o.ConsumerIDs), true)
+			// LLM-357: on a partial-payment commission, record that the balance was
+			// settled on collection so both memories carry the whole deal, not just
+			// the handover.
+			if balanceDue > 0 {
+				sellerFact += fmt.Sprintf(" They settled the %d-coin balance on collection.", balanceDue)
+				buyerFact += fmt.Sprintf(" I settled the %d-coin balance on collection.", balanceDue)
+			}
 			if _, err := RecordInteraction(o.SellerID, o.BuyerID, InteractionDelivered, sellerFact, at).Fn(w); err != nil {
 				log.Printf("sim.DeliverOrder: RecordInteraction seller→buyer: %v", err)
 			}

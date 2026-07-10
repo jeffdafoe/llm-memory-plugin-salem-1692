@@ -549,7 +549,9 @@ func TestCommission_PartialPayment_BuyerFaultForfeitsDeposit(t *testing.T) {
 	if _, err := w.Send(sim.AcceptPay("smith", 1, at)); err != nil {
 		t.Fatalf("AcceptPay: %v", err)
 	}
-	// smith forges the nail (holds it) but the buyer never returns to collect.
+	// smith holds enough stock at expiry (forged for this order, or acquired any
+	// other way — buyer-fault is a current-stock / "was deliverable" test, not
+	// "forged for this order") but the buyer never returns to collect.
 	mustSend(t, w, func(world *sim.World) {
 		world.Actors["smith"].Inventory = map[sim.ItemKind]int{"nail": 1}
 	})

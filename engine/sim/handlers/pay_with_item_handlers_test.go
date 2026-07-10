@@ -305,7 +305,8 @@ func TestDecodePayWithItem_RejectsShapeErrors(t *testing.T) {
 		{"ready_in_days_negative", `{"seller":"A","item":"stew","qty":1,"amount":4,"consume_now":false,"ready_in_days":-1}`, "ready_in_days cannot be negative"},
 		{"ready_in_days_over_cap", `{"seller":"A","item":"stew","qty":1,"amount":4,"consume_now":false,"ready_in_days":31}`, "ready_in_days too far ahead"},
 		{"deposit_negative", `{"seller":"A","item":"shovel","qty":1,"amount":15,"consume_now":false,"deposit":-1}`, "deposit cannot be negative"},
-		{"deposit_over_amount", `{"seller":"A","item":"shovel","qty":1,"amount":15,"consume_now":false,"deposit":20}`, "deposit 20 cannot exceed the amount 15"},
+		{"deposit_over_amount", `{"seller":"A","item":"shovel","qty":1,"amount":15,"consume_now":false,"deposit":20}`, "deposit 20 must be less than the amount 15"},
+		{"deposit_equals_amount", `{"seller":"A","item":"shovel","qty":1,"amount":15,"consume_now":false,"deposit":15}`, "deposit 15 must be less than the amount 15"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

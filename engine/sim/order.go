@@ -476,10 +476,15 @@ func orderBalanceDue(o *Order) int {
 // on both the seller's and the buyer's side. LLM-357.
 func OrderBalanceDue(o *Order) int { return orderBalanceDue(o) }
 
-// sellerHoldsOrderGoods reports whether the seller currently holds enough
-// physical stock to fulfil the order — the "the good was actually forged"
-// signal that tells buyer-fault (forged but uncollected) from seller-fault
-// (never made) at expiry (LLM-357). Mirrors DeliverOrder's gate-5 stock check
+// sellerHoldsOrderGoods reports whether the seller currently holds enough stock
+// to fulfil the order right now — the same gate-5 signal DeliverOrder uses. At
+// expiry (LLM-357) it distinguishes buyer-fault (the order was DELIVERABLE — the
+// seller had the goods on hand — and the buyer never collected) from seller-fault
+// (the seller could not have delivered). It is deliberately a current-stock
+// check, NOT "these specific units were forged for this order": the reservation
+// model pools forged goods into general inventory with no per-order earmark, and
+// "the seller could have handed it over and the buyer didn't come" is the fair
+// test however the stock was acquired. Mirrors DeliverOrder's gate-5 stock check
 // (raw inventory vs Qty*consumers). A service/lodging item carries no inventory
 // and is treated as always-held (never reached by a commission, which is
 // non-service by construction). MUST run on the world goroutine.
