@@ -75,6 +75,7 @@ const (
 	WarrantKindFarmUpkeep         WarrantKind = "farm_upkeep"          // a farm owner owes upkeep shovels (coins above the floor) — wake them to buy from the smith (LLM-215)
 	WarrantKindReturnToPost       WarrantKind = "return_to_post"       // engine-authored felt impulse: a laboring worker has wandered off the post — wake them to head back (LLM-268)
 	WarrantKindTendNeed           WarrantKind = "tend_need"            // engine-authored felt impulse: a workless idle worker has grown hungry/thirsty and can resolve it now — go eat/drink instead of hunting odd jobs (LLM-276)
+	WarrantKindAtEase             WarrantKind = "at_ease"              // engine-authored felt impulse: a comfortable (coin-rich) workless idle worker has nothing pressing — take its ease, a plain idle villager (LLM-352, the LLM-194 "later lever")
 )
 
 // WarrantReason is the marker interface for kind-specific warrant payloads.
@@ -560,6 +561,25 @@ type SeekWorkWarrantReason struct{}
 func (SeekWorkWarrantReason) isWarrantReason()           {}
 func (SeekWorkWarrantReason) Kind() WarrantKind          { return WarrantKindSeekWork }
 func (SeekWorkWarrantReason) DedupDiscriminator() uint64 { return 0 }
+
+// AtEaseWarrantReason wakes a COMFORTABLE (coin-rich, at/above the seek-work
+// ceiling) workless idle Worker so it does the ordinary-villager things — wander,
+// visit, consume — instead of freezing in place (LLM-352). It is the "later
+// lever" LLM-194 named: 194 stopped a rich worker from hustling but relied on
+// eating/drinking to drain its purse back under the ceiling, and that drain is too
+// slow — a comfortable idle worker has no driver at all until a need reddens hours
+// later, so it went dormant. Stamped by the seek-work backstop IN PLACE OF
+// SeekWorkWarrantReason for a comfortable worker (the go-earn nudge would be a lie
+// — it doesn't need work). Same no-fields, engine-authored, non-rester-interrupting
+// posture as SeekWorkWarrantReason; DedupDiscriminator 0 (not event-sourced).
+// Unlike seek-work it is AUDIENCE-GATED (the backstop withholds it under eco, like
+// the idle backstop, LLM-313) — cosmetic liveness for a watcher, not economic
+// housekeeping.
+type AtEaseWarrantReason struct{}
+
+func (AtEaseWarrantReason) isWarrantReason()           {}
+func (AtEaseWarrantReason) Kind() WarrantKind          { return WarrantKindAtEase }
+func (AtEaseWarrantReason) DedupDiscriminator() uint64 { return 0 }
 
 // TendNeedWarrantReason wakes a workless, idle Worker whose hunger or thirst has
 // climbed into the UPPER part of the felt (sub-red) band AND which it can resolve

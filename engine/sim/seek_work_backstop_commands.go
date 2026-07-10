@@ -51,12 +51,14 @@ const (
 type SeekWorkBackstopTelemetry struct {
 	Stamped              int
 	Redirected           int // of Stamped, how many were re-aimed at eating/drinking (TendNeed) instead of seeking work (LLM-276)
+	AtEase               int // of Stamped, how many were a comfortable idler's at-ease liveness impulse instead of seek-work (LLM-352)
 	SkippedScope         int // not KindNPCStateful / KindNPCShared, or a visitor
 	SkippedNotEligible   int // not a worker, has a workplace, off-shift, asleep, or already working
 	SkippedRedNeed       int // an actionable red need takes precedence (eat before work)
 	SkippedWarranted     int // open WarrantedSince cycle
 	SkippedTickInFlight  int // mid-tick
 	SkippedBackoff       int // still inside its backoff window
+	SkippedEco           int // a comfortable idler's at-ease impulse withheld while unwatched (LLM-352 audience-gate)
 	SkippedStampDeclined int // tryStampWarrant funnel declined (unreachable today)
 }
 
@@ -82,10 +84,14 @@ func EvaluateSeekWorkBackstop(now time.Time) Command {
 					continue
 				}
 
-				if !seekWorkEligible(w, a, now, nowMinute) {
+				if !worklessIdleWorkerOnShift(w, a, now, nowMinute) {
 					// Not a workless idle worker (has a workplace, off-shift,
 					// working, …). Clear the backoff so the NEXT workless spell
 					// re-engages from base rather than inheriting a stale timer.
+					// NOTE the gate is the coin-ceiling-AGNOSTIC predicate: a
+					// comfortable workless idler is still handled here (it takes the
+					// at-ease arm below), where the old seek-work-only gate skipped
+					// it into the freeze this ticket fixes (LLM-352).
 					clearSeekWorkBackstop(a)
 					t.SkippedNotEligible++
 					continue
@@ -127,18 +133,35 @@ func EvaluateSeekWorkBackstop(now time.Time) Command {
 				// Shared exponential-backoff helper (red_need_backstop_commands.go).
 				delay := redNeedBackoffDelay(defaultSeekWorkBackstopBaseDelay, defaultSeekWorkBackstopMaxDelay, level)
 
-				// LLM-276: a workless worker that has grown hungry/thirsty (upper felt
-				// band) AND can resolve it right now — carries food, holds coin, or a
-				// free public source is nearby — is steered to EAT rather than to hunt
-				// odd jobs. The seek-work backstop is its waker either way; only the felt
-				// impulse it stamps differs, so the redirect inherits the same backoff
-				// pacing. A broke worker with no reachable food stays on seek-work (goes
-				// to earn meal money) — the coarse resolvable gate is what splits them.
+				// Which felt impulse to stamp — three arms sharing this waker and its
+				// backoff:
+				//   1. TendNeed (LLM-276): a worker (broke OR comfortable) that has grown
+				//      hungry/thirsty (upper felt band) AND can resolve it now — carries
+				//      food, holds coin, or a free source is nearby — is steered to EAT.
+				//   2. SeekWork (LLM-141): a below-ceiling worker goes to earn.
+				//   3. AtEase (LLM-352): an at/above-ceiling ("comfortable") worker has no
+				//      go-earn nudge to give — that would be a lie, it doesn't need the
+				//      work — so it gets the "the day is your own" leisure impulse instead
+				//      of the freeze the coin ceiling (LLM-194) otherwise left it in.
+				// AtEase is AUDIENCE-GATED: withheld while unwatched (like the plain idle
+				// backstop under eco, LLM-313). No coin moves and no counterparty waits —
+				// it is cosmetic liveness for a watcher, so it costs nothing when nobody is
+				// looking. It re-qualifies every sweep, so the first sweep after the
+				// audience returns stamps as usual; the backoff is left untouched on the
+				// eco-skip so recovery is prompt.
 				var reason WarrantReason = SeekWorkWarrantReason{}
 				redirected := false
+				atEase := false
 				if need, ok := pressingResolvableConsumableNeed(w, a); ok {
 					reason = TendNeedWarrantReason{Need: need}
 					redirected = true
+				} else if workerIsComfortable(w, a) {
+					if ecoModeEngaged(w, now) {
+						t.SkippedEco++
+						continue
+					}
+					reason = AtEaseWarrantReason{}
+					atEase = true
 				}
 				// Only advance the backoff (and count the stamp) if the funnel
 				// recorded the warrant — same correct-by-construction posture as
@@ -158,6 +181,9 @@ func EvaluateSeekWorkBackstop(now time.Time) Command {
 				t.Stamped++
 				if redirected {
 					t.Redirected++
+				}
+				if atEase {
+					t.AtEase++
 				}
 			}
 			return t, nil
@@ -198,10 +224,13 @@ func workerIsComfortable(w *World, a *Actor) bool {
 	return a.Coins >= effectiveSeekWorkCoinCeiling(w.Settings)
 }
 
-// seekWorkEligible reports whether a is a workless, on-shift, awake Worker with
-// no live or pending labor job — the core "has no post to keep but should be
-// finding odd jobs" state. Scope (kind / visitor) is checked by the caller.
-func seekWorkEligible(w *World, a *Actor, now time.Time, nowMinute int) bool {
+// worklessIdleWorkerOnShift reports whether a is a workless, on-shift, awake Worker
+// with no live or pending labor job — the coin-ceiling-AGNOSTIC "has no post to keep
+// but is here and unengaged" state shared by BOTH backstop arms. seekWorkEligible
+// adds "and below the coin ceiling" (goes to earn, LLM-141); the at-ease arm covers
+// the at/above-ceiling worker (takes its ease instead of freezing, LLM-352). Scope
+// (kind / visitor) is checked by the caller.
+func worklessIdleWorkerOnShift(w *World, a *Actor, now time.Time, nowMinute int) bool {
 	if !actorIsWorker(a) {
 		return false
 	}
@@ -219,17 +248,8 @@ func seekWorkEligible(w *World, a *Actor, now time.Time, nowMinute int) bool {
 	if actorHasResolvableWorkplace(w, a) {
 		return false
 	}
-	// LLM-194: a coin-rich worker doesn't need odd jobs. At or above the seek-work
-	// coin ceiling the worker reads as a plain idle villager and drains its purse via
-	// ordinary consumption instead of pestering keepers for work it doesn't need;
-	// it re-enters the labor market once it dips back under the ceiling. Mirrors the
-	// perception directory/affordance gate (subjectIsComfortable) so the warrant and
-	// the cues agree (the LLM-168 warrant/directory-must-agree invariant).
-	if workerIsComfortable(w, a) {
-		return false
-	}
-	// Never nudge a sleeper (the seek-work warrant can't wake one anyway — it is
-	// not a rester-interrupting kind — so stamping it would only waste a slot).
+	// Never nudge a sleeper (neither impulse is a rester-interrupting kind — it
+	// can't wake one anyway — so stamping it would only waste a slot).
 	if a.State == StateSleeping {
 		return false
 	}
@@ -238,10 +258,10 @@ func seekWorkEligible(w *World, a *Actor, now time.Time, nowMinute int) bool {
 	}
 	// Don't disturb a cleanly-occupied worker: a scheduled break (StateResting /
 	// BreakUntil — recovering) or an in-flight timed source activity (mid
-	// eat/drink/harvest). The seek-work kind isn't a rester-interrupting one, so
-	// such a warrant would only shelve in actorCanReactNow anyway — skipping here
-	// keeps the invariant local and avoids burning a warrant slot + advancing the
-	// backoff on a worker that is legitimately busy.
+	// eat/drink/harvest). Neither impulse is a rester-interrupting one, so such a
+	// warrant would only shelve in actorCanReactNow anyway — skipping here keeps the
+	// invariant local and avoids burning a warrant slot + advancing the backoff on a
+	// worker that is legitimately busy.
 	if a.State == StateResting {
 		return false
 	}
@@ -264,6 +284,17 @@ func seekWorkEligible(w *World, a *Actor, now time.Time, nowMinute int) bool {
 		return false
 	}
 	return true
+}
+
+// seekWorkEligible reports whether a workless idle worker should be SEEKING work:
+// worklessIdleWorkerOnShift AND below the seek-work coin ceiling. At/above the
+// ceiling ("comfortable", workerIsComfortable / LLM-194) the worker doesn't need
+// odd jobs — the at-ease arm keeps it a live idle villager instead of leaving it to
+// freeze (LLM-352). The sweep gates on worklessIdleWorkerOnShift and splits by
+// workerIsComfortable inline; this named predicate is retained for the tests and
+// any future caller.
+func seekWorkEligible(w *World, a *Actor, now time.Time, nowMinute int) bool {
+	return worklessIdleWorkerOnShift(w, a, now, nowMinute) && !workerIsComfortable(w, a)
 }
 
 // actorHasResolvableWorkplace reports whether the actor's WorkStructureID names a
