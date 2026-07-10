@@ -114,6 +114,26 @@ func TestGoldensNeverAdvertiseHomeAsMoveTargetWhenInside(t *testing.T) {
 	}
 }
 
+// TestGoldensRainLineIffStorm is the LLM-364 cross-scenario invariant: the felt
+// rain line renders in a scenario's prompt IFF that scenario's snapshot has an
+// active storm (Environment.Weather == storm). Guards both directions across the
+// whole matrix — a storm scenario must carry the line, and every clear/weatherless
+// scenario must NOT (so the deterministic weather cue can't leak into a calm-day
+// prompt, and a storm can't silently stop surfacing).
+func TestGoldensRainLineIffStorm(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, _, _ := sc.build()
+			wantRain := strings.TrimSpace(snap.Environment.Weather) == sim.WeatherStorm
+			hasRain := strings.Contains(renderScenario(sc), weatherStormProse)
+			if wantRain != hasRain {
+				t.Errorf("scenario %q: storm=%v but rain line present=%v — the felt rain line must render iff a storm is overhead (LLM-364)", sc.name, wantRain, hasRain)
+			}
+		})
+	}
+}
+
 // TestGoldensTendNeedYieldsToEating is the LLM-276 cross-scenario invariant: whenever
 // a tend-need warrant is present (the seek-work backstop redirected a workless idle
 // worker with a resolvable hunger/thirst to eat), the rendered prompt must carry the
@@ -733,6 +753,21 @@ var perceptionScenarios = []perceptionScenario{
 			"fixed it at the tool-advertising layer, so this PAYLOAD is unchanged — the golden is a regression pin; " +
 			"the fix's guard is the handlers gating test.",
 		build: keeperAloneAtPostOnShift,
+	},
+	{
+		name: "storm_weather_over_keeper_at_post",
+		summary: "LLM-364: the keeper_alone_at_post_onshift fixture with a storm overhead " +
+			"(Environment.Weather = storm). The golden pins the deterministic felt rain line — " +
+			"\"Rain falls steady over the village, and the lanes are turning to mud.\" — rendered right after " +
+			"the time-of-day line, so an NPC deciding its turn actually perceives the weather (the client's " +
+			"rain / lightning FX alone never reached deliberation, and the atmosphere line was pulled by " +
+			"WORK-374). The diff against keeper_alone_at_post_onshift is exactly that one added line; clear / " +
+			"empty weather renders nothing (matrix guard: TestGoldensRainLineIffStorm).",
+		build: func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+			snap, actorID, warrants := keeperAloneAtPostOnShift()
+			snap.Environment.Weather = sim.WeatherStorm
+			return snap, actorID, warrants
+		},
 	},
 	{
 		name: "visitor_arrives_at_keepers_workplace",
