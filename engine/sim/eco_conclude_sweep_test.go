@@ -268,6 +268,107 @@ func TestEcoConcludeSweep_ForeignCommerceDoesNotProtect(t *testing.T) {
 	}
 }
 
+// setLaborState flips a seeded labor offer's state on the world goroutine — the
+// labor analogue of re-staging a pay entry between test phases.
+func setLaborState(t *testing.T, w *sim.World, id sim.LaborID, state sim.LaborLedgerState) {
+	t.Helper()
+	sendT(t, w, sim.Command{Fn: func(world *sim.World) (any, error) {
+		if o := world.LaborLedger[id]; o != nil {
+			o.State = state
+		}
+		return nil, nil
+	}})
+}
+
+// TestEcoConcludeSweep_LaborLedgerGuard (LLM-348): a huddle carrying a live
+// labor offer stamped with its ID is spared the arc — the same protection a
+// pending pay-ledger entry earns a sale — through every non-terminal state
+// (pending → en_route → working). Once the hire settles the arc runs and the
+// scene concludes.
+func TestEcoConcludeSweep_LaborLedgerGuard(t *testing.T) {
+	w, cancel := buildHuddleTestWorld(t)
+	defer cancel()
+	t0 := time.Now().UTC()
+
+	h := sendT(t, w, sim.JoinHuddle("alice", "tavern", "", t0)).(sim.JoinHuddleResult).HuddleID
+	sendT(t, w, sim.JoinHuddle("bob", "tavern", "", t0))
+	enableEcoArc(t, w, 3*time.Minute)
+
+	// Arm the arc, then open a live hire in the huddle (worker alice, employer bob).
+	sendT(t, w, sim.EvaluateEcoConcludeSweep(t0))
+	seedLaborOffer(t, w, sim.LaborOffer{
+		ID:         1,
+		WorkerID:   "alice",
+		EmployerID: "bob",
+		State:      sim.LaborStatePending,
+		HuddleID:   h,
+		Reward:     3,
+	})
+
+	// Far past the arc: the pending hire re-stamps instead of concluding, just
+	// like a pending sale.
+	t1 := t0.Add(10 * time.Minute)
+	sendT(t, w, sim.EvaluateEcoConcludeSweep(t1))
+	if huddleConcludedAt(t, w, h) != nil {
+		t.Fatal("a huddle with a pending labor offer must not be concluded")
+	}
+	if stamp := ecoStamp(t, w, h); stamp == nil || !stamp.Equal(t1) {
+		t.Errorf("labor guard should push the arc stamp to now, got %v", stamp)
+	}
+
+	// The offer walks through its remaining non-terminal states — still spared.
+	for _, st := range []sim.LaborLedgerState{sim.LaborStateEnRoute, sim.LaborStateWorking} {
+		setLaborState(t, w, 1, st)
+		t1 = t1.Add(10 * time.Minute)
+		sendT(t, w, sim.EvaluateEcoConcludeSweep(t1))
+		if huddleConcludedAt(t, w, h) != nil {
+			t.Fatalf("a huddle with a %s labor offer must not be concluded", st)
+		}
+		if stamp := ecoStamp(t, w, h); stamp == nil || !stamp.Equal(t1) {
+			t.Errorf("labor guard (%s) should push the arc stamp to now, got %v", st, stamp)
+		}
+	}
+
+	// Hire settles (terminal): the arc finally runs and the huddle concludes.
+	setLaborState(t, w, 1, sim.LaborStateCompleted)
+	t2 := t1.Add(3 * time.Minute)
+	sendT(t, w, sim.EvaluateEcoConcludeSweep(t2))
+	if huddleConcludedAt(t, w, h) == nil {
+		t.Error("with the hire settled the arc should conclude the huddle")
+	}
+}
+
+// TestEcoConcludeSweep_ForeignLaborDoesNotProtect (LLM-348): a live labor offer
+// stamped with a DIFFERENT huddle's ID must not hold this conversation open —
+// the ledger-scoping discipline that keeps a stale hire from elsewhere
+// protecting every scene, mirroring ForeignCommerce for the pay ledger.
+func TestEcoConcludeSweep_ForeignLaborDoesNotProtect(t *testing.T) {
+	w, cancel := buildHuddleTestWorld(t)
+	defer cancel()
+	t0 := time.Now().UTC()
+
+	h := sendT(t, w, sim.JoinHuddle("alice", "tavern", "", t0)).(sim.JoinHuddleResult).HuddleID
+	sendT(t, w, sim.JoinHuddle("bob", "tavern", "", t0))
+	enableEcoArc(t, w, 3*time.Minute)
+
+	// A pending hire between the same two actors, but scoped to another huddle.
+	seedLaborOffer(t, w, sim.LaborOffer{
+		ID:         1,
+		WorkerID:   "alice",
+		EmployerID: "bob",
+		State:      sim.LaborStatePending,
+		HuddleID:   "hud-somewhere-else",
+		Reward:     3,
+	})
+
+	sendT(t, w, sim.EvaluateEcoConcludeSweep(t0))
+	t1 := t0.Add(3 * time.Minute)
+	sendT(t, w, sim.EvaluateEcoConcludeSweep(t1))
+	if huddleConcludedAt(t, w, h) == nil {
+		t.Error("a labor offer scoped to another huddle must not protect this one — the arc should conclude it")
+	}
+}
+
 func TestEcoConcludeSweep_DisabledNoop(t *testing.T) {
 	w, cancel := buildHuddleTestWorld(t)
 	defer cancel()
