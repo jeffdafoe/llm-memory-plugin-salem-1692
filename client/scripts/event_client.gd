@@ -48,6 +48,27 @@ var _local_object_ids: Dictionary = {}
 var _reconnect_timer: float = 0.0
 const RECONNECT_DELAY: float = 3.0
 
+# Backlog guards (LLM-361). A hidden tab stops the main loop while the
+# browser keeps the socket alive (WS pings are answered by the network
+# stack, not game code), so events pile up unread. Replaying a big backlog
+# in one frame floods the engine's MessageQueue — on overflow deferred
+# calls are silently dropped and the client dies on use-after-free.
+# MAX_PACKETS_PER_FRAME slices the replay across frames; a frame gap over
+# STALE_GAP_MS means the backlog is minutes old (and past the inbound
+# buffer, silently holed) — drop the socket and let the reconnect resync
+# (main.gd._on_ws_reconnected) rebuild from REST instead of replaying.
+const MAX_PACKETS_PER_FRAME := 100
+const STALE_GAP_MS := 120_000
+# The peer default inbound buffer (64KB / 4096 packets) silently drops
+# events after roughly a minute of a busy village — too small for the
+# hidden-tab slow-tick mode where the browser runs ~1 frame/minute.
+const INBOUND_BUFFER_BYTES := 1 << 20
+const INBOUND_MAX_PACKETS := 8192
+
+# Wall-clock stamp of the previous _process, for the stale-gap check.
+# _process delta can be clamped by the engine, so measure time ourselves.
+var _last_process_ticks: int = 0
+
 # Token currently bound to the open / opening connection. Used to make
 # connect_to_server idempotent — calling it twice with the same token
 # (which happens when both auth_ready and logged_in fire on a single
@@ -88,6 +109,8 @@ func connect_to_server() -> void:
 
     _connected_token = Auth.session_token
     _socket = WebSocketPeer.new()
+    _socket.inbound_buffer_size = INBOUND_BUFFER_BYTES
+    _socket.max_queued_packets = INBOUND_MAX_PACKETS
     var err = _socket.connect_to_url(_url)
     if err != OK:
         push_error("WebSocket connect failed: " + str(err))
@@ -96,6 +119,14 @@ func connect_to_server() -> void:
         _reconnect_timer = RECONNECT_DELAY
 
 func _process(delta: float) -> void:
+    var now_ticks := Time.get_ticks_msec()
+    # First tick has no previous stamp — treat the gap as zero so a node
+    # added late (or resequenced setup) can't see a bogus since-boot gap.
+    var frame_gap := 0
+    if _last_process_ticks != 0:
+        frame_gap = now_ticks - _last_process_ticks
+    _last_process_ticks = now_ticks
+
     # Handle terrain reload debounce
     if _terrain_reload_timer > 0:
         _terrain_reload_timer -= delta
@@ -124,10 +155,24 @@ func _process(delta: float) -> void:
                 reconnected.emit()
             else:
                 _initial_connect_done = true
-        # Read all available messages
-        while _socket.get_available_packet_count() > 0:
+        elif frame_gap > STALE_GAP_MS:
+            # The main loop just woke from a long stall (hidden tab). The
+            # buffered backlog is minutes old and anything past the inbound
+            # buffer was silently dropped, so replaying it would rebuild a
+            # holed world. Discard it with the socket; the reconnect path
+            # resyncs from REST under the loading curtain.
+            push_warning("EventClient: %d ms frame gap — dropping WS backlog for resync" % frame_gap)
+            _socket.close()
+            return
+        # Read available messages, capped per frame so a burst can't flood
+        # the MessageQueue; leftovers drain on the following frames.
+        var processed := 0
+        while _socket.get_available_packet_count() > 0 and processed < MAX_PACKETS_PER_FRAME:
             var data = _socket.get_packet().get_string_from_utf8()
             _handle_message(data)
+            processed += 1
+        if processed == MAX_PACKETS_PER_FRAME and _socket.get_available_packet_count() > 0:
+            push_warning("EventClient: WS packet processing capped this frame; backlog remains")
 
     if state == WebSocketPeer.STATE_CLOSED:
         _connected = false

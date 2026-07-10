@@ -335,22 +335,33 @@ func _build_tree() -> void:
     _build_launcher()
     _build_sheet()
 
+    # Timeouts (LLM-361): a request that hangs (server restart mid-flight,
+    # stalled proxy) otherwise wedges its HTTPRequest node forever — every
+    # later poll bounces off ERR_BUSY. Polled requests time out under their
+    # own cadence so the next tick gets a free node; user-action requests
+    # get a looser bound.
     http_me = HTTPRequest.new()
+    http_me.timeout = 8.0
     add_child(http_me)
 
     http_speak = HTTPRequest.new()
+    http_speak.timeout = 15.0
     add_child(http_speak)
 
     http_pay = HTTPRequest.new()
+    http_pay.timeout = 15.0
     add_child(http_pay)
 
     http_items = HTTPRequest.new()
+    http_items.timeout = 15.0
     add_child(http_items)
 
     http_quotes = HTTPRequest.new()
+    http_quotes.timeout = 15.0
     add_child(http_quotes)
 
     http_village = HTTPRequest.new()
+    http_village.timeout = 4.0
     add_child(http_village)
 
     refresh_timer = Timer.new()
