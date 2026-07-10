@@ -242,14 +242,38 @@ func TestBuildEveningLeisure(t *testing.T) {
 			t.Errorf("venue label: got %q, want the tavern the actor stands in", v.VenueLabel)
 		}
 	})
-	t.Run("nil leaving the tavern for home (don't argue with the choice)", func(t *testing.T) {
-		// Inside the venue but already walking back out to the night-place: the decision
-		// to leave is made, so the room must not be re-pumped at the agent's back.
+	t.Run("nil leaving the tavern (don't argue with the choice)", func(t *testing.T) {
+		// Inside the venue but already walking out: the decision to leave is made, so the
+		// room must not be re-pumped at the agent's back. InsideStructureID tracks the
+		// CURRENT TILE, so this state persists for every tick spent crossing the tavern
+		// floor — it is not a one-tick transient. Any destination counts, not just home
+		// (code_review): the model may walk out to the smith or its own workplace.
+		for _, dest := range []struct {
+			name string
+			kind sim.MoveDestinationKind
+			id   sim.StructureID
+		}{
+			{"home (the co-equal stay-in option)", sim.MoveDestinationStructureEnter, "cottage"},
+			{"the blacksmith (an errand)", sim.MoveDestinationStructureEnter, "blacksmith"},
+			{"a visitor slot outside the tavern itself", sim.MoveDestinationStructureVisit, "tavern"},
+		} {
+			a := eveningWorker("tavern")
+			a.MoveDestKind = dest.kind
+			a.MoveDestStructureID = dest.id
+			if v := buildEveningLeisure(eveningSnap(1230), a, eveningAnchors); v != nil {
+				t.Errorf("want nil while walking out of the venue to %s, got %+v", dest.name, v)
+			}
+		}
+	})
+	t.Run("settled-in survives a stale enter-intent aimed at the venue itself", func(t *testing.T) {
+		// A StructureEnter targeting the venue the actor already stands in is an arrival
+		// that just reconciled, not a departure — the room must still render.
 		a := eveningWorker("tavern")
 		a.MoveDestKind = sim.MoveDestinationStructureEnter
-		a.MoveDestStructureID = "cottage"
-		if v := buildEveningLeisure(eveningSnap(1230), a, eveningAnchors); v != nil {
-			t.Fatalf("want nil while walking out of the venue toward home, got %+v", v)
+		a.MoveDestStructureID = "tavern"
+		v := buildEveningLeisure(eveningSnap(1230), a, eveningAnchors)
+		if v == nil || !v.SettledIn {
+			t.Fatalf("want the settled-in view for an arrival intent at the venue, got %+v", v)
 		}
 	})
 	t.Run("nil walking to the tavern", func(t *testing.T) {
@@ -471,30 +495,80 @@ func TestInsideLeisureVenue(t *testing.T) {
 	}
 }
 
-// TestEveningAtLeisureVenue: the Lever-B gate is the conjunction, so it is false the
-// moment either half lapses — most importantly for the tavernkeeper, whose wrap
-// schedule never opens an evening window, so his own wares/restock cues survive in
-// his own tavern.
-func TestEveningAtLeisureVenue(t *testing.T) {
-	if !eveningAtLeisureVenue(eveningSnap(1230), eveningWorker("tavern")) {
-		t.Error("want true: off-shift day-worker inside the tavern in-window")
+// TestLeavingLeisureVenue: from inside a venue, ANY active move intent is a departure —
+// except a StructureEnter aimed at the venue already occupied, which is an arrival that
+// has just reconciled. A StructureVisit at the same venue IS a departure: visitor slots
+// stand outside the walls.
+func TestLeavingLeisureVenue(t *testing.T) {
+	idle := eveningWorker("tavern")
+	if leavingLeisureVenue(idle) {
+		t.Error("want false: no move intent")
 	}
-	if eveningAtLeisureVenue(eveningSnap(1000), eveningWorker("tavern")) {
+	if leavingLeisureVenue(nil) {
+		t.Error("want false for a nil actor")
+	}
+
+	arriving := eveningWorker("tavern")
+	arriving.MoveDestKind = sim.MoveDestinationStructureEnter
+	arriving.MoveDestStructureID = "tavern"
+	if leavingLeisureVenue(arriving) {
+		t.Error("want false: an enter-intent at the venue already occupied is an arrival")
+	}
+
+	for name, mutate := range map[string]func(*sim.ActorSnapshot){
+		"enter another structure": func(a *sim.ActorSnapshot) {
+			a.MoveDestKind = sim.MoveDestinationStructureEnter
+			a.MoveDestStructureID = "blacksmith"
+		},
+		"visit a slot outside this venue": func(a *sim.ActorSnapshot) {
+			a.MoveDestKind = sim.MoveDestinationStructureVisit
+			a.MoveDestStructureID = "tavern"
+		},
+		"walk to a bare tile": func(a *sim.ActorSnapshot) {
+			a.MoveDestKind = sim.MoveDestinationPosition
+		},
+		"visit a village object": func(a *sim.ActorSnapshot) {
+			a.MoveDestKind = sim.MoveDestinationObjectVisit
+			a.MoveDestObjectID = "well"
+		},
+	} {
+		a := eveningWorker("tavern")
+		mutate(a)
+		if !leavingLeisureVenue(a) {
+			t.Errorf("want true: %s is a departure from the venue", name)
+		}
+	}
+}
+
+// TestSettledAtLeisureVenue: the Lever-B gate is a conjunction, so it is false the moment
+// any half lapses — most importantly for the tavernkeeper, whose wrap schedule never opens
+// an evening window, so his own wares/restock cues survive in his own tavern.
+func TestSettledAtLeisureVenue(t *testing.T) {
+	if !settledAtLeisureVenue(eveningSnap(1230), eveningWorker("tavern")) {
+		t.Error("want true: off-shift day-worker settled inside the tavern in-window")
+	}
+	if settledAtLeisureVenue(eveningSnap(1000), eveningWorker("tavern")) {
 		t.Error("want false: still on shift, even standing in the tavern")
 	}
-	if eveningAtLeisureVenue(eveningSnap(1230), eveningWorker("blacksmith")) {
+	if settledAtLeisureVenue(eveningSnap(1230), eveningWorker("blacksmith")) {
 		t.Error("want false: in-window but not inside a venue")
+	}
+	leaving := eveningWorker("tavern")
+	leaving.MoveDestKind = sim.MoveDestinationStructureEnter
+	leaving.MoveDestStructureID = "blacksmith"
+	if settledAtLeisureVenue(eveningSnap(1230), leaving) {
+		t.Error("want false: inside the venue but already walking out — not settled")
 	}
 	keeper := eveningWorker("tavern")
 	keeper.ScheduleStartMin, keeper.ScheduleEndMin = evMinPtr(960), evMinPtr(180) // 16:00–03:00 wrap
-	if eveningAtLeisureVenue(eveningSnap(1230), keeper) {
+	if settledAtLeisureVenue(eveningSnap(1230), keeper) {
 		t.Error("want false for the tavernkeeper: a wrap schedule has no evening window")
 	}
 	broke := eveningWorker("tavern")
 	broke.Coins = 0
 	// The tavern sells nothing priced in this fixture, so canAffordLeisure finds no
 	// barrier — the coin gate is exercised in the LLM-205 tests, not here.
-	if !eveningAtLeisureVenue(eveningSnap(1230), broke) {
+	if !settledAtLeisureVenue(eveningSnap(1230), broke) {
 		t.Error("want true with no priced tavern goods (no affordability barrier)")
 	}
 }
@@ -558,6 +632,21 @@ func TestBuildSuppressesErrandCuesInLeisureVenue(t *testing.T) {
 	if v := Build(outdoors, actorID, warrants).FarmUpkeep; v == nil {
 		t.Error("outdoors on the evening: the upkeep errand must still render (Lever B is scoped to the venue interior)")
 	}
+
+	// Control 3 — still on tavern tiles, but she has ALREADY committed to the walk to buy
+	// her shovels. Suppressing the errand now would leave the prompt unable to explain the
+	// move it is in the middle of, and the room would be re-argued at her back (code_review).
+	leaving, actorID, warrants := farmOwnerSettledInTavernEvening()
+	la := leaving.Actors[actorID]
+	la.MoveDestKind = sim.MoveDestinationStructureEnter
+	la.MoveDestStructureID = "blacksmith"
+	lp := Build(leaving, actorID, warrants)
+	if lp.FarmUpkeep == nil {
+		t.Error("walking out on the errand: the upkeep cue must survive to explain the in-flight move")
+	}
+	if lp.EveningLeisure != nil {
+		t.Errorf("walking out of the venue: the room must not be re-pumped at her back, got %+v", lp.EveningLeisure)
+	}
 }
 
 // TestGoldensNoWorkErrandCuesInsideLeisureVenue is the LLM-345 cross-scenario invariant
@@ -581,30 +670,39 @@ func TestGoldensNoWorkErrandCuesInsideLeisureVenue(t *testing.T) {
 		"## Restocking",                  // low stock — go to a supplier
 		"## Your bushes to harvest",      // forage — go to your bushes
 	}
-	covered := 0
+	settled, rooms := 0, 0
 	for _, sc := range perceptionScenarios {
 		sc := sc
 		t.Run(sc.name, func(t *testing.T) {
-			snap, actorID, _ := sc.build()
-			if !eveningAtLeisureVenue(snap, snap.Actors[actorID]) {
-				return // subject isn't passing its evening in a venue — invariant N/A here
-			}
-			covered++
+			snap, actorID, warrants := sc.build()
 			out := renderScenario(sc)
-			for _, section := range errandSections {
-				if strings.Contains(out, section) {
-					t.Errorf("scenario %q: subject is passing the evening inside a leisure venue but the prompt still carries %q — the errand argues it back out the door (LLM-345)", sc.name, section)
+
+			// Half one — errand absence. Holds for ANY settled subject, whatever else its
+			// situation carries (a red need clears the room but must not restore the errands).
+			if settledAtLeisureVenue(snap, snap.Actors[actorID]) {
+				settled++
+				for _, section := range errandSections {
+					if strings.Contains(out, section) {
+						t.Errorf("scenario %q: subject is settled in a leisure venue on the evening but the prompt still carries %q — the errand argues it back out the door (LLM-345)", sc.name, section)
+					}
 				}
 			}
-			if !strings.Contains(out, "of an evening — the fire lit, the room warm") {
-				t.Errorf("scenario %q: subject is inside a leisure venue on the evening window but the settled-in scene is missing — the evening must not evaporate at the threshold (LLM-345)", sc.name)
+
+			// Half two — the room reaches the page. Whenever Build decides the subject is
+			// settled in, Render must say so; this is the Lever-A half, and it catches a
+			// render branch silently dropped out from under a correct build.
+			if v := Build(snap, actorID, warrants).EveningLeisure; v != nil && v.SettledIn {
+				rooms++
+				if !strings.Contains(out, "of an evening — the fire lit, the room warm") {
+					t.Errorf("scenario %q: the payload carries the settled-in view but the rendered prompt has no room — the evening must not evaporate at the threshold (LLM-345)", sc.name)
+				}
 			}
 		})
 	}
-	// A matrix with no qualifying scenario would pass this invariant vacuously, which
-	// is exactly the hole the ticket was written against.
-	if covered == 0 {
-		t.Fatal("no scenario places the subject inside a leisure venue on the evening window — this invariant is vacuous; add one")
+	// A matrix with no qualifying scenario would pass either half vacuously, which is
+	// exactly the hole the ticket was written against.
+	if settled == 0 || rooms == 0 {
+		t.Fatalf("this invariant is vacuous — no scenario is settled in a leisure venue (settled=%d) or carries the room (rooms=%d); add one", settled, rooms)
 	}
 }
 

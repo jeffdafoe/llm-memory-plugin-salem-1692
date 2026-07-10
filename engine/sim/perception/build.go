@@ -378,11 +378,15 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// table (LLM-125), and silencing it would put invented prices back in the one room
 	// this ticket exists to fill.
 	//
+	// SETTLED, not merely inside: an agent that has already committed to a walk out — to
+	// the smith for those very shovels — keeps the cue that explains its own in-flight
+	// move, or the prompt could no longer account for where it was going (code_review).
+	//
 	// Applied after buildDutySteer so the steer's own errand suppressors read the
 	// unmodified views; the steer is nil here regardless (inEveningLeisure suppresses
 	// its off-shift arm), but the ordering keeps that a coincidence rather than a
 	// dependency.
-	if eveningAtLeisureVenue(snap, actorSnap) {
+	if settledAtLeisureVenue(snap, actorSnap) {
 		p.FarmUpkeep = nil
 		p.Restocking = nil
 		p.StallRepairBuy = nil
@@ -2106,14 +2110,39 @@ func insideLeisureVenue(snap *sim.Snapshot, a *sim.ActorSnapshot) bool {
 	return vobj != nil && vobj.HasTag(sim.VisitorTagTavern)
 }
 
-// eveningAtLeisureVenue reports whether the actor is passing its affordable post-work
-// evening INSIDE a leisure venue (LLM-345) — the state in which the walk-away work-errand
-// cues yield to the room (see Build). inEveningLeisure already implies off-shift (its
-// window opens at the actor's own shift end), so the tavernkeeper who lives and works in
-// the tavern is excluded for free: his wrap schedule never enters an evening window, and
-// his wares and restock cues survive in his own house.
-func eveningAtLeisureVenue(snap *sim.Snapshot, a *sim.ActorSnapshot) bool {
-	return insideLeisureVenue(snap, a) && inEveningLeisure(snap, a)
+// leavingLeisureVenue reports whether an actor standing inside a venue has already
+// committed to a walk out of it. InsideStructureID tracks the actor's CURRENT TILE
+// (reconcileInsideAndNarrateDeparture keeps it honest each locomotion tick), so
+// "inside the tavern AND walking to the blacksmith" is a real state that persists for
+// every tick the actor is still crossing the tavern floor — not a transient. The
+// departure is therefore any active move intent, with one exception: a StructureEnter
+// aimed at the venue the actor already occupies is an arrival that has just reconciled,
+// not a departure. A StructureVisit aimed at the same venue IS a departure — visitor
+// slots stand outside the walls.
+//
+// Callers must only consult this for an actor already inside a venue.
+func leavingLeisureVenue(a *sim.ActorSnapshot) bool {
+	if a == nil || a.MoveDestKind == "" {
+		return false
+	}
+	return !(a.MoveDestKind == sim.MoveDestinationStructureEnter && a.MoveDestStructureID == a.InsideStructureID)
+}
+
+// settledAtLeisureVenue reports whether the actor is SETTLED in a leisure venue for its
+// affordable post-work evening (LLM-345) — inside, in-window, and not already walking out.
+// This is the state in which the walk-away work-errand cues yield to the room (see Build).
+//
+// The "not leaving" half matters in both directions. An agent that has chosen to walk to
+// the smith must not have the room re-argued at its back, and it must keep the upkeep cue
+// that EXPLAINS the walk it is taking — suppressing the errand mid-errand would leave the
+// prompt unable to account for its own in-flight move. code_review.
+//
+// inEveningLeisure already implies off-shift (its window opens at the actor's own shift
+// end), so the tavernkeeper who lives and works in the tavern is excluded for free: his
+// wrap schedule never enters an evening window, and his wares and restock cues survive in
+// his own house.
+func settledAtLeisureVenue(snap *sim.Snapshot, a *sim.ActorSnapshot) bool {
+	return insideLeisureVenue(snap, a) && !leavingLeisureVenue(a) && inEveningLeisure(snap, a)
 }
 
 // canAffordLeisure reports whether the actor holds enough coin for a night out at
@@ -2262,9 +2291,11 @@ func buildEveningLeisure(snap *sim.Snapshot, a *sim.ActorSnapshot, anchors *Anch
 	// destination-free scene the agent has nothing to act on, which is exactly why it
 	// stays render-only (see Invitation) and why Build silences the errand cues beside it.
 	if insideLeisureVenue(snap, a) {
-		// Already walking back out to the night-place — the choice to leave is made;
-		// don't argue with it (the same anti-pester posture as the walk guard below).
-		if a.MoveDestKind == sim.MoveDestinationStructureEnter && a.MoveDestStructureID == nightID {
+		// Already walking out — the choice to leave is made; don't argue with it at the
+		// agent's back (the same anti-pester posture as the walk guard below). Any
+		// destination counts, not just the night-place: the model may walk out to the
+		// smith or its farm, and the room must not be re-pumped over an in-flight walk.
+		if leavingLeisureVenue(a) {
 			return nil
 		}
 		venueLabel, _ := resolveStructureLabel(snap, a.InsideStructureID)
