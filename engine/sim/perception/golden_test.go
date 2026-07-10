@@ -125,7 +125,11 @@ func TestGoldensRainLineIffStorm(t *testing.T) {
 		sc := sc
 		t.Run(sc.name, func(t *testing.T) {
 			snap, _, _ := sc.build()
-			wantRain := strings.TrimSpace(snap.Environment.Weather) == sim.WeatherStorm
+			// Compute "should this scenario show rain?" through weatherProse itself
+			// rather than restating the token check — the invariant then matches
+			// production exactly and won't drift when future tokens (fog/snow) gain
+			// their own prose (code_review, LLM-364).
+			wantRain := weatherProse(snap.Environment.Weather) == weatherStormProse
 			hasRain := strings.Contains(renderScenario(sc), weatherStormProse)
 			if wantRain != hasRain {
 				t.Errorf("scenario %q: storm=%v but rain line present=%v — the felt rain line must render iff a storm is overhead (LLM-364)", sc.name, wantRain, hasRain)
