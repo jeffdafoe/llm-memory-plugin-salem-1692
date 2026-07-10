@@ -2125,7 +2125,8 @@ func leavingLeisureVenue(a *sim.ActorSnapshot) bool {
 	if a == nil || a.MoveDestKind == "" {
 		return false
 	}
-	return !(a.MoveDestKind == sim.MoveDestinationStructureEnter && a.MoveDestStructureID == a.InsideStructureID)
+	arrivingHere := a.MoveDestKind == sim.MoveDestinationStructureEnter && a.MoveDestStructureID == a.InsideStructureID
+	return !arrivingHere
 }
 
 // settledAtLeisureVenue reports whether the actor is SETTLED in a leisure venue for its
