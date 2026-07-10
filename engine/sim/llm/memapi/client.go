@@ -307,11 +307,14 @@ func (c *Client) PersistToolResults(ctx context.Context, req llm.PersistRequest)
 
 // searchMemoryRequest is the /v1/memory/search body. namespace scopes the
 // search to a single agent's memory — recall passes the acting NPC's own
-// namespace, never "*".
+// namespace, never "*". SlugPrefix (LLM-356) narrows below the namespace to
+// source_files under a prefix; omitempty so an empty prefix sends no field and
+// the endpoint searches the whole namespace (its pre-LLM-355 behavior).
 type searchMemoryRequest struct {
-	Query     string `json:"query"`
-	Namespace string `json:"namespace"`
-	Limit     int    `json:"limit"`
+	Query      string `json:"query"`
+	Namespace  string `json:"namespace"`
+	SlugPrefix string `json:"slug_prefix,omitempty"`
+	Limit      int    `json:"limit"`
 }
 
 // searchMemoryHitWire is one note-grouped result on the wire. Mirrors v1's
@@ -337,8 +340,8 @@ type searchMemoryResponse struct {
 // Errors carry no llm.Error classification (unlike Complete): recall's
 // ObservationFn turns any error into an in-character "the memory wouldn't
 // come" tool result, so the caller only needs to know success-vs-failure.
-func (c *Client) SearchMemory(ctx context.Context, namespace, query string, limit int) ([]llm.MemoryHit, error) {
-	body, err := json.Marshal(searchMemoryRequest{Query: query, Namespace: namespace, Limit: limit})
+func (c *Client) SearchMemory(ctx context.Context, namespace, query, slugPrefix string, limit int) ([]llm.MemoryHit, error) {
+	body, err := json.Marshal(searchMemoryRequest{Query: query, Namespace: namespace, SlugPrefix: slugPrefix, Limit: limit})
 	if err != nil {
 		return nil, fmt.Errorf("memapi: marshal search request: %w", err)
 	}
@@ -362,6 +365,119 @@ func (c *Client) SearchMemory(ctx context.Context, namespace, query string, limi
 		})
 	}
 	return hits, nil
+}
+
+// --- Note I/O (memorize) --------------------------------------------------
+
+// saveNoteRequest is the /v1/documents/save body. Upsert is always true for the
+// memorize path — re-memorizing the same (date, topic) revises the note in
+// place. Metadata carries cognitive_type, which selects the note's search-decay
+// half-life server-side.
+type saveNoteRequest struct {
+	Namespace string         `json:"namespace"`
+	Slug      string         `json:"slug"`
+	Title     string         `json:"title"`
+	Content   string         `json:"content"`
+	Metadata  map[string]any `json:"metadata,omitempty"`
+	Upsert    bool           `json:"upsert"`
+}
+
+// SaveNote implements llm.MemoryWriter. POSTs /v1/documents/save with upsert,
+// which auto-indexes the note for search (documents.js ingestContent) and makes
+// it browsable in the admin UI. The response body (the saved doc) is unused —
+// memorize needs only success-vs-failure.
+func (c *Client) SaveNote(ctx context.Context, namespace, slug, title, content, cognitiveType string) error {
+	req := saveNoteRequest{
+		Namespace: namespace,
+		Slug:      slug,
+		Title:     title,
+		Content:   content,
+		Upsert:    true,
+	}
+	if cognitiveType != "" {
+		req.Metadata = map[string]any{"cognitive_type": cognitiveType}
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("memapi: marshal save request: %w", err)
+	}
+	if _, err := c.post(ctx, "/v1/documents/save", body); err != nil {
+		return fmt.Errorf("memapi: save note: %w", err)
+	}
+	return nil
+}
+
+// listNotesRequest is the /v1/documents/list body. prefix lists a "directory"
+// of slugs; memorize passes the NPC's "<name>/memory/" prefix to enumerate only
+// its own memories (not dreams or impressions) for the prune step.
+type listNotesRequest struct {
+	Namespace string `json:"namespace"`
+	Prefix    string `json:"prefix,omitempty"`
+	Limit     int    `json:"limit,omitempty"`
+}
+
+// noteMetaWire is one row of the /v1/documents/list response. LastAccessed is a
+// pointer because it is null until the note is first read/recalled (LLM-355).
+type noteMetaWire struct {
+	Slug         string     `json:"slug"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+	LastAccessed *time.Time `json:"last_accessed"`
+}
+
+type listNotesResponse struct {
+	Notes []noteMetaWire `json:"notes"`
+}
+
+// ListNotes implements llm.MemoryWriter. POSTs /v1/documents/list scoped to a
+// slug prefix. A high limit is passed so the prune step sees the whole set (an
+// NPC's memory cap is small); the server default (50) could hide notes past it.
+func (c *Client) ListNotes(ctx context.Context, namespace, slugPrefix string) ([]llm.NoteMeta, error) {
+	body, err := json.Marshal(listNotesRequest{Namespace: namespace, Prefix: slugPrefix, Limit: listNotesPageSize})
+	if err != nil {
+		return nil, fmt.Errorf("memapi: marshal list request: %w", err)
+	}
+	respBytes, err := c.post(ctx, "/v1/documents/list", body)
+	if err != nil {
+		return nil, fmt.Errorf("memapi: list notes: %w", err)
+	}
+	var resp listNotesResponse
+	if err := json.Unmarshal(respBytes, &resp); err != nil {
+		return nil, fmt.Errorf("memapi: parse list response: %w", err)
+	}
+	notes := make([]llm.NoteMeta, 0, len(resp.Notes))
+	for _, n := range resp.Notes {
+		meta := llm.NoteMeta{Slug: n.Slug, CreatedAt: n.CreatedAt, UpdatedAt: n.UpdatedAt}
+		if n.LastAccessed != nil {
+			meta.LastAccessed = *n.LastAccessed
+		}
+		notes = append(notes, meta)
+	}
+	return notes, nil
+}
+
+// listNotesPageSize caps the prune enumeration. Well above any per-NPC memory
+// cap so the whole memory set comes back in one page.
+const listNotesPageSize = 500
+
+// deleteNoteRequest is the /v1/documents/delete body. The delete is a soft
+// delete server-side — the note stops surfacing in search but stays in the
+// admin UI.
+type deleteNoteRequest struct {
+	Namespace string `json:"namespace"`
+	Slug      string `json:"slug"`
+}
+
+// DeleteNote implements llm.MemoryWriter. POSTs /v1/documents/delete (soft).
+func (c *Client) DeleteNote(ctx context.Context, namespace, slug string) error {
+	body, err := json.Marshal(deleteNoteRequest{Namespace: namespace, Slug: slug})
+	if err != nil {
+		return fmt.Errorf("memapi: marshal delete request: %w", err)
+	}
+	if _, err := c.post(ctx, "/v1/documents/delete", body); err != nil {
+		return fmt.Errorf("memapi: delete note: %w", err)
+	}
+	return nil
 }
 
 // --- FetchRateLimits ------------------------------------------------------

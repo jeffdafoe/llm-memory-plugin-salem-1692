@@ -155,10 +155,15 @@ const withdrawPayToolName = "withdraw_pay"
 // (register_summon.go), so a stray call still reaches sim.DispatchSummon.
 const summonToolName = "summon"
 
-// recallToolName is the recall observation tool — advertised ONLY to agents
-// with a dedicated VA / own memory namespace (ZBBS-WORK-321). A shared-VA NPC
-// (vendor/visitor-backed) has no personal memory to recall.
-const recallToolName = "recall"
+// recallToolName / memorizeToolName are the two memory observation tools. Both
+// are advertised to any actor with a private memory partition — every NPC,
+// stateful or shared-VA (LLM-356). Before LLM-356 recall was gated to
+// dedicated-VA NPCs only, because a shared-VA NPC had no per-NPC memory to
+// search; sectioning shared-VA memory by slug prefix removed that limit.
+const (
+	recallToolName   = "recall"
+	memorizeToolName = "memorize"
+)
 
 // gatherToolName is the gather tool — advertised ONLY when the actor is
 // loitering at a gatherable source (ZBBS-WORK-328). The signal is the
@@ -293,12 +298,16 @@ func actorIsMoving(actorID sim.ActorID, snap *sim.Snapshot) bool {
 	return a.MoveDestKind != ""
 }
 
-// actorHasDedicatedVA reports whether the acting actor is a stateful NPC
-// (KindNPCStateful = "own VA with memory", per actor.go). Shared-VA NPCs have
-// no personal memory, so recall is not advertised to them. Returns false when
-// the actor can't be resolved (nil snapshot / missing actor) — conservative:
-// don't advertise a memory tool to an actor we can't confirm has memory.
-func actorHasDedicatedVA(actorID sim.ActorID, snap *sim.Snapshot) bool {
+// actorHasMemory reports whether the acting actor has a private memory
+// partition — i.e. whether the memory tools (recall / memorize) apply to it.
+// True for both stateful NPCs (own namespace) and shared-VA NPCs (sectioned by
+// slug prefix inside a pooled namespace); false for PCs, decoratives, and a
+// shared-VA actor whose name won't slugify. Derives from sim.MemoryPartition,
+// the single source of truth the memory tools themselves use, so what's
+// advertised can't drift from what's searchable/writable (LLM-356). Returns
+// false when the actor can't be resolved — conservative: don't advertise a
+// memory tool to an actor we can't confirm has memory.
+func actorHasMemory(actorID sim.ActorID, snap *sim.Snapshot) bool {
 	if snap == nil {
 		return false
 	}
@@ -306,7 +315,8 @@ func actorHasDedicatedVA(actorID sim.ActorID, snap *sim.Snapshot) bool {
 	if !ok || a == nil {
 		return false
 	}
-	return a.Kind == sim.KindNPCStateful
+	_, hasMemory := sim.MemoryPartition(a.Kind, a.DisplayName)
+	return hasMemory
 }
 
 // actorIsFlaggedDegenerate reports whether the degeneracy observer (LLM-94) has
@@ -381,9 +391,9 @@ func laboringMayBreakOffToEat(a perception.ActorView) bool {
 // Registration order is preserved (the gated tools, when included, stay in
 // their registered positions) for provider prompt-cache stability.
 //
-// recall (ZBBS-WORK-321) is the first consumer to use snap: it advertises
-// recall only to dedicated-VA agents (`snap.Actors[id].Kind == KindNPCStateful`)
-// — a shared-VA NPC has no own memory namespace to search. snap remains the
+// recall (ZBBS-WORK-321) is the first consumer to use snap: with memorize
+// (LLM-356) it advertises the memory tools only to actors with a private memory
+// partition (actorHasMemory → sim.MemoryPartition). snap remains the
 // channel for future consumers needing world state the warrant batch doesn't
 // carry (e.g. shift state for speak gating); the pay consumer reads only the
 // payload.
@@ -407,7 +417,7 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 	hasPayOffer := len(offers) > 0
 	canCounter := anyOfferCounterable(offers)
 	hasOwnPendingOffer := len(payload.PendingOffersFromMe) > 0
-	dedicatedVA := actorHasDedicatedVA(payload.ActorID, snap)
+	hasMemory := actorHasMemory(payload.ActorID, snap)
 	atGatherableSource := payload.Surroundings.GatherableItem != ""
 	moving := actorIsMoving(payload.ActorID, snap)
 	offerStayOpen := payload.DutySteer != nil && payload.DutySteer.OfferStayOpen
@@ -463,9 +473,10 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 		if spec.Name == summonToolName {
 			continue
 		}
-		// recall consumer (ZBBS-WORK-321): advertise only to dedicated-VA
-		// agents — a shared-VA NPC has no personal memory to search.
-		if spec.Name == recallToolName && !dedicatedVA {
+		// memory consumers (LLM-356): advertise recall + memorize only to
+		// actors with a private memory partition (every NPC — stateful or
+		// shared-VA). PCs and decoratives have none, so both tools are dropped.
+		if (spec.Name == recallToolName || spec.Name == memorizeToolName) && !hasMemory {
 			continue
 		}
 		// gather consumer (ZBBS-WORK-328): advertise only when loitering at a

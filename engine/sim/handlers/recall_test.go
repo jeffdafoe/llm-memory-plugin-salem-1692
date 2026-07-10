@@ -14,17 +14,18 @@ import (
 // fakeSearcher is a test double for llm.MemorySearcher. Records the last call
 // args so tests can assert namespace scoping / limit / query truncation.
 type fakeSearcher struct {
-	hits     []llm.MemoryHit
-	err      error
-	calls    int
-	gotNS    string
-	gotQuery string
-	gotLimit int
+	hits      []llm.MemoryHit
+	err       error
+	calls     int
+	gotNS     string
+	gotQuery  string
+	gotPrefix string
+	gotLimit  int
 }
 
-func (f *fakeSearcher) SearchMemory(_ context.Context, namespace, query string, limit int) ([]llm.MemoryHit, error) {
+func (f *fakeSearcher) SearchMemory(_ context.Context, namespace, query, slugPrefix string, limit int) ([]llm.MemoryHit, error) {
 	f.calls++
-	f.gotNS, f.gotQuery, f.gotLimit = namespace, query, limit
+	f.gotNS, f.gotQuery, f.gotPrefix, f.gotLimit = namespace, query, slugPrefix, limit
 	return f.hits, f.err
 }
 
@@ -38,7 +39,7 @@ func TestRecall_Hits_Formatted(t *testing.T) {
 		{SourceFile: "people/bea", ChunkText: "Bea runs the bakery."},
 		{SourceFile: "dreams/2026-05-01", ChunkText: "A dream of rain."},
 	}}
-	out, err := runRecall(t, s, HandlerInput{ActorID: "john", LLMMemoryAgent: "salem-john", Args: RecallArgs{Query: "who is bea"}})
+	out, err := runRecall(t, s, HandlerInput{ActorID: "john", LLMMemoryAgent: "salem-john", MemoryHasPartition: true, Args: RecallArgs{Query: "who is bea"}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -54,7 +55,7 @@ func TestRecall_Hits_Formatted(t *testing.T) {
 
 func TestRecall_EmptyHits_NothingComesToMind(t *testing.T) {
 	s := &fakeSearcher{hits: nil}
-	out, err := runRecall(t, s, HandlerInput{LLMMemoryAgent: "salem-john", Args: RecallArgs{Query: "anything"}})
+	out, err := runRecall(t, s, HandlerInput{LLMMemoryAgent: "salem-john", MemoryHasPartition: true, Args: RecallArgs{Query: "anything"}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -96,7 +97,7 @@ func TestRecall_NoNamespace_NoSearch(t *testing.T) {
 
 func TestRecall_SearchError_GracefulText(t *testing.T) {
 	s := &fakeSearcher{err: errors.New("boom")}
-	out, err := runRecall(t, s, HandlerInput{LLMMemoryAgent: "salem-john", Args: RecallArgs{Query: "q"}})
+	out, err := runRecall(t, s, HandlerInput{LLMMemoryAgent: "salem-john", MemoryHasPartition: true, Args: RecallArgs{Query: "q"}})
 	if err != nil {
 		t.Fatalf("a search error must NOT surface as a handler error (v1 parity); got %v", err)
 	}
@@ -107,7 +108,7 @@ func TestRecall_SearchError_GracefulText(t *testing.T) {
 
 func TestRecall_SearchesActorNamespaceAtLimit(t *testing.T) {
 	s := &fakeSearcher{}
-	_, _ = runRecall(t, s, HandlerInput{LLMMemoryAgent: "salem-prudence", Args: RecallArgs{Query: "  remedies  "}})
+	_, _ = runRecall(t, s, HandlerInput{LLMMemoryAgent: "salem-prudence", MemoryHasPartition: true, Args: RecallArgs{Query: "  remedies  "}})
 	if s.gotNS != "salem-prudence" {
 		t.Errorf("searched ns %q, want the actor's own namespace", s.gotNS)
 	}
@@ -122,7 +123,7 @@ func TestRecall_SearchesActorNamespaceAtLimit(t *testing.T) {
 func TestRecall_QueryTruncatedToCap(t *testing.T) {
 	s := &fakeSearcher{}
 	long := strings.Repeat("か", recallQueryMaxChars+50) // multibyte: rune-truncation must not split
-	_, err := runRecall(t, s, HandlerInput{LLMMemoryAgent: "salem-john", Args: RecallArgs{Query: long}})
+	_, err := runRecall(t, s, HandlerInput{LLMMemoryAgent: "salem-john", MemoryHasPartition: true, Args: RecallArgs{Query: long}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -211,4 +212,81 @@ func TestRegisterRecall(t *testing.T) {
 			t.Errorf("availability = %v, want AvailabilityAvailable", e.Availability)
 		}
 	})
+}
+
+// TestRecall_PassesMemorySlugPrefix — recall scopes the search to the acting
+// actor's memory partition (LLM-356): the handler forwards in.MemorySlugPrefix
+// to SearchMemory as the slug_prefix. A shared-VA NPC passes "<name>/"; a
+// dedicated-VA NPC passes "" (its whole namespace).
+func TestRecall_PassesMemorySlugPrefix(t *testing.T) {
+	s := &fakeSearcher{}
+	_, err := runRecall(t, s, HandlerInput{
+		ActorID:            "anne",
+		LLMMemoryAgent:     "salem-vendor",
+		MemorySlugPrefix:   "anne-walker/",
+		MemoryHasPartition: true,
+		Args:               RecallArgs{Query: "who is the smith"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if s.gotNS != "salem-vendor" {
+		t.Errorf("namespace = %q, want salem-vendor", s.gotNS)
+	}
+	if s.gotPrefix != "anne-walker/" {
+		t.Errorf("slug prefix = %q, want anne-walker/", s.gotPrefix)
+	}
+}
+
+// TestRecall_NoPartition_RefusesSearch — a partition-less shared-VA actor
+// (non-empty pooled namespace, empty prefix, hasPartition=false) must NOT search:
+// an empty-prefix search of salem-vendor would leak other NPCs' private memories
+// into this actor's context (LLM-356). The perception gate drops recall for such
+// an actor, but the handler is the real control against a stray dispatch.
+func TestRecall_NoPartition_RefusesSearch(t *testing.T) {
+	s := &fakeSearcher{hits: []llm.MemoryHit{{SourceFile: "someone-else/memory/secret", ChunkText: "private"}}}
+	out, err := runRecall(t, s, HandlerInput{
+		ActorID:            "nameless",
+		LLMMemoryAgent:     "salem-vendor",
+		MemorySlugPrefix:   "",
+		MemoryHasPartition: false,
+		Args:               RecallArgs{Query: "anything"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out != recallFailedText {
+		t.Errorf("got %q, want the failed string", out)
+	}
+	if s.calls != 0 {
+		t.Errorf("search must not run without a partition (privacy); calls = %d", s.calls)
+	}
+}
+
+// TestRecall_RendersHeadingNotSlug — a memorize hit carries a Heading (the
+// human topic) and a ChunkText that leads with that same "## topic" line. Recall
+// must label the hit with the heading, not the slug path, and must not print the
+// heading twice (LLM-356).
+func TestRecall_RendersHeadingNotSlug(t *testing.T) {
+	s := &fakeSearcher{hits: []llm.MemoryHit{{
+		SourceFile: "anne-walker/memory/2026-07-10-the-blacksmith-s-name",
+		Heading:    "## The blacksmith's name",
+		ChunkText:  "## The blacksmith's name\n\nThe smith is called Amos.",
+	}}}
+	out, err := runRecall(t, s, HandlerInput{ActorID: "anne", LLMMemoryAgent: "salem-vendor", MemoryHasPartition: true, Args: RecallArgs{Query: "smith"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "— The blacksmith's name —") {
+		t.Errorf("hit should be labelled with the heading; got %q", out)
+	}
+	if strings.Contains(out, "anne-walker/memory/") {
+		t.Errorf("the raw slug path must not appear in the model-facing result; got %q", out)
+	}
+	if strings.Count(out, "The blacksmith's name") != 1 {
+		t.Errorf("the topic should appear once (label only), not duplicated in the body; got %q", out)
+	}
+	if !strings.Contains(out, "The smith is called Amos.") {
+		t.Errorf("the memory body should be shown; got %q", out)
+	}
 }

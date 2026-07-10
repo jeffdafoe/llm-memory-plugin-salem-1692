@@ -117,7 +117,7 @@ func (f *FakeClient) CallCount() int {
 // TestRun_WiresOffWorldCascades reach world.Run instead of erroring out before
 // it. Tests that exercise recall itself use a dedicated searcher mock, not this.
 // Ctx-cancel handling mirrors Complete/PersistToolResults for consistency.
-func (f *FakeClient) SearchMemory(ctx context.Context, namespace, query string, limit int) ([]MemoryHit, error) {
+func (f *FakeClient) SearchMemory(ctx context.Context, namespace, query, slugPrefix string, limit int) ([]MemoryHit, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, &Error{
 			Class:   ErrorContextCancelled,
@@ -126,6 +126,33 @@ func (f *FakeClient) SearchMemory(ctx context.Context, namespace, query string, 
 		}
 	}
 	return nil, nil
+}
+
+// SaveNote / ListNotes / DeleteNote implement MemoryWriter — the capability the
+// memorize tool needs (LLM-356), which cmd/engine's run() type-asserts on the
+// LLM client at startup alongside MemorySearcher. No-ops here (SaveNote/Delete
+// succeed, ListNotes returns nothing), enough to satisfy the assertion so
+// boot-wiring tests reach world.Run. Tests that exercise memorize itself use a
+// dedicated writer mock, not this. Ctx-cancel handling mirrors SearchMemory.
+func (f *FakeClient) SaveNote(ctx context.Context, namespace, slug, title, content, cognitiveType string) error {
+	if err := ctx.Err(); err != nil {
+		return &Error{Class: ErrorContextCancelled, Message: "ctx cancelled before fake SaveNote", Cause: err}
+	}
+	return nil
+}
+
+func (f *FakeClient) ListNotes(ctx context.Context, namespace, slugPrefix string) ([]NoteMeta, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, &Error{Class: ErrorContextCancelled, Message: "ctx cancelled before fake ListNotes", Cause: err}
+	}
+	return nil, nil
+}
+
+func (f *FakeClient) DeleteNote(ctx context.Context, namespace, slug string) error {
+	if err := ctx.Err(); err != nil {
+		return &Error{Class: ErrorContextCancelled, Message: "ctx cancelled before fake DeleteNote", Cause: err}
+	}
+	return nil
 }
 
 // SynthesizeSoul implements the cascade's SoulSynthesizer capability

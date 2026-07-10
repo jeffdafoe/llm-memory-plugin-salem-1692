@@ -29,3 +29,47 @@ func TestClassifyActorKind(t *testing.T) {
 		})
 	}
 }
+
+func TestMemoryPartition(t *testing.T) {
+	cases := []struct {
+		name        string
+		kind        ActorKind
+		displayName string
+		wantPrefix  string
+		wantHas     bool
+	}{
+		{"dedicated VA owns its namespace", KindNPCStateful, "Josiah Thorne", "", true},
+		{"shared VA sections by name", KindNPCShared, "Anne Walker", "anne-walker/", true},
+		{"shared VA with punctuated name", KindNPCShared, "O'Brien the Elder", "o-brien-the-elder/", true},
+		{"shared VA with unslugifiable name has no partition", KindNPCShared, "!!!", "", false},
+		{"shared VA with empty name has no partition", KindNPCShared, "", "", false},
+		{"PC has no memory", KindPC, "Jeff", "", false},
+		{"decorative has no memory", KindDecorative, "Villager", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prefix, has := MemoryPartition(tc.kind, tc.displayName)
+			if prefix != tc.wantPrefix || has != tc.wantHas {
+				t.Fatalf("MemoryPartition(%d, %q) = (%q, %v), want (%q, %v)",
+					tc.kind, tc.displayName, prefix, has, tc.wantPrefix, tc.wantHas)
+			}
+		})
+	}
+}
+
+func TestSlugify(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"Anne Walker", "anne-walker"},
+		{"The Blacksmith's Name", "the-blacksmith-s-name"},
+		{"  Trim  Me  ", "trim-me"},
+		{"Multiple---Hyphens", "multiple-hyphens"},
+		{"café münchen", "caf-m-nchen"}, // non-ASCII letters are not alphanumeric-ASCII → hyphenated
+		{"!!!", ""},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		if got := Slugify(tc.in); got != tc.want {
+			t.Errorf("Slugify(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}

@@ -935,8 +935,13 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 				}
 			}
 
-			// Dispatch by class.
-			content, outcome := h.dispatch(ctx, w, job, vc, actor.LLMAgent, perceivedPlaces, rememberedPlaces)
+			// Dispatch by class. The memory partition prefix + date stamp are
+			// derived once from the acting actor / snapshot (LLM-356) and threaded
+			// to the off-world memory tools via HandlerInput; sim.MemoryPartition is
+			// the single derivation point shared with the perception tool-gate.
+			memSlugPrefix, memHasPartition := sim.MemoryPartition(actor.Kind, actor.DisplayName)
+			memDateStamp := memoryDateStamp(snap.LocalDateUTC)
+			content, outcome := h.dispatch(ctx, w, job, vc, actor.LLMAgent, memSlugPrefix, memHasPartition, memDateStamp, perceivedPlaces, rememberedPlaces)
 			transcript = append(transcript, toolResultMsg(call.ID, content))
 
 			if outcome.stale {
@@ -1130,13 +1135,29 @@ type dispatchOutcome struct {
 //     World.SendContext. A successful submission with
 //     TerminalPolicy=TerminalOnSuccess ends the tick.
 //   - ClassTerminal → no handler; the tick ends.
-func (h *Harness) dispatch(ctx context.Context, w *sim.World, job tickJob, vc *ValidatedCall, llmMemoryAgent string, perceivedPlaces perception.PerceivedPlaces, rememberedPlaces sim.RememberedPlaces) (string, dispatchOutcome) {
+//
+// memoryDateStamp renders the village's current calendar date as "YYYY-MM-DD"
+// for a memory slug (LLM-356). LocalDateUTC is already midnight UTC of the
+// village date, so formatting in UTC yields that date without a timezone shift.
+// Returns "" for a zero time (a hand-built snapshot with no clock) so memorize
+// can fall back rather than stamp year 1.
+func memoryDateStamp(localDateUTC time.Time) string {
+	if localDateUTC.IsZero() {
+		return ""
+	}
+	return localDateUTC.UTC().Format("2006-01-02")
+}
+
+func (h *Harness) dispatch(ctx context.Context, w *sim.World, job tickJob, vc *ValidatedCall, llmMemoryAgent, memSlugPrefix string, memHasPartition bool, memDateStamp string, perceivedPlaces perception.PerceivedPlaces, rememberedPlaces sim.RememberedPlaces) (string, dispatchOutcome) {
 	in := HandlerInput{
-		ActorID:        job.actorID,
-		AttemptID:      job.attemptID,
-		RootEventID:    job.rootEventID,
-		LLMMemoryAgent: llmMemoryAgent,
-		Args:           vc.DecodedArgs,
+		ActorID:            job.actorID,
+		AttemptID:          job.attemptID,
+		RootEventID:        job.rootEventID,
+		LLMMemoryAgent:     llmMemoryAgent,
+		MemorySlugPrefix:   memSlugPrefix,
+		MemoryHasPartition: memHasPartition,
+		MemoryDateStamp:    memDateStamp,
+		Args:               vc.DecodedArgs,
 		// Object move targets this tick's perception surfaced (ZBBS-HOME-389) — the
 		// move_to commit resolves a name that matches no village structure against
 		// these (a well, a fruit tree). Structures resolve by village geography

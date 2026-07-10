@@ -76,6 +76,65 @@ func ClassifyActorKind(loginUsername, llmAgent string) ActorKind {
 	return KindDecorative
 }
 
+// MemoryPartition is the SINGLE source of truth for where an actor's private
+// memory lives inside its llm-memory namespace (LLM-356). It returns the slug
+// prefix that scopes that actor's memory and whether the actor has memory at
+// all. Both the memory tools (recall reads it as the search slug_prefix,
+// memorize writes under it) and the perception tool-gate derive from this one
+// function, so isolation can't drift between "what's advertised" and "what's
+// searched/written".
+//
+//   - KindNPCStateful → ("", true): a dedicated-VA NPC owns its namespace
+//     outright (zbbs-<name>), so its memory is the whole namespace — recall
+//     spans its notes, dreams, and impressions, and memorize writes under
+//     "memory/" within it. No prefix needed.
+//   - KindNPCShared → ("<name>/", true): a shared-VA NPC lives in a pooled
+//     namespace (salem-vendor) with six others, so its memory is sectioned
+//     under a per-NPC slug prefix derived from its display name. Returns
+//     (\"\", false) if the name slugifies to empty — better no memory than a
+//     broken "/memory/…" prefix that would pool with any other nameless actor.
+//   - KindPC / KindDecorative → ("", false): no VA-backed memory.
+func MemoryPartition(kind ActorKind, displayName string) (slugPrefix string, hasMemory bool) {
+	switch kind {
+	case KindNPCStateful:
+		return "", true
+	case KindNPCShared:
+		slug := Slugify(displayName)
+		if slug == "" {
+			return "", false
+		}
+		return slug + "/", true
+	default:
+		return "", false
+	}
+}
+
+// Slugify lowercases a string and collapses each run of non-alphanumeric
+// characters into a single hyphen, trimming leading/trailing hyphens —
+// "Anne Walker" → "anne-walker", "The Blacksmith's Name" →
+// "the-blacksmith-s-name". Used to derive a shared-VA NPC's memory partition
+// prefix from its display name and a memory's slug from its topic (LLM-356);
+// the result is a slug segment the memory-api's sanitize.identifier accepts
+// verbatim.
+func Slugify(s string) string {
+	var b strings.Builder
+	lastHyphen := false
+	for _, r := range strings.ToLower(strings.TrimSpace(s)) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastHyphen = false
+			continue
+		}
+		// Any other rune (space, punctuation, apostrophe in "O'Brien") becomes a
+		// single hyphen; runs collapse so we never emit "--".
+		if !lastHyphen && b.Len() > 0 {
+			b.WriteByte('-')
+			lastHyphen = true
+		}
+	}
+	return strings.TrimRight(b.String(), "-")
+}
+
 // ActorState is the macro-state of an actor: what it is doing right now at
 // a coarse level. Set softly by engine handlers when they observe a change;
 // there is no strict FSM that validates transitions. Consumer switches must
