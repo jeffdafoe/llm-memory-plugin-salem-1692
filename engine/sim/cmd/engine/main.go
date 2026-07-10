@@ -606,6 +606,10 @@ func run(rt runtime, stop <-chan struct{}) error {
 		// defeat the handler's nil-writer 503 guard, so only wire a real one.
 		if rt.AssetGeometryWriter != nil {
 			server.SetAssetGeometryWriter(rt.AssetGeometryWriter)
+			// Same concrete *pg.AssetsRepo backs the asset refresh-default write
+			// (LLM-363) — reference data, no checkpoint path, wired whenever pg is
+			// present. Guarded by the same non-nil check for the same typed-nil reason.
+			server.SetAssetRefreshDefaultWriter(rt.AssetGeometryWriter)
 		}
 		// Enables the operator-gated umbilical routes. Nil when UMBILICAL_ENABLED
 		// is unset → SetTelemetry not called → routes never registered.

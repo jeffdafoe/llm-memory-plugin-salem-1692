@@ -625,6 +625,11 @@ func CreateVillageObject(assetID AssetID, x, y float64, attachedTo VillageObject
 				AttachedTo:   attachedTo,
 				Tags:         []string{},
 			}
+			// LLM-363: seed the placement's refresh policy from the asset's default
+			// template when it carries one, so a forageable / eat-in-place source
+			// drops in working (a fresh full supply) instead of inert. nil/empty for
+			// the common non-refreshing asset — obj.Refreshes stays nil.
+			obj.Refreshes = seedRefreshesFromDefaults(asset.RefreshDefaults)
 			w.VillageObjects[obj.ID] = obj
 			w.emit(&VillageObjectCreated{
 				ObjectID:     obj.ID,
