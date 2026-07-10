@@ -774,8 +774,10 @@ func registerTools(r *handlers.Registry, searcher llm.MemorySearcher) error {
 		{"deliver_order", handlers.RegisterDeliverOrder}, // ZBBS-HOME-398: only a keeper with a Ready order
 		{"stop", handlers.RegisterStop},                  // ZBBS-HOME-338: only while moving
 		// labor group (LLM-26): solicit_work only for a free worker with an
-		// audience; accept/decline_work only for an employer with a pending offer.
+		// audience; offer_work only when a hireable worker is co-present (LLM-346);
+		// accept/decline_work only for whoever owes an answer on a pending offer.
 		{"solicit_work", handlers.RegisterSolicitWork},
+		{"offer_work", handlers.RegisterOfferWork},
 		{"accept_work", handlers.RegisterAcceptWork},
 		{"decline_work", handlers.RegisterDeclineWork},
 		// pay-with-item resolution group: advertised only to a seller with a

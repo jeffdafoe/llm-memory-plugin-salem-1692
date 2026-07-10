@@ -222,19 +222,138 @@ func TestBuildLaboring_PrefersActiveJob(t *testing.T) {
 	}
 }
 
-// TestSubjectHasPendingLaborOffer — the worker-side pending-offer check that
-// hides the solicit_work affordance + tool while a bid is outstanding.
-func TestSubjectHasPendingLaborOffer(t *testing.T) {
+// TestSubjectHasPendingLaborOfferOut — the initiator-side pending-offer check that
+// hides the solicit_work / offer_work affordance + tool while a bid is
+// outstanding. The fixture carries no InitiatedBy, the legacy solicit shape, so it
+// also pins that a zero value still reads worker-initiated (LLM-346).
+func TestSubjectHasPendingLaborOfferOut(t *testing.T) {
 	snap := &sim.Snapshot{
 		LaborLedger: map[sim.LaborID]*sim.LaborOffer{
 			1: {ID: 1, WorkerID: "ezekiel", EmployerID: "josiah", State: sim.LaborStatePending},
 		},
 	}
-	if !subjectHasPendingLaborOffer(snap, "ezekiel") {
-		t.Error("subjectHasPendingLaborOffer(ezekiel) = false, want true (has a pending offer out)")
+	if !subjectHasPendingLaborOfferOut(snap, "ezekiel") {
+		t.Error("subjectHasPendingLaborOfferOut(ezekiel) = false, want true (has a pending offer out)")
 	}
-	if subjectHasPendingLaborOffer(snap, "josiah") {
-		t.Error("subjectHasPendingLaborOffer(josiah) = true, want false (the employer, not the worker)")
+	if subjectHasPendingLaborOfferOut(snap, "josiah") {
+		t.Error("subjectHasPendingLaborOfferOut(josiah) = true, want false (the employer, not the initiator)")
+	}
+	// The mirror: the employer is the one who owes an answer on a solicited offer.
+	if !subjectHasLaborOfferToAnswer(snap, "josiah") {
+		t.Error("subjectHasLaborOfferToAnswer(josiah) = false, want true (the employer must answer)")
+	}
+	if subjectHasLaborOfferToAnswer(snap, "ezekiel") {
+		t.Error("subjectHasLaborOfferToAnswer(ezekiel) = true, want false (the worker made the offer)")
+	}
+}
+
+// TestLaborOfferLivePending_ExpiredPendingRowDoesNotSuppress is the code_review
+// catch on LLM-346. A pending offer sits in the ledger for up to a full sweep
+// cadence (60s) after its 3-minute TTL elapses — only the aging sweep flips it
+// Expired. The substrate already skips those rows (workerPendingLaborOffer's
+// `!now.Before(o.ExpiresAt)`), so perception must too, or for up to a minute a
+// worker cannot solicit and a keeper cannot hire against an offer that is already
+// dead: a cue that hides while the tool would happily mint.
+func TestLaborOfferLivePending_ExpiredPendingRowDoesNotSuppress(t *testing.T) {
+	published := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	snap := &sim.Snapshot{
+		PublishedAt: published,
+		LaborLedger: map[sim.LaborID]*sim.LaborOffer{
+			// Minted 4 minutes ago with the 3-minute TTL: dead, but unswept.
+			1: {
+				ID: 1, WorkerID: "ezekiel", EmployerID: "josiah",
+				State:     sim.LaborStatePending,
+				ExpiresAt: published.Add(-time.Minute),
+			},
+		},
+	}
+	if subjectHasPendingLaborOfferOut(snap, "ezekiel") {
+		t.Error("an expired-but-unswept offer still suppresses the worker's solicit affordance; the substrate would mint past it")
+	}
+	if subjectHasLaborOfferToAnswer(snap, "josiah") {
+		t.Error("an expired-but-unswept offer still suppresses the employer's affordances; there is nothing left to answer")
+	}
+
+	// A live one still suppresses both.
+	snap.LaborLedger[1].ExpiresAt = published.Add(time.Minute)
+	if !subjectHasPendingLaborOfferOut(snap, "ezekiel") {
+		t.Error("a live pending offer must still suppress the worker's solicit affordance")
+	}
+	if !subjectHasLaborOfferToAnswer(snap, "josiah") {
+		t.Error("a live pending offer must still name the employer as owing an answer")
+	}
+
+	// A clock-free fixture (the golden matrix) treats the row as live, matching
+	// how the ledger reads a zero ExpiresAt.
+	snap.PublishedAt = time.Time{}
+	snap.LaborLedger[1].ExpiresAt = time.Time{}
+	if !subjectHasPendingLaborOfferOut(snap, "ezekiel") {
+		t.Error("a clock-free pending offer must read as live")
+	}
+}
+
+// TestIsHireableWorker_ExpiredOfferDoesNotHideTheWorker is the same drift on the
+// hiring side: a worker holding a dead-but-unswept offer must not vanish from the
+// keeper's offer_work cue, because sim.OfferWork would take him.
+func TestIsHireableWorker_ExpiredOfferDoesNotHideTheWorker(t *testing.T) {
+	published := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	prudence := &sim.ActorSnapshot{
+		DisplayName:   "Prudence Ward",
+		Acquaintances: map[string]sim.Acquaintance{"Lewis Walker": {}},
+	}
+	lewis := &sim.ActorSnapshot{
+		DisplayName:    "Lewis Walker",
+		AttributeSlugs: []string{sim.AttrWorker},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt: published,
+		Actors:      map[sim.ActorID]*sim.ActorSnapshot{"prudence": prudence, "lewis": lewis},
+		LaborLedger: map[sim.LaborID]*sim.LaborOffer{
+			1: {
+				ID: 1, WorkerID: "lewis", EmployerID: "hannah",
+				State:     sim.LaborStatePending,
+				ExpiresAt: published.Add(-time.Minute), // dead, unswept
+			},
+		},
+	}
+	if !isHireableWorker(snap, "prudence", prudence, "lewis") {
+		t.Error("Lewis is hidden from the offer_work cue by a dead offer the substrate would mint straight past")
+	}
+
+	// A live offer to someone else does occupy him — one answer at a time.
+	snap.LaborLedger[1].ExpiresAt = published.Add(time.Minute)
+	if isHireableWorker(snap, "prudence", prudence, "lewis") {
+		t.Error("Lewis owes Hannah an answer; he must not be offered a second job")
+	}
+
+	// So does a job already under way.
+	snap.LaborLedger[1].State = sim.LaborStateWorking
+	if isHireableWorker(snap, "prudence", prudence, "lewis") {
+		t.Error("Lewis is mid-job; he must not be offered another")
+	}
+}
+
+// TestSubjectHasPendingLaborOfferOut_EmployerInitiated is the LLM-346 direction:
+// the employer minted the offer, so the roles of the two predicates swap. Without
+// this the worker would be told to go seek work while an offer of work stood in
+// front of him, which is the Lewis Walker case the ticket exists to fix.
+func TestSubjectHasPendingLaborOfferOut_EmployerInitiated(t *testing.T) {
+	snap := &sim.Snapshot{
+		LaborLedger: map[sim.LaborID]*sim.LaborOffer{
+			1: {ID: 1, WorkerID: "lewis", EmployerID: "prudence", InitiatedBy: "prudence", State: sim.LaborStatePending},
+		},
+	}
+	if !subjectHasPendingLaborOfferOut(snap, "prudence") {
+		t.Error("subjectHasPendingLaborOfferOut(prudence) = false, want true (she offered the work)")
+	}
+	if subjectHasPendingLaborOfferOut(snap, "lewis") {
+		t.Error("subjectHasPendingLaborOfferOut(lewis) = true, want false (he did not mint it)")
+	}
+	if !subjectHasLaborOfferToAnswer(snap, "lewis") {
+		t.Error("subjectHasLaborOfferToAnswer(lewis) = false, want true (the offer awaits his answer)")
+	}
+	if subjectHasLaborOfferToAnswer(snap, "prudence") {
+		t.Error("subjectHasLaborOfferToAnswer(prudence) = true, want false (she is waiting on him)")
 	}
 }
 

@@ -243,6 +243,10 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// follows so a free worker sees the option to offer their labor.
 	renderLaborOffers(&ephemeral, p.LaborOffersForMe, p.Actor.Coins, p.SubjectProducesGoods, nameOf)
 	renderLaborAffordance(&ephemeral, p.CanSolicitWork)
+	// LLM-346: the hiring-side twin of the affordance above. Sits immediately after
+	// it so the two mints of the labor market read as one pair — offer your labor,
+	// or ask for someone else's.
+	renderOfferWorkAffordance(&ephemeral, p.HireableWorkers, nameOf)
 	// LLM-152/160: the directional half of seek-work — the town's businesses to head
 	// to, by their resolvable names. Sits with the labor affordance; non-empty
 	// whenever the subject is a broke idle worker with no employer present to solicit
@@ -2246,13 +2250,21 @@ func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason, nam
 	b.WriteString("Respond first with accept_pay, decline_pay, or counter_pay, passing the offer id as ledger_id. Then also use speak for a brief reply, because the pay response itself passes in silence.\n")
 }
 
-// renderLaborOffers renders the employer-side pending-work-offer decision
-// section: one line per offer carrying the labor_id (the load-bearing field
-// the model must echo into accept_work/decline_work), the worker, the reward,
-// and how long the job takes. Uncapped by design — labor offers are inherently
-// few (bounded by co-present workers), and the section must always carry the
-// labor_id whenever gateTools advertises the response tools (the discussion-109
-// invariant). LLM-26.
+// renderLaborOffers renders the pending-work-offer decision section for whoever
+// must ANSWER: one line per offer carrying the labor_id (the load-bearing field
+// the model must echo into accept_work/decline_work), the other party, the
+// reward, and how long the job takes. Uncapped by design — labor offers are
+// inherently few (bounded by co-present actors), and the section must always
+// carry the labor_id whenever gateTools advertises the response tools (the
+// discussion-109 invariant). LLM-26.
+//
+// Two directions share the section (LLM-346), keyed off LaborOfferView.SubjectIsWorker().
+// When the subject is the employer (the zero value of EmployerInitiated), a worker has offered to do a
+// job and the affordability steer applies — the subject would be the one paying.
+// When the subject is the worker, an employer has asked them to lend a hand: no
+// affordability steer (they cannot see the keeper's purse), no returning-helper
+// recall (that memory is the employer's), and the pay is something they would
+// RECEIVE, not spend.
 func renderLaborOffers(b *strings.Builder, offers []LaborOfferView, employerCoins int, employerProduces bool, nameOf func(sim.ActorID) string) {
 	if len(offers) == 0 {
 		return
@@ -2260,10 +2272,16 @@ func renderLaborOffers(b *strings.Builder, offers []LaborOfferView, employerCoin
 	b.WriteString("## Work offers awaiting your decision\n")
 	anyAffordable, anyUnaffordable := false, false
 	for i, o := range offers {
+		// The pay may be coins, goods the employer holds, or both (LLM-225) —
+		// formatOfferPayment renders whichever legs are present ("5 coins",
+		// "1 porridge", "1 porridge and 2 coins").
+		if o.SubjectIsWorker() {
+			fmt.Fprintf(b, "%d. %s has asked you to do a job for them — %s for about %s of work (offer id %d)\n",
+				i+1, nameOf(o.Employer), formatOfferPayment(o.Reward, o.RewardItems), humanizeWorkMinutes(o.DurationMin), o.LaborID)
+			anyAffordable = true // no coin gate on the worker's side — the pay comes to them
+			continue
+		}
 		worker := nameOf(o.Worker)
-		// The asked pay may be coins, goods the employer holds, or both
-		// (LLM-225) — formatOfferPayment renders whichever legs are present
-		// ("5 coins", "1 porridge", "1 porridge and 2 coins").
 		fmt.Fprintf(b, "%d. %s offers to do a job for you for %s — about %s of work (offer id %d)\n",
 			i+1, worker, formatOfferPayment(o.Reward, o.RewardItems), humanizeWorkMinutes(o.DurationMin), o.LaborID)
 		// LLM-228: the returning-helper recall. When this worker completed a paid
@@ -2421,20 +2439,32 @@ func renderWorkersForMe(b *strings.Builder, workers []WorkerForMeView, nameOf fu
 	b.WriteString("That work is already covered and the pay settles on its own when it's finished — don't hire someone else for it or pay again by hand.\n\n")
 }
 
-// renderPendingLaborOfferOut renders the worker's OWN outgoing labor offer that
-// is still awaiting the employer's answer (LLM-164) — the awaiting-acceptance
-// mirror of renderLaborSelfState's in-progress line. A worker who has solicited
-// has no Working job yet, so this is the only labor self-state they get while
-// waiting; it names what's on the table and says plainly to sit tight, the anchor
-// that keeps the weak model from flailing into an unrelated tool under the quiet
+// renderPendingLaborOfferOut renders the subject's OWN outgoing labor offer that
+// is still awaiting the other party's answer (LLM-164) — the awaiting-acceptance
+// mirror of renderLaborSelfState's in-progress line. Whoever minted an offer has
+// no Working job yet, so this is the only labor self-state they get while waiting;
+// it names what's on the table and says plainly to sit tight, the anchor that
+// keeps the weak model from flailing into an unrelated tool under the quiet
 // backstop / "choose one action" pressure. Content-gated on PendingLaborOfferOut.
+//
+// Both mints get a line (LLM-346): the worker who solicited waits on the employer,
+// the employer who offered work waits on the worker. Without the second one a
+// keeper who has just asked someone to lend a hand has no anchor at all, and the
+// quiet backstop pushes her to ask again.
 func renderPendingLaborOfferOut(b *strings.Builder, offer *PendingLaborOfferOutView, nameOf func(sim.ActorID) string) {
 	if offer == nil {
 		return
 	}
-	// The asked pay may be coins, goods, or both (LLM-225).
+	// The pay may be coins, goods, or both (LLM-225).
+	payment := formatOfferPayment(offer.Reward, offer.RewardItems)
+	duration := humanizeWorkMinutes(offer.DurationMin)
+	if offer.SubjectIsEmployer() {
+		fmt.Fprintf(b, "You've asked %s to work for you for %s (about %s) — your offer stands and it is their move now. There's nothing more to do on it; wait for their answer, say a brief word if you like, then call done().\n",
+			nameOf(offer.Worker), payment, duration)
+		return
+	}
 	fmt.Fprintf(b, "You've offered to work for %s for %s (about %s) — your offer stands and it is their move now. There's nothing more to do on it; wait for their answer, say a brief word if you like, then call done().\n",
-		nameOf(offer.Employer), formatOfferPayment(offer.Reward, offer.RewardItems), humanizeWorkMinutes(offer.DurationMin))
+		nameOf(offer.Employer), payment, duration)
 }
 
 // renderLaborAffordance renders the free-worker option cue (LLM-26): the
@@ -2445,6 +2475,36 @@ func renderLaborAffordance(b *strings.Builder, canSolicit bool) {
 		return
 	}
 	b.WriteString("You take work for pay. If someone here outside your own household or trade has a task you could do and you want the pay, offer your labor with solicit_work — name them, the pay you want (coins, goods they hold such as a meal, or both), and roughly how long the job will take.\n")
+}
+
+// renderOfferWorkAffordance renders the hiring-side option cue (LLM-346): people
+// are here who take work for pay, and the subject may ask one of them to lend a
+// hand. Content-gated on a non-empty HireableWorkers — the same slice that gates
+// the offer_work tool, so the cue and the tool surface together or not at all
+// (discussion-109).
+//
+// It NAMES them because nothing else in the prompt does. Whether a villager takes
+// odd jobs is not visible from the co-presence line, and offer_work resolves its
+// target by exact display name — a keeper left to guess spends her turn being told
+// the person she asked is not a worker.
+//
+// It also warns off the terminal speak, for the reason LLM-343 folded `say` into
+// sell: offer_work and speak both end the tick, so a keeper who voices the request
+// first never reaches the tool, and the offer she just made aloud does not exist.
+func renderOfferWorkAffordance(b *strings.Builder, workers []sim.ActorID, nameOf func(sim.ActorID) string) {
+	if len(workers) == 0 {
+		return
+	}
+	names := make([]string, 0, len(workers))
+	for _, id := range workers {
+		names = append(names, nameOf(id))
+	}
+	takes := "takes"
+	if len(names) > 1 {
+		takes = "take"
+	}
+	fmt.Fprintf(b, "%s %s work for pay and could lend you a hand. If you have a task worth paying for, ask with offer_work — name them, the pay you will hand over when the work is done (coins, goods you hold such as a meal, or both), and roughly how long the job will take. Put what you say to them in offer_work's `say`, in your own voice; do NOT ask with speak first, because speaking ends your turn and the offer would never reach them.\n",
+		joinNames(names), takes)
 }
 
 // renderSeekWorkPlaces lists the town's businesses as move_to destinations for a

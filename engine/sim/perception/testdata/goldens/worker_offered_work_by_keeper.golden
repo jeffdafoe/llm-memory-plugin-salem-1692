@@ -1,0 +1,16 @@
+# Your turn
+
+## Since your last turn
+(nothing specific — this is a routine check-in)
+
+
+## You
+Coins in your purse: 26.
+
+## Around you
+You are inside the PW Apothecary, with Prudence Ward.
+
+## Work offers awaiting your decision
+1. Prudence Ward has asked you to do a job for them — 4 coins for about 4 hours of work (offer id 1)
+Respond with accept_work or decline_work, passing the offer id as labor_id. Then also use speak for a brief reply, because the work response itself passes in silence.
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

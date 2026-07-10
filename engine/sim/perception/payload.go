@@ -365,13 +365,16 @@ type Payload struct {
 	// another." nil when no pending offer overlaps an undelivered room.
 	RoomAlreadySoldOrderByLedger map[sim.LedgerID]sim.OrderID
 
-	// LaborOffersForMe lists the still-pending labor offers staked AGAINST the
-	// subject as EMPLOYER (snap.LaborLedger entries where EmployerID == subject
-	// and State == Pending) — the standing decision view that drives the
-	// "## Work offers awaiting your decision" section (renderLaborOffers) and
-	// the accept_work/decline_work tool gate (PendingLaborOffers). Sourced from
-	// snap.LaborLedger every tick, same standing-view posture as PayOffersForMe.
-	// nil when nothing is pending. Ordered by LaborID ascending. LLM-26.
+	// LaborOffersForMe lists the still-pending labor offers AWAITING THE SUBJECT'S
+	// ANSWER (snap.LaborLedger entries where State == Pending and the subject is
+	// the responder — the party who did not mint it). That is a worker's
+	// solicitation when the subject is the employer, and an employer's offer of
+	// work when the subject is the worker (LLM-346). The standing decision view
+	// that drives the "## Work offers awaiting your decision" section
+	// (renderLaborOffers) and the accept_work/decline_work tool gate
+	// (PendingLaborOffers). Sourced from snap.LaborLedger every tick, same
+	// standing-view posture as PayOffersForMe. nil when nothing is pending.
+	// Ordered by LaborID ascending. LLM-26.
 	LaborOffersForMe []LaborOfferView
 
 	// SubjectProducesGoods is true when the subject makes any goods itself — has a
@@ -411,23 +414,41 @@ type Payload struct {
 	// worker is either relocating or working, never both).
 	LaborEnRoute *LaborEnRouteView
 
-	// PendingLaborOfferOut is non-nil when the subject is a WORKER with an
-	// OUTGOING labor offer still awaiting the employer's answer (a Pending
-	// LaborOffer where WorkerID == subject). It carries the employer and the
-	// offered terms so the self-state line can say "you've offered to work for X
-	// — wait for their answer." The worker-side mirror of Laboring: a worker who
-	// has solicited has no Working job yet, so without this anchor they sit with
-	// no labor self-state and — under the LLM-159 quiet backstop / "choose one
-	// action" pressure — flail into an unrelated tool (live: a worker paid her own
-	// employer while waiting). nil when the subject has no outgoing offer. LLM-164.
+	// PendingLaborOfferOut is non-nil when the subject MINTED a labor offer that
+	// is still awaiting the other party's answer (a Pending LaborOffer where
+	// InitiatedBy == subject) — a worker who solicited, or an employer who offered
+	// work (LLM-346). It carries the counterparty and the offered terms so the
+	// self-state line can say "you've offered to work for X — wait for their
+	// answer," or "you've asked X to work for you — it's their move." The mirror of
+	// Laboring for the awaiting-answer state: an actor who has just offered has no
+	// Working job yet, so without this anchor they sit with no labor self-state
+	// and — under the LLM-159 quiet backstop / "choose one action" pressure —
+	// flail into an unrelated tool (live: a worker paid her own employer while
+	// waiting). nil when the subject has no outgoing offer. LLM-164.
 	PendingLaborOfferOut *PendingLaborOfferOutView
 
 	// CanSolicitWork is true when the subject is a free worker — carries the
-	// AttrWorker marker, is not currently laboring, and has an audience to
-	// offer to. The standing affordance that renders the solicit_work cue
-	// (renderLaborAffordance) and gates the solicit_work tool; the one signal
-	// drives both so cue and tool can't drift (discussion-109). LLM-26.
+	// AttrWorker marker, is not currently laboring, holds no unanswered offer in
+	// either direction, and has an audience to offer to. The standing affordance
+	// that renders the solicit_work cue (renderLaborAffordance) and gates the
+	// solicit_work tool; the one signal drives both so cue and tool can't drift
+	// (discussion-109). LLM-26.
 	CanSolicitWork bool
+
+	// HireableWorkers are the co-present actors the subject could take on for an
+	// odd job right now: AttrWorker carriers in the subject's audience who share
+	// neither its household nor its workplace, hold no live job or unanswered
+	// offer, and have not just refused the subject (LLM-346). Ordered by display
+	// name for a stable prompt.
+	//
+	// A non-empty slice IS the offer_work gate: renderOfferWorkAffordance names
+	// these actors and gateTools advertises the tool off the same field, so the
+	// cue and the tool cannot drift (the discussion-109 invariant). It must NAME
+	// them — unlike solicit_work, whose caller knows they are a worker from their
+	// own self-knowledge, an employer has no other way to learn which of the
+	// people in front of her takes work for pay, and offer_work needs the name
+	// verbatim.
+	HireableWorkers []sim.ActorID
 
 	// SeekWorkPlaces are the town's businesses (village objects tagged
 	// sim.TagBusiness, resolved to their structure names), surfaced as move_to
@@ -829,14 +850,36 @@ type CounterOfferView struct {
 	CounterPayItems []sim.ItemKindQty
 }
 
-// LaborOfferView is one pending labor offer staked AGAINST the subject as
-// EMPLOYER — a worker offering to do a job for pay (LLM-26). It drives the
-// "## Work offers awaiting your decision" section (renderLaborOffers) and the
+// LaborOfferView is one pending labor offer AWAITING THE SUBJECT'S ANSWER — a
+// worker offering to do a job for pay (solicit_work, LLM-26), or an employer
+// offering the subject a job (offer_work, LLM-346). It drives the "## Work offers
+// awaiting your decision" section (renderLaborOffers) and the
 // accept_work/decline_work tool gate (PendingLaborOffers). LaborID is the
-// load-bearing field the employer must echo back into accept_work/decline_work.
+// load-bearing field the subject must echo back into accept_work/decline_work.
+//
+// Both parties are named because the subject is one of them and the rendered
+// sentence must name the OTHER. SubjectIsEmployer says which side the subject is
+// on, and therefore which direction the offer came from — the subject is the
+// responder by construction, so it is also the direction it was NOT minted from.
 type LaborOfferView struct {
-	LaborID sim.LaborID
-	Worker  sim.ActorID
+	LaborID  sim.LaborID
+	Worker   sim.ActorID
+	Employer sim.ActorID
+	// EmployerInitiated records WHO MINTED the offer — the same domain fact
+	// sim.LaborOffer.EmployerInitiated() carries, not a subject-relative flag. The
+	// subject is the responder by construction, so their role follows: an
+	// employer-initiated offer means the subject is the worker being asked; a
+	// worker-initiated one means the subject is the employer being solicited.
+	// Read it through SubjectIsWorker / SubjectIsEmployer rather than inline, so
+	// no callsite has to redo that step.
+	//
+	// The zero value is the worker-initiated direction — the only one that existed
+	// before LLM-346 and still the common one — so a hand-built payload that omits
+	// the field renders the sentence it always did rather than silently addressing
+	// the subject as the wrong party. PendingLaborOfferOutView carries the same
+	// field with the same name, meaning and zero value, so the two cannot be
+	// confused for having opposite polarity (code_review).
+	EmployerInitiated bool
 	// Reward is the coin leg; RewardItems the in-kind leg (goods the
 	// EMPLOYER hands over at settle — LLM-225). At least one is non-empty.
 	Reward      int
@@ -846,15 +889,31 @@ type LaborOfferView struct {
 	// snapshot inventory — the goods half of accept_work's gate-8 mirror
 	// (the coin half stays a render-side Coins comparison, LLM-158). Non-nil
 	// drives the "you do not hold what they ask" decline steer.
+	//
+	// Populated ONLY when the subject is the employer: it is built from the
+	// subject's own inventory, and a worker weighing an offered job cannot see
+	// into the keeper's purse. An employer who named a wage they no longer hold
+	// fails accept_work's gate 8 the ordinary way (LLM-346).
 	MissingRewardItems []sim.ItemKindQty
 	DurationMin        int
 	ExpiresAt          time.Time
 	// HelpedBeforeRecently is true when this worker completed a paid job for the
 	// subject within HelpedByWorkerMemoryTTL (the employer's ObservedHelpedByWorker
 	// memory is Active). Drives the returning-helper recall line the decision
-	// section adds above the accept/decline steer (LLM-228).
+	// section adds above the accept/decline steer (LLM-228). Employer-side only —
+	// the memory lives on the employer, keyed by the worker's PeerID.
 	HelpedBeforeRecently bool
 }
+
+// SubjectIsWorker reports whether the subject of this offer is the one who would
+// do the work — i.e. an employer asked them. The subject of a LaborOfferView is
+// always the responder, so this is exactly "the employer minted it." LLM-346.
+func (v LaborOfferView) SubjectIsWorker() bool { return v.EmployerInitiated }
+
+// SubjectIsEmployer reports whether the subject is the one who would pay — i.e. a
+// worker solicited them. The complement of SubjectIsWorker, named so no callsite
+// has to reason about the negation. LLM-346.
+func (v LaborOfferView) SubjectIsEmployer() bool { return !v.EmployerInitiated }
 
 // LaboringView carries the subject's OWN in-progress job for the self-state
 // line (LLM-26): who they're working for and when the work window completes.
@@ -918,12 +977,32 @@ type WorkerForMeView struct {
 // reward + duration they solicited with) so the line can name what's on the table.
 type PendingLaborOfferOutView struct {
 	Employer sim.ActorID
-	// Reward is the coin leg; RewardItems the in-kind leg the worker asked
-	// to be paid in (LLM-225).
+	// Worker is the actor who would do the job. Set on both directions so the
+	// employer-side line can name whom they asked (LLM-346).
+	Worker sim.ActorID
+	// EmployerInitiated records WHO MINTED the offer — the same field name,
+	// meaning and zero value LaborOfferView carries, so the two adjacent labor
+	// views cannot be confused for having opposite polarity (code_review). The
+	// subject of this view is always the INITIATOR, so their role follows: an
+	// employer-initiated offer means the subject is the employer who asked.
+	// Read it through SubjectIsEmployer / SubjectIsWorker.
+	EmployerInitiated bool
+	// Reward is the coin leg; RewardItems the in-kind leg the worker would
+	// be paid in (LLM-225).
 	Reward      int
 	RewardItems []sim.ItemKindQty
 	DurationMin int
 }
+
+// SubjectIsEmployer reports whether the subject minted an offer of work
+// (offer_work) and is waiting on the worker's answer. The subject of a
+// PendingLaborOfferOutView is always the initiator, so this is exactly "the
+// employer minted it." LLM-346.
+func (v PendingLaborOfferOutView) SubjectIsEmployer() bool { return v.EmployerInitiated }
+
+// SubjectIsWorker reports whether the subject solicited (solicit_work) and is
+// waiting on the employer's answer. LLM-346.
+func (v PendingLaborOfferOutView) SubjectIsWorker() bool { return !v.EmployerInitiated }
 
 // OfferableCustomersView is the seller-side "offer your wares" cue's content
 // (ZBBS-HOME-404). CustomerNames are the acquaintance-gated labels

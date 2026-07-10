@@ -9,24 +9,31 @@ import (
 	"time"
 )
 
-// labor_commands.go — LLM-26 Command Fns for the worker-initiated
-// service-for-pay flow on top of the labor_ledger.go substrate +
-// events_labor.go. Three commands:
+// labor_commands.go — LLM-26 Command Fns for the service-for-pay flow on top of
+// the labor_ledger.go substrate + events_labor.go. Four commands:
 //
-//   - SolicitWork  — worker-side, mints the pending offer {employer,
+//   - SolicitWork  — worker-side mint: "I'll do a job for you" {employer,
 //                    reward, duration}.
-//   - AcceptWork   — employer-side, starts the work window (non-terminal —
+//   - OfferWork    — employer-side mint: "come do a job for me" {worker,
+//                    reward, duration} (LLM-346).
+//   - AcceptWork   — responder-side, starts the work window (non-terminal —
 //                    the employer→worker reward transfer settles at
 //                    completion via the sweep in labor_settle.go).
-//   - DeclineWork  — employer-side, declines a pending offer (no coins
+//   - DeclineWork  — responder-side, declines a pending offer (no coins
 //                    move).
 //
-// Deliberately super-basic (Jeff, 2026-06-26): the worker proposes terms,
-// the employer says yes or no, and EVERYTHING ELSE — what the work is, why,
-// any haggling — happens in conversation. There is no counter, no message
-// field, no task taxonomy: the engine is task-agnostic and the fiction
-// carries the variety. The whole machine is gated to actors carrying the
-// AttrWorker marker.
+// Either party may open the bargain; the other answers. Before LLM-346 the
+// market was worker-initiated only, so a keeper's most natural line — "would you
+// lend a hand?" — had no mechanical counterpart and the conversation could only
+// loop (the live Prudence Ward / Lewis Walker apothecary hire, which both
+// parties agreed to in words and neither could act on).
+//
+// Deliberately super-basic (Jeff, 2026-06-26): one side proposes terms, the
+// other says yes or no, and EVERYTHING ELSE — what the work is, why, any
+// haggling — happens in conversation. There is no counter, no message field, no
+// task taxonomy: the engine is task-agnostic and the fiction carries the
+// variety. The WORKER side of every offer must carry the AttrWorker marker,
+// whichever direction the offer was minted from.
 //
 // Mirrors the pay-with-item Command pattern (pay_with_item_commands.go):
 // every Fn re-validates on the world goroutine, mutates atomically, emits
@@ -67,19 +74,51 @@ type LaborSolicitResult struct {
 // pre-formatted reward phrase ("5 coins", "1 porridge and 2 coins" — LLM-225)
 // so the harness steer can name the full terms without re-formatting
 // (formatPayment is sim-internal).
+//
+// Both party names ride along because either one may be the acceptor (LLM-346),
+// and the tool feedback addresses whoever called: an employer accepting a
+// solicitation hired someone, a worker accepting an offered job took a job on.
+// AcceptorIsWorker says which sentence to write.
 type LaborAcceptResult struct {
-	ID           LaborID
-	State        LaborLedgerState
-	WorkerName   string
-	Reward       int
-	Payment      string
-	WorkingUntil time.Time
+	ID               LaborID
+	State            LaborLedgerState
+	WorkerName       string
+	EmployerName     string
+	AcceptorIsWorker bool
+	Reward           int
+	Payment          string
+	WorkingUntil     time.Time
 }
 
 // LaborDeclineResult is DeclineWork's value.
 type LaborDeclineResult struct {
 	ID    LaborID
 	State LaborLedgerState
+}
+
+// LaborOfferResult is OfferWork's success value — the minted pending offer's id
+// plus the resolved worker display name, so the tool feedback can name who the
+// job went to.
+//
+// State is always LaborStatePending on success. OfferWork does check
+// affordability, but a failure there REJECTS before minting rather than resolving
+// to a terminal state the way SolicitWork's LLM-193 auto-decline does: the
+// employer names the wage herself, so one she cannot cover is a malformed call,
+// not a doomed offer worth recording against her (code_review — the earlier
+// wording claimed there was no affordability branch at all).
+//
+// Announced / SayRefused carry the fate of the optional spoken line the tool folds
+// in, mirroring SceneQuoteCreateResult. LLM-346.
+type LaborOfferResult struct {
+	ID         LaborID
+	State      LaborLedgerState
+	WorkerName string
+
+	// Announced is true when the employer's `say` line went out alongside the
+	// offer. False when no line was passed, or when SpeakTo refused it — in which
+	// case SayRefused carries its reason. The offer stands either way.
+	Announced  bool
+	SayRefused string
 }
 
 // SolicitWork returns the Command for a worker offering their labor to a
@@ -201,14 +240,25 @@ func SolicitWork(workerID ActorID, employerName string, reward int, rewardItems 
 				)
 			}
 
-			// Duplicate-offer gate: at most ONE pending outgoing offer per
-			// worker (any employer). A worker bids one job at a time and waits
-			// for an answer — this prevents both the weak-model re-offer storm
-			// AND a worker staking valid-looking offers to several employers at
-			// once, where every late acceptor would then hit failed_unavailable
-			// (code_review). Past-TTL entries are skipped (they resolve on the
-			// sweep, not here).
+			// Duplicate-offer gate: at most ONE live pending offer per worker, in
+			// EITHER direction. A worker bids one job at a time and waits for an
+			// answer — this prevents both the weak-model re-offer storm AND a worker
+			// staking valid-looking offers to several employers at once, where every
+			// late acceptor would then hit failed_unavailable (code_review). Past-TTL
+			// entries are skipped (they resolve on the sweep, not here).
+			//
+			// LLM-346: the standing offer may have been minted by an EMPLOYER who
+			// asked this worker for help. Soliciting past it would leave two live
+			// offers on one worker; worse, the model is reaching for the wrong verb
+			// while a job it can simply take is already on the table. Name the offer
+			// and the answer tools rather than the re-offer advice.
 			if o := workerPendingLaborOffer(w, workerID, at); o != nil {
+				if o.EmployerInitiated() {
+					return nil, fmt.Errorf(
+						"%s has already offered you work (offer id %d) — answer that with accept_work or decline_work instead of offering again.",
+						actorDisplayName(w, o.EmployerID), o.ID,
+					)
+				}
 				return nil, fmt.Errorf(
 					"you already have a work offer out awaiting an answer (offer id %d) — wait for a response before offering again.",
 					o.ID,
@@ -235,6 +285,7 @@ func SolicitWork(workerID ActorID, employerName string, reward int, rewardItems 
 			offer := &LaborOffer{
 				WorkerID:    workerID,
 				EmployerID:  employerID,
+				InitiatedBy: workerID,
 				Reward:      reward,
 				RewardItems: resolvedRewardItems,
 				DurationMin: durationMin,
@@ -307,6 +358,7 @@ func SolicitWork(workerID ActorID, employerName string, reward int, rewardItems 
 				LaborID:     id,
 				WorkerID:    workerID,
 				EmployerID:  employerID,
+				InitiatedBy: workerID,
 				Reward:      reward,
 				RewardItems: cloneItemKindQtys(resolvedRewardItems),
 				DurationMin: durationMin,
@@ -328,8 +380,264 @@ func SolicitWork(workerID ActorID, employerName string, reward int, rewardItems 
 	}
 }
 
-// AcceptWork returns the Command for an employer accepting a pending labor
-// offer. Gates 1-2 (caller exists, offer exists) and gates 3-4 (auth,
+// OfferWork returns the Command for an employer offering a job to a co-present
+// worker — the mirror of SolicitWork with the roles reversed (LLM-346). Pending
+// offer only; the WORKER resolves it with accept_work / decline_work. The reward
+// may be coins, goods the employer holds, or both; at least one leg must be
+// non-empty. Gates first-failure-wins: numeric bounds → employer exists →
+// not-walking → in-conversation → scene anchor → worker resolve → not-self →
+// worker attribute → not-own-household/crew → worker free → worker not already
+// answering an offer → employer not already offering → goods resolve → employer
+// holds the reward.
+//
+// Two gates in SolicitWork have NO counterpart here, both for the same reason —
+// the offering party names the terms:
+//
+//   - The LLM-193 destitute auto-decline and the LLM-243 barter-possible branch
+//     both exist because a WORKER can ask for a wage the employer cannot cover,
+//     and the engine must decide whether that forecloses the employer. An
+//     employer who names a wage they do not hold has simply made a malformed
+//     call: nothing is minted, no decline is remembered, and the tool error tells
+//     them what they are short so they can re-offer terms they can meet.
+//   - There is no "already laboring" gate on the employer. Hiring help is not a
+//     job you walk away from; a laboring worker's offer_work is withheld at the
+//     advertising layer instead (laborAbandonTools), where every other
+//     job-abandoning verb is.
+func OfferWork(employerID ActorID, workerName string, reward int, rewardItems []PayItemInput, durationMin int, at time.Time) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			// Numeric defense. OfferWork is exported — non-handler callers could
+			// pass shapes the decode side rejects.
+			if reward < 0 {
+				return nil, fmt.Errorf("offer_work: reward cannot be negative (got %d)", reward)
+			}
+			// The pay-nothing hole: a wage must carry coins, goods, or both. The
+			// coin floor applies only when no goods leg is offered.
+			if reward < MinLaborReward && len(rewardItems) == 0 {
+				return nil, fmt.Errorf(
+					"offer_work: the pay must be worth something — offer at least %d coin, or goods via reward_items, or both.",
+					MinLaborReward,
+				)
+			}
+			if reward > MaxLaborReward {
+				return nil, fmt.Errorf("offer_work: reward exceeds maximum (got %d, max %d)", reward, MaxLaborReward)
+			}
+			if durationMin < MinLaborDurationMinutes {
+				return nil, fmt.Errorf("offer_work: duration must be at least %d minutes (got %d)", MinLaborDurationMinutes, durationMin)
+			}
+			if durationMin > MaxLaborDurationMinutes {
+				return nil, fmt.Errorf("offer_work: duration exceeds maximum (got %d, max %d minutes)", durationMin, MaxLaborDurationMinutes)
+			}
+
+			employer, ok := w.Actors[employerID]
+			if !ok {
+				return nil, fmt.Errorf("OfferWork: employer %q not in world", employerID)
+			}
+			if employer.MoveIntent != nil {
+				return nil, errors.New(
+					"you are walking — finish your move before offering someone work. " +
+						"Either offer BEFORE the move_to, or wait until you arrive.",
+				)
+			}
+			if employer.CurrentHuddleID == "" {
+				return nil, errors.New(
+					"you're not in a conversation — start one with the person you want to hire first.",
+				)
+			}
+
+			sceneID, ok := resolveSellerScene(w, employer.CurrentHuddleID)
+			if !ok {
+				return nil, errors.New(
+					"your current conversation isn't anchored to a scene — wait for it to be established before offering work.",
+				)
+			}
+
+			// Resolve the worker against huddle peers — same tight scope as
+			// solicit_work and pay (same huddle, case-insensitive, ambiguity reject).
+			workerID, ok, ambiguous := findHuddlePeerByDisplayName(w, employerID, employer.CurrentHuddleID, workerName)
+			if ambiguous {
+				return nil, fmt.Errorf(
+					"more than one person named %q is in this conversation — use a unique full name before offering work.",
+					workerName,
+				)
+			}
+			if !ok {
+				return nil, fmt.Errorf(
+					"no one named %q in this conversation — re-check who is here before offering them work.",
+					workerName,
+				)
+			}
+			// Defensive only: the huddle-peer resolver excludes the caller, so naming
+			// yourself already bounced on resolution above. Mirrors SolicitWork's
+			// equally unreachable not-self check.
+			if workerID == employerID {
+				return nil, errors.New("you cannot offer work to yourself")
+			}
+			worker, ok := w.Actors[workerID]
+			if !ok {
+				return nil, fmt.Errorf("OfferWork: worker %q vanished mid-resolve", workerID)
+			}
+
+			// Worker-attribute gate — the mirror of SolicitWork's. The `worker`
+			// marker is what makes a villager hireable for odd jobs; the tool-gating
+			// layer only names carriers as targets, and this re-checks the resolved
+			// actor for direct / stale-perception callers.
+			if !actorIsWorker(worker) {
+				return nil, fmt.Errorf(
+					"%s is not taken on as a worker — only villagers minded up as workers can be hired for odd jobs.",
+					worker.DisplayName,
+				)
+			}
+
+			// Co-resident / co-worker gate (LLM-145, mirrored): a keeper does not
+			// hire her own household or her own shop's crew. The perception affordance
+			// already hides them (CanOfferWork); this is the substrate backstop.
+			if employer.HomeStructureID != "" && employer.HomeStructureID == worker.HomeStructureID {
+				return nil, fmt.Errorf(
+					"you live with %s — offer the work to someone outside your own household.",
+					worker.DisplayName,
+				)
+			}
+			if employer.WorkStructureID != "" && employer.WorkStructureID == worker.WorkStructureID {
+				return nil, fmt.Errorf(
+					"you and %s keep the same workplace — they already work alongside you.",
+					worker.DisplayName,
+				)
+			}
+
+			// One live job per worker, ledger-authoritative (a Working offer occupies
+			// the worker until the sweep settles it, even past its window).
+			if workerHasLiveJob(w, workerID) {
+				return nil, fmt.Errorf(
+					"%s is already on a job — wait until they have finished before taking them on.",
+					worker.DisplayName,
+				)
+			}
+			// One live pending offer per worker, either direction: they can only
+			// answer one thing at a time, and a second offer would be a doomed
+			// failed_unavailable the moment the first is accepted.
+			if o := workerPendingLaborOffer(w, workerID, at); o != nil {
+				if o.EmployerInitiated() && o.EmployerID == employerID {
+					return nil, fmt.Errorf(
+						"you have already offered %s work (offer id %d) — wait for their answer.",
+						worker.DisplayName, o.ID,
+					)
+				}
+				return nil, fmt.Errorf(
+					"%s already has a work offer awaiting an answer (offer id %d) — wait until it is settled.",
+					worker.DisplayName, o.ID,
+				)
+			}
+			// One live pending offer OUT per employer (any worker), the mirror of
+			// SolicitWork's duplicate gate: an employer hires one body at a time and
+			// waits for the answer, so a weak model cannot storm the room with offers.
+			if o := employerPendingLaborOffer(w, employerID, at); o != nil {
+				return nil, fmt.Errorf(
+					"you already have a work offer out to %s awaiting an answer (offer id %d) — wait for a response before offering again.",
+					actorDisplayName(w, o.WorkerID), o.ID,
+				)
+			}
+
+			// Resolve the in-kind wage leg. resolvePayItems is the shared goods-line
+			// resolver: free-text → canonical kind, duplicate-kind reject, qty bounds,
+			// the LLM-167 labor-token steer, and the service-kind reject. Resolved
+			// LAST among the gates so an offer that bounces on an earlier gate doesn't
+			// mint a qty-0 discovery kind for nothing.
+			resolvedRewardItems, err := resolvePayItems(w, rewardItems)
+			if err != nil {
+				return nil, err
+			}
+
+			expiresAt := at.Add(LaborLedgerTTLDefault)
+			offer := &LaborOffer{
+				WorkerID:    workerID,
+				EmployerID:  employerID,
+				InitiatedBy: employerID,
+				Reward:      reward,
+				RewardItems: resolvedRewardItems,
+				DurationMin: durationMin,
+				State:       LaborStatePending,
+				HuddleID:    employer.CurrentHuddleID,
+				SceneID:     sceneID,
+				CreatedAt:   at,
+				ExpiresAt:   expiresAt,
+			}
+
+			// Means-to-pay. Nothing is escrowed and the settle re-checks
+			// authoritatively, but an employer who offers a wage they do not hold
+			// right now has named terms they cannot keep — the worker would down
+			// tools for hours toward a payout that was never going to land. Reject
+			// the CALL rather than minting a doomed offer: no ledger entry, no
+			// decline for either party to remember, and the message names exactly
+			// which leg is short so the model can re-offer terms it can meet.
+			if !employerCanCoverLaborReward(employer, offer) {
+				return nil, offerWorkCannotCoverError(employer, offer)
+			}
+
+			// Mint: assign the id and record the offer.
+			id := w.nextLaborSeq()
+			offer.ID = id
+			w.LaborLedger[id] = offer
+
+			evt := &LaborOfferReceived{
+				LaborID:     id,
+				WorkerID:    workerID,
+				EmployerID:  employerID,
+				InitiatedBy: employerID,
+				Reward:      reward,
+				RewardItems: cloneItemKindQtys(resolvedRewardItems),
+				DurationMin: durationMin,
+				SceneID:     sceneID,
+				HuddleID:    employer.CurrentHuddleID,
+				ExpiresAt:   expiresAt,
+				At:          at,
+			}
+			w.emit(evt)
+			offer.RootEventID = evt.RootEventID()
+			offer.SourceEventID = evt.EventID()
+
+			return LaborOfferResult{
+				ID:         id,
+				State:      LaborStatePending,
+				WorkerName: worker.DisplayName,
+			}, nil
+		},
+	}
+}
+
+// offerWorkCannotCoverError explains which leg of the wage the employer does not
+// hold, so the model can re-offer terms it can meet rather than guessing. The two
+// branches mirror employerCanCoverLaborReward's two legs exactly (LLM-346).
+func offerWorkCannotCoverError(employer *Actor, offer *LaborOffer) error {
+	shortOnCoins := !buyerCanAfford(employer, offer.Reward)
+	var missing []ItemKindQty
+	for _, ri := range offer.RewardItems {
+		if employer.Inventory[ri.Kind] < ri.Qty {
+			missing = append(missing, ri)
+		}
+	}
+	switch {
+	case shortOnCoins && len(missing) > 0:
+		return fmt.Errorf(
+			"you have only %s and do not hold the %s you offered as pay — offer a wage you can hand over when the work is done.",
+			laborCoinsPhrase(employer.Coins), formatPayment(0, missing),
+		)
+	case len(missing) > 0:
+		return fmt.Errorf(
+			"you do not hold the %s you offered as pay — offer goods you have, coins, or both.",
+			formatPayment(0, missing),
+		)
+	default:
+		return fmt.Errorf(
+			"you have only %s — offer a wage you can hand over when the work is done.",
+			laborCoinsPhrase(employer.Coins),
+		)
+	}
+}
+
+// AcceptWork returns the Command for the RESPONDER accepting a pending labor
+// offer — the employer on a solicited offer, the worker on an offered job
+// (LLM-346). Gates 1-2 (caller exists, offer exists) and gates 3-4 (auth,
 // state) are idempotent rejects — tool error, NO transition. Gates 5+ (TTL,
 // co-presence, worker-free, funds) DRIVE a terminal flip: the gate failure
 // IS the resolution (FailedUnavailable / Expired), not a tool error.
@@ -348,8 +656,7 @@ func AcceptWork(callerID ActorID, laborID LaborID, at time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
 			// Gate 1: caller exists.
-			caller, ok := w.Actors[callerID]
-			if !ok {
+			if _, ok := w.Actors[callerID]; !ok {
 				return nil, fmt.Errorf("AcceptWork: caller %q not in world", callerID)
 			}
 
@@ -362,11 +669,13 @@ func AcceptWork(callerID ActorID, laborID LaborID, at time.Time) Command {
 				)
 			}
 
-			// Gate 3: auth (idempotent reject — NO transition).
-			if offer.EmployerID != callerID {
+			// Gate 3: auth (idempotent reject — NO transition). The responder is
+			// whoever did not mint the offer: the employer answers a solicit_work,
+			// the worker answers an offer_work (LLM-346).
+			if offer.Responder() != callerID {
 				return nil, fmt.Errorf(
-					"AcceptWork: only the employer of labor offer %d may accept it",
-					laborID,
+					"AcceptWork: only %s may accept labor offer %d — it is their answer to give",
+					actorDisplayName(w, offer.Responder()), laborID,
 				)
 			}
 
@@ -384,12 +693,16 @@ func AcceptWork(callerID ActorID, laborID LaborID, at time.Time) Command {
 			}
 
 			// Gate 6: co-presence. Worker and employer must both still be in
-			// offer.HuddleID (captured at solicitation).
+			// offer.HuddleID (captured at the mint). Read off the OFFER's two roles,
+			// not off caller — caller is the responder, which is the worker on an
+			// employer-initiated offer (LLM-346). `caller` is one of the two by gate
+			// 3, so checking both parties subsumes checking the caller.
 			worker, workerOK := w.Actors[offer.WorkerID]
-			if !workerOK ||
+			employer, employerOK := w.Actors[offer.EmployerID]
+			if !workerOK || !employerOK ||
 				offer.HuddleID == "" ||
 				worker.CurrentHuddleID != offer.HuddleID ||
-				caller.CurrentHuddleID != offer.HuddleID {
+				employer.CurrentHuddleID != offer.HuddleID {
 				return finalizeLaborTerminal(w, offer, LaborTerminalStateFailedUnavailable, false, at), nil
 			}
 
@@ -410,8 +723,9 @@ func AcceptWork(callerID ActorID, laborID LaborID, at time.Time) Command {
 			// worker labor (possibly for hours) toward a payout that was never
 			// going to land. The completion sweep re-checks both legs
 			// authoritatively, since the employer's holdings can drift across a
-			// long work window.
-			if !employerCanCoverLaborReward(caller, offer) {
+			// long work window. Checked against the offer's EMPLOYER, who is not the
+			// caller when the worker is the one accepting (LLM-346).
+			if !employerCanCoverLaborReward(employer, offer) {
 				return finalizeLaborTerminal(w, offer, LaborTerminalStateFailedUnavailable, false, at), nil
 			}
 
@@ -437,10 +751,10 @@ func AcceptWork(callerID ActorID, laborID LaborID, at time.Time) Command {
 			//      are already where the work happens.
 			var resultState LaborLedgerState
 			var resultWorkingUntil time.Time
-			ws := caller.WorkStructureID
+			ws := employer.WorkStructureID
 			switch {
-			case ws == "" || (actorAtWorkpost(w, worker, ws) && actorAtWorkpost(w, caller, ws)):
-				startLaborWork(w, offer, worker, caller, at)
+			case ws == "" || (actorAtWorkpost(w, worker, ws) && actorAtWorkpost(w, employer, ws)):
+				startLaborWork(w, offer, worker, employer, at)
 				resultState, resultWorkingUntil = LaborStateWorking, *offer.WorkingUntil
 			default:
 				// Relocate: the worker heads to the employer's workplace; the work
@@ -450,8 +764,8 @@ func AcceptWork(callerID ActorID, laborID LaborID, at time.Time) Command {
 				// that deadlocks or an owner who never shows can't occupy the
 				// worker forever — the sweep voids it unpaid past the deadline.
 				offer.State = LaborStateEnRoute
-				offer.EnRouteDeadline = clampWorkingUntilToEmployerClose(w, caller, at.Add(LaborEnRouteWaitDefault), at)
-				sendWorkerToWorkplace(w, worker, caller, true, at)
+				offer.EnRouteDeadline = clampWorkingUntilToEmployerClose(w, employer, at.Add(LaborEnRouteWaitDefault), at)
+				sendWorkerToWorkplace(w, worker, employer, true, at)
 				resultState = LaborStateEnRoute
 			}
 
@@ -474,23 +788,26 @@ func AcceptWork(callerID ActorID, laborID LaborID, at time.Time) Command {
 			w.emit(evt)
 
 			return LaborAcceptResult{
-				ID:           offer.ID,
-				State:        resultState,
-				WorkerName:   worker.DisplayName,
-				Reward:       offer.Reward,
-				Payment:      formatPayment(offer.Reward, offer.RewardItems),
-				WorkingUntil: resultWorkingUntil,
+				ID:               offer.ID,
+				State:            resultState,
+				WorkerName:       worker.DisplayName,
+				EmployerName:     employer.DisplayName,
+				AcceptorIsWorker: offer.EmployerInitiated(),
+				Reward:           offer.Reward,
+				Payment:          formatPayment(offer.Reward, offer.RewardItems),
+				WorkingUntil:     resultWorkingUntil,
 			}, nil
 		},
 	}
 }
 
-// DeclineWork returns the Command for an employer declining a pending labor
-// offer. Three gates first-failure-wins, all idempotent rejects until the
-// flip: caller exists → offer exists → caller is the employer → offer is
-// pending. No coins move; no co-presence or TTL gate (a decline is
-// unconditional on a pending offer the caller owns). Any explanation is
-// spoken in conversation, not carried as a field.
+// DeclineWork returns the Command for the RESPONDER declining a pending labor
+// offer — the employer refusing a solicited offer, the worker refusing an
+// offered job (LLM-346). Four gates first-failure-wins, all idempotent rejects
+// until the flip: caller exists → offer exists → caller is the responder →
+// offer is pending. No coins move; no co-presence or TTL gate (a decline is
+// unconditional on a pending offer awaiting the caller's answer). Any
+// explanation is spoken in conversation, not carried as a field.
 func DeclineWork(callerID ActorID, laborID LaborID, at time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
@@ -504,10 +821,10 @@ func DeclineWork(callerID ActorID, laborID LaborID, at time.Time) Command {
 					laborID,
 				)
 			}
-			if offer.EmployerID != callerID {
+			if offer.Responder() != callerID {
 				return nil, fmt.Errorf(
-					"DeclineWork: only the employer of labor offer %d may decline it",
-					laborID,
+					"DeclineWork: only %s may decline labor offer %d — it is their answer to give",
+					actorDisplayName(w, offer.Responder()), laborID,
 				)
 			}
 			if offer.State != LaborStatePending {
@@ -580,6 +897,7 @@ func finalizeLaborTerminalOpts(w *World, offer *LaborOffer, terminal LaborTermin
 		LaborID:       offer.ID,
 		WorkerID:      offer.WorkerID,
 		EmployerID:    offer.EmployerID,
+		InitiatedBy:   offer.InitiatedBy,
 		Reward:        offer.Reward,
 		RewardItems:   cloneItemKindQtys(offer.RewardItems),
 		DurationMin:   offer.DurationMin,
@@ -625,12 +943,20 @@ func recordLaborInteractions(w *World, offer *LaborOffer, terminal LaborTerminal
 	// Pick the interaction kinds for this terminal. The non-social terminals
 	// (expired, and the accept-time failed_unavailable fall-through) return here
 	// — before the name lookups below — and write nothing.
+	//
+	// A decline is the RESPONDER's refusal, so the declined/declined-by pair swaps
+	// sides with the offer's direction (LLM-346): the employer refuses a solicited
+	// offer, the worker refuses an offered job. Writing the solicit-shaped pair for
+	// both would leave each party remembering a refusal they never made — and would
+	// teach the worker that this employer turns them away.
 	var workerKind, employerKind InteractionKind
 	switch {
 	case terminal == LaborTerminalStateCompleted:
 		workerKind, employerKind = InteractionWorked, InteractionHired
 	case terminal == LaborTerminalStateFailedUnavailable && workPerformed:
 		workerKind, employerKind = InteractionWorkedUnpaid, InteractionLeftWorkerUnpaid
+	case terminal == LaborTerminalStateDeclined && offer.EmployerInitiated():
+		workerKind, employerKind = InteractionDeclinedWork, InteractionWorkDeclinedBy
 	case terminal == LaborTerminalStateDeclined:
 		workerKind, employerKind = InteractionWorkDeclinedBy, InteractionDeclinedWork
 	default:
@@ -666,6 +992,8 @@ func recordLaborInteractions(w *World, offer *LaborOffer, terminal LaborTerminal
 		workerFact, employerFact = laborUnpaidFacts(workerName, employerName, payment, workedMin)
 	case InteractionWorkDeclinedBy:
 		workerFact, employerFact = laborDeclinedFacts(workerName, employerName, payment)
+	case InteractionDeclinedWork:
+		workerFact, employerFact = laborOfferDeclinedFacts(workerName, employerName, payment)
 	}
 
 	if _, err := RecordInteraction(offer.WorkerID, offer.EmployerID, workerKind, workerFact, at).Fn(w); err != nil {
@@ -741,12 +1069,21 @@ func laborUnpaidFacts(workerName, employerName, payment string, durationMin int)
 }
 
 // laborDeclinedFacts returns the (worker→employer, employer→worker) salient
-// fact texts for an offer the employer declined — the labor analogue of
+// fact texts for a SOLICITED offer the employer declined — the labor analogue of
 // payDeclinedFactText. No duration (the work never started); the payment names
 // the terms that were refused.
 func laborDeclinedFacts(workerName, employerName, payment string) (workerFact, employerFact string) {
 	workerFact = fmt.Sprintf("%s declined my offer to work for them for %s.", employerName, payment)
 	employerFact = fmt.Sprintf("I declined %s's offer to work for me for %s.", workerName, payment)
+	return workerFact, employerFact
+}
+
+// laborOfferDeclinedFacts returns the (worker→employer, employer→worker) salient
+// fact texts for an OFFERED job the worker declined — laborDeclinedFacts with the
+// refusal on the other side (LLM-346). The employer asked; the worker said no.
+func laborOfferDeclinedFacts(workerName, employerName, payment string) (workerFact, employerFact string) {
+	workerFact = fmt.Sprintf("I declined %s's offer of work for %s.", employerName, payment)
+	employerFact = fmt.Sprintf("%s declined my offer of work for %s.", workerName, payment)
 	return workerFact, employerFact
 }
 
@@ -1057,14 +1394,39 @@ func workerHiredAt(w *World, workerID ActorID, structureID StructureID) bool {
 	return false
 }
 
-// workerPendingLaborOffer returns the worker's live (not past-TTL) pending
-// outgoing labor offer, or nil. Shared by SolicitWork's duplicate-offer gate
-// and the seek-work backstop's eligibility (LLM-141) so the "already bidding"
-// predicate can't drift between them. Past-TTL pending entries are skipped —
-// they resolve on the labor sweep, not here. World-goroutine-only.
+// workerPendingLaborOffer returns the live (not past-TTL) pending labor offer
+// this worker is party to, or nil — one they solicited, or one an employer
+// offered them (LLM-346). Shared by SolicitWork's and OfferWork's duplicate-offer
+// gates and the seek-work backstop's eligibility (LLM-141) so the "already
+// engaged in a bargain" predicate can't drift between them. Direction-agnostic on
+// purpose: a worker who is waiting on an answer and a worker who owes one are
+// equally unavailable, and equally wrong to nudge toward job-hunting. Callers
+// that need the direction read EmployerInitiated on the returned offer. Past-TTL
+// pending entries are skipped — they resolve on the labor sweep, not here.
+// World-goroutine-only.
 func workerPendingLaborOffer(w *World, workerID ActorID, now time.Time) *LaborOffer {
 	for _, o := range w.LaborLedger {
 		if o == nil || o.State != LaborStatePending || o.WorkerID != workerID {
+			continue
+		}
+		if !o.ExpiresAt.IsZero() && !now.Before(o.ExpiresAt) {
+			continue
+		}
+		return o
+	}
+	return nil
+}
+
+// employerPendingLaborOffer returns the employer's live (not past-TTL) pending
+// OUTGOING offer of work, or nil — an offer_work awaiting a worker's answer. The
+// employer-side mirror of workerPendingLaborOffer's duplicate gate (LLM-346), and
+// deliberately narrower: it ignores offers SOLICITED of this employer, because
+// answering a solicitation is not the same commitment as having a job offer on
+// the table, and a keeper fielding a solicit must still be free to offer work to
+// someone else. World-goroutine-only.
+func employerPendingLaborOffer(w *World, employerID ActorID, now time.Time) *LaborOffer {
+	for _, o := range w.LaborLedger {
+		if o == nil || o.State != LaborStatePending || o.EmployerID != employerID || !o.EmployerInitiated() {
 			continue
 		}
 		if !o.ExpiresAt.IsZero() && !now.Before(o.ExpiresAt) {
@@ -1149,10 +1511,10 @@ func laborBetweenRank(s LaborLedgerState) int {
 // inert kind into the catalog and then dead-ends on a holdings/stock shortfall
 // (pay_items / quote side) — in both cases with no hint the labor flow exists.
 // That is the LLM-167 symptom (Ezekiel Crane burned ~20 trade-tool turns before
-// stumbling onto accept_work). The copy names ONLY the real verbs: the labor
-// market is worker-initiated, so the worker solicits and the employer
-// accepts/declines — there is no employer-initiated "offer_work". LLM-167.
-const laborTradeSteerMsg = "labor isn't a tradeable good. To offer to do a job for someone in exchange for coins, use solicit_work. If someone has offered to work for you, respond with accept_work or decline_work."
+// stumbling onto accept_work). The copy names ONLY the real verbs. Since LLM-346
+// the market opens from either side, so it names both mints: solicit_work to
+// offer your labor, offer_work to hire someone. LLM-167.
+const laborTradeSteerMsg = "labor isn't a tradeable good. To offer to do a job for someone in exchange for coins, use solicit_work. To ask someone to do a job for you, use offer_work. If someone has offered you either, respond with accept_work or decline_work."
 
 // isLaborToken reports whether an item-kind argument is really the labor/work
 // concept rather than a good. A closed allow-list — none of these tokens is an

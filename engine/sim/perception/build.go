@@ -145,7 +145,6 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	p.PendingLaborOfferOut = buildPendingLaborOfferOut(snap, actorID)
 
 	p.Actor = buildActorView(snap, actorSnap)
-	p.WarrantActorNames = buildWarrantActorNames(snap, actorSnap, actorID, p.Warrants, p.PayOffersForMe, p.LaborOffersForMe, p.WorkersForMe, p.Laboring, p.LaborEnRoute, p.PendingLaborOfferOut)
 	p.WarrantPlaceNames = buildWarrantPlaceNames(snap, p.Warrants)
 	p.WarrantPlaceKeepers = buildWarrantPlaceKeepers(snap, p.Warrants)
 	p.EatHereKinds = buildEatHereKinds(snap)
@@ -192,8 +191,21 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 		// LLM-229: a worker relocating to an accepted job is already committed —
 		// don't offer the solicit affordance for a second one.
 		p.LaborEnRoute == nil &&
-		!subjectHasPendingLaborOffer(snap, actorID) &&
+		!subjectHasPendingLaborOfferOut(snap, actorID) &&
+		// LLM-346: an employer has asked this worker to lend a hand and is waiting
+		// on the answer. Soliciting past a job already on the table is the wrong
+		// verb — the decision section names the offer and the answer tools.
+		!subjectHasLaborOfferToAnswer(snap, actorID) &&
 		hasSolicitableAudience(snap, actorID, actorSnap, p.Surroundings)
+	// LLM-346: the hiring-side affordance. A non-empty slice both renders the
+	// offer_work cue (renderOfferWorkAffordance) and gates the offer_work tool, so
+	// the two cannot drift. Built after Surroundings so the audience is populated,
+	// and after CanSolicitWork so the two labor mints stay visibly symmetric.
+	p.HireableWorkers = buildHireableWorkers(snap, actorID, actorSnap, p.Surroundings)
+	// Resolved last among the name-bearing views, because HireableWorkers is the
+	// newest of them and the offer_work cue must render real names — a "someone
+	// takes work for pay" line names a target offer_work cannot resolve.
+	p.WarrantActorNames = buildWarrantActorNames(snap, actorSnap, actorID, p.Warrants, p.PayOffersForMe, p.LaborOffersForMe, p.WorkersForMe, p.Laboring, p.LaborEnRoute, p.PendingLaborOfferOut, p.HireableWorkers)
 	// LLM-160: the businesses directory is a STANDING cue for a workless idle
 	// worker with no employer present — not a rare warrant-gated one. Pre-fix it
 	// rode only the paced seek-work warrant tick (LLM-152, ~7% of ticks), so on the
@@ -251,7 +263,10 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 		p.LaborEnRoute == nil &&
 		p.Actor.InFlightMove == nil &&
 		p.Actor.InFlightSourceActivity == nil &&
-		!subjectHasPendingLaborOffer(snap, actorID) &&
+		!subjectHasPendingLaborOfferOut(snap, actorID) &&
+		// LLM-346: a worker holding an unanswered offer of work has a job in front
+		// of them — don't send them across town looking for another.
+		!subjectHasLaborOfferToAnswer(snap, actorID) &&
 		!hasSolicitableAudience(snap, actorID, actorSnap, p.Surroundings) {
 		p.SeekWorkPlaces = buildSeekWorkPlaces(snap, actorSnap)
 	}
@@ -1677,7 +1692,7 @@ func customerProducedGoods(snap *sim.Snapshot, customer sim.ActorID, goods []Off
 // UUID into the "## Since your last turn" lines (ZBBS-HOME-339). The subject's
 // own ID is excluded — Render resolves self to "you". Returns nil when no
 // warrant references another actor (the common single-actor tick).
-func buildWarrantActorNames(snap *sim.Snapshot, subject *sim.ActorSnapshot, subjectID sim.ActorID, warrants []sim.WarrantMeta, payOffers []sim.PayOfferWarrantReason, laborOffers []LaborOfferView, workersForMe []WorkerForMeView, laboring *LaboringView, laborEnRoute *LaborEnRouteView, pendingLaborOut *PendingLaborOfferOutView) map[sim.ActorID]string {
+func buildWarrantActorNames(snap *sim.Snapshot, subject *sim.ActorSnapshot, subjectID sim.ActorID, warrants []sim.WarrantMeta, payOffers []sim.PayOfferWarrantReason, laborOffers []LaborOfferView, workersForMe []WorkerForMeView, laboring *LaboringView, laborEnRoute *LaborEnRouteView, pendingLaborOut *PendingLaborOfferOutView, hireableWorkers []sim.ActorID) map[sim.ActorID]string {
 	var names map[sim.ActorID]string
 	add := func(id sim.ActorID) {
 		if id == "" || id == subjectID {
@@ -1731,8 +1746,14 @@ func buildWarrantActorNames(snap *sim.Snapshot, subject *sim.ActorSnapshot, subj
 	// no warrant — the workers offering to me (LaborOffersForMe) and the
 	// employer I'm working for (Laboring) — so their labels must resolve here
 	// too, else render falls back to "someone."
+	//
+	// LLM-346: an offer awaiting my answer may name EITHER party — the worker who
+	// solicited me, or the employer who asked me to lend a hand — so both sides of
+	// every pending offer resolve. Adding only the worker left the employer-initiated
+	// decision line reading "someone has asked you to do a job for them."
 	for _, o := range laborOffers {
 		add(o.Worker)
+		add(o.Employer)
 	}
 	// LLM-202: the employer's active-job view (WorkersForMe) renders its workers
 	// on ticks carrying no warrant — the standing "who's working for you" cue — so
@@ -1750,12 +1771,22 @@ func buildWarrantActorNames(snap *sim.Snapshot, subject *sim.ActorSnapshot, subj
 	if laborEnRoute != nil {
 		add(laborEnRoute.Employer)
 	}
-	// LLM-164: the worker's own pending-offer self-state (PendingLaborOfferOut)
-	// renders its employer on ticks carrying no warrant — in particular the
+	// LLM-164: the subject's own pending-offer self-state (PendingLaborOfferOut)
+	// renders its counterparty on ticks carrying no warrant — in particular the
 	// idle/quiet-backstop wake the anchor exists to handle, whose only warrant
-	// triggers on the subject itself — so the employer's label must resolve here
-	// too, else render falls back to "someone."
+	// triggers on the subject itself — so that label must resolve here too, else
+	// render falls back to "someone." Both roles, since either may have minted the
+	// offer (LLM-346); the subject's own id resolves harmlessly.
+	// LLM-346: the offer_work affordance names the co-present workers a keeper could
+	// hire, on ticks carrying no warrant at all — it is a standing cue. Its whole
+	// job is to supply a name the tool can resolve, so these must never fall back
+	// to "someone." isHireableWorker already restricted the set to acquaintances,
+	// so each resolves to a real DisplayName here.
+	for _, id := range hireableWorkers {
+		add(id)
+	}
 	if pendingLaborOut != nil {
+		add(pendingLaborOut.Worker)
 		add(pendingLaborOut.Employer)
 	}
 	return names
@@ -3849,12 +3880,17 @@ func buildPayOffersForMe(snap *sim.Snapshot, subject sim.ActorID, resolvedThisTi
 }
 
 // buildLaborOffersForMe scans snap.LaborLedger for the still-pending labor
-// offers staked AGAINST the subject as EMPLOYER (state Pending, EmployerID ==
-// subject), projecting each to a LaborOfferView for the "## Work offers
-// awaiting your decision" section and the accept_work/decline_work tool gate
-// (LLM-26). The labor analog of buildPayOffersForMe; snap.LaborLedger is
-// deep-cloned at publish, so the per-tick read-only view is race-free.
-// Returns nil for no pending offers. Ordering: by LaborID ascending.
+// offers AWAITING THE SUBJECT'S ANSWER (state Pending, Responder() == subject),
+// projecting each to a LaborOfferView for the "## Work offers awaiting your
+// decision" section and the accept_work/decline_work tool gate (LLM-26). The
+// responder is the employer on a solicited offer and the worker on an offered
+// job (LLM-346), so this one view feeds both directions of the decision section
+// — and, because the tool gate reads the same slice, a worker who has been
+// offered a job is handed the answer tools exactly when the cue names the offer.
+//
+// The labor analog of buildPayOffersForMe; snap.LaborLedger is deep-cloned at
+// publish, so the per-tick read-only view is race-free. Returns nil for no
+// pending offers. Ordering: by LaborID ascending.
 func buildLaborOffersForMe(snap *sim.Snapshot, subject sim.ActorID) []LaborOfferView {
 	if snap == nil || len(snap.LaborLedger) == 0 {
 		return nil
@@ -3864,7 +3900,7 @@ func buildLaborOffersForMe(snap *sim.Snapshot, subject sim.ActorID) []LaborOffer
 		if o == nil || o.State != sim.LaborStatePending {
 			continue
 		}
-		if o.EmployerID != subject {
+		if o.Responder() != subject {
 			continue
 		}
 		ids = append(ids, id)
@@ -3873,9 +3909,11 @@ func buildLaborOffersForMe(snap *sim.Snapshot, subject sim.ActorID) []LaborOffer
 		return nil
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-	// Employer holdings for the in-kind affordability mirror (LLM-225): the
-	// subject IS the employer here, so their snapshot inventory is the same
-	// map accept_work's gate 8 will check (buyerHoldsPayItems).
+	// Employer holdings for the in-kind affordability mirror (LLM-225). Only
+	// meaningful when the subject IS the employer: their snapshot inventory is
+	// then the same map accept_work's gate 8 will check (buyerHoldsPayItems). A
+	// worker weighing an offered job cannot see the keeper's purse, so the
+	// affordability steer is employer-side only.
 	subjectSnap := snap.Actors[subject]
 	var employerInv map[sim.ItemKind]int
 	if subjectSnap != nil {
@@ -3884,23 +3922,28 @@ func buildLaborOffersForMe(snap *sim.Snapshot, subject sim.ActorID) []LaborOffer
 	out := make([]LaborOfferView, 0, len(ids))
 	for _, id := range ids {
 		o := snap.LaborLedger[id]
+		subjectIsEmployer := o.EmployerID == subject
 		var missing []sim.ItemKindQty
-		for _, ri := range o.RewardItems {
-			if employerInv[ri.Kind] < ri.Qty {
-				missing = append(missing, ri)
+		if subjectIsEmployer {
+			for _, ri := range o.RewardItems {
+				if employerInv[ri.Kind] < ri.Qty {
+					missing = append(missing, ri)
+				}
 			}
 		}
 		// LLM-228: did this worker complete a paid job for the subject within the
-		// memory window? The subject IS the employer whose Observed store carries
-		// the ObservedHelpedByWorker memory, keyed by the worker's PeerID. When
-		// Active, the decision section adds a returning-helper recall line.
-		helpedBefore := subjectSnap != nil && subjectSnap.Observed.Active(
+		// memory window? The memory lives on the EMPLOYER's Observed store, keyed by
+		// the worker's PeerID, so the recall only applies when the subject is the
+		// employer. When Active, the decision section adds a returning-helper line.
+		helpedBefore := subjectIsEmployer && subjectSnap != nil && subjectSnap.Observed.Active(
 			sim.ObservedStateKey{PeerID: o.WorkerID, Condition: sim.ObservedHelpedByWorker},
 			snap.PublishedAt,
 		)
 		out = append(out, LaborOfferView{
 			LaborID:              o.ID,
 			Worker:               o.WorkerID,
+			Employer:             o.EmployerID,
+			EmployerInitiated:    o.EmployerInitiated(),
 			Reward:               o.Reward,
 			RewardItems:          o.RewardItems,
 			MissingRewardItems:   missing,
@@ -4041,11 +4084,12 @@ func buildWorkersForMe(snap *sim.Snapshot, subject sim.ActorID) []WorkerForMeVie
 	return out
 }
 
-// buildPendingLaborOfferOut scans snap.LaborLedger for a Pending offer where the
-// subject is the WORKER, returning the worker-side self-state view (employer +
-// offered terms) or nil if the subject has no outgoing offer (LLM-164). The
-// mirror of buildLaboring for the awaiting-acceptance state. The
-// one-pending-offer-per-worker gate (SolicitWork) means at most one exists;
+// buildPendingLaborOfferOut scans snap.LaborLedger for a Pending offer the
+// subject MINTED, returning the initiator-side self-state view (counterparty +
+// offered terms) or nil if the subject has no outgoing offer (LLM-164). Covers
+// both mints: a worker who solicited, and an employer who offered work (LLM-346).
+// The mirror of buildLaboring for the awaiting-answer state. The
+// one-pending-offer-out gate (SolicitWork / OfferWork) means at most one exists;
 // lowest LaborID wins for determinism if more ever appear.
 func buildPendingLaborOfferOut(snap *sim.Snapshot, subject sim.ActorID) *PendingLaborOfferOutView {
 	if snap == nil || len(snap.LaborLedger) == 0 {
@@ -4053,7 +4097,7 @@ func buildPendingLaborOfferOut(snap *sim.Snapshot, subject sim.ActorID) *Pending
 	}
 	var best *sim.LaborOffer
 	for _, o := range snap.LaborLedger {
-		if o == nil || o.State != sim.LaborStatePending || o.WorkerID != subject {
+		if o == nil || o.State != sim.LaborStatePending || o.Initiator() != subject {
 			continue
 		}
 		if best == nil || o.ID < best.ID {
@@ -4064,24 +4108,69 @@ func buildPendingLaborOfferOut(snap *sim.Snapshot, subject sim.ActorID) *Pending
 		return nil
 	}
 	return &PendingLaborOfferOutView{
-		Employer:    best.EmployerID,
-		Reward:      best.Reward,
-		RewardItems: best.RewardItems,
-		DurationMin: best.DurationMin,
+		Employer:          best.EmployerID,
+		Worker:            best.WorkerID,
+		EmployerInitiated: best.EmployerInitiated(),
+		Reward:            best.Reward,
+		RewardItems:       best.RewardItems,
+		DurationMin:       best.DurationMin,
 	}
 }
 
-// subjectHasPendingLaborOffer reports whether the subject (as worker) has a
-// pending OUTGOING labor offer awaiting an employer's answer — the perception
-// mirror of SolicitWork's one-pending-offer-per-worker gate, so the affordance
-// cue and the solicit_work tool both hide while an offer is outstanding
-// (code_review). LLM-26.
-func subjectHasPendingLaborOffer(snap *sim.Snapshot, subject sim.ActorID) bool {
+// laborOfferLivePending reports whether o is a pending offer that has not yet run
+// out its TTL as of the snapshot instant — the perception mirror of the substrate's
+// `!now.Before(o.ExpiresAt)` skip (workerPendingLaborOffer, activeLaborBetween).
+//
+// The two must agree or the affordances drift (code_review). A pending offer sits
+// in the ledger for up to a full sweep cadence (60s) after its 3-minute TTL
+// elapses, because only the aging sweep flips it Expired. Suppressing on the bare
+// `State == Pending` therefore hides solicit_work / offer_work for as much as a
+// minute against an offer the substrate would cheerfully mint past — a keeper
+// watching a hireable worker vanish from her prompt for no reason she can see.
+// Judged against snap.PublishedAt, so every actor perceiving one snapshot agrees.
+//
+// A zero instant means a clock-free fixture (hand-built snapshots, the golden
+// matrix); those rows are treated as live, matching how the ledger reads a
+// zero ExpiresAt.
+func laborOfferLivePending(o *sim.LaborOffer, at time.Time) bool {
+	if o == nil || o.State != sim.LaborStatePending {
+		return false
+	}
+	if at.IsZero() || o.ExpiresAt.IsZero() {
+		return true
+	}
+	return at.Before(o.ExpiresAt)
+}
+
+// subjectHasPendingLaborOfferOut reports whether the subject MINTED a live pending
+// labor offer that is still awaiting the other party's answer — the perception
+// mirror of SolicitWork's / OfferWork's one-pending-offer-out gate, so the
+// affordance cue and the tool both hide while an offer is outstanding
+// (code_review). LLM-26, LLM-346.
+func subjectHasPendingLaborOfferOut(snap *sim.Snapshot, subject sim.ActorID) bool {
 	if snap == nil {
 		return false
 	}
 	for _, o := range snap.LaborLedger {
-		if o != nil && o.State == sim.LaborStatePending && o.WorkerID == subject {
+		if laborOfferLivePending(o, snap.PublishedAt) && o.Initiator() == subject {
+			return true
+		}
+	}
+	return false
+}
+
+// subjectHasLaborOfferToAnswer reports whether a live pending labor offer awaits
+// the subject's accept_work / decline_work (LLM-346). Suppresses the solicit_work
+// and offer_work affordances: an actor holding an unanswered offer should answer
+// it, not open a second bargain — and a worker who has just been ASKED to lend a
+// hand must not be told to go and ask for work. The perception mirror of the
+// substrate's duplicate-offer gates, which reject the second mint outright.
+func subjectHasLaborOfferToAnswer(snap *sim.Snapshot, subject sim.ActorID) bool {
+	if snap == nil {
+		return false
+	}
+	for _, o := range snap.LaborLedger {
+		if laborOfferLivePending(o, snap.PublishedAt) && o.Responder() == subject {
 			return true
 		}
 	}
@@ -4322,6 +4411,138 @@ func isSolicitableEmployer(snap *sim.Snapshot, subjectID sim.ActorID, subject *s
 	return !sharesHousehold(subject, other) && !sharesWorkplace(subject, other)
 }
 
+// buildHireableWorkers lists the co-present actors the subject could offer an odd
+// job to right now — the hiring-side mirror of hasSolicitableAudience (LLM-346).
+// A non-empty result both names the workers in the offer_work cue and advertises
+// the tool, so the cue and the tool read one signal (discussion-109).
+//
+// The audience is the same addressable set the speak gate reads (huddle peers ∪
+// co-present), because offer_work needs a huddle peer at the substrate and the
+// tool's huddle bootstrap forms one from a co-present walk-in. Sorted by display
+// name so the prompt is stable across ticks.
+func buildHireableWorkers(snap *sim.Snapshot, subjectID sim.ActorID, subject *sim.ActorSnapshot, surr SurroundingsView) []sim.ActorID {
+	if snap == nil || subject == nil {
+		return nil
+	}
+	seen := make(map[sim.ActorID]struct{})
+	var out []sim.ActorID
+	for _, group := range [][]HuddleMember{surr.HuddleMembers, surr.CoPresent} {
+		for _, m := range group {
+			if _, dup := seen[m.ID]; dup {
+				continue
+			}
+			if !isHireableWorker(snap, subjectID, subject, m.ID) {
+				continue
+			}
+			seen[m.ID] = struct{}{}
+			out = append(out, m.ID)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return snap.Actors[out[i]].DisplayName < snap.Actors[out[j]].DisplayName
+	})
+	return out
+}
+
+// isHireableWorker reports whether candidate is someone the subject could take on
+// for an odd job: present in the snapshot, known to the subject BY NAME, carrying
+// the AttrWorker marker, not the subject itself, sharing neither the subject's
+// household nor its workplace (LLM-145's gate, mirrored), free of any live job or
+// unanswered offer, and not on record as having just refused this employer (the
+// LLM-181 mirror — an employer who re-offers to the worker who declined them loops
+// the same refusal).
+//
+// Every clause here has a substrate counterpart in sim.OfferWork, so a named worker
+// is one the tool will actually accept — with one clause that has no substrate twin
+// and belongs to the cue alone: acquaintance. An unacquainted peer renders as
+// "the laborer" or "a stranger" (descriptorLabel), and offer_work resolves its
+// target by exact DisplayName among huddle peers. Naming a descriptor would hand
+// the keeper a target the tool must then refuse. So a keeper hires people she
+// knows; the rest she must speak to first, which is how she comes to know them.
+func isHireableWorker(snap *sim.Snapshot, subjectID sim.ActorID, subject *sim.ActorSnapshot, candidate sim.ActorID) bool {
+	if candidate == subjectID {
+		return false
+	}
+	other := snap.Actors[candidate]
+	if other == nil || !subjectIsWorker(other) {
+		return false
+	}
+	if other.DisplayName == "" {
+		return false
+	}
+	if _, acquainted := subject.Acquaintances[other.DisplayName]; !acquainted {
+		return false
+	}
+	if sharesHousehold(subject, other) || sharesWorkplace(subject, other) {
+		return false
+	}
+	if workerDeclinedSubject(snap, subjectID, candidate) {
+		return false
+	}
+	for _, o := range snap.LaborLedger {
+		if o == nil || o.WorkerID != candidate {
+			continue
+		}
+		switch o.State {
+		case sim.LaborStatePending:
+			// Only a LIVE pending offer occupies the worker. A row past its TTL is
+			// dead — the sweep just hasn't flipped it yet — and sim.OfferWork would
+			// mint straight past it, so hiding the worker here would drift the cue
+			// from the tool for up to a sweep cadence (code_review).
+			if laborOfferLivePending(o, snap.PublishedAt) {
+				return false
+			}
+		case sim.LaborStateEnRoute, sim.LaborStateWorking:
+			return false // already committed to a job
+		}
+	}
+	return true
+}
+
+// workerDeclinedSubject reports whether the candidate worker's MOST RECENT
+// EMPLOYER-INITIATED offer from this employer ended in a decline (LLM-346) — the
+// hiring-side mirror of employerDeclinedSubject. An employer whose offer of work
+// was just refused must stop counting that worker as hireable, or the cue names
+// them again next tick and the keeper re-offers into the same refusal.
+//
+// Scoped to employer-initiated offers: a worker who SOLICITED and was declined is
+// still perfectly hireable by that employer later on better terms — that decline
+// was the employer's own, and holding it against the worker would foreclose a
+// hire the employer themselves refused. Resolves by the latest offer for the pair
+// (LaborID is minted monotonically) and suppresses only when that offer is a
+// declined offer_work. The suppression ages out with the ledger reaper
+// (LaborLedgerTerminalRetentionDefault, 1h).
+//
+// The 1h window is deliberate and symmetric, though it can look otherwise
+// (code_review). There are TWO refusal memories in the labor system, and only one
+// of them has a hiring-side counterpart:
+//
+//   - The CO-PRESENT audience suppression — "don't re-ask the person standing in
+//     front of you who just said no." That is employerDeclinedSubject on the
+//     solicit side and this function on the hire side. Both are pure ledger scans,
+//     both last exactly as long as the declined row does (1h). Symmetric.
+//   - The DIRECTORY suppression — the worker's 12h ObservedDeclinedWork memory
+//     (LLM-198), which drops a shop from buildSeekWorkPlaces so the worker doesn't
+//     walk back across town to a closed door. There is no hiring-side counterpart
+//     because an employer never travels to find workers; she hires whoever is in
+//     the room. Nothing to drop from a directory she does not have.
+//
+// So a 12h employer-side observed state would suppress nothing the 1h ledger scan
+// doesn't already cover, and would keep a keeper from re-asking a worker whose
+// circumstances changed the same afternoon.
+func workerDeclinedSubject(snap *sim.Snapshot, employerID, candidate sim.ActorID) bool {
+	var latest *sim.LaborOffer
+	for _, o := range snap.LaborLedger {
+		if o == nil || o.WorkerID != candidate || o.EmployerID != employerID || !o.EmployerInitiated() {
+			continue
+		}
+		if latest == nil || o.ID > latest.ID {
+			latest = o
+		}
+	}
+	return latest != nil && latest.State == sim.LaborStateDeclined
+}
+
 // employerDeclinedSubject reports whether the candidate employer's MOST RECENT labor
 // offer from this worker ended in a decline. A worker who solicited an employer and
 // was turned down must stop counting that employer as a live prospect: the decline IS
@@ -4339,11 +4560,16 @@ func isSolicitableEmployer(snap *sim.Snapshot, subjectID sim.ActorID, subject *s
 // Expired (no answer) or FailedUnavailable offer is a different signal, left for a
 // follow-up. The suppression ages out only when the ledger reaper removes the declined
 // offer (LaborLedgerTerminalRetentionDefault, 1h) — walking away does not clear it.
-// Pure ledger scan, mirroring subjectHasPendingLaborOffer.
+// Pure ledger scan, mirroring subjectHasPendingLaborOfferOut.
+//
+// EMPLOYER-INITIATED offers are skipped (LLM-346): a decline is the responder's
+// refusal, so on an offer_work it was the WORKER who said no. Counting it here
+// would have the worker treat an employer who tried to hire them as one who turned
+// them away — and stop them soliciting the very keeper who wanted their help.
 func employerDeclinedSubject(snap *sim.Snapshot, subjectID, candidate sim.ActorID) bool {
 	var latest *sim.LaborOffer
 	for _, o := range snap.LaborLedger {
-		if o == nil || o.WorkerID != subjectID || o.EmployerID != candidate {
+		if o == nil || o.WorkerID != subjectID || o.EmployerID != candidate || o.EmployerInitiated() {
 			continue
 		}
 		if latest == nil || o.ID > latest.ID {

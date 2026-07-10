@@ -46,7 +46,16 @@ type LaborOfferDTO struct {
 	WorkerName   string `json:"worker_name,omitempty"`
 	EmployerID   string `json:"employer_id"`
 	EmployerName string `json:"employer_name,omitempty"`
-	State        string `json:"state"`
+	// InitiatedBy names which party minted the offer — "worker" (solicit_work) or
+	// "employer" (offer_work). ResponderID is the other one: the actor whose
+	// accept_work / decline_work the offer is waiting on while Pending. Both are
+	// derived rather than raw, because "who owes an answer" is the question you
+	// actually ask this endpoint when a hire has stalled (LLM-346). A contract
+	// restored from labor_contract across a restart carries no initiator (the
+	// column is not persisted), so it reports "worker".
+	InitiatedBy string `json:"initiated_by"`
+	ResponderID string `json:"responder_id"`
+	State       string `json:"state"`
 
 	RewardCoins int                  `json:"reward_coins"`
 	RewardItems []LaborRewardItemDTO `json:"reward_items,omitempty"`
@@ -124,14 +133,20 @@ func umbilicalLaborLedgerFromSnapshot(snap *sim.Snapshot, limit int) UmbilicalLa
 }
 
 // laborOfferDTO maps one offer to its wire shape, resolving the worker / employer
-// display names off the actor roster.
+// display names off the actor roster and the offer's direction off InitiatedBy.
 func laborOfferDTO(o *sim.LaborOffer, actors map[sim.ActorID]*sim.ActorSnapshot) LaborOfferDTO {
+	initiatedBy := "worker"
+	if o.EmployerInitiated() {
+		initiatedBy = "employer"
+	}
 	dto := LaborOfferDTO{
 		ID:             uint64(o.ID),
 		WorkerID:       string(o.WorkerID),
 		WorkerName:     snapshotActorName(actors, o.WorkerID),
 		EmployerID:     string(o.EmployerID),
 		EmployerName:   snapshotActorName(actors, o.EmployerID),
+		InitiatedBy:    initiatedBy,
+		ResponderID:    string(o.Responder()),
 		State:          string(o.State),
 		RewardCoins:    o.Reward,
 		DurationMin:    o.DurationMin,

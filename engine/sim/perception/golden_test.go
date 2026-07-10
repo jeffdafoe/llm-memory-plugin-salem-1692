@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -279,6 +280,71 @@ func TestGoldensEnRouteWorkerNotOfferedNewWork(t *testing.T) {
 				t.Errorf("scenario %q: subject is relocating to an accepted job but the prompt still shows the seek-work businesses directory (LLM-229)", sc.name)
 			}
 		})
+	}
+}
+
+// TestGoldensUnansweredRequestIsNeverToolless is the LLM-346 cross-scenario
+// invariant: an actor facing an unanswered direct request always has a way to
+// answer it. Concretely — in ANY scenario where a Pending labor offer awaits the
+// subject's answer, the rendered prompt must name at least one answer tool and
+// must carry that offer's id, the token the model echoes back into it.
+//
+// "At least one" is the honest bar, not "both". An employer who cannot cover the
+// wage is deliberately steered to decline_work alone (LLM-158): accepting would
+// only flip the offer to failed_unavailable, so naming the accept in prose would
+// coach a doomed call. What must never happen is a rendered obligation with NO
+// mechanical answer at all. Where the subject CAN say yes — a worker weighing an
+// offered job, whose purse is nobody's concern — accept_work must be named too, so
+// that a refusal is a choice rather than the only door out.
+//
+// This is the discussion-109 lockstep stated as a property rather than a wiring
+// detail: the tools are gated on the same standing view this section renders from
+// (gateTools reads perception.PendingLaborOffers), so a prompt describing an offer
+// it cannot answer means the two have drifted, and a missing id means the model
+// holds tools it cannot address.
+//
+// The bug it exists to catch is the one that filed the ticket. Lewis Walker's
+// deliberation prompt quoted Prudence Ward's request back to him verbatim and
+// advertised no work tool at all. Any future gate that silences a responder (a
+// comfort ceiling, an evening-leisure suppression, a coin threshold) reproduces it
+// exactly, and trips here first.
+func TestGoldensUnansweredRequestIsNeverToolless(t *testing.T) {
+	var exercisedSolicited, exercisedOffered bool
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, warrants := sc.build()
+			p := Build(snap, actorID, warrants)
+			offers := PendingLaborOffers(p)
+			if len(offers) == 0 {
+				return // nobody is waiting on this actor — invariant N/A here
+			}
+			out := renderScenario(sc)
+			if !strings.Contains(out, "accept_work") && !strings.Contains(out, "decline_work") {
+				t.Errorf("scenario %q: a labor offer awaits the subject's answer but the prompt names neither accept_work nor decline_work — the request is rendered with no way to answer it (LLM-346)", sc.name)
+			}
+			for _, o := range offers {
+				if o.SubjectIsWorker() {
+					exercisedOffered = true
+					if !strings.Contains(out, "accept_work") {
+						t.Errorf("scenario %q: an employer offered the subject a job but the prompt never names accept_work — a worker who can say yes must be able to (LLM-346)", sc.name)
+					}
+				} else {
+					exercisedSolicited = true
+				}
+				if id := "offer id " + strconv.FormatUint(uint64(o.LaborID), 10); !strings.Contains(out, id) {
+					t.Errorf("scenario %q: offer %d awaits the subject's answer but the prompt never carries %q — the model cannot address the tools it was given (LLM-346)", sc.name, o.LaborID, id)
+				}
+			}
+		})
+	}
+	// Both directions must actually be walked, or the invariant silently covers
+	// only the half that existed before LLM-346.
+	if !exercisedSolicited {
+		t.Error("matrix must exercise an employer answering a solicited offer (LLM-346)")
+	}
+	if !exercisedOffered {
+		t.Error("matrix must exercise a worker answering an offered job (LLM-346)")
 	}
 }
 
@@ -1153,6 +1219,25 @@ var perceptionScenarios = []perceptionScenario{
 			"the absence of both the solicit affordance and the businesses directory. The matrix-wide guard is " +
 			"TestGoldensEnRouteWorkerNotOfferedNewWork.",
 		build: workerEnRouteToWorkplace,
+	},
+	{
+		name: "worker_offered_work_by_keeper",
+		summary: "LLM-346: Prudence Ward has asked Lewis Walker to lend a hand at her apothecary — an employer-initiated " +
+			"Pending offer. The subject is the WORKER. The golden pins that he is given a work tool at all: the decision " +
+			"section names her, the terms, and the offer id he echoes into accept_work/decline_work. It also pins the " +
+			"absence of the affordability steer (he cannot see her purse) and of the solicit affordance (he holds 26 coins, " +
+			"above the seek-work comfort ceiling — his hustle is silenced, his answer is not). Live, this prompt advertised " +
+			"no work-taking tool at all and he stood at her door for 45 minutes.",
+		build: workerOfferedWorkByKeeper,
+	},
+	{
+		name: "keeper_can_offer_work_to_co_present_worker",
+		summary: "LLM-346: the mint side of the same room, before anyone has offered anything. The subject is Prudence " +
+			"Ward, keeper of the apothecary, with Lewis Walker co-present. The golden pins the offer_work affordance " +
+			"NAMING him — nothing else in the prompt reveals which villagers take work for pay, and offer_work resolves " +
+			"its target by exact display name — and pins the warning off the terminal speak (asking aloud with speak " +
+			"would end her turn before the offer was ever made, the LLM-343 collision).",
+		build: keeperCanOfferWorkToCoPresentWorker,
 	},
 	{
 		name: "labor_offer_in_kind_reward",
@@ -9055,6 +9140,92 @@ func inKindLaborOfferSnapshot(employerHoldsGoods bool) (*sim.Snapshot, sim.Actor
 		ItemKinds: foodDrinkCatalog(),
 	}
 	return snap, hannahID, nil
+}
+
+// apothecaryHireSnapshot builds the LLM-346 shape from the live trace: Lewis
+// Walker (a `worker`) stands in the PW Apothecary with Prudence Ward, its keeper.
+// `offered` controls whether Prudence has already asked him to lend a hand — true
+// mints an employer-initiated Pending offer (subject Lewis sees the decision
+// section), false leaves the room empty of offers (subject Prudence sees the
+// offer_work affordance naming him).
+//
+// The two together pin the whole employer-initiated path: the cue that lets a
+// keeper ask, and the section that lets the worker answer. Before this ticket
+// Prudence could only say the words, and Lewis's prompt advertised no work tool at
+// all — he stood at her door for 45 minutes holding a promise the world had no way
+// to keep.
+func apothecaryHireSnapshot(offered bool) (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		lewisID    = sim.ActorID("lewis")
+		prudenceID = sim.ActorID("prudence")
+		apothecary = sim.StructureID("apothecary")
+		huddle     = sim.HuddleID("h1")
+	)
+	published := time.Date(2026, 7, 10, 11, 38, 0, 0, time.UTC)
+	prudence := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Prudence Ward",
+		Role:              "apothecary",
+		State:             sim.StateIdle,
+		InsideStructureID: apothecary,
+		WorkStructureID:   apothecary,
+		CurrentHuddleID:   huddle,
+		Coins:             40,
+		Needs:             map[sim.NeedKey]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"Lewis Walker": {}},
+	}
+	// Lewis carries 26 coins, as he did live. That is above the seek-work comfort
+	// ceiling, so his solicit affordance is suppressed — which is precisely why he
+	// must be able to ANSWER an offer without one (the LLM-347 comfort gate this
+	// ticket subsumes). The answer tools ride the standing offer, not the hustle.
+	lewis := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Lewis Walker",
+		Role:              "laborer",
+		State:             sim.StateIdle,
+		InsideStructureID: apothecary,
+		CurrentHuddleID:   huddle,
+		Coins:             26,
+		Needs:             map[sim.NeedKey]int{},
+		AttributeSlugs:    []string{sim.AttrWorker},
+		Acquaintances:     map[string]sim.Acquaintance{"Prudence Ward": {}},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:    published,
+		NeedThresholds: sim.NeedThresholds{},
+		Actors:         map[sim.ActorID]*sim.ActorSnapshot{lewisID: lewis, prudenceID: prudence},
+		Structures: map[sim.StructureID]*sim.Structure{
+			apothecary: plainStructure(apothecary, "PW Apothecary"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{lewisID: {}, prudenceID: {}}},
+		},
+		ItemKinds: foodDrinkCatalog(),
+	}
+	if !offered {
+		return snap, prudenceID, nil
+	}
+	snap.LaborLedger = map[sim.LaborID]*sim.LaborOffer{
+		1: {
+			ID:          1,
+			WorkerID:    lewisID,
+			EmployerID:  prudenceID,
+			InitiatedBy: prudenceID,
+			Reward:      4,
+			DurationMin: 240,
+			State:       sim.LaborStatePending,
+			HuddleID:    huddle,
+		},
+	}
+	return snap, lewisID, nil
+}
+
+func workerOfferedWorkByKeeper() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return apothecaryHireSnapshot(true)
+}
+
+func keeperCanOfferWorkToCoPresentWorker() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return apothecaryHireSnapshot(false)
 }
 
 func laborOfferInKindReward() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {

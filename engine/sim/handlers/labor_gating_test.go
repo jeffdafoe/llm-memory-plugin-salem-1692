@@ -102,6 +102,84 @@ func TestGateTools_Moving_DropsSolicitWork(t *testing.T) {
 	}
 }
 
+// workOfferedToMePayload builds the LLM-346 worker-side decision view: an employer
+// has offered the subject a job and is waiting on their answer. The subject is the
+// WORKER, so the tools must be advertised off the standing offer alone — no
+// affordance, no comfort ceiling, no coin threshold in the way.
+func workOfferedToMePayload(ids ...sim.LaborID) perception.Payload {
+	var offers []perception.LaborOfferView
+	for _, id := range ids {
+		offers = append(offers, perception.LaborOfferView{
+			LaborID: id, Worker: "lewis", Employer: "prudence",
+			EmployerInitiated: true, Reward: 4, DurationMin: 240,
+		})
+	}
+	return perception.Payload{ActorID: "lewis", LaborOffersForMe: offers, Surroundings: speakAudience()}
+}
+
+// TestGateTools_WorkOfferedToWorker_AddsResponseTools is the LLM-346 gate. Lewis
+// Walker's live deliberation prompt advertised no work-taking tool at all while
+// Prudence Ward's request sat unanswered in front of him. The response tools ride
+// the standing offer view, which is now direction-agnostic, so a worker who has
+// been asked can answer.
+func TestGateTools_WorkOfferedToWorker_AddsResponseTools(t *testing.T) {
+	r := laborGatingRegistry(t)
+	names := specNameSet(gateTools(r, workOfferedToMePayload(1), nil))
+	for _, want := range []string{"accept_work", "decline_work"} {
+		if names[want] != 1 {
+			t.Errorf("%q should be advertised to a worker holding an offer of work; count %d", want, names[want])
+		}
+	}
+	// He is not also handed the hiring verb — nobody here is his to hire.
+	if names["offer_work"] != 0 {
+		t.Errorf("offer_work advertised with no hireable worker present; count %d", names["offer_work"])
+	}
+}
+
+// TestGateTools_HireableWorkers_AdvertisesOfferWork pins the cue/tool lockstep:
+// offer_work rides the SAME HireableWorkers slice renderOfferWorkAffordance names
+// its targets from, so a keeper is never handed a hiring verb with nobody in the
+// room to hire (LLM-346).
+func TestGateTools_HireableWorkers_AdvertisesOfferWork(t *testing.T) {
+	r := laborGatingRegistry(t)
+
+	on := perception.Payload{ActorID: "prudence", HireableWorkers: []sim.ActorID{"lewis"}, Surroundings: speakAudience()}
+	if specNameSet(gateTools(r, on, nil))["offer_work"] != 1 {
+		t.Error("offer_work should be advertised when a hireable worker is co-present")
+	}
+
+	off := perception.Payload{ActorID: "prudence", Surroundings: speakAudience()}
+	if specNameSet(gateTools(r, off, nil))["offer_work"] != 0 {
+		t.Error("offer_work should be dropped when no hireable worker is co-present")
+	}
+}
+
+func TestGateTools_Moving_DropsOfferWork(t *testing.T) {
+	r := laborGatingRegistry(t)
+	// A hireable worker is present, but the keeper is mid-walk — OfferWork rejects
+	// on MoveIntent, so the walk gate drops the tool rather than burn a doomed call.
+	payload := perception.Payload{ActorID: "prudence", HireableWorkers: []sim.ActorID{"lewis"}, Surroundings: speakAudience()}
+	if specNameSet(gateTools(r, payload, movingSnap("prudence", true)))["offer_work"] != 0 {
+		t.Error("offer_work advertised while moving — want it gated out")
+	}
+}
+
+// TestGateTools_LaboringWorker_DropsOfferWork: a hand mid-job does not subcontract
+// the shelves to a passer-by. The offer_work gate only asks about the TARGET, so
+// the laboring strip (laborAbandonTools) is what disqualifies the caller (LLM-346).
+func TestGateTools_LaboringWorker_DropsOfferWork(t *testing.T) {
+	r := laborGatingRegistry(t)
+	payload := perception.Payload{
+		ActorID:         "lewis",
+		HireableWorkers: []sim.ActorID{"patience"},
+		Laboring:        &perception.LaboringView{Employer: "prudence"},
+		Surroundings:    speakAudience(),
+	}
+	if specNameSet(gateTools(r, payload, nil))["offer_work"] != 0 {
+		t.Error("offer_work advertised to a worker mid-job — want it stripped with the other commerce tools")
+	}
+}
+
 // laborSpeakOnlyRegistry adds the commerce + consume tools on top of the labor
 // set so the LLM-230 speak-only gate can be observed stripping the abandon tools.
 func laborSpeakOnlyRegistry(t *testing.T) *Registry {
