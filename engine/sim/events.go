@@ -406,6 +406,29 @@ type VillageObjectCreated struct {
 
 func (VillageObjectCreated) isSimEvent() {}
 
+// VillageObjectPromotedToStructure is emitted by PromoteObjectToStructure when a
+// placed object becomes a first-class Structure sharing its id (the
+// shared-identity bridge). has_interior IS in ObjectDTO and flips false → true on
+// promotion, so the change is client-visible: the httpapi hub translates this to
+// the object_promoted_to_structure frame and an already-open client re-marks the
+// placement as a building with no reload (LLM-250). Without it such a client
+// keeps routing clicks on the new building to object_visit (walk to its loiter
+// slot) rather than structure_enter (walk inside) until it re-fetches the
+// snapshot.
+//
+// DisplayName and Tags are the RESOLVED post-promotion values — the name may have
+// defaulted from the object or the asset catalog — carried for subscribers. The
+// wire frame ships only the id (see objectPromotedToStructureWireDTO).
+type VillageObjectPromotedToStructure struct {
+	EventBase
+	ObjectID    VillageObjectID
+	DisplayName string
+	Tags        []string
+	At          time.Time
+}
+
+func (VillageObjectPromotedToStructure) isSimEvent() {}
+
 // ZoomSettingsChanged is emitted by SetZoomSettings when an admin saves new
 // camera zoom floors via the config panel. The hub translates it to the
 // zoom_settings_changed frame so connected clients reload their floor without a

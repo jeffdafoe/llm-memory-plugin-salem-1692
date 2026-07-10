@@ -3,6 +3,7 @@ package sim
 import (
 	"errors"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -135,6 +136,16 @@ func PromoteObjectToStructure(objectID VillageObjectID, displayName string, tags
 				Tags:        cleanTags,
 			}
 			w.Structures[sid] = st
+			// Copy the tag set rather than alias st.Tags: the event crosses a
+			// serialization boundary and may be encoded after this Fn returns, so it
+			// must not observe live world state mutating underneath it (same reason
+			// TranslateEvent copies for VillageObjectTagsUpdated).
+			w.emit(&VillageObjectPromotedToStructure{
+				ObjectID:    objectID,
+				DisplayName: name,
+				Tags:        append([]string(nil), cleanTags...),
+				At:          time.Now().UTC(),
+			})
 			return PromoteStructureResult{ID: sid, DisplayName: name, Tags: cleanTags}, nil
 		},
 	}

@@ -153,6 +153,8 @@ func _handle_message(data: String) -> void:
             _on_object_owner_changed(event_data)
         "object_display_name_changed":
             _on_object_display_name_changed(event_data)
+        "object_promoted_to_structure":
+            _on_object_promoted_to_structure(event_data)
         "object_state_changed":
             _on_object_state_changed(event_data)
         "terrain_updated":
@@ -511,6 +513,25 @@ func _on_object_display_name_changed(data: Dictionary) -> void:
     if display_name == null:
         display_name = ""
     node.set_meta("display_name", display_name)
+
+## A placement became a first-class Structure (LLM-250). Flip has_interior on the
+## existing node so this client stops treating the building as a bare prop:
+## clicking it now dispatches structure_enter (walk inside) rather than
+## object_visit (walk to its loiter slot), and it becomes a valid home/work
+## assignment target. Without this an already-open client only learns of the
+## promotion by re-fetching the object snapshot — i.e. a full page reload.
+##
+## Idempotent, so no echo-suppression is needed: the client that placed the
+## building already set has_interior locally off the promote route's 200
+## (world.gd _promote_to_structure) and simply re-sets it here. Promotion is
+## one-way — no event ever clears has_interior.
+func _on_object_promoted_to_structure(data: Dictionary) -> void:
+    if world == null:
+        return
+    var obj_id = data.get("id", "")
+    if not world.placed_objects.has(obj_id):
+        return
+    world.placed_objects[obj_id].set_meta("has_interior", true)
 
 # Debounce terrain reloads — painting triggers frequent saves
 var _terrain_reload_timer: float = 0.0

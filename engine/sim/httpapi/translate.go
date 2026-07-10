@@ -211,6 +211,10 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			EntryPolicy:  string(e.EntryPolicy),
 			AttachedTo:   string(e.AttachedTo),
 		}}, true
+	case *sim.VillageObjectPromotedToStructure:
+		return WireFrame{Type: "object_promoted_to_structure", Data: objectPromotedToStructureWireDTO{
+			ID: string(e.ObjectID),
+		}}, true
 	case *sim.VillageObjectDisplayNameChanged:
 		return WireFrame{Type: "object_display_name_changed", Data: objectDisplayNameChangedWireDTO{
 			ID:          string(e.ObjectID),
@@ -705,6 +709,20 @@ type objectCreatedWireDTO struct {
 	PlacedBy     string  `json:"placed_by,omitempty"`
 	EntryPolicy  string  `json:"entry_policy,omitempty"`
 	AttachedTo   string  `json:"attached_to,omitempty"`
+}
+
+// objectPromotedToStructureWireDTO is the object_promoted_to_structure payload —
+// a placed object that just became a Structure (LLM-250). Only the id ships: the
+// single client-visible change is ObjectDTO.has_interior false → true, which the
+// client re-derives from the id alone.
+//
+// The structure's display_name and tags are deliberately OMITTED. A structure's
+// display_name is a different field from the village object's (promotion may
+// resolve the structure name off the asset catalog without ever touching the
+// object's own name), and object tags live on the village_object, not the
+// Structure. Shipping either would invite the client to write the wrong field.
+type objectPromotedToStructureWireDTO struct {
+	ID string `json:"id"`
 }
 
 // objectDisplayNameChangedWireDTO is the object_display_name_changed payload — a

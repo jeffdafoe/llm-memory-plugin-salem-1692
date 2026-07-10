@@ -195,3 +195,90 @@ func TestSetVillageObjectDisplayName_ClearRejectsWhenNoFallback(t *testing.T) {
 		t.Errorf("structure DisplayName = %q, want unchanged 'Corrupt Hall'", got)
 	}
 }
+
+// --- promotion broadcast (LLM-250) ---
+
+// promotedEvents filters a capture down to the promotion events.
+func promotedEvents(cap *objEventCapture) []*sim.VillageObjectPromotedToStructure {
+	var out []*sim.VillageObjectPromotedToStructure
+	for _, evt := range cap.snapshot() {
+		if p, ok := evt.(*sim.VillageObjectPromotedToStructure); ok {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// A successful promote must emit VillageObjectPromotedToStructure carrying the
+// RESOLVED name/tags — that frame is the only way an already-open client learns
+// the placement became a building (its has_interior flips false → true).
+func TestPromoteObjectToStructure_EmitsPromotionEvent(t *testing.T) {
+	w, cap := buildObjectAdminWorld(t)
+	if _, err := w.Send(sim.PromoteObjectToStructure("mill2", "  Granary  ", []string{" business ", "mill", "business"})); err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+	got := promotedEvents(cap)
+	if len(got) != 1 {
+		t.Fatalf("VillageObjectPromotedToStructure count = %d, want 1", len(got))
+	}
+	evt := got[0]
+	if evt.ObjectID != "mill2" {
+		t.Errorf("ObjectID = %q, want mill2", evt.ObjectID)
+	}
+	if evt.DisplayName != "Granary" {
+		t.Errorf("DisplayName = %q, want resolved 'Granary'", evt.DisplayName)
+	}
+	if strings.Join(evt.Tags, ",") != "business,mill" {
+		t.Errorf("Tags = %v, want resolved [business mill]", evt.Tags)
+	}
+}
+
+// The event's Tags must not alias the live Structure's slice: the hub may encode
+// the frame after the world goroutine has moved on, and a later tag mutation must
+// not be observable through the queued event.
+func TestPromoteObjectToStructure_EventTagsDoNotAliasStructure(t *testing.T) {
+	w, cap := buildObjectAdminWorld(t)
+	if _, err := w.Send(sim.PromoteObjectToStructure("mill2", "Granary", []string{"business"})); err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+	got := promotedEvents(cap)
+	if len(got) != 1 {
+		t.Fatalf("promotion event count = %d, want 1", len(got))
+	}
+	// Mutate the live structure's tag set in place, then re-read the event.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Structures["mill2"].Tags[0] = "clobbered"
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("mutate: %v", err)
+	}
+	if got[0].Tags[0] != "business" {
+		t.Errorf("event Tags[0] = %q, want 'business' (event aliased live world state)", got[0].Tags[0])
+	}
+}
+
+// A rejected promote mutates nothing, so it must emit nothing — a client that
+// flipped has_interior on a failed promote would dispatch structure_enter at an
+// object with no Structure and take a 404.
+func TestPromoteObjectToStructure_RejectedEmitsNothing(t *testing.T) {
+	cases := map[string]struct {
+		id   sim.VillageObjectID
+		name string
+	}{
+		"already a structure": {"tavern", ""},
+		"not promotable":      {"prop-1", "Building"},
+		"not found":           {"ghost", ""},
+		"invalid name":        {"mill", "bad\x07name"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			w, cap := buildObjectAdminWorld(t)
+			if _, err := w.Send(sim.PromoteObjectToStructure(tc.id, tc.name, nil)); err == nil {
+				t.Fatal("promote should have failed")
+			}
+			if n := len(promotedEvents(cap)); n != 0 {
+				t.Errorf("promotion event count = %d, want 0 (rejected promote must not emit)", n)
+			}
+		})
+	}
+}
