@@ -29,6 +29,12 @@ func eveningSnap(nowMin int) *sim.Snapshot {
 	return &sim.Snapshot{
 		LocalMinuteOfDay:     &m,
 		LodgingBedtimeMinute: 1320, // 22:00
+		// Dawn/dusk day window (07:00–19:00) so shiftWindowBounds can supply the
+		// day-active fallback for an UNSCHEDULED worker (LLM-137/LLM-352). A
+		// scheduled actor ignores it; a non-worker never reaches it.
+		DawnMinute:       420,  // 07:00
+		DuskMinute:       1140, // 19:00
+		DawnDuskMinuteOK: true,
 		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
 			"tavern": {Tags: []string{sim.VisitorTagTavern}, Pos: sim.WorldPos{X: 0, Y: 0}},
 		},
@@ -53,6 +59,21 @@ func eveningWorker(inside sim.StructureID) *sim.ActorSnapshot {
 		InsideStructureID: inside,
 		Needs:             map[sim.NeedKey]int{},
 	}
+}
+
+// eveningUnscheduledWorker is a homed labor vendor (the Walkers): no schedule row,
+// no fixed workplace, carries AttrWorker. It is day-active on the world dawn/dusk
+// window (LLM-137), so its evening is [dusk, bedtime) exactly like a
+// dawn→dusk-scheduled worker's (LLM-352). Pair the snapshot with eveningSnap,
+// which supplies the dawn/dusk day window shiftWindowBounds falls back to.
+func eveningUnscheduledWorker(inside sim.StructureID) *sim.ActorSnapshot {
+	a := eveningWorker(inside)
+	a.Kind = sim.KindNPCShared // the Walkers run on the shared salem-vendor VA
+	a.ScheduleStartMin = nil
+	a.ScheduleEndMin = nil
+	a.WorkStructureID = ""
+	a.AttributeSlugs = []string{sim.AttrWorker}
+	return a
 }
 
 // eveningInnRoom is the room the lodger fixtures hold a ledger grant at. Distinct
@@ -110,9 +131,34 @@ func TestInEveningWindow(t *testing.T) {
 		}
 	}
 
-	t.Run("unscheduled -> no evening", func(t *testing.T) {
+	t.Run("unscheduled non-worker -> no evening", func(t *testing.T) {
+		// No schedule AND no worker marker: home is its resting state (HOME-204), no
+		// post-work evening (LLM-352 preserves this — the HOME-204 tension).
 		if inEveningWindow(eveningSnap(1230), &sim.ActorSnapshot{Kind: sim.KindNPCStateful}) {
-			t.Error("an unscheduled actor has no evening window")
+			t.Error("an unscheduled non-worker has no evening window")
+		}
+	})
+	t.Run("partial schedule (worker) -> no evening", func(t *testing.T) {
+		// Exactly one bound set is a malformed schedule row — no evening even for a
+		// worker (matches the pre-LLM-352 reject; don't silently fall to dawn/dusk).
+		partial := eveningUnscheduledWorker("")
+		partial.ScheduleStartMin = evMinPtr(420) // start set, end still nil
+		if inEveningWindow(eveningSnap(1230), partial) {
+			t.Error("a partial (one-bound) schedule is malformed and has no evening window")
+		}
+	})
+	t.Run("unscheduled worker -> evening via dawn/dusk fallback", func(t *testing.T) {
+		// LLM-352: the Walkers. Day-active on dawn/dusk (07:00–19:00), so 20:30 is in
+		// their [dusk, bedtime) evening even with no schedule row.
+		if !inEveningWindow(eveningSnap(1230), eveningUnscheduledWorker("")) {
+			t.Error("an unscheduled worker is day-active and has an evening [dusk, bedtime)")
+		}
+		// ...but not during the workday, and not after bedtime.
+		if inEveningWindow(eveningSnap(720), eveningUnscheduledWorker("")) {
+			t.Error("an unscheduled worker at noon is on-shift, not in the evening")
+		}
+		if inEveningWindow(eveningSnap(1380), eveningUnscheduledWorker("")) {
+			t.Error("an unscheduled worker after bedtime is past the evening window")
 		}
 	})
 	t.Run("wrap/night shift -> no evening", func(t *testing.T) {
@@ -200,6 +246,13 @@ func TestBuildEveningLeisure(t *testing.T) {
 	t.Run("fires outdoors in window", func(t *testing.T) {
 		if v := buildEveningLeisure(eveningSnap(1230), eveningWorker(""), eveningAnchors); v == nil {
 			t.Fatal("want evening cue while outdoors in window, got nil")
+		}
+	})
+	t.Run("fires for an unscheduled worker in window (LLM-352)", func(t *testing.T) {
+		// The Walkers: no schedule, day-active on dawn/dusk, so they get the same
+		// tavern invitation a scheduled day-worker does instead of being bedded at dusk.
+		if v := buildEveningLeisure(eveningSnap(1230), eveningUnscheduledWorker(""), eveningAnchors); v == nil {
+			t.Fatal("want evening cue for an unscheduled worker in its [dusk, bedtime) window, got nil")
 		}
 	})
 	t.Run("nil settled at home", func(t *testing.T) {

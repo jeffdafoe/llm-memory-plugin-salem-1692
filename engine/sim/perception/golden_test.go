@@ -790,6 +790,15 @@ var perceptionScenarios = []perceptionScenario{
 		build: homedWorkerEveningTavernOpen,
 	},
 	{
+		name: "unscheduled_worker_evening_tavern_open",
+		summary: "LLM-352: a homed labor vendor (Lewis Walker) with NO schedule row and no fixed workplace, day-active " +
+			"on the world dawn/dusk window (07:00–19:00, LLM-137), standing outdoors at 20:30 — inside its [dusk, 22:00) " +
+			"evening. The golden pins that the evening 'tavern's open' invitation now fires for an UNSCHEDULED worker exactly " +
+			"as it does for a scheduled one — before the fix the Walkers were shut out of the evening (no cue) and bedded at " +
+			"dusk. A regression that re-keys the evening on a present schedule row drops the invitation here.",
+		build: unscheduledWorkerEveningTavernOpen,
+	},
+	{
 		name: "farm_owner_settled_in_tavern_evening",
 		summary: "LLM-345: Elizabeth Ellis (farm day 06:00–18:00, owes 3 upkeep shovels) has TAKEN the evening invitation " +
 			"and stands inside the Tavern at 19:40, in the [shift-end, 22:00) window. The golden pins both levers of the fix. " +
@@ -10044,6 +10053,51 @@ func homedWorkerEveningTavernOpen() (*sim.Snapshot, sim.ActorID, []sim.WarrantMe
 		},
 	}
 	return snap, ezekielID, nil
+}
+
+// unscheduledWorkerEveningTavernOpen is the LLM-352 case: a homed LABOR VENDOR — a
+// Walker — with NO schedule row and no fixed workplace, day-active on the world
+// dawn/dusk window (LLM-137, gated on the AttrWorker marker). Standing outdoors in
+// the [dusk, bedtime) evening, it now earns the SAME "tavern's open" invitation a
+// dawn→dusk-scheduled worker gets, instead of being shut out of the evening (and
+// bedded at dusk) because it carried no schedule row. DawnMinute/DuskMinute is set
+// so shiftWindowBounds supplies the day-active fallback the evening keys on. A
+// regression that re-restricts the evening to schedule-carriers drops the
+// invitation here and shows in the diff.
+func unscheduledWorkerEveningTavernOpen() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		lewisID = sim.ActorID("lewis")
+		home    = sim.StructureID("walker_residence")
+		tavern  = sim.StructureID("tavern")
+	)
+	now := 1230 // 20:30 — after dusk (19:00), inside the evening window
+	lewis := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared, // the Walkers run on the shared salem-vendor VA
+		DisplayName:       "Lewis Walker",
+		State:             sim.StateIdle,
+		InsideStructureID: "", // standing outdoors in the village at dusk
+		HomeStructureID:   home,
+		Coins:             12,
+		Needs:             map[sim.NeedKey]int{},
+		AttributeSlugs:    []string{sim.AttrWorker},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay:     &now,
+		LodgingBedtimeMinute: 1320, // 22:00 — the evening window's close
+		DawnMinute:           420,  // 07:00
+		DuskMinute:           1140, // 19:00
+		DawnDuskMinuteOK:     true,
+		NeedThresholds:       sim.NeedThresholds{},
+		Actors:               map[sim.ActorID]*sim.ActorSnapshot{lewisID: lewis},
+		Structures: map[sim.StructureID]*sim.Structure{
+			home:   plainStructure(home, "Walker Residence"),
+			tavern: plainStructure(tavern, "the Tavern"),
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			sim.VillageObjectID(tavern): {Tags: []string{sim.VisitorTagTavern}, Pos: sim.WorldPos{X: 0, Y: 0}},
+		},
+	}
+	return snap, lewisID, nil
 }
 
 // farmOwnerSettledInTavernEvening is the LLM-345 case, reconstructed from the live
