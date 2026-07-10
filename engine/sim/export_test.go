@@ -552,6 +552,21 @@ func SummonErrandMessengerByID(w *World, id ErrandID) (ActorID, bool) {
 	return e.MessengerID, true
 }
 
+// ResolveSummonTargetForTest exposes resolveSummonTarget (LLM-323 gate 1) so
+// sim_test can assert name→id resolution — exact-id fast path, case/punctuation
+// tolerance, ambiguity — without driving a full dispatch. MUST be called on the
+// world goroutine (it reads w.Actors), same as the accessors above.
+func ResolveSummonTargetForTest(w *World, raw string) (ActorID, bool, bool) {
+	return resolveSummonTarget(w, raw)
+}
+
+// SummonPointDestinationForTest exposes summonPointDestination (LLM-323 gate 3)
+// so sim_test can assert the point resolves to a structure-visit when it backs a
+// structure and an object-visit when it is a bare placement.
+func SummonPointDestinationForTest(w *World, pointID VillageObjectID) (MoveDestination, bool) {
+	return summonPointDestination(w, pointID)
+}
+
 // SummonErrandLegAttemptByID returns the MovementAttemptID of the walk leg
 // the errand is currently waiting on — the value a synthetic ActorArrived
 // must carry to advance the machine.

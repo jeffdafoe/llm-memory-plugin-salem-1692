@@ -43,6 +43,17 @@ const (
 // Returns the running world + cancel. The summon subscriber is registered.
 func buildSummonWorld(t *testing.T) (*sim.World, context.CancelFunc) {
 	t.Helper()
+	return buildSummonWorldOpt(t, true)
+}
+
+// buildSummonWorldOpt seeds the summon test world. pointBacksStructure controls
+// whether the summon_point object ALSO gets a backing Structure row: true is the
+// original anchor shape (structure-visit rendezvous); false exercises LLM-323
+// gate 3 — a bare summon_point placement with no Structure shell, which the
+// pre-LLM-323 DispatchSummon rejected as "cannot be reached" and which now walks
+// via an object-visit instead.
+func buildSummonWorldOpt(t *testing.T, pointBacksStructure bool) (*sim.World, context.CancelFunc) {
+	t.Helper()
 	repo, handles := mem.NewRepository()
 	handles.Terrain.Seed(makeAllGrassTerrain())
 	handles.Assets.Seed(map[sim.AssetID]*sim.Asset{
@@ -57,9 +68,11 @@ func buildSummonWorld(t *testing.T) (*sim.World, context.CancelFunc) {
 			Tags:        []string{sim.SummonPointTag},
 		},
 	})
-	handles.Structures.Seed(map[sim.StructureID]*sim.Structure{
-		"square": {ID: "square", DisplayName: "the town square"},
-	})
+	if pointBacksStructure {
+		handles.Structures.Seed(map[sim.StructureID]*sim.Structure{
+			"square": {ID: "square", DisplayName: "the town square"},
+		})
+	}
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
 		"summoner": {ID: "summoner", DisplayName: "Goodwife Bishop", LLMAgent: "va-bishop", Pos: sim.TilePos{X: sim.PadX, Y: sim.PadY}},
 		"target":   {ID: "target", DisplayName: "John Proctor", Pos: sim.TilePos{X: sim.PadX + 3, Y: sim.PadY + 3}},
@@ -78,7 +91,7 @@ func buildSummonWorld(t *testing.T) (*sim.World, context.CancelFunc) {
 // dispatchSummon runs DispatchSummon and returns the new errand id.
 func dispatchSummon(t *testing.T, w *sim.World, summoner, target sim.ActorID, reason string) sim.ErrandID {
 	t.Helper()
-	res, err := w.Send(sim.DispatchSummon(summoner, target, reason, time.Now().UTC()))
+	res, err := w.Send(sim.DispatchSummon(summoner, string(target), reason, time.Now().UTC()))
 	if err != nil {
 		t.Fatalf("DispatchSummon(%q->%q): %v", summoner, target, err)
 	}
@@ -661,5 +674,159 @@ func TestSummonMessengerSelection_ExcludesSummonerAndTarget(t *testing.T) {
 	}})
 	if _, err := w.Send(sim.DispatchSummon("summoner", "target", "", time.Now().UTC())); err == nil {
 		t.Fatal("dispatch should reject: the only messenger candidate is the summoner itself")
+	}
+}
+
+// buildResolutionWorld seeds a running world with a roster tailored to exercise
+// target-name resolution (LLM-323 gate 1): a normal villager, one whose display
+// name legitimately begins with an article, and a duplicate-name pair for the
+// ambiguity branch. No summon point / messenger — resolution never dispatches.
+func buildResolutionWorld(t *testing.T) (*sim.World, context.CancelFunc) {
+	t.Helper()
+	repo, handles := mem.NewRepository()
+	handles.Terrain.Seed(makeAllGrassTerrain())
+	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
+		"a1":       {ID: "a1", DisplayName: "Ezekiel Crane", Pos: sim.TilePos{X: sim.PadX, Y: sim.PadY}},
+		"a2":       {ID: "a2", DisplayName: "the boy", Pos: sim.TilePos{X: sim.PadX + 1, Y: sim.PadY}},
+		"dup1":     {ID: "dup1", DisplayName: "John Smith", Pos: sim.TilePos{X: sim.PadX + 2, Y: sim.PadY}},
+		"dup2":     {ID: "dup2", DisplayName: "John Smith", Pos: sim.TilePos{X: sim.PadX + 3, Y: sim.PadY}},
+		"nameless": {ID: "nameless", DisplayName: "", Pos: sim.TilePos{X: sim.PadX + 4, Y: sim.PadY}},
+	})
+	w, err := sim.LoadWorld(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go w.Run(ctx)
+	return w, cancel
+}
+
+// resolveTarget runs resolveSummonTarget on the world goroutine (it reads
+// w.Actors) and returns its tri-state result.
+func resolveTarget(t *testing.T, w *sim.World, raw string) (sim.ActorID, bool, bool) {
+	t.Helper()
+	var id sim.ActorID
+	var ok, ambiguous bool
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		id, ok, ambiguous = sim.ResolveSummonTargetForTest(world, raw)
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("resolve %q: %v", raw, err)
+	}
+	return id, ok, ambiguous
+}
+
+// TestResolveSummonTarget — LLM-323 gate 1. The summon tool invites a display
+// name, so DispatchSummon must resolve name → actor id. Covers the exact-id fast
+// path, case/punctuation/quote tolerance, the leading-article-kept case (a proper
+// name never carries one; a display name that does must still match verbatim),
+// the unknown name, the empty query, and the ambiguous duplicate.
+func TestResolveSummonTarget(t *testing.T) {
+	w, cancel := buildResolutionWorld(t)
+	defer cancel()
+
+	cases := []struct {
+		name          string
+		raw           string
+		wantID        sim.ActorID
+		wantOK        bool
+		wantAmbiguous bool
+	}{
+		{"display name", "Ezekiel Crane", "a1", true, false},
+		{"case-insensitive", "ezekiel crane", "a1", true, false},
+		{"trailing period", "Ezekiel Crane.", "a1", true, false},
+		{"surrounding quotes + comma", `"Ezekiel Crane,"`, "a1", true, false},
+		{"leading article kept", "the boy", "a2", true, false},
+		{"exact id fast path", "a1", "a1", true, false},
+		{"unknown name", "Nobody Here", "", false, false},
+		{"empty query", "   ", "", false, false},
+		{"punctuation-only query never matches a nameless actor", ".", "", false, false},
+		{"ambiguous duplicate", "John Smith", "", false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			id, ok, ambiguous := resolveTarget(t, w, tc.raw)
+			if ok != tc.wantOK || ambiguous != tc.wantAmbiguous || (tc.wantOK && id != tc.wantID) {
+				t.Fatalf("resolveSummonTarget(%q) = (%q, ok=%v, ambiguous=%v); want (%q, ok=%v, ambiguous=%v)",
+					tc.raw, id, ok, ambiguous, tc.wantID, tc.wantOK, tc.wantAmbiguous)
+			}
+		})
+	}
+}
+
+// TestDispatchSummon_ByDisplayName — LLM-323 gate 1 end to end: a dispatch that
+// names the target by DISPLAY NAME (not the UUID key) resolves and starts an
+// errand, where before LLM-323 it died at the exact-id lookup.
+func TestDispatchSummon_ByDisplayName(t *testing.T) {
+	w, cancel := buildSummonWorld(t)
+	defer cancel()
+
+	res, err := w.Send(sim.DispatchSummon("summoner", "John Proctor", "", time.Now().UTC()))
+	if err != nil {
+		t.Fatalf("DispatchSummon by display name: %v", err)
+	}
+	if _, ok := res.(sim.ErrandID); !ok {
+		t.Fatalf("DispatchSummon by display name returned %T, want sim.ErrandID", res)
+	}
+}
+
+// TestSummonPointDestination — LLM-323 gate 3. The rendezvous resolves to a
+// structure-visit when the summon_point object backs a Structure, and to an
+// object-visit when it is a bare placement (the live village's case).
+func TestSummonPointDestination(t *testing.T) {
+	t.Run("structure-backed → structure-visit", func(t *testing.T) {
+		w, cancel := buildSummonWorldOpt(t, true)
+		defer cancel()
+		dest := pointDestination(t, w, "square")
+		if dest.Kind != sim.MoveDestinationStructureVisit {
+			t.Fatalf("kind = %q, want structure_visit", dest.Kind)
+		}
+	})
+	t.Run("bare object → object-visit", func(t *testing.T) {
+		w, cancel := buildSummonWorldOpt(t, false)
+		defer cancel()
+		dest := pointDestination(t, w, "square")
+		if dest.Kind != sim.MoveDestinationObjectVisit {
+			t.Fatalf("kind = %q, want object_visit", dest.Kind)
+		}
+	})
+}
+
+// pointDestination runs summonPointDestination on the world goroutine and fails
+// if the point can't be resolved at all.
+func pointDestination(t *testing.T, w *sim.World, pointID sim.VillageObjectID) sim.MoveDestination {
+	t.Helper()
+	var dest sim.MoveDestination
+	var ok bool
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		dest, ok = sim.SummonPointDestinationForTest(world, pointID)
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("resolve point %q: %v", pointID, err)
+	}
+	if !ok {
+		t.Fatalf("summonPointDestination(%q) = !ok", pointID)
+	}
+	return dest
+}
+
+// TestDispatchSummon_BarePointStillDispatches — LLM-323 gate 3 end to end: with a
+// summon_point that has no backing Structure (the live village's state), dispatch
+// no longer rejects with "the summoning place cannot be reached" — it walks the
+// summoner to the object via an object-visit and starts the errand.
+func TestDispatchSummon_BarePointStillDispatches(t *testing.T) {
+	w, cancel := buildSummonWorldOpt(t, false)
+	defer cancel()
+
+	res, err := w.Send(sim.DispatchSummon("summoner", "target", "", time.Now().UTC()))
+	if err != nil {
+		t.Fatalf("DispatchSummon with a bare (structure-less) summon point: %v", err)
+	}
+	id, ok := res.(sim.ErrandID)
+	if !ok {
+		t.Fatalf("DispatchSummon returned %T, want sim.ErrandID", res)
+	}
+	if st, ok := errandState(t, w, id); !ok || st != stDispatched {
+		t.Fatalf("errand state = (%q, ok=%v), want %q", st, ok, stDispatched)
 	}
 }

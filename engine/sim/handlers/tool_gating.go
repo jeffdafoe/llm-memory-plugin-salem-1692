@@ -146,13 +146,12 @@ const counterPayToolName = "counter_pay"
 const withdrawPayToolName = "withdraw_pay"
 
 // summonToolName is the messenger-errand tool (send a courier to fetch someone,
-// ZBBS-HOME-311). Advertised to NOBODY right now (LLM-322): the errand
-// substrate exists but no NPC carries AttrMessenger in the live village, so
-// DispatchSummon's "a messenger is free" precheck always fails and every summon
-// refuses — a dead ~350-char schema on every tick. Gated out until LLM-323
-// provisions a messenger; REMOVE this gate when LLM-323 lands. Advertising-only
-// like every gate here: the tool stays registered/dispatchable
-// (register_summon.go), so a stray call still reaches sim.DispatchSummon.
+// ZBBS-HOME-311). Advertised to every actor again as of LLM-323: a messenger is
+// provisioned in the live village (a non-VA NPC carrying AttrMessenger), target
+// name resolution works (DispatchSummon resolves a display name → actor id), and
+// the summon_point is reachable whether or not it backs a structure. The LLM-322
+// advertising gate that dropped it — a dead affordance while no messenger was
+// thought to exist — is removed. Registered/dispatchable via register_summon.go.
 const summonToolName = "summon"
 
 // recallToolName / memorizeToolName are the two memory observation tools. Both
@@ -465,12 +464,6 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 		// stop consumer (ZBBS-HOME-338): the inverse — advertise the voluntary
 		// halt tool ONLY while moving (a stationary actor has nothing to stop).
 		if spec.Name == stopToolName && !moving {
-			continue
-		}
-		// summon gate (LLM-322): dead affordance in the live village — no NPC
-		// carries AttrMessenger, so DispatchSummon always refuses. Drop it for
-		// everyone until LLM-323 provisions a messenger. Remove this block then.
-		if spec.Name == summonToolName {
 			continue
 		}
 		// memory consumers (LLM-356): advertise recall + memorize only to
