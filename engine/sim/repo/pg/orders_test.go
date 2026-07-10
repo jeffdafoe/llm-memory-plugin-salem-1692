@@ -89,17 +89,17 @@ func TestOrdersRepo_LoadAll_HappyPath(t *testing.T) {
 	rows := pgxmock.NewRows([]string{
 		"id", "buyer_id", "seller_id", "item_kind", "qty",
 		"offered_amount", "consumer_actor_ids", "fulfillment_status",
-		"created_at", "delivered_on", "expires_at", "ready_by",
+		"created_at", "delivered_on", "expires_at", "ready_by", "deposit_amount",
 	}).
 		AddRow(int64(1), "alice", "bob", "stew", 2,
 			6, []string{"alice", "carol"}, "ready",
-			now, (*time.Time)(nil), &expires, readyBy).
+			now, (*time.Time)(nil), &expires, readyBy, 4). // partial-payment deposit
 		AddRow(int64(2), "dave", "bob", "ale", 1,
 			3, []string{}, "pending",
-			now, (*time.Time)(nil), &expires, readyBy).
+			now, (*time.Time)(nil), &expires, readyBy, 0).
 		AddRow(int64(3), "eve", "bob", "bread", 1,
 			2, []string{}, "ready",
-			now, &delivered, (*time.Time)(nil), readyBy) // legacy row: NULL expires_at
+			now, &delivered, (*time.Time)(nil), readyBy, 0) // legacy row: NULL expires_at
 
 	mock.ExpectQuery(`SELECT[\s\S]+FROM pay_ledger[\s\S]+WHERE state = 'accepted'[\s\S]+ORDER BY id`).
 		WillReturnRows(rows)
@@ -127,6 +127,9 @@ func TestOrdersRepo_LoadAll_HappyPath(t *testing.T) {
 	}
 	if !o1.ReadyBy.Equal(readyBy) {
 		t.Errorf("o1.ReadyBy = %v, want %v", o1.ReadyBy, readyBy)
+	}
+	if o1.Deposit != 4 {
+		t.Errorf("o1.Deposit = %d, want 4 (partial-payment deposit loaded)", o1.Deposit)
 	}
 
 	// Pending maps to Ready in the runtime view (per orders.go mapping
@@ -167,11 +170,11 @@ func TestOrdersRepo_LoadAll_UnknownStatusErrors(t *testing.T) {
 	rows := pgxmock.NewRows([]string{
 		"id", "buyer_id", "seller_id", "item_kind", "qty",
 		"offered_amount", "consumer_actor_ids", "fulfillment_status",
-		"created_at", "delivered_on", "expires_at", "ready_by",
+		"created_at", "delivered_on", "expires_at", "ready_by", "deposit_amount",
 	}).
 		AddRow(int64(1), "alice", "bob", "stew", 1,
 			3, []string{}, "weirdo_status",
-			now, (*time.Time)(nil), &expires, now)
+			now, (*time.Time)(nil), &expires, now, 0)
 
 	mock.ExpectQuery(`SELECT[\s\S]+FROM pay_ledger`).WillReturnRows(rows)
 
@@ -232,7 +235,7 @@ func TestOrdersRepo_SaveSnapshot_UpsertsEachOrder(t *testing.T) {
 		WithArgs(
 			int64(1), "alice", "bob", "stew", 2, 6,
 			[]string{"alice"}, "ready",
-			readyBy, expires, now, (*time.Time)(nil),
+			readyBy, expires, now, (*time.Time)(nil), 4,
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 
@@ -240,7 +243,7 @@ func TestOrdersRepo_SaveSnapshot_UpsertsEachOrder(t *testing.T) {
 		WithArgs(
 			int64(2), "dave", "bob", "ale", 1, 3,
 			[]string{}, "delivered",
-			now, expires, now, &delivered,
+			now, expires, now, &delivered, 0,
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 
@@ -253,6 +256,7 @@ func TestOrdersRepo_SaveSnapshot_UpsertsEachOrder(t *testing.T) {
 			Item:        "stew",
 			Qty:         2,
 			Amount:      6,
+			Deposit:     4,
 			ConsumerIDs: []sim.ActorID{"alice"},
 			LedgerID:    1,
 			CreatedAt:   now,

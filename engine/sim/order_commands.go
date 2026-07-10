@@ -354,6 +354,33 @@ func DeliverOrder(sellerID ActorID, orderID OrderID, at time.Time) Command {
 				return nil, fmt.Errorf("deliver_order: item %q no longer in catalog", o.Item)
 			}
 
+			// Gate 8: the outstanding balance is affordable (LLM-357). A
+			// partial-payment commission collected only a deposit at accept; the
+			// balance (orderBalanceDue) is settled below as an atomic coin↔goods
+			// swap once the goods move. The BUYER funds it, so they must be
+			// co-present with the seller and hold the coins — a short or absent
+			// buyer bounces the delivery HERE, before any goods move, and the
+			// order rides to expiry (forged-but-uncollected → deposit forfeit).
+			// Zero for every full-prepay order, so this is a no-op there.
+			var balanceBuyer *Actor
+			balanceDue := orderBalanceDue(o)
+			if balanceDue > 0 {
+				buyer, ok := w.Actors[o.BuyerID]
+				if !ok || buyer == nil {
+					return nil, fmt.Errorf("deliver_order: buyer %q not found to settle the %d-coin balance on order %d", o.BuyerID, balanceDue, orderID)
+				}
+				if buyer.CurrentHuddleID == "" || buyer.CurrentHuddleID != seller.CurrentHuddleID {
+					return nil, fmt.Errorf("deliver_order: buyer %q is not here to pay the %d-coin balance on order %d", o.BuyerID, balanceDue, orderID)
+				}
+				if buyer.Coins < balanceDue {
+					return nil, fmt.Errorf("deliver_order: buyer %q has %d coins, needs %d to settle the balance on order %d", o.BuyerID, buyer.Coins, balanceDue, orderID)
+				}
+				if seller.Coins > math.MaxInt-balanceDue {
+					return nil, fmt.Errorf("deliver_order: settling %d would overflow seller %q coins on order %d", balanceDue, sellerID, orderID)
+				}
+				balanceBuyer = buyer
+			}
+
 			// Fulfillment — shared with the ZBBS-HOME-398 immediate-handover
 			// path (commitPayTransfer). transferOrderGoods grants the lodging
 			// room or moves the goods to each consumer. Co-presence (gate 6),
@@ -361,6 +388,16 @@ func DeliverOrder(sellerID ActorID, orderID OrderID, at time.Time) Command {
 			// stay on this deferred-delivery caller.
 			if err := transferOrderGoods(w, o, seller, consumers, at); err != nil {
 				return nil, err
+			}
+
+			// LLM-357: the goods are handed over — settle the outstanding
+			// balance now (validated affordable in gate 8; the world is
+			// single-goroutine, so the buyer's coins can't have moved since).
+			// The deposit taken at accept plus this balance equal the full price.
+			if balanceDue > 0 && balanceBuyer != nil {
+				balanceBuyer.Coins -= balanceDue
+				seller.Coins += balanceDue
+				accrueStallWear(w, seller, balanceDue, at)
 			}
 
 			// Bidirectional buyer↔seller SalientFacts. Multi-consumer
@@ -376,6 +413,13 @@ func DeliverOrder(sellerID ActorID, orderID OrderID, at time.Time) Command {
 			}
 			sellerFact := orderDeliveredFactText(buyerName, o.Item, o.Qty, len(o.ConsumerIDs), false)
 			buyerFact := orderDeliveredFactText(sellerName, o.Item, o.Qty, len(o.ConsumerIDs), true)
+			// LLM-357: on a partial-payment commission, record that the balance was
+			// settled on collection so both memories carry the whole deal, not just
+			// the handover.
+			if balanceDue > 0 {
+				sellerFact += fmt.Sprintf(" They settled the %d-coin balance on collection.", balanceDue)
+				buyerFact += fmt.Sprintf(" I settled the %d-coin balance on collection.", balanceDue)
+			}
 			if _, err := RecordInteraction(o.SellerID, o.BuyerID, InteractionDelivered, sellerFact, at).Fn(w); err != nil {
 				log.Printf("sim.DeliverOrder: RecordInteraction seller→buyer: %v", err)
 			}
@@ -591,4 +635,50 @@ func orderDeliveredFactText(counterpartyName string, item ItemKind, qty, consume
 	}
 	b.WriteString(".")
 	return b.String()
+}
+
+// recordExpiredDepositFacts writes the bidirectional relationship memory a
+// partial-payment commission leaves when it expires (LLM-357): a forfeit
+// (buyer-fault — the buyer never collected, so the seller kept the deposit and
+// re-shelved the goods) or a refund (seller-fault — the seller never made it, so
+// the deposit went back). The reputation seed both keepers carry forward. Only
+// called for a genuine partial (0 < Deposit < Amount); full-prepay expiry stays
+// as silent as it was before LLM-357. MUST run on the world goroutine.
+func recordExpiredDepositFacts(w *World, o *Order, forfeited bool, at time.Time) {
+	if o == nil {
+		return
+	}
+	buyerName, sellerName := string(o.BuyerID), string(o.SellerID)
+	if b := w.Actors[o.BuyerID]; b != nil {
+		buyerName = b.DisplayName
+	}
+	if s := w.Actors[o.SellerID]; s != nil {
+		sellerName = s.DisplayName
+	}
+	itemDesc := string(o.Item)
+	if o.Qty > 1 {
+		itemDesc = fmt.Sprintf("%d %s", o.Qty, o.Item)
+	}
+	// The fact is specifically about the deposit; read it straight off the order
+	// rather than through orderAmountPaidAtAccept so the narration can't drift
+	// from the actual sum with any future accept-time pricing change (they are
+	// equal here — the caller guards 0 < Deposit < Amount). LLM-357.
+	deposit := o.Deposit
+	var sellerKind, buyerKind InteractionKind
+	var sellerFact, buyerFact string
+	if forfeited {
+		sellerKind, buyerKind = InteractionKeptDeposit, InteractionForfeitedDeposit
+		sellerFact = fmt.Sprintf("%s never came for the %s I made to order, so I kept their %d-coin deposit and put the goods back up for sale.", buyerName, itemDesc, deposit)
+		buyerFact = fmt.Sprintf("I never collected the %s I commissioned from %s, and forfeited my %d-coin deposit.", itemDesc, sellerName, deposit)
+	} else {
+		sellerKind, buyerKind = InteractionRefundedDeposit, InteractionDepositRefunded
+		sellerFact = fmt.Sprintf("I never made the %s %s commissioned, so their %d-coin deposit went back to them.", itemDesc, buyerName, deposit)
+		buyerFact = fmt.Sprintf("%s never made the %s I commissioned, and my %d-coin deposit came back.", sellerName, itemDesc, deposit)
+	}
+	if _, err := RecordInteraction(o.SellerID, o.BuyerID, sellerKind, sellerFact, at).Fn(w); err != nil {
+		log.Printf("sim.recordExpiredDepositFacts: seller->buyer order %d: %v", o.ID, err)
+	}
+	if _, err := RecordInteraction(o.BuyerID, o.SellerID, buyerKind, buyerFact, at).Fn(w); err != nil {
+		log.Printf("sim.recordExpiredDepositFacts: buyer->seller order %d: %v", o.ID, err)
+	}
 }

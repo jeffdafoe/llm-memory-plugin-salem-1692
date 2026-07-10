@@ -74,6 +74,22 @@ func TestDecodePayWithItem_ReadyInDays(t *testing.T) {
 	}
 }
 
+// TestDecodePayWithItem_Deposit — the partial-payment deposit decodes; the
+// commission-only / coin-only rules are enforced in the command, not the
+// decoder (LLM-357).
+func TestDecodePayWithItem_Deposit(t *testing.T) {
+	args, err := DecodePayWithItemArgs(json.RawMessage(`{
+        "seller":"Ezekiel","item":"shovel","qty":3,"amount":15,
+        "consume_now":false,"deposit":5
+    }`))
+	if err != nil {
+		t.Fatalf("DecodePayWithItemArgs: %v", err)
+	}
+	if got := args.(PayWithItemArgs).Deposit; got != 5 {
+		t.Errorf("Deposit = %d, want 5", got)
+	}
+}
+
 func TestDecodePayWithItem_Barter(t *testing.T) {
 	// Goods only (no amount).
 	args, err := DecodePayWithItemArgs(json.RawMessage(`{
@@ -288,6 +304,9 @@ func TestDecodePayWithItem_RejectsShapeErrors(t *testing.T) {
 		{"pay_items_unknown_nested_field", `{"seller":"A","item":"stew","qty":1,"consume_now":false,"pay_items":[{"item":"nail","qty":2,"extra":1}]}`, "malformed arguments"},
 		{"ready_in_days_negative", `{"seller":"A","item":"stew","qty":1,"amount":4,"consume_now":false,"ready_in_days":-1}`, "ready_in_days cannot be negative"},
 		{"ready_in_days_over_cap", `{"seller":"A","item":"stew","qty":1,"amount":4,"consume_now":false,"ready_in_days":31}`, "ready_in_days too far ahead"},
+		{"deposit_negative", `{"seller":"A","item":"shovel","qty":1,"amount":15,"consume_now":false,"deposit":-1}`, "deposit cannot be negative"},
+		{"deposit_over_amount", `{"seller":"A","item":"shovel","qty":1,"amount":15,"consume_now":false,"deposit":20}`, "deposit 20 must be less than the amount 15"},
+		{"deposit_equals_amount", `{"seller":"A","item":"shovel","qty":1,"amount":15,"consume_now":false,"deposit":15}`, "deposit 15 must be less than the amount 15"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

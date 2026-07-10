@@ -69,11 +69,13 @@ type OrderDelivered struct {
 func (e *OrderDelivered) Kind() string { return "OrderDelivered" }
 func (OrderDelivered) isSimEvent()     {}
 
-// OrderExpired fires from the order sweep when an Order at Ready
-// crosses its ExpiresAt. State flip only — goods stay with seller,
-// coins stay with seller. No automatic refund in MVP (design call 5
-// option A). Subscribers can use this as an admin-dashboard signal
-// or for future cascade-controller hooks.
+// OrderExpired fires when an Order at Ready crosses its ExpiresAt (the sweep,
+// or an in-band deliver_order gate-4 flip). settleExpiredOrder has already run
+// the coin/goods settlement: seller-fault (never forged) refunds what the buyer
+// paid; buyer-fault on a partial-payment commission (forged, uncollected)
+// forfeits the deposit to the seller and returns the goods to sellable stock.
+// Forfeited reports which happened so narration/telemetry can tell "your coins
+// came back" from "the buyer never came — you kept the deposit." LLM-357.
 type OrderExpired struct {
 	EventBase
 	OrderID     OrderID
@@ -83,7 +85,11 @@ type OrderExpired struct {
 	Qty         int
 	ConsumerIDs []ActorID
 	LedgerID    LedgerID
-	At          time.Time
+	// Forfeited is true when expiry FORFEITED the buyer's deposit to the seller
+	// (buyer-fault: the good was forged but never collected) rather than
+	// REFUNDING it (seller-fault, or a full-prepay order). LLM-357.
+	Forfeited bool
+	At        time.Time
 }
 
 func (e *OrderExpired) Kind() string { return "OrderExpired" }

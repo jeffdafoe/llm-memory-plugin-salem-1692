@@ -309,6 +309,18 @@ const (
 	InteractionLeftWorkerUnpaid InteractionKind = "left_worker_unpaid"
 	InteractionWorkDeclinedBy   InteractionKind = "work_declined_by"
 	InteractionDeclinedWork     InteractionKind = "declined_work"
+	// Commission partial-payment expiry (LLM-357): a made-to-order deal with a
+	// deposit that lapsed at Ready. KeptDeposit/ForfeitedDeposit are the
+	// buyer-fault pair (the buyer never collected, so the seller kept the deposit
+	// and re-shelved the goods); RefundedDeposit/DepositRefunded are the
+	// seller-fault pair (the seller never made it, so the deposit went back).
+	// Each is one side of a bidirectional write, like Delivered/Received — the
+	// reputation seed both keepers carry forward. Full-prepay expiry writes
+	// nothing (silent as before this ticket).
+	InteractionKeptDeposit      InteractionKind = "kept_deposit"
+	InteractionForfeitedDeposit InteractionKind = "forfeited_deposit"
+	InteractionRefundedDeposit  InteractionKind = "refunded_deposit"
+	InteractionDepositRefunded  InteractionKind = "deposit_refunded"
 )
 
 // MaxSalientFactTextLen caps per-fact Text at write time so a single

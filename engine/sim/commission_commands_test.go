@@ -388,3 +388,280 @@ func TestAcceptPay_Commission_ReservedStockMintsCommission(t *testing.T) {
 		t.Errorf("commission order 1 = %+v (ok=%v), want a Ready deferred commission", o, ok)
 	}
 }
+
+// commissionOfferWithDeposit seeds a coin-only, take-home pending offer from
+// alice to smith for `qty` of `item` at `amount` coins total, with `deposit`
+// payable now and the balance (amount - deposit) collected at deliver_order —
+// the LLM-357 partial-payment shape.
+func commissionOfferWithDeposit(t *testing.T, w *sim.World, id sim.LedgerID, item sim.ItemKind, qty, amount, deposit int, at time.Time) {
+	seedLedgerEntry(t, w, sim.PayLedgerEntry{
+		ID: id, BuyerID: "alice", SellerID: "smith",
+		ItemKind: item, Qty: qty, Amount: amount, Deposit: deposit, ConsumeNow: false,
+		State:     sim.PayLedgerStatePending,
+		CreatedAt: at, ExpiresAt: at.Add(3 * time.Minute),
+		SceneID: "sc1", HuddleID: "h1",
+	})
+}
+
+// commissionExpiry returns a time past a nail commission's Ready window, for
+// driving the expiry sweep.
+func commissionExpiry(at time.Time) time.Time {
+	return at.Add(time.Duration(sim.CycleDurationSeconds(commissionRecipes()["nail"]))*time.Second*time.Duration(sim.CommissionOrderSlack) + sim.CommissionOrderGrace + time.Minute)
+}
+
+// TestCommission_PartialPayment_AcceptChargesDepositOnly: an offer carrying a
+// deposit (5 of 15) charges only the deposit at accept — not the full price —
+// and mints a Ready commission recording both the total and the deposit, so the
+// balance owed at delivery is Amount - Deposit. LLM-357.
+func TestCommission_PartialPayment_AcceptChargesDepositOnly(t *testing.T) {
+	w, stop := buildCommissionWorld(t, produceNail(), nil, 50, nil)
+	defer stop()
+	at := time.Now().UTC()
+	commissionOfferWithDeposit(t, w, 1, "nail", 1, 15, 5, at)
+
+	if _, err := w.Send(sim.AcceptPay("smith", 1, at)); err != nil {
+		t.Fatalf("AcceptPay: %v", err)
+	}
+	alice := readHoldings(t, w, "alice")
+	smith := readHoldings(t, w, "smith")
+	if alice.Coins != 45 {
+		t.Errorf("alice.Coins = %d, want 45 (only the 5-coin deposit charged, not the full 15)", alice.Coins)
+	}
+	if smith.Coins != 5 {
+		t.Errorf("smith.Coins = %d, want 5 (deposit received)", smith.Coins)
+	}
+	o, ok := readOrders(t, w)[1]
+	if !ok || o.State != sim.OrderStateReady {
+		t.Fatalf("order 1 = %+v (ok=%v), want a Ready commission", o, ok)
+	}
+	if o.Amount != 15 || o.Deposit != 5 {
+		t.Errorf("order Amount/Deposit = %d/%d, want 15/5 (full price + deposit recorded)", o.Amount, o.Deposit)
+	}
+	if got := sim.OrderBalanceDue(&o); got != 10 {
+		t.Errorf("OrderBalanceDue = %d, want 10 (balance owed at delivery)", got)
+	}
+}
+
+// TestCommission_PartialPayment_DeliverCollectsBalance: the full deposit
+// lifecycle — deposit at accept, forge, then deliver_order collects the balance
+// as an atomic coin↔goods swap. The buyer pays deposit + balance = the full
+// price; the seller receives all of it; the good is handed over. LLM-357.
+func TestCommission_PartialPayment_DeliverCollectsBalance(t *testing.T) {
+	w, stop := buildCommissionWorld(t, produceNail(), nil, 50, nil)
+	defer stop()
+	at := time.Now().UTC()
+	commissionOfferWithDeposit(t, w, 1, "nail", 1, 15, 5, at)
+	if _, err := w.Send(sim.AcceptPay("smith", 1, at)); err != nil {
+		t.Fatalf("AcceptPay: %v", err)
+	}
+	// The forged nail lands.
+	mustSend(t, w, func(world *sim.World) {
+		world.Actors["smith"].Inventory = map[sim.ItemKind]int{"nail": 1}
+	})
+	if _, err := w.Send(sim.DeliverOrder("smith", 1, at.Add(time.Hour))); err != nil {
+		t.Fatalf("DeliverOrder: %v", err)
+	}
+	alice := readHoldings(t, w, "alice")
+	smith := readHoldings(t, w, "smith")
+	if alice.inv["nail"] != 1 {
+		t.Errorf("alice.nail = %d, want 1 (delivered)", alice.inv["nail"])
+	}
+	if alice.Coins != 35 {
+		t.Errorf("alice.Coins = %d, want 35 (50 - 5 deposit - 10 balance)", alice.Coins)
+	}
+	if smith.Coins != 15 {
+		t.Errorf("smith.Coins = %d, want 15 (5 deposit + 10 balance collected at delivery)", smith.Coins)
+	}
+	if o, ok := readOrders(t, w)[1]; ok && o.State == sim.OrderStateReady {
+		t.Errorf("order still Ready after delivery: %+v", o)
+	}
+}
+
+// TestCommission_PartialPayment_ShortBalanceBouncesDelivery: a buyer who put a
+// deposit down but can't cover the balance bounces the delivery (before any
+// goods move) — the order stays Ready to ride to expiry. LLM-357.
+func TestCommission_PartialPayment_ShortBalanceBouncesDelivery(t *testing.T) {
+	// alice can afford the 5 deposit but not the 10 balance.
+	w, stop := buildCommissionWorld(t, produceNail(), nil, 5, nil)
+	defer stop()
+	at := time.Now().UTC()
+	commissionOfferWithDeposit(t, w, 1, "nail", 1, 15, 5, at)
+	if _, err := w.Send(sim.AcceptPay("smith", 1, at)); err != nil {
+		t.Fatalf("AcceptPay: %v", err)
+	}
+	mustSend(t, w, func(world *sim.World) {
+		world.Actors["smith"].Inventory = map[sim.ItemKind]int{"nail": 1}
+	})
+	_, err := w.Send(sim.DeliverOrder("smith", 1, at.Add(time.Hour)))
+	if err == nil || !strings.Contains(err.Error(), "balance") {
+		t.Fatalf("DeliverOrder with a broke buyer: want a balance-gate reject, got %v", err)
+	}
+	alice := readHoldings(t, w, "alice")
+	if alice.inv["nail"] != 0 {
+		t.Errorf("alice.nail = %d, want 0 (delivery bounced, no goods moved)", alice.inv["nail"])
+	}
+	if alice.Coins != 0 {
+		t.Errorf("alice.Coins = %d, want 0 (only the deposit was ever charged)", alice.Coins)
+	}
+	if o, ok := readOrders(t, w)[1]; !ok || o.State != sim.OrderStateReady {
+		t.Errorf("order 1 = %+v (ok=%v), want still Ready (bounced delivery rides to expiry)", o, ok)
+	}
+}
+
+// TestCommission_PartialPayment_SellerFaultRefundsDeposit: a partial-payment
+// commission the seller NEVER forges expires seller-fault — the buyer's deposit
+// is refunded (they're made whole), the seller debited what they received. Only
+// the deposit moves, since only the deposit was ever paid. LLM-357.
+func TestCommission_PartialPayment_SellerFaultRefundsDeposit(t *testing.T) {
+	w, stop := buildCommissionWorld(t, produceNail(), nil, 50, nil)
+	defer stop()
+	at := time.Now().UTC()
+	commissionOfferWithDeposit(t, w, 1, "nail", 1, 15, 5, at)
+	if _, err := w.Send(sim.AcceptPay("smith", 1, at)); err != nil {
+		t.Fatalf("AcceptPay: %v", err)
+	}
+	if alice := readHoldings(t, w, "alice"); alice.Coins != 45 {
+		t.Fatalf("alice.Coins after deposit = %d, want 45", alice.Coins)
+	}
+	// smith never forges the nail; the window lapses.
+	if _, err := w.Send(sim.EvaluateOrderSweep(commissionExpiry(at))); err != nil {
+		t.Fatalf("EvaluateOrderSweep: %v", err)
+	}
+	alice := readHoldings(t, w, "alice")
+	smith := readHoldings(t, w, "smith")
+	if alice.Coins != 50 {
+		t.Errorf("alice.Coins = %d, want 50 (seller-fault: deposit refunded in full)", alice.Coins)
+	}
+	if smith.Coins != 0 {
+		t.Errorf("smith.Coins = %d, want 0 (deposit reversed on refund)", smith.Coins)
+	}
+	// alice (shared-VA buyer) durably remembers the refund — smith never made it.
+	if joined := strings.Join(readSalientFacts(t, w, "alice", "smith"), " | "); !strings.Contains(joined, "deposit came back") {
+		t.Errorf("alice's memory of smith should record the refunded deposit, got %q", joined)
+	}
+}
+
+// TestCommission_PartialPayment_BuyerFaultForfeitsDeposit: a partial-payment
+// commission the seller DID forge but the buyer never collected expires
+// buyer-fault — the seller keeps the deposit (no refund) and the forged good
+// returns to sellable stock (the terminal order stops reserving it). LLM-357.
+func TestCommission_PartialPayment_BuyerFaultForfeitsDeposit(t *testing.T) {
+	w, stop := buildCommissionWorld(t, produceNail(), nil, 50, nil)
+	defer stop()
+	at := time.Now().UTC()
+	commissionOfferWithDeposit(t, w, 1, "nail", 1, 15, 5, at)
+	if _, err := w.Send(sim.AcceptPay("smith", 1, at)); err != nil {
+		t.Fatalf("AcceptPay: %v", err)
+	}
+	// smith holds enough stock at expiry (forged for this order, or acquired any
+	// other way — buyer-fault is a current-stock / "was deliverable" test, not
+	// "forged for this order") but the buyer never returns to collect.
+	mustSend(t, w, func(world *sim.World) {
+		world.Actors["smith"].Inventory = map[sim.ItemKind]int{"nail": 1}
+	})
+	if _, err := w.Send(sim.EvaluateOrderSweep(commissionExpiry(at))); err != nil {
+		t.Fatalf("EvaluateOrderSweep: %v", err)
+	}
+	alice := readHoldings(t, w, "alice")
+	smith := readHoldings(t, w, "smith")
+	if alice.Coins != 45 {
+		t.Errorf("alice.Coins = %d, want 45 (buyer-fault: deposit forfeited, no refund)", alice.Coins)
+	}
+	if smith.Coins != 5 {
+		t.Errorf("smith.Coins = %d, want 5 (seller keeps the deposit)", smith.Coins)
+	}
+	if smith.inv["nail"] != 1 {
+		t.Errorf("smith.nail = %d, want 1 (forged good stays with the seller, sellable again)", smith.inv["nail"])
+	}
+	if o, ok := readOrders(t, w)[1]; ok && o.State == sim.OrderStateReady {
+		t.Errorf("order still Ready after buyer-fault expiry: %+v", o)
+	}
+	// The reputation seed: alice (shared-VA buyer) durably remembers forfeiting
+	// the deposit. smith is a stateful NPC (own memory system), so his side is
+	// carried through the dream path, not salient_facts — the same gate the
+	// delivery fact uses.
+	if joined := strings.Join(readSalientFacts(t, w, "alice", "smith"), " | "); !strings.Contains(joined, "forfeited") {
+		t.Errorf("alice's memory of smith should record the forfeited deposit, got %q", joined)
+	}
+}
+
+// TestCommission_PartialPayment_InStockIgnoresDeposit: a deposit is honored only
+// for a genuine commission (the seller is out of stock and must forge). When the
+// seller HOLDS the good, the offer delivers at accept for the FULL price — the
+// deposit is ignored (depositChargeForEntry re-checks isCommissionOrder) and no
+// Ready order is left carrying a phantom balance. LLM-357.
+func TestCommission_PartialPayment_InStockIgnoresDeposit(t *testing.T) {
+	w, stop := buildCommissionWorld(t, produceNail(), map[sim.ItemKind]int{"nail": 1}, 50, nil)
+	defer stop()
+	at := time.Now().UTC()
+	commissionOfferWithDeposit(t, w, 1, "nail", 1, 15, 5, at)
+
+	if _, err := w.Send(sim.AcceptPay("smith", 1, at)); err != nil {
+		t.Fatalf("AcceptPay: %v", err)
+	}
+	alice := readHoldings(t, w, "alice")
+	smith := readHoldings(t, w, "smith")
+	if alice.inv["nail"] != 1 {
+		t.Errorf("alice.nail = %d, want 1 (in-stock sale delivers at accept)", alice.inv["nail"])
+	}
+	if alice.Coins != 35 {
+		t.Errorf("alice.Coins = %d, want 35 (full 15 charged — deposit ignored for an in-stock sale)", alice.Coins)
+	}
+	if smith.Coins != 15 {
+		t.Errorf("smith.Coins = %d, want 15 (full price)", smith.Coins)
+	}
+	for _, o := range readOrders(t, w) {
+		if o.State == sim.OrderStateReady {
+			t.Errorf("unexpected Ready order for an in-stock sale (a deposit must not defer it): %+v", o)
+		}
+	}
+}
+
+// TestCommission_PartialPayment_ExpiryNarratesBothSides_Forfeit: with BOTH
+// parties shared-VA (so both directions of the salient_facts write are
+// observable — a stateful NPC carries its side through the dream path instead),
+// a buyer-fault forfeit leaves a memory beat on each side. LLM-357.
+func TestCommission_PartialPayment_ExpiryNarratesBothSides_Forfeit(t *testing.T) {
+	w, stop := buildCommissionWorld(t, produceNail(), nil, 50, nil)
+	defer stop()
+	mustSend(t, w, func(world *sim.World) { world.Actors["smith"].Kind = sim.KindNPCShared })
+	at := time.Now().UTC()
+	commissionOfferWithDeposit(t, w, 1, "nail", 1, 15, 5, at)
+	if _, err := w.Send(sim.AcceptPay("smith", 1, at)); err != nil {
+		t.Fatalf("AcceptPay: %v", err)
+	}
+	// smith forges it but the buyer never collects → buyer-fault forfeit.
+	mustSend(t, w, func(world *sim.World) { world.Actors["smith"].Inventory = map[sim.ItemKind]int{"nail": 1} })
+	if _, err := w.Send(sim.EvaluateOrderSweep(commissionExpiry(at))); err != nil {
+		t.Fatalf("EvaluateOrderSweep: %v", err)
+	}
+	if joined := strings.Join(readSalientFacts(t, w, "smith", "alice"), " | "); !strings.Contains(joined, "kept their") {
+		t.Errorf("smith's memory of alice should record keeping the deposit, got %q", joined)
+	}
+	if joined := strings.Join(readSalientFacts(t, w, "alice", "smith"), " | "); !strings.Contains(joined, "forfeited") {
+		t.Errorf("alice's memory of smith should record the forfeit, got %q", joined)
+	}
+}
+
+// TestCommission_PartialPayment_ExpiryNarratesBothSides_Refund: the seller-fault
+// (never forged) counterpart — both sides record the refund. LLM-357.
+func TestCommission_PartialPayment_ExpiryNarratesBothSides_Refund(t *testing.T) {
+	w, stop := buildCommissionWorld(t, produceNail(), nil, 50, nil)
+	defer stop()
+	mustSend(t, w, func(world *sim.World) { world.Actors["smith"].Kind = sim.KindNPCShared })
+	at := time.Now().UTC()
+	commissionOfferWithDeposit(t, w, 1, "nail", 1, 15, 5, at)
+	if _, err := w.Send(sim.AcceptPay("smith", 1, at)); err != nil {
+		t.Fatalf("AcceptPay: %v", err)
+	}
+	// smith never forges → seller-fault refund on expiry.
+	if _, err := w.Send(sim.EvaluateOrderSweep(commissionExpiry(at))); err != nil {
+		t.Fatalf("EvaluateOrderSweep: %v", err)
+	}
+	if joined := strings.Join(readSalientFacts(t, w, "smith", "alice"), " | "); !strings.Contains(joined, "deposit went back") {
+		t.Errorf("smith's memory of alice should record refunding the deposit, got %q", joined)
+	}
+	if joined := strings.Join(readSalientFacts(t, w, "alice", "smith"), " | "); !strings.Contains(joined, "deposit came back") {
+		t.Errorf("alice's memory of smith should record the refund, got %q", joined)
+	}
+}

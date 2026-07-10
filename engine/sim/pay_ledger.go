@@ -208,6 +208,24 @@ func cloneItemKindQtys(in []ItemKindQty) []ItemKindQty {
 	return out
 }
 
+// PayWithItemOpts carries the optional buyer-facing extras on a pay_with_item
+// offer that most internal / test callers leave unset. Passed variadically to
+// PayWithItem so the many call sites that set neither field compile unchanged;
+// at most one value may be passed. Exported so cross-package callers (the tool
+// handler, the PC pay route) can construct it.
+type PayWithItemOpts struct {
+	// ReadyInDays books a deferred order N days ahead (lodging advance booking,
+	// ZBBS-HOME-403). 0 = deliver / check-in today.
+	ReadyInDays int
+
+	// Deposit is the coin the buyer pays up front on a partial-payment
+	// commission (LLM-357); the balance (Amount - Deposit) settles at
+	// deliver_order. 0 (or >= Amount) means full prepay. Honored only when the
+	// offer resolves to a commission at accept — a coin-only, take-home,
+	// produced-good order the seller is short on.
+	Deposit int
+}
+
 // PayLedgerEntry is the in-memory state of one buyer-staked pay offer.
 // Lives in World.PayLedger keyed by ID. In-memory only — pending
 // entries are intentionally restart-lossy (no checkpoint, no projection
@@ -289,6 +307,17 @@ type PayLedgerEntry struct {
 	// the buyer's ORIGINAL coin offer; CounterAmount is the seller's
 	// counter-proposal coins.
 	Amount int
+
+	// Deposit is the coin to charge the buyer at accept when this is a
+	// partial-payment commission (LLM-357): the buyer pays Deposit now and the
+	// balance (Amount - Deposit) at deliver_order. Zero is the "full prepay"
+	// sentinel — every non-commission offer and a full-prepay commission leaves
+	// it zero (the full Amount is charged at accept). Intake accepts a
+	// 0 < Deposit < Amount only on a coin-only offer; depositChargeForEntry
+	// re-checks the commission envelope at accept so a stray Deposit on a
+	// non-commission accept can never underpay. Carried onto Order.Deposit,
+	// which persists it.
+	Deposit int
 
 	// PayItems are the goods the buyer offers to pay WITH (barter leg,
 	// ZBBS-HOME-393). Empty for a pure-coin offer. Kinds are canonical

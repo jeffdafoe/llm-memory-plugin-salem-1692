@@ -287,6 +287,10 @@ type PayWithItemArgs struct {
 	InResponseTo LenientID   `json:"in_response_to"`
 	For          string      `json:"for"`
 	ReadyInDays  int         `json:"ready_in_days"`
+	// Deposit is the coins to put down NOW on a made-to-order commission
+	// (LLM-357); the balance settles at pickup. Coin-only, takeaway only, and
+	// only honored when the offer resolves to a commission. 0 = pay in full.
+	Deposit int `json:"deposit"`
 	// Say is the buyer's spoken line, delivered as the offer is placed (LLM-350).
 	// The restock cue used to ask for "a brief handoff line" via a separate speak
 	// after the pay_with_item, which the terminal offer had already made
@@ -356,6 +360,12 @@ var payWithItemSchema = json.RawMessage(`{
             "minimum": 0,
             "maximum": 30,
             "description": "Lodging only: book a room starting this many days from now (0 or omitted = a room for tonight). Ignored for anything else — ordinary goods are handed over when you pay. Max 30."
+        },
+        "deposit": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2147483647,
+            "description": "Optional down payment for a made-to-order good the seller must still craft: pay this many coins now and settle the rest when you collect it. Must be less than amount, coin-only (no pay_items), and takeaway (consume_now=false). Omit or 0 to pay in full up front. Ignored unless the order is a genuine commission — the seller makes this good and is out of stock."
         },
         "say": {
             "type": "string",
@@ -477,6 +487,15 @@ func DecodePayWithItemArgs(raw json.RawMessage) (any, error) {
 	}
 	if args.ReadyInDays > sim.MaxOrderReadyInDays {
 		return nil, modelSafef("pay_with_item: ready_in_days too far ahead (got %d, max %d)", args.ReadyInDays, sim.MaxOrderReadyInDays)
+	}
+	// deposit bounds (partial-payment commission, LLM-357). The substrate
+	// re-enforces coin-only / takeaway / < amount and only honors it for a real
+	// commission; this is defense in depth at intake.
+	if args.Deposit < 0 {
+		return nil, modelSafef("pay_with_item: deposit cannot be negative (got %d)", args.Deposit)
+	}
+	if args.Deposit > 0 && args.Deposit >= args.Amount {
+		return nil, modelSafef("pay_with_item: deposit %d must be less than the amount %d — a deposit is a partial payment; omit it to pay in full", args.Deposit, args.Amount)
 	}
 	// say shares speak's rune cap — it lands on the same utterance path (LLM-350).
 	if n := utf8.RuneCountInString(args.Say); n > MaxSpeakTextChars {
@@ -655,7 +674,7 @@ func HandlePayWithItem(in HandlerInput) (sim.Command, error) {
 		sim.LedgerID(args.InResponseTo),
 		forText,
 		now,
-		args.ReadyInDays,
+		sim.PayWithItemOpts{ReadyInDays: args.ReadyInDays, Deposit: args.Deposit},
 	)
 	if say == "" {
 		return withHuddleBootstrap(actorID, now, offer), nil

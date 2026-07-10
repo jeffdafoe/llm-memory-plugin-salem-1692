@@ -294,7 +294,10 @@ func payWithItemPCCommand(
 				// PC-side barter (pay_items) is a follow-on slice
 				// (ZBBS-HOME-393); the PC pay route stays coin-only for now.
 				actorID, seller, item, qty, amount, consumeNow,
-				consumers, nil, quoteID, parentID, forText, now, readyInDays,
+				consumers, nil, quoteID, parentID, forText, now,
+				// PC partial-payment (deposit) is a follow-on; the PC route
+				// stays full-prepay for now (LLM-357 lands NPC-side first).
+				sim.PayWithItemOpts{ReadyInDays: readyInDays},
 			).Fn(world)
 		},
 	}

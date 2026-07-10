@@ -217,7 +217,7 @@ func TestAcceptPay_Lodging_AdvanceBooking_StaysDeferred(t *testing.T) {
 	at := time.Now().UTC()
 
 	// ready_in_days = 3 → a reservation for a future night.
-	res, err := w.Send(sim.PayWithItem("alice", "Bob", "nights_stay", 1, 4, false, nil, nil, 0, 0, "", at, 3))
+	res, err := w.Send(sim.PayWithItem("alice", "Bob", "nights_stay", 1, 4, false, nil, nil, 0, 0, "", at, sim.PayWithItemOpts{ReadyInDays: 3}))
 	if err != nil {
 		t.Fatalf("PayWithItem: %v", err)
 	}
@@ -324,7 +324,7 @@ func TestPayWithItem_Lodging_AdvanceBarter_Rejected(t *testing.T) {
 		t.Fatalf("seed skillets: %v", err)
 	}
 
-	_, err := w.Send(sim.PayWithItem("alice", "Bob", "nights_stay", 1, 0, false, nil, []sim.PayItemInput{{Item: "skillet", Qty: 2}}, 0, 0, "", time.Now().UTC(), 3))
+	_, err := w.Send(sim.PayWithItem("alice", "Bob", "nights_stay", 1, 0, false, nil, []sim.PayItemInput{{Item: "skillet", Qty: 2}}, 0, 0, "", time.Now().UTC(), sim.PayWithItemOpts{ReadyInDays: 3}))
 	if err == nil || !strings.Contains(err.Error(), "future night must be paid in coins") {
 		t.Fatalf("want future-barter reject, got %v", err)
 	}

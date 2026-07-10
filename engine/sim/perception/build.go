@@ -3426,14 +3426,16 @@ func buildPendingOrderViews(snap *sim.Snapshot, subject sim.ActorID) (fromMe, to
 
 	toView := func(o *sim.Order) OrderView {
 		v := OrderView{
-			ID:         o.ID,
-			Item:       o.Item,
-			Qty:        o.Qty,
-			BuyerName:  resolveName(o.BuyerID),
-			SellerName: resolveName(o.SellerID),
-			CreatedAt:  o.CreatedAt,
-			ExpiresAt:  o.ExpiresAt,
-			ReadyBy:    o.ReadyBy,
+			ID:          o.ID,
+			Item:        o.Item,
+			Qty:         o.Qty,
+			BuyerName:   resolveName(o.BuyerID),
+			SellerName:  resolveName(o.SellerID),
+			CreatedAt:   o.CreatedAt,
+			ExpiresAt:   o.ExpiresAt,
+			ReadyBy:     o.ReadyBy,
+			BalanceDue:  sim.OrderBalanceDue(o),
+			DepositPaid: o.Deposit,
 		}
 		// Only populate ConsumerNames when there's more than just
 		// the implicit buyer-as-consumer entry.
@@ -3973,15 +3975,27 @@ func buildPayOffersForMe(snap *sim.Snapshot, subject sim.ActorID, resolvedThisTi
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 
+	// LLM-357: the deposit is only HONORED when the offer resolves to a
+	// commission at accept (depositChargeForEntry re-checks isCommissionOrder).
+	// Carry it onto the seller's decision cue ONLY when the offer is currently
+	// commission-shaped — the seller produces this good and is short of it — so an
+	// in-stock sale (delivered in full at accept) or a lodging/service offer isn't
+	// mis-rendered as "N down as a deposit".
+	seller := snap.Actors[subject]
 	offers := make([]sim.PayOfferWarrantReason, 0, len(ids))
 	for _, id := range ids {
 		e := snap.PayLedger[id]
+		deposit := 0
+		if offerIsCommissionShaped(seller, e) {
+			deposit = e.Deposit
+		}
 		offers = append(offers, sim.PayOfferWarrantReason{
 			LedgerID:    e.ID,
 			Buyer:       e.BuyerID,
 			Item:        e.ItemKind,
 			Qty:         e.Qty,
 			Amount:      e.Amount,
+			Deposit:     deposit,
 			PayItems:    e.PayItems,
 			ConsumeNow:  e.ConsumeNow,
 			ConsumerIDs: e.ConsumerIDs,
@@ -3990,6 +4004,30 @@ func buildPayOffersForMe(snap *sim.Snapshot, subject sim.ActorID, resolvedThisTi
 		})
 	}
 	return offers
+}
+
+// offerIsCommissionShaped reports whether a pending pay offer would resolve to a
+// commission at accept — the seller produces the good and is currently short of
+// it, so accept can't deliver in full. Mirrors the sim isCommissionOrder core
+// (coin-only, non-gift, non-consume-now, producer, stock-short) using snapshot
+// data, so the seller's decision cue frames a deposit as a deposit only when the
+// deal really is made-to-order. Raw inventory (no reservation subtraction), like
+// orderAwaitingMake. LLM-357.
+func offerIsCommissionShaped(seller *sim.ActorSnapshot, e *sim.PayLedgerEntry) bool {
+	if seller == nil || e == nil || e.IsGift || e.ConsumeNow || len(e.PayItems) > 0 {
+		return false
+	}
+	if seller.RestockPolicy == nil || !seller.RestockPolicy.Produces(e.ItemKind) {
+		return false
+	}
+	consumers := len(e.ConsumerIDs)
+	if consumers == 0 {
+		consumers = 1
+	}
+	if e.Qty <= 0 || e.Qty > math.MaxInt/consumers {
+		return false
+	}
+	return seller.Inventory[e.ItemKind] < e.Qty*consumers
 }
 
 // buildLaborOffersForMe scans snap.LaborLedger for the still-pending labor

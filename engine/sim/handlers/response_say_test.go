@@ -282,7 +282,7 @@ func placePendingBreadOffer(t *testing.T, w *sim.World, amount int, now time.Tim
 	if _, err := sim.EnsureColocatedHuddle("alice", now).Fn(w); err != nil {
 		t.Fatalf("EnsureColocatedHuddle: %v", err)
 	}
-	res, err := sim.PayWithItem("alice", "Bob", "bread", 1, amount, false, nil, nil, 0, 0, "", now, 0).Fn(w)
+	res, err := sim.PayWithItem("alice", "Bob", "bread", 1, amount, false, nil, nil, 0, 0, "", now).Fn(w)
 	if err != nil {
 		t.Fatalf("PayWithItem: %v", err)
 	}
@@ -478,7 +478,7 @@ func TestPayWithItem_ReturnsOnlyLiveStatesOnSuccess(t *testing.T) {
 			if _, err := sim.EnsureColocatedHuddle("alice", now).Fn(w); err != nil {
 				t.Fatalf("EnsureColocatedHuddle: %v", err)
 			}
-			res, err := sim.PayWithItem("alice", tc.seller, tc.item, 1, tc.amount, false, nil, nil, 0, 0, "", now, 0).Fn(w)
+			res, err := sim.PayWithItem("alice", tc.seller, tc.item, 1, tc.amount, false, nil, nil, 0, 0, "", now).Fn(w)
 			if err != nil {
 				return // a rejection is fine — nothing was minted, so nothing is said
 			}
