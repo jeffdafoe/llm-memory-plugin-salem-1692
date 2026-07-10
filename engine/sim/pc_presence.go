@@ -99,7 +99,10 @@ func StampPCSeen(actorID ActorID) Command {
 }
 
 // SweepStalePCPresence marks every stale PC that is in a huddle as absent —
-// co-present but quiet — returning the count marked (LLM-342). It does NOT evict
+// co-present but quiet (LLM-342). The returned count is the number of stale-in-
+// huddle PCs touched THIS pass, a diagnostic/test figure — not a transition count:
+// there is no persistent absent flag, so a PC that stays stale is re-counted (and
+// re-quieted, idempotently) on each 15s pass. It does NOT evict
 // the PC: eviction was a heavy hammer (a HuddlePeerLeft to every peer, killed
 // in-flight commerce, and leave/join churn the moment the client reconnected) for
 // what is fundamentally a cost guard. markPCAbsentInHuddle instead keeps the PC in
