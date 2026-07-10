@@ -592,12 +592,13 @@ func gatingRegistryWithSummon(t *testing.T) *Registry {
 	return r
 }
 
-// TestGateTools_Summon_NeverAdvertised — LLM-322: summon is a dead affordance in
-// the live village (no NPC carries AttrMessenger, so DispatchSummon always
-// refuses). It is gated out of the advertised set for every actor until LLM-323
-// provisions a messenger, even though it stays registered/dispatchable — an
-// advertising-layer gate. Remove this test (and the gate) when LLM-323 lands.
-func TestGateTools_Summon_NeverAdvertised(t *testing.T) {
+// TestGateTools_Summon_Advertised — LLM-323: summon is a live affordance again.
+// A messenger is provisioned in the live village (a non-VA NPC carrying
+// AttrMessenger) and DispatchSummon resolves a display name → actor id, so the
+// LLM-322 advertising gate that dropped summon everywhere is removed. gateTools
+// now keeps summon in the advertised set for a stationary actor (it is not
+// walk-incompatible, so the mid-walk axis is separate and not asserted here).
+func TestGateTools_Summon_Advertised(t *testing.T) {
 	r := gatingRegistryWithSummon(t)
 
 	// Precondition: summon IS in the registry's raw advertised specs.
@@ -605,14 +606,14 @@ func TestGateTools_Summon_NeverAdvertised(t *testing.T) {
 		t.Fatalf("precondition: summon should be registered in AdvertisedSpecs")
 	}
 
-	// ...but gateTools drops it for everyone, regardless of situation.
+	// gateTools advertises it now — no more LLM-322 drop.
 	payloads := []perception.Payload{
 		{ActorID: "npc", Surroundings: speakAudience()},
 		payOfferPayload(1),
 	}
 	for i, p := range payloads {
-		if got := specNameSet(gateTools(r, p, nil))[summonToolName]; got != 0 {
-			t.Errorf("payload %d: summon should never be advertised (LLM-322); count %d", i, got)
+		if got := specNameSet(gateTools(r, p, nil))[summonToolName]; got != 1 {
+			t.Errorf("payload %d: summon should be advertised after LLM-323; count %d", i, got)
 		}
 	}
 }

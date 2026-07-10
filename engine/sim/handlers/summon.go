@@ -141,5 +141,9 @@ func HandleSummon(in HandlerInput) (sim.Command, error) {
 				"summon: reason contains a disallowed control character at byte offset %d", i)
 		}
 	}
-	return sim.DispatchSummon(in.ActorID, sim.ActorID(target), reason, time.Now().UTC()), nil
+	// Pass the raw target STRING through to DispatchSummon, which resolves it
+	// to an actor id on the world goroutine (name → id; the handler is a pure
+	// builder with no world access). Before LLM-323 this cast the display name
+	// straight to an ActorID, so the world's exact-id lookup never matched.
+	return sim.DispatchSummon(in.ActorID, target, reason, time.Now().UTC()), nil
 }

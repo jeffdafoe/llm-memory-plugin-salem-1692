@@ -774,6 +774,24 @@ var perceptionScenarios = []perceptionScenario{
 		},
 	},
 	{
+		name: "villager_summoned_sees_the_call",
+		summary: "LLM-323: the keeper_alone_at_post_onshift fixture with a summons delivered to the subject " +
+			"(PendingSummon set — a messenger reached them). The golden pins the target-side '## You have been " +
+			"summoned' section: who sent for them, where to go, the reason, and the move_to steer — the cue that " +
+			"drives a summoned NPC to walk to the summoning place. The diff against keeper_alone_at_post_onshift is " +
+			"exactly that added block. Summon was dead in v2 until LLM-323 (name resolution + a reachable summon " +
+			"point re-enabled it), so this cue had no golden coverage before.",
+		build: func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+			snap, actorID, warrants := keeperAloneAtPostOnShift()
+			snap.Actors[actorID].PendingSummon = &sim.PendingSummon{
+				SummonerName: "Goodwife Bishop",
+				Place:        "the town square",
+				Reason:       "There is news of the trial.",
+			}
+			return snap, actorID, warrants
+		},
+	},
+	{
 		name: "visitor_arrives_at_keepers_workplace",
 		summary: "LLM-284: a tavern keeper (John Ellis) arrives at another keeper's workplace — the Blacksmith, " +
 			"kept by the co-present Ezekiel Crane — on an errand. The golden pins the keeper possessive in the " +

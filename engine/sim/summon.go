@@ -3,6 +3,7 @@ package sim
 import (
 	"fmt"
 	"log"
+	"strings"
 	"time"
 )
 
@@ -225,21 +226,29 @@ func (w *World) nextErrandSeq() ErrandID {
 //
 // On success the summoner is dispatched (MoveActor visit → summon point) and
 // the errand is inserted at state `dispatched`.
-func DispatchSummon(summonerID, targetID ActorID, reason string, now time.Time) Command {
+func DispatchSummon(summonerID ActorID, targetRaw string, reason string, now time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
 			if _, ok := w.Actors[summonerID]; !ok {
 				return nil, fmt.Errorf("summon: actor %q not in world", summonerID)
 			}
+			// Resolve the model-supplied target to an actor id. The tool invites
+			// a display name ("Ezekiel Crane"); before LLM-323 that string was
+			// cast straight to an ActorID and looked up as a UUID key, so every
+			// named summon failed. Existence is the only target pre-check — the
+			// target's LOCATION is re-resolved at the delivery leg (it may move
+			// between now and the messenger's arrival).
+			targetID, ok, ambiguous := resolveSummonTarget(w, targetRaw)
+			if ambiguous {
+				return nil, fmt.Errorf(
+					"more than one villager is called %q — name them more precisely", strings.TrimSpace(targetRaw))
+			}
+			if !ok {
+				return nil, fmt.Errorf(
+					"there is no one called %q to summon — name someone you know is in the village", strings.TrimSpace(targetRaw))
+			}
 			if targetID == summonerID {
 				return nil, fmt.Errorf("you cannot summon yourself")
-			}
-			// Existence is the only target pre-check; the target's location
-			// is re-resolved at the delivery leg (it may move between now and
-			// the messenger's arrival).
-			if _, ok := w.Actors[targetID]; !ok {
-				return nil, fmt.Errorf(
-					"there is no one called %q to summon — name someone you know is in the village", targetID)
 			}
 			if summonerHasActiveErrand(w, summonerID) {
 				return nil, fmt.Errorf("you have already sent for someone — wait for your messenger to return")
@@ -249,12 +258,11 @@ func DispatchSummon(summonerID, targetID ActorID, reason string, now time.Time) 
 			if !ok {
 				return nil, fmt.Errorf("there is nowhere to send for someone from — no summoning place exists in the village")
 			}
-			pointStructure := StructureID(pointID)
-			if _, ok := w.Structures[pointStructure]; !ok {
-				// A summon_point tag on an object with no backing structure
-				// can't be walked to via the structure-visit destination.
-				// Treat as "no summon point" rather than dispatching an
-				// unreachable errand.
+			pointDest, ok := summonPointDestination(w, pointID)
+			if !ok {
+				// The summon_point object vanished between findSummonPoint and
+				// here (a world mutation mid-command). Treat as "no summon point"
+				// rather than dispatching an unreachable errand.
 				return nil, fmt.Errorf("there is nowhere to send for someone from — the summoning place cannot be reached")
 			}
 
@@ -264,11 +272,11 @@ func DispatchSummon(summonerID, targetID ActorID, reason string, now time.Time) 
 			}
 			messenger := w.Actors[messengerID]
 
-			// Dispatch the summoner to the summon point (visit slot — they
-			// stand outside, no entry required). leaveHuddleFirst=true: the
-			// summoner leaves any conversation to go wait for the messenger,
-			// matching move_to's "choosing to walk away leaves it" posture.
-			res, err := MoveActor(summonerID, NewStructureVisitDestination(pointStructure), true, now).Fn(w)
+			// Dispatch the summoner to the summon point (visit slot — they stand
+			// beside it, no entry required). leaveHuddleFirst=true: the summoner
+			// leaves any conversation to go wait for the messenger, matching
+			// move_to's "choosing to walk away leaves it" posture.
+			res, err := MoveActor(summonerID, pointDest, true, now).Fn(w)
 			if err != nil {
 				return nil, fmt.Errorf("you cannot reach the summoning place from here: %w", err)
 			}
@@ -351,6 +359,111 @@ func findFreeMessenger(w *World, summonerID, targetID ActorID) (ActorID, bool) {
 	return best, found
 }
 
+// resolveSummonTarget resolves the model-supplied target string to an actor id
+// (LLM-323 gate 1). The summon tool invites a display name, so the string is
+// almost always a name ("Ezekiel Crane"), not the UUIDv7 the world map is keyed
+// by. Resolution order:
+//
+//   - exact-id fast path — a model that echoes a raw id, or a future caller that
+//     passes one, resolves without a scan;
+//   - village-wide display-name match — summon fetches someone who is by
+//     definition NOT co-present, so the scan spans every actor, not just the
+//     summoner's huddle (unlike findHuddlePeerByDisplayName). Matching is
+//     case-insensitive and tolerant of the trailing punctuation / surrounding
+//     quotes a weak model appends to a spoken name (summonTargetMatches).
+//
+// Tri-state like findHuddlePeerByDisplayName:
+//
+//   - (id, true, false)  — single match;
+//   - ("", false, false) — no actor by that id or name;
+//   - ("", false, true)  — two or more actors share the name; the caller rejects
+//     as ambiguous rather than pick one non-deterministically. Village display
+//     names are unique in practice, so this guard is defensive.
+//
+// The summoner is deliberately NOT excluded from the scan: a model that names
+// itself resolves to its own id, and DispatchSummon's self-summon check then
+// returns the precise "you cannot summon yourself" instead of a misleading
+// "no one by that name".
+func resolveSummonTarget(w *World, raw string) (ActorID, bool, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", false, false
+	}
+	if _, ok := w.Actors[ActorID(trimmed)]; ok {
+		return ActorID(trimmed), true, false
+	}
+	var found ActorID
+	for id, a := range w.Actors {
+		if a == nil {
+			continue
+		}
+		if summonTargetMatches(a.DisplayName, trimmed) {
+			if found != "" {
+				return "", false, true
+			}
+			found = id
+		}
+	}
+	if found == "" {
+		return "", false, false
+	}
+	return found, true, false
+}
+
+// summonTargetMatches reports whether an actor's display name matches the
+// model-supplied target string, case-insensitively and tolerant of the trailing
+// sentence punctuation and surrounding quotes a weak model wraps a spoken name in
+// ("Ezekiel Crane." / 'Ezekiel Crane,'). Mirrors placeNameMatches's forgiving
+// posture, for people instead of places — but does NOT strip a leading article,
+// since a proper name never carries one and stripping would break a display name
+// that legitimately begins with one ("the boy").
+//
+// Empty on either side never matches: a nameless actor (a decorative with no
+// display name — the scan spans every actor, so these are in range) must not be
+// reachable, and an all-punctuation query normalizes to "" and names no one.
+// Without these guards `summonTargetMatches("", ".")` would be true.
+func summonTargetMatches(displayName, query string) bool {
+	name := strings.TrimSpace(displayName)
+	if name == "" {
+		return false
+	}
+	q := normalizeSummonQuery(query)
+	if q == "" {
+		return false
+	}
+	return strings.EqualFold(name, q)
+}
+
+// normalizeSummonQuery strips the surrounding quotes and trailing sentence
+// punctuation a model tends to wrap a spoken name in, so the EqualFold compare
+// sees just the name. Handles straight and curly quotes. An all-punctuation
+// query normalizes to "" — summonTargetMatches treats that empty result as
+// "names no one" rather than letting it match a nameless actor.
+func normalizeSummonQuery(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.Trim(s, "\"'“”‘’")
+	s = strings.TrimRight(s, " .,!?;:")
+	return strings.TrimSpace(s)
+}
+
+// summonPointDestination resolves how the summoner and messenger walk to the
+// rendezvous point (LLM-323 gate 3). When the summon_point object also backs a
+// Structure it uses the structure's visitor slot (the original ZBBS-HOME-311
+// anchor shape); when it is a bare placement — the live village's summon_point is
+// one — it walks to a visitor slot beside the object itself (NewObjectVisitDestination).
+// A summoning place is a spot (a well, a market cross), not necessarily a
+// building, so requiring a Structure shell was an over-constraint that left the
+// live feature dead at this gate. ok=false only when the object itself is gone.
+func summonPointDestination(w *World, pointID VillageObjectID) (MoveDestination, bool) {
+	if _, ok := w.Structures[StructureID(pointID)]; ok {
+		return NewStructureVisitDestination(StructureID(pointID)), true
+	}
+	if obj, ok := w.VillageObjects[pointID]; ok && obj != nil {
+		return NewObjectVisitDestination(pointID), true
+	}
+	return MoveDestination{}, false
+}
+
 // handleSummonArrival is the inline ActorArrived subscriber. Runs on the
 // world goroutine during emit; advances the matching errand leg. Non-arrival
 // events and arrivals for actors in no errand fall through.
@@ -424,8 +537,15 @@ func errandForArrival(w *World, actorID ActorID) (*summonErrand, summonRole) {
 // messenger to the same point. Advance to summonerAtPoint, tracking the
 // messenger's walk-leg attempt id.
 func onSummonerAtPoint(w *World, e *summonErrand, now time.Time) {
-	pointStructure := StructureID(e.SummonPointID)
-	res, err := MoveActor(e.MessengerID, NewStructureVisitDestination(pointStructure), true, now).Fn(w)
+	pointDest, ok := summonPointDestination(w, e.SummonPointID)
+	if !ok {
+		// The summon point vanished mid-errand. Abandon cleanly rather than
+		// leave a dangling entry no arrival can advance.
+		log.Printf("sim/summon: errand %d abandoned — summon point %q gone", e.ID, e.SummonPointID)
+		finishErrand(w, e, "summon_point_gone")
+		return
+	}
+	res, err := MoveActor(e.MessengerID, pointDest, true, now).Fn(w)
 	if err != nil {
 		// The messenger can't reach the rendezvous (path blocked). Abandon
 		// the errand cleanly — better than a dangling entry no arrival can
