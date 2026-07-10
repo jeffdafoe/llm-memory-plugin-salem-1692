@@ -636,3 +636,45 @@ func orderDeliveredFactText(counterpartyName string, item ItemKind, qty, consume
 	b.WriteString(".")
 	return b.String()
 }
+
+// recordExpiredDepositFacts writes the bidirectional relationship memory a
+// partial-payment commission leaves when it expires (LLM-357): a forfeit
+// (buyer-fault — the buyer never collected, so the seller kept the deposit and
+// re-shelved the goods) or a refund (seller-fault — the seller never made it, so
+// the deposit went back). The reputation seed both keepers carry forward. Only
+// called for a genuine partial (0 < Deposit < Amount); full-prepay expiry stays
+// as silent as it was before LLM-357. MUST run on the world goroutine.
+func recordExpiredDepositFacts(w *World, o *Order, forfeited bool, at time.Time) {
+	if o == nil {
+		return
+	}
+	buyerName, sellerName := string(o.BuyerID), string(o.SellerID)
+	if b := w.Actors[o.BuyerID]; b != nil {
+		buyerName = b.DisplayName
+	}
+	if s := w.Actors[o.SellerID]; s != nil {
+		sellerName = s.DisplayName
+	}
+	itemDesc := string(o.Item)
+	if o.Qty > 1 {
+		itemDesc = fmt.Sprintf("%d %s", o.Qty, o.Item)
+	}
+	deposit := orderAmountPaidAtAccept(o)
+	var sellerKind, buyerKind InteractionKind
+	var sellerFact, buyerFact string
+	if forfeited {
+		sellerKind, buyerKind = InteractionKeptDeposit, InteractionForfeitedDeposit
+		sellerFact = fmt.Sprintf("%s never came for the %s I made to order, so I kept their %d-coin deposit and put the goods back up for sale.", buyerName, itemDesc, deposit)
+		buyerFact = fmt.Sprintf("I never collected the %s I commissioned from %s, and forfeited my %d-coin deposit.", itemDesc, sellerName, deposit)
+	} else {
+		sellerKind, buyerKind = InteractionRefundedDeposit, InteractionDepositRefunded
+		sellerFact = fmt.Sprintf("I never made the %s %s commissioned, so their %d-coin deposit went back to them.", itemDesc, buyerName, deposit)
+		buyerFact = fmt.Sprintf("%s never made the %s I commissioned, and my %d-coin deposit came back.", sellerName, itemDesc, deposit)
+	}
+	if _, err := RecordInteraction(o.SellerID, o.BuyerID, sellerKind, sellerFact, at).Fn(w); err != nil {
+		log.Printf("sim.recordExpiredDepositFacts: seller->buyer order %d: %v", o.ID, err)
+	}
+	if _, err := RecordInteraction(o.BuyerID, o.SellerID, buyerKind, buyerFact, at).Fn(w); err != nil {
+		log.Printf("sim.recordExpiredDepositFacts: buyer->seller order %d: %v", o.ID, err)
+	}
+}

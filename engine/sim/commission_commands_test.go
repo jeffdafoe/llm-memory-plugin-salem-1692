@@ -535,6 +535,10 @@ func TestCommission_PartialPayment_SellerFaultRefundsDeposit(t *testing.T) {
 	if smith.Coins != 0 {
 		t.Errorf("smith.Coins = %d, want 0 (deposit reversed on refund)", smith.Coins)
 	}
+	// alice (shared-VA buyer) durably remembers the refund — smith never made it.
+	if joined := strings.Join(readSalientFacts(t, w, "alice", "smith"), " | "); !strings.Contains(joined, "deposit came back") {
+		t.Errorf("alice's memory of smith should record the refunded deposit, got %q", joined)
+	}
 }
 
 // TestCommission_PartialPayment_BuyerFaultForfeitsDeposit: a partial-payment
@@ -571,6 +575,13 @@ func TestCommission_PartialPayment_BuyerFaultForfeitsDeposit(t *testing.T) {
 	}
 	if o, ok := readOrders(t, w)[1]; ok && o.State == sim.OrderStateReady {
 		t.Errorf("order still Ready after buyer-fault expiry: %+v", o)
+	}
+	// The reputation seed: alice (shared-VA buyer) durably remembers forfeiting
+	// the deposit. smith is a stateful NPC (own memory system), so his side is
+	// carried through the dream path, not salient_facts — the same gate the
+	// delivery fact uses.
+	if joined := strings.Join(readSalientFacts(t, w, "alice", "smith"), " | "); !strings.Contains(joined, "forfeited") {
+		t.Errorf("alice's memory of smith should record the forfeited deposit, got %q", joined)
 	}
 }
 
