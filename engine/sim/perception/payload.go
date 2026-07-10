@@ -1648,6 +1648,17 @@ type DutySteerView struct {
 // unused. Unlike the invitation this variant is render-only — it does NOT hold
 // the noop-skip gate open (noop_skip.go), so a busy keeper still skips idle
 // no-op ticks, mirroring the at-post duty-steer exclusion.
+//
+// SettledIn is the LLM-345 variant: the agent crossed the venue threshold and is
+// passing its evening there. The invitation used to simply vanish at the door
+// ("already at the tavern → acted on"), which left the day's standing work content
+// as the loudest thing on the page — and under the render.go coda, which ranks
+// obligations above "idle matters", the scene argued the lingerer straight back out
+// (live: Elizabeth Ellis, ninety seconds in the Tavern reading her shovel inventory).
+// The view then carries only SettledIn + VenueLabel and render writes the room
+// itself, with no destination to walk to. Render-only like BatchHold, and for the
+// same reason: an agent alone in the tavern with nothing to act on should skip its
+// idle no-op ticks rather than re-deliberate its way out the door every tick.
 type EveningLeisureView struct {
 	VenueID    sim.StructureID
 	VenueLabel string // resolved venue DisplayName; render falls back to "the tavern"
@@ -1656,6 +1667,19 @@ type EveningLeisureView struct {
 
 	BatchHold      bool   // LLM-335: pinned by an in-flight batch at post — render the hold, not the invitation
 	BatchItemLabel string // the batch good's display label, for the hold line ("the batch of Cheese …")
+
+	SettledIn bool // LLM-345: inside the venue, passing the evening — render the room, not the invitation
+}
+
+// Invitation reports whether the view is the movement invitation ("the tavern's
+// open of an evening — you might head over") rather than one of the render-only
+// variants. Only the invitation is a standing actionable signal, so only it holds
+// the noop-skip gate open in the suppressed go-home steer's place (noop_skip.go);
+// BatchHold and SettledIn are scenes the agent has nothing to act on, and forcing
+// a tick for them would restore the constant idle deliberation each was added to
+// remove. Nil-safe so callers can test a possibly-absent view in one expression.
+func (v *EveningLeisureView) Invitation() bool {
+	return v != nil && !v.BatchHold && !v.SettledIn
 }
 
 // SceneView describes the primary scene and, when a baseline could be

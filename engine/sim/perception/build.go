@@ -366,6 +366,28 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// buildDutySteer just suppressed. Placed before degeneracy thinning so a
 	// flagged actor's movement invitation is stripped in lockstep with the steers.
 	p.EveningLeisure = buildEveningLeisure(snap, actorSnap, p.Anchors)
+	// LLM-345: inside a leisure venue, on the evening, the walk-away work-errand cues
+	// yield to the room. Each of these tells the agent to LEAVE and go buy or gather
+	// something — shovels from the smith, restock from a supplier, nails for a mend,
+	// berries from its bushes — and each renders under the coda that ranks obligations
+	// above idle matters, so an evening in the tavern loses to a shovel every time. Off
+	// the evening window, or anywhere but a venue, they all stand as before: an agent
+	// that chooses to run an errand on its way home is not the bug. The wares cue
+	// (## What your wares fetch) deliberately SURVIVES — it names no destination and
+	// carries no leave-imperative, it is what lets a trade happen across the tavern
+	// table (LLM-125), and silencing it would put invented prices back in the one room
+	// this ticket exists to fill.
+	//
+	// Applied after buildDutySteer so the steer's own errand suppressors read the
+	// unmodified views; the steer is nil here regardless (inEveningLeisure suppresses
+	// its off-shift arm), but the ordering keeps that a coincidence rather than a
+	// dependency.
+	if eveningAtLeisureVenue(snap, actorSnap) {
+		p.FarmUpkeep = nil
+		p.Restocking = nil
+		p.StallRepairBuy = nil
+		p.Forage = nil
+	}
 	// Stay-open choice (ZBBS-WORK-387): a keeper standing at its own post on an
 	// off-shift wind-down may keep its business open instead of closing up. Surface
 	// the option, and encourage it when a concrete reason is present (the hybrid
@@ -2071,6 +2093,29 @@ func inEveningLeisure(snap *sim.Snapshot, a *sim.ActorSnapshot) bool {
 	return hasNightPlace && inEveningWindow(snap, a) && canAffordLeisure(snap, a)
 }
 
+// insideLeisureVenue reports whether the actor is standing INSIDE a leisure venue —
+// a structure whose shared-identity VillageObject carries the tavern venue tag. Keyed
+// on the structure the actor actually occupies rather than on nearestTaggedVenue's
+// pick, so a village with two taverns reads the one the agent is in (the nearest-venue
+// comparison it replaces would have mistaken the farther tavern for "not at a venue").
+func insideLeisureVenue(snap *sim.Snapshot, a *sim.ActorSnapshot) bool {
+	if snap == nil || a == nil || a.InsideStructureID == "" {
+		return false
+	}
+	vobj := snap.VillageObjects[sim.VillageObjectID(a.InsideStructureID)]
+	return vobj != nil && vobj.HasTag(sim.VisitorTagTavern)
+}
+
+// eveningAtLeisureVenue reports whether the actor is passing its affordable post-work
+// evening INSIDE a leisure venue (LLM-345) — the state in which the walk-away work-errand
+// cues yield to the room (see Build). inEveningLeisure already implies off-shift (its
+// window opens at the actor's own shift end), so the tavernkeeper who lives and works in
+// the tavern is excluded for free: his wrap schedule never enters an evening window, and
+// his wares and restock cues survive in his own house.
+func eveningAtLeisureVenue(snap *sim.Snapshot, a *sim.ActorSnapshot) bool {
+	return insideLeisureVenue(snap, a) && inEveningLeisure(snap, a)
+}
+
 // canAffordLeisure reports whether the actor holds enough coin for a night out at
 // the tavern: coins at or above the cheapest PRICED item sold by a vendor stationed
 // at the tavern venue, valued at the recipe's authored retail (asking) price. The
@@ -2159,9 +2204,11 @@ func nearestTaggedVenue(snap *sim.Snapshot, a *sim.ActorSnapshot, tag string) (s
 // Clear/defer conditions — the cue-catalog discipline (a standing cue with no
 // clear is a loop): a RED need outranks idle leisure (let satiation/recovery
 // win, matching the duty steer); already at home → chose to stay in, don't pull
-// back out; already at the venue, or walking there → acted on, don't re-pump
-// (the Ezekiel lesson, both sides — the in-flight line + mid-walk coda keep a
-// walking agent on course). A lodger with a paid room is IN scope (LLM-311) — its
+// back out; walking to either offered destination → acted on, don't re-pump (the
+// Ezekiel lesson, both sides — the in-flight line + mid-walk coda keep a walking
+// agent on course). Arriving at the venue does not clear the view but SWITCHES it
+// to the settled-in tier (LLM-345): the invitation stops, the evening does not.
+// A lodger with a paid room is IN scope (LLM-311) — its
 // night-place is the rented inn; only the genuinely homeless (no home, no room
 // grant) stay on the duty steer's placeless wind-down arm.
 func buildEveningLeisure(snap *sim.Snapshot, a *sim.ActorSnapshot, anchors *AnchorsView) *EveningLeisureView {
@@ -2206,13 +2253,26 @@ func buildEveningLeisure(snap *sim.Snapshot, a *sim.ActorSnapshot, anchors *Anch
 	if a.InsideStructureID == nightID {
 		return nil
 	}
+	// Inside the venue → the invitation was acted on, so it must not be re-pumped. But
+	// LLM-345: the evening framing does NOT vanish at the threshold with it. A bare
+	// `return nil` here left the agent's standing WORK content (the farm-upkeep errand,
+	// the anchors line offering its workplace) as the only voice in the room, under a
+	// coda that ranks obligations above idle matters — and the model, reading a farm
+	// ledger where a tavern should be, walked back out. Render the room instead: a
+	// destination-free scene the agent has nothing to act on, which is exactly why it
+	// stays render-only (see Invitation) and why Build silences the errand cues beside it.
+	if insideLeisureVenue(snap, a) {
+		// Already walking back out to the night-place — the choice to leave is made;
+		// don't argue with it (the same anti-pester posture as the walk guard below).
+		if a.MoveDestKind == sim.MoveDestinationStructureEnter && a.MoveDestStructureID == nightID {
+			return nil
+		}
+		venueLabel, _ := resolveStructureLabel(snap, a.InsideStructureID)
+		return &EveningLeisureView{SettledIn: true, VenueLabel: venueLabel}
+	}
 	// Resolve the venue from the snapshot — no tavern placed → no cue.
 	venueID, venueLabel, ok := nearestTaggedVenue(snap, a, sim.VisitorTagTavern)
 	if !ok {
-		return nil
-	}
-	// Already at the tavern → acted on; don't re-pump.
-	if a.InsideStructureID == venueID {
 		return nil
 	}
 	// Walking to EITHER offered destination — the tavern, or the night-place (the cue

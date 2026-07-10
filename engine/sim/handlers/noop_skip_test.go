@@ -229,6 +229,27 @@ func TestShouldSkipNoop_EveningLeisurePresent_DoesNotSkip(t *testing.T) {
 	// carries EveningLeisure=nil.
 }
 
+// TestShouldSkipNoop_EveningLeisureRenderOnlyVariants_Skip: only the INVITATION is a
+// standing actionable signal. The render-only variants are scenes the agent has nothing
+// to act on, so an idle-backstop tick under either must still skip — forcing the tick
+// would restore exactly the constant deliberation each variant was added to remove
+// (LLM-335 the mid-batch pester, LLM-345 the lingerer re-deliberating out of the room).
+func TestShouldSkipNoop_EveningLeisureRenderOnlyVariants_Skip(t *testing.T) {
+	variants := map[string]*perception.EveningLeisureView{
+		"batch hold (LLM-335)": {BatchHold: true, BatchItemLabel: "Cheese"},
+		"settled in (LLM-345)": {SettledIn: true, VenueLabel: "the Tavern"},
+	}
+	for name, view := range variants {
+		t.Run(name, func(t *testing.T) {
+			pl := quietPayload()
+			pl.EveningLeisure = view
+			if !shouldSkipNoop(pl, defaultThresholds(), []sim.WarrantMeta{idleBackstopWarrant()}) {
+				t.Fatalf("expected skip=true: %s is render-only and must not force an idle tick", name)
+			}
+		})
+	}
+}
+
 func TestShouldSkipNoop_HighInfoWarrantInBatch_DoesNotSkip(t *testing.T) {
 	cases := []sim.WarrantKind{
 		sim.WarrantKindNPCSpoke,

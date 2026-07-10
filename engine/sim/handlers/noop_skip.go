@@ -123,16 +123,25 @@ func shouldSkipNoop(payload perception.Payload, thresholds sim.NeedThresholds, w
 	// that steer is exactly what kept an idle off-shift homed agent ticking
 	// (HOME-441). Without this an evening agent with only idle-backstop warrants
 	// would skip-lock and never see the invitation. It self-extinguishes when the
-	// agent commits (the cue clears at the tavern or home).
+	// agent commits (the cue clears at home, and switches to the settled-in tier
+	// at the tavern).
 	//
-	// LLM-335: the BatchHold variant is EXEMPT — like the at-post steer above, it is
-	// render-only, not a reason to force a tick. A keeper mid-batch at its post is
-	// pinned there and has nothing to act on, so its idle-backstop no-op ticks should
-	// still skip (that constant deliberation is the pester the ticket removes). The
-	// batch's own landing wake is a high-info ProductionDone warrant, so it keeps the
-	// gate open on its own the tick the batch finishes — this exemption can't strand it.
+	// Only the INVITATION holds the gate open — the render-only variants are EXEMPT,
+	// like the at-post steer above, because neither is a reason to force a tick:
+	//
+	//   - LLM-335 BatchHold: a keeper mid-batch at its post is pinned there and has
+	//     nothing to act on, so its idle-backstop no-op ticks should still skip (that
+	//     constant deliberation is the pester the ticket removes). The batch's own
+	//     landing wake is a high-info ProductionDone warrant, so it keeps the gate open
+	//     on its own the tick the batch finishes — this exemption can't strand it.
+	//   - LLM-345 SettledIn: an agent passing the evening in the tavern has taken the
+	//     invitation and has nothing further to act on. Forcing an idle tick would make
+	//     it re-deliberate its way out of the room every tick, which is the very
+	//     behavior that ticket removes. It can't strand either: company in the room is
+	//     a huddle (gated above), anything said to it is a high-info warrant, and at
+	//     22:00 the window closes, the go-home steer resumes, and Lever 1 beds it.
 	if (payload.DutySteer != nil && !payload.DutySteer.AtPost) || payload.DutyPending ||
-		(payload.EveningLeisure != nil && !payload.EveningLeisure.BatchHold) {
+		payload.EveningLeisure.Invitation() {
 		return false
 	}
 	return true

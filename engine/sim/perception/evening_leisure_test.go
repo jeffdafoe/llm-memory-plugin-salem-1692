@@ -207,9 +207,49 @@ func TestBuildEveningLeisure(t *testing.T) {
 			t.Fatalf("want nil at home (chose to stay in), got %+v", v)
 		}
 	})
-	t.Run("nil already at the tavern", func(t *testing.T) {
-		if v := buildEveningLeisure(eveningSnap(1230), eveningWorker("tavern"), eveningAnchors); v != nil {
-			t.Fatalf("want nil at the venue (acted on), got %+v", v)
+	t.Run("settled-in tier at the tavern (LLM-345)", func(t *testing.T) {
+		// The invitation is acted on, but the evening does not evaporate at the
+		// threshold: the view switches to the destination-free settled-in scene.
+		v := buildEveningLeisure(eveningSnap(1230), eveningWorker("tavern"), eveningAnchors)
+		if v == nil {
+			t.Fatal("want the settled-in view inside the venue, got nil")
+		}
+		if !v.SettledIn {
+			t.Errorf("want SettledIn inside the venue, got %+v", v)
+		}
+		if v.VenueLabel != "the Tavern" {
+			t.Errorf("venue label: got %q, want %q", v.VenueLabel, "the Tavern")
+		}
+		// No destinations: the settled-in scene must never re-offer a place to walk to.
+		if v.VenueID != "" || v.HomeID != "" {
+			t.Errorf("settled-in view must carry no move targets, got venue=%q home=%q", v.VenueID, v.HomeID)
+		}
+		if v.Invitation() {
+			t.Error("settled-in view must not count as the invitation (it would force idle ticks)")
+		}
+	})
+	t.Run("settled-in reads the venue the actor is IN, not the nearest one", func(t *testing.T) {
+		// Two taverns: the actor stands in the farther. The old nearest-venue identity
+		// check would have missed it and re-pumped an invitation to the near one.
+		s := eveningSnap(1230)
+		s.VillageObjects["tavern_far"] = &sim.VillageObject{Tags: []string{sim.VisitorTagTavern}, Pos: sim.WorldPos{X: 4096, Y: 4096}}
+		s.Structures["tavern_far"] = &sim.Structure{ID: "tavern_far", DisplayName: "the Ship Inn"}
+		v := buildEveningLeisure(s, eveningWorker("tavern_far"), eveningAnchors)
+		if v == nil || !v.SettledIn {
+			t.Fatalf("want the settled-in view in the farther tavern, got %+v", v)
+		}
+		if v.VenueLabel != "the Ship Inn" {
+			t.Errorf("venue label: got %q, want the tavern the actor stands in", v.VenueLabel)
+		}
+	})
+	t.Run("nil leaving the tavern for home (don't argue with the choice)", func(t *testing.T) {
+		// Inside the venue but already walking back out to the night-place: the decision
+		// to leave is made, so the room must not be re-pumped at the agent's back.
+		a := eveningWorker("tavern")
+		a.MoveDestKind = sim.MoveDestinationStructureEnter
+		a.MoveDestStructureID = "cottage"
+		if v := buildEveningLeisure(eveningSnap(1230), a, eveningAnchors); v != nil {
+			t.Fatalf("want nil while walking out of the venue toward home, got %+v", v)
 		}
 	})
 	t.Run("nil walking to the tavern", func(t *testing.T) {
@@ -374,6 +414,91 @@ func TestRenderEveningLeisure(t *testing.T) {
 	}
 }
 
+// TestRenderEveningLeisure_SettledIn: the LLM-345 settled-in tier renders the room
+// and nothing to walk to. "Scenes, not stats" — the room is the argument, so the line
+// carries no imperative and no move_to token.
+func TestRenderEveningLeisure_SettledIn(t *testing.T) {
+	var b strings.Builder
+	renderEveningLeisure(&b, &EveningLeisureView{SettledIn: true, VenueLabel: "the Tavern"})
+	out := b.String()
+
+	for _, want := range []string{
+		"inside the Tavern of an evening",
+		"can wait for the morning",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("settled-in scene missing %q; got:\n%s", want, out)
+		}
+	}
+	// The invitation's tokens and its three-way choice must be gone: the agent is
+	// already here, and re-offering destinations is the re-pump this tier removes.
+	for _, unwanted := range []string{"destination:", "make your way to", "turn in for the night"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("settled-in scene must not carry %q; got:\n%s", unwanted, out)
+		}
+	}
+
+	// Unnamed venue falls back rather than rendering an empty place.
+	var fb strings.Builder
+	renderEveningLeisure(&fb, &EveningLeisureView{SettledIn: true})
+	if !strings.Contains(fb.String(), "inside the tavern of an evening") {
+		t.Errorf("settled-in scene should fall back to \"the tavern\"; got:\n%s", fb.String())
+	}
+}
+
+// TestInsideLeisureVenue covers the tag-based occupancy predicate behind both LLM-345
+// levers — it reads the tag off the structure the actor is IN (via the shared-identity
+// VillageObject), never the nearest venue.
+func TestInsideLeisureVenue(t *testing.T) {
+	snap := eveningSnap(1230)
+
+	if !insideLeisureVenue(snap, eveningWorker("tavern")) {
+		t.Error("want true inside the tavern")
+	}
+	if insideLeisureVenue(snap, eveningWorker("cottage")) {
+		t.Error("want false inside a home (no venue tag)")
+	}
+	if insideLeisureVenue(snap, eveningWorker("")) {
+		t.Error("want false outdoors")
+	}
+	if insideLeisureVenue(nil, eveningWorker("tavern")) || insideLeisureVenue(snap, nil) {
+		t.Error("want false for nil snapshot / nil actor")
+	}
+	// A structure with no backing VillageObject (so no tags) is not a venue.
+	snap.Structures["barn"] = &sim.Structure{ID: "barn", DisplayName: "the Barn"}
+	if insideLeisureVenue(snap, eveningWorker("barn")) {
+		t.Error("want false inside an untagged structure")
+	}
+}
+
+// TestEveningAtLeisureVenue: the Lever-B gate is the conjunction, so it is false the
+// moment either half lapses — most importantly for the tavernkeeper, whose wrap
+// schedule never opens an evening window, so his own wares/restock cues survive in
+// his own tavern.
+func TestEveningAtLeisureVenue(t *testing.T) {
+	if !eveningAtLeisureVenue(eveningSnap(1230), eveningWorker("tavern")) {
+		t.Error("want true: off-shift day-worker inside the tavern in-window")
+	}
+	if eveningAtLeisureVenue(eveningSnap(1000), eveningWorker("tavern")) {
+		t.Error("want false: still on shift, even standing in the tavern")
+	}
+	if eveningAtLeisureVenue(eveningSnap(1230), eveningWorker("blacksmith")) {
+		t.Error("want false: in-window but not inside a venue")
+	}
+	keeper := eveningWorker("tavern")
+	keeper.ScheduleStartMin, keeper.ScheduleEndMin = evMinPtr(960), evMinPtr(180) // 16:00–03:00 wrap
+	if eveningAtLeisureVenue(eveningSnap(1230), keeper) {
+		t.Error("want false for the tavernkeeper: a wrap schedule has no evening window")
+	}
+	broke := eveningWorker("tavern")
+	broke.Coins = 0
+	// The tavern sells nothing priced in this fixture, so canAffordLeisure finds no
+	// barrier — the coin gate is exercised in the LLM-205 tests, not here.
+	if !eveningAtLeisureVenue(eveningSnap(1230), broke) {
+		t.Error("want true with no priced tavern goods (no affordability barrier)")
+	}
+}
+
 // TestEveningCueReplacesGoHomeSteer is a cross-scenario invariant (the GUIDELINES
 // growth-loop): wherever the evening "tavern's open" cue appears in the golden
 // matrix, the off-shift go-home wind-down steer ("Your working hours are over …")
@@ -387,6 +512,99 @@ func TestEveningCueReplacesGoHomeSteer(t *testing.T) {
 			strings.Contains(out, "Your working hours are over") {
 			t.Errorf("scenario %q shows the evening cue AND the go-home wind-down steer; the cue must replace it, not stack on it", sc.name)
 		}
+	}
+}
+
+// TestBuildSuppressesErrandCuesInLeisureVenue pins Lever B at the Build level, where the
+// golden can only speak for the cues its fixture happens to raise: inside the venue on
+// the evening, every walk-away errand view is dropped, and the moment either half of the
+// gate lapses they all stand again. The on-shift control is the load-bearing half —
+// Lever B must not silence a farmer's upkeep errand for the rest of her life just
+// because she once walked through a pub.
+func TestBuildSuppressesErrandCuesInLeisureVenue(t *testing.T) {
+	// The live case: Elizabeth owes 3 shovels and is standing in the Tavern at 19:40.
+	snap, actorID, warrants := farmOwnerSettledInTavernEvening()
+	p := Build(snap, actorID, warrants)
+
+	if p.FarmUpkeep != nil {
+		t.Errorf("farm-upkeep errand must yield inside a leisure venue on the evening, got %+v", p.FarmUpkeep)
+	}
+	if p.Restocking != nil {
+		t.Errorf("restock errand must yield inside a leisure venue on the evening, got %+v", p.Restocking)
+	}
+	if p.StallRepairBuy != nil {
+		t.Errorf("repair-buy errand must yield inside a leisure venue on the evening, got %+v", p.StallRepairBuy)
+	}
+	if p.Forage != nil {
+		t.Errorf("forage errand must yield inside a leisure venue on the evening, got %+v", p.Forage)
+	}
+	if p.EveningLeisure == nil || !p.EveningLeisure.SettledIn {
+		t.Fatalf("want the settled-in scene in the errands' place, got %+v", p.EveningLeisure)
+	}
+
+	// Control 1 — the SAME farmer, same tavern, but still on shift at 10:00. The upkeep
+	// errand is hers to run and must survive: the gate is the evening, not the building.
+	onShift, actorID, warrants := farmOwnerSettledInTavernEvening()
+	morning := 600
+	onShift.LocalMinuteOfDay = &morning
+	if v := Build(onShift, actorID, warrants).FarmUpkeep; v == nil {
+		t.Error("on-shift inside the tavern: the upkeep errand must still render (Lever B gates on the evening, not the venue alone)")
+	}
+
+	// Control 2 — the same evening, but she has stepped outside. An agent that chooses to
+	// run an errand on its way home is not the bug this ticket fixes.
+	outdoors, actorID, warrants := farmOwnerSettledInTavernEvening()
+	outdoors.Actors[actorID].InsideStructureID = ""
+	if v := Build(outdoors, actorID, warrants).FarmUpkeep; v == nil {
+		t.Error("outdoors on the evening: the upkeep errand must still render (Lever B is scoped to the venue interior)")
+	}
+}
+
+// TestGoldensNoWorkErrandCuesInsideLeisureVenue is the LLM-345 cross-scenario invariant
+// (the GUIDELINES growth-loop): in ANY situation where the subject is passing its
+// affordable post-work evening inside a leisure venue, the prompt must carry the
+// settled-in room and must NOT carry a walk-away work-errand cue. Each errand below
+// tells the agent to leave and go buy or gather something, and each renders under the
+// coda that ranks obligations above idle matters — which is precisely how a farm ledger
+// beat a tavern and emptied the room (Elizabeth Ellis, live, 2026-07-09). Running it
+// over the whole matrix means a future cue can't reintroduce the pull for some other
+// situation that nobody thought to pin a golden for.
+//
+// The wares cue is deliberately NOT in the forbidden set: it names no destination and
+// carries no leave-imperative, and it is what lets a trade happen across the tavern
+// table (LLM-125). Silencing it would put invented prices back in the room.
+func TestGoldensNoWorkErrandCuesInsideLeisureVenue(t *testing.T) {
+	// The section headers of the walk-away errand class, in the order Render writes them.
+	errandSections := []string{
+		"## Nails to mend your business", // stall repair buy — go to the smith
+		"## Farm upkeep",                 // upkeep shovels — go to the smith
+		"## Restocking",                  // low stock — go to a supplier
+		"## Your bushes to harvest",      // forage — go to your bushes
+	}
+	covered := 0
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, _ := sc.build()
+			if !eveningAtLeisureVenue(snap, snap.Actors[actorID]) {
+				return // subject isn't passing its evening in a venue — invariant N/A here
+			}
+			covered++
+			out := renderScenario(sc)
+			for _, section := range errandSections {
+				if strings.Contains(out, section) {
+					t.Errorf("scenario %q: subject is passing the evening inside a leisure venue but the prompt still carries %q — the errand argues it back out the door (LLM-345)", sc.name, section)
+				}
+			}
+			if !strings.Contains(out, "of an evening — the fire lit, the room warm") {
+				t.Errorf("scenario %q: subject is inside a leisure venue on the evening window but the settled-in scene is missing — the evening must not evaporate at the threshold (LLM-345)", sc.name)
+			}
+		})
+	}
+	// A matrix with no qualifying scenario would pass this invariant vacuously, which
+	// is exactly the hole the ticket was written against.
+	if covered == 0 {
+		t.Fatal("no scenario places the subject inside a leisure venue on the evening window — this invariant is vacuous; add one")
 	}
 }
 

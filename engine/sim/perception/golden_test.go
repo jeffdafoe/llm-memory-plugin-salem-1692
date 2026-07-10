@@ -789,6 +789,16 @@ var perceptionScenarios = []perceptionScenario{
 		build: homedWorkerEveningTavernOpen,
 	},
 	{
+		name: "farm_owner_settled_in_tavern_evening",
+		summary: "LLM-345: Elizabeth Ellis (farm day 06:00–18:00, owes 3 upkeep shovels) has TAKEN the evening invitation " +
+			"and stands inside the Tavern at 19:40, in the [shift-end, 22:00) window. The golden pins both levers of the fix. " +
+			"Lever A — the evening framing survives the threshold: ## Around you carries the destination-free settled-in scene " +
+			"('… here you are inside the Tavern of an evening … can wait for the morning') instead of falling silent, which is " +
+			"what left the farm ledger as the loudest thing on the page. Lever B — '## Farm upkeep' is ABSENT: the walk-away " +
+			"errand yields to the room. Live, its presence here walked her home inside ninety seconds.",
+		build: farmOwnerSettledInTavernEvening,
+	},
+	{
 		name: "homed_worker_evening_batch_holds_leisure",
 		summary: "LLM-335: the SAME homed day-shift agent and evening as homed_worker_evening_tavern_open (Ezekiel at his " +
 			"forge at 20:30, inside the [shift-end, 22:00) window, flush enough for a drink), but with a Cheese batch in the " +
@@ -10033,6 +10043,76 @@ func homedWorkerEveningTavernOpen() (*sim.Snapshot, sim.ActorID, []sim.WarrantMe
 		},
 	}
 	return snap, ezekielID, nil
+}
+
+// farmOwnerSettledInTavernEvening is the LLM-345 case, reconstructed from the live
+// trace: Elizabeth Ellis, a farm owner who owes 3 upkeep shovels, finishes her farm
+// day at 18:00 and takes the tavern invitation. At 19:40 she is standing INSIDE the
+// Tavern. Before this fix the evening cue vanished at the threshold and her prompt
+// held only the farm ledger — "Upkeep calls for 3 shovels…", the anchors line offering
+// her farm and her house — under a coda ranking obligations above idle matters; she
+// read it and walked home inside ninety seconds.
+//
+// The golden pins both levers at once. Lever A: the settled-in scene renders in
+// ## Around you ("… here you are inside the Tavern of an evening …") with no
+// destination to walk to. Lever B: "## Farm upkeep" is ABSENT — the walk-away errand
+// yields to the room for the evening. A regression that resurrects the shovel cue in
+// the pub, or drops the room, shows in the diff.
+func farmOwnerSettledInTavernEvening() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		actorID = sim.ActorID("elizabeth")
+		home    = sim.StructureID("ellis_residence")
+		farm    = sim.StructureID("ellis_farm")
+		tavern  = sim.StructureID("tavern")
+	)
+	zero := 0
+	start, end := 360, 1080 // 06:00–18:00, the farm day
+	now := 1180             // 19:40 — off shift, inside the [18:00, 22:00) evening window
+	tavernPos := sim.WorldPos{X: 400, Y: 400}
+	elizabeth := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Elizabeth Ellis",
+		Role:              "farmer",
+		State:             sim.StateIdle,
+		Pos:               tavernPos.Tile(),
+		InsideStructureID: tavern,
+		WorkStructureID:   farm,
+		HomeStructureID:   home,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             95, // floor 30, band 20 → owes 3 shovels, none in hand
+		Needs:             map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay:         &now,
+		LodgingBedtimeMinute:     1320, // 22:00 — the evening window's close
+		NeedThresholds:           sim.NeedThresholds{},
+		Assets:                   emptyAssetSet,
+		FarmUpkeepFloor:          30,
+		FarmUpkeepCoinsPerShovel: 20,
+		Actors:                   map[sim.ActorID]*sim.ActorSnapshot{actorID: elizabeth},
+		Structures: map[sim.StructureID]*sim.Structure{
+			home:   plainStructure(home, "Ellis Residence"),
+			farm:   plainStructure(farm, "Ellis Farm"),
+			tavern: plainStructure(tavern, "the Tavern"),
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			// The venue: a "tavern"-tagged VillageObject bridged to the same-id Structure.
+			sim.VillageObjectID(tavern): {Tags: []string{sim.VisitorTagTavern}, Pos: tavernPos},
+			// Her farm — the workplace the upkeep errand would have sent her away to tend,
+			// sharing its id with the same-named Structure (the shared-identity bridge).
+			sim.VillageObjectID(farm): {
+				ID:            sim.VillageObjectID(farm),
+				DisplayName:   "Ellis Farm",
+				Pos:           sim.WorldPos{X: 100, Y: 100},
+				OwnerActorID:  actorID,
+				Tags:          []string{sim.TagFarm},
+				LoiterOffsetX: &zero,
+				LoiterOffsetY: &zero,
+			},
+		},
+	}
+	return snap, actorID, nil
 }
 
 // homedWorkerEveningBatchHoldsLeisure is the LLM-335 case: the SAME homed day-shift

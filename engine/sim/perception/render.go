@@ -1363,6 +1363,17 @@ func renderEveningLeisure(b *strings.Builder, v *EveningLeisureView) {
 			sanitizeInline(v.BatchItemLabel))
 		return
 	}
+	// LLM-345: the settled-in tier — the agent took the invitation and is standing in
+	// the venue. The invitation has been acted on, so the cue stops offering places to
+	// walk to and simply IS the room. No imperative and no "stay" instruction: the room
+	// is the argument. The closing clause is the load-bearing one — it answers, in the
+	// diegesis rather than as an instruction, the coda's "obligations before idle
+	// matters", whose plain reading at seven in the evening sent the lingerer home.
+	if v.SettledIn {
+		fmt.Fprintf(b, "Your day's work is behind you, and here you are inside %s of an evening — the fire lit, the room warm. Whatever the morning asks of you can wait for the morning.\n\n",
+			anchorPlace(v.VenueLabel, "the tavern"))
+		return
+	}
 	venue := anchorPlace(v.VenueLabel, "the tavern")
 	home := anchorPlace(v.HomeLabel, "your home")
 	fmt.Fprintf(b, "Your day's work is done, and the tavern is open of an evening — you might make your way to %s (destination: %s) for company, pass a quiet evening at %s (destination: %s), or turn in for the night, as you please.\n\n",
