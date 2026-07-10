@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
 
 // upgrader promotes the GET /api/village/events request to a WebSocket.
@@ -47,9 +49,17 @@ var upgrader = websocket.Upgrader{
 // until it disconnects.
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	token := r.URL.Query().Get("token")
-	if res := s.auth.Verify(token); !res.Valid {
+	res := s.auth.Verify(token)
+	if !res.Valid {
 		writeAuthError(w, res.Reason)
 		return
+	}
+	// The verified principal's login, refcounted by the hub for the PC presence
+	// heartbeat (LLM-342). A valid token always carries a User, but guard the
+	// deref — an empty login is simply never tracked.
+	login := ""
+	if res.User != nil {
+		login = res.User.Username
 	}
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -72,6 +82,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		conn:  conn,
 		send:  make(chan []byte, clientSendBuffer),
 		token: token, // already verified above
+		login: login,
 	}
 	// Queue the hello frame before registering so it is the first thing the
 	// write pump sends (the channel is FIFO and has room). Any broadcast that
@@ -88,6 +99,18 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	case s.hub.register <- c:
 		go c.writePump()
 		go c.readPump()
+		// Stamp presence immediately on connect (LLM-342). The heartbeat only
+		// re-stamps on its next tick, so a freshly connected or reconnected PC —
+		// whose LastPCSeenAt is nil (never attached this session) or already stale
+		// — could be swept from its huddle in the gap before the first tick, the
+		// very ejection this ticket removes. Synchronous like the old /pc/me stamp,
+		// on the still-live request context; a no-op login or a caller with no PC
+		// stamps nothing.
+		if login != "" {
+			if _, err := s.world.SendContext(r.Context(), sim.StampConnectedPCsSeen(map[string]struct{}{login: {}})); err != nil {
+				log.Printf("httpapi: initial presence stamp for %q failed: %v", login, err)
+			}
+		}
 	case <-s.hub.done:
 		_ = conn.Close()
 	case <-r.Context().Done():

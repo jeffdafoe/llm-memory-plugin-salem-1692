@@ -545,6 +545,17 @@ func run(rt runtime, stop <-chan struct{}) error {
 	tickPool.Start(worldCtx)
 	startTickers(worldCtx, rt.World)
 
+	// PC presence heartbeat (LLM-342): the player's live WebSocket — not the
+	// render-loop /pc/me poll — is the presence signal. Re-stamps LastPCSeenAt for
+	// every WS-connected PC each interval, so a hidden or occluded tab (whose socket
+	// stays alive) keeps the player present in the room, his huddle, and the
+	// keeper's customer list; a closed tab / sleep / dropped network stops the
+	// stamps and the presence sweep reclaims the ghost. Wired only when the WS
+	// surface exists — eventsHub is nil in the headless lifecycle.
+	if eventsHub != nil {
+		go sim.RunPCPresenceHeartbeat(worldCtx, rt.World, eventsHub)
+	}
+
 	// Schedule-window trigger for the washerwoman / town-crier routes
 	// (ZBBS-HOME-446): once a minute, fire a route at the carrier's
 	// window start and end boundaries (laundry out at start / in at end;

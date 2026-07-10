@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"sync"
 	"sync/atomic"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
@@ -75,6 +76,17 @@ type Hub struct {
 	framesDropped    atomic.Uint64
 	clientsEvicted   atomic.Uint64
 	clientsConnected atomic.Int64
+
+	// connectedLogins refcounts the login of every live WS client (LLM-342), so
+	// the PC presence heartbeat (sim.RunPCPresenceHeartbeat) can tell which PCs
+	// currently hold a socket. Refcounted because one player may hold several
+	// sockets (multiple tabs); a login stays present until its last socket drops.
+	// Mutated only under mu — written from the hub goroutine (register /
+	// unregister / slow-consumer eviction), read from the heartbeat goroutine via
+	// ConnectedLogins. Separate from the mutex-free clients map, which the hub
+	// goroutine owns exclusively; only this cross-goroutine view needs the lock.
+	mu              sync.Mutex
+	connectedLogins map[string]int
 }
 
 // NewHub builds a hub that translates events via translate. Panics on a nil
@@ -84,12 +96,54 @@ func NewHub(translate EventTranslator) *Hub {
 		panic("httpapi: NewHub requires a non-nil translator")
 	}
 	return &Hub{
-		translate:  translate,
-		broadcast:  make(chan []byte, broadcastBuffer),
-		register:   make(chan *client, regBuffer),
-		unregister: make(chan *client, regBuffer),
-		done:       make(chan struct{}),
+		translate:       translate,
+		broadcast:       make(chan []byte, broadcastBuffer),
+		register:        make(chan *client, regBuffer),
+		unregister:      make(chan *client, regBuffer),
+		done:            make(chan struct{}),
+		connectedLogins: make(map[string]int),
 	}
+}
+
+// trackLogin increments the refcount for a connecting client's login. An empty
+// login (a token that resolved to no principal name) is never tracked.
+func (h *Hub) trackLogin(login string) {
+	if login == "" {
+		return
+	}
+	h.mu.Lock()
+	h.connectedLogins[login]++
+	h.mu.Unlock()
+}
+
+// untrackLogin decrements the refcount for a disconnecting client's login,
+// deleting the entry when its last socket drops. The inverse of trackLogin;
+// empty logins were never tracked, so they no-op.
+func (h *Hub) untrackLogin(login string) {
+	if login == "" {
+		return
+	}
+	h.mu.Lock()
+	if h.connectedLogins[login] <= 1 {
+		delete(h.connectedLogins, login)
+	} else {
+		h.connectedLogins[login]--
+	}
+	h.mu.Unlock()
+}
+
+// ConnectedLogins snapshots the set of logins that currently hold at least one
+// live WS client. Safe to call from any goroutine; the PC presence heartbeat
+// reads it each tick to refresh those PCs' LastPCSeenAt (LLM-342). Satisfies
+// sim.ConnectedPCSource.
+func (h *Hub) ConnectedLogins() map[string]struct{} {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make(map[string]struct{}, len(h.connectedLogins))
+	for login := range h.connectedLogins {
+		out[login] = struct{}{}
+	}
+	return out
 }
 
 // Handle satisfies sim.EventSubscriber. It runs on the world goroutine after
@@ -155,13 +209,16 @@ func (h *Hub) Run(ctx context.Context) {
 			return
 		case c := <-h.register:
 			clients[c] = struct{}{}
+			h.trackLogin(c.login)
 			h.clientsConnected.Store(int64(len(clients)))
 		case c := <-h.unregister:
 			// Guarded so an already-evicted client (slow-consumer path below)
-			// isn't closed twice when its read pump later unregisters it.
+			// isn't closed twice when its read pump later unregisters it — and so
+			// its login refcount is decremented exactly once.
 			if _, ok := clients[c]; ok {
 				delete(clients, c)
 				close(c.send)
+				h.untrackLogin(c.login)
 				h.clientsConnected.Store(int64(len(clients)))
 			}
 		case data := <-h.broadcast:
@@ -175,6 +232,7 @@ func (h *Hub) Run(ctx context.Context) {
 					// tries to unregister, which is a no-op (already deleted).
 					delete(clients, c)
 					close(c.send)
+					h.untrackLogin(c.login)
 					h.clientsEvicted.Add(1)
 					evicted = true
 				}

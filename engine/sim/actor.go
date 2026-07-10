@@ -641,21 +641,24 @@ type Actor struct {
 	// of durable storage.
 	LastPCInputAt *time.Time
 
-	// LastPCSeenAt is the wall-clock instant of this PC's last client poll,
-	// stamped by StampPCSeen on every /pc/me hit (ZBBS-WORK-326). The v2 client
-	// polls /pc/me every 10s while the game is open, so a fresh LastPCSeenAt means
-	// "a live client is driving this PC"; once the player closes the tab the polls
-	// stop and it goes stale. The presence sweep (pc_presence.go) ejects a stale PC
-	// from its huddle, and the encounter cascades skip stale PCs, so co-located
-	// NPCs stop burning ticks greeting an absent player (v1 parity: the
-	// last_pc_seen_at presence-cleanup sweep; the prod ghost-PC cost bug). nil for
-	// NPCs and for a PC no client has polled this session.
+	// LastPCSeenAt is the wall-clock instant this PC was last seen present. The
+	// server re-stamps it every PCPresenceHeartbeatInterval for as long as the
+	// player's WebSocket is connected (LLM-342, RunPCPresenceHeartbeat), and
+	// deliberate PC actions (TouchPCInput) stamp it too. A fresh LastPCSeenAt means
+	// "a live client is driving this PC"; once the socket drops (closed tab, sleep,
+	// network loss) the stamps stop and it goes stale. Originally fed by the /pc/me
+	// poll (ZBBS-WORK-326), but that rode the render loop and died with a hidden
+	// tab. The presence sweep (pc_presence.go) ejects a stale PC from its huddle,
+	// and the encounter cascades skip stale PCs, so co-located NPCs stop burning
+	// ticks greeting an absent player (v1 parity: the last_pc_seen_at
+	// presence-cleanup sweep; the prod ghost-PC cost bug). nil for NPCs and for a PC
+	// no client has attached this session.
 	//
 	// TRANSIENT — not persisted (like LastPCInputAt / LastTirednessRecoveryAt).
 	// Presence is live-session state, not durable: a restored PC starts nil (=
-	// treated as absent until its first poll), which is correct — after a restart
-	// the client must re-attach to be "present". Keeps ephemeral cadence state out
-	// of durable storage.
+	// treated as absent until its client re-attaches), which is correct — after a
+	// restart the client must reconnect its WebSocket to be "present". Keeps
+	// ephemeral cadence state out of durable storage.
 	LastPCSeenAt *time.Time
 
 	// Tick scheduling.
@@ -1243,8 +1246,8 @@ type ActorSnapshot struct {
 	// into live world state for a pure read.
 	LoginUsername string
 
-	// LastPCSeenAt mirrors the live Actor's last /pc/me poll stamp (nil for
-	// NPCs and for a PC that hasn't polled this session). Carried so read-path
+	// LastPCSeenAt mirrors the live Actor's presence stamp (nil for NPCs and for a
+	// PC no client has attached this session). Carried so read-path
 	// consumers can apply the same presence-staleness gate as the sim side
 	// (PCPresenceStale) — notably the pc/me indoor co-located roster, which
 	// must not advertise a stale (logged-out) PC the speak path's

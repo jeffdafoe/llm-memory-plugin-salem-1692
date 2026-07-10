@@ -2,9 +2,55 @@ package perception
 
 import (
 	"testing"
+	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
+
+// LLM-342: a co-present PC whose presence stamp is stale routes to HuddleAway
+// (co-present but not addressable) instead of HuddleMembers, while a fresh PC stays
+// an addressable huddle member. This is the away-vs-present split perception uses
+// to keep a stepped-away player in "## Around you" without cueing NPCs to address him.
+func TestBuildSurroundings_StaleHuddlePCRoutesToAway(t *testing.T) {
+	published := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	fresh := published.Add(-5 * time.Second)  // within 40s → present
+	stale := published.Add(-90 * time.Second) // past 40s → stepped away
+
+	build := func(pcSeen *time.Time) SurroundingsView {
+		subj := &sim.ActorSnapshot{Kind: sim.KindNPCShared, DisplayName: "Nora", InsideStructureID: "tavern", CurrentHuddleID: "h1"}
+		pc := &sim.ActorSnapshot{Kind: sim.KindPC, DisplayName: "Jeff", LoginUsername: "jeff", InsideStructureID: "tavern", CurrentHuddleID: "h1", LastPCSeenAt: pcSeen}
+		snap := &sim.Snapshot{
+			PublishedAt:          published,
+			PCPresenceStaleAfter: sim.DefaultPCPresenceStaleAfter,
+			Actors:               map[sim.ActorID]*sim.ActorSnapshot{"nora": subj, "jeff": pc},
+			Structures:           map[sim.StructureID]*sim.Structure{"tavern": plainStructure("tavern", "Tavern")},
+			Huddles:              map[sim.HuddleID]*sim.Huddle{"h1": {ID: "h1", Members: map[sim.ActorID]struct{}{"nora": {}, "jeff": {}}}},
+		}
+		return buildSurroundings(snap, "nora", subj)
+	}
+
+	present := build(&fresh)
+	if len(present.HuddleMembers) != 1 || present.HuddleMembers[0].ID != "jeff" {
+		t.Errorf("fresh PC: HuddleMembers = %+v, want [jeff] addressable", present.HuddleMembers)
+	}
+	if len(present.HuddleAway) != 0 {
+		t.Errorf("fresh PC: HuddleAway = %+v, want empty", present.HuddleAway)
+	}
+
+	away := build(&stale)
+	if len(away.HuddleMembers) != 0 {
+		t.Errorf("stale PC: HuddleMembers = %+v, want empty (not addressable)", away.HuddleMembers)
+	}
+	if len(away.HuddleAway) != 1 || away.HuddleAway[0].ID != "jeff" {
+		t.Errorf("stale PC: HuddleAway = %+v, want [jeff] stepped away", away.HuddleAway)
+	}
+
+	// A nil stamp (no client attached this session) is stepped away too.
+	nilStamp := build(nil)
+	if len(nilStamp.HuddleAway) != 1 || len(nilStamp.HuddleMembers) != 0 {
+		t.Errorf("nil-stamp PC: members=%+v away=%+v, want away=[jeff]", nilStamp.HuddleMembers, nilStamp.HuddleAway)
+	}
+}
 
 // --- test construction helpers -------------------------------------------
 

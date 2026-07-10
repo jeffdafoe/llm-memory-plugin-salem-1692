@@ -14,9 +14,9 @@ import (
 // caught: the participant scan skipped stale PCs but the initiator path didn't).
 //
 // Rules:
-//   - A stale (ghost) PC — a closed-tab player whose /pc/me presence stamp has
-//     gone stale — must neither greet nor be greeted, so co-located NPCs don't
-//     burn ticks on an absent player (ZBBS-WORK-326).
+//   - A stale (ghost) PC — a closed-tab player whose presence stamp has gone
+//     stale (WS dropped; LLM-342) — must neither greet nor be greeted, so
+//     co-located NPCs don't burn ticks on an absent player (ZBBS-WORK-326).
 //   - A moving actor (one holding a MoveIntent) is mid-task and not available
 //     to be pulled into a conversation (ZBBS-HOME-340). Encounters form only
 //     among actors who are actually standing somewhere: the arriver has just

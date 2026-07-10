@@ -1139,14 +1139,33 @@ func buildSurroundings(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnap
 	}
 	if a.CurrentHuddleID != "" {
 		if h := snap.Huddles[a.CurrentHuddleID]; h != nil {
+			// A co-present PC whose client has gone quiet (WS dropped, presence stamp
+			// stale) stays in the huddle but is routed to HuddleAway, not the
+			// addressable HuddleMembers — so it leaves every cue that reads
+			// HuddleMembers (offerable customers, greet/respond, HasAudience) without
+			// vanishing from "## Around you" (LLM-342). A published snapshot always
+			// carries the threshold (> 0); a directly-constructed test snapshot that
+			// omits it reads 0, which turns away-routing OFF (all co-present PCs stay
+			// addressable — the legacy behavior), matching the SeekWorkCoinCeiling
+			// test-snapshot convention.
+			staleAfter := snap.PCPresenceStaleAfter
 			for memberID := range h.Members {
 				if memberID == actorID {
 					continue
 				}
-				s.HuddleMembers = append(s.HuddleMembers, resolveCoPresentMember(snap, actorID, a, memberID))
+				m := resolveCoPresentMember(snap, actorID, a, memberID)
+				if peer := snap.Actors[memberID]; staleAfter > 0 && peer != nil && peer.Kind == sim.KindPC &&
+					sim.PCPresenceStale(peer.LastPCSeenAt, snap.PublishedAt, staleAfter) {
+					s.HuddleAway = append(s.HuddleAway, m)
+					continue
+				}
+				s.HuddleMembers = append(s.HuddleMembers, m)
 			}
 			sort.Slice(s.HuddleMembers, func(i, j int) bool {
 				return s.HuddleMembers[i].ID < s.HuddleMembers[j].ID
+			})
+			sort.Slice(s.HuddleAway, func(i, j int) bool {
+				return s.HuddleAway[i].ID < s.HuddleAway[j].ID
 			})
 		}
 	} else {

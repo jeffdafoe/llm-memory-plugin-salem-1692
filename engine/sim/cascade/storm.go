@@ -40,8 +40,8 @@ import (
 //   - otherwise                              → no transition
 //
 // PC-presence gate (acceptance criteria 2-4): an automatic storm only
-// STARTS when at least one non-stale PC is present (the /pc/me 10s
-// heartbeat primitive in engine/sim/pc_presence.go). Storms are a visual
+// STARTS when at least one non-stale PC is present (the WS presence
+// heartbeat primitive in engine/sim/pc_presence.go, LLM-342). Storms are a visual
 // payoff — wasted on an empty village. The operator force-path (httpapi
 // umbilical /weather) is deliberately NOT gated, so a storm can be summoned
 // on an empty village for demo/testing.

@@ -1035,6 +1035,21 @@ var perceptionScenarios = []perceptionScenario{
 		build: keeperResellingInCompany,
 	},
 	{
+		name: "pc_customer_present_in_huddle",
+		summary: "Control for pc_customer_stepped_away_in_huddle: a keeper (Josiah Thorne) in company with a LIVE " +
+			"PC customer (Wendy, fresh presence stamp). She is an addressable huddle member, named in the '## Around " +
+			"you' company line. Pairs with the stepped-away golden so the diff isolates the LLM-342 away-vs-present split.",
+		build: keeperWithPresentPCCustomer,
+	},
+	{
+		name: "pc_customer_stepped_away_in_huddle",
+		summary: "LLM-342: the same keeper+PC-customer huddle, but the player's client has gone quiet (nil presence " +
+			"stamp — a hidden tab whose WebSocket also dropped, or a departed player). Wendy stays co-present in '## " +
+			"Around you' as having 'stepped away', but is NOT in the addressable company set, so no cue drives Josiah to " +
+			"keep addressing an absent player. Pins the co-present-PC-has-gone-quiet, away-vs-present distinction.",
+		build: keeperWithSteppedAwayPCCustomer,
+	},
+	{
 		name: "distributor_underwater_resale",
 		summary: "LLM-332 underwater escalation: the same reseller shape as keeper_reselling_in_company, now with realized " +
 			"SALE history that makes one line demonstrably underwater. Josiah bought milk at ~2 and has been selling it at " +
@@ -7830,6 +7845,68 @@ func keeperResellingInCompany() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) 
 		},
 	}
 	return snap, josiahID, nil
+}
+
+// pcCompanyKeeperScenario builds Josiah keeping his store in company with a PC
+// customer (Wendy) whose presence is controlled by pcSeen (LLM-342). Shared by the
+// present / stepped-away golden pair so the two fixtures differ ONLY in the PC's
+// last-seen stamp — isolating the away-vs-present split in the golden diff.
+func pcCompanyKeeperScenario(pcSeen *time.Time) (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		josiahID = sim.ActorID("josiah")
+		wendyID  = sim.ActorID("wendy")
+		store    = sim.StructureID("general_store")
+		huddle   = sim.HuddleID("h1")
+	)
+	start, end := 360, 1080 // 06:00-18:00
+	now := 720              // 12:00 — on shift, at the store
+	published := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	josiah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Josiah Thorne",
+		Role:              "shopkeeper",
+		State:             sim.StateIdle,
+		WorkStructureID:   store,
+		InsideStructureID: store,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		CurrentHuddleID:   huddle,
+		Needs:             map[sim.NeedKey]int{},
+	}
+	wendy := &sim.ActorSnapshot{
+		Kind:              sim.KindPC,
+		DisplayName:       "Wendy",
+		LoginUsername:     "wendy",
+		State:             sim.StateIdle,
+		InsideStructureID: store,
+		CurrentHuddleID:   huddle,
+		Coins:             20,
+		Needs:             map[sim.NeedKey]int{},
+		LastPCSeenAt:      pcSeen,
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:          published,
+		LocalMinuteOfDay:     &now,
+		NeedThresholds:       sim.NeedThresholds{},
+		PCPresenceStaleAfter: sim.DefaultPCPresenceStaleAfter,
+		Actors:               map[sim.ActorID]*sim.ActorSnapshot{josiahID: josiah, wendyID: wendy},
+		Structures: map[sim.StructureID]*sim.Structure{
+			store: plainStructure(store, "General Store"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{josiahID: {}, wendyID: {}}},
+		},
+	}
+	return snap, josiahID, nil
+}
+
+func keeperWithPresentPCCustomer() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	seen := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC) // == PublishedAt → fresh, present
+	return pcCompanyKeeperScenario(&seen)
+}
+
+func keeperWithSteppedAwayPCCustomer() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return pcCompanyKeeperScenario(nil) // no client attached this session → stepped away
 }
 
 // distributorUnderwaterResale is the LLM-332 leg: the same reseller shape as
