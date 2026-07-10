@@ -187,7 +187,7 @@ func TestAppendActionLogEntry_RejectsZeroOccurredAt(t *testing.T) {
 }
 
 // --- TestAppendActionLogEntry_TruncatesText -------------------------
-// Text longer than MaxActionLogTextLen is rune-truncated at the
+// Non-spoken Text longer than MaxActionLogTextLen is rune-truncated at the
 // substrate boundary so subscribers can't accumulate oversized rows
 // even if they forget to truncate.
 func TestAppendActionLogEntry_TruncatesText(t *testing.T) {
@@ -198,7 +198,7 @@ func TestAppendActionLogEntry_TruncatesText(t *testing.T) {
 	if _, err := w.Send(sim.AppendActionLogEntry(sim.ActionLogEntry{
 		ActorID:    "hannah",
 		OccurredAt: time.Now().UTC(),
-		ActionType: sim.ActionTypeSpoke,
+		ActionType: sim.ActionTypeTookBreak,
 		Text:       longText,
 	})); err != nil {
 		t.Fatalf("Append: %v", err)
@@ -210,6 +210,44 @@ func TestAppendActionLogEntry_TruncatesText(t *testing.T) {
 	}
 	if runes := []rune(got[0].Text); len(runes) != sim.MaxActionLogTextLen {
 		t.Errorf("rune count = %d, want %d", len(runes), sim.MaxActionLogTextLen)
+	}
+}
+
+// --- TestAppendActionLogEntry_SpokenTextKeepsFullUtterance ----------
+// A spoken line between MaxActionLogTextLen and MaxSpokenActionLogTextLen
+// is kept in full — the regression that clipped long utterances mid-word
+// in the PC talk-panel history backload — and only clamps at the wider
+// MaxSpokenActionLogTextLen safety bound.
+func TestAppendActionLogEntry_SpokenTextKeepsFullUtterance(t *testing.T) {
+	w, cancel := buildActionLogWorld(t)
+	defer cancel()
+
+	// Longer than the 220-rune non-speech budget, well under the spoken bound.
+	midText := strings.Repeat("a", sim.MaxActionLogTextLen+300)
+	// Beyond even the spoken bound — must clamp to MaxSpokenActionLogTextLen.
+	overText := strings.Repeat("b", sim.MaxSpokenActionLogTextLen+50)
+	base := time.Now().UTC()
+	for i, txt := range []string{midText, overText} {
+		if _, err := w.Send(sim.AppendActionLogEntry(sim.ActionLogEntry{
+			ActorID:    "hannah",
+			OccurredAt: base.Add(time.Duration(i) * time.Second),
+			ActionType: sim.ActionTypeSpoke,
+			Text:       txt,
+		})); err != nil {
+			t.Fatalf("Append %d: %v", i, err)
+		}
+	}
+
+	got := readActionLog(t, w)
+	if len(got) != 2 {
+		t.Fatalf("len(ActionLog) = %d, want 2", len(got))
+	}
+	if runes := []rune(got[0].Text); len(runes) != sim.MaxActionLogTextLen+300 {
+		t.Errorf("mid-length utterance rune count = %d, want %d (kept full, not clipped to %d)",
+			len(runes), sim.MaxActionLogTextLen+300, sim.MaxActionLogTextLen)
+	}
+	if runes := []rune(got[1].Text); len(runes) != sim.MaxSpokenActionLogTextLen {
+		t.Errorf("over-length utterance rune count = %d, want %d", len(runes), sim.MaxSpokenActionLogTextLen)
 	}
 }
 
