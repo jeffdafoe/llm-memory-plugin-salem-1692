@@ -187,7 +187,7 @@ func conversationalScopeStructure(w *World, a *Actor) StructureID {
 // shut shop identically or the huddle WRITE scope and the talk-roster READ scope
 // drift.
 func loiterScopeConversable(w *World, sid StructureID) bool {
-	if _, isStructure := w.Structures[sid]; !isStructure {
+	if w.Structures[sid] == nil {
 		return true
 	}
 	return keeperPresentAt(w, sid)
@@ -195,13 +195,14 @@ func loiterScopeConversable(w *World, sid StructureID) bool {
 
 // LoiterScopeConversableInSnapshot is loiterScopeConversable over a published
 // Snapshot — the read-path (httpapi pcAudienceStructure) twin. assets is the
-// reference catalog KeeperPresentInSnapshot needs (the snapshot doesn't carry it
-// inline).
+// reference catalog keeperPresentInSnapshot needs (the snapshot doesn't carry it
+// inline). A nil snapshot or non-structure resolved object keeps the loiter scope
+// (nothing to gate); a real structure must be open.
 func LoiterScopeConversableInSnapshot(snap *Snapshot, assets map[AssetID]*Asset, sid StructureID) bool {
-	if _, isStructure := snap.Structures[sid]; !isStructure {
+	if snap == nil || snap.Structures[sid] == nil {
 		return true
 	}
-	return KeeperPresentInSnapshot(snap, assets, sid)
+	return keeperPresentInSnapshot(snap, assets, sid)
 }
 
 // colocatedConversationalActors returns the ids (sorted) of conversational,

@@ -147,14 +147,18 @@ func keeperPresentAt(w *World, structureID StructureID) bool {
 	return false
 }
 
-// KeeperPresentInSnapshot is keeperPresentAt over a published Snapshot — the
-// read-path counterpart (httpapi pc/me) that gates the PC's cross-threshold
-// conversational scope so a shut shop's wall blocks it (pcAudienceStructure,
-// LLM-359). The snapshot doesn't carry the asset catalog inline, so it is passed
-// in — the same reference catalog ResolveLoiteringObject already needs. Shares
-// workerTendsStructure with the live-world keeperPresentAt so the two agree on
-// what "tending" means.
-func KeeperPresentInSnapshot(snap *Snapshot, assets map[AssetID]*Asset, structureID StructureID) bool {
+// keeperPresentInSnapshot is keeperPresentAt over a published Snapshot — the
+// read-path counterpart that backs LoiterScopeConversableInSnapshot's shut-shop
+// gate for the PC's cross-threshold conversational scope (httpapi
+// pcAudienceStructure, LLM-359). The snapshot doesn't carry the asset catalog
+// inline, so it is passed in — the same reference catalog ResolveLoiteringObject
+// already needs. Shares workerTendsStructure with the live-world keeperPresentAt
+// so the two agree on what "tending" means. Guards a nil snapshot (fail-closed:
+// unknown ⇒ not tended) since it's reachable from an exported helper.
+func keeperPresentInSnapshot(snap *Snapshot, assets map[AssetID]*Asset, structureID StructureID) bool {
+	if snap == nil {
+		return false
+	}
 	for _, a := range snap.Actors {
 		if a == nil {
 			continue
