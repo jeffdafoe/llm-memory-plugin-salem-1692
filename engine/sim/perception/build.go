@@ -2029,23 +2029,42 @@ func buildDutySteer(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapsho
 // inEveningWindow reports whether the snapshot clock is inside the post-work
 // evening window [shift-end, 22:00) for a homed day-shift agent — the slice
 // during which the evening leisure cue (LLM-149) replaces the off-shift go-home
-// wind-down steer. The window's open is the actor's own schedule end; its close
-// is snap.LodgingBedtimeMinute (the 22:00 lodger bedtime — the same gate Lever 1
-// beds homed agents at, so cue and bedtime agree). Requires a normal
-// (non-wrapping) schedule whose end precedes the bedtime; wrap/night shifts and
-// shifts running to or past bedtime have no evening and are excluded (the
-// in-scope day-workers end 19:00–21:00). Keying on a present schedule also keeps
-// the four unscheduled vendors untouched, matching Lever 1's scope guard.
+// wind-down steer. The window's open is the actor's effective shift end; its
+// close is snap.LodgingBedtimeMinute (the 22:00 lodger bedtime — the same gate
+// Lever 1 beds homed agents at, so cue and bedtime agree). Requires a normal
+// (non-wrapping) shift whose end precedes the bedtime; wrap/night shifts and
+// shifts running to or past bedtime have no evening (the in-scope day-workers
+// end 19:00–21:00).
+//
+// LLM-352: an UNSCHEDULED worker is day-active on the world's dawn/dusk window
+// (LLM-137), so shiftWindowBounds supplies its shift end and its evening becomes
+// [dusk, bedtime) exactly like a dawn→dusk-scheduled worker's — the four labor
+// vendors (the Walkers) were previously shut out because this keyed on a present
+// schedule row. An unscheduled NON-worker has no shift at all (actorOnShift keeps
+// it always-off — home is its resting state, HOME-204), so it gets no post-work
+// evening: worker-gating here keeps inEveningWindow in step with actorOnShift
+// rather than diverging via an ungated fallback. (See the HOME-204 tension noted
+// on LLM-352 — leaving non-worker residents on the HOME-204 rule is deliberate.)
 func inEveningWindow(snap *sim.Snapshot, a *sim.ActorSnapshot) bool {
 	if snap == nil || a == nil || snap.LocalMinuteOfDay == nil {
 		return false
 	}
-	if a.ScheduleStartMin == nil || a.ScheduleEndMin == nil {
+	// A fully-scheduled actor's own window governs; a fully-UNSCHEDULED actor gets
+	// the dawn/dusk fallback only if it is a worker (day-active). A partial schedule
+	// (exactly one bound set) is malformed and earns no evening — matching the
+	// pre-LLM-352 reject — and an unscheduled non-worker has no post-work evening
+	// (home is its resting state, HOME-204).
+	scheduled := a.ScheduleStartMin != nil && a.ScheduleEndMin != nil
+	unscheduledWorker := a.ScheduleStartMin == nil && a.ScheduleEndMin == nil && subjectIsWorker(a)
+	if !scheduled && !unscheduledWorker {
 		return false
 	}
-	shiftStart, shiftEnd := *a.ScheduleStartMin, *a.ScheduleEndMin
+	shiftStart, shiftEnd, ok := shiftWindowBounds(snap, a)
+	if !ok {
+		return false
+	}
 	if shiftStart >= shiftEnd {
-		return false // wrap/degenerate schedule — no simple post-work evening
+		return false // wrap/degenerate shift — no simple post-work evening
 	}
 	bedtime := snap.LodgingBedtimeMinute
 	if shiftEnd >= bedtime {

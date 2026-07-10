@@ -196,16 +196,20 @@ func npcSleepHere(w *World, a *Actor, now time.Time) bool {
 	}
 	nowMinute := localMinuteOfDay(w, now)
 	if a.HomeStructureID != "" && a.InsideStructureID == a.HomeStructureID {
-		if a.ScheduleStartMin != nil && a.ScheduleEndMin != nil {
-			// LLM-148: a scheduled homed agent gets an evening — bed it at the
-			// civil-night hour, not the moment its work shift ends. The gate is
-			// off-shift AND inside the night window: off-shift alone bedded it at
-			// shift-end (the old behavior); the window alone would bed a night-shift
-			// home==work keeper (e.g. a tavernkeeper 16:00–03:00) mid-shift at 22:00.
-			// Reuses lodgerNightWindow so homed bedtime tracks the same
-			// lodging_bedtime_hour knob as lodgers. Wake stays shift-driven
-			// (WakeExpiredNPCSleepers): off-shift bed vs on-shift wake can never
-			// thrash.
+		// A fully-scheduled homed agent, OR a fully-UNSCHEDULED worker, gets an evening
+		// — bed it at the civil-night hour, not the moment its shift ends. The gate is
+		// off-shift AND inside the night window: off-shift alone bedded it at shift-end
+		// (the old behavior), which for an unscheduled worker (day-active on the
+		// dawn/dusk window, LLM-137) meant bedded at DUSK with no evening (LLM-352); the
+		// window alone would bed a night-shift home==work keeper (a tavernkeeper
+		// 16:00–03:00) mid-shift at 22:00. actorOnShift already supplies the worker's
+		// dawn/dusk fallback, so scheduled and unscheduled-worker agents share one gate.
+		// Reuses lodgerNightWindow so homed bedtime tracks the same lodging_bedtime_hour
+		// knob as lodgers. Wake stays shift-driven (WakeExpiredNPCSleepers): off-shift
+		// bed vs on-shift wake can never thrash.
+		scheduled := a.ScheduleStartMin != nil && a.ScheduleEndMin != nil
+		unscheduledWorker := a.ScheduleStartMin == nil && a.ScheduleEndMin == nil && actorIsWorker(a)
+		if scheduled || unscheduledWorker {
 			if actorOnShift(w, a, nowMinute) {
 				return false
 			}
@@ -215,6 +219,12 @@ func npcSleepHere(w *World, a *Actor, now time.Time) bool {
 			}
 			return minuteInShiftWindow(start, end, nowMinute)
 		}
+		// An unscheduled NON-worker — or a malformed partial schedule (exactly one bound
+		// set) — keeps the classic always-off rule: home is its default resting state
+		// (HOME-204), so it beds on any off-shift arrival, unchanged from before. The
+		// non-worker is deliberately NOT given the civil-night evening — that is the
+		// HOME-204 tension noted on LLM-352: whether jobless residents keep evening
+		// hours is forward policy for an actor type that does not exist yet.
 		return !actorOnShift(w, a, nowMinute)
 	}
 	if actorIsLodgerAt(w, a, a.InsideStructureID, now) {

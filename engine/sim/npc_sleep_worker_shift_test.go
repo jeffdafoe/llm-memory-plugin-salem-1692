@@ -15,6 +15,7 @@ func workerShiftWorld(actors ...*Actor) *World {
 	w := sleepTestWorld(actors...)
 	w.Settings.DawnTime = "07:00"
 	w.Settings.DuskTime = "19:00"
+	w.Settings.LodgingBedtimeHour = 22 // civil-night bedtime — the [22:00, dawn) bed window
 	return w
 }
 
@@ -69,16 +70,23 @@ func TestActorOnShift_ExplicitScheduleGovernsWorker(t *testing.T) {
 	}
 }
 
-func TestNpcSleepHere_UnscheduledWorker_NotBeddedMidday_BeddedAtNight(t *testing.T) {
+func TestNpcSleepHere_UnscheduledWorker_NotBeddedMidday_HasEvening_BeddedAtNight(t *testing.T) {
 	worker := homedWorker("w")
 	w := workerShiftWorld(worker)
 	noon := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	evening := time.Date(2026, 6, 27, 20, 0, 0, 0, time.UTC) // after dusk (19:00), before bedtime (22:00)
 	night := time.Date(2026, 6, 27, 23, 0, 0, 0, time.UTC)
 	if npcSleepHere(w, worker, noon) {
 		t.Errorf("homed worker bedded at noon; want NOT bedded (day-active)")
 	}
+	// LLM-352: the fix. An unscheduled worker is off-shift at 20:00 but inside its
+	// evening [dusk, bedtime), so it must NOT be bedded — the old !actorOnShift gate
+	// bedded it here, at dusk, with no evening.
+	if npcSleepHere(w, worker, evening) {
+		t.Errorf("homed worker bedded at 20:00; want NOT bedded (evening, [dusk, bedtime))")
+	}
 	if !npcSleepHere(w, worker, night) {
-		t.Errorf("homed worker NOT bedded at 23:00; want bedded (off-shift at night)")
+		t.Errorf("homed worker NOT bedded at 23:00; want bedded (inside the civil-night window)")
 	}
 }
 
