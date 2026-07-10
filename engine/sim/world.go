@@ -517,11 +517,12 @@ type WorldSettings struct {
 	OrderTTL          time.Duration
 	OrderSweepCadence time.Duration
 
-	// PCPresenceStaleAfter is how long a PC may go without a /pc/me poll
-	// before the presence sweep treats it as an absent ghost (ZBBS-WORK-326).
-	// The v2 client polls /pc/me every 10s, so the default (40s ≈ 4 missed
-	// polls) rides out a network hiccup while still clearing a closed tab
-	// quickly. Falls back to DefaultPCPresenceStaleAfter when zero/unset (read
+	// PCPresenceStaleAfter is how long a PC may go without a presence stamp
+	// before the presence sweep treats it as an absent ghost (ZBBS-WORK-326;
+	// signal moved to the WS heartbeat in LLM-342). The server re-stamps every
+	// PCPresenceHeartbeatInterval (15s) while the socket is up, so the default
+	// (40s) rides out a missed heartbeat or brief blip while still clearing a
+	// dropped socket quickly. Falls back to DefaultPCPresenceStaleAfter when zero/unset (read
 	// via PCPresenceStaleAfter); tunable via the pc_presence_stale_seconds
 	// setting.
 	PCPresenceStaleAfter time.Duration

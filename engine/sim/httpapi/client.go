@@ -33,6 +33,11 @@ type client struct {
 	// before the upgrade). Kept for re-verification / role checks when the
 	// write routes land.
 	token string
+	// login is the verified principal's username (from the token's AuthUser).
+	// The hub refcounts it in connectedLogins so the PC presence heartbeat
+	// (LLM-342) can tell which PCs currently hold a live socket. Empty when the
+	// token resolved to no principal name — such a client is never tracked.
+	login string
 }
 
 // readPump drains (and discards) inbound frames and services pong deadlines for

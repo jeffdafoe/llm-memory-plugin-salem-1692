@@ -208,13 +208,15 @@ func WakePC(actorID ActorID, now time.Time) Command {
 }
 
 // TouchPCInput records a PC's deliberate action: stamps LastPCInputAt = now
-// (feeding the idle-auto-bed timer) and, if the PC was sleeping, wakes them and
-// emits PCSleepEnded reason "input" — so acting while asleep both wakes the PC
-// and lets the action proceed. v2 port of v1 touchPCInput, called from the PC
-// write-command wrappers (move / speak / pay) BEFORE delegating to the sim
-// command. PC-only: an NPC id (or vanished actor) is a no-op, so a stray caller
-// can't wake an NPC or emit a PC event for it. MUST run on the world goroutine
-// (mutates the actor + emits).
+// (feeding the idle-auto-bed timer) and LastPCSeenAt = now (presence — a
+// deliberate action proves the player is here, so it refreshes the LLM-342 WS
+// heartbeat as defence in depth against a momentary socket blip). If the PC was
+// sleeping it also wakes them and emits PCSleepEnded reason "input" — so acting
+// while asleep both wakes the PC and lets the action proceed. v2 port of v1
+// touchPCInput, called from the PC write-command wrappers (move / speak / pay)
+// BEFORE delegating to the sim command. PC-only: an NPC id (or vanished actor) is
+// a no-op, so a stray caller can't wake an NPC or emit a PC event for it. MUST run
+// on the world goroutine (mutates the actor + emits).
 func TouchPCInput(w *World, actorID ActorID, now time.Time) {
 	pc := w.Actors[actorID]
 	if pc == nil || pc.Kind != KindPC {
@@ -222,6 +224,7 @@ func TouchPCInput(w *World, actorID ActorID, now time.Time) {
 	}
 	stamp := now
 	pc.LastPCInputAt = &stamp
+	pc.LastPCSeenAt = &stamp
 	if pc.SleepingUntil != nil {
 		fromRoom := pc.InsideRoomID
 		wakePCActor(pc)

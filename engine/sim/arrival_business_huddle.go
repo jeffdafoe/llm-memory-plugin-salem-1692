@@ -59,7 +59,7 @@ func EnsureArrivalBusinessHuddle(actorID ActorID, structureID StructureID, now t
 			if actor.BusinessownerState != nil && actor.WorkStructureID == structureID {
 				return nil, nil
 			}
-			// A ghost PC (closed tab, stale /pc/me stamp) must not be welcomed
+			// A ghost PC (closed tab, stale presence stamp) must not be welcomed
 			// — same gate the encounter cascade and the speak-time pull-in use
 			// (ZBBS-WORK-326).
 			if actor.Kind == KindPC && PCPresenceStale(actor.LastPCSeenAt, now, PCPresenceStaleAfter(w)) {

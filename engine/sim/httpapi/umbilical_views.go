@@ -440,10 +440,10 @@ type UmbilicalActorRowDTO struct {
 	TileX       int            `json:"tile_x"`
 	TileY       int            `json:"tile_y"`
 	// Present is PC-only (omitted for every other kind): whether the player's
-	// client is currently attached, i.e. the /pc/me presence stamp is fresh by
-	// the same PCPresenceStale gate the ghost-ejection sweep and eco mode
-	// (LLM-313) trust. The read side of "does the village think anyone is
-	// watching."
+	// client is currently attached, i.e. the presence stamp is fresh by the same
+	// PCPresenceStale gate the ghost-ejection sweep and eco mode (LLM-313) trust —
+	// now driven by the WS heartbeat (LLM-342). The read side of "does the village
+	// think anyone is watching."
 	Present *bool `json:"present,omitempty"`
 }
 
@@ -461,8 +461,8 @@ type UmbilicalActorsDTO struct {
 // the world goroutine (it reads an *Actor and, for a PC's presence, world
 // settings); no pointer escapes the closure. A nil/empty Needs map yields an
 // omitted needs field (the actor tracks no needs). For PCs the row carries
-// present (fresh /pc/me stamp per the shared PCPresenceStale gate); every other
-// kind omits it.
+// present (fresh presence stamp per the shared PCPresenceStale gate, WS-driven
+// since LLM-342); every other kind omits it.
 func actorRowDTO(world *sim.World, a *sim.Actor, now time.Time) UmbilicalActorRowDTO {
 	row := UmbilicalActorRowDTO{
 		ID:          string(a.ID),

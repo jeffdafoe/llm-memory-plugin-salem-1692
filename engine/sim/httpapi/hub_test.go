@@ -252,3 +252,64 @@ func TestHubStatsConnectedCount(t *testing.T) {
 	_ = conn.Close()
 	waitConnected(t, hub, 0)
 }
+
+// ConnectedLogins refcounts a login across its sockets (LLM-342): present after
+// either of two sockets registers, still present when one closes, gone only when
+// the last closes. An empty login (a token with no principal name) is never
+// tracked. White-box (direct track/untrack) so the refcount transitions are
+// deterministic, without racing the async register/unregister channel.
+func TestHubConnectedLogins_Refcount(t *testing.T) {
+	hub := NewHub(dropTranslator)
+
+	if got := len(hub.ConnectedLogins()); got != 0 {
+		t.Fatalf("fresh hub ConnectedLogins len = %d, want 0", got)
+	}
+
+	hub.trackLogin("alice")
+	hub.trackLogin("alice")
+	if _, ok := hub.ConnectedLogins()["alice"]; !ok {
+		t.Fatal("alice not connected after tracking two sockets")
+	}
+	hub.untrackLogin("alice")
+	if _, ok := hub.ConnectedLogins()["alice"]; !ok {
+		t.Fatal("alice dropped after one of two sockets closed (refcount bug)")
+	}
+	hub.untrackLogin("alice")
+	if _, ok := hub.ConnectedLogins()["alice"]; ok {
+		t.Fatal("alice still connected after both sockets closed")
+	}
+
+	hub.trackLogin("")
+	if got := len(hub.ConnectedLogins()); got != 0 {
+		t.Fatalf("empty login tracked; ConnectedLogins len = %d, want 0", got)
+	}
+}
+
+// End to end: a live WS client's login appears in ConnectedLogins on connect and
+// clears on disconnect — the signal the PC presence heartbeat reads. okAuth
+// resolves every token to login "tester".
+func TestHubConnectedLogins_WSLifecycle(t *testing.T) {
+	ts, hub := newHubServer(t, dropTranslator)
+
+	conn := dialEvents(t, ts)
+	waitForConnectedLogin(t, hub, "tester", true)
+
+	_ = conn.Close()
+	waitForConnectedLogin(t, hub, "tester", false)
+}
+
+// waitForConnectedLogin polls hub.ConnectedLogins until login's presence matches
+// want, or fails after a short deadline. Register/unregister are asynchronous
+// (handler → hub goroutine, read pump → hub goroutine), so a direct assert would
+// race the hub goroutine.
+func waitForConnectedLogin(t *testing.T, hub *Hub, login string, want bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, ok := hub.ConnectedLogins()[login]; ok == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("login %q connected=%v not reached within deadline", login, want)
+}

@@ -47,9 +47,17 @@ var upgrader = websocket.Upgrader{
 // until it disconnects.
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	token := r.URL.Query().Get("token")
-	if res := s.auth.Verify(token); !res.Valid {
+	res := s.auth.Verify(token)
+	if !res.Valid {
 		writeAuthError(w, res.Reason)
 		return
+	}
+	// The verified principal's login, refcounted by the hub for the PC presence
+	// heartbeat (LLM-342). A valid token always carries a User, but guard the
+	// deref — an empty login is simply never tracked.
+	login := ""
+	if res.User != nil {
+		login = res.User.Username
 	}
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -72,6 +80,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		conn:  conn,
 		send:  make(chan []byte, clientSendBuffer),
 		token: token, // already verified above
+		login: login,
 	}
 	// Queue the hello frame before registering so it is the first thing the
 	// write pump sends (the channel is FIFO and has room). Any broadcast that

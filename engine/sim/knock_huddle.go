@@ -95,7 +95,7 @@ func EnsureKnockServiceHuddle(actorID ActorID, structureID StructureID, now time
 			if _, ok := w.Structures[structureID]; !ok {
 				return nil, nil
 			}
-			// A ghost PC (closed tab, stale /pc/me stamp) must not knock —
+			// A ghost PC (closed tab, stale presence stamp) must not knock —
 			// same gate as the encounter cascade (ZBBS-WORK-326).
 			if actor.Kind == KindPC && PCPresenceStale(actor.LastPCSeenAt, now, PCPresenceStaleAfter(w)) {
 				return nil, nil

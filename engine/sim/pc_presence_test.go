@@ -115,6 +115,65 @@ func TestSweepStalePCPresence_EjectsGhostFromHuddle(t *testing.T) {
 	}
 }
 
+// LLM-342: presence now derives from the live WebSocket, re-stamped by the
+// heartbeat command StampConnectedPCsSeen. A PC whose /pc/me poll has gone stale
+// (nil LastPCSeenAt — the hidden/occluded-tab case, where the render loop and its
+// poll are suspended) but whose login still holds a live socket is refreshed by
+// the heartbeat, so the sweep must NOT eject it.
+func TestStampConnectedPCsSeen_KeepsWSConnectedPC(t *testing.T) {
+	w, cancel := buildPresenceTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+	huddleID := huddlePlayerAndNora(t, w, now)
+
+	stamped := sendPresence(t, w, sim.StampConnectedPCsSeen(map[string]struct{}{"player": {}})).(int)
+	if stamped != 1 {
+		t.Fatalf("stamped = %d, want 1 (player login is connected)", stamped)
+	}
+	ejected := sendPresence(t, w, sim.SweepStalePCPresence(now)).(int)
+	if ejected != 0 {
+		t.Fatalf("ejected = %d, want 0 (WS-connected PC must stay)", ejected)
+	}
+	if got := w.Published().Actors["player"].CurrentHuddleID; got != huddleID {
+		t.Errorf("WS-connected PC was ejected (%q), should remain in %q", got, huddleID)
+	}
+}
+
+// The inverse: a PC whose login holds no live socket is not refreshed by the
+// heartbeat, so it stays stale and the sweep reclaims it — the closed-tab /
+// dropped-socket cleanup ZBBS-WORK-326 introduced, now keyed on the WS instead of
+// the poll. A different login being connected must not spare it.
+func TestStampConnectedPCsSeen_DisconnectedPCSwept(t *testing.T) {
+	w, cancel := buildPresenceTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+	huddlePlayerAndNora(t, w, now)
+
+	stamped := sendPresence(t, w, sim.StampConnectedPCsSeen(map[string]struct{}{"someone-else": {}})).(int)
+	if stamped != 0 {
+		t.Fatalf("stamped = %d, want 0 (player login not connected)", stamped)
+	}
+	ejected := sendPresence(t, w, sim.SweepStalePCPresence(now)).(int)
+	if ejected != 1 {
+		t.Fatalf("ejected = %d, want 1 (disconnected ghost reclaimed)", ejected)
+	}
+}
+
+// StampConnectedPCsSeen only touches PCs whose login is in the connected set: an
+// empty set is a no-op, and an NPC id in the set matches nothing (the command
+// keys on LoginUsername over KindPC actors only, never an NPC).
+func TestStampConnectedPCsSeen_OnlyConnectedPCs(t *testing.T) {
+	w, cancel := buildPresenceTestWorld(t)
+	defer cancel()
+
+	if got := sendPresence(t, w, sim.StampConnectedPCsSeen(nil)).(int); got != 0 {
+		t.Errorf("empty set stamped %d, want 0", got)
+	}
+	if got := sendPresence(t, w, sim.StampConnectedPCsSeen(map[string]struct{}{"nora": {}})).(int); got != 0 {
+		t.Errorf("NPC-name set stamped %d, want 0 (PC-login only)", got)
+	}
+}
+
 // A PC that just polled /pc/me (StampPCSeen) is fresh, so the sweep keeps it.
 func TestSweepStalePCPresence_KeepsFreshPC(t *testing.T) {
 	w, cancel := buildPresenceTestWorld(t)

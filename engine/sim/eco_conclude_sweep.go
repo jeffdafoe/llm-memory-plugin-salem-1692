@@ -27,8 +27,8 @@ import (
 // npc_spoke beat ticks once more and re-forms the scene. The scene still
 // HAPPENS (an arc of EcoConversationMax at the eco cadence ≈ 3-6 beats —
 // greetings exchanged, memories formed); it just can't run forever with
-// nobody watching. When a player returns, AudienceActive flips on their first
-// /pc/me poll, the sweep stops stamping/concluding, and every arc stamp is
+// nobody watching. When a player returns, AudienceActive flips as soon as their
+// client attaches (WS heartbeat, LLM-342), the sweep stops stamping/concluding, and every arc stamp is
 // cleared — already-concluded conversations are not resurrected, the actors
 // are simply quiet and respond to greetings like any other quiet moment.
 //

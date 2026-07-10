@@ -13,10 +13,10 @@ import "time"
 //
 // Presence predicate: any KindPC actor with a fresh LastPCSeenAt — the exact
 // signal the ghost-ejection sweep already trusts (pc_presence.go,
-// PCPresenceStale, 40s staleness over the client's 10s /pc/me polls). Watching
-// and playing are the same thing (admins use the same Godot client; the
-// umbilical's JSON reads deliberately do NOT count as audience). Wake is
-// instant and free: the first /pc/me poll stamps presence and the next reactor
+// PCPresenceStale, 40s staleness over the WS presence heartbeat, LLM-342).
+// Watching and playing are the same thing (admins use the same Godot client; the
+// umbilical's JSON reads deliberately do NOT count as audience). Wake is instant
+// and free: a connecting client's socket stamps presence and the next reactor
 // scan runs at full cadence.
 //
 // Mechanism: DELAY, not drop. Warrants mint exactly as today — dedup,

@@ -6,32 +6,49 @@ import (
 	"time"
 )
 
-// PC presence cleanup (ZBBS-WORK-326) — the v2 port of v1's pc_presence_sweep.
+// PC presence cleanup (ZBBS-WORK-326; presence signal reworked in LLM-342) — the
+// v2 port of v1's pc_presence_sweep.
 //
-// A human player drives their PC through the Godot client, which polls
-// POST /api/village/pc/me every 10s while the game is open (talk_panel.gd
-// REFRESH_INTERVAL). StampPCSeen records the instant of each poll on
-// Actor.LastPCSeenAt, so a fresh stamp means "a live client is here." When the
-// player closes the tab the polls stop and the stamp goes stale.
+// A human player drives their PC through the Godot client. The presence signal is
+// the player's live WebSocket (client/scripts/event_client.gd): while a socket is
+// connected the server re-stamps Actor.LastPCSeenAt every
+// PCPresenceHeartbeatInterval (RunPCPresenceHeartbeat), so a fresh stamp means "a
+// live client is here." The WS is the right signal because the browser's network
+// stack answers the ping/pong even when the tab is hidden or occluded — unlike the
+// old /pc/me poll, which rode the render loop and stopped whenever the window quit
+// painting, erasing a player who was still sitting there (LLM-342). Deliberate PC
+// actions (TouchPCInput) also stamp presence, as defence in depth against a
+// momentary socket blip.
 //
-// Without cleanup a stale (ghost) PC stays pinned in whatever conversational
-// huddle it was in, and co-located LLM-NPCs keep getting warranted to greet a
-// player who isn't actually there — a real prod cost bug (2026-05-11/12). The
-// sweep ejects stale PCs from their huddles, and the encounter cascades skip
-// stale PCs when forming new huddles (PCPresenceStale is the shared gate), so
-// the greeting cost stops. The PC actor stays in the world (idle/offline) and
-// re-attaches the moment its client polls again — it is NOT despawned.
+// When the player closes the tab, sleeps the machine, or loses the network the
+// socket drops within ~pongWait (~60s), the heartbeat stops stamping it, and the
+// stamp goes stale. Without cleanup a stale (ghost) PC stays pinned in whatever
+// conversational huddle it was in, and co-located LLM-NPCs keep getting warranted
+// to greet a player who isn't actually there — a real prod cost bug (2026-05-11/12).
+// The sweep ejects stale PCs from their huddles, and the encounter cascades skip
+// stale PCs when forming new huddles (PCPresenceStale is the shared gate), so the
+// greeting cost stops. The PC actor stays in the world (idle/offline) and
+// re-attaches the moment its client reconnects — it is NOT despawned.
 
 const (
 	// DefaultPCPresenceStaleAfter is the fallback staleness threshold when
-	// WorldSettings.PCPresenceStaleAfter is unset. ~4 missed 10s polls — long
-	// enough to ride out a network hiccup, short enough to clear a closed tab
-	// promptly.
+	// WorldSettings.PCPresenceStaleAfter is unset. At ~2.6× the heartbeat interval
+	// it rides out a single missed heartbeat or a brief socket blip, while still
+	// clearing a genuinely dropped socket within a sweep interval of the ~60s pong
+	// timeout.
 	DefaultPCPresenceStaleAfter = 40 * time.Second
 
 	// PCPresenceSweepInterval is how often the presence sweep scans for stale
 	// PCs. A const (not a setting), matching RoomSweepInterval / SleepTickerInterval.
 	PCPresenceSweepInterval = 15 * time.Second
+
+	// PCPresenceHeartbeatInterval is how often the server re-stamps LastPCSeenAt
+	// for every WS-connected PC (LLM-342). It MUST stay comfortably below the stale
+	// threshold (DefaultPCPresenceStaleAfter) so a live socket always refreshes a
+	// PC before the sweep could judge it stale; 15s against 40s leaves ~2 stamps of
+	// margin for scheduling jitter. Matches PCPresenceSweepInterval — presence is
+	// generated and reclaimed on the same cadence.
+	PCPresenceHeartbeatInterval = 15 * time.Second
 )
 
 // PCPresenceStaleAfter returns the configured staleness threshold, falling back
@@ -57,13 +74,15 @@ func PCPresenceStale(lastSeenAt *time.Time, now time.Time, staleAfter time.Durat
 	return now.Sub(*lastSeenAt) > staleAfter
 }
 
-// StampPCSeen records a /pc/me poll: sets the caller's PC LastPCSeenAt to the
-// instant the command EXECUTES on the world goroutine (not request-receipt
-// time) — so a backed-up command channel can't stamp an already-old time and
-// make a live client look stale earlier than it is (code_review R1). A no-op
-// for a missing actor or a non-PC id, so a stray caller can't stamp an NPC.
-// MUST run on the world goroutine (mutates the actor) — sent as a command from
-// the pc/me handler.
+// StampPCSeen sets one PC's LastPCSeenAt to the instant the command EXECUTES on
+// the world goroutine (not request-receipt time) — so a backed-up command channel
+// can't stamp an already-old time and make a live client look stale earlier than
+// it is (code_review R1). A no-op for a missing actor or a non-PC id, so a stray
+// caller can't stamp an NPC. MUST run on the world goroutine (mutates the actor).
+//
+// The live presence signal is the WS heartbeat (StampConnectedPCsSeen, driven by
+// RunPCPresenceHeartbeat) plus TouchPCInput on deliberate actions; this
+// single-actor primitive is retained for tests and as a utility.
 func StampPCSeen(actorID ActorID) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
@@ -120,6 +139,74 @@ func RunPCPresenceSweep(ctx context.Context, w *World) {
 			now := time.Now().UTC()
 			if _, err := w.SendContext(ctx, SweepStalePCPresence(now)); err != nil && ctx.Err() == nil {
 				log.Printf("sim/pc_presence: stale-PC sweep failed: %v", err)
+			}
+		}
+	}
+}
+
+// ConnectedPCSource reports which login names currently hold at least one live
+// client connection. The WS hub (httpapi.Hub) implements it; the presence
+// heartbeat reads it each tick. Declared here, not in httpapi, so package sim
+// owns no dependency on the HTTP layer (httpapi already imports sim).
+type ConnectedPCSource interface {
+	ConnectedLogins() map[string]struct{}
+}
+
+// StampConnectedPCsSeen refreshes LastPCSeenAt for every PC whose login currently
+// holds a live WS connection (LLM-342). This is the server-side presence
+// heartbeat that replaces the client's render-loop /pc/me poll as the liveness
+// signal: a hidden or occluded browser tab suspends the render loop (and its poll)
+// but not the WebSocket, whose ping/pong is serviced by the browser's network
+// stack — so a connected login means the player is still here. Stamps the
+// execution-time instant (like StampPCSeen) so a backed-up command channel can't
+// backdate a live client into staleness. NPCs and logins with no matching PC match
+// nothing. Returns the count stamped. MUST run on the world goroutine.
+func StampConnectedPCsSeen(connectedLogins map[string]struct{}) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			if len(connectedLogins) == 0 {
+				return 0, nil
+			}
+			now := time.Now().UTC()
+			stamped := 0
+			for _, a := range w.Actors {
+				if a.Kind != KindPC {
+					continue
+				}
+				if _, ok := connectedLogins[a.LoginUsername]; !ok {
+					continue
+				}
+				a.LastPCSeenAt = &now
+				stamped++
+			}
+			return stamped, nil
+		},
+	}
+}
+
+// RunPCPresenceHeartbeat re-stamps presence for every WS-connected PC on
+// PCPresenceHeartbeatInterval (LLM-342). Started only when the WS surface exists
+// (the hub is the ConnectedPCSource). When a socket drops (closed tab, sleep,
+// network loss) the hub removes the login within ~pongWait (~60s) and the stamps
+// stop, so the existing SweepStalePCPresence reclaims the ghost within the stale
+// threshold — the closed-tab cleanup ZBBS-WORK-326 added is preserved, now keyed
+// on the socket instead of the render-loop poll. SendContext so shutdown unblocks
+// cleanly. Mirrors RunPCPresenceSweep.
+func RunPCPresenceHeartbeat(ctx context.Context, w *World, src ConnectedPCSource) {
+	t := time.NewTicker(PCPresenceHeartbeatInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			w.beatTicker("pc_presence_heartbeat")
+			logins := src.ConnectedLogins()
+			if len(logins) == 0 {
+				continue
+			}
+			if _, err := w.SendContext(ctx, StampConnectedPCsSeen(logins)); err != nil && ctx.Err() == nil {
+				log.Printf("sim/pc_presence: presence heartbeat failed: %v", err)
 			}
 		}
 	}
