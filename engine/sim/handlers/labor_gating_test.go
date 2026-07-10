@@ -111,7 +111,7 @@ func workOfferedToMePayload(ids ...sim.LaborID) perception.Payload {
 	for _, id := range ids {
 		offers = append(offers, perception.LaborOfferView{
 			LaborID: id, Worker: "lewis", Employer: "prudence",
-			SubjectIsWorker: true, Reward: 4, DurationMin: 240,
+			EmployerInitiated: true, Reward: 4, DurationMin: 240,
 		})
 	}
 	return perception.Payload{ActorID: "lewis", LaborOffersForMe: offers, Surroundings: speakAudience()}

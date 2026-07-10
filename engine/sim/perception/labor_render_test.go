@@ -247,6 +247,92 @@ func TestSubjectHasPendingLaborOfferOut(t *testing.T) {
 	}
 }
 
+// TestLaborOfferLivePending_ExpiredPendingRowDoesNotSuppress is the code_review
+// catch on LLM-346. A pending offer sits in the ledger for up to a full sweep
+// cadence (60s) after its 3-minute TTL elapses — only the aging sweep flips it
+// Expired. The substrate already skips those rows (workerPendingLaborOffer's
+// `!now.Before(o.ExpiresAt)`), so perception must too, or for up to a minute a
+// worker cannot solicit and a keeper cannot hire against an offer that is already
+// dead: a cue that hides while the tool would happily mint.
+func TestLaborOfferLivePending_ExpiredPendingRowDoesNotSuppress(t *testing.T) {
+	published := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	snap := &sim.Snapshot{
+		PublishedAt: published,
+		LaborLedger: map[sim.LaborID]*sim.LaborOffer{
+			// Minted 4 minutes ago with the 3-minute TTL: dead, but unswept.
+			1: {
+				ID: 1, WorkerID: "ezekiel", EmployerID: "josiah",
+				State:     sim.LaborStatePending,
+				ExpiresAt: published.Add(-time.Minute),
+			},
+		},
+	}
+	if subjectHasPendingLaborOfferOut(snap, "ezekiel") {
+		t.Error("an expired-but-unswept offer still suppresses the worker's solicit affordance; the substrate would mint past it")
+	}
+	if subjectHasLaborOfferToAnswer(snap, "josiah") {
+		t.Error("an expired-but-unswept offer still suppresses the employer's affordances; there is nothing left to answer")
+	}
+
+	// A live one still suppresses both.
+	snap.LaborLedger[1].ExpiresAt = published.Add(time.Minute)
+	if !subjectHasPendingLaborOfferOut(snap, "ezekiel") {
+		t.Error("a live pending offer must still suppress the worker's solicit affordance")
+	}
+	if !subjectHasLaborOfferToAnswer(snap, "josiah") {
+		t.Error("a live pending offer must still name the employer as owing an answer")
+	}
+
+	// A clock-free fixture (the golden matrix) treats the row as live, matching
+	// how the ledger reads a zero ExpiresAt.
+	snap.PublishedAt = time.Time{}
+	snap.LaborLedger[1].ExpiresAt = time.Time{}
+	if !subjectHasPendingLaborOfferOut(snap, "ezekiel") {
+		t.Error("a clock-free pending offer must read as live")
+	}
+}
+
+// TestIsHireableWorker_ExpiredOfferDoesNotHideTheWorker is the same drift on the
+// hiring side: a worker holding a dead-but-unswept offer must not vanish from the
+// keeper's offer_work cue, because sim.OfferWork would take him.
+func TestIsHireableWorker_ExpiredOfferDoesNotHideTheWorker(t *testing.T) {
+	published := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	prudence := &sim.ActorSnapshot{
+		DisplayName:   "Prudence Ward",
+		Acquaintances: map[string]sim.Acquaintance{"Lewis Walker": {}},
+	}
+	lewis := &sim.ActorSnapshot{
+		DisplayName:    "Lewis Walker",
+		AttributeSlugs: []string{sim.AttrWorker},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt: published,
+		Actors:      map[sim.ActorID]*sim.ActorSnapshot{"prudence": prudence, "lewis": lewis},
+		LaborLedger: map[sim.LaborID]*sim.LaborOffer{
+			1: {
+				ID: 1, WorkerID: "lewis", EmployerID: "hannah",
+				State:     sim.LaborStatePending,
+				ExpiresAt: published.Add(-time.Minute), // dead, unswept
+			},
+		},
+	}
+	if !isHireableWorker(snap, "prudence", prudence, "lewis") {
+		t.Error("Lewis is hidden from the offer_work cue by a dead offer the substrate would mint straight past")
+	}
+
+	// A live offer to someone else does occupy him — one answer at a time.
+	snap.LaborLedger[1].ExpiresAt = published.Add(time.Minute)
+	if isHireableWorker(snap, "prudence", prudence, "lewis") {
+		t.Error("Lewis owes Hannah an answer; he must not be offered a second job")
+	}
+
+	// So does a job already under way.
+	snap.LaborLedger[1].State = sim.LaborStateWorking
+	if isHireableWorker(snap, "prudence", prudence, "lewis") {
+		t.Error("Lewis is mid-job; he must not be offered another")
+	}
+}
+
 // TestSubjectHasPendingLaborOfferOut_EmployerInitiated is the LLM-346 direction:
 // the employer minted the offer, so the roles of the two predicates swap. Without
 // this the worker would be told to go seek work while an offer of work stood in

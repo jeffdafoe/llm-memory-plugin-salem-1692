@@ -2258,8 +2258,8 @@ func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason, nam
 // carry the labor_id whenever gateTools advertises the response tools (the
 // discussion-109 invariant). LLM-26.
 //
-// Two directions share the section (LLM-346), keyed off LaborOfferView.SubjectIsWorker.
-// When the subject is the employer (the zero value), a worker has offered to do a
+// Two directions share the section (LLM-346), keyed off LaborOfferView.SubjectIsWorker().
+// When the subject is the employer (the zero value of EmployerInitiated), a worker has offered to do a
 // job and the affordability steer applies — the subject would be the one paying.
 // When the subject is the worker, an employer has asked them to lend a hand: no
 // affordability steer (they cannot see the keeper's purse), no returning-helper
@@ -2275,7 +2275,7 @@ func renderLaborOffers(b *strings.Builder, offers []LaborOfferView, employerCoin
 		// The pay may be coins, goods the employer holds, or both (LLM-225) —
 		// formatOfferPayment renders whichever legs are present ("5 coins",
 		// "1 porridge", "1 porridge and 2 coins").
-		if o.SubjectIsWorker {
+		if o.SubjectIsWorker() {
 			fmt.Fprintf(b, "%d. %s has asked you to do a job for them — %s for about %s of work (offer id %d)\n",
 				i+1, nameOf(o.Employer), formatOfferPayment(o.Reward, o.RewardItems), humanizeWorkMinutes(o.DurationMin), o.LaborID)
 			anyAffordable = true // no coin gate on the worker's side — the pay comes to them
@@ -2458,7 +2458,7 @@ func renderPendingLaborOfferOut(b *strings.Builder, offer *PendingLaborOfferOutV
 	// The pay may be coins, goods, or both (LLM-225).
 	payment := formatOfferPayment(offer.Reward, offer.RewardItems)
 	duration := humanizeWorkMinutes(offer.DurationMin)
-	if offer.SubjectIsEmployer {
+	if offer.SubjectIsEmployer() {
 		fmt.Fprintf(b, "You've asked %s to work for you for %s (about %s) — your offer stands and it is their move now. There's nothing more to do on it; wait for their answer, say a brief word if you like, then call done().\n",
 			nameOf(offer.Worker), payment, duration)
 		return

@@ -3943,7 +3943,7 @@ func buildLaborOffersForMe(snap *sim.Snapshot, subject sim.ActorID) []LaborOffer
 			LaborID:              o.ID,
 			Worker:               o.WorkerID,
 			Employer:             o.EmployerID,
-			SubjectIsWorker:      !subjectIsEmployer,
+			EmployerInitiated:    o.EmployerInitiated(),
 			Reward:               o.Reward,
 			RewardItems:          o.RewardItems,
 			MissingRewardItems:   missing,
@@ -4110,14 +4110,39 @@ func buildPendingLaborOfferOut(snap *sim.Snapshot, subject sim.ActorID) *Pending
 	return &PendingLaborOfferOutView{
 		Employer:          best.EmployerID,
 		Worker:            best.WorkerID,
-		SubjectIsEmployer: best.EmployerInitiated(),
+		EmployerInitiated: best.EmployerInitiated(),
 		Reward:            best.Reward,
 		RewardItems:       best.RewardItems,
 		DurationMin:       best.DurationMin,
 	}
 }
 
-// subjectHasPendingLaborOfferOut reports whether the subject MINTED a pending
+// laborOfferLivePending reports whether o is a pending offer that has not yet run
+// out its TTL as of the snapshot instant — the perception mirror of the substrate's
+// `!now.Before(o.ExpiresAt)` skip (workerPendingLaborOffer, activeLaborBetween).
+//
+// The two must agree or the affordances drift (code_review). A pending offer sits
+// in the ledger for up to a full sweep cadence (60s) after its 3-minute TTL
+// elapses, because only the aging sweep flips it Expired. Suppressing on the bare
+// `State == Pending` therefore hides solicit_work / offer_work for as much as a
+// minute against an offer the substrate would cheerfully mint past — a keeper
+// watching a hireable worker vanish from her prompt for no reason she can see.
+// Judged against snap.PublishedAt, so every actor perceiving one snapshot agrees.
+//
+// A zero instant means a clock-free fixture (hand-built snapshots, the golden
+// matrix); those rows are treated as live, matching how the ledger reads a
+// zero ExpiresAt.
+func laborOfferLivePending(o *sim.LaborOffer, at time.Time) bool {
+	if o == nil || o.State != sim.LaborStatePending {
+		return false
+	}
+	if at.IsZero() || o.ExpiresAt.IsZero() {
+		return true
+	}
+	return at.Before(o.ExpiresAt)
+}
+
+// subjectHasPendingLaborOfferOut reports whether the subject MINTED a live pending
 // labor offer that is still awaiting the other party's answer — the perception
 // mirror of SolicitWork's / OfferWork's one-pending-offer-out gate, so the
 // affordance cue and the tool both hide while an offer is outstanding
@@ -4127,25 +4152,25 @@ func subjectHasPendingLaborOfferOut(snap *sim.Snapshot, subject sim.ActorID) boo
 		return false
 	}
 	for _, o := range snap.LaborLedger {
-		if o != nil && o.State == sim.LaborStatePending && o.Initiator() == subject {
+		if laborOfferLivePending(o, snap.PublishedAt) && o.Initiator() == subject {
 			return true
 		}
 	}
 	return false
 }
 
-// subjectHasLaborOfferToAnswer reports whether a pending labor offer awaits the
-// subject's accept_work / decline_work (LLM-346). Suppresses the solicit_work and
-// offer_work affordances: an actor holding an unanswered offer should answer it,
-// not open a second bargain — and a worker who has just been ASKED to lend a hand
-// must not be told to go and ask for work. The perception mirror of the
+// subjectHasLaborOfferToAnswer reports whether a live pending labor offer awaits
+// the subject's accept_work / decline_work (LLM-346). Suppresses the solicit_work
+// and offer_work affordances: an actor holding an unanswered offer should answer
+// it, not open a second bargain — and a worker who has just been ASKED to lend a
+// hand must not be told to go and ask for work. The perception mirror of the
 // substrate's duplicate-offer gates, which reject the second mint outright.
 func subjectHasLaborOfferToAnswer(snap *sim.Snapshot, subject sim.ActorID) bool {
 	if snap == nil {
 		return false
 	}
 	for _, o := range snap.LaborLedger {
-		if o != nil && o.State == sim.LaborStatePending && o.Responder() == subject {
+		if laborOfferLivePending(o, snap.PublishedAt) && o.Responder() == subject {
 			return true
 		}
 	}
@@ -4459,8 +4484,16 @@ func isHireableWorker(snap *sim.Snapshot, subjectID sim.ActorID, subject *sim.Ac
 			continue
 		}
 		switch o.State {
-		case sim.LaborStatePending, sim.LaborStateEnRoute, sim.LaborStateWorking:
-			return false // already committed, or owed an answer on another offer
+		case sim.LaborStatePending:
+			// Only a LIVE pending offer occupies the worker. A row past its TTL is
+			// dead — the sweep just hasn't flipped it yet — and sim.OfferWork would
+			// mint straight past it, so hiding the worker here would drift the cue
+			// from the tool for up to a sweep cadence (code_review).
+			if laborOfferLivePending(o, snap.PublishedAt) {
+				return false
+			}
+		case sim.LaborStateEnRoute, sim.LaborStateWorking:
+			return false // already committed to a job
 		}
 	}
 	return true
@@ -4479,6 +4512,24 @@ func isHireableWorker(snap *sim.Snapshot, subjectID sim.ActorID, subject *sim.Ac
 // (LaborID is minted monotonically) and suppresses only when that offer is a
 // declined offer_work. The suppression ages out with the ledger reaper
 // (LaborLedgerTerminalRetentionDefault, 1h).
+//
+// The 1h window is deliberate and symmetric, though it can look otherwise
+// (code_review). There are TWO refusal memories in the labor system, and only one
+// of them has a hiring-side counterpart:
+//
+//   - The CO-PRESENT audience suppression — "don't re-ask the person standing in
+//     front of you who just said no." That is employerDeclinedSubject on the
+//     solicit side and this function on the hire side. Both are pure ledger scans,
+//     both last exactly as long as the declined row does (1h). Symmetric.
+//   - The DIRECTORY suppression — the worker's 12h ObservedDeclinedWork memory
+//     (LLM-198), which drops a shop from buildSeekWorkPlaces so the worker doesn't
+//     walk back across town to a closed door. There is no hiring-side counterpart
+//     because an employer never travels to find workers; she hires whoever is in
+//     the room. Nothing to drop from a directory she does not have.
+//
+// So a 12h employer-side observed state would suppress nothing the 1h ledger scan
+// doesn't already cover, and would keep a keeper from re-asking a worker whose
+// circumstances changed the same afternoon.
 func workerDeclinedSubject(snap *sim.Snapshot, employerID, candidate sim.ActorID) bool {
 	var latest *sim.LaborOffer
 	for _, o := range snap.LaborLedger {

@@ -324,7 +324,7 @@ func TestGoldensUnansweredRequestIsNeverToolless(t *testing.T) {
 				t.Errorf("scenario %q: a labor offer awaits the subject's answer but the prompt names neither accept_work nor decline_work — the request is rendered with no way to answer it (LLM-346)", sc.name)
 			}
 			for _, o := range offers {
-				if o.SubjectIsWorker {
+				if o.SubjectIsWorker() {
 					exercisedOffered = true
 					if !strings.Contains(out, "accept_work") {
 						t.Errorf("scenario %q: an employer offered the subject a job but the prompt never names accept_work — a worker who can say yes must be able to (LLM-346)", sc.name)

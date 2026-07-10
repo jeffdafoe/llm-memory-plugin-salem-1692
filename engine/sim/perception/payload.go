@@ -865,16 +865,21 @@ type LaborOfferView struct {
 	LaborID  sim.LaborID
 	Worker   sim.ActorID
 	Employer sim.ActorID
-	// SubjectIsWorker is true when the subject is the one who would WORK — an
-	// employer offered them the job (offer_work). False when the subject is the
-	// one who would PAY — a worker solicited them (solicit_work).
+	// EmployerInitiated records WHO MINTED the offer — the same domain fact
+	// sim.LaborOffer.EmployerInitiated() carries, not a subject-relative flag. The
+	// subject is the responder by construction, so their role follows: an
+	// employer-initiated offer means the subject is the worker being asked; a
+	// worker-initiated one means the subject is the employer being solicited.
+	// Read it through SubjectIsWorker / SubjectIsEmployer rather than inline, so
+	// no callsite has to redo that step.
 	//
-	// The polarity is chosen so the ZERO VALUE is the employer-receiving-a-
-	// solicitation case: that was the only direction before LLM-346, it remains
-	// the common one, and a hand-built payload that omits the field therefore
-	// renders the sentence it always did rather than silently addressing the
-	// subject as the wrong party.
-	SubjectIsWorker bool
+	// The zero value is the worker-initiated direction — the only one that existed
+	// before LLM-346 and still the common one — so a hand-built payload that omits
+	// the field renders the sentence it always did rather than silently addressing
+	// the subject as the wrong party. PendingLaborOfferOutView carries the same
+	// field with the same name, meaning and zero value, so the two cannot be
+	// confused for having opposite polarity (code_review).
+	EmployerInitiated bool
 	// Reward is the coin leg; RewardItems the in-kind leg (goods the
 	// EMPLOYER hands over at settle — LLM-225). At least one is non-empty.
 	Reward      int
@@ -899,6 +904,16 @@ type LaborOfferView struct {
 	// the memory lives on the employer, keyed by the worker's PeerID.
 	HelpedBeforeRecently bool
 }
+
+// SubjectIsWorker reports whether the subject of this offer is the one who would
+// do the work — i.e. an employer asked them. The subject of a LaborOfferView is
+// always the responder, so this is exactly "the employer minted it." LLM-346.
+func (v LaborOfferView) SubjectIsWorker() bool { return v.EmployerInitiated }
+
+// SubjectIsEmployer reports whether the subject is the one who would pay — i.e. a
+// worker solicited them. The complement of SubjectIsWorker, named so no callsite
+// has to reason about the negation. LLM-346.
+func (v LaborOfferView) SubjectIsEmployer() bool { return !v.EmployerInitiated }
 
 // LaboringView carries the subject's OWN in-progress job for the self-state
 // line (LLM-26): who they're working for and when the work window completes.
@@ -965,16 +980,29 @@ type PendingLaborOfferOutView struct {
 	// Worker is the actor who would do the job. Set on both directions so the
 	// employer-side line can name whom they asked (LLM-346).
 	Worker sim.ActorID
-	// SubjectIsEmployer is true when the subject MINTED an offer of work
-	// (offer_work) and is waiting on the worker's answer; false when the subject
-	// solicited (solicit_work) and is waiting on the employer's.
-	SubjectIsEmployer bool
+	// EmployerInitiated records WHO MINTED the offer — the same field name,
+	// meaning and zero value LaborOfferView carries, so the two adjacent labor
+	// views cannot be confused for having opposite polarity (code_review). The
+	// subject of this view is always the INITIATOR, so their role follows: an
+	// employer-initiated offer means the subject is the employer who asked.
+	// Read it through SubjectIsEmployer / SubjectIsWorker.
+	EmployerInitiated bool
 	// Reward is the coin leg; RewardItems the in-kind leg the worker would
 	// be paid in (LLM-225).
 	Reward      int
 	RewardItems []sim.ItemKindQty
 	DurationMin int
 }
+
+// SubjectIsEmployer reports whether the subject minted an offer of work
+// (offer_work) and is waiting on the worker's answer. The subject of a
+// PendingLaborOfferOutView is always the initiator, so this is exactly "the
+// employer minted it." LLM-346.
+func (v PendingLaborOfferOutView) SubjectIsEmployer() bool { return v.EmployerInitiated }
+
+// SubjectIsWorker reports whether the subject solicited (solicit_work) and is
+// waiting on the employer's answer. LLM-346.
+func (v PendingLaborOfferOutView) SubjectIsWorker() bool { return !v.EmployerInitiated }
 
 // OfferableCustomersView is the seller-side "offer your wares" cue's content
 // (ZBBS-HOME-404). CustomerNames are the acquaintance-gated labels

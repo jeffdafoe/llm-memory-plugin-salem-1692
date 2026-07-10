@@ -98,12 +98,17 @@ type LaborDeclineResult struct {
 
 // LaborOfferResult is OfferWork's success value — the minted pending offer's id
 // plus the resolved worker display name, so the tool feedback can name who the
-// job went to. State is always LaborStatePending: unlike SolicitWork, an
-// employer-initiated offer has no affordability branch to resolve here. The
-// employer names the reward themselves, so a reward they cannot cover is a
-// malformed call (rejected outright, nothing minted) rather than a doomed offer
-// worth recording. Announced / SayRefused carry the fate of the optional spoken
-// line the tool folds in (LLM-346, mirroring SceneQuoteCreateResult). LLM-346.
+// job went to.
+//
+// State is always LaborStatePending on success. OfferWork does check
+// affordability, but a failure there REJECTS before minting rather than resolving
+// to a terminal state the way SolicitWork's LLM-193 auto-decline does: the
+// employer names the wage herself, so one she cannot cover is a malformed call,
+// not a doomed offer worth recording against her (code_review — the earlier
+// wording claimed there was no affordability branch at all).
+//
+// Announced / SayRefused carry the fate of the optional spoken line the tool folds
+// in, mirroring SceneQuoteCreateResult. LLM-346.
 type LaborOfferResult struct {
 	ID         LaborID
 	State      LaborLedgerState
@@ -462,10 +467,9 @@ func OfferWork(employerID ActorID, workerName string, reward int, rewardItems []
 					workerName,
 				)
 			}
-			// Unreachable through the tool: findHuddlePeerByDisplayName excludes the
-			// caller, so naming yourself already bounced on resolution above. Kept as
-			// the backstop for non-handler callers passing an already-resolved id —
-			// the same posture as SolicitWork's not-self check.
+			// Defensive only: the huddle-peer resolver excludes the caller, so naming
+			// yourself already bounced on resolution above. Mirrors SolicitWork's
+			// equally unreachable not-self check.
 			if workerID == employerID {
 				return nil, errors.New("you cannot offer work to yourself")
 			}
