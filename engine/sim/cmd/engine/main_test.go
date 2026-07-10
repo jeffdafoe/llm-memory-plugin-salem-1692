@@ -112,9 +112,22 @@ func TestRun_LifecycleAndFinalCheckpoint(t *testing.T) {
 // without coupling the test to the full llm.Client surface.
 type stubSearcher struct{}
 
-func (stubSearcher) SearchMemory(context.Context, string, string, int) ([]llm.MemoryHit, error) {
+func (stubSearcher) SearchMemory(context.Context, string, string, string, int) ([]llm.MemoryHit, error) {
 	return nil, nil
 }
+
+// stubWriter is a minimal llm.MemoryWriter for registration tests — registerTools
+// wires memorize (LLM-356) but never calls it during registration, so no-ops
+// satisfy the contract without coupling the test to the full client surface.
+type stubWriter struct{}
+
+func (stubWriter) SaveNote(context.Context, string, string, string, string, string) error {
+	return nil
+}
+func (stubWriter) ListNotes(context.Context, string, string) ([]llm.NoteMeta, error) {
+	return nil, nil
+}
+func (stubWriter) DeleteNote(context.Context, string, string) error { return nil }
 
 // TestRegisterTools_RegistersDoneTerminal guards ZBBS-HOME-369: production
 // registerTools must register the universal `done` terminal tool. The NPC's
@@ -127,7 +140,7 @@ func (stubSearcher) SearchMemory(context.Context, string, string, int) ([]llm.Me
 // terminal AND advertised to the model.
 func TestRegisterTools_RegistersDoneTerminal(t *testing.T) {
 	r := handlers.NewRegistry()
-	if err := registerTools(r, stubSearcher{}); err != nil {
+	if err := registerTools(r, stubSearcher{}, stubWriter{}); err != nil {
 		t.Fatalf("registerTools: %v", err)
 	}
 
@@ -161,7 +174,7 @@ func TestRegisterTools_RegistersDoneTerminal(t *testing.T) {
 // commerce path.
 func TestRegisterTools_RegistersBareCoinPay(t *testing.T) {
 	r := handlers.NewRegistry()
-	if err := registerTools(r, stubSearcher{}); err != nil {
+	if err := registerTools(r, stubSearcher{}, stubWriter{}); err != nil {
 		t.Fatalf("registerTools: %v", err)
 	}
 	if _, ok := r.Lookup("pay"); !ok {
@@ -202,7 +215,7 @@ func TestRegisterTools_RegistersBareCoinPay(t *testing.T) {
 // added, place it in the right section and extend the lists here.
 func TestRegisterTools_CacheStableOrder(t *testing.T) {
 	r := handlers.NewRegistry()
-	if err := registerTools(r, stubSearcher{}); err != nil {
+	if err := registerTools(r, stubSearcher{}, stubWriter{}); err != nil {
 		t.Fatalf("registerTools: %v", err)
 	}
 	idx := map[string]int{}
@@ -252,7 +265,7 @@ func TestRegisterTools_CacheStableOrder(t *testing.T) {
 // inside registerTools (it needs the searcher) so it appears last.
 func TestRegisterTools_AdvertisedToolNamesExact(t *testing.T) {
 	r := handlers.NewRegistry()
-	if err := registerTools(r, stubSearcher{}); err != nil {
+	if err := registerTools(r, stubSearcher{}, stubWriter{}); err != nil {
 		t.Fatalf("registerTools: %v", err)
 	}
 
@@ -271,7 +284,7 @@ func TestRegisterTools_AdvertisedToolNamesExact(t *testing.T) {
 		"gather", "produce", "repair", "take_break", "stay_open", "deliver_order", "stop",
 		"solicit_work", "offer_work", "accept_work", "decline_work",
 		"accept_pay", "decline_pay", "counter_pay", "withdraw_pay",
-		"accept_gift", "decline_gift", "summon", "done", "recall",
+		"accept_gift", "decline_gift", "summon", "done", "recall", "memorize",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("advertised tool sequence drifted (LLM-328):\ngot  %v\nwant %v", got, want)
@@ -499,7 +512,7 @@ func TestTerminalToolsMatchPerceptionInvariantList(t *testing.T) {
 	}
 
 	r := handlers.NewRegistry()
-	if err := registerTools(r, stubSearcher{}); err != nil {
+	if err := registerTools(r, stubSearcher{}, stubWriter{}); err != nil {
 		t.Fatalf("registerTools: %v", err)
 	}
 	var got []string

@@ -26,7 +26,15 @@ type MemoryHit struct {
 // caller's responsibility — recall passes the acting NPC's own namespace,
 // never "*", so an NPC can only remember its own memory.
 //
+// slugPrefix narrows the search below the namespace to source_files under a
+// prefix (LLM-355/356): a shared-VA NPC's memory lives at "<name>/memory/…"
+// inside one shared namespace (salem-vendor), so recall passes "<name>/" to
+// keep each NPC from remembering another's. Empty = whole namespace (a
+// dedicated-VA NPC owns its namespace outright, so its recall spans notes,
+// dreams, and impressions). Passing it is mandatory at the type level so a
+// caller can't silently forget the isolation.
+//
 // Implemented by llm/memapi.Client. An empty result is NOT an error.
 type MemorySearcher interface {
-	SearchMemory(ctx context.Context, namespace, query string, limit int) ([]MemoryHit, error)
+	SearchMemory(ctx context.Context, namespace, query, slugPrefix string, limit int) ([]MemoryHit, error)
 }

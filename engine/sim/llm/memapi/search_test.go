@@ -25,7 +25,7 @@ func TestSearchMemory(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClient(srv.URL, "test-key")
-	hits, err := c.SearchMemory(context.Background(), "salem-john", "who is bea", 5)
+	hits, err := c.SearchMemory(context.Background(), "salem-john", "who is bea", "", 5)
 	if err != nil {
 		t.Fatalf("SearchMemory: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestSearchMemory_EmptyResults(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewClient(srv.URL, "k")
-	hits, err := c.SearchMemory(context.Background(), "ns", "q", 5)
+	hits, err := c.SearchMemory(context.Background(), "ns", "q", "", 5)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestSearchMemory_HTTPError(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewClient(srv.URL, "k")
-	if _, err := c.SearchMemory(context.Background(), "ns", "q", 5); err == nil {
+	if _, err := c.SearchMemory(context.Background(), "ns", "q", "", 5); err == nil {
 		t.Fatal("expected an error on HTTP 500")
 	}
 }

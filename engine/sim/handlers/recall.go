@@ -107,6 +107,12 @@ func DecodeRecallArgs(raw json.RawMessage) (any, error) {
 // so v1's per-hit "[namespace display name]" label (which required a
 // slug→name cache refreshed every tick) is dropped — every hit is from the
 // actor's own memory. Empty hits → recallNoMemoryText.
+//
+// The per-hit label is the note's Heading, not its SourceFile (LLM-356): a
+// memorize slug is a path like "anne-walker/memory/2026-07-10-blacksmiths-name"
+// — a raw identifier dropped into a scene — whereas the heading is the
+// human-phrased topic ("## The blacksmith's name"). Fall back to SourceFile
+// only when a hit carries no heading (raw ingest / pre-memorize note).
 func formatRecallHits(hits []llm.MemoryHit) string {
 	if len(hits) == 0 {
 		return recallNoMemoryText
@@ -114,9 +120,33 @@ func formatRecallHits(hits []llm.MemoryHit) string {
 	var b strings.Builder
 	b.WriteString("You remember:\n\n")
 	for _, h := range hits {
-		fmt.Fprintf(&b, "— %s —\n%s\n\n", h.SourceFile, h.ChunkText)
+		label := strings.TrimSpace(strings.TrimLeft(h.Heading, "#"))
+		text := h.ChunkText
+		if label != "" {
+			// The heading is the label; drop it from the body so it isn't shown
+			// twice (a memorize chunk_text leads with its own "## topic" line).
+			text = dropLeadingHeadingLine(text)
+		} else {
+			label = h.SourceFile
+		}
+		fmt.Fprintf(&b, "— %s —\n%s\n\n", label, strings.TrimSpace(text))
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// dropLeadingHeadingLine removes a leading markdown heading line (## …) and any
+// blank line right after it, so recall doesn't print the topic both as the hit
+// label and again atop the body.
+func dropLeadingHeadingLine(text string) string {
+	trimmed := strings.TrimLeft(text, " \t\n")
+	if !strings.HasPrefix(trimmed, "#") {
+		return text
+	}
+	nl := strings.IndexByte(trimmed, '\n')
+	if nl < 0 {
+		return ""
+	}
+	return strings.TrimLeft(trimmed[nl+1:], "\n")
 }
 
 // makeRecallHandler builds the recall ObservationFn closed over searcher. It
@@ -137,17 +167,24 @@ func makeRecallHandler(searcher llm.MemorySearcher) ObservationFn {
 		if utf8.RuneCountInString(query) > recallQueryMaxChars {
 			query = string([]rune(query)[:recallQueryMaxChars])
 		}
-		if strings.TrimSpace(in.LLMMemoryAgent) == "" {
-			// No VA namespace to search (decorative / unbacked actor). v1
-			// logged + returned the in-character failure string.
-			log.Printf("handlers: recall for actor %q: no llm-memory namespace", in.ActorID)
+		namespace := strings.TrimSpace(in.LLMMemoryAgent)
+		if namespace == "" || !in.MemoryHasPartition {
+			// No memory partition (decorative / PC, or a shared-VA actor whose
+			// name won't slugify). Guarding on MemoryHasPartition — not just a
+			// non-empty namespace — is a PRIVACY control: a partition-less shared-VA
+			// actor has an empty MemorySlugPrefix, so an unguarded search of its
+			// pooled namespace (salem-vendor) would leak the OTHER NPCs' private
+			// memories into this actor's transcript. The perception gate already
+			// drops recall for these, but gates are advertising-only, so the handler
+			// is the real control (matches memorize).
+			log.Printf("handlers: recall for actor %q: no memory partition (ns %q, hasPartition %v)", in.ActorID, namespace, in.MemoryHasPartition)
 			return recallFailedText, nil
 		}
-		hits, err := searcher.SearchMemory(ctx, in.LLMMemoryAgent, query, recallResultLimit)
+		hits, err := searcher.SearchMemory(ctx, namespace, query, in.MemorySlugPrefix, recallResultLimit)
 		if err != nil {
 			// Detailed error to the log; in-character string to the model
 			// (don't leak API/transport detail into the LLM transcript).
-			log.Printf("handlers: recall for actor %q (ns %q): search: %v", in.ActorID, in.LLMMemoryAgent, err)
+			log.Printf("handlers: recall for actor %q (ns %q): search: %v", in.ActorID, namespace, err)
 			return recallFailedText, nil
 		}
 		return formatRecallHits(hits), nil

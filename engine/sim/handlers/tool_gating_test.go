@@ -231,48 +231,67 @@ func TestGateTools_AllOffersAtCap_DropsCounterPay(t *testing.T) {
 	}
 }
 
-// gatingRegistryWithRecall extends the gating test registry with a recall
-// observation tool, for the dedicated-VA gate tests (ZBBS-WORK-321).
-func gatingRegistryWithRecall(t *testing.T) *Registry {
+// gatingRegistryWithMemoryTools extends the gating test registry with the recall
+// and memorize observation tools, for the memory-partition gate tests (LLM-356).
+func gatingRegistryWithMemoryTools(t *testing.T) *Registry {
 	t.Helper()
 	r := gatingTestRegistry(t)
-	if err := r.RegisterObservation(
-		"recall",
-		json.RawMessage(`{"type":"object"}`),
-		func(json.RawMessage) (any, error) { return nil, nil },
-		func(_ context.Context, _ HandlerInput) (string, error) { return "", nil },
-	); err != nil {
-		t.Fatalf("RegisterObservation recall: %v", err)
+	for _, name := range []string{"recall", "memorize"} {
+		if err := r.RegisterObservation(
+			name,
+			json.RawMessage(`{"type":"object"}`),
+			func(json.RawMessage) (any, error) { return nil, nil },
+			func(_ context.Context, _ HandlerInput) (string, error) { return "", nil },
+		); err != nil {
+			t.Fatalf("RegisterObservation %s: %v", name, err)
+		}
 	}
 	return r
 }
 
 func snapWithActorKind(id sim.ActorID, kind sim.ActorKind) *sim.Snapshot {
-	return &sim.Snapshot{Actors: map[sim.ActorID]*sim.ActorSnapshot{id: {Kind: kind}}}
+	return snapWithActorKindName(id, kind, "")
 }
 
-// TestGateTools_Recall_AdvertisedOnlyToDedicatedVA — recall is offered to a
-// KindNPCStateful (own VA + memory) actor, dropped for a KindNPCShared actor
-// (no personal memory), and dropped conservatively when the actor can't be
-// resolved (nil snapshot). ZBBS-WORK-321.
-func TestGateTools_Recall_AdvertisedOnlyToDedicatedVA(t *testing.T) {
-	r := gatingRegistryWithRecall(t)
+func snapWithActorKindName(id sim.ActorID, kind sim.ActorKind, name string) *sim.Snapshot {
+	return &sim.Snapshot{Actors: map[sim.ActorID]*sim.ActorSnapshot{id: {Kind: kind, DisplayName: name}}}
+}
+
+// TestGateTools_MemoryTools_AdvertisedToActorsWithMemory — recall AND memorize
+// are offered to any actor with a private memory partition: a dedicated-VA NPC
+// (KindNPCStateful) and a shared-VA NPC (KindNPCShared) with a slugifiable name.
+// They are dropped for a PC, a decorative, a shared-VA actor whose name won't
+// slugify (no partition to key), and conservatively when the actor can't be
+// resolved. This is the cross-kind invariant: the two memory tools appear
+// together iff the actor has memory (LLM-356).
+func TestGateTools_MemoryTools_AdvertisedToActorsWithMemory(t *testing.T) {
+	r := gatingRegistryWithMemoryTools(t)
 	payload := perception.Payload{ActorID: "npc"}
+	memoryTools := []string{"recall", "memorize"}
 
-	stateful := specNameSet(gateTools(r, payload, snapWithActorKind("npc", sim.KindNPCStateful)))
-	if stateful["recall"] != 1 {
-		t.Errorf("recall should be advertised to a KindNPCStateful actor; count %d", stateful["recall"])
+	assertBoth := func(t *testing.T, snap *sim.Snapshot, wantAdvertised bool) {
+		t.Helper()
+		got := specNameSet(gateTools(r, payload, snap))
+		for _, name := range memoryTools {
+			want := 0
+			if wantAdvertised {
+				want = 1
+			}
+			if got[name] != want {
+				t.Errorf("%q advertised count = %d, want %d", name, got[name], want)
+			}
+		}
 	}
 
-	shared := specNameSet(gateTools(r, payload, snapWithActorKind("npc", sim.KindNPCShared)))
-	if shared["recall"] != 0 {
-		t.Errorf("recall must NOT be advertised to a KindNPCShared actor; count %d", shared["recall"])
-	}
+	// Has memory → both advertised.
+	assertBoth(t, snapWithActorKindName("npc", sim.KindNPCStateful, "Josiah Thorne"), true)
+	assertBoth(t, snapWithActorKindName("npc", sim.KindNPCShared, "Anne Walker"), true)
 
-	nilSnap := specNameSet(gateTools(r, payload, nil))
-	if nilSnap["recall"] != 0 {
-		t.Errorf("recall must be dropped when the actor can't be resolved (nil snapshot); count %d", nilSnap["recall"])
-	}
+	// No memory → both dropped.
+	assertBoth(t, snapWithActorKindName("npc", sim.KindNPCShared, ""), false) // name won't slugify → no partition
+	assertBoth(t, snapWithActorKind("npc", sim.KindPC), false)
+	assertBoth(t, snapWithActorKind("npc", sim.KindDecorative), false)
+	assertBoth(t, nil, false) // actor can't be resolved
 }
 
 // gatingRegistryWithDeliverOrder extends the gating test registry with the

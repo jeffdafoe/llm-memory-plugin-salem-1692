@@ -433,15 +433,19 @@ func run(rt runtime, stop <-chan struct{}) error {
 	// Agent-tick execution pipeline: tool registry → harness → worker pool.
 	// The registry is the set of tools an NPC's LLM may call during a tick.
 	registry := handlers.NewRegistry()
-	// recall (observation) reaches llm-memory-api for memory search; the
-	// production LLM client (memapi) implements llm.MemorySearcher. Assert it
-	// here so a client that can't search fails loudly at startup rather than
-	// at the first recall call.
+	// recall + memorize (observations) reach llm-memory-api directly for memory
+	// search / note I/O; the production LLM client (memapi) implements both
+	// llm.MemorySearcher and llm.MemoryWriter. Assert here so a client that can't
+	// do memory fails loudly at startup rather than at the first recall/memorize.
 	searcher, ok := rt.LLMClient.(llm.MemorySearcher)
 	if !ok {
 		return fmt.Errorf("engine: LLM client %T does not implement llm.MemorySearcher (recall needs it)", rt.LLMClient)
 	}
-	if err := registerTools(registry, searcher); err != nil {
+	writer, ok := rt.LLMClient.(llm.MemoryWriter)
+	if !ok {
+		return fmt.Errorf("engine: LLM client %T does not implement llm.MemoryWriter (memorize needs it)", rt.LLMClient)
+	}
+	if err := registerTools(registry, searcher, writer); err != nil {
 		return err
 	}
 	harnessCfg := handlers.HarnessConfig{
@@ -718,7 +722,7 @@ func run(rt runtime, stop <-chan struct{}) error {
 // is deliberately no handlers.RegisterAllProductionTools helper — the tool
 // surface is a composition choice the entrypoint owns. A registration failure
 // is a wiring bug, surfaced to the caller to fail loudly at startup.
-func registerTools(r *handlers.Registry, searcher llm.MemorySearcher) error {
+func registerTools(r *handlers.Registry, searcher llm.MemorySearcher, writer llm.MemoryWriter) error {
 	// Registration order IS the advertised-tool order (AdvertisedSpecs preserves
 	// it) and gateTools drops a gated-off tool in place, so the advertised set
 	// is registration order with holes. Provider prompt-prefix caching keys on a
@@ -806,10 +810,14 @@ func registerTools(r *handlers.Registry, searcher llm.MemorySearcher) error {
 			return fmt.Errorf("register tool %s: %w", t.name, err)
 		}
 	}
-	// recall (ZBBS-WORK-321) — observation tool; registered separately
-	// because it needs the memory searcher (the others take only *Registry).
+	// recall (ZBBS-WORK-321) / memorize (LLM-356) — observation tools; registered
+	// separately because they need the memory searcher / writer (the others take
+	// only *Registry).
 	if err := handlers.RegisterRecall(r, searcher); err != nil {
 		return fmt.Errorf("register tool recall: %w", err)
+	}
+	if err := handlers.RegisterMemorize(r, writer); err != nil {
+		return fmt.Errorf("register tool memorize: %w", err)
 	}
 	return nil
 }

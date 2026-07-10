@@ -137,6 +137,29 @@ type HandlerInput struct {
 	// world access, so "who am I" must be threaded in.
 	LLMMemoryAgent string
 
+	// MemorySlugPrefix scopes the acting actor's memory inside LLMMemoryAgent
+	// (LLM-356), derived by the harness from sim.MemoryPartition. Empty for a
+	// dedicated-VA NPC (its namespace is its memory outright); "<name>/" for a
+	// shared-VA NPC sharing a pooled namespace. recall passes it as the search
+	// slug_prefix; memorize writes and prunes under it. Threaded from the
+	// harness because observation handlers run OFF the world goroutine.
+	MemorySlugPrefix string
+
+	// MemoryHasPartition is sim.MemoryPartition's second return — whether the
+	// actor has a private memory partition at all. It disambiguates the two
+	// cases where MemorySlugPrefix is empty: a dedicated-VA NPC (true — its whole
+	// namespace is its memory) vs an actor with no memory, e.g. a shared-VA NPC
+	// whose name won't slugify (false). memorize REQUIRES it before writing, so a
+	// stray dispatch (the perception gate is advertising-only) can't pool a write
+	// into a shared namespace's root.
+	MemoryHasPartition bool
+
+	// MemoryDateStamp is the village's current calendar date as "YYYY-MM-DD"
+	// (from the snapshot's LocalDateUTC), used by memorize to date-stamp a new
+	// memory's slug so re-memorizing the same topic the same day revises one
+	// note instead of duplicating. Empty on a hand-built snapshot with no clock.
+	MemoryDateStamp string
+
 	// Args is the typed value produced by RegistryEntry.Decode — already
 	// validated, ready to consume. The handler should type-assert to its
 	// per-tool args struct.
