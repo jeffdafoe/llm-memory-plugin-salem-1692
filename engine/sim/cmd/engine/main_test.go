@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"reflect"
+	"slices"
 	"sort"
 	"sync"
 	"testing"
@@ -468,5 +469,50 @@ func TestRun_WiresStormCascade(t *testing.T) {
 
 	if got != sim.WeatherClear {
 		t.Errorf("Environment.Weather = %q, want %q (RegisterStorm not wired into run()?)", got, sim.WeatherClear)
+	}
+}
+
+// TestTerminalToolsMatchPerceptionInvariantList pins the set of tools whose
+// success ends the tick against the literal list the LLM-350 perception invariant
+// (perception.TestGoldensNoCueInstructsTwoTerminalVerbs, via its terminalToolNames
+// slice) scans rendered cues for.
+//
+// The invariant lives in package perception, which cannot import handlers —
+// handlers imports perception — so it cannot read the registry it is really about.
+// This test closes the loop from the side that can. Add a terminal tool without
+// telling the invariant about it and the new tool's cues go unchecked; this test
+// fails first, naming the file to edit.
+//
+// `done` is excluded: it is ClassTerminal, not a TerminalOnSuccess commit, and no
+// cue pairs it with a speak (it IS the end-of-turn verb).
+func TestTerminalToolsMatchPerceptionInvariantList(t *testing.T) {
+	// Keep sorted; mirrors perception/golden_test.go's terminalToolNames.
+	wantTerminal := []string{
+		"accept_pay", "accept_work", "counter_pay", "decline_pay", "decline_work",
+		"gather", "move_to", "offer_trade", "offer_work", "pay_with_item", "sell",
+		"solicit_work", "speak", "stop", "summon", "withdraw_pay",
+	}
+
+	r := handlers.NewRegistry()
+	if err := registerTools(r, stubSearcher{}); err != nil {
+		t.Fatalf("registerTools: %v", err)
+	}
+	var got []string
+	for _, spec := range r.AdvertisedSpecs() {
+		entry, ok := r.Lookup(spec.Name)
+		if !ok {
+			t.Fatalf("advertised tool %q has no registry entry", spec.Name)
+		}
+		if entry.Class == handlers.ClassCommit && entry.TerminalPolicy == handlers.TerminalOnSuccess {
+			got = append(got, spec.Name)
+		}
+	}
+	sort.Strings(got)
+
+	if !slices.Equal(got, wantTerminal) {
+		t.Errorf("terminal-on-success tools drifted from the LLM-350 perception invariant list.\n"+
+			" registry: %v\n perception/golden_test.go terminalToolNames: %v\n"+
+			"Update terminalToolNames in engine/sim/perception/golden_test.go to match, so the "+
+			"two-terminal-verb invariant keeps checking every cue that names one.", got, wantTerminal)
 	}
 }

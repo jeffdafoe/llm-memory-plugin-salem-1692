@@ -183,6 +183,13 @@ type PayWithItemResult struct {
 	// only by staying put, so the settle feedback uses this to tell the buyer to
 	// stay and finish instead of walking off and wasting it (ZBBS-WORK-409).
 	MealMinutes int
+
+	// Announced / SayRefused carry the fate of the optional spoken line
+	// pay_with_item folds in, mirroring SceneQuoteCreateResult (LLM-350). The
+	// buyer's handoff word used to be a separate speak the restock cue asked for
+	// after the offer — unreachable, since pay_with_item ends the tick.
+	Announced  bool
+	SayRefused string
 	// ReroutedSellerName is the worker's display name when the model named a
 	// building (its workplace) instead of the person and the engine rerouted
 	// the offer to them (ZBBS-HOME-460). Empty on the common path. The harness

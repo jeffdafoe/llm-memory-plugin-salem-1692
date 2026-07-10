@@ -17,6 +17,6 @@ You keep your trade at the Tavern (destination: tavern) — you can head back th
 ## Restocking
 Your shop stock of these bought-in goods is running low. You choose how much to buy.
 - You have 1 ale on hand and room for 19 more at the most. It is generally worth about 1 coin each — pay much above that and you're overpaying.
-  - Anders Brewer is here with you and sells ale. Buy it now — first call pay_with_item with seller "Anders Brewer", item "ale", a qty up to 19, and a payment: coins (amount), goods you carry (pay_items), or both, with consume_now false. Then also use speak for a brief handoff line as you make the offer. They will accept or counter your offer.
+  - Anders Brewer is here with you and sells ale. Buy it now — call pay_with_item with seller "Anders Brewer", item "ale", a qty up to 19, a payment: coins (amount), goods you carry (pay_items), or both, with consume_now false, and your handoff line in say. Do not speak first: speaking ends your turn, and the offer would never be made. They will accept or counter your offer.
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

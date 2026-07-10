@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -11047,47 +11048,155 @@ func TestSeekWorkSuppressedByRedNeed(t *testing.T) {
 	}
 }
 
-// TestGoldensSellerCueNamesOneTerminalVerb is the LLM-343 cross-scenario
-// invariant. speak and sell are BOTH terminal-on-success (LLM-321 and LLM-184
-// respectively), so whichever lands first ends the tick. Any cue that tells a
-// keeper to speak a price AND then call sell is therefore unfollowable: the
-// keeper obeys the first clause, the turn ends, and no payable offer is ever
-// posted. That is exactly what happened live on 2026-07-09 — John Ellis quoted
-// "six coins for the both of them together" and the player's pay screen stayed
-// empty.
+// terminalToolNames are the tools whose success ENDS the tick
+// (TerminalPolicy=TerminalOnSuccess in the handlers registry). Duplicated here
+// as a literal because perception cannot import handlers — handlers imports
+// perception. handlers.TestTerminalToolsMatchPerceptionInvariantList pins this
+// list against the real registry, so adding a terminal tool without updating
+// this slice fails there with a pointer back to this test. LLM-350.
+var terminalToolNames = []string{
+	"accept_pay", "accept_work", "counter_pay", "decline_pay", "decline_work",
+	"gather", "move_to", "offer_trade", "offer_work", "pay_with_item", "sell",
+	"solicit_work", "speak", "stop", "summon", "withdraw_pay",
+}
+
+// negatedSpeakRe matches a line that FORBIDS the speak tool rather than asking
+// for it. The cues that legitimately name speak alongside another terminal verb
+// all do so to warn the model off it ("Do not reply with the speak tool"), which
+// is the opposite instruction and must stay allowed.
+var negatedSpeakRe = regexp.MustCompile(`(?i)\b(do not|don't|never)\b`)
+
+// TestGoldensNoCueInstructsTwoTerminalVerbs is the LLM-350 cross-scenario
+// invariant, generalized from the LLM-343 seller-only version it replaces.
 //
-// So: wherever the seller cue renders, it must point at ONE tool. It must route
-// the spoken price through sell's `say` argument, and it must warn the keeper
-// off naming a price with speak. This runs over the whole matrix so no future
-// edit to the cue can quietly reintroduce the two-terminal-verb instruction.
-func TestGoldensSellerCueNamesOneTerminalVerb(t *testing.T) {
+// Every tool in terminalToolNames ends the tick on success, speak among them
+// (LLM-321). So a cue that instructs the model to call speak AND some other
+// terminal tool can never be obeyed: whichever call lands first ends the tick and
+// the harness skips the rest of the batch as post_terminal. Both orderings lose
+// something. Speak-then-act loses the act — the offer goes unanswered, the sale
+// expires. Act-then-speak loses the words — the village transacts in silence.
+//
+// The rule: on any single rendered line, the speak TOOL may be named beside
+// another terminal verb only to forbid it. Line granularity is the right unit
+// because each cue writes one \n-terminated line, and the two-verb instructions
+// this catches ("Respond with accept_pay… Then also use speak") split their two
+// clauses across sentences within one line.
+//
+// Not a lint: it renders the whole matrix, so it fires on the cue as an NPC
+// actually receives it. accept_gift / decline_gift deliberately pair with a
+// following speak and are NOT in the list — they are non-terminal, so that cue is
+// followable, and the invariant must not drag them in.
+func TestGoldensNoCueInstructsTwoTerminalVerbs(t *testing.T) {
+	var checked int
 	for _, sc := range perceptionScenarios {
 		sc := sc
 		t.Run(sc.name, func(t *testing.T) {
-			out := renderScenario(sc)
-			// Key off the cue's BODY, not just its title: a future section that
-			// reused the "## Custom at hand" header would otherwise be dragged
-			// into an invariant that is only about the sell cue.
-			if !strings.Contains(out, "## Custom at hand") || !strings.Contains(out, "Your goods to sell:") {
-				return // invariant N/A — renderOfferableCustomers did not fire here
-			}
-			// The words must ride on sell itself.
-			if !strings.Contains(out, "the words you speak aloud in say") {
-				t.Errorf("scenario %q: seller cue does not route the spoken price through sell's `say` (LLM-343)", sc.name)
-			}
-			// And the cue must actively steer off the terminal speak.
-			if !strings.Contains(out, "Do not name a price with the speak tool") {
-				t.Errorf("scenario %q: seller cue does not warn against naming a price with the terminal speak tool (LLM-343)", sc.name)
-			}
-			// The pre-LLM-343 phrasing, which asked for a speech AND a sell.
-			for _, banned := range []string{
-				"say your price for it plainly in your reply",
-				"and call sell with that named item",
-			} {
-				if strings.Contains(out, banned) {
-					t.Errorf("scenario %q: seller cue reintroduces the two-terminal-verb instruction %q — "+
-						"the speech ends the tick and the offer never posts (LLM-343)", sc.name, banned)
+			for _, line := range strings.Split(renderScenario(sc), "\n") {
+				named := namedTerminalTools(line)
+				if len(named) < 2 || !slices.Contains(named, "speak") {
+					continue
 				}
+				checked++
+				if !negatedSpeakRe.MatchString(line) {
+					t.Errorf("scenario %q: cue names the terminal speak tool alongside %v "+
+						"without forbidding it — whichever lands first ends the tick and the other "+
+						"is skipped as post_terminal (LLM-350). Fold the utterance into the tool's "+
+						"`say` argument instead.\n    %s",
+						sc.name, without(named, "speak"), line)
+				}
+			}
+		})
+	}
+	// Guard against the invariant going vacuous — a tool rename would otherwise
+	// make every line stop matching and the test would pass having asserted
+	// nothing. The matrix renders the sell, offer_work, pay_with_item, pay-response
+	// and labor-response cues, so this floor is comfortably met today.
+	if checked == 0 {
+		t.Fatal("invariant matched no lines at all — terminalToolNames is probably stale (LLM-350)")
+	}
+}
+
+// namedTerminalTools returns the terminal tools named as whole words on line.
+func namedTerminalTools(line string) []string {
+	var out []string
+	for _, name := range terminalToolNames {
+		if regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `\b`).MatchString(line) {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+func without(names []string, drop string) []string {
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		if n != drop {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// TestGoldensTransactionCuesRouteWordsThroughSay is the positive half of the
+// invariant above: it is not enough that a cue stops asking for a second speak —
+// the words have to go somewhere, or the fix would just have muted the village.
+//
+// Each entry pins one cue to the `say` argument that now carries its utterance,
+// and to the banned phrasing it used to carry. Keyed off the cue's BODY, never
+// its header alone, so a future section reusing a title isn't dragged in.
+func TestGoldensTransactionCuesRouteWordsThroughSay(t *testing.T) {
+	cues := []struct {
+		name    string
+		present string // renders only when the cue fired
+		wantSay string // the phrase routing words into the tool's `say`
+		banned  []string
+	}{
+		{
+			name:    "seller (sell, LLM-343)",
+			present: "Your goods to sell:",
+			wantSay: "the words you speak aloud in say",
+			banned:  []string{"say your price for it plainly in your reply", "and call sell with that named item"},
+		},
+		{
+			name:    "pay response (accept_pay/decline_pay/counter_pay, LLM-350)",
+			present: "## Offers awaiting your decision",
+			wantSay: "passing the offer id as ledger_id and the words you speak aloud in say",
+			banned:  []string{"Then also use speak", "because the pay response itself passes in silence"},
+		},
+		{
+			name:    "labor response (accept_work/decline_work, LLM-350)",
+			present: "passing the offer id as labor_id",
+			wantSay: "the words you speak aloud in say",
+			banned:  []string{"Then also use speak", "because the work response itself passes in silence"},
+		},
+		{
+			name:    "buyer offer (pay_with_item, LLM-350)",
+			present: "Buy it now — call pay_with_item",
+			wantSay: "your handoff line in say",
+			banned:  []string{"Then also use speak for a brief handoff line"},
+		},
+	}
+	for _, cue := range cues {
+		cue := cue
+		t.Run(cue.name, func(t *testing.T) {
+			var fired int
+			for _, sc := range perceptionScenarios {
+				out := renderScenario(sc)
+				if !strings.Contains(out, cue.present) {
+					continue // cue N/A in this scenario
+				}
+				fired++
+				if !strings.Contains(out, cue.wantSay) {
+					t.Errorf("scenario %q: cue does not route its words through `say` (want %q)", sc.name, cue.wantSay)
+				}
+				for _, banned := range cue.banned {
+					if strings.Contains(out, banned) {
+						t.Errorf("scenario %q: cue reintroduces the two-terminal-verb instruction %q", sc.name, banned)
+					}
+				}
+			}
+			if fired == 0 {
+				t.Errorf("no scenario rendered this cue (marker %q) — the assertion is vacuous", cue.present)
 			}
 		})
 	}

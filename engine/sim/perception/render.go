@@ -2240,14 +2240,15 @@ func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason, nam
 		}
 		b.WriteString("\n")
 	}
-	// Action first, then an explicit speak: accept/decline/counter pass in silence,
-	// so prompt the speak TOOL alongside the response — same "say a word as you pass
-	// it across" pattern deliver_order uses — so an NPC-to-NPC trade is visible as a
-	// speech bubble (the pay_* lifecycle frames render only for the PC's own
-	// transactions; bubbles spawn only from the speak tool, so the cue must name it
-	// rather than just "say a word", which a weak model may satisfy as plain text).
-	// ZBBS-HOME-388.
-	b.WriteString("Respond first with accept_pay, decline_pay, or counter_pay, passing the offer id as ledger_id. Then also use speak for a brief reply, because the pay response itself passes in silence.\n")
+	// ONE tool, and the words ride on it (LLM-350). This cue used to read "Respond
+	// first with accept_pay… Then also use speak", which no NPC could obey: the pay
+	// responses and speak are all terminal-on-success, so whichever landed first
+	// ended the tick and the other was skipped as post_terminal. Obeying the order
+	// as written settled the sale in silence; obeying it literally — speaking first —
+	// cost the seller the sale, because the offer went unanswered and expired.
+	// The response no longer passes in silence, so the cue no longer says it does.
+	// Mirrors the seller cue's sell(say=…) shape (LLM-343).
+	b.WriteString("Respond with accept_pay, decline_pay, or counter_pay, passing the offer id as ledger_id and the words you speak aloud in say. Do not reply with the speak tool: speaking ends your turn, and the offer would go unanswered.\n")
 }
 
 // renderLaborOffers renders the pending-work-offer decision section for whoever
@@ -2303,9 +2304,9 @@ func renderLaborOffers(b *strings.Builder, offers []LaborOfferView, employerCoin
 		// gate 8 would only flip the offer to failed_unavailable
 		// (employerCanCoverLaborReward, labor_commands.go), so the model
 		// "accepts" verbally and the deal dies in silence. Steer the employer
-		// to decline WITH a spoken reason instead — naming speak explicitly,
-		// because decline_work (like accept_work) passes in silence, the same
-		// reason the all-affordable footer below names it. The two checks here
+		// to decline WITH a spoken reason instead — carried in decline_work's own
+		// `say` (LLM-350), not a second speak call, which being terminal would
+		// have skipped the decline or been skipped by it. The two checks here
 		// mirror gate 8's two legs exactly — Coins < Reward, and the
 		// build-time MissingRewardItems holdings scan — so the cue and the
 		// substrate never disagree. LLM-158; goods leg LLM-225.
@@ -2315,31 +2316,31 @@ func renderLaborOffers(b *strings.Builder, offers []LaborOfferView, employerCoin
 			anyUnaffordable = true
 			switch {
 			case shortOnCoins && len(missing) > 0:
-				fmt.Fprintf(b, "You only have %s and do not hold the %s they ask to be paid in, so you cannot pay for this — call decline_work (offer id %d), then use speak to tell them you cannot pay what they ask.\n",
+				fmt.Fprintf(b, "You only have %s and do not hold the %s they ask to be paid in, so you cannot pay for this — call decline_work (offer id %d), telling them in say that you cannot pay what they ask.\n",
 					coinsPhrase(employerCoins), formatOfferPayment(0, missing), o.LaborID)
 			case len(missing) > 0:
-				fmt.Fprintf(b, "You do not hold the %s they ask to be paid in, so you cannot pay for this — call decline_work (offer id %d), then use speak to tell them you cannot pay what they ask.\n",
+				fmt.Fprintf(b, "You do not hold the %s they ask to be paid in, so you cannot pay for this — call decline_work (offer id %d), telling them in say that you cannot pay what they ask.\n",
 					formatOfferPayment(0, missing), o.LaborID)
 			default:
-				fmt.Fprintf(b, "You only have %s, so you cannot pay for this — call decline_work (offer id %d), then use speak to tell them you have not enough coin to take them on.\n",
+				fmt.Fprintf(b, "You only have %s, so you cannot pay for this — call decline_work (offer id %d), telling them in say that you have not enough coin to take them on.\n",
 					coinsPhrase(employerCoins), o.LaborID)
 			}
 			continue
 		}
 		anyAffordable = true
 	}
-	// Action first, then an explicit speak — same "say a word as you decide"
-	// pattern the pay decision section uses (the accept_work/decline_work call
-	// itself passes in silence). When SOME offers are unaffordable, scope the
-	// footer to the affordable ones so a weak model can't apply a generic
-	// "accept_work or decline_work" to an offer that was just steered to decline.
-	// Suppressed entirely when EVERY offer is unaffordable — each carried its own
-	// decline steer above. LLM-158.
+	// One tool, and the words ride on it — the same shape the pay decision section
+	// uses, for the same reason (LLM-350): accept_work, decline_work and speak are
+	// all terminal, so a cue naming two of them can only ever have one obeyed. When
+	// SOME offers are unaffordable, scope the footer to the affordable ones so a
+	// weak model can't apply a generic "accept_work or decline_work" to an offer
+	// that was just steered to decline. Suppressed entirely when EVERY offer is
+	// unaffordable — each carried its own decline steer above. LLM-158.
 	switch {
 	case anyAffordable && anyUnaffordable:
-		b.WriteString("For an offer you can afford, respond with accept_work or decline_work, passing the offer id as labor_id; decline_work the ones you cannot pay. Then also use speak for a brief reply, because the work response itself passes in silence.\n")
+		b.WriteString("For an offer you can afford, respond with accept_work or decline_work, passing the offer id as labor_id and the words you speak aloud in say; decline_work the ones you cannot pay. Do not reply with the speak tool: speaking ends your turn, and the offer would go unanswered.\n")
 	case anyAffordable:
-		b.WriteString("Respond with accept_work or decline_work, passing the offer id as labor_id. Then also use speak for a brief reply, because the work response itself passes in silence.\n")
+		b.WriteString("Respond with accept_work or decline_work, passing the offer id as labor_id and the words you speak aloud in say. Do not reply with the speak tool: speaking ends your turn, and the offer would go unanswered.\n")
 	}
 }
 

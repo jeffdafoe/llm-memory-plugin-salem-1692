@@ -802,11 +802,13 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 			// id this tick is a guaranteed no-op that only reaches the command's
 			// "no longer pending" error. Keyed on the LEDGER ID alone — not name +
 			// args like genericCallKey below — so it catches the two slip-throughs
-			// that guard missed: a counter re-fired with a `message` added (different
-			// args → different generic key), and a counter followed by an accept of
-			// that same just-countered ledger (different tool name → different
-			// generic key). Recorded on first attempt regardless of outcome; the
-			// reject steers the model to the speak beat + done() the perception wants.
+			// that guard missed: a counter re-fired with its spoken `say` added
+			// (different args → different generic key), and a counter followed by an
+			// accept of that same just-countered ledger (different tool name →
+			// different generic key). Recorded on first attempt regardless of outcome.
+			// The reject below may still name speak: a rejected call is NOT terminal,
+			// so the tick continues and the model can reach it (unlike the success
+			// path, whose terminal response ends the tick — LLM-350).
 			if id, ok := ledgerResolutionID(vc); ok {
 				if _, dup := resolvedLedgerThisTick[id]; dup {
 					observationOnly = false
@@ -1342,6 +1344,46 @@ func selfStateChanged(pre, post *sim.ActorSnapshot) bool {
 // decline_pay / counter_pay — unlike the still-pending accept_pay stock
 // rejection, which is a retryable ModelFacingError raised upstream (LLM-302) and
 // never reaches this success-path switch.
+// sayEcho renders the acknowledgment fragment for a tool that folded a spoken
+// line into its own terminal act — sell, offer_work, and the five pay/labor
+// responses (LLM-343 / LLM-346 / LLM-350). The caller appends it to its own
+// outcome sentence, so it ends with a trailing space; "" when nothing was said.
+//
+// Echoing the line back is the same acknowledgment a bare speak returns, and it
+// is the ONLY signal the model gets that the room heard it. announced is false
+// when the act committed but SpeakTo refused the words — the act stands either
+// way, so the echo reports the refusal and passes SpeakTo's own reason through
+// rather than guessing which gate rejected it.
+func sayEcho(say string, announced bool, sayRefused string) string {
+	s := strings.TrimSpace(say)
+	if s == "" {
+		return ""
+	}
+	switch {
+	case announced:
+		return fmt.Sprintf("You said: %q. ", s)
+	case sayRefused != "":
+		return fmt.Sprintf("Your words went unsaid: %s ", sayRefused)
+	default:
+		return "Your words went unsaid. "
+	}
+}
+
+// payResponseSayEcho is sayEcho over whichever of the three pay-response arg
+// types vc carries. Returns "" when the response was wordless.
+func payResponseSayEcho(vc *ValidatedCall, announced bool, sayRefused string) string {
+	switch args := vc.DecodedArgs.(type) {
+	case AcceptPayArgs:
+		return sayEcho(args.Say, announced, sayRefused)
+	case DeclinePayArgs:
+		return sayEcho(args.Say, announced, sayRefused)
+	case CounterPayArgs:
+		return sayEcho(args.Say, announced, sayRefused)
+	default:
+		return ""
+	}
+}
+
 func paySettlementFellThroughContent(state sim.PayLedgerState) (string, bool) {
 	switch state {
 	case sim.PayLedgerStateFailedInsufficientStock:
@@ -1453,53 +1495,46 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 	// upstream, so it never reaches this success-path switch — the helper's
 	// stock case is defensive here and live for counter_pay's coercion below.)
 	//
-	// A genuine Accepted (ZBBS-HOME-473) no longer falls through to a bare
-	// [ok] either: the pay response itself passes in silence (the perception's
-	// "## Offers awaiting your decision" block tells the seller to accept then
-	// ALSO speak), but a bare [ok] gave the weak seller model no within-result
-	// reason to voice the handover — so it re-fired accept_pay to the iteration
-	// budget (already_did_that-guarded no-ops) and closed the sale mute, the
-	// buyer walking off with no word exchanged (observed live: Josiah×Prudence
-	// bread). Echo the settle + steer to a brief handover line + done(), and
-	// forbid the re-accept — the same soft-steer / hard-guard pairing speak and
-	// scene_quote carry.
+	// A genuine Accepted (ZBBS-HOME-473) no longer falls through to a bare [ok]
+	// either: it once closed the sale mute, the buyer walking off with no word
+	// exchanged (observed live: Josiah×Prudence bread).
+	//
+	// These three arms used to end "Say a brief word …, then call done()". Every
+	// pay response is terminal-on-success, so the tick returns the moment one
+	// lands (see the batchEnded return in runTick) — the model never got another
+	// round in which to say that word, and the instruction was unreachable text.
+	// The words now ride on each tool's own `say` (LLM-350) and are echoed back
+	// here, which is the only signal the model gets that the room heard it.
 	if vc.Name == "accept_pay" {
-		if state, ok := cmdResult.(sim.PayLedgerState); ok {
+		if state, announced, refused, ok := payResponseState(cmdResult); ok {
 			if state == sim.PayLedgerStateAccepted {
-				return "[ok] The sale is settled. Say a brief word to them as you settle it, then call done(). Do not accept again."
+				return "[ok] The sale is settled. " + payResponseSayEcho(vc, announced, refused) + "Do not accept again."
 			}
 			if msg, ok := paySettlementFellThroughContent(state); ok {
 				return msg
 			}
 		}
 	}
-	// decline_pay / counter_pay: the two sibling seller pay-responses pass in
-	// silence the same way accept_pay did before ZBBS-HOME-473 (LLM-13). Both
-	// resolve to a bare sim.PayLedgerState as cmdResult and otherwise fall
-	// through to the plain "[ok]" below — a declined or countered offer with no
-	// spoken word reads to the buyer as being ignored. Echo the resolution and
-	// steer to a brief spoken beat + done(), forbidding the re-fire (the same
-	// soft-steer / hard-guard pairing accept_pay carries).
 	if vc.Name == "decline_pay" {
-		if state, ok := cmdResult.(sim.PayLedgerState); ok {
+		if state, announced, refused, ok := payResponseState(cmdResult); ok {
 			switch state {
 			case sim.PayLedgerStateDeclined:
-				return "[ok] You declined. Say a brief word of refusal, then call done(). Do not decline again."
+				return "[ok] You declined. " + payResponseSayEcho(vc, announced, refused) + "Do not decline again."
 			}
 		}
 	}
 	if vc.Name == "counter_pay" {
-		if state, ok := cmdResult.(sim.PayLedgerState); ok {
+		if state, announced, refused, ok := payResponseState(cmdResult); ok {
 			switch state {
 			case sim.PayLedgerStateCountered:
-				return "[ok] Your counter stands. Now call speak to say a brief word about it, then call done() and wait for their answer. Do not counter again."
+				return "[ok] Your counter stands. " + payResponseSayEcho(vc, announced, refused) + "Await their answer. Do not counter again."
 			// A non-increasing pure-coin counter coerces to an accept in
 			// sim.CounterPay (the "I'll let it go at your price" path), so the
 			// sale settles under the counter_pay name and would otherwise miss
 			// the handover steer accept_pay earns — the gap the HOME-473 ticket
-			// glossed (LLM-13). Voice the settle and steer the handover.
+			// glossed (LLM-13). Voice the settle.
 			case sim.PayLedgerStateAccepted:
-				return "[ok] The sale is settled. Say a brief word as you settle it, then call done(). Do not counter again."
+				return "[ok] The sale is settled. " + payResponseSayEcho(vc, announced, refused) + "Do not counter again."
 			default:
 				// That same coercion can fail a gate at settle time (seller has
 				// no stock, buyer is short of coins, either party moved on, offer
@@ -1577,23 +1612,9 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 		// actually created (code_review #415) — an unexpected result shape
 		// still steers, but doesn't assert state without evidence.
 		if r, ok := cmdResult.(sim.SceneQuoteCreateResult); ok {
-			// LLM-343: echo the spoken line so the seller sees its own words
-			// land, the same acknowledgment a bare speak returns. Announced is
-			// false when the quote posted but SpeakTo refused the line — the
-			// offer stands, so say so, and pass SpeakTo's own reason through
-			// rather than guessing at which gate rejected it.
 			said := ""
 			if args, ok := vc.DecodedArgs.(SceneQuoteArgs); ok {
-				if s := strings.TrimSpace(args.Say); s != "" {
-					switch {
-					case r.Announced:
-						said = fmt.Sprintf("You said: %q. ", s)
-					case r.SayRefused != "":
-						said = fmt.Sprintf("Your words went unsaid: %s ", r.SayRefused)
-					default:
-						said = "Your words went unsaid. "
-					}
-				}
+				said = sayEcho(args.Say, r.Announced, r.SayRefused)
 			}
 			if r.EatHereClamped {
 				item := "those goods"
@@ -1630,7 +1651,7 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 				other = "them"
 			}
 			return fmt.Sprintf(
-				"[ok] Coins are payment, not goods to buy — this settled as a plain payment: you handed %s %d coins; the coins have moved and nothing is owed back. Say a brief word as you hand them over, then call done(). Next time, use pay to give someone coins.",
+				"[ok] Coins are payment, not goods to buy — this settled as a plain payment: you handed %s %d coins; the coins have moved and nothing is owed back. Next time, use pay to give someone coins.",
 				other, coins,
 			)
 		}
@@ -1712,10 +1733,17 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 				if vc.Name == "offer_trade" {
 					lead = fmt.Sprintf("Your offer to trade for %d %s", args.Qty, item)
 				}
+				// Echo the buyer's own words back (LLM-350) — pay_with_item now
+				// carries them; offer_trade does not, so said is "" there and the
+				// sentence is unchanged.
+				said := ""
+				if r, ok := cmdResult.(sim.PayWithItemResult); ok {
+					said = sayEcho(args.Say, r.Announced, r.SayRefused)
+				}
 				return fmt.Sprintf(
-					"[ok] %s is before %s — bide for their answer. Make no second "+
+					"[ok] %s is before %s — bide for their answer. %sMake no second "+
 						"offer; call done() and let them accept, decline, or counter.%s",
-					lead, other, clampNote,
+					lead, other, said, clampNote,
 				)
 			}
 		}
@@ -1782,6 +1810,11 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 	// from the caller's side: an employer answering a solicit_work has hired
 	// someone; a worker answering an offer_work has taken a job on and is the one
 	// who must now go and do it.
+	//
+	// As with the pay responses, the old "Say a brief word, then call done()"
+	// tail was unreachable — accept_work is terminal, so the tick ends on it. The
+	// acceptor's words ride on accept_work's own `say` now (LLM-350) and are
+	// echoed back here instead.
 	if vc.Name == "accept_work" {
 		if r, ok := cmdResult.(sim.LaborAcceptResult); ok {
 			// r.Payment names both reward legs ("5 coins", "1 porridge and 2 coins"
@@ -1794,21 +1827,25 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 					payment = "1 coin"
 				}
 			}
+			said := ""
+			if args, ok := vc.DecodedArgs.(AcceptWorkArgs); ok {
+				said = sayEcho(args.Say, r.Announced, r.SayRefused)
+			}
 			switch {
 			case r.State == sim.LaborStateWorking && r.AcceptorIsWorker:
-				return fmt.Sprintf("[ok] You took on the job for %s — you are at the work now, paid %s when you finish. Say a brief word, then call done(). Do not accept again.", r.EmployerName, payment)
+				return fmt.Sprintf("[ok] You took on the job for %s — you are at the work now, paid %s when you finish. %sDo not accept again.", r.EmployerName, payment, said)
 			case r.State == sim.LaborStateWorking:
-				return fmt.Sprintf("[ok] You hired %s — they are at the work now for %s, paid when they finish. Say a brief word, then call done(). Do not accept again.", r.WorkerName, payment)
+				return fmt.Sprintf("[ok] You hired %s — they are at the work now for %s, paid when they finish. %sDo not accept again.", r.WorkerName, payment, said)
 			case r.State == sim.LaborStateEnRoute && r.AcceptorIsWorker:
 				// LLM-229 from the worker's side: the deal was struck away from the
 				// employer's workplace, so the worker is the one who must walk there.
-				return fmt.Sprintf("[ok] You took on the job for %s — make your way to their workplace and get to work once you're both there, paid %s when you finish. Say a brief word, then call done(). Do not accept again.", r.EmployerName, payment)
+				return fmt.Sprintf("[ok] You took on the job for %s — make your way to their workplace and get to work once you're both there, paid %s when you finish. %sDo not accept again.", r.EmployerName, payment, said)
 			case r.State == sim.LaborStateEnRoute:
 				// LLM-229: the deal was struck away from your workplace, so the
 				// worker is making their way there and starts once they arrive with
 				// you present. Same payment phrasing; no "until T" (the window
 				// hasn't started).
-				return fmt.Sprintf("[ok] You hired %s — they will make their way to your workplace and get to work once you're both there, paid %s when they finish. Say a brief word, then call done(). Do not accept again.", r.WorkerName, payment)
+				return fmt.Sprintf("[ok] You hired %s — they will make their way to your workplace and get to work once you're both there, paid %s when they finish. %sDo not accept again.", r.WorkerName, payment, said)
 			case r.State == sim.LaborStateExpired:
 				return "[ok] That offer had already expired — too late to take it up."
 			case r.State == sim.LaborStateFailedUnavailable:
@@ -1818,10 +1855,14 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 	}
 	// decline_work (LLM-163): a declined offer passed in silence on a bare [ok],
 	// reading to the worker as ignored, with no reason for the employer to stop
-	// re-firing. Echo the decline and steer to a brief refusal + done().
+	// re-firing. The refusal now rides on decline_work's `say` (LLM-350).
 	if vc.Name == "decline_work" {
 		if r, ok := cmdResult.(sim.LaborDeclineResult); ok && r.State == sim.LaborStateDeclined {
-			return "[ok] You declined the work. Say a brief word of refusal, then call done(). Do not decline again."
+			said := ""
+			if args, ok := vc.DecodedArgs.(DeclineWorkArgs); ok {
+				said = sayEcho(args.Say, r.Announced, r.SayRefused)
+			}
+			return "[ok] You declined the work. " + said + "Do not decline again."
 		}
 	}
 	return "[ok]"

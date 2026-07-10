@@ -67,6 +67,11 @@ func RegisterOfferWork(r *Registry) error {
 // (accept_work x6, observed live on pooled AND stateful NPCs). The already_answered
 // guard (LLM-164) stays a backstop. (The "before-speak is preserved" rationale this
 // comment once carried died with LLM-321, which made speak terminal as well.)
+//
+// The acceptor agrees aloud through accept_work's own `say` (LLM-350), spoken
+// from INSIDE sim.AcceptWorkSaying rather than a handler-level wrapper: a
+// relocating accept sets the worker walking and drops them from the huddle before
+// any wrapper could speak. See HandleAcceptWork.
 func RegisterAcceptWork(r *Registry) error {
 	return r.RegisterCommit(
 		"accept_work",
@@ -82,6 +87,11 @@ func RegisterAcceptWork(r *Registry) error {
 //
 // terminalOnSuccess is TRUE (LLM-184): a decline is instant and final for this
 // tick — nothing to chain — so the decline_work storm cannot recur.
+//
+// The refusal is spoken through decline_work's own `say` (LLM-350). Its old
+// description — "if you want to explain or propose different terms, just say so
+// in conversation" — asked for a speak the terminal decline had already made
+// unreachable.
 func RegisterDeclineWork(r *Registry) error {
 	return r.RegisterCommit(
 		"decline_work",

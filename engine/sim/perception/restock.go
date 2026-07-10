@@ -912,7 +912,7 @@ func renderRestocking(b *strings.Builder, v *RestockingView) {
 				// Stock covers the headroom and the deal is plausible — the exact pay_with_item
 				// call, walk-to list skipped (he is already here).
 				seller := sanitizeInline(it.CoPresentSeller)
-				fmt.Fprintf(b, "%s is here with you and sells %s. Buy it now — first call pay_with_item with seller \"%s\", item \"%s\", a qty up to %d, and a payment: coins (amount), goods you carry (pay_items), or both, with consume_now false. Then also use speak for a brief handoff line as you make the offer. They will accept or counter your offer.\n",
+				fmt.Fprintf(b, "%s is here with you and sells %s. Buy it now — call pay_with_item with seller \"%s\", item \"%s\", a qty up to %d, a payment: coins (amount), goods you carry (pay_items), or both, with consume_now false, and your handoff line in say. Do not speak first: speaking ends your turn, and the offer would never be made. They will accept or counter your offer.\n",
 					seller, sanitizeInline(it.ItemLabel), seller, sanitizeInline(string(it.kind)), headroom)
 			}
 			continue
@@ -960,12 +960,17 @@ func renderWalkToVendors(b *strings.Builder, vendors []RestockVendor) {
 // shovel farm-upkeep buy) when a qualifying seller of the item shares the buyer's
 // huddle. It mirrors the model-proven pay_with_item wording renderRestocking issues
 // at the co-present moment (ZBBS-HOME-388): a complete, copyable pay_with_item call
-// plus a brief speak handoff, so the weak stateful model transacts here instead of
+// carrying the handoff line, so the weak stateful model transacts here instead of
 // narrating its need and walking off (the live Elizabeth-at-the-smith failure that
 // motivated LLM-277). qty is the "up to" ceiling — the shortfall the errand needs.
 // Inputs are sanitized here, so callers pass raw snapshot strings.
+//
+// The handoff word rides in pay_with_item's `say` (LLM-350). ZBBS-HOME-388 asked
+// for it as a separate speak — correct then, unreachable since LLM-321 made speak
+// terminal alongside pay_with_item: whichever landed first ended the tick, so the
+// buyer either offered in silence or spoke and never offered.
 func renderCoPresentBuy(b *strings.Builder, seller, itemLabel string, itemKind sim.ItemKind, qty int) {
 	s := sanitizeInline(seller)
-	fmt.Fprintf(b, "%s is here with you and sells %s. Buy it now — call pay_with_item with seller \"%s\", item \"%s\", a qty up to %d, and a payment: coins (amount), goods you carry (pay_items), or both, with consume_now false. Then also use speak for a brief handoff line as you make the offer. They will accept or counter your offer.\n",
+	fmt.Fprintf(b, "%s is here with you and sells %s. Buy it now — call pay_with_item with seller \"%s\", item \"%s\", a qty up to %d, a payment: coins (amount), goods you carry (pay_items), or both, with consume_now false, and your handoff line in say. Do not speak first: speaking ends your turn, and the offer would never be made. They will accept or counter your offer.\n",
 		s, sanitizeInline(itemLabel), s, sanitizeInline(string(itemKind)), qty)
 }

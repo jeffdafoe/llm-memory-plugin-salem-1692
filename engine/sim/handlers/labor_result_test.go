@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
@@ -10,6 +11,12 @@ import (
 // decline_work) must return a STEERED [ok], not a bare one, so the weak model
 // stops re-firing them — the third recurrence of the offeredThisTick /
 // quotedThisTick storm. Mirrors accept_pay_result_test.go.
+//
+// LLM-350: the "Say a brief word, then call done()" tail is gone from the
+// accept_work / decline_work results. Both are terminal-on-success, so the tick
+// returns the moment one lands and the model never got a round in which to obey
+// either verb. The acceptor's words ride on the tool's own `say` instead, and
+// come back echoed on the result — TestCommitResultContent_LaborSay_EchoesSaid.
 
 func TestCommitResultContent_LaborSteers(t *testing.T) {
 	cases := []struct {
@@ -37,14 +44,14 @@ func TestCommitResultContent_LaborSteers(t *testing.T) {
 			name:   "accept_work working → hired + handover steer",
 			vc:     ValidatedCall{Name: "accept_work"},
 			result: sim.LaborAcceptResult{State: sim.LaborStateWorking, WorkerName: "Lewis Walker", Reward: 5, Payment: "5 coins"},
-			want:   "[ok] You hired Lewis Walker — they are at the work now for 5 coins, paid when they finish. Say a brief word, then call done(). Do not accept again.",
+			want:   "[ok] You hired Lewis Walker — they are at the work now for 5 coins, paid when they finish. Do not accept again.",
 		},
 		{
 			// LLM-225: an in-kind reward names both legs in the hired steer.
 			name:   "accept_work working with in-kind reward → payment phrase in steer",
 			vc:     ValidatedCall{Name: "accept_work"},
 			result: sim.LaborAcceptResult{State: sim.LaborStateWorking, WorkerName: "Anne Walker", Reward: 2, Payment: "1 porridge and 2 coins"},
-			want:   "[ok] You hired Anne Walker — they are at the work now for 1 porridge and 2 coins, paid when they finish. Say a brief word, then call done(). Do not accept again.",
+			want:   "[ok] You hired Anne Walker — they are at the work now for 1 porridge and 2 coins, paid when they finish. Do not accept again.",
 		},
 		{
 			// Defensive: a result built without the pre-formatted Payment falls
@@ -52,7 +59,7 @@ func TestCommitResultContent_LaborSteers(t *testing.T) {
 			name:   "accept_work working without Payment falls back to coins",
 			vc:     ValidatedCall{Name: "accept_work"},
 			result: sim.LaborAcceptResult{State: sim.LaborStateWorking, WorkerName: "Lewis Walker", Reward: 5},
-			want:   "[ok] You hired Lewis Walker — they are at the work now for 5 coins, paid when they finish. Say a brief word, then call done(). Do not accept again.",
+			want:   "[ok] You hired Lewis Walker — they are at the work now for 5 coins, paid when they finish. Do not accept again.",
 		},
 		{
 			// The copy is role-neutral because either party may be the acceptor
@@ -74,13 +81,13 @@ func TestCommitResultContent_LaborSteers(t *testing.T) {
 			name:   "accept_work working, worker accepted an offered job",
 			vc:     ValidatedCall{Name: "accept_work"},
 			result: sim.LaborAcceptResult{State: sim.LaborStateWorking, WorkerName: "Lewis Walker", EmployerName: "Prudence Ward", AcceptorIsWorker: true, Payment: "4 coins"},
-			want:   "[ok] You took on the job for Prudence Ward — you are at the work now, paid 4 coins when you finish. Say a brief word, then call done(). Do not accept again.",
+			want:   "[ok] You took on the job for Prudence Ward — you are at the work now, paid 4 coins when you finish. Do not accept again.",
 		},
 		{
 			name:   "accept_work en_route, worker must walk to the employer's post",
 			vc:     ValidatedCall{Name: "accept_work"},
 			result: sim.LaborAcceptResult{State: sim.LaborStateEnRoute, WorkerName: "Lewis Walker", EmployerName: "Prudence Ward", AcceptorIsWorker: true, Payment: "4 coins"},
-			want:   "[ok] You took on the job for Prudence Ward — make your way to their workplace and get to work once you're both there, paid 4 coins when you finish. Say a brief word, then call done(). Do not accept again.",
+			want:   "[ok] You took on the job for Prudence Ward — make your way to their workplace and get to work once you're both there, paid 4 coins when you finish. Do not accept again.",
 		},
 		{
 			name:   "offer_work placed → the worker answers on their turn",
@@ -101,7 +108,7 @@ func TestCommitResultContent_LaborSteers(t *testing.T) {
 			name:   "decline_work declined → refusal steer",
 			vc:     ValidatedCall{Name: "decline_work"},
 			result: sim.LaborDeclineResult{State: sim.LaborStateDeclined},
-			want:   "[ok] You declined the work. Say a brief word of refusal, then call done(). Do not decline again.",
+			want:   "[ok] You declined the work. Do not decline again.",
 		},
 		{
 			// Defensive: a wrong/unexpected result shape must degrade to the bare
@@ -126,5 +133,56 @@ func TestCommitResultContent_LaborSteers(t *testing.T) {
 				t.Errorf("commitResultContent\n got:  %q\n want: %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestCommitResultContent_LaborSay_EchoesSaid pins the LLM-350 echo on the two
+// labor responses: the acceptor's own words come back on the result (the only
+// signal it gets that the room heard), and a refused line says so rather than
+// letting the NPC believe it spoke. The hire or the decline stands either way.
+func TestCommitResultContent_LaborSay_EchoesSaid(t *testing.T) {
+	accepted := sim.LaborAcceptResult{
+		State: sim.LaborStateEnRoute, WorkerName: "Lewis Walker", EmployerName: "Prudence Ward",
+		AcceptorIsWorker: true, Reward: 4, Payment: "4 coins",
+	}
+	acceptVC := &ValidatedCall{
+		Name:        "accept_work",
+		DecodedArgs: AcceptWorkArgs{LaborID: 1, Say: "It would be my pleasure."},
+	}
+
+	accepted.Announced = true
+	got := commitResultContent(acceptVC, accepted)
+	if !strings.Contains(got, `You said: "It would be my pleasure."`) {
+		t.Errorf("accept_work result %q does not echo the acceptor's line", got)
+	}
+	if !strings.Contains(got, "make your way to their workplace") {
+		t.Errorf("accept_work result %q lost the relocate instruction", got)
+	}
+
+	accepted.Announced, accepted.SayRefused = false, "you are walking"
+	got = commitResultContent(acceptVC, accepted)
+	if !strings.Contains(got, "Your words went unsaid: you are walking") {
+		t.Errorf("accept_work result %q does not report the refused line", got)
+	}
+	if !strings.Contains(got, "You took on the job") {
+		t.Errorf("accept_work result %q dropped the hire when the words were refused — the hire stands", got)
+	}
+
+	declineVC := &ValidatedCall{
+		Name:        "decline_work",
+		DecodedArgs: DeclineWorkArgs{LaborID: 1, Say: "Not today."},
+	}
+	got = commitResultContent(declineVC, sim.LaborDeclineResult{
+		ID: 1, State: sim.LaborStateDeclined, Announced: true,
+	})
+	if !strings.Contains(got, `You said: "Not today."`) {
+		t.Errorf("decline_work result %q does not echo the spoken refusal", got)
+	}
+
+	// A wordless response invents nothing.
+	got = commitResultContent(&ValidatedCall{Name: "decline_work", DecodedArgs: DeclineWorkArgs{LaborID: 1}},
+		sim.LaborDeclineResult{ID: 1, State: sim.LaborStateDeclined})
+	if strings.Contains(got, "You said") || strings.Contains(got, "unsaid") {
+		t.Errorf("wordless decline_work result %q invented an utterance", got)
 	}
 }

@@ -328,11 +328,17 @@ func TestRenderRestocking_BuyHereImperative(t *testing.T) {
 	if !strings.Contains(out, "consume_now false") {
 		t.Errorf("example must spell out consume_now:\n%s", out)
 	}
-	// ZBBS-HOME-388: order pay before speech and name the speak TOOL explicitly
-	// (bubbles spawn only from speak; "say a word" alone may be satisfied as plain
-	// text), so the trade both happens and is visible as a bubble.
-	if !strings.Contains(out, "first call pay_with_item") || !strings.Contains(out, "use speak") {
-		t.Errorf("buy-here imperative should order pay before speech:\n%s", out)
+	// ZBBS-HOME-388 wanted the trade visible as a speech bubble and named the speak
+	// TOOL for it. LLM-321 later made speak terminal alongside pay_with_item, so
+	// "call pay_with_item … then also use speak" could never be obeyed: the offer
+	// ended the tick and the speak was skipped, or the speak ended it and no offer
+	// was ever made. The handoff line rides in pay_with_item's own `say` now, which
+	// lands on the same utterance path — the bubble still spawns, from one call.
+	if !strings.Contains(out, "call pay_with_item") || !strings.Contains(out, "your handoff line in say") {
+		t.Errorf("buy-here imperative should carry the handoff line in say:\n%s", out)
+	}
+	if strings.Contains(out, "Then also use speak") {
+		t.Errorf("buy-here imperative asks for a second terminal verb (LLM-350):\n%s", out)
 	}
 	if strings.Contains(out, "buy from Ellis Farm") {
 		t.Errorf("co-present item should suppress the walk-to line:\n%s", out)

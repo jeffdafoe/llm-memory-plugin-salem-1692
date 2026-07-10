@@ -67,10 +67,17 @@ const MaxPayWithItemForChars = 200
 // on a runaway consumer list before validation gets a chance.
 const MaxPayWithItemConsumersHandler = 8
 
-// MaxPayMessageHandlerRunes caps free-text message fields
-// (decline_pay.reason, counter_pay.message, withdraw_pay.message).
+// MaxPayMessageHandlerRunes caps withdraw_pay's free-text message field.
 // Mirrors sim.MaxPayMessageRunes — schema literal must stay in sync
 // with the substrate constant.
+//
+// decline_pay and counter_pay no longer carry a silent note of their own
+// (LLM-350): their words are spoken through `say`, capped at MaxSpeakTextChars
+// like every other utterance, and sim.DeclinePay / sim.CounterPay truncate what
+// they record on PayLedgerEntry.Message to sim.MaxPayMessageRunes. withdraw_pay
+// keeps its message — it is unilateral and reaches no one in the room, and no cue
+// pairs it with a speak, so there is no live failure to fix and no reason to widen
+// this ticket to it (the same call LLM-346 made for solicit_work).
 const MaxPayMessageHandlerRunes = 220
 
 // MaxPayWithItemPayItemsHandler caps len(pay_items[]) in the
@@ -267,6 +274,7 @@ const payItemsSchemaFragment = `{
 //   - quote_id:       integer (optional), minimum 1
 //   - in_response_to: integer (optional), minimum 1
 //   - for:            string (optional), maxLength MaxPayWithItemForChars
+//   - say:            optional, maxLength MaxSpeakTextChars (LLM-350)
 type PayWithItemArgs struct {
 	Seller       string      `json:"seller"`
 	Item         string      `json:"item"`
@@ -279,6 +287,11 @@ type PayWithItemArgs struct {
 	InResponseTo LenientID   `json:"in_response_to"`
 	For          string      `json:"for"`
 	ReadyInDays  int         `json:"ready_in_days"`
+	// Say is the buyer's spoken line, delivered as the offer is placed (LLM-350).
+	// The restock cue used to ask for "a brief handoff line" via a separate speak
+	// after the pay_with_item, which the terminal offer had already made
+	// unreachable. Optional: a wordless offer is legal.
+	Say string `json:"say"`
 }
 
 var payWithItemSchema = json.RawMessage(`{
@@ -343,6 +356,11 @@ var payWithItemSchema = json.RawMessage(`{
             "minimum": 0,
             "maximum": 30,
             "description": "Lodging only: book a room starting this many days from now (0 or omitted = a room for tonight). Ignored for anything else — ordinary goods are handed over when you pay. Max 30."
+        },
+        "say": {
+            "type": "string",
+            "maxLength": 1000,
+            "description": "What you say aloud as you make the offer, in your own voice (e.g. 'Four coins for a bowl of your stew, if you'll have it.'). Spoken to the seller. Optional: omit to offer without a word."
         }
     },
     "required": ["seller", "item", "qty", "consume_now"],
@@ -353,6 +371,7 @@ const payWithItemDescription = "Offer to buy items from another villager in your
 	"You set the item, qty (per consumer), and the payment — coins (amount), goods you carry (pay_items), or both — and whether it's eat-here or takeaway. " +
 	"Paying with goods is barter: the seller weighs your goods just like a coin offer. " +
 	"By default this creates a pending offer the seller must accept, decline, or counter. " +
+	"Say your piece in the same breath by passing `say` — do NOT speak first and then call this, because speaking ends your turn and the offer would never be made. " +
 	"If you pass quote_id, the deal closes instantly when terms match (strict reject on any mismatch — no silent fall-through). " +
 	"If you pass in_response_to, you're following up on a counter the seller made on a previous offer of yours."
 
@@ -459,6 +478,11 @@ func DecodePayWithItemArgs(raw json.RawMessage) (any, error) {
 	if args.ReadyInDays > sim.MaxOrderReadyInDays {
 		return nil, modelSafef("pay_with_item: ready_in_days too far ahead (got %d, max %d)", args.ReadyInDays, sim.MaxOrderReadyInDays)
 	}
+	// say shares speak's rune cap — it lands on the same utterance path (LLM-350).
+	if n := utf8.RuneCountInString(args.Say); n > MaxSpeakTextChars {
+		return nil, modelSafef(
+			"pay_with_item: say exceeds %d-character cap (got %d characters)", MaxSpeakTextChars, n)
+	}
 	return args, nil
 }
 
@@ -529,8 +553,28 @@ func HandlePayWithItem(in HandlerInput) (sim.Command, error) {
 					"pay_with_item: 'for' contains a disallowed control character at byte offset %d", i)
 			}
 		}
+		say, err := normalizeSayLine("pay_with_item", args.Say)
+		if err != nil {
+			return sim.Command{}, err
+		}
 		now := time.Now().UTC()
-		return withHuddleBootstrap(in.ActorID, now, sim.Pay(in.ActorID, seller, coins, forText, now)), nil
+		actorID := in.ActorID
+		hasNewNews := in.HasNewNews
+		pay := sim.Pay(actorID, seller, coins, forText, now)
+		if say == "" {
+			return withHuddleBootstrap(actorID, now, pay), nil
+		}
+		// The translated payment is still a pay_with_item call, and pay_with_item is
+		// tick-terminal — so the buyer's line has to ride along here too (LLM-350),
+		// even though sim.Pay itself is not. Payment first, then the words.
+		return withHuddleBootstrap(actorID, now, sim.Command{Fn: func(w *sim.World) (any, error) {
+			res, err := pay.Fn(w)
+			if err != nil {
+				return nil, err
+			}
+			sim.SpeakAlongside(w, actorID, say, seller, hasNewNews, now, "pay_with_item handed over coins")
+			return res, nil
+		}}), nil
 	}
 
 	// Normalize the consumer list. Per-entry trim + strict-control-char
@@ -583,14 +627,21 @@ func HandlePayWithItem(in HandlerInput) (sim.Command, error) {
 		return sim.Command{}, err
 	}
 
+	say, err := normalizeSayLine("pay_with_item", args.Say)
+	if err != nil {
+		return sim.Command{}, err
+	}
+
 	// ZBBS-HOME-400: form/join the co-located huddle on the offer itself so a
 	// buyer who walked up to a stall can make the offer on arrival without a
 	// separate prior speak (the live restock-thrash). No-op when already
 	// huddled, alone, or out of stall scope, so an offer to an absent seller
 	// still rejects at the gate exactly as before.
 	now := time.Now().UTC()
-	return withHuddleBootstrap(in.ActorID, now, sim.PayWithItem(
-		in.ActorID,
+	actorID := in.ActorID
+	hasNewNews := in.HasNewNews
+	offer := sim.PayWithItem(
+		actorID,
 		seller,
 		item,
 		args.Qty,
@@ -603,7 +654,142 @@ func HandlePayWithItem(in HandlerInput) (sim.Command, error) {
 		forText,
 		now,
 		args.ReadyInDays,
-	)), nil
+	)
+	if say == "" {
+		return withHuddleBootstrap(actorID, now, offer), nil
+	}
+
+	// Offer FIRST, then the words — sell's ordering (LLM-343), for its reason: an
+	// offer the world refuses (no such seller, no stock, terms that don't match the
+	// quote) leaves the buyer silent rather than haggling over a deal that was never
+	// placed. The speak is best-effort the other way; see sim.SpeakAlongside.
+	return withHuddleBootstrap(actorID, now, sim.Command{Fn: func(w *sim.World) (any, error) {
+		res, err := offer.Fn(w)
+		if err != nil {
+			return nil, err
+		}
+		placed, ok := res.(sim.PayWithItemResult)
+		if !ok {
+			return res, nil
+		}
+		// The offer names one seller, so the buyer's line is spoken to them.
+		placed.Announced, placed.SayRefused = sim.SpeakAlongside(
+			w, actorID, say, seller, hasNewNews, now,
+			fmt.Sprintf("pay_with_item placed offer %d", placed.LedgerID),
+		)
+		return placed, nil
+	}}), nil
+}
+
+// ====================================================================
+// the spoken line the three pay RESPONSES fold in (LLM-350)
+// ====================================================================
+
+// payResponseResult is what a pay RESPONSE tool returns once it carries a `say`:
+// the ledger state the response resolved to, plus the fate of the spoken line.
+// Announced is true when the words went out; SayRefused carries SpeakTo's own
+// model-facing reason when the response landed but the speech did not. The
+// response stands either way (see sim.SpeakAlongside).
+//
+// A response with no `say` returns the bare sim.PayLedgerState, exactly as it did
+// before this ticket — payResponseState unwraps both shapes for the harness.
+type payResponseResult struct {
+	State      sim.PayLedgerState
+	Announced  bool
+	SayRefused string
+}
+
+// payResponseState unwraps a pay-response commit result into the ledger state and
+// the spoken line's fate, tolerating both the bare-state (no `say`) and the
+// payResponseResult (with `say`) shapes. ok is false for any other result type.
+func payResponseState(cmdResult any) (state sim.PayLedgerState, announced bool, sayRefused string, ok bool) {
+	switch r := cmdResult.(type) {
+	case sim.PayLedgerState:
+		return r, false, "", true
+	case payResponseResult:
+		return r.State, r.Announced, r.SayRefused, true
+	default:
+		return "", false, "", false
+	}
+}
+
+// payCounterpartyName resolves the display name of the party on the other side of
+// ledgerID from callerID — the buyer, when a seller answers. Empty when it can't
+// be resolved, which addresses the utterance to the whole huddle rather than
+// failing: SpeakTo's vocative gate must never cost the seller their answer.
+func payCounterpartyName(w *sim.World, callerID sim.ActorID, ledgerID sim.LedgerID) string {
+	entry, ok := w.PayLedger[ledgerID]
+	if !ok || entry == nil {
+		return ""
+	}
+	other := entry.BuyerID
+	if other == callerID {
+		other = entry.SellerID
+	}
+	peer, ok := w.Actors[other]
+	if !ok || peer == nil {
+		return ""
+	}
+	return peer.DisplayName
+}
+
+// respondAndSpeak wraps a terminal pay-response Command so the caller's spoken
+// line goes out as the response commits, in one terminal act (LLM-350). Returns
+// cmd unchanged when there is nothing to say.
+//
+// Response FIRST, then the words — the LLM-343 ordering, for the LLM-343 reason.
+// A response that falls through to a failed terminal (the buyer's coins are gone,
+// the stock ran out, either party walked off) settled nothing, and `landed` reports
+// that: the seller stays silent rather than thanking a customer for a sale that
+// did not happen. Nothing the pay responses do can gate the speech that follows —
+// they move no one and dissolve no huddle — which is why this composite lives at
+// the handler layer, where accept_work's cannot.
+func respondAndSpeak(
+	actorID sim.ActorID,
+	ledgerID sim.LedgerID,
+	say string,
+	hasNewNews bool,
+	now time.Time,
+	act string,
+	landed func(sim.PayLedgerState) bool,
+	cmd sim.Command,
+) sim.Command {
+	if say == "" {
+		return cmd
+	}
+	return sim.Command{Fn: func(w *sim.World) (any, error) {
+		to := payCounterpartyName(w, actorID, ledgerID)
+		res, err := cmd.Fn(w)
+		if err != nil {
+			return nil, err
+		}
+		state, ok := res.(sim.PayLedgerState)
+		if !ok {
+			return res, nil
+		}
+		out := payResponseResult{State: state}
+		if !landed(state) {
+			return out, nil
+		}
+		out.Announced, out.SayRefused = sim.SpeakAlongside(w, actorID, say, to, hasNewNews, now, act)
+		return out, nil
+	}}
+}
+
+// normalizeSayLine trims a folded `say` line and runs speak's permissive control-char
+// scan (\n \r \t allowed — it is prose, not an identifier). Returns the trimmed
+// text, or a model-safe error naming toolName.
+func normalizeSayLine(toolName, say string) (string, error) {
+	trimmed := strings.TrimSpace(say)
+	if trimmed == "" {
+		return "", nil
+	}
+	if i := indexInvalidControlChar(trimmed); i >= 0 {
+		return "", modelSafef(
+			"%s: say contains a disallowed control character at byte offset %d "+
+				"(only \\n, \\r, \\t allowed)", toolName, i)
+	}
+	return trimmed, nil
 }
 
 // ====================================================================
@@ -613,6 +799,12 @@ func HandlePayWithItem(in HandlerInput) (sim.Command, error) {
 // AcceptPayArgs is the decoded shape of the accept_pay tool's arguments.
 type AcceptPayArgs struct {
 	LedgerID LenientID `json:"ledger_id"`
+	// Say is the seller's spoken line, delivered as the sale settles (LLM-350).
+	// accept_pay and speak are both tick-terminal, so a seller who answered with
+	// speak never reached the accept, and one who accepted first had the speak
+	// skipped as post_terminal — either way the transaction passed in silence.
+	// Optional: a wordless accept is still legal.
+	Say string `json:"say"`
 }
 
 var acceptPaySchema = json.RawMessage(`{
@@ -622,6 +814,11 @@ var acceptPaySchema = json.RawMessage(`{
             "type": "integer",
             "minimum": 1,
             "description": "The numeric ledger ID of the pending offer to accept. You'll see this in your perception of the buyer's offer."
+        },
+        "say": {
+            "type": "string",
+            "maxLength": 1000,
+            "description": "What you say aloud as you take their coins, in your own voice (e.g. 'Six coins it is — here's your stew and bread.'). Spoken to the buyer. Optional: omit to settle without a word."
         }
     },
     "required": ["ledger_id"],
@@ -632,24 +829,57 @@ const acceptPayDescription = "Accept a pending offer from a buyer in your curren
 	"At acceptance time the engine verifies you are both still in the same conversation, you have stock, the buyer has coins, " +
 	"and you are not on a break — if any check fails, the offer flips to a terminal failed state and the " +
 	"transfer does not happen. On success: coins move to you, items leave your inventory, and (for eat-here " +
-	"deals) the consumers' needs are satisfied immediately."
+	"deals) the consumers' needs are satisfied immediately. " +
+	"Answer them aloud in the same breath by passing `say` — do NOT reply with the speak tool, because speaking ends your turn and the offer would go unanswered."
 
 // DecodeAcceptPayArgs parses raw args into an AcceptPayArgs.
 func DecodeAcceptPayArgs(raw json.RawMessage) (any, error) {
-	args, err := decodeLedgerOnly(raw, "accept_pay")
-	if err != nil {
-		return nil, err
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return nil, modelSafef("accept_pay: arguments must be a JSON object")
 	}
-	return AcceptPayArgs{LedgerID: args.LedgerID}, nil
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var args AcceptPayArgs
+	if err := dec.Decode(&args); err != nil {
+		return nil, fmt.Errorf("accept_pay: malformed arguments: %w", err)
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return nil, modelSafef("accept_pay: trailing data after JSON object")
+		}
+		return nil, fmt.Errorf("accept_pay: malformed trailing data: %w", err)
+	}
+	if args.LedgerID < 1 {
+		return nil, modelSafef("accept_pay: ledger_id must be at least 1 (got %d)", args.LedgerID)
+	}
+	if n := utf8.RuneCountInString(args.Say); n > MaxSpeakTextChars {
+		return nil, modelSafef(
+			"accept_pay: say exceeds %d-character cap (got %d characters)", MaxSpeakTextChars, n)
+	}
+	return args, nil
 }
 
-// HandleAcceptPay is the CommitFn for the accept_pay tool. Pure builder.
+// HandleAcceptPay is the CommitFn for the accept_pay tool. Pure builder — the
+// spoken line rides along on the settle itself (LLM-350).
 func HandleAcceptPay(in HandlerInput) (sim.Command, error) {
 	args, ok := in.Args.(AcceptPayArgs)
 	if !ok {
 		return sim.Command{}, fmt.Errorf("accept_pay: handler received unexpected args type %T", in.Args)
 	}
-	return sim.AcceptPay(in.ActorID, sim.LedgerID(args.LedgerID), time.Now().UTC()), nil
+	say, err := normalizeSayLine("accept_pay", args.Say)
+	if err != nil {
+		return sim.Command{}, err
+	}
+	now := time.Now().UTC()
+	ledgerID := sim.LedgerID(args.LedgerID)
+	return respondAndSpeak(
+		in.ActorID, ledgerID, say, in.HasNewNews, now,
+		fmt.Sprintf("accept_pay settled ledger %d", ledgerID),
+		func(s sim.PayLedgerState) bool { return s == sim.PayLedgerStateAccepted },
+		sim.AcceptPay(in.ActorID, ledgerID, now),
+	), nil
 }
 
 // ====================================================================
@@ -657,9 +887,18 @@ func HandleAcceptPay(in HandlerInput) (sim.Command, error) {
 // ====================================================================
 
 // DeclinePayArgs is the decoded shape of the decline_pay tool's arguments.
+//
+// Say folds in the field this tool used to call `reason` (LLM-350). They were
+// always the same thing — the seller's reason for refusing — but `reason` was
+// never spoken and never reached the buyer: renderPayResolvedWarrantLine drops
+// PayLedgerEntry.Message, and CounterOfferView withholds it on purpose as a
+// cross-actor prompt-injection surface. Only the umbilical operator console ever
+// read it. Advertising a silent `reason` NEXT TO a spoken `say` would just move
+// this ticket's bug one layer down — its own description promised the buyer would
+// see it — so there is one field. It is spoken, and it still lands on the ledger.
 type DeclinePayArgs struct {
 	LedgerID LenientID `json:"ledger_id"`
-	Reason   string    `json:"reason"`
+	Say      string    `json:"say"`
 }
 
 var declinePaySchema = json.RawMessage(`{
@@ -670,20 +909,25 @@ var declinePaySchema = json.RawMessage(`{
             "minimum": 1,
             "description": "The numeric ledger ID of the pending offer to decline."
         },
-        "reason": {
+        "say": {
             "type": "string",
-            "maxLength": 220,
-            "description": "Optional short reason for the decline. The buyer sees this in their perception of the resolution."
+            "maxLength": 1000,
+            "description": "What you say aloud as you refuse, in your own voice (e.g. 'I've none to spare today — come back tomorrow.'). Spoken to the buyer. Optional: omit to decline without a word."
         }
     },
     "required": ["ledger_id"],
     "additionalProperties": false
 }`)
 
-const declinePayDescription = "Decline a pending offer from a buyer in your current conversation. " +
-	"No goods or coins move. Optionally include a brief reason the buyer sees in their perception."
+const declinePayDescription = "Decline a pending offer from a buyer in your current conversation. No goods or coins move. " +
+	"Refuse them aloud in the same breath by passing `say` — do NOT reply with the speak tool, because speaking ends your turn and the offer would go unanswered."
 
 // DecodeDeclinePayArgs parses raw args into a DeclinePayArgs.
+//
+// Alias: `reason` is tolerated as a decode-only name for `say` (the pre-LLM-350
+// field), so a model that reaches for it still lands the decline WITH its words.
+// A non-empty `say` wins. Per-tool by design, exactly like sell's item_kind→item
+// alias (LLM-326) and speak's message→text (LLM-315) — never a global alias.
 func DecodeDeclinePayArgs(raw json.RawMessage) (any, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
@@ -691,8 +935,12 @@ func DecodeDeclinePayArgs(raw json.RawMessage) (any, error) {
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
-	var args DeclinePayArgs
-	if err := dec.Decode(&args); err != nil {
+	var wire struct {
+		LedgerID LenientID `json:"ledger_id"`
+		Say      string    `json:"say"`
+		Reason   string    `json:"reason"` // decode-only alias (LLM-350)
+	}
+	if err := dec.Decode(&wire); err != nil {
 		return nil, fmt.Errorf("decline_pay: malformed arguments: %w", err)
 	}
 	var extra any
@@ -702,44 +950,51 @@ func DecodeDeclinePayArgs(raw json.RawMessage) (any, error) {
 		}
 		return nil, fmt.Errorf("decline_pay: malformed trailing data: %w", err)
 	}
-	if args.LedgerID < 1 {
-		return nil, modelSafef("decline_pay: ledger_id must be at least 1 (got %d)", args.LedgerID)
+	if wire.LedgerID < 1 {
+		return nil, modelSafef("decline_pay: ledger_id must be at least 1 (got %d)", wire.LedgerID)
 	}
-	if n := utf8.RuneCountInString(args.Reason); n > MaxPayMessageHandlerRunes {
-		return nil, modelSafef(
-			"decline_pay: reason exceeds %d-character cap (got %d characters)",
-			MaxPayMessageHandlerRunes, n,
-		)
+	say, err := selectSayAlias("decline_pay", "reason", wire.Say, wire.Reason)
+	if err != nil {
+		return nil, err
 	}
-	return args, nil
+	return DeclinePayArgs{LedgerID: wire.LedgerID, Say: say}, nil
 }
 
-// HandleDeclinePay is the CommitFn for the decline_pay tool.
+// HandleDeclinePay is the CommitFn for the decline_pay tool. The refusal is
+// spoken as it commits, and the same words are recorded on the ledger entry —
+// where sim.DeclinePay truncates them to MaxPayMessageRunes for the operator
+// console. The two normalizations differ on purpose: speech keeps its line
+// breaks, the ledger field does not.
 func HandleDeclinePay(in HandlerInput) (sim.Command, error) {
 	args, ok := in.Args.(DeclinePayArgs)
 	if !ok {
 		return sim.Command{}, fmt.Errorf("decline_pay: handler received unexpected args type %T", in.Args)
 	}
-	reason := normalizeShortMessage(args.Reason)
-	if reason != "" {
-		if i := indexInvalidControlChar(reason); i >= 0 {
-			return sim.Command{}, modelSafef(
-				"decline_pay: reason contains a disallowed control character at byte offset %d", i)
-		}
+	say, err := normalizeSayLine("decline_pay", args.Say)
+	if err != nil {
+		return sim.Command{}, err
 	}
-	return sim.DeclinePay(in.ActorID, sim.LedgerID(args.LedgerID), reason, time.Now().UTC()), nil
+	now := time.Now().UTC()
+	ledgerID := sim.LedgerID(args.LedgerID)
+	return respondAndSpeak(
+		in.ActorID, ledgerID, say, in.HasNewNews, now,
+		fmt.Sprintf("decline_pay refused ledger %d", ledgerID),
+		func(s sim.PayLedgerState) bool { return s == sim.PayLedgerStateDeclined },
+		sim.DeclinePay(in.ActorID, ledgerID, normalizeShortMessage(say), now),
+	), nil
 }
 
 // ====================================================================
 // counter_pay — seller-side counter
 // ====================================================================
 
-// CounterPayArgs is the decoded shape of the counter_pay tool's arguments.
+// CounterPayArgs is the decoded shape of the counter_pay tool's arguments. Say
+// folds in the old `message` field for the reasons DeclinePayArgs gives.
 type CounterPayArgs struct {
 	LedgerID LenientID   `json:"ledger_id"`
 	Amount   int         `json:"amount"`
 	PayItems payItemList `json:"pay_items"`
-	Message  string      `json:"message"`
+	Say      string      `json:"say"`
 }
 
 var counterPaySchema = json.RawMessage(`{
@@ -757,10 +1012,10 @@ var counterPaySchema = json.RawMessage(`{
             "description": "Your counter-proposal in coins (optional; defaults to 0). You must counter with coins, goods (pay_items), or both. The buyer can respond with a fresh pay_with_item using in_response_to set to this offer's ledger_id."
         },
         "pay_items": ` + payItemsSchemaFragment + `,
-        "message": {
+        "say": {
             "type": "string",
-            "maxLength": 220,
-            "description": "Optional short note explaining your counter. The buyer sees this in their perception."
+            "maxLength": 1000,
+            "description": "What you say aloud as you counter, in your own voice (e.g. 'Four is too little for a whole loaf — six, and it's yours.'). Spoken to the buyer. Optional: omit to counter without a word."
         }
     },
     "required": ["ledger_id"],
@@ -768,9 +1023,11 @@ var counterPaySchema = json.RawMessage(`{
 }`)
 
 const counterPayDescription = "Counter a pending offer with different terms. No coins or goods move. " +
-	"You propose new payment — coins (amount), goods you want instead (pay_items), or both — and the buyer can respond by calling pay_with_item with in_response_to set to this ledger's ID."
+	"You propose new payment — coins (amount), goods you want instead (pay_items), or both — and the buyer can respond by calling pay_with_item with in_response_to set to this ledger's ID. " +
+	"Name your terms aloud in the same breath by passing `say` — do NOT reply with the speak tool, because speaking ends your turn and the offer would go unanswered."
 
-// DecodeCounterPayArgs parses raw args into a CounterPayArgs.
+// DecodeCounterPayArgs parses raw args into a CounterPayArgs. `message` is
+// tolerated as a decode-only alias for `say` (see DecodeDeclinePayArgs).
 func DecodeCounterPayArgs(raw json.RawMessage) (any, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
@@ -778,8 +1035,14 @@ func DecodeCounterPayArgs(raw json.RawMessage) (any, error) {
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
-	var args CounterPayArgs
-	if err := dec.Decode(&args); err != nil {
+	var wire struct {
+		LedgerID LenientID   `json:"ledger_id"`
+		Amount   int         `json:"amount"`
+		PayItems payItemList `json:"pay_items"`
+		Say      string      `json:"say"`
+		Message  string      `json:"message"` // decode-only alias (LLM-350)
+	}
+	if err := dec.Decode(&wire); err != nil {
 		return nil, fmt.Errorf("counter_pay: malformed arguments: %w", err)
 	}
 	var extra any
@@ -789,50 +1052,59 @@ func DecodeCounterPayArgs(raw json.RawMessage) (any, error) {
 		}
 		return nil, fmt.Errorf("counter_pay: malformed trailing data: %w", err)
 	}
-	if args.LedgerID < 1 {
-		return nil, modelSafef("counter_pay: ledger_id must be at least 1 (got %d)", args.LedgerID)
+	if wire.LedgerID < 1 {
+		return nil, modelSafef("counter_pay: ledger_id must be at least 1 (got %d)", wire.LedgerID)
 	}
 	// Coins are optional (>= 0) — a counter may propose coins, goods
 	// (pay_items), or both, but must propose at least one.
-	if args.Amount < 0 {
-		return nil, modelSafef("counter_pay: amount cannot be negative (got %d)", args.Amount)
+	if wire.Amount < 0 {
+		return nil, modelSafef("counter_pay: amount cannot be negative (got %d)", wire.Amount)
 	}
-	if args.Amount > sim.MaxPayWithItemAmount {
-		return nil, modelSafef("counter_pay: amount exceeds maximum (got %d, max %d)", args.Amount, sim.MaxPayWithItemAmount)
+	if wire.Amount > sim.MaxPayWithItemAmount {
+		return nil, modelSafef("counter_pay: amount exceeds maximum (got %d, max %d)", wire.Amount, sim.MaxPayWithItemAmount)
 	}
-	if err := validatePayItemsDecode("counter_pay", "pay_items", args.PayItems); err != nil {
+	if err := validatePayItemsDecode("counter_pay", "pay_items", wire.PayItems); err != nil {
 		return nil, err
 	}
-	if args.Amount == 0 && len(args.PayItems) == 0 {
+	if wire.Amount == 0 && len(wire.PayItems) == 0 {
 		return nil, modelSafef("counter_pay: counter must propose coins or goods (set amount, add pay_items, or both)")
 	}
-	if n := utf8.RuneCountInString(args.Message); n > MaxPayMessageHandlerRunes {
-		return nil, modelSafef(
-			"counter_pay: message exceeds %d-character cap (got %d characters)",
-			MaxPayMessageHandlerRunes, n,
-		)
+	say, err := selectSayAlias("counter_pay", "message", wire.Say, wire.Message)
+	if err != nil {
+		return nil, err
 	}
-	return args, nil
+	return CounterPayArgs{LedgerID: wire.LedgerID, Amount: wire.Amount, PayItems: wire.PayItems, Say: say}, nil
 }
 
-// HandleCounterPay is the CommitFn for the counter_pay tool.
+// HandleCounterPay is the CommitFn for the counter_pay tool. The counter's terms
+// are spoken as it commits; the same words are recorded on the ledger entry.
+//
+// `landed` admits Accepted as well as Countered: a non-increasing pure-coin
+// counter coerces to an accept inside sim.CounterPay (the "I'll let it go at your
+// price" path, LLM-13). Those words were said over a real settle, so they carry.
 func HandleCounterPay(in HandlerInput) (sim.Command, error) {
 	args, ok := in.Args.(CounterPayArgs)
 	if !ok {
 		return sim.Command{}, fmt.Errorf("counter_pay: handler received unexpected args type %T", in.Args)
 	}
-	message := normalizeShortMessage(args.Message)
-	if message != "" {
-		if i := indexInvalidControlChar(message); i >= 0 {
-			return sim.Command{}, modelSafef(
-				"counter_pay: message contains a disallowed control character at byte offset %d", i)
-		}
+	say, err := normalizeSayLine("counter_pay", args.Say)
+	if err != nil {
+		return sim.Command{}, err
 	}
 	payItems, err := buildPayItemInputs("counter_pay", "pay_items", args.PayItems)
 	if err != nil {
 		return sim.Command{}, err
 	}
-	return sim.CounterPay(in.ActorID, sim.LedgerID(args.LedgerID), args.Amount, payItems, message, time.Now().UTC()), nil
+	now := time.Now().UTC()
+	ledgerID := sim.LedgerID(args.LedgerID)
+	return respondAndSpeak(
+		in.ActorID, ledgerID, say, in.HasNewNews, now,
+		fmt.Sprintf("counter_pay countered ledger %d", ledgerID),
+		func(s sim.PayLedgerState) bool {
+			return s == sim.PayLedgerStateCountered || s == sim.PayLedgerStateAccepted
+		},
+		sim.CounterPay(in.ActorID, ledgerID, args.Amount, payItems, normalizeShortMessage(say), now),
+	), nil
 }
 
 // ====================================================================
@@ -953,12 +1225,38 @@ func decodeLedgerOnly(raw json.RawMessage, toolName string) (ledgerOnlyArgs, err
 
 // normalizeShortMessage trims surrounding whitespace and collapses runs
 // of internal whitespace to single spaces (same posture as PR B pay's
-// ForText). Used for decline reason / counter message / withdraw note —
-// all short-form metadata that lands on PayLedgerEntry.Message and
-// gets rendered into the other party's perception prompt, where a
-// literal newline would split the warrant line.
+// ForText). Used for the decline / counter spoken line as it is recorded on
+// PayLedgerEntry.Message, and for the withdraw note — short-form metadata read by
+// the umbilical operator console, where a literal newline would split the row.
 func normalizeShortMessage(s string) string {
 	return strings.Join(strings.Fields(s), " ")
+}
+
+// selectSayAlias picks the spoken line from the canonical `say` and a tool's
+// legacy alias for it (decline_pay's `reason`, counter_pay's `message` —
+// LLM-350). Non-empty `say` wins; otherwise the alias. Emptiness is judged
+// exact, NOT trimmed: a whitespace-only value still selects and the handler does
+// the trim, preserving the decode/handler split the rest of the pay family uses.
+//
+// Both names are rune-capped here even when the other one wins, matching the
+// strict-decode posture of sell's item/item_kind pair: an over-cap value the
+// model actually sent is a malformed call, not something to silently ignore.
+func selectSayAlias(toolName, aliasName, say, alias string) (string, error) {
+	for _, f := range []struct{ name, val string }{{"say", say}, {aliasName, alias}} {
+		if f.val == "" {
+			continue
+		}
+		if n := utf8.RuneCountInString(f.val); n > MaxSpeakTextChars {
+			return "", modelSafef(
+				"%s: %s exceeds %d-character cap (got %d characters)",
+				toolName, f.name, MaxSpeakTextChars, n,
+			)
+		}
+	}
+	if say != "" {
+		return say, nil
+	}
+	return alias, nil
 }
 
 // validatePayItemsDecode runs the decode-stage checks on a barter

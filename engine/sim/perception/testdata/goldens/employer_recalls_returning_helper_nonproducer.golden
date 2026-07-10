@@ -13,5 +13,5 @@ You are inside The Inn, with Anne Walker.
 ## Work offers awaiting your decision
 1. Anne Walker offers to do a job for you for 3 coins — about 1 hour of work (offer id 1)
 You remember Anne Walker lending you a hand recently.
-Respond with accept_work or decline_work, passing the offer id as labor_id. Then also use speak for a brief reply, because the work response itself passes in silence.
+Respond with accept_work or decline_work, passing the offer id as labor_id and the words you speak aloud in say. Do not reply with the speak tool: speaking ends your turn, and the offer would go unanswered.
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

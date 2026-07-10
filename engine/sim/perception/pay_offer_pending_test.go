@@ -381,7 +381,7 @@ func TestBuild_StandingOfferSurvivesConsumedWarrant(t *testing.T) {
 		"248 coins",
 		"25 meat",
 		"the apothecary", // buyer label resolved without a warrant (elizabeth doesn't know prudence)
-		"Respond first with accept_pay",
+		"Respond with accept_pay",
 	} {
 		if !strings.Contains(out, must) {
 			t.Errorf("warrant-less seller tick missing %q\n--- output ---\n%s", must, out)

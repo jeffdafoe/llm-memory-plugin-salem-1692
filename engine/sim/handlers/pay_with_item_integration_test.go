@@ -225,7 +225,7 @@ func TestIntegration_CounterChain(t *testing.T) {
 	// Round 2: bob counters at 6.
 	counter, err := handlers.HandleCounterPay(handlers.HandlerInput{
 		ActorID: "bob", AttemptID: "tk-2",
-		Args: handlers.CounterPayArgs{LedgerID: handlers.LenientID(parentID), Amount: 6, Message: "how about six"},
+		Args: handlers.CounterPayArgs{LedgerID: handlers.LenientID(parentID), Amount: 6, Say: "how about six"},
 	})
 	if err != nil {
 		t.Fatalf("HandleCounterPay: %v", err)
