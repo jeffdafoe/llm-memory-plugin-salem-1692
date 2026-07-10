@@ -14,11 +14,16 @@ import (
 // which only resolves once the command has validated co-location, so a test that
 // skipped the command would assert against a world the engine never produces.
 
+// backRoomID is the private subspace inside the store used by the leak test.
+const backRoomID = sim.RoomID(7)
+
 // buildRepairNarrationWorld seeds a running world with a "store" business owned by
 // the keeper, worn past the repair threshold, with the keeper standing inside it
 // holding enough nails to mend. When withPC is true a PC stands inside the store
-// too — the co-present observer whose talk panel should receive the line.
-func buildRepairNarrationWorld(t *testing.T, withPC bool) (*sim.World, context.CancelFunc, *eventRec) {
+// too — the co-present observer whose talk panel should receive the line. When
+// inBackRoom is true the keeper mends from the store's private back room, which
+// must suppress the room_id-less live line.
+func buildRepairNarrationWorld(t *testing.T, withPC, inBackRoom bool) (*sim.World, context.CancelFunc, *eventRec) {
 	t.Helper()
 	repo, handles := mem.NewRepository()
 	handles.Terrain.Seed(makeAllGrassTerrain())
@@ -39,13 +44,23 @@ func buildRepairNarrationWorld(t *testing.T, withPC bool) (*sim.World, context.C
 		},
 	})
 	handles.Structures.Seed(map[sim.StructureID]*sim.Structure{
-		"store": {ID: "store", DisplayName: "General Store"},
+		"store": {
+			ID: "store", DisplayName: "General Store",
+			Rooms: []*sim.Room{
+				{ID: backRoomID, StructureID: "store", Kind: sim.RoomKindPrivate, Name: "back_room"},
+			},
+		},
 	})
+	keeperRoom := sim.RoomID(0)
+	if inBackRoom {
+		keeperRoom = backRoomID
+	}
 	actors := map[sim.ActorID]*sim.Actor{
 		"keeper": {
 			ID: "keeper", DisplayName: "Josiah Thorne", Kind: sim.KindNPCStateful,
 			Pos:               sim.TilePos{X: sim.PadX + 10, Y: sim.PadY + 10},
 			InsideStructureID: "store",
+			InsideRoomID:      keeperRoom,
 			Inventory:         map[sim.ItemKind]int{sim.NailItemKind: sim.DefaultStallNailsPerRepair},
 			RecentActions:     sim.NewRingBuffer[sim.Action](4),
 		},
@@ -91,7 +106,7 @@ func repairNarrations(rec *eventRec) []*sim.ActorRepairNarrated {
 // a PC stands in the shop emits ActorRepairNarrated naming the business — the same
 // phrasing renderActionLogEntry uses for the panel backload.
 func TestRepairNarration_EmitsToCoPresentPC(t *testing.T) {
-	w, cancel, rec := buildRepairNarrationWorld(t, true)
+	w, cancel, rec := buildRepairNarrationWorld(t, true, false)
 	defer cancel()
 
 	if _, err := w.Send(sim.StartRepair("keeper")); err != nil {
@@ -119,7 +134,7 @@ func TestRepairNarration_EmitsToCoPresentPC(t *testing.T) {
 // still starts and still emits its substrate seam (which drives the action-log row
 // and thus the backload), but nothing is narrated to an empty room.
 func TestRepairNarration_SkippedWithNoPC(t *testing.T) {
-	w, cancel, rec := buildRepairNarrationWorld(t, false)
+	w, cancel, rec := buildRepairNarrationWorld(t, false, false)
 	defer cancel()
 
 	if _, err := w.Send(sim.StartRepair("keeper")); err != nil {
@@ -129,11 +144,35 @@ func TestRepairNarration_SkippedWithNoPC(t *testing.T) {
 	if got := repairNarrations(rec); len(got) != 0 {
 		t.Errorf("emitted %d ActorRepairNarrated with no PC present, want 0", len(got))
 	}
-	started := rec.countEvents(func(e sim.Event) bool {
+	if started := repairStarts(rec); started != 1 {
+		t.Errorf("SourceActivityStarted(repair) count = %d, want 1", started)
+	}
+}
+
+// TestRepairNarration_SkippedInPrivateRoom: mending from the store's private back
+// room emits no live line even with a PC in the building. The wire frame carries
+// no room_id, so a back-room narration would leak to common-room observers who
+// cannot see in; that case is left to the panel backload, which IS room-scoped.
+// The substrate seam still fires, so the action-log row (and the backload) survive.
+func TestRepairNarration_SkippedInPrivateRoom(t *testing.T) {
+	w, cancel, rec := buildRepairNarrationWorld(t, true, true)
+	defer cancel()
+
+	if _, err := w.Send(sim.StartRepair("keeper")); err != nil {
+		t.Fatalf("StartRepair: %v", err)
+	}
+
+	if got := repairNarrations(rec); len(got) != 0 {
+		t.Errorf("emitted %d ActorRepairNarrated from a private room, want 0 (leak guard)", len(got))
+	}
+	if started := repairStarts(rec); started != 1 {
+		t.Errorf("SourceActivityStarted(repair) count = %d, want 1", started)
+	}
+}
+
+func repairStarts(rec *eventRec) int {
+	return rec.countEvents(func(e sim.Event) bool {
 		s, ok := e.(*sim.SourceActivityStarted)
 		return ok && s.Kind == sim.SourceActivityRepair
 	})
-	if started != 1 {
-		t.Errorf("SourceActivityStarted(repair) count = %d, want 1", started)
-	}
 }
