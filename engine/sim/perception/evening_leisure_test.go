@@ -507,6 +507,14 @@ func TestLeavingLeisureVenue(t *testing.T) {
 	if leavingLeisureVenue(nil) {
 		t.Error("want false for a nil actor")
 	}
+	// Total, not precondition-bound: an actor standing outdoors is leaving nothing, even
+	// with a live move intent.
+	outdoors := eveningWorker("")
+	outdoors.MoveDestKind = sim.MoveDestinationStructureEnter
+	outdoors.MoveDestStructureID = "blacksmith"
+	if leavingLeisureVenue(outdoors) {
+		t.Error("want false outdoors: you cannot leave a structure you are not in")
+	}
 
 	arriving := eveningWorker("tavern")
 	arriving.MoveDestKind = sim.MoveDestinationStructureEnter

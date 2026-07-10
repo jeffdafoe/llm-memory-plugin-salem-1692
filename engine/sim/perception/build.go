@@ -2120,9 +2120,11 @@ func insideLeisureVenue(snap *sim.Snapshot, a *sim.ActorSnapshot) bool {
 // not a departure. A StructureVisit aimed at the same venue IS a departure — visitor
 // slots stand outside the walls.
 //
-// Callers must only consult this for an actor already inside a venue.
+// Total rather than precondition-bound: an actor standing nowhere in particular cannot
+// be leaving a structure, so the outdoors case answers false rather than relying on
+// callers to have checked insideLeisureVenue first. code_review.
 func leavingLeisureVenue(a *sim.ActorSnapshot) bool {
-	if a == nil || a.MoveDestKind == "" {
+	if a == nil || a.InsideStructureID == "" || a.MoveDestKind == "" {
 		return false
 	}
 	arrivingHere := a.MoveDestKind == sim.MoveDestinationStructureEnter && a.MoveDestStructureID == a.InsideStructureID
