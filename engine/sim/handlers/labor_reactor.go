@@ -8,54 +8,68 @@ import (
 )
 
 // labor_reactor.go — LLM-187. The LaborOfferReceived subscriber that turns a
-// worker's solicit_work into a reactor warrant on the EMPLOYER, the labor
-// analog of pay_with_item_reactor.go's handlePayOfferReceivedWarrants.
+// labor offer into a reactor warrant on whoever must ANSWER it, the labor analog
+// of pay_with_item_reactor.go's handlePayOfferReceivedWarrants.
 //
-// Why it exists: solicit_work mints a pending LaborOffer (labor_commands.go)
-// but the offer alone does not wake the employer. The decision section and the
+// Why it exists: a mint inserts a pending LaborOffer (labor_commands.go) but the
+// offer alone does not wake the other party. The decision section and the
 // accept_work/decline_work tool gate are both correct — buildLaborOffersForMe
 // scans the ledger and gateTools advertises the tools when a pending offer
-// stands — but they only take effect on a tick the employer actually takes.
-// Without a warrant the employer is woken only incidentally (e.g. the worker
-// speaks again, firing the speech reactor), so a solicitation made into a lull
-// goes unseen and expires at LaborLedgerTTLDefault (3 min). Live trace:
-// hud-e8a494cc… — Anne Walker solicited twice, Prudence Ward never ticked
-// during either window, accept_work never fired, the hire was wholly
-// confabulated. events_labor.go documented this subscriber from the start
-// ("a later subscriber stamps the employer's warrant"); it was never built.
+// stands — but they only take effect on a tick that party actually takes.
+// Without a warrant they are woken only incidentally (e.g. the other speaks
+// again, firing the speech reactor), so an offer made into a lull goes unseen
+// and expires at LaborLedgerTTLDefault (3 min). Live trace: hud-e8a494cc… —
+// Anne Walker solicited twice, Prudence Ward never ticked during either window,
+// accept_work never fired, the hire was wholly confabulated. events_labor.go
+// documented this subscriber from the start ("a later subscriber stamps the
+// employer's warrant"); it was never built.
+//
+// Since LLM-346 the offer may be minted from either side, so the warrant lands on
+// the RESPONDER rather than always on the employer. The failure it guards against
+// is identical in the new direction: Prudence asks Lewis to lend a hand, Lewis
+// never ticks, and her offer expires against a worker standing at her door.
 
 // handleLaborOfferReceivedWarrants is the LaborOfferReceived subscriber. Stamps
-// LaborOfferWarrantReason on the employer so their next reactor tick perceives
-// the pending offer and decides accept_work / decline_work. The warrant's
-// DedupDiscriminator is uint64(LaborID), so a duplicate registration (or a
-// future restart re-stamp) dedupes cleanly against this stamp.
+// LaborOfferWarrantReason on the RESPONDER — the party who did not mint the offer
+// — so their next reactor tick perceives the pending offer and decides
+// accept_work / decline_work. That is the employer on a solicit_work and the
+// worker on an offer_work (LLM-346); the initiator needs no wake, they just
+// acted. The warrant's DedupDiscriminator is uint64(LaborID), so a duplicate
+// registration (or a future restart re-stamp) dedupes cleanly against this stamp.
 func handleLaborOfferReceivedWarrants(w *sim.World, evt sim.Event) {
 	offer, ok := evt.(*sim.LaborOfferReceived)
 	if !ok {
 		return
 	}
-	if offer.EmployerID == "" {
+	responderID := offer.Responder()
+	initiatorID := offer.InitiatedBy
+	if initiatorID == "" {
+		initiatorID = offer.WorkerID // legacy solicit-shaped event
+	}
+	if responderID == "" {
 		return
 	}
-	employer, ok := w.Actors[offer.EmployerID]
-	if !ok || employer == nil {
+	responder, ok := w.Actors[responderID]
+	if !ok || responder == nil {
 		return
 	}
-	if employer.Kind != sim.KindNPCStateful && employer.Kind != sim.KindNPCShared {
-		// PC or decorative employer. PCs don't deliberate via the reactor
-		// (a player hiring acts through the UI surface), and a decorative
-		// actor can't deliberate at all. Defensive skip, mirroring the pay
-		// reactor's non-NPC-seller skip.
+	if responder.Kind != sim.KindNPCStateful && responder.Kind != sim.KindNPCShared {
+		// PC or decorative responder. PCs don't deliberate via the reactor
+		// (a player hiring or taking a job acts through the UI surface), and a
+		// decorative actor can't deliberate at all. Defensive skip, mirroring the
+		// pay reactor's non-NPC-seller skip.
 		return
 	}
 
 	now := time.Now().UTC()
 	meta := sim.WarrantMeta{
-		TriggerActorID: offer.WorkerID,
+		TriggerActorID: initiatorID,
 		Force:          false,
 		Reason: sim.LaborOfferWarrantReason{
 			LaborID:     offer.LaborID,
 			Worker:      offer.WorkerID,
+			Employer:    offer.EmployerID,
+			InitiatedBy: initiatorID,
 			Reward:      offer.Reward,
 			RewardItems: offer.RewardItems,
 			DurationMin: offer.DurationMin,
@@ -63,15 +77,15 @@ func handleLaborOfferReceivedWarrants(w *sim.World, evt sim.Event) {
 		},
 		SourceEventID: offer.EventID(),
 		RootEventID:   offer.RootEventID(),
-		SourceActorID: offer.WorkerID,
+		SourceActorID: initiatorID,
 		HuddleID:      offer.HuddleID,
 		SceneID:       offer.SceneID,
 		OccurredAt:    offer.At,
 	}
-	if _, err := sim.StampWarrant(offer.EmployerID, meta, now).Fn(w); err != nil {
+	if _, err := sim.StampWarrant(responderID, meta, now).Fn(w); err != nil {
 		log.Printf(
-			"handlers: labor-reactor StampWarrant for employer %q (labor %d, event %d): %v",
-			offer.EmployerID, offer.LaborID, offer.EventID(), err,
+			"handlers: labor-reactor StampWarrant for responder %q (labor %d, event %d): %v",
+			responderID, offer.LaborID, offer.EventID(), err,
 		)
 	}
 }

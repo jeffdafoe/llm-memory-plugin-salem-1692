@@ -38,12 +38,20 @@ var payOfferResponseTools = map[string]struct{}{
 	"counter_pay": {},
 }
 
-// laborResponseTools are the employer-side labor-decision tools advertised ONLY
-// when the actor's perception carries a pending labor offer staked against them
-// (perception.PendingLaborOffers — the standing LaborLedger view). The labor
-// analog of payOfferResponseTools; same advertising-only posture (the tools
-// stay AvailabilityAvailable so a call that arrives is still dispatchable, and
+// laborResponseTools are the labor-decision tools advertised ONLY when the actor's
+// perception carries a pending labor offer AWAITING THEIR ANSWER
+// (perception.PendingLaborOffers — the standing LaborLedger view). That is a
+// worker's solicitation when the actor is the employer, and an employer's offer of
+// work when the actor is the worker (LLM-346). The labor analog of
+// payOfferResponseTools; same advertising-only posture (the tools stay
+// AvailabilityAvailable so a call that arrives is still dispatchable, and
 // sim.AcceptWork/DeclineWork stay authoritative). LLM-26.
+//
+// Note what is NOT here: no comfort gate. A seek-work coin ceiling silences a
+// worker's HUSTLE (CanSolicitWork), never their answer to a direct question. These
+// tools ride the standing offer view alone, so a worker who has been asked to lend
+// a hand can always say yes or no — however full their purse, however late the
+// hour, whatever the seek-work backstop thinks of them.
 var laborResponseTools = map[string]struct{}{
 	"accept_work":  {},
 	"decline_work": {},
@@ -59,11 +67,18 @@ var laborResponseTools = map[string]struct{}{
 // food — see gateTools). solicit_work / accept_work / the pay-offer group are
 // already gated by their own conditions (a busy worker is not a free solicitor
 // and holds no offer), so they need no entry here.
+//
+// offer_work IS listed (LLM-346). Its own gate would not stop a laboring worker
+// from hiring a co-present peer — HireableWorkers only asks about the TARGET — and
+// a hand mid-job subcontracting the shelves to a passer-by is exactly the kind of
+// commerce this set exists to strip. The employer's own commitment, not the
+// target's, is what disqualifies the call.
 var laborAbandonTools = map[string]struct{}{
 	"pay":           {},
 	"pay_with_item": {},
 	"offer_trade":   {},
 	"sell":          {}, // the seller quote tool's model-facing name (scene_quote, renamed in LLM-184)
+	"offer_work":    {}, // LLM-346: a worker mid-job does not take on hired help of her own
 }
 
 // payVerbTools are the buyer-initiated payment tools advertised ONLY when the
@@ -105,6 +120,16 @@ var giftResponseTools = map[string]struct{}{
 // while the actor is walking (walkIncompatibleTools — SolicitWork rejects on
 // MoveIntent != nil). LLM-26.
 const solicitWorkToolName = "solicit_work"
+
+// offerWorkToolName — the employer's hire-someone tool (LLM-346). Advertised ONLY
+// when perception names at least one co-present hireable worker
+// (payload.HireableWorkers), the SAME slice renderOfferWorkAffordance names them
+// from — so the tool and its cue surface together or not at all (discussion-109),
+// and the model is never handed a hiring verb with no one in the room to hire.
+// Also dropped while the actor is walking (walkIncompatibleTools — OfferWork
+// rejects on MoveIntent != nil) and while the actor is laboring
+// (laborAbandonTools).
+const offerWorkToolName = "offer_work"
 
 // counterPayToolName is the seller's counter tool — gated more tightly than
 // the rest of the seller-response group (see gateTools / scar #4).
@@ -164,6 +189,7 @@ var walkIncompatibleTools = map[string]struct{}{
 	"pay":           {}, // LLM-99: bare-coin pay re-registered; same walk-in-flight reject
 	"repair":        {}, // LLM-118: StartRepair rejects on MoveIntent != nil (mend at the stall)
 	"solicit_work":  {}, // LLM-26: SolicitWork rejects on MoveIntent != nil (offer when stationary)
+	"offer_work":    {}, // LLM-346: OfferWork rejects on MoveIntent != nil (hire when stationary)
 }
 
 // stopToolName — the voluntary-halt tool (ZBBS-HOME-338). The inverse of the
@@ -397,6 +423,7 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 	offerRepair := payload.StallRepair != nil
 	hasLaborOffer := len(perception.PendingLaborOffers(payload)) > 0
 	canSolicitWork := payload.CanSolicitWork
+	canOfferWork := len(payload.HireableWorkers) > 0
 	hasGift := len(perception.PendingGiftsForMe(payload)) > 0
 	laboring := payload.Laboring != nil
 	// LLM-230 strips a laboring worker's move_to to keep her committed, EXCEPT when
@@ -530,6 +557,12 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 		// from — so the tool and its cue can't drift, and no non-worker ever sees
 		// it.
 		if spec.Name == solicitWorkToolName && !canSolicitWork {
+			continue
+		}
+		// offer_work consumer (LLM-346): advertise only when perception names a
+		// co-present worker this actor could hire — the same HireableWorkers slice
+		// the affordance cue names them from, so the tool and its cue can't drift.
+		if spec.Name == offerWorkToolName && !canOfferWork {
 			continue
 		}
 		// labor-response consumer (LLM-26): advertise accept_work/decline_work

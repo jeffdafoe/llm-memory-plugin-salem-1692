@@ -55,16 +55,47 @@ func TestCommitResultContent_LaborSteers(t *testing.T) {
 			want:   "[ok] You hired Lewis Walker — they are at the work now for 5 coins, paid when they finish. Say a brief word, then call done(). Do not accept again.",
 		},
 		{
+			// The copy is role-neutral because either party may be the acceptor
+			// (LLM-346) — "too late to take them on" reads wrong for a worker.
 			name:   "accept_work expired → honest no-hire outcome, no false 'hired'",
 			vc:     ValidatedCall{Name: "accept_work"},
 			result: sim.LaborAcceptResult{State: sim.LaborStateExpired},
-			want:   "[ok] That offer had already expired — too late to take them on.",
+			want:   "[ok] That offer had already expired — too late to take it up.",
 		},
 		{
 			name:   "accept_work failed_unavailable → honest no-hire outcome",
 			vc:     ValidatedCall{Name: "accept_work"},
 			result: sim.LaborAcceptResult{State: sim.LaborStateFailedUnavailable},
-			want:   "[ok] That couldn't be arranged — one of you was no longer available, they were already at a job, or you couldn't cover the pay they asked.",
+			want:   "[ok] That couldn't be arranged — one of you was no longer available, the worker was already at a job, or the employer couldn't cover the pay agreed.",
+		},
+		{
+			// LLM-346: the worker is the acceptor, so the sentence is written from
+			// their side — they took a job on, they did not hire anyone.
+			name:   "accept_work working, worker accepted an offered job",
+			vc:     ValidatedCall{Name: "accept_work"},
+			result: sim.LaborAcceptResult{State: sim.LaborStateWorking, WorkerName: "Lewis Walker", EmployerName: "Prudence Ward", AcceptorIsWorker: true, Payment: "4 coins"},
+			want:   "[ok] You took on the job for Prudence Ward — you are at the work now, paid 4 coins when you finish. Say a brief word, then call done(). Do not accept again.",
+		},
+		{
+			name:   "accept_work en_route, worker must walk to the employer's post",
+			vc:     ValidatedCall{Name: "accept_work"},
+			result: sim.LaborAcceptResult{State: sim.LaborStateEnRoute, WorkerName: "Lewis Walker", EmployerName: "Prudence Ward", AcceptorIsWorker: true, Payment: "4 coins"},
+			want:   "[ok] You took on the job for Prudence Ward — make your way to their workplace and get to work once you're both there, paid 4 coins when you finish. Say a brief word, then call done(). Do not accept again.",
+		},
+		{
+			name:   "offer_work placed → the worker answers on their turn",
+			vc:     ValidatedCall{Name: "offer_work"},
+			result: sim.LaborOfferResult{ID: 3, State: sim.LaborStatePending, WorkerName: "Lewis Walker", Announced: true},
+			want:   "[ok] Your offer of work to Lewis Walker stands — they will answer on their turn.",
+		},
+		{
+			// The offer survives a refused `say` (SpeakTo's vocative / owed-a-reply
+			// gates); the keeper is told her words did not carry rather than left to
+			// assume the room heard her.
+			name:   "offer_work placed but say refused → offer stands, refusal surfaced",
+			vc:     ValidatedCall{Name: "offer_work"},
+			result: sim.LaborOfferResult{ID: 3, State: sim.LaborStatePending, WorkerName: "Lewis Walker", SayRefused: "you are owed a reply"},
+			want:   "[ok] Your offer of work to Lewis Walker stands — they will answer on their turn. Your words did not carry: you are owed a reply",
 		},
 		{
 			name:   "decline_work declined → refusal steer",

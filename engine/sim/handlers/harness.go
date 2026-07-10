@@ -1758,44 +1758,61 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 			}
 		}
 	}
+	// offer_work (LLM-346): the employer-side mint. Tick-terminal like
+	// solicit_work, so the result is purely informational — who the job went to,
+	// and that the answer is theirs to give. When a `say` line rode along it has
+	// already gone out; when SpeakTo refused it, the offer still stands and the
+	// refusal reason is surfaced rather than guessed at, so the keeper knows the
+	// room did not hear her (mirrors sell's say handling).
+	if vc.Name == "offer_work" {
+		if r, ok := cmdResult.(sim.LaborOfferResult); ok && r.State == sim.LaborStatePending {
+			if r.SayRefused != "" {
+				return fmt.Sprintf("[ok] Your offer of work to %s stands — they will answer on their turn. Your words did not carry: %s", r.WorkerName, r.SayRefused)
+			}
+			return fmt.Sprintf("[ok] Your offer of work to %s stands — they will answer on their turn.", r.WorkerName)
+		}
+	}
 	// accept_work (LLM-163): on a real accept the offer flips Working and the
 	// worker is hired; a gate-driven flip (TTL elapsed, co-presence lost, can't
 	// afford) resolves terminal with NO hire. A bare [ok] read "hired" on either
 	// and gave no within-result reason to stop, so the employer re-fired
 	// accept_work (the accept_pay posture). Report the real outcome + steer.
+	//
+	// Either party can be the acceptor (LLM-346), and the sentence must be written
+	// from the caller's side: an employer answering a solicit_work has hired
+	// someone; a worker answering an offer_work has taken a job on and is the one
+	// who must now go and do it.
 	if vc.Name == "accept_work" {
 		if r, ok := cmdResult.(sim.LaborAcceptResult); ok {
-			switch r.State {
-			case sim.LaborStateWorking:
-				// r.Payment names both reward legs ("5 coins", "1 porridge and
-				// 2 coins" — LLM-225), pre-formatted by the Command. Fall back
-				// to the coin leg for a result built without it (defensive —
-				// AcceptWork always sets it).
-				payment := r.Payment
-				if payment == "" {
-					payment = fmt.Sprintf("%d coins", r.Reward)
-					if r.Reward == 1 {
-						payment = "1 coin"
-					}
+			// r.Payment names both reward legs ("5 coins", "1 porridge and 2 coins"
+			// — LLM-225), pre-formatted by the Command. Fall back to the coin leg
+			// for a result built without it (defensive — AcceptWork always sets it).
+			payment := r.Payment
+			if payment == "" {
+				payment = fmt.Sprintf("%d coins", r.Reward)
+				if r.Reward == 1 {
+					payment = "1 coin"
 				}
+			}
+			switch {
+			case r.State == sim.LaborStateWorking && r.AcceptorIsWorker:
+				return fmt.Sprintf("[ok] You took on the job for %s — you are at the work now, paid %s when you finish. Say a brief word, then call done(). Do not accept again.", r.EmployerName, payment)
+			case r.State == sim.LaborStateWorking:
 				return fmt.Sprintf("[ok] You hired %s — they are at the work now for %s, paid when they finish. Say a brief word, then call done(). Do not accept again.", r.WorkerName, payment)
-			case sim.LaborStateEnRoute:
+			case r.State == sim.LaborStateEnRoute && r.AcceptorIsWorker:
+				// LLM-229 from the worker's side: the deal was struck away from the
+				// employer's workplace, so the worker is the one who must walk there.
+				return fmt.Sprintf("[ok] You took on the job for %s — make your way to their workplace and get to work once you're both there, paid %s when you finish. Say a brief word, then call done(). Do not accept again.", r.EmployerName, payment)
+			case r.State == sim.LaborStateEnRoute:
 				// LLM-229: the deal was struck away from your workplace, so the
 				// worker is making their way there and starts once they arrive with
 				// you present. Same payment phrasing; no "until T" (the window
 				// hasn't started).
-				payment := r.Payment
-				if payment == "" {
-					payment = fmt.Sprintf("%d coins", r.Reward)
-					if r.Reward == 1 {
-						payment = "1 coin"
-					}
-				}
 				return fmt.Sprintf("[ok] You hired %s — they will make their way to your workplace and get to work once you're both there, paid %s when they finish. Say a brief word, then call done(). Do not accept again.", r.WorkerName, payment)
-			case sim.LaborStateExpired:
-				return "[ok] That offer had already expired — too late to take them on."
-			case sim.LaborStateFailedUnavailable:
-				return "[ok] That couldn't be arranged — one of you was no longer available, they were already at a job, or you couldn't cover the pay they asked."
+			case r.State == sim.LaborStateExpired:
+				return "[ok] That offer had already expired — too late to take it up."
+			case r.State == sim.LaborStateFailedUnavailable:
+				return "[ok] That couldn't be arranged — one of you was no longer available, the worker was already at a job, or the employer couldn't cover the pay agreed."
 			}
 		}
 	}

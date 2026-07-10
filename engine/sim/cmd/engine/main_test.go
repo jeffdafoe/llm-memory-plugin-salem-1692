@@ -216,7 +216,7 @@ func TestRegisterTools_CacheStableOrder(t *testing.T) {
 	// cross-actor common/situational cache seam.
 	situationalTail := []string{
 		"gather", "produce", "repair", "take_break", "stay_open", "deliver_order", "stop",
-		"solicit_work", "accept_work", "decline_work",
+		"solicit_work", "offer_work", "accept_work", "decline_work",
 		"accept_pay", "decline_pay", "counter_pay", "withdraw_pay",
 		"accept_gift", "decline_gift", "summon",
 	}
@@ -268,7 +268,7 @@ func TestRegisterTools_AdvertisedToolNamesExact(t *testing.T) {
 	want := []string{
 		"speak", "move_to", "consume", "pay_with_item", "pay", "sell", "offer_trade", "give",
 		"gather", "produce", "repair", "take_break", "stay_open", "deliver_order", "stop",
-		"solicit_work", "accept_work", "decline_work",
+		"solicit_work", "offer_work", "accept_work", "decline_work",
 		"accept_pay", "decline_pay", "counter_pay", "withdraw_pay",
 		"accept_gift", "decline_gift", "summon", "done", "recall",
 	}
@@ -330,7 +330,8 @@ func TestRegisterTools_FamilyMembership(t *testing.T) {
 			"labor",
 			handlers.RegisterLaborFamily,
 			[]func(*handlers.Registry) error{
-				handlers.RegisterSolicitWork, handlers.RegisterAcceptWork, handlers.RegisterDeclineWork,
+				handlers.RegisterSolicitWork, handlers.RegisterOfferWork,
+				handlers.RegisterAcceptWork, handlers.RegisterDeclineWork,
 			},
 		},
 	}

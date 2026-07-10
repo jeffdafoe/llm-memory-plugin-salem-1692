@@ -335,14 +335,15 @@ func (PayOfferWarrantReason) isWarrantReason()             {}
 func (PayOfferWarrantReason) Kind() WarrantKind            { return WarrantKindPayOffer }
 func (r PayOfferWarrantReason) DedupDiscriminator() uint64 { return uint64(r.LedgerID) }
 
-// LaborOfferWarrantReason wakes the EMPLOYER when a worker solicits a
-// service-for-pay job (LLM-187). The labor analog of PayOfferWarrantReason:
-// solicit_work mints a pending LaborOffer, the LaborOfferReceived subscriber
-// (handlers/labor_reactor.go) stamps this on the employer, and their next
-// reactor tick perceives the offer and decides accept_work / decline_work.
+// LaborOfferWarrantReason wakes the RESPONDER when a service-for-pay offer is
+// minted against them (LLM-187): the employer when a worker solicits, the worker
+// when an employer offers work (LLM-346). The labor analog of
+// PayOfferWarrantReason — the LaborOfferReceived subscriber
+// (handlers/labor_reactor.go) stamps this, and the responder's next reactor tick
+// perceives the offer and decides accept_work / decline_work.
 //
-// Without this the employer is only woken by some OTHER reactor (e.g. the
-// worker speaking again), so a solicitation made into a lull expires unseen
+// Without this the responder is only woken by some OTHER reactor (e.g. the
+// initiator speaking again), so an offer made into a lull expires unseen
 // at the 3-minute LaborLedgerTTLDefault — the confabulated-hire bug this
 // reason exists to close.
 //
@@ -350,12 +351,15 @@ func (r PayOfferWarrantReason) DedupDiscriminator() uint64 { return uint64(r.Led
 // snapshot (perception.buildLaborOffersForMe over snap.LaborLedger), NOT this
 // payload — so the fields here are not consumed by rendering. They snapshot
 // the LaborOfferReceived terms for the telemetry/debug trail and parity with
-// PayOfferWarrantReason. DedupDiscriminator returns uint64(LaborID), the
-// stable per-offer key, so a double registration (or a future restart
+// PayOfferWarrantReason. Both parties and the initiator are carried because the
+// stamped actor may be either one. DedupDiscriminator returns uint64(LaborID),
+// the stable per-offer key, so a double registration (or a future restart
 // re-stamp) dedupes cleanly against the normal-flow stamp.
 type LaborOfferWarrantReason struct {
 	LaborID     LaborID
 	Worker      ActorID
+	Employer    ActorID
+	InitiatedBy ActorID
 	Reward      int
 	RewardItems []ItemKindQty
 	DurationMin int

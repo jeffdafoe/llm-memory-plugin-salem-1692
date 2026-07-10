@@ -2,16 +2,17 @@ package sim
 
 import "time"
 
-// events_labor.go — LLM-26 event family for the worker-initiated
-// service-for-pay (solicit_work) flow. Three event types covering the
+// events_labor.go — LLM-26 event family for the service-for-pay
+// (solicit_work / offer_work) flow. Three event types covering the
 // offer lifecycle, mirroring the pay-with-item family's split:
 //
-//   - LaborOfferReceived fires when sim.SolicitWork inserts a new pending
-//     LaborOffer into World.LaborLedger. The handlers/labor_reactor.go
-//     subscriber stamps LaborOfferWarrantReason on the employer so their
-//     next reactor tick perceives the offer and can accept_work /
-//     decline_work (LLM-187 — without it the employer is only woken
-//     incidentally and the offer can expire unseen).
+//   - LaborOfferReceived fires when sim.SolicitWork or sim.OfferWork inserts a
+//     new pending LaborOffer into World.LaborLedger. The
+//     handlers/labor_reactor.go subscriber stamps LaborOfferWarrantReason on the
+//     RESPONDER — the party who did not mint it — so their next reactor tick
+//     perceives the offer and can accept_work / decline_work (LLM-187 — without
+//     it the responder is only woken incidentally and the offer can expire
+//     unseen).
 //
 //   - LaborOfferAccepted fires when sim.AcceptWork flips the offer to
 //     Working (no coins move). NON-terminal — the commerce isn't ended,
@@ -32,19 +33,20 @@ import "time"
 // keeping event handlers snapshot-clean — the same rationale as the
 // pay-with-item events.
 
-// LaborOfferReceived fires when sim.SolicitWork inserts a new pending
-// LaborOffer. WorkerID solicited; EmployerID is the peer who must accept
-// or decline. Reward + RewardItems + DurationMin snapshot the proposed
-// terms (coins and/or goods — LLM-225). SceneID + HuddleID anchor the
-// co-presence context captured at solicitation; accept-time revalidation
-// re-checks both parties are still in HuddleID. ExpiresAt is the
-// pending-TTL boundary the aging sweep enforces off the offer.
+// LaborOfferReceived fires when sim.SolicitWork or sim.OfferWork inserts a new
+// pending LaborOffer. InitiatedBy names which of WorkerID / EmployerID minted it;
+// the other is the responder who must accept or decline (LLM-346). Reward +
+// RewardItems + DurationMin snapshot the proposed terms (coins and/or goods —
+// LLM-225). SceneID + HuddleID anchor the co-presence context captured at the
+// mint; accept-time revalidation re-checks both parties are still in HuddleID.
+// ExpiresAt is the pending-TTL boundary the aging sweep enforces off the offer.
 type LaborOfferReceived struct {
 	EventBase
 
 	LaborID     LaborID
 	WorkerID    ActorID
 	EmployerID  ActorID
+	InitiatedBy ActorID
 	Reward      int
 	RewardItems []ItemKindQty
 	DurationMin int
@@ -53,6 +55,15 @@ type LaborOfferReceived struct {
 	HuddleID  HuddleID
 	ExpiresAt time.Time
 	At        time.Time
+}
+
+// Responder is the party who must answer this offer — the one who did not mint
+// it. The labor reactor stamps its wake warrant here. LLM-346.
+func (e *LaborOfferReceived) Responder() ActorID {
+	if e.InitiatedBy != "" && e.InitiatedBy == e.EmployerID {
+		return e.WorkerID
+	}
+	return e.EmployerID
 }
 
 func (LaborOfferReceived) isSimEvent() {}
@@ -94,9 +105,16 @@ func (LaborOfferAccepted) isSimEvent() {}
 type LaborResolved struct {
 	EventBase
 
-	LaborID     LaborID
-	WorkerID    ActorID
-	EmployerID  ActorID
+	LaborID    LaborID
+	WorkerID   ActorID
+	EmployerID ActorID
+	// InitiatedBy names which party minted the offer (LLM-346). Load-bearing on
+	// the Declined terminal: a decline is the RESPONDER's refusal, so it means
+	// "the employer turned this worker down" only on a worker-initiated offer.
+	// handleDeclinedWorkOnResolved reads it before stamping the worker's
+	// don't-come-back memory, and recordLaborInteractions before choosing which
+	// side authored the refusal.
+	InitiatedBy ActorID
 	Reward      int
 	RewardItems []ItemKindQty
 	DurationMin int
@@ -122,3 +140,9 @@ type LaborResolved struct {
 }
 
 func (LaborResolved) isSimEvent() {}
+
+// EmployerInitiated reports whether the employer minted the offer this event
+// resolves (offer_work) rather than the worker (solicit_work). LLM-346.
+func (e *LaborResolved) EmployerInitiated() bool {
+	return e.InitiatedBy != "" && e.InitiatedBy == e.EmployerID
+}

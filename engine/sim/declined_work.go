@@ -41,9 +41,15 @@ const DeclinedWorkMemoryTTL = 12 * time.Hour
 // exactly that entry. An employer can decline away from its own shop (e.g. met
 // at the Tavern); keying on its workplace still suppresses the right directory
 // entry, because going to that shop to find that employer would be wasted.
+//
+// EMPLOYER-INITIATED offers are skipped (LLM-346). A decline is the responder's
+// refusal, so on an offer_work it is the WORKER who said no. Stamping the memory
+// there would have the worker remember being turned away by a shop that had just
+// tried to hire him, and drop that shop from his own seek-work directory for
+// twelve hours — punishing him for his own refusal.
 func handleDeclinedWorkOnResolved(w *World, evt Event) {
 	res, ok := evt.(*LaborResolved)
-	if !ok || res.TerminalState != LaborTerminalStateDeclined {
+	if !ok || res.TerminalState != LaborTerminalStateDeclined || res.EmployerInitiated() {
 		return
 	}
 	worker := w.Actors[res.WorkerID]

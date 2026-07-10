@@ -222,19 +222,52 @@ func TestBuildLaboring_PrefersActiveJob(t *testing.T) {
 	}
 }
 
-// TestSubjectHasPendingLaborOffer — the worker-side pending-offer check that
-// hides the solicit_work affordance + tool while a bid is outstanding.
-func TestSubjectHasPendingLaborOffer(t *testing.T) {
+// TestSubjectHasPendingLaborOfferOut — the initiator-side pending-offer check that
+// hides the solicit_work / offer_work affordance + tool while a bid is
+// outstanding. The fixture carries no InitiatedBy, the legacy solicit shape, so it
+// also pins that a zero value still reads worker-initiated (LLM-346).
+func TestSubjectHasPendingLaborOfferOut(t *testing.T) {
 	snap := &sim.Snapshot{
 		LaborLedger: map[sim.LaborID]*sim.LaborOffer{
 			1: {ID: 1, WorkerID: "ezekiel", EmployerID: "josiah", State: sim.LaborStatePending},
 		},
 	}
-	if !subjectHasPendingLaborOffer(snap, "ezekiel") {
-		t.Error("subjectHasPendingLaborOffer(ezekiel) = false, want true (has a pending offer out)")
+	if !subjectHasPendingLaborOfferOut(snap, "ezekiel") {
+		t.Error("subjectHasPendingLaborOfferOut(ezekiel) = false, want true (has a pending offer out)")
 	}
-	if subjectHasPendingLaborOffer(snap, "josiah") {
-		t.Error("subjectHasPendingLaborOffer(josiah) = true, want false (the employer, not the worker)")
+	if subjectHasPendingLaborOfferOut(snap, "josiah") {
+		t.Error("subjectHasPendingLaborOfferOut(josiah) = true, want false (the employer, not the initiator)")
+	}
+	// The mirror: the employer is the one who owes an answer on a solicited offer.
+	if !subjectHasLaborOfferToAnswer(snap, "josiah") {
+		t.Error("subjectHasLaborOfferToAnswer(josiah) = false, want true (the employer must answer)")
+	}
+	if subjectHasLaborOfferToAnswer(snap, "ezekiel") {
+		t.Error("subjectHasLaborOfferToAnswer(ezekiel) = true, want false (the worker made the offer)")
+	}
+}
+
+// TestSubjectHasPendingLaborOfferOut_EmployerInitiated is the LLM-346 direction:
+// the employer minted the offer, so the roles of the two predicates swap. Without
+// this the worker would be told to go seek work while an offer of work stood in
+// front of him, which is the Lewis Walker case the ticket exists to fix.
+func TestSubjectHasPendingLaborOfferOut_EmployerInitiated(t *testing.T) {
+	snap := &sim.Snapshot{
+		LaborLedger: map[sim.LaborID]*sim.LaborOffer{
+			1: {ID: 1, WorkerID: "lewis", EmployerID: "prudence", InitiatedBy: "prudence", State: sim.LaborStatePending},
+		},
+	}
+	if !subjectHasPendingLaborOfferOut(snap, "prudence") {
+		t.Error("subjectHasPendingLaborOfferOut(prudence) = false, want true (she offered the work)")
+	}
+	if subjectHasPendingLaborOfferOut(snap, "lewis") {
+		t.Error("subjectHasPendingLaborOfferOut(lewis) = true, want false (he did not mint it)")
+	}
+	if !subjectHasLaborOfferToAnswer(snap, "lewis") {
+		t.Error("subjectHasLaborOfferToAnswer(lewis) = false, want true (the offer awaits his answer)")
+	}
+	if subjectHasLaborOfferToAnswer(snap, "prudence") {
+		t.Error("subjectHasLaborOfferToAnswer(prudence) = true, want false (she is waiting on him)")
 	}
 }
 
