@@ -18,6 +18,6 @@ Your home is at the Walker House (destination: walker_house) — you can head ba
 Free to eat nearby:
 - Blueberry Bush — a nibble, free, a long walk southeast (destination: blueberry_bush)
 Nearby to buy (hunger):
-- General Store — buy a bowl of porridge (a good meal), ask the seller, to eat there (it can't be carried away) (destination: general_store)
+- General Store — buy a bowl of porridge (a good meal), ask the seller, to eat there (destination: general_store)
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.
