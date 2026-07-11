@@ -24,6 +24,7 @@ type Repository struct {
 	Terrain              TerrainRepo
 	VillageObjects       VillageObjectsRepo
 	LaborContracts       LaborContractsRepo
+	Visitors             VisitorsRepo
 
 	// Event sinks — write-through per-event, NOT part of the checkpoint tx.
 	// agent-action-log is an audit trail appended outside the checkpoint.
@@ -205,6 +206,18 @@ type VillageObjectsRepo interface {
 type LaborContractsRepo interface {
 	LoadAll(ctx context.Context) (map[LaborID]*LaborOffer, error)
 	SaveSnapshot(ctx context.Context, tx Tx, contracts map[LaborID]*LaborOffer) error
+}
+
+// VisitorsRepo loads + checkpoints in-flight transient visitors (LLM-369) — the
+// durable mirror that lets a traveler survive an engine restart instead of
+// vanishing mid-scene. Visitors are firewalled from the 11-tier actor aggregate
+// (ActorsRepo.SaveSnapshot skips VisitorState != nil), so this lean tier carries
+// them separately: written inside the SaveWorld Tx from the visitor subset of
+// cp.Actors (per-row UPSERT + delete-stale gen-marker), and rehydrated into
+// World.Actors at FinalizeLoad so a restart resumes the traveler.
+type VisitorsRepo interface {
+	LoadAll(ctx context.Context) (map[ActorID]*LoadedVisitor, error)
+	SaveSnapshot(ctx context.Context, tx Tx, actors map[ActorID]*Actor) error
 }
 
 // EnvironmentRepo loads + checkpoints world-level state: environment

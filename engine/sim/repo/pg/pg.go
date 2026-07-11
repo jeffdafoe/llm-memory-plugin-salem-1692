@@ -47,6 +47,7 @@ func NewRepository(pool Pool) sim.Repository {
 		Terrain:              &TerrainRepo{pool: pool},
 		VillageObjects:       &VillageObjectsRepo{pool: pool},
 		LaborContracts:       &LaborContractsRepo{pool: pool},
+		Visitors:             &VisitorsRepo{pool: pool},
 		ActionLog:            notImplActionLog{},
 		TickTelemetry:        notImplTickTelemetry{},
 		Begin: func(ctx context.Context) (sim.Tx, error) {

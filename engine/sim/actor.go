@@ -447,19 +447,50 @@ type NarrativeState struct {
 // Archetype / Origin / Disposition come from per-spawn random pools in
 // engine/sim/visitor.go and feed the perception "Visitors here" block plus
 // the per-call identity preface the shared salem-visitor VA reads.
-// ExpiresAt is the wall-clock departure deadline; LeaveDispatched flags
-// whether the despawn walk has been issued (so the visitor ticker
-// doesn't keep re-issuing it tick after tick).
+// ExpiresAt is the wall-clock departure deadline; Phase is the visitor's
+// lifecycle state — VisitorPhaseDeparting means the despawn walk has been
+// issued (so the visitor ticker doesn't keep re-issuing it tick after tick).
 type VisitorState struct {
-	Archetype       string
-	Origin          string
-	Disposition     string
-	ExpiresAt       time.Time
-	LeaveDispatched bool
+	Archetype   string
+	Origin      string
+	Disposition string
+	ExpiresAt   time.Time
+	Phase       VisitorPhase
+}
+
+// VisitorPhase is the visitor's lifecycle state — a small Go-owned enum
+// persisted to the visitor.phase column. A string, not a bool: the lifecycle
+// is inherently multi-state and grows — LLM-373 adds arriving / making_rounds
+// / lodging between present and departing. Go owns the allowlist; the column
+// carries no DB CHECK (a CHECK refusing a Go-side value would wedge the
+// checkpoint Tx, matching labor_contract.state).
+type VisitorPhase string
+
+const (
+	// VisitorPhasePresent — in the village, not leaving: the phase from spawn
+	// through the stay.
+	VisitorPhasePresent VisitorPhase = "present"
+	// VisitorPhaseDeparting — ExpiresAt passed and the despawn walk to a map
+	// edge has been issued. One-shot: dispatchVisitorDespawn won't re-fire once
+	// a visitor is in this phase.
+	VisitorPhaseDeparting VisitorPhase = "departing"
+)
+
+// LoadedVisitor is the persisted-and-reloaded form of an in-flight visitor
+// (LLM-369) — what VisitorsRepo.LoadAll returns and rehydrateVisitorsOnLoad
+// rebuilds a live Actor from. It carries exactly the fields the visitor tier
+// persists; the rest of the Actor (Kind, LLMAgent, seeded needs, empty
+// inventory, StateIdle) is reconstructed the same way spawn mints one.
+type LoadedVisitor struct {
+	ID                ActorID
+	DisplayName       string
+	Pos               TilePos
+	InsideStructureID StructureID
+	VisitorState      *VisitorState
 }
 
 // cloneVisitorState deep-copies a VisitorState pointer. All fields are
-// value types (string / time.Time / bool), so a struct copy is sufficient
+// value types (string / time.Time / VisitorPhase), so a struct copy is sufficient
 // — but the helper exists so future pointer-bearing fields don't silently
 // alias across the snapshot / mem-repo boundary.
 func cloneVisitorState(src *VisitorState) *VisitorState {

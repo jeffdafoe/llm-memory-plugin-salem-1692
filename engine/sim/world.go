@@ -1499,6 +1499,13 @@ func (w *World) FinalizeLoad(ctx context.Context) error {
 	normalizeOutdoorSceneRadius(&w.Settings)
 
 	w.rebuildIndices()
+	// LLM-369: rehydrate in-flight visitors from their durable mirror into
+	// World.Actors — the reverse of the SaveSnapshot filter that keeps them out
+	// of the actor aggregate. AFTER rebuildIndices so the secondary-index maps
+	// exist to place them in; a visitor whose stay elapsed while down is dropped.
+	if err := w.rehydrateVisitorsOnLoad(ctx); err != nil {
+		return fmt.Errorf("sim: FinalizeLoad: rehydrate visitors: %w", err)
+	}
 	// LLM-259: rehydrate the accepted (en_route/working) labor contracts from
 	// their durable mirror into World.LaborLedger BEFORE the stranded-laboring
 	// reconcile below. A worker whose working contract loaded then holds a live

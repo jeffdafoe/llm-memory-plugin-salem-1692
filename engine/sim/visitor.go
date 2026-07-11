@@ -1,6 +1,7 @@
 package sim
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"math/rand"
@@ -272,13 +273,13 @@ func TickVisitorCascade(inputs VisitorTickInputs) Command {
 // visitor may exit a different edge than they arrived on — narratively
 // reads as "wandered off down the road," not "retraced their steps."
 //
-// VisitorState.LeaveDispatched is the one-shot gate. v1 used "actor still
-// in a structure" as the despawn-eligibility proxy; v2's substrate has the
-// dedicated flag so the gate doesn't entangle with whatever happened to
-// the actor's InsideStructureID mid-walk (e.g. a stale back-ref clear).
+// VisitorState.Phase == VisitorPhaseDeparting is the one-shot gate. v1 used
+// "actor still in a structure" as the despawn-eligibility proxy; v2's substrate
+// has the dedicated phase so the gate doesn't entangle with whatever happened
+// to the actor's InsideStructureID mid-walk (e.g. a stale back-ref clear).
 //
-// On any failure (no edge tile, no path) we still set LeaveDispatched=true
-// so the despawn isn't re-attempted every tick — cleanup will collect the
+// On any failure (no edge tile, no path) we still set the departing phase so
+// the despawn isn't re-attempted every tick — cleanup will collect the
 // stranded actor after the grace window regardless.
 func dispatchVisitorDespawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeTelemetry) {
 	now := inputs.Now
@@ -287,7 +288,7 @@ func dispatchVisitorDespawn(w *World, inputs VisitorTickInputs, t *VisitorCascad
 		if actor == nil || actor.VisitorState == nil {
 			continue
 		}
-		if actor.VisitorState.LeaveDispatched {
+		if actor.VisitorState.Phase == VisitorPhaseDeparting {
 			continue
 		}
 		if !now.After(actor.VisitorState.ExpiresAt) {
@@ -299,18 +300,18 @@ func dispatchVisitorDespawn(w *World, inputs VisitorTickInputs, t *VisitorCascad
 		// collect them after the grace window.
 		_, anchorTile, ok := pickVisitorDestination(w)
 		if !ok {
-			actor.VisitorState.LeaveDispatched = true
+			actor.VisitorState.Phase = VisitorPhaseDeparting
 			continue
 		}
 		grid, err := buildWalkGrid(w)
 		if err != nil {
 			log.Printf("sim/visitor: dispatchDespawn build walk grid: %v", err)
-			actor.VisitorState.LeaveDispatched = true
+			actor.VisitorState.Phase = VisitorPhaseDeparting
 			continue
 		}
 		edgeTile, ok := pickVisitorEdgeTile(w, grid, anchorTile, r)
 		if !ok {
-			actor.VisitorState.LeaveDispatched = true
+			actor.VisitorState.Phase = VisitorPhaseDeparting
 			continue
 		}
 		dest := NewPositionDestination(edgeTile)
@@ -324,7 +325,7 @@ func dispatchVisitorDespawn(w *World, inputs VisitorTickInputs, t *VisitorCascad
 			// window regardless.
 			log.Printf("sim/visitor: dispatchDespawn MoveActor %s: %v", id, err)
 		}
-		actor.VisitorState.LeaveDispatched = true
+		actor.VisitorState.Phase = VisitorPhaseDeparting
 		t.DespawnsStarted++
 	}
 }
@@ -520,6 +521,7 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 			Origin:      profile.Origin,
 			Disposition: profile.Disposition,
 			ExpiresAt:   expiresAt,
+			Phase:       VisitorPhasePresent,
 		},
 		State: StateIdle,
 	}
@@ -547,6 +549,84 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 	t.Spawned++
 	log.Printf("sim/visitor: spawn %s (id=%s, archetype=%s, origin=%s, disposition=%s, stay=%dm, edge=(%d,%d))",
 		displayName, id, profile.Archetype, profile.Origin, profile.Disposition, stayMinutes, edgeTile.X, edgeTile.Y)
+}
+
+// rehydrateVisitorsOnLoad restores the durable in-flight visitor mirror
+// (LLM-369) into World.Actors so a restart resumes travelers instead of dropping
+// them — the reverse of ActorsRepo.SaveSnapshot's filter that keeps visitors out
+// of the actor aggregate. Runs from FinalizeLoad AFTER rebuildIndices (so the
+// secondary-index maps exist to append to); world-goroutine-only (FinalizeLoad
+// runs before Run starts).
+//
+// Reconcile against the wall-clock ExpiresAt: a visitor still within its stay
+// window is rebuilt into a live Actor at its checkpointed tile; one whose stay
+// elapsed while the engine was down is dropped — not resurrected for another
+// stay, not walked off — and its row is swept from the table on the next
+// checkpoint (absent from cp.Actors -> delete-stale). A dropped / dup / loader-
+// inconsistent row is logged, never fatal: a live village must boot, and a lost
+// visitor is data-clean (transient by design). Such a row never arises from a
+// consistent checkpoint (a visitor and the rest of the world write in the SAME
+// SaveWorld Tx); it means a manual / out-of-band edit.
+//
+// The Actor is reconstructed exactly the way dispatchVisitorSpawn mints one —
+// KindNPCShared, the shared salem-visitor VA, needs seeded to 0, empty inventory,
+// StateIdle — differing only in the persisted identity / position / VisitorState.
+// Secondary-index membership (outdoorActors / actorsByStructure) is set to match
+// the loaded InsideStructureID.
+func (w *World) rehydrateVisitorsOnLoad(ctx context.Context) error {
+	visitors, err := w.repo.Visitors.LoadAll(ctx)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	var restored, elapsed int
+	for id, lv := range visitors {
+		if lv == nil {
+			continue
+		}
+		if lv.ID != id {
+			log.Printf("sim: rehydrate visitor: map key %q != LoadedVisitor.ID %q (loader inconsistency) — dropping", id, lv.ID)
+			continue
+		}
+		if lv.VisitorState == nil {
+			log.Printf("sim: rehydrate visitor %q: nil VisitorState — dropping", id)
+			continue
+		}
+		if _, exists := w.Actors[id]; exists {
+			log.Printf("sim: rehydrate visitor %q: id already present in loaded actors — dropping visitor row", id)
+			continue
+		}
+		if now.After(lv.VisitorState.ExpiresAt) {
+			elapsed++
+			continue
+		}
+		actor := &Actor{
+			ID:                id,
+			DisplayName:       lv.DisplayName,
+			Kind:              KindNPCShared,
+			LLMAgent:          VisitorAgentName,
+			Pos:               lv.Pos,
+			InsideStructureID: lv.InsideStructureID,
+			Needs:             seedVisitorNeeds(),
+			Inventory:         map[ItemKind]int{},
+			VisitorState:      lv.VisitorState,
+			State:             StateIdle,
+		}
+		w.Actors[id] = actor
+		if actor.InsideStructureID == "" {
+			w.outdoorActors[id] = struct{}{}
+		} else {
+			if w.actorsByStructure[actor.InsideStructureID] == nil {
+				w.actorsByStructure[actor.InsideStructureID] = make(map[ActorID]struct{})
+			}
+			w.actorsByStructure[actor.InsideStructureID][id] = struct{}{}
+		}
+		restored++
+	}
+	if restored > 0 || elapsed > 0 {
+		log.Printf("sim: rehydrated %d in-flight visitor(s); dropped %d whose stay elapsed while down", restored, elapsed)
+	}
+	return nil
 }
 
 // visitorProfile holds the four persona slots a freshly-spawned visitor

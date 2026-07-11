@@ -131,6 +131,13 @@ func SaveWorld(ctx context.Context, repo sim.Repository, cp *sim.CheckpointSnaps
 	if err := repo.Actors.SaveSnapshot(ctx, tx, cp.Actors); err != nil {
 		return fmt.Errorf("pg SaveWorld: Actors.SaveSnapshot: %w", err)
 	}
+	// LLM-369: the in-flight visitor mirror — the COMPLEMENT of Actors.SaveSnapshot
+	// (which skips VisitorState != nil). Handed the same cp.Actors map, it persists
+	// exactly the visitor subset the actor aggregate drops. Same Tx, so a crash
+	// can't split a visitor's persistence from the rest of the checkpoint.
+	if err := repo.Visitors.SaveSnapshot(ctx, tx, cp.Actors); err != nil {
+		return fmt.Errorf("pg SaveWorld: Visitors.SaveSnapshot: %w", err)
+	}
 	// LLM-259: the accepted-labor-contract mirror (en_route + working). No cross-
 	// aggregate FK (worker_id/employer_id are soft TEXT refs to actor, Go-side
 	// validated at LoadWorld), so order is free — placed after Actors for
