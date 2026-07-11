@@ -372,7 +372,7 @@ func TestTickVisitorCascade_RespectsCap(t *testing.T) {
 }
 
 // TestTickVisitorCascade_DespawnDispatches verifies a visitor past
-// ExpiresAt gets a despawn walk and LeaveDispatched set.
+// ExpiresAt gets a despawn walk and its phase set to departing.
 func TestTickVisitorCascade_DespawnDispatches(t *testing.T) {
 	vw := newVisitorWorld()
 	vw.seedTavern(t)
@@ -395,6 +395,7 @@ func TestTickVisitorCascade_DespawnDispatches(t *testing.T) {
 				Origin:      "Boston",
 				Disposition: "weary",
 				ExpiresAt:   now.Add(-1 * time.Minute),
+				Phase:       sim.VisitorPhasePresent,
 			},
 			State: sim.StateIdle,
 		}
@@ -414,14 +415,14 @@ func TestTickVisitorCascade_DespawnDispatches(t *testing.T) {
 		t.Errorf("DespawnsStarted = %d, want 1", tm.DespawnsStarted)
 	}
 
-	// LeaveDispatched should be set.
+	// Phase should be departing.
 	snap := w.Published()
 	got, ok := snap.Actors["test-visitor"]
 	if !ok {
 		t.Fatal("visitor missing post-despawn (should not be removed before grace)")
 	}
-	if !got.VisitorState.LeaveDispatched {
-		t.Error("LeaveDispatched not set")
+	if got.VisitorState.Phase != sim.VisitorPhaseDeparting {
+		t.Errorf("phase = %q, want departing", got.VisitorState.Phase)
 	}
 }
 
@@ -443,9 +444,9 @@ func TestTickVisitorCascade_CleanupRemovesAndEmits(t *testing.T) {
 			Pos:         sim.TilePos{X: sim.PadX + 5, Y: sim.PadY + 5},
 			Needs:       sim.SeedVisitorNeedsForTest(),
 			VisitorState: &sim.VisitorState{
-				Archetype:       "peddler",
-				ExpiresAt:       now.Add(-time.Duration(sim.VisitorCleanupGraceMinutes+1) * time.Minute),
-				LeaveDispatched: true,
+				Archetype: "peddler",
+				ExpiresAt: now.Add(-time.Duration(sim.VisitorCleanupGraceMinutes+1) * time.Minute),
+				Phase:     sim.VisitorPhaseDeparting,
 			},
 		}
 		world.Actors["expired-visitor"] = v
