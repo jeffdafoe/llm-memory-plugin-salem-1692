@@ -175,8 +175,8 @@ func (r *VisitorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[s
 			return fmt.Errorf("pg visitors SaveSnapshot: id=%s has empty DisplayName", a.ID)
 		}
 		vs := a.VisitorState
-		if strings.TrimSpace(string(vs.Phase)) == "" {
-			return fmt.Errorf("pg visitors SaveSnapshot: id=%s has empty visitor phase", a.ID)
+		if !vs.Phase.Valid() {
+			return fmt.Errorf("pg visitors SaveSnapshot: id=%s has invalid visitor phase %q (Go owns the allowlist)", a.ID, vs.Phase)
 		}
 		// inside_structure_id: bind "" as SQL NULL so the column round-trips
 		// outdoors-or-inside cleanly (matches the visitor_inside_structure_id_nonempty

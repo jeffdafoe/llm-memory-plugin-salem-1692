@@ -81,6 +81,9 @@ func TestFinalizeLoad_ResumesInsideStructureVisitor(t *testing.T) {
 	repo, handles := mem.NewRepository()
 	now := time.Now().UTC()
 	const tavern sim.StructureID = "str-tavern-0001"
+	handles.Structures.Seed(map[sim.StructureID]*sim.Structure{
+		tavern: {ID: tavern, DisplayName: "The Ordinary"},
+	})
 	handles.Visitors.Seed(map[sim.ActorID]*sim.LoadedVisitor{
 		"vstr-0000beef": newVisitorFixture("vstr-0000beef", now.Add(90*time.Minute), tavern),
 	})
@@ -125,5 +128,60 @@ func TestFinalizeLoad_DropsElapsedVisitor(t *testing.T) {
 	}
 	if containsVisitorID(sim.OutdoorActorIDs(w), "vstr-0000dead") {
 		t.Error("elapsed visitor left dangling in the outdoorActors index")
+	}
+}
+
+// TestFinalizeLoad_DropsVisitorWithMissingStructure — a visitor whose
+// inside_structure_id points at a structure absent from the loaded set (only
+// possible from an out-of-band edit) is dropped rather than indexed under a
+// nonexistent structure.
+func TestFinalizeLoad_DropsVisitorWithMissingStructure(t *testing.T) {
+	repo, handles := mem.NewRepository()
+	now := time.Now().UTC()
+	const missing sim.StructureID = "str-does-not-exist"
+	handles.Visitors.Seed(map[sim.ActorID]*sim.LoadedVisitor{
+		"vstr-0000c0de": newVisitorFixture("vstr-0000c0de", now.Add(time.Hour), missing),
+	})
+
+	w, err := sim.LoadWorld(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	if _, ok := w.Actors["vstr-0000c0de"]; ok {
+		t.Error("visitor with a missing inside_structure_id was rehydrated; want dropped")
+	}
+	if len(sim.ActorsInStructure(w, missing)) != 0 {
+		t.Error("dropped visitor left a dangling entry under a nonexistent structure")
+	}
+}
+
+// TestFinalizeLoad_DropsVisitorWithInvalidPhase — a persisted phase outside the
+// Go-owned allowlist (an out-of-band edit) is dropped, not silently loaded.
+func TestFinalizeLoad_DropsVisitorWithInvalidPhase(t *testing.T) {
+	repo, handles := mem.NewRepository()
+	now := time.Now().UTC()
+	lv := newVisitorFixture("vstr-0000f00d", now.Add(time.Hour), "")
+	lv.VisitorState.Phase = "loitering" // not a known phase
+	handles.Visitors.Seed(map[sim.ActorID]*sim.LoadedVisitor{"vstr-0000f00d": lv})
+
+	w, err := sim.LoadWorld(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	if _, ok := w.Actors["vstr-0000f00d"]; ok {
+		t.Error("visitor with an unknown phase was rehydrated; want dropped")
+	}
+}
+
+func TestVisitorPhase_Valid(t *testing.T) {
+	for _, p := range []sim.VisitorPhase{sim.VisitorPhasePresent, sim.VisitorPhaseDeparting} {
+		if !p.Valid() {
+			t.Errorf("VisitorPhase(%q).Valid() = false, want true", p)
+		}
+	}
+	for _, p := range []sim.VisitorPhase{"", "departed", "loitering", "PRESENT"} {
+		if p.Valid() {
+			t.Errorf("VisitorPhase(%q).Valid() = true, want false", p)
+		}
 	}
 }

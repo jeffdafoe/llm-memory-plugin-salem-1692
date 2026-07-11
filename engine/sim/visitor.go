@@ -596,6 +596,21 @@ func (w *World) rehydrateVisitorsOnLoad(ctx context.Context) error {
 			log.Printf("sim: rehydrate visitor %q: id already present in loaded actors — dropping visitor row", id)
 			continue
 		}
+		if !lv.VisitorState.Phase.Valid() {
+			log.Printf("sim: rehydrate visitor %q: invalid phase %q — dropping", id, lv.VisitorState.Phase)
+			continue
+		}
+		// inside_structure_id is a soft ref (no FK). The normal actor structure-ref
+		// validation ran in LoadWorld before visitors are added here, so validate it
+		// now — a dangling ref (only possible from an out-of-band edit; a consistent
+		// checkpoint writes structures and visitors in one Tx) would otherwise index
+		// the visitor under a structure that doesn't exist.
+		if lv.InsideStructureID != "" {
+			if _, ok := w.Structures[lv.InsideStructureID]; !ok {
+				log.Printf("sim: rehydrate visitor %q: inside_structure_id %q not among loaded structures — dropping", id, lv.InsideStructureID)
+				continue
+			}
+		}
 		if now.After(lv.VisitorState.ExpiresAt) {
 			elapsed++
 			continue

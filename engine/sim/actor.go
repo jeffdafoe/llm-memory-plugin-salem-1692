@@ -476,6 +476,20 @@ const (
 	VisitorPhaseDeparting VisitorPhase = "departing"
 )
 
+// Valid reports whether p is a known visitor phase. The persistence boundary
+// uses it to reject an unknown phase on write (SaveSnapshot — a Go-side bug) and
+// to drop an unknown phase on rehydrate (an out-of-band DB edit): "Go owns the
+// allowlist". Grows with the enum — add new values here as LLM-373 introduces
+// arriving / making_rounds / lodging.
+func (p VisitorPhase) Valid() bool {
+	switch p {
+	case VisitorPhasePresent, VisitorPhaseDeparting:
+		return true
+	default:
+		return false
+	}
+}
+
 // LoadedVisitor is the persisted-and-reloaded form of an in-flight visitor
 // (LLM-369) — what VisitorsRepo.LoadAll returns and rehydrateVisitorsOnLoad
 // rebuilds a live Actor from. It carries exactly the fields the visitor tier
