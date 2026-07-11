@@ -606,7 +606,7 @@ func (w *World) rehydrateVisitorsOnLoad(ctx context.Context) error {
 		// checkpoint writes structures and visitors in one Tx) would otherwise index
 		// the visitor under a structure that doesn't exist.
 		if lv.InsideStructureID != "" {
-			if _, ok := w.Structures[lv.InsideStructureID]; !ok {
+			if w.Structures[lv.InsideStructureID] == nil {
 				log.Printf("sim: rehydrate visitor %q: inside_structure_id %q not among loaded structures — dropping", id, lv.InsideStructureID)
 				continue
 			}
