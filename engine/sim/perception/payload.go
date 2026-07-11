@@ -1110,6 +1110,13 @@ type SelfActionView struct {
 	CounterpartyName string
 	Amount           int
 	At               time.Time
+
+	// FoundShut marks an ActionTypeWalked entry whose destination business the
+	// subject still remembers finding shut (ObservedClosed, within TTL). The trail
+	// then renders "You went to X but found it shut" instead of a neutral "You
+	// arrived at X", giving LLM-217's churn-mirror the outcome it lacked: a run of
+	// dead-end trips reads AS dead ends, not ordinary errands (LLM-366).
+	FoundShut bool
 }
 
 // ActorView is the subject actor's own current state, lifted from the

@@ -3348,6 +3348,13 @@ func buildSelfActions(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 			CounterpartyName: e.CounterpartyName,
 			Amount:           e.Amount,
 			At:               e.OccurredAt,
+			// LLM-366: flag a walked entry whose destination the subject still
+			// remembers finding shut, so the churn trail shows the trip was a dead
+			// end. A raw ObservedClosed read (not businessRememberedShut) — this is a
+			// PAST-trip outcome, so the in-flight-destination guard must NOT suppress
+			// it even while the actor is re-walking there.
+			FoundShut: e.ActionType == sim.ActionTypeWalked && e.StructureID != "" &&
+				actorSnap.Observed.Active(sim.ObservedStateKey{StructureID: e.StructureID, Condition: sim.ObservedClosed}, snap.PublishedAt),
 		})
 	}
 	return out

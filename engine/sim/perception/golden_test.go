@@ -828,6 +828,18 @@ var perceptionScenarios = []perceptionScenario{
 		build: wearyResidentInOwnHome,
 	},
 	{
+		name: "walker_home_after_shut_store_trip",
+		summary: "LLM-366: a workless, scheduleless salem-vendor Walker (the live Silence Walker) sits idle inside " +
+			"its own home in the morning — the 'find work / see who's about' decision turn that had no legible " +
+			"shut-status signal at decision time. Its self-action trail shows it just walked to the General Store and " +
+			"found it shut (a live ObservedClosed memory within TTL), so '## What you've recently done' renders 'You went " +
+			"to the General Store but found it shut, no one tending it' instead of a neutral 'You arrived at the General " +
+			"Store'. The FIRST golden to exercise the self-action trail (sets PublishedAt + an ActionLog); it pins the " +
+			"LLM-217 churn-mirror carrying the dead-end outcome that broke the home↔closed-store loop. A regression that " +
+			"dropped the FoundShut annotation reverts the line to the neutral arrival in the diff.",
+		build: walkerHomeAfterShutStoreTrip,
+	},
+	{
 		name: "shared_npc_soul_who_you_are",
 		summary: "A shared-VA keeper (Hannah, salem-vendor) at her own post during working hours, carrying a " +
 			"synthesized about_me soul (LLM-199). The golden pins that '## Who you are' renders the soul prose — the " +
@@ -10150,6 +10162,59 @@ func wearyResidentInOwnHome() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 		},
 	}
 	return snap, anneID, nil
+}
+
+// walkerHomeAfterShutStoreTrip is the LLM-366 scenario: a workless, scheduleless
+// salem-vendor Walker (the live Silence Walker) sits idle inside its own home in
+// the morning — the "find work / see who's about" decision turn that had no
+// legible shut-status signal at decision time. Its recent self-action trail shows
+// it just walked to the General Store and found it shut (a live ObservedClosed
+// memory within the 4h TTL), so "## What you've recently done" renders "You went to
+// the General Store but found it shut, no one tending it" instead of a neutral
+// "You arrived at the General Store" — the LLM-217 churn-mirror finally carrying the
+// dead-end outcome that broke the home↔closed-store loop. This is the FIRST golden
+// to exercise the self-action trail (it sets PublishedAt + an ActionLog), so the
+// recently-done block appears in a golden here for the first time.
+func walkerHomeAfterShutStoreTrip() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		silenceID = sim.ActorID("silence")
+		home      = sim.StructureID("walker_residence")
+		store     = sim.StructureID("general_store")
+	)
+	published := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	morning := 465 // 07:45 — before the General Store's 09:00 open
+	silence := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Silence Walker",
+		Role:              "laborer",
+		State:             sim.StateIdle,
+		HomeStructureID:   home,
+		InsideStructureID: home,
+		Coins:             25,
+		Needs:             map[sim.NeedKey]int{},
+		// Found the store shut 4 minutes ago (the walked trail entry below), still
+		// within the 4h closed-business TTL.
+		Observed: sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
+			{StructureID: store, Condition: sim.ObservedClosed}: published.Add(-4 * time.Minute),
+		}),
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &morning,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{silenceID: silence},
+		Structures: map[sim.StructureID]*sim.Structure{
+			home:  plainStructure(home, "Walker Residence"),
+			store: plainStructure(store, "General Store"),
+		},
+		// The churn trail: home → (shut) store → home, oldest first in the log.
+		ActionLog: []sim.ActionLogEntry{
+			{Seq: 1, ActorID: silenceID, OccurredAt: published.Add(-6 * time.Minute), ActionType: sim.ActionTypeWalked, Text: "Walker Residence", StructureID: home},
+			{Seq: 2, ActorID: silenceID, OccurredAt: published.Add(-4 * time.Minute), ActionType: sim.ActionTypeWalked, Text: "General Store", StructureID: store},
+			{Seq: 3, ActorID: silenceID, OccurredAt: published.Add(-2 * time.Minute), ActionType: sim.ActionTypeWalked, Text: "Walker Residence", StructureID: home},
+		},
+	}
+	return snap, silenceID, nil
 }
 
 // homedWorkerEveningTavernOpen is the LLM-149 (Lever 2) positive case: a homed

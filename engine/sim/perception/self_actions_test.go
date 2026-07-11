@@ -152,3 +152,55 @@ func TestAgoPhraseBuckets(t *testing.T) {
 		t.Errorf("zero renderedAt must yield no stamp, got %q", got)
 	}
 }
+
+// LLM-366: buildSelfActions flags a walked entry whose destination the subject
+// still remembers finding shut (active ObservedClosed) so the churn trail can show
+// the trip was a dead end. Only ActionTypeWalked entries with a live shut memory
+// are flagged — a walk to a place with no such memory, and any non-walk action,
+// are not.
+func TestBuildSelfActions_FoundShutFromObservedClosed(t *testing.T) {
+	published := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	log := []sim.ActionLogEntry{
+		{Seq: 1, ActorID: "ezekiel", OccurredAt: published.Add(-3 * time.Minute), ActionType: sim.ActionTypeWalked, Text: "General Store", StructureID: "store"},
+		{Seq: 2, ActorID: "ezekiel", OccurredAt: published.Add(-2 * time.Minute), ActionType: sim.ActionTypeWalked, Text: "Inn", StructureID: "inn"},
+		{Seq: 3, ActorID: "ezekiel", OccurredAt: published.Add(-1 * time.Minute), ActionType: sim.ActionTypeDeparted, Text: "General Store", StructureID: "store"},
+	}
+	snap, subject := selfActionsFixture(published, log, "")
+	// Remembers the store shut (within TTL) but not the inn.
+	subject.Observed = sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
+		{StructureID: "store", Condition: sim.ObservedClosed}: published.Add(-time.Hour),
+	})
+
+	got := buildSelfActions(snap, "ezekiel", subject)
+	byKey := map[string]SelfActionView{}
+	for _, v := range got {
+		byKey[string(v.ActionType)+"|"+v.Text] = v
+	}
+	if !byKey["walked|General Store"].FoundShut {
+		t.Error("walk→General Store should be FoundShut (remembered shut, within TTL)")
+	}
+	if byKey["walked|Inn"].FoundShut {
+		t.Error("walk→Inn should NOT be FoundShut (no shut memory)")
+	}
+	if byKey["departed|General Store"].FoundShut {
+		t.Error("a non-walk action (departed) must never be FoundShut, even for a shut structure")
+	}
+}
+
+// LLM-366: a FoundShut walked entry names the dead end so a churn of these reads
+// AS dead ends; an ordinary walked entry keeps its neutral arrival line.
+func TestRenderSelfActions_FoundShutNamesDeadEnd(t *testing.T) {
+	renderedAt := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	var b strings.Builder
+	renderSelfActions(&b, []SelfActionView{
+		{ActionType: sim.ActionTypeWalked, Text: "General Store", FoundShut: true, At: renderedAt.Add(-2 * time.Minute)},
+		{ActionType: sim.ActionTypeWalked, Text: "Inn", At: renderedAt.Add(-5 * time.Minute)},
+	}, renderedAt)
+	out := b.String()
+	if want := "- You went to the General Store but found it shut, no one tending it (2m ago)"; !strings.Contains(out, want) {
+		t.Errorf("missing FoundShut phrasing %q in:\n%s", want, out)
+	}
+	if want := "- You arrived at the Inn (5m ago)"; !strings.Contains(out, want) {
+		t.Errorf("missing neutral arrival %q in:\n%s", want, out)
+	}
+}

@@ -3,6 +3,7 @@ package sim
 import (
 	"reflect"
 	"testing"
+	"time"
 )
 
 // move_to_byname_test.go — resolveStructureByVillageName (LLM-142). White-box
@@ -157,7 +158,7 @@ func TestNamedVillageDestinations_BusinessesNearestFirstCapped(t *testing.T) {
 	w.Structures["ghost"] = &Structure{ID: "ghost", DisplayName: "Ghost Hall"}
 	bnBusiness(w, "blank", "", 1, EntryPolicyOwner, true)
 
-	names, more := namedVillageDestinations(w, bnActor("", ""), moveToDestinationNameCap)
+	names, more := namedVillageDestinations(w, bnActor("", ""), moveToDestinationNameCap, time.Now())
 	want := []string{"General Store", "The Tavern", "Blacksmith", "Inn", "PW Apothecary"}
 	if !reflect.DeepEqual(names, want) {
 		t.Errorf("names = %v, want %v (businesses, nearest-first, deduped, capped at %d)", names, want, moveToDestinationNameCap)
@@ -168,7 +169,7 @@ func TestNamedVillageDestinations_BusinessesNearestFirstCapped(t *testing.T) {
 
 	// With a limit above the distinct count, the full deduped list returns (the
 	// keeperless Cooper Shop last, farthest out) and more is false.
-	all, moreAll := namedVillageDestinations(w, bnActor("", ""), 10)
+	all, moreAll := namedVillageDestinations(w, bnActor("", ""), 10, time.Now())
 	wantAll := append(append([]string{}, want...), "Mill", "Cooper Shop")
 	if !reflect.DeepEqual(all, wantAll) {
 		t.Errorf("full list = %v, want %v", all, wantAll)
@@ -187,7 +188,7 @@ func TestNamedVillageDestinations_ListsUntendedBusiness(t *testing.T) {
 	w := bnWorld(5)
 	bnBusiness(w, "smithy", "Blacksmith", 2, EntryPolicyOwner, true) // owner-only, keeper in
 
-	names, _ := namedVillageDestinations(w, bnActor("", ""), moveToDestinationNameCap)
+	names, _ := namedVillageDestinations(w, bnActor("", ""), moveToDestinationNameCap, time.Now())
 	if !reflect.DeepEqual(names, []string{"Blacksmith"}) {
 		t.Fatalf("keeper present: names = %v, want [Blacksmith]", names)
 	}
@@ -197,7 +198,7 @@ func TestNamedVillageDestinations_ListsUntendedBusiness(t *testing.T) {
 	w.Actors["keeper_smithy"].InsideStructureID = ""
 	w.Actors["keeper_smithy"].Pos = WorldPos{X: 999 * TileSize, Y: 0}.Tile()
 
-	names, more := namedVillageDestinations(w, bnActor("", ""), moveToDestinationNameCap)
+	names, more := namedVillageDestinations(w, bnActor("", ""), moveToDestinationNameCap, time.Now())
 	if !reflect.DeepEqual(names, []string{"Blacksmith"}) || more {
 		t.Fatalf("keeper gone: names = %v more = %v, want [Blacksmith] + false (untended business still lists)", names, more)
 	}
@@ -213,7 +214,7 @@ func TestNamedVillageDestinations_StructureTagsNotConsulted(t *testing.T) {
 	bnPlace(w, "smithy", "Blacksmith", 2)               // placed object left UNtagged
 	w.Structures["smithy"].Tags = []string{TagBusiness} // stale structure-level tag
 
-	names, more := namedVillageDestinations(w, bnActor("", ""), moveToDestinationNameCap)
+	names, more := namedVillageDestinations(w, bnActor("", ""), moveToDestinationNameCap, time.Now())
 	if len(names) != 0 || more {
 		t.Errorf("names = %v more = %v, want empty + false (Structure.Tags must not make an untagged placed object eligible)", names, more)
 	}
@@ -227,7 +228,7 @@ func TestNamedVillageDestinations_NoBusinesses(t *testing.T) {
 	bnPlace(w, "home", "Thorne Residence", 1)
 	w.VillageObjects["home"].EntryPolicy = EntryPolicyOwner
 
-	names, more := namedVillageDestinations(w, bnActor("", ""), moveToDestinationNameCap)
+	names, more := namedVillageDestinations(w, bnActor("", ""), moveToDestinationNameCap, time.Now())
 	if len(names) != 0 || more {
 		t.Errorf("names = %v more = %v, want empty + false (no business to name)", names, more)
 	}
@@ -241,12 +242,64 @@ func TestNamedVillageDestinations_NonPositiveLimit(t *testing.T) {
 	bnBusiness(w, "tavern", "The Tavern", 2, EntryPolicyOpen, true)
 
 	for _, limit := range []int{0, -1} {
-		names, more := namedVillageDestinations(w, bnActor("", ""), limit)
+		names, more := namedVillageDestinations(w, bnActor("", ""), limit, time.Now())
 		if len(names) != 0 {
 			t.Errorf("limit %d: names = %v, want empty", limit, names)
 		}
 		if !more {
 			t.Errorf("limit %d: more = false, want true (businesses exist)", limit)
 		}
+	}
+}
+
+// LLM-366: the suggestion list drops a business the actor recently found shut (an
+// active ObservedClosed within its TTL), so a lost, workless NPC isn't pointed
+// back at the very shop it just walked to and found closed — the seam that let
+// Silence Walker re-pick the closed General Store every idle cycle. A stale
+// (decayed) memory does NOT drop — the NPC should retry once the TTL lapses.
+func TestNamedVillageDestinations_DropsRememberedShut(t *testing.T) {
+	w := bnWorld(5)
+	bnBusiness(w, "store", "General Store", 1, EntryPolicyOwner, true)
+	bnBusiness(w, "tavern", "The Tavern", 2, EntryPolicyOpen, true)
+	bnBusiness(w, "inn", "Inn", 3, EntryPolicyOpen, true)
+
+	now := time.Unix(1_700_000_000, 0)
+	a := bnActor("", "")
+	// Found the nearest business (the store) shut an hour ago — within the 4h TTL.
+	a.Observed = NewObservedStates(map[ObservedStateKey]time.Time{
+		{StructureID: "store", Condition: ObservedClosed}: now.Add(-time.Hour),
+	})
+	names, _ := namedVillageDestinations(w, a, moveToDestinationNameCap, now)
+	if want := []string{"The Tavern", "Inn"}; !reflect.DeepEqual(names, want) {
+		t.Errorf("names = %v, want %v (the remembered-shut General Store is dropped)", names, want)
+	}
+
+	// The same memory, now beyond the TTL, has decayed — the store lists again.
+	a.Observed = NewObservedStates(map[ObservedStateKey]time.Time{
+		{StructureID: "store", Condition: ObservedClosed}: now.Add(-ClosedBusinessMemoryTTL - time.Minute),
+	})
+	names, _ = namedVillageDestinations(w, a, moveToDestinationNameCap, now)
+	if want := []string{"General Store", "The Tavern", "Inn"}; !reflect.DeepEqual(names, want) {
+		t.Errorf("stale memory: names = %v, want %v (decayed shut memory does not drop)", names, want)
+	}
+}
+
+// LLM-366: when EVERY nearby business is remembered-shut, the list must not go
+// empty — an empty hint is worse than naming a shop that may have reopened, and
+// MoveToStructureByName would otherwise fall through to the generic no-place hint.
+func TestNamedVillageDestinations_AllShutFallsBackToFullList(t *testing.T) {
+	w := bnWorld(5)
+	bnBusiness(w, "store", "General Store", 1, EntryPolicyOwner, true)
+	bnBusiness(w, "tavern", "The Tavern", 2, EntryPolicyOpen, true)
+
+	now := time.Unix(1_700_000_000, 0)
+	a := bnActor("", "")
+	a.Observed = NewObservedStates(map[ObservedStateKey]time.Time{
+		{StructureID: "store", Condition: ObservedClosed}:  now.Add(-time.Hour),
+		{StructureID: "tavern", Condition: ObservedClosed}: now.Add(-time.Hour),
+	})
+	names, _ := namedVillageDestinations(w, a, moveToDestinationNameCap, now)
+	if want := []string{"General Store", "The Tavern"}; !reflect.DeepEqual(names, want) {
+		t.Errorf("names = %v, want %v (all shut → fall back to the full list, never empty)", names, want)
 	}
 }

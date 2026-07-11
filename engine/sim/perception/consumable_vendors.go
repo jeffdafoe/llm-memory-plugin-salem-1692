@@ -378,6 +378,13 @@ func businessRememberedShut(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, st
 	if snap == nil || actorSnap == nil {
 		return false
 	}
+	// Don't treat a place as remembered-shut while the actor is actively walking to
+	// it (LLM-366): a mid-walk re-tick must not read a stale "shut" label and steer
+	// the actor off the destination it just chose (ZBBS-HOME-405). The memory
+	// survives for the NEXT decision; arrival re-observes the truth.
+	if walkingToStructure(actorSnap, structureID) {
+		return false
+	}
 	return actorSnap.Observed.Active(sim.ObservedStateKey{StructureID: structureID, Condition: sim.ObservedClosed}, snap.PublishedAt)
 }
 
@@ -397,5 +404,27 @@ func businessRememberedOutOfStock(snap *sim.Snapshot, actorSnap *sim.ActorSnapsh
 	if snap == nil || actorSnap == nil {
 		return false
 	}
+	// Same in-flight-destination guard as businessRememberedShut (LLM-366 /
+	// ZBBS-HOME-405): don't let a stale "out of stock" memory steer the actor off a
+	// shop it is currently walking to; arrival re-checks the shelves.
+	if walkingToStructure(actorSnap, structureID) {
+		return false
+	}
 	return actorSnap.Observed.Active(sim.ObservedStateKey{StructureID: structureID, ItemKind: itemKind, Condition: sim.ObservedOutOfStock}, snap.PublishedAt)
+}
+
+// walkingToStructure reports whether the actor's in-flight move targets
+// structureID (an enter or a visit). It is the narrow HOME-405 guard for the
+// remembered-shut / remembered-out-of-stock avoidance reads (LLM-366): an NPC
+// weighing a cue about the very place it is walking to must not be steered off it
+// by a stale memory — it chose to go re-check, and arrival re-observes the truth.
+// Replaces the old commit-time memory wipe (move_to.go), which also erased the
+// memory across decisions and let a workless NPC re-pick the same shut shop.
+func walkingToStructure(actorSnap *sim.ActorSnapshot, structureID sim.StructureID) bool {
+	if actorSnap == nil || structureID == "" {
+		return false
+	}
+	return actorSnap.MoveDestStructureID == structureID &&
+		(actorSnap.MoveDestKind == sim.MoveDestinationStructureEnter ||
+			actorSnap.MoveDestKind == sim.MoveDestinationStructureVisit)
 }

@@ -1793,6 +1793,10 @@ func selfActionLine(a SelfActionView) string {
 		if a.Text == "" {
 			return "You arrived"
 		}
+		if a.FoundShut {
+			// LLM-366: name the dead end so a churn of these reads as dead ends.
+			return "You went to " + sim.WithDefiniteArticle(sanitizeInline(a.Text)) + " but found it shut, no one tending it"
+		}
 		return "You arrived at " + sim.WithDefiniteArticle(sanitizeInline(a.Text))
 	case sim.ActionTypeDeparted:
 		if a.Text == "" {

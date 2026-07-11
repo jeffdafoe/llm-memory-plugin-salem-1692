@@ -665,16 +665,20 @@ func TestMoveToStructure_NoOpVisitOwnerOnlyRejects(t *testing.T) {
 	}
 }
 
-// --- stale supplier-memory clear on commit (ZBBS-HOME-405) -------------
+// --- stale supplier-memory preserved on commit (LLM-366) ---------------
 
-// TestMoveToStructure_ClearsStaleSupplierMemoryForDestination asserts that
-// committing a walk to a structure drops the actor's experiential observed-state
-// memories — "found it shut" (ObservedClosed) and "found it dry"
-// (ObservedOutOfStock) — for THAT destination only, leaving memories about other
-// businesses intact. Without this, a mid-walk re-decision off the stale "shut"
-// annotation steers the actor away from the destination it is en route to (the
-// Josiah↔Ellis Farm thrash).
-func TestMoveToStructure_ClearsStaleSupplierMemoryForDestination(t *testing.T) {
+// TestMoveToStructure_PreservesStaleSupplierMemory asserts that committing a walk
+// to a structure does NOT drop the actor's experiential observed-state memories.
+// Before LLM-366 the destination's "found it shut" (ObservedClosed) / "found it
+// dry" (ObservedOutOfStock) memories were cleared on commit
+// (forgetSupplierStaleMemory) so a mid-walk re-decision couldn't steer the actor
+// off its destination (the Josiah↔Ellis Farm thrash, ZBBS-HOME-405). That also
+// erased the memory across DECISIONS, so a workless NPC re-picked the same shut
+// shop every idle cycle (Silence Walker's home↔store loop). The memory now
+// SURVIVES the walk; the mid-walk redirect is prevented instead by perception's
+// in-flight-destination guard (businessRememberedShut / businessRememberedOutOfStock),
+// and arrival re-observes the truth.
+func TestMoveToStructure_PreservesStaleSupplierMemory(t *testing.T) {
 	w, cancel, _ := buildMoveTestWorld(t)
 	defer cancel()
 	now := time.Now().UTC()
@@ -702,20 +706,18 @@ func TestMoveToStructure_ClearsStaleSupplierMemoryForDestination(t *testing.T) {
 
 	obs := supplierMemoryOf(t, w, "walker")
 
-	if _, ok := obs.At(sim.ObservedStateKey{StructureID: "inn", Condition: sim.ObservedClosed}); ok {
-		t.Error("closed[inn] should be cleared after move_to(inn)")
-	}
-	if _, ok := obs.At(sim.ObservedStateKey{StructureID: other, Condition: sim.ObservedClosed}); !ok {
-		t.Errorf("closed[%s] should be untouched — destination-only clear", other)
-	}
-	if _, ok := obs.At(sim.ObservedStateKey{StructureID: "inn", ItemKind: "meat", Condition: sim.ObservedOutOfStock}); ok {
-		t.Error("out-of-stock{inn,meat} should be cleared after move_to(inn)")
-	}
-	if _, ok := obs.At(sim.ObservedStateKey{StructureID: "inn", ItemKind: "milk", Condition: sim.ObservedOutOfStock}); ok {
-		t.Error("out-of-stock{inn,milk} should be cleared after move_to(inn)")
-	}
-	if _, ok := obs.At(sim.ObservedStateKey{StructureID: other, ItemKind: "meat", Condition: sim.ObservedOutOfStock}); !ok {
-		t.Errorf("out-of-stock{%s,meat} should be untouched — destination-only clear", other)
+	// Every seeded memory — the destination (inn) AND the unrelated gazebo —
+	// survives the walk; move_to no longer clears any supplier memory (LLM-366).
+	for _, k := range []sim.ObservedStateKey{
+		{StructureID: "inn", Condition: sim.ObservedClosed},
+		{StructureID: other, Condition: sim.ObservedClosed},
+		{StructureID: "inn", ItemKind: "meat", Condition: sim.ObservedOutOfStock},
+		{StructureID: "inn", ItemKind: "milk", Condition: sim.ObservedOutOfStock},
+		{StructureID: other, ItemKind: "meat", Condition: sim.ObservedOutOfStock},
+	} {
+		if _, ok := obs.At(k); !ok {
+			t.Errorf("memory %+v should survive move_to(inn) — commit no longer clears supplier memory", k)
+		}
 	}
 }
 
