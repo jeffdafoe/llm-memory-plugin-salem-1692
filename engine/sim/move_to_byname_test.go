@@ -282,6 +282,17 @@ func TestNamedVillageDestinations_DropsRememberedShut(t *testing.T) {
 	if want := []string{"General Store", "The Tavern", "Inn"}; !reflect.DeepEqual(names, want) {
 		t.Errorf("stale memory: names = %v, want %v (decayed shut memory does not drop)", names, want)
 	}
+
+	// A FUTURE-stamped shut observation (clock skew) is rejected by Observed.Active's
+	// age >= 0 guard, so the business is NOT dropped — the filter shares that decay
+	// funnel rather than a looser "is it present" check.
+	a.Observed = NewObservedStates(map[ObservedStateKey]time.Time{
+		{StructureID: "store", Condition: ObservedClosed}: now.Add(time.Hour),
+	})
+	names, _ = namedVillageDestinations(w, a, moveToDestinationNameCap, now)
+	if want := []string{"General Store", "The Tavern", "Inn"}; !reflect.DeepEqual(names, want) {
+		t.Errorf("future-stamped memory: names = %v, want %v (future observation must not drop)", names, want)
+	}
 }
 
 // LLM-366: when EVERY nearby business is remembered-shut, the list must not go

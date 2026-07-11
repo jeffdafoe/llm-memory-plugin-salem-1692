@@ -3342,19 +3342,31 @@ func buildSelfActions(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 		if e.ActionType == sim.ActionTypeSpoke && e.HuddleID != "" && e.HuddleID == actorSnap.CurrentHuddleID {
 			continue // the current huddle's ring already renders this line
 		}
+		// LLM-366: flag a walked entry as a dead end only when the subject's ACTIVE
+		// shut memory belongs to THIS arrival — i.e. was observed no earlier than the
+		// walk. The walked entry and the ObservedClosed stamp share the same arrival
+		// timestamp (both ActorArrived.At — cascade/action_log.go, closed_business.go),
+		// so an equal-or-later stamp means this walk is the one that found it shut,
+		// while an earlier walk that found it OPEN (which would have cleared the
+		// memory) correctly stays a plain arrival. A raw ObservedClosed read, NOT
+		// businessRememberedShut: this is a PAST-trip outcome, so the in-flight-
+		// destination guard must not suppress it even while the actor re-walks there.
+		foundShut := false
+		if e.ActionType == sim.ActionTypeWalked && e.StructureID != "" {
+			key := sim.ObservedStateKey{StructureID: e.StructureID, Condition: sim.ObservedClosed}
+			if observedAt, ok := actorSnap.Observed.At(key); ok &&
+				!e.OccurredAt.Before(observedAt) &&
+				actorSnap.Observed.Active(key, snap.PublishedAt) {
+				foundShut = true
+			}
+		}
 		out = append(out, SelfActionView{
 			ActionType:       e.ActionType,
 			Text:             e.Text,
 			CounterpartyName: e.CounterpartyName,
 			Amount:           e.Amount,
 			At:               e.OccurredAt,
-			// LLM-366: flag a walked entry whose destination the subject still
-			// remembers finding shut, so the churn trail shows the trip was a dead
-			// end. A raw ObservedClosed read (not businessRememberedShut) — this is a
-			// PAST-trip outcome, so the in-flight-destination guard must NOT suppress
-			// it even while the actor is re-walking there.
-			FoundShut: e.ActionType == sim.ActionTypeWalked && e.StructureID != "" &&
-				actorSnap.Observed.Active(sim.ObservedStateKey{StructureID: e.StructureID, Condition: sim.ObservedClosed}, snap.PublishedAt),
+			FoundShut:        foundShut,
 		})
 	}
 	return out

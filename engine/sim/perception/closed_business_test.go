@@ -235,9 +235,13 @@ func TestBusinessRememberedOutOfStock_InFlightDestinationGuard(t *testing.T) {
 	if !businessRememberedOutOfStock(snap, subj, "store", "milk") {
 		t.Fatal("baseline: a fresh out-of-stock memory should read as remembered")
 	}
-	subj.MoveDestStructureID = "store"
-	subj.MoveDestKind = sim.MoveDestinationStructureVisit
-	if businessRememberedOutOfStock(snap, subj, "store", "milk") {
-		t.Error("walking to the store must suppress its out-of-stock memory (HOME-405 guard)")
+	// Both walk kinds suppress it — the old commit-time wipe cleared out-of-stock
+	// regardless of enter/visit, so the guard must pin the same equivalence.
+	for _, kind := range []sim.MoveDestinationKind{sim.MoveDestinationStructureVisit, sim.MoveDestinationStructureEnter} {
+		subj.MoveDestStructureID = "store"
+		subj.MoveDestKind = kind
+		if businessRememberedOutOfStock(snap, subj, "store", "milk") {
+			t.Errorf("walking to the store (kind %v) must suppress its out-of-stock memory (HOME-405 guard)", kind)
+		}
 	}
 }

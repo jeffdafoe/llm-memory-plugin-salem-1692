@@ -160,29 +160,45 @@ func TestAgoPhraseBuckets(t *testing.T) {
 // are not.
 func TestBuildSelfActions_FoundShutFromObservedClosed(t *testing.T) {
 	published := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	// The store was found shut at -3m — that arrival stamped the memory (a walked
+	// entry and its ObservedClosed stamp share the same arrival time). An EARLIER
+	// walk to the store at -10m found it open (which would have cleared any memory),
+	// so ONLY the -3m arrival must read as a dead end — the timestamp-aware guard
+	// must not retroactively rewrite the earlier open trip.
+	observedAt := published.Add(-3 * time.Minute)
+	openWalk := published.Add(-10 * time.Minute)
 	log := []sim.ActionLogEntry{
-		{Seq: 1, ActorID: "ezekiel", OccurredAt: published.Add(-3 * time.Minute), ActionType: sim.ActionTypeWalked, Text: "General Store", StructureID: "store"},
-		{Seq: 2, ActorID: "ezekiel", OccurredAt: published.Add(-2 * time.Minute), ActionType: sim.ActionTypeWalked, Text: "Inn", StructureID: "inn"},
-		{Seq: 3, ActorID: "ezekiel", OccurredAt: published.Add(-1 * time.Minute), ActionType: sim.ActionTypeDeparted, Text: "General Store", StructureID: "store"},
+		{Seq: 1, ActorID: "ezekiel", OccurredAt: openWalk, ActionType: sim.ActionTypeWalked, Text: "General Store", StructureID: "store"},
+		{Seq: 2, ActorID: "ezekiel", OccurredAt: published.Add(-6 * time.Minute), ActionType: sim.ActionTypeWalked, Text: "Inn", StructureID: "inn"},
+		{Seq: 3, ActorID: "ezekiel", OccurredAt: observedAt, ActionType: sim.ActionTypeWalked, Text: "General Store", StructureID: "store"},
+		{Seq: 4, ActorID: "ezekiel", OccurredAt: published.Add(-1 * time.Minute), ActionType: sim.ActionTypeDeparted, Text: "General Store", StructureID: "store"},
 	}
 	snap, subject := selfActionsFixture(published, log, "")
-	// Remembers the store shut (within TTL) but not the inn.
 	subject.Observed = sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
-		{StructureID: "store", Condition: sim.ObservedClosed}: published.Add(-time.Hour),
+		{StructureID: "store", Condition: sim.ObservedClosed}: observedAt,
 	})
 
 	got := buildSelfActions(snap, "ezekiel", subject)
-	byKey := map[string]SelfActionView{}
-	for _, v := range got {
-		byKey[string(v.ActionType)+"|"+v.Text] = v
+	find := func(text string, at time.Time) SelfActionView {
+		t.Helper()
+		for _, v := range got {
+			if v.Text == text && v.At.Equal(at) {
+				return v
+			}
+		}
+		t.Fatalf("no self-action %q at %v in trail", text, at)
+		return SelfActionView{}
 	}
-	if !byKey["walked|General Store"].FoundShut {
-		t.Error("walk→General Store should be FoundShut (remembered shut, within TTL)")
+	if !find("General Store", observedAt).FoundShut {
+		t.Error("the -3m walk that stamped the shut memory should be FoundShut")
 	}
-	if byKey["walked|Inn"].FoundShut {
-		t.Error("walk→Inn should NOT be FoundShut (no shut memory)")
+	if find("General Store", openWalk).FoundShut {
+		t.Error("the earlier -10m walk (found open, before the shut observation) must NOT be FoundShut")
 	}
-	if byKey["departed|General Store"].FoundShut {
+	if find("Inn", published.Add(-6*time.Minute)).FoundShut {
+		t.Error("a walk to a place with no shut memory must not be FoundShut")
+	}
+	if find("General Store", published.Add(-1*time.Minute)).FoundShut {
 		t.Error("a non-walk action (departed) must never be FoundShut, even for a shut structure")
 	}
 }

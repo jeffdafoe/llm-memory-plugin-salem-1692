@@ -418,6 +418,13 @@ func namedVillageDestinations(w *World, a *Actor, limit int, now time.Time) (nam
 			// LLM-366: don't suggest a business the actor recently found shut (an
 			// active ObservedClosed within its 4h TTL). Their own experience, not
 			// omniscience — the same drop the seek-work directory already applies.
+			// Observed.Active is the shared decay funnel (age >= 0 future guard +
+			// per-condition TTL, observed_state.go) that perception's
+			// businessRememberedShut also reads through, so the semantics match. No
+			// in-flight-destination guard here (unlike businessRememberedShut): this
+			// hint is emitted only in RESPONSE to the model's own move_to(bad-name)
+			// call, so the model has already chosen to (re)pick a destination — dropping
+			// a shut place can't cause a passive mid-walk redirect (HOME-405).
 			shut: a.Observed.Active(ObservedStateKey{StructureID: structureID, Condition: ObservedClosed}, now),
 		})
 	}
