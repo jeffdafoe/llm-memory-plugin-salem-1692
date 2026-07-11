@@ -1,0 +1,19 @@
+# Your turn
+
+## Since your last turn
+(nothing specific — this is a routine check-in)
+
+
+## You
+Coins in your purse: 10.
+
+## Around you
+You are inside the Village Commons, with Lewis Walker.
+Evening settles over the village.
+
+You keep your trade at the Blacksmith (destination: blacksmith), and your home is at the Crane Cottage (destination: crane_cottage) — you can head to either whenever you wish.
+
+Your day's work is done, and the tavern is open of an evening — you might make your way to the Tavern (destination: tavern) for company, pass a quiet evening at the Crane Cottage (destination: crane_cottage), or turn in for the night, as you please.
+
+You take work for pay. If someone here outside your own household or trade has a task you could do and you want the pay, offer your labor with solicit_work — name them, the pay you want (coins, goods they hold such as a meal, or both), and roughly how long the job will take.
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.
