@@ -14,6 +14,6 @@ It is morning in the village.
 
 ## What you can eat or drink
 Nearby to buy (hunger):
-- The Tavern — buy a wedge of cheese (a good meal), ask the seller, to eat there (it can't be carried away) (destination: tavern)
+- The Tavern — buy a wedge of cheese (a good meal), ask the seller, to eat there (destination: tavern)
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

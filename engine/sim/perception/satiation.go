@@ -962,7 +962,7 @@ func renderSatiation(b *strings.Builder, v *SatiationView) {
 				// goods can't be carried away, so the buyer should plan a
 				// sit-down, not a carry-out the clamp would quietly rewrite.
 				if vd.EatHere {
-					b.WriteString(", to eat there (it can't be carried away)")
+					b.WriteString(", to eat there")
 				}
 				// The structure_id is the load-bearing field: move_to(structure_id)
 				// is how the buyer actually walks here, and the tool rejects a bare

@@ -328,8 +328,13 @@ func TestBuildSatiation_VendorEatHereFact(t *testing.T) {
 	out := b.String()
 	for _, line := range strings.Split(out, "\n") {
 		if strings.Contains(line, "stew") && strings.Contains(line, "The Tavern") {
-			if !strings.Contains(line, ", to eat there (it can't be carried away)") {
+			if !strings.Contains(line, ", to eat there") {
 				t.Errorf("stew vendor line missing the eat-here fact:\n%s", line)
+			}
+			// The positive check above also passes on the old, longer phrase
+			// (it contains ", to eat there"), so pin the parenthetical's removal.
+			if strings.Contains(line, "it can't be carried away") {
+				t.Errorf("stew vendor line should not carry the redundant carry-away parenthetical:\n%s", line)
 			}
 		}
 		if strings.Contains(line, "bread") {
