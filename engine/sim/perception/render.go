@@ -369,6 +369,15 @@ func renderTravelerPreface(b *strings.Builder, v *TravelerSelfView) {
 	case disposition != "":
 		fmt.Fprintf(b, " Your manner today is %s.", disposition)
 	}
+
+	// The grounded rumor the traveler carries (LLM-371). One real recent village
+	// beat, selected at spawn from the action log and framed as word picked up on
+	// the road — so the stateless salem-visitor VA has something true to trade in
+	// conversation rather than empty small-talk. Dropped when empty (no
+	// rumor-worthy beat was on hand at spawn).
+	if rumor := sanitizeInline(v.Rumor); rumor != "" {
+		fmt.Fprintf(b, " Word reached you on the road that %s.", rumor)
+	}
 	b.WriteString("\n\n")
 }
 

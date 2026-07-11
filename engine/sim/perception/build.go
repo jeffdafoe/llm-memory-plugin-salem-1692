@@ -1546,6 +1546,7 @@ func buildTravelerSelf(a *sim.ActorSnapshot) *TravelerSelfView {
 		Archetype:   a.VisitorState.Archetype,
 		Origin:      a.VisitorState.Origin,
 		Disposition: a.VisitorState.Disposition,
+		Rumor:       a.VisitorState.Payload,
 	}
 }
 

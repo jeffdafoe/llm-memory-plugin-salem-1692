@@ -26,6 +26,7 @@ func newVisitorFixture(id sim.ActorID, expiresAt time.Time, inside sim.Structure
 			Disposition: "weary",
 			ExpiresAt:   expiresAt,
 			Phase:       sim.VisitorPhasePresent,
+			Payload:     "Ezekiel Crane turned out a plow for the Hale farm",
 		},
 	}
 }
@@ -66,6 +67,9 @@ func TestFinalizeLoad_ResumesInWindowVisitor(t *testing.T) {
 	}
 	if a.VisitorState.Archetype != "peddler" || a.VisitorState.Origin != "Boston" || a.VisitorState.Phase != sim.VisitorPhasePresent {
 		t.Errorf("rehydrated VisitorState = %+v; want peddler / Boston / present", a.VisitorState)
+	}
+	if a.VisitorState.Payload != "Ezekiel Crane turned out a plow for the Hale farm" {
+		t.Errorf("rehydrated Payload = %q; want the carried rumor restored", a.VisitorState.Payload)
 	}
 	if a.Pos.X != sim.PadX+4 || a.Pos.Y != sim.PadY+6 {
 		t.Errorf("rehydrated Pos = %+v; want the persisted tile", a.Pos)

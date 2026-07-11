@@ -834,6 +834,16 @@ var perceptionScenarios = []perceptionScenario{
 		build: travelerSelfIdentityPreface,
 	},
 	{
+		name: "traveler_self_identity_preface_with_rumor",
+		summary: "LLM-371: the same traveler (Elias Drum the peddler) now carries a grounded rumor — VisitorState.Payload, " +
+			"selected at spawn from the action log. The golden pins the extra preface clause that closes the persona line — " +
+			"'Word reached you on the road that Ezekiel Crane turned out a plow for the Hale farm.' — so the stateless " +
+			"salem-visitor VA has one true, checkable thing to trade in conversation instead of empty small-talk. The " +
+			"payload rides the same self-preface stream as the persona (renderTravelerPreface); an empty payload drops the " +
+			"clause (the no-rumor case is the LLM-370 traveler_self_identity_preface golden).",
+		build: travelerSelfIdentityPrefaceWithRumor,
+	},
+	{
 		name: "traveler_observed_by_villager",
 		summary: "LLM-370: a villager (Goodwife Bishop) stands in the Tavern with a co-present transient traveler she " +
 			"does not yet know by name. The golden pins the observer cue in '## Around you' — 'a peddler lately come from " +
@@ -10044,6 +10054,51 @@ func travelerSelfIdentityPreface() (*sim.Snapshot, sim.ActorID, []sim.WarrantMet
 		},
 	}
 	// The traveler just walked in → "## Since your last turn: You arrived at the Tavern."
+	warrants := []sim.WarrantMeta{
+		{
+			TriggerActorID: eliasID,
+			Reason:         sim.ArrivalWarrantReason{AtStructureID: tavern},
+			SourceEventID:  1,
+		},
+	}
+	return snap, eliasID, warrants
+}
+
+// travelerSelfIdentityPrefaceWithRumor is the LLM-371 fixture: the same traveler
+// as travelerSelfIdentityPreface, but now carrying a grounded rumor on
+// VisitorState.Payload. The golden pins the extra preface clause ("Word reached
+// you on the road that …") that renderTravelerPreface appends after the persona,
+// so the stateless salem-visitor VA has one true thing to trade. The clause is
+// dropped entirely on an empty Payload — that no-rumor case is the LLM-370
+// travelerSelfIdentityPreface golden, so the two goldens together pin both arms.
+func travelerSelfIdentityPrefaceWithRumor() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		eliasID = sim.ActorID("vstr-elias")
+		tavern  = sim.StructureID("tavern")
+	)
+	now := 540 // 09:00 — morning
+	elias := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Elias Drum the peddler",
+		State:             sim.StateIdle,
+		InsideStructureID: tavern,
+		Coins:             8,
+		Needs:             map[sim.NeedKey]int{},
+		VisitorState: &sim.VisitorState{
+			Archetype:   "peddler",
+			Origin:      "Boston",
+			Disposition: "weary",
+			Payload:     "Ezekiel Crane turned out a plow for the Hale farm",
+		},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{eliasID: elias},
+		Structures: map[sim.StructureID]*sim.Structure{
+			tavern: plainStructure(tavern, "Tavern"),
+		},
+	}
 	warrants := []sim.WarrantMeta{
 		{
 			TriggerActorID: eliasID,

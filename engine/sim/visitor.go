@@ -118,6 +118,13 @@ const (
 	// to observers — it colors only the traveler's own self-identity preface. This
 	// radius has no consumer yet; 2 tiles ≈ same-tile, adjacent, one-step-away.
 	VisitorPerceptionRadius = 2
+
+	// VisitorRumorLookback bounds how far back selectVisitorRumor reaches into
+	// the action log for a grounded rumor to hand a spawning traveler (LLM-371).
+	// The log itself is retention-bounded (DefaultActionLogRetention, 48h); this
+	// tighter window keeps the carried word feeling like recent news ("lately",
+	// "this week") rather than something stale from two days ago.
+	VisitorRumorLookback = 24 * time.Hour
 )
 
 // VisitorTagTavern is the per-instance VillageObject tag the destination
@@ -380,6 +387,117 @@ func dispatchVisitorCleanup(w *World, now time.Time, t *VisitorCascadeTelemetry)
 	}
 }
 
+// selectVisitorRumor picks one grounded rumor for a spawning traveler to carry
+// (LLM-371). It draws from the in-memory action log — the same recent-happenings
+// ring the atmosphere digest reads — filtered to rumor-worthy beats within
+// VisitorRumorLookback whose subject is a real resident (not another visitor, not
+// the PC, not decorative), and renders one to a diegetic past-tense clause. This
+// is the v2-faithful stand-in for the ticket's "recent village_event": engine-v2
+// has no village_event table, but the action log records every actor's real beats
+// (a stateful keeper's delivery / a shared-VA vendor's sale alike), so a traveler
+// can carry checkable word about anyone in the village. Returns "" when nothing
+// rumor-worthy is on hand — the caller leaves Payload empty and the preface drops
+// the clause. Random pick (not most-recent) so back-to-back spawns don't all echo
+// the same freshest beat. Runs on the world goroutine (called from
+// dispatchVisitorSpawn), so reading w.ActionLog / w.Actors is race-free.
+func selectVisitorRumor(w *World, r *rand.Rand, now time.Time) string {
+	if w == nil || len(w.ActionLog) == 0 {
+		return ""
+	}
+	cutoff := now.Add(-VisitorRumorLookback)
+	var candidates []string
+	for _, e := range w.ActionLog {
+		if e.OccurredAt.Before(cutoff) {
+			continue
+		}
+		subject := w.Actors[e.ActorID]
+		if subject == nil || subject.VisitorState != nil {
+			continue // subject must be a resident villager, not a passing traveler
+		}
+		if subject.Kind == KindPC || subject.Kind == KindDecorative {
+			continue // rumors are about the village's own, not the player or props
+		}
+		if clause := renderRumorClause(w, e); clause != "" {
+			candidates = append(candidates, clause)
+		}
+	}
+	if len(candidates) == 0 {
+		return ""
+	}
+	return candidates[r.Intn(len(candidates))]
+}
+
+// renderRumorClause turns one action-log entry into the diegetic, past-tense
+// clause a traveler carries as a rumor — "Ezekiel Crane turned out a plow for the
+// Hale farm" — or "" for a beat that doesn't make a rumor worth carrying. The
+// preface owns the "Word reached you on the road that …" framing
+// (renderTravelerPreface); this returns just the grounded fact. Deliberately a
+// curated allow-set of the socially legible economic beats: the private
+// (consumed / took_break), the dull (walked / departed), the utterance itself
+// (spoke — long, contextual, and already carried by the speaker's own memory),
+// and the feed-only negotiation types (offered / declined / countered, filtered
+// everywhere NPC-facing) all render "". Amounts and exact coin counts are dropped
+// on purpose — scene, not ledger. The subject name is resolved by the caller's
+// guard (w.Actors[e.ActorID] non-nil), re-checked here for safety.
+func renderRumorClause(w *World, e ActionLogEntry) string {
+	subject := w.Actors[e.ActorID]
+	if subject == nil || subject.DisplayName == "" {
+		return ""
+	}
+	name := subject.DisplayName
+	switch e.ActionType {
+	case ActionTypePaid:
+		if e.CounterpartyName == "" {
+			return "" // a payment to no one named isn't a rumor worth carrying
+		}
+		clause := name + " settled up with " + e.CounterpartyName
+		if e.Text != "" {
+			clause += " over " + e.Text
+		}
+		return clause
+	case ActionTypeDelivered:
+		if e.Text == "" {
+			return ""
+		}
+		clause := name + " turned out " + e.Text
+		if e.CounterpartyName != "" {
+			clause += " for " + e.CounterpartyName
+		}
+		return clause
+	case ActionTypeLabored:
+		if e.CounterpartyName != "" {
+			return name + " put in a day's work for " + e.CounterpartyName
+		}
+		return name + " took on a piece of work"
+	case ActionTypeHired:
+		if e.CounterpartyName == "" {
+			return ""
+		}
+		return name + " took " + e.CounterpartyName + " on for a job"
+	case ActionTypeSolicitedWork:
+		if e.CounterpartyName != "" {
+			return name + " went looking to work for " + e.CounterpartyName
+		}
+		return name + " was about looking for work"
+	case ActionTypeGathered:
+		if e.Text == "" {
+			return ""
+		}
+		clause := name + " was out gathering " + e.Text
+		if e.CounterpartyName != "" {
+			clause += " at " + WithDefiniteArticle(e.CounterpartyName)
+		}
+		return clause
+	case ActionTypeRepairing:
+		if e.Text != "" {
+			return name + " was mending " + WithDefiniteArticle(e.Text)
+		}
+		return name + " was busy at repairs"
+	default:
+		return ""
+	}
+}
+
 // dispatchVisitorSpawn rolls the per-tick spawn chance and — when it
 // fires and the concurrent cap isn't reached — generates a persona,
 // picks an arrival edge tile + tavern destination, inserts a fresh
@@ -524,6 +642,7 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 			Disposition: profile.Disposition,
 			ExpiresAt:   expiresAt,
 			Phase:       VisitorPhasePresent,
+			Payload:     selectVisitorRumor(w, r, inputs.Now),
 		},
 		State: StateIdle,
 	}

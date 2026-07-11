@@ -456,6 +456,18 @@ type VisitorState struct {
 	Disposition string
 	ExpiresAt   time.Time
 	Phase       VisitorPhase
+	// Payload is the one grounded rumor the traveler carries — a diegetic,
+	// past-tense clause about a real thing that happened in the village
+	// recently ("Ezekiel Crane turned out a plow for the Hale farm"),
+	// selected at spawn from the in-memory action log (selectVisitorRumor in
+	// engine/sim/visitor.go) and voiced through the identity preface
+	// (renderTravelerPreface, LLM-371). "" when no rumor-worthy beat was on
+	// hand at spawn — the preface simply drops the clause. Persisted in the
+	// visitor.payload column so the carried word survives a deploy restart
+	// (the action log is restart-wiped, so re-selecting on rehydrate would
+	// draw from an empty pool). Not live-updated: it is a snapshot of what
+	// the traveler "heard on the road," fixed for the visit.
+	Payload string
 }
 
 // VisitorPhase is the visitor's lifecycle state — a small Go-owned enum
