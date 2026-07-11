@@ -131,6 +131,12 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	var selfState strings.Builder
 	renderActor(&selfState, p.Actor)
 
+	// Durable: a transient traveler's own persona opens the message ahead of the
+	// turn header (LLM-370) — durable leads the assembled prompt
+	// (harness.fullPerceptionPrompt), so this is the first thing the stateless
+	// salem-visitor VA reads, framing the whole turn in-character. Nothing for a
+	// non-traveler subject (SelfTraveler nil).
+	renderTravelerPreface(&durable, p.SelfTraveler)
 	// Durable: just the turn header here; the "since your last turn" events append
 	// below (## You is ephemeral now — ZBBS-WORK-410).
 	durable.WriteString("# Your turn\n\n")
@@ -328,6 +334,42 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	out.Text = durable.String()
 	out.EphemeralText = ephemeral.String()
 	return out
+}
+
+// renderTravelerPreface opens a transient traveler's own user_message with its
+// persona as prose (LLM-370): "You are Elias Drum, a peddler making your way
+// through Salem. You hail from Boston, and your manner today is weary." The shared
+// salem-visitor VA is stateless and carries no per-visitor identity in its system
+// prompt, so this engine-injected preface is what makes it speak as this specific
+// traveler. Written to the DURABLE stream ahead of the turn header (see Render), so
+// it leads the assembled prompt. Missing persona slots drop their own clause; a nil
+// view (every non-traveler subject) writes nothing.
+func renderTravelerPreface(b *strings.Builder, v *TravelerSelfView) {
+	if v == nil {
+		return
+	}
+	name := sanitizeInline(v.Name)
+	if name == "" {
+		name = "a traveler"
+	}
+	b.WriteString("You are ")
+	b.WriteString(name)
+	if v.Archetype != "" {
+		fmt.Fprintf(b, ", %s making your way through Salem", sanitizeInline(sim.WithIndefiniteArticle(v.Archetype)))
+	}
+	b.WriteString(".")
+
+	origin := sanitizeInline(v.Origin)
+	disposition := sanitizeInline(v.Disposition)
+	switch {
+	case origin != "" && disposition != "":
+		fmt.Fprintf(b, " You hail from %s, and your manner today is %s.", origin, disposition)
+	case origin != "":
+		fmt.Fprintf(b, " You hail from %s.", origin)
+	case disposition != "":
+		fmt.Fprintf(b, " Your manner today is %s.", disposition)
+	}
+	b.WriteString("\n\n")
 }
 
 // renderTurnState writes the conversation turn-state lines (ZBBS-WORK-370): who
@@ -1148,7 +1190,7 @@ func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 		// when the actor has a social reason for one (LLM-220).
 		names := make([]string, len(s.CoPresent))
 		for i, m := range s.CoPresent {
-			label := descriptorLabel(m.DisplayName, m.Role, m.Acquainted)
+			label := travelerCoPresentLabel(m)
 			if m.JustArrived {
 				// ZBBS-WORK-422: flag a newcomer so a stateless NPC reads the
 				// "someone just walked up — greet them" beat. Without it a fresh

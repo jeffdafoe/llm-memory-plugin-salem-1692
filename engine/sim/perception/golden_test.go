@@ -114,6 +114,29 @@ func TestGoldensNeverAdvertiseHomeAsMoveTargetWhenInside(t *testing.T) {
 	}
 }
 
+// TestGoldensTravelerPrefaceIffSubjectIsTraveler is the LLM-370 cross-scenario
+// invariant: the self-identity preface (its unique "making your way through Salem"
+// phrase) renders in a scenario's prompt IFF the SUBJECT is a transient traveler
+// (its snapshot carries a VisitorState with an archetype). Guards both directions
+// across the whole matrix — a traveler subject must get its persona preface, and
+// every persistent NPC / PC must NOT, so the engine-injected identity can neither
+// leak into a non-traveler's prompt nor silently stop opening a traveler's.
+func TestGoldensTravelerPrefaceIffSubjectIsTraveler(t *testing.T) {
+	const prefaceMarker = "making your way through Salem"
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, _ := sc.build()
+			a := snap.Actors[actorID]
+			wantPreface := a != nil && a.VisitorState != nil && a.VisitorState.Archetype != ""
+			hasPreface := strings.Contains(renderScenario(sc), prefaceMarker)
+			if wantPreface != hasPreface {
+				t.Errorf("scenario %q: subject is traveler=%v but preface present=%v — the self-identity preface must open the message iff the subject is a transient traveler (LLM-370)", sc.name, wantPreface, hasPreface)
+			}
+		})
+	}
+}
+
 // TestGoldensRainLineIffStorm is the LLM-364 cross-scenario invariant: the felt
 // rain line renders in a scenario's prompt IFF that scenario's snapshot has an
 // active storm (Environment.Weather == storm). Guards both directions across the
@@ -799,6 +822,25 @@ var perceptionScenarios = []perceptionScenario{
 			"whose shop it entered instead of greeting the smith as if hosting its own forge (the live host-role " +
 			"inversion). A regression back to the ownerless 'the Blacksmith' shows in the diff.",
 		build: visitorArrivesAtKeepersWorkplace,
+	},
+	{
+		name: "traveler_self_identity_preface",
+		summary: "LLM-370: a transient traveler (salem-visitor Elias Drum the peddler, in from Boston, weary) perceives " +
+			"its OWN turn, standing in the Tavern. The golden pins the self-identity preface that OPENS the message — " +
+			"'You are Elias Drum, a peddler making your way through Salem. You hail from Boston, and your manner today is " +
+			"weary.' — ahead of the '# Your turn' header, so the stateless salem-visitor VA (no per-visitor identity in " +
+			"its system prompt) speaks in-character as this specific traveler. Before LLM-370 perception never read " +
+			"VisitorState and a traveler was rendered as a generic stranger with no persona at all.",
+		build: travelerSelfIdentityPreface,
+	},
+	{
+		name: "traveler_observed_by_villager",
+		summary: "LLM-370: a villager (Goodwife Bishop) stands in the Tavern with a co-present transient traveler she " +
+			"does not yet know by name. The golden pins the observer cue in '## Around you' — 'a peddler lately come from " +
+			"Boston is here with you.' — where the bare 'a stranger' descriptorLabel used to render (unacquainted, no " +
+			"role). Archetype + origin reach the observer's prompt; disposition stays out (it colors the traveler's own " +
+			"voice only). The traveler stays addressable in the company line, so no separate redundant 'a stranger' beat.",
+		build: travelerObservedByVillager,
 	},
 	{
 		name: "hungry_worker_with_means_redirected_to_eat",
@@ -9965,6 +10007,100 @@ func visitorArrivesAtKeepersWorkplace() (*sim.Snapshot, sim.ActorID, []sim.Warra
 		},
 	}
 	return snap, johnID, warrants
+}
+
+// travelerSelfIdentityPreface is the LLM-370 self-preface fixture: a transient
+// traveler (salem-visitor) perceiving its own turn. Elias Drum the peddler, in
+// from Boston and weary, has just walked into the Tavern. The golden pins the
+// engine-injected identity preface that opens the message ahead of "# Your turn",
+// so the stateless shared VA speaks as this specific traveler. VisitorState set on
+// the subject snapshot is the whole trigger; a persistent NPC (nil VisitorState)
+// gets no preface (matrix guard: TestGoldensTravelerPrefaceIffSubjectIsTraveler).
+func travelerSelfIdentityPreface() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		eliasID = sim.ActorID("vstr-elias")
+		tavern  = sim.StructureID("tavern")
+	)
+	now := 540 // 09:00 — morning
+	elias := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Elias Drum the peddler",
+		State:             sim.StateIdle,
+		InsideStructureID: tavern,
+		Coins:             8,
+		Needs:             map[sim.NeedKey]int{},
+		VisitorState: &sim.VisitorState{
+			Archetype:   "peddler",
+			Origin:      "Boston",
+			Disposition: "weary",
+		},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{eliasID: elias},
+		Structures: map[sim.StructureID]*sim.Structure{
+			tavern: plainStructure(tavern, "Tavern"),
+		},
+	}
+	// The traveler just walked in → "## Since your last turn: You arrived at the Tavern."
+	warrants := []sim.WarrantMeta{
+		{
+			TriggerActorID: eliasID,
+			Reason:         sim.ArrivalWarrantReason{AtStructureID: tavern},
+			SourceEventID:  1,
+		},
+	}
+	return snap, eliasID, warrants
+}
+
+// travelerObservedByVillager is the LLM-370 observer-cue fixture: a villager
+// (Goodwife Bishop) standing in the Tavern with a co-present transient traveler
+// she doesn't yet know by name. The golden pins the "## Around you" observer cue —
+// "a peddler lately come from Boston is here with you." — in place of the bare "a
+// stranger" an unacquainted, roleless actor rendered before LLM-370. Disposition
+// (weary) is deliberately absent from the observer's view; it colors only the
+// traveler's own preface.
+func travelerObservedByVillager() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		bishopID = sim.ActorID("bishop")
+		eliasID  = sim.ActorID("vstr-elias")
+		tavern   = sim.StructureID("tavern")
+	)
+	now := 540 // 09:00 — morning
+	bishop := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Goodwife Bishop",
+		Role:              "goodwife",
+		State:             sim.StateIdle,
+		InsideStructureID: tavern,
+		Coins:             30,
+		Needs:             map[sim.NeedKey]int{},
+		// The traveler is within earshot but a stranger to Bishop — no acquaintance
+		// entry, so the observer cue names them by archetype + origin, not by name.
+		ColocatedAudienceIDs: []sim.ActorID{eliasID},
+	}
+	elias := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Elias Drum the peddler",
+		State:             sim.StateIdle,
+		InsideStructureID: tavern,
+		Needs:             map[sim.NeedKey]int{},
+		VisitorState: &sim.VisitorState{
+			Archetype:   "peddler",
+			Origin:      "Boston",
+			Disposition: "weary",
+		},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{bishopID: bishop, eliasID: elias},
+		Structures: map[sim.StructureID]*sim.Structure{
+			tavern: plainStructure(tavern, "Tavern"),
+		},
+	}
+	return snap, bishopID, nil
 }
 
 // worklessTiredRejoinerSelfActionTrail is the LLM-217 fixture: the live Patience
