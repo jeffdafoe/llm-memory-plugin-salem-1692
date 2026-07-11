@@ -318,6 +318,20 @@ func executeNPCSleep(w *World, a *Actor, now time.Time) bool {
 	a.State = StateSleeping
 	if a.InsideStructureID != "" {
 		refreshStructureOccupancyState(w, a.InsideStructureID)
+		// LLM-360: a keeper bedding down at its OWN workplace closes the shop
+		// (keeperPresentAt now reads false with State just set to StateSleeping), so
+		// tear down any cross-threshold conversation still standing at its loiter pin.
+		// A huddle formed while the shop was open (LLM-359 gates formation, not
+		// teardown) otherwise keeps a stranded loiterer perceiving and addressing
+		// whoever is inside through the shut wall. Gate on the sleeper being a worker
+		// of the structure it beds in — only that bed-down can flip keeperPresentAt.
+		// A lodger/resident bedding down elsewhere's guest, or in a never-keeper-gated
+		// structure (a private home mid-knock, where keeperPresentAt is trivially
+		// false), must NOT trigger the closed-shop teardown and evict a legitimate
+		// visitor.
+		if a.WorkStructureID == a.InsideStructureID {
+			evictLoiterMembersOnClose(w, a.InsideStructureID, now)
+		}
 	}
 	return true
 }
