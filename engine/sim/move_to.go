@@ -202,7 +202,7 @@ func MoveToStructureByName(actorID ActorID, name string, shownObjects []VillageO
 			// valid target instead of mutating the same bad string. When the world
 			// has no public destination to name (a degenerate/minimal world), fall
 			// back to the original generic hint so the message stays coherent.
-			if names, more := namedVillageDestinations(w, a, moveToDestinationNameCap); len(names) > 0 {
+			if names, more := namedVillageDestinations(w, a, moveToDestinationNameCap, now); len(names) > 0 {
 				// %q each name: a display name is admin/agent-authored, so escaping it
 				// (matching the target/id rendering in this file) keeps a stray newline
 				// or control char from forging the tool-feedback line, and reads to the
@@ -392,11 +392,12 @@ const moveToDestinationNameCap = 5
 // deduplicated by display name (leading-article-insensitive) so a shared name is
 // listed once. Deterministic for a fixed world + actor position, so the error
 // string is byte-stable. MUST be called from inside a Command.Fn.
-func namedVillageDestinations(w *World, a *Actor, limit int) (names []string, more bool) {
+func namedVillageDestinations(w *World, a *Actor, limit int, now time.Time) (names []string, more bool) {
 	type candidate struct {
 		id   StructureID
 		name string
 		dist int
+		shut bool
 	}
 	candidates := make([]candidate, 0, len(w.Structures))
 	for structureID, st := range w.Structures {
@@ -414,6 +415,17 @@ func namedVillageDestinations(w *World, a *Actor, limit int) (names []string, mo
 			id:   structureID,
 			name: strings.TrimSpace(st.DisplayName),
 			dist: a.Pos.Chebyshev(vobj.Pos.Tile()),
+			// LLM-366: don't suggest a business the actor recently found shut (an
+			// active ObservedClosed within its 4h TTL). Their own experience, not
+			// omniscience — the same drop the seek-work directory already applies.
+			// Observed.Active is the shared decay funnel (age >= 0 future guard +
+			// per-condition TTL, observed_state.go) that perception's
+			// businessRememberedShut also reads through, so the semantics match. No
+			// in-flight-destination guard here (unlike businessRememberedShut): this
+			// hint is emitted only in RESPONSE to the model's own move_to(bad-name)
+			// call, so the model has already chosen to (re)pick a destination — dropping
+			// a shut place can't cause a passive mid-walk redirect (HOME-405).
+			shut: a.Observed.Active(ObservedStateKey{StructureID: structureID, Condition: ObservedClosed}, now),
 		})
 	}
 	// Nearest wins; equal distance breaks by lower structure_id, so the list is
@@ -425,13 +437,30 @@ func namedVillageDestinations(w *World, a *Actor, limit int) (names []string, mo
 		return candidates[i].id < candidates[j].id
 	})
 	seen := make(map[string]bool, len(candidates))
+	// First pass excludes businesses the actor remembers finding shut (LLM-366), so
+	// a lost NPC isn't pointed back at a shop it just found closed.
 	for _, c := range candidates {
+		if c.shut {
+			continue
+		}
 		key := strings.ToLower(stripLeadingArticle(c.name))
 		if seen[key] {
 			continue // a shared name (nearest instance already listed)
 		}
 		seen[key] = true
 		names = append(names, c.name)
+	}
+	// Fallback: every nearby business is remembered-shut — name them anyway, since
+	// an empty hint is worse than one pointing at a shop that may have reopened.
+	if len(names) == 0 {
+		for _, c := range candidates {
+			key := strings.ToLower(stripLeadingArticle(c.name))
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			names = append(names, c.name)
+		}
 	}
 	if limit <= 0 {
 		// Degenerate cap — name nothing (avoids a negative-slice panic on
@@ -746,11 +775,16 @@ func moveToStructureLabeled(actorID ActorID, structureID StructureID, spokenAs s
 					return MoveActorResult{}, TerminalNoOpError{Msg: alreadyAtMsg(w, a, structureID, moveToLabel(spokenAs, string(structureID)))}
 				}
 			}
-			// The actor has chosen to walk to structureID — deciding to GO there
-			// supersedes any stale "I found it shut/dry" belief about it, so drop
-			// that experiential memory now (ZBBS-HOME-405). Placed after the
-			// guards above so it fires only on a genuinely new walk.
-			forgetSupplierStaleMemory(a, structureID)
+			// LLM-366: we deliberately do NOT drop the actor's stale "found it
+			// shut/dry" memory here. It used to be cleared on commit so a mid-walk
+			// re-tick couldn't steer the actor off its own destination (ZBBS-HOME-405)
+			// — but that also erased the memory across decisions, so a workless NPC
+			// re-picked the same shut shop every idle cycle (Silence Walker's
+			// home↔closed-store loop). The HOME-405 protection now lives as a narrower
+			// guard: perception's businessRememberedShut / businessRememberedOutOfStock
+			// ignore the memory for the actor's in-flight move destination, so a
+			// mid-walk cue can't redirect while the cross-decision memory survives.
+			// Arrival re-stamps or clears the truth (closed_business.go / out_of_stock.go).
 			// leaveHuddleFirst=true: choosing to walk somewhere ends any
 			// conversation the actor is in (ZBBS-HOME-285 — matches v1's
 			// move=leave, confirmed with work for the duty-warrant seam). The
@@ -760,28 +794,6 @@ func moveToStructureLabeled(actorID ActorID, structureID StructureID, spokenAs s
 			return MoveActor(actorID, dest, true, now).Fn(w)
 		},
 	}
-}
-
-// forgetSupplierStaleMemory drops every observed-state memory the actor holds
-// about structureID — "found it shut" (ObservedClosed, ZBBS-HOME-353) and "found
-// it dry" (ObservedOutOfStock, ZBBS-HOME-363), across all items — for the
-// destination the actor is now committing to walk to (ZBBS-HOME-405).
-//
-// Deciding to GO somewhere supersedes a stale belief about it. Without this, a
-// mid-walk reactor tick re-reads the old "shut" annotation and steers the actor
-// AWAY from the very destination it is en route to (the live Josiah↔Ellis Farm
-// thrash: he arrived just as the keeper was present, but a re-decision off the
-// stale shut label had already redirected him, yanking him out of the
-// just-formed huddle before he could buy). The deprioritization still applies at
-// DECISION time — the cue shows the annotation when the actor first weighs the
-// trip — and the arrival subscribers re-stamp the memory if the place really is
-// shut/dry on arrival; we clear it only once the actor has chosen to go.
-//
-// Destination-scoped on purpose (Jeff, 2026-06-06): clearing memory for OTHER
-// businesses would make the actor re-attempt shops it legitimately knows are
-// shut. nil-safe (ForgetStructure ranges a possibly-empty store).
-func forgetSupplierStaleMemory(a *Actor, structureID StructureID) {
-	a.Observed.ForgetStructure(structureID)
 }
 
 // moveToDestinationFor derives the MoveDestination for a move_to: a

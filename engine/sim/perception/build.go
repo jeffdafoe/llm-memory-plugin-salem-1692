@@ -3345,12 +3345,31 @@ func buildSelfActions(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 		if e.ActionType == sim.ActionTypeSpoke && e.HuddleID != "" && e.HuddleID == actorSnap.CurrentHuddleID {
 			continue // the current huddle's ring already renders this line
 		}
+		// LLM-366: flag a walked entry as a dead end only when the active shut memory
+		// was observed at or before this walk. The walked entry and the ObservedClosed
+		// stamp share the same arrival timestamp (both ActorArrived.At —
+		// cascade/action_log.go, closed_business.go), so the arrival that found it shut
+		// has walkTime == observedAt, while an earlier walk to the same structure has
+		// walkTime < observedAt and must NOT be retroactively marked (it found the place
+		// open, which would have cleared the memory). A raw ObservedClosed read, NOT
+		// businessRememberedShut: this is a PAST-trip outcome, so the in-flight-
+		// destination guard must not suppress it even while the actor re-walks there.
+		foundShut := false
+		if e.ActionType == sim.ActionTypeWalked && e.StructureID != "" {
+			key := sim.ObservedStateKey{StructureID: e.StructureID, Condition: sim.ObservedClosed}
+			if observedAt, ok := actorSnap.Observed.At(key); ok &&
+				!e.OccurredAt.Before(observedAt) &&
+				actorSnap.Observed.Active(key, snap.PublishedAt) {
+				foundShut = true
+			}
+		}
 		out = append(out, SelfActionView{
 			ActionType:       e.ActionType,
 			Text:             e.Text,
 			CounterpartyName: e.CounterpartyName,
 			Amount:           e.Amount,
 			At:               e.OccurredAt,
+			FoundShut:        foundShut,
 		})
 	}
 	return out

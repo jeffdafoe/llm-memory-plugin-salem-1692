@@ -175,3 +175,73 @@ func TestRenderSatiation_AsleepKeeperNoLongerOmniscient(t *testing.T) {
 		t.Errorf("the retired experiential shut annotation must not render (vendor is dropped), got:\n%s", out)
 	}
 }
+
+// TestBusinessRememberedShut_InFlightDestinationGuard — LLM-366 / ZBBS-HOME-405.
+// The remembered-shut avoidance read is SUPPRESSED for the actor's own in-flight
+// move destination, so a mid-walk re-tick can't read a stale "shut" label and
+// steer the actor off the place it just chose to go. This is the narrow guard that
+// replaces the old commit-time memory wipe (move_to.go's forgetSupplierStaleMemory):
+// the memory itself is untouched, so it applies again the moment the walk is no
+// longer aimed there (the next decision) — which is what stops a workless NPC from
+// re-picking the same shut shop every idle cycle.
+func TestBusinessRememberedShut_InFlightDestinationGuard(t *testing.T) {
+	now := time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)
+	base := func() *sim.ActorSnapshot {
+		return &sim.ActorSnapshot{
+			Observed: sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
+				{StructureID: "farm", Condition: sim.ObservedClosed}: now.Add(-time.Hour),
+			}),
+		}
+	}
+	snap := &sim.Snapshot{PublishedAt: now}
+
+	if !businessRememberedShut(snap, base(), "farm") {
+		t.Fatal("baseline: a fresh shut memory (not walking anywhere) should read as remembered-shut")
+	}
+
+	// Walking TO the farm — a visit (the owner-only buy path) or an enter — both
+	// suppress the farm's own shut memory so the mid-walk cue can't redirect.
+	for _, kind := range []sim.MoveDestinationKind{sim.MoveDestinationStructureVisit, sim.MoveDestinationStructureEnter} {
+		a := base()
+		a.MoveDestStructureID = "farm"
+		a.MoveDestKind = kind
+		if businessRememberedShut(snap, a, "farm") {
+			t.Errorf("walking to the farm (kind %v) must suppress its shut memory (HOME-405 guard)", kind)
+		}
+	}
+
+	// Walking to a DIFFERENT place must NOT suppress the farm's shut memory.
+	elsewhere := base()
+	elsewhere.MoveDestStructureID = "tavern"
+	elsewhere.MoveDestKind = sim.MoveDestinationStructureVisit
+	if !businessRememberedShut(snap, elsewhere, "farm") {
+		t.Error("walking elsewhere must leave the farm's shut memory in force")
+	}
+}
+
+// TestBusinessRememberedOutOfStock_InFlightDestinationGuard — LLM-366. The
+// out-of-stock avoidance read carries the same in-flight-destination guard as the
+// shut read: the old commit-time wipe cleared BOTH memories, so both must now be
+// suppressed only while the actor is actively walking to the structure.
+func TestBusinessRememberedOutOfStock_InFlightDestinationGuard(t *testing.T) {
+	now := time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)
+	subj := &sim.ActorSnapshot{
+		Observed: sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
+			{StructureID: "store", ItemKind: "milk", Condition: sim.ObservedOutOfStock}: now.Add(-time.Hour),
+		}),
+	}
+	snap := &sim.Snapshot{PublishedAt: now}
+
+	if !businessRememberedOutOfStock(snap, subj, "store", "milk") {
+		t.Fatal("baseline: a fresh out-of-stock memory should read as remembered")
+	}
+	// Both walk kinds suppress it — the old commit-time wipe cleared out-of-stock
+	// regardless of enter/visit, so the guard must pin the same equivalence.
+	for _, kind := range []sim.MoveDestinationKind{sim.MoveDestinationStructureVisit, sim.MoveDestinationStructureEnter} {
+		subj.MoveDestStructureID = "store"
+		subj.MoveDestKind = kind
+		if businessRememberedOutOfStock(snap, subj, "store", "milk") {
+			t.Errorf("walking to the store (kind %v) must suppress its out-of-stock memory (HOME-405 guard)", kind)
+		}
+	}
+}
