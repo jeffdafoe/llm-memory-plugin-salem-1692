@@ -880,24 +880,28 @@ var perceptionScenarios = []perceptionScenario{
 		build: homedWorkerEveningBatchHoldsLeisure,
 	},
 	{
-		name: "homed_worker_evening_too_broke_for_tavern",
-		summary: "A homed day-shift agent (Ezekiel, 07:00–19:00) off-shift at 20:30 — inside the evening window — but " +
-			"holding only 2 coins, below the tavern's cheapest drink (ale, retail 3, sold by the co-located keeper). LLM-205: " +
-			"a night out costs coin, so canAffordLeisure fails and the agent is NOT in evening leisure. The golden pins that " +
-			"the 'tavern's open of an evening' invitation is ABSENT and the off-shift go-home wind-down steer ('Your working " +
-			"hours are over …') is PRESENT — the broke have no evening; they wind down home and bed at shift-end. The mirror " +
-			"of homed_worker_evening_tavern_open (same situation, affordable there).",
-		build: homedWorkerEveningTooBrokeForTavern,
+		name: "homed_worker_evening_broke_still_invited",
+		summary: "LLM-353: a homed day-shift agent (Ezekiel, 07:00–19:00) off-shift at 20:30 — inside the evening window — " +
+			"holding only 2 coins, with the tavern's cheapest drink at 3 (ale, sold by the co-located keeper). Coin no longer " +
+			"gates the evening: Salem pays in goods as readily as coin, so the empty purse is no barrier. The golden pins that " +
+			"the 'tavern's open of an evening' invitation is PRESENT and the off-shift go-home wind-down steer ('Your working " +
+			"hours are over …') is ABSENT — the broke get the same evening as anyone else; the model decides whether to go. " +
+			"This is the DoD case: a broke agent in the evening window still receives the tavern invitation. Before LLM-353 the " +
+			"coin floor turned this agent away (invitation absent, wind-down present).",
+		build: homedWorkerEveningBrokeStillInvited,
 	},
 	{
-		name: "homed_workers_evening_commons_no_solicit",
-		summary: "Two homed day-shift workers (Ezekiel + Lewis, different homes and trades) off-shift at 20:30, together at " +
-			"the Village Commons — neither at home nor the tavern — with a tavern placed and the subject flush enough to afford " +
-			"a drink (10 coins, ale retail 3). LLM-205 rule 2: the subject is in affordable evening leisure, so the solicit-work " +
-			"affordance ('offer your labor with solicit_work') is SUPPRESSED even though a solicitable peer is present (without " +
-			"the gate an employed worker with a solicitable audience would be offered it). The golden pins the evening cue PRESENT " +
-			"and the solicit affordance ABSENT — the lingering don't hustle. Makes TestEveningLeisureSuppressesSolicit non-vacuous.",
-		build: homedWorkersEveningCommonsNoSolicit,
+		name: "homed_workers_evening_commons_still_solicits",
+		summary: "LLM-353: two homed day-shift workers (Ezekiel + Lewis, different homes and trades) off-shift at 20:30, together " +
+			"at the Village Commons — neither at home nor the tavern — with a tavern placed and the subject flush (10 coins). The " +
+			"re-key keys the solicit-work suppression on tookEveningLeisure (gone to the pub), not on affluence: this worker is " +
+			"still in the road, so he is STILL offered the solicit-work affordance ('offer your labor with solicit_work') even " +
+			"though he could afford a drink. The golden pins the evening invitation PRESENT (he is homed in the window) AND the " +
+			"solicit affordance PRESENT — a man still in the road might be job-hunting. This is the DoD invariant: an off-shift " +
+			"worker who has not taken the evening still sees the seek-work cues, so the re-key can't silently regress into the " +
+			"affluence proxy. Before LLM-353 affluence suppressed the affordance here. Makes " +
+			"TestGoldensSeekWorkSurvivesEveningUntilTavern non-vacuous.",
+		build: homedWorkersEveningCommonsStillSolicits,
 	},
 	{
 		name: "lodger_evening_tavern_open",
@@ -10435,13 +10439,15 @@ func lodgerEveningTavernOpen() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	return snap, ezekielID, nil
 }
 
-// homedWorkerEveningTooBrokeForTavern is the LLM-205 rule-1 case: the same homed
-// day-shift agent as homedWorkerEveningTavernOpen, in the evening window, but too
-// broke to afford the tavern's cheapest drink (2 coins; the co-located keeper sells
-// ale at retail 3). canAffordLeisure fails, so the agent is NOT in evening leisure:
-// no tavern invitation, and the off-shift go-home wind-down steer resumes (the broke
-// have no evening). No needs / no PriceBook / no orders → byte-stable.
-func homedWorkerEveningTooBrokeForTavern() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+// homedWorkerEveningBrokeStillInvited is the LLM-353 case: the same homed day-shift
+// agent as homedWorkerEveningTavernOpen, in the evening window, holding only 2 coins
+// with the co-located keeper's cheapest drink at 3 (ale, retail 3). Coin no longer gates
+// the evening — Salem pays in goods as readily as coin — so the empty purse is no barrier:
+// the tavern invitation fires and the off-shift go-home wind-down steer stays suppressed,
+// exactly as for a flush agent. Before LLM-353 the coin floor turned this agent away. This
+// is the DoD case (a broke agent still receives the invitation). No needs / no PriceBook /
+// no orders → byte-stable.
+func homedWorkerEveningBrokeStillInvited() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	const (
 		ezekielID = sim.ActorID("ezekiel")
 		keeperID  = sim.ActorID("innkeep")
@@ -10461,7 +10467,7 @@ func homedWorkerEveningTooBrokeForTavern() (*sim.Snapshot, sim.ActorID, []sim.Wa
 		HomeStructureID:   home,
 		ScheduleStartMin:  &start,
 		ScheduleEndMin:    &end,
-		Coins:             2, // below the tavern's cheapest drink (ale, retail 3)
+		Coins:             2, // under the cheapest drink (ale, retail 3) — no longer a barrier (LLM-353)
 		Needs:             map[sim.NeedKey]int{},
 	}
 	keeper := &sim.ActorSnapshot{
@@ -10557,16 +10563,17 @@ func hungryWorkerWithMeansRedirectedToEat() (*sim.Snapshot, sim.ActorID, []sim.W
 	return snap, silenceID, []sim.WarrantMeta{{TriggerActorID: silenceID, Reason: sim.TendNeedWarrantReason{Need: "hunger"}}}
 }
 
-// homedWorkersEveningCommonsNoSolicit is the LLM-205 rule-2 case: two homed
-// day-shift workers (different homes + trades, so solicitable to each other) off
-// shift in the evening window, together at the Commons — neither at home nor the
-// tavern, so the evening cue still fires. The subject carries AttrWorker and is flush
-// enough for a drink (10 coins, ale retail 3), so it is in evening leisure: the
-// solicit-work affordance is suppressed even though a solicitable peer is present.
-// Without the gate, an employed worker with a solicitable audience would be offered
-// solicit_work — so this pins that evening leisure replaces the hustle. Fixed
-// PublishedAt, no orders/PriceBook → byte-stable.
-func homedWorkersEveningCommonsNoSolicit() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+// homedWorkersEveningCommonsStillSolicits is the LLM-353 case: two homed day-shift
+// workers (different homes + trades, so solicitable to each other) off shift in the
+// evening window, together at the Commons — neither at home nor the tavern, so the
+// evening invitation still fires. The subject carries AttrWorker and is flush (10 coins).
+// The solicit-work suppression keys on tookEveningLeisure (gone to the pub), not on
+// affluence: this worker is still in the road, so he is STILL offered solicit_work even
+// though he could afford a drink — a man still in the road might be job-hunting. Before
+// LLM-353 affluence suppressed the affordance here. Pins the DoD invariant (an off-shift
+// worker who has not taken the evening still sees the seek-work cues). Fixed PublishedAt,
+// no orders/PriceBook → byte-stable.
+func homedWorkersEveningCommonsStillSolicits() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	const (
 		ezekielID = sim.ActorID("ezekiel")
 		lewisID   = sim.ActorID("lewis")
@@ -10593,7 +10600,7 @@ func homedWorkersEveningCommonsNoSolicit() (*sim.Snapshot, sim.ActorID, []sim.Wa
 		CurrentHuddleID:   huddle,
 		ScheduleStartMin:  &start,
 		ScheduleEndMin:    &end,
-		Coins:             10, // affords ale (retail 3); below the comfort ceiling (25)
+		Coins:             10, // flush (would afford ale, retail 3) yet below the comfort ceiling (25) — still solicits (LLM-353)
 		AttributeSlugs:    []string{sim.AttrWorker},
 		Needs:             map[sim.NeedKey]int{},
 		Acquaintances:     map[string]sim.Acquaintance{"Lewis Walker": {}},

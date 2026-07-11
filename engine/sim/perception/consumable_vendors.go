@@ -53,9 +53,9 @@ func eachVendorOffer(snap *sim.Snapshot, buyerID sim.ActorID, fn func(vendorOffe
 	// so a hungry or restocking buyer is routed to the distributor (or nowhere)
 	// rather than lured to a source the PayWithItem backstop then rejects. The
 	// distributor himself still perceives the wholesale sources as suppliers.
-	// Resolved once for the scan; an empty buyerID (min-price venue scan in
-	// canAffordLeisure) reads as non-distributor, which is harmless there — that
-	// caller only keeps offers at the tavern venue, never a wholesale source.
+	// Resolved once for the scan; an empty buyerID (an unbuyer-scoped scan, e.g. a
+	// min-price venue sweep) reads as non-distributor, which is harmless — such a
+	// caller filters the offers it wants and never follows a wholesale source.
 	buyerIsDistributor := false
 	if buyer := snap.Actors[buyerID]; buyer != nil {
 		buyerIsDistributor = sim.ActorIsDistributor(snap.VillageObjects, buyer.WorkStructureID)
