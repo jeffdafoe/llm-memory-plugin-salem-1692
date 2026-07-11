@@ -205,6 +205,72 @@ func LoiterScopeConversableInSnapshot(snap *Snapshot, assets map[AssetID]*Asset,
 	return keeperPresentInSnapshot(snap, assets, sid)
 }
 
+// evictLoiterMembersOnClose is the teardown twin of the LLM-359 formation gate
+// (loiterScopeConversable): when a structure's shop closes mid-conversation — a
+// keeper beds down / leaves post so keeperPresentAt flips false — any huddle
+// member conversing across its threshold from the loiter pin loses the open-shop
+// scope that let it join. LLM-359 gates cross-threshold huddle FORMATION on the
+// shop being open but does nothing to one already formed: perception feeds a
+// huddled actor its peers straight from the roster (perception/build.go), with no
+// closed-shop re-check, so a stranded loiterer keeps perceiving and addressing
+// whoever is inside through the shut wall (the live case: an NPC at the pin
+// talking to a lodging PC through a closed-for-the-night tavern's door, LLM-360).
+//
+// Evicts each active-huddle member standing OUTSIDE the structure
+// (InsideStructureID != structureID) — the cross-threshold loiter members — and
+// leaves members physically inside alone: two actors inside a closed building
+// still converse, the same boundary LLM-359 draws. leaveCurrentHuddle concludes
+// the huddle if the eviction empties it and handles the degenerate
+// lone-resting-member case.
+//
+// A fast no-op when the shop is still open (keeperPresentAt — another keeper on
+// post, or the sleeper was not the keeper), the structure has no active huddle, or
+// no member is cross-threshold. Call AFTER the presence-ending mutation is applied
+// (in executeNPCSleep, after State is set to StateSleeping) so keeperPresentAt
+// reads the post-close state. MUST run on the world goroutine.
+//
+// Scope: the live-in bed-down close (executeNPCSleep). A keeper who instead walks
+// off-shift makes an owner-only shop shut, but customers never enter those, so no
+// one is left inside for a stranded loiterer to reach through the wall — that path
+// is deliberately not hooked here.
+func evictLoiterMembersOnClose(w *World, structureID StructureID, now time.Time) {
+	if structureID == "" || keeperPresentAt(w, structureID) {
+		return
+	}
+	huddleID, ok := findActiveHuddleAt(w, structureID)
+	if !ok {
+		return
+	}
+	huddle := w.Huddles[huddleID]
+	if huddle == nil {
+		return
+	}
+	// Snapshot the cross-threshold ids before mutating — leaveCurrentHuddle deletes
+	// from huddle.Members, so ranging it live would be unsafe. Sorted for a
+	// deterministic eviction order (and reproducible tests).
+	var strandedOutside []ActorID
+	for id := range huddle.Members {
+		a := w.Actors[id]
+		if a == nil {
+			continue // stale ref; leaveCurrentHuddle's own guards reap it if reached
+		}
+		if a.InsideStructureID != structureID {
+			strandedOutside = append(strandedOutside, id)
+		}
+	}
+	sort.Slice(strandedOutside, func(i, j int) bool { return strandedOutside[i] < strandedOutside[j] })
+	for _, id := range strandedOutside {
+		a := w.Actors[id]
+		// Re-check membership: an earlier eviction may have concluded the huddle out
+		// from under this id, or leaveCurrentHuddle's lone-resting-member sweep may
+		// have already dropped it.
+		if a == nil || a.CurrentHuddleID != huddleID {
+			continue
+		}
+		leaveCurrentHuddle(w, a, now)
+	}
+}
+
 // colocatedConversationalActors returns the ids (sorted) of conversational,
 // currently-unhuddled actors other than self inside structureID. Conversational
 // = a stateful/shared NPC or a PC, not asleep. Decorative NPCs and sleepers are
