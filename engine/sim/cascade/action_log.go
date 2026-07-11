@@ -248,6 +248,10 @@ func handlePayResolvedActionLog(w *sim.World, evt sim.Event) {
 		HuddleID:         resolved.HuddleID,
 		CounterpartyName: actorDisplayNameOrEmpty(w, resolved.SellerID),
 		Amount:           resolved.Amount,
+		// Snapshot the goods leg into the ring entry rather than aliasing the
+		// event's slice — the entry outlives the event by many ticks, so it must
+		// own its data (mirrors sim.cloneItemKindQtys at the event/entry boundary).
+		PayItems: append([]sim.ItemKindQty(nil), resolved.PayItems...),
 	}
 	if _, err := sim.AppendActionLogEntry(entry).Fn(w); err != nil {
 		log.Printf("cascade/action_log: append pay-resolved (buyer %q ledger %d event %d): %v",

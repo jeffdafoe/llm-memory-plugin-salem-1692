@@ -3430,6 +3430,7 @@ func buildSelfActions(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 			Text:             e.Text,
 			CounterpartyName: e.CounterpartyName,
 			Amount:           e.Amount,
+			PayItems:         append([]sim.ItemKindQty(nil), e.PayItems...),
 			At:               e.OccurredAt,
 			FoundShut:        foundShut,
 		})

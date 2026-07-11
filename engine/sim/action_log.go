@@ -273,6 +273,14 @@ type ActionLogEntry struct {
 	// ActionTypeLabored (whole coins, > 0). Zero means "no amount to show" —
 	// the renderer omits it. Unset for all other ActionTypes.
 	Amount int
+
+	// PayItems are the barter goods the payer handed over ALONGSIDE Amount on
+	// an ActionTypePaid settlement — the buyer's non-coin leg of a pay_with_item
+	// deal (LLM-374). Empty for a pure-coin pay and for every non-Paid action.
+	// The Paid renderers append it after the coin amount so a mixed coins+goods
+	// payment narrates in full ("pays 4 coins and 3 cheese for …") instead of
+	// silently reading as coins-only.
+	PayItems []ItemKindQty
 }
 
 // MaxActionLogTextLen bounds the Text field at write time for every

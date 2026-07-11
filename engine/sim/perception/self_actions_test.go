@@ -110,6 +110,9 @@ func TestRenderSelfActions_PhrasingAndStamps(t *testing.T) {
 	renderSelfActions(&b, []SelfActionView{
 		{ActionType: sim.ActionTypeWalked, Text: "Tavern", At: renderedAt.Add(-45 * time.Second)},
 		{ActionType: sim.ActionTypePaid, CounterpartyName: "John Ellis", Amount: 2, Text: "carrot", At: renderedAt.Add(-4 * time.Minute)},
+		// LLM-374: a mixed coins+goods (barter) settlement shows BOTH legs, not
+		// just the coins — otherwise a value-matched barter reads as a shortchange.
+		{ActionType: sim.ActionTypePaid, CounterpartyName: "Joseph Scott", Amount: 4, PayItems: []sim.ItemKindQty{{Kind: "cheese", Qty: 3}}, Text: "5x flour", At: renderedAt.Add(-5 * time.Minute)},
 		{ActionType: sim.ActionTypePaid, At: renderedAt.Add(-6 * time.Minute)},
 	}, renderedAt)
 	out := b.String()
@@ -117,6 +120,7 @@ func TestRenderSelfActions_PhrasingAndStamps(t *testing.T) {
 		"## What you've recently done",
 		"- You arrived at the Tavern (45s ago)",
 		"- You paid John Ellis 2 coins for carrot (4m ago)",
+		"- You paid Joseph Scott 3 cheese and 4 coins for 5x flour (5m ago)",
 		"- You made a payment (6m ago)",
 	} {
 		if !strings.Contains(out, want) {

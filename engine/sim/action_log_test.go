@@ -2,6 +2,7 @@ package sim_test
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -84,10 +85,12 @@ func TestAppendActionLogEntry_HappyPath(t *testing.T) {
 	// other field.
 	e0.Seq = 1
 	e1.Seq = 2
-	if got[0] != e0 {
+	// ActionLogEntry carries a slice field (PayItems, LLM-374) so it's no
+	// longer comparable with ==; DeepEqual still covers every field.
+	if !reflect.DeepEqual(got[0], e0) {
 		t.Errorf("got[0] = %+v, want %+v", got[0], e0)
 	}
-	if got[1] != e1 {
+	if !reflect.DeepEqual(got[1], e1) {
 		t.Errorf("got[1] = %+v, want %+v", got[1], e1)
 	}
 }

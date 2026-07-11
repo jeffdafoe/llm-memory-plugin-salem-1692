@@ -1810,8 +1810,11 @@ func selfActionLine(a SelfActionView) string {
 			return "You made a payment"
 		}
 		line := "You paid " + sanitizeInline(a.CounterpartyName)
-		if a.Amount > 0 {
-			line += " " + coins(a.Amount)
+		// LLM-374: render the full tender — coins AND any barter goods — so a
+		// pay_with_item settlement doesn't read as coins-only. FormatPayment
+		// yields "4 coins and 3 cheese", "3 cheese", or "4 coins" as appropriate.
+		if a.Amount > 0 || len(a.PayItems) > 0 {
+			line += " " + sim.FormatPayment(a.Amount, a.PayItems)
 		}
 		if a.Text != "" {
 			line += " for " + sanitizeInline(a.Text)
