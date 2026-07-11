@@ -288,6 +288,11 @@ func (w *World) scheduleReturnerDeparture(rid RecurringVisitorID, now time.Time,
 	if rv == nil {
 		return
 	}
+	if r == nil {
+		// Durable scheduling logic — never panic on a nil source (a direct/test call
+		// without one). Mirrors inputsRandOrDefault on the cascade path.
+		r = rand.New(rand.NewSource(now.UnixNano()))
+	}
 	if minDays <= 0 {
 		minDays = DefaultVisitorReturnMinDays
 	}
@@ -328,6 +333,11 @@ const (
 // recencyTierFor buckets an elapsed duration. Boundaries are deliberately coarse:
 // the prose is fuzzy ("a few weeks back"), so exact days never surface.
 func recencyTierFor(d time.Duration) RecencyTier {
+	if d < 0 {
+		// Clock skew / out-of-band future timestamp — clamp so it reads as "recent"
+		// rather than under/over-flowing the buckets. Not catastrophic, just tidy.
+		d = 0
+	}
 	switch {
 	case d < 24*time.Hour:
 		return RecencyRecent

@@ -49,6 +49,13 @@ BEGIN;
 --                      (next_return_at <= now, not currently present) over a fresh
 --                      random stranger. Wall-clock to match the `visitor`
 --                      ExpiresAt / boot-reconcile clock.
+-- The persona CHECKs (length caps + no control characters) are defense-in-depth:
+-- these fields drive both a spawned returner's DisplayName and its perception
+-- prompt, so a control character or an oversized string reaching them — only
+-- possible via an out-of-band edit, since normal spawn draws from closed pools —
+-- could break prompt structure. The DB refuses to store such a value at all, which
+-- is stronger than sanitizing on read. visit_count >= 1 pins the "created at 1,
+-- only ever bumped" invariant the render tier relies on.
 CREATE TABLE IF NOT EXISTS public.recurring_visitor (
     id text NOT NULL,
     name text NOT NULL,
@@ -60,7 +67,12 @@ CREATE TABLE IF NOT EXISTS public.recurring_visitor (
     last_seen_at timestamp with time zone NOT NULL,
     next_return_at timestamp with time zone,
     CONSTRAINT recurring_visitor_pkey PRIMARY KEY (id),
-    CONSTRAINT recurring_visitor_id_format CHECK ((id ~ '^rvis-[0-9a-f]{8}$'::text))
+    CONSTRAINT recurring_visitor_id_format CHECK ((id ~ '^rvis-[0-9a-f]{8}$'::text)),
+    CONSTRAINT recurring_visitor_visit_count_positive CHECK (visit_count >= 1),
+    CONSTRAINT recurring_visitor_name_sane CHECK (char_length(name) BETWEEN 1 AND 120 AND name !~ '[[:cntrl:]]'),
+    CONSTRAINT recurring_visitor_persona_sane CHECK (
+        char_length(archetype) <= 80 AND char_length(origin) <= 80 AND char_length(disposition) <= 80
+        AND archetype !~ '[[:cntrl:]]' AND origin !~ '[[:cntrl:]]' AND disposition !~ '[[:cntrl:]]')
 );
 
 -- recurring_visitor_acquaintance — per (returner, PC) familiarity. The bond a
@@ -81,6 +93,7 @@ CREATE TABLE IF NOT EXISTS public.recurring_visitor_acquaintance (
     first_met_at timestamp with time zone NOT NULL,
     last_met_at timestamp with time zone NOT NULL,
     CONSTRAINT recurring_visitor_acquaintance_pkey PRIMARY KEY (recurring_visitor_id, pc_actor_id),
+    CONSTRAINT recurring_visitor_acquaintance_pcname_sane CHECK (char_length(pc_display_name) <= 120 AND pc_display_name !~ '[[:cntrl:]]'),
     CONSTRAINT recurring_visitor_acquaintance_rv_fkey FOREIGN KEY (recurring_visitor_id)
         REFERENCES public.recurring_visitor (id) ON DELETE CASCADE
 );
@@ -99,8 +112,17 @@ ALTER TABLE public.visitor
 
 DO $$
 BEGIN
+    -- Schema-qualified existence check: match the constraint on public.visitor
+    -- specifically, so a same-named constraint in another schema can't make this a
+    -- false no-op. ADD CONSTRAINT has no IF NOT EXISTS, hence the guard.
     IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint WHERE conname = 'visitor_recurring_visitor_id_format'
+        SELECT 1
+          FROM pg_constraint c
+          JOIN pg_class t ON t.oid = c.conrelid
+          JOIN pg_namespace n ON n.oid = t.relnamespace
+         WHERE c.conname = 'visitor_recurring_visitor_id_format'
+           AND n.nspname = 'public'
+           AND t.relname = 'visitor'
     ) THEN
         ALTER TABLE public.visitor
             ADD CONSTRAINT visitor_recurring_visitor_id_format

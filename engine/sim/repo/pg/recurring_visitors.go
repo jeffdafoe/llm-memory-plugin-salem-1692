@@ -65,6 +65,17 @@ ON CONFLICT (recurring_visitor_id, pc_actor_id) DO UPDATE SET
     first_met_at    = EXCLUDED.first_met_at,
     last_met_at     = EXCLUDED.last_met_at`
 
+// deleteRecurringAcqNotInSQL reconciles a returner's acquaintance children to its
+// current in-memory set: any child whose pc_actor_id is not in the passed array is
+// removed. Keeps children faithful WITHOUT sweeping the durable parents — so if a
+// future path ever drops an in-memory acquaintance, the DB row doesn't resurrect
+// on restart. `<> ALL('{}')` is TRUE for every row, so an empty set clears all of a
+// parent's children.
+const deleteRecurringAcqNotInSQL = `
+DELETE FROM recurring_visitor_acquaintance
+ WHERE recurring_visitor_id = $1
+   AND pc_actor_id <> ALL($2::text[])`
+
 // advisoryLockRecurringSQL serializes concurrent checkpoints on this aggregate for
 // the Tx duration — parity with VisitorsRepo, cheap insurance even though the
 // checkpointer is single-threaded.
@@ -199,16 +210,26 @@ func (r *RecurringVisitorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, rec
 		); err != nil {
 			return fmt.Errorf("pg recurring_visitors SaveSnapshot: upsert id=%s: %w", rv.ID, err)
 		}
+		// Reconcile this returner's acquaintance children to the in-memory set first,
+		// then upsert the current ones. Parents are never swept; children are, per
+		// parent, so the child table stays a faithful mirror of the in-memory map.
+		pcIDs := make([]string, 0, len(rv.Acquaintances))
+		for pcID := range rv.Acquaintances {
+			pcIDs = append(pcIDs, string(pcID))
+		}
+		if _, err := tx.Exec(ctx, deleteRecurringAcqNotInSQL, string(rv.ID), pcIDs); err != nil {
+			return fmt.Errorf("pg recurring_visitors SaveSnapshot: reconcile acq id=%s: %w", rv.ID, err)
+		}
 		for pcID, acq := range rv.Acquaintances {
 			if acq == nil {
 				continue
 			}
 			if _, err := tx.Exec(ctx, upsertRecurringAcqSQL,
-				string(rv.ID),      // $1 recurring_visitor_id
-				string(pcID),       // $2 pc_actor_id
-				acq.PCDisplayName,  // $3 pc_display_name
-				acq.FirstMetAt,     // $4 first_met_at
-				acq.LastMetAt,      // $5 last_met_at
+				string(rv.ID),     // $1 recurring_visitor_id
+				string(pcID),      // $2 pc_actor_id
+				acq.PCDisplayName, // $3 pc_display_name
+				acq.FirstMetAt,    // $4 first_met_at
+				acq.LastMetAt,     // $5 last_met_at
 			); err != nil {
 				return fmt.Errorf("pg recurring_visitors SaveSnapshot: upsert acq id=%s pc=%s: %w", rv.ID, pcID, err)
 			}

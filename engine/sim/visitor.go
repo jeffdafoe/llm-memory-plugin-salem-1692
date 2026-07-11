@@ -667,6 +667,10 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 			Disposition: profile.Disposition,
 			ExpiresAt:   expiresAt,
 			Phase:       VisitorPhasePresent,
+			// A returner's PERSONA is stable across visits, but its road-rumor is
+			// deliberately fresh each trip: a peddler coming back through carries the
+			// latest news, not last season's. So Payload is (re)selected here every
+			// spawn and is NOT stored on the recurring_visitor row (LLM-372).
 			Payload:     selectVisitorRumor(w, r, inputs.Now),
 			RecurringID: returnerID, // "" for a fresh stranger; set for a returning traveler
 		},

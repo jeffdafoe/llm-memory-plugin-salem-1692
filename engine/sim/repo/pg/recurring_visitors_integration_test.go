@@ -147,3 +147,44 @@ func TestIntegration_RecurringVisitor_SurvivesDeparture(t *testing.T) {
 		t.Error("recurring_visitor was swept on the traveler's departure — it must outlive the visit (no delete-stale)")
 	}
 }
+
+// TestIntegration_RecurringVisitor_AcquaintanceReconcile — a per-parent child
+// reconcile: an acquaintance dropped from the in-memory map is removed from the
+// child table at the next checkpoint (does not resurrect on reload), even though
+// the durable parent is never swept.
+func TestIntegration_RecurringVisitor_AcquaintanceReconcile(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	repo := NewRepository(f.Pool)
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	w := recurringWorld(repo, now)
+	rv := w.RecurringVisitors["rvis-0000abcd"]
+	rv.Acquaintances["pc-mary"] = &sim.RecurringAcquaintance{
+		PCActorID: "pc-mary", PCDisplayName: "Mary", FirstMetAt: now, LastMetAt: now,
+	}
+	if err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
+		t.Fatalf("SaveWorld (two acquaintances): %v", err)
+	}
+	rvs, err := repo.RecurringVisitors.LoadAll(ctx)
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	if got := len(rvs["rvis-0000abcd"].Acquaintances); got != 2 {
+		t.Fatalf("acquaintance count = %d, want 2 after adding Mary", got)
+	}
+
+	// Drop Mary in memory, checkpoint again — the child row must be reconciled out.
+	delete(rv.Acquaintances, "pc-mary")
+	if err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
+		t.Fatalf("SaveWorld (after drop): %v", err)
+	}
+	rvs, err = repo.RecurringVisitors.LoadAll(ctx)
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	acqs := rvs["rvis-0000abcd"].Acquaintances
+	if len(acqs) != 1 || acqs["pc-jeff"] == nil {
+		t.Errorf("acquaintances = %+v, want only pc-jeff (Mary reconciled out, not resurrected)", acqs)
+	}
+}
