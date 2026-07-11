@@ -69,6 +69,13 @@ func (s BaselineStatus) String() string {
 type Payload struct {
 	ActorID sim.ActorID
 
+	// SelfTraveler carries the subject's OWN transient-traveler persona, non-nil
+	// only when the subject is a salem-visitor (VisitorState set on its snapshot).
+	// Render opens the user_message with a prose self-identity preface built from
+	// it, so the stateless salem-visitor VA speaks in-character as this specific
+	// traveler. Nil for every persistent NPC / PC (the steady-state case). LLM-370.
+	SelfTraveler *TravelerSelfView
+
 	// Actor is the subject actor's own current decision-relevant state.
 	Actor ActorView
 
@@ -1552,11 +1559,35 @@ const (
 	laborTieWorkplace
 )
 
+// TravelerSelfView is the render-ready projection of the subject's own
+// VisitorState for the self-identity preface (LLM-370). Name is the bare persona
+// name (the visitor's DisplayName minus the " the <archetype>" suffix that
+// dispatchVisitorSpawn composes); Archetype / Origin / Disposition come straight
+// from VisitorState. Empty-string fields degrade the preface gracefully — a
+// missing origin or disposition simply drops that clause.
+type TravelerSelfView struct {
+	Name        string
+	Archetype   string
+	Origin      string
+	Disposition string
+}
+
 type HuddleMember struct {
 	ID          sim.ActorID
 	DisplayName string
 	Role        string
 	Acquainted  bool
+
+	// Traveler marks a co-present transient traveler (salem-visitor). When set and
+	// the observer does not yet know them by name (not Acquainted), "## Around you"
+	// names them by archetype + origin ("a peddler lately come from Boston") in
+	// place of the bare "a stranger" descriptorLabel gives an unacquainted roleless
+	// actor — the observer half of the traveler legibility cue. TravelerArchetype /
+	// TravelerOrigin carry the persona slots; empty archetype falls back to the
+	// generic descriptor. LLM-370.
+	Traveler          bool
+	TravelerArchetype string
+	TravelerOrigin    string
 
 	// SolicitTie marks a co-present member the subject shares a household or
 	// workplace with — kin/crew the subject (when a worker) should not solicit for

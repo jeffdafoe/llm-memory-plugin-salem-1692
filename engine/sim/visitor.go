@@ -108,13 +108,15 @@ const (
 	// under 1% after 5 independent rolls.
 	surnameScrubMaxTries = 5
 
-	// VisitorPerceptionRadius is the bounding-box (Chebyshev) tile radius
-	// around a perceiver within which a transient visitor is named with
-	// archetype + origin + disposition by the "Visitors here" perception
-	// block. 2 tiles ≈ same-tile, adjacent, one-step-away. Persistent
-	// NPCs are not surfaced by this block — they go through the regular
-	// huddle / acquaintance perception sections. Consumed by perception
-	// build when the visitor cue lands.
+	// VisitorPerceptionRadius is a reserved bounding-box (Chebyshev) tile radius
+	// for a possible future "a traveler is about across the room" ambient observer
+	// line — a wider scan than the observer cue that shipped. LLM-370's cue is
+	// co-presence-scoped instead: it names a co-present traveler by archetype +
+	// origin in the regular "## Around you" company line, off the same
+	// ColocatedAudienceIDs earshot set every other nearby-actor line uses (see
+	// perception.travelerCoPresentLabel). Disposition is deliberately NOT surfaced
+	// to observers — it colors only the traveler's own self-identity preface. This
+	// radius has no consumer yet; 2 tiles ≈ same-tile, adjacent, one-step-away.
 	VisitorPerceptionRadius = 2
 )
 

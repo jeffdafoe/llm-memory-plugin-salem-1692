@@ -145,6 +145,10 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	p.PendingLaborOfferOut = buildPendingLaborOfferOut(snap, actorID)
 
 	p.Actor = buildActorView(snap, actorSnap)
+	// LLM-370: when the perceiving actor is itself a transient traveler, carry its
+	// persona so Render can open the message with the self-identity preface. Read
+	// off the VisitorState the substrate mirrors onto the snapshot.
+	p.SelfTraveler = buildTravelerSelf(actorSnap)
 	p.WarrantPlaceNames = buildWarrantPlaceNames(snap, p.Warrants)
 	p.WarrantPlaceKeepers = buildWarrantPlaceKeepers(snap, p.Warrants)
 	p.EatHereKinds = buildEatHereKinds(snap)
@@ -1231,6 +1235,13 @@ func resolveCoPresentMember(snap *sim.Snapshot, subjectID sim.ActorID, subj *sim
 				}
 			}
 		}
+		// LLM-370: a co-present transient traveler is named by archetype + origin in
+		// "## Around you" while the observer doesn't yet know them by name.
+		if peer.VisitorState != nil {
+			m.Traveler = true
+			m.TravelerArchetype = peer.VisitorState.Archetype
+			m.TravelerOrigin = peer.VisitorState.Origin
+		}
 	}
 	if m.DisplayName != "" {
 		_, m.Acquainted = subj.Acquaintances[m.DisplayName]
@@ -1522,6 +1533,57 @@ func descriptorLabel(displayName, role string, acquainted bool) string {
 		return "the " + role
 	}
 	return "a stranger"
+}
+
+// buildTravelerSelf projects the subject's own VisitorState into the self-identity
+// preface view (LLM-370), or nil when the subject is not a transient traveler.
+func buildTravelerSelf(a *sim.ActorSnapshot) *TravelerSelfView {
+	if a == nil || a.VisitorState == nil {
+		return nil
+	}
+	return &TravelerSelfView{
+		Name:        travelerPersonaName(a.DisplayName),
+		Archetype:   a.VisitorState.Archetype,
+		Origin:      a.VisitorState.Origin,
+		Disposition: a.VisitorState.Disposition,
+	}
+}
+
+// travelerPersonaName recovers the bare persona name from a visitor's composed
+// DisplayName ("Elias Drum the peddler", or "... (1234)" when disambiguated) by
+// cutting at the LAST " the " — dispatchVisitorSpawn appends the archetype suffix
+// last, so trimming the final marker keeps a persona name that itself contains
+// " the " intact. Falls back to the whole DisplayName when the marker is absent (a
+// hand-built snapshot), so the preface always has a name to open with.
+func travelerPersonaName(displayName string) string {
+	if i := strings.LastIndex(displayName, " the "); i >= 0 {
+		return displayName[:i]
+	}
+	return displayName
+}
+
+// travelerCoPresentLabel renders a co-present transient traveler as a scene
+// descriptor carrying archetype + origin ("a peddler lately come from Boston") —
+// the observer half of the traveler legibility cue (LLM-370). Falls through to the
+// generic descriptorLabel once the observer knows the traveler by name (acquainted)
+// or for any non-traveler member, so acquaintance precedence matches every other
+// co-present label. Archetype / origin are sanitized before composing (the same
+// defense-in-depth the self-preface applies), and an archetype that sanitizes to
+// empty degrades to the plain descriptor; an empty origin drops the "lately come
+// from" clause.
+func travelerCoPresentLabel(m HuddleMember) string {
+	if !m.Traveler || m.Acquainted {
+		return descriptorLabel(m.DisplayName, m.Role, m.Acquainted)
+	}
+	archetype := sanitizeInline(m.TravelerArchetype)
+	if archetype == "" {
+		return descriptorLabel(m.DisplayName, m.Role, m.Acquainted)
+	}
+	who := sim.WithIndefiniteArticle(archetype)
+	if origin := sanitizeInline(m.TravelerOrigin); origin != "" {
+		return who + " lately come from " + origin
+	}
+	return who
 }
 
 // buildWarrantPlaceNames resolves the place named by each warrant that carries
