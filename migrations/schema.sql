@@ -1113,34 +1113,6 @@ ALTER SEQUENCE public.structure_subspace_id_seq OWNED BY public.structure_room.i
 
 
 --
--- Name: summon_errand; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.summon_errand (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    summoner_id uuid NOT NULL,
-    messenger_id uuid NOT NULL,
-    target_name text NOT NULL,
-    summon_point_id uuid NOT NULL,
-    reason text DEFAULT ''::text NOT NULL,
-    state text NOT NULL,
-    target_kind text NOT NULL,
-    messenger_origin_x double precision NOT NULL,
-    messenger_origin_y double precision NOT NULL,
-    target_dispatch_x double precision NOT NULL,
-    target_dispatch_y double precision NOT NULL,
-    chat_at_summon_until timestamp with time zone,
-    chat_at_target_until timestamp with time zone,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    messenger_origin_structure_id uuid,
-    target_dispatch_structure_id uuid,
-    CONSTRAINT summon_errand_state_check CHECK ((state = ANY (ARRAY['dispatched'::text, 'summoner_at_point'::text, 'messenger_at_point'::text, 'messenger_to_target'::text, 'messenger_at_target'::text, 'messenger_to_summoner'::text, 'messenger_returning'::text, 'done'::text, 'failed'::text]))),
-    CONSTRAINT summon_errand_target_kind_check CHECK ((target_kind = ANY (ARRAY['va'::text, 'pc'::text, 'nonva'::text, 'unknown'::text])))
-);
-
-
---
 -- Name: tileset_pack; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1830,14 +1802,6 @@ ALTER TABLE ONLY public.room_access
 
 
 --
--- Name: summon_errand summon_errand_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.summon_errand
-    ADD CONSTRAINT summon_errand_pkey PRIMARY KEY (id);
-
-
---
 -- Name: tileset_pack tileset_pack_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2342,34 +2306,6 @@ CREATE INDEX idx_structure_room_snapshot_gen ON public.structure_room USING btre
 --
 
 CREATE INDEX idx_structure_snapshot_gen ON public.structure USING btree (snapshot_gen);
-
-
---
--- Name: idx_summon_errand_active; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_summon_errand_active ON public.summon_errand USING btree (state) WHERE (state <> ALL (ARRAY['done'::text, 'failed'::text]));
-
-
---
--- Name: idx_summon_errand_messenger_active; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX idx_summon_errand_messenger_active ON public.summon_errand USING btree (messenger_id) WHERE (state <> ALL (ARRAY['done'::text, 'failed'::text]));
-
-
---
--- Name: idx_summon_errand_messenger_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_summon_errand_messenger_id ON public.summon_errand USING btree (messenger_id);
-
-
---
--- Name: idx_summon_errand_summoner_active; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_summon_errand_summoner_active ON public.summon_errand USING btree (summoner_id) WHERE (state <> ALL (ARRAY['done'::text, 'failed'::text]));
 
 
 --
@@ -3107,46 +3043,6 @@ ALTER TABLE ONLY public.room_access
 
 ALTER TABLE ONLY public.room_access
     ADD CONSTRAINT subspace_access_subspace_id_fkey FOREIGN KEY (room_id) REFERENCES public.structure_room(id) ON DELETE CASCADE;
-
-
---
--- Name: summon_errand summon_errand_messenger_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.summon_errand
-    ADD CONSTRAINT summon_errand_messenger_id_fkey FOREIGN KEY (messenger_id) REFERENCES public.actor(id) ON DELETE CASCADE;
-
-
---
--- Name: summon_errand summon_errand_messenger_origin_structure_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.summon_errand
-    ADD CONSTRAINT summon_errand_messenger_origin_structure_id_fkey FOREIGN KEY (messenger_origin_structure_id) REFERENCES public.village_object(id) ON DELETE SET NULL;
-
-
---
--- Name: summon_errand summon_errand_summon_point_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.summon_errand
-    ADD CONSTRAINT summon_errand_summon_point_id_fkey FOREIGN KEY (summon_point_id) REFERENCES public.village_object(id) ON DELETE CASCADE;
-
-
---
--- Name: summon_errand summon_errand_summoner_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.summon_errand
-    ADD CONSTRAINT summon_errand_summoner_id_fkey FOREIGN KEY (summoner_id) REFERENCES public.actor(id) ON DELETE CASCADE;
-
-
---
--- Name: summon_errand summon_errand_target_dispatch_structure_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.summon_errand
-    ADD CONSTRAINT summon_errand_target_dispatch_structure_id_fkey FOREIGN KEY (target_dispatch_structure_id) REFERENCES public.village_object(id) ON DELETE SET NULL;
 
 
 --
