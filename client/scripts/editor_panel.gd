@@ -1106,7 +1106,7 @@ func build_catalog() -> void:
         _add_category_section(cat_name, assets)
 
     # NPCs catalog — always appears at the bottom. Populated asynchronously
-    # from GET /api/village/npc-sprites once thumbnails' sheets download.
+    # from GET /api/village/sprites once thumbnails' sheets download.
     _build_npc_catalog_section()
     _load_npc_sprites()
 
@@ -1301,7 +1301,7 @@ func _load_npc_sprites() -> void:
     add_child(http)
     http.request_completed.connect(_on_npc_sprites_loaded.bind(http))
     var headers: PackedStringArray = Auth.auth_headers(false)
-    http.request(Auth.api_base + "/api/village/npc-sprites", headers)
+    http.request(Auth.api_base + "/api/village/sprites", headers)
 
 func _on_npc_sprites_loaded(result: int, code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:
     http.queue_free()

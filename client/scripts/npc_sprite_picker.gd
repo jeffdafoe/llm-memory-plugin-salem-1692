@@ -176,7 +176,7 @@ func _load_sprites() -> void:
     add_child(http)
     http.request_completed.connect(_on_sprites_loaded.bind(http))
     var headers: PackedStringArray = Auth.auth_headers(false)
-    http.request(Auth.api_base + "/api/village/npc-sprites", headers)
+    http.request(Auth.api_base + "/api/village/sprites", headers)
 
 func _on_sprites_loaded(result: int, code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:
     http.queue_free()
