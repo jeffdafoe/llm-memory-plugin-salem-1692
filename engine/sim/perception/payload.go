@@ -1116,7 +1116,12 @@ type SelfActionView struct {
 	Text             string
 	CounterpartyName string
 	Amount           int
-	At               time.Time
+	// PayItems are the barter goods the subject handed over alongside Amount on a
+	// pay_with_item settlement (LLM-374) — the non-coin leg. Empty for a pure-coin
+	// pay. selfActionLine appends it so the self-trail shows the full tender, not
+	// just the coins.
+	PayItems []sim.ItemKindQty
+	At       time.Time
 
 	// FoundShut marks an ActionTypeWalked entry whose destination business the
 	// subject still remembers finding shut (ObservedClosed, within TTL). The trail

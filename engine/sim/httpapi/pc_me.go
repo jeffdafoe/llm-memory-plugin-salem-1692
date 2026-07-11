@@ -710,15 +710,17 @@ func renderActionLogEntry(snap *sim.Snapshot, e sim.ActionLogEntry) (speaker, te
 		}
 		return name, e.Text, k, true
 	case sim.ActionTypePaid:
-		// ZBBS-WORK-377: narrate recipient + amount, degrading gracefully —
-		// "X pays Y N coins for Z." → "X pays Y N coins." → "X pays Y." →
-		// "X makes a payment." (counterparty unknown).
+		// ZBBS-WORK-377: narrate recipient + payment + item, degrading gracefully —
+		// "X pays Y <tender> for Z." → "X pays Y <tender>." → "X pays Y." →
+		// "X makes a payment." (counterparty unknown). LLM-374: <tender> is the full
+		// coins-and/or-goods payment (sim.FormatPayment), so a barter settlement shows
+		// its goods leg instead of silently reading as coins-only.
 		if e.CounterpartyName == "" {
 			return name, name + " makes a payment.", "act", true
 		}
 		line := name + " pays " + e.CounterpartyName
-		if e.Amount > 0 {
-			line += " " + formatCoins(e.Amount)
+		if e.Amount > 0 || len(e.PayItems) > 0 {
+			line += " " + sim.FormatPayment(e.Amount, e.PayItems)
 		}
 		if e.Text != "" {
 			line += " for " + e.Text

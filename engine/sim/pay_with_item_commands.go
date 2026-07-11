@@ -2271,6 +2271,17 @@ func formatPayment(amount int, payItems []ItemKindQty) string {
 	}
 }
 
+// FormatPayment is the exported wrapper over formatPayment (LLM-374). The
+// settlement renderers live in other packages — the third-person Village feed
+// in httpapi (renderActionLogEntry) and the first-person self-trail in
+// perception (selfActionLine) — and both need to phrase a Paid action's full
+// coins-and/or-goods tender identically to the in-package offer/counter lines.
+// A thin wrapper keeps those cross-package callers on the one canonical
+// formatter without exporting the internal name or duplicating the logic.
+func FormatPayment(amount int, payItems []ItemKindQty) string {
+	return formatPayment(amount, payItems)
+}
+
 // effectivePayConsumerCount returns max(1, len(consumerIDs)). Empty
 // consumer set = buyer is implicit single consumer.
 func effectivePayConsumerCount(consumerIDs []ActorID) int {

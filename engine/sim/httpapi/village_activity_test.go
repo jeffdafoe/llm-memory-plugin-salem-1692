@@ -88,6 +88,34 @@ func TestVillageActivity_RenderAndOrder(t *testing.T) {
 	}
 }
 
+// TestRenderActionLogEntry_BarterShowsGoods (LLM-374): a pay_with_item settlement
+// paid with a mix of coins AND goods narrates BOTH legs in the Village feed.
+// Before the fix the line dropped the goods and read as coins-only, making a
+// value-matched barter look like a shortchange. A pure-coin pay is unchanged
+// (covered by TestVillageActivity_RenderAndOrder's "3 coins for stew" line).
+func TestRenderActionLogEntry_BarterShowsGoods(t *testing.T) {
+	snap := &sim.Snapshot{
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			"josiah": {DisplayName: "Josiah Thorne"},
+		},
+	}
+	e := sim.ActionLogEntry{
+		ActorID:          "josiah",
+		ActionType:       sim.ActionTypePaid,
+		CounterpartyName: "Joseph Scott",
+		Amount:           4,
+		PayItems:         []sim.ItemKindQty{{Kind: "cheese", Qty: 3}},
+		Text:             "5x flour",
+	}
+	_, line, kind, ok := renderActionLogEntry(snap, e)
+	if !ok || kind != "act" {
+		t.Fatalf("render ok/kind = %v/%q, want true/act", ok, kind)
+	}
+	if want := "Josiah Thorne pays Joseph Scott 3 cheese and 4 coins for 5x flour."; line != want {
+		t.Errorf("barter line = %q, want %q", line, want)
+	}
+}
+
 func TestVillageActivity_CursorAndLimit(t *testing.T) {
 	w := seededWorld(t)
 	t0 := time.Date(2026, 6, 11, 9, 0, 0, 0, time.UTC)
