@@ -40,6 +40,7 @@ func TestIntegration_Visitor_RoundTrip(t *testing.T) {
 			VisitorState: &sim.VisitorState{
 				Archetype: "peddler", Origin: "Boston", Disposition: "weary",
 				ExpiresAt: expiresAt, Phase: sim.VisitorPhasePresent,
+				Payload: "Ezekiel Crane turned out a plow for the Hale farm",
 			},
 		},
 		// A normal actor (real UUID id, persisted by the actor aggregate) proves
@@ -69,7 +70,8 @@ func TestIntegration_Visitor_RoundTrip(t *testing.T) {
 	}
 	if lv.DisplayName != "Elias Drum the peddler" ||
 		lv.VisitorState.Archetype != "peddler" || lv.VisitorState.Origin != "Boston" ||
-		lv.VisitorState.Disposition != "weary" || lv.VisitorState.Phase != sim.VisitorPhasePresent {
+		lv.VisitorState.Disposition != "weary" || lv.VisitorState.Phase != sim.VisitorPhasePresent ||
+		lv.VisitorState.Payload != "Ezekiel Crane turned out a plow for the Hale farm" {
 		t.Errorf("round-tripped visitor = %+v / state %+v", lv, lv.VisitorState)
 	}
 	if lv.Pos.X != sim.PadX+4 || lv.Pos.Y != sim.PadY+6 {

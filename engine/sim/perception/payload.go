@@ -1570,6 +1570,11 @@ type TravelerSelfView struct {
 	Archetype   string
 	Origin      string
 	Disposition string
+	// Rumor is the grounded clause the traveler carries (VisitorState.Payload,
+	// LLM-371) — "Ezekiel Crane turned out a plow for the Hale farm". Empty when
+	// no rumor-worthy beat was on hand at spawn; the preface drops the "Word
+	// reached you …" line entirely in that case.
+	Rumor string
 }
 
 type HuddleMember struct {

@@ -41,7 +41,7 @@ func NewVisitorsRepo(pool Pool) *VisitorsRepo {
 // model is map-keyed.
 const loadAllSQLV = `
 SELECT actor_id, display_name, archetype, origin, disposition,
-       position_x, position_y, inside_structure_id, expires_at, phase
+       position_x, position_y, inside_structure_id, expires_at, phase, payload
   FROM visitor`
 
 // upsertSQLV writes one visitor row. snapshot_gen carries the new checkpoint gen
@@ -49,9 +49,9 @@ SELECT actor_id, display_name, archetype, origin, disposition,
 const upsertSQLV = `
 INSERT INTO visitor (
     actor_id, display_name, archetype, origin, disposition,
-    position_x, position_y, inside_structure_id, expires_at, phase, snapshot_gen
+    position_x, position_y, inside_structure_id, expires_at, phase, payload, snapshot_gen
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
 )
 ON CONFLICT (actor_id) DO UPDATE SET
     display_name        = EXCLUDED.display_name,
@@ -63,6 +63,7 @@ ON CONFLICT (actor_id) DO UPDATE SET
     inside_structure_id = EXCLUDED.inside_structure_id,
     expires_at          = EXCLUDED.expires_at,
     phase               = EXCLUDED.phase,
+    payload             = EXCLUDED.payload,
     snapshot_gen        = EXCLUDED.snapshot_gen`
 
 // deleteStaleSQLV prunes visitor rows whose snapshot_gen is below the current
@@ -102,9 +103,10 @@ func (r *VisitorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Loaded
 			insideID    *string
 			expiresAt   time.Time
 			phase       string
+			payload     string
 		)
 		if err := rows.Scan(&actorID, &displayName, &archetype, &origin, &disposition,
-			&posX, &posY, &insideID, &expiresAt, &phase); err != nil {
+			&posX, &posY, &insideID, &expiresAt, &phase, &payload); err != nil {
 			return nil, fmt.Errorf("pg visitors LoadAll scan: %w", err)
 		}
 		var inside sim.StructureID
@@ -122,6 +124,7 @@ func (r *VisitorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Loaded
 				Disposition: disposition,
 				ExpiresAt:   expiresAt,
 				Phase:       sim.VisitorPhase(phase),
+				Payload:     payload,
 			},
 		}
 	}
@@ -196,7 +199,8 @@ func (r *VisitorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[s
 			insideArg,        // $8  inside_structure_id (nullable)
 			vs.ExpiresAt,     // $9  expires_at
 			string(vs.Phase), // $10 phase
-			gen,              // $11 snapshot_gen
+			vs.Payload,       // $11 payload
+			gen,              // $12 snapshot_gen
 		); err != nil {
 			return fmt.Errorf("pg visitors SaveSnapshot: upsert id=%s: %w", a.ID, err)
 		}
