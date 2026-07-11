@@ -25,6 +25,7 @@ type Repository struct {
 	VillageObjects       VillageObjectsRepo
 	LaborContracts       LaborContractsRepo
 	Visitors             VisitorsRepo
+	RecurringVisitors    RecurringVisitorsRepo
 
 	// Event sinks — write-through per-event, NOT part of the checkpoint tx.
 	// agent-action-log is an audit trail appended outside the checkpoint.
@@ -218,6 +219,18 @@ type LaborContractsRepo interface {
 type VisitorsRepo interface {
 	LoadAll(ctx context.Context) (map[ActorID]*LoadedVisitor, error)
 	SaveSnapshot(ctx context.Context, tx Tx, actors map[ActorID]*Actor) error
+}
+
+// RecurringVisitorsRepo loads + checkpoints the durable returner set (LLM-372) —
+// memorable travelers who dealt with a player and come back across the seasons.
+// UNLIKE VisitorsRepo (a live mirror swept by a generation marker), these rows
+// OUTLIVE the visit: SaveSnapshot is a plain upsert of the in-memory set with NO
+// delete-stale sweep (the DiscoveredKind precedent). Written inside the SaveWorld
+// Tx from cp.RecurringVisitors, and loaded into World.RecurringVisitors at
+// FinalizeLoad so a restart resumes every returner's identity + schedule.
+type RecurringVisitorsRepo interface {
+	LoadAll(ctx context.Context) (map[RecurringVisitorID]*RecurringVisitor, error)
+	SaveSnapshot(ctx context.Context, tx Tx, recurring map[RecurringVisitorID]*RecurringVisitor) error
 }
 
 // EnvironmentRepo loads + checkpoints world-level state: environment

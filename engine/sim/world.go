@@ -432,6 +432,16 @@ type WorldSettings struct {
 	VisitorMaxStayMinutes      int
 	VisitorTickInterval        time.Duration
 
+	// VisitorReturnMinDays / VisitorReturnMaxDays: when a promoted returner
+	// (LLM-372) departs, next_return_at is set a uniform-random number of
+	// wall-clock days in [min, max] out — long enough that the absence reads as
+	// "across the seasons." Both fall back to DefaultVisitorReturnMinDays /
+	// MaxDays (14 / 45) when zero, so a test or a fresh DB gets a sane rhythm; a
+	// live run can shorten them to see returns sooner. Settings keys
+	// visitor_return_min_days / visitor_return_max_days.
+	VisitorReturnMinDays int
+	VisitorReturnMaxDays int
+
 	// Businessowner cascade tunables (engine/sim/businessowner.go +
 	// engine/sim/cascade/businessowner.go). Both fall back to
 	// *Default constants when zero, so tests that bypass the
@@ -837,6 +847,17 @@ type World struct {
 	// clean: no coins are ever held (the reward only moves at completion), so a
 	// lost offer is just a deal that didn't happen. See labor_ledger.go.
 	LaborLedger map[LaborID]*LaborOffer
+
+	// RecurringVisitors is the durable set of memorable returners (LLM-372) —
+	// promoted travelers who dealt with a player and come back across the seasons.
+	// Keyed by the stable rvis-<8hex> id. UNLIKE most world maps this is genuinely
+	// durable, not restart-lossy: loaded from the recurring_visitor tables at boot
+	// (FinalizeLoad), mutated in memory (promotion on ActorMet, return scheduling on
+	// departure), and re-persisted every checkpoint (RecurringVisitorsRepo — plain
+	// upsert, NO generation-marker sweep, since a returner outlives the visit). The
+	// legitimate durable case per GUIDELINES: survives restart AND fires a return
+	// days-to-weeks out. See recurring_visitor.go.
+	RecurringVisitors map[RecurringVisitorID]*RecurringVisitor
 
 	// BusinessownerCooldowns is the per-(speaker, listener, trigger) gap
 	// map used by the businessowner cascade slice to suppress redundant
@@ -1286,6 +1307,7 @@ func NewWorld(repo Repository) *World {
 		Quotes:               make(map[QuoteID]*SceneQuote),
 		PayLedger:            make(map[LedgerID]*PayLedgerEntry),
 		LaborLedger:          make(map[LaborID]*LaborOffer),
+		RecurringVisitors:    make(map[RecurringVisitorID]*RecurringVisitor),
 		Assets:               make(map[AssetID]*Asset),
 		Sprites:              make(map[SpriteID]*Sprite),
 		AttributeDefinitions: make(map[string]*AttributeDefinition),
@@ -1505,6 +1527,11 @@ func (w *World) FinalizeLoad(ctx context.Context) error {
 	// exist to place them in; a visitor whose stay elapsed while down is dropped.
 	if err := w.rehydrateVisitorsOnLoad(ctx); err != nil {
 		return fmt.Errorf("sim: FinalizeLoad: rehydrate visitors: %w", err)
+	}
+	// LLM-372: load the durable returner set AFTER visitors so it can validate the
+	// in-flight visitor->recurring_visitor links against the loaded rows.
+	if err := w.rehydrateRecurringVisitorsOnLoad(ctx); err != nil {
+		return fmt.Errorf("sim: FinalizeLoad: rehydrate recurring visitors: %w", err)
 	}
 	// LLM-259: rehydrate the accepted (en_route/working) labor contracts from
 	// their durable mirror into World.LaborLedger BEFORE the stranded-laboring
@@ -2031,6 +2058,10 @@ func (w *World) republish() {
 	}
 	for id, a := range w.Actors {
 		sa := snapshotActor(a, w.TickCounter, w.Settings.degeneracyEnabled())
+		// LLM-372: project a returner's durable continuity onto the snapshot here
+		// (not in snapshotActor, a *World-less free function) — buildReturnerSnapshot
+		// reads World.RecurringVisitors and needs the wall-clock now for recency.
+		sa.Returner = buildReturnerSnapshot(w, a, now)
 		// Co-presence for the unhuddled (ZBBS-WORK-407): precompute who an
 		// unhuddled conversational NPC would reach if it spoke now, so perception's
 		// "## Around you" line and the speak no-audience gate share one scope rule

@@ -41,7 +41,8 @@ func NewVisitorsRepo(pool Pool) *VisitorsRepo {
 // model is map-keyed.
 const loadAllSQLV = `
 SELECT actor_id, display_name, archetype, origin, disposition,
-       position_x, position_y, inside_structure_id, expires_at, phase, payload
+       position_x, position_y, inside_structure_id, expires_at, phase, payload,
+       recurring_visitor_id
   FROM visitor`
 
 // upsertSQLV writes one visitor row. snapshot_gen carries the new checkpoint gen
@@ -49,22 +50,24 @@ SELECT actor_id, display_name, archetype, origin, disposition,
 const upsertSQLV = `
 INSERT INTO visitor (
     actor_id, display_name, archetype, origin, disposition,
-    position_x, position_y, inside_structure_id, expires_at, phase, payload, snapshot_gen
+    position_x, position_y, inside_structure_id, expires_at, phase, payload,
+    recurring_visitor_id, snapshot_gen
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
 )
 ON CONFLICT (actor_id) DO UPDATE SET
-    display_name        = EXCLUDED.display_name,
-    archetype           = EXCLUDED.archetype,
-    origin              = EXCLUDED.origin,
-    disposition         = EXCLUDED.disposition,
-    position_x          = EXCLUDED.position_x,
-    position_y          = EXCLUDED.position_y,
-    inside_structure_id = EXCLUDED.inside_structure_id,
-    expires_at          = EXCLUDED.expires_at,
-    phase               = EXCLUDED.phase,
-    payload             = EXCLUDED.payload,
-    snapshot_gen        = EXCLUDED.snapshot_gen`
+    display_name         = EXCLUDED.display_name,
+    archetype            = EXCLUDED.archetype,
+    origin               = EXCLUDED.origin,
+    disposition          = EXCLUDED.disposition,
+    position_x           = EXCLUDED.position_x,
+    position_y           = EXCLUDED.position_y,
+    inside_structure_id  = EXCLUDED.inside_structure_id,
+    expires_at           = EXCLUDED.expires_at,
+    phase                = EXCLUDED.phase,
+    payload              = EXCLUDED.payload,
+    recurring_visitor_id = EXCLUDED.recurring_visitor_id,
+    snapshot_gen         = EXCLUDED.snapshot_gen`
 
 // deleteStaleSQLV prunes visitor rows whose snapshot_gen is below the current
 // checkpoint gen — the visitors absent from this snapshot (departed + cleaned
@@ -104,14 +107,19 @@ func (r *VisitorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Loaded
 			expiresAt   time.Time
 			phase       string
 			payload     string
+			recurringID *string
 		)
 		if err := rows.Scan(&actorID, &displayName, &archetype, &origin, &disposition,
-			&posX, &posY, &insideID, &expiresAt, &phase, &payload); err != nil {
+			&posX, &posY, &insideID, &expiresAt, &phase, &payload, &recurringID); err != nil {
 			return nil, fmt.Errorf("pg visitors LoadAll scan: %w", err)
 		}
 		var inside sim.StructureID
 		if insideID != nil {
 			inside = sim.StructureID(*insideID)
+		}
+		var recurring string
+		if recurringID != nil {
+			recurring = *recurringID
 		}
 		out[sim.ActorID(actorID)] = &sim.LoadedVisitor{
 			ID:                sim.ActorID(actorID),
@@ -125,6 +133,7 @@ func (r *VisitorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Loaded
 				ExpiresAt:   expiresAt,
 				Phase:       sim.VisitorPhase(phase),
 				Payload:     payload,
+				RecurringID: recurring,
 			},
 		}
 	}
@@ -188,6 +197,12 @@ func (r *VisitorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[s
 		if a.InsideStructureID != "" {
 			insideArg = string(a.InsideStructureID)
 		}
+		// recurring_visitor_id: bind "" as SQL NULL — a not-yet-promoted stranger
+		// has no returner identity, and the format CHECK allows NULL but not ''.
+		var recurringArg any
+		if vs.RecurringID != "" {
+			recurringArg = vs.RecurringID
+		}
 		if _, err := tx.Exec(ctx, upsertSQLV,
 			string(a.ID),     // $1  actor_id
 			a.DisplayName,    // $2  display_name
@@ -200,7 +215,8 @@ func (r *VisitorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[s
 			vs.ExpiresAt,     // $9  expires_at
 			string(vs.Phase), // $10 phase
 			vs.Payload,       // $11 payload
-			gen,              // $12 snapshot_gen
+			recurringArg,     // $12 recurring_visitor_id (nullable)
+			gen,              // $13 snapshot_gen
 		); err != nil {
 			return fmt.Errorf("pg visitors SaveSnapshot: upsert id=%s: %w", a.ID, err)
 		}

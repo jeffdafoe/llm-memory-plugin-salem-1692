@@ -1241,6 +1241,11 @@ func resolveCoPresentMember(snap *sim.Snapshot, subjectID sim.ActorID, subj *sim
 			m.Traveler = true
 			m.TravelerArchetype = peer.VisitorState.Archetype
 			m.TravelerOrigin = peer.VisitorState.Origin
+			// A returner reuses its DisplayName across visits, so a persistent NPC
+			// that met it before already recognizes it BY NAME through the base
+			// acquaintance path below (m.Acquainted) — no returner-specific observer
+			// cue is needed here. The returner's own continuity (greeting a player it
+			// remembers) rides the self-preface, not this observer line. (LLM-372)
 		}
 	}
 	if m.DisplayName != "" {
@@ -1541,13 +1546,24 @@ func buildTravelerSelf(a *sim.ActorSnapshot) *TravelerSelfView {
 	if a == nil || a.VisitorState == nil {
 		return nil
 	}
-	return &TravelerSelfView{
+	v := &TravelerSelfView{
 		Name:        travelerPersonaName(a.DisplayName),
 		Archetype:   a.VisitorState.Archetype,
 		Origin:      a.VisitorState.Origin,
 		Disposition: a.VisitorState.Disposition,
 		Rumor:       a.VisitorState.Payload,
 	}
+	// LLM-372: a returner on a repeat visit carries continuity — how many times
+	// they've passed through, and the players they remember (most-recent first).
+	// ActorSnapshot.Returner is non-nil only for VisitCount >= 2, so a freshly
+	// promoted first-visit traveler never claims to have been here before.
+	if r := a.Returner; r != nil {
+		v.VisitCount = r.VisitCount
+		for _, k := range r.KnownHere {
+			v.KnownHere = append(v.KnownHere, TravelerKnownPC{Name: k.DisplayName, Recency: k.Recency})
+		}
+	}
+	return v
 }
 
 // travelerPersonaName recovers the bare persona name from a visitor's composed

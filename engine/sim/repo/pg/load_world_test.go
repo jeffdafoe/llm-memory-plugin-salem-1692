@@ -119,6 +119,18 @@ func (fakeVisitors) SaveSnapshot(_ context.Context, _ sim.Tx, _ map[sim.ActorID]
 	return nil
 }
 
+type fakeRecurringVisitors struct {
+	out map[sim.RecurringVisitorID]*sim.RecurringVisitor
+	err error
+}
+
+func (f fakeRecurringVisitors) LoadAll(_ context.Context) (map[sim.RecurringVisitorID]*sim.RecurringVisitor, error) {
+	return f.out, f.err
+}
+func (fakeRecurringVisitors) SaveSnapshot(_ context.Context, _ sim.Tx, _ map[sim.RecurringVisitorID]*sim.RecurringVisitor) error {
+	return nil
+}
+
 type fakeEnvironment struct {
 	env      sim.WorldEnvironment
 	phase    sim.Phase
@@ -252,6 +264,7 @@ func (o fakeRepoOpts) build() sim.Repository {
 		VillageObjects:       pick(o.villageObjects, fakeVillageObjects{out: map[sim.VillageObjectID]*sim.VillageObject{}}).(sim.VillageObjectsRepo),
 		LaborContracts:       pick(o.laborContracts, fakeLaborContracts{out: map[sim.LaborID]*sim.LaborOffer{}}).(sim.LaborContractsRepo),
 		Visitors:             fakeVisitors{out: map[sim.ActorID]*sim.LoadedVisitor{}},
+		RecurringVisitors:    fakeRecurringVisitors{out: map[sim.RecurringVisitorID]*sim.RecurringVisitor{}},
 		ActionLog:            fakeActionLog{},
 		TickTelemetry:        fakeTickTelemetry{},
 	}

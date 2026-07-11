@@ -263,7 +263,7 @@ func TickVisitorCascade(inputs VisitorTickInputs) Command {
 		Fn: func(w *World) (any, error) {
 			t := VisitorCascadeTelemetry{}
 			dispatchVisitorDespawn(w, inputs, &t)
-			dispatchVisitorCleanup(w, inputs.Now, &t)
+			dispatchVisitorCleanup(w, inputs, &t)
 			// Eco mode (LLM-313): visitors exist to be seen — pause SPAWNING
 			// while unwatched. Despawn/cleanup above keep running so existing
 			// visitors age out normally; spawning resumes on the first tick
@@ -344,7 +344,9 @@ func dispatchVisitorDespawn(w *World, inputs VisitorTickInputs, t *VisitorCascad
 // visitor stranded with no walk path still gets cleaned up after the
 // grace window so we don't leak rows. Emits ActorDeparted before delete
 // so subscribers can capture the departure event.
-func dispatchVisitorCleanup(w *World, now time.Time, t *VisitorCascadeTelemetry) {
+func dispatchVisitorCleanup(w *World, inputs VisitorTickInputs, t *VisitorCascadeTelemetry) {
+	now := inputs.Now
+	r := inputsRandOrDefault(inputs.Rand)
 	grace := time.Duration(VisitorCleanupGraceMinutes) * time.Minute
 	for id, actor := range w.Actors {
 		if actor == nil || actor.VisitorState == nil {
@@ -352,6 +354,13 @@ func dispatchVisitorCleanup(w *World, now time.Time, t *VisitorCascadeTelemetry)
 		}
 		if !now.After(actor.VisitorState.ExpiresAt.Add(grace)) {
 			continue
+		}
+		// LLM-372: a promoted returner leaving schedules its comeback — stamp
+		// last_seen + next_return_at on the durable row before the actor row goes.
+		// A one-shot (unpromoted) visitor has no RecurringID and is simply gone.
+		if actor.VisitorState.RecurringID != "" {
+			w.scheduleReturnerDeparture(RecurringVisitorID(actor.VisitorState.RecurringID),
+				now, r, w.Settings.VisitorReturnMinDays, w.Settings.VisitorReturnMaxDays)
 		}
 		// Capture before-removal state for the event.
 		evt := &ActorDeparted{
@@ -565,18 +574,34 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 		return
 	}
 
-	// Persona generation with surname scrub.
-	existing := loadActorSurnames(w)
-	profile := generateVisitorProfile(r)
-	for tries := 0; tries < surnameScrubMaxTries; tries++ {
-		if !existing[extractSurname(profile.Name)] {
-			break
-		}
+	// Persona. A due returner (LLM-372) comes back as the SAME person — prefer one
+	// over a fresh stranger, reusing its established persona verbatim (and skipping
+	// the surname scrub, since the name is already in play and unique enough).
+	// Only READ the returner here; the durable mutation (beginReturnerVisit — bump
+	// visit count, clear next_return_at) is deferred until AFTER the actor is
+	// committed below, so a spawn that bails out (ID-mint exhaustion) leaves the
+	// returner still due to try again rather than consumed-but-not-arrived.
+	// Otherwise roll a new persona and scrub its surname against seated villagers.
+	var returnerID string
+	var dueReturner *RecurringVisitor
+	var profile visitorProfile
+	if rv, ok := w.pickDueReturner(inputs.Now); ok {
+		profile = visitorProfile{Name: rv.Name, Archetype: rv.Archetype, Origin: rv.Origin, Disposition: rv.Disposition}
+		returnerID = string(rv.ID)
+		dueReturner = rv
+	} else {
+		existing := loadActorSurnames(w)
 		profile = generateVisitorProfile(r)
-	}
-	if existing[extractSurname(profile.Name)] {
-		log.Printf("sim/visitor: dispatchSpawn: surname for %q still collides after %d tries; shipping anyway",
-			profile.Name, surnameScrubMaxTries)
+		for tries := 0; tries < surnameScrubMaxTries; tries++ {
+			if !existing[extractSurname(profile.Name)] {
+				break
+			}
+			profile = generateVisitorProfile(r)
+		}
+		if existing[extractSurname(profile.Name)] {
+			log.Printf("sim/visitor: dispatchSpawn: surname for %q still collides after %d tries; shipping anyway",
+				profile.Name, surnameScrubMaxTries)
+		}
 	}
 
 	// Stay window.
@@ -643,11 +668,20 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 			ExpiresAt:   expiresAt,
 			Phase:       VisitorPhasePresent,
 			Payload:     selectVisitorRumor(w, r, inputs.Now),
+			RecurringID: returnerID, // "" for a fresh stranger; set for a returning traveler
 		},
 		State: StateIdle,
 	}
 	w.Actors[id] = visitor
 	w.outdoorActors[id] = struct{}{}
+
+	// The spawn is committed — now record the returner's arrival (bump visit count,
+	// clear next_return_at) on the durable row it came back as (LLM-372).
+	if dueReturner != nil {
+		dueReturner.beginReturnerVisit()
+		log.Printf("sim/visitor: returner arrived — %s the %s from %s (rvis=%s, id=%s, visit #%d)",
+			dueReturner.Name, dueReturner.Archetype, dueReturner.Origin, dueReturner.ID, id, dueReturner.VisitCount)
+	}
 
 	// Walk toward the destination. Tavern entry policy decides whether
 	// the visitor walks into the interior (open / default) or stops at
