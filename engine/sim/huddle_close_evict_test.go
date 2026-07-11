@@ -101,3 +101,33 @@ func TestExecuteNPCSleep_CoKeeperPresent_KeepsCrossThresholdHuddle(t *testing.T)
 		t.Errorf("john still huddled (%q) — it bedded down and left the conversation", john.CurrentHuddleID)
 	}
 }
+
+// TestExecuteNPCSleep_NonKeeperBedDown_KeepsKnockHuddle guards against
+// over-eviction (code_review). A visitor knocks at a private home and the resident
+// answers across the doorway — a legitimate cross-threshold huddle at a structure
+// with NO keeper, so keeperPresentAt is trivially false. When an unrelated NPC
+// beds down inside that home, the closed-shop teardown must NOT fire: the sleeper
+// is not a worker of the structure, so its bed-down closes no shop and the visitor
+// keeps talking to the resident. Without the WorkStructureID == InsideStructureID
+// call-site gate this test evicts the visitor.
+func TestExecuteNPCSleep_NonKeeperBedDown_KeepsKnockHuddle(t *testing.T) {
+	now := time.Date(2026, 6, 24, 21, 0, 0, 0, time.UTC)
+	// resident lives in the home, works elsewhere — not a keeper of "tavern".
+	resident := &Actor{ID: "resident", Kind: KindNPCStateful, HomeStructureID: "tavern", WorkStructureID: "smithy", InsideStructureID: "tavern"}
+	visitor := &Actor{ID: "visitor", Kind: KindNPCShared} // knocked, standing outside at the door
+	// a lodger bedding down for the night inside; also works elsewhere.
+	lodger := &Actor{ID: "lodger", Kind: KindNPCStateful, HomeStructureID: "cottage", WorkStructureID: "smithy", InsideStructureID: "tavern", Needs: map[NeedKey]int{"tiredness": 20}}
+	w := keeperTavernWorld(false, resident, visitor, lodger)
+	seatHuddle(w, "hud-1", "tavern", now, "resident", "visitor")
+
+	if !executeNPCSleep(w, lodger, now) {
+		t.Fatal("executeNPCSleep should bed the lodger")
+	}
+
+	if visitor.CurrentHuddleID != "hud-1" {
+		t.Errorf("visitor evicted (%q) by an unrelated lodger's bed-down — a non-worker's sleep closes no shop", visitor.CurrentHuddleID)
+	}
+	if resident.CurrentHuddleID != "hud-1" {
+		t.Errorf("resident dropped from the knock huddle (%q) — it neither slept nor tends this structure", resident.CurrentHuddleID)
+	}
+}

@@ -223,11 +223,18 @@ func LoiterScopeConversableInSnapshot(snap *Snapshot, assets map[AssetID]*Asset,
 // the huddle if the eviction empties it and handles the degenerate
 // lone-resting-member case.
 //
-// A fast no-op when the shop is still open (keeperPresentAt — another keeper on
-// post, or the sleeper was not the keeper), the structure has no active huddle, or
-// no member is cross-threshold. Call AFTER the presence-ending mutation is applied
-// (in executeNPCSleep, after State is set to StateSleeping) so keeperPresentAt
-// reads the post-close state. MUST run on the world goroutine.
+// A fast no-op when the shop is still open (keeperPresentAt — another keeper still
+// on post), the structure has no active huddle, or no member is cross-threshold.
+// Call AFTER the presence-ending mutation is applied (in executeNPCSleep, after
+// State is set to StateSleeping) so keeperPresentAt reads the post-close state.
+// MUST run on the world goroutine.
+//
+// The CALLER must invoke this only for a genuine shop-close — the sleeper being a
+// worker of the structure it beds down in (WorkStructureID == InsideStructureID),
+// the one actor whose bed-down can flip keeperPresentAt. keeperPresentAt is
+// trivially false for a never-keeper-gated structure (a private home answering a
+// knock), so calling this on any keeperless structure would wrongly evict a
+// legitimate cross-threshold visitor.
 //
 // Scope: the live-in bed-down close (executeNPCSleep). A keeper who instead walks
 // off-shift makes an owner-only shop shut, but customers never enter those, so no
@@ -252,7 +259,7 @@ func evictLoiterMembersOnClose(w *World, structureID StructureID, now time.Time)
 	for id := range huddle.Members {
 		a := w.Actors[id]
 		if a == nil {
-			continue // stale ref; leaveCurrentHuddle's own guards reap it if reached
+			continue // nil/stale roster entry — no actor to evict; skip
 		}
 		if a.InsideStructureID != structureID {
 			strandedOutside = append(strandedOutside, id)
