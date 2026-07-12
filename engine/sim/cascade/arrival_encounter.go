@@ -66,6 +66,17 @@ func outdoorEncounterExcludesActor(w *sim.World, a *sim.Actor, now time.Time, st
 	if _, onRoute := w.ActiveRoutes[a.ID]; onRoute {
 		return true
 	}
+	// LLM-375: an actor at an OPEN worked structure's loiter pin belongs to the
+	// keeper's structure conversation across the threshold, not an open-ground
+	// encounter. Excluding it here — for both the arriver and each nearby candidate
+	// — stops a second customer's arrival from grabbing the two co-loiterers into a
+	// peer huddle that shadows the structure, after which neither could resolve the
+	// keeper for a pay / quote / greet. Their own speak or transaction forms/joins
+	// the keeper's structure huddle instead (EnsureColocatedHuddle). A SHUT
+	// structure scopes to "" (LLM-359), so loiterers there still meet on open ground.
+	if sim.InOpenLoiterStructureScope(w, a) {
+		return true
+	}
 	return a.Kind == sim.KindPC && sim.PCPresenceStale(a.LastPCSeenAt, now, staleAfter)
 }
 
