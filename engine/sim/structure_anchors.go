@@ -575,3 +575,39 @@ func tileOccupiedByOtherActor(w *World, pos Position, exceptID ActorID) bool {
 	}
 	return false
 }
+
+// tileOccupiedByRestingOtherActor reports whether an actor OTHER than exceptID is
+// at REST on pos — settled (no active MoveIntent) and physically outdoors
+// (InsideStructureID == ""). It is the arrival-gate companion to
+// tileOccupiedByOtherActor (LLM-380): a visitor must not come to rest stacked on a
+// stationary loiterer, but two exclusions matter versus the stricter helper —
+//
+//   - A mover merely passing THROUGH the tile is not an occupant. Without the
+//     MoveIntent skip, two visitors transiently sharing a loiter-radius tile would
+//     each refuse arrival because the other is standing there, and neither could
+//     become the first to settle — a mutual-arrival deadlock. Skipping movers lets
+//     whichever is evaluated first settle; the other then sees a resting occupant
+//     and re-picks its own free slot.
+//   - An actor INSIDE a structure retains its last outdoor Pos, which is stale for
+//     occupancy of an outdoor loiter tile — it is not physically standing there.
+//
+// pickVisitorSlot deliberately keeps using the stricter tileOccupiedByOtherActor
+// for slot SELECTION: a tile a mover is walking onto should still not be handed out
+// as another visitor's target.
+func tileOccupiedByRestingOtherActor(w *World, pos Position, exceptID ActorID) bool {
+	for id, a := range w.Actors {
+		if id == exceptID || a == nil {
+			continue
+		}
+		if a.MoveIntent != nil {
+			continue
+		}
+		if a.InsideStructureID != "" {
+			continue
+		}
+		if a.Pos.Equal(pos) {
+			return true
+		}
+	}
+	return false
+}

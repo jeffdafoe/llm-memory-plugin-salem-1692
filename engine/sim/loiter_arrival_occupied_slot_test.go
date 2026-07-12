@@ -124,35 +124,54 @@ func TestLoiterArrival_VisitorDoesNotRestOnOccupiedSlot(t *testing.T) {
 	}
 }
 
-// TestLoiterArrival_ArrivedAtDestinationRejectsOccupiedTile pins the invariant at
-// the decision point, independent of the ticker: standing on a ring tile another
-// actor holds is NOT arrival, while the free pin still is (so the HOME-329
-// all-slots-blocked fallback keeps registering arrival and never loops).
-func TestLoiterArrival_ArrivedAtDestinationRejectsOccupiedTile(t *testing.T) {
+// TestLoiterArrival_ArrivedAtDestinationOnlyRestingOutdoorOccupantBlocks pins the
+// gate at the decision point, independent of the ticker. Only a RESTING, outdoor
+// actor on the tile blocks arrival; a mover passing through or an indoor actor with
+// a stale position does not — so one of two visitors transiently sharing a tile can
+// settle first instead of both mutually refusing arrival (the liveness risk of
+// checking occupancy at arrival time). The free pin still arrives (HOME-329).
+func TestLoiterArrival_ArrivedAtDestinationOnlyRestingOutdoorOccupantBlocks(t *testing.T) {
 	w, cancel, pin, occupiedSlot, _ := buildOccupiedSlotSmithyWorld(t)
 	defer cancel()
 
-	arrivedStandingAt := func(x, y int) bool {
+	// Position josiah on `tile`, reset prudence to a resting outdoor occupant of the
+	// south slot, apply the per-case mutation to her, then read arrivedAtDestination.
+	eval := func(tile sim.Position, mutateOccupant func(*sim.Actor)) bool {
 		res, err := w.Send(sim.Command{
 			Fn: func(world *sim.World) (any, error) {
-				a := world.Actors["josiah"]
-				a.Pos = sim.TilePos{X: x, Y: y}
-				return sim.ArrivedAtDestination(world, a, sim.NewStructureVisitDestination("smithy")), nil
+				occupant := world.Actors["prudence"]
+				occupant.Pos = sim.TilePos{X: occupiedSlot.X, Y: occupiedSlot.Y}
+				occupant.MoveIntent = nil
+				occupant.InsideStructureID = ""
+				if mutateOccupant != nil {
+					mutateOccupant(occupant)
+				}
+				j := world.Actors["josiah"]
+				j.Pos = sim.TilePos{X: tile.X, Y: tile.Y}
+				return sim.ArrivedAtDestination(world, j, sim.NewStructureVisitDestination("smithy")), nil
 			},
 		})
 		if err != nil {
-			t.Fatalf("arrivedStandingAt(%d,%d): %v", x, y, err)
+			t.Fatalf("eval: %v", err)
 		}
 		return res.(bool)
 	}
 
-	// prudence still holds occupiedSlot: standing there is within the pin radius
-	// but occupied → must NOT count as arrived (else the visitor freezes stacked).
-	if arrivedStandingAt(occupiedSlot.X, occupiedSlot.Y) {
-		t.Errorf("ArrivedAtDestination=true on occupied ring slot %+v — visitor would freeze stacked on the occupant (LLM-380)", occupiedSlot)
+	// Resting outdoor occupant on the slot → NOT arrived (the live LLM-380 fix).
+	if eval(occupiedSlot, nil) {
+		t.Errorf("arrived stacked on a resting occupant at %+v (LLM-380)", occupiedSlot)
 	}
-	// The pin is free: within radius and unoccupied → must still register arrival.
-	if !arrivedStandingAt(pin.X, pin.Y) {
-		t.Errorf("ArrivedAtDestination=false on the free pin %+v — the all-slots-blocked fallback must still arrive (HOME-329)", pin)
+	// Occupant still MOVING (has a MoveIntent) → arrival allowed, so one of two
+	// movers transiently sharing a tile can settle first (no mutual-arrival block).
+	if !eval(occupiedSlot, func(o *sim.Actor) { o.MoveIntent = &sim.MoveIntent{} }) {
+		t.Errorf("a moving actor sharing the tile blocked arrival — two movers could mutually deadlock")
+	}
+	// Occupant INSIDE a structure (retained/stale outdoor Pos) → arrival allowed.
+	if !eval(occupiedSlot, func(o *sim.Actor) { o.InsideStructureID = "smithy" }) {
+		t.Errorf("an indoor actor's stale outdoor position blocked loiter arrival")
+	}
+	// The free pin, occupant left on its own slot → arrived (HOME-329 fallback).
+	if !eval(pin, nil) {
+		t.Errorf("did not arrive on the free pin %+v — the all-slots-blocked fallback must still arrive (HOME-329)", pin)
 	}
 }

@@ -742,19 +742,22 @@ func arrivedAtDestination(w *World, actor *Actor, dest MoveDestination) bool {
 //     would never register that arrival and the mover would loop on the pin forever
 //     (ZBBS-HOME-329). LoiterAttributionTiles (1) covers the pin (0) and all eight
 //     ring slots (1).
-//   - The resting tile is held by no other actor (LLM-380). pickVisitorSlot hands
-//     each visitor a distinct FREE slot as its target, but this test is radius-based,
-//     not slot-specific: a visitor funneled ONTO an occupied slot (a stationary
-//     loiterer plugging the only approach) would otherwise "arrive" stacked on the
-//     occupant and freeze there for the whole visit. Refusing arrival on an occupied
-//     tile keeps the MoveIntent alive, and pickVisitorSlot — which re-resolves every
-//     tick and already excludes occupied tiles — walks the mover on to its own free
-//     slot. The HOME-329 pin fallback still registers because pickVisitorSlotAtPin
-//     only returns the pin when the pin itself is unoccupied. Passing THROUGH an
-//     occupant mid-walk is unaffected; only the resting tile must be clear.
+//   - The resting tile is held by no RESTING other actor (LLM-380). pickVisitorSlot
+//     hands each visitor a distinct FREE slot as its target, but this test is
+//     radius-based, not slot-specific: a visitor funneled ONTO an occupied slot (a
+//     stationary loiterer plugging the only approach) would otherwise "arrive"
+//     stacked on the occupant and freeze there for the whole visit. Refusing arrival
+//     on the tile keeps the MoveIntent alive, and pickVisitorSlot — which re-resolves
+//     every tick and already excludes occupied tiles — walks the mover on to its own
+//     free slot. The HOME-329 pin fallback still registers because pickVisitorSlotAtPin
+//     only returns the pin when the pin itself is unoccupied. The occupancy check
+//     counts only a RESTING, outdoor actor (tileOccupiedByRestingOtherActor): a mover
+//     merely passing through must not block — else two visitors sharing a tile would
+//     mutually refuse arrival — and an indoor actor's retained Pos is stale. Passing
+//     THROUGH an occupant mid-walk is unaffected; only the resting tile must be clear.
 func arrivedAtLoiterRing(w *World, actor *Actor, pin Position) bool {
 	return pin.Chebyshev(actor.Pos) <= LoiterAttributionTiles &&
-		!tileOccupiedByOtherActor(w, actor.Pos, actor.ID)
+		!tileOccupiedByRestingOtherActor(w, actor.Pos, actor.ID)
 }
 
 // finishArrival clears the MoveIntent, emits ActorArrived, and stamps an
