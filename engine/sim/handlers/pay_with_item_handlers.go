@@ -408,8 +408,29 @@ func DecodePayWithItemArgs(raw json.RawMessage) (any, error) {
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
-	var args PayWithItemArgs
-	if err := dec.Decode(&args); err != nil {
+	// Decode into a wire struct that tolerates the weak model's scalar shapes
+	// (LLM-377): string-wrapped numbers, a string boolean, and the coin
+	// synonyms `coins` / `payment.coins` it learned from offer_trade. The
+	// public PayWithItemArgs stays plain int/bool, so HandlePayWithItem and the
+	// substrate are untouched — this is a decode-only tolerance layer.
+	var wire struct {
+		Seller       string       `json:"seller"`
+		Item         string       `json:"item"`
+		Qty          LenientInt   `json:"qty"`
+		Amount       LenientInt   `json:"amount"`
+		Coins        LenientInt   `json:"coins"`   // synonym → amount
+		Payment      *coinPayment `json:"payment"` // synonym → amount
+		ConsumeNow   LenientBool  `json:"consume_now"`
+		Consumers    []string     `json:"consumers"`
+		PayItems     payItemList  `json:"pay_items"`
+		QuoteID      LenientID    `json:"quote_id"`
+		InResponseTo LenientID    `json:"in_response_to"`
+		For          string       `json:"for"`
+		ReadyInDays  LenientInt   `json:"ready_in_days"`
+		Deposit      LenientInt   `json:"deposit"`
+		Say          string       `json:"say"`
+	}
+	if err := dec.Decode(&wire); err != nil {
 		return nil, fmt.Errorf("pay_with_item: malformed arguments: %w", err)
 	}
 	var extra any
@@ -418,6 +439,21 @@ func DecodePayWithItemArgs(raw json.RawMessage) (any, error) {
 			return nil, modelSafef("pay_with_item: trailing data after JSON object")
 		}
 		return nil, fmt.Errorf("pay_with_item: malformed trailing data: %w", err)
+	}
+	args := PayWithItemArgs{
+		Seller:       wire.Seller,
+		Item:         wire.Item,
+		Qty:          int(wire.Qty),
+		Amount:       resolveCoinAmount(int(wire.Amount), wire.Coins, wire.Payment),
+		ConsumeNow:   bool(wire.ConsumeNow),
+		Consumers:    wire.Consumers,
+		PayItems:     wire.PayItems,
+		QuoteID:      wire.QuoteID,
+		InResponseTo: wire.InResponseTo,
+		For:          wire.For,
+		ReadyInDays:  int(wire.ReadyInDays),
+		Deposit:      int(wire.Deposit),
+		Say:          wire.Say,
 	}
 
 	if args.Seller == "" {
@@ -1079,11 +1115,13 @@ func DecodeCounterPayArgs(raw json.RawMessage) (any, error) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	var wire struct {
-		LedgerID LenientID   `json:"ledger_id"`
-		Amount   int         `json:"amount"`
-		PayItems payItemList `json:"pay_items"`
-		Say      string      `json:"say"`
-		Message  string      `json:"message"` // decode-only alias (LLM-350)
+		LedgerID LenientID    `json:"ledger_id"`
+		Amount   LenientInt   `json:"amount"`
+		Coins    LenientInt   `json:"coins"`   // synonym → amount (LLM-377)
+		Payment  *coinPayment `json:"payment"` // synonym → amount (LLM-377)
+		PayItems payItemList  `json:"pay_items"`
+		Say      string       `json:"say"`
+		Message  string       `json:"message"` // decode-only alias (LLM-350)
 	}
 	if err := dec.Decode(&wire); err != nil {
 		return nil, fmt.Errorf("counter_pay: malformed arguments: %w", err)
@@ -1099,24 +1137,26 @@ func DecodeCounterPayArgs(raw json.RawMessage) (any, error) {
 		return nil, modelSafef("counter_pay: ledger_id must be at least 1 (got %d)", wire.LedgerID)
 	}
 	// Coins are optional (>= 0) — a counter may propose coins, goods
-	// (pay_items), or both, but must propose at least one.
-	if wire.Amount < 0 {
-		return nil, modelSafef("counter_pay: amount cannot be negative (got %d)", wire.Amount)
+	// (pay_items), or both, but must propose at least one. Fold the weak-model
+	// coin synonyms (coins / payment.coins) into amount (LLM-377).
+	amount := resolveCoinAmount(int(wire.Amount), wire.Coins, wire.Payment)
+	if amount < 0 {
+		return nil, modelSafef("counter_pay: amount cannot be negative (got %d)", amount)
 	}
-	if wire.Amount > sim.MaxPayWithItemAmount {
-		return nil, modelSafef("counter_pay: amount exceeds maximum (got %d, max %d)", wire.Amount, sim.MaxPayWithItemAmount)
+	if amount > sim.MaxPayWithItemAmount {
+		return nil, modelSafef("counter_pay: amount exceeds maximum (got %d, max %d)", amount, sim.MaxPayWithItemAmount)
 	}
 	if err := validatePayItemsDecode("counter_pay", "pay_items", wire.PayItems); err != nil {
 		return nil, err
 	}
-	if wire.Amount == 0 && len(wire.PayItems) == 0 {
+	if amount == 0 && len(wire.PayItems) == 0 {
 		return nil, modelSafef("counter_pay: counter must propose coins or goods (set amount, add pay_items, or both)")
 	}
 	say, err := selectSayAlias("counter_pay", "message", wire.Say, wire.Message)
 	if err != nil {
 		return nil, err
 	}
-	return CounterPayArgs{LedgerID: wire.LedgerID, Amount: wire.Amount, PayItems: wire.PayItems, Say: say}, nil
+	return CounterPayArgs{LedgerID: wire.LedgerID, Amount: amount, PayItems: wire.PayItems, Say: say}, nil
 }
 
 // HandleCounterPay is the CommitFn for the counter_pay tool. The counter's terms
