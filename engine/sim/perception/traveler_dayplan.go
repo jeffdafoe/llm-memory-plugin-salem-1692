@@ -2,6 +2,7 @@ package perception
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
@@ -24,48 +25,183 @@ import (
 // traveler (buildVisitorEveningLeisure below, dispatched from buildEveningLeisure) —
 // the social-hours pull that draws it to the tavern with the rest of the village.
 
-// TravelerRoundsView is the content-gated "## On your rounds" section — presence is
-// the whole signal (a nil view renders nothing). It is built only when the traveler
-// is on its daytime circuit AND co-present with the keeper of the shop it is in, so
-// the cue never fires in an empty room.
-type TravelerRoundsView struct{}
+// TravelerRoundsView is the situational "## Your rounds" surface (LLM-379). The engine
+// no longer chooses the traveler's stops — it renders his situation here and he
+// navigates himself with move_to. Content-gated: a nil view (off his daytime rounds)
+// writes nothing.
+type TravelerRoundsView struct {
+	// AtKeeperShop names the keeper-business he stands in co-present with its keeper,
+	// "" when he is between legs / out in the open. Drives the trade-here line and is
+	// excluded from OpenShops.
+	AtKeeperShop string
+	// Visited is the display names of the keeper-businesses he has already called at
+	// this stay — rendered back so a stateless shared VA "remembers" and does not
+	// repeat a shop.
+	Visited []string
+	// OpenShops is the keeper-businesses still tending (snapshotKeeperPresent, the twin
+	// of the arrival-recording gate so the list can't outrun what a visit records),
+	// unvisited, not the inn, not the one he stands in — each with a bearing so he can
+	// choose a next stop. Nearest first. NEVER a single "go here" imperative: the list,
+	// and he picks with move_to.
+	OpenShops []RoundsShop
+	// MinutesToDusk drives the escalating nightfall pressure; only meaningful when
+	// HasClock. HasClock is false on an unusable dawn/dusk clock (suppress the line).
+	MinutesToDusk int
+	HasClock      bool
+}
 
-// buildTravelerRounds returns the rounds view when the subject is a traveler on its
-// daytime circuit standing inside a business with that business's keeper co-present,
-// or nil otherwise. Pure over the snapshot.
+// RoundsShop is one still-open shop on the traveler's rounds: its name and a bearing
+// from where he stands.
+type RoundsShop struct {
+	Name      string
+	Direction string // "north" … "" when he is on top of it
+	Steps     int    // Chebyshev tiles, for a rough near/far sense
+}
+
+// buildTravelerRounds returns the rounds surface when the subject is a traveler on his
+// daytime rounds (arriving / making_rounds / a legacy 'present' row); nil in the evening
+// (the seek-a-bed cue owns it) or off-visitor. Pure over the snapshot.
 func buildTravelerRounds(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, members []HuddleMember) *TravelerRoundsView {
 	if snap == nil || actorSnap == nil || actorSnap.VisitorState == nil {
 		return nil
 	}
 	switch actorSnap.VisitorState.Phase {
 	case sim.VisitorPhaseArriving, sim.VisitorPhaseMakingRounds, sim.VisitorPhasePresent:
-		// on the daytime circuit
+		// on his daytime rounds
 	default:
 		return nil
 	}
-	sid := actorSnap.InsideStructureID
-	if sid == "" {
-		return nil // not inside a shop — nothing to frame yet
-	}
-	for _, m := range members {
-		ks := snap.Actors[m.ID]
-		if ks != nil && ks.BusinessownerState != nil && ks.WorkStructureID == sid {
-			return &TravelerRoundsView{}
+	vs := actorSnap.VisitorState
+
+	// Where he stands: if co-present with the keeper of the shop he is in, name it (the
+	// trade-here line) and exclude it from the still-open list.
+	var atShopID sim.StructureID
+	atShop := ""
+	if sid := actorSnap.InsideStructureID; sid != "" {
+		for _, m := range members {
+			ks := snap.Actors[m.ID]
+			if ks != nil && ks.BusinessownerState != nil && ks.WorkStructureID == sid {
+				atShopID = sid
+				if st := snap.Structures[sid]; st != nil {
+					atShop = st.DisplayName
+				}
+				break
+			}
 		}
 	}
-	return nil
+
+	// Rounds so far.
+	visitedSet := make(map[sim.StructureID]bool, len(vs.VisitedBusinesses))
+	var visited []string
+	for _, sid := range vs.VisitedBusinesses {
+		visitedSet[sid] = true
+		if st := snap.Structures[sid]; st != nil {
+			visited = append(visited, st.DisplayName)
+		}
+	}
+
+	// Shops still open: keeper tending now (the twin of the recording gate), unvisited,
+	// not the inn, not where he stands. The engine lists them; the model chooses.
+	var open []RoundsShop
+	for id, vobj := range snap.VillageObjects {
+		stID := sim.StructureID(id)
+		if vobj == nil || stID == atShopID || visitedSet[stID] {
+			continue
+		}
+		st, ok := snap.Structures[stID]
+		if !ok || st == nil {
+			continue
+		}
+		if structureSnapIsLodging(snap, stID) || !snapshotKeeperPresent(snap, stID) {
+			continue
+		}
+		tile := vobj.Pos.Tile()
+		open = append(open, RoundsShop{
+			Name:      st.DisplayName,
+			Direction: cardinalDirection(float64(actorSnap.Pos.X), float64(actorSnap.Pos.Y), float64(tile.X), float64(tile.Y)),
+			Steps:     actorSnap.Pos.Chebyshev(tile),
+		})
+	}
+	sort.Slice(open, func(i, j int) bool {
+		if open[i].Steps != open[j].Steps {
+			return open[i].Steps < open[j].Steps
+		}
+		return open[i].Name < open[j].Name
+	})
+
+	view := &TravelerRoundsView{AtKeeperShop: atShop, Visited: visited, OpenShops: open}
+	if snap.LocalMinuteOfDay != nil && snap.DawnDuskMinuteOK {
+		view.HasClock = true
+		view.MinutesToDusk = snap.DuskMinute - *snap.LocalMinuteOfDay
+	}
+	return view
 }
 
-// renderTravelerRounds writes the "## On your rounds" framing. Content-gated: a nil
-// view writes nothing. Deliberately does not re-name the shop or keeper — "## Around
-// you" already places the traveler and names who is present; this adds only the
-// purpose (why it is here, what to do), keeping the register a scene, not a stat.
+// renderTravelerRounds writes the "## Your rounds" surface — a scene (what he's called
+// at, what's still open and where, the failing light), not a stat pile. Content-gated.
+// It never names a single "go here next" target: it lays out the situation and the
+// model chooses its next move with move_to (LLM-379).
 func renderTravelerRounds(b *strings.Builder, v *TravelerRoundsView) {
 	if v == nil {
 		return
 	}
-	b.WriteString("## On your rounds\n")
-	b.WriteString("You are making your rounds of the village — calling shop to shop, trading and passing the news you carry from the road. Greet whoever keeps this place, share word from your travels, and show what is in your pack if talk turns to trade.\n\n")
+	b.WriteString("## Your rounds\n")
+	if v.AtKeeperShop != "" {
+		fmt.Fprintf(b, "You're inside %s just now — greet whoever keeps it, share word from the road, and show what's in your pack if talk turns to trade.\n", sanitizeInline(v.AtKeeperShop))
+	}
+	if len(v.Visited) == 0 {
+		b.WriteString("You've not called anywhere yet this visit.\n")
+	} else {
+		fmt.Fprintf(b, "So far you've called at %s.\n", joinNames(v.Visited))
+	}
+	if len(v.OpenShops) > 0 {
+		b.WriteString("Still trading at this hour: ")
+		for i, s := range v.OpenShops {
+			if i > 0 {
+				b.WriteString("; ")
+			}
+			fmt.Fprintf(b, "%s, %s", sanitizeInline(s.Name), roundsDistPhrase(s.Steps, s.Direction))
+		}
+		b.WriteString(". Make for whichever you please.\n")
+	} else {
+		b.WriteString("Nothing else is open just now.\n")
+	}
+	if v.HasClock {
+		b.WriteString(roundsNightfallLine(v.MinutesToDusk))
+	}
+	b.WriteString("\n")
+}
+
+// roundsDistPhrase renders a shop's bearing as a diegetic phrase — "just to the west",
+// "a short way to the north", "off to the east" — or "right here" when the traveler
+// stands on it.
+func roundsDistPhrase(steps int, dir string) string {
+	if dir == "" {
+		return "right here"
+	}
+	switch {
+	case steps <= 8:
+		return "just to the " + dir
+	case steps <= 20:
+		return "a short way to the " + dir
+	default:
+		return "off to the " + dir
+	}
+}
+
+// roundsNightfallLine is the escalating pressure toward seeking a bed, keyed on minutes
+// to dusk. Its wording lets the model decide when to break off trading.
+func roundsNightfallLine(minsToDusk int) string {
+	switch {
+	case minsToDusk <= 0:
+		return "The light has all but gone — best see about a bed for the night before long.\n"
+	case minsToDusk <= 60:
+		return "The light is going fast now; you'll want to see about a bed before it's dark.\n"
+	case minsToDusk <= 180:
+		return "The afternoon is wearing on and the light is starting to lengthen.\n"
+	default:
+		return "There's plenty of daylight left for your trade.\n"
+	}
 }
 
 // TravelerSeekBedView is the content-gated "## A bed for the night" section: the

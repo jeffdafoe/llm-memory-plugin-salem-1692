@@ -90,6 +90,9 @@ func RegisterProductionCascades(ctx context.Context, w *sim.World, client llm.Cl
 	// purpose is feeding that greet path (ZBBS-HOME-425); registration
 	// order itself is not load-bearing.
 	RegisterBusinessArrival(w)
+	// Records where a traveler actually calls on his rounds (LLM-379) — same
+	// ActorArrived signal, a different concern from the hospitality greet above.
+	RegisterVisitorArrival(w)
 	RegisterVisitor(ctx, w)
 
 	// LLM-bearing cascades — atmosphere prose, per-pair consolidation,

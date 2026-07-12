@@ -47,6 +47,29 @@ func TestSearchMemory(t *testing.T) {
 	}
 }
 
+// TestSearchMemory_StringChunkCount — the memory-api serializes chunk_count as a
+// quoted string in some responses; a plain int field failed the whole decode and
+// every recall came back empty (LLM-379). flexInt must accept the string shape.
+func TestSearchMemory_StringChunkCount(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"results":[{"source_file":"people/bea","heading":"Bea","chunk_text":"runs the bakery","namespace":"salem-visitor","similarity":0.9,"chunk_count":"2"}]}`)
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "k")
+	hits, err := c.SearchMemory(context.Background(), "salem-visitor", "who is bea", "", 5)
+	if err != nil {
+		t.Fatalf("SearchMemory with string chunk_count: %v", err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("hits len = %d, want 1 (string chunk_count must not fail the decode)", len(hits))
+	}
+	if hits[0].ChunkCount != 2 {
+		t.Errorf("ChunkCount = %d, want 2 (parsed from the quoted string)", hits[0].ChunkCount)
+	}
+}
+
 func TestSearchMemory_EmptyResults(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, `{"results":[]}`)

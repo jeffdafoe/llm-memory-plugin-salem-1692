@@ -79,6 +79,37 @@ func TestFinalizeLoad_ResumesInWindowVisitor(t *testing.T) {
 	}
 }
 
+// TestFinalizeLoad_RestoresSprite — LLM-379: a rehydrated traveler gets its SpriteID
+// resolved from the persisted archetype (and a Facing), so a restart doesn't strand it
+// invisible. The sprite is derived from the archetype, not persisted separately.
+func TestFinalizeLoad_RestoresSprite(t *testing.T) {
+	repo, handles := mem.NewRepository()
+	now := time.Now().UTC()
+	wantName := sim.VisitorArchetypeSprite["peddler"] // the fixture's archetype
+	const spriteID sim.SpriteID = "sprite-peddler-uuid"
+	handles.Sprites.Seed(map[sim.SpriteID]*sim.Sprite{
+		spriteID: {ID: spriteID, Name: wantName},
+	})
+	handles.Visitors.Seed(map[sim.ActorID]*sim.LoadedVisitor{
+		"vstr-0000cafe": newVisitorFixture("vstr-0000cafe", now.Add(2*time.Hour), ""),
+	})
+
+	w, err := sim.LoadWorld(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	a, ok := w.Actors["vstr-0000cafe"]
+	if !ok {
+		t.Fatal("in-window visitor not rehydrated")
+	}
+	if a.SpriteID != spriteID {
+		t.Errorf("rehydrated SpriteID = %q, want %q (peddler → %q)", a.SpriteID, spriteID, wantName)
+	}
+	if a.Facing == "" {
+		t.Error("rehydrated traveler has empty Facing")
+	}
+}
+
 // TestFinalizeLoad_ResumesInsideStructureVisitor — a visitor checkpointed inside
 // a structure reloads inside it, in the actorsByStructure index (not outdoors).
 func TestFinalizeLoad_ResumesInsideStructureVisitor(t *testing.T) {
@@ -214,7 +245,6 @@ func TestFinalizeLoad_RestoresDayPlan(t *testing.T) {
 			ExpiresAt:         expires,
 			Phase:             sim.VisitorPhaseMakingRounds,
 			VisitedBusinesses: []sim.StructureID{shop},
-			RoundTarget:       "str-store-0002",
 		},
 		Inventory: map[sim.ItemKind]int{"cheese": 4, "iron": 2},
 		Coins:     37,
@@ -244,9 +274,8 @@ func TestFinalizeLoad_RestoresDayPlan(t *testing.T) {
 	if !ok || grant == nil || !grant.Active || grant.LedgerID != 99 {
 		t.Errorf("restored RoomAccess grant = %+v; want the active ledger grant", grant)
 	}
-	if a.VisitorState.Phase != sim.VisitorPhaseMakingRounds || a.VisitorState.RoundTarget != "str-store-0002" {
-		t.Errorf("restored itinerary = phase %q target %q; want making_rounds / str-store-0002",
-			a.VisitorState.Phase, a.VisitorState.RoundTarget)
+	if a.VisitorState.Phase != sim.VisitorPhaseMakingRounds {
+		t.Errorf("restored phase = %q; want making_rounds", a.VisitorState.Phase)
 	}
 	if len(a.VisitorState.VisitedBusinesses) != 1 || a.VisitorState.VisitedBusinesses[0] != shop {
 		t.Errorf("restored VisitedBusinesses = %v; want [%q]", a.VisitorState.VisitedBusinesses, shop)

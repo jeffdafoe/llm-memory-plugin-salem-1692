@@ -114,8 +114,12 @@ func cloneRecurringVisitor(src *RecurringVisitor) *RecurringVisitor {
 // newRecurringVisitorID mints a fresh rvis-<8hex> id. Prefix "rvis-" so the
 // durable returner identity is visually distinct from a per-visit vstr- actor id
 // in admin reads. crypto/rand via randomHex, same as newVisitorActorID.
+//
+// randomHex takes a BYTE count (2 hex chars/byte), so 4 bytes = 8 hex chars —
+// matching recurring_visitor.id's CHECK (^rvis-[0-9a-f]{8}$). randomHex(8) minted
+// 16 hex and violated it, so no returner ever persisted (LLM-379).
 func newRecurringVisitorID() RecurringVisitorID {
-	return RecurringVisitorID("rvis-" + randomHex(8))
+	return RecurringVisitorID("rvis-" + randomHex(4))
 }
 
 // personaNameFromDisplayName recovers the bare persona name from a visitor's
