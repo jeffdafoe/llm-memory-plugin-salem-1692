@@ -55,6 +55,11 @@ func TestDecodePayWithItem_CoinSynonyms(t *testing.T) {
 		{"amount_wins_over_coins", `"amount":8,"coins":6`, 8},
 		{"coins_wins_over_payment", `"coins":6,"payment":{"coins":7}`, 6},
 		{"coins_numeric_string", `"coins":"6"`, 6},
+		// An explicit amount:0 is treated as unset, so a stray coins synonym folds
+		// in — the sharpest precedence edge (pinned per code review).
+		{"amount_zero_folds_coins", `"amount":0,"coins":5`, 5},
+		// The nested payment object tolerates extra keys the model tacks on.
+		{"payment_ignores_extra_keys", `"payment":{"coins":7,"currency":"usd"}`, 7},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -141,7 +146,9 @@ func TestLenientTypes_RejectGenuinelyBad(t *testing.T) {
 	}{
 		{"qty_non_numeric_string", `{"seller":"A","item":"stew","qty":"lots","amount":4,"consume_now":false}`, "not a whole number"},
 		{"qty_fractional", `{"seller":"A","item":"stew","qty":1.5,"amount":4,"consume_now":false}`, "malformed arguments"},
+		{"qty_empty_string", `{"seller":"A","item":"stew","qty":"","amount":4,"consume_now":false}`, "qty must be at least 1"},
 		{"consume_now_non_bool", `{"seller":"A","item":"stew","qty":1,"amount":4,"consume_now":"maybe"}`, "not a boolean"},
+		{"consume_now_numeric_two", `{"seller":"A","item":"stew","qty":1,"amount":4,"consume_now":2}`, "not a boolean"},
 		{"coins_non_numeric", `{"seller":"A","item":"stew","qty":1,"consume_now":false,"coins":"lots"}`, "not a whole number"},
 	}
 	for _, tc := range cases {
@@ -203,6 +210,8 @@ func TestLenientBool_Forms(t *testing.T) {
 		{`"yes"`, true, false}, {`"no"`, false, false},
 		{`1`, true, false}, {`0`, false, false},
 		{`"maybe"`, false, true}, {`[]`, false, true},
+		// A number outside {0,1} is not a boolean — must reject, not widen to true.
+		{`2`, false, true}, {`-1`, false, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.raw, func(t *testing.T) {

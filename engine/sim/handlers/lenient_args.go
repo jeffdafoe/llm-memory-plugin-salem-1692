@@ -101,13 +101,24 @@ func (b *LenientBool) UnmarshalJSON(data []byte) error {
 		}
 		return nil
 	}
-	// Numeric form: 0 → false, non-zero → true (some models emit consume_now:0).
-	if trimmed[0] >= '0' && trimmed[0] <= '9' {
+	// Numeric form: only 0/1 (some models emit consume_now:0). A number outside
+	// {0,1} is NOT a boolean — reject it with a model-safe reason rather than
+	// silently widening "true" to "any non-zero". The leading '-' is admitted to
+	// this branch only so a negative like -1 lands on this model-safe reject
+	// instead of the generic json bool-decode error.
+	if trimmed[0] == '-' || (trimmed[0] >= '0' && trimmed[0] <= '9') {
 		var v int
 		if err := json.Unmarshal(trimmed, &v); err != nil {
 			return err
 		}
-		*b = LenientBool(v != 0)
+		switch v {
+		case 0:
+			*b = false
+		case 1:
+			*b = true
+		default:
+			return modelSafef("%d is not a boolean (use true/false or 0/1)", v)
+		}
 		return nil
 	}
 	// Real JSON bool.
@@ -120,11 +131,26 @@ func (b *LenientBool) UnmarshalJSON(data []byte) error {
 }
 
 // coinPayment is the decode target for the nested `payment: {"coins": N}`
-// synonym the weak model reaches for on the pay tools. Only its coins are
-// read; any other keys inside the object are ignored (the object's own decode
-// is not strict — DisallowUnknownFields applies to the top-level call only).
+// synonym the weak model reaches for on the pay tools. Its own UnmarshalJSON
+// reads only `coins` and ignores any other keys the model tacks on (currency,
+// method, …). The custom Unmarshaler is load-bearing: a plainly-typed nested
+// struct is decoded by the SAME top-level decoder, so its DisallowUnknownFields
+// would reject those extras and re-create the loop we are fixing. Handing the
+// nested object to json.Unmarshal detaches it from that strictness. A
+// non-object payment still errors.
 type coinPayment struct {
-	Coins LenientInt `json:"coins"`
+	Coins LenientInt
+}
+
+func (c *coinPayment) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		Coins LenientInt `json:"coins"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	c.Coins = wire.Coins
+	return nil
 }
 
 // resolveCoinAmount folds the weak-model coin synonyms into the canonical
