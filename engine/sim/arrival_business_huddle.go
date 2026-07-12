@@ -26,10 +26,13 @@ import (
 // when the structure has an at-post keeper to receive the customer — a home,
 // or a shop whose keeper is away/asleep, forms no huddle (walk-throughs are
 // never grabbed; that churn is exactly what HOME-358/363 kept the speak-time
-// trigger boundary tight against). Join order is load-bearing: keepers join
-// FIRST, the arriver LAST, so the greet subscriber sees the keeper among
-// HuddleJoined.OtherMembers when the arriver's join fires — the existing
-// greet path (at-post check, cooldowns, reactor suppression) runs unchanged.
+// trigger boundary tight against). The arriver may be physically inside the
+// structure (walked into an open shop) or standing at its loiter pin, scoped
+// across the threshold to the keeper within (LLM-384, a market-stall patron).
+// Join order is load-bearing: keepers join FIRST, the arriver LAST, so the
+// greet subscriber sees the keeper among HuddleJoined.OtherMembers when the
+// arriver's join fires — the existing greet path (at-post check, cooldowns,
+// reactor suppression) runs unchanged.
 func EnsureArrivalBusinessHuddle(actorID ActorID, structureID StructureID, now time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
@@ -47,12 +50,18 @@ func EnsureArrivalBusinessHuddle(actorID ActorID, structureID StructureID, now t
 			if actor.CurrentHuddleID != "" {
 				return nil, nil // already conversing
 			}
-			// structureID is the EVENT's final structure. Stale-arrival
-			// guard (code_review): the actor must still actually be there —
-			// a delayed ActorArrived must not bootstrap a huddle at whatever
-			// structure the actor has since wandered into. Same posture as
-			// the encounter cascade's freshness invariant.
-			if structureID == "" || actor.InsideStructureID != structureID {
+			// The arriver must still be AT this structure: physically inside
+			// it, or — a market-stall patron — standing at its loiter pin,
+			// conversationally scoped across the threshold to the keeper
+			// working within (ZBBS-HOME-378, the commerce position for an
+			// owner-only stall where the customer stays outside).
+			// conversationalScopeStructure returns the inside structure else
+			// the open-stall loiter scope, so this one check covers both and
+			// stays the stale-arrival guard (code_review): a delayed
+			// ActorArrived must not bootstrap a huddle at a structure the actor
+			// has since wandered off from — same posture as the encounter
+			// cascade's freshness invariant.
+			if structureID == "" || conversationalScopeStructure(w, actor) != structureID {
 				return nil, nil
 			}
 			// The structure's own keeper returning to post greets no one.
