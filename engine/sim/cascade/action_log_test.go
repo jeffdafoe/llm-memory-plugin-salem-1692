@@ -988,6 +988,71 @@ func TestSubscribers_EmitDurableRows(t *testing.T) {
 	}
 }
 
+// --- TestSubscribers_ExcludeTransientVisitorsFromDurableSink -------
+// LLM-382: a transient visitor's committed actions must never reach the durable
+// agent_action_log sink. A visitor's actor_id is a "vstr-" string, but the audit
+// table's actor_id is a uuid column — every visitor row errored on the sink's
+// writer goroutine with "invalid input syntax for type uuid" (SQLSTATE 22P02).
+// Live, this was a per-minute flood of `walked` rows as travelers made their
+// rounds. AppendActionLogDurable drops rows whose acting actor carries a
+// VisitorState, at the single chokepoint the ~17 emit sites funnel through. The
+// gate is DURABLE-ONLY: the visitor stays in the in-memory ring (which feeds
+// rumors / atmosphere / the talk-panel backload), so travelers remain fully
+// present in-world — only the pg persistence is skipped.
+func TestSubscribers_ExcludeTransientVisitorsFromDurableSink(t *testing.T) {
+	w, stop := buildActionLogCascadeWorld(t)
+	defer stop()
+
+	rec := &recordingActionLogSink{}
+	const visitorID sim.ActorID = "vstr-0000abcd"
+	invokeOnWorld(t, w, func(world *sim.World) {
+		world.SetActionLogSink(rec)
+		// A transient visitor the way spawn / rehydrate mints one: a shared-VA
+		// actor carrying VisitorState. The "vstr-" id is what the uuid column rejects.
+		world.Actors[visitorID] = &sim.Actor{
+			ID:              visitorID,
+			DisplayName:     "Elias Drum the peddler",
+			Kind:            sim.KindNPCShared,
+			State:           sim.StateIdle,
+			CurrentHuddleID: "h1",
+			RecentActions:   sim.NewRingBuffer[sim.Action](4),
+			VisitorState:    &sim.VisitorState{Archetype: "peddler", Phase: sim.VisitorPhaseMakingRounds},
+		}
+	})
+
+	at := time.Now().UTC()
+	invokeOnWorld(t, w, func(world *sim.World) {
+		// The exact live failure: a visitor arrival → durable `walked` row.
+		handleActorArrivedActionLog(world, &sim.ActorArrived{ActorID: visitorID, FinalStructureID: "tavern", At: at})
+		// A second action type through the same chokepoint, so the test pins the
+		// gate as actor-based rather than walked-specific.
+		handleSpokeActionLog(world, &sim.Spoke{SpeakerID: visitorID, HuddleID: "h1", Text: "Wares from Boston!", At: at})
+		// Positive control: a persistent NPC's arrival DOES persist.
+		handleActorArrivedActionLog(world, &sim.ActorArrived{ActorID: "hannah", FinalStructureID: "tavern", At: at})
+	})
+
+	// Durable sink: only the NPC's row lands; both visitor rows are dropped.
+	rows := rec.snapshot()
+	if len(rows) != 1 {
+		t.Fatalf("recorded %d durable rows, want 1 (both visitor rows must be excluded): %+v", len(rows), rows)
+	}
+	if rows[0].ActorID != "hannah" || rows[0].ActionType != sim.ActionTypeWalked {
+		t.Errorf("durable row = %+v; want hannah's walked row", rows[0])
+	}
+
+	// In-memory ring: the visitor's actions ARE present — the gate is durable-only,
+	// so travelers still feed rumors / atmosphere / the talk panel.
+	var visitorRing int
+	for _, e := range readActionLog(t, w) {
+		if e.ActorID == visitorID {
+			visitorRing++
+		}
+	}
+	if visitorRing != 2 {
+		t.Errorf("in-memory ring holds %d visitor rows, want 2 (walked + spoke); the durable gate must not touch the ring", visitorRing)
+	}
+}
+
 // --- TestHandleRepairingActionLog_NamesBusinessAndIgnoresOtherKinds ---
 // LLM-354: a repair start appends a row naming the business being mended, and
 // the harvest/refresh starts that share SourceActivityStarted append nothing —
