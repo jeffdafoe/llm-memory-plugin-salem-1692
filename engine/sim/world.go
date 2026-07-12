@@ -1393,6 +1393,16 @@ func (w *World) AppendActionLogDurable(row DurableActionLogRow) {
 	if sink == nil {
 		return
 	}
+	// Visitors are transient and live OUTSIDE the actor aggregate — their rows are
+	// in the separate `visitor` table, firewalled out of ActorsRepo (LLM-369). The
+	// durable audit sink's actor_id carries a FK to actor(id), so a visitor id can
+	// never satisfy it; every insert errored on the writer goroutine (LLM-379).
+	// Drop them here at the single chokepoint the ~17 emit sites funnel through,
+	// rather than flood the log with FK violations. A visitor's behaviour stays
+	// traceable via the engine journal (walked/spoke/etc.).
+	if a := w.Actors[row.ActorID]; a != nil && a.VisitorState != nil {
+		return
+	}
 	_ = sink.Append(w.LifecycleContext(), row)
 }
 

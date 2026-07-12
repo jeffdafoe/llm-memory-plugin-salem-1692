@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -325,7 +326,42 @@ type searchMemoryHitWire struct {
 	ChunkText  string  `json:"chunk_text"`
 	Namespace  string  `json:"namespace"`
 	Similarity float64 `json:"similarity"`
-	ChunkCount int     `json:"chunk_count"`
+	ChunkCount flexInt `json:"chunk_count"`
+}
+
+// flexInt decodes a JSON integer OR a JSON string that wraps one. The memory-api
+// serializes chunk_count as a quoted string ("2") in some responses; a plain int
+// field then fails the WHOLE search decode, so every visitor/NPC recall came back
+// empty (LLM-379). Be liberal here: accept both shapes, treat empty/null as 0.
+type flexInt int
+
+func (f *flexInt) UnmarshalJSON(b []byte) error {
+	if len(b) == 0 || string(b) == "null" {
+		*f = 0
+		return nil
+	}
+	if b[0] == '"' {
+		var s string
+		if err := json.Unmarshal(b, &s); err != nil {
+			return err
+		}
+		if s == "" {
+			*f = 0
+			return nil
+		}
+		n, err := strconv.Atoi(s)
+		if err != nil {
+			return fmt.Errorf("chunk_count %q: %w", s, err)
+		}
+		*f = flexInt(n)
+		return nil
+	}
+	var n int
+	if err := json.Unmarshal(b, &n); err != nil {
+		return err
+	}
+	*f = flexInt(n)
+	return nil
 }
 
 type searchMemoryResponse struct {
@@ -361,7 +397,7 @@ func (c *Client) SearchMemory(ctx context.Context, namespace, query, slugPrefix 
 			ChunkText:  h.ChunkText,
 			Namespace:  h.Namespace,
 			Similarity: h.Similarity,
-			ChunkCount: h.ChunkCount,
+			ChunkCount: int(h.ChunkCount),
 		})
 	}
 	return hits, nil

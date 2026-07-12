@@ -2,9 +2,28 @@ package sim
 
 import (
 	"math/rand"
+	"regexp"
 	"testing"
 	"time"
 )
+
+// TestVisitorIDFormat guards the minter↔DB-constraint contract: newVisitorActorID
+// and newRecurringVisitorID must match the visitor / recurring_visitor actor_id
+// CHECKs (^vstr-[0-9a-f]{8}$ and ^rvis-[0-9a-f]{8}$). randomHex takes a BYTE count
+// (2 hex chars/byte), so the old randomHex(8) minted 16 hex chars and every
+// checkpoint upsert violated the constraint — no visitor ever persisted (LLM-379).
+func TestVisitorIDFormat(t *testing.T) {
+	vstr := regexp.MustCompile(`^vstr-[0-9a-f]{8}$`)
+	rvis := regexp.MustCompile(`^rvis-[0-9a-f]{8}$`)
+	for i := 0; i < 100; i++ {
+		if id := newVisitorActorID(); !vstr.MatchString(id) {
+			t.Fatalf("newVisitorActorID() = %q, want match %s", id, vstr)
+		}
+		if id := string(newRecurringVisitorID()); !rvis.MatchString(id) {
+			t.Fatalf("newRecurringVisitorID() = %q, want match %s", id, rvis)
+		}
+	}
+}
 
 // visitor_dayplan_internal_test.go — LLM-373 unit coverage for the day-plan
 // helpers that are unexported (an internal test, package sim). Behavioral spawn /

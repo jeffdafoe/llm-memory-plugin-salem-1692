@@ -1372,8 +1372,13 @@ func seedVisitorNeeds() map[NeedKey]int {
 // "vstr-" so visitor rows are visually distinguishable from persistent
 // NPC IDs (UUID-style) and PC IDs (login-username derived) in admin
 // reads. Uses crypto/rand via randomHex for collision resistance.
+//
+// randomHex takes a BYTE count and hex-encodes (2 chars/byte), so 4 bytes =
+// 8 hex chars — matching the visitor table's actor_id CHECK
+// (^vstr-[0-9a-f]{8}$, migrations/LLM-369). randomHex(8) would mint 16 hex
+// chars and violate it, so every checkpoint upsert failed (LLM-379).
 func newVisitorActorID() string {
-	return "vstr-" + randomHex(8)
+	return "vstr-" + randomHex(4)
 }
 
 // inputsRandOrDefault returns r when non-nil, otherwise a fresh
