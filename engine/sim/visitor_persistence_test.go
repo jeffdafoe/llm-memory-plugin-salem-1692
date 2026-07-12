@@ -245,7 +245,6 @@ func TestFinalizeLoad_RestoresDayPlan(t *testing.T) {
 			ExpiresAt:         expires,
 			Phase:             sim.VisitorPhaseMakingRounds,
 			VisitedBusinesses: []sim.StructureID{shop},
-			RoundTarget:       "str-store-0002",
 		},
 		Inventory: map[sim.ItemKind]int{"cheese": 4, "iron": 2},
 		Coins:     37,
@@ -275,9 +274,8 @@ func TestFinalizeLoad_RestoresDayPlan(t *testing.T) {
 	if !ok || grant == nil || !grant.Active || grant.LedgerID != 99 {
 		t.Errorf("restored RoomAccess grant = %+v; want the active ledger grant", grant)
 	}
-	if a.VisitorState.Phase != sim.VisitorPhaseMakingRounds || a.VisitorState.RoundTarget != "str-store-0002" {
-		t.Errorf("restored itinerary = phase %q target %q; want making_rounds / str-store-0002",
-			a.VisitorState.Phase, a.VisitorState.RoundTarget)
+	if a.VisitorState.Phase != sim.VisitorPhaseMakingRounds {
+		t.Errorf("restored phase = %q; want making_rounds", a.VisitorState.Phase)
 	}
 	if len(a.VisitorState.VisitedBusinesses) != 1 || a.VisitorState.VisitedBusinesses[0] != shop {
 		t.Errorf("restored VisitedBusinesses = %v; want [%q]", a.VisitorState.VisitedBusinesses, shop)

@@ -93,10 +93,8 @@ const advisoryLockSQLV = `SELECT pg_advisory_xact_lock(hashtext('visitor_snapsho
 // expires_at + phase columns — so it rides as one document rather than a spray of
 // typed columns, the way labor_contract.reward_items does.
 type visitorPlanJSON struct {
-	// Itinerary — VisitorState.VisitedBusinesses / RoundTarget / DwellUntil.
-	VisitedBusinesses []string   `json:"visited_businesses,omitempty"`
-	RoundTarget       string     `json:"round_target,omitempty"`
-	DwellUntil        *time.Time `json:"dwell_until,omitempty"`
+	// Rounds — VisitorState.VisitedBusinesses (the keeper-businesses he has called at).
+	VisitedBusinesses []string `json:"visited_businesses,omitempty"`
 	// Pack + purse — Actor.Inventory / Actor.Coins. The barter wares and coins the
 	// traveler pays for its room and trades on its circuit with.
 	Inventory map[string]int `json:"inventory,omitempty"`
@@ -133,9 +131,7 @@ func encodeVisitorPlan(a *sim.Actor) (string, error) {
 	}
 	vs := a.VisitorState
 	plan := visitorPlanJSON{
-		RoundTarget: string(vs.RoundTarget),
-		DwellUntil:  vs.DwellUntil,
-		Coins:       a.Coins,
+		Coins: a.Coins,
 	}
 	for _, sid := range vs.VisitedBusinesses {
 		plan.VisitedBusinesses = append(plan.VisitedBusinesses, string(sid))
@@ -179,8 +175,6 @@ func applyVisitorPlan(raw []byte, lv *sim.LoadedVisitor) error {
 	if err := json.Unmarshal(raw, &plan); err != nil {
 		return err
 	}
-	lv.VisitorState.RoundTarget = sim.StructureID(plan.RoundTarget)
-	lv.VisitorState.DwellUntil = plan.DwellUntil
 	for _, s := range plan.VisitedBusinesses {
 		lv.VisitorState.VisitedBusinesses = append(lv.VisitorState.VisitedBusinesses, sim.StructureID(s))
 	}

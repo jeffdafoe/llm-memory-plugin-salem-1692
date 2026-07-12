@@ -11,12 +11,12 @@ Coins in your purse: 40.
 You are carrying: cheese (x4), iron (x2).
 
 ## Around you
-You are inside the Blacksmith, with the blacksmith.
-It is morning in the village.
+You are outdoors, with no one else here to hear you speak.
+The afternoon wears on.
 
 ## Your rounds
-You're inside Blacksmith just now — greet whoever keeps it, share word from the road, and show what's in your pack if talk turns to trade.
-You've not called anywhere yet this visit.
-Nothing else is open just now.
+So far you've called at Cooper's.
+Still trading at this hour: Smithy, just to the north; Weaver's, a short way to the east. Make for whichever you please.
+The afternoon is wearing on and the light is starting to lengthen.
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

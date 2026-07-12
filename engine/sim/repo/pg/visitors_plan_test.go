@@ -15,7 +15,6 @@ import (
 func TestVisitorPlanRoundTrip(t *testing.T) {
 	roomExpiry := time.Now().UTC().Add(8 * time.Hour)
 	created := time.Now().UTC().Add(-time.Hour)
-	dwell := time.Now().UTC().Add(20 * time.Minute)
 	a := &sim.Actor{
 		ID:        "vstr-00001234",
 		Inventory: map[sim.ItemKind]int{"cheese": 3, "ale": 2},
@@ -28,8 +27,6 @@ func TestVisitorPlanRoundTrip(t *testing.T) {
 		},
 		VisitorState: &sim.VisitorState{
 			VisitedBusinesses: []sim.StructureID{"str-a", "str-b"},
-			RoundTarget:       "str-c",
-			DwellUntil:        &dwell,
 		},
 	}
 
@@ -42,15 +39,9 @@ func TestVisitorPlanRoundTrip(t *testing.T) {
 		t.Fatalf("applyVisitorPlan: %v", err)
 	}
 
-	if lv.VisitorState.RoundTarget != "str-c" {
-		t.Errorf("RoundTarget = %q; want str-c", lv.VisitorState.RoundTarget)
-	}
 	if len(lv.VisitorState.VisitedBusinesses) != 2 ||
 		lv.VisitorState.VisitedBusinesses[0] != "str-a" || lv.VisitorState.VisitedBusinesses[1] != "str-b" {
 		t.Errorf("VisitedBusinesses = %v; want [str-a str-b]", lv.VisitorState.VisitedBusinesses)
-	}
-	if lv.VisitorState.DwellUntil == nil || !lv.VisitorState.DwellUntil.Equal(dwell) {
-		t.Errorf("DwellUntil = %v; want %v", lv.VisitorState.DwellUntil, dwell)
 	}
 	if lv.Coins != 42 {
 		t.Errorf("Coins = %d; want 42", lv.Coins)
@@ -76,9 +67,9 @@ func TestVisitorPlanEmpty(t *testing.T) {
 		t.Fatalf("applyVisitorPlan({}): %v", err)
 	}
 	if lv.Coins != 0 || lv.Inventory != nil || lv.RoomAccess != nil ||
-		lv.VisitorState.RoundTarget != "" || lv.VisitorState.VisitedBusinesses != nil {
-		t.Errorf("empty plan mutated the visitor: coins=%d inv=%v room=%v target=%q visited=%v",
-			lv.Coins, lv.Inventory, lv.RoomAccess, lv.VisitorState.RoundTarget, lv.VisitorState.VisitedBusinesses)
+		lv.VisitorState.VisitedBusinesses != nil {
+		t.Errorf("empty plan mutated the visitor: coins=%d inv=%v room=%v visited=%v",
+			lv.Coins, lv.Inventory, lv.RoomAccess, lv.VisitorState.VisitedBusinesses)
 	}
 
 	// An actor carrying nothing encodes to a minimal object that round-trips clean.

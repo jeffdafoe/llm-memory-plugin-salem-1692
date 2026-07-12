@@ -48,6 +48,16 @@ func firstVisitor(t *testing.T, w *sim.World) *sim.ActorSnapshot {
 	return nil
 }
 
+func firstVisitorID(t *testing.T, w *sim.World) sim.ActorID {
+	t.Helper()
+	for id, a := range w.Published().Actors {
+		if a.VisitorState != nil {
+			return id
+		}
+	}
+	return ""
+}
+
 func TestVisitorSpawn_DayPlanSeeds(t *testing.T) {
 	loc := et(t)
 	vw := newVisitorWorld()
@@ -246,12 +256,14 @@ func tickCircuit(t *testing.T, w *sim.World, now time.Time) {
 	}
 }
 
-// TestVisitorCircuit_RoutesToOpenBusiness — the spawned traveler heads to the open
-// business (keeper present), not the tavern fallback.
-func TestVisitorCircuit_RoutesToOpenBusiness(t *testing.T) {
+// TestVisitorSpawn_EngineDoesNotPickShop — LLM-379: the engine no longer chooses the
+// traveler's stops. With a shop open, a spawned visitor is walked to the neutral village
+// anchor (the tavern), never the shop, and the engine marks nothing visited — he chooses
+// his own rounds with move_to.
+func TestVisitorSpawn_EngineDoesNotPickShop(t *testing.T) {
 	loc := et(t)
 	vw := newVisitorWorld()
-	vw.seedTavern(t)
+	tavern := vw.seedTavern(t)
 	const smithy sim.StructureID = "smithy"
 	vw.seedBusiness(t, smithy, "Blacksmith", sim.WorldPos{X: 288, Y: 320})
 	w, cancel := vw.load(t)
@@ -260,62 +272,107 @@ func TestVisitorCircuit_RoutesToOpenBusiness(t *testing.T) {
 
 	tickCircuit(t, w, time.Date(2026, 7, 12, 15, 0, 0, 0, loc))
 	got := firstVisitor(t, w)
-	if got == nil || got.VisitorState.RoundTarget != smithy {
-		t.Fatalf("RoundTarget = %v, want the open business %q", got, smithy)
+	if got == nil {
+		t.Fatal("no visitor spawned")
+	}
+	// The engine's one walk is to the anchor, never the shop.
+	if got.MoveDestStructureID == smithy {
+		t.Errorf("engine routed the visitor to the shop %q; it must not pick his stops", smithy)
+	}
+	if got.MoveDestStructureID != tavern {
+		t.Errorf("spawn move dest = %q, want the neutral anchor %q", got.MoveDestStructureID, tavern)
+	}
+	if len(got.VisitorState.VisitedBusinesses) != 0 {
+		t.Errorf("engine marked %v visited at spawn; recording is arrival-driven only", got.VisitorState.VisitedBusinesses)
 	}
 }
 
-// TestVisitorCircuit_MarksVisitedOnArrival — LLM-379: a round is marked made when the
-// traveler ARRIVES at the shop, whether the walk ended inside the structure or at its
-// doorstep visitor slot (owner-only / entry-policy fallback — the general-store case).
-// The arrival business huddle forms either way, so the traveler is co-present with the
-// keeper. Marking on arrival is what breaks the re-arrival loop: an unmarked doorstep
-// arrival would drop the leg and re-pick the SAME shop every tick, walking back forever.
-func TestVisitorCircuit_MarksVisitedOnArrival(t *testing.T) {
+// TestRecordVisitorArrival — LLM-379: VisitedBusinesses is written only on a genuine
+// co-present arrival at a keeper-business, never for a shut shop, the inn, or an evening
+// (lodging) arrival. This is the sole writer now that the engine picks no destinations.
+func TestRecordVisitorArrival(t *testing.T) {
 	loc := et(t)
 	day := time.Date(2026, 7, 12, 15, 0, 0, 0, loc)
 	const smithy sim.StructureID = "smithy"
 
-	for _, tc := range []struct {
-		name   string
-		inside sim.StructureID // InsideStructureID on arrival
-	}{
-		{"arrived inside", smithy},
-		{"arrived at doorstep slot", ""}, // StructureVisit fallback — the loop-triggering case
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			vw := newVisitorWorld()
-			vw.seedTavern(t)
-			vw.seedBusiness(t, smithy, "Blacksmith", sim.WorldPos{X: 288, Y: 320})
-			w, cancel := vw.load(t)
-			defer cancel()
-			seedDayPlanSettings(t, w, loc)
-
-			tickCircuit(t, w, day) // spawn + first leg → RoundTarget = smithy
-			setVisitorState(t, w, func(a *sim.Actor) {
-				a.MoveIntent = nil
-				a.InsideStructureID = tc.inside // arrived (inside or at the slot)
-			})
-			tickCircuit(t, w, day) // arrival tick: mark visited, start dwell
-
-			got := firstVisitor(t, w)
-			if got == nil || len(got.VisitorState.VisitedBusinesses) != 1 ||
-				got.VisitorState.VisitedBusinesses[0] != smithy || got.VisitorState.DwellUntil == nil {
-				t.Fatalf("%s: visited=%v dwell=%v; want [smithy] + dwell set",
-					tc.name, visitedOf(got), dwellSet(got))
-			}
-
-			// No re-arrival loop: once the dwell elapses, the only shop is now marked
-			// visited, so the traveler does NOT re-target it — RoundTarget stays clear
-			// rather than re-picking smithy and walking back.
-			afterDwell := day.Add(time.Duration(sim.DefaultVisitorRoundDwellMinutes+1) * time.Minute)
-			setVisitorState(t, w, func(a *sim.Actor) { a.MoveIntent = nil })
-			tickCircuit(t, w, afterDwell)
-			if got := firstVisitor(t, w); got == nil || got.VisitorState.RoundTarget == smithy {
-				t.Fatalf("%s: re-targeted the visited shop %q — re-arrival loop", tc.name, smithy)
-			}
-		})
+	newWorld := func(t *testing.T) (*sim.World, func(), sim.ActorID) {
+		vw := newVisitorWorld()
+		vw.seedTavern(t)
+		vw.seedBusiness(t, smithy, "Blacksmith", sim.WorldPos{X: 288, Y: 320})
+		w, cancel := vw.load(t)
+		seedDayPlanSettings(t, w, loc)
+		tickCircuit(t, w, day) // spawn
+		id := firstVisitorID(t, w)
+		if id == "" {
+			cancel()
+			t.Fatal("no visitor spawned")
+		}
+		return w, cancel, id
 	}
+	record := func(t *testing.T, w *sim.World, id sim.ActorID, sid sim.StructureID) {
+		if _, err := w.Send(sim.RecordVisitorArrival(id, sid)); err != nil {
+			t.Fatalf("record: %v", err)
+		}
+	}
+	// atSmithy puts the visitor co-present inside the smithy — the location the recording
+	// gate now requires (a shop is marked only when he is actually there).
+	atSmithy := func(t *testing.T, w *sim.World) {
+		setVisitorState(t, w, func(a *sim.Actor) { a.InsideStructureID = smithy })
+	}
+
+	t.Run("co-present keeper-shop is recorded", func(t *testing.T) {
+		w, cancel, id := newWorld(t)
+		defer cancel()
+		atSmithy(t, w)
+		record(t, w, id, smithy)
+		if got := firstVisitor(t, w); got == nil || len(visitedOf(got)) != 1 || visitedOf(got)[0] != smithy {
+			t.Fatalf("visited=%v, want [smithy]", visitedOf(got))
+		}
+	})
+
+	t.Run("not co-present (elsewhere) is not recorded", func(t *testing.T) {
+		w, cancel, id := newWorld(t)
+		defer cancel()
+		// The visitor is still out by the anchor, NOT at the smithy; a stale / misrouted
+		// arrival (or a stray direct call) must record nothing even though the keeper is
+		// present — else a shop is "visited" the traveler never reached.
+		record(t, w, id, smithy)
+		if got := firstVisitor(t, w); got == nil || len(visitedOf(got)) != 0 {
+			t.Fatalf("visited=%v, want none (visitor isn't at the shop)", visitedOf(got))
+		}
+	})
+
+	t.Run("shut shop (keeper away) is not recorded", func(t *testing.T) {
+		w, cancel, id := newWorld(t)
+		defer cancel()
+		atSmithy(t, w)
+		if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+			for _, a := range world.Actors {
+				if a.WorkStructureID == smithy {
+					a.InsideStructureID = ""
+					a.Pos = sim.TilePos{X: sim.PadX + 1, Y: sim.PadY + 1} // keeper wandered far off
+				}
+			}
+			return nil, nil
+		}}); err != nil {
+			t.Fatal(err)
+		}
+		record(t, w, id, smithy)
+		if got := firstVisitor(t, w); got == nil || len(visitedOf(got)) != 0 {
+			t.Fatalf("visited=%v, want none (shut shop)", visitedOf(got))
+		}
+	})
+
+	t.Run("evening arrival is lodging, not a round", func(t *testing.T) {
+		w, cancel, id := newWorld(t)
+		defer cancel()
+		atSmithy(t, w)
+		setVisitorState(t, w, func(a *sim.Actor) { a.VisitorState.Phase = sim.VisitorPhaseLodging })
+		record(t, w, id, smithy)
+		if got := firstVisitor(t, w); got == nil || len(visitedOf(got)) != 0 {
+			t.Fatalf("visited=%v, want none (evening — lodging, not rounds)", visitedOf(got))
+		}
+	})
 }
 
 func visitedOf(a *sim.ActorSnapshot) []sim.StructureID {
@@ -323,9 +380,6 @@ func visitedOf(a *sim.ActorSnapshot) []sim.StructureID {
 		return nil
 	}
 	return a.VisitorState.VisitedBusinesses
-}
-func dwellSet(a *sim.ActorSnapshot) bool {
-	return a != nil && a.VisitorState != nil && a.VisitorState.DwellUntil != nil
 }
 
 func TestVisitorCircuit_DuskTurnsToLodging(t *testing.T) {

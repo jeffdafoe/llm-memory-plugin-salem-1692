@@ -3192,6 +3192,13 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 		// (renderLaborSelfState), the same predicate that re-grants her move_to, so
 		// this line and the tool can't drift. Mirrors the SeekWork felt-impulse line.
 		return fmt.Sprintf("%d. It weighs on you that you have drifted away from the paid job you are in the middle of — you should get back to it.\n", n), false
+	case sim.VisitorRoundsWarrantReason:
+		// LLM-379: the pacing beat for a traveler on his rounds — a felt pause to
+		// consider his next move. No named target (the engine does not choose his
+		// stop); the "## Your rounds" section lists the shops still open and their
+		// bearings, and he decides with move_to. Same no-coercion register as the
+		// seek-work / at-ease impulse lines.
+		return fmt.Sprintf("%d. You pause a moment on your rounds — thinking where to carry your pack and your news next, or whether the light is going and it's time to see about a bed.\n", n), false
 	case sim.ArrivalWarrantReason:
 		return renderArrivalWarrantLine(n, nameOf(w.TriggerActorID), r, placeNameOf, placeKeeperOf), false
 	case sim.NeedThresholdWarrantReason:

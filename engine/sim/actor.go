@@ -478,26 +478,18 @@ type VisitorState struct {
 	// linkage instead of re-promoting the same traveler as a duplicate persona.
 	RecurringID string
 
-	// Day-plan itinerary (LLM-373). The engine-driven business circuit the
-	// traveler walks during the daytime portion of its stay: it visits each open,
-	// tagged business once, lingers to trade/talk, then moves on. This state is
-	// stepped by dispatchVisitorCircuit (engine/sim/visitor.go) — the ENGINE owns
-	// the movement and phase transitions; the shared salem-visitor VA owns only
-	// the speech. Persisted (with the pack/purse and any booked-room grant) in the
-	// visitor.plan jsonb column so a mid-circuit deploy resumes the traveler on the
-	// same leg rather than restarting the rounds.
+	// Day-plan rounds (LLM-373, model-driven since LLM-379). During the daytime
+	// portion of his stay the traveler makes his rounds of the village, trading and
+	// passing news. He navigates HIMSELF with move_to — the engine renders his
+	// situation ("## Your rounds") and paces him (dispatchVisitorPacing) but no longer
+	// chooses his stops. Persisted (with the pack/purse and any booked-room grant) in
+	// the visitor.plan jsonb column so a mid-stay deploy resumes him.
 	//
-	//   - VisitedBusinesses: structures the traveler has already made its round at
-	//     (a keeper it has visited). The nearest-unvisited route skips these.
-	//   - RoundTarget: the business the traveler is currently walking to or
-	//     dwelling at. "" when between legs / not on the circuit.
-	//   - DwellUntil: while set and in the future the traveler lingers at
-	//     RoundTarget so a conversation with the keeper has room to happen before
-	//     it moves on; once passed the circuit picks the next open-unvisited shop.
-	//     nil when not dwelling.
+	//   - VisitedBusinesses: keeper-businesses he has actually called at, recorded on
+	//     real co-present arrival (cascade/visitor_arrival.go). The rounds cue renders
+	//     these back so a stateless shared VA "remembers" where it has been and routes
+	//     onward instead of repeating a shop.
 	VisitedBusinesses []StructureID
-	RoundTarget       StructureID
-	DwellUntil        *time.Time
 }
 
 // VisitorPhase is the visitor's lifecycle state — a small Go-owned enum
@@ -571,8 +563,8 @@ type LoadedVisitor struct {
 
 // cloneVisitorState deep-copies a VisitorState pointer. The scalar fields
 // (string / time.Time / VisitorPhase) copy by value with the struct copy; the
-// itinerary's VisitedBusinesses slice and DwellUntil pointer (LLM-373) are
-// deep-copied so a snapshot never aliases the world's mutable circuit state.
+// VisitedBusinesses slice (LLM-373) is deep-copied so a snapshot never aliases the
+// world's mutable rounds state.
 func cloneVisitorState(src *VisitorState) *VisitorState {
 	if src == nil {
 		return nil
@@ -580,10 +572,6 @@ func cloneVisitorState(src *VisitorState) *VisitorState {
 	cp := *src
 	if src.VisitedBusinesses != nil {
 		cp.VisitedBusinesses = append([]StructureID(nil), src.VisitedBusinesses...)
-	}
-	if src.DwellUntil != nil {
-		dwell := *src.DwellUntil
-		cp.DwellUntil = &dwell
 	}
 	return &cp
 }

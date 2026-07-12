@@ -29,7 +29,89 @@ func init() {
 				"so the traveler books through the real lodging flow.",
 			build: travelerSeekingBedScenario,
 		},
+		perceptionScenario{
+			name: "traveler_between_legs_navigates",
+			summary: "LLM-379: a peddler between legs of his rounds — out in the open, not in any shop. '## Your " +
+				"rounds' renders his situation for HIM to navigate: what he's already called at, the shops still " +
+				"open and their bearings, and the failing light — never a single 'go here next' target. The engine " +
+				"no longer picks his stops; he chooses with move_to.",
+			build: travelerBetweenLegsScenario,
+		},
 	)
+}
+
+func travelerBetweenLegsScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		peddlerID = sim.ActorID("vstr-0000abcd")
+		smithID   = sim.ActorID("ezekiel")
+		weaverID  = sim.ActorID("goodwife-mary")
+		smithy    = sim.StructureID("smithy")
+		weaver    = sim.StructureID("weaver")
+		cooper    = sim.StructureID("cooper") // already called at
+	)
+	now := 960 // 16:00 — the afternoon wearing on (dusk 18:00)
+	peddler := &sim.ActorSnapshot{
+		Kind:        sim.KindNPCShared,
+		DisplayName: "Elias Drum the peddler",
+		State:       sim.StateIdle,
+		Pos:         sim.TilePos{X: 80, Y: 120}, // out in the open, no shop, no huddle (padded tile)
+		Coins:       40,
+		Inventory:   map[sim.ItemKind]int{"cheese": 4, "iron": 2},
+		Needs:       map[sim.NeedKey]int{},
+		VisitorState: &sim.VisitorState{
+			Archetype:         "peddler",
+			Origin:            "Boston",
+			Disposition:       "weary",
+			Phase:             sim.VisitorPhaseMakingRounds,
+			VisitedBusinesses: []sim.StructureID{cooper},
+		},
+	}
+	// Two shops still open, at distinct bearings from the peddler; the smith is nearer
+	// (north), the weaver a short way east.
+	smith := &sim.ActorSnapshot{
+		Kind:               sim.KindNPCStateful,
+		DisplayName:        "Ezekiel Crane",
+		Role:               "blacksmith",
+		State:              sim.StateIdle,
+		Pos:                sim.TilePos{X: 80, Y: 112}, // north of the peddler
+		WorkStructureID:    smithy,
+		InsideStructureID:  smithy,
+		Needs:              map[sim.NeedKey]int{},
+		BusinessownerState: &sim.BusinessownerState{Flavor: "smith"},
+	}
+	weav := &sim.ActorSnapshot{
+		Kind:               sim.KindNPCStateful,
+		DisplayName:        "Goodwife Mary",
+		Role:               "weaver",
+		State:              sim.StateIdle,
+		Pos:                sim.TilePos{X: 95, Y: 120}, // a short way east of the peddler
+		WorkStructureID:    weaver,
+		InsideStructureID:  weaver,
+		Needs:              map[sim.NeedKey]int{},
+		BusinessownerState: &sim.BusinessownerState{Flavor: "weaver"},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		DawnMinute:       360,
+		DuskMinute:       1080,
+		DawnDuskMinuteOK: true,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			peddlerID: peddler, smithID: smith, weaverID: weav,
+		},
+		Structures: map[sim.StructureID]*sim.Structure{
+			smithy: plainStructure(smithy, "Smithy"),
+			weaver: plainStructure(weaver, "Weaver's"),
+			cooper: plainStructure(cooper, "Cooper's"),
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			// WorldPos.Tile() adds PadX=60/PadY=112: smithy → tile {80,112} (due north,
+			// ~8 tiles), weaver → tile {95,120} (east, ~15 tiles).
+			sim.VillageObjectID(smithy): {ID: sim.VillageObjectID(smithy), Pos: sim.WorldPos{X: 640, Y: 0}},
+			sim.VillageObjectID(weaver): {ID: sim.VillageObjectID(weaver), Pos: sim.WorldPos{X: 1120, Y: 256}},
+		},
+	}
+	return snap, peddlerID, nil
 }
 
 func travelerMakingRoundsScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {

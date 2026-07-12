@@ -76,6 +76,7 @@ const (
 	WarrantKindReturnToPost       WarrantKind = "return_to_post"       // engine-authored felt impulse: a laboring worker has wandered off the post — wake them to head back (LLM-268)
 	WarrantKindTendNeed           WarrantKind = "tend_need"            // engine-authored felt impulse: a workless idle worker has grown hungry/thirsty and can resolve it now — go eat/drink instead of hunting odd jobs (LLM-276)
 	WarrantKindAtEase             WarrantKind = "at_ease"              // engine-authored felt impulse: a comfortable (coin-rich) workless idle worker has nothing pressing — take its ease, a plain idle villager (LLM-352, the LLM-194 "later lever")
+	WarrantKindVisitorRounds      WarrantKind = "visitor_rounds"       // engine-paced beat for a stationary traveler on his rounds — wake him to choose his next stop (move_to) off the rendered situation; the engine no longer picks his destination (LLM-379)
 )
 
 // WarrantReason is the marker interface for kind-specific warrant payloads.
@@ -567,6 +568,21 @@ type SeekWorkWarrantReason struct{}
 func (SeekWorkWarrantReason) isWarrantReason()           {}
 func (SeekWorkWarrantReason) Kind() WarrantKind          { return WarrantKindSeekWork }
 func (SeekWorkWarrantReason) DedupDiscriminator() uint64 { return 0 }
+
+// VisitorRoundsWarrantReason paces a STATIONARY traveler on his daytime rounds so
+// he reconsiders where to take his trade next (LLM-379). The engine no longer picks
+// his stops — it renders the situation ("## Your rounds": shops still open + their
+// bearings, rounds so far, nightfall pressure) and this beat wakes him to choose with
+// move_to. The just-moved case is already covered by the arrival warrant; this only
+// fills the gaps when he stands still. Engine-authored felt impulse, no fields, no
+// named target — same non-coercive, non-rester-interrupting posture as SeekWork.
+// Not event-sourced, so DedupDiscriminator returns 0; the pacing loop's own
+// WarrantedSince pre-check prevents a second stamp on an open cycle.
+type VisitorRoundsWarrantReason struct{}
+
+func (VisitorRoundsWarrantReason) isWarrantReason()           {}
+func (VisitorRoundsWarrantReason) Kind() WarrantKind          { return WarrantKindVisitorRounds }
+func (VisitorRoundsWarrantReason) DedupDiscriminator() uint64 { return 0 }
 
 // AtEaseWarrantReason wakes a COMFORTABLE (coin-rich, at/above the seek-work
 // ceiling) workless idle Worker so it does the ordinary-villager things — wander,

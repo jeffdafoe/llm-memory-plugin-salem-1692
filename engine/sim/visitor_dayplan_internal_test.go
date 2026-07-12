@@ -7,6 +7,60 @@ import (
 	"time"
 )
 
+// TestVisitorPaceElapsed covers the stationary-traveler pace timer (LLM-379): with no
+// reactor tick yet (the just-spawned case) it measures from the world's LoadedAt anchor
+// and reports elapsed only strictly past the pace interval; a zero anchor never elapses.
+func TestVisitorPaceElapsed(t *testing.T) {
+	base := time.Date(2026, 7, 12, 15, 0, 0, 0, time.UTC)
+	w := &World{}
+	w.LoadedAt = base
+	a := &Actor{}
+
+	if visitorPaceElapsed(w, a, base.Add(DefaultVisitorPaceInterval-time.Minute)) {
+		t.Error("paced before the interval elapsed")
+	}
+	if !visitorPaceElapsed(w, a, base.Add(DefaultVisitorPaceInterval+time.Minute)) {
+		t.Error("did not pace after the interval elapsed")
+	}
+	w.LoadedAt = time.Time{}
+	if visitorPaceElapsed(w, a, base) {
+		t.Error("paced against a zero anchor")
+	}
+}
+
+// TestDispatchVisitorPacing_PacesLingeringHuddle — a traveler who finished trading but
+// still sits in the huddle (huddles linger until someone leaves) must still be paced to
+// move on (code_review). Pacing is NOT suppressed by CurrentHuddleID; the quiet timer is
+// the gate, and once he's stood quiet past the interval he gets a VisitorRounds warrant.
+func TestDispatchVisitorPacing_PacesLingeringHuddle(t *testing.T) {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatalf("load location: %v", err)
+	}
+	base := time.Date(2026, 7, 12, 15, 0, 0, 0, loc) // daytime (dawn 06:00 / dusk 18:00)
+	w := &World{Actors: map[ActorID]*Actor{}}
+	w.Settings.DawnTime = "06:00"
+	w.Settings.DuskTime = "18:00"
+	w.Settings.Location = loc
+	w.LoadedAt = base
+
+	v := &Actor{
+		ID:              "vstr-00001111",
+		Kind:            KindNPCShared,
+		State:           StateIdle,
+		CurrentHuddleID: "h1", // still in the shop huddle after the conversation went quiet
+		VisitorState:    &VisitorState{Phase: VisitorPhaseMakingRounds},
+	}
+	w.Actors[v.ID] = v
+
+	var tm VisitorCascadeTelemetry
+	dispatchVisitorPacing(w, VisitorTickInputs{Now: base.Add(DefaultVisitorPaceInterval + time.Minute)}, &tm)
+	if tm.RoundsPaced != 1 || v.WarrantedSince == nil {
+		t.Fatalf("a stationary traveler idling in a lingering huddle was not paced (RoundsPaced=%d, warranted=%v)",
+			tm.RoundsPaced, v.WarrantedSince != nil)
+	}
+}
+
 // TestVisitorIDFormat guards the minter↔DB-constraint contract: newVisitorActorID
 // and newRecurringVisitorID must match the visitor / recurring_visitor actor_id
 // CHECKs (^vstr-[0-9a-f]{8}$ and ^rvis-[0-9a-f]{8}$). randomHex takes a BYTE count
