@@ -127,8 +127,17 @@ func DecodePayArgs(raw json.RawMessage) (any, error) {
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
-	var args PayArgs
-	if err := dec.Decode(&args); err != nil {
+	// Wire struct tolerates the weak model's scalar shapes (LLM-377): a
+	// string-wrapped amount and the coin synonyms `coins` / `payment.coins`.
+	// PayArgs stays plain int, so HandlePay and the substrate are untouched.
+	var wire struct {
+		Recipient string       `json:"recipient"`
+		Amount    LenientInt   `json:"amount"`
+		Coins     LenientInt   `json:"coins"`   // synonym → amount
+		Payment   *coinPayment `json:"payment"` // synonym → amount
+		For       string       `json:"for"`
+	}
+	if err := dec.Decode(&wire); err != nil {
 		return nil, fmt.Errorf("pay: malformed arguments: %w", err)
 	}
 	// Trailing-data check — matches the speak pattern. dec.More() reports
@@ -139,6 +148,11 @@ func DecodePayArgs(raw json.RawMessage) (any, error) {
 			return nil, modelSafef("pay: trailing data after JSON object")
 		}
 		return nil, fmt.Errorf("pay: malformed trailing data: %w", err)
+	}
+	args := PayArgs{
+		Recipient: wire.Recipient,
+		Amount:    resolveCoinAmount(int(wire.Amount), wire.Coins, wire.Payment),
+		For:       wire.For,
 	}
 	if args.Recipient == "" {
 		return nil, modelSafef("pay: recipient is required")
