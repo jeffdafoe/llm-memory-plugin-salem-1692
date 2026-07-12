@@ -761,22 +761,30 @@ func TestHarness_ContextCancelled_BeforeFirstIter_Shutdown(t *testing.T) {
 
 // --- content-only response (no tool calls) ------------------------------
 
-func TestHarness_ContentOnlyResponse_EndsTickAsSuccess(t *testing.T) {
+// LLM-378: a content-only response with spoken substance is NOT end-of-thought
+// — words reach the scene only through speak(), so a bare-prose reply is heard
+// by no one. The harness reprompts once; here the model then ends via done(),
+// so the tick takes two iterations and ends TickStatusDone. (The RunTick-level
+// pin of the reprompt; the speak-completes-it and one-shot-cap arms live in
+// harness_bare_content_speak_test.go through the integration fixture. The empty
+// content-only case — genuine end-of-thought, no reprompt — is covered there
+// and by the noop-skip tests.)
+func TestHarness_ContentOnlyReply_RepromptedThenEnds(t *testing.T) {
 	w, cancel := newHarnessWorld(t, "attempt-A")
 	defer cancel()
 
-	client := llm.NewFakeClient(llm.ScriptedTurn{Response: llm.Response{
-		Content:    "I'll just sit and think",
-		StopReason: "end_turn",
-	}})
+	client := llm.NewFakeClient(
+		llm.ScriptedTurn{Response: llm.Response{Content: "I'll just sit and think", StopReason: "end_turn"}},
+		doneTurn("d1"), // after the steer, the model ends its turn
+	)
 	h, _ := newTestHarness(t, client, 0, 0)
 	result := h.RunTick(context.Background(), w, newTestJob("attempt-A", nil))
 
-	if result.TerminalStatus != sim.TickStatusSuccess {
-		t.Errorf("status: got %v, want Success (content-only is end-of-thought)", result.TerminalStatus)
+	if result.TerminalStatus != sim.TickStatusDone {
+		t.Errorf("status: got %v, want Done (reprompted content-only ends via done())", result.TerminalStatus)
 	}
-	if result.IterationCount != 1 {
-		t.Errorf("IterationCount: got %d, want 1", result.IterationCount)
+	if result.IterationCount != 2 {
+		t.Errorf("IterationCount: got %d, want 2 (one reprompt round after the bare-content response)", result.IterationCount)
 	}
 }
 

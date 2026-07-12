@@ -478,8 +478,12 @@ func TestHarness_NoopSkip_PeerPresent_FiresLLMCall(t *testing.T) {
 		t.Fatalf("seed huddle: %v", err)
 	}
 
-	// Scripted: content-only response (no tools) → harness returns Success.
-	fake := llm.NewFakeClient(llm.ScriptedTurn{Response: llm.Response{Content: "..."}})
+	// Scripted: an EMPTY content-only response (no tools, no spoken substance)
+	// → harness returns Success in one round. A non-empty reply would be
+	// reprompted per LLM-378, adding a round; this test only cares that the
+	// gate stepped aside and the LLM call FIRED, so the empty response keeps
+	// it to the single call the CallCount assertion below pins.
+	fake := llm.NewFakeClient(llm.ScriptedTurn{Response: llm.Response{Content: ""}})
 	h, _ := newTestHarness(t, fake, 0, 0)
 
 	job := newTestJob(attemptID, []sim.WarrantMeta{idleBackstopWarrant()})
@@ -503,7 +507,10 @@ func TestHarness_NoopSkip_HighInfoWarrant_FiresLLMCall(t *testing.T) {
 	attemptID := sim.TickAttemptID("attempt-noopskip-3")
 	setInFlight(t, w, attemptID)
 
-	fake := llm.NewFakeClient(llm.ScriptedTurn{Response: llm.Response{Content: "..."}})
+	// Empty content-only response (no tools, no spoken substance) → Success in
+	// one round; keeps CallCount at 1 (a non-empty reply would be reprompted,
+	// LLM-378). The test's point is that the high-info warrant fired the LLM.
+	fake := llm.NewFakeClient(llm.ScriptedTurn{Response: llm.Response{Content: ""}})
 	h, _ := newTestHarness(t, fake, 0, 0)
 
 	job := newTestJob(attemptID, []sim.WarrantMeta{{
