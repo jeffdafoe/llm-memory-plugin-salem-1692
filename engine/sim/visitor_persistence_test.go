@@ -178,14 +178,77 @@ func TestFinalizeLoad_DropsVisitorWithInvalidPhase(t *testing.T) {
 }
 
 func TestVisitorPhase_Valid(t *testing.T) {
-	for _, p := range []sim.VisitorPhase{sim.VisitorPhasePresent, sim.VisitorPhaseDeparting} {
+	for _, p := range []sim.VisitorPhase{
+		sim.VisitorPhasePresent, sim.VisitorPhaseArriving, sim.VisitorPhaseMakingRounds,
+		sim.VisitorPhaseLodging, sim.VisitorPhaseDeparting,
+	} {
 		if !p.Valid() {
 			t.Errorf("VisitorPhase(%q).Valid() = false, want true", p)
 		}
 	}
-	for _, p := range []sim.VisitorPhase{"", "departed", "loitering", "PRESENT"} {
+	for _, p := range []sim.VisitorPhase{"", "departed", "loitering", "PRESENT", "rounds"} {
 		if p.Valid() {
 			t.Errorf("VisitorPhase(%q).Valid() = true, want false", p)
 		}
+	}
+}
+
+// TestFinalizeLoad_RestoresDayPlan — the day-plan pack (Inventory), purse (Coins),
+// booked-room grant (RoomAccess), and itinerary (VisitorState) restore onto the
+// rehydrated Actor, so a mid-stay deploy resumes the traveler with its wares to pay
+// with and its room still booked (LLM-373).
+func TestFinalizeLoad_RestoresDayPlan(t *testing.T) {
+	repo, handles := mem.NewRepository()
+	now := time.Now().UTC()
+	expires := now.Add(3 * time.Hour)
+	const shop sim.StructureID = "str-smithy-0001"
+	roomExpiry := now.Add(8 * time.Hour)
+	lv := &sim.LoadedVisitor{
+		ID:          "vstr-0000a11e",
+		DisplayName: "Elias Drum the peddler",
+		Pos:         sim.TilePos{X: sim.PadX + 2, Y: sim.PadY + 2},
+		VisitorState: &sim.VisitorState{
+			Archetype:         "peddler",
+			Origin:            "Boston",
+			Disposition:       "weary",
+			ExpiresAt:         expires,
+			Phase:             sim.VisitorPhaseMakingRounds,
+			VisitedBusinesses: []sim.StructureID{shop},
+			RoundTarget:       "str-store-0002",
+		},
+		Inventory: map[sim.ItemKind]int{"cheese": 4, "iron": 2},
+		Coins:     37,
+		RoomAccess: map[sim.RoomAccessKey]*sim.RoomAccess{
+			{RoomID: 7, Source: sim.AccessSourceLedger}: {
+				RoomID: 7, Source: sim.AccessSourceLedger, LedgerID: 99, ExpiresAt: &roomExpiry, Active: true, CreatedAt: now,
+			},
+		},
+	}
+	handles.Visitors.Seed(map[sim.ActorID]*sim.LoadedVisitor{"vstr-0000a11e": lv})
+
+	w, err := sim.LoadWorld(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	a, ok := w.Actors["vstr-0000a11e"]
+	if !ok {
+		t.Fatal("day-plan visitor not rehydrated")
+	}
+	if a.Inventory["cheese"] != 4 || a.Inventory["iron"] != 2 {
+		t.Errorf("restored Inventory = %v; want cheese:4 iron:2", a.Inventory)
+	}
+	if a.Coins != 37 {
+		t.Errorf("restored Coins = %d; want 37", a.Coins)
+	}
+	grant, ok := a.RoomAccess[sim.RoomAccessKey{RoomID: 7, Source: sim.AccessSourceLedger}]
+	if !ok || grant == nil || !grant.Active || grant.LedgerID != 99 {
+		t.Errorf("restored RoomAccess grant = %+v; want the active ledger grant", grant)
+	}
+	if a.VisitorState.Phase != sim.VisitorPhaseMakingRounds || a.VisitorState.RoundTarget != "str-store-0002" {
+		t.Errorf("restored itinerary = phase %q target %q; want making_rounds / str-store-0002",
+			a.VisitorState.Phase, a.VisitorState.RoundTarget)
+	}
+	if len(a.VisitorState.VisitedBusinesses) != 1 || a.VisitorState.VisitedBusinesses[0] != shop {
+		t.Errorf("restored VisitedBusinesses = %v; want [%q]", a.VisitorState.VisitedBusinesses, shop)
 	}
 }

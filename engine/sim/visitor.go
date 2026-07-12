@@ -218,12 +218,14 @@ func init() {
 // reading SpawnSkipReason will misreport disabled worlds as low-roll
 // luck. See shared/notes/codebase/salem-engine-v2/visitor "Future work."
 type VisitorCascadeTelemetry struct {
-	DespawnsStarted int // visitors whose despawn walk was issued this tick
-	CleanedUp       int // visitor rows removed past ExpiresAt + grace
-	Spawned         int // new visitors created (0 or 1 per tick)
-	SpawnSkipChance int // 1 if spawn skipped — chance=0 OR unlucky roll; check SpawnSkipReason
-	SpawnSkipCap    int // 1 if spawn skipped because MaxConcurrent reached
-	SpawnSkipReason string
+	DespawnsStarted  int // visitors whose despawn walk was issued this tick
+	CleanedUp        int // visitor rows removed past ExpiresAt + grace
+	Spawned          int // new visitors created (0 or 1 per tick)
+	CircuitAdvanced  int // circuit legs advanced this tick (arrived + moved on, or first leg picked)
+	CircuitToLodging int // visitors that turned to the lodging phase this tick (evening / rounds done)
+	SpawnSkipChance  int // 1 if spawn skipped — chance=0 OR unlucky roll; check SpawnSkipReason
+	SpawnSkipCap     int // 1 if spawn skipped because MaxConcurrent reached
+	SpawnSkipReason  string
 }
 
 // VisitorTickInputs carries the per-tick inputs the dispatcher reads.
@@ -264,11 +266,14 @@ func TickVisitorCascade(inputs VisitorTickInputs) Command {
 			t := VisitorCascadeTelemetry{}
 			dispatchVisitorDespawn(w, inputs, &t)
 			dispatchVisitorCleanup(w, inputs, &t)
-			// Eco mode (LLM-313): visitors exist to be seen — pause SPAWNING
-			// while unwatched. Despawn/cleanup above keep running so existing
-			// visitors age out normally; spawning resumes on the first tick
-			// after a player's presence stamp is fresh again.
+			// Eco mode (LLM-313): visitors exist to be seen — pause the circuit and
+			// SPAWNING while unwatched. Despawn/cleanup above keep running so existing
+			// visitors age out normally; the circuit resumes stepping (and spawning
+			// resumes) on the first tick after a player's presence stamp is fresh
+			// again. Circuit before spawn so a freshly-spawned visitor (whose first
+			// leg spawn already issued) isn't re-stepped on its spawn tick.
 			if !ecoModeEngaged(w, inputs.Now) {
+				dispatchVisitorCircuit(w, inputs, &t)
 				dispatchVisitorSpawn(w, inputs, &t)
 			}
 			return t, nil
@@ -531,6 +536,19 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 		t.SpawnSkipReason = "disabled (chance=0)"
 		return
 	}
+	// Daytime spawns only (LLM-373): a traveler arrives on the road in daylight so
+	// it has business hours left to make its rounds before nightfall. A visitor that
+	// spawned after dusk would find every shop shut and skip straight to seeking a
+	// bed — off-key for the "peddler making the rounds" arc. Gate on the world's
+	// dawn/dusk window; a world with no usable dawn/dusk clock spawns anytime
+	// (fail-open, matching how the perception evening gates degrade on a bad clock).
+	if dawn, dusk, ok := worldDawnDuskMinutes(w); ok {
+		nowMin := localMinuteOfDay(w, inputs.Now)
+		if nowMin < dawn || nowMin >= dusk {
+			t.SpawnSkipReason = "outside daytime spawn window"
+			return
+		}
+	}
 	r := inputsRandOrDefault(inputs.Rand)
 	if r.Intn(1000) >= chance {
 		t.SpawnSkipChance = 1
@@ -604,26 +622,13 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 		}
 	}
 
-	// Stay window.
-	minStay := w.Settings.VisitorMinStayMinutes
-	if minStay <= 0 {
-		minStay = DefaultVisitorMinStayMinutes
-	}
-	maxStay := w.Settings.VisitorMaxStayMinutes
-	if maxStay <= 0 {
-		maxStay = DefaultVisitorMaxStayMinutes
-	}
-	if maxStay < minStay {
-		maxStay = minStay
-	}
-	stayMinutes := minStay
-	if maxStay > minStay {
-		// +1 makes the upper bound inclusive — matches the documented
-		// [min, max] semantics. r.Intn(n) returns [0, n), so n=maxStay-
-		// minStay+1 produces additions in [0, maxStay-minStay].
-		stayMinutes = minStay + r.Intn(maxStay-minStay+1)
-	}
-	expiresAt := inputs.Now.Add(time.Duration(stayMinutes) * time.Minute)
+	// Departure is schedule-anchored to the next daybreak (LLM-373), replacing the
+	// old random [min,max] stay: a traveler stays the night and leaves at first
+	// light. Default one night; a multi-night stay is a later setting. The
+	// Foundation despawn/cleanup reconcile is unchanged — it just reads this
+	// ExpiresAt. nextDaybreak fails open to a one-day fallback if the world has no
+	// usable dawn/dusk clock, so a bad clock can't mint a never-expiring visitor.
+	expiresAt := nextDaybreak(w, inputs.Now)
 
 	// Display name uniqueness — "Name the Archetype" with a numeric
 	// disambiguator on collision. Collisions with persistent NPCs are
@@ -652,6 +657,12 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 		log.Printf("sim/visitor: dispatchSpawn: actor-ID minting exhausted 10 retries; skipping")
 		return
 	}
+	// Means to pay (LLM-373): the traveler spawns carrying a pack of trade goods
+	// and a small purse. This is both its lodging payment — a room is bought by
+	// barter (pay_with_item), per LLM-353, or by coin — and its trade stock for the
+	// circuit. Without it, good prompting still yields an empty promise: a booking
+	// it can't complete with a tool call.
+	pack, purse := seedVisitorPack(r)
 	visitor := &Actor{
 		ID:                id,
 		DisplayName:       displayName,
@@ -660,13 +671,16 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 		Pos:               edgeTile,
 		InsideStructureID: "",
 		Needs:             seedVisitorNeeds(),
-		Inventory:         map[ItemKind]int{},
+		Inventory:         pack,
+		Coins:             purse,
 		VisitorState: &VisitorState{
 			Archetype:   profile.Archetype,
 			Origin:      profile.Origin,
 			Disposition: profile.Disposition,
 			ExpiresAt:   expiresAt,
-			Phase:       VisitorPhasePresent,
+			// Arriving: on the road, walking in to the first stop on its circuit. The
+			// circuit dispatcher flips it to making_rounds on arrival (LLM-373).
+			Phase: VisitorPhaseArriving,
 			// A returner's PERSONA is stable across visits, but its road-rumor is
 			// deliberately fresh each trip: a peddler coming back through carries the
 			// latest news, not last season's. So Payload is (re)selected here every
@@ -687,27 +701,29 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 			dueReturner.Name, dueReturner.Archetype, dueReturner.Origin, dueReturner.ID, id, dueReturner.VisitCount)
 	}
 
-	// Walk toward the destination. Tavern entry policy decides whether
-	// the visitor walks into the interior (open / default) or stops at
-	// a visitor slot (owner-only / closed). MoveActor itself classifies;
-	// the visitor cascade just hands it a StructureEnter destination and
-	// falls back to StructureVisit on rejection.
-	dest := NewStructureEnterDestination(destID)
-	if _, err := MoveActor(id, dest, false, inputs.Now).Fn(w); err != nil {
-		// EntryPolicy not open, no door, etc. — fall back to a visitor
-		// slot. structure_visit accepts every structure and pickVisitorSlot
-		// finds a tile in the loiter ring.
-		dest = NewStructureVisitDestination(destID)
-		if _, err := MoveActor(id, dest, false, inputs.Now).Fn(w); err != nil {
-			// Both failed. The visitor row is in place but standing at
-			// the edge tile; despawn / cleanup will collect after the
-			// stay window. Log so the admin can see it.
-			log.Printf("sim/visitor: dispatchSpawn: %s no walk to dest %s: %v", id, destID, err)
-		}
+	// First circuit leg (LLM-373): head to the nearest open business to trade and
+	// pass news. If none is open right now (keepers off-post), fall back to the
+	// town's gathering place (the tavern / destID) so the traveler still heads into
+	// the village core; the circuit re-routes to a shop on a later tick once one is
+	// tending. RoundTarget stays "" in the fallback so the circuit knows it has not
+	// been sent to a business yet.
+	target := destID
+	if biz, ok := pickNextOpenBusiness(w, visitor.Pos, nil); ok {
+		target = biz
+		visitor.VisitorState.RoundTarget = biz
 	}
+
+	// Walk toward the target. Entry policy decides whether the visitor walks into
+	// the interior (open / default) or stops at a visitor slot (owner-only /
+	// closed) — issueVisitorWalk hands MoveActor a StructureEnter destination and
+	// falls back to StructureVisit on rejection. leaveHuddle=false: a freshly-spawned
+	// visitor is not in a conversation. A dead-end leaves it at the edge tile for
+	// despawn/cleanup to collect after the stay window.
+	issueVisitorWalk(w, id, target, false, inputs.Now)
 	t.Spawned++
-	log.Printf("sim/visitor: spawn %s (id=%s, archetype=%s, origin=%s, disposition=%s, stay=%dm, edge=(%d,%d))",
-		displayName, id, profile.Archetype, profile.Origin, profile.Disposition, stayMinutes, edgeTile.X, edgeTile.Y)
+	log.Printf("sim/visitor: spawn %s (id=%s, archetype=%s, origin=%s, disposition=%s, depart=%s, target=%s, edge=(%d,%d))",
+		displayName, id, profile.Archetype, profile.Origin, profile.Disposition,
+		expiresAt.Format("2006-01-02 15:04"), target, edgeTile.X, edgeTile.Y)
 }
 
 // rehydrateVisitorsOnLoad restores the durable in-flight visitor mirror
@@ -727,9 +743,10 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 // consistent checkpoint (a visitor and the rest of the world write in the SAME
 // SaveWorld Tx); it means a manual / out-of-band edit.
 //
-// The Actor is reconstructed exactly the way dispatchVisitorSpawn mints one —
-// KindNPCShared, the shared salem-visitor VA, needs seeded to 0, empty inventory,
-// StateIdle — differing only in the persisted identity / position / VisitorState.
+// The Actor is reconstructed the way dispatchVisitorSpawn mints one —
+// KindNPCShared, the shared salem-visitor VA, needs seeded to 0, StateIdle —
+// differing in the persisted identity / position / VisitorState and, from LLM-373,
+// the day-plan pack / purse / booked-room grant restored off the plan jsonb.
 // Secondary-index membership (outdoorActors / actorsByStructure) is set to match
 // the loaded InsideStructureID.
 func (w *World) rehydrateVisitorsOnLoad(ctx context.Context) error {
@@ -774,6 +791,18 @@ func (w *World) rehydrateVisitorsOnLoad(ctx context.Context) error {
 			elapsed++
 			continue
 		}
+		// Pack / purse / booked-room grant ride on the plan jsonb (LLM-373), restored
+		// here so a mid-stay deploy resumes the traveler with its wares to pay with
+		// and its room still booked. nil maps seed empty (a traveler that carried
+		// nothing, or a row written before the plan column existed).
+		inventory := lv.Inventory
+		if inventory == nil {
+			inventory = map[ItemKind]int{}
+		}
+		roomAccess := lv.RoomAccess
+		if roomAccess == nil {
+			roomAccess = map[RoomAccessKey]*RoomAccess{}
+		}
 		actor := &Actor{
 			ID:                id,
 			DisplayName:       lv.DisplayName,
@@ -782,7 +811,9 @@ func (w *World) rehydrateVisitorsOnLoad(ctx context.Context) error {
 			Pos:               lv.Pos,
 			InsideStructureID: lv.InsideStructureID,
 			Needs:             seedVisitorNeeds(),
-			Inventory:         map[ItemKind]int{},
+			Inventory:         inventory,
+			Coins:             lv.Coins,
+			RoomAccess:        roomAccess,
 			VisitorState:      lv.VisitorState,
 			State:             StateIdle,
 		}
@@ -801,6 +832,280 @@ func (w *World) rehydrateVisitorsOnLoad(ctx context.Context) error {
 		log.Printf("sim: rehydrated %d in-flight visitor(s); dropped %d whose stay elapsed while down", restored, elapsed)
 	}
 	return nil
+}
+
+// DefaultVisitorRoundDwellMinutes is how long a traveler lingers at each business
+// on its circuit before moving on — long enough for a real exchange with the
+// keeper (conversation runs on the reactor cadence while it stands there), short
+// enough to visit several shops over an afternoon. Wall-clock minutes: the Salem
+// clock is real-time.
+const DefaultVisitorRoundDwellMinutes = 20
+
+// dispatchVisitorCircuit steps each in-flight traveler's day-plan (LLM-373). The
+// ENGINE owns the movement and the phase transitions; the shared salem-visitor VA
+// owns only the speech that happens once the traveler is co-present with a keeper.
+//
+// Per phase:
+//   - arriving / making_rounds (and a legacy 'present' row): the daytime business
+//     circuit. Walk to the nearest open, unvisited business; on arrival linger
+//     (DwellUntil) so a conversation has room to happen, then move on to the next.
+//     When the civil evening opens — or no open business remains and it is late —
+//     turn to the lodging phase.
+//   - lodging: the evening. The engine walks the traveler to the tavern; from there
+//     the evening-leisure + seek-a-bed perception cues drive the booking. The engine
+//     does not force the tool call — a traveler that won't book is a prompt bug.
+//   - departing: owned by dispatchVisitorDespawn; skipped here.
+//
+// MUST run inside a Command.Fn on the world goroutine (mutates actors + issues
+// MoveActor). A walk in flight (MoveIntent != nil) is left to finish.
+func dispatchVisitorCircuit(w *World, inputs VisitorTickInputs, t *VisitorCascadeTelemetry) {
+	now := inputs.Now
+	for id, actor := range w.Actors {
+		if actor == nil || actor.VisitorState == nil {
+			continue
+		}
+		vs := actor.VisitorState
+		if vs.Phase == VisitorPhaseDeparting {
+			continue // despawn owns it
+		}
+		if vs.Phase == VisitorPhaseLodging {
+			stepVisitorLodging(w, actor, now)
+			continue
+		}
+		// Daytime circuit phases: arriving / making_rounds / present (legacy).
+		if !visitorDaytime(w, now) {
+			// Evening: stop the rounds and turn to lodging. Clear the in-flight round
+			// leg so the evening cues (not a stale shop target) drive the traveler on.
+			vs.Phase = VisitorPhaseLodging
+			vs.RoundTarget = ""
+			vs.DwellUntil = nil
+			t.CircuitToLodging++
+			stepVisitorLodging(w, actor, now)
+			continue
+		}
+		if actor.MoveIntent != nil {
+			continue // still walking to its current target — let it finish
+		}
+		if vs.Phase == VisitorPhaseArriving || vs.Phase == VisitorPhasePresent {
+			vs.Phase = VisitorPhaseMakingRounds
+		}
+		// Arrived (or the move ended): record the visit and start the dwell, then
+		// linger until DwellUntil before advancing to the next shop.
+		if vs.RoundTarget != "" {
+			switch {
+			case vs.DwellUntil == nil:
+				if actor.InsideStructureID != vs.RoundTarget {
+					// The walk ended without reaching the shop interior — a StructureVisit
+					// fallback (owner-only / shut on arrival) or a failed path leaves the
+					// traveler OUTSIDE, not co-present with the keeper. Don't count that as a
+					// round made (it would skip the shop forever); drop the leg and re-pick
+					// next tick — it re-routes to the same open shop and enters once
+					// policy/path allow, or moves on when the shop closes. Only a confirmed
+					// interior arrival is a visit.
+					vs.RoundTarget = ""
+					continue
+				}
+				// Co-present with the keeper — mark the round made and linger so the VA can
+				// trade / pass news.
+				vs.VisitedBusinesses = appendUniqueStructure(vs.VisitedBusinesses, vs.RoundTarget)
+				dwell := now.Add(time.Duration(DefaultVisitorRoundDwellMinutes) * time.Minute)
+				vs.DwellUntil = &dwell
+				continue
+			case now.Before(*vs.DwellUntil):
+				continue // still lingering
+			default:
+				vs.RoundTarget = ""
+				vs.DwellUntil = nil
+			}
+		}
+		// Between legs: route to the next open, unvisited business.
+		if vs.RoundTarget == "" {
+			next, ok := pickNextOpenBusiness(w, actor.Pos, vs.VisitedBusinesses)
+			if !ok {
+				continue // no open unvisited shop right now — idle until evening / retry
+			}
+			vs.RoundTarget = next
+			issueVisitorWalk(w, id, next, true, now)
+			t.CircuitAdvanced++
+		}
+	}
+}
+
+// stepVisitorLodging walks a lodging-phase traveler to the tavern so it is
+// co-present with the innkeeper (arrival forms the business huddle → a turn where
+// the seek-a-bed cue fires) and, once booked, is inside its inn to bed down. The
+// engine issues the walk; the model books. No-op while the traveler is already
+// walking, asleep, inside the inn, or standing at its door — so it is never
+// re-walked or woken.
+func stepVisitorLodging(w *World, actor *Actor, now time.Time) {
+	if actor.State == StateSleeping {
+		return // abed — the lodger sleep arm owns it
+	}
+	tavern, ok := findLodgingStructure(w)
+	if !ok {
+		return // no inn placed — nothing to do
+	}
+	if actor.InsideStructureID == tavern {
+		return // inside the inn — the seek-a-bed / evening cues + lodger sleep arm take over
+	}
+	if moveIntentTargetsStructure(actor.MoveIntent, tavern) {
+		return // already walking in — let it finish
+	}
+	// (Re)issue a walk to the inn, superseding any stale daytime move (a shop leg
+	// still in flight when dusk fell — LeaveHuddleFirst pulls the traveler off it).
+	// Keep aiming for the interior (StructureEnter) rather than stopping at the
+	// doorstep, so the traveler ends up co-present with the innkeeper where the
+	// seek-a-bed cue fires and it can book — not stranded outside.
+	issueVisitorWalk(w, actor.ID, tavern, true, now)
+}
+
+// moveIntentTargetsStructure reports whether an in-flight move is aimed at
+// structureID — a StructureEnter or StructureVisit destination both carry the id.
+// Used to tell "already walking to the inn" from a stale daytime leg (LLM-373).
+func moveIntentTargetsStructure(mi *MoveIntent, structureID StructureID) bool {
+	return mi != nil && mi.Destination.StructureID != nil && *mi.Destination.StructureID == structureID
+}
+
+// issueVisitorWalk sends a visitor toward a structure, entering the interior when
+// entry policy allows and falling back to a loiter slot outside otherwise — the
+// same StructureEnter → StructureVisit fallback the spawn walk uses. leaveHuddle
+// pulls the visitor out of any conversation first (true when moving on from a shop
+// or to the inn). A dead-end (no path either way) is logged, never fatal.
+func issueVisitorWalk(w *World, id ActorID, target StructureID, leaveHuddle bool, now time.Time) {
+	dest := NewStructureEnterDestination(target)
+	if _, err := MoveActor(id, dest, leaveHuddle, now).Fn(w); err != nil {
+		dest = NewStructureVisitDestination(target)
+		if _, err := MoveActor(id, dest, leaveHuddle, now).Fn(w); err != nil {
+			log.Printf("sim/visitor: circuit: %s no walk to %s: %v", id, target, err)
+		}
+	}
+}
+
+// pickNextOpenBusiness returns the nearest open, unvisited business to `from` — a
+// structure kept by a present businessowner, excluding the inn (the evening lodging
+// venue, not a daytime round stop) and anything already visited. keeperPresentAt is
+// the LLM-366 shut-status check, so a shut shop is skipped and may be picked up on a
+// later tick once its keeper is tending. Distance is Chebyshev to the structure's
+// placement; ties break on the smaller structure id for determinism. ok=false when
+// no eligible business is open.
+func pickNextOpenBusiness(w *World, from TilePos, visited []StructureID) (StructureID, bool) {
+	visitedSet := make(map[StructureID]bool, len(visited))
+	for _, s := range visited {
+		visitedSet[s] = true
+	}
+	var bestID StructureID
+	bestDist := -1
+	for _, keeper := range w.Actors {
+		if keeper == nil || keeper.BusinessownerState == nil || keeper.WorkStructureID == "" {
+			continue
+		}
+		sid := keeper.WorkStructureID
+		if visitedSet[sid] || structureIsLodging(w, sid) {
+			continue
+		}
+		if !keeperPresentAt(w, sid) {
+			continue // shut right now — a later tick may find it tending
+		}
+		vobj, ok := villageObjectForStructureOnly(w, sid)
+		if !ok || vobj == nil {
+			continue
+		}
+		d := from.Chebyshev(vobj.Pos.Tile())
+		if bestDist == -1 || d < bestDist || (d == bestDist && sid < bestID) {
+			bestDist = d
+			bestID = sid
+		}
+	}
+	return bestID, bestDist != -1
+}
+
+// structureIsLodging reports whether a structure is the village's inn (its backing
+// VillageObject carries the "lodging" tag) — the evening venue the circuit excludes
+// from its daytime rounds.
+func structureIsLodging(w *World, sid StructureID) bool {
+	vobj, ok := villageObjectForStructureOnly(w, sid)
+	if !ok || vobj == nil {
+		return false
+	}
+	return vobj.HasTag("lodging")
+}
+
+// appendUniqueStructure appends id to s only if not already present — the visited
+// set stays deduped as the circuit revisits the same RoundTarget across ticks.
+func appendUniqueStructure(s []StructureID, id StructureID) []StructureID {
+	for _, x := range s {
+		if x == id {
+			return s
+		}
+	}
+	return append(s, id)
+}
+
+// worldDawnDuskMinutes returns the world's dawn and dusk as minute-of-day in the
+// village timezone, or ok=false when the configured DawnTime/DuskTime don't parse
+// (callers fail open). Mirrors effectiveShiftWindow's unscheduled branch.
+func worldDawnDuskMinutes(w *World) (dawn, dusk int, ok bool) {
+	dawnH, dawnM, err := ParseHM(w.Settings.DawnTime)
+	if err != nil {
+		return 0, 0, false
+	}
+	duskH, duskM, err := ParseHM(w.Settings.DuskTime)
+	if err != nil {
+		return 0, 0, false
+	}
+	return dawnH*60 + dawnM, duskH*60 + duskM, true
+}
+
+// visitorDaytime reports whether now falls in the village's business hours
+// [dawn, dusk) — when the circuit runs. Fails open to daytime on an unusable
+// dawn/dusk clock (the circuit keeps running rather than lodging on a bad clock;
+// ExpiresAt still bounds the stay).
+func visitorDaytime(w *World, now time.Time) bool {
+	dawn, dusk, ok := worldDawnDuskMinutes(w)
+	if !ok {
+		return true
+	}
+	nowMin := localMinuteOfDay(w, now)
+	return nowMin >= dawn && nowMin < dusk
+}
+
+// nextDaybreak returns the next daybreak instant (the village dawn minute in the
+// world timezone strictly after now) — the traveler's schedule-anchored departure
+// deadline (LLM-373). Fails open to a one-day fallback if the world has no usable
+// dawn clock, so a misconfiguration can't mint a never-expiring visitor.
+func nextDaybreak(w *World, now time.Time) time.Time {
+	dawn, _, ok := worldDawnDuskMinutes(w)
+	loc := w.Settings.Location
+	if !ok || loc == nil {
+		return now.Add(24 * time.Hour)
+	}
+	local := now.In(loc)
+	dawnInstant := time.Date(local.Year(), local.Month(), local.Day(), dawn/60, dawn%60, 0, 0, loc)
+	if !dawnInstant.After(now) {
+		dawnInstant = dawnInstant.AddDate(0, 0, 1)
+	}
+	return dawnInstant
+}
+
+// visitorWareKinds are the trade goods a traveler may spawn carrying (LLM-373),
+// drawn from the seeded item catalog so a keeper values them for barter. A small
+// varied pack reads as a peddler's stock and, with the purse, pays for a room
+// (LLM-353). Generic, not archetype-specific — per-archetype packs are a later
+// refinement.
+var visitorWareKinds = []ItemKind{"cheese", "ale", "iron", "bread"}
+
+// seedVisitorPack returns the pack (inventory) and purse (coins) a freshly-spawned
+// traveler carries: two distinct wares (a few units each) plus a modest purse. The
+// coins guarantee it can cover a room (default 4/night); the wares give the
+// barter-first payment its flavor and stock the circuit's trade talk. r is non-nil.
+func seedVisitorPack(r *rand.Rand) (map[ItemKind]int, int) {
+	pack := map[ItemKind]int{}
+	i := r.Intn(len(visitorWareKinds))
+	j := (i + 1 + r.Intn(len(visitorWareKinds)-1)) % len(visitorWareKinds)
+	pack[visitorWareKinds[i]] = 3 + r.Intn(4) // 3..6
+	pack[visitorWareKinds[j]] = 2 + r.Intn(3) // 2..4
+	purse := 30 + r.Intn(21)                  // 30..50
+	return pack, purse
 }
 
 // visitorProfile holds the four persona slots a freshly-spawned visitor

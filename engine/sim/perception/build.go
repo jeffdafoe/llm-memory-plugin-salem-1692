@@ -455,6 +455,12 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	if actorSnap.WorkStructureID != "" && actorSnap.InsideStructureID == actorSnap.WorkStructureID {
 		p.LodgingOffer = buildLodgingOfferCue(snap, actorID, p.KeeperLodging, p.Surroundings.HuddleMembers)
 	}
+	// Traveler day-plan cues (LLM-373): the daytime "## On your rounds" circuit
+	// framing, and the evening "## A bed for the night" booking cue. Both nil for a
+	// non-traveler subject; the seek-a-bed cue additionally needs a homeless traveler,
+	// the civil evening, and a co-present innkeeper (see traveler_dayplan.go).
+	p.TravelerRounds = buildTravelerRounds(snap, actorSnap, p.Surroundings.HuddleMembers)
+	p.TravelerSeekBed = buildTravelerSeekBed(snap, actorSnap, p.Surroundings.HuddleMembers)
 	p.SummonsForYou = buildSummonsForYou(actorSnap)
 	p.SummonRefusal = buildSummonRefusal(actorSnap)
 
@@ -2365,7 +2371,7 @@ func nearestTaggedVenue(snap *sim.Snapshot, a *sim.ActorSnapshot, tag string) (s
 // night-place is the rented inn; only the genuinely homeless (no home, no room
 // grant) stay on the duty steer's placeless wind-down arm.
 func buildEveningLeisure(snap *sim.Snapshot, a *sim.ActorSnapshot, anchors *AnchorsView) *EveningLeisureView {
-	if snap == nil || a == nil || anchors == nil {
+	if snap == nil || a == nil {
 		return nil
 	}
 	// Agent NPCs only — same scope as the duty steer (PCs are player-driven,
@@ -2378,6 +2384,21 @@ func buildEveningLeisure(snap *sim.Snapshot, a *sim.ActorSnapshot, anchors *Anch
 	// but guard explicitly so a sleeping actor that reaches perception is never
 	// cued to the tavern. code_review.
 	if a.State == sim.StateSleeping {
+		return nil
+	}
+	// Transient traveler (LLM-373): a homeless visitor has no night-place of its
+	// own, so the resident subjectNightPlace / inEveningLeisure gates below exclude
+	// it — but of an evening it is drawn to the tavern like anyone, for company and
+	// to seek its bed. Its own arm resolves the tavern and offers no home
+	// destination; it needs no home anchor, so it runs BEFORE the resident anchors
+	// guard (buildAnchors returns nil for a homeless, workless traveler). Residents
+	// (VisitorState nil) fall through to the standard path unchanged.
+	if a.VisitorState != nil {
+		return buildVisitorEveningLeisure(snap, a)
+	}
+	// Residents past here need a resolved home/work anchor (the standard path reads
+	// subjectNightPlace / offers a home destination).
+	if anchors == nil {
 		return nil
 	}
 	// Night-place: the structure the agent winds down to — its home if homed, else

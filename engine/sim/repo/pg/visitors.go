@@ -2,6 +2,7 @@ package pg
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -42,7 +43,7 @@ func NewVisitorsRepo(pool Pool) *VisitorsRepo {
 const loadAllSQLV = `
 SELECT actor_id, display_name, archetype, origin, disposition,
        position_x, position_y, inside_structure_id, expires_at, phase, payload,
-       recurring_visitor_id
+       recurring_visitor_id, plan
   FROM visitor`
 
 // upsertSQLV writes one visitor row. snapshot_gen carries the new checkpoint gen
@@ -51,9 +52,9 @@ const upsertSQLV = `
 INSERT INTO visitor (
     actor_id, display_name, archetype, origin, disposition,
     position_x, position_y, inside_structure_id, expires_at, phase, payload,
-    recurring_visitor_id, snapshot_gen
+    recurring_visitor_id, plan, snapshot_gen
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14
 )
 ON CONFLICT (actor_id) DO UPDATE SET
     display_name         = EXCLUDED.display_name,
@@ -67,6 +68,7 @@ ON CONFLICT (actor_id) DO UPDATE SET
     phase                = EXCLUDED.phase,
     payload              = EXCLUDED.payload,
     recurring_visitor_id = EXCLUDED.recurring_visitor_id,
+    plan                 = EXCLUDED.plan,
     snapshot_gen         = EXCLUDED.snapshot_gen`
 
 // deleteStaleSQLV prunes visitor rows whose snapshot_gen is below the current
@@ -81,6 +83,130 @@ const nextGenSQLV = `SELECT nextval('visitor_snapshot_gen_seq')`
 // the Tx duration to serialize concurrent SaveSnapshot calls. Multi-realm upgrade
 // path: replace 0 with hashtext($realm_id) when realms land.
 const advisoryLockSQLV = `SELECT pg_advisory_xact_lock(hashtext('visitor_snapshot'), 0)`
+
+// visitorPlanJSON is the serialized shape of the visitor.plan jsonb column — the
+// traveler's mutable day-plan (LLM-373). It gathers state that spans the visit and
+// must survive the constant deploys, drawn from two live sources at checkpoint:
+// the itinerary from VisitorState, and the pack / purse / booked-room grant from
+// the live Actor (the same actor the tier already reads Pos and DisplayName off).
+// None of it is reconcile-critical — the boot reconcile keys on the typed
+// expires_at + phase columns — so it rides as one document rather than a spray of
+// typed columns, the way labor_contract.reward_items does.
+type visitorPlanJSON struct {
+	// Itinerary — VisitorState.VisitedBusinesses / RoundTarget / DwellUntil.
+	VisitedBusinesses []string   `json:"visited_businesses,omitempty"`
+	RoundTarget       string     `json:"round_target,omitempty"`
+	DwellUntil        *time.Time `json:"dwell_until,omitempty"`
+	// Pack + purse — Actor.Inventory / Actor.Coins. The barter wares and coins the
+	// traveler pays for its room and trades on its circuit with.
+	Inventory map[string]int `json:"inventory,omitempty"`
+	Coins     int            `json:"coins,omitempty"`
+	// Booked room(s) — Actor.RoomAccess. A visitor is firewalled out of the actor
+	// aggregate that writes room_access, so its lodging grant is NOT in that table;
+	// it rides here so the room stays booked across a restart. Crash-consistent with
+	// the sale: the completed nights_stay pay_ledger row is itself written only at the
+	// SaveWorld checkpoint (by Orders.SaveSnapshot), the SAME Tx this visitor tier
+	// writes in — so a crash before the checkpoint loses the grant AND the sale
+	// together (the traveler simply wasn't booked yet), never one without the other.
+	RoomAccess []visitorGrantJSON `json:"room_access,omitempty"`
+}
+
+// visitorGrantJSON is the on-disk element shape for a persisted RoomAccess grant.
+type visitorGrantJSON struct {
+	RoomID    int64      `json:"room_id"`
+	Source    string     `json:"source"`
+	LedgerID  int64      `json:"ledger_id,omitempty"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	Active    bool       `json:"active"`
+	CreatedAt time.Time  `json:"created_at"`
+}
+
+// encodeVisitorPlan marshals the live day-plan of one visitor to the plan jsonb
+// text. The itinerary comes off VisitorState; the pack / purse / grant come off
+// the live Actor. Bound as text and cast to ::jsonb in the UPSERT (pgx encodes a
+// Go string as text), matching encodeRewardItems. SaveSnapshot only calls this for
+// a VisitorState != nil actor; the nil guard hardens the helper against a future
+// caller.
+func encodeVisitorPlan(a *sim.Actor) (string, error) {
+	if a == nil || a.VisitorState == nil {
+		return "{}", nil
+	}
+	vs := a.VisitorState
+	plan := visitorPlanJSON{
+		RoundTarget: string(vs.RoundTarget),
+		DwellUntil:  vs.DwellUntil,
+		Coins:       a.Coins,
+	}
+	for _, sid := range vs.VisitedBusinesses {
+		plan.VisitedBusinesses = append(plan.VisitedBusinesses, string(sid))
+	}
+	if len(a.Inventory) > 0 {
+		plan.Inventory = make(map[string]int, len(a.Inventory))
+		for kind, qty := range a.Inventory {
+			plan.Inventory[string(kind)] = qty
+		}
+	}
+	for _, ra := range a.RoomAccess {
+		if ra == nil {
+			continue
+		}
+		plan.RoomAccess = append(plan.RoomAccess, visitorGrantJSON{
+			RoomID:    int64(ra.RoomID),
+			Source:    string(ra.Source),
+			LedgerID:  ra.LedgerID,
+			ExpiresAt: ra.ExpiresAt,
+			Active:    ra.Active,
+			CreatedAt: ra.CreatedAt,
+		})
+	}
+	b, err := json.Marshal(plan)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+// applyVisitorPlan parses the plan jsonb back onto a LoadedVisitor: the itinerary
+// onto its VisitorState, and the pack / purse / booked-room grant onto the fields
+// rehydrateVisitorsOnLoad rebuilds the live Actor from. Empty/absent bytes leave
+// the visitor at its zero plan (a freshly-spawned row before its first checkpoint,
+// or one written by an engine that predates the column).
+func applyVisitorPlan(raw []byte, lv *sim.LoadedVisitor) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	var plan visitorPlanJSON
+	if err := json.Unmarshal(raw, &plan); err != nil {
+		return err
+	}
+	lv.VisitorState.RoundTarget = sim.StructureID(plan.RoundTarget)
+	lv.VisitorState.DwellUntil = plan.DwellUntil
+	for _, s := range plan.VisitedBusinesses {
+		lv.VisitorState.VisitedBusinesses = append(lv.VisitorState.VisitedBusinesses, sim.StructureID(s))
+	}
+	lv.Coins = plan.Coins
+	if len(plan.Inventory) > 0 {
+		lv.Inventory = make(map[sim.ItemKind]int, len(plan.Inventory))
+		for kind, qty := range plan.Inventory {
+			lv.Inventory[sim.ItemKind(kind)] = qty
+		}
+	}
+	for _, g := range plan.RoomAccess {
+		if lv.RoomAccess == nil {
+			lv.RoomAccess = make(map[sim.RoomAccessKey]*sim.RoomAccess)
+		}
+		key := sim.RoomAccessKey{RoomID: sim.RoomID(g.RoomID), Source: sim.RoomAccessSource(g.Source)}
+		lv.RoomAccess[key] = &sim.RoomAccess{
+			RoomID:    sim.RoomID(g.RoomID),
+			Source:    sim.RoomAccessSource(g.Source),
+			LedgerID:  g.LedgerID,
+			ExpiresAt: g.ExpiresAt,
+			Active:    g.Active,
+			CreatedAt: g.CreatedAt,
+		}
+	}
+	return nil
+}
 
 // LoadAll loads every visitor row into a map of the reload-DTO the rehydrate pass
 // (World.rehydrateVisitorsOnLoad) rebuilds a live Actor from. Runs against the
@@ -108,9 +234,10 @@ func (r *VisitorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Loaded
 			phase       string
 			payload     string
 			recurringID *string
+			plan        []byte
 		)
 		if err := rows.Scan(&actorID, &displayName, &archetype, &origin, &disposition,
-			&posX, &posY, &insideID, &expiresAt, &phase, &payload, &recurringID); err != nil {
+			&posX, &posY, &insideID, &expiresAt, &phase, &payload, &recurringID, &plan); err != nil {
 			return nil, fmt.Errorf("pg visitors LoadAll scan: %w", err)
 		}
 		var inside sim.StructureID
@@ -121,7 +248,7 @@ func (r *VisitorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Loaded
 		if recurringID != nil {
 			recurring = *recurringID
 		}
-		out[sim.ActorID(actorID)] = &sim.LoadedVisitor{
+		lv := &sim.LoadedVisitor{
 			ID:                sim.ActorID(actorID),
 			DisplayName:       displayName,
 			Pos:               sim.TilePos{X: posX, Y: posY},
@@ -136,6 +263,10 @@ func (r *VisitorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Loaded
 				RecurringID: recurring,
 			},
 		}
+		if err := applyVisitorPlan(plan, lv); err != nil {
+			return nil, fmt.Errorf("pg visitors LoadAll: parse plan for %s: %w", actorID, err)
+		}
+		out[sim.ActorID(actorID)] = lv
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("pg visitors LoadAll iter: %w", err)
@@ -203,6 +334,12 @@ func (r *VisitorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[s
 		if vs.RecurringID != "" {
 			recurringArg = vs.RecurringID
 		}
+		// The day-plan document (LLM-373): itinerary off VisitorState, pack / purse /
+		// booked-room grant off the live Actor. Bound as text and cast ::jsonb.
+		planJSON, err := encodeVisitorPlan(a)
+		if err != nil {
+			return fmt.Errorf("pg visitors SaveSnapshot: encode plan id=%s: %w", a.ID, err)
+		}
 		if _, err := tx.Exec(ctx, upsertSQLV,
 			string(a.ID),     // $1  actor_id
 			a.DisplayName,    // $2  display_name
@@ -216,7 +353,8 @@ func (r *VisitorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[s
 			string(vs.Phase), // $10 phase
 			vs.Payload,       // $11 payload
 			recurringArg,     // $12 recurring_visitor_id (nullable)
-			gen,              // $13 snapshot_gen
+			planJSON,         // $13 plan (::jsonb)
+			gen,              // $14 snapshot_gen
 		); err != nil {
 			return fmt.Errorf("pg visitors SaveSnapshot: upsert id=%s: %w", a.ID, err)
 		}

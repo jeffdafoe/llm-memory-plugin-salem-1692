@@ -76,6 +76,13 @@ type Payload struct {
 	// traveler. Nil for every persistent NPC / PC (the steady-state case). LLM-370.
 	SelfTraveler *TravelerSelfView
 
+	// TravelerRounds / TravelerSeekBed are the traveler's day-plan cues (LLM-373):
+	// the daytime "## On your rounds" circuit framing, and the evening "## A bed for
+	// the night" booking cue at the inn. Both non-nil only for a salem-visitor in the
+	// matching phase; see traveler_dayplan.go.
+	TravelerRounds  *TravelerRoundsView
+	TravelerSeekBed *TravelerSeekBedView
+
 	// Actor is the subject actor's own current decision-relevant state.
 	Actor ActorView
 
