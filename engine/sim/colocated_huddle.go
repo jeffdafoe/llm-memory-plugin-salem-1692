@@ -176,18 +176,21 @@ func conversationalScopeStructure(w *World, a *Actor) StructureID {
 	return ""
 }
 
-// InOpenLoiterStallScope reports whether actor a is standing OUTDOORS at the
-// loiter pin of an OPEN structure — a shop whose keeper is present and awake, so
-// a is conversationally scoped across the threshold to the keeper working within
-// (conversationalScopeStructure resolves to that structure). The arrival-encounter
-// cascade excludes such an actor from an open-ground encounter (LLM-375): a second
-// customer walking up must not grab the two co-loiterers into a peer huddle that
-// shadows the stall — after which neither could resolve the keeper for a
-// pay/quote/greet. Their conversation belongs to the keeper's structure huddle,
-// which their own speak/transaction forms/joins via EnsureColocatedHuddle. A SHUT
-// shop resolves to "" (LLM-359) and is NOT in scope here, so loiterers at a closed
-// shop still meet on open ground as before. Read-only; safe on the world goroutine.
-func InOpenLoiterStallScope(w *World, a *Actor) bool {
+// InOpenLoiterStructureScope reports whether actor a is standing OUTDOORS at the
+// loiter pin of an OPEN worked structure — a shop, inn, workshop, or any building
+// whose keeper is present and awake — so a is conversationally scoped across the
+// threshold to the keeper working within (conversationalScopeStructure resolves to
+// that structure). The arrival-encounter cascade excludes such an actor from an
+// open-ground encounter (LLM-375): a second customer walking up must not grab the
+// two co-loiterers into a peer huddle that shadows the structure — after which
+// neither could resolve the keeper for a pay/quote/greet. Their conversation
+// belongs to the keeper's structure huddle, which their own speak/transaction
+// forms/joins via EnsureColocatedHuddle. The breadth is intended: the same shadow
+// afflicts any open cross-threshold structure, not just an owner-only stall. A SHUT
+// structure resolves to "" (LLM-359) and is NOT in scope here, so loiterers at a
+// closed shop still meet on open ground as before. Read-only; safe on the world
+// goroutine.
+func InOpenLoiterStructureScope(w *World, a *Actor) bool {
 	if a == nil || a.InsideStructureID != "" {
 		return false
 	}

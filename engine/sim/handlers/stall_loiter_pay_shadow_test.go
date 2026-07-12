@@ -2,6 +2,7 @@ package handlers_test
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -104,7 +105,11 @@ func buildStallLoiterWorld(t *testing.T) (w *sim.World, pin sim.TilePos, stop fu
 func huddleOfActor(t *testing.T, w *sim.World, id sim.ActorID) sim.HuddleID {
 	t.Helper()
 	v, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		return world.Actors[id].CurrentHuddleID, nil
+		a := world.Actors[id]
+		if a == nil {
+			return sim.HuddleID(""), fmt.Errorf("actor %q not seeded", id)
+		}
+		return a.CurrentHuddleID, nil
 	}})
 	if err != nil {
 		t.Fatalf("read huddle for %q: %v", id, err)
