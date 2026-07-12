@@ -378,7 +378,86 @@ func renderTravelerPreface(b *strings.Builder, v *TravelerSelfView) {
 	if rumor := sanitizeInline(v.Rumor); rumor != "" {
 		fmt.Fprintf(b, " Word reached you on the road that %s.", rumor)
 	}
+
+	// Returner continuity (LLM-372): a traveler who has walked this road before —
+	// and may remember specific townsfolk. Voiced as the stateless VA's own memory,
+	// tiered by visit count and by how recently it last saw a known player, never a
+	// raw count or date (scenes-not-stats). Only present for a repeat visit
+	// (VisitCount >= 2), so a first-time traveler never claims to have been here.
+	if v.VisitCount >= 2 {
+		fmt.Fprintf(b, " %s", returnerVisitClause(v.VisitCount))
+		if known := renderReturnerKnownClause(v.KnownHere); known != "" {
+			fmt.Fprintf(b, " %s", known)
+		}
+	}
 	b.WriteString("\n\n")
+}
+
+// returnerVisitClause tiers how many times a returner has passed through Salem
+// into prose — the felt-needs pattern applied to a visit count.
+func returnerVisitClause(visitCount int) string {
+	switch {
+	case visitCount <= 2:
+		return "You have passed through Salem before."
+	case visitCount <= 4:
+		return "You have come through Salem a few times before."
+	default:
+		return "Salem is no stranger to you — you have come through many times."
+	}
+}
+
+// renderReturnerKnownClause names the players a returner remembers: the most
+// recent by name with a recency, plus a second if there is one. Returns "" when
+// the returner recorded no one. Names are sanitized; empties are skipped.
+func renderReturnerKnownClause(known []TravelerKnownPC) string {
+	var names []string
+	var firstRecency sim.RecencyTier
+	for _, k := range known {
+		n := sanitizeInline(k.Name)
+		if n == "" {
+			continue
+		}
+		if len(names) == 0 {
+			firstRecency = k.Recency
+		}
+		names = append(names, n)
+		if len(names) == 2 {
+			break
+		}
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	rec := returnerRecencyClause(firstRecency)
+	if len(names) == 1 {
+		if rec != "" {
+			return fmt.Sprintf("You know %s here — you last saw them %s.", names[0], rec)
+		}
+		return fmt.Sprintf("You know %s here.", names[0])
+	}
+	if rec != "" {
+		return fmt.Sprintf("You know %s and %s here — you last saw %s %s.", names[0], names[1], names[0], rec)
+	}
+	return fmt.Sprintf("You know %s and %s here.", names[0], names[1])
+}
+
+// returnerRecencyClause maps a recency tier to the phrase vocabulary that fills a
+// "you last saw them ___" slot. "" for an unknown tier.
+func returnerRecencyClause(t sim.RecencyTier) string {
+	switch t {
+	case sim.RecencyRecent:
+		return "only lately"
+	case sim.RecencyDays:
+		return "some days back"
+	case sim.RecencyWeeks:
+		return "a few weeks back"
+	case sim.RecencyMonths:
+		return "a month or more ago"
+	case sim.RecencyLong:
+		return "a long while ago"
+	default:
+		return ""
+	}
 }
 
 // renderTurnState writes the conversation turn-state lines (ZBBS-WORK-370): who

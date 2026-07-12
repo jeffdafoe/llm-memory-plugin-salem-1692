@@ -1580,6 +1580,21 @@ type TravelerSelfView struct {
 	// no rumor-worthy beat was on hand at spawn; the preface drops the "Word
 	// reached you …" line entirely in that case.
 	Rumor string
+
+	// Returner continuity (LLM-372). Non-zero only for a returning traveler on a
+	// repeat visit (ActorSnapshot.Returner set, VisitCount >= 2). VisitCount tiers
+	// the "you have passed through Salem before" line; KnownHere names the players
+	// the traveler remembers — most-recent first, with a coarse recency — so the
+	// preface can voice a specific bond ("you know Sarah Hale here"). Empty for a
+	// one-shot stranger or a first-visit traveler; the preface drops the block.
+	VisitCount int
+	KnownHere  []TravelerKnownPC
+}
+
+// TravelerKnownPC is one player a returner remembers, projected for the preface.
+type TravelerKnownPC struct {
+	Name    string
+	Recency sim.RecencyTier
 }
 
 type HuddleMember struct {

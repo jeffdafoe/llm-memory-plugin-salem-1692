@@ -292,6 +292,9 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.VisitorMinStayMinutes = parseIntSetting(values, "visitor_min_stay_minutes", 240)
 	s.VisitorMaxStayMinutes = parseIntSetting(values, "visitor_max_stay_minutes", 1440)
 	s.VisitorTickInterval = parseDurationSetting(values, "visitor_tick_interval_seconds", 60*time.Second)
+	// LLM-372: returner comeback window (wall-clock days).
+	s.VisitorReturnMinDays = parseIntSetting(values, "visitor_return_min_days", sim.DefaultVisitorReturnMinDays)
+	s.VisitorReturnMaxDays = parseIntSetting(values, "visitor_return_max_days", sim.DefaultVisitorReturnMaxDays)
 
 	// Businessowner cooldowns.
 	s.BusinessownerGreetCooldownMinutes = parseIntSetting(values, "businessowner_greet_cooldown_minutes",

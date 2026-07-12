@@ -137,6 +137,34 @@ func TestGoldensTravelerPrefaceIffSubjectIsTraveler(t *testing.T) {
 	}
 }
 
+// TestGoldensReturnerContinuityIffRepeatVisit is the LLM-372 cross-scenario
+// invariant: the returner continuity block (the visit clause that opens it)
+// renders IFF the subject is a returning traveler on a repeat visit
+// (ActorSnapshot.Returner != nil && VisitCount >= 2). Computes the expected
+// marker through returnerVisitClause itself (like the rain invariant) so it tracks
+// production exactly. Guards both directions — a repeat-visit returner must carry
+// the continuity, and a one-shot / first-visit traveler (nil Returner) must NOT,
+// so the "you've been here before" beat can neither leak to a stranger nor
+// silently stop opening for a returner.
+func TestGoldensReturnerContinuityIffRepeatVisit(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, _ := sc.build()
+			a := snap.Actors[actorID]
+			wantReturner := a != nil && a.Returner != nil && a.Returner.VisitCount >= 2
+			marker := ""
+			if a != nil && a.Returner != nil {
+				marker = returnerVisitClause(a.Returner.VisitCount)
+			}
+			hasReturner := marker != "" && strings.Contains(renderScenario(sc), marker)
+			if wantReturner != hasReturner {
+				t.Errorf("scenario %q: repeat-visit returner=%v but continuity present=%v — the returner continuity block must render iff the subject is a returning traveler on a repeat visit (LLM-372)", sc.name, wantReturner, hasReturner)
+			}
+		})
+	}
+}
+
 // TestGoldensRainLineIffStorm is the LLM-364 cross-scenario invariant: the felt
 // rain line renders in a scenario's prompt IFF that scenario's snapshot has an
 // active storm (Environment.Weather == storm). Guards both directions across the
@@ -851,6 +879,15 @@ var perceptionScenarios = []perceptionScenario{
 			"role). Archetype + origin reach the observer's prompt; disposition stays out (it colors the traveler's own " +
 			"voice only). The traveler stays addressable in the company line, so no separate redundant 'a stranger' beat.",
 		build: travelerObservedByVillager,
+	},
+	{
+		name: "traveler_returner_self_preface",
+		summary: "LLM-372: a returning traveler (Elias Drum the peddler, back for his 3rd visit) perceives its OWN turn. " +
+			"The golden pins the returner continuity that closes the self-preface — 'You have come through Salem a few " +
+			"times before. You know Jeff here — you last saw them a few weeks back.' — so the stateless salem-visitor VA " +
+			"greets a player it remembers instead of a stranger. Present ONLY for a repeat visit (Returner.VisitCount >= 2); " +
+			"a first-visit traveler (traveler_self_identity_preface, no Returner) shows no continuity block.",
+		build: travelerReturnerSelfPreface,
 	},
 	{
 		name: "hungry_worker_with_means_redirected_to_eat",
@@ -10156,6 +10193,57 @@ func travelerObservedByVillager() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta
 		},
 	}
 	return snap, bishopID, nil
+}
+
+// travelerReturnerSelfPreface is the LLM-372 fixture: the same traveler as
+// travelerSelfIdentityPreface, but now a RETURNER on a repeat visit — its
+// ActorSnapshot carries a Returner projection (VisitCount 3, and a remembered
+// player Jeff last seen a few weeks back). The golden pins the continuity block
+// that closes the self-preface, so the stateless salem-visitor VA greets someone
+// it remembers rather than a stranger. Present only for VisitCount >= 2 (a nil
+// Returner — the one-shot / first-visit case — is travelerSelfIdentityPreface).
+func travelerReturnerSelfPreface() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		eliasID = sim.ActorID("vstr-elias")
+		tavern  = sim.StructureID("tavern")
+	)
+	now := 540 // 09:00 — morning
+	elias := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Elias Drum the peddler",
+		State:             sim.StateIdle,
+		InsideStructureID: tavern,
+		Coins:             8,
+		Needs:             map[sim.NeedKey]int{},
+		VisitorState: &sim.VisitorState{
+			Archetype:   "peddler",
+			Origin:      "Boston",
+			Disposition: "weary",
+			RecurringID: "rvis-0000e71a",
+		},
+		Returner: &sim.ReturnerSnapshot{
+			VisitCount: 3,
+			KnownHere: []sim.ReturnerKnownPC{
+				{PCActorID: "pc-jeff", DisplayName: "Jeff", Recency: sim.RecencyWeeks},
+			},
+		},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{eliasID: elias},
+		Structures: map[sim.StructureID]*sim.Structure{
+			tavern: plainStructure(tavern, "Tavern"),
+		},
+	}
+	warrants := []sim.WarrantMeta{
+		{
+			TriggerActorID: eliasID,
+			Reason:         sim.ArrivalWarrantReason{AtStructureID: tavern},
+			SourceEventID:  1,
+		},
+	}
+	return snap, eliasID, warrants
 }
 
 // worklessTiredRejoinerSelfActionTrail is the LLM-217 fixture: the live Patience

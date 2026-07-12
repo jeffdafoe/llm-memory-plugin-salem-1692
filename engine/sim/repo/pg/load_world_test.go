@@ -252,6 +252,10 @@ func (o fakeRepoOpts) build() sim.Repository {
 		VillageObjects:       pick(o.villageObjects, fakeVillageObjects{out: map[sim.VillageObjectID]*sim.VillageObject{}}).(sim.VillageObjectsRepo),
 		LaborContracts:       pick(o.laborContracts, fakeLaborContracts{out: map[sim.LaborID]*sim.LaborOffer{}}).(sim.LaborContractsRepo),
 		Visitors:             fakeVisitors{out: map[sim.ActorID]*sim.LoadedVisitor{}},
+		// RecurringVisitors intentionally left unwired here — SaveWorld and the load
+		// rehydrate both nil-tolerate the tier (treat it as "no returners"), so this
+		// exercises that partially-wired-repo path. The real persistence is covered by
+		// the pg recurring_visitors integration tests. (LLM-372)
 		ActionLog:            fakeActionLog{},
 		TickTelemetry:        fakeTickTelemetry{},
 	}

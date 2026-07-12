@@ -468,6 +468,15 @@ type VisitorState struct {
 	// draw from an empty pool). Not live-updated: it is a snapshot of what
 	// the traveler "heard on the road," fixed for the visit.
 	Payload string
+
+	// RecurringID links this in-flight traveler to its durable returner identity
+	// (recurring_visitor.id, rvis-<8hex>) once promoted — set the first time the
+	// traveler shares a scene with a player (handleVisitorReturnerMeet, LLM-372),
+	// or at spawn for a returner coming back. "" for a not-yet-promoted stranger.
+	// Persisted in the visitor.recurring_visitor_id column (same checkpoint Tx as
+	// the recurring_visitor row it points at) so a mid-visit deploy keeps the
+	// linkage instead of re-promoting the same traveler as a duplicate persona.
+	RecurringID string
 }
 
 // VisitorPhase is the visitor's lifecycle state — a small Go-owned enum
@@ -1478,6 +1487,16 @@ type ActorSnapshot struct {
 	// Deep-cloned by snapshotActor so published snapshots don't alias the
 	// world's mutable visitor record.
 	VisitorState *VisitorState
+
+	// Returner projects this traveler's durable returner identity (LLM-372) into
+	// the render view — visit count + the players it remembers, most-recent first.
+	// Non-nil ONLY for a returner on a repeat visit (VisitCount >= 2); nil for a
+	// one-shot stranger or a first-visit traveler, so a freshly-promoted stranger
+	// never claims "you've been here before." Built at publish from
+	// World.RecurringVisitors (buildReturnerSnapshot), NOT persisted on the actor —
+	// the recurring_visitor tables are the source of truth, re-projected each
+	// publish so recency stays fresh.
+	Returner *ReturnerSnapshot
 
 	// BusinessownerState mirrors the live Actor's businessowner attribute
 	// at snapshot time. Non-nil marks the actor as a shopkeeper / innkeeper

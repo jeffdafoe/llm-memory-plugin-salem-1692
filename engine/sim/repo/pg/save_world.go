@@ -138,6 +138,20 @@ func SaveWorld(ctx context.Context, repo sim.Repository, cp *sim.CheckpointSnaps
 	if err := repo.Visitors.SaveSnapshot(ctx, tx, cp.Actors); err != nil {
 		return fmt.Errorf("pg SaveWorld: Visitors.SaveSnapshot: %w", err)
 	}
+	// LLM-372: the durable returner set (recurring_visitor + acquaintance children).
+	// Same Tx as Visitors so a visitor's recurring_visitor_id link and the row it
+	// points at can never split across a crash. Upsert-only (no sweep) — these rows
+	// outlive the visit. No cross-aggregate FK (pc_actor_id is a soft ref), so order
+	// relative to the other aggregates is free. Nil-guarded to match the load side
+	// (rehydrateRecurringVisitorsOnLoad): a partially-wired repo treats the tier as
+	// absent rather than panicking. Production (pg/mem NewRepository) always wires
+	// it, and a repo that never wired it also never loaded returners, so cp is empty
+	// — the guard can't drop real state.
+	if repo.RecurringVisitors != nil {
+		if err := repo.RecurringVisitors.SaveSnapshot(ctx, tx, cp.RecurringVisitors); err != nil {
+			return fmt.Errorf("pg SaveWorld: RecurringVisitors.SaveSnapshot: %w", err)
+		}
+	}
 	// LLM-259: the accepted-labor-contract mirror (en_route + working). No cross-
 	// aggregate FK (worker_id/employer_id are soft TEXT refs to actor, Go-side
 	// validated at LoadWorld), so order is free — placed after Actors for

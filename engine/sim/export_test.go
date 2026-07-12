@@ -517,6 +517,13 @@ func WorldCurrentRootEventID(w *World) EventID { return w.currentRootEventID }
 // single-threaded test — same contract as a production subscriber's emit.
 func EmitForTest(w *World, evt Event) { w.emit(evt) }
 
+// PickDueReturnerForTest exposes World.pickDueReturner (LLM-372) so sim_test can
+// assert the due / present / not-due selection without driving the full spawn
+// path (which needs a walkable map). Same world-goroutine contract as emit.
+func PickDueReturnerForTest(w *World, now time.Time) (*RecurringVisitor, bool) {
+	return w.pickDueReturner(now)
+}
+
 // SourceKey / EventSourced expose the unexported WarrantMeta dedup-key
 // helpers for sim_test.
 func SourceKey(m WarrantMeta) WarrantSourceKey { return m.sourceKey() }

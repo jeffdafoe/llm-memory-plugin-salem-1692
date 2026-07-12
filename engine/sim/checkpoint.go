@@ -50,6 +50,10 @@ type CheckpointSnapshot struct {
 	// DiscoveredKinds — engine-minted item kinds (ZBBS-WORK-412), upserted into
 	// item_kind by SaveWorld so an agent's invented good survives restart.
 	DiscoveredKinds []DiscoveredKind
+	// RecurringVisitors — the durable returner set (LLM-372). Cloned whole and
+	// upserted (NO sweep) by SaveWorld so a memorable traveler's identity + per-PC
+	// familiarity + next_return_at survive restart and fire a return days out.
+	RecurringVisitors map[RecurringVisitorID]*RecurringVisitor
 }
 
 // MutableWorldSettings is the runtime-tunable subset of WorldSettings the admin
@@ -191,6 +195,14 @@ func (w *World) BuildCheckpointSnapshot() *CheckpointSnapshot {
 			DisplayLabel: def.DisplayLabel,
 			Category:     def.Category,
 		})
+	}
+	// LLM-372: clone the durable returner set. Upserted (not swept) by SaveWorld —
+	// these rows outlive the visit, unlike the in-flight visitor mirror.
+	if len(w.RecurringVisitors) > 0 {
+		cp.RecurringVisitors = make(map[RecurringVisitorID]*RecurringVisitor, len(w.RecurringVisitors))
+		for id, rv := range w.RecurringVisitors {
+			cp.RecurringVisitors[id] = cloneRecurringVisitor(rv)
+		}
 	}
 	for id, a := range w.Actors {
 		cp.Actors[id] = CloneActor(a)
