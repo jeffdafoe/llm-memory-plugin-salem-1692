@@ -126,6 +126,7 @@ func processActorDwellTick(w *World, actor *Actor, now time.Time, res *DwellTick
 	// mutating the map mid-iteration.
 	var walkedAway []DwellCreditKey
 	var catalogUnknown []DwellCreditKey
+	var staleAtFloor []DwellCreditKey
 	type fired struct {
 		key         DwellCreditKey
 		credit      *DwellCredit
@@ -171,6 +172,18 @@ func processActorDwellTick(w *World, actor *Actor, now time.Time, res *DwellTick
 			walkedAway = append(walkedAway, key)
 			continue
 		}
+		// LLM-376: retire a stale OBJECT dwell credit whose need is already at
+		// the floor. floorHit below fires only on a preNeed>0 -> postNeed==0
+		// transition, so a credit born (or persisted in actor_dwell_credit at
+		// last checkpoint) at the floor never terminates and pins the actor with
+		// a permanent "you are drinking … until quenched" cue. Retire it silently
+		// (audit-only, no completion narration — nothing was recovered), distinct
+		// from a real floor-hit finish. Object-only: item dwells self-terminate
+		// via RemainingTicks / floor-hit and carry the coins-paid framing.
+		if credit.Source == DwellSourceObject && actor.Needs[credit.Attribute] <= 0 {
+			staleAtFloor = append(staleAtFloor, key)
+			continue
+		}
 
 		preNeed := actor.Needs[credit.Attribute]
 		if actor.Needs == nil {
@@ -211,6 +224,14 @@ func processActorDwellTick(w *World, actor *Actor, now time.Time, res *DwellTick
 			continue
 		}
 		stampDwellEnd(w, actor, credit, DwellEndCatalogUnknown, now, res)
+		delete(actor.DwellCredits, k)
+	}
+	for _, k := range staleAtFloor {
+		credit := actor.DwellCredits[k]
+		if credit == nil {
+			continue
+		}
+		stampDwellEnd(w, actor, credit, DwellEndStaleAtFloor, now, res)
 		delete(actor.DwellCredits, k)
 	}
 

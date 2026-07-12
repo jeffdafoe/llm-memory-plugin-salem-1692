@@ -984,6 +984,20 @@ func buildActiveDwellCredits(snap *sim.Snapshot, a *sim.ActorSnapshot) []DwellCr
 		if a.CurrentLoiterObjectID == "" || c.ObjectID != a.CurrentLoiterObjectID {
 			continue
 		}
+		// Satisfied-need gate (LLM-376): sibling of the co-location gate above,
+		// scoped to OBJECT dwells (well / shade tree / bush). Those are open-ended
+		// with no countdown — they end only when the floor-hit terminator clears
+		// them — so a credit whose need is already at the floor has nothing left
+		// to ease, and asserting "you are drinking … until your thirst is
+		// quenched" when the actor is already quenched is unfaithful and pins them
+		// in place. The grant guard in applyObjectRefreshEffect keeps such a credit
+		// from being stamped; this drops any that still slips through (a checkpoint
+		// edge, a future grant path). Item dwells are left alone: their lifecycle
+		// is RemainingTicks-driven and they carry the "don't waste the coins you
+		// paid" framing, so they are not need-gated here.
+		if c.Source == sim.DwellSourceObject && a.Needs[c.Attribute] <= 0 {
+			continue
+		}
 		view := DwellCreditView{
 			ObjectID:       c.ObjectID,
 			StructureLabel: resolveDwellPinLabel(snap, c.ObjectID),

@@ -22,8 +22,13 @@ func dwellSnap(credits map[sim.DwellCreditKey]*sim.DwellCredit, structures map[s
 	return &sim.Snapshot{
 		Actors: map[sim.ActorID]*sim.ActorSnapshot{
 			"hannah": {
-				State:                 sim.StateEating,
-				Needs:                 map[sim.NeedKey]int{"hunger": 12},
+				State: sim.StateEating,
+				// All three needs unmet: an actor actively recovering at a pin has
+				// an unmet need for whatever the credit eases. LLM-376 gates an
+				// OBJECT dwell whose need is already at the floor out of the active-
+				// dwell projection, so these fixtures must keep the eased need > 0
+				// for the credit to render (which is what they exercise).
+				Needs:                 map[sim.NeedKey]int{"hunger": 12, "thirst": 12, "tiredness": 12},
 				DwellCredits:          credits,
 				CurrentLoiterObjectID: loiterObjID,
 			},

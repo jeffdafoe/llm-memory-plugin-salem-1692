@@ -1086,6 +1086,16 @@ var perceptionScenarios = []perceptionScenario{
 		build: generalStoreWaterForageAtWell,
 	},
 	{
+		name: "quenched_at_well_no_drink_cue",
+		summary: "LLM-376. A shared-VA NPC stands ON the town Well's loiter pin, thirst fully quenched (0), " +
+			"still holding a stale open-ended thirst dwell credit for the Well (the immortal credit the pre-fix " +
+			"arrival path stamped when the -8 gulp landed thirst on the floor). The satisfied-need gate in " +
+			"buildActiveDwellCredits must drop that credit so the prompt does NOT assert 'You are drinking at " +
+			"Well … until your thirst is quenched' — the cue that pinned Lewis Walker at the well for 3+ hours. " +
+			"Byte-stable: idle, on shift, no orders, no clock read.",
+		build: npcQuenchedAtWellStaleCredit,
+	},
+	{
 		name: "hungry_forager_at_stocked_bush",
 		summary: "A hungry forager stands at an unowned raspberry bush that still has stock, with a cheese seller at " +
 			"the General Store nearby — the LLM-113 situation (Ezekiel at the Raspberry Bush with buy options). The " +
@@ -5577,6 +5587,98 @@ func generalStoreWaterForageAtWell() (*sim.Snapshot, sim.ActorID, []sim.WarrantM
 		},
 	}
 	return snap, josiahID, nil
+}
+
+// npcAtWellWithThirst builds a shared-VA NPC standing ON the town Well's loiter
+// pin, holding an open-ended thirst dwell credit for the Well, with thirst set to
+// the given value. LLM-376: the pre-fix arrival path could stamp such a credit
+// with thirst already at the floor (the -8 gulp landing on 0), and the floor-hit
+// terminator — which fires only on a preNeed>0 -> postNeed==0 transition — then
+// never cleared it, so perception asserted "You are drinking at Well … until your
+// thirst is quenched" forever and pinned the actor (Lewis at the well for 3+
+// hours). thirst==0 exercises the satisfied-need gate in buildActiveDwellCredits;
+// thirst>0 is the still-recovering control. Idle, on shift, no orders, no clock
+// read → byte-stable.
+func npcAtWellWithThirst(thirst int) (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const lewisID = sim.ActorID("lewis")
+	zero := 0
+	start, end := 360, 1080 // 06:00–18:00
+	now := 600              // 10:00 — on shift
+	wellTile := sim.WorldPos{X: 100 * 32, Y: 135 * 32}.Tile()
+	lewis := &sim.ActorSnapshot{
+		Kind:                  sim.KindNPCShared,
+		DisplayName:           "Lewis Walker",
+		State:                 sim.StateIdle,
+		Pos:                   wellTile, // standing ON the Well loiter pin
+		ScheduleStartMin:      &start,
+		ScheduleEndMin:        &end,
+		Coins:                 27,
+		Needs:                 map[sim.NeedKey]int{"thirst": thirst},
+		CurrentLoiterObjectID: "town_well", // co-location gate passes: on the Well pin
+		DwellCredits: map[sim.DwellCreditKey]*sim.DwellCredit{
+			{ObjectID: "town_well", Attribute: "thirst", Source: sim.DwellSourceObject}: {
+				ObjectID:           "town_well",
+				Attribute:          "thirst",
+				Source:             sim.DwellSourceObject,
+				LastCreditedAt:     time.Unix(1_700_000_000, 0).UTC(),
+				DwellDelta:         -2,
+				DwellPeriodMinutes: 30,
+			},
+		},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Assets:           emptyAssetSet,
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{lewisID: lewis},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"town_well": {
+				ID:            "town_well",
+				DisplayName:   "Well",
+				Pos:           sim.WorldPos{X: 100 * 32, Y: 135 * 32}, // tile (100,135)
+				OwnerActorID:  "",                                     // unowned commons
+				LoiterOffsetX: &zero,
+				LoiterOffsetY: &zero,
+				Refreshes: []*sim.ObjectRefresh{
+					{Attribute: "thirst", Amount: -8}, // public slake-in-place drink row
+				},
+			},
+		},
+	}
+	return snap, lewisID, nil
+}
+
+// npcQuenchedAtWellStaleCredit is the registered LLM-376 golden situation: the
+// quenched (thirst 0) case, where the satisfied-need gate must suppress the drink
+// dwell cue.
+func npcQuenchedAtWellStaleCredit() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return npcAtWellWithThirst(0)
+}
+
+// TestGoldenQuenchedDwellSuppressesDrinkCue is the LLM-376 property guard: a
+// recovery dwell whose need is already at the floor must NOT render as an active
+// "You are drinking … until your thirst is quenched" cue (the immortal-credit pin
+// that trapped Lewis at the well). Pairs the quenched fixture (cue absent) with an
+// otherwise-identical still-thirsty fixture at the same Well (cue present), so the
+// assertion pins the guard rather than a broken fixture.
+func TestGoldenQuenchedDwellSuppressesDrinkCue(t *testing.T) {
+	const drinkCue = "You are drinking at Well"
+	const recoverClause = "the longer you stay the more you recover"
+
+	quenched := renderScenario(perceptionScenario{name: "quenched_at_well", build: npcQuenchedAtWellStaleCredit})
+	if strings.Contains(quenched, drinkCue) {
+		t.Errorf("quenched NPC (thirst 0) still shows the drink dwell cue %q — the stale credit must be gated out:\n%s", drinkCue, quenched)
+	}
+	if strings.Contains(quenched, recoverClause) {
+		t.Errorf("quenched NPC still shows the open-ended recovery clause %q:\n%s", recoverClause, quenched)
+	}
+
+	thirsty := renderScenario(perceptionScenario{name: "thirsty_at_well", build: func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+		return npcAtWellWithThirst(5)
+	}})
+	if !strings.Contains(thirsty, drinkCue) {
+		t.Errorf("still-thirsty NPC (thirst 5) lost the drink dwell cue %q — the guard must fire only at the floor:\n%s", drinkCue, thirsty)
+	}
 }
 
 // TestRangedWildForageRequiresTag is the LLM-253 tag-gate unit: the ranged

@@ -485,7 +485,15 @@ func applyObjectRefreshEffect(w *World, actorID ActorID, objID VillageObjectID, 
 			NewValue:  newValue,
 		})
 
-		if r.HasDwell() {
+		// LLM-376: only arm the open-ended dwell when the arrival application
+		// left an unmet need to keep recovering. If the burst alone drove the
+		// need to the floor (newValue == 0) there is nothing left to drip — and
+		// a credit born AT the floor is immortal: the floor-hit terminator in
+		// dwell_tick.go fires only on a preNeed>0 -> postNeed==0 transition, so a
+		// credit whose need is already 0 never terminates and pins the actor with
+		// a permanent "you are drinking here … until your thirst is quenched" cue
+		// (Lewis stuck at the well for 3+ hours).
+		if r.HasDwell() && newValue > 0 {
 			key := DwellCreditKey{
 				ObjectID:  objID,
 				Attribute: r.Attribute,
