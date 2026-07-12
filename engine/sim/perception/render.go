@@ -285,6 +285,10 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderKeeperLodging(&ephemeral, p.KeeperLodging)
 	renderKeeperHeldLodgers(&ephemeral, p.KeeperHeldLodgers)
 	renderLodgingOffer(&ephemeral, p.LodgingOffer)
+	// Traveler day-plan cues (LLM-373): rounds framing by day, the seek-a-bed
+	// booking cue of an evening. At most one fires per turn (day vs evening phase).
+	renderTravelerRounds(&ephemeral, p.TravelerRounds)
+	renderTravelerSeekBed(&ephemeral, p.TravelerSeekBed)
 	renderSummonsForYou(&ephemeral, p.SummonsForYou)
 	renderSummonRefusal(&ephemeral, p.SummonRefusal)
 	renderScene(&ephemeral, p)
@@ -1573,6 +1577,13 @@ func renderEveningLeisure(b *strings.Builder, v *EveningLeisureView) {
 		return
 	}
 	venue := anchorPlace(v.VenueLabel, "the tavern")
+	if v.HomeID == "" {
+		// Transient traveler (LLM-373): no home of its own to offer as the stay-in
+		// alternative — the tavern is where it passes the evening AND seeks its bed.
+		fmt.Fprintf(b, "Your rounds are done, and the tavern is open of an evening — you might make your way to %s (destination: %s) for company and a bed for the night, or bide where you are, as you please.\n\n",
+			venue, v.VenueID)
+		return
+	}
 	home := anchorPlace(v.HomeLabel, "your home")
 	fmt.Fprintf(b, "Your day's work is done, and the tavern is open of an evening — you might make your way to %s (destination: %s) for company, pass a quiet evening at %s (destination: %s), or turn in for the night, as you please.\n\n",
 		venue, v.VenueID, home, v.HomeID)

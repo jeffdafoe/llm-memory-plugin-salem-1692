@@ -477,6 +477,27 @@ type VisitorState struct {
 	// the recurring_visitor row it points at) so a mid-visit deploy keeps the
 	// linkage instead of re-promoting the same traveler as a duplicate persona.
 	RecurringID string
+
+	// Day-plan itinerary (LLM-373). The engine-driven business circuit the
+	// traveler walks during the daytime portion of its stay: it visits each open,
+	// tagged business once, lingers to trade/talk, then moves on. This state is
+	// stepped by dispatchVisitorCircuit (engine/sim/visitor.go) — the ENGINE owns
+	// the movement and phase transitions; the shared salem-visitor VA owns only
+	// the speech. Persisted (with the pack/purse and any booked-room grant) in the
+	// visitor.plan jsonb column so a mid-circuit deploy resumes the traveler on the
+	// same leg rather than restarting the rounds.
+	//
+	//   - VisitedBusinesses: structures the traveler has already made its round at
+	//     (a keeper it has visited). The nearest-unvisited route skips these.
+	//   - RoundTarget: the business the traveler is currently walking to or
+	//     dwelling at. "" when between legs / not on the circuit.
+	//   - DwellUntil: while set and in the future the traveler lingers at
+	//     RoundTarget so a conversation with the keeper has room to happen before
+	//     it moves on; once passed the circuit picks the next open-unvisited shop.
+	//     nil when not dwelling.
+	VisitedBusinesses []StructureID
+	RoundTarget       StructureID
+	DwellUntil        *time.Time
 }
 
 // VisitorPhase is the visitor's lifecycle state — a small Go-owned enum
@@ -488,9 +509,23 @@ type VisitorState struct {
 type VisitorPhase string
 
 const (
-	// VisitorPhasePresent — in the village, not leaving: the phase from spawn
-	// through the stay.
+	// VisitorPhasePresent — in the village, not leaving. The pre-LLM-373 spawn
+	// phase; retained for backward compatibility so a visitor row checkpointed by
+	// an older engine rehydrates cleanly (the circuit treats it like arriving).
 	VisitorPhasePresent VisitorPhase = "present"
+	// VisitorPhaseArriving — spawned on a road edge, walking in to the first stop
+	// on the circuit. Becomes making_rounds once the traveler reaches a business
+	// (LLM-373).
+	VisitorPhaseArriving VisitorPhase = "arriving"
+	// VisitorPhaseMakingRounds — the daytime business circuit: the traveler visits
+	// each open, tagged business once, trading and passing news, then moves on
+	// (LLM-373). The engine steps the route; the VA speaks.
+	VisitorPhaseMakingRounds VisitorPhase = "making_rounds"
+	// VisitorPhaseLodging — the evening: the traveler is drawn to the tavern by the
+	// evening-leisure cue and seeks a bed for the night, booking a room from its
+	// pack through the real lodging flow (LLM-373). Entered when the civil evening
+	// window opens or the rounds are exhausted.
+	VisitorPhaseLodging VisitorPhase = "lodging"
 	// VisitorPhaseDeparting — ExpiresAt passed and the despawn walk to a map
 	// edge has been issued. One-shot: dispatchVisitorDespawn won't re-fire once
 	// a visitor is in this phase.
@@ -504,7 +539,8 @@ const (
 // arriving / making_rounds / lodging.
 func (p VisitorPhase) Valid() bool {
 	switch p {
-	case VisitorPhasePresent, VisitorPhaseDeparting:
+	case VisitorPhasePresent, VisitorPhaseArriving, VisitorPhaseMakingRounds,
+		VisitorPhaseLodging, VisitorPhaseDeparting:
 		return true
 	default:
 		return false
@@ -513,26 +549,42 @@ func (p VisitorPhase) Valid() bool {
 
 // LoadedVisitor is the persisted-and-reloaded form of an in-flight visitor
 // (LLM-369) — what VisitorsRepo.LoadAll returns and rehydrateVisitorsOnLoad
-// rebuilds a live Actor from. It carries exactly the fields the visitor tier
-// persists; the rest of the Actor (Kind, LLMAgent, seeded needs, empty
-// inventory, StateIdle) is reconstructed the same way spawn mints one.
+// rebuilds a live Actor from. It carries the reconcile-critical typed columns
+// plus the day-plan (LLM-373) parsed off the plan jsonb; the rest of the Actor
+// (Kind, LLMAgent, seeded needs, StateIdle) is reconstructed the way spawn mints
+// one.
 type LoadedVisitor struct {
 	ID                ActorID
 	DisplayName       string
 	Pos               TilePos
 	InsideStructureID StructureID
 	VisitorState      *VisitorState
+
+	// Day-plan mutable state (LLM-373), restored from the plan jsonb onto the
+	// rebuilt Actor: the pack (Inventory) and purse (Coins) the traveler carries,
+	// and any booked-room RoomAccess grant. nil Inventory / RoomAccess mean the
+	// traveler carried nothing / had no room — rehydrate seeds an empty map.
+	Inventory  map[ItemKind]int
+	Coins      int
+	RoomAccess map[RoomAccessKey]*RoomAccess
 }
 
-// cloneVisitorState deep-copies a VisitorState pointer. All fields are
-// value types (string / time.Time / VisitorPhase), so a struct copy is sufficient
-// — but the helper exists so future pointer-bearing fields don't silently
-// alias across the snapshot / mem-repo boundary.
+// cloneVisitorState deep-copies a VisitorState pointer. The scalar fields
+// (string / time.Time / VisitorPhase) copy by value with the struct copy; the
+// itinerary's VisitedBusinesses slice and DwellUntil pointer (LLM-373) are
+// deep-copied so a snapshot never aliases the world's mutable circuit state.
 func cloneVisitorState(src *VisitorState) *VisitorState {
 	if src == nil {
 		return nil
 	}
 	cp := *src
+	if src.VisitedBusinesses != nil {
+		cp.VisitedBusinesses = append([]StructureID(nil), src.VisitedBusinesses...)
+	}
+	if src.DwellUntil != nil {
+		dwell := *src.DwellUntil
+		cp.DwellUntil = &dwell
+	}
 	return &cp
 }
 

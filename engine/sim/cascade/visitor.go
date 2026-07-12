@@ -106,9 +106,10 @@ func runOneVisitorTick(ctx context.Context, w *sim.World, r *rand.Rand) {
 		log.Printf("cascade/visitor: tick returned %T, want sim.VisitorCascadeTelemetry", res)
 		return
 	}
-	if tm.Spawned > 0 || tm.DespawnsStarted > 0 || tm.CleanedUp > 0 {
-		log.Printf("cascade/visitor: spawned=%d despawns=%d cleaned=%d",
-			tm.Spawned, tm.DespawnsStarted, tm.CleanedUp)
+	if tm.Spawned > 0 || tm.DespawnsStarted > 0 || tm.CleanedUp > 0 ||
+		tm.CircuitAdvanced > 0 || tm.CircuitToLodging > 0 {
+		log.Printf("cascade/visitor: spawned=%d despawns=%d cleaned=%d circuit_advanced=%d to_lodging=%d",
+			tm.Spawned, tm.DespawnsStarted, tm.CleanedUp, tm.CircuitAdvanced, tm.CircuitToLodging)
 	}
 }
 
