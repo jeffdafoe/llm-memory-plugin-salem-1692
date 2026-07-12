@@ -151,6 +151,15 @@ const (
 	// Attribute is unknown to the Needs registry (catalog edit
 	// post-stamp). Audit-only; no perception narration.
 	DwellEndCatalogUnknown
+
+	// DwellEndStaleAtFloor — defense-in-depth (LLM-376): an object-source
+	// credit found on a dwell tick with its need already at the floor.
+	// DwellEndFloorHit fires only on a preNeed>0 -> postNeed==0 transition,
+	// so a credit born (or persisted in actor_dwell_credit) at the floor
+	// never self-terminates and pins the actor with a permanent "you are
+	// drinking … until quenched" cue. This retires it. Audit-only; no
+	// perception narration — nothing was recovered, so it is not a "finish".
+	DwellEndStaleAtFloor
 )
 
 // String returns the stable lowercase label for the reason — used in
@@ -165,6 +174,8 @@ func (r DwellEndReason) String() string {
 		return "walked_away"
 	case DwellEndCatalogUnknown:
 		return "catalog_unknown"
+	case DwellEndStaleAtFloor:
+		return "stale_at_floor"
 	default:
 		return "unknown"
 	}
