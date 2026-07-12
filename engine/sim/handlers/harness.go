@@ -647,6 +647,16 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 	if lastSelf != nil {
 		simActorName = lastSelf.DisplayName
 	}
+	// nudgedForBareContent guards the LLM-378 one-shot reprompt below: a weak
+	// model under a heavy character prompt sometimes answers a conversational
+	// turn as bare assistant prose ("Lewis! Good to see you…") with NO speak
+	// tool call. Speech only reaches the scene through the speak commit, so
+	// that prose is heard by no one and the waiting party stalls forever. We
+	// give the model exactly ONE chance per tick to re-emit its reply through
+	// speak(); a second bare-content response falls through to the plain
+	// content-only tick end. Flag caps it at one reprompt so a stubborn model
+	// can't burn the whole round budget re-narrating.
+	nudgedForBareContent := false
 	for round := 0; round < maxTotalRounds; round++ {
 		result.IterationCount = round + 1
 
@@ -689,9 +699,40 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 			})
 		}
 
-		// No tool calls = content-only response = the model is done
-		// thinking, no actions to dispatch. Treat as successful tick end.
+		// No tool calls = content-only response. Two cases:
+		//
+		//  1. LLM-378: the model wrote a reply as bare prose but never called
+		//     speak(), so nothing reaches the scene and the party it was
+		//     answering waits forever. When there is non-empty content here,
+		//     we haven't already reprompted this tick, AND a reprompt round is
+		//     still left, append the model's own line and steer it to say the
+		//     words through speak() (or done() if it truly has nothing to
+		//     say), then loop once more. This lets the model re-emit CLEAN
+		//     speech text — its `*stage narration*` stays in content and out
+		//     of the "X said:" line — rather than us guessing how to split it.
+		//     The predicate is "non-empty content", not speech detection: a
+		//     line the model meant as private musing gets the same steer and
+		//     simply calls done() out of it.
+		//
+		//  2. Genuine end-of-turn: empty content, the model already got its
+		//     one reprompt, or no reprompt round remains (a nudge here would
+		//     just fall through the exhausted loop to a misleading
+		//     BudgetForced with the reply still dropped). Treat as the model
+		//     being done — successful tick end, as before.
 		if len(resp.ToolCalls) == 0 {
+			if !nudgedForBareContent && strings.TrimSpace(resp.Content) != "" && round+1 < maxTotalRounds {
+				nudgedForBareContent = true
+				transcript = append(transcript, llm.Message{
+					Role:    llm.RoleAssistant,
+					Content: resp.Content,
+				})
+				transcript = append(transcript, llm.Message{
+					Role: llm.RoleUser,
+					Content: "[not spoken] No one heard that — words reach others only through the speak tool, not by writing them in your reply. " +
+						"Call speak() now with what you meant to say aloud, or done() if you truly have nothing to say.",
+				})
+				continue
+			}
 			result.TerminalStatus = sim.TickStatusSuccess
 			return result
 		}
