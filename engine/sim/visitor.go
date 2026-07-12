@@ -173,12 +173,13 @@ var visitorDispositionPool = []string{
 	"talkative", "wary", "earnest", "wry", "withdrawn",
 }
 
-// VisitorArchetypeSprite maps each archetype to an npc_sprite.name. v2's
-// Actor doesn't yet carry SpriteID — the rendering / client layer reads
-// this map at cutover. The init() below enforces every archetype in
-// visitorArchetypePool has an entry here; an archetype-without-sprite
-// makes the package fail to load, so the mismatch can't reach a running
-// deploy.
+// VisitorArchetypeSprite maps each archetype to an npc_sprite.name. The
+// spawn / rehydrate paths resolve this name to the uuid-keyed SpriteID via
+// the loaded catalog (visitorSpriteID) and stamp it on the Actor, so the
+// client renders the traveler instead of drawing nothing (LLM-379). The
+// init() below enforces every archetype in visitorArchetypePool has an entry
+// here; an archetype-without-sprite makes the package fail to load, so the
+// mismatch can't reach a running deploy.
 //
 // Sprite reuse across archetypes is intentional given the current
 // shortage of period-appropriate sheets — variant suffixes (v00, v01)
@@ -203,6 +204,33 @@ func init() {
 			panic("sim/visitor: archetype " + archetype + " has no sprite mapping in VisitorArchetypeSprite")
 		}
 	}
+}
+
+// visitorSpriteID resolves an archetype's configured sprite NAME
+// (VisitorArchetypeSprite) to the uuid-keyed SpriteID the client renders by.
+// World.Sprites is keyed by the sprite id with the display name carried on
+// Sprite.Name, so the lookup is a name scan of the loaded catalog. Spawn /
+// rehydrate stamp the result on the Actor; without it a visitor ships with an
+// empty sprite_id and the client draws nothing (LLM-379).
+//
+// ok=false when the archetype has no mapping (init() prevents that for pooled
+// archetypes) or the named sheet isn't in the loaded catalog. The caller logs
+// and ships spriteless rather than failing the spawn — an invisible traveler
+// is a lesser fault than a dropped one.
+func visitorSpriteID(w *World, archetype string) (SpriteID, bool) {
+	if w == nil {
+		return "", false
+	}
+	name, ok := VisitorArchetypeSprite[archetype]
+	if !ok {
+		return "", false
+	}
+	for id, sp := range w.Sprites {
+		if sp != nil && sp.Name == name {
+			return id, true
+		}
+	}
+	return "", false
 }
 
 // VisitorCascadeTelemetry captures what each tick did. Used by the
@@ -663,6 +691,14 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 	// circuit. Without it, good prompting still yields an empty promise: a booking
 	// it can't complete with a tool call.
 	pack, purse := seedVisitorPack(r)
+	// Give the traveler a visible form: resolve its archetype's sprite to the
+	// uuid-keyed SpriteID the client draws by (LLM-379). "" on miss ships the
+	// visitor spriteless — logged, but the spawn still proceeds.
+	spriteID, ok := visitorSpriteID(w, profile.Archetype)
+	if !ok {
+		log.Printf("sim/visitor: dispatchSpawn: no sprite for archetype %q (name=%q); shipping spriteless",
+			profile.Archetype, VisitorArchetypeSprite[profile.Archetype])
+	}
 	visitor := &Actor{
 		ID:                id,
 		DisplayName:       displayName,
@@ -670,6 +706,8 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 		LLMAgent:          VisitorAgentName,
 		Pos:               edgeTile,
 		InsideStructureID: "",
+		SpriteID:          spriteID,
+		Facing:            "south",
 		Needs:             seedVisitorNeeds(),
 		Inventory:         pack,
 		Coins:             purse,
@@ -803,6 +841,14 @@ func (w *World) rehydrateVisitorsOnLoad(ctx context.Context) error {
 		if roomAccess == nil {
 			roomAccess = map[RoomAccessKey]*RoomAccess{}
 		}
+		// Sprite is derived from the archetype (persisted on VisitorState), not stored
+		// separately — resolve it the same way spawn does so a restart doesn't strand
+		// the traveler invisible (LLM-379).
+		spriteID, ok := visitorSpriteID(w, lv.VisitorState.Archetype)
+		if !ok {
+			log.Printf("sim: rehydrate visitor %q: no sprite for archetype %q (name=%q); restoring spriteless",
+				id, lv.VisitorState.Archetype, VisitorArchetypeSprite[lv.VisitorState.Archetype])
+		}
 		actor := &Actor{
 			ID:                id,
 			DisplayName:       lv.DisplayName,
@@ -810,6 +856,8 @@ func (w *World) rehydrateVisitorsOnLoad(ctx context.Context) error {
 			LLMAgent:          VisitorAgentName,
 			Pos:               lv.Pos,
 			InsideStructureID: lv.InsideStructureID,
+			SpriteID:          spriteID,
+			Facing:            "south",
 			Needs:             seedVisitorNeeds(),
 			Inventory:         inventory,
 			Coins:             lv.Coins,
@@ -894,19 +942,15 @@ func dispatchVisitorCircuit(w *World, inputs VisitorTickInputs, t *VisitorCascad
 		if vs.RoundTarget != "" {
 			switch {
 			case vs.DwellUntil == nil:
-				if actor.InsideStructureID != vs.RoundTarget {
-					// The walk ended without reaching the shop interior — a StructureVisit
-					// fallback (owner-only / shut on arrival) or a failed path leaves the
-					// traveler OUTSIDE, not co-present with the keeper. Don't count that as a
-					// round made (it would skip the shop forever); drop the leg and re-pick
-					// next tick — it re-routes to the same open shop and enters once
-					// policy/path allow, or moves on when the shop closes. Only a confirmed
-					// interior arrival is a visit.
-					vs.RoundTarget = ""
-					continue
-				}
-				// Co-present with the keeper — mark the round made and linger so the VA can
-				// trade / pass news.
+				// Arrived at the round target (the walk finished). Mark the shop dealt-with
+				// and linger — whether the walk ended INSIDE the structure or at its
+				// doorstep visitor slot (owner-only / entry-policy fallback). The arrival
+				// business huddle forms either way, so the traveler is co-present with the
+				// keeper and the VA can trade / pass news from the slot just as from inside.
+				// Marking visited UNCONDITIONALLY is what breaks the re-arrival loop
+				// (LLM-379): a doorstep arrival left unmarked would drop the leg and re-pick
+				// the SAME shop every tick, walking back to it forever. The rare walk that
+				// failed outright dwells one idle interval here, then advances — never loops.
 				vs.VisitedBusinesses = appendUniqueStructure(vs.VisitedBusinesses, vs.RoundTarget)
 				dwell := now.Add(time.Duration(DefaultVisitorRoundDwellMinutes) * time.Minute)
 				vs.DwellUntil = &dwell

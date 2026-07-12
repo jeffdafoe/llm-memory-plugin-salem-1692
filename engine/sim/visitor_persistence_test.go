@@ -79,6 +79,37 @@ func TestFinalizeLoad_ResumesInWindowVisitor(t *testing.T) {
 	}
 }
 
+// TestFinalizeLoad_RestoresSprite — LLM-379: a rehydrated traveler gets its SpriteID
+// resolved from the persisted archetype (and a Facing), so a restart doesn't strand it
+// invisible. The sprite is derived from the archetype, not persisted separately.
+func TestFinalizeLoad_RestoresSprite(t *testing.T) {
+	repo, handles := mem.NewRepository()
+	now := time.Now().UTC()
+	wantName := sim.VisitorArchetypeSprite["peddler"] // the fixture's archetype
+	const spriteID sim.SpriteID = "sprite-peddler-uuid"
+	handles.Sprites.Seed(map[sim.SpriteID]*sim.Sprite{
+		spriteID: {ID: spriteID, Name: wantName},
+	})
+	handles.Visitors.Seed(map[sim.ActorID]*sim.LoadedVisitor{
+		"vstr-0000cafe": newVisitorFixture("vstr-0000cafe", now.Add(2*time.Hour), ""),
+	})
+
+	w, err := sim.LoadWorld(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	a, ok := w.Actors["vstr-0000cafe"]
+	if !ok {
+		t.Fatal("in-window visitor not rehydrated")
+	}
+	if a.SpriteID != spriteID {
+		t.Errorf("rehydrated SpriteID = %q, want %q (peddler → %q)", a.SpriteID, spriteID, wantName)
+	}
+	if a.Facing == "" {
+		t.Error("rehydrated traveler has empty Facing")
+	}
+}
+
 // TestFinalizeLoad_ResumesInsideStructureVisitor — a visitor checkpointed inside
 // a structure reloads inside it, in the actorsByStructure index (not outdoors).
 func TestFinalizeLoad_ResumesInsideStructureVisitor(t *testing.T) {

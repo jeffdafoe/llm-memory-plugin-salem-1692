@@ -112,6 +112,82 @@ func TestVisitorSpawn_SkippedAtNight(t *testing.T) {
 	}
 }
 
+// seedVisitorSprites seeds one npc_sprite per distinct name referenced by
+// VisitorArchetypeSprite, keyed by a synthetic id — mirroring the live catalog
+// (id = uuid, Name = display name) so visitorSpriteID resolves whatever archetype
+// the spawn rolls. Call before load().
+func (vw *visitorWorld) seedVisitorSprites(t *testing.T) {
+	t.Helper()
+	sprites := map[sim.SpriteID]*sim.Sprite{}
+	for _, name := range sim.VisitorArchetypeSprite {
+		id := sim.SpriteID("sprite-" + name) // unique per name; stands in for the uuid PK
+		sprites[id] = &sim.Sprite{ID: id, Name: name}
+	}
+	vw.handles.Sprites.Seed(sprites)
+}
+
+// TestVisitorSpawn_SetsSprite — LLM-379: a spawned traveler carries a non-empty
+// SpriteID resolved from its archetype (and a Facing), so the client draws it
+// instead of nothing.
+func TestVisitorSpawn_SetsSprite(t *testing.T) {
+	loc := et(t)
+	vw := newVisitorWorld()
+	vw.seedTavern(t)
+	vw.seedVisitorSprites(t)
+	w, cancel := vw.load(t)
+	defer cancel()
+	seedDayPlanSettings(t, w, loc)
+
+	now := time.Date(2026, 7, 12, 15, 0, 0, 0, loc)
+	if _, err := w.Send(sim.TickVisitorCascade(sim.VisitorTickInputs{Now: now, Rand: rand.New(rand.NewSource(7))})); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	got := firstVisitor(t, w)
+	if got == nil {
+		t.Fatal("no visitor after daytime spawn")
+	}
+	if got.SpriteID == "" {
+		t.Fatalf("spawned traveler has empty SpriteID — renders invisible (archetype=%q)", got.VisitorState.Archetype)
+	}
+	// The resolved sprite is the one mapped for its archetype.
+	wantName := sim.VisitorArchetypeSprite[got.VisitorState.Archetype]
+	if want := sim.SpriteID("sprite-" + wantName); got.SpriteID != want {
+		t.Errorf("SpriteID = %q, want %q (archetype %q → %q)", got.SpriteID, want, got.VisitorState.Archetype, wantName)
+	}
+	if got.Facing == "" {
+		t.Error("spawned traveler has empty Facing")
+	}
+}
+
+// TestVisitorSpawn_MissingSpriteCatalog — a spawn with no sprite for the archetype
+// (empty catalog) logs and ships the traveler spriteless rather than crashing: a
+// missing sheet must never be fatal to the spawn.
+func TestVisitorSpawn_MissingSpriteCatalog(t *testing.T) {
+	loc := et(t)
+	vw := newVisitorWorld()
+	vw.seedTavern(t)
+	// No seedVisitorSprites — the catalog is empty.
+	w, cancel := vw.load(t)
+	defer cancel()
+	seedDayPlanSettings(t, w, loc)
+
+	now := time.Date(2026, 7, 12, 15, 0, 0, 0, loc)
+	res, err := w.Send(sim.TickVisitorCascade(sim.VisitorTickInputs{Now: now, Rand: rand.New(rand.NewSource(7))}))
+	if err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if tm := res.(sim.VisitorCascadeTelemetry); tm.Spawned != 1 {
+		t.Fatalf("Spawned = %d, want 1 despite missing sprite (reason=%q)", tm.Spawned, tm.SpawnSkipReason)
+	}
+	got := firstVisitor(t, w)
+	if got == nil {
+		t.Fatal("visitor was dropped when its sprite was missing; want spawned spriteless")
+	}
+	if got.SpriteID != "" {
+		t.Errorf("SpriteID = %q, want empty (no catalog seeded)", got.SpriteID)
+	}
+}
+
 // seedBusiness places a shop (asset + VillageObject + Structure) with a present
 // keeper inside it — the minimum for keeperPresentAt(shop) to read true, so the
 // circuit routes a traveler there. Call before load().
@@ -189,50 +265,56 @@ func TestVisitorCircuit_RoutesToOpenBusiness(t *testing.T) {
 	}
 }
 
-// TestVisitorCircuit_VisitCountsOnlyOnInteriorArrival — the code_review #2 guard: a
-// round is marked made only when the traveler is confirmed INSIDE the shop. A walk
-// that ended outside (StructureVisit fallback) drops the leg without marking it, so
-// the shop is retried rather than skipped forever.
-func TestVisitorCircuit_VisitCountsOnlyOnInteriorArrival(t *testing.T) {
+// TestVisitorCircuit_MarksVisitedOnArrival — LLM-379: a round is marked made when the
+// traveler ARRIVES at the shop, whether the walk ended inside the structure or at its
+// doorstep visitor slot (owner-only / entry-policy fallback — the general-store case).
+// The arrival business huddle forms either way, so the traveler is co-present with the
+// keeper. Marking on arrival is what breaks the re-arrival loop: an unmarked doorstep
+// arrival would drop the leg and re-pick the SAME shop every tick, walking back forever.
+func TestVisitorCircuit_MarksVisitedOnArrival(t *testing.T) {
 	loc := et(t)
 	day := time.Date(2026, 7, 12, 15, 0, 0, 0, loc)
-
-	// Case A: arrived INSIDE → the round is marked, dwell starts.
-	vwA := newVisitorWorld()
-	vwA.seedTavern(t)
 	const smithy sim.StructureID = "smithy"
-	vwA.seedBusiness(t, smithy, "Blacksmith", sim.WorldPos{X: 288, Y: 320})
-	wA, cancelA := vwA.load(t)
-	defer cancelA()
-	seedDayPlanSettings(t, wA, loc)
-	tickCircuit(t, wA, day)
-	setVisitorState(t, wA, func(a *sim.Actor) {
-		a.MoveIntent = nil
-		a.InsideStructureID = smithy // arrived inside
-	})
-	tickCircuit(t, wA, day)
-	if got := firstVisitor(t, wA); got == nil ||
-		len(got.VisitorState.VisitedBusinesses) != 1 || got.VisitorState.VisitedBusinesses[0] != smithy ||
-		got.VisitorState.DwellUntil == nil {
-		t.Errorf("interior arrival: visited=%v dwell=%v; want [smithy] + dwell set",
-			visitedOf(got), dwellSet(got))
-	}
 
-	// Case B: the walk ended OUTSIDE (no interior) → the shop is NOT marked visited.
-	vwB := newVisitorWorld()
-	vwB.seedTavern(t)
-	vwB.seedBusiness(t, smithy, "Blacksmith", sim.WorldPos{X: 288, Y: 320})
-	wB, cancelB := vwB.load(t)
-	defer cancelB()
-	seedDayPlanSettings(t, wB, loc)
-	tickCircuit(t, wB, day)
-	setVisitorState(t, wB, func(a *sim.Actor) {
-		a.MoveIntent = nil
-		a.InsideStructureID = "" // ended outside — StructureVisit fallback / failed path
-	})
-	tickCircuit(t, wB, day)
-	if got := firstVisitor(t, wB); got == nil || len(got.VisitorState.VisitedBusinesses) != 0 {
-		t.Errorf("outside arrival: visited=%v; want none (the shop must not be skipped)", visitedOf(got))
+	for _, tc := range []struct {
+		name   string
+		inside sim.StructureID // InsideStructureID on arrival
+	}{
+		{"arrived inside", smithy},
+		{"arrived at doorstep slot", ""}, // StructureVisit fallback — the loop-triggering case
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vw := newVisitorWorld()
+			vw.seedTavern(t)
+			vw.seedBusiness(t, smithy, "Blacksmith", sim.WorldPos{X: 288, Y: 320})
+			w, cancel := vw.load(t)
+			defer cancel()
+			seedDayPlanSettings(t, w, loc)
+
+			tickCircuit(t, w, day) // spawn + first leg → RoundTarget = smithy
+			setVisitorState(t, w, func(a *sim.Actor) {
+				a.MoveIntent = nil
+				a.InsideStructureID = tc.inside // arrived (inside or at the slot)
+			})
+			tickCircuit(t, w, day) // arrival tick: mark visited, start dwell
+
+			got := firstVisitor(t, w)
+			if got == nil || len(got.VisitorState.VisitedBusinesses) != 1 ||
+				got.VisitorState.VisitedBusinesses[0] != smithy || got.VisitorState.DwellUntil == nil {
+				t.Fatalf("%s: visited=%v dwell=%v; want [smithy] + dwell set",
+					tc.name, visitedOf(got), dwellSet(got))
+			}
+
+			// No re-arrival loop: once the dwell elapses, the only shop is now marked
+			// visited, so the traveler does NOT re-target it — RoundTarget stays clear
+			// rather than re-picking smithy and walking back.
+			afterDwell := day.Add(time.Duration(sim.DefaultVisitorRoundDwellMinutes+1) * time.Minute)
+			setVisitorState(t, w, func(a *sim.Actor) { a.MoveIntent = nil })
+			tickCircuit(t, w, afterDwell)
+			if got := firstVisitor(t, w); got == nil || got.VisitorState.RoundTarget == smithy {
+				t.Fatalf("%s: re-targeted the visited shop %q — re-arrival loop", tc.name, smithy)
+			}
+		})
 	}
 }
 
