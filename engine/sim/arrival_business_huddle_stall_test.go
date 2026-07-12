@@ -130,6 +130,34 @@ func TestArrivalBusinessHuddle_OpenStallWalkupGreeted(t *testing.T) {
 	}
 }
 
+// A stale loiter-arrival — the event carries DestStructureID but the patron has
+// since walked off the loiter pin before the delayed handler runs — forms no
+// huddle and no greet: the relaxed conversationalScopeStructure guard does the
+// same stale-event job for a stall arrival that the InsideStructureID check does
+// for an indoor one.
+func TestArrivalBusinessHuddle_StaleStallArrivalNoOp(t *testing.T) {
+	now := time.Now().UTC()
+	w, rec, stop := buildStallGreetWorld(t, sim.StateIdle)
+	defer stop()
+
+	// The patron wandered far off the pin between the walk and this ActorArrived.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["patron"].Pos = sim.WorldPos{X: 999, Y: 999}.Tile()
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("move patron off pin: %v", err)
+	}
+
+	emitLoiterVisitArrival(t, w, "patron", "stall", now)
+
+	if ph := readHuddleOf(t, w, "patron"); ph != "" {
+		t.Fatalf("a stale stall arrival must not bootstrap a huddle, got %q", ph)
+	}
+	if greets := rec.bySpeaker("keeper"); len(greets) != 0 {
+		t.Fatalf("a stale stall arrival must not greet, got %d greet(s)", len(greets))
+	}
+}
+
 // Composition guard with LLM-359: a SHUT stall (keeper abed ⇒ keeperPresentAt
 // false ⇒ no cross-threshold loiter scope) forms no keeper huddle and no greet —
 // the patron at the pin is outside a shut wall, not received.
