@@ -1,6 +1,7 @@
 package sim_test
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -57,28 +58,56 @@ func soloHuddleForAlice(t *testing.T, w *sim.World, now time.Time) sim.HuddleID 
 	return hud
 }
 
+// dissolveStatusName names a terminal status for subtest labels (the type has
+// no String method; the numeric value alone is unreadable in failures).
+func dissolveStatusName(s sim.TickTerminalStatus) string {
+	switch s {
+	case sim.TickStatusSkipped:
+		return "skipped"
+	case sim.TickStatusDone:
+		return "done"
+	case sim.TickStatusSuccess:
+		return "success"
+	case sim.TickStatusBudgetForced:
+		return "budget-forced"
+	case sim.TickStatusFailedAfterRender:
+		return "failed-after-render"
+	case sim.TickStatusFailedBeforeRender:
+		return "failed-before-render"
+	case sim.TickStatusShutdown:
+		return "shutdown"
+	default:
+		return fmt.Sprintf("status-%d", s)
+	}
+}
+
+// addressingStatuses is the full set terminalStatusAddresses accepts — the
+// statuses the solo-huddle dissolve now fires on.
+var addressingStatuses = []sim.TickTerminalStatus{
+	sim.TickStatusSkipped,
+	sim.TickStatusDone,
+	sim.TickStatusSuccess,
+	sim.TickStatusBudgetForced,
+	sim.TickStatusFailedAfterRender,
+}
+
 // Every ADDRESSING terminal completion dissolves alice's dead solo huddle —
 // skip (the original HOME-413 case) and the real-turn statuses a
 // skip-bypassing warrant produces (the John-Ellis widening: done / success /
 // budget-forced / failed-after-render).
 func TestCompleteReactorTick_AddressingCompletionDissolvesSoloHuddle(t *testing.T) {
-	statuses := []sim.TickTerminalStatus{
-		sim.TickStatusSkipped,
-		sim.TickStatusDone,
-		sim.TickStatusSuccess,
-		sim.TickStatusBudgetForced,
-		sim.TickStatusFailedAfterRender,
-	}
-	for _, status := range statuses {
-		w, cancel := buildHuddleTestWorld(t)
-		now := time.Now().UTC()
-		soloHuddleForAlice(t, w, now)
+	for _, status := range addressingStatuses {
+		t.Run(dissolveStatusName(status), func(t *testing.T) {
+			w, cancel := buildHuddleTestWorld(t)
+			defer cancel()
+			now := time.Now().UTC()
+			soloHuddleForAlice(t, w, now)
 
-		completeTickWithStatus(t, w, "alice", status, now.Add(2*time.Second))
-		if h := huddleOf(t, w, "alice"); h != "" {
-			t.Errorf("status %v: alice should be out of the dissolved solo huddle, still in %q", status, h)
-		}
-		cancel()
+			completeTickWithStatus(t, w, "alice", status, now.Add(2*time.Second))
+			if h := huddleOf(t, w, "alice"); h != "" {
+				t.Errorf("alice should be out of the dissolved solo huddle, still in %q", h)
+			}
+		})
 	}
 }
 
@@ -92,15 +121,60 @@ func TestCompleteReactorTick_NonAddressingKeepsSoloHuddle(t *testing.T) {
 		sim.TickStatusShutdown,
 	}
 	for _, status := range statuses {
-		w, cancel := buildHuddleTestWorld(t)
-		now := time.Now().UTC()
-		hud := soloHuddleForAlice(t, w, now)
+		t.Run(dissolveStatusName(status), func(t *testing.T) {
+			w, cancel := buildHuddleTestWorld(t)
+			defer cancel()
+			now := time.Now().UTC()
+			hud := soloHuddleForAlice(t, w, now)
 
-		completeTickWithStatus(t, w, "alice", status, now.Add(2*time.Second))
-		if h := huddleOf(t, w, "alice"); h != hud {
-			t.Errorf("status %v: a non-addressing completion must not dissolve the huddle; alice now in %q, want %q", status, h, hud)
-		}
-		cancel()
+			completeTickWithStatus(t, w, "alice", status, now.Add(2*time.Second))
+			if h := huddleOf(t, w, "alice"); h != hud {
+				t.Errorf("a non-addressing completion must not dissolve the huddle; alice now in %q, want %q", h, hud)
+			}
+		})
+	}
+}
+
+// The dissolve's own side effect, pinned (code_review): leaveCurrentHuddle
+// stamps a WarrantKindHuddleLeft on the leaver, so a dissolved actor gets
+// exactly ONE follow-up wake — a LOW-INFO warrant (isLowInfoWarrantKind), so
+// with no huddle and sub-red needs that wake noop-skips without an LLM call —
+// and the skip's own completion re-runs the dissolve as a no-op (no huddle
+// left), re-stamping nothing. Two completions, one HuddleLeft warrant, no
+// loop.
+func TestCompleteReactorTick_DissolveStampsLeaverWarrantOnce(t *testing.T) {
+	w, cancel := buildHuddleTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+	soloHuddleForAlice(t, w, now)
+
+	// The live shape: a real (done) completion dissolves the solo huddle.
+	completeTickWithStatus(t, w, "alice", sim.TickStatusDone, now.Add(2*time.Second))
+	countHuddleLeft := func() int {
+		n := 0
+		sendT(t, w, sim.Command{Fn: func(world *sim.World) (any, error) {
+			for _, m := range world.Actors["alice"].Warrants {
+				if m.Kind() == sim.WarrantKindHuddleLeft {
+					n++
+				}
+			}
+			return nil, nil
+		}})
+		return n
+	}
+	if got := countHuddleLeft(); got != 1 {
+		t.Fatalf("HuddleLeft warrants after dissolve = %d, want exactly 1 (the leaver's single follow-up wake)", got)
+	}
+
+	// The follow-up wake completes as a skip (its batch is the low-info
+	// HuddleLeft); the dissolve re-runs and must no-op — no huddle, no
+	// fresh warrant, no loop.
+	completeTickWithStatus(t, w, "alice", sim.TickStatusSkipped, now.Add(4*time.Second))
+	if h := huddleOf(t, w, "alice"); h != "" {
+		t.Errorf("alice re-acquired a huddle from a no-op dissolve: %q", h)
+	}
+	if got := countHuddleLeft(); got != 1 {
+		t.Errorf("HuddleLeft warrants after the follow-up completion = %d, want still 1 (no re-stamp loop)", got)
 	}
 }
 
@@ -111,23 +185,25 @@ func TestCompleteReactorTick_NonAddressingKeepsSoloHuddle(t *testing.T) {
 // success, and only the sole-member check keeps it from tearing the huddle
 // down mid-conversation.
 func TestCompleteReactorTick_CompletionKeepsMultiMemberHuddle(t *testing.T) {
-	for _, status := range []sim.TickTerminalStatus{sim.TickStatusSkipped, sim.TickStatusSuccess} {
-		w, cancel := buildHuddleTestWorld(t)
-		now := time.Now().UTC()
-		setActor(t, w, "alice", func(a *sim.Actor) { a.Kind = sim.KindNPCStateful; a.State = sim.StateIdle })
-		setActor(t, w, "bob", func(a *sim.Actor) { a.Kind = sim.KindNPCStateful })
-		sendT(t, w, sim.JoinHuddle("alice", "tavern", "", now))
-		sendT(t, w, sim.JoinHuddle("bob", "tavern", "", now))
-		hud := huddleOf(t, w, "alice")
+	for _, status := range addressingStatuses {
+		t.Run(dissolveStatusName(status), func(t *testing.T) {
+			w, cancel := buildHuddleTestWorld(t)
+			defer cancel()
+			now := time.Now().UTC()
+			setActor(t, w, "alice", func(a *sim.Actor) { a.Kind = sim.KindNPCStateful; a.State = sim.StateIdle })
+			setActor(t, w, "bob", func(a *sim.Actor) { a.Kind = sim.KindNPCStateful })
+			sendT(t, w, sim.JoinHuddle("alice", "tavern", "", now))
+			sendT(t, w, sim.JoinHuddle("bob", "tavern", "", now))
+			hud := huddleOf(t, w, "alice")
 
-		completeTickWithStatus(t, w, "alice", status, now.Add(time.Second))
-		if h := huddleOf(t, w, "alice"); h != hud {
-			t.Errorf("status %v: alice should remain — the huddle has another member; got %q", status, h)
-		}
-		if h := huddleOf(t, w, "bob"); h != hud {
-			t.Errorf("status %v: bob must not be stranded by alice's completion; got %q", status, h)
-		}
-		cancel()
+			completeTickWithStatus(t, w, "alice", status, now.Add(time.Second))
+			if h := huddleOf(t, w, "alice"); h != hud {
+				t.Errorf("alice should remain — the huddle has another member; got %q", h)
+			}
+			if h := huddleOf(t, w, "bob"); h != hud {
+				t.Errorf("bob must not be stranded by alice's completion; got %q", h)
+			}
+		})
 	}
 }
 
