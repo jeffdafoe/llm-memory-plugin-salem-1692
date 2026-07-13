@@ -1702,6 +1702,14 @@ func _promote_to_structure(object_id: String, node: Node2D) -> void:
             return
         if is_instance_valid(node):
             node.set_meta("has_interior", true)
+            # A doorless structure promotes fine and is a valid workplace, but no
+            # one can enter it or live there (LLM-344). Warn the admin so they
+            # drag the door marker — the door lives on the asset, so setting it
+            # once fixes every past and future placement of this asset.
+            var asset_id: String = str(node.get_meta("asset_id", ""))
+            var asset: Dictionary = Catalog.assets.get(asset_id, {})
+            if asset.get("door_offset_x", null) == null or asset.get("door_offset_y", null) == null:
+                Toast.warning("This building has no door, so no one can enter it or live here. Drag the door marker in the editor to set one.")
     )
     var headers_arr = Auth.auth_headers()
     var err := http.request(api_base + "/api/village/admin/object/promote-to-structure", headers_arr, HTTPClient.METHOD_POST, payload)
