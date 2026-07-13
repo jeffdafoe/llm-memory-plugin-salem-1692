@@ -303,18 +303,27 @@ func CompleteReactorTick(actorID ActorID, attemptID TickAttemptID, result TickRe
 			// the actor's futility streak. No-op unless explicitly enabled.
 			updateDegeneracy(w, actor, result, now)
 
-			// ZBBS-HOME-413: a noop-skipped tick is the moment to dissolve a dead
-			// solo huddle. The skip gate (shouldSkipNoop) only fires when the actor
-			// has NO co-present huddle peer, so a skip while still pinned in a
-			// one-member huddle means the conversation is over and no one is left —
-			// yet post-WORK-367 the lone member never ticks itself out (its
-			// HuddlePeerLeft is low-info, so every subsequent tick re-skips without
-			// leaving). Left alone it stays stranded forever, rendering a departed
-			// peer in its perception (the live Elizabeth-Ellis case). Concluding it
-			// here, where we've just confirmed the actor won't act, is the precise
-			// fix; the actor re-huddles for free on the next co-located speak.
-			if result.TerminalStatus == TickStatusSkipped {
-				dissolveSoloHuddleAfterSkip(w, actor, now)
+			// ZBBS-HOME-413: a completed tick that leaves the actor as the SOLE
+			// member of its huddle is the moment to dissolve that dead huddle —
+			// post-WORK-367 the lone member never ticks itself out (its
+			// HuddlePeerLeft is low-info), so left alone it stays stranded,
+			// rendering a departed peer in its perception (the live
+			// Elizabeth-Ellis case). Originally scoped to TickStatusSkipped
+			// ("a skip means confirmed won't act"), but a lone member whose
+			// ticks are driven by a skip-bypassing warrant (WarrantKindRestock)
+			// never skips, and sat in a zombie huddle for 40 minutes answering
+			// done() (the live John-Ellis case, hud-db18626e). The signal is
+			// not skip-vs-ran — no action a lone member can take repopulates
+			// its huddle (any peer joining would have made it non-solo by
+			// completion time), so ANY addressing completion that ends with the
+			// actor still alone confirms the conversation is over. Non-addressing
+			// statuses (failed-before-render, shutdown) are excluded: the actor
+			// never perceived the turn, or the world is going away. The actor
+			// re-huddles for free on the next co-located speak, and LLM-170's
+			// per-structure carry-over preserves the conversation for a
+			// returning peer.
+			if terminalStatusAddresses(result.TerminalStatus) {
+				dissolveSoloHuddleAfterTick(w, actor, now)
 			}
 			return CompleteReactorTickResult{Stale: false}, nil
 		},
@@ -373,14 +382,17 @@ func applyTerminalWarrantPolicy(w *World, actor *Actor, result TickResult, now t
 	}
 }
 
-// dissolveSoloHuddleAfterSkip leaves+concludes the actor's current huddle when
+// dissolveSoloHuddleAfterTick leaves+concludes the actor's current huddle when
 // the actor is its only remaining member (ZBBS-HOME-413). Called from
-// CompleteReactorTick after a noop-skipped tick — see that callsite for the why.
+// CompleteReactorTick after any addressing terminal completion — see that
+// callsite for the why (originally skip-only; widened because a skip-bypassing
+// warrant keeps a lone member's ticks real forever).
 //
-// No-op unless the actor is the SOLE member: a skip with other members still in
-// the huddle means peers drifted out of co-presence without leaving the
-// membership set (a broader stale-huddle desync, boot-collapse Finding 6), which
-// is deliberately out of scope here — dissolving a still-populated huddle would
+// No-op unless the actor is the SOLE member: a completion with other members
+// still in the huddle means the conversation may be live for them (or, for a
+// skip, that peers drifted out of co-presence without leaving the membership
+// set — a broader stale-huddle desync, boot-collapse Finding 6), which is
+// deliberately out of scope here — dissolving a still-populated huddle would
 // strand the OTHER members. A stale back-ref (huddle missing from w.Huddles) is
 // also left untouched; leaveCurrentHuddle's own stale-ref path owns that.
 //
@@ -395,7 +407,7 @@ func applyTerminalWarrantPolicy(w *World, actor *Actor, result TickResult, now t
 // finds the huddle empty, and concludes it (emitting HuddleLeft + HuddleConcluded
 // and detaching it from any scenes) — the same teardown the normal last-leaver
 // path runs.
-func dissolveSoloHuddleAfterSkip(w *World, actor *Actor, now time.Time) {
+func dissolveSoloHuddleAfterTick(w *World, actor *Actor, now time.Time) {
 	if actor.CurrentHuddleID == "" {
 		return
 	}

@@ -7,13 +7,16 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
 
-// huddle_skip_dissolve_test.go — ZBBS-HOME-413. A noop-skipped reactor tick
-// dissolves the actor's dead SOLO huddle. The skip gate (handlers.shouldSkipNoop)
-// only fires when the actor has no co-present huddle peer, so a skip while still
-// pinned in a one-member huddle means the conversation is over and no one is
-// left — yet post-WORK-367 the lone member never ticks itself out. The dissolve
-// runs in CompleteReactorTick on TickStatusSkipped. Reuses buildHuddleTestWorld
-// / setActor / huddleOf / sendT (sibling huddle tests).
+// huddle_skip_dissolve_test.go — ZBBS-HOME-413, widened. A completed reactor
+// tick that leaves the actor as the SOLE member of its huddle dissolves that
+// dead huddle. Originally the dissolve keyed off TickStatusSkipped only ("a
+// skip means confirmed won't act"), but a lone member whose ticks are driven
+// by a skip-bypassing warrant (WarrantKindRestock) never skips and stayed
+// stranded in a zombie huddle through real done() turns (the live John-Ellis
+// case). Now any ADDRESSING terminal completion (terminalStatusAddresses)
+// dissolves; non-addressing statuses (failed-before-render, shutdown) do not —
+// the actor never perceived that turn. Reuses buildHuddleTestWorld / setActor
+// / huddleOf / sendT (sibling huddle tests).
 
 // completeTickWithStatus puts the actor mid-tick under a fixed attempt id, then
 // completes that tick with the given terminal status (asserting the completion
@@ -54,53 +57,77 @@ func soloHuddleForAlice(t *testing.T, w *sim.World, now time.Time) sim.HuddleID 
 	return hud
 }
 
-// A noop-skipped tick dissolves alice's dead solo huddle.
-func TestCompleteReactorTick_SkippedDissolvesSoloHuddle(t *testing.T) {
-	w, cancel := buildHuddleTestWorld(t)
-	defer cancel()
-	now := time.Now().UTC()
-	soloHuddleForAlice(t, w, now)
+// Every ADDRESSING terminal completion dissolves alice's dead solo huddle —
+// skip (the original HOME-413 case) and the real-turn statuses a
+// skip-bypassing warrant produces (the John-Ellis widening: done / success /
+// budget-forced / failed-after-render).
+func TestCompleteReactorTick_AddressingCompletionDissolvesSoloHuddle(t *testing.T) {
+	statuses := []sim.TickTerminalStatus{
+		sim.TickStatusSkipped,
+		sim.TickStatusDone,
+		sim.TickStatusSuccess,
+		sim.TickStatusBudgetForced,
+		sim.TickStatusFailedAfterRender,
+	}
+	for _, status := range statuses {
+		w, cancel := buildHuddleTestWorld(t)
+		now := time.Now().UTC()
+		soloHuddleForAlice(t, w, now)
 
-	completeTickWithStatus(t, w, "alice", sim.TickStatusSkipped, now.Add(2*time.Second))
-	if h := huddleOf(t, w, "alice"); h != "" {
-		t.Errorf("alice should be out of the dissolved solo huddle, still in %q", h)
+		completeTickWithStatus(t, w, "alice", status, now.Add(2*time.Second))
+		if h := huddleOf(t, w, "alice"); h != "" {
+			t.Errorf("status %v: alice should be out of the dissolved solo huddle, still in %q", status, h)
+		}
+		cancel()
 	}
 }
 
-// The control: a NON-skip completion (the actor actually ran a turn) leaves the
-// solo huddle intact — only a skip means "confirmed won't act", which is the
-// signal the dissolve keys off.
-func TestCompleteReactorTick_SuccessKeepsSoloHuddle(t *testing.T) {
-	w, cancel := buildHuddleTestWorld(t)
-	defer cancel()
-	now := time.Now().UTC()
-	hud := soloHuddleForAlice(t, w, now)
+// The control: a NON-addressing completion (the actor never perceived the
+// turn — LLM failure before render, or world shutdown) leaves the solo huddle
+// intact. The dissolve keys off "the actor ran a turn against current state
+// and is still alone", which these statuses don't establish.
+func TestCompleteReactorTick_NonAddressingKeepsSoloHuddle(t *testing.T) {
+	statuses := []sim.TickTerminalStatus{
+		sim.TickStatusFailedBeforeRender,
+		sim.TickStatusShutdown,
+	}
+	for _, status := range statuses {
+		w, cancel := buildHuddleTestWorld(t)
+		now := time.Now().UTC()
+		hud := soloHuddleForAlice(t, w, now)
 
-	completeTickWithStatus(t, w, "alice", sim.TickStatusSuccess, now.Add(2*time.Second))
-	if h := huddleOf(t, w, "alice"); h != hud {
-		t.Errorf("a non-skip completion must not dissolve the huddle; alice now in %q, want %q", h, hud)
+		completeTickWithStatus(t, w, "alice", status, now.Add(2*time.Second))
+		if h := huddleOf(t, w, "alice"); h != hud {
+			t.Errorf("status %v: a non-addressing completion must not dissolve the huddle; alice now in %q, want %q", status, h, hud)
+		}
+		cancel()
 	}
 }
 
-// Guard: a skip while the huddle still has ANOTHER member dissolves nothing —
-// the dissolve is scoped to a SOLE-member huddle so a co-member is never
-// stranded (a multi-member skip is a separate drift desync, out of scope).
-func TestCompleteReactorTick_SkippedKeepsMultiMemberHuddle(t *testing.T) {
-	w, cancel := buildHuddleTestWorld(t)
-	defer cancel()
-	now := time.Now().UTC()
-	setActor(t, w, "alice", func(a *sim.Actor) { a.Kind = sim.KindNPCStateful; a.State = sim.StateIdle })
-	setActor(t, w, "bob", func(a *sim.Actor) { a.Kind = sim.KindNPCStateful })
-	sendT(t, w, sim.JoinHuddle("alice", "tavern", "", now))
-	sendT(t, w, sim.JoinHuddle("bob", "tavern", "", now))
-	hud := huddleOf(t, w, "alice")
+// Guard: a completion while the huddle still has ANOTHER member dissolves
+// nothing — the dissolve is scoped to a SOLE-member huddle so a co-member is
+// never stranded. This is THE protection for normal conversations now that
+// every addressing status dissolves: each ordinary speak turn completes as
+// success, and only the sole-member check keeps it from tearing the huddle
+// down mid-conversation.
+func TestCompleteReactorTick_CompletionKeepsMultiMemberHuddle(t *testing.T) {
+	for _, status := range []sim.TickTerminalStatus{sim.TickStatusSkipped, sim.TickStatusSuccess} {
+		w, cancel := buildHuddleTestWorld(t)
+		now := time.Now().UTC()
+		setActor(t, w, "alice", func(a *sim.Actor) { a.Kind = sim.KindNPCStateful; a.State = sim.StateIdle })
+		setActor(t, w, "bob", func(a *sim.Actor) { a.Kind = sim.KindNPCStateful })
+		sendT(t, w, sim.JoinHuddle("alice", "tavern", "", now))
+		sendT(t, w, sim.JoinHuddle("bob", "tavern", "", now))
+		hud := huddleOf(t, w, "alice")
 
-	completeTickWithStatus(t, w, "alice", sim.TickStatusSkipped, now.Add(time.Second))
-	if h := huddleOf(t, w, "alice"); h != hud {
-		t.Errorf("alice should remain — the huddle has another member; got %q", h)
-	}
-	if h := huddleOf(t, w, "bob"); h != hud {
-		t.Errorf("bob must not be stranded by alice's skip; got %q", h)
+		completeTickWithStatus(t, w, "alice", status, now.Add(time.Second))
+		if h := huddleOf(t, w, "alice"); h != hud {
+			t.Errorf("status %v: alice should remain — the huddle has another member; got %q", status, h)
+		}
+		if h := huddleOf(t, w, "bob"); h != hud {
+			t.Errorf("status %v: bob must not be stranded by alice's completion; got %q", status, h)
+		}
+		cancel()
 	}
 }
 
