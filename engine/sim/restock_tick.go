@@ -205,7 +205,22 @@ func firstActionableLowEntry(a *Actor, w *World, pct int, now time.Time, conserv
 //   - a SURVIVING walk-to supplier: a qualifying vendor whose workplace the
 //     actor does not remember finding shut, at a remembered price the purse can
 //     cover (unknown price is kept — patronage earns the number). These are the
-//     LLM-216 drops findItemVendors applies.
+//     LLM-216 drops findItemVendors applies. A BATCH-PINNED buyer (mid-
+//     production-batch at post — the batch only advances while the actor is
+//     there, LLM-319) has NO walk-to path: the trip would stall the batch, so
+//     the actor correctly answers done() on every wake (the live John-Ellis
+//     sage case — 8 unanswerable wakes across a bread batch, bounded but not
+//     eliminated by the LLM-233 decay). Mirrors the LLM-335 mid-batch leisure
+//     suppression and the ZBBS-HOME-386 mid-walk gate: don't wake an actor the
+//     cue's own imperative can't move. Nothing is lost — the batch-landing
+//     wake (ProductionDoneWarrantReason) and the level-triggered per-minute
+//     scan re-pose the reorder the moment the batch lands, the boundary where
+//     the trip actually happens. A co-present seller still counts while
+//     pinned (pay_with_item resolves without leaving post). The perception
+//     cue is deliberately NOT gated the same way: warrant ⊂ cue is the safe
+//     direction of the lockstep discipline (the wake-loop hazard is a warrant
+//     whose cue declines to render, not extra information on a tick driven by
+//     another wake).
 //
 // "Qualifying vendor" mirrors the shared structural-vendorship scan
 // (perception/consumable_vendors.go eachVendorOffer) + the LLM-252 supplier
@@ -216,6 +231,7 @@ func firstActionableLowEntry(a *Actor, w *World, pct int, now time.Time, conserv
 // tests over the snapshot.
 func actorHasBuyPath(w *World, a *Actor, item ItemKind, now time.Time) bool {
 	buyerIsDistributor := ActorIsDistributor(w.VillageObjects, a.WorkStructureID)
+	pinned := actorBatchPinnedAtPost(a)
 	for vendorID, vendor := range w.Actors {
 		if vendor == nil || vendorID == a.ID || vendor.Kind == KindPC {
 			continue
@@ -240,7 +256,11 @@ func actorHasBuyPath(w *World, a *Actor, item ItemKind, now time.Time) bool {
 			return true
 		}
 		// Walk-to drops (LLM-216): a supplier remembered shut, or one whose
-		// remembered price the purse can't cover, is not a destination.
+		// remembered price the purse can't cover, is not a destination. A
+		// batch-pinned buyer has no walk-to path at all (see doc above).
+		if pinned {
+			continue
+		}
 		if a.Observed.Active(ObservedStateKey{StructureID: vendor.WorkStructureID, Condition: ObservedClosed}, now) {
 			continue
 		}
@@ -250,6 +270,16 @@ func actorHasBuyPath(w *World, a *Actor, item ItemKind, now time.Time) bool {
 		return true
 	}
 	return false
+}
+
+// actorBatchPinnedAtPost reports whether the actor is mid-production-batch at
+// its post — the LLM-319 pause model means the batch only advances while the
+// actor is there, so a walk-to trip has a real opportunity cost the actor
+// keeps (correctly) declining. Same at-post + in-flight-batch predicate as
+// shouldChooseProduction (production_choice_tick.go) and the LLM-335 shift-
+// duty suppression (shift_duty.go).
+func actorBatchPinnedAtPost(a *Actor) bool {
+	return a.WorkStructureID != "" && a.InsideStructureID == a.WorkStructureID && a.ProductionActivity != nil
 }
 
 // actorRemembersForageSource reports whether the actor remembers a still-owned
