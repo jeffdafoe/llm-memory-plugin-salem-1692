@@ -1214,7 +1214,7 @@ var perceptionScenarios = []perceptionScenario{
 			"never reliably moved stock (live: 0 coins, empty sell-through). The golden pins the cue now valuing his resold " +
 			"goods from the recipe wholesale-retail spread AND surfacing his own recent purchase cost ('you have lately " +
 			"paid about N each for it') from the buyer-side PriceBook — the cost basis to mark up from. No sale history " +
-			"yet, so no 'sold for' clause. Pairs with smith_bartering_at_tavern (the producer leg) to pin both halves.",
+			"yet, so no 'sold for' clause and (LLM-385) no below-cost caution — that fires only for a realized sale at or below cost, so the bare cost basis renders alone. Pairs with smith_bartering_at_tavern.",
 		build: keeperResellingInCompany,
 	},
 	{
@@ -1239,10 +1239,22 @@ var perceptionScenarios = []perceptionScenario{
 			"~1 (the live −51-coin milk leak that drove him to rationally cut the line, starving the stew chain), while " +
 			"cheese carries a healthy markup (bought ~2, sold ~4). The golden pins BOTH branches: the underwater milk line " +
 			"escalates past the bare caution to name the two levers a merchant holds ('you may need to negotiate lower " +
-			"costs or raise your price'); the healthy cheese line keeps only the caution. The lever hint fires strictly on " +
-			"RecentUnit < PaidUnit, so it is the cue that gives a rational loss-cutter a path back to margin instead of " +
-			"abandoning a good the village needs.",
+			"costs or raise your price'); the healthy cheese line carries NO caution at all (LLM-385: caution only for a good sold " +
+			"at or below cost, on the sub-coin sale-vs-buy rates). It gives a rational loss-cutter a path back to margin, not " +
+			"a scolding on a profitable line.",
 		build: distributorUnderwaterResale,
+	},
+	{
+		name: "distributor_overbuying_below_resale",
+		summary: "LLM-385 buy-side: a reseller (Josiah) low on milk with a walk-to supplier (Ellis Farm), whose OWN " +
+			"books show the two leaks the pre-LLM-385 '## Restocking' cue could not flag. He resells milk at ~1 coin " +
+			"(seller ring: 9 units for 12 coins) while the going rate is ALSO ~1, so the buying-in anchor now names the " +
+			"resale CEILING ('You resell it for about 1 coin each — pay more than that and you lose coin on every one') " +
+			"beside the market rate — the distributor's binding number the market-only anchor never surfaced. And he " +
+			"bought 35 milk this week but sold only 9, so the over-buying steer fires ('restocking faster than it sells, " +
+			"so buy sparingly, if at all') — the QUANTITY guard beside the PRICE guard. Solo (no huddle), so the " +
+			"wares-fetch cue stays out and the section under test renders cleanly.",
+		build: distributorOverbuyingBelowResale,
 	},
 	{
 		name: "innkeeper_pricing_with_makings_cost",
@@ -8184,14 +8196,15 @@ func keeperWithSteppedAwayPCCustomer() (*sim.Snapshot, sim.ActorID, []sim.Warran
 	return pcCompanyKeeperScenario(nil) // no client attached this session → stepped away
 }
 
-// distributorUnderwaterResale is the LLM-332 leg: the same reseller shape as
+// distributorUnderwaterResale is the LLM-332 / LLM-385 leg: the same reseller shape as
 // keeperResellingInCompany, but now with realized SALE history that makes one line
 // demonstrably underwater. Josiah the distributor bought milk at ~2 and has been selling
 // it at ~1 (the live −51-coin milk leak that drove him to cut the line rather than carry
 // a loss), while cheese carries a healthy markup (bought ~2, sold ~4). The golden pins
-// BOTH branches of the LLM-332 escalation: the underwater milk line gains the two-lever
-// hint ("negotiate lower costs or raise your price"); the healthy cheese line keeps only
-// the bare caution. In company with Martha so the "## What your wares fetch" cue renders.
+// BOTH branches: the underwater milk line gains the caution + two-lever hint ("negotiate
+// lower costs or raise your price"); the healthy cheese line carries NO caution at all
+// (LLM-385: the caution fires only for a good sold at or below cost — pre-LLM-385 every
+// resold line carried it as boilerplate). In company with Martha so the cue renders.
 func distributorUnderwaterResale() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	const (
 		josiahID = sim.ActorID("josiah")
@@ -8240,8 +8253,8 @@ func distributorUnderwaterResale() (*sim.Snapshot, sim.ActorID, []sim.WarrantMet
 	milkBuys := sim.NewRingBuffer[sim.PriceObservation](8)
 	milkBuys.Push(sim.PriceObservation{BuyerID: josiahID, Amount: 8, Qty: 4, Consumers: 1, At: published.Add(-1 * 24 * time.Hour)})
 	// Seller-side realized sales (keyed by josiah as SELLER): cheese 16/4 = 4 each (a
-	// healthy markup over its cost 2 → bare caution only), milk 4/4 = 1 each (BELOW its
-	// cost 2 → underwater, so the two-lever hint appends).
+	// healthy markup over its cost 2 → NOT sold below cost, so NO caution at all,
+	// LLM-385), milk 4/4 = 1 each (BELOW its cost 2 → caution + two-lever hint).
 	cheeseSales := sim.NewRingBuffer[sim.PriceObservation](8)
 	cheeseSales.Push(sim.PriceObservation{BuyerID: marthaID, Amount: 16, Qty: 4, Consumers: 1, At: published.Add(-12 * time.Hour)})
 	milkSales := sim.NewRingBuffer[sim.PriceObservation](8)
@@ -8779,6 +8792,81 @@ func resellerCoPresentSageStandoff() (*sim.Snapshot, sim.ActorID, []sim.WarrantM
 		2: {ID: 2, BuyerID: actorID, SellerID: "josiah", ItemKind: "sage", Qty: 3, Amount: 6, State: sim.PayLedgerStateDeclined, HuddleID: "store_huddle", ResolvedAt: resolved},
 	}
 	return snap, actorID, warrants
+}
+
+// distributorOverbuyingBelowResale is the LLM-385 buy-side golden (see the scenario
+// summary): a reseller low on milk with a walk-to supplier, whose own price book shows
+// a resale rate at the going rate (the resale-ceiling clause fires) and a week of buying
+// 35 against selling 9 (the over-buying steer fires). Solo, so the wares-fetch cue stays
+// out and the "## Restocking" section renders on its own.
+func distributorOverbuyingBelowResale() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		josiahID = sim.ActorID("josiah")
+		elizID   = sim.ActorID("elizabeth")
+		store    = sim.StructureID("general_store")
+		farm     = sim.StructureID("ellis_farm")
+	)
+	start, end := 360, 1080 // 06:00-18:00 shopkeeping day
+	now := 720              // 12:00 — on shift at the store
+	published := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+	josiah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Josiah Thorne",
+		Role:              "storekeeper",
+		State:             sim.StateIdle,
+		WorkStructureID:   store,
+		InsideStructureID: store,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             50, // ≥ the ~40 last-paid bundle, so Ellis Farm survives the LLM-216 affordability drop
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"milk": 4}, // below the reorder threshold (cap 20)
+		RestockPolicy:     buyPolicy("milk", 20),
+	}
+	elizabeth := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Elizabeth Ellis",
+		Role:              "farmer",
+		State:             sim.StateIdle,
+		WorkStructureID:   farm,
+		InsideStructureID: farm, // at her farm, NOT co-present with Josiah — a walk-to supplier
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             30,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"milk": 40},
+		RestockPolicy:     producePolicy("milk", 40), // first-hand producer (LLM-252)
+	}
+	// Josiah as SELLER of milk: 9 units for 12 coins → resale rate 1.3 → 1.
+	sellPB := sim.NewRingBuffer[sim.PriceObservation](20)
+	sellPB.Push(sim.PriceObservation{BuyerID: "cust", Amount: 12, Qty: 9, Consumers: 1, At: published.Add(-2 * 24 * time.Hour)})
+	// Josiah's in-window PURCHASE from Elizabeth: 35 units for 40 coins. Drives
+	// boughtUnits = 35 → over-buying, and (as Elizabeth's own sales) the observed
+	// going-rate anchor = 40/35 → 1.
+	buyPB := sim.NewRingBuffer[sim.PriceObservation](20)
+	buyPB.Push(sim.PriceObservation{BuyerID: josiahID, Amount: 40, Qty: 35, Consumers: 1, At: published.Add(-1 * 24 * time.Hour)})
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{josiahID: josiah, elizID: elizabeth},
+		Structures: map[sim.StructureID]*sim.Structure{
+			store: plainStructure(store, "General Store"),
+			farm:  plainStructure(farm, "Ellis Farm"),
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"milk": {Name: "milk", DisplayLabel: "milk", Category: sim.ItemCategoryFood},
+		},
+		RestockReorderPct: 25,
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"milk": {OutputItem: "milk", OutputQty: 1, RateQty: 1, RatePerHours: 1, WholesalePrice: 1, RetailPrice: 2},
+		},
+		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+			{SellerID: josiahID, Item: "milk"}: sellPB,
+			{SellerID: elizID, Item: "milk"}:   buyPB,
+		},
+	}
+	return snap, josiahID, nil
 }
 
 // keeperNotPitchingMakersOwnWare is the LLM-171 seller side: John Ellis keeps

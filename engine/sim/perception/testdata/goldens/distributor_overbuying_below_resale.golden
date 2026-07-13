@@ -1,0 +1,24 @@
+# Your turn
+
+## Since your last turn
+(nothing specific — this is a routine check-in)
+
+
+## You
+Coins in your purse: 50.
+You are carrying: milk (x4).
+
+## Around you
+You are inside the General Store, your workplace, with no one else here to hear you speak.
+It is midday.
+
+You're at your workplace.
+
+It is your working hours and you are at your post — stay and look after your work; you close at 6 in the evening.
+
+## Restocking
+Your shop stock of these bought-in goods is running low. You choose how much to buy.
+- You have 4 milk on hand and room for 16 more at the most. Of late it has been going for about 1 coin each — pay much above that and you're overpaying. You resell it for about 1 coin each — paying above your resale rate loses coin on each one. You've sold about 9 over the past week, at a cost of 40 coins and sales of 12 coins. You've bought about 35 this past week but sold only 9 — you're restocking faster than it sells, so buy sparingly, if at all. No seller is here now — use move_to to reach a supplier below, then pay_with_item once you arrive.
+  - buy from Ellis Farm (destination: ellis_farm), ~40 coins
+
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

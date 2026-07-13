@@ -125,6 +125,16 @@ type RestockItemView struct {
 	BuyAnchorUnit     int
 	BuyAnchorObserved bool
 
+	// ResaleUnit is the reseller's OWN realized per-unit resale rate for this item
+	// over the window (its sellerRecentSales, nearest-rounded), 0 with no sale on
+	// record (LLM-385). The buying-in anchor above is the market/supplier going-rate;
+	// this is the number that actually BINDS for a distributor — pay above what you
+	// resell for and every unit loses coin. Render surfaces it as a ceiling beside the
+	// market anchor. Its absence (no sale history) simply omits the resale clause; the
+	// live Josiah bleed was buying milk/carrots at ~ the going rate while reselling for
+	// less, a loss the market-only anchor could never flag.
+	ResaleUnit int
+
 	// RecentSalesUnits / RecentSalesCoins / RecentBuyCost are this item's trailing-
 	// restockSalesWindow economics, read off the price book (LLM-63):
 	//   - RecentSalesUnits: units SOLD (Qty×Consumers per accepted sale, seller view).
@@ -140,6 +150,20 @@ type RestockItemView struct {
 	RecentSalesUnits int
 	RecentSalesCoins int
 	RecentBuyCost    int
+
+	// RecentBuyUnits is the units the reseller BOUGHT of this item this window (buyer
+	// view, the unit sibling of RecentBuyCost) and OverBuying flags that it bought
+	// markedly more than it sold — restocking faster than the shop moves the good, so
+	// another fill-to-cap just traps coin in stock that isn't selling (LLM-385, the
+	// live cheese case: 35 bought, 9 sold). buildRestocking sets OverBuying when
+	// RecentBuyUnits >= 4 AND >= 2×RecentSalesUnits+1, which also catches a dead good
+	// it keeps restocking though it sells none. Render surfaces the "buy sparingly"
+	// steer, distinct from the market/resale anchors (those bound the PRICE per unit;
+	// this bounds the QUANTITY). The restock cue only fires when on-hand is below the
+	// reorder point, so the signal is the weekly FLOW imbalance, not the current
+	// on-hand level — a keeper churning stock through non-sale channels still over-buys.
+	RecentBuyUnits int
+	OverBuying     bool
 
 	// kind is the final sort tie-break so two item kinds sharing a display label
 	// order deterministically (BuyEntries order is stable, but the sort makes the
@@ -205,10 +229,24 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 			affordable = qty
 		}
 		// Recent demand + weekly P&L the reseller sizes its restock against (LLM-63):
-		// units sold + coins taken in (seller view), coins paid restocking (buyer
-		// view). 0 units sold leaves the whole sentence silent at render.
+		// units sold + coins taken in (seller view), units + coins paid restocking
+		// (buyer view). 0 units sold leaves the P&L sentence silent at render.
 		salesUnits, salesCoins := sellerRecentSales(snap, actorID, e.Item, restockSalesWindow)
-		buyCost := buyerRecentSpend(snap, actorID, e.Item, restockSalesWindow)
+		boughtUnits, buyCost := buyerRecentPurchases(snap, actorID, e.Item, restockSalesWindow)
+		// LLM-385: the reseller's OWN realized resale rate — the ceiling the buying-in
+		// anchor should be judged against, because a distributor's binding number is
+		// what it can resell the good for, not the market going-rate. 0 with no sale on
+		// record.
+		resaleUnit := 0
+		if salesUnits > 0 {
+			resaleUnit = (salesCoins + salesUnits/2) / salesUnits
+		}
+		// LLM-385: over-buying flag — bought markedly more than it sold this window, so
+		// another fill-to-cap just traps coin in stock that isn't moving (the live cheese
+		// case: 35 bought, 9 sold). Fires at >= twice-sold plus a small floor to avoid
+		// noise on tiny numbers, and covers the sold-nothing case (a dead good it keeps
+		// restocking).
+		overBuying := boughtUnits >= 4 && boughtUnits >= 2*salesUnits+1
 		coName, coID := coPresentSellerForItem(snap, actorID, actorSnap, e.Item)
 		vendors := findItemVendors(snap, actorID, actorSnap, e.Item)
 		// LLM-308: make the co-present buy imperative situation-aware via the same shared
@@ -252,9 +290,12 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 			AffordableQty:                 affordable,
 			BuyAnchorUnit:                 buyAnchor,
 			BuyAnchorObserved:             buyAnchorObserved,
+			ResaleUnit:                    resaleUnit,
 			RecentSalesUnits:              salesUnits,
 			RecentSalesCoins:              salesCoins,
 			RecentBuyCost:                 buyCost,
+			RecentBuyUnits:                boughtUnits,
+			OverBuying:                    overBuying,
 			kind:                          e.Item,
 		})
 	}
@@ -554,14 +595,6 @@ func buyerRecentPurchases(snap *sim.Snapshot, buyerID sim.ActorID, item sim.Item
 		c = int64(math.MaxInt32)
 	}
 	return int(u), int(c)
-}
-
-// buyerRecentSpend totals just the coins the actor has PAID restocking `item` within
-// the trailing `window` — the cost half of the restock cue's weekly P&L (LLM-63). Thin
-// wrapper over buyerRecentPurchases for the call site that wants only the spend.
-func buyerRecentSpend(snap *sim.Snapshot, buyerID sim.ActorID, item sim.ItemKind, window time.Duration) int {
-	_, coins := buyerRecentPurchases(snap, buyerID, item, window)
-	return coins
 }
 
 // isRestockSupplierOf reports whether vendor qualifies as a restock supplier of
@@ -870,12 +903,34 @@ func renderRestocking(b *strings.Builder, v *RestockingView) {
 					coinsPhrase(it.BuyAnchorUnit))
 			}
 		}
+		// LLM-385: the resale ceiling — the number that actually BINDS for a reseller.
+		// The market anchor above guards overpaying versus the going rate; this guards
+		// the distributor-specific loss it can't see — paying at or above what he
+		// RESELLS the good for. Surfaced only when a realized resale rate is on record.
+		// Josiah bought milk/carrots at ~the going rate and resold them for less, a
+		// per-unit loss the market anchor rated as a fair buy.
+		if it.ResaleUnit > 0 {
+			// "about N" is nearest-rounded, so it must not be stated as the exact hard
+			// ceiling — refer to "your resale rate" (the true, un-rounded rate) rather
+			// than making the displayed integer itself the threshold (code_review).
+			fmt.Fprintf(b, " You resell it for about %s each — paying above your resale rate loses coin on each one.",
+				coinsPhrase(it.ResaleUnit))
+		}
 		// The week's demand + P&L the reseller sizes its restock against: units sold,
 		// coins paid restocking, coins taken in selling. Silent at 0 units sold (no
 		// sale on record in the window) so a new or dormant good asserts no rate.
 		if it.RecentSalesUnits > 0 {
 			fmt.Fprintf(b, " You've sold about %d over the past week, at a cost of %d coins and sales of %d coins.",
 				it.RecentSalesUnits, it.RecentBuyCost, it.RecentSalesCoins)
+		}
+		// LLM-385: over-buying steer — bought far more than it sold this window, so
+		// another fill-to-cap just ties coin up in stock that isn't moving. Renders even
+		// when it sold nothing (a dead good it keeps restocking). Bounds the QUANTITY —
+		// the complement to the price anchors above — and carries no "ask"/"price" token
+		// (the HOME-386 speaking-loop guard).
+		if it.OverBuying {
+			fmt.Fprintf(b, " You've bought about %d this past week but sold only %d — you're restocking faster than it sells, so buy sparingly, if at all.",
+				it.RecentBuyUnits, it.RecentSalesUnits)
 		}
 		// ZBBS-HOME-459: the purse covers fewer units than the cap leaves room for,
 		// so coins are the binding limit — state it as a fact so the model sizes the

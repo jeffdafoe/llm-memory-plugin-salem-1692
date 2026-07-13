@@ -18,7 +18,7 @@ It is your working hours and you are at your post — stay and look after your w
 
 ## What your wares fetch
 What your wares fetch in coin — use it to set a fair price or weigh a trade:
-- cheese: 3 to 6 coins each; you have lately paid about 2 coins each for it — selling below your costs loses you coin.
-- milk: 1 to 3 coins each; you have lately paid about 1 coin each for it — selling below your costs loses you coin.
+- cheese: 3 to 6 coins each; you have lately paid about 2 coins each for it.
+- milk: 1 to 3 coins each; you have lately paid about 1 coin each for it.
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

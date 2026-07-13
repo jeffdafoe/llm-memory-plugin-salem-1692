@@ -207,15 +207,21 @@ func TestBuildTradeValue_ResoldGoodCostBasis(t *testing.T) {
 	if v == nil || len(v.Items) != 1 {
 		t.Fatalf("want 1 resold item, got %+v", v)
 	}
-	if got := v.Items[0]; got.itemKind != "cheese" || got.Low != 3 || got.High != 6 || got.PaidUnit != 2 || got.RecentUnit != 0 {
+	if got := v.Items[0]; got.itemKind != "cheese" || got.Low != 3 || got.High != 6 || got.PaidUnit != 2 || got.RecentUnit != 0 || got.AtOrBelowCost {
 		t.Fatalf("cheese item wrong: %+v", got)
 	}
 	var b strings.Builder
 	renderTradeValue(&b, v)
 	out := b.String()
-	// LLM-292: the cost clause carries its stake for a resold good.
-	if !strings.Contains(out, "cheese: 3 to 6 coins each; you have lately paid about 2 coins each for it — selling below your costs loses you coin.") {
+	// LLM-385: with a purchase cost but NO realized sale on record, we can't say the
+	// good is being sold at or below cost — so the caution no longer fires. Only the
+	// bare cost-basis (paid) clause renders. (Pre-LLM-385 the caution appended on
+	// PaidUnit alone, which was boilerplate.)
+	if !strings.Contains(out, "cheese: 3 to 6 coins each; you have lately paid about 2 coins each for it.") {
 		t.Errorf("missing cost-basis clause:\n%s", out)
+	}
+	if strings.Contains(out, "selling below your costs") {
+		t.Errorf("no realized sale — below-cost caution must not fire (LLM-385):\n%s", out)
 	}
 	if strings.Contains(out, "sold for") {
 		t.Errorf("no sale history — should not render a sold-for clause:\n%s", out)
@@ -247,18 +253,21 @@ func TestBuildTradeValue_ResoldGoodBothClauses(t *testing.T) {
 	if v == nil || len(v.Items) != 1 {
 		t.Fatalf("want 1 item, got %+v", v)
 	}
-	if got := v.Items[0]; got.PaidUnit != 2 || got.RecentUnit != 5 {
-		t.Fatalf("want PaidUnit=2 RecentUnit=5, got %+v", got)
+	if got := v.Items[0]; got.PaidUnit != 2 || got.RecentUnit != 5 || got.AtOrBelowCost || got.StrictlyBelowCost {
+		t.Fatalf("want PaidUnit=2 RecentUnit=5 not-below-cost, got %+v", got)
 	}
 	var b strings.Builder
 	renderTradeValue(&b, v)
-	// LLM-292: the stake trails BOTH clauses, commenting the paid/sold juxtaposition.
-	if !strings.Contains(b.String(), "you have lately paid about 2 coins each for it; of late you have sold for about 5 coins each — selling below your costs loses you coin.") {
-		t.Errorf("want paid-then-sold clauses in order:\n%s", b.String())
+	// LLM-292/191: paid then sold, in order — the pair brackets the markup.
+	// LLM-385: a healthy markup (sold 5 > paid 2) is NOT sold at or below cost, so the
+	// caution no longer fires AT ALL — the paid/sold pair renders as a bare fact. This
+	// is the boilerplate fix: pre-LLM-385 every resold line carried the caution.
+	if !strings.Contains(b.String(), "you have lately paid about 2 coins each for it; of late you have sold for about 5 coins each.") {
+		t.Errorf("want paid-then-sold clauses with NO below-cost caution:\n%s", b.String())
 	}
-	// LLM-332: a healthy markup (sold 5 > paid 2) is NOT underwater — the two-lever
-	// hint must NOT append. The trailing "." in the assertion above already fails if
-	// it does; assert the negative explicitly too.
+	if strings.Contains(b.String(), "selling below your costs") {
+		t.Errorf("healthy markup must not get the below-cost caution (LLM-385):\n%s", b.String())
+	}
 	if strings.Contains(b.String(), "negotiate lower costs or raise your price") {
 		t.Errorf("healthy markup should not get the underwater lever hint:\n%s", b.String())
 	}
@@ -292,8 +301,8 @@ func TestBuildTradeValue_ResoldGoodUnderwater(t *testing.T) {
 	if v == nil || len(v.Items) != 1 {
 		t.Fatalf("want 1 item, got %+v", v)
 	}
-	if got := v.Items[0]; got.PaidUnit != 2 || got.RecentUnit != 1 {
-		t.Fatalf("want PaidUnit=2 RecentUnit=1, got %+v", got)
+	if got := v.Items[0]; got.PaidUnit != 2 || got.RecentUnit != 1 || !got.AtOrBelowCost || !got.StrictlyBelowCost {
+		t.Fatalf("want PaidUnit=2 RecentUnit=1 below-cost, got %+v", got)
 	}
 	var b strings.Builder
 	renderTradeValue(&b, v)
@@ -301,6 +310,128 @@ func TestBuildTradeValue_ResoldGoodUnderwater(t *testing.T) {
 	// LLM-332: underwater → the bare caution gains the two-lever hint.
 	if !strings.Contains(out, "of late you have sold for about 1 coin each — selling below your costs loses you coin; you may need to negotiate lower costs or raise your price.") {
 		t.Errorf("want underwater two-lever hint:\n%s", out)
+	}
+}
+
+// TestBuildTradeValue_ResoldGoodSubCoinUnderwater is the LLM-385 crux: a good whose
+// loss is smaller than a whole coin. Bought at 1.39/unit (139 coins / 100 units) and
+// sold at 1.30/unit (130 / 100), BOTH round to "about 1 coin each" for display — so
+// the old whole-coin RecentUnit < PaidUnit test (1 < 1) saw break-even and stayed
+// silent. The sub-coin cross-multiplication catches it: 130*100 < 139*100, so the
+// caution AND the two-lever escalation both fire despite the identical displayed
+// numbers. This is the milk/carrots bleed that emptied Josiah's purse.
+func TestBuildTradeValue_ResoldGoodSubCoinUnderwater(t *testing.T) {
+	subj := &sim.ActorSnapshot{RestockPolicy: buyPolicy("milk", 10)}
+	published := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	buys := sim.NewRingBuffer[sim.PriceObservation](4)
+	buys.Push(sim.PriceObservation{BuyerID: "josiah", Amount: 139, Qty: 100, Consumers: 1, At: published.Add(-24 * time.Hour)})
+	sales := sim.NewRingBuffer[sim.PriceObservation](4)
+	sales.Push(sim.PriceObservation{BuyerID: "martha", Amount: 130, Qty: 100, Consumers: 1, At: published.Add(-12 * time.Hour)})
+	snap := &sim.Snapshot{
+		PublishedAt: published,
+		Actors:      map[sim.ActorID]*sim.ActorSnapshot{"josiah": subj},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"milk": {OutputItem: "milk", WholesalePrice: 1, RetailPrice: 2},
+		},
+		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+			{SellerID: "ellis_farm", Item: "milk"}: buys,  // josiah as buyer (cost)
+			{SellerID: "josiah", Item: "milk"}:     sales, // josiah as seller (realized)
+		},
+	}
+	v := buildTradeValue(snap, "josiah", subj, true)
+	if v == nil || len(v.Items) != 1 {
+		t.Fatalf("want 1 item, got %+v", v)
+	}
+	// Both DISPLAY as 1 coin (rounded), but the sub-coin comparison flags the loss.
+	if got := v.Items[0]; got.PaidUnit != 1 || got.RecentUnit != 1 || !got.AtOrBelowCost || !got.StrictlyBelowCost {
+		t.Fatalf("want display 1/1 but below-cost flags set, got %+v", got)
+	}
+	var b strings.Builder
+	renderTradeValue(&b, v)
+	if !strings.Contains(b.String(), "of late you have sold for about 1 coin each — selling below your costs loses you coin; you may need to negotiate lower costs or raise your price.") {
+		t.Errorf("sub-coin loss must fire caution + two-lever hint despite 1/1 display:\n%s", b.String())
+	}
+}
+
+// TestBuildTradeValue_ResoldGoodAtCost pins the "at or below" boundary (LLM-385): a
+// good sold at EXACTLY its buy rate (paid 2, sold 2) gets the bare caution — no margin
+// is a leak once overhead is counted — but NOT the two-lever escalation, which is for
+// a strict loss. Buy 8/4 = 2, sale 8/4 = 2.
+func TestBuildTradeValue_ResoldGoodAtCost(t *testing.T) {
+	subj := &sim.ActorSnapshot{RestockPolicy: buyPolicy("cheese", 10)}
+	published := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	buys := sim.NewRingBuffer[sim.PriceObservation](4)
+	buys.Push(sim.PriceObservation{BuyerID: "josiah", Amount: 8, Qty: 4, Consumers: 1, At: published.Add(-24 * time.Hour)})
+	sales := sim.NewRingBuffer[sim.PriceObservation](4)
+	sales.Push(sim.PriceObservation{BuyerID: "martha", Amount: 8, Qty: 4, Consumers: 1, At: published.Add(-12 * time.Hour)})
+	snap := &sim.Snapshot{
+		PublishedAt: published,
+		Actors:      map[sim.ActorID]*sim.ActorSnapshot{"josiah": subj},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"cheese": {OutputItem: "cheese", WholesalePrice: 3, RetailPrice: 6},
+		},
+		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+			{SellerID: "ellis_farm", Item: "cheese"}: buys,
+			{SellerID: "josiah", Item: "cheese"}:     sales,
+		},
+	}
+	v := buildTradeValue(snap, "josiah", subj, true)
+	if v == nil || len(v.Items) != 1 {
+		t.Fatalf("want 1 item, got %+v", v)
+	}
+	if got := v.Items[0]; !got.AtOrBelowCost || got.StrictlyBelowCost {
+		t.Fatalf("at-cost should set AtOrBelowCost but not StrictlyBelowCost, got %+v", got)
+	}
+	var b strings.Builder
+	renderTradeValue(&b, v)
+	out := b.String()
+	if !strings.Contains(out, "selling below your costs loses you coin.") {
+		t.Errorf("at-cost should carry the bare caution:\n%s", out)
+	}
+	if strings.Contains(out, "negotiate lower costs or raise your price") {
+		t.Errorf("at-cost (not strictly below) must not get the two-lever hint:\n%s", out)
+	}
+}
+
+// TestBuildTradeValue_ResoldGoodFreeAcquisition pins the LLM-385 zero-cost guard: a
+// good acquired for FREE (barter, paidCoins 0) is NOT flagged below cost even when it is
+// also sold for free — 0 <= 0 must not read as "at or below cost" when there is no cost
+// basis. But a zero-coin SALE against a POSITIVE paid cost still warns (a real give-away
+// loss). Requires the paidCoins > 0 gate in buildTradeValue.
+func TestBuildTradeValue_ResoldGoodFreeAcquisition(t *testing.T) {
+	published := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	newSnap := func(buyAmt, buyQty, saleAmt, saleQty int) *sim.Snapshot {
+		buys := sim.NewRingBuffer[sim.PriceObservation](4)
+		buys.Push(sim.PriceObservation{BuyerID: "josiah", Amount: buyAmt, Qty: buyQty, Consumers: 1, At: published.Add(-24 * time.Hour)})
+		sales := sim.NewRingBuffer[sim.PriceObservation](4)
+		sales.Push(sim.PriceObservation{BuyerID: "martha", Amount: saleAmt, Qty: saleQty, Consumers: 1, At: published.Add(-12 * time.Hour)})
+		return &sim.Snapshot{
+			PublishedAt: published,
+			Recipes:     map[sim.ItemKind]*sim.ItemRecipe{"cheese": {OutputItem: "cheese", WholesalePrice: 3, RetailPrice: 6}},
+			PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+				{SellerID: "ellis_farm", Item: "cheese"}: buys,  // josiah as buyer (cost)
+				{SellerID: "josiah", Item: "cheese"}:     sales, // josiah as seller (realized)
+			},
+		}
+	}
+	subj := &sim.ActorSnapshot{RestockPolicy: buyPolicy("cheese", 10)}
+	// Free in (0 coins / 4 units), free out (0 coins / 4 units) → no cost basis, no caution.
+	v := buildTradeValue(newSnap(0, 4, 0, 4), "josiah", subj, true)
+	if v == nil || len(v.Items) != 1 {
+		t.Fatalf("want 1 item, got %+v", v)
+	}
+	if got := v.Items[0]; got.AtOrBelowCost || got.StrictlyBelowCost {
+		t.Fatalf("free-in/free-out must not flag below cost, got %+v", got)
+	}
+	var b strings.Builder
+	renderTradeValue(&b, v)
+	if strings.Contains(b.String(), "selling below your costs") {
+		t.Errorf("free acquisition must carry no below-cost caution:\n%s", b.String())
+	}
+	// A zero-coin give-away against a POSITIVE paid cost (8/4 = 2) IS a loss → warn.
+	v2 := buildTradeValue(newSnap(8, 4, 0, 4), "josiah", subj, true)
+	if got := v2.Items[0]; !got.AtOrBelowCost || !got.StrictlyBelowCost {
+		t.Fatalf("giving away a good that cost coin must flag below cost, got %+v", got)
 	}
 }
 
