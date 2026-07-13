@@ -277,6 +277,13 @@ func HandleSpeak(in HandlerInput) (sim.Command, error) {
 			"speak: text contains a disallowed control character at byte offset %d "+
 				"(only \\n, \\r, \\t allowed)", i)
 	}
+	// Mojibake guard (LLM-235): reject U+FFFD and mid-word script splices so
+	// a token glitch ("I�ге peckish") never reaches the scene. Rejection
+	// bounces the speak back for a plain-words retry — speak is
+	// TerminalOnSuccess, so a failed commit does not end the tick.
+	if err := checkUtteranceText("speak", "text", text); err != nil {
+		return sim.Command{}, err
+	}
 	actorID := in.ActorID
 	to := args.To
 	// Mentions pass through as raw model strings; canonicalization +

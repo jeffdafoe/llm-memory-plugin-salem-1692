@@ -387,6 +387,10 @@ func DecodeOfferWorkArgs(raw json.RawMessage) (any, error) {
 			MaxSpeakTextChars, n,
 		)
 	}
+	// Same utterance path ⇒ same mojibake guard as speak (LLM-235).
+	if err := checkUtteranceText("offer_work", "say", args.Say); err != nil {
+		return nil, err
+	}
 	return args, nil
 }
 
@@ -676,6 +680,11 @@ func decodeLaborIDAndSay(raw json.RawMessage, toolName string) (LenientID, strin
 	if n := utf8.RuneCountInString(args.Say); n > MaxSpeakTextChars {
 		return 0, "", modelSafef(
 			"%s: say exceeds %d-character cap (got %d characters)", toolName, MaxSpeakTextChars, n)
+	}
+	// Same utterance path ⇒ same mojibake guard as speak (LLM-235). toolName
+	// scopes the error (accept_work / decline_work share this decoder).
+	if err := checkUtteranceText(toolName, "say", args.Say); err != nil {
+		return 0, "", err
 	}
 	return args.LaborID, args.Say, nil
 }
