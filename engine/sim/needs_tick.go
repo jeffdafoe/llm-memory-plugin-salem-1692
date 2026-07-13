@@ -21,8 +21,9 @@ import (
 //   IncrementNeedsTick()
 //       Hourly batch increment across all eligible actors. Fired by
 //       RunNeedsTicker once per minute (no-op when the hour hasn't rolled).
-//       Catch-up cap protects from outage shock; sleeping actors and
-//       decoratives are skipped.
+//       Applied one hour at a time — a multi-hour gap is treated as downtime
+//       and skipped (LLM-393), not caught up; sleeping actors and decoratives
+//       are skipped.
 //
 //   ApplyMovementFatigue(actorID, fromX, fromY, toX, toY)
 //       Tiredness bump proportional to walked distance. Short walks floor
@@ -355,8 +356,11 @@ const NeedsTickerInterval = time.Minute
 // IncrementNeedsTick command when the boundary has rolled past the last
 // processed tick.
 //
-// Catch-up: if many hours have elapsed since the last tick (downtime,
-// fresh process), the increment is capped at MaxNeedsCatchupHours.
+// No catch-up (LLM-393): a gap of more than one hour means the engine was
+// down or booted onto a stale checkpoint. The ticker stamps the boundary and
+// resumes without incrementing, rather than accumulating a village-wide need
+// shock — a 12h catch-up used to spike every actor past its red line and shut
+// the village down for the afternoon. Only a normal single-hour roll ticks.
 //
 // Fresh-run no-pulse: if LastNeedsTickAt is zero, the ticker stamps the
 // current hour boundary without incrementing — avoids a deploy-time
@@ -370,13 +374,27 @@ func RunNeedsTicker(ctx context.Context, w *World) {
 			return
 		case <-t.C:
 			w.beatTicker("needs")
-			runNeedsTickIteration(ctx, w)
+			runNeedsTickIteration(ctx, w, time.Now().UTC())
 		}
 	}
 }
 
-func runNeedsTickIteration(ctx context.Context, w *World) {
-	now := time.Now().UTC()
+// stampNeedsTickBoundary returns a Command that advances the persisted
+// last-needs-tick stamp to hourBoundary without touching any needs. Shared by
+// the fresh-run path (zero stamp) and the no-catch-up gap path (LLM-393) — both
+// resume ticking from the current hour rather than applying an increment.
+func stampNeedsTickBoundary(hourBoundary time.Time) Command {
+	return Command{
+		Fn: func(world *World) (any, error) {
+			world.Environment.LastNeedsTickAt = hourBoundary
+			return nil, nil
+		},
+	}
+}
+
+// now is injected (rather than read here) so the elapsed-hours decision is
+// deterministic under test; RunNeedsTicker passes time.Now().UTC().
+func runNeedsTickIteration(ctx context.Context, w *World, now time.Time) {
 	hourBoundary := now.Truncate(time.Hour)
 
 	// Snapshot the LastNeedsTickAt via a command so we read it consistent
@@ -398,12 +416,9 @@ func runNeedsTickIteration(ctx context.Context, w *World) {
 		// First run after deploy / process boot. Stamp the current hour
 		// boundary without incrementing (matches legacy behavior on
 		// NULL last_needs_tick_at).
-		_, _ = w.SendContext(ctx, Command{
-			Fn: func(world *World) (any, error) {
-				world.Environment.LastNeedsTickAt = hourBoundary
-				return nil, nil
-			},
-		})
+		if _, err := w.SendContext(ctx, stampNeedsTickBoundary(hourBoundary)); err != nil && ctx.Err() == nil {
+			log.Printf("sim/needs_tick: stamp boundary: %v", err)
+		}
 		return
 	}
 
@@ -413,21 +428,26 @@ func runNeedsTickIteration(ctx context.Context, w *World) {
 		return
 	}
 
-	cappedHours := hoursElapsed
-	if cappedHours > MaxNeedsCatchupHours {
-		log.Printf("sim/needs_tick: %d hours since last tick exceeds cap (%d) — applying capped catch-up only",
-			hoursElapsed, MaxNeedsCatchupHours)
-		cappedHours = MaxNeedsCatchupHours
+	// LLM-393: no catch-up. A gap of more than one hour means the engine was
+	// down, or booted onto a stale checkpoint (LLM-392) — the villagers were
+	// not actually accruing need for that whole window (they may well have slept
+	// through it), so resume where they left off instead of shock-spiking every
+	// need to red. Stamp the boundary and move on, exactly like the fresh-run
+	// path above. Only a normal single-hour roll applies the increment.
+	if hoursElapsed > 1 {
+		log.Printf("sim/needs_tick: %d hour(s) since last tick — resuming without catch-up", hoursElapsed)
+		if _, err := w.SendContext(ctx, stampNeedsTickBoundary(hourBoundary)); err != nil && ctx.Err() == nil {
+			log.Printf("sim/needs_tick: stamp boundary: %v", err)
+		}
+		return
 	}
 
-	res, err := w.SendContext(ctx, IncrementNeedsTick(cappedHours))
+	res, err := w.SendContext(ctx, IncrementNeedsTick(1))
 	if err != nil {
 		if ctx.Err() == nil {
 			log.Printf("sim/needs_tick: increment failed: %v", err)
 		}
 		return
 	}
-	touched := res.(int)
-	log.Printf("sim/needs_tick: %d hour(s) elapsed, applying %d capped, touched %d actors",
-		hoursElapsed, cappedHours, touched)
+	log.Printf("sim/needs_tick: hourly tick applied, touched %d actors", res.(int))
 }
