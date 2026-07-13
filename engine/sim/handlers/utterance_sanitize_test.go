@@ -66,6 +66,18 @@ func TestIndexCorruptSpeechRune(t *testing.T) {
 	}
 }
 
+// TestIndexCorruptSpeechRune_InvalidUTF8 documents why this guard is separate
+// from the generic control-char helper: a raw invalid UTF-8 byte is decoded by
+// range as utf8.RuneError (== U+FFFD), so rule 1 catches it as corruption even
+// though it was never literally encoded as EF BF BD. The distinction does not
+// matter for model feedback.
+func TestIndexCorruptSpeechRune_InvalidUTF8(t *testing.T) {
+	gotOffset, gotReason := indexCorruptSpeechRune(string([]byte{'h', 0xff, 'i'}))
+	if gotOffset != 1 || !strings.Contains(gotReason, "corrupted") {
+		t.Fatalf("offset/reason = %d/%q, want 1/contains %q", gotOffset, gotReason, "corrupted")
+	}
+}
+
 // TestCheckUtteranceText verifies the wrapper scopes the error to the tool
 // and field name and steers the model toward a retry, and that it never
 // echoes the offending text back (fail-closed).
