@@ -538,6 +538,10 @@ func DecodePayWithItemArgs(raw json.RawMessage) (any, error) {
 		return nil, modelSafef(
 			"pay_with_item: say exceeds %d-character cap (got %d characters)", MaxSpeakTextChars, n)
 	}
+	// Same utterance path ⇒ same mojibake guard as speak (LLM-235).
+	if err := checkUtteranceText("pay_with_item", "say", args.Say); err != nil {
+		return nil, err
+	}
 	return args, nil
 }
 
@@ -936,6 +940,10 @@ func DecodeAcceptPayArgs(raw json.RawMessage) (any, error) {
 	if n := utf8.RuneCountInString(args.Say); n > MaxSpeakTextChars {
 		return nil, modelSafef(
 			"accept_pay: say exceeds %d-character cap (got %d characters)", MaxSpeakTextChars, n)
+	}
+	// Same utterance path ⇒ same mojibake guard as speak (LLM-235).
+	if err := checkUtteranceText("accept_pay", "say", args.Say); err != nil {
+		return nil, err
 	}
 	return args, nil
 }
@@ -1340,6 +1348,12 @@ func selectSayAlias(toolName, aliasName, say, alias string) (string, error) {
 				"%s: %s exceeds %d-character cap (got %d characters)",
 				toolName, f.name, MaxSpeakTextChars, n,
 			)
+		}
+		// Same utterance path ⇒ same mojibake guard as speak (LLM-235). Each
+		// field is checked under its own name (say / reason / message) so the
+		// model can map the correction back to the field it sent.
+		if err := checkUtteranceText(toolName, f.name, f.val); err != nil {
+			return "", err
 		}
 	}
 	if strings.TrimSpace(say) != "" {

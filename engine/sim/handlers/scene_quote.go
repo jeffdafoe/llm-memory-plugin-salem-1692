@@ -351,6 +351,10 @@ func DecodeSceneQuoteArgs(raw json.RawMessage) (any, error) {
 			MaxSpeakTextChars, n,
 		)
 	}
+	// Same utterance path ⇒ same mojibake guard as speak (LLM-235).
+	if err := checkUtteranceText("sell", "say", args.Say); err != nil {
+		return nil, err
+	}
 	return args, nil
 }
 
