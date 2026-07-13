@@ -76,19 +76,49 @@ type RecurringVisitor struct {
 	// NextReturnAt is the wall-clock moment this returner is due back, or the zero
 	// value while they are in-village (or not yet scheduled). Set at departure,
 	// cleared when the return spawn consumes it.
-	NextReturnAt time.Time
+	NextReturnAt  time.Time
 	Acquaintances map[ActorID]*RecurringAcquaintance
 }
 
-// RecurringAcquaintance is the bond a returner remembers toward one PC. Coarse by
-// design (Tier 1): met-before + recency, not a staged arc. PCDisplayName is
-// denormalized so perception renders without a join back to the actor aggregate.
+// RecurringAcquaintance is the bond a returner remembers toward one PC.
+// PCDisplayName is denormalized so perception renders without a join back to the
+// actor aggregate.
+//
+// Episodic memory (LLM-383) extends the coarse Tier-1 familiarity (met-before +
+// recency) with what the returner actually remembers of prior visits with this PC.
+// It reuses the persistent-NPC continuity machinery (SalientFact + consolidation)
+// on the returner tier, which is firewalled out of the actor aggregate:
+//   - SalientFacts is the append-only {at, kind, text} trail captured DURING a
+//     visit on returner<->PC speech/trade beats (recordReturnerSalientFact), keyed
+//     strictly to the pair so a co-present third party can't leak in. FIFO-capped
+//     at MaxReturnerSalientFacts; per-fact Text is rune-truncated via NewSalientFact.
+//   - SummaryText is the LLM-folded distilled impression, rewritten at visit-end
+//     (or a mid-visit ceiling backstop) from the trail. Between visits the trail is
+//     pruned to ~empty and only this summary carries the returner's memory forward.
+//   - LastConsolidatedAt is stamped at each fold; nil until the first.
 type RecurringAcquaintance struct {
-	PCActorID     ActorID
-	PCDisplayName string
-	FirstMetAt    time.Time
-	LastMetAt     time.Time
+	PCActorID          ActorID
+	PCDisplayName      string
+	FirstMetAt         time.Time
+	LastMetAt          time.Time
+	SalientFacts       []SalientFact
+	SummaryText        string
+	LastConsolidatedAt *time.Time
 }
+
+// Returner episodic-memory bounds (LLM-383). These are DELIBERATELY smaller than
+// the persistent-NPC MaxSalientFactsPerRelationship (200) because a returner's
+// trail spans a single VISIT (hours), not a full day across many co-present pairs:
+// facts accrue during a visit and are folded to SummaryText + pruned at visit-end.
+//   - MaxReturnerSalientFacts caps the per-pair trail with FIFO eviction during a
+//     visit — the last-resort guard for a pathologically chatty single visit; the
+//     DB CHECK backstop (<= 200) sits well above it.
+//   - ReturnerConsolidationCeiling triggers a mid-visit fold if one visit's trail
+//     out-runs it before departure, so a marathon session still stays bounded.
+const (
+	MaxReturnerSalientFacts      = 60
+	ReturnerConsolidationCeiling = 40
+)
 
 // cloneRecurringVisitor deep-copies a RecurringVisitor (including its
 // Acquaintances map + the pointed-to entries) so the checkpoint snapshot and the
@@ -105,6 +135,16 @@ func cloneRecurringVisitor(src *RecurringVisitor) *RecurringVisitor {
 				continue
 			}
 			a := *acq
+			// Deep-copy the episodic-memory slice + time pointer (LLM-383) so a
+			// snapshot/mem-repo consumer never aliases live world state — same
+			// posture as cloneRelationships.
+			if acq.SalientFacts != nil {
+				a.SalientFacts = append([]SalientFact(nil), acq.SalientFacts...)
+			}
+			if acq.LastConsolidatedAt != nil {
+				t := *acq.LastConsolidatedAt
+				a.LastConsolidatedAt = &t
+			}
 			cp.Acquaintances[id] = &a
 		}
 	}
@@ -243,6 +283,50 @@ func recordReturnerAcquaintance(rv *RecurringVisitor, pc *Actor, at time.Time) {
 	}
 }
 
+// recordReturnerSalientFact appends one episodic-memory fact to a returner's
+// per-PC acquaintance (LLM-383). Called from RecordInteraction for a returner→PC
+// beat, on the world goroutine — so direct mutation of the returner set is
+// race-free. This is how a returner remembers a prior visit despite being
+// firewalled out of the actor aggregate that holds actor_relationship.SalientFacts.
+//
+// Self-talk exclusion: a bare InteractionSpoke is the returner's OWN utterance.
+// Folding the returner's patter into its memory OF the PC is exactly the
+// 2026-06-03 shared-VA cross-attribution failure (Item A), so Spoke is dropped
+// here. What the returner HEARD the PC say (InteractionHeard) and the factual
+// transactional beats (paid / paid_by / gave / delivered / …, which bake their
+// own attribution into the fact text) are kept.
+//
+// FIFO-capped at MaxReturnerSalientFacts: a pathologically chatty single visit
+// evicts its oldest beats rather than growing unbounded. The visit-end fold (and
+// the mid-visit ceiling backstop) is expected to consolidate well before the cap.
+// Per-fact Text is rune-truncated by NewSalientFact.
+func (w *World) recordReturnerSalientFact(returner, pc *Actor, kind InteractionKind, text string, at time.Time) {
+	if kind == InteractionSpoke {
+		return
+	}
+	vs := returner.VisitorState
+	if vs == nil || vs.RecurringID == "" {
+		return
+	}
+	rv := w.RecurringVisitors[RecurringVisitorID(vs.RecurringID)]
+	if rv == nil {
+		return
+	}
+	acq := rv.Acquaintances[pc.ID]
+	if acq == nil {
+		// No familiarity row yet. The promotion path (handleVisitorReturnerMeet on
+		// ActorMet / huddle-join) records the acquaintance before any speech or
+		// trade can happen in that huddle, so this is the defensive can't-happen
+		// path — skip rather than mint a half-populated row (no FirstMetAt). The
+		// fact is dropped, not misfiled.
+		return
+	}
+	acq.SalientFacts = append(acq.SalientFacts, NewSalientFact(at, kind, text))
+	if len(acq.SalientFacts) > MaxReturnerSalientFacts {
+		acq.SalientFacts = acq.SalientFacts[1:]
+	}
+}
+
 // pickDueReturner returns the returner most overdue for a comeback — one whose
 // NextReturnAt has passed and who is not currently in the village — or (nil,
 // false) when none is due. Deterministic: earliest NextReturnAt wins, id
@@ -371,6 +455,12 @@ type ReturnerKnownPC struct {
 	PCActorID   ActorID
 	DisplayName string
 	Recency     RecencyTier
+	// Summary is the returner's folded episodic impression of this PC (LLM-383), or
+	// "" before the first fold. Rendered as the remembered specifics in the
+	// self-preface. Raw facts are deliberately NOT projected: re-surfacing a stored
+	// `heard` utterance as a live one drove the persistent-tier re-pitch bug
+	// (ZBBS-HOME-412), so only the distilled summary crosses into perception.
+	Summary string
 }
 
 // buildReturnerSnapshot projects a traveler actor's durable returner identity into
@@ -395,6 +485,7 @@ func buildReturnerSnapshot(w *World, a *Actor, now time.Time) *ReturnerSnapshot 
 			PCActorID:   acq.PCActorID,
 			DisplayName: acq.PCDisplayName,
 			Recency:     recencyTierFor(now.Sub(acq.LastMetAt)),
+			Summary:     acq.SummaryText,
 		})
 	}
 	// Most-recently-seen first, id tie-break — a stable order so the preface names

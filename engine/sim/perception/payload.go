@@ -1602,6 +1602,9 @@ type TravelerSelfView struct {
 type TravelerKnownPC struct {
 	Name    string
 	Recency sim.RecencyTier
+	// Summary is the returner's folded episodic impression of this player (LLM-383),
+	// woven into the preface as remembered specifics. Empty before the first fold.
+	Summary string
 }
 
 type HuddleMember struct {

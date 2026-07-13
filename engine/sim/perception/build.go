@@ -1580,7 +1580,7 @@ func buildTravelerSelf(a *sim.ActorSnapshot) *TravelerSelfView {
 	if r := a.Returner; r != nil {
 		v.VisitCount = r.VisitCount
 		for _, k := range r.KnownHere {
-			v.KnownHere = append(v.KnownHere, TravelerKnownPC{Name: k.DisplayName, Recency: k.Recency})
+			v.KnownHere = append(v.KnownHere, TravelerKnownPC{Name: k.DisplayName, Recency: k.Recency, Summary: k.Summary})
 		}
 	}
 	return v

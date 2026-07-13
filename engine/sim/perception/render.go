@@ -416,6 +416,7 @@ func returnerVisitClause(visitCount int) string {
 func renderReturnerKnownClause(known []TravelerKnownPC) string {
 	var names []string
 	var firstRecency sim.RecencyTier
+	var firstSummary string
 	for _, k := range known {
 		n := sanitizeInline(k.Name)
 		if n == "" {
@@ -423,6 +424,10 @@ func renderReturnerKnownClause(known []TravelerKnownPC) string {
 		}
 		if len(names) == 0 {
 			firstRecency = k.Recency
+			// Bound defensively: the store path already caps the summary, but an
+			// out-of-band DB edit could set one up to the looser DB CHECK, and this
+			// text goes verbatim into every returner preface.
+			firstSummary = sim.BoundReturnerSummary(strings.TrimSpace(sanitizeInline(k.Summary)))
 		}
 		names = append(names, n)
 		if len(names) == 2 {
@@ -433,16 +438,29 @@ func renderReturnerKnownClause(known []TravelerKnownPC) string {
 		return ""
 	}
 	rec := returnerRecencyClause(firstRecency)
-	if len(names) == 1 {
-		if rec != "" {
-			return fmt.Sprintf("You know %s here — you last saw them %s.", names[0], rec)
-		}
-		return fmt.Sprintf("You know %s here.", names[0])
+	var clause string
+	switch {
+	case len(names) == 1 && rec != "":
+		clause = fmt.Sprintf("You know %s here — you last saw them %s.", names[0], rec)
+	case len(names) == 1:
+		clause = fmt.Sprintf("You know %s here.", names[0])
+	case rec != "":
+		clause = fmt.Sprintf("You know %s and %s here — you last saw %s %s.", names[0], names[1], names[0], rec)
+	default:
+		clause = fmt.Sprintf("You know %s and %s here.", names[0], names[1])
 	}
-	if rec != "" {
-		return fmt.Sprintf("You know %s and %s here — you last saw %s %s.", names[0], names[1], names[0], rec)
+	// Episodic memory (LLM-383): weave the returner's folded impression of the
+	// primary (most-recent) remembered player as prose after the recognition
+	// clause — the remembered specifics that turn "recognized" into "remembered"
+	// ("did that nail hold? you were fretting over the fence line last time"). Only
+	// the folded SUMMARY is surfaced — already an in-voice impression the visit-end
+	// fold distilled; raw facts are never re-surfaced (ZBBS-HOME-412). Present only
+	// after the first fold; empty before then, and the clause reads as plain
+	// coarse familiarity (the LLM-372 behavior).
+	if firstSummary != "" {
+		clause += " " + firstSummary
 	}
-	return fmt.Sprintf("You know %s and %s here.", names[0], names[1])
+	return clause
 }
 
 // returnerRecencyClause maps a recency tier to the phrase vocabulary that fills a

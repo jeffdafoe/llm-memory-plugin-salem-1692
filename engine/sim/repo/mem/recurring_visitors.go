@@ -62,6 +62,15 @@ func cloneRecurringVisitor(src *sim.RecurringVisitor) *sim.RecurringVisitor {
 				continue
 			}
 			a := *acq
+			// Deep-copy the episodic-memory slice + time pointer (LLM-383) so the
+			// fake repo doesn't alias the caller's structs across its boundary.
+			if acq.SalientFacts != nil {
+				a.SalientFacts = append([]sim.SalientFact(nil), acq.SalientFacts...)
+			}
+			if acq.LastConsolidatedAt != nil {
+				t := *acq.LastConsolidatedAt
+				a.LastConsolidatedAt = &t
+			}
 			cp.Acquaintances[id] = &a
 		}
 	}

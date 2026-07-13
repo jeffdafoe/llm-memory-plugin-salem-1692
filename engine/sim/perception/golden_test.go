@@ -890,6 +890,17 @@ var perceptionScenarios = []perceptionScenario{
 		build: travelerReturnerSelfPreface,
 	},
 	{
+		name: "traveler_returner_episodic_memory",
+		summary: "LLM-383: a returning traveler (Elias Drum, back for his 3rd visit) whose acquaintance with Jeff carries a " +
+			"FOLDED episodic summary — the returner remembers not just that it knows Jeff, but what happened last visit. The " +
+			"golden pins the remembered specifics woven into the self-preface after the recognition clause — the distilled " +
+			"impression prose ('Jeff frets over the fence line ... bought a bundle of your nails to set it right'), turning " +
+			"recognition into being remembered. Only the folded summary is surfaced (never a raw fact list — re-surfacing a " +
+			"stored heard-utterance as a live one drove the ZBBS-HOME-412 re-pitch bug); the no-summary case is " +
+			"traveler_returner_self_preface.",
+		build: travelerReturnerEpisodicMemory,
+	},
+	{
 		name: "hungry_worker_with_means_redirected_to_eat",
 		summary: "LLM-276: a workless, on-shift, idle worker whose hunger sits in the upper felt band (15, " +
 			"below the red-line 18) and who can resolve it now (holds coin, a free bush + a porridge vendor in reach). " +
@@ -10348,6 +10359,61 @@ func travelerReturnerSelfPreface() (*sim.Snapshot, sim.ActorID, []sim.WarrantMet
 	return snap, eliasID, warrants
 }
 
+// travelerReturnerEpisodicMemory is the LLM-383 fixture: the returner from
+// travelerReturnerSelfPreface, but now its acquaintance with Jeff carries a FOLDED
+// episodic summary (the visit-end fold's output). The golden pins the remembered
+// specifics woven into the self-preface after the recognition clause — the
+// distilled impression prose, scenes-not-stats, never a raw fact list. The
+// no-summary case (coarse familiarity only) is travelerReturnerSelfPreface.
+func travelerReturnerEpisodicMemory() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		eliasID = sim.ActorID("vstr-elias")
+		tavern  = sim.StructureID("tavern")
+	)
+	now := 540 // 09:00 — morning
+	elias := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Elias Drum the peddler",
+		State:             sim.StateIdle,
+		InsideStructureID: tavern,
+		Coins:             8,
+		Needs:             map[sim.NeedKey]int{},
+		VisitorState: &sim.VisitorState{
+			Archetype:   "peddler",
+			Origin:      "Boston",
+			Disposition: "weary",
+			RecurringID: "rvis-0000e71a",
+		},
+		Returner: &sim.ReturnerSnapshot{
+			VisitCount: 3,
+			KnownHere: []sim.ReturnerKnownPC{
+				{
+					PCActorID:   "pc-jeff",
+					DisplayName: "Jeff",
+					Recency:     sim.RecencyWeeks,
+					Summary:     "Jeff frets over the fence line on his north field; last visit he bought a bundle of your nails to set it right.",
+				},
+			},
+		},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{eliasID: elias},
+		Structures: map[sim.StructureID]*sim.Structure{
+			tavern: plainStructure(tavern, "Tavern"),
+		},
+	}
+	warrants := []sim.WarrantMeta{
+		{
+			TriggerActorID: eliasID,
+			Reason:         sim.ArrivalWarrantReason{AtStructureID: tavern},
+			SourceEventID:  1,
+		},
+	}
+	return snap, eliasID, warrants
+}
+
 // worklessTiredRejoinerSelfActionTrail is the LLM-217 fixture: the live Patience
 // Walker oscillation, mid-loop. She is workless (no work structure), tired, and
 // back in the Tavern huddle with John Ellis after two announce-leave-return
@@ -11519,7 +11585,7 @@ func comfortableWorkerAtEase() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 		},
 		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
 			sim.VillageObjectID(tavern): {ID: sim.VillageObjectID(tavern), Tags: []string{"business", "tavern"}},
-			sim.VillageObjectID(store): {ID: sim.VillageObjectID(store), Tags: []string{"business", "shop"}},
+			sim.VillageObjectID(store):  {ID: sim.VillageObjectID(store), Tags: []string{"business", "shop"}},
 		},
 	}
 	warrants := []sim.WarrantMeta{{TriggerActorID: silenceID, Reason: sim.AtEaseWarrantReason{}}}
