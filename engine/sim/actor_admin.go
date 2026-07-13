@@ -37,6 +37,15 @@ var ErrInvalidAgentLink = errors.New("invalid agent link")
 // empty id is valid — it clears the anchor.
 var ErrStructureNotFound = errors.New("structure not found")
 
+// ErrStructureNotHabitable is returned by SetActorHomeStructure when the target
+// structure's asset has no authored door (→ 422). A doorless structure is a
+// valid WORK anchor (its loiter pin is the work post, like a market stall) but
+// can never be a HOME: no NPC can walk inside to sleep, homeDestinationFor's
+// StructureEnter is rejected outright, and anchoring an NPC to one strands them
+// (they can't go home, can't sleep, and needsRestFallback no longer covers them
+// once HomeStructureID is set). See LLM-344.
+var ErrStructureNotHabitable = errors.New("structure has no door — cannot be a home (no one can enter to sleep)")
+
 // ErrInvalidSchedule is returned by SetActorSchedule when the start/end pair is
 // one-sided (exactly one nil) or a bound is outside [0,1439] (→ 400). Both-nil
 // is valid (inherit dawn/dusk); start == end is valid (an empty shift window,
@@ -162,7 +171,9 @@ func SetActorAgentLink(id ActorID, agent string) Command {
 }
 
 // SetActorHomeStructure sets (or clears) an NPC's home anchor. An empty id
-// clears; a non-empty id must resolve in World.Structures (ErrStructureNotFound).
+// clears; a non-empty id must resolve in World.Structures (ErrStructureNotFound)
+// AND its asset must have an authored door (ErrStructureNotHabitable) — a
+// doorless structure cannot be a home (see ErrStructureNotHabitable).
 // Emits NPCHomeStructureChanged only on an actual change.
 func SetActorHomeStructure(id ActorID, structureID string) Command {
 	return setActorStructure(id, structureID, true)
@@ -184,6 +195,17 @@ func setActorStructure(id ActorID, structureID string, home bool) Command {
 			if trimmed != "" {
 				if _, ok := w.Structures[StructureID(trimmed)]; !ok {
 					return nil, ErrStructureNotFound
+				}
+				// A home anchor additionally requires a door — a doorless
+				// structure is a valid workplace but never a residence
+				// (LLM-344). Work stays door-agnostic. An asset-catalog gap
+				// (villageObjectForStructure ok=false) can't confirm a door,
+				// so it fails the home gate too.
+				if home {
+					_, asset, ok := villageObjectForStructure(w, StructureID(trimmed))
+					if !ok || !assetHasDoor(asset) {
+						return nil, ErrStructureNotHabitable
+					}
 				}
 			}
 			a, err := editableNPC(w, id)

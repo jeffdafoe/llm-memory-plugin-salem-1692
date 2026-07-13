@@ -488,15 +488,26 @@ func _try_assign_structure(screen_pos: Vector2, is_home: bool) -> void:
     var hit: Node2D = _find_object_at(screen_pos)
     if hit == null:
         return
-    var asset_id: String = hit.get_meta("asset_id", "")
-    var asset: Dictionary = Catalog.assets.get(asset_id, {})
-    # Home/work assignment requires the asset to have a door tile —
-    # without one there's no walkable entry point for the scheduler
-    # (post-ZBBS-101 the per-instance entry_policy gates runtime entry,
-    # but eligibility as a home/work target is an asset-level question:
-    # is this physically a building?).
-    if asset.get("door_offset_x", null) == null or asset.get("door_offset_y", null) == null:
+    # Server eligibility is structure-backing, not "has a door" (LLM-344). The
+    # old door-only gate was wrong both ways: it accepted door-having placements
+    # that back no Structure (server 404s them) and refused doorless placements
+    # LLM-249 promoted into real workplaces. has_interior is this client's live
+    # mirror of w.Structures membership (world.gd, flipped by the promote
+    # broadcast). A miss on this gate is treated like clicking scenery — silent,
+    # so the admin can keep trying.
+    if not bool(hit.get_meta("has_interior", false)):
         return
+    # A home anchor additionally requires an authored door: a doorless structure
+    # can be a workplace (its loiter pin is the post) but never a home — the NPC
+    # could never walk inside to sleep, and anchoring them there strands them.
+    # Mirrors the server's ErrStructureNotHabitable gate. Warn rather than
+    # silently swallow, so the click isn't a dead no-op.
+    if is_home:
+        var asset_id: String = hit.get_meta("asset_id", "")
+        var asset: Dictionary = Catalog.assets.get(asset_id, {})
+        if asset.get("door_offset_x", null) == null or asset.get("door_offset_y", null) == null:
+            Toast.warning("This building has no door, so no one can live here. Drag the door marker in the editor to set one, then it can be a home.")
+            return
     var structure_id: String = hit.get_meta("object_id", "")
     if structure_id == "":
         return

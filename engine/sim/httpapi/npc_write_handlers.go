@@ -69,7 +69,8 @@ func writeActorAdminError(w http.ResponseWriter, err error) {
 		errors.Is(err, sim.ErrInvalidAgentLink),
 		errors.Is(err, sim.ErrInvalidSchedule):
 		writeError(w, http.StatusBadRequest, err.Error())
-	case errors.Is(err, sim.ErrUnknownAttribute), errors.Is(err, sim.ErrUnknownItemKind):
+	case errors.Is(err, sim.ErrUnknownAttribute), errors.Is(err, sim.ErrUnknownItemKind),
+		errors.Is(err, sim.ErrStructureNotHabitable):
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 	case errors.Is(err, sim.ErrUnknownSprite), errors.Is(err, sim.ErrInvalidInventory):
 		writeError(w, http.StatusBadRequest, err.Error())
