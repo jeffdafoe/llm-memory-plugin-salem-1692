@@ -213,6 +213,115 @@ func TestEvaluateRestock_DegradedBusinessNoWarrant(t *testing.T) {
 	}
 }
 
+// pinAtPost puts the actor mid-production-batch at its own workplace — the
+// LLM-319 pause-model pin (the batch only advances while the actor is there),
+// the state actorBatchPinnedAtPost keys on.
+func pinAtPost(w *World, a *Actor) {
+	sid := StructureID("post-" + string(a.ID))
+	a.WorkStructureID = sid
+	a.InsideStructureID = sid
+	a.ProductionActivity = &ProductionActivity{Item: "bread", BatchQty: 4, RemainingSeconds: 1200}
+	if w.Structures == nil {
+		w.Structures = map[StructureID]*Structure{}
+	}
+	w.Structures[sid] = &Structure{}
+}
+
+// TestEvaluateRestock_BatchPinnedWalkToNoWarrant: a keeper mid-batch at post
+// whose only buy path is a WALK-TO supplier gets no restock warrant — the trip
+// would stall the batch, so every wake is unanswerable (the live John-Ellis
+// sage case). The batch-landing wake + the per-minute scan re-pose the reorder
+// when the batch lands. Foil of TestEvaluateRestock_LowStockStamps: identical
+// low-stock + supplier setup, only pinned.
+func TestEvaluateRestock_BatchPinnedWalkToNoWarrant(t *testing.T) {
+	a := reseller("merchant", KindNPCStateful, "ale", 20, 3) // 15% < 25% — would stamp
+	w := restockWorld(a)
+	addSupplier(w, "brewer", "ale")
+	pinAtPost(w, a)
+	now := time.Now().UTC()
+
+	res, err := EvaluateRestock(now).Fn(w)
+	if err != nil {
+		t.Fatalf("EvaluateRestock: %v", err)
+	}
+	if res.(int) != 0 {
+		t.Errorf("stamped = %d, want 0 (batch-pinned keeper has no walk-to buy path)", res.(int))
+	}
+	if hasWarrantKind(a, WarrantKindRestock) {
+		t.Fatalf("a batch-pinned keeper must not be woken for a walk-to reorder; kinds = %v", warrantKinds(a))
+	}
+}
+
+// TestEvaluateRestock_BatchPinnedCoPresentSellerStamps: the pin only drops the
+// WALK-TO path — a co-present seller (sharing the keeper's huddle) is
+// actionable this very tick without leaving post, so the warrant still fires.
+func TestEvaluateRestock_BatchPinnedCoPresentSellerStamps(t *testing.T) {
+	a := reseller("merchant", KindNPCStateful, "ale", 20, 3)
+	w := restockWorld(a)
+	v := addSupplier(w, "brewer", "ale")
+	pinAtPost(w, a)
+	a.CurrentHuddleID = "hud-1"
+	v.CurrentHuddleID = "hud-1"
+	now := time.Now().UTC()
+
+	res, err := EvaluateRestock(now).Fn(w)
+	if err != nil {
+		t.Fatalf("EvaluateRestock: %v", err)
+	}
+	if res.(int) != 1 {
+		t.Errorf("stamped = %d, want 1 (a co-present seller is actionable while pinned)", res.(int))
+	}
+	if !hasWarrantKind(a, WarrantKindRestock) {
+		t.Fatalf("expected a restock warrant via the co-present seller; kinds = %v", warrantKinds(a))
+	}
+}
+
+// TestEvaluateRestock_MidBatchAwayFromPostStamps: a paused batch does not pin.
+// Mid-batch but AWAY from post (the batch isn't advancing anyway), the walk-to
+// path is back and the warrant fires — he's already off-post, the trip stalls
+// nothing that isn't already stalled.
+func TestEvaluateRestock_MidBatchAwayFromPostStamps(t *testing.T) {
+	a := reseller("merchant", KindNPCStateful, "ale", 20, 3)
+	w := restockWorld(a)
+	addSupplier(w, "brewer", "ale")
+	pinAtPost(w, a)
+	a.InsideStructureID = "" // wandered off — batch paused, not pinned
+	now := time.Now().UTC()
+
+	res, err := EvaluateRestock(now).Fn(w)
+	if err != nil {
+		t.Fatalf("EvaluateRestock: %v", err)
+	}
+	if res.(int) != 1 {
+		t.Errorf("stamped = %d, want 1 (a paused batch away from post does not pin)", res.(int))
+	}
+	if !hasWarrantKind(a, WarrantKindRestock) {
+		t.Fatalf("expected a restock warrant for the off-post keeper; kinds = %v", warrantKinds(a))
+	}
+}
+
+// TestEvaluateRestock_AtPostNoBatchStamps: at post with NO batch in flight is
+// not pinned — the ordinary at-post keeper still reorders via walk-to.
+func TestEvaluateRestock_AtPostNoBatchStamps(t *testing.T) {
+	a := reseller("merchant", KindNPCStateful, "ale", 20, 3)
+	w := restockWorld(a)
+	addSupplier(w, "brewer", "ale")
+	pinAtPost(w, a)
+	a.ProductionActivity = nil // batch landed — pin lifts
+	now := time.Now().UTC()
+
+	res, err := EvaluateRestock(now).Fn(w)
+	if err != nil {
+		t.Fatalf("EvaluateRestock: %v", err)
+	}
+	if res.(int) != 1 {
+		t.Errorf("stamped = %d, want 1 (no batch in flight — the pin is lifted)", res.(int))
+	}
+	if !hasWarrantKind(a, WarrantKindRestock) {
+		t.Fatalf("expected a restock warrant once the batch landed; kinds = %v", warrantKinds(a))
+	}
+}
+
 // TestEvaluateRestock_LowForageStockStamps: a grower whose own HARVESTED sell-
 // stock runs low warrants restock the same way a buy-side reseller does (LLM-90),
 // with the forage Source so the cue line routes to "## Your bushes to harvest".
