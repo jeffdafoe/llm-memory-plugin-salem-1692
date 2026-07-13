@@ -255,6 +255,10 @@ func TestEvaluateRestock_BatchPinnedWalkToNoWarrant(t *testing.T) {
 // TestEvaluateRestock_BatchPinnedCoPresentSellerStamps: the pin only drops the
 // WALK-TO path — a co-present seller (sharing the keeper's huddle) is
 // actionable this very tick without leaving post, so the warrant still fires.
+// Matching CurrentHuddleID backrefs (no live Huddle object) is deliberate:
+// that IS the production co-presence predicate in actorHasBuyPath, the same
+// backref test the ZBBS-HOME-388 buy-here cue uses — not a shortcut this test
+// takes (code_review).
 func TestEvaluateRestock_BatchPinnedCoPresentSellerStamps(t *testing.T) {
 	a := reseller("merchant", KindNPCStateful, "ale", 20, 3)
 	w := restockWorld(a)
