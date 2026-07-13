@@ -116,3 +116,23 @@ func TestSetActorHomeStructure_NotFoundBeforeHabitable(t *testing.T) {
 		t.Fatalf("home=\"\" (clear) err = %v, want nil", err)
 	}
 }
+
+// Fail-closed on a data-integrity gap: a Structure that exists in w.Structures
+// but has no backing VillageObject (villageObjectForStructure ok=false) can't
+// prove a door, so the home gate rejects it with ErrStructureNotHabitable rather
+// than accepting an unenterable anchor. Seeding the orphan through a command
+// (not the world builder) models the runtime gap without depending on how
+// LoadWorld treats a placement-less structure.
+func TestSetActorHomeStructure_StructureWithoutPlacementRejected(t *testing.T) {
+	w := buildHomeAnchorWorld(t)
+
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Structures["orphan"] = &sim.Structure{ID: "orphan", DisplayName: "Orphan"}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed orphan structure: %v", err)
+	}
+	if _, err := w.Send(sim.SetActorHomeStructure("npc", "orphan")); !errors.Is(err, sim.ErrStructureNotHabitable) {
+		t.Fatalf("home=orphan err = %v, want ErrStructureNotHabitable (fail-closed on missing placement)", err)
+	}
+}
