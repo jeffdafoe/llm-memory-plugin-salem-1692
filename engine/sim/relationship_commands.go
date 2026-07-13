@@ -55,6 +55,22 @@ func RecordInteraction(actorID, otherID ActorID, kind InteractionKind, text stri
 			if actor.Kind != KindNPCShared {
 				return nil, nil
 			}
+			// Returner episodic memory (LLM-383): a returner is a transient,
+			// shared-VA traveler with no actor Relationship, but it DOES keep
+			// per-PC episodic memory on its recurring_visitor_acquaintance. Route
+			// a returner→PC beat there instead of skipping it below. Keyed
+			// strictly to the (returner, PC) pair, so a co-present third party's
+			// beats — their OWN RecordInteraction pairs — can never leak into
+			// this pair (the shared-VA cross-attribution guard is structural, not
+			// prompt-level). recordReturnerSalientFact additionally drops the
+			// returner's own utterance (InteractionSpoke) so a weak VA can't fold
+			// the returner's patter into its memory of the PC. A returner↔NPC beat
+			// (other not a PC) is NOT captured — the returner arc is player-facing
+			// — and falls through to the visitor skip.
+			if actor.VisitorState != nil && actor.VisitorState.RecurringID != "" && other.Kind == KindPC {
+				w.recordReturnerSalientFact(actor, other, kind, text, at)
+				return nil, nil
+			}
 			// Transient-visitor skip: visitors don't accumulate relationship
 			// rows (stateless by design — the shared salem-visitor VA has
 			// dream_mode='none'), and persistent NPCs don't accumulate

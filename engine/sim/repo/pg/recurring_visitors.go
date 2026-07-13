@@ -36,7 +36,8 @@ SELECT id, name, archetype, origin, disposition, visit_count,
   FROM recurring_visitor`
 
 const loadRecurringAcqSQL = `
-SELECT recurring_visitor_id, pc_actor_id, pc_display_name, first_met_at, last_met_at
+SELECT recurring_visitor_id, pc_actor_id, pc_display_name, first_met_at, last_met_at,
+       salient_facts, summary_text, last_consolidated_at
   FROM recurring_visitor_acquaintance`
 
 // upsertRecurringSQL writes one returner row. next_return_at is bound NULL when
@@ -56,14 +57,21 @@ ON CONFLICT (id) DO UPDATE SET
     last_seen_at   = EXCLUDED.last_seen_at,
     next_return_at = EXCLUDED.next_return_at`
 
+// upsertRecurringAcqSQL writes one acquaintance row. salient_facts is bound as
+// text + cast to jsonb (same posture as actor_relationship). last_consolidated_at
+// is a nullable *time.Time (pgx binds a nil pointer as NULL).
 const upsertRecurringAcqSQL = `
 INSERT INTO recurring_visitor_acquaintance (
-    recurring_visitor_id, pc_actor_id, pc_display_name, first_met_at, last_met_at
-) VALUES ($1, $2, $3, $4, $5)
+    recurring_visitor_id, pc_actor_id, pc_display_name, first_met_at, last_met_at,
+    salient_facts, summary_text, last_consolidated_at
+) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)
 ON CONFLICT (recurring_visitor_id, pc_actor_id) DO UPDATE SET
-    pc_display_name = EXCLUDED.pc_display_name,
-    first_met_at    = EXCLUDED.first_met_at,
-    last_met_at     = EXCLUDED.last_met_at`
+    pc_display_name      = EXCLUDED.pc_display_name,
+    first_met_at         = EXCLUDED.first_met_at,
+    last_met_at          = EXCLUDED.last_met_at,
+    salient_facts        = EXCLUDED.salient_facts,
+    summary_text         = EXCLUDED.summary_text,
+    last_consolidated_at = EXCLUDED.last_consolidated_at`
 
 // deleteRecurringAcqNotInSQL reconciles a returner's acquaintance children to its
 // current in-memory set: any child whose pc_actor_id is not in the passed array is
@@ -137,24 +145,35 @@ func (r *RecurringVisitorsRepo) LoadAll(ctx context.Context) (map[sim.RecurringV
 	defer acqRows.Close()
 	for acqRows.Next() {
 		var (
-			rvID       string
-			pcActorID  string
-			pcName     string
-			firstMetAt time.Time
-			lastMetAt  time.Time
+			rvID               string
+			pcActorID          string
+			pcName             string
+			firstMetAt         time.Time
+			lastMetAt          time.Time
+			salientFactsJSON   []byte
+			summaryText        string
+			lastConsolidatedAt *time.Time
 		)
-		if err := acqRows.Scan(&rvID, &pcActorID, &pcName, &firstMetAt, &lastMetAt); err != nil {
+		if err := acqRows.Scan(&rvID, &pcActorID, &pcName, &firstMetAt, &lastMetAt,
+			&salientFactsJSON, &summaryText, &lastConsolidatedAt); err != nil {
 			return nil, fmt.Errorf("pg recurring_visitors LoadAll acq scan: %w", err)
 		}
 		rv := out[sim.RecurringVisitorID(rvID)]
 		if rv == nil {
 			continue // orphan child (out-of-band edit); the FK makes this unreachable from a consistent write
 		}
+		facts, err := unmarshalSalientFacts(salientFactsJSON)
+		if err != nil {
+			return nil, fmt.Errorf("pg recurring_visitors LoadAll acq id=%s pc=%s salient_facts unmarshal: %w", rvID, pcActorID, err)
+		}
 		rv.Acquaintances[sim.ActorID(pcActorID)] = &sim.RecurringAcquaintance{
-			PCActorID:     sim.ActorID(pcActorID),
-			PCDisplayName: pcName,
-			FirstMetAt:    firstMetAt,
-			LastMetAt:     lastMetAt,
+			PCActorID:          sim.ActorID(pcActorID),
+			PCDisplayName:      pcName,
+			FirstMetAt:         firstMetAt,
+			LastMetAt:          lastMetAt,
+			SalientFacts:       facts,
+			SummaryText:        summaryText,
+			LastConsolidatedAt: lastConsolidatedAt,
 		}
 	}
 	if err := acqRows.Err(); err != nil {
@@ -198,15 +217,15 @@ func (r *RecurringVisitorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, rec
 			nextReturnArg = rv.NextReturnAt
 		}
 		if _, err := tx.Exec(ctx, upsertRecurringSQL,
-			string(rv.ID),   // $1 id
-			rv.Name,         // $2 name
-			rv.Archetype,    // $3 archetype
-			rv.Origin,       // $4 origin
-			rv.Disposition,  // $5 disposition
-			rv.VisitCount,   // $6 visit_count
-			rv.FirstSeenAt,  // $7 first_seen_at
-			rv.LastSeenAt,   // $8 last_seen_at
-			nextReturnArg,   // $9 next_return_at (nullable)
+			string(rv.ID),  // $1 id
+			rv.Name,        // $2 name
+			rv.Archetype,   // $3 archetype
+			rv.Origin,      // $4 origin
+			rv.Disposition, // $5 disposition
+			rv.VisitCount,  // $6 visit_count
+			rv.FirstSeenAt, // $7 first_seen_at
+			rv.LastSeenAt,  // $8 last_seen_at
+			nextReturnArg,  // $9 next_return_at (nullable)
 		); err != nil {
 			return fmt.Errorf("pg recurring_visitors SaveSnapshot: upsert id=%s: %w", rv.ID, err)
 		}
@@ -224,12 +243,19 @@ func (r *RecurringVisitorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, rec
 			if acq == nil {
 				continue
 			}
+			factsJSON, err := marshalSalientFacts(acq.SalientFacts)
+			if err != nil {
+				return fmt.Errorf("pg recurring_visitors SaveSnapshot: marshal salient_facts id=%s pc=%s: %w", rv.ID, pcID, err)
+			}
 			if _, err := tx.Exec(ctx, upsertRecurringAcqSQL,
-				string(rv.ID),     // $1 recurring_visitor_id
-				string(pcID),      // $2 pc_actor_id
-				acq.PCDisplayName, // $3 pc_display_name
-				acq.FirstMetAt,    // $4 first_met_at
-				acq.LastMetAt,     // $5 last_met_at
+				string(rv.ID),          // $1 recurring_visitor_id
+				string(pcID),           // $2 pc_actor_id
+				acq.PCDisplayName,      // $3 pc_display_name
+				acq.FirstMetAt,         // $4 first_met_at
+				acq.LastMetAt,          // $5 last_met_at
+				factsJSON,              // $6 salient_facts (::jsonb)
+				acq.SummaryText,        // $7 summary_text
+				acq.LastConsolidatedAt, // $8 last_consolidated_at (nullable)
 			); err != nil {
 				return fmt.Errorf("pg recurring_visitors SaveSnapshot: upsert acq id=%s pc=%s: %w", rv.ID, pcID, err)
 			}

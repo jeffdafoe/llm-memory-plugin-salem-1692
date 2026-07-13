@@ -148,6 +148,57 @@ func TestIntegration_RecurringVisitor_SurvivesDeparture(t *testing.T) {
 	}
 }
 
+// TestIntegration_RecurringVisitor_EpisodicMemoryRoundTrip — the LLM-383 columns:
+// a per-pair salient-fact trail (with spoke/heard/paid attribution + ordering), the
+// folded summary_text, and the nullable last_consolidated_at all round-trip through
+// the real jsonb + text columns end to end. The base round-trip test above exercises
+// the zero-value path (empty trail, empty summary, NULL fold stamp).
+func TestIntegration_RecurringVisitor_EpisodicMemoryRoundTrip(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	repo := NewRepository(f.Pool)
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	w := recurringWorld(repo, now)
+
+	consolidatedAt := now.Add(-20 * 24 * time.Hour)
+	acq := w.RecurringVisitors["rvis-0000abcd"].Acquaintances["pc-jeff"]
+	acq.SummaryText = "Jeff bought a bundle of nails last visit and fretted over his fence line."
+	acq.LastConsolidatedAt = &consolidatedAt
+	acq.SalientFacts = []sim.SalientFact{
+		sim.NewSalientFact(now.Add(-2*time.Hour), sim.InteractionHeard, "The fence along the north field still won't hold."),
+		sim.NewSalientFact(now.Add(-1*time.Hour), sim.InteractionSpoke, "I've a fresh bundle of nails that'll do the job."),
+		sim.NewSalientFact(now.Add(-30*time.Minute), sim.InteractionPaid, "Jeff paid me 6 coins for a bundle of nails."),
+	}
+
+	if err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
+		t.Fatalf("SaveWorld: %v", err)
+	}
+	rvs, err := repo.RecurringVisitors.LoadAll(ctx)
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	got := rvs["rvis-0000abcd"].Acquaintances["pc-jeff"]
+	if got == nil {
+		t.Fatal("acquaintance did not round-trip")
+	}
+	if got.SummaryText != acq.SummaryText {
+		t.Errorf("SummaryText = %q, want %q", got.SummaryText, acq.SummaryText)
+	}
+	if got.LastConsolidatedAt == nil || !got.LastConsolidatedAt.Equal(consolidatedAt) {
+		t.Errorf("LastConsolidatedAt = %v, want %v", got.LastConsolidatedAt, consolidatedAt)
+	}
+	if len(got.SalientFacts) != len(acq.SalientFacts) {
+		t.Fatalf("SalientFacts count = %d, want %d", len(got.SalientFacts), len(acq.SalientFacts))
+	}
+	for i, want := range acq.SalientFacts {
+		g := got.SalientFacts[i]
+		if g.Kind != want.Kind || g.Text != want.Text || !g.At.Equal(want.At) {
+			t.Errorf("SalientFacts[%d] = {%v %q %q}, want {%v %q %q}", i, g.At, g.Kind, g.Text, want.At, want.Kind, want.Text)
+		}
+	}
+}
+
 // TestIntegration_RecurringVisitor_AcquaintanceReconcile — a per-parent child
 // reconcile: an acquaintance dropped from the in-memory map is removed from the
 // child table at the next checkpoint (does not resurrect on reload), even though

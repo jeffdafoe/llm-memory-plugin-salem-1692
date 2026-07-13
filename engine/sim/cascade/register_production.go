@@ -102,6 +102,11 @@ func RegisterProductionCascades(ctx context.Context, w *sim.World, client llm.Cl
 	// predictable reading.
 	RegisterAtmosphere(ctx, w, client)
 	RegisterConsolidation(ctx, w, client)
+	// Returner episodic-memory fold (LLM-383): the returner-tier analogue of
+	// RegisterConsolidation, folding a returning traveler's per-PC fact trail into
+	// a summary at visit-end. Separate sweep because its trigger is visit-end /
+	// ceiling, not the persistent 24h floor.
+	RegisterReturnerConsolidation(ctx, w, client)
 	RegisterNarrationExpansion(ctx, w, client)
 	// Narrative soul synthesis (LLM-199) calls the memory-api /sim/soul
 	// endpoint (resolving the system-owned dream-sim-soul agent), not the
