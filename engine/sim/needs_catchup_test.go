@@ -72,8 +72,8 @@ func TestNeedsTick_NoCatchupOnLongGap(t *testing.T) {
 	w, cancel := catchupTestWorld(t)
 	defer cancel()
 
-	now := time.Now().UTC()
-	setNeedsStamp(t, w, now.Add(-18*time.Hour))
+	now := time.Date(1692, 9, 22, 15, 30, 0, 0, time.UTC)
+	setNeedsStamp(t, w, now.Truncate(time.Hour).Add(-18*time.Hour))
 
 	runNeedsTickIteration(context.Background(), w, now)
 
@@ -94,7 +94,7 @@ func TestNeedsTick_NormalHourStillTicks(t *testing.T) {
 	w, cancel := catchupTestWorld(t)
 	defer cancel()
 
-	now := time.Now().UTC()
+	now := time.Date(1692, 9, 22, 15, 30, 0, 0, time.UTC)
 	setNeedsStamp(t, w, now.Truncate(time.Hour).Add(-1*time.Hour))
 
 	runNeedsTickIteration(context.Background(), w, now)

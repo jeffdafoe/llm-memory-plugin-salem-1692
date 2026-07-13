@@ -416,7 +416,9 @@ func runNeedsTickIteration(ctx context.Context, w *World, now time.Time) {
 		// First run after deploy / process boot. Stamp the current hour
 		// boundary without incrementing (matches legacy behavior on
 		// NULL last_needs_tick_at).
-		_, _ = w.SendContext(ctx, stampNeedsTickBoundary(hourBoundary))
+		if _, err := w.SendContext(ctx, stampNeedsTickBoundary(hourBoundary)); err != nil && ctx.Err() == nil {
+			log.Printf("sim/needs_tick: stamp boundary: %v", err)
+		}
 		return
 	}
 
