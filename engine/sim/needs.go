@@ -19,11 +19,6 @@ const (
 	// NeedMax is the hard ceiling on every need value.
 	NeedMax = 24
 
-	// MaxNeedsCatchupHours caps the increment applied after a long
-	// downtime. Prevents a multi-hour outage from shock-spiking every
-	// villager to peak need on the first tick after recovery.
-	MaxNeedsCatchupHours = 12
-
 	// NeedsHysteresisMargin keeps the "needs_resolved" detection from
 	// chattering across the red threshold. Resolves when value drops at
 	// least this far below red. Mirrors the legacy needsHysteresisMargin.
