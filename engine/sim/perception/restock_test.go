@@ -1066,6 +1066,119 @@ func TestRenderRestocking_SellThroughLine(t *testing.T) {
 	}
 }
 
+// TestBuildRestocking_ResaleUnitAndOverBuying pins the LLM-385 buy-side fields: the
+// reseller's own realized resale RATE (the ceiling the buying-in anchor is judged
+// against) and the OVER-BUYING flag (bought markedly more than it sold this window).
+// Milk: sold 9 units for 12 coins → resale 1.3 rounds to 1; bought 35 units → over-buying
+// (35 >= 4 and 35 >= 2×9+1). Coins high so the supplier isn't dropped as unaffordable.
+func TestBuildRestocking_ResaleUnitAndOverBuying(t *testing.T) {
+	now := time.Date(2026, 6, 23, 12, 0, 0, 0, time.UTC)
+	subj := &sim.ActorSnapshot{Coins: 100, Inventory: map[sim.ItemKind]int{"milk": 4}, RestockPolicy: buyPolicy("milk", 20)}
+	// merchant-as-SELLER ring for milk (resale rate): 9 units for 12 coins → 1.3 → 1.
+	sellPB := sim.NewRingBuffer[sim.PriceObservation](20)
+	sellPB.Push(sim.PriceObservation{BuyerID: "cust", Amount: 12, Qty: 9, Consumers: 1, At: now.Add(-2 * 24 * time.Hour)})
+	// supplier-as-SELLER ring holding the merchant's in-window PURCHASE of 35 units
+	// (bundle price 40 ≤ 100 coins, so the supplier survives the affordability drop).
+	buyPB := sim.NewRingBuffer[sim.PriceObservation](20)
+	buyPB.Push(sim.PriceObservation{BuyerID: "merchant", Amount: 40, Qty: 35, Consumers: 1, At: now.Add(-1 * 24 * time.Hour)})
+	supplierActor := &sim.ActorSnapshot{WorkStructureID: "farm", Inventory: map[sim.ItemKind]int{"milk": 40}, RestockPolicy: producePolicy("milk", 40)}
+	snap := &sim.Snapshot{
+		PublishedAt: now,
+		Actors:      map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj, "supplier": supplierActor},
+		Structures:  map[sim.StructureID]*sim.Structure{"farm": {ID: "farm", DisplayName: "Ellis Farm"}},
+		ItemKinds:   restockCatalog(),
+		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+			{SellerID: "merchant", Item: "milk"}: sellPB,
+			{SellerID: "supplier", Item: "milk"}: buyPB,
+		},
+		RestockReorderPct: 25,
+	}
+	v := buildRestocking(snap, "merchant", subj)
+	if v == nil || len(v.Items) != 1 {
+		t.Fatalf("want 1 item, got %+v", v)
+	}
+	it := v.Items[0]
+	if it.ResaleUnit != 1 {
+		t.Errorf("ResaleUnit = %d, want 1 (12 coins / 9 units → 1.3 → 1)", it.ResaleUnit)
+	}
+	if it.RecentBuyUnits != 35 {
+		t.Errorf("RecentBuyUnits = %d, want 35", it.RecentBuyUnits)
+	}
+	if !it.OverBuying {
+		t.Errorf("OverBuying = false, want true (35 bought vs 9 sold)")
+	}
+
+	// Boundary: bought 10 against 8 SOLD is NOT over-buying (10 < 2×8+1 = 17) — a
+	// healthy shop restocking about what it moves. ResaleUnit rounds its 16/8 = 2.
+	subj2 := &sim.ActorSnapshot{Coins: 100, Inventory: map[sim.ItemKind]int{"milk": 4}, RestockPolicy: buyPolicy("milk", 20)}
+	sellPB2 := sim.NewRingBuffer[sim.PriceObservation](20)
+	sellPB2.Push(sim.PriceObservation{BuyerID: "cust", Amount: 16, Qty: 8, Consumers: 1, At: now.Add(-2 * 24 * time.Hour)})
+	buyPB2 := sim.NewRingBuffer[sim.PriceObservation](20)
+	buyPB2.Push(sim.PriceObservation{BuyerID: "merchant", Amount: 10, Qty: 10, Consumers: 1, At: now.Add(-1 * 24 * time.Hour)})
+	supplier2 := &sim.ActorSnapshot{WorkStructureID: "farm", Inventory: map[sim.ItemKind]int{"milk": 40}, RestockPolicy: producePolicy("milk", 40)}
+	snap2 := &sim.Snapshot{
+		PublishedAt: now,
+		Actors:      map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj2, "supplier": supplier2},
+		Structures:  map[sim.StructureID]*sim.Structure{"farm": {ID: "farm", DisplayName: "Ellis Farm"}},
+		ItemKinds:   restockCatalog(),
+		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+			{SellerID: "merchant", Item: "milk"}: sellPB2,
+			{SellerID: "supplier", Item: "milk"}: buyPB2,
+		},
+		RestockReorderPct: 25,
+	}
+	v2 := buildRestocking(snap2, "merchant", subj2)
+	if v2 == nil || len(v2.Items) != 1 {
+		t.Fatalf("want 1 item (boundary), got %+v", v2)
+	}
+	if v2.Items[0].OverBuying {
+		t.Errorf("OverBuying = true, want false (10 bought vs 8 sold — a modest imbalance)")
+	}
+	if v2.Items[0].ResaleUnit != 2 {
+		t.Errorf("ResaleUnit = %d, want 2 (16 coins / 8 units)", v2.Items[0].ResaleUnit)
+	}
+}
+
+// TestRenderRestocking_ResaleCeilingAndOverBuying pins the two LLM-385 buy-side clauses:
+// the resale-ceiling guard (ResaleUnit > 0) and the over-buying steer (OverBuying), each
+// silent when its field is unset.
+func TestRenderRestocking_ResaleCeilingAndOverBuying(t *testing.T) {
+	var b strings.Builder
+	renderRestocking(&b, &RestockingView{Items: []RestockItemView{
+		{ItemLabel: "milk", CurrentQty: 4, Cap: 20, ResaleUnit: 1,
+			RecentBuyUnits: 35, RecentSalesUnits: 9, OverBuying: true},
+	}})
+	out := b.String()
+	if !strings.Contains(out, "You resell it for about 1 coin each — paying above your resale rate loses coin on each one.") {
+		t.Errorf("missing resale-ceiling clause:\n%s", out)
+	}
+	if !strings.Contains(out, "You've bought about 35 this past week but sold only 9 — you're restocking faster than it sells, so buy sparingly, if at all.") {
+		t.Errorf("missing over-buying steer:\n%s", out)
+	}
+
+	// Over-buying renders even when nothing sold (a dead good it keeps restocking).
+	var dead strings.Builder
+	renderRestocking(&dead, &RestockingView{Items: []RestockItemView{
+		{ItemLabel: "sage", CurrentQty: 1, Cap: 6, RecentBuyUnits: 6, RecentSalesUnits: 0, OverBuying: true},
+	}})
+	if !strings.Contains(dead.String(), "You've bought about 6 this past week but sold only 0 —") {
+		t.Errorf("over-buying steer should render with zero sales:\n%s", dead.String())
+	}
+
+	// Negatives: no resale rate → no ceiling clause; not over-buying → no steer.
+	var quiet strings.Builder
+	renderRestocking(&quiet, &RestockingView{Items: []RestockItemView{
+		{ItemLabel: "milk", CurrentQty: 4, Cap: 20, ResaleUnit: 0, OverBuying: false},
+	}})
+	q := quiet.String()
+	if strings.Contains(q, "You resell it for") {
+		t.Errorf("no resale rate should omit the ceiling clause:\n%s", q)
+	}
+	if strings.Contains(q, "restocking faster than it sells") {
+		t.Errorf("not over-buying should omit the steer:\n%s", q)
+	}
+}
+
 // --- LLM-252: restock supplier must be a first-hand supplier or the distributor ---
 
 // carrotSupplyChainSnap seeds a carrot supply chain: a producer (Moses at the

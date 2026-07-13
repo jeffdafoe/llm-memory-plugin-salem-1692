@@ -101,6 +101,20 @@ type TradeValueItem struct {
 	CostQty    int
 	CostFloor  bool
 
+	// AtOrBelowCost / StrictlyBelowCost gate the resale below-cost caution off a
+	// SUB-COIN comparison of the actor's realized sale rate against its realized buy
+	// rate (LLM-385), NOT the whole-coin RecentUnit/PaidUnit fields render displays.
+	// Those display fields are nearest-rounded for legibility, so milk bought at 1.39
+	// and sold at 1.30 both showed "about 1 coin each" and the loss was invisible to a
+	// RecentUnit < PaidUnit test. buildTradeValue compares the raw (coins, units) rates
+	// by cross-multiplication — no float, no rounding: AtOrBelowCost = the good has a
+	// realized sale AND its rate <= the realized buy rate; StrictlyBelowCost = the same
+	// with a strict <. Both are false unless the good is a resale with BOTH a purchase
+	// AND a sale on record — so the caution fires only for goods actually being sold at
+	// or below cost, never as boilerplate on a profitable or not-yet-sold line.
+	AtOrBelowCost     bool
+	StrictlyBelowCost bool
+
 	// WholesaleTo, when non-empty, marks this as a wholesale producer's OWN
 	// produce (sim.IsOwnProduce) and names the village distributor it sells to —
 	// the sole legitimate buyer (LLM-223/252). Render then draws the wholesale-
@@ -172,20 +186,46 @@ func buildTradeValue(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 			return // no price configured at all — nothing to surface
 		}
 		recentUnit := 0
+		recentUnits, recentCoins := 0, 0
 		// sellerRecentSales is the actor's OWN realized coin sales of this good over
 		// the weekly window — the lived "what I've been getting for it" signal, only
-		// shown when there is history (a coin market for the good actually exists).
+		// shown when there is history (a coin market for the good actually exists). The
+		// raw (units, coins) are kept alongside the rounded display value for the
+		// sub-coin below-cost test below (LLM-385).
 		if units, coins := sellerRecentSales(snap, actorID, item, restockSalesWindow); units > 0 {
-			recentUnit = (coins + units/2) / units // round to nearest coin
+			recentUnit = (coins + units/2) / units // round to nearest coin (display only)
+			recentUnits, recentCoins = units, coins
 		}
 		// For a resold good, buyerRecentPurchases is the actor's OWN recent per-unit
 		// cost — the anchor a reseller marks up from. Window-averaged and rounded like
 		// the sale price; 0 (clause omitted) when it hasn't restocked the good of late.
 		paidUnit := 0
+		paidUnits, paidCoins := 0, 0
 		if isResale {
 			if units, coins := buyerRecentPurchases(snap, actorID, item, restockSalesWindow); units > 0 {
-				paidUnit = (coins + units/2) / units
+				paidUnit = (coins + units/2) / units // display only
+				paidUnits, paidCoins = units, coins
 			}
+		}
+		// LLM-385: decide the below-cost caution on the RAW rates, not the rounded
+		// display units — a sub-coin loss (milk paid 1.39/unit, sold 1.30/unit) rounds
+		// both to "1 coin" and is invisible to a RecentUnit < PaidUnit test. Cross-
+		// multiply to compare the sale rate (recentCoins/recentUnits) against the buy
+		// rate (paidCoins/paidUnits) with no float and no rounding. Only meaningful when
+		// the good has BOTH a realized sale and a realized purchase on record, so a
+		// profitable line and a not-yet-sold line both carry no caution.
+		//
+		// paidCoins > 0 guards a ZERO-cost basis: a barter/free acquisition (Amount 0,
+		// Qty > 0) has paidUnits > 0 but paidCoins 0, so a free-in/free-out good would
+		// read 0 <= 0 as "at or below cost" and warn though it cost nothing. Requiring a
+		// positive paid cost drops that false positive; a zero-coin SALE against a
+		// positive cost still (correctly) warns, since recentCoins 0 < paidCoins·units.
+		atOrBelowCost, strictlyBelowCost := false, false
+		if recentUnits > 0 && paidUnits > 0 && paidCoins > 0 {
+			saleTimesBuyUnits := recentCoins * paidUnits
+			buyTimesSaleUnits := paidCoins * recentUnits
+			atOrBelowCost = saleTimesBuyUnits <= buyTimesSaleUnits
+			strictlyBelowCost = saleTimesBuyUnits < buyTimesSaleUnits
 		}
 		// For a produced good with real recipe inputs, estimate the cost of goods —
 		// the produce-side sibling of the reseller cost-basis clause (LLM-226).
@@ -262,20 +302,22 @@ func buildTradeValue(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 		}
 		seen[item] = true
 		items = append(items, TradeValueItem{
-			ItemLabel:    itemDisplayLabel(snap, item),
-			itemKind:     item,
-			Low:          lo,
-			High:         hi,
-			RecentUnit:   recentUnit,
-			PaidUnit:     paidUnit,
-			CostBatch:    costBatch,
-			CostQty:      costQty,
-			CostFloor:    costFloor,
-			WholesaleTo:  wholesaleTo,
-			BulkUnit:     bulkUnit,
-			BulkObserved: bulkObserved,
-			ShopUnit:     shopUnit,
-			ShopObserved: shopObserved,
+			ItemLabel:         itemDisplayLabel(snap, item),
+			itemKind:          item,
+			Low:               lo,
+			High:              hi,
+			RecentUnit:        recentUnit,
+			PaidUnit:          paidUnit,
+			CostBatch:         costBatch,
+			CostQty:           costQty,
+			CostFloor:         costFloor,
+			AtOrBelowCost:     atOrBelowCost,
+			StrictlyBelowCost: strictlyBelowCost,
+			WholesaleTo:       wholesaleTo,
+			BulkUnit:          bulkUnit,
+			BulkObserved:      bulkObserved,
+			ShopUnit:          shopUnit,
+			ShopObserved:      shopObserved,
 		})
 	}
 	// Produced goods first, so a kind somehow listed under both sources values as
@@ -414,23 +456,28 @@ func renderTradeValue(b *strings.Builder, v *TradeValueView) {
 		// live — Josiah's rendered line held "paid about 2… sold for about 1" and he
 		// accepted a 1-coin offer on that very prompt; all data, no consequence. Per
 		// the prompt-prose principle the clause says what the number is FOR. Resale
-		// goods only (PaidUnit is only set for them) — the produced-goods makings
-		// clause below deliberately stays a directive-free fact (LLM-227), because a
-		// producer may run a loss-leader; a reseller selling below its own cost is
-		// never that, just a leak.
+		// goods only — the produced-goods makings clause below deliberately stays a
+		// directive-free fact (LLM-227), because a producer may run a loss-leader; a
+		// reseller selling below its own cost is never that, just a leak.
 		//
-		// LLM-332: when the good is DEMONSTRABLY underwater — a realized sale price
-		// below the realized buy cost (RecentUnit < PaidUnit) — escalate from the bare
+		// LLM-332: when the good is DEMONSTRABLY underwater, escalate from the bare
 		// caution to the two levers a merchant actually holds: buy cheaper or charge
-		// more. Live case: Josiah the distributor cut milk (paid ~2, sold ~1, −51 coins
-		// over the week) as a rational loss-cut rather than carry a losing line, which
-		// starved the stew chain downstream. The caution alone gave him no path back to
-		// margin; naming the levers does. Advisory ("you may need to"), not a number to
-		// anchor haggling on — this reseller-leak case is exactly the exception the
-		// block above carves out of LLM-227's no-directive rule.
-		if it.PaidUnit > 0 {
+		// more. Live case: Josiah the distributor cut milk as a rational loss-cut
+		// rather than carry a losing line, which starved the stew chain downstream. The
+		// caution alone gave him no path back to margin; naming the levers does.
+		// Advisory ("you may need to"), not a number to anchor haggling on.
+		//
+		// LLM-385: the caution now fires ONLY for a good actually sold at or below cost,
+		// decided on the SUB-COIN AtOrBelowCost / StrictlyBelowCost rates (see the
+		// struct fields). This fixes two failures of the old `PaidUnit > 0` trigger: it
+		// fired as boilerplate on PROFITABLE resale lines (cheese paid 2, sold 4 carried
+		// the same "selling below your costs" tag as a real loser, so the model couldn't
+		// tell them apart), and the whole-coin `RecentUnit < PaidUnit` escalation missed
+		// sub-coin losses (milk paid 1.39, sold 1.30 both rounded to 1). A profitable or
+		// not-yet-sold line now carries no caution at all.
+		if it.AtOrBelowCost {
 			clauses += " — selling below your costs loses you coin"
-			if it.RecentUnit > 0 && it.RecentUnit < it.PaidUnit {
+			if it.StrictlyBelowCost {
 				clauses += "; you may need to negotiate lower costs or raise your price"
 			}
 		}
