@@ -48,12 +48,19 @@ func TestBusinessRememberedShut_Decay(t *testing.T) {
 	}
 }
 
-// TestBuildRestocking_ShutSupplierDropped — LLM-216. The restock path DROPS a
-// supplier the buyer remembers finding shut (it no longer annotates it "found it
-// shut up" — that ZBBS-HOME-353/LLM-126 posture left the weak model touring the dead
-// ends). When the shut brewery is the only supplier, the item has no actionable buy
-// path and the whole section is omitted; without the memory the open brewery
-// surfaces normally. (The satiation cue still annotates — see
+// TestBuildRestocking_ShutSupplierDropped — LLM-216 + LLM-406. The restock path never
+// offers a supplier the buyer remembers finding shut as a walk-to DESTINATION (it no
+// longer annotates it "found it shut up" and leaves the id in — that
+// ZBBS-HOME-353/LLM-126 posture left the weak model touring the dead ends). When the
+// shut brewery is the only supplier, the item has no actionable buy path and carries
+// no Vendors at all.
+//
+// It is NOT silent, though (LLM-406): the shut brewery is named as a BLOCKED supplier
+// with its reason, so the keeper learns who has the ale he needs and why he can't have
+// it today — the section renders, with no destination id and no buy imperative.
+// Omitting it entirely, as LLM-216 did, is what left an illiquid keeper standing in an
+// empty shop with no cue at all. Without the shut memory the open brewery surfaces as
+// a normal destination. (The satiation cue still annotates — see
 // TestRenderSatiation_ShutAnnotation.)
 func TestBuildRestocking_ShutSupplierDropped(t *testing.T) {
 	now := time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)
@@ -73,16 +80,42 @@ func TestBuildRestocking_ShutSupplierDropped(t *testing.T) {
 		ItemKinds:         restockCatalog(),
 		RestockReorderPct: 25,
 	}
-	// The lone remembered-shut supplier is dropped → no actionable item → section nil.
-	if v := buildRestocking(snap, "merchant", subj); v != nil {
-		t.Fatalf("a lone remembered-shut supplier should leave no actionable item (section nil), got %+v", v)
+	// The lone remembered-shut supplier is no destination — but it IS named, with its
+	// reason, instead of the item vanishing into a silent section (LLM-406).
+	v := buildRestocking(snap, "merchant", subj)
+	if v == nil || len(v.Items) != 1 {
+		t.Fatalf("a shut lone supplier should still render the item as blocked, got %+v", v)
+	}
+	if it := v.Items[0]; len(it.Vendors) != 0 || it.CoPresentSeller != "" {
+		t.Fatalf("a remembered-shut supplier must not be offered as a destination, got %+v", it)
+	}
+	if it := v.Items[0]; len(it.Blocked) != 1 || it.Blocked[0].Reason != restockBlockShut || it.Blocked[0].StructureLabel != "The Brewery" {
+		t.Fatalf("want The Brewery named as blocked-shut, got %+v", it.Blocked)
+	}
+	if !v.AllBlocked() {
+		t.Error("the only item is blocked, so the section should render its blocked lead")
+	}
+	// The rendered section names the supplier in prose but must NEVER hand over its
+	// structure_id — that token is what the model echoes into move_to, and this is
+	// precisely the place it must not go (the LLM-216 touring loop).
+	var b strings.Builder
+	renderRestocking(&b, v)
+	out := b.String()
+	if !strings.Contains(out, "The Brewery") || !strings.Contains(out, "found it shut") {
+		t.Errorf("blocked render should name the supplier and the reason:\n%s", out)
+	}
+	if strings.Contains(out, "destination:") {
+		t.Errorf("a blocked supplier must not be rendered as a move_to destination:\n%s", out)
 	}
 
 	// Same setup without the memory → the open brewery surfaces.
 	subj.Observed = sim.ObservedStates{}
-	v := buildRestocking(snap, "merchant", subj)
+	v = buildRestocking(snap, "merchant", subj)
 	if v == nil || len(v.Items) != 1 || len(v.Items[0].Vendors) != 1 || v.Items[0].Vendors[0].StructureID != "brewery" {
 		t.Fatalf("without the shut memory the open brewery should surface, got %+v", v)
+	}
+	if len(v.Items[0].Blocked) != 0 {
+		t.Errorf("an open, payable supplier is not blocked, got %+v", v.Items[0].Blocked)
 	}
 }
 

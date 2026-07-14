@@ -87,7 +87,10 @@ func buildStallRepair(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 	// worker — they can't leave the job to shop, so their cue only names the shortfall
 	// (renderHiredStallRepair).
 	if !view.HasEnoughNails && !hired {
-		view.NailVendors = findItemVendors(snap, actorID, actorSnap, sim.NailItemKind)
+		// Only the destinations the owner can actually be sent to; the blocked
+		// suppliers findItemVendors also returns are the restock cue's to narrate
+		// (LLM-406).
+		view.NailVendors, _ = findItemVendors(snap, actorID, actorSnap, sim.NailItemKind)
 		// LLM-301: the conserve determination is independent of the vendor drops — a
 		// keeper can be under the working-capital floor while a supplier still survives
 		// findItemVendors (unknown price, or a remembered price the purse just covers).
@@ -307,7 +310,7 @@ func buildStallRepairBuy(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim
 		return nil // already carrying enough to mend — no buy errand
 	}
 	coName, coID := coPresentSellerForItem(snap, actorID, actorSnap, sim.NailItemKind)
-	vendors := findItemVendors(snap, actorID, actorSnap, sim.NailItemKind)
+	vendors, _ := findItemVendors(snap, actorID, actorSnap, sim.NailItemKind)
 	if coName == "" && len(vendors) == 0 {
 		return nil // LLM-216: no actionable buy path — don't surface a dead-end errand
 	}

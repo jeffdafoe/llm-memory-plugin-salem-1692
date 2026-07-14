@@ -70,16 +70,20 @@ func buildFarmUpkeep(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 		return nil // nothing owed beyond what they already carry
 	}
 	coName, coID := coPresentSellerForItem(snap, actorID, actorSnap, sim.ShovelItemKind)
+	// LLM-274: resolve the shovel supplier(s) so the cue names a move_to destination
+	// instead of the dead-end "the blacksmith". Same restock-directory path the
+	// stall-repair nail cue uses — findItemVendors names only first-hand producers
+	// (the smith produces shovels, LLM-200), separates out the remembered-shut and the
+	// unpayable, and dedupes by workplace. Empty → render keeps the generic "from the
+	// blacksmith". The blocked suppliers it also returns are the restock cue's to
+	// narrate (LLM-406); this cue names the shortfall and its own steer, so it takes
+	// only the destinations it can actually send the owner to.
+	shovelVendors, _ := findItemVendors(snap, actorID, actorSnap, sim.ShovelItemKind)
 	view := &FarmUpkeepView{
-		ShovelsOwed:  owed,
-		ShovelsHeld:  held,
-		ShovelsShort: owed - held,
-		// LLM-274: resolve the shovel supplier(s) so the cue names a move_to destination
-		// instead of the dead-end "the blacksmith". Same restock-directory path the
-		// stall-repair nail cue uses — findItemVendors names only first-hand producers
-		// (the smith produces shovels, LLM-200), drops remembered-shut/unaffordable, and
-		// dedupes by workplace. Empty → render keeps the generic "from the blacksmith".
-		ShovelVendors: findItemVendors(snap, actorID, actorSnap, sim.ShovelItemKind),
+		ShovelsOwed:   owed,
+		ShovelsHeld:   held,
+		ShovelsShort:  owed - held,
+		ShovelVendors: shovelVendors,
 		// LLM-277: the co-present buy-here fast-path, mirroring the nail repair-buy.
 		CoPresentSeller: coName,
 		PendingOffer:    coID != "" && hasPendingOfferTo(snap, actorID, coID, sim.ShovelItemKind),

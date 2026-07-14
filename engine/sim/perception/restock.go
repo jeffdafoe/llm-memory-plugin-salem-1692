@@ -49,6 +49,21 @@ type RestockingView struct {
 	Conserve bool
 }
 
+// AllBlocked reports whether EVERY low item in the section is blocked — nothing here
+// can be bought, from anyone, by any means (LLM-406). This is the state that used to
+// render as no section at all, leaving an illiquid keeper with an unmet obligation and
+// not one word about it. Render keys the section lead off it, so such a keeper is told
+// the situation rather than "you choose how much to buy". Vacuously true on empty
+// Items, which render already gates the whole section on.
+func (v *RestockingView) AllBlocked() bool {
+	for _, it := range v.Items {
+		if !it.blocked() {
+			return false
+		}
+	}
+	return true
+}
+
 // RestockItemView is one low `buy` item the reseller could replenish: its label,
 // current on-hand quantity, the cap it restocks toward, and the suppliers
 // selling it. buildRestocking only emits an item that has at least one actionable
@@ -60,6 +75,21 @@ type RestockItemView struct {
 	CurrentQty int
 	Cap        int
 	Vendors    []RestockVendor
+
+	// Blocked names the suppliers of this item the buyer cannot transact with right
+	// now, with the reason for each (LLM-406). Populated ONLY for an item with no
+	// actionable buy path at all — no co-present seller and no surviving walk-to
+	// supplier — where the pre-LLM-406 code omitted the item outright and, if every
+	// item was omitted, rendered no section at all. That silence turned an illiquid
+	// keeper into an absorbing state: he was told neither what he needed, nor who had
+	// it, nor why he could not get it (the live Josiah Thorne deadlock — see
+	// sim/means_to_pay.go). Suppression may remove the imperative to go buy; it must
+	// never remove the NEED, the supplier's IDENTITY, or the REASON.
+	//
+	// An item nobody sells anywhere stays omitted, with no Blocked entry — there is no
+	// supplier to name and nothing to say, so a line for it would be the dead-end cue
+	// LLM-216 removed (the live Hannah Boggs phantom fetch-water hires).
+	Blocked []RestockBlockedSupplier
 
 	// CoPresentSeller is the display name of a seller of this item who shares the
 	// reseller's CURRENT huddle right now — so a pay_with_item(seller: …) for this
@@ -172,6 +202,15 @@ type RestockItemView struct {
 	kind sim.ItemKind
 }
 
+// blocked reports whether this item has no actionable buy path — no seller co-present
+// to transact with here-and-now, and no open, payable walk-to supplier — but at least
+// one supplier that is merely blocked, and so can be named with its reason (LLM-406).
+// An item with no supplier anywhere never reaches the view at all (buildRestocking
+// omits it), so a blocked item always has something to say.
+func (it RestockItemView) blocked() bool {
+	return len(it.Vendors) == 0 && it.CoPresentSeller == "" && len(it.Blocked) > 0
+}
+
 // RestockVendor is one (workplace, supplier) buy opportunity for a low item.
 // StructureID is the supplier's workplace key — the reseller passes it straight
 // to move_to(structure_id), then pay_with_item once co-present.
@@ -184,6 +223,47 @@ type RestockVendor struct {
 	// the structure — so the anchor can't average in a non-rendered co-worker.
 	VendorID sim.ActorID
 	CostText string // per-buyer last-paid "~3 coins", or "" when no price is on record
+
+	// Barter marks a supplier the buyer's COINS cannot cover but its GOODS can reach
+	// — the LLM-406 means-to-pay state, and the exact mirror of SatiationVendor.Barter
+	// (LLM-222). Render then swaps the coin cost hint for a goods-in-trade steer:
+	// showing a "~4 coins" price to a keeper holding 3 would only invite a
+	// pay_with_item the purse can't fund, when the bundle it CAN fund is sitting in
+	// its pack. Set only on the walk-to list; the co-present imperative already names
+	// all three payment forms (coins, pay_items, or both).
+	Barter bool
+}
+
+// restockBlockReason is why a supplier that sells a low item is not a destination
+// the buyer can act on this tick. Unexported — render maps it to prose.
+type restockBlockReason int
+
+const (
+	// restockBlockShut — the buyer remembers finding this supplier's workplace shut
+	// (businessRememberedShut, the TTL-decayed experiential memory). It will come back
+	// as a destination once the memory lapses.
+	restockBlockShut restockBlockReason = iota
+	// restockBlockNoMeans — the buyer has no coin that covers the remembered price AND
+	// no goods at all to put up in trade. The genuine payment dead-end: nothing to pay
+	// with, in any form the seller could accept.
+	restockBlockNoMeans
+)
+
+// RestockBlockedSupplier is a supplier of a low item that the buyer cannot transact
+// with right now, and why (LLM-406). It exists so a blocked keeper is told the truth
+// — the need, WHO holds what it needs, and WHY it can't be had — instead of being
+// told nothing at all, which is what the LLM-216 drops did once the last supplier
+// fell away: the section rendered nil and the keeper stood in an empty shop with no
+// cue, no warrant, and no way to reason about his own deadlock.
+//
+// It deliberately carries NO StructureID. "(destination: <id>)" is the token the
+// weak model echoes into move_to (HOME-349), and a blocked supplier is precisely a
+// destination that must not be walked to — handing over the id is what produced the
+// original LLM-216 touring loop. The supplier is named in PROSE, which gives the
+// model the fact without the tour target.
+type RestockBlockedSupplier struct {
+	StructureLabel string
+	Reason         restockBlockReason
 }
 
 // buildRestocking builds the restock view for actorSnap, or nil when the actor
@@ -248,7 +328,7 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 		// restocking).
 		overBuying := boughtUnits >= 4 && boughtUnits >= 2*salesUnits+1
 		coName, coID := coPresentSellerForItem(snap, actorID, actorSnap, e.Item)
-		vendors := findItemVendors(snap, actorID, actorSnap, e.Item)
+		vendors, blocked := findItemVendors(snap, actorID, actorSnap, e.Item)
 		// LLM-308: make the co-present buy imperative situation-aware via the same shared
 		// classifier the nail/shovel co-present buys use (copresent_buy.go) — cap the ask at
 		// the seller's live stock and soften to a hold-off when the negotiation has dead-ended
@@ -262,13 +342,21 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 		if coID != "" && !pendingCoPresent {
 			sellerStock, block = classifyCoPresentBuy(snap, actorID, actorSnap, coID, e.Item)
 		}
-		// LLM-216: omit an item with no actionable buy path — no co-present seller to
-		// transact with here-and-now, and no reachable, open, affordable walk-to
-		// supplier (findItemVendors drops the shut and the unaffordable). A broke or
-		// dead-ended keeper is no longer handed an unactionable restock cue it would
-		// tour on the wasted-move loop (the live Josiah Thorne shut-farm case); the
-		// item returns the moment a supplier opens or the purse can cover one.
-		if len(vendors) == 0 && coName == "" {
+		// No actionable buy path — no co-present seller to transact with here-and-now,
+		// and no open, payable walk-to supplier (findItemVendors separates out the shut
+		// and the unpayable). LLM-216 omitted the item outright here, so a keeper with
+		// no path was never handed a cue it would tour on the wasted-move loop.
+		//
+		// LLM-406 keeps that restraint — no destination, no buy imperative — but not the
+		// SILENCE. If suppliers exist and are merely blocked, name them and why: the
+		// keeper still has an unmet obligation, and telling him nothing about it is what
+		// turned the live Josiah Thorne into an absorbing state (no cue, no warrant, no
+		// way to reason about his own deadlock). If NOBODY sells the item anywhere,
+		// there is no supplier to name and nothing to say — omit it exactly as before,
+		// rather than dangle a want with no possible outlet (the Hannah Boggs phantom
+		// fetch-water hires). Either way the item returns to a normal buy line the
+		// moment a supplier opens or the buyer can pay.
+		if len(vendors) == 0 && coName == "" && len(blocked) == 0 {
 			continue
 		}
 		// LLM-295: observed-first buy anchor, scoped to the reachable suppliers just
@@ -283,6 +371,7 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 			CurrentQty:                    current,
 			Cap:                           cap,
 			Vendors:                       vendors,
+			Blocked:                       blocked,
 			CoPresentSeller:               coName,
 			PendingOfferToCoPresentSeller: pendingCoPresent,
 			SellerStock:                   sellerStock,
@@ -440,7 +529,10 @@ func itemHasActionableBuyPath(snap *sim.Snapshot, actorID sim.ActorID, actorSnap
 	if coName, _ := coPresentSellerForItem(snap, actorID, actorSnap, kind); coName != "" {
 		return true
 	}
-	return len(findItemVendors(snap, actorID, actorSnap, kind)) > 0
+	// Only the payable, open suppliers count as a path — a blocked supplier is
+	// named to the buyer (LLM-406) but is not somewhere it can act.
+	vendors, _ := findItemVendors(snap, actorID, actorSnap, kind)
+	return len(vendors) > 0
 }
 
 // buyerLatestPriceObs returns the buyer's newest accepted purchase observation
@@ -626,11 +718,26 @@ func isRestockSupplierOf(snap *sim.Snapshot, vendorID sim.ActorID, itemKind sim.
 // the shared structural-vendorship scan (eachVendorOffer, consumable_vendors.go),
 // the same supplier-resolution path the satiation/recovery consumable cues use.
 //
-// It drops two kinds of non-destination before returning (LLM-216, mirroring the
-// seek-work directory and the need-redirect affordability skip): a supplier the
-// buyer remembers finding shut, and one whose remembered price the buyer's purse
-// can't cover — both are unactionable walk-to targets the weak model would
-// otherwise tour (the live Josiah Thorne shut-farm move_to loop).
+// It separates two kinds of non-destination out of the returned list (LLM-216,
+// mirroring the seek-work directory and the need-redirect affordability skip): a
+// supplier the buyer remembers finding shut, and one the buyer has no MEANS to pay.
+// Neither is a walk-to target — both are dead ends the weak model would otherwise
+// tour (the live Josiah Thorne shut-farm move_to loop) — so neither appears in
+// `vendors`. They are returned separately in `blocked` (LLM-406) so the caller can
+// still NAME them, in prose and without a move_to id, rather than let a fully-blocked
+// item vanish into a silent nil section.
+//
+// MEANS TO PAY, not coins (LLM-406). The old test was coins-only: any supplier whose
+// remembered price exceeded the purse was dropped. But pay_with_item settles in goods
+// as readily as coin, so that gate asked the wrong question and silently erased a
+// goods-rich, coin-poor keeper from his own supply chain. A supplier is payable when
+// the purse covers the remembered price, when no price is on record and the buyer has
+// coin at all (patronage earns the number — walk over, learn it, pay), or, failing
+// coin, when the buyer holds ANY goods to put up in trade (holdsBarterableGoods) — in
+// which case the vendor survives with Barter set and render steers it to a goods
+// offer. Only a buyer with neither coin nor goods is a hard payment dead-end. Same
+// coin-OR-goods shape gatherSatiationVendors has had since LLM-222; the sim-side
+// warrant mirror is sim.buyerCanTransact.
 //
 // Dedupe-by-structure: the LLM only needs a destination — move_to(structure_id)
 // then pay_with_item resolves which co-present seller actually transacts — so two
@@ -639,7 +746,7 @@ func isRestockSupplierOf(snap *sim.Snapshot, vendorID sim.ActorID, itemKind sim.
 // The representative seller is the lowest VendorID at that structure, picked
 // deterministically so the per-buyer CostText (last-paid from that seller) is
 // stable across snapshots regardless of map iteration order.
-func findItemVendors(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *sim.ActorSnapshot, itemKind sim.ItemKind) []RestockVendor {
+func findItemVendors(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *sim.ActorSnapshot, itemKind sim.ItemKind) ([]RestockVendor, []RestockBlockedSupplier) {
 	type pick struct {
 		vendorID  sim.ActorID
 		structure *sim.Structure
@@ -658,33 +765,53 @@ func findItemVendors(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *sim.Act
 		best[o.StructureID] = pick{vendorID: o.VendorID, structure: o.Structure}
 	})
 	if len(best) == 0 {
-		return nil
+		return nil, nil
 	}
 	coins := buyerSnap.Coins
+	// Goods it could put up in trade FOR this item — the item itself excluded, since a
+	// keeper down to his last few carrots cannot buy carrots by offering carrots
+	// (LLM-406). Same predicate the warrant reads (sim.buyerCanTransact).
+	hasGoods := sim.HoldsBarterableGoodsExcept(buyerSnap.Inventory, itemKind)
 	out := make([]RestockVendor, 0, len(best))
+	var blocked []RestockBlockedSupplier
 	for structureID, p := range best {
-		// LLM-216: drop a supplier the buyer remembers finding shut, mirroring the
-		// seek-work directory (buildSeekWorkPlaces). Annotating it — the old
-		// ZBBS-HOME-353 / LLM-126 "found it shut up" posture — left the weak model
+		label := vendorStructureLabel(p.structure)
+		// LLM-216: a supplier the buyer remembers finding shut is not a destination,
+		// mirroring the seek-work directory (buildSeekWorkPlaces). Annotating it — the
+		// old ZBBS-HOME-353 / LLM-126 "found it shut up" posture — left the weak model
 		// touring the dead ends (Josiah's every-tick move_to loop among shut farms).
-		// The shut memory is experiential and TTL-decayed, so the supplier reappears
-		// once it lapses (he'd go there and find a keeper), preserving the retry the
-		// annotation aimed for without the wasted trips in between.
+		// The shut memory is experiential and TTL-decayed, so the supplier returns to
+		// the walk-to list once it lapses (he'd go there and find a keeper), preserving
+		// the retry the annotation aimed for without the wasted trips in between.
 		if businessRememberedShut(snap, buyerSnap, structureID) {
+			blocked = append(blocked, RestockBlockedSupplier{StructureLabel: label, Reason: restockBlockShut})
 			continue
 		}
-		// LLM-216: drop a supplier the buyer can't afford, mirroring the need-redirect
-		// affordability skip (needRedirectFor, build.go). A REMEMBERED price above the
-		// purse names an unactionable destination; an unknown price (0, never bought
-		// there) is kept — patronage earns the number, so the buyer walks over and
-		// learns it (and can still barter goods on arrival). A broke keeper with a
-		// KNOWN-price supplier (the live Josiah case: 0 coins, ~4/~6 farms) thus drops
-		// it, and the cue self-heals the moment he earns.
-		if price := buyerLastPaidCoins(snap, buyerID, p.vendorID, itemKind); price > 0 && coins < price {
+		// The LLM-406 means-to-pay gate (see the doc comment): coin that covers the
+		// remembered price, coin with no price yet on record, or — failing coin — goods
+		// to barter. Only the buyer with neither is blocked.
+		barter := false
+		price := buyerLastPaidCoins(snap, buyerID, p.vendorID, itemKind)
+		switch {
+		case price > 0 && coins >= price:
+			// The purse covers what he last paid here — an ordinary coin buy.
+		case price == 0 && coins > 0:
+			// No price on record but he has coin: patronage earns the number, so he
+			// walks over, learns it, and pays (and can still barter on arrival).
+		case hasGoods:
+			// Coin can't cover it, but his pack can. pay_with_item takes goods and the
+			// SELLER adjudicates the bundle — so this is a real destination, steered to
+			// a goods offer rather than a coin price he cannot meet.
+			barter = true
+		default:
+			// No coin that covers it and nothing whatever to trade — the genuine payment
+			// dead-end. Not a destination, but still NAMED to the caller so a keeper with
+			// no path left is told who holds what he needs and why he can't have it.
+			blocked = append(blocked, RestockBlockedSupplier{StructureLabel: label, Reason: restockBlockNoMeans})
 			continue
 		}
 		out = append(out, RestockVendor{
-			StructureLabel: vendorStructureLabel(p.structure),
+			StructureLabel: label,
 			StructureID:    structureID,
 			VendorID:       p.vendorID, // the representative whose CostText below is shown (LLM-295)
 			// Empty fallback when no price is on record (was "ask the supplier",
@@ -692,17 +819,25 @@ func findItemVendors(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *sim.Act
 			// calling pay_with_item — ZBBS-HOME-386). With "", renderRestocking
 			// omits the cost clause entirely; the header carries the action.
 			CostText: buyerLastPaidText(snap, buyerID, p.vendorID, itemKind, ""),
+			Barter:   barter,
 		})
 	}
 	// Alphabetical for deterministic output over the surviving suppliers (the shut
-	// and the unaffordable were dropped above).
+	// and the unpayable were separated out above); the blocked list is sorted on the
+	// same key so its prose ordering is stable too.
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].StructureLabel != out[j].StructureLabel {
 			return out[i].StructureLabel < out[j].StructureLabel
 		}
 		return out[i].StructureID < out[j].StructureID
 	})
-	return out
+	sort.Slice(blocked, func(i, j int) bool {
+		if blocked[i].StructureLabel != blocked[j].StructureLabel {
+			return blocked[i].StructureLabel < blocked[j].StructureLabel
+		}
+		return blocked[i].Reason < blocked[j].Reason
+	})
+	return out, blocked
 }
 
 // conversationalScopeStructure resolves the structure an actor is conversationally
@@ -824,6 +959,18 @@ func renderRestocking(b *strings.Builder, v *RestockingView) {
 		return
 	}
 	b.WriteString("## Restocking\n")
+	// LLM-406: every low item is blocked — no seller here, nowhere payable to walk to.
+	// "You choose how much to buy" would be a lie, and a lie the model would act on, so
+	// the section leads with the situation instead. Conserve (a keeper who COULD buy but
+	// shouldn't) still wins: it is a choice, and its own steer already says so.
+	if !v.Conserve && v.AllBlocked() {
+		b.WriteString("Your shop stock of these bought-in goods is running low, and there is no way to replenish it just now. This is what stands in the way:\n")
+		for _, it := range v.Items {
+			renderBlockedItem(b, it)
+		}
+		b.WriteString("\n")
+		return
+	}
 	if v.Conserve {
 		// LLM-294: coin-poor + overstocked. Lead with the hold-off-buying steer; the
 		// items below are named without a buy imperative so the cue never says "buy now"
@@ -869,6 +1016,14 @@ func renderRestocking(b *strings.Builder, v *RestockingView) {
 		// the model latching onto one item bullet in isolation on a restock-wakeup turn.
 		if v.Conserve {
 			fmt.Fprintf(b, "- You are low on %s — no errand for it now; sell first, then restock once your purse recovers.\n", sanitizeInline(it.ItemLabel))
+			continue
+		}
+		// LLM-406: this item has no buy path, but others in the section do — name the
+		// blocked suppliers and their reasons rather than letting the item vanish while
+		// its neighbours render normally. Same restraint as the all-blocked lead above:
+		// no destination id, no buy imperative.
+		if it.blocked() {
+			renderBlockedItem(b, it)
 			continue
 		}
 		headroom := it.Cap - it.CurrentQty
@@ -1003,11 +1158,58 @@ func renderWalkToVendors(b *strings.Builder, vendors []RestockVendor) {
 		if vd.StructureID != "" {
 			fmt.Fprintf(b, " (destination: %s)", vd.StructureID)
 		}
-		if vd.CostText != "" {
+		// Means-to-pay phrasing (LLM-406), the same swap the satiation buy cue makes
+		// (LLM-222): a supplier the purse can't cover but the pack can reach is steered
+		// to a goods offer. Showing the coin hint here instead would name a number the
+		// buyer cannot meet and invite a pay_with_item it cannot fund — while the bundle
+		// it CAN fund sits in its inventory, unmentioned. Otherwise the ordinary
+		// last-paid coin hint, when one is on record.
+		if vd.Barter {
+			b.WriteString(", which your coins won't cover — offer goods you carry in trade instead (use pay_with_item with pay_items)")
+		} else if vd.CostText != "" {
 			fmt.Fprintf(b, ", %s", vd.CostText)
 		}
 		b.WriteString("\n")
 	}
+}
+
+// renderBlockedItem writes the LLM-406 blocked scene for a low item with no
+// actionable buy path: the need, WHO holds it, WHY it can't be had, and what to do
+// instead. It is the answer to the silence that made an illiquid keeper an absorbing
+// state — suppression may take away the imperative to go buy, but it must not take
+// away the facts he needs to reason about his own position.
+//
+// Deliberately carries NO "(destination: <id>)" token and no buy imperative. That
+// token is what the weak model echoes into move_to (HOME-349), and every supplier
+// here is exactly a place it must NOT walk to — handing over the ids is what drove
+// the original LLM-216 touring loop. Naming the supplier in prose gives the model the
+// fact without the tour target.
+//
+// The line self-resolves (LLM-298): it never leaves a bare want dangling, because a
+// weak model fills that vacuum by inventing an errand (the phantom "Market" it tried
+// to move_to). It says what to do INSTEAD, and the coda is keyed to the reason — a
+// shut supplier will reopen and is worth another call another day; a purse and a pack
+// with nothing in them is a wait for trade to come in.
+func renderBlockedItem(b *strings.Builder, it RestockItemView) {
+	fmt.Fprintf(b, "- You have %d %s on hand, and no way to restock just now.\n",
+		it.CurrentQty, sanitizeInline(it.ItemLabel))
+	noMeans := false
+	for _, bl := range it.Blocked {
+		switch bl.Reason {
+		case restockBlockNoMeans:
+			noMeans = true
+			fmt.Fprintf(b, "  - %s sells %s, but you have neither the coin for it nor a single good to put up in trade.\n",
+				sanitizeInline(bl.StructureLabel), sanitizeInline(it.ItemLabel))
+		default:
+			fmt.Fprintf(b, "  - %s sells %s, but you called there and found it shut.\n",
+				sanitizeInline(bl.StructureLabel), sanitizeInline(it.ItemLabel))
+		}
+	}
+	if noMeans {
+		b.WriteString("  Keep your shop and take what trade comes to you — you can restock once you have coin or goods to trade with.\n")
+		return
+	}
+	b.WriteString("  Look in again another day — a keeper will be tending it sooner or later.\n")
 }
 
 // renderCoPresentBuy writes the shared "a seller is here with you — buy it now"

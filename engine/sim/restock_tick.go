@@ -203,9 +203,10 @@ func firstActionableLowEntry(a *Actor, w *World, pct int, now time.Time, conserv
 //     current huddle (the cue's buy-here imperative, ZBBS-HOME-388) — actionable
 //     this very tick regardless of the walk-to drops below; or
 //   - a SURVIVING walk-to supplier: a qualifying vendor whose workplace the
-//     actor does not remember finding shut, at a remembered price the purse can
-//     cover (unknown price is kept — patronage earns the number). These are the
-//     LLM-216 drops findItemVendors applies. A BATCH-PINNED buyer (mid-
+//     actor does not remember finding shut, and which the actor has the MEANS to
+//     pay — coin that covers the remembered price, coin with no price yet on
+//     record, or, failing coin, goods to barter (buyerCanTransact, LLM-406).
+//     These are the drops findItemVendors applies. A BATCH-PINNED buyer (mid-
 //     production-batch at post — the batch only advances while the actor is
 //     there, LLM-319) has NO walk-to path: the trip would stall the batch, so
 //     the actor correctly answers done() on every wake (the live John-Ellis
@@ -264,12 +265,43 @@ func actorHasBuyPath(w *World, a *Actor, item ItemKind, now time.Time) bool {
 		if a.Observed.Active(ObservedStateKey{StructureID: vendor.WorkStructureID, Condition: ObservedClosed}, now) {
 			continue
 		}
-		if price := LastPaidCoins(w.PriceBook, a.ID, vendorID, item); price > 0 && a.Coins < price {
+		if !buyerCanTransact(w, a, vendorID, item) {
 			continue
 		}
 		return true
 	}
 	return false
+}
+
+// buyerCanTransact reports whether the buyer has the MEANS to pay this vendor for
+// item — the LLM-406 means-to-pay gate, and the warrant-side mirror of the
+// findItemVendors drop (perception/restock.go). Three ways to pay:
+//
+//   - coins that cover the price the buyer REMEMBERS paying this vendor for the
+//     item;
+//   - coins, with no price yet on record — patronage earns the number, so the buyer
+//     walks over, learns it, and pays (an unknown price was never a drop);
+//   - failing coin, any OTHER good to put up in a pay_with_item bundle
+//     (HoldsBarterableGoodsExcept) — the seller adjudicates the bundle, so goods the
+//     buyer carries ARE means to pay. The item being bought is excluded: a keeper
+//     down to his last few carrots cannot buy carrots by offering carrots.
+//
+// Only a buyer with no coin AND no goods is a hard payment dead-end, and only that
+// buyer is dropped. The old test was coins-only (LLM-216), which asked whether the
+// buyer could pay in COIN and dropped a supplier whenever it couldn't — erasing the
+// goods-rich, coin-poor keeper from his own supply chain and leaving him in a silent
+// absorbing state (see means_to_pay.go for the live incident). Same coin-OR-goods
+// shape the consumer buy cue has had since LLM-222.
+func buyerCanTransact(w *World, a *Actor, vendorID ActorID, item ItemKind) bool {
+	price := LastPaidCoins(w.PriceBook, a.ID, vendorID, item)
+	switch {
+	case price > 0 && a.Coins >= price:
+		return true
+	case price == 0 && a.Coins > 0:
+		return true
+	default:
+		return HoldsBarterableGoodsExcept(a.Inventory, item)
+	}
 }
 
 // actorBatchPinnedAtPost reports whether the actor is mid-production-batch at
