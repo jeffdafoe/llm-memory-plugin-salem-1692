@@ -27,15 +27,21 @@ import (
 // (the conversation produces no action), not of any single actor, so the
 // detection and the response both live here, at the huddle level.
 //
-// Detection is deterministic, via three OR'd arms sharing one LoopingSince
+// Detection is deterministic, via four OR'd arms sharing one LoopingSince
 // onset + persistence gate: the LEXICAL arm (a highly repetitive
 // RecentUtterances ring — huddleUtteranceRepetition — with no progress newer
-// than it), the LEDGER arm (LLM-309, a silent offer→decline standoff), and the
+// than it), the LEDGER arm (LLM-309, a silent offer→decline standoff), the
 // ENDURANCE arm (LLM-333, HuddleLoopMaxTurns spoken lines with no progress —
 // content-blind, because a creative model paraphrases past any lexical
-// threshold). A persistence gate (Huddle.LoopingSince, must hold for
-// HuddleLoopTimeout) keeps it high-precision: a brief repetitive patch is spared,
-// only a sustained livelock is concluded. Conclusion is SILENT (no per-member
+// threshold), and the LINGERING arm (LLM-397, a conversation older than
+// HuddleConversationWindDown — the only arm that is not a pathology verdict, and
+// the only one that can see a healthy, productive conversation that has simply
+// gone on long enough; it is commerce-guarded and its conclusion drops the
+// structure's carry-over so the scene genuinely ends). A persistence gate
+// (Huddle.LoopingSince, must hold for HuddleLoopTimeout) keeps it high-precision:
+// a brief repetitive patch is spared, only a sustained livelock is concluded —
+// and for the lingering arm the gate is the wind-down grace period, the members'
+// chance to close the scene themselves before the engine does. Conclusion is SILENT (no per-member
 // warrant), like the silence sweep — breaking the loop must not itself wake the
 // members into a fresh re-pitch round; their next genuine warrant (a need, a
 // schedule duty) drives real behavior. Members' pending social-cadence-only
@@ -110,6 +116,31 @@ const huddleLoopLedgerMinTerminals = 3
 // Mirrors coPresentBuyStandoff's recentlyResolvedOfferWindow role (LLM-297).
 const huddleLoopLedgerRecencyWindow = 5 * time.Minute
 
+// huddleLoopReasonLingering tags a conclusion by the LLM-397 lingering arm — the
+// only arm that is not a pathology verdict. The other three name a conversation
+// that is stuck (repeating, standing off, or spending turns on nothing); this one
+// names a conversation that has simply run its course, and it is the reason a
+// conclusion drops the structure's carry-over instead of preserving it.
+const huddleLoopReasonLingering = "conversation_lingering"
+
+// HuddleConversationWindDownDefault is the lingering arm's clock (LLM-397): how
+// long a conversation may run — measured on Huddle.ConversationSince, so churned
+// huddle ids don't restart it — before the wind-down steer arms and the
+// persistence gate starts running toward a silent conclude. The hard end of a
+// conversation is therefore this PLUS HuddleLoopTimeout (12m + 3m = 15m at the
+// live settings), and the members get the whole gate to close the scene
+// themselves before the engine does it for them.
+//
+// 12 minutes is deliberately generous. The arc this replaces (the eco-conclude
+// sweep, LLM-334) cut every unwatched conversation at 3 minutes, which severed
+// the best scenes the village produces mid-sentence — on 2026-07-14 it cut the
+// innkeeper's story about her dead husband ten times in a hundred minutes, while
+// the clique simply re-formed and resumed each time, so it bought nothing. Eco
+// mode's gaps are what slow an unwatched village down; ending a scene is not a
+// pacing instrument and is not gated on the audience (a conversation that reads
+// well unwatched is the same conversation a player would walk in on).
+const HuddleConversationWindDownDefault = 12 * time.Minute
+
 // HuddleLoopMaxTurnsDefault is the endurance arm's default turn budget (LLM-333)
 // when WorldSettings.HuddleLoopMaxTurns is unset: how many spoken lines a huddle
 // may accumulate with no progress event (completed transaction, genuine
@@ -155,6 +186,30 @@ func effectiveHuddleLoopMaxTurns(s WorldSettings) int {
 		return s.HuddleLoopMaxTurns
 	}
 	return HuddleLoopMaxTurnsDefault
+}
+
+// effectiveHuddleConversationWindDown returns the configured lingering clock or
+// the default when WorldSettings.HuddleConversationWindDown is zero/unset. Like
+// the endurance budget the arm has no independent off-switch — it rides the
+// sweep's master enable (HuddleLoopTimeout); an operator who wants conversations
+// unbounded again sets the window absurdly high.
+func effectiveHuddleConversationWindDown(s WorldSettings) time.Duration {
+	if s.HuddleConversationWindDown > 0 {
+		return s.HuddleConversationWindDown
+	}
+	return HuddleConversationWindDownDefault
+}
+
+// hardConcludeSeconds is when a lingering conversation is actually ended: the
+// wind-down window plus the persistence gate the members get to close it
+// themselves. 0 when the sweep is disabled — there is then no hard conclude at
+// all, and reporting a number would tell an operator the engine will end a
+// conversation that it will in fact let run forever.
+func hardConcludeSeconds(s WorldSettings, windDown time.Duration) int {
+	if !huddleLoopEnabled(s) {
+		return 0
+	}
+	return int((windDown + s.HuddleLoopTimeout) / time.Second)
 }
 
 // effectiveHuddleLoopRepeatFraction returns the configured near-duplicate
@@ -279,6 +334,11 @@ func EvaluateHuddleLoopSweep(now time.Time) Command {
 			// per-huddle ledger walk. OR'd into the utterance arm's onset + conclude
 			// gates so a zero-utterance offer→decline loop rides the same machinery.
 			ledgerPresentHuddles, ledgerArmedHuddles := ledgerStandoffHuddles(w, now)
+			// LLM-397: the live-deal guard for the lingering arm, computed once for
+			// the whole scan like the standoff sets above. Only the lingering arm
+			// consults it — the other three conclude BECAUSE commerce is going
+			// nowhere, which is the opposite verdict from "leave this deal alone."
+			commerceHuddles := ledgerCommerceHuddles(w)
 			var looping []HuddleID
 			for id, h := range w.Huddles {
 				if h == nil || h.ConcludedAt != nil {
@@ -309,8 +369,15 @@ func EvaluateHuddleLoopSweep(now time.Time) Command {
 				// content-present, ledger-standoff, or budget-exhausted has its spell
 				// cleared.
 				_, ledgerPresent := ledgerPresentHuddles[id]
+				// LLM-397: the lingering arm ORs into the same onset, with one
+				// difference — a huddle mid-deal is never lingering. The wind-down
+				// would tell a buyer to say farewell with coin already on the table,
+				// and the backstop would strand the pending entry. The pathology arms
+				// need no such guard: a standoff IS the dead deal.
+				lingeringPresent := huddleLingeringPresent(w.Settings, h, now) &&
+					!huddleCarriesLiveCommerce(w, h, commerceHuddles)
 				if !huddleLoopContentPresent(w.Settings, h) && !ledgerPresent &&
-					!huddleEndurancePresent(w.Settings, h) {
+					!huddleEndurancePresent(w.Settings, h) && !lingeringPresent {
 					h.LoopingSince = nil
 					h.LoopingReason = ""
 					continue
@@ -322,14 +389,19 @@ func EvaluateHuddleLoopSweep(now time.Time) Command {
 					// can drift apart over a spell, and re-diagnosing at conclude
 					// time would misattribute which detector caught the incident
 					// (LLM-333 code_review). Precedence mirrors the conclude tag:
-					// ledger > lexical > endurance.
+					// ledger > lexical > endurance > lingering. Lingering is last
+					// because it is the only non-pathological reading: if any arm
+					// says the conversation is actually STUCK, that is the truer
+					// diagnosis and the one the incident should be filed under.
 					switch {
 					case ledgerPresent:
 						h.LoopingReason = "huddle_loop_ledger"
 					case huddleLoopContentPresent(w.Settings, h):
 						h.LoopingReason = "huddle_loop"
-					default:
+					case huddleEndurancePresent(w.Settings, h):
 						h.LoopingReason = "huddle_loop_endurance"
+					default:
+						h.LoopingReason = huddleLoopReasonLingering
 					}
 				}
 				// Conclude only a spell that has BOTH persisted past the gate AND is
@@ -341,7 +413,8 @@ func EvaluateHuddleLoopSweep(now time.Time) Command {
 				_, ledgerArmed := ledgerArmedHuddles[id]
 				if now.Sub(*h.LoopingSince) >= timeout &&
 					(huddleLoopArmed(w.Settings, h, now) || ledgerArmed ||
-						huddleEnduranceArmed(w.Settings, h, now)) {
+						huddleEnduranceArmed(w.Settings, h, now) ||
+						(lingeringPresent && huddleNewestUtteranceLive(h, now))) {
 					looping = append(looping, id)
 				}
 			}
@@ -392,14 +465,27 @@ func EvaluateHuddleLoopSweep(now time.Time) Command {
 				// pay offer, a Force nudge) is left whole — the tick it drives is
 				// real work, not an echo of the dead conversation.
 				clearSocialWarrantCycles(w, members)
-				// concludeHuddleInner wrote a carry-over (LLM-170). Keep its ring (so a
-				// re-form doesn't re-greet) but reset the carried loop clock + latched
-				// reason: a silent conclude is meant to give the clique a fresh chance,
-				// so if they re-form and resume looping the NEXT gate catches them, not
-				// an instantly-elapsed inherited spell. The endurance counter is NOT
-				// reset — it is the durable CONDITION (like the carried ring), so a
-				// re-formed loop re-arms and earns exactly one fresh timeout.
-				if cb := w.carryoverByStructure[structureID]; cb != nil {
+				// concludeHuddleInner wrote a carry-over (LLM-170).
+				//
+				// LLM-397: a LINGERING conclude drops it entirely. The carry-over
+				// exists so a clique that churns huddles mid-conversation isn't
+				// re-greeted as strangers — but this conversation is not mid-anything,
+				// it is over: it ran its full window, was told to wind down for a whole
+				// persistence gate, and didn't. Preserving the ring and the clock here
+				// is precisely what made the old eco arc toothless — the clique
+				// re-formed within seconds, inherited an already-elapsed clock, and got
+				// cut again three minutes later, ten times over. Dropping it means the
+				// next huddle at this structure is a genuinely NEW conversation: a fresh
+				// clock, a fresh window, and yes, a greeting — which is what actually
+				// happens when people finish talking and later strike up again.
+				//
+				// Every other reason keeps today's behavior: hold the ring, reset the
+				// carried loop clock + latched reason so a re-formed loop earns one
+				// fresh timeout rather than an instantly-elapsed inherited spell. The
+				// endurance counter stays — it is the durable CONDITION, not the clock.
+				if reason == huddleLoopReasonLingering {
+					delete(w.carryoverByStructure, structureID)
+				} else if cb := w.carryoverByStructure[structureID]; cb != nil {
 					cb.loopingSince = nil
 					cb.loopingReason = ""
 				}
@@ -545,6 +631,59 @@ func huddleEndurancePresent(s WorldSettings, h *Huddle) bool {
 // matching the other arms' live gates.
 func huddleEnduranceArmed(s WorldSettings, h *Huddle, now time.Time) bool {
 	return huddleEndurancePresent(s, h) && huddleNewestUtteranceLive(h, now)
+}
+
+// --- lingering arm (LLM-397) ---
+//
+// The other three arms all detect a PATHOLOGY: the conversation is repeating
+// (lexical), standing off over a dead deal (ledger), or burning turns with
+// nothing happening (endurance). None of them fires on a conversation that is
+// healthy, productive, and simply endless — and that is the live case. The
+// 2026-07-14 inn conversation sold porridge (which stamps LastProgressAt and so
+// RESETS the endurance counter, by design), never repeated itself (the lexical
+// arm measured near-zero), and carried no failed deals — and then ran for a
+// hundred minutes, because there is no such thing in the model as a conversation
+// that has simply gone on long enough.
+//
+// This arm supplies that: a clock on the CONVERSATION, blind to content and to
+// progress, and unlike the other three it is not a verdict of anything being
+// wrong. Its purpose is the steer — arming ConversationLingering so the members
+// close the scene themselves, in the fiction, which they demonstrably do when
+// told ("I'll let this fine meal settle... I'll see you back at the house this
+// evening"). The silent conclude one persistence-gate later is only the backstop
+// for a scene that won't take the hint.
+
+// huddleLingeringPresent is the lingering arm's DURABLE onset condition: the
+// conversation has been going longer than the wind-down window. Read off
+// ConversationSince (carried across re-formation), NOT StartedAt — a clique that
+// churns huddles every couple of minutes must not present a fresh clock each
+// cycle, which is exactly how the live conversation stayed young forever while
+// running for an hour and a half. Falls back to StartedAt for a huddle minted
+// before this field existed (or by a creation site that forgot to stamp), so the
+// arm degrades to per-huddle age rather than never arming.
+func huddleLingeringPresent(s WorldSettings, h *Huddle, now time.Time) bool {
+	if h == nil || h.ConcludedAt != nil {
+		return false
+	}
+	since := h.ConversationSince
+	if since.IsZero() {
+		since = h.StartedAt
+	}
+	if since.IsZero() {
+		return false
+	}
+	age := now.Sub(since)
+	// A negative age (out-of-order / replayed clock) reads as not-lingering,
+	// matching huddleNewestUtteranceLive — a replay must never arm the arm early.
+	return age >= 0 && age >= effectiveHuddleConversationWindDown(s)
+}
+
+// huddleLingeringArmed is the lingering arm's LIVE steer + conclude condition:
+// the conversation has run past the wind-down window AND is still being spoken
+// right now. A long conversation that has gone quiet needs no wind-down — it
+// wound down — and belongs to the silence sweep, matching the other arms.
+func huddleLingeringArmed(s WorldSettings, h *Huddle, now time.Time) bool {
+	return huddleLingeringPresent(s, h, now) && huddleNewestUtteranceLive(h, now)
 }
 
 // --- transactional-futility arm (LLM-309) ---

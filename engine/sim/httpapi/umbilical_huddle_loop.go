@@ -28,17 +28,27 @@ type umbilicalHuddleLoopRequest struct {
 	RepeatPercent  *int `json:"repeat_percent"`
 	CadenceSeconds *int `json:"cadence_seconds"`
 	MaxTurns       *int `json:"max_turns"`
+	// WindDownSeconds (LLM-397) is the lingering arm's clock: how long a
+	// conversation may run before its members are steered to close it. Must be > 0.
+	WindDownSeconds *int `json:"wind_down_seconds"`
 }
 
 // umbilicalHuddleLoopResponse echoes the full post-change knob set (wire units).
 // Enabled is timeout_seconds > 0 — the master enable for both the sweep and the
 // per-tick ConversationLooping steer.
 type umbilicalHuddleLoopResponse struct {
-	TimeoutSeconds int  `json:"timeout_seconds"`
-	RepeatPercent  int  `json:"repeat_percent"`
-	CadenceSeconds int  `json:"cadence_seconds"`
-	MaxTurns       int  `json:"max_turns"`
-	Enabled        bool `json:"enabled"`
+	TimeoutSeconds  int `json:"timeout_seconds"`
+	RepeatPercent   int `json:"repeat_percent"`
+	CadenceSeconds  int `json:"cadence_seconds"`
+	MaxTurns        int `json:"max_turns"`
+	WindDownSeconds int `json:"wind_down_seconds"`
+	// HardConcludeSeconds is wind_down_seconds + timeout_seconds: when a
+	// conversation is actually ended, having been steered toward a close for the
+	// whole gate first. Echoed because THIS is the number an operator means by
+	// "how long can a conversation run" — deriving it by hand is how the old
+	// 3-minute arc went unnoticed. 0 when the sweep is disabled (nothing ends).
+	HardConcludeSeconds int  `json:"hard_conclude_seconds"`
+	Enabled             bool `json:"enabled"`
 }
 
 // handleUmbilicalHuddleLoop applies a live huddle loop-sweep knob change.
@@ -58,14 +68,14 @@ func (s *Server) handleUmbilicalHuddleLoop(w http.ResponseWriter, r *http.Reques
 	auditUmbilical(user.Username, "settings.huddle-loop", huddleLoopAuditDetail(req))
 
 	res, err := s.world.SendContext(r.Context(), sim.SetHuddleLoopSettings(
-		req.TimeoutSeconds, req.RepeatPercent, req.CadenceSeconds, req.MaxTurns,
+		req.TimeoutSeconds, req.RepeatPercent, req.CadenceSeconds, req.MaxTurns, req.WindDownSeconds,
 	))
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return
 		}
 		if errors.Is(err, sim.ErrInvalidHuddleLoopSetting) {
-			writeError(w, http.StatusBadRequest, "provide at least one of timeout_seconds (>=0), repeat_percent (1-100), cadence_seconds (>0), max_turns (>0)")
+			writeError(w, http.StatusBadRequest, "provide at least one of timeout_seconds (>=0), repeat_percent (1-100), cadence_seconds (>0), max_turns (>0), wind_down_seconds (>0)")
 			return
 		}
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
@@ -77,17 +87,19 @@ func (s *Server) handleUmbilicalHuddleLoop(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, umbilicalHuddleLoopResponse{
-		TimeoutSeconds: out.TimeoutSeconds,
-		RepeatPercent:  out.RepeatPercent,
-		CadenceSeconds: out.CadenceSeconds,
-		MaxTurns:       out.MaxTurns,
-		Enabled:        out.TimeoutSeconds > 0,
+		TimeoutSeconds:      out.TimeoutSeconds,
+		RepeatPercent:       out.RepeatPercent,
+		CadenceSeconds:      out.CadenceSeconds,
+		MaxTurns:            out.MaxTurns,
+		WindDownSeconds:     out.WindDownSeconds,
+		HardConcludeSeconds: out.HardConcludeSeconds,
+		Enabled:             out.TimeoutSeconds > 0,
 	})
 }
 
 // huddleLoopAuditDetail renders the supplied (non-nil) knobs for the audit log.
 func huddleLoopAuditDetail(req umbilicalHuddleLoopRequest) string {
-	parts := make([]string, 0, 4)
+	parts := make([]string, 0, 5)
 	if req.TimeoutSeconds != nil {
 		parts = append(parts, fmt.Sprintf("timeout_seconds=%d", *req.TimeoutSeconds))
 	}
@@ -99,6 +111,9 @@ func huddleLoopAuditDetail(req umbilicalHuddleLoopRequest) string {
 	}
 	if req.MaxTurns != nil {
 		parts = append(parts, fmt.Sprintf("max_turns=%d", *req.MaxTurns))
+	}
+	if req.WindDownSeconds != nil {
+		parts = append(parts, fmt.Sprintf("wind_down_seconds=%d", *req.WindDownSeconds))
 	}
 	return strings.Join(parts, " ")
 }

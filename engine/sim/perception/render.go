@@ -337,8 +337,12 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// reason the loop steer does — reply-pressure is what keeps the over-long
 	// conversation alive.
 	conversationRunLong := p.TurnState.ConversationRunLong
-	renderTurnState(&ephemeral, p.TurnState, seekWorkDirective || conversationLooping || conversationRunLong)
-	renderTriage(&ephemeral, p.Actor.Needs, p.Actor.NeedThresholds, p.TurnState.AwaitingReply(), conversationLooping, conversationRunLong, p.NeedRedirect, seekWorkDirective, len(payOffers) > 0, p.Actor.InFlightMove, p.Actor.InFlightSourceActivity)
+	// LLM-397: a conversation that has merely run long suppresses the owed-reply
+	// nag too. The nag is reply-pressure, and reply-pressure is what keeps a scene
+	// that should be ending alive for another beat.
+	conversationLingering := p.TurnState.ConversationLingering
+	renderTurnState(&ephemeral, p.TurnState, seekWorkDirective || conversationLooping || conversationRunLong || conversationLingering)
+	renderTriage(&ephemeral, p.Actor.Needs, p.Actor.NeedThresholds, p.TurnState.AwaitingReply(), conversationLooping, conversationRunLong, conversationLingering, p.NeedRedirect, seekWorkDirective, len(payOffers) > 0, p.Actor.InFlightMove, p.Actor.InFlightSourceActivity)
 
 	out.Text = durable.String()
 	out.EphemeralText = ephemeral.String()
@@ -632,7 +636,7 @@ func renderNeedRedirect(v NeedRedirectView) string {
 // wandering exposed: obligations to others and pressing needs over idle drift.
 // Rendered unconditionally — Render is only called on the NPC reactor-tick path
 // (handlers.Harness.RunTick), never for a PC.
-func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.NeedThresholds, awaitingReply bool, conversationLooping bool, conversationRunLong bool, needRedirect *NeedRedirectView, seekWork bool, hasPayOffers bool, inFlightMove *InFlightMoveView, inFlightSourceActivity *InFlightSourceActivityView) {
+func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.NeedThresholds, awaitingReply bool, conversationLooping bool, conversationRunLong bool, conversationLingering bool, needRedirect *NeedRedirectView, seekWork bool, hasPayOffers bool, inFlightMove *InFlightMoveView, inFlightSourceActivity *InFlightSourceActivityView) {
 	// A buyer's offer awaiting this actor's answer outranks everything below —
 	// including the actor's own felt needs, which the coda's "pressing needs"
 	// phrasing otherwise licenses to win. Without this, a starving seller read
@@ -718,6 +722,21 @@ func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.
 		// swap is deliberately NOT applied here — it exists to break a
 		// confabulated plan-loop, and this case is by definition not a loop.
 		b.WriteString("This conversation has gone on a good while and nothing new is coming of it. Bring it to a close — say a brief farewell or simply turn to your own affairs, then call done(). Do not start a new topic.\n")
+	case conversationLingering:
+		// Lingering wind-down coda (LLM-397). Unlike every case above, this one is
+		// not a fault: the conversation may have been warm, varied, and genuinely
+		// productive — the live scene that motivated the arm sold a bowl of
+		// porridge and then turned to a widow's memories of her husband. It has
+		// simply run long. So the line says only that, and says it kindly: the
+		// endurance coda's "nothing new is coming of it" would be a plain lie here,
+		// and a weak model told an obvious falsehood about the scene in front of it
+		// argues with the premise instead of acting on it. Nothing is forbidden —
+		// the actor may still answer a need, take an offer, keep a duty; it is only
+		// asked to let the talk end rather than open another topic. The sweep's
+		// silent conclude one persistence gate later exists for the case where it
+		// doesn't, and getting a graceful in-world farewell here instead is the
+		// entire point of the arm.
+		b.WriteString("You have been talking here a long while now, and the day is getting on. Let the conversation come to its natural end — say your farewells, or simply turn back to your own affairs, then call done(). Do not open a new topic.\n")
 	case awaitingReply:
 		// Turn-state coda (ZBBS-WORK-370): the actor has spoken and is awaiting a
 		// reply. The default "choose one thing and do it" imperative is exactly

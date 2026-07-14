@@ -306,7 +306,7 @@ func TestSetEcoMode_UpdatesAndEchoes(t *testing.T) {
 
 	enabled := false
 	social := 45
-	res, err := w.Send(sim.SetEcoMode(&enabled, &social, nil, nil))
+	res, err := w.Send(sim.SetEcoMode(&enabled, &social, nil))
 	if err != nil {
 		t.Fatalf("SetEcoMode: %v", err)
 	}
@@ -360,7 +360,7 @@ func TestSetEcoMode_Rejects(t *testing.T) {
 		{"economy past stale horizon", nil, nil, &pastHorizon},
 	}
 	for _, tc := range cases {
-		if _, err := w.Send(sim.SetEcoMode(tc.enabled, tc.social, tc.economy, nil)); err == nil {
+		if _, err := w.Send(sim.SetEcoMode(tc.enabled, tc.social, tc.economy)); err == nil {
 			t.Errorf("%s: want ErrInvalidEcoModeSetting, got nil", tc.name)
 		}
 	}
@@ -381,11 +381,11 @@ func TestSetEcoMode_ZeroValidUnderTightHorizon(t *testing.T) {
 		t.Fatalf("tighten MaxWarrantAge: %v", err)
 	}
 	zero := 0
-	if _, err := w.Send(sim.SetEcoMode(nil, &zero, &zero, nil)); err != nil {
+	if _, err := w.Send(sim.SetEcoMode(nil, &zero, &zero)); err != nil {
 		t.Errorf("zero gaps under a tight horizon must stay valid: %v", err)
 	}
 	one := 1
-	if _, err := w.Send(sim.SetEcoMode(nil, &one, nil, nil)); err == nil {
+	if _, err := w.Send(sim.SetEcoMode(nil, &one, nil)); err == nil {
 		t.Error("a positive gap that cannot fit under the ceiling must be rejected")
 	}
 }

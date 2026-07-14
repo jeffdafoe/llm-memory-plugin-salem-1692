@@ -883,6 +883,18 @@ var perceptionScenarios = []perceptionScenario{
 		build: listenerHearsLongUtterance,
 	},
 	{
+		name: "lingering_inn_conversation",
+		summary: "LLM-397: the live 2026-07-14 inn scene (hud-e26338a9…) past its wind-down window — Lewis, " +
+			"Hannah and Silence, an hour into a conversation that bought and ate a bowl of porridge and moved " +
+			"on to a widow's memories of her husband. It is NOT a loop: no repetition, and the sale reset the " +
+			"endurance counter, so only the lingering clock can see it. The golden pins the register the engine " +
+			"uses on a healthy conversation it merely wants to end — a graceful farewell, the owed-reply nag " +
+			"suppressed, and pointedly NOT the endurance line's 'nothing new is coming of it', which here would " +
+			"be false. The eco arc this replaced simply severed this scene mid-sentence, ten times in a hundred " +
+			"minutes. Matrix guard: TestGoldensLingeringNeverClaimsFruitlessness.",
+		build: lingeringInnConversation,
+	},
+	{
 		name: "keeper_alone_at_post_onshift",
 		summary: "Stateful keeper arrives at its own store during working hours with no one else present " +
 			"(the live Josiah Thorne case, LLM-106). The golden pins exactly what the engine shows him: " +
@@ -12320,5 +12332,133 @@ func TestInstructsSpeakAlongside(t *testing.T) {
 		if instructsSpeakAlongside(line) {
 			t.Errorf("false positive on a cue that does not instruct a speak call:\n    %s", line)
 		}
+	}
+}
+
+// lingeringInnConversation is the LLM-397 scene, rebuilt from the live
+// 2026-07-14 inn transcript (hud-e26338a9…): Hannah Boggs, Lewis Walker and
+// Silence Walker have been talking in the Inn for well over the wind-down
+// window. Nothing here is wrong. The porridge was bought, paid for, and eaten;
+// the talk is varied and warm; a widow is remembering her husband. The engine's
+// only remaining interest is that the scene should be allowed to END, so the
+// steer asks for a farewell and nothing else.
+//
+// The golden's job is to pin exactly that register — a graceful close, NOT the
+// endurance arm's "nothing new is coming of it", which on this scene would be a
+// flat falsehood (a sale had just closed) and which a weak model answers by
+// arguing with the premise instead of saying goodbye. Guarded across the matrix
+// by TestGoldensLingeringNeverClaimsFruitlessness.
+func lingeringInnConversation() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		lewisID   = sim.ActorID("lewis")
+		hannahID  = sim.ActorID("hannah")
+		silenceID = sim.ActorID("silence")
+		inn       = sim.StructureID("the_inn")
+		huddleID  = sim.HuddleID("inn_huddle")
+	)
+	noon := 750 // 12:30 — the midday chill of the transcript
+	published := time.Date(2026, 7, 14, 12, 30, 0, 0, time.UTC)
+
+	lewis := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Lewis Walker",
+		State:             sim.StateIdle,
+		Pos:               sim.TilePos{X: 10, Y: 10},
+		InsideStructureID: inn,
+		CurrentHuddleID:   huddleID,
+		// The whole point of the arm: not looping, not starved of progress —
+		// just long.
+		ConversationLingering: true,
+		Coins:                 4,
+		Needs:                 map[sim.NeedKey]int{},
+		Acquaintances: map[string]sim.Acquaintance{
+			"Hannah Boggs":   {},
+			"Silence Walker": {},
+		},
+	}
+	hannah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Hannah Boggs",
+		Role:              "innkeeper",
+		State:             sim.StateIdle,
+		Pos:               sim.TilePos{X: 11, Y: 10},
+		InsideStructureID: inn,
+		CurrentHuddleID:   huddleID,
+		Coins:             30,
+		Needs:             map[sim.NeedKey]int{},
+	}
+	silence := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Silence Walker",
+		State:             sim.StateIdle,
+		Pos:               sim.TilePos{X: 10, Y: 11},
+		InsideStructureID: inn,
+		CurrentHuddleID:   huddleID,
+		Coins:             6,
+		Needs:             map[sim.NeedKey]int{},
+	}
+
+	ring := []sim.Utterance{
+		{SpeakerID: hannahID, SpeakerName: "Hannah Boggs", At: published.Add(-6 * time.Minute),
+			Text: "His name was Thomas. Thomas Boggs. A blacksmith by trade, though he could turn his hand to anything."},
+		{SpeakerID: silenceID, SpeakerName: "Silence Walker", At: published.Add(-4 * time.Minute),
+			Text: "A man whose memory still warms you after seven winters — that's a life worth remembering."},
+		{SpeakerID: hannahID, SpeakerName: "Hannah Boggs", At: published.Add(-2 * time.Minute),
+			Text: "Take your ease, both of you. There's no rush to leave a warm bowl and a warm fire."},
+	}
+
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &noon,
+		NeedThresholds:   sim.NeedThresholds{},
+		Assets:           emptyAssetSet,
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			lewisID: lewis, hannahID: hannah, silenceID: silence,
+		},
+		Structures: map[sim.StructureID]*sim.Structure{inn: plainStructure(inn, "The Inn")},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddleID: {
+				ID:               huddleID,
+				Members:          map[sim.ActorID]struct{}{lewisID: {}, hannahID: {}, silenceID: {}},
+				RecentUtterances: ring,
+			},
+		},
+	}
+	// Hannah has just spoken to him — the reply pressure the wind-down must
+	// override rather than obey. Left unsuppressed, this nag is exactly what
+	// keeps a finished conversation alive for another beat.
+	warrants := []sim.WarrantMeta{{
+		TriggerActorID: hannahID,
+		SourceEventID:  1,
+		OccurredAt:     published.Add(-2 * time.Minute),
+		HuddleID:       huddleID,
+		Reason: sim.NPCSpeechWarrantReason{
+			SpeechID: 1,
+			Speaker:  hannahID,
+			Excerpt:  "Take your ease, both of you. There's no rush to leave a warm bowl and a warm fire.",
+		},
+	}}
+	return snap, lewisID, warrants
+}
+
+// TestGoldensLingeringNeverClaimsFruitlessness is the LLM-397 cross-scenario
+// invariant. The lingering steer and the endurance steer both end in "wind this
+// down", and the temptation to collapse them into one line will recur — but they
+// are not interchangeable: the endurance arm only fires when nothing has come of
+// the conversation, while the lingering arm routinely fires on scenes where
+// something plainly has. Any prompt that tells an NPC nothing came of a
+// conversation that just sold breakfast is lying to it, and the fix for the
+// falsehood is not a better threshold — it is a separate line.
+func TestGoldensLingeringNeverClaimsFruitlessness(t *testing.T) {
+	const fruitless = "nothing new is coming of it"
+	got := renderScenario(perceptionScenario{
+		name:  "lingering_inn_conversation",
+		build: lingeringInnConversation,
+	})
+	if strings.Contains(got, fruitless) {
+		t.Errorf("the lingering steer must never claim the conversation was fruitless — the live scene it fires on had just closed a sale.\nprompt:\n%s", got)
+	}
+	if !strings.Contains(got, "Let the conversation come to its natural end") {
+		t.Errorf("a lingering conversation should be steered to a graceful close.\nprompt:\n%s", got)
 	}
 }

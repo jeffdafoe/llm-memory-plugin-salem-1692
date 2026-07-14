@@ -1398,9 +1398,18 @@ type ActorSnapshot struct {
 	// ConversationLooping at publish — looping wins as the more specific
 	// diagnosis.
 	ConversationRunLong bool
-	Needs               map[NeedKey]int
-	InventoryHash       uint64 // fast-compare; computed at snapshot time
-	Coins               int
+	// ConversationLingering is the lingering arm's steer (LLM-397): this
+	// conversation has simply run longer than HuddleConversationWindDown. It
+	// asserts nothing about the talk being stuck — the huddle may be varied,
+	// productive, and carrying real memories — only that it has gone on, so
+	// perception renders a graceful wind-down rather than the endurance line's
+	// "nothing is coming of it" (which on the live case would have been a lie: a
+	// sale had just closed). Set at publish only when the two flags above are
+	// not, and never for a huddle carrying a live deal.
+	ConversationLingering bool
+	Needs                 map[NeedKey]int
+	InventoryHash         uint64 // fast-compare; computed at snapshot time
+	Coins                 int
 
 	// SpriteID + Facing mirror the live Actor's render identity at snapshot
 	// time so the client read surface (httpapi) can resolve + inline the

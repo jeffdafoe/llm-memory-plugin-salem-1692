@@ -1396,16 +1396,22 @@ func buildTurnState(snap *sim.Snapshot, actorID sim.ActorID, subj *sim.ActorSnap
 	// "wait for their reply" line would fight the loop-breaking coda, the same
 	// reason ConversationLooping suppresses the owed-reply nag. Feeds the same
 	// AwaitingReplyFrom the render + coda already consume — no new render path.
-	if len(ts.AwaitingReplyFrom) == 0 && !subj.ConversationLooping && !subj.ConversationRunLong {
+	// LLM-397: a lingering conversation suppresses the re-ask anchor for the same
+	// reason the two loop flags do — every steer here is telling the actor to
+	// close the scene, and a "wait for their reply" line would hold it open.
+	if len(ts.AwaitingReplyFrom) == 0 && !subj.ConversationLooping &&
+		!subj.ConversationRunLong && !subj.ConversationLingering {
 		if label, ok := solePeerReaskAnchor(snap, actorID, subj, members); ok {
 			ts.AwaitingReplyFrom = append(ts.AwaitingReplyFrom, label)
 		}
 	}
 	// LLM-169: carry the publish-time armed-loop flag through so render can swap
 	// the reply-pressure nudge for the "you've agreed, act now" coda. LLM-333:
-	// the endurance flag rides the same way for the wind-down variant.
+	// the endurance flag rides the same way for the wind-down variant. LLM-397:
+	// so does the lingering flag, for the ran-its-course variant.
 	ts.ConversationLooping = subj.ConversationLooping
 	ts.ConversationRunLong = subj.ConversationRunLong
+	ts.ConversationLingering = subj.ConversationLingering
 	return ts
 }
 

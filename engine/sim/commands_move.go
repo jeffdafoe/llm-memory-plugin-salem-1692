@@ -525,6 +525,10 @@ func StartOutdoorHuddle(participants []ActorID, anchor Position, radius int, rea
 				Members:     make(map[ActorID]struct{}, len(participants)),
 				StructureID: "", // outdoor — no structure
 				StartedAt:   now,
+				// An outdoor huddle is 1:1 with its area scene and carries nothing
+				// forward (writeConversationCarryover no-ops without a structure), so
+				// its conversation clock always starts here.
+				ConversationSince: now,
 				// LLM-159: forming the huddle is a membership change = progress, so
 				// the loop sweep doesn't treat a brand-new outdoor huddle as a
 				// pre-existing stuck loop. (LastActivityAt stays zero here — the

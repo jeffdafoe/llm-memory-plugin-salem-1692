@@ -62,20 +62,17 @@ const (
 	// cycle while unwatched. Mild: restock/production/upkeep decisions land
 	// within half a minute of their trigger instead of seconds.
 	DefaultEcoEconomyGap = 30 * time.Second
-
-	// DefaultEcoConversationMax is the fallback eco conversation arc (LLM-334):
-	// how long an unwatched huddle may run before the eco-conclude sweep ends
-	// the scene. The eco social gap bounds a conversation's RATE, but npc_spoke
-	// re-stamps on every reply, so its total call count is turn-bound — live
-	// 2026-07-08 marathons ran 54-143 minutes at exactly the eco cadence (110
-	// spokes for one pair) and ended only on schedule events. 3 minutes ≈ 3-6
-	// paced beats: the scene happens, memories form, then everyone goes quiet
-	// until something real (a schedule move, a greet, a player) starts a new
-	// one. Matches the loop sweep's live timeout scale. Tunable via
-	// eco_conversation_max_seconds; 0 disables the sweep (meter-forever, the
-	// pre-LLM-334 behavior).
-	DefaultEcoConversationMax = 3 * time.Minute
 )
+
+// Eco mode PACES an unwatched village; it does not end its scenes. The LLM-334
+// conversation arc (a 3-minute audience-gated guillotine on every huddle) lived
+// here and is gone — bounding how long a conversation may run is a fact about the
+// conversation, not about who is watching, so it belongs to the loop sweep's
+// lingering arm (LLM-397, HuddleConversationWindDown) which applies whether or
+// not a player is present. What the arc actually bought is also worth recording:
+// nothing. Because the LLM-170 carry-over let the clique re-form and resume
+// within seconds, the live 2026-07-14 inn conversation was cut ten times in a
+// hundred minutes and never stopped — it just did so mid-sentence each time.
 
 // AudienceActive reports whether any player character has a fresh presence
 // stamp — the world-level "someone is watching" predicate. Reuses the
@@ -124,17 +121,6 @@ func effectiveEcoEconomyGap(s WorldSettings) time.Duration {
 		return DefaultEcoEconomyGap
 	}
 	return s.EcoEconomyGap
-}
-
-// effectiveEcoConversationMax returns the configured eco conversation arc
-// (LLM-334), falling back to DefaultEcoConversationMax when unset. Same
-// convention as the gaps: negative = unset (parse seeds the default, so this
-// is belt-and-braces), zero = the eco-conclude sweep is off.
-func effectiveEcoConversationMax(s WorldSettings) time.Duration {
-	if s.EcoConversationMax < 0 {
-		return DefaultEcoConversationMax
-	}
-	return s.EcoConversationMax
 }
 
 // effectiveMaxWarrantAge is the live warrant stale horizon — the same

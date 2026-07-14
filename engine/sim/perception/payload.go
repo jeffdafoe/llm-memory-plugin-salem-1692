@@ -1535,6 +1535,15 @@ type TurnStateView struct {
 	// scene's truth is "this has gone on with nothing coming of it", not "you
 	// keep saying the same thing". Never true alongside ConversationLooping.
 	ConversationRunLong bool
+
+	// ConversationLingering is the wind-down for a conversation that has merely
+	// run long (LLM-397, sim.ActorSnapshot.ConversationLingering) — not stuck, not
+	// starved of progress, just old. Same reply-nag suppression and the same
+	// "bring it to a close" shape as ConversationRunLong, but the line must not
+	// claim the talk has been fruitless: this is the arm that fires on the scene
+	// where the innkeeper sold breakfast and then told a story about her husband.
+	// Never true alongside either flag above.
+	ConversationLingering bool
 }
 
 // AwaitingReply reports whether the subject is awaiting at least one live reply
