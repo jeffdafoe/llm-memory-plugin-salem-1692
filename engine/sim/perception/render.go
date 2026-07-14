@@ -3837,8 +3837,15 @@ func sanitizeInline(s string) string {
 	return out
 }
 
+// elisionMarker terminates any free-text payload capBytes had to shorten. It is
+// the sole signal to a reading NPC that it is NOT seeing the whole line — without
+// it a clipped utterance reads as an unfinished sentence, and the listener answers
+// by asking the speaker to finish, forever (LLM-396). Exported to the package so
+// the render path and the golden invariant that enforces it share one definition.
+const elisionMarker = "…"
+
 // capBytes truncates s to at most maxBytes bytes on a rune boundary,
-// appending an ellipsis marker when it truncates. maxBytes <= 0 means no
+// appending elisionMarker when it truncates. maxBytes <= 0 means no
 // cap. The returned bool reports whether truncation happened.
 //
 // The byte cap is hard: when maxBytes is smaller than the marker itself,
@@ -3850,7 +3857,7 @@ func capBytes(s string, maxBytes int) (string, bool) {
 	if maxBytes <= 0 || len(s) <= maxBytes {
 		return s, false
 	}
-	const marker = "…"
+	const marker = elisionMarker
 	if maxBytes < len(marker) {
 		return "", true
 	}

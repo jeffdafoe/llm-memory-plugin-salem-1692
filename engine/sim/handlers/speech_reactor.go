@@ -38,11 +38,24 @@ import (
 //     explicit speaker-skip would be redundant — but defensive in case
 //     a future change to sim.Speak forgets the exclusion.
 //
-// Excerpt truncation: the warrant payload's Excerpt is rune-truncated to
-// sim.MaxSalientFactTextLen (220) — every reactor tick this peer takes
-// re-renders the excerpt into the perception prompt, so bounding the
-// excerpt bounds the per-tick token cost. The full text remains on the
-// Spoke event for any consumer that wants it.
+// Excerpt carries the FULL utterance (LLM-396). It used to be rune-truncated
+// to sim.MaxSalientFactTextLen (220) to bound per-tick token cost, but that
+// cut landed mid-word with no marker, and 40% of live utterances were long
+// enough to hit it. A listener shown "...they're about finding home in small"
+// reads a dangling, unfinished sentence and does the socially obvious thing —
+// asks the speaker to finish it. The reply is truncated too, so every turn
+// manufactures a fresh conversational obligation and the huddle never
+// terminates (observed live: a 13-minute unbreakable politeness loop in the
+// Inn). It also defeated the "you already spoke, wait for their reply" guard,
+// which can never be the most pressing matter while a question dangles.
+//
+// Token cost stays bounded where it belongs — in the renderer, which caps the
+// warrant payload at perception.RenderConfig.MaxBytesPerWarrant (600 bytes)
+// and, unlike this path, MARKS the cut with an ellipsis. Every utterance the
+// speak tool can produce is already bounded upstream at MaxSpeakTextChars
+// (1000 runes), and no observed utterance exceeded 473 bytes, so in practice
+// the full line now reaches the listener intact; a pathological one is elided
+// visibly rather than silently.
 func handleSpokeWarrants(w *sim.World, evt sim.Event) {
 	spoke, ok := evt.(*sim.Spoke)
 	if !ok {
@@ -52,7 +65,7 @@ func handleSpokeWarrants(w *sim.World, evt sim.Event) {
 		return
 	}
 	now := time.Now().UTC()
-	excerpt := truncateRunes(spoke.Text, sim.MaxSalientFactTextLen)
+	excerpt := spoke.Text
 	// ZBBS-HOME-377: is the speaker a PC (the player)? A player's words are a
 	// deliberate, in-person address — they stamp PCSpeechWarrantReason so they
 	// reach a recipient even when it is on a break (PCSpeechWarrantReason

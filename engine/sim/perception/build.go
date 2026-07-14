@@ -3391,10 +3391,10 @@ func relationshipRecency(rel *sim.Relationship) (time.Time, int) {
 	return last, rel.InteractionCount
 }
 
-// recentConversationDedupKey truncates an utterance to MaxSalientFactTextLen the
-// same way the warrant Excerpt is, so a ring line can be matched against
-// currentHeardExcerpts (which keys on the truncated form). Short lines (the
-// common case) are returned unchanged.
+// recentConversationDedupKey normalizes an utterance to the 220-rune SalientFact
+// form (what NewSalientFact stores at write time), so a ring line can be matched
+// against currentHeardExcerpts — which indexes both this form and the full text
+// (LLM-396). Short lines (the common case) are returned unchanged.
 func recentConversationDedupKey(text string) string {
 	r := []rune(text)
 	if len(r) > sim.MaxSalientFactTextLen {
@@ -3557,10 +3557,26 @@ func buildSelfActions(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 
 // currentHeardExcerpts indexes the speech utterances in this tick's consumed
 // warrant batch by speaker, so buildRelationships can drop a `heard` SalientFact
-// that the "## Since your last turn" section already renders (ZBBS-WORK-374). The
-// warrant Excerpt and the heard-fact Text are both truncateRunes(spoke.Text,
-// MaxSalientFactTextLen), so an exact string match is reliable. Returns nil when
-// the batch carries no speech (the common non-conversational tick).
+// that the "## Since your last turn" section already renders (ZBBS-WORK-374), and
+// buildRecentConversation can drop the same line from the huddle ring.
+//
+// Both forms of every utterance are indexed (LLM-396). The warrant Excerpt now
+// carries the FULL text, but the two things it is matched against are still
+// stored in the 220-rune SalientFact form:
+//
+//   - buildRelationships compares a SalientFact.Text, truncated at write time by
+//     NewSalientFact to MaxSalientFactTextLen.
+//   - buildRecentConversation compares recentConversationDedupKey(ring text),
+//     which normalizes to that same form.
+//
+// Indexing the full excerpt alone would silently fail both matches on any
+// utterance over 220 runes (40% of them), re-introducing the ZBBS-WORK-374
+// duplication — the model shown the same line twice and reinforcing it. Indexing
+// both keys keeps every comparison exact regardless of length; for a short
+// utterance the two keys coincide and the set simply dedups them.
+//
+// Returns nil when the batch carries no speech (the common non-conversational
+// tick).
 func currentHeardExcerpts(warrants []sim.WarrantMeta) map[sim.ActorID]map[string]bool {
 	var bySpeaker map[sim.ActorID]map[string]bool
 	add := func(speaker sim.ActorID, excerpt string) {
@@ -3574,6 +3590,7 @@ func currentHeardExcerpts(warrants []sim.WarrantMeta) map[sim.ActorID]map[string
 			bySpeaker[speaker] = make(map[string]bool)
 		}
 		bySpeaker[speaker][excerpt] = true
+		bySpeaker[speaker][recentConversationDedupKey(excerpt)] = true
 	}
 	for _, w := range warrants {
 		switch r := w.Reason.(type) {
