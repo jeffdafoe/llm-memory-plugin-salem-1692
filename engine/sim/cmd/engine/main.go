@@ -554,6 +554,13 @@ func run(rt runtime, stop <-chan struct{}) error {
 	// stamps and the presence sweep reclaims the ghost. Wired only when the WS
 	// surface exists — eventsHub is nil in the headless lifecycle.
 	if eventsHub != nil {
+		// Declared here rather than in RegisterCoreTickers because this ticker is
+		// CONDITIONAL: it only runs when the WS surface exists. A headless engine never
+		// starts it, and declaring a cadence for a ticker that is deliberately not
+		// running would make the staleness alarm scream about its silence forever.
+		// Registration tracks the launch, so the contract exists exactly when the
+		// goroutine does.
+		rt.World.RegisterTicker("pc_presence_heartbeat", sim.PCPresenceHeartbeatInterval)
 		go sim.RunPCPresenceHeartbeat(worldCtx, rt.World, eventsHub)
 	}
 
@@ -843,6 +850,14 @@ func registerTools(r *handlers.Registry, searcher llm.MemorySearcher, writer llm
 // separately by RegisterProductionCascades; these are the core sim tickers
 // that live in the sim package itself.
 func startTickers(ctx context.Context, w *sim.World) {
+	// Declare every cadence contract BEFORE launching anything (LLM-395). Order is
+	// load-bearing: an unregistered ticker never alarms, so if this ran after the
+	// `go` statements — or from inside the goroutines — a ticker that failed to come
+	// up at all would be invisible to the staleness alarm, which is the very failure
+	// it exists to catch. Declared first, a ticker that never beats is stale from its
+	// registration stamp onward.
+	sim.RegisterCoreTickers(w)
+
 	go sim.RunReactorEvaluator(ctx, w)
 	go sim.RunLocomotionTicker(ctx, w)
 	go sim.RunPhaseTicker(ctx, w)

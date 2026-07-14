@@ -51,6 +51,9 @@ func RegisterVisitor(ctx context.Context, w *sim.World) {
 	if w == nil {
 		panic("cascade: RegisterVisitor requires a non-nil world")
 	}
+	// Cadence contract, phase one — default now, settings-resolved interval once the
+	// goroutine can read it (LLM-395; see RegisterIdleBackstop).
+	w.RegisterTicker("visitor", defaultVisitorTickInterval)
 	go runVisitorTicker(ctx, w)
 }
 
@@ -67,6 +70,8 @@ func runVisitorTicker(ctx context.Context, w *sim.World) {
 	if ctx.Err() != nil {
 		return
 	}
+	// Cadence contract, phase two (LLM-395) — see runIdleBackstopSweep.
+	w.RegisterTicker("visitor", interval)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 

@@ -45,6 +45,14 @@ func RegisterIdleBackstop(ctx context.Context, w *sim.World) {
 	if w == nil {
 		panic("cascade: RegisterIdleBackstop requires a non-nil world")
 	}
+	// Cadence contract, phase one (LLM-395). This sweep's true interval comes from
+	// WorldSettings, which can only be read from INSIDE the goroutine — the world
+	// command loop isn't running yet at cascade-registration time, so a read here
+	// would block. So declare the default now, which is what makes a never-started
+	// goroutine visible to the staleness alarm, and let the goroutine refine the
+	// number to the settings-resolved one the moment it has it. Re-registration
+	// overwrites the interval and nothing else.
+	w.RegisterTicker("idle_backstop", defaultIdleBackstopSweepInterval)
 	go runIdleBackstopSweep(ctx, w)
 }
 
@@ -58,6 +66,10 @@ func runIdleBackstopSweep(ctx context.Context, w *sim.World) {
 	if ctx.Err() != nil {
 		return
 	}
+	// Cadence contract, phase two (LLM-395): now that settings are readable, replace
+	// the default declared at registration with the interval this loop will actually
+	// tick at. Overwrites the interval only — RegisteredAt and the beat history stand.
+	w.RegisterTicker("idle_backstop", interval)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 

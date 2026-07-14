@@ -78,6 +78,9 @@ func armNextPayLedgerSweep(w *World) {
 	}
 	w.payLedgerSweep.scheduled = true
 	cadence := effectivePayLedgerSweepCadence(w.Settings)
+	// Re-declare the live-tunable cadence on each re-arm (LLM-395) — see
+	// armNextEvaluation.
+	w.RegisterTicker("pay_ledger_sweep", cadence)
 	time.AfterFunc(cadence, func() { fireScheduledPayLedgerSweep(w) })
 }
 

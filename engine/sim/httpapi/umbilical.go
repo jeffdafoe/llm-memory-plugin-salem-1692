@@ -282,24 +282,42 @@ func parseActionsLimit(raw string) int {
 	return n
 }
 
-// TickerHealthEntryDTO is one interval goroutine's liveness on the wire.
+// TickerHealthEntryDTO is one interval goroutine's liveness AND its cadence
+// contract on the wire (LLM-395).
+//
+// IntervalSeconds is what the ticker declared it should beat at, and Stale is the
+// engine's own verdict against that declaration — so the reader no longer has to
+// know every cadence by heart to interpret a LastFire. Registered=false marks a
+// ticker that beats but never declared a cadence: it is listed, but it is
+// invisible to the ticker_stale alarm, so it reads as a hole in the coverage
+// rather than as a healthy ticker.
+//
+// LastFire is the zero value for a ticker that registered but has not yet beaten
+// — normal for the first interval after boot, and permanent for a goroutine that
+// never started.
 type TickerHealthEntryDTO struct {
-	Name     string    `json:"name"`
-	Count    uint64    `json:"count"`
-	LastFire time.Time `json:"last_fire"`
+	Name            string    `json:"name"`
+	Count           uint64    `json:"count"`
+	LastFire        time.Time `json:"last_fire"`
+	Registered      bool      `json:"registered"`
+	IntervalSeconds float64   `json:"interval_seconds"`
+	Stale           bool      `json:"stale"`
 }
 
 // UmbilicalTickerHealthDTO is the GET /api/village/umbilical/ticker-health
-// response: per-interval-goroutine last-fire + cumulative fire count, sorted by
-// name. The signal: a ticker goroutine that died or wedged stops beating, so a
-// LastFire that's stale relative to that ticker's known cadence (or a Count that
-// stops advancing across two polls) flags a silently-stopped cadence driver.
-// `now` is the server's wall-clock at response time so the operator computes
-// staleness without assuming clock alignment. The reactor evaluator is included
-// for a complete view even though its liveness is also inferable from the
-// telemetry-ring flow; the cascade-package internal tickers (atmosphere,
-// consolidation, …) are NOT here — they fold into the separate cascade-health
-// work.
+// response: per-interval-goroutine cadence contract + last-fire + cumulative fire
+// count, sorted by name. The signal: a ticker goroutine that died or wedged stops
+// beating, so a LastFire stale relative to that ticker's DECLARED cadence (or a
+// Count that stops advancing across two polls) flags a silently-stopped cadence
+// driver. `now` is the server's wall-clock at response time so the operator
+// computes staleness without assuming clock alignment.
+//
+// This is the pull view of the same judgement the ticker_stale alarm makes and
+// stamps onto every umbilical response (httpapi/alarms.go) — the alarm carries the
+// names, this route carries the per-ticker detail behind them.
+//
+// The list is COMPLETE: both the sim-package tickers and the cascade-package ones
+// (atmosphere, consolidation, storm, visitor, …) fold into the one registry.
 type UmbilicalTickerHealthDTO struct {
 	ContractVersion int                    `json:"contract_version"`
 	Now             time.Time              `json:"now"`
@@ -310,17 +328,21 @@ type UmbilicalTickerHealthDTO struct {
 // world's TickerHealth registry (its own mutex — safe to read off the world
 // goroutine). Read-only, like the other umbilical read routes.
 func (s *Server) handleUmbilicalTickerHealth(w http.ResponseWriter, _ *http.Request) {
+	now := time.Now().UTC()
 	entries := s.world.TickerHealthSnapshot()
 	out := UmbilicalTickerHealthDTO{
 		ContractVersion: ContractVersion,
-		Now:             time.Now().UTC(),
+		Now:             now,
 		Tickers:         make([]TickerHealthEntryDTO, 0, len(entries)),
 	}
 	for _, e := range entries {
 		out.Tickers = append(out.Tickers, TickerHealthEntryDTO{
-			Name:     e.Name,
-			Count:    e.Count,
-			LastFire: e.LastFire,
+			Name:            e.Name,
+			Count:           e.Count,
+			LastFire:        e.LastFire,
+			Registered:      e.Registered,
+			IntervalSeconds: e.Interval.Seconds(),
+			Stale:           e.IsStale(now),
 		})
 	}
 	writeJSON(w, out)

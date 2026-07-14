@@ -79,11 +79,24 @@ func armNextEvaluation(w *World) {
 		return
 	}
 	w.reactorEval.scheduled = true
-	cadence := w.Settings.ReactorEvaluatorCadence
-	if cadence <= 0 {
-		cadence = defaultReactorEvaluatorCadence
-	}
+	cadence := effectiveReactorEvaluatorCadence(w.Settings)
+	// Re-declare the cadence contract on each re-arm (LLM-395). The re-arm is the
+	// moment a live-tuned cadence actually takes effect, so it is the moment the
+	// staleness alarm's expectation has to move with it — otherwise an operator
+	// raising this cadence would be false-alarmed by a boot-time snapshot. Updates
+	// the expected interval only; the beat still owns last-fire.
+	w.RegisterTicker("reactor", cadence)
 	time.AfterFunc(cadence, func() { fireScheduledEvaluation(w) })
+}
+
+// effectiveReactorEvaluatorCadence returns the configured evaluator cadence, or
+// the default when unset. Extracted so RegisterCoreTickers can declare the
+// boot-time contract from the same source of truth the arm chain uses.
+func effectiveReactorEvaluatorCadence(s WorldSettings) time.Duration {
+	if s.ReactorEvaluatorCadence > 0 {
+		return s.ReactorEvaluatorCadence
+	}
+	return defaultReactorEvaluatorCadence
 }
 
 // fireScheduledEvaluation is the body of the AfterFunc callback. Factored

@@ -79,6 +79,9 @@ func armNextOrderSweep(w *World) {
 	}
 	w.orderSweep.scheduled = true
 	cadence := effectiveOrderSweepCadence(w.Settings)
+	// Re-declare the live-tunable cadence on each re-arm (LLM-395) — see
+	// armNextEvaluation for why the re-arm, not boot, is the moment that matters.
+	w.RegisterTicker("order_sweep", cadence)
 	time.AfterFunc(cadence, func() { fireScheduledOrderSweep(w) })
 }
 

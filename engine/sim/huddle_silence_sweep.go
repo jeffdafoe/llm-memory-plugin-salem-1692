@@ -105,6 +105,9 @@ func armNextHuddleSilenceSweep(w *World) {
 	}
 	w.huddleSilenceSweep.scheduled = true
 	cadence := effectiveHuddleSilenceSweepCadence(w.Settings)
+	// Re-declare the live-tunable cadence on each re-arm (LLM-395) — see
+	// armNextEvaluation.
+	w.RegisterTicker("huddle_silence_sweep", cadence)
 	time.AfterFunc(cadence, func() { fireScheduledHuddleSilenceSweep(w) })
 }
 

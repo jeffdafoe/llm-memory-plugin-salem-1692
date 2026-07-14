@@ -107,6 +107,9 @@ func RegisterActionLog(ctx context.Context, w *sim.World) {
 	w.Subscribe(sim.SubscriberFunc(handleSolicitedWorkActionLog))
 	w.Subscribe(sim.SubscriberFunc(handleHiredActionLog))
 	w.Subscribe(sim.SubscriberFunc(handleLaborResolvedActionLog))
+	// Cadence contract, phase one — default now, settings-resolved interval once the
+	// goroutine can read it (LLM-395; see RegisterIdleBackstop).
+	w.RegisterTicker("action_log", defaultActionLogSweepInterval)
 	go runActionLogSweep(ctx, w)
 }
 
@@ -1111,6 +1114,8 @@ func runActionLogSweep(ctx context.Context, w *sim.World) {
 	if ctx.Err() != nil {
 		return
 	}
+	// Cadence contract, phase two (LLM-395) — see runIdleBackstopSweep.
+	w.RegisterTicker("action_log", interval)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 

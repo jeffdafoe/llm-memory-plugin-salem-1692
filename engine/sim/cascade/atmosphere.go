@@ -123,6 +123,9 @@ func RegisterAtmosphere(ctx context.Context, w *sim.World, client llm.Client) {
 		}
 	}))
 
+	// Cadence contract, phase one — default now, settings-resolved interval once the
+	// goroutine can read it (LLM-395; see RegisterIdleBackstop).
+	w.RegisterTicker("atmosphere", defaultAtmosphereRefreshInterval)
 	go runAtmosphereSweep(ctx, w, client, refresh)
 }
 
@@ -142,6 +145,8 @@ func runAtmosphereSweep(ctx context.Context, w *sim.World, client llm.Client, re
 	if ctx.Err() != nil {
 		return
 	}
+	// Cadence contract, phase two (LLM-395) — see runIdleBackstopSweep.
+	w.RegisterTicker("atmosphere", interval)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 

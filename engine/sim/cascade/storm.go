@@ -78,6 +78,9 @@ func RegisterStorm(ctx context.Context, w *sim.World) {
 	if w == nil {
 		panic("cascade: RegisterStorm requires a non-nil world")
 	}
+	// Cadence contract, declared before the goroutine starts (LLM-395): a ticker
+	// that never comes up must still be visible to the staleness alarm.
+	w.RegisterTicker("storm", stormSweepInterval)
 	go runStormSweep(ctx, w)
 }
 

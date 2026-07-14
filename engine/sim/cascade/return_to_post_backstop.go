@@ -27,6 +27,8 @@ func RegisterReturnToPostBackstop(ctx context.Context, w *sim.World) {
 	if w == nil {
 		panic("cascade: RegisterReturnToPostBackstop requires a non-nil world")
 	}
+	// Cadence contract, declared before the goroutine starts (LLM-395).
+	w.RegisterTicker("return_to_post_backstop", returnToPostBackstopSweepInterval)
 	go runReturnToPostBackstopSweep(ctx, w)
 }
 
