@@ -1951,6 +1951,33 @@ var perceptionScenarios = []perceptionScenario{
 		build: keeperStayingOpenOffshift,
 	},
 	{
+		name: "reseller_at_post_brisk_trade",
+		summary: "LLM-413 concession-gate negative arm: a reseller (Josiah Thorne, buy-sourced cheese) at his post with two " +
+			"sales inside the weekly window — trade is moving, so keeperTradeSlow is false. The golden pins the rebalanced " +
+			"'How you trade:' block: the margin floor ('never sell a thing for less than it cost you') stands, and the " +
+			"concession line is ABSENT — the licence to discount is withheld while trade moves, instead of standing on " +
+			"every turn (the one-way ratchet that helped bleed the distributor dry).",
+		build: resellerAtPostBriskTrade,
+	},
+	{
+		name: "reseller_at_post_slow_trade",
+		summary: "LLM-413 concession-gate positive arm: the same reseller, but every sale on his book is older than the " +
+			"weekly window — a dead week, keeperTradeSlow true. The golden pins the concession line rendering as a felt " +
+			"fact ('Trade has been thin this week') with the margin floor still standing beside it and restated inside it " +
+			"('but never below what a thing cost you') — the two-sided balance the old unconditional concede-on-price line " +
+			"lacked. Also pins the window cutoff: stale observations don't count as moving trade.",
+		build: resellerAtPostSlowTrade,
+	},
+	{
+		name: "producer_at_post_sub_batch_sales",
+		summary: "LLM-413 batch-quantum arm: a producer (Ezekiel Crane, recipe-backed nails, batch 10) sold 3 nails this " +
+			"week — a count that would read as moving trade for a resold ware reads SLOW against the producer's own batch, " +
+			"the same quantum the '## Your trade' scene narrates from. The golden pins the two cues agreeing ('only a few " +
+			"sold this past week' beside 'Trade has been thin this week') and the concession line rendering with the floor " +
+			"intact.",
+		build: producerAtPostSubBatchSales,
+	},
+	{
 		name: "lodger_renewal_due_in_conversation",
 		summary: "Renewal-due lodger (Ezekiel Crane, 0 coins, room at the Tavern nearly up) mid-conversation with an " +
 			"awake huddle peer — the live incident where the renewal walk-pull dragged him out of a PC exchange. Gate 1 " +
@@ -5480,6 +5507,10 @@ func TestVendorOperatingCueOnlyDuringOperatingHours(t *testing.T) {
 		"seller_huddled_with_laboring_peer": true,
 		// LLM-231: John keeps his tavern on shift, at post, employing a laboring worker.
 		"seller_employing_own_laboring_worker": true,
+		// LLM-413: the three concession-gate keepers, all on shift at their posts.
+		"reseller_at_post_brisk_trade":     true,
+		"reseller_at_post_slow_trade":      true,
+		"producer_at_post_sub_batch_sales": true,
 	}
 	for _, sc := range perceptionScenarios {
 		sc := sc
@@ -5487,6 +5518,49 @@ func TestVendorOperatingCueOnlyDuringOperatingHours(t *testing.T) {
 		want := operating[sc.name]
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: trade-conduct cue present=%v, want %v", sc.name, has, want)
+		}
+	}
+}
+
+// TestVendorConcessionLineOnlyWhenTradeSlow is the LLM-413 cross-scenario
+// invariant, two properties over the whole matrix:
+//
+//  1. The concession line ("Trade has been thin this week") renders in EXACTLY
+//     the scenarios whose keeper had a slow week by the engine's own judgment
+//     (keeperTradeSlow) — never as a standing instruction. A keeper with no
+//     sales on record (the plain LLM-123 fixtures) is genuinely slow; the one
+//     scenario with in-window movement (reseller_at_post_brisk_trade) must not
+//     carry the licence to discount.
+//  2. Wherever the trade-conduct block renders AT ALL, the margin floor line
+//     renders with it — the counterweight is unconditional, so no future gate
+//     can reintroduce a concession without a floor.
+func TestVendorConcessionLineOnlyWhenTradeSlow(t *testing.T) {
+	const (
+		blockMarker      = "How you trade:"
+		concessionMarker = "Trade has been thin this week"
+		floorMarker      = "Never sell a thing for less than it cost you"
+	)
+	slow := map[string]bool{
+		// No seller-side sales on record in these fixtures → a slow week.
+		"keeper_at_post_onshift":               true,
+		"keeper_staying_open_offshift":         true,
+		"keeper_not_pitching_makers_own_ware":  true,
+		"seller_huddled_with_laboring_peer":    true,
+		"seller_employing_own_laboring_worker": true,
+		// The dedicated LLM-413 arms: stale-window reseller, sub-batch producer.
+		"reseller_at_post_slow_trade":      true,
+		"producer_at_post_sub_batch_sales": true,
+		// reseller_at_post_brisk_trade: block renders, concession does NOT.
+	}
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		got := renderScenario(sc)
+		hasBlock := strings.Contains(got, blockMarker)
+		if has := strings.Contains(got, concessionMarker); has != slow[sc.name] {
+			t.Errorf("scenario %q: concession line present=%v, want %v", sc.name, has, slow[sc.name])
+		}
+		if hasBlock != strings.Contains(got, floorMarker) {
+			t.Errorf("scenario %q: trade-conduct block present=%v but margin floor present=%v — the floor is unconditional within the block", sc.name, hasBlock, strings.Contains(got, floorMarker))
 		}
 	}
 }
@@ -11918,6 +11992,146 @@ func keeperAtClosedPostOffshiftNight() (*sim.Snapshot, sim.ActorID, []sim.Warran
 // gate opens on a stay_open commitment too), and the routine wind-down is suppressed.
 func keeperStayingOpenOffshift() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	return operatingKeeperSnapshot(1380, true) // 23:00 — off shift but committed to stay open
+}
+
+// tradeConductKeeperSnapshot builds the LLM-413 concession-gate fixtures: a
+// keeper on shift inside his own post, alone, with the caller supplying the
+// policy/recipe/price-book shape that feeds keeperTradeSlow. Inventory sits at
+// cap so no "## Restocking" pull fires, and there is no company → no offer /
+// trade-value cues; fixed clock → byte-stable. What varies across the three
+// scenarios is exactly the concession judgment's input: what the keeper sold
+// this past week, and in what natural unit (single units for a reseller's
+// wares, the batch for a producer's).
+func tradeConductKeeperSnapshot(keeper *sim.ActorSnapshot, keeperID sim.ActorID, post sim.StructureID, postLabel string, mutate func(*sim.Snapshot)) (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const home = sim.StructureID("keeper_house")
+	start, end := 360, 1080 // 06:00–18:00
+	now := 720              // 12:00 — on shift, at the post
+	published := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	keeper.State = sim.StateIdle
+	keeper.WorkStructureID = post
+	keeper.InsideStructureID = post
+	keeper.HomeStructureID = home
+	keeper.ScheduleStartMin = &start
+	keeper.ScheduleEndMin = &end
+	keeper.BusinessownerState = &sim.BusinessownerState{}
+	keeper.Needs = map[sim.NeedKey]int{}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{keeperID: keeper},
+		Structures: map[sim.StructureID]*sim.Structure{
+			post: plainStructure(post, postLabel),
+			home: plainStructure(home, "Keeper House"),
+		},
+		RestockReorderPct: 25,
+	}
+	mutate(snap)
+	return snap, keeperID, nil
+}
+
+// resellerAtPostBriskTrade: a reseller (buy-sourced stock, no value-add — the
+// Josiah economics) whose shop moved goods this past week: two cheese sales
+// inside the window → movement is brisk against a resold ware's single-unit
+// quantum → keeperTradeSlow false. The golden pins that the "How you trade:"
+// block carries the margin floor but NO concession line — the licence to
+// discount is withheld while trade moves (LLM-413).
+func resellerAtPostBriskTrade() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		josiahID = sim.ActorID("josiah")
+		store    = sim.StructureID("general_store")
+	)
+	josiah := &sim.ActorSnapshot{
+		Kind:        sim.KindNPCShared,
+		DisplayName: "Josiah Thorne",
+		Role:        "shopkeeper",
+		Coins:       14,
+		Inventory:   map[sim.ItemKind]int{"cheese": 10},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "cheese", Source: sim.RestockSourceBuy, Max: 10},
+		}},
+	}
+	return tradeConductKeeperSnapshot(josiah, josiahID, store, "General Store", func(snap *sim.Snapshot) {
+		sales := sim.NewRingBuffer[sim.PriceObservation](8)
+		sales.Push(sim.PriceObservation{BuyerID: "cust1", Amount: 3, Qty: 1, Consumers: 1, At: snap.PublishedAt.Add(-3 * 24 * time.Hour)})
+		sales.Push(sim.PriceObservation{BuyerID: "cust2", Amount: 3, Qty: 1, Consumers: 1, At: snap.PublishedAt.Add(-1 * 24 * time.Hour)})
+		snap.ItemKinds = map[sim.ItemKind]*sim.ItemKindDef{
+			"cheese": {Name: "cheese", DisplayLabel: "cheese", DisplayLabelSingular: "wedge of cheese", DisplayLabelPlural: "wedges of cheese", Category: sim.ItemCategoryFood},
+		}
+		snap.PriceBook = map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+			{SellerID: "josiah", Item: "cheese"}: sales,
+		}
+	})
+}
+
+// resellerAtPostSlowTrade: the same reseller, but every sale on his book is
+// OLDER than the weekly window (a dead week — the ring remembers the trade,
+// the window doesn't) → keeperTradeSlow true. The golden pins the concession
+// line rendering as a felt fact about the slow week, WITH the margin floor
+// still standing beside it and restated inside it (LLM-413).
+func resellerAtPostSlowTrade() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		josiahID = sim.ActorID("josiah")
+		store    = sim.StructureID("general_store")
+	)
+	josiah := &sim.ActorSnapshot{
+		Kind:        sim.KindNPCShared,
+		DisplayName: "Josiah Thorne",
+		Role:        "shopkeeper",
+		Coins:       14,
+		Inventory:   map[sim.ItemKind]int{"cheese": 10},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "cheese", Source: sim.RestockSourceBuy, Max: 10},
+		}},
+	}
+	return tradeConductKeeperSnapshot(josiah, josiahID, store, "General Store", func(snap *sim.Snapshot) {
+		sales := sim.NewRingBuffer[sim.PriceObservation](8)
+		sales.Push(sim.PriceObservation{BuyerID: "cust1", Amount: 3, Qty: 1, Consumers: 1, At: snap.PublishedAt.Add(-10 * 24 * time.Hour)})
+		sales.Push(sim.PriceObservation{BuyerID: "cust2", Amount: 3, Qty: 1, Consumers: 1, At: snap.PublishedAt.Add(-8 * 24 * time.Hour)})
+		snap.ItemKinds = map[sim.ItemKind]*sim.ItemKindDef{
+			"cheese": {Name: "cheese", DisplayLabel: "cheese", DisplayLabelSingular: "wedge of cheese", DisplayLabelPlural: "wedges of cheese", Category: sim.ItemCategoryFood},
+		}
+		snap.PriceBook = map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+			{SellerID: "josiah", Item: "cheese"}: sales,
+		}
+	})
+}
+
+// producerAtPostSubBatchSales: a producer (recipe-backed smith) who sold 3
+// nails this past week against a batch of 10 — movement that would read brisk
+// for a resold ware reads SLOW against the producer's own batch quantum (the
+// same unit the "## Your trade" scene narrates from, so the two cues agree:
+// "only a few sold this past week" beside "Trade has been thin this week").
+// The golden pins the batch-quantum leg of keeperTradeSlow: concession line
+// present, margin floor present, forge scene consistent (LLM-413).
+func producerAtPostSubBatchSales() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		ezekielID = sim.ActorID("ezekiel")
+		forge     = sim.StructureID("blacksmith")
+	)
+	ezekiel := &sim.ActorSnapshot{
+		Kind:        sim.KindNPCShared,
+		DisplayName: "Ezekiel Crane",
+		Role:        "blacksmith",
+		Coins:       9,
+		Inventory:   map[sim.ItemKind]int{"nail": 12},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "nail", Source: sim.RestockSourceProduce, Max: 30},
+		}},
+	}
+	return tradeConductKeeperSnapshot(ezekiel, ezekielID, forge, "Blacksmith", func(snap *sim.Snapshot) {
+		sales := sim.NewRingBuffer[sim.PriceObservation](8)
+		sales.Push(sim.PriceObservation{BuyerID: "cust1", Amount: 6, Qty: 3, Consumers: 1, At: snap.PublishedAt.Add(-2 * 24 * time.Hour)})
+		snap.ItemKinds = map[sim.ItemKind]*sim.ItemKindDef{
+			"nail": {Name: "nail", DisplayLabel: "nails", DisplayLabelSingular: "nail", DisplayLabelPlural: "nails", Category: sim.ItemCategoryCraft},
+		}
+		snap.Recipes = map[sim.ItemKind]*sim.ItemRecipe{
+			"nail": {OutputItem: "nail", OutputQty: 10, RateQty: 10, RatePerHours: 2, WholesalePrice: 1, RetailPrice: 2},
+		}
+		snap.PriceBook = map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+			{SellerID: "ezekiel", Item: "nail"}: sales,
+		}
+	})
 }
 
 // brokeWorkerNoEmployerSeeksWork builds the live LLM-160 situation: a broke

@@ -295,6 +295,11 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// is on-shift OR a live stay_open commitment. The customer-facing cues keep
 	// gating on bare AtOwnBusiness (location).
 	p.AtOwnBusinessOperating = p.AtOwnBusiness && keeperOperating(snap, actorSnap)
+	// LLM-413: the concession line inside the trade-conduct block ("meet a willing
+	// buyer partway on price") renders only when trade at the post actually IS
+	// slow — an engine judgment off the keeper's weekly sell-through, not a model
+	// guess. Unconditional, it was a standing licence to discount.
+	p.VendorTradeSlow = p.AtOwnBusinessOperating && keeperTradeSlow(snap, actorID, actorSnap)
 	heardNow := currentHeardExcerpts(p.Warrants)
 	p.Relationships = buildRelationships(actorSnap, p.Surroundings.HuddleMembers, heardNow)
 	// LLM-387: gossip the subject carries about people NOT in the scene, the
