@@ -74,9 +74,11 @@ var recallSchema = json.RawMessage(`{
     "additionalProperties": false
 }`)
 
-// recallDescription is the tool description advertised to the model — verbatim
-// from v1 (engine/agent_tick.go).
-const recallDescription = "Try to remember something — search your past notes, dreams, and impressions for anything relevant. Use this when you want to recall what you know about a person, place, or event. Phrase the query in your own words."
+// recallDescription is the tool description advertised to the model. Framed as
+// the counterpart to memorize (memapi read side of memorize's write) and told it
+// won't invent unstored details, to curb models firing recall speculatively when
+// they've stored nothing relevant.
+const recallDescription = "Try to remember something — the counterpart to memorize. It searches what you've stored, plus your dreams and impressions, for anything relevant; it won't invent what you've never memorized."
 
 // DecodeRecallArgs parses the raw tool-call arguments into a RecallArgs.
 // Rejects non-object payloads, unknown fields, and trailing data — same
