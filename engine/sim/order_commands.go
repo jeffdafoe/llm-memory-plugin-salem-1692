@@ -397,7 +397,15 @@ func DeliverOrder(sellerID ActorID, orderID OrderID, at time.Time) Command {
 			if balanceDue > 0 && balanceBuyer != nil {
 				balanceBuyer.Coins -= balanceDue
 				seller.Coins += balanceDue
-				accrueStallWear(w, seller, balanceDue, at)
+				// LLM-411: the balance leg wears on its proportional share of the
+				// sale's margin over the seller's cost basis — the deposit leg took
+				// its share back at accept, so the two together tax the margin once.
+				accrueStallWear(w, seller, saleWear{
+					Lines:     []QuoteLine{{ItemKind: o.Item, Qty: o.Qty}},
+					Consumers: len(o.ConsumerIDs),
+					Amount:    o.Amount,
+					Charge:    balanceDue,
+				}, at)
 			}
 
 			// Bidirectional buyer↔seller SalientFacts. Multi-consumer

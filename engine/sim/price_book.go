@@ -1,6 +1,9 @@
 package sim
 
-import "time"
+import (
+	"math"
+	"time"
+)
 
 // price_book.go — in-memory per-(seller, item) ring buffer of recent
 // transactions, the v2 substrate for v1's price-history perception cues.
@@ -220,6 +223,85 @@ func (w *World) LookupSellerRecent(seller ActorID, item ItemKind) []PriceObserva
 		return nil
 	}
 	return buf.Snapshot()
+}
+
+// ObservationUnits is the true unit count one observation moved: Qty × Consumers
+// (a group order moves Qty per consumer), consumers floored at 1 for a malformed
+// row. 0 when the product is non-positive, so a caller can skip the entry. The one
+// definition behind every aggregate over the book — the perception restock cue, the
+// umbilical /sell-through row, and the LLM-411 cost basis — so they can't disagree
+// on what "a unit" is.
+func ObservationUnits(obs PriceObservation) int64 {
+	consumers := obs.Consumers
+	if consumers < 1 {
+		consumers = 1
+	}
+	units := int64(obs.Qty) * int64(consumers)
+	if units < 1 {
+		return 0
+	}
+	return units
+}
+
+// BuyerPurchaseTotals sums the units and coins `buyer` paid buying `item`, across
+// every seller's ring, counting only observations at or after cutoff (a zero cutoff
+// takes everything the book still holds). Price knowledge is per-buyer, so this scans
+// all (seller, item) keys for the buyer's own purchases rather than reading one key —
+// the buyer-side mirror of the seller's single-key LookupSellerRecent.
+//
+// Accumulates in int64 so the Qty×Consumers multiply and the sums can't overflow
+// before a caller narrows them; callers clamp into their own int fields.
+func BuyerPurchaseTotals(book map[PriceBookKey]*RingBuffer[PriceObservation], buyer ActorID, item ItemKind, cutoff time.Time) (units, coins int64) {
+	if book == nil || buyer == "" || item == "" {
+		return 0, 0
+	}
+	for key, buf := range book {
+		if key.Item != item || buf == nil || buf.Len() == 0 {
+			continue
+		}
+		for _, obs := range buf.Snapshot() {
+			if obs.BuyerID != buyer || obs.At.Before(cutoff) {
+				continue
+			}
+			units += ObservationUnits(obs)
+			coins += int64(obs.Amount)
+		}
+	}
+	return units, coins
+}
+
+// BuyerCostBasis returns what `buyer` actually paid, in coins, for `units` of `item`
+// — their average unit cost over their whole buy history in the book, times units,
+// rounded to the nearest coin. This is the LLM-411 cost basis: the coin a reseller
+// sank into the goods before selling them on.
+//
+// 0 when the buyer has never bought the item. That zero is load-bearing, not a
+// failure case: a self-produced, foraged, or service good has no purchase behind it,
+// so it has no cost basis and its sale is all margin — which is exactly why taxing
+// margin leaves producers untouched and only relieves genuine resale legs.
+//
+// No time window (unlike the perception cue's trailing-week demand read): a cost
+// basis wants to be STABLE, and what the seller paid ten days ago is still what the
+// goods on their shelf cost them. The ring's own bounds (the last
+// PriceBookRingCapacity observations per key, seeded no further back than
+// PriceBookSeedWindow) keep the history recent enough on their own.
+func BuyerCostBasis(book map[PriceBookKey]*RingBuffer[PriceObservation], buyer ActorID, item ItemKind, units int64) int64 {
+	if units < 1 {
+		return 0
+	}
+	boughtUnits, spend := BuyerPurchaseTotals(book, buyer, item, time.Time{})
+	if boughtUnits < 1 || spend < 1 {
+		return 0
+	}
+	// avg unit cost × units, rounded half-up, in one integer expression so the
+	// per-unit division rounds once at the end rather than per unit. Guard the
+	// units×spend multiply against an int64 wrap before it happens — saleCostBasis
+	// clamps the total to MaxInt32 regardless, so a saturated high return here is fine
+	// and matches the accrual path's saturate-don't-wrap posture.
+	if units > (math.MaxInt64-boughtUnits/2)/spend {
+		return math.MaxInt32
+	}
+	return (units*spend + boughtUnits/2) / boughtUnits
 }
 
 // ClonePriceBook deep-copies the entire price book map for snapshot

@@ -237,21 +237,112 @@ func maybeStampHiredRepairWarrant(w *World, worker, employer *Actor, at time.Tim
 	}, at)
 }
 
+// saleWear describes one coin leg of a completed sale to the wear accrual: the
+// goods that moved, how many recipients shared them, the full agreed price, and the
+// coin actually collected on THIS leg. Charge and Amount differ only for an LLM-357
+// partial-payment commission, which collects the deposit at accept and the balance at
+// deliver_order — two legs, one sale, one cost basis.
+//
+// Lines is empty for a sale with no goods behind it (a service — nights_stay — or a
+// coin-only pay): no goods, no cost basis, so the leg wears on its full charge.
+type saleWear struct {
+	Lines     []QuoteLine
+	Consumers int
+	Amount    int
+	Charge    int
+}
+
+// wearableCoin returns the share of this leg's Charge that is MARGIN over what the
+// seller actually paid for the goods — the coin the wear meter taxes (LLM-411).
+//
+// Wear used to accrue on the full sale amount, which is a flat tax on TURNOVER. That
+// was calibrated (LLM-247) when the busiest business turned over ~50 coins/week, and
+// it broke when LLM-223 made the distributor a deliberately high-turnover, low-margin
+// business: his upkeep came to ~75% of his gross margin, he ran down to 3 coins, and
+// the farms → distributor → village pipe stalled with his shelves empty. Taxing the
+// margin instead leaves the wear-per-coin knob meaning "wear per coin EARNED."
+//
+// Producers are untouched by construction: a good the seller made or foraged has no
+// buy history, so its cost basis is 0 (BuyerCostBasis) and the whole amount is margin
+// — Ezekiel's nails, Hannah's porridge, and the farms' produce wear exactly as before.
+// Only a genuine resale leg, where the seller can be shown to have paid for the goods,
+// gets relief. So no village-wide recalibration of the thresholds is needed.
+//
+// A sale at or below cost wears nothing (a distributor eating a loss doesn't also grind
+// his shop down), and a partial-payment commission's two legs each wear their
+// proportional share of the sale's margin, so deposit + balance together tax the margin
+// once. The split is FLOORED, so the two legs together never wear MORE than the sale's
+// margin (they may under-tax by a single coin across the split — the safe direction:
+// half-up on both legs could total margin+1 and cross the repair threshold a coin early).
+func wearableCoin(w *World, seller *Actor, sale saleWear) int {
+	basis := saleCostBasis(w, seller, sale)
+	if basis <= 0 {
+		return sale.Charge
+	}
+	margin := sale.Amount - basis
+	if margin <= 0 {
+		return 0
+	}
+	// Full prepay — the one leg carries the whole margin. (Charge > Amount can't
+	// happen: a deposit is < Amount by definition. Folded in here defensively so an
+	// over-charge can never scale the margin UP.)
+	if sale.Charge >= sale.Amount {
+		return margin
+	}
+	// Partial-payment (LLM-357): this leg carries its proportional share of the margin,
+	// FLOORED (see the doc comment). Charge < Amount here, so the result is always
+	// <= margin. Guard the multiply against an int64 wrap before it happens — coin
+	// amounts are tiny in practice, but the accrual path holds a saturate-don't-wrap
+	// posture (TestAccrueStallWear_Saturates); saturate at the margin, the most a single
+	// leg can carry. margin >= 1 and Amount > Charge > 0 here, so both divides are safe.
+	if int64(sale.Charge) > math.MaxInt64/int64(margin) {
+		return margin
+	}
+	return int(int64(sale.Charge) * int64(margin) / int64(sale.Amount))
+}
+
+// saleCostBasis totals what the seller actually paid for the goods this sale moved:
+// per line, their average unit cost for that item from their own buy history in the
+// price book, times the line's true unit count (Qty × consumers). 0 when nothing in
+// the sale has a purchase behind it — the producer / forager / service case.
+func saleCostBasis(w *World, seller *Actor, sale saleWear) int {
+	consumers := sale.Consumers
+	if consumers < 1 {
+		consumers = 1
+	}
+	var total int64
+	for _, line := range sale.Lines {
+		units := int64(line.Qty) * int64(consumers)
+		if line.ItemKind == "" || units < 1 {
+			continue
+		}
+		total += BuyerCostBasis(w.PriceBook, seller.ID, line.ItemKind, units)
+	}
+	if total > int64(math.MaxInt32) {
+		return math.MaxInt32
+	}
+	return int(total)
+}
+
 // accrueStallWear adds usage-weighted wear to the seller's owned stall on a
 // completed sale and, on the upward crossing of the repair threshold, wakes the
 // owner to mend it. Called from commitPayTransfer — the single coin-transfer
 // chokepoint — so every accepted sale (slow accept, fast quote-take, bundle,
-// eat-here) accrues. A seller who owns no market stall, a zero amount, or
-// StallWearPerCoin==0 is a no-op (idle stalls never wear; the off-switch
-// disables the feature entirely).
+// eat-here) accrues, plus the deliver_order leg that settles a partial-payment
+// balance. A seller who owns no market stall, a zero charge, or StallWearPerCoin==0
+// is a no-op (idle stalls never wear; the off-switch disables the feature entirely).
+//
+// Wear accrues on the leg's MARGIN over the seller's cost basis, not on the coin it
+// takes in (LLM-411 — see wearableCoin). A resale at cost wears nothing; a producer's
+// sale, having no cost basis, still wears on its full amount as it always did.
 //
 // The warrant is edge-triggered: stamped only on the before<threshold &&
 // after>=threshold transition, so a stall already past the threshold doesn't
 // re-stamp every sale. Repair resets Wear to 0, which re-arms the edge. The
 // standing arrival cue (perception) keeps reminding the owner after the one-shot
 // warrant is consumed, so an ignored warrant doesn't go silent.
-func accrueStallWear(w *World, seller *Actor, amount int, at time.Time) {
-	if w == nil || seller == nil || amount <= 0 || w.Settings.StallWearPerCoin <= 0 {
+func accrueStallWear(w *World, seller *Actor, sale saleWear, at time.Time) {
+	if w == nil || seller == nil || sale.Charge <= 0 || w.Settings.StallWearPerCoin <= 0 {
 		return
 	}
 	stall := OwnedWearableStall(w.VillageObjects, seller.ID)
@@ -264,6 +355,10 @@ func accrueStallWear(w *World, seller *Actor, amount int, at time.Time) {
 	// Repair zeroes Wear regardless; this just keeps the number stable once degraded.
 	if StallDegraded(stall, w.Settings.StallWearDegradeThreshold) {
 		return
+	}
+	amount := wearableCoin(w, seller, sale)
+	if amount <= 0 {
+		return // the leg sold at or below what the goods cost the seller — no margin to tax
 	}
 	before := stall.Wear
 	// int64 saturating add: a large sale amount × StallWearPerCoin (or accrual
