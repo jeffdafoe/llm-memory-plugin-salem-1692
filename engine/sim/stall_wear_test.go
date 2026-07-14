@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/cascade"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/repo/mem"
 )
 
@@ -260,4 +261,63 @@ func TestDegradedStall_AllowsSlowAccept(t *testing.T) {
 	if stew != 4 {
 		t.Errorf("bob's stew = %d, want 4 (1 transferred on the now-allowed sale)", stew)
 	}
+}
+
+// TestAccrueStallWear_NetMarginEndToEnd (LLM-411) drives the distributor's whole leg
+// through the REAL pipeline — buy from a producer (the accepted offer records a price
+// observation via the cascade subscriber), then sell the goods on — and asserts his
+// business wears on the MARGIN, not the turnover. The internal accrual tests hit
+// accrueStallWear directly and so can't see the seam this covers: commitPayTransfer
+// resolving the sale's goods, unit count, and full price out of the ledger entry. The
+// wear number is the whole point of the ticket, and it is only correct if that
+// resolution is correct.
+func TestAccrueStallWear_NetMarginEndToEnd(t *testing.T) {
+	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
+		{id: "carol", displayName: "Carol", kind: sim.KindNPCShared, huddleID: "h1", inventory: map[sim.ItemKind]int{"stew": 20}},
+		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1", coins: 50, inventory: map[sim.ItemKind]int{}},
+		{id: "alice", displayName: "Alice", kind: sim.KindNPCShared, huddleID: "h1", coins: 50},
+	})
+	defer stop()
+	at := time.Now().UTC()
+
+	// Bob keeps a wearable business, and the price book records what he pays for stock.
+	mustSend(t, w, func(world *sim.World) {
+		world.Settings.StallWearPerCoin = 1
+		world.Settings.StallWearRepairThreshold = 60
+		world.Settings.StallWearDegradeThreshold = 90
+		world.VillageObjects["bob_stall"] = &sim.VillageObject{
+			ID: "bob_stall", OwnerActorID: "bob", Tags: []string{sim.TagBusiness},
+		}
+		cascade.RegisterPriceBook(world)
+	})
+
+	// Bob restocks: 6 stew from Carol for 6 coins (1 coin/unit). Carol produces her own
+	// stew and owns no business, so nothing wears on her side.
+	res, err := w.Send(sim.PayWithItem("bob", "Carol", "stew", 6, 6, false, nil, nil, 0, 0, "", at))
+	if err != nil {
+		t.Fatalf("Bob's restock offer: %v", err)
+	}
+	if _, err := w.Send(sim.AcceptPay("carol", res.(sim.PayWithItemResult).LedgerID, at)); err != nil {
+		t.Fatalf("Carol accepts Bob's restock: %v", err)
+	}
+	mustSend(t, w, func(world *sim.World) {
+		if wear := world.VillageObjects["bob_stall"].Wear; wear != 0 {
+			t.Fatalf("Bob's business wore %d on a purchase — only SALES wear a business", wear)
+		}
+	})
+
+	// Bob sells 3 of them on to Alice for 6 coins. Cost basis 3 (3 units × 1 coin), so
+	// the margin — and the wear — is 3. Under the old gross accrual this was 6.
+	sale, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 3, 6, false, nil, nil, 0, 0, "", at))
+	if err != nil {
+		t.Fatalf("Alice's offer: %v", err)
+	}
+	if _, err := w.Send(sim.AcceptPay("bob", sale.(sim.PayWithItemResult).LedgerID, at)); err != nil {
+		t.Fatalf("Bob accepts Alice's offer: %v", err)
+	}
+	mustSend(t, w, func(world *sim.World) {
+		if wear := world.VillageObjects["bob_stall"].Wear; wear != 3 {
+			t.Errorf("Wear = %d, want 3 — the resale earned 3 coins over the 3 it cost him; wear taxes the margin, not the 6-coin turnover (LLM-411)", wear)
+		}
+	})
 }

@@ -126,12 +126,8 @@ func umbilicalSellThroughFromSnapshot(snap *sim.Snapshot, sellerFilter, itemFilt
 				continue
 			}
 			// Units = Qty×Consumers (consumers floored at 1) — the bundle's true unit
-			// count, mirroring perception.observationUnits / the price-book doc.
-			consumers := obs.Consumers
-			if consumers < 1 {
-				consumers = 1
-			}
-			units := int64(obs.Qty) * int64(consumers)
+			// count, from the shared sim definition the restock cue reads too.
+			units := sim.ObservationUnits(obs)
 			if units < 1 {
 				continue
 			}
@@ -175,20 +171,11 @@ func umbilicalSellThroughFromSnapshot(snap *sim.Snapshot, sellerFilter, itemFilt
 // buyerWindowSpend totals the coins `buyer` paid buying `item` across every seller's
 // ring within the window (observations no older than cutoff). The buyer-side cost
 // companion to a row's seller-side sales — price knowledge is per-buyer, so this
-// scans all (seller, item) rings for the buyer's own purchases.
+// scans all (seller, item) rings for the buyer's own purchases (sim.BuyerPurchaseTotals,
+// the shared aggregate the restock cue and the LLM-411 wear cost basis also read).
 func buyerWindowSpend(book map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation], buyer sim.ActorID, item sim.ItemKind, cutoff time.Time) int {
-	var total int64
-	for key, buf := range book {
-		if key.Item != item || buf == nil || buf.Len() == 0 {
-			continue
-		}
-		for _, obs := range buf.Snapshot() {
-			if obs.BuyerID == buyer && !obs.At.Before(cutoff) {
-				total += int64(obs.Amount)
-			}
-		}
-	}
-	return clampInt32(total)
+	_, coins := sim.BuyerPurchaseTotals(book, buyer, item, cutoff)
+	return clampInt32(coins)
 }
 
 // clampInt32 narrows an int64 accumulator into the int DTO fields, saturating at the

@@ -584,16 +584,10 @@ func buyerLatestPriceObs(snap *sim.Snapshot, buyerID sim.ActorID, item sim.ItemK
 // observationUnits is the total units in an observation's bundle (qty × consumers,
 // with the consumer count floored at 1). 0 means the bundle carried no units, so
 // any rate derived from it is meaningless — callers treat 0 as "no usable rate".
+// The definition lives in sim (sim.ObservationUnits) so the cue, the umbilical
+// sell-through row, and the wear cost basis all count units the same way.
 func observationUnits(obs sim.PriceObservation) int64 {
-	consumers := obs.Consumers
-	if consumers < 1 {
-		consumers = 1
-	}
-	units := int64(obs.Qty) * int64(consumers)
-	if units < 1 {
-		return 0
-	}
-	return units
+	return sim.ObservationUnits(obs)
 }
 
 // buyerLastPaidAffordableQty returns how many units `coins` covers at the buyer's
@@ -673,20 +667,7 @@ func buyerRecentPurchases(snap *sim.Snapshot, buyerID sim.ActorID, item sim.Item
 	if snap == nil || snap.PriceBook == nil {
 		return 0, 0
 	}
-	cutoff := snap.PublishedAt.Add(-window)
-	var u, c int64
-	for key, buf := range snap.PriceBook {
-		if key.Item != item || buf == nil || buf.Len() == 0 {
-			continue
-		}
-		for _, obs := range buf.Snapshot() {
-			if obs.BuyerID != buyerID || obs.At.Before(cutoff) {
-				continue
-			}
-			u += observationUnits(obs)
-			c += int64(obs.Amount)
-		}
-	}
+	u, c := sim.BuyerPurchaseTotals(snap.PriceBook, buyerID, item, snap.PublishedAt.Add(-window))
 	if u > int64(math.MaxInt32) {
 		u = int64(math.MaxInt32)
 	}

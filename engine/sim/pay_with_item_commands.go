@@ -2636,6 +2636,25 @@ func depositChargeForEntry(w *World, seller *Actor, entry *PayLedgerEntry) int {
 	return entry.Amount
 }
 
+// entrySaleLines resolves the goods an accepted offer moves, as the {item, qty} lines
+// the wear accrual prices its cost basis over (LLM-411). A bundle quote-take carries
+// its goods in Lines and leaves the scalar ItemKind empty (LLM-101); every other offer
+// — slow accept, fast take, counter, barter, lodging — carries the single scalar line.
+// Nil when the offer moves no goods at all, which the accrual reads as "no cost basis"
+// and wears on the full charge.
+func entrySaleLines(entry *PayLedgerEntry) []QuoteLine {
+	if entry == nil {
+		return nil
+	}
+	if len(entry.Lines) > 0 {
+		return entry.Lines
+	}
+	if entry.ItemKind == "" || entry.Qty < 1 {
+		return nil
+	}
+	return []QuoteLine{{ItemKind: entry.ItemKind, Qty: entry.Qty}}
+}
+
 // maxDwellMinutes returns the longest remaining dwell duration in minutes across
 // the stamped item-dwell snapshots (0 when none carry a countdown). An eat-here
 // meal or drink keeps easing a need for this long after the first bite, but the
@@ -2797,8 +2816,15 @@ func commitPayTransfer(
 	buyer.Coins -= charge
 	seller.Coins += charge
 	// LLM-118: a market stall wears in proportion to the coin its owner takes
-	// in here; crossing the repair threshold wakes them to mend it.
-	accrueStallWear(w, seller, charge, at)
+	// in here; crossing the repair threshold wakes them to mend it. LLM-411: the
+	// goods ride along so the wear taxes the sale's MARGIN over what the seller
+	// paid for them, not its gross — a reseller's leg wears only on what it earns.
+	accrueStallWear(w, seller, saleWear{
+		Lines:     entrySaleLines(entry),
+		Consumers: len(entry.ConsumerIDs),
+		Amount:    entry.Amount,
+		Charge:    charge,
+	}, at)
 	for _, m := range moves {
 		if m.buyerPostQty == 0 {
 			delete(buyer.Inventory, m.kind) // delete-on-zero invariant

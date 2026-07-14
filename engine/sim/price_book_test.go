@@ -262,3 +262,54 @@ func TestRepublish_EmptyPriceBookProducesNilSnapshotField(t *testing.T) {
 		t.Errorf("empty PriceBook should snapshot as nil, got %v", snap.PriceBook)
 	}
 }
+
+// TestBuyerCostBasis is the LLM-411 cost-basis lookup: what a seller actually paid for
+// the goods on their shelf, averaged over their own buy history across every seller
+// they restocked from. The zero cases are load-bearing — no purchase history means no
+// cost basis, which is what leaves producers' wear untouched by the net-margin accrual.
+func TestBuyerCostBasis(t *testing.T) {
+	at := time.Unix(1_700_000_000, 0).UTC()
+	book := map[PriceBookKey]*RingBuffer[PriceObservation]{}
+	push := func(seller ActorID, item ItemKind, obs PriceObservation) {
+		key := PriceBookKey{SellerID: seller, Item: item}
+		if book[key] == nil {
+			book[key] = NewRingBuffer[PriceObservation](PriceBookRingCapacity)
+		}
+		book[key].Push(obs)
+	}
+	// Josiah's milk buys, from two different farms: 6 units for 6 coins, then 4 for 6.
+	// Blended: 10 units, 12 coins → 1.2 coins/unit.
+	push("elizabeth", "milk", PriceObservation{BuyerID: "josiah", Amount: 6, Qty: 6, Consumers: 1, At: at})
+	push("moses", "milk", PriceObservation{BuyerID: "josiah", Amount: 6, Qty: 2, Consumers: 2, At: at})
+	// Noise the lookup must exclude: another buyer's milk, Josiah's cheese, and Josiah's
+	// own milk SALES (he is the seller on those, so they are not purchases).
+	push("elizabeth", "milk", PriceObservation{BuyerID: "hannah", Amount: 40, Qty: 4, Consumers: 1, At: at})
+	push("moses", "cheese", PriceObservation{BuyerID: "josiah", Amount: 40, Qty: 4, Consumers: 1, At: at})
+	push("josiah", "milk", PriceObservation{BuyerID: "villager", Amount: 30, Qty: 3, Consumers: 1, At: at})
+
+	cases := []struct {
+		name  string
+		buyer ActorID
+		item  ItemKind
+		units int64
+		want  int64
+	}{
+		{"blended average over both suppliers", "josiah", "milk", 5, 6},  // 5 × 1.2
+		{"rounds half-up on the whole quantity", "josiah", "milk", 3, 4}, // 3 × 1.2 = 3.6
+		{"never bought it — no cost basis", "josiah", "porridge", 5, 0},  // producer/forager case
+		{"never bought anything", "ezekiel", "milk", 5, 0},
+		{"non-positive units", "josiah", "milk", 0, 0},
+	}
+	for _, c := range cases {
+		if got := BuyerCostBasis(book, c.buyer, c.item, c.units); got != c.want {
+			t.Errorf("%s: BuyerCostBasis(%s, %s, %d) = %d, want %d", c.name, c.buyer, c.item, c.units, got, c.want)
+		}
+	}
+
+	if units, coins := BuyerPurchaseTotals(book, "josiah", "milk", at.Add(time.Hour)); units != 0 || coins != 0 {
+		t.Errorf("BuyerPurchaseTotals past the cutoff = (%d, %d), want (0, 0)", units, coins)
+	}
+	if got := BuyerCostBasis(nil, "josiah", "milk", 5); got != 0 {
+		t.Errorf("BuyerCostBasis over a nil book = %d, want 0", got)
+	}
+}
