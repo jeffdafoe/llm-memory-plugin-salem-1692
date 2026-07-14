@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -196,39 +197,39 @@ func runOneAtmosphereSweep(ctx context.Context, w *sim.World, client llm.Client)
 	}
 
 	prompt := buildAtmospherePrompt(actx)
-	req := llm.Request{
-		Messages: []llm.Message{{Role: llm.RoleUser, Content: prompt}},
-		// No tools — atmosphere is prose-only. The llm.Client contract
-		// allows empty Tools (rare but legal).
-		Tools: nil,
-		// Routes through the cutover-layer HTTP adapter to salem-generic
-		// (blank instructions, no persona, no state). FakeClient ignores
-		// Model; tests assert it's passed through.
-		Model: atmosphereLLMModel,
-		// Fresh scene per refresh: memory-api's chat_messages history
-		// loader filters by scene_id when set, so each refresh is its
-		// own isolated conversation — without this, salem-generic would
-		// accumulate every prior atmosphere prompt as history.
-		SceneID: llm.NewSceneID(),
+	text, ok := completeAtmosphere(ctx, client, prompt)
+	if !ok {
+		return
 	}
-	reply, err := client.Complete(ctx, req)
-	if err != nil {
-		if ctx.Err() == nil {
-			log.Printf("cascade/atmosphere: LLM call failed: %v", err)
+
+	// Weather-coherence clamp (LLM-399). The prompt states the sky as fact, so
+	// this should rarely fire; when it does, correct the model once, and if it
+	// insists on its own weather, publish the sky itself rather than prose that
+	// contradicts it. The pair must never disagree in a single snapshot — both
+	// reach a reader (the client ticker, /umbilical/state) and the atmosphere
+	// feeds the noticeboard authoring prompt as PriorAtmosphere, so an
+	// incoherent mood line propagates into engine-authored content.
+	if phrase := weatherContradiction(actx.Weather, text); phrase != "" {
+		log.Printf("cascade/atmosphere: reply says %q under weather=%q; correcting once", phrase, actx.Weather)
+		retry, retryOK := completeAtmosphere(ctx, client, prompt+"\n\n"+atmosphereCorrection(actx.Weather))
+		if !retryOK {
+			return
 		}
-		return
-	}
-	// Cancellation can land between client.Complete's start and its return
-	// (the response arrived just before ctx-cancel reached the client).
-	// Stop here rather than proceed to log empty-reply or attempt apply
-	// during shutdown. (code_review R0 finding #1.)
-	if ctx.Err() != nil {
-		return
-	}
-	text := strings.TrimSpace(reply.Content)
-	if text == "" {
-		log.Printf("cascade/atmosphere: empty reply (tool_calls=%d)", len(reply.ToolCalls))
-		return
+		if phrase := weatherContradiction(actx.Weather, retry); phrase != "" {
+			// Twice told, twice wrong. Fall back to the deterministic weather
+			// scene — thin as a mood line, but true, and it breaks the loop that
+			// kept the contradiction alive: the next sweep gets THIS as its
+			// prior instead of being re-anchored on the rain.
+			fallback := sim.WeatherScene(actx.Weather)
+			if fallback == "" {
+				log.Printf("cascade/atmosphere: reply says %q under weather=%q on retry, and no scene to fall back to; skipping write", phrase, actx.Weather)
+				return
+			}
+			log.Printf("cascade/atmosphere: reply says %q under weather=%q on retry; installing the deterministic scene instead", phrase, actx.Weather)
+			text = fallback
+		} else {
+			text = retry
+		}
 	}
 
 	applyAt := time.Now().UTC()
@@ -251,6 +252,55 @@ func runOneAtmosphereSweep(ctx context.Context, w *sim.World, client llm.Client)
 	} else {
 		log.Printf("cascade/atmosphere: dedup — LLM returned current atmosphere; skipping write")
 	}
+}
+
+// completeAtmosphere issues one salem-generic round-trip and returns the
+// trimmed prose. ok=false means "this sweep is over" — the call failed, the
+// reply was empty, or ctx was cancelled — and the caller returns without
+// touching world state; the next sweep retries (the ticker cadence is the retry
+// interval, no backoff at this layer).
+//
+// Extracted (LLM-399) so the first attempt and the weather-correction retry are
+// literally the same round-trip, rather than two copies that can drift on
+// Model, SceneID, or the empty-reply guard.
+func completeAtmosphere(ctx context.Context, client llm.Client, prompt string) (string, bool) {
+	req := llm.Request{
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: prompt}},
+		// No tools — atmosphere is prose-only. The llm.Client contract
+		// allows empty Tools (rare but legal).
+		Tools: nil,
+		// Routes through the cutover-layer HTTP adapter to salem-generic
+		// (blank instructions, no persona, no state). FakeClient ignores
+		// Model; tests assert it's passed through.
+		Model: atmosphereLLMModel,
+		// Fresh scene per call: memory-api's chat_messages history loader
+		// filters by scene_id when set, so each call is its own isolated
+		// conversation — without this, salem-generic would accumulate every
+		// prior atmosphere prompt as history. The correction retry gets its own
+		// scene too: it re-sends the full prompt plus the correction, so it
+		// needs no memory of the attempt it is correcting.
+		SceneID: llm.NewSceneID(),
+	}
+	reply, err := client.Complete(ctx, req)
+	if err != nil {
+		if ctx.Err() == nil {
+			log.Printf("cascade/atmosphere: LLM call failed: %v", err)
+		}
+		return "", false
+	}
+	// Cancellation can land between client.Complete's start and its return
+	// (the response arrived just before ctx-cancel reached the client).
+	// Stop here rather than proceed to log empty-reply or attempt apply
+	// during shutdown. (code_review R0 finding #1.)
+	if ctx.Err() != nil {
+		return "", false
+	}
+	text := strings.TrimSpace(reply.Content)
+	if text == "" {
+		log.Printf("cascade/atmosphere: empty reply (tool_calls=%d)", len(reply.ToolCalls))
+		return "", false
+	}
+	return text, true
 }
 
 // readAtmosphereRefreshInterval reads WorldSettings.AtmosphereRefreshInterval
@@ -299,17 +349,29 @@ func buildAtmospherePrompt(c sim.AtmosphereContext) string {
 	b.WriteString("You author the village's current atmosphere — weather, mood, ambient texture. There are no tools available for this turn; respond with prose only.\n\n")
 
 	fmt.Fprintf(&b, "It is %s.", c.Phase)
-	// "clear" is the calm/default weather (LLM-117) — render it as no weather
-	// line, identical to the empty (pre-weather-cascade) case, so the clear-
-	// state atmosphere prompt is byte-for-byte unchanged. A storm (or any
-	// future non-clear state) surfaces naturally in the mood prose.
-	if weather := strings.TrimSpace(c.Weather); weather != "" && weather != sim.WeatherClear {
-		fmt.Fprintf(&b, " The weather: %s.", weather)
+	// The sky, ALWAYS — clear included (LLM-399). LLM-117 deliberately rendered
+	// clear as NO weather line (byte-identical to the pre-weather-cascade
+	// prompt), which left the model with zero information about the sky on the
+	// common state while still handing it its own rain prose as the prior. Told
+	// nothing and shown rain, it kept the rain: a cleared storm went on falling
+	// in the mood line for hours ("The rain YET falleth…" — a continuation
+	// clause, not a fresh scene). The calm sky has to be stated to be believed.
+	if scene := sim.WeatherScene(c.Weather); scene != "" {
+		b.WriteString(" ")
+		b.WriteString(scene)
 	}
 	b.WriteString("\n\n")
 
 	if prior := strings.TrimSpace(c.PriorAtmosphere); prior != "" {
-		b.WriteString("The previous atmosphere you wrote:\n")
+		// Naming the prior as STALE when the sky has turned is the other half of
+		// the fix: without it the model reads its own last writing as a
+		// description of the scene in front of it and continues the weather it
+		// finds there.
+		if c.WeatherChangedSinceAtmosphere {
+			b.WriteString("The sky has turned since you last wrote. What follows is the OLD sky — it is not the weather over the village now:\n")
+		} else {
+			b.WriteString("The previous atmosphere you wrote:\n")
+		}
 		b.WriteString(prior)
 		b.WriteString("\n\n")
 	} else {
@@ -364,8 +426,104 @@ func buildAtmospherePrompt(c sim.AtmosphereContext) string {
 		}
 	}
 
-	b.WriteString("Write 1-2 brief sentences capturing the village's current atmosphere. Plain prose, biblical in cadence. No preamble, no sign-off — just the prose.")
+	b.WriteString("Write 1-2 brief sentences capturing the village's current atmosphere. Plain prose, biblical in cadence. No preamble, no sign-off — just the prose. The sky described above is the truth of it: write no weather that contradicts it.")
 	return b.String()
+}
+
+// atmosphereWetPattern matches prose claiming a wet sky; atmosphereDryPattern,
+// prose claiming a fair one. The guard behind weatherContradiction (LLM-399).
+//
+// Word-prefix matching (`\brain\w*`) rather than exact words, because the prose
+// is biblical in cadence and inflects freely — "raineth", "falleth", "stormy".
+// The leading \b is what keeps "restraineth" from reading as rain. "hail" is
+// deliberately ABSENT from the wet list: in this register it is overwhelmingly
+// a greeting ("Hail, brethren"), not weather.
+//
+// The dry list is phrases, not bare words: "clear" and "sun" appear constantly
+// in innocent prose ("a clear voice", "the sun is hid behind the cloud" — which
+// is a storm-compatible line), so only unambiguous fair-sky claims count.
+var (
+	atmosphereWetPattern = regexp.MustCompile(`(?i)\b(rain|storm|downpour|drizzle|thunder|lightning|tempest|deluge|overcast|cloudburst|squall|sleet|shower)\w*`)
+	atmosphereDryPattern = regexp.MustCompile(`(?i)(cloudless|unclouded|sunlit|sunshine|sunny|clear sk(y|ies)|clear heaven|fair weather|no rain)`)
+
+	// Mentioning rain is not claiming rain. "No rain falls", "the rain hath
+	// passed and the sky opens" — these are the RIGHT things to write on the
+	// clear side of a storm, and a bare keyword match rejects every one of them.
+	// A guard that fires on those would replace the best post-storm prose we
+	// produce with a flat deterministic line, every time a storm cleared. So a
+	// wet word only contradicts a clear sky when it is ASSERTED: not negated
+	// before, not called off after.
+	//
+	// Both patterns are searched only within the wet word's own clause (the
+	// caller cuts at sentence punctuation), and both are deliberately GENEROUS —
+	// they bias the guard toward letting a mention through. That bias is the
+	// right one: a missed contradiction is one imperfect mood line until the next
+	// sweep, while a false alarm is good prose thrown away and replaced with the
+	// fallback. The prompt is the fix; this is only the net beneath it.
+	atmosphereWetNegated   = regexp.MustCompile(`(?i)\b(no|not|nor|never|without|nary|after|since|once)\b`)
+	atmosphereWetCeased    = regexp.MustCompile(`(?i)\b(pass\w*|ceas\w*|abat\w*|spent|gone|fled|lift\w*|clear\w*|stopp\w*|subsid\w*|withdraw\w*|broke\w*|end\w*|no more)\b`)
+	atmosphereClauseBreaks = ".;:!?"
+)
+
+// weatherContradiction reports the phrase by which `text` describes a sky the
+// village is not having, or "" when the prose and the weather agree.
+//
+// This is a clamp, and it is meant to be the second line, not the first — the
+// prompt stating the sky as fact (buildAtmospherePrompt) is what should make
+// contradictions rare. The clamp exists because the definition of done is that
+// weather and atmosphere "cannot report different conditions from the same
+// snapshot", and a prompt can only make that unlikely, not impossible: prose is
+// generated, and a weak model handed a rain-soaked prior will sometimes reach
+// for the rain anyway.
+//
+// A weather token with no scene (a future `fog` before its prose is written) is
+// unjudgeable — no vocabulary to check against — so it never contradicts.
+func weatherContradiction(weather, text string) string {
+	switch strings.TrimSpace(weather) {
+	case sim.WeatherStorm:
+		return atmosphereDryPattern.FindString(text)
+	case sim.WeatherClear, "":
+		for _, m := range atmosphereWetPattern.FindAllStringIndex(text, -1) {
+			if wetMentionAssertsRain(text, m[0], m[1]) {
+				return text[m[0]:m[1]]
+			}
+		}
+		return ""
+	default:
+		return ""
+	}
+}
+
+// wetMentionAssertsRain reports whether the wet word at text[start:end] claims
+// weather that is falling NOW, rather than weather being denied ("no rain
+// falls") or called off ("the rain hath passed"). Scoped to the word's own
+// clause on each side, so a wet word in one sentence isn't excused by a negation
+// in another.
+func wetMentionAssertsRain(text string, start, end int) bool {
+	before := text[:start]
+	if i := strings.LastIndexAny(before, atmosphereClauseBreaks); i >= 0 {
+		before = before[i+1:]
+	}
+	if atmosphereWetNegated.MatchString(before) {
+		return false
+	}
+	after := text[end:]
+	if i := strings.IndexAny(after, atmosphereClauseBreaks); i >= 0 {
+		after = after[:i]
+	}
+	return !atmosphereWetCeased.MatchString(after)
+}
+
+// atmosphereCorrection is appended to the prompt for the single retry after a
+// reply contradicted the sky. Restates the weather as a direct instruction
+// rather than as scene-setting — the scene evidently didn't land, so the retry
+// stops being subtle about it.
+func atmosphereCorrection(weather string) string {
+	scene := sim.WeatherScene(weather)
+	if scene == "" {
+		return ""
+	}
+	return "Your last attempt described weather the village is not having. " + scene + " Write the mood of the village under THAT sky, and name no other weather."
 }
 
 // atmosphereDigestVerbs maps each ActionType to the past-tense verb

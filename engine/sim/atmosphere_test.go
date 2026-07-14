@@ -38,6 +38,49 @@ func runAtmosphereCmd(t *testing.T, w *World, cmd Command) any {
 	return v
 }
 
+// WeatherChangedSinceAtmosphere is the fact that lets the prompt name the prior
+// as the OLD sky (LLM-399). It is derived — LastWeatherChangeAt vs
+// LastAtmosphereRefreshAt — so no new persisted state was added for it.
+func TestFetchAtmosphereContext_WeatherChangedSinceAtmosphere(t *testing.T) {
+	early := time.Date(2026, 5, 17, 18, 0, 0, 0, time.UTC)
+	late := time.Date(2026, 5, 17, 20, 0, 0, 0, time.UTC)
+	at := time.Date(2026, 5, 17, 21, 0, 0, 0, time.UTC)
+
+	for _, tc := range []struct {
+		name           string
+		lastAtmosphere time.Time
+		lastWeather    time.Time
+		want           bool
+	}{
+		// The storm cleared after the prose was written — the prose describes a
+		// sky that is gone.
+		{"weather turned after the prose", early, late, true},
+		// The prose was written after the sky settled — it already describes it.
+		{"prose written after the weather", late, early, false},
+		// Boot: LastAtmosphereRefreshAt is restart-lossy and reads zero, while
+		// SeedWeatherClear stamps the weather clock. The prose restored from the
+		// checkpoint predates this boot's sky, so flagging it stale is correct —
+		// this is the path that carried rain prose across restarts for days.
+		{"boot with restored prose", time.Time{}, late, true},
+		// A world whose weather clock has never been seeded has nothing to say.
+		{"weather clock unseeded", late, time.Time{}, false},
+	} {
+		w := newAtmosphereTestWorld(t)
+		w.Environment.Atmosphere = "the rain falleth"
+		w.Environment.LastAtmosphereRefreshAt = tc.lastAtmosphere
+		w.Environment.LastWeatherChangeAt = tc.lastWeather
+
+		v := runAtmosphereCmd(t, w, FetchAtmosphereContext(at))
+		ctx, ok := v.(AtmosphereContext)
+		if !ok {
+			t.Fatalf("%s: FetchAtmosphereContext returned %T, want AtmosphereContext", tc.name, v)
+		}
+		if ctx.WeatherChangedSinceAtmosphere != tc.want {
+			t.Errorf("%s: WeatherChangedSinceAtmosphere = %v, want %v", tc.name, ctx.WeatherChangedSinceAtmosphere, tc.want)
+		}
+	}
+}
+
 func TestFetchAtmosphereContext_BasicShape(t *testing.T) {
 	w := newAtmosphereTestWorld(t)
 	w.Phase = PhaseNight
