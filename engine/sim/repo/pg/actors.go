@@ -2076,7 +2076,9 @@ func validateActorsSnapshot(actors map[sim.ActorID]*sim.Actor, q *sim.Quarantine
 			continue
 		}
 		if a.ID != key {
-			dropActor(q, a.ID, fmt.Sprintf("map key=%s does not match a.ID=%s", key, a.ID))
+			// Keyed on the MAP KEY, like every other aggregate: a.ID is precisely the
+			// field we do not trust here, and it may even name a DIFFERENT valid actor.
+			dropActor(q, key, fmt.Sprintf("map key=%s does not match a.ID=%s", key, a.ID))
 			continue
 		}
 		if strings.TrimSpace(a.DisplayName) == "" {
@@ -2136,13 +2138,17 @@ func validateActorsSnapshot(actors map[sim.ActorID]*sim.Actor, q *sim.Quarantine
 				a.Inventory[kind] = 0
 			}
 		}
-		// Tool wear (LLM-330): entries must be positive — applyToolWear
-		// deletes at zero, so a non-positive entry is a mechanics bug. Wear
-		// rides on the inventory row's uses_left, so a bad entry drops the
-		// WEAR, not the inventory: the tool persists, merely unworn.
+		// Tool wear (LLM-330): entries must be positive — applyToolWear deletes
+		// at zero, so a non-positive entry is a mechanics bug.
+		//
+		// There is NO actor_tool_wear table: wear rides on the inventory row's
+		// uses_left column. So a bad entry is a CLAMP on actor_inventory, not a
+		// drop — the tool still persists, merely unworn — and it must not be
+		// recorded against a table name that does not exist, which would name a
+		// phantom table in the alarm and block a sweep that isn't there.
 		for kind, wear := range a.ToolWear {
 			if strings.TrimSpace(string(kind)) == "" || wear <= 0 {
-				q.Drop("actor_tool_wear", childID(a.ID, string(kind)), fmt.Sprintf("uses_left=%d must be > 0 (item persists unworn)", wear))
+				q.Clamp("actor_inventory", childID(a.ID, string(kind)), fmt.Sprintf("tool wear uses_left=%d must be > 0 — wear cleared, the item persists unworn", wear))
 				delete(a.ToolWear, kind)
 			}
 		}

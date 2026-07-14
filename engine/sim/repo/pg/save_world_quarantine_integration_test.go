@@ -188,6 +188,115 @@ func TestIntegration_SaveWorld_DroppedActor_KeepsPreviousRowAndChildren(t *testi
 	}
 }
 
+// TestIntegration_SaveWorld_QuarantinedLedger_SuppressesRoomGrant covers the ONE
+// cross-aggregate dependency in the checkpoint:
+// room_access.granted_via_ledger_id -> pay_ledger(id).
+//
+// This is the case Postgres CANNOT catch for us. When the ledger row is brand
+// new, the FK does reject the orphaned grant. But once the ledger row already
+// exists durably from an earlier checkpoint, the FK is perfectly satisfied by
+// the STALE row — so a fresh grant would silently bind to a superseded payment,
+// and only Go can see that as wrong. Hence the explicit q.Dropped("pay_ledger",
+// …) guard in the room_access write loop.
+//
+// It also pins the SaveWorld ordering (Orders before Actors) that the guard
+// depends on: if Actors ran first, the ledger drop would not yet be recorded
+// and the grant would be written anyway.
+func TestIntegration_SaveWorld_QuarantinedLedger_SuppressesRoomGrant(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	repo := NewRepository(f.Pool)
+
+	seedQuarantineItemKinds(t, f, ctx)
+
+	const (
+		innID  = sim.StructureID("44444444-0000-0000-0000-000000000392")
+		roomID = sim.RoomID(392)
+	)
+	w := checkpointableWorld(repo)
+	now := time.Date(2026, 7, 12, 23, 0, 0, 0, time.UTC)
+	readyBy := time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC)
+
+	// room_access.room_id FKs to structure_room, and a structure shares its id
+	// with a village_object (the shared-identity bridge LoadWorld enforces), so
+	// the inn needs both rows. All checkpointed in this same SaveWorld.
+	w.VillageObjects = map[sim.VillageObjectID]*sim.VillageObject{
+		sim.VillageObjectID(innID): {ID: sim.VillageObjectID(innID), AssetID: sim.AssetID(uuidAssetWell), EntryPolicy: sim.EntryPolicyOpen},
+	}
+	w.Structures = map[sim.StructureID]*sim.Structure{
+		innID: {ID: innID, DisplayName: "Inn", Rooms: []*sim.Room{
+			{ID: roomID, StructureID: innID, Kind: sim.RoomKindPrivate, Name: "bedroom_1"},
+		}},
+	}
+
+	// Two delivered lodging bookings for the same (buyer, seller, ready_by):
+	// 1448 is the double-book and will be quarantined.
+	lodging := func(id sim.OrderID) *sim.Order {
+		return &sim.Order{
+			ID: id, LedgerID: sim.LedgerID(id),
+			State:    sim.OrderStateDelivered,
+			BuyerID:  ezekielID,
+			SellerID: hannahID,
+			Item:     lodgingItemKind,
+			Qty:      1, Amount: 3,
+			ReadyBy:   readyBy,
+			CreatedAt: now,
+			ExpiresAt: now.Add(time.Hour),
+		}
+	}
+	w.Orders = map[sim.OrderID]*sim.Order{
+		1447: lodging(1447),
+		1448: lodging(1448),
+	}
+	// Ezekiel holds a room grant bought with the QUARANTINED ledger row 1448.
+	// That grant must not be written: a room cannot outlive the payment for it.
+	w.Actors = map[sim.ActorID]*sim.Actor{
+		ezekielID: {
+			ID: ezekielID, Kind: sim.KindNPCShared,
+			DisplayName: "Ezekiel", State: "idle",
+			Coins: 42,
+			RoomAccess: map[sim.RoomAccessKey]*sim.RoomAccess{
+				{RoomID: roomID, Source: sim.AccessSourceLedger}: {
+					RoomID:    roomID,
+					Source:    sim.AccessSourceLedger,
+					LedgerID:  1448, // the quarantined booking
+					Active:    true,
+					CreatedAt: now,
+				},
+			},
+		},
+	}
+
+	q, err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot())
+	if err != nil {
+		t.Fatalf("SaveWorld = %v, want nil (quarantine, not abort)", err)
+	}
+	if !q.Dropped("pay_ledger", "1448") {
+		t.Fatalf("ledger 1448 should be quarantined; rows = %+v", q.Rows())
+	}
+	if !q.Dropped("room_access", roomAccessID(roomID, ezekielID)) {
+		t.Errorf("the room grant bought with the quarantined ledger row must be dropped too; rows = %+v", q.Rows())
+	}
+
+	// And it is genuinely absent from pg — not merely reported.
+	var grants int
+	if err := f.Pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM room_access WHERE granted_via_ledger_id = 1448`).Scan(&grants); err != nil {
+		t.Fatalf("count room_access: %v", err)
+	}
+	if grants != 0 {
+		t.Errorf("room_access rows referencing the quarantined ledger 1448 = %d, want 0", grants)
+	}
+	// The actor himself still persisted — only the orphaned grant was dropped.
+	loaded, err := LoadWorld(ctx, repo, true)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	if loaded.Actors[ezekielID] == nil {
+		t.Fatal("ezekiel was not persisted — only his orphaned grant should have been dropped")
+	}
+}
+
 // TestIntegration_SaveWorld_DroppedChildRow_NeverReachesSQL — the regression
 // test for the bug code_review caught on the first pass.
 //

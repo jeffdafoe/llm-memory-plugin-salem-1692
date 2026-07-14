@@ -374,9 +374,25 @@ func (r *OrdersRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, orders map[sim
 	// keeps whatever durable row it already had instead of being expired out
 	// from under the world. That is why Orders needs no sweep guard, unlike
 	// the gen-marker aggregates.
+	//
+	// The list is built from IDENTIFIED orders only. A nil entry, or one whose
+	// map key disagrees with o.ID, has no coherent identity: keying the expire
+	// list off the map key while the writer binds o.ID would protect one ledger
+	// row from expiry while writing a different one. Both are quarantined by
+	// MAP KEY here, before the list is built — which also means every order
+	// that survives this loop has key == o.ID, so the map key is a valid
+	// quarantine key for the rest of this function (and for the room_access
+	// cross-aggregate check in the actors writer, which looks the ledger row up
+	// by its id).
 	ids := make([]int64, 0, len(orders))
-	for id, o := range orders {
+	for _, id := range sortedOrderIDs(orders) {
+		o := orders[id]
 		if o == nil {
+			q.Drop("pay_ledger", fmt.Sprintf("%d", id), "nil order entry")
+			continue
+		}
+		if o.ID != id {
+			q.Drop("pay_ledger", fmt.Sprintf("%d", id), fmt.Sprintf("map key=%d does not match o.ID=%d — the order has no coherent identity", id, o.ID))
 			continue
 		}
 		ids = append(ids, int64(id))
@@ -438,10 +454,10 @@ func (r *OrdersRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, orders map[sim
 	// must agree with it).
 	for _, id := range sortedOrderIDs(orders) {
 		o := orders[id]
-		if o == nil {
-			continue
-		}
-		if q.Dropped("pay_ledger", fmt.Sprintf("%d", o.ID)) {
+		// Keyed on the map key. Every order still standing has key == o.ID (the
+		// mismatched ones were quarantined before `ids` was built), so this is
+		// the same identity the drops above and the lodging guard used.
+		if o == nil || q.Dropped("pay_ledger", fmt.Sprintf("%d", id)) {
 			continue
 		}
 		// Order.ID and Order.LedgerID are the same value by domain

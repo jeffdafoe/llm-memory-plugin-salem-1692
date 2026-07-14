@@ -268,6 +268,10 @@ func (r *HuddlesRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, huddles map[s
 	q := quarantineOf(tx)
 	for key, h := range huddles {
 		if h == nil {
+			// Quarantined, not silently skipped: a silent skip would leave this
+			// huddle out of the write set WITHOUT blocking the sweep, so its durable
+			// row would be deleted rather than preserved.
+			dropHuddle(q, key, "nil huddle entry (deletion goes through gen-marker absence, not nil)")
 			continue
 		}
 		if h.ID == "" {
