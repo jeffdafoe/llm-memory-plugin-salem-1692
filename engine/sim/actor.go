@@ -975,6 +975,14 @@ type Actor struct {
 	Relationships map[ActorID]*Relationship
 	Narrative     *NarrativeState
 
+	// Rumors is this actor's known-set of village rumors (LLM-387): fallible
+	// social beliefs it carries about OTHER actors, seeded by witnessing a
+	// coin-short settlement and spread + escalated through conversation. Capped
+	// (MaxKnownRumors) and TTL'd (RumorTTL); see rumor.go. Distinct from
+	// Relationships (faithful per-pair interaction memory) — a rumor may be
+	// false and never re-syncs from world state.
+	Rumors []KnownRumor
+
 	// Behavior history — load-bearing for diff-against-previous and loop
 	// detection. RecentActions and LastSnapshot are in-memory only (not
 	// checkpointed); post-restart blind spot for the first few ticks is
@@ -1297,6 +1305,11 @@ func CloneActor(a *Actor) *Actor {
 	if a.RecentProduce != nil {
 		cp.RecentProduce = append([]ProduceEvent(nil), a.RecentProduce...)
 	}
+	if a.Rumors != nil {
+		// KnownRumor is a pure value type — a slice copy fully breaks the alias
+		// cp := *a left in place (same posture as RecentProduce above). LLM-387.
+		cp.Rumors = append([]KnownRumor(nil), a.Rumors...)
+	}
 	cp.RoomAccess = cloneRoomAccess(a.RoomAccess)
 	if a.Attributes != nil {
 		cp.Attributes = make(map[string][]byte, len(a.Attributes))
@@ -1441,6 +1454,17 @@ type ActorSnapshot struct {
 	Acquaintances map[string]Acquaintance
 	Relationships map[ActorID]*Relationship
 	Narrative     *NarrativeState
+
+	// Rumors mirrors the live Actor's carried rumor known-set at snapshot time
+	// (LLM-387) so perception can surface the "## Word about the village" line —
+	// the fallible gossip this actor has picked up about ABSENT residents. Unlike
+	// Relationships (a faithful dyadic record) a KnownRumor is a deliberately-
+	// distortable social belief that decays out of the set; see rumor.go. A pure
+	// value slice — KnownRumor holds no maps or pointers — so the plain append in
+	// snapshotActor is a full deep copy and the published snapshot never aliases
+	// the live Actor's slice. Empty for an actor carrying no rumors and for PC /
+	// decorative kinds (which never gossip). See Actor.Rumors.
+	Rumors []KnownRumor
 
 	// AwaitingReplyFrom mirrors the live Actor's turn-state edge
 	// (Actor.awaitingReplyFrom) at snapshot time: addressee -> when this actor

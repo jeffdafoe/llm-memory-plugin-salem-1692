@@ -228,6 +228,11 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderDutySteer(&ephemeral, p.DutySteer)
 	renderEveningLeisure(&ephemeral, p.EveningLeisure)
 	renderRelationships(&ephemeral, p.Relationships)
+	// LLM-387: gossip the actor carries about people NOT in the scene — the
+	// word-of-mouth layer's read surface. Sits beside "what you remember of those
+	// here" (its co-present twin) but is about the ABSENT, and is framed as
+	// fallible talk rather than a faithful readout.
+	renderVillageWord(&ephemeral, p.VillageWord)
 	// LLM-217: the subject's own recent deeds render just above the spoken
 	// turns — together they are the actor's short-term memory of the scene,
 	// and the action trail is what makes a self-loop (leave ↔ bounce back)
@@ -1803,6 +1808,40 @@ func renderRelationships(b *strings.Builder, peers []RelationshipPeerView) {
 			name = string(p.PeerID)
 		}
 		fmt.Fprintf(b, "- %s: %s\n", name, sanitizeInline(p.SummaryText))
+	}
+	if wrote {
+		b.WriteString("\n")
+	}
+}
+
+// renderVillageWord writes the "## Word about the village" section (LLM-387): the
+// fallible gossip the subject has picked up about residents who are NOT present —
+// the word-of-mouth layer surfaced into perception. A first-hand line is framed
+// as something the actor witnessed; a relayed line as talk going round Salem, so
+// the model can weigh its own certainty. Unlike a perception fact this is NOT a
+// faithful readout — the preamble says as much — so an NPC may repeat it, doubt
+// it, or embroider it further when it speaks. Header + preamble are written lazily
+// on the first non-empty line, so a list of all-empty clauses renders nothing.
+func renderVillageWord(b *strings.Builder, rumors []VillageRumorView) {
+	if len(rumors) == 0 {
+		return
+	}
+	wrote := false
+	for _, r := range rumors {
+		clause := sanitizeInline(r.Clause)
+		if clause == "" {
+			continue
+		}
+		if !wrote {
+			b.WriteString("## Word about the village\n")
+			b.WriteString("Talk you've picked up around Salem — it may be true, it may be idle gossip:\n")
+			wrote = true
+		}
+		if r.FirstHand {
+			fmt.Fprintf(b, "- You saw it yourself: %s.\n", clause)
+			continue
+		}
+		fmt.Fprintf(b, "- Word has it that %s.\n", clause)
 	}
 	if wrote {
 		b.WriteString("\n")

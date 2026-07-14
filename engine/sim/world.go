@@ -2435,6 +2435,7 @@ func snapshotActor(a *Actor, atTick uint64, degeneracyEnabled bool) *ActorSnapsh
 		Acquaintances:              cloneAcquaintances(a.Acquaintances),
 		Relationships:              cloneRelationships(a.Relationships),
 		Narrative:                  cloneNarrativeState(a.Narrative),
+		Rumors:                     append([]KnownRumor(nil), a.Rumors...), // pure-value deep copy (LLM-387); see ActorSnapshot.Rumors
 		AwaitingReplyFrom:          cloneAwaitingReplyFrom(a.awaitingReplyFrom),
 		VisitorState:               cloneVisitorState(a.VisitorState),
 		BusinessownerState:         cloneBusinessownerState(a.BusinessownerState),
