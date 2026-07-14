@@ -28,6 +28,7 @@ type WorldEnvironment struct {
 	Atmosphere              string
 	LastAtmosphereRefreshAt time.Time // last successful atmosphere refresh (UTC); see engine/sim/atmosphere.go. Restart-lossy by design — cosmetic prose, fresh fire after restart is acceptable.
 	LastWeatherChangeAt     time.Time // last weather transition (UTC); see engine/sim/weather.go. Restart-lossy by design — the storm sweep boots to clear and reseeds this (SeedWeatherClear), so it is NOT persisted.
+	StormDueAt              time.Time // earliest the next automatic storm may start (UTC); armed by the storm sweep (engine/sim/cascade/storm.go), zero = unarmed. Separate from LastWeatherChangeAt because the sweep re-arms it while the village is empty, and LastWeatherChangeAt also feeds WeatherChangedSinceAtmosphere. Transient — not persisted.
 	LastTransitionAt        time.Time // last day↔night transition (UTC). Durable — persisted in world_state.last_transition_at.
 	LastRotationAt          time.Time // last daily asset rotation (UTC). Durable — persisted in world_state.last_rotation_at.
 	LastNeedsTickAt         time.Time // last hourly needs increment (UTC, hour-truncated). Durable — persisted in world_state.last_needs_tick_at.

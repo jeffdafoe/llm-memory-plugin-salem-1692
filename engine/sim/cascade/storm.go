@@ -3,6 +3,7 @@ package cascade
 import (
 	"context"
 	"log"
+	mathrand "math/rand/v2"
 	"strings"
 	"time"
 
@@ -18,10 +19,10 @@ import (
 // Modeled on cascade/atmosphere.go, but mechanical: weather is a dice-
 // free state machine, so unlike atmosphere this slice needs no llm.Client
 // (the decision is "has enough time elapsed?", not prose). All timing
-// state lives on World.Environment (Weather + LastWeatherChangeAt) — the
-// sweep goroutine is stateless, so a single source of truth drives the
-// DTO, the prompt, and the wire frame, and the decision is testable by
-// advancing a clock against a constructed world.
+// state lives on World.Environment (Weather + LastWeatherChangeAt +
+// StormDueAt) — the sweep goroutine is stateless, so a single source of
+// truth drives the DTO, the prompt, and the wire frame, and the decision
+// is testable by advancing a clock against a constructed world.
 //
 // Lifecycle:
 //
@@ -29,14 +30,16 @@ import (
 //	└─> go runStormSweep(ctx, w)
 //	     ├─> SeedWeatherClear (boot to clear, seed the change clock)
 //	     ├─> time.Ticker @ stormSweepInterval until ctx.Done
-//	     └─> each tick: decideStorm (read) → ApplyWeatherChange (apply)
+//	     └─> each tick: decideStorm (decide + arm) → ApplyWeatherChange (apply)
 //
 // The state machine (decideStorm), per tick:
 //
 //   - storm held >= StormDuration            → clear   (NOT PC-gated; an
 //     in-flight storm rides out its full duration even if the last PC
 //     left — only the START is gated)
-//   - clear held >= StormInterval AND a PC is present → storm
+//   - clear, no PC present (or unarmed)      → re-arm StormDueAt to
+//     now + pickStormInterval(); no transition
+//   - clear, PC present, now >= StormDueAt   → storm
 //   - otherwise                              → no transition
 //
 // PC-presence gate (acceptance criteria 2-4): an automatic storm only
@@ -45,6 +48,15 @@ import (
 // payoff — wasted on an empty village. The operator force-path (httpapi
 // umbilical /weather) is deliberately NOT gated, so a storm can be summoned
 // on an empty village for demo/testing.
+//
+// The gate defers the FIRE, so the clock must not keep accruing behind it
+// (LLM-401): an empty village that banked hours of clear sky would otherwise
+// release a storm on the first sweep after someone logged in — every session
+// opening in the rain. Hence the re-arm on every unattended clear tick: the
+// interval a PC waits out is measured from their arrival, and a PC who leaves
+// hands back a full interval rather than a partial one. Storms are meant to be
+// rare from the player's seat — a PC has to be resident for a full (jittered)
+// StormInterval to see one.
 
 const (
 	// defaultStormInterval is the fallback gap between automatic storms
@@ -56,6 +68,11 @@ const (
 	// defaultStormDuration is the fallback storm hold time (storm → clear)
 	// when WorldSettings.StormDuration is unset. 15m.
 	defaultStormDuration = 15 * time.Minute
+
+	// stormIntervalJitter scatters each armed storm interval by ±25% of
+	// StormInterval, so a PC resident long enough to see two storms doesn't
+	// get them on a metronome.
+	stormIntervalJitter = 0.25
 
 	// stormSweepInterval is how often the sweep re-evaluates the weather
 	// state machine. A const (not a setting), matching PCPresenceSweepInterval
@@ -119,12 +136,11 @@ func runStormSweep(ctx context.Context, w *sim.World) {
 	}
 }
 
-// runOneStormDecision runs one tick of the weather state machine: read the
-// world to decide the next weather (decideStorm), and if a transition is
-// due, apply it via the shared ApplyWeatherChange command — the same code
-// the umbilical force-path runs. Two SendContext round-trips (decide, then
-// apply) mirror atmosphere's fetch→apply split and keep the decision a pure
-// read that's testable in isolation.
+// runOneStormDecision runs one tick of the weather state machine: decide the
+// next weather (decideStorm), and if a transition is due, apply it via the
+// shared ApplyWeatherChange command — the same code the umbilical force-path
+// runs. Two SendContext round-trips (decide, then apply) mirror atmosphere's
+// fetch→apply split and keep the decision testable in isolation.
 //
 // Honors ctx cancellation between the round-trips so a shutdown mid-tick
 // returns promptly.
@@ -154,42 +170,67 @@ func runOneStormDecision(ctx context.Context, w *sim.World) {
 	}
 }
 
-// decideStorm returns a Command that reads the world and yields the weather
-// to transition TO at `now`, or "" for no transition this tick. Pure read
-// — it mutates nothing, so runOneStormDecision (and tests) can apply the
-// result through the shared ApplyWeatherChange command.
+// decideStorm returns a Command that yields the weather to transition TO at
+// `now`, or "" for no transition this tick — and, on a clear tick, arms or
+// re-arms Environment.StormDueAt (the only thing it writes; the weather
+// transition itself goes through the shared ApplyWeatherChange command, so
+// runOneStormDecision and tests apply the result the same way the operator
+// force-path does).
 //
 // Runs on the world goroutine (it reads w.Settings, w.Environment, and
 // w.Actors), so the actor scan for PC presence is race-safe.
 func decideStorm(now time.Time) sim.Command {
 	return sim.Command{Fn: func(w *sim.World) (any, error) {
-		interval := w.Settings.StormInterval
-		if interval <= 0 {
-			interval = defaultStormInterval
-		}
 		duration := w.Settings.StormDuration
 		if duration <= 0 {
 			duration = defaultStormDuration
 		}
-		elapsed := now.Sub(w.Environment.LastWeatherChangeAt)
 
 		if strings.TrimSpace(w.Environment.Weather) == sim.WeatherStorm {
 			// In-flight storm: clear once it has held its full duration.
 			// Not PC-gated — a storm that started while a PC was present
 			// rides out even if the last PC has since left.
-			if elapsed >= duration {
+			if now.Sub(w.Environment.LastWeatherChangeAt) >= duration {
 				return sim.WeatherClear, nil
 			}
 			return "", nil
 		}
 
-		// Clear (or unset): start a storm only once the interval has
-		// elapsed AND at least one PC is present.
-		if elapsed >= interval && anyPCPresent(w, now) {
+		// Clear (or unset). Nobody here — or a weather transition just
+		// disarmed the clock — so hold: push the due time out to a fresh
+		// interval from now. A PC therefore always walks into a full
+		// interval of clear sky, never into a storm the empty village
+		// banked while they were away (LLM-401).
+		if !anyPCPresent(w, now) || w.Environment.StormDueAt.IsZero() {
+			w.Environment.StormDueAt = now.Add(pickStormInterval(w.Settings))
+			return "", nil
+		}
+		if !now.Before(w.Environment.StormDueAt) {
 			return sim.WeatherStorm, nil
 		}
 		return "", nil
 	}}
+}
+
+// pickStormInterval returns the wait until the next automatic storm: the
+// configured StormInterval (defaultStormInterval when unset) scattered by
+// ±stormIntervalJitter.
+//
+// Sampled once per arming and stored as an absolute StormDueAt — the same
+// shape as the reactor's WarrantDueAt (engine/sim/reactor.go). Re-rolling the
+// band on every 30s sweep instead would pull the fire toward the low edge of
+// the band (a hundred-odd chances to roll low across an interval), which is a
+// metronome with extra steps.
+func pickStormInterval(s sim.WorldSettings) time.Duration {
+	interval := s.StormInterval
+	if interval <= 0 {
+		interval = defaultStormInterval
+	}
+	jitter := time.Duration(float64(interval) * stormIntervalJitter)
+	if jitter <= 0 {
+		return interval
+	}
+	return interval - jitter + time.Duration(mathrand.Int64N(int64(2*jitter)))
 }
 
 // anyPCPresent reports whether at least one non-stale PC is in the world at
