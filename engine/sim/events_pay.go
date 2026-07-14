@@ -15,9 +15,10 @@ import "time"
 //
 // ForText is the post-validation flavor text: trimmed, length <= 200
 // characters, control-character-rejected (only \n \r \t allowed outside the
-// printable range). The pay reactor subscriber rune-truncates this to
-// MaxSalientFactTextLen for the warrant Excerpt, but the full string travels
-// on the event for any consumer that wants it.
+// printable range). The 200-rune cap is the bound the whole pipeline relies
+// on: the pay reactor subscriber copies this string into the seller's warrant
+// Excerpt verbatim (LLM-400), and only the renderer shortens it — with a
+// visible elision marker. Nothing downstream cuts it silently.
 //
 // PaidID — the canonical identifier for this pay transaction — aliases the
 // event's EventID (same pattern as SpeechID/Spoke). The pay reactor

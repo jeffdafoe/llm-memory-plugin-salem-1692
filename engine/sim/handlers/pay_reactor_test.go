@@ -2,6 +2,7 @@ package handlers_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -147,21 +148,27 @@ func TestPayReactor_BuyerHasNoWarrant(t *testing.T) {
 	}
 }
 
-// --- TestPayReactor_ExcerptTruncated: ForText longer than
-// MaxSalientFactTextLen truncates in the warrant payload (the per-tick
-// prompt cost bound).
-func TestPayReactor_ExcerptTruncated(t *testing.T) {
-	// Build a ForText that's at the handler's 200-char cap (max allowed by
-	// the schema) — the warrant Excerpt then truncates to MaxSalientFactTextLen
-	// runes. The 200-char text is BELOW the 220-rune cap so it won't actually
-	// truncate; we need a ForText > 220 runes to test truncation. Since the
-	// handler caps at 200, we send through sim.Pay directly with a longer
-	// string — the truncation happens regardless of the handler's cap (the
-	// substrate path is the floor).
-	longForText := ""
-	for i := 0; i < 300; i++ {
-		longForText += "x"
-	}
+// --- TestPayReactor_ExcerptCarriesFullForText ------------------------
+// A ForText past the old MaxSalientFactTextLen cut reaches the seller's warrant
+// WHOLE — LLM-400. This test previously asserted the exact opposite (ForText
+// rune len == MaxSalientFactTextLen); that contract was the bug, so it is
+// inverted here rather than deleted, the same way LLM-396 inverted the speech
+// one.
+//
+// The old 220-rune cut was unmarked and landed mid-word, handing the seller a
+// payment reason that stops mid-clause as though it were the whole note. It
+// could not fire through any real tool path (every producer of ForText caps it
+// at 200 runes first), but nothing linked the 200 to the 220 — bumping the tool
+// cap would have turned silent truncation on with no test failing. So the
+// substrate path is exercised directly here, exactly as the old test did.
+//
+// Length is still bounded, just where it belongs: upstream at the 200-rune tool
+// cap, and downstream at the renderer's MaxBytesPerWarrant — which MARKS what it
+// elides.
+func TestPayReactor_ExcerptCarriesFullForText(t *testing.T) {
+	// 300 runes: past the old 220-rune cut, and past the 200-rune tool cap the
+	// handler enforces — sim.Pay is the floor, so it takes the string as given.
+	longForText := strings.Repeat("x", 300)
 	w, stop := buildPayReactorWorld(t,
 		payReactorActor{id: "hannah", displayName: "Hannah", kind: sim.KindNPCShared, huddleID: "h1", coins: 10},
 		payReactorActor{id: "ezekiel", displayName: "Ezekiel Crane", kind: sim.KindNPCShared, huddleID: "h1"},
@@ -176,8 +183,12 @@ func TestPayReactor_ExcerptTruncated(t *testing.T) {
 		t.Fatalf("ezekiel.Warrants = %d, want 1", len(ws))
 	}
 	reason := ws[0].Reason.(sim.PaidWarrantReason)
-	if got := len([]rune(reason.ForText)); got != sim.MaxSalientFactTextLen {
-		t.Errorf("ForText excerpt = %d runes, want %d (truncated)", got, sim.MaxSalientFactTextLen)
+	if reason.ForText != longForText {
+		t.Errorf(
+			"ForText excerpt = %d runes, want the full %d — the warrant must carry the payment "+
+				"reason whole; a bare mid-word prefix reads to the seller as a complete note",
+			len([]rune(reason.ForText)), len([]rune(longForText)),
+		)
 	}
 }
 

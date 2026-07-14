@@ -1,0 +1,24 @@
+# Your turn
+
+## Since your last turn
+1. the laborer paid you 9 coins — "the cheese and the milk both, and for keeping the last of it back for me on Tuesday when I hadn't the coin to pay for it right then — my sister is stopping the week and I would not have her go without"
+
+
+## You
+Coins in your purse: 0 — you have no coins to spend, but you may be able to offer goods you carry in trade.
+You are carrying: cheese (x4), milk (x6).
+
+## Around you
+You are inside the General Store, your workplace, with the laborer.
+It is midday.
+
+You're at your workplace.
+
+It is your working hours and you are at your post — stay and look after your work; you close at 6 in the evening.
+
+## What your wares fetch
+What your wares fetch in coin — use it to set a fair price or weigh a trade:
+- cheese: 3 to 6 coins each; you have lately paid about 2 coins each for it.
+- milk: 1 to 3 coins each; you have lately paid about 1 coin each for it.
+
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

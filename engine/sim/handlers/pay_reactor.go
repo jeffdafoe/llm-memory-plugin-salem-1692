@@ -29,11 +29,26 @@ import (
 //     they don't need their own tick to react to it; they're already
 //     mid-tick.
 //
-// Excerpt: the ForText excerpt is rune-truncated to MaxSalientFactTextLen
-// (220) — every reactor tick the seller takes re-renders the excerpt into
-// the perception prompt, so bounding the excerpt bounds the per-tick token
-// cost. The raw (200-char-capped, control-char-rejected) text travels on
-// the Paid event for any consumer that wants the full flavor.
+// Excerpt carries the FULL ForText (LLM-400). It used to be rune-truncated
+// to sim.MaxSalientFactTextLen (220) to bound per-tick token cost, the same
+// bare cut LLM-396 removed from the speech path — a mid-word slice with no
+// marker, handing the seller a payment reason that stops mid-clause as though
+// it were whole.
+//
+// The cut could not actually fire: every producer of ForText rune-caps it at
+// 200 first (the pay tool's MaxPayForChars, pay_with_item's
+// MaxPayWithItemForChars, and the PC HTTP route's mirror of the same), so 200
+// runes never reached a 220-rune cut. But the two constants live in different
+// packages with nothing linking them: raising MaxPayForChars past 220 would
+// have switched silent mid-word truncation on in the seller's prompt with no
+// test failing. The dead cut is removed rather than left as a landmine.
+//
+// Length stays bounded where it belongs — upstream at the 200-rune tool cap,
+// and downstream in the renderer, which caps the warrant payload at
+// perception.RenderConfig.MaxBytesPerWarrant (600 bytes) and, unlike this
+// path, MARKS the cut with an ellipsis. A 200-rune ForText only reaches that
+// cap if it is heavily multi-byte, and then it is elided visibly rather than
+// silently.
 func handlePaidWarrants(w *sim.World, evt sim.Event) {
 	paid, ok := evt.(*sim.Paid)
 	if !ok {
@@ -46,7 +61,7 @@ func handlePaidWarrants(w *sim.World, evt sim.Event) {
 		return
 	}
 	now := time.Now().UTC()
-	excerpt := truncateRunes(paid.ForText, sim.MaxSalientFactTextLen)
+	excerpt := paid.ForText
 	meta := sim.WarrantMeta{
 		TriggerActorID: paid.BuyerID,
 		Force:          false,

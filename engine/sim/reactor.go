@@ -194,12 +194,11 @@ type SpeechID uint64
 // Amount is the coin total transferred (always > 0 — the handler decode
 // rejects zero/negative).
 //
-// ForText is the buyer's flavor text rune-truncated to MaxSalientFactTextLen
-// — the seller's perception prompt re-renders the excerpt on every reactor
-// tick they consume, so bounding the excerpt at warrant-stamp time bounds
-// the per-tick prompt cost. The raw (200-char-capped, control-char-rejected)
-// text travels on the Paid event for any consumer that wants the full
-// flavor.
+// ForText is the buyer's flavor text, carried WHOLE off the Paid event
+// (LLM-400) — it is already bounded at 200 runes by every tool that can
+// produce it, and the renderer marks any elision it has to make. It is never
+// pre-truncated here: a bare mid-word prefix reads to the seller as a
+// complete payment reason that happens to stop mid-clause.
 //
 // No PC/NPC split for now — pay warrants only fire on NPC sellers (PCs
 // don't deliberate). When a PC-as-recipient flow lands, split type-per-kind

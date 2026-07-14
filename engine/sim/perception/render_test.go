@@ -166,6 +166,55 @@ func TestRenderWarrants_OverCapSpeechIsMarkedElided(t *testing.T) {
 	}
 }
 
+// TestRenderWarrants_OverCapPayForTextIsMarkedElided is the pay-side counterpart
+// (LLM-400): a payment's for-text too long for MaxBytesPerWarrant is cut, but the
+// cut is MARKED.
+//
+// The renderer is now the SOLE truncation point for a pay excerpt — the handler's
+// bare 220-rune cut is gone, so this is the only place a for-text can be shortened
+// and the only place a marker can be attached. A 200-rune for-text (the tool cap)
+// only reaches the 600-byte render cap when heavily multi-byte, so the elision
+// branch is rare in practice and correspondingly easy to regress unnoticed.
+// Asserted here directly rather than through the scenario matrix, for the same
+// reason the speech test above exists: no golden carries an over-cap payload.
+func TestRenderWarrants_OverCapPayForTextIsMarkedElided(t *testing.T) {
+	cfg := DefaultRenderConfig()
+	long := strings.Repeat("a", cfg.MaxBytesPerWarrant+200)
+	p := Payload{
+		ActorID: "alice",
+		Actor:   ActorView{State: sim.StateIdle},
+		Warrants: []sim.WarrantMeta{{
+			TriggerActorID: "ezekiel",
+			Reason:         sim.PaidWarrantReason{Buyer: "ezekiel", Amount: 3, ForText: long},
+		}},
+		Baseline:   BaselinePresent,
+		RenderedAt: time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC),
+	}
+	out := Render(p, cfg).Text
+	if strings.Contains(out, long) {
+		t.Fatalf("an over-cap for-text should not render in full — the byte cap must still bind:\n%s", out)
+	}
+	// Assert against what the render path actually produces for this text, rather
+	// than just "an ellipsis appears somewhere in the prompt" — that weaker check
+	// would pass on any unrelated ellipsis the prompt gained later, while the
+	// for-text itself regressed to a bare prefix (code_review, round 1). Same shape
+	// as the matrix invariant in golden_test.go.
+	rendered, elided := sanitizeText(long, cfg.MaxBytesPerWarrant)
+	if !elided {
+		t.Fatalf("test fixture no longer exceeds MaxBytesPerWarrant (%d bytes) — it must, or this test proves nothing", cfg.MaxBytesPerWarrant)
+	}
+	if !strings.Contains(out, rendered) {
+		t.Errorf("the elided for-text does not appear in the prompt as the renderer produced it:\n  want substring: %q\n--- prompt ---\n%s", rendered, out)
+	}
+	if !strings.HasSuffix(rendered, elisionMarker) {
+		t.Errorf(
+			"an over-cap for-text rendered without the %q marker — the seller reads a bare mid-word prefix "+
+				"as the buyer's complete reason for paying, and answers the wrong thing. Rendered tail: %q",
+			elisionMarker, tailOf(rendered, 48),
+		)
+	}
+}
+
 // TestRender_NarrationWarrants covers the felt-language self-perception lines:
 // the surviving dwell beats (boundary tick + ended, LLM-316) render their
 // pre-rendered NarrationText, and an empty-narration warrant falls back to the
