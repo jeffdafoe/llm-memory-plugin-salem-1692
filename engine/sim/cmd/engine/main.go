@@ -1,7 +1,13 @@
 // Command engine is the v2 sim-engine entrypoint: it boots a sim.World from
 // Postgres, wires the full runtime (tickers, cascades, the agent-tick
-// pipeline, the periodic checkpointer), runs the world's command loop, and on
-// SIGINT/SIGTERM takes a final checkpoint before exiting.
+// pipeline, the periodic checkpointer), runs the world's command loop, and takes
+// a final checkpoint before exiting.
+//
+// It stops two ways (LLM-404, stop.go). SIGINT/SIGTERM — `systemctl stop` — is a
+// FORCE stop: it exits whether or not the world could be saved. The graceful-stop
+// signal (SIGWINCH) checkpoints first and REFUSES to exit if that write fails,
+// leaving the engine running rather than rebooting the village onto a stale
+// checkpoint.
 //
 // The client-facing surface is served when PORT (→ HTTPAddr) is set: the REST
 // read endpoints plus the WS /events push channel (movement events today). An
@@ -287,13 +293,34 @@ func main() {
 		SimPush:             simPush,
 	}
 
-	// Shutdown on SIGINT/SIGTERM.
-	stop := make(chan struct{})
+	// Shutdown signals. SIGINT/SIGTERM force-stop (exit whether or not the world
+	// could be saved — `systemctl stop`, unchanged); the graceful-stop signal
+	// (SIGWINCH on Unix) asks run's stop gate to refuse the exit if the world is
+	// not durably saved. See stop.go.
+	//
+	// A stream of requests, not a single close: an ABORTED graceful stop leaves
+	// the engine running and waiting for the next request, so the channel has to
+	// carry more than one. The send is blocking on purpose — a force signal that
+	// arrives while a graceful gate is mid-checkpoint is delivered as soon as the
+	// gate finishes, so an operator who loses patience and reaches for
+	// `systemctl stop` gets honoured the moment the abort happens.
+	stop := make(chan stopRequest)
 	go func() {
+		graceful := gracefulStopSignals()
+		isGraceful := make(map[os.Signal]bool, len(graceful))
+		for _, sig := range graceful {
+			isGraceful[sig] = true
+		}
 		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-		<-sigChan
-		close(stop)
+		signal.Notify(sigChan, append([]os.Signal{syscall.SIGINT, syscall.SIGTERM}, graceful...)...)
+		for sig := range sigChan {
+			mode := stopForce
+			if isGraceful[sig] {
+				mode = stopGraceful
+			}
+			log.Printf("engine: received %s — requesting %s stop", sig, mode)
+			stop <- stopRequest{mode: mode}
+		}
 	}()
 
 	// LLM-156: install per-agent tick caps before run() starts the world loop,
@@ -409,10 +436,16 @@ func agentSlugsToQuery(world *sim.World) []string {
 	return slugs
 }
 
-// run wires the full runtime onto an already-loaded world, operates it until
-// stop is closed, then performs the graceful shutdown sequence (final
+// run wires the full runtime onto an already-loaded world, operates it until a
+// stop request is honoured, then performs the shutdown sequence (final
 // checkpoint) and returns once the world goroutine has stopped.
-func run(rt runtime, stop <-chan struct{}) error {
+//
+// A GRACEFUL stop request may be refused: if the world cannot be durably
+// checkpointed, run aborts the shutdown and keeps operating, waiting for a
+// further request (LLM-404 — see the stop gate below, and stop.go). So run may
+// consume many stop requests before it returns; only a force stop, or a graceful
+// stop whose gate checkpoint succeeded, ends it.
+func run(rt runtime, stop <-chan stopRequest) error {
 	// Two independent contexts. worldCtx drives the world goroutine plus every
 	// ticker, cascade sweep, and the tick-worker pool — everything that must
 	// stay alive to build the final checkpoint. checkpointerCtx drives only
@@ -662,8 +695,53 @@ func run(rt runtime, stop <-chan struct{}) error {
 
 	log.Printf("engine: v2 sim engine running")
 
-	<-stop
-	log.Println("engine: shutting down...")
+	// The stop gate (LLM-404). A graceful stop proves the world can be durably
+	// saved BEFORE anything is torn down, and refuses to go any further if it
+	// cannot — the engine simply keeps running and waits for another request.
+	//
+	// The checkpoint here is an ordinary CheckpointNow against a fully live
+	// engine: exactly what the periodic checkpointer does every interval, so it
+	// is safe at any moment and needs no quiescing. Its whole job is to answer
+	// one question — "if we exit, does the village survive?" — while the answer
+	// is still cheap to act on.
+	//
+	// On abort NOTHING has been stopped, so there is nothing to restart: the
+	// world goroutine, tickers, cascades, tick pool, HTTP surface and periodic
+	// checkpointer all keep running untouched, and the checkpoint_failure alarm
+	// (LLM-394) keeps firing on every umbilical response until durability is
+	// repaired. That is the entire reason the gate sits here rather than at the
+	// final checkpoint below: the teardown is ONE-WAY (a stopped TickWorkerPool
+	// panics on Start, a shut-down http.Server cannot be reused), so a refusal
+	// discovered mid-teardown would have no engine left to resume.
+	mode := stopForce
+	for {
+		req := <-stop
+		mode = req.mode
+		if mode == stopForce {
+			break
+		}
+		log.Println("engine: graceful stop requested — checkpointing before teardown")
+		gateCtx, cancelGate := context.WithTimeout(context.Background(), finalCheckpointTimeout)
+		gateClamps, gateErr := sim.CheckpointNow(gateCtx, rt.World, rt.Save)
+		cancelGate()
+		if gateErr != nil {
+			// A failed gate IS a failed checkpoint — record it so it feeds the
+			// consecutive-failure streak behind the alarm, same as a periodic one.
+			checkpointHealth.RecordFailure(time.Now(), gateErr)
+			log.Printf("engine: CRITICAL graceful stop ABORTED — the world is NOT durably saved: %v", gateErr)
+			log.Printf("engine: the village is STILL RUNNING and nothing has been torn down. Exiting now would discard %s. "+
+				"Repair durability and stop again, or force the stop (SIGTERM / `systemctl stop`) to exit anyway and accept the loss.",
+				discardedSince(checkpointHealth, time.Now()))
+			continue
+		}
+		checkpointHealth.RecordSuccess(time.Now(), gateClamps)
+		if !gateClamps.Clean() {
+			log.Printf("engine: stop gate checkpoint CLAMPED — %s", gateClamps.Summary())
+		}
+		log.Println("engine: graceful stop gate passed — world is durably saved")
+		break
+	}
+	log.Printf("engine: shutting down (%s stop)...", mode)
 
 	// Stop accepting HTTP reads first, before any runtime teardown.
 	if httpServer != nil {
@@ -693,8 +771,10 @@ func run(rt runtime, stop <-chan struct{}) error {
 	tickPool.Stop()
 	tickPool.Wait()
 
+	finalStart := time.Now()
 	finalCtx, cancelFinal := context.WithTimeout(context.Background(), finalCheckpointTimeout)
 	finalClamps, err := sim.CheckpointNow(finalCtx, rt.World, rt.Save)
+	finalTook := time.Since(finalStart)
 	if err != nil {
 		// Don't fail the whole shutdown on a final-checkpoint error — the
 		// prior checkpoint is still intact. Log and proceed to stop the world.
@@ -705,8 +785,17 @@ func run(rt runtime, stop <-chan struct{}) error {
 		// error here means the final write genuinely failed or exceeded
 		// finalCheckpointTimeout — a real durability failure worth surfacing to
 		// the operator, so it is recorded unconditionally.
+		//
+		// Reaching here means one of two things, and both deserve the shouting
+		// (LLM-404). On a FORCE stop it is the accepted loss being realised — the
+		// operator asked to exit regardless, and this line is the receipt for what
+		// that cost. On a GRACEFUL stop the gate above already proved the world was
+		// saveable seconds ago, so this is a genuinely transient failure and the
+		// loss is bounded to the window since that gate write — not to the last
+		// periodic checkpoint.
 		checkpointHealth.RecordFailure(time.Now(), err)
-		log.Printf("engine: final checkpoint failed: %v", err)
+		log.Printf("engine: CRITICAL final checkpoint FAILED — exiting anyway on a %s stop, DISCARDING %s: %v",
+			mode, discardedSince(checkpointHealth, time.Now()), err)
 	} else {
 		checkpointHealth.RecordSuccess(time.Now(), finalClamps)
 		log.Println("engine: final checkpoint written")
@@ -718,6 +807,11 @@ func run(rt runtime, stop <-chan struct{}) error {
 		}
 	}
 	cancelFinal()
+
+	// The one line the deploy reads back out of the journal (LLM-404). Emitted
+	// here, where every fact about the shutdown is settled and before the world
+	// teardown below can add noise between it and the reader.
+	logShutdownSummary(mode, checkpointHealth, finalClamps, finalTook, err)
 
 	// Stop the world and block until Run has actually returned. cancelWorld is
 	// also deferred (cleanup for early returns before the world starts);

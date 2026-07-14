@@ -61,7 +61,7 @@ func TestRun_LifecycleAndFinalCheckpoint(t *testing.T) {
 		TickSink:  nil, // worker pool null-checks the sink
 	}
 
-	stop := make(chan struct{})
+	stop := make(chan stopRequest, 1)
 	done := make(chan error, 1)
 	go func() { done <- run(rt, stop) }()
 
@@ -76,7 +76,7 @@ func TestRun_LifecycleAndFinalCheckpoint(t *testing.T) {
 	}
 
 	// Signal shutdown and wait for run() to return.
-	close(stop)
+	stop <- stopRequest{mode: stopGraceful}
 	select {
 	case err := <-done:
 		if err != nil {
@@ -390,7 +390,7 @@ func TestRun_WiresOffWorldCascades(t *testing.T) {
 		TickSink:  nil,
 	}
 
-	stop := make(chan struct{})
+	stop := make(chan stopRequest, 1)
 	done := make(chan error, 1)
 	go func() { done <- run(rt, stop) }()
 
@@ -411,7 +411,7 @@ func TestRun_WiresOffWorldCascades(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	close(stop)
+	stop <- stopRequest{mode: stopGraceful}
 	select {
 	case err := <-done:
 		if err != nil {
@@ -450,7 +450,7 @@ func TestRun_WiresStormCascade(t *testing.T) {
 		TickSink:  nil,
 	}
 
-	stop := make(chan struct{})
+	stop := make(chan stopRequest, 1)
 	done := make(chan error, 1)
 	go func() { done <- run(rt, stop) }()
 
@@ -470,7 +470,7 @@ func TestRun_WiresStormCascade(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	close(stop)
+	stop <- stopRequest{mode: stopGraceful}
 	select {
 	case err := <-done:
 		if err != nil {

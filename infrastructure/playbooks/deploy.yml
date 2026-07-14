@@ -74,22 +74,111 @@
     # checkpoint (engine/sim/repo/pg/save_world.go). A migration that UPDATEs one
     # of those rows while the engine is live is silently reverted: the old
     # binary's next checkpoint upserts its stale in-memory copy back over the
-    # migrated value (LLM-73, surfaced live by LLM-60). Stopping first sends
-    # SIGTERM, which the engine traps to take a final checkpoint before exiting
-    # (engine/sim/cmd/engine/main.go), so migrations apply to a quiesced
-    # database. systemd's default TimeoutStopSec (90s) comfortably covers the
-    # checkpoint. Skipped on a fresh machine where the unit does not exist yet;
-    # nothing is running to clobber.
+    # migrated value (LLM-73, surfaced live by LLM-60). Stopping first means
+    # migrations apply to a quiesced database. Skipped on a fresh machine where
+    # the unit does not exist yet; nothing is running to clobber.
+    #
+    # The stop is a GRACEFUL one (SIGWINCH, LLM-404): the engine checkpoints while
+    # still fully live and REFUSES to exit if that write fails, rather than dying
+    # and rebooting the village onto a stale checkpoint — the 2026-07-12 outage
+    # silently rolled back ~17.5 hours of world state exactly that way. A refused
+    # stop must therefore FAIL THE DEPLOY here, before the migrations below touch
+    # the database, leaving the engine running and the village intact.
+    #
+    # Delivered with `systemctl kill`, NOT `systemctl stop`, and that is
+    # load-bearing: systemd always escalates a stop to SIGKILL once
+    # TimeoutStopSec expires, and a SIGKILL landing on an engine that is
+    # deliberately refusing to exit would destroy the very world the refusal is
+    # protecting. `systemctl kill` just delivers the signal — the unit never
+    # enters its stopping state, so nothing is on a timer. (`systemctl stop`
+    # still works, and still means force/accept-the-loss. That is the escape
+    # hatch when durability cannot be repaired and the process must come down.)
     - name: Check whether the salem-engine unit is installed
       stat:
         path: /etc/systemd/system/salem-engine.service
       register: salem_engine_unit
 
-    - name: Stop the engine before migrations (avoid checkpoint clobber, LLM-73)
-      systemd:
-        name: salem-engine
-        state: stopped
+    - name: Check whether the engine is currently running
+      command: systemctl is-active --quiet salem-engine
+      register: engine_was_running
+      failed_when: false
+      changed_when: false
       when: salem_engine_unit.stat.exists
+
+    # Journal cursor for this stop attempt, so the checks below read only THIS
+    # shutdown's lines and can't be fooled by a previous deploy's.
+    - name: Mark the journal position before stopping the engine
+      command: date "+%Y-%m-%d %H:%M:%S"
+      register: engine_stop_mark
+      changed_when: false
+      when: engine_was_running.rc | default(1) == 0
+
+    - name: Request a graceful engine stop (SIGWINCH — refuses to exit unsaved, LLM-404)
+      command: systemctl kill -s WINCH salem-engine
+      when: engine_was_running.rc | default(1) == 0
+
+    # The engine exits 0 once its checkpoint lands (Restart=on-failure leaves it
+    # down). Two ways out of this poll: the unit goes inactive — the stop went
+    # through and the world is saved — or the engine logs its refusal, which we
+    # catch immediately rather than sitting out the full timeout. The timeout
+    # itself is the backstop for an engine that is wedged rather than refusing;
+    # generous, because a legitimate stop can spend a while draining an in-flight
+    # NPC tick before it even reaches the final checkpoint.
+    - name: Wait for the engine to checkpoint and exit
+      shell: |
+        for _ in $(seq 1 60); do
+          systemctl is-active --quiet salem-engine || exit 0
+          if journalctl -u salem-engine --since "{{ engine_stop_mark.stdout }}" --no-pager -o cat \
+               | grep -qF 'graceful stop ABORTED'; then
+            exit 1
+          fi
+          sleep 5
+        done
+        exit 2
+      register: engine_stopped
+      failed_when: false
+      changed_when: false
+      when: engine_was_running.rc | default(1) == 0
+
+    - name: Read the engine's account of the shutdown
+      shell: |
+        journalctl -u salem-engine --since "{{ engine_stop_mark.stdout }}" --no-pager -o cat \
+          | grep -F 'engine: shutdown summary:' | tail -1
+      register: engine_shutdown_summary
+      failed_when: false
+      changed_when: false
+      when: engine_was_running.rc | default(1) == 0
+
+    # A refused stop is a FAILED DEPLOY, and it fails HERE — before the migrations
+    # below touch the database. The village is still running and has lost nothing.
+    # Repair durability (/umbilical/checkpoint-health names the failing write),
+    # then re-run. If the engine genuinely must come down and the loss is
+    # acceptable, that is `systemctl stop` — a force stop, deliberately left as a
+    # separate, explicit human decision.
+    - name: Fail the deploy if the engine would not stop
+      fail:
+        msg: |
+          {% if engine_stopped.rc == 1 %}
+          The engine REFUSED to stop. Its checkpoint is failing, so exiting would
+          discard every change since the last good checkpoint — which is exactly
+          how the 2026-07-12 outage silently rolled the village back 17.5 hours.
+
+          Nothing has been migrated. The village is still running, unharmed.
+
+          Repair durability, then re-run this deploy. Check:
+            curl .../api/village/umbilical/checkpoint-health
+          To bring it down anyway and ACCEPT THE LOSS:
+            systemctl stop salem-engine
+          {% else %}
+          The engine did not exit within 5 minutes of a graceful stop request, and
+          did not log a refusal either — so it is wedged rather than protecting
+          itself. Nothing has been migrated.
+
+          Investigate: journalctl -u salem-engine -n 100
+          {% endif %}
+      when:
+        - engine_was_running.rc | default(1) == 0
+        - engine_stopped.rc | default(0) != 0
 
     # Migrations
     # On a fresh database, load the schema baseline (schema.sql) before running
@@ -249,3 +338,29 @@
     - name: Display deployment complete message
       debug:
         msg: "Deploy complete! Environment: {{ deploy_environment }}, Branch: {{ deploy_branch | default('main') }}"
+
+    # What the stop actually cost (LLM-404). A deploy that discarded hours of
+    # village must not read like a clean one, so the engine's own shutdown-summary
+    # line is echoed here, after "deploy complete", where it is the last thing on
+    # screen. Every branch below states what IS known — none of them quietly
+    # implies a checkpoint was verified when it wasn't.
+    - name: Report what the engine shutdown cost
+      debug:
+        msg: >-
+          {% if engine_was_running.rc | default(1) != 0 %}
+          WORLD STATE: the engine was NOT running when this deploy started, so this
+          deploy did not stop it and cannot vouch for its last checkpoint. Whatever
+          state it booted with is whatever the last checkpoint held.
+          {% elif engine_shutdown_summary.stdout | default('') == '' %}
+          WORLD STATE: the engine stopped, but logged no shutdown summary — this
+          deploy cannot confirm its final checkpoint was written. Check:
+          journalctl -u salem-engine --since "{{ engine_stop_mark.stdout }}"
+          {% elif 'checkpoint=ok' in engine_shutdown_summary.stdout %}
+          WORLD STATE: stopped gracefully, final checkpoint written, nothing lost.
+          {{ engine_shutdown_summary.stdout }}
+          {% else %}
+          *** WORLD STATE: THE ENGINE EXITED WITHOUT A GOOD CHECKPOINT. The village
+          was rolled back to its last successful save and the state since then is
+          GONE. ***
+          {{ engine_shutdown_summary.stdout }}
+          {% endif %}
