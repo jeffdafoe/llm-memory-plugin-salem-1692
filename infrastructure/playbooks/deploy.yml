@@ -118,6 +118,23 @@
       changed_when: false
       when: (engine_was_running | default({})).rc | default(1) == 0
 
+    # The cursor is REQUIRED, not nice-to-have: without it we cannot scope the
+    # journal reads to this stop attempt, and the play's refusal detection would
+    # silently degrade into "wait the full timeout and guess". A running unit
+    # always has journal entries, so an empty cursor means journald itself is
+    # unhealthy — fail now, before we have signalled anything.
+    - name: Fail if the journal cursor could not be read
+      fail:
+        msg: |
+          Could not read a journal cursor for salem-engine, so this deploy cannot
+          reliably tell a refused stop from a successful one. The engine has NOT
+          been signalled and nothing has been migrated.
+
+          Check journald: journalctl -u salem-engine -n 5
+      when:
+        - (engine_was_running | default({})).rc | default(1) == 0
+        - (engine_journal_cursor | default({})).stdout | default('') == ''
+
     - name: Request a graceful engine stop (SIGWINCH — refuses to exit unsaved, LLM-404)
       command: systemctl kill -s WINCH salem-engine
       when: (engine_was_running | default({})).rc | default(1) == 0
@@ -159,20 +176,10 @@
       register: engine_shutdown_summary
       failed_when: false
       changed_when: false
-      when:
-        - (engine_was_running | default({})).rc | default(1) == 0
-        - (engine_journal_cursor | default({})).stdout | default('') != ''
+      when: (engine_was_running | default({})).rc | default(1) == 0
 
     # A REFUSED stop is a failed deploy, and it fails HERE — before the migrations
-    # below touch the database.
-    #
-    # Note what does and does not halt the play, because the line is principled
-    # rather than squeamish: we halt only when halting still PRESERVES something.
-    # A refusal means the engine is alive and holding a world that has not been
-    # saved — stopping the deploy keeps it. Every other bad outcome below (a crash,
-    # a failed final checkpoint) has already realised its loss and left the engine
-    # down; halting there would only extend the outage without recovering a single
-    # row, so the play continues, restores service, and reports what it cost.
+    # below touch the database. The village is still running and has lost nothing.
     - name: Fail the deploy if the engine would not stop
       fail:
         msg: |
@@ -199,6 +206,51 @@
       when:
         - (engine_was_running | default({})).rc | default(1) == 0
         - (engine_stopped | default({})).rc | default(0) in [1, 2]
+
+    # The engine is DOWN now, one way or another. Before we run migrations —
+    # which are IRREVERSIBLE — insist we know how it went down.
+    #
+    # "Clean" means this shutdown durably saved the world at least once: either
+    # `final=ok`, or `gate=ok` (a graceful stop whose gate wrote a good checkpoint
+    # seconds before a transient final write failed — the village is safe and the
+    # DB is current). Anything else — a crash (rc=3), no summary at all, or a force
+    # stop whose only checkpoint failed — means we do NOT know what state the
+    # database is in relative to the world that just died.
+    #
+    # Halting here is NOT about recovering the lost in-memory state; that is gone
+    # and no amount of stopping brings it back. It is about the migration boundary:
+    # migrations are irreversible, and running them automatically on top of an
+    # uncontrolled engine death compounds a transient failure into a mixed event
+    # (lost checkpoint + migrated schema + new binary) and destroys the operator's
+    # chance to inspect or snapshot the DB at the exact pre-migration state. That
+    # is a call a human should make, so this asks them to make it.
+    #
+    # Scoped to run_migrations: with no migrations pending, nothing irreversible is
+    # about to happen, so there is no boundary to defend and the play just brings
+    # the village back up.
+    - name: Fail before migrations if the engine died without a confirmed checkpoint
+      fail:
+        msg: |
+          The engine went down WITHOUT confirming it saved the world, and there are
+          migrations to run. Migrations are irreversible, so this deploy is stopping
+          here rather than layering schema changes on top of a state nobody has
+          looked at.
+
+            stop result: {{ (engine_stopped | default({})).rc | default('unknown') }}{{ ' (unit ended in `failed` — the engine crashed)' if (engine_stopped | default({})).rc | default(0) | int == 3 else '' }}
+            engine said: {{ (engine_shutdown_summary | default({})).stdout | default('(no shutdown summary in the journal)') }}
+
+          Nothing has been migrated. The engine is stopped.
+
+          Inspect the journal and the database, take a snapshot if you want one,
+          then re-run with:
+            -e allow_migrate_after_unclean_engine_stop=true
+        # A deploy with no migrations pending has no irreversible step to guard.
+      when:
+        - (engine_was_running | default({})).rc | default(1) == 0
+        - run_migrations | default(false) | bool
+        - not (allow_migrate_after_unclean_engine_stop | default(false) | bool)
+        - "'final=ok' not in ((engine_shutdown_summary | default({})).stdout | default(''))"
+        - "'gate=ok' not in ((engine_shutdown_summary | default({})).stdout | default(''))"
 
     # Migrations
     # On a fresh database, load the schema baseline (schema.sql) before running
@@ -376,21 +428,27 @@
           deploy did not stop it and cannot vouch for its last checkpoint. Whatever
           it boots with is whatever that checkpoint held.
           {% elif stop_rc | int == 3 %}
-          *** WORLD STATE: THE ENGINE DID NOT STOP CLEANLY — the unit ended up in
-          `failed`, i.e. it died rather than checkpointing its way out. Everything
-          since its last successful checkpoint is GONE, and this deploy cannot say
-          how much that was. *** {{ summary }}
+          *** WORLD STATE: THE ENGINE CRASHED rather than checkpointing its way out
+          (the unit ended in `failed`). Everything since its last successful
+          checkpoint is GONE, and this deploy cannot say how much that was. ***
+          {{ summary }}
           Investigate: journalctl -u salem-engine -n 100
           {% elif summary == '' %}
           WORLD STATE: the engine stopped, but logged no shutdown summary, so this
-          deploy cannot confirm a final checkpoint was written. Check:
+          deploy cannot confirm a checkpoint was written. Check:
           journalctl -u salem-engine -n 100
-          {% elif 'checkpoint=ok' in summary %}
-          WORLD STATE: stopped gracefully, final checkpoint written, nothing lost.
+          {% elif 'final=ok' in summary %}
+          WORLD STATE: stopped cleanly, final checkpoint written, nothing lost.
+          {{ summary }}
+          {% elif 'gate=ok' in summary %}
+          WORLD STATE: saved, then the final write failed on the way out. The stop
+          gate had already checkpointed the world seconds earlier, so the village is
+          intact and only that last sliver is gone — but the final failure means
+          durability is flaky and wants looking at.
           {{ summary }}
           {% else %}
-          *** WORLD STATE: THE ENGINE EXITED WITHOUT A GOOD FINAL CHECKPOINT. The
-          village has been rolled back to its last successful save and the state
-          since then is GONE. ***
+          *** WORLD STATE: THE ENGINE EXITED WITHOUT SAVING THE WORLD AT ALL. The
+          village has been rolled back to its last successful checkpoint and
+          everything since then is GONE. ***
           {{ summary }}
           {% endif %}

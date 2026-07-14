@@ -96,12 +96,28 @@ func discardedSince(health *sim.CheckpointHealth, now time.Time) string {
 //
 // Deliberately machine-readable AND readable: the operator holding this at 3am
 // is as likely to be a human reading journalctl as the playbook.
-func logShutdownSummary(mode stopMode, health *sim.CheckpointHealth, clamps *sim.ClampReport, took time.Duration, err error) {
+//
+// It reports the two checkpoints SEPARATELY (gate= and final=) because they
+// answer different questions and the deploy branches on the difference. A
+// graceful stop that passed its gate and then lost the final write to a
+// transient error has a GOOD checkpoint on disk, seconds old — the village is
+// safe and the deploy may proceed. A force stop that failed its only checkpoint
+// has nothing of the kind. Collapsing both into one `checkpoint=FAILED` would
+// make those look identical, and the safe one is by far the more common.
+//
+// gate=skipped on a force stop: force does not run a gate, and saying "skipped"
+// rather than "failed" keeps the reader from hunting for a failure that never
+// happened.
+func logShutdownSummary(mode stopMode, gateOK bool, health *sim.CheckpointHealth, clamps *sim.ClampReport, took time.Duration, err error) {
+	gate := "skipped"
+	if gateOK {
+		gate = "ok"
+	}
 	if err != nil {
-		log.Printf("engine: shutdown summary: mode=%s checkpoint=FAILED discarded=%q error=%q",
-			mode, discardedSince(health, time.Now()), err.Error())
+		log.Printf("engine: shutdown summary: mode=%s gate=%s final=FAILED discarded=%q error=%q",
+			mode, gate, discardedSince(health, time.Now()), err.Error())
 		return
 	}
-	log.Printf("engine: shutdown summary: mode=%s checkpoint=ok duration=%s clamps=%d discarded=none",
-		mode, took.Round(time.Millisecond), clamps.Total())
+	log.Printf("engine: shutdown summary: mode=%s gate=%s final=ok duration=%s clamps=%d discarded=none",
+		mode, gate, took.Round(time.Millisecond), clamps.Total())
 }

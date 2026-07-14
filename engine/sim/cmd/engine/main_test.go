@@ -61,9 +61,14 @@ func TestRun_LifecycleAndFinalCheckpoint(t *testing.T) {
 		TickSink:  nil, // worker pool null-checks the sink
 	}
 
+	// Both channels wired even though these lifecycle tests only ever stop
+	// gracefully — a nil force channel is a silently disabled select case, and a
+	// test that can't inject force is a coverage gap waiting to happen.
 	graceful := make(chan struct{}, 1)
 	done := make(chan error, 1)
-	go func() { done <- run(rt, stopSignals{graceful: graceful}) }()
+	go func() {
+		done <- run(rt, stopSignals{force: make(chan struct{}, 1), graceful: graceful})
+	}()
 
 	// Let the world boot and the periodic checkpointer fire at least once.
 	time.Sleep(150 * time.Millisecond)
@@ -390,9 +395,14 @@ func TestRun_WiresOffWorldCascades(t *testing.T) {
 		TickSink:  nil,
 	}
 
+	// Both channels wired even though these lifecycle tests only ever stop
+	// gracefully — a nil force channel is a silently disabled select case, and a
+	// test that can't inject force is a coverage gap waiting to happen.
 	graceful := make(chan struct{}, 1)
 	done := make(chan error, 1)
-	go func() { done <- run(rt, stopSignals{graceful: graceful}) }()
+	go func() {
+		done <- run(rt, stopSignals{force: make(chan struct{}, 1), graceful: graceful})
+	}()
 
 	// The immediate atmosphere sweep applies async (via SendContext) once Run
 	// starts, so poll the world for the installed prose rather than racing it.
@@ -450,9 +460,14 @@ func TestRun_WiresStormCascade(t *testing.T) {
 		TickSink:  nil,
 	}
 
+	// Both channels wired even though these lifecycle tests only ever stop
+	// gracefully — a nil force channel is a silently disabled select case, and a
+	// test that can't inject force is a coverage gap waiting to happen.
 	graceful := make(chan struct{}, 1)
 	done := make(chan error, 1)
-	go func() { done <- run(rt, stopSignals{graceful: graceful}) }()
+	go func() {
+		done <- run(rt, stopSignals{force: make(chan struct{}, 1), graceful: graceful})
+	}()
 
 	// The boot SeedWeatherClear applies async once Run starts; poll for clear.
 	var got string

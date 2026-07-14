@@ -449,6 +449,14 @@ func agentSlugsToQuery(world *sim.World) []string {
 // consume many stop requests before it returns; only a force stop, or a graceful
 // stop whose gate checkpoint succeeded, ends it.
 func run(rt runtime, stop stopSignals) error {
+	// A run with no stop channel at all could never return — the gate below would
+	// block on two nil receives forever. A nil channel is a legitimate way to say
+	// "this engine cannot be stopped THAT way" (the tests use it, and the Windows
+	// build has no graceful signal), but both nil is a wiring bug, not a mode.
+	if stop.force == nil && stop.graceful == nil {
+		return fmt.Errorf("engine: run needs at least one stop channel (both force and graceful are nil)")
+	}
+
 	// Two independent contexts. worldCtx drives the world goroutine plus every
 	// ticker, cascade sweep, and the tick-worker pool — everything that must
 	// stay alive to build the final checkpoint. checkpointerCtx drives only
@@ -717,6 +725,7 @@ func run(rt runtime, stop stopSignals) error {
 	// panics on Start, a shut-down http.Server cannot be reused), so a refusal
 	// discovered mid-teardown would have no engine left to resume.
 	mode := stopForce
+	gateOK := false
 gate:
 	for {
 		// Force first, and on its own, so it PREEMPTS a graceful request that is
@@ -759,7 +768,7 @@ gate:
 				log.Printf("engine: stop gate checkpoint CLAMPED — %s", gateClamps.Summary())
 			}
 			log.Println("engine: graceful stop gate passed — world is durably saved")
-			mode = stopGraceful
+			mode, gateOK = stopGraceful, true
 			break gate
 		}
 	}
@@ -843,7 +852,7 @@ gate:
 	// The one line the deploy reads back out of the journal (LLM-404). Emitted
 	// here, where every fact about the shutdown is settled and before the world
 	// teardown below can add noise between it and the reader.
-	logShutdownSummary(mode, checkpointHealth, finalClamps, finalTook, err)
+	logShutdownSummary(mode, gateOK, checkpointHealth, finalClamps, finalTook, err)
 
 	// Stop the world and block until Run has actually returned. cancelWorld is
 	// also deferred (cleanup for early returns before the world starts);
