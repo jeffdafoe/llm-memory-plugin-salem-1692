@@ -333,6 +333,10 @@ func JoinHuddle(actorID ActorID, structureID StructureID, sceneID SceneID, now t
 					Members:     make(map[ActorID]struct{}),
 					StructureID: structureID,
 					StartedAt:   now,
+					// A brand-new conversation until seedHuddleFromContinuity says
+					// otherwise — a same-clique re-formation overwrites this with the
+					// carried clock so the lingering arm measures the talk, not the id.
+					ConversationSince: now,
 				}
 				w.Huddles[huddleID] = huddle
 				huddleNew = true

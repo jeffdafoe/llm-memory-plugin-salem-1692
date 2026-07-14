@@ -65,5 +65,4 @@ func RegisterCoreTickers(w *World) {
 	w.RegisterTicker("huddle_silence_sweep", effectiveHuddleSilenceSweepCadence(w.Settings))
 	w.RegisterTicker("huddle_loop_sweep", effectiveHuddleLoopSweepCadence(w.Settings))
 	w.RegisterTicker("scene_quote_sweep", effectiveSceneQuoteSweepCadence(w.Settings))
-	w.RegisterTicker("eco_conclude_sweep", ecoConcludeSweepCadence)
 }

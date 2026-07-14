@@ -62,6 +62,14 @@ type conversationCarryover struct {
 	// chance) but NOT this counter (the CONDITION persists), matching how the
 	// carried ring keeps huddleLoopContentPresent true across a sweep conclude.
 	turnsSinceProgress int
+
+	// conversationSince carries the LLM-397 lingering arm's clock — when the TALK
+	// began, as distinct from when any one huddle object did. Without it the
+	// clock resets on every churn cycle and a conversation can run indefinitely
+	// while never appearing older than its newest huddle: the live 2026-07-14 inn
+	// conversation ran 100 minutes across ten huddle ids, none of them older than
+	// a few minutes.
+	conversationSince time.Time
 }
 
 // effectiveHuddleContinuityWindow returns the configured continuity window or the
@@ -141,6 +149,10 @@ func writeConversationCarryover(w *World, h *Huddle, now time.Time) {
 		t := *h.LoopingSince
 		loopingSince = &t
 	}
+	conversationSince := h.ConversationSince
+	if conversationSince.IsZero() {
+		conversationSince = h.StartedAt
+	}
 	w.carryoverByStructure[h.StructureID] = &conversationCarryover{
 		utterances:         append([]Utterance(nil), h.RecentUtterances...),
 		members:            members,
@@ -149,6 +161,7 @@ func writeConversationCarryover(w *World, h *Huddle, now time.Time) {
 		lastProgressAt:     h.LastProgressAt,
 		concludedAt:        now,
 		turnsSinceProgress: h.TurnsSinceProgress,
+		conversationSince:  conversationSince,
 	}
 }
 
@@ -176,4 +189,9 @@ func seedHuddleFromContinuity(w *World, huddle *Huddle, structureID StructureID,
 	}
 	huddle.LastProgressAt = cb.lastProgressAt
 	huddle.TurnsSinceProgress = cb.turnsSinceProgress
+	// LLM-397: the talk resumes, so its clock does too — a re-formed huddle
+	// inherits the conversation's age rather than presenting as newborn.
+	if !cb.conversationSince.IsZero() {
+		huddle.ConversationSince = cb.conversationSince
+	}
 }

@@ -140,7 +140,7 @@ func TestSetHuddleLoopSettings(t *testing.T) {
 	ip := func(v int) *int { return &v }
 
 	w := newConfigWorld(t)
-	res, err := sim.SetHuddleLoopSettings(ip(90), ip(70), ip(20), ip(24)).Fn(w)
+	res, err := sim.SetHuddleLoopSettings(ip(90), ip(70), ip(20), ip(24), ip(600)).Fn(w)
 	if err != nil {
 		t.Fatalf("SetHuddleLoopSettings: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestSetHuddleLoopSettings(t *testing.T) {
 	}
 
 	// Partial update: repeat_percent only; timeout + cadence + max_turns unchanged.
-	if _, err := sim.SetHuddleLoopSettings(nil, ip(55), nil, nil).Fn(w); err != nil {
+	if _, err := sim.SetHuddleLoopSettings(nil, ip(55), nil, nil, nil).Fn(w); err != nil {
 		t.Fatalf("partial tune: %v", err)
 	}
 	if w.Settings.HuddleLoopTimeout != 90*time.Second ||
@@ -173,14 +173,14 @@ func TestSetHuddleLoopSettings(t *testing.T) {
 
 	// A max_turns-only tune with an unset stored value echoes the effective
 	// default resolution path: result reports the concrete value just set.
-	if res, err := sim.SetHuddleLoopSettings(nil, nil, nil, ip(10)).Fn(w); err != nil {
+	if res, err := sim.SetHuddleLoopSettings(nil, nil, nil, ip(10), nil).Fn(w); err != nil {
 		t.Fatalf("max_turns tune: %v", err)
 	} else if out := res.(sim.HuddleLoopSettingsResult); out.MaxTurns != 10 {
 		t.Errorf("MaxTurns after tune = %d, want 10", out.MaxTurns)
 	}
 
 	// Master off-switch: timeout 0 is valid (disables the sweep).
-	if _, err := sim.SetHuddleLoopSettings(ip(0), nil, nil, nil).Fn(w); err != nil {
+	if _, err := sim.SetHuddleLoopSettings(ip(0), nil, nil, nil, nil).Fn(w); err != nil {
 		t.Fatalf("timeout 0 should be valid (disable): %v", err)
 	}
 	if w.Settings.HuddleLoopTimeout != 0 {
@@ -188,20 +188,22 @@ func TestSetHuddleLoopSettings(t *testing.T) {
 	}
 
 	bad := []struct {
-		name                                string
-		timeout, percent, cadence, maxTurns *int
+		name                                          string
+		timeout, percent, cadence, maxTurns, windDown *int
 	}{
-		{"none provided", nil, nil, nil, nil},
-		{"negative timeout", ip(-1), nil, nil, nil},
-		{"percent zero", nil, ip(0), nil, nil},
-		{"percent over 100", nil, ip(101), nil, nil},
-		{"cadence zero", nil, nil, ip(0), nil},
-		{"cadence negative", nil, nil, ip(-5), nil},
-		{"max_turns zero", nil, nil, nil, ip(0)},
-		{"max_turns negative", nil, nil, nil, ip(-3)},
+		{"none provided", nil, nil, nil, nil, nil},
+		{"negative timeout", ip(-1), nil, nil, nil, nil},
+		{"percent zero", nil, ip(0), nil, nil, nil},
+		{"percent over 100", nil, ip(101), nil, nil, nil},
+		{"cadence zero", nil, nil, ip(0), nil, nil},
+		{"cadence negative", nil, nil, ip(-5), nil, nil},
+		{"max_turns zero", nil, nil, nil, ip(0), nil},
+		{"max_turns negative", nil, nil, nil, ip(-3), nil},
+		{"wind_down zero", nil, nil, nil, nil, ip(0)},
+		{"wind_down negative", nil, nil, nil, nil, ip(-60)},
 	}
 	for _, c := range bad {
-		if _, err := sim.SetHuddleLoopSettings(c.timeout, c.percent, c.cadence, c.maxTurns).Fn(newConfigWorld(t)); !errors.Is(err, sim.ErrInvalidHuddleLoopSetting) {
+		if _, err := sim.SetHuddleLoopSettings(c.timeout, c.percent, c.cadence, c.maxTurns, c.windDown).Fn(newConfigWorld(t)); !errors.Is(err, sim.ErrInvalidHuddleLoopSetting) {
 			t.Errorf("%s: err = %v, want ErrInvalidHuddleLoopSetting", c.name, err)
 		}
 	}

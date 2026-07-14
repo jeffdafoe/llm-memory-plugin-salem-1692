@@ -591,10 +591,22 @@ type WorldSettings struct {
 	// 0.60 threshold on the live farewell loop). <= 0 falls back to
 	// HuddleLoopMaxTurnsDefault (16); rides the sweep's master enable. Tunable
 	// via huddle_loop_max_turns.
-	HuddleLoopTimeout       time.Duration
-	HuddleLoopRepeatPercent int
-	HuddleLoopSweepCadence  time.Duration
-	HuddleLoopMaxTurns      int
+	//
+	// HuddleConversationWindDown is the lingering arm's clock (LLM-397): how long
+	// a CONVERSATION may run — measured on Huddle.ConversationSince, which
+	// survives the huddle churn — before the wind-down steer arms and the
+	// persistence gate starts running toward a silent conclude. It is the only
+	// arm that can see a healthy, productive conversation (the others all require
+	// a pathology: repetition, a dead deal, or turns spent on nothing), and the
+	// steer is its point — the conclude one HuddleLoopTimeout later is just the
+	// backstop for a scene that won't close itself. <= 0 falls back to
+	// HuddleConversationWindDownDefault (12m); rides the sweep's master enable.
+	// Tunable via huddle_conversation_wind_down_seconds.
+	HuddleLoopTimeout          time.Duration
+	HuddleLoopRepeatPercent    int
+	HuddleLoopSweepCadence     time.Duration
+	HuddleLoopMaxTurns         int
+	HuddleConversationWindDown time.Duration
 
 	// HuddleContinuityWindow is how long after a structure huddle concludes a
 	// re-formation among the same speakers still counts as the SAME conversation
@@ -672,16 +684,6 @@ type WorldSettings struct {
 	// choice, farm upkeep, stall repair, seek work). Seeded
 	// DefaultEcoEconomyGap when the eco_economy_gap_seconds key is absent.
 	EcoEconomyGap time.Duration
-
-	// EcoConversationMax is the eco conversation arc (LLM-334): how long a
-	// huddle may run continuously unwatched (and commerce-free) before the
-	// eco-conclude sweep silently ends the scene and quiets its members. The
-	// eco gaps bound a conversation's rate; this bounds its lifetime — the
-	// only thing that reduces a self-sustaining npc_spoke chain's total call
-	// count. 0 disables the sweep (meter-forever); seeded
-	// DefaultEcoConversationMax when the eco_conversation_max_seconds key is
-	// absent. Live-tunable + persisted (settings/eco-mode).
-	EcoConversationMax time.Duration
 }
 
 // DefaultOutdoorSceneRadiusValue is the fallback radius used when
@@ -2063,8 +2065,13 @@ func (w *World) republish() {
 	// lookup rather than a per-member ledger walk in this hot, per-command path.
 	// Gated on the loop sweep's master enable — the same gate the utterance steer reads.
 	var ledgerLoopHuddles map[HuddleID]struct{}
+	// LLM-397: the live-deal set for the lingering steer, same once-per-publish
+	// posture. A huddle mid-deal must not be told to wrap up — the wind-down line
+	// would land on a buyer with coin already on the table.
+	var commerceHuddles map[HuddleID]struct{}
 	if huddleLoopEnabled(w.Settings) {
 		_, ledgerLoopHuddles = ledgerStandoffHuddles(w, now)
+		commerceHuddles = ledgerCommerceHuddles(w)
 	}
 	for id, a := range w.Actors {
 		sa := snapshotActor(a, w.TickCounter, w.Settings.degeneracyEnabled())
@@ -2136,11 +2143,23 @@ func (w *World) republish() {
 				// on", not "you keep saying the same thing", and the render line must
 				// state what is actually true of the scene. Looping wins when both
 				// hold: it is the more specific diagnosis.
+				//
+				// LLM-397: the lingering arm's steer (ConversationLingering) is last
+				// and least specific — it says only "this has run long", which is all
+				// that is TRUE of a conversation that has been productive and varied
+				// and simply hasn't stopped. It must not borrow the endurance line's
+				// "nothing is coming of it": on the live inn conversation that line
+				// would have been false — a bowl of porridge had just been bought,
+				// paid for, and served. Suppressed mid-deal, like the sweep's arm.
 				_, ledgerArmed := ledgerLoopHuddles[a.CurrentHuddleID]
-				if huddleLoopArmed(w.Settings, h, now) || ledgerArmed {
+				switch {
+				case huddleLoopArmed(w.Settings, h, now) || ledgerArmed:
 					sa.ConversationLooping = true
-				} else if huddleEnduranceArmed(w.Settings, h, now) {
+				case huddleEnduranceArmed(w.Settings, h, now):
 					sa.ConversationRunLong = true
+				case huddleLingeringArmed(w.Settings, h, now) &&
+					!huddleCarriesLiveCommerce(w, h, commerceHuddles):
+					sa.ConversationLingering = true
 				}
 			}
 		}

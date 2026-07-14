@@ -191,10 +191,12 @@ var ErrInvalidHuddleLoopSetting = errors.New("invalid huddle loop setting")
 // HuddleLoopSettingsResult echoes the post-change huddle loop-sweep knobs in wire
 // units (seconds + percent + turns).
 type HuddleLoopSettingsResult struct {
-	TimeoutSeconds int
-	RepeatPercent  int
-	CadenceSeconds int
-	MaxTurns       int
+	TimeoutSeconds      int
+	RepeatPercent       int
+	CadenceSeconds      int
+	MaxTurns            int
+	WindDownSeconds     int
+	HardConcludeSeconds int
 }
 
 // SetHuddleLoopSettings returns a Command that live-tunes the huddle
@@ -214,7 +216,14 @@ type HuddleLoopSettingsResult struct {
 // timer. Durability rides the periodic checkpoint (MutableWorldSettings →
 // SaveMutableSettings upserts huddle_loop_*_seconds / huddle_loop_repeat_percent
 // into the setting table), so a live change survives restart.
-func SetHuddleLoopSettings(timeoutSeconds, repeatPercent, cadenceSeconds, maxTurns *int) Command {
+// windDownSeconds > 0 is the LLM-397 lingering clock (how long a conversation may
+// run before the wind-down steer arms), riding the master enable like the other
+// arms. The result also echoes HardConcludeSeconds — wind-down PLUS the
+// persistence gate — because that, not either knob alone, is the number an
+// operator actually wants: "how long can a conversation run before the engine ends
+// it." Making them do that arithmetic in their head is how you end up with a
+// 3-minute guillotine nobody intended.
+func SetHuddleLoopSettings(timeoutSeconds, repeatPercent, cadenceSeconds, maxTurns, windDownSeconds *int) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
 			hasOne := false
@@ -242,6 +251,12 @@ func SetHuddleLoopSettings(timeoutSeconds, repeatPercent, cadenceSeconds, maxTur
 					return nil, ErrInvalidHuddleLoopSetting
 				}
 			}
+			if windDownSeconds != nil {
+				hasOne = true
+				if *windDownSeconds <= 0 || *windDownSeconds > math.MaxInt32 {
+					return nil, ErrInvalidHuddleLoopSetting
+				}
+			}
 			if !hasOne {
 				return nil, ErrInvalidHuddleLoopSetting
 			}
@@ -257,11 +272,19 @@ func SetHuddleLoopSettings(timeoutSeconds, repeatPercent, cadenceSeconds, maxTur
 			if maxTurns != nil {
 				w.Settings.HuddleLoopMaxTurns = *maxTurns
 			}
+			if windDownSeconds != nil {
+				w.Settings.HuddleConversationWindDown = time.Duration(*windDownSeconds) * time.Second
+			}
+			windDown := effectiveHuddleConversationWindDown(w.Settings)
 			return HuddleLoopSettingsResult{
-				TimeoutSeconds: int(w.Settings.HuddleLoopTimeout / time.Second),
-				RepeatPercent:  w.Settings.HuddleLoopRepeatPercent,
-				CadenceSeconds: int(w.Settings.HuddleLoopSweepCadence / time.Second),
-				MaxTurns:       effectiveHuddleLoopMaxTurns(w.Settings),
+				TimeoutSeconds:  int(w.Settings.HuddleLoopTimeout / time.Second),
+				RepeatPercent:   w.Settings.HuddleLoopRepeatPercent,
+				CadenceSeconds:  int(w.Settings.HuddleLoopSweepCadence / time.Second),
+				MaxTurns:        effectiveHuddleLoopMaxTurns(w.Settings),
+				WindDownSeconds: int(windDown / time.Second),
+				// The gate only runs once the arm is enabled; with the sweep off there
+				// is no hard conclude at all, and reporting wind-down+0 would imply one.
+				HardConcludeSeconds: hardConcludeSeconds(w.Settings, windDown),
 			}, nil
 		},
 	}
@@ -417,12 +440,11 @@ var ErrInvalidEcoModeSetting = errors.New("invalid eco mode setting")
 // throttles are engaged at this instant (enabled AND no fresh player presence)
 // so the operator sees cause and effect in one response.
 type EcoModeSettingsResult struct {
-	Enabled                bool
-	SocialGapSeconds       int
-	EconomyGapSeconds      int
-	ConversationMaxSeconds int
-	AudienceActive         bool
-	Engaged                bool
+	Enabled           bool
+	SocialGapSeconds  int
+	EconomyGapSeconds int
+	AudienceActive    bool
+	Engaged           bool
 }
 
 // SetEcoMode returns a Command that live-tunes eco mode (LLM-313): the master
@@ -436,11 +458,15 @@ type EcoModeSettingsResult struct {
 // by the warrant stale horizon, since it delays no warrant — it ends scenes.
 // Takes effect on the next reactor scan / sweep pass AND persists on the next
 // checkpoint via MutableWorldSettings, so a live change survives restart.
-func SetEcoMode(enabled *bool, socialGapSeconds, economyGapSeconds, conversationMaxSeconds *int) Command {
+// Eco mode PACES; it does not end scenes. The conversation arc (LLM-334) that
+// used to live here — an audience-gated hard conclude on every huddle — is gone
+// (LLM-397): how long a conversation may run is a fact about the conversation,
+// not about who is watching, so it now belongs to the loop sweep's lingering arm
+// (settings/huddle-loop, huddle_conversation_wind_down_seconds).
+func SetEcoMode(enabled *bool, socialGapSeconds, economyGapSeconds *int) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
-			if enabled == nil && socialGapSeconds == nil && economyGapSeconds == nil &&
-				conversationMaxSeconds == nil {
+			if enabled == nil && socialGapSeconds == nil && economyGapSeconds == nil {
 				return nil, ErrInvalidEcoModeSetting
 			}
 			// Gaps must fit under the eco ceiling (code_review R1+R2): the
@@ -463,10 +489,6 @@ func SetEcoMode(enabled *bool, socialGapSeconds, economyGapSeconds, conversation
 			if !validGap(socialGapSeconds) || !validGap(economyGapSeconds) {
 				return nil, ErrInvalidEcoModeSetting
 			}
-			if conversationMaxSeconds != nil &&
-				(*conversationMaxSeconds < 0 || *conversationMaxSeconds > math.MaxInt32) {
-				return nil, ErrInvalidEcoModeSetting
-			}
 			if enabled != nil {
 				w.Settings.EcoEnabled = *enabled
 			}
@@ -476,18 +498,14 @@ func SetEcoMode(enabled *bool, socialGapSeconds, economyGapSeconds, conversation
 			if economyGapSeconds != nil {
 				w.Settings.EcoEconomyGap = time.Duration(*economyGapSeconds) * time.Second
 			}
-			if conversationMaxSeconds != nil {
-				w.Settings.EcoConversationMax = time.Duration(*conversationMaxSeconds) * time.Second
-			}
 			now := time.Now().UTC()
 			audience := AudienceActive(w, now)
 			return EcoModeSettingsResult{
-				Enabled:                w.Settings.EcoEnabled,
-				SocialGapSeconds:       int(w.Settings.EcoSocialGap / time.Second),
-				EconomyGapSeconds:      int(w.Settings.EcoEconomyGap / time.Second),
-				ConversationMaxSeconds: int(effectiveEcoConversationMax(w.Settings) / time.Second),
-				AudienceActive:         audience,
-				Engaged:                w.Settings.EcoEnabled && !audience,
+				Enabled:           w.Settings.EcoEnabled,
+				SocialGapSeconds:  int(w.Settings.EcoSocialGap / time.Second),
+				EconomyGapSeconds: int(w.Settings.EcoEconomyGap / time.Second),
+				AudienceActive:    audience,
+				Engaged:           w.Settings.EcoEnabled && !audience,
 			}, nil
 		},
 	}

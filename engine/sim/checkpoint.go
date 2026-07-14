@@ -87,10 +87,13 @@ type MutableWorldSettings struct {
 	// in seconds to match the huddle_loop_*_seconds setting keys.
 	// HuddleLoopMaxTurns is the LLM-333 endurance arm's no-progress turn budget
 	// (0 = default, HuddleLoopMaxTurnsDefault).
-	HuddleLoopTimeoutSeconds      int
-	HuddleLoopRepeatPercent       int
-	HuddleLoopSweepCadenceSeconds int
-	HuddleLoopMaxTurns            int
+	// HuddleConversationWindDownSeconds is the LLM-397 lingering arm's clock
+	// (0 = default, HuddleConversationWindDownDefault).
+	HuddleLoopTimeoutSeconds          int
+	HuddleLoopRepeatPercent           int
+	HuddleLoopSweepCadenceSeconds     int
+	HuddleLoopMaxTurns                int
+	HuddleConversationWindDownSeconds int
 
 	// SeekWorkCoinCeiling (LLM-194) — the coin balance at/above which a workless
 	// worker stops seeking/soliciting work. Live-tunable via the umbilical, persisted
@@ -116,12 +119,11 @@ type MutableWorldSettings struct {
 	// Eco mode knobs (LLM-313) — throttle LLM deliberation cadence while no player
 	// is present. Live-tunable via the umbilical, persisted here each checkpoint so
 	// a live change survives restart. Gaps stored in seconds to match the
-	// eco_*_gap_seconds setting keys. EcoConversationMaxSeconds (LLM-334) is the
-	// unwatched conversation arc (0 = arc sweep off).
-	EcoEnabled                bool
-	EcoSocialGapSeconds       int
-	EcoEconomyGapSeconds      int
-	EcoConversationMaxSeconds int
+	// eco_*_gap_seconds setting keys. Eco paces; it does not end conversations —
+	// the LLM-334 arc moved to HuddleConversationWindDownSeconds (LLM-397).
+	EcoEnabled           bool
+	EcoSocialGapSeconds  int
+	EcoEconomyGapSeconds int
 }
 
 // DiscoveredKind is the minimal persist-tuple for an engine-minted item kind
@@ -159,28 +161,28 @@ func (w *World) BuildCheckpointSnapshot() *CheckpointSnapshot {
 		Environment:    w.Environment,
 		Phase:          w.Phase,
 		MutableSettings: MutableWorldSettings{
-			ZoomMinAdmin:                  w.Settings.ZoomMinAdmin,
-			ZoomMinRegular:                w.Settings.ZoomMinRegular,
-			AgentTicksPaused:              w.Settings.AgentTicksPaused,
-			StallWearPerCoin:              w.Settings.StallWearPerCoin,
-			StallWearRepairThreshold:      w.Settings.StallWearRepairThreshold,
-			StallWearDegradeThreshold:     w.Settings.StallWearDegradeThreshold,
-			StallNailsPerRepair:           w.Settings.StallNailsPerRepair,
-			StallRepairDurationSeconds:    w.Settings.StallRepairDurationSeconds,
-			FarmUpkeepFloor:               w.Settings.FarmUpkeepFloor,
-			FarmUpkeepCoinsPerShovel:      w.Settings.FarmUpkeepCoinsPerShovel,
-			HuddleLoopTimeoutSeconds:      int(w.Settings.HuddleLoopTimeout / time.Second),
-			HuddleLoopRepeatPercent:       w.Settings.HuddleLoopRepeatPercent,
-			HuddleLoopSweepCadenceSeconds: int(w.Settings.HuddleLoopSweepCadence / time.Second),
-			HuddleLoopMaxTurns:            w.Settings.HuddleLoopMaxTurns,
-			SeekWorkCoinCeiling:           w.Settings.SeekWorkCoinCeiling,
-			SeekWorkNeedYieldMargin:       w.Settings.SeekWorkNeedYieldMargin,
-			LaborProduceBoostPct:          w.Settings.LaborProduceBoostPct,
-			MerchantCoinFloor:             w.Settings.MerchantCoinFloor,
-			EcoEnabled:                    w.Settings.EcoEnabled,
-			EcoSocialGapSeconds:           int(w.Settings.EcoSocialGap / time.Second),
-			EcoEconomyGapSeconds:          int(w.Settings.EcoEconomyGap / time.Second),
-			EcoConversationMaxSeconds:     int(w.Settings.EcoConversationMax / time.Second),
+			ZoomMinAdmin:                      w.Settings.ZoomMinAdmin,
+			ZoomMinRegular:                    w.Settings.ZoomMinRegular,
+			AgentTicksPaused:                  w.Settings.AgentTicksPaused,
+			StallWearPerCoin:                  w.Settings.StallWearPerCoin,
+			StallWearRepairThreshold:          w.Settings.StallWearRepairThreshold,
+			StallWearDegradeThreshold:         w.Settings.StallWearDegradeThreshold,
+			StallNailsPerRepair:               w.Settings.StallNailsPerRepair,
+			StallRepairDurationSeconds:        w.Settings.StallRepairDurationSeconds,
+			FarmUpkeepFloor:                   w.Settings.FarmUpkeepFloor,
+			FarmUpkeepCoinsPerShovel:          w.Settings.FarmUpkeepCoinsPerShovel,
+			HuddleLoopTimeoutSeconds:          int(w.Settings.HuddleLoopTimeout / time.Second),
+			HuddleLoopRepeatPercent:           w.Settings.HuddleLoopRepeatPercent,
+			HuddleLoopSweepCadenceSeconds:     int(w.Settings.HuddleLoopSweepCadence / time.Second),
+			HuddleLoopMaxTurns:                w.Settings.HuddleLoopMaxTurns,
+			HuddleConversationWindDownSeconds: int(w.Settings.HuddleConversationWindDown / time.Second),
+			SeekWorkCoinCeiling:               w.Settings.SeekWorkCoinCeiling,
+			SeekWorkNeedYieldMargin:           w.Settings.SeekWorkNeedYieldMargin,
+			LaborProduceBoostPct:              w.Settings.LaborProduceBoostPct,
+			MerchantCoinFloor:                 w.Settings.MerchantCoinFloor,
+			EcoEnabled:                        w.Settings.EcoEnabled,
+			EcoSocialGapSeconds:               int(w.Settings.EcoSocialGap / time.Second),
+			EcoEconomyGapSeconds:              int(w.Settings.EcoEconomyGap / time.Second),
 		},
 	}
 	// ZBBS-WORK-412: carry the engine-minted (unknown-category) item kinds so

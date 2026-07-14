@@ -41,6 +41,15 @@ type UmbilicalSettingsDTO struct {
 	// default), matching the other seeded knobs.
 	HuddleLoopMaxTurns int `json:"huddle_loop_max_turns"`
 
+	// HuddleConversationWindDownSeconds (LLM-397) is the lingering arm's clock:
+	// how long a conversation may run before its members are steered to close it.
+	// HuddleConversationHardConcludeSeconds is that plus the persistence gate —
+	// when the engine ends it if they don't. Reported as EFFECTIVE values (a
+	// stored 0 resolves to the default); hard-conclude is 0 when the sweep is off,
+	// meaning no conversation is ever force-ended.
+	HuddleConversationWindDownSeconds     int `json:"huddle_conversation_wind_down_seconds"`
+	HuddleConversationHardConcludeSeconds int `json:"huddle_conversation_hard_conclude_seconds"`
+
 	// SeekWorkCoinCeiling (LLM-194) is the coin balance at/above which a workless
 	// worker stops seeking/soliciting work (settings/seek-work-ceiling writes it). Like
 	// the huddle_loop_* knobs it PERSISTS (the checkpoint writes it back to the setting
@@ -83,11 +92,8 @@ type UmbilicalSettingsDTO struct {
 	EcoEnabled           bool `json:"eco_enabled"`
 	EcoSocialGapSeconds  int  `json:"eco_social_gap_seconds"`
 	EcoEconomyGapSeconds int  `json:"eco_economy_gap_seconds"`
-	// EcoConversationMaxSeconds (LLM-334) is the unwatched conversation arc the
-	// eco-conclude sweep applies (0 = sweep off, meter-forever).
-	EcoConversationMaxSeconds int  `json:"eco_conversation_max_seconds"`
-	EcoAudienceActive         bool `json:"eco_audience_active"`
-	EcoEngaged                bool `json:"eco_engaged"`
+	EcoAudienceActive    bool `json:"eco_audience_active"`
+	EcoEngaged           bool `json:"eco_engaged"`
 }
 
 // handleUmbilicalSettings serves the current live-tunable world settings. Read on
@@ -101,26 +107,37 @@ func (s *Server) handleUmbilicalSettings(w http.ResponseWriter, r *http.Request)
 		if maxTurns <= 0 {
 			maxTurns = sim.HuddleLoopMaxTurnsDefault
 		}
+		windDown := world.Settings.HuddleConversationWindDown
+		if windDown <= 0 {
+			windDown = sim.HuddleConversationWindDownDefault
+		}
+		// No hard conclude at all while the sweep is off — reporting wind_down+0
+		// would advertise an ending the engine will never deliver.
+		hardConclude := time.Duration(0)
+		if world.Settings.HuddleLoopTimeout > 0 {
+			hardConclude = windDown + world.Settings.HuddleLoopTimeout
+		}
 		dto := UmbilicalSettingsDTO{
-			ContractVersion:               ContractVersion,
-			NeedThresholds:                make(map[string]int, len(world.Settings.NeedThresholds)),
-			HuddleLoopEnabled:             world.Settings.HuddleLoopTimeout > 0,
-			HuddleLoopTimeoutSeconds:      int(world.Settings.HuddleLoopTimeout / time.Second),
-			HuddleLoopRepeatPercent:       world.Settings.HuddleLoopRepeatPercent,
-			HuddleLoopSweepCadenceSeconds: int(world.Settings.HuddleLoopSweepCadence / time.Second),
-			HuddleLoopMaxTurns:            maxTurns,
-			SeekWorkCoinCeiling:           world.Settings.SeekWorkCoinCeiling,
-			SeekWorkNeedYieldMargin:       world.Settings.SeekWorkNeedYieldMargin,
-			FarmUpkeepFloor:               world.Settings.FarmUpkeepFloor,
-			FarmUpkeepCoinsPerShovel:      world.Settings.FarmUpkeepCoinsPerShovel,
-			LaborProduceBoostPct:          world.Settings.LaborProduceBoostPct,
-			MerchantCoinFloor:             world.Settings.MerchantCoinFloor,
-			EcoEnabled:                    world.Settings.EcoEnabled,
-			EcoSocialGapSeconds:           int(world.Settings.EcoSocialGap / time.Second),
-			EcoEconomyGapSeconds:          int(world.Settings.EcoEconomyGap / time.Second),
-			EcoConversationMaxSeconds:     int(world.Settings.EcoConversationMax / time.Second),
-			EcoAudienceActive:             audience,
-			EcoEngaged:                    world.Settings.EcoEnabled && !audience,
+			ContractVersion:                       ContractVersion,
+			NeedThresholds:                        make(map[string]int, len(world.Settings.NeedThresholds)),
+			HuddleLoopEnabled:                     world.Settings.HuddleLoopTimeout > 0,
+			HuddleLoopTimeoutSeconds:              int(world.Settings.HuddleLoopTimeout / time.Second),
+			HuddleLoopRepeatPercent:               world.Settings.HuddleLoopRepeatPercent,
+			HuddleLoopSweepCadenceSeconds:         int(world.Settings.HuddleLoopSweepCadence / time.Second),
+			HuddleLoopMaxTurns:                    maxTurns,
+			HuddleConversationWindDownSeconds:     int(windDown / time.Second),
+			HuddleConversationHardConcludeSeconds: int(hardConclude / time.Second),
+			SeekWorkCoinCeiling:                   world.Settings.SeekWorkCoinCeiling,
+			SeekWorkNeedYieldMargin:               world.Settings.SeekWorkNeedYieldMargin,
+			FarmUpkeepFloor:                       world.Settings.FarmUpkeepFloor,
+			FarmUpkeepCoinsPerShovel:              world.Settings.FarmUpkeepCoinsPerShovel,
+			LaborProduceBoostPct:                  world.Settings.LaborProduceBoostPct,
+			MerchantCoinFloor:                     world.Settings.MerchantCoinFloor,
+			EcoEnabled:                            world.Settings.EcoEnabled,
+			EcoSocialGapSeconds:                   int(world.Settings.EcoSocialGap / time.Second),
+			EcoEconomyGapSeconds:                  int(world.Settings.EcoEconomyGap / time.Second),
+			EcoAudienceActive:                     audience,
+			EcoEngaged:                            world.Settings.EcoEnabled && !audience,
 		}
 		for k, v := range world.Settings.NeedThresholds {
 			dto.NeedThresholds[string(k)] = v

@@ -111,18 +111,19 @@ type Huddle struct {
 	// churn can't evade the arm.
 	TurnsSinceProgress int
 
-	// EcoUnwatchedSince marks when the eco-conclude sweep (LLM-334) first saw
-	// this huddle with eco engaged (EcoEnabled AND no fresh player presence)
-	// and no live commerce. Once the stamp is older than the eco conversation
-	// arc (eco_conversation_max_seconds) the sweep silently concludes the
-	// huddle — an unwatched conversation gets a bounded scene, not an
-	// indefinite meter (eco's pacing can slow beats but npc_spoke re-stamps
-	// every reply, so only ending the scene reduces total calls). nil while
-	// watched, while the huddle carries live commerce (the sweep re-stamps to
-	// now, restarting the arc when the deal settles), or when eco disengages.
-	// In-memory only, not checkpointed; NOT carried by the LLM-170 carry-over
-	// — a re-formed huddle earns a fresh arc from the sweep's next pass.
-	EcoUnwatchedSince *time.Time
+	// ConversationSince is when this CONVERSATION began — not when this huddle
+	// object was minted. The two differ because a clique that disperses and
+	// reconvenes at a structure mints a fresh Huddle each time (LLM-170), so
+	// StartedAt restarts on every churn cycle while the talk continues
+	// unbroken; the live 2026-07-14 inn conversation ran 100 minutes across ten
+	// huddle ids. Stamped at creation and carried across same-clique
+	// re-formation by the carry-over, so it measures the thing an observer would
+	// call "how long have these people been talking" — the clock the loop
+	// sweep's lingering arm (LLM-397) reads. A conversation that genuinely lapses
+	// (no re-formation within HuddleContinuityWindow) leaves no carry-over to
+	// adopt, so the next huddle there starts a fresh clock. In-memory only, not
+	// checkpointed — same transient posture as the ring it travels with.
+	ConversationSince time.Time
 }
 
 // Utterance is one spoken line recorded in a Huddle's RecentUtterances ring.
@@ -164,10 +165,6 @@ func CloneHuddle(h *Huddle) *Huddle {
 	if h.LoopingSince != nil {
 		t := *h.LoopingSince
 		cp.LoopingSince = &t
-	}
-	if h.EcoUnwatchedSince != nil {
-		t := *h.EcoUnwatchedSince
-		cp.EcoUnwatchedSince = &t
 	}
 	// Utterance is a pure value type (no pointers/maps), so a slice copy fully
 	// isolates the published snapshot from later world-goroutine appends.

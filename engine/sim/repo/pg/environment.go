@@ -324,10 +324,14 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	// Huddle loop conclusion (LLM-159). huddle_loop_timeout_seconds is the master
 	// enable: 0/unset leaves the loop sweep OFF. huddle_loop_max_turns is the
 	// LLM-333 endurance arm's no-progress turn budget.
+	// huddle_conversation_wind_down_seconds is the LLM-397 lingering arm's clock —
+	// how long a conversation may run before it is steered toward a close; the hard
+	// conclude lands one huddle_loop_timeout_seconds after that.
 	s.HuddleLoopTimeout = parseDurationSetting(values, "huddle_loop_timeout_seconds", 0)
 	s.HuddleLoopRepeatPercent = parseIntSetting(values, "huddle_loop_repeat_percent", sim.HuddleLoopRepeatPercentDefault)
 	s.HuddleLoopSweepCadence = parseDurationSetting(values, "huddle_loop_sweep_cadence_seconds", sim.HuddleLoopSweepCadenceDefault)
 	s.HuddleLoopMaxTurns = parseIntSetting(values, "huddle_loop_max_turns", sim.HuddleLoopMaxTurnsDefault)
+	s.HuddleConversationWindDown = parseDurationSetting(values, "huddle_conversation_wind_down_seconds", sim.HuddleConversationWindDownDefault)
 
 	// Seek-work coin ceiling (LLM-194). 0/unset falls back to the default at read time
 	// via effectiveSeekWorkCoinCeiling, but seed the default here too so GET /settings
@@ -349,13 +353,14 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 
 	// Eco mode (LLM-313). ON by default — unset seeds enabled with the default gaps;
 	// an explicit false/0 sticks (eco_enabled false kills the whole feature; a zero
-	// gap disables that bucket's throttle individually). The conversation arc
-	// (LLM-334) follows the same posture: unset seeds the default, explicit 0
-	// disables the eco-conclude sweep.
+	// gap disables that bucket's throttle individually). Eco paces an unwatched
+	// village; it no longer ends its conversations — the LLM-334 arc key
+	// (eco_conversation_max_seconds) is retired and ignored, superseded by
+	// huddle_conversation_wind_down_seconds above (LLM-397). An existing row for the
+	// old key is inert; nothing reads it.
 	s.EcoEnabled = parseBoolSetting(values, "eco_enabled", true)
 	s.EcoSocialGap = parseDurationSetting(values, "eco_social_gap_seconds", sim.DefaultEcoSocialGap)
 	s.EcoEconomyGap = parseDurationSetting(values, "eco_economy_gap_seconds", sim.DefaultEcoEconomyGap)
-	s.EcoConversationMax = parseDurationSetting(values, "eco_conversation_max_seconds", sim.DefaultEcoConversationMax)
 
 	// Cross-huddle conversation continuity (LLM-170). ON by default — the ring
 	// carry-over is pure perception legibility; the loop-state carry is inert
@@ -589,6 +594,7 @@ func (r *EnvironmentRepo) SaveMutableSettings(ctx context.Context, tx sim.Tx, ms
 		{"huddle_loop_repeat_percent", strconv.Itoa(ms.HuddleLoopRepeatPercent)},
 		{"huddle_loop_sweep_cadence_seconds", strconv.Itoa(ms.HuddleLoopSweepCadenceSeconds)},
 		{"huddle_loop_max_turns", strconv.Itoa(ms.HuddleLoopMaxTurns)},
+		{"huddle_conversation_wind_down_seconds", strconv.Itoa(ms.HuddleConversationWindDownSeconds)},
 		// Seek-work coin ceiling (LLM-194) — live-tuned via the umbilical, persisted
 		// here; the load path parses seek_work_coin_ceiling via parseIntSetting.
 		{"seek_work_coin_ceiling", strconv.Itoa(ms.SeekWorkCoinCeiling)},
@@ -607,7 +613,6 @@ func (r *EnvironmentRepo) SaveMutableSettings(ctx context.Context, tx sim.Tx, ms
 		{"eco_enabled", strconv.FormatBool(ms.EcoEnabled)},
 		{"eco_social_gap_seconds", strconv.Itoa(ms.EcoSocialGapSeconds)},
 		{"eco_economy_gap_seconds", strconv.Itoa(ms.EcoEconomyGapSeconds)},
-		{"eco_conversation_max_seconds", strconv.Itoa(ms.EcoConversationMaxSeconds)},
 	}
 	for _, row := range rows {
 		if _, err := tx.Exec(ctx, upsertSettingSQL, row.key, row.val); err != nil {
