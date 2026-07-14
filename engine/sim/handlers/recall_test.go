@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/llm"
@@ -181,8 +182,57 @@ func TestDecodeRecallArgs(t *testing.T) {
 }
 
 func TestFormatRecallHits_Empty(t *testing.T) {
-	if got := formatRecallHits(nil); got != recallNoMemoryText {
+	if got := formatRecallHits(nil, time.Now()); got != recallNoMemoryText {
 		t.Errorf("got %q, want %q", got, recallNoMemoryText)
+	}
+}
+
+// TestFormatRecallHits_AgeFraming — a hit with a known CreatedAt is framed
+// with its age ("From two days ago — <heading>:", LLM-390) so a days-old
+// memory can't pass for tonight's; the heading itself (the NPC's own authored
+// topic) stays verbatim. A hit with no CreatedAt (older API, raw ingest)
+// keeps the bare "— <heading> —" form.
+func TestFormatRecallHits_AgeFraming(t *testing.T) {
+	now := time.Date(2026, 7, 13, 20, 0, 0, 0, time.UTC)
+	hits := []llm.MemoryHit{
+		{
+			Heading:   "## Day's end reflections",
+			ChunkText: "## Day's end reflections\n\nEvening at the Walker Residence.",
+			CreatedAt: now.Add(-49 * time.Hour),
+		},
+		{
+			Heading:   "## evening routine",
+			ChunkText: "## evening routine\n\nA quiet day spent at home.",
+		},
+	}
+	out := formatRecallHits(hits, now)
+	if !strings.Contains(out, "From two days ago — Day's end reflections:") {
+		t.Errorf("dated hit should carry the age framing; got %q", out)
+	}
+	if !strings.Contains(out, "— evening routine —") {
+		t.Errorf("undated hit should keep the bare heading form; got %q", out)
+	}
+	if strings.Contains(out, "From — ") || strings.Contains(out, "From  —") {
+		t.Errorf("no age framing without a phrase; got %q", out)
+	}
+}
+
+// TestFormatRecallHits_FutureCreatedAt — a CreatedAt after now (API/clock
+// skew) must fall back to the bare form, not render as "From just now" and
+// make bad data look current (code_review finding, LLM-390).
+func TestFormatRecallHits_FutureCreatedAt(t *testing.T) {
+	now := time.Date(2026, 7, 13, 20, 0, 0, 0, time.UTC)
+	hits := []llm.MemoryHit{{
+		Heading:   "## A memory from the future",
+		ChunkText: "## A memory from the future\n\nSomething skewed.",
+		CreatedAt: now.Add(2 * time.Hour),
+	}}
+	out := formatRecallHits(hits, now)
+	if !strings.Contains(out, "— A memory from the future —") {
+		t.Errorf("future-dated hit should keep the bare heading form; got %q", out)
+	}
+	if strings.Contains(out, "From ") {
+		t.Errorf("future-dated hit must not carry age framing; got %q", out)
 	}
 }
 

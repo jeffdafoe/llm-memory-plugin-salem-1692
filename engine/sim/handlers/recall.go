@@ -8,9 +8,11 @@ import (
 	"io"
 	"log"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/llm"
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/perception"
 )
 
 // recall.go — production recall observation tool, ZBBS-WORK-321 (port of v1's
@@ -113,7 +115,15 @@ func DecodeRecallArgs(raw json.RawMessage) (any, error) {
 // — a raw identifier dropped into a scene — whereas the heading is the
 // human-phrased topic ("## The blacksmith's name"). Fall back to SourceFile
 // only when a hit carries no heading (raw ingest / pre-memorize note).
-func formatRecallHits(hits []llm.MemoryHit) string {
+//
+// A hit with a known CreatedAt is framed with its age (LLM-390): "From two
+// days ago — <heading>:". Without it, a two-day-old "Day's end reflections"
+// reads as if it happened tonight, so stale intentions ("offered to help
+// Josiah tomorrow") pass for current ones. The age wraps the hit rather than
+// being spliced into the heading — the heading is the NPC's own authored
+// topic name, not a generic label. Zero CreatedAt or zero now (older API,
+// raw ingest, hand-built test input) keeps the bare "— <heading> —" form.
+func formatRecallHits(hits []llm.MemoryHit, now time.Time) string {
 	if len(hits) == 0 {
 		return recallNoMemoryText
 	}
@@ -129,7 +139,20 @@ func formatRecallHits(hits []llm.MemoryHit) string {
 		} else {
 			label = h.SourceFile
 		}
-		fmt.Fprintf(&b, "— %s —\n%s\n\n", label, strings.TrimSpace(text))
+		// A CreatedAt after now (API/clock skew, bad data) would render as
+		// AgoPhrase's "just now" — the negative-delta clamp is right for the
+		// conversation stamps it was built for, but a memory framed "From
+		// just now" makes bad data look current. Unknown-age (bare form) is
+		// the honest render for a future timestamp (code_review, LLM-390).
+		if h.CreatedAt.After(now) {
+			fmt.Fprintf(&b, "— %s —\n%s\n\n", label, strings.TrimSpace(text))
+			continue
+		}
+		if ago := perception.AgoPhrase(h.CreatedAt, now); ago != "" {
+			fmt.Fprintf(&b, "From %s — %s:\n%s\n\n", ago, label, strings.TrimSpace(text))
+		} else {
+			fmt.Fprintf(&b, "— %s —\n%s\n\n", label, strings.TrimSpace(text))
+		}
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -187,6 +210,9 @@ func makeRecallHandler(searcher llm.MemorySearcher) ObservationFn {
 			log.Printf("handlers: recall for actor %q (ns %q): search: %v", in.ActorID, namespace, err)
 			return recallFailedText, nil
 		}
-		return formatRecallHits(hits), nil
+		// time.Now() rather than a snapshot clock: recall runs live during the
+		// tick, and a memory's age against the actual present is exactly the
+		// point. formatRecallHits stays pure for tests.
+		return formatRecallHits(hits, time.Now()), nil
 	}
 }

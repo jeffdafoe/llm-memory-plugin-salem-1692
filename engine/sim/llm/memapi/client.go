@@ -321,12 +321,13 @@ type searchMemoryRequest struct {
 // searchMemoryHitWire is one note-grouped result on the wire. Mirrors v1's
 // searchMemoryHit (engine/agent_client.go). Decoded into llm.MemoryHit.
 type searchMemoryHitWire struct {
-	SourceFile string  `json:"source_file"`
-	Heading    string  `json:"heading"`
-	ChunkText  string  `json:"chunk_text"`
-	Namespace  string  `json:"namespace"`
-	Similarity float64 `json:"similarity"`
-	ChunkCount flexInt `json:"chunk_count"`
+	SourceFile string   `json:"source_file"`
+	Heading    string   `json:"heading"`
+	ChunkText  string   `json:"chunk_text"`
+	Namespace  string   `json:"namespace"`
+	Similarity float64  `json:"similarity"`
+	ChunkCount flexInt  `json:"chunk_count"`
+	CreatedAt  flexTime `json:"created_at"`
 }
 
 // flexInt decodes a JSON integer OR a JSON string that wraps one. The memory-api
@@ -364,6 +365,36 @@ func (f *flexInt) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+// flexTime decodes an ISO-8601/RFC3339 timestamp string, treating null,
+// empty, absent, or unparseable values as the zero time ("unknown") rather
+// than an error. Same liberal-decode rationale as flexInt: created_at is
+// nice-to-have age context (LLM-390), and a strict field would fail the WHOLE
+// search decode and blank every recall — the exact LLM-379 failure mode.
+type flexTime time.Time
+
+func (f *flexTime) UnmarshalJSON(b []byte) error {
+	*f = flexTime(time.Time{})
+	if len(b) == 0 || string(b) == "null" {
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return nil
+	}
+	if s == "" {
+		return nil
+	}
+	// The producer is Express res.json serializing a pg Date via
+	// Date.toISOString() — always "YYYY-MM-DDTHH:mm:ss.sssZ". RFC3339Nano
+	// parses that exactly (and tolerates any fractional-second width).
+	t, err := time.Parse(time.RFC3339Nano, s)
+	if err != nil {
+		return nil
+	}
+	*f = flexTime(t)
+	return nil
+}
+
 type searchMemoryResponse struct {
 	Results []searchMemoryHitWire `json:"results"`
 }
@@ -398,6 +429,7 @@ func (c *Client) SearchMemory(ctx context.Context, namespace, query, slugPrefix 
 			Namespace:  h.Namespace,
 			Similarity: h.Similarity,
 			ChunkCount: int(h.ChunkCount),
+			CreatedAt:  time.Time(h.CreatedAt),
 		})
 	}
 	return hits, nil

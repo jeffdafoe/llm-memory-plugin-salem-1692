@@ -1,6 +1,9 @@
 package llm
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // memory_search.go — the memory-search capability the recall observation
 // tool needs. Mirrors the llm.Client split: the interface lives here (the
@@ -12,6 +15,11 @@ import "context"
 // best-matching chunk for a (namespace, source_file), plus its similarity
 // and how many chunks of that note matched. Mirrors v1's searchMemoryHit
 // (engine/agent_client.go).
+//
+// CreatedAt is when the note was written (the documents row's created_at,
+// LLM-390) — recall renders it as the memory's age ("From two days ago —
+// <topic>"). Zero when the API predates the field or the hit is a raw ingest
+// with no documents row; callers must treat zero as unknown, not 1970.
 type MemoryHit struct {
 	SourceFile string
 	Heading    string
@@ -19,6 +27,7 @@ type MemoryHit struct {
 	Namespace  string
 	Similarity float64
 	ChunkCount int
+	CreatedAt  time.Time
 }
 
 // MemorySearcher is the narrow capability recall needs: a semantic search

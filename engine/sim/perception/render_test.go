@@ -95,7 +95,7 @@ func TestRenderSurroundings_InsideHuddleLinesOmitIDs(t *testing.T) {
 }
 
 // TestRenderWarrants_IntervalStamps pins the LLM-316 per-line staleness stamp:
-// a warrant whose OccurredAt trails the render clock renders its agoPhrase
+// a warrant whose OccurredAt trails the render clock renders its AgoPhrase
 // interval, so a carried-forward / shelve-delayed / slept-through signal reads
 // honestly as old news instead of masquerading as fresh under the section
 // header. Zero clocks (hand-built payloads, unstamped metas) render no stamp.
