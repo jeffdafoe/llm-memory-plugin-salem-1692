@@ -384,7 +384,10 @@ func (f *flexTime) UnmarshalJSON(b []byte) error {
 	if s == "" {
 		return nil
 	}
-	t, err := time.Parse(time.RFC3339, s)
+	// The producer is Express res.json serializing a pg Date via
+	// Date.toISOString() — always "YYYY-MM-DDTHH:mm:ss.sssZ". RFC3339Nano
+	// parses that exactly (and tolerates any fractional-second width).
+	t, err := time.Parse(time.RFC3339Nano, s)
 	if err != nil {
 		return nil
 	}

@@ -217,6 +217,25 @@ func TestFormatRecallHits_AgeFraming(t *testing.T) {
 	}
 }
 
+// TestFormatRecallHits_FutureCreatedAt — a CreatedAt after now (API/clock
+// skew) must fall back to the bare form, not render as "From just now" and
+// make bad data look current (code_review finding, LLM-390).
+func TestFormatRecallHits_FutureCreatedAt(t *testing.T) {
+	now := time.Date(2026, 7, 13, 20, 0, 0, 0, time.UTC)
+	hits := []llm.MemoryHit{{
+		Heading:   "## A memory from the future",
+		ChunkText: "## A memory from the future\n\nSomething skewed.",
+		CreatedAt: now.Add(2 * time.Hour),
+	}}
+	out := formatRecallHits(hits, now)
+	if !strings.Contains(out, "— A memory from the future —") {
+		t.Errorf("future-dated hit should keep the bare heading form; got %q", out)
+	}
+	if strings.Contains(out, "From ") {
+		t.Errorf("future-dated hit must not carry age framing; got %q", out)
+	}
+}
+
 func TestRegisterRecall(t *testing.T) {
 	t.Run("nil-searcher-errors", func(t *testing.T) {
 		r := NewRegistry()

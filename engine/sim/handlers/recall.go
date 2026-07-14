@@ -139,6 +139,15 @@ func formatRecallHits(hits []llm.MemoryHit, now time.Time) string {
 		} else {
 			label = h.SourceFile
 		}
+		// A CreatedAt after now (API/clock skew, bad data) would render as
+		// AgoPhrase's "just now" — the negative-delta clamp is right for the
+		// conversation stamps it was built for, but a memory framed "From
+		// just now" makes bad data look current. Unknown-age (bare form) is
+		// the honest render for a future timestamp (code_review, LLM-390).
+		if h.CreatedAt.After(now) {
+			fmt.Fprintf(&b, "— %s —\n%s\n\n", label, strings.TrimSpace(text))
+			continue
+		}
 		if ago := perception.AgoPhrase(h.CreatedAt, now); ago != "" {
 			fmt.Fprintf(&b, "From %s — %s:\n%s\n\n", ago, label, strings.TrimSpace(text))
 		} else {
