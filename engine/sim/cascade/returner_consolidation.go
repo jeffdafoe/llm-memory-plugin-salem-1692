@@ -35,6 +35,9 @@ func RegisterReturnerConsolidation(ctx context.Context, w *sim.World, client llm
 	if client == nil {
 		panic("cascade: RegisterReturnerConsolidation requires a non-nil LLM client")
 	}
+	// Cadence contract, declared before the goroutine starts (LLM-395). Shares the
+	// consolidation sweep's interval, as the goroutine's own ticker does.
+	w.RegisterTicker("returner_consolidation", sim.ConsolidationSweepInterval)
 	go runReturnerConsolidationSweep(ctx, w, client)
 }
 

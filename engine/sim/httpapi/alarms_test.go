@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,155 @@ import (
 
 // alarms_test.go — the alarm evaluator (threshold classification) and the
 // response-injection middleware (body splice + header + healthy no-op).
+
+// --- ticker_stale (LLM-395) ---
+
+// staleEntry builds a registered ticker whose last beat was `silent` ago.
+func staleEntry(name string, interval, silent time.Duration, now time.Time) sim.TickerHealthEntry {
+	return sim.TickerHealthEntry{
+		Name:         name,
+		Count:        7,
+		LastFire:     now.Add(-silent),
+		Registered:   true,
+		RegisteredAt: now.Add(-24 * time.Hour),
+		Interval:     interval,
+	}
+}
+
+func TestTickerStaleAlarm_SilentWhenCadencesAreMet(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	entries := []sim.TickerHealthEntry{
+		staleEntry("needs", time.Minute, 20*time.Second, now),
+		staleEntry("reactor", 250*time.Millisecond, time.Second, now),
+		staleEntry("atmosphere", time.Hour, 90*time.Minute, now),
+	}
+	if a, ok := tickerStaleAlarm(entries, now); ok {
+		t.Errorf("alarm fired on healthy tickers: %+v", a)
+	}
+	// An empty registry (a world with no tickers wired) is silent, not a panic.
+	if _, ok := tickerStaleAlarm(nil, now); ok {
+		t.Error("alarm fired on an empty registry")
+	}
+}
+
+func TestTickerStaleAlarm_AggregatesAndNamesTheStaleTickers(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	entries := []sim.TickerHealthEntry{
+		staleEntry("needs", time.Minute, 30*time.Minute, now), // stale
+		staleEntry("shift", time.Minute, 10*time.Second, now), // healthy
+		staleEntry("sleep", time.Minute, 20*time.Minute, now), // stale
+		staleEntry("dwell", time.Minute, 5*time.Second, now),  // healthy
+	}
+
+	a, ok := tickerStaleAlarm(entries, now)
+	if !ok {
+		t.Fatal("no alarm for two dead tickers")
+	}
+	if a.Kind != alarmKindTickerStale {
+		t.Errorf("Kind=%q, want %q", a.Kind, alarmKindTickerStale)
+	}
+	// Assert against the rendered NAME LIST, not the whole sentence: the prose
+	// legitimately mentions "needs decay, shift changes" as operator context, so a
+	// bare substring check would match the healthy 'shift' ticker in that phrase.
+	if !strings.Contains(a.Detail, "(needs, sleep)") {
+		t.Errorf("Detail does not list exactly the two stale tickers: %s", a.Detail)
+	}
+	if !strings.Contains(a.Detail, "2 of the engine's") {
+		t.Errorf("Detail does not report the stale count: %s", a.Detail)
+	}
+
+	// Since is the EARLIEST crossing — 'needs' went silent first, so its deadline
+	// (lastFire + 3x1m) is the moment durability of the cadence broke.
+	wantSince := now.Add(-30 * time.Minute).Add(3 * time.Minute)
+	if !a.Since.Equal(wantSince) {
+		t.Errorf("Since=%v, want the earliest staleSince %v", a.Since, wantSince)
+	}
+}
+
+// The alarm evaluator holds no state, so re-evaluating the same registry must
+// produce the same Since — otherwise the banner would appear to "reset" on every
+// request an operator made mid-incident.
+func TestTickerStaleAlarm_SinceIsStableAcrossEvaluations(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	entries := []sim.TickerHealthEntry{staleEntry("needs", time.Minute, 30*time.Minute, now)}
+
+	first, ok := tickerStaleAlarm(entries, now)
+	if !ok {
+		t.Fatal("no alarm")
+	}
+	later, ok := tickerStaleAlarm(entries, now.Add(5*time.Minute))
+	if !ok {
+		t.Fatal("alarm cleared itself while the ticker was still dead")
+	}
+	if !first.Since.Equal(later.Since) {
+		t.Errorf("Since moved between evaluations: %v -> %v", first.Since, later.Since)
+	}
+}
+
+// Every ticker stale at once is one upstream cause (a wedged world command
+// goroutine), not N independent deaths. The alarm must say so, and must not paste
+// every name into the body.
+func TestTickerStaleAlarm_AllStaleReadsAsOneUpstreamCause(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	var entries []sim.TickerHealthEntry
+	for _, n := range []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"} {
+		entries = append(entries, staleEntry(n, time.Minute, time.Hour, now))
+	}
+
+	a, ok := tickerStaleAlarm(entries, now)
+	if !ok {
+		t.Fatal("no alarm with every ticker dead")
+	}
+	if !strings.Contains(a.Detail, "EVERY ticker is stale") {
+		t.Errorf("Detail does not call out the single-upstream-cause case: %s", a.Detail)
+	}
+	// Capped at tickerStaleNamesInDetail (8) of the 10, with the remainder summarised
+	// — the wedge case must not paste every ticker in the engine into every response.
+	if !strings.Contains(a.Detail, "(a, b, c, d, e, f, g, h, and 2 more)") {
+		t.Errorf("Detail does not cap the name list at %d + a remainder: %s", tickerStaleNamesInDetail, a.Detail)
+	}
+}
+
+// The fail-safe, at the alarm boundary: a ticker nobody declared a cadence for is
+// never judged, however long it has been silent.
+func TestTickerStaleAlarm_UnregisteredAndZeroIntervalNeverFire(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	entries := []sim.TickerHealthEntry{
+		{Name: "unregistered", Count: 3, LastFire: now.Add(-30 * 24 * time.Hour)},
+		{Name: "zero_interval", Registered: true, Interval: 0, LastFire: now.Add(-30 * 24 * time.Hour)},
+	}
+	if a, ok := tickerStaleAlarm(entries, now); ok {
+		t.Errorf("alarm fired on opted-out tickers — the fail-safe is broken: %+v", a)
+	}
+}
+
+// The never-started goroutine: registered ahead of its `go`, never beat once.
+func TestTickerStaleAlarm_FiresOnATickerThatNeverStarted(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	entries := []sim.TickerHealthEntry{{
+		Name:         "needs",
+		Registered:   true,
+		Interval:     time.Minute,
+		RegisteredAt: now.Add(-time.Hour),
+		// No beat, ever.
+	}}
+	a, ok := tickerStaleAlarm(entries, now)
+	if !ok {
+		t.Fatal("no alarm for a ticker that registered and never fired — this is the goroutine-never-started case")
+	}
+	if !a.Since.Equal(now.Add(-time.Hour).Add(3 * time.Minute)) {
+		t.Errorf("Since=%v, want registeredAt+3m (the baseline for a never-fired ticker)", a.Since)
+	}
+}
+
+// A worldless Server must not panic the entire umbilical surface: evaluateAlarms
+// runs on EVERY response.
+func TestEvaluateAlarms_NilWorldIsSilent(t *testing.T) {
+	s := &Server{}
+	if got := s.evaluateAlarms(time.Now().UTC()); len(got) != 0 {
+		t.Errorf("evaluateAlarms on a worldless server = %+v, want none", got)
+	}
+}
 
 func TestCheckpointAlarm_ThresholdBoundary(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)

@@ -65,6 +65,8 @@ func RegisterConsolidation(ctx context.Context, w *sim.World, client llm.Client)
 	if client == nil {
 		panic("cascade: RegisterConsolidation requires a non-nil LLM client")
 	}
+	// Cadence contract, declared before the goroutine starts (LLM-395).
+	w.RegisterTicker("consolidation", sim.ConsolidationSweepInterval)
 	go runConsolidationSweep(ctx, w, client)
 }
 

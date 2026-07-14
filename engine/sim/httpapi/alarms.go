@@ -48,6 +48,24 @@ import (
 // diverging from the last good checkpoint and a restart would roll back to it.
 const alarmKindCheckpointFailure = "checkpoint_failure"
 
+// alarmKindTickerStale fires when a cadence goroutine has stopped beating on its
+// declared interval (LLM-395). This is the OTHER way the engine keeps serving
+// while quietly ceasing to function: the HTTP surface answers, the world holds
+// state, but needs stop decaying, shifts stop firing, sweeps stop expiring. The
+// staleness judgement itself lives on sim.TickerHealthEntry, which owns the
+// cadence contract; this file only classifies the result and writes the prose.
+const alarmKindTickerStale = "ticker_stale"
+
+// tickerStaleNamesInDetail caps how many stale ticker names the alarm's prose
+// lists before summarising the remainder.
+//
+// The cap exists because of a specific and expected failure shape: if the world
+// COMMAND GOROUTINE wedges, every ticker starves at once (they all block sending
+// to it), so ~36 names would otherwise be pasted into every umbilical response
+// body the operator reads while trying to diagnose it. The count always tells the
+// true scale; /umbilical/ticker-health carries the full per-ticker detail.
+const tickerStaleNamesInDetail = 8
+
 // checkpointFailureStreakThreshold is how many CONSECUTIVE failed checkpoints
 // raise the alarm. Deliberately small: the checkpoint cadence is ~60s, so 3 is
 // roughly three minutes of broken durability — long enough that a single
@@ -100,7 +118,83 @@ func (s *Server) evaluateAlarms(now time.Time) []Alarm {
 	if a, ok := checkpointAlarm(s.checkpointHealth.Snapshot(), now); ok {
 		out = append(out, a)
 	}
+	// Nil-guarded: unlike the health recorders, s.world is a bare pointer whose
+	// methods are not nil-safe, and this runs on EVERY umbilical response — a
+	// worldless test server must not panic the whole surface.
+	if s.world != nil {
+		if a, ok := tickerStaleAlarm(s.world.TickerHealthSnapshot(), now); ok {
+			out = append(out, a)
+		}
+	}
 	return out
+}
+
+// tickerStaleAlarm classifies the ticker-health registry: it fires when one or
+// more registered tickers have missed their declared cadence.
+//
+// ONE AGGREGATE ALARM, NOT ONE PER TICKER. The tickers are not independent — they
+// all drive their work by sending to the single world command goroutine, so the
+// headline failure (that goroutine wedging, or the process starving) takes every
+// one of them out simultaneously. Per-ticker alarms would stamp ~36 entries onto
+// every response in exactly the incident where the operator most needs the
+// surface to stay readable. The kind is the grouping key the alarm framework
+// already provides; the names go in the prose.
+//
+// Since is the EARLIEST moment any of the stale tickers crossed its deadline —
+// derived from recorded beat/registration state (see TickerHealthEntry.StaleSince),
+// never from when an HTTP request happened to notice. That keeps the alarm stable
+// across requests and self-clearing the moment the cadence resumes, which is what
+// lets the evaluator stay stateless.
+func tickerStaleAlarm(entries []sim.TickerHealthEntry, now time.Time) (Alarm, bool) {
+	var (
+		stale []sim.TickerHealthEntry
+		since time.Time
+	)
+	for _, e := range entries {
+		if !e.IsStale(now) {
+			continue
+		}
+		stale = append(stale, e)
+		if at := e.StaleSince(); since.IsZero() || at.Before(since) {
+			since = at
+		}
+	}
+	if len(stale) == 0 {
+		return Alarm{}, false
+	}
+
+	names := make([]string, 0, len(stale))
+	for _, e := range stale {
+		names = append(names, e.Name)
+	}
+	listed := names
+	suffix := ""
+	if len(listed) > tickerStaleNamesInDetail {
+		listed = listed[:tickerStaleNamesInDetail]
+		suffix = ", and " + strconv.Itoa(len(names)-tickerStaleNamesInDetail) + " more"
+	}
+
+	detail := "CADENCE DRIVERS HAVE STOPPED: " + strconv.Itoa(len(stale)) +
+		" of the engine's interval goroutines (" + strings.Join(listed, ", ") + suffix +
+		") have missed their expected cadence. The engine is still serving requests, but the work those " +
+		"tickers drive — needs decay, shift changes, sweeps — is NOT happening"
+	if !since.IsZero() {
+		detail += " (first went stale " + humanizeSince(now.Sub(since)) + " ago)"
+	}
+	if len(stale) == len(entries) && len(entries) > 1 {
+		// Every registered ticker at once is not 36 independent deaths; it is one
+		// upstream cause. Say so, rather than leaving the operator to infer it from
+		// a wall of names.
+		detail += ". EVERY ticker is stale, which points at a single upstream cause — " +
+			"a wedged world command goroutine or a starved process — rather than at the tickers themselves"
+	}
+	detail += ". See /umbilical/ticker-health for per-ticker detail."
+
+	return Alarm{
+		Kind:   alarmKindTickerStale,
+		Since:  since,
+		Detail: detail,
+	}, true
 }
 
 // checkpointAlarm classifies a CheckpointHealthSnapshot: it fires once the

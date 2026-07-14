@@ -27,6 +27,8 @@ func RegisterHiredRepairBackstop(ctx context.Context, w *sim.World) {
 	if w == nil {
 		panic("cascade: RegisterHiredRepairBackstop requires a non-nil world")
 	}
+	// Cadence contract, declared before the goroutine starts (LLM-395).
+	w.RegisterTicker("hired_repair_backstop", hiredRepairBackstopSweepInterval)
 	go runHiredRepairBackstopSweep(ctx, w)
 }
 

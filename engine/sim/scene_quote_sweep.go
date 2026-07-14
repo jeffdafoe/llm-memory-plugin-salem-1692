@@ -64,6 +64,9 @@ func armNextSceneQuoteSweep(w *World) {
 	}
 	w.sceneQuoteSweep.scheduled = true
 	cadence := effectiveSceneQuoteSweepCadence(w.Settings)
+	// Re-declare the live-tunable cadence on each re-arm (LLM-395) — see
+	// armNextEvaluation.
+	w.RegisterTicker("scene_quote_sweep", cadence)
 	time.AfterFunc(cadence, func() { fireScheduledSceneQuoteSweep(w) })
 }
 

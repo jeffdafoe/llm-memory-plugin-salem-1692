@@ -40,6 +40,9 @@ func RegisterRedNeedBackstop(ctx context.Context, w *sim.World) {
 	if w == nil {
 		panic("cascade: RegisterRedNeedBackstop requires a non-nil world")
 	}
+	// Cadence contract, phase one — default now, settings-resolved interval once the
+	// goroutine can read it (LLM-395; see RegisterIdleBackstop).
+	w.RegisterTicker("red_need_backstop", defaultRedNeedBackstopSweepInterval)
 	go runRedNeedBackstopSweep(ctx, w)
 }
 
@@ -51,6 +54,8 @@ func runRedNeedBackstopSweep(ctx context.Context, w *sim.World) {
 	if ctx.Err() != nil {
 		return
 	}
+	// Cadence contract, phase two (LLM-395) — see runIdleBackstopSweep.
+	w.RegisterTicker("red_need_backstop", interval)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 

@@ -73,6 +73,8 @@ func RegisterNarrativeConsolidation(ctx context.Context, w *sim.World, soul Soul
 	if soul == nil {
 		panic("cascade: RegisterNarrativeConsolidation requires a non-nil soul synthesizer")
 	}
+	// Cadence contract, declared before the goroutine starts (LLM-395).
+	w.RegisterTicker("narrative_consolidation", sim.NarrativeConsolidationSweepInterval)
 	go runNarrativeConsolidationSweep(ctx, w, soul)
 }
 

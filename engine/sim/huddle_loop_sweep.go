@@ -207,6 +207,9 @@ func armNextHuddleLoopSweep(w *World) {
 	}
 	w.huddleLoopSweep.scheduled = true
 	cadence := effectiveHuddleLoopSweepCadence(w.Settings)
+	// Re-declare the live-tunable cadence on each re-arm (LLM-395) — see
+	// armNextEvaluation.
+	w.RegisterTicker("huddle_loop_sweep", cadence)
 	time.AfterFunc(cadence, func() { fireScheduledHuddleLoopSweep(w) })
 }
 
