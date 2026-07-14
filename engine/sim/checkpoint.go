@@ -249,12 +249,19 @@ func CheckpointSnapshotCommand() Command {
 }
 
 // CheckpointFunc persists a CheckpointSnapshot durably. The production impl
-// adapts pg.SaveWorld (the entrypoint wraps it: func(ctx, cp) error {
-// return pg.SaveWorld(ctx, repo, cp) }); tests pass a fake. It is a func
+// is pg.SaveWorld (the entrypoint wraps it: func(ctx, cp) (*Quarantine, error)
+// { return pg.SaveWorld(ctx, repo, cp) }); tests pass a fake. It is a func
 // rather than an interface so the durable-write package (pg) stays out of
 // sim's import graph — sim owns the cadence + clone, pg owns the SQL, the
 // entrypoint composes them.
-type CheckpointFunc func(ctx context.Context, cp *CheckpointSnapshot) error
+//
+// The returned *Quarantine reports the rows this checkpoint could not persist
+// cleanly (LLM-392). A nil Quarantine, or one whose Clean() is true, means a
+// fully healthy checkpoint; anything else committed but is DEGRADED and must
+// alarm. It is returned alongside err rather than folded into it because a
+// quarantined checkpoint is not a failure — it committed, durability advanced
+// — it is a success that lost something, and the two need different responses.
+type CheckpointFunc func(ctx context.Context, cp *CheckpointSnapshot) (*Quarantine, error)
 
 // defaultCheckpointInterval is the fallback cadence when
 // WorldSettings.CheckpointInterval is unset (<= 0). Matches the locked-plan
@@ -277,6 +284,14 @@ const defaultCheckpointInterval = 60 * time.Second
 // LastSuccessAt is the at-a-glance "durability is broken" signal that was
 // missing. A nil *CheckpointHealth is a no-op on every method, so callers
 // (and tests) that don't care can pass nil.
+// Quarantine state (LLM-392) is tracked SEPARATELY from failure state, and
+// the distinction is the whole point. A quarantined checkpoint COMMITS —
+// durability advanced, so consecutiveFailures resets and lastSuccessAt moves.
+// If that were the only signal, isolating a bad row would have silently
+// un-fired the very alarm LLM-394 built: a village quietly dropping a row
+// every minute would report perfect health. So a degraded checkpoint keeps its
+// own streak, its own since-timestamp, and its own alarm, and it clears only
+// on a fully clean checkpoint — not merely on one that didn't crash.
 type CheckpointHealth struct {
 	mu                  sync.Mutex
 	lastAttemptAt       time.Time
@@ -286,6 +301,16 @@ type CheckpointHealth struct {
 	totalSuccesses      uint64
 	totalFailures       uint64
 	lastError           string
+
+	// quarantineSince is when the CURRENT degraded run began — it does NOT
+	// reset on each new degraded checkpoint, so the alarm can say "durability
+	// has been dropping rows for 4 hours" rather than "for 60 seconds".
+	quarantineSince      time.Time
+	consecutiveDegraded  int
+	totalDegraded        uint64
+	lastQuarantinedRows  []QuarantinedRow
+	lastSkippedSweeps    []string
+	totalQuarantinedRows uint64
 }
 
 // CheckpointHealthSnapshot is an immutable point-in-time copy of a
@@ -298,11 +323,29 @@ type CheckpointHealthSnapshot struct {
 	TotalSuccesses      uint64    `json:"total_successes"`
 	TotalFailures       uint64    `json:"total_failures"`
 	LastError           string    `json:"last_error"`
+
+	// Degraded-checkpoint state (LLM-392): the checkpoint committed, but left
+	// rows behind. QuarantineSince is the start of the CURRENT degraded run,
+	// so an operator sees how long durability has been lossy.
+	QuarantineSince      time.Time        `json:"quarantine_since"`
+	ConsecutiveDegraded  int              `json:"consecutive_degraded"`
+	TotalDegraded        uint64           `json:"total_degraded"`
+	TotalQuarantinedRows uint64           `json:"total_quarantined_rows"`
+	LastQuarantinedRows  []QuarantinedRow `json:"last_quarantined_rows,omitempty"`
+	LastSkippedSweeps    []string         `json:"last_skipped_sweeps,omitempty"`
 }
 
-// RecordSuccess marks a successful checkpoint at now: clears the consecutive-
+// RecordSuccess marks a COMMITTED checkpoint at now: clears the consecutive-
 // failure streak and the last-error string. Nil-safe.
-func (h *CheckpointHealth) RecordSuccess(now time.Time) {
+//
+// q carries what the checkpoint had to leave behind (LLM-392) and may be nil.
+// A clean q clears the degraded state too — this is the ONLY thing that
+// clears it, so a village that keeps quarantining a row keeps alarming, and
+// the alarm's "since" reflects when the degradation actually started rather
+// than resetting every cycle. A quarantined q still counts as a success: it
+// committed, durability advanced, and the last-good checkpoint moved forward.
+// It just did so lossily, which is what the degraded fields are for.
+func (h *CheckpointHealth) RecordSuccess(now time.Time, q *Quarantine) {
 	if h == nil {
 		return
 	}
@@ -313,6 +356,22 @@ func (h *CheckpointHealth) RecordSuccess(now time.Time) {
 	h.consecutiveFailures = 0
 	h.totalSuccesses++
 	h.lastError = ""
+
+	if q.Clean() {
+		h.quarantineSince = time.Time{}
+		h.consecutiveDegraded = 0
+		h.lastQuarantinedRows = nil
+		h.lastSkippedSweeps = nil
+		return
+	}
+	if h.consecutiveDegraded == 0 {
+		h.quarantineSince = now
+	}
+	h.consecutiveDegraded++
+	h.totalDegraded++
+	h.totalQuarantinedRows += uint64(len(q.Rows()))
+	h.lastQuarantinedRows = q.Rows()
+	h.lastSkippedSweeps = q.SkippedSweeps()
 }
 
 // RecordFailure marks a failed checkpoint at now, advancing the consecutive-
@@ -341,13 +400,19 @@ func (h *CheckpointHealth) Snapshot() CheckpointHealthSnapshot {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return CheckpointHealthSnapshot{
-		LastAttemptAt:       h.lastAttemptAt,
-		LastSuccessAt:       h.lastSuccessAt,
-		LastFailureAt:       h.lastFailureAt,
-		ConsecutiveFailures: h.consecutiveFailures,
-		TotalSuccesses:      h.totalSuccesses,
-		TotalFailures:       h.totalFailures,
-		LastError:           h.lastError,
+		LastAttemptAt:        h.lastAttemptAt,
+		LastSuccessAt:        h.lastSuccessAt,
+		LastFailureAt:        h.lastFailureAt,
+		ConsecutiveFailures:  h.consecutiveFailures,
+		TotalSuccesses:       h.totalSuccesses,
+		TotalFailures:        h.totalFailures,
+		LastError:            h.lastError,
+		QuarantineSince:      h.quarantineSince,
+		ConsecutiveDegraded:  h.consecutiveDegraded,
+		TotalDegraded:        h.totalDegraded,
+		TotalQuarantinedRows: h.totalQuarantinedRows,
+		LastQuarantinedRows:  append([]QuarantinedRow(nil), h.lastQuarantinedRows...),
+		LastSkippedSweeps:    append([]string(nil), h.lastSkippedSweeps...),
 	}
 }
 
@@ -380,7 +445,7 @@ func RunCheckpointer(ctx context.Context, w *World, save CheckpointFunc, health 
 			return
 		case <-ticker.C:
 			start := time.Now()
-			err := CheckpointNow(ctx, w, save)
+			q, err := CheckpointNow(ctx, w, save)
 			// A shutdown racing this tick cancels the in-flight write; that's
 			// not a real failure, so don't record or log it — the <-ctx.Done()
 			// case returns on the next loop iteration.
@@ -392,7 +457,17 @@ func RunCheckpointer(ctx context.Context, w *World, save CheckpointFunc, health 
 				log.Printf("sim/checkpoint: %v", err)
 			} else {
 				finished := time.Now()
-				health.RecordSuccess(finished)
+				health.RecordSuccess(finished, q)
+				// LLM-392: a checkpoint that committed but had to leave rows
+				// behind is NOT "written ok". Log it at the same cadence as the
+				// success line but with the quarantine detail, so journalctl
+				// shows what durability actually kept — the alarm carries the
+				// same signal to anyone touching the umbilical.
+				if !q.Clean() {
+					log.Printf("sim/checkpoint: DEGRADED — committed with quarantine (%s): %s",
+						finished.Sub(start).Round(time.Millisecond), q.Summary())
+					continue
+				}
 				// ZBBS-HOME-399: log every successful periodic checkpoint so an
 				// operator can confirm checkpointing is alive — and spot duration
 				// creep — from journalctl alone, instead of polling the DB's
@@ -412,14 +487,14 @@ func RunCheckpointer(ctx context.Context, w *World, save CheckpointFunc, health 
 // checkpoint synchronously after stopping the periodic loop — call it with a
 // FRESH context (not the cancelled run/checkpointer context) so the build send
 // and the durable write both complete.
-func CheckpointNow(ctx context.Context, w *World, save CheckpointFunc) error {
+func CheckpointNow(ctx context.Context, w *World, save CheckpointFunc) (*Quarantine, error) {
 	res, err := w.SendContext(ctx, CheckpointSnapshotCommand())
 	if err != nil {
-		return fmt.Errorf("build checkpoint snapshot: %w", err)
+		return nil, fmt.Errorf("build checkpoint snapshot: %w", err)
 	}
 	cp, ok := res.(*CheckpointSnapshot)
 	if !ok {
-		return fmt.Errorf("checkpoint snapshot command returned %T, want *CheckpointSnapshot", res)
+		return nil, fmt.Errorf("checkpoint snapshot command returned %T, want *CheckpointSnapshot", res)
 	}
 	return save(ctx, cp)
 }

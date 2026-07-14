@@ -256,8 +256,8 @@ func (o fakeRepoOpts) build() sim.Repository {
 		// rehydrate both nil-tolerate the tier (treat it as "no returners"), so this
 		// exercises that partially-wired-repo path. The real persistence is covered by
 		// the pg recurring_visitors integration tests. (LLM-372)
-		ActionLog:            fakeActionLog{},
-		TickTelemetry:        fakeTickTelemetry{},
+		ActionLog:     fakeActionLog{},
+		TickTelemetry: fakeTickTelemetry{},
 	}
 }
 

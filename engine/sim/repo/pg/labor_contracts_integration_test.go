@@ -71,7 +71,7 @@ func TestIntegration_LaborContract_RoundTrip(t *testing.T) {
 		},
 	}
 
-	if err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
+	if _, err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
 		t.Fatalf("SaveWorld: %v", err)
 	}
 
@@ -158,14 +158,14 @@ func TestIntegration_LaborContract_DeleteStaleOnSettle(t *testing.T) {
 			CreatedAt: now, EnRouteDeadline: enRouteDeadline,
 		},
 	}
-	if err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
+	if _, err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
 		t.Fatalf("SaveWorld (both contracts): %v", err)
 	}
 
 	// The working contract settled between checkpoints — remove it from the
 	// ledger. The next checkpoint must sweep its row.
 	delete(w.LaborLedger, 7)
-	if err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
+	if _, err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
 		t.Fatalf("SaveWorld (after settle): %v", err)
 	}
 

@@ -357,7 +357,7 @@ func TestInjectAlarms_ResultStaysValidJSON(t *testing.T) {
 // in a row.
 func serverWithStreak(n int) *Server {
 	h := &sim.CheckpointHealth{}
-	h.RecordSuccess(time.Now().Add(-time.Hour))
+	h.RecordSuccess(time.Now().Add(-time.Hour), nil)
 	for i := 0; i < n; i++ {
 		h.RecordFailure(time.Now(), errAlarmTest)
 	}
@@ -566,9 +566,84 @@ func TestWithAlarmBanner_SelfClearsOnRecovery(t *testing.T) {
 		t.Fatalf("expected the alarm to be firing, got %v", got)
 	}
 
-	h.RecordSuccess(time.Now())
+	h.RecordSuccess(time.Now(), nil)
 
 	if got := s.evaluateAlarms(time.Now()); len(got) != 0 {
 		t.Fatalf("expected the alarm to self-clear after a successful checkpoint, got %v", got)
+	}
+}
+
+// --- LLM-392: the quarantine alarm ----------------------------------------
+
+// TestQuarantineAlarm_FiresWhereFailureAlarmCannot is the regression test for
+// the trap LLM-392 sets for LLM-394.
+//
+// Row quarantine turns a FAILING checkpoint into a SUCCEEDING one — so
+// ConsecutiveFailures sits at 0 and checkpoint_failure (correctly) stays quiet.
+// If that were the only alarm, a village dropping a row every 60 seconds would
+// report perfect durability health, which is precisely the blind spot that let
+// the 2026-07-12 outage run for 17.5 hours unnoticed. The quarantine alarm is
+// what covers that gap.
+func TestQuarantineAlarm_FiresWhereFailureAlarmCannot(t *testing.T) {
+	h := &sim.CheckpointHealth{}
+	q := &sim.Quarantine{}
+	q.Drop("pay_ledger", "1448", "second delivered nights_stay — violates pay_ledger_lodging_active_once")
+	q.SweepSkipped("pay_ledger")
+
+	now := time.Now()
+	h.RecordSuccess(now.Add(-2*time.Hour), q)
+	s := &Server{checkpointHealth: h}
+
+	alarms := s.evaluateAlarms(now)
+	if len(alarms) != 1 {
+		t.Fatalf("alarms = %+v, want exactly the quarantine alarm", alarms)
+	}
+	a := alarms[0]
+	if a.Kind != alarmKindCheckpointQuarantine {
+		t.Fatalf("alarm kind = %q, want %q", a.Kind, alarmKindCheckpointQuarantine)
+	}
+	// The checkpoint SUCCEEDED, so the failure alarm must not fire — that is the
+	// whole point of having a second kind.
+	for _, other := range alarms {
+		if other.Kind == alarmKindCheckpointFailure {
+			t.Error("checkpoint_failure must not fire for a checkpoint that committed")
+		}
+	}
+	if !strings.Contains(a.Detail, "LOSSY") {
+		t.Errorf("detail should say durability is LOSSY, got %q", a.Detail)
+	}
+	if !strings.Contains(a.Detail, "pay_ledger") {
+		t.Errorf("detail should name the affected table, got %q", a.Detail)
+	}
+	if !strings.Contains(a.Detail, "sweeps are SKIPPED") {
+		t.Errorf("detail should warn that sweeps are skipped, got %q", a.Detail)
+	}
+}
+
+// TestQuarantineAlarm_FiresOnFirstDegradedCheckpoint — no streak threshold,
+// unlike checkpoint_failure. A dropped row is not a transient blip that might
+// clear on retry: the row is unwritable because of what it IS, so waiting three
+// cycles to say so just delays the news.
+func TestQuarantineAlarm_FiresOnFirstDegradedCheckpoint(t *testing.T) {
+	h := &sim.CheckpointHealth{}
+	q := &sim.Quarantine{}
+	q.Clamp("actor_need", "hannah/hunger", "value=99 out of range [0,24], clamped to 24")
+	h.RecordSuccess(time.Now(), q)
+
+	s := &Server{checkpointHealth: h}
+	alarms := s.evaluateAlarms(time.Now())
+	if len(alarms) != 1 || alarms[0].Kind != alarmKindCheckpointQuarantine {
+		t.Fatalf("alarms = %+v, want the quarantine alarm on the FIRST degraded checkpoint", alarms)
+	}
+}
+
+// TestQuarantineAlarm_SilentWhenClean — a healthy checkpoint raises nothing.
+func TestQuarantineAlarm_SilentWhenClean(t *testing.T) {
+	h := &sim.CheckpointHealth{}
+	h.RecordSuccess(time.Now(), &sim.Quarantine{})
+
+	s := &Server{checkpointHealth: h}
+	if alarms := s.evaluateAlarms(time.Now()); len(alarms) != 0 {
+		t.Errorf("alarms = %+v, want none for a clean checkpoint", alarms)
 	}
 }

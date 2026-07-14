@@ -545,18 +545,32 @@ func TestScenesRepo_SaveSnapshot_ZeroOriginAtRejected(t *testing.T) {
 
 // --- Bound shape validation -------------------------------------------------
 
-func TestScenesRepo_SaveSnapshot_StructureBoundMissingStructureIDRejected(t *testing.T) {
+// LLM-392: a malformed scene bound quarantines that scene rather than aborting
+// the checkpoint. The scene keeps its previous durable row — which is also why
+// BOTH sweeps are skipped here (scene by its own drop, scene_huddle_ref because
+// its parent was dropped): sweeping would delete the very rows we declined to
+// rewrite.
+func TestScenesRepo_SaveSnapshot_StructureBoundMissingStructureIDQuarantined(t *testing.T) {
 	mock, repo := newMockPoolSc(t)
-	tx := fakeTx{mock: mock}
+	q := &sim.Quarantine{}
+	tx := &checkpointTx{Tx: fakeTx{mock: mock}, q: q}
 
 	expectSceneSaveSnapshotPrelude(mock, 1)
+	// No scene upsert (dropped), no scene sweep (blocked). The child gen still
+	// bumps; no ref upsert and no ref sweep (blocked by the parent drop).
+	mock.ExpectQuery(`SELECT nextval\('scene_huddle_ref_snapshot_gen_seq`).
+		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(int64(1)))
 
 	badBound := sim.SceneBound{Kind: sim.SceneBoundStructure} // StructureID nil
 	err := repo.SaveSnapshot(context.Background(), tx, map[sim.SceneID]*sim.Scene{
 		sim.SceneID(sceA): {ID: sim.SceneID(sceA), OriginKind: "pc_speak", OriginAt: time.Now(), Bound: badBound},
 	})
-	if err == nil {
-		t.Fatal("expected error for structure bound with nil StructureID")
+	if err != nil {
+		t.Fatalf("SaveSnapshot = %v, want nil (quarantine, not abort)", err)
+	}
+	assertQuarantinedRow(t, q, "scene", "StructureID is nil")
+	if !q.SweepBlocked("scene") || !q.SweepBlocked("scene_huddle_ref") {
+		t.Errorf("a dropped scene must block BOTH its own sweep and its refs' sweep, else the sweep deletes the rows we kept")
 	}
 }
 
@@ -593,20 +607,24 @@ func TestScenesRepo_SaveSnapshot_StructureBoundWithAnchorRejected(t *testing.T) 
 	}
 }
 
-func TestScenesRepo_SaveSnapshot_AreaBoundMissingAnchorRejected(t *testing.T) {
+func TestScenesRepo_SaveSnapshot_AreaBoundMissingAnchorQuarantined(t *testing.T) {
 	mock, repo := newMockPoolSc(t)
-	tx := fakeTx{mock: mock}
+	q := &sim.Quarantine{}
+	tx := &checkpointTx{Tx: fakeTx{mock: mock}, q: q}
 
 	expectSceneSaveSnapshotPrelude(mock, 1)
+	mock.ExpectQuery(`SELECT nextval\('scene_huddle_ref_snapshot_gen_seq`).
+		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(int64(1)))
 
 	radius := 3
 	badBound := sim.SceneBound{Kind: sim.SceneBoundArea, Radius: &radius} // Anchor nil
 	err := repo.SaveSnapshot(context.Background(), tx, map[sim.SceneID]*sim.Scene{
 		sim.SceneID(sceA): {ID: sim.SceneID(sceA), OriginKind: "pc_speak", OriginAt: time.Now(), Bound: badBound},
 	})
-	if err == nil {
-		t.Fatal("expected error for area bound with nil Anchor")
+	if err != nil {
+		t.Fatalf("SaveSnapshot = %v, want nil (quarantine, not abort)", err)
 	}
+	assertQuarantinedRow(t, q, "scene", "requires Anchor and Radius")
 }
 
 func TestScenesRepo_SaveSnapshot_AreaBoundWithStructureIDRejected(t *testing.T) {

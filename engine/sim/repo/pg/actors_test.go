@@ -903,61 +903,64 @@ func TestActorsRepo_SaveSnapshot_ToolWearUsesLeft(t *testing.T) {
 // assert that by programming NO expectations on the mock and confirming
 // ExpectationsWereMet after the error returns.
 
-func assertValidationOnly(t *testing.T, mock pgxmock.PgxPoolIface, err error, wantSubstr string) {
+// assertQuarantined runs the actor validation pre-pass and asserts it recorded
+// an entry whose reason contains wantSubstr.
+//
+// This is the LLM-392 contract, and it INVERTS what these tests used to assert.
+// They demanded that bad row content return an ERROR — but that error aborted
+// SaveWorld's entire transaction, so one actor with a need value of 25 killed
+// durability for the whole village, silently, until someone read the journal
+// (the 17.5-hour outage of 2026-07-12). Bad content is now dropped or clamped,
+// recorded on the quarantine, and alarmed, while every other row still commits.
+//
+// No SQL here at all: validateActorsSnapshot is pure, so the policy is tested
+// directly rather than through a wall of mocked statement expectations.
+func assertQuarantined(t *testing.T, actors map[sim.ActorID]*sim.Actor, wantSubstr string) {
 	t.Helper()
-	if err == nil || !strings.Contains(err.Error(), wantSubstr) {
-		t.Fatalf("err = %v, want substring %q", err, wantSubstr)
+	q := &sim.Quarantine{}
+	validateActorsSnapshot(actors, q)
+	for _, r := range q.Rows() {
+		if strings.Contains(r.Reason, wantSubstr) {
+			return
+		}
 	}
-	if exErr := mock.ExpectationsWereMet(); exErr != nil {
-		t.Errorf("validation path fired unexpected SQL: %v", exErr)
-	}
+	t.Fatalf("quarantine rows = %+v, want one whose reason contains %q", q.Rows(), wantSubstr)
 }
 
 func TestActorsRepo_SaveSnapshot_NilEntry(t *testing.T) {
-	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{actA: nil}
-	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
-	assertValidationOnly(t, mock, err, "nil entry")
+	assertQuarantined(t, actors, "nil actor entry")
 }
 
 func TestActorsRepo_SaveSnapshot_EmptyID(t *testing.T) {
-	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
 		"   ": {ID: "   ", DisplayName: "X", State: "idle"},
 	}
-	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
-	assertValidationOnly(t, mock, err, "empty ActorID")
+	assertQuarantined(t, actors, "empty ActorID")
 }
 
 func TestActorsRepo_SaveSnapshot_KeyMismatch(t *testing.T) {
-	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {ID: actB, DisplayName: "X", State: "idle"},
 	}
-	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
-	assertValidationOnly(t, mock, err, "does not match a.ID")
+	assertQuarantined(t, actors, "does not match a.ID")
 }
 
 func TestActorsRepo_SaveSnapshot_EmptyDisplayName(t *testing.T) {
-	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {ID: actA, DisplayName: "  ", State: "idle"},
 	}
-	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
-	assertValidationOnly(t, mock, err, "empty DisplayName")
+	assertQuarantined(t, actors, "empty DisplayName")
 }
 
 func TestActorsRepo_SaveSnapshot_EmptyState(t *testing.T) {
-	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {ID: actA, DisplayName: "X", State: ""},
 	}
-	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
-	assertValidationOnly(t, mock, err, "empty State")
+	assertQuarantined(t, actors, "empty State")
 }
 
 func TestActorsRepo_SaveSnapshot_HalfSetSchedule(t *testing.T) {
-	mock, repo := newMockPoolA(t)
 	start := 540
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
@@ -965,8 +968,7 @@ func TestActorsRepo_SaveSnapshot_HalfSetSchedule(t *testing.T) {
 			ScheduleStartMin: &start, // ScheduleEndMin: nil
 		},
 	}
-	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
-	assertValidationOnly(t, mock, err, "half-set schedule")
+	assertQuarantined(t, actors, "half-set schedule")
 }
 
 // TestActorsRepo_SaveSnapshot_ScheduleOutOfRange — guards intPtrToSQL's
@@ -1008,61 +1010,52 @@ func TestActorsRepo_SaveSnapshot_ScheduleOutOfRange(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			mock, repo := newMockPoolA(t)
 			a := &sim.Actor{ID: actA, DisplayName: "X", State: "idle"}
 			tc.mut(a)
-			err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, map[sim.ActorID]*sim.Actor{actA: a})
-			assertValidationOnly(t, mock, err, tc.want)
+			assertQuarantined(t, map[sim.ActorID]*sim.Actor{actA: a}, tc.want)
 		})
 	}
 }
 
 func TestActorsRepo_SaveSnapshot_NeedOutOfRange(t *testing.T) {
-	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
 			ID: actA, DisplayName: "X", State: "idle",
 			Needs: map[sim.NeedKey]int{"hunger": 99}, // > 24
 		},
 	}
-	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
-	assertValidationOnly(t, mock, err, "out of range")
+	assertQuarantined(t, actors, "out of range")
 }
 
 // TestActorsRepo_SaveSnapshot_EmptyNeedKey — guards against whitespace
 // or empty need keys (would trip btrim CHECK mid-Tx otherwise).
 func TestActorsRepo_SaveSnapshot_EmptyNeedKey(t *testing.T) {
-	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
 			ID: actA, DisplayName: "X", State: "idle",
 			Needs: map[sim.NeedKey]int{"  ": 4},
 		},
 	}
-	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
-	assertValidationOnly(t, mock, err, "empty need key")
+	assertQuarantined(t, actors, "empty need key")
 }
 
 // TestActorsRepo_SaveSnapshot_NegativeInventoryQuantity — negative
 // quantities are almost certainly command-handler bugs; reject rather
 // than silently treat as deletion.
 func TestActorsRepo_SaveSnapshot_NegativeInventoryQuantity(t *testing.T) {
-	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
 			ID: actA, DisplayName: "X", State: "idle",
 			Inventory: map[sim.ItemKind]int{"ale": -1},
 		},
 	}
-	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
-	assertValidationOnly(t, mock, err, "quantity=-1")
+	assertQuarantined(t, actors, "quantity=-1")
 }
 
 // TestActorsRepo_SaveSnapshot_NonPositiveToolWear — LLM-330: applyToolWear
 // deletes a wear entry at zero, so a non-positive value is a mechanics bug;
 // reject rather than persist a broken counter.
 func TestActorsRepo_SaveSnapshot_NonPositiveToolWear(t *testing.T) {
-	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
 			ID: actA, DisplayName: "X", State: "idle",
@@ -1070,22 +1063,19 @@ func TestActorsRepo_SaveSnapshot_NonPositiveToolWear(t *testing.T) {
 			ToolWear:  map[sim.ItemKind]int{"skillet": 0},
 		},
 	}
-	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
-	assertValidationOnly(t, mock, err, "uses_left=0")
+	assertQuarantined(t, actors, "uses_left=0")
 }
 
 // TestActorsRepo_SaveSnapshot_EmptyInventoryKind — guards whitespace /
 // empty item_kind keys.
 func TestActorsRepo_SaveSnapshot_EmptyInventoryKind(t *testing.T) {
-	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
 			ID: actA, DisplayName: "X", State: "idle",
 			Inventory: map[sim.ItemKind]int{"   ": 3},
 		},
 	}
-	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
-	assertValidationOnly(t, mock, err, "empty inventory item kind")
+	assertQuarantined(t, actors, "empty inventory item kind")
 }
 
 // TestActorsRepo_SaveSnapshot_NilTx — defensive guard.
@@ -1526,33 +1516,28 @@ func TestActorsRepo_SaveSnapshot_EmptySalientFacts(t *testing.T) {
 // --- Slice 2: SaveSnapshot continuity validation --------------------------
 
 func TestActorsRepo_SaveSnapshot_SelfRelationship(t *testing.T) {
-	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
 			ID: actA, DisplayName: "X", State: "idle",
 			Relationships: map[sim.ActorID]*sim.Relationship{actA: {}},
 		},
 	}
-	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
-	assertValidationOnly(t, mock, err, "self-relationship")
+	assertQuarantined(t, actors, "self-relationship")
 }
 
 func TestActorsRepo_SaveSnapshot_EmptyRelationshipPeer(t *testing.T) {
-	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
 			ID: actA, DisplayName: "X", State: "idle",
 			Relationships: map[sim.ActorID]*sim.Relationship{"  ": {}},
 		},
 	}
-	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
-	assertValidationOnly(t, mock, err, "empty relationship peer key")
+	assertQuarantined(t, actors, "empty relationship peer key")
 }
 
 // LLM-77: a known-place whose kp.Ref disagrees with its map key is malformed —
 // the map key is the authoritative place_ref. Rejected before any SQL.
 func TestActorsRepo_SaveSnapshot_KnownPlaceRefMismatch(t *testing.T) {
-	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
 			ID: actA, DisplayName: "X", State: "idle",
@@ -1561,14 +1546,12 @@ func TestActorsRepo_SaveSnapshot_KnownPlaceRefMismatch(t *testing.T) {
 			},
 		},
 	}
-	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
-	assertValidationOnly(t, mock, err, "mismatched Ref")
+	assertQuarantined(t, actors, "mismatched Ref")
 }
 
 // LLM-77: place_kind has no DB CHECK (Go owns the allowlist), so the pre-pass
 // rejects an unknown kind before it can wedge the checkpoint Tx.
 func TestActorsRepo_SaveSnapshot_KnownPlaceInvalidKind(t *testing.T) {
-	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
 			ID: actA, DisplayName: "X", State: "idle",
@@ -1577,8 +1560,7 @@ func TestActorsRepo_SaveSnapshot_KnownPlaceInvalidKind(t *testing.T) {
 			},
 		},
 	}
-	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
-	assertValidationOnly(t, mock, err, "unknown place_kind")
+	assertQuarantined(t, actors, "unknown place_kind")
 }
 
 func TestActorsRepo_SaveSnapshot_NegativeRelationshipCounts(t *testing.T) {
@@ -1592,41 +1574,35 @@ func TestActorsRepo_SaveSnapshot_NegativeRelationshipCounts(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			mock, repo := newMockPoolA(t)
 			actors := map[sim.ActorID]*sim.Actor{
 				actA: {
 					ID: actA, DisplayName: "X", State: "idle",
 					Relationships: map[sim.ActorID]*sim.Relationship{actB: tc.rel},
 				},
 			}
-			err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
-			assertValidationOnly(t, mock, err, tc.want)
+			assertQuarantined(t, actors, tc.want)
 		})
 	}
 }
 
 func TestActorsRepo_SaveSnapshot_EmptyAcquaintanceName(t *testing.T) {
-	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
 			ID: actA, DisplayName: "X", State: "idle",
 			Acquaintances: map[string]sim.Acquaintance{"   ": {FirstInteractedAt: tsEntered}},
 		},
 	}
-	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
-	assertValidationOnly(t, mock, err, "empty acquaintance name")
+	assertQuarantined(t, actors, "empty acquaintance name")
 }
 
 func TestActorsRepo_SaveSnapshot_OverLongAcquaintanceName(t *testing.T) {
-	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
 			ID: actA, DisplayName: "X", State: "idle",
 			Acquaintances: map[string]sim.Acquaintance{strings.Repeat("x", 101): {FirstInteractedAt: tsEntered}},
 		},
 	}
-	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
-	assertValidationOnly(t, mock, err, "exceeds 100 chars")
+	assertQuarantined(t, actors, "exceeds 100 chars")
 }
 
 // TestActorsRepo_SaveSnapshot_AcquaintanceMultibyteWithinLimit — a name
@@ -1696,7 +1672,6 @@ func TestActorsRepo_SaveSnapshot_AcquaintanceMultibyteWithinLimit(t *testing.T) 
 // TestActorsRepo_SaveSnapshot_AcquaintanceOverLongRunes — 101 multibyte
 // runes exceeds VARCHAR(100) and is rejected (rune-counted, not byte).
 func TestActorsRepo_SaveSnapshot_AcquaintanceOverLongRunes(t *testing.T) {
-	mock, repo := newMockPoolA(t)
 	name := strings.Repeat("é", 101) // 101 runes
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
@@ -1704,8 +1679,7 @@ func TestActorsRepo_SaveSnapshot_AcquaintanceOverLongRunes(t *testing.T) {
 			Acquaintances: map[string]sim.Acquaintance{name: {FirstInteractedAt: tsEntered}},
 		},
 	}
-	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
-	assertValidationOnly(t, mock, err, "exceeds 100 chars")
+	assertQuarantined(t, actors, "exceeds 100 chars")
 }
 
 // --- Slice 3 (ZBBS-WORK-245): dwell / room_access / attribute ---
@@ -1998,7 +1972,6 @@ func TestActorsRepo_SaveSnapshot_Slice3(t *testing.T) {
 // credit must carry a remaining_ticks countdown (pre-pass rejection,
 // mirrors the baseline pairing CHECK).
 func TestActorsRepo_SaveSnapshot_DwellCreditItemNilRemaining(t *testing.T) {
-	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
 			ID: actA, DisplayName: "X", State: "idle",
@@ -2010,8 +1983,7 @@ func TestActorsRepo_SaveSnapshot_DwellCreditItemNilRemaining(t *testing.T) {
 			},
 		},
 	}
-	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
-	assertValidationOnly(t, mock, err, "nil remaining_ticks")
+	assertQuarantined(t, actors, "nil remaining_ticks")
 }
 
 // TestActorsRepo_SaveSnapshot_ProductionActivityEmptyItem — LLM-319 pre-pass:
@@ -2020,15 +1992,13 @@ func TestActorsRepo_SaveSnapshot_DwellCreditItemNilRemaining(t *testing.T) {
 // cycle" while the consumed inputs stay spent — clean substrate rejection
 // before any SQL fires.
 func TestActorsRepo_SaveSnapshot_ProductionActivityEmptyItem(t *testing.T) {
-	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
 			ID: actA, DisplayName: "X", State: "idle",
 			ProductionActivity: &sim.ProductionActivity{Item: "", BatchQty: 5, RemainingSeconds: 1800},
 		},
 	}
-	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
-	assertValidationOnly(t, mock, err, "production activity with empty item")
+	assertQuarantined(t, actors, "production activity with empty item")
 }
 
 // TestActorsRepo_SaveSnapshot_ProductionActivityNonPositive — LLM-319
@@ -2046,12 +2016,10 @@ func TestActorsRepo_SaveSnapshot_ProductionActivityNonPositive(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			mock, repo := newMockPoolA(t)
 			actors := map[sim.ActorID]*sim.Actor{
 				actA: {ID: actA, DisplayName: "X", State: "idle", ProductionActivity: tc.pa},
 			}
-			err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
-			assertValidationOnly(t, mock, err, "non-positive batch_qty")
+			assertQuarantined(t, actors, "non-positive batch_qty")
 		})
 	}
 }
@@ -2060,7 +2028,6 @@ func TestActorsRepo_SaveSnapshot_ProductionActivityNonPositive(t *testing.T) {
 // key with room_id <= 0 is rejected (RoomID 0 is the "not in a room"
 // sentinel; a grant for it is corruption).
 func TestActorsRepo_SaveSnapshot_RoomAccessNonPositiveRoom(t *testing.T) {
-	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
 			ID: actA, DisplayName: "X", State: "idle",
@@ -2071,15 +2038,13 @@ func TestActorsRepo_SaveSnapshot_RoomAccessNonPositiveRoom(t *testing.T) {
 			},
 		},
 	}
-	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
-	assertValidationOnly(t, mock, err, "non-positive room_id")
+	assertQuarantined(t, actors, "non-positive room_id")
 }
 
 // TestActorsRepo_SaveSnapshot_RoomAccessLedgerMissingLedgerID — a ledger
 // grant must carry a positive LedgerID so the load-side Source derivation
 // (non-NULL ledger id ⇒ ledger) round-trips.
 func TestActorsRepo_SaveSnapshot_RoomAccessLedgerMissingLedgerID(t *testing.T) {
-	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
 			ID: actA, DisplayName: "X", State: "idle",
@@ -2090,8 +2055,7 @@ func TestActorsRepo_SaveSnapshot_RoomAccessLedgerMissingLedgerID(t *testing.T) {
 			},
 		},
 	}
-	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
-	assertValidationOnly(t, mock, err, "non-positive ledger id")
+	assertQuarantined(t, actors, "non-positive ledger id")
 }
 
 // TestActorsRepo_SaveSnapshot_RoomAccessDuplicateActivePrivate — two actors
@@ -2099,7 +2063,6 @@ func TestActorsRepo_SaveSnapshot_RoomAccessLedgerMissingLedgerID(t *testing.T) {
 // ux_room_access_one_private_active; the cross-actor pre-pass guard rejects
 // it before any UPSERT (R1 finding 5).
 func TestActorsRepo_SaveSnapshot_RoomAccessDuplicateActivePrivate(t *testing.T) {
-	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
 			ID: actA, DisplayName: "A", State: "idle",
@@ -2118,15 +2081,13 @@ func TestActorsRepo_SaveSnapshot_RoomAccessDuplicateActivePrivate(t *testing.T) 
 			},
 		},
 	}
-	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
-	assertValidationOnly(t, mock, err, "active ledger (private) grant for room")
+	assertQuarantined(t, actors, "active ledger (private) grant for room")
 }
 
 // TestActorsRepo_SaveSnapshot_RoomAccessDuplicateRoom — two in-memory
 // grants for the same room under different sources would collide on the
 // (room_id, actor_id) PK; the pre-pass rejects it.
 func TestActorsRepo_SaveSnapshot_RoomAccessDuplicateRoom(t *testing.T) {
-	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
 			ID: actA, DisplayName: "X", State: "idle",
@@ -2140,37 +2101,32 @@ func TestActorsRepo_SaveSnapshot_RoomAccessDuplicateRoom(t *testing.T) {
 			},
 		},
 	}
-	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
-	assertValidationOnly(t, mock, err, "two room-access entries for room")
+	assertQuarantined(t, actors, "second room-access entry for room")
 }
 
 // TestActorsRepo_SaveSnapshot_AttributeInvalidJSON — a params blob that
 // isn't valid JSON would trip the ::jsonb cast mid-Tx; reject in the
 // pre-pass for a clean error.
 func TestActorsRepo_SaveSnapshot_AttributeInvalidJSON(t *testing.T) {
-	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
 			ID: actA, DisplayName: "X", State: "idle",
 			Attributes: map[string][]byte{"businessowner": []byte("{not json")},
 		},
 	}
-	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
-	assertValidationOnly(t, mock, err, "invalid JSON params")
+	assertQuarantined(t, actors, "invalid JSON params")
 }
 
 // TestActorsRepo_SaveSnapshot_AttributeOverLongSlug — slug exceeds
 // VARCHAR(64).
 func TestActorsRepo_SaveSnapshot_AttributeOverLongSlug(t *testing.T) {
-	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
 			ID: actA, DisplayName: "X", State: "idle",
 			Attributes: map[string][]byte{strings.Repeat("a", 65): []byte(`{}`)},
 		},
 	}
-	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
-	assertValidationOnly(t, mock, err, "exceeds 64 chars")
+	assertQuarantined(t, actors, "exceeds 64 chars")
 }
 
 // --- helpers --------------------------------------------------------------

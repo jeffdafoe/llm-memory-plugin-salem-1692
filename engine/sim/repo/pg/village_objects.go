@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
 	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
@@ -38,6 +39,25 @@ type VillageObjectsRepo struct {
 // the normal path is pg.NewRepository which wires this internally.
 func NewVillageObjectsRepo(pool Pool) *VillageObjectsRepo {
 	return &VillageObjectsRepo{pool: pool}
+}
+
+// dropVillageObject quarantines an object out of this checkpoint (LLM-392) and
+// blocks its refresh rows' sweep — the object keeps its previous durable row,
+// so the refreshes hanging off it must keep theirs too.
+func dropVillageObject(q *sim.Quarantine, id sim.VillageObjectID, reason string) {
+	q.Drop("village_object", string(id), reason)
+	q.BlockSweep("object_refresh")
+}
+
+// sortedObjectIDs returns object ids in a stable order so the write order (and
+// therefore any quarantine decision that depends on it) is reproducible.
+func sortedObjectIDs(m map[sim.VillageObjectID]*sim.VillageObject) []sim.VillageObjectID {
+	out := make([]sim.VillageObjectID, 0, len(m))
+	for id := range m {
+		out = append(out, id)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
 }
 
 // loadAllSQL selects every village_object row. No JOIN — tags collapsed
@@ -552,6 +572,30 @@ func (r *VillageObjectsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, object
 		return fmt.Errorf("pg village_objects SaveSnapshot: nextval: %w", err)
 	}
 
+	// Step 1b: orphan guard (LLM-392). An overlay whose parent is NOT in this
+	// snapshot must not be written: the parent's durable row survives at the
+	// OLD gen (step 3's safer DELETE keeps stale parents that still have fresh
+	// children), so writing the child fresh produces exactly the cross-tier
+	// violation step 4's orphan check exists to catch — and that check aborts
+	// the ENTIRE checkpoint for every aggregate.
+	//
+	// Catching it here instead turns a village-wide durability outage into one
+	// quarantined overlay. Step 4 stays as a backstop, but this guard means it
+	// can no longer be tripped by snapshot content — only by real schema drift
+	// or an out-of-band write, which is an infrastructure failure and SHOULD
+	// abort.
+	q := quarantineOf(tx)
+	for _, id := range sortedObjectIDs(objects) {
+		obj := objects[id]
+		if obj == nil || obj.AttachedTo == "" {
+			continue
+		}
+		parent, ok := objects[obj.AttachedTo]
+		if !ok || parent == nil {
+			dropVillageObject(q, obj.ID, fmt.Sprintf("attached to %s, which is absent from the snapshot — a fresh overlay on a stale parent would violate the object parent/child gen invariant", obj.AttachedTo))
+		}
+	}
+
 	// Step 2: upsert each object, stamping the new gen. Order roots (no
 	// attached_to) before overlays (attached_to set) so a single-level
 	// overlay's parent is written first — a defensive eager pass. The
@@ -559,13 +603,15 @@ func (r *VillageObjectsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, object
 	// so deeper attachment chains and any residual ordering still resolve at
 	// commit; this pass just keeps the common case eager and intent clear.
 	ordered := make([]*sim.VillageObject, 0, len(objects))
-	for _, obj := range objects {
-		if obj != nil && obj.AttachedTo == "" {
+	for _, id := range sortedObjectIDs(objects) {
+		obj := objects[id]
+		if obj != nil && obj.AttachedTo == "" && !q.Dropped("village_object", string(obj.ID)) {
 			ordered = append(ordered, obj)
 		}
 	}
-	for _, obj := range objects {
-		if obj != nil && obj.AttachedTo != "" {
+	for _, id := range sortedObjectIDs(objects) {
+		obj := objects[id]
+		if obj != nil && obj.AttachedTo != "" && !q.Dropped("village_object", string(obj.ID)) {
 			ordered = append(ordered, obj)
 		}
 	}
@@ -611,7 +657,7 @@ func (r *VillageObjectsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, object
 	// Step 3: prune absent rows. The safer DELETE keeps stale parents
 	// alive when they still have fresh children attached, so the FK
 	// CASCADE never destroys fresh data.
-	if _, err := tx.Exec(ctx, deleteStaleSQLVO, gen); err != nil {
+	if err := execSweep(ctx, tx, "village_object", deleteStaleSQLVO, gen); err != nil {
 		return fmt.Errorf("pg village_objects SaveSnapshot: delete stale: %w", err)
 	}
 
@@ -638,9 +684,12 @@ func (r *VillageObjectsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, object
 	// Step 6: upsert every refresh on every snapshot parent. Refreshes
 	// for absent parents were already FK-CASCADE-dropped at step 3, so
 	// iterating only `objects` is correct (no missing parents to
-	// reference). nil refresh entries are skipped.
+	// reference). nil refresh entries are skipped — as are the refreshes of a
+	// QUARANTINED object (LLM-392): the object kept its old durable row, so
+	// its refreshes must keep theirs rather than being rewritten fresh against
+	// it.
 	for _, obj := range objects {
-		if obj == nil {
+		if obj == nil || q.Dropped("village_object", string(obj.ID)) {
 			continue
 		}
 		for _, ref := range obj.Refreshes {
@@ -701,7 +750,7 @@ func (r *VillageObjectsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, object
 	// Step 7: prune absent refresh rows. Catches the "parent survived
 	// but refresh attribute dropped" case. No CASCADE concerns here —
 	// object_refresh has no children.
-	if _, err := tx.Exec(ctx, deleteStaleSQLOR, refreshGen); err != nil {
+	if err := execSweep(ctx, tx, "object_refresh", deleteStaleSQLOR, refreshGen); err != nil {
 		return fmt.Errorf("pg village_objects SaveSnapshot: delete stale refresh: %w", err)
 	}
 	return nil

@@ -264,7 +264,7 @@ func main() {
 	rt := runtime{
 		World:     world,
 		LLMClient: llmClient,
-		Save: func(ctx context.Context, cp *sim.CheckpointSnapshot) error {
+		Save: func(ctx context.Context, cp *sim.CheckpointSnapshot) (*sim.Quarantine, error) {
 			return pg.SaveWorld(ctx, repo, cp)
 		},
 		// TickSink is the ring when the umbilical is enabled (set on repo above),
@@ -694,7 +694,8 @@ func run(rt runtime, stop <-chan struct{}) error {
 	tickPool.Wait()
 
 	finalCtx, cancelFinal := context.WithTimeout(context.Background(), finalCheckpointTimeout)
-	if err := sim.CheckpointNow(finalCtx, rt.World, rt.Save); err != nil {
+	q, err := sim.CheckpointNow(finalCtx, rt.World, rt.Save)
+	if err != nil {
 		// Don't fail the whole shutdown on a final-checkpoint error — the
 		// prior checkpoint is still intact. Log and proceed to stop the world.
 		//
@@ -707,8 +708,19 @@ func run(rt runtime, stop <-chan struct{}) error {
 		checkpointHealth.RecordFailure(time.Now(), err)
 		log.Printf("engine: final checkpoint failed: %v", err)
 	} else {
-		checkpointHealth.RecordSuccess(time.Now())
-		log.Println("engine: final checkpoint written")
+		checkpointHealth.RecordSuccess(time.Now(), q)
+		// LLM-392: the FINAL checkpoint is the one that matters most — it is
+		// what the next boot loads. On 2026-07-12 it failed along with all the
+		// others, which is why the restart rolled the village back 17.5 hours.
+		// If it commits but had to quarantine rows, say so in the shutdown log
+		// rather than the reassuring "written" line: this is the last thing an
+		// operator sees before the process exits, and the in-memory alarm dies
+		// with it.
+		if !q.Clean() {
+			log.Printf("engine: final checkpoint written DEGRADED — %s", q.Summary())
+		} else {
+			log.Println("engine: final checkpoint written")
+		}
 	}
 	cancelFinal()
 

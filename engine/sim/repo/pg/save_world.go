@@ -19,6 +19,22 @@ import (
 // consistency line — transient state may be lossy on crash, persistent
 // state must stay consistent).
 //
+// # World-state content never aborts the checkpoint (LLM-392)
+//
+// That all-or-nothing rollback is the response to an INFRASTRUCTURE failure —
+// pg is unreachable, the Tx is dead, a statement is malformed. It is NOT the
+// response to a bad ROW. A row the writers judge unpersistable (an actor with
+// an empty FSM state, a second active lodging ledger entry for one room) is
+// quarantined by the writer's validation pre-pass — dropped from this
+// checkpoint, recorded on the returned sim.Quarantine, and alarmed — while
+// every other row commits normally. Before LLM-392 those checks each returned
+// an error, so ONE bad field on ONE actor silently killed durability for the
+// entire village, permanently (the 17.5-hour outage of 2026-07-12; see
+// sim/checkpoint_quarantine.go for the full account and for exactly what a
+// quarantined checkpoint commits — it is a degraded hybrid, not a clean
+// image). The returned Quarantine is non-nil on every path, including error
+// paths, and Clean() reports whether this checkpoint was fully healthy.
+//
 // # Aggregates checkpointed
 //
 // The eight aggregates that own mutable world state and expose SaveSnapshot:
@@ -90,15 +106,22 @@ import (
 // is the in-memory clone, not this multi-second write. sim.RunCheckpointer
 // (the periodic driver) and the entrypoint's shutdown path compose the
 // clone-then-write; see engine/sim/checkpoint.go.
-func SaveWorld(ctx context.Context, repo sim.Repository, cp *sim.CheckpointSnapshot) error {
+func SaveWorld(ctx context.Context, repo sim.Repository, cp *sim.CheckpointSnapshot) (*sim.Quarantine, error) {
 	if cp == nil {
-		return fmt.Errorf("pg SaveWorld: nil checkpoint snapshot")
+		return nil, fmt.Errorf("pg SaveWorld: nil checkpoint snapshot")
 	}
 
-	tx, err := repo.Begin(ctx)
+	// The quarantine rides on the Tx (see quarantine.go) so every writer can
+	// reach it without a signature change. It is returned to the caller even
+	// on error — a failed checkpoint may still have quarantined rows before
+	// whatever finally broke it, and the operator wants to see them.
+	q := &sim.Quarantine{}
+
+	raw, err := repo.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("pg SaveWorld: begin tx: %w", err)
+		return q, fmt.Errorf("pg SaveWorld: begin tx: %w", err)
 	}
+	tx := &checkpointTx{Tx: raw, q: q}
 	// Roll back unless we reach a clean Commit. After a successful Commit
 	// the tx is already closed, so the deferred Rollback is a no-op and its
 	// error is intentionally discarded; on any early return below it's what
@@ -111,32 +134,32 @@ func SaveWorld(ctx context.Context, repo sim.Repository, cp *sim.CheckpointSnaps
 	}()
 
 	if err := repo.VillageObjects.SaveSnapshot(ctx, tx, cp.VillageObjects); err != nil {
-		return fmt.Errorf("pg SaveWorld: VillageObjects.SaveSnapshot: %w", err)
+		return q, fmt.Errorf("pg SaveWorld: VillageObjects.SaveSnapshot: %w", err)
 	}
 	if err := repo.Structures.SaveSnapshot(ctx, tx, cp.Structures); err != nil {
-		return fmt.Errorf("pg SaveWorld: Structures.SaveSnapshot: %w", err)
+		return q, fmt.Errorf("pg SaveWorld: Structures.SaveSnapshot: %w", err)
 	}
 	if err := repo.Huddles.SaveSnapshot(ctx, tx, cp.Huddles); err != nil {
-		return fmt.Errorf("pg SaveWorld: Huddles.SaveSnapshot: %w", err)
+		return q, fmt.Errorf("pg SaveWorld: Huddles.SaveSnapshot: %w", err)
 	}
 	if err := repo.Scenes.SaveSnapshot(ctx, tx, cp.Scenes); err != nil {
-		return fmt.Errorf("pg SaveWorld: Scenes.SaveSnapshot: %w", err)
+		return q, fmt.Errorf("pg SaveWorld: Scenes.SaveSnapshot: %w", err)
 	}
 	// Orders before Actors — room_access (actors aggregate) carries a real,
 	// non-deferred FK to pay_ledger (orders aggregate); see the write-order
 	// section in the doc comment above (ZBBS-HOME-451).
 	if err := repo.Orders.SaveSnapshot(ctx, tx, cp.Orders); err != nil {
-		return fmt.Errorf("pg SaveWorld: Orders.SaveSnapshot: %w", err)
+		return q, fmt.Errorf("pg SaveWorld: Orders.SaveSnapshot: %w", err)
 	}
 	if err := repo.Actors.SaveSnapshot(ctx, tx, cp.Actors); err != nil {
-		return fmt.Errorf("pg SaveWorld: Actors.SaveSnapshot: %w", err)
+		return q, fmt.Errorf("pg SaveWorld: Actors.SaveSnapshot: %w", err)
 	}
 	// LLM-369: the in-flight visitor mirror — the COMPLEMENT of Actors.SaveSnapshot
 	// (which skips VisitorState != nil). Handed the same cp.Actors map, it persists
 	// exactly the visitor subset the actor aggregate drops. Same Tx, so a crash
 	// can't split a visitor's persistence from the rest of the checkpoint.
 	if err := repo.Visitors.SaveSnapshot(ctx, tx, cp.Actors); err != nil {
-		return fmt.Errorf("pg SaveWorld: Visitors.SaveSnapshot: %w", err)
+		return q, fmt.Errorf("pg SaveWorld: Visitors.SaveSnapshot: %w", err)
 	}
 	// LLM-372: the durable returner set (recurring_visitor + acquaintance children).
 	// Same Tx as Visitors so a visitor's recurring_visitor_id link and the row it
@@ -149,7 +172,7 @@ func SaveWorld(ctx context.Context, repo sim.Repository, cp *sim.CheckpointSnaps
 	// — the guard can't drop real state.
 	if repo.RecurringVisitors != nil {
 		if err := repo.RecurringVisitors.SaveSnapshot(ctx, tx, cp.RecurringVisitors); err != nil {
-			return fmt.Errorf("pg SaveWorld: RecurringVisitors.SaveSnapshot: %w", err)
+			return q, fmt.Errorf("pg SaveWorld: RecurringVisitors.SaveSnapshot: %w", err)
 		}
 	}
 	// LLM-259: the accepted-labor-contract mirror (en_route + working). No cross-
@@ -164,27 +187,27 @@ func SaveWorld(ctx context.Context, repo sim.Repository, cp *sim.CheckpointSnaps
 	// (e.g. the agent_action_log `labored` audit row) can duplicate, same as every
 	// other write-through action in the engine.
 	if err := repo.LaborContracts.SaveSnapshot(ctx, tx, cp.LaborContracts); err != nil {
-		return fmt.Errorf("pg SaveWorld: LaborContracts.SaveSnapshot: %w", err)
+		return q, fmt.Errorf("pg SaveWorld: LaborContracts.SaveSnapshot: %w", err)
 	}
 	if err := repo.Environment.SaveSnapshot(ctx, tx, cp.Environment, cp.Phase); err != nil {
-		return fmt.Errorf("pg SaveWorld: Environment.SaveSnapshot: %w", err)
+		return q, fmt.Errorf("pg SaveWorld: Environment.SaveSnapshot: %w", err)
 	}
 	// Runtime-tunable settings (ZBBS-WORK-363) — the 3-key mutable subset, in the
 	// same Tx so a crash can't split a config save from the rest of the checkpoint.
 	if err := repo.Environment.SaveMutableSettings(ctx, tx, cp.MutableSettings); err != nil {
-		return fmt.Errorf("pg SaveWorld: Environment.SaveMutableSettings: %w", err)
+		return q, fmt.Errorf("pg SaveWorld: Environment.SaveMutableSettings: %w", err)
 	}
 	// Discovered (engine-minted) item kinds (ZBBS-WORK-412) — upserted in the
 	// same Tx so a crash can't split a discovery from the rest of the checkpoint.
 	// INSERT ... ON CONFLICT DO NOTHING: only unknown-category discoveries are
 	// written; authored item_kind rows stay reference data (SIGHUP hot-reload).
 	if err := saveDiscoveredKinds(ctx, tx, cp.DiscoveredKinds); err != nil {
-		return fmt.Errorf("pg SaveWorld: saveDiscoveredKinds: %w", err)
+		return q, fmt.Errorf("pg SaveWorld: saveDiscoveredKinds: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("pg SaveWorld: commit: %w", err)
+		return q, fmt.Errorf("pg SaveWorld: commit: %w", err)
 	}
 	committed = true
-	return nil
+	return q, nil
 }

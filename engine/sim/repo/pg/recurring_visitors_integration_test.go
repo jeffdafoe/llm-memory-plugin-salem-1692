@@ -64,7 +64,7 @@ func TestIntegration_RecurringVisitor_RoundTrip(t *testing.T) {
 	nextReturn := now.Add(20 * 24 * time.Hour)
 	w := recurringWorld(repo, now)
 
-	if err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
+	if _, err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
 		t.Fatalf("SaveWorld: %v", err)
 	}
 
@@ -121,14 +121,14 @@ func TestIntegration_RecurringVisitor_SurvivesDeparture(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	w := recurringWorld(repo, now)
 
-	if err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
+	if _, err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
 		t.Fatalf("SaveWorld (present): %v", err)
 	}
 	// The traveler departs and is cleaned up; the in-flight visitor row is swept by
 	// its own tier. The recurring identity must remain (and gets its next_return_at
 	// stamped on departure — modeled here as the row simply staying put).
 	delete(w.Actors, "vstr-0000abcd")
-	if err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
+	if _, err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
 		t.Fatalf("SaveWorld (after depart): %v", err)
 	}
 
@@ -171,7 +171,7 @@ func TestIntegration_RecurringVisitor_EpisodicMemoryRoundTrip(t *testing.T) {
 		sim.NewSalientFact(now.Add(-30*time.Minute), sim.InteractionPaid, "Jeff paid me 6 coins for a bundle of nails."),
 	}
 
-	if err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
+	if _, err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
 		t.Fatalf("SaveWorld: %v", err)
 	}
 	rvs, err := repo.RecurringVisitors.LoadAll(ctx)
@@ -214,7 +214,7 @@ func TestIntegration_RecurringVisitor_AcquaintanceReconcile(t *testing.T) {
 	rv.Acquaintances["pc-mary"] = &sim.RecurringAcquaintance{
 		PCActorID: "pc-mary", PCDisplayName: "Mary", FirstMetAt: now, LastMetAt: now,
 	}
-	if err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
+	if _, err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
 		t.Fatalf("SaveWorld (two acquaintances): %v", err)
 	}
 	rvs, err := repo.RecurringVisitors.LoadAll(ctx)
@@ -227,7 +227,7 @@ func TestIntegration_RecurringVisitor_AcquaintanceReconcile(t *testing.T) {
 
 	// Drop Mary in memory, checkpoint again — the child row must be reconciled out.
 	delete(rv.Acquaintances, "pc-mary")
-	if err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
+	if _, err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
 		t.Fatalf("SaveWorld (after drop): %v", err)
 	}
 	rvs, err = repo.RecurringVisitors.LoadAll(ctx)

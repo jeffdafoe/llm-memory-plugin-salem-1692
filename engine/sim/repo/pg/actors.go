@@ -5,12 +5,42 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
+
+// actorChildTables are every table that hangs off `actor`. Dropping an actor
+// from a checkpoint (LLM-392) must block these tables' stale-row sweeps as
+// well as `actor`'s own: the dropped actor's child rows are not re-upserted
+// either, so they still carry the old gen, and an unblocked sweep would delete
+// them — leaving the actor's parent row (preserved, because `actor`'s sweep is
+// skipped) stripped of its needs, inventory and room grants. Half an actor is
+// worse than a stale one.
+var actorChildTables = []string{
+	"actor_need",
+	"actor_inventory",
+	"actor_relationship",
+	"actor_narrative_state",
+	"npc_acquaintance",
+	"actor_dwell_credit",
+	"room_access",
+	"actor_attribute",
+	"actor_known_place",
+}
+
+// dropActor quarantines one actor out of this checkpoint and takes its whole
+// subtree with it — see actorChildTables. The actor keeps whatever version it
+// already had in Postgres; it does not vanish.
+func dropActor(q *sim.Quarantine, id sim.ActorID, reason string) {
+	q.Drop("actor", string(id), reason)
+	for _, t := range actorChildTables {
+		q.BlockSweep(t)
+	}
+}
 
 // ActorsRepo reads and writes Actor rows against `actor` plus its child
 // tables. Owns the whole aggregate; Slice 245 extends the load/save
@@ -1219,233 +1249,8 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 	// because Go-side int16(v) wraps silently — a 40000-minute value
 	// would pgx-encode as a wrapped negative without ever tripping the
 	// SMALLINT range error. (Slice 1 R1 precedent.)
-	persisted := make([]*sim.Actor, 0, len(actors))
-	// activePrivateRooms tracks, across ALL persisted actors, which rooms
-	// already have an active ledger (→ private kind) grant. Enforces the
-	// ux_room_access_one_private_active partial unique index in Go so a
-	// double-occupancy snapshot surfaces as a clean pre-pass rejection
-	// rather than a mid-Tx unique-violation when the second active private
-	// row UPSERTs ahead of the stale DELETE (the gen-marker order is
-	// upsert-then-sweep). This is the robust guard the step-27 ordering
-	// comment relies on.
-	activePrivateRooms := make(map[sim.RoomID]sim.ActorID)
-	for key, a := range actors {
-		if a == nil {
-			return fmt.Errorf("pg actors SaveSnapshot: nil entry at map key=%s (use deletion via gen-marker absence, not nil)", key)
-		}
-		if a.VisitorState != nil {
-			continue // visitor actors filtered — see header comment
-		}
-		if strings.TrimSpace(string(a.ID)) == "" {
-			return fmt.Errorf("pg actors SaveSnapshot: empty ActorID (map key=%s)", key)
-		}
-		if a.ID != key {
-			return fmt.Errorf("pg actors SaveSnapshot: map key=%s does not match a.ID=%s", key, a.ID)
-		}
-		if strings.TrimSpace(a.DisplayName) == "" {
-			return fmt.Errorf("pg actors SaveSnapshot: id=%s has empty DisplayName", a.ID)
-		}
-		if strings.TrimSpace(string(a.State)) == "" {
-			return fmt.Errorf("pg actors SaveSnapshot: id=%s has empty State (FSM bug — every actor must be in a named state)", a.ID)
-		}
-		// Schedule fields are all-or-none on the DB side
-		// (actor_schedule_window_all_or_none CHECK).
-		if (a.ScheduleStartMin == nil) != (a.ScheduleEndMin == nil) {
-			return fmt.Errorf("pg actors SaveSnapshot: id=%s has half-set schedule (start=%v end=%v) — must be both set or both nil",
-				a.ID, a.ScheduleStartMin, a.ScheduleEndMin)
-		}
-		// Schedule range: minute-of-day [0, 1439]. Explicit range check
-		// guards intPtrToSQL's int16 narrowing.
-		if a.ScheduleStartMin != nil && (*a.ScheduleStartMin < 0 || *a.ScheduleStartMin > 1439) {
-			return fmt.Errorf("pg actors SaveSnapshot: id=%s ScheduleStartMin=%d out of range [0,1439]", a.ID, *a.ScheduleStartMin)
-		}
-		if a.ScheduleEndMin != nil && (*a.ScheduleEndMin < 0 || *a.ScheduleEndMin > 1439) {
-			return fmt.Errorf("pg actors SaveSnapshot: id=%s ScheduleEndMin=%d out of range [0,1439]", a.ID, *a.ScheduleEndMin)
-		}
-		// Need values must fit the CHECK 0-24 range (Slice 121). Key
-		// validation guards against whitespace-only keys that would
-		// pass Go-side empty checks and trip a btrim CHECK mid-Tx.
-		for k, v := range a.Needs {
-			if strings.TrimSpace(string(k)) == "" {
-				return fmt.Errorf("pg actors SaveSnapshot: id=%s has empty need key", a.ID)
-			}
-			if v < 0 || v > 24 {
-				return fmt.Errorf("pg actors SaveSnapshot: id=%s need=%s value=%d out of range [0,24]", a.ID, k, v)
-			}
-		}
-		// Inventory: reject negative quantities (almost certainly a
-		// command-handler bug; silent-drop would mask the underlying
-		// problem). qty=0 is allowed and treated as the deletion case
-		// at the write step.
-		for kind, qty := range a.Inventory {
-			if strings.TrimSpace(string(kind)) == "" {
-				return fmt.Errorf("pg actors SaveSnapshot: id=%s has empty inventory item kind", a.ID)
-			}
-			if qty < 0 {
-				return fmt.Errorf("pg actors SaveSnapshot: id=%s inventory item=%s quantity=%d out of range (must be >= 0)",
-					a.ID, kind, qty)
-			}
-		}
-		// Tool wear (LLM-330): entries must be positive — applyToolWear
-		// deletes at zero, so a non-positive entry is a mechanics bug. A
-		// wear entry for a kind with no inventory row is tolerated (the
-		// sold-every-unit corner); it simply isn't persisted.
-		for kind, wear := range a.ToolWear {
-			if strings.TrimSpace(string(kind)) == "" {
-				return fmt.Errorf("pg actors SaveSnapshot: id=%s has empty tool-wear item kind", a.ID)
-			}
-			if wear <= 0 {
-				return fmt.Errorf("pg actors SaveSnapshot: id=%s tool wear item=%s uses_left=%d out of range (must be > 0)",
-					a.ID, kind, wear)
-			}
-		}
-		// Relationships: peer key non-empty, no self-row (matches the
-		// actor_relationship_no_self CHECK — catch in Go so it doesn't
-		// trip mid-Tx as a worse error), non-negative counts. nil entries
-		// are skipped at the write step (cloneRelationships precedent).
-		for peerID, rel := range a.Relationships {
-			if rel == nil {
-				continue
-			}
-			if strings.TrimSpace(string(peerID)) == "" {
-				return fmt.Errorf("pg actors SaveSnapshot: id=%s has empty relationship peer key", a.ID)
-			}
-			if peerID == a.ID {
-				return fmt.Errorf("pg actors SaveSnapshot: id=%s has a self-relationship (peer == self) — violates actor_relationship_no_self", a.ID)
-			}
-			if rel.InteractionCount < 0 {
-				return fmt.Errorf("pg actors SaveSnapshot: id=%s relationship peer=%s InteractionCount=%d out of range (must be >= 0)", a.ID, peerID, rel.InteractionCount)
-			}
-			if rel.DroppedFactCount < 0 {
-				return fmt.Errorf("pg actors SaveSnapshot: id=%s relationship peer=%s DroppedFactCount=%d out of range (must be >= 0)", a.ID, peerID, rel.DroppedFactCount)
-			}
-		}
-		// Acquaintances: other_name non-empty/non-whitespace (PK column,
-		// btrim concern) and within VARCHAR(100) — reject over-length in
-		// Go rather than eat a mid-Tx truncation/violation.
-		for name := range a.Acquaintances {
-			if strings.TrimSpace(name) == "" {
-				return fmt.Errorf("pg actors SaveSnapshot: id=%s has empty acquaintance name", a.ID)
-			}
-			// VARCHAR(100) counts characters, not bytes — use rune count so
-			// a multibyte name (e.g. "Élisabeth") isn't rejected for being
-			// over the byte length while under the char limit.
-			if utf8.RuneCountInString(name) > 100 {
-				return fmt.Errorf("pg actors SaveSnapshot: id=%s acquaintance name=%q exceeds 100 chars", a.ID, name)
-			}
-		}
-		// Dwell credits: shape mirrors the baseline CHECKs (source allowlist,
-		// remaining↔source pairing, dwell_delta < 0, period > 0). The map key
-		// is the PK source of truth; the struct's redundant ObjectID/
-		// Attribute/Source must agree with it. nil values skipped at write.
-		for dk, dc := range a.DwellCredits {
-			if dc == nil {
-				continue
-			}
-			if dc.ObjectID != dk.ObjectID || dc.Attribute != dk.Attribute || dc.Source != dk.Source {
-				return fmt.Errorf("pg actors SaveSnapshot: id=%s dwell credit struct (obj=%s attr=%s src=%s) disagrees with map key (obj=%s attr=%s src=%s)",
-					a.ID, dc.ObjectID, dc.Attribute, dc.Source, dk.ObjectID, dk.Attribute, dk.Source)
-			}
-			if err := validateDwellCreditShape(string(a.ID), string(dk.ObjectID), string(dk.Attribute), string(dk.Source), dc.RemainingTicks, dc.DwellDelta, dc.DwellPeriodMinutes); err != nil {
-				return fmt.Errorf("pg actors SaveSnapshot: %w", err)
-			}
-			if dc.LastCreditedAt.IsZero() {
-				return fmt.Errorf("pg actors SaveSnapshot: id=%s dwell credit obj=%s attr=%s has zero LastCreditedAt (last_credited_at is NOT NULL)", a.ID, dk.ObjectID, dk.Attribute)
-			}
-		}
-		// Production activity (LLM-319): a live cycle must carry a non-empty
-		// item and positive batch/remaining — the load side treats item==""
-		// or remaining<=0 as "no cycle", so a malformed window would silently
-		// vanish on the next boot instead of surfacing here.
-		if pa := a.ProductionActivity; pa != nil {
-			if strings.TrimSpace(string(pa.Item)) == "" {
-				return fmt.Errorf("pg actors SaveSnapshot: id=%s has production activity with empty item", a.ID)
-			}
-			if pa.BatchQty <= 0 || pa.RemainingSeconds <= 0 {
-				return fmt.Errorf("pg actors SaveSnapshot: id=%s production activity item=%s has non-positive batch_qty=%d / remaining_seconds=%d", a.ID, pa.Item, pa.BatchQty, pa.RemainingSeconds)
-			}
-		}
-		// Room access: struct must agree with key; source↔ledger-id pairing
-		// (shared with the load derivation via validateRoomAccessShape);
-		// CreatedAt non-zero (granted_at is NOT NULL). The table PK is
-		// (room_id, actor_id), so two in-memory entries for the same room
-		// under different sources would collide on UPSERT — reject that
-		// here. The cross-actor activePrivateRooms guard enforces the
-		// single-active-private-occupant index. nil skipped at write.
-		seenRooms := make(map[sim.RoomID]sim.RoomAccessSource)
-		for rk, ra := range a.RoomAccess {
-			if ra == nil {
-				continue
-			}
-			if ra.RoomID != rk.RoomID || ra.Source != rk.Source {
-				return fmt.Errorf("pg actors SaveSnapshot: id=%s room-access struct (room=%d src=%s) disagrees with map key (room=%d src=%s)",
-					a.ID, ra.RoomID, ra.Source, rk.RoomID, rk.Source)
-			}
-			if err := validateRoomAccessShape(int64(rk.RoomID), rk.Source, ra.LedgerID); err != nil {
-				return fmt.Errorf("pg actors SaveSnapshot: id=%s %w", a.ID, err)
-			}
-			if prior, dup := seenRooms[rk.RoomID]; dup {
-				return fmt.Errorf("pg actors SaveSnapshot: id=%s has two room-access entries for room=%d (sources %s and %s) — PK (room_id, actor_id) holds one row per room",
-					a.ID, rk.RoomID, prior, rk.Source)
-			}
-			seenRooms[rk.RoomID] = rk.Source
-			if ra.CreatedAt.IsZero() {
-				return fmt.Errorf("pg actors SaveSnapshot: id=%s room-access room=%d has zero CreatedAt (granted_at is NOT NULL)", a.ID, rk.RoomID)
-			}
-			// Single active private occupant per room (ux_room_access_one_
-			// private_active): ledger grants map to kind=private; an active
-			// one claims the room. Reject a second claimant up front.
-			if rk.Source == sim.AccessSourceLedger && ra.Active {
-				if prior, taken := activePrivateRooms[rk.RoomID]; taken {
-					return fmt.Errorf("pg actors SaveSnapshot: two actors hold an active ledger (private) grant for room=%d (%s and %s) — violates ux_room_access_one_private_active",
-						rk.RoomID, prior, a.ID)
-				}
-				activePrivateRooms[rk.RoomID] = a.ID
-			}
-		}
-		// Attributes: slug non-empty/non-whitespace and within VARCHAR(64);
-		// params must be valid JSON (the column is jsonb; an invalid blob
-		// would trip the ::jsonb cast mid-Tx).
-		for slug, params := range a.Attributes {
-			if strings.TrimSpace(slug) == "" {
-				return fmt.Errorf("pg actors SaveSnapshot: id=%s has empty attribute slug", a.ID)
-			}
-			if utf8.RuneCountInString(slug) > 64 {
-				return fmt.Errorf("pg actors SaveSnapshot: id=%s attribute slug=%q exceeds 64 chars", a.ID, slug)
-			}
-			if len(params) > 0 && !json.Valid(params) {
-				return fmt.Errorf("pg actors SaveSnapshot: id=%s attribute slug=%q has invalid JSON params", a.ID, slug)
-			}
-		}
-		// KnownPlaces: place_ref non-empty (PK column), place_kind in the
-		// allowlist (the schema has no CHECK — Go owns it, sim_state posture),
-		// affordance tokens non-empty. nil entries skipped at the write step.
-		// LLM-77.
-		for ref, kp := range a.KnownPlaces {
-			if kp == nil {
-				continue
-			}
-			if strings.TrimSpace(string(ref)) == "" {
-				return fmt.Errorf("pg actors SaveSnapshot: id=%s has empty known-place ref", a.ID)
-			}
-			// The map key is the authoritative place_ref (what gets persisted +
-			// reloaded as the PK); a non-empty kp.Ref that disagrees is a
-			// malformed entry that would read differently before vs after a
-			// checkpoint. Reject it (mirrors the parent map-key vs a.ID check).
-			if kp.Ref != "" && kp.Ref != ref {
-				return fmt.Errorf("pg actors SaveSnapshot: id=%s known-place key=%s has mismatched Ref=%s", a.ID, ref, kp.Ref)
-			}
-			if !kp.Kind.Valid() {
-				return fmt.Errorf("pg actors SaveSnapshot: id=%s known-place ref=%s has unknown place_kind %q", a.ID, ref, kp.Kind)
-			}
-			for _, aff := range kp.Affordances {
-				if strings.TrimSpace(aff) == "" {
-					return fmt.Errorf("pg actors SaveSnapshot: id=%s known-place ref=%s has an empty affordance token", a.ID, ref)
-				}
-			}
-		}
-		persisted = append(persisted, a)
-	}
+	q := quarantineOf(tx)
+	persisted := validateActorsSnapshot(actors, q)
 
 	// Step 1: advisory lock — serializes concurrent actor SaveSnapshot.
 	// AFTER validation so shape-error returns don't take the lock.
@@ -1500,7 +1305,7 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 
 	// Step 4: prune absent parents. FK CASCADE drops their needs +
 	// inventory rows automatically.
-	if _, err := tx.Exec(ctx, deleteStaleSQLA, actorGen); err != nil {
+	if err := execSweep(ctx, tx, "actor", deleteStaleSQLA, actorGen); err != nil {
 		return fmt.Errorf("pg actors SaveSnapshot: delete stale actor: %w", err)
 	}
 
@@ -1517,6 +1322,9 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 	// while value=0 means "satisfied right now." Keep the row.)
 	for _, a := range persisted {
 		for k, v := range a.Needs {
+			if q.Dropped("actor_need", childID(a.ID, string(k))) {
+				continue
+			}
 			if _, err := tx.Exec(ctx, upsertNeedSQLA,
 				string(a.ID), // $1 actor_id
 				string(k),    // $2 key
@@ -1529,7 +1337,7 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 	}
 
 	// Step 7: prune absent need rows.
-	if _, err := tx.Exec(ctx, deleteStaleNeedSQLA, needGen); err != nil {
+	if err := execSweep(ctx, tx, "actor_need", deleteStaleNeedSQLA, needGen); err != nil {
 		return fmt.Errorf("pg actors SaveSnapshot: delete stale need: %w", err)
 	}
 
@@ -1547,6 +1355,9 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 	// entry without a live inventory row rides nothing and is dropped.
 	for _, a := range persisted {
 		for kind, qty := range a.Inventory {
+			if q.Dropped("actor_inventory", childID(a.ID, string(kind))) {
+				continue
+			}
 			if qty == 0 {
 				continue
 			}
@@ -1570,7 +1381,7 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 
 	// Step 10: prune absent inventory rows (catches consumed-to-zero
 	// entries that were skipped at step 9 plus item-removed entries).
-	if _, err := tx.Exec(ctx, deleteStaleInvSQLA, invGen); err != nil {
+	if err := execSweep(ctx, tx, "actor_inventory", deleteStaleInvSQLA, invGen); err != nil {
 		return fmt.Errorf("pg actors SaveSnapshot: delete stale inventory: %w", err)
 	}
 
@@ -1586,6 +1397,9 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 	// with lowercase keys to match v1's stored shape.
 	for _, a := range persisted {
 		for peerID, rel := range a.Relationships {
+			if q.Dropped("actor_relationship", childID(a.ID, string(peerID))) {
+				continue
+			}
 			if rel == nil {
 				continue
 			}
@@ -1612,7 +1426,7 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 	}
 
 	// Step 13: prune absent relationship rows.
-	if _, err := tx.Exec(ctx, deleteStaleRelationshipSQLA, relGen); err != nil {
+	if err := execSweep(ctx, tx, "actor_relationship", deleteStaleRelationshipSQLA, relGen); err != nil {
 		return fmt.Errorf("pg actors SaveSnapshot: delete stale relationship: %w", err)
 	}
 
@@ -1644,7 +1458,7 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 	}
 
 	// Step 16: prune absent narrative rows.
-	if _, err := tx.Exec(ctx, deleteStaleNarrativeSQLA, narrGen); err != nil {
+	if err := execSweep(ctx, tx, "actor_narrative_state", deleteStaleNarrativeSQLA, narrGen); err != nil {
 		return fmt.Errorf("pg actors SaveSnapshot: delete stale narrative: %w", err)
 	}
 
@@ -1657,6 +1471,9 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 	// Step 18: upsert each acquaintance.
 	for _, a := range persisted {
 		for name, acq := range a.Acquaintances {
+			if q.Dropped("npc_acquaintance", childID(a.ID, name)) {
+				continue
+			}
 			if _, err := tx.Exec(ctx, upsertAcquaintanceSQLA,
 				string(a.ID),          // $1 actor_id
 				name,                  // $2 other_name
@@ -1669,7 +1486,7 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 	}
 
 	// Step 19: prune absent acquaintance rows.
-	if _, err := tx.Exec(ctx, deleteStaleAcquaintanceSQLA, acqGen); err != nil {
+	if err := execSweep(ctx, tx, "npc_acquaintance", deleteStaleAcquaintanceSQLA, acqGen); err != nil {
 		return fmt.Errorf("pg actors SaveSnapshot: delete stale acquaintance: %w", err)
 	}
 
@@ -1683,6 +1500,9 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 	// validated the rest). The map key supplies the PK columns.
 	for _, a := range persisted {
 		for dk, dc := range a.DwellCredits {
+			if q.Dropped("actor_dwell_credit", childID(a.ID, fmt.Sprintf("%s/%s/%s", dk.ObjectID, dk.Attribute, dk.Source))) {
+				continue
+			}
 			if dc == nil {
 				continue
 			}
@@ -1703,7 +1523,7 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 	}
 
 	// Step 22: prune absent dwell-credit rows.
-	if _, err := tx.Exec(ctx, deleteStaleDwellCreditSQLA, dwellGen); err != nil {
+	if err := execSweep(ctx, tx, "actor_dwell_credit", deleteStaleDwellCreditSQLA, dwellGen); err != nil {
 		return fmt.Errorf("pg actors SaveSnapshot: delete stale dwell credit: %w", err)
 	}
 
@@ -1731,6 +1551,23 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 			if ra == nil {
 				continue
 			}
+			if q.Dropped("room_access", roomAccessID(rk.RoomID, a.ID)) {
+				continue
+			}
+			// The ONE cross-aggregate dependency in the checkpoint:
+			// room_access.granted_via_ledger_id -> pay_ledger(id). If Orders
+			// quarantined that ledger row, this grant must go too — and we
+			// CANNOT leave it to the FK to tell us so. When the ledger row is
+			// brand new the FK does reject the grant, but when the ledger row
+			// already exists durably from an earlier checkpoint, the FK is
+			// perfectly happy: it would bind this fresh grant to the STALE
+			// ledger row, silently pairing a current grant with a superseded
+			// payment. Postgres cannot see that as wrong; only we can.
+			if ra.LedgerID != 0 && q.Dropped("pay_ledger", fmt.Sprintf("%d", ra.LedgerID)) {
+				q.Drop("room_access", roomAccessID(rk.RoomID, a.ID),
+					fmt.Sprintf("ledger row %d was quarantined by Orders — a room grant cannot outlive the payment that bought it", ra.LedgerID))
+				continue
+			}
 			if _, err := tx.Exec(ctx, upsertRoomAccessSQLA,
 				int64(rk.RoomID),                     // $1 room_id
 				string(a.ID),                         // $2 actor_id
@@ -1747,7 +1584,7 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 	}
 
 	// Step 28: prune absent room-access rows.
-	if _, err := tx.Exec(ctx, deleteStaleRoomAccessSQLA, roomGen); err != nil {
+	if err := execSweep(ctx, tx, "room_access", deleteStaleRoomAccessSQLA, roomGen); err != nil {
 		return fmt.Errorf("pg actors SaveSnapshot: delete stale room access: %w", err)
 	}
 
@@ -1763,6 +1600,9 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 	// schema default.
 	for _, a := range persisted {
 		for slug, params := range a.Attributes {
+			if q.Dropped("actor_attribute", childID(a.ID, slug)) {
+				continue
+			}
 			if _, err := tx.Exec(ctx, upsertAttributeSQLA,
 				string(a.ID),              // $1 actor_id
 				slug,                      // $2 slug
@@ -1775,7 +1615,7 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 	}
 
 	// Step 31: prune absent attribute rows.
-	if _, err := tx.Exec(ctx, deleteStaleAttributeSQLA, attrGen); err != nil {
+	if err := execSweep(ctx, tx, "actor_attribute", deleteStaleAttributeSQLA, attrGen); err != nil {
 		return fmt.Errorf("pg actors SaveSnapshot: delete stale attribute: %w", err)
 	}
 
@@ -1789,6 +1629,9 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 	// precedent). affordances marshalled to a JSON array of capability tokens.
 	for _, a := range persisted {
 		for ref, kp := range a.KnownPlaces {
+			if q.Dropped("actor_known_place", childID(a.ID, string(ref))) {
+				continue
+			}
 			if kp == nil {
 				continue
 			}
@@ -1811,7 +1654,7 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 	}
 
 	// Step 34: prune absent known-place rows.
-	if _, err := tx.Exec(ctx, deleteStaleKnownPlaceSQLA, knownPlaceGen); err != nil {
+	if err := execSweep(ctx, tx, "actor_known_place", deleteStaleKnownPlaceSQLA, knownPlaceGen); err != nil {
 		return fmt.Errorf("pg actors SaveSnapshot: delete stale known_place: %w", err)
 	}
 	return nil
@@ -2160,4 +2003,326 @@ func unmarshalAffordances(b []byte) ([]string, error) {
 		return nil, nil
 	}
 	return tokens, nil
+}
+
+// validateActorsSnapshot is the actor aggregate's substrate-boundary validation
+// (LLM-392). It returns the actors that will be written, and records everything
+// it had to correct or leave behind on q.
+//
+// Pure by design — no Tx, no SQL, no I/O. The checkpoint's quarantine POLICY
+// (what gets clamped, what gets dropped, which actor keeps a contested room)
+// is the part that has to be right, and a pure function is the only way to test
+// it directly instead of through a wall of mocked SQL expectations. It is also
+// the honest shape: none of this needs a database to decide.
+func validateActorsSnapshot(actors map[sim.ActorID]*sim.Actor, q *sim.Quarantine) []*sim.Actor {
+	// LLM-392: this pre-pass no longer VETOES the checkpoint. Every check
+	// below used to `return`, which aborted SaveWorld's whole transaction —
+	// so one actor with an out-of-range need silently killed durability for
+	// the entire village until someone noticed. Now a bad row is quarantined
+	// (q.Drop) or corrected (q.Clamp) and the checkpoint carries on. See
+	// sim/checkpoint_quarantine.go for the policy; the short version:
+	//
+	//   - clamp a value that is merely out of its column's range;
+	//   - drop a row that cannot be meaningfully written at all;
+	//   - a dropped ACTOR takes its child rows with it (the write steps below
+	//     consult q.Dropped), because a fresh child against the stale parent
+	//     row Postgres still holds would be a cross-generation hybrid.
+	//
+	// Clamping mutates the actor in place. That is safe and deliberate: `a`
+	// points into the CheckpointSnapshot's deep clone, which belongs to this
+	// checkpoint alone (built on the world goroutine, disconnected from live
+	// state, discarded when SaveWorld returns). The LIVE world keeps its bad
+	// value — the clamp corrects only what we persist — so the alarm keeps
+	// firing every cycle until the actual world bug is fixed, which is the
+	// behaviour we want.
+
+	// Iterate in sorted ID order. Map order is random, and two of the checks
+	// below are CROSS-actor (the single-active-private-occupant room guard):
+	// with random order, WHICH of two double-booked actors keeps the room
+	// would differ run to run, so the durable state would flap between
+	// checkpoints. Sorted order makes the survivor stable. It also makes
+	// `persisted` — and therefore every write loop below — deterministic.
+	keys := make([]sim.ActorID, 0, len(actors))
+	for key := range actors {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
+
+	persisted := make([]*sim.Actor, 0, len(actors))
+	// activePrivateRooms tracks, across ALL persisted actors, which rooms
+	// already have an active ledger (→ private kind) grant. Enforces the
+	// ux_room_access_one_private_active partial unique index in Go so a
+	// double-occupancy snapshot is caught here — as a dropped grant — rather
+	// than as a mid-Tx unique-violation when the second active private row
+	// UPSERTs ahead of the stale DELETE (the gen-marker order is
+	// upsert-then-sweep). This is the guard that keeps a double-booked room
+	// from wedging the checkpoint the way a double-booked LEDGER row did for
+	// 17.5 hours on 2026-07-12 (LLM-391/LLM-392).
+	activePrivateRooms := make(map[sim.RoomID]sim.ActorID)
+	for _, key := range keys {
+		a := actors[key]
+		if a == nil {
+			// A nil entry has no identity to persist and nothing to drop — the
+			// gen-marker sweep is how an actor is deleted, so a nil here is a
+			// command-handler bug. Record it against the map key and skip.
+			dropActor(q, key, "nil actor entry in snapshot (deletion goes through gen-marker absence, not nil)")
+			continue
+		}
+		if a.VisitorState != nil {
+			continue // visitor actors filtered — see header comment
+		}
+		if strings.TrimSpace(string(a.ID)) == "" {
+			dropActor(q, key, "empty ActorID")
+			continue
+		}
+		if a.ID != key {
+			dropActor(q, a.ID, fmt.Sprintf("map key=%s does not match a.ID=%s", key, a.ID))
+			continue
+		}
+		if strings.TrimSpace(a.DisplayName) == "" {
+			dropActor(q, a.ID, "empty DisplayName")
+			continue
+		}
+		if strings.TrimSpace(string(a.State)) == "" {
+			dropActor(q, a.ID, "empty State (FSM bug — every actor must be in a named state)")
+			continue
+		}
+		// Schedule fields are all-or-none on the DB side
+		// (actor_schedule_window_all_or_none CHECK). A half-set schedule can't
+		// be repaired (we don't know the missing end), so clear both — the
+		// actor persists with no schedule window rather than not at all.
+		if (a.ScheduleStartMin == nil) != (a.ScheduleEndMin == nil) {
+			q.Clamp("actor", string(a.ID), fmt.Sprintf("half-set schedule (start=%v end=%v) cleared — must be both set or both nil",
+				a.ScheduleStartMin, a.ScheduleEndMin))
+			a.ScheduleStartMin, a.ScheduleEndMin = nil, nil
+		}
+		// Schedule range: minute-of-day [0, 1439]. Explicit range check
+		// guards intPtrToSQL's int16 narrowing.
+		if a.ScheduleStartMin != nil && (*a.ScheduleStartMin < 0 || *a.ScheduleStartMin > 1439) {
+			clamped := clampInt(*a.ScheduleStartMin, 0, 1439)
+			q.Clamp("actor", string(a.ID), fmt.Sprintf("ScheduleStartMin=%d out of range [0,1439], clamped to %d", *a.ScheduleStartMin, clamped))
+			a.ScheduleStartMin = &clamped
+		}
+		if a.ScheduleEndMin != nil && (*a.ScheduleEndMin < 0 || *a.ScheduleEndMin > 1439) {
+			clamped := clampInt(*a.ScheduleEndMin, 0, 1439)
+			q.Clamp("actor", string(a.ID), fmt.Sprintf("ScheduleEndMin=%d out of range [0,1439], clamped to %d", *a.ScheduleEndMin, clamped))
+			a.ScheduleEndMin = &clamped
+		}
+		// Need values must fit the CHECK 0-24 range (Slice 121). An out-of-
+		// range need is an arithmetic bug in the needs tick, not a reason to
+		// lose the actor — clamp it. An empty key can't be a PK, so that row
+		// alone is dropped.
+		for k, v := range a.Needs {
+			if strings.TrimSpace(string(k)) == "" {
+				q.Drop("actor_need", childID(a.ID, string(k)), "empty need key")
+				continue
+			}
+			if v < 0 || v > 24 {
+				clamped := clampInt(v, 0, 24)
+				q.Clamp("actor_need", childID(a.ID, string(k)), fmt.Sprintf("value=%d out of range [0,24], clamped to %d", v, clamped))
+				a.Needs[k] = clamped
+			}
+		}
+		// Inventory: a negative quantity is a command-handler bug. Clamp to 0
+		// — the write step treats qty==0 as the deletion case, so the row goes
+		// away rather than persisting a nonsense negative stock.
+		for kind, qty := range a.Inventory {
+			if strings.TrimSpace(string(kind)) == "" {
+				q.Drop("actor_inventory", childID(a.ID, string(kind)), "empty inventory item kind")
+				continue
+			}
+			if qty < 0 {
+				q.Clamp("actor_inventory", childID(a.ID, string(kind)), fmt.Sprintf("quantity=%d negative, clamped to 0 (row deleted)", qty))
+				a.Inventory[kind] = 0
+			}
+		}
+		// Tool wear (LLM-330): entries must be positive — applyToolWear
+		// deletes at zero, so a non-positive entry is a mechanics bug. Wear
+		// rides on the inventory row's uses_left, so a bad entry drops the
+		// WEAR, not the inventory: the tool persists, merely unworn.
+		for kind, wear := range a.ToolWear {
+			if strings.TrimSpace(string(kind)) == "" || wear <= 0 {
+				q.Drop("actor_tool_wear", childID(a.ID, string(kind)), fmt.Sprintf("uses_left=%d must be > 0 (item persists unworn)", wear))
+				delete(a.ToolWear, kind)
+			}
+		}
+		// Relationships: peer key non-empty, no self-row (matches the
+		// actor_relationship_no_self CHECK), non-negative counts. Negative
+		// counts are clamped; a structurally impossible row (no peer, or a
+		// self-relationship) is dropped. nil entries are skipped at write.
+		for peerID, rel := range a.Relationships {
+			if rel == nil {
+				continue
+			}
+			if strings.TrimSpace(string(peerID)) == "" {
+				q.Drop("actor_relationship", childID(a.ID, string(peerID)), "empty relationship peer key")
+				continue
+			}
+			if peerID == a.ID {
+				q.Drop("actor_relationship", childID(a.ID, string(peerID)), "self-relationship (peer == self) — violates actor_relationship_no_self")
+				continue
+			}
+			if rel.InteractionCount < 0 {
+				q.Clamp("actor_relationship", childID(a.ID, string(peerID)), fmt.Sprintf("InteractionCount=%d negative, clamped to 0", rel.InteractionCount))
+				rel.InteractionCount = 0
+			}
+			if rel.DroppedFactCount < 0 {
+				q.Clamp("actor_relationship", childID(a.ID, string(peerID)), fmt.Sprintf("DroppedFactCount=%d negative, clamped to 0", rel.DroppedFactCount))
+				rel.DroppedFactCount = 0
+			}
+		}
+		// Acquaintances: other_name is a PK column, so an empty or over-long
+		// name can't be written — drop the row. (Truncating to fit VARCHAR(100)
+		// could collide with another acquaintance's name, so no clamp here.)
+		for name := range a.Acquaintances {
+			if strings.TrimSpace(name) == "" {
+				q.Drop("npc_acquaintance", childID(a.ID, name), "empty acquaintance name")
+				continue
+			}
+			// VARCHAR(100) counts characters, not bytes — use rune count so
+			// a multibyte name (e.g. "Élisabeth") isn't rejected for being
+			// over the byte length while under the char limit.
+			if utf8.RuneCountInString(name) > 100 {
+				q.Drop("npc_acquaintance", childID(a.ID, name), fmt.Sprintf("acquaintance name %q exceeds 100 chars", name))
+			}
+		}
+		// Dwell credits: shape mirrors the baseline CHECKs (source allowlist,
+		// remaining↔source pairing, dwell_delta < 0, period > 0). The map key
+		// is the PK source of truth; the struct's redundant ObjectID/
+		// Attribute/Source must agree with it. A malformed credit is dropped —
+		// there is no safe repair for a disagreeing composite key.
+		for dk, dc := range a.DwellCredits {
+			if dc == nil {
+				continue
+			}
+			id := childID(a.ID, fmt.Sprintf("%s/%s/%s", dk.ObjectID, dk.Attribute, dk.Source))
+			if dc.ObjectID != dk.ObjectID || dc.Attribute != dk.Attribute || dc.Source != dk.Source {
+				q.Drop("actor_dwell_credit", id, fmt.Sprintf("struct (obj=%s attr=%s src=%s) disagrees with map key (obj=%s attr=%s src=%s)",
+					dc.ObjectID, dc.Attribute, dc.Source, dk.ObjectID, dk.Attribute, dk.Source))
+				continue
+			}
+			if err := validateDwellCreditShape(string(a.ID), string(dk.ObjectID), string(dk.Attribute), string(dk.Source), dc.RemainingTicks, dc.DwellDelta, dc.DwellPeriodMinutes); err != nil {
+				q.Drop("actor_dwell_credit", id, err.Error())
+				continue
+			}
+			if dc.LastCreditedAt.IsZero() {
+				q.Drop("actor_dwell_credit", id, "zero LastCreditedAt (last_credited_at is NOT NULL)")
+			}
+		}
+		// Production activity (LLM-319): a live cycle must carry a non-empty
+		// item and positive batch/remaining. A malformed window is cleared —
+		// the actor persists with no production cycle, which is exactly what
+		// the load side would have inferred from it anyway.
+		if pa := a.ProductionActivity; pa != nil {
+			if strings.TrimSpace(string(pa.Item)) == "" {
+				q.Clamp("actor", string(a.ID), "production activity with empty item cleared")
+				a.ProductionActivity = nil
+			} else if pa.BatchQty <= 0 || pa.RemainingSeconds <= 0 {
+				q.Clamp("actor", string(a.ID), fmt.Sprintf("production activity item=%s has non-positive batch_qty=%d / remaining_seconds=%d, cleared",
+					pa.Item, pa.BatchQty, pa.RemainingSeconds))
+				a.ProductionActivity = nil
+			}
+		}
+		// Room access: struct must agree with key; source↔ledger-id pairing
+		// (shared with the load derivation via validateRoomAccessShape);
+		// CreatedAt non-zero (granted_at is NOT NULL). The table PK is
+		// (room_id, actor_id), so two in-memory entries for the same room
+		// under different sources would collide on UPSERT — drop the second.
+		// The cross-actor activePrivateRooms guard enforces the single-active-
+		// private-occupant index the same way. nil skipped at write.
+		//
+		// Sorted key order here for the same reason as the actor loop: which
+		// of two colliding grants survives must not depend on map order.
+		seenRooms := make(map[sim.RoomID]sim.RoomAccessSource)
+		for _, rk := range sortedRoomKeys(a.RoomAccess) {
+			ra := a.RoomAccess[rk]
+			if ra == nil {
+				continue
+			}
+			id := roomAccessID(rk.RoomID, a.ID)
+			if ra.RoomID != rk.RoomID || ra.Source != rk.Source {
+				q.Drop("room_access", id, fmt.Sprintf("struct (room=%d src=%s) disagrees with map key (room=%d src=%s)",
+					ra.RoomID, ra.Source, rk.RoomID, rk.Source))
+				continue
+			}
+			if err := validateRoomAccessShape(int64(rk.RoomID), rk.Source, ra.LedgerID); err != nil {
+				q.Drop("room_access", id, err.Error())
+				continue
+			}
+			if prior, dup := seenRooms[rk.RoomID]; dup {
+				q.Drop("room_access", id, fmt.Sprintf("second room-access entry for room=%d (sources %s and %s) — PK (room_id, actor_id) holds one row per room",
+					rk.RoomID, prior, rk.Source))
+				continue
+			}
+			if ra.CreatedAt.IsZero() {
+				q.Drop("room_access", id, fmt.Sprintf("room=%d has zero CreatedAt (granted_at is NOT NULL)", rk.RoomID))
+				continue
+			}
+			// Single active private occupant per room (ux_room_access_one_
+			// private_active): ledger grants map to kind=private; an active
+			// one claims the room. The first claimant in sorted actor order
+			// keeps it; a second is dropped rather than wedging the write.
+			if rk.Source == sim.AccessSourceLedger && ra.Active {
+				if prior, taken := activePrivateRooms[rk.RoomID]; taken {
+					q.Drop("room_access", id, fmt.Sprintf("second actor holding an active ledger (private) grant for room=%d (%s already holds it) — violates ux_room_access_one_private_active",
+						rk.RoomID, prior))
+					continue
+				}
+				activePrivateRooms[rk.RoomID] = a.ID
+			}
+			seenRooms[rk.RoomID] = rk.Source
+		}
+		// Attributes: slug non-empty/non-whitespace and within VARCHAR(64);
+		// params must be valid JSON (the column is jsonb; an invalid blob
+		// would trip the ::jsonb cast mid-Tx). All three are unwritable rows,
+		// so all three drop.
+		for slug, params := range a.Attributes {
+			id := childID(a.ID, slug)
+			if strings.TrimSpace(slug) == "" {
+				q.Drop("actor_attribute", id, "empty attribute slug")
+				continue
+			}
+			if utf8.RuneCountInString(slug) > 64 {
+				q.Drop("actor_attribute", id, fmt.Sprintf("attribute slug %q exceeds 64 chars", slug))
+				continue
+			}
+			if len(params) > 0 && !json.Valid(params) {
+				q.Drop("actor_attribute", id, fmt.Sprintf("attribute slug %q has invalid JSON params", slug))
+			}
+		}
+		// KnownPlaces: place_ref non-empty (PK column), place_kind in the
+		// allowlist (the schema has no CHECK — Go owns it, sim_state posture),
+		// affordance tokens non-empty. nil entries skipped at the write step.
+		// LLM-77.
+		for ref, kp := range a.KnownPlaces {
+			if kp == nil {
+				continue
+			}
+			id := childID(a.ID, string(ref))
+			if strings.TrimSpace(string(ref)) == "" {
+				q.Drop("actor_known_place", id, "empty known-place ref")
+				continue
+			}
+			// The map key is the authoritative place_ref (what gets persisted +
+			// reloaded as the PK); a non-empty kp.Ref that disagrees is a
+			// malformed entry that would read differently before vs after a
+			// checkpoint.
+			if kp.Ref != "" && kp.Ref != ref {
+				q.Drop("actor_known_place", id, fmt.Sprintf("known-place key=%s has mismatched Ref=%s", ref, kp.Ref))
+				continue
+			}
+			if !kp.Kind.Valid() {
+				q.Drop("actor_known_place", id, fmt.Sprintf("known-place ref=%s has unknown place_kind %q", ref, kp.Kind))
+				continue
+			}
+			for _, aff := range kp.Affordances {
+				if strings.TrimSpace(aff) == "" {
+					q.Drop("actor_known_place", id, fmt.Sprintf("known-place ref=%s has an empty affordance token", ref))
+					break
+				}
+			}
+		}
+		persisted = append(persisted, a)
+	}
+	return persisted
 }

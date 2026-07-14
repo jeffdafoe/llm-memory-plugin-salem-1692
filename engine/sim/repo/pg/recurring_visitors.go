@@ -199,18 +199,23 @@ func (r *RecurringVisitorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, rec
 		return fmt.Errorf("pg recurring_visitors SaveSnapshot: advisory lock: %w", err)
 	}
 
+	// LLM-392: a malformed returner is quarantined, not fatal.
+	q := quarantineOf(tx)
 	for id, rv := range recurring {
 		if rv == nil {
 			continue
 		}
 		if rv.ID != id {
-			return fmt.Errorf("pg recurring_visitors SaveSnapshot: map key=%s does not match rv.ID=%s", id, rv.ID)
+			q.Drop("recurring_visitor", string(rv.ID), fmt.Sprintf("map key=%s does not match rv.ID=%s", id, rv.ID))
+			continue
 		}
 		if strings.TrimSpace(string(rv.ID)) == "" {
-			return fmt.Errorf("pg recurring_visitors SaveSnapshot: empty recurring visitor id")
+			q.Drop("recurring_visitor", string(id), "empty recurring visitor id")
+			continue
 		}
 		if strings.TrimSpace(rv.Name) == "" {
-			return fmt.Errorf("pg recurring_visitors SaveSnapshot: id=%s has empty persona name", rv.ID)
+			q.Drop("recurring_visitor", string(rv.ID), "empty persona name")
+			continue
 		}
 		var nextReturnArg any
 		if !rv.NextReturnAt.IsZero() {
@@ -245,7 +250,8 @@ func (r *RecurringVisitorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, rec
 			}
 			factsJSON, err := marshalSalientFacts(acq.SalientFacts)
 			if err != nil {
-				return fmt.Errorf("pg recurring_visitors SaveSnapshot: marshal salient_facts id=%s pc=%s: %w", rv.ID, pcID, err)
+				q.Drop("recurring_visitor_acquaintance", fmt.Sprintf("%s/%s", rv.ID, pcID), fmt.Sprintf("salient_facts will not marshal: %v", err))
+				continue
 			}
 			if _, err := tx.Exec(ctx, upsertRecurringAcqSQL,
 				string(rv.ID),          // $1 recurring_visitor_id

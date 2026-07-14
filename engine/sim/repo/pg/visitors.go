@@ -301,19 +301,25 @@ func (r *VisitorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[s
 		return fmt.Errorf("pg visitors SaveSnapshot: nextval: %w", err)
 	}
 
+	// LLM-392: a malformed visitor is quarantined, not fatal — it keeps its
+	// previous durable row while the rest of the checkpoint commits.
+	q := quarantineOf(tx)
 	for key, a := range actors {
 		if a == nil || a.VisitorState == nil {
 			continue // not a visitor — the actor aggregate owns (or rejects) it
 		}
 		if a.ID != key {
-			return fmt.Errorf("pg visitors SaveSnapshot: map key=%s does not match a.ID=%s", key, a.ID)
+			q.Drop("visitor", string(a.ID), fmt.Sprintf("map key=%s does not match a.ID=%s", key, a.ID))
+			continue
 		}
 		if strings.TrimSpace(a.DisplayName) == "" {
-			return fmt.Errorf("pg visitors SaveSnapshot: id=%s has empty DisplayName", a.ID)
+			q.Drop("visitor", string(a.ID), "empty DisplayName")
+			continue
 		}
 		vs := a.VisitorState
 		if !vs.Phase.Valid() {
-			return fmt.Errorf("pg visitors SaveSnapshot: id=%s has invalid visitor phase %q (Go owns the allowlist)", a.ID, vs.Phase)
+			q.Drop("visitor", string(a.ID), fmt.Sprintf("invalid visitor phase %q (Go owns the allowlist)", vs.Phase))
+			continue
 		}
 		// inside_structure_id: bind "" as SQL NULL so the column round-trips
 		// outdoors-or-inside cleanly (matches the visitor_inside_structure_id_nonempty
@@ -332,7 +338,11 @@ func (r *VisitorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[s
 		// booked-room grant off the live Actor. Bound as text and cast ::jsonb.
 		planJSON, err := encodeVisitorPlan(a)
 		if err != nil {
-			return fmt.Errorf("pg visitors SaveSnapshot: encode plan id=%s: %w", a.ID, err)
+			// An unencodable plan is bad ROW content, not a broken transaction —
+			// quarantine the visitor rather than taking the village's durability
+			// down with it (LLM-392).
+			q.Drop("visitor", string(a.ID), fmt.Sprintf("day-plan will not encode: %v", err))
+			continue
 		}
 		if _, err := tx.Exec(ctx, upsertSQLV,
 			string(a.ID),     // $1  actor_id
@@ -354,7 +364,7 @@ func (r *VisitorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[s
 		}
 	}
 
-	if _, err := tx.Exec(ctx, deleteStaleSQLV, gen); err != nil {
+	if err := execSweep(ctx, tx, "visitor", deleteStaleSQLV, gen); err != nil {
 		return fmt.Errorf("pg visitors SaveSnapshot: delete stale: %w", err)
 	}
 	return nil

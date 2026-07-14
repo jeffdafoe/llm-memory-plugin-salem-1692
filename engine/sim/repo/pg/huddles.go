@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
 	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
@@ -261,22 +262,29 @@ func (r *HuddlesRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, huddles map[s
 	// surfaces them on the failing checkpoint Tx instead of as a
 	// partial-Tx CHECK / UNIQUE violation downstream, and avoids
 	// stamping inconsistent state.
+	// LLM-392: a malformed huddle is quarantined, not fatal — it keeps its
+	// previous durable row (and its member rows, whose sweep the drop blocks)
+	// while the rest of the checkpoint commits.
+	q := quarantineOf(tx)
 	for key, h := range huddles {
 		if h == nil {
 			continue
 		}
 		if h.ID == "" {
-			return fmt.Errorf("pg huddles SaveSnapshot: empty HuddleID (map key=%s)", key)
+			dropHuddle(q, key, "empty HuddleID")
+			continue
 		}
 		if h.ID != key {
-			return fmt.Errorf("pg huddles SaveSnapshot: map key=%s does not match h.ID=%s", key, h.ID)
+			dropHuddle(q, key, fmt.Sprintf("map key=%s does not match h.ID=%s", key, h.ID))
+			continue
 		}
 		if h.ConcludedAt != nil && len(h.Members) != 0 {
-			return fmt.Errorf("pg huddles SaveSnapshot: id=%s concluded but Members non-empty (size=%d) — ConcludeHuddle must wipe Members",
-				h.ID, len(h.Members))
+			dropHuddle(q, key, fmt.Sprintf("concluded but Members non-empty (size=%d) — ConcludeHuddle must wipe Members", len(h.Members)))
+			continue
 		}
 		if h.StartedAt.IsZero() {
-			return fmt.Errorf("pg huddles SaveSnapshot: id=%s has zero StartedAt", h.ID)
+			dropHuddle(q, key, "zero StartedAt")
+			continue
 		}
 		// Empty StructureID (outdoor huddle) → SQL NULL. CHECK
 		// constraint forbids empty-but-not-NULL.
@@ -296,7 +304,7 @@ func (r *HuddlesRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, huddles map[s
 	}
 
 	// Step 3: prune absent parents. FK CASCADE drops their member rows.
-	if _, err := tx.Exec(ctx, deleteStaleSQLH, huddleGen); err != nil {
+	if err := execSweep(ctx, tx, "scene_huddle", deleteStaleSQLH, huddleGen); err != nil {
 		return fmt.Errorf("pg huddles SaveSnapshot: delete stale huddle: %w", err)
 	}
 
@@ -316,16 +324,29 @@ func (r *HuddlesRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, huddles map[s
 	// without failing the checkpoint: the first huddle iterated wins, any later
 	// duplicate is logged and skipped (one write per actor, no flip-flopping
 	// upsert). This is the loud signal the old fail-the-Tx clause reached for,
-	// minus the durability outage.
+	// minus the durability outage — the same trade LLM-392 later generalized to
+	// every writer, so the duplicate is now recorded on the quarantine too
+	// rather than only in the log.
+	//
+	// Sorted iteration (LLM-392): "the first huddle iterated wins" was decided
+	// by Go's random map order, so which huddle kept a double-booked actor
+	// flipped from one checkpoint to the next. Lowest huddle id wins now.
 	seenHuddleByActor := make(map[sim.ActorID]sim.HuddleID)
-	for _, h := range huddles {
-		if h == nil {
+	for _, hid := range sortedHuddleIDs(huddles) {
+		h := huddles[hid]
+		// hid is the MAP KEY — the same identity the pre-pass drops under. Keying
+		// on h.ID instead would miss an empty-ID huddle (dropped under its key,
+		// but h.ID is ""), and its members would then be written against a parent
+		// row that was never inserted — an FK violation that aborts the checkpoint.
+		if h == nil || q.Dropped("scene_huddle", string(hid)) {
 			continue
 		}
-		for actorID := range h.Members {
+		for _, actorID := range sortedMemberIDs(h.Members) {
 			if prev, dup := seenHuddleByActor[actorID]; dup {
 				log.Printf("pg huddles SaveSnapshot: actor %s already in huddle %s, also listed in %s — keeping first; world-side membership bug",
 					actorID, prev, h.ID)
+				q.Drop("huddle_member", fmt.Sprintf("%s/%s", h.ID, actorID),
+					fmt.Sprintf("actor %s is already a live member of huddle %s — an actor can only be in one huddle", actorID, prev))
 				continue
 			}
 			seenHuddleByActor[actorID] = h.ID
@@ -341,8 +362,36 @@ func (r *HuddlesRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, huddles map[s
 	}
 
 	// Step 6: prune absent member rows.
-	if _, err := tx.Exec(ctx, deleteStaleSQLM, memberGen); err != nil {
+	if err := execSweep(ctx, tx, "huddle_member", deleteStaleSQLM, memberGen); err != nil {
 		return fmt.Errorf("pg huddles SaveSnapshot: delete stale member: %w", err)
 	}
 	return nil
+}
+
+// dropHuddle quarantines a huddle and blocks its members' sweep — the huddle
+// keeps its previous durable row, so its member rows must keep theirs.
+func dropHuddle(q *sim.Quarantine, id sim.HuddleID, reason string) {
+	q.Drop("scene_huddle", string(id), reason)
+	q.BlockSweep("huddle_member")
+}
+
+// sortedHuddleIDs returns huddle ids in a stable order, so which huddle keeps a
+// double-booked actor is reproducible rather than map-order luck.
+func sortedHuddleIDs(m map[sim.HuddleID]*sim.Huddle) []sim.HuddleID {
+	out := make([]sim.HuddleID, 0, len(m))
+	for id := range m {
+		out = append(out, id)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+// sortedMemberIDs returns a huddle's member ids in a stable order.
+func sortedMemberIDs(m map[sim.ActorID]struct{}) []sim.ActorID {
+	out := make([]sim.ActorID, 0, len(m))
+	for id := range m {
+		out = append(out, id)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
 }

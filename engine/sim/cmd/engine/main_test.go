@@ -46,12 +46,12 @@ func TestRun_LifecycleAndFinalCheckpoint(t *testing.T) {
 	var mu sync.Mutex
 	var saves int
 	var last *sim.CheckpointSnapshot
-	save := func(_ context.Context, cp *sim.CheckpointSnapshot) error {
+	save := func(_ context.Context, cp *sim.CheckpointSnapshot) (*sim.Quarantine, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		saves++
 		last = cp
-		return nil
+		return nil, nil
 	}
 
 	rt := runtime{
@@ -386,7 +386,7 @@ func TestRun_WiresOffWorldCascades(t *testing.T) {
 	rt := runtime{
 		World:     world,
 		LLMClient: llm.NewFakeClient(llm.ScriptedTurn{Response: llm.Response{Content: wantAtmosphere}}),
-		Save:      func(context.Context, *sim.CheckpointSnapshot) error { return nil },
+		Save:      func(context.Context, *sim.CheckpointSnapshot) (*sim.Quarantine, error) { return nil, nil },
 		TickSink:  nil,
 	}
 
@@ -446,7 +446,7 @@ func TestRun_WiresStormCascade(t *testing.T) {
 	rt := runtime{
 		World:     world,
 		LLMClient: llm.NewFakeClient(),
-		Save:      func(context.Context, *sim.CheckpointSnapshot) error { return nil },
+		Save:      func(context.Context, *sim.CheckpointSnapshot) (*sim.Quarantine, error) { return nil, nil },
 		TickSink:  nil,
 	}
 

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -29,8 +30,10 @@ import (
 //
 // Not a metrics feed — a fire alarm. The registry stays small and severe: a
 // condition belongs here only if the right response is to drop what you are
-// doing. Today that is exactly one condition (durability is broken); the
-// evaluator is shaped so more slot in.
+// doing. Today that is three: durability is BROKEN (checkpoint_failure —
+// nothing is being written), durability is LOSSY (checkpoint_quarantine — not
+// everything is; LLM-392), or the world has stopped moving (ticker_stale — a
+// cadence goroutine missed its declared interval; LLM-395).
 //
 // TIED TO THE EXISTING MONITORS, NOT A NEW ONE. evaluateAlarms owns no state and
 // tracks nothing: it reads the health structs the engine already maintains
@@ -47,6 +50,14 @@ import (
 // checkpointer has failed this many times in a row, so the world in memory is
 // diverging from the last good checkpoint and a restart would roll back to it.
 const alarmKindCheckpointFailure = "checkpoint_failure"
+
+// alarmKindCheckpointQuarantine fires when durable persistence is LOSSY: the
+// checkpoint commits, but the writers had to leave rows behind (LLM-392). The
+// world in memory and the world on disk have diverged, and — because a table
+// with a dropped row also stops sweeping — some tables may be retaining rows
+// for entities that no longer exist. Distinct from checkpoint_failure: that one
+// means nothing is being written; this one means not EVERYTHING is.
+const alarmKindCheckpointQuarantine = "checkpoint_quarantine"
 
 // alarmKindTickerStale fires when a cadence goroutine has stopped beating on its
 // declared interval (LLM-395). This is the OTHER way the engine keeps serving
@@ -115,7 +126,11 @@ type UmbilicalAlarmsDTO struct {
 // streak, so it simply never fires.
 func (s *Server) evaluateAlarms(now time.Time) []Alarm {
 	var out []Alarm
-	if a, ok := checkpointAlarm(s.checkpointHealth.Snapshot(), now); ok {
+	h := s.checkpointHealth.Snapshot()
+	if a, ok := checkpointAlarm(h, now); ok {
+		out = append(out, a)
+	}
+	if a, ok := checkpointQuarantineAlarm(h, now); ok {
 		out = append(out, a)
 	}
 	// Nil-guarded: unlike the health recorders, s.world is a bare pointer whose
@@ -227,6 +242,76 @@ func checkpointAlarm(h sim.CheckpointHealthSnapshot, now time.Time) (Alarm, bool
 		LastError:   h.LastError,
 		Detail:      detail,
 	}, true
+}
+
+// checkpointQuarantineAlarm fires while the checkpoint is COMMITTING BUT LOSSY
+// (LLM-392): rows the writers could not persist are being dropped every cycle,
+// and any table with a drop has stopped sweeping its departed rows.
+//
+// This alarm is not optional garnish — it is the thing that keeps LLM-392 from
+// silently undoing LLM-394. Row quarantine turns a failing checkpoint into a
+// SUCCEEDING one, which resets ConsecutiveFailures and moves LastSuccessAt, so
+// the checkpoint_failure alarm above goes quiet. Without this second alarm, a
+// village dropping a row every 60 seconds forever would report perfect
+// durability health — the exact blind spot that cost 17.5 hours.
+//
+// It fires on the FIRST degraded checkpoint, with no streak threshold. A
+// dropped row is not a transient blip that might self-heal on retry (the
+// unwritable row is unwritable because of what it IS); it means world state and
+// durable state have diverged and will stay diverged. There is nothing to wait
+// out.
+//
+// Since is when the CURRENT degraded run began, not when this checkpoint ran,
+// so the alarm reports how long durability has been lossy rather than resetting
+// to "just now" every cycle.
+func checkpointQuarantineAlarm(h sim.CheckpointHealthSnapshot, now time.Time) (Alarm, bool) {
+	if h.ConsecutiveDegraded == 0 {
+		return Alarm{}, false
+	}
+	since := h.QuarantineSince
+	detail := "DURABILITY IS LOSSY: the last " + strconv.Itoa(h.ConsecutiveDegraded) +
+		" checkpoint(s) committed, but could not persist every row — world state and the durable state have diverged"
+	if !since.IsZero() {
+		detail += " (ongoing for " + humanizeSince(now.Sub(since)) + ")"
+	}
+	if n := len(h.LastQuarantinedRows); n > 0 {
+		detail += ". Last checkpoint left " + strconv.Itoa(n) + " row(s) behind: " + summarizeRows(h.LastQuarantinedRows)
+	}
+	if len(h.LastSkippedSweeps) > 0 {
+		detail += ". Stale-row sweeps are SKIPPED on " + strings.Join(h.LastSkippedSweeps, ", ") +
+			", so those tables may be accumulating rows for entities that have left the world"
+	}
+	detail += ". The world is holding state it cannot write — fix the offending state; this does not heal on its own."
+	return Alarm{
+		Kind:        alarmKindCheckpointQuarantine,
+		Since:       since,
+		Consecutive: h.ConsecutiveDegraded,
+		Detail:      detail,
+	}, true
+}
+
+// summarizeRows renders a capped sample of quarantined rows for the alarm
+// detail. Capped because this string rides on EVERY umbilical response: a
+// schema bug dropping hundreds of rows must not turn every unrelated API call
+// into a wall of text.
+func summarizeRows(rows []sim.QuarantinedRow) string {
+	const maxShown = 3
+	var b strings.Builder
+	for i, r := range rows {
+		if i == maxShown {
+			fmt.Fprintf(&b, ", +%d more", len(rows)-maxShown)
+			break
+		}
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		verb := "dropped"
+		if r.Clamped {
+			verb = "clamped"
+		}
+		fmt.Fprintf(&b, "%s %s(%s) — %s", verb, r.Table, r.ID, r.Reason)
+	}
+	return b.String()
 }
 
 // humanizeSince renders a duration as a coarse human phrase for the alarm's

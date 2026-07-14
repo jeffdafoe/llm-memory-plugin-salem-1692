@@ -172,12 +172,12 @@ func TestCheckpointNow_BuildsAndSaves(t *testing.T) {
 	defer cancel()
 
 	var got *sim.CheckpointSnapshot
-	save := func(_ context.Context, cp *sim.CheckpointSnapshot) error {
+	save := func(_ context.Context, cp *sim.CheckpointSnapshot) (*sim.Quarantine, error) {
 		got = cp
-		return nil
+		return nil, nil
 	}
 
-	if err := sim.CheckpointNow(context.Background(), w, save); err != nil {
+	if _, err := sim.CheckpointNow(context.Background(), w, save); err != nil {
 		t.Fatalf("CheckpointNow: %v", err)
 	}
 	if got == nil {
@@ -195,9 +195,9 @@ func TestCheckpointNow_SaveError(t *testing.T) {
 	defer cancel()
 
 	sentinel := errors.New("disk full")
-	save := func(_ context.Context, _ *sim.CheckpointSnapshot) error { return sentinel }
+	save := func(_ context.Context, _ *sim.CheckpointSnapshot) (*sim.Quarantine, error) { return nil, sentinel }
 
-	err := sim.CheckpointNow(context.Background(), w, save)
+	_, err := sim.CheckpointNow(context.Background(), w, save)
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("CheckpointNow error = %v, want it to wrap %v", err, sentinel)
 	}
@@ -210,15 +210,15 @@ func TestCheckpointNow_BuildError(t *testing.T) {
 	defer cancel()
 
 	saveCalled := false
-	save := func(_ context.Context, _ *sim.CheckpointSnapshot) error {
+	save := func(_ context.Context, _ *sim.CheckpointSnapshot) (*sim.Quarantine, error) {
 		saveCalled = true
-		return nil
+		return nil, nil
 	}
 
 	ctx, cancelCtx := context.WithCancel(context.Background())
 	cancelCtx()
 
-	if err := sim.CheckpointNow(ctx, w, save); err == nil {
+	if _, err := sim.CheckpointNow(ctx, w, save); err == nil {
 		t.Fatal("expected error from cancelled-context build")
 	}
 	if saveCalled {
@@ -245,12 +245,12 @@ func TestRunCheckpointer_PeriodicAndStop(t *testing.T) {
 	defer cancelWorld()
 
 	saved := make(chan struct{}, 64)
-	save := func(_ context.Context, _ *sim.CheckpointSnapshot) error {
+	save := func(_ context.Context, _ *sim.CheckpointSnapshot) (*sim.Quarantine, error) {
 		select {
 		case saved <- struct{}{}:
 		default:
 		}
-		return nil
+		return nil, nil
 	}
 
 	health := &sim.CheckpointHealth{}
@@ -293,7 +293,7 @@ func TestRunCheckpointer_PeriodicAndStop(t *testing.T) {
 // so callers (and RunCheckpointer) can pass nil when they don't track health.
 func TestCheckpointHealth_NilSafe(t *testing.T) {
 	var h *sim.CheckpointHealth
-	h.RecordSuccess(time.Now())
+	h.RecordSuccess(time.Now(), nil)
 	h.RecordFailure(time.Now(), errors.New("x"))
 	snap := h.Snapshot()
 	if snap.TotalSuccesses != 0 || snap.TotalFailures != 0 || snap.ConsecutiveFailures != 0 {
@@ -311,12 +311,12 @@ func TestCheckpointHealth_NilSafe(t *testing.T) {
 	defer cancelWorld()
 
 	saved := make(chan struct{}, 1)
-	save := func(_ context.Context, _ *sim.CheckpointSnapshot) error {
+	save := func(_ context.Context, _ *sim.CheckpointSnapshot) (*sim.Quarantine, error) {
 		select {
 		case saved <- struct{}{}:
 		default:
 		}
-		return nil
+		return nil, nil
 	}
 	cpCtx, cancelCP := context.WithCancel(context.Background())
 	defer cancelCP()
@@ -343,7 +343,7 @@ func TestCheckpointHealth_RecordsFailureThenRecovery(t *testing.T) {
 	if snap.LastError != "boom again" {
 		t.Errorf("LastError = %q; want last error message", snap.LastError)
 	}
-	h.RecordSuccess(time.Now())
+	h.RecordSuccess(time.Now(), nil)
 	snap = h.Snapshot()
 	if snap.ConsecutiveFailures != 0 {
 		t.Errorf("ConsecutiveFailures after success = %d; want 0", snap.ConsecutiveFailures)

@@ -267,34 +267,48 @@ func (r *ScenesRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, scenes map[sim
 	// including Unbounded; Bound-variant shape for the kind that will
 	// be persisted. Failures here surface as substrate errors before
 	// any write.
+	// LLM-392: a malformed scene is quarantined, not fatal.
+	q := quarantineOf(tx)
 	for key, s := range scenes {
 		if s == nil {
-			return fmt.Errorf("pg scenes SaveSnapshot: nil entry at map key=%s (use deletion via gen-marker absence, not nil)", key)
+			dropScene(q, key, "nil scene entry (deletion goes through gen-marker absence, not nil)")
+			continue
 		}
 		if strings.TrimSpace(string(s.ID)) == "" {
-			return fmt.Errorf("pg scenes SaveSnapshot: empty SceneID (map key=%s)", key)
+			dropScene(q, key, "empty SceneID")
+			continue
 		}
 		if s.ID != key {
-			return fmt.Errorf("pg scenes SaveSnapshot: map key=%s does not match s.ID=%s", key, s.ID)
+			dropScene(q, key, fmt.Sprintf("map key=%s does not match s.ID=%s", key, s.ID))
+			continue
 		}
 		if strings.TrimSpace(s.OriginKind) == "" {
-			return fmt.Errorf("pg scenes SaveSnapshot: id=%s has empty OriginKind", s.ID)
+			dropScene(q, key, "empty OriginKind")
+			continue
 		}
 		if s.OriginAt.IsZero() {
-			return fmt.Errorf("pg scenes SaveSnapshot: id=%s has zero OriginAt", s.ID)
+			dropScene(q, key, "zero OriginAt")
+			continue
 		}
 		if err := validateBoundShape(s.ID, s.Bound); err != nil {
-			return err
+			dropScene(q, key, err.Error())
+			continue
 		}
 		for hid := range s.Huddles {
 			if strings.TrimSpace(string(hid)) == "" {
-				return fmt.Errorf("pg scenes SaveSnapshot: id=%s has empty HuddleID in Huddles set", s.ID)
+				q.Drop("scene_huddle_ref", fmt.Sprintf("%s/%s", key, hid), "empty HuddleID in the scene's Huddles set")
 			}
 		}
 	}
 
-	// Step 3: upsert each persisted scene (skip Unbounded).
-	for _, s := range scenes {
+	// Step 3: upsert each persisted scene (skip Unbounded, and skip anything
+	// the pre-pass quarantined).
+	for key, s := range scenes {
+		// Keyed on the MAP KEY, which is what the pre-pass drops under. Keying on
+		// s.ID would miss an empty-ID scene (s.ID is ""), and it would reach SQL.
+		if s == nil || q.Dropped("scene", string(key)) {
+			continue
+		}
 		if s.Bound.Kind == sim.SceneBoundUnbounded {
 			continue
 		}
@@ -317,7 +331,7 @@ func (r *ScenesRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, scenes map[sim
 	}
 
 	// Step 4: prune absent parents. FK CASCADE drops their refs.
-	if _, err := tx.Exec(ctx, deleteStaleSQLSc, sceneGen); err != nil {
+	if err := execSweep(ctx, tx, "scene", deleteStaleSQLSc, sceneGen); err != nil {
 		return fmt.Errorf("pg scenes SaveSnapshot: delete stale scene: %w", err)
 	}
 
@@ -329,11 +343,19 @@ func (r *ScenesRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, scenes map[sim
 
 	// Step 6: upsert each persisted scene's Huddles set. Skip Unbounded
 	// (their Huddles set is discarded along with the scene).
-	for _, s := range scenes {
+	for key, s := range scenes {
+		// Keyed on the MAP KEY, which is what the pre-pass drops under. Keying on
+		// s.ID would miss an empty-ID scene (s.ID is ""), and it would reach SQL.
+		if s == nil || q.Dropped("scene", string(key)) {
+			continue
+		}
 		if s.Bound.Kind == sim.SceneBoundUnbounded {
 			continue
 		}
 		for hid := range s.Huddles {
+			if q.Dropped("scene_huddle_ref", fmt.Sprintf("%s/%s", key, hid)) {
+				continue
+			}
 			if _, err := tx.Exec(ctx, upsertSQLScRef,
 				string(s.ID), // $1 scene_id
 				string(hid),  // $2 huddle_id
@@ -345,7 +367,7 @@ func (r *ScenesRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, scenes map[sim
 	}
 
 	// Step 7: prune absent ref rows.
-	if _, err := tx.Exec(ctx, deleteStaleSQLScRef, refGen); err != nil {
+	if err := execSweep(ctx, tx, "scene_huddle_ref", deleteStaleSQLScRef, refGen); err != nil {
 		return fmt.Errorf("pg scenes SaveSnapshot: delete stale scene_huddle_ref: %w", err)
 	}
 	return nil
@@ -408,4 +430,11 @@ func boundUpsertArgs(b sim.SceneBound) (structureArg, anchorXArg, anchorYArg, ra
 		radiusArg = *b.Radius
 	}
 	return
+}
+
+// dropScene quarantines a scene and blocks its huddle-ref sweep — the scene
+// keeps its previous durable row, so the refs hanging off it must keep theirs.
+func dropScene(q *sim.Quarantine, id sim.SceneID, reason string) {
+	q.Drop("scene", string(id), reason)
+	q.BlockSweep("scene_huddle_ref")
 }

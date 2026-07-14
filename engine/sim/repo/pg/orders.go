@@ -3,6 +3,7 @@ package pg
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
@@ -321,14 +322,58 @@ func (r *OrdersRepo) LoadAll(ctx context.Context) (map[sim.OrderID]*sim.Order, e
 // Slice 5 has no caller wired (pg isn't in main.go yet); Slice 6
 // wires the substrate terminal write-through + prune, and the
 // caller invariant becomes load-bearing then.
+// lodgingItemKind is the item whose ledger rows carry the
+// pay_ledger_lodging_active_once partial unique index — the constraint behind
+// the 2026-07-12 durability outage (LLM-391/LLM-392). Named here so the Go
+// guard that mirrors that index and the index itself are grep-able together.
+const lodgingItemKind sim.ItemKind = "nights_stay"
+
+// readyByForOrder resolves the ready_by DATE an order persists with.
+//
+// Never bind Go's zero time (year 0001) to the ready_by DATE column.
+// createOrderForPayWithItem always sets ReadyBy, but a hand-built / legacy
+// Order reaching SaveSnapshot might not; fall back to the creation date (the
+// pre-ZBBS-HOME-403 binding) so the row stays sane. Shared by the write step
+// and the lodging double-book guard so the two agree on which date an order
+// occupies — a guard keyed on a different date than the write would police the
+// wrong booking.
+func readyByForOrder(o *sim.Order) time.Time {
+	if !o.ReadyBy.IsZero() {
+		return o.ReadyBy
+	}
+	c := o.CreatedAt.UTC()
+	return time.Date(c.Year(), c.Month(), c.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+// sortedOrderIDs returns the snapshot's order ids ascending. Map order is
+// random; the lodging guard drops the SECOND row it sees for a booking, so an
+// unsorted pass would let the surviving booking flip from one checkpoint to the
+// next.
+func sortedOrderIDs(orders map[sim.OrderID]*sim.Order) []sim.OrderID {
+	out := make([]sim.OrderID, 0, len(orders))
+	for id := range orders {
+		out = append(out, id)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
 func (r *OrdersRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, orders map[sim.OrderID]*sim.Order) error {
 	if tx == nil {
 		return fmt.Errorf("pg orders SaveSnapshot: nil tx")
 	}
 
+	q := quarantineOf(tx)
+
 	// Step 1: expire any in-flight row whose id is not in the snapshot.
 	// Build the id slice first (skipping nil entries) so the UPDATE
 	// argument and the upsert loop agree on what IS in the snapshot.
+	//
+	// Note a QUARANTINED order stays in this list (it is still in the
+	// snapshot — we merely failed to write it), which is exactly right: it
+	// keeps whatever durable row it already had instead of being expired out
+	// from under the world. That is why Orders needs no sweep guard, unlike
+	// the gen-marker aggregates.
 	ids := make([]int64, 0, len(orders))
 	for id, o := range orders {
 		if o == nil {
@@ -340,9 +385,63 @@ func (r *OrdersRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, orders map[sim
 		return fmt.Errorf("pg orders SaveSnapshot: expire absent: %w", err)
 	}
 
-	// Step 2: upsert each Order in the snapshot.
-	for _, o := range orders {
+	// Step 1b: the lodging double-book guard (LLM-392). THIS is the row that
+	// cost the village 17.5 hours of durability on 2026-07-12: a second
+	// delivered nights_stay for the same (buyer, seller, ready_by) violates
+	// the pay_ledger_lodging_active_once partial unique index, so the UPSERT
+	// aborted the whole checkpoint — and re-aborted it every 60s thereafter,
+	// because the snapshot never changed. Nothing else in the world was wrong;
+	// everything else was simply never written again.
+	//
+	// So mirror the index predicate in Go and quarantine the loser HERE,
+	// before any SQL sees it. The row is reported and alarmed; the other 1,000
+	// rows of the checkpoint commit normally.
+	//
+	// The index is:
+	//   UNIQUE (buyer_id, seller_id, ready_by)
+	//   WHERE item_kind = 'nights_stay'
+	//     AND state = 'accepted'          -- upsertSQL always writes 'accepted'
+	//     AND fulfillment_status = 'delivered'
+	//
+	// Sorted-id iteration makes the survivor deterministic: the LOWEST order
+	// id keeps the booking (it was minted first, so it is the one the rest of
+	// the world has most likely already reacted to), and later duplicates are
+	// dropped. Without the sort, which of the two survived would flip between
+	// checkpoints as Go's map order changed.
+	type lodgingKey struct {
+		buyer   sim.ActorID
+		seller  sim.ActorID
+		readyBy string // date only — the column is ::date
+	}
+	activeLodging := make(map[lodgingKey]sim.OrderID)
+	for _, id := range sortedOrderIDs(orders) {
+		o := orders[id]
+		if o == nil || o.Item != lodgingItemKind || o.State != sim.OrderStateDelivered {
+			continue
+		}
+		k := lodgingKey{
+			buyer:   o.BuyerID,
+			seller:  o.SellerID,
+			readyBy: readyByForOrder(o).Format("2006-01-02"),
+		}
+		if prior, taken := activeLodging[k]; taken {
+			q.Drop("pay_ledger", fmt.Sprintf("%d", id), fmt.Sprintf(
+				"second delivered %s for buyer=%s seller=%s ready_by=%s (order %d already holds it) — violates pay_ledger_lodging_active_once",
+				lodgingItemKind, o.BuyerID, o.SellerID, k.readyBy, prior))
+			continue
+		}
+		activeLodging[k] = id
+	}
+
+	// Step 2: upsert each Order in the snapshot, in sorted id order (the
+	// lodging guard above picked its survivors in that order, so the writes
+	// must agree with it).
+	for _, id := range sortedOrderIDs(orders) {
+		o := orders[id]
 		if o == nil {
+			continue
+		}
+		if q.Dropped("pay_ledger", fmt.Sprintf("%d", o.ID)) {
 			continue
 		}
 		// Order.ID and Order.LedgerID are the same value by domain
@@ -357,25 +456,19 @@ func (r *OrdersRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, orders map[sim
 		// types but worth noting), revisit this comparison to add an
 		// explicit range check before conversion.
 		if o.LedgerID != 0 && sim.OrderID(o.LedgerID) != o.ID {
-			return fmt.Errorf("pg orders SaveSnapshot: order %d LedgerID %d mismatch", o.ID, o.LedgerID)
+			q.Drop("pay_ledger", fmt.Sprintf("%d", o.ID), fmt.Sprintf("LedgerID %d does not match order id", o.LedgerID))
+			continue
 		}
 		status, err := orderStateToFulfillment(o.State)
 		if err != nil {
-			return fmt.Errorf("pg orders SaveSnapshot: order %d: %w", o.ID, err)
+			q.Drop("pay_ledger", fmt.Sprintf("%d", o.ID), err.Error())
+			continue
 		}
 		consumerIDs := make([]string, len(o.ConsumerIDs))
 		for i, a := range o.ConsumerIDs {
 			consumerIDs[i] = string(a)
 		}
-		// Never bind Go's zero time (year 0001) to the ready_by DATE column.
-		// createOrderForPayWithItem always sets ReadyBy, but a hand-built /
-		// legacy Order reaching SaveSnapshot might not; fall back to the
-		// creation date (the pre-ZBBS-HOME-403 binding) so the row stays sane.
-		readyBy := o.ReadyBy
-		if readyBy.IsZero() {
-			c := o.CreatedAt.UTC()
-			readyBy = time.Date(c.Year(), c.Month(), c.Day(), 0, 0, 0, 0, time.UTC)
-		}
+		readyBy := readyByForOrder(o)
 		if _, err := tx.Exec(ctx, upsertSQL,
 			int64(o.ID),        // $1 id
 			string(o.BuyerID),  // $2 buyer_id

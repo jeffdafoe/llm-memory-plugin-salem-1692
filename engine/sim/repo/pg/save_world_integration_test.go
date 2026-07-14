@@ -48,7 +48,7 @@ func TestIntegration_SaveWorld_EmptyRoundTrip(t *testing.T) {
 	ctx := t.Context()
 	repo := NewRepository(f.Pool)
 
-	if err := SaveWorld(ctx, repo, checkpointableWorld(repo).BuildCheckpointSnapshot()); err != nil {
+	if _, err := SaveWorld(ctx, repo, checkpointableWorld(repo).BuildCheckpointSnapshot()); err != nil {
 		t.Fatalf("SaveWorld (empty): %v", err)
 	}
 
@@ -95,7 +95,7 @@ func TestIntegration_SaveWorld_PopulatedRoundTrip(t *testing.T) {
 		sim.VillageObjectID(uuidObj2): {ID: sim.VillageObjectID(uuidObj2), AssetID: sim.AssetID(uuidAssetLamp), EntryPolicy: sim.EntryPolicyClosed},
 	}
 
-	if err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
+	if _, err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
 		t.Fatalf("SaveWorld (populated): %v", err)
 	}
 
@@ -139,7 +139,7 @@ func TestIntegration_SaveWorld_ProductionActivityRoundTrip(t *testing.T) {
 			}},
 		bareID: {ID: bareID, DisplayName: "Bare", State: sim.StateIdle},
 	}
-	if err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
+	if _, err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
 		t.Fatalf("SaveWorld: %v", err)
 	}
 
@@ -185,7 +185,7 @@ func TestIntegration_SaveWorld_DeleteStaleAcrossCheckpoints(t *testing.T) {
 		sim.VillageObjectID(uuidObj1): {ID: sim.VillageObjectID(uuidObj1), AssetID: sim.AssetID(uuidAssetWell), EntryPolicy: sim.EntryPolicyOpen},
 		sim.VillageObjectID(uuidObj2): {ID: sim.VillageObjectID(uuidObj2), AssetID: sim.AssetID(uuidAssetLamp), EntryPolicy: sim.EntryPolicyClosed},
 	}
-	if err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
+	if _, err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
 		t.Fatalf("SaveWorld (two VOs): %v", err)
 	}
 
@@ -193,7 +193,7 @@ func TestIntegration_SaveWorld_DeleteStaleAcrossCheckpoints(t *testing.T) {
 	w.VillageObjects = map[sim.VillageObjectID]*sim.VillageObject{
 		sim.VillageObjectID(uuidObj1): {ID: sim.VillageObjectID(uuidObj1), AssetID: sim.AssetID(uuidAssetWell), EntryPolicy: sim.EntryPolicyOpen},
 	}
-	if err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
+	if _, err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
 		t.Fatalf("SaveWorld (one VO): %v", err)
 	}
 
@@ -275,7 +275,7 @@ func TestIntegration_SaveWorld_SameWindowOrderAndRoomGrant(t *testing.T) {
 		},
 	}
 
-	if err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
+	if _, err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
 		t.Fatalf("SaveWorld (same-window order + room grant): %v", err)
 	}
 
@@ -338,7 +338,7 @@ func TestIntegration_SaveWorld_KnownPlaceRoundTrip(t *testing.T) {
 			}},
 	}
 
-	if err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
+	if _, err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
 		t.Fatalf("SaveWorld (known places): %v", err)
 	}
 

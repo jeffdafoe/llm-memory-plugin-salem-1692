@@ -200,22 +200,30 @@ func (r *LaborContractsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, contra
 		return fmt.Errorf("pg labor_contracts SaveSnapshot: nextval: %w", err)
 	}
 
+	// LLM-392: a malformed contract is quarantined, not fatal.
+	q := quarantineOf(tx)
 	for key, o := range contracts {
 		if o == nil {
-			return fmt.Errorf("pg labor_contracts SaveSnapshot: nil offer (map key=%d)", key)
+			q.Drop("labor_contract", fmt.Sprintf("%d", key), "nil offer")
+			continue
 		}
+		id := fmt.Sprintf("%d", o.ID)
 		if o.ID != key {
-			return fmt.Errorf("pg labor_contracts SaveSnapshot: map key=%d does not match o.ID=%d", key, o.ID)
+			q.Drop("labor_contract", id, fmt.Sprintf("map key=%d does not match o.ID=%d", key, o.ID))
+			continue
 		}
 		if o.State != sim.LaborStateEnRoute && o.State != sim.LaborStateWorking {
-			return fmt.Errorf("pg labor_contracts SaveSnapshot: labor_id=%d has non-accepted state %q (only en_route/working are persisted)", o.ID, o.State)
+			q.Drop("labor_contract", id, fmt.Sprintf("non-accepted state %q (only en_route/working are persisted)", o.State))
+			continue
 		}
 		if o.WorkerID == "" || o.EmployerID == "" {
-			return fmt.Errorf("pg labor_contracts SaveSnapshot: labor_id=%d has empty worker/employer id", o.ID)
+			q.Drop("labor_contract", id, "empty worker/employer id")
+			continue
 		}
 		rewardItemsJSON, err := encodeRewardItems(o.RewardItems)
 		if err != nil {
-			return fmt.Errorf("pg labor_contracts SaveSnapshot: labor_id=%d encode reward_items: %w", o.ID, err)
+			q.Drop("labor_contract", id, fmt.Sprintf("reward_items will not encode: %v", err))
+			continue
 		}
 		// EnRouteDeadline is a value time.Time (zero for an on-site working hire);
 		// bind zero as SQL NULL so the column round-trips nil-or-value cleanly.
@@ -243,7 +251,7 @@ func (r *LaborContractsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, contra
 		}
 	}
 
-	if _, err := tx.Exec(ctx, deleteStaleSQLLC, gen); err != nil {
+	if err := execSweep(ctx, tx, "labor_contract", deleteStaleSQLLC, gen); err != nil {
 		return fmt.Errorf("pg labor_contracts SaveSnapshot: delete stale: %w", err)
 	}
 	return nil

@@ -359,18 +359,20 @@ func TestEnvironmentRepo_SaveSnapshot_NilTx(t *testing.T) {
 // as PG year-0001 (NOT NULL passes), which would silently corrupt the
 // next phase-transition decision. The guard surfaces upstream bugs
 // before they reach the DB.
-func TestEnvironmentRepo_SaveSnapshot_ZeroLastTransition_Error(t *testing.T) {
+func TestEnvironmentRepo_SaveSnapshot_ZeroLastTransition_Quarantined(t *testing.T) {
 	mock, repo := newMockPoolE(t)
-	tx := fakeTx{mock: mock}
+	q := &sim.Quarantine{}
+	tx := &checkpointTx{Tx: fakeTx{mock: mock}, q: q}
 	at := time.Date(2026, 5, 19, 7, 0, 0, 0, time.UTC)
 	env := sim.WorldEnvironment{
 		// LastTransitionAt intentionally zero.
 		LastRotationAt: at,
 	}
 	err := repo.SaveSnapshot(context.Background(), tx, env, sim.PhaseDay)
-	if err == nil {
-		t.Fatal("SaveSnapshot(zero LastTransitionAt) should error")
+	if err != nil {
+		t.Fatalf("SaveSnapshot(zero LastTransitionAt) = %v, want nil (quarantine, not abort)", err)
 	}
+	assertQuarantinedRow(t, q, "world_state", "zero LastTransitionAt")
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unexpected SQL fired: %v", err)
 	}
@@ -378,18 +380,20 @@ func TestEnvironmentRepo_SaveSnapshot_ZeroLastTransition_Error(t *testing.T) {
 
 // TestEnvironmentRepo_SaveSnapshot_ZeroLastRotation_Error — mirror of
 // the LastTransitionAt guard for the daily asset rotation gate.
-func TestEnvironmentRepo_SaveSnapshot_ZeroLastRotation_Error(t *testing.T) {
+func TestEnvironmentRepo_SaveSnapshot_ZeroLastRotation_Quarantined(t *testing.T) {
 	mock, repo := newMockPoolE(t)
-	tx := fakeTx{mock: mock}
+	q := &sim.Quarantine{}
+	tx := &checkpointTx{Tx: fakeTx{mock: mock}, q: q}
 	at := time.Date(2026, 5, 19, 7, 0, 0, 0, time.UTC)
 	env := sim.WorldEnvironment{
 		LastTransitionAt: at,
 		// LastRotationAt intentionally zero.
 	}
 	err := repo.SaveSnapshot(context.Background(), tx, env, sim.PhaseDay)
-	if err == nil {
-		t.Fatal("SaveSnapshot(zero LastRotationAt) should error")
+	if err != nil {
+		t.Fatalf("SaveSnapshot(zero LastRotationAt) = %v, want nil (quarantine, not abort)", err)
 	}
+	assertQuarantinedRow(t, q, "world_state", "zero LastRotationAt")
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unexpected SQL fired: %v", err)
 	}
@@ -400,14 +404,22 @@ func TestEnvironmentRepo_SaveSnapshot_ZeroLastRotation_Error(t *testing.T) {
 // TestEnvironmentRepo_SaveSnapshot_InvalidPhase — phase outside the
 // 'day' | 'night' enum trips the substrate-boundary check before any
 // SQL fires (defends against forgotten phase validation upstream).
+// TestEnvironmentRepo_SaveSnapshot_InvalidPhase — LLM-392: an unwritable
+// environment row is QUARANTINED, not fatal. world_state is a singleton, so the
+// quarantine means it keeps its previous durable values while the rest of the
+// checkpoint (every actor, order and structure — the village itself) still
+// commits. It used to abort the whole checkpoint, which traded the entire
+// village's durability for one bad enum.
 func TestEnvironmentRepo_SaveSnapshot_InvalidPhase(t *testing.T) {
 	mock, repo := newMockPoolE(t)
-	tx := fakeTx{mock: mock}
+	q := &sim.Quarantine{}
+	tx := &checkpointTx{Tx: fakeTx{mock: mock}, q: q}
 	err := repo.SaveSnapshot(context.Background(), tx, sim.WorldEnvironment{}, sim.Phase("twilight"))
-	if err == nil {
-		t.Fatal("SaveSnapshot(invalid phase) should error")
+	if err != nil {
+		t.Fatalf("SaveSnapshot(invalid phase) = %v, want nil (quarantine, not abort)", err)
 	}
-	// Mock should have NO expectations met (no SQL fired).
+	assertQuarantinedRow(t, q, "world_state", "invalid phase")
+	// Still NO SQL — the row never reaches the database.
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unexpected SQL fired: %v", err)
 	}

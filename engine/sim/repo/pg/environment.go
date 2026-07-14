@@ -525,7 +525,8 @@ func (r *EnvironmentRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, env sim.W
 		return fmt.Errorf("pg environment SaveSnapshot: nil tx")
 	}
 	if phase != sim.PhaseDay && phase != sim.PhaseNight {
-		return fmt.Errorf("pg environment SaveSnapshot: invalid phase %q (expected day | night)", phase)
+		quarantineOf(tx).Drop("world_state", "singleton", fmt.Sprintf("invalid phase %q (expected day | night) — environment kept at its previous durable values", phase))
+		return nil
 	}
 	// Substrate-boundary guard: both required timestamps must be set.
 	// Zero time.Time encodes as PG year-0001 (not caught by NOT NULL),
@@ -533,11 +534,22 @@ func (r *EnvironmentRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, env sim.W
 	// relies on. LoadWorld seeds these from world_state at startup; a
 	// zero value here indicates upstream forgot to copy through.
 	// LastNeedsTickAt zero IS legitimate (= "never run yet" = SQL NULL).
+	//
+	// LLM-392: world_state is a SINGLETON — there is no "other rows" to save by
+	// dropping this one, so a quarantine here means the environment row keeps
+	// its previous durable values while the rest of the checkpoint (actors,
+	// orders, structures — everything the village actually is) commits
+	// normally. That is a far better trade than the old behaviour, where a
+	// zero timestamp on this one row aborted the entire checkpoint. A stale
+	// scheduler row costs a phase/rotation gate being a checkpoint behind on
+	// reload; losing the checkpoint costs everything.
 	if env.LastTransitionAt.IsZero() {
-		return fmt.Errorf("pg environment SaveSnapshot: zero LastTransitionAt (scheduler state would corrupt to year 0001)")
+		quarantineOf(tx).Drop("world_state", "singleton", "zero LastTransitionAt (scheduler state would corrupt to year 0001) — environment kept at its previous durable values")
+		return nil
 	}
 	if env.LastRotationAt.IsZero() {
-		return fmt.Errorf("pg environment SaveSnapshot: zero LastRotationAt (scheduler state would corrupt to year 0001)")
+		quarantineOf(tx).Drop("world_state", "singleton", "zero LastRotationAt (scheduler state would corrupt to year 0001) — environment kept at its previous durable values")
+		return nil
 	}
 	var lastNeedsArg any
 	if !env.LastNeedsTickAt.IsZero() {

@@ -52,7 +52,7 @@ func TestIntegration_Visitor_RoundTrip(t *testing.T) {
 		},
 	}
 
-	if err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
+	if _, err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
 		t.Fatalf("SaveWorld: %v", err)
 	}
 
@@ -122,12 +122,12 @@ func TestIntegration_Visitor_DeleteStaleOnDepart(t *testing.T) {
 			},
 		},
 	}
-	if err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
+	if _, err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
 		t.Fatalf("SaveWorld (present): %v", err)
 	}
 
 	delete(w.Actors, "vstr-0000beef") // departed + cleaned up between checkpoints
-	if err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
+	if _, err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
 		t.Fatalf("SaveWorld (after depart): %v", err)
 	}
 

@@ -3,6 +3,7 @@ package pg
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
@@ -219,59 +220,92 @@ func (r *StructuresRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, structures
 	// — without that, a whitespace-only ID / DisplayName / Name passes Go
 	// validation and then trips the CHECK mid-Tx, leaving a worse error
 	// than a clean substrate rejection. (code_review R1 2026-05-19.)
+	// LLM-392: a bad structure is quarantined, not fatal. Sorted iteration so
+	// the winner of a cross-structure duplicate-RoomID collision is stable
+	// between checkpoints. See sim/checkpoint_quarantine.go.
+	q := quarantineOf(tx)
 	seenRoomIDs := make(map[sim.RoomID]sim.StructureID)
 	seenRoomNames := make(map[sim.StructureID]map[string]struct{})
-	for key, s := range structures {
+	for _, key := range sortedStructureIDs(structures) {
+		s := structures[key]
 		if s == nil {
-			return fmt.Errorf("pg structures SaveSnapshot: nil entry at map key=%s (use deletion via gen-marker absence, not nil)", key)
+			dropStructure(q, key, "nil structure entry (deletion goes through gen-marker absence, not nil)")
+			continue
 		}
 		if strings.TrimSpace(string(s.ID)) == "" {
-			return fmt.Errorf("pg structures SaveSnapshot: empty StructureID (map key=%s)", key)
+			dropStructure(q, key, "empty StructureID")
+			continue
 		}
 		if s.ID != key {
-			return fmt.Errorf("pg structures SaveSnapshot: map key=%s does not match s.ID=%s", key, s.ID)
+			dropStructure(q, key, fmt.Sprintf("map key=%s does not match s.ID=%s", key, s.ID))
+			continue
 		}
 		if strings.TrimSpace(s.DisplayName) == "" {
-			return fmt.Errorf("pg structures SaveSnapshot: id=%s has empty DisplayName (load-bearing for prompts)", s.ID)
+			dropStructure(q, key, "empty DisplayName (load-bearing for prompts)")
+			continue
 		}
 		// Tag-element validation matches the (now repo-only) no-nulls /
 		// no-empty invariant. The DB CHECK was dropped in R1 because
 		// `array_position(tags, NULL)` has unreliable semantics for
-		// null-element detection; pure repo validation replaces it.
-		for i, t := range s.Tags {
-			if t == "" {
-				return fmt.Errorf("pg structures SaveSnapshot: id=%s has empty tag at index %d", s.ID, i)
-			}
+		// null-element detection; pure repo validation replaces it. An empty
+		// tag is dropped FROM the array rather than dropping the structure —
+		// a blank tag is not worth losing a building over.
+		if tags, changed := compactTags(s.Tags); changed {
+			q.Clamp("structure", string(s.ID), fmt.Sprintf("dropped %d empty tag(s) from tags[]", len(s.Tags)-len(tags)))
+			s.Tags = tags
 		}
+		// Room drops are keyed by POSITION (structure + slice index), never by
+		// RoomID, and the write loop below re-derives the identical key. Two
+		// reasons, both load-bearing:
+		//
+		//   - a room with an invalid id (<= 0) has no usable PK to key on, so a
+		//     RoomID-keyed drop could not be matched at write time and the bad
+		//     row would reach SQL anyway;
+		//   - on a DUPLICATE RoomID, a RoomID-keyed drop would mark that id
+		//     dropped for BOTH rooms — suppressing the survivor along with the
+		//     loser. Position keys distinguish them, so the first room in sorted
+		//     structure order keeps the id and only the later one is dropped.
 		for i, room := range s.Rooms {
+			id := structureRoomID(s.ID, i)
 			if room == nil {
-				return fmt.Errorf("pg structures SaveSnapshot: id=%s has nil room at index %d", s.ID, i)
+				q.Drop("structure_room", id, "nil room entry")
+				continue
 			}
 			if room.ID <= 0 {
-				return fmt.Errorf("pg structures SaveSnapshot: id=%s room at index %d has invalid RoomID=%d (must be > 0)", s.ID, i, room.ID)
+				q.Drop("structure_room", id, fmt.Sprintf("invalid RoomID=%d (must be > 0)", room.ID))
+				continue
 			}
 			if room.StructureID != s.ID {
-				return fmt.Errorf("pg structures SaveSnapshot: id=%s room id=%d has mismatched StructureID=%s", s.ID, room.ID, room.StructureID)
+				q.Drop("structure_room", id, fmt.Sprintf("room id=%d has mismatched StructureID=%s (owner is %s)", room.ID, room.StructureID, s.ID))
+				continue
 			}
 			if strings.TrimSpace(room.Name) == "" {
-				return fmt.Errorf("pg structures SaveSnapshot: id=%s room id=%d has empty Name", s.ID, room.ID)
+				q.Drop("structure_room", id, fmt.Sprintf("room id=%d has empty Name", room.ID))
+				continue
 			}
 			if owner, dup := seenRoomIDs[room.ID]; dup {
-				return fmt.Errorf("pg structures SaveSnapshot: duplicate RoomID=%d (in structure %s and %s)", room.ID, owner, s.ID)
+				q.Drop("structure_room", id, fmt.Sprintf("duplicate RoomID=%d (already owned by structure %s, which keeps it)", room.ID, owner))
+				continue
 			}
-			seenRoomIDs[room.ID] = s.ID
 			if seenRoomNames[s.ID] == nil {
 				seenRoomNames[s.ID] = make(map[string]struct{})
 			}
 			if _, dup := seenRoomNames[s.ID][room.Name]; dup {
-				return fmt.Errorf("pg structures SaveSnapshot: id=%s has duplicate room name=%q", s.ID, room.Name)
+				q.Drop("structure_room", id, fmt.Sprintf("duplicate room name=%q in structure %s", room.Name, s.ID))
+				continue
 			}
+			seenRoomIDs[room.ID] = s.ID
 			seenRoomNames[s.ID][room.Name] = struct{}{}
 		}
 	}
 
-	// Step 2: upsert each structure.
-	for _, s := range structures {
+	// Step 2: upsert each structure. Keyed on the MAP KEY — what the pre-pass
+	// drops under. Keying on s.ID would miss an empty-ID structure (s.ID is "")
+	// and let it reach SQL.
+	for key, s := range structures {
+		if s == nil || q.Dropped("structure", string(key)) {
+			continue
+		}
 		if _, err := tx.Exec(ctx, upsertSQLS,
 			string(s.ID),   // $1 id
 			s.DisplayName,  // $2 display_name
@@ -284,8 +318,10 @@ func (r *StructuresRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, structures
 	}
 
 	// Step 3: prune absent parents. FK CASCADE drops their rooms (and
-	// transitively any room_access rows).
-	if _, err := tx.Exec(ctx, deleteStaleSQLS, structGen); err != nil {
+	// transitively any room_access rows) — which is exactly why a dropped
+	// structure must block this sweep: sweeping it would CASCADE-delete the
+	// rooms of a structure we merely declined to rewrite.
+	if err := execSweep(ctx, tx, "structure", deleteStaleSQLS, structGen); err != nil {
 		return fmt.Errorf("pg structures SaveSnapshot: delete stale structure: %w", err)
 	}
 
@@ -296,9 +332,17 @@ func (r *StructuresRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, structures
 	}
 
 	// Step 5: upsert each room of each structure. (Validation already
-	// happened in the pre-pass.)
-	for _, s := range structures {
-		for _, room := range s.Rooms {
+	// happened in the pre-pass; quarantined rooms — and every room of a
+	// quarantined structure — are skipped here.)
+	for key, s := range structures {
+		if s == nil || q.Dropped("structure", string(key)) {
+			continue
+		}
+		// Same position key the pre-pass dropped under — see the comment there.
+		for i, room := range s.Rooms {
+			if room == nil || q.Dropped("structure_room", structureRoomID(s.ID, i)) {
+				continue
+			}
 			if _, err := tx.Exec(ctx, upsertSQLSR,
 				int64(room.ID),           // $1 id
 				string(room.StructureID), // $2 structure_id
@@ -312,8 +356,51 @@ func (r *StructuresRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, structures
 	}
 
 	// Step 6: prune absent room rows.
-	if _, err := tx.Exec(ctx, deleteStaleSQLSR, roomGen); err != nil {
+	if err := execSweep(ctx, tx, "structure_room", deleteStaleSQLSR, roomGen); err != nil {
 		return fmt.Errorf("pg structures SaveSnapshot: delete stale structure_room: %w", err)
 	}
 	return nil
+}
+
+// dropStructure quarantines a structure and blocks its rooms' sweep — the
+// structure keeps its durable row, so its rooms must keep theirs. (structure's
+// own sweep would CASCADE the rooms away regardless; blocking structure_room
+// as well keeps the two tiers consistent if only the child sweep were to run.)
+func dropStructure(q *sim.Quarantine, id sim.StructureID, reason string) {
+	q.Drop("structure", string(id), reason)
+	q.BlockSweep("structure_room")
+}
+
+// sortedStructureIDs returns structure ids in a stable order, so a
+// cross-structure duplicate-RoomID collision always resolves the same way.
+func sortedStructureIDs(m map[sim.StructureID]*sim.Structure) []sim.StructureID {
+	out := make([]sim.StructureID, 0, len(m))
+	for id := range m {
+		out = append(out, id)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+// compactTags removes empty tag elements, reporting whether it changed
+// anything. An empty tag violates the repo-side no-empty invariant but is not
+// worth dropping a whole structure over.
+func compactTags(tags []string) ([]string, bool) {
+	out := make([]string, 0, len(tags))
+	for _, t := range tags {
+		if t == "" {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out, len(out) != len(tags)
+}
+
+// structureRoomID is the quarantine key for a room row: structure id + slice
+// POSITION, not RoomID. The pre-pass and the write loop must derive it
+// identically — see the comment in the pre-pass for why position and not the
+// PK (an invalid id has no usable PK; a duplicate id would suppress the
+// survivor along with the loser).
+func structureRoomID(sid sim.StructureID, i int) string {
+	return fmt.Sprintf("%s/#%d", sid, i)
 }

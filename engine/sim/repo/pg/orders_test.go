@@ -337,9 +337,11 @@ func TestOrdersRepo_SaveSnapshot_LedgerIDMismatchRejected(t *testing.T) {
 			ExpiresAt: now.Add(time.Hour),
 		},
 	}
-	if err := repo.SaveSnapshot(context.Background(), tx, bad); err == nil {
-		t.Fatal("expected error for LedgerID/ID mismatch")
+	q := &sim.Quarantine{}
+	if err := repo.SaveSnapshot(context.Background(), &checkpointTx{Tx: tx, q: q}, bad); err != nil {
+		t.Fatalf("SaveSnapshot = %v, want nil (LLM-392: quarantine the bad ledger row, don't abort the checkpoint)", err)
 	}
+	assertQuarantinedRow(t, q, "pay_ledger", "does not match order id")
 }
 
 func TestOrdersRepo_SaveSnapshot_NilTx(t *testing.T) {
@@ -369,19 +371,93 @@ func TestOrdersRepo_SaveSnapshot_NilOrderSkipped(t *testing.T) {
 	}
 }
 
-func TestOrdersRepo_SaveSnapshot_UnknownStateErrors(t *testing.T) {
+// TestOrdersRepo_SaveSnapshot_UnknownStateQuarantined — LLM-392: an order whose
+// state won't map to a fulfillment_status is dropped from the checkpoint and
+// reported, not thrown as an error that aborts every other aggregate's write.
+func TestOrdersRepo_SaveSnapshot_UnknownStateQuarantined(t *testing.T) {
 	mock, repo := newMockPool(t)
-	tx := fakeTx{mock: mock}
-	// expire-absent UPDATE runs first; mapping error surfaces on
-	// the first upsert attempt.
+	q := &sim.Quarantine{}
+	tx := &checkpointTx{Tx: fakeTx{mock: mock}, q: q}
+	// expire-absent UPDATE still runs; the bad row is then skipped, so no upsert
+	// is attempted for it.
 	mock.ExpectExec(`UPDATE pay_ledger[\s\S]+SET fulfillment_status = 'expired'`).
 		WithArgs(pgxmock.AnyArg()).
 		WillReturnResult(pgconn.NewCommandTag("UPDATE 0"))
 	err := repo.SaveSnapshot(context.Background(), tx, map[sim.OrderID]*sim.Order{
 		1: {ID: 1, State: sim.OrderState("garbage")},
 	})
-	if err == nil {
-		t.Fatal("expected error for unknown OrderState")
+	if err != nil {
+		t.Fatalf("SaveSnapshot = %v, want nil (quarantine, not abort)", err)
+	}
+	assertQuarantinedRow(t, q, "pay_ledger", "unknown OrderState")
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+}
+
+// TestOrdersRepo_SaveSnapshot_LodgingDoubleBookQuarantined — THE regression test
+// for the 2026-07-12 outage (LLM-391/LLM-392).
+//
+// Two delivered nights_stay ledger rows for the same (buyer, seller, ready_by)
+// violate the pay_ledger_lodging_active_once partial unique index. Before
+// LLM-392 the second row's UPSERT raised a duplicate-key error that rolled back
+// the ENTIRE checkpoint — and kept doing so every 60 seconds for 17.5 hours,
+// because the in-memory snapshot never changed. The village ran that whole time
+// with zero durability and then lost the lot on restart.
+//
+// Now the guard mirrors the index in Go: the lower order id keeps the booking,
+// the later duplicate is quarantined before any SQL runs, and the checkpoint
+// commits. Note only ONE upsert is expected — the poison row never reaches pg.
+func TestOrdersRepo_SaveSnapshot_LodgingDoubleBookQuarantined(t *testing.T) {
+	mock, repo := newMockPool(t)
+	q := &sim.Quarantine{}
+	tx := &checkpointTx{Tx: fakeTx{mock: mock}, q: q}
+
+	now := time.Now().UTC()
+	readyBy := time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC)
+	order := func(id sim.OrderID) *sim.Order {
+		return &sim.Order{
+			ID: id, LedgerID: sim.LedgerID(id),
+			State:    sim.OrderStateDelivered,
+			BuyerID:  "ezekiel",
+			SellerID: "hannah",
+			Item:     lodgingItemKind,
+			Qty:      1, Amount: 3,
+			ReadyBy:   readyBy,
+			CreatedAt: now,
+			ExpiresAt: now.Add(time.Hour),
+		}
+	}
+
+	mock.ExpectExec(`UPDATE pay_ledger[\s\S]+SET fulfillment_status = 'expired'`).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgconn.NewCommandTag("UPDATE 0"))
+	// Exactly one upsert: order 1447 (the lower id) survives.
+	mock.ExpectExec(`INSERT INTO pay_ledger`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(),
+			pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(),
+			pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(),
+			pgxmock.AnyArg()).
+		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
+
+	err := repo.SaveSnapshot(context.Background(), tx, map[sim.OrderID]*sim.Order{
+		1447: order(1447),
+		1448: order(1448), // the double-book
+	})
+	if err != nil {
+		t.Fatalf("SaveSnapshot = %v, want nil — a double-booked room must not take down durability", err)
+	}
+	assertQuarantinedRow(t, q, "pay_ledger", "pay_ledger_lodging_active_once")
+	// The SURVIVOR must be deterministic: the lower id keeps the booking every
+	// run, so the durable state cannot flap between checkpoints.
+	if !q.Dropped("pay_ledger", "1448") {
+		t.Errorf("expected order 1448 (the later duplicate) to be dropped, got rows = %+v", q.Rows())
+	}
+	if q.Dropped("pay_ledger", "1447") {
+		t.Errorf("order 1447 (the lower id) must SURVIVE the double-book, got rows = %+v", q.Rows())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
 	}
 }
 
