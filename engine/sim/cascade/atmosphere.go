@@ -460,7 +460,13 @@ var (
 	// right one: a missed contradiction is one imperfect mood line until the next
 	// sweep, while a false alarm is good prose thrown away and replaced with the
 	// fallback. The prompt is the fix; this is only the net beneath it.
-	atmosphereWetNegated   = regexp.MustCompile(`(?i)\b(no|not|nor|never|without|nary|after|since|once)\b`)
+	// "once" is deliberately NOT a negator: "Once the rain begins, the village
+	// draws within doors" asserts rain. Its cessation reading ("once the rain had
+	// passed") is already excused by atmosphereWetCeased, which catches the verb
+	// AFTER the wet word — so dropping it costs nothing and closes a real miss.
+	// "after" and "since" earn their place, because their cessation readings
+	// carry no such verb ("After the rain, the village goeth quietly").
+	atmosphereWetNegated   = regexp.MustCompile(`(?i)\b(no|not|nor|never|without|nary|after|since)\b`)
 	atmosphereWetCeased    = regexp.MustCompile(`(?i)\b(pass\w*|ceas\w*|abat\w*|spent|gone|fled|lift\w*|clear\w*|stopp\w*|subsid\w*|withdraw\w*|broke\w*|end\w*|no more)\b`)
 	atmosphereClauseBreaks = ".;:!?"
 )

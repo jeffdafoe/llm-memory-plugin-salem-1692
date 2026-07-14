@@ -123,6 +123,31 @@ func TestSeedWeatherClear_DiscardsPersistedStormAndEmits(t *testing.T) {
 	}
 }
 
+// Boot-to-clear is unconditional, so it discards a persisted future token (fog,
+// snow) exactly as it discards a storm — and emits, because by the time the seed
+// returns the sky IS clear and a consumer told otherwise would be wrong about the
+// world, scene written for the old token or not.
+func TestSeedWeatherClear_DiscardsUnknownWeatherAndEmits(t *testing.T) {
+	w := newAtmosphereTestWorld(t)
+	w.Environment.Weather = "fog"
+	got := recordWeatherChanged(w)
+
+	at := time.Date(2026, 6, 25, 0, 0, 0, 0, time.UTC)
+	res, err := SeedWeatherClear(at).Fn(w)
+	if err != nil {
+		t.Fatalf("SeedWeatherClear: %v", err)
+	}
+	if changed, _ := res.(bool); !changed {
+		t.Errorf("SeedWeatherClear returned changed=false, want true (it discarded a persisted fog)")
+	}
+	if w.Environment.Weather != WeatherClear {
+		t.Errorf("Weather = %q, want %q", w.Environment.Weather, WeatherClear)
+	}
+	if len(*got) != 1 {
+		t.Fatalf("emitted %d WeatherChanged discarding a persisted fog, want 1", len(*got))
+	}
+}
+
 // The common boot — already clear — changes nothing and must stay silent, so a
 // restart doesn't spend an LLM round-trip re-authoring an atmosphere for a sky
 // that never moved. The stamp is still seeded (LastWeatherChangeAt is

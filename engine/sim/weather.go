@@ -125,8 +125,12 @@ func ApplyWeatherChange(weather string, at time.Time) Command {
 //     make the elapsed-since-last-change check fire on the next tick).
 //
 // Emits WeatherChanged when the seed ACTUALLY changed the weather — i.e. the
-// checkpoint restored a mid-storm village and boot-to-clear discarded it
-// (LLM-399). Without the event, that discard was silent: the atmosphere
+// checkpoint restored a village under a non-clear sky (a storm, or any future
+// token) and boot-to-clear discarded it (LLM-399). Discarding an unknown token
+// emits too, and should: boot-to-clear is unconditional, so by the time this
+// returns the sky IS clear, and a consumer told otherwise would be wrong about
+// the world regardless of whether we have a scene written for what it was.
+// Without the event, that discard was silent: the atmosphere
 // cascade's boot sweep races this seed on its own goroutine, and if it won the
 // race it snapshotted the persisted `storm`, wrote rain prose, and then nothing
 // told it the sky had been forced clear — leaving contradictory prose standing

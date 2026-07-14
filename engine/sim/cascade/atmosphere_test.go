@@ -326,6 +326,11 @@ func TestWeatherContradiction(t *testing.T) {
 		{"after the rain", sim.WeatherClear, "After the rain, the village goeth quietly about its labor.", false},
 		// But a negation in a NEIGHBOURING sentence does not excuse a live claim.
 		{"negation in another sentence", sim.WeatherClear, "No sound is heard. The rain falleth still upon the roofs.", true},
+		// "once" reads as ONSET as readily as cessation, so it is not a negator —
+		// its cessation sense ("once the rain had passed") is caught by the
+		// cessation verb after the word instead.
+		{"once rain begins asserts rain", sim.WeatherClear, "Once the rain begins, the village draws within doors.", true},
+		{"once rain had passed does not", sim.WeatherClear, "Once the rain had passed, the village came forth again.", false},
 
 		// A weather with no scene written for it is unjudgeable — no vocabulary to
 		// check the prose against, so it can't be called a contradiction.
