@@ -307,18 +307,23 @@ func RunWorldCommandProbe(ctx context.Context, w *World) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			// Beat FIRST, before the send that may never return. See
-			// WorldCommandProbeTickerName: a wedged world must not be able to
-			// silence the instrument that detects it.
-			w.beatTicker(WorldCommandProbeTickerName)
-			probeWorldCommand(ctx, w)
+			runWorldCommandProbeOnce(ctx, w, WorldCommandProbeTimeout)
 		}
 	}
 }
 
-// probeWorldCommand runs exactly one probe at the production deadline.
-func probeWorldCommand(ctx context.Context, w *World) {
-	probeWorldCommandWithTimeout(ctx, w, WorldCommandProbeTimeout)
+// runWorldCommandProbeOnce is one iteration of the prober: BEAT, then probe.
+//
+// The whole loop body lives in one function so that ordering is a thing a test can
+// hold, rather than two statements a future edit could quietly swap. It is
+// load-bearing: the beat must land before a send that may never return, because a
+// wedged world must not be able to silence the instrument that detects it (see
+// WorldCommandProbeTickerName). Beat afterwards and ticker_stale and
+// world_command_stalled collapse into the same silence, which is the entire failure
+// this ticket set out to fix.
+func runWorldCommandProbeOnce(ctx context.Context, w *World, timeout time.Duration) {
+	w.beatTicker(WorldCommandProbeTickerName)
+	probeWorldCommandWithTimeout(ctx, w, timeout)
 }
 
 // probeWorldCommandWithTimeout runs exactly one probe under the given deadline and
@@ -335,6 +340,15 @@ func probeWorldCommand(ctx context.Context, w *World) {
 // send semantics are otherwise identical to SendContext's, including the buffered
 // reply channel that keeps a late reply from ever blocking the world goroutine.
 func probeWorldCommandWithTimeout(ctx context.Context, w *World, timeout time.Duration) {
+	// Shutdown is not a probe. Checked BEFORE the attempt is recorded, not just
+	// before the outcome is: an attempt counted against a world that is meant to be
+	// gone would leave total_probes and last_attempt_at advancing through every
+	// clean restart, which is a small lie on a route whose whole job is to be
+	// trusted about what the engine is doing.
+	if ctx.Err() != nil {
+		return
+	}
+
 	sendCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 

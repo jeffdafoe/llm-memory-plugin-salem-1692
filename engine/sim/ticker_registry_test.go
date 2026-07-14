@@ -47,12 +47,18 @@ import (
 // allow.
 
 // stringConsts returns every package-level `const NAME = "value"` string constant
-// declared under root, keyed by identifier. The resolution table for ticker names
-// that are named by a const rather than spelled as a literal at the call site.
-func stringConsts(t *testing.T, root string) map[string]string {
+// declared under root, keyed by PACKAGE then identifier. The resolution table for
+// ticker names that are named by a const rather than spelled as a literal.
+//
+// Keyed by package, not by bare name, because a flat table would resolve
+// `sim.TickerName` and `cascade.TickerName` to whichever the directory walk reached
+// last — silently mapping a call to the WRONG string, which is precisely the drift
+// this guard exists to catch. A guard that can lie about the thing it guards is
+// worse than no guard.
+func stringConsts(t *testing.T, root string) map[string]map[string]string {
 	t.Helper()
 
-	out := make(map[string]string)
+	out := make(map[string]map[string]string)
 	fset := token.NewFileSet()
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -65,6 +71,7 @@ func stringConsts(t *testing.T, root string) map[string]string {
 		if perr != nil {
 			return perr
 		}
+		pkg := file.Name.Name
 		for _, decl := range file.Decls {
 			gen, ok := decl.(*ast.GenDecl)
 			if !ok || gen.Tok != token.CONST {
@@ -83,9 +90,14 @@ func stringConsts(t *testing.T, root string) map[string]string {
 					if !ok || lit.Kind != token.STRING {
 						continue
 					}
-					if v, uerr := strconv.Unquote(lit.Value); uerr == nil {
-						out[name.Name] = v
+					v, uerr := strconv.Unquote(lit.Value)
+					if uerr != nil {
+						continue
 					}
+					if out[pkg] == nil {
+						out[pkg] = make(map[string]string)
+					}
+					out[pkg][name.Name] = v
 				}
 			}
 		}
@@ -132,7 +144,7 @@ func tickerCallNames(t *testing.T, root string, methods ...string) map[string]st
 			if !ok || !want[sel.Sel.Name] {
 				return true
 			}
-			name, ok := tickerNameArg(call.Args[0], consts)
+			name, ok := tickerNameArg(call.Args[0], file.Name.Name, consts)
 			if !ok {
 				// A name this scan cannot resolve (a variable, a computed string) would
 				// make its ticker invisible to the guard — which is precisely the blind
@@ -152,10 +164,12 @@ func tickerCallNames(t *testing.T, root string, methods ...string) map[string]st
 	return found
 }
 
-// tickerNameArg resolves one ticker-name argument: a string literal directly, or a
-// package-level string const by identifier (bare, or qualified as sim.Name from
-// another package in the tree).
-func tickerNameArg(arg ast.Expr, consts map[string]string) (string, bool) {
+// tickerNameArg resolves one ticker-name argument: a string literal directly, a
+// bare const identifier (resolved in the CALLER'S OWN package — a bare ident cannot
+// refer to anything else), or a qualified `pkg.Name` const (resolved in the named
+// package). A name that resolves in neither is reported unresolvable, so it fails
+// the scan rather than silently dropping a ticker out of the coverage sets.
+func tickerNameArg(arg ast.Expr, pkg string, consts map[string]map[string]string) (string, bool) {
 	switch a := arg.(type) {
 	case *ast.BasicLit:
 		if a.Kind != token.STRING {
@@ -167,10 +181,17 @@ func tickerNameArg(arg ast.Expr, consts map[string]string) (string, bool) {
 		}
 		return v, true
 	case *ast.Ident:
-		v, ok := consts[a.Name]
+		v, ok := consts[pkg][a.Name]
 		return v, ok
 	case *ast.SelectorExpr:
-		v, ok := consts[a.Sel.Name]
+		// The qualifier is an import name (package `sim` is imported as `sim`
+		// everywhere in this tree — no aliasing), so it keys the package table
+		// directly.
+		x, ok := a.X.(*ast.Ident)
+		if !ok {
+			return "", false
+		}
+		v, ok := consts[x.Name][a.Sel.Name]
 		return v, ok
 	}
 	return "", false

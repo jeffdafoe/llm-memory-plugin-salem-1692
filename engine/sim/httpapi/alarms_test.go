@@ -36,11 +36,11 @@ func TestTickerStaleAlarm_SilentWhenCadencesAreMet(t *testing.T) {
 		staleEntry("reactor", 250*time.Millisecond, time.Second, now),
 		staleEntry("atmosphere", time.Hour, 90*time.Minute, now),
 	}
-	if a, ok := tickerStaleAlarm(entries, false, now); ok {
+	if a, ok := tickerStaleAlarm(entries, worldServing, now); ok {
 		t.Errorf("alarm fired on healthy tickers: %+v", a)
 	}
 	// An empty registry (a world with no tickers wired) is silent, not a panic.
-	if _, ok := tickerStaleAlarm(nil, false, now); ok {
+	if _, ok := tickerStaleAlarm(nil, worldServing, now); ok {
 		t.Error("alarm fired on an empty registry")
 	}
 }
@@ -54,7 +54,7 @@ func TestTickerStaleAlarm_AggregatesAndNamesTheStaleTickers(t *testing.T) {
 		staleEntry("dwell", time.Minute, 5*time.Second, now),  // healthy
 	}
 
-	a, ok := tickerStaleAlarm(entries, false, now)
+	a, ok := tickerStaleAlarm(entries, worldServing, now)
 	if !ok {
 		t.Fatal("no alarm for two dead tickers")
 	}
@@ -86,11 +86,11 @@ func TestTickerStaleAlarm_SinceIsStableAcrossEvaluations(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	entries := []sim.TickerHealthEntry{staleEntry("needs", time.Minute, 30*time.Minute, now)}
 
-	first, ok := tickerStaleAlarm(entries, false, now)
+	first, ok := tickerStaleAlarm(entries, worldServing, now)
 	if !ok {
 		t.Fatal("no alarm")
 	}
-	later, ok := tickerStaleAlarm(entries, false, now.Add(5*time.Minute))
+	later, ok := tickerStaleAlarm(entries, worldServing, now.Add(5*time.Minute))
 	if !ok {
 		t.Fatal("alarm cleared itself while the ticker was still dead")
 	}
@@ -110,7 +110,7 @@ func TestTickerStaleAlarm_AllStaleWithAHealthyWorldExoneratesTheWorldLoop(t *tes
 		entries = append(entries, staleEntry(n, time.Minute, time.Hour, now))
 	}
 
-	a, ok := tickerStaleAlarm(entries, false, now)
+	a, ok := tickerStaleAlarm(entries, worldServing, now)
 	if !ok {
 		t.Fatal("no alarm with every ticker dead")
 	}
@@ -136,7 +136,7 @@ func TestTickerStaleAlarm_DefersToTheWorldCommandAlarmWhenItIsFiring(t *testing.
 		staleEntry("sleep", time.Minute, time.Hour, now),
 	}
 
-	a, ok := tickerStaleAlarm(entries, true, now)
+	a, ok := tickerStaleAlarm(entries, worldStalled, now)
 	if !ok {
 		t.Fatal("no alarm")
 	}
@@ -163,7 +163,7 @@ func TestTickerStaleAlarm_ProbeIsExcludedFromTheAllStaleHeadcount(t *testing.T) 
 		staleEntry(sim.WorldCommandProbeTickerName, sim.WorldCommandProbeInterval, time.Second, now),
 	}
 
-	a, ok := tickerStaleAlarm(entries, false, now)
+	a, ok := tickerStaleAlarm(entries, worldServing, now)
 	if !ok {
 		t.Fatal("no alarm")
 	}
@@ -184,7 +184,7 @@ func TestTickerStaleAlarm_UnregisteredAndZeroIntervalNeverFire(t *testing.T) {
 		{Name: "unregistered", Count: 3, LastFire: now.Add(-30 * 24 * time.Hour)},
 		{Name: "zero_interval", Registered: true, Interval: 0, LastFire: now.Add(-30 * 24 * time.Hour)},
 	}
-	if a, ok := tickerStaleAlarm(entries, false, now); ok {
+	if a, ok := tickerStaleAlarm(entries, worldServing, now); ok {
 		t.Errorf("alarm fired on opted-out tickers — the fail-safe is broken: %+v", a)
 	}
 }
@@ -199,7 +199,7 @@ func TestTickerStaleAlarm_FiresOnATickerThatNeverStarted(t *testing.T) {
 		RegisteredAt: now.Add(-time.Hour),
 		// No beat, ever.
 	}}
-	a, ok := tickerStaleAlarm(entries, false, now)
+	a, ok := tickerStaleAlarm(entries, worldServing, now)
 	if !ok {
 		t.Fatal("no alarm for a ticker that registered and never fired — this is the goroutine-never-started case")
 	}
@@ -849,5 +849,81 @@ func TestProbeTickerStale(t *testing.T) {
 	dead := []sim.TickerHealthEntry{staleEntry(sim.WorldCommandProbeTickerName, sim.WorldCommandProbeInterval, time.Hour, now)}
 	if !probeTickerStale(dead, now) {
 		t.Error("a prober silent for an hour reported as alive")
+	}
+}
+
+// A SATURATED queue is not a wedged loop, and ticker_stale must not say it is. The
+// loop may be running perfectly and simply being out-produced — the tickers starve
+// either way, but the operator's fix is upstream of the loop, so the prose has to
+// keep them apart. (Caught by the code_review VA: a bool verdict collapsed these.)
+func TestTickerStaleAlarm_SaturationIsNotReportedAsAWedgedLoop(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	entries := []sim.TickerHealthEntry{
+		staleEntry("needs", time.Minute, time.Hour, now),
+		staleEntry("sleep", time.Minute, time.Hour, now),
+	}
+
+	a, ok := tickerStaleAlarm(entries, worldSaturated, now)
+	if !ok {
+		t.Fatal("no alarm")
+	}
+	if !strings.Contains(a.Detail, "QUEUE is CONFIRMED SATURATED") {
+		t.Errorf("Detail does not name the saturation: %s", a.Detail)
+	}
+	if strings.Contains(a.Detail, "loop is CONFIRMED STALLED") {
+		t.Errorf("Detail claims a wedged loop on a saturated queue: %s", a.Detail)
+	}
+}
+
+// A dead prober means NO live measurement, so ticker_stale must neither confirm a
+// stall nor exonerate the world off the fossil the recorder is still holding. The
+// world_command_stalled alarm labels that reading FROZEN; an alarm next to it must
+// not quietly launder it back into a confirmation.
+func TestTickerStaleAlarm_ADeadProberConfirmsAndExoneratesNothing(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	var entries []sim.TickerHealthEntry
+	for _, n := range []string{"needs", "sleep", "dwell"} {
+		entries = append(entries, staleEntry(n, time.Minute, time.Hour, now))
+	}
+
+	a, ok := tickerStaleAlarm(entries, worldUnknown, now)
+	if !ok {
+		t.Fatal("no alarm")
+	}
+	if strings.Contains(a.Detail, "CONFIRMED") {
+		t.Errorf("Detail confirms a cause with a dead instrument: %s", a.Detail)
+	}
+	if strings.Contains(a.Detail, "is NOT a wedged world") {
+		t.Errorf("Detail exonerates the world loop off a frozen reading: %s", a.Detail)
+	}
+	if !strings.Contains(a.Detail, "liveness prober is dead") {
+		t.Errorf("Detail does not admit it has no live measurement: %s", a.Detail)
+	}
+}
+
+// The verdict mapping itself: four states, because a bool forced two different lies.
+func TestWorldCommandVerdict(t *testing.T) {
+	enqueue := sim.WorldCommandHealthSnapshot{LastTimeoutPhase: sim.WorldCommandPhaseEnqueue}
+	reply := sim.WorldCommandHealthSnapshot{LastTimeoutPhase: sim.WorldCommandPhaseReply}
+
+	cases := []struct {
+		name       string
+		h          sim.WorldCommandHealthSnapshot
+		probeStale bool
+		isStalled  bool
+		want       worldVerdict
+	}{
+		{"probe landing", sim.WorldCommandHealthSnapshot{}, false, false, worldServing},
+		{"loop wedged", reply, false, true, worldStalled},
+		{"queue saturated", enqueue, false, true, worldSaturated},
+		// A dead prober outranks BOTH readings: a fossil that says "stalled" is worth
+		// exactly as much as one that says "serving".
+		{"dead prober, fossil says stalled", reply, true, true, worldUnknown},
+		{"dead prober, fossil says healthy", sim.WorldCommandHealthSnapshot{}, true, false, worldUnknown},
+	}
+	for _, tc := range cases {
+		if got := worldCommandVerdict(tc.h, tc.probeStale, tc.isStalled); got != tc.want {
+			t.Errorf("%s: verdict = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }

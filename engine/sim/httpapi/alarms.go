@@ -169,25 +169,74 @@ func (s *Server) evaluateAlarms(now time.Time) []Alarm {
 	// worldless test server must not panic the whole surface.
 	if s.world != nil {
 		entries := s.world.TickerHealthSnapshot()
+		health := s.world.WorldCommandHealthSnapshot()
+		probeStale := probeTickerStale(entries, now)
+
 		// CAUSE BEFORE SYMPTOM, in both the ordering and the prose. A wedged world
 		// command loop starves every ticker that depends on it, so these two alarms
 		// fire together in the headline incident — and world_command_stalled is the
 		// one that says what is actually wrong. It is evaluated first so its verdict
 		// can be handed to the ticker_stale classifier, which is what lets that alarm
 		// name the cause instead of hedging at a 3am operator.
-		stalled, worldStalled := worldCommandStalledAlarm(
-			s.world.WorldCommandHealthSnapshot(),
-			probeTickerStale(entries, now),
-			now,
-		)
-		if worldStalled {
+		stalled, isStalled := worldCommandStalledAlarm(health, probeStale, now)
+		if isStalled {
 			out = append(out, stalled)
 		}
-		if a, ok := tickerStaleAlarm(entries, worldStalled, now); ok {
+		if a, ok := tickerStaleAlarm(entries, worldCommandVerdict(health, probeStale, isStalled), now); ok {
 			out = append(out, a)
 		}
 	}
 	return out
+}
+
+// worldVerdict is what the liveness probe currently knows about the world command
+// path — the input ticker_stale needs to explain itself.
+//
+// FOUR STATES, NOT A BOOL. A bool would force two different lies. It would call a
+// SATURATED queue a stalled loop, when the loop may be running perfectly and merely
+// being out-produced (the probe cannot even enqueue) — and it would hand a FROZEN
+// reading from a dead prober to ticker_stale as live confirmation, which is exactly
+// the currency world_command_stalled refuses to claim for itself when it labels that
+// reading frozen. An alarm must not confirm a cause with an instrument it has just
+// admitted is dead.
+type worldVerdict int
+
+const (
+	// worldUnknown — no current measurement. The prober is dead (its own ticker is
+	// stale), so whatever the recorder holds is a fossil. Confirm nothing, exonerate
+	// nothing.
+	worldUnknown worldVerdict = iota
+
+	// worldServing — the probe is landing inside its deadline. The world command
+	// path is demonstrably alive, whatever else is wrong.
+	worldServing
+
+	// worldStalled — probes are being ACCEPTED and never completed. The loop itself
+	// is wedged.
+	worldStalled
+
+	// worldSaturated — probes cannot even be ENQUEUED. The queue has been full for
+	// the whole deadline; the loop may be healthy and simply out-produced.
+	worldSaturated
+)
+
+// worldCommandVerdict collapses the probe's recorded state into what ticker_stale
+// is entitled to say about it.
+func worldCommandVerdict(h sim.WorldCommandHealthSnapshot, probeStale, isStalled bool) worldVerdict {
+	// A dead prober means no live measurement, whichever way the recorded state
+	// happens to read. Checked FIRST, ahead of the alarm itself, because a stale
+	// reading that says "stalled" is worth precisely as much as one that says
+	// "serving": nothing.
+	if probeStale {
+		return worldUnknown
+	}
+	if !isStalled {
+		return worldServing
+	}
+	if h.LastTimeoutPhase == sim.WorldCommandPhaseEnqueue {
+		return worldSaturated
+	}
+	return worldStalled
 }
 
 // worldCommandStalledAlarm classifies the world-command liveness recorder: it
@@ -301,13 +350,15 @@ func formatSeconds(secs float64) string {
 // across requests and self-clearing the moment the cadence resumes, which is what
 // lets the evaluator stay stateless.
 //
-// worldStalled is the world_command_stalled verdict, and it turns this alarm's
-// worst case from a shrug into a DIAGNOSIS (LLM-402). Mass staleness has exactly
-// two shapes and they have opposite fixes: the tickers are starving on a wedged
-// world command loop, or the world loop is fine and the tickers themselves (or the
-// process scheduling them) are dying. Silence alone cannot tell those apart —
-// which is why this alarm's prose used to hedge — but the liveness probe can, so
-// the answer is stated instead of guessed.
+// world is the liveness probe's verdict, and it turns this alarm's worst case from
+// a shrug into a DIAGNOSIS (LLM-402). Mass staleness has shapes with opposite
+// fixes: the tickers are starving on a wedged world command loop, or the world loop
+// is fine and the tickers themselves (or the process scheduling them) are dying.
+// Silence alone cannot tell those apart — which is why this alarm's prose used to
+// hedge — but the probe can, so the answer is stated instead of guessed. It says
+// only what the probe actually measured, though: see worldVerdict, whose four states
+// exist precisely so this prose cannot confirm a wedge on a saturated queue, or
+// confirm anything at all off a dead prober's last reading.
 //
 // THE PROBER IS EXCLUDED FROM THE "EVERY TICKER" HEADCOUNT, and that exclusion is
 // load-bearing rather than cosmetic. The prober beats BEFORE each send precisely so
@@ -316,7 +367,7 @@ func formatSeconds(secs float64) string {
 // ticker still beating, and a naive len(stale) == len(entries) would be false
 // forever. The branch would have quietly become unreachable in the case it exists
 // to describe.
-func tickerStaleAlarm(entries []sim.TickerHealthEntry, worldStalled bool, now time.Time) (Alarm, bool) {
+func tickerStaleAlarm(entries []sim.TickerHealthEntry, world worldVerdict, now time.Time) (Alarm, bool) {
 	var (
 		stale []sim.TickerHealthEntry
 		since time.Time
@@ -363,14 +414,29 @@ func tickerStaleAlarm(entries []sim.TickerHealthEntry, worldStalled bool, now ti
 	if !since.IsZero() {
 		detail += " (first went stale " + humanizeSince(now.Sub(since)) + " ago)"
 	}
+	allWorldDependentStale := worldDependent > 1 && worldDependentStale == worldDependent
 	switch {
-	case worldStalled:
-		// The cause is MEASURED, not inferred. Point at it and get out of the way:
-		// this alarm is the shadow of the other one, and an operator who fixes the
-		// world command loop fixes this too.
+	case world == worldStalled:
+		// The cause is MEASURED. Point at it and get out of the way: this alarm is
+		// the shadow of the other one, and an operator who fixes the world command
+		// loop fixes this too.
 		detail += ". The world command loop is CONFIRMED STALLED (see the world_command_stalled alarm) — " +
-			"these tickers are starving on it, not dying independently. Fix that first; this alarm is its shadow"
-	case worldDependent > 1 && worldDependentStale == worldDependent:
+			"it is accepting commands and never completing them, so these tickers are starving on it rather " +
+			"than dying independently. Fix that first; this alarm is its shadow"
+	case world == worldSaturated:
+		// NOT a wedge, and saying so matters: the loop may be running perfectly and
+		// simply being out-produced. The tickers are still starving — they cannot get
+		// their work into the queue either — but the fix is upstream of the loop.
+		detail += ". The world command QUEUE is CONFIRMED SATURATED (see the world_command_stalled alarm) — " +
+			"the loop may well be running, but nothing can get work into it, these tickers included. " +
+			"Find what is flooding the queue"
+	case world == worldUnknown && allWorldDependentStale:
+		// The prober is dead too, so there is no live measurement to lean on. Say
+		// that, rather than reaching for the fossil in the recorder.
+		detail += ". EVERY world-dependent ticker is stale AND the liveness prober is dead, so there is no " +
+			"live measurement of the world command path — this is a process-wide failure until proven otherwise " +
+			"(scheduler starvation, a GC death spiral, or the world loop taking everything down with it)"
+	case world == worldServing && allWorldDependentStale:
 		// Every ticker that depends on the world is stale, and yet the world is
 		// answering its liveness probe. That REMOVES the obvious suspect, which is
 		// the single most useful thing this sentence can do at 3am.
