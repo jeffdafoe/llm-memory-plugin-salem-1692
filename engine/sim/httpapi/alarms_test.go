@@ -141,6 +141,29 @@ func TestInjectAlarms(t *testing.T) {
 			body: `not json`,
 			want: `not json`,
 		},
+		{
+			// Opens with '{' but is not a valid object. Splicing would manufacture a
+			// DIFFERENTLY malformed payload and stamp a fresh Content-Length on it.
+			name: "truncated object is returned untouched",
+			body: `{`,
+			want: `{`,
+		},
+		{
+			name: "brace-prefixed non-JSON is returned untouched",
+			body: `{not json}`,
+			want: `{not json}`,
+		},
+		{
+			name: "object with trailing garbage is returned untouched",
+			body: `{"x":1} trailing`,
+			want: `{"x":1} trailing`,
+		},
+		{
+			// A brace inside a string must not confuse the member-detection scan.
+			name: "braces inside string values are handled",
+			body: `{"msg":"{not a brace}"}`,
+			want: `{"ALARMS":[{"kind":"checkpoint_failure"}],"msg":"{not a brace}"}`,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -308,6 +331,77 @@ func TestWithAlarmBanner_PreservesHandlerStatus(t *testing.T) {
 	}
 	if got.Error != "missing id" || len(got.Alarms) != 1 {
 		t.Errorf("want both the handler's error and the alarm, got %+v", got)
+	}
+}
+
+// A no-body status must not gain one. 204/304 (and 1xx) carry no payload, so the
+// alarm rides the header alone — writing a body here is a protocol violation.
+func TestWithAlarmBanner_NoBodyStatusesGetHeaderOnly(t *testing.T) {
+	for _, status := range []int{http.StatusNoContent, http.StatusNotModified} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			s := serverWithStreak(10)
+			h := s.withAlarmBanner(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(status)
+			})
+
+			rec := httptest.NewRecorder()
+			h(rec, httptest.NewRequest(http.MethodGet, "/api/village/umbilical/state", nil))
+
+			if rec.Code != status {
+				t.Errorf("status = %d, want %d", rec.Code, status)
+			}
+			if rec.Body.Len() != 0 {
+				t.Errorf("body = %q, want empty for a %d", rec.Body.String(), status)
+			}
+			if got := rec.Header().Get("Content-Length"); got != "" {
+				t.Errorf("Content-Length = %q, want unset for a %d", got, status)
+			}
+			if got := rec.Header().Get(alarmHeader); got != alarmKindCheckpointFailure {
+				t.Errorf("%s = %q, want the alarm to still ride the header", alarmHeader, got)
+			}
+		})
+	}
+}
+
+// Go's ServeMux routes HEAD to a "GET <path>" pattern, so every umbilical GET
+// handler is reachable by HEAD. A HEAD response carries no body.
+func TestWithAlarmBanner_HeadRequestGetsNoBody(t *testing.T) {
+	s := serverWithStreak(10)
+	h := s.withAlarmBanner(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"contract_version":1}`))
+	})
+
+	rec := httptest.NewRecorder()
+	h(rec, httptest.NewRequest(http.MethodHead, "/api/village/umbilical/state", nil))
+
+	if rec.Body.Len() != 0 {
+		t.Errorf("body = %q, want empty for a HEAD", rec.Body.String())
+	}
+	if got := rec.Header().Get(alarmHeader); got != alarmKindCheckpointFailure {
+		t.Errorf("%s = %q, want the alarm on the header", alarmHeader, got)
+	}
+}
+
+// A content-encoded body is opaque bytes: splicing JSON into it would corrupt it.
+// It must pass through byte-for-byte, with the alarm on the header only.
+func TestWithAlarmBanner_EncodedBodyIsNotSpliced(t *testing.T) {
+	s := serverWithStreak(10)
+	// Deliberately a body that WOULD be spliced if it were treated as plain JSON,
+	// so the test fails loudly if the encoding guard regresses.
+	payload := `{"contract_version":1}`
+	h := s.withAlarmBanner(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Encoding", "gzip")
+		_, _ = w.Write([]byte(payload))
+	})
+
+	rec := httptest.NewRecorder()
+	h(rec, httptest.NewRequest(http.MethodGet, "/api/village/umbilical/turns", nil))
+
+	if got := rec.Body.String(); got != payload {
+		t.Errorf("encoded body = %s, want it untouched", got)
+	}
+	if got := rec.Header().Get(alarmHeader); got != alarmKindCheckpointFailure {
+		t.Errorf("%s = %q, want the alarm on the header", alarmHeader, got)
 	}
 }
 

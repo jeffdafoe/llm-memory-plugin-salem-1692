@@ -201,6 +201,14 @@ func push(text: String) -> void:
 # wait politely behind a paragraph of village prose.
 #
 # A new line resets the burst counter so it gets the 5-scroll attention burst.
+#
+# INVARIANT — a queued atmosphere line can never resurface over a firing alarm.
+# Two things hold it, and a future caller must not break either: (1) the immediate
+# path below CLEARS _pending_line as it takes over, so an atmosphere line queued
+# before the alarm is dropped, and (2) push() — the only non-alarm caller — bails
+# out before reaching here while _alarm_line is set, so nothing can queue behind
+# an alarm afterwards. _atmosphere_line still holds the prose, so it is restored
+# (not lost) when the alarm clears.
 func _show(text: String, immediate: bool) -> void:
     if text == _active_line:
         return

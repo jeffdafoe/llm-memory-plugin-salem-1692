@@ -184,19 +184,68 @@ func (s *Server) withAlarmBanner(next http.HandlerFunc) http.HandlerFunc {
 		rec := &alarmCapture{header: http.Header{}, status: http.StatusOK}
 		next(rec, r)
 
-		body := injectAlarms(rec.buf.Bytes(), encoded)
-
+		// Copy the handler's headers out. The values are cloned rather than aliased
+		// so the outbound header map can never share backing arrays with the capture.
 		for k, v := range rec.header {
-			w.Header()[k] = v
+			w.Header()[k] = append([]string(nil), v...)
 		}
+		// The header is the one signal that reaches EVERY response, including the
+		// ones we must not or cannot touch the body of. Always set it.
 		w.Header().Set(alarmHeader, alarmKinds(alarms))
-		// The splice changes the body length, and a handler may have copied an
-		// upstream Content-Length (the /turns proxy relays upstream headers). Set it
-		// from what we are actually about to write, or the response is truncated.
-		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+
+		body := rec.buf.Bytes()
+		if responseAllowsBody(r.Method, rec.status) && bodyAcceptsAlarmSplice(rec.header) {
+			body = injectAlarms(body, encoded)
+			// The splice changes the body length, so Content-Length must be restated
+			// from what we are actually about to write or the response truncates.
+			w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+			w.WriteHeader(rec.status)
+			_, _ = w.Write(body)
+			return
+		}
+
+		// A no-body status (204/304/1xx) or a HEAD request must not carry a body, and
+		// an encoded body must not be spliced. Emit the handler's response as it was,
+		// carrying the alarm on the header alone. Content-Length is dropped rather
+		// than restated: for a no-body response we write nothing, and net/http will
+		// set the right thing for what we do write.
+		w.Header().Del("Content-Length")
 		w.WriteHeader(rec.status)
-		_, _ = w.Write(body)
+		if responseAllowsBody(r.Method, rec.status) {
+			_, _ = w.Write(body)
+		}
 	}
+}
+
+// responseAllowsBody reports whether a response with this method + status is
+// permitted to carry a body at all. Writing one anyway is a protocol violation
+// that net/http will complain about ("request method or response status code
+// does not allow body").
+//
+// HEAD is reachable here: Go's ServeMux routes a HEAD request to a "GET <path>"
+// pattern, so every umbilical GET handler can be entered by a HEAD.
+func responseAllowsBody(method string, status int) bool {
+	if method == http.MethodHead {
+		return false
+	}
+	if status >= 100 && status < 200 {
+		return false
+	}
+	return status != http.StatusNoContent && status != http.StatusNotModified
+}
+
+// bodyAcceptsAlarmSplice reports whether the captured body is raw bytes we may
+// safely splice a key into — i.e. it is not content-encoded.
+//
+// No umbilical route sets Content-Encoding today (the /turns proxy relays only
+// Content-Type and io.Copy's the body through), so this is a guard against the
+// future: a route that ever relays a gzip'd upstream body would otherwise have
+// compressed bytes handed to a JSON byte-splice. Compressed bytes almost never
+// begin with '{' so injectAlarms would decline anyway, but "almost never" is not
+// an invariant to hang a live operator surface on. Encoded → header-only.
+func bodyAcceptsAlarmSplice(h http.Header) bool {
+	enc := h.Get("Content-Encoding")
+	return enc == "" || strings.EqualFold(enc, "identity")
 }
 
 // alarmKinds renders the header value: the firing kinds, comma-separated.
@@ -209,9 +258,24 @@ func alarmKinds(alarms []Alarm) string {
 }
 
 // alarmCapture buffers a handler's response so the body can be rewritten. Only
-// used on the firing path. No Hijack passthrough: the umbilical carries no
-// WebSocket upgrade (the WS /events route is not an umbilical route and is never
-// wrapped), so there is nothing to hijack.
+// used on the firing path.
+//
+// It implements ResponseWriter and NOTHING ELSE, deliberately:
+//
+//   - No Hijack. The umbilical carries no WebSocket upgrade (the WS /events route
+//     is not an umbilical route and is never wrapped), so there is nothing to
+//     hijack, and claiming to support it would be a lie.
+//   - No Flush. A no-op Flush() would be worse than its absence: it makes
+//     w.(http.Flusher) succeed, so a streaming handler would believe it had
+//     flushed bytes to the client when they are in fact sitting in this buffer.
+//     Leaving it unimplemented makes the type assertion fail, which is the honest
+//     answer for a buffered writer and the safe branch for any handler that tests
+//     for it.
+//
+// The constraint this places on the surface: AN UMBILICAL HANDLER MUST NOT DEPEND
+// ON OPTIONAL ResponseWriter INTERFACES. Every one today just writes a JSON body,
+// so this holds; a future streaming umbilical route would have to bypass or teach
+// this wrapper.
 type alarmCapture struct {
 	header http.Header
 	buf    bytes.Buffer
@@ -251,12 +315,23 @@ func (c *alarmCapture) Write(b []byte) (int, error) {
 // underneath is preserved EXACTLY (key order, number formatting, unknown fields
 // from the /turns upstream) — the operator is mid-incident and the response body
 // must not be quietly reshaped on its way out.
+//
+// The invariant is strict: VALID JSON OBJECT gets the key, everything else is
+// returned byte-for-byte. Starting with '{' is necessary but not sufficient — a
+// truncated body ("{"), a text/plain diagnostic that happens to open with a
+// brace, or any malformed object would otherwise be spliced into a DIFFERENTLY
+// malformed payload, with a freshly-computed Content-Length lending it false
+// authority. json.Valid buys that guarantee for one linear scan, and only ever on
+// the firing path.
 func injectAlarms(body, encoded []byte) []byte {
 	open := 0
 	for open < len(body) && isJSONSpace(body[open]) {
 		open++
 	}
 	if open >= len(body) || body[open] != '{' {
+		return body
+	}
+	if !json.Valid(body) {
 		return body
 	}
 	// First non-space byte after '{' tells us whether the object already has any
