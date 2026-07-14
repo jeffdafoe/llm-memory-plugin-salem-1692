@@ -789,12 +789,24 @@ func TestSetVillageObjectRefreshes_Applied(t *testing.T) {
 		t.Errorf("available_quantity = %d after mutating source, want 3 (must be copied)", got)
 	}
 
-	// No event — refresh is not in ObjectDTO.
+	// The refresh rows themselves are not in ObjectDTO, so they broadcast nothing.
+	// The rows DO emit a display-name frame here (LLM-398): they turned a nameless
+	// prop into an eat-on-arrival source, and a nameless source is unreachable
+	// (resolveLoiteringObject skips it, so arrival-eat can never resolve it), so it
+	// takes its asset's catalog name — and the name IS client-rendered.
+	var named *sim.VillageObjectDisplayNameChanged
 	for _, evt := range cap.snapshot() {
-		switch evt.(type) {
-		case *sim.VillageObjectDisplayNameChanged, *sim.VillageObjectTagsUpdated, *sim.VillageObjectStateChanged:
+		switch e := evt.(type) {
+		case *sim.VillageObjectDisplayNameChanged:
+			named = e
+		case *sim.VillageObjectTagsUpdated, *sim.VillageObjectStateChanged:
 			t.Errorf("unexpected client-visible event emitted on set-refresh: %T", evt)
 		}
+	}
+	if named == nil {
+		t.Error("no display-name event: a nameless prop that gains refresh rows must take its asset name")
+	} else if named.ObjectID != "prop-1" || named.DisplayName != "Bench" {
+		t.Errorf("display-name event = %+v, want prop-1 → \"Bench\"", named)
 	}
 }
 

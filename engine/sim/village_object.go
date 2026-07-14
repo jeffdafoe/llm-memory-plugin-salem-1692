@@ -196,11 +196,20 @@ func (o *VillageObject) HasForageSourceFor(item ItemKind) bool {
 // First check (LLM-60): a refresh-bearing object (a gather/eat source) with
 // an empty DisplayName. The command-side resolver resolveLoiteringObject skips
 // nameless objects, so neither the gather verb (Gather/StartHarvest) nor passive
-// eat-on-arrival (ApplyObjectRefreshAtArrival) can resolve it — yet the perception
-// cue (findGatherableCue) and the free-food list (gatherFreeSatiationSources) do
-// NOT apply that name filter, so they keep advertising a source the engine then
-// refuses, trapping an NPC in a gather/eat loop. Naming the object is the fix; the
-// name requirement in the resolver is intentional (v1 "you are at X" attribution).
+// eat-on-arrival (ApplyObjectRefreshAtArrival) can resolve it — the source sits
+// there regenerating a supply no actor can ever draw. The name requirement in the
+// resolver is intentional (v1 "you are at X" attribution). Since LLM-93 the at-bush
+// cue (findGatherableCue) resolves through the SAME shared ResolveGatherSource, and
+// the ranged forage cue (nearestWildForageSource) skips nameless sources too, so
+// perception no longer advertises what the command path refuses — a nameless source
+// is inert rather than an NPC-trapping gather loop, which is why this stays advisory.
+//
+// Since LLM-398 the authoring paths close this at the source: a placement that
+// carries refresh rows takes its asset's catalog name when it has none of its own
+// (nameSourceFromAsset, called from CreateVillageObject + SetVillageObjectRefreshes).
+// So this check now fires only for a row that BYPASSED those paths (hand-inserted
+// SQL — how the LLM-398 sage bush arose) or one whose asset carries no usable name
+// of its own, which is the genuine, un-derivable data defect.
 //
 // Second check (LLM-269): a `well`-tagged placement with zero object_refresh rows
 // — a dead water source that slakes no thirst and yields no water. Tagging `well`
@@ -412,6 +421,57 @@ func provisionWellDefaults(w *World, obj *VillageObject) {
 				At:          time.Now().UTC(),
 			})
 		}
+	}
+}
+
+// nameSourceFromAsset names a nameless SOURCE placement from its asset's catalog
+// name (LLM-398). A source with no display_name is unreachable, not merely
+// unlabelled: ResolveLoiteringObject skips nameless objects, and it is both the
+// gather resolver's seed (ResolveGatherSource) and the loiter-attribution lookup —
+// so an unnamed forageable lands working-but-invisible, its supply regenerating
+// where no actor can ever act on it. The name was the last asset default that did
+// not copy at placement (CurrentState always did; the refresh policy does since
+// LLM-363's RefreshDefaults template), which is exactly how a drop of a forageable
+// asset produced a dead source.
+//
+// SCOPED TO SOURCES ON PURPOSE — do not widen this to every placement. The map's
+// decoration (trees, fences, props) is deliberately nameless, and naming it would
+// both attribute actors to scenery ("you are at Oak Tree") and, worse, let a tree
+// win ResolveLoiteringObject over a real bush — whereupon ResolveGatherSource's
+// "a non-gatherable object owns the tile" arm returns no source at all, killing the
+// gather cue near any scenery.
+//
+// An asset name that is not a valid object name (over-long / control chars — only
+// reachable from a corrupt catalog row) is left unapplied rather than stored, so the
+// object stays nameless and ConfigWarnings reports it as the genuine data defect it
+// is. An admin who wants a different name still overrides with
+// SetVillageObjectDisplayName.
+//
+// Shape mirrors provisionWellDefaults above: nil-safe, names only when the object
+// has no name, and emits VillageObjectDisplayNameChanged (→ the
+// object_display_name_changed client frame) so a live editor shows the name — with
+// the broadcast skipped when w is nil, so the helper is self-contained.
+func nameSourceFromAsset(w *World, obj *VillageObject, asset *Asset) {
+	if obj == nil || asset == nil {
+		return
+	}
+	if len(obj.Refreshes) == 0 {
+		return // not a source — decoration stays nameless
+	}
+	if strings.TrimSpace(obj.DisplayName) != "" {
+		return // an explicit name always wins
+	}
+	name := strings.TrimSpace(asset.Name)
+	if name == "" || utf8.RuneCountInString(name) > MaxVillageObjectDisplayNameLen || containsControlChar(name) {
+		return
+	}
+	obj.DisplayName = name
+	if w != nil {
+		w.emit(&VillageObjectDisplayNameChanged{
+			ObjectID:    obj.ID,
+			DisplayName: obj.DisplayName,
+			At:          time.Now().UTC(),
+		})
 	}
 }
 
@@ -642,6 +702,10 @@ func CreateVillageObject(assetID AssetID, x, y float64, attachedTo VillageObject
 				AttachedTo:   attachedTo,
 				At:           time.Now().UTC(),
 			})
+			// LLM-398: a placement the template just turned into a source must carry a
+			// name or the gather/eat resolvers can never reach it. Runs AFTER the
+			// created event so the client has the object before the name frame lands.
+			nameSourceFromAsset(w, obj, asset)
 			return CreateObjectResult{Object: obj}, nil
 		},
 	}
@@ -1121,6 +1185,15 @@ func SetVillageObjectRefreshes(id VillageObjectID, rows []*ObjectRefresh) Comman
 				next = append(next, clone)
 			}
 			obj.Refreshes = next
+
+			// LLM-398: rows added to a nameless placement turn decoration into a
+			// source, which is unreachable until it has a name — the same hole
+			// CreateVillageObject closes at placement, reachable here by editing an
+			// object's policy after the fact. Clearing the rows (an empty set) makes
+			// it decoration again but leaves any name in place, which is harmless.
+			if asset, ok := w.Assets[obj.AssetID]; ok {
+				nameSourceFromAsset(w, obj, asset)
+			}
 
 			// Return a deep copy so the result, read off the world goroutine by
 			// the HTTP handler, never aliases the live rows the regen tick mutates.
