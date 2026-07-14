@@ -925,6 +925,71 @@ func TestBuildRestocking_MeansToPaySupplier(t *testing.T) {
 	}
 }
 
+// TestRenderBlockedItem_CodaMatchesTheReasons — LLM-406. The blocked scene must
+// self-resolve for EVERY reason it names (LLM-298: a want with no outlet is what makes
+// a weak model invent an errand). An item blocked both ways — one supplier shut, another
+// beyond any means — needs both resolutions: keying the coda off one reason alone
+// silently drops the other supplier's way out (code_review). And no blocked line, in any
+// combination, may ever carry a "(destination: …)" token — that is what the model echoes
+// into move_to, and these are precisely the places it must not go.
+func TestRenderBlockedItem_CodaMatchesTheReasons(t *testing.T) {
+	item := func(blocked ...RestockBlockedSupplier) RestockItemView {
+		return RestockItemView{ItemLabel: "milk", CurrentQty: 0, Cap: 12, Blocked: blocked, kind: "milk"}
+	}
+	shut := RestockBlockedSupplier{StructureLabel: "James Farm", Reason: restockBlockShut}
+	noMeans := RestockBlockedSupplier{StructureLabel: "Ellis Farm", Reason: restockBlockNoMeans}
+
+	cases := []struct {
+		name    string
+		it      RestockItemView
+		want    []string
+		exclude []string
+	}{
+		{
+			name: "shut only — the supplier reopens, so try again later",
+			it:   item(shut),
+			want: []string{"James Farm", "found it shut", "Look in again another day"},
+		},
+		{
+			name: "no means only — nothing to pay with, so wait for trade to come in",
+			it:   item(noMeans),
+			want: []string{"Ellis Farm", "neither the coin", "take what trade comes to you"},
+			// The shut resolution would be a lie here: Ellis is open, and looking in again
+			// changes nothing while the purse and the pack are both empty.
+			exclude: []string{"Look in again another day"},
+		},
+		{
+			name: "both — each supplier's reason AND each way out",
+			it:   item(noMeans, shut),
+			want: []string{
+				"Ellis Farm", "neither the coin",
+				"James Farm", "found it shut",
+				"take what trade comes to you", "looking in on another day",
+			},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var b strings.Builder
+			renderBlockedItem(&b, c.it)
+			out := b.String()
+			for _, w := range c.want {
+				if !strings.Contains(out, w) {
+					t.Errorf("blocked scene missing %q:\n%s", w, out)
+				}
+			}
+			for _, x := range c.exclude {
+				if strings.Contains(out, x) {
+					t.Errorf("blocked scene should not carry %q:\n%s", x, out)
+				}
+			}
+			if strings.Contains(out, "destination:") {
+				t.Errorf("a blocked supplier must never be rendered as a move_to destination:\n%s", out)
+			}
+		})
+	}
+}
+
 // TestRenderRestocking_WalkToInstruction (LLM-10): a walk-to item (a vendor, no
 // co-present seller) names the actual no-seller-here situation and the two-step
 // move_to → pay_with_item buy; the co-present item does not.

@@ -53,9 +53,16 @@ type RestockingView struct {
 // can be bought, from anyone, by any means (LLM-406). This is the state that used to
 // render as no section at all, leaving an illiquid keeper with an unmet obligation and
 // not one word about it. Render keys the section lead off it, so such a keeper is told
-// the situation rather than "you choose how much to buy". Vacuously true on empty
-// Items, which render already gates the whole section on.
+// the situation rather than "you choose how much to buy".
+//
+// An empty view is NOT "all blocked" — there is no item, blocked or otherwise. Render
+// happens to gate the section on a non-empty Items before ever consulting this, so a
+// vacuous true would be harmless there today; it is still the wrong answer to the
+// question the method asks, and a footgun for the next caller (code_review).
 func (v *RestockingView) AllBlocked() bool {
+	if v == nil || len(v.Items) == 0 {
+		return false
+	}
 	for _, it := range v.Items {
 		if !it.blocked() {
 			return false
@@ -733,11 +740,14 @@ func isRestockSupplierOf(snap *sim.Snapshot, vendorID sim.ActorID, itemKind sim.
 // goods-rich, coin-poor keeper from his own supply chain. A supplier is payable when
 // the purse covers the remembered price, when no price is on record and the buyer has
 // coin at all (patronage earns the number — walk over, learn it, pay), or, failing
-// coin, when the buyer holds ANY goods to put up in trade (holdsBarterableGoods) — in
-// which case the vendor survives with Barter set and render steers it to a goods
-// offer. Only a buyer with neither coin nor goods is a hard payment dead-end. Same
-// coin-OR-goods shape gatherSatiationVendors has had since LLM-222; the sim-side
-// warrant mirror is sim.buyerCanTransact.
+// coin, when the buyer holds any OTHER good to put up in trade — in which case the
+// vendor survives with Barter set and render steers it to a goods offer.
+//
+// So a supplier is blocked exactly when the buyer holds no goods to offer AND either
+// cannot cover its remembered price in coin, or has no coin at all for an unknown one.
+// Being merely short of a known price does not block it on its own; the pack has to be
+// empty too. Same coin-OR-goods shape gatherSatiationVendors has had since LLM-222; the
+// sim-side warrant mirror is sim.buyerCanTransact.
 //
 // Dedupe-by-structure: the LLM only needs a destination — move_to(structure_id)
 // then pay_with_item resolves which co-present seller actually transacts — so two
@@ -1189,11 +1199,13 @@ func renderWalkToVendors(b *strings.Builder, vendors []RestockVendor) {
 // weak model fills that vacuum by inventing an errand (the phantom "Market" it tried
 // to move_to). It says what to do INSTEAD, and the coda is keyed to the reason — a
 // shut supplier will reopen and is worth another call another day; a purse and a pack
-// with nothing in them is a wait for trade to come in.
+// with nothing in them is a wait for trade to come in. An item blocked BOTH ways gets
+// both resolutions: keying the coda off one reason alone would silently drop the other
+// supplier's way out (code_review).
 func renderBlockedItem(b *strings.Builder, it RestockItemView) {
 	fmt.Fprintf(b, "- You have %d %s on hand, and no way to restock just now.\n",
 		it.CurrentQty, sanitizeInline(it.ItemLabel))
-	noMeans := false
+	noMeans, shut := false, false
 	for _, bl := range it.Blocked {
 		switch bl.Reason {
 		case restockBlockNoMeans:
@@ -1201,15 +1213,19 @@ func renderBlockedItem(b *strings.Builder, it RestockItemView) {
 			fmt.Fprintf(b, "  - %s sells %s, but you have neither the coin for it nor a single good to put up in trade.\n",
 				sanitizeInline(bl.StructureLabel), sanitizeInline(it.ItemLabel))
 		default:
+			shut = true
 			fmt.Fprintf(b, "  - %s sells %s, but you called there and found it shut.\n",
 				sanitizeInline(bl.StructureLabel), sanitizeInline(it.ItemLabel))
 		}
 	}
-	if noMeans {
+	switch {
+	case noMeans && shut:
+		b.WriteString("  Keep your shop and take what trade comes to you — once you have coin or goods to trade with you can restock, and the shut one is worth looking in on another day.\n")
+	case noMeans:
 		b.WriteString("  Keep your shop and take what trade comes to you — you can restock once you have coin or goods to trade with.\n")
-		return
+	default:
+		b.WriteString("  Look in again another day — a keeper will be tending it sooner or later.\n")
 	}
-	b.WriteString("  Look in again another day — a keeper will be tending it sooner or later.\n")
 }
 
 // renderCoPresentBuy writes the shared "a seller is here with you — buy it now"

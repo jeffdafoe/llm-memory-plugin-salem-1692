@@ -286,12 +286,14 @@ func actorHasBuyPath(w *World, a *Actor, item ItemKind, now time.Time) bool {
 //     buyer carries ARE means to pay. The item being bought is excluded: a keeper
 //     down to his last few carrots cannot buy carrots by offering carrots.
 //
-// Only a buyer with no coin AND no goods is a hard payment dead-end, and only that
-// buyer is dropped. The old test was coins-only (LLM-216), which asked whether the
-// buyer could pay in COIN and dropped a supplier whenever it couldn't — erasing the
-// goods-rich, coin-poor keeper from his own supply chain and leaving him in a silent
-// absorbing state (see means_to_pay.go for the live incident). Same coin-OR-goods
-// shape the consumer buy cue has had since LLM-222.
+// So a supplier is a dead end exactly when the buyer holds no goods to offer AND
+// either cannot cover its remembered price in coin, or has no coin at all for an
+// unknown one. (Being merely SHORT of a known price is not enough to be dropped — the
+// pack still has to be empty too.) The old test was coins-only (LLM-216): it asked
+// whether the buyer could pay in COIN and dropped a supplier whenever it couldn't,
+// erasing the goods-rich, coin-poor keeper from his own supply chain and leaving him in
+// a silent absorbing state (see means_to_pay.go for the live incident). Same
+// coin-OR-goods shape the consumer buy cue has had since LLM-222.
 func buyerCanTransact(w *World, a *Actor, vendorID ActorID, item ItemKind) bool {
 	price := LastPaidCoins(w.PriceBook, a.ID, vendorID, item)
 	switch {

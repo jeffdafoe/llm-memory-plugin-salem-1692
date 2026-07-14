@@ -3,10 +3,10 @@ package sim
 // means_to_pay.go — LLM-406. The shared "can this actor pay AT ALL" predicate.
 //
 // pay_with_item settles in coins, goods (pay_items), or both, and the SELLER
-// adjudicates the bundle. So the only hard payment dead-end is an actor holding
-// neither coin nor goods. A coins-only affordability test asks the wrong question
-// — "can you pay in coin?" rather than "can you pay?" — and silently erases a
-// goods-rich, coin-poor buyer from its own supply chain.
+// adjudicates the bundle. So an actor holding goods is never a payment dead-end,
+// whatever its purse says. A coins-only affordability test asks the wrong question —
+// "can you pay in coin?" rather than "can you pay?" — and silently erases a goods-rich,
+// coin-poor buyer from its own supply chain.
 //
 // That erasure was the live Josiah Thorne deadlock (2026-07-14): the village's
 // only distributor stood at his post with 3 coins, a pack of goods, and NO restock

@@ -651,7 +651,12 @@ func TestGoldensRoleNeedNeverRendersSilent(t *testing.T) {
 	for _, sc := range perceptionScenarios {
 		sc := sc
 		t.Run(sc.name, func(t *testing.T) {
-			snap, actorID, _ := sc.build()
+			// Build ONCE and render THAT snapshot. Deciding whether the invariant applies
+			// from one build and then rendering a second one (via renderScenario, which
+			// rebuilds) would let the test diagnose a different world than the one it
+			// inspected — the fixtures are deterministic today, so it would agree, but it
+			// is the wrong thing to be relying on (code_review).
+			snap, actorID, warrants := sc.build()
 			subj := snap.Actors[actorID]
 			if subj == nil || subj.RestockPolicy == nil || snap.RestockReorderPct <= 0 {
 				return // no role policy, or the producer is switched off — invariant N/A
@@ -672,7 +677,8 @@ func TestGoldensRoleNeedNeverRendersSilent(t *testing.T) {
 				if len(vendors) == 0 && len(blocked) == 0 && coName == "" {
 					continue
 				}
-				if out := renderScenario(sc); !strings.Contains(out, "## Restocking") {
+				out := combinedPrompt(Render(Build(snap, actorID, warrants), DefaultRenderConfig()))
+				if !strings.Contains(out, "## Restocking") {
 					t.Errorf("scenario %q: subject is low on %q and the engine can name a supplier for it "+
 						"(payable=%d blocked=%d coPresent=%q), yet the prompt carries no '## Restocking' section at all. "+
 						"An unmet role obligation must never render silent (LLM-406):\n%s",
