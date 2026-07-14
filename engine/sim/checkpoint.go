@@ -288,6 +288,9 @@ type CheckpointHealth struct {
 	totalSuccesses      uint64
 	totalFailures       uint64
 	lastError           string
+	lastClamps          []Clamp
+	lastClampCount      int
+	totalClamps         uint64
 }
 
 // CheckpointHealthSnapshot is an immutable point-in-time copy of a
@@ -300,11 +303,26 @@ type CheckpointHealthSnapshot struct {
 	TotalSuccesses      uint64    `json:"total_successes"`
 	TotalFailures       uint64    `json:"total_failures"`
 	LastError           string    `json:"last_error"`
+
+	// LastClampCount is how many out-of-range values the MOST RECENT successful
+	// checkpoint had to correct to be persistable (LLM-392) — zero on a clean
+	// one, which is the normal state. It is deliberately last-checkpoint rather
+	// than cumulative so the derived alarm self-clears the moment the world stops
+	// producing impossible values; TotalClamps keeps the running tally.
+	LastClampCount int     `json:"last_clamp_count"`
+	LastClamps     []Clamp `json:"last_clamps,omitempty"`
+	TotalClamps    uint64  `json:"total_clamps"`
 }
 
 // RecordSuccess marks a successful checkpoint at now: clears the consecutive-
-// failure streak and the last-error string. Nil-safe.
-func (h *CheckpointHealth) RecordSuccess(now time.Time) {
+// failure streak and the last-error string, and replaces the clamp detail with
+// whatever THIS checkpoint had to correct (clamps may be nil / empty, which is
+// the healthy case and clears any previous report). Nil-safe.
+//
+// Clamps are recorded on success only. A checkpoint that clamped and then failed
+// anyway persisted nothing, so its corrections never happened as far as the
+// durable state is concerned — and the failure raises the louder alarm regardless.
+func (h *CheckpointHealth) RecordSuccess(now time.Time, clamps *ClampReport) {
 	if h == nil {
 		return
 	}
@@ -315,6 +333,9 @@ func (h *CheckpointHealth) RecordSuccess(now time.Time) {
 	h.consecutiveFailures = 0
 	h.totalSuccesses++
 	h.lastError = ""
+	h.lastClampCount = clamps.Total()
+	h.lastClamps = clamps.Clamps()
+	h.totalClamps += uint64(clamps.Total())
 }
 
 // RecordFailure marks a failed checkpoint at now, advancing the consecutive-
@@ -350,6 +371,11 @@ func (h *CheckpointHealth) Snapshot() CheckpointHealthSnapshot {
 		TotalSuccesses:      h.totalSuccesses,
 		TotalFailures:       h.totalFailures,
 		LastError:           h.lastError,
+		LastClampCount:      h.lastClampCount,
+		// Copied, not aliased: the snapshot is handed to umbilical request
+		// goroutines that outlive this lock.
+		LastClamps:  append([]Clamp(nil), h.lastClamps...),
+		TotalClamps: h.totalClamps,
 	}
 }
 
@@ -382,7 +408,7 @@ func RunCheckpointer(ctx context.Context, w *World, save CheckpointFunc, health 
 			return
 		case <-ticker.C:
 			start := time.Now()
-			err := CheckpointNow(ctx, w, save)
+			clamps, err := CheckpointNow(ctx, w, save)
 			// A shutdown racing this tick cancels the in-flight write; that's
 			// not a real failure, so don't record or log it — the <-ctx.Done()
 			// case returns on the next loop iteration.
@@ -394,7 +420,7 @@ func RunCheckpointer(ctx context.Context, w *World, save CheckpointFunc, health 
 				log.Printf("sim/checkpoint: %v", err)
 			} else {
 				finished := time.Now()
-				health.RecordSuccess(finished)
+				health.RecordSuccess(finished, clamps)
 				// ZBBS-HOME-399: log every successful periodic checkpoint so an
 				// operator can confirm checkpointing is alive — and spot duration
 				// creep — from journalctl alone, instead of polling the DB's
@@ -403,27 +429,48 @@ func RunCheckpointer(ctx context.Context, w *World, save CheckpointFunc, health 
 				// rotation. Failures already log above; shutdown's final
 				// checkpoint logs separately (cmd/engine).
 				log.Printf("sim/checkpoint: written ok (%s)", finished.Sub(start).Round(time.Millisecond))
+				// LLM-392: a clamped checkpoint is a SUCCESSFUL one — durability is
+				// intact, which is the entire point — but it means a live bug wrote a
+				// value no valid world state can hold. Logged right after the success
+				// line so journalctl carries the evidence next to the write it
+				// describes; the alarm (checkpoint_clamped) does the shouting on the
+				// umbilical.
+				if !clamps.Clean() {
+					log.Printf("sim/checkpoint: CLAMPED — %s", clamps.Summary())
+				}
 			}
 		}
 	}
 }
 
-// CheckpointNow performs one checkpoint: build the immutable clone on the
-// world goroutine (via SendContext), then run the durable write off the world
-// goroutine against that clone. Exposed so the shutdown path can force a final
-// checkpoint synchronously after stopping the periodic loop — call it with a
-// FRESH context (not the cancelled run/checkpointer context) so the build send
-// and the durable write both complete.
-func CheckpointNow(ctx context.Context, w *World, save CheckpointFunc) error {
+// CheckpointNow performs one checkpoint: build the clone on the world goroutine
+// (via SendContext), project its out-of-range scalars back onto their legal
+// ranges, then run the durable write off the world goroutine against that clone.
+// Exposed so the shutdown path can force a final checkpoint synchronously after
+// stopping the periodic loop — call it with a FRESH context (not the cancelled
+// run/checkpointer context) so the build send and the durable write both complete.
+//
+// Returns the clamp report alongside the error: a non-empty report means the
+// world produced values no valid world state can hold and the checkpoint had to
+// correct them to persist at all (LLM-392 — see checkpoint_clamp.go). It is
+// returned even when the write then fails, so a caller can log both; the report
+// is never nil.
+//
+// The clamp deliberately sits HERE rather than in the writer, so the periodic
+// loop and the shutdown checkpoint cannot diverge: there is exactly one path from
+// a live world to a durable one, and it runs through this function.
+func CheckpointNow(ctx context.Context, w *World, save CheckpointFunc) (*ClampReport, error) {
+	empty := &ClampReport{}
 	res, err := w.SendContext(ctx, CheckpointSnapshotCommand())
 	if err != nil {
-		return fmt.Errorf("build checkpoint snapshot: %w", err)
+		return empty, fmt.Errorf("build checkpoint snapshot: %w", err)
 	}
 	cp, ok := res.(*CheckpointSnapshot)
 	if !ok {
-		return fmt.Errorf("checkpoint snapshot command returned %T, want *CheckpointSnapshot", res)
+		return empty, fmt.Errorf("checkpoint snapshot command returned %T, want *CheckpointSnapshot", res)
 	}
-	return save(ctx, cp)
+	clamps := cp.ClampToPersistable()
+	return clamps, save(ctx, cp)
 }
 
 // readCheckpointInterval reads WorldSettings.CheckpointInterval via a

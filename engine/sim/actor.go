@@ -1162,6 +1162,16 @@ func CloneActor(a *Actor) *Actor {
 	}
 	cp := *a
 
+	// `cp := *a` copied these two *int by VALUE, leaving the clone pointing at
+	// the live actor's ints — a hole in the deep-clone contract that
+	// CloneActorSnapshot never had. It went unnoticed while every reader treated
+	// the snapshot as read-only, but the checkpoint clamp pass (LLM-392) writes
+	// through such a pointer to project an out-of-range minute back into
+	// [0,1439], and it runs OFF the world goroutine: without this, that write
+	// would land in the live actor while the world was reading him.
+	cp.ScheduleStartMin = copyIntPtr(a.ScheduleStartMin)
+	cp.ScheduleEndMin = copyIntPtr(a.ScheduleEndMin)
+
 	if a.Needs != nil {
 		cp.Needs = make(map[NeedKey]int, len(a.Needs))
 		for k, v := range a.Needs {

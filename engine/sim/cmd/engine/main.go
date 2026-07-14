@@ -694,7 +694,8 @@ func run(rt runtime, stop <-chan struct{}) error {
 	tickPool.Wait()
 
 	finalCtx, cancelFinal := context.WithTimeout(context.Background(), finalCheckpointTimeout)
-	if err := sim.CheckpointNow(finalCtx, rt.World, rt.Save); err != nil {
+	finalClamps, err := sim.CheckpointNow(finalCtx, rt.World, rt.Save)
+	if err != nil {
 		// Don't fail the whole shutdown on a final-checkpoint error — the
 		// prior checkpoint is still intact. Log and proceed to stop the world.
 		//
@@ -707,8 +708,14 @@ func run(rt runtime, stop <-chan struct{}) error {
 		checkpointHealth.RecordFailure(time.Now(), err)
 		log.Printf("engine: final checkpoint failed: %v", err)
 	} else {
-		checkpointHealth.RecordSuccess(time.Now())
+		checkpointHealth.RecordSuccess(time.Now(), finalClamps)
 		log.Println("engine: final checkpoint written")
+		// The shutdown checkpoint is the one nobody is watching a dashboard for,
+		// and its clamps are the last word on what the world looked like before it
+		// went away. Put them in the journal (LLM-392).
+		if !finalClamps.Clean() {
+			log.Printf("engine: final checkpoint CLAMPED — %s", finalClamps.Summary())
+		}
 	}
 	cancelFinal()
 

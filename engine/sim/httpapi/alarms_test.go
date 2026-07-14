@@ -357,7 +357,7 @@ func TestInjectAlarms_ResultStaysValidJSON(t *testing.T) {
 // in a row.
 func serverWithStreak(n int) *Server {
 	h := &sim.CheckpointHealth{}
-	h.RecordSuccess(time.Now().Add(-time.Hour))
+	h.RecordSuccess(time.Now().Add(-time.Hour), nil)
 	for i := 0; i < n; i++ {
 		h.RecordFailure(time.Now(), errAlarmTest)
 	}
@@ -566,9 +566,99 @@ func TestWithAlarmBanner_SelfClearsOnRecovery(t *testing.T) {
 		t.Fatalf("expected the alarm to be firing, got %v", got)
 	}
 
-	h.RecordSuccess(time.Now())
+	h.RecordSuccess(time.Now(), nil)
 
 	if got := s.evaluateAlarms(time.Now()); len(got) != 0 {
 		t.Fatalf("expected the alarm to self-clear after a successful checkpoint, got %v", got)
+	}
+}
+
+// TestCheckpointClampAlarm_FiresOnASingleCorrection — unlike checkpoint_failure,
+// which waits for a streak because a lone failure can be a transient pg hiccup, a
+// single clamp fires immediately. There is no benign version of it: the world
+// computed a value no rule of the world permits, and it did so before any of this
+// ran.
+func TestCheckpointClampAlarm_FiresOnASingleCorrection(t *testing.T) {
+	written := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	h := sim.CheckpointHealthSnapshot{
+		LastSuccessAt:  written,
+		LastClampCount: 1,
+		LastClamps:     []sim.Clamp{{Table: "actor_need", Field: "value", Key: "hannah/hunger", From: "25", To: "24"}},
+	}
+
+	got, firing := checkpointClampAlarm(h)
+	if !firing {
+		t.Fatal("a single clamp must fire the alarm — a clamped checkpoint that says nothing is a persistence layer quietly editing the world")
+	}
+	if got.Kind != alarmKindCheckpointClamped {
+		t.Errorf("Kind = %q, want %q", got.Kind, alarmKindCheckpointClamped)
+	}
+	if !got.Since.Equal(written) {
+		t.Errorf("Since = %v, want the moment the clamped checkpoint was written (%v)", got.Since, written)
+	}
+	// The prose has to carry the offending value, or the operator has to go
+	// digging to learn anything actionable.
+	for _, want := range []string{"actor_need", "hannah/hunger", "25", "24"} {
+		if !strings.Contains(got.Detail, want) {
+			t.Errorf("Detail is missing %q: %s", want, got.Detail)
+		}
+	}
+}
+
+// TestCheckpointClampAlarm_QuietWhenClean — the common case. Every healthy
+// checkpoint must leave this silent, or the alarm banner becomes noise and the
+// operator learns to skim past the REAL one.
+func TestCheckpointClampAlarm_QuietWhenClean(t *testing.T) {
+	if _, firing := checkpointClampAlarm(sim.CheckpointHealthSnapshot{LastSuccessAt: time.Now()}); firing {
+		t.Error("a clean checkpoint must not fire the clamp alarm")
+	}
+}
+
+// TestCheckpointClampAlarm_SelfClearsOnACleanCheckpoint — the alarm reads
+// LAST-checkpoint state, so fixing the world bug silences it on the next cadence
+// with no ack and no restart. That is what keeps the evaluator stateless.
+func TestCheckpointClampAlarm_SelfClearsOnACleanCheckpoint(t *testing.T) {
+	h := &sim.CheckpointHealth{}
+	dirty := &sim.CheckpointSnapshot{Actors: map[sim.ActorID]*sim.Actor{
+		"a1": {ID: "a1", DisplayName: "A", State: sim.StateIdle, Needs: map[sim.NeedKey]int{"hunger": 25}},
+	}}
+	h.RecordSuccess(time.Now(), dirty.ClampToPersistable())
+
+	s := &Server{checkpointHealth: h}
+	if got := s.evaluateAlarms(time.Now()); len(got) != 1 || got[0].Kind != alarmKindCheckpointClamped {
+		t.Fatalf("expected the clamp alarm to be firing, got %v", got)
+	}
+
+	// The world bug is fixed; the next checkpoint corrects nothing.
+	clean := &sim.CheckpointSnapshot{Actors: map[sim.ActorID]*sim.Actor{
+		"a1": {ID: "a1", DisplayName: "A", State: sim.StateIdle, Needs: map[sim.NeedKey]int{"hunger": 12}},
+	}}
+	h.RecordSuccess(time.Now(), clean.ClampToPersistable())
+
+	if got := s.evaluateAlarms(time.Now()); len(got) != 0 {
+		t.Fatalf("expected the clamp alarm to self-clear after a clean checkpoint, got %v", got)
+	}
+}
+
+// TestCheckpointClampAlarm_CoexistsWithTheFailureAlarm — the two are independent
+// conditions and both can be true at once (a checkpoint clamped, then a later one
+// started failing). Neither must mask the other on the banner.
+func TestCheckpointClampAlarm_CoexistsWithTheFailureAlarm(t *testing.T) {
+	h := &sim.CheckpointHealth{}
+	dirty := &sim.CheckpointSnapshot{Actors: map[sim.ActorID]*sim.Actor{
+		"a1": {ID: "a1", DisplayName: "A", State: sim.StateIdle, Needs: map[sim.NeedKey]int{"hunger": 25}},
+	}}
+	h.RecordSuccess(time.Now(), dirty.ClampToPersistable())
+	for i := 0; i < checkpointFailureStreakThreshold; i++ {
+		h.RecordFailure(time.Now(), errAlarmTest)
+	}
+
+	s := &Server{checkpointHealth: h}
+	kinds := map[string]bool{}
+	for _, a := range s.evaluateAlarms(time.Now()) {
+		kinds[a.Kind] = true
+	}
+	if !kinds[alarmKindCheckpointFailure] || !kinds[alarmKindCheckpointClamped] {
+		t.Errorf("both alarms must fire together, got %v", kinds)
 	}
 }

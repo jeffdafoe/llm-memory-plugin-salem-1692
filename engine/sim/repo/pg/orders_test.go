@@ -200,7 +200,19 @@ func (f fakeTx) Exec(ctx context.Context, sql string, args ...any) (sim.CommandT
 	}
 	return cmdTagAdapter{ct: ct}, nil
 }
-func (fakeTx) Query(_ context.Context, _ string, _ ...any) (sim.Rows, error) { return nil, nil }
+
+// Query forwards to the mock pool, like Exec and QueryRow. It used to return
+// (nil, nil) — a stub that no checkpoint writer happened to exercise, and which
+// would have handed the first one that did a nil sim.Rows with a nil error to
+// range over. A fake that reports success and returns nothing is worse than one
+// that is missing.
+func (f fakeTx) Query(ctx context.Context, sql string, args ...any) (sim.Rows, error) {
+	rows, err := f.mock.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	return rowsAdapter{rows: rows}, nil
+}
 func (f fakeTx) QueryRow(ctx context.Context, sql string, args ...any) sim.Row {
 	// Forward to the mock pool so SaveSnapshot implementations that
 	// use QueryRow (e.g., Slice 9's nextval sequence call) can be
