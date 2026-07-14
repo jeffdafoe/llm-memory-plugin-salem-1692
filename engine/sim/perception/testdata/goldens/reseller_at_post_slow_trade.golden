@@ -5,7 +5,8 @@
 
 
 ## You
-Coins in your purse: 20.
+Coins in your purse: 14.
+You are carrying: wedges of cheese (x10).
 
 How you trade:
 - Tend to your trade — your living depends on it. Look after your goods and your custom, and see to the day's business rather than let it pass idle.
@@ -16,9 +17,9 @@ Plain 1692 New England speech; no modern idioms.
 
 ## Around you
 You are inside the General Store, your workplace, with no one else here to hear you speak.
-It is morning in the village.
+It is midday.
 
-You keep your trade at the General Store (destination: general_store); your home is at the James Farm (destination: james_farm) — head home once your work is done.
+You keep your trade at the General Store (destination: general_store); your home is at the Keeper House (destination: keeper_house) — head home once your work is done.
 
 It is your working hours and you are at your post — stay and look after your work; you close at 6 in the evening.
 

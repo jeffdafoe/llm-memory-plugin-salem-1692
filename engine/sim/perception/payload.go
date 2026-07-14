@@ -248,6 +248,18 @@ type Payload struct {
 	// trade at a closed post.
 	AtOwnBusinessOperating bool
 
+	// VendorTradeSlow is the engine-computed "trade is slow" judgment behind the
+	// trade-conduct block's concession line (LLM-413): true iff the keeper is
+	// operating at its own post AND no ware it sold this past week reached a
+	// steady week's movement (keeperTradeSlow — produced goods measured against
+	// their own batch, everything else against a single unit). The concession
+	// line ("meet a willing buyer partway on price") renders ONLY when this is
+	// set, so the licence to discount is a felt fact about an actually-slow week
+	// rather than a standing instruction; the margin floor beside it renders
+	// unconditionally. Always false when AtOwnBusinessOperating is false — the
+	// block it feeds isn't rendered then.
+	VendorTradeSlow bool
+
 	// OfferableCustomers is the seller-side "offer your wares" cue
 	// (ZBBS-HOME-404): non-nil when the subject is a businessowner co-present
 	// with one or more customers it could proactively offer goods to. Carries

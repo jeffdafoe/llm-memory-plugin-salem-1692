@@ -222,7 +222,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderWorkersForMe(&ephemeral, p.WorkersForMe, nameOf, p.RenderedAt)
 	renderPendingLaborOfferOut(&ephemeral, p.PendingLaborOfferOut, nameOf)
 	renderNarrativeState(&ephemeral, p.NarrativeState)
-	renderVendorOperating(&ephemeral, p.AtOwnBusinessOperating)
+	renderVendorOperating(&ephemeral, p.AtOwnBusinessOperating, p.VendorTradeSlow)
 	renderSurroundings(&ephemeral, p.Surroundings)
 	renderAnchors(&ephemeral, p.Anchors, p.DutySteer != nil && p.DutySteer.AtPost, p.Surroundings.InsideStructureID)
 	renderDutySteer(&ephemeral, p.DutySteer)
@@ -1726,14 +1726,28 @@ func renderNarrativeState(b *strings.Builder, n *NarrativeStateView) {
 // the WORK-374 port dropped (the producers were drifting off-post with nothing to
 // do); kept generic ("your trade", not "your stall") since a vendor may keep a
 // stall or a building.
-func renderVendorOperating(b *strings.Builder, atOwnBusinessOperating bool) {
+//
+// LLM-413 rebalances the block, which read as a one-way discount ratchet: "what
+// goes unsold earns nothing" framed stock as pure loss, and the unconditional
+// "when trade is slow, make a reasonable deal" was a standing licence to concede
+// with no counterweight — nothing ever told a vendor to make a profit, which is
+// survivable for a producer and fatal for the reseller who lives on the spread.
+// Now: the tend line keeps its anti-idle intent without pricing stock at zero, a
+// margin floor states the other side (a sale below what the goods cost is worse
+// than no sale), and the concession line renders only when tradeSlow — the
+// engine's own weekly sell-through judgment (keeperTradeSlow), not a model
+// guess — and restates the floor even then.
+func renderVendorOperating(b *strings.Builder, atOwnBusinessOperating, tradeSlow bool) {
 	if !atOwnBusinessOperating {
 		return
 	}
 	b.WriteString("How you trade:\n")
-	b.WriteString("- Tend to your trade — your living depends on it. Look after your goods and your custom; what goes unsold earns nothing, so see to the day's business rather than let it pass idle.\n")
+	b.WriteString("- Tend to your trade — your living depends on it. Look after your goods and your custom, and see to the day's business rather than let it pass idle.\n")
+	b.WriteString("- You live by the difference between what your goods cost you — in coin or in labor — and what they fetch. Never sell a thing for less than it cost you: a sale at a loss is worse than no sale, for goods keep their worth on the shelf. Decline plainly if a stranger's purse is short.\n")
 	b.WriteString("- If someone only greets you, greet them and let them state their business — don't quote prices or pitch your goods or rooms unless they ask or show interest.\n")
-	b.WriteString("- When trade is slow, make a reasonable deal rather than hold the line on price; decline plainly if a stranger's purse is short.\n")
+	if tradeSlow {
+		b.WriteString("- Trade has been thin this week. A fair bargain is better than wares sitting idle — meet a willing buyer partway on price, but never below what a thing cost you.\n")
+	}
 	b.WriteString("Plain 1692 New England speech; no modern idioms.\n\n")
 }
 

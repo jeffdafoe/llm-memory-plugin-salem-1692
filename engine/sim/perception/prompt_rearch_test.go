@@ -19,10 +19,12 @@ const vendorOperatingMarker = "How you trade:"
 // trade-conduct block renders iff the actor is operating (the build-side
 // AtOwnBusinessOperating: at its own post AND within business hours). The
 // operating-hours determination itself is covered by the build/golden tests
-// (LLM-123).
+// (LLM-123). LLM-413 adds the second gate: the concession line renders only
+// under the build-side tradeSlow judgment, and the margin floor is always
+// present beside it.
 func TestRenderVendorOperating_Gate(t *testing.T) {
 	var on strings.Builder
-	renderVendorOperating(&on, true)
+	renderVendorOperating(&on, true, false)
 	got := on.String()
 	if !strings.Contains(got, vendorOperatingMarker) {
 		t.Errorf("businessowner should get the operating block, got: %q", got)
@@ -37,9 +39,30 @@ func TestRenderVendorOperating_Gate(t *testing.T) {
 	if !strings.Contains(got, "- Tend to your trade — your living depends on it.") {
 		t.Errorf("operating block missing the tend-to-your-trade framing, got: %q", got)
 	}
+	// LLM-413: the margin floor is unconditional — the counterweight the block
+	// never had — and the concession line is absent while trade moves.
+	if !strings.Contains(got, "Never sell a thing for less than it cost you") {
+		t.Errorf("operating block missing the margin floor, got: %q", got)
+	}
+	if strings.Contains(got, "Trade has been thin this week") {
+		t.Errorf("concession line rendered without the tradeSlow judgment, got: %q", got)
+	}
+
+	var slow strings.Builder
+	renderVendorOperating(&slow, true, true)
+	gotSlow := slow.String()
+	if !strings.Contains(gotSlow, "Trade has been thin this week") {
+		t.Errorf("slow-trade block missing the concession line, got: %q", gotSlow)
+	}
+	// Even with the concession licence granted, the floor holds — in the standing
+	// margin line AND restated inside the concession itself.
+	if !strings.Contains(gotSlow, "Never sell a thing for less than it cost you") ||
+		!strings.Contains(gotSlow, "but never below what a thing cost you") {
+		t.Errorf("slow-trade block dropped the margin floor, got: %q", gotSlow)
+	}
 
 	var off strings.Builder
-	renderVendorOperating(&off, false)
+	renderVendorOperating(&off, false, true)
 	if off.Len() != 0 {
 		t.Errorf("non-businessowner should get no operating block, got: %q", off.String())
 	}
