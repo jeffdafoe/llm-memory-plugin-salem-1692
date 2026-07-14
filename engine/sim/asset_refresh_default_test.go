@@ -365,6 +365,44 @@ func TestSetVillageObjectRefreshes_NamesSourceOnGainingRows(t *testing.T) {
 	}
 }
 
+// TestCreateVillageObject_InvalidAssetNameLeavesSourceNamelessAndWarns pins the
+// deliberate no-truncate / no-sanitize decision. A catalog name that is not a valid
+// object name (control chars, over the length limit — only reachable from a corrupt
+// asset row) is left UNAPPLIED rather than quietly trimmed to fit: truncating would
+// hide the bad catalog data behind a plausible-looking name. The object stays
+// nameless, so ConfigWarnings surfaces it as the genuine, un-derivable data defect
+// it is — which is exactly what that advisory audit is for.
+func TestCreateVillageObject_InvalidAssetNameLeavesSourceNamelessAndWarns(t *testing.T) {
+	for _, tc := range []struct {
+		label string
+		name  string
+	}{
+		{"control char", "Sage\x00Bush"},
+		{"over the length limit", strings.Repeat("s", sim.MaxVillageObjectDisplayNameLen+1)},
+		{"blank", "   "},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			asset := sageAsset()
+			asset.Name = tc.name
+			asset.RefreshDefaults = sageForageDefaults()
+			w := buildRefreshDefaultWorld(t, map[sim.AssetID]*sim.Asset{"sage": asset})
+
+			res, err := w.Send(sim.CreateVillageObject("sage", 32, 64, "", "tester"))
+			if err != nil {
+				t.Fatalf("create object: %v", err)
+			}
+			id := res.(sim.CreateObjectResult).Object.ID
+
+			if got := objectDisplayName(t, w, id); got != "" {
+				t.Errorf("display name = %q, want empty (an invalid asset name is not applied)", got)
+			}
+			if warns := configWarningsFor(t, w, id); len(warns) != 1 {
+				t.Errorf("config warnings = %v, want exactly 1 flagging the un-nameable source", warns)
+			}
+		})
+	}
+}
+
 // TestSetVillageObjectRefreshes_KeepsExplicitName: the fallback fills a GAP, it does
 // not override intent. An operator who named the object keeps that name when its
 // refresh policy is later edited.
