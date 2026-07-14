@@ -15,14 +15,30 @@ import (
 // these cover the weather state machine (decideStorm), the PC-presence gate,
 // the goroutine lifecycle, and the ctx-cancel exit.
 
+// testStormInterval / testStormDuration are the cadence settings every
+// decision world below runs with. The jitter band (±stormIntervalJitter)
+// puts an armed due time in [2h15m, 3h45m) — tests that need a "definitely
+// before/after any possible arming" boundary use stormArmFloor / stormArmCeil.
+const (
+	testStormInterval = 3 * time.Hour
+	testStormDuration = 15 * time.Minute
+)
+
+var (
+	stormArmFloor = time.Duration(float64(testStormInterval) * (1 - stormIntervalJitter))
+	stormArmCeil  = time.Duration(float64(testStormInterval) * (1 + stormIntervalJitter))
+)
+
 // newStormDecisionWorld builds a non-running world with the given weather and
 // last-change stamp, plus the default storm cadence settings. decideStorm reads
-// it directly via Fn — no Run needed.
+// it directly via Fn — no Run needed. StormDueAt starts unarmed (zero), as it
+// is after a boot seed or any weather transition; tests that need an armed
+// clock set it themselves.
 func newStormDecisionWorld(weather string, lastChange time.Time) *sim.World {
 	repo, _ := mem.NewRepository()
 	w := sim.NewWorld(repo)
-	w.Settings.StormInterval = 3 * time.Hour
-	w.Settings.StormDuration = 15 * time.Minute
+	w.Settings.StormInterval = testStormInterval
+	w.Settings.StormDuration = testStormDuration
 	w.Environment.Weather = weather
 	w.Environment.LastWeatherChangeAt = lastChange
 	return w
@@ -43,40 +59,166 @@ func decide(t *testing.T, w *sim.World, now time.Time) string {
 	return s
 }
 
-func TestDecideStorm_FiresWhenIntervalElapsedAndPCPresent(t *testing.T) {
+func TestDecideStorm_FiresWhenDueAndPCPresent(t *testing.T) {
 	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
-	w := newStormDecisionWorld(sim.WeatherClear, now.Add(-4*time.Hour)) // interval (3h) elapsed
+	w := newStormDecisionWorld(sim.WeatherClear, now.Add(-4*time.Hour))
+	w.Environment.StormDueAt = now.Add(-30 * time.Second) // armed, and due
 	addPresentPC(w, now)
 
 	if got := decide(t, w, now); got != sim.WeatherStorm {
-		t.Errorf("decideStorm = %q, want %q (interval elapsed + PC present)", got, sim.WeatherStorm)
+		t.Errorf("decideStorm = %q, want %q (due + PC present)", got, sim.WeatherStorm)
 	}
 }
 
-func TestDecideStorm_NoFireWhenNoPCPresent(t *testing.T) {
+// An empty village holds the clock: a due time that came and went with nobody
+// there is pushed back out to a fresh interval, so the storm is never banked
+// (LLM-401).
+func TestDecideStorm_NoPCPresentReArmsInsteadOfFiring(t *testing.T) {
 	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
-	w := newStormDecisionWorld(sim.WeatherClear, now.Add(-4*time.Hour)) // interval elapsed, but no PC
+	w := newStormDecisionWorld(sim.WeatherClear, now.Add(-4*time.Hour))
+	w.Environment.StormDueAt = now.Add(-1 * time.Hour) // long overdue, but nobody is here
+
 	if got := decide(t, w, now); got != "" {
 		t.Errorf("decideStorm = %q, want \"\" (no PC present ⇒ no auto-storm)", got)
 	}
+	assertArmedFromNow(t, w, now)
 }
 
-func TestDecideStorm_NoFireWhenPCStale(t *testing.T) {
+// A PC who logs out hands back a FULL interval, not the remainder of the one
+// they were serving — reset-on-empty, not a paused accumulator. Storms are meant
+// to be rare from the player's seat: you have to be resident for a whole
+// interval to see one.
+func TestDecideStorm_PCLeavingReArmsAFullInterval(t *testing.T) {
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	w := newStormDecisionWorld(sim.WeatherClear, now.Add(-3*time.Hour))
+	w.Environment.StormDueAt = now.Add(1 * time.Minute) // armed, nearly due — the PC just left
+
+	if got := decide(t, w, now); got != "" {
+		t.Errorf("decideStorm = %q, want \"\" (nobody here)", got)
+	}
+	assertArmedFromNow(t, w, now)
+}
+
+func TestDecideStorm_StalePCReArmsInsteadOfFiring(t *testing.T) {
 	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
 	w := newStormDecisionWorld(sim.WeatherClear, now.Add(-4*time.Hour))
+	w.Environment.StormDueAt = now.Add(-1 * time.Hour)
 	stale := now.Add(-5 * time.Minute) // far past the 40s staleness default
 	w.Actors["ghost"] = &sim.Actor{ID: "ghost", Kind: sim.KindPC, LastPCSeenAt: &stale}
+
 	if got := decide(t, w, now); got != "" {
 		t.Errorf("decideStorm = %q, want \"\" (stale PC is absent ⇒ no auto-storm)", got)
 	}
+	assertArmedFromNow(t, w, now)
 }
 
-func TestDecideStorm_NoFireBeforeInterval(t *testing.T) {
+func TestDecideStorm_NoFireBeforeDue(t *testing.T) {
 	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
-	w := newStormDecisionWorld(sim.WeatherClear, now.Add(-1*time.Hour)) // only 1h of a 3h interval
+	w := newStormDecisionWorld(sim.WeatherClear, now.Add(-1*time.Hour))
+	w.Environment.StormDueAt = now.Add(1 * time.Hour) // armed, not yet due
 	addPresentPC(w, now)
+
 	if got := decide(t, w, now); got != "" {
-		t.Errorf("decideStorm = %q, want \"\" (interval not yet elapsed)", got)
+		t.Errorf("decideStorm = %q, want \"\" (not yet due)", got)
+	}
+	if !w.Environment.StormDueAt.Equal(now.Add(1 * time.Hour)) {
+		t.Errorf("StormDueAt = %v, want unchanged (an attended tick must not re-arm)", w.Environment.StormDueAt)
+	}
+}
+
+// A disarmed clock (post-boot-seed, or after any weather transition) arms on
+// the first tick even with a PC present — it never reads as "due at the zero
+// time" and fires immediately.
+func TestDecideStorm_ArmsUnarmedClockWithPCPresent(t *testing.T) {
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	w := newStormDecisionWorld(sim.WeatherClear, now) // StormDueAt zero
+	addPresentPC(w, now)
+
+	if got := decide(t, w, now); got != "" {
+		t.Errorf("decideStorm = %q, want \"\" (unarmed clock arms, it does not fire)", got)
+	}
+	assertArmedFromNow(t, w, now)
+}
+
+// The bug (LLM-401): a village that sat empty for hours past the interval must
+// not rain on the PC who walks into it. The interval is measured from arrival.
+func TestDecideStorm_PCArrivingAtLongEmptyVillageWaitsAFullInterval(t *testing.T) {
+	start := time.Date(2026, 6, 25, 6, 0, 0, 0, time.UTC)
+	arrival := start.Add(6 * time.Hour)
+	w := newStormDecisionWorld(sim.WeatherClear, start)
+
+	// Six hours of unattended sweeps — twice the interval. Every one of them
+	// pushes the due time back out, so nothing is banked.
+	lastEmptySweep := start
+	for at := start; !at.After(arrival); at = at.Add(stormSweepInterval) {
+		if got := decide(t, w, at); got != "" {
+			t.Fatalf("decideStorm at %v = %q, want \"\" (empty village never storms)", at, got)
+		}
+		lastEmptySweep = at
+	}
+	assertArmedFromNow(t, w, lastEmptySweep)
+
+	// The PC is now present, and their heartbeat keeps them present. The due
+	// time was armed on the last empty sweep, so that is where the wait the
+	// PC serves is measured from (they arrive within a sweep of it).
+	addPresentPC(w, arrival)
+
+	// Nothing was banked: no storm anywhere inside the interval floor.
+	for at := arrival; at.Before(lastEmptySweep.Add(stormArmFloor)); at = at.Add(stormSweepInterval) {
+		addPresentPC(w, at) // heartbeat keeps presence fresh
+		if got := decide(t, w, at); got != "" {
+			t.Fatalf("decideStorm at arrival+%v = %q, want \"\" (the clock starts at arrival)", at.Sub(arrival), got)
+		}
+	}
+
+	// ...and it does still storm once the PC has waited one out.
+	sawStorm := false
+	for at := lastEmptySweep.Add(stormArmFloor); !at.After(lastEmptySweep.Add(stormArmCeil)); at = at.Add(stormSweepInterval) {
+		addPresentPC(w, at)
+		if decide(t, w, at) == sim.WeatherStorm {
+			sawStorm = true
+			break
+		}
+	}
+	if !sawStorm {
+		t.Errorf("no storm within the jitter band after a resident PC waited out a full interval")
+	}
+}
+
+// assertArmedFromNow checks the clock was (re-)armed at `now` — one full
+// jittered interval out, never in the past.
+func assertArmedFromNow(t *testing.T, w *sim.World, now time.Time) {
+	t.Helper()
+	wait := w.Environment.StormDueAt.Sub(now)
+	if wait < stormArmFloor || wait >= stormArmCeil {
+		t.Errorf("StormDueAt is %v out, want within [%v, %v) of now", wait, stormArmFloor, stormArmCeil)
+	}
+}
+
+// The jitter has to actually scatter (a fixed interval is the metronome the
+// jitter exists to break) and has to stay inside the band.
+func TestPickStormInterval_ScattersWithinBand(t *testing.T) {
+	s := sim.WorldSettings{StormInterval: testStormInterval}
+	seen := make(map[time.Duration]bool)
+	for i := 0; i < 200; i++ {
+		got := pickStormInterval(s)
+		if got < stormArmFloor || got >= stormArmCeil {
+			t.Fatalf("pickStormInterval = %v, want within [%v, %v)", got, stormArmFloor, stormArmCeil)
+		}
+		seen[got] = true
+	}
+	if len(seen) < 2 {
+		t.Error("pickStormInterval returned a single value across 200 draws — no jitter")
+	}
+}
+
+// An unset StormInterval falls back to the cascade default, jittered the same.
+func TestPickStormInterval_UnsetFallsBackToDefault(t *testing.T) {
+	got := pickStormInterval(sim.WorldSettings{})
+	lo := time.Duration(float64(defaultStormInterval) * (1 - stormIntervalJitter))
+	hi := time.Duration(float64(defaultStormInterval) * (1 + stormIntervalJitter))
+	if got < lo || got >= hi {
+		t.Errorf("pickStormInterval (unset) = %v, want within [%v, %v)", got, lo, hi)
 	}
 }
 

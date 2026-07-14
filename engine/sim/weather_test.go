@@ -48,6 +48,53 @@ func TestApplyWeatherChange_InstallsStampsAndEmits(t *testing.T) {
 	}
 }
 
+// A real transition disarms the storm clock (LLM-401) — the sweep re-arms it
+// from the interval + jitter it owns, so an operator forcing the weather over
+// the umbilical starts a fresh interval instead of inheriting a due time from
+// the clear period they interrupted. Both directions: a forced storm throws
+// away the clear clock it cut short, and the clear that follows must not carry
+// the old one back in.
+func TestApplyWeatherChange_DisarmsStormClock(t *testing.T) {
+	at := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct{ from, to string }{
+		{WeatherClear, WeatherStorm},
+		{WeatherStorm, WeatherClear},
+	} {
+		w := newAtmosphereTestWorld(t)
+		w.Environment.Weather = tc.from
+		w.Environment.StormDueAt = at.Add(-time.Hour) // armed and overdue
+
+		if _, err := ApplyWeatherChange(tc.to, at).Fn(w); err != nil {
+			t.Fatalf("%s→%s: ApplyWeatherChange: %v", tc.from, tc.to, err)
+		}
+		if !w.Environment.StormDueAt.IsZero() {
+			t.Errorf("%s→%s: StormDueAt = %v, want zero (a transition disarms; the sweep re-arms)", tc.from, tc.to, w.Environment.StormDueAt)
+		}
+	}
+}
+
+// A force-apply of the weather already in effect is a no-op, and that includes
+// the storm clock: forcing "clear" on an already-clear sky must not quietly
+// grant the village a fresh interval it didn't earn.
+func TestApplyWeatherChange_DedupPreservesStormClock(t *testing.T) {
+	w := newAtmosphereTestWorld(t)
+	w.Environment.Weather = WeatherClear
+	at := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	due := at.Add(time.Minute) // armed, nearly due
+	w.Environment.StormDueAt = due
+
+	res, err := ApplyWeatherChange(WeatherClear, at).Fn(w)
+	if err != nil {
+		t.Fatalf("ApplyWeatherChange: %v", err)
+	}
+	if wrote, _ := res.(bool); wrote {
+		t.Fatalf("ApplyWeatherChange returned true, want false (dedup)")
+	}
+	if !w.Environment.StormDueAt.Equal(due) {
+		t.Errorf("StormDueAt = %v, want unchanged %v (a dedup'd apply must not re-arm)", w.Environment.StormDueAt, due)
+	}
+}
+
 func TestApplyWeatherChange_DedupsIdentical(t *testing.T) {
 	w := newAtmosphereTestWorld(t)
 	w.Environment.Weather = WeatherStorm
@@ -67,6 +114,23 @@ func TestApplyWeatherChange_DedupsIdentical(t *testing.T) {
 	}
 	if len(*got) != 0 {
 		t.Errorf("emitted %d WeatherChanged on dedup, want 0", len(*got))
+	}
+}
+
+// The seed leaves the storm clock disarmed: the sweep arms it on its first tick
+// (and re-arms it every tick the village is empty), so a boot can't hand a PC a
+// due time that elapsed while nobody was here.
+func TestSeedWeatherClear_LeavesStormClockDisarmed(t *testing.T) {
+	w := newAtmosphereTestWorld(t)
+	w.Environment.Weather = WeatherStorm
+	at := time.Date(2026, 6, 25, 0, 0, 0, 0, time.UTC)
+	w.Environment.StormDueAt = at.Add(-time.Hour) // a stale due time restored under it
+
+	if _, err := SeedWeatherClear(at).Fn(w); err != nil {
+		t.Fatalf("SeedWeatherClear: %v", err)
+	}
+	if !w.Environment.StormDueAt.IsZero() {
+		t.Errorf("StormDueAt = %v, want zero (boot leaves the clock to the sweep)", w.Environment.StormDueAt)
 	}
 }
 

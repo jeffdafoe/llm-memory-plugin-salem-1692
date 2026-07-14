@@ -81,8 +81,16 @@ func WeatherScene(weather string) string {
 }
 
 // ApplyWeatherChange returns a Command that installs `weather` as the new
-// World.Environment.Weather, stamps LastWeatherChangeAt, and emits a
-// WeatherChanged event so the transition reaches connected clients.
+// World.Environment.Weather, stamps LastWeatherChangeAt, disarms the storm
+// clock, and emits a WeatherChanged event so the transition reaches connected
+// clients.
+//
+// Disarming StormDueAt (zeroing it) hands the storm cadence back to the sweep
+// (cascade/storm.go), which re-arms it on its next tick from the interval +
+// jitter it owns. That keeps all storm policy in cascade — sim only clears the
+// field — and it means an operator force-clear over the umbilical starts a
+// fresh interval rather than inheriting the due time of the clear period the
+// forced storm interrupted (LLM-401).
 //
 // Dedup: if the trimmed weather matches the trimmed current weather
 // exactly, the apply is a no-op — no write, no stamp, no event. Returns
@@ -107,6 +115,7 @@ func ApplyWeatherChange(weather string, at time.Time) Command {
 			}
 			w.Environment.Weather = trimmed
 			w.Environment.LastWeatherChangeAt = at
+			w.Environment.StormDueAt = time.Time{}
 			w.emit(&WeatherChanged{Weather: trimmed, At: at})
 			return true, nil
 		},
@@ -142,7 +151,7 @@ func ApplyWeatherChange(weather string, at time.Time) Command {
 // Returns true when the weather changed, false when it was already clear (the
 // common boot). No dedup on the STAMP — LastWeatherChangeAt is seeded on every
 // boot either way, since a restart-lossy zero clock is the thing it exists to
-// fix.
+// fix. StormDueAt is left disarmed (zero): the sweep arms it on its first tick.
 func SeedWeatherClear(at time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
@@ -152,6 +161,7 @@ func SeedWeatherClear(at time.Time) Command {
 			changed := prior != "" && prior != WeatherClear
 			w.Environment.Weather = WeatherClear
 			w.Environment.LastWeatherChangeAt = at
+			w.Environment.StormDueAt = time.Time{}
 			if changed {
 				w.emit(&WeatherChanged{Weather: WeatherClear, At: at})
 			}
