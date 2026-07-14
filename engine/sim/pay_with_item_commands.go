@@ -2306,19 +2306,23 @@ func effectivePayConsumerCount(consumerIDs []ActorID) int {
 	return len(consumerIDs)
 }
 
-// truncatePayMessage trims surrounding whitespace and rune-truncates to
-// MaxPayMessageRunes. The handler intake also trims + validates control
-// characters; this is defense-in-depth for non-handler callers.
+// truncatePayMessage trims surrounding whitespace and caps to
+// MaxPayMessageRunes, MARKED when it has to cut (LLM-405). The handler intake
+// also trims + validates control characters, and REJECTS an over-cap message
+// outright rather than shortening it, so on the tool path this never fires —
+// it is defense-in-depth for non-handler callers (seeded entries, PC routes,
+// future writers).
+//
+// It marks anyway. The message reaches a human through the operator console,
+// and — for a gift's "for" note, the fourth caller — it reaches an NPC through
+// the gave/received_gift relationship facts. Neither reader can tell a clipped
+// note from a whole one without the marker.
 func truncatePayMessage(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return ""
 	}
-	runes := []rune(s)
-	if len(runes) > MaxPayMessageRunes {
-		return string(runes[:MaxPayMessageRunes])
-	}
-	return s
+	return capRunesMarked(s, MaxPayMessageRunes)
 }
 
 // resolvePayConsumers resolves each consumer name to a huddle-peer

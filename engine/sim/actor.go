@@ -338,16 +338,17 @@ const MaxSalientFactTextLen = 220
 // non-zero DroppedFactCount means a pair out-ran even the backstop.
 const MaxSalientFactsPerRelationship = 200
 
-// NewSalientFact builds a SalientFact with Text truncated to
-// MaxSalientFactTextLen runes. Use this at every write callsite — never
-// construct a SalientFact directly when the text comes from LLM output
-// or other untrusted source.
+// NewSalientFact builds a SalientFact with Text capped at
+// MaxSalientFactTextLen runes, MARKED when it has to cut (LLM-405). Use this
+// at every write callsite — never construct a SalientFact directly when the
+// text comes from LLM output or other untrusted source.
+//
+// This is the last cut a fact takes before it is stored, and a stored fact is
+// read straight back into a prompt (perception surfaces the most recent facts
+// per peer). A bare prefix here is therefore a memory that ENDS MID-SENTENCE,
+// which the reader answers as though something were owed — see text.go.
 func NewSalientFact(at time.Time, kind InteractionKind, text string) SalientFact {
-	runes := []rune(text)
-	if len(runes) > MaxSalientFactTextLen {
-		text = string(runes[:MaxSalientFactTextLen])
-	}
-	return SalientFact{At: at, Kind: kind, Text: text}
+	return SalientFact{At: at, Kind: kind, Text: capRunesMarked(text, MaxSalientFactTextLen)}
 }
 
 // cloneRelationships deep-copies a Relationships map. Used by CloneActor

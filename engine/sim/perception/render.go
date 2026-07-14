@@ -3865,7 +3865,12 @@ func sanitizeInline(s string) string {
 // it a clipped utterance reads as an unfinished sentence, and the listener answers
 // by asking the speaker to finish, forever (LLM-396). Named rather than inlined so
 // the render path and the invariant that enforces it share one definition.
-const elisionMarker = "…"
+//
+// The write paths cap by rune against a storage bound, this one caps by byte
+// against the prompt budget, and both must mark a cut identically or "am I seeing
+// the whole line?" stops having one answer — so the marker itself is declared once,
+// in sim, and aliased here (LLM-405).
+const elisionMarker = sim.ElisionMarker
 
 // capBytes truncates s to at most maxBytes bytes on a rune boundary,
 // appending elisionMarker when it truncates. maxBytes <= 0 means no

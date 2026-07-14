@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
@@ -325,6 +326,66 @@ func TestGiveItems_ForNotePersisted(t *testing.T) {
 	}
 	if !containsFold(joined, "gave me") {
 		t.Errorf("received-gift fact should read 'gave me ...', got: %s", joined)
+	}
+}
+
+// TestGiveItems_LongForNoteStoredWholeOrMarked (LLM-405) drives the defect
+// end-to-end, through the real command path, at the longest note the give tool
+// will actually accept.
+//
+// The tool caps `for` at 200 runes by REJECTING anything longer (handlers'
+// MaxPayWithItemForChars) — so a 200-rune note is not an edge case, it is a legal
+// gift. Wrapped in "Ezekiel Crane gave me 3 blueberries as a gift (…)." that fact
+// ran past the 220-rune SalientFact cap, and the write-time cap sliced the tail of
+// the note and the closing paren off mid-word, silently. Both parties then carried
+// a memory of the gift that stopped in the middle of a sentence.
+//
+// What must hold now: the stored fact fits, ends as a sentence, and if the note had
+// to be shortened to get there it SAYS so.
+func TestGiveItems_LongForNoteStoredWholeOrMarked(t *testing.T) {
+	w, stop := giftWorld(t)
+	defer stop()
+
+	const maxNoteTheGiveToolAdmits = 200 // handlers.MaxPayWithItemForChars
+	note := "for tending my garden while I was away, " + strings.Repeat("and for the kindness of it, ", 20)
+	note = string([]rune(note)[:maxNoteTheGiveToolAdmits])
+
+	res, err := w.Send(sim.GiveItems("alice", "Bob", giftLine("stew", 1), note, time.Now().UTC()))
+	if err != nil {
+		t.Fatalf("GiveItems: %v", err)
+	}
+	id := res.(sim.PayWithItemResult).LedgerID
+	if _, err := w.Send(sim.AcceptGift("bob", id, time.Now().UTC())); err != nil {
+		t.Fatalf("AcceptGift: %v", err)
+	}
+
+	// Both sides of the pair: the giver's "I gave…" fact and the recipient's
+	// "…gave me" fact are built separately and each got cut separately.
+	for _, party := range []struct{ name, from, to string }{
+		{"recipient's memory of the giver", "bob", "alice"},
+		{"giver's memory of the recipient", "alice", "bob"},
+	} {
+		facts := readSalientFacts(t, w, sim.ActorID(party.from), sim.ActorID(party.to))
+		if len(facts) == 0 {
+			t.Fatalf("%s: no gift fact was recorded at all", party.name)
+		}
+		for _, fact := range facts {
+			if n := utf8.RuneCountInString(fact); n > sim.MaxSalientFactTextLen {
+				t.Errorf("%s: stored fact is %d runes, over the %d-rune cap: %q", party.name, n, sim.MaxSalientFactTextLen, fact)
+			}
+			if !strings.HasSuffix(fact, ".") {
+				t.Errorf("%s: stored fact does not end as a sentence — the cut ate its punctuation: %q", party.name, fact)
+			}
+			// The note was shortened to fit, so the marker is mandatory: without it
+			// the NPC reads a memory that stops mid-clause and takes it for whole.
+			if !strings.Contains(fact, sim.ElisionMarker) {
+				t.Errorf("%s: the note was cut to fit but stored as a bare prefix, no %q marker: %q",
+					party.name, sim.ElisionMarker, fact)
+			}
+			if strings.Contains(fact, "for tending my garden") == false {
+				t.Errorf("%s: the head of the note should survive the cut: %q", party.name, fact)
+			}
+		}
 	}
 }
 
