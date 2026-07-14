@@ -44,6 +44,42 @@ const (
 	WeatherStorm = "storm"
 )
 
+// The sky as a felt sentence — one vocabulary, shared by every surface that
+// describes the weather in prose (LLM-399). NPC perception renders these
+// (perception/render.go weatherProse) and the atmosphere prompt states them as
+// the given fact the mood line must not contradict (cascade/atmosphere.go).
+// Sharing the wording is the point: two surfaces that describe the sky in their
+// own words are two surfaces that can describe different skies.
+const (
+	// WeatherStormScene is the storm sky. A scene, not a "weather: storm"
+	// stat — it hands the model something concrete to reason over (shelter,
+	// mud) and lets the scene be the argument.
+	WeatherStormScene = "Rain falls steady over the village, and the lanes are turning to mud."
+
+	// WeatherClearScene is the calm sky. Stated plainly and in the negative
+	// ("no rain") because the model's failure mode is inventing rain that
+	// isn't there, not omitting rain that is — an atmosphere prompt that says
+	// nothing about a clear sky leaves the model free to keep raining
+	// (LLM-399).
+	WeatherClearScene = "The sky is clear over the village, and no rain falls."
+)
+
+// WeatherScene renders World.Environment.Weather as its felt sentence. An
+// unrecognized future token (fog, snow) renders "" rather than leak a raw stat
+// — additive by design: a new state surfaces once its scene is written above,
+// the same graceful-degradation posture as the atmosphere digest's verb map.
+// Empty weather reads as clear (the calm default).
+func WeatherScene(weather string) string {
+	switch strings.TrimSpace(weather) {
+	case WeatherStorm:
+		return WeatherStormScene
+	case WeatherClear, "":
+		return WeatherClearScene
+	default:
+		return ""
+	}
+}
+
 // ApplyWeatherChange returns a Command that installs `weather` as the new
 // World.Environment.Weather, stamps LastWeatherChangeAt, and emits a
 // WeatherChanged event so the transition reaches connected clients.
@@ -78,8 +114,7 @@ func ApplyWeatherChange(weather string, at time.Time) Command {
 }
 
 // SeedWeatherClear forces weather to clear and stamps the change clock at
-// boot. Unconditional (no dedup) and emits no event — it runs from the
-// storm sweep's startup before any client is connected, to:
+// boot. It runs from the storm sweep's startup, to:
 //
 //   - discard a persisted mid-storm weather so the engine boots to clear
 //     (Environment.Weather is persisted in world_state, but storms are
@@ -88,12 +123,39 @@ func ApplyWeatherChange(weather string, at time.Time) Command {
 //     StormInterval rather than firing immediately (LastWeatherChangeAt
 //     is restart-lossy, so it reads zero on boot, which would otherwise
 //     make the elapsed-since-last-change check fire on the next tick).
+//
+// Emits WeatherChanged when the seed ACTUALLY changed the weather — i.e. the
+// checkpoint restored a village under a non-clear sky (a storm, or any future
+// token) and boot-to-clear discarded it (LLM-399). Discarding an unknown token
+// emits too, and should: boot-to-clear is unconditional, so by the time this
+// returns the sky IS clear, and a consumer told otherwise would be wrong about
+// the world regardless of whether we have a scene written for what it was.
+// Without the event, that discard was silent: the atmosphere
+// cascade's boot sweep races this seed on its own goroutine, and if it won the
+// race it snapshotted the persisted `storm`, wrote rain prose, and then nothing
+// told it the sky had been forced clear — leaving contradictory prose standing
+// for a full refresh interval. The event makes the boot path self-healing
+// regardless of which goroutine wins: commands only execute once World.Run
+// starts draining w.cmds, which is after every Subscribe has landed, so the
+// atmosphere subscriber is always registered by the time this fires.
+//
+// Returns true when the weather changed, false when it was already clear (the
+// common boot). No dedup on the STAMP — LastWeatherChangeAt is seeded on every
+// boot either way, since a restart-lossy zero clock is the thing it exists to
+// fix.
 func SeedWeatherClear(at time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
+			// Empty reads as clear (a virgin world that has never had weather
+			// set), so it is not a change — there is no stale sky to correct.
+			prior := strings.TrimSpace(w.Environment.Weather)
+			changed := prior != "" && prior != WeatherClear
 			w.Environment.Weather = WeatherClear
 			w.Environment.LastWeatherChangeAt = at
-			return nil, nil
+			if changed {
+				w.emit(&WeatherChanged{Weather: WeatherClear, At: at})
+			}
+			return changed, nil
 		},
 	}
 }

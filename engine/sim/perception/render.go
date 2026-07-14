@@ -1170,7 +1170,11 @@ func timeOfDayProse(minute int) string {
 // something concrete to reason over (shelter, mud) and lets the scene be the
 // argument, with no imperative. A named const so the golden invariant
 // (TestGoldensRainLineIffStorm) and weatherProse can't drift on the wording.
-const weatherStormProse = "Rain falls steady over the village, and the lanes are turning to mud."
+//
+// Sourced from sim (LLM-399) so this line and the sky the atmosphere prompt is
+// told to write to are the same sentence, not two hand-written descriptions of
+// the same storm that can drift apart.
+const weatherStormProse = sim.WeatherStormScene
 
 // weatherProse maps World.Environment.Weather to a felt ambient sentence — the
 // deterministic, in-world weather analogue of timeOfDayProse. Only the active

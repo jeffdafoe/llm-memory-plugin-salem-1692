@@ -109,6 +109,19 @@ type VillageContext struct {
 	Roster          []AtmosphereRosterEntry
 	ActivityDigest  []ActivityDigestEntry
 
+	// WeatherChangedSinceAtmosphere reports that the sky has turned since
+	// PriorAtmosphere was written — LastWeatherChangeAt is after
+	// LastAtmosphereRefreshAt. The atmosphere prompt needs this to say so out
+	// loud (LLM-399): handed its own rain prose as "the previous atmosphere you
+	// wrote" with no word that the storm has passed, the model reads the prior
+	// as the current scene and keeps raining ("The rain YET falleth…"), which is
+	// how a cleared storm survived in the mood line for hours.
+	//
+	// True on the first fire after a boot whenever the weather clock is seeded
+	// (LastAtmosphereRefreshAt is restart-lossy and reads zero), which is
+	// correct: the prose restored from the checkpoint predates this boot's sky.
+	WeatherChangedSinceAtmosphere bool
+
 	// Visitors carries every Actor with VisitorState != nil at
 	// snapshot time. Empty for villages with no current visitors.
 	Visitors []VisitorSummary
@@ -146,6 +159,8 @@ func FetchVillageContext(at time.Time) Command {
 				Phase:           w.Phase,
 				Weather:         w.Environment.Weather,
 				PriorAtmosphere: w.Environment.Atmosphere,
+				WeatherChangedSinceAtmosphere: !w.Environment.LastWeatherChangeAt.IsZero() &&
+					w.Environment.LastWeatherChangeAt.After(w.Environment.LastAtmosphereRefreshAt),
 			}
 
 			ctx.Roster = buildVillageContextRoster(w)
