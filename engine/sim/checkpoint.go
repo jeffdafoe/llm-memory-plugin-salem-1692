@@ -333,9 +333,12 @@ func (h *CheckpointHealth) RecordSuccess(now time.Time, clamps *ClampReport) {
 	h.consecutiveFailures = 0
 	h.totalSuccesses++
 	h.lastError = ""
-	h.lastClampCount = clamps.Total()
+	// Total() and Clamps() are nil-safe, so a caller with nothing to report may
+	// pass nil (tests do) and simply clears the previous checkpoint's detail.
+	total := clamps.Total()
+	h.lastClampCount = total
 	h.lastClamps = clamps.Clamps()
-	h.totalClamps += uint64(clamps.Total())
+	h.totalClamps += uint64(total)
 }
 
 // RecordFailure marks a failed checkpoint at now, advancing the consecutive-

@@ -6,8 +6,10 @@ package sim_test
 
 import (
 	"context"
+	"math"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
@@ -146,6 +148,33 @@ func TestClamp_ProjectsEachRangedField(t *testing.T) {
 				}
 			},
 			wantTable: "actor", wantField: "production_remaining_seconds", wantFromTo: [2]string{"-12", "1"},
+		},
+		{
+			name: "non-positive production batch",
+			mutate: func(a *sim.Actor) {
+				a.ProductionActivity = &sim.ProductionActivity{Item: "stew", BatchQty: 0, RemainingSeconds: 900}
+			},
+			check: func(t *testing.T, a *sim.Actor) {
+				if a.ProductionActivity.BatchQty != 1 {
+					t.Errorf("BatchQty = %d, want 1", a.ProductionActivity.BatchQty)
+				}
+			},
+			wantTable: "actor", wantField: "production_batch_qty", wantFromTo: [2]string{"0", "1"},
+		},
+		{
+			name: "production batch above INTEGER",
+			mutate: func(a *sim.Actor) {
+				a.ProductionActivity = &sim.ProductionActivity{
+					Item: "stew", BatchQty: math.MaxInt32 + 1, RemainingSeconds: 900,
+				}
+			},
+			check: func(t *testing.T, a *sim.Actor) {
+				if a.ProductionActivity.BatchQty != math.MaxInt32 {
+					t.Errorf("BatchQty = %d, want MaxInt32 (the column is INTEGER)", a.ProductionActivity.BatchQty)
+				}
+			},
+			wantTable: "actor", wantField: "production_batch_qty",
+			wantFromTo: [2]string{"2147483648", "2147483647"},
 		},
 		{
 			name: "non-negative dwell delta",
@@ -374,6 +403,112 @@ func TestClamp_NeverTouchesTheLiveWorld(t *testing.T) {
 	}
 	if liveNow.Facing != "up" {
 		t.Errorf("live Facing = %q, want the original %q", liveNow.Facing, "up")
+	}
+}
+
+// TestClamp_NeverTouchesTheLiveWorld_NestedPointers is the other half of the
+// aliasing contract, covering the two clamped fields that sit behind a pointer
+// INSIDE a nested struct — the places a deep-clone is most likely to be shallow
+// without anyone noticing:
+//
+//   - Actor.DwellCredits[k].RemainingTicks (*int inside a *DwellCredit)
+//   - Scene.Bound.Radius                   (*int inside a SceneBound value)
+//
+// cloneDwellCredits and cloneSceneBound both re-allocate these today, so the
+// clamp cannot reach live state. This test is what keeps that true: a future
+// "optimization" that copies the struct without re-allocating the pointer would
+// reintroduce a silent cross-goroutine write, and reading the clone code would
+// not tell you.
+func TestClamp_NeverTouchesTheLiveWorld_NestedPointers(t *testing.T) {
+	remaining := -5
+	dwellKey := sim.DwellCreditKey{ObjectID: "hearth", Attribute: "warmth", Source: sim.DwellSourceItem}
+	live := &sim.Actor{
+		ID: "hannah", DisplayName: "Hannah", State: sim.StateIdle,
+		DwellCredits: map[sim.DwellCreditKey]*sim.DwellCredit{
+			dwellKey: {
+				ObjectID: "hearth", Attribute: "warmth", Source: sim.DwellSourceItem,
+				RemainingTicks: &remaining, DwellDelta: 0, DwellPeriodMinutes: 0,
+			},
+		},
+	}
+	w, cancel := runningWorld(t, map[sim.ActorID]*sim.Actor{live.ID: live})
+	defer cancel()
+
+	// Install a scene whose area bound carries a negative radius. Built by hand
+	// rather than via NewAreaBound, which clamps to 0 at construction — the whole
+	// point is a value that bypassed the constructor.
+	radius := -9
+	anchor := sim.Position{X: 3, Y: 4}
+	const sceneID = sim.SceneID("scene-392")
+	if _, err := w.SendContext(context.Background(), sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			world.Scenes[sceneID] = &sim.Scene{
+				ID: sceneID, OriginKind: "test", OriginAt: time.Now(),
+				Bound: sim.SceneBound{Kind: sim.SceneBoundArea, Anchor: &anchor, Radius: &radius},
+			}
+			return nil, nil
+		},
+	}); err != nil {
+		t.Fatalf("install scene: %v", err)
+	}
+
+	res, err := w.SendContext(context.Background(), sim.CheckpointSnapshotCommand())
+	if err != nil {
+		t.Fatalf("build snapshot: %v", err)
+	}
+	cp := res.(*sim.CheckpointSnapshot)
+
+	if report := cp.ClampToPersistable(); report.Clean() {
+		t.Fatal("expected clamps on the snapshot")
+	}
+
+	// The snapshot is corrected...
+	snapDwell := cp.Actors["hannah"].DwellCredits[dwellKey]
+	if *snapDwell.RemainingTicks != 1 || snapDwell.DwellDelta != -1 || snapDwell.DwellPeriodMinutes != 1 {
+		t.Fatalf("snapshot dwell credit was not clamped: remaining=%d delta=%d period=%d",
+			*snapDwell.RemainingTicks, snapDwell.DwellDelta, snapDwell.DwellPeriodMinutes)
+	}
+	if *cp.Scenes[sceneID].Bound.Radius != 0 {
+		t.Fatalf("snapshot scene radius = %d, want 0", *cp.Scenes[sceneID].Bound.Radius)
+	}
+
+	// ...and the live world still holds every original value.
+	got, err := w.SendContext(context.Background(), sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			return []any{
+				sim.CloneActor(world.Actors["hannah"]),
+				sim.CloneScene(world.Scenes[sceneID]),
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("read live state: %v", err)
+	}
+	pair := got.([]any)
+	liveActor := pair[0].(*sim.Actor)
+	liveScene := pair[1].(*sim.Scene)
+
+	liveDwell := liveActor.DwellCredits[dwellKey]
+	if *liveDwell.RemainingTicks != -5 {
+		t.Errorf("THE CLAMP WROTE THROUGH INTO THE LIVE WORLD: DwellCredit.RemainingTicks = %d, want the original -5. cloneDwellCredits must re-allocate RemainingTicks",
+			*liveDwell.RemainingTicks)
+	}
+	if liveDwell.DwellDelta != 0 || liveDwell.DwellPeriodMinutes != 0 {
+		t.Errorf("THE CLAMP WROTE THROUGH INTO THE LIVE WORLD: DwellCredit delta/period = %d/%d, want the original 0/0. cloneDwellCredits must copy the struct, not alias the pointer",
+			liveDwell.DwellDelta, liveDwell.DwellPeriodMinutes)
+	}
+	if *liveScene.Bound.Radius != -9 {
+		t.Errorf("THE CLAMP WROTE THROUGH INTO THE LIVE WORLD: Scene.Bound.Radius = %d, want the original -9. cloneSceneBound must re-allocate Radius",
+			*liveScene.Bound.Radius)
+	}
+	// The live *int must not merely hold the right value — it must be a DIFFERENT
+	// int. Same value via a shared pointer would pass the checks above only by
+	// luck of ordering.
+	if liveScene.Bound.Radius == cp.Scenes[sceneID].Bound.Radius {
+		t.Error("live and snapshot Scene.Bound.Radius are the SAME pointer — the clone is shallow")
+	}
+	if liveDwell.RemainingTicks == snapDwell.RemainingTicks {
+		t.Error("live and snapshot DwellCredit.RemainingTicks are the SAME pointer — the clone is shallow")
 	}
 }
 
