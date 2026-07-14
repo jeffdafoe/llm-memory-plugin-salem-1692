@@ -78,11 +78,18 @@ import (
 // (Slices 11-13: actor->huddle, scene_huddle->village_object, actor->
 // structure/room were all dropped, and the new scene table's structure /
 // huddle refs were created as TEXT soft-refs with no FK), moving that
-// consistency to Go-side validation at LoadWorld. ONE cross-aggregate FK
-// survived the purge: room_access.granted_via_ledger_id -> pay_ledger(id)
-// (subspace_access_granted_via_ledger_id_fkey, NOT deferred — checked at
-// statement time). room_access is written by Actors.SaveSnapshot;
-// pay_ledger by Orders.SaveSnapshot. So Orders MUST run before Actors:
+// consistency to Go-side validation at LoadWorld. TWO cross-aggregate FKs
+// survived the purge, both on room_access and both NOT deferred (checked at
+// statement time):
+//
+//	granted_via_ledger_id -> pay_ledger(id)     (written by Orders)
+//	room_id               -> structure_room(id) (written by Structures)
+//
+// room_access is written by Actors.SaveSnapshot, so BOTH Orders and Structures
+// must run before Actors — and, since LLM-392, the actors writer also consults
+// the quarantine for both parents (a dropped ledger row or a dropped room takes
+// the grant with it; the FK alone is not enough, because it is satisfied by the
+// parent.s STALE row once one exists). So Orders MUST run before Actors:
 // when an order is minted, accepted, and delivered with a room grant all
 // inside one checkpoint window (instant-settle lodging does this in ~3s),
 // both rows are new to the same SaveWorld, and saving the grant before its

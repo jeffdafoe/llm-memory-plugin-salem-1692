@@ -707,6 +707,12 @@ func run(rt runtime, stop <-chan struct{}) error {
 		// the operator, so it is recorded unconditionally.
 		checkpointHealth.RecordFailure(time.Now(), err)
 		log.Printf("engine: final checkpoint failed: %v", err)
+		if !q.Clean() {
+			// Same reason as the periodic loop: the rows the writers had already
+			// judged unpersistable are the diagnostic for WHY the write broke, and
+			// this is the last thing the operator sees before the process exits.
+			log.Printf("engine: the FAILED final checkpoint had also quarantined rows: %s", q.Summary())
+		}
 	} else {
 		checkpointHealth.RecordSuccess(time.Now(), q)
 		// LLM-392: the FINAL checkpoint is the one that matters most — it is

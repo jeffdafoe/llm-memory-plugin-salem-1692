@@ -142,9 +142,9 @@ func TestSelectVisitorRumor(t *testing.T) {
 		w.ActionLog = []ActionLogEntry{
 			{ActorID: "trav", OccurredAt: recent, ActionType: ActionTypeDelivered, Text: "trinkets", CounterpartyName: "Alice"}, // a visitor
 			{ActorID: "pc", OccurredAt: recent, ActionType: ActionTypePaid, CounterpartyName: "Alice"},                          // the player
-			{ActorID: "prop", OccurredAt: recent, ActionType: ActionTypeDelivered, Text: "x"},                                  // decorative
-			{ActorID: "ghost", OccurredAt: recent, ActionType: ActionTypePaid, CounterpartyName: "Alice"},                      // no such actor
-			{ActorID: "smith", OccurredAt: recent, ActionType: ActionTypeSpoke, Text: "hello"},                                 // dull beat
+			{ActorID: "prop", OccurredAt: recent, ActionType: ActionTypeDelivered, Text: "x"},                                   // decorative
+			{ActorID: "ghost", OccurredAt: recent, ActionType: ActionTypePaid, CounterpartyName: "Alice"},                       // no such actor
+			{ActorID: "smith", OccurredAt: recent, ActionType: ActionTypeSpoke, Text: "hello"},                                  // dull beat
 		}
 		if got := selectVisitorRumor(w, r, now); got != "" {
 			t.Errorf("got %q, want empty (no eligible resident rumor)", got)

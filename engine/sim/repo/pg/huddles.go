@@ -349,8 +349,24 @@ func (r *HuddlesRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, huddles map[s
 			if prev, dup := seenHuddleByActor[actorID]; dup {
 				log.Printf("pg huddles SaveSnapshot: actor %s already in huddle %s, also listed in %s — keeping first; world-side membership bug",
 					actorID, prev, h.ID)
-				q.Drop("huddle_member", fmt.Sprintf("%s/%s", h.ID, actorID),
-					fmt.Sprintf("actor %s is already a live member of huddle %s — an actor can only be in one huddle", actorID, prev))
+				// CLAMP, not Drop — and the distinction is load-bearing.
+				//
+				// A Drop means "we could not write this row; keep the durable one",
+				// and it blocks the table's sweep to protect that durable row. Here
+				// the opposite is true: the actor's single huddle_member row WAS
+				// written (upsertSQLM's arbiter is ON CONFLICT (actor_id), so it was
+				// repointed to the winning huddle), and the stale row is precisely
+				// what we WANT the sweep to delete.
+				//
+				// Dropping would block the sweep — the only mechanism that removes
+				// member rows of concluded huddles and of actors who left. Because
+				// this world-side bug persists across cycles, the sweep would stay
+				// blocked every cycle, memberships would accumulate, and LoadAll
+				// would resurrect departed actors into huddles they had left. The
+				// pre-LLM-392 code logged and continued and the sweep still ran;
+				// this keeps that behaviour and adds the alarm.
+				q.Clamp("huddle_member", childID(h.ID, string(actorID)),
+					fmt.Sprintf("actor %s is already a live member of huddle %s — an actor can only be in one huddle; kept the first, the duplicate is not written", actorID, prev))
 				continue
 			}
 			seenHuddleByActor[actorID] = h.ID

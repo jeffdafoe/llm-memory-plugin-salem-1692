@@ -1162,6 +1162,14 @@ func CloneActor(a *Actor) *Actor {
 	}
 	cp := *a
 
+	// `cp := *a` copies the *int HEADERS, so the clone would otherwise share the
+	// schedule minutes with the live actor — a hole in the deep-clone contract
+	// that BuildCheckpointSnapshot (and the checkpoint's clamps, which correct
+	// out-of-range schedule values on the snapshot) depend on. CloneActorSnapshot
+	// already does this; CloneActor did not.
+	cp.ScheduleStartMin = copyIntPtr(a.ScheduleStartMin)
+	cp.ScheduleEndMin = copyIntPtr(a.ScheduleEndMin)
+
 	if a.Needs != nil {
 		cp.Needs = make(map[NeedKey]int, len(a.Needs))
 		for k, v := range a.Needs {

@@ -207,8 +207,10 @@ func (r *LaborContractsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, contra
 			q.Drop("labor_contract", fmt.Sprintf("%d", key), "nil offer")
 			continue
 		}
-		id := fmt.Sprintf("%d", o.ID)
+		id := fmt.Sprintf("%d", key)
 		if o.ID != key {
+			// Keyed on the MAP KEY: o.ID is the field we do not trust here, and it
+			// may name a DIFFERENT, healthy contract.
 			q.Drop("labor_contract", id, fmt.Sprintf("map key=%d does not match o.ID=%d", key, o.ID))
 			continue
 		}

@@ -309,7 +309,9 @@ func (r *VisitorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[s
 			continue // not a visitor — the actor aggregate owns (or rejects) it
 		}
 		if a.ID != key {
-			q.Drop("visitor", string(a.ID), fmt.Sprintf("map key=%s does not match a.ID=%s", key, a.ID))
+			// Keyed on the MAP KEY: a.ID is the field we do not trust here, and it
+			// may name a DIFFERENT, healthy visitor.
+			q.Drop("visitor", string(key), fmt.Sprintf("map key=%s does not match a.ID=%s", key, a.ID))
 			continue
 		}
 		if strings.TrimSpace(a.DisplayName) == "" {

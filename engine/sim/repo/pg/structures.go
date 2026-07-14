@@ -299,6 +299,44 @@ func (r *StructuresRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, structures
 		}
 	}
 
+	// Publish, under an id-shaped key, every room that will have NO durable row
+	// after this checkpoint — so the ACTORS writer can drop a room_access grant
+	// pointing at it. room_access.room_id -> structure_room(id) is a real,
+	// non-deferred FK, and Structures runs before Actors, so this is the only
+	// place that knows.
+	//
+	// Why a second key: this writer's own drops are keyed by slice POSITION,
+	// which is right for its write loop but meaningless to a writer that only
+	// holds a RoomID. Distinct key strings in the same table, so they never
+	// collide. And it is computed AFTER the whole pass, because a room id that
+	// one structure dropped as a DUPLICATE is still written by the structure
+	// that legitimately owns it (seenRoomIDs) — marking it missing would drop a
+	// grant on a room that exists perfectly well.
+	for _, key := range sortedStructureIDs(structures) {
+		s := structures[key]
+		if s == nil {
+			continue
+		}
+		// A dropped STRUCTURE takes every one of its rooms with it — the write
+		// loop skips them all — and those rooms never reached the room-level
+		// drop, because the pre-pass bailed on the structure before iterating
+		// them. So both cases have to be covered here.
+		structDropped := q.Dropped("structure", string(key))
+		for i, room := range s.Rooms {
+			if room == nil || room.ID <= 0 {
+				continue
+			}
+			if !structDropped && !q.Dropped("structure_room", structureRoomID(s.ID, i)) {
+				continue
+			}
+			if _, written := seenRoomIDs[room.ID]; written {
+				continue // another structure legitimately writes this id
+			}
+			q.Drop("structure_room", roomRowID(room.ID),
+				fmt.Sprintf("room %d will have no durable row this checkpoint", room.ID))
+		}
+	}
+
 	// Step 2: upsert each structure. Keyed on the MAP KEY — what the pre-pass
 	// drops under. Keying on s.ID would miss an empty-ID structure (s.ID is "")
 	// and let it reach SQL.

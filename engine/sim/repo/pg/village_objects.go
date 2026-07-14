@@ -584,15 +584,37 @@ func (r *VillageObjectsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, object
 	// can no longer be tripped by snapshot content — only by real schema drift
 	// or an out-of-band write, which is an infrastructure failure and SHOULD
 	// abort.
+	// The drop must CASCADE DOWN THE CHAIN, not just one level. Attachment is a
+	// chain (A <- B <- C), and dropping B is not enough: C's parent B is still
+	// PRESENT in the map, so a single pass leaves C alone, writes it at the
+	// fresh gen, and leaves B at the old one — which is exactly what step 4's
+	// orphan check aborts the whole checkpoint for. Iterate to a fixpoint so a
+	// dropped object takes every descendant with it.
 	q := quarantineOf(tx)
-	for _, id := range sortedObjectIDs(objects) {
-		obj := objects[id]
-		if obj == nil || obj.AttachedTo == "" {
-			continue
+	ids := sortedObjectIDs(objects)
+	for {
+		dropped := false
+		for _, id := range ids {
+			obj := objects[id]
+			if obj == nil || obj.AttachedTo == "" {
+				continue
+			}
+			if q.Dropped("village_object", string(obj.ID)) {
+				continue
+			}
+			parent, ok := objects[obj.AttachedTo]
+			if !ok || parent == nil {
+				dropVillageObject(q, obj.ID, fmt.Sprintf("attached to %s, which is absent from the snapshot — a fresh overlay on a stale parent would violate the object parent/child gen invariant", obj.AttachedTo))
+				dropped = true
+				continue
+			}
+			if q.Dropped("village_object", string(obj.AttachedTo)) {
+				dropVillageObject(q, obj.ID, fmt.Sprintf("attached to %s, which was itself quarantined — an overlay cannot be written fresh onto a parent we declined to update", obj.AttachedTo))
+				dropped = true
+			}
 		}
-		parent, ok := objects[obj.AttachedTo]
-		if !ok || parent == nil {
-			dropVillageObject(q, obj.ID, fmt.Sprintf("attached to %s, which is absent from the snapshot — a fresh overlay on a stale parent would violate the object parent/child gen invariant", obj.AttachedTo))
+		if !dropped {
+			break
 		}
 	}
 

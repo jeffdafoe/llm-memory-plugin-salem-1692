@@ -345,6 +345,74 @@ func readyByForOrder(o *sim.Order) time.Time {
 	return time.Date(c.Year(), c.Month(), c.Day(), 0, 0, 0, 0, time.UTC)
 }
 
+// lodgingKey is the pay_ledger_lodging_active_once index's key: the columns it
+// is UNIQUE over, for the rows its predicate selects.
+type lodgingKey struct {
+	buyer   sim.ActorID
+	seller  sim.ActorID
+	readyBy string // date only — the column is ::date
+}
+
+// loadDurableLodgingSQL reads the bookings that ALREADY occupy the
+// pay_ledger_lodging_active_once index. The WHERE clause is a verbatim copy of
+// the index's predicate — if one changes, the other must.
+//
+//	CREATE UNIQUE INDEX pay_ledger_lodging_active_once
+//	    ON pay_ledger (buyer_id, seller_id, ready_by)
+//	 WHERE item_kind = 'nights_stay'
+//	   AND state = 'accepted'
+//	   AND fulfillment_status = 'delivered';
+const loadDurableLodgingSQL = `
+SELECT id, buyer_id, seller_id, ready_by
+  FROM pay_ledger
+ WHERE item_kind = 'nights_stay'
+   AND state = 'accepted'
+   AND fulfillment_status = 'delivered'`
+
+// loadDurableLodging seeds the lodging guard with the bookings already durable
+// in pay_ledger.
+//
+// Without this the guard is blind exactly where it matters. A delivered lodging
+// order is pruned from w.Orders at delivery and is never reloaded (LoadAll
+// filters to ready/pending), so the row that a new booking collides with is
+// almost never in the snapshot — it is sitting in the table. A snapshot-only
+// scan would therefore be a same-cycle dedup wearing the costume of an index
+// mirror, and the 2026-07-12 wedge would still be reachable through it. The same
+// trap is recorded at order_commands.go:96 ("an earlier w.Orders scan here was a
+// no-op in production").
+//
+// Runs inside the checkpoint Tx, so it sees this transaction's own writes and a
+// consistent view of everything else.
+func loadDurableLodging(ctx context.Context, tx sim.Tx) (map[lodgingKey]sim.OrderID, error) {
+	rows, err := tx.Query(ctx, loadDurableLodgingSQL)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[lodgingKey]sim.OrderID)
+	for rows.Next() {
+		var (
+			id      int64
+			buyer   string
+			seller  string
+			readyBy time.Time
+		)
+		if err := rows.Scan(&id, &buyer, &seller, &readyBy); err != nil {
+			return nil, err
+		}
+		out[lodgingKey{
+			buyer:   sim.ActorID(buyer),
+			seller:  sim.ActorID(seller),
+			readyBy: readyBy.Format("2006-01-02"),
+		}] = sim.OrderID(id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // sortedOrderIDs returns the snapshot's order ids ascending. Map order is
 // random; the lodging guard drops the SECOND row it sees for a booking, so an
 // unsorted pass would let the surviving booking flip from one checkpoint to the
@@ -384,18 +452,27 @@ func (r *OrdersRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, orders map[sim
 	// quarantine key for the rest of this function (and for the room_access
 	// cross-aggregate check in the actors writer, which looks the ledger row up
 	// by its id).
+	// EVERY id in the snapshot map goes in the list, INCLUDING the quarantined
+	// ones. `ids` is not "rows we are about to write" — it is "rows the world
+	// still knows about", and expireAbsentSQL destructively flips everything
+	// absent from it to fulfillment_status='expired'. Leaving a quarantined
+	// order out would therefore EXPIRE its durable row: the checkpoint would
+	// kill the very order it claimed only to leave behind, and since Orders has
+	// no gen-marker sweep there is no SweepBlocked backstop to catch it. A
+	// quarantine must never mutate the row it quarantines.
 	ids := make([]int64, 0, len(orders))
 	for _, id := range sortedOrderIDs(orders) {
+		ids = append(ids, int64(id))
+
 		o := orders[id]
 		if o == nil {
-			q.Drop("pay_ledger", fmt.Sprintf("%d", id), "nil order entry")
+			q.Drop("pay_ledger", ledgerRowID(id), "nil order entry")
 			continue
 		}
 		if o.ID != id {
-			q.Drop("pay_ledger", fmt.Sprintf("%d", id), fmt.Sprintf("map key=%d does not match o.ID=%d — the order has no coherent identity", id, o.ID))
+			q.Drop("pay_ledger", ledgerRowID(id), fmt.Sprintf("map key=%d does not match o.ID=%d — the order has no coherent identity", id, o.ID))
 			continue
 		}
-		ids = append(ids, int64(id))
 	}
 	if _, err := tx.Exec(ctx, expireAbsentSQL, ids); err != nil {
 		return fmt.Errorf("pg orders SaveSnapshot: expire absent: %w", err)
@@ -424,12 +501,21 @@ func (r *OrdersRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, orders map[sim
 	// the world has most likely already reacted to), and later duplicates are
 	// dropped. Without the sort, which of the two survived would flip between
 	// checkpoints as Go's map order changed.
-	type lodgingKey struct {
-		buyer   sim.ActorID
-		seller  sim.ActorID
-		readyBy string // date only — the column is ::date
+	//
+	// THE GUARD MUST CONSULT THE DURABLE TABLE, NOT JUST THE SNAPSHOT. The
+	// index is UNIQUE over the whole pay_ledger table, and the conflicting row
+	// is usually NOT in memory: a delivered lodging order is pruned from
+	// w.Orders at delivery (finalizeOrderTerminal) and is never reloaded after a
+	// restart, because LoadAll filters to fulfillment_status IN
+	// ('ready','pending'). So a snapshot-only scan is blind to exactly the row
+	// it needs to see — order_commands.go:96 records the same lesson ("an
+	// earlier w.Orders scan here was a no-op in production"). Seeding from pg
+	// first is what makes this a real mirror of the index rather than a
+	// same-cycle dedup.
+	activeLodging, err := loadDurableLodging(ctx, tx)
+	if err != nil {
+		return fmt.Errorf("pg orders SaveSnapshot: load durable lodging: %w", err)
 	}
-	activeLodging := make(map[lodgingKey]sim.OrderID)
 	for _, id := range sortedOrderIDs(orders) {
 		o := orders[id]
 		if o == nil || o.Item != lodgingItemKind || o.State != sim.OrderStateDelivered {
@@ -440,9 +526,13 @@ func (r *OrdersRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, orders map[sim
 			seller:  o.SellerID,
 			readyBy: readyByForOrder(o).Format("2006-01-02"),
 		}
-		if prior, taken := activeLodging[k]; taken {
-			q.Drop("pay_ledger", fmt.Sprintf("%d", id), fmt.Sprintf(
-				"second delivered %s for buyer=%s seller=%s ready_by=%s (order %d already holds it) — violates pay_ledger_lodging_active_once",
+		// A row already holding this booking is only a CONFLICT if it is a
+		// DIFFERENT row. The order's own durable row re-upserts through
+		// ON CONFLICT (id) and rewrites the same index entry, so it must not be
+		// quarantined against itself.
+		if prior, taken := activeLodging[k]; taken && prior != id {
+			q.Drop("pay_ledger", ledgerRowID(id), fmt.Sprintf(
+				"second delivered %s for buyer=%s seller=%s ready_by=%s (ledger row %d already holds it) — violates pay_ledger_lodging_active_once",
 				lodgingItemKind, o.BuyerID, o.SellerID, k.readyBy, prior))
 			continue
 		}
@@ -457,7 +547,7 @@ func (r *OrdersRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, orders map[sim
 		// Keyed on the map key. Every order still standing has key == o.ID (the
 		// mismatched ones were quarantined before `ids` was built), so this is
 		// the same identity the drops above and the lodging guard used.
-		if o == nil || q.Dropped("pay_ledger", fmt.Sprintf("%d", id)) {
+		if o == nil || q.Dropped("pay_ledger", ledgerRowID(id)) {
 			continue
 		}
 		// Order.ID and Order.LedgerID are the same value by domain
@@ -472,12 +562,12 @@ func (r *OrdersRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, orders map[sim
 		// types but worth noting), revisit this comparison to add an
 		// explicit range check before conversion.
 		if o.LedgerID != 0 && sim.OrderID(o.LedgerID) != o.ID {
-			q.Drop("pay_ledger", fmt.Sprintf("%d", o.ID), fmt.Sprintf("LedgerID %d does not match order id", o.LedgerID))
+			q.Drop("pay_ledger", ledgerRowID(o.ID), fmt.Sprintf("LedgerID %d does not match order id", o.LedgerID))
 			continue
 		}
 		status, err := orderStateToFulfillment(o.State)
 		if err != nil {
-			q.Drop("pay_ledger", fmt.Sprintf("%d", o.ID), err.Error())
+			q.Drop("pay_ledger", ledgerRowID(o.ID), err.Error())
 			continue
 		}
 		consumerIDs := make([]string, len(o.ConsumerIDs))

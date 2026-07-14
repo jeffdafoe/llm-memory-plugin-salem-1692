@@ -1266,9 +1266,13 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 
 	// Step 3: upsert each persisted actor.
 	for _, a := range persisted {
+		// An invalid Facing is row CONTENT, so it must not veto the checkpoint
+		// (LLM-392). validateFacing already maps "" -> the default heading, so a
+		// bad value is clamped the same way rather than costing the actor.
 		facing, err := validateFacing(a.Facing)
 		if err != nil {
-			return fmt.Errorf("pg actors SaveSnapshot: actor id=%s: %w", a.ID, err)
+			q.Clamp("actor", string(a.ID), fmt.Sprintf("invalid facing %q, clamped to the default heading: %v", a.Facing, err))
+			facing, _ = validateFacing("")
 		}
 		if _, err := tx.Exec(ctx, upsertSQLA,
 			string(a.ID),                                 // $1 id
@@ -1405,7 +1409,11 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 			}
 			factsJSON, err := marshalSalientFacts(rel.SalientFacts)
 			if err != nil {
-				return fmt.Errorf("pg actors SaveSnapshot: marshal salient_facts actor=%s peer=%s: %w", a.ID, peerID, err)
+				// Unmarshalable facts are row content, not a broken Tx — drop the
+				// one relationship, keep the actor and the checkpoint (LLM-392).
+				q.Drop("actor_relationship", childID(a.ID, string(peerID)),
+					fmt.Sprintf("salient_facts will not marshal: %v", err))
+				continue
 			}
 			if _, err := tx.Exec(ctx, upsertRelationshipSQLA,
 				string(a.ID),           // $1 actor_id
@@ -1551,21 +1559,31 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 			if ra == nil {
 				continue
 			}
-			if q.Dropped("room_access", roomAccessID(rk.RoomID, a.ID)) {
+			id := roomAccessID(rk.RoomID, a.ID, rk.Source)
+			if q.Dropped("room_access", id) {
 				continue
 			}
-			// The ONE cross-aggregate dependency in the checkpoint:
-			// room_access.granted_via_ledger_id -> pay_ledger(id). If Orders
-			// quarantined that ledger row, this grant must go too — and we
-			// CANNOT leave it to the FK to tell us so. When the ledger row is
-			// brand new the FK does reject the grant, but when the ledger row
-			// already exists durably from an earlier checkpoint, the FK is
-			// perfectly happy: it would bind this fresh grant to the STALE
-			// ledger row, silently pairing a current grant with a superseded
-			// payment. Postgres cannot see that as wrong; only we can.
-			if ra.LedgerID != 0 && q.Dropped("pay_ledger", fmt.Sprintf("%d", ra.LedgerID)) {
-				q.Drop("room_access", roomAccessID(rk.RoomID, a.ID),
+			// room_access carries TWO non-deferred cross-aggregate FKs, and
+			// neither can be left to Postgres to police:
+			//
+			//   granted_via_ledger_id -> pay_ledger(id)   (Orders runs first)
+			//   room_id               -> structure_room(id) (Structures runs first)
+			//
+			// If the referenced row was quarantined by its own writer, this grant
+			// must go too. The FK alone is NOT a sufficient guard: it only fires
+			// when the parent row is BRAND NEW. Once the parent exists durably
+			// from an earlier checkpoint, the FK is perfectly satisfied by the
+			// STALE row — so the grant would be written fresh against a superseded
+			// payment, or against a room whose definition we just declined to
+			// update. Postgres cannot see either as wrong; only we can.
+			if ra.LedgerID != 0 && q.Dropped("pay_ledger", ledgerRowID(ra.LedgerID)) {
+				q.Drop("room_access", id,
 					fmt.Sprintf("ledger row %d was quarantined by Orders — a room grant cannot outlive the payment that bought it", ra.LedgerID))
+				continue
+			}
+			if q.Dropped("structure_room", roomRowID(rk.RoomID)) {
+				q.Drop("room_access", id,
+					fmt.Sprintf("room %d was quarantined by Structures and has no durable row — a grant cannot reference a room that does not exist", rk.RoomID))
 				continue
 			}
 			if _, err := tx.Exec(ctx, upsertRoomAccessSQLA,
@@ -1637,7 +1655,9 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 			}
 			affJSON, err := marshalAffordances(kp.Affordances)
 			if err != nil {
-				return fmt.Errorf("pg actors SaveSnapshot: marshal affordances actor=%s ref=%s: %w", a.ID, ref, err)
+				q.Drop("actor_known_place", childID(a.ID, string(ref)),
+					fmt.Sprintf("affordances will not marshal: %v", err))
+				continue
 			}
 			if _, err := tx.Exec(ctx, upsertKnownPlaceSQLA,
 				string(a.ID),         // $1 actor_id
@@ -2058,7 +2078,7 @@ func validateActorsSnapshot(actors map[sim.ActorID]*sim.Actor, q *sim.Quarantine
 	// upsert-then-sweep). This is the guard that keeps a double-booked room
 	// from wedging the checkpoint the way a double-booked LEDGER row did for
 	// 17.5 hours on 2026-07-12 (LLM-391/LLM-392).
-	activePrivateRooms := make(map[sim.RoomID]sim.ActorID)
+	activePrivateRooms := make(map[sim.RoomID]privateClaim)
 	for _, key := range keys {
 		a := actors[key]
 		if a == nil {
@@ -2134,7 +2154,7 @@ func validateActorsSnapshot(actors map[sim.ActorID]*sim.Actor, q *sim.Quarantine
 				continue
 			}
 			if qty < 0 {
-				q.Clamp("actor_inventory", childID(a.ID, string(kind)), fmt.Sprintf("quantity=%d negative, clamped to 0 (row deleted)", qty))
+				q.Clamp("actor_inventory", childID(a.ID, string(kind)), fmt.Sprintf("quantity=%d negative, clamped to 0 — the row is not written, and is removed by the stale-row sweep once one runs unblocked", qty))
 				a.Inventory[kind] = 0
 			}
 		}
@@ -2245,7 +2265,7 @@ func validateActorsSnapshot(actors map[sim.ActorID]*sim.Actor, q *sim.Quarantine
 			if ra == nil {
 				continue
 			}
-			id := roomAccessID(rk.RoomID, a.ID)
+			id := roomAccessID(rk.RoomID, a.ID, rk.Source)
 			if ra.RoomID != rk.RoomID || ra.Source != rk.Source {
 				q.Drop("room_access", id, fmt.Sprintf("struct (room=%d src=%s) disagrees with map key (room=%d src=%s)",
 					ra.RoomID, ra.Source, rk.RoomID, rk.Source))
@@ -2264,17 +2284,33 @@ func validateActorsSnapshot(actors map[sim.ActorID]*sim.Actor, q *sim.Quarantine
 				q.Drop("room_access", id, fmt.Sprintf("room=%d has zero CreatedAt (granted_at is NOT NULL)", rk.RoomID))
 				continue
 			}
-			// Single active private occupant per room (ux_room_access_one_
-			// private_active): ledger grants map to kind=private; an active
-			// one claims the room. The first claimant in sorted actor order
-			// keeps it; a second is dropped rather than wedging the write.
+			// Single active private occupant per room
+			// (ux_room_access_one_private_active — a partial UNIQUE on room_id
+			// alone, which upsertRoomAccessSQLA's ON CONFLICT (room_id, actor_id)
+			// arbiter does NOT resolve).
+			//
+			// When two actors claim one room, BOTH are dropped — we do not pick a
+			// winner. Picking one looks tempting (lowest actor id) but is unsafe:
+			// dropping the loser blocks the room_access sweep, so the loser's
+			// STALE durable row survives, still active and still private. The
+			// "winner"'s fresh UPSERT then collides with that surviving row on the
+			// partial index and aborts the whole checkpoint mid-Tx — the very
+			// outage this ticket exists to prevent, in half of all double-booked
+			// rooms (whenever the durable incumbent happens to sort higher).
+			//
+			// Dropping both is the safe reading of an ambiguous world: we cannot
+			// tell who owns the room, so we change nothing about it. Each grant
+			// keeps its previous durable version and the alarm names both.
 			if rk.Source == sim.AccessSourceLedger && ra.Active {
 				if prior, taken := activePrivateRooms[rk.RoomID]; taken {
-					q.Drop("room_access", id, fmt.Sprintf("second actor holding an active ledger (private) grant for room=%d (%s already holds it) — violates ux_room_access_one_private_active",
-						rk.RoomID, prior))
+					q.Drop("room_access", id, fmt.Sprintf("two actors hold an active ledger (private) grant for room=%d (%s and %s) — violates ux_room_access_one_private_active; BOTH grants are dropped, the room's durable occupancy is left untouched",
+						rk.RoomID, prior.actor, a.ID))
+					// Retroactively drop the earlier claimant too.
+					q.Drop("room_access", prior.key, fmt.Sprintf("two actors hold an active ledger (private) grant for room=%d (%s and %s) — violates ux_room_access_one_private_active; BOTH grants are dropped, the room's durable occupancy is left untouched",
+						rk.RoomID, prior.actor, a.ID))
 					continue
 				}
-				activePrivateRooms[rk.RoomID] = a.ID
+				activePrivateRooms[rk.RoomID] = privateClaim{actor: a.ID, key: id}
 			}
 			seenRooms[rk.RoomID] = rk.Source
 		}
@@ -2331,4 +2367,15 @@ func validateActorsSnapshot(actors map[sim.ActorID]*sim.Actor, q *sim.Quarantine
 		persisted = append(persisted, a)
 	}
 	return persisted
+}
+
+// privateClaim is the first actor seen holding an active ledger (private) grant
+// on a room, plus the quarantine key that grant was recorded under — so that a
+// SECOND claimant can retroactively drop the first as well. See the
+// activePrivateRooms guard: an ambiguous room is left alone entirely rather than
+// having a winner picked, because dropping only the loser leaves the loser's
+// stale active row in place for the winner's UPSERT to collide with.
+type privateClaim struct {
+	actor sim.ActorID
+	key   string
 }

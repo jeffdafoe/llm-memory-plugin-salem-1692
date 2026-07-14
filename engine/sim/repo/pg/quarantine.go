@@ -29,15 +29,34 @@ type checkpointTx struct {
 	q *sim.Quarantine
 }
 
-// quarantineOf extracts the quarantine from a checkpoint Tx. Returns nil for
-// a plain Tx — the non-checkpoint write paths (WriteTerminal and friends run
-// against the pool, outside any checkpoint) — and every sim.Quarantine method
-// is nil-safe, so callers never branch on it.
+// quarantineOf extracts the quarantine from a checkpoint Tx.
+//
+// It NEVER returns nil. A nil quarantine would make this mechanism FAIL OPEN,
+// which is strictly worse than the bug it replaces: `Drop` would be a silent
+// no-op, so `Dropped` would report false and `SweepBlocked` would report false
+// — yet the writers would still leave the bad row out of the write set. The row
+// would then keep its old snapshot_gen, the sweep would run unblocked, and the
+// row we meant to PRESERVE would be DELETED, silently, with no alarm. Before
+// LLM-392 that same row returned a loud error. So a writer handed a plain Tx
+// gets a throwaway quarantine and stays internally consistent (drops recorded,
+// sweeps blocked, rows preserved); only the report is discarded.
+//
+// Both the pointer and value forms are matched. checkpointTx embeds the sim.Tx
+// INTERFACE, so its methods are promoted into the VALUE's method set too — a
+// by-value checkpointTx satisfies sim.Tx and would silently miss a
+// pointer-only type assertion, with no compiler warning.
 func quarantineOf(tx sim.Tx) *sim.Quarantine {
-	if ctx, ok := tx.(*checkpointTx); ok {
-		return ctx.q
+	switch t := tx.(type) {
+	case *checkpointTx:
+		if t.q != nil {
+			return t.q
+		}
+	case checkpointTx:
+		if t.q != nil {
+			return t.q
+		}
 	}
-	return nil
+	return &sim.Quarantine{}
 }
 
 // execSweep runs a gen-marker stale-row sweep (`DELETE FROM t WHERE
@@ -78,17 +97,56 @@ func execSweep(ctx context.Context, tx sim.Tx, table, sql string, args ...any) e
 
 // childID builds the quarantine key for a child row of an owning entity —
 // "<owner>/<key>". The write loops rebuild the same string to ask whether the
-// pre-pass dropped that row (q.Dropped), so the two must agree exactly; that
-// is the only reason this is a shared helper rather than an inline Sprintf.
-func childID(owner sim.ActorID, key string) string {
+// pre-pass dropped that row (q.Dropped), so the two must agree exactly; that is
+// the only reason this is a shared helper rather than an inline Sprintf. Every
+// aggregate with child rows must route BOTH the drop and the check through it —
+// a hand-rolled Sprintf on one side and a helper on the other is precisely how
+// the two drift.
+func childID[T ~string](owner T, key string) string {
 	return string(owner) + "/" + key
 }
 
-// roomAccessID builds the quarantine key for a room_access row. Keyed on the
-// table's real PK, (room_id, actor_id) — NOT on the in-memory RoomAccessKey,
-// whose Source is not part of the PK.
-func roomAccessID(room sim.RoomID, actor sim.ActorID) string {
-	return fmt.Sprintf("%d/%s", room, actor)
+// roomAccessID builds the quarantine key for a room_access row.
+//
+// Source is part of the key even though it is NOT part of the table's PK
+// (room_id, actor_id). That is deliberate: Actor.RoomAccess is keyed by
+// {RoomID, Source}, so one actor can hold two in-memory grants for the same
+// room under different sources. The pre-pass keeps the first and drops the
+// second — and if both minted the same quarantine key, the write loop's
+// q.Dropped check would match the SURVIVOR too and skip it, writing neither.
+// (structure_room hit the identical trap and solved it with position keys.)
+func roomAccessID(room sim.RoomID, actor sim.ActorID, source sim.RoomAccessSource) string {
+	return fmt.Sprintf("%d/%s/%s", room, actor, source)
+}
+
+// roomRowID is the quarantine key for a structure_room row AS SEEN FROM ANOTHER
+// AGGREGATE — the raw room id.
+//
+// Structures keys its own room drops by slice POSITION (structureRoomID), which
+// is right for its write loop but useless to the actors writer, which only
+// knows a RoomID. So a room that will have NO durable row this checkpoint is
+// ALSO recorded under this id-shaped key, letting the room_access writer skip a
+// grant whose room was quarantined. Distinct key strings in the same table, so
+// the two never collide.
+func roomRowID(room sim.RoomID) string {
+	return fmt.Sprintf("%d", room)
+}
+
+// ledgerRowID is the quarantine key for a pay_ledger row.
+//
+// This is the ONE key that crosses an aggregate boundary — Orders mints the
+// drop, and the Actors room_access writer reads it back to cascade the drop to
+// the grant that ledger row paid for — which makes it the key least able to
+// afford a drift, and the one whose drift is SILENT (Postgres accepts a grant
+// bound to a stale ledger row; only Go can see it is wrong).
+//
+// It bridges three Go types for the SAME number: Orders holds a sim.OrderID
+// (uint64), pay_ledger.id is a sim.LedgerID (uint64), and RoomAccess.LedgerID is
+// a plain int64. Routing them all through one helper is the point — a
+// hand-rolled Sprintf on each side is how a uint64 and an int64 silently stop
+// producing the same key.
+func ledgerRowID[T ~uint64 | ~int64](id T) string {
+	return fmt.Sprintf("%d", id)
 }
 
 // clampInt forces v into [lo, hi]. The checkpoint clamps an out-of-range value

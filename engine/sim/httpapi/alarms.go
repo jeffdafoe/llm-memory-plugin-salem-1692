@@ -269,8 +269,15 @@ func checkpointQuarantineAlarm(h sim.CheckpointHealthSnapshot, now time.Time) (A
 		return Alarm{}, false
 	}
 	since := h.QuarantineSince
-	detail := "DURABILITY IS LOSSY: the last " + strconv.Itoa(h.ConsecutiveDegraded) +
-		" checkpoint(s) committed, but could not persist every row — world state and the durable state have diverged"
+	// Phrased around "the last checkpoint that COMMITTED" rather than "the last
+	// N checkpoints", because RecordFailure deliberately does not clear the
+	// degraded state — the world is still holding rows it cannot write — so this
+	// alarm can be firing while checkpoints are currently FAILING outright. In
+	// that combined state, claiming the recent checkpoints committed would be a
+	// lie, and it is exactly the state (durability broken AND lossy) where an
+	// operator can least afford a misleading sentence.
+	detail := "DURABILITY IS LOSSY: the last checkpoint that COMMITTED could not persist every row — world state and the durable state have diverged, over " +
+		strconv.Itoa(h.ConsecutiveDegraded) + " degraded checkpoint(s)"
 	if !since.IsZero() {
 		detail += " (ongoing for " + humanizeSince(now.Sub(since)) + ")"
 	}

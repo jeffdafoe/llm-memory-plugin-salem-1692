@@ -85,7 +85,7 @@ func TestExecuteNPCSleep_KeeperBedDown_EvictsCrossThresholdLoiterer(t *testing.T
 func TestExecuteNPCSleep_CoKeeperPresent_KeepsCrossThresholdHuddle(t *testing.T) {
 	now := time.Date(2026, 6, 24, 4, 0, 0, 0, time.UTC)
 	john := liveInKeeper("john")
-	mary := liveInKeeper("mary") // second keeper of the same tavern, stays awake
+	mary := liveInKeeper("mary")                       // second keeper of the same tavern, stays awake
 	npc := &Actor{ID: "patience", Kind: KindNPCShared} // at the loiter pin, outside
 	w := keeperTavernWorld(false, john, mary, npc)
 	seatHuddle(w, "hud-1", "tavern", now, "john", "mary", "patience")

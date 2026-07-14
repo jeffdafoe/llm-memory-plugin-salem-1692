@@ -206,7 +206,8 @@ func (r *RecurringVisitorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, rec
 			continue
 		}
 		if rv.ID != id {
-			q.Drop("recurring_visitor", string(rv.ID), fmt.Sprintf("map key=%s does not match rv.ID=%s", id, rv.ID))
+			// Keyed on the MAP KEY: rv.ID is the field we do not trust here.
+			q.Drop("recurring_visitor", string(id), fmt.Sprintf("map key=%s does not match rv.ID=%s", id, rv.ID))
 			continue
 		}
 		if strings.TrimSpace(string(rv.ID)) == "" {
@@ -250,7 +251,7 @@ func (r *RecurringVisitorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, rec
 			}
 			factsJSON, err := marshalSalientFacts(acq.SalientFacts)
 			if err != nil {
-				q.Drop("recurring_visitor_acquaintance", fmt.Sprintf("%s/%s", rv.ID, pcID), fmt.Sprintf("salient_facts will not marshal: %v", err))
+				q.Drop("recurring_visitor_acquaintance", childID(rv.ID, string(pcID)), fmt.Sprintf("salient_facts will not marshal: %v", err))
 				continue
 			}
 			if _, err := tx.Exec(ctx, upsertRecurringAcqSQL,

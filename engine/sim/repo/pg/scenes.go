@@ -296,7 +296,7 @@ func (r *ScenesRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, scenes map[sim
 		}
 		for hid := range s.Huddles {
 			if strings.TrimSpace(string(hid)) == "" {
-				q.Drop("scene_huddle_ref", fmt.Sprintf("%s/%s", key, hid), "empty HuddleID in the scene's Huddles set")
+				q.Drop("scene_huddle_ref", childID(key, string(hid)), "empty HuddleID in the scene's Huddles set")
 			}
 		}
 	}
@@ -353,7 +353,7 @@ func (r *ScenesRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, scenes map[sim
 			continue
 		}
 		for hid := range s.Huddles {
-			if q.Dropped("scene_huddle_ref", fmt.Sprintf("%s/%s", key, hid)) {
+			if q.Dropped("scene_huddle_ref", childID(key, string(hid))) {
 				continue
 			}
 			if _, err := tx.Exec(ctx, upsertSQLScRef,

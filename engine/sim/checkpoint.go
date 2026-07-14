@@ -369,8 +369,14 @@ func (h *CheckpointHealth) RecordSuccess(now time.Time, q *Quarantine) {
 	}
 	h.consecutiveDegraded++
 	h.totalDegraded++
-	h.totalQuarantinedRows += uint64(len(q.Rows()))
-	h.lastQuarantinedRows = q.Rows()
+	h.totalQuarantinedRows += uint64(q.Len())
+	// COPY, don't alias. q.Rows() hands back the Quarantine's own backing array,
+	// which the pg writers built with append. Storing that slice header would
+	// publish a live, still-appendable array to the HTTP reader goroutines that
+	// call Snapshot() — safe only by the accident that nobody appends after this
+	// point today. Copying once here (per checkpoint, off the request path) is
+	// also why Snapshot() no longer has to copy on every single read.
+	h.lastQuarantinedRows = append([]QuarantinedRow(nil), q.Rows()...)
 	h.lastSkippedSweeps = q.SkippedSweeps()
 }
 
@@ -411,8 +417,11 @@ func (h *CheckpointHealth) Snapshot() CheckpointHealthSnapshot {
 		ConsecutiveDegraded:  h.consecutiveDegraded,
 		TotalDegraded:        h.totalDegraded,
 		TotalQuarantinedRows: h.totalQuarantinedRows,
-		LastQuarantinedRows:  append([]QuarantinedRow(nil), h.lastQuarantinedRows...),
-		LastSkippedSweeps:    append([]string(nil), h.lastSkippedSweeps...),
+		// Already a private copy (RecordSuccess copied on the way in) and never
+		// mutated after, so handing it out directly is safe — and this runs on
+		// EVERY umbilical response, so not re-copying it here matters.
+		LastQuarantinedRows: h.lastQuarantinedRows,
+		LastSkippedSweeps:   h.lastSkippedSweeps,
 	}
 }
 
@@ -455,6 +464,14 @@ func RunCheckpointer(ctx context.Context, w *World, save CheckpointFunc, health 
 			if err != nil {
 				health.RecordFailure(time.Now(), err)
 				log.Printf("sim/checkpoint: %v", err)
+				// A checkpoint can quarantine rows and THEN die on a real
+				// infrastructure failure (pg drops at COMMIT). SaveWorld returns
+				// the quarantine on every error path precisely so those rows are
+				// not lost — they are the diagnostic that says which bad row was in
+				// play when the write broke. Don't throw it away.
+				if !q.Clean() {
+					log.Printf("sim/checkpoint: the FAILED checkpoint had also quarantined rows: %s", q.Summary())
+				}
 			} else {
 				finished := time.Now()
 				health.RecordSuccess(finished, q)

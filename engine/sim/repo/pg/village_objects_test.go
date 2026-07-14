@@ -472,6 +472,19 @@ func TestVillageObjectsRepo_SaveSnapshot_OwnerNullVsValue(t *testing.T) {
 
 	expectSaveSnapshotPrelude(mock, 2)
 
+	// The overlay's PARENT must be in the snapshot. An overlay attached to an
+	// object that is absent from the snapshot is exactly the orphan condition
+	// (a fresh child on a stale parent) that the LLM-392 guard now quarantines —
+	// and that the step-4 orphan check would otherwise abort the whole
+	// checkpoint over. Roots are written before overlays.
+	mock.ExpectExec(`INSERT INTO village_object`).
+		WithArgs(
+			uuidObj1, uuidAssetLamp, "idle", 10.0, 10.0, "",
+			"", "open", nil, nil,
+			(*int)(nil), (*int)(nil), 0, []string{}, 0, int64(2),
+		).
+		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
+
 	// Owned overlay (both owner_actor_id + attached_to non-NULL).
 	mock.ExpectExec(`INSERT INTO village_object`).
 		WithArgs(
@@ -489,6 +502,11 @@ func TestVillageObjectsRepo_SaveSnapshot_OwnerNullVsValue(t *testing.T) {
 	expectSaveSnapshotRefreshTail(mock, 20)
 
 	objects := map[sim.VillageObjectID]*sim.VillageObject{
+		sim.VillageObjectID(uuidObj1): {
+			ID: sim.VillageObjectID(uuidObj1), AssetID: sim.AssetID(uuidAssetLamp), CurrentState: "idle",
+			Pos:         sim.WorldPos{X: 10, Y: 10},
+			EntryPolicy: sim.EntryPolicyOpen,
+		},
 		sim.VillageObjectID(uuidOverlay): {
 			ID: sim.VillageObjectID(uuidOverlay), AssetID: sim.AssetID(uuidAssetLamp), CurrentState: "lit",
 			Pos:          sim.WorldPos{X: 100, Y: 100},

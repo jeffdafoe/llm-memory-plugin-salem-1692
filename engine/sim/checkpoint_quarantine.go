@@ -114,6 +114,8 @@ type Quarantine struct {
 	// here: a clamped row is still written, so nothing downstream should
 	// skip it.
 	ids map[string]map[string]bool
+	// total counts every Drop/Clamp, including those past maxRetainedRows.
+	total int
 	// blocked holds tables whose sweep must be skipped even though no row of
 	// THEIR own was dropped — the child tables of a dropped parent. See
 	// BlockSweep.
@@ -125,6 +127,22 @@ type Quarantine struct {
 	sweeps map[string]bool
 }
 
+// maxRetainedRows caps the per-checkpoint row REPORT — not the drop bookkeeping.
+//
+// The report is retained on CheckpointHealth, copied on every umbilical
+// response, and serialized into /umbilical/state and /checkpoint-health bodies.
+// A schema drift (a migration invalidating an enum, a needs-tick bug pushing
+// every need out of range) quarantines one row per child entity per actor —
+// thousands of rows, rebuilt every 60s and held for as long as the degradation
+// lasts. Unbounded, that turns the alarm into a response amplifier on exactly
+// the routes an operator hits BECAUSE the alarm is firing.
+//
+// Only `rows` is capped. `ids`, `blocked` and `sweeps` stay complete and
+// unbounded, because Dropped()/SweepBlocked() are correctness-load-bearing —
+// capping them would let a dropped row reach SQL, or a blocked sweep delete a
+// row we meant to preserve. Len() still reports the true total.
+const maxRetainedRows = 64
+
 // Drop records that a row was left out of this checkpoint entirely. The row
 // keeps whatever version it already had in Postgres (its table's sweep is
 // skipped, so the old row survives), or has no durable row at all if it was
@@ -133,7 +151,11 @@ func (q *Quarantine) Drop(table, id, reason string) {
 	if q == nil {
 		return
 	}
-	q.rows = append(q.rows, QuarantinedRow{Table: table, ID: id, Reason: reason})
+	q.total++
+	if len(q.rows) < maxRetainedRows {
+		q.rows = append(q.rows, QuarantinedRow{Table: table, ID: id, Reason: reason})
+	}
+	// The index is NEVER capped — see maxRetainedRows.
 	if q.ids == nil {
 		q.ids = make(map[string]map[string]bool)
 	}
@@ -151,7 +173,19 @@ func (q *Quarantine) Clamp(table, id, reason string) {
 	if q == nil {
 		return
 	}
-	q.rows = append(q.rows, QuarantinedRow{Table: table, ID: id, Reason: reason, Clamped: true})
+	q.total++
+	if len(q.rows) < maxRetainedRows {
+		q.rows = append(q.rows, QuarantinedRow{Table: table, ID: id, Reason: reason, Clamped: true})
+	}
+}
+
+// Len reports how many rows were dropped or clamped — the TRUE count, which may
+// exceed len(Rows()) when the report was capped at maxRetainedRows. Nil-safe.
+func (q *Quarantine) Len() int {
+	if q == nil {
+		return 0
+	}
+	return q.total
 }
 
 // Dropped reports whether this exact row was dropped. Child writers call it
@@ -220,7 +254,11 @@ func (q *Quarantine) Clean() bool {
 	if q == nil {
 		return true
 	}
-	return len(q.rows) == 0 && len(q.sweeps) == 0
+	// blocked is included even though every dropX helper pairs BlockSweep with a
+	// Drop today: BlockSweep is a public method, and a lone BlockSweep on a table
+	// whose execSweep is never reached would otherwise leave rows and sweeps both
+	// empty — Clean() would report healthy while durability is knowingly degraded.
+	return q.total == 0 && len(q.sweeps) == 0 && len(q.blocked) == 0
 }
 
 // Rows returns the quarantined rows in the order they were recorded. Nil-safe.
@@ -264,6 +302,9 @@ func (q *Quarantine) Summary() string {
 		dropped++
 	}
 	fmt.Fprintf(&b, "%d row(s) dropped, %d clamped", dropped, clamped)
+	if q.Len() > len(q.Rows()) {
+		fmt.Fprintf(&b, " (report capped; %d total)", q.Len())
+	}
 	if sweeps := q.SkippedSweeps(); len(sweeps) > 0 {
 		fmt.Fprintf(&b, "; sweep skipped on %s (departed rows may be retained)", strings.Join(sweeps, ", "))
 	}

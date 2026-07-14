@@ -122,6 +122,82 @@ func TestIntegration_SaveWorld_LodgingDoubleBook_QuarantinedNotFatal(t *testing.
 	}
 }
 
+// TestIntegration_SaveWorld_LodgingCollidesWithDurableRow is the regression test
+// for the way the FIRST version of this guard was still broken.
+//
+// pay_ledger_lodging_active_once is UNIQUE over the whole TABLE, but the guard
+// originally deduped only WITHIN the snapshot — and the row a new booking
+// collides with is almost never in the snapshot. A delivered lodging order is
+// pruned from w.Orders at delivery and never reloaded (LoadAll filters to
+// ready/pending), so it lives on in pay_ledger and nowhere else. A snapshot-only
+// guard is therefore blind to exactly the row it exists to see, and the 17.5-hour
+// wedge stays reachable straight through it.
+//
+// Here the durable row is NOT in the snapshot at all. The guard must still catch
+// the collision by reading pay_ledger.
+func TestIntegration_SaveWorld_LodgingCollidesWithDurableRow(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	repo := NewRepository(f.Pool)
+
+	seedQuarantineItemKinds(t, f, ctx)
+
+	readyBy := time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC)
+	// A delivered booking already durable in pay_ledger — the shape of a lodging
+	// order that has since been pruned from memory. It is NOT in w.Orders.
+	if _, err := f.Pool.Exec(ctx, `
+        INSERT INTO pay_ledger
+            (id, buyer_id, seller_id, item_kind, qty, offered_amount,
+             state, fulfillment_status, ready_by, created_at, resolved_at)
+        VALUES
+            (1447, $1, $2, 'nights_stay', 1, 3,
+             'accepted', 'delivered', $3::date, NOW(), NOW())`,
+		string(ezekielID), string(hannahID), readyBy,
+	); err != nil {
+		t.Fatalf("seed durable lodging row: %v", err)
+	}
+
+	w := checkpointableWorld(repo)
+	now := time.Date(2026, 7, 13, 23, 0, 0, 0, time.UTC)
+	// A NEW booking for the same (buyer, seller, ready_by) reaches Delivered.
+	// It is alone in the snapshot — nothing here reveals the conflict.
+	w.Orders = map[sim.OrderID]*sim.Order{
+		1449: {
+			ID: 1449, LedgerID: 1449,
+			State:    sim.OrderStateDelivered,
+			BuyerID:  ezekielID,
+			SellerID: hannahID,
+			Item:     lodgingItemKind,
+			Qty:      1, Amount: 3,
+			ReadyBy:   readyBy,
+			CreatedAt: now,
+			ExpiresAt: now.Add(time.Hour),
+		},
+	}
+	w.Actors = map[sim.ActorID]*sim.Actor{
+		ezekielID: {
+			ID: ezekielID, Kind: sim.KindNPCShared,
+			DisplayName: "Ezekiel", State: "idle", Coins: 42,
+		},
+	}
+
+	q, err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot())
+	if err != nil {
+		t.Fatalf("SaveWorld = %v — the new booking collides with a DURABLE lodging row the snapshot cannot see; the guard must read pay_ledger, not just the snapshot", err)
+	}
+	if !q.Dropped("pay_ledger", "1449") {
+		t.Errorf("the colliding new booking should be quarantined against the durable row; rows = %+v", q.Rows())
+	}
+	// The village still persists.
+	loaded, err := LoadWorld(ctx, repo, true)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	if loaded.Actors[ezekielID] == nil {
+		t.Fatal("ezekiel was not persisted — a lodging collision must not cost the village its durability")
+	}
+}
+
 // TestIntegration_SaveWorld_DroppedActor_KeepsPreviousRowAndChildren proves the
 // sweep guard, which is the subtlest part of the design.
 //
@@ -274,7 +350,7 @@ func TestIntegration_SaveWorld_QuarantinedLedger_SuppressesRoomGrant(t *testing.
 	if !q.Dropped("pay_ledger", "1448") {
 		t.Fatalf("ledger 1448 should be quarantined; rows = %+v", q.Rows())
 	}
-	if !q.Dropped("room_access", roomAccessID(roomID, ezekielID)) {
+	if !q.Dropped("room_access", roomAccessID(roomID, ezekielID, sim.AccessSourceLedger)) {
 		t.Errorf("the room grant bought with the quarantined ledger row must be dropped too; rows = %+v", q.Rows())
 	}
 
@@ -359,6 +435,117 @@ func TestIntegration_SaveWorld_DroppedChildRow_NeverReachesSQL(t *testing.T) {
 	}
 	if j.Inventory["bread"] != 2 {
 		t.Errorf("josiah.Inventory[bread] = %d, want 2 (the GOOD sibling row must still persist)", j.Inventory["bread"])
+	}
+}
+
+// TestIntegration_SaveWorld_NestedOverlayChain_DoesNotAbort — the orphan guard
+// must cascade DOWN THE CHAIN, not one level.
+//
+// village_object attachment is a chain (A <- B <- C). The first version of the
+// guard dropped an overlay whose parent was ABSENT from the snapshot, but left
+// alone one whose parent was PRESENT-but-quarantined. C would then be written at
+// the fresh gen against B, which kept the old gen — and the writer's own hard
+// orphan check (fresh child + stale parent => error) aborted the ENTIRE
+// checkpoint. That is the 17.5-hour outage shape, reintroduced by the guard
+// meant to prevent it.
+func TestIntegration_SaveWorld_NestedOverlayChain_DoesNotAbort(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	repo := NewRepository(f.Pool)
+
+	const (
+		objB = sim.VillageObjectID("55555555-0000-0000-0000-000000000392")
+		objC = sim.VillageObjectID("66666666-0000-0000-0000-000000000392")
+		objA = sim.VillageObjectID("77777777-0000-0000-0000-000000000392") // NOT in the snapshot
+	)
+
+	w := checkpointableWorld(repo)
+	// B hangs off A, which is absent from the world. C hangs off B.
+	w.VillageObjects = map[sim.VillageObjectID]*sim.VillageObject{
+		objB: {
+			ID: objB, AssetID: sim.AssetID(uuidAssetWell), EntryPolicy: sim.EntryPolicyOpen,
+			AttachedTo: objA,
+		},
+		objC: {
+			ID: objC, AssetID: sim.AssetID(uuidAssetWell), EntryPolicy: sim.EntryPolicyOpen,
+			AttachedTo: objB,
+		},
+	}
+
+	q, err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot())
+	if err != nil {
+		t.Fatalf("SaveWorld = %v — a nested overlay chain must not abort the checkpoint; the drop has to cascade to descendants", err)
+	}
+	if !q.Dropped("village_object", string(objB)) {
+		t.Errorf("B (parent absent) should be quarantined; rows = %+v", q.Rows())
+	}
+	if !q.Dropped("village_object", string(objC)) {
+		t.Errorf("C must be quarantined TOO — its parent B was dropped, so writing C fresh orphans it; rows = %+v", q.Rows())
+	}
+}
+
+// TestIntegration_SaveWorld_RoomAccessTwoSources_SurvivorStillWritten — the
+// drop key must distinguish the loser from the survivor.
+//
+// Actor.RoomAccess is keyed by {RoomID, Source}, so one actor can hold two
+// in-memory grants for the same room. The table's PK is only (room_id,
+// actor_id), so the pre-pass drops the second. But the drop key originally
+// omitted Source — so BOTH grants minted the same key, and the write loop's
+// q.Dropped guard skipped the SURVIVOR as well. Neither grant was written, and
+// with the sweep blocked the actor's durable grant froze forever.
+func TestIntegration_SaveWorld_RoomAccessTwoSources_SurvivorStillWritten(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	repo := NewRepository(f.Pool)
+
+	const (
+		innID  = sim.StructureID("88888888-0000-0000-0000-000000000392")
+		roomID = sim.RoomID(393)
+	)
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+
+	w := checkpointableWorld(repo)
+	w.VillageObjects = map[sim.VillageObjectID]*sim.VillageObject{
+		sim.VillageObjectID(innID): {ID: sim.VillageObjectID(innID), AssetID: sim.AssetID(uuidAssetWell), EntryPolicy: sim.EntryPolicyOpen},
+	}
+	w.Structures = map[sim.StructureID]*sim.Structure{
+		innID: {ID: innID, DisplayName: "Inn", Rooms: []*sim.Room{
+			{ID: roomID, StructureID: innID, Kind: sim.RoomKindPrivate, Name: "bedroom_1"},
+		}},
+	}
+	// Hannah holds TWO grants on the same room, under different sources.
+	w.Actors = map[sim.ActorID]*sim.Actor{
+		hannahID: {
+			ID: hannahID, Kind: sim.KindNPCShared,
+			DisplayName: "Hannah", State: "idle",
+			RoomAccess: map[sim.RoomAccessKey]*sim.RoomAccess{
+				{RoomID: roomID, Source: sim.AccessSourceStaff}: {
+					RoomID: roomID, Source: sim.AccessSourceStaff,
+					Active: true, CreatedAt: now,
+				},
+				{RoomID: roomID, Source: sim.AccessSourceLedger}: {
+					RoomID: roomID, Source: sim.AccessSourceLedger,
+					LedgerID: 0, Active: true, CreatedAt: now,
+				},
+			},
+		},
+	}
+
+	q, err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot())
+	if err != nil {
+		t.Fatalf("SaveWorld = %v, want nil", err)
+	}
+	_ = q
+
+	// Exactly ONE room_access row — the survivor. Not zero.
+	var grants int
+	if err := f.Pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM room_access WHERE room_id = $1 AND actor_id = $2`,
+		int64(roomID), string(hannahID)).Scan(&grants); err != nil {
+		t.Fatalf("count room_access: %v", err)
+	}
+	if grants != 1 {
+		t.Errorf("room_access rows = %d, want 1 — dropping the duplicate must not suppress the survivor too", grants)
 	}
 }
 

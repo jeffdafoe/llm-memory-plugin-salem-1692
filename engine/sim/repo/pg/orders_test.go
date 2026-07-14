@@ -200,7 +200,19 @@ func (f fakeTx) Exec(ctx context.Context, sql string, args ...any) (sim.CommandT
 	}
 	return cmdTagAdapter{ct: ct}, nil
 }
-func (fakeTx) Query(_ context.Context, _ string, _ ...any) (sim.Rows, error) { return nil, nil }
+
+// Query forwards to the mock, like Exec and QueryRow. It used to be a
+// `return nil, nil` stub — harmless while no checkpoint writer read inside the
+// Tx, but a live nil-deref the moment one did (LLM-392's lodging guard reads the
+// durable pay_ledger rows). A fake that silently returns nothing is worse than
+// one that fails loudly.
+func (f fakeTx) Query(ctx context.Context, sql string, args ...any) (sim.Rows, error) {
+	rows, err := f.mock.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	return rowsAdapter{rows: rows}, nil
+}
 func (f fakeTx) QueryRow(ctx context.Context, sql string, args ...any) sim.Row {
 	// Forward to the mock pool so SaveSnapshot implementations that
 	// use QueryRow (e.g., Slice 9's nextval sequence call) can be
@@ -230,6 +242,7 @@ func TestOrdersRepo_SaveSnapshot_UpsertsEachOrder(t *testing.T) {
 	mock.ExpectExec(`UPDATE pay_ledger[\s\S]+SET fulfillment_status = 'expired'`).
 		WithArgs(pgxmock.AnyArg()).
 		WillReturnResult(pgconn.NewCommandTag("UPDATE 0"))
+	expectDurableLodgingScan(mock)
 
 	mock.ExpectExec(`INSERT INTO pay_ledger`).
 		WithArgs(
@@ -301,6 +314,7 @@ func TestOrdersRepo_SaveSnapshot_ExpiresAbsentRows_EmptyMap(t *testing.T) {
 	mock.ExpectExec(`UPDATE pay_ledger[\s\S]+SET fulfillment_status = 'expired'`).
 		WithArgs(pgxmock.AnyArg()).
 		WillReturnResult(pgconn.NewCommandTag("UPDATE 0"))
+	expectDurableLodgingScan(mock)
 
 	if err := repo.SaveSnapshot(context.Background(), tx, map[sim.OrderID]*sim.Order{}); err != nil {
 		t.Fatalf("SaveSnapshot: %v", err)
@@ -321,6 +335,7 @@ func TestOrdersRepo_SaveSnapshot_LedgerIDMismatchRejected(t *testing.T) {
 	mock.ExpectExec(`UPDATE pay_ledger[\s\S]+SET fulfillment_status = 'expired'`).
 		WithArgs(pgxmock.AnyArg()).
 		WillReturnResult(pgconn.NewCommandTag("UPDATE 0"))
+	expectDurableLodgingScan(mock)
 
 	now := time.Now().UTC()
 	bad := map[sim.OrderID]*sim.Order{
@@ -362,6 +377,7 @@ func TestOrdersRepo_SaveSnapshot_NilOrderSkipped(t *testing.T) {
 	mock.ExpectExec(`UPDATE pay_ledger[\s\S]+SET fulfillment_status = 'expired'`).
 		WithArgs(pgxmock.AnyArg()).
 		WillReturnResult(pgconn.NewCommandTag("UPDATE 0"))
+	expectDurableLodgingScan(mock)
 	err := repo.SaveSnapshot(context.Background(), tx, map[sim.OrderID]*sim.Order{1: nil})
 	if err != nil {
 		t.Fatalf("SaveSnapshot: %v", err)
@@ -383,6 +399,7 @@ func TestOrdersRepo_SaveSnapshot_UnknownStateQuarantined(t *testing.T) {
 	mock.ExpectExec(`UPDATE pay_ledger[\s\S]+SET fulfillment_status = 'expired'`).
 		WithArgs(pgxmock.AnyArg()).
 		WillReturnResult(pgconn.NewCommandTag("UPDATE 0"))
+	expectDurableLodgingScan(mock)
 	err := repo.SaveSnapshot(context.Background(), tx, map[sim.OrderID]*sim.Order{
 		1: {ID: 1, State: sim.OrderState("garbage")},
 	})
@@ -432,6 +449,7 @@ func TestOrdersRepo_SaveSnapshot_LodgingDoubleBookQuarantined(t *testing.T) {
 	mock.ExpectExec(`UPDATE pay_ledger[\s\S]+SET fulfillment_status = 'expired'`).
 		WithArgs(pgxmock.AnyArg()).
 		WillReturnResult(pgconn.NewCommandTag("UPDATE 0"))
+	expectDurableLodgingScan(mock)
 	// Exactly one upsert: order 1447 (the lower id) survives.
 	mock.ExpectExec(`INSERT INTO pay_ledger`).
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(),
@@ -718,3 +736,19 @@ func TestOrdersRepo_LoadRecentPrices_QueryError(t *testing.T) {
 
 // intPtr returns &i; helper for cardinality column mock values.
 func intPtr(i int) *int { return &i }
+
+// expectDurableLodgingScan programs the read that seeds the lodging double-book
+// guard from the DURABLE pay_ledger rows (LLM-392).
+//
+// The guard cannot work from the snapshot alone: a delivered lodging order is
+// pruned from w.Orders at delivery and never reloaded, so the row a new booking
+// collides with is sitting in the table, not in memory. Every SaveSnapshot
+// therefore issues this query, and every mock-based SaveSnapshot test has to
+// expect it. Returns no rows by default — a clean table.
+func expectDurableLodgingScan(mock pgxmock.PgxPoolIface, rows ...[]any) {
+	r := pgxmock.NewRows([]string{"id", "buyer_id", "seller_id", "ready_by"})
+	for _, row := range rows {
+		r.AddRow(row...)
+	}
+	mock.ExpectQuery(`FROM pay_ledger[\s\S]+item_kind = 'nights_stay'`).WillReturnRows(r)
+}
