@@ -36,9 +36,70 @@ import (
 //
 // Parsed as Go rather than grepped so a name mentioned in a COMMENT (ticker_health.go
 // quotes a `w.BeatTicker("atmosphere")` call in its prose) can't enter either set.
+//
+// A ticker name may be a string LITERAL or a package-level string CONST (LLM-402:
+// world_command_probe is named by an exported const, because the ticker_stale alarm
+// has to exclude that exact name from its all-stale headcount and a second copy of
+// the string would be a silent way for the two to drift apart). Const identifiers
+// are resolved against a pre-pass over the same tree — see stringConsts. Anything
+// else (a variable, a computed name) still fails the scan loudly, because it would
+// make a ticker invisible to this guard, which is the one thing the guard cannot
+// allow.
 
-// tickerCallNames returns the string-literal first arguments of every call to one
-// of the named methods, across every non-test .go file under root.
+// stringConsts returns every package-level `const NAME = "value"` string constant
+// declared under root, keyed by identifier. The resolution table for ticker names
+// that are named by a const rather than spelled as a literal at the call site.
+func stringConsts(t *testing.T, root string) map[string]string {
+	t.Helper()
+
+	out := make(map[string]string)
+	fset := token.NewFileSet()
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		file, perr := parser.ParseFile(fset, path, nil, 0)
+		if perr != nil {
+			return perr
+		}
+		for _, decl := range file.Decls {
+			gen, ok := decl.(*ast.GenDecl)
+			if !ok || gen.Tok != token.CONST {
+				continue
+			}
+			for _, spec := range gen.Specs {
+				vs, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for i, name := range vs.Names {
+					if i >= len(vs.Values) {
+						continue
+					}
+					lit, ok := vs.Values[i].(*ast.BasicLit)
+					if !ok || lit.Kind != token.STRING {
+						continue
+					}
+					if v, uerr := strconv.Unquote(lit.Value); uerr == nil {
+						out[name.Name] = v
+					}
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s for consts: %v", root, err)
+	}
+	return out
+}
+
+// tickerCallNames returns the ticker name passed as the first argument of every
+// call to one of the named methods, across every non-test .go file under root.
+// Names may be string literals or package-level string consts.
 func tickerCallNames(t *testing.T, root string, methods ...string) map[string]string {
 	t.Helper()
 
@@ -47,6 +108,7 @@ func tickerCallNames(t *testing.T, root string, methods ...string) map[string]st
 		want[m] = true
 	}
 
+	consts := stringConsts(t, root)
 	found := make(map[string]string) // ticker name -> file it was found in
 	fset := token.NewFileSet()
 
@@ -70,16 +132,13 @@ func tickerCallNames(t *testing.T, root string, methods ...string) map[string]st
 			if !ok || !want[sel.Sel.Name] {
 				return true
 			}
-			lit, ok := call.Args[0].(*ast.BasicLit)
-			if !ok || lit.Kind != token.STRING {
-				// A non-literal name (a variable, a const) would defeat this scan.
-				// None exist today; fail loudly rather than silently under-counting.
-				t.Errorf("%s: %s called with a non-literal ticker name — the coverage guard cannot see it", path, sel.Sel.Name)
-				return true
-			}
-			name, uerr := strconv.Unquote(lit.Value)
-			if uerr != nil {
-				t.Errorf("%s: unquote %s: %v", path, lit.Value, uerr)
+			name, ok := tickerNameArg(call.Args[0], consts)
+			if !ok {
+				// A name this scan cannot resolve (a variable, a computed string) would
+				// make its ticker invisible to the guard — which is precisely the blind
+				// spot the guard exists to close. Fail loudly rather than under-count.
+				t.Errorf("%s: %s called with a ticker name the coverage guard cannot resolve "+
+					"(want a string literal or a package-level string const)", path, sel.Sel.Name)
 				return true
 			}
 			found[name] = path
@@ -91,6 +150,30 @@ func tickerCallNames(t *testing.T, root string, methods ...string) map[string]st
 		t.Fatalf("walk %s: %v", root, err)
 	}
 	return found
+}
+
+// tickerNameArg resolves one ticker-name argument: a string literal directly, or a
+// package-level string const by identifier (bare, or qualified as sim.Name from
+// another package in the tree).
+func tickerNameArg(arg ast.Expr, consts map[string]string) (string, bool) {
+	switch a := arg.(type) {
+	case *ast.BasicLit:
+		if a.Kind != token.STRING {
+			return "", false
+		}
+		v, err := strconv.Unquote(a.Value)
+		if err != nil {
+			return "", false
+		}
+		return v, true
+	case *ast.Ident:
+		v, ok := consts[a.Name]
+		return v, ok
+	case *ast.SelectorExpr:
+		v, ok := consts[a.Sel.Name]
+		return v, ok
+	}
+	return "", false
 }
 
 func sortedKeys(m map[string]string) []string {

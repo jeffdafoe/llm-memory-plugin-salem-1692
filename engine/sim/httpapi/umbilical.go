@@ -348,6 +348,40 @@ func (s *Server) handleUmbilicalTickerHealth(w http.ResponseWriter, _ *http.Requ
 	writeJSON(w, out)
 }
 
+// UmbilicalWorldCommandHealthDTO is the GET
+// /api/village/umbilical/world-command-health response: the liveness of the single
+// world command goroutine, measured directly by a periodic no-op probe (LLM-402).
+//
+// The pull view behind the world_command_stalled alarm, and the sibling of
+// /ticker-health: that route says WHETHER the cadence drivers are beating, this one
+// says whether the loop they all feed is still serving. When every ticker has gone
+// quiet, these two together are what separate "the world is wedged" from "the world
+// is fine and the tickers are dying" — a distinction staleness alone cannot make.
+//
+// It also carries the signal the ALARM deliberately withholds: slowest_round_trip_ms.
+// A world loop whose probes are landing at 4.5s of a 5s deadline is about to fall
+// over, and that is worth seeing coming — but a successful probe is a successful
+// probe, and a fire alarm that fires on "getting slower" is one nobody trusts. The
+// early warning belongs on a route you can watch; the alarm stays for emergencies.
+type UmbilicalWorldCommandHealthDTO struct {
+	ContractVersion int                            `json:"contract_version"`
+	Now             time.Time                      `json:"now"`
+	Health          sim.WorldCommandHealthSnapshot `json:"health"`
+}
+
+// handleUmbilicalWorldCommandHealth serves the world-command liveness view off the
+// world's own recorder (its own mutex — safe to read off the world goroutine, which
+// is the entire point: a route that had to ASK the world goroutine how it was doing
+// would hang in exactly the incident it exists to report). Read-only, operator-gated
+// like every other umbilical read.
+func (s *Server) handleUmbilicalWorldCommandHealth(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, UmbilicalWorldCommandHealthDTO{
+		ContractVersion: ContractVersion,
+		Now:             time.Now().UTC(),
+		Health:          s.world.WorldCommandHealthSnapshot(),
+	})
+}
+
 // UmbilicalCheckpointHealthDTO is the GET /api/village/umbilical/checkpoint-health
 // response: the durable-checkpoint health snapshot plus the contract version.
 type UmbilicalCheckpointHealthDTO struct {
@@ -403,8 +437,9 @@ func (s *Server) umbilicalRoutes() []umbilicalRoute {
 		{http.MethodGet, umbilicalBasePath + "/chat", "One scene's engine<->model exchange: the rendered perception (tx) and the model's responses + tool calls (rx) for that scene_id, oldest first. Query params: scene (required), limit (optional, default all retained). Empty when chat capture is off.", false, s.handleUmbilicalChat},
 		{http.MethodGet, umbilicalBasePath + "/reactor", "Tick-eligibility across all actors: warranted / due-now / in-flight / idle counts plus the queued-actor list.", false, s.handleUmbilicalReactor},
 		{http.MethodGet, umbilicalBasePath + "/ticker-health", "Per-interval-goroutine liveness: last-fire time and cumulative fire count for each cadence driver.", false, s.handleUmbilicalTickerHealth},
+		{http.MethodGet, umbilicalBasePath + "/world-command-health", "Liveness of the single world command goroutine every ticker feeds, MEASURED by a periodic no-op probe rather than inferred from silence: round-trip times, consecutive missed deadlines, and which half of the round-trip expired (queue saturated vs loop wedged). A non-zero consecutive_timeouts means the world is not processing commands; a slowest_round_trip_ms creeping toward the deadline means it is about to stop.", false, s.handleUmbilicalWorldCommandHealth},
 		{http.MethodGet, umbilicalBasePath + "/checkpoint-health", "Durable-checkpoint health: last success/failure/attempt times, consecutive-failure streak, totals, and last error. A non-zero consecutive_failures or a stale last_success_at means durability is broken.", false, s.handleUmbilicalCheckpointHealth},
-		{http.MethodGet, umbilicalBasePath + "/alarms", "Critical engine-health alarms currently firing (today: durability broken — the checkpointer has failed N times running). Empty when healthy. The SAME alarms are stamped onto every umbilical response (top-level ALARMS key + X-Umbilical-Alarms header), so you do not need to poll this — it exists for the client's operator ticker.", false, s.handleUmbilicalAlarms},
+		{http.MethodGet, umbilicalBasePath + "/alarms", "Critical engine-health alarms currently firing: durability broken (the checkpointer has failed N times running), the checkpoint had to clamp impossible values, cadence drivers have stopped beating, or the world command loop is not processing commands. Empty when healthy. The SAME alarms are stamped onto every umbilical response (top-level ALARMS key + X-Umbilical-Alarms header), so you do not need to poll this — it exists for the client's operator ticker.", false, s.handleUmbilicalAlarms},
 		{http.MethodGet, umbilicalBasePath + "/errors", "Recent non-2xx responses the engine returned (server-observed) for remote visibility into client-facing failures.", false, s.handleUmbilicalErrors},
 		{http.MethodGet, umbilicalBasePath + "/client-errors", "Client-reported (untrusted) runtime-error feed beaconed by the Godot client.", false, s.handleUmbilicalClientErrors},
 		{http.MethodGet, umbilicalBasePath + "/deadlocks", "Recent locomotion soft-block deadlock hard-stops (mover + occupant + whether re-plan found no detour) for remote visibility into live freeze frequency.", false, s.handleUmbilicalDeadlocks},

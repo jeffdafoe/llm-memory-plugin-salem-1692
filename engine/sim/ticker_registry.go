@@ -65,4 +65,12 @@ func RegisterCoreTickers(w *World) {
 	w.RegisterTicker("huddle_silence_sweep", effectiveHuddleSilenceSweepCadence(w.Settings))
 	w.RegisterTicker("huddle_loop_sweep", effectiveHuddleLoopSweepCadence(w.Settings))
 	w.RegisterTicker("scene_quote_sweep", effectiveSceneQuoteSweepCadence(w.Settings))
+
+	// The odd one out: not a substrate driver but the world command path's own
+	// liveness probe (LLM-402). It is declared here with the rest so ticker_stale
+	// watches the watchman — if the prober goroutine dies, its silence raises the
+	// staleness alarm and the direct instrument cannot fail quietly. It beats
+	// BEFORE each send, so a wedged world does NOT silence it; that is what keeps
+	// the two signals independent (see world_command_probe.go).
+	w.RegisterTicker(WorldCommandProbeTickerName, WorldCommandProbeInterval)
 }

@@ -897,6 +897,13 @@ func startTickers(ctx context.Context, w *sim.World) {
 	go sim.RunRotationTicker(ctx, w, sim.RotationScope{
 		ExcludeTags: []string{sim.TagLaundry, sim.TagNoticeBoard},
 	})
+
+	// LLM-402: not a substrate driver — the liveness probe for the single world
+	// command goroutine every ticker above depends on. Started here, with them,
+	// because its cadence is declared with theirs in RegisterCoreTickers and the
+	// register-before-launch ordering above is what makes a prober that never came
+	// up visible rather than silent.
+	go sim.RunWorldCommandProbe(ctx, w)
 }
 
 // requireEnv reads an environment variable or exits if missing.

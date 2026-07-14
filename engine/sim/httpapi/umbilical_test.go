@@ -133,6 +133,56 @@ func TestUmbilical_TickerHealth(t *testing.T) {
 	}
 }
 
+// The pull view behind the world_command_stalled alarm (LLM-402). It reads the
+// world's own recorder rather than asking the world goroutine anything — a route
+// that had to send a command to report on the command loop would hang in exactly
+// the incident it exists to describe, so the healthy-path shape here is load-bearing.
+func TestUmbilical_WorldCommandHealth(t *testing.T) {
+	h := umbilicalServer(t, operatorPerms, telemetry.New(8))
+
+	rec := req(t, h, "/api/village/umbilical/world-command-health", "tok")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("world-command-health = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var out UmbilicalWorldCommandHealthDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.ContractVersion != ContractVersion {
+		t.Errorf("contract_version = %d, want %d", out.ContractVersion, ContractVersion)
+	}
+	if out.Now.IsZero() {
+		t.Error("now is zero, want server wall-clock")
+	}
+	// No prober runs against a seeded test world, so the health is the zero value —
+	// which must read as HEALTHY (no timeout streak), never as a stall.
+	if out.Health.ConsecutiveTimeouts != 0 {
+		t.Errorf("consecutive_timeouts = %d on a world with no prober, want 0", out.Health.ConsecutiveTimeouts)
+	}
+	// The route is self-describing: the reader should not have to know the engine's
+	// constants by heart to judge the numbers above.
+	if out.Health.ProbeIntervalSeconds != sim.WorldCommandProbeInterval.Seconds() {
+		t.Errorf("probe_interval_seconds = %v, want %v", out.Health.ProbeIntervalSeconds, sim.WorldCommandProbeInterval.Seconds())
+	}
+	if out.Health.ProbeTimeoutSeconds != sim.WorldCommandProbeTimeout.Seconds() {
+		t.Errorf("probe_timeout_seconds = %v, want %v", out.Health.ProbeTimeoutSeconds, sim.WorldCommandProbeTimeout.Seconds())
+	}
+
+	// Gating: engine liveness is operator-only, same boundary as every other health
+	// read. Non-operator 403, no token 401, 404 when the umbilical is off.
+	hNonOp := umbilicalServer(t, nil, telemetry.New(8))
+	if rec := req(t, hNonOp, "/api/village/umbilical/world-command-health", "tok"); rec.Code != http.StatusForbidden {
+		t.Errorf("non-operator = %d, want 403", rec.Code)
+	}
+	if rec := req(t, hNonOp, "/api/village/umbilical/world-command-health", ""); rec.Code != http.StatusUnauthorized {
+		t.Errorf("no token = %d, want 401", rec.Code)
+	}
+	hOffWC := NewServer(seededWorld(t), permAuth{operatorPerms}).Handler()
+	if rec := req(t, hOffWC, "/api/village/umbilical/world-command-health", "tok"); rec.Code != http.StatusNotFound {
+		t.Errorf("umbilical off = %d, want 404", rec.Code)
+	}
+}
+
 func TestUmbilical_Actions(t *testing.T) {
 	w := seededWorld(t)
 	t0 := time.Date(2026, 5, 24, 9, 0, 0, 0, time.UTC)

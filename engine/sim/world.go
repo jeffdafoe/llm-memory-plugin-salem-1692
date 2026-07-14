@@ -1249,6 +1249,16 @@ type World struct {
 	// RecordDeadlock is nil-safe regardless. See deadlock_log.go.
 	deadlockLog *DeadlockLog
 
+	// worldCmdHealth records the liveness of THIS goroutine's command loop —
+	// the round-trip time of a periodic no-op probe (LLM-402). It lives on the
+	// World, rather than being built in cmd/engine and injected like
+	// CheckpointHealth, because it describes the world's own loop: every
+	// wiring gets it without plumbing. Written by the prober goroutine, read
+	// from HTTP request goroutines, so it carries its own mutex. Always
+	// non-nil for a NewWorld-built world; every method is nil-safe regardless.
+	// See world_command_probe.go.
+	worldCmdHealth *WorldCommandHealth
+
 	// eventSeq is the monotonic per-run event counter. emit increments it
 	// and assigns the value as the new event's EventID. World-goroutine-
 	// only — emit runs exclusively inside Command.Fn, so no atomic is
@@ -1325,6 +1335,7 @@ func NewWorld(repo Repository) *World {
 		tickAdmission:        alwaysAdmit{},
 		repo:                 repo,
 		tickerHealth:         newTickerHealth(),
+		worldCmdHealth:       newWorldCommandHealth(),
 		deadlockLog:          newDeadlockLog(0),
 	}
 	w.republish()

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -69,6 +70,33 @@ const alarmKindCheckpointClamped = "checkpoint_clamped"
 // staleness judgement itself lives on sim.TickerHealthEntry, which owns the
 // cadence contract; this file only classifies the result and writes the prose.
 const alarmKindTickerStale = "ticker_stale"
+
+// alarmKindWorldCommandStalled fires when the engine's single world command
+// goroutine has missed its liveness deadline (LLM-402). Every mutation in the
+// engine goes through that one goroutine and every ticker drives its work by
+// sending to it, so its wedging is the loudest failure the engine has: the HTTP
+// surface still answers, and NOTHING in the world changes.
+//
+// This is a MEASUREMENT, and it is the reason this kind exists next to
+// ticker_stale rather than being folded into it. Stale tickers can only INFER an
+// upstream cause from silence, and silence cannot distinguish a wedged world loop
+// from scheduler starvation, a GC pause, a lock convoy, or a handful of unlucky
+// ticker panics. The probe enqueues a no-op command and requires the round-trip
+// (sim.RunWorldCommandProbe) — if it does not land, the command path is not
+// serving. It is also FAST where staleness is slowest: seconds, against a
+// ticker_stale floor of two minutes.
+const alarmKindWorldCommandStalled = "world_command_stalled"
+
+// worldCommandTimeoutStreakThreshold is how many CONSECUTIVE probe timeouts raise
+// the alarm.
+//
+// Two, at a 15s cadence and a 5s deadline: ~20-35s to detect, requiring ~10s of
+// continuous unavailability. One missed 5s deadline is survivable as a GC pause or
+// a noisy neighbour stealing the CPU; two in a row across a 15s cadence is not a
+// hiccup, it is an engine that has stopped serving. Lower than that cries wolf on
+// a surface whose entire worth is that it only screams about real emergencies;
+// higher buys nothing, because a wedged world loop does not un-wedge itself.
+const worldCommandTimeoutStreakThreshold = 2
 
 // tickerStaleNamesInDetail caps how many stale ticker names the alarm's prose
 // lists before summarising the remainder.
@@ -140,11 +168,120 @@ func (s *Server) evaluateAlarms(now time.Time) []Alarm {
 	// methods are not nil-safe, and this runs on EVERY umbilical response — a
 	// worldless test server must not panic the whole surface.
 	if s.world != nil {
-		if a, ok := tickerStaleAlarm(s.world.TickerHealthSnapshot(), now); ok {
+		entries := s.world.TickerHealthSnapshot()
+		// CAUSE BEFORE SYMPTOM, in both the ordering and the prose. A wedged world
+		// command loop starves every ticker that depends on it, so these two alarms
+		// fire together in the headline incident — and world_command_stalled is the
+		// one that says what is actually wrong. It is evaluated first so its verdict
+		// can be handed to the ticker_stale classifier, which is what lets that alarm
+		// name the cause instead of hedging at a 3am operator.
+		stalled, worldStalled := worldCommandStalledAlarm(
+			s.world.WorldCommandHealthSnapshot(),
+			probeTickerStale(entries, now),
+			now,
+		)
+		if worldStalled {
+			out = append(out, stalled)
+		}
+		if a, ok := tickerStaleAlarm(entries, worldStalled, now); ok {
 			out = append(out, a)
 		}
 	}
 	return out
+}
+
+// worldCommandStalledAlarm classifies the world-command liveness recorder: it
+// fires once the no-op probe has missed its round-trip deadline this many times in
+// a row.
+//
+// WHAT IT CLAIMS IS EXACTLY WHAT IT MEASURED. A missed deadline proves the command
+// path missed its SERVICE deadline — which covers a wedged handler, a wedge inside
+// republish or an event subscriber, AND a command queue so saturated the probe
+// could not get in. Those are different diseases, so the prose says "stalled or
+// saturated" and then names which half of the round-trip actually expired, rather
+// than asserting a wedged goroutine the evidence does not single out.
+//
+// probeStale is the ticker registry's verdict on the PROBER ITSELF. It matters
+// because this alarm reads recorded state: if the prober goroutine is dead, the
+// streak it left behind keeps this alarm firing off a frozen reading, which would
+// otherwise be indistinguishable from a live stall. When that happens the alarm
+// says so rather than pretending to a currency it does not have.
+//
+// Since is the start of the CURRENT timeout streak — the moment the command path
+// stopped serving, as closely as the prober can date it. Not last_success_at
+// ("last known good" is a different and staler question, and there is no such
+// moment on an engine whose world loop never came up at all), and never "now": the
+// evaluator is stateless and re-derives this on every umbilical response, so a
+// request-time Since would walk forward on every poll.
+func worldCommandStalledAlarm(h sim.WorldCommandHealthSnapshot, probeStale bool, now time.Time) (Alarm, bool) {
+	if h.ConsecutiveTimeouts < worldCommandTimeoutStreakThreshold {
+		return Alarm{}, false
+	}
+
+	detail := "THE WORLD IS NOT PROCESSING COMMANDS: " + strconv.Itoa(h.ConsecutiveTimeouts) +
+		" consecutive no-op liveness probes have missed their " + formatSeconds(h.ProbeTimeoutSeconds) +
+		" round-trip deadline, so the single world command goroutine is stalled or saturated. " +
+		"The engine is still answering HTTP, but NOTHING in the village is changing — no deliberation, " +
+		"no movement, no trade, no needs decay"
+	if !h.TimeoutStreakStartedAt.IsZero() {
+		detail += " (since " + humanizeSince(now.Sub(h.TimeoutStreakStartedAt)) + " ago)"
+	}
+	detail += ". " + describeWorldCommandPhase(h.LastTimeoutPhase)
+	if probeStale {
+		// The instrument is dead, so this reading is a fossil. Say it plainly — an
+		// operator must not act on a stale measurement believing it is a live one.
+		detail += " WARNING: the prober itself has stopped beating (see the ticker_stale alarm), " +
+			"so this reading is FROZEN at its last observation, not live."
+	}
+	detail += " See /umbilical/world-command-health."
+
+	return Alarm{
+		Kind:        alarmKindWorldCommandStalled,
+		Since:       h.TimeoutStreakStartedAt,
+		Consecutive: h.ConsecutiveTimeouts,
+		LastError:   h.LastError,
+		Detail:      detail,
+	}, true
+}
+
+// describeWorldCommandPhase renders the operator's actual next move, which differs
+// by which half of the round-trip expired — the whole reason the probe records the
+// phase instead of reporting an undifferentiated timeout.
+func describeWorldCommandPhase(phase sim.WorldCommandPhase) string {
+	switch phase {
+	case sim.WorldCommandPhaseEnqueue:
+		return "The probe could not even ENQUEUE its command — the command queue has been full for the " +
+			"whole deadline, so the loop is being out-produced or has backed up behind something stuck. " +
+			"Look at what is flooding it."
+	case sim.WorldCommandPhaseReply:
+		return "The world goroutine ACCEPTED the command and never completed it — a wedged command handler, " +
+			"a wedge in republish or an event subscriber, or a process starved so hard the goroutine is not " +
+			"being scheduled. Get a goroutine dump."
+	default:
+		return "The round-trip did not complete."
+	}
+}
+
+// probeTickerStale reports whether the liveness prober's OWN ticker has gone
+// stale — i.e. the goroutine that produces the world-command measurement has
+// itself stopped.
+func probeTickerStale(entries []sim.TickerHealthEntry, now time.Time) bool {
+	for _, e := range entries {
+		if e.Name == sim.WorldCommandProbeTickerName {
+			return e.IsStale(now)
+		}
+	}
+	return false
+}
+
+// formatSeconds renders a whole-second duration for the alarm prose ("5s"),
+// falling back to a decimal for a sub-second one so a retuned constant can never
+// render as a bare "0s".
+func formatSeconds(secs float64) string {
+	if secs == math.Trunc(secs) {
+		return strconv.Itoa(int(secs)) + "s"
+	}
+	return strconv.FormatFloat(secs, 'g', -1, 64) + "s"
 }
 
 // tickerStaleAlarm classifies the ticker-health registry: it fires when one or
@@ -163,14 +300,41 @@ func (s *Server) evaluateAlarms(now time.Time) []Alarm {
 // never from when an HTTP request happened to notice. That keeps the alarm stable
 // across requests and self-clearing the moment the cadence resumes, which is what
 // lets the evaluator stay stateless.
-func tickerStaleAlarm(entries []sim.TickerHealthEntry, now time.Time) (Alarm, bool) {
+//
+// worldStalled is the world_command_stalled verdict, and it turns this alarm's
+// worst case from a shrug into a DIAGNOSIS (LLM-402). Mass staleness has exactly
+// two shapes and they have opposite fixes: the tickers are starving on a wedged
+// world command loop, or the world loop is fine and the tickers themselves (or the
+// process scheduling them) are dying. Silence alone cannot tell those apart —
+// which is why this alarm's prose used to hedge — but the liveness probe can, so
+// the answer is stated instead of guessed.
+//
+// THE PROBER IS EXCLUDED FROM THE "EVERY TICKER" HEADCOUNT, and that exclusion is
+// load-bearing rather than cosmetic. The prober beats BEFORE each send precisely so
+// a wedged world cannot silence it (see sim.WorldCommandProbeTickerName) — so in
+// the exact incident the all-stale branch was written for, the prober is the one
+// ticker still beating, and a naive len(stale) == len(entries) would be false
+// forever. The branch would have quietly become unreachable in the case it exists
+// to describe.
+func tickerStaleAlarm(entries []sim.TickerHealthEntry, worldStalled bool, now time.Time) (Alarm, bool) {
 	var (
 		stale []sim.TickerHealthEntry
 		since time.Time
+		// The world-dependent population: every ticker that drives its work through
+		// the world command loop, i.e. all of them except the loop's own prober.
+		worldDependent      int
+		worldDependentStale int
 	)
 	for _, e := range entries {
+		isProbe := e.Name == sim.WorldCommandProbeTickerName
+		if !isProbe {
+			worldDependent++
+		}
 		if !e.IsStale(now) {
 			continue
+		}
+		if !isProbe {
+			worldDependentStale++
 		}
 		stale = append(stale, e)
 		if at := e.StaleSince(); since.IsZero() || at.Before(since) {
@@ -199,12 +363,20 @@ func tickerStaleAlarm(entries []sim.TickerHealthEntry, now time.Time) (Alarm, bo
 	if !since.IsZero() {
 		detail += " (first went stale " + humanizeSince(now.Sub(since)) + " ago)"
 	}
-	if len(stale) == len(entries) && len(entries) > 1 {
-		// Every registered ticker at once is not 36 independent deaths; it is one
-		// upstream cause. Say so, rather than leaving the operator to infer it from
-		// a wall of names.
-		detail += ". EVERY ticker is stale, which points at a single upstream cause — " +
-			"a wedged world command goroutine or a starved process — rather than at the tickers themselves"
+	switch {
+	case worldStalled:
+		// The cause is MEASURED, not inferred. Point at it and get out of the way:
+		// this alarm is the shadow of the other one, and an operator who fixes the
+		// world command loop fixes this too.
+		detail += ". The world command loop is CONFIRMED STALLED (see the world_command_stalled alarm) — " +
+			"these tickers are starving on it, not dying independently. Fix that first; this alarm is its shadow"
+	case worldDependent > 1 && worldDependentStale == worldDependent:
+		// Every ticker that depends on the world is stale, and yet the world is
+		// answering its liveness probe. That REMOVES the obvious suspect, which is
+		// the single most useful thing this sentence can do at 3am.
+		detail += ". EVERY world-dependent ticker is stale, and yet the world command loop IS completing " +
+			"its liveness probes — so this is NOT a wedged world. Suspect the process itself (scheduler " +
+			"starvation, a GC death spiral) or the ticker goroutines, and check /umbilical/world-command-health"
 	}
 	detail += ". See /umbilical/ticker-health for per-ticker detail."
 
