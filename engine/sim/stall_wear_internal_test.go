@@ -218,9 +218,10 @@ func TestAccrueStallWear_SaleAtOrBelowCost(t *testing.T) {
 
 // TestAccrueStallWear_PartialPaymentLegsSplitMargin: an LLM-357 partial-payment
 // commission collects a deposit at accept and the balance at deliver_order — two legs,
-// one sale. Each wears its proportional share of the sale's margin, so the two together
-// tax the margin once rather than twice (which double-subtracting the cost basis per
-// leg, or ignoring it on one, would do).
+// one sale. Each wears its FLOORED proportional share of the sale's margin, so the two
+// together never exceed the margin (they may under-tax by one coin — the safe
+// direction). The old half-up-both-legs math over-taxed by a coin, crossing the repair
+// threshold early; this pins that it can't.
 func TestAccrueStallWear_PartialPaymentLegsSplitMargin(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	w, owner, stall := stallTestWorld(1, 400, 600, 0)
@@ -233,10 +234,10 @@ func TestAccrueStallWear_PartialPaymentLegsSplitMargin(t *testing.T) {
 			Charge:    charge,
 		}
 	}
-	accrueStallWear(w, owner, sale(5), now)  // deposit: 5/20 of the margin = 3 (rounded)
-	accrueStallWear(w, owner, sale(15), now) // balance: 15/20 of the margin = 8 (rounded)
-	if stall.Wear < 9 || stall.Wear > 11 {
-		t.Errorf("Wear = %d, want ~10 — the deposit and the balance legs together wear the sale's margin once", stall.Wear)
+	accrueStallWear(w, owner, sale(5), now)  // deposit: floor(5/20 × 10) = 2
+	accrueStallWear(w, owner, sale(15), now) // balance: floor(15/20 × 10) = 7
+	if stall.Wear != 9 {
+		t.Errorf("Wear = %d, want 9 — floored deposit (2) + balance (7); the two legs never exceed the 10-coin margin", stall.Wear)
 	}
 }
 

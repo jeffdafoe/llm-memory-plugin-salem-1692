@@ -1,6 +1,9 @@
 package sim
 
-import "time"
+import (
+	"math"
+	"time"
+)
 
 // price_book.go — in-memory per-(seller, item) ring buffer of recent
 // transactions, the v2 substrate for v1's price-history perception cues.
@@ -291,7 +294,13 @@ func BuyerCostBasis(book map[PriceBookKey]*RingBuffer[PriceObservation], buyer A
 		return 0
 	}
 	// avg unit cost × units, rounded half-up, in one integer expression so the
-	// per-unit division rounds once at the end rather than per unit.
+	// per-unit division rounds once at the end rather than per unit. Guard the
+	// units×spend multiply against an int64 wrap before it happens — saleCostBasis
+	// clamps the total to MaxInt32 regardless, so a saturated high return here is fine
+	// and matches the accrual path's saturate-don't-wrap posture.
+	if units > (math.MaxInt64-boughtUnits/2)/spend {
+		return math.MaxInt32
+	}
 	return (units*spend + boughtUnits/2) / boughtUnits
 }
 

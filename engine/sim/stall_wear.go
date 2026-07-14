@@ -271,8 +271,9 @@ type saleWear struct {
 // A sale at or below cost wears nothing (a distributor eating a loss doesn't also grind
 // his shop down), and a partial-payment commission's two legs each wear their
 // proportional share of the sale's margin, so deposit + balance together tax the margin
-// once. Proportional split, so the two legs can't disagree about which one "used up" the
-// cost basis; rounding can move a coin of wear between the legs, never more.
+// once. The split is FLOORED, so the two legs together never wear MORE than the sale's
+// margin (they may under-tax by a single coin across the split — the safe direction:
+// half-up on both legs could total margin+1 and cross the repair threshold a coin early).
 func wearableCoin(w *World, seller *Actor, sale saleWear) int {
 	basis := saleCostBasis(w, seller, sale)
 	if basis <= 0 {
@@ -288,8 +289,16 @@ func wearableCoin(w *World, seller *Actor, sale saleWear) int {
 	if sale.Charge >= sale.Amount {
 		return margin
 	}
-	// Amount > basis >= 1 here, so the divide is safe.
-	return int((int64(sale.Charge)*int64(margin) + int64(sale.Amount)/2) / int64(sale.Amount))
+	// Partial-payment (LLM-357): this leg carries its proportional share of the margin,
+	// FLOORED (see the doc comment). Charge < Amount here, so the result is always
+	// <= margin. Guard the multiply against an int64 wrap before it happens — coin
+	// amounts are tiny in practice, but the accrual path holds a saturate-don't-wrap
+	// posture (TestAccrueStallWear_Saturates); saturate at the margin, the most a single
+	// leg can carry. margin >= 1 and Amount > Charge > 0 here, so both divides are safe.
+	if int64(sale.Charge) > math.MaxInt64/int64(margin) {
+		return margin
+	}
+	return int(int64(sale.Charge) * int64(margin) / int64(sale.Amount))
 }
 
 // saleCostBasis totals what the seller actually paid for the goods this sale moved:
