@@ -212,25 +212,31 @@ func decideStorm(now time.Time) sim.Command {
 	}}
 }
 
-// pickStormInterval returns the wait until the next automatic storm: the
-// configured StormInterval (defaultStormInterval when unset) scattered by
-// ±stormIntervalJitter.
+// pickStormInterval returns the wait until the next automatic storm: a draw
+// from [StormInterval-jitter, StormInterval+jitter), where jitter is
+// stormIntervalJitter of the configured interval (defaultStormInterval when
+// unset).
 //
 // Sampled once per arming and stored as an absolute StormDueAt — the same
 // shape as the reactor's WarrantDueAt (engine/sim/reactor.go). Re-rolling the
 // band on every 30s sweep instead would pull the fire toward the low edge of
 // the band (a hundred-odd chances to roll low across an interval), which is a
 // metronome with extra steps.
+//
+// StormInterval is admin-settable (storm_interval_minutes), so a jitter that
+// doesn't come out to a sane fraction of the interval — zero, or wide enough
+// that doubling it would overflow the int64 nanoseconds Int64N takes — falls
+// back to the bare interval rather than panicking on the draw.
 func pickStormInterval(s sim.WorldSettings) time.Duration {
 	interval := s.StormInterval
 	if interval <= 0 {
 		interval = defaultStormInterval
 	}
 	jitter := time.Duration(float64(interval) * stormIntervalJitter)
-	if jitter <= 0 {
+	if jitter <= 0 || jitter > interval/2 {
 		return interval
 	}
-	return interval - jitter + time.Duration(mathrand.Int64N(int64(2*jitter)))
+	return interval - jitter + time.Duration(mathrand.Int64N(int64(jitter)*2))
 }
 
 // anyPCPresent reports whether at least one non-stale PC is in the world at

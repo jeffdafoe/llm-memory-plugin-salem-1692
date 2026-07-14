@@ -84,6 +84,21 @@ func TestDecideStorm_NoPCPresentReArmsInsteadOfFiring(t *testing.T) {
 	assertArmedFromNow(t, w, now)
 }
 
+// A PC who logs out hands back a FULL interval, not the remainder of the one
+// they were serving — reset-on-empty, not a paused accumulator. Storms are meant
+// to be rare from the player's seat: you have to be resident for a whole
+// interval to see one.
+func TestDecideStorm_PCLeavingReArmsAFullInterval(t *testing.T) {
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	w := newStormDecisionWorld(sim.WeatherClear, now.Add(-3*time.Hour))
+	w.Environment.StormDueAt = now.Add(1 * time.Minute) // armed, nearly due — the PC just left
+
+	if got := decide(t, w, now); got != "" {
+		t.Errorf("decideStorm = %q, want \"\" (nobody here)", got)
+	}
+	assertArmedFromNow(t, w, now)
+}
+
 func TestDecideStorm_StalePCReArmsInsteadOfFiring(t *testing.T) {
 	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
 	w := newStormDecisionWorld(sim.WeatherClear, now.Add(-4*time.Hour))
@@ -132,20 +147,24 @@ func TestDecideStorm_PCArrivingAtLongEmptyVillageWaitsAFullInterval(t *testing.T
 	arrival := start.Add(6 * time.Hour)
 	w := newStormDecisionWorld(sim.WeatherClear, start)
 
-	// Six hours of unattended sweeps — twice the interval. The last one runs
-	// as the PC is logging in, so the clock is armed at `arrival`.
+	// Six hours of unattended sweeps — twice the interval. Every one of them
+	// pushes the due time back out, so nothing is banked.
+	lastEmptySweep := start
 	for at := start; !at.After(arrival); at = at.Add(stormSweepInterval) {
 		if got := decide(t, w, at); got != "" {
 			t.Fatalf("decideStorm at %v = %q, want \"\" (empty village never storms)", at, got)
 		}
+		lastEmptySweep = at
 	}
-	assertArmedFromNow(t, w, arrival)
+	assertArmedFromNow(t, w, lastEmptySweep)
 
-	// The PC is now present, and their heartbeat keeps them present.
+	// The PC is now present, and their heartbeat keeps them present. The due
+	// time was armed on the last empty sweep, so that is where the wait the
+	// PC serves is measured from (they arrive within a sweep of it).
 	addPresentPC(w, arrival)
 
 	// Nothing was banked: no storm anywhere inside the interval floor.
-	for at := arrival; at.Before(arrival.Add(stormArmFloor)); at = at.Add(stormSweepInterval) {
+	for at := arrival; at.Before(lastEmptySweep.Add(stormArmFloor)); at = at.Add(stormSweepInterval) {
 		addPresentPC(w, at) // heartbeat keeps presence fresh
 		if got := decide(t, w, at); got != "" {
 			t.Fatalf("decideStorm at arrival+%v = %q, want \"\" (the clock starts at arrival)", at.Sub(arrival), got)
@@ -154,7 +173,7 @@ func TestDecideStorm_PCArrivingAtLongEmptyVillageWaitsAFullInterval(t *testing.T
 
 	// ...and it does still storm once the PC has waited one out.
 	sawStorm := false
-	for at := arrival.Add(stormArmFloor); !at.After(arrival.Add(stormArmCeil)); at = at.Add(stormSweepInterval) {
+	for at := lastEmptySweep.Add(stormArmFloor); !at.After(lastEmptySweep.Add(stormArmCeil)); at = at.Add(stormSweepInterval) {
 		addPresentPC(w, at)
 		if decide(t, w, at) == sim.WeatherStorm {
 			sawStorm = true
