@@ -61,9 +61,9 @@ func TestRun_LifecycleAndFinalCheckpoint(t *testing.T) {
 		TickSink:  nil, // worker pool null-checks the sink
 	}
 
-	stop := make(chan stopRequest, 1)
+	graceful := make(chan struct{}, 1)
 	done := make(chan error, 1)
-	go func() { done <- run(rt, stop) }()
+	go func() { done <- run(rt, stopSignals{graceful: graceful}) }()
 
 	// Let the world boot and the periodic checkpointer fire at least once.
 	time.Sleep(150 * time.Millisecond)
@@ -76,7 +76,7 @@ func TestRun_LifecycleAndFinalCheckpoint(t *testing.T) {
 	}
 
 	// Signal shutdown and wait for run() to return.
-	stop <- stopRequest{mode: stopGraceful}
+	graceful <- struct{}{}
 	select {
 	case err := <-done:
 		if err != nil {
@@ -390,9 +390,9 @@ func TestRun_WiresOffWorldCascades(t *testing.T) {
 		TickSink:  nil,
 	}
 
-	stop := make(chan stopRequest, 1)
+	graceful := make(chan struct{}, 1)
 	done := make(chan error, 1)
-	go func() { done <- run(rt, stop) }()
+	go func() { done <- run(rt, stopSignals{graceful: graceful}) }()
 
 	// The immediate atmosphere sweep applies async (via SendContext) once Run
 	// starts, so poll the world for the installed prose rather than racing it.
@@ -411,7 +411,7 @@ func TestRun_WiresOffWorldCascades(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	stop <- stopRequest{mode: stopGraceful}
+	graceful <- struct{}{}
 	select {
 	case err := <-done:
 		if err != nil {
@@ -450,9 +450,9 @@ func TestRun_WiresStormCascade(t *testing.T) {
 		TickSink:  nil,
 	}
 
-	stop := make(chan stopRequest, 1)
+	graceful := make(chan struct{}, 1)
 	done := make(chan error, 1)
-	go func() { done <- run(rt, stop) }()
+	go func() { done <- run(rt, stopSignals{graceful: graceful}) }()
 
 	// The boot SeedWeatherClear applies async once Run starts; poll for clear.
 	var got string
@@ -470,7 +470,7 @@ func TestRun_WiresStormCascade(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	stop <- stopRequest{mode: stopGraceful}
+	graceful <- struct{}{}
 	select {
 	case err := <-done:
 		if err != nil {

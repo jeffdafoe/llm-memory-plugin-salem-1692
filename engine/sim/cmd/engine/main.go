@@ -298,30 +298,33 @@ func main() {
 	// (SIGWINCH on Unix) asks run's stop gate to refuse the exit if the world is
 	// not durably saved. See stop.go.
 	//
-	// A stream of requests, not a single close: an ABORTED graceful stop leaves
-	// the engine running and waiting for the next request, so the channel has to
-	// carry more than one. The send is blocking on purpose — a force signal that
-	// arrives while a graceful gate is mid-checkpoint is delivered as soon as the
-	// gate finishes, so an operator who loses patience and reaches for
-	// `systemctl stop` gets honoured the moment the abort happens.
-	stop := make(chan stopRequest)
+	// Both sends are NON-BLOCKING into cap-1 channels, so this goroutine never
+	// blocks and never stops observing signals — not while a graceful gate is
+	// mid-checkpoint, and not during a teardown that is taking too long. Repeated
+	// presses of the same signal coalesce into the one pending request they mean.
+	forceStop := make(chan struct{}, 1)
+	gracefulStop := make(chan struct{}, 1)
 	go func() {
-		graceful := gracefulStopSignals()
-		isGraceful := make(map[os.Signal]bool, len(graceful))
-		for _, sig := range graceful {
+		gracefulSigs := gracefulStopSignals()
+		isGraceful := make(map[os.Signal]bool, len(gracefulSigs))
+		for _, sig := range gracefulSigs {
 			isGraceful[sig] = true
 		}
 		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, append([]os.Signal{syscall.SIGINT, syscall.SIGTERM}, graceful...)...)
+		signal.Notify(sigChan, append([]os.Signal{syscall.SIGINT, syscall.SIGTERM}, gracefulSigs...)...)
 		for sig := range sigChan {
-			mode := stopForce
+			target, mode := forceStop, stopForce
 			if isGraceful[sig] {
-				mode = stopGraceful
+				target, mode = gracefulStop, stopGraceful
 			}
 			log.Printf("engine: received %s — requesting %s stop", sig, mode)
-			stop <- stopRequest{mode: mode}
+			select {
+			case target <- struct{}{}:
+			default: // one of this kind is already pending; it means the same thing
+			}
 		}
 	}()
+	stop := stopSignals{force: forceStop, graceful: gracefulStop}
 
 	// LLM-156: install per-agent tick caps before run() starts the world loop,
 	// so the reactor paces a shared VA's pool under its memory-api rate limit
@@ -445,7 +448,7 @@ func agentSlugsToQuery(world *sim.World) []string {
 // further request (LLM-404 — see the stop gate below, and stop.go). So run may
 // consume many stop requests before it returns; only a force stop, or a graceful
 // stop whose gate checkpoint succeeded, ends it.
-func run(rt runtime, stop <-chan stopRequest) error {
+func run(rt runtime, stop stopSignals) error {
 	// Two independent contexts. worldCtx drives the world goroutine plus every
 	// ticker, cascade sweep, and the tick-worker pool — everything that must
 	// stay alive to build the final checkpoint. checkpointerCtx drives only
@@ -714,32 +717,51 @@ func run(rt runtime, stop <-chan stopRequest) error {
 	// panics on Start, a shut-down http.Server cannot be reused), so a refusal
 	// discovered mid-teardown would have no engine left to resume.
 	mode := stopForce
+gate:
 	for {
-		req := <-stop
-		mode = req.mode
-		if mode == stopForce {
-			break
+		// Force first, and on its own, so it PREEMPTS a graceful request that is
+		// already pending — an operator who gives up mid-abort ("fine, take the
+		// loss, just bring it down") must not be made to wait out another
+		// multi-second gate checkpoint first. A bare select over both channels
+		// would pick between two ready cases at RANDOM; this makes the priority
+		// explicit.
+		select {
+		case <-stop.force:
+			break gate
+		default:
 		}
-		log.Println("engine: graceful stop requested — checkpointing before teardown")
-		gateCtx, cancelGate := context.WithTimeout(context.Background(), finalCheckpointTimeout)
-		gateClamps, gateErr := sim.CheckpointNow(gateCtx, rt.World, rt.Save)
-		cancelGate()
-		if gateErr != nil {
-			// A failed gate IS a failed checkpoint — record it so it feeds the
-			// consecutive-failure streak behind the alarm, same as a periodic one.
-			checkpointHealth.RecordFailure(time.Now(), gateErr)
-			log.Printf("engine: CRITICAL graceful stop ABORTED — the world is NOT durably saved: %v", gateErr)
-			log.Printf("engine: the village is STILL RUNNING and nothing has been torn down. Exiting now would discard %s. "+
-				"Repair durability and stop again, or force the stop (SIGTERM / `systemctl stop`) to exit anyway and accept the loss.",
-				discardedSince(checkpointHealth, time.Now()))
-			continue
+		select {
+		case <-stop.force:
+			break gate
+		case _, ok := <-stop.graceful:
+			if !ok {
+				// Nothing closes these channels today. If something ever does,
+				// force is the least surprising reading of it — and it keeps a
+				// closed channel from spinning this loop on a failing gate.
+				break gate
+			}
+			log.Println("engine: graceful stop requested — checkpointing before teardown")
+			gateCtx, cancelGate := context.WithTimeout(context.Background(), finalCheckpointTimeout)
+			gateClamps, gateErr := sim.CheckpointNow(gateCtx, rt.World, rt.Save)
+			cancelGate()
+			if gateErr != nil {
+				// A failed gate IS a failed checkpoint — record it so it feeds the
+				// consecutive-failure streak behind the alarm, same as a periodic one.
+				checkpointHealth.RecordFailure(time.Now(), gateErr)
+				log.Printf("engine: CRITICAL graceful stop ABORTED — the world is NOT durably saved: %v", gateErr)
+				log.Printf("engine: the village is STILL RUNNING and nothing has been torn down. Exiting now would discard %s. "+
+					"Repair durability and stop again, or force the stop (SIGTERM / `systemctl stop`) to exit anyway and accept the loss.",
+					discardedSince(checkpointHealth, time.Now()))
+				continue
+			}
+			checkpointHealth.RecordSuccess(time.Now(), gateClamps)
+			if !gateClamps.Clean() {
+				log.Printf("engine: stop gate checkpoint CLAMPED — %s", gateClamps.Summary())
+			}
+			log.Println("engine: graceful stop gate passed — world is durably saved")
+			mode = stopGraceful
+			break gate
 		}
-		checkpointHealth.RecordSuccess(time.Now(), gateClamps)
-		if !gateClamps.Clean() {
-			log.Printf("engine: stop gate checkpoint CLAMPED — %s", gateClamps.Summary())
-		}
-		log.Println("engine: graceful stop gate passed — world is durably saved")
-		break
 	}
 	log.Printf("engine: shutting down (%s stop)...", mode)
 
@@ -771,9 +793,20 @@ func run(rt runtime, stop <-chan stopRequest) error {
 	tickPool.Stop()
 	tickPool.Wait()
 
+	// A graceful stop reaches here having ALREADY written a checkpoint at the gate,
+	// so it writes the world twice. That is deliberate and it is safe. Deliberate,
+	// because the tick pool drained just above and its workers committed their
+	// in-flight ticks on the way out — the gate write predates those, and this is
+	// the one that captures them. Safe, because SaveWorld is idempotent by
+	// construction: each aggregate upserts every row in the snapshot at a fresh
+	// snapshot_gen and then sweeps `WHERE snapshot_gen < $1`, so the durable state
+	// it leaves is a pure function of the snapshot handed to it, with no dependence
+	// on when (or how recently) the last one ran. Two checkpoints seconds apart are
+	// the same operation as the two the periodic checkpointer does a minute apart.
 	finalStart := time.Now()
 	finalCtx, cancelFinal := context.WithTimeout(context.Background(), finalCheckpointTimeout)
 	finalClamps, err := sim.CheckpointNow(finalCtx, rt.World, rt.Save)
+	cancelFinal()
 	finalTook := time.Since(finalStart)
 	if err != nil {
 		// Don't fail the whole shutdown on a final-checkpoint error — the
@@ -806,7 +839,6 @@ func run(rt runtime, stop <-chan stopRequest) error {
 			log.Printf("engine: final checkpoint CLAMPED — %s", finalClamps.Summary())
 		}
 	}
-	cancelFinal()
 
 	// The one line the deploy reads back out of the journal (LLM-404). Emitted
 	// here, where every fact about the shutdown is settled and before the world

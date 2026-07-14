@@ -52,12 +52,27 @@ func (m stopMode) String() string {
 	return "graceful"
 }
 
-// stopRequest is one request to stop the engine. Sent by the signal handler in
-// main; consumed by run's stop gate. A graceful request that is aborted leaves
-// the engine running and waiting for the next one, so the channel carries a
-// STREAM of requests rather than a single close.
-type stopRequest struct {
-	mode stopMode
+// stopSignals carries stop requests into run. TWO channels rather than one
+// stream of requests, because force must be able to PREEMPT graceful — "exits
+// regardless" is worthless if a force request can be made to queue behind a
+// graceful one and wait out its multi-second checkpoint. run's gate always
+// checks force first, so an operator who loses patience mid-abort ("fine, take
+// the loss, just bring it down") is honoured immediately rather than after
+// another gate attempt.
+//
+// Both are buffered (cap 1) and written with non-blocking sends, which
+// COALESCES duplicates: hitting the same signal three times is one request, not
+// three queued checkpoints. It also means the signal handler can never block,
+// so it keeps observing (and logging) signals for as long as the process lives —
+// including during a teardown that is taking too long.
+//
+// Neither channel is ever closed; a graceful request that is aborted simply
+// leaves run waiting on them again. run treats a closed channel as force anyway,
+// so a future caller who does close one gets the least surprising behaviour
+// rather than a tight loop.
+type stopSignals struct {
+	force    <-chan struct{}
+	graceful <-chan struct{}
 }
 
 // discardedSince renders how much world state exiting right now would throw

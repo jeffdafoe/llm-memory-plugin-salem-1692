@@ -105,30 +105,42 @@
       changed_when: false
       when: salem_engine_unit.stat.exists
 
-    # Journal cursor for this stop attempt, so the checks below read only THIS
-    # shutdown's lines and can't be fooled by a previous deploy's.
+    # Journal CURSOR (not a timestamp) for this stop attempt, so every check below
+    # reads only THIS shutdown's lines. journalctl --since has one-second
+    # resolution, which is not enough to guarantee a previous attempt's "ABORTED"
+    # or summary line can't be misread as this one's — and the deploy branches on
+    # exactly those lines.
     - name: Mark the journal position before stopping the engine
-      command: date "+%Y-%m-%d %H:%M:%S"
-      register: engine_stop_mark
+      shell: |
+        journalctl -u salem-engine -n 0 --show-cursor --no-pager \
+          | sed -n 's/^-- cursor: //p'
+      register: engine_journal_cursor
       changed_when: false
-      when: engine_was_running.rc | default(1) == 0
+      when: (engine_was_running | default({})).rc | default(1) == 0
 
     - name: Request a graceful engine stop (SIGWINCH — refuses to exit unsaved, LLM-404)
       command: systemctl kill -s WINCH salem-engine
-      when: engine_was_running.rc | default(1) == 0
+      when: (engine_was_running | default({})).rc | default(1) == 0
 
-    # The engine exits 0 once its checkpoint lands (Restart=on-failure leaves it
-    # down). Two ways out of this poll: the unit goes inactive — the stop went
-    # through and the world is saved — or the engine logs its refusal, which we
-    # catch immediately rather than sitting out the full timeout. The timeout
-    # itself is the backstop for an engine that is wedged rather than refusing;
-    # generous, because a legitimate stop can spend a while draining an in-flight
-    # NPC tick before it even reaches the final checkpoint.
+    # Four ways out, and they are deliberately NOT collapsed into "did it exit?":
+    #   0  inactive          — the stop went through and the world is saved
+    #   1  refused           — the engine logged its abort; caught immediately
+    #                          rather than sitting out the whole timeout
+    #   3  failed            — the unit died abnormally. NOT the same as a clean
+    #                          stop, and must not be reported as one
+    #   2  timed out         — still running, no refusal logged: wedged
+    # A legitimate stop can take a while (draining an in-flight NPC tick, then two
+    # checkpoints), hence the generous window.
     - name: Wait for the engine to checkpoint and exit
       shell: |
+        cursor="{{ (engine_journal_cursor | default({})).stdout | default('') }}"
         for _ in $(seq 1 60); do
-          systemctl is-active --quiet salem-engine || exit 0
-          if journalctl -u salem-engine --since "{{ engine_stop_mark.stdout }}" --no-pager -o cat \
+          state="$(systemctl is-active salem-engine || true)"
+          case "$state" in
+            inactive)  exit 0 ;;
+            failed)    exit 3 ;;
+          esac
+          if [ -n "$cursor" ] && journalctl -u salem-engine --after-cursor "$cursor" --no-pager -o cat \
                | grep -qF 'graceful stop ABORTED'; then
             exit 1
           fi
@@ -138,27 +150,33 @@
       register: engine_stopped
       failed_when: false
       changed_when: false
-      when: engine_was_running.rc | default(1) == 0
+      when: (engine_was_running | default({})).rc | default(1) == 0
 
     - name: Read the engine's account of the shutdown
       shell: |
-        journalctl -u salem-engine --since "{{ engine_stop_mark.stdout }}" --no-pager -o cat \
-          | grep -F 'engine: shutdown summary:' | tail -1
+        journalctl -u salem-engine --after-cursor "{{ (engine_journal_cursor | default({})).stdout | default('') }}" \
+          --no-pager -o cat | grep -F 'engine: shutdown summary:' | tail -1
       register: engine_shutdown_summary
       failed_when: false
       changed_when: false
-      when: engine_was_running.rc | default(1) == 0
+      when:
+        - (engine_was_running | default({})).rc | default(1) == 0
+        - (engine_journal_cursor | default({})).stdout | default('') != ''
 
-    # A refused stop is a FAILED DEPLOY, and it fails HERE — before the migrations
-    # below touch the database. The village is still running and has lost nothing.
-    # Repair durability (/umbilical/checkpoint-health names the failing write),
-    # then re-run. If the engine genuinely must come down and the loss is
-    # acceptable, that is `systemctl stop` — a force stop, deliberately left as a
-    # separate, explicit human decision.
+    # A REFUSED stop is a failed deploy, and it fails HERE — before the migrations
+    # below touch the database.
+    #
+    # Note what does and does not halt the play, because the line is principled
+    # rather than squeamish: we halt only when halting still PRESERVES something.
+    # A refusal means the engine is alive and holding a world that has not been
+    # saved — stopping the deploy keeps it. Every other bad outcome below (a crash,
+    # a failed final checkpoint) has already realised its loss and left the engine
+    # down; halting there would only extend the outage without recovering a single
+    # row, so the play continues, restores service, and reports what it cost.
     - name: Fail the deploy if the engine would not stop
       fail:
         msg: |
-          {% if engine_stopped.rc == 1 %}
+          {% if (engine_stopped | default({})).rc == 1 %}
           The engine REFUSED to stop. Its checkpoint is failing, so exiting would
           discard every change since the last good checkpoint — which is exactly
           how the 2026-07-12 outage silently rolled the village back 17.5 hours.
@@ -171,14 +189,16 @@
             systemctl stop salem-engine
           {% else %}
           The engine did not exit within 5 minutes of a graceful stop request, and
-          did not log a refusal either — so it is wedged rather than protecting
-          itself. Nothing has been migrated.
+          logged no refusal — so it is not protecting itself, it is stuck. (If this
+          engine predates LLM-404 it has no SIGWINCH handler and ignored the signal
+          entirely; stop it once by hand with `systemctl stop salem-engine` and
+          re-run.) Nothing has been migrated.
 
           Investigate: journalctl -u salem-engine -n 100
           {% endif %}
       when:
-        - engine_was_running.rc | default(1) == 0
-        - engine_stopped.rc | default(0) != 0
+        - (engine_was_running | default({})).rc | default(1) == 0
+        - (engine_stopped | default({})).rc | default(0) in [1, 2]
 
     # Migrations
     # On a fresh database, load the schema baseline (schema.sql) before running
@@ -345,22 +365,32 @@
     # screen. Every branch below states what IS known — none of them quietly
     # implies a checkpoint was verified when it wasn't.
     - name: Report what the engine shutdown cost
+      vars:
+        was_running: "{{ (engine_was_running | default({})).rc | default(1) == 0 }}"
+        stop_rc: "{{ (engine_stopped | default({})).rc | default(0) }}"
+        summary: "{{ (engine_shutdown_summary | default({})).stdout | default('') }}"
       debug:
         msg: >-
-          {% if engine_was_running.rc | default(1) != 0 %}
+          {% if not was_running %}
           WORLD STATE: the engine was NOT running when this deploy started, so this
           deploy did not stop it and cannot vouch for its last checkpoint. Whatever
-          state it booted with is whatever the last checkpoint held.
-          {% elif engine_shutdown_summary.stdout | default('') == '' %}
-          WORLD STATE: the engine stopped, but logged no shutdown summary — this
-          deploy cannot confirm its final checkpoint was written. Check:
-          journalctl -u salem-engine --since "{{ engine_stop_mark.stdout }}"
-          {% elif 'checkpoint=ok' in engine_shutdown_summary.stdout %}
+          it boots with is whatever that checkpoint held.
+          {% elif stop_rc | int == 3 %}
+          *** WORLD STATE: THE ENGINE DID NOT STOP CLEANLY — the unit ended up in
+          `failed`, i.e. it died rather than checkpointing its way out. Everything
+          since its last successful checkpoint is GONE, and this deploy cannot say
+          how much that was. *** {{ summary }}
+          Investigate: journalctl -u salem-engine -n 100
+          {% elif summary == '' %}
+          WORLD STATE: the engine stopped, but logged no shutdown summary, so this
+          deploy cannot confirm a final checkpoint was written. Check:
+          journalctl -u salem-engine -n 100
+          {% elif 'checkpoint=ok' in summary %}
           WORLD STATE: stopped gracefully, final checkpoint written, nothing lost.
-          {{ engine_shutdown_summary.stdout }}
+          {{ summary }}
           {% else %}
-          *** WORLD STATE: THE ENGINE EXITED WITHOUT A GOOD CHECKPOINT. The village
-          was rolled back to its last successful save and the state since then is
-          GONE. ***
-          {{ engine_shutdown_summary.stdout }}
+          *** WORLD STATE: THE ENGINE EXITED WITHOUT A GOOD FINAL CHECKPOINT. The
+          village has been rolled back to its last successful save and the state
+          since then is GONE. ***
+          {{ summary }}
           {% endif %}

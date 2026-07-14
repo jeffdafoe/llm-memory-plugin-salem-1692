@@ -55,11 +55,20 @@ func (f *flakySave) writeCount() int {
 	return f.writes
 }
 
+// stopHarness is a booted engine plus the two levers a test pulls on it.
+type stopHarness struct {
+	world    *sim.World
+	saver    *flakySave
+	force    chan struct{}
+	graceful chan struct{}
+	done     chan error
+}
+
 // bootStopTestWorld builds a mem world with the periodic checkpointer pushed out
 // of the way (a one-hour cadence never fires inside a test), so every durable
 // write these tests observe is one the STOP path made — not a periodic one that
 // happened to land mid-assertion.
-func bootStopTestWorld(t *testing.T) (*sim.World, *flakySave, chan stopRequest, chan error) {
+func bootStopTestWorld(t *testing.T) *stopHarness {
 	t.Helper()
 	repo, _ := mem.NewRepository()
 	world, err := sim.LoadWorld(context.Background(), repo)
@@ -76,10 +85,30 @@ func bootStopTestWorld(t *testing.T) (*sim.World, *flakySave, chan stopRequest, 
 		TickSink:  nil,
 	}
 
-	stop := make(chan stopRequest, 1)
-	done := make(chan error, 1)
-	go func() { done <- run(rt, stop) }()
-	return world, saver, stop, done
+	h := &stopHarness{
+		world:    world,
+		saver:    saver,
+		force:    make(chan struct{}, 1),
+		graceful: make(chan struct{}, 1),
+		done:     make(chan error, 1),
+	}
+	go func() {
+		h.done <- run(rt, stopSignals{force: h.force, graceful: h.graceful})
+	}()
+	return h
+}
+
+// requireStopped asserts run() returned cleanly within the window.
+func (h *stopHarness) requireStopped(t *testing.T, why string) {
+	t.Helper()
+	select {
+	case err := <-h.done:
+		if err != nil {
+			t.Fatalf("run returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("run did not return within 5s: %s", why)
+	}
 }
 
 // worldIsAlive reports whether the world goroutine is still servicing commands —
@@ -97,14 +126,14 @@ func worldIsAlive(w *sim.World) bool {
 // and leave the village running. The operator then repairs durability and asks
 // again — and now the stop completes, with the world saved and nothing lost.
 func TestRun_GracefulStopAbortsOnFailedCheckpointThenCompletesOnRepair(t *testing.T) {
-	world, saver, stop, done := bootStopTestWorld(t)
-	saver.setFail(true)
+	h := bootStopTestWorld(t)
+	h.saver.setFail(true)
 
-	stop <- stopRequest{mode: stopGraceful}
+	h.graceful <- struct{}{}
 
 	// The gate must refuse. run() keeps operating instead of returning.
 	select {
-	case err := <-done:
+	case err := <-h.done:
 		t.Fatalf("run() EXITED on a graceful stop with a failing checkpoint (err=%v) — "+
 			"this is the 17.5-hour rollback the gate exists to prevent", err)
 	case <-time.After(time.Second):
@@ -113,28 +142,20 @@ func TestRun_GracefulStopAbortsOnFailedCheckpointThenCompletesOnRepair(t *testin
 	// ...and the refusal must leave the engine whole, not half-torn-down. If the
 	// gate had run after the teardown (the design LLM-404 rejected), the world
 	// goroutine would be gone and there would be nothing left to resume.
-	if !worldIsAlive(world) {
+	if !worldIsAlive(h.world) {
 		t.Fatal("world goroutine stopped after an ABORTED graceful stop — the abort tore down the engine it was supposed to preserve")
 	}
-	if saver.writeCount() == 0 {
+	if h.saver.writeCount() == 0 {
 		t.Error("graceful stop attempted no checkpoint at all — the gate never ran")
 	}
 
 	// The operator repairs durability. The next graceful stop now finds a world it
 	// can save, and goes through.
-	saver.setFail(false)
-	stop <- stopRequest{mode: stopGraceful}
+	h.saver.setFail(false)
+	h.graceful <- struct{}{}
+	h.requireStopped(t, "a graceful stop whose checkpoint SUCCEEDS must complete")
 
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("run returned error: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("run did not return within 5s of a graceful stop whose checkpoint SUCCEEDS")
-	}
-
-	if worldIsAlive(world) {
+	if worldIsAlive(h.world) {
 		t.Error("world still processing commands after run() returned — the completed stop did not tear the world down")
 	}
 }
@@ -144,23 +165,42 @@ func TestRun_GracefulStopAbortsOnFailedCheckpointThenCompletesOnRepair(t *testin
 // the world cannot be saved, because the alternative (an engine that can never be
 // stopped) is worse than the rollback.
 func TestRun_ForceStopExitsDespiteFailingCheckpoint(t *testing.T) {
-	world, saver, stop, done := bootStopTestWorld(t)
-	saver.setFail(true)
+	h := bootStopTestWorld(t)
+	h.saver.setFail(true)
 
-	stop <- stopRequest{mode: stopForce}
+	h.force <- struct{}{}
+	h.requireStopped(t, "force must exit regardless of checkpoint state")
 
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("run returned error: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("run did not return within 5s of a FORCE stop — force must exit regardless of checkpoint state")
-	}
-
-	if worldIsAlive(world) {
+	if worldIsAlive(h.world) {
 		t.Error("world still processing commands after a force stop returned")
 	}
+}
+
+// TestRun_ForceStopPreemptsAbortedGraceful — the escalation path. Durability is
+// broken, the operator asks nicely, the engine refuses. The operator then decides
+// the loss is acceptable and forces it. That force must be honoured immediately,
+// even though a graceful request is sitting right there in the channel: "exits
+// regardless" is worthless if force can be made to queue behind another
+// multi-second gate checkpoint first.
+func TestRun_ForceStopPreemptsAbortedGraceful(t *testing.T) {
+	h := bootStopTestWorld(t)
+	h.saver.setFail(true)
+
+	// Refuse a graceful stop first, so run() is back at the gate and the engine is
+	// in exactly the state an escalating operator would find it in.
+	h.graceful <- struct{}{}
+	select {
+	case <-h.done:
+		t.Fatal("run() exited on a graceful stop with a failing checkpoint")
+	case <-time.After(time.Second):
+	}
+
+	// Queue ANOTHER graceful (the operator retrying) and a force behind it. Force
+	// must win, and must not wait out a second gate checkpoint to do it.
+	h.graceful <- struct{}{}
+	h.force <- struct{}{}
+
+	h.requireStopped(t, "force must preempt a pending graceful request, not queue behind it")
 }
 
 // TestRun_GracefulStopCheckpointsBeforeTeardown pins the ordering that makes the
@@ -169,29 +209,27 @@ func TestRun_ForceStopExitsDespiteFailingCheckpoint(t *testing.T) {
 // pool drains. Two durable writes on a clean graceful stop, with no periodic
 // checkpointer in play to account for either of them.
 func TestRun_GracefulStopCheckpointsBeforeTeardown(t *testing.T) {
-	world, saver, stop, done := bootStopTestWorld(t)
+	h := bootStopTestWorld(t)
 
 	// Nothing should have been written yet — the periodic cadence is an hour out,
 	// and a freshly-loaded world is already identical to what is on disk.
-	if got := saver.writeCount(); got != 0 {
+	if got := h.saver.writeCount(); got != 0 {
 		t.Fatalf("checkpoint writes before any stop request = %d, want 0", got)
 	}
-	if !worldIsAlive(world) {
+	if !worldIsAlive(h.world) {
 		t.Fatal("world goroutine never started")
 	}
 
-	stop <- stopRequest{mode: stopGraceful}
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("run returned error: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("run did not return within 5s of a clean graceful stop")
-	}
+	h.graceful <- struct{}{}
+	h.requireStopped(t, "a clean graceful stop must complete")
 
-	// One for the gate (engine live), one for the final write (pool drained).
-	if got := saver.writeCount(); got != 2 {
+	// One for the gate (engine live), one for the final write (pool drained). The
+	// second is not redundant — the tick pool's workers commit their in-flight
+	// ticks as they drain, AFTER the gate write, and the final checkpoint is what
+	// captures them. Both are safe to run back-to-back: SaveWorld upserts the
+	// snapshot at a fresh snapshot_gen and sweeps below it, so what it persists is
+	// a pure function of the snapshot it was handed.
+	if got := h.saver.writeCount(); got != 2 {
 		t.Errorf("checkpoint writes over a graceful stop = %d, want 2 (the pre-teardown gate + the final checkpoint)", got)
 	}
 }
