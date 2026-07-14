@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
@@ -8263,6 +8264,29 @@ func keeperResellingInCompany() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) 
 const longPaymentNote = "the cheese and the milk both, and for keeping the last of it back for me on " +
 	"Tuesday when I hadn't the coin to pay for it right then — my sister is stopping the week and I " +
 	"would not have her go without"
+
+// payForTextCapRunes restates handlers.MaxPayForChars (== MaxPayWithItemForChars,
+// == the PC route's mirror of it). Stated as a literal rather than imported: the
+// perception package does not depend on handlers, and the point here is to pin the
+// FIXTURE's claim about itself, not to re-derive the production constant.
+const payForTextCapRunes = 200
+
+// TestLongPaymentNoteSitsAtPayCap pins what keeper_paid_with_long_note is actually
+// FOR. The scenario's whole value is that its note sits exactly on the cap the pay
+// tools enforce — the longest note production can emit — so it exercises the
+// boundary the old 220-rune cut sat just past. Nothing else enforces that: an
+// innocent edit to the prose would leave the golden passing while it quietly stopped
+// covering the boundary the comments still claim it covers (code_review, round 1).
+func TestLongPaymentNoteSitsAtPayCap(t *testing.T) {
+	if got := utf8.RuneCountInString(longPaymentNote); got != payForTextCapRunes {
+		t.Fatalf(
+			"longPaymentNote = %d runes, want exactly %d (handlers.MaxPayForChars) — the fixture must sit ON "+
+				"the pay tools' cap to be the longest note production can emit; re-word it to length or update both "+
+				"this test and the scenario summary",
+			got, payForTextCapRunes,
+		)
+	}
+}
 
 // keeperPaidWithLongNote is the LLM-400 fixture: Josiah Thorne's reselling-store
 // scene, with a Paid warrant from Martha Bishop carrying a note at the tool's

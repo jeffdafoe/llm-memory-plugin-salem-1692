@@ -194,11 +194,23 @@ func TestRenderWarrants_OverCapPayForTextIsMarkedElided(t *testing.T) {
 	if strings.Contains(out, long) {
 		t.Fatalf("an over-cap for-text should not render in full — the byte cap must still bind:\n%s", out)
 	}
-	if !strings.Contains(out, elisionMarker) {
+	// Assert against what the render path actually produces for this text, rather
+	// than just "an ellipsis appears somewhere in the prompt" — that weaker check
+	// would pass on any unrelated ellipsis the prompt gained later, while the
+	// for-text itself regressed to a bare prefix (code_review, round 1). Same shape
+	// as the matrix invariant in golden_test.go.
+	rendered, elided := sanitizeText(long, cfg.MaxBytesPerWarrant)
+	if !elided {
+		t.Fatalf("test fixture no longer exceeds MaxBytesPerWarrant (%d bytes) — it must, or this test proves nothing", cfg.MaxBytesPerWarrant)
+	}
+	if !strings.Contains(out, rendered) {
+		t.Errorf("the elided for-text does not appear in the prompt as the renderer produced it:\n  want substring: %q\n--- prompt ---\n%s", rendered, out)
+	}
+	if !strings.HasSuffix(rendered, elisionMarker) {
 		t.Errorf(
 			"an over-cap for-text rendered without the %q marker — the seller reads a bare mid-word prefix "+
-				"as the buyer's complete reason for paying, and answers the wrong thing:\n%s",
-			elisionMarker, out,
+				"as the buyer's complete reason for paying, and answers the wrong thing. Rendered tail: %q",
+			elisionMarker, tailOf(rendered, 48),
 		)
 	}
 }
