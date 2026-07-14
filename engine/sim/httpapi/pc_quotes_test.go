@@ -24,6 +24,11 @@ func quotesWorld(t *testing.T) *sim.World {
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		world.ItemKinds = map[sim.ItemKind]*sim.ItemKindDef{
 			"stew": {Name: "stew", DisplayLabel: "Stew", Category: "food"},
+			// nights_stay is a lodging service (no inventory backing) so the
+			// LLM-409 coverage reconcile skips it — quote 2 stays Active regardless
+			// of stock. No DisplayLabel: the handler's raw-kind fallback is asserted
+			// below.
+			"nights_stay": {Name: "nights_stay", Capabilities: []string{"service", "lodging"}},
 		}
 		world.Actors["pc-tester"] = &sim.Actor{
 			ID: "pc-tester", DisplayName: "Tester", Kind: sim.KindPC,
@@ -34,12 +39,16 @@ func quotesWorld(t *testing.T) *sim.World {
 			ID: "npc-john", DisplayName: "John Ellis", Kind: sim.KindNPCStateful,
 			State: sim.StateIdle, Pos: sim.TilePos{X: 3, Y: 4},
 			CurrentHuddleID: "h1",
+			// Backs john's stew quotes so the LLM-409 coverage reconcile leaves
+			// them Active — this test exercises handler eligibility, not coverage.
+			Inventory: map[sim.ItemKind]int{"stew": 5},
 		}
 		// Mary is in the scene's structure but NOT in the PC's huddle — her
 		// quote must be filtered (fast-path predicate 3 would reject a take).
 		world.Actors["npc-mary"] = &sim.Actor{
 			ID: "npc-mary", DisplayName: "Mary", Kind: sim.KindNPCShared,
 			State: sim.StateIdle, Pos: sim.TilePos{X: 3, Y: 4},
+			Inventory: map[sim.ItemKind]int{"stew": 1}, // backs quote 8 (LLM-409 reconcile)
 		}
 		// Two co-huddled "Bob"s: pc/pay's seller-by-display-name resolution
 		// rejects the ambiguous match (case-insensitively), so Bob's quote
@@ -48,6 +57,7 @@ func quotesWorld(t *testing.T) *sim.World {
 			ID: "npc-bob1", DisplayName: "Bob", Kind: sim.KindNPCShared,
 			State: sim.StateIdle, Pos: sim.TilePos{X: 3, Y: 4},
 			CurrentHuddleID: "h1",
+			Inventory:       map[sim.ItemKind]int{"stew": 1}, // backs quote 9 (LLM-409 reconcile)
 		}
 		world.Actors["npc-bob2"] = &sim.Actor{
 			ID: "npc-bob2", DisplayName: "bob", Kind: sim.KindNPCShared,

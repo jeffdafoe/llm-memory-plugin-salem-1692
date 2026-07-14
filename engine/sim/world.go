@@ -1777,6 +1777,13 @@ func (w *World) Run(ctx context.Context) {
 			// diff this command's need changes against it. Loaded before republish
 			// overwrites it; this is the state as of the previous command.
 			prevSnap := w.published.Load()
+			// LLM-409: flip any standing sell lot the seller can no longer cover to
+			// terminal shortfall BEFORE republish, so no published snapshot ever
+			// advertises stock the seller spent out from under his own offer,
+			// whichever inventory-drain path this command took. Sampled here (not
+			// republish's later time.Now()) so a lot's ResolvedAt is <= the
+			// snapshot's PublishedAt the beat window compares against.
+			w.reconcileQuoteCoverage(time.Now())
 			w.republish()
 			w.emitNeedsDeltas(prevSnap)
 			w.emitDormancyDeltas(prevSnap)

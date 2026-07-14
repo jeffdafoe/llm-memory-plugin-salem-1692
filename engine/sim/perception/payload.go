@@ -276,6 +276,18 @@ type Payload struct {
 	// out. Ordering: by QuoteID ascending for determinism.
 	StandingQuotesFromMe []StandingQuoteView
 
+	// UncoverableOffersFromMe lists the subject's OWN sell lots that JUST fell
+	// through because the subject spent/ate/paid the quoted goods away out from
+	// under his own offer — lots the pre-publish coverage reconcile
+	// (reconcileQuoteCoverage) flipped to terminal SceneQuoteStateShortfall
+	// within recentlyResolvedOfferWindow of snap.PublishedAt (LLM-409). Drives
+	// the flat "## An offer you couldn't keep" beat: the seller learns he can no
+	// longer honour a promise he made aloud, instead of the lot silently
+	// vanishing from StandingQuotesFromMe. Sourced from snap.Quotes (shortfall
+	// lots where SellerID == subject); NOT a warrant. nil (render content-gates)
+	// when nothing fell through recently. Ordering: by QuoteID ascending.
+	UncoverableOffersFromMe []UncoverableOfferView
+
 	// PendingDeliveriesFromMe lists open Orders where the subject is
 	// the seller — items they owe to a buyer/consumers from a previously
 	// accepted pay-with-item offer that hasn't been delivered yet.
@@ -829,6 +841,23 @@ type StandingQuoteView struct {
 	// common single-item quote, multi for a bundle.
 	Lines  []sim.QuoteLine
 	Amount int
+}
+
+// UncoverableOfferView is one of the subject's OWN sell lots that JUST fell
+// through because the subject spent the quoted goods out from under it — the lot
+// the pre-publish coverage reconcile (reconcileQuoteCoverage) flipped to the
+// terminal SceneQuoteStateShortfall within recentlyResolvedOfferWindow of
+// snap.PublishedAt (LLM-409). Drives the flat "## An offer you couldn't keep"
+// beat, the seller/scene_quote resolution counterpart to the buyer-side
+// ResolvedOfferView. It exists for conversational continuity: without it the lot
+// silently vanishes, and a seller who announced the offer aloud keeps no thread
+// when the buyer later comes to take a good he no longer has. BuyerName is the
+// acquaintance-gated label (descriptorLabel), empty for a public lot heard by
+// the whole room. Lines are the good(s) and count promised; item kinds are
+// sanitized inline at render time. Built by buildRecentlyShortfallQuotesFromMe.
+type UncoverableOfferView struct {
+	BuyerName string
+	Lines     []sim.QuoteLine
 }
 
 // ResolvedOfferView is one entry in RecentlyResolvedOffersFromMe — a

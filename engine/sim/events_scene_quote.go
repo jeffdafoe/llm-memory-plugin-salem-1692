@@ -82,6 +82,14 @@ const (
 	// phantom standing offer. The transfer itself rides the
 	// PayWithItemResolved{Accepted} event; this is the quote-side close.
 	SceneQuoteExpiredReasonTaken = "taken"
+
+	// SceneQuoteExpiredReasonShortfall — the seller's coverable holding of
+	// a quoted good fell below the lot's remaining quantity (they spent /
+	// ate / paid the goods away out from under their own offer), so the
+	// pre-publish coverage reconcile flipped the lot to
+	// SceneQuoteStateShortfall. The seller is told via the perception beat;
+	// they re-post what they still hold next turn (LLM-409).
+	SceneQuoteExpiredReasonShortfall = "shortfall"
 )
 
 // SceneQuoteExpired fires on every scene-quote terminal-state

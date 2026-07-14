@@ -266,6 +266,10 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderOfferableCustomers(&ephemeral, p.OfferableCustomers)
 	renderTradeValue(&ephemeral, p.TradeValue)
 	renderStandingQuotesFromMe(&ephemeral, p.StandingQuotesFromMe)
+	// LLM-409: the resolution twin of the standing-offers cue — a lot the seller
+	// spent the goods out from under, just flipped to shortfall. Sits right after
+	// so "still standing" and "fell through" read as a pair.
+	renderUncoverableOffersFromMe(&ephemeral, p.UncoverableOffersFromMe)
 	renderPendingDeliveriesFromMe(&ephemeral, p.PendingDeliveriesFromMe, p.LocalDateUTC, p.RenderedAt)
 	renderPendingDeliveriesToMe(&ephemeral, p.PendingDeliveriesToMe, p.LocalDateUTC, p.RenderedAt)
 	renderPendingOffersFromMe(&ephemeral, p.PendingOffersFromMe)
@@ -3024,6 +3028,37 @@ func renderStandingQuotesFromMe(b *strings.Builder, quotes []StandingQuoteView) 
 	// "the same goods" (which the buyer-side close uses, where double-buying a
 	// single need IS wrong).
 	b.WriteString("Bide for an answer; an offer listed above already stands — do not post it again.\n")
+}
+
+// renderUncoverableOffersFromMe renders the flat "## An offer you couldn't keep"
+// beat — a sell lot the subject posted and then spent the goods out from under,
+// which the coverage reconcile just flipped to shortfall (built by
+// buildRecentlyShortfallQuotesFromMe, LLM-409). One diegetic line per fallen-
+// through lot: the seller announced the offer aloud, so this closes the thread
+// he'd otherwise lose when the buyer comes to take a good he no longer holds. A
+// shortfall is a discrete event, not a gradient, so the register is a single
+// plain beat rather than a tiered felt escalation. Item kinds are sanitized
+// inline. Uncapped — bounded by the seller's own recent lots and the short
+// resolution window.
+func renderUncoverableOffersFromMe(b *strings.Builder, offers []UncoverableOfferView) {
+	if len(offers) == 0 {
+		return
+	}
+	b.WriteString("## An offer you couldn't keep\n")
+	for i, o := range offers {
+		items := formatQuoteLines(o.Lines)
+		if items == "" {
+			items = "what you offered"
+		}
+		if o.BuyerName != "" {
+			fmt.Fprintf(b, "%d. You offered %s %s and no longer have it to give.\n",
+				i+1, sanitizeInline(o.BuyerName), items)
+			continue
+		}
+		fmt.Fprintf(b, "%d. You offered %s to anyone here and no longer have it to give.\n",
+			i+1, items)
+	}
+	b.WriteString("You can no longer make good on it — own it to them plainly, and offer only what you still hold.\n")
 }
 
 // renderRecentlyResolvedOffersFromMe renders the buyer-side "## Recently settled

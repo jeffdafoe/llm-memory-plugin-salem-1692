@@ -78,6 +78,21 @@ const (
 	// "once-then-done" policy choice the SceneQuote doc comment defers
 	// to pay-with-item time (LLM-189). Terminal.
 	SceneQuoteStateTaken SceneQuoteState = "taken"
+
+	// SceneQuoteStateShortfall — the seller can no longer cover the lot:
+	// their coverable holding of a quoted good (on-hand minus goods
+	// earmarked for a Ready order) dropped below what the lot promises,
+	// because they spent, ate, or paid the goods away out from under
+	// their own standing offer. The pre-publish coverage reconcile
+	// (reconcileQuoteCoverage) flips the lot here so it stops advertising
+	// stock the seller lacks and stops pinning them to a promise they
+	// cannot keep. Whole-lot expire, not shrink: the seller announced the
+	// lot's price aloud, so the engine kills it and narrates the broken
+	// promise (the "## An offer you couldn't keep" beat) rather than
+	// silently re-pricing a deal to a quantity nobody agreed to. The
+	// seller re-posts what they still hold on their next turn. Terminal
+	// (LLM-409).
+	SceneQuoteStateShortfall SceneQuoteState = "shortfall"
 )
 
 // SceneQuoteTTLDefault is the default Time-To-Live for a scene quote

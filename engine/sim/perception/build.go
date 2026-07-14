@@ -305,6 +305,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	p.SelfActions = buildSelfActions(snap, actorID, actorSnap)
 	p.OfferableCustomers = buildOfferableCustomers(snap, actorID, p.AtOwnBusiness, p.Surroundings.HuddleMembers, p.Actor.Inventory)
 	p.StandingQuotesFromMe = buildStandingQuotesFromMe(snap, actorID, actorSnap)
+	p.UncoverableOffersFromMe = buildRecentlyShortfallQuotesFromMe(snap, actorID, actorSnap)
 	p.PendingDeliveriesFromMe, p.PendingDeliveriesToMe = buildPendingOrderViews(snap, actorID)
 	p.PendingOffersFromMe = buildPendingOffersFromMe(snap, actorID, actorSnap)
 	p.RecentlyResolvedOffersFromMe = buildRecentlyResolvedOffersFromMe(snap, actorID, actorSnap)
@@ -4163,6 +4164,80 @@ func buildStandingQuotesFromMe(snap *sim.Snapshot, subject sim.ActorID, subjectS
 			BuyerName: buyerName,
 			Lines:     q.Lines,
 			Amount:    q.Amount,
+		})
+	}
+	return views
+}
+
+// buildRecentlyShortfallQuotesFromMe scans snap.Quotes for the subject's OWN
+// sell lots that JUST fell through — quotes the pre-publish coverage reconcile
+// (reconcileQuoteCoverage) flipped to terminal SceneQuoteStateShortfall within
+// recentlyResolvedOfferWindow of snap.PublishedAt — and projects each to an
+// UncoverableOfferView for the flat "## An offer you couldn't keep" beat (LLM-409).
+//
+// This is the seller/scene_quote resolution counterpart to
+// buildRecentlyResolvedOffersFromMe (the buyer/pay_with_item settlement view):
+// buildStandingQuotesFromMe drops a lot the instant it goes terminal, so a
+// seller who spent the quoted goods away sees his standing-offer row simply
+// vanish. That fixes the absorbing state but loses the thread — he announced the
+// offer aloud, and without a beat he has no memory of it when the buyer comes to
+// take a good he no longer holds. This surfaces the broken promise so he can own
+// it. The short window (same 3-minute horizon as the buyer-side resolution view)
+// ages the beat out on its own — it is a one-time "you welched" nudge, not a
+// standing row.
+//
+// The buyer's name is acquaintance-gated (descriptorLabel), empty for a public
+// lot — mirroring buildStandingQuotesFromMe. Returns nil for none so render
+// content-gates cheaply. Ordering: by QuoteID ascending, deterministic.
+func buildRecentlyShortfallQuotesFromMe(snap *sim.Snapshot, subject sim.ActorID, subjectSnap *sim.ActorSnapshot) []UncoverableOfferView {
+	if snap == nil || len(snap.Quotes) == 0 {
+		return nil
+	}
+	var ids []sim.QuoteID
+	for id, q := range snap.Quotes {
+		if q == nil || q.SellerID != subject {
+			continue
+		}
+		if q.State != sim.SceneQuoteStateShortfall {
+			continue
+		}
+		// Fail closed on a future-dated ResolvedAt (age < 0): production stamps
+		// ResolvedAt before PublishedAt in World.Run, but this reads arbitrary
+		// snapshots, and a negative age would otherwise slip past the window as if
+		// fresh (code_review, LLM-409).
+		age := snap.PublishedAt.Sub(q.ResolvedAt)
+		if q.ResolvedAt.IsZero() || age < 0 || age > recentlyResolvedOfferWindow {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+
+	resolveBuyer := func(id sim.ActorID) string {
+		buyer := snap.Actors[id]
+		if buyer == nil {
+			return "someone"
+		}
+		acquainted := false
+		if subjectSnap != nil && buyer.DisplayName != "" {
+			_, acquainted = subjectSnap.Acquaintances[buyer.DisplayName]
+		}
+		return descriptorLabel(buyer.DisplayName, buyer.Role, acquainted)
+	}
+
+	views := make([]UncoverableOfferView, 0, len(ids))
+	for _, id := range ids {
+		q := snap.Quotes[id]
+		buyerName := ""
+		if q.TargetBuyer != "" {
+			buyerName = resolveBuyer(q.TargetBuyer)
+		}
+		views = append(views, UncoverableOfferView{
+			BuyerName: buyerName,
+			Lines:     q.Lines,
 		})
 	}
 	return views

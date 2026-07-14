@@ -5,16 +5,19 @@
 
 
 ## You
-Coins in your purse: 30.
-You are carrying: raspberries (x5).
+Coins in your purse: 12.
+You are carrying: turnip (x3).
 
 ## Around you
-You are inside the PW Apothecary, your workplace, with no one else here to hear you speak.
+You are inside the Thorne Farm, your workplace, with no one else here to hear you speak.
 It is morning in the village.
 
 You're at your workplace.
 
 ## Offers you've put out
-1. You have offered Anne 5 raspberries for 10 coins — they have yet to answer.
+1. You have offered John Ellis 3 turnip for 3 coins — they have yet to answer.
 Bide for an answer; an offer listed above already stands — do not post it again.
+## An offer you couldn't keep
+1. You offered John Ellis 2 wheat and no longer have it to give.
+You can no longer make good on it — own it to them plainly, and offer only what you still hold.
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

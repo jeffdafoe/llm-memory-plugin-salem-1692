@@ -1127,8 +1127,10 @@ func runPayWithItemFastPath(
 				)
 			}
 			need := ln.Qty * effConsumers
-			reserved := outstandingReadyOrderQty(w, seller.ID, ln.ItemKind)
-			if seller.Inventory[ln.ItemKind]-reserved < need {
+			// sellerCoverableStock (LLM-409): on-hand minus goods earmarked for a
+			// Ready order — the same coverage predicate quote create and the
+			// pre-publish reconcile use.
+			if coverable, reserved := sellerCoverableStock(w, seller, ln.ItemKind); coverable < need {
 				noteOutOfStock(w, buyer.ID, seller.ID, ln.ItemKind, at)
 				return nil, fmt.Errorf(
 					"%s doesn't have enough %s (have %d, reserved %d, need %d)",
@@ -1137,8 +1139,9 @@ func runPayWithItemFastPath(
 			}
 		}
 	} else if !itemHasCapability(w, kind, "service") {
-		reserved := outstandingReadyOrderQty(w, seller.ID, kind)
-		available := seller.Inventory[kind] - reserved
+		// sellerCoverableStock (LLM-409): on-hand minus goods earmarked for a
+		// Ready order — the shared coverage predicate.
+		available, reserved := sellerCoverableStock(w, seller, kind)
 		if available < needed {
 			// ZBBS-HOME-363: the buyer walked here and found the seller dry on
 			// this item. This fast-path rejects with no ledger entry (the

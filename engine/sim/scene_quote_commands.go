@@ -272,10 +272,18 @@ func SceneQuoteCreate(
 				if itemHasCapability(w, ln.ItemKind, "service") {
 					continue
 				}
-				if seller.Inventory[ln.ItemKind] < needed {
+				// Coverage is on-hand MINUS goods earmarked for a Ready order
+				// (sellerCoverableStock, LLM-409): a quote backed only by stock
+				// already promised to a pending delivery is uncoverable the moment
+				// it posts and would flip to shortfall on the next reconcile pass.
+				// Gating create on the same reserved-aware predicate the accept path
+				// and the reconcile use keeps all three coverage checks in one shape
+				// (previously create gated on raw Inventory and could mint a
+				// born-dead lot).
+				if coverable, reserved := sellerCoverableStock(w, seller, ln.ItemKind); coverable < needed {
 					return nil, fmt.Errorf(
-						"insufficient stock (have %d %s, need %d) — quote a smaller quantity before posting.",
-						seller.Inventory[ln.ItemKind], ln.ItemKind, needed,
+						"insufficient stock (have %d %s, reserved %d, need %d) — quote a smaller quantity before posting.",
+						seller.Inventory[ln.ItemKind], ln.ItemKind, reserved, needed,
 					)
 				}
 			}
