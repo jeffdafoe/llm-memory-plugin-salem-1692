@@ -44,7 +44,10 @@ func capRunesMarked(s string, maxRunes int) string {
 	if utf8.RuneCountInString(s) <= maxRunes {
 		return s
 	}
-	const markerRunes = 1 // ElisionMarker is a single rune (U+2026)
+	// Measured, not assumed. The marker is one rune today (U+2026), and the
+	// whole marker-inside-the-budget contract quietly breaks if that changes
+	// under a hardcoded 1 — the helper would start returning maxRunes+n.
+	markerRunes := utf8.RuneCountInString(ElisionMarker)
 	if maxRunes <= markerRunes {
 		// No room for any of the text — say "there was more" and nothing else,
 		// which is still truer than a one-rune prefix.
