@@ -129,6 +129,43 @@ func TestRenderWarrants_IntervalStamps(t *testing.T) {
 	}
 }
 
+// TestRenderWarrants_OverCapSpeechIsMarkedElided pins the OTHER half of the
+// LLM-396 contract: an utterance too long for MaxBytesPerWarrant is still cut —
+// but the cut is MARKED, so it can never read as an unfinished sentence.
+//
+// The golden (listener_hears_long_utterance) uses the real 372-rune Inn line,
+// which is deliberately under the 600-byte render cap — so it pins "complete" and
+// never exercises the elision branch. Nothing else in the scenario matrix carries
+// an over-cap utterance either, which means the marked-elision path would go
+// entirely untested and could silently regress to a bare prefix — the exact defect
+// this ticket fixed (code_review, LLM-396). This test is that missing half.
+func TestRenderWarrants_OverCapSpeechIsMarkedElided(t *testing.T) {
+	cfg := DefaultRenderConfig()
+	// Comfortably past the byte cap, so capBytes must shorten it.
+	long := strings.Repeat("a", cfg.MaxBytesPerWarrant+200)
+	p := Payload{
+		ActorID: "alice",
+		Actor:   ActorView{State: sim.StateIdle},
+		Warrants: []sim.WarrantMeta{{
+			TriggerActorID: "ezekiel",
+			Reason:         sim.NPCSpeechWarrantReason{Speaker: "ezekiel", Excerpt: long},
+		}},
+		Baseline:   BaselinePresent,
+		RenderedAt: time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC),
+	}
+	out := Render(p, cfg).Text
+	if strings.Contains(out, long) {
+		t.Fatalf("an over-cap utterance should not render in full — the byte cap must still bind:\n%s", out)
+	}
+	if !strings.Contains(out, elisionMarker) {
+		t.Errorf(
+			"an over-cap utterance rendered without the %q marker — a listener reads a bare mid-word prefix "+
+				"as an unfinished sentence and asks the speaker to finish it, which is the LLM-396 loop:\n%s",
+			elisionMarker, out,
+		)
+	}
+}
+
 // TestRender_NarrationWarrants covers the felt-language self-perception lines:
 // the surviving dwell beats (boundary tick + ended, LLM-316) render their
 // pre-rendered NarrationText, and an empty-narration warrant falls back to the

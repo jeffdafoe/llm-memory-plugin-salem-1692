@@ -189,6 +189,78 @@ func TestGoldensRainLineIffStorm(t *testing.T) {
 	}
 }
 
+// TestGoldensSpeechExcerptCompleteOrMarked is the LLM-396 cross-scenario invariant:
+// a speech warrant's utterance reaches the listener's prompt either COMPLETE, or —
+// if the renderer had to elide it — visibly marked with the elision marker. It is
+// never a bare mid-word prefix.
+//
+// A bare prefix is not a cosmetic defect, it is a behavioral one. A listener shown
+// "…they're about finding home in small" perceives an unfinished sentence and does
+// the socially obvious thing: it asks the speaker to finish. The reply is clipped
+// the same way, so a fresh dangling question is minted every single turn and the
+// huddle cannot terminate — the live 13-minute Inn loop (Lewis / Silence / Hannah,
+// 2026-07-14). It also defeats the "you already spoke, wait for their reply" guard,
+// which can never be the most pressing matter while a question hangs unanswered.
+//
+// Stated matrix-wide rather than pinned in the one golden on purpose: the cut that
+// caused this lived a package away (handlers/speech_reactor.go), not in the render
+// path, so a scenario-local assertion would not have caught it. Any future cap — a
+// new warrant kind carrying speech, a re-tightened budget — trips here instead.
+func TestGoldensSpeechExcerptCompleteOrMarked(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, warrants := sc.build()
+			out := combinedPrompt(Render(Build(snap, actorID, warrants), DefaultRenderConfig()))
+			for _, w := range warrants {
+				var excerpt string
+				switch r := w.Reason.(type) {
+				case sim.NPCSpeechWarrantReason:
+					excerpt = r.Excerpt
+				case sim.PCSpeechWarrantReason:
+					excerpt = r.Excerpt
+				default:
+					continue // not a speech warrant — invariant N/A
+				}
+				// An empty excerpt renders "X spoke to you." — nothing to elide.
+				if strings.TrimSpace(excerpt) == "" {
+					continue
+				}
+				// Ask the render path itself what this excerpt becomes, rather than
+				// restating the cap — the invariant then tracks production and won't
+				// drift if MaxBytesPerWarrant moves (same reasoning as the LLM-364
+				// rain invariant computing through weatherProse).
+				rendered, elided := sanitizeText(excerpt, DefaultRenderConfig().MaxBytesPerWarrant)
+				if !strings.Contains(out, rendered) {
+					t.Fatalf("scenario %q: speaker's utterance does not appear in the prompt at all:\n  want substring: %q", sc.name, rendered)
+				}
+				if !elided {
+					continue // full utterance reached the listener — the good case
+				}
+				if !strings.HasSuffix(rendered, elisionMarker) {
+					t.Errorf(
+						"scenario %q: speech excerpt was elided but rendered as a bare prefix, with no %q marker — "+
+							"a listener reads this as an unfinished sentence and asks the speaker to complete it, which is "+
+							"the LLM-396 conversation loop. Rendered tail: %q",
+						sc.name, elisionMarker, tailOf(rendered, 48),
+					)
+				}
+			}
+		})
+	}
+}
+
+// tailOf returns the last n runes of s, for readable failure messages on long
+// utterances (the head of a clipped line is never the interesting part — the cut
+// is at the tail).
+func tailOf(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return "…" + string(r[len(r)-n:])
+}
+
 // TestGoldensTendNeedYieldsToEating is the LLM-276 cross-scenario invariant: whenever
 // a tend-need warrant is present (the seek-work backstop redirected a workless idle
 // worker with a resolvable hunger/thirst to eat), the rendered prompt must carry the
@@ -799,6 +871,17 @@ func promptSection(prompt, header string) string {
 // Each new live (a)-class failure should add a scenario here (and, where it states
 // a property over the whole matrix, a cross-scenario invariant test).
 var perceptionScenarios = []perceptionScenario{
+	{
+		name: "listener_hears_long_utterance",
+		summary: "LLM-396: a listener perceives a 372-rune utterance — the real line Silence Walker spoke " +
+			"in the Inn on 2026-07-14, which Lewis received clipped mid-word at \"…finding home in small\" and " +
+			"answered by asking her to finish the sentence, a loop that ran unbroken for 13 minutes. The golden " +
+			"pins that the FULL line now reaches the listener (no bare mid-word prefix, no silent elision) and " +
+			"that it renders exactly ONCE — the warrant carries the whole text while the ring/SalientFact copies " +
+			"stay in the 220-rune form, the exact case that would break the ZBBS-WORK-374 same-tick dedup and " +
+			"show the model the same line twice. Matrix guard: TestGoldensSpeechExcerptCompleteOrMarked.",
+		build: listenerHearsLongUtterance,
+	},
 	{
 		name: "keeper_alone_at_post_onshift",
 		summary: "Stateful keeper arrives at its own store during working hours with no one else present " +
@@ -9854,6 +9937,48 @@ func laboringWorkerAddressedByEmployer() (*sim.Snapshot, sim.ActorID, []sim.Warr
 		OccurredAt:     published,
 	}}
 	return snap, silenceID, warrants
+}
+
+// longHeardUtterance is a 372-rune line — the actual utterance Silence Walker
+// spoke in the Inn on 2026-07-14 that Lewis perceived clipped at "…finding home
+// in small" (LLM-396). Well past the old 220-rune warrant cut, comfortably under
+// both MaxSpeakTextChars (1000 runes) and the renderer's MaxBytesPerWarrant
+// (600 bytes), so a correct engine shows it WHOLE.
+const longHeardUtterance = "You didn't put me on the spot, Lewis — not at all. You're right that some " +
+	"memories are best held close, but the ones I've been sharing... they feel like the kind worth " +
+	"telling, because they're about finding home in small, steady things. And you're right — the " +
+	"making and mending, the tending, they do hold a life together. I think that's what I'm learning, " +
+	"day by day."
+
+// listenerHearsLongUtterance is the LLM-396 fixture: the laboring-worker scene
+// with the employer's line replaced by a real 372-rune utterance, carried BOTH on
+// the speech warrant (the "## Since your last turn" beat) and in the huddle's
+// RecentUtterances ring (the "## Recent conversation here" beat).
+//
+// It pins two things at once:
+//
+//   - The listener perceives the COMPLETE utterance — not a bare mid-word prefix.
+//     The clipped prefix is what drove the live 13-minute Inn loop: an unfinished
+//     sentence reads as an invitation to ask the speaker to finish it.
+//   - The line still renders exactly ONCE. Carrying the full text on the warrant
+//     while the ring/SalientFact copies stay in the 220-rune form is precisely the
+//     case that would break currentHeardExcerpts' exact-match dedup and resurrect
+//     the ZBBS-WORK-374 "same line twice" duplication — which reinforces the very
+//     line we don't want repeated. The golden fails loudly if it double-renders.
+func listenerHearsLongUtterance() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, subject, warrants := laboringWorkerAddressedByEmployer()
+	for _, h := range snap.Huddles {
+		for i := range h.RecentUtterances {
+			h.RecentUtterances[i].Text = longHeardUtterance
+		}
+	}
+	for i := range warrants {
+		if r, ok := warrants[i].Reason.(sim.NPCSpeechWarrantReason); ok {
+			r.Excerpt = longHeardUtterance
+			warrants[i].Reason = r
+		}
+	}
+	return snap, subject, warrants
 }
 
 // returningHelperLaborOfferSnapshot builds the LLM-228 shape: Anne Walker, who

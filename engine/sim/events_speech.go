@@ -21,10 +21,10 @@ import "time"
 // Schema's maxLength is character-based per spec, and the engine-side
 // check uses utf8.RuneCountInString so the two layers agree),
 // control-character-rejected (only \n \r \t allowed outside the
-// printable range). The speech reactor subscriber truncates
-// this to MaxSalientFactTextLen runes for the warrant Excerpt, but the
-// full text travels on the event for any consumer that wants the complete
-// utterance (debug logs, future audit, future WS clients).
+// printable range). The speech reactor subscriber copies this text
+// verbatim into the warrant Excerpt (LLM-396) so a listener perceives the
+// complete utterance; the renderer applies the only length bound, and it
+// marks whatever it elides.
 //
 // SpeechID is the canonical identifier for this utterance. By design it
 // aliases the event's EventID — the speech reactor subscriber copies

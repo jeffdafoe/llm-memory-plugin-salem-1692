@@ -140,12 +140,13 @@ func (BasicWarrantReason) DedupDiscriminator() uint64 { return 0 }
 // flows through event, payload, and dedup key, so logs and replay tooling
 // trace a single cascade by one ID.
 //
-// Excerpt is the speech text truncated to MaxSalientFactTextLen runes —
-// other actors' perception prompts re-render this on every reactor tick
-// they consume, so bounding the excerpt at warrant-stamp time bounds the
-// per-tick prompt cost. The raw (1000-char-capped, control-char-rejected)
-// text travels on the Spoke event for any consumer that wants the full
-// utterance.
+// Excerpt is the FULL speech text (1000-char-capped, control-char-rejected
+// upstream by the speak tool) — LLM-396. It was previously truncated to
+// MaxSalientFactTextLen runes to bound per-tick prompt cost, but the cut was
+// unmarked and landed mid-word, so listeners perceived a dangling sentence and
+// kept asking the speaker to finish it — an endless huddle. Prompt cost is now
+// bounded in the renderer instead (RenderConfig.MaxBytesPerWarrant), which marks
+// what it elides.
 type PCSpeechWarrantReason struct {
 	SpeechID SpeechID
 	Speaker  ActorID

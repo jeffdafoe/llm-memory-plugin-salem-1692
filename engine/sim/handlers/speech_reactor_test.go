@@ -2,6 +2,7 @@ package handlers_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -176,22 +177,32 @@ func TestSpeechReactor_NoHuddleNoWarrants(t *testing.T) {
 	}
 }
 
-// --- TestSpeechReactor_ExcerptTruncatedToMaxSalientFactTextLen --------
-// Long speech (above MaxSalientFactTextLen) produces a truncated Excerpt.
-// The Text on the Spoke event itself is bounded by the handler at 1000
-// chars; the warrant Excerpt is bounded by sim.MaxSalientFactTextLen (220).
-func TestSpeechReactor_ExcerptTruncated(t *testing.T) {
-	const longLen = 600 // > MaxSalientFactTextLen (220), < MaxSpeakTextBytes (1000)
-	long := make([]byte, longLen)
-	for i := range long {
-		long[i] = 'a'
-	}
+// --- TestSpeechReactor_ExcerptCarriesFullUtterance -------------------
+// A long utterance (well past the old MaxSalientFactTextLen cut) reaches the
+// listener's warrant WHOLE — LLM-396. This test previously asserted the exact
+// opposite (Excerpt rune len == MaxSalientFactTextLen); that contract was the
+// bug, so it is inverted here rather than deleted.
+//
+// The old 220-rune cut was unmarked and landed mid-word. A listener perceiving
+// "...they're about finding home in small" reads an unfinished sentence and asks
+// the speaker to complete it; the reply is clipped identically, so every turn
+// mints a fresh dangling question and the huddle cannot terminate. That is the
+// live 13-minute Inn loop (Lewis / Silence / Hannah, 2026-07-14), and 40% of
+// real utterances were long enough to trigger it.
+//
+// Length is still bounded, just where it belongs: upstream the speak tool caps
+// text at MaxSpeakTextChars (1000 runes), and downstream the renderer caps the
+// warrant payload at RenderConfig.MaxBytesPerWarrant — and the renderer MARKS
+// what it elides, so a clipped line can never again read as an unfinished one.
+func TestSpeechReactor_ExcerptCarriesFullUtterance(t *testing.T) {
+	// 600 runes: far past the old 220 cut, inside MaxSpeakTextChars (1000).
+	long := strings.Repeat("a", 600)
 	w, stop := buildSpeechReactorWorld(t,
 		speakActor{id: "hannah", displayName: "Hannah", kind: sim.KindNPCShared, huddleID: "h1"},
 		speakActor{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1"},
 	)
 	defer stop()
-	if _, err := w.Send(sim.Speak("hannah", string(long), time.Now().UTC())); err != nil {
+	if _, err := w.Send(sim.Speak("hannah", long, time.Now().UTC())); err != nil {
 		t.Fatalf("Speak: %v", err)
 	}
 	bobWarrants := peekWarrants(t, w, "bob")
@@ -199,8 +210,11 @@ func TestSpeechReactor_ExcerptTruncated(t *testing.T) {
 		t.Fatalf("bob warrants = %d, want 1", len(bobWarrants))
 	}
 	reason := bobWarrants[0].Reason.(sim.NPCSpeechWarrantReason)
-	if got := len([]rune(reason.Excerpt)); got != sim.MaxSalientFactTextLen {
-		t.Errorf("Excerpt rune len = %d, want %d", got, sim.MaxSalientFactTextLen)
+	if reason.Excerpt != long {
+		t.Errorf(
+			"Excerpt did not carry the full utterance: got %d runes, want %d (the whole line)",
+			len([]rune(reason.Excerpt)), len([]rune(long)),
+		)
 	}
 }
 
