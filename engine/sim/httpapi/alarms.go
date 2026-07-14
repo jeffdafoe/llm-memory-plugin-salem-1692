@@ -48,6 +48,20 @@ import (
 // diverging from the last good checkpoint and a restart would roll back to it.
 const alarmKindCheckpointFailure = "checkpoint_failure"
 
+// alarmKindCheckpointClamped fires when the last checkpoint could only be
+// persisted by correcting a value the world had no business producing — a need
+// above its ceiling, a negative quantity, a zero-length period (LLM-392).
+//
+// Durability is INTACT when this fires; that is what separates it from
+// checkpoint_failure, and it is why the checkpoint clamps at all. But it earns a
+// place in a registry this severe because a clamp is proof of a live bug that has
+// ALREADY corrupted world state in memory — the durable row is the repaired
+// value, not what the actor actually holds — and because the alternative to
+// making this loud is a persistence layer that quietly edits the world on its way
+// to disk. The clamp buys durability; the alarm is the price, and it is not
+// optional.
+const alarmKindCheckpointClamped = "checkpoint_clamped"
+
 // alarmKindTickerStale fires when a cadence goroutine has stopped beating on its
 // declared interval (LLM-395). This is the OTHER way the engine keeps serving
 // while quietly ceasing to function: the HTTP surface answers, the world holds
@@ -115,7 +129,11 @@ type UmbilicalAlarmsDTO struct {
 // streak, so it simply never fires.
 func (s *Server) evaluateAlarms(now time.Time) []Alarm {
 	var out []Alarm
-	if a, ok := checkpointAlarm(s.checkpointHealth.Snapshot(), now); ok {
+	health := s.checkpointHealth.Snapshot()
+	if a, ok := checkpointAlarm(health, now); ok {
+		out = append(out, a)
+	}
+	if a, ok := checkpointClampAlarm(health); ok {
 		out = append(out, a)
 	}
 	// Nil-guarded: unlike the health recorders, s.world is a bare pointer whose
@@ -227,6 +245,51 @@ func checkpointAlarm(h sim.CheckpointHealthSnapshot, now time.Time) (Alarm, bool
 		LastError:   h.LastError,
 		Detail:      detail,
 	}, true
+}
+
+// checkpointClampAlarm classifies the clamp side of a CheckpointHealthSnapshot: it
+// fires whenever the most recent SUCCESSFUL checkpoint had to correct at least one
+// out-of-range value to be persistable at all (LLM-392).
+//
+// Threshold of one, unlike checkpoint_failure's three. A failed checkpoint can be a
+// transient blip that self-heals (a lock timeout, a pg hiccup), which is why that
+// alarm waits for a streak. A clamp cannot: it means an engine code path computed a
+// value that no rule of the world permits, and it computed it BEFORE any of this
+// ran. There is no benign version to wait out.
+//
+// It reads last-checkpoint state, so it self-clears as soon as one checkpoint
+// completes without a correction — which keeps the evaluator stateless and means a
+// fixed bug stops the alarm on the next cadence, with no ack and no restart.
+//
+// Since is the moment the clamped checkpoint was WRITTEN (last_success_at), not the
+// moment a request noticed — so the alarm reads identically on every response until
+// the next checkpoint moves it, per this file's stability rule.
+func checkpointClampAlarm(h sim.CheckpointHealthSnapshot) (Alarm, bool) {
+	if h.LastClampCount <= 0 {
+		return Alarm{}, false
+	}
+	detail := "THE WORLD IS PRODUCING IMPOSSIBLE VALUES: the last checkpoint could only be saved by correcting " +
+		strconv.Itoa(h.LastClampCount) +
+		" value(s) that no valid world state can hold — a need past its ceiling, a negative quantity, a zero-length period. " +
+		"Durability is INTACT (the correction is what kept it), but a live engine bug has already corrupted this state in " +
+		"memory, and what is now on disk is the repaired value, NOT what the world believed"
+	if len(h.LastClamps) > 0 {
+		detail += ". First: " + describeClamp(h.LastClamps[0])
+	}
+	detail += ". Find the code path that wrote it; see /umbilical/checkpoint-health for the full list."
+	return Alarm{
+		Kind:        alarmKindCheckpointClamped,
+		Since:       h.LastSuccessAt,
+		Consecutive: h.LastClampCount,
+		Detail:      detail,
+	}, true
+}
+
+// describeClamp renders one correction for the alarm's prose. The operator reading
+// it may never have seen this alarm before, so it spells out the transition rather
+// than emitting a struct.
+func describeClamp(c sim.Clamp) string {
+	return c.Table + "." + c.Field + " for " + c.Key + " held " + c.From + ", written as " + c.To
 }
 
 // humanizeSince renders a duration as a coarse human phrase for the alarm's
