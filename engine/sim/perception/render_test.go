@@ -166,6 +166,43 @@ func TestRenderWarrants_OverCapSpeechIsMarkedElided(t *testing.T) {
 	}
 }
 
+// TestRenderWarrants_OverCapPayForTextIsMarkedElided is the pay-side counterpart
+// (LLM-400): a payment's for-text too long for MaxBytesPerWarrant is cut, but the
+// cut is MARKED.
+//
+// The renderer is now the SOLE truncation point for a pay excerpt — the handler's
+// bare 220-rune cut is gone, so this is the only place a for-text can be shortened
+// and the only place a marker can be attached. A 200-rune for-text (the tool cap)
+// only reaches the 600-byte render cap when heavily multi-byte, so the elision
+// branch is rare in practice and correspondingly easy to regress unnoticed.
+// Asserted here directly rather than through the scenario matrix, for the same
+// reason the speech test above exists: no golden carries an over-cap payload.
+func TestRenderWarrants_OverCapPayForTextIsMarkedElided(t *testing.T) {
+	cfg := DefaultRenderConfig()
+	long := strings.Repeat("a", cfg.MaxBytesPerWarrant+200)
+	p := Payload{
+		ActorID: "alice",
+		Actor:   ActorView{State: sim.StateIdle},
+		Warrants: []sim.WarrantMeta{{
+			TriggerActorID: "ezekiel",
+			Reason:         sim.PaidWarrantReason{Buyer: "ezekiel", Amount: 3, ForText: long},
+		}},
+		Baseline:   BaselinePresent,
+		RenderedAt: time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC),
+	}
+	out := Render(p, cfg).Text
+	if strings.Contains(out, long) {
+		t.Fatalf("an over-cap for-text should not render in full — the byte cap must still bind:\n%s", out)
+	}
+	if !strings.Contains(out, elisionMarker) {
+		t.Errorf(
+			"an over-cap for-text rendered without the %q marker — the seller reads a bare mid-word prefix "+
+				"as the buyer's complete reason for paying, and answers the wrong thing:\n%s",
+			elisionMarker, out,
+		)
+	}
+}
+
 // TestRender_NarrationWarrants covers the felt-language self-perception lines:
 // the surviving dwell beats (boundary tick + ended, LLM-316) render their
 // pre-rendered NarrationText, and an empty-narration warrant falls back to the

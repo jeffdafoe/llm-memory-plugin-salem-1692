@@ -189,10 +189,11 @@ func TestGoldensRainLineIffStorm(t *testing.T) {
 	}
 }
 
-// TestGoldensSpeechExcerptCompleteOrMarked is the LLM-396 cross-scenario invariant:
-// a speech warrant's utterance reaches the listener's prompt either COMPLETE, or —
-// if the renderer had to elide it — visibly marked with the elision marker. It is
-// never a bare mid-word prefix.
+// TestGoldensWarrantTextCompleteOrMarked is the cross-scenario invariant behind
+// LLM-396 and LLM-400: an untrusted free-text payload carried on a warrant — the
+// words someone said, the note attached to a payment — reaches the reader's prompt
+// either COMPLETE, or, if the renderer had to elide it, visibly marked with the
+// elision marker. It is never a bare mid-word prefix.
 //
 // A bare prefix is not a cosmetic defect, it is a behavioral one. A listener shown
 // "…they're about finding home in small" perceives an unfinished sentence and does
@@ -200,49 +201,57 @@ func TestGoldensRainLineIffStorm(t *testing.T) {
 // the same way, so a fresh dangling question is minted every single turn and the
 // huddle cannot terminate — the live 13-minute Inn loop (Lewis / Silence / Hannah,
 // 2026-07-14). It also defeats the "you already spoke, wait for their reply" guard,
-// which can never be the most pressing matter while a question hangs unanswered.
+// which can never be the most pressing matter while a question hangs unanswered. A
+// clipped payment note is the quieter version of the same lie: the seller reads a
+// reason that stops mid-clause as though the buyer had finished saying it.
 //
-// Stated matrix-wide rather than pinned in the one golden on purpose: the cut that
-// caused this lived a package away (handlers/speech_reactor.go), not in the render
-// path, so a scenario-local assertion would not have caught it. Any future cap — a
-// new warrant kind carrying speech, a re-tightened budget — trips here instead.
-func TestGoldensSpeechExcerptCompleteOrMarked(t *testing.T) {
+// Stated matrix-wide rather than pinned in the goldens on purpose: both cuts lived
+// a package away (handlers/speech_reactor.go, handlers/pay_reactor.go), not in the
+// render path, so a scenario-local assertion would not have caught either. It is
+// stated over warrant text in general, rather than per kind, so the next warrant
+// that carries free text inherits the guarantee by joining the switch below —
+// which is exactly what the pay path failed to do the first time around.
+func TestGoldensWarrantTextCompleteOrMarked(t *testing.T) {
 	for _, sc := range perceptionScenarios {
 		sc := sc
 		t.Run(sc.name, func(t *testing.T) {
 			snap, actorID, warrants := sc.build()
 			out := combinedPrompt(Render(Build(snap, actorID, warrants), DefaultRenderConfig()))
 			for _, w := range warrants {
-				var excerpt string
+				var text, kind string
 				switch r := w.Reason.(type) {
 				case sim.NPCSpeechWarrantReason:
-					excerpt = r.Excerpt
+					text, kind = r.Excerpt, "speech excerpt"
 				case sim.PCSpeechWarrantReason:
-					excerpt = r.Excerpt
+					text, kind = r.Excerpt, "speech excerpt"
+				case sim.PaidWarrantReason:
+					text, kind = r.ForText, "payment for-text"
 				default:
-					continue // not a speech warrant — invariant N/A
+					continue // carries no untrusted free text — invariant N/A
 				}
-				// An empty excerpt renders "X spoke to you." — nothing to elide.
-				if strings.TrimSpace(excerpt) == "" {
+				// Empty text renders the payload-less form of the line ("X spoke to
+				// you.", "X paid you N coins.") — nothing to elide.
+				if strings.TrimSpace(text) == "" {
 					continue
 				}
-				// Ask the render path itself what this excerpt becomes, rather than
+				// Ask the render path itself what this text becomes, rather than
 				// restating the cap — the invariant then tracks production and won't
 				// drift if MaxBytesPerWarrant moves (same reasoning as the LLM-364
 				// rain invariant computing through weatherProse).
-				rendered, elided := sanitizeText(excerpt, DefaultRenderConfig().MaxBytesPerWarrant)
+				rendered, elided := sanitizeText(text, DefaultRenderConfig().MaxBytesPerWarrant)
 				if !strings.Contains(out, rendered) {
-					t.Fatalf("scenario %q: speaker's utterance does not appear in the prompt at all:\n  want substring: %q", sc.name, rendered)
+					t.Fatalf("scenario %q: %s does not appear in the prompt at all:\n  want substring: %q", sc.name, kind, rendered)
 				}
 				if !elided {
-					continue // full utterance reached the listener — the good case
+					continue // the full text reached the reader — the good case
 				}
 				if !strings.HasSuffix(rendered, elisionMarker) {
 					t.Errorf(
-						"scenario %q: speech excerpt was elided but rendered as a bare prefix, with no %q marker — "+
-							"a listener reads this as an unfinished sentence and asks the speaker to complete it, which is "+
-							"the LLM-396 conversation loop. Rendered tail: %q",
-						sc.name, elisionMarker, tailOf(rendered, 48),
+						"scenario %q: %s was elided but rendered as a bare prefix, with no %q marker — "+
+							"the reader takes a cut sentence for a whole one. For speech that is the LLM-396 "+
+							"conversation loop; for a payment note it is a reason the seller answers wrong. "+
+							"Rendered tail: %q",
+						sc.name, kind, elisionMarker, tailOf(rendered, 48),
 					)
 				}
 			}
@@ -1311,6 +1320,17 @@ var perceptionScenarios = []perceptionScenario{
 			"paid about N each for it') from the buyer-side PriceBook — the cost basis to mark up from. No sale history " +
 			"yet, so no 'sold for' clause and (LLM-385) no below-cost caution — that fires only for a realized sale at or below cost, so the bare cost basis renders alone. Pairs with smith_bartering_at_tavern.",
 		build: keeperResellingInCompany,
+	},
+	{
+		name: "keeper_paid_with_long_note",
+		summary: "LLM-400: a seller (Josiah Thorne) perceives a payment whose buyer attached a long note — 200 runes, " +
+			"exactly the cap the pay tools enforce on `for`. Pins that the note reaches him WHOLE. The warrant used to " +
+			"pre-cut it at 220 runes with no marker, handing the seller a reason that stops mid-clause as though the buyer " +
+			"had finished saying it; the cut could not fire through a real tool path (200 < 220) but nothing linked the two " +
+			"constants, so raising the tool cap would have switched it on silently. Also the matrix's only pay-warrant " +
+			"prompt: the seller-just-paid line renders in the live village daily and had no golden. Matrix guard: " +
+			"TestGoldensWarrantTextCompleteOrMarked; marked-elision half: TestRenderWarrants_OverCapPayForTextIsMarkedElided.",
+		build: keeperPaidWithLongNote,
 	},
 	{
 		name: "pc_customer_present_in_huddle",
@@ -4560,7 +4580,8 @@ func TestWaresWorthCueOnlyInCompanyWithOwnTrade(t *testing.T) {
 			sc.name == "wholesaler_producer_observed_rates" || // LLM-295: same, with observed rates on both wholesale-line figures
 			sc.name == "owner_holding_repair_nails_in_company" || // LLM-292: keeper in company with priced ware + the repair-reserve earmark
 			sc.name == "coin_poor_overstocked_keeper_conserves" || // LLM-294: producer in company (priced own wares) + the conserve sell-first nudge
-			sc.name == "distributor_underwater_resale" // LLM-332: reseller in company with priced resale wares, one underwater
+			sc.name == "distributor_underwater_resale" || // LLM-332: reseller in company with priced resale wares, one underwater
+			sc.name == "keeper_paid_with_long_note" // LLM-400: built ON keeper_reselling_in_company's fixture, so it inherits the cue correctly
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: wares-worth cue present=%v, want %v", sc.name, has, want)
 		}
@@ -8227,6 +8248,49 @@ func keeperResellingInCompany() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) 
 		},
 	}
 	return snap, josiahID, nil
+}
+
+// longPaymentNote is a buyer's note sitting exactly ON the 200-rune cap every pay
+// tool enforces on `for` (MaxPayForChars / MaxPayWithItemForChars) — the longest
+// note production can actually emit, and 202 bytes, comfortably under the
+// renderer's MaxBytesPerWarrant (600), so a correct engine shows it WHOLE.
+//
+// Deliberately NOT past the old 220-rune warrant cut, because nothing the tools
+// can produce ever was: 200 < 220, so the bare cut never fired. That is what made
+// it dangerous rather than harmless — the two constants lived in different
+// packages with nothing linking them, so the cut sat one raised cap away from
+// silently clipping this note mid-word.
+const longPaymentNote = "the cheese and the milk both, and for keeping the last of it back for me on " +
+	"Tuesday when I hadn't the coin to pay for it right then — my sister is stopping the week and I " +
+	"would not have her go without"
+
+// keeperPaidWithLongNote is the LLM-400 fixture: Josiah Thorne's reselling-store
+// scene, with a Paid warrant from Martha Bishop carrying a note at the tool's
+// length cap.
+//
+// It pins that the seller perceives the buyer's COMPLETE reason for paying. A bare
+// mid-word prefix is the quiet version of the LLM-396 speech defect: the seller
+// reads a clipped clause as the whole thought and answers the wrong thing.
+//
+// Built on keeperResellingInCompany rather than a fresh fixture so the golden diff
+// against that scenario isolates exactly one thing — the pay warrant and the line
+// it renders. It is also the matrix's only pay-warrant prompt, so it doubles as
+// plain coverage of the seller-just-paid situation.
+func keeperPaidWithLongNote() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const marthaID = sim.ActorID("martha")
+	snap, josiahID, _ := keeperResellingInCompany()
+	warrants := []sim.WarrantMeta{{
+		TriggerActorID: marthaID,
+		SourceActorID:  marthaID,
+		SourceEventID:  1,
+		Reason: sim.PaidWarrantReason{
+			PaidID:  1,
+			Buyer:   marthaID,
+			Amount:  9,
+			ForText: longPaymentNote,
+		},
+	}}
+	return snap, josiahID, warrants
 }
 
 // pcCompanyKeeperScenario builds Josiah keeping his store in company with a PC

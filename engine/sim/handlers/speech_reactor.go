@@ -3,7 +3,6 @@ package handlers
 import (
 	"log"
 	"time"
-	"unicode/utf8"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
@@ -167,18 +166,4 @@ func RegisterSpeechHandlers(w *sim.World) {
 		panic("handlers: RegisterSpeechHandlers requires a non-nil world")
 	}
 	w.Subscribe(sim.SubscriberFunc(handleSpokeWarrants))
-}
-
-// truncateRunes returns s truncated to at most max runes, dropping any
-// runes past the cap. Rune-safe: a multi-byte UTF-8 sequence is either
-// fully present or fully absent in the result. max <= 0 returns "".
-func truncateRunes(s string, max int) string {
-	if max <= 0 {
-		return ""
-	}
-	if utf8.RuneCountInString(s) <= max {
-		return s
-	}
-	runes := []rune(s)
-	return string(runes[:max])
 }
