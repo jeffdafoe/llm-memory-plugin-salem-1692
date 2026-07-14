@@ -794,31 +794,36 @@ func buildFastPathFixture(t *testing.T, quoteID sim.QuoteID) (*sim.World, func()
 	return w, stop, at
 }
 
-// TestPayWithItem_FastPath_InsufficientStock_RecordsOutOfStock is the
-// integration test (ZBBS-HOME-363, code_review): the quote-payment fast-path
-// rejects insufficient stock with a bare error and NO PayWithItemResolved, so
-// the out-of-stock memory is captured INLINE there (not via the event
-// subscriber). Drive a real buyer-initiated buy against a zero-stock seller and
-// assert the buyer remembers (seller-workplace, item) out of stock.
-func TestPayWithItem_FastPath_InsufficientStock_RecordsOutOfStock(t *testing.T) {
+// TestPayWithItem_SellerDrainedUnderStandingQuote_ReconcileFrontsAcceptGate
+// (LLM-409): when a seller spends the quoted goods out from under his own
+// standing lot, the pre-publish coverage reconcile flips the lot to shortfall
+// BEFORE any buyer take reaches the accept-time stock gate, so a stale take is
+// rejected as a gone lot rather than an insufficient-stock error. This is the
+// public-API integration counterpart to the reconcile unit test in
+// scene_quote_reconcile_test.go. The accept-time stock gate remains as
+// defense-in-depth, and the buyer's out-of-stock experiential memory
+// (ZBBS-HOME-363) is still captured on the slow/ledger path — see
+// TestOutOfStock_RecordsOnInsufficientStock.
+func TestPayWithItem_SellerDrainedUnderStandingQuote_ReconcileFrontsAcceptGate(t *testing.T) {
 	w, stop, at := buildFastPathFixture(t, 7)
 	defer stop()
-	// Seller has a workplace (the structure the buyer walked to) and zero stock.
+	// Seller spends his last stew out from under the quote he posted; the reconcile
+	// runs on this command and flips the lot to shortfall.
 	mustSend(t, w, func(world *sim.World) {
-		world.Actors["bob"].WorkStructureID = "tavern"
 		delete(world.Actors["bob"].Inventory, "stew")
 	})
 
-	if _, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, nil, 7, 0, "", at)); err == nil {
-		t.Fatal("expected an insufficient-stock error from the fast path")
+	var state sim.SceneQuoteState
+	mustSend(t, w, func(world *sim.World) {
+		state = world.Quotes[7].State
+	})
+	if state != sim.SceneQuoteStateShortfall {
+		t.Fatalf("quote state = %q, want shortfall (reconcile should flip an uncoverable standing lot)", state)
 	}
 
-	var recorded bool
-	mustSend(t, w, func(world *sim.World) {
-		_, recorded = world.Actors["alice"].Observed.At(sim.ObservedStateKey{StructureID: "tavern", ItemKind: "stew", Condition: sim.ObservedOutOfStock})
-	})
-	if !recorded {
-		t.Fatal("fast-path insufficient stock should record an out-of-stock observation on the buyer")
+	_, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, nil, 7, 0, "", at))
+	if err == nil || !strings.Contains(err.Error(), "no longer active") {
+		t.Fatalf("want a 'no longer active' rejection of the stale take, got %v", err)
 	}
 }
 
@@ -1072,6 +1077,10 @@ func TestPayWithItem_FastPath_StrictRejectPredicates(t *testing.T) {
 			tweak: func(t *testing.T, w *sim.World, _ time.Time) {
 				mustSend(t, w, func(world *sim.World) {
 					world.Quotes[7].Lines[0].ItemKind = "ale"
+					// Back the retargeted good so the LLM-409 coverage reconcile
+					// leaves the lot Active and the take reaches the item-mismatch
+					// gate (rather than the reconcile pulling an uncoverable lot).
+					world.Actors["bob"].Inventory["ale"] = 5
 				})
 			},
 			want: "the item is the good the quote sells",
@@ -1103,7 +1112,13 @@ func TestPayWithItem_FastPath_StrictRejectPredicates(t *testing.T) {
 					delete(world.Actors["bob"].Inventory, "stew")
 				})
 			},
-			want: "doesn't have enough",
+			// LLM-409: draining the seller's stock makes his standing lot
+			// uncoverable, so the pre-publish coverage reconcile flips it to
+			// shortfall before any take reaches the accept-time stock gate — the
+			// take is rejected as a gone lot. The accept-time "doesn't have enough"
+			// gate remains as defense-in-depth (see the fixture-level integration
+			// test TestPayWithItem_SellerDrainedUnderStandingQuote_ReconcileFrontsAcceptGate).
+			want: "no longer active",
 		},
 		{
 			name: "insufficient_coins",

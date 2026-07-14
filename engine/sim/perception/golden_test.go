@@ -323,6 +323,51 @@ func TestGoldensSettledCloseNamesTheOffer(t *testing.T) {
 	}
 }
 
+// TestGoldensStandingOfferWithinOnHand is the LLM-409 cross-scenario render
+// invariant: no rendered "## Offers you've put out" standing sell offer may quote
+// more of an item than the seller holds ON HAND. This is the weaker, snapshot-
+// checkable half of the production guarantee — the reconcile actually enforces
+// the stronger reserved-aware bound (on-hand minus goods owed to a Ready order),
+// which is unit-tested in TestReconcileQuoteCoverage_ReservedOrderMakesUncoverable
+// (goldens don't carry Order state). What this pins across every fixture is that
+// no situation, and no future render/build change, advertises a lot exceeding raw
+// on-hand. Service kinds (lodging) carry no inventory and are exempt. Non-vacuous:
+// seller_with_shortfall_lot_at_post and seller_with_taken_quote_at_post both
+// render a standing offer, so the check exercises real lots.
+func TestGoldensStandingOfferWithinOnHand(t *testing.T) {
+	var exercised bool
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, warrants := sc.build()
+			p := Build(snap, actorID, warrants)
+			if len(p.StandingQuotesFromMe) == 0 {
+				return // no standing offer here — invariant N/A
+			}
+			subject := snap.Actors[actorID]
+			for _, q := range p.StandingQuotesFromMe {
+				for _, ln := range q.Lines {
+					if def := snap.ItemKinds[ln.ItemKind]; def != nil && def.HasCapability("service") {
+						continue // a service lot has no inventory to fall short of
+					}
+					exercised = true
+					onHand := 0
+					if subject != nil {
+						onHand = subject.Inventory[ln.ItemKind]
+					}
+					if ln.Qty > onHand {
+						t.Errorf("scenario %q renders a standing offer of %d %s but the seller holds only %d (LLM-409: no lot may exceed on-hand)",
+							sc.name, ln.Qty, ln.ItemKind, onHand)
+					}
+				}
+			}
+		})
+	}
+	if !exercised {
+		t.Fatal("no scenario rendered a standing sell offer — the LLM-409 within-on-hand invariant is vacuous")
+	}
+}
+
 // TestGoldensNoCoPresentBuyGoadAfterTwoDeclines is the LLM-308 cross-scenario invariant, spanning
 // ALL co-present-buy cue families (restock, stall-repair nails, farm-upkeep shovels): whenever the
 // subject has declined an item at least copresentStandoffDeclineThreshold times to a STILL-CO-PRESENT
@@ -2266,6 +2311,16 @@ var perceptionScenarios = []perceptionScenario{
 		build: sellerWithTakenQuoteAtPost,
 	},
 	{
+		name: "seller_with_shortfall_lot_at_post",
+		summary: "LLM-409: a farmer (Josiah Thorne) at his post offered John Ellis two sheaves of wheat and then spent the " +
+			"wheat out from under his own lot, so the coverage reconcile flipped that lot to SceneQuoteStateShortfall while a " +
+			"turnip lot he can still cover stays active. The golden pins that '## Offers you've put out' lists ONLY the coverable " +
+			"turnip lot — the wheat lot is GONE, no longer advertised or pinning him with 'bide, do not re-post' — and that the " +
+			"flat '## An offer you couldn't keep' beat names the wheat he can no longer give. Reverting the reconcile would " +
+			"resurface the uncoverable wheat lot under the standing-offers header.",
+		build: sellerWithShortfallLotAtPost,
+	},
+	{
 		name: "buyer_kept_consume_remainder_reconciled",
 		summary: "A buyer (Anne Walker) just took a consume_now quote for 5 blueberries, but her low hunger meant the " +
 			"needs-clamp ate only 1 and pocketed 4 (the live LLM-188 case). The golden pins that '## Recently settled " +
@@ -4136,7 +4191,11 @@ func sellerWithTakenQuoteAtPost() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta
 		WorkStructureID:   apothecary,
 		Coins:             30,
 		Needs:             map[sim.NeedKey]int{},
-		Acquaintances:     map[string]sim.Acquaintance{"Anne": {}},
+		// Holds the raspberries the active lot advertises (0 blueberries — those
+		// were sold on the taken lot), so the fixture satisfies the LLM-409
+		// within-on-hand invariant.
+		Inventory:     map[sim.ItemKind]int{"raspberries": 5},
+		Acquaintances: map[string]sim.Acquaintance{"Anne": {}},
 	}
 	anne := &sim.ActorSnapshot{
 		Kind: sim.KindNPCShared, DisplayName: "Anne", Role: "traveler", Needs: map[sim.NeedKey]int{},
@@ -4152,6 +4211,67 @@ func sellerWithTakenQuoteAtPost() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta
 		Structures:       map[sim.StructureID]*sim.Structure{apothecary: plainStructure(apothecary, "PW Apothecary")},
 	}
 	return snap, prudenceID, nil
+}
+
+// sellerWithShortfallLotAtPost builds the LLM-409 fixture: Josiah Thorne, a
+// farmer at his post, offered John Ellis two sheaves of wheat and then spent the
+// wheat out from under his own lot (the pre-publish coverage reconcile flipped
+// that lot to SceneQuoteStateShortfall), while a separate turnip lot he can still
+// cover stays active. The golden proves the shortfall lot is GONE from "## Offers
+// you've put out" (it no longer advertises or pins him to the uncoverable
+// promise) and instead surfaces as the flat "## An offer you couldn't keep" beat,
+// while the coverable turnip lot still stands. Reverting the reconcile would make
+// the wheat lot reappear under the standing-offers header — the exact stale
+// advertisement + "bide, do not re-post" absorbing state this ticket closes.
+func sellerWithShortfallLotAtPost() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		josiahID = sim.ActorID("josiah")
+		johnID   = sim.ActorID("john")
+		farm     = sim.StructureID("farm")
+	)
+	now := 600 // 10:00
+	published := time.Date(2026, 7, 14, 0, 0, 0, 0, time.UTC).Add(time.Duration(now) * time.Minute)
+	// Coverable: he holds 3 turnips and offers John 3 turnips — stays active.
+	active := &sim.SceneQuote{
+		ID: 1, SellerID: josiahID, TargetBuyer: johnID,
+		Lines: []sim.QuoteLine{{ItemKind: "turnip", Qty: 3}}, Amount: 3,
+		State: sim.SceneQuoteStateActive,
+	}
+	// Shortfall: he offered John 2 wheat, then paid his last wheat away — 0 held.
+	// ResolvedAt sits inside the beat's recentlyResolvedOfferWindow.
+	shortfall := &sim.SceneQuote{
+		ID: 2, SellerID: josiahID, TargetBuyer: johnID,
+		Lines: []sim.QuoteLine{{ItemKind: "wheat", Qty: 2}}, Amount: 2,
+		State:      sim.SceneQuoteStateShortfall,
+		ResolvedAt: published.Add(-1 * time.Minute),
+	}
+	josiah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Josiah Thorne",
+		Role:              "farmer",
+		State:             sim.StateIdle,
+		InsideStructureID: farm,
+		WorkStructureID:   farm,
+		Coins:             12,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"turnip": 3},
+		Acquaintances:     map[string]sim.Acquaintance{"John Ellis": {}},
+	}
+	john := &sim.ActorSnapshot{
+		Kind: sim.KindNPCShared, DisplayName: "John Ellis", Role: "traveler", Needs: map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{josiahID: josiah, johnID: john},
+		Quotes:           map[sim.QuoteID]*sim.SceneQuote{1: active, 2: shortfall},
+		PayLedger:        map[sim.LedgerID]*sim.PayLedgerEntry{},
+		Scenes:           map[sim.SceneID]*sim.Scene{},
+		Huddles:          map[sim.HuddleID]*sim.Huddle{},
+		Structures:       map[sim.StructureID]*sim.Structure{farm: plainStructure(farm, "Thorne Farm")},
+	}
+	return snap, josiahID, nil
 }
 
 // lodgerGoldenBase builds the shared LLM-127 lodging-gate fixture: Ezekiel Crane,

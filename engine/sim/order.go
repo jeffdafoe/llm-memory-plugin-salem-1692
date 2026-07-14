@@ -660,6 +660,37 @@ func outstandingReadyOrderQty(w *World, sellerID ActorID, item ItemKind) int {
 	return total
 }
 
+// sellerCoverableStock returns how many units of item the seller can actually
+// deliver right now (coverable = on-hand inventory minus the units already
+// earmarked for a Ready order awaiting handover) plus that reserved count. This
+// is the single coverage predicate used everywhere a standing sell offer's
+// honesty is checked — quote creation, the pay_with_item accept fast path, and
+// the pre-publish coverage reconcile (LLM-409) — so all three agree on what "can
+// he cover this" means and a lot can never be posted, accepted, or left standing
+// above what the seller can hand over.
+//
+// reserved is returned directly (not derived as Inventory-coverable) so error
+// copy prints the true reserved count even when outstandingReadyOrderQty
+// saturates to MaxInt on corrupt order data — deriving it from a saturated
+// coverable would integer-overflow the diagnostic (code_review, LLM-409).
+//
+// NOTE: "service"-capability items (lodging, etc.) carry no inventory — the
+// grant is a capacity, not stock — so coverage is meaningless for them and every
+// caller skips this check for a service kind. This returns their raw (zero)
+// coverable, which callers must not gate on.
+//
+// coverable can go negative when reserved saturates to MaxInt; that fails closed
+// (the lot reads as uncoverable), which is the safe reading. MUST be called from
+// inside a Command.Fn / the world goroutine — reads w.Orders and the actor
+// inventory without coordination.
+func sellerCoverableStock(w *World, seller *Actor, item ItemKind) (coverable, reserved int) {
+	if seller == nil {
+		return 0, 0
+	}
+	reserved = outstandingReadyOrderQty(w, seller.ID, item)
+	return seller.Inventory[item] - reserved, reserved
+}
+
 // undeliveredLodgingOrderFor returns the ID of a Ready (accepted but
 // not-yet-delivered) lodging order this seller owes this buyer, and true, or
 // (0, false) when none. A nights_stay grant is created only at the keeper's
