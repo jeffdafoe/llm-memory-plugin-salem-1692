@@ -2,6 +2,7 @@ package mem_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -288,7 +289,13 @@ func TestNewSalientFact_TruncatesText(t *testing.T) {
 	if len([]rune(got2.Text)) != sim.MaxSalientFactTextLen {
 		t.Errorf("Multibyte truncation: got %d runes, want %d", len([]rune(got2.Text)), sim.MaxSalientFactTextLen)
 	}
-	for _, r := range got2.Text {
+	// The cut marks itself now (LLM-405), so the last rune is the elision marker
+	// and everything BEFORE it must still be a whole 'é' — a byte-wise cut would
+	// leave a split rune in there, which is what this check exists to catch.
+	if !strings.HasSuffix(got2.Text, sim.ElisionMarker) {
+		t.Errorf("Multibyte truncation: cut was not marked with %q", sim.ElisionMarker)
+	}
+	for _, r := range strings.TrimSuffix(got2.Text, sim.ElisionMarker) {
 		if r != 'é' {
 			t.Errorf("Multibyte truncation split a rune: found %q", r)
 			break

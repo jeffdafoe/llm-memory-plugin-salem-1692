@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // give_commands.go — LLM-138. The one-way gift command + its relationship-
@@ -212,6 +213,15 @@ func DeclineGift(callerID ActorID, ledgerID LedgerID, reason string, at time.Tim
 // blueberries as a gift.") or the recipient's ("Ezekiel Crane gave me 3
 // blueberries as a gift."). An optional forText appends the giver's stated
 // reason.
+//
+// The note is elided HERE, against what the rest of the sentence leaves it, so
+// the fact arrives at NewSalientFact already inside MaxSalientFactTextLen and
+// takes no second cut (LLM-405). Cutting it downstream instead would clip the
+// sentence at a rune offset that has nothing to do with its grammar: the give
+// tool admits a 200-rune note, the sentence around it runs another ~45, so a
+// long note routinely overran the 220-rune fact cap and the fact was stored with
+// its closing paren — and the tail of the note — sliced off mid-word. The reader
+// then meets a memory that simply stops, and answers the dangling clause.
 func giftFactText(w *World, giverName, recipientName string, items []ItemKindQty, forText string, fromGiverPOV bool) string {
 	goods := giftGoodsPhrase(w, items)
 	var s string
@@ -221,7 +231,16 @@ func giftFactText(w *World, giverName, recipientName string, items []ItemKindQty
 		s = fmt.Sprintf("%s gave me %s as a gift", giverName, goods)
 	}
 	if forText != "" {
-		s += fmt.Sprintf(" (%s)", forText)
+		// What the note may spend: the fact cap, less the sentence already built
+		// and the 4 runes of punctuation that wrap and close it (" (" … ")." ).
+		const wrapRunes = 4
+		budget := MaxSalientFactTextLen - utf8.RuneCountInString(s) - wrapRunes
+		// A gift of enough distinct items can spend the whole budget on the goods
+		// phrase alone. Drop the note rather than render an empty "(…)" — the goods
+		// are the fact; NewSalientFact still marks whatever it has to cut off THAT.
+		if budget > 0 {
+			s += fmt.Sprintf(" (%s)", capRunesMarked(forText, budget))
+		}
 	}
 	return s + "."
 }
