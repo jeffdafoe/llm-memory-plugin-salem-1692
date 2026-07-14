@@ -297,6 +297,10 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	p.AtOwnBusinessOperating = p.AtOwnBusiness && keeperOperating(snap, actorSnap)
 	heardNow := currentHeardExcerpts(p.Warrants)
 	p.Relationships = buildRelationships(actorSnap, p.Surroundings.HuddleMembers, heardNow)
+	// LLM-387: gossip the subject carries about people NOT in the scene, the
+	// absent-subject twin of Relationships. Built off Surroundings so present
+	// peers can be filtered (no gossiping to someone's face).
+	p.VillageWord = buildVillageWord(actorSnap, p.Surroundings, snap.PublishedAt)
 	p.RecentConversation = buildRecentConversation(snap, actorID, actorSnap, heardNow)
 	p.SelfActions = buildSelfActions(snap, actorID, actorSnap)
 	p.OfferableCustomers = buildOfferableCustomers(snap, actorID, p.AtOwnBusiness, p.Surroundings.HuddleMembers, p.Actor.Inventory)
@@ -3219,6 +3223,67 @@ const recentSalientFactsPerPeer = 3
 // just without the remembered impression). Chosen so a normal conversation (a
 // handful of people) is untouched and only a genuine crowd is trimmed.
 const maxRenderedRelationshipPeers = 4
+
+// maxRenderedVillageWord caps the "## Word about the village" bullets so a
+// well-traveled gossip's known-set can't balloon the re-sent-every-tick section.
+// Small on purpose — it is background colour, not a ledger; the sim-side known-set
+// cap (sim.MaxKnownRumors) is looser, so the render trims to the freshest few.
+const maxRenderedVillageWord = 3
+
+// buildVillageWord projects the subject's own carried rumors
+// (ActorSnapshot.Rumors) into the "## Word about the village" view (LLM-387): the
+// freshest live rumors about residents who are NOT standing in the scene, capped
+// at maxRenderedVillageWord. Expired rumors (past sim.RumorTTL as of now) are
+// skipped, and any rumor whose subject is a present peer — huddled or merely
+// co-present — is filtered out, the render mirror of sim.salientRumorToShare's
+// "don't gossip to their face" rule. Returns nil for PC / decorative subjects
+// (which never carry or voice gossip) and when the subject holds nothing
+// shareable here. Pure over the immutable snapshot: it reads the snapshot's own
+// Rumors copy and never mutates it (no in-place prune), so ordering the working
+// set is done on a local copy.
+func buildVillageWord(a *sim.ActorSnapshot, s SurroundingsView, now time.Time) []VillageRumorView {
+	if a == nil || len(a.Rumors) == 0 {
+		return nil
+	}
+	if a.Kind == sim.KindPC || a.Kind == sim.KindDecorative {
+		return nil
+	}
+	present := make(map[sim.ActorID]bool, len(s.HuddleMembers)+len(s.CoPresent))
+	for _, m := range s.HuddleMembers {
+		present[m.ID] = true
+	}
+	for _, m := range s.CoPresent {
+		present[m.ID] = true
+	}
+	shareable := make([]sim.KnownRumor, 0, len(a.Rumors))
+	for _, r := range a.Rumors {
+		if r.Expired(now) {
+			continue
+		}
+		if present[r.SubjectID] {
+			continue // don't voice gossip about someone standing right here
+		}
+		if r.Clause() == "" {
+			continue // unknown topic or missing subject name — nothing to say
+		}
+		shareable = append(shareable, r)
+	}
+	if len(shareable) == 0 {
+		return nil
+	}
+	// Freshest first so the cap keeps the most recently heard gossip.
+	sort.SliceStable(shareable, func(i, j int) bool {
+		return shareable[i].HeardAt.After(shareable[j].HeardAt)
+	})
+	if len(shareable) > maxRenderedVillageWord {
+		shareable = shareable[:maxRenderedVillageWord]
+	}
+	out := make([]VillageRumorView, 0, len(shareable))
+	for _, r := range shareable {
+		out = append(out, VillageRumorView{Clause: r.Clause(), FirstHand: r.FirstHand})
+	}
+	return out
+}
 
 // buildRelationships projects per-co-huddle-peer relationship views
 // from the subject actor's Relationships map. Populated only for

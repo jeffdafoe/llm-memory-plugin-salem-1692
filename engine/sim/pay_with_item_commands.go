@@ -2512,6 +2512,15 @@ func finalizePayLedgerTerminal(
 			log.Printf("sim.finalizePayLedgerTerminal: RecordInteraction seller→buyer %q→%q: %v", entry.SellerID, entry.BuyerID, err)
 		}
 	}
+
+	// Rumor seed (LLM-387): a settlement that fell through because the buyer
+	// couldn't cover the price is a witnessed coin-short moment — the seller was
+	// just told "the buyer couldn't cover the price". Seed a rung-0 short_on_coin
+	// rumor about the buyer into the seller + any co-present huddle witnesses.
+	// Social layer only; no coin or state moves.
+	if terminal == PayTerminalStateFailedInsufficientFunds {
+		seedShortOnCoinRumor(w, entry, at)
+	}
 	return entry.State
 }
 

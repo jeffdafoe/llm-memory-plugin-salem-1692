@@ -297,6 +297,13 @@ func SpeakTo(speakerID ActorID, text, to string, mentions []SpeakMention, hasNew
 						// conversation is alive" signal — reset the silence
 						// sweep's dormancy clock.
 						h.LastActivityAt = at
+						// LLM-387: spread one rumor from the speaker to the
+						// huddle's other ACTIVE conversants (those who have
+						// themselves spoken), escalated a rung on the hop.
+						// Speak-gated + active-only — silent co-presence moves
+						// nothing. Words aren't inspected; the token moves, not
+						// the utterance.
+						propagateRumorOnSpeak(w, h, speakerID, at)
 						// LLM-185: a player's own line marks the huddle as
 						// player-attended, exempting it from the loop sweep + the
 						// ConversationLooping steer for huddlePCAttentionWindow so an

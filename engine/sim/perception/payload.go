@@ -189,6 +189,18 @@ type Payload struct {
 	// Ordering: sorted by PeerID for determinism.
 	Relationships []RelationshipPeerView
 
+	// VillageWord is the fallible gossip the subject carries about residents who
+	// are NOT present in the scene — the "## Word about the village" section
+	// (LLM-387). Projected from the subject's own ActorSnapshot.Rumors, freshest
+	// first, bounded to maxRenderedVillageWord, with expired entries dropped and
+	// any rumor whose subject stands in the current scene filtered out (you don't
+	// gossip about someone to their face — the render mirror of sim's
+	// salientRumorToShare). This is the ABSENT-subject twin of Relationships
+	// ("what you remember of those here"), and unlike a perception fact it is
+	// explicitly NOT a faithful readout. Populated for NPC kinds only; empty for
+	// PC / decorative subjects and for an actor holding nothing shareable here.
+	VillageWord []VillageRumorView
+
 	// RecentConversation is the last few spoken lines in the subject's current
 	// huddle, oldest-first — the cross-tick "## Recent conversation here" section
 	// (ZBBS-HOME-412). Unlike Relationships (shared-VA only), this is populated
@@ -1092,6 +1104,18 @@ type RelationshipPeerView struct {
 	PeerName    string
 	SummaryText string
 	RecentFacts []sim.SalientFact
+}
+
+// VillageRumorView is one carried rumor projected for the "## Word about the
+// village" render (LLM-387): the diegetic clause at its current embellishment
+// rung, plus whether THIS holder witnessed it first-hand (true) or only heard it
+// relayed (false) — render frames a first-hand line as something the actor saw
+// and a hearsay line as talk going round Salem, so the model can weight its own
+// certainty. No rung number, subject id, or HeardAt is carried; the clause is the
+// whole diegetic payload, keeping the section scenes-not-stats.
+type VillageRumorView struct {
+	Clause    string
+	FirstHand bool
 }
 
 // UtteranceView is one line in the "## Recent conversation here" section
