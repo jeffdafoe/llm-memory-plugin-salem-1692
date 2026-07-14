@@ -33,8 +33,15 @@ func stewRecipe(input sim.ItemKind, perBatch int) map[sim.ItemKind]*sim.ItemReci
 
 // makesStewBuying builds an actor that PRODUCES stew and BUYS `input` (cap), with
 // `onHand` of the input in inventory.
+// A purse by default: the "## Keeping up production" runway only surfaces for an
+// input the producer has an actionable buy path to (LLM-260), and a buy path now needs
+// MEANS TO PAY (LLM-406). A coinless producer holding nothing but the input it is
+// short of cannot buy that input — a good is not payment for itself — so it would
+// surface no runway at all, and none of these batch-floor/runway cases would be
+// exercising what they mean to.
 func makesStewBuying(input sim.ItemKind, cap, onHand int) *sim.ActorSnapshot {
 	return &sim.ActorSnapshot{
+		Coins:     50,
 		Inventory: map[sim.ItemKind]int{input: onHand},
 		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
 			{Item: "stew", Source: sim.RestockSourceProduce, Max: 60},
@@ -266,6 +273,7 @@ func TestBuildProductionInputs_SelfProducedInputIgnored(t *testing.T) {
 // derived-demand path (LLM-260) gives the unsourced input its buy cap.
 func TestBuildProductionInputs_BoughtButNotConsumedIgnored(t *testing.T) {
 	subj := &sim.ActorSnapshot{
+		Coins:     50, // means to pay — see makesStewBuying
 		Inventory: map[sim.ItemKind]int{"skillet": 0},
 		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
 			{Item: "stew", Source: sim.RestockSourceProduce, Max: 60},
@@ -341,6 +349,7 @@ func milkRecipeBoostedBySage() map[sim.ItemKind]*sim.ItemRecipe {
 // `onHand` sage.
 func makesMilkBuyingSage(cap, onHand int) *sim.ActorSnapshot {
 	return &sim.ActorSnapshot{
+		Coins:     50, // means to pay — see makesStewBuying
 		Inventory: map[sim.ItemKind]int{"sage": onHand},
 		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
 			{Item: "milk", Source: sim.RestockSourceProduce, Max: 30},

@@ -14,11 +14,16 @@ import (
 // reseller builds an agent NPC holding a single `buy` entry for `item` at the
 // given cap, with `onHand` units in inventory. No schedule — the producer does
 // not gate on shift (a low shelf is low whether or not the keeper is "on").
+// A purse by default: the restock warrant needs MEANS TO PAY (LLM-406), so a
+// coinless reseller with an empty pack has no buy path and would warrant for nothing.
+// Affordability is not what most of these tests are about — the ones that do exercise
+// it (TestActorHasBuyPath_Gates) set Coins themselves.
 func reseller(id ActorID, kind ActorKind, item ItemKind, cap, onHand int) *Actor {
 	return &Actor{
 		ID:        id,
 		Kind:      kind,
 		LLMAgent:  string(id) + "-agent",
+		Coins:     50,
 		Inventory: map[ItemKind]int{item: onHand},
 		RestockPolicy: &RestockPolicy{Restock: []RestockEntry{
 			{Item: item, Source: RestockSourceBuy, Max: cap},
@@ -676,6 +681,7 @@ func TestFirstActionableLowEntry_BuyBeforeForageAndActionability(t *testing.T) {
 	// Both a low buy and a low (actionable) forage entry → buy wins.
 	both := &Actor{
 		ID:        "prudence",
+		Coins:     20, // means to pay: without it the low BUY entry has no path (LLM-406) and forage would win by default
 		Inventory: map[ItemKind]int{"raspberries": 0, "milk": 1},
 		RestockPolicy: &RestockPolicy{Restock: []RestockEntry{
 			{Item: "raspberries", Source: RestockSourceForage, Max: 10},
@@ -837,11 +843,11 @@ func TestEvaluateRestock_SelfSourcedInputNoDerivedDemand(t *testing.T) {
 }
 
 // TestActorHasBuyPath_Gates: the warrant-side mirror of the buildRestocking
-// vendor drops — LLM-252 first-hand-supplier gate, LLM-216 remembered-shut and
-// known-price-affordability drops, and the co-present bypass.
+// vendor drops — LLM-252 first-hand-supplier gate, LLM-216 remembered-shut drop,
+// the LLM-406 means-to-pay drop, and the co-present bypass.
 func TestActorHasBuyPath_Gates(t *testing.T) {
 	now := time.Now().UTC()
-	buyer := reseller("buyer", KindNPCStateful, "ale", 20, 0)
+	buyer := reseller("buyer", KindNPCStateful, "ale", 20, 0) // reseller() carries a purse — see its doc
 
 	// A vendor holding the item only via a past `buy` (a fellow reseller) is not
 	// a supplier (LLM-252) — no path.
@@ -875,18 +881,46 @@ func TestActorHasBuyPath_Gates(t *testing.T) {
 	v.CurrentHuddleID = ""
 	buyer.Observed.Clear(ObservedStateKey{StructureID: v.WorkStructureID, Condition: ObservedClosed})
 
-	// A remembered price above the purse → dropped (LLM-216); an unknown price
-	// is kept (patronage earns the number).
+	// A remembered price the buyer can meet by NO means — not by coin, not by goods —
+	// is dropped: nothing it carries could settle a pay_with_item, so the trip is
+	// wasted (LLM-216's drop, now asked as "can you pay at all", LLM-406).
 	buyer.Coins = 2
+	buyer.Inventory = map[ItemKind]int{"ale": 0} // an empty pack: nothing to put up in trade
 	w.PriceBook = map[PriceBookKey]*RingBuffer[PriceObservation]{}
 	buf := NewRingBuffer[PriceObservation](4)
 	buf.Push(PriceObservation{BuyerID: buyer.ID, Amount: 5, Qty: 1, At: now})
 	w.PriceBook[PriceBookKey{SellerID: v.ID, Item: "ale"}] = buf
 	if actorHasBuyPath(w, buyer, "ale", now) {
-		t.Error("a supplier at a remembered price above the purse must not be a buy path")
+		t.Error("a supplier the buyer can pay by neither coin nor goods must not be a buy path")
 	}
 	buyer.Coins = 5
 	if !actorHasBuyPath(w, buyer, "ale", now) {
 		t.Error("a supplier at a remembered, affordable price should be a buy path")
+	}
+
+	// LLM-406, the live Josiah Thorne case: the purse cannot cover the remembered
+	// price, but the pack holds goods. pay_with_item settles in goods, so this is a
+	// real path — and the coins-only test that used to drop it is exactly what turned
+	// an illiquid distributor into an absorbing state.
+	buyer.Coins = 2
+	buyer.Inventory = map[ItemKind]int{"ale": 0, "skillet": 1}
+	if !actorHasBuyPath(w, buyer, "ale", now) {
+		t.Error("a coin-poor buyer holding goods to barter should still have a buy path (LLM-406)")
+	}
+
+	// The purse is empty and the price unknown, but the pack is not — still payable,
+	// because the buyer can walk over and put its goods up in trade.
+	buyer.Coins = 0
+	w.PriceBook = map[PriceBookKey]*RingBuffer[PriceObservation]{}
+	if !actorHasBuyPath(w, buyer, "ale", now) {
+		t.Error("a penniless buyer holding goods should have a buy path at an unknown-price supplier (LLM-406)")
+	}
+
+	// Neither coin nor goods, at any price: the genuine payment dead-end. This is the
+	// one buyer LLM-406 still drops — and the one the blocked-supplier cue now names
+	// rather than leaving in silence (perception/restock.go).
+	buyer.Inventory = map[ItemKind]int{"ale": 0}
+	if actorHasBuyPath(w, buyer, "ale", now) {
+		t.Error("a buyer with neither coin nor goods must not have a buy path — nothing could settle the payment")
 	}
 }

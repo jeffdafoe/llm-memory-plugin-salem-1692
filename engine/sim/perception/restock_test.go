@@ -94,7 +94,7 @@ func TestBuildRestocking_LowStockNoVendorOmitted(t *testing.T) {
 }
 
 func TestBuildRestocking_VendorResolved(t *testing.T) {
-	subj := &sim.ActorSnapshot{Inventory: map[sim.ItemKind]int{"ale": 2}, RestockPolicy: buyPolicy("ale", 20)}
+	subj := &sim.ActorSnapshot{Coins: 20, Inventory: map[sim.ItemKind]int{"ale": 2}, RestockPolicy: buyPolicy("ale", 20)}
 	supplier := &sim.ActorSnapshot{WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}, RestockPolicy: producePolicy("ale", 40)}
 	snap := &sim.Snapshot{
 		Actors: map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj, "brewer": supplier},
@@ -122,6 +122,7 @@ func TestBuildRestocking_VendorResolved(t *testing.T) {
 // the buy-here imperative). ZBBS-HOME-388.
 func TestBuildRestocking_CoPresentSeller(t *testing.T) {
 	subj := &sim.ActorSnapshot{
+		Coins:           20,
 		Inventory:       map[sim.ItemKind]int{"ale": 1},
 		RestockPolicy:   buyPolicy("ale", 20),
 		CurrentHuddleID: "h1",
@@ -153,6 +154,7 @@ func TestBuildRestocking_CoPresentSeller(t *testing.T) {
 // walk-to vendor cue still resolves. ZBBS-HOME-388.
 func TestBuildRestocking_SellerNotCoPresent(t *testing.T) {
 	subj := &sim.ActorSnapshot{
+		Coins:           20,
 		Inventory:       map[sim.ItemKind]int{"ale": 1},
 		RestockPolicy:   buyPolicy("ale", 20),
 		CurrentHuddleID: "h1",
@@ -271,6 +273,7 @@ func TestBuildRestocking_LoiteringSellerNotCoPresent(t *testing.T) {
 	zero := 0
 	pin := sim.WorldPos{X: 100, Y: 100}
 	subj := &sim.ActorSnapshot{
+		Coins:         20,
 		Inventory:     map[sim.ItemKind]int{"ale": 1},
 		RestockPolicy: buyPolicy("ale", 20),
 		Pos:           pin.Tile(),
@@ -355,6 +358,7 @@ func TestRenderRestocking_BuyHereImperative(t *testing.T) {
 // instead of re-prompting the buy. LLM-64.
 func TestBuildRestocking_PendingOfferToCoPresentSeller(t *testing.T) {
 	subj := &sim.ActorSnapshot{
+		Coins:           20,
 		Inventory:       map[sim.ItemKind]int{"ale": 1},
 		RestockPolicy:   buyPolicy("ale", 20),
 		CurrentHuddleID: "h1",
@@ -390,6 +394,7 @@ func TestBuildRestocking_PendingOfferToCoPresentSeller(t *testing.T) {
 // narrowing of the hasPendingOfferTo check. LLM-64.
 func TestBuildRestocking_PendingOfferToOtherSeller_FlagUnset(t *testing.T) {
 	subj := &sim.ActorSnapshot{
+		Coins:           20,
 		Inventory:       map[sim.ItemKind]int{"ale": 1},
 		RestockPolicy:   buyPolicy("ale", 20),
 		CurrentHuddleID: "h1",
@@ -464,6 +469,7 @@ func TestRenderRestocking_PendingOfferWaitLine(t *testing.T) {
 // nondeterminism, same posture as TestFindItemVendors_DedupeByStructure. ZBBS-HOME-388.
 func TestBuildRestocking_CoPresentSeller_Deterministic(t *testing.T) {
 	subj := &sim.ActorSnapshot{
+		Coins:           20,
 		Inventory:       map[sim.ItemKind]int{"ale": 1},
 		RestockPolicy:   buyPolicy("ale", 20),
 		CurrentHuddleID: "h1",
@@ -512,7 +518,7 @@ func TestBuildRestocking_VendorExclusions(t *testing.T) {
 		ItemKinds:         restockCatalog(),
 		RestockReorderPct: 25,
 	}
-	if vds := findItemVendors(snap, "merchant", subj, "ale"); len(vds) != 0 {
+	if vds, _ := findItemVendors(snap, "merchant", subj, "ale"); len(vds) != 0 {
 		t.Errorf("all suppliers should be excluded, got %+v", vds)
 	}
 	// With no resolvable supplier and no co-present seller, the item is omitted.
@@ -819,22 +825,34 @@ func TestBuildRestocking_DropsRememberedShutSupplier(t *testing.T) {
 	}
 }
 
-// TestBuildRestocking_DropsUnaffordableSupplier — LLM-216. A supplier whose
-// REMEMBERED price the buyer's purse can't cover is dropped, mirroring the
-// need-redirect affordability skip (needRedirectFor); an unknown price (never bought
-// there) is kept — patronage earns the number, so the buyer walks over and learns it
-// (and may barter on arrival). A broke keeper with a lone known-price supplier thus
-// gets no restock item (the live Josiah 0-coins case), and it returns once his purse
-// covers the price.
-func TestBuildRestocking_DropsUnaffordableSupplier(t *testing.T) {
+// TestBuildRestocking_MeansToPaySupplier — LLM-216 as amended by LLM-406. The gate on
+// a walk-to supplier is MEANS TO PAY, not coins: pay_with_item settles in goods as
+// readily as coin, so the question is "can you pay at all", not "can you pay in coin".
+//
+//   - Purse covers the remembered price → an ordinary coin buy.
+//   - Purse can't cover it, but the pack holds other goods → the supplier SURVIVES,
+//     flagged Barter, and render steers to a goods offer. This is the live Josiah
+//     Thorne case, and the coins-only test that used to drop it is what turned an
+//     illiquid distributor into an absorbing state.
+//   - Neither coin nor goods → a real payment dead-end. No destination — but the
+//     supplier is NAMED as blocked with its reason, rather than the item vanishing and
+//     the whole section rendering nil (the silence LLM-406 removes).
+//
+// A good is not payment for itself, so the ale on the shelf never counts as means to
+// buy ale — only the skillet does.
+func TestBuildRestocking_MeansToPaySupplier(t *testing.T) {
 	priced := func() *sim.RingBuffer[sim.PriceObservation] {
 		buf := sim.NewRingBuffer[sim.PriceObservation](8)
 		// He last paid this seller 6 coins for 1 ale.
 		buf.Push(sim.PriceObservation{BuyerID: "merchant", Amount: 6, Qty: 1, Consumers: 1, At: time.Date(2026, 5, 29, 12, 0, 0, 0, time.UTC)})
 		return buf
 	}
-	mk := func(coins int, withPrice bool) *sim.Snapshot {
-		subj := &sim.ActorSnapshot{Coins: coins, Inventory: map[sim.ItemKind]int{"ale": 2}, RestockPolicy: buyPolicy("ale", 20)}
+	mk := func(coins int, withPrice, withGoods bool) *sim.Snapshot {
+		inv := map[sim.ItemKind]int{"ale": 2} // the 2 ale on the shelf are what he's restocking — never his means
+		if withGoods {
+			inv["skillet"] = 1 // something else in the pack, and so something to trade
+		}
+		subj := &sim.ActorSnapshot{Coins: coins, Inventory: inv, RestockPolicy: buyPolicy("ale", 20)}
 		supplier := &sim.ActorSnapshot{WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}, RestockPolicy: producePolicy("ale", 40)}
 		snap := &sim.Snapshot{
 			PublishedAt:       time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC),
@@ -850,21 +868,125 @@ func TestBuildRestocking_DropsUnaffordableSupplier(t *testing.T) {
 		}
 		return snap
 	}
+	blockedFor := func(t *testing.T, snap *sim.Snapshot, why string) {
+		t.Helper()
+		v := buildRestocking(snap, "merchant", snap.Actors["merchant"])
+		if v == nil || len(v.Items) != 1 {
+			t.Fatalf("%s: the item should still render, named as blocked, got %+v", why, v)
+		}
+		it := v.Items[0]
+		if len(it.Vendors) != 0 {
+			t.Fatalf("%s: an unpayable supplier is not a destination, got %+v", why, it.Vendors)
+		}
+		if len(it.Blocked) != 1 || it.Blocked[0].Reason != restockBlockNoMeans || it.Blocked[0].StructureLabel != "The Brewery" {
+			t.Fatalf("%s: want The Brewery named blocked-no-means, got %+v", why, it.Blocked)
+		}
+	}
 
-	// Broke (0 < 6) → the lone known-price supplier is unaffordable → item omitted.
-	broke := mk(0, true)
-	if v := buildRestocking(broke, "merchant", broke.Actors["merchant"]); v != nil {
-		t.Errorf("a broke keeper's lone known-price supplier is unaffordable → section nil, got %+v", v)
+	// Purse covers the price (6 >= 6) → an ordinary coin buy, no barter steer.
+	flush := mk(6, true, false)
+	v := buildRestocking(flush, "merchant", flush.Actors["merchant"])
+	if v == nil || len(v.Items) != 1 || len(v.Items[0].Vendors) != 1 {
+		t.Fatalf("a keeper who can cover the remembered price keeps the supplier, got %+v", v)
 	}
-	// Purse covers the price (6 >= 6) → supplier kept.
-	flush := mk(6, true)
-	if v := buildRestocking(flush, "merchant", flush.Actors["merchant"]); v == nil || len(v.Items) != 1 || len(v.Items[0].Vendors) != 1 {
-		t.Errorf("a keeper who can cover the remembered price keeps the supplier, got %+v", v)
+	if v.Items[0].Vendors[0].Barter {
+		t.Error("a keeper paying in coin should not be steered to barter")
 	}
-	// Unknown price (never bought there) is kept even when broke — walk-and-learn.
-	brokeUnknown := mk(0, false)
-	if v := buildRestocking(brokeUnknown, "merchant", brokeUnknown.Actors["merchant"]); v == nil || len(v.Items) != 1 || len(v.Items[0].Vendors) != 1 {
-		t.Errorf("an unknown-price supplier is kept even for a broke keeper (walk-and-learn), got %+v", v)
+
+	// LLM-406: the purse can't cover the price, but the pack can. The supplier survives,
+	// steered to a goods offer — the fix for the live distributor deadlock.
+	bartering := mk(0, true, true)
+	v = buildRestocking(bartering, "merchant", bartering.Actors["merchant"])
+	if v == nil || len(v.Items) != 1 || len(v.Items[0].Vendors) != 1 {
+		t.Fatalf("a coin-poor keeper holding goods keeps the supplier (barter), got %+v", v)
+	}
+	if !v.Items[0].Vendors[0].Barter {
+		t.Error("a supplier the coins can't cover but the goods can should be flagged Barter")
+	}
+	// The rendered line must offer the goods payment, not a coin price he cannot meet.
+	var b strings.Builder
+	renderRestocking(&b, v)
+	if out := b.String(); !strings.Contains(out, "offer goods you carry in trade") {
+		t.Errorf("a barter supplier should be steered to a goods offer:\n%s", out)
+	}
+
+	// Broke with an empty pack, at a known price above the purse → nothing to pay with.
+	blockedFor(t, mk(0, true, false), "broke, known price")
+	// ...and at an UNKNOWN price too: walk-and-learn is only worth the trip if he could
+	// settle on arrival, and with neither coin nor goods he could not.
+	blockedFor(t, mk(0, false, false), "broke, unknown price")
+
+	// A penniless keeper who still has goods CAN walk over and learn an unknown price —
+	// he has something to settle with when he gets there.
+	brokeWithGoods := mk(0, false, true)
+	v = buildRestocking(brokeWithGoods, "merchant", brokeWithGoods.Actors["merchant"])
+	if v == nil || len(v.Items) != 1 || len(v.Items[0].Vendors) != 1 {
+		t.Fatalf("a penniless keeper holding goods keeps an unknown-price supplier, got %+v", v)
+	}
+}
+
+// TestRenderBlockedItem_CodaMatchesTheReasons — LLM-406. The blocked scene must
+// self-resolve for EVERY reason it names (LLM-298: a want with no outlet is what makes
+// a weak model invent an errand). An item blocked both ways — one supplier shut, another
+// beyond any means — needs both resolutions: keying the coda off one reason alone
+// silently drops the other supplier's way out (code_review). And no blocked line, in any
+// combination, may ever carry a "(destination: …)" token — that is what the model echoes
+// into move_to, and these are precisely the places it must not go.
+func TestRenderBlockedItem_CodaMatchesTheReasons(t *testing.T) {
+	item := func(blocked ...RestockBlockedSupplier) RestockItemView {
+		return RestockItemView{ItemLabel: "milk", CurrentQty: 0, Cap: 12, Blocked: blocked, kind: "milk"}
+	}
+	shut := RestockBlockedSupplier{StructureLabel: "James Farm", Reason: restockBlockShut}
+	noMeans := RestockBlockedSupplier{StructureLabel: "Ellis Farm", Reason: restockBlockNoMeans}
+
+	cases := []struct {
+		name    string
+		it      RestockItemView
+		want    []string
+		exclude []string
+	}{
+		{
+			name: "shut only — the supplier reopens, so try again later",
+			it:   item(shut),
+			want: []string{"James Farm", "found it shut", "Look in again another day"},
+		},
+		{
+			name: "no means only — nothing to pay with, so wait for trade to come in",
+			it:   item(noMeans),
+			want: []string{"Ellis Farm", "neither the coin", "take what trade comes to you"},
+			// The shut resolution would be a lie here: Ellis is open, and looking in again
+			// changes nothing while the purse and the pack are both empty.
+			exclude: []string{"Look in again another day"},
+		},
+		{
+			name: "both — each supplier's reason AND each way out",
+			it:   item(noMeans, shut),
+			want: []string{
+				"Ellis Farm", "neither the coin",
+				"James Farm", "found it shut",
+				"take what trade comes to you", "looking in on another day",
+			},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var b strings.Builder
+			renderBlockedItem(&b, c.it)
+			out := b.String()
+			for _, w := range c.want {
+				if !strings.Contains(out, w) {
+					t.Errorf("blocked scene missing %q:\n%s", w, out)
+				}
+			}
+			for _, x := range c.exclude {
+				if strings.Contains(out, x) {
+					t.Errorf("blocked scene should not carry %q:\n%s", x, out)
+				}
+			}
+			if strings.Contains(out, "destination:") {
+				t.Errorf("a blocked supplier must never be rendered as a move_to destination:\n%s", out)
+			}
+		})
 	}
 }
 
@@ -1221,7 +1343,8 @@ func TestFindItemVendors_ExcludesResellerHoldingBoughtStock(t *testing.T) {
 	subj := &sim.ActorSnapshot{Coins: 50, Inventory: map[sim.ItemKind]int{"carrots": 1}, RestockPolicy: buyPolicy("carrots", 12)}
 	snap := carrotSupplyChainSnap(subj, false)
 	got := map[sim.StructureID]bool{}
-	for _, vd := range findItemVendors(snap, "subj", subj, "carrots") {
+	vendors, _ := findItemVendors(snap, "subj", subj, "carrots")
+	for _, vd := range vendors {
 		got[vd.StructureID] = true
 	}
 	if !got["farm"] {
@@ -1285,7 +1408,8 @@ func TestFindItemVendors_DegradedSellerStillListedWhileStocked(t *testing.T) {
 	degradeMosesFarm(snap)
 	listed := func() map[sim.StructureID]bool {
 		got := map[sim.StructureID]bool{}
-		for _, vd := range findItemVendors(snap, "subj", subj, "carrots") {
+		vendors, _ := findItemVendors(snap, "subj", subj, "carrots")
+		for _, vd := range vendors {
 			got[vd.StructureID] = true
 		}
 		return got

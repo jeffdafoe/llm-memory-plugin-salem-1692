@@ -616,6 +616,80 @@ func TestGoldensRestockNeverTargetsRememberedShutSupplier(t *testing.T) {
 	}
 }
 
+// TestGoldensRoleNeedNeverRendersSilent is the LLM-406 cross-scenario invariant — the
+// role-liveness rule: an actor with an unmet ROLE obligation that the engine can say
+// something true and useful about is never handed a turn that says nothing about it.
+//
+// Concretely, for the restock obligation: if the subject holds a `buy` entry below the
+// reorder point AND the engine can name at least one supplier of that item — a payable
+// one, a co-present one, or merely a BLOCKED one — then the prompt must carry a
+// "## Restocking" section. What the section says is up to the situation: go buy, hold
+// off and sell down first, or "you are stuck, here is who has it and here is why you
+// can't have it". What it may not do is stay silent.
+//
+// Silence is the bug this ticket exists for. The live Josiah Thorne stood at his post
+// with an unmet obligation, a supplier for every item of it, and NOT ONE WORD in his
+// prompt — no cue, no warrant, no way to reason about his own deadlock. He was not
+// erroring and not looping; he simply could not recover, and nothing surfaced it. And
+// because the wholesale tier made him the farms' only lawful buyer, his silence jammed
+// the entire village's retail food chain behind him.
+//
+// The invariant is scoped to what the engine can actually SAY: an item literally nobody
+// sells anywhere yields no supplier, and a line for it would be a dead-end want the
+// weak model improvises a destination for (the Hannah Boggs phantom fetch-water hires,
+// LLM-260). That case is exempt by construction — there is nothing to name.
+//
+// Exempt too are the situations where the engine drops the section by DESIGN, each of
+// which is a considered decision rather than an oversight:
+//   - restock disabled outright (RestockReorderPct == 0, the operator off-switch);
+//   - a degraded business (LLM-304) — it cannot turn a buy into shelf stock until it is
+//     mended, and the "## Your business" cue carries that obligation instead;
+//   - a degeneracy-flagged actor (LLM-94) — the place-naming movement steers are thinned
+//     precisely because it is in a futile move loop;
+//   - a keeper settled at the tavern for the evening — off the clock.
+func TestGoldensRoleNeedNeverRendersSilent(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			// Build ONCE and render THAT snapshot. Deciding whether the invariant applies
+			// from one build and then rendering a second one (via renderScenario, which
+			// rebuilds) would let the test diagnose a different world than the one it
+			// inspected — the fixtures are deterministic today, so it would agree, but it
+			// is the wrong thing to be relying on (code_review).
+			snap, actorID, warrants := sc.build()
+			subj := snap.Actors[actorID]
+			if subj == nil || subj.RestockPolicy == nil || snap.RestockReorderPct <= 0 {
+				return // no role policy, or the producer is switched off — invariant N/A
+			}
+			if ownerBusinessDegraded(snap, actorID) || degeneracyFlagged(subj) || settledAtLeisureVenue(snap, subj) {
+				return // the section is dropped by design in these situations — see the doc above
+			}
+			floors := sim.ReorderFloors(snap.Recipes, subj.RestockPolicy)
+			for _, e := range sim.EffectiveBuyEntries(snap.Recipes, subj.RestockPolicy) {
+				if !sim.RestockReorderThresholdMet(subj.Inventory[e.Item], e.Cap(), snap.RestockReorderPct, floors[e.Item]) {
+					continue // not low — no unmet obligation for this item
+				}
+				// Can the engine name ANYONE for this item — a destination, a seller in
+				// the room, or a supplier it must explain away? If not, there is nothing
+				// truthful to say and silence is correct.
+				vendors, blocked := findItemVendors(snap, actorID, subj, e.Item)
+				coName, _ := coPresentSellerForItem(snap, actorID, subj, e.Item)
+				if len(vendors) == 0 && len(blocked) == 0 && coName == "" {
+					continue
+				}
+				out := combinedPrompt(Render(Build(snap, actorID, warrants), DefaultRenderConfig()))
+				if !strings.Contains(out, "## Restocking") {
+					t.Errorf("scenario %q: subject is low on %q and the engine can name a supplier for it "+
+						"(payable=%d blocked=%d coPresent=%q), yet the prompt carries no '## Restocking' section at all. "+
+						"An unmet role obligation must never render silent (LLM-406):\n%s",
+						sc.name, e.Item, len(vendors), len(blocked), coName, out)
+					return
+				}
+			}
+		})
+	}
+}
+
 // TestGoldensNeverCoachSpeakingAtCompany is the LLM-220 cross-scenario
 // invariant: no rendered situation coaches the actor to speak at whoever is
 // present. The old co-presence clause ("— speak to start conversing with them")
@@ -694,7 +768,8 @@ func TestGoldensRestockSupplierProducesOrForagesOrIsDistributor(t *testing.T) {
 			// Effective demand (LLM-260) so derived buy inputs are held to the
 			// same supplier invariant as hand-authored entries.
 			for _, e := range sim.EffectiveBuyEntries(snap.Recipes, subj.RestockPolicy) {
-				for _, vd := range findItemVendors(snap, actorID, subj, e.Item) {
+				vendors, _ := findItemVendors(snap, actorID, subj, e.Item)
+				for _, vd := range vendors {
 					if sim.ActorIsDistributor(snap.VillageObjects, vd.StructureID) {
 						continue // the distributor is a standing supplier of everything
 					}
@@ -2242,16 +2317,35 @@ var perceptionScenarios = []perceptionScenario{
 		build: laboringWorkerEmployerAway,
 	},
 	{
-		name: "broke_keeper_shut_and_unaffordable_suppliers_no_restock",
-		summary: "LLM-216, the live Josiah Thorne case: a broke (0 coins) general-store keeper whose bought-in carrots " +
-			"and milk are both empty stands alone at his store on shift. His carrot supplier (James Farm) he remembers " +
-			"finding SHUT; his milk supplier (Ellis Farm) is open but its remembered price (4 coins) is beyond his empty " +
-			"purse. Before the fix the '## Restocking' cue handed him BOTH farms as move_to targets — annotating James " +
-			"'found it shut up' yet still steering there, and listing an Ellis he couldn't pay — and he toured them every " +
-			"tick instead of tending his shop and earning. The golden pins that NO '## Restocking' section renders: the " +
-			"shut supplier is dropped and the unaffordable one is dropped, so with no actionable buy path both items are " +
-			"omitted. The matrix-wide guard is TestGoldensRestockNeverTargetsRememberedShutSupplier.",
-		build: brokeKeeperShutAndUnaffordableSuppliersNoRestock,
+		name: "destitute_keeper_blocked_suppliers_named_with_reasons",
+		summary: "LLM-216 as amended by LLM-406: a DESTITUTE general-store keeper — 0 coins AND an empty pack — whose " +
+			"bought-in carrots and milk are both empty stands alone at his store on shift. His carrot supplier (James " +
+			"Farm) he remembers finding SHUT; his milk supplier (Ellis Farm) is open, but its remembered price (4 coins) " +
+			"is beyond a purse and a pack that hold nothing at all. Neither is a place he can act on, so LLM-216 dropped " +
+			"both and rendered NO section — and that silence is what this golden used to pin. It is also what turned an " +
+			"illiquid keeper into an absorbing state: an unmet obligation and not one word about it. The golden now pins " +
+			"the blocked scene — both farms NAMED, each with its reason, no '(destination: …)' token anywhere (that is " +
+			"the token the model echoes into move_to, and these are precisely the places it must not walk to), and a " +
+			"self-resolving coda instead of a dangling want. Suppression may take the imperative; it may not take the " +
+			"facts. Compare illiquid_distributor_barters_for_stock, where the same keeper HAS goods and so gets his " +
+			"suppliers back as real destinations. Matrix guards: TestGoldensRestockNeverTargetsRememberedShutSupplier " +
+			"and TestGoldensRoleNeedNeverRendersSilent.",
+		build: destituteKeeperBlockedSuppliersNamedWithReasons,
+	},
+	{
+		name: "illiquid_distributor_barters_for_stock",
+		summary: "LLM-406, the live Josiah Thorne deadlock (2026-07-14): the village's ONLY distributor stands at his " +
+			"post with 3 coins, bare shelves, and a pack holding a horseshoe, a skillet and 18 flasks of water — he had " +
+			"liquidated his book to buy the nails to mend his roof. Both farms' remembered prices (4 milk, 6 carrots) sit " +
+			"above his purse, so the COINS-ONLY affordability drop erased both suppliers, omitted both items, and rendered " +
+			"no '## Restocking' section at all. With empty shelves he had nothing to sell, so he could never earn back " +
+			"over any price, so the cue could never return — an absorbing state, and one that jammed the whole village's " +
+			"retail food chain, since the wholesale tier makes him the farms' only lawful buyer. The golden pins the " +
+			"means-to-pay fix: pay_with_item settles in GOODS, his pack is not empty, so both farms return as real " +
+			"destinations carrying the barter steer ('your coins won't cover it — offer goods you carry in trade') " +
+			"instead of a coin price he cannot meet. His own nail purchase — 2 skillets, 2 wheat and 2 coins — was " +
+			"exactly such a bundle.",
+		build: illiquidDistributorBartersForStock,
 	},
 	{
 		name: "keeper_restock_drops_shut_keeps_open_supplier",
@@ -2730,19 +2824,27 @@ func keeperWornSkilletWearRunway() (*sim.Snapshot, sim.ActorID, []sim.WarrantMet
 	return snap, johnID, nil
 }
 
-// brokeKeeperShutAndUnaffordableSuppliersNoRestock is the LLM-216 live fixture:
-// Josiah Thorne, a broke (0 coins) general-store keeper with empty carrot and milk
-// stock, stands alone at his store on shift. His only carrot supplier (James Farm)
-// he remembers finding shut; his only milk supplier (Ellis Farm) is open but its
-// remembered price (4 coins) is beyond his empty purse. Both suppliers are present
-// as resolvable vendor structures — so WITHOUT the LLM-216 drops the restock cue
-// would list both as move_to targets (the every-tick tour). With them, the shut
-// James Farm and the unaffordable Ellis Farm are both dropped, and an item with no
-// actionable buy path (no surviving walk-to supplier, no co-present seller) is
-// omitted — so the golden carries no "## Restocking" section at all. Clock-free: the
-// shut memory and the price history are stamped relative to PublishedAt, and the
-// render path reads no wall clock.
-func brokeKeeperShutAndUnaffordableSuppliersNoRestock() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+// destituteKeeperBlockedSuppliersNamedWithReasons is the LLM-216 / LLM-406 fixture: a
+// DESTITUTE general-store keeper — 0 coins and, unlike the live Josiah, an entirely
+// empty pack — with empty carrot and milk stock, alone at his store on shift. His only
+// carrot supplier (James Farm) he remembers finding shut; his only milk supplier (Ellis
+// Farm) is open, but its remembered price (4 coins) is beyond a purse AND a pack that
+// hold nothing at all. He is the one buyer LLM-406 still refuses to send anywhere: no
+// coin, no goods, nothing that could settle a pay_with_item.
+//
+// Both suppliers are resolvable vendor structures, and both GROW what they sell — the
+// produce entries are load-bearing. Without them the farms fail the LLM-252 first-hand-
+// supplier gate and drop out before the shut/means gates are ever reached, and the
+// fixture asserts the right output for the wrong reason (which is what it did, silently,
+// from LLM-252 until LLM-406 caught it).
+//
+// So: WITHOUT the LLM-216 drops the cue would hand him both farms as move_to targets
+// (the every-tick tour). With them, neither is a destination — but LLM-406 stops the
+// item from vanishing along with the destination: both farms are NAMED as blocked, each
+// with its reason, and the section renders a scene with no "(destination: …)" token
+// anywhere in it. Clock-free: the shut memory and the price history are stamped relative
+// to PublishedAt, and the render path reads no wall clock.
+func destituteKeeperBlockedSuppliersNamedWithReasons() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	const (
 		josiahID  = sim.ActorID("josiah")
 		jamesID   = sim.ActorID("james")
@@ -2776,6 +2878,9 @@ func brokeKeeperShutAndUnaffordableSuppliersNoRestock() (*sim.Snapshot, sim.Acto
 			{StructureID: jamesFarm, Condition: sim.ObservedClosed}: published.Add(-time.Hour),
 		}),
 	}
+	// Both farms GROW what they sell — without a produce entry they'd fail the LLM-252
+	// first-hand-supplier gate and drop out before the shut/means gates were ever
+	// consulted, leaving this fixture asserting the right output for the wrong reason.
 	james := &sim.ActorSnapshot{
 		Kind:            sim.KindNPCStateful,
 		DisplayName:     "James Fuller",
@@ -2783,6 +2888,9 @@ func brokeKeeperShutAndUnaffordableSuppliersNoRestock() (*sim.Snapshot, sim.Acto
 		Pos:             sim.TilePos{X: 400, Y: 400},
 		WorkStructureID: jamesFarm,
 		Inventory:       map[sim.ItemKind]int{"carrots": 40},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "carrots", Source: sim.RestockSourceProduce, Max: 40},
+		}},
 	}
 	ellis := &sim.ActorSnapshot{
 		Kind:            sim.KindNPCStateful,
@@ -2791,6 +2899,9 @@ func brokeKeeperShutAndUnaffordableSuppliersNoRestock() (*sim.Snapshot, sim.Acto
 		Pos:             sim.TilePos{X: 420, Y: 420},
 		WorkStructureID: ellisFarm,
 		Inventory:       map[sim.ItemKind]int{"milk": 40},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "milk", Source: sim.RestockSourceProduce, Max: 40},
+		}},
 	}
 	// Josiah's buyer-side price history: 6 coins/carrot from James, 4 coins/milk from
 	// Ellis — both beyond his empty purse (the affordability drop), and James is shut
@@ -2822,6 +2933,124 @@ func brokeKeeperShutAndUnaffordableSuppliersNoRestock() (*sim.Snapshot, sim.Acto
 		},
 	}
 	return snap, josiahID, nil
+}
+
+// illiquidDistributorBartersForStock is the LLM-406 fixture — the live Josiah Thorne
+// deadlock of 2026-07-14, reproduced from the umbilical dump.
+//
+// He is the village's ONLY distributor, and the wholesale tier makes him the sole
+// lawful channel between the farms and everyone else. His store roof degraded; mending
+// it cost nails, and to buy them he liquidated essentially his whole book — 2 skillets,
+// 2 wheat and 2 coins to the smith. He came back to his post with 3 coins, bare
+// shelves, and a pack holding a horseshoe, a skillet and 18 flasks of water.
+//
+// Every farm's remembered price (4 coins milk, 6 coins carrots) is above his 3-coin
+// purse, so the old coins-only gate dropped both suppliers, omitted both items, and
+// rendered NO "## Restocking" section at all. He could not earn — his shelves were
+// empty, so he had nothing to sell — and so could never climb back over any supplier's
+// price. The guard built to stop him touring dead ends guaranteed he stayed at zero
+// forever, and it jammed the whole village's retail food chain behind him.
+//
+// The golden pins the means-to-pay fix: pay_with_item settles in GOODS, and his pack is
+// not empty, so both farms are real destinations again — rendered with the barter steer
+// ("your coins won't cover it — offer goods you carry in trade") rather than a coin
+// price he cannot meet. His own nail purchase minutes earlier was exactly such a
+// bundle, which is what makes the coins-only question the wrong one.
+func illiquidDistributorBartersForStock() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		josiahID  = sim.ActorID("josiah")
+		jamesID   = sim.ActorID("james")
+		ellisID   = sim.ActorID("ellis")
+		store     = sim.StructureID("general_store")
+		jamesFarm = sim.StructureID("james_farm")
+		ellisFarm = sim.StructureID("ellis_farm")
+	)
+	start, end := 360, 1080 // 06:00-18:00
+	now := 720              // 12:00 — on shift, at his post
+	published := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	josiah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Josiah Thorne",
+		Role:              "shopkeeper",
+		State:             sim.StateIdle,
+		Pos:               sim.TilePos{X: 10, Y: 10},
+		WorkStructureID:   store,
+		InsideStructureID: store,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             3,
+		Needs:             map[sim.NeedKey]int{},
+		// Bare shelves, but NOT an empty pack: the horseshoe, the skillet and the water
+		// are means to pay, and the whole bug was never asking.
+		Inventory: map[sim.ItemKind]int{
+			"carrots": 0, "milk": 0,
+			"horseshoe": 1, "skillet": 1, "water": 18,
+		},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "carrots", Source: sim.RestockSourceBuy, Max: 12},
+			{Item: "milk", Source: sim.RestockSourceBuy, Max: 12},
+		}},
+	}
+	james := &sim.ActorSnapshot{
+		Kind:            sim.KindNPCStateful,
+		DisplayName:     "James Fuller",
+		State:           sim.StateIdle,
+		Pos:             sim.TilePos{X: 400, Y: 400},
+		WorkStructureID: jamesFarm,
+		Inventory:       map[sim.ItemKind]int{"carrots": 30},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "carrots", Source: sim.RestockSourceProduce, Max: 40},
+		}},
+	}
+	ellis := &sim.ActorSnapshot{
+		Kind:            sim.KindNPCStateful,
+		DisplayName:     "Ellis Ward",
+		State:           sim.StateIdle,
+		Pos:             sim.TilePos{X: 420, Y: 420},
+		WorkStructureID: ellisFarm,
+		Inventory:       map[sim.ItemKind]int{"milk": 29},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "milk", Source: sim.RestockSourceProduce, Max: 40},
+		}},
+	}
+	// Both remembered prices sit above his 3-coin purse — the coins-only drop that
+	// erased him from his own supply chain.
+	carrotBuys := sim.NewRingBuffer[sim.PriceObservation](8)
+	carrotBuys.Push(sim.PriceObservation{BuyerID: josiahID, Amount: 6, Qty: 1, Consumers: 1, At: published.Add(-2 * 24 * time.Hour)})
+	milkBuys := sim.NewRingBuffer[sim.PriceObservation](8)
+	milkBuys.Push(sim.PriceObservation{BuyerID: josiahID, Amount: 4, Qty: 1, Consumers: 1, At: published.Add(-1 * 24 * time.Hour)})
+	return &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			josiahID: josiah, jamesID: james, ellisID: ellis,
+		},
+		Structures: map[sim.StructureID]*sim.Structure{
+			store:     plainStructure(store, "General Store"),
+			jamesFarm: plainStructure(jamesFarm, "James Farm"),
+			ellisFarm: plainStructure(ellisFarm, "Ellis Farm"),
+		},
+		// The store carries the distributor tag: he is the one buyer the farms may
+		// lawfully sell to, so the wholesale gate keeps both farms in scope for HIM.
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			sim.VillageObjectID(store):     {ID: sim.VillageObjectID(store), Tags: []string{sim.TagDistributor}},
+			sim.VillageObjectID(jamesFarm): {ID: sim.VillageObjectID(jamesFarm), Tags: []string{sim.TagFarm}},
+			sim.VillageObjectID(ellisFarm): {ID: sim.VillageObjectID(ellisFarm), Tags: []string{sim.TagFarm}},
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"carrots":   {Name: "carrots", DisplayLabel: "carrots", Category: sim.ItemCategoryFood},
+			"milk":      {Name: "milk", DisplayLabel: "milk", Category: sim.ItemCategoryDrink},
+			"horseshoe": {Name: "horseshoe", DisplayLabel: "horseshoe"},
+			"skillet":   {Name: "skillet", DisplayLabel: "skillet"},
+			"water":     {Name: "water", DisplayLabel: "water", Category: sim.ItemCategoryDrink},
+		},
+		RestockReorderPct: 25,
+		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+			{SellerID: jamesID, Item: "carrots"}: carrotBuys,
+			{SellerID: ellisID, Item: "milk"}:    milkBuys,
+		},
+	}, josiahID, nil
 }
 
 // keeperRestockDropsShutKeepsOpenSupplier is the LLM-216 section-present fixture: a
@@ -4691,7 +4920,7 @@ func TestRestockBuyAnchorRendersWhenRateKnown(t *testing.T) {
 					// observed reachable-supplier rate first (LLM-295), catalog seed as
 					// fallback. Same reachable-supplier inputs the build uses.
 					_, coID := coPresentSellerForItem(snap, actorID, subj, e.Item)
-					vendors := findItemVendors(snap, actorID, subj, e.Item)
+					vendors, _ := findItemVendors(snap, actorID, subj, e.Item)
 					rate, observed := observedSupplierBuyRate(vendors, coID, snap, e.Item, restockSalesWindow)
 					if !observed {
 						rate = catalogBulkRate(snap, e.Item)

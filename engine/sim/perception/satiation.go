@@ -228,19 +228,17 @@ func dropDrinkSatisfiers(snap *sim.Snapshot, items []OwnStockItem) []OwnStockIte
 
 // holdsBarterableGoods reports whether the actor carries any goods it could put
 // up in a pay_with_item / offer_trade bundle — the "goods" half of the LLM-222
-// means-to-pay gate. Any held ItemKind with a positive quantity counts:
-// pay_with_item's pay_items accepts whatever the buyer carries and the SELLER
-// decides accept or decline, so perception gates only on whether goods exist to
-// offer, never on whether this seller would take these particular goods (that
-// adjudication is the seller's own turn — the line the ticket draws at
-// knowable/hard facts). Coins are counted separately by the caller.
+// means-to-pay gate. Delegates to the shared sim predicate (LLM-406), which the
+// restock cue's own means-to-pay gate and its warrant-side mirror
+// (sim.buyerCanTransact) also read, so every buy gate in the engine agrees on what
+// "has something to pay with" means and none of them can drift back to coins-only.
+//
+// No exclusion ("" ): the consumer buy cue is a buyer paying for something it means
+// to CONSUME, so every good it carries is fair payment. The restock cue passes the
+// item being bought instead — restocking a line of stock by offering that same stock
+// is not a payment path (see HoldsBarterableGoodsExcept).
 func holdsBarterableGoods(actorSnap *sim.ActorSnapshot) bool {
-	for _, qty := range actorSnap.Inventory {
-		if qty > 0 {
-			return true
-		}
-	}
-	return false
+	return sim.HoldsBarterableGoodsExcept(actorSnap.Inventory, "")
 }
 
 // satiationMealFloor is the itemFeltAmount magnitude at which a satisfier reads

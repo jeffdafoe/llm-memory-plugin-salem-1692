@@ -63,13 +63,13 @@ func wholesaleGateSnap(buyerID sim.ActorID, buyerWork sim.StructureID, distribut
 func TestWholesaleGate_RestockDirectory(t *testing.T) {
 	t.Run("wholesaler_dropped_for_non_distributor", func(t *testing.T) {
 		snap, buyer := wholesaleGateSnap("hannah", "the_inn", false)
-		if vds := findItemVendors(snap, "hannah", buyer, "milk"); len(vds) != 0 {
+		if vds, _ := findItemVendors(snap, "hannah", buyer, "milk"); len(vds) != 0 {
 			t.Errorf("wholesale vendor should be dropped for a non-distributor, got %+v", vds)
 		}
 	})
 	t.Run("wholesaler_kept_for_distributor", func(t *testing.T) {
 		snap, buyer := wholesaleGateSnap("josiah", "general_store", true)
-		vds := findItemVendors(snap, "josiah", buyer, "milk")
+		vds, _ := findItemVendors(snap, "josiah", buyer, "milk")
 		if len(vds) != 1 || vds[0].StructureID != "ellis_farm" {
 			t.Errorf("wholesale vendor should be kept for the distributor, got %+v", vds)
 		}
@@ -79,7 +79,7 @@ func TestWholesaleGate_RestockDirectory(t *testing.T) {
 		// Untag Ellis Farm: a plain (non-wholesale) milk vendor stays visible to
 		// everyone. It still produces milk, so the LLM-252 supplier gate keeps it.
 		snap.VillageObjects["ellis_farm"].Tags = nil
-		if vds := findItemVendors(snap, "hannah", buyer, "milk"); len(vds) != 1 {
+		if vds, _ := findItemVendors(snap, "hannah", buyer, "milk"); len(vds) != 1 {
 			t.Errorf("a non-wholesale vendor must stay visible to a non-distributor, got %+v", vds)
 		}
 	})
