@@ -341,7 +341,13 @@ func injectAlarms(body, encoded []byte) []byte {
 	for peek < len(body) && isJSONSpace(body[peek]) {
 		peek++
 	}
-	out := make([]byte, 0, len(body)+len(encoded)+len(alarmBodyKey)+1)
+	// Grown by append rather than pre-sized. Summing the three lengths to
+	// pre-allocate is arithmetic on a value derived from a proxied upstream body
+	// (/turns), which is exactly the shape CodeQL's go/allocation-size-overflow
+	// flags. The saving was a micro-optimization on a path that only runs WHILE AN
+	// ALARM IS FIRING; it is not worth carrying an overflow-prone size computation
+	// on an operator surface, and it is certainly not worth a suppression.
+	var out []byte
 	out = append(out, body[:rest]...)
 	out = append(out, alarmBodyKey...)
 	out = append(out, encoded...)
