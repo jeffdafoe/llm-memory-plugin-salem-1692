@@ -570,6 +570,22 @@ func PayWithItem(
 			// inherits both guards. Matches deliver_order's own capability
 			// check at order_commands.go.
 			if itemHasCapability(w, kind, "lodging") {
+				// LLM-391 — a room is delivered as an Order + RoomAccess grant,
+				// never eaten on the spot, so consume_now is meaningless for
+				// lodging. Normalize it to the booking shape HERE, before the
+				// WORK-344 consumer gate, the consume_now/advance-booking check,
+				// and the fast/slow split all read it. Left unnormalized, a
+				// consume_now nights_stay settled the coins in commitPayTransfer's
+				// eat-on-the-spot branch and granted NO room: the guest paid for a
+				// bed it never held, appeared unhoused once its prior grant lapsed,
+				// re-booked the same night, and the second delivered
+				// (buyer, seller, ready_by) row collided with the first on
+				// pay_ledger_lodging_active_once — wedging every checkpoint (the
+				// 2026-07-12 Ezekiel/Hannah incident). The fast path already forces
+				// this for service kinds (runPayWithItemFastPath); the slow-path
+				// offer intake did not, which was the gap.
+				consumeNow = false
+
 				// LLM-182 — buyer-side need-a-room gate. The lodging seek/offer
 				// cues are already home-gated in perception
 				// (actorSnapIsLodgingSeeker), but nothing stopped a homed villager
@@ -625,21 +641,20 @@ func PayWithItem(
 					)
 				}
 
-				// WORK-344 — lodging take-home with non-buyer consumers
-				// is a guaranteed-impossible Order: deliver_order's
-				// lodging branch (order_commands.go) enforces single-self
-				// consumer. The redundant consumerNames=[buyer] case is
-				// permitted; only non-buyer consumers are rejected.
-				// consume_now is incoherent for lodging service items but
-				// not a fulfillment-impossibility, so left alone.
-				if !consumeNow {
-					for _, cid := range consumerIDs {
-						if cid != buyerID {
-							return nil, fmt.Errorf(
-								"%s can't be booked for someone else — only the buyer can take the room (drop the consumers list).",
-								kind,
-							)
-						}
+				// WORK-344 — a room booked for a non-buyer consumer is a
+				// guaranteed-impossible Order: deliver_order's lodging branch
+				// (order_commands.go) enforces a single self-consumer. The
+				// redundant consumerNames=[buyer] case is permitted; only
+				// non-buyer consumers are rejected. consume_now was normalized
+				// to false just above (LLM-391), so this now also closes the
+				// former "book a room for someone else with consume_now" hole
+				// that the earlier !consumeNow guard let slip through.
+				for _, cid := range consumerIDs {
+					if cid != buyerID {
+						return nil, fmt.Errorf(
+							"%s can't be booked for someone else — only the buyer can take the room (drop the consumers list).",
+							kind,
+						)
 					}
 				}
 			}
@@ -2837,10 +2852,20 @@ func commitPayTransfer(
 			return payTransferOutcome{}, bundleErr
 		}
 		out = bundleOut
-	} else if entry.ConsumeNow {
+	} else if entry.ConsumeNow && !itemHasCapability(w, entry.ItemKind, "lodging") {
 		// Eat-on-the-spot: stock leaves seller, consumer needs
 		// satisfied directly. Per-consumer apply + dwell stamp +
 		// ItemConsumed emit. No Order minted.
+		//
+		// LLM-391 — lodging is explicitly excluded so a consume_now
+		// nights_stay can NEVER land here (where no room is granted). PayWithItem
+		// normalizes consume_now→false for lodging at intake, but an entry that
+		// bypassed intake (a pre-fix pending offer reloaded across a deploy, or a
+		// future direct construction) would otherwise be silently "consumed" for
+		// nothing. Falling through to the lodging branch below routes it through
+		// transferOrderGoods → AssignBedroomForLodger, whose advancePastHeldLodging
+		// coalesces a same-night re-book instead of minting a duplicate
+		// (buyer, seller, ready_by) that wedges the checkpoint.
 		//
 		// ZBBS-WORK-391: each consumer eats only what their needs can absorb
 		// (consumableUnits); the surplus goes to the BUYER's inventory instead
@@ -2885,13 +2910,13 @@ func commitPayTransfer(
 		out.keptToInventory = totalKept
 		for _, sp := range splits {
 			cid, consumer, eat, kept := sp.cid, sp.consumer, sp.eat, sp.kept
-			// "service"-capability items (e.g. nights_stay) carry no
-			// inventory — infinite-stock, so there's nothing to deplete
-			// (ZBBS-HOME-296; mirrors the gate-10 stock skip). Without this
-			// guard a consume_now service offer would trip the drained-
-			// inventory error below. Lodging is always ConsumeNow=false (it
-			// mints an Order), so this guard is defensive for the unusual
-			// consume_now+service combo, not a lodging path.
+			// A non-lodging "service"-capability item carries no inventory —
+			// infinite-stock, so there's nothing to deplete (ZBBS-HOME-296;
+			// mirrors the gate-10 stock skip). Without this guard a consume_now
+			// service offer would trip the drained-inventory error below.
+			// nights_stay is the sole service kind today and is excluded from
+			// this branch by the lodging guard above (LLM-391), so this handles
+			// a hypothetical future non-lodging service kind.
 			if !itemHasCapability(w, entry.ItemKind, "service") {
 				have := seller.Inventory[entry.ItemKind]
 				if have < entry.Qty {

@@ -437,6 +437,172 @@ func TestPayWithItem_Lodging_OnePrivateRoomOccupied_StillPasses(t *testing.T) {
 }
 
 // ============================================================
+// LLM-391 — consume_now lodging grants a room (never eaten for nothing)
+// ============================================================
+
+// TestPayWithItem_LodgingConsumeNow_SelfConsumer_GrantsRoom is the LLM-391
+// regression: a buyer renting a room with consume_now=TRUE must still get a
+// RoomAccess grant. Before the fix, a consume_now nights_stay fell into
+// commitPayTransfer's eat-on-the-spot branch — coins settled, "delivered" row
+// written, but NO room granted and NO Order minted. PayWithItem now normalizes
+// consume_now→false for lodging at intake, so the accept mints an Order and
+// grants the room exactly like a consume_now=false walk-in.
+func TestPayWithItem_LodgingConsumeNow_SelfConsumer_GrantsRoom(t *testing.T) {
+	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
+		{id: "alice", displayName: "Alice", kind: sim.KindNPCStateful, huddleID: "h1", coins: 100},
+		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1"},
+	})
+	defer stop()
+	seedLodgingFixture(t, w, "bob", []*sim.Room{
+		{ID: 1, StructureID: "inn", Kind: sim.RoomKindCommon, Name: "common"},
+		{ID: 2, StructureID: "inn", Kind: sim.RoomKindPrivate, Name: "bedroom_1"},
+	})
+	at := time.Now().UTC()
+
+	// consume_now = TRUE — the disposition that produced the paid-for-nothing bug.
+	res, err := w.Send(sim.PayWithItem("alice", "Bob", "nights_stay", 1, 4, true, nil, nil, 0, 0, "", at))
+	if err != nil {
+		t.Fatalf("PayWithItem: %v", err)
+	}
+	ledgerID := res.(sim.PayWithItemResult).LedgerID
+	if _, err := w.Send(sim.AcceptPay("bob", ledgerID, at)); err != nil {
+		t.Fatalf("AcceptPay: %v", err)
+	}
+
+	ra, ok := activeLedgerRoomAccess(t, w, "alice")
+	if !ok {
+		t.Fatal("alice holds no active RoomAccess after a consume_now room booking (the LLM-391 bug: paid, no room)")
+	}
+	if ra.RoomID != 2 {
+		t.Errorf("RoomAccess.RoomID = %d, want 2 (bedroom_1)", ra.RoomID)
+	}
+
+	var orderState sim.OrderState
+	var orderCount, aliceCoins int
+	var entryConsumeNow bool
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		aliceCoins = world.Actors["alice"].Coins
+		for _, o := range world.Orders {
+			if o != nil && o.SellerID == "bob" && o.BuyerID == "alice" {
+				orderState = o.State
+				orderCount++
+			}
+		}
+		if e := world.PayLedger[ledgerID]; e != nil {
+			entryConsumeNow = e.ConsumeNow
+		}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("read world: %v", err)
+	}
+	if orderCount != 1 {
+		t.Fatalf("lodging order count = %d, want 1 (an Order must be minted, not the order-less consume path)", orderCount)
+	}
+	if orderState != sim.OrderStateDelivered {
+		t.Errorf("order State = %q, want delivered (same-day walk-in grant)", orderState)
+	}
+	if aliceCoins != 96 {
+		t.Errorf("alice.Coins = %d, want 96 (paid 4 at accept)", aliceCoins)
+	}
+	if entryConsumeNow {
+		t.Error("persisted ledger entry still ConsumeNow=true — lodging must be normalized to the booking shape")
+	}
+}
+
+// TestPayWithItem_LodgingConsumeNow_SameNightRebook_Coalesces is the durable
+// invariant regression: a second nights_stay booked for a night the buyer
+// already holds at this keeper must coalesce to the NEXT night (extending the
+// stay), never mint a duplicate (buyer, seller, ready_by) — the collision that
+// violates pay_ledger_lodging_active_once and wedges every checkpoint. Both
+// bookings go through the consume_now path to prove the grant (and thus
+// advancePastHeldLodging's coverage read) is reliable end-to-end.
+func TestPayWithItem_LodgingConsumeNow_SameNightRebook_Coalesces(t *testing.T) {
+	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
+		{id: "alice", displayName: "Alice", kind: sim.KindNPCStateful, huddleID: "h1", coins: 100},
+		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1"},
+	})
+	defer stop()
+	seedLodgingFixture(t, w, "bob", []*sim.Room{
+		{ID: 2, StructureID: "inn", Kind: sim.RoomKindPrivate, Name: "bedroom_1"},
+	})
+	at := time.Now().UTC()
+
+	book := func(tag string) {
+		res, err := w.Send(sim.PayWithItem("alice", "Bob", "nights_stay", 1, 4, true, nil, nil, 0, 0, "", at))
+		if err != nil {
+			t.Fatalf("PayWithItem (%s): %v", tag, err)
+		}
+		id := res.(sim.PayWithItemResult).LedgerID
+		if _, err := w.Send(sim.AcceptPay("bob", id, at)); err != nil {
+			t.Fatalf("AcceptPay (%s): %v", tag, err)
+		}
+	}
+	book("first")
+	book("second") // same night, same keeper — the double-book attempt
+
+	var readyBys []string
+	var aliceRooms int
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		aliceRooms = len(world.Actors["alice"].RoomAccess)
+		for _, o := range world.Orders {
+			if o != nil && o.SellerID == "bob" && o.BuyerID == "alice" && o.Item == "nights_stay" {
+				readyBys = append(readyBys, o.ReadyBy.Format("2006-01-02"))
+			}
+		}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("read world: %v", err)
+	}
+	if len(readyBys) != 2 {
+		t.Fatalf("nights_stay order count = %d, want 2", len(readyBys))
+	}
+	if readyBys[0] == readyBys[1] {
+		t.Errorf("both bookings landed on ready_by %s — a duplicate (buyer,seller,night) that wedges the checkpoint; the second must coalesce to the next night", readyBys[0])
+	}
+	// The renewal extends the ONE grant in place (branch 1), not a second room.
+	if aliceRooms != 1 {
+		t.Errorf("alice holds %d RoomAccess grants, want 1 (renewal extends in place, no room-hop)", aliceRooms)
+	}
+}
+
+// TestAcceptPay_LodgingConsumeNow_Backstop_GrantsRoom isolates the fix (2)
+// commit chokepoint: a nights_stay ledger entry that reaches accept with
+// ConsumeNow=TRUE WITHOUT passing through PayWithItem's intake normalization —
+// the "pre-fix pending offer reloaded across a deploy, then accepted" shape the
+// incident calls out. seedLedgerEntry writes the entry straight into
+// w.PayLedger (no intake), so this proves commitPayTransfer's lodging exclusion
+// (not the intake normalize) is what routes it to a real room grant instead of
+// the order-less consume branch.
+func TestAcceptPay_LodgingConsumeNow_Backstop_GrantsRoom(t *testing.T) {
+	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
+		{id: "alice", displayName: "Alice", kind: sim.KindNPCStateful, huddleID: "h1", coins: 100},
+		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1"},
+	})
+	defer stop()
+	seedLodgingFixture(t, w, "bob", []*sim.Room{
+		{ID: 2, StructureID: "inn", Kind: sim.RoomKindPrivate, Name: "bedroom_1"},
+	})
+	at := time.Now().UTC()
+
+	// A ConsumeNow=true nights_stay pending entry that never saw intake
+	// normalization — exactly what a pre-fix offer reloaded post-deploy looks like.
+	seedLedgerEntry(t, w, sim.PayLedgerEntry{
+		ID: 1, BuyerID: "alice", SellerID: "bob", ItemKind: "nights_stay",
+		Qty: 1, Amount: 4, ConsumeNow: true,
+		State: sim.PayLedgerStatePending, HuddleID: "h1", SceneID: "sc1",
+		CreatedAt: at, ExpiresAt: at.Add(10 * time.Minute),
+	})
+
+	if _, err := w.Send(sim.AcceptPay("bob", 1, at)); err != nil {
+		t.Fatalf("AcceptPay: %v", err)
+	}
+
+	if _, ok := activeLedgerRoomAccess(t, w, "alice"); !ok {
+		t.Fatal("alice holds no room after accepting a ConsumeNow=true nights_stay — the commit backstop must route lodging to a grant, not the consume branch")
+	}
+}
+
+// ============================================================
 // WORK-344 — lodging take-home non-buyer consumer gate
 // ============================================================
 
@@ -487,14 +653,13 @@ func TestPayWithItem_LodgingTakeHome_BuyerAsSoleConsumer_Passes(t *testing.T) {
 	}
 }
 
-// TestPayWithItem_LodgingConsumeNow_NonBuyerConsumer_Passes — the WORK-344
-// gate scopes to take-home (!consumeNow). consume_now=true for lodging
-// is incoherent but not a fulfillment-impossibility (commitPayTransfer's
-// consume branch silently skips inventory depletion for service-cap
-// items, and applyConsumeSatisfactions no-ops for items without
-// satisfaction effects). Existing v2 behavior; this ticket doesn't
-// tighten it.
-func TestPayWithItem_LodgingConsumeNow_NonBuyerConsumer_Passes(t *testing.T) {
+// TestPayWithItem_LodgingConsumeNow_NonBuyerConsumer_Rejected — LLM-391
+// normalizes consume_now→false for every lodging intake (a room is delivered
+// via an Order + grant, never eaten on the spot), so the WORK-344 non-buyer
+// gate now covers the former consume_now hole too: booking a room "for Carol"
+// is rejected whatever the disposition. Before LLM-391 this passed intake and
+// the consume branch silently granted no room (the paid-for-nothing bug).
+func TestPayWithItem_LodgingConsumeNow_NonBuyerConsumer_Rejected(t *testing.T) {
 	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
 		{id: "alice", displayName: "Alice", kind: sim.KindNPCStateful, huddleID: "h1", coins: 100},
 		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1"},
@@ -506,11 +671,11 @@ func TestPayWithItem_LodgingConsumeNow_NonBuyerConsumer_Passes(t *testing.T) {
 		{ID: 2, StructureID: "inn", Kind: sim.RoomKindPrivate, Name: "bedroom_1"},
 	})
 
-	res, err := w.Send(sim.PayWithItem("alice", "Bob", "nights_stay", 1, 4, true, []string{"Carol"}, nil, 0, 0, "", time.Now().UTC()))
-	if err != nil {
-		t.Fatalf("PayWithItem: %v (WORK-344 gate scopes to take-home only)", err)
+	_, err := w.Send(sim.PayWithItem("alice", "Bob", "nights_stay", 1, 4, true, []string{"Carol"}, nil, 0, 0, "", time.Now().UTC()))
+	if err == nil || !strings.Contains(err.Error(), "for someone else") {
+		t.Fatalf("want non-buyer-consumer reject, got %v", err)
 	}
-	if result := res.(sim.PayWithItemResult); result.State != sim.PayLedgerStatePending {
-		t.Errorf("State = %q, want pending", result.State)
+	if ledger := readPayLedger(t, w); len(ledger) != 0 {
+		t.Errorf("ledger has %d entries after rejected intake, want 0", len(ledger))
 	}
 }
