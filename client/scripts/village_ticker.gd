@@ -29,6 +29,22 @@ const HEARTBEAT_INTERVAL_SEC: float = 900.0
 ## poll is plenty; identical prose is deduped by push().
 const WORLD_POLL_INTERVAL_SEC: float = 600.0
 
+## Operator alarm banner (LLM-394). A critical engine-health failure (today:
+## durable checkpointing broken) is stamped onto every umbilical response so an
+## operator hitting the API trips over it — but Jeff watches the village in the
+## client, not curl, so the same alarm rides the ticker. Operator-only: gated on
+## Auth.can_edit, which mirrors the plugins/administer capability the umbilical's
+## requireOperator gate uses, so an ordinary player never polls this and never
+## sees it. A non-200 (umbilical disabled → 404, non-operator → 403) reads as
+## "no alarm" — this must fail SILENT, never wedge a player's ticker.
+const ALARM_POLL_INTERVAL_SEC: float = 60.0
+## An alarm re-scrolls on this fixed interval for as long as it is firing — it
+## never decays into the atmosphere line's slow heartbeat. It is an emergency;
+## it keeps shouting until someone fixes it.
+const ALARM_REPEAT_SEC: float = 30.0
+const COLOR_ATMOSPHERE: Color = Color(0.85, 0.78, 0.55, 1.0)
+const COLOR_ALARM: Color = Color(1.0, 0.35, 0.30, 1.0)
+
 var _label: Label = null
 var _clip: Control = null
 var _active_line: String = ""
@@ -40,6 +56,13 @@ var _label_x: float = 0.0
 var _http: HTTPRequest = null
 var _repeat_timer: Timer = null
 var _poll_timer: Timer = null
+## The two sources that compete for the band. _alarm_line wins whenever it is
+## non-empty; _atmosphere_line is remembered underneath and restored when the
+## alarm clears, so an operator doesn't lose the village's prose to an incident.
+var _atmosphere_line: String = ""
+var _alarm_line: String = ""
+var _alarm_http: HTTPRequest = null
+var _alarm_timer: Timer = null
 
 
 func _ready() -> void:
@@ -73,7 +96,7 @@ func _ready() -> void:
     _label = Label.new()
     _label.text = ""
     _label.add_theme_font_size_override("font_size", 12)
-    _label.add_theme_color_override("font_color", Color(0.85, 0.78, 0.55, 1.0))
+    _label.add_theme_color_override("font_color", COLOR_ATMOSPHERE)
     _label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
     _label.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
     _label.size_flags_vertical = Control.SIZE_FILL
@@ -82,6 +105,12 @@ func _ready() -> void:
     _http = HTTPRequest.new()
     add_child(_http)
     _http.request_completed.connect(_on_world_state_completed)
+
+    # Separate HTTPRequest for the alarm poll: one HTTPRequest serves one request
+    # at a time, so sharing _http would make the two polls collide with ERR_BUSY.
+    _alarm_http = HTTPRequest.new()
+    add_child(_alarm_http)
+    _alarm_http.request_completed.connect(_on_alarms_completed)
 
     _repeat_timer = Timer.new()
     _repeat_timer.one_shot = true
@@ -95,16 +124,28 @@ func _ready() -> void:
     _poll_timer.timeout.connect(_fetch_world_state)
     add_child(_poll_timer)
 
+    _alarm_timer = Timer.new()
+    _alarm_timer.one_shot = false
+    _alarm_timer.wait_time = ALARM_POLL_INTERVAL_SEC
+    _alarm_timer.timeout.connect(_fetch_alarms)
+    add_child(_alarm_timer)
+
 
 # Wired by main.gd once the client is authenticated. Kicks off the first
 # world-state fetch so the ticker has atmosphere to display, then starts the
-# slow refresh poll.
+# slow refresh poll. Operators additionally start the alarm poll.
 func begin() -> void:
     _fetch_world_state()
     # Guard against begin() being called before _ready() built the timer (the
     # current call site adds the node first, but don't crash if that changes).
     if _poll_timer != null:
         _poll_timer.start()
+    # Operator-only. can_edit is resolved by the pc/me token-verify before
+    # main.gd calls begin(), so it is trustworthy here.
+    if Auth.can_edit:
+        _fetch_alarms()
+        if _alarm_timer != null:
+            _alarm_timer.start()
 
 
 func _fetch_world_state() -> void:
@@ -139,18 +180,31 @@ func _on_world_state_completed(_result: int, code: int, _headers: PackedStringAr
     push(text)
 
 
-# Add a raw text line to the marquee. Same line as the active one is a
-# no-op (the schedule continues uninterrupted). A different line takes
-# over: if a scroll is in flight we let it finish and switch on the
-# next pass (player is mid-read), otherwise we cancel any pending
-# heartbeat and start the new line immediately. New line resets the
-# burst counter so the player gets the 5-scroll attention burst.
+# Add a raw atmosphere line to the marquee. Same line as the active one is a
+# no-op (the schedule continues uninterrupted).
 func push(text: String) -> void:
     if text == "":
         return
+    _atmosphere_line = text
+    # A firing alarm owns the band. The prose is remembered underneath and
+    # restored the moment the alarm clears.
+    if _alarm_line != "":
+        return
+    _show(text, false)
+
+
+# Take over the band with a line.
+#
+# immediate=false is the courteous path (atmosphere): if a scroll is in flight we
+# let it finish and switch on the next pass, so the player is never yanked
+# mid-read. immediate=true interrupts (alarms) — a durability outage does not
+# wait politely behind a paragraph of village prose.
+#
+# A new line resets the burst counter so it gets the 5-scroll attention burst.
+func _show(text: String, immediate: bool) -> void:
     if text == _active_line:
         return
-    if _scrolling:
+    if _scrolling and not immediate:
         _pending_line = text
         return
     _active_line = text
@@ -197,11 +251,16 @@ func _on_scroll_finished() -> void:
     if _active_line == "":
         _label.text = ""
         return
-    # Schedule the next re-scroll. First BURST_COUNT scrolls fire at
-    # the 3-minute interval; everything after is the slow heartbeat.
+    # Schedule the next re-scroll. An alarm re-scrolls on its own fixed interval
+    # for as long as it fires — it must never decay into the 15-minute heartbeat,
+    # which is a fine cadence for weather prose and a terrible one for "the world
+    # is not being saved". Otherwise: first BURST_COUNT scrolls at the 3-minute
+    # interval, everything after on the slow heartbeat.
     _burst_done += 1
     var delay: float
-    if _burst_done < BURST_COUNT:
+    if _alarm_line != "" and _active_line == _alarm_line:
+        delay = ALARM_REPEAT_SEC
+    elif _burst_done < BURST_COUNT:
         delay = BURST_INTERVAL_SEC
     else:
         delay = HEARTBEAT_INTERVAL_SEC
@@ -212,3 +271,94 @@ func _on_repeat_timeout() -> void:
     if _active_line == "":
         return
     _start_scroll()
+
+
+# Poll the operator-gated alarm read. Operator-only (Auth.can_edit mirrors the
+# plugins/administer capability the umbilical gate requires), so an ordinary
+# player never issues this request.
+func _fetch_alarms() -> void:
+    if _alarm_http == null:
+        return
+    if not Auth.is_authenticated() or not Auth.can_edit:
+        return
+    var headers: PackedStringArray = Auth.auth_headers(false)
+    var err := _alarm_http.request(Auth.api_base + "/api/village/umbilical/alarms", headers)
+    if err != OK:
+        # ERR_BUSY just means the previous poll is still in flight — skip this
+        # cycle; the next tick picks it up.
+        return
+
+
+func _on_alarms_completed(_result: int, code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
+    # Fail SILENT on anything but a clean 200: the umbilical may be disabled
+    # (404), the session may not be an operator (403), or the engine may be
+    # briefly unreachable. None of those is an alarm, and none of them should be
+    # allowed to disturb the atmosphere line.
+    if code != 200:
+        _apply_alarms([])
+        return
+    var json = JSON.parse_string(body.get_string_from_utf8())
+    if typeof(json) != TYPE_DICTIONARY:
+        _apply_alarms([])
+        return
+    var raw = json.get("alarms", [])
+    if typeof(raw) != TYPE_ARRAY:
+        _apply_alarms([])
+        return
+    _apply_alarms(raw)
+
+
+# Fold the firing alarms into one red band line, or hand the band back to the
+# atmosphere when nothing is firing. The engine already renders each alarm as a
+# plain-English sentence (Alarm.detail) — the client does not restate the
+# diagnosis, it just carries it.
+func _apply_alarms(alarms: Array) -> void:
+    if _label == null:
+        return
+
+    var parts: PackedStringArray = PackedStringArray()
+    for entry in alarms:
+        if typeof(entry) != TYPE_DICTIONARY:
+            continue
+        var detail: String = ""
+        var raw_detail = entry.get("detail", "")
+        if typeof(raw_detail) == TYPE_STRING:
+            detail = raw_detail
+        if detail == "":
+            var raw_kind = entry.get("kind", "")
+            if typeof(raw_kind) == TYPE_STRING:
+                detail = raw_kind
+        if detail == "":
+            continue
+        parts.append(detail)
+
+    if parts.is_empty():
+        _clear_alarm()
+        return
+
+    var line: String = "*** ENGINE ALARM — " + " | ".join(parts) + " ***"
+    if line == _alarm_line:
+        return
+    _alarm_line = line
+    _label.add_theme_color_override("font_color", COLOR_ALARM)
+    _show(line, true)
+
+
+func _clear_alarm() -> void:
+    if _alarm_line == "":
+        return
+    _alarm_line = ""
+    _label.add_theme_color_override("font_color", COLOR_ATMOSPHERE)
+    if _atmosphere_line != "":
+        # Immediate, not courteous: the colour has already flipped back to the
+        # atmosphere tone, so letting the resolved alarm finish its scroll would
+        # paint red text in amber. Nothing is on fire — swap now.
+        _show(_atmosphere_line, true)
+        return
+    # Nothing to fall back to (the atmosphere cascade hasn't produced prose yet).
+    # Blank the band rather than leaving a resolved alarm scrolling forever.
+    _active_line = ""
+    _pending_line = ""
+    _scrolling = false
+    _repeat_timer.stop()
+    _label.text = ""

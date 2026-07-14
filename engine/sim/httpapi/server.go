@@ -431,12 +431,16 @@ func (s *Server) Handler() http.Handler {
 	// control is ALSO enabled (UMBILICAL_CONTROL_ENABLED), so read-only is the
 	// default even with the umbilical on. Every route is requireOperator-gated;
 	// the control routes are additionally audited (see umbilical_control.go).
+	//
+	// withAlarmBanner sits INSIDE requireOperator so a firing critical-health alarm
+	// rides out on every umbilical response (LLM-394) but is never disclosed to an
+	// unauthenticated or non-operator caller. It is a strict no-op while healthy.
 	if s.telemetry != nil {
 		for _, rt := range s.umbilicalRoutes() {
 			if rt.control && !s.controlEnabled {
 				continue
 			}
-			mux.HandleFunc(rt.method+" "+rt.path, s.requireOperator(rt.handler))
+			mux.HandleFunc(rt.method+" "+rt.path, s.requireOperator(s.withAlarmBanner(rt.handler)))
 		}
 	}
 	// Wrap the whole mux so every non-2xx response (incl. no-route 404s and auth
