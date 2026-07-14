@@ -77,6 +77,20 @@ func setConversationSince(t *testing.T, w *sim.World, id sim.HuddleID, at time.T
 	}})
 }
 
+// huddleLoopingReason reads the latched onset cause off the world goroutine.
+func huddleLoopingReason(t *testing.T, w *sim.World, id sim.HuddleID) string {
+	t.Helper()
+	v := sendT(t, w, sim.Command{Fn: func(world *sim.World) (any, error) {
+		h, ok := world.Huddles[id]
+		if !ok || h == nil {
+			return "", nil
+		}
+		return h.LoopingReason, nil
+	}})
+	s, _ := v.(string)
+	return s
+}
+
 // lingeringSteer reports whether the published snapshot is currently asking this
 // actor to wind the conversation down.
 func lingeringSteer(t *testing.T, w *sim.World, id sim.ActorID) bool {
@@ -308,5 +322,83 @@ func TestLingeringArm_SteerArmsBeforeTheConclude(t *testing.T) {
 	}
 	if huddleConcludedAt(t, w, h) != nil {
 		t.Fatal("the steer must arm WITHOUT anything being concluded — a graceful in-world farewell is the whole point")
+	}
+}
+
+// TestLingeringArm_EnduranceLatchedButLingeringConcluded is the code_review
+// regression: the arms drift over a spell, and the LATCHED reason must not be
+// what decides the carry-over.
+//
+// Sequence: a long conversation arms as endurance (turn budget exhausted, no
+// progress). Then a sale completes — which stamps LastProgressAt and resets the
+// endurance counter, exactly as designed — so the endurance arm goes quiet. But
+// the conversation is still old, still talking, and now only the lingering clock
+// holds it. It concludes under the lingering arm.
+//
+// Under the latched reason ("huddle_loop_endurance") the conclusion would have
+// PRESERVED the carry-over: the clique re-forms seconds later, inherits an
+// already-elapsed conversation clock, and gets cut again one gate later. That
+// sawtooth is the entire defect this ticket removes, and it would have crept
+// straight back in through the latch.
+func TestLingeringArm_EnduranceLatchedButLingeringConcluded(t *testing.T) {
+	w, cancel := buildHuddleTestWorld(t)
+	defer cancel()
+	sink := wireLoopTelemetry(t, w)
+	t0 := time.Now().UTC()
+
+	h := sendT(t, w, sim.JoinHuddle("alice", "tavern", "", t0)).(sim.JoinHuddleResult).HuddleID
+	sendT(t, w, sim.JoinHuddle("bob", "tavern", "", t0))
+	// Endurance budget low enough to arm on the transcript below; wind-down long
+	// past, so both arms are live at onset.
+	sendT(t, w, sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Settings.HuddleLoopTimeout = 3 * time.Minute
+		world.Settings.HuddleLoopRepeatPercent = 60
+		world.Settings.HuddleLoopMaxTurns = 4
+		world.Settings.HuddleConversationWindDown = 12 * time.Minute
+		return nil, nil
+	}})
+	feedTranscript(t, w, h, "alice", "bob", innSceneLines, t0, time.Minute)
+	setConversationSince(t, w, h, t0.Add(-20*time.Minute))
+
+	// Onset: endurance latches first (precedence puts it above lingering).
+	sendT(t, w, sim.EvaluateHuddleLoopSweep(t0))
+	if got := huddleLoopingReason(t, w, h); got != "huddle_loop_endurance" {
+		t.Fatalf("precondition: onset reason = %q, want huddle_loop_endurance", got)
+	}
+
+	// A sale lands mid-conversation: progress stamped, endurance counter reset.
+	// The conversation keeps going, and is now held ONLY by the lingering clock.
+	t1 := t0.Add(3 * time.Minute)
+	sendT(t, w, sim.Command{Fn: func(world *sim.World) (any, error) {
+		hh := world.Huddles[h]
+		hh.LastProgressAt = t1.Add(-time.Minute)
+		hh.TurnsSinceProgress = 0
+		return nil, nil
+	}})
+	appendUtterance(t, w, h, "alice", "That's a fine bowl of porridge, Hannah — my thanks.", t1.Add(-10*time.Second))
+
+	sendT(t, w, sim.EvaluateHuddleLoopSweep(t1))
+	if huddleConcludedAt(t, w, h) == nil {
+		t.Fatal("the conversation should still conclude — the lingering clock is armed even though endurance went quiet")
+	}
+
+	// Filed under the arm that ACTUALLY fired, not the stale latch.
+	for _, rec := range sink.snapshot() {
+		if rec.Kind != "stuck" {
+			continue
+		}
+		if got := rec.Detail["reason"]; got != "conversation_lingering" {
+			t.Errorf("telemetry reason = %q, want conversation_lingering — endurance stopped holding this conversation before it was concluded", got)
+		}
+	}
+
+	// And the carry-over is DROPPED, so the clique doesn't resume into a sawtooth.
+	reform := t1.Add(30 * time.Second)
+	h2 := sendT(t, w, sim.JoinHuddle("alice", "tavern", "", reform)).(sim.JoinHuddleResult).HuddleID
+	if got := huddleConversationSince(t, w, h2); !got.Equal(reform) {
+		t.Errorf("ConversationSince after the conclude = %v, want a fresh clock at %v — a stale latch must not preserve a carry-over the lingering verdict drops", got, reform)
+	}
+	if ring := huddleRing(t, w, h2); len(ring) != 0 {
+		t.Errorf("carried ring after the conclude = %d utterances, want 0", len(ring))
 	}
 }

@@ -200,6 +200,35 @@ func effectiveHuddleConversationWindDown(s WorldSettings) time.Duration {
 	return HuddleConversationWindDownDefault
 }
 
+// concludeReason names the arm a conclusion should be filed under, given the
+// LATCHED onset cause and which pathology arm (if any) is armed at conclusion.
+//
+// The rule that matters: **no pathology armed means the clock is what ended this
+// conversation**, whatever caught it first. That verdict is not just a label — it
+// decides whether the structure's carry-over is dropped, so getting it from the
+// stale latch instead of the live arms is a correctness bug, not a cosmetic one
+// (code_review): an endurance spell whose counter a sale later reset, on a
+// conversation now old enough to linger, concludes under the lingering arm — and
+// under the latch it would have PRESERVED the ring, re-formed the clique, and
+// sawtoothed. Which is the bug this ticket exists to remove.
+//
+// Otherwise the latched cause wins (LLM-333: the record should name the detector
+// that CAUGHT the incident, not a re-diagnosis — the arms drift over a spell).
+// Two exceptions: the ledger arm always announces itself, so a mixed
+// chatty+transactional loop can't hide its ledger shape (it comes in as the
+// pathology, which already takes precedence); and a spell latched by the CLOCK
+// that a genuine pathology later concludes is filed under the pathology — the
+// conversation turned out to be broken, and the record should say which way.
+func concludeReason(latched, pathology string) string {
+	if pathology == "" {
+		return huddleLoopReasonLingering
+	}
+	if latched == "" || latched == huddleLoopReasonLingering {
+		return pathology
+	}
+	return latched
+}
+
 // hardConcludeSeconds is when a lingering conversation is actually ended: the
 // wind-down window plus the persistence gate the members get to close it
 // themselves. 0 when the sweep is disabled — there is then no hard conclude at
@@ -340,6 +369,16 @@ func EvaluateHuddleLoopSweep(now time.Time) Command {
 			// nowhere, which is the opposite verdict from "leave this deal alone."
 			commerceHuddles := ledgerCommerceHuddles(w)
 			var looping []HuddleID
+			// LLM-397: which PATHOLOGY arm (if any) is actually armed at the moment
+			// each huddle is collected. Recorded here because the conclude pass below
+			// runs after the scan, and the answer decides two things: the telemetry
+			// reason, and — the load-bearing one — whether the carry-over is dropped.
+			// The latched onset reason cannot be trusted for that: an endurance spell
+			// whose counter is later reset by a sale, on a conversation now old enough
+			// to be lingering, would conclude under the lingering arm while still
+			// latched "huddle_loop_endurance" — and preserve exactly the carry-over
+			// the lingering conclude exists to drop (code_review).
+			pathologyArmed := make(map[HuddleID]string)
 			for id, h := range w.Huddles {
 				if h == nil || h.ConcludedAt != nil {
 					continue
@@ -411,11 +450,22 @@ func EvaluateHuddleLoopSweep(now time.Time) Command {
 				// steer arms on, so the gentle nudge and this destructive conclude
 				// stay coupled.
 				_, ledgerArmed := ledgerArmedHuddles[id]
-				if now.Sub(*h.LoopingSince) >= timeout &&
-					(huddleLoopArmed(w.Settings, h, now) || ledgerArmed ||
-						huddleEnduranceArmed(w.Settings, h, now) ||
-						(lingeringPresent && huddleNewestUtteranceLive(h, now))) {
+				// The pathology arms that are LIVE right now, in the same precedence
+				// the reason tag uses. Empty means nothing is wrong with this
+				// conversation — only the clock is firing.
+				pathology := ""
+				switch {
+				case ledgerArmed:
+					pathology = "huddle_loop_ledger"
+				case huddleLoopArmed(w.Settings, h, now):
+					pathology = "huddle_loop"
+				case huddleEnduranceArmed(w.Settings, h, now):
+					pathology = "huddle_loop_endurance"
+				}
+				lingeringArmed := lingeringPresent && huddleNewestUtteranceLive(h, now)
+				if now.Sub(*h.LoopingSince) >= timeout && (pathology != "" || lingeringArmed) {
 					looping = append(looping, id)
+					pathologyArmed[id] = pathology
 				}
 			}
 			if len(looping) == 0 {
@@ -430,22 +480,7 @@ func EvaluateHuddleLoopSweep(now time.Time) Command {
 					continue
 				}
 				// Telemetry BEFORE conclude — concludeHuddleInner clears Members.
-				// The reason is the LATCHED onset cause (h.LoopingReason) so the
-				// record names the arm that actually caught the incident, not a
-				// re-diagnosis at conclude time. One override: tag
-				// "huddle_loop_ledger" whenever the transactional arm (LLM-309) is
-				// armed at conclusion, so the ledger shape is never hidden in a
-				// mixed chatty+transactional loop; the per-record `utterances`
-				// count still distinguishes a truly silent loop (0) from a mixed
-				// one (>0). "huddle_loop_endurance" (LLM-333) marks an incident only
-				// the turn budget could see, keeping paraphrase-loop kills separable.
-				reason := h.LoopingReason
-				if _, ok := ledgerArmedHuddles[id]; ok {
-					reason = "huddle_loop_ledger"
-				}
-				if reason == "" {
-					reason = "huddle_loop"
-				}
+				reason := concludeReason(h.LoopingReason, pathologyArmed[id])
 				emitHuddleLoopTelemetry(w, h, now, reason)
 				// Member set BEFORE conclude, for the post-conclude warrant clear.
 				members := make([]ActorID, 0, len(h.Members))
