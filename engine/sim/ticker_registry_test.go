@@ -144,7 +144,7 @@ func tickerCallNames(t *testing.T, root string, methods ...string) map[string]st
 			if !ok || !want[sel.Sel.Name] {
 				return true
 			}
-			name, ok := tickerNameArg(call.Args[0], file.Name.Name, consts)
+			name, ok := tickerNameArg(call.Args[0], file.Name.Name, importedPackages(file), consts)
 			if !ok {
 				// A name this scan cannot resolve (a variable, a computed string) would
 				// make its ticker invisible to the guard — which is precisely the blind
@@ -164,12 +164,41 @@ func tickerCallNames(t *testing.T, root string, methods ...string) map[string]st
 	return found
 }
 
+// importedPackages maps each import QUALIFIER used in a file to the package name it
+// actually refers to — the alias when one is given, otherwise the last path segment.
+//
+// Resolved from the file's own imports rather than assuming qualifier == package
+// name, so an aliased import (`import simalias ".../engine/sim"`) resolves to `sim`
+// instead of falling through as an unknown package. Assuming they match would leave
+// the guard's correctness resting on a comment that nothing enforces — and a comment
+// that goes stale takes the guard with it, silently.
+func importedPackages(file *ast.File) map[string]string {
+	out := make(map[string]string, len(file.Imports))
+	for _, imp := range file.Imports {
+		path, err := strconv.Unquote(imp.Path.Value)
+		if err != nil {
+			continue
+		}
+		pkg := path
+		if i := strings.LastIndex(path, "/"); i >= 0 {
+			pkg = path[i+1:]
+		}
+		qualifier := pkg
+		if imp.Name != nil {
+			qualifier = imp.Name.Name
+		}
+		out[qualifier] = pkg
+	}
+	return out
+}
+
 // tickerNameArg resolves one ticker-name argument: a string literal directly, a
 // bare const identifier (resolved in the CALLER'S OWN package — a bare ident cannot
-// refer to anything else), or a qualified `pkg.Name` const (resolved in the named
-// package). A name that resolves in neither is reported unresolvable, so it fails
-// the scan rather than silently dropping a ticker out of the coverage sets.
-func tickerNameArg(arg ast.Expr, pkg string, consts map[string]map[string]string) (string, bool) {
+// refer to anything else), or a qualified `pkg.Name` const (resolved through the
+// file's imports to the declaring package). A name that resolves nowhere is reported
+// unresolvable, so it fails the scan loudly rather than silently dropping a ticker
+// out of the coverage sets — which would be the guard un-guarding itself.
+func tickerNameArg(arg ast.Expr, pkg string, imports map[string]string, consts map[string]map[string]string) (string, bool) {
 	switch a := arg.(type) {
 	case *ast.BasicLit:
 		if a.Kind != token.STRING {
@@ -184,14 +213,15 @@ func tickerNameArg(arg ast.Expr, pkg string, consts map[string]map[string]string
 		v, ok := consts[pkg][a.Name]
 		return v, ok
 	case *ast.SelectorExpr:
-		// The qualifier is an import name (package `sim` is imported as `sim`
-		// everywhere in this tree — no aliasing), so it keys the package table
-		// directly.
 		x, ok := a.X.(*ast.Ident)
 		if !ok {
 			return "", false
 		}
-		v, ok := consts[x.Name][a.Sel.Name]
+		declaring, ok := imports[x.Name]
+		if !ok {
+			return "", false
+		}
+		v, ok := consts[declaring][a.Sel.Name]
 		return v, ok
 	}
 	return "", false

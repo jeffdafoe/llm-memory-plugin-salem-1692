@@ -440,9 +440,14 @@ func tickerStaleAlarm(entries []sim.TickerHealthEntry, world worldVerdict, now t
 		// Every ticker that depends on the world is stale, and yet the world is
 		// answering its liveness probe. That REMOVES the obvious suspect, which is
 		// the single most useful thing this sentence can do at 3am.
+		// Scoped precisely to what the probe measured: the command PATH is answering.
+		// That rules out a wedged command loop; it does NOT certify the world as
+		// healthy, and the sentence must not drift into saying so — every ticker in
+		// the engine being dead is not a healthy world by any reading.
 		detail += ". EVERY world-dependent ticker is stale, and yet the world command loop IS completing " +
-			"its liveness probes — so this is NOT a wedged world. Suspect the process itself (scheduler " +
-			"starvation, a GC death spiral) or the ticker goroutines, and check /umbilical/world-command-health"
+			"its liveness probes — so this is NOT a wedged world COMMAND LOOP, whatever else is wrong. " +
+			"Suspect the process itself (scheduler starvation, a GC death spiral) or the ticker goroutines, " +
+			"and check /umbilical/world-command-health"
 	}
 	detail += ". See /umbilical/ticker-health for per-ticker detail."
 

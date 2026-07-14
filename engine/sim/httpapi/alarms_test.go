@@ -117,7 +117,7 @@ func TestTickerStaleAlarm_AllStaleWithAHealthyWorldExoneratesTheWorldLoop(t *tes
 	if !strings.Contains(a.Detail, "EVERY world-dependent ticker is stale") {
 		t.Errorf("Detail does not call out the all-stale case: %s", a.Detail)
 	}
-	if !strings.Contains(a.Detail, "is NOT a wedged world") {
+	if !strings.Contains(a.Detail, "is NOT a wedged world COMMAND LOOP") {
 		t.Errorf("Detail does not exonerate the world loop when the probe is landing: %s", a.Detail)
 	}
 	// Capped at tickerStaleNamesInDetail (8) of the 10, with the remainder summarised
@@ -143,7 +143,7 @@ func TestTickerStaleAlarm_DefersToTheWorldCommandAlarmWhenItIsFiring(t *testing.
 	if !strings.Contains(a.Detail, "CONFIRMED STALLED") {
 		t.Errorf("Detail does not defer to the measured cause: %s", a.Detail)
 	}
-	if strings.Contains(a.Detail, "is NOT a wedged world") {
+	if strings.Contains(a.Detail, "is NOT a wedged world COMMAND LOOP") {
 		t.Errorf("Detail exonerates the world loop while the probe is timing out: %s", a.Detail)
 	}
 }
@@ -893,7 +893,7 @@ func TestTickerStaleAlarm_ADeadProberConfirmsAndExoneratesNothing(t *testing.T) 
 	if strings.Contains(a.Detail, "CONFIRMED") {
 		t.Errorf("Detail confirms a cause with a dead instrument: %s", a.Detail)
 	}
-	if strings.Contains(a.Detail, "is NOT a wedged world") {
+	if strings.Contains(a.Detail, "is NOT a wedged world COMMAND LOOP") {
 		t.Errorf("Detail exonerates the world loop off a frozen reading: %s", a.Detail)
 	}
 	if !strings.Contains(a.Detail, "liveness prober is dead") {
