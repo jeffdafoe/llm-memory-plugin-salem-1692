@@ -10,7 +10,7 @@ import (
 
 // self_actions_test.go — LLM-217 "## What you've recently done" edges the
 // golden scenario doesn't isolate: the window cutoff, the line cap, the
-// prior-huddle spoke inclusion, and the agoPhrase buckets.
+// prior-huddle spoke inclusion, and the AgoPhrase buckets.
 
 func selfActionsFixture(published time.Time, log []sim.ActionLogEntry, currentHuddle sim.HuddleID) (*sim.Snapshot, *sim.ActorSnapshot) {
 	subject := &sim.ActorSnapshot{
@@ -142,17 +142,29 @@ func TestAgoPhraseBuckets(t *testing.T) {
 		{90 * time.Second, "1m ago"},
 		{59 * time.Minute, "59m ago"},
 		{time.Hour, "1h ago"},
-		{25 * time.Hour, "25h ago"},
+		{23 * time.Hour, "23h ago"},
+		// Long scales (LLM-390): prose past a day, for the recall memory-age
+		// framing. Duration-based buckets, not calendar days.
+		{25 * time.Hour, "a day ago"},
+		{49 * time.Hour, "two days ago"},
+		{6*24*time.Hour + time.Hour, "six days ago"},
+		{8 * 24 * time.Hour, "a week ago"},
+		{15 * 24 * time.Hour, "two weeks ago"},
+		{29 * 24 * time.Hour, "four weeks ago"},
+		{45 * 24 * time.Hour, "a month ago"},
+		{90 * 24 * time.Hour, "three months ago"},
+		{360 * 24 * time.Hour, "twelve months ago"},
+		{400 * 24 * time.Hour, "over a year ago"},
 	}
 	for _, c := range cases {
-		if got := agoPhrase(now.Add(-c.before), now); got != c.want {
-			t.Errorf("agoPhrase(%v before now) = %q, want %q", c.before, got, c.want)
+		if got := AgoPhrase(now.Add(-c.before), now); got != c.want {
+			t.Errorf("AgoPhrase(%v before now) = %q, want %q", c.before, got, c.want)
 		}
 	}
-	if got := agoPhrase(time.Time{}, now); got != "" {
+	if got := AgoPhrase(time.Time{}, now); got != "" {
 		t.Errorf("zero At must yield no stamp, got %q", got)
 	}
-	if got := agoPhrase(now, time.Time{}); got != "" {
+	if got := AgoPhrase(now, time.Time{}); got != "" {
 		t.Errorf("zero renderedAt must yield no stamp, got %q", got)
 	}
 }

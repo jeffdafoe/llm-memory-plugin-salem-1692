@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 // TestSearchMemory verifies the /v1/memory/search request shape (path, bearer
@@ -20,7 +21,7 @@ func TestSearchMemory(t *testing.T) {
 		body, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(body, &gotReq)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"results":[{"source_file":"people/bea","heading":"Bea","chunk_text":"runs the bakery","namespace":"salem-john","similarity":0.9,"chunk_count":2}]}`)
+		_, _ = io.WriteString(w, `{"results":[{"source_file":"people/bea","heading":"Bea","chunk_text":"runs the bakery","namespace":"salem-john","similarity":0.9,"chunk_count":2,"created_at":"2026-07-11T02:34:56.789Z"}]}`)
 	}))
 	defer srv.Close()
 
@@ -44,6 +45,38 @@ func TestSearchMemory(t *testing.T) {
 	h := hits[0]
 	if h.SourceFile != "people/bea" || h.ChunkText != "runs the bakery" || h.Namespace != "salem-john" || h.ChunkCount != 2 {
 		t.Errorf("hit = %+v", h)
+	}
+	if want := time.Date(2026, 7, 11, 2, 34, 56, 789000000, time.UTC); !h.CreatedAt.Equal(want) {
+		t.Errorf("CreatedAt = %v, want %v", h.CreatedAt, want)
+	}
+}
+
+// TestSearchMemory_CreatedAtLiberalDecode — created_at is nice-to-have age
+// context (LLM-390); a null, absent, or malformed value must decode to the
+// zero time, never fail the whole search (the LLM-379 failure mode).
+func TestSearchMemory_CreatedAtLiberalDecode(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"results":[
+			{"source_file":"a","chunk_text":"x","namespace":"ns","similarity":0.9,"chunk_count":1,"created_at":null},
+			{"source_file":"b","chunk_text":"y","namespace":"ns","similarity":0.8,"chunk_count":1},
+			{"source_file":"c","chunk_text":"z","namespace":"ns","similarity":0.7,"chunk_count":1,"created_at":"not-a-timestamp"}
+		]}`)
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "k")
+	hits, err := c.SearchMemory(context.Background(), "ns", "q", "", 5)
+	if err != nil {
+		t.Fatalf("SearchMemory with odd created_at values: %v", err)
+	}
+	if len(hits) != 3 {
+		t.Fatalf("hits len = %d, want 3 (odd created_at must not fail the decode)", len(hits))
+	}
+	for i, h := range hits {
+		if !h.CreatedAt.IsZero() {
+			t.Errorf("hit %d CreatedAt = %v, want zero (unknown)", i, h.CreatedAt)
+		}
 	}
 }
 

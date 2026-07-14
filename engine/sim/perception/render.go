@@ -1827,7 +1827,7 @@ func renderRecentConversation(b *strings.Builder, lines []UtteranceView, rendere
 	for _, u := range lines {
 		text, _ := sanitizeText(u.Text, 0)
 		said := "said"
-		if stamp := agoPhrase(u.At, renderedAt); stamp != "" {
+		if stamp := AgoPhrase(u.At, renderedAt); stamp != "" {
 			said = "said (" + stamp + ")"
 		}
 		if u.IsSelf {
@@ -1843,16 +1843,23 @@ func renderRecentConversation(b *strings.Builder, lines []UtteranceView, rendere
 	b.WriteString("\n")
 }
 
-// agoPhrase renders how long before now `at` happened, in the coarse buckets a
+// AgoPhrase renders how long before now `at` happened, in the coarse buckets a
 // prompt line needs: "just now" inside 15s, whole seconds under 90s, then whole
-// minutes, then whole hours. Returns "" when either clock is zero (hand-built
+// minutes, then whole hours under a day. Past a day (LLM-390) the buckets go
+// prose — "a day ago", "two days ago", "a week ago", "a month ago" — because
+// the long scales read inside sentences (recall's "From two days ago — <topic>")
+// where "49h ago" would not. Duration-based, not calendar-based: "a day ago" is
+// 24–48h elapsed, which can differ by one from the calendar-day count around
+// midnight — acceptable at this granularity, and it keeps the helper free of
+// the village timezone. Returns "" when either clock is zero (hand-built
 // test payloads) — callers drop the stamp rather than show a bogus interval.
-// LLM-217.
-func agoPhrase(at, now time.Time) string {
+// LLM-217. Exported for the recall tool's memory-age framing (LLM-390).
+func AgoPhrase(at, now time.Time) string {
 	if at.IsZero() || now.IsZero() {
 		return ""
 	}
 	d := now.Sub(at)
+	day := 24 * time.Hour
 	switch {
 	case d < 15*time.Second:
 		// Covers negative deltas too: an At a hair after the snapshot's
@@ -1863,9 +1870,37 @@ func agoPhrase(at, now time.Time) string {
 		return fmt.Sprintf("%ds ago", int(d/time.Second))
 	case d < time.Hour:
 		return fmt.Sprintf("%dm ago", int(d/time.Minute))
-	default:
+	case d < day:
 		return fmt.Sprintf("%dh ago", int(d/time.Hour))
+	case d < 2*day:
+		return "a day ago"
+	case d < 7*day:
+		return countWord(int(d/day)) + " days ago"
+	case d < 14*day:
+		return "a week ago"
+	case d < 30*day:
+		return countWord(int(d/(7*day))) + " weeks ago"
+	case d < 60*day:
+		return "a month ago"
+	case d < 365*day:
+		return countWord(int(d/(30*day))) + " months ago"
+	default:
+		return "over a year ago"
 	}
+}
+
+// countWord spells out the small counts the AgoPhrase prose buckets produce
+// (2–12 covers every reachable value: days cap at 6, weeks at 4, months at 12).
+// Falls back to digits defensively.
+func countWord(n int) string {
+	words := map[int]string{
+		2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven",
+		8: "eight", 9: "nine", 10: "ten", 11: "eleven", 12: "twelve",
+	}
+	if w, ok := words[n]; ok {
+		return w
+	}
+	return fmt.Sprintf("%d", n)
 }
 
 // renderSelfActions writes the "## What you've recently done" section (LLM-217)
@@ -1893,7 +1928,7 @@ func renderSelfActions(b *strings.Builder, actions []SelfActionView, renderedAt 
 			b.WriteString("Most recent first.\n")
 			wrote = true
 		}
-		if stamp := agoPhrase(a.At, renderedAt); stamp != "" {
+		if stamp := AgoPhrase(a.At, renderedAt); stamp != "" {
 			fmt.Fprintf(b, "- %s (%s)\n", line, stamp)
 			continue
 		}
@@ -3099,7 +3134,7 @@ func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(
 	// shelve-delayed, or slept-through warrant can be minutes-to-hours old by the
 	// time it renders, and the batch semantics ARE "what accumulated since you last
 	// acted" — the header shouldn't promise a recency the queue can't guarantee.
-	// The per-line agoPhrase stamp below carries the actual staleness.
+	// The per-line AgoPhrase stamp below carries the actual staleness.
 	b.WriteString("## Since your last turn\n")
 	if len(warrants) == 0 {
 		b.WriteString("(nothing specific — this is a routine check-in)\n")
@@ -3121,9 +3156,9 @@ func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(
 		// Interval-stamp each signal against the render clock (LLM-316), the
 		// LLM-217 treatment the conversation ring and self-action trail already
 		// get: a carried-forward or shelve-delayed warrant renders honestly as
-		// "(4m ago)" instead of masquerading as fresh. agoPhrase returns "" for
+		// "(4m ago)" instead of masquerading as fresh. AgoPhrase returns "" for
 		// zero clocks (hand-built payloads / unstamped metas) — no stamp then.
-		if stamp := agoPhrase(w.OccurredAt, renderedAt); stamp != "" {
+		if stamp := AgoPhrase(w.OccurredAt, renderedAt); stamp != "" {
 			line = strings.TrimSuffix(line, "\n") + " (" + stamp + ")\n"
 		}
 		if sectionBytes+len(line) > cfg.MaxSectionBytes && i > 0 {
