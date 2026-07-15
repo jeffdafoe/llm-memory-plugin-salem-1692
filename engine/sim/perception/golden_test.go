@@ -452,6 +452,55 @@ func TestGoldensNoCoPresentBuyGoadAfterTwoDeclines(t *testing.T) {
 	}
 }
 
+// TestGoldensRestockCueNeverHoldsOffOnLowStock is the LLM-424 cross-scenario invariant:
+// every item in the "## Restocking" section is by definition below its reorder point, so
+// the section must NEVER tell such a keeper to hold off buying on flow-velocity grounds —
+// the old LLM-385 "restocking faster than it sells, so buy sparingly, if at all" overstock
+// steer read exactly backwards on a sold-out, self-consumed line (the live Josiah cheese
+// confabulation, where the model invented phantom unsold stock to reconcile an empty shelf
+// against a "you're overstocked" cue). No rendered scenario may carry that hold-off.
+// Non-vacuous: at least one scenario must render the self-use accounting that replaced it
+// ("used or traded the rest"), so the check proves the reframed path is exercised, not
+// merely that a phrase nobody emits is absent. True coin-poor overstock is a separate,
+// Conserve-mode steer and is unaffected.
+func TestGoldensRestockCueNeverHoldsOffOnLowStock(t *testing.T) {
+	var exercised bool
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		section := restockingSection(renderScenario(sc))
+		if section == "" {
+			continue // no "## Restocking" cue in this scenario — invariant N/A
+		}
+		if strings.Contains(section, "buy sparingly") || strings.Contains(section, "restocking faster than it sells") {
+			t.Errorf("scenario %q: the '## Restocking' cue holds off buying on a low-stock item (LLM-424):\n%s", sc.name, section)
+		}
+		if strings.Contains(section, "used or traded the rest") {
+			exercised = true
+		}
+	}
+	if !exercised {
+		t.Error("matrix must exercise a scenario whose '## Restocking' cue renders the self-use accounting (LLM-424 'used or traded the rest')")
+	}
+}
+
+// restockingSection returns the body of the "## Restocking" section of a rendered
+// prompt — from its header to the next "## " header (or end of prompt) — or "" when the
+// prompt has no such section. Scoping the LLM-424 invariant to this slice keeps a phrase
+// in an unrelated section from either false-failing the hold-off check or vacuously
+// satisfying the self-use non-vacuity guard (code_review).
+func restockingSection(prompt string) string {
+	const header = "## Restocking\n"
+	i := strings.Index(prompt, header)
+	if i < 0 {
+		return ""
+	}
+	body := prompt[i+len(header):]
+	if j := strings.Index(body, "\n## "); j >= 0 {
+		return body[:j]
+	}
+	return body
+}
+
 // TestGoldensEnRouteWorkerNotOfferedNewWork is the LLM-229 cross-scenario
 // invariant: whenever the subject is a WORKER relocating to an accepted job (an
 // EnRoute LaborOffer with the subject as worker), the rendered prompt must offer
@@ -1506,15 +1555,29 @@ var perceptionScenarios = []perceptionScenario{
 	},
 	{
 		name: "distributor_overbuying_below_resale",
-		summary: "LLM-385 buy-side: a reseller (Josiah) low on milk with a walk-to supplier (Ellis Farm), whose OWN " +
-			"books show the two leaks the pre-LLM-385 '## Restocking' cue could not flag. He resells milk at ~1 coin " +
+		summary: "LLM-385/LLM-424 buy-side: a reseller (Josiah) low on milk with a walk-to supplier (Ellis Farm), whose OWN " +
+			"books show the two things the pre-LLM-385 '## Restocking' cue could not flag. He resells milk at ~1 coin " +
 			"(seller ring: 9 units for 12 coins) while the going rate is ALSO ~1, so the buying-in anchor now names the " +
 			"resale CEILING ('You resell it for about 1 coin each — pay more than that and you lose coin on every one') " +
 			"beside the market rate — the distributor's binding number the market-only anchor never surfaced. And he " +
-			"bought 35 milk this week but sold only 9, so the over-buying steer fires ('restocking faster than it sells, " +
-			"so buy sparingly, if at all') — the QUANTITY guard beside the PRICE guard. Solo (no huddle), so the " +
-			"wares-fetch cue stays out and the section under test renders cleanly.",
+			"bought 35 milk this week but sold only 9, so the self-use accounting fires ('bought about 35 of these this " +
+			"past week, sold only 9, and used or traded the rest') — the LLM-424 honest reframe that replaced the " +
+			"backwards 'buy sparingly' hold-off, since an item below its reorder point has not piled up on the shelf. " +
+			"Solo (no huddle), so the wares-fetch cue stays out and the section under test renders cleanly.",
 		build: distributorOverbuyingBelowResale,
+	},
+	{
+		name: "keeper_self_consumes_zero_stock",
+		summary: "LLM-424 live case (Josiah Thorne, 2026-07-15): a storekeeper SOLD OUT of cheese (0 on hand, cap 6) who " +
+			"has been buying it far faster than he sells — bought ~25 this week, sold only ~5 — because he grazes his own " +
+			"stock (no engine spoilage, so the buy>>sell gap was consumed or bartered away, not shelved). The pre-LLM-424 " +
+			"cue rendered a self-contradiction: '0 on hand, room for 6' AND the overstock steer 'restocking faster than it " +
+			"sells, so buy sparingly, if at all', and the weak model confabulated '22 still unsold' to reconcile the two, " +
+			"talking itself out of restocking a sold-out line. The golden pins the fix: the honest self-use accounting " +
+			"('bought about 25 of these this past week, sold only 5, and used or traded the rest') AND the normal " +
+			"restock affordance (walk to Ellis Farm), with NO 'buy sparingly' / overstock hold-off. Solo (no huddle), so " +
+			"the wares-fetch cue stays out and the '## Restocking' section renders cleanly.",
+		build: keeperSelfConsumesZeroStock,
 	},
 	{
 		name: "innkeeper_pricing_with_makings_cost",
@@ -9559,6 +9622,84 @@ func distributorOverbuyingBelowResale() (*sim.Snapshot, sim.ActorID, []sim.Warra
 		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
 			{SellerID: josiahID, Item: "milk"}: sellPB,
 			{SellerID: elizID, Item: "milk"}:   buyPB,
+		},
+	}
+	return snap, josiahID, nil
+}
+
+// keeperSelfConsumesZeroStock is the LLM-424 live case: Josiah Thorne, storekeeper,
+// SOLD OUT of cheese (0 of a 6 cap) yet buying it far faster than he sells — bought ~25
+// this week, sold only ~5 — because he eats his own stock (no engine spoilage, so the
+// buy>>sell gap left through non-sale channels). Elizabeth at the farm is a first-hand
+// cheese producer and a walk-to supplier (not co-present), and Josiah's purse covers his
+// ~25-coin last-paid bundle so the farm survives the LLM-216 affordability drop. Drives
+// UsingOwnStock (25 >= 4 and 25 >= 2×5+1 = 11) with a clean restock path, so the golden
+// pins the self-use accounting beside a normal buy cue and the ABSENCE of the old
+// "buy sparingly" hold-off that had the model confabulating phantom unsold stock.
+func keeperSelfConsumesZeroStock() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		josiahID = sim.ActorID("josiah")
+		elizID   = sim.ActorID("elizabeth")
+		store    = sim.StructureID("general_store")
+		farm     = sim.StructureID("ellis_farm")
+	)
+	start, end := 360, 1080 // 06:00-18:00 shopkeeping day
+	now := 720              // 12:00 — on shift at the store
+	published := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
+	josiah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Josiah Thorne",
+		Role:              "storekeeper",
+		State:             sim.StateIdle,
+		WorkStructureID:   store,
+		InsideStructureID: store,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             50, // ≥ the ~25 last-paid bundle, so Ellis Farm survives the affordability drop
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"cheese": 0}, // sold out — 0 of a 6 cap
+		RestockPolicy:     buyPolicy("cheese", 6),
+	}
+	elizabeth := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Elizabeth Ellis",
+		Role:              "farmer",
+		State:             sim.StateIdle,
+		WorkStructureID:   farm,
+		InsideStructureID: farm, // at her farm, NOT co-present with Josiah — a walk-to supplier
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             30,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"cheese": 40},
+		RestockPolicy:     producePolicy("cheese", 40), // first-hand producer (LLM-252)
+	}
+	// Josiah as SELLER of cheese: 5 units for 10 coins → sold ~5 this window.
+	sellPB := sim.NewRingBuffer[sim.PriceObservation](20)
+	sellPB.Push(sim.PriceObservation{BuyerID: "cust", Amount: 10, Qty: 5, Consumers: 1, At: published.Add(-2 * 24 * time.Hour)})
+	// Josiah's in-window PURCHASE from Elizabeth: 25 units for 25 coins → boughtUnits = 25
+	// (UsingOwnStock), and (as Elizabeth's own sales) the observed going-rate anchor = 1.
+	buyPB := sim.NewRingBuffer[sim.PriceObservation](20)
+	buyPB.Push(sim.PriceObservation{BuyerID: josiahID, Amount: 25, Qty: 25, Consumers: 1, At: published.Add(-1 * 24 * time.Hour)})
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{josiahID: josiah, elizID: elizabeth},
+		Structures: map[sim.StructureID]*sim.Structure{
+			store: plainStructure(store, "General Store"),
+			farm:  plainStructure(farm, "Ellis Farm"),
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"cheese": {Name: "cheese", DisplayLabel: "cheese", Category: sim.ItemCategoryFood},
+		},
+		RestockReorderPct: 25,
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"cheese": {OutputItem: "cheese", OutputQty: 1, RateQty: 1, RatePerHours: 1, WholesalePrice: 1, RetailPrice: 2},
+		},
+		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+			{SellerID: josiahID, Item: "cheese"}: sellPB,
+			{SellerID: elizID, Item: "cheese"}:   buyPB,
 		},
 	}
 	return snap, josiahID, nil

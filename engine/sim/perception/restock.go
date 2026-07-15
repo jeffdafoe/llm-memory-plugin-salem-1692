@@ -189,18 +189,26 @@ type RestockItemView struct {
 	RecentBuyCost    int
 
 	// RecentBuyUnits is the units the reseller BOUGHT of this item this window (buyer
-	// view, the unit sibling of RecentBuyCost) and OverBuying flags that it bought
-	// markedly more than it sold — restocking faster than the shop moves the good, so
-	// another fill-to-cap just traps coin in stock that isn't selling (LLM-385, the
-	// live cheese case: 35 bought, 9 sold). buildRestocking sets OverBuying when
-	// RecentBuyUnits >= 4 AND >= 2×RecentSalesUnits+1, which also catches a dead good
-	// it keeps restocking though it sells none. Render surfaces the "buy sparingly"
-	// steer, distinct from the market/resale anchors (those bound the PRICE per unit;
-	// this bounds the QUANTITY). The restock cue only fires when on-hand is below the
-	// reorder point, so the signal is the weekly FLOW imbalance, not the current
-	// on-hand level — a keeper churning stock through non-sale channels still over-buys.
+	// view, the unit sibling of RecentBuyCost) and UsingOwnStock flags that it bought
+	// markedly more than it SOLD. buildRestocking sets it when RecentBuyUnits >= 4 AND
+	// >= 2×RecentSalesUnits+1, which also catches a dead good it keeps restocking though
+	// it sells none. Because the restock cue only fires when on-hand is below the reorder
+	// point (section membership), a large buy>>sell gap has NOT piled up on the shelf: it
+	// left through non-sale channels — the keeper consumed it, used it to make its own wares
+	// (a bought recipe input surfaces here too, via EffectiveBuyEntries), or bartered/gave
+	// it away (a goods trade the coin price book never books as a sale, so it lives entirely
+	// in this residual). Render names that honestly with a verb broad enough to cover all
+	// three ("bought N, sold M, used or traded the rest") — "used", not "consumed", so it
+	// stays true for a production input that went into the pot, not the keeper's mouth.
+	//
+	// This supersedes the LLM-385 "buy sparingly, if at all" over-buying hold-off, which
+	// read exactly backwards here: an item in the restock section is by definition NOT
+	// overstocked, so telling a sold-out, self-consumed line to buy sparingly talked the
+	// model out of restocking — the live Josiah cheese confabulation, where it invented
+	// "22 still unsold" to reconcile a 0-stock shelf against the overstock steer (LLM-424).
+	// True coin-poor overstock is handled section-wide by Conserve, not here.
 	RecentBuyUnits int
-	OverBuying     bool
+	UsingOwnStock  bool
 
 	// kind is the final sort tie-break so two item kinds sharing a display label
 	// order deterministically (BuyEntries order is stable, but the sort makes the
@@ -328,12 +336,16 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 		if salesUnits > 0 {
 			resaleUnit = (salesCoins + salesUnits/2) / salesUnits
 		}
-		// LLM-385: over-buying flag — bought markedly more than it sold this window, so
-		// another fill-to-cap just traps coin in stock that isn't moving (the live cheese
-		// case: 35 bought, 9 sold). Fires at >= twice-sold plus a small floor to avoid
-		// noise on tiny numbers, and covers the sold-nothing case (a dead good it keeps
-		// restocking).
-		overBuying := boughtUnits >= 4 && boughtUnits >= 2*salesUnits+1
+		// LLM-424: buy-outpaces-sell flag — bought markedly more than it SOLD this window.
+		// Since the item is below its reorder point (or it would not be in this section),
+		// that gap did not pile up on the shelf; it left through non-sale channels —
+		// consumed, used to make its own wares, or bartered/given away (a goods trade the
+		// coin price book never books as a sale). Render reframes it as an honest self-use
+		// accounting, superseding the
+		// LLM-385 "buy sparingly" hold-off that read backwards on a sold-out, self-consumed
+		// line. Fires at >= twice-sold plus a small floor to avoid noise on tiny numbers,
+		// and covers the sold-nothing case (a dead good it keeps restocking).
+		usingOwnStock := boughtUnits >= 4 && boughtUnits >= 2*salesUnits+1
 		coName, coID := coPresentSellerForItem(snap, actorID, actorSnap, e.Item)
 		vendors, blocked := findItemVendors(snap, actorID, actorSnap, e.Item)
 		// LLM-308: make the co-present buy imperative situation-aware via the same shared
@@ -391,7 +403,7 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 			RecentSalesCoins:              salesCoins,
 			RecentBuyCost:                 buyCost,
 			RecentBuyUnits:                boughtUnits,
-			OverBuying:                    overBuying,
+			UsingOwnStock:                 usingOwnStock,
 			kind:                          e.Item,
 		})
 	}
@@ -1069,13 +1081,20 @@ func renderRestocking(b *strings.Builder, v *RestockingView) {
 			fmt.Fprintf(b, " You've sold about %d over the past week, at a cost of %d coins and sales of %d coins.",
 				it.RecentSalesUnits, it.RecentBuyCost, it.RecentSalesCoins)
 		}
-		// LLM-385: over-buying steer — bought far more than it sold this window, so
-		// another fill-to-cap just ties coin up in stock that isn't moving. Renders even
-		// when it sold nothing (a dead good it keeps restocking). Bounds the QUANTITY —
-		// the complement to the price anchors above — and carries no "ask"/"price" token
-		// (the HOME-386 speaking-loop guard).
-		if it.OverBuying {
-			fmt.Fprintf(b, " You've bought about %d this past week but sold only %d — you're restocking faster than it sells, so buy sparingly, if at all.",
+		// LLM-424: self-use accounting — bought far more than it SOLD this window, yet an
+		// item in the restock section is below its reorder point, so the gap did not pile
+		// up on the shelf: the keeper consumed it, used it to make its own wares, or
+		// bartered/gave it away (a goods trade the coin price book never books as a sale, so
+		// it sits entirely in this residual). "used or traded" covers all three — "used",
+		// not "consumed", stays true for a production input that went into the pot, not the
+		// keeper's mouth. Name that honestly instead of the LLM-385 "buy sparingly" hold-off,
+		// which read exactly backwards on a sold-out, self-consumed line and talked the model
+		// out of restocking (the live Josiah cheese confabulation: it invented "22 still
+		// unsold" to reconcile a 0-stock shelf against an overstock steer). No "ask"/"price"
+		// token (the HOME-386 speaking-loop guard) and no hold-off imperative — an empty
+		// shelf needs restocking regardless of flow velocity.
+		if it.UsingOwnStock {
+			fmt.Fprintf(b, " You've bought about %d of these this past week, sold only %d, and used or traded the rest.",
 				it.RecentBuyUnits, it.RecentSalesUnits)
 		}
 		// ZBBS-HOME-459: the purse covers fewer units than the cap leaves room for,
