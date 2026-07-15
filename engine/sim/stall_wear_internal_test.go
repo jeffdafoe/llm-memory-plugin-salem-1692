@@ -351,6 +351,10 @@ func TestStallWearPredicates(t *testing.T) {
 	if got := OwnedWearableStall(objects, "nobody"); got != nil {
 		t.Errorf("OwnedWearableStall for a non-owner = %v, want nil", got)
 	}
+	// A stray nil map entry must be skipped, not panic the world goroutine (LLM-417).
+	if got := OwnedWearableStall(map[VillageObjectID]*VillageObject{"nil": nil}, "ezekiel"); got != nil {
+		t.Errorf("OwnedWearableStall over a nil-only map = %v, want nil", got)
+	}
 
 	wDeg := &World{
 		Settings:       WorldSettings{StallWearDegradeThreshold: 600},

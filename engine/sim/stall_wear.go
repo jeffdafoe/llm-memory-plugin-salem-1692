@@ -69,7 +69,9 @@ func OwnedWearableStall(objects map[VillageObjectID]*VillageObject, sellerID Act
 		return nil
 	}
 	for _, obj := range objects {
-		if obj.OwnerActorID == sellerID && IsWearableStall(obj) {
+		// nil-safe: also runs over hand-built perception/test maps where a stray
+		// nil entry must not panic the world (LLM-417; same guard as OwnedHearth).
+		if obj != nil && obj.OwnerActorID == sellerID && IsWearableStall(obj) {
 			return obj
 		}
 	}
