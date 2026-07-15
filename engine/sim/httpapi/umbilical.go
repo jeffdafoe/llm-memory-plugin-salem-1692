@@ -67,7 +67,13 @@ type UmbilicalStateDTO struct {
 	World           WorldStateDTO      `json:"world"`
 	TicksInFlight   int                `json:"ticks_in_flight"`
 	Counts          UmbilicalCountsDTO `json:"counts"`
-	Telemetry       TelemetryStatsDTO  `json:"telemetry"`
+	// CoinSupply is the on-map money-supply gauge (LLM-410): total coin held
+	// across non-decorative actors, split resident vs transient-visitor.
+	// Surfaced here because /state is the daily check-in and the import/export
+	// tier is about to start changing the money supply — this makes the inflow
+	// observable before it moves. Computed off the snapshot, decoratives excluded.
+	CoinSupply sim.CoinSupply    `json:"coin_supply"`
+	Telemetry  TelemetryStatsDTO `json:"telemetry"`
 	// Checkpoint is the durable-checkpoint health summary — surfaced here too
 	// (not just on /checkpoint-health) because /state is the daily check-in
 	// route, and consecutive_failures is the at-a-glance durability signal.
@@ -161,6 +167,7 @@ func umbilicalStateFromSnapshot(s *sim.Snapshot, st telemetry.Stats) UmbilicalSt
 		ActionLog:      len(s.ActionLog),
 		PriceBook:      len(s.PriceBook),
 	}
+	out.CoinSupply = sim.ComputeCoinSupply(s)
 	out.ConfigWarnings = sim.ConfigWarnings(s.VillageObjects)
 	return out
 }
