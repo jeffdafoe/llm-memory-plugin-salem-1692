@@ -1731,6 +1731,22 @@ type HuddleMember struct {
 	// alongside LaboringBystander; empty when the observer is the employer or the
 	// employer can't be resolved (render then omits the name). LLM-231.
 	LaboringForLabel string
+
+	// Eating marks a co-present member who is mid item-dwell (eating or drinking a
+	// bought consumable at an eat-here source right now), set for EVERY observer.
+	// "## Around you" renders it as a busy annotation ("eating porridge") so an
+	// onlooker — a proprietor especially — reads a lingering diner as still at
+	// their meal rather than as someone about to leave, and stops re-issuing
+	// farewells at them (the LLM-416 Inn breakfast farewell storm). Sourced from
+	// the peer's active item DwellCredits, so it clears the moment the meal
+	// finishes. Unlike Laboring it does NOT gate the seller offer/quote cue (an
+	// eater is still a sale target) and does NOT drop them from the speech audience.
+	Eating bool
+
+	// EatingItemLabel is the display label of what the member is eating, woven into
+	// the annotation ("eating porridge"). Set only alongside Eating; empty falls
+	// back to a bare "eating here" in render. LLM-416.
+	EatingItemLabel string
 }
 
 // AnchorsView carries the actor's own home and work structures as standing

@@ -1265,6 +1265,20 @@ func resolveCoPresentMember(snap *sim.Snapshot, subjectID sim.ActorID, subj *sim
 				}
 			}
 		}
+		// LLM-416: surface a co-present member mid item-dwell (eating/drinking a
+		// bought consumable at an eat-here source) as busy-eating in "## Around you",
+		// so an onlooker — a proprietor especially — reads a lingering diner as still
+		// at their meal rather than as someone about to leave, and stops re-issuing
+		// farewells. Reuse buildActiveDwellCredits so the co-location + item/object
+		// gating is identical to the eater's own self-cue and can't drift; take the
+		// first item-source credit (an eater holds one).
+		for _, dc := range buildActiveDwellCredits(snap, peer) {
+			if dc.Source == sim.DwellSourceItem {
+				m.Eating = true
+				m.EatingItemLabel = itemDisplayLabel(snap, dc.Kind)
+				break
+			}
+		}
 		// LLM-370: a co-present transient traveler is named by archetype + origin in
 		// "## Around you" while the observer doesn't yet know them by name.
 		if peer.VisitorState != nil {

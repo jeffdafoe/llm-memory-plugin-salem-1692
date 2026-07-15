@@ -345,8 +345,26 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// nag too. The nag is reply-pressure, and reply-pressure is what keeps a scene
 	// that should be ending alive for another beat.
 	conversationLingering := p.TurnState.ConversationLingering
+	// LLM-416: an actor mid item-dwell (eating a bought meal at an eat-here source)
+	// is mechanically pinned — its dwell self-cue says leaving now wastes the food
+	// and leaves it hungry (DwellStayClause). The run-long and lingering codas below
+	// tell it to bring the talk to a close / turn to its own affairs — advice it
+	// cannot follow, so it emits a fresh farewell every tick instead of eating in
+	// silence (the live Inn breakfast farewell storm, 2026-07-15). Suppress those
+	// two leave codas while pinned so the coda falls through to the wait/decision
+	// codas, which permit a silent done(). Item dwells only: object dwells (well,
+	// shade tree) are open-ended with no waste-on-leave pin, so an actor resting
+	// there may still be wound down. The owed-reply-nag suppression below keeps the
+	// ungated flags — a pinned eater should get no reply pressure either.
+	midItemDwell := false
+	for _, c := range p.Actor.ActiveDwellCredits {
+		if c.Source == sim.DwellSourceItem {
+			midItemDwell = true
+			break
+		}
+	}
 	renderTurnState(&ephemeral, p.TurnState, seekWorkDirective || conversationLooping || conversationRunLong || conversationLingering)
-	renderTriage(&ephemeral, p.Actor.Needs, p.Actor.NeedThresholds, p.TurnState.AwaitingReply(), conversationLooping, conversationRunLong, conversationLingering, p.NeedRedirect, seekWorkDirective, len(payOffers) > 0, p.Actor.InFlightMove, p.Actor.InFlightSourceActivity)
+	renderTriage(&ephemeral, p.Actor.Needs, p.Actor.NeedThresholds, p.TurnState.AwaitingReply(), conversationLooping, conversationRunLong && !midItemDwell, conversationLingering && !midItemDwell, p.NeedRedirect, seekWorkDirective, len(payOffers) > 0, p.Actor.InFlightMove, p.Actor.InFlightSourceActivity)
 
 	out.Text = durable.String()
 	out.EphemeralText = ephemeral.String()
@@ -713,6 +731,10 @@ func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.
 		} else {
 			b.WriteString("You and the others here keep saying the same thing — the matter is already settled between you. Don't say it again: do what you've agreed — move, tend your work or a need — or call done() and let the moment rest. Speak again only if you truly have something new.\n")
 		}
+	// LLM-416: conversationRunLong arrives already gated off while the actor is mid
+	// item-dwell (see midItemDwell at the render call site) — a pinned eater cannot
+	// obey "bring it to a close", so it falls through to the wait/decision coda
+	// instead of farewelling every tick.
 	case conversationRunLong:
 		// Endurance wind-down coda (LLM-333): the huddle has talked for a long
 		// stretch with nothing coming of it — no trade, no one new, no player —
@@ -726,6 +748,9 @@ func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.
 		// swap is deliberately NOT applied here — it exists to break a
 		// confabulated plan-loop, and this case is by definition not a loop.
 		b.WriteString("This conversation has gone on a good while and nothing new is coming of it. Bring it to a close — say a brief farewell or simply turn to your own affairs, then call done(). Do not start a new topic.\n")
+	// LLM-416: also arrives gated off while mid item-dwell, same as
+	// conversationRunLong above — the pinned eater falls through rather than being
+	// told to let the talk end.
 	case conversationLingering:
 		// Lingering wind-down coda (LLM-397). Unlike every case above, this one is
 		// not a fault: the conversation may have been warm, varied, and genuinely
@@ -1342,6 +1367,7 @@ func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 			}
 			label += laborTiePhrase(m.SolicitTie)
 			label += laboringPhrase(m)
+			label += eatingPhrase(m)
 			names[i] = label
 		}
 		verb := "is"
@@ -1653,7 +1679,7 @@ func joinHuddleMembers(members []HuddleMember) string {
 }
 
 func renderHuddleMember(m HuddleMember) string {
-	return sanitizeInline(descriptorLabel(m.DisplayName, m.Role, m.Acquainted)) + laborTiePhrase(m.SolicitTie) + laboringPhrase(m)
+	return sanitizeInline(descriptorLabel(m.DisplayName, m.Role, m.Acquainted)) + laborTiePhrase(m.SolicitTie) + laboringPhrase(m) + eatingPhrase(m)
 }
 
 // laboringPhrase renders the LLM-231 busy annotation for a co-present member who is
@@ -1670,6 +1696,22 @@ func laboringPhrase(m HuddleMember) string {
 		return fmt.Sprintf(" (working a job for %s just now — not free to trade)", sanitizeInline(m.LaboringForLabel))
 	}
 	return " (working a job just now — not free to trade)"
+}
+
+// eatingPhrase annotates a co-present member who is mid item-dwell as busy at
+// their meal in "## Around you" (LLM-416) — the proprietor-side half of the
+// farewell-storm fix, so an onlooker reads a lingering diner as still eating
+// rather than about to leave. Gated on m.Eating directly (no bystander split, as
+// an eater has no employer to suppress the label toward). Names the dish when
+// known, falling back to a bare "eating here". Empty for a non-eating member.
+func eatingPhrase(m HuddleMember) string {
+	if !m.Eating {
+		return ""
+	}
+	if m.EatingItemLabel != "" {
+		return fmt.Sprintf(" (eating %s just now)", sanitizeInline(m.EatingItemLabel))
+	}
+	return " (eating here just now)"
 }
 
 // laborTiePhrase names a co-present member's relationship to the subject —
