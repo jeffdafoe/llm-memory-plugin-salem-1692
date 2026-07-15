@@ -131,7 +131,8 @@ func runOneSweep(ctx context.Context, w *sim.World, client llm.Client) {
 }
 
 // consolidateOne issues the LLM call for one candidate and applies
-// the result. Errors at every step log + return; no partial writes.
+// the result — or, on a "nothing notable" reply, prunes the pair
+// (LLM-426). Errors at every step log + return; no partial writes.
 func consolidateOne(ctx context.Context, w *sim.World, client llm.Client, c sim.ConsolidationCandidate) {
 	prompt := buildConsolidationPrompt(c)
 	req := llm.Request{
@@ -166,6 +167,27 @@ func consolidateOne(ctx context.Context, w *sim.World, client llm.Client, c sim.
 			c.ActorID, c.PeerID, len(reply.ToolCalls))
 		return
 	}
+	if isNothingNotable(newSummary) {
+		// The actor formed no dealing-relevant judgment about the peer. Prune
+		// the pair rather than store filler prose (LLM-426). An empty/garbage
+		// reply, by contrast, was already handled above (reject-and-retry) so
+		// a real summary is never wiped by a bad turn.
+		clearAt := time.Now()
+		if _, err := w.SendContext(ctx, sim.ClearConsolidation(c.ActorID, c.PeerID, c.Facts, clearAt)); err != nil {
+			if ctx.Err() == nil {
+				if errors.Is(err, sim.ErrStaleConsolidationSnapshot) {
+					log.Printf("cascade/consolidation: snapshot stale for %s→%s on prune (FIFO race during LLM call); next sweep will retry",
+						c.ActorID, c.PeerID)
+				} else {
+					log.Printf("cascade/consolidation: prune for %s→%s failed: %v",
+						c.ActorID, c.PeerID, err)
+				}
+			}
+			return
+		}
+		log.Printf("cascade/consolidation: %s→%s nothing notable — relationship pruned", c.ActorName, c.PeerName)
+		return
+	}
 	applyAt := time.Now()
 	if _, err := w.SendContext(ctx, sim.ApplyConsolidation(c.ActorID, c.PeerID, newSummary, c.Facts, applyAt)); err != nil {
 		if ctx.Err() == nil {
@@ -187,12 +209,33 @@ func consolidateOne(ctx context.Context, w *sim.World, client llm.Client, c sim.
 		c.ActorName, c.PeerName, len(c.Facts), len(newSummary))
 }
 
+// isNothingNotable reports whether a consolidation reply is the sentinel the
+// prompt asks for when the actor has formed no dealing-relevant judgment about
+// the peer. Matched case/punctuation-insensitively, tolerating a short
+// elaboration ("nothing notable to report") — but a reply that hides a real
+// judgment behind the phrase ("nothing notable except he pays late") is treated
+// as a summary, NOT a prune, so the judgment isn't lost.
+func isNothingNotable(reply string) bool {
+	n := strings.ToLower(strings.TrimSpace(reply))
+	n = strings.Trim(n, " \t\n.!\"'")
+	if !strings.HasPrefix(n, "nothing notable") {
+		return false
+	}
+	for _, caveat := range []string{"except", "but ", "however", "aside", "other than", "save "} {
+		if strings.Contains(n, caveat) {
+			return false
+		}
+	}
+	return true
+}
+
 // buildConsolidationPrompt composes the user-message text the actor's
 // VA reads. Frames the task as private reflection (not a scene),
 // disclaims tools (overrides any tool-discipline boilerplate in the
 // system prompt — the shared salem-vendor system prompt is
-// vendor-economic but user-message intent wins), and asks for prose
-// synthesis rather than a list.
+// vendor-economic but user-message intent wins), and asks for a
+// dealing-relevant judgment about the peer — or the "nothing notable"
+// sentinel when there is none (LLM-426).
 //
 // Dedup-in-prompt (v1 WORK-233): identical fact text lines collapse
 // to one entry. Pre-fix, polluted history (e.g. presence-ghost trails)
@@ -240,7 +283,7 @@ func buildConsolidationPrompt(c sim.ConsolidationCandidate) string {
 		b.WriteString(line)
 		b.WriteString("\n")
 	}
-	fmt.Fprintf(&b, "\nWrite one or two sentences capturing your current sense of %s — a coherent impression, not a list of events. Past or present tense, whichever fits. Just those sentences, no preamble or sign-off.",
+	fmt.Fprintf(&b, "\nFrom these dealings, write one or two sentences on what you have learned about %s that would matter the next time you deal with them — how they trade or work, whether they keep their word and pay what they owe, whether they can be trusted or relied upon. Judge the person, not the pleasantries. If there is nothing about them that bears on future dealings, reply with exactly: nothing notable\nGive just the sentence or two (or \"nothing notable\") — no preamble or sign-off.",
 		c.PeerName)
 	return b.String()
 }

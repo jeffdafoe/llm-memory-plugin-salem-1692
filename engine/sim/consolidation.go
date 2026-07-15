@@ -321,6 +321,67 @@ func ApplyConsolidation(actorID, peerID ActorID, newSummary string, snapshotFact
 	}
 }
 
+// ClearConsolidation returns a Command for the "nothing notable" outcome
+// (LLM-426): the actor has formed no dealing-relevant judgment about the peer,
+// so the consolidated summary is cleared and the pair is PRUNED rather than
+// storing filler prose. Same snapshot race-safety contract as
+// ApplyConsolidation — the snapshot's prefix must still equal the live slice.
+//
+//   - Match, nothing left after pruning the consolidated facts → DELETE the
+//     relationship row entirely, so the relationship graph keeps only edges
+//     that carry a judgment (a chatty-but-unremarkable pair stops accreting a
+//     row). RecordInteraction re-creates the row if they interact again.
+//   - Match, but facts arrived during the LLM call → keep the row for the next
+//     sweep to judge those, clear SummaryText, and stamp LastConsolidatedAt so
+//     it isn't re-selected before the daily floor.
+//   - Mismatch → ErrStaleConsolidationSnapshot, no writes (next sweep retries),
+//     exactly as ApplyConsolidation.
+//
+// Unlike ApplyConsolidation this does NOT reject an empty summary — clearing is
+// the whole point. The caller (cascade) routes here only on an explicit
+// "nothing notable" reply, never on an empty/garbage one (that keeps the
+// reject-and-retry posture in consolidateOne).
+func ClearConsolidation(actorID, peerID ActorID, snapshotFacts []SalientFact, at time.Time) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			actor, ok := w.Actors[actorID]
+			if !ok || actor == nil {
+				return nil, fmt.Errorf("ClearConsolidation: actor %q not found", actorID)
+			}
+			if actor.Kind != KindNPCShared {
+				return nil, fmt.Errorf("ClearConsolidation: actor %q is not KindNPCShared", actorID)
+			}
+			if actor.VisitorState != nil {
+				return nil, fmt.Errorf("ClearConsolidation: actor %q is a transient visitor", actorID)
+			}
+			if actor.Relationships == nil {
+				return nil, fmt.Errorf("ClearConsolidation: actor %q has no Relationships", actorID)
+			}
+			rel, ok := actor.Relationships[peerID]
+			if !ok || rel == nil {
+				return nil, fmt.Errorf("ClearConsolidation: relationship %q→%q not found", actorID, peerID)
+			}
+			n := len(snapshotFacts)
+			if n > len(rel.SalientFacts) || !salientFactsPrefixEqual(rel.SalientFacts[:n], snapshotFacts) {
+				return nil, ErrStaleConsolidationSnapshot
+			}
+			rel.SalientFacts = rel.SalientFacts[n:]
+			if len(rel.SalientFacts) == 0 {
+				// No judgment, no fresh facts — drop the edge entirely.
+				delete(actor.Relationships, peerID)
+				return nil, nil
+			}
+			// Facts landed during the LLM call: keep the row for the next
+			// sweep to judge, but clear the (now-absent) summary and stamp.
+			rel.SummaryText = ""
+			t := at
+			rel.LastConsolidatedAt = &t
+			rel.UpdatedAt = t
+			return nil, nil
+		},
+	}
+}
+
 // ErrStaleConsolidationSnapshot is returned by ApplyConsolidation
 // when the live SalientFacts slice's prefix no longer matches the
 // snapshot the worker took at scan time — typically because the
