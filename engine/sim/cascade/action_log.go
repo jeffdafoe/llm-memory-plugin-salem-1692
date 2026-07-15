@@ -304,15 +304,16 @@ func handlePayResolvedActionLog(w *sim.World, evt sim.Event) {
 // mints (or renews via in_response_to) a pending pay-ledger offer — the
 // PayOfferReceived event (LLM-283). Buyer-side single row: ActorID is the buyer
 // (the offer is theirs), the seller is the counterparty, Amount is the coin offer
-// (0 for goods-only barter), Text is the item summary. The buyer + seller share
+// (0 for goods-only barter), Text is the wanted-item summary, and PayItems carries
+// the barter give-goods (LLM-431). The buyer + seller share
 // the offer's HuddleID by construction (co-presence is required to offer), so the
 // same-huddle talk-panel backload reaches the seller. Fast-path / auto-match
 // quote-takes never emit PayOfferReceived (they mint already-accepted), so only a
 // genuinely-pending offer — the dead-air the feed was missing — logs a row.
 //
-// Gift offers (give_goods, IsGift) also emit PayOfferReceived but are skipped:
-// a one-way give isn't a purchase haggle, and the buy-phrasing render would read
-// backwards ("offers X for 3x milk" when the giver is HANDING milk over).
+// Gift offers (give_goods, IsGift) also emit PayOfferReceived but are skipped
+// here: a one-way give isn't a purchase/barter haggle, so it doesn't belong in
+// the offer feed line.
 func handleOfferedActionLog(w *sim.World, evt sim.Event) {
 	offer, ok := evt.(*sim.PayOfferReceived)
 	if !ok {
@@ -337,6 +338,12 @@ func handleOfferedActionLog(w *sim.World, evt sim.Event) {
 		HuddleID:         offer.HuddleID,
 		CounterpartyName: actorDisplayNameOrEmpty(w, offer.SellerID),
 		Amount:           offer.Amount,
+		// Snapshot the barter give-goods (LLM-431) so the feed renderer can show
+		// what the buyer offered to hand over — a goods-only offer (Amount 0)
+		// otherwise narrates as "<buyer> offers <seller> for <item>", dropping the
+		// give side. Own the slice rather than alias the event's (the entry outlives
+		// the event; mirrors the Paid path above).
+		PayItems: append([]sim.ItemKindQty(nil), offer.PayItems...),
 	}
 	if _, err := sim.AppendActionLogEntry(entry).Fn(w); err != nil {
 		log.Printf("cascade/action_log: append offered (buyer %q ledger %d event %d): %v",
@@ -350,17 +357,29 @@ func handleOfferedActionLog(w *sim.World, evt sim.Event) {
 	// from dream narration (memory-api, its unmapped-kind default), so it does NOT
 	// feed NPC dream memory — this is durable audit only, not a dream beat.
 	display, source := actorDisplayAndSource(w, offer.BuyerID)
+	payload := map[string]any{
+		"ledger_id": offer.LedgerID,
+		"item":      string(offer.ItemKind),
+		"qty":       qty,
+		"amount":    offer.Amount,
+		"seller":    actorDisplayName(w, offer.SellerID),
+	}
+	// LLM-431: record the barter give-goods so the durable audit captures the full
+	// offer terms — a goods-only barter reads amount:0, and pay_items is what the
+	// buyer offered in trade. Same {item,qty} shape + non-empty gate as the Paid
+	// mirror above (ItemKindQty has no json tags, so serialize explicitly).
+	if len(offer.PayItems) > 0 {
+		goods := make([]map[string]any, 0, len(offer.PayItems))
+		for _, pi := range offer.PayItems {
+			goods = append(goods, map[string]any{"item": string(pi.Kind), "qty": pi.Qty})
+		}
+		payload["pay_items"] = goods
+	}
 	w.AppendActionLogDurable(sim.DurableActionLogRow{
-		ActorID:    offer.BuyerID,
-		OccurredAt: offer.At,
-		ActionType: sim.ActionTypeOffered,
-		Payload: map[string]any{
-			"ledger_id": offer.LedgerID,
-			"item":      string(offer.ItemKind),
-			"qty":       qty,
-			"amount":    offer.Amount,
-			"seller":    actorDisplayName(w, offer.SellerID),
-		},
+		ActorID:     offer.BuyerID,
+		OccurredAt:  offer.At,
+		ActionType:  sim.ActionTypeOffered,
+		Payload:     payload,
 		SpeakerName: display,
 		HuddleID:    offer.HuddleID,
 		Source:      source,

@@ -830,14 +830,16 @@ func renderActionLogEntry(snap *sim.Snapshot, e sim.ActionLogEntry) (speaker, te
 		}
 	case sim.ActionTypeOffered:
 		// LLM-283: buyer's pending pay offer. Degrade like the paid line —
-		// "X offers Y N coins for Z." → drop the amount (goods-only barter) →
-		// drop the counterparty.
+		// "X offers Y <tender> for Z." → drop the tender → drop the counterparty.
+		// LLM-431: <tender> is the full coins-and/or-goods offer (sim.FormatPayment),
+		// so a goods-only barter shows what the buyer offered to trade instead of
+		// reading as "X offers Y for Z" with the give side silently dropped.
 		if e.CounterpartyName == "" {
 			return name, name + " makes an offer.", "act", true
 		}
 		line := name + " offers " + e.CounterpartyName
-		if e.Amount > 0 {
-			line += " " + formatCoins(e.Amount)
+		if e.Amount > 0 || len(e.PayItems) > 0 {
+			line += " " + sim.FormatPayment(e.Amount, e.PayItems)
 		}
 		if e.Text != "" {
 			line += " for " + e.Text
