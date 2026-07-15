@@ -22,6 +22,10 @@ type negotiationPayload struct {
 	OriginalAmount int    `json:"original_amount"`
 	Buyer          string `json:"buyer"`
 	Seller         string `json:"seller"`
+	PayItems       []struct {
+		Item string `json:"item"`
+		Qty  int    `json:"qty"`
+	} `json:"pay_items"`
 }
 
 func decodeNegotiationPayload(t *testing.T, p map[string]any) negotiationPayload {
@@ -82,6 +86,62 @@ func TestHandleOfferedActionLog_RingAndDurable(t *testing.T) {
 	p := decodeNegotiationPayload(t, rows[0].Payload)
 	if p.LedgerID != 501 || p.Item != "ale" || p.Qty != 4 || p.Amount != 8 || p.Seller != "Bob" {
 		t.Errorf("payload = %+v, want ledger 501 / ale / qty 4 / amount 8 / seller Bob", p)
+	}
+}
+
+// TestHandleOfferedActionLog_BarterCarriesPayItems: a goods-only barter offer
+// (Amount 0, give-goods in PayItems) carries the give side onto the ring entry —
+// so the feed renders "offers X <goods> for Y" instead of dropping the give side
+// (LLM-431) — and records it in the durable pay_items payload for audit parity.
+func TestHandleOfferedActionLog_BarterCarriesPayItems(t *testing.T) {
+	w, stop := buildActionLogCascadeWorld(t)
+	defer stop()
+
+	rec := &recordingActionLogSink{}
+	invokeOnWorld(t, w, func(world *sim.World) { world.SetActionLogSink(rec) })
+
+	at := time.Now().UTC()
+	give := []sim.ItemKindQty{{Kind: "stew", Qty: 1}}
+	invokeOnWorld(t, w, func(world *sim.World) {
+		handleOfferedActionLog(world, &sim.PayOfferReceived{
+			LedgerID: 511, BuyerID: "hannah", SellerID: "bob", ItemKind: "firewood",
+			QtyPerConsumer: 3, Amount: 0, PayItems: give, HuddleID: "h1", At: at,
+		})
+	})
+
+	got := readActionLog(t, w)
+	if len(got) != 1 {
+		t.Fatalf("ring rows = %d, want 1", len(got))
+	}
+	e := got[0]
+	// Amount 0 (goods-only barter); the wanted item stays in Text, the give-goods
+	// ride in PayItems for the renderer.
+	if e.Amount != 0 || e.Text != "3x firewood" {
+		t.Errorf("amount/text = %d/%q, want 0/3x firewood", e.Amount, e.Text)
+	}
+	if len(e.PayItems) != 1 || e.PayItems[0].Kind != "stew" || e.PayItems[0].Qty != 1 {
+		t.Errorf("ring PayItems = %+v, want [{stew 1}]", e.PayItems)
+	}
+
+	// Defensive-copy contract: mutating the caller's give slice after the handler
+	// returns must not reach the stored entry — the handler snapshots PayItems
+	// rather than aliasing the event's backing array.
+	give[0].Qty = 99
+	after := readActionLog(t, w)
+	if len(after) != 1 || len(after[0].PayItems) != 1 || after[0].PayItems[0].Qty != 1 {
+		t.Errorf("ring PayItems mutated through caller slice = %+v, want [{stew 1}]", after[0].PayItems)
+	}
+
+	rows := rec.snapshot()
+	if len(rows) != 1 {
+		t.Fatalf("durable rows = %d, want 1", len(rows))
+	}
+	p := decodeNegotiationPayload(t, rows[0].Payload)
+	if p.Amount != 0 || p.Item != "firewood" || p.Qty != 3 || p.Seller != "Bob" {
+		t.Errorf("payload terms = amount %d / item %q / qty %d / seller %q, want 0/firewood/3/Bob", p.Amount, p.Item, p.Qty, p.Seller)
+	}
+	if len(p.PayItems) != 1 || p.PayItems[0].Item != "stew" || p.PayItems[0].Qty != 1 {
+		t.Errorf("durable pay_items = %+v, want [{stew 1}]", p.PayItems)
 	}
 }
 

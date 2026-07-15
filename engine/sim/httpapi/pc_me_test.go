@@ -787,7 +787,12 @@ func TestRenderActionLogEntry(t *testing.T) {
 		// the paid line; declined/countered name the counterparty.
 		{"offered amount item", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeOffered, CounterpartyName: "Hannah", Amount: 3, Text: "3x milk"}, "Tester", "Tester offers Hannah 3 coins for 3x milk.", "act", true},
 		{"offered one coin", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeOffered, CounterpartyName: "Hannah", Amount: 1, Text: "bread"}, "Tester", "Tester offers Hannah 1 coin for bread.", "act", true},
-		{"offered goods-only drops amount", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeOffered, CounterpartyName: "Hannah", Amount: 0, Text: "3x milk"}, "Tester", "Tester offers Hannah for 3x milk.", "act", true},
+		// LLM-431: a goods-only barter (Amount 0) shows the give-goods from PayItems
+		// instead of dropping the tender; coins+goods reads goods-then-coins like the
+		// paid line (sim.FormatPayment ordering).
+		{"offered goods-only barter shows give", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeOffered, CounterpartyName: "Hannah", Amount: 0, Text: "3x firewood", PayItems: []sim.ItemKindQty{{Kind: "stew", Qty: 1}}}, "Tester", "Tester offers Hannah 1 stew for 3x firewood.", "act", true},
+		{"offered coins and goods", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeOffered, CounterpartyName: "Hannah", Amount: 4, Text: "3x firewood", PayItems: []sim.ItemKindQty{{Kind: "stew", Qty: 1}}}, "Tester", "Tester offers Hannah 1 stew and 4 coins for 3x firewood.", "act", true},
+		{"offered no tender degrades to bare", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeOffered, CounterpartyName: "Hannah", Amount: 0, Text: "3x milk"}, "Tester", "Tester offers Hannah for 3x milk.", "act", true},
 		{"offered no counterparty", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeOffered, CounterpartyName: "", Amount: 3, Text: "3x milk"}, "Tester", "Tester makes an offer.", "act", true},
 		{"declined with buyer", sim.ActionLogEntry{ActorID: "npc", ActionType: sim.ActionTypeDeclined, CounterpartyName: "Tester"}, "Hannah", "Hannah declines Tester's offer.", "act", true},
 		{"declined no counterparty", sim.ActionLogEntry{ActorID: "npc", ActionType: sim.ActionTypeDeclined, CounterpartyName: ""}, "Hannah", "Hannah declines an offer.", "act", true},
