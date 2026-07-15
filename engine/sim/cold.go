@@ -119,14 +119,18 @@ func coldRatePerMinuteX100(w *World, a *Actor, now time.Time) int {
 		if a.InsideStructureID != "" {
 			rate = w.Settings.ColdStormIndoorsPerMinuteX100
 		}
-		// A warm garment (LLM-410) caps accrual at the garment rate — "the coat is
-		// your roof." Only ever LOWERS the rate (min): it never makes a sheltered
-		// actor colder, and if a roof already caps lower the garment is moot. A
-		// garment rate of 0 turns a coat into full outdoor relief (the off-switch
-		// posture the outdoors==0 knob already has). The free relief (a roof, a
-		// hearth, going home) is untouched, so cold keeps a free path — this is a
-		// PAID upgrade to keep working outside, not a replacement.
-		if g := w.Settings.ColdWarmGarmentPerMinuteX100; g < rate && actorHasWarmGarment(w, a) {
+		// A warm garment (LLM-410) caps storm accrual at the garment rate — "the
+		// coat is your roof." OUTDOORS ONLY: indoors a roof already shelters, and the
+		// coat is the roof's outdoor substitute (so a non-default indoor rate is never
+		// lowered by a coat). Min-only (g < rate), so it never raises accrual and is
+		// moot when the environmental rate is already lower. g >= 0 ignores a
+		// misconfigured negative — a garment can't turn a storm into active recovery;
+		// g == 0 makes a coat full outdoor relief (the outdoors==0 off-switch posture).
+		// This is a PRE-night base like the indoor roof rate: the night multiplier
+		// below scales it exactly as it scales a roof (25 -> 37), so a coat stays
+		// equivalent to a roof rather than beating one. The free relief (a roof, a
+		// hearth, going home) is untouched — a PAID upgrade to keep working outside.
+		if g := w.Settings.ColdWarmGarmentPerMinuteX100; a.InsideStructureID == "" && g >= 0 && g < rate && actorHasWarmGarment(w, a) {
 			rate = g
 		}
 		if w.Phase == PhaseNight && w.Settings.ColdNightMultiplierX100 > 0 {

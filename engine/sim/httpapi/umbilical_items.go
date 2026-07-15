@@ -227,6 +227,13 @@ func (s *Server) handleUmbilicalItemSet(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	}
+	// description is free TEXT in the column, but bound it so a stray oversized body
+	// isn't written wholesale — catalog flavor prose is short (the seed descriptions
+	// run ~60 chars); 500 is generous headroom (code_review).
+	if utf8.RuneCountInString(description) > 500 {
+		writeError(w, http.StatusBadRequest, "description must be 500 characters or fewer")
+		return
+	}
 	// sort_order maps to a SMALLINT column — keep it in range so a bad value
 	// fails at the handler (400) rather than the pg write (500).
 	if req.SortOrder < 0 || req.SortOrder > 32767 {

@@ -49,8 +49,12 @@ ALTER TABLE item_kind ADD COLUMN IF NOT EXISTS description text;
 --    soft-typed bucket (`clothing` / `charm`, both new — the type is open). coat +
 --    cloak carry the `warms` capability; everything else takes the '{}' default.
 --    sort_order clusters clothing in the 200s and charms in the 300s, after the
---    food/craft catalog. ON CONFLICT (name) DO NOTHING keeps the migration rerun-safe
---    without clobbering a later operator edit.
+--    food/craft catalog. ON CONFLICT (name) DO UPDATE — CORRECTIVE for these owned
+--    canonical goods: if a name already exists as an engine-minted discovery row
+--    (ZBBS-WORK-412 — e.g. an NPC once referenced "coat", minting an inert
+--    category='unknown' row with no capabilities/labels), this promotes it to the
+--    proper clothing def (warms, price, description all land). Migrations apply once
+--    at deploy, so this can't clobber a later operator item/set edit.
 INSERT INTO item_kind
     (name, display_label, display_label_singular, display_label_plural,
      category, sort_order, capabilities, description)
@@ -79,12 +83,22 @@ VALUES
     ('iron_ward', 'Iron ward', 'iron ward', 'iron wards',
      'charm', 330, '{}'::text[],
      'A twist of cold iron worn against the skin, to turn away ill wishes.')
-ON CONFLICT (name) DO NOTHING;
+ON CONFLICT (name) DO UPDATE SET
+    display_label          = EXCLUDED.display_label,
+    display_label_singular = EXCLUDED.display_label_singular,
+    display_label_plural   = EXCLUDED.display_label_plural,
+    category               = EXCLUDED.category,
+    sort_order             = EXCLUDED.sort_order,
+    capabilities           = EXCLUDED.capabilities,
+    description            = EXCLUDED.description;
 
 -- 3. Price anchors. One recipe per good carrying wholesale/retail; inert (no
 --    producer, empty inputs) — a price carrier, not a production path. The rate
 --    columns are the CHECK-required placeholders. FK output_item -> item_kind(name)
---    is satisfied by the rows just inserted. ON CONFLICT (output_item) DO NOTHING.
+--    is satisfied by the rows just inserted. ON CONFLICT (output_item) DO UPDATE —
+--    CORRECTIVE like the item_kind upsert above: re-asserts the canonical price for
+--    an owned good rather than leaving a stale/absent recipe in place. Migrations
+--    apply once at deploy, so this can't overwrite a later operator recipe/set edit.
 INSERT INTO item_recipe
     (output_item, output_qty, rate_qty, rate_per_hours, inputs,
      wholesale_price, retail_price)
@@ -97,14 +111,24 @@ VALUES
     ('whalebone_charm', 1, 1, 1, '[]'::jsonb, 2, 5),
     ('silver_locket', 1, 1, 1, '[]'::jsonb, 4, 9),
     ('iron_ward', 1, 1, 1, '[]'::jsonb, 2, 5)
-ON CONFLICT (output_item) DO NOTHING;
+ON CONFLICT (output_item) DO UPDATE SET
+    output_qty      = EXCLUDED.output_qty,
+    rate_qty        = EXCLUDED.rate_qty,
+    rate_per_hours  = EXCLUDED.rate_per_hours,
+    inputs          = EXCLUDED.inputs,
+    wholesale_price = EXCLUDED.wholesale_price,
+    retail_price    = EXCLUDED.retail_price,
+    updated_at      = now();
 
--- 4. Seed the distributor's clothing stock (Josiah Thorne, 019dcac2...). Guarded on
---    Josiah existing so it is a no-op on the schema-only harness. ON CONFLICT
---    (actor_id, item_kind) DO NOTHING so a re-run neither doubles the stock nor
---    resurrects what he has since sold. snapshot_gen takes its column default (0).
---    coat + cloak (the warms goods) lead so the cold-relief loop is live at once; a
---    gown, a pair of breeches, and a locket round out the shelf for variety.
+-- 4. Seed the distributor's clothing stock (Josiah Thorne, 019dcac2...) — a ONE-TIME
+--    bootstrap so the loop is live from the first storm, NOT a convergent invariant.
+--    Guarded on Josiah existing so it is a no-op on the schema-only harness. The whole
+--    migration is transactional (BEGIN/COMMIT), so it never lands partially. ON CONFLICT
+--    (actor_id, item_kind) DO NOTHING so it doesn't DOUBLE a still-present holding —
+--    deliberately NOT DO UPDATE, since after go-live this row is engine-owned live
+--    stock (checkpoint-written) the seed must never overwrite. snapshot_gen takes its
+--    column default (0). coat + cloak (the warms goods) lead so the cold-relief loop is
+--    live at once; a gown, a pair of breeches, and a locket round out the shelf.
 INSERT INTO actor_inventory (actor_id, item_kind, quantity)
 SELECT '019dcac2-e78a-715e-91b7-101f339b0891', v.item_kind, v.quantity
   FROM (VALUES

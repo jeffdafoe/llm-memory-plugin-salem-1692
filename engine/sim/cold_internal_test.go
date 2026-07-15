@@ -152,12 +152,19 @@ func TestColdRatePerMinuteX100_WarmGarment(t *testing.T) {
 	}
 	w.Phase = PhaseDay
 
-	// Coated, indoors under a roof: the roof rate already caps at the garment rate,
-	// so min() leaves it unchanged — the coat never doubles the relief.
+	// Coated, indoors under a roof: OUTDOORS-ONLY, so the coat doesn't apply — the
+	// rate is the plain indoor rate (a roof is not a coat's job).
 	a.InsideStructureID = "tavern"
 	if got := coldRatePerMinuteX100(w, a, now); got != DefaultColdStormIndoorsPerMinuteX100 {
-		t.Errorf("coated storm indoors = %d, want %d (roof already caps; coat moot)", got, DefaultColdStormIndoorsPerMinuteX100)
+		t.Errorf("coated storm indoors = %d, want %d (coat is outdoors-only)", got, DefaultColdStormIndoorsPerMinuteX100)
 	}
+	// Pin the outdoors-only gate where it would otherwise bite: an indoor rate ABOVE
+	// the garment rate must NOT be lowered by a coat.
+	w.Settings.ColdStormIndoorsPerMinuteX100 = 50
+	if got := coldRatePerMinuteX100(w, a, now); got != 50 {
+		t.Errorf("coated indoors, indoor rate 50 = %d, want 50 (coat must not lower an indoor rate)", got)
+	}
+	w.Settings.ColdStormIndoorsPerMinuteX100 = DefaultColdStormIndoorsPerMinuteX100
 
 	// Coated, indoors, hearth lit: warmth (fast recovery) still beats a coat.
 	hearth.HearthLitUntil = now.Add(time.Hour)
@@ -179,6 +186,13 @@ func TestColdRatePerMinuteX100_WarmGarment(t *testing.T) {
 	w.Settings.ColdWarmGarmentPerMinuteX100 = DefaultColdStormOutdoorsPerMinuteX100 + 50
 	if got := coldRatePerMinuteX100(w, a, now); got != DefaultColdStormOutdoorsPerMinuteX100 {
 		t.Errorf("garment rate above outdoors = %d, want %d (a coat never raises accrual)", got, DefaultColdStormOutdoorsPerMinuteX100)
+	}
+
+	// Misconfigured NEGATIVE: a coat can't turn a storm into active recovery — the
+	// negative setting is ignored, leaving the full outdoor accrual.
+	w.Settings.ColdWarmGarmentPerMinuteX100 = -10
+	if got := coldRatePerMinuteX100(w, a, now); got != DefaultColdStormOutdoorsPerMinuteX100 {
+		t.Errorf("negative garment rate = %d, want %d (ignored, never recovery)", got, DefaultColdStormOutdoorsPerMinuteX100)
 	}
 }
 

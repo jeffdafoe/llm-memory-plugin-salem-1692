@@ -160,6 +160,7 @@ func TestUmbilicalItemSet_Validation(t *testing.T) {
 		{"category too long", `{"name":"x","display_label":"X","category":"` + strings.Repeat("a", 33) + `"}`},
 		{"negative sort_order", `{"name":"x","display_label":"X","category":"food","sort_order":-1}`},
 		{"blank capability token", `{"name":"x","display_label":"X","category":"food","capabilities":["  "]}`},
+		{"description too long", `{"name":"x","display_label":"X","category":"food","description":"` + strings.Repeat("a", 501) + `"}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
