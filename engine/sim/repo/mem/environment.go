@@ -42,6 +42,19 @@ func NewEnvironmentRepo() *EnvironmentRepo {
 			LodgingCheckOutHour:        11,
 			LodgingBedtimeHour:         sim.DefaultLodgingBedtimeHour,
 			ShiftLatenessWindowMinutes: sim.DefaultShiftLatenessWindowMinutes,
+			// Cold exposure + hearth (LLM-412) — mirror the pg parse fallbacks so a
+			// mem-backed world feels the weather like prod does.
+			ColdStormOutdoorsPerMinuteX100: sim.DefaultColdStormOutdoorsPerMinuteX100,
+			ColdStormIndoorsPerMinuteX100:  sim.DefaultColdStormIndoorsPerMinuteX100,
+			ColdNightMultiplierX100:        sim.DefaultColdNightMultiplierX100,
+			ColdWarmRecoveryPerMinuteX100:  sim.DefaultColdWarmRecoveryPerMinuteX100,
+			ColdClearRecoveryPerMinuteX100: sim.DefaultColdClearRecoveryPerMinuteX100,
+			ColdProduceSapPct:              sim.DefaultColdProduceSapPct,
+			HearthBurnMinutesPerWood:       sim.DefaultHearthBurnMinutesPerWood,
+			HearthMaxBankMinutes:           sim.DefaultHearthMaxBankMinutes,
+			HearthLowMinutes:               sim.DefaultHearthLowMinutes,
+			StokeWoodPerStoke:              sim.DefaultStokeWoodPerStoke,
+			StokeDurationSeconds:           sim.DefaultStokeDurationSeconds,
 		},
 		phase: sim.PhaseDay,
 	}

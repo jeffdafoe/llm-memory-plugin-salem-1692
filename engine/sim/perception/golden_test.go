@@ -2617,6 +2617,54 @@ var perceptionScenarios = []perceptionScenario{
 			"where only the craftable good is listed.",
 		build: producerAllGoodsAtCap,
 	},
+	{
+		name: "cold_outdoors_in_storm",
+		summary: "LLM-412: Lewis Walker caught outdoors in a storm, cold past its red threshold. The golden pins the " +
+			"situated cold line — red tier phrase, the rain soaking him, and the FREE relief steer: any roof, plus his own " +
+			"home as a concrete (destination: walker_house) move target (the LLM-274 lesson — a steer with no destination " +
+			"gets narrated, not walked). The storm ambient prose renders in the same prompt, so the sky and the chill agree.",
+		build: coldOutdoorsInStorm,
+	},
+	{
+		name: "cold_in_unheated_room_storm",
+		summary: "LLM-412: the same storm felt through a roof — Lewis chilled (mild) INSIDE a plain structure with no " +
+			"hearth. The golden pins the indoors branch: the roof is keeping the rain off and staying in is easing it " +
+			"(shelter is real, free relief — the absorbing-state rule), with the lit-fire upsell named but never an " +
+			"imperative.",
+		build: coldInUnheatedRoomStorm,
+	},
+	{
+		name: "warm_by_lit_fire",
+		summary: "LLM-412: Lewis carries a chill but stands inside the tavern whose hearth is LIT. The golden pins the " +
+			"warm branch — the fire is working the chill out of him, stay by it — and the ABSENCE of any hearth cue (he " +
+			"is not responsible for this fire; a lit fire needs no stoking anyway).",
+		build: warmByLitFire,
+	},
+	{
+		name: "keeper_at_dead_hearth_storm",
+		summary: "LLM-412: Hannah Boggs, keeper of the tavern, inside at her post while a storm runs and her hearth sits " +
+			"OUT, carrying enough firewood to feed it. The golden pins the '## Your hearth' cue (the storm pressing its " +
+			"chill into the room, folk in the room feeling the cold — a cold co-present guest escalates the scene) with " +
+			"the use-the-stoke-tool-now steer, plus the HearthLow warrant line (the storm wake). The stoke tool rides the " +
+			"same Hearth signal (handlers gating test).",
+		build: keeperAtDeadHearthStorm,
+	},
+	{
+		name: "keeper_low_hearth_short_wood_with_supplier",
+		summary: "LLM-412: Hannah at her post under a calm sky, fire down to embers, holding NO firewood, while Ezekiel — " +
+			"who forages firewood (supplier of record) — works the Blacksmith. The golden pins the quiet embers scene and " +
+			"the destination-bearing buy steer ('buy from Blacksmith (destination: blacksmith)'), the firewood twin of the " +
+			"LLM-274 nail steer: name the supplier or the model narrates the errand and never walks.",
+		build: keeperLowHearthShortWoodWithSupplier,
+	},
+	{
+		name: "hired_worker_at_employer_low_hearth",
+		summary: "LLM-412: Anne Walker, mid-hire (Working) at Hannah's tavern during a storm, fire down to embers, carrying " +
+			"firewood. The golden pins the hired framing — '## The hearth where you're working', the truthful relationship, " +
+			"the stoke-now steer — plus the hired hearth warrant line (the wake that pierces the laboring shelve; tending " +
+			"the fire is the job, not leaving it — no task field anywhere).",
+		build: hiredWorkerAtEmployerLowHearth,
+	},
 }
 
 // producerDerivedInputDemand is the LLM-260 derived-demand fixture: Hannah-shaped

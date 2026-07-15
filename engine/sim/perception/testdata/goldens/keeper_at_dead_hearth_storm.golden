@@ -1,0 +1,22 @@
+# Your turn
+
+## Since your last turn
+1. The storm outside puts you in mind of the fire at your Tavern — it is burning low, if it burns at all.
+
+
+## You
+Coins in your purse: 25.
+You are carrying: firewood (x2).
+
+## Around you
+You are inside the Tavern, your workplace, with no one else here to hear you speak.
+It is midday.
+Rain falls steady over the village, and the lanes are turning to mud.
+
+You're at your workplace.
+
+It is your working hours and you are at your post — stay and look after your work; you close at 6 in the evening.
+
+## Your hearth
+The hearth at your Tavern sits cold and dark, and the storm outside is pressing its chill into the room. Folk in the room are feeling the cold. You carry enough firewood (2) to feed it — use the stoke tool now to build the fire back up (it takes a moment).
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

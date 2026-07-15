@@ -734,6 +734,16 @@ type Actor struct {
 	// deliberately avoid (Postgres is durable storage, not a cadence store).
 	LastTirednessRecoveryAt *time.Time
 
+	// ColdCarryX100 is the sub-unit remainder of the cold exposure sweep
+	// (cold.go, LLM-412) — the ×100 fraction of a cold unit accrued/recovered
+	// but not yet applied to Needs["cold"]. The integer twin of the
+	// LastTirednessRecoveryAt fractional carry.
+	//
+	// TRANSIENT — not persisted (like LastTirednessRecoveryAt): losing a
+	// fraction of one cold unit on restart is nothing. Rides CloneActor's
+	// value copy.
+	ColdCarryX100 int
+
 	// LastPCInputAt is the wall-clock instant of this PC's last deliberate
 	// action (move / speak / pay), stamped by touchPCInput. It drives two PC
 	// sleep behaviors (pc_sleep.go): the idle-auto-bed sweep beds a lodger PC

@@ -224,6 +224,19 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.FarmUpkeepFloor = parseIntSetting(values, "farm_upkeep_floor", sim.DefaultFarmUpkeepFloor)
 	s.FarmUpkeepCoinsPerShovel = parseIntSetting(values, "farm_upkeep_coins_per_shovel", sim.DefaultFarmUpkeepCoinsPerShovel)
 
+	// Cold exposure + hearth (LLM-412).
+	s.ColdStormOutdoorsPerMinuteX100 = parseIntSetting(values, "cold_storm_outdoors_per_minute_x100", sim.DefaultColdStormOutdoorsPerMinuteX100)
+	s.ColdStormIndoorsPerMinuteX100 = parseIntSetting(values, "cold_storm_indoors_per_minute_x100", sim.DefaultColdStormIndoorsPerMinuteX100)
+	s.ColdNightMultiplierX100 = parseIntSetting(values, "cold_night_multiplier_x100", sim.DefaultColdNightMultiplierX100)
+	s.ColdWarmRecoveryPerMinuteX100 = parseIntSetting(values, "cold_warm_recovery_per_minute_x100", sim.DefaultColdWarmRecoveryPerMinuteX100)
+	s.ColdClearRecoveryPerMinuteX100 = parseIntSetting(values, "cold_clear_recovery_per_minute_x100", sim.DefaultColdClearRecoveryPerMinuteX100)
+	s.ColdProduceSapPct = parseIntSetting(values, "cold_produce_sap_pct", sim.DefaultColdProduceSapPct)
+	s.HearthBurnMinutesPerWood = parseIntSetting(values, "hearth_burn_minutes_per_wood", sim.DefaultHearthBurnMinutesPerWood)
+	s.HearthMaxBankMinutes = parseIntSetting(values, "hearth_max_bank_minutes", sim.DefaultHearthMaxBankMinutes)
+	s.HearthLowMinutes = parseIntSetting(values, "hearth_low_minutes", sim.DefaultHearthLowMinutes)
+	s.StokeWoodPerStoke = parseIntSetting(values, "stoke_wood_per_stoke", sim.DefaultStokeWoodPerStoke)
+	s.StokeDurationSeconds = parseIntSetting(values, "stoke_duration_seconds", sim.DefaultStokeDurationSeconds)
+
 	// Reactor evaluator tunables.
 	s.ReactorJitterMin = parseDurationSetting(values, "reactor_jitter_min_ms", 1*time.Second)
 	s.ReactorJitterMax = parseDurationSetting(values, "reactor_jitter_max_ms", 4*time.Second)

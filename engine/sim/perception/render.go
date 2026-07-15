@@ -286,6 +286,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderStallRepair(&ephemeral, p.StallRepair)
 	renderStallCondition(&ephemeral, p.StallCondition)
 	renderStallRepairBuy(&ephemeral, p.StallRepairBuy)
+	renderHearth(&ephemeral, p.Hearth)
 	renderFarmUpkeep(&ephemeral, p.FarmUpkeep)
 	renderRestocking(&ephemeral, p.Restocking)
 	renderForage(&ephemeral, p.Forage)
@@ -850,6 +851,11 @@ func renderActor(b *strings.Builder, a ActorView) {
 			b.WriteString("\n")
 		}
 	}
+	// Cold renders as its own situated line too (LLM-412): tier phrase plus the
+	// relief the situation offers — always including a free path (a roof, the
+	// fire it is standing by, the clearing sky) so a cold actor is never shown
+	// a dead end.
+	renderColdSelf(b, a.Cold)
 	// An empty purse is a hard constraint on paying, not just a number (LLM-153).
 	// Without the consequence spelled out, 0-coin NPCs burned tool calls attempting
 	// buys the pay path rejects (engine/sim/pay_commands.go). But "cannot pay for
@@ -1071,6 +1077,8 @@ func sourceActivityVerb(v InFlightSourceActivityView) string {
 		return "gathering"
 	case sim.SourceActivityRepair:
 		return "mending"
+	case sim.SourceActivityStoke:
+		return "tending the fire"
 	}
 	switch v.Attribute {
 	case "hunger":
@@ -1108,6 +1116,8 @@ func renderInFlightSourceActivity(v InFlightSourceActivityView) string {
 		tail = "if you walk off now you abandon the pick and gather nothing"
 	case sim.SourceActivityRepair:
 		tail = "if you walk off now the mending is unfinished and the stall stays worn"
+	case sim.SourceActivityStoke:
+		tail = "if you walk off now the wood is wasted and the fire stays low"
 	}
 	return fmt.Sprintf("%s — stay where you are; %s", sourceActivityPhrase(v), tail)
 }
@@ -3480,6 +3490,24 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 		// cue carries the shovel count + buy-from-the-blacksmith steer; this is the
 		// wake-from-anywhere "why you ticked" nudge, like production-choice / seek-work.
 		return fmt.Sprintf("%d. Your farm tools are worn from the season's work — buy fresh shovels from the blacksmith.\n", n), false
+	case sim.HearthLowWarrantReason:
+		// LLM-412: a storm is on and the owner's hearth fire is out or low. At the
+		// hearth the "## Your hearth" cue carries the firewood count + buy steer;
+		// this is the wake-from-anywhere nudge to go see to the fire. Diegetic, not
+		// imperative past the pointing — the scene is the argument.
+		place := placeNameOf(string(r.HearthID))
+		if place == "" {
+			place = "place"
+		}
+		return fmt.Sprintf("%d. The storm outside puts you in mind of the fire at your %s — it is burning low, if it burns at all.\n", n, place), false
+	case sim.HearthStokeHiredWarrantReason:
+		// LLM-412: hired-worker twin — the employer's fire, framed truthfully as
+		// the place the worker was taken on to help at.
+		place := placeNameOf(string(r.HearthID))
+		if place == "" {
+			return fmt.Sprintf("%d. The storm outside puts you in mind of the fire where you're working — it is burning low, if it burns at all.\n", n), false
+		}
+		return fmt.Sprintf("%d. The storm outside puts you in mind of the fire at the %s you're working at — it is burning low, if it burns at all.\n", n, place), false
 	default:
 		return renderBasicWarrantLine(n, w.Kind(), nameOf(w.TriggerActorID)), false
 	}

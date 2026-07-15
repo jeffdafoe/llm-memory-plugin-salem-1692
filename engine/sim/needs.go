@@ -72,6 +72,12 @@ const (
 	// through the plateau and surfaces it only as it approaches the red "weary"
 	// line (16), leaving a window to seek rest before distress.
 	DefaultTirednessAwarenessFloor = 13
+
+	// DefaultColdRedThreshold is cold's red ("cold") line (LLM-412). At the
+	// default storm-exposure rate (1/min outdoors) an actor caught out in a
+	// storm goes red in ~16 minutes — about one default storm — so the storm
+	// itself is what drives people through a door, not a slow ambient tax.
+	DefaultColdRedThreshold = 16
 )
 
 // Need describes one graduated quantity an actor carries. The registry
@@ -90,6 +96,14 @@ type Need struct {
 	// it (LLM-179) so the mild mid-afternoon fatigue plateau stays silent until
 	// it nears the actionable/red band.
 	AwarenessFloor int
+
+	// ExternallyDriven marks a need whose accrual is imposed from without
+	// (weather, location) rather than from within (time awake, time since a
+	// meal). The hourly IncrementNeedsTick skips it — its own driver owns both
+	// directions of change (cold: the per-minute exposure sweep in cold.go,
+	// LLM-412). Everything else in the registry contract (tiers, thresholds,
+	// red-need warrants, felt labels) applies unchanged.
+	ExternallyDriven bool
 }
 
 // Needs is the canonical registry. Iteration order is stable across
@@ -120,6 +134,19 @@ var Needs = []Need{
 		DefaultThreshold:    DefaultTirednessRedThreshold,
 		ThresholdSettingKey: "tiredness_red_threshold",
 		AwarenessFloor:      DefaultTirednessAwarenessFloor,
+	},
+	{
+		// Cold (LLM-412) — the first externally-driven, state-relieved need.
+		// It is imposed by storm exposure (cold.go), never by the hourly tick,
+		// and relieved by WHERE you are (indoors, by a lit hearth), never by
+		// consuming an item — it is deliberately NOT wired into item_satisfies.
+		Key:                 "cold",
+		Mild:                "chilled",
+		Red:                 "cold",
+		Peak:                "perished with cold",
+		DefaultThreshold:    DefaultColdRedThreshold,
+		ThresholdSettingKey: "cold_red_threshold",
+		ExternallyDriven:    true,
 	},
 }
 

@@ -610,6 +610,14 @@ type Payload struct {
 	// gates the on-site-only `repair` tool.
 	StallRepairBuy *StallRepairBuyView
 
+	// Hearth surfaces, to the actor responsible for a structure's fireplace
+	// (its owner, or a worker hired by the owner — "tend the fire" is work,
+	// not leaving), standing inside it, that the fire is out or low and how to
+	// feed it (firewood count + buy steer). nil when not responsible, not
+	// inside, or the fire is burning well. The same non-nil view gates the
+	// `stoke` tool. LLM-412.
+	Hearth *HearthView
+
 	// FarmUpkeep surfaces, to a farm owner, that the season wore out their upkeep
 	// shovels and they owe fresh ones from the blacksmith (shovel count + buy
 	// steer). nil when not a farm owner or nothing is owed. Not co-location-gated —
@@ -1278,6 +1286,12 @@ type ActorView struct {
 	// (where wakefulness-since-shift-start holds); nil off-shift, unscheduled, or
 	// with no clock, which the renderer reads as "drop the awake-hours tail".
 	HoursAwake *int
+
+	// Cold is the subject's felt cold plus its exposure context (LLM-412),
+	// rendered as its own situated line after tiredness — a scene with the
+	// relief the situation offers, never a number. nil below the awareness
+	// floor (the common case).
+	Cold *ColdSelfView
 }
 
 // InventoryItem is one carried item kind in the standing inventory readout —

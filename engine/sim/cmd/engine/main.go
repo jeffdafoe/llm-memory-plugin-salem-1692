@@ -938,6 +938,7 @@ func registerTools(r *handlers.Registry, searcher llm.MemorySearcher, writer llm
 		{"gather", handlers.RegisterGather},              // ZBBS-WORK-328: only at a gatherable source
 		{"produce", handlers.RegisterCraft},              // LLM-116: only a producer idle at its post
 		{"repair", handlers.RegisterRepair},              // LLM-118: only an owner at their worn business
+		{"stoke", handlers.RegisterStoke},                // LLM-412: only the hearth-responsible actor inside, fire out/low
 		{"take_break", handlers.RegisterTakeBreak},       // ZBBS-HOME-284 #4: only tired at post/home
 		{"stay_open", handlers.RegisterStayOpen},         // ZBBS-WORK-387: only on the off-shift wind-down cue
 		{"deliver_order", handlers.RegisterDeliverOrder}, // ZBBS-HOME-398: only a keeper with a Ready order
@@ -1005,6 +1006,7 @@ func startTickers(ctx context.Context, w *sim.World) {
 	go sim.RunPhaseTicker(ctx, w)
 	go sim.RunNeedsTicker(ctx, w)
 	go sim.RunTirednessRecoveryTicker(ctx, w)
+	go sim.RunColdTicker(ctx, w) // LLM-412: storm-exposure cold + hearth storm wake
 	go sim.RunSleepTicker(ctx, w)
 	go sim.RunShiftTicker(ctx, w) // ZBBS-WORK-278: shift/duty producer
 
