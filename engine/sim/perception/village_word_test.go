@@ -100,7 +100,7 @@ func TestBuildVillageWordSkipsNonGossipKinds(t *testing.T) {
 }
 
 // TestRenderVillageWordFraming pins the two per-line framings and the section
-// scaffolding (header + fallible-talk preamble).
+// header, and that no blanket fallible-talk preamble discounts the lines (LLM-425).
 func TestRenderVillageWordFraming(t *testing.T) {
 	var b strings.Builder
 	renderVillageWord(&b, []VillageRumorView{
@@ -111,8 +111,8 @@ func TestRenderVillageWordFraming(t *testing.T) {
 	if !strings.Contains(out, "## Word about the village") {
 		t.Fatalf("missing header:\n%s", out)
 	}
-	if !strings.Contains(out, "it may be true, it may be idle gossip") {
-		t.Fatalf("missing fallible-talk preamble:\n%s", out)
+	if strings.Contains(out, "it may be true, it may be idle gossip") {
+		t.Fatalf("blanket fallible-talk preamble should be gone:\n%s", out)
 	}
 	if !strings.Contains(out, "- You saw it yourself: Ezekiel Crane came up short of coin for a purchase.") {
 		t.Fatalf("first-hand framing wrong:\n%s", out)
