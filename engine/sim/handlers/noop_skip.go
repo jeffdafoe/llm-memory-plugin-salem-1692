@@ -140,8 +140,15 @@ func shouldSkipNoop(payload perception.Payload, thresholds sim.NeedThresholds, w
 	//     behavior that ticket removes. It can't strand either: company in the room is
 	//     a huddle (gated above), anything said to it is a high-info warrant, and at
 	//     22:00 the window closes, the go-home steer resumes, and Lever 1 beds it.
+	// SummonsForYou (LLM-414) holds the gate open in the suppressed steers'
+	// place, exactly the EveningLeisure pattern: while a summons stands,
+	// buildDutySteer and the evening invitation both yield to it — but those
+	// were the signals keeping an idle off-shift agent ticking, so without
+	// this a summoned target whose delivery tick didn't answer would
+	// skip-lock and never see the summons again. It self-extinguishes: the
+	// meeting, a take_break, or the errand TTL clears the cue.
 	if (payload.DutySteer != nil && !payload.DutySteer.AtPost) || payload.DutyPending ||
-		payload.EveningLeisure.Invitation() {
+		payload.EveningLeisure.Invitation() || payload.SummonsForYou != nil {
 		return false
 	}
 	return true

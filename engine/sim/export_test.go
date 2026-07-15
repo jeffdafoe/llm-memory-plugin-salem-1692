@@ -599,9 +599,10 @@ func RunSummonDeliverForTest(w *World, id ErrandID, now time.Time) {
 	runSummonChatPause(id, summonDeliver, now).Fn(w)
 }
 
-// ClearSummonCuesForTest exposes the cue-clear helper so sim_test can assert
-// the nil-safe / both-fields-cleared behavior directly.
-func ClearSummonCuesForTest(a *Actor) { clearSummonCues(a) }
+// ClearSummonCueForErrandForTest exposes the errand-scoped cue-clear helper
+// (LLM-414 replaced the clear-both clearSummonCues: PendingSummon now clears
+// only via its own errand / take_break / TTL).
+func ClearSummonCueForErrandForTest(a *Actor, id ErrandID) { clearSummonCueForErrand(a, id) }
 
 // RunSummonErrandTTLForTest fires the bounded-lifetime TTL body synchronously
 // so a test can assert a stuck/superseded errand (one whose tracked leg never

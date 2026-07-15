@@ -3,23 +3,35 @@ package sim
 import (
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 )
 
-// summon.go — the summon messenger-errand substrate (ZBBS-HOME-311). v2
-// in-memory port of v1's summon(target, reason?) tool. An NPC asks the
-// engine to fetch another villager; the engine does NOT teleport anyone —
-// it runs a multi-leg messenger errand:
+// summon.go — the summon messenger-errand substrate (ZBBS-HOME-311,
+// reworked LLM-414). v2 in-memory port of v1's summon(target, reason?)
+// tool. An NPC asks the engine to fetch another villager; the engine does
+// NOT teleport anyone — it runs a multi-leg messenger errand:
 //
-//  1. the summoner walks to a summon_point village object,
+//  1. the summoner walks to a summon_point village object (the bell — the
+//     diegetic "get a messenger's attention" ritual),
 //  2. a free messenger-attribute NPC walks to the same summon_point,
 //  3. the messenger pauses (chat beat), the summoner commissions it and the
-//     messenger acknowledges ("At once"),
+//     messenger acknowledges ("At once") — the summoner's errand role ends
+//     HERE (LLM-414): the ack speech warrants him and his own steers walk
+//     him back to his business; he does not wait at the bell,
 //  4. the messenger walks to the target's location,
 //  5. the messenger pauses (chat beat), then delivers
-//     "<target>, <summoner> summons you. <reason>,"
-//  6. the messenger walks back to where it started — errand done.
+//     "<target>, <summoner> summons you. Come to <the summoner's place>.
+//     <reason>" — the MEET PLACE is the summoner's own place (his post /
+//     wherever he is headed), NOT the bell (v1's back half, restored),
+//  6. the messenger walks home (untracked — nothing depends on it) and the
+//     errand waits in awaiting_target for the target to ANSWER: the
+//     target-side perception cue drives a model-chosen move_to; on the
+//     target's arrival at the meet place the errand forms/joins the huddle
+//     there (EnsureColocatedHuddle) so the meeting actually happens, then
+//     finishes ("met"). The target going anywhere else is a choice, not an
+//     answer — the cue stands until the errand TTL sweeps it.
 //
 // Refusal branch: if at the delivery dispatch the target can no longer be
 // located (gone, or has no walkable location), the messenger turns around
@@ -63,8 +75,12 @@ const SummonPointTag = "summon_point"
 //	summonerAtPoint      --ActorArrived(messenger)--> messengerAtPoint
 //	messengerAtPoint     --chat-pause callback------> messengerToTarget
 //	messengerToTarget    --ActorArrived(messenger)--> messengerAtTarget
-//	messengerAtTarget    --chat-pause callback------> messengerReturning
-//	messengerReturning   --ActorArrived(messenger)--> done (errand removed)
+//	messengerAtTarget    --chat-pause callback------> awaitingTarget
+//	awaitingTarget       --ActorArrived(target at meet place)--> done ("met")
+//
+// The messenger's walk home after delivery is untracked (LLM-414): nothing
+// downstream depends on it, and freeing the messenger at delivery lets it
+// carry another summons while this errand waits for its target.
 //
 // Refusal branch (entered from messengerAtPoint's callback when the target
 // can no longer be located):
@@ -78,7 +94,7 @@ const (
 	summonMessengerAtPoint    summonState = "messenger_at_point"
 	summonMessengerToTarget   summonState = "messenger_to_target"
 	summonMessengerAtTarget   summonState = "messenger_at_target"
-	summonMessengerReturning  summonState = "messenger_returning"
+	summonAwaitingTarget      summonState = "awaiting_target"
 	summonMessengerToSummoner summonState = "messenger_to_summoner"
 )
 
@@ -129,8 +145,39 @@ type summonErrand struct {
 	// flight for the actor we're waiting on. ActorArrived advances the
 	// machine only when its MovementAttemptID matches — a superseded or
 	// stale arrival (admin force-move, an out-of-band MoveActor) is ignored,
-	// same guard posture as npc_route's WalkTo check.
+	// same guard posture as npc_route's WalkTo check. NOT used for the
+	// awaiting_target leg: the target's walk is its own model-chosen move_to,
+	// so that leg matches on DESTINATION (MeetStructureID) instead.
 	LegAttemptID MovementAttemptID
+
+	// MeetStructureID is where the target was told to come — the summoner's
+	// own place, resolved at delivery time (summonMeetPlace). Empty when the
+	// summoner had no resolvable structure (the delivery fell back to the
+	// summon point's label and the bell's structure identity, when it has one).
+	MeetStructureID StructureID
+
+	// DispatchedAt / History are the observability trail (LLM-414): every
+	// state transition is stamped so the umbilical summon-errands view can
+	// show where an errand is — or, for the finished ring, where it died.
+	DispatchedAt time.Time
+	History      []SummonStateStamp
+}
+
+// SummonStateStamp is one observability breadcrumb: the errand entered State
+// at At. Exported because it rides the umbilical SummonErrandDTO unchanged.
+type SummonStateStamp struct {
+	State string    `json:"state"`
+	At    time.Time `json:"at"`
+}
+
+// setSummonState is the single transition chokepoint: stamps the new state,
+// appends the history breadcrumb, and logs the transition — the operator-
+// visible trail the live incident lacked (the action log showed movement but
+// not which state the errand died in).
+func setSummonState(e *summonErrand, s summonState, now time.Time) {
+	log.Printf("sim/summon: errand %d state %s -> %s", e.ID, e.State, s)
+	e.State = s
+	e.History = append(e.History, SummonStateStamp{State: string(s), At: now})
 }
 
 // RegisterSummonSubscriber wires the summon errand machine into the world:
@@ -156,13 +203,21 @@ func RegisterSummonSubscriber(w *World) {
 	}
 }
 
-// actorInActiveSummonErrand reports whether actor is the summoner or
-// messenger of any active errand. Consulted by the locomotion ticker's
+// actorInActiveSummonErrand reports whether actor is currently PLAYING a role
+// in an active errand's choreography. Consulted by the locomotion ticker's
 // finishArrival (via World.suppressArrivalWarrant) to suppress the arrival
 // warrant on an errand participant: the summoner shouldn't LLM-tick and
 // wander off mid-errand. (The messenger is a non-VA NPC and never
 // LLM-ticks anyway, but suppressing it too costs nothing and keeps the
 // predicate simple.)
+//
+// The summoner's role ends at the commission (LLM-414): from
+// messengerToTarget onward his arrival warrants must NOT be suppressed —
+// the "At once." ack speech warrants him, and his subsequent walk back to
+// his business needs its normal arrival tick, or he stands wherever he
+// lands with no turn to act on. The messenger stays suppressed for the
+// states it is actually walking in (it is freed at delivery by clearing
+// e.MessengerID, so awaiting_target matches no one).
 //
 // MUST be called from inside a Command.Fn / inline subscriber (reads the
 // errand map).
@@ -174,7 +229,14 @@ func actorInActiveSummonErrand(w *World, actor *Actor) bool {
 		if e == nil {
 			continue
 		}
-		if e.SummonerID == actor.ID || e.MessengerID == actor.ID {
+		if e.SummonerID == actor.ID {
+			switch e.State {
+			case summonDispatched, summonSummonerAtPoint, summonMessengerAtPoint:
+				return true
+			}
+			continue
+		}
+		if e.MessengerID != "" && e.MessengerID == actor.ID {
 			return true
 		}
 	}
@@ -224,9 +286,20 @@ func (w *World) nextErrandSeq() ErrandID {
 //   - no free messenger NPC is available.
 //   - the summoner can't path to the summon point.
 //
+// say (LLM-414) is the summoner's own in-character acknowledgement — the
+// social beat spoken to whoever asked, BEFORE the summoner sets off. summon
+// is terminal-on-success and so is speak, so without this the model had to
+// choose between agreeing out loud and actually summoning (the live LLM-414
+// incident: it agreed, the tick ended, and the summon waited 12.5 minutes
+// for an unrelated wake). Emitted through the real Speak pipeline (audience,
+// action log, turn-state) AFTER the pre-checks pass — a rejected summon must
+// not leave a stray "I'll send for him" hanging — and best-effort: a speak
+// rejection (no audience, a vocative gate) is logged, never fails the
+// dispatch the model committed to.
+//
 // On success the summoner is dispatched (MoveActor visit → summon point) and
 // the errand is inserted at state `dispatched`.
-func DispatchSummon(summonerID ActorID, targetRaw string, reason string, now time.Time) Command {
+func DispatchSummon(summonerID ActorID, targetRaw string, reason string, say string, now time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
 			if _, ok := w.Actors[summonerID]; !ok {
@@ -272,6 +345,16 @@ func DispatchSummon(summonerID ActorID, targetRaw string, reason string, now tim
 			}
 			messenger := w.Actors[messengerID]
 
+			// The social beat: the summoner's spoken acknowledgement lands in
+			// its current conversation BEFORE the walk to the bell pulls it
+			// out. Best-effort — the dispatch stands even if the line is
+			// rejected (e.g. genuinely no one within earshot).
+			if say != "" {
+				if _, err := Speak(summonerID, say, now).Fn(w); err != nil {
+					log.Printf("sim/summon: summoner %q say beat rejected (dispatch continues): %v", summonerID, err)
+				}
+			}
+
 			// Dispatch the summoner to the summon point (visit slot — they stand
 			// beside it, no entry required). leaveHuddleFirst=true: the summoner
 			// leaves any conversation to go wait for the messenger, matching
@@ -292,6 +375,8 @@ func DispatchSummon(summonerID ActorID, targetRaw string, reason string, now tim
 				SummonPointID:   pointID,
 				MessengerOrigin: Position{X: messenger.Pos.X, Y: messenger.Pos.Y},
 				LegAttemptID:    moveRes.MovementAttemptID,
+				DispatchedAt:    now,
+				History:         []SummonStateStamp{{State: string(summonDispatched), At: now}},
 			}
 			if w.SummonErrands == nil {
 				w.SummonErrands = map[ErrandID]*summonErrand{}
@@ -467,6 +552,13 @@ func summonPointDestination(w *World, pointID VillageObjectID) (MoveDestination,
 // handleSummonArrival is the inline ActorArrived subscriber. Runs on the
 // world goroutine during emit; advances the matching errand leg. Non-arrival
 // events and arrivals for actors in no errand fall through.
+//
+// Two matching regimes (LLM-414): the summoner/messenger legs are engine-
+// dispatched walks, so they match on the tracked MovementAttemptID; the
+// awaiting_target leg is the target's OWN model-chosen move_to, whose attempt
+// id the errand never sees — it matches on DESTINATION instead (the target
+// arriving at the meet structure). A target arrival anywhere else is a
+// choice, not an answer, and is ignored.
 func handleSummonArrival(w *World, evt Event) {
 	arrived, ok := evt.(*ActorArrived)
 	if !ok {
@@ -476,6 +568,17 @@ func handleSummonArrival(w *World, evt Event) {
 	if e == nil {
 		return
 	}
+	now := arrived.At
+	if role == summonRoleTarget {
+		if e.State != summonAwaitingTarget {
+			return
+		}
+		if e.MeetStructureID == "" || arrived.DestStructureID != e.MeetStructureID {
+			return
+		}
+		completeSummonMeeting(w, e, now)
+		return
+	}
 	// Stale-arrival guard: only the leg we dispatched advances the machine.
 	// A superseded MoveActor (admin force-move, out-of-band walk) carries a
 	// different MovementAttemptID and is ignored — the next legitimate
@@ -483,7 +586,6 @@ func handleSummonArrival(w *World, evt Event) {
 	if arrived.MovementAttemptID != e.LegAttemptID {
 		return
 	}
-	now := arrived.At
 	switch e.State {
 	case summonDispatched:
 		if role == summonRoleSummoner {
@@ -496,10 +598,6 @@ func handleSummonArrival(w *World, evt Event) {
 	case summonMessengerToTarget:
 		if role == summonRoleMessenger {
 			onMessengerAtTarget(w, e, now)
-		}
-	case summonMessengerReturning:
-		if role == summonRoleMessenger {
-			finishErrand(w, e, "delivered")
 		}
 	case summonMessengerToSummoner:
 		if role == summonRoleMessenger {
@@ -514,10 +612,14 @@ const (
 	summonRoleNone summonRole = iota
 	summonRoleSummoner
 	summonRoleMessenger
+	summonRoleTarget
 )
 
 // errandForArrival finds the active errand an arriving actor participates in
-// and which role it plays. Returns nil when the actor is in no errand.
+// and which role it plays. Returns nil when the actor is in no errand. The
+// target role only matters while the errand awaits it, but resolution stays
+// unconditional and the state check lives in the caller — one place decides
+// what a state does with an arrival.
 func errandForArrival(w *World, actorID ActorID) (*summonErrand, summonRole) {
 	for _, e := range w.SummonErrands {
 		if e == nil {
@@ -526,11 +628,39 @@ func errandForArrival(w *World, actorID ActorID) (*summonErrand, summonRole) {
 		if e.SummonerID == actorID {
 			return e, summonRoleSummoner
 		}
-		if e.MessengerID == actorID {
+		if e.MessengerID != "" && e.MessengerID == actorID {
 			return e, summonRoleMessenger
+		}
+		if e.TargetID == actorID {
+			return e, summonRoleTarget
 		}
 	}
 	return nil, summonRoleNone
+}
+
+// completeSummonMeeting is the errand's happy ending (LLM-414): the target
+// arrived at the meet place. Clear the target-side cue (the summons is
+// answered), join the target into the active huddle at the meet structure —
+// EnsureColocatedHuddle find-or-creates it, pulling in the summoner and
+// anyone already conversing there (the player who asked, typically) — and
+// finish. The HuddleJoined/PeerJoined warrants that join stamps are what
+// produce the greeting: both sides get a turn, and the arrival beat is the
+// model's own words, not a canned line.
+//
+// The huddle join is best-effort: the meeting is the target standing at the
+// meet place either way, and a join rejection (summoner wandered off, the
+// structure emptied) must not strand the errand — the outcome string records
+// which ending it was.
+func completeSummonMeeting(w *World, e *summonErrand, now time.Time) {
+	if target, ok := w.Actors[e.TargetID]; ok && target != nil {
+		clearSummonCueForErrand(target, e.ID)
+	}
+	outcome := "met"
+	if _, err := EnsureColocatedHuddle(e.TargetID, now).Fn(w); err != nil {
+		log.Printf("sim/summon: errand %d meeting huddle failed: %v", e.ID, err)
+		outcome = "met_no_huddle"
+	}
+	finishErrand(w, e, outcome)
 }
 
 // onSummonerAtPoint: the summoner reached the summon point. Dispatch the
@@ -558,14 +688,14 @@ func onSummonerAtPoint(w *World, e *summonErrand, now time.Time) {
 		return
 	}
 	e.LegAttemptID = res.(MoveActorResult).MovementAttemptID
-	e.State = summonSummonerAtPoint
+	setSummonState(e, summonSummonerAtPoint, now)
 }
 
 // onMessengerAtPoint: the messenger reached the summon point. Hold the chat
 // beat, then commission the messenger. Advance to messengerAtPoint and
 // schedule the commissioning callback.
 func onMessengerAtPoint(w *World, e *summonErrand, now time.Time) {
-	e.State = summonMessengerAtPoint
+	setSummonState(e, summonMessengerAtPoint, now)
 	scheduleSummonChatPause(w, e.ID, summonCommission)
 }
 
@@ -573,7 +703,7 @@ func onMessengerAtPoint(w *World, e *summonErrand, now time.Time) {
 // chat beat, then deliver. Advance to messengerAtTarget and schedule the
 // delivery callback.
 func onMessengerAtTarget(w *World, e *summonErrand, now time.Time) {
-	e.State = summonMessengerAtTarget
+	setSummonState(e, summonMessengerAtTarget, now)
 	scheduleSummonChatPause(w, e.ID, summonDeliver)
 }
 
@@ -730,12 +860,13 @@ func summonDoCommission(w *World, e *summonErrand, now time.Time) {
 		return
 	}
 	e.LegAttemptID = res.(MoveActorResult).MovementAttemptID
-	e.State = summonMessengerToTarget
+	setSummonState(e, summonMessengerToTarget, now)
 }
 
 // summonDoDeliver emits the delivery beat at the target, stamps the
-// target-side perception cue + the action-log entry, then sends the
-// messenger home (final leg). Advances the errand to messengerReturning.
+// target-side perception cue + the action-log entry, sends the messenger
+// home (untracked — see below), and parks the errand in awaiting_target
+// until the target's own move_to answers the summons (LLM-414).
 func summonDoDeliver(w *World, e *summonErrand, now time.Time) {
 	messenger := w.Actors[e.MessengerID]
 	target := w.Actors[e.TargetID]
@@ -746,17 +877,27 @@ func summonDoDeliver(w *World, e *summonErrand, now time.Time) {
 		return
 	}
 
+	// The meet place is the summoner's OWN place, resolved now (his post,
+	// the place he's walking back to, or where he stands) — the v1 back
+	// half. The bell is only the commissioning ritual; nobody meets there.
+	meetID, meetLabel := summonMeetPlace(w, e)
+	e.MeetStructureID = meetID
+
 	summonerName := summonerDisplayName(w, e.SummonerID)
-	deliveryText := summonDeliveryText(target.DisplayName, summonerName, e.Reason)
+	deliveryText := summonDeliveryText(target.DisplayName, summonerName, meetLabel, e.Reason)
 	emitSummonSpoke(w, e.MessengerID, target.CurrentHuddleID, []ActorID{e.TargetID}, deliveryText, now)
 
 	// Target-side perception cue — drives the summoned NPC to move_to the
-	// summon point. Faded after the target next acts (see consumeSummonCues).
+	// meet place. It survives the target's speech and its walk (the walk IS
+	// the answer in progress); it is cleared by the meeting itself, a
+	// take_break, or the errand's TTL. See handleSummonResponseFade.
 	target.PendingSummon = &PendingSummon{
-		SummonerName: summonerName,
-		Place:        summonPointLabel(w, e.SummonPointID),
-		Reason:       e.Reason,
-		At:           now,
+		ErrandID:         e.ID,
+		SummonerName:     summonerName,
+		Place:            meetLabel,
+		PlaceStructureID: meetID,
+		Reason:           e.Reason,
+		At:               now,
 	}
 
 	// Action-log row: the delivery is the target's summons event. Best-effort
@@ -772,19 +913,68 @@ func summonDoDeliver(w *World, e *summonErrand, now time.Time) {
 		log.Printf("sim/summon: errand %d action-log append failed: %v", e.ID, err)
 	}
 
-	// Final leg: messenger walks back to where it started.
-	res, err := MoveActor(e.MessengerID, NewPositionDestination(e.MessengerOrigin), true, now).Fn(w)
-	if err != nil {
-		// Can't get home (origin tile now blocked). The delivery already
-		// landed, so this is a clean done — just remove the errand rather
-		// than stranding it.
-		log.Printf("sim/summon: errand %d delivered but messenger %q cannot return home: %v — finishing",
+	// Send the messenger home, UNTRACKED, and free it from the errand:
+	// nothing downstream depends on its walk, and a freed messenger can
+	// carry another summons while this errand waits for its target. A
+	// failed return walk strands nothing (the stranded backstop covers a
+	// parked NPC).
+	if _, err := MoveActor(e.MessengerID, NewPositionDestination(e.MessengerOrigin), true, now).Fn(w); err != nil {
+		log.Printf("sim/summon: errand %d messenger %q cannot return home: %v",
 			e.ID, e.MessengerID, err)
-		finishErrand(w, e, "delivered_no_return")
-		return
 	}
-	e.LegAttemptID = res.(MoveActorResult).MovementAttemptID
-	e.State = summonMessengerReturning
+	e.MessengerID = ""
+
+	setSummonState(e, summonAwaitingTarget, now)
+
+	// Degenerate immediate meeting: the target is ALREADY at the meet place
+	// (summoned someone standing in the same building). Complete on the spot
+	// rather than waiting for a walk that will never happen.
+	if meetID != "" && target.InsideStructureID == meetID {
+		completeSummonMeeting(w, e, now)
+	}
+}
+
+// summonMeetPlace resolves where the target should be told to come — the
+// summoner's own place at delivery time. Ladder: the structure the summoner
+// is inside; the structure an in-flight walk is headed to (the usual case
+// right after the commission — he is walking back to his post); the
+// structure whose loiter pin he stands at; else the summon point (the bell)
+// as neutral-ground fallback, which for a bare placement yields an empty
+// structure id — the cue then names the label alone, and the errand can only
+// finish by TTL (no destination to match), which the outcome trail records.
+func summonMeetPlace(w *World, e *summonErrand) (StructureID, string) {
+	summoner := w.Actors[e.SummonerID]
+	if summoner != nil {
+		if summoner.InsideStructureID != "" {
+			if st := w.Structures[summoner.InsideStructureID]; st != nil {
+				return summoner.InsideStructureID, structureLabel(w, summoner.InsideStructureID)
+			}
+		}
+		if summoner.MoveIntent != nil && summoner.MoveIntent.Destination.StructureID != nil {
+			dest := *summoner.MoveIntent.Destination.StructureID
+			if st := w.Structures[dest]; st != nil {
+				return dest, structureLabel(w, dest)
+			}
+		}
+		if objID, ok := resolveLoiteringObject(w, summoner.Pos, LoiterAttributionTiles); ok {
+			if st := w.Structures[StructureID(objID)]; st != nil {
+				return StructureID(objID), structureLabel(w, StructureID(objID))
+			}
+		}
+	}
+	if _, ok := w.Structures[StructureID(e.SummonPointID)]; ok {
+		return StructureID(e.SummonPointID), summonPointLabel(w, e.SummonPointID)
+	}
+	return "", summonPointLabel(w, e.SummonPointID)
+}
+
+// structureLabel resolves a structure's display name, falling back to the raw
+// id so the cue never renders an empty place.
+func structureLabel(w *World, id StructureID) string {
+	if st, ok := w.Structures[id]; ok && st != nil && st.DisplayName != "" {
+		return st.DisplayName
+	}
+	return string(id)
 }
 
 // startRefusalReturn turns the messenger toward the summoner to deliver the
@@ -810,16 +1000,85 @@ func startRefusalReturn(w *World, e *summonErrand, now time.Time) {
 		return
 	}
 	e.LegAttemptID = res.(MoveActorResult).MovementAttemptID
-	e.State = summonMessengerToSummoner
+	setSummonState(e, summonMessengerToSummoner, now)
 }
 
 // finishErrand removes the errand from the world map. THE bounded-membership
 // chokepoint: every terminal path (normal completion, refusal, abandon,
-// participant-gone) routes through here, so no exit leaves a stale entry that
-// would suppress the summoner's arrival warrants forever.
+// participant-gone, TTL expiry) routes through here, so no exit leaves a
+// stale entry that would suppress the summoner's arrival warrants forever.
+//
+// It also (LLM-414):
+//   - clears the target's PendingSummon cue when it belongs to THIS errand —
+//     a cue must not outlive its errand (the steer suppression keys on it),
+//     and an expired errand's target must get its go-home steers back;
+//   - records the errand into the recent-errands observability ring so the
+//     umbilical can show where a finished errand ended after the live map
+//     entry is gone (the live incident was undiagnosable precisely because
+//     completion erased the trail).
 func finishErrand(w *World, e *summonErrand, outcome string) {
 	delete(w.SummonErrands, e.ID)
+	if target, ok := w.Actors[e.TargetID]; ok && target != nil {
+		clearSummonCueForErrand(target, e.ID)
+	}
+	recordFinishedSummonErrand(w, e, outcome, time.Now().UTC())
 	log.Printf("sim/summon: errand %d finished (%s)", e.ID, outcome)
+}
+
+// clearSummonCueForErrand drops an actor's PendingSummon only when it was
+// stamped by the given errand — a newer errand's cue (the same actor summoned
+// again) must not be wiped by an older errand's terminal path.
+func clearSummonCueForErrand(a *Actor, id ErrandID) {
+	if a == nil || a.PendingSummon == nil {
+		return
+	}
+	if a.PendingSummon.ErrandID == id {
+		a.PendingSummon = nil
+	}
+}
+
+// summonErrandHistoryCap bounds the recent-errands observability ring: big
+// enough to hold days of real summon traffic (the errand is rare), small
+// enough to never matter in memory.
+const summonErrandHistoryCap = 32
+
+// FinishedSummonErrand is one recent-errands ring entry — the post-mortem
+// record of a completed/failed errand for the umbilical summon-errands view.
+// Names are resolved at finish time (the actors could be deleted later).
+type FinishedSummonErrand struct {
+	ID            ErrandID           `json:"id"`
+	SummonerID    ActorID            `json:"summoner_id"`
+	SummonerName  string             `json:"summoner_name"`
+	TargetID      ActorID            `json:"target_id"`
+	TargetName    string             `json:"target_name"`
+	Reason        string             `json:"reason,omitempty"`
+	Outcome       string             `json:"outcome"`
+	MeetStructure StructureID        `json:"meet_structure_id,omitempty"`
+	DispatchedAt  time.Time          `json:"dispatched_at"`
+	FinishedAt    time.Time          `json:"finished_at"`
+	History       []SummonStateStamp `json:"history"`
+}
+
+// recordFinishedSummonErrand appends the errand's post-mortem to the world's
+// recent-errands ring, evicting the oldest past the cap. World-goroutine-only.
+func recordFinishedSummonErrand(w *World, e *summonErrand, outcome string, finishedAt time.Time) {
+	rec := FinishedSummonErrand{
+		ID:            e.ID,
+		SummonerID:    e.SummonerID,
+		SummonerName:  targetDisplayName(w, e.SummonerID),
+		TargetID:      e.TargetID,
+		TargetName:    targetDisplayName(w, e.TargetID),
+		Reason:        e.Reason,
+		Outcome:       outcome,
+		MeetStructure: e.MeetStructureID,
+		DispatchedAt:  e.DispatchedAt,
+		FinishedAt:    finishedAt,
+		History:       append([]SummonStateStamp(nil), e.History...),
+	}
+	w.recentSummonErrands = append(w.recentSummonErrands, rec)
+	if len(w.recentSummonErrands) > summonErrandHistoryCap {
+		w.recentSummonErrands = w.recentSummonErrands[len(w.recentSummonErrands)-summonErrandHistoryCap:]
+	}
 }
 
 // summonTargetDestination resolves where the messenger should walk to reach
@@ -899,55 +1158,119 @@ func summonAcknowledgeText() string {
 	return "At once."
 }
 
-func summonDeliveryText(targetName, summonerName, reason string) string {
+func summonDeliveryText(targetName, summonerName, meetLabel, reason string) string {
 	if reason != "" {
-		return fmt.Sprintf("%s, %s summons you. %s", targetName, summonerName, reason)
+		return fmt.Sprintf("%s, %s summons you — come to %s. %s", targetName, summonerName, meetLabel, reason)
 	}
-	return fmt.Sprintf("%s, %s summons you.", targetName, summonerName)
+	return fmt.Sprintf("%s, %s summons you — come to %s.", targetName, summonerName, meetLabel)
 }
 
 func summonRefusalText(targetName string) string {
 	return fmt.Sprintf("I could not find %s anywhere.", targetName)
 }
 
-// clearSummonCues drops the actor's summon perception cues. Called from the
-// response-fade subscriber (handleSummonResponseFade) when the actor commits a
-// move_to / speak / take_break — its "answer" to the summons in v1's sense.
-// No-op when the actor carries no cue (the overwhelming common case).
-func clearSummonCues(a *Actor) {
-	if a == nil {
-		return
-	}
-	a.PendingSummon = nil
-	a.SummonRefusal = nil
+// ActiveSummonErrandDTO is one live errand on the umbilical summon-errands
+// wire: the in-flight mirror of FinishedSummonErrand (no outcome yet).
+type ActiveSummonErrandDTO struct {
+	ID            ErrandID           `json:"id"`
+	State         string             `json:"state"`
+	SummonerID    ActorID            `json:"summoner_id"`
+	SummonerName  string             `json:"summoner_name"`
+	MessengerID   ActorID            `json:"messenger_id,omitempty"`
+	TargetID      ActorID            `json:"target_id"`
+	TargetName    string             `json:"target_name"`
+	Reason        string             `json:"reason,omitempty"`
+	MeetStructure StructureID        `json:"meet_structure_id,omitempty"`
+	DispatchedAt  time.Time          `json:"dispatched_at"`
+	History       []SummonStateStamp `json:"history"`
 }
 
-// handleSummonResponseFade is the inline subscriber that fades a summon cue
-// once its holder RESPONDS. v1 dropped a summons from perception only after
-// the target committed a move_to / take_break / speak (the three "I acted"
-// verbs) — crucially NOT on any tick, so a summoned NPC that ticked for an
-// unrelated reason (e.g. ate because it was hungry) kept seeing the summons.
-// v2 mirrors that: the cue is a persistent ActorSnapshot field (it survives
-// ticks) and is cleared here on ActorMoveStarted / TookBreak / Spoke for the
-// acting actor. The errand-driven moves/speech of the messenger and summoner
-// also pass through, but neither holds a target-side cue at that point (the
-// messenger is never a summon target; the summoner's only cue is a prior
-// refusal it has rightly acted past when it moves/speaks again), so clearing
-// is correct in every case. Cheap: one map lookup + a nil-field check per
-// response event. Runs on the world goroutine during emit.
+// SummonErrandsReportResult is the SummonErrandsReport payload: live errands
+// (dispatch order) + the recent finished ring (oldest first).
+type SummonErrandsReportResult struct {
+	Active []ActiveSummonErrandDTO `json:"active"`
+	Recent []FinishedSummonErrand  `json:"recent"`
+}
+
+// SummonErrandsReport returns a Command that snapshots the live errand map +
+// the recent-errands ring for the umbilical GET /summon-errands read (LLM-414
+// observability DoD). Read-only; names resolved live.
+func SummonErrandsReport() Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			out := SummonErrandsReportResult{
+				Active: []ActiveSummonErrandDTO{},
+				Recent: append([]FinishedSummonErrand{}, w.recentSummonErrands...),
+			}
+			for _, e := range w.SummonErrands {
+				if e == nil {
+					continue
+				}
+				out.Active = append(out.Active, ActiveSummonErrandDTO{
+					ID:            e.ID,
+					State:         string(e.State),
+					SummonerID:    e.SummonerID,
+					SummonerName:  targetDisplayName(w, e.SummonerID),
+					MessengerID:   e.MessengerID,
+					TargetID:      e.TargetID,
+					TargetName:    targetDisplayName(w, e.TargetID),
+					Reason:        e.Reason,
+					MeetStructure: e.MeetStructureID,
+					DispatchedAt:  e.DispatchedAt,
+					History:       append([]SummonStateStamp(nil), e.History...),
+				})
+			}
+			sort.Slice(out.Active, func(i, j int) bool { return out.Active[i].ID < out.Active[j].ID })
+			return out, nil
+		},
+	}
+}
+
+// handleSummonResponseFade is the inline subscriber that fades summon cues.
+// The two cues fade on DIFFERENT verbs (LLM-414):
+//
+//   - SummonRefusAL (summoner-side, informational) keeps the v1 posture: any
+//     move / speak / take_break by its holder is acting past the news, so all
+//     three clear it.
+//
+//   - PendingSummon (target-side, actionable) is deliberately STICKIER than
+//     v1. The live incident showed why the v1 fade loses the summons on weak
+//     models: a spoken "Aye, I'm coming" is terminal-on-success, cleared the
+//     cue, and the next tick had no summons left to act on — and a move
+//     ANYWHERE (home, in the incident) also read as an answer. Now the cue
+//     survives the target's speech and its walk (the walk toward the meet
+//     place IS the answer in progress, and the arrival tick needs the cue as
+//     scene context for the greeting — a shared-VA target has no transcript
+//     memory of the delivery). It clears on:
+//
+//   - the meeting itself (completeSummonMeeting / finishErrand),
+//
+//   - take_break — an explicit settling-in that says "not going",
+//
+//   - the errand's TTL sweep (finishErrand("expired")),
+//     and perception additionally stops rendering a cue older than
+//     summonCueRenderTTL as read-time defense (perception/summon.go).
+//
+// Cheap: one map lookup + a nil-field check per response event. Runs on the
+// world goroutine during emit.
 func handleSummonResponseFade(w *World, evt Event) {
 	var actorID ActorID
+	clearPending := false
 	switch e := evt.(type) {
 	case *ActorMoveStarted:
 		actorID = e.ActorID
 	case *TookBreak:
 		actorID = e.ActorID
+		clearPending = true
 	case *Spoke:
 		actorID = e.SpeakerID
 	default:
 		return
 	}
 	if a, ok := w.Actors[actorID]; ok && a != nil {
-		clearSummonCues(a)
+		a.SummonRefusal = nil
+		if clearPending {
+			a.PendingSummon = nil
+		}
 	}
 }

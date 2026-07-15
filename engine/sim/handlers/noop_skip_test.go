@@ -248,6 +248,23 @@ func TestShouldSkipNoop_EveningLeisurePresent_DoesNotSkip(t *testing.T) {
 	// carries EveningLeisure=nil.
 }
 
+func TestShouldSkipNoop_SummonsPresent_DoesNotSkip(t *testing.T) {
+	// LLM-414: a live summons suppresses the duty steer and the evening
+	// invitation — the very signals that held this gate open. The summons
+	// section must hold it open in their place, or a summoned target whose
+	// delivery tick didn't answer skip-locks and never re-sees the summons.
+	pl := quietPayload()
+	pl.SummonsForYou = &perception.SummonsForYouView{
+		SummonerName: "John Ellis", Place: "the Tavern", PlaceStructureID: "tavern",
+	}
+	if shouldSkipNoop(pl, defaultThresholds(), []sim.WarrantMeta{idleBackstopWarrant()}) {
+		t.Fatalf("expected skip=false when payload carries a pending summons")
+	}
+	// The nil baseline (skip=true) is pinned by
+	// TestShouldSkipNoop_IdleBackstopAlone_NoPeerNoNeeds_Skips — quietPayload
+	// carries SummonsForYou=nil.
+}
+
 // TestShouldSkipNoop_EveningLeisureRenderOnlyVariants_Skip: only the INVITATION is a
 // standing actionable signal. The render-only variants are scenes the agent has nothing
 // to act on, so an idle-backstop tick under either must still skip — forcing the tick

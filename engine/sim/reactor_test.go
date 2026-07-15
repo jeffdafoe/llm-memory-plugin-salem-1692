@@ -1314,6 +1314,69 @@ func TestCompleteReactorTick_MatchingAttemptIDClears(t *testing.T) {
 	})
 }
 
+// TestCompleteReactorTick_SkippedIntentStampsWarrant — LLM-414. A completion
+// carrying SkippedIntentTools (the harness dropped commit calls queued after
+// a terminal one) stamps a fresh unfinished_intent warrant cycle, so the
+// actor re-ticks promptly and can finish what it meant to do. Only on
+// addressing terminal statuses; a failed-before-render completion (the actor
+// never perceived the turn) stamps nothing.
+func TestCompleteReactorTick_SkippedIntentStampsWarrant(t *testing.T) {
+	w, cancel := buildReactorTestWorld(t)
+	defer cancel()
+
+	setInFlight := func(attempt sim.TickAttemptID) {
+		_, _ = w.Send(sim.Command{
+			Fn: func(world *sim.World) (any, error) {
+				a := world.Actors["alice"]
+				a.TickInFlight = true
+				a.TickAttemptID = attempt
+				return nil, nil
+			},
+		})
+	}
+
+	setInFlight("tk-1")
+	_, err := w.Send(sim.CompleteReactorTick("alice", "tk-1", sim.TickResult{
+		TerminalStatus:     sim.TickStatusSuccess,
+		SkippedIntentTools: []string{"summon"},
+	}, time.Now()))
+	if err != nil {
+		t.Fatalf("CompleteReactorTick: %v", err)
+	}
+	inspectActor(t, w, "alice", func(a *sim.Actor) {
+		if a.WarrantedSince == nil || len(a.Warrants) != 1 {
+			t.Fatalf("want exactly one fresh warrant cycle after skipped-intent completion, got %d (warranted=%v)", len(a.Warrants), a.WarrantedSince != nil)
+		}
+		r, ok := a.Warrants[0].Reason.(sim.UnfinishedIntentWarrantReason)
+		if !ok {
+			t.Fatalf("warrant reason = %T, want UnfinishedIntentWarrantReason", a.Warrants[0].Reason)
+		}
+		if r.Tools != "summon" {
+			t.Errorf("reason.Tools = %q, want summon", r.Tools)
+		}
+		// Clear for the next leg of the test.
+		a.WarrantedSince = nil
+		a.WarrantDueAt = nil
+		a.Warrants = nil
+	})
+
+	// Non-addressing status (failed-before-render): the actor never made the
+	// choice — no warrant.
+	setInFlight("tk-2")
+	_, err = w.Send(sim.CompleteReactorTick("alice", "tk-2", sim.TickResult{
+		TerminalStatus:     sim.TickStatusFailedBeforeRender,
+		SkippedIntentTools: []string{"summon"},
+	}, time.Now()))
+	if err != nil {
+		t.Fatalf("CompleteReactorTick (failed-before-render): %v", err)
+	}
+	inspectActor(t, w, "alice", func(a *sim.Actor) {
+		if len(a.Warrants) != 0 {
+			t.Errorf("failed-before-render completion stamped %d warrants, want 0", len(a.Warrants))
+		}
+	})
+}
+
 // TestCompleteReactorTick_StaleCompletionIgnored: completion command
 // with a mismatched AttemptID is a no-op (Stale=true). This is the
 // guard against a late attempt-1 completion clearing attempt-2's flag.

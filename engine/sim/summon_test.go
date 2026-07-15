@@ -9,24 +9,25 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/repo/mem"
 )
 
-// summon_test.go — ZBBS-HOME-311. Exercises the summon messenger-errand
-// state machine end to end: the dispatch happy-path through every state to
-// done, the refusal branch, each ActorArrived-driven and chat-pause-driven
-// transition, messenger selection (free/busy/none), and the pre-check
-// rejections. The bounded-membership invariant — the errand map is empty
-// after EVERY terminal path — is asserted in every terminal case.
+// summon_test.go — ZBBS-HOME-311, reworked LLM-414. Exercises the summon
+// messenger-errand state machine end to end: the dispatch happy-path through
+// every state to the meeting, the refusal branch, each ActorArrived-driven
+// and chat-pause-driven transition, messenger selection (free/busy/none),
+// and the pre-check rejections. The bounded-membership invariant — the
+// errand map is empty after EVERY terminal path — is asserted in every
+// terminal case.
 //
 // The machine is driven synchronously: walk legs are advanced by synthesizing
 // ActorArrived via sim.EmitForTest (the subscriber reads only ActorID +
-// MovementAttemptID, never the actor's tile, so no real locomotion is
-// needed), and the two chat-pause beats are fired via the
+// MovementAttemptID / DestStructureID, never the actor's tile, so no real
+// locomotion is needed), and the two chat-pause beats are fired via the
 // RunSummon*ForTest export-test drivers (the AfterFunc bodies run inline).
 
 const (
 	stDispatched          = "dispatched"
 	stSummonerAtPoint     = "summoner_at_point"
 	stMessengerToTarget   = "messenger_to_target"
-	stMessengerReturning  = "messenger_returning"
+	stAwaitingTarget      = "awaiting_target"
 	stMessengerToSummoner = "messenger_to_summoner"
 )
 
@@ -88,10 +89,11 @@ func buildSummonWorldOpt(t *testing.T, pointBacksStructure bool) (*sim.World, co
 	return w, cancel
 }
 
-// dispatchSummon runs DispatchSummon and returns the new errand id.
+// dispatchSummon runs DispatchSummon (no say beat) and returns the new
+// errand id.
 func dispatchSummon(t *testing.T, w *sim.World, summoner, target sim.ActorID, reason string) sim.ErrandID {
 	t.Helper()
-	res, err := w.Send(sim.DispatchSummon(summoner, string(target), reason, time.Now().UTC()))
+	res, err := w.Send(sim.DispatchSummon(summoner, string(target), reason, "", time.Now().UTC()))
 	if err != nil {
 		t.Fatalf("DispatchSummon(%q->%q): %v", summoner, target, err)
 	}
@@ -100,6 +102,25 @@ func dispatchSummon(t *testing.T, w *sim.World, summoner, target sim.ActorID, re
 		t.Fatalf("DispatchSummon returned %T, want sim.ErrandID", res)
 	}
 	return id
+}
+
+// arriveTargetAt synthesizes the TARGET's model-driven arrival at a
+// destination structure — the awaiting_target leg matches on destination,
+// not on a tracked MovementAttemptID (the errand never sees the target's own
+// move_to attempt).
+func arriveTargetAt(t *testing.T, w *sim.World, target sim.ActorID, dest sim.StructureID) {
+	t.Helper()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		sim.EmitForTest(world, &sim.ActorArrived{
+			ActorID:           target,
+			DestStructureID:   dest,
+			MovementAttemptID: 424242,
+			At:                time.Now().UTC(),
+		})
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("emit target ActorArrived at %q: %v", dest, err)
+	}
 }
 
 // arriveLeg synthesizes the ActorArrived for the errand's current leg —
@@ -242,10 +263,14 @@ func TestSummonHappyPath(t *testing.T) {
 		t.Fatalf("after messenger arrival at target: state %q, want messenger_at_target", st)
 	}
 
-	// Delivery beat → delivery cue stamped + messenger heads home.
+	// Delivery beat → delivery cue stamped, messenger freed (walks home
+	// untracked), errand parks awaiting the target's answer (LLM-414).
 	runDeliver(t, w, id)
-	if st, _ := errandState(t, w, id); st != stMessengerReturning {
-		t.Fatalf("after deliver: state %q, want %q", st, stMessengerReturning)
+	if st, _ := errandState(t, w, id); st != stAwaitingTarget {
+		t.Fatalf("after deliver: state %q, want %q", st, stAwaitingTarget)
+	}
+	if m := messengerOf(t, w, id); m != "" {
+		t.Fatalf("messenger %q still bound to the errand after delivery — must be freed for the next summons", m)
 	}
 	if cue := pendingSummonOf(t, w, "target"); cue == nil {
 		t.Fatal("target has no PendingSummon cue after delivery")
@@ -253,18 +278,38 @@ func TestSummonHappyPath(t *testing.T) {
 		if cue.SummonerName != "Goodwife Bishop" {
 			t.Errorf("PendingSummon.SummonerName = %q, want Goodwife Bishop", cue.SummonerName)
 		}
+		// The meet place resolves off the summoner's in-flight bell walk
+		// (MoveIntent → the structure-backed square) — the summoner's own
+		// place, never a separate rendezvous.
 		if cue.Place != "the town square" {
 			t.Errorf("PendingSummon.Place = %q, want the town square", cue.Place)
 		}
+		if cue.PlaceStructureID != "square" {
+			t.Errorf("PendingSummon.PlaceStructureID = %q, want square", cue.PlaceStructureID)
+		}
 	}
 
-	// Leg 4: messenger arrives home → done; map empties.
-	arriveLeg(t, w, id, "courier")
+	// The target's arrival ELSEWHERE is a choice, not an answer: nothing
+	// advances and the cue stands.
+	arriveTargetAt(t, w, "target", "somewhere-else")
+	if st, _ := errandState(t, w, id); st != stAwaitingTarget {
+		t.Fatalf("target arrival elsewhere advanced the errand: state %q, want %q", st, stAwaitingTarget)
+	}
+	if cue := pendingSummonOf(t, w, "target"); cue == nil {
+		t.Fatal("cue cleared by the target's arrival elsewhere")
+	}
+
+	// The target's arrival AT the meet place answers the summons: cue
+	// cleared, errand done, map empties.
+	arriveTargetAt(t, w, "target", "square")
 	if _, ok := errandState(t, w, id); ok {
-		t.Fatal("errand still present after final arrival")
+		t.Fatal("errand still present after the target reached the meet place")
 	}
 	if n := errandCount(t, w); n != 0 {
 		t.Fatalf("errand map has %d entries after done, want 0 (bounded membership)", n)
+	}
+	if cue := pendingSummonOf(t, w, "target"); cue != nil {
+		t.Fatal("PendingSummon cue not cleared by the meeting")
 	}
 }
 
@@ -312,7 +357,7 @@ func TestSummonRefusalBranch(t *testing.T) {
 func TestSummonRejectSelf(t *testing.T) {
 	w, cancel := buildSummonWorld(t)
 	defer cancel()
-	if _, err := w.Send(sim.DispatchSummon("summoner", "summoner", "", time.Now().UTC())); err == nil {
+	if _, err := w.Send(sim.DispatchSummon("summoner", "summoner", "", "", time.Now().UTC())); err == nil {
 		t.Fatal("DispatchSummon(self) did not error")
 	}
 	if n := errandCount(t, w); n != 0 {
@@ -324,7 +369,7 @@ func TestSummonRejectSelf(t *testing.T) {
 func TestSummonRejectUnknownTarget(t *testing.T) {
 	w, cancel := buildSummonWorld(t)
 	defer cancel()
-	if _, err := w.Send(sim.DispatchSummon("summoner", "ghost", "", time.Now().UTC())); err == nil {
+	if _, err := w.Send(sim.DispatchSummon("summoner", "ghost", "", "", time.Now().UTC())); err == nil {
 		t.Fatal("DispatchSummon(unknown target) did not error")
 	}
 	if n := errandCount(t, w); n != 0 {
@@ -351,7 +396,7 @@ func TestSummonRejectNoSummonPoint(t *testing.T) {
 	defer cancel()
 	go w.Run(ctx)
 
-	if _, err := w.Send(sim.DispatchSummon("summoner", "target", "", time.Now().UTC())); err == nil {
+	if _, err := w.Send(sim.DispatchSummon("summoner", "target", "", "", time.Now().UTC())); err == nil {
 		t.Fatal("DispatchSummon with no summon_point did not error")
 	}
 	if n := errandCount(t, w); n != 0 {
@@ -384,7 +429,7 @@ func TestSummonMessengerSelection_NoneFree(t *testing.T) {
 	defer cancel()
 	go w.Run(ctx)
 
-	if _, err := w.Send(sim.DispatchSummon("summoner", "target", "", time.Now().UTC())); err == nil {
+	if _, err := w.Send(sim.DispatchSummon("summoner", "target", "", "", time.Now().UTC())); err == nil {
 		t.Fatal("DispatchSummon with no free messenger did not error")
 	}
 	if n := errandCount(t, w); n != 0 {
@@ -410,7 +455,7 @@ func TestSummonMessengerSelection_Busy(t *testing.T) {
 		world.Actors["summoner2"] = &sim.Actor{ID: "summoner2", DisplayName: "S2", LLMAgent: "va-2", Pos: sim.TilePos{X: sim.PadX, Y: sim.PadY + 1}}
 		return nil, nil
 	}})
-	if _, err := w.Send(sim.DispatchSummon("summoner2", "target", "", time.Now().UTC())); err == nil {
+	if _, err := w.Send(sim.DispatchSummon("summoner2", "target", "", "", time.Now().UTC())); err == nil {
 		t.Fatal("second DispatchSummon succeeded while the only messenger was busy")
 	}
 	// First errand still present, unaffected.
@@ -426,7 +471,7 @@ func TestSummonRejectDoubleDispatch(t *testing.T) {
 	defer cancel()
 
 	dispatchSummon(t, w, "summoner", "target", "")
-	if _, err := w.Send(sim.DispatchSummon("summoner", "target", "", time.Now().UTC())); err == nil {
+	if _, err := w.Send(sim.DispatchSummon("summoner", "target", "", "", time.Now().UTC())); err == nil {
 		t.Fatal("second DispatchSummon by the same summoner did not error")
 	}
 	if n := errandCount(t, w); n != 1 {
@@ -456,26 +501,30 @@ func TestSummonStaleArrivalIgnored(t *testing.T) {
 	}
 }
 
-// TestSummonCuesFadeOnResponse: a summon cue persists across ticks/events and
-// fades only when its HOLDER responds — commits a move_to / speak / take_break
-// (v1's drop-on-response semantics, NOT drop-on-any-tick, so a summoned NPC
-// that ticks for an unrelated reason doesn't forget the summons). An unrelated
-// actor's event must leave the cue alone.
+// TestSummonCuesFadeOnResponse — the LLM-414 fade rules. PendingSummon is
+// STICKY: it survives the holder's own speech ("Aye, I'm coming" is terminal
+// and used to erase the summons) and its own walk (the walk toward the meet
+// place IS the answer in progress, and the arrival tick needs the cue as
+// scene context). It clears on take_break (an explicit settling-in), on the
+// meeting, and on the errand's terminal paths. SummonRefusal keeps the v1
+// posture: any own move/speak/break fades it.
 func TestSummonCuesFadeOnResponse(t *testing.T) {
-	// Unit: the clear helper nils both fields and is nil-safe.
+	// Unit: the errand-scoped clear drops only a matching errand's cue.
 	a := &sim.Actor{
 		ID:            "x",
-		PendingSummon: &sim.PendingSummon{SummonerName: "S", Place: "p"},
-		SummonRefusal: &sim.SummonRefusal{TargetName: "T"},
+		PendingSummon: &sim.PendingSummon{ErrandID: 7, SummonerName: "S", Place: "p"},
 	}
-	sim.ClearSummonCuesForTest(a)
-	if a.PendingSummon != nil || a.SummonRefusal != nil {
-		t.Error("clearSummonCues did not nil both cues")
+	sim.ClearSummonCueForErrandForTest(a, 3)
+	if a.PendingSummon == nil {
+		t.Error("clearSummonCueForErrand wiped a DIFFERENT errand's cue")
 	}
-	sim.ClearSummonCuesForTest(nil) // nil-safe
+	sim.ClearSummonCueForErrandForTest(a, 7)
+	if a.PendingSummon != nil {
+		t.Error("clearSummonCueForErrand did not clear its own errand's cue")
+	}
+	sim.ClearSummonCueForErrandForTest(nil, 7) // nil-safe
 
-	// Integration: the response-fade subscriber clears a holder's cue on its
-	// OWN move/speak/break event, and leaves it for another actor's event.
+	// Integration: the response-fade subscriber.
 	w, cancel := buildSummonWorld(t)
 	defer cancel()
 
@@ -485,10 +534,24 @@ func TestSummonCuesFadeOnResponse(t *testing.T) {
 			return nil, nil
 		}})
 	}
+	setRefusal := func(actor sim.ActorID) {
+		w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+			world.Actors[actor].SummonRefusal = &sim.SummonRefusal{TargetName: "T"}
+			return nil, nil
+		}})
+	}
 	hasCue := func(actor sim.ActorID) bool {
 		var has bool
 		w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 			has = world.Actors[actor].PendingSummon != nil
+			return nil, nil
+		}})
+		return has
+	}
+	hasRefusal := func(actor sim.ActorID) bool {
+		var has bool
+		w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+			has = world.Actors[actor].SummonRefusal != nil
 			return nil, nil
 		}})
 		return has
@@ -506,29 +569,46 @@ func TestSummonCuesFadeOnResponse(t *testing.T) {
 	if !hasCue("target") {
 		t.Error("target's cue cleared by an unrelated actor's Spoke")
 	}
-	// The holder's own move_to (ActorMoveStarted) clears it — the answer-walk.
+	// The holder's own move does NOT clear it — the answer-walk carries it.
 	emit(&sim.ActorMoveStarted{ActorID: "target", At: time.Now().UTC()})
-	if hasCue("target") {
-		t.Error("target's cue not cleared on its own ActorMoveStarted")
+	if !hasCue("target") {
+		t.Error("target's cue cleared on its own ActorMoveStarted — the arrival tick loses its scene context")
 	}
-	// Speak clears it.
-	setCue("target")
+	// The holder's own speech does NOT clear it — a spoken acknowledgement
+	// must not erase the summons it acknowledges.
 	emit(&sim.Spoke{SpeakerID: "target", At: time.Now().UTC()})
-	if hasCue("target") {
-		t.Error("target's cue not cleared on its own Spoke")
+	if !hasCue("target") {
+		t.Error("target's cue cleared on its own Spoke — 'Aye, I'm coming' erased the summons")
 	}
-	// take_break clears it.
-	setCue("target")
+	// take_break DOES clear it — an explicit settling-in is a "not going".
 	emit(&sim.TookBreak{ActorID: "target", At: time.Now().UTC()})
 	if hasCue("target") {
 		t.Error("target's cue not cleared on its own TookBreak")
 	}
+
+	// SummonRefusal keeps the v1 fade: any own act clears it.
+	for _, tc := range []struct {
+		name string
+		evt  sim.Event
+	}{
+		{"move", &sim.ActorMoveStarted{ActorID: "summoner", At: time.Now().UTC()}},
+		{"speak", &sim.Spoke{SpeakerID: "summoner", At: time.Now().UTC()}},
+		{"break", &sim.TookBreak{ActorID: "summoner", At: time.Now().UTC()}},
+	} {
+		setRefusal("summoner")
+		emit(tc.evt)
+		if hasRefusal("summoner") {
+			t.Errorf("SummonRefusal not cleared on the holder's own %s", tc.name)
+		}
+	}
 }
 
-// TestSummonArrivalWarrantSuppression: the work-domain seam. While an errand
-// is active, both participants (summoner + messenger) are suppressed from the
-// arrival-warrant stamp; an uninvolved actor is not. After the errand
-// terminates, suppression lifts for everyone.
+// TestSummonArrivalWarrantSuppression: the work-domain seam, LLM-414 shape.
+// The summoner is suppressed only through the bell ritual (dispatch →
+// commission) — after the commission his role is over and his arrival ticks
+// must run so his own steers walk him back to his business. The messenger is
+// suppressed for the legs it walks and freed at delivery. The target is
+// NEVER suppressed — its arrival tick at the meet place IS the greeting.
 func TestSummonArrivalWarrantSuppression(t *testing.T) {
 	w, cancel := buildSummonWorld(t)
 	defer cancel()
@@ -548,7 +628,7 @@ func TestSummonArrivalWarrantSuppression(t *testing.T) {
 
 	id := dispatchSummon(t, w, "summoner", "target", "")
 	if !suppressed("summoner") {
-		t.Error("summoner NOT suppressed during active errand — would LLM-tick and wander off")
+		t.Error("summoner NOT suppressed during the bell ritual — would LLM-tick and wander off")
 	}
 	if !suppressed("courier") {
 		t.Error("messenger NOT suppressed during active errand")
@@ -557,13 +637,37 @@ func TestSummonArrivalWarrantSuppression(t *testing.T) {
 		t.Error("uninvolved target suppressed during errand")
 	}
 
-	// Drive the errand to done and confirm suppression lifts.
+	// Through the ritual: still suppressed at the point.
 	arriveLeg(t, w, id, "summoner")
 	arriveLeg(t, w, id, "courier")
+	if !suppressed("summoner") {
+		t.Error("summoner not suppressed awaiting the commission beat")
+	}
+
+	// The commission releases the summoner; the messenger walks on.
 	runCommission(t, w, id)
+	if suppressed("summoner") {
+		t.Error("summoner still suppressed after the commission — his walk back to his business needs its arrival tick")
+	}
+	if !suppressed("courier") {
+		t.Error("messenger not suppressed on the delivery leg")
+	}
+
+	// Delivery frees the messenger; the errand still stands (awaiting_target).
 	arriveLeg(t, w, id, "courier")
 	runDeliver(t, w, id)
-	arriveLeg(t, w, id, "courier")
+	if st, _ := errandState(t, w, id); st != stAwaitingTarget {
+		t.Fatalf("state %q, want %q", st, stAwaitingTarget)
+	}
+	if suppressed("courier") {
+		t.Error("messenger still suppressed after delivery — must be freed for the next summons")
+	}
+	if suppressed("target") {
+		t.Error("target suppressed while awaited — its meet-place arrival tick is the greeting")
+	}
+
+	// The meeting ends the errand; nobody is suppressed after.
+	arriveTargetAt(t, w, "target", "square")
 	if errandCount(t, w) != 0 {
 		t.Fatal("errand did not terminate")
 	}
@@ -644,6 +748,84 @@ func TestSummonErrand_TTLRemovesStuckErrand(t *testing.T) {
 	}})
 }
 
+// TestSummonErrand_TTLClearsCueAndRecordsOutcome — LLM-414. An errand swept
+// by the TTL while awaiting its target must (a) clear the target's
+// PendingSummon (the steer suppression keys on it — a dangling cue would
+// suppress the target's go-home steers past the errand's life) and (b) land
+// in the recent-errands observability ring with outcome "expired" and its
+// full state history.
+func TestSummonErrand_TTLClearsCueAndRecordsOutcome(t *testing.T) {
+	w, cancel := buildSummonWorld(t)
+	defer cancel()
+
+	id := dispatchSummon(t, w, "summoner", "target", "News.")
+	arriveLeg(t, w, id, "summoner")
+	arriveLeg(t, w, id, "courier")
+	runCommission(t, w, id)
+	arriveLeg(t, w, id, "courier")
+	runDeliver(t, w, id)
+	if cue := pendingSummonOf(t, w, "target"); cue == nil {
+		t.Fatal("target has no cue after delivery")
+	}
+
+	// The target never answers; the TTL sweeps the awaiting errand.
+	w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		sim.RunSummonErrandTTLForTest(world, id)
+		return nil, nil
+	}})
+	if n := errandCount(t, w); n != 0 {
+		t.Fatalf("errand count after TTL = %d, want 0", n)
+	}
+	if cue := pendingSummonOf(t, w, "target"); cue != nil {
+		t.Fatal("PendingSummon must be cleared when its errand expires — a dangling cue suppresses the target's steers forever")
+	}
+
+	// The ring records the post-mortem.
+	res, err := w.Send(sim.SummonErrandsReport())
+	if err != nil {
+		t.Fatalf("SummonErrandsReport: %v", err)
+	}
+	report := res.(sim.SummonErrandsReportResult)
+	if len(report.Active) != 0 {
+		t.Errorf("report.Active has %d entries, want 0", len(report.Active))
+	}
+	if len(report.Recent) != 1 {
+		t.Fatalf("report.Recent has %d entries, want 1", len(report.Recent))
+	}
+	rec := report.Recent[0]
+	if rec.ID != id || rec.Outcome != "expired" {
+		t.Errorf("recent record = id %d outcome %q, want id %d outcome expired", rec.ID, rec.Outcome, id)
+	}
+	if rec.SummonerName != "Goodwife Bishop" || rec.TargetName != "John Proctor" {
+		t.Errorf("recent record names = %q/%q, want Goodwife Bishop/John Proctor", rec.SummonerName, rec.TargetName)
+	}
+	if len(rec.History) < 5 {
+		t.Errorf("recent record history has %d stamps, want the full transition trail (>=5): %+v", len(rec.History), rec.History)
+	}
+	if last := rec.History[len(rec.History)-1]; last.State != "awaiting_target" {
+		t.Errorf("last history state = %q, want awaiting_target (where it died)", last.State)
+	}
+}
+
+// TestDispatchSummon_SayBeatBestEffort — LLM-414. A dispatch carrying a say
+// beat still succeeds when the speak is rejected (the summoner is alone —
+// no audience), and the say never blocks the errand. The beat itself riding
+// the real Speak pipeline is asserted at the handler layer; here we pin the
+// best-effort contract.
+func TestDispatchSummon_SayBeatBestEffort(t *testing.T) {
+	w, cancel := buildSummonWorld(t)
+	defer cancel()
+
+	res, err := w.Send(sim.DispatchSummon("summoner", "John Proctor", "News.",
+		"Aye, I'll have a messenger fetch him over for you.", time.Now().UTC()))
+	if err != nil {
+		t.Fatalf("DispatchSummon with say beat: %v", err)
+	}
+	if _, ok := res.(sim.ErrandID); !ok {
+		t.Fatalf("DispatchSummon returned %T, want sim.ErrandID", res)
+	}
+}
+
 // TestSummonMessengerSelection_ExcludesSummonerAndTarget: the summoner and the
 // target must never be chosen as the messenger. A self-messenger can't be
 // observed in the messenger role (errandForArrival resolves the summoner role
@@ -660,7 +842,7 @@ func TestSummonMessengerSelection_ExcludesSummonerAndTarget(t *testing.T) {
 		world.Actors["target"].Attributes = map[string][]byte{sim.AttrMessenger: {}}
 		return nil, nil
 	}})
-	if _, err := w.Send(sim.DispatchSummon("summoner", "target", "", time.Now().UTC())); err == nil {
+	if _, err := w.Send(sim.DispatchSummon("summoner", "target", "", "", time.Now().UTC())); err == nil {
 		t.Fatal("dispatch should reject: the only messenger candidate is the target (self-fetch)")
 	}
 
@@ -672,7 +854,7 @@ func TestSummonMessengerSelection_ExcludesSummonerAndTarget(t *testing.T) {
 		world.Actors["summoner"].Attributes = map[string][]byte{sim.AttrMessenger: {}}
 		return nil, nil
 	}})
-	if _, err := w.Send(sim.DispatchSummon("summoner", "target", "", time.Now().UTC())); err == nil {
+	if _, err := w.Send(sim.DispatchSummon("summoner", "target", "", "", time.Now().UTC())); err == nil {
 		t.Fatal("dispatch should reject: the only messenger candidate is the summoner itself")
 	}
 }
@@ -761,7 +943,7 @@ func TestDispatchSummon_ByDisplayName(t *testing.T) {
 	w, cancel := buildSummonWorld(t)
 	defer cancel()
 
-	res, err := w.Send(sim.DispatchSummon("summoner", "John Proctor", "", time.Now().UTC()))
+	res, err := w.Send(sim.DispatchSummon("summoner", "John Proctor", "", "", time.Now().UTC()))
 	if err != nil {
 		t.Fatalf("DispatchSummon by display name: %v", err)
 	}
@@ -818,7 +1000,7 @@ func TestDispatchSummon_BarePointStillDispatches(t *testing.T) {
 	w, cancel := buildSummonWorldOpt(t, false)
 	defer cancel()
 
-	res, err := w.Send(sim.DispatchSummon("summoner", "target", "", time.Now().UTC()))
+	res, err := w.Send(sim.DispatchSummon("summoner", "target", "", "", time.Now().UTC()))
 	if err != nil {
 		t.Fatalf("DispatchSummon with a bare (structure-less) summon point: %v", err)
 	}

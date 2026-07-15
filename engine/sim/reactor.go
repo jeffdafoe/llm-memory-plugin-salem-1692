@@ -77,6 +77,7 @@ const (
 	WarrantKindTendNeed           WarrantKind = "tend_need"            // engine-authored felt impulse: a workless idle worker has grown hungry/thirsty and can resolve it now — go eat/drink instead of hunting odd jobs (LLM-276)
 	WarrantKindAtEase             WarrantKind = "at_ease"              // engine-authored felt impulse: a comfortable (coin-rich) workless idle worker has nothing pressing — take its ease, a plain idle villager (LLM-352, the LLM-194 "later lever")
 	WarrantKindVisitorRounds      WarrantKind = "visitor_rounds"       // engine-paced beat for a stationary traveler on his rounds — wake him to choose his next stop (move_to) off the rendered situation; the engine no longer picks his destination (LLM-379)
+	WarrantKindUnfinishedIntent   WarrantKind = "unfinished_intent"    // the actor's own batch queued a commit call AFTER a terminal one — the harness dropped it, so re-tick promptly to let the actor finish what it meant to do (LLM-414)
 )
 
 // WarrantReason is the marker interface for kind-specific warrant payloads.
@@ -553,6 +554,33 @@ type AdminDirectiveWarrantReason struct {
 func (AdminDirectiveWarrantReason) isWarrantReason()           {}
 func (AdminDirectiveWarrantReason) Kind() WarrantKind          { return WarrantKindImpulse }
 func (AdminDirectiveWarrantReason) DedupDiscriminator() uint64 { return 0 }
+
+// UnfinishedIntentWarrantReason re-ticks an actor whose response batch queued
+// commit-class tool calls AFTER a terminal one (LLM-414). Terminal-on-success
+// ends the tick and the harness drops the rest of the batch — but a dropped
+// commit call is the actor's own declared, unfinished intent (the live case:
+// speak "I'll send for him" + summon in one batch; the speak ended the tick
+// and the summon evaporated for 12.5 minutes). The stamped re-tick arrives on
+// normal jitter so the actor finishes what it meant to do within seconds; the
+// dropped call's ARGS are deliberately not replayed — the world may have
+// moved, so the model re-decides from fresh perception.
+//
+// Tools carries the dropped commit tool names, comma-joined, for the rendered
+// line ("you were about to act — summon"). A single string (not a slice) so
+// the reason stays value-only and CloneActor's shallow Warrants copy stays
+// correct, matching the other reasons. One-retry-only: the harness never sets
+// this on a tick that was itself triggered by an unfinished_intent warrant,
+// so a model that habitually over-batches costs one extra tick, not a storm.
+//
+// Zero-sourced (the trigger is the actor's own turn shape, not a world
+// event); DedupDiscriminator 0 like the other condition-driven reasons.
+type UnfinishedIntentWarrantReason struct {
+	Tools string
+}
+
+func (UnfinishedIntentWarrantReason) isWarrantReason()           {}
+func (UnfinishedIntentWarrantReason) Kind() WarrantKind          { return WarrantKindUnfinishedIntent }
+func (UnfinishedIntentWarrantReason) DedupDiscriminator() uint64 { return 0 }
 
 // SeekWorkWarrantReason wakes a broke, on-shift, idle Worker so it goes and
 // earns (LLM-141). Carries no fields — the impulse text is engine-authored and

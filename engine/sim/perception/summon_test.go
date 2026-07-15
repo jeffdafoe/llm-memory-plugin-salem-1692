@@ -8,29 +8,54 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
 
-// summon_test.go — ZBBS-HOME-311. Covers the two content-gated summon
-// perception sections: the target-side "## You have been summoned" and the
-// summoner-side "## Your messenger returned", over build (cue present vs
-// absent) and render.
+// summon_test.go — ZBBS-HOME-311, reworked LLM-414. Covers the two
+// content-gated summon perception sections: the target-side "## You have
+// been summoned" (now with the read-time TTL and the inline meet-place
+// structure_id) and the summoner-side "## Your messenger returned", over
+// build (cue present vs absent vs aged-out) and render.
 
 func TestBuildSummonsForYou_PresentAndAbsent(t *testing.T) {
+	now := time.Now().UTC()
+	snap := &sim.Snapshot{PublishedAt: now}
 	// Absent: no PendingSummon → nil view.
-	if v := buildSummonsForYou(&sim.ActorSnapshot{}); v != nil {
+	if v := buildSummonsForYou(snap, &sim.ActorSnapshot{}); v != nil {
 		t.Errorf("want nil with no PendingSummon, got %+v", v)
 	}
-	if v := buildSummonsForYou(nil); v != nil {
+	if v := buildSummonsForYou(snap, nil); v != nil {
+		t.Errorf("want nil for nil actor snapshot, got %+v", v)
+	}
+	if v := buildSummonsForYou(nil, &sim.ActorSnapshot{}); v != nil {
 		t.Errorf("want nil for nil snapshot, got %+v", v)
 	}
 	// Present.
 	subj := &sim.ActorSnapshot{PendingSummon: &sim.PendingSummon{
-		SummonerName: "Goodwife Bishop", Place: "the town square", Reason: "News of the trial.", At: time.Now(),
+		SummonerName: "Goodwife Bishop", Place: "the town square", PlaceStructureID: "square",
+		Reason: "News of the trial.", At: now,
 	}}
-	v := buildSummonsForYou(subj)
+	v := buildSummonsForYou(snap, subj)
 	if v == nil {
 		t.Fatal("want a view with a pending summons, got nil")
 	}
 	if v.SummonerName != "Goodwife Bishop" || v.Place != "the town square" || v.Reason != "News of the trial." {
 		t.Errorf("view fields not carried through: %+v", v)
+	}
+	if v.PlaceStructureID != "square" {
+		t.Errorf("PlaceStructureID not carried through: %+v", v)
+	}
+	// Aged out (LLM-414 read-time TTL): a cue older than summonCueRenderTTL
+	// builds nothing — defense in depth behind the errand machine's clears.
+	stale := &sim.ActorSnapshot{PendingSummon: &sim.PendingSummon{
+		SummonerName: "S", Place: "p", At: now.Add(-summonCueRenderTTL - time.Minute),
+	}}
+	if v := buildSummonsForYou(snap, stale); v != nil {
+		t.Errorf("want nil for an aged-out cue, got %+v", v)
+	}
+	// Clock skew (cue stamped 'after' the snapshot) still renders.
+	skew := &sim.ActorSnapshot{PendingSummon: &sim.PendingSummon{
+		SummonerName: "S", Place: "p", At: now.Add(time.Minute),
+	}}
+	if v := buildSummonsForYou(snap, skew); v == nil {
+		t.Error("clock-skewed fresh cue must still build")
 	}
 }
 
@@ -47,12 +72,18 @@ func TestBuildSummonRefusal_PresentAndAbsent(t *testing.T) {
 
 func TestRenderSummonsForYou(t *testing.T) {
 	var b strings.Builder
-	renderSummonsForYou(&b, &SummonsForYouView{SummonerName: "Goodwife Bishop", Place: "the town square", Reason: "News of the trial."})
+	renderSummonsForYou(&b, &SummonsForYouView{SummonerName: "Goodwife Bishop", Place: "the town square", PlaceStructureID: "sq-1", Reason: "News of the trial."})
 	out := b.String()
-	for _, want := range []string{"## You have been summoned", "Goodwife Bishop", "the town square", "News of the trial.", "move_to"} {
+	for _, want := range []string{"## You have been summoned", "Goodwife Bishop", "the town square", "(structure_id: sq-1)", "News of the trial.", "move_to"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("rendered summons missing %q:\n%s", want, out)
 		}
+	}
+	// No structure id → no empty token rendered.
+	var noID strings.Builder
+	renderSummonsForYou(&noID, &SummonsForYouView{SummonerName: "S", Place: "the well"})
+	if strings.Contains(noID.String(), "structure_id") {
+		t.Errorf("id-less summons rendered a structure_id token:\n%s", noID.String())
 	}
 
 	// Content-gated: nil view writes nothing.

@@ -892,6 +892,14 @@ type World struct {
 	// summoner's warrants forever.
 	SummonErrands map[ErrandID]*summonErrand
 
+	// recentSummonErrands is the bounded post-mortem ring of FINISHED summon
+	// errands (LLM-414 observability): finishErrand appends every terminal
+	// outcome with its state-transition history so the umbilical
+	// summon-errands view can answer "where did that errand die" after the
+	// live map entry is gone. Oldest first, capped at summonErrandHistoryCap.
+	// World-goroutine-only; restart-lossy like SummonErrands itself.
+	recentSummonErrands []FinishedSummonErrand
+
 	// establishmentCloseupDeadline holds the active close-up grace deadline per
 	// establishment (LLM-129). Keyed by StructureID; nil-readable as empty
 	// (lazy-allocated when a keeper beds down and arms the close-up). It is the
