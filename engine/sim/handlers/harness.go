@@ -585,6 +585,17 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 	// outcome, like resolvedLaborThisTick below; a name-only flag, since one work
 	// offer per tick is all that helps whether or not it lands.
 	solicitAttemptedThisTick := false
+	// retriggeredIntent marks a tick that was ITSELF triggered by an LLM-414
+	// unfinished_intent warrant. The post-terminal skip loop then leaves
+	// result.SkippedIntentTools empty, so an over-batching model gets exactly
+	// one retry per split, never a self-sustaining re-tick chain.
+	retriggeredIntent := false
+	for _, m := range job.warrants {
+		if m.Kind() == sim.WarrantKindUnfinishedIntent {
+			retriggeredIntent = true
+			break
+		}
+	}
 	// resolvedLaborThisTick holds the LaborID of every labor offer this actor has
 	// answered this tick as EMPLOYER via accept_work / decline_work. LLM-163 left
 	// these two unguarded on the theory that a re-fire "hits the substrate's
@@ -1094,10 +1105,28 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 
 			if outcome.ended {
 				// Invariant 3: post-terminal calls skipped + logged.
+				//
+				// LLM-414: a skipped COMMIT call is the actor's own declared,
+				// unfinished intent — the live incident's speak (terminal) +
+				// summon batch dropped the summon here with nothing to bring
+				// it back for 12.5 minutes. Collect the commit-class names
+				// into result.SkippedIntentTools so CompleteReactorTick
+				// stamps a prompt unfinished_intent re-tick. Exclusions:
+				//   - speak — re-ticking to re-say is the LLM-184 verb storm;
+				//   - non-commit classes (done, observations) — nothing to do;
+				//   - unresolvable names — an unknown tool declares nothing;
+				//   - a tick ITSELF triggered by unfinished_intent (one retry,
+				//     never a storm).
 				for j := i + 1; j < len(calls); j++ {
 					result.ToolsRequested = append(result.ToolsRequested, calls[j].Name)
 					result.ToolsFailedRejected = append(result.ToolsFailedRejected, calls[j].Name)
 					transcript = append(transcript, toolResultMsg(calls[j].ID, "[skipped: post_terminal] earlier call in this batch ended the tick"))
+					if calls[j].Name == "speak" || retriggeredIntent {
+						continue
+					}
+					if entry, ok := h.validator.Registry.Lookup(calls[j].Name); ok && entry.Class == ClassCommit {
+						result.SkippedIntentTools = append(result.SkippedIntentTools, calls[j].Name)
+					}
 				}
 				batchEnded = true
 				endedAt = i

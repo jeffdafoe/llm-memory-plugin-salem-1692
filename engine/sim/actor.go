@@ -1090,22 +1090,24 @@ type Actor struct {
 	// Free-form behavior specs (typed lazily per subsystem during port).
 	Attributes map[string][]byte
 
-	// Summon errand perception cues (ZBBS-HOME-311). Both transient,
-	// in-memory only (restart-lossy like the errand machine itself), and
-	// consumed-on-next-act:
+	// Summon errand perception cues (ZBBS-HOME-311, fade rules reworked
+	// LLM-414). Both transient, in-memory only (restart-lossy like the
+	// errand machine itself):
 	//
 	//   - PendingSummon is set on the TARGET when a messenger delivers a
-	//     summons ("come to <place>"), driving them to move_to the summon
-	//     point. Non-nil drives the "## You have been summoned" perception
-	//     section.
+	//     summons ("come to <place>"), driving them to move_to the meet
+	//     place. Non-nil drives the "## You have been summoned" perception
+	//     section AND suppresses the competing movement steers (go-home /
+	//     evening leisure / walk-away errands) so the summons is the single
+	//     actionable voice. Cleared by the meeting itself, a take_break, or
+	//     the errand's TTL — NOT by the target's speech or walk (see
+	//     handleSummonResponseFade).
 	//   - SummonRefusal is set on the SUMMONER when their messenger returns
 	//     unable to find the target. Non-nil drives the "## Your messenger
-	//     returned" perception section.
+	//     returned" perception section; fades on any move/speak/break.
 	//
-	// Each fades after the actor next acts (ConsumeSummonCuesOnTick clears
-	// them on the actor's reactor tick), mirroring v1's drop-once-consumed
-	// behavior. Deep-cloned by CloneActor + mirrored into ActorSnapshot so
-	// perception (which runs purely off the snapshot) can read them.
+	// Deep-cloned by CloneActor + mirrored into ActorSnapshot so perception
+	// (which runs purely off the snapshot) can read them.
 	PendingSummon *PendingSummon
 	SummonRefusal *SummonRefusal
 }
@@ -1114,10 +1116,19 @@ type Actor struct {
 // summons asking this actor to come to a place. Value-cloned (no inner
 // pointers).
 type PendingSummon struct {
+	// ErrandID ties the cue to the errand that stamped it, so the errand's
+	// terminal paths clear exactly their own cue (a re-summoned target's
+	// fresh cue survives an old errand's expiry). Never rendered.
+	ErrandID     ErrandID
 	SummonerName string
-	Place        string
-	Reason       string // "" when the summoner gave none
-	At           time.Time
+	// Place / PlaceStructureID name the meet place — the summoner's own
+	// place at delivery time. The structure id is the move_to token the cue
+	// renders inline (the incident target had only a bare label it could
+	// not resolve from across the village).
+	Place            string
+	PlaceStructureID StructureID
+	Reason           string // "" when the summoner gave none
+	At               time.Time
 }
 
 // SummonRefusal is the summoner-side perception cue: the messenger returned

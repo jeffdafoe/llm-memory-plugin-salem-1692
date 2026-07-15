@@ -1051,18 +1051,42 @@ var perceptionScenarios = []perceptionScenario{
 	},
 	{
 		name: "villager_summoned_sees_the_call",
-		summary: "LLM-323: the keeper_alone_at_post_onshift fixture with a summons delivered to the subject " +
+		summary: "LLM-323/LLM-414: the keeper_alone_at_post_onshift fixture with a summons delivered to the subject " +
 			"(PendingSummon set — a messenger reached them). The golden pins the target-side '## You have been " +
-			"summoned' section: who sent for them, where to go, the reason, and the move_to steer — the cue that " +
-			"drives a summoned NPC to walk to the summoning place. The diff against keeper_alone_at_post_onshift is " +
-			"exactly that added block. Summon was dead in v2 until LLM-323 (name resolution + a reachable summon " +
-			"point re-enabled it), so this cue had no golden coverage before.",
+			"summoned' section: who sent for them, where to go WITH the meet place's structure_id inline (the move_to " +
+			"token a cross-village target can't resolve from a bare label), the reason, and the move_to steer. LLM-414 " +
+			"also pins the SUPPRESSIONS: the at-post duty stabilizer yields to the summons (no 'stay and look after your " +
+			"work' line), so the summons is the single actionable movement voice. The diff against " +
+			"keeper_alone_at_post_onshift is that added block + the absent steer.",
 		build: func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 			snap, actorID, warrants := keeperAloneAtPostOnShift()
 			snap.Actors[actorID].PendingSummon = &sim.PendingSummon{
-				SummonerName: "Goodwife Bishop",
-				Place:        "the town square",
-				Reason:       "There is news of the trial.",
+				SummonerName:     "Goodwife Bishop",
+				Place:            "the town square",
+				PlaceStructureID: "town_square",
+				Reason:           "There is news of the trial.",
+				At:               snap.PublishedAt,
+			}
+			return snap, actorID, warrants
+		},
+	},
+	{
+		name: "villager_summoned_in_evening_goes_not_home",
+		summary: "LLM-414 (the live 2026-07-14 incident shape): a homed day-shift agent (Ezekiel), off-shift at 20:30 " +
+			"inside the evening window — the state where the go-home wind-down and the tavern invitation both compete — " +
+			"with a summons just delivered (PendingSummon). The golden pins that '## You have been summoned' renders AND " +
+			"that BOTH competing movement voices are silent: no evening 'tavern is open' invitation and no go-home steer. " +
+			"Live, the target was summoned just past dusk and walked home instead of to the meet place because the engine " +
+			"argued for home against its own errand. The model still chooses freely — the scene simply stops contradicting " +
+			"the summons.",
+		build: func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+			snap, actorID, warrants := homedWorkerEveningTavernOpen()
+			snap.Actors[actorID].PendingSummon = &sim.PendingSummon{
+				SummonerName:     "John Ellis",
+				Place:            "the Tavern",
+				PlaceStructureID: "tavern",
+				Reason:           "A guest asks after you.",
+				At:               snap.PublishedAt,
 			}
 			return snap, actorID, warrants
 		},

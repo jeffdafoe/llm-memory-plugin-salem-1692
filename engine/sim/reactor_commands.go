@@ -3,6 +3,7 @@ package sim
 import (
 	"fmt"
 	mathrand "math/rand/v2"
+	"strings"
 	"time"
 )
 
@@ -245,6 +246,17 @@ type TickResult struct {
 	// they fire again, and excludes their source keys from recently-
 	// consumed suppression.
 	UnaddressedWarrants []WarrantMeta
+
+	// SkippedIntentTools names the commit-class tool calls the model queued
+	// AFTER a terminal call in the same batch — dropped by the harness's
+	// post-terminal skip, i.e. the actor's own declared, unfinished intent
+	// (LLM-414). CompleteReactorTick stamps an unfinished_intent warrant so
+	// the actor re-ticks promptly and can finish the deed. The harness
+	// leaves this empty on a tick that was ITSELF triggered by an
+	// unfinished_intent warrant (one retry, never a storm) and never
+	// includes `speak` or terminal-class `done` (re-ticking to re-say is the
+	// LLM-184 storm this must not reintroduce).
+	SkippedIntentTools []string
 }
 
 // CompleteReactorTick returns a Command that records the completion of an
@@ -324,6 +336,22 @@ func CompleteReactorTick(actorID ActorID, attemptID TickAttemptID, result TickRe
 			// returning peer.
 			if terminalStatusAddresses(result.TerminalStatus) {
 				dissolveSoloHuddleAfterTick(w, actor, now)
+			}
+
+			// LLM-414: the model queued commit calls after its terminal one —
+			// its own unfinished intent. Stamp a prompt re-tick (normal
+			// jitter) so the second beat lands in seconds, not on whatever
+			// unrelated wake comes minutes later. Stamped AFTER the in-flight
+			// markers clear so it opens a fresh cycle. Only on addressing
+			// completions: a failed/shutdown turn never really made the
+			// choice this warrant exists to honor.
+			if len(result.SkippedIntentTools) > 0 && terminalStatusAddresses(result.TerminalStatus) {
+				tryStampWarrant(w, actor, WarrantMeta{
+					TriggerActorID: actorID,
+					Reason: UnfinishedIntentWarrantReason{
+						Tools: strings.Join(result.SkippedIntentTools, ", "),
+					},
+				}, now)
 			}
 			return CompleteReactorTickResult{Stale: false}, nil
 		},

@@ -113,6 +113,39 @@ func TestHandleSummon_ControlCharInReason(t *testing.T) {
 	}
 }
 
+// --- say beat (LLM-414) --------------------------------------------------
+
+func TestDecodeSummonArgs_SayOptionalAndCarried(t *testing.T) {
+	args, err := DecodeSummonArgs(json.RawMessage(`{"target":"T","say":"Aye, I'll send for him."}`))
+	if err != nil {
+		t.Fatalf("DecodeSummonArgs (with say): %v", err)
+	}
+	if got := args.(SummonArgs).Say; got != "Aye, I'll send for him." {
+		t.Errorf("decoded say = %q, want the spoken line", got)
+	}
+	// Absent say defaults empty.
+	args, err = DecodeSummonArgs(json.RawMessage(`{"target":"T"}`))
+	if err != nil {
+		t.Fatalf("DecodeSummonArgs (no say): %v", err)
+	}
+	if args.(SummonArgs).Say != "" {
+		t.Errorf("say should default empty, got %q", args.(SummonArgs).Say)
+	}
+}
+
+func TestDecodeSummonArgs_SayOverCap(t *testing.T) {
+	long := strings.Repeat("z", MaxSummonSayChars+1)
+	if _, err := DecodeSummonArgs(json.RawMessage(`{"target":"T","say":"` + long + `"}`)); err == nil {
+		t.Fatal("want error for say over cap, got nil")
+	}
+}
+
+func TestHandleSummon_ControlCharInSay(t *testing.T) {
+	if _, err := HandleSummon(HandlerInput{ActorID: "summoner", Args: SummonArgs{Target: "T", Say: "bad\x00"}}); err == nil {
+		t.Fatal("want error for control char in say, got nil")
+	}
+}
+
 // --- RegisterSummon ----------------------------------------------------
 
 func TestRegisterSummon(t *testing.T) {

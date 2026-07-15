@@ -10,10 +10,11 @@ package handlers
 // DecodeSummonArgs; both live in summon.go.
 //
 // terminalOnSuccess is TRUE: summon ends the tick. Sending for someone is a
-// "decide, then go wait" action — the summoner walks to the summon point and
-// has nothing left to do this turn. Any departing line is said with a
-// non-terminal speak BEFORE the summon, the same speak-then-move ordering
-// move_to enforces.
+// "decide, then act" action — the summoner walks to the summon point and has
+// nothing left to do this turn. The spoken agreement rides the `say` argument
+// (LLM-414): speak is ALSO terminal-on-success (LLM-321), so a speak-first
+// ordering would end the tick before the summon ever ran — exactly the live
+// failure this rework fixes.
 //
 // Returns an error on registration failure (duplicate name, malformed schema
 // bytes) — a startup wiring bug the caller should fail loudly on.

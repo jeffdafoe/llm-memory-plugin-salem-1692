@@ -3423,6 +3423,16 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 		// bearings, and he decides with move_to. Same no-coercion register as the
 		// seek-work / at-ease impulse lines.
 		return fmt.Sprintf("%d. You pause a moment on your rounds — thinking where to carry your pack and your news next, or whether the light is going and it's time to see about a bed.\n", n), false
+	case sim.UnfinishedIntentWarrantReason:
+		// LLM-414: the actor's own last turn queued an action after a terminal
+		// one and the harness dropped it (a spoken agreement is terminal, so
+		// "I'll send for him" + summon lost the summon). Felt continuation
+		// beat, with the dropped tool named exactly — the model re-decides
+		// with fresh perception rather than replaying stale args.
+		if r.Tools != "" {
+			return fmt.Sprintf("%d. Your words ended your turn before you could act on what you meant to do (%s) — if you still mean to, do it now.\n", n, sanitizeInline(r.Tools)), false
+		}
+		return fmt.Sprintf("%d. Your words ended your turn before you could act on what you meant to do — if you still mean to, do it now.\n", n), false
 	case sim.ArrivalWarrantReason:
 		return renderArrivalWarrantLine(n, nameOf(w.TriggerActorID), r, placeNameOf, placeKeeperOf), false
 	case sim.NeedThresholdWarrantReason:

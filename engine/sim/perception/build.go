@@ -410,6 +410,19 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 		p.StallRepairBuy = nil
 		p.Forage = nil
 	}
+	// LLM-414: a live summons also silences the walk-away work-errand cues,
+	// the same subtractive treatment the settled-evening block above applies —
+	// each names a DIFFERENT destination and renders under the triage coda's
+	// obligations-first ranking, so a summoned keeper would lose the meeting
+	// to a shovel. The wares cue survives here too (no destination, no
+	// leave-imperative). Same post-buildDutySteer ordering note as above: the
+	// steer already yielded on its own summonsActive gate.
+	if summonsActive(snap, actorSnap) {
+		p.FarmUpkeep = nil
+		p.Restocking = nil
+		p.StallRepairBuy = nil
+		p.Forage = nil
+	}
 	// Stay-open choice (ZBBS-WORK-387): a keeper standing at its own post on an
 	// off-shift wind-down may keep its business open instead of closing up. Surface
 	// the option, and encourage it when a concrete reason is present (the hybrid
@@ -472,7 +485,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// the civil evening, and a co-present innkeeper (see traveler_dayplan.go).
 	p.TravelerRounds = buildTravelerRounds(snap, actorSnap, p.Surroundings.HuddleMembers)
 	p.TravelerSeekBed = buildTravelerSeekBed(snap, actorSnap, p.Surroundings.HuddleMembers)
-	p.SummonsForYou = buildSummonsForYou(actorSnap)
+	p.SummonsForYou = buildSummonsForYou(snap, actorSnap)
 	p.SummonRefusal = buildSummonRefusal(actorSnap)
 
 	// Group the consumed warrants by the scene they reference. Only event-
@@ -2036,6 +2049,20 @@ func buildDutySteer(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapsho
 	if hasRedNeed(a, snap) {
 		return nil
 	}
+	// LLM-414: a live summons outranks the routine steers — BOTH arms. The
+	// live incident: the target was summoned just past dusk, the off-shift
+	// go-home steer argued for home, and home won; the meeting never
+	// happened. While the summons stands, the "## You have been summoned"
+	// section is the single actionable movement voice (the model still
+	// CHOOSES — decline by staying put or take_break is legitimate; the
+	// engine just stops arguing against its own errand). Deliberately AFTER
+	// the red-need gate: a starving target still eats first, and the summons
+	// cue survives the detour (it no longer fades on unrelated acts).
+	// shouldSkipNoop holds the noop gate open on SummonsForYou in this
+	// steer's place, so the suppression cannot skip-lock the target.
+	if summonsActive(snap, a) {
+		return nil
+	}
 	nowMin := *snap.LocalMinuteOfDay
 
 	start, end, windowOK := shiftWindowBounds(snap, a)
@@ -2436,6 +2463,13 @@ func buildEveningLeisure(snap *sim.Snapshot, a *sim.ActorSnapshot, anchors *Anch
 	// but guard explicitly so a sleeping actor that reaches perception is never
 	// cued to the tavern. code_review.
 	if a.State == sim.StateSleeping {
+		return nil
+	}
+	// LLM-414: a live summons silences the evening invitation, same as it
+	// silences the go-home steer — the "come to <place>" cue must be the
+	// single movement voice while it stands, or the tavern argues against
+	// the meeting the same way home did in the live incident.
+	if summonsActive(snap, a) {
 		return nil
 	}
 	// Transient traveler (LLM-373): a homeless visitor has no night-place of its

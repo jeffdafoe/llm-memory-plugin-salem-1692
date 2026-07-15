@@ -34,9 +34,15 @@ import (
 //   - target: required, the display name / id of the villager to summon.
 //   - reason: optional, a short in-character reason carried into the
 //     delivery line ("<target>, <summoner> summons you. <reason>").
+//   - say: optional (LLM-414), the summoner's own spoken acknowledgement,
+//     emitted through the real speak pipeline right before the errand
+//     dispatches. summon and speak are both terminal-on-success, so without
+//     this the model had to choose between agreeing out loud and actually
+//     summoning — the live incident chose the words and lost the deed.
 type SummonArgs struct {
 	Target string `json:"target"`
 	Reason string `json:"reason"`
+	Say    string `json:"say"`
 }
 
 // MaxSummonTargetChars caps the target length on the model-facing schema.
@@ -51,6 +57,11 @@ const MaxSummonTargetChars = 128
 // with the MaxSalientFactTextLen excerpt a peer forms from the line, so the
 // model isn't told it can write more than a listener will remember.
 const MaxSummonReasonChars = 220
+
+// MaxSummonSayChars caps the optional say beat. It is a real utterance
+// through the real speak pipeline, so it carries speak's own cap
+// (MaxSpeakTextChars) — the schema restates the literal below.
+const MaxSummonSayChars = MaxSpeakTextChars
 
 // summonSchema is the JSON Schema bytes shipped to the LLM provider. The
 // length bounds are restated as literals because schema bytes are static —
@@ -68,14 +79,23 @@ var summonSchema = json.RawMessage(`{
             "type": "string",
             "maxLength": 220,
             "description": "Optional. A short reason the messenger relays, e.g. 'There is news of the trial.' Leave empty if you have none."
+        },
+        "say": {
+            "type": "string",
+            "maxLength": 1000,
+            "description": "Optional. What you say aloud as you agree to send for them, spoken to whoever is with you before you step out — e.g. 'Aye, I'll have a messenger fetch him over for you.'"
         }
     },
     "required": ["target"],
     "additionalProperties": false
 }`)
 
-// summonDescription is the tool description advertised to the model.
-const summonDescription = "Send for another villager. A messenger will walk to them, deliver your summons, and return — this is NOT a teleport and takes time. You will walk to the summoning place to wait. Summoning ENDS your turn, so say anything you want the people around you to hear BEFORE you call summon. If the messenger cannot find them, it returns and tells you so."
+// summonDescription is the tool description advertised to the model. LLM-414
+// rewrote it: the old text told the model to SAY its piece BEFORE calling
+// summon, which under terminal-on-success speak guaranteed the summon never
+// happened — the speak ended the turn and the agreement evaporated. Now the
+// say argument carries the spoken reply inside the one call.
+const summonDescription = "Send for another villager: a messenger will carry your summons to them and they will be asked to come to YOUR place. When someone asks you to fetch or summon a person, call THIS tool — do not merely say you will. Put your spoken reply in `say`; it is said aloud before you step out to dispatch the messenger. This is NOT a teleport and takes time. You will walk to the summoning place to send the messenger, then return to your business. If the messenger cannot find them, it returns and tells you so."
 
 // DecodeSummonArgs parses the raw tool-call arguments into a SummonArgs.
 // Typed validation failures surface to the model as tool errors.
@@ -113,6 +133,10 @@ func DecodeSummonArgs(raw json.RawMessage) (any, error) {
 		return nil, modelSafef(
 			"summon: reason exceeds %d-character cap (got %d characters)", MaxSummonReasonChars, n)
 	}
+	if n := utf8.RuneCountInString(args.Say); n > MaxSummonSayChars {
+		return nil, modelSafef(
+			"summon: say exceeds %d-character cap (got %d characters)", MaxSummonSayChars, n)
+	}
 	return args, nil
 }
 
@@ -141,9 +165,16 @@ func HandleSummon(in HandlerInput) (sim.Command, error) {
 				"summon: reason contains a disallowed control character at byte offset %d", i)
 		}
 	}
+	say := strings.TrimSpace(args.Say)
+	if say != "" {
+		if i := indexInvalidControlChar(say); i >= 0 {
+			return sim.Command{}, modelSafef(
+				"summon: say contains a disallowed control character at byte offset %d", i)
+		}
+	}
 	// Pass the raw target STRING through to DispatchSummon, which resolves it
 	// to an actor id on the world goroutine (name → id; the handler is a pure
 	// builder with no world access). Before LLM-323 this cast the display name
 	// straight to an ActorID, so the world's exact-id lookup never matched.
-	return sim.DispatchSummon(in.ActorID, target, reason, time.Now().UTC()), nil
+	return sim.DispatchSummon(in.ActorID, target, reason, say, time.Now().UTC()), nil
 }

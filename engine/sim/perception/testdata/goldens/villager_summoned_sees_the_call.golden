@@ -11,12 +11,10 @@ Coins in your purse: 44.
 You are inside the General Store, your workplace, with no one else here to hear you speak.
 It is morning in the village.
 
-You keep your trade at the General Store (destination: general_store); your home is at the Thorne Residence (destination: thorne_residence) — head home once your work is done.
-
-It is your working hours and you are at your post — stay and look after your work; you close at 9 in the evening.
+You're at your workplace. Your home is at the Thorne Residence (destination: thorne_residence) — you can head home whenever you wish.
 
 ## You have been summoned
-Goodwife Bishop asks you to come to the town square. There is news of the trial.
-Walk there (move_to) if you choose to answer.
+A messenger has brought word: Goodwife Bishop asks you to come to the town square (structure_id: town_square). There is news of the trial.
+They await you there now. Walk there (move_to) to answer the summons, or stay and let it go unanswered.
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.
