@@ -53,8 +53,10 @@ ALTER TABLE item_kind ADD COLUMN IF NOT EXISTS description text;
 --    canonical goods: if a name already exists as an engine-minted discovery row
 --    (ZBBS-WORK-412 — e.g. an NPC once referenced "coat", minting an inert
 --    category='unknown' row with no capabilities/labels), this promotes it to the
---    proper clothing def (warms, price, description all land). Migrations apply once
---    at deploy, so this can't clobber a later operator item/set edit.
+--    proper clothing def (warms, price, description all land). A rerun INTENTIONALLY
+--    re-asserts this canonical definition — technically it would overwrite a later
+--    operator item/set edit, but migrations are applied once at deploy, so that
+--    reassertion only ever runs at deploy time.
 INSERT INTO item_kind
     (name, display_label, display_label_singular, display_label_plural,
      category, sort_order, capabilities, description)
@@ -97,8 +99,9 @@ ON CONFLICT (name) DO UPDATE SET
 --    columns are the CHECK-required placeholders. FK output_item -> item_kind(name)
 --    is satisfied by the rows just inserted. ON CONFLICT (output_item) DO UPDATE —
 --    CORRECTIVE like the item_kind upsert above: re-asserts the canonical price for
---    an owned good rather than leaving a stale/absent recipe in place. Migrations
---    apply once at deploy, so this can't overwrite a later operator recipe/set edit.
+--    an owned good rather than leaving a stale/absent recipe in place. A rerun
+--    intentionally re-asserts the canonical price — it would overwrite a later
+--    operator recipe/set edit, but migrations apply once at deploy.
 INSERT INTO item_recipe
     (output_item, output_qty, rate_qty, rate_per_hours, inputs,
      wholesale_price, retail_price)
@@ -177,10 +180,16 @@ BEGIN
         IF NOT EXISTS (SELECT 1 FROM actor WHERE id = '019dcac2-e78a-715e-91b7-101f339b0891') THEN
             RAISE EXCEPTION 'LLM-410: seeded actors but distributor Josiah 019dcac2... is missing (stale id?)';
         END IF;
-        IF NOT EXISTS (SELECT 1 FROM actor_inventory
-                        WHERE actor_id = '019dcac2-e78a-715e-91b7-101f339b0891'
-                          AND item_kind = 'coat') THEN
-            RAISE EXCEPTION 'LLM-410: distributor coat seed did not apply';
+        -- Assert the FULL seed shape, not just the coat. The seed's ON CONFLICT
+        -- (actor_id, item_kind) DO NOTHING conflicts per-row, so any MISSING seeded
+        -- kind is still inserted (only a still-present holding is skipped — that is
+        -- how a live-traded quantity is preserved rather than reset). So after this
+        -- migration all five seeded kinds must be present; fail loud otherwise,
+        -- which also catches a broken/partial pre-existing seed.
+        IF (SELECT count(*) FROM actor_inventory
+             WHERE actor_id = '019dcac2-e78a-715e-91b7-101f339b0891'
+               AND item_kind IN ('coat', 'cloak', 'gown', 'breeches', 'silver_locket')) <> 5 THEN
+            RAISE EXCEPTION 'LLM-410: distributor clothing seed incomplete (expected all 5 seeded kinds present)';
         END IF;
     END IF;
 END $$;
