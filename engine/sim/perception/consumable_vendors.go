@@ -155,6 +155,58 @@ func findVendorConsumables(snap *sim.Snapshot, buyerID sim.ActorID, need sim.Nee
 	return out
 }
 
+// findWarmGarmentVendors returns the workplaces selling a warm garment (a
+// CapabilityWarms good — coat or cloak) — the vendor-gated destinations for the
+// cold "buy a coat" nudge (LLM-410). Built on the shared structural-vendorship
+// scan: any non-PC keeper holding a warms-capable good at a resolvable workplace,
+// one entry per structure (lowest VendorID the representative), sorted by label
+// then structure for a stable cue. Empty when nothing warm is for sale — which is
+// exactly what makes the nudge vendor-gated: no supply, no cue, so the steer never
+// dangles before the seed stock (or the factor channel) exists.
+//
+// Buyer-unscoped (empty buyerID): the scan reads the caller as a non-distributor,
+// so a wholesale-only warm-garment source would be dropped — correct for an
+// ordinary villager — and the self-vendor case can't arise, since a keeper holding
+// a coat already reads as warm (actorSnapHasWarmGarment) and never reaches this cue.
+func findWarmGarmentVendors(snap *sim.Snapshot) []RestockVendor {
+	if snap == nil || len(snap.ItemKinds) == 0 {
+		return nil
+	}
+	type pick struct {
+		vendorID  sim.ActorID
+		structure *sim.Structure
+	}
+	best := map[sim.StructureID]pick{}
+	eachVendorOffer(snap, "", func(o vendorOffer) {
+		def := snap.ItemKinds[o.Kind]
+		if def == nil || !def.HasCapability(sim.CapabilityWarms) {
+			return
+		}
+		if cur, ok := best[o.StructureID]; ok && cur.vendorID <= o.VendorID {
+			return // keep the lowest VendorID at this structure
+		}
+		best[o.StructureID] = pick{vendorID: o.VendorID, structure: o.Structure}
+	})
+	if len(best) == 0 {
+		return nil
+	}
+	out := make([]RestockVendor, 0, len(best))
+	for structureID, p := range best {
+		out = append(out, RestockVendor{
+			StructureLabel: vendorStructureLabel(p.structure),
+			StructureID:    structureID,
+			VendorID:       p.vendorID,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].StructureLabel != out[j].StructureLabel {
+			return out[i].StructureLabel < out[j].StructureLabel
+		}
+		return out[i].StructureID < out[j].StructureID
+	})
+	return out
+}
+
 // OwnStockItem is one satisfier the actor already carries — the consume-first
 // half of both the satiation section (hunger/thirst) and the recovery-options
 // tiredness own-stock line. Shared so "you carry X — consume" reads identically

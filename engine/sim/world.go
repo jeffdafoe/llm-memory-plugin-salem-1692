@@ -154,6 +154,10 @@ type WorldSettings struct {
 	// (nothing ever accrues; the off-switch posture).
 	ColdStormOutdoorsPerMinuteX100 int
 	ColdStormIndoorsPerMinuteX100  int
+	// ColdWarmGarmentPerMinuteX100 caps outdoor storm accrual for an actor carrying
+	// a CapabilityWarms garment (LLM-410) — the coat-is-your-roof relief. Only ever
+	// lowers the situational rate; 0 makes a warm garment full outdoor relief.
+	ColdWarmGarmentPerMinuteX100   int
 	ColdNightMultiplierX100        int
 	ColdWarmRecoveryPerMinuteX100  int
 	ColdClearRecoveryPerMinuteX100 int

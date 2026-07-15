@@ -87,6 +87,40 @@ func TestUmbilicalItemSet_CreateNewGood(t *testing.T) {
 	}
 }
 
+func TestUmbilicalItemSet_Description(t *testing.T) {
+	fake := &fakeItemKindWriter{}
+	srv, h := itemSetServer(t, fake)
+
+	// A garment carrying flavor prose + the warms capability (LLM-410): the
+	// description is trimmed on the way in, round-trips through the request DTO ->
+	// def -> response, and lands on the live catalog def.
+	const want = "A thick woolen cloak that throws off the rain."
+	rec := postReq(t, h, "/api/village/umbilical/item/set", "tok",
+		`{"name":"cloak","display_label":"Cloak","category":"clothing","sort_order":205,`+
+			`"capabilities":["warms"],"display_label_singular":"cloak","display_label_plural":"cloaks",`+
+			`"description":"  A thick woolen cloak that throws off the rain.  "}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("set = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var out umbilicalItemDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Description != want {
+		t.Fatalf("response description = %q, want trimmed flavor %q", out.Description, want)
+	}
+	if fake.def.Description != want {
+		t.Fatalf("writer def description = %q, want trimmed flavor %q", fake.def.Description, want)
+	}
+	// The live catalog carries the description.
+	res, _ := srv.world.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return world.ItemKinds["cloak"], nil
+	}})
+	if live, _ := res.(*sim.ItemKindDef); live == nil || live.Description != want {
+		t.Errorf("live cloak def = %+v", res)
+	}
+}
+
 func TestUmbilicalItemSet_EditPreservesSatiation(t *testing.T) {
 	fake := &fakeItemKindWriter{}
 	srv, h := itemSetServer(t, fake)
@@ -126,6 +160,7 @@ func TestUmbilicalItemSet_Validation(t *testing.T) {
 		{"category too long", `{"name":"x","display_label":"X","category":"` + strings.Repeat("a", 33) + `"}`},
 		{"negative sort_order", `{"name":"x","display_label":"X","category":"food","sort_order":-1}`},
 		{"blank capability token", `{"name":"x","display_label":"X","category":"food","capabilities":["  "]}`},
+		{"description too long", `{"name":"x","display_label":"X","category":"food","description":"` + strings.Repeat("a", 501) + `"}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

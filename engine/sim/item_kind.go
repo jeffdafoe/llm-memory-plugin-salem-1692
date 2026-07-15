@@ -33,6 +33,15 @@ type ItemKindDef struct {
 	DisplayLabelSingular string
 	DisplayLabelPlural   string
 
+	// Description is optional flavor prose for a catalog good (LLM-410) —
+	// item_kind.description, a nullable free-text column. Distinct from the
+	// counting labels: it's what the good IS in-world ("a heavy wool coat, long
+	// against the wind and the rain"), surfaced when the good is laid out or
+	// examined — e.g. the factor spreading his wares (LLM-410 slice 3) — not woven
+	// into every buy cue. Empty for goods with no authored description (the whole
+	// pre-410 catalog: NULL round-trips to "" like the label columns).
+	Description string
+
 	// Category is the soft-typed bucket — a free VARCHAR(32) in both v1 and v2.
 	// ItemCategory names the well-known values (food | drink | material | craft,
 	// plus the engine-minted "unknown"), but it is a string soft-type, not a

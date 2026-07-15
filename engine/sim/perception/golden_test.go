@@ -2650,6 +2650,23 @@ var perceptionScenarios = []perceptionScenario{
 		build: coldOutdoorsInStorm,
 	},
 	{
+		name: "cold_outdoors_in_storm_coat_for_sale",
+		summary: "LLM-410: the cold_outdoors_in_storm scene with a coat SELLER present — Josiah Thorne holds coats and a " +
+			"cloak at the General Store. The golden pins the vendor-gated warm-garment nudge — a warm coat or cloak would " +
+			"keep the worst off, buy from General Store (destination: general_store) — rendered AFTER the unconditional " +
+			"free-relief steer (a coat is a PAID upgrade to keep working outside, never a substitute for shelter). Contrast " +
+			"cold_outdoors_in_storm, whose world has no seller, so no nudge renders — the vendor-gating proof.",
+		build: coldOutdoorsInStormCoatForSale,
+	},
+	{
+		name: "cold_outdoors_in_storm_coated",
+		summary: "LLM-410: the same red-cold storm-outdoors scene, but Lewis is CARRYING a coat (a warms garment). The " +
+			"golden pins the confirming line — the warm clothes are holding the worst of the cold off, enough to keep " +
+			"working out here — after the free-relief steer, and the ABSENCE of any buy nudge (he already has one). In the " +
+			"sweep the coat caps his outdoor accrual at the under-a-roof rate (coldRatePerMinuteX100).",
+		build: coldOutdoorsInStormCoated,
+	},
+	{
 		name: "cold_in_unheated_room_storm",
 		summary: "LLM-412: the same storm felt through a roof — Lewis chilled (mild) INSIDE a plain structure with no " +
 			"hearth. The golden pins the indoors branch: the roof is keeping the rain off and staying in is easing it " +
