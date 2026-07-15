@@ -628,6 +628,28 @@ func TestUmbilical_State(t *testing.T) {
 	if out.Telemetry.Capacity != 8 {
 		t.Errorf("telemetry.capacity = %d, want 8", out.Telemetry.Capacity)
 	}
+	// Coin supply (LLM-410): hannah holds 25, bram (PC) 0 — both non-decorative,
+	// neither a visitor, so 25 total across 2 resident holders.
+	if out.CoinSupply != (sim.CoinSupply{Total: 25, Resident: 25, Visitor: 0, Holders: 2}) {
+		t.Errorf("coin_supply = %+v, want {Total:25 Resident:25 Visitor:0 Holders:2}", out.CoinSupply)
+	}
+}
+
+// TestUmbilical_State_CoinSupply: the /state mapper carries the money-supply
+// gauge, excluding decoratives and splitting a transient visitor's purse out of
+// the resident total. Exercises the pure snapshot→DTO mapper directly.
+func TestUmbilical_State_CoinSupply(t *testing.T) {
+	snap := &sim.Snapshot{
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			"keeper": {Kind: sim.KindNPCStateful, Coins: 40},
+			"factor": {Kind: sim.KindNPCShared, Coins: 200, VisitorState: &sim.VisitorState{Archetype: "peddler"}},
+			"statue": {Kind: sim.KindDecorative, Coins: 999},
+		},
+	}
+	out := umbilicalStateFromSnapshot(snap, telemetry.Stats{})
+	if out.CoinSupply != (sim.CoinSupply{Total: 240, Resident: 40, Visitor: 200, Holders: 2}) {
+		t.Errorf("coin_supply = %+v, want {Total:240 Resident:40 Visitor:200 Holders:2}", out.CoinSupply)
+	}
 }
 
 // TestUmbilical_State_ConfigWarnings: /state surfaces the LLM-60 data-config
