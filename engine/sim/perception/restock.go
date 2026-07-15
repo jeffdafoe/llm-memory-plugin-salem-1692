@@ -194,10 +194,12 @@ type RestockItemView struct {
 	// >= 2×RecentSalesUnits+1, which also catches a dead good it keeps restocking though
 	// it sells none. Because the restock cue only fires when on-hand is below the reorder
 	// point (section membership), a large buy>>sell gap has NOT piled up on the shelf: it
-	// left through non-sale channels — the keeper consumed it, or bartered/gave it away (a
-	// goods trade the coin price book never books as a sale, so it lives entirely in this
-	// residual). Render names that honestly ("bought N, sold M, consumed or traded the
-	// rest").
+	// left through non-sale channels — the keeper consumed it, used it to make its own wares
+	// (a bought recipe input surfaces here too, via EffectiveBuyEntries), or bartered/gave
+	// it away (a goods trade the coin price book never books as a sale, so it lives entirely
+	// in this residual). Render names that honestly with a verb broad enough to cover all
+	// three ("bought N, sold M, used or traded the rest") — "used", not "consumed", so it
+	// stays true for a production input that went into the pot, not the keeper's mouth.
 	//
 	// This supersedes the LLM-385 "buy sparingly, if at all" over-buying hold-off, which
 	// read exactly backwards here: an item in the restock section is by definition NOT
@@ -337,8 +339,9 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 		// LLM-424: buy-outpaces-sell flag — bought markedly more than it SOLD this window.
 		// Since the item is below its reorder point (or it would not be in this section),
 		// that gap did not pile up on the shelf; it left through non-sale channels —
-		// consumed, or bartered/given away (a goods trade the coin price book never books
-		// as a sale). Render reframes it as an honest self-use accounting, superseding the
+		// consumed, used to make its own wares, or bartered/given away (a goods trade the
+		// coin price book never books as a sale). Render reframes it as an honest self-use
+		// accounting, superseding the
 		// LLM-385 "buy sparingly" hold-off that read backwards on a sold-out, self-consumed
 		// line. Fires at >= twice-sold plus a small floor to avoid noise on tiny numbers,
 		// and covers the sold-nothing case (a dead good it keeps restocking).
@@ -1080,16 +1083,18 @@ func renderRestocking(b *strings.Builder, v *RestockingView) {
 		}
 		// LLM-424: self-use accounting — bought far more than it SOLD this window, yet an
 		// item in the restock section is below its reorder point, so the gap did not pile
-		// up on the shelf: the keeper consumed it, or bartered/gave it away (a goods trade
-		// the coin price book never books as a sale, so it sits entirely in this residual).
-		// Name that honestly instead of the LLM-385 "buy sparingly" hold-off, which read
-		// exactly backwards on a sold-out, self-consumed line and talked the model out of
-		// restocking (the live Josiah cheese confabulation: it invented "22 still unsold"
-		// to reconcile a 0-stock shelf against an overstock steer). No "ask"/"price" token
-		// (the HOME-386 speaking-loop guard) and no hold-off imperative — an empty shelf
-		// needs restocking regardless of flow velocity.
+		// up on the shelf: the keeper consumed it, used it to make its own wares, or
+		// bartered/gave it away (a goods trade the coin price book never books as a sale, so
+		// it sits entirely in this residual). "used or traded" covers all three — "used",
+		// not "consumed", stays true for a production input that went into the pot, not the
+		// keeper's mouth. Name that honestly instead of the LLM-385 "buy sparingly" hold-off,
+		// which read exactly backwards on a sold-out, self-consumed line and talked the model
+		// out of restocking (the live Josiah cheese confabulation: it invented "22 still
+		// unsold" to reconcile a 0-stock shelf against an overstock steer). No "ask"/"price"
+		// token (the HOME-386 speaking-loop guard) and no hold-off imperative — an empty
+		// shelf needs restocking regardless of flow velocity.
 		if it.UsingOwnStock {
-			fmt.Fprintf(b, " You've bought about %d of these this past week, sold only %d, and consumed or traded the rest.",
+			fmt.Fprintf(b, " You've bought about %d of these this past week, sold only %d, and used or traded the rest.",
 				it.RecentBuyUnits, it.RecentSalesUnits)
 		}
 		// ZBBS-HOME-459: the purse covers fewer units than the cap leaves room for,

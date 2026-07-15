@@ -460,24 +460,45 @@ func TestGoldensNoCoPresentBuyGoadAfterTwoDeclines(t *testing.T) {
 // confabulation, where the model invented phantom unsold stock to reconcile an empty shelf
 // against a "you're overstocked" cue). No rendered scenario may carry that hold-off.
 // Non-vacuous: at least one scenario must render the self-use accounting that replaced it
-// ("consumed or traded the rest"), so the check proves the reframed path is exercised, not
+// ("used or traded the rest"), so the check proves the reframed path is exercised, not
 // merely that a phrase nobody emits is absent. True coin-poor overstock is a separate,
 // Conserve-mode steer and is unaffected.
 func TestGoldensRestockCueNeverHoldsOffOnLowStock(t *testing.T) {
 	var exercised bool
 	for _, sc := range perceptionScenarios {
 		sc := sc
-		got := renderScenario(sc)
-		if strings.Contains(got, "buy sparingly") || strings.Contains(got, "restocking faster than it sells") {
-			t.Errorf("scenario %q: the '## Restocking' cue holds off buying on a low-stock item (LLM-424):\n%s", sc.name, got)
+		section := restockingSection(renderScenario(sc))
+		if section == "" {
+			continue // no "## Restocking" cue in this scenario — invariant N/A
 		}
-		if strings.Contains(got, "consumed or traded the rest") {
+		if strings.Contains(section, "buy sparingly") || strings.Contains(section, "restocking faster than it sells") {
+			t.Errorf("scenario %q: the '## Restocking' cue holds off buying on a low-stock item (LLM-424):\n%s", sc.name, section)
+		}
+		if strings.Contains(section, "used or traded the rest") {
 			exercised = true
 		}
 	}
 	if !exercised {
-		t.Error("matrix must exercise a scenario that renders the self-use accounting (LLM-424 'consumed or traded the rest')")
+		t.Error("matrix must exercise a scenario whose '## Restocking' cue renders the self-use accounting (LLM-424 'used or traded the rest')")
 	}
+}
+
+// restockingSection returns the body of the "## Restocking" section of a rendered
+// prompt — from its header to the next "## " header (or end of prompt) — or "" when the
+// prompt has no such section. Scoping the LLM-424 invariant to this slice keeps a phrase
+// in an unrelated section from either false-failing the hold-off check or vacuously
+// satisfying the self-use non-vacuity guard (code_review).
+func restockingSection(prompt string) string {
+	const header = "## Restocking\n"
+	i := strings.Index(prompt, header)
+	if i < 0 {
+		return ""
+	}
+	body := prompt[i+len(header):]
+	if j := strings.Index(body, "\n## "); j >= 0 {
+		return body[:j]
+	}
+	return body
 }
 
 // TestGoldensEnRouteWorkerNotOfferedNewWork is the LLM-229 cross-scenario
@@ -1540,7 +1561,7 @@ var perceptionScenarios = []perceptionScenario{
 			"resale CEILING ('You resell it for about 1 coin each — pay more than that and you lose coin on every one') " +
 			"beside the market rate — the distributor's binding number the market-only anchor never surfaced. And he " +
 			"bought 35 milk this week but sold only 9, so the self-use accounting fires ('bought about 35 of these this " +
-			"past week, sold only 9, and consumed or traded the rest') — the LLM-424 honest reframe that replaced the " +
+			"past week, sold only 9, and used or traded the rest') — the LLM-424 honest reframe that replaced the " +
 			"backwards 'buy sparingly' hold-off, since an item below its reorder point has not piled up on the shelf. " +
 			"Solo (no huddle), so the wares-fetch cue stays out and the section under test renders cleanly.",
 		build: distributorOverbuyingBelowResale,
@@ -1553,7 +1574,7 @@ var perceptionScenarios = []perceptionScenario{
 			"cue rendered a self-contradiction: '0 on hand, room for 6' AND the overstock steer 'restocking faster than it " +
 			"sells, so buy sparingly, if at all', and the weak model confabulated '22 still unsold' to reconcile the two, " +
 			"talking itself out of restocking a sold-out line. The golden pins the fix: the honest self-use accounting " +
-			"('bought about 25 of these this past week, sold only 5, and consumed or traded the rest') AND the normal " +
+			"('bought about 25 of these this past week, sold only 5, and used or traded the rest') AND the normal " +
 			"restock affordance (walk to Ellis Farm), with NO 'buy sparingly' / overstock hold-off. Solo (no huddle), so " +
 			"the wares-fetch cue stays out and the '## Restocking' section renders cleanly.",
 		build: keeperSelfConsumesZeroStock,

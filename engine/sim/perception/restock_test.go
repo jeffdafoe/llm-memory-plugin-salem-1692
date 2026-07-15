@@ -1275,7 +1275,7 @@ func TestRenderRestocking_ResaleCeilingAndSelfUse(t *testing.T) {
 	if !strings.Contains(out, "You resell it for about 1 coin each — paying above your resale rate loses coin on each one.") {
 		t.Errorf("missing resale-ceiling clause:\n%s", out)
 	}
-	if !strings.Contains(out, "You've bought about 35 of these this past week, sold only 9, and consumed or traded the rest.") {
+	if !strings.Contains(out, "You've bought about 35 of these this past week, sold only 9, and used or traded the rest.") {
 		t.Errorf("missing self-use accounting:\n%s", out)
 	}
 
@@ -1284,7 +1284,7 @@ func TestRenderRestocking_ResaleCeilingAndSelfUse(t *testing.T) {
 	renderRestocking(&dead, &RestockingView{Items: []RestockItemView{
 		{ItemLabel: "sage", CurrentQty: 1, Cap: 6, RecentBuyUnits: 6, RecentSalesUnits: 0, UsingOwnStock: true},
 	}})
-	if !strings.Contains(dead.String(), "You've bought about 6 of these this past week, sold only 0, and consumed or traded the rest.") {
+	if !strings.Contains(dead.String(), "You've bought about 6 of these this past week, sold only 0, and used or traded the rest.") {
 		t.Errorf("self-use accounting should render with zero sales:\n%s", dead.String())
 	}
 
@@ -1297,7 +1297,7 @@ func TestRenderRestocking_ResaleCeilingAndSelfUse(t *testing.T) {
 	if strings.Contains(q, "You resell it for") {
 		t.Errorf("no resale rate should omit the ceiling clause:\n%s", q)
 	}
-	if strings.Contains(q, "consumed or traded the rest") {
+	if strings.Contains(q, "used or traded the rest") {
 		t.Errorf("not UsingOwnStock should omit the self-use accounting:\n%s", q)
 	}
 }
