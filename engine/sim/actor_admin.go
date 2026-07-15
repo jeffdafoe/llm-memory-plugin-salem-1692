@@ -113,6 +113,18 @@ func sortedAttributeSlugs(a *Actor) []string {
 	return slugs
 }
 
+// SortedAttributeSlugs is the exported view of sortedAttributeSlugs for callers
+// outside package sim (the umbilical read handlers in httpapi). Sharing the one
+// helper keeps the operator read surface's slug set identical to the set the
+// worker routes and the npc_attributes_changed frame emit — they can't drift.
+// a must be a live actor (non-nil) — not nil-safe, matching the unexported
+// helper; every caller resolves a off world.Actors on the world goroutine first.
+// For a valid actor it never returns nil (empty attribute set → non-nil empty
+// slice → JSON `[]`).
+func SortedAttributeSlugs(a *Actor) []string {
+	return sortedAttributeSlugs(a)
+}
+
 // validMinuteOfDay reports whether m is a valid minute-of-day [0,1439].
 func validMinuteOfDay(m int) bool {
 	return m >= 0 && m <= 1439
