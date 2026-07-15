@@ -100,6 +100,14 @@ type UmbilicalAgentDTO struct {
 	LoginUsername   string `json:"login_username,omitempty"`
 	IsAdmin         bool   `json:"is_admin"`
 
+	// Attributes is the actor's role-marker slug set (sorted): worker, messenger,
+	// town_crier, keeper/businessowner, etc. — the same set the worker routes and
+	// the npc_attributes_changed frame emit (shared helper, so they can't drift).
+	// Presence-only markers; the params values are unused, so slugs suffice. Not
+	// omitempty — always emitted, as `[]` when the actor carries none, so the
+	// operator can distinguish "no markers" from "field absent" (LLM-421).
+	Attributes []string `json:"attributes"`
+
 	TileX             int    `json:"tile_x"`
 	TileY             int    `json:"tile_y"`
 	State             string `json:"state"`
@@ -226,6 +234,7 @@ func (s *Server) handleUmbilicalAgent(w http.ResponseWriter, r *http.Request) {
 			WarrantCount:      len(a.Warrants),
 			TickInFlight:      a.TickInFlight,
 			TickAttemptID:     string(a.TickAttemptID),
+			Attributes:        sim.SortedAttributeSlugs(a),
 		}
 		if len(a.Needs) > 0 {
 			dto.Needs = make(map[string]int, len(a.Needs))
@@ -445,6 +454,12 @@ type UmbilicalActorRowDTO struct {
 	// now driven by the WS heartbeat (LLM-342). The read side of "does the village
 	// think anyone is watching."
 	Present *bool `json:"present,omitempty"`
+	// Attributes is the actor's sorted role-marker slug set (worker, messenger,
+	// town_crier, keeper/businessowner, …) — the village-wide "who carries what"
+	// scan (LLM-421). omitempty here (unlike /agent's always-emit): the roster is
+	// many rows and most carry none, so the field appears only on the rows that
+	// have markers, making carriers stand out. Same shared helper as /agent.
+	Attributes []string `json:"attributes,omitempty"`
 }
 
 // UmbilicalActorsDTO is the GET /api/village/umbilical/actors response: the full
@@ -482,6 +497,9 @@ func actorRowDTO(world *sim.World, a *sim.Actor, now time.Time) UmbilicalActorRo
 	if a.Kind == sim.KindPC {
 		present := !sim.PCPresenceStale(a.LastPCSeenAt, now, sim.PCPresenceStaleAfter(world))
 		row.Present = &present
+	}
+	if len(a.Attributes) > 0 {
+		row.Attributes = sim.SortedAttributeSlugs(a)
 	}
 	return row
 }

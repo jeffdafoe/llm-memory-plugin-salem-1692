@@ -309,6 +309,28 @@ func TestUmbilical_Agent(t *testing.T) {
 	if out.TileX != 3 || out.TileY != 4 {
 		t.Errorf("tile = %d,%d, want 3,4", out.TileX, out.TileY)
 	}
+	// Attributes (LLM-421): the actor's role-marker slugs, sorted. seededWorld
+	// gives hannah {tavernkeeper, businessowner}; the wire set is sorted.
+	if got := strings.Join(out.Attributes, ","); got != "businessowner,tavernkeeper" {
+		t.Errorf("attributes = %v, want [businessowner tavernkeeper] (sorted)", out.Attributes)
+	}
+
+	// An actor with no attributes emits an empty array `[]` (not null/absent), so
+	// the operator can tell "no markers" from "field missing" (LLM-421 AC).
+	rec = req(t, h, "/api/village/umbilical/agent?id=bram", "tok")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("agent bram = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"attributes":[]`) {
+		t.Errorf("bram body = %s, want attributes:[] (empty array, not null)", rec.Body.String())
+	}
+	var bram UmbilicalAgentDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &bram); err != nil {
+		t.Fatalf("decode bram: %v", err)
+	}
+	if bram.Attributes == nil || len(bram.Attributes) != 0 {
+		t.Errorf("bram attributes = %v, want non-nil empty slice", bram.Attributes)
+	}
 
 	// Missing id → 400; unknown actor → 404.
 	if rec := req(t, h, "/api/village/umbilical/agent", "tok"); rec.Code != http.StatusBadRequest {
@@ -590,6 +612,26 @@ func TestUmbilical_Actors(t *testing.T) {
 	}
 	if out.Actors[1].Needs["hunger"] != sim.NeedMax || out.Actors[1].Needs["thirst"] != 12 {
 		t.Errorf("hannah needs = %v, want hunger=%d thirst=12", out.Actors[1].Needs, sim.NeedMax)
+	}
+	// Attributes (LLM-421): roster rows carry the sorted role-marker slugs, and
+	// omitempty means a marker-less actor omits the field. bram (PC) has none;
+	// hannah has {businessowner, tavernkeeper}.
+	if out.Actors[0].Attributes != nil {
+		t.Errorf("bram attributes = %v, want nil (omitempty, no markers)", out.Actors[0].Attributes)
+	}
+	if got := strings.Join(out.Actors[1].Attributes, ","); got != "businessowner,tavernkeeper" {
+		t.Errorf("hannah attributes = %v, want [businessowner tavernkeeper]", out.Actors[1].Attributes)
+	}
+	// Assert the omitempty behavior on the actual response bytes, not just the
+	// decoded slice: exactly one of the two rows (hannah) carries the field, so
+	// `"attributes"` appears once and bram's row omits it. Guards against a future
+	// marshaler / DTO change that keeps the decode assertions green while altering
+	// the wire contract.
+	if n := strings.Count(rec.Body.String(), `"attributes"`); n != 1 {
+		t.Errorf("attributes field count = %d, want 1 (only hannah's row; bram omits it)", n)
+	}
+	if !strings.Contains(rec.Body.String(), `"attributes":["businessowner","tavernkeeper"]`) {
+		t.Errorf("body = %s, want hannah attributes:[businessowner,tavernkeeper] on the wire", rec.Body.String())
 	}
 
 	// Gating mirrors the read surface: 404 when the umbilical is off, 403 for a
