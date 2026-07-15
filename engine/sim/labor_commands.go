@@ -1395,6 +1395,10 @@ func startLaborWork(w *World, offer *LaborOffer, worker, employer *Actor, at tim
 	// before the hire, so there is no owner-style accrual edge to ride, and a
 	// StateLaboring worker is otherwise shelved by the reactor.
 	maybeStampHiredRepairWarrant(w, worker, employer, at)
+	// LLM-412: same shape for the employer's hearth — if a storm is running and
+	// the fire wants wood, wake the worker once to stoke it (tending the fire is
+	// the job, not leaving it).
+	maybeStampHiredHearthWarrant(w, worker, employer, at)
 }
 
 // sendWorkerToWorkplace walks a hired worker to the employer's workplace to

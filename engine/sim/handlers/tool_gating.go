@@ -192,6 +192,7 @@ var walkIncompatibleTools = map[string]struct{}{
 	"give":          {}, // LLM-138: GiveItems rejects on MoveIntent != nil (offer the gift when stationary)
 	"pay":           {}, // LLM-99: bare-coin pay re-registered; same walk-in-flight reject
 	"repair":        {}, // LLM-118: StartRepair rejects on MoveIntent != nil (mend at the stall)
+	"stoke":         {}, // LLM-412: StartStoke rejects on MoveIntent != nil (tend the fire on site)
 	"solicit_work":  {}, // LLM-26: SolicitWork rejects on MoveIntent != nil (offer when stationary)
 	"offer_work":    {}, // LLM-346: OfferWork rejects on MoveIntent != nil (hire when stationary)
 }
@@ -280,6 +281,16 @@ const craftToolName = "produce"
 // steers buy-then-mend when short, and StartRepair errors helpfully if called
 // without nails. The sim.StartRepair Command stays the authoritative gate.
 const repairToolName = "repair"
+
+// stokeToolName — the hearth keeper's "feed the fire" tool (LLM-412).
+// Advertised ONLY when the hearth cue is present (payload.Hearth non-nil),
+// which itself fires only when the actor is responsible for the hearth
+// (owner, or Working a hired job for its owner), stands inside its structure,
+// and the fire is out or low. Deliberately NOT in laborAbandonTools: a hired
+// hand stoking the employer's fire is doing the job, not leaving it — the
+// work-vs-leaving principle. Like repair, not gated on carrying enough
+// firewood; sim.StartStoke stays the authoritative gate.
+const stokeToolName = "stoke"
 
 // actorIsMoving reports whether the subject has an in-flight move at snapshot
 // time, read from the ZBBS-HOME-336 read-path projection (MoveDestKind is
@@ -430,6 +441,7 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 	flaggedDegenerate := actorIsFlaggedDegenerate(payload.ActorID, snap)
 	offerCraft := payload.ForgeChoice != nil && len(payload.ForgeChoice.Items) > 0
 	offerRepair := payload.StallRepair != nil
+	offerStoke := payload.Hearth != nil
 	hasLaborOffer := len(perception.PendingLaborOffers(payload)) > 0
 	canSolicitWork := payload.CanSolicitWork
 	canOfferWork := len(payload.HireableWorkers) > 0
@@ -535,6 +547,14 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 		// owner is handed the tool exactly when standing at their own worn business,
 		// and no other actor ever sees it.
 		if spec.Name == repairToolName && !offerRepair {
+			continue
+		}
+		// stoke consumer (LLM-412): advertise only when the hearth cue is present
+		// (payload.Hearth non-nil: responsible for the hearth, inside its structure,
+		// fire out/low) — the same signal the cue renders from, so tool and cue
+		// can't drift. Like repair, NOT gated on carrying enough firewood: the cue
+		// steers buy-then-stoke when short, and sim.StartStoke errors helpfully.
+		if spec.Name == stokeToolName && !offerStoke {
 			continue
 		}
 		if _, gated := payOfferResponseTools[spec.Name]; gated {

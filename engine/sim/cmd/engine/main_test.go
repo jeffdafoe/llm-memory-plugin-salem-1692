@@ -234,7 +234,7 @@ func TestRegisterTools_CacheStableOrder(t *testing.T) {
 	// convention, recall is registered separately; neither is part of the
 	// cross-actor common/situational cache seam.
 	situationalTail := []string{
-		"gather", "produce", "repair", "take_break", "stay_open", "deliver_order", "stop",
+		"gather", "produce", "repair", "stoke", "take_break", "stay_open", "deliver_order", "stop",
 		"solicit_work", "offer_work", "accept_work", "decline_work",
 		"accept_pay", "decline_pay", "counter_pay", "withdraw_pay",
 		"accept_gift", "decline_gift", "summon",
@@ -286,7 +286,7 @@ func TestRegisterTools_AdvertisedToolNamesExact(t *testing.T) {
 
 	want := []string{
 		"speak", "move_to", "consume", "pay_with_item", "pay", "sell", "offer_trade", "give",
-		"gather", "produce", "repair", "take_break", "stay_open", "deliver_order", "stop",
+		"gather", "produce", "repair", "stoke", "take_break", "stay_open", "deliver_order", "stop",
 		"solicit_work", "offer_work", "accept_work", "decline_work",
 		"accept_pay", "decline_pay", "counter_pay", "withdraw_pay",
 		"accept_gift", "decline_gift", "summon", "done", "recall", "memorize",

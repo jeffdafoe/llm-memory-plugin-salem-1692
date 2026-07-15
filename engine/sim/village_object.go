@@ -93,6 +93,16 @@ type VillageObject struct {
 	// isn't a wearable business (see IsWearableStall / TagBusiness scope).
 	Wear int
 
+	// HearthLitUntil is when this structure's hearth fire burns out (LLM-412).
+	// Meaningful only on an object tagged TagHearth (a structure-backed object
+	// whose building has a fireplace); zero = the fire is out. Stoking (the
+	// stoke source-activity, consuming firewood) extends it, capped at
+	// HearthMaxBankMinutes ahead. "Lit" is simply a future instant — there is
+	// no burn-down sweep; the fire goes out by the clock. Durable
+	// (checkpointed): village restarts are many-times-daily deploys, and every
+	// fire going out on each deploy would turn firewood into a restart tax.
+	HearthLitUntil time.Time
+
 	// Refreshes — per-attribute need-decrement-on-arrival policies. Empty
 	// for objects without refresh effects (decorative trees, plain benches).
 	// Multi-attribute objects (a shaded oak refreshing both tiredness from
