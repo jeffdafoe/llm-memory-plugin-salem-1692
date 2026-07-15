@@ -1754,10 +1754,14 @@ func laborTiePhrase(t laborTie) string {
 // matches the perception note — Render is kind-agnostic; Build is the
 // one that gates on Kind.
 //
-// The body is the actor's AboutMe — the accreting first-person soul the
-// per-actor narrative sweep synthesizes each day via the dream-sim-soul agent
-// (LLM-199). Build gates the view on a non-empty AboutMe, so an actor whose
-// soul hasn't been synthesized yet gets no section rather than a bare header
+// The section opens with the actor's own name (LLM-432): the shared VA's
+// system prompt is a generic sim context and the AboutMe prose doesn't
+// reliably state the name, so without this line the model cannot tell
+// whether overheard second-person speech ("ezekiel, you sleeping over
+// there?") is addressed to it. The body is the actor's AboutMe — the
+// accreting first-person soul the per-actor narrative sweep synthesizes
+// each day via the dream-sim-soul agent (LLM-199). Build gates the view on
+// having a name or a soul, so the section never renders as a bare header
 // (the original empty-block bug). SeedText/EvolvingSummary are not rendered —
 // SeedText is never populated for shared VAs, and EvolvingSummary was the
 // frozen, unconsolidated diary prose that primed the repeat-pitch loop
@@ -1767,6 +1771,11 @@ func renderNarrativeState(b *strings.Builder, n *NarrativeStateView) {
 		return
 	}
 	b.WriteString("## Who you are\n")
+	if n.Name != "" {
+		b.WriteString("You are ")
+		b.WriteString(sanitizeInline(n.Name))
+		b.WriteString(".\n")
+	}
 	if n.AboutMe != "" {
 		b.WriteString(sanitizeInline(n.AboutMe))
 		b.WriteString("\n")

@@ -138,6 +138,35 @@ func TestGoldensTravelerPrefaceIffSubjectIsTraveler(t *testing.T) {
 	}
 }
 
+// TestGoldensSelfNameIffSharedVillager is the LLM-432 cross-scenario
+// invariant: the "You are <name>." self-name line renders IFF the subject is
+// a shared-VA villager (KindNPCShared, not a traveler) with a display name.
+// The shared VA's system prompt is a generic sim context, so this line is the
+// ONLY place a shared villager learns who it is — without it, a bystander
+// hearing "ezekiel, you sleeping over there?" cannot rule itself out as the
+// addressee (the live Patience Walker misfire). Guards both directions:
+// stateful NPCs and PCs must NOT get the line (their identity comes from
+// their own VA's <Self> block / the player), and travelers keep their own
+// preface (LLM-370) instead.
+func TestGoldensSelfNameIffSharedVillager(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, _ := sc.build()
+			a := snap.Actors[actorID]
+			if a == nil || a.DisplayName == "" {
+				return
+			}
+			marker := "You are " + a.DisplayName + ".\n"
+			wantSelfName := a.Kind == sim.KindNPCShared && a.VisitorState == nil
+			hasSelfName := strings.Contains(renderScenario(sc), marker)
+			if wantSelfName != hasSelfName {
+				t.Errorf("scenario %q: shared villager=%v but self-name line present=%v — '## Who you are' must open with the subject's own name iff it is a shared-VA villager (LLM-432)", sc.name, wantSelfName, hasSelfName)
+			}
+		})
+	}
+}
+
 // TestGoldensReturnerContinuityIffRepeatVisit is the LLM-372 cross-scenario
 // invariant: the returner continuity block (the visit clause that opens it)
 // renders IFF the subject is a returning traveler on a repeat visit
@@ -1288,6 +1317,17 @@ var perceptionScenarios = []perceptionScenario{
 			"populated seed_text). A regression that muted about_me, reverted the render field, or dropped the build " +
 			"gate would show the block going empty in the diff.",
 		build: sharedNpcWithSoul,
+	},
+	{
+		name: "shared_npc_bystander_hears_addressed_speech",
+		summary: "LLM-432: the live Patience Walker misfire (2026-07-15). A shared-VA villager in the evening tavern " +
+			"hears a PC address a co-present third party by name ('ezekiel, you sleeping over there?'), and her soul " +
+			"prose — like the live one — never states her own name. Nothing else in a shared-VA prompt does (the " +
+			"shared VA's system prompt is a generic sim context), so she couldn't rule herself out as the addressee " +
+			"and answered as if teased. The golden pins the 'You are Patience Walker.' self-name line opening " +
+			"'## Who you are' ahead of the soul prose. A regression that drops the Name field from the build or the " +
+			"render shows the line vanishing in the diff.",
+		build: sharedNpcBystanderHearsAddressedSpeech,
 	},
 	{
 		name: "homed_worker_evening_tavern_open",
@@ -11612,6 +11652,90 @@ func sharedNpcWithSoul() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 		},
 	}
 	return snap, hannahID, warrants
+}
+
+// sharedNpcBystanderHearsAddressedSpeech is the LLM-432 fixture: the live
+// Patience Walker misfire of 2026-07-15. A shared-VA villager sits in the
+// evening tavern when a PC asks a co-present third party by name — "ezekiel,
+// you sleeping over there?" — and her soul prose, like the live one, never
+// states her own name. Before the fix nothing in the prompt did either
+// (the shared VA's system prompt is a generic sim context), so she could
+// not rule herself out as the addressee and answered as if teased. The
+// golden pins the "You are Patience Walker." self-name line opening
+// "## Who you are" ahead of the soul prose.
+func sharedNpcBystanderHearsAddressedSpeech() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		patienceID = sim.ActorID("patience")
+		ezekielID  = sim.ActorID("ezekiel")
+		jeffereyID = sim.ActorID("jefferey")
+		tavern     = sim.StructureID("tavern")
+		huddleID   = sim.HuddleID("tavern_huddle")
+	)
+	now := 19*60 + 35 // 19:35 — the tavern of an evening
+	published := time.Date(2026, 7, 15, 23, 35, 0, 0, time.UTC)
+	ago := func(sec int) time.Time { return published.Add(-time.Duration(sec) * time.Second) }
+	patience := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Patience Walker",
+		Role:              "villager",
+		State:             sim.StateIdle,
+		InsideStructureID: tavern,
+		CurrentHuddleID:   huddleID,
+		Coins:             22,
+		Needs:             map[sim.NeedKey]int{},
+		Narrative: &sim.NarrativeState{
+			AboutMe: "My life in the village is a tapestry of moments. My family remains a source of comfort, and I find steadiness in the day's work and the fire of an evening.",
+		},
+	}
+	ezekiel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Ezekiel Crane",
+		Role:              "blacksmith",
+		State:             sim.StateIdle,
+		InsideStructureID: tavern,
+		CurrentHuddleID:   huddleID,
+		Coins:             15,
+		Needs:             map[sim.NeedKey]int{},
+	}
+	jefferey := &sim.ActorSnapshot{
+		Kind:              sim.KindPC,
+		DisplayName:       "Jefferey",
+		State:             sim.StateIdle,
+		InsideStructureID: tavern,
+		CurrentHuddleID:   huddleID,
+		Coins:             30,
+		Needs:             map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			patienceID: patience,
+			ezekielID:  ezekiel,
+			jeffereyID: jefferey,
+		},
+		Structures: map[sim.StructureID]*sim.Structure{
+			tavern: plainStructure(tavern, "Tavern"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddleID: {
+				ID:      huddleID,
+				Members: map[sim.ActorID]struct{}{patienceID: {}, ezekielID: {}, jeffereyID: {}},
+				RecentUtterances: []sim.Utterance{
+					{SpeakerID: jeffereyID, SpeakerName: "Jefferey", Text: "ezekiel, you sleeping over there?", At: ago(10)},
+				},
+			},
+		},
+	}
+	warrants := []sim.WarrantMeta{{
+		TriggerActorID: jeffereyID,
+		Reason:         sim.PCSpeechWarrantReason{SpeechID: 1, Speaker: jeffereyID, Excerpt: "ezekiel, you sleeping over there?"},
+		SourceEventID:  1,
+		HuddleID:       huddleID,
+		OccurredAt:     published,
+	}}
+	return snap, patienceID, warrants
 }
 
 // tiredKeeperAtPostOnShift is the LLM-100 positive case: a tired keeper standing

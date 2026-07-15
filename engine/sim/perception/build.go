@@ -3256,23 +3256,29 @@ func sellerHasActiveQuoteToBuyer(snap *sim.Snapshot, seller, buyer sim.ActorID) 
 // buildNarrativeState returns the kind-aware "## Who you are" content
 // for shared-VA actors, or nil otherwise. Stateful and PC actors get
 // no engine-side narrative — their identity comes from their own VA's
-// <Self> block (stateful) or from the player (PC).
+// <Self> block (stateful) or from the player (PC). Transient travelers
+// are excluded too: their identity is the renderTravelerPreface
+// (LLM-370), so this section would double-state it.
 //
-// Gated on AboutMe (the synthesized soul, LLM-199): a shared actor whose
-// soul hasn't been synthesized yet gets nil so Render skips the section
-// cleanly rather than emitting a bare header. SeedText/EvolvingSummary are
-// not rendered (SeedText is never set for shared VAs; EvolvingSummary is
-// legacy), so they don't open the section.
+// Name is always set from the snapshot (LLM-432) — the shared VA's
+// system prompt carries no per-actor identity, so the self-name line is
+// content on its own even before the soul (AboutMe, LLM-199) has been
+// synthesized. Nil only when both name and soul are empty, so Render
+// never emits a bare header. SeedText/EvolvingSummary are not rendered
+// (SeedText is never set for shared VAs; EvolvingSummary is legacy), so
+// they don't open the section.
 func buildNarrativeState(a *sim.ActorSnapshot) *NarrativeStateView {
-	if a.Kind != sim.KindNPCShared || a.Narrative == nil {
+	if a.Kind != sim.KindNPCShared || a.VisitorState != nil {
 		return nil
 	}
-	if a.Narrative.AboutMe == "" {
+	v := &NarrativeStateView{Name: a.DisplayName}
+	if a.Narrative != nil {
+		v.AboutMe = a.Narrative.AboutMe
+	}
+	if v.Name == "" && v.AboutMe == "" {
 		return nil
 	}
-	return &NarrativeStateView{
-		AboutMe: a.Narrative.AboutMe,
-	}
+	return v
 }
 
 // recentSalientFactsPerPeer is the per-peer ceiling on facts surfaced

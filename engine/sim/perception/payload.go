@@ -1139,8 +1139,16 @@ type ProducerNote struct {
 // shared-VA actor: the accreting first-person soul the per-actor narrative
 // sweep synthesizes each day via the dream-sim-soul agent (LLM-199). Nil for
 // stateful / PC actors, who get identity elsewhere (the VA's <Self> block /
-// the player).
+// the player), and for transient travelers, whose identity preface is
+// renderTravelerPreface (LLM-370).
+//
+// Name is the actor's own display name (LLM-432). The shared VA's system
+// prompt is a generic sim context and AboutMe is first-person prose that
+// doesn't reliably contain the name, so without this line the model never
+// learns who it is — and a bystander hearing "ezekiel, you sleeping over
+// there?" can't rule itself out as the addressee.
 type NarrativeStateView struct {
+	Name    string
 	AboutMe string
 }
 
