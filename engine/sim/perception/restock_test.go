@@ -1188,12 +1188,13 @@ func TestRenderRestocking_SellThroughLine(t *testing.T) {
 	}
 }
 
-// TestBuildRestocking_ResaleUnitAndOverBuying pins the LLM-385 buy-side fields: the
-// reseller's own realized resale RATE (the ceiling the buying-in anchor is judged
-// against) and the OVER-BUYING flag (bought markedly more than it sold this window).
-// Milk: sold 9 units for 12 coins → resale 1.3 rounds to 1; bought 35 units → over-buying
-// (35 >= 4 and 35 >= 2×9+1). Coins high so the supplier isn't dropped as unaffordable.
-func TestBuildRestocking_ResaleUnitAndOverBuying(t *testing.T) {
+// TestBuildRestocking_ResaleUnitAndSelfUse pins the two buy-side flags: the reseller's
+// own realized resale RATE (the ceiling the buying-in anchor is judged against, LLM-385)
+// and the UsingOwnStock flag (bought markedly more than it SOLD this window — the buy that
+// left through non-sale channels, LLM-424). Milk: sold 9 units for 12 coins → resale 1.3
+// rounds to 1; bought 35 units → UsingOwnStock (35 >= 4 and 35 >= 2×9+1). Coins high so the
+// supplier isn't dropped as unaffordable.
+func TestBuildRestocking_ResaleUnitAndSelfUse(t *testing.T) {
 	now := time.Date(2026, 6, 23, 12, 0, 0, 0, time.UTC)
 	subj := &sim.ActorSnapshot{Coins: 100, Inventory: map[sim.ItemKind]int{"milk": 4}, RestockPolicy: buyPolicy("milk", 20)}
 	// merchant-as-SELLER ring for milk (resale rate): 9 units for 12 coins → 1.3 → 1.
@@ -1226,8 +1227,8 @@ func TestBuildRestocking_ResaleUnitAndOverBuying(t *testing.T) {
 	if it.RecentBuyUnits != 35 {
 		t.Errorf("RecentBuyUnits = %d, want 35", it.RecentBuyUnits)
 	}
-	if !it.OverBuying {
-		t.Errorf("OverBuying = false, want true (35 bought vs 9 sold)")
+	if !it.UsingOwnStock {
+		t.Errorf("UsingOwnStock = false, want true (35 bought vs 9 sold)")
 	}
 
 	// Boundary: bought 10 against 8 SOLD is NOT over-buying (10 < 2×8+1 = 17) — a
@@ -1253,51 +1254,51 @@ func TestBuildRestocking_ResaleUnitAndOverBuying(t *testing.T) {
 	if v2 == nil || len(v2.Items) != 1 {
 		t.Fatalf("want 1 item (boundary), got %+v", v2)
 	}
-	if v2.Items[0].OverBuying {
-		t.Errorf("OverBuying = true, want false (10 bought vs 8 sold — a modest imbalance)")
+	if v2.Items[0].UsingOwnStock {
+		t.Errorf("UsingOwnStock = true, want false (10 bought vs 8 sold — a modest imbalance)")
 	}
 	if v2.Items[0].ResaleUnit != 2 {
 		t.Errorf("ResaleUnit = %d, want 2 (16 coins / 8 units)", v2.Items[0].ResaleUnit)
 	}
 }
 
-// TestRenderRestocking_ResaleCeilingAndOverBuying pins the two LLM-385 buy-side clauses:
-// the resale-ceiling guard (ResaleUnit > 0) and the over-buying steer (OverBuying), each
-// silent when its field is unset.
-func TestRenderRestocking_ResaleCeilingAndOverBuying(t *testing.T) {
+// TestRenderRestocking_ResaleCeilingAndSelfUse pins the two buy-side clauses: the
+// resale-ceiling guard (ResaleUnit > 0, LLM-385) and the self-use accounting
+// (UsingOwnStock, LLM-424), each silent when its field is unset.
+func TestRenderRestocking_ResaleCeilingAndSelfUse(t *testing.T) {
 	var b strings.Builder
 	renderRestocking(&b, &RestockingView{Items: []RestockItemView{
 		{ItemLabel: "milk", CurrentQty: 4, Cap: 20, ResaleUnit: 1,
-			RecentBuyUnits: 35, RecentSalesUnits: 9, OverBuying: true},
+			RecentBuyUnits: 35, RecentSalesUnits: 9, UsingOwnStock: true},
 	}})
 	out := b.String()
 	if !strings.Contains(out, "You resell it for about 1 coin each — paying above your resale rate loses coin on each one.") {
 		t.Errorf("missing resale-ceiling clause:\n%s", out)
 	}
-	if !strings.Contains(out, "You've bought about 35 this past week but sold only 9 — you're restocking faster than it sells, so buy sparingly, if at all.") {
-		t.Errorf("missing over-buying steer:\n%s", out)
+	if !strings.Contains(out, "You've bought about 35 of these this past week, sold only 9, and consumed or traded the rest.") {
+		t.Errorf("missing self-use accounting:\n%s", out)
 	}
 
-	// Over-buying renders even when nothing sold (a dead good it keeps restocking).
+	// The self-use line renders even when nothing sold (a good bought purely for own use).
 	var dead strings.Builder
 	renderRestocking(&dead, &RestockingView{Items: []RestockItemView{
-		{ItemLabel: "sage", CurrentQty: 1, Cap: 6, RecentBuyUnits: 6, RecentSalesUnits: 0, OverBuying: true},
+		{ItemLabel: "sage", CurrentQty: 1, Cap: 6, RecentBuyUnits: 6, RecentSalesUnits: 0, UsingOwnStock: true},
 	}})
-	if !strings.Contains(dead.String(), "You've bought about 6 this past week but sold only 0 —") {
-		t.Errorf("over-buying steer should render with zero sales:\n%s", dead.String())
+	if !strings.Contains(dead.String(), "You've bought about 6 of these this past week, sold only 0, and consumed or traded the rest.") {
+		t.Errorf("self-use accounting should render with zero sales:\n%s", dead.String())
 	}
 
-	// Negatives: no resale rate → no ceiling clause; not over-buying → no steer.
+	// Negatives: no resale rate → no ceiling clause; not UsingOwnStock → no self-use line.
 	var quiet strings.Builder
 	renderRestocking(&quiet, &RestockingView{Items: []RestockItemView{
-		{ItemLabel: "milk", CurrentQty: 4, Cap: 20, ResaleUnit: 0, OverBuying: false},
+		{ItemLabel: "milk", CurrentQty: 4, Cap: 20, ResaleUnit: 0, UsingOwnStock: false},
 	}})
 	q := quiet.String()
 	if strings.Contains(q, "You resell it for") {
 		t.Errorf("no resale rate should omit the ceiling clause:\n%s", q)
 	}
-	if strings.Contains(q, "restocking faster than it sells") {
-		t.Errorf("not over-buying should omit the steer:\n%s", q)
+	if strings.Contains(q, "consumed or traded the rest") {
+		t.Errorf("not UsingOwnStock should omit the self-use accounting:\n%s", q)
 	}
 }
 
