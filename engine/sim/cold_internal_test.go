@@ -133,6 +133,74 @@ func TestAdjustCold_RecoveryWhenWarmAndFloor(t *testing.T) {
 	}
 }
 
+// TestAdjustCold_CarrySignFlip pins the carry's behavior when the rate
+// changes sign with a non-zero remainder (code_review): Go's integer division
+// truncates toward zero, so the remainder keeps the carry's sign, |carry|
+// stays < 100 after every apply, and a direction flip works the leftover
+// fraction off in the new direction rather than minting a spurious unit.
+func TestAdjustCold_CarrySignFlip(t *testing.T) {
+	w, a, hearth := coldTestWorld(WeatherStorm, PhaseDay)
+	a.InsideStructureID = "tavern" // unheated: +25 x100/min
+
+	// Accrue a positive remainder: 2 min → carry +50, no unit.
+	if _, err := AdjustCold(2).Fn(w); err != nil {
+		t.Fatalf("AdjustCold: %v", err)
+	}
+	a.Needs[ColdNeedKey] = 5 // give it something to recover
+	if a.ColdCarryX100 != 50 {
+		t.Fatalf("carry = %d, want +50", a.ColdCarryX100)
+	}
+
+	// Flip to warm recovery (-200/min): +50 - 200 = -150 → one whole unit down,
+	// remainder -50. No spurious unit from the flip; carry bounded.
+	hearth.HearthLitUntil = time.Now().UTC().Add(time.Hour)
+	if _, err := AdjustCold(1).Fn(w); err != nil {
+		t.Fatalf("AdjustCold: %v", err)
+	}
+	if a.Needs[ColdNeedKey] != 4 || a.ColdCarryX100 != -50 {
+		t.Fatalf("after flip to recovery: cold=%d carry=%d, want 4/-50", a.Needs[ColdNeedKey], a.ColdCarryX100)
+	}
+
+	// Flip back to accrual mid-negative-remainder: -50 + 25 = -25 → no unit,
+	// remainder still negative and bounded.
+	hearth.HearthLitUntil = time.Time{}
+	if _, err := AdjustCold(1).Fn(w); err != nil {
+		t.Fatalf("AdjustCold: %v", err)
+	}
+	if a.Needs[ColdNeedKey] != 4 || a.ColdCarryX100 != -25 {
+		t.Fatalf("after flip to accrual: cold=%d carry=%d, want 4/-25", a.Needs[ColdNeedKey], a.ColdCarryX100)
+	}
+
+	// Large clamped interval still leaves a bounded remainder: outdoors at
+	// night (+150/min) for 30 min = +4500 → +45 units minus the -25 remainder
+	// carried in: 4475 → 44 units + carry 75; the need clamps at NeedMax.
+	a.InsideStructureID = ""
+	w.Phase = PhaseNight
+	if _, err := AdjustCold(30).Fn(w); err != nil {
+		t.Fatalf("AdjustCold: %v", err)
+	}
+	if a.Needs[ColdNeedKey] != NeedMax {
+		t.Errorf("cold = %d, want clamped %d", a.Needs[ColdNeedKey], NeedMax)
+	}
+	if a.ColdCarryX100 <= -100 || a.ColdCarryX100 >= 100 {
+		t.Errorf("carry = %d, want bounded in (-100, 100)", a.ColdCarryX100)
+	}
+
+	// Recovery from zero with a stale positive remainder is discarded (the
+	// carry-reset branch), so cold can never drift below 0 nor re-mint from a
+	// leftover fraction.
+	a.Needs[ColdNeedKey] = 0
+	a.ColdCarryX100 = 99
+	w.Environment.Weather = WeatherClear
+	w.Phase = PhaseDay
+	if _, err := AdjustCold(1).Fn(w); err != nil {
+		t.Fatalf("AdjustCold: %v", err)
+	}
+	if a.Needs[ColdNeedKey] != 0 || a.ColdCarryX100 != 0 {
+		t.Errorf("at-zero recovery: cold=%d carry=%d, want 0/0 (stale remainder discarded)", a.Needs[ColdNeedKey], a.ColdCarryX100)
+	}
+}
+
 func TestAdjustCold_SkipsDecoratives(t *testing.T) {
 	w, a, _ := coldTestWorld(WeatherStorm, PhaseDay)
 	a.LLMAgent = "" // decorative: no agent, no login
@@ -185,6 +253,26 @@ func TestAdjustCold_StormWakesHearthOwner(t *testing.T) {
 	}
 	if hasWarrantKind(owner, WarrantKindHearthLow) {
 		t.Fatalf("clear sky: owner warranted for a dead fire")
+	}
+
+	// Cleared-and-consumed → the level trigger RE-stamps on a later sweep while
+	// the condition holds (code_review: the zero DedupDiscriminator must read
+	// as "no discriminator" — bypassing source-key dedup — not as a shared key
+	// that would collapse or suppress a fresh stamp after the first is gone).
+	w.Environment.Weather = WeatherStorm
+	if _, err := AdjustCold(1).Fn(w); err != nil {
+		t.Fatalf("AdjustCold: %v", err)
+	}
+	if !hasWarrantKind(owner, WarrantKindHearthLow) {
+		t.Fatalf("storm resumed: owner not warranted")
+	}
+	owner.Warrants = nil
+	owner.WarrantedSince = nil // the tick consumed the warrant and closed the cycle
+	if _, err := AdjustCold(1).Fn(w); err != nil {
+		t.Fatalf("AdjustCold: %v", err)
+	}
+	if !hasWarrantKind(owner, WarrantKindHearthLow) {
+		t.Fatalf("condition still holds after consume: owner not RE-warranted (zero discriminator collapsed?)")
 	}
 }
 
@@ -329,6 +417,32 @@ func TestHearthToStoke_OwnerThenHire(t *testing.T) {
 	}
 	if got, _ := HearthToStoke(objects, ledger, "lewis"); got != nil {
 		t.Errorf("pending offer resolved a hearth: %v", got)
+	}
+	// nil-safety: a stray nil map entry must not panic (code_review).
+	objects["ghost"] = nil
+	if got, hired := HearthToStoke(objects, ledger, "hannah"); got != hearth || hired {
+		t.Errorf("nil map entry broke owner resolution: got %v hired=%v", got, hired)
+	}
+}
+
+// TestHearthToStoke_MultiOfferFollowsStallResolver pins the tie-break under a
+// broken single-live-job invariant (code_review): with two simultaneous
+// Working offers, the resolver follows the LOWEST LaborID's employer — the
+// exact WearableStallToMend semantics — even when that employer owns no
+// hearth and a higher-ID offer's employer does. One job, one post, one set of
+// responsibilities; the repair and stoke resolvers must never pick different
+// employers for the same worker.
+func TestHearthToStoke_MultiOfferFollowsStallResolver(t *testing.T) {
+	hearth := &VillageObject{ID: "tavern", OwnerActorID: "hannah", Tags: []string{TagHearth}}
+	objects := map[VillageObjectID]*VillageObject{hearth.ID: hearth}
+	ledger := map[LaborID]*LaborOffer{
+		// Lowest-ID job: employer josiah owns NO hearth.
+		1: {ID: 1, WorkerID: "anne", EmployerID: "josiah", State: LaborStateWorking},
+		// Higher-ID job: employer hannah owns one.
+		2: {ID: 2, WorkerID: "anne", EmployerID: "hannah", State: LaborStateWorking},
+	}
+	if got, _ := HearthToStoke(objects, ledger, "anne"); got != nil {
+		t.Errorf("multi-offer resolver scanned past the lowest-ID job: got %v, want nil (josiah owns no hearth)", got)
 	}
 }
 

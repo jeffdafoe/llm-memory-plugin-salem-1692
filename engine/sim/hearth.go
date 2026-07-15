@@ -105,7 +105,10 @@ func OwnedHearth(objects map[VillageObjectID]*VillageObject, actorID ActorID) *V
 		return nil
 	}
 	for _, obj := range objects {
-		if obj.OwnerActorID == actorID && IsHearth(obj) {
+		// nil-safe: this helper runs on the world goroutine from command
+		// validation, the storm wake, AND over hand-built perception/test maps —
+		// a stray nil entry must not panic the world (code_review).
+		if obj != nil && obj.OwnerActorID == actorID && IsHearth(obj) {
 			return obj
 		}
 	}
@@ -122,6 +125,15 @@ func OwnedHearth(objects map[VillageObjectID]*VillageObject, actorID ActorID) *V
 // qualifies; deterministic lowest-LaborID tie-break for the same reason as the
 // stall resolver. Shared by the perception cue, the stoke command, and the
 // hired warrant stamp so they can't drift on who may stoke.
+//
+// Like WearableStallToMend, the tie-break selects THE job (lowest LaborID),
+// then reads that one employer's hearth — it does NOT scan across offers for
+// any hearth-owning employer. A worker holds at most one live job (AcceptWork
+// forbids double-booking), so the distinction is unreachable in practice; if
+// the invariant is ever broken, resolving the SAME employer as the repair
+// resolver — rather than a different one that happens to own a hearth — is the
+// consistent behavior (one job, one post, one set of responsibilities).
+// Pinned by TestHearthToStoke_MultiOfferFollowsStallResolver (code_review).
 func HearthToStoke(objects map[VillageObjectID]*VillageObject, ledger map[LaborID]*LaborOffer, actorID ActorID) (hearth *VillageObject, hired bool) {
 	if own := OwnedHearth(objects, actorID); own != nil {
 		return own, false

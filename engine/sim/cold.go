@@ -120,6 +120,13 @@ func AdjustCold(elapsedMinutes int) Command {
 					// Nothing to recover and nothing accruing → skip the carry
 					// math (the common clear-sky case: everyone at 0 stays 0).
 					if rate > 0 || current > 0 {
+						// Signed carry, applied in whole units. Go's integer
+						// division truncates TOWARD ZERO, so the remainder always
+						// keeps the carry's sign and |carry| stays < 100 after
+						// every apply — a rate flipping sign mid-remainder just
+						// works the leftover fraction off in the new direction,
+						// never minting a spurious unit at the flip. Pinned by
+						// TestAdjustCold_CarrySignFlip (code_review).
 						a.ColdCarryX100 += rate * elapsedMinutes
 						if units := a.ColdCarryX100 / 100; units != 0 {
 							a.ColdCarryX100 -= units * 100
