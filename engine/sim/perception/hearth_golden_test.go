@@ -112,6 +112,97 @@ func warmByLitFire() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	return snap, "lewis", nil
 }
 
+// warmGarmentGoldenCatalog is the minimal item catalog the LLM-410 warm-garment
+// fixtures need: coat + cloak carrying the warms capability, so the cold self-line's
+// garment branch (the carry-check and the vendor finder) resolves. Labels match the
+// seed migration so the rendered cue reads as it will in production.
+func warmGarmentGoldenCatalog() map[sim.ItemKind]*sim.ItemKindDef {
+	return map[sim.ItemKind]*sim.ItemKindDef{
+		"coat":  {Name: "coat", DisplayLabel: "Coat", DisplayLabelSingular: "coat", DisplayLabelPlural: "coats", Category: "clothing", Capabilities: []string{sim.CapabilityWarms}},
+		"cloak": {Name: "cloak", DisplayLabel: "Cloak", DisplayLabelSingular: "cloak", DisplayLabelPlural: "cloaks", Category: "clothing", Capabilities: []string{sim.CapabilityWarms}},
+	}
+}
+
+// coldOutdoorsInStormCoated: the same red-cold storm-outdoors scene as
+// coldOutdoorsInStorm, but Lewis is CARRYING a coat (CapabilityWarms). The garment
+// confirming line renders after the unconditional free-relief steer, and no buy
+// nudge (he already has one).
+func coldOutdoorsInStormCoated() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	now := 720
+	lewis := &sim.ActorSnapshot{
+		Kind:            sim.KindNPCStateful,
+		DisplayName:     "Lewis Walker",
+		State:           sim.StateIdle,
+		Pos:             sim.WorldPos{X: 500, Y: 500}.Tile(),
+		HomeStructureID: "walker_house",
+		Coins:           3,
+		Needs:           map[sim.NeedKey]int{sim.ColdNeedKey: 17}, // past the default red 16
+		Inventory:       map[sim.ItemKind]int{"coat": 1},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      hearthClock,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Assets:           emptyAssetSet,
+		HearthLowMinutes: 60,
+		Environment:      sim.WorldEnvironment{Weather: sim.WeatherStorm},
+		ItemKinds:        warmGarmentGoldenCatalog(),
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{"lewis": lewis},
+		Structures: map[sim.StructureID]*sim.Structure{
+			"walker_house": plainStructure("walker_house", "Walker House"),
+		},
+	}
+	return snap, "lewis", nil
+}
+
+// coldOutdoorsInStormCoatForSale: red cold, outdoors, storm, Lewis carrying NO
+// coat — but Josiah Thorne holds coats + a cloak at the General Store. The
+// vendor-gated buy nudge renders after the free-relief steer; contrast
+// cold_outdoors_in_storm, whose world has no seller, so no nudge renders.
+func coldOutdoorsInStormCoatForSale() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	now := 720
+	start, end := 360, 1080
+	lewis := &sim.ActorSnapshot{
+		Kind:            sim.KindNPCStateful,
+		DisplayName:     "Lewis Walker",
+		State:           sim.StateIdle,
+		Pos:             sim.WorldPos{X: 500, Y: 500}.Tile(),
+		HomeStructureID: "walker_house",
+		Coins:           20,
+		Needs:           map[sim.NeedKey]int{sim.ColdNeedKey: 17},
+	}
+	// Far from Lewis — a seller of record, not co-present (the firewood-supplier
+	// pattern): the cue names the WORKPLACE, not proximity.
+	josiah := &sim.ActorSnapshot{
+		Kind:             sim.KindNPCStateful,
+		DisplayName:      "Josiah Thorne",
+		Role:             "merchant",
+		State:            sim.StateIdle,
+		Pos:              sim.WorldPos{X: 2000, Y: 2000}.Tile(),
+		ScheduleStartMin: &start,
+		ScheduleEndMin:   &end,
+		WorkStructureID:  "general_store",
+		Coins:            40,
+		Needs:            map[sim.NeedKey]int{},
+		Inventory:        map[sim.ItemKind]int{"coat": 2, "cloak": 1},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      hearthClock,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Assets:           emptyAssetSet,
+		HearthLowMinutes: 60,
+		Environment:      sim.WorldEnvironment{Weather: sim.WeatherStorm},
+		ItemKinds:        warmGarmentGoldenCatalog(),
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{"lewis": lewis, "josiah": josiah},
+		Structures: map[sim.StructureID]*sim.Structure{
+			"walker_house":  plainStructure("walker_house", "Walker House"),
+			"general_store": plainStructure("general_store", "General Store"),
+		},
+	}
+	return snap, "lewis", nil
+}
+
 // keeperAtDeadHearthStorm: the tavern keeper at her post, storm running, fire
 // OUT, enough firewood in hand, a chilled guest in the room — the full-dress
 // "## Your hearth" cue plus the HearthLow warrant line.

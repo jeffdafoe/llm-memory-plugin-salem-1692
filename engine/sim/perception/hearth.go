@@ -27,6 +27,17 @@ type ColdSelfView struct {
 	Warm     bool         // inside a structure whose hearth is lit — recovering
 	HomeID   sim.StructureID
 	HomeName string // resolved display name; "" drops the home destination clause
+
+	// HasWarmGarment: the subject is carrying a coat/cloak (CapabilityWarms), so the
+	// storm's cold is being held off outdoors (LLM-410). Set only in the storm-
+	// outdoors case; renders a confirming note instead of the buy nudge.
+	HasWarmGarment bool
+	// CoatVendors are the workplaces selling a warm garment — populated ONLY in the
+	// storm-outdoors case when the subject carries none. Vendor-gated: an empty list
+	// renders no nudge, so the cue never dangles before the clothing stock exists.
+	// The PAID relief, always rendered AFTER the free-relief line, never instead of
+	// it — a coat is an upgrade to stay outside, not a substitute for shelter.
+	CoatVendors []RestockVendor
 }
 
 // buildColdSelf classifies the subject's cold for the self-state line, or nil
@@ -64,7 +75,35 @@ func buildColdSelf(snap *sim.Snapshot, a *sim.ActorSnapshot) *ColdSelfView {
 			view.HomeName = name
 		}
 	}
+	// LLM-410 warm-garment relief. Only meaningful outdoors in a storm — that is the
+	// case the coat "is your roof"; under a roof one already shelters, and by a fire
+	// warmth beats a coat. Either the subject carries a garment (confirm it's holding
+	// the chill off) or a seller has one (surface the vendor-gated buy nudge as a
+	// PAID option alongside the free relief above).
+	if view.Storm && !view.Indoors {
+		if actorSnapHasWarmGarment(snap, a) {
+			view.HasWarmGarment = true
+		} else {
+			view.CoatVendors = findWarmGarmentVendors(snap)
+		}
+	}
 	return view
+}
+
+// actorSnapHasWarmGarment mirrors sim.actorHasWarmGarment over the snapshot: does
+// the subject carry any CapabilityWarms good (coat or cloak)? The perception-side
+// read behind the cold self-line's warm-garment branch (LLM-410). A kind absent
+// from the catalog (or a nil ItemKinds map) simply doesn't match.
+func actorSnapHasWarmGarment(snap *sim.Snapshot, a *sim.ActorSnapshot) bool {
+	for kind, qty := range a.Inventory {
+		if qty <= 0 {
+			continue
+		}
+		if def := snap.ItemKinds[kind]; def != nil && def.HasCapability(sim.CapabilityWarms) {
+			return true
+		}
+	}
+	return false
 }
 
 // renderColdSelf writes the subject's situated cold line — tier phrase plus the
@@ -97,12 +136,32 @@ func renderColdSelf(b *strings.Builder, v *ColdSelfView) {
 			fmt.Fprintf(b, " Your home, %s (destination: %s), is shelter for free.", sanitizeInline(v.HomeName), v.HomeID)
 		}
 		b.WriteString("\n")
+		renderColdGarment(b, v)
 	case v.Storm && v.Indoors:
 		fmt.Fprintf(b, "%s. The roof here keeps the rain off you — staying in is easing it — though only a lit fire would warm you through.\n", lead)
 	default:
 		// Clear sky, not by a fire: the chill is already fading on its own.
 		fmt.Fprintf(b, "%s, but the sky has cleared and the chill is easing off you on its own; a fire would drive it out faster.\n", lead)
 	}
+}
+
+// renderColdGarment writes the LLM-410 warm-garment tail of the storm-outdoors
+// cold line: a confirming note when the subject already carries a coat/cloak, or —
+// vendor-gated — the "buy one to keep working outside" nudge when a seller has one.
+// Always AFTER the free-relief line, never instead of it: a coat is a PAID upgrade
+// to stay out, not a substitute for going indoors (the free path is unconditional
+// above, so the absorbing-state rule holds). Nothing renders when the subject
+// carries none and none is for sale — no dangling steer before supply exists.
+func renderColdGarment(b *strings.Builder, v *ColdSelfView) {
+	if v.HasWarmGarment {
+		b.WriteString("The warm clothes you carry are holding the worst of the cold off you — enough to keep working out here, though a fire indoors would drive the chill out entirely.\n")
+		return
+	}
+	if len(v.CoatVendors) == 0 {
+		return
+	}
+	b.WriteString("A warm coat or cloak would keep the worst of it off and let you keep working out here. Use move_to to reach a seller, then pay_with_item once you arrive:\n")
+	renderWalkToVendors(b, v.CoatVendors)
 }
 
 // HearthView is the at-the-hearth stoke cue. Non-nil only when the actor is

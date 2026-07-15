@@ -16,6 +16,9 @@ import (
 //
 //   - warm (inside a structure whose hearth is lit)  → recover fast
 //   - storm, outdoors                                → accrue at full rate
+//   - storm, outdoors, carrying a warm garment       → accrue slowly (a coat
+//     or cloak is your roof — LLM-410; a PAID upgrade to keep working outside,
+//     never a replacement for the free relief a roof already gives)
 //   - storm, indoors with no live fire               → accrue slowly (a roof
 //     is real relief — the free path — but not warmth)
 //   - clear sky, not warm                            → recover slowly (the
@@ -37,6 +40,15 @@ import (
 // ColdNeedKey is the registry key of the cold need (needs.go).
 const ColdNeedKey NeedKey = "cold"
 
+// CapabilityWarms tags an item_kind whose bearer is sheltered from the storm's
+// cold while OUTDOORS — a coat or cloak (LLM-410). Data-driven on
+// item_kind.capabilities, never a hardcoded kind set, so the clothing family
+// stays operator-tunable via the item/set route. Holding at least one such
+// garment caps outdoor storm accrual at ColdWarmGarmentPerMinuteX100 (see
+// coldRatePerMinuteX100). Slice-2 models CARRYING one as relief — wear (a worn
+// vs. packed distinction) is LLM-422.
+const CapabilityWarms = "warms"
+
 // Default WorldSettings knobs for cold exposure (LLM-412), ×100 per minute.
 // At these rates: an actor caught outdoors in a storm goes red (16) in ~16
 // minutes — one default storm — and peaks in ~24; the same storm reaches ~4
@@ -44,9 +56,18 @@ const ColdNeedKey NeedKey = "cold"
 // what chills an unheated room); a lit hearth clears a red chill in ~8
 // minutes; and a passed storm's chill fades on its own inside the hour. Night
 // multiplies accrual half again, so the night half of a storm redlines in ~11.
+//
+// A warm garment (LLM-410) caps outdoor storm accrual at the under-a-roof rate,
+// so a coated worker outdoors chills like an unheated room — ~64 minutes to red,
+// i.e. well past any default storm: the coat lets the work go on outside.
 const (
 	DefaultColdStormOutdoorsPerMinuteX100 = 100
 	DefaultColdStormIndoorsPerMinuteX100  = 25
+	// DefaultColdWarmGarmentPerMinuteX100 caps outdoor storm accrual for an actor
+	// carrying a CapabilityWarms garment. Equal to the indoor (under-a-roof) rate —
+	// "the coat is your roof": real outdoor relief, but a lit hearth still beats it
+	// and going indoors/home is still free, so cold never loses a free relief path.
+	DefaultColdWarmGarmentPerMinuteX100   = 25
 	DefaultColdNightMultiplierX100        = 150
 	DefaultColdWarmRecoveryPerMinuteX100  = 200
 	DefaultColdClearRecoveryPerMinuteX100 = 50
@@ -64,6 +85,25 @@ func actorIsWarm(w *World, a *Actor, now time.Time) bool {
 	return HearthLit(StructureHearth(w.VillageObjects, a.InsideStructureID), now)
 }
 
+// actorHasWarmGarment reports whether the actor carries at least one
+// CapabilityWarms item (a coat or cloak) — the "your coat is your roof" relief
+// (LLM-410). Data-driven: any inventory kind whose catalog def carries the warms
+// capability counts, so the clothing family is operator-tunable via item/set
+// without touching this predicate. A kind absent from the catalog (or a nil
+// ItemKinds map) simply doesn't match. Carrying is the model in slice 2; a
+// worn-vs-packed distinction is LLM-422.
+func actorHasWarmGarment(w *World, a *Actor) bool {
+	for kind, qty := range a.Inventory {
+		if qty <= 0 {
+			continue
+		}
+		if def := w.ItemKinds[kind]; def != nil && def.HasCapability(CapabilityWarms) {
+			return true
+		}
+	}
+	return false
+}
+
 // coldRatePerMinuteX100 returns the actor's current cold delta in ×100 units
 // per minute — positive accruing, negative recovering, zero holding. The one
 // place the exposure model lives: the sweep applies it, and
@@ -78,6 +118,16 @@ func coldRatePerMinuteX100(w *World, a *Actor, now time.Time) int {
 		rate := w.Settings.ColdStormOutdoorsPerMinuteX100
 		if a.InsideStructureID != "" {
 			rate = w.Settings.ColdStormIndoorsPerMinuteX100
+		}
+		// A warm garment (LLM-410) caps accrual at the garment rate — "the coat is
+		// your roof." Only ever LOWERS the rate (min): it never makes a sheltered
+		// actor colder, and if a roof already caps lower the garment is moot. A
+		// garment rate of 0 turns a coat into full outdoor relief (the off-switch
+		// posture the outdoors==0 knob already has). The free relief (a roof, a
+		// hearth, going home) is untouched, so cold keeps a free path — this is a
+		// PAID upgrade to keep working outside, not a replacement.
+		if g := w.Settings.ColdWarmGarmentPerMinuteX100; g < rate && actorHasWarmGarment(w, a) {
+			rate = g
 		}
 		if w.Phase == PhaseNight && w.Settings.ColdNightMultiplierX100 > 0 {
 			rate = rate * w.Settings.ColdNightMultiplierX100 / 100

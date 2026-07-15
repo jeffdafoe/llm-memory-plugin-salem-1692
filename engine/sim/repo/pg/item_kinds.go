@@ -33,7 +33,7 @@ func NewItemKindsRepo(pool Pool) *ItemKindsRepo {
 const loadAllItemKindsSQL = `
 SELECT name, display_label, display_label_singular, display_label_plural,
        category, sort_order, capabilities, consume_dwell_narration,
-       durability_uses
+       durability_uses, description
   FROM item_kind
  ORDER BY sort_order, name`
 
@@ -85,8 +85,9 @@ func (r *ItemKindsRepo) loadDefs(ctx context.Context) (map[sim.ItemKind]*sim.Ite
 			capabilities                             []string
 			narration                                *string
 			durabilityUses                           int
+			description                              *string // nullable column
 		)
-		if err := rows.Scan(&name, &displayLabel, &displayLabelSingular, &displayLabelPlural, &category, &sortOrder, &capabilities, &narration, &durabilityUses); err != nil {
+		if err := rows.Scan(&name, &displayLabel, &displayLabelSingular, &displayLabelPlural, &category, &sortOrder, &capabilities, &narration, &durabilityUses, &description); err != nil {
 			return nil, fmt.Errorf("pg item_kinds LoadAll: item_kind scan: %w", err)
 		}
 		def := &sim.ItemKindDef{
@@ -105,6 +106,9 @@ func (r *ItemKindsRepo) loadDefs(ctx context.Context) (map[sim.ItemKind]*sim.Ite
 		}
 		if narration != nil {
 			def.ConsumeDwellNarration = *narration
+		}
+		if description != nil {
+			def.Description = *description
 		}
 		// Loud duplicate detection (consistent with the other loaded-map
 		// repos). name is the item_kind PK so this is unreachable in valid
@@ -214,8 +218,8 @@ const upsertItemKindSQL = `
 INSERT INTO item_kind (
     name, display_label, display_label_singular, display_label_plural,
     category, sort_order, capabilities, consume_dwell_narration,
-    durability_uses)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    durability_uses, description)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 ON CONFLICT (name) DO UPDATE SET
     display_label           = EXCLUDED.display_label,
     display_label_singular  = EXCLUDED.display_label_singular,
@@ -224,7 +228,8 @@ ON CONFLICT (name) DO UPDATE SET
     sort_order              = EXCLUDED.sort_order,
     capabilities            = EXCLUDED.capabilities,
     consume_dwell_narration = EXCLUDED.consume_dwell_narration,
-    durability_uses         = EXCLUDED.durability_uses`
+    durability_uses         = EXCLUDED.durability_uses,
+    description             = EXCLUDED.description`
 
 // UpsertItemKind inserts or updates one item_kind definition — the durable half
 // of the umbilical /item/set route (LLM-200). The catalog has no checkpoint path
@@ -257,6 +262,12 @@ func (r *ItemKindsRepo) UpsertItemKind(ctx context.Context, def sim.ItemKindDef)
 	if def.ConsumeDwellNarration != "" {
 		narrationArg = def.ConsumeDwellNarration
 	}
+	// description is a nullable free-text column: Go empty string → SQL NULL,
+	// round-tripping with the loader's NULL→"" mapping (same idiom as the labels).
+	var descriptionArg any
+	if def.Description != "" {
+		descriptionArg = def.Description
+	}
 	// capabilities is NOT NULL DEFAULT '{}': nil → empty slice so pg stores '{}'.
 	caps := def.Capabilities
 	if caps == nil {
@@ -272,6 +283,7 @@ func (r *ItemKindsRepo) UpsertItemKind(ctx context.Context, def sim.ItemKindDef)
 		caps,
 		narrationArg,
 		def.DurabilityUses,
+		descriptionArg,
 	); err != nil {
 		return fmt.Errorf("pg item_kinds UpsertItemKind: exec: %w", err)
 	}

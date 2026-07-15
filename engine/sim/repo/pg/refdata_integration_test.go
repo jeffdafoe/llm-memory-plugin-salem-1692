@@ -266,11 +266,11 @@ func TestIntegration_ItemKinds_LoadAllHappyPath(t *testing.T) {
 	clearCatalog(t, f)
 
 	if _, err := f.Pool.Exec(ctx, `
-		INSERT INTO item_kind (name, display_label, category, sort_order, consume_dwell_narration)
+		INSERT INTO item_kind (name, display_label, category, sort_order, consume_dwell_narration, description)
 		VALUES
-			('ale','Ale','drink', 2, NULL),
-			('stew','Hearty Stew','food', 1, 'This stew looks really good.'),
-			('iron','Iron Ingot','material', 5, NULL)`); err != nil {
+			('ale','Ale','drink', 2, NULL, NULL),
+			('stew','Hearty Stew','food', 1, 'This stew looks really good.', 'A rich stew of meat and roots.'),
+			('iron','Iron Ingot','material', 5, NULL, NULL)`); err != nil {
 		t.Fatalf("seed item_kind: %v", err)
 	}
 	if _, err := f.Pool.Exec(ctx, `
@@ -300,6 +300,9 @@ func TestIntegration_ItemKinds_LoadAllHappyPath(t *testing.T) {
 	if ale.ConsumeDwellNarration != "" {
 		t.Errorf("ale narration should be empty for NULL, got %q", ale.ConsumeDwellNarration)
 	}
+	if ale.Description != "" {
+		t.Errorf("ale description should be empty for NULL, got %q", ale.Description)
+	}
 	if len(ale.Satisfies) != 2 {
 		t.Fatalf("ale satisfies len=%d want 2", len(ale.Satisfies))
 	}
@@ -318,6 +321,9 @@ func TestIntegration_ItemKinds_LoadAllHappyPath(t *testing.T) {
 	}
 	if stew.ConsumeDwellNarration == "" {
 		t.Error("stew narration should be populated")
+	}
+	if stew.Description != "A rich stew of meat and roots." {
+		t.Errorf("stew description = %q, want the populated flavor", stew.Description)
 	}
 	if len(stew.Satisfies) != 1 {
 		t.Fatalf("stew satisfies len=%d want 1", len(stew.Satisfies))

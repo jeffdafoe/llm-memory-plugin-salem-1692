@@ -26,6 +26,7 @@ func coldTestWorld(weather string, phase Phase) (*World, *Actor, *VillageObject)
 		Settings: WorldSettings{
 			ColdStormOutdoorsPerMinuteX100: DefaultColdStormOutdoorsPerMinuteX100,
 			ColdStormIndoorsPerMinuteX100:  DefaultColdStormIndoorsPerMinuteX100,
+			ColdWarmGarmentPerMinuteX100:   DefaultColdWarmGarmentPerMinuteX100,
 			ColdNightMultiplierX100:        DefaultColdNightMultiplierX100,
 			ColdWarmRecoveryPerMinuteX100:  DefaultColdWarmRecoveryPerMinuteX100,
 			ColdClearRecoveryPerMinuteX100: DefaultColdClearRecoveryPerMinuteX100,
@@ -75,6 +76,136 @@ func TestColdRatePerMinuteX100_ExposureMatrix(t *testing.T) {
 	w.Environment.Weather = WeatherClear
 	if got := coldRatePerMinuteX100(w, a, now); got != -DefaultColdClearRecoveryPerMinuteX100 {
 		t.Errorf("clear unwarmed = %d, want %d", got, -DefaultColdClearRecoveryPerMinuteX100)
+	}
+}
+
+// warmGarmentCatalog is the minimal item catalog for the warm-garment tests:
+// one kind carrying the warms capability, one without. Local to the test so the
+// cold mechanic's coverage never depends on the production clothing catalog
+// (LLM-410 slice 2 seeds that) — the relief is data-driven on the capability,
+// not on any named kind.
+func warmGarmentCatalog() map[ItemKind]*ItemKindDef {
+	return map[ItemKind]*ItemKindDef{
+		"coat":  {Name: "coat", DisplayLabel: "coat", Category: "clothing", Capabilities: []string{CapabilityWarms}},
+		"bread": {Name: "bread", DisplayLabel: "bread", Category: ItemCategoryFood},
+	}
+}
+
+func TestActorHasWarmGarment(t *testing.T) {
+	w, a, _ := coldTestWorld(WeatherStorm, PhaseDay)
+	w.ItemKinds = warmGarmentCatalog()
+
+	// No inventory → false.
+	if actorHasWarmGarment(w, a) {
+		t.Errorf("empty inventory reads as holding a warm garment")
+	}
+	// A non-warms good → false.
+	a.Inventory = map[ItemKind]int{"bread": 3}
+	if actorHasWarmGarment(w, a) {
+		t.Errorf("bread counted as a warm garment")
+	}
+	// A warms garment at qty>0 → true.
+	a.Inventory = map[ItemKind]int{"coat": 1}
+	if !actorHasWarmGarment(w, a) {
+		t.Errorf("a held coat not recognized as a warm garment")
+	}
+	// A spent line (qty 0) → false.
+	a.Inventory = map[ItemKind]int{"coat": 0}
+	if actorHasWarmGarment(w, a) {
+		t.Errorf("a zero-qty coat counted")
+	}
+	// A kind absent from the catalog → false (no def carries the capability).
+	a.Inventory = map[ItemKind]int{"phantom": 2}
+	if actorHasWarmGarment(w, a) {
+		t.Errorf("an uncatalogued kind counted as a warm garment")
+	}
+}
+
+// TestColdRatePerMinuteX100_WarmGarment pins the LLM-410 relief branch: a warm
+// garment caps outdoor storm accrual at the garment rate (min-only — never
+// raises), stacks with the night multiplier, is moot under a roof that already
+// caps lower, and loses to a lit fire; the 0-rate off switch and an above-range
+// misconfig are both covered.
+func TestColdRatePerMinuteX100_WarmGarment(t *testing.T) {
+	now := time.Now().UTC()
+	w, a, hearth := coldTestWorld(WeatherStorm, PhaseDay)
+	w.ItemKinds = warmGarmentCatalog()
+	a.Inventory = map[ItemKind]int{"coat": 1}
+
+	// Storm, outdoors, coated: capped at the garment rate, not the full outdoor rate.
+	if got := coldRatePerMinuteX100(w, a, now); got != DefaultColdWarmGarmentPerMinuteX100 {
+		t.Errorf("coated storm outdoors = %d, want %d (the coat is your roof)", got, DefaultColdWarmGarmentPerMinuteX100)
+	}
+	// Same spot, uncoated: full outdoor accrual — the coat is doing the work.
+	a.Inventory = nil
+	if got := coldRatePerMinuteX100(w, a, now); got != DefaultColdStormOutdoorsPerMinuteX100 {
+		t.Errorf("uncoated storm outdoors = %d, want %d", got, DefaultColdStormOutdoorsPerMinuteX100)
+	}
+
+	// Coated, outdoors, night: the garment rate takes the night multiplier like any
+	// accrual (25 * 150 / 100 = 37) — still far below the uncoated night rate.
+	a.Inventory = map[ItemKind]int{"coat": 1}
+	w.Phase = PhaseNight
+	wantNight := DefaultColdWarmGarmentPerMinuteX100 * DefaultColdNightMultiplierX100 / 100
+	if got := coldRatePerMinuteX100(w, a, now); got != wantNight {
+		t.Errorf("coated storm outdoors night = %d, want %d", got, wantNight)
+	}
+	w.Phase = PhaseDay
+
+	// Coated, indoors under a roof: the roof rate already caps at the garment rate,
+	// so min() leaves it unchanged — the coat never doubles the relief.
+	a.InsideStructureID = "tavern"
+	if got := coldRatePerMinuteX100(w, a, now); got != DefaultColdStormIndoorsPerMinuteX100 {
+		t.Errorf("coated storm indoors = %d, want %d (roof already caps; coat moot)", got, DefaultColdStormIndoorsPerMinuteX100)
+	}
+
+	// Coated, indoors, hearth lit: warmth (fast recovery) still beats a coat.
+	hearth.HearthLitUntil = now.Add(time.Hour)
+	if got := coldRatePerMinuteX100(w, a, now); got != -DefaultColdWarmRecoveryPerMinuteX100 {
+		t.Errorf("coated by a lit fire = %d, want %d (a fire beats a coat)", got, -DefaultColdWarmRecoveryPerMinuteX100)
+	}
+	hearth.HearthLitUntil = time.Time{}
+	a.InsideStructureID = ""
+
+	// Off-switch: a garment rate of 0 makes a coat FULL outdoor relief (rate 0),
+	// mirroring the outdoors==0 off switch.
+	w.Settings.ColdWarmGarmentPerMinuteX100 = 0
+	if got := coldRatePerMinuteX100(w, a, now); got != 0 {
+		t.Errorf("garment-rate-0 coated outdoors = %d, want 0 (full relief)", got)
+	}
+
+	// Misconfigured ABOVE the outdoor rate: a coat only ever LOWERS accrual, so it's
+	// ignored here — a garment never makes the wearer colder.
+	w.Settings.ColdWarmGarmentPerMinuteX100 = DefaultColdStormOutdoorsPerMinuteX100 + 50
+	if got := coldRatePerMinuteX100(w, a, now); got != DefaultColdStormOutdoorsPerMinuteX100 {
+		t.Errorf("garment rate above outdoors = %d, want %d (a coat never raises accrual)", got, DefaultColdStormOutdoorsPerMinuteX100)
+	}
+}
+
+// TestAdjustCold_CoatKeepsWorkerOutside runs a coated and an uncoated worker
+// through a default 15-minute storm outdoors, end to end through the sweep: the
+// uncoated one climbs toward red while the coated one barely chills — the
+// LLM-410 "keep working outside" demand loop.
+func TestAdjustCold_CoatKeepsWorkerOutside(t *testing.T) {
+	w, uncoated, _ := coldTestWorld(WeatherStorm, PhaseDay)
+	w.ItemKinds = warmGarmentCatalog()
+	coated := &Actor{
+		ID: "coated", Kind: KindNPCStateful, LLMAgent: "coated",
+		Needs: map[NeedKey]int{ColdNeedKey: 0}, Inventory: map[ItemKind]int{"coat": 1},
+	}
+	w.Actors[coated.ID] = coated
+
+	// 15 outdoor storm minutes: uncoated accrues 15 (100 x100/min), coated accrues 3
+	// (25 x100/min → 3 whole units + 75 carry). Same storm, same spot — the coat is
+	// the whole difference.
+	if _, err := AdjustCold(15).Fn(w); err != nil {
+		t.Fatalf("AdjustCold: %v", err)
+	}
+	if uncoated.Needs[ColdNeedKey] != 15 {
+		t.Errorf("uncoated after 15 storm min = %d, want 15", uncoated.Needs[ColdNeedKey])
+	}
+	if coated.Needs[ColdNeedKey] != 3 {
+		t.Errorf("coated after 15 storm min = %d, want 3 (the coat holds the chill off)", coated.Needs[ColdNeedKey])
 	}
 }
 

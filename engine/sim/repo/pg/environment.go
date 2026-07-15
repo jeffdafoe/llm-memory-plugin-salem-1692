@@ -227,6 +227,7 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	// Cold exposure + hearth (LLM-412).
 	s.ColdStormOutdoorsPerMinuteX100 = parseIntSetting(values, "cold_storm_outdoors_per_minute_x100", sim.DefaultColdStormOutdoorsPerMinuteX100)
 	s.ColdStormIndoorsPerMinuteX100 = parseIntSetting(values, "cold_storm_indoors_per_minute_x100", sim.DefaultColdStormIndoorsPerMinuteX100)
+	s.ColdWarmGarmentPerMinuteX100 = parseIntSetting(values, "cold_warm_garment_per_minute_x100", sim.DefaultColdWarmGarmentPerMinuteX100)
 	s.ColdNightMultiplierX100 = parseIntSetting(values, "cold_night_multiplier_x100", sim.DefaultColdNightMultiplierX100)
 	s.ColdWarmRecoveryPerMinuteX100 = parseIntSetting(values, "cold_warm_recovery_per_minute_x100", sim.DefaultColdWarmRecoveryPerMinuteX100)
 	s.ColdClearRecoveryPerMinuteX100 = parseIntSetting(values, "cold_clear_recovery_per_minute_x100", sim.DefaultColdClearRecoveryPerMinuteX100)

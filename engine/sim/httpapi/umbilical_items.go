@@ -44,6 +44,7 @@ type umbilicalItemDTO struct {
 	Category     string   `json:"category"`
 	SortOrder    int      `json:"sort_order"`
 	Capabilities []string `json:"capabilities,omitempty"`
+	Description  string   `json:"description,omitempty"`
 	EatHereOnly  bool     `json:"eat_here_only"`
 	// DurabilityUses > 0 marks a durable tool: produce executions one unit
 	// lasts (LLM-330). The read side of item/set's durability_uses knob.
@@ -72,6 +73,7 @@ func itemRowDTO(def *sim.ItemKindDef) umbilicalItemDTO {
 		// an aliased slice could race a concurrent catalog writer. Same rationale
 		// as the Satisfies copy below. nil in → nil out (omitempty drops it).
 		Capabilities:   append([]string(nil), def.Capabilities...),
+		Description:    def.Description,
 		EatHereOnly:    def.EatHereOnly(),
 		DurabilityUses: def.DurabilityUses,
 		Satisfies:      make([]umbilicalSatisfactionDTO, 0, len(def.Satisfies)),
@@ -153,6 +155,9 @@ type umbilicalItemSetRequest struct {
 	DisplayLabelSingular  string   `json:"display_label_singular"`
 	DisplayLabelPlural    string   `json:"display_label_plural"`
 	ConsumeDwellNarration string   `json:"consume_dwell_narration"`
+	// Description is optional flavor prose (LLM-410) — the item_kind.description
+	// column. Free text (the column is unbounded TEXT), trimmed; blank clears it.
+	Description string `json:"description"`
 	// DurabilityUses > 0 makes the kind a durable tool lasting that many
 	// produce executions (LLM-330) — the live tuning knob for tool lifetimes.
 	// 0 (or omitted) keeps plain consumed-input semantics.
@@ -192,6 +197,7 @@ func (s *Server) handleUmbilicalItemSet(w http.ResponseWriter, r *http.Request) 
 	singular := strings.TrimSpace(req.DisplayLabelSingular)
 	plural := strings.TrimSpace(req.DisplayLabelPlural)
 	narration := strings.TrimSpace(req.ConsumeDwellNarration)
+	description := strings.TrimSpace(req.Description)
 
 	if name == "" {
 		writeError(w, http.StatusBadRequest, "name is required")
@@ -260,6 +266,7 @@ func (s *Server) handleUmbilicalItemSet(w http.ResponseWriter, r *http.Request) 
 		SortOrder:             req.SortOrder,
 		Capabilities:          capabilities,
 		ConsumeDwellNarration: narration,
+		Description:           description,
 		DurabilityUses:        req.DurabilityUses,
 	}
 
