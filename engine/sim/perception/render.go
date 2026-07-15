@@ -363,8 +363,16 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 			break
 		}
 	}
+	// Named locals so the gate reads clearly at the call. Only the two leave codas
+	// are gated; a pinned eater then falls through to the awaiting-reply coda (itself
+	// wait-permitting: "do not repeat yourself — wait and call done()") or the default
+	// decision coda — neither of which tells it to leave. AwaitingReply() is passed
+	// through UNgated on purpose: gating it would demote a spoke-then-eating actor
+	// from that anti-repeat line down to the weaker default coda.
+	triageRunLong := conversationRunLong && !midItemDwell
+	triageLingering := conversationLingering && !midItemDwell
 	renderTurnState(&ephemeral, p.TurnState, seekWorkDirective || conversationLooping || conversationRunLong || conversationLingering)
-	renderTriage(&ephemeral, p.Actor.Needs, p.Actor.NeedThresholds, p.TurnState.AwaitingReply(), conversationLooping, conversationRunLong && !midItemDwell, conversationLingering && !midItemDwell, p.NeedRedirect, seekWorkDirective, len(payOffers) > 0, p.Actor.InFlightMove, p.Actor.InFlightSourceActivity)
+	renderTriage(&ephemeral, p.Actor.Needs, p.Actor.NeedThresholds, p.TurnState.AwaitingReply(), conversationLooping, triageRunLong, triageLingering, p.NeedRedirect, seekWorkDirective, len(payOffers) > 0, p.Actor.InFlightMove, p.Actor.InFlightSourceActivity)
 
 	out.Text = durable.String()
 	out.EphemeralText = ephemeral.String()

@@ -13268,6 +13268,14 @@ func TestGoldenDwellPinnedEaterNoLeaveCoda(t *testing.T) {
 			if strings.Contains(pinned, tc.leaveLine) {
 				t.Errorf("a dwell-pinned eater must NOT get the %s leave coda %q — it cannot leave without wasting its meal.\nprompt:\n%s", tc.coda, tc.leaveLine, pinned)
 			}
+			// Absence of the leave line is not enough — prove the fall-through lands on
+			// the benign decision coda, not a leave/close or reply-pressure line. Here
+			// the subject owes Hannah a reply (AwaitingReplyFrom empty → AwaitingReply()
+			// false), so it deterministically hits the default "choose one action …
+			// done()" coda, which permits eating on in silence.
+			if !strings.Contains(pinned, "Choose one action, then call done()") {
+				t.Errorf("a dwell-pinned eater should fall through to the benign decision coda (a silent done() is permitted), not a leave or reply-pressure line.\nprompt:\n%s", pinned)
+			}
 
 			control := renderScenario(perceptionScenario{
 				name:  "dwell_eater_" + tc.coda + "_control",
