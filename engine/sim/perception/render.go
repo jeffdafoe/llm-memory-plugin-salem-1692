@@ -1919,10 +1919,11 @@ func renderRelationships(b *strings.Builder, peers []RelationshipPeerView) {
 // fallible gossip the subject has picked up about residents who are NOT present —
 // the word-of-mouth layer surfaced into perception. A first-hand line is framed
 // as something the actor witnessed; a relayed line as talk going round Salem, so
-// the model can weigh its own certainty. Unlike a perception fact this is NOT a
-// faithful readout — the preamble says as much — so an NPC may repeat it, doubt
-// it, or embroider it further when it speaks. Header + preamble are written lazily
-// on the first non-empty line, so a list of all-empty clauses renders nothing.
+// the model can weigh its own certainty: a first-hand line is a fact the actor
+// witnessed and can trust, while a relayed line is marked as hearsay ("Word has
+// it that ..."), so an NPC may repeat it, doubt it, or embroider it further when
+// it speaks. The header is written lazily on the first non-empty line, so a list
+// of all-empty clauses renders nothing.
 func renderVillageWord(b *strings.Builder, rumors []VillageRumorView) {
 	if len(rumors) == 0 {
 		return
@@ -1935,7 +1936,6 @@ func renderVillageWord(b *strings.Builder, rumors []VillageRumorView) {
 		}
 		if !wrote {
 			b.WriteString("## Word about the village\n")
-			b.WriteString("Talk you've picked up around Salem — it may be true, it may be idle gossip:\n")
 			wrote = true
 		}
 		if r.FirstHand {
