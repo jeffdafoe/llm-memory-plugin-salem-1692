@@ -10,8 +10,11 @@ package sim
 // about to start changing it.
 //
 // Decorative sprite-only actors are excluded: they are scenery, never economic
-// participants — the same exclusion the cold sweep makes (coldEligible). The
-// count is over the published snapshot, so the /state read stays lock-free.
+// participants — the same exclusion the cold sweep makes (coldEligible). Kind is
+// derived at load from the login/agent columns (ClassifyActorKind) and copied
+// onto the snapshot, so `Kind == KindDecorative` is exactly coldEligible's
+// "no agent and no login" test without duplicating the classification. The count
+// is over the published snapshot, so the /state read stays lock-free.
 type CoinSupply struct {
 	// Total is coin held across every non-decorative actor (Resident + Visitor).
 	Total int `json:"total"`
