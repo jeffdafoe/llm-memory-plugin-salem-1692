@@ -1681,9 +1681,10 @@ func _ensure_pay_modal_built() -> void:
     pay_dispo_carry_button.focus_mode = Control.FOCUS_NONE
     pay_dispo_carry_button.custom_minimum_size = Vector2(0, 24)
     pay_dispo_carry_button.add_theme_font_size_override("font_size", 12)
-    # Carry home is the default for portable goods (designer rec) — the
-    # session-persisting choice; never reset on open.
-    pay_dispo_carry_button.button_pressed = true
+    # Eat/drink now is the default (LLM-415) — the player is usually in the
+    # tavern eating on the spot, so that's the common case; Carry home stays
+    # one click away. Session-persisting choice; never reset on open.
+    pay_dispo_eat_button.button_pressed = true
     pay_disposition_row.add_child(pay_dispo_carry_button)
     vbox.add_child(pay_disposition_row)
 
