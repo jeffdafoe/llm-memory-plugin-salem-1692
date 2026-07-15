@@ -859,11 +859,46 @@ func TestSummonTargetArrival_MultipleErrands(t *testing.T) {
 	if _, ok := errandState(t, w, idNew); ok {
 		t.Error("awaiting errand not completed by the target's arrival (first-match resolution dropped it)")
 	}
+	// The old errand is untouched because it is not AWAITING (still stalled at
+	// dispatched) — not because only one errand may complete per arrival.
+	// Several errands already awaiting the same target at the same structure
+	// would all complete, by design.
 	if st, ok := errandState(t, w, idOld); !ok || st != stDispatched {
-		t.Errorf("stalled errand = (%q, ok=%v), want untouched at %q", st, ok, stDispatched)
+		t.Errorf("stalled (non-awaiting) errand = (%q, ok=%v), want untouched at %q", st, ok, stDispatched)
 	}
 	if n := errandCount(t, w); n != 1 {
-		t.Errorf("errand count = %d, want 1 (only the awaiting errand completes)", n)
+		t.Errorf("errand count = %d, want 1 (the stalled errand remains)", n)
+	}
+}
+
+// TestSummonTargetArrival_PhysicalPresenceIsTheMeeting pins the PRODUCT
+// DECISION behind destination-only matching (code_review round 2): an
+// awaiting errand completes on ANY arrival of its target at the meet place —
+// even one the summons did not cause, even after the target's pending cue
+// was replaced or faded. The summons asked them to come and they are
+// physically there; what motivated the walk does not change that the meeting
+// is happening at that spot. (The alternative — correlating on the cue —
+// would strand an older errand whose cue was overwritten by a newer summons
+// despite a physically-formed meeting.)
+func TestSummonTargetArrival_PhysicalPresenceIsTheMeeting(t *testing.T) {
+	w, cancel := buildSummonWorld(t)
+	defer cancel()
+
+	id := dispatchSummon(t, w, "summoner", "target", "")
+	driveToAwaiting(t, w, id, "summoner", "courier")
+
+	// The cue is gone (faded, replaced, or cleared by a take_break) — the
+	// arrival still completes the errand.
+	w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["target"].PendingSummon = nil
+		return nil, nil
+	}})
+	arriveTargetAt(t, w, "target", "square")
+	if _, ok := errandState(t, w, id); ok {
+		t.Error("errand not completed by a cue-less arrival at the meet place — physical presence IS the meeting (supported rule)")
+	}
+	if n := errandCount(t, w); n != 0 {
+		t.Errorf("errand count = %d, want 0", n)
 	}
 }
 
