@@ -1035,10 +1035,11 @@ func TestRenderRestocking_HeaderNeutral(t *testing.T) {
 
 // --- LLM-63: recent sell-through demand signal -----------------------------
 
-// TestBuildRestocking_RecentSalesUnits: the reseller's weekly economics for the low
-// item — units sold + coins taken in (seller view), and coins paid restocking
-// (buyer view) — are summed over the trailing window, with stale observations
-// excluded from all three.
+// TestBuildRestocking_RecentSalesUnits: the reseller's weekly sell-through for the
+// low item — units sold (seller view), with the coins taken in feeding only the
+// realized resale rate — is summed over the trailing window, with stale
+// observations excluded. The aggregate buy-cost/sales-coins pair is deliberately
+// no longer carried on the view (LLM-427: the phantom-loss source).
 func TestBuildRestocking_RecentSalesUnits(t *testing.T) {
 	now := time.Date(2026, 6, 23, 12, 0, 0, 0, time.UTC)
 	subj := &sim.ActorSnapshot{Coins: 20, Inventory: map[sim.ItemKind]int{"ale": 2}, RestockPolicy: buyPolicy("ale", 20)}
@@ -1076,11 +1077,10 @@ func TestBuildRestocking_RecentSalesUnits(t *testing.T) {
 	if got := v.Items[0].RecentSalesUnits; got != 10 {
 		t.Errorf("RecentSalesUnits = %d, want 10 (6+4 in-window, stale 99 excluded)", got)
 	}
-	if got := v.Items[0].RecentSalesCoins; got != 20 {
-		t.Errorf("RecentSalesCoins = %d, want 20 (12+8 in-window sale amounts)", got)
-	}
-	if got := v.Items[0].RecentBuyCost; got != 7 {
-		t.Errorf("RecentBuyCost = %d, want 7 (in-window purchase only; stale 50 excluded)", got)
+	// The in-window sale coins (12+8 = 20) surface only through the realized resale
+	// rate: 20 coins / 10 units = 2.
+	if got := v.Items[0].ResaleUnit; got != 2 {
+		t.Errorf("ResaleUnit = %d, want 2 (20 in-window coins / 10 units)", got)
 	}
 }
 
@@ -1161,30 +1161,61 @@ func TestBuyerRecentPurchases_BoundaryAndFilter(t *testing.T) {
 	}
 }
 
-// TestRenderRestocking_SellThroughLine: a positive RecentSalesUnits renders the
-// "you've sold about N over the past week" demand line after the on-hand lead;
-// zero renders nothing.
-func TestRenderRestocking_SellThroughLine(t *testing.T) {
-	var sold strings.Builder
-	renderRestocking(&sold, &RestockingView{Items: []RestockItemView{
-		{ItemLabel: "milk", CurrentQty: 4, Cap: 20, RecentSalesUnits: 18, RecentBuyCost: 130, RecentSalesCoins: 150},
-	}})
-	out := sold.String()
+// TestRenderRestocking_DemandAndMarginClauses (LLM-427): the week's demand renders
+// as a graded judgment with the unit count as its evidence, and the per-unit
+// economics as one fixed clause per margin verdict over the two displayed rates.
+// The old aggregate P&L tail ("at a cost of X coins and sales of Y coins") must
+// never render — it paired the cost of everything bought against the revenue of
+// only what sold, which the model subtracted into a phantom loss on any good
+// bought faster than it sells (the live Josiah cheese refusal).
+func TestRenderRestocking_DemandAndMarginClauses(t *testing.T) {
+	render := func(it RestockItemView) string {
+		var b strings.Builder
+		renderRestocking(&b, &RestockingView{Items: []RestockItemView{it}})
+		return b.String()
+	}
+
+	// Steady demand + earning margin — the honest read of the live cheese line.
+	out := render(RestockItemView{ItemLabel: "milk", CurrentQty: 4, Cap: 20,
+		RecentSalesUnits: 18, BuyAnchorUnit: 2, BuyAnchorObserved: true, ResaleUnit: 3})
 	if !strings.Contains(out, "You have 4 milk on hand and room for 16 more at the most.") {
 		t.Errorf("missing on-hand + capacity lead:\n%s", out)
 	}
-	if !strings.Contains(out, "You've sold about 18 over the past week, at a cost of 130 coins and sales of 150 coins.") {
-		t.Errorf("missing sell-through + P&L line:\n%s", out)
+	if !strings.Contains(out, "It sells steadily — about 18 this past week.") {
+		t.Errorf("missing steady demand judgment:\n%s", out)
+	}
+	if !strings.Contains(out, "Each one earns you coin: you buy at about 2 coins and resell at about 3 coins.") {
+		t.Errorf("missing earning margin judgment:\n%s", out)
+	}
+	if strings.Contains(out, "at a cost of") {
+		t.Errorf("the aggregate P&L pairing must not render (LLM-427):\n%s", out)
 	}
 
-	// Zero units sold suppresses the whole demand/P&L sentence (no rate to assert),
-	// even if a buy cost happens to be on record.
-	var silent strings.Builder
-	renderRestocking(&silent, &RestockingView{Items: []RestockItemView{
-		{ItemLabel: "milk", CurrentQty: 4, Cap: 20, RecentSalesUnits: 0, RecentBuyCost: 5, RecentSalesCoins: 0},
-	}})
-	if out := silent.String(); strings.Contains(out, "over the past week") {
-		t.Errorf("zero recent sales should render no sell-through/P&L line:\n%s", out)
+	// Demand tier boundaries: 7/week is still slow, 21/week is brisk.
+	if out := render(RestockItemView{ItemLabel: "milk", CurrentQty: 4, Cap: 20, RecentSalesUnits: 7}); !strings.Contains(out, "It sells slowly — about 7 this past week.") {
+		t.Errorf("7 sold should grade slow:\n%s", out)
+	}
+	if out := render(RestockItemView{ItemLabel: "milk", CurrentQty: 4, Cap: 20, RecentSalesUnits: 21}); !strings.Contains(out, "It sells briskly — about 21 this past week.") {
+		t.Errorf("21 sold should grade brisk:\n%s", out)
+	}
+
+	// Break-even and losing margin verdicts.
+	if out := render(RestockItemView{ItemLabel: "milk", CurrentQty: 4, Cap: 20, RecentSalesUnits: 21, BuyAnchorUnit: 1, ResaleUnit: 1}); !strings.Contains(out, "You pay about 1 coin for it and resell at about 1 coin, so it earns you nothing on its own.") {
+		t.Errorf("missing break-even margin judgment:\n%s", out)
+	}
+	if out := render(RestockItemView{ItemLabel: "meat", CurrentQty: 0, Cap: 6, RecentSalesUnits: 8, BuyAnchorUnit: 4, ResaleUnit: 3}); !strings.Contains(out, "You've been paying about 4 coins and reselling at about 3 coins — a losing trade unless you buy cheaper or charge more.") {
+		t.Errorf("missing losing margin judgment:\n%s", out)
+	}
+
+	// Zero units sold renders no demand clause at all (a new or dormant good
+	// asserts no demand), and an anchor without a resale rate keeps its own
+	// pre-LLM-427 sentence with the overpay guard.
+	out = render(RestockItemView{ItemLabel: "milk", CurrentQty: 4, Cap: 20, RecentSalesUnits: 0, BuyAnchorUnit: 2, BuyAnchorObserved: true})
+	if strings.Contains(out, "this past week") {
+		t.Errorf("zero recent sales should render no demand clause:\n%s", out)
+	}
+	if !strings.Contains(out, "Of late it has been going for about 2 coins each — pay much above that and you're overpaying.") {
+		t.Errorf("anchor-only item should keep the lone buy-anchor sentence:\n%s", out)
 	}
 }
 

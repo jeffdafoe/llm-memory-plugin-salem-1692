@@ -483,6 +483,49 @@ func TestGoldensRestockCueNeverHoldsOffOnLowStock(t *testing.T) {
 	}
 }
 
+// TestGoldensRestockCueNeverPairsAggregateCostWithSales is the LLM-427 cross-scenario
+// invariant: the "## Restocking" cue must never render the aggregate weekly P&L pair —
+// coins paid for EVERYTHING bought this window against revenue from ONLY the units that
+// sold ("at a cost of X coins and sales of Y coins"). The two figures were never
+// apples-to-apples, and the model subtracted them into a phantom loss on any good bought
+// faster than it sells — the live Josiah Thorne cheese refusal ("a fool's arithmetic I
+// don't mean to repeat") on a line that earned a coin per unit. Demand renders as a
+// graded judgment and per-unit economics as a margin verdict instead. Non-vacuous both
+// ways: at least one scenario must render a demand clause and at least one a margin
+// verdict, so the check proves the replacement path is exercised, not merely that a
+// phrase nobody emits is absent.
+func TestGoldensRestockCueNeverPairsAggregateCostWithSales(t *testing.T) {
+	var demandExercised, marginExercised bool
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		section := restockingSection(renderScenario(sc))
+		if section == "" {
+			continue // no "## Restocking" cue in this scenario — invariant N/A
+		}
+		if strings.Contains(section, "at a cost of") || strings.Contains(section, "and sales of") {
+			t.Errorf("scenario %q: the '## Restocking' cue pairs aggregate bought-cost with sold-revenue (LLM-427):\n%s", sc.name, section)
+		}
+		// Deliberately the tier phrasings, not "this past week" — the LLM-424
+		// self-use line carries that fragment too and must not satisfy this.
+		if strings.Contains(section, "It sells slowly") ||
+			strings.Contains(section, "It sells steadily") ||
+			strings.Contains(section, "It sells briskly") {
+			demandExercised = true
+		}
+		if strings.Contains(section, "Each one earns you coin") ||
+			strings.Contains(section, "it earns you nothing on its own") ||
+			strings.Contains(section, "a losing trade unless you buy cheaper or charge more") {
+			marginExercised = true
+		}
+	}
+	if !demandExercised {
+		t.Error("matrix must exercise a scenario whose '## Restocking' cue renders a demand judgment (LLM-427 'It sells … this past week')")
+	}
+	if !marginExercised {
+		t.Error("matrix must exercise a scenario whose '## Restocking' cue renders a margin verdict (LLM-427)")
+	}
+}
+
 // restockingSection returns the body of the "## Restocking" section of a rendered
 // prompt — from its header to the next "## " header (or end of prompt) — or "" when the
 // prompt has no such section. Scoping the LLM-424 invariant to this slice keeps a phrase
@@ -1555,15 +1598,17 @@ var perceptionScenarios = []perceptionScenario{
 	},
 	{
 		name: "distributor_overbuying_below_resale",
-		summary: "LLM-385/LLM-424 buy-side: a reseller (Josiah) low on milk with a walk-to supplier (Ellis Farm), whose OWN " +
-			"books show the two things the pre-LLM-385 '## Restocking' cue could not flag. He resells milk at ~1 coin " +
-			"(seller ring: 9 units for 12 coins) while the going rate is ALSO ~1, so the buying-in anchor now names the " +
-			"resale CEILING ('You resell it for about 1 coin each — pay more than that and you lose coin on every one') " +
-			"beside the market rate — the distributor's binding number the market-only anchor never surfaced. And he " +
-			"bought 35 milk this week but sold only 9, so the self-use accounting fires ('bought about 35 of these this " +
-			"past week, sold only 9, and used or traded the rest') — the LLM-424 honest reframe that replaced the " +
-			"backwards 'buy sparingly' hold-off, since an item below its reorder point has not piled up on the shelf. " +
-			"Solo (no huddle), so the wares-fetch cue stays out and the section under test renders cleanly.",
+		summary: "LLM-385/LLM-424/LLM-427 buy-side: a reseller (Josiah) low on milk with a walk-to supplier (Ellis Farm), " +
+			"whose OWN books show what the pre-LLM-385 '## Restocking' cue could not flag. He resells milk at ~1 coin " +
+			"(seller ring: 9 units for 12 coins) while the going rate is ALSO ~1, so the margin judgment grades the two " +
+			"displayed rates break-even ('You pay about 1 coin for it and resell at about 1 coin, so it earns you nothing " +
+			"on its own') — the LLM-427 tiered verdict that replaced the warning-tailed anchor+ceiling sentence pair and " +
+			"the aggregate cost-vs-sales P&L (which here read 40 cost / 12 sales, a phantom −28 on a sub-coin-profitable " +
+			"line). Demand grades steady (9/week). And he bought 35 milk this week but sold only 9, so the self-use " +
+			"accounting fires ('bought about 35 of these this past week, sold only 9, and used or traded the rest') — the " +
+			"LLM-424 honest reframe that replaced the backwards 'buy sparingly' hold-off, since an item below its reorder " +
+			"point has not piled up on the shelf. Solo (no huddle), so the wares-fetch cue stays out and the section under " +
+			"test renders cleanly.",
 		build: distributorOverbuyingBelowResale,
 	},
 	{
@@ -1575,8 +1620,12 @@ var perceptionScenarios = []perceptionScenario{
 			"sells, so buy sparingly, if at all', and the weak model confabulated '22 still unsold' to reconcile the two, " +
 			"talking itself out of restocking a sold-out line. The golden pins the fix: the honest self-use accounting " +
 			"('bought about 25 of these this past week, sold only 5, and used or traded the rest') AND the normal " +
-			"restock affordance (walk to Ellis Farm), with NO 'buy sparingly' / overstock hold-off. Solo (no huddle), so " +
-			"the wares-fetch cue stays out and the '## Restocking' section renders cleanly.",
+			"restock affordance (walk to Ellis Farm), with NO 'buy sparingly' / overstock hold-off. It also pins the " +
+			"LLM-427 sequel to the same live case: slow demand and an EARNING margin verdict ('Each one earns you coin: " +
+			"you buy at about 1 coin and resell at about 2 coins') in place of the aggregate cost-vs-sales P&L, which " +
+			"here read 25 cost / 10 sales — a phantom −15 the model subtracted into 'a fool's arithmetic I don't mean " +
+			"to repeat' and refused to restock a per-unit-profitable line over. Solo (no huddle), so the wares-fetch cue " +
+			"stays out and the '## Restocking' section renders cleanly.",
 		build: keeperSelfConsumesZeroStock,
 	},
 	{
@@ -5176,21 +5225,31 @@ func TestRepairReserveLineOnlyForOwnerWithMendAndNails(t *testing.T) {
 }
 
 // TestRestockBuyAnchorRendersWhenRateKnown is the buy-leg anchor invariant
-// (LLM-292, reworked observed-first in LLM-295), re-derived from each scenario's
-// fixture rather than trusting the build that produced the section: the buying-in
-// anchor ("… above that and you're overpaying") appears on a rendered "##
-// Restocking" item line iff that ITEM has a resolvable rate — an observed
-// supplier rate if one exists, else the catalog seed — checked per line, not
-// section-wide, so a mixed rate/no-rate section can't hide an anchor attached to
-// the wrong item (code_review). Guards both directions — a low item with a known
-// rate must carry the corrective anchor (the self-poisoning last-paid anchor must
-// never again be the cue's only number: the live Josiah 2.2/unit milk leg), and an
-// item with neither an observed rate nor a catalog price must not conjure one. A
-// fixture that owes an anchor but renders no Restocking section at all fails too
-// (the anchor can't render if the section disappears). The marker is the phrase
-// both the observed and the seed phrasings share.
+// (LLM-292, reworked observed-first in LLM-295, and again for the LLM-427 margin
+// verdicts), re-derived from each scenario's fixture rather than trusting the
+// build that produced the section: every rendered "## Restocking" item line whose
+// ITEM has a resolvable buying-in rate — an observed supplier rate if one exists,
+// else the catalog seed — must carry that corrective rate in SOME clause (the
+// self-poisoning last-paid anchor must never again be the cue's only number: the
+// live Josiah 2.2/unit milk leg). Which clause depends on whether a realized
+// resale rate also exists: with one, the LLM-427 margin verdict names the buy
+// rate ("you buy at about …" / "You pay about …" / "you've been paying about …");
+// without one, the lone anchor sentence keeps its overpay guard ("… above that
+// and you're overpaying"). Checked per line, not section-wide, so a mixed
+// rate/no-rate section can't hide an anchor attached to the wrong item
+// (code_review), and both directions are guarded — an item with neither an
+// observed rate nor a catalog price must not conjure either clause. A fixture
+// that owes an anchor but renders no Restocking section at all fails too (the
+// anchor can't render if the section disappears).
 func TestRestockBuyAnchorRendersWhenRateKnown(t *testing.T) {
 	const marker = "above that and you're overpaying"
+	// The margin verdict's three buy-rate phrasings (one per tier). Any of them
+	// carries the corrective rate on a line whose margin is judgeable.
+	hasMarginVerdict := func(line string) bool {
+		return strings.Contains(line, "you buy at about ") ||
+			strings.Contains(line, "You pay about ") ||
+			strings.Contains(line, "you've been paying about ")
+	}
 	for _, sc := range perceptionScenarios {
 		sc := sc
 		t.Run(sc.name, func(t *testing.T) {
@@ -5210,7 +5269,11 @@ func TestRestockBuyAnchorRendersWhenRateKnown(t *testing.T) {
 			// line per LLM-294). Also maps each entry's display label to its rate for
 			// the per-line check below.
 			want := false
-			rateByLabel := map[string]int{}
+			type buyRateExpectation struct {
+				rate int
+				tier restockMarginTier
+			}
+			expectByLabel := map[string]buyRateExpectation{}
 			labelAmbiguous := map[string]bool{}
 			if subj != nil && subj.RestockPolicy != nil {
 				floors := sim.ReorderFloors(snap.Recipes, subj.RestockPolicy)
@@ -5224,11 +5287,20 @@ func TestRestockBuyAnchorRendersWhenRateKnown(t *testing.T) {
 					if !observed {
 						rate = catalogBulkRate(snap, e.Item)
 					}
-					label := itemDisplayLabel(snap, e.Item)
-					if prev, ok := rateByLabel[label]; ok && (prev > 0) != (rate > 0) {
-						labelAmbiguous[label] = true // two kinds share a label with differing pricedness — per-line check skips it
+					// The realized resale rate, derived the same way buildRestocking does,
+					// and from it the margin tier that selects WHICH clause owes the buy
+					// rate on this item's line (LLM-427).
+					salesUnits, salesCoins := sellerRecentSales(snap, actorID, e.Item, restockSalesWindow)
+					resale := 0
+					if salesUnits > 0 {
+						resale = (salesCoins + salesUnits/2) / salesUnits
 					}
-					rateByLabel[label] = rate
+					exp := buyRateExpectation{rate: rate, tier: restockMarginTierOf(rate, resale)}
+					label := itemDisplayLabel(snap, e.Item)
+					if prev, ok := expectByLabel[label]; ok && ((prev.rate > 0) != (rate > 0) || prev.tier != exp.tier) {
+						labelAmbiguous[label] = true // two kinds share a label with differing expectations — per-line check skips it
+					}
+					expectByLabel[label] = exp
 					if !sim.RestockReorderThresholdMet(subj.Inventory[e.Item], e.Cap(), snap.RestockReorderPct, floors[e.Item]) {
 						continue
 					}
@@ -5257,11 +5329,14 @@ func TestRestockBuyAnchorRendersWhenRateKnown(t *testing.T) {
 			if idx := strings.Index(section, "\n## "); idx >= 0 {
 				section = section[:idx]
 			}
-			if has := strings.Contains(section, marker); has != want {
-				t.Errorf("scenario %q: restock catalog anchor present=%v, want %v (LLM-292)", sc.name, has, want)
+			// An owed corrective rate must surface SOMEWHERE — as the lone anchor's
+			// overpay guard or inside a margin verdict. The reverse direction (a
+			// clause conjured where none is owed) is checked per line below.
+			if want && !strings.Contains(section, marker) && !hasMarginVerdict(section) {
+				t.Errorf("scenario %q: an anchor-owing buy entry exists but no corrective buy-rate clause rendered (LLM-292/LLM-427)", sc.name)
 			}
 			// Per-line attachment: every full item line ("- You have N <label> on
-			// hand…") carries the anchor iff ITS kind is priced. Bide steers and the
+			// hand…") carries the clause its own rates owe. Bide steers and the
 			// walk-to sub-bullets don't match the prefix and are skipped by design.
 			for _, line := range strings.Split(section, "\n") {
 				rest, ok := strings.CutPrefix(line, "- You have ")
@@ -5273,12 +5348,30 @@ func TestRestockBuyAnchorRendersWhenRateKnown(t *testing.T) {
 					continue
 				}
 				label := strings.TrimLeft(head, "0123456789 ")
-				rate, known := rateByLabel[label]
+				exp, known := expectByLabel[label]
 				if !known || labelAmbiguous[label] {
 					continue // not one of the effective entries (or ambiguous label) — nothing to assert
 				}
-				if has := strings.Contains(line, marker); has != (rate > 0) {
-					t.Errorf("scenario %q: item line %q anchor present=%v, want %v (per-line attachment, LLM-292)", sc.name, line, has, rate > 0)
+				switch {
+				case exp.tier != marginUnknown:
+					// Both rates known — the margin verdict carries the buy rate, and
+					// the lone overpay-guard sentence must not also render beside it.
+					if !hasMarginVerdict(line) {
+						t.Errorf("scenario %q: item line %q lacks the margin verdict owed a line with both rates (LLM-427)", sc.name, line)
+					}
+					if strings.Contains(line, marker) {
+						t.Errorf("scenario %q: item line %q carries the lone overpay guard alongside a judgeable margin (LLM-427)", sc.name, line)
+					}
+				case exp.rate > 0:
+					// Buy rate only — the pre-LLM-427 anchor sentence with its guard.
+					if !strings.Contains(line, marker) {
+						t.Errorf("scenario %q: item line %q anchor missing for a priced item (per-line attachment, LLM-292)", sc.name, line)
+					}
+				default:
+					// No resolvable buy rate — neither clause may conjure one.
+					if strings.Contains(line, marker) || hasMarginVerdict(line) {
+						t.Errorf("scenario %q: item line %q conjures a buy-rate clause for an unpriced item (LLM-292)", sc.name, line)
+					}
 				}
 			}
 		})

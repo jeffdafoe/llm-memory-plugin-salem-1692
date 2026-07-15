@@ -166,27 +166,28 @@ type RestockItemView struct {
 	// over the window (its sellerRecentSales, nearest-rounded), 0 with no sale on
 	// record (LLM-385). The buying-in anchor above is the market/supplier going-rate;
 	// this is the number that actually BINDS for a distributor — pay above what you
-	// resell for and every unit loses coin. Render surfaces it as a ceiling beside the
-	// market anchor. Its absence (no sale history) simply omits the resale clause; the
+	// resell for and every unit loses coin. Render judges it against the buy anchor
+	// into a margin tier (restockMarginTierOf, LLM-427), falling back to the lone
+	// resale-ceiling sentence when no anchor is on record. Its absence (no sale
+	// history) leaves the margin unknown; the
 	// live Josiah bleed was buying milk/carrots at ~ the going rate while reselling for
 	// less, a loss the market-only anchor could never flag.
 	ResaleUnit int
 
-	// RecentSalesUnits / RecentSalesCoins / RecentBuyCost are this item's trailing-
-	// restockSalesWindow economics, read off the price book (LLM-63):
-	//   - RecentSalesUnits: units SOLD (Qty×Consumers per accepted sale, seller view).
-	//   - RecentSalesCoins: coins taken IN on those sales (seller view, sum of amount).
-	//   - RecentBuyCost: coins the reseller PAID restocking this item this window
-	//     (buyer view, sum of amount across every seller it bought from).
-	// Render surfaces them as the demand + weekly-P&L signal the reseller sizes its
-	// restock against ("you've sold about N over the past week, at a cost of X coins
-	// and sales of Y coins"), in place of the fill-to-cap PRICE anchor that biased the
-	// weak model into a copy-paste max offer and drained its working capital. The
-	// whole sentence is silent when RecentSalesUnits is 0, so a new or dormant good
-	// asserts no rate rather than a misleading zero.
+	// RecentSalesUnits is the units of this item the reseller SOLD over the trailing
+	// restockSalesWindow (Qty×Consumers per accepted sale, seller view of the price
+	// book). Render grades it into a demand tier (restockDemandTierOf) and speaks the
+	// tier with the count as its evidence ("It sells slowly — about 4 this past
+	// week"); 0 renders nothing, so a new or dormant good asserts no demand rather
+	// than a misleading "none sold". What is deliberately NOT carried any more is the
+	// LLM-63 aggregate coin pair (RecentBuyCost / RecentSalesCoins): coins paid for
+	// EVERYTHING bought this window against revenue from ONLY the units that sold was
+	// never apples-to-apples, and the model subtracted the two into a phantom loss on
+	// any good bought faster than it sells — the live Josiah Thorne cheese refusal
+	// ("a fool's arithmetic I don't mean to repeat") on a per-unit-profitable line.
+	// Per-unit economics carry the honest signal instead (restockMarginTierOf over
+	// BuyAnchorUnit vs ResaleUnit). LLM-427.
 	RecentSalesUnits int
-	RecentSalesCoins int
-	RecentBuyCost    int
 
 	// RecentBuyUnits is the units the reseller BOUGHT of this item this window (buyer
 	// view, the unit sibling of RecentBuyCost) and UsingOwnStock flags that it bought
@@ -323,11 +324,13 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 		if qty, ok := buyerLastPaidAffordableQty(snap, actorID, e.Item, actorSnap.Coins); ok {
 			affordable = qty
 		}
-		// Recent demand + weekly P&L the reseller sizes its restock against (LLM-63):
-		// units sold + coins taken in (seller view), units + coins paid restocking
-		// (buyer view). 0 units sold leaves the P&L sentence silent at render.
+		// Recent demand the reseller sizes its restock against: units sold + coins
+		// taken in (seller view — the coins feed only the resale rate below), units
+		// bought (buyer view — the self-use accounting). The buy-cost sum is
+		// deliberately unread: pairing it with sold-only revenue was the LLM-63
+		// aggregate P&L the model subtracted into a phantom loss (LLM-427).
 		salesUnits, salesCoins := sellerRecentSales(snap, actorID, e.Item, restockSalesWindow)
-		boughtUnits, buyCost := buyerRecentPurchases(snap, actorID, e.Item, restockSalesWindow)
+		boughtUnits, _ := buyerRecentPurchases(snap, actorID, e.Item, restockSalesWindow)
 		// LLM-385: the reseller's OWN realized resale rate — the ceiling the buying-in
 		// anchor should be judged against, because a distributor's binding number is
 		// what it can resell the good for, not the market going-rate. 0 with no sale on
@@ -400,8 +403,6 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 			BuyAnchorObserved:             buyAnchorObserved,
 			ResaleUnit:                    resaleUnit,
 			RecentSalesUnits:              salesUnits,
-			RecentSalesCoins:              salesCoins,
-			RecentBuyCost:                 buyCost,
 			RecentBuyUnits:                boughtUnits,
 			UsingOwnStock:                 usingOwnStock,
 			kind:                          e.Item,
@@ -936,6 +937,78 @@ func coPresentSellerForItem(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *
 // live tuning.
 const restockSalesWindow = 7 * 24 * time.Hour
 
+// restockDemandTier grades an item's weekly sell-through for the restock cue's
+// demand clause (LLM-427) — the engine-computes-judgments half of the felt-needs
+// pattern: the cue speaks a tier ("It sells slowly") with the unit count as its
+// evidence, never a raw figure the model must interpret alone. demandSilent (no
+// sale in the window) renders nothing at all, preserving the LLM-63 posture that
+// a new or dormant good asserts no demand rather than a misleading "none sold";
+// a dead good the keeper keeps buying is still named by the self-use accounting.
+// Unexported — render maps tiers to prose.
+type restockDemandTier int
+
+const (
+	demandSilent restockDemandTier = iota
+	demandSlow
+	demandSteady
+	demandBrisk
+)
+
+// restockDemandTierOf grades units sold over the trailing restockSalesWindow. The
+// cutoffs read against that literal week: slow is a unit a day at most, brisk is
+// roughly three a day or better, steady the band between. Tuning knobs, kept
+// constants like the window itself.
+func restockDemandTierOf(salesUnits int) restockDemandTier {
+	switch {
+	case salesUnits <= 0:
+		return demandSilent
+	case salesUnits <= 7:
+		return demandSlow
+	case salesUnits <= 20:
+		return demandSteady
+	default:
+		return demandBrisk
+	}
+}
+
+// restockMarginTier is the engine's judgment of an item's per-unit resale margin —
+// buy at the anchor, resell at the realized rate, and say which way the coin flows
+// (LLM-427). It replaces the pair of warning-tailed anchor/ceiling sentences whose
+// numbers the model was left to reconcile itself — and, fatally, the LLM-63
+// aggregate cost-vs-sales pair it reconciled them AGAINST, subtracting all-bought
+// cost from sold-only revenue into a phantom loss (the live Josiah cheese refusal
+// on a line that earned a coin per unit). Unexported — render maps tiers to prose.
+type restockMarginTier int
+
+const (
+	marginUnknown restockMarginTier = iota
+	marginEarns
+	marginBreakEven
+	marginLosing
+)
+
+// restockMarginTierOf judges the two DISPLAYED per-unit rates against each other.
+// The comparison deliberately runs on the nearest-rounded coin integers the cue
+// prints, not the un-rounded internals: the judgment shares a sentence with those
+// numbers, and "you buy at about 2 and resell at about 2 — each one earns you
+// coin" would read as a contradiction even when a sub-coin margin makes it
+// technically true. Sub-coin margins therefore grade break-even — the tier is a
+// judgment, not an audit. Unknown when either rate is missing, in which case
+// render falls back to the single known rate's own sentence.
+func restockMarginTierOf(buyAnchorUnit, resaleUnit int) restockMarginTier {
+	if buyAnchorUnit <= 0 || resaleUnit <= 0 {
+		return marginUnknown
+	}
+	switch {
+	case resaleUnit > buyAnchorUnit:
+		return marginEarns
+	case resaleUnit < buyAnchorUnit:
+		return marginLosing
+	default:
+		return marginBreakEven
+	}
+}
+
 // renderRestocking writes the "## Restocking" section. Content-gated: a
 // nil/empty view writes nothing. Each low item leads with on-hand + the headroom as
 // a capacity ceiling, then — when a sale is on record — the week's demand and coin
@@ -1043,43 +1116,61 @@ func renderRestocking(b *strings.Builder, v *RestockingView) {
 		// restates it at the buy moment.
 		fmt.Fprintf(b, "- You have %d %s on hand and room for %d more at the most.",
 			it.CurrentQty, sanitizeInline(it.ItemLabel), headroom)
-		// The buying-in anchor, with its stake — the corrective to the buyer's own
-		// self-poisoning last-paid (one overpay re-anchors every later offer: the
-		// live Josiah 2.2/unit milk leg). Deliberately a per-unit rate and never a
-		// fill total — LLM-63 removed the concrete fill-to-cap figure because the
-		// weak model copy-pasted it as a max offer and drained its purse; a rate to
-		// weigh an offer against does not re-open that. No "ask"/"price" token (the
-		// HOME-386 speaking-loop guard). LLM-295: phrase a lived observed rate as
-		// such, and a catalog SEED as a soft estimate — the model must not be told a
-		// hand-authored guess is a rate the market has set.
-		if it.BuyAnchorUnit > 0 {
-			if it.BuyAnchorObserved {
-				fmt.Fprintf(b, " Of late it has been going for about %s each — pay much above that and you're overpaying.",
-					coinsPhrase(it.BuyAnchorUnit))
-			} else {
-				fmt.Fprintf(b, " It is generally worth about %s each — pay much above that and you're overpaying.",
-					coinsPhrase(it.BuyAnchorUnit))
+		// The week's demand, spoken as a judgment with its evidence (LLM-427): the
+		// tier carries the conclusion, the unit count grounds it. What died here is
+		// the LLM-63 aggregate P&L tail ("at a cost of X coins and sales of Y
+		// coins") — coins paid for everything bought against revenue from only the
+		// units that sold, never apples-to-apples, which the model subtracted into a
+		// phantom loss on any good bought faster than it sells (the live Josiah
+		// cheese refusal, on a line that earned a coin per unit). Silent when no
+		// sale is on record, so a new or dormant good asserts no demand.
+		switch restockDemandTierOf(it.RecentSalesUnits) {
+		case demandSlow:
+			fmt.Fprintf(b, " It sells slowly — about %d this past week.", it.RecentSalesUnits)
+		case demandSteady:
+			fmt.Fprintf(b, " It sells steadily — about %d this past week.", it.RecentSalesUnits)
+		case demandBrisk:
+			fmt.Fprintf(b, " It sells briskly — about %d this past week.", it.RecentSalesUnits)
+		}
+		// The per-unit economics, spoken as a judgment (LLM-427): one fixed clause
+		// per margin tier with both displayed rates interpolated — replacing the two
+		// warning-tailed anchor/ceiling sentences (LLM-295 / LLM-385) the model was
+		// left to reconcile on its own. The rates stay exact and per-unit (never a
+		// fill total — the LLM-63 copy-paste-max-offer guard), and the losing tier
+		// names the loss with both ways out (buy cheaper / charge more) but never
+		// holds off the restock: the shelf is low and the demand real, so the
+		// decision stays the keeper's, and a co-present "Buy it now" below reconciles
+		// by countering lower rather than by contradiction. No "ask"/"price" token
+		// (the HOME-386 speaking-loop guard).
+		switch restockMarginTierOf(it.BuyAnchorUnit, it.ResaleUnit) {
+		case marginEarns:
+			fmt.Fprintf(b, " Each one earns you coin: you buy at about %s and resell at about %s.",
+				coinsPhrase(it.BuyAnchorUnit), coinsPhrase(it.ResaleUnit))
+		case marginBreakEven:
+			fmt.Fprintf(b, " You pay about %s for it and resell at about %s, so it earns you nothing on its own.",
+				coinsPhrase(it.BuyAnchorUnit), coinsPhrase(it.ResaleUnit))
+		case marginLosing:
+			fmt.Fprintf(b, " You've been paying about %s and reselling at about %s — a losing trade unless you buy cheaper or charge more.",
+				coinsPhrase(it.BuyAnchorUnit), coinsPhrase(it.ResaleUnit))
+		default:
+			// Only one rate (or neither) on record — no margin to judge, so the known
+			// rate keeps its pre-LLM-427 sentence. The buy anchor keeps its overpay
+			// guard (nothing else carries the corrective to the buyer's self-poisoning
+			// last-paid when there is no margin verdict), phrased lived-vs-seed per
+			// LLM-295; the resale ceiling keeps its LLM-385 wording, referring to
+			// "your resale rate" rather than the rounded integer (code_review).
+			if it.BuyAnchorUnit > 0 {
+				if it.BuyAnchorObserved {
+					fmt.Fprintf(b, " Of late it has been going for about %s each — pay much above that and you're overpaying.",
+						coinsPhrase(it.BuyAnchorUnit))
+				} else {
+					fmt.Fprintf(b, " It is generally worth about %s each — pay much above that and you're overpaying.",
+						coinsPhrase(it.BuyAnchorUnit))
+				}
+			} else if it.ResaleUnit > 0 {
+				fmt.Fprintf(b, " You resell it for about %s each — paying above your resale rate loses coin on each one.",
+					coinsPhrase(it.ResaleUnit))
 			}
-		}
-		// LLM-385: the resale ceiling — the number that actually BINDS for a reseller.
-		// The market anchor above guards overpaying versus the going rate; this guards
-		// the distributor-specific loss it can't see — paying at or above what he
-		// RESELLS the good for. Surfaced only when a realized resale rate is on record.
-		// Josiah bought milk/carrots at ~the going rate and resold them for less, a
-		// per-unit loss the market anchor rated as a fair buy.
-		if it.ResaleUnit > 0 {
-			// "about N" is nearest-rounded, so it must not be stated as the exact hard
-			// ceiling — refer to "your resale rate" (the true, un-rounded rate) rather
-			// than making the displayed integer itself the threshold (code_review).
-			fmt.Fprintf(b, " You resell it for about %s each — paying above your resale rate loses coin on each one.",
-				coinsPhrase(it.ResaleUnit))
-		}
-		// The week's demand + P&L the reseller sizes its restock against: units sold,
-		// coins paid restocking, coins taken in selling. Silent at 0 units sold (no
-		// sale on record in the window) so a new or dormant good asserts no rate.
-		if it.RecentSalesUnits > 0 {
-			fmt.Fprintf(b, " You've sold about %d over the past week, at a cost of %d coins and sales of %d coins.",
-				it.RecentSalesUnits, it.RecentBuyCost, it.RecentSalesCoins)
 		}
 		// LLM-424: self-use accounting — bought far more than it SOLD this window, yet an
 		// item in the restock section is below its reorder point, so the gap did not pile
