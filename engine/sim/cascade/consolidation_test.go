@@ -372,7 +372,8 @@ func TestBuildConsolidationPrompt_StructureAndDedup(t *testing.T) {
 		"- Good evening, Wendy.",
 		"- She ordered ale.",
 		"one or two sentences",
-		"a coherent impression, not a list of events",
+		"the next time you deal with them",
+		"reply with exactly: nothing notable",
 	} {
 		if !strings.Contains(prompt, must) {
 			t.Errorf("prompt missing %q\n--- prompt ---\n%s", must, prompt)
@@ -653,5 +654,55 @@ func TestRunOneSweep_ErrorIsClassified(t *testing.T) {
 	}
 	if le.Class != llm.ErrorTooLarge {
 		t.Errorf("ErrorClass = %v, want ErrorTooLarge", le.Class)
+	}
+}
+
+// TestRunOneSweep_NothingNotablePrunes verifies the LLM-426 outcome: a reply of
+// the "nothing notable" sentinel drops the relationship row entirely rather
+// than storing filler prose, so the graph keeps only edges that carry a
+// judgment.
+func TestRunOneSweep_NothingNotablePrunes(t *testing.T) {
+	w, stop := buildConsolidationHandlerWorld(t)
+	defer stop()
+	at := time.Now().UTC()
+	drivePastFirstMinFacts(t, w, "ezekiel", at)
+
+	client := llm.NewFakeClient(llm.ScriptedTurn{
+		Response: llm.Response{Content: "  Nothing notable.  "},
+	})
+	runOneSweep(context.Background(), w, client)
+
+	if got := client.CallCount(); got != 1 {
+		t.Fatalf("LLM call count = %d, want 1", got)
+	}
+	snap := w.Published()
+	if rel, ok := snap.Actors["hannah"].Relationships["ezekiel"]; ok {
+		t.Errorf("relationship row survived a 'nothing notable' reply, want it pruned: %+v", rel)
+	}
+}
+
+// TestIsNothingNotable pins the sentinel matcher: the phrase (with punctuation /
+// casing / a short elaboration) prunes, but a real judgment hiding behind the
+// phrase does not.
+func TestIsNothingNotable(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"nothing notable", true},
+		{"Nothing notable.", true},
+		{"  nothing notable  ", true},
+		{`"Nothing notable"`, true},
+		{"Nothing notable to report.", true},
+		{"Nothing notable about them.", true},
+		{"Nothing notable except that he pays late.", false},
+		{"Nothing notable, but he drives a hard bargain.", false},
+		{"He pays what he promises and trades fair.", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := isNothingNotable(c.in); got != c.want {
+			t.Errorf("isNothingNotable(%q) = %v, want %v", c.in, got, c.want)
+		}
 	}
 }
