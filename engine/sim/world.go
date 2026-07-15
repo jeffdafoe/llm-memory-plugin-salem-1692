@@ -146,6 +146,29 @@ type WorldSettings struct {
 	StallNailsPerRepair        int
 	StallRepairDurationSeconds int
 
+	// Cold exposure (LLM-412; cold.go). Per-minute ×100 rates the exposure
+	// sweep applies by situation — storm accrual outdoors / under an unheated
+	// roof, recovery by a lit hearth / under a clear sky — plus the night
+	// multiplier on accrual and the production-rate sap while red-or-worse
+	// cold. ColdStormOutdoorsPerMinuteX100==0 turns storm cold off entirely
+	// (nothing ever accrues; the off-switch posture).
+	ColdStormOutdoorsPerMinuteX100 int
+	ColdStormIndoorsPerMinuteX100  int
+	ColdNightMultiplierX100        int
+	ColdWarmRecoveryPerMinuteX100  int
+	ColdClearRecoveryPerMinuteX100 int
+	ColdProduceSapPct              int
+
+	// Hearth (LLM-412; hearth.go). A stoke consumes StokeWoodPerStoke firewood
+	// over StokeDurationSeconds and buys HearthBurnMinutesPerWood of fire per
+	// stick, banked at most HearthMaxBankMinutes ahead; a fire within
+	// HearthLowMinutes of out is "low" (cue + storm warrant + stoke gate).
+	HearthBurnMinutesPerWood int
+	HearthMaxBankMinutes     int
+	HearthLowMinutes         int
+	StokeWoodPerStoke        int
+	StokeDurationSeconds     int
+
 	// Farm upkeep wealth tax (LLM-215). Each game-day a farm-tagged producer's
 	// owner owes one upkeep shovel per FarmUpkeepCoinsPerShovel coins held above
 	// FarmUpkeepFloor, bought from the smith (the LLM-83 circulation lever). Stock-
@@ -1458,6 +1481,21 @@ func LoadWorld(ctx context.Context, repo Repository) (*World, error) {
 		return nil, err
 	}
 	w.Actors = actors
+	// Backfill any registry need missing from a loaded actor's rows (a need
+	// added after the actor's rows were first written — e.g. cold, LLM-412) so
+	// SnapshotNeeds never log-spams a missing key and the next checkpoint
+	// persists the new row. Zero is the correct seed for every need (fully
+	// sated / not cold).
+	for _, a := range w.Actors {
+		if a.Needs == nil {
+			a.Needs = make(map[NeedKey]int, len(Needs))
+		}
+		for _, n := range Needs {
+			if _, ok := a.Needs[n.Key]; !ok {
+				a.Needs[n.Key] = 0
+			}
+		}
+	}
 
 	huddles, err := repo.Huddles.LoadAll(ctx)
 	if err != nil {
@@ -2071,6 +2109,8 @@ func (w *World) republish() {
 		StallWearRepairThreshold:  w.Settings.StallWearRepairThreshold,
 		StallWearDegradeThreshold: w.Settings.StallWearDegradeThreshold,
 		StallNailsPerRepair:       w.Settings.StallNailsPerRepair,
+		HearthLowMinutes:          w.Settings.HearthLowMinutes,
+		StokeWoodPerStoke:         w.Settings.StokeWoodPerStoke,
 		FarmUpkeepFloor:           w.Settings.FarmUpkeepFloor,
 		FarmUpkeepCoinsPerShovel:  w.Settings.FarmUpkeepCoinsPerShovel,
 		MerchantCoinFloor:         w.Settings.MerchantCoinFloor,

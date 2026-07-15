@@ -43,6 +43,11 @@ const (
 	// StallRepairDurationSeconds, and completion resets the business's Wear to 0 so
 	// it trades again.
 	SourceActivityRepair SourceActivityKind = "repair"
+	// SourceActivityStoke is a keeper (or hired hand) feeding a structure's
+	// hearth fire (LLM-412): firewood is consumed at start, the window runs
+	// StokeDurationSeconds, and completion extends the hearth's HearthLitUntil
+	// so the structure is warm. The repair pattern with firewood for nails.
+	SourceActivityStoke SourceActivityKind = "stoke"
 )
 
 // Durations are tunable engine constants (Jeff approved eat ~3s / harvest ~5s
@@ -571,6 +576,29 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 			Continues:      false, // harvest never auto-repeats
 			At:             now,
 		})
+	case SourceActivityStoke:
+		// LLM-412: the stoke lands — the fire is fed. Bound to the object the
+		// window BEGAN at (act.ObjectID), for exactly the LLM-287 reason the
+		// repair completion is: StartStoke validated responsibility,
+		// co-location, and fuel at start AND consumed the firewood, and a
+		// hired stoker's job can settle inside the window — a paid-for stoke
+		// must land regardless of the hire's admin lifecycle. IsHearth is the
+		// cheap sanity guard against an object untagged mid-window. Qty
+		// carries the wood consumed at start.
+		hearth := w.VillageObjects[act.ObjectID]
+		if hearth == nil || !IsHearth(hearth) {
+			return
+		}
+		StokeFireOn(hearth, act.Qty, now, w.Settings.HearthBurnMinutesPerWood, w.Settings.HearthMaxBankMinutes)
+		w.emit(&SourceActivityCompleted{
+			ActorID:    actorID,
+			ObjectID:   act.ObjectID,
+			Kind:       act.Kind,
+			Qty:        act.Qty,
+			SourceName: sourceActivityObjectName(w, hearth),
+			Continues:  false,
+			At:         now,
+		})
 	case SourceActivityRepair:
 		// LLM-118 (owner), LLM-271 (hired worker): the mending lands — wear cleared,
 		// the stall trades again. Wear=0 re-arms the owner's edge-triggered warrant
@@ -753,6 +781,11 @@ func SourceActivityCompletionNarration(kind SourceActivityKind, item ItemKind, q
 		}
 	case SourceActivityRepair:
 		return "You finish mending your stall; it is sound again."
+	case SourceActivityStoke:
+		if sourceName != "" {
+			return fmt.Sprintf("You feed the fire at %s; it catches and burns strong, and the room warms.", sourceName)
+		}
+		return "You feed the fire; it catches and burns strong, and the room warms."
 	}
 	return ""
 }

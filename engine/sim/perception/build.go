@@ -343,6 +343,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	p.StallRepair = buildStallRepair(snap, actorID, actorSnap)
 	p.StallCondition = buildStallCondition(snap, actorID, actorSnap)
 	p.StallRepairBuy = buildStallRepairBuy(snap, actorID, actorSnap)
+	p.Hearth = buildHearth(snap, actorID, actorSnap)
 	p.FarmUpkeep = buildFarmUpkeep(snap, actorID, actorSnap)
 	// customerEngaged (LLM-90): the seller-side "someone's at my stall right now"
 	// signal — a buyer's pending offer awaiting my decision (PayOffersForMe), a
@@ -824,6 +825,7 @@ func buildActorView(snap *sim.Snapshot, a *sim.ActorSnapshot) ActorView {
 		Inventory:              buildInventoryView(snap, a),
 		HoursAwake:             computeHoursAwake(snap.LocalMinuteOfDay, a.ScheduleStartMin, a.ScheduleEndMin),
 		InFlightProduction:     buildInFlightProduction(snap, a),
+		Cold:                   buildColdSelf(snap, a),
 	}
 }
 
@@ -1711,6 +1713,12 @@ func buildWarrantPlaceNames(snap *sim.Snapshot, warrants []sim.WarrantMeta) map[
 			// LLM-271: hired-worker twin — name the employer's worn business the same
 			// way, so its warrant line can name the place the worker is mending.
 			put(string(r.StallID), resolveDwellPinLabel(snap, r.StallID))
+		case sim.HearthLowWarrantReason:
+			// LLM-412: name the structure whose fire wants wood, so the storm-time
+			// wake can say "the fire at your <name>."
+			put(string(r.HearthID), resolveDwellPinLabel(snap, r.HearthID))
+		case sim.HearthStokeHiredWarrantReason:
+			put(string(r.HearthID), resolveDwellPinLabel(snap, r.HearthID))
 		}
 	}
 	return names

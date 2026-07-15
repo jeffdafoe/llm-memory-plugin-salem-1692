@@ -211,6 +211,15 @@ func actorActionableRedNeed(w *World, a *Actor, now time.Time, nowMinute int) (N
 		if n.Key == "tiredness" && !actorOnShift(w, a, nowMinute) {
 			continue
 		}
+		// LLM-412: red cold only warrants while it is actively ACCRUING. An actor
+		// already in relief posture — indoors under a clear sky, or warming by a
+		// lit hearth — is recovering on the exposure sweep's schedule; waking them
+		// to "address" a need that is already mending is the take_break churn in a
+		// new coat. The rate predicate is the same one the sweep applies, so the
+		// warrant and the recovery can't disagree about which way cold is moving.
+		if n.Key == ColdNeedKey && coldRatePerMinuteX100(w, a, now) <= 0 {
+			continue
+		}
 		return n.Key, true
 	}
 	return "", false
@@ -296,6 +305,11 @@ func IncrementNeedsTick(cappedHours int) Command {
 					a.VisitorState == nil && a.WarrantedSince == nil && !a.TickInFlight
 
 				for _, n := range Needs {
+					// LLM-412: an externally-driven need (cold) never accrues on the
+					// clock — its own exposure sweep owns both directions of change.
+					if n.ExternallyDriven {
+						continue
+					}
 					if (sleeping || onBreak) && n.Key == "tiredness" {
 						continue // recovered by the sleep/break loop, not accrued here
 					}

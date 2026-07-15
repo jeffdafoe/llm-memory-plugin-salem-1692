@@ -41,6 +41,7 @@ func RegisterCoreTickers(w *World) {
 	w.RegisterTicker("phase", PhaseTickerInterval)
 	w.RegisterTicker("needs", NeedsTickerInterval)
 	w.RegisterTicker("tiredness_recovery", TirednessRecoveryTickerInterval)
+	w.RegisterTicker("cold", ColdTickerInterval)
 	w.RegisterTicker("sleep", SleepTickerInterval)
 	w.RegisterTicker("shift", ShiftTickerInterval)
 	w.RegisterTicker("dwell", DwellTickerInterval)

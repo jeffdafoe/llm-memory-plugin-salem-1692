@@ -90,15 +90,29 @@ func laboringHelperCount(w *World, employerID ActorID, workStructureID Structure
 
 // produceRateScalePct resolves the keeper's production-rate scale for this
 // tick: 100 (base rate) plus LaborProduceBoostPct per laboring helper at the
-// establishment. Sampled once per keeper per tick — the 1-min cadence bounds
-// how stale a mid-window hire/finish can read.
+// establishment, then sapped by ColdProduceSapPct while the keeper is
+// red-or-worse cold (LLM-412 — miserable and productivity-sapping, never
+// lethal). Sampled once per keeper per tick — the 1-min cadence bounds how
+// stale a mid-window hire/finish (or a warming-up keeper) can read.
 func produceRateScalePct(w *World, employerID ActorID, employer *Actor) int {
-	boostPct := w.Settings.LaborProduceBoostPct
-	if boostPct <= 0 {
-		return 100
+	scale := 100
+	if boostPct := w.Settings.LaborProduceBoostPct; boostPct > 0 {
+		scale += laboringHelperCount(w, employerID, employer.WorkStructureID) * boostPct
 	}
-	helpers := laboringHelperCount(w, employerID, employer.WorkStructureID)
-	return 100 + helpers*boostPct
+	if sap := w.Settings.ColdProduceSapPct; sap > 0 && sap < 100 && actorRedCold(w, employer) {
+		scale = scale * sap / 100
+	}
+	return scale
+}
+
+// actorRedCold reports whether the actor's cold sits at or past its red
+// threshold — the "works slower" line the production sap keys on. A missing
+// need row reads 0 (not cold).
+func actorRedCold(w *World, a *Actor) bool {
+	if a == nil || a.Needs == nil {
+		return false
+	}
+	return a.Needs[ColdNeedKey] >= w.Settings.NeedThresholds.Get(ColdNeedKey)
 }
 
 // ProduceEvent records one LANDED production batch for the recent-production
@@ -340,9 +354,11 @@ func ApplyProduceTick(now time.Time) Command {
 				// so a helper hired mid-batch speeds the remainder. Rounded
 				// division so a non-multiple-of-100 scale (the knob is
 				// configurable) doesn't shed a fraction of a second every tick
-				// (~48s/h at 133% — code_review).
+				// (~48s/h at 133% — code_review). LLM-412: the scale can now also
+				// dip BELOW 100 (a red-cold keeper works at ColdProduceSapPct), so
+				// apply on any deviation from base, not just a boost.
 				credit := elapsed
-				if scale := produceRateScalePct(w, actorID, actor); scale > 100 {
+				if scale := produceRateScalePct(w, actorID, actor); scale != 100 && scale > 0 {
 					credit = (elapsed*int64(scale) + 50) / 100
 				}
 				act.RemainingSeconds -= credit

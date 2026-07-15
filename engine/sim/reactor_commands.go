@@ -1011,6 +1011,20 @@ func hasHiredRepairWarrant(list []WarrantMeta) bool {
 	return false
 }
 
+// hasHiredHearthWarrant is the hearth twin of hasHiredRepairWarrant (LLM-412):
+// the laboring shelve-gate uses it to let a worker hired at an employer whose
+// hearth wants stoking during a storm draw one tick to feed the fire. Scoped
+// to the hired kind, NOT the owner's WarrantKindHearthLow, for the same reason
+// as the repair predicate.
+func hasHiredHearthWarrant(list []WarrantMeta) bool {
+	for _, m := range list {
+		if m.Reason != nil && m.Reason.Kind() == WarrantKindHearthStokeHired {
+			return true
+		}
+	}
+	return false
+}
+
 // hasReturnToPostWarrant reports whether any meta is a return-to-post impulse
 // (WarrantKindReturnToPost). The laboring tick-shelve (actorCanReactNow, LLM-268)
 // uses it to wake an off-post worker so she walks back — deliberately its own

@@ -174,6 +174,16 @@ type Snapshot struct {
 	StallWearDegradeThreshold int
 	StallNailsPerRepair       int
 
+	// Hearth knobs (LLM-412) mirror the WorldSettings values so the hearth
+	// cue, the stoke-tool gate, and the cold relief steer classify a fire
+	// ("low", "out", wood per stoke) on the SAME boundaries the engine
+	// enforces — pure over the snapshot, using PublishedAt as the clock. A
+	// directly-constructed test snapshot that omits HearthLowMinutes treats
+	// only an OUT fire as needing stoking (HearthNeedsStoking's non-positive
+	// lowMinutes rule).
+	HearthLowMinutes  int
+	StokeWoodPerStoke int
+
 	// FarmUpkeepFloor / FarmUpkeepCoinsPerShovel mirror the WorldSettings knobs
 	// (LLM-215) so the owner upkeep cue derives the shovel obligation
 	// (FarmUpkeepObligation) on the SAME values assessFarmUpkeep enforces, pure over

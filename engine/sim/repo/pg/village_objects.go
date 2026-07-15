@@ -55,7 +55,8 @@ const loadAllSQLVO = `
 SELECT
     id, asset_id, current_state, x, y, placed_by, display_name,
     entry_policy, owner_actor_id, attached_to,
-    loiter_offset_x, loiter_offset_y, available_quantity, tags, wear
+    loiter_offset_x, loiter_offset_y, available_quantity, tags, wear,
+    hearth_lit_until
 FROM village_object`
 
 // upsertSQLVO writes one VillageObject row. snapshot_gen is included
@@ -77,12 +78,12 @@ INSERT INTO village_object (
     id, asset_id, current_state, x, y, placed_by, display_name,
     entry_policy, owner_actor_id, attached_to,
     loiter_offset_x, loiter_offset_y, available_quantity, tags,
-    wear, snapshot_gen
+    wear, hearth_lit_until, snapshot_gen
 ) VALUES (
     $1::uuid, $2::uuid, $3, $4, $5, $6, $7,
     $8, $9, $10::uuid,
     $11, $12, $13, $14,
-    $15, $16
+    $15, $16, $17
 )
 ON CONFLICT (id) DO UPDATE SET
     asset_id           = EXCLUDED.asset_id,
@@ -99,6 +100,7 @@ ON CONFLICT (id) DO UPDATE SET
     available_quantity = EXCLUDED.available_quantity,
     tags               = EXCLUDED.tags,
     wear               = EXCLUDED.wear,
+    hearth_lit_until   = EXCLUDED.hearth_lit_until,
     snapshot_gen       = EXCLUDED.snapshot_gen`
 
 // deleteStaleSQLVO prunes village_object rows whose snapshot_gen is
@@ -141,6 +143,15 @@ SELECT COUNT(*) FROM village_object fresh
 // persistent across restart, and avoids cross-aggregate coordination
 // at checkpoint time.
 const nextGenSQLVO = `SELECT nextval('village_object_snapshot_gen_seq')`
+
+// timeOrZero unwraps a nullable timestamp scan target: NULL → the zero time
+// (the in-memory "never" convention, e.g. VillageObject.HearthLitUntil).
+func timeOrZero(t *time.Time) time.Time {
+	if t == nil {
+		return time.Time{}
+	}
+	return t.UTC()
+}
 
 // advisoryLockSQLVO is the **single global lock for the village_object
 // snapshot** — held for the Tx duration (released automatically on
@@ -327,25 +338,27 @@ func (r *VillageObjectsRepo) LoadAll(ctx context.Context) (map[sim.VillageObject
 	out := make(map[sim.VillageObjectID]*sim.VillageObject)
 	for rows.Next() {
 		var (
-			id           string
-			assetID      *string // nullable in baseline; required in-memory (validated below)
-			currentState string
-			x, y         float64
-			placedBy     *string // nullable in baseline; required in-memory (validated below)
-			displayName  *string // nullable in baseline; required in-memory (validated below)
-			entryPolicy  string
-			ownerActorID *string // NULL when no owner
-			attachedTo   *string // NULL when not an overlay
-			loiterX      *int
-			loiterY      *int
-			availableQty int
-			tags         []string
-			wear         int
+			id             string
+			assetID        *string // nullable in baseline; required in-memory (validated below)
+			currentState   string
+			x, y           float64
+			placedBy       *string // nullable in baseline; required in-memory (validated below)
+			displayName    *string // nullable in baseline; required in-memory (validated below)
+			entryPolicy    string
+			ownerActorID   *string // NULL when no owner
+			attachedTo     *string // NULL when not an overlay
+			loiterX        *int
+			loiterY        *int
+			availableQty   int
+			tags           []string
+			wear           int
+			hearthLitUntil *time.Time // NULL when the fire has never been lit (zero time in-memory)
 		)
 		if err := rows.Scan(
 			&id, &assetID, &currentState, &x, &y, &placedBy, &displayName,
 			&entryPolicy, &ownerActorID, &attachedTo,
 			&loiterX, &loiterY, &availableQty, &tags, &wear,
+			&hearthLitUntil,
 		); err != nil {
 			return nil, fmt.Errorf("pg village_objects LoadAll scan: %w", err)
 		}
@@ -402,6 +415,7 @@ func (r *VillageObjectsRepo) LoadAll(ctx context.Context) (map[sim.VillageObject
 			Tags:              tags,
 			AvailableQuantity: availableQty,
 			Wear:              wear,
+			HearthLitUntil:    timeOrZero(hearthLitUntil),
 			// Refreshes populated below by loadAllRefreshes.
 		}
 	}
@@ -586,6 +600,12 @@ func (r *VillageObjectsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, object
 		if tags == nil {
 			tags = []string{}
 		}
+		// hearth_lit_until: zero time → NULL (never lit / not a hearth), so
+		// the column stays NULL for the overwhelmingly common non-hearth row.
+		var hearthArg any
+		if !obj.HearthLitUntil.IsZero() {
+			hearthArg = obj.HearthLitUntil
+		}
 		if _, err := tx.Exec(ctx, upsertSQLVO,
 			string(obj.ID),          // $1 id (UUID)
 			string(obj.AssetID),     // $2 asset_id (UUID)
@@ -602,7 +622,8 @@ func (r *VillageObjectsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, object
 			obj.AvailableQuantity,   // $13 available_quantity
 			tags,                    // $14 tags (text[])
 			obj.Wear,                // $15 wear
-			gen,                     // $16 snapshot_gen
+			hearthArg,               // $16 hearth_lit_until (nullable — NULL for a never-lit fire)
+			gen,                     // $17 snapshot_gen
 		); err != nil {
 			return fmt.Errorf("pg village_objects SaveSnapshot: upsert id=%s: %w", obj.ID, err)
 		}

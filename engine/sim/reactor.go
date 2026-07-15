@@ -77,6 +77,8 @@ const (
 	WarrantKindTendNeed           WarrantKind = "tend_need"            // engine-authored felt impulse: a workless idle worker has grown hungry/thirsty and can resolve it now — go eat/drink instead of hunting odd jobs (LLM-276)
 	WarrantKindAtEase             WarrantKind = "at_ease"              // engine-authored felt impulse: a comfortable (coin-rich) workless idle worker has nothing pressing — take its ease, a plain idle villager (LLM-352, the LLM-194 "later lever")
 	WarrantKindVisitorRounds      WarrantKind = "visitor_rounds"       // engine-paced beat for a stationary traveler on his rounds — wake him to choose his next stop (move_to) off the rendered situation; the engine no longer picks his destination (LLM-379)
+	WarrantKindHearthLow          WarrantKind = "hearth_low"           // a storm is running and the owner's hearth fire is out/low — wake them to stoke it (LLM-412)
+	WarrantKindHearthStokeHired   WarrantKind = "hearth_stoke_hired"   // a hired worker started on-post during a storm at an employer whose hearth wants stoking — wake them, piercing the laboring shelve-gate (LLM-412)
 	WarrantKindUnfinishedIntent   WarrantKind = "unfinished_intent"    // the actor's own batch queued a commit call AFTER a terminal one — the harness dropped it, so re-tick promptly to let the actor finish what it meant to do (LLM-414)
 )
 
@@ -1232,6 +1234,10 @@ func actorCanReactNow(w *World, a *Actor, now time.Time) (eligible bool, stale b
 			hasOperatorNudgeWarrant(a.Warrants) ||
 			hasPCSpeechWarrant(a.Warrants) ||
 			hasHiredRepairWarrant(a.Warrants) ||
+			// LLM-412: the hired hearth wake — a worker hired at an employer
+			// whose fire wants wood during a storm draws a tick to stoke it,
+			// same one-shot posture as the hired repair wake above.
+			hasHiredHearthWarrant(a.Warrants) ||
 			// LLM-268: a return-to-post impulse lifts the shelve so an off-post
 			// worker actually wakes to walk back. Kept in lockstep with the
 			// tool surface — gateTools re-grants move_to for the off-post
