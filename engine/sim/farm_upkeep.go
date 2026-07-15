@@ -59,7 +59,9 @@ func OwnedFarm(objects map[VillageObjectID]*VillageObject, ownerID ActorID) *Vil
 		return nil
 	}
 	for _, obj := range objects {
-		if obj.OwnerActorID == ownerID && IsFarmStructure(obj) {
+		// nil-safe: also runs over hand-built perception/test maps where a stray
+		// nil entry must not panic the world (LLM-417; same guard as OwnedHearth).
+		if obj != nil && obj.OwnerActorID == ownerID && IsFarmStructure(obj) {
 			return obj
 		}
 	}

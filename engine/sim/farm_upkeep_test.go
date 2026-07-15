@@ -157,6 +157,10 @@ func TestFarmPredicates(t *testing.T) {
 	if got := OwnedFarm(objects, "nobody"); got != nil {
 		t.Errorf("OwnedFarm for a non-owner = %v, want nil", got)
 	}
+	// A stray nil map entry must be skipped, not panic the world goroutine (LLM-417).
+	if got := OwnedFarm(map[VillageObjectID]*VillageObject{"nil": nil}, "elizabeth"); got != nil {
+		t.Errorf("OwnedFarm over a nil-only map = %v, want nil", got)
+	}
 }
 
 func TestSetFarmUpkeepSettings_Validation(t *testing.T) {
