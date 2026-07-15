@@ -13113,3 +13113,191 @@ func TestGoldensLingeringNeverClaimsFruitlessness(t *testing.T) {
 		t.Errorf("a lingering conversation should be steered to a graceful close.\nprompt:\n%s", got)
 	}
 }
+
+// dwellPinnedEaterInn rebuilds the LLM-416 Inn scene: the same over-long huddle as
+// lingeringInnConversation, but the subject (Lewis) is mid item-dwell — eating a
+// bowl of porridge at the Inn, four ticks from finishing, so his dwell self-cue
+// tells him leaving now wastes it. `coda` selects which wind-down flag the
+// classifier has raised on him ("runlong" or "lingering"); `pinned` toggles the
+// dwell so a caller can compare the pinned scene against the identical un-pinned
+// control. `subjectID` lets the same scene be rendered from the eater's POV (Lewis,
+// Lever A) or an onlooker's (Hannah, Lever B). Fixed clock + timestamps → byte-stable.
+func dwellPinnedEaterInn(coda string, pinned bool, subjectID sim.ActorID) func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+		const (
+			lewisID   = sim.ActorID("lewis")
+			hannahID  = sim.ActorID("hannah")
+			silenceID = sim.ActorID("silence")
+			inn       = sim.StructureID("the_inn")
+			innPin    = sim.VillageObjectID("the_inn")
+			huddleID  = sim.HuddleID("inn_huddle")
+		)
+		noon := 750 // 12:30
+		published := time.Date(2026, 7, 15, 12, 40, 0, 0, time.UTC)
+		remaining := 4
+
+		lewis := &sim.ActorSnapshot{
+			Kind:              sim.KindNPCStateful,
+			DisplayName:       "Lewis Walker",
+			State:             sim.StateIdle,
+			Pos:               sim.TilePos{X: 10, Y: 10},
+			InsideStructureID: inn,
+			CurrentHuddleID:   huddleID,
+			Coins:             4,
+			Needs:             map[sim.NeedKey]int{"hunger": 6},
+			Acquaintances: map[string]sim.Acquaintance{
+				"Hannah Boggs":   {},
+				"Silence Walker": {},
+			},
+		}
+		switch coda {
+		case "runlong":
+			lewis.ConversationRunLong = true
+		case "lingering":
+			lewis.ConversationLingering = true
+		}
+		if pinned {
+			// Standing on the Inn pin with an item dwell keyed to it — the
+			// co-location gate in buildActiveDwellCredits passes, so the eating
+			// self-cue renders and midItemDwell suppresses the leave coda.
+			lewis.CurrentLoiterObjectID = innPin
+			lewis.DwellCredits = map[sim.DwellCreditKey]*sim.DwellCredit{
+				{ObjectID: innPin, Attribute: "hunger", Source: sim.DwellSourceItem}: {
+					ObjectID:           innPin,
+					Kind:               "porridge",
+					Attribute:          "hunger",
+					Source:             sim.DwellSourceItem,
+					LastCreditedAt:     published.Add(-2 * time.Minute),
+					RemainingTicks:     &remaining,
+					DwellDelta:         -1,
+					DwellPeriodMinutes: 2,
+				},
+			}
+		}
+
+		hannah := &sim.ActorSnapshot{
+			Kind:              sim.KindNPCStateful,
+			DisplayName:       "Hannah Boggs",
+			Role:              "innkeeper",
+			State:             sim.StateIdle,
+			Pos:               sim.TilePos{X: 11, Y: 10},
+			InsideStructureID: inn,
+			CurrentHuddleID:   huddleID,
+			Coins:             30,
+			Needs:             map[sim.NeedKey]int{},
+			Acquaintances: map[string]sim.Acquaintance{
+				"Lewis Walker":   {},
+				"Silence Walker": {},
+			},
+		}
+		silence := &sim.ActorSnapshot{
+			Kind:              sim.KindNPCStateful,
+			DisplayName:       "Silence Walker",
+			State:             sim.StateIdle,
+			Pos:               sim.TilePos{X: 10, Y: 11},
+			InsideStructureID: inn,
+			CurrentHuddleID:   huddleID,
+			Coins:             6,
+			Needs:             map[sim.NeedKey]int{},
+		}
+
+		ring := []sim.Utterance{
+			{SpeakerID: hannahID, SpeakerName: "Hannah Boggs", At: published.Add(-2 * time.Minute),
+				Text: "Take your ease — there's no rush to leave a warm bowl."},
+		}
+
+		snap := &sim.Snapshot{
+			PublishedAt:      published,
+			LocalMinuteOfDay: &noon,
+			NeedThresholds:   sim.NeedThresholds{},
+			Assets:           emptyAssetSet,
+			Actors: map[sim.ActorID]*sim.ActorSnapshot{
+				lewisID: lewis, hannahID: hannah, silenceID: silence,
+			},
+			Structures: map[sim.StructureID]*sim.Structure{inn: plainStructure(inn, "The Inn")},
+			Huddles: map[sim.HuddleID]*sim.Huddle{
+				huddleID: {
+					ID:               huddleID,
+					Members:          map[sim.ActorID]struct{}{lewisID: {}, hannahID: {}, silenceID: {}},
+					RecentUtterances: ring,
+				},
+			},
+		}
+		// Hannah has just spoken — the reply pressure the wind-down otherwise
+		// overrides. Present so the scene matches the live one that motivated the fix.
+		warrants := []sim.WarrantMeta{{
+			TriggerActorID: hannahID,
+			SourceEventID:  1,
+			OccurredAt:     published.Add(-2 * time.Minute),
+			HuddleID:       huddleID,
+			Reason: sim.NPCSpeechWarrantReason{
+				SpeechID: 1,
+				Speaker:  hannahID,
+				Excerpt:  "Take your ease — there's no rush to leave a warm bowl.",
+			},
+		}}
+		return snap, subjectID, warrants
+	}
+}
+
+// TestGoldenDwellPinnedEaterNoLeaveCoda is the LLM-416 property guard (Lever A) and
+// its cross-scenario invariant: a subject mid item-dwell — eating a bought meal it
+// would waste by leaving — must NOT be handed a wind-down "leave" coda it cannot
+// obey. That contradiction (dwell self-cue "don't leave or you waste it" vs. coda
+// "bring it to a close") is what drove the live Inn farewell storm (2026-07-15).
+// Checked across the whole wind-down matrix (both run-long and lingering), each
+// pinned (coda suppressed) and un-pinned (coda present) so the test proves the
+// dwell is what suppresses it, not the scene shape.
+func TestGoldenDwellPinnedEaterNoLeaveCoda(t *testing.T) {
+	cases := []struct {
+		coda      string
+		leaveLine string
+	}{
+		{"runlong", "Bring it to a close"},
+		{"lingering", "Let the conversation come to its natural end"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.coda, func(t *testing.T) {
+			pinned := renderScenario(perceptionScenario{
+				name:  "dwell_eater_" + tc.coda + "_pinned",
+				build: dwellPinnedEaterInn(tc.coda, true, "lewis"),
+			})
+			if !strings.Contains(pinned, "porridge") {
+				t.Fatalf("precondition: the pinned eater must perceive its own active meal.\nprompt:\n%s", pinned)
+			}
+			if strings.Contains(pinned, tc.leaveLine) {
+				t.Errorf("a dwell-pinned eater must NOT get the %s leave coda %q — it cannot leave without wasting its meal.\nprompt:\n%s", tc.coda, tc.leaveLine, pinned)
+			}
+			// Absence of the leave line is not enough — prove the fall-through lands on
+			// the benign decision coda, not a leave/close or reply-pressure line. Here
+			// the subject owes Hannah a reply (AwaitingReplyFrom empty → AwaitingReply()
+			// false), so it deterministically hits the default "choose one action …
+			// done()" coda, which permits eating on in silence.
+			if !strings.Contains(pinned, "Choose one action, then call done()") {
+				t.Errorf("a dwell-pinned eater should fall through to the benign decision coda (a silent done() is permitted), not a leave or reply-pressure line.\nprompt:\n%s", pinned)
+			}
+
+			control := renderScenario(perceptionScenario{
+				name:  "dwell_eater_" + tc.coda + "_control",
+				build: dwellPinnedEaterInn(tc.coda, false, "lewis"),
+			})
+			if !strings.Contains(control, tc.leaveLine) {
+				t.Errorf("control (no dwell): the %s wind-down leave coda %q should render when the subject is NOT pinned — else this guard proves nothing.\nprompt:\n%s", tc.coda, tc.leaveLine, control)
+			}
+		})
+	}
+}
+
+// TestGoldenObserverSeesEatingPeer is the LLM-416 Lever B guard: an onlooker huddled
+// with a mid-meal peer must see, in "## Around you", that the peer is eating — so a
+// proprietor reads a lingering diner as still at their meal rather than as someone
+// about to leave (the loop's other half). Rendered from Hannah's POV.
+func TestGoldenObserverSeesEatingPeer(t *testing.T) {
+	got := renderScenario(perceptionScenario{
+		name:  "observer_sees_eating_peer",
+		build: dwellPinnedEaterInn("lingering", true, "hannah"),
+	})
+	if !strings.Contains(got, "Lewis Walker") || !strings.Contains(got, "(eating porridge just now)") {
+		t.Errorf("an observer should see a co-present eater annotated as eating in ## Around you.\nprompt:\n%s", got)
+	}
+}
