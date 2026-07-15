@@ -553,30 +553,53 @@ func summonPointDestination(w *World, pointID VillageObjectID) (MoveDestination,
 // world goroutine during emit; advances the matching errand leg. Non-arrival
 // events and arrivals for actors in no errand fall through.
 //
-// Two matching regimes (LLM-414): the summoner/messenger legs are engine-
-// dispatched walks, so they match on the tracked MovementAttemptID; the
-// awaiting_target leg is the target's OWN model-chosen move_to, whose attempt
-// id the errand never sees — it matches on DESTINATION instead (the target
-// arriving at the meet structure). A target arrival anywhere else is a
-// choice, not an answer, and is ignored.
+// Two matching regimes (LLM-414), processed INDEPENDENTLY — one arrival can
+// legitimately serve both (an actor that is the target of one errand and the
+// summoner of another):
+//
+//   - The awaiting_target leg is the target's OWN model-chosen move_to, whose
+//     attempt id the errand never sees — it matches on DESTINATION instead,
+//     scanning EVERY errand awaiting this actor at the arrived structure
+//     (first-match resolution dropped valid arrivals when the same target
+//     carried a second, non-awaiting summons — code_review). A target
+//     arriving at the meet place for ANY reason completes the meeting by
+//     design: the summons asked them to come, and they are physically there;
+//     the errand-scoped cue clear + idempotent huddle join make a
+//     coincidental arrival harmless. A target arrival anywhere else is a
+//     choice, not an answer, and is ignored.
+//
+//   - The summoner/messenger legs are engine-dispatched walks matching on the
+//     tracked MovementAttemptID. First-match resolution is safe THERE: the
+//     one-errand-per-summoner and one-errand-per-messenger guards make a
+//     second simultaneous match impossible.
 func handleSummonArrival(w *World, evt Event) {
 	arrived, ok := evt.(*ActorArrived)
 	if !ok {
 		return
 	}
+	now := arrived.At
+
+	// Target-role arrivals: complete every errand awaiting this actor at
+	// this destination. Collect first (finishErrand mutates the map), sort
+	// for determinism, then complete.
+	if arrived.DestStructureID != "" {
+		var met []*summonErrand
+		for _, e := range w.SummonErrands {
+			if e == nil || e.State != summonAwaitingTarget {
+				continue
+			}
+			if e.TargetID == arrived.ActorID && e.MeetStructureID == arrived.DestStructureID {
+				met = append(met, e)
+			}
+		}
+		sort.Slice(met, func(i, j int) bool { return met[i].ID < met[j].ID })
+		for _, e := range met {
+			completeSummonMeeting(w, e, now)
+		}
+	}
+
 	e, role := errandForArrival(w, arrived.ActorID)
 	if e == nil {
-		return
-	}
-	now := arrived.At
-	if role == summonRoleTarget {
-		if e.State != summonAwaitingTarget {
-			return
-		}
-		if e.MeetStructureID == "" || arrived.DestStructureID != e.MeetStructureID {
-			return
-		}
-		completeSummonMeeting(w, e, now)
 		return
 	}
 	// Stale-arrival guard: only the leg we dispatched advances the machine.
@@ -612,14 +635,14 @@ const (
 	summonRoleNone summonRole = iota
 	summonRoleSummoner
 	summonRoleMessenger
-	summonRoleTarget
 )
 
-// errandForArrival finds the active errand an arriving actor participates in
-// and which role it plays. Returns nil when the actor is in no errand. The
-// target role only matters while the errand awaits it, but resolution stays
-// unconditional and the state check lives in the caller — one place decides
-// what a state does with an arrival.
+// errandForArrival finds the active errand an arriving actor DRIVES a
+// tracked walk leg for — as summoner or messenger. Returns nil when the
+// actor drives no leg. First-match is safe: summonerHasActiveErrand and
+// messengerIsBusy each cap an actor to one errand in that role. The target
+// role is deliberately NOT resolved here — a target can be awaited by
+// several errands at once, so the caller scans those exhaustively instead.
 func errandForArrival(w *World, actorID ActorID) (*summonErrand, summonRole) {
 	for _, e := range w.SummonErrands {
 		if e == nil {
@@ -630,9 +653,6 @@ func errandForArrival(w *World, actorID ActorID) (*summonErrand, summonRole) {
 		}
 		if e.MessengerID != "" && e.MessengerID == actorID {
 			return e, summonRoleMessenger
-		}
-		if e.TargetID == actorID {
-			return e, summonRoleTarget
 		}
 	}
 	return nil, summonRoleNone

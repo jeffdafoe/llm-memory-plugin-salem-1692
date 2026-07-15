@@ -807,6 +807,86 @@ func TestSummonErrand_TTLClearsCueAndRecordsOutcome(t *testing.T) {
 	}
 }
 
+// driveToAwaiting runs an errand from dispatched through delivery so it parks
+// in awaiting_target: summoner to the point, messenger to the point,
+// commission, messenger to the target, deliver.
+func driveToAwaiting(t *testing.T, w *sim.World, id sim.ErrandID, summoner, courier sim.ActorID) {
+	t.Helper()
+	arriveLeg(t, w, id, summoner)
+	arriveLeg(t, w, id, courier)
+	runCommission(t, w, id)
+	arriveLeg(t, w, id, courier)
+	runDeliver(t, w, id)
+	if st, _ := errandState(t, w, id); st != stAwaitingTarget {
+		t.Fatalf("errand %d state %q, want %q", id, st, stAwaitingTarget)
+	}
+}
+
+// addActor seeds an extra actor into the running world.
+func addActor(t *testing.T, w *sim.World, a *sim.Actor) {
+	t.Helper()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors[a.ID] = a
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("add actor %q: %v", a.ID, err)
+	}
+}
+
+// TestSummonTargetArrival_MultipleErrands — the code_review blocker. Two
+// active summons for the same target: an OLDER one still stalled at
+// `dispatched` and a NEWER one in `awaiting_target`. First-match errand
+// resolution could return the stalled one and drop the valid arrival (map
+// iteration order is unstable, so it failed nondeterministically). The
+// target-role scan must examine every errand: the arrival completes exactly
+// the awaiting errand and leaves the stalled one untouched.
+func TestSummonTargetArrival_MultipleErrands(t *testing.T) {
+	w, cancel := buildSummonWorld(t)
+	defer cancel()
+
+	// Older errand: claims the courier, never advances past dispatched.
+	idOld := dispatchSummon(t, w, "summoner", "target", "")
+
+	// Newer errand from a second summoner with its own courier.
+	addActor(t, w, &sim.Actor{ID: "summoner2", DisplayName: "Reverend Hale", LLMAgent: "va-hale", Pos: sim.TilePos{X: sim.PadX, Y: sim.PadY + 2}})
+	addActor(t, w, &sim.Actor{ID: "courier2", DisplayName: "the girl", Pos: sim.TilePos{X: sim.PadX + 2, Y: sim.PadY}, Attributes: map[string][]byte{sim.AttrMessenger: {}}})
+	idNew := dispatchSummon(t, w, "summoner2", "target", "")
+	driveToAwaiting(t, w, idNew, "summoner2", "courier2")
+
+	// The target answers the newer summons.
+	arriveTargetAt(t, w, "target", "square")
+
+	if _, ok := errandState(t, w, idNew); ok {
+		t.Error("awaiting errand not completed by the target's arrival (first-match resolution dropped it)")
+	}
+	if st, ok := errandState(t, w, idOld); !ok || st != stDispatched {
+		t.Errorf("stalled errand = (%q, ok=%v), want untouched at %q", st, ok, stDispatched)
+	}
+	if n := errandCount(t, w); n != 1 {
+		t.Errorf("errand count = %d, want 1 (only the awaiting errand completes)", n)
+	}
+}
+
+// TestSummonMessengerFreedAtDelivery_Reusable — the messenger is released at
+// delivery, while the first errand still awaits its target: a second summon
+// dispatched right then must be able to select the same courier.
+func TestSummonMessengerFreedAtDelivery_Reusable(t *testing.T) {
+	w, cancel := buildSummonWorld(t)
+	defer cancel()
+
+	id1 := dispatchSummon(t, w, "summoner", "target", "")
+	driveToAwaiting(t, w, id1, "summoner", "courier")
+
+	addActor(t, w, &sim.Actor{ID: "summoner2", DisplayName: "Reverend Hale", LLMAgent: "va-hale", Pos: sim.TilePos{X: sim.PadX, Y: sim.PadY + 2}})
+	id2 := dispatchSummon(t, w, "summoner2", "target", "")
+	if m := messengerOf(t, w, id2); m != "courier" {
+		t.Fatalf("second errand's messenger = %q, want the courier freed at the first delivery", m)
+	}
+	if n := errandCount(t, w); n != 2 {
+		t.Fatalf("errand count = %d, want 2 (awaiting + fresh)", n)
+	}
+}
+
 // TestDispatchSummon_SayBeatBestEffort — LLM-414. A dispatch carrying a say
 // beat still succeeds when the speak is rejected (the summoner is alone —
 // no audience), and the say never blocks the errand. The beat itself riding
