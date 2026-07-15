@@ -5240,7 +5240,10 @@ func TestRepairReserveLineOnlyForOwnerWithMendAndNails(t *testing.T) {
 // (code_review), and both directions are guarded — an item with neither an
 // observed rate nor a catalog price must not conjure either clause. A fixture
 // that owes an anchor but renders no Restocking section at all fails too (the
-// anchor can't render if the section disappears).
+// anchor can't render if the section disappears), as does an owed item whose
+// LINE never renders; and a fixture whose duplicate display labels would make
+// per-line attribution ambiguous is itself an error to fix, not a case to skip
+// (code_review — the old silent skip let a missing clause hide behind a twin).
 func TestRestockBuyAnchorRendersWhenRateKnown(t *testing.T) {
 	const marker = "above that and you're overpaying"
 	// The margin verdict's three buy-rate phrasings (one per tier). Any of them
@@ -5274,7 +5277,7 @@ func TestRestockBuyAnchorRendersWhenRateKnown(t *testing.T) {
 				tier restockMarginTier
 			}
 			expectByLabel := map[string]buyRateExpectation{}
-			labelAmbiguous := map[string]bool{}
+			owedByLabel := map[string]bool{}
 			if subj != nil && subj.RestockPolicy != nil {
 				floors := sim.ReorderFloors(snap.Recipes, subj.RestockPolicy)
 				for _, e := range sim.EffectiveBuyEntries(snap.Recipes, subj.RestockPolicy) {
@@ -5297,8 +5300,13 @@ func TestRestockBuyAnchorRendersWhenRateKnown(t *testing.T) {
 					}
 					exp := buyRateExpectation{rate: rate, tier: restockMarginTierOf(rate, resale)}
 					label := itemDisplayLabel(snap, e.Item)
+					// Rendered item lines carry only the display label, so two kinds
+					// sharing a label with differing expectations would make the
+					// per-line check unattributable. Silently skipping such labels let
+					// a missing clause hide behind its twin (code_review), so an
+					// ambiguous fixture is an error to fix, not a case to tolerate.
 					if prev, ok := expectByLabel[label]; ok && ((prev.rate > 0) != (rate > 0) || prev.tier != exp.tier) {
-						labelAmbiguous[label] = true // two kinds share a label with differing expectations — per-line check skips it
+						t.Fatalf("scenario %q: two buy entries share display label %q with differing buy-rate expectations — disambiguate the fixture so the per-line check can attribute clauses (LLM-292/LLM-427)", sc.name, label)
 					}
 					expectByLabel[label] = exp
 					if !sim.RestockReorderThresholdMet(subj.Inventory[e.Item], e.Cap(), snap.RestockReorderPct, floors[e.Item]) {
@@ -5317,6 +5325,7 @@ func TestRestockBuyAnchorRendersWhenRateKnown(t *testing.T) {
 						continue // conserve mode replaces the item line — no anchor owed (LLM-294)
 					}
 					want = true
+					owedByLabel[label] = true // a full item line must render AND carry this label's clause
 				}
 			}
 			_, section, found := strings.Cut(renderScenario(sc), "## Restocking\n")
@@ -5329,15 +5338,12 @@ func TestRestockBuyAnchorRendersWhenRateKnown(t *testing.T) {
 			if idx := strings.Index(section, "\n## "); idx >= 0 {
 				section = section[:idx]
 			}
-			// An owed corrective rate must surface SOMEWHERE — as the lone anchor's
-			// overpay guard or inside a margin verdict. The reverse direction (a
-			// clause conjured where none is owed) is checked per line below.
-			if want && !strings.Contains(section, marker) && !hasMarginVerdict(section) {
-				t.Errorf("scenario %q: an anchor-owing buy entry exists but no corrective buy-rate clause rendered (LLM-292/LLM-427)", sc.name)
-			}
 			// Per-line attachment: every full item line ("- You have N <label> on
 			// hand…") carries the clause its own rates owe. Bide steers and the
 			// walk-to sub-bullets don't match the prefix and are skipped by design.
+			// seenByLabel closes the other gap (code_review): an owed item whose line
+			// never renders at all would otherwise slip past a per-line-only check.
+			seenByLabel := map[string]bool{}
 			for _, line := range strings.Split(section, "\n") {
 				rest, ok := strings.CutPrefix(line, "- You have ")
 				if !ok {
@@ -5349,9 +5355,10 @@ func TestRestockBuyAnchorRendersWhenRateKnown(t *testing.T) {
 				}
 				label := strings.TrimLeft(head, "0123456789 ")
 				exp, known := expectByLabel[label]
-				if !known || labelAmbiguous[label] {
-					continue // not one of the effective entries (or ambiguous label) — nothing to assert
+				if !known {
+					continue // not one of the effective entries — nothing to assert
 				}
+				seenByLabel[label] = true
 				switch {
 				case exp.tier != marginUnknown:
 					// Both rates known — the margin verdict carries the buy rate, and
@@ -5372,6 +5379,14 @@ func TestRestockBuyAnchorRendersWhenRateKnown(t *testing.T) {
 					if strings.Contains(line, marker) || hasMarginVerdict(line) {
 						t.Errorf("scenario %q: item line %q conjures a buy-rate clause for an unpriced item (LLM-292)", sc.name, line)
 					}
+				}
+			}
+			// Every entry that owes a clause must have rendered a full item line the
+			// loop above could check — a section that silently drops an owed item
+			// would otherwise pass on absence (code_review).
+			for label := range owedByLabel {
+				if !seenByLabel[label] {
+					t.Errorf("scenario %q: item %q owes a buy-rate clause but no '- You have … %s on hand' line rendered (LLM-292)", sc.name, label, label)
 				}
 			}
 		})

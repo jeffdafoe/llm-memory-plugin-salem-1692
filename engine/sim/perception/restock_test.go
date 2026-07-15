@@ -1219,6 +1219,50 @@ func TestRenderRestocking_DemandAndMarginClauses(t *testing.T) {
 	}
 }
 
+// TestRestockDemandTierOf pins the demand cutoffs at their exact boundaries
+// (code_review): non-positive is silent, a unit a day at most is slow, roughly
+// three a day or better is brisk, steady the band between. The cutoffs read
+// against restockSalesWindow (a literal week) — retune them together.
+func TestRestockDemandTierOf(t *testing.T) {
+	cases := []struct {
+		units int
+		want  restockDemandTier
+	}{
+		{-1, demandSilent}, {0, demandSilent},
+		{1, demandSlow}, {7, demandSlow},
+		{8, demandSteady}, {20, demandSteady},
+		{21, demandBrisk}, {100, demandBrisk},
+	}
+	for _, c := range cases {
+		if got := restockDemandTierOf(c.units); got != c.want {
+			t.Errorf("restockDemandTierOf(%d) = %v, want %v", c.units, got, c.want)
+		}
+	}
+}
+
+// TestRestockMarginTierOf pins the margin verdict at its boundaries
+// (code_review): either rate missing (zero or negative) is unknown — never a
+// verdict conjured from one number — and equal displayed rates grade
+// break-even (the judgment runs on the rounded integers the cue prints, so a
+// sub-coin margin never contradicts the visible numbers).
+func TestRestockMarginTierOf(t *testing.T) {
+	cases := []struct {
+		buy, resale int
+		want        restockMarginTier
+	}{
+		{0, 3, marginUnknown}, {2, 0, marginUnknown}, {0, 0, marginUnknown},
+		{-1, 3, marginUnknown}, {2, -1, marginUnknown},
+		{2, 3, marginEarns}, {1, 2, marginEarns},
+		{1, 1, marginBreakEven}, {4, 4, marginBreakEven},
+		{4, 3, marginLosing}, {2, 1, marginLosing},
+	}
+	for _, c := range cases {
+		if got := restockMarginTierOf(c.buy, c.resale); got != c.want {
+			t.Errorf("restockMarginTierOf(%d, %d) = %v, want %v", c.buy, c.resale, got, c.want)
+		}
+	}
+}
+
 // TestBuildRestocking_ResaleUnitAndSelfUse pins the two buy-side flags: the reseller's
 // own realized resale RATE (the ceiling the buying-in anchor is judged against, LLM-385)
 // and the UsingOwnStock flag (bought markedly more than it SOLD this window — the buy that
