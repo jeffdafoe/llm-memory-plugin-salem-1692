@@ -188,6 +188,9 @@ func buildHearth(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSn
 	if snap == nil || actorSnap == nil {
 		return nil
 	}
+	if actorMidSourceActivity(actorSnap) {
+		return nil // mid a source-activity window — a fresh stoke bounces "already busy ... before tending the fire"
+	}
 	hearth, hired := sim.HearthToStoke(snap.VillageObjects, snap.LaborLedger, actorID)
 	if hearth == nil {
 		return nil

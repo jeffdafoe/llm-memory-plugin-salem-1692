@@ -877,7 +877,7 @@ func computeHoursAwake(nowMin, startMin, endMin *int) *int {
 // at a source. SourceLabel resolves the same way dwell-pin and move labels do
 // (resolveDwellPinLabel against snap.Structures / snap.VillageObjects). LLM-69.
 func buildInFlightSourceActivity(snap *sim.Snapshot, a *sim.ActorSnapshot) *InFlightSourceActivityView {
-	if a.SourceActivityKind == "" {
+	if !actorMidSourceActivity(a) {
 		return nil
 	}
 	return &InFlightSourceActivityView{
@@ -1513,6 +1513,27 @@ func awaitEdgeLive(edges map[sim.ActorID]time.Time, key sim.ActorID, now time.Ti
 	return now.Sub(stamp) < window
 }
 
+// actorMidSourceActivity reports whether the subject has a timed source activity
+// in flight (gather/repair/stoke/refresh). The source-activity-START cues — the
+// gatherable cue, the stall-repair cue, and the hearth cue — suppress on it.
+// While a window is open the substrate rejects a fresh start ("you are already
+// busy ..."), and the minted result lands only at completion, so the source
+// object still reads as actionable mid-window (bush still stocked, stall still
+// worn, fire still low). An un-suppressed cue would re-advertise its start tool
+// to a busy actor and bait that reject on every reactor tick inside the window;
+// the mid-activity triage coda (renderTriage) is what holds the actor to done()
+// instead. The source-activity analogue of the walkIncompatibleTools drop for an
+// in-flight move.
+//
+// This is the single definition of "mid a source activity" — buildInFlightSource-
+// Activity (the coda/self-line view) gates on it too, so the suppression and the
+// "you are …" self-state can never disagree about the state. Fail-closed by
+// design: ANY non-empty kind counts, including an unknown/future one, because
+// starting any timed source activity while one runs rejects. Nil-safe. LLM-435.
+func actorMidSourceActivity(a *sim.ActorSnapshot) bool {
+	return a != nil && a.SourceActivityKind != ""
+}
+
 // findGatherableCue resolves the gatherable bush the subject is loitering at and
 // returns (item, sourceName, true), or ("", "", false) to suppress. It calls the
 // SAME sim.ResolveGatherSource the gather command uses (LLM-93) — identical gate,
@@ -1525,6 +1546,9 @@ func awaitEdgeLive(edges map[sim.ActorID]time.Time, key sim.ActorID, now time.Ti
 // (gateTools) reads this same SurroundingsView field, so suppressing un-advertises
 // gather. Owner-gate: LLM-50 D2.
 func findGatherableCue(snap *sim.Snapshot, subjectID sim.ActorID, a *sim.ActorSnapshot) (sim.ItemKind, string, bool) {
+	if actorMidSourceActivity(a) {
+		return "", "", false // mid a source-activity window — a fresh gather bounces "already busy at the source"
+	}
 	low := sim.LowForageItems(a.RestockPolicy, a.Inventory, snap.RestockReorderPct)
 	_, obj, row := sim.ResolveGatherSource(snap.VillageObjects, snap.Assets, a.Pos, subjectID, a.GatherTargetObjectID, low)
 	if obj == nil || row == nil || obj.OwnedByOther(subjectID) {
