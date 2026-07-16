@@ -323,17 +323,15 @@ func apply_npc_display_name_change(data: Dictionary) -> void:
     var npc_id: String = data.get("id", "")
     if npc_id == "":
         return
-    var container: Node2D = placed_npcs.get(npc_id, null)
-    if container == null:
-        return
     var display_name: String = data.get("display_name", "")
-    container.set_meta("display_name", display_name)
-    # Keep the owner-picker cache in sync with the rename. actor_names / actor_list
-    # are otherwise rebuilt only by load_agents(), so without this the object Owner
-    # dropdown and "Owner:" label keep the pre-rename name until the next agent
-    # reload (LLM-428). Mirror load_agents(): only touch ids already known as owner
-    # candidates, drop the row when the name is cleared (load_agents skips empty
-    # names), and re-sort so the dropdown stays alphabetical.
+    # Sync the owner-picker cache before the placed-node check: actor_names /
+    # actor_list is an agent-roster cache (rebuilt only by load_agents()) and is
+    # independent of placed_npcs, so a rename broadcast for an NPC not placed on
+    # this client must still update it. Without this the object Owner dropdown and
+    # "Owner:" label keep the pre-rename name until the next agent reload (LLM-428).
+    # Mirror load_agents(): only touch ids already known as owner candidates, drop
+    # the row when the name is cleared (load_agents skips empty names), and re-sort
+    # so the dropdown stays alphabetical.
     if actor_names.has(npc_id):
         if display_name == "":
             actor_names.erase(npc_id)
@@ -341,6 +339,10 @@ func apply_npc_display_name_change(data: Dictionary) -> void:
         else:
             actor_names[npc_id] = display_name
             actor_list.sort_custom(func(a, b): return str(actor_names.get(a, a)).naturalnocasecmp_to(str(actor_names.get(b, b))) < 0)
+    var container: Node2D = placed_npcs.get(npc_id, null)
+    if container == null:
+        return
+    container.set_meta("display_name", display_name)
     npc_metadata_changed.emit(npc_id)
 
 ## Apply a server-broadcast sprite swap. Rebuilds the AnimatedSprite2D with
