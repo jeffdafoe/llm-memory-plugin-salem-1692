@@ -10,6 +10,15 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/repo/mem"
 )
 
+// visitorSpawnDaytime is a fixed instant inside the village's [07:00, 19:00)
+// daytime spawn window (the LLM-373 gate in dispatchVisitorSpawn, evaluated in
+// the world timezone America/New_York). Spawn-path tests must pin Now here:
+// time.Now() puts the suite outside the window every evening/night and fails the
+// spawn assertions with a time-of-day-dependent red (LLM-430). 16:00 UTC is
+// 12:00 in New York for this July date (EDT, UTC-4); even under UTC-5 it would
+// be 11:00 — mid-window under either offset, so the constant is DST-safe.
+var visitorSpawnDaytime = time.Date(2026, 7, 15, 16, 0, 0, 0, time.UTC)
+
 // makeAllDirtTerrain returns a Terrain blob of MapW*MapH dirt tiles —
 // every tile is a road, so pickVisitorEdgeTile finds candidates at depth 0
 // on every edge and FindPathToAdjacent always succeeds.
@@ -228,7 +237,7 @@ func TestTickVisitorCascade_Spawns(t *testing.T) {
 
 	r := rand.New(rand.NewSource(42))
 	res, err := w.Send(sim.TickVisitorCascade(sim.VisitorTickInputs{
-		Now: time.Now(), Rand: r,
+		Now: visitorSpawnDaytime, Rand: r,
 	}))
 	if err != nil {
 		t.Fatalf("TickVisitorCascade: %v", err)
@@ -307,7 +316,7 @@ func TestTickVisitorCascade_EcoPausesSpawn(t *testing.T) {
 		t.Fatalf("seed settings: %v", err)
 	}
 
-	now := time.Now().UTC()
+	now := visitorSpawnDaytime
 	r := rand.New(rand.NewSource(42))
 	res, err := w.Send(sim.TickVisitorCascade(sim.VisitorTickInputs{Now: now, Rand: r}))
 	if err != nil {
@@ -353,7 +362,7 @@ func TestTickVisitorCascade_RespectsCap(t *testing.T) {
 	r := rand.New(rand.NewSource(99))
 	for i := 0; i < 3; i++ {
 		if _, err := w.Send(sim.TickVisitorCascade(sim.VisitorTickInputs{
-			Now: time.Now(), Rand: r,
+			Now: visitorSpawnDaytime, Rand: r,
 		})); err != nil {
 			t.Fatalf("tick: %v", err)
 		}
