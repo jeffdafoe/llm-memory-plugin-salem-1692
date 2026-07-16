@@ -56,13 +56,14 @@ func buildConsolidationHandlerWorld(t *testing.T) (*sim.World, func()) {
 }
 
 // drivePastFirstMinFacts records enough interactions to satisfy the
-// first-time consolidation gate.
+// first-time consolidation gate. Uses a dealing-relevant (transactional) fact
+// kind so the pair also clears the LLM-434 dealing gate in candidate selection.
 func drivePastFirstMinFacts(t *testing.T, w *sim.World, peer sim.ActorID, base time.Time) {
 	t.Helper()
 	for i := 0; i < sim.ConsolidationFirstMinFacts; i++ {
 		at := base.Add(time.Duration(i) * time.Second)
 		text := "fact-" + string(rune('A'+i))
-		if _, err := w.Send(sim.RecordInteraction("hannah", peer, sim.InteractionHeard, text, at)); err != nil {
+		if _, err := w.Send(sim.RecordInteraction("hannah", peer, sim.InteractionServed, text, at)); err != nil {
 			t.Fatalf("RecordInteraction: %v", err)
 		}
 	}
@@ -537,10 +538,12 @@ func TestRunOneSweep_CapEvictionDuringLLMCallPreservesFacts(t *testing.T) {
 	}
 
 	// Drive exactly ConsolidationCeiling facts pre-snapshot. Each fact
-	// has a distinct numeric text so we can verify which survived.
+	// has a distinct numeric text so we can verify which survived. Uses a
+	// dealing kind so the pair clears the LLM-434 selection gate — the eviction
+	// race this test exercises is independent of fact kind.
 	for i := 0; i < sim.ConsolidationCeiling; i++ {
 		text := fmt.Sprintf("old-%d", i)
-		if _, err := w.Send(sim.RecordInteraction("hannah", "ezekiel", sim.InteractionHeard, text, at.Add(time.Duration(i)*time.Second))); err != nil {
+		if _, err := w.Send(sim.RecordInteraction("hannah", "ezekiel", sim.InteractionServed, text, at.Add(time.Duration(i)*time.Second))); err != nil {
 			t.Fatalf("RecordInteraction old-%d: %v", i, err)
 		}
 	}
@@ -572,7 +575,7 @@ func TestRunOneSweep_CapEvictionDuringLLMCallPreservesFacts(t *testing.T) {
 	postBase := at.Add(time.Hour)
 	for i := 0; i < newFactCount; i++ {
 		text := fmt.Sprintf("new-%d", i)
-		if _, err := w.Send(sim.RecordInteraction("hannah", "ezekiel", sim.InteractionHeard, text, postBase.Add(time.Duration(i)*time.Second))); err != nil {
+		if _, err := w.Send(sim.RecordInteraction("hannah", "ezekiel", sim.InteractionServed, text, postBase.Add(time.Duration(i)*time.Second))); err != nil {
 			t.Fatalf("RecordInteraction new-%d: %v", i, err)
 		}
 	}
