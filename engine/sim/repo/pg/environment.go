@@ -228,6 +228,7 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.ColdStormOutdoorsPerMinuteX100 = parseIntSetting(values, "cold_storm_outdoors_per_minute_x100", sim.DefaultColdStormOutdoorsPerMinuteX100)
 	s.ColdStormIndoorsPerMinuteX100 = parseIntSetting(values, "cold_storm_indoors_per_minute_x100", sim.DefaultColdStormIndoorsPerMinuteX100)
 	s.ColdWarmGarmentPerMinuteX100 = parseIntSetting(values, "cold_warm_garment_per_minute_x100", sim.DefaultColdWarmGarmentPerMinuteX100)
+	s.ColdThreadbareGarmentPerMinuteX100 = parseIntSetting(values, "cold_threadbare_garment_per_minute_x100", sim.DefaultColdThreadbareGarmentPerMinuteX100)
 	s.ColdNightMultiplierX100 = parseIntSetting(values, "cold_night_multiplier_x100", sim.DefaultColdNightMultiplierX100)
 	s.ColdWarmRecoveryPerMinuteX100 = parseIntSetting(values, "cold_warm_recovery_per_minute_x100", sim.DefaultColdWarmRecoveryPerMinuteX100)
 	s.ColdClearRecoveryPerMinuteX100 = parseIntSetting(values, "cold_clear_recovery_per_minute_x100", sim.DefaultColdClearRecoveryPerMinuteX100)
@@ -237,6 +238,10 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.HearthLowMinutes = parseIntSetting(values, "hearth_low_minutes", sim.DefaultHearthLowMinutes)
 	s.StokeWoodPerStoke = parseIntSetting(values, "stoke_wood_per_stoke", sim.DefaultStokeWoodPerStoke)
 	s.StokeDurationSeconds = parseIntSetting(values, "stoke_duration_seconds", sim.DefaultStokeDurationSeconds)
+
+	// Garment wear (LLM-422).
+	s.GarmentWearPerMinute = parseIntSetting(values, "garment_wear_per_minute", sim.DefaultGarmentWearPerMinute)
+	s.GarmentThreadbareFractionX100 = parseIntSetting(values, "garment_threadbare_fraction_x100", sim.DefaultGarmentThreadbareFractionX100)
 
 	// Reactor evaluator tunables.
 	s.ReactorJitterMin = parseDurationSetting(values, "reactor_jitter_min_ms", 1*time.Second)

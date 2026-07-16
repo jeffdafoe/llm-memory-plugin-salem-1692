@@ -32,11 +32,17 @@ type ColdSelfView struct {
 	// storm's cold is being held off outdoors (LLM-410). Set only in the storm-
 	// outdoors case; renders a confirming note instead of the buy nudge.
 	HasWarmGarment bool
-	// CoatVendors are the workplaces selling a warm garment — populated ONLY in the
-	// storm-outdoors case when the subject carries none. Vendor-gated: an empty list
-	// renders no nudge, so the cue never dangles before the clothing stock exists.
-	// The PAID relief, always rendered AFTER the free-relief line, never instead of
-	// it — a coat is an upgrade to stay outside, not a substitute for shelter.
+	// GarmentThreadbare: the subject's best warms garment has worn THREADBARE
+	// (LLM-422) — it still turns some wind but not fully, so the line escalates from
+	// the confirming note to a replacement nudge (with CoatVendors when a seller has
+	// one). Set only alongside HasWarmGarment in the storm-outdoors case.
+	GarmentThreadbare bool
+	// CoatVendors are the workplaces selling a warm garment — populated in the
+	// storm-outdoors case when the subject carries NONE (the buy nudge) or when the
+	// one they carry is THREADBARE (the replacement nudge). Vendor-gated: an empty
+	// list renders no steer, so the cue never dangles before the clothing stock
+	// exists. The PAID relief, always rendered AFTER the free-relief line, never
+	// instead of it — a coat is an upgrade to stay outside, not a substitute for shelter.
 	CoatVendors []RestockVendor
 }
 
@@ -75,35 +81,40 @@ func buildColdSelf(snap *sim.Snapshot, a *sim.ActorSnapshot) *ColdSelfView {
 			view.HomeName = name
 		}
 	}
-	// LLM-410 warm-garment relief. Only meaningful outdoors in a storm — that is the
-	// case the coat "is your roof"; under a roof one already shelters, and by a fire
-	// warmth beats a coat. Either the subject carries a garment (confirm it's holding
-	// the chill off) or a seller has one (surface the vendor-gated buy nudge as a
-	// PAID option alongside the free relief above).
+	// LLM-410 warm-garment relief, LLM-422 wear tiering. Only meaningful outdoors in
+	// a storm — that is the case the coat "is your roof"; under a roof one already
+	// shelters, and by a fire warmth beats a coat. Grade the subject's best warms
+	// garment by wear:
+	//   - SOUND: confirm it's holding the chill off.
+	//   - THREADBARE: it still helps, but worn thin — surface the vendor-gated
+	//     REPLACEMENT nudge alongside the confirming note.
+	//   - NONE: surface the vendor-gated BUY nudge.
+	// Vendor lists are the PAID option, always after the free-relief line.
 	if view.Storm && !view.Indoors {
-		if actorSnapHasWarmGarment(snap, a) {
+		switch actorSnapWarmGarmentTier(snap, a) {
+		case sim.WarmGarmentSound:
 			view.HasWarmGarment = true
-		} else {
+		case sim.WarmGarmentThreadbare:
+			view.HasWarmGarment = true
+			view.GarmentThreadbare = true
+			view.CoatVendors = findWarmGarmentVendors(snap)
+		default: // WarmGarmentNone
 			view.CoatVendors = findWarmGarmentVendors(snap)
 		}
 	}
 	return view
 }
 
-// actorSnapHasWarmGarment mirrors sim.actorHasWarmGarment over the snapshot: does
-// the subject carry any CapabilityWarms good (coat or cloak)? The perception-side
-// read behind the cold self-line's warm-garment branch (LLM-410). A kind absent
-// from the catalog (or a nil ItemKinds map) simply doesn't match.
-func actorSnapHasWarmGarment(snap *sim.Snapshot, a *sim.ActorSnapshot) bool {
-	for kind, qty := range a.Inventory {
-		if qty <= 0 {
-			continue
-		}
-		if def := snap.ItemKinds[kind]; def != nil && def.HasCapability(sim.CapabilityWarms) {
-			return true
-		}
-	}
-	return false
+// actorSnapWarmGarmentTier mirrors sim.actorWarmGarmentTier over the snapshot:
+// grade the subject's best warms garment (coat/cloak) by wear — sound, threadbare,
+// or none (LLM-410 relief, LLM-422 wear). The perception-side read behind the cold
+// self-line's warm-garment branch, resolving through the SAME sim.ResolveWarmGarmentTier
+// the cold sweep uses so the cue and the mechanic never drift. A kind absent from
+// the catalog (or a nil ItemKinds map) simply doesn't match. GarmentThreadbareFractionX100
+// rides the snapshot from WorldSettings; a directly-constructed test snapshot that
+// omits it treats every warms garment as sound (non-positive fraction rule).
+func actorSnapWarmGarmentTier(snap *sim.Snapshot, a *sim.ActorSnapshot) sim.WarmGarmentTier {
+	return sim.ResolveWarmGarmentTier(snap.ItemKinds, a.Inventory, a.GarmentWear, snap.GarmentThreadbareFractionX100)
 }
 
 // renderColdSelf writes the subject's situated cold line — tier phrase plus the
@@ -145,14 +156,27 @@ func renderColdSelf(b *strings.Builder, v *ColdSelfView) {
 	}
 }
 
-// renderColdGarment writes the LLM-410 warm-garment tail of the storm-outdoors
-// cold line: a confirming note when the subject already carries a coat/cloak, or —
-// vendor-gated — the "buy one to keep working outside" nudge when a seller has one.
+// renderColdGarment writes the LLM-410/LLM-422 warm-garment tail of the storm-
+// outdoors cold line: a confirming note for a SOUND coat/cloak; a "it's worn thin,
+// replace it" nudge for a THREADBARE one; or the "buy one to keep working outside"
+// nudge when the subject carries none. The replacement/buy steers are vendor-gated.
 // Always AFTER the free-relief line, never instead of it: a coat is a PAID upgrade
 // to stay out, not a substitute for going indoors (the free path is unconditional
-// above, so the absorbing-state rule holds). Nothing renders when the subject
-// carries none and none is for sale — no dangling steer before supply exists.
+// above, so the absorbing-state rule holds). Nothing extra renders when no seller
+// has one — no dangling steer before supply exists.
 func renderColdGarment(b *strings.Builder, v *ColdSelfView) {
+	if v.HasWarmGarment && v.GarmentThreadbare {
+		// Worn thin: the coat still helps but the wind is getting through, and it
+		// won't last. Point at a fresh one when a seller has it; else just the fact.
+		b.WriteString("The warm clothes you carry are worn thin — they turn some of the cold, but the wind finds its way through now, and they won't hold much longer. ")
+		if len(v.CoatVendors) == 0 {
+			b.WriteString("A fresh coat or cloak would keep you working out here.\n")
+			return
+		}
+		b.WriteString("A fresh coat or cloak would keep you working out here. Use move_to to reach a seller, then pay_with_item once you arrive:\n")
+		renderWalkToVendors(b, v.CoatVendors)
+		return
+	}
 	if v.HasWarmGarment {
 		b.WriteString("The warm clothes you carry are holding the worst of the cold off you — enough to keep working out here, though a fire indoors would drive the chill out entirely.\n")
 		return

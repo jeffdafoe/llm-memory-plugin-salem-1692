@@ -67,10 +67,18 @@ const (
 	// carrying a CapabilityWarms garment. Equal to the indoor (under-a-roof) rate —
 	// "the coat is your roof": real outdoor relief, but a lit hearth still beats it
 	// and going indoors/home is still free, so cold never loses a free relief path.
-	DefaultColdWarmGarmentPerMinuteX100   = 25
-	DefaultColdNightMultiplierX100        = 150
-	DefaultColdWarmRecoveryPerMinuteX100  = 200
-	DefaultColdClearRecoveryPerMinuteX100 = 50
+	DefaultColdWarmGarmentPerMinuteX100 = 25
+	// DefaultColdThreadbareGarmentPerMinuteX100 caps outdoor storm accrual for an
+	// actor whose best warms garment has worn THREADBARE (LLM-422). Between the
+	// sound-garment rate (25) and the full unprotected outdoor rate (100): a worn
+	// coat still turns some of the wind, but not like a fresh one — so replacing
+	// it has real cold stakes, and the failing coat gets the bearer red (16) in
+	// ~27 minutes outdoors rather than ~64. Min-only and pre-night like the
+	// sound-garment cap.
+	DefaultColdThreadbareGarmentPerMinuteX100 = 60
+	DefaultColdNightMultiplierX100            = 150
+	DefaultColdWarmRecoveryPerMinuteX100      = 200
+	DefaultColdClearRecoveryPerMinuteX100     = 50
 
 	// DefaultColdProduceSapPct scales a red-or-worse-cold producer's
 	// production rate (produceRateScalePct) — miserable and productivity-
@@ -83,25 +91,6 @@ const (
 // (a roof alone) is the storm-indoors branch of the rate, not this.
 func actorIsWarm(w *World, a *Actor, now time.Time) bool {
 	return HearthLit(StructureHearth(w.VillageObjects, a.InsideStructureID), now)
-}
-
-// actorHasWarmGarment reports whether the actor carries at least one
-// CapabilityWarms item (a coat or cloak) — the "your coat is your roof" relief
-// (LLM-410). Data-driven: any inventory kind whose catalog def carries the warms
-// capability counts, so the clothing family is operator-tunable via item/set
-// without touching this predicate. A kind absent from the catalog (or a nil
-// ItemKinds map) simply doesn't match. Carrying is the model in slice 2; a
-// worn-vs-packed distinction is LLM-422.
-func actorHasWarmGarment(w *World, a *Actor) bool {
-	for kind, qty := range a.Inventory {
-		if qty <= 0 {
-			continue
-		}
-		if def := w.ItemKinds[kind]; def != nil && def.HasCapability(CapabilityWarms) {
-			return true
-		}
-	}
-	return false
 }
 
 // coldRatePerMinuteX100 returns the actor's current cold delta in ×100 units
@@ -122,16 +111,28 @@ func coldRatePerMinuteX100(w *World, a *Actor, now time.Time) int {
 		// A warm garment (LLM-410) caps storm accrual at the garment rate — "the
 		// coat is your roof." OUTDOORS ONLY: indoors a roof already shelters, and the
 		// coat is the roof's outdoor substitute (so a non-default indoor rate is never
-		// lowered by a coat). Min-only (g < rate), so it never raises accrual and is
-		// moot when the environmental rate is already lower. g >= 0 ignores a
-		// misconfigured negative — a garment can't turn a storm into active recovery;
-		// g == 0 makes a coat full outdoor relief (the outdoors==0 off-switch posture).
-		// This is a PRE-night base like the indoor roof rate: the night multiplier
-		// below scales it exactly as it scales a roof (25 -> 37), so a coat stays
-		// equivalent to a roof rather than beating one. The free relief (a roof, a
-		// hearth, going home) is untouched — a PAID upgrade to keep working outside.
-		if g := w.Settings.ColdWarmGarmentPerMinuteX100; a.InsideStructureID == "" && g >= 0 && g < rate && actorHasWarmGarment(w, a) {
-			rate = g
+		// lowered by a coat). A THREADBARE garment (worn into its last fraction,
+		// LLM-422) caps at a WORSE rate — it still turns some wind, but the cloth is
+		// thin — so replacing a failing coat has real cold stakes. Min-only (g < rate),
+		// so a garment never raises accrual and is moot when the environmental rate is
+		// already lower. g >= 0 ignores a misconfigured negative — a garment can't turn
+		// a storm into active recovery; g == 0 makes a coat full outdoor relief (the
+		// outdoors==0 off-switch posture). Both are PRE-night bases like the indoor roof
+		// rate: the night multiplier below scales them exactly as it scales a roof, so a
+		// coat stays equivalent to (a threadbare coat, worse than) a roof rather than
+		// beating one. The free relief (a roof, a hearth, going home) is untouched — a
+		// PAID upgrade to keep working outside.
+		if a.InsideStructureID == "" {
+			switch actorWarmGarmentTier(w, a) {
+			case WarmGarmentSound:
+				if g := w.Settings.ColdWarmGarmentPerMinuteX100; g >= 0 && g < rate {
+					rate = g
+				}
+			case WarmGarmentThreadbare:
+				if g := w.Settings.ColdThreadbareGarmentPerMinuteX100; g >= 0 && g < rate {
+					rate = g
+				}
+			}
 		}
 		if w.Phase == PhaseNight && w.Settings.ColdNightMultiplierX100 > 0 {
 			rate = rate * w.Settings.ColdNightMultiplierX100 / 100

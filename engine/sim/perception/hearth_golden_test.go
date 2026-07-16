@@ -118,8 +118,8 @@ func warmByLitFire() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 // seed migration so the rendered cue reads as it will in production.
 func warmGarmentGoldenCatalog() map[sim.ItemKind]*sim.ItemKindDef {
 	return map[sim.ItemKind]*sim.ItemKindDef{
-		"coat":  {Name: "coat", DisplayLabel: "Coat", DisplayLabelSingular: "coat", DisplayLabelPlural: "coats", Category: "clothing", Capabilities: []string{sim.CapabilityWarms}},
-		"cloak": {Name: "cloak", DisplayLabel: "Cloak", DisplayLabelSingular: "cloak", DisplayLabelPlural: "cloaks", Category: "clothing", Capabilities: []string{sim.CapabilityWarms}},
+		"coat":  {Name: "coat", DisplayLabel: "Coat", DisplayLabelSingular: "coat", DisplayLabelPlural: "coats", Category: "clothing", Capabilities: []string{sim.CapabilityWarms}, WearMinutes: 600},
+		"cloak": {Name: "cloak", DisplayLabel: "Cloak", DisplayLabelSingular: "cloak", DisplayLabelPlural: "cloaks", Category: "clothing", Capabilities: []string{sim.CapabilityWarms}, WearMinutes: 600},
 	}
 }
 
@@ -195,6 +195,59 @@ func coldOutdoorsInStormCoatForSale() (*sim.Snapshot, sim.ActorID, []sim.Warrant
 		Environment:      sim.WorldEnvironment{Weather: sim.WeatherStorm},
 		ItemKinds:        warmGarmentGoldenCatalog(),
 		Actors:           map[sim.ActorID]*sim.ActorSnapshot{"lewis": lewis, "josiah": josiah},
+		Structures: map[sim.StructureID]*sim.Structure{
+			"walker_house":  plainStructure("walker_house", "Walker House"),
+			"general_store": plainStructure("general_store", "General Store"),
+		},
+	}
+	return snap, "lewis", nil
+}
+
+// coldOutdoorsInStormThreadbareCoat: the same red-cold storm-outdoors scene, but
+// Lewis's single coat has worn THREADBARE (its in-use unit is deep into its last
+// fifth — 60 worked minutes of a 600 budget, below the 20% threadbare line), and
+// Josiah holds coats at the General Store. The garment line escalates from the
+// coated confirming note to the "worn thin, replace it" nudge with a destination-
+// bearing steer — the LLM-422 wear stakes — after the unconditional free-relief
+// line. The sweep caps his outdoor accrual at the WORSE threadbare rate.
+func coldOutdoorsInStormThreadbareCoat() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	now := 720
+	start, end := 360, 1080
+	lewis := &sim.ActorSnapshot{
+		Kind:            sim.KindNPCStateful,
+		DisplayName:     "Lewis Walker",
+		State:           sim.StateIdle,
+		Pos:             sim.WorldPos{X: 500, Y: 500}.Tile(),
+		HomeStructureID: "walker_house",
+		Coins:           20,
+		Needs:           map[sim.NeedKey]int{sim.ColdNeedKey: 17}, // past the default red 16
+		Inventory:       map[sim.ItemKind]int{"coat": 1},
+		GarmentWear:     map[sim.ItemKind]int{"coat": 60}, // 60 of 600 → threadbare (< 20%)
+	}
+	// A coat seller of record, not co-present — the cue names the WORKPLACE.
+	josiah := &sim.ActorSnapshot{
+		Kind:             sim.KindNPCStateful,
+		DisplayName:      "Josiah Thorne",
+		Role:             "merchant",
+		State:            sim.StateIdle,
+		Pos:              sim.WorldPos{X: 2000, Y: 2000}.Tile(),
+		ScheduleStartMin: &start,
+		ScheduleEndMin:   &end,
+		WorkStructureID:  "general_store",
+		Coins:            40,
+		Needs:            map[sim.NeedKey]int{},
+		Inventory:        map[sim.ItemKind]int{"coat": 2},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:                   hearthClock,
+		LocalMinuteOfDay:              &now,
+		NeedThresholds:                sim.NeedThresholds{},
+		Assets:                        emptyAssetSet,
+		HearthLowMinutes:              60,
+		GarmentThreadbareFractionX100: 20,
+		Environment:                   sim.WorldEnvironment{Weather: sim.WeatherStorm},
+		ItemKinds:                     warmGarmentGoldenCatalog(),
+		Actors:                        map[sim.ActorID]*sim.ActorSnapshot{"lewis": lewis, "josiah": josiah},
 		Structures: map[sim.StructureID]*sim.Structure{
 			"walker_house":  plainStructure("walker_house", "Walker House"),
 			"general_store": plainStructure("general_store", "General Store"),

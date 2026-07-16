@@ -155,13 +155,26 @@ type WorldSettings struct {
 	ColdStormOutdoorsPerMinuteX100 int
 	ColdStormIndoorsPerMinuteX100  int
 	// ColdWarmGarmentPerMinuteX100 caps outdoor storm accrual for an actor carrying
-	// a CapabilityWarms garment (LLM-410) — the coat-is-your-roof relief. Only ever
-	// lowers the situational rate; 0 makes a warm garment full outdoor relief.
-	ColdWarmGarmentPerMinuteX100   int
-	ColdNightMultiplierX100        int
-	ColdWarmRecoveryPerMinuteX100  int
-	ColdClearRecoveryPerMinuteX100 int
-	ColdProduceSapPct              int
+	// a SOUND CapabilityWarms garment (LLM-410) — the coat-is-your-roof relief. Only
+	// ever lowers the situational rate; 0 makes a warm garment full outdoor relief.
+	ColdWarmGarmentPerMinuteX100 int
+	// ColdThreadbareGarmentPerMinuteX100 is the same cap for a THREADBARE warms
+	// garment (LLM-422) — worse relief than a sound one (the wind gets through the
+	// worn cloth), so a failing coat has real cold stakes. Also min-only.
+	ColdThreadbareGarmentPerMinuteX100 int
+	ColdNightMultiplierX100            int
+	ColdWarmRecoveryPerMinuteX100      int
+	ColdClearRecoveryPerMinuteX100     int
+	ColdProduceSapPct                  int
+
+	// Garment wear (LLM-422; garment_wear.go). A working actor's in-use unit of a
+	// wearable garment (item_kind.wear_minutes > 0) loses GarmentWearPerMinute
+	// worked minutes per real minute; a garment worn into its last
+	// GarmentThreadbareFractionX100 percent reads THREADBARE (warms less, prompts
+	// replacement). GarmentWearPerMinute <= 0 disables garment wear (the
+	// off-switch, mirroring StallWearPerCoin == 0).
+	GarmentWearPerMinute          int
+	GarmentThreadbareFractionX100 int
 
 	// Hearth (LLM-412; hearth.go). A stoke consumes StokeWoodPerStoke firewood
 	// over StokeDurationSeconds and buys HearthBurnMinutesPerWood of fire per
@@ -2093,46 +2106,47 @@ func (w *World) republish() {
 		duskMin, duskOK = h*60+m, true
 	}
 	snap := &Snapshot{
-		AtTick:                    w.TickCounter,
-		PublishedAt:               now,
-		Actors:                    make(map[ActorID]*ActorSnapshot, len(w.Actors)),
-		Huddles:                   make(map[HuddleID]*Huddle, len(w.Huddles)),
-		Scenes:                    make(map[SceneID]*Scene, len(w.Scenes)),
-		Structures:                make(map[StructureID]*Structure, len(w.Structures)),
-		Orders:                    make(map[OrderID]*Order, len(w.Orders)),
-		VillageObjects:            make(map[VillageObjectID]*VillageObject, len(w.VillageObjects)),
-		Quotes:                    make(map[QuoteID]*SceneQuote, len(w.Quotes)),
-		PayLedger:                 make(map[LedgerID]*PayLedgerEntry, len(w.PayLedger)),
-		LaborLedger:               make(map[LaborID]*LaborOffer, len(w.LaborLedger)),
-		ActionLog:                 CloneActionLog(w.ActionLog),
-		NoticeboardContent:        make(map[VillageObjectID]*NoticeboardContent, len(w.NoticeboardContent)),
-		PriceBook:                 ClonePriceBook(w.PriceBook),
-		Environment:               w.Environment,
-		Phase:                     w.Phase,
-		LocalMinuteOfDay:          &localMin,
-		LocalDateUTC:              orderDateUTC(now, w.Settings.Location),
-		DawnMinute:                dawnMin,
-		DuskMinute:                duskMin,
-		DawnDuskMinuteOK:          dawnOK && duskOK,
-		NeedThresholds:            w.Settings.NeedThresholds.Clone(),
-		PCPresenceStaleAfter:      PCPresenceStaleAfter(w),
-		SeekWorkCoinCeiling:       effectiveSeekWorkCoinCeiling(w.Settings),
-		LodgingDefaultWeeklyRate:  w.Settings.LodgingDefaultWeeklyRate,
-		LodgingBedtimeMinute:      lodgerBedtimeMinute(w),
-		LodgingCheckOutMinute:     w.Settings.LodgingCheckOutHour * 60,
-		RestockReorderPct:         w.Settings.RestockReorderPct,
-		StallWearRepairThreshold:  w.Settings.StallWearRepairThreshold,
-		StallWearDegradeThreshold: w.Settings.StallWearDegradeThreshold,
-		StallNailsPerRepair:       w.Settings.StallNailsPerRepair,
-		HearthLowMinutes:          w.Settings.HearthLowMinutes,
-		StokeWoodPerStoke:         w.Settings.StokeWoodPerStoke,
-		FarmUpkeepFloor:           w.Settings.FarmUpkeepFloor,
-		FarmUpkeepCoinsPerShovel:  w.Settings.FarmUpkeepCoinsPerShovel,
-		MerchantCoinFloor:         w.Settings.MerchantCoinFloor,
-		DefaultOutdoorSceneRadius: w.Settings.DefaultOutdoorSceneRadius,
-		Assets:                    w.Assets,
-		ZoomMinAdmin:              w.Settings.ZoomMinAdmin,
-		ZoomMinRegular:            w.Settings.ZoomMinRegular,
+		AtTick:                        w.TickCounter,
+		PublishedAt:                   now,
+		Actors:                        make(map[ActorID]*ActorSnapshot, len(w.Actors)),
+		Huddles:                       make(map[HuddleID]*Huddle, len(w.Huddles)),
+		Scenes:                        make(map[SceneID]*Scene, len(w.Scenes)),
+		Structures:                    make(map[StructureID]*Structure, len(w.Structures)),
+		Orders:                        make(map[OrderID]*Order, len(w.Orders)),
+		VillageObjects:                make(map[VillageObjectID]*VillageObject, len(w.VillageObjects)),
+		Quotes:                        make(map[QuoteID]*SceneQuote, len(w.Quotes)),
+		PayLedger:                     make(map[LedgerID]*PayLedgerEntry, len(w.PayLedger)),
+		LaborLedger:                   make(map[LaborID]*LaborOffer, len(w.LaborLedger)),
+		ActionLog:                     CloneActionLog(w.ActionLog),
+		NoticeboardContent:            make(map[VillageObjectID]*NoticeboardContent, len(w.NoticeboardContent)),
+		PriceBook:                     ClonePriceBook(w.PriceBook),
+		Environment:                   w.Environment,
+		Phase:                         w.Phase,
+		LocalMinuteOfDay:              &localMin,
+		LocalDateUTC:                  orderDateUTC(now, w.Settings.Location),
+		DawnMinute:                    dawnMin,
+		DuskMinute:                    duskMin,
+		DawnDuskMinuteOK:              dawnOK && duskOK,
+		NeedThresholds:                w.Settings.NeedThresholds.Clone(),
+		PCPresenceStaleAfter:          PCPresenceStaleAfter(w),
+		SeekWorkCoinCeiling:           effectiveSeekWorkCoinCeiling(w.Settings),
+		LodgingDefaultWeeklyRate:      w.Settings.LodgingDefaultWeeklyRate,
+		LodgingBedtimeMinute:          lodgerBedtimeMinute(w),
+		LodgingCheckOutMinute:         w.Settings.LodgingCheckOutHour * 60,
+		RestockReorderPct:             w.Settings.RestockReorderPct,
+		StallWearRepairThreshold:      w.Settings.StallWearRepairThreshold,
+		StallWearDegradeThreshold:     w.Settings.StallWearDegradeThreshold,
+		StallNailsPerRepair:           w.Settings.StallNailsPerRepair,
+		HearthLowMinutes:              w.Settings.HearthLowMinutes,
+		StokeWoodPerStoke:             w.Settings.StokeWoodPerStoke,
+		GarmentThreadbareFractionX100: w.Settings.GarmentThreadbareFractionX100,
+		FarmUpkeepFloor:               w.Settings.FarmUpkeepFloor,
+		FarmUpkeepCoinsPerShovel:      w.Settings.FarmUpkeepCoinsPerShovel,
+		MerchantCoinFloor:             w.Settings.MerchantCoinFloor,
+		DefaultOutdoorSceneRadius:     w.Settings.DefaultOutdoorSceneRadius,
+		Assets:                        w.Assets,
+		ZoomMinAdmin:                  w.Settings.ZoomMinAdmin,
+		ZoomMinRegular:                w.Settings.ZoomMinRegular,
 		// Resolved (default-applied) conversation turn-state windows, so
 		// perception build reads the same expiry the sim.Speak backstop uses.
 		PCAwaitReplyWindow:  w.awaitReplyWindow(KindPC),
@@ -2449,6 +2463,13 @@ func snapshotActor(a *Actor, atTick uint64, degeneracyEnabled bool) *ActorSnapsh
 			toolWearCopy[k] = v
 		}
 	}
+	var garmentWearCopy map[ItemKind]int
+	if len(a.GarmentWear) > 0 {
+		garmentWearCopy = make(map[ItemKind]int, len(a.GarmentWear))
+		for k, v := range a.GarmentWear {
+			garmentWearCopy[k] = v
+		}
+	}
 	needsCopy := make(map[NeedKey]int, len(a.Needs))
 	for k, v := range a.Needs {
 		needsCopy[k] = v
@@ -2532,6 +2553,7 @@ func snapshotActor(a *Actor, atTick uint64, degeneracyEnabled bool) *ActorSnapsh
 		InventoryHash:              hash,
 		Inventory:                  inventoryCopy,
 		ToolWear:                   toolWearCopy,
+		GarmentWear:                garmentWearCopy,
 		Coins:                      a.Coins,
 		Acquaintances:              cloneAcquaintances(a.Acquaintances),
 		Relationships:              cloneRelationships(a.Relationships),

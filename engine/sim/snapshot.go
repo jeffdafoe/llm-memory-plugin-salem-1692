@@ -184,6 +184,14 @@ type Snapshot struct {
 	HearthLowMinutes  int
 	StokeWoodPerStoke int
 
+	// GarmentThreadbareFractionX100 mirrors the WorldSettings knob (LLM-422) so the
+	// cold self-line grades a warms garment's wear (ResolveWarmGarmentTier) on the
+	// SAME threadbare boundary the cold sweep enforces, pure over the snapshot. A
+	// directly-constructed test snapshot that omits it (0) treats no garment as
+	// threadbare (garmentUnitThreadbare's non-positive fraction rule), so an unworn
+	// world reads every warms garment as sound.
+	GarmentThreadbareFractionX100 int
+
 	// FarmUpkeepFloor / FarmUpkeepCoinsPerShovel mirror the WorldSettings knobs
 	// (LLM-215) so the owner upkeep cue derives the shovel obligation
 	// (FarmUpkeepObligation) on the SAME values assessFarmUpkeep enforces, pure over

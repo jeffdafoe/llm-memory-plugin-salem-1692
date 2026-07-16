@@ -420,6 +420,7 @@ func TestIntegration_ItemKinds_UpsertItemKind(t *testing.T) {
 		Name: "shovel", DisplayLabel: "Shovel", Category: sim.ItemCategory("tool"),
 		SortOrder: 4, Capabilities: []string{"portable"},
 		DisplayLabelSingular: "shovel", DisplayLabelPlural: "shovels",
+		WearMinutes: 300, // LLM-422: garment/wear column round-trips through the real column
 	}
 	if err := repo.UpsertItemKind(ctx, insert); err != nil {
 		t.Fatalf("UpsertItemKind insert: %v", err)
@@ -436,6 +437,9 @@ func TestIntegration_ItemKinds_UpsertItemKind(t *testing.T) {
 		sh.DisplayLabelSingular != "shovel" || sh.DisplayLabelPlural != "shovels" {
 		t.Errorf("inserted def fields: %+v", sh)
 	}
+	if sh.WearMinutes != 300 {
+		t.Errorf("inserted WearMinutes = %d, want 300", sh.WearMinutes)
+	}
 	if len(sh.Capabilities) != 1 || sh.Capabilities[0] != "portable" {
 		t.Errorf("inserted capabilities: %+v", sh.Capabilities)
 	}
@@ -450,6 +454,7 @@ func TestIntegration_ItemKinds_UpsertItemKind(t *testing.T) {
 		Name: "shovel", DisplayLabel: "Garden Spade", Category: sim.ItemCategory("implement"),
 		SortOrder: 9, Capabilities: []string{"portable", "service"},
 		DisplayLabelSingular: "spade", DisplayLabelPlural: "spades",
+		WearMinutes: 0, // cleared on update — proves the column upserts both directions
 	}
 	if err := repo.UpsertItemKind(ctx, update); err != nil {
 		t.Fatalf("UpsertItemKind update: %v", err)
@@ -465,6 +470,9 @@ func TestIntegration_ItemKinds_UpsertItemKind(t *testing.T) {
 	if sh.DisplayLabel != "Garden Spade" || sh.Category != "implement" || sh.SortOrder != 9 ||
 		sh.DisplayLabelSingular != "spade" || sh.DisplayLabelPlural != "spades" {
 		t.Errorf("updated def fields: %+v", sh)
+	}
+	if sh.WearMinutes != 0 {
+		t.Errorf("updated WearMinutes = %d, want 0 (cleared)", sh.WearMinutes)
 	}
 	if len(sh.Capabilities) != 2 {
 		t.Errorf("updated capabilities: %+v", sh.Capabilities)
