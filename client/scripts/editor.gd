@@ -59,6 +59,7 @@ var _selection_border: Node2D = null
 # "left", "right", "top", "bottom".
 const TILE_SIZE: float = 32.0
 const FOOTPRINT_EDGE_HIT_PX: float = 8.0  # screen-pixel hit slop on each side
+const FOOTPRINT_HANDLE_PX: float = 12.0  # drawn size of the mid-edge drag handle squares
 var _footprint_resize_side: String = ""
 var _footprint_resize_start_value: int = 0
 var _footprint_resize_start_world: Vector2 = Vector2.ZERO
@@ -365,6 +366,21 @@ func _on_left_press(screen_pos: Vector2) -> void:
                 # right-click, re-click the NPC, or the Select tool) to pick
                 # objects. left_click_used stays false so the camera can pan.
                 return
+
+            # Footprint drag HANDLES beat every marker (LLM-429): the small
+            # handle squares stay grabbable even when a marker — door, stand,
+            # or the loiter pin that defaults just south of the object — is
+            # parked over that edge and would otherwise eat the click. The
+            # full-edge _hit_test_footprint_edge below still runs AFTER the
+            # markers, so the markers keep their drag zones along the rest of
+            # the edge.
+            if selected_object != null:
+                var handle_side: String = _hit_test_footprint_handle(screen_pos, selected_object)
+                if handle_side != "":
+                    _begin_footprint_resize(handle_side, screen_pos)
+                    left_click_used = true
+                    get_viewport().set_input_as_handled()
+                    return
 
             # If the selected object has a door marker and the click lands on
             # it, start a door drag. This takes priority over footprint edges
@@ -860,7 +876,7 @@ func _add_selection_border(node: Node2D) -> void:
     # users can see the rect is interactive. The actual hit zone is the
     # whole edge (see _hit_test_footprint_edge), the handles just signal
     # affordance. World-pixel sized; consistent with the fixed-width border.
-    var handle_size: float = 12.0
+    var handle_size: float = FOOTPRINT_HANDLE_PX
     var mid_top: Vector2    = rect.position + Vector2(rect.size.x / 2, 0)
     var mid_bottom: Vector2 = rect.position + Vector2(rect.size.x / 2, rect.size.y)
     var mid_left: Vector2   = rect.position + Vector2(0, rect.size.y / 2)
@@ -906,6 +922,40 @@ func _footprint_rect_local(node: Node2D) -> Rect2:
         Vector2(world_left, world_top) - node.position,
         Vector2(world_right - world_left, world_bottom - world_top)
     )
+
+## Hit-test the screen position against the four mid-edge handle SQUARES
+## only (the 12px squares _make_handle draws at each edge midpoint) — NOT
+## the full edge line. Returns "left" / "right" / "top" / "bottom" or ""
+## if no handle was hit. Checked BEFORE the door / stand / loiter markers
+## (LLM-429): those markers park near the footprint — the loiter pin
+## defaults just south of it — and their TILE_SIZE/2 hit zones otherwise
+## swallow the overlapping handle (the bottom one in the default layout).
+## The full-edge _hit_test_footprint_edge stays AFTER the markers so the
+## pin keeps its drag zone along the rest of the edge line. Matched in
+## world pixels, mirroring the fixed-world-size handle draw.
+func _hit_test_footprint_handle(screen_pos: Vector2, node: Node2D) -> String:
+    var rect: Rect2 = _footprint_rect_local(node)
+    if rect.size == Vector2.ZERO:
+        return ""  # no footprint drawn -> no handles to grab
+    var world_pos: Vector2 = _screen_to_world(screen_pos)
+    var origin: Vector2 = node.position
+    var left: float = rect.position.x + origin.x
+    var right: float = left + rect.size.x
+    var top: float = rect.position.y + origin.y
+    var bottom: float = top + rect.size.y
+    var mid_x: float = (left + right) / 2.0
+    var mid_y: float = (top + bottom) / 2.0
+    var half: float = FOOTPRINT_HANDLE_PX / 2.0
+
+    if abs(world_pos.x - left) <= half and abs(world_pos.y - mid_y) <= half:
+        return "left"
+    if abs(world_pos.x - right) <= half and abs(world_pos.y - mid_y) <= half:
+        return "right"
+    if abs(world_pos.x - mid_x) <= half and abs(world_pos.y - top) <= half:
+        return "top"
+    if abs(world_pos.x - mid_x) <= half and abs(world_pos.y - bottom) <= half:
+        return "bottom"
+    return ""
 
 ## Hit-test the screen position against the four edges of the selected
 ## object's footprint border. Returns "left" / "right" / "top" / "bottom"
