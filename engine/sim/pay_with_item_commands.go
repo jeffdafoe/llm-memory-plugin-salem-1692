@@ -2262,6 +2262,23 @@ func resolvePayItems(w *World, payItems []PayItemInput) ([]ItemKindQty, error) {
 				pi.Item,
 			)
 		}
+		// A non-portable consumable (porridge, stew, a poured drink — any
+		// EatHereOnly kind) is eaten where it's served and can't leave the
+		// premises, so it can't be handed over and carried off as payment. The buy
+		// leg is already clamped at PayWithItem (the EatHereOnly consume-clamp);
+		// this applies the SAME rule to every TENDERED-goods leg — all of which
+		// resolve through here: the barter pay_items, a counter offer, a gift
+		// (GiveItems), and a labor in-kind reward. Without it an eat-here food
+		// leaks into the recipient's pack and circulates as de-facto currency
+		// (observed live: porridge). EatHereOnly is nil-safe, and a freshly-minted
+		// unknown kind is not consumable, so it passes here and rejects instead on
+		// the holdings shortfall — same posture as the service gate above. LLM-445.
+		if w.ItemKinds[kind].EatHereOnly() {
+			return nil, fmt.Errorf(
+				"%q is eaten where it's served and can't be carried off as payment — offer coins or a portable good in trade instead.",
+				pi.Item,
+			)
+		}
 		seen[kind] = struct{}{}
 		resolved = append(resolved, ItemKindQty{Kind: kind, Qty: pi.Qty})
 	}
@@ -2800,6 +2817,14 @@ func commitPayTransfer(
 	// so it must not assume uniqueness: without aggregation two lines of the
 	// same kind would each compute their post-quantity from the ORIGINAL
 	// inventory and the second apply would clobber the first (lost quantity).
+	//
+	// Item CLASS, by contrast, is deliberately NOT re-checked here (LLM-445):
+	// the eat-here/service tendered-goods gate lives at intake
+	// (resolvePayItems), and an already-minted entry settles as offered. Safe
+	// because the ledger has no durable projection (a restart wipes pending
+	// entries) and offers expire in minutes — so a pre-gate entry can't
+	// outlive a deploy. Pinned by TestGift_PreGateEatHereEntry_StillSettles;
+	// adding a settle-time class check should be a deliberate decision there.
 	totals := make(map[ItemKind]int, len(entry.PayItems))
 	for _, pi := range entry.PayItems {
 		if pi.Qty < 1 {

@@ -3018,7 +3018,7 @@ func producerSelfSourcedInputNoDemand() (*sim.Snapshot, sim.ActorID, []sim.Warra
 		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
 			"stew":  {Name: "stew", DisplayLabel: "stew", Category: sim.ItemCategoryFood},
 			"meat":  {Name: "meat", DisplayLabel: "meat"},
-			"water": {Name: "water", DisplayLabel: "water", Category: sim.ItemCategoryDrink},
+			"water": {Name: "water", Capabilities: []string{"portable"}, DisplayLabel: "water", Category: sim.ItemCategoryDrink},
 		},
 		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
 			"stew": {
@@ -3088,7 +3088,7 @@ func dairyKeeperOutOfBoosterAtPost() (*sim.Snapshot, sim.ActorID, []sim.WarrantM
 			herbGarden: plainStructure(herbGarden, "Ward Garden"),
 		},
 		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
-			"milk": {Name: "milk", DisplayLabel: "milk", Category: sim.ItemCategoryDrink},
+			"milk": {Name: "milk", Capabilities: []string{"portable"}, DisplayLabel: "milk", Category: sim.ItemCategoryDrink},
 			"sage": {Name: "sage", DisplayLabel: "sage"},
 		},
 		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
@@ -3272,7 +3272,7 @@ func destituteKeeperBlockedSuppliersNamedWithReasons() (*sim.Snapshot, sim.Actor
 			ellisFarm: plainStructure(ellisFarm, "Ellis Farm"),
 		},
 		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
-			"carrots": {Name: "carrots", DisplayLabel: "carrots", Category: sim.ItemCategoryFood},
+			"carrots": {Name: "carrots", Capabilities: []string{"portable"}, DisplayLabel: "carrots", Category: sim.ItemCategoryFood},
 			"milk":    {Name: "milk", DisplayLabel: "milk", Category: sim.ItemCategoryDrink},
 		},
 		RestockReorderPct: 25,
@@ -3487,7 +3487,7 @@ func keeperRestockDropsShutKeepsOpenSupplier() (*sim.Snapshot, sim.ActorID, []si
 			jamesFarm: plainStructure(jamesFarm, "James Farm"),
 		},
 		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
-			"carrots": {Name: "carrots", DisplayLabel: "carrots", Category: sim.ItemCategoryFood},
+			"carrots": {Name: "carrots", Capabilities: []string{"portable"}, DisplayLabel: "carrots", Category: sim.ItemCategoryFood},
 		},
 		RestockReorderPct: 25,
 		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
@@ -3575,7 +3575,7 @@ func resellerRestockRoutedToDistributorNotFarm() (*sim.Snapshot, sim.ActorID, []
 			sim.VillageObjectID(farm):  {ID: sim.VillageObjectID(farm), OwnerActorID: ellisID, Tags: []string{sim.TagFarm, sim.TagWholesaler}},
 		},
 		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
-			"milk": {Name: "milk", DisplayLabel: "milk", Category: sim.ItemCategoryDrink},
+			"milk": {Name: "milk", Capabilities: []string{"portable"}, DisplayLabel: "milk", Category: sim.ItemCategoryDrink},
 		},
 		RestockReorderPct: 25,
 	}
@@ -3750,7 +3750,7 @@ func coinPoorKeeperAloneConserveLowStock() (*sim.Snapshot, sim.ActorID, []sim.Wa
 			"ale":     {Name: "ale", DisplayLabel: "ale", Category: sim.ItemCategoryDrink},
 			"bread":   {Name: "bread", DisplayLabel: "bread", Category: sim.ItemCategoryFood},
 			"stew":    {Name: "stew", DisplayLabel: "stew", Category: sim.ItemCategoryFood},
-			"carrots": {Name: "carrots", DisplayLabel: "carrots", Category: sim.ItemCategoryFood},
+			"carrots": {Name: "carrots", Capabilities: []string{"portable"}, DisplayLabel: "carrots", Category: sim.ItemCategoryFood},
 		},
 		RestockReorderPct: 25,
 	}
@@ -3847,7 +3847,7 @@ func distributorRestockSkipsCoPresentReseller() (*sim.Snapshot, sim.ActorID, []s
 			sim.VillageObjectID(jamesFarm): {ID: sim.VillageObjectID(jamesFarm), OwnerActorID: mosesID, Tags: []string{sim.TagFarm, sim.TagWholesaler}},
 		},
 		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
-			"carrots": {Name: "carrots", DisplayLabel: "carrots", Category: sim.ItemCategoryFood},
+			"carrots": {Name: "carrots", Capabilities: []string{"portable"}, DisplayLabel: "carrots", Category: sim.ItemCategoryFood},
 		},
 		RestockReorderPct: 25,
 	}
@@ -3915,7 +3915,7 @@ func distributorRestockingMilkBulkRateAnchor() (*sim.Snapshot, sim.ActorID, []si
 			"milk": {OutputItem: "milk", OutputQty: 1, RateQty: 4, RatePerHours: 1, WholesalePrice: 1, RetailPrice: 2},
 		},
 		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
-			"milk": {Name: "milk", DisplayLabel: "milk", Category: sim.ItemCategoryDrink},
+			"milk": {Name: "milk", Capabilities: []string{"portable"}, DisplayLabel: "milk", Category: sim.ItemCategoryDrink},
 		},
 		RestockReorderPct: 25,
 	}
@@ -3990,7 +3990,7 @@ func distributorRestockObservedSupplierRate() (*sim.Snapshot, sim.ActorID, []sim
 			"milk": {OutputItem: "milk", OutputQty: 1, RateQty: 4, RatePerHours: 1, WholesalePrice: 1, RetailPrice: 2},
 		},
 		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
-			"milk": {Name: "milk", DisplayLabel: "milk", Category: sim.ItemCategoryDrink},
+			"milk": {Name: "milk", Capabilities: []string{"portable"}, DisplayLabel: "milk", Category: sim.ItemCategoryDrink},
 		},
 		RestockReorderPct: 25,
 		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
@@ -4081,7 +4081,8 @@ func wholesalerProducerObservedRates() (*sim.Snapshot, sim.ActorID, []sim.Warran
 		},
 		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
 			"carrots": {
-				Name: "carrots", DisplayLabel: "Carrots",
+				Name:         "carrots",
+				Capabilities: []string{"portable"}, DisplayLabel: "Carrots",
 				DisplayLabelSingular: "carrot", DisplayLabelPlural: "carrots",
 				Category: sim.ItemCategoryFood,
 			},
@@ -4239,7 +4240,7 @@ func ownerHoldingRepairNailsInCompany() (*sim.Snapshot, sim.ActorID, []sim.Warra
 			"milk": {OutputItem: "milk", OutputQty: 1, RateQty: 4, RatePerHours: 1, WholesalePrice: 1, RetailPrice: 2},
 		},
 		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
-			"milk": {Name: "milk", DisplayLabel: "milk", Category: sim.ItemCategoryDrink},
+			"milk": {Name: "milk", Capabilities: []string{"portable"}, DisplayLabel: "milk", Category: sim.ItemCategoryDrink},
 			"nail": {Name: "nail", DisplayLabel: "nails", Category: sim.ItemCategoryMaterial},
 		},
 		RestockReorderPct: 25,
@@ -4689,7 +4690,8 @@ func buyerRemembersVendorShut() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) 
 		},
 		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
 			"cheese": {
-				Name: "cheese", DisplayLabel: "Cheese",
+				Name:         "cheese",
+				Capabilities: []string{"portable"}, DisplayLabel: "Cheese",
 				DisplayLabelSingular: "wedge of cheese", DisplayLabelPlural: "wedges of cheese",
 				Category:  sim.ItemCategoryFood,
 				Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 8}},
@@ -4877,11 +4879,13 @@ func brokeBuyerNoGoodsNoBuyCue() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta)
 // brokeBuyerNoGoodsNoPeerBuy — LLM-242 means-to-pay suppression, the co-present
 // peer arm (sibling of brokeBuyerNoGoodsNoBuyCue's vendor arm). The same broke
 // forager (0 coins, nothing to trade) stands in a huddle with a co-present peer
-// (Lewis) carrying stew he'd otherwise be told to buy with pay_with_item. No
+// (Lewis) carrying bread he'd otherwise be told to buy with pay_with_item. No
 // coins and no goods is no means to pay, so the peer offer is dropped; with no
 // free source or own stock nearby the whole "## What you can eat or drink"
-// section is omitted. Contrast peers_holding_same_food, where the subject holds
-// stew (goods) and so keeps a means to pay.
+// section is omitted. (Lewis carries bread, not stew, so the vacuity tripwire's
+// holdsBarterableGoods read of him survives LLM-445 — eat-here food no longer
+// counts as barterable goods.) Contrast peers_holding_same_food, where the
+// subject holds food of its own and so keeps a means to pay.
 func brokeBuyerNoGoodsNoPeerBuy() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	const (
 		ezekielID = sim.ActorID("ezekiel")
@@ -4909,7 +4913,7 @@ func brokeBuyerNoGoodsNoPeerBuy() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta
 		InsideStructureID: commons,
 		CurrentHuddleID:   huddle,
 		Needs:             map[sim.NeedKey]int{},
-		Inventory:         map[sim.ItemKind]int{"stew": 1},
+		Inventory:         map[sim.ItemKind]int{"bread": 1},
 		Acquaintances:     map[string]sim.Acquaintance{"Ezekiel Crane": {}},
 	}
 	snap := &sim.Snapshot{
@@ -6133,7 +6137,7 @@ func TestGoldensNoBuyCueWithoutMeansToPay(t *testing.T) {
 		t.Run(sc.name, func(t *testing.T) {
 			snap, actorID, _ := sc.build()
 			a := snap.Actors[actorID]
-			if a == nil || a.Coins != 0 || holdsBarterableGoods(a) {
+			if a == nil || a.Coins != 0 || holdsBarterableGoods(snap, a) {
 				return // has some means to pay — invariant N/A here
 			}
 			sawBroke = true
@@ -6150,7 +6154,7 @@ func TestGoldensNoBuyCueWithoutMeansToPay(t *testing.T) {
 			// half from silently going vacuous if its fixture is ever dropped.
 			if h := snap.Huddles[a.CurrentHuddleID]; h != nil {
 				for peerID := range h.Members {
-					if p := snap.Actors[peerID]; peerID != actorID && p != nil && p.Kind != sim.KindPC && holdsBarterableGoods(p) {
+					if p := snap.Actors[peerID]; peerID != actorID && p != nil && p.Kind != sim.KindPC && holdsBarterableGoods(snap, p) {
 						sawPeerArm = true
 					}
 				}
@@ -6203,7 +6207,7 @@ func TestGoldensCoinPoorEmployerStaysSolicitable(t *testing.T) {
 				// IN KIND — 0 coins AND holds goods. A destitute peer (no goods) is not
 				// covered; it may legitimately dead-end. holdsBarterableGoods is the same
 				// predicate the sim gate (employerCanHireInKind) uses.
-				if peer == nil || peer.Coins != 0 || !holdsBarterableGoods(peer) {
+				if peer == nil || peer.Coins != 0 || !holdsBarterableGoods(snap, peer) {
 					continue
 				}
 				// Coin-independent "could hire you" test, mirroring isSolicitableEmployer
@@ -6255,7 +6259,7 @@ func TestEmptyPurseCannotPayCueTracksActorCoins(t *testing.T) {
 		// snapshot state (Coins + holdsBarterableGoods, the SAME predicate the buy-cue
 		// gate reads), not the rendered text — so this asserts the cue tracks the actor.
 		empty := actor.Coins == 0
-		hasGoods := holdsBarterableGoods(actor)
+		hasGoods := holdsBarterableGoods(snap, actor)
 		wantCannotPay := empty && !hasGoods
 		wantBarter := empty && hasGoods
 		if has := strings.Contains(out, cannotPayMarker); has != wantCannotPay {
@@ -6492,7 +6496,7 @@ func generalStoreWaterForageAtWell() (*sim.Snapshot, sim.ActorID, []sim.WarrantM
 		RestockReorderPct: 25,
 		Actors:            map[sim.ActorID]*sim.ActorSnapshot{josiahID: josiah},
 		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
-			"water": {Name: "water", DisplayLabel: "water", Category: sim.ItemCategoryDrink},
+			"water": {Name: "water", Capabilities: []string{"portable"}, DisplayLabel: "water", Category: sim.ItemCategoryDrink},
 		},
 		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
 			"town_well": {
@@ -7787,13 +7791,15 @@ func hungryForagerAtStockedBush() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta
 		},
 		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
 			"raspberries": {
-				Name: "raspberries", DisplayLabel: "Raspberries",
+				Name:         "raspberries",
+				Capabilities: []string{"portable"}, DisplayLabel: "Raspberries",
 				DisplayLabelSingular: "raspberry", DisplayLabelPlural: "raspberries",
 				Category:  sim.ItemCategoryFood,
 				Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 2}},
 			},
 			"cheese": {
-				Name: "cheese", DisplayLabel: "Cheese",
+				Name:         "cheese",
+				Capabilities: []string{"portable"}, DisplayLabel: "Cheese",
 				DisplayLabelSingular: "wedge of cheese", DisplayLabelPlural: "wedges of cheese",
 				Category:  sim.ItemCategoryFood,
 				Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 8}},
@@ -7872,13 +7878,15 @@ func snackLoopScenario(carry sim.ItemKind) (*sim.Snapshot, sim.ActorID, []sim.Wa
 		},
 		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
 			"raspberries": {
-				Name: "raspberries", DisplayLabel: "Raspberries",
+				Name:         "raspberries",
+				Capabilities: []string{"portable"}, DisplayLabel: "Raspberries",
 				DisplayLabelSingular: "raspberry", DisplayLabelPlural: "raspberries",
 				Category:  sim.ItemCategoryFood,
 				Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 2}},
 			},
 			"cheese": {
-				Name: "cheese", DisplayLabel: "Cheese",
+				Name:         "cheese",
+				Capabilities: []string{"portable"}, DisplayLabel: "Cheese",
 				DisplayLabelSingular: "wedge of cheese", DisplayLabelPlural: "wedges of cheese",
 				Category:  sim.ItemCategoryFood,
 				Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 8}},
@@ -7958,7 +7966,7 @@ func snackLooperRedirectedToMeal() (*sim.Snapshot, sim.ActorID, []sim.WarrantMet
 			huddleID: {ID: huddleID, Members: map[sim.ActorID]struct{}{ezekielID: {}, graceID: {}}},
 		},
 		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
-			"raspberries": {Name: "raspberries", DisplayLabel: "Raspberries", DisplayLabelSingular: "raspberry", DisplayLabelPlural: "raspberries", Category: sim.ItemCategoryFood, Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 2}}},
+			"raspberries": {Name: "raspberries", Capabilities: []string{"portable"}, DisplayLabel: "Raspberries", DisplayLabelSingular: "raspberry", DisplayLabelPlural: "raspberries", Category: sim.ItemCategoryFood, Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 2}}},
 			"cheese":      {Name: "cheese", DisplayLabel: "Cheese", DisplayLabelSingular: "wedge of cheese", DisplayLabelPlural: "wedges of cheese", Category: sim.ItemCategoryFood, Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 8}}},
 		},
 	}
@@ -8005,7 +8013,8 @@ func grazingProducerScenario(hunger int) (*sim.Snapshot, sim.ActorID, []sim.Warr
 		},
 		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
 			"carrots": {
-				Name: "carrots", DisplayLabel: "Carrots",
+				Name:         "carrots",
+				Capabilities: []string{"portable"}, DisplayLabel: "Carrots",
 				DisplayLabelSingular: "carrot", DisplayLabelPlural: "carrots",
 				Category:  sim.ItemCategoryFood,
 				Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 3}},
@@ -8056,12 +8065,14 @@ func hungryActorHoldingRawMeat() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta)
 		},
 		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
 			"meat": {
-				Name: "meat", DisplayLabel: "Meat",
+				Name:         "meat",
+				Capabilities: []string{"portable"}, DisplayLabel: "Meat",
 				DisplayLabelSingular: "cut of meat", DisplayLabelPlural: "cuts of meat",
 				Category: sim.ItemCategoryFood, // food, but no Satisfies -> inedible raw
 			},
 			"cheese": {
-				Name: "cheese", DisplayLabel: "Cheese",
+				Name:         "cheese",
+				Capabilities: []string{"portable"}, DisplayLabel: "Cheese",
 				DisplayLabelSingular: "wedge of cheese", DisplayLabelPlural: "wedges of cheese",
 				Category:  sim.ItemCategoryFood,
 				Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 4}},
@@ -8129,7 +8140,8 @@ func wholesalerGrazingScenario(hunger int) (*sim.Snapshot, sim.ActorID, []sim.Wa
 		},
 		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
 			"carrots": {
-				Name: "carrots", DisplayLabel: "Carrots",
+				Name:         "carrots",
+				Capabilities: []string{"portable"}, DisplayLabel: "Carrots",
 				DisplayLabelSingular: "carrot", DisplayLabelPlural: "carrots",
 				Category:  sim.ItemCategoryFood,
 				Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 3}},
@@ -8154,8 +8166,9 @@ func wholesalerCarryingBoughtFoodAtPost() (*sim.Snapshot, sim.ActorID, []sim.War
 	snap.ItemKinds["bread"] = &sim.ItemKindDef{
 		Name: "bread", DisplayLabel: "Bread",
 		DisplayLabelSingular: "loaf of bread", DisplayLabelPlural: "loaves of bread",
-		Category:  sim.ItemCategoryFood,
-		Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 8}},
+		Category:     sim.ItemCategoryFood,
+		Capabilities: []string{"portable"}, // mirrors live: bread is the canonical carry-home food
+		Satisfies:    []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 8}},
 	}
 	return snap, id, warr
 }
@@ -8242,7 +8255,8 @@ func wholesalerProducerBarteringWithCustomer() (*sim.Snapshot, sim.ActorID, []si
 		},
 		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
 			"carrots": {
-				Name: "carrots", DisplayLabel: "Carrots",
+				Name:         "carrots",
+				Capabilities: []string{"portable"}, DisplayLabel: "Carrots",
 				DisplayLabelSingular: "carrot", DisplayLabelPlural: "carrots",
 				Category: sim.ItemCategoryFood,
 			},
@@ -8436,7 +8450,8 @@ func hungryLooperAtFoodlessHome() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta
 		},
 		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
 			"raspberries": {
-				Name: "raspberries", DisplayLabel: "Raspberries",
+				Name:         "raspberries",
+				Capabilities: []string{"portable"}, DisplayLabel: "Raspberries",
 				DisplayLabelSingular: "raspberry", DisplayLabelPlural: "raspberries",
 				Category:  sim.ItemCategoryFood,
 				Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 2}},
@@ -8820,7 +8835,7 @@ func tavernkeeperMissingInputAtPost() (*sim.Snapshot, sim.ActorID, []sim.Warrant
 		},
 		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
 			"stew":  {Name: "stew", DisplayLabel: "Stew", DisplayLabelSingular: "stew", DisplayLabelPlural: "stews", Category: sim.ItemCategoryFood},
-			"water": {Name: "water", DisplayLabel: "Water", DisplayLabelSingular: "water", DisplayLabelPlural: "water", Category: sim.ItemCategoryDrink},
+			"water": {Name: "water", Capabilities: []string{"portable"}, DisplayLabel: "Water", DisplayLabelSingular: "water", DisplayLabelPlural: "water", Category: sim.ItemCategoryDrink},
 			"sage":  {Name: "sage", DisplayLabel: "Sage", DisplayLabelSingular: "sage", DisplayLabelPlural: "sage", Category: sim.ItemCategoryMaterial},
 			"meat":  {Name: "meat", DisplayLabel: "Meat", DisplayLabelSingular: "meat", DisplayLabelPlural: "meat", Category: sim.ItemCategoryFood},
 		},
@@ -9653,7 +9668,7 @@ func resellerArrivesAtSupplierBuyHereNoHuddle() (*sim.Snapshot, sim.ActorID, []s
 			brewery: plainStructure(brewery, "The Brewery"),
 		},
 		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
-			"ale": {Name: "ale", DisplayLabel: "ale", Category: sim.ItemCategoryDrink},
+			"ale": {Name: "ale", Capabilities: []string{"portable"}, DisplayLabel: "ale", Category: sim.ItemCategoryDrink},
 		},
 		RestockReorderPct: 25,
 		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
@@ -9827,7 +9842,7 @@ func distributorOverbuyingBelowResale() (*sim.Snapshot, sim.ActorID, []sim.Warra
 			farm:  plainStructure(farm, "Ellis Farm"),
 		},
 		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
-			"milk": {Name: "milk", DisplayLabel: "milk", Category: sim.ItemCategoryFood},
+			"milk": {Name: "milk", Capabilities: []string{"portable"}, DisplayLabel: "milk", Category: sim.ItemCategoryFood},
 		},
 		RestockReorderPct: 25,
 		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
@@ -9905,7 +9920,7 @@ func keeperSelfConsumesZeroStock() (*sim.Snapshot, sim.ActorID, []sim.WarrantMet
 			farm:  plainStructure(farm, "Ellis Farm"),
 		},
 		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
-			"cheese": {Name: "cheese", DisplayLabel: "cheese", Category: sim.ItemCategoryFood},
+			"cheese": {Name: "cheese", Capabilities: []string{"portable"}, DisplayLabel: "cheese", Category: sim.ItemCategoryFood},
 		},
 		RestockReorderPct: 25,
 		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
@@ -12704,7 +12719,7 @@ func resellerAtPostBriskTrade() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) 
 		sales.Push(sim.PriceObservation{BuyerID: "cust1", Amount: 3, Qty: 1, Consumers: 1, At: snap.PublishedAt.Add(-3 * 24 * time.Hour)})
 		sales.Push(sim.PriceObservation{BuyerID: "cust2", Amount: 3, Qty: 1, Consumers: 1, At: snap.PublishedAt.Add(-1 * 24 * time.Hour)})
 		snap.ItemKinds = map[sim.ItemKind]*sim.ItemKindDef{
-			"cheese": {Name: "cheese", DisplayLabel: "cheese", DisplayLabelSingular: "wedge of cheese", DisplayLabelPlural: "wedges of cheese", Category: sim.ItemCategoryFood},
+			"cheese": {Name: "cheese", Capabilities: []string{"portable"}, DisplayLabel: "cheese", DisplayLabelSingular: "wedge of cheese", DisplayLabelPlural: "wedges of cheese", Category: sim.ItemCategoryFood},
 		}
 		snap.PriceBook = map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
 			{SellerID: "josiah", Item: "cheese"}: sales,
@@ -12737,7 +12752,7 @@ func resellerAtPostSlowTrade() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 		sales.Push(sim.PriceObservation{BuyerID: "cust1", Amount: 3, Qty: 1, Consumers: 1, At: snap.PublishedAt.Add(-10 * 24 * time.Hour)})
 		sales.Push(sim.PriceObservation{BuyerID: "cust2", Amount: 3, Qty: 1, Consumers: 1, At: snap.PublishedAt.Add(-8 * 24 * time.Hour)})
 		snap.ItemKinds = map[sim.ItemKind]*sim.ItemKindDef{
-			"cheese": {Name: "cheese", DisplayLabel: "cheese", DisplayLabelSingular: "wedge of cheese", DisplayLabelPlural: "wedges of cheese", Category: sim.ItemCategoryFood},
+			"cheese": {Name: "cheese", Capabilities: []string{"portable"}, DisplayLabel: "cheese", DisplayLabelSingular: "wedge of cheese", DisplayLabelPlural: "wedges of cheese", Category: sim.ItemCategoryFood},
 		}
 		snap.PriceBook = map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
 			{SellerID: "josiah", Item: "cheese"}: sales,

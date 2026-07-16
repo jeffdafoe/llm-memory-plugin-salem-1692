@@ -234,11 +234,13 @@ func dropDrinkSatisfiers(snap *sim.Snapshot, items []OwnStockItem) []OwnStockIte
 // "has something to pay with" means and none of them can drift back to coins-only.
 //
 // No exclusion ("" ): the consumer buy cue is a buyer paying for something it means
-// to CONSUME, so every good it carries is fair payment. The restock cue passes the
+// to CONSUME, so every TRADEABLE good it carries is fair payment — a service or an
+// eat-here-only food is not (resolvePayItems rejects both; LLM-445), so a pack
+// holding nothing else reads as no means to barter. The restock cue passes the
 // item being bought instead — restocking a line of stock by offering that same stock
 // is not a payment path (see HoldsBarterableGoodsExcept).
-func holdsBarterableGoods(actorSnap *sim.ActorSnapshot) bool {
-	return sim.HoldsBarterableGoodsExcept(actorSnap.Inventory, "")
+func holdsBarterableGoods(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) bool {
+	return sim.HoldsBarterableGoodsExcept(snap.ItemKinds, actorSnap.Inventory, "")
 }
 
 // satiationMealFloor is the itemFeltAmount magnitude at which a satisfier reads
@@ -443,7 +445,7 @@ type satiationVendorCandidate struct {
 //     consumer can barter — a coin-only check would re-introduce false dead-ends.
 func gatherSatiationVendors(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSnapshot, need sim.NeedKey) []SatiationVendor {
 	coins := actorSnap.Coins
-	hasGoods := holdsBarterableGoods(actorSnap)
+	hasGoods := holdsBarterableGoods(snap, actorSnap)
 	byStructure := make(map[sim.StructureID]satiationVendorCandidate)
 	for _, vc := range findVendorConsumables(snap, actorID, need, "ask the seller") {
 		// No resolvable workplace → no structure_id for move_to (unactionable);
@@ -737,7 +739,7 @@ func gatherCoPresentPeerOffers(snap *sim.Snapshot, actorID sim.ActorID, actorSna
 	// negotiated on their turn), so the gate is a flat coin>0-or-goods, not the
 	// vendor cue's costCoins affordability tier. Reuses holdsBarterableGoods so the
 	// two buy-food affordances read the SAME goods signal (discussion-109 no-drift).
-	if actorSnap.Coins <= 0 && !holdsBarterableGoods(actorSnap) {
+	if actorSnap.Coins <= 0 && !holdsBarterableGoods(snap, actorSnap) {
 		return nil
 	}
 	buyerIsDistributor := sim.ActorIsDistributor(snap.VillageObjects, actorSnap.WorkStructureID)

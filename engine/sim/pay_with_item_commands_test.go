@@ -2497,6 +2497,53 @@ func TestPayWithItem_PayItems_ServiceRejected(t *testing.T) {
 	}
 }
 
+// TestPayWithItem_PayItems_EatHereOnlyRejected (LLM-445) — an eat-here-only
+// consumable (stew: consumable, neither service nor portable) is eaten where
+// it's served and can't be carried off as payment. Offering one in pay_items
+// is rejected at intake by the shared resolver — the tendered-goods mirror of
+// the WORK-405 buy-leg clamp — while a portable good (bread) still passes.
+// Observed live before the gate: porridge circulating as de-facto currency.
+func TestPayWithItem_PayItems_EatHereOnlyRejected(t *testing.T) {
+	w, stop, at := buildFastPathFixture(t, 7)
+	defer stop()
+	mustSend(t, w, func(world *sim.World) {
+		world.Actors["alice"].Inventory = map[sim.ItemKind]int{"stew": 2, "bread": 2}
+	})
+
+	// stew in pay_items: rejected at resolve, before any settle path.
+	_, err := w.Send(sim.PayWithItem("alice", "Bob", "ale", 1, 0, false, nil,
+		[]sim.PayItemInput{{Item: "stew", Qty: 1}}, 0, 0, "", at))
+	if err == nil || !strings.Contains(err.Error(), "eaten where it's served") {
+		t.Fatalf("want eat-here-payment rejection, got %v", err)
+	}
+
+	// bread (portable) in pay_items: resolves fine — the gate is class-scoped,
+	// not a blanket food ban.
+	if _, err := w.Send(sim.PayWithItem("alice", "Bob", "ale", 1, 0, false, nil,
+		[]sim.PayItemInput{{Item: "bread", Qty: 1}}, 0, 0, "", at)); err != nil {
+		t.Fatalf("portable good must still pass as payment, got %v", err)
+	}
+}
+
+// TestCounterPay_EatHereOnlyRejected (LLM-445) — the seller's counter goods
+// resolve through the same shared resolver, so countering "pay me in stew
+// instead" is rejected the same way the buyer's pay_items leg is.
+func TestCounterPay_EatHereOnlyRejected(t *testing.T) {
+	w, stop, at := buildFastPathFixture(t, 7)
+	defer stop()
+	res, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, true, nil, nil, 0, 0, "", at))
+	if err != nil {
+		t.Fatalf("PayWithItem seed offer: %v", err)
+	}
+	ledgerID := res.(sim.PayWithItemResult).LedgerID
+
+	_, err = w.Send(sim.CounterPay("bob", ledgerID, 0,
+		[]sim.PayItemInput{{Item: "stew", Qty: 1}}, "", at))
+	if err == nil || !strings.Contains(err.Error(), "eaten where it's served") {
+		t.Fatalf("want eat-here counter-goods rejection, got %v", err)
+	}
+}
+
 // TestPayWithItem_FastPath_BuyerDispositionWins (ZBBS-WORK-402): the quote
 // is takeaway, the buyer takes it eat-here — the take settles on the fast
 // path with the BUYER's disposition (ItemConsumed fires, the entry carries

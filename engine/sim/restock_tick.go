@@ -302,7 +302,7 @@ func buyerCanTransact(w *World, a *Actor, vendorID ActorID, item ItemKind) bool 
 	case price == 0 && a.Coins > 0:
 		return true
 	default:
-		return HoldsBarterableGoodsExcept(a.Inventory, item)
+		return HoldsBarterableGoodsExcept(w.ItemKinds, a.Inventory, item)
 	}
 }
 

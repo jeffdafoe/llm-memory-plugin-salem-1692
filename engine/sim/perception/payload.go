@@ -1329,8 +1329,19 @@ type InventoryItem struct {
 	// ingredient (LLM-166), so a hungry model doesn't mistake it for food.
 	// Empty for an edible item (the satiation cue owns those) or a non-ingredient
 	// (nothing to say). See buildInventoryView.
-	Use  string
-	kind sim.ItemKind
+	Use string
+	// EatHere marks an eat-here-only carried food (ItemKindDef.EatHereOnly —
+	// LLM-445): the carry readout annotates it "to eat here — not for trade" so
+	// the model doesn't plan a barter the resolver rejects. Mutually exclusive
+	// with Use (Use is inedibles-only; EatHere is consumables-only).
+	EatHere bool
+	// Barterable mirrors sim.KindBarterable for this kind (LLM-445): could this
+	// good go up in a pay_items / offer_trade / labor-reward bundle at all (not a
+	// service, not eat-here-only). Render's coinless "offer goods in trade" line
+	// keys on it so the purse cue and the means-to-pay gates
+	// (holdsBarterableGoods) cannot disagree about the same pack.
+	Barterable bool
+	kind       sim.ItemKind
 }
 
 // InFlightMoveView is the perception-side projection of the subject's

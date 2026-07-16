@@ -775,7 +775,7 @@ func findItemVendors(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *sim.Act
 	// Goods it could put up in trade FOR this item — the item itself excluded, since a
 	// keeper down to his last few carrots cannot buy carrots by offering carrots
 	// (LLM-406). Same predicate the warrant reads (sim.buyerCanTransact).
-	hasGoods := sim.HoldsBarterableGoodsExcept(buyerSnap.Inventory, itemKind)
+	hasGoods := sim.HoldsBarterableGoodsExcept(snap.ItemKinds, buyerSnap.Inventory, itemKind)
 	out := make([]RestockVendor, 0, len(best))
 	var blocked []RestockBlockedSupplier
 	for structureID, p := range best {

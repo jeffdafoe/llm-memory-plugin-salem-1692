@@ -332,7 +332,7 @@ func SolicitWork(workerID ActorID, employerName string, reward int, rewardItems 
 			// decline is remembered — and the harness steers the worker to re-ask in
 			// kind. Only a genuinely destitute employer (no coin AND no goods —
 			// employerCanHireInKind false) still hits the LLM-193 auto-decline below.
-			if !canCover && employerCanHireInKind(employer) {
+			if !canCover && employerCanHireInKind(w, employer) {
 				return LaborSolicitResult{
 					State:        LaborStateBarterPossible,
 					EmployerName: employer.DisplayName,
@@ -1281,20 +1281,16 @@ func employerCanCoverLaborReward(employer *Actor, offer *LaborOffer) bool {
 // employerCanHireInKind reports whether the employer holds any tradeable goods
 // it could offer as an in-kind wage — the "could this employer hire AT ALL"
 // predicate (LLM-243), distinct from employerCanCoverLaborReward's "can it cover
-// THIS ask". Any carried ItemKind with a positive quantity counts: the worker
-// names the reward goods and the employer either holds them or not, so this
-// gates only on whether goods exist to pay WITH, never on whether these
+// THIS ask". Delegates to the shared means-to-pay predicate (LLM-406/LLM-445):
+// a carried kind counts only if it could go in a reward bundle at all (not a
+// service, not eat-here-only — a pot of porridge is not a wage), and it gates
+// only on whether such goods exist to pay WITH, never on whether these
 // particular goods match a given ask (that is the per-offer coverage check).
-// The sim-side mirror of perception.holdsBarterableGoods (LLM-222), kept in step
-// so the hiring gate and the buy-side means-to-pay cue agree on what "has goods
-// to trade" means. World-goroutine-only.
-func employerCanHireInKind(employer *Actor) bool {
-	for _, qty := range employer.Inventory {
-		if qty > 0 {
-			return true
-		}
-	}
-	return false
+// The sim-side mirror of perception.holdsBarterableGoods (LLM-222), now
+// literally the same predicate so the hiring gate and the buy-side
+// means-to-pay cue cannot drift. World-goroutine-only.
+func employerCanHireInKind(w *World, employer *Actor) bool {
+	return HoldsBarterableGoodsExcept(w.ItemKinds, employer.Inventory, "")
 }
 
 // workerHasLiveJob reports whether the worker currently holds a committed labor
