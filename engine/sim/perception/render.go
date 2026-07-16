@@ -3651,10 +3651,25 @@ func renderHuddlePartWarrantLine(n int, r sim.HuddlePartReason, nameOf func(sim.
 // (gone from the snapshot — nameOf's "someone" fallback) is dropped rather
 // than guessed at; returns "" when nothing survives, which the caller turns
 // into the bare no-peers sentence.
+//
+// The "someone" / "a stranger" cases match the literal sentinel labels minted
+// by the Render nameOf closure and descriptorLabel (build.go) — the same
+// contract every "!= \"someone\"" check in this file leans on. Rewording
+// either label there without updating here degrades gracefully (the label
+// renders in the list instead of merging/dropping), and the phrase-edge unit
+// test pins the pairing.
 func huddlePeerPhrase(ids []sim.ActorID, nameOf func(sim.ActorID) string) string {
 	var labels []string
 	strangers := 0
+	// Stamp sites collect peers from huddle member SETS, so duplicates can't
+	// occur today — the seen-guard is insurance so a future caller passing a
+	// rebuilt list can't double-name a peer or inflate the stranger count.
+	seen := make(map[sim.ActorID]struct{}, len(ids))
 	for _, id := range ids {
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
 		switch label := nameOf(id); label {
 		case "someone":
 			// Unresolvable — deleted between event and publish. Skip.

@@ -79,6 +79,15 @@ func TestRenderWarrantLine_HuddlePartPeers(t *testing.T) {
 			want:  "1. You joined a conversation with Mercy Lewis, John Ellis, and others.\n",
 		},
 		{
+			// A duplicated ID (impossible from the set-derived stamp sites,
+			// but the phrase guards it) neither double-names a peer nor
+			// inflates the stranger count.
+			label: "left with duplicated peer ids",
+			kind:  sim.WarrantKindHuddleLeft,
+			peers: []sim.ActorID{"mercy", "mercy", "tabitha", "tabitha"},
+			want:  "1. You left the conversation with Mercy Lewis and a stranger.\n",
+		},
+		{
 			// Empty peer list (lone-member dissolve) keeps the bare sentence.
 			label: "left alone",
 			kind:  sim.WarrantKindHuddleLeft,

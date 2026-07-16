@@ -82,13 +82,18 @@ func TestHuddlePartReason_JoinAndLeaveNamePeers(t *testing.T) {
 // TestHuddlePartReason_StartOutdoorHuddle covers the commands_move.go stamp
 // site: with no reason override, each participant's default HuddleJoined
 // warrant carries the members already joined before them in participant
-// order — first participant none, second the first.
+// order — first none, second the first, third the first two. Asserting the
+// EARLIER participants' stamps after the whole command has run also pins
+// that the per-participant peer slice a warrant captured is not mutated by
+// the later loop iterations (the aliasing hazard code_review flagged — a
+// future refactor reusing one slice across iterations would corrupt ben's
+// stamped peers when cal joins).
 func TestHuddlePartReason_StartOutdoorHuddle(t *testing.T) {
 	w, cancel, _ := buildOutdoorTestWorld(t)
 	defer cancel()
 
 	now := time.Now().UTC()
-	if _, err := w.Send(sim.StartOutdoorHuddle([]sim.ActorID{"ann", "ben"}, outdoorAnchor, 3, nil, now)); err != nil {
+	if _, err := w.Send(sim.StartOutdoorHuddle([]sim.ActorID{"ann", "ben", "cal"}, outdoorAnchor, 3, nil, now)); err != nil {
 		t.Fatalf("StartOutdoorHuddle: %v", err)
 	}
 
@@ -105,4 +110,11 @@ func TestHuddlePartReason_StartOutdoorHuddle(t *testing.T) {
 		t.Fatalf("ben Reason type = %T, want HuddlePartReason", benJoined.Reason)
 	}
 	assertPeerIDs(t, "ben joined", benReason.PeerIDs, "ann")
+
+	calJoined := findWarrant(readWarrants(t, w, "cal"), sim.WarrantKindHuddleJoined)
+	calReason, ok := calJoined.Reason.(sim.HuddlePartReason)
+	if !ok {
+		t.Fatalf("cal Reason type = %T, want HuddlePartReason", calJoined.Reason)
+	}
+	assertPeerIDs(t, "cal joined", calReason.PeerIDs, "ann", "ben")
 }
