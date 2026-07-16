@@ -2858,6 +2858,15 @@ var perceptionScenarios = []perceptionScenario{
 		build: keeperLowHearthShortWoodWithSupplier,
 	},
 	{
+		name: "keeper_mid_stoke_no_restoke",
+		summary: "LLM-435: Hannah mid-stoke of her own tavern hearth (a stoke SourceActivity in flight) under a storm, the " +
+			"fire still reading OUT because the extension lands only at completion, wood in hand. The golden pins the " +
+			"ABSENCE of the '## Your hearth' cue (and so the stoke tool, which rides the same Hearth signal) plus the " +
+			"mid-activity coda that holds her to done() — re-advertising stoke to an actor already mid-stoke would bait the " +
+			"'already busy ... before tending the fire' reject.",
+		build: keeperMidStokeNoRestoke,
+	},
+	{
 		name: "hired_worker_at_employer_low_hearth",
 		summary: "LLM-412: Anne Walker, mid-hire (Working) at Hannah's tavern during a storm, fire down to embers, carrying " +
 			"firewood. The golden pins the hired framing — '## The hearth where you're working', the truthful relationship, " +
@@ -5568,6 +5577,41 @@ func TestGoldensRepairCueWheneverColocatedOwnerRepairable(t *testing.T) {
 			}
 			if out := renderScenario(sc); !strings.Contains(out, header) {
 				t.Errorf("scenario %q: subject owns a repairable business and is co-located with it (inside or at pin) but the prompt omits the %q repair cue (LLM-266)", sc.name, header)
+			}
+		})
+	}
+}
+
+// TestGoldensNoSourceActivityStartCueWhileMidSourceActivity is the LLM-435
+// cross-scenario invariant: whenever the subject already has a timed source
+// activity in flight (gather/repair/stoke/refresh), the built payload must carry
+// NONE of the source-activity-START cues — the hearth cue (gates stoke), the
+// stall-repair cue (gates repair), or the gatherable cue (gates gather). The
+// substrate rejects a fresh start mid-window ("you are already busy ..."), and
+// the minted result lands only at completion, so the source object still reads as
+// actionable; an un-gated cue would re-advertise its start tool to a busy actor
+// and bait that reject on every reactor tick inside the window (the live Hannah
+// "already busy ... before tending the fire" reject). The mid-activity coda holds
+// the actor to done() instead. Runs over the whole matrix so a future cue can't
+// reintroduce a start affordance for a busy actor; keeper_mid_stoke_no_restoke is
+// the non-vacuous fixture.
+func TestGoldensNoSourceActivityStartCueWhileMidSourceActivity(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, warrants := sc.build()
+			p := Build(snap, actorID, warrants)
+			if p.Actor.InFlightSourceActivity == nil {
+				return // subject isn't mid a source activity — invariant N/A here
+			}
+			if p.Hearth != nil {
+				t.Errorf("scenario %q: subject is mid a source activity, but the hearth (stoke) cue is advertised — a fresh stoke bounces \"already busy\"", sc.name)
+			}
+			if p.StallRepair != nil {
+				t.Errorf("scenario %q: subject is mid a source activity, but the stall-repair cue is advertised — a fresh repair bounces \"already busy\"", sc.name)
+			}
+			if p.Surroundings.GatherableItem != "" {
+				t.Errorf("scenario %q: subject is mid a source activity, but the gatherable (gather) cue is advertised (%q) — a fresh gather bounces \"already busy\"", sc.name, p.Surroundings.GatherableItem)
 			}
 		})
 	}

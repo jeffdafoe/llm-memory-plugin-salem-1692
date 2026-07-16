@@ -261,6 +261,58 @@ func keeperAtDeadHearthStorm() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	return snap, "hannah", warrants
 }
 
+// keeperMidStokeNoRestoke: Hannah mid-stoke of her own tavern hearth (a stoke
+// SourceActivity in flight), the fire still reading OUT because the extension
+// lands only at completion, wood still in hand under a storm. The "## Your
+// hearth" cue and the stoke tool must both be SUPPRESSED — re-advertising stoke
+// to an actor already mid-stoke baits the "already busy — finish what you're
+// doing before tending the fire" reject (StartStoke gate). What renders instead
+// is the mid-activity coda that holds her in place to done(). LLM-435.
+func keeperMidStokeNoRestoke() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	now := 720
+	start, end := 360, 1080
+	hannah := &sim.ActorSnapshot{
+		Kind:                   sim.KindNPCStateful,
+		DisplayName:            "Hannah Boggs",
+		Role:                   "innkeeper",
+		State:                  sim.StateIdle,
+		Pos:                    sim.WorldPos{X: 100, Y: 100}.Tile(),
+		InsideStructureID:      "tavern",
+		WorkStructureID:        "tavern",
+		ScheduleStartMin:       &start,
+		ScheduleEndMin:         &end,
+		Coins:                  25,
+		Needs:                  map[sim.NeedKey]int{},
+		Inventory:              map[sim.ItemKind]int{sim.FirewoodItemKind: 2},
+		SourceActivityKind:     sim.SourceActivityStoke,
+		SourceActivityObjectID: "tavern",
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:       hearthClock,
+		LocalMinuteOfDay:  &now,
+		NeedThresholds:    sim.NeedThresholds{},
+		Assets:            emptyAssetSet,
+		HearthLowMinutes:  60,
+		StokeWoodPerStoke: 1,
+		Environment:       sim.WorldEnvironment{Weather: sim.WeatherStorm},
+		Actors:            map[sim.ActorID]*sim.ActorSnapshot{"hannah": hannah},
+		Structures: map[sim.StructureID]*sim.Structure{
+			"tavern": plainStructure("tavern", "Tavern"),
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"tavern": {
+				ID:           "tavern",
+				DisplayName:  "Tavern",
+				Pos:          sim.WorldPos{X: 100, Y: 100},
+				OwnerActorID: "hannah",
+				Tags:         []string{sim.TagBusiness, sim.TagHearth},
+				// HearthLitUntil zero — fire out mid-window; the extension lands at completion.
+			},
+		},
+	}
+	return snap, "hannah", nil
+}
+
 // keeperLowHearthShortWoodWithSupplier: calm sky, embers, no wood in hand, and
 // a firewood supplier of record (Ezekiel at the Blacksmith) — the
 // destination-bearing buy steer, the firewood twin of the LLM-274 nail steer.

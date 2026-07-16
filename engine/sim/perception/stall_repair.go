@@ -60,6 +60,9 @@ func buildStallRepair(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 	if snap == nil || actorSnap == nil {
 		return nil
 	}
+	if actorMidSourceActivity(actorSnap) {
+		return nil // mid a source-activity window — a fresh repair bounces "already busy ... before mending the stall"
+	}
 	stall, hired := sim.WearableStallToMend(snap.VillageObjects, snap.LaborLedger, actorID)
 	if stall == nil {
 		return nil
