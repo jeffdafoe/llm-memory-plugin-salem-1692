@@ -589,7 +589,7 @@ func StartOutdoorHuddle(participants []ActorID, anchor Position, radius int, rea
 				// them overwritten here, which is intentional.
 				meta := WarrantMeta{
 					TriggerActorID: id,
-					Reason:         BasicWarrantReason{K: WarrantKindHuddleJoined},
+					Reason:         HuddlePartReason{K: WarrantKindHuddleJoined, PeerIDs: others},
 				}
 				if reason != nil {
 					meta.TriggerActorID = reason.TriggerActorID
