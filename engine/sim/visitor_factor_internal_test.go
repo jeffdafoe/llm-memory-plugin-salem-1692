@@ -52,6 +52,21 @@ func TestSeedFactorPack(t *testing.T) {
 	}
 }
 
+// TestCloneVisitorState_DistributorOnly guards that the clone/snapshot copy path carries the
+// factor flag (LLM-410). cloneVisitorState backs ActorSnapshot publication (world.go), the
+// mem-repo boundary, and the ActorDeparted event; a field-by-field copy that dropped
+// DistributorOnly would let a live factor lose its gate between snapshots even though the
+// plan-jsonb persistence round-trips.
+func TestCloneVisitorState_DistributorOnly(t *testing.T) {
+	cp := cloneVisitorState(&VisitorState{Archetype: FactorArchetype, Origin: FactorOrigin, DistributorOnly: true})
+	if cp == nil || !cp.DistributorOnly {
+		t.Fatalf("cloneVisitorState dropped DistributorOnly: %+v", cp)
+	}
+	if cloneVisitorState(&VisitorState{}).DistributorOnly {
+		t.Error("cloneVisitorState invented DistributorOnly on an ordinary traveler")
+	}
+}
+
 // TestPickDistributorArrival — the factor targets the distributor-tagged structure (smallest ID
 // on a tie); an ordinary traveler targets the tavern; a factor in a village with no distributor
 // falls back to the tavern anchor.
