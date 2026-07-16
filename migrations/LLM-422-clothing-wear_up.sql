@@ -49,8 +49,26 @@ ALTER TABLE item_kind ADD COLUMN IF NOT EXISTS wear_minutes INTEGER NOT NULL DEF
 --    fresh / non-garment; a set value must be a live counter (the engine deletes
 --    wear entries at zero), so guard the invariant against out-of-band writes —
 --    the exact shape of actor_inventory_uses_left_positive (LLM-330).
-ALTER TABLE actor_inventory ADD COLUMN IF NOT EXISTS worn_minutes_left INTEGER
-    CONSTRAINT actor_inventory_worn_minutes_left_positive CHECK (worn_minutes_left IS NULL OR worn_minutes_left > 0);
+--
+--    Add the column and its CHECK constraint SEPARATELY, each idempotent:
+--    `ADD COLUMN IF NOT EXISTS` skips the ENTIRE statement (constraint included)
+--    when the column already exists, so an inline constraint wouldn't be
+--    guaranteed on a rerun or an out-of-band column add. The guarded constraint
+--    add below makes the invariant certain however the column came to exist.
+ALTER TABLE actor_inventory ADD COLUMN IF NOT EXISTS worn_minutes_left INTEGER;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conname = 'actor_inventory_worn_minutes_left_positive'
+           AND conrelid = 'public.actor_inventory'::regclass
+    ) THEN
+        ALTER TABLE actor_inventory
+            ADD CONSTRAINT actor_inventory_worn_minutes_left_positive
+            CHECK (worn_minutes_left IS NULL OR worn_minutes_left > 0);
+    END IF;
+END $$;
 
 -- 3. Budgets (worked-minutes). Sturdier warm goods last longer; linen wears fast.
 UPDATE item_kind SET wear_minutes = 600 WHERE name = 'coat';
