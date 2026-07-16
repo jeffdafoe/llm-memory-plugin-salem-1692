@@ -79,6 +79,32 @@ func TestColdRatePerMinuteX100_ExposureMatrix(t *testing.T) {
 	}
 }
 
+// TestColdRatePerMinuteX100_NegativeRecoveryFloored pins the LLM-439 runtime
+// defense-in-depth: a negative recovery rate reaching coldRatePerMinuteX100 (via
+// any WorldSettings not built through the clamping pg loader) must NOT flip
+// recovery into accrual — the max(0, …) floor holds both branches at 0.
+func TestColdRatePerMinuteX100_NegativeRecoveryFloored(t *testing.T) {
+	now := time.Now().UTC()
+
+	// Warm by a lit fire, but the warm-recovery rate is misconfigured negative:
+	// floored to 0, not returned as a positive (accrual by a fire).
+	w, a, hearth := coldTestWorld(WeatherClear, PhaseDay)
+	a.InsideStructureID = "tavern"
+	hearth.HearthLitUntil = now.Add(time.Hour)
+	w.Settings.ColdWarmRecoveryPerMinuteX100 = -100
+	if got := coldRatePerMinuteX100(w, a, now); got != 0 {
+		t.Errorf("negative warm-recovery = %d, want 0 (never accrual by a fire)", got)
+	}
+
+	// Clear sky, unwarmed, clear-recovery misconfigured negative: same floor.
+	hearth.HearthLitUntil = time.Time{}
+	a.InsideStructureID = ""
+	w.Settings.ColdClearRecoveryPerMinuteX100 = -50
+	if got := coldRatePerMinuteX100(w, a, now); got != 0 {
+		t.Errorf("negative clear-recovery = %d, want 0", got)
+	}
+}
+
 // warmGarmentCatalog is the minimal item catalog for the warm-garment tests:
 // one kind carrying the warms capability, one without. Local to the test so the
 // cold mechanic's coverage never depends on the production clothing catalog

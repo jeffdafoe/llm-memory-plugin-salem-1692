@@ -528,6 +528,100 @@ func TestParseIntSetting(t *testing.T) {
 	}
 }
 
+// TestClampNonNegSetting — a valid value passes through, a negative clamps to 0
+// and records a warning, and a missing row falls to the (in-range) default
+// without a warning (LLM-439).
+func TestClampNonNegSetting(t *testing.T) {
+	values := map[string]string{
+		"ok":  "25",
+		"neg": "-25",
+	}
+	var warnings []sim.SettingWarning
+
+	if got := clampNonNegSetting(values, "ok", 100, &warnings); got != 25 {
+		t.Errorf("ok = %d, want 25", got)
+	}
+	if got := clampNonNegSetting(values, "missing", 100, &warnings); got != 100 {
+		t.Errorf("missing = %d, want default 100", got)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("in-range + missing recorded warnings: %+v", warnings)
+	}
+
+	if got := clampNonNegSetting(values, "neg", 100, &warnings); got != 0 {
+		t.Errorf("neg = %d, want clamp to 0", got)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("negative recorded %d warnings, want 1: %+v", len(warnings), warnings)
+	}
+	if warnings[0].Key != "neg" || warnings[0].Raw != -25 || warnings[0].Clamped != 0 {
+		t.Errorf("warning = %+v, want {key:neg raw:-25 clamped:0}", warnings[0])
+	}
+}
+
+// coldRateKnobs maps every cold setting key to the WorldSettings field it loads
+// into — the full set clampNonNegSetting is applied to (LLM-439). Kept beside the
+// buildSettings test so a new cold knob added without validation is caught.
+var coldRateKnobs = []struct {
+	key string
+	get func(sim.WorldSettings) int
+}{
+	{"cold_storm_outdoors_per_minute_x100", func(s sim.WorldSettings) int { return s.ColdStormOutdoorsPerMinuteX100 }},
+	{"cold_storm_indoors_per_minute_x100", func(s sim.WorldSettings) int { return s.ColdStormIndoorsPerMinuteX100 }},
+	{"cold_warm_garment_per_minute_x100", func(s sim.WorldSettings) int { return s.ColdWarmGarmentPerMinuteX100 }},
+	{"cold_threadbare_garment_per_minute_x100", func(s sim.WorldSettings) int { return s.ColdThreadbareGarmentPerMinuteX100 }},
+	{"cold_night_multiplier_x100", func(s sim.WorldSettings) int { return s.ColdNightMultiplierX100 }},
+	{"cold_warm_recovery_per_minute_x100", func(s sim.WorldSettings) int { return s.ColdWarmRecoveryPerMinuteX100 }},
+	{"cold_clear_recovery_per_minute_x100", func(s sim.WorldSettings) int { return s.ColdClearRecoveryPerMinuteX100 }},
+	{"cold_produce_sap_pct", func(s sim.WorldSettings) int { return s.ColdProduceSapPct }},
+}
+
+// TestBuildSettings_ClampsNegativeColdRates — end to end through buildSettings for
+// EVERY cold knob: a stored negative clamps the field to 0 and records exactly one
+// SettingWarning naming that key (LLM-439). The recovery keys are the dangerous
+// case — un-clamped they would flip recovery into accrual.
+func TestBuildSettings_ClampsNegativeColdRates(t *testing.T) {
+	for _, knob := range coldRateKnobs {
+		t.Run(knob.key, func(t *testing.T) {
+			s := buildSettings(map[string]string{knob.key: "-7"})
+			if got := knob.get(s); got != 0 {
+				t.Errorf("%s = %d, want clamp to 0", knob.key, got)
+			}
+			var flagged []sim.SettingWarning
+			for _, wrn := range s.SettingWarnings {
+				if wrn.Key == knob.key {
+					flagged = append(flagged, wrn)
+				}
+			}
+			if len(flagged) != 1 {
+				t.Fatalf("%s recorded %d warnings, want 1: %+v", knob.key, len(flagged), s.SettingWarnings)
+			}
+			if flagged[0].Raw != -7 || flagged[0].Clamped != 0 {
+				t.Errorf("%s warning = %+v, want {raw:-7 clamped:0}", knob.key, flagged[0])
+			}
+		})
+	}
+}
+
+// TestBuildSettings_ZeroColdRatesPreservedNoWarning — 0 is in range for every cold
+// knob (no accrual / full relief / no sap / plain daytime rate for the multiplier),
+// so a stored 0 is kept verbatim and generates NO warning (LLM-439).
+func TestBuildSettings_ZeroColdRatesPreservedNoWarning(t *testing.T) {
+	values := map[string]string{}
+	for _, knob := range coldRateKnobs {
+		values[knob.key] = "0"
+	}
+	s := buildSettings(values)
+	for _, knob := range coldRateKnobs {
+		if got := knob.get(s); got != 0 {
+			t.Errorf("%s = %d, want 0 preserved", knob.key, got)
+		}
+	}
+	if len(s.SettingWarnings) != 0 {
+		t.Errorf("zero-value cold knobs recorded warnings: %+v", s.SettingWarnings)
+	}
+}
+
 // TestParseFloatSetting — happy + fallback paths.
 func TestParseFloatSetting(t *testing.T) {
 	values := map[string]string{

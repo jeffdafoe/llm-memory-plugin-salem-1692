@@ -101,7 +101,12 @@ func actorIsWarm(w *World, a *Actor, now time.Time) bool {
 // recovering on this same schedule — waking them would churn).
 func coldRatePerMinuteX100(w *World, a *Actor, now time.Time) int {
 	if actorIsWarm(w, a, now) {
-		return -w.Settings.ColdWarmRecoveryPerMinuteX100
+		// max(0, …): a recovery rate is returned NEGATED, so a negative setting would
+		// flip recovery into accrual (cold rising by a fire). LLM-439 clamps this at
+		// load for the pg boot path; this runtime floor is the defense-in-depth twin
+		// for any WorldSettings built another way (mem loader, test, a future
+		// live-settings path). The accrual/garment branches keep their own g >= 0 guards.
+		return -max(0, w.Settings.ColdWarmRecoveryPerMinuteX100)
 	}
 	if w.Environment.Weather == WeatherStorm {
 		rate := w.Settings.ColdStormOutdoorsPerMinuteX100
@@ -139,7 +144,9 @@ func coldRatePerMinuteX100(w *World, a *Actor, now time.Time) int {
 		}
 		return rate
 	}
-	return -w.Settings.ColdClearRecoveryPerMinuteX100
+	// max(0, …): the clear-sky recovery twin of the warm-branch floor above — a
+	// negative setting must not flip clear-sky recovery into accrual (LLM-439).
+	return -max(0, w.Settings.ColdClearRecoveryPerMinuteX100)
 }
 
 // coldEligible mirrors the needs-tick eligibility filter: agent-backed or

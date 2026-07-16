@@ -119,6 +119,15 @@ type UmbilicalSettingsDTO struct {
 	VisitorFactorPackUnits     int `json:"visitor_factor_pack_units"`
 	VisitorFactorPurseMin      int `json:"visitor_factor_purse_min"`
 	VisitorFactorPurseMax      int `json:"visitor_factor_purse_max"`
+
+	// SettingWarnings lists settings that were out of range at load and clamped to
+	// a safe bound (LLM-439) — today the cold rate knobs, which must be >= 0. Each
+	// carries the key, the raw stored value, the clamped value in use, and a plain-
+	// English reason. `[]`, never null, when every setting loaded in range (the
+	// common case). Regenerated at every boot from the stored value, so a
+	// misconfiguration keeps showing here across the village's frequent restarts
+	// until an operator fixes the setting row.
+	SettingWarnings []sim.SettingWarning `json:"setting_warnings"`
 }
 
 // handleUmbilicalSettings serves the current live-tunable world settings. Read on
@@ -183,6 +192,11 @@ func (s *Server) handleUmbilicalSettings(w http.ResponseWriter, r *http.Request)
 		if factorPurseMax < factorPurseMin {
 			factorPurseMax = factorPurseMin
 		}
+		// Deep-copy the clamp warnings so the DTO holds no alias into world.Settings
+		// (the JSON encode runs off the world goroutine), and so the field encodes as
+		// [] rather than null when nothing was clamped (the common case).
+		settingWarnings := make([]sim.SettingWarning, 0, len(world.Settings.SettingWarnings))
+		settingWarnings = append(settingWarnings, world.Settings.SettingWarnings...)
 		dto := UmbilicalSettingsDTO{
 			ContractVersion:                       ContractVersion,
 			NeedThresholds:                        make(map[string]int, len(world.Settings.NeedThresholds)),
@@ -212,6 +226,7 @@ func (s *Server) handleUmbilicalSettings(w http.ResponseWriter, r *http.Request)
 			VisitorFactorPackUnits:                factorUnits,
 			VisitorFactorPurseMin:                 factorPurseMin,
 			VisitorFactorPurseMax:                 factorPurseMax,
+			SettingWarnings:                       settingWarnings,
 		}
 		for k, v := range world.Settings.NeedThresholds {
 			dto.NeedThresholds[string(k)] = v

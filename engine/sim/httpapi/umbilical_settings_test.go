@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,6 +32,41 @@ func TestUmbilicalSettings_NeedThresholds(t *testing.T) {
 	}
 	if out.NeedThresholds["hunger"] != 20 || out.NeedThresholds["thirst"] != 18 {
 		t.Fatalf("need_thresholds = %v, want hunger:20 thirst:18", out.NeedThresholds)
+	}
+}
+
+// TestUmbilicalSettings_SettingWarnings verifies the LLM-439 clamp warnings
+// surface on the settings read: a seeded warning appears verbatim, and the field
+// encodes as [] (never null) when nothing was clamped.
+func TestUmbilicalSettings_SettingWarnings(t *testing.T) {
+	srv, h := controlServer(t, operatorPerms)
+
+	// Empty case first: no warnings → the field must be [] in the wire body.
+	rec := req(t, h, "/api/village/umbilical/settings", "tok")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("settings = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.String(); !strings.Contains(body, `"setting_warnings":[]`) {
+		t.Errorf("empty setting_warnings not encoded as []; body=%s", body)
+	}
+
+	// Seed a clamp warning as the loader would have, and confirm it surfaces.
+	if _, err := srv.world.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Settings.SettingWarnings = []sim.SettingWarning{{
+			Key: "cold_warm_recovery_per_minute_x100", Raw: -200, Clamped: 0,
+			Reason: "value must be 0 or greater; clamped to 0",
+		}}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed warning: %v", err)
+	}
+	out := decodeSettings(t, h)
+	if len(out.SettingWarnings) != 1 {
+		t.Fatalf("setting_warnings = %+v, want 1", out.SettingWarnings)
+	}
+	w := out.SettingWarnings[0]
+	if w.Key != "cold_warm_recovery_per_minute_x100" || w.Raw != -200 || w.Clamped != 0 {
+		t.Errorf("warning = %+v", w)
 	}
 }
 

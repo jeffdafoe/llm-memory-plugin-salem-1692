@@ -736,6 +736,29 @@ type WorldSettings struct {
 	// choice, farm upkeep, stall repair, seek work). Seeded
 	// DefaultEcoEconomyGap when the eco_economy_gap_seconds key is absent.
 	EcoEconomyGap time.Duration
+
+	// SettingWarnings records settings that were out of range at load and clamped
+	// to a safe bound (LLM-439). Populated by the pg settings loader — today the
+	// cold rate knobs, each of which must be >= 0 (a negative recovery rate would
+	// otherwise flip recovery into accrual). Surfaced on the umbilical /settings
+	// route so an operator sees a misconfigured value rather than a silently
+	// corrected one; NOT checkpoint-persisted — it is regenerated at every boot
+	// from the (durable) stored value, so it survives the village's frequent
+	// restarts for as long as the misconfiguration itself does. Empty when every
+	// setting loaded in range (the common case).
+	SettingWarnings []SettingWarning
+}
+
+// SettingWarning records one WorldSettings value that was out of range at load
+// and clamped to a safe bound (LLM-439). The clamp keeps the always-live village
+// booting on a fat-fingered config while the warning — carried to the umbilical
+// /settings surface — makes the bad value visible. Regenerated at every boot, so
+// it persists across restarts as long as the stored value stays out of range.
+type SettingWarning struct {
+	Key     string `json:"key"`     // the setting-table key
+	Raw     int    `json:"raw"`     // the out-of-range stored value
+	Clamped int    `json:"clamped"` // the safe value the engine is using instead
+	Reason  string `json:"reason"`  // plain-English why, for an operator reading it cold
 }
 
 // DefaultOutdoorSceneRadiusValue is the fallback radius used when
