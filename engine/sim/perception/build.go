@@ -1298,6 +1298,24 @@ func resolveCoPresentMember(snap *sim.Snapshot, subjectID sim.ActorID, subj *sim
 				break
 			}
 		}
+		// LLM-440: surface a co-present member mid a timed source activity (mending a
+		// business, tending a hearth fire, gathering at a source) as busy in "## Around
+		// you", so an onlooker reads a keeper deep in a repair/stoke/gather as occupied
+		// rather than free to greet or pitch. The observer half of the LLM-435 self-cue
+		// suppression. The snapshot's SourceActivityKind is already BusyAtSource-gated at
+		// projection (world.go) — its presence here means the window is genuinely in
+		// flight, the SAME signal the subject's own in-flight self-line reads, so observer
+		// and subject can't drift on who is busy. Gate to the three "work" kinds that
+		// busyActivityPhrase renders: refresh (eat/drink at a source) is deliberately left
+		// to the Eating annotation, and confining the flag to the handled kinds keeps
+		// SourceActivityBusy and a rendered phrase in lockstep — a busy flag never renders
+		// silent (nor would a future unhandled kind).
+		switch peer.SourceActivityKind {
+		case sim.SourceActivityRepair, sim.SourceActivityStoke, sim.SourceActivityHarvest:
+			m.SourceActivityBusy = true
+			m.SourceActivityKind = peer.SourceActivityKind
+			m.SourceActivityLabel = resolveDwellPinLabel(snap, peer.SourceActivityObjectID)
+		}
 		// LLM-370: a co-present transient traveler is named by archetype + origin in
 		// "## Around you" while the observer doesn't yet know them by name.
 		if peer.VisitorState != nil {
