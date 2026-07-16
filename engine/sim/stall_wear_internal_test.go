@@ -477,3 +477,40 @@ func TestProduceRateScalePct_DegradedSap(t *testing.T) {
 		}
 	}
 }
+
+// TestProduceRateScalePct_ExtremeBoostClamps — code_review (LLM-446): an
+// extreme LaborProduceBoostPct (the knob is not range-capped) must never
+// overflow the scale computation into a negative or wrapped rate. The scale is
+// computed in int64 and clamped to int32 range, so credit math in the caller
+// stays far inside int64.
+func TestProduceRateScalePct_ExtremeBoostClamps(t *testing.T) {
+	w := &World{
+		Settings: WorldSettings{
+			LaborProduceBoostPct:      math.MaxInt32,
+			StallWearDegradeThreshold: 90,
+			StallDegradedProducePct:   50,
+		},
+		Actors: map[ActorID]*Actor{
+			"helper1": {ID: "helper1", InsideStructureID: "forge"},
+			"helper2": {ID: "helper2", InsideStructureID: "forge"},
+		},
+		VillageObjects: map[VillageObjectID]*VillageObject{
+			"forge": {ID: "forge", OwnerActorID: "ezekiel", Tags: []string{TagBusiness}, Wear: 150},
+		},
+		LaborLedger: map[LaborID]*LaborOffer{
+			1: {ID: 1, State: LaborStateWorking, WorkerID: "helper1", EmployerID: "ezekiel"},
+			2: {ID: 2, State: LaborStateWorking, WorkerID: "helper2", EmployerID: "ezekiel"},
+		},
+	}
+	keeper := &Actor{ID: "ezekiel", WorkStructureID: "forge"}
+	got := produceRateScalePct(w, keeper.ID, keeper)
+	if got < 0 {
+		t.Fatalf("scale overflowed negative: %d", got)
+	}
+	if got > math.MaxInt32 {
+		t.Fatalf("scale exceeds the int32 clamp: %d", got)
+	}
+	if got == 0 {
+		t.Fatalf("scale collapsed to 0 under an extreme boost; want a large positive clamp")
+	}
+}

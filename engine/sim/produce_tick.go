@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"time"
 )
 
@@ -100,21 +101,36 @@ func laboringHelperCount(w *World, employerID ActorID, workStructureID Structure
 // cadence bounds how stale a mid-window hire/finish (or a warming-up keeper)
 // can read.
 func produceRateScalePct(w *World, employerID ActorID, employer *Actor) int {
-	scale := 100
+	// int64 intermediates: helperCount × an extreme LaborProduceBoostPct (the
+	// knob is not range-capped) could overflow an int mid-computation and go
+	// negative — a corrupted rate. The saps only shrink the value, so computing
+	// wide and clamping once at the end keeps every path in range (code_review,
+	// LLM-446).
+	scale := int64(100)
 	if boostPct := w.Settings.LaborProduceBoostPct; boostPct > 0 {
-		scale += laboringHelperCount(w, employerID, employer.WorkStructureID) * boostPct
+		scale += int64(laboringHelperCount(w, employerID, employer.WorkStructureID)) * int64(boostPct)
 	}
 	if sap := w.Settings.ColdProduceSapPct; sap > 0 && sap < 100 && actorRedCold(w, employer) {
-		scale = scale * sap / 100
+		scale = scale * int64(sap) / 100
 	}
 	// The 0 and >=100 guards match the cold sap's posture: 0 is not a sap here
 	// (it's the full block, applied at degradedProduceBlocked before progress is
 	// credited), and >=100 means no penalty — an out-of-range stored value can
 	// never boost a degraded business.
 	if sap := w.Settings.StallDegradedProducePct; sap > 0 && sap < 100 && ownerStallDegraded(w, employerID) {
-		scale = scale * sap / 100
+		scale = scale * int64(sap) / 100
 	}
-	return scale
+	// Clamp to int32 range so the caller's elapsed×scale credit multiply stays
+	// far inside int64 no matter the knob values. The floor can't be hit today
+	// (helpers and saps never subtract below the 100 base), but a clamped
+	// posture beats trusting every future term.
+	if scale > math.MaxInt32 {
+		scale = math.MaxInt32
+	}
+	if scale < 0 {
+		scale = 0
+	}
+	return int(scale)
 }
 
 // actorRedCold reports whether the actor's cold sits at or past its red

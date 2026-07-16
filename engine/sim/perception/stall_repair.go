@@ -108,8 +108,12 @@ func buildStallRepair(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 	}
 	// LLM-446: a nail-producing owner (the smith) is steered to forge their own
 	// rather than handed a buy errand — checked before the vendor scan since
-	// MakesNails wins every buy branch in the render.
-	if !view.HasEnoughNails && !hired && actorSnap.RestockPolicy != nil {
+	// MakesNails wins every buy branch in the render. NOT set while production
+	// is hard-blocked (pct 0): StartProductionCycle rejects there, so the
+	// forge-your-own steer would be exactly the unactionable errand this cue
+	// exists to avoid (code_review) — the plain shortfall fallback renders
+	// instead.
+	if !view.HasEnoughNails && !view.ProduceBlocked && !hired && actorSnap.RestockPolicy != nil {
 		for _, e := range actorSnap.RestockPolicy.ProduceEntries() {
 			if e.Item == sim.NailItemKind {
 				view.MakesNails = true

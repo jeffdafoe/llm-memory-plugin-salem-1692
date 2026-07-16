@@ -2034,6 +2034,14 @@ var perceptionScenarios = []perceptionScenario{
 		build: degradedSmithShortOfOwnNails,
 	},
 	{
+		name: "degraded_smith_short_of_own_nails_produce_blocked",
+		summary: "LLM-446 code_review regression arm: the sole nail producer's fixture under the legacy pct-0 full " +
+			"block. StartProductionCycle rejects here, so the golden pins the ABSENCE of the forge-your-own steer (which " +
+			"would goad a refused production) — the plain shortfall fallback renders instead — and the halted in-flight " +
+			"batch line ('the work stands still') in place of the frozen-clock re-promise.",
+		build: degradedSmithShortOfOwnNailsProduceBlocked,
+	},
+	{
 		name: "owner_at_degraded_store_conserving",
 		summary: "LLM-304/301 (slowed framing since LLM-446): Josiah Thorne stands at his own DEGRADED General Store (restock buying shut, work slowed, still sells on-hand stock) with 0 of the 5 " +
 			"nails a mend takes, 1 coin (below the 10-coin MerchantCoinFloor) and 17 unsold flour — conserve active — and " +
@@ -5584,16 +5592,17 @@ func TestCoinQuoteTakeNamesConcreteTerms(t *testing.T) {
 func TestStallRepairCueOnlyAtOwnWornStall(t *testing.T) {
 	const marker = "## Your business"
 	ownWornBusiness := map[string]bool{
-		"owner_at_worn_stall":                     true,
-		"owner_at_worn_stall_with_nail_supplier":  true, // LLM-274: owner short of nails WITH a resolvable supplier
-		"owner_at_degraded_stall":                 true,
-		"owner_at_degraded_stall_produce_blocked": true, // LLM-446: the legacy pct-0 full-block arm
-		"degraded_smith_short_of_own_nails":       true, // LLM-446: the sole-nail-producer live-bug fixture
-		"owner_at_degraded_store_conserving":      true, // LLM-301: vendor-less fallback, conserve arm
-		"owner_conserving_with_nail_supplier":     true, // LLM-301: conserve wins over a surviving vendor
-		"owner_at_worn_tavern":                    true,
-		"owner_inside_worn_business":              true, // LLM-266: owner INSIDE their worn business (not at the outdoor pin)
-		"owner_holding_repair_nails_in_company":   true, // LLM-292: owner at own worn store's pin (the earmark fixture)
+		"owner_at_worn_stall":                               true,
+		"owner_at_worn_stall_with_nail_supplier":            true, // LLM-274: owner short of nails WITH a resolvable supplier
+		"owner_at_degraded_stall":                           true,
+		"owner_at_degraded_stall_produce_blocked":           true, // LLM-446: the legacy pct-0 full-block arm
+		"degraded_smith_short_of_own_nails":                 true, // LLM-446: the sole-nail-producer live-bug fixture
+		"degraded_smith_short_of_own_nails_produce_blocked": true, // LLM-446: same fixture at pct 0 — the forge-your-own steer must NOT render
+		"owner_at_degraded_store_conserving":                true, // LLM-301: vendor-less fallback, conserve arm
+		"owner_conserving_with_nail_supplier":               true, // LLM-301: conserve wins over a surviving vendor
+		"owner_at_worn_tavern":                              true,
+		"owner_inside_worn_business":                        true, // LLM-266: owner INSIDE their worn business (not at the outdoor pin)
+		"owner_holding_repair_nails_in_company":             true, // LLM-292: owner at own worn store's pin (the earmark fixture)
 	}
 	for _, sc := range perceptionScenarios {
 		sc := sc
@@ -6824,6 +6833,18 @@ func degradedSmithShortOfOwnNails() (*sim.Snapshot, sim.ActorID, []sim.WarrantMe
 	}}
 	smith.ProductionItem = "nail"
 	smith.ProductionRemainingSeconds = 204 // the live frozen clock, now honest: it advances slowed
+	return snap, actorID, warrants
+}
+
+// degradedSmithShortOfOwnNailsProduceBlocked is the code_review regression arm:
+// the same sole-nail-producer fixture under the legacy pct-0 full block, where
+// StartProductionCycle REJECTS — so the forge-your-own steer must NOT render
+// (it would goad a production the engine refuses; the plain shortfall fallback
+// renders instead) and the in-flight batch line must state the halt rather than
+// re-promising the frozen clock.
+func degradedSmithShortOfOwnNailsProduceBlocked() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, actorID, warrants := degradedSmithShortOfOwnNails()
+	snap.StallDegradedProducePct = 0
 	return snap, actorID, warrants
 }
 
