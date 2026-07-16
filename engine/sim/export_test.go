@@ -173,6 +173,21 @@ func VisitorArchetypePoolForTest() []string {
 	return out
 }
 
+// ForceFactorArchetypeForTest overrides the archetype pool + landing weights so every spawn
+// deterministically yields a landed wholesale factor (LLM-410). Returns a restore func the
+// caller must defer. Test-only; mutates package state, so not safe under parallel tests (the
+// visitor spawn tests are not parallel).
+func ForceFactorArchetypeForTest() func() {
+	oldPool := visitorArchetypePool
+	oldWeight := visitorArchetypeLandingWeight
+	visitorArchetypePool = []string{FactorArchetype}
+	visitorArchetypeLandingWeight = map[string]int{FactorArchetype: DefaultLandingWeightPermille}
+	return func() {
+		visitorArchetypePool = oldPool
+		visitorArchetypeLandingWeight = oldWeight
+	}
+}
+
 // PickVisitorDestinationResult bundles pickVisitorDestination's
 // (StructureID, GridPoint, bool) return tuple so the helper can be
 // invoked through a Command.

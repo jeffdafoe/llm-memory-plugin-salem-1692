@@ -508,6 +508,19 @@ func PayWithItem(
 				)
 			}
 
+			// Wholesale factor (LLM-410): a factor's TRADE goods move only between him and
+			// the village distributor, both ways — the symmetric mirror of the wholesale gate
+			// above, keyed on the factor flag rather than the seller's workplace. It covers a
+			// non-distributor buying the factor's cloth (factor = seller) and the factor
+			// buying a trade good from anyone but the distributor (factor = buyer). His
+			// SELF-provisioning is exempt: a service (a room, nights_stay) or a consumable (a
+			// meal) is a bed or supper for himself, not wholesale trade, so he still rides the
+			// ordinary lodging/eating lifecycle. The perception layer keeps a factor pointed at
+			// the distributor and suppresses the trade-nudge elsewhere; this is the backstop.
+			if steer := FactorTradeSteer(w.VillageObjects, w.Actors, buyer, seller, w.ItemKinds[kind]); steer != "" {
+				return nil, errors.New(steer)
+			}
+
 			// ZBBS-WORK-403: a purchase of a non-portable consumable always
 			// settles eat-here, clamped HERE on the world goroutine so
 			// it holds regardless of what the client sent — a failed catalog

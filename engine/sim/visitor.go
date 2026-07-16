@@ -147,13 +147,28 @@ var visitorNamePool = []string{
 	"Silas Withrow", "Asa Larkin", "Daniel Holcomb",
 }
 
+// FactorArchetype is the wholesale-factor traveler archetype (LLM-410): a Boston
+// merchant who deals ONLY with the village distributor — he sells imported cloth and
+// charms into the village and buys the distributor's accumulated surplus to carry off.
+// He rides the ordinary visitor lifecycle (rounds / tavern / lodging); the factor
+// behavior is additive, driven by the DistributorOnly flag set on his VisitorState at
+// spawn. Kept as a const so pool membership, the sprite mapping, the landing weight, and
+// the spawn special-cases (Boston origin, factor pack, DistributorOnly) all key off one
+// symbol rather than a bare string scattered across the file.
+const FactorArchetype = "factor"
+
+// FactorOrigin is where a wholesale factor hails from — the city he trades out of
+// (LLM-410). Forced at spawn instead of a random next-village pull so the persona preface
+// and the distributor's cue read "a factor out of Boston." Boston per the ticket.
+const FactorOrigin = "Boston"
+
 // visitorArchetypePool — closed-set archetypes a small village would
 // actually receive. Adding an archetype here requires a matching
 // visitorArchetypeSprite entry below — init() enforces.
 var visitorArchetypePool = []string{
 	"peddler", "traveling scholar", "messenger", "itinerant musician",
 	"journeyman tinsmith", "circuit preacher", "wool-buyer",
-	"pewterer", "wandering surgeon", "almanac-seller",
+	"pewterer", "wandering surgeon", "almanac-seller", FactorArchetype,
 }
 
 // visitorOriginPool — fictional/historical next-village strings. Drives
@@ -196,6 +211,9 @@ var VisitorArchetypeSprite = map[string]string{
 	"pewterer":            "Merchant C (v01)",
 	"wandering surgeon":   "Old Man A (v02)",
 	"almanac-seller":      "Old Man B (v01)",
+	// A well-to-do Boston factor reads as a merchant; reuses the Merchant A family at
+	// its v00 variant (distinct from the wool-buyer's Merchant A v01). LLM-410.
+	FactorArchetype: "Merchant A (v00)",
 }
 
 func init() {
@@ -204,6 +222,46 @@ func init() {
 			panic("sim/visitor: archetype " + archetype + " has no sprite mapping in VisitorArchetypeSprite")
 		}
 	}
+}
+
+// Landing weight (LLM-410) — a per-archetype spawn gate rolled AFTER the uniform
+// archetype pick. A failed roll skips the spawn that tick (no re-pick), so a
+// rarity-tuned archetype arrives less often than its uniform pool share alone. Only
+// the factor is tuned; ordinary archetypes weigh 1000 (always land), so the roll is a
+// no-op for them and ordinary travelers are unaffected.
+const (
+	// DefaultLandingWeightPermille is the weight for any archetype with no explicit
+	// visitorArchetypeLandingWeight entry — 1000 per-mille = always lands.
+	DefaultLandingWeightPermille = 1000
+
+	// FactorLandingWeightPermille is the wholesale factor's landing weight. Rarity
+	// COMPOUNDS with the uniform pool odds (1/N pick × weight/1000), so this is not the
+	// factor's visit frequency — set it against the pool size. 300 makes the factor a
+	// notable arrival rather than the everyday traveler.
+	FactorLandingWeightPermille = 300
+)
+
+// visitorArchetypeLandingWeight maps an archetype to its per-mille landing weight
+// (LLM-410). Absent → DefaultLandingWeightPermille (always lands). Only rarity-tuned
+// archetypes appear here.
+var visitorArchetypeLandingWeight = map[string]int{
+	FactorArchetype: FactorLandingWeightPermille,
+}
+
+// landingWeightPermille returns an archetype's landing weight clamped to [0, 1000].
+// A missing entry lands always (DefaultLandingWeightPermille).
+func landingWeightPermille(archetype string) int {
+	w, ok := visitorArchetypeLandingWeight[archetype]
+	if !ok {
+		return DefaultLandingWeightPermille
+	}
+	if w < 0 {
+		return 0
+	}
+	if w > 1000 {
+		return 1000
+	}
+	return w
 }
 
 // visitorSpriteID resolves an archetype's configured sprite NAME
@@ -253,6 +311,7 @@ type VisitorCascadeTelemetry struct {
 	CircuitToLodging int // visitors that turned to the lodging phase this tick (dusk)
 	SpawnSkipChance  int // 1 if spawn skipped — chance=0 OR unlucky roll; check SpawnSkipReason
 	SpawnSkipCap     int // 1 if spawn skipped because MaxConcurrent reached
+	SpawnSkipLanding int // 1 if spawn skipped because a rarity-tuned archetype didn't land (LLM-410)
 	SpawnSkipReason  string
 }
 
@@ -604,30 +663,17 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 		return
 	}
 
-	destID, destAnchor, ok := pickVisitorDestination(w)
-	if !ok {
-		log.Printf("sim/visitor: dispatchSpawn: no destination structure placed; skipping")
-		return
-	}
-	grid, err := buildWalkGrid(w)
-	if err != nil {
-		log.Printf("sim/visitor: dispatchSpawn build walk grid: %v", err)
-		return
-	}
-	edgeTile, ok := pickVisitorEdgeTile(w, grid, destAnchor, r)
-	if !ok {
-		log.Printf("sim/visitor: dispatchSpawn: no valid edge tile this cycle; skipping")
-		return
-	}
-
-	// Persona. A due returner (LLM-372) comes back as the SAME person — prefer one
-	// over a fresh stranger, reusing its established persona verbatim (and skipping
-	// the surname scrub, since the name is already in play and unique enough).
-	// Only READ the returner here; the durable mutation (beginReturnerVisit — bump
-	// visit count, clear next_return_at) is deferred until AFTER the actor is
-	// committed below, so a spawn that bails out (ID-mint exhaustion) leaves the
-	// returner still due to try again rather than consumed-but-not-arrived.
-	// Otherwise roll a new persona and scrub its surname against seated villagers.
+	// Persona FIRST (moved ahead of the spatial picks for LLM-410): the archetype decides
+	// the landing-weight roll below AND — for a wholesale factor — the arrival target (the
+	// distributor, not the tavern) and the pack, so it must be known before we pick a
+	// destination. A due returner (LLM-372) comes back as the SAME person — prefer one over
+	// a fresh stranger, reusing its established persona verbatim (and skipping the surname
+	// scrub, since the name is already in play and unique enough). Only READ the returner
+	// here; the durable mutation (beginReturnerVisit — bump visit count, clear
+	// next_return_at) is deferred until AFTER the actor is committed below, so a spawn that
+	// bails out (landing roll, edge-tile miss, ID-mint exhaustion) leaves the returner still
+	// due to try again rather than consumed-but-not-arrived. Otherwise roll a new persona and
+	// scrub its surname against seated villagers.
 	var returnerID string
 	var dueReturner *RecurringVisitor
 	var profile visitorProfile
@@ -648,6 +694,45 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 			log.Printf("sim/visitor: dispatchSpawn: surname for %q still collides after %d tries; shipping anyway",
 				profile.Name, surnameScrubMaxTries)
 		}
+	}
+	isFactor := profile.Archetype == FactorArchetype
+	if isFactor {
+		// A wholesale factor hails from the city he trades out of (LLM-410), not a random
+		// next-village origin — forced here on both the fresh pick and a returner (whose
+		// row already carries Boston from its first spawn) so the persona preface and the
+		// distributor's cue read "a factor out of Boston."
+		profile.Origin = FactorOrigin
+	}
+
+	// Landing-weight roll (LLM-410): AFTER the uniform archetype pick, roll the archetype's
+	// landing weight; a failed roll skips the spawn this tick (no re-pick), so a
+	// rarity-tuned archetype (the factor) arrives less often than its uniform pool share.
+	// Ordinary archetypes weigh 1000 (always land), so the roll is a no-op for them. Placed
+	// before the spatial picks so a non-landing factor costs no walk-grid build; the returner
+	// (if any) is only READ so far, so bailing leaves it still due to retry.
+	if lw := landingWeightPermille(profile.Archetype); lw < DefaultLandingWeightPermille && r.Intn(1000) >= lw {
+		t.SpawnSkipLanding = 1
+		t.SpawnSkipReason = fmt.Sprintf("%s didn't land (weight %d)", profile.Archetype, lw)
+		return
+	}
+
+	// Arrival target. A factor deals only with the distributor, so he makes straight for
+	// the distributor's structure (LLM-410) rather than the neutral tavern anchor; falls
+	// back to the ordinary tavern/gathering-place picker when no distributor is placed.
+	destID, destAnchor, ok := pickArrivalDestination(w, isFactor)
+	if !ok {
+		log.Printf("sim/visitor: dispatchSpawn: no destination structure placed; skipping")
+		return
+	}
+	grid, err := buildWalkGrid(w)
+	if err != nil {
+		log.Printf("sim/visitor: dispatchSpawn build walk grid: %v", err)
+		return
+	}
+	edgeTile, ok := pickVisitorEdgeTile(w, grid, destAnchor, r)
+	if !ok {
+		log.Printf("sim/visitor: dispatchSpawn: no valid edge tile this cycle; skipping")
+		return
 	}
 
 	// Departure is schedule-anchored to the next daybreak (LLM-373), replacing the
@@ -685,12 +770,32 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 		log.Printf("sim/visitor: dispatchSpawn: actor-ID minting exhausted 10 retries; skipping")
 		return
 	}
-	// Means to pay (LLM-373): the traveler spawns carrying a pack of trade goods
-	// and a small purse. This is both its lodging payment — a room is bought by
-	// barter (pay_with_item), per LLM-353, or by coin — and its trade stock for the
-	// circuit. Without it, good prompting still yields an empty promise: a booking
-	// it can't complete with a tool call.
-	pack, purse := seedVisitorPack(r)
+	// Means to pay (LLM-373): the traveler spawns carrying a pack of trade goods and a
+	// purse. This is both its lodging payment — a room is bought by barter (pay_with_item),
+	// per LLM-353, or by coin — and its trade stock for the circuit. A wholesale factor
+	// (LLM-410) carries a heavier bale of imported cloth/charms to SELL plus a larger purse
+	// to BUY the village's surplus — injecting coin, the money-supply growth this ticket is
+	// about. Both operator-tunable (visitor_factor_pack_units / visitor_factor_purse_*),
+	// clamped here against misconfig; an ordinary traveler carries a small mixed pack.
+	var pack map[ItemKind]int
+	var purse int
+	if isFactor {
+		units := w.Settings.VisitorFactorPackUnits
+		if units < 1 {
+			units = DefaultVisitorFactorPackUnits
+		}
+		purseMin := w.Settings.VisitorFactorPurseMin
+		if purseMin < 0 {
+			purseMin = 0
+		}
+		purseMax := w.Settings.VisitorFactorPurseMax
+		if purseMax < purseMin {
+			purseMax = purseMin
+		}
+		pack, purse = seedFactorPack(r, units, purseMin, purseMax)
+	} else {
+		pack, purse = seedVisitorPack(r)
+	}
 	// Give the traveler a visible form: resolve its archetype's sprite to the
 	// uuid-keyed SpriteID the client draws by (LLM-379). "" on miss ships the
 	// visitor spriteless — logged, but the spawn still proceeds.
@@ -725,6 +830,10 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 			// spawn and is NOT stored on the recurring_visitor row (LLM-372).
 			Payload:     selectVisitorRumor(w, r, inputs.Now),
 			RecurringID: returnerID, // "" for a fresh stranger; set for a returning traveler
+			// LLM-410: a factor trades only with the distributor. The bool drives the
+			// perception steer and the PayWithItem gate — set once at spawn, not
+			// re-derived by string-matching the archetype at each read site.
+			DistributorOnly: isFactor,
 		},
 		State: StateIdle,
 	}
@@ -1127,6 +1236,40 @@ func seedVisitorPack(r *rand.Rand) (map[ItemKind]int, int) {
 	return pack, purse
 }
 
+// Factor pack + purse defaults (LLM-410), used when the WorldSettings knobs are unset.
+// A factor carries a bale of cloth/charms to sell and a heavier purse than an ordinary
+// traveler (30..50) so he can buy the village's surplus and inject coin. Operator-tunable
+// via visitor_factor_pack_units / visitor_factor_purse_min / visitor_factor_purse_max.
+const (
+	DefaultVisitorFactorPackUnits = 2
+	DefaultVisitorFactorPurseMin  = 120
+	DefaultVisitorFactorPurseMax  = 200
+)
+
+// factorWareKinds are the goods a wholesale factor spawns carrying to SELL into the
+// village (LLM-410) — the imported clothing + charm catalog added in slice 2. Drawn from
+// the seeded item_kind rows so the distributor values them for the two-way trade; the
+// warms garments (coat/cloak) are what close the cold-relief loop. Which kinds exist is
+// itself operator-tunable via item/set; the per-visit quantity is visitor_factor_pack_units.
+var factorWareKinds = []ItemKind{"coat", "cloak", "gown", "breeches", "shift", "silver_locket", "whalebone_charm"}
+
+// seedFactorPack returns the pack (clothing/charm goods to sell) and purse (a heavier coin
+// float than an ordinary traveler) a wholesale factor spawns carrying (LLM-410).
+// unitsPerKind of each ware kind, plus a small 0..1 jitter so back-to-back factors don't
+// carry identical bales; purse a uniform pull from [purseMin, purseMax]. r is non-nil; the
+// caller clamps unitsPerKind >= 1 and purseMin <= purseMax.
+func seedFactorPack(r *rand.Rand, unitsPerKind, purseMin, purseMax int) (map[ItemKind]int, int) {
+	pack := map[ItemKind]int{}
+	for _, kind := range factorWareKinds {
+		pack[kind] = unitsPerKind + r.Intn(2) // unitsPerKind..unitsPerKind+1
+	}
+	purse := purseMin
+	if purseMax > purseMin {
+		purse = purseMin + r.Intn(purseMax-purseMin+1)
+	}
+	return pack, purse
+}
+
 // visitorProfile holds the four persona slots a freshly-spawned visitor
 // receives. Drawn from the hardcoded pools above.
 type visitorProfile struct {
@@ -1242,6 +1385,47 @@ func pickVisitorDestination(w *World) (StructureID, GridPoint, bool) {
 	if fallback != "" {
 		anchor := w.VillageObjects[fallback].Pos.Tile()
 		return StructureID(fallback), anchor, true
+	}
+	return "", GridPoint{}, false
+}
+
+// pickArrivalDestination picks the structure a freshly-spawned traveler walks in toward
+// (LLM-410). An ordinary traveler heads for the neutral village anchor (the tavern /
+// gathering place, pickVisitorDestination). A wholesale factor makes straight for the
+// distributor he deals with (pickDistributorDestination), falling back to the ordinary
+// anchor when no distributor structure is placed — so a factor still arrives somewhere
+// sensible in a village without a configured distributor. MUST be called inside a
+// Command.Fn (reads world maps directly).
+func pickArrivalDestination(w *World, factor bool) (StructureID, GridPoint, bool) {
+	if factor {
+		if id, anchor, ok := pickDistributorDestination(w); ok {
+			return id, anchor, true
+		}
+	}
+	return pickVisitorDestination(w)
+}
+
+// pickDistributorDestination picks the smallest-ID distributor-tagged VillageObject that
+// is also backed by a Structure (LLM-410) — the wholesale factor's arrival target. Returns
+// false when no distributor structure is placed (the caller falls back to the ordinary
+// tavern anchor). Lexicographic tie-break for determinism, mirroring pickVisitorDestination
+// — one distributor by data convention, so order only matters if an operator tags two.
+// MUST be called inside a Command.Fn.
+func pickDistributorDestination(w *World) (StructureID, GridPoint, bool) {
+	var pick VillageObjectID
+	for id, vobj := range w.VillageObjects {
+		if !IsDistributorStructure(vobj) {
+			continue
+		}
+		if !structureIDValid(w, id) {
+			continue
+		}
+		if pick == "" || id < pick {
+			pick = id
+		}
+	}
+	if pick != "" {
+		return StructureID(pick), w.VillageObjects[pick].Pos.Tile(), true
 	}
 	return "", GridPoint{}, false
 }

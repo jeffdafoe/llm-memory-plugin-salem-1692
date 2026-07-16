@@ -95,6 +95,10 @@ const advisoryLockSQLV = `SELECT pg_advisory_xact_lock(hashtext('visitor_snapsho
 type visitorPlanJSON struct {
 	// Rounds — VisitorState.VisitedBusinesses (the keeper-businesses he has called at).
 	VisitedBusinesses []string `json:"visited_businesses,omitempty"`
+	// DistributorOnly — the wholesale-factor flag (LLM-410). Set at spawn and immutable
+	// for the visit; rides the plan jsonb (no dedicated column) so a mid-visit redeploy
+	// resumes the traveler as a factor rather than a plain peddler.
+	DistributorOnly bool `json:"distributor_only,omitempty"`
 	// Pack + purse — Actor.Inventory / Actor.Coins. The barter wares and coins the
 	// traveler pays for its room and trades on its circuit with.
 	Inventory map[string]int `json:"inventory,omitempty"`
@@ -131,7 +135,8 @@ func encodeVisitorPlan(a *sim.Actor) (string, error) {
 	}
 	vs := a.VisitorState
 	plan := visitorPlanJSON{
-		Coins: a.Coins,
+		Coins:           a.Coins,
+		DistributorOnly: vs.DistributorOnly,
 	}
 	for _, sid := range vs.VisitedBusinesses {
 		plan.VisitedBusinesses = append(plan.VisitedBusinesses, string(sid))
@@ -178,6 +183,7 @@ func applyVisitorPlan(raw []byte, lv *sim.LoadedVisitor) error {
 	for _, s := range plan.VisitedBusinesses {
 		lv.VisitorState.VisitedBusinesses = append(lv.VisitorState.VisitedBusinesses, sim.StructureID(s))
 	}
+	lv.VisitorState.DistributorOnly = plan.DistributorOnly
 	lv.Coins = plan.Coins
 	if len(plan.Inventory) > 0 {
 		lv.Inventory = make(map[sim.ItemKind]int, len(plan.Inventory))

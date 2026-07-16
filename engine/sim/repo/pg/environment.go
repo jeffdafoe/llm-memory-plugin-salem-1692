@@ -309,6 +309,10 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	// LLM-372: returner comeback window (wall-clock days).
 	s.VisitorReturnMinDays = parseIntSetting(values, "visitor_return_min_days", sim.DefaultVisitorReturnMinDays)
 	s.VisitorReturnMaxDays = parseIntSetting(values, "visitor_return_max_days", sim.DefaultVisitorReturnMaxDays)
+	// LLM-410: wholesale factor pack + purse.
+	s.VisitorFactorPackUnits = parseIntSetting(values, "visitor_factor_pack_units", sim.DefaultVisitorFactorPackUnits)
+	s.VisitorFactorPurseMin = parseIntSetting(values, "visitor_factor_purse_min", sim.DefaultVisitorFactorPurseMin)
+	s.VisitorFactorPurseMax = parseIntSetting(values, "visitor_factor_purse_max", sim.DefaultVisitorFactorPurseMax)
 
 	// Businessowner cooldowns.
 	s.BusinessownerGreetCooldownMinutes = parseIntSetting(values, "businessowner_greet_cooldown_minutes",

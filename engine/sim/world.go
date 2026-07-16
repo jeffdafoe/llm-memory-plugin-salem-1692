@@ -470,6 +470,17 @@ type WorldSettings struct {
 	VisitorReturnMinDays int
 	VisitorReturnMaxDays int
 
+	// Factor pack + purse (LLM-410). A wholesale factor spawns carrying a bale of
+	// imported cloth/charms to sell (VisitorFactorPackUnits of each factorWareKind) and a
+	// purse pulled from [VisitorFactorPurseMin, VisitorFactorPurseMax] — heavier than an
+	// ordinary traveler's 30..50 so he can buy the village's surplus and inject coin. All
+	// fall back to their Default* consts (2 / 120 / 200) when zero/unset, and are clamped
+	// against misconfig at spawn. Settings keys visitor_factor_pack_units /
+	// visitor_factor_purse_min / visitor_factor_purse_max.
+	VisitorFactorPackUnits int
+	VisitorFactorPurseMin  int
+	VisitorFactorPurseMax  int
+
 	// Businessowner cascade tunables (engine/sim/businessowner.go +
 	// engine/sim/cascade/businessowner.go). Both fall back to
 	// *Default constants when zero, so tests that bypass the

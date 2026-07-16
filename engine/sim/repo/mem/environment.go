@@ -56,6 +56,11 @@ func NewEnvironmentRepo() *EnvironmentRepo {
 			HearthLowMinutes:               sim.DefaultHearthLowMinutes,
 			StokeWoodPerStoke:              sim.DefaultStokeWoodPerStoke,
 			StokeDurationSeconds:           sim.DefaultStokeDurationSeconds,
+			// Wholesale factor pack + purse (LLM-410) — mirror the pg parse fallbacks so a
+			// mem-backed factor spawns with a full bale and a heavy purse like prod.
+			VisitorFactorPackUnits: sim.DefaultVisitorFactorPackUnits,
+			VisitorFactorPurseMin:  sim.DefaultVisitorFactorPurseMin,
+			VisitorFactorPurseMax:  sim.DefaultVisitorFactorPurseMax,
 		},
 		phase: sim.PhaseDay,
 	}

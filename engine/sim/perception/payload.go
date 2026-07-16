@@ -83,6 +83,14 @@ type Payload struct {
 	TravelerRounds  *TravelerRoundsView
 	TravelerSeekBed *TravelerSeekBedView
 
+	// FactorTrade / FactorVisit are the wholesale-factor cues (LLM-410). FactorTrade is the
+	// factor's own distributor-only "## Your dealings here" surface (it replaces TravelerRounds
+	// for a factor — the two are mutually exclusive). FactorVisit is the distributor keeper's
+	// "## A factor's come to trade" cue when a factor is co-present. Both nil otherwise; see
+	// traveler_dayplan.go.
+	FactorTrade *FactorTradeView
+	FactorVisit *FactorVisitView
+
 	// Actor is the subject actor's own current decision-relevant state.
 	Actor ActorView
 
