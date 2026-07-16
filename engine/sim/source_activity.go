@@ -99,12 +99,13 @@ type SourceActivityStarted struct {
 	Kind     SourceActivityKind
 	Until    time.Time
 	At       time.Time
-	// SourceName is the resolved object display name at start, carried so a
-	// pure event→wire translator (httpapi.TranslateEvent) can surface the
+	// SourceName is the resolved place label at start, carried so a pure
+	// event→wire translator (httpapi.TranslateEvent) can surface the
 	// player-facing "Mending the <place>" tooltip line (LLM-441) without
-	// re-reading world state — the same self-contained-payload posture as
-	// SourceActivityCompleted.SourceName. Set for the three rendered kinds
-	// (repair/stoke/harvest); empty for refresh, which the client drops.
+	// re-reading world state. Set ONLY for repair — the one rendered kind with a
+	// place (stoke/harvest render place-less, "Tending the fire" / "Gathering");
+	// empty for everything else. Resolved DisplayName-first (sourceActivityWireLabel),
+	// matching the AgentDTO snapshot + the LLM-440 perception line.
 	SourceName string
 }
 
@@ -335,12 +336,11 @@ func StartHarvest(actorID ActorID, qty int) Command {
 				Qty:       requested,
 			}
 			w.emit(&SourceActivityStarted{
-				ActorID:    actorID,
-				ObjectID:   objID,
-				Kind:       SourceActivityHarvest,
-				Until:      actor.SourceActivity.Until,
-				At:         now,
-				SourceName: obj.EffectiveDisplayName(catalogName),
+				ActorID:  actorID,
+				ObjectID: objID,
+				Kind:     SourceActivityHarvest,
+				Until:    actor.SourceActivity.Until,
+				At:       now,
 			})
 			return SourceActivityStartResult{
 				Started:    true,
@@ -426,12 +426,17 @@ func StartRepair(actorID ActorID) Command {
 			// Emit the substrate seam first: its action-log subscriber stamps the
 			// mender's conversational scope, which the narration gate below reads.
 			w.emit(&SourceActivityStarted{
-				ActorID:    actorID,
-				ObjectID:   objID,
-				Kind:       SourceActivityRepair,
-				Until:      actor.SourceActivity.Until,
-				At:         now,
-				SourceName: businessName,
+				ActorID:  actorID,
+				ObjectID: objID,
+				Kind:     SourceActivityRepair,
+				Until:    actor.SourceActivity.Until,
+				At:       now,
+				// Player-facing tooltip label (LLM-441): resolved the SAME
+				// DisplayName-first way as the AgentDTO snapshot and the LLM-440
+				// perception line, NOT businessName's EffectiveDisplayName (which
+				// falls back to the catalog name), so the live tooltip, a mid-window
+				// reconnect, and the NPC annotation can't drift on a repair's name.
+				SourceName: sourceActivityWireLabel(w, objID),
 			})
 			emitRepairNarration(w, actor, businessName, now)
 			return SourceActivityStartResult{
@@ -812,6 +817,30 @@ func sourceActivityObjectName(w *World, obj *VillageObject) string {
 		catalogName = a.Name
 	}
 	return obj.EffectiveDisplayName(catalogName)
+}
+
+// sourceActivityWireLabel resolves objID's display label for the player-facing
+// npc_source_activity_changed frame (LLM-441): structures-first, then village
+// objects, using DisplayName only (no catalog fallback). This deliberately
+// mirrors httpapi.sourceActivityLabel (the AgentDTO snapshot) and
+// perception.resolveDwellPinLabel (the LLM-440 observer line) EXACTLY — same
+// lookup order, same field — so the live tooltip, a mid-window reconnect, and
+// the NPC perception annotation all name a repair's business identically and
+// can't drift. "" when the id resolves to neither, so the client renders the
+// place-less "Mending". (Distinct from sourceActivityObjectName, whose
+// EffectiveDisplayName catalog fallback is right for the completion narration
+// but would diverge from the DisplayName-only snapshot/perception labels here.)
+func sourceActivityWireLabel(w *World, objID VillageObjectID) string {
+	if objID == "" {
+		return ""
+	}
+	if st := w.Structures[StructureID(objID)]; st != nil && st.DisplayName != "" {
+		return st.DisplayName
+	}
+	if obj := w.VillageObjects[objID]; obj != nil && obj.DisplayName != "" {
+		return obj.DisplayName
+	}
+	return ""
 }
 
 // primaryRefreshNeed returns the first need-bearing, applicable refresh need an

@@ -87,12 +87,11 @@ func StartStoke(actorID ActorID) Command {
 				Qty:       wood, // sticks consumed — completion extends the fire by this many
 			}
 			w.emit(&SourceActivityStarted{
-				ActorID:    actorID,
-				ObjectID:   hearth.ID,
-				Kind:       SourceActivityStoke,
-				Until:      actor.SourceActivity.Until,
-				At:         now,
-				SourceName: sourceActivityObjectName(w, hearth),
+				ActorID:  actorID,
+				ObjectID: hearth.ID,
+				Kind:     SourceActivityStoke,
+				Until:    actor.SourceActivity.Until,
+				At:       now,
 			})
 			return SourceActivityStartResult{
 				Started:    true,
