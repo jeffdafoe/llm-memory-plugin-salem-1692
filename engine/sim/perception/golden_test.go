@@ -154,10 +154,17 @@ func TestGoldensSelfNameIffSharedVillager(t *testing.T) {
 		t.Run(sc.name, func(t *testing.T) {
 			snap, actorID, _ := sc.build()
 			a := snap.Actors[actorID]
-			if a == nil || a.DisplayName == "" {
+			if a == nil {
 				return
 			}
-			marker := "You are " + a.DisplayName + ".\n"
+			// Sanitize like the render path does, so a display name the
+			// renderer flattens can't make the invariant look for a marker
+			// the renderer never emits.
+			name := sanitizeInline(a.DisplayName)
+			if name == "" {
+				return
+			}
+			marker := "You are " + name + ".\n"
 			wantSelfName := a.Kind == sim.KindNPCShared && a.VisitorState == nil
 			hasSelfName := strings.Contains(renderScenario(sc), marker)
 			if wantSelfName != hasSelfName {

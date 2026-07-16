@@ -1770,14 +1770,23 @@ func renderNarrativeState(b *strings.Builder, n *NarrativeStateView) {
 	if n == nil {
 		return
 	}
+	// Gate on the SANITIZED values: a name or soul made only of content
+	// sanitization strips (control characters, whitespace) must not emit a
+	// bare header or a dangling "You are ." line. Build's raw-empty gate is
+	// just the fast path; this is the authoritative check.
+	name := sanitizeInline(n.Name)
+	aboutMe := sanitizeInline(n.AboutMe)
+	if name == "" && aboutMe == "" {
+		return
+	}
 	b.WriteString("## Who you are\n")
-	if n.Name != "" {
+	if name != "" {
 		b.WriteString("You are ")
-		b.WriteString(sanitizeInline(n.Name))
+		b.WriteString(name)
 		b.WriteString(".\n")
 	}
-	if n.AboutMe != "" {
-		b.WriteString(sanitizeInline(n.AboutMe))
+	if aboutMe != "" {
+		b.WriteString(aboutMe)
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
