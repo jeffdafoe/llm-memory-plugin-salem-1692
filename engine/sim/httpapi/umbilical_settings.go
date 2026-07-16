@@ -94,6 +94,31 @@ type UmbilicalSettingsDTO struct {
 	EcoEconomyGapSeconds int  `json:"eco_economy_gap_seconds"`
 	EcoAudienceActive    bool `json:"eco_audience_active"`
 	EcoEngaged           bool `json:"eco_engaged"`
+
+	// Visitor cascade (LLM-437) — the knobs driving the transient-visitor tier
+	// (engine/sim/visitor.go + cascade/visitor.go + the LLM-410 factor). Unlike
+	// every field above these are NOT checkpoint-persisted: they load once via
+	// parseIntSetting at boot (repo/pg/environment.go) and change only by editing
+	// the env config and restarting — so this read is the ONLY console window onto
+	// them (eco mode pauses spawning while unwatched, so live visitor count can't
+	// reveal the rate either). Reported as EFFECTIVE values: each mirrors the exact
+	// clamp its dispatcher applies to world.Settings at spawn/return time, so the
+	// figure shown is what the next visitor would actually use — not the raw stored
+	// value. NOTE the clamps are NOT uniformly "0 → Default": the purse and
+	// return-max knobs clamp to a floor/companion rather than resolving to the
+	// env-loader default (see handleUmbilicalSettings), so a stored 0 there reports
+	// 0 / the min, matching the engine.
+	//
+	// VisitorSpawnChancePermille is the master gate and is reported RAW — 0 means
+	// spawning is OFF, a real operator setting, not a fall-through to a default.
+	VisitorSpawnChancePermille int `json:"visitor_spawn_chance_permille"`
+	VisitorMaxConcurrent       int `json:"visitor_max_concurrent"`
+	VisitorTickIntervalSeconds int `json:"visitor_tick_interval_seconds"`
+	VisitorReturnMinDays       int `json:"visitor_return_min_days"`
+	VisitorReturnMaxDays       int `json:"visitor_return_max_days"`
+	VisitorFactorPackUnits     int `json:"visitor_factor_pack_units"`
+	VisitorFactorPurseMin      int `json:"visitor_factor_purse_min"`
+	VisitorFactorPurseMax      int `json:"visitor_factor_purse_max"`
 }
 
 // handleUmbilicalSettings serves the current live-tunable world settings. Read on
@@ -117,6 +142,47 @@ func (s *Server) handleUmbilicalSettings(w http.ResponseWriter, r *http.Request)
 		if world.Settings.HuddleLoopTimeout > 0 {
 			hardConclude = windDown + world.Settings.HuddleLoopTimeout
 		}
+		// Visitor-cascade effective values — each line replicates the clamp the
+		// owning dispatcher applies to world.Settings, so the report matches what a
+		// spawn/return actually uses (see the DTO doc). Spawn-chance is reported raw
+		// (0 = OFF). max-concurrent (visitor.go), tick-interval (cascade/visitor.go)
+		// and return-min (recurring_visitor.go) resolve <=0 to their Default. The
+		// factor pack-units resolves <1 to its Default; the purse and return-max
+		// knobs instead clamp to a floor (neg->0) / their companion min, NOT to the
+		// env-loader default — mirroring dispatchVisitorSpawn and scheduleReturn.
+		visitorMax := world.Settings.VisitorMaxConcurrent
+		if visitorMax <= 0 {
+			visitorMax = sim.DefaultVisitorMaxConcurrent
+		}
+		visitorTick := world.Settings.VisitorTickInterval
+		if visitorTick <= 0 {
+			visitorTick = sim.DefaultVisitorTickInterval
+		}
+		// Emitted as whole seconds below (int(visitorTick / time.Second)), lossless:
+		// visitor_tick_interval_seconds is an INTEGER-seconds env setting
+		// (parseDurationSetting parses an int and multiplies by time.Second), so the
+		// effective duration is always a whole number of seconds — same convention as
+		// every other *Seconds field in this DTO.
+		returnMin := world.Settings.VisitorReturnMinDays
+		if returnMin <= 0 {
+			returnMin = sim.DefaultVisitorReturnMinDays
+		}
+		returnMax := world.Settings.VisitorReturnMaxDays
+		if returnMax < returnMin {
+			returnMax = returnMin
+		}
+		factorUnits := world.Settings.VisitorFactorPackUnits
+		if factorUnits < 1 {
+			factorUnits = sim.DefaultVisitorFactorPackUnits
+		}
+		factorPurseMin := world.Settings.VisitorFactorPurseMin
+		if factorPurseMin < 0 {
+			factorPurseMin = 0
+		}
+		factorPurseMax := world.Settings.VisitorFactorPurseMax
+		if factorPurseMax < factorPurseMin {
+			factorPurseMax = factorPurseMin
+		}
 		dto := UmbilicalSettingsDTO{
 			ContractVersion:                       ContractVersion,
 			NeedThresholds:                        make(map[string]int, len(world.Settings.NeedThresholds)),
@@ -138,6 +204,14 @@ func (s *Server) handleUmbilicalSettings(w http.ResponseWriter, r *http.Request)
 			EcoEconomyGapSeconds:                  int(world.Settings.EcoEconomyGap / time.Second),
 			EcoAudienceActive:                     audience,
 			EcoEngaged:                            world.Settings.EcoEnabled && !audience,
+			VisitorSpawnChancePermille:            world.Settings.VisitorSpawnChancePermille,
+			VisitorMaxConcurrent:                  visitorMax,
+			VisitorTickIntervalSeconds:            int(visitorTick / time.Second),
+			VisitorReturnMinDays:                  returnMin,
+			VisitorReturnMaxDays:                  returnMax,
+			VisitorFactorPackUnits:                factorUnits,
+			VisitorFactorPurseMin:                 factorPurseMin,
+			VisitorFactorPurseMax:                 factorPurseMax,
 		}
 		for k, v := range world.Settings.NeedThresholds {
 			dto.NeedThresholds[string(k)] = v
