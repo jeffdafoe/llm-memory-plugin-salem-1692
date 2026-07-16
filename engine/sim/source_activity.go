@@ -99,6 +99,13 @@ type SourceActivityStarted struct {
 	Kind     SourceActivityKind
 	Until    time.Time
 	At       time.Time
+	// SourceName is the resolved object display name at start, carried so a
+	// pure event→wire translator (httpapi.TranslateEvent) can surface the
+	// player-facing "Mending the <place>" tooltip line (LLM-441) without
+	// re-reading world state — the same self-contained-payload posture as
+	// SourceActivityCompleted.SourceName. Set for the three rendered kinds
+	// (repair/stoke/harvest); empty for refresh, which the client drops.
+	SourceName string
 }
 
 func (SourceActivityStarted) isSimEvent() {}
@@ -328,11 +335,12 @@ func StartHarvest(actorID ActorID, qty int) Command {
 				Qty:       requested,
 			}
 			w.emit(&SourceActivityStarted{
-				ActorID:  actorID,
-				ObjectID: objID,
-				Kind:     SourceActivityHarvest,
-				Until:    actor.SourceActivity.Until,
-				At:       now,
+				ActorID:    actorID,
+				ObjectID:   objID,
+				Kind:       SourceActivityHarvest,
+				Until:      actor.SourceActivity.Until,
+				At:         now,
+				SourceName: obj.EffectiveDisplayName(catalogName),
 			})
 			return SourceActivityStartResult{
 				Started:    true,
@@ -418,11 +426,12 @@ func StartRepair(actorID ActorID) Command {
 			// Emit the substrate seam first: its action-log subscriber stamps the
 			// mender's conversational scope, which the narration gate below reads.
 			w.emit(&SourceActivityStarted{
-				ActorID:  actorID,
-				ObjectID: objID,
-				Kind:     SourceActivityRepair,
-				Until:    actor.SourceActivity.Until,
-				At:       now,
+				ActorID:    actorID,
+				ObjectID:   objID,
+				Kind:       SourceActivityRepair,
+				Until:      actor.SourceActivity.Until,
+				At:         now,
+				SourceName: businessName,
 			})
 			emitRepairNarration(w, actor, businessName, now)
 			return SourceActivityStartResult{

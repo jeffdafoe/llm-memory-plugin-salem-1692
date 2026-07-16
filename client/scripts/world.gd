@@ -592,6 +592,24 @@ func _apply_npc_structure_meta(data: Dictionary, field: String) -> void:
         container.set_meta(field, str(value))
     npc_metadata_changed.emit(npc_id)
 
+## Apply an npc_source_activity_changed broadcast (LLM-441) — an actor's
+## in-flight timed source activity opened or closed. kind is "repair" /
+## "stoke" / "harvest" while busy, or absent to clear it; source_name is the
+## resolved place label, present only for a repair. The actor tooltip reads
+## these metas on hover to render the current-activity line. No
+## npc_metadata_changed emit: this isn't an editor field, and the tooltip
+## re-reads the meta on the next hover. placed_npcs holds both NPCs and PCs,
+## so this fires for either — the annotation is subject-agnostic.
+func apply_npc_source_activity_changed(data: Dictionary) -> void:
+    var npc_id: String = data.get("id", "")
+    if npc_id == "":
+        return
+    var container: Node2D = placed_npcs.get(npc_id, null)
+    if container == null:
+        return
+    container.set_meta("source_activity_kind", str(data.get("kind", "")))
+    container.set_meta("source_activity_label", str(data.get("source_name", "")))
+
 ## Remove an NPC from the world by id. Called by the npc_deleted WS handler
 ## on all connected clients, not just the one that initiated the delete.
 func remove_npc_by_id(npc_id: String) -> void:
@@ -738,6 +756,12 @@ func _render_npc(npc: Dictionary) -> void:
     container.set_meta("llm_memory_agent", npc.get("llm_memory_agent", ""))
     container.set_meta("home_structure_id", npc.get("home_structure_id", ""))
     container.set_meta("work_structure_id", npc.get("work_structure_id", ""))
+    # In-flight source activity (LLM-441) — load-time value so an actor already
+    # mid repair/stoke/harvest when this client connects shows the tooltip line
+    # immediately; live open/close rides apply_npc_source_activity_changed. Both
+    # keys omitted from the DTO when idle, so the get() defaults clear them.
+    container.set_meta("source_activity_kind", npc.get("source_activity_kind", ""))
+    container.set_meta("source_activity_label", npc.get("source_activity_label", ""))
     # Worker work-window (ZBBS-071) — carry only when both are set so the
     # editor panel can distinguish "NULL inherits dawn/dusk" from the
     # 0/0 minute literal.

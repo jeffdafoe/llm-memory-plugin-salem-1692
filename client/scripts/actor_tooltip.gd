@@ -25,6 +25,7 @@ const COLOR_TEXT_DIM = Color(0.63, 0.56, 0.44, 1.0)
 
 var _panel: PanelContainer = null
 var _name_label: Label = null
+var _activity_label: Label = null
 var _role_label: Label = null
 var _work_label: Label = null
 var _home_label: Label = null
@@ -72,6 +73,16 @@ func _ready() -> void:
     _name_label.add_theme_font_override("font", _font)
     _name_label.add_theme_font_size_override("font_size", 16)
     vbox.add_child(_name_label)
+
+    # In-flight source activity (LLM-441) — a current-doing line directly under
+    # the name, above the identity lines. Dim like role/work/home. Shown for NPC
+    # or PC alike (subject-agnostic); hidden when the actor isn't mid-activity.
+    _activity_label = Label.new()
+    _activity_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+    _activity_label.add_theme_font_override("font", _font)
+    _activity_label.add_theme_font_size_override("font_size", 12)
+    _activity_label.visible = false
+    vbox.add_child(_activity_label)
 
     _role_label = Label.new()
     _role_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
@@ -137,6 +148,15 @@ func _show_panel_for(node: Node2D, screen_pos: Vector2) -> void:
         display_name = "(unnamed)"
     _name_label.text = display_name
 
+    # Current-activity line (LLM-441) — subject-agnostic, so it renders before
+    # the NPC-only identity branch below and shows for a busy PC too.
+    var activity: String = _format_activity(node)
+    if activity != "":
+        _activity_label.text = activity
+        _activity_label.visible = true
+    else:
+        _activity_label.visible = false
+
     # NPC vs PC: NPCs carry a non-empty llm_memory_agent meta. PCs are
     # human players and have no agent link. The role/work/home lines
     # are NPC-specific — for PCs we show the name alone.
@@ -200,6 +220,26 @@ func _hide_panel() -> void:
     if _panel.visible:
         _panel.visible = false
     _shown_node = null
+
+## Format the in-flight source-activity line (LLM-441) from the container's
+## source_activity_kind / source_activity_label metas (set by _render_npc at
+## load and apply_npc_source_activity_changed live). Empty string when the
+## actor isn't mid a rendered activity — the caller hides the line. Repair
+## names its business ("Mending the Market"); stoke and harvest are place-less
+## ("Tending the fire" / "Gathering"), mirroring the LLM-440 perception phrases.
+func _format_activity(node: Node2D) -> String:
+    var kind: String = str(node.get_meta("source_activity_kind", ""))
+    match kind:
+        "repair":
+            var label: String = str(node.get_meta("source_activity_label", ""))
+            if label != "":
+                return "Mending the " + label
+            return "Mending"
+        "stoke":
+            return "Tending the fire"
+        "harvest":
+            return "Gathering"
+    return ""
 
 ## Title-case the first attribute slug. Slugs are role identifiers
 ## like "tavernkeeper", "merchant", "blacksmith", "herbalist" — render

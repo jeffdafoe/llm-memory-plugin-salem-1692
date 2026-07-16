@@ -476,6 +476,44 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			StructureID: string(e.StructureID),
 			At:          e.At.UTC().Format(time.RFC3339),
 		}}, true
+	case *sim.SourceActivityStarted:
+		// LLM-441: surface a player-observable in-flight source activity (a keeper
+		// mending / stoking, a forager gathering) so the Godot actor tooltip reads
+		// "Mending the <place>" / "Tending the fire" / "Gathering" — the player-facing
+		// counterpart to the LLM-440 co-presence prompt annotation. Gated to the three
+		// rendered kinds; refresh (eat/drink at a source) is deliberately left out to
+		// match the perception annotation and to keep the busy line and a rendered
+		// phrase in lockstep. SourceName is stamped on the event at emit; only repair
+		// uses it (stoke/harvest render place-less), but it rides along uniformly. The
+		// line clears on the matching Completed / Cancelled below.
+		if !renderedSourceActivityKind(e.Kind) {
+			return WireFrame{}, false
+		}
+		return WireFrame{Type: "npc_source_activity_changed", Data: sourceActivityChangedWireDTO{
+			ID:         string(e.ActorID),
+			Kind:       string(e.Kind),
+			SourceName: e.SourceName,
+		}}, true
+	case *sim.SourceActivityCompleted:
+		// Clear the tooltip busy line when the window closes on its own. Gated to the
+		// same three kinds so a refresh completion (never set busy) can't emit a
+		// spurious clear. An empty kind is the client's idle signal. For the rendered
+		// kinds the completion is always terminal (refresh's auto-repeat Continues is
+		// gated out), so one clear per busy window.
+		if !renderedSourceActivityKind(e.Kind) {
+			return WireFrame{}, false
+		}
+		return WireFrame{Type: "npc_source_activity_changed", Data: sourceActivityChangedWireDTO{
+			ID: string(e.ActorID),
+		}}, true
+	case *sim.SourceActivityCancelled:
+		// Clear on abandonment (today: a committed move off the source). Same gate.
+		if !renderedSourceActivityKind(e.Kind) {
+			return WireFrame{}, false
+		}
+		return WireFrame{Type: "npc_source_activity_changed", Data: sourceActivityChangedWireDTO{
+			ID: string(e.ActorID),
+		}}, true
 	case *sim.ActorDepartureNarrated:
 		// Departure twin of ActorArrivalNarrated: observer-facing "X leaves Y" line
 		// for co-present PCs, rendered by the talk panel's _on_room_event as a narration
@@ -817,6 +855,32 @@ type npcScheduleChangedWireDTO struct {
 type npcAttributesChangedWireDTO struct {
 	ID         string   `json:"id"`
 	Attributes []string `json:"attributes"`
+}
+
+// sourceActivityChangedWireDTO is the npc_source_activity_changed payload
+// (LLM-441): an actor's in-flight source activity opened or closed. Kind is
+// "repair"/"stoke"/"harvest" while busy, or absent (omitempty) to clear the
+// tooltip line. SourceName is the resolved place label, present only for a
+// repair (stoke/harvest render place-less); absent otherwise. The client keys
+// the update to the actor by id and updates its placed_npcs container meta.
+type sourceActivityChangedWireDTO struct {
+	ID         string `json:"id"`
+	Kind       string `json:"kind,omitempty"`
+	SourceName string `json:"source_name,omitempty"`
+}
+
+// renderedSourceActivityKind reports whether a source-activity kind has a
+// player-facing tooltip rendering (LLM-441) — the three "work" kinds, matching
+// the LLM-440 perception co-presence annotation. Refresh (eat/drink at a source)
+// is left out, and an unhandled future kind stays silent rather than flagging
+// busy with no phrase. Shared by the event translator (busy/clear frames) and
+// the snapshot builder (agentsFromSnapshot).
+func renderedSourceActivityKind(k sim.SourceActivityKind) bool {
+	switch k {
+	case sim.SourceActivityRepair, sim.SourceActivityStoke, sim.SourceActivityHarvest:
+		return true
+	}
+	return false
 }
 
 type npcNeedsChangedWireDTO struct {
