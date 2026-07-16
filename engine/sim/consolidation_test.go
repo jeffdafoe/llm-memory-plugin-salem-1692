@@ -301,30 +301,47 @@ func TestFindCandidates_SkipsSpeechOnlyPair(t *testing.T) {
 	}
 }
 
-// TestFindCandidates_SelectsPairWithOneDealingFact confirms the gate opens as
-// soon as a pair carries a single transactional fact among its speech — the
-// pair now has a dealing judgment worth forming (LLM-434).
-func TestFindCandidates_SelectsPairWithOneDealingFact(t *testing.T) {
-	w, stop := buildConsolidationTestWorld(t)
-	defer stop()
-	at := time.Now().UTC()
-	// Four speech facts...
-	for i := 0; i < sim.ConsolidationFirstMinFacts-1; i++ {
-		ts := at.Add(time.Duration(i) * time.Second)
-		if _, err := w.Send(sim.RecordInteraction("hannah", "ezekiel", sim.InteractionHeard, "chatter", ts)); err != nil {
-			t.Fatalf("RecordInteraction #%d: %v", i, err)
-		}
+// TestFindCandidates_DealingKindsOpenGate confirms the gate opens as soon as a
+// pair carries a single non-speech fact among its speech — and documents the
+// "any non-speech kind is dealing-relevant" assumption behind relHasDealingFact
+// (LLM-434). Negotiation outcomes (countered, pay-declined) count too: they are
+// evidence of how a pair deals even when no coins changed hands. If a future
+// kind should NOT open the gate, it must be excluded in relHasDealingFact — and
+// removed here so this test fails, forcing the decision to be reviewed.
+func TestFindCandidates_DealingKindsOpenGate(t *testing.T) {
+	dealingKinds := []sim.InteractionKind{
+		sim.InteractionPaid,
+		sim.InteractionCountered,
+		sim.InteractionPayDeclinedBy,
+		sim.InteractionServed,
+		sim.InteractionGave,
+		sim.InteractionWorked,
+		sim.InteractionKeptDeposit,
 	}
-	// ...and one dealing fact, clearing both the count and the gate.
-	if _, err := w.Send(sim.RecordInteraction("hannah", "ezekiel", sim.InteractionPaid, "paid 3 coins", at.Add(5*time.Second))); err != nil {
-		t.Fatalf("RecordInteraction paid: %v", err)
-	}
-	cs := candidates(t, w, at, 5)
-	if len(cs) != 1 {
-		t.Fatalf("len(candidates) = %d, want 1 (pair has a dealing fact)", len(cs))
-	}
-	if cs[0].PeerID != "ezekiel" {
-		t.Errorf("candidate peer = %q, want ezekiel", cs[0].PeerID)
+	for _, kind := range dealingKinds {
+		t.Run(string(kind), func(t *testing.T) {
+			w, stop := buildConsolidationTestWorld(t)
+			defer stop()
+			at := time.Now().UTC()
+			// Four speech facts — below the first-min count gate on their own.
+			for i := 0; i < sim.ConsolidationFirstMinFacts-1; i++ {
+				ts := at.Add(time.Duration(i) * time.Second)
+				if _, err := w.Send(sim.RecordInteraction("hannah", "ezekiel", sim.InteractionHeard, "chatter", ts)); err != nil {
+					t.Fatalf("RecordInteraction #%d: %v", i, err)
+				}
+			}
+			// ...plus one fact of the dealing kind under test, clearing count + gate.
+			if _, err := w.Send(sim.RecordInteraction("hannah", "ezekiel", kind, "dealing", at.Add(5*time.Second))); err != nil {
+				t.Fatalf("RecordInteraction %s: %v", kind, err)
+			}
+			cs := candidates(t, w, at, 5)
+			if len(cs) != 1 {
+				t.Fatalf("kind %s: len(candidates) = %d, want 1 (dealing kind opens gate)", kind, len(cs))
+			}
+			if cs[0].PeerID != "ezekiel" {
+				t.Errorf("kind %s: candidate peer = %q, want ezekiel", kind, cs[0].PeerID)
+			}
+		})
 	}
 }
 
