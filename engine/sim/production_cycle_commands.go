@@ -66,10 +66,11 @@ func StartProductionCycle(id ActorID, itemName string) Command {
 			if a.WorkStructureID == "" || a.InsideStructureID != a.WorkStructureID {
 				return nil, ModelFacingError{Msg: "you can only produce at your own workplace — go there first."}
 			}
-			// LLM-304: a degraded business is shut for refill — a batch can't start
-			// until the owner mends it (the produce tick would pause it anyway;
-			// rejecting at start keeps the inputs out of a stalled pot).
-			if ownerStallDegraded(w, id) {
+			// LLM-446: a degraded business still produces, just slowed (the sap in
+			// produceRateScalePct) — only the operator dialing the pct to 0 restores
+			// the legacy LLM-304 full block, and then rejecting at start keeps the
+			// inputs out of a pot the produce tick would never advance.
+			if degradedProduceBlocked(w, id) {
 				return nil, ModelFacingError{Msg: "your business is too worn to make anything — mend it first."}
 			}
 			kind, ok := resolveItemKind(w, itemName)

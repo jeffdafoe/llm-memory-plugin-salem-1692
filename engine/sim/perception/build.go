@@ -144,7 +144,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	p.LaborEnRoute = buildLaborEnRoute(snap, actorID)
 	p.PendingLaborOfferOut = buildPendingLaborOfferOut(snap, actorID)
 
-	p.Actor = buildActorView(snap, actorSnap)
+	p.Actor = buildActorView(snap, actorID, actorSnap)
 	// LLM-370: when the perceiving actor is itself a transient traveler, carry its
 	// persona so Render can open the message with the self-identity preface. Read
 	// off the VisitorState the substrate mirrors onto the snapshot.
@@ -807,7 +807,7 @@ func needsEqual(a, b map[sim.NeedKey]int) bool {
 // (preferred) or snap.VillageObjects (fallback for object-source
 // credits whose pin is a free-standing object like a well or shade
 // tree, not a structure).
-func buildActorView(snap *sim.Snapshot, a *sim.ActorSnapshot) ActorView {
+func buildActorView(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapshot) ActorView {
 	var needs map[sim.NeedKey]int
 	if len(a.Needs) > 0 {
 		needs = make(map[sim.NeedKey]int, len(a.Needs))
@@ -828,7 +828,7 @@ func buildActorView(snap *sim.Snapshot, a *sim.ActorSnapshot) ActorView {
 		InFlightSourceActivity: buildInFlightSourceActivity(snap, a),
 		Inventory:              buildInventoryView(snap, a),
 		HoursAwake:             computeHoursAwake(snap.LocalMinuteOfDay, a.ScheduleStartMin, a.ScheduleEndMin),
-		InFlightProduction:     buildInFlightProduction(snap, a),
+		InFlightProduction:     buildInFlightProduction(snap, actorID, a),
 		Cold:                   buildColdSelf(snap, a),
 	}
 }
@@ -841,14 +841,25 @@ func buildActorView(snap *sim.Snapshot, a *sim.ActorSnapshot) ActorView {
 // progress simply isn't accruing until the actor is back (the produce-tick
 // pause). Its presence is also what keeps buildForgeChoice nil, so the trade
 // cue and this standing line never show together.
-func buildInFlightProduction(snap *sim.Snapshot, a *sim.ActorSnapshot) *InFlightProductionView {
+func buildInFlightProduction(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapshot) *InFlightProductionView {
 	if a.ProductionItem == "" {
 		return nil
 	}
-	return &InFlightProductionView{
+	view := &InFlightProductionView{
 		ItemLabel: itemDisplayLabel(snap, a.ProductionItem),
 		WorkLeft:  sim.HumanizeWorkDuration(a.ProductionRemainingSeconds),
 	}
+	// LLM-446: a degraded business drags on the batch — slowed at a positive
+	// pct, halted outright at 0 (legacy). Carried so the line can't promise a
+	// clock the engine isn't running; >=100 is no penalty, so neither is set.
+	if ownerBusinessDegraded(snap, actorID) && snap.StallDegradedProducePct < 100 {
+		if snap.StallDegradedProducePct > 0 {
+			view.Slowed = true
+		} else {
+			view.Halted = true
+		}
+	}
+	return view
 }
 
 // computeHoursAwake returns whole hours the actor has been awake, measured from

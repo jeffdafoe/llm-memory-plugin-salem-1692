@@ -45,7 +45,7 @@ func buildStallTestWorld(t *testing.T) (*sim.World, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go w.Run(ctx)
 	ip := func(v int) *int { return &v }
-	if _, err := w.Send(sim.SetStallWearSettings(ip(1), ip(400), ip(600), ip(5), ip(90))); err != nil {
+	if _, err := w.Send(sim.SetStallWearSettings(ip(1), ip(400), ip(600), ip(5), ip(90), nil)); err != nil {
 		cancel()
 		t.Fatalf("SetStallWearSettings: %v", err)
 	}

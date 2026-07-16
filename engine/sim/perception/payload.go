@@ -1361,10 +1361,20 @@ type InFlightSourceActivityView struct {
 // in-flight production cycle (LLM-319). ItemLabel is the batch good's display
 // label; WorkLeft is the humanized base-rate work remaining ("about 40
 // minutes" reads as an estimate on purpose — hired help shortens the real wall
-// time). Resolved at build time so render stays a pure formatter.
+// time, a degraded business stretches it). Resolved at build time so render
+// stays a pure formatter.
+//
+// Slowed / Halted (LLM-446) carry the degraded-business drag on the batch so
+// the standing line tells the truth about the clock: Slowed at a positive
+// StallDegradedProducePct (the batch advances under the sap), Halted at pct 0
+// (the legacy LLM-304 full pause — WITHOUT this line the frozen WorkLeft
+// renders as "about 3 minutes of work left" every tick forever, the live
+// "three more minutes, Josiah" loop). At most one is set.
 type InFlightProductionView struct {
 	ItemLabel string
 	WorkLeft  string
+	Slowed    bool
+	Halted    bool
 }
 
 // DwellCreditView is the perception-side projection of one

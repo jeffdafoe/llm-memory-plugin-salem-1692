@@ -75,6 +75,7 @@ type MutableWorldSettings struct {
 	StallWearDegradeThreshold  int
 	StallNailsPerRepair        int
 	StallRepairDurationSeconds int
+	StallDegradedProducePct    int
 
 	// Farm upkeep wealth-tax knobs (LLM-215) — live-tunable via the umbilical,
 	// persisted here each checkpoint so a live change survives restart.
@@ -169,6 +170,7 @@ func (w *World) BuildCheckpointSnapshot() *CheckpointSnapshot {
 			StallWearDegradeThreshold:         w.Settings.StallWearDegradeThreshold,
 			StallNailsPerRepair:               w.Settings.StallNailsPerRepair,
 			StallRepairDurationSeconds:        w.Settings.StallRepairDurationSeconds,
+			StallDegradedProducePct:           w.Settings.StallDegradedProducePct,
 			FarmUpkeepFloor:                   w.Settings.FarmUpkeepFloor,
 			FarmUpkeepCoinsPerShovel:          w.Settings.FarmUpkeepCoinsPerShovel,
 			HuddleLoopTimeoutSeconds:          int(w.Settings.HuddleLoopTimeout / time.Second),

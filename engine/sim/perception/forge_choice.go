@@ -101,11 +101,12 @@ func buildForgeChoice(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 	if actorSnap.ProductionItem != "" {
 		return nil // a batch is in the works — the standing in-progress line renders instead
 	}
-	// LLM-304: a degraded business is shut for refill — production included. The
-	// repair cue owns the moment; inviting a batch the tick would pause (and
-	// StartProductionCycle rejects) would be a false affordance. Same suppression
-	// posture as "## Restocking" / the production-inputs cue.
-	if ownerBusinessDegraded(snap, actorID) {
+	// LLM-446: only a FULL production block (degraded at pct 0) suppresses the
+	// choice — inviting a batch the tick would pause (and StartProductionCycle
+	// rejects) would be a false affordance. At a positive pct a degraded keeper
+	// still chooses batches — slowed production is the way out of the
+	// sole-nail-producer self-repair deadlock, so the invitation must survive.
+	if ownerBusinessProduceBlocked(snap, actorID) {
 		return nil
 	}
 	var items []ForgeChoiceItem

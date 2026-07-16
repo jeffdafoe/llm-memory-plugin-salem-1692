@@ -6,10 +6,12 @@
 
 ## You
 Coins in your purse: 8.
+You are carrying: nail (x5).
 
 ## Around you
 You are outdoors, with no one else here to hear you speak.
 It is morning in the village.
 
-The Blacksmith here is badly worn — its keeper can sell what's on hand and still works, though the disrepair makes everything slow, and the shelves can't be restocked until it's mended.
+## Your business
+Your Blacksmith is too worn to keep stock — you can still sell what's on hand, but you can't restock the shelves or make more until you mend it. You carry enough nails (5) to mend it — use the repair tool now to fix it, hammer in hand, on site (it takes a short while).
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

@@ -115,10 +115,11 @@ func buildProductionInputs(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *s
 	if merchantConserve(snap, actorID, actorSnap).Active {
 		return nil
 	}
-	// LLM-304: a degraded business is shut for production — no point motivating an
-	// input buy while the shop can't produce until it's mended (the "## Your business"
-	// cue carries that). Suppress the section so it doesn't dangle an outletless want.
-	if ownerBusinessDegraded(snap, actorID) {
+	// LLM-446: suppress only on a FULL production block (degraded at pct 0) — then
+	// an input buy has no outlet until the shop is mended and the "## Your business"
+	// cue carries that. At a positive pct a degraded keeper still produces (slowed),
+	// so keeping inputs stocked stays a live, actionable want.
+	if ownerBusinessProduceBlocked(snap, actorID) {
 		return nil
 	}
 	// The items the actor restocks by buying, and their caps — the gate for which

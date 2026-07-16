@@ -25,7 +25,8 @@ import (
 // business you're working at" so the cue states the true relationship.
 type StallRepairView struct {
 	Hired          bool            // resolved through a hire (Working for the owner), not ownership (LLM-271)
-	Degraded       bool            // worn past the degrade threshold: shut for restock/production until mended, still sells on-hand stock (LLM-304)
+	Degraded       bool            // worn past the degrade threshold: shut for restock buying, production slowed, still sells on-hand stock (LLM-304, LLM-446)
+	ProduceBlocked bool            // Degraded AND StallDegradedProducePct == 0: the legacy full production block (LLM-446) — selects the "can't make more" wording over "work goes slowly"
 	NailsNeeded    int             // nails one repair consumes
 	NailsHeld      int             // nails the actor currently carries
 	HasEnoughNails bool            // NailsHeld >= NailsNeeded
@@ -40,16 +41,36 @@ type StallRepairView struct {
 	// findItemVendors' affordability drop is a different, narrower filter than the
 	// working-capital floor, so the two can disagree.
 	Conserve bool
+
+	// MakesNails (LLM-446): the short-of-nails owner PRODUCES nails themselves —
+	// the smith's own case. Wins over every buy branch in the render: for the
+	// village's sole nail producer, "buy them" is an errand to a supplier who
+	// doesn't exist (findItemVendors returns nothing — he IS the supplier of
+	// record), and the deadlock's whole exit is that he forges his own. Making
+	// costs no coin, so it also wins over Conserve.
+	MakesNails bool
 }
 
 // ownerBusinessDegraded reports whether the actor owns a wearable business worn
-// past the degrade threshold — shut for restock/production until mended (LLM-304).
-// The snapshot-side twin of sim.ownerStallDegraded (the engine refill gate): the
-// refill cues ("## Restocking", "## Keeping up production") suppress on it so they
-// can't steer a buy the degraded shop can't turn into stock. nil-safe via
-// sim.StallDegraded (an actor owning no wearable stall is never degraded).
+// past the degrade threshold — shut for restock buying, and production slowed
+// (or blocked at pct 0), until mended (LLM-304, LLM-446). The snapshot-side twin
+// of sim.ownerStallDegraded: the buy-side "## Restocking" cue suppresses on it
+// unconditionally so it can't steer a buy the degraded shop can't turn into
+// stock. nil-safe via sim.StallDegraded (an actor owning no wearable stall is
+// never degraded).
 func ownerBusinessDegraded(snap *sim.Snapshot, actorID sim.ActorID) bool {
 	return sim.StallDegraded(sim.OwnedWearableStall(snap.VillageObjects, actorID), snap.StallWearDegradeThreshold)
+}
+
+// ownerBusinessProduceBlocked reports whether degrade FULLY blocks the actor's
+// production — degraded AND StallDegradedProducePct dialed to 0 (the legacy
+// LLM-304 block). The snapshot-side twin of sim.degradedProduceBlocked: the
+// production-side cues ("## Keeping up production", the forge/production
+// choice) suppress on THIS, not on ownerBusinessDegraded, so at a positive pct
+// a degraded keeper is still invited to produce — slowed production is the
+// whole way out of the sole-nail-producer self-repair deadlock (LLM-446).
+func ownerBusinessProduceBlocked(snap *sim.Snapshot, actorID sim.ActorID) bool {
+	return snap.StallDegradedProducePct <= 0 && ownerBusinessDegraded(snap, actorID)
 }
 
 // buildStallRepair returns the at-the-business repair cue, or nil. Pure over the
@@ -75,13 +96,26 @@ func buildStallRepair(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 	}
 	needed := snap.StallNailsPerRepair
 	held := actorSnap.Inventory[sim.NailItemKind]
+	degraded := sim.StallDegraded(stall, snap.StallWearDegradeThreshold)
 	view := &StallRepairView{
 		Hired:          hired,
-		Degraded:       sim.StallDegraded(stall, snap.StallWearDegradeThreshold),
+		Degraded:       degraded,
+		ProduceBlocked: degraded && snap.StallDegradedProducePct <= 0,
 		NailsNeeded:    needed,
 		NailsHeld:      held,
 		HasEnoughNails: held >= needed,
 		Name:           resolveDwellPinLabel(snap, stall.ID),
+	}
+	// LLM-446: a nail-producing owner (the smith) is steered to forge their own
+	// rather than handed a buy errand — checked before the vendor scan since
+	// MakesNails wins every buy branch in the render.
+	if !view.HasEnoughNails && !hired && actorSnap.RestockPolicy != nil {
+		for _, e := range actorSnap.RestockPolicy.ProduceEntries() {
+			if e.Item == sim.NailItemKind {
+				view.MakesNails = true
+				break
+			}
+		}
 	}
 	// LLM-274: when the owner is short of nails, resolve the nail supplier(s) so the
 	// cue can name a concrete move_to destination instead of the dead-end "the smith".
@@ -124,18 +158,29 @@ func renderStallRepair(b *strings.Builder, v *StallRepairView) {
 	}
 	b.WriteString("## Your business\n")
 	// Owner path only — the hired-worker branch returned above.
-	if v.Degraded {
-		// LLM-304: a degraded shop is shut for RESTOCK/PRODUCTION, not for selling —
-		// it sells down what's on hand and reopens the refill on repair. State that
-		// plainly so the keeper keeps trading (which earns the coin for the nails)
-		// and treats mending as the way to restore the refill, instead of the old
-		// "stays shut, earns nothing" framing that trapped a broke keeper.
+	switch {
+	case v.ProduceBlocked:
+		// LLM-304 legacy (pct 0): a fully blocked shop sells down what's on hand
+		// and reopens the refill on repair. State that plainly so the keeper keeps
+		// trading (which earns the coin for the nails) and treats mending as the
+		// way to restore the refill, instead of the old "stays shut, earns
+		// nothing" framing that trapped a broke keeper.
 		fmt.Fprintf(b, "Your %s is too worn to keep stock — you can still sell what's on hand, but you can't restock the shelves or make more until you mend it. ", name)
-	} else {
+	case v.Degraded:
+		// LLM-446: at a positive pct the degraded shop LIMPS — work continues
+		// slowly, so the way out (make/earn the nails) stays visibly open. Only
+		// restock buying is shut.
+		fmt.Fprintf(b, "Your %s is badly worn — the disrepair drags at every task, and you can't restock the shelves until you mend it. You can still sell what's on hand, and work goes on, though slowly. ", name)
+	default:
 		fmt.Fprintf(b, "Your %s is showing hard use and needs mending. ", name)
 	}
 	if v.HasEnoughNails {
 		fmt.Fprintf(b, "You carry enough nails (%d) to mend it — use the repair tool now to fix it, hammer in hand, on site (it takes a short while).\n", v.NailsHeld)
+	} else if v.MakesNails {
+		// LLM-446: the owner forges nails themselves — the sole-producer case,
+		// where every buy branch below is an errand to a supplier who doesn't
+		// exist. Point the mend at their own bench.
+		fmt.Fprintf(b, "Mending takes %d nails and you have %d — but nails are your own work: forge what you're short, then mend it here.\n", v.NailsNeeded, v.NailsHeld)
 	} else if v.Conserve {
 		// LLM-301: the working-capital gate says hold off buying — the soften wins even
 		// over a resolvable supplier (checked BEFORE the vendor list), so this cue can
@@ -171,9 +216,12 @@ func renderStallRepair(b *strings.Builder, v *StallRepairView) {
 // to shop), so it just names the shortfall.
 func renderHiredStallRepair(b *strings.Builder, v *StallRepairView, name string) {
 	b.WriteString("## The business you're working at\n")
-	if v.Degraded {
+	switch {
+	case v.ProduceBlocked:
 		fmt.Fprintf(b, "The %s you're working at is too worn to keep stock — it can still sell what's on hand, but it can't restock or make more until it's mended. ", name)
-	} else {
+	case v.Degraded:
+		fmt.Fprintf(b, "The %s you're working at is badly worn — the disrepair drags at every task, and it can't restock until it's mended. It can still sell what's on hand, and the work goes on, though slowly. ", name)
+	default:
 		fmt.Fprintf(b, "The %s you're working at is showing hard use and needs mending. ", name)
 	}
 	if v.HasEnoughNails {
@@ -191,8 +239,9 @@ func renderHiredStallRepair(b *strings.Builder, v *StallRepairView, name string)
 // shop's state. nil when the actor isn't at a worn business, or when they ARE its
 // owner (they get the richer "## Your business" cue instead).
 type StallConditionView struct {
-	Degraded bool
-	Name     string // the business's display name (structure/object); "" → generic noun
+	Degraded       bool
+	ProduceBlocked bool   // Degraded at pct 0 — the legacy full-block wording (LLM-446); mirrors StallRepairView.ProduceBlocked so the two audiences agree
+	Name           string // the business's display name (structure/object); "" → generic noun
 }
 
 // buildStallCondition returns the co-present worn-business line for a non-owner,
@@ -220,9 +269,11 @@ func buildStallCondition(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim
 		if !sim.StallNeedsRepair(obj, snap.StallWearRepairThreshold) {
 			continue
 		}
+		degraded := sim.StallDegraded(obj, snap.StallWearDegradeThreshold)
 		return &StallConditionView{
-			Degraded: sim.StallDegraded(obj, snap.StallWearDegradeThreshold),
-			Name:     resolveDwellPinLabel(snap, obj.ID),
+			Degraded:       degraded,
+			ProduceBlocked: degraded && snap.StallDegradedProducePct <= 0,
+			Name:           resolveDwellPinLabel(snap, obj.ID),
 		}
 	}
 	return nil
@@ -240,7 +291,8 @@ func renderStallCondition(b *strings.Builder, v *StallConditionView) {
 	if name == "" {
 		name = "business"
 	}
-	if v.Degraded {
+	switch {
+	case v.ProduceBlocked:
 		// LLM-310: a degraded business is a closed-for-restock fact, not mere texture —
 		// state it the same way the owner's "## Your business" cue does (LLM-304: sells
 		// on-hand stock, can't refill until mended) so a co-present buyer isn't told the
@@ -248,7 +300,11 @@ func renderStallCondition(b *strings.Builder, v *StallConditionView) {
 		// NOT "can sell nothing": degrade blocks refill, not selling, so the on-hand stock
 		// is still for sale (the eachVendorOffer qty>0 gate drops him once sold empty).
 		fmt.Fprintf(b, "The %s here is too worn to restock — its keeper can sell what's on hand, but can't refill the shelves or make more until it's mended.\n", name)
-	} else {
+	case v.Degraded:
+		// LLM-446 (the positive-pct twin): the keeper still works, slowly — a
+		// co-present buyer should expect long waits, not a dead shop.
+		fmt.Fprintf(b, "The %s here is badly worn — its keeper can sell what's on hand and still works, though the disrepair makes everything slow, and the shelves can't be restocked until it's mended.\n", name)
+	default:
 		fmt.Fprintf(b, "The %s here looks worn and run-down from hard use.\n", name)
 	}
 }

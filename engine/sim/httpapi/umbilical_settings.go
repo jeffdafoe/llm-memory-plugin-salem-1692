@@ -84,6 +84,20 @@ type UmbilicalSettingsDTO struct {
 	// so it survives restart. 0 means the gate is disabled.
 	MerchantCoinFloor int `json:"merchant_coin_floor"`
 
+	// Stall wear & repair (LLM-118/LLM-247) — the knobs stall-wear/set writes,
+	// persisted like the huddle_loop_* group. Surfaced here in LLM-446: before
+	// that, the set route's echo was the only window onto them (no read without a
+	// write). stall_wear_per_coin == 0 disables wear; a 0 threshold disables that
+	// transition. stall_degraded_produce_pct (LLM-446) is the production-rate
+	// multiplier while the owner's business is degraded — 0 restores the legacy
+	// full block, 100 removes the penalty.
+	StallWearPerCoin           int `json:"stall_wear_per_coin"`
+	StallWearRepairThreshold   int `json:"stall_wear_repair_threshold"`
+	StallWearDegradeThreshold  int `json:"stall_wear_degrade_threshold"`
+	StallNailsPerRepair        int `json:"stall_nails_per_repair"`
+	StallRepairDurationSeconds int `json:"stall_repair_duration_seconds"`
+	StallDegradedProducePct    int `json:"stall_degraded_produce_pct"`
+
 	// Eco mode (LLM-313) — the knobs settings/eco-mode writes, persisted like the
 	// huddle_loop_* group. eco_audience_active / eco_engaged are LIVE state, not
 	// settings: whether any PC's presence stamp is fresh at this instant, and
@@ -218,6 +232,12 @@ func (s *Server) handleUmbilicalSettings(w http.ResponseWriter, r *http.Request)
 			FarmUpkeepCoinsPerShovel:              world.Settings.FarmUpkeepCoinsPerShovel,
 			LaborProduceBoostPct:                  world.Settings.LaborProduceBoostPct,
 			MerchantCoinFloor:                     world.Settings.MerchantCoinFloor,
+			StallWearPerCoin:                      world.Settings.StallWearPerCoin,
+			StallWearRepairThreshold:              world.Settings.StallWearRepairThreshold,
+			StallWearDegradeThreshold:             world.Settings.StallWearDegradeThreshold,
+			StallNailsPerRepair:                   world.Settings.StallNailsPerRepair,
+			StallRepairDurationSeconds:            world.Settings.StallRepairDurationSeconds,
+			StallDegradedProducePct:               world.Settings.StallDegradedProducePct,
 			EcoEnabled:                            world.Settings.EcoEnabled,
 			EcoSocialGapSeconds:                   int(world.Settings.EcoSocialGap / time.Second),
 			EcoEconomyGapSeconds:                  int(world.Settings.EcoEconomyGap / time.Second),
