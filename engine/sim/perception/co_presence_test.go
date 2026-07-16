@@ -354,3 +354,104 @@ func TestRenderSurroundings_AsleepAndRestingCombined(t *testing.T) {
 		t.Errorf("only-dormant should note there's no awake audience, got:\n%s", out)
 	}
 }
+
+// mendingPeerObserverSnapshot builds an observer (Prudence) co-present with a keeper
+// (Ezekiel) mid-repair of his market stall, plus a non-busy peer (Grace). Shared by
+// the LLM-440 build + end-to-end observer tests. Deterministic — no wall-clock reads.
+func mendingPeerObserverSnapshot() (*sim.Snapshot, sim.ActorID) {
+	subj := &sim.ActorSnapshot{
+		Kind:                 sim.KindNPCShared,
+		InsideStructureID:    "market",
+		ColocatedAudienceIDs: []sim.ActorID{"ezekiel", "grace"},
+		Acquaintances: map[string]sim.Acquaintance{
+			"Ezekiel Stone": {},
+			"Grace Ward":    {},
+		},
+	}
+	snap := &sim.Snapshot{
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			"prudence": subj,
+			// Ezekiel is mid a timed repair of his market stall (a structure-backed
+			// object shares its id, so the object id resolves to the Market structure).
+			"ezekiel": {
+				DisplayName:            "Ezekiel Stone",
+				Role:                   "merchant",
+				SourceActivityKind:     sim.SourceActivityRepair,
+				SourceActivityObjectID: "market",
+			},
+			// Grace is just standing here — no activity, so no annotation.
+			"grace": {DisplayName: "Grace Ward", Role: "farmer"},
+		},
+		Structures: map[sim.StructureID]*sim.Structure{
+			"market": {DisplayName: "the Market"},
+		},
+	}
+	return snap, "prudence"
+}
+
+// LLM-440 build layer: a co-present peer mid a timed source activity is annotated busy
+// on its CoPresent member view, sourced from the peer's BusyAtSource-gated
+// SourceActivityKind projection with the mended business's label. A peer with no
+// activity leaves the fields zero — the observer half of the LLM-435 self-suppression.
+func TestBuild_CoPresentSourceActivityAnnotated(t *testing.T) {
+	snap, observer := mendingPeerObserverSnapshot()
+	p := Build(snap, observer, nil)
+	byID := make(map[sim.ActorID]HuddleMember, len(p.Surroundings.CoPresent))
+	for _, m := range p.Surroundings.CoPresent {
+		byID[m.ID] = m
+	}
+	ez, ok := byID["ezekiel"]
+	if !ok {
+		t.Fatalf("Ezekiel should be co-present, got members: %v", p.Surroundings.CoPresent)
+	}
+	if !ez.SourceActivityBusy || ez.SourceActivityKind != sim.SourceActivityRepair {
+		t.Errorf("Ezekiel is mid-repair — want busy + repair kind, got busy=%v kind=%q", ez.SourceActivityBusy, ez.SourceActivityKind)
+	}
+	if ez.SourceActivityLabel != "the Market" {
+		t.Errorf("SourceActivityLabel = %q, want %q (the mended business's display name)", ez.SourceActivityLabel, "the Market")
+	}
+	if byID["grace"].SourceActivityBusy {
+		t.Errorf("Grace has no activity — want SourceActivityBusy=false")
+	}
+}
+
+// LLM-440 render layer: busyActivityPhrase annotates a co-present peer mid a source
+// activity in "## Around you", keyed on kind — repair names the business it is bound
+// to (falling back to a place-less phrase), stoke and gather stand alone.
+func TestRenderSurroundings_SourceActivityBusyAnnotated(t *testing.T) {
+	cases := []struct {
+		name string
+		m    HuddleMember
+		want string
+	}{
+		{"repair names the business", HuddleMember{ID: "ez", DisplayName: "Ezekiel Stone", Acquainted: true, SourceActivityBusy: true, SourceActivityKind: sim.SourceActivityRepair, SourceActivityLabel: "the Market"}, "(mending at the Market just now)"},
+		{"repair with no resolved place", HuddleMember{ID: "ez", DisplayName: "Ezekiel Stone", Acquainted: true, SourceActivityBusy: true, SourceActivityKind: sim.SourceActivityRepair}, "(mending just now)"},
+		{"stoke", HuddleMember{ID: "hannah", DisplayName: "Hannah Boggs", Acquainted: true, SourceActivityBusy: true, SourceActivityKind: sim.SourceActivityStoke}, "(tending the fire just now)"},
+		{"harvest", HuddleMember{ID: "josiah", DisplayName: "Josiah Thorne", Acquainted: true, SourceActivityBusy: true, SourceActivityKind: sim.SourceActivityHarvest}, "(gathering just now)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var b strings.Builder
+			renderSurroundings(&b, SurroundingsView{
+				InsideStructureID: "market",
+				StructureName:     "the Market",
+				CoPresent:         []HuddleMember{tc.m},
+			})
+			if out := b.String(); !strings.Contains(out, tc.want) {
+				t.Errorf("want %q in ## Around you, got:\n%s", tc.want, out)
+			}
+		})
+	}
+}
+
+// TestGoldenObserverSeesMendingPeer is the LLM-440 observer guard (the source-activity
+// analogue of TestGoldenObserverSeesEatingPeer): an onlooker co-present with a keeper
+// mid-repair must see, in "## Around you", that the keeper is mending — so they read a
+// busy keeper as occupied rather than free to greet or pitch.
+func TestGoldenObserverSeesMendingPeer(t *testing.T) {
+	snap, observer := mendingPeerObserverSnapshot()
+	got := combinedPrompt(Render(Build(snap, observer, nil), DefaultRenderConfig()))
+	if !strings.Contains(got, "Ezekiel Stone") || !strings.Contains(got, "(mending at the Market just now)") {
+		t.Errorf("an observer should see a co-present repairing keeper annotated as mending in ## Around you.\nprompt:\n%s", got)
+	}
+}

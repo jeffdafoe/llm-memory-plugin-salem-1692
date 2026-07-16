@@ -1777,6 +1777,26 @@ type HuddleMember struct {
 	// the annotation ("eating porridge"). Set only alongside Eating; empty falls
 	// back to a bare "eating here" in render. LLM-416.
 	EatingItemLabel string
+
+	// SourceActivityBusy marks a co-present member mid a timed source activity —
+	// mending a worn business, tending a hearth fire, or gathering at a source —
+	// set for EVERY observer. "## Around you" renders it as a busy annotation
+	// ("mending the market stall just now") so an onlooker reads a keeper deep in a
+	// repair/stoke/gather as occupied rather than free to greet or pitch. The
+	// observer half of the LLM-435 self-suppression, the same legibility beat
+	// Eating (LLM-416) and Laboring (LLM-231) give their own states. Sourced from
+	// the peer's BusyAtSource-gated SourceActivityKind projection, so it clears the
+	// moment the window completes. Like Eating and unlike Laboring it does NOT gate
+	// the seller offer/quote cue or drop the member from the speech audience — a
+	// keeper mid-repair can still sell and still answer if spoken to. LLM-440.
+	SourceActivityBusy bool
+	SourceActivityKind sim.SourceActivityKind
+
+	// SourceActivityLabel is the display label of the place the activity is bound to
+	// (the business being mended, the hearth's structure), woven into the repair
+	// annotation ("mending the market stall"). Set only alongside SourceActivityBusy;
+	// empty falls back to a place-less phrase in render. LLM-440.
+	SourceActivityLabel string
 }
 
 // AnchorsView carries the actor's own home and work structures as standing

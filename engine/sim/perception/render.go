@@ -1390,6 +1390,7 @@ func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 			label += laborTiePhrase(m.SolicitTie)
 			label += laboringPhrase(m)
 			label += eatingPhrase(m)
+			label += busyActivityPhrase(m)
 			names[i] = label
 		}
 		verb := "is"
@@ -1734,6 +1735,34 @@ func eatingPhrase(m HuddleMember) string {
 		return fmt.Sprintf(" (eating %s just now)", sanitizeInline(m.EatingItemLabel))
 	}
 	return " (eating here just now)"
+}
+
+// busyActivityPhrase annotates a co-present member mid a timed source activity as
+// busy in "## Around you" (LLM-440) — the observer-facing counterpart to the
+// subject's own in-flight self-line (renderInFlightSourceActivity), so an onlooker
+// reads a keeper deep in a repair/stoke/gather as occupied rather than free to greet
+// or pitch. Third-person, keyed on kind. Repair names the business it is bound to
+// with the same "at <label>" framing and label source (resolveDwellPinLabel) the
+// self-line uses, so the two can't drift; an unresolved label falls back to a
+// place-less phrase. Stoke and gather need no place — the fire and the forager are
+// already at the observed spot. Empty for a member not mid a source activity. Like
+// eatingPhrase, purely a legibility beat: it gates neither trade nor speech.
+func busyActivityPhrase(m HuddleMember) string {
+	if !m.SourceActivityBusy {
+		return ""
+	}
+	switch m.SourceActivityKind {
+	case sim.SourceActivityRepair:
+		if m.SourceActivityLabel != "" {
+			return fmt.Sprintf(" (mending at %s just now)", sanitizeInline(m.SourceActivityLabel))
+		}
+		return " (mending just now)"
+	case sim.SourceActivityStoke:
+		return " (tending the fire just now)"
+	case sim.SourceActivityHarvest:
+		return " (gathering just now)"
+	}
+	return ""
 }
 
 // laborTiePhrase names a co-present member's relationship to the subject —
