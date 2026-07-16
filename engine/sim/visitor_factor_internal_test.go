@@ -23,21 +23,28 @@ func TestLandingWeightPermille(t *testing.T) {
 	}
 }
 
-// TestSeedFactorPack — a factor carries every factorWareKind (unitsPerKind..+1 of each) and a
-// purse inside the configured [min,max]; a min==max range gives a fixed purse.
+// TestSeedFactorPack — a factor carries every factorWareKind (unitsPerKind..+1 of each),
+// an iron shipment (ironUnits..+2 — LLM-442), and a purse inside the configured [min,max];
+// a min==max range gives a fixed purse.
 func TestSeedFactorPack(t *testing.T) {
-	valid := map[ItemKind]bool{}
+	valid := map[ItemKind]bool{factorIronKind: true}
 	for _, k := range factorWareKinds {
 		valid[k] = true
 	}
 	for seed := int64(0); seed < 50; seed++ {
-		pack, purse := seedFactorPack(rand.New(rand.NewSource(seed)), 2, 120, 200)
-		if len(pack) != len(factorWareKinds) {
-			t.Fatalf("seed %d: pack has %d kinds, want %d (one per factorWareKind)", seed, len(pack), len(factorWareKinds))
+		pack, purse := seedFactorPack(rand.New(rand.NewSource(seed)), 2, 10, 120, 200)
+		if len(pack) != len(factorWareKinds)+1 {
+			t.Fatalf("seed %d: pack has %d kinds, want %d (one per factorWareKind plus iron)", seed, len(pack), len(factorWareKinds)+1)
 		}
 		for kind, qty := range pack {
 			if !valid[kind] {
 				t.Errorf("seed %d: pack carries %q, not a factorWareKind", seed, kind)
+			}
+			if kind == factorIronKind {
+				if qty < 10 || qty > 12 {
+					t.Errorf("seed %d: iron qty %d out of [10,12]", seed, qty)
+				}
+				continue
 			}
 			if qty < 2 || qty > 3 {
 				t.Errorf("seed %d: %q qty %d out of [2,3]", seed, kind, qty)
@@ -47,7 +54,7 @@ func TestSeedFactorPack(t *testing.T) {
 			t.Errorf("seed %d: purse %d out of [120,200]", seed, purse)
 		}
 	}
-	if _, purse := seedFactorPack(rand.New(rand.NewSource(1)), 1, 150, 150); purse != 150 {
+	if _, purse := seedFactorPack(rand.New(rand.NewSource(1)), 1, 1, 150, 150); purse != 150 {
 		t.Errorf("purse = %d, want 150 when min==max", purse)
 	}
 }

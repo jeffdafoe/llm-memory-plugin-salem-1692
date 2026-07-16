@@ -494,6 +494,16 @@ type WorldSettings struct {
 	VisitorFactorPurseMin  int
 	VisitorFactorPurseMax  int
 
+	// VisitorFactorIronUnits (LLM-442): bars of iron per factor visit, seeded
+	// separately from the uniform per-kind pack quantity because iron is a
+	// production INPUT consumed batch-by-batch (1 bar boosts one nail batch),
+	// not a durable garment — at the clothing-scale 2-per-visit, the rare
+	// factor (14–45 day visitor return cooldowns) could never keep the forge
+	// supplied and the rough-nails fallback would become the everyday path.
+	// Falls back to DefaultVisitorFactorIronUnits when zero/unset; settings
+	// key visitor_factor_iron_units.
+	VisitorFactorIronUnits int
+
 	// Businessowner cascade tunables (engine/sim/businessowner.go +
 	// engine/sim/cascade/businessowner.go). Both fall back to
 	// *Default constants when zero, so tests that bypass the
