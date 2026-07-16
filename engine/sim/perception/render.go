@@ -1754,10 +1754,14 @@ func laborTiePhrase(t laborTie) string {
 // matches the perception note — Render is kind-agnostic; Build is the
 // one that gates on Kind.
 //
-// The body is the actor's AboutMe — the accreting first-person soul the
-// per-actor narrative sweep synthesizes each day via the dream-sim-soul agent
-// (LLM-199). Build gates the view on a non-empty AboutMe, so an actor whose
-// soul hasn't been synthesized yet gets no section rather than a bare header
+// The section opens with the actor's own name (LLM-432): the shared VA's
+// system prompt is a generic sim context and the AboutMe prose doesn't
+// reliably state the name, so without this line the model cannot tell
+// whether overheard second-person speech ("ezekiel, you sleeping over
+// there?") is addressed to it. The body is the actor's AboutMe — the
+// accreting first-person soul the per-actor narrative sweep synthesizes
+// each day via the dream-sim-soul agent (LLM-199). Build gates the view on
+// having a name or a soul, so the section never renders as a bare header
 // (the original empty-block bug). SeedText/EvolvingSummary are not rendered —
 // SeedText is never populated for shared VAs, and EvolvingSummary was the
 // frozen, unconsolidated diary prose that primed the repeat-pitch loop
@@ -1766,9 +1770,23 @@ func renderNarrativeState(b *strings.Builder, n *NarrativeStateView) {
 	if n == nil {
 		return
 	}
+	// Gate on the SANITIZED values: a name or soul made only of content
+	// sanitization strips (control characters, whitespace) must not emit a
+	// bare header or a dangling "You are ." line. Build's raw-empty gate is
+	// just the fast path; this is the authoritative check.
+	name := sanitizeInline(n.Name)
+	aboutMe := sanitizeInline(n.AboutMe)
+	if name == "" && aboutMe == "" {
+		return
+	}
 	b.WriteString("## Who you are\n")
-	if n.AboutMe != "" {
-		b.WriteString(sanitizeInline(n.AboutMe))
+	if name != "" {
+		b.WriteString("You are ")
+		b.WriteString(name)
+		b.WriteString(".\n")
+	}
+	if aboutMe != "" {
+		b.WriteString(aboutMe)
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")

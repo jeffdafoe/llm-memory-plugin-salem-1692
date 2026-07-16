@@ -61,16 +61,47 @@ func TestBuild_NarrativeStateNilForStateful(t *testing.T) {
 	}
 }
 
-func TestBuild_NarrativeStateNilForSharedEmpty(t *testing.T) {
-	// Shared actor with a NarrativeState pointer but both fields empty —
-	// content-gated nil so Render skips the section cleanly.
+func TestBuild_NarrativeStateNameOnlyForSharedEmptyNarrative(t *testing.T) {
+	// Shared actor with an empty narrative still gets the view: the
+	// self-name line is content on its own (LLM-432) — a villager whose
+	// soul hasn't been synthesized yet must still know who it is.
 	a := sharedSnap("hannah", "Hannah", "")
 	a.Narrative = &sim.NarrativeState{}
 	snap := &sim.Snapshot{Actors: map[sim.ActorID]*sim.ActorSnapshot{"hannah": a}}
 
 	p := Build(snap, "hannah", nil)
+	if p.NarrativeState == nil {
+		t.Fatal("NarrativeState nil for shared actor with a display name")
+	}
+	if p.NarrativeState.Name != "Hannah" || p.NarrativeState.AboutMe != "" {
+		t.Errorf("NarrativeState = %+v, want name-only view", p.NarrativeState)
+	}
+}
+
+func TestBuild_NarrativeStateNilForSharedNameless(t *testing.T) {
+	// No name AND no soul — content-gated nil so Render skips the
+	// section cleanly rather than emitting a bare header.
+	a := sharedSnap("hannah", "", "")
+	a.Narrative = &sim.NarrativeState{}
+	snap := &sim.Snapshot{Actors: map[sim.ActorID]*sim.ActorSnapshot{"hannah": a}}
+
+	p := Build(snap, "hannah", nil)
 	if p.NarrativeState != nil {
-		t.Errorf("NarrativeState should be nil for empty narrative; got %+v", p.NarrativeState)
+		t.Errorf("NarrativeState should be nil with no name and no narrative; got %+v", p.NarrativeState)
+	}
+}
+
+func TestBuild_NarrativeStateNilForTraveler(t *testing.T) {
+	// A transient traveler is KindNPCShared but its identity is the
+	// traveler preface (LLM-370) — the narrative section must stay nil
+	// or the prompt would state its identity twice.
+	a := sharedSnap("elias", "Elias Drum the peddler", "")
+	a.VisitorState = &sim.VisitorState{Archetype: "peddler"}
+	snap := &sim.Snapshot{Actors: map[sim.ActorID]*sim.ActorSnapshot{"elias": a}}
+
+	p := Build(snap, "elias", nil)
+	if p.NarrativeState != nil {
+		t.Errorf("NarrativeState should be nil for a traveler; got %+v", p.NarrativeState)
 	}
 }
 
