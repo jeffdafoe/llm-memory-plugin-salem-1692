@@ -70,9 +70,14 @@ func HandleStoke(in HandlerInput) (sim.Command, error) {
 }
 
 // RegisterStoke adds the stoke tool to r as a ClassCommit entry,
-// AvailabilityAvailable. terminalOnSuccess is FALSE, matching repair: feeding
-// the fire is a within-tick step — the keeper can speak a word over their
-// shoulder in the same tick.
+// AvailabilityAvailable. terminalOnSuccess is TRUE, matching gather (LLM-175): a
+// started stoke opens a timed window, so a second stoke this tick bounces "already
+// busy" and a move abandons the window — nothing useful chains after starting it.
+// Ending the tick kills the within-tick re-fire storm a weak model fell into (LLM-443:
+// a keeper stoked, then hammered stoke to the round budget against the "already busy"
+// reject); the fire extension still lands next tick via the source-activity completion
+// sweep. A word said over the shoulder rides the narration on the stoke call itself —
+// speak is terminal too (LLM-321), so it was never a same-tick follow-on anyway.
 //
 // Advertising is gated at the prompt layer by gateTools (offered only with
 // the hearth cue: responsible for the hearth, inside its structure, fire
@@ -86,7 +91,7 @@ func RegisterStoke(r *Registry) error {
 		stokeSchema,
 		DecodeStokeArgs,
 		HandleStoke,
-		false, // non-terminal
+		true, // terminal: a started stoke ends the tick (LLM-443)
 		WithDescription(stokeDescription),
 	)
 }
