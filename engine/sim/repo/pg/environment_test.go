@@ -559,44 +559,66 @@ func TestClampNonNegSetting(t *testing.T) {
 	}
 }
 
-// TestBuildSettings_ClampsNegativeColdRates — end to end through buildSettings: a
-// negative cold accrual rate and a negative recovery rate both clamp to 0 (the
-// recovery one is the dangerous case — un-clamped it would flip recovery into
-// accrual), and both land in SettingWarnings; an in-range knob is untouched and
-// unflagged (LLM-439).
+// coldRateKnobs maps every cold setting key to the WorldSettings field it loads
+// into — the full set clampNonNegSetting is applied to (LLM-439). Kept beside the
+// buildSettings test so a new cold knob added without validation is caught.
+var coldRateKnobs = []struct {
+	key string
+	get func(sim.WorldSettings) int
+}{
+	{"cold_storm_outdoors_per_minute_x100", func(s sim.WorldSettings) int { return s.ColdStormOutdoorsPerMinuteX100 }},
+	{"cold_storm_indoors_per_minute_x100", func(s sim.WorldSettings) int { return s.ColdStormIndoorsPerMinuteX100 }},
+	{"cold_warm_garment_per_minute_x100", func(s sim.WorldSettings) int { return s.ColdWarmGarmentPerMinuteX100 }},
+	{"cold_threadbare_garment_per_minute_x100", func(s sim.WorldSettings) int { return s.ColdThreadbareGarmentPerMinuteX100 }},
+	{"cold_night_multiplier_x100", func(s sim.WorldSettings) int { return s.ColdNightMultiplierX100 }},
+	{"cold_warm_recovery_per_minute_x100", func(s sim.WorldSettings) int { return s.ColdWarmRecoveryPerMinuteX100 }},
+	{"cold_clear_recovery_per_minute_x100", func(s sim.WorldSettings) int { return s.ColdClearRecoveryPerMinuteX100 }},
+	{"cold_produce_sap_pct", func(s sim.WorldSettings) int { return s.ColdProduceSapPct }},
+}
+
+// TestBuildSettings_ClampsNegativeColdRates — end to end through buildSettings for
+// EVERY cold knob: a stored negative clamps the field to 0 and records exactly one
+// SettingWarning naming that key (LLM-439). The recovery keys are the dangerous
+// case — un-clamped they would flip recovery into accrual.
 func TestBuildSettings_ClampsNegativeColdRates(t *testing.T) {
-	values := map[string]string{
-		"cold_storm_outdoors_per_minute_x100": "-100",
-		"cold_warm_recovery_per_minute_x100":  "-200",
-		"cold_storm_indoors_per_minute_x100":  "25", // in range — untouched
+	for _, knob := range coldRateKnobs {
+		t.Run(knob.key, func(t *testing.T) {
+			s := buildSettings(map[string]string{knob.key: "-7"})
+			if got := knob.get(s); got != 0 {
+				t.Errorf("%s = %d, want clamp to 0", knob.key, got)
+			}
+			var flagged []sim.SettingWarning
+			for _, wrn := range s.SettingWarnings {
+				if wrn.Key == knob.key {
+					flagged = append(flagged, wrn)
+				}
+			}
+			if len(flagged) != 1 {
+				t.Fatalf("%s recorded %d warnings, want 1: %+v", knob.key, len(flagged), s.SettingWarnings)
+			}
+			if flagged[0].Raw != -7 || flagged[0].Clamped != 0 {
+				t.Errorf("%s warning = %+v, want {raw:-7 clamped:0}", knob.key, flagged[0])
+			}
+		})
+	}
+}
+
+// TestBuildSettings_ZeroColdRatesPreservedNoWarning — 0 is in range for every cold
+// knob (no accrual / full relief / no sap / plain daytime rate for the multiplier),
+// so a stored 0 is kept verbatim and generates NO warning (LLM-439).
+func TestBuildSettings_ZeroColdRatesPreservedNoWarning(t *testing.T) {
+	values := map[string]string{}
+	for _, knob := range coldRateKnobs {
+		values[knob.key] = "0"
 	}
 	s := buildSettings(values)
-
-	if s.ColdStormOutdoorsPerMinuteX100 != 0 {
-		t.Errorf("negative outdoors rate = %d, want clamp 0", s.ColdStormOutdoorsPerMinuteX100)
+	for _, knob := range coldRateKnobs {
+		if got := knob.get(s); got != 0 {
+			t.Errorf("%s = %d, want 0 preserved", knob.key, got)
+		}
 	}
-	if s.ColdWarmRecoveryPerMinuteX100 != 0 {
-		t.Errorf("negative recovery rate = %d, want clamp 0", s.ColdWarmRecoveryPerMinuteX100)
-	}
-	if s.ColdStormIndoorsPerMinuteX100 != 25 {
-		t.Errorf("in-range indoors rate = %d, want 25 untouched", s.ColdStormIndoorsPerMinuteX100)
-	}
-
-	got := map[string]sim.SettingWarning{}
-	for _, wrn := range s.SettingWarnings {
-		got[wrn.Key] = wrn
-	}
-	if len(got) != 2 {
-		t.Fatalf("SettingWarnings = %+v, want exactly the 2 clamped keys", s.SettingWarnings)
-	}
-	if w, ok := got["cold_storm_outdoors_per_minute_x100"]; !ok || w.Raw != -100 || w.Clamped != 0 {
-		t.Errorf("outdoors warning = %+v (present=%v)", w, ok)
-	}
-	if w, ok := got["cold_warm_recovery_per_minute_x100"]; !ok || w.Raw != -200 || w.Clamped != 0 {
-		t.Errorf("recovery warning = %+v (present=%v)", w, ok)
-	}
-	if _, ok := got["cold_storm_indoors_per_minute_x100"]; ok {
-		t.Errorf("in-range knob was flagged")
+	if len(s.SettingWarnings) != 0 {
+		t.Errorf("zero-value cold knobs recorded warnings: %+v", s.SettingWarnings)
 	}
 }
 

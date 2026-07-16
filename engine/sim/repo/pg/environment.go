@@ -227,13 +227,15 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	// Cold exposure + hearth (LLM-412). Every cold knob is a per-minute rate, a
 	// multiplier, or a percentage — all of which must be >= 0 (a negative recovery
 	// rate would FLIP recovery into accrual, `return -setting` going positive; a
-	// negative accrual/cap/multiplier/sap is likewise nonsense). 0 is a valid
-	// off-switch for each (no accrual / a coat is full relief / no night boost /
-	// no sap), so the floor is 0, not the default. clampNonNegSetting clamps a
-	// negative to 0 and records a SettingWarning (LLM-439) so the umbilical
+	// negative accrual/cap/multiplier/sap is likewise nonsense). 0 is IN RANGE for
+	// each — its meaning varies (no accrual / a coat is full relief / no sap / the
+	// night multiplier's `> 0` guard selects the plain daytime rate) but is never
+	// itself invalid — so the floor is 0, not the default. clampNonNegSetting clamps
+	// a negative to 0 and records a SettingWarning (LLM-439) so the umbilical
 	// /settings surface shows the bad config rather than silently correcting it —
-	// keeping the always-live village booting on a fat-fingered deploy. The
-	// runtime `g >= 0` guards in coldRatePerMinuteX100 stay as defense in depth.
+	// keeping the always-live village booting on a fat-fingered deploy. The runtime
+	// guards in coldRatePerMinuteX100 (the accrual/garment `g >= 0` gates and the
+	// recovery-branch max(0, …) floors) stay as defense in depth.
 	s.ColdStormOutdoorsPerMinuteX100 = clampNonNegSetting(values, "cold_storm_outdoors_per_minute_x100", sim.DefaultColdStormOutdoorsPerMinuteX100, &s.SettingWarnings)
 	s.ColdStormIndoorsPerMinuteX100 = clampNonNegSetting(values, "cold_storm_indoors_per_minute_x100", sim.DefaultColdStormIndoorsPerMinuteX100, &s.SettingWarnings)
 	s.ColdWarmGarmentPerMinuteX100 = clampNonNegSetting(values, "cold_warm_garment_per_minute_x100", sim.DefaultColdWarmGarmentPerMinuteX100, &s.SettingWarnings)
