@@ -72,6 +72,12 @@ func buildTravelerRounds(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, membe
 		return nil
 	}
 	vs := actorSnap.VisitorState
+	if vs.DistributorOnly {
+		// A wholesale factor (LLM-410) doesn't make the ordinary rounds — he deals only with
+		// the distributor. The distributor-only "## Your dealings here" cue (buildFactorTrade)
+		// replaces this surface, so it never nudges him to trade at another shop.
+		return nil
+	}
 
 	// Where he stands: if co-present with the keeper of the shop he is in, name it (the
 	// trade-here line) and exclude it from the still-open list.
@@ -320,4 +326,165 @@ func structureSnapIsLodging(snap *sim.Snapshot, sid sim.StructureID) bool {
 	}
 	vobj := snap.VillageObjects[sim.VillageObjectID(sid)]
 	return vobj != nil && vobj.HasTag("lodging")
+}
+
+// FactorTradeView is the wholesale factor's "## Your dealings here" cue (LLM-410) — the
+// distributor-only replacement for the ordinary "## Your rounds" surface. It points him at
+// the one keeper he deals with and, when he stands with that keeper, cues the two-way trade
+// (sell his cloth, buy the surplus); it never nudges him toward any other shop, so he isn't
+// steered into a trade the PayWithItem gate would reject. nil for a non-factor or off his
+// daytime rounds.
+type FactorTradeView struct {
+	// StorekeeperName is the distributor keeper's display name — used verbatim as the
+	// pay_with_item seller arg when the factor buys the surplus, and named in the prose. ""
+	// when the keeper is not co-present (then only the bearing renders).
+	StorekeeperName string
+	// ShopLabel is the distributor structure's display name for the prose.
+	ShopLabel string
+	// AtDistributor is true when the factor stands co-present with the distributor's keeper —
+	// the moment to lay out his wares and buy the surplus.
+	AtDistributor bool
+	// Direction / Steps give the bearing to the distributor's shop when he is not there yet;
+	// HasBearing is false when he is on top of it (keeper away) so the line drops the bearing.
+	Direction  string
+	Steps      int
+	HasBearing bool
+}
+
+// buildFactorTrade returns the factor's distributor-only trade cue when the subject is a
+// wholesale factor on his daytime rounds (LLM-410). nil for a non-factor, off his rounds, or
+// when no distributor structure is placed (then he has no business to cue — his lifecycle
+// carries him to the tavern and out at daybreak, a clean no-op). Pure over the snapshot.
+func buildFactorTrade(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, members []HuddleMember) *FactorTradeView {
+	if snap == nil || actorSnap == nil || actorSnap.VisitorState == nil || !actorSnap.VisitorState.DistributorOnly {
+		return nil
+	}
+	switch actorSnap.VisitorState.Phase {
+	case sim.VisitorPhaseArriving, sim.VisitorPhaseMakingRounds, sim.VisitorPhasePresent:
+		// on his daytime rounds — the evening seek-a-bed / leisure cues take over after dusk
+	default:
+		return nil
+	}
+	distID := snapDistributorStructure(snap)
+	if distID == "" {
+		return nil // no distributor placed — no factor business to cue
+	}
+	shop := string(distID)
+	if st := snap.Structures[distID]; st != nil && st.DisplayName != "" {
+		shop = st.DisplayName
+	}
+	view := &FactorTradeView{ShopLabel: shop}
+	// Co-present with the distributor's keeper? (the businessowner working at the distributor
+	// structure, resolved off the huddle — the same shape buildTravelerRounds uses for AtKeeperShop.)
+	for _, m := range members {
+		ks := snap.Actors[m.ID]
+		if ks == nil || ks.BusinessownerState == nil || ks.WorkStructureID != distID {
+			continue
+		}
+		view.AtDistributor = true
+		view.StorekeeperName = m.DisplayName
+		break
+	}
+	if !view.AtDistributor {
+		if vobj := snap.VillageObjects[sim.VillageObjectID(distID)]; vobj != nil {
+			tile := vobj.Pos.Tile()
+			view.Direction = cardinalDirection(float64(actorSnap.Pos.X), float64(actorSnap.Pos.Y), float64(tile.X), float64(tile.Y))
+			view.Steps = actorSnap.Pos.Chebyshev(tile)
+			view.HasBearing = view.Direction != ""
+		}
+	}
+	return view
+}
+
+// renderFactorTrade writes the "## Your dealings here" surface — the factor's one-keeper trade
+// steer. Co-present with the distributor it spells out the two-way deal and names pay_with_item
+// for the buy leg; otherwise it points him at the distributor's shop with a bearing and tells
+// him the other shops are no concern of his. Content-gated (LLM-410).
+func renderFactorTrade(b *strings.Builder, v *FactorTradeView) {
+	if v == nil {
+		return
+	}
+	shop := sanitizeInline(v.ShopLabel)
+	b.WriteString("## Your dealings here\n")
+	if v.AtDistributor && v.StorekeeperName != "" {
+		keeper := sanitizeInline(v.StorekeeperName)
+		fmt.Fprintf(b, "You're here to deal with %s, who keeps %s — the one person in this village you trade with. Show them the cloth and charms in your pack and let them buy what they want for the village; a warm coat or cloak is worth most with the cold weather in. In return, buy the goods they have a surplus of to carry back to the city: call pay_with_item with seller \"%s\", the item you want, qty, consume_now false, coins in amount, and your words in say. The other shops here are no concern of yours.\n\n", keeper, shop, keeper)
+		return
+	}
+	if v.HasBearing {
+		fmt.Fprintf(b, "You deal only with the keeper of %s, %s. Make your way there — the other shops in this village are no concern of yours.\n\n", shop, roundsDistPhrase(v.Steps, v.Direction))
+		return
+	}
+	fmt.Fprintf(b, "You deal only with the keeper of %s. Seek them out — the other shops in this village are no concern of yours.\n\n", shop)
+}
+
+// snapDistributorStructure returns the smallest-ID distributor-tagged structure over the
+// snapshot (the perception twin of sim.pickDistributorDestination), or "" when none is placed.
+// Lexicographic tie-break for determinism; one distributor by data convention.
+func snapDistributorStructure(snap *sim.Snapshot) sim.StructureID {
+	var pick sim.VillageObjectID
+	for id, vobj := range snap.VillageObjects {
+		if !sim.IsDistributorStructure(vobj) {
+			continue
+		}
+		if _, ok := snap.Structures[sim.StructureID(id)]; !ok {
+			continue
+		}
+		if pick == "" || id < pick {
+			pick = id
+		}
+	}
+	return sim.StructureID(pick)
+}
+
+// FactorVisitView is the distributor's "## A factor's come to trade" cue (LLM-410): when a
+// wholesale factor is co-present with the distributor keeper, tell the keeper who he is and
+// that he deals both ways, so the keeper buys the factor's cloth and sells him the surplus.
+// nil unless the subject is the distributor with a factor co-present.
+type FactorVisitView struct {
+	// FactorName is the factor's display name — used verbatim as the pay_with_item seller arg
+	// when the keeper buys the factor's cloth, and named in the prose.
+	FactorName string
+	// Origin colors the prose ("a factor out of Boston"); "" drops the clause.
+	Origin string
+}
+
+// buildFactorVisit returns the distributor-facing cue when the subject is the village
+// distributor and a wholesale factor is co-present in his huddle (LLM-410). nil for anyone
+// else, or when no factor is present. Pure over the snapshot.
+func buildFactorVisit(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, members []HuddleMember) *FactorVisitView {
+	if snap == nil || actorSnap == nil {
+		return nil
+	}
+	if actorSnap.VisitorState != nil {
+		return nil // the distributor is a resident keeper, never a visitor
+	}
+	if !sim.ActorIsDistributor(snap.VillageObjects, actorSnap.WorkStructureID) {
+		return nil
+	}
+	for _, m := range members {
+		fs := snap.Actors[m.ID]
+		if fs == nil || fs.VisitorState == nil || !fs.VisitorState.DistributorOnly {
+			continue
+		}
+		return &FactorVisitView{FactorName: m.DisplayName, Origin: fs.VisitorState.Origin}
+	}
+	return nil
+}
+
+// renderFactorVisit writes the "## A factor's come to trade" cue for the distributor: names
+// the factor, frames the two-way deal, and names pay_with_item for the leg the keeper drives
+// (buying the factor's cloth). Content-gated (LLM-410).
+func renderFactorVisit(b *strings.Builder, v *FactorVisitView) {
+	if v == nil {
+		return
+	}
+	name := sanitizeInline(v.FactorName)
+	b.WriteString("## A factor's come to trade\n")
+	if v.Origin != "" {
+		fmt.Fprintf(b, "%s, a factor out of %s, is here to deal with you — and only you. ", name, sanitizeInline(v.Origin))
+	} else {
+		fmt.Fprintf(b, "%s, a traveling factor, is here to deal with you — and only you. ", name)
+	}
+	fmt.Fprintf(b, "He carries cloth and charms from the city to sell, and he'll buy the surplus stacking up in your store to carry off. Buy what the village needs from his pack with pay_with_item (seller \"%s\", the item, qty, consume_now false, coins in amount, your words in say), and let him buy your surplus in turn.\n\n", name)
 }

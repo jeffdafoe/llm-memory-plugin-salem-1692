@@ -479,6 +479,18 @@ type VisitorState struct {
 	// linkage instead of re-promoting the same traveler as a duplicate persona.
 	RecurringID string
 
+	// DistributorOnly marks a wholesale factor (LLM-410): a traveler who trades ONLY
+	// with the village distributor, both ways — he sells imported cloth/charms into
+	// the village and buys the distributor's accumulated surplus to carry off. Set at
+	// spawn from the "factor" archetype (a denormalized behavioral flag, NOT re-derived
+	// by string-matching the archetype everywhere it is read), so the two gate seams
+	// key on the bool: the perception layer steers him to the distributor and suppresses
+	// the ordinary rounds trade-nudge at every other shop, and PayWithItem rejects a
+	// factor↔non-distributor transaction in either direction. false for an ordinary
+	// traveler. Immutable for the visit; persisted in the visitor.plan jsonb so a
+	// mid-visit redeploy resumes him as a factor rather than a plain peddler.
+	DistributorOnly bool
+
 	// Day-plan rounds (LLM-373, model-driven since LLM-379). During the daytime
 	// portion of his stay the traveler makes his rounds of the village, trading and
 	// passing news. He navigates HIMSELF with move_to — the engine renders his

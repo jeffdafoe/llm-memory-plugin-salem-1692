@@ -485,6 +485,10 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// the civil evening, and a co-present innkeeper (see traveler_dayplan.go).
 	p.TravelerRounds = buildTravelerRounds(snap, actorSnap, p.Surroundings.HuddleMembers)
 	p.TravelerSeekBed = buildTravelerSeekBed(snap, actorSnap, p.Surroundings.HuddleMembers)
+	// Wholesale factor cues (LLM-410): the factor's own distributor-only trade steer (replaces
+	// TravelerRounds for a factor), and the distributor keeper's "a factor's here to deal" cue.
+	p.FactorTrade = buildFactorTrade(snap, actorSnap, p.Surroundings.HuddleMembers)
+	p.FactorVisit = buildFactorVisit(snap, actorSnap, p.Surroundings.HuddleMembers)
 	p.SummonsForYou = buildSummonsForYou(snap, actorSnap)
 	p.SummonRefusal = buildSummonRefusal(actorSnap)
 

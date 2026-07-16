@@ -27,6 +27,7 @@ func TestVisitorPlanRoundTrip(t *testing.T) {
 		},
 		VisitorState: &sim.VisitorState{
 			VisitedBusinesses: []sim.StructureID{"str-a", "str-b"},
+			DistributorOnly:   true, // LLM-410 wholesale factor flag rides the plan jsonb
 		},
 	}
 
@@ -45,6 +46,9 @@ func TestVisitorPlanRoundTrip(t *testing.T) {
 	}
 	if lv.Coins != 42 {
 		t.Errorf("Coins = %d; want 42", lv.Coins)
+	}
+	if !lv.VisitorState.DistributorOnly {
+		t.Error("DistributorOnly did not round-trip through the plan jsonb")
 	}
 	if lv.Inventory["cheese"] != 3 || lv.Inventory["ale"] != 2 {
 		t.Errorf("Inventory = %v; want cheese:3 ale:2", lv.Inventory)

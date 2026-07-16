@@ -112,3 +112,57 @@ func DistributorSteerLabel(objects map[VillageObjectID]*VillageObject, actors ma
 	}
 	return "the village storekeeper"
 }
+
+// ActorIsFactor reports whether an actor is a wholesale factor (LLM-410) — a transient
+// visitor carrying the DistributorOnly flag, who trades ONLY with the village distributor.
+// Nil-safe.
+func ActorIsFactor(a *Actor) bool {
+	return a != nil && a.VisitorState != nil && a.VisitorState.DistributorOnly
+}
+
+// FactorTradeSteer enforces the wholesale factor's distributor-only TRADE rule (LLM-410) —
+// the engine backstop beneath the perception steer, the mirror of the wholesale gate above.
+// A factor's trade goods move only between him and the village distributor, in EITHER
+// direction: he sells his imported cloth/charms into the village and buys the village's
+// surplus, both through the distributor alone. So a transaction is rejected when exactly one
+// side is a factor and that factor's counterparty is not the distributor — symmetric, covering
+// the factor as seller (a non-distributor buying his cloth) AND as buyer (the factor buying a
+// trade good from anyone else).
+//
+// His SELF-provisioning is exempt so he still rides the ordinary lodging/eating lifecycle: a
+// service (a room — nights_stay carries the "service" capability) or a consumable (a meal) that
+// the factor BUYS is his own bed or supper, not wholesale trade, so it is allowed from any
+// keeper. def is the good being bought (nil-safe: an unknown kind is treated as a trade good and
+// gated). The sell side is unconditional — the factor holds only his trade wares, never a
+// service/consumable to sell.
+//
+// Returns "" when the trade is allowed: no factor involved, the factor's counterparty IS the
+// distributor, or the factor is buying self-provisioning. The steer is an in-world line and never
+// names the mechanic role (LLM-292) — the distributor is named by DistributorSteerLabel.
+func FactorTradeSteer(objects map[VillageObjectID]*VillageObject, actors map[ActorID]*Actor, buyer, seller *Actor, def *ItemKindDef) string {
+	buyerFactor := ActorIsFactor(buyer)
+	sellerFactor := ActorIsFactor(seller)
+	if buyerFactor == sellerFactor {
+		// Neither is a factor (the common path), or — vacuously — both are: only one
+		// visitor spawns as a factor at a time, so two factors trading never arises. Allow.
+		return ""
+	}
+	counterparty := seller
+	if sellerFactor {
+		counterparty = buyer
+	}
+	if counterparty != nil && ActorIsDistributor(objects, counterparty.WorkStructureID) {
+		return "" // the factor's counterparty is the distributor — the one trade he may do
+	}
+	who := DistributorSteerLabel(objects, actors)
+	if sellerFactor {
+		// A non-distributor is trying to buy the factor's goods.
+		return "that trader deals only with " + who + " — his cloth and wares go to " + who + ", who supplies the village; buy them from " + who + " instead."
+	}
+	// The factor is BUYING from a non-distributor. Let him provision himself — a bed or a
+	// meal — anywhere; only his wholesale trade goods are distributor-only.
+	if def != nil && (def.HasCapability("service") || def.Consumable()) {
+		return ""
+	}
+	return "you deal only with " + who + " here — buy the goods you carry home from " + who + ", not from anyone else in the village."
+}
