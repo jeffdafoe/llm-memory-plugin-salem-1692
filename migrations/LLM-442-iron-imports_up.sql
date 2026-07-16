@@ -92,21 +92,30 @@ UPDATE item_recipe
        updated_at   = now()
  WHERE output_item = 'nail';
 
--- 4. Ezekiel Crane's hand-authored `buy iron` entry, appended to the blacksmith
---    attribute's restock (the union policy home of his produce entries). The
---    jsonb_typeof CASE keeps a malformed non-array restock from corrupting via
---    ||; the @> guard makes reruns no-ops. 0 rows on schema-only (no actor).
+-- 4. Ezekiel Crane's hand-authored `buy iron` entry on the blacksmith
+--    attribute's restock (the union policy home of his produce entries).
+--    CORRECTIVE like the catalog upserts: any pre-existing iron/buy entry
+--    (a partial or hand-edited deploy) is stripped and the canonical entry
+--    appended, so a rerun converges on exactly one {iron, buy, max 6} row
+--    rather than merely tolerating whatever is there. His other entries pass
+--    through the filter untouched. The jsonb_typeof CASE keeps a malformed
+--    non-array restock from corrupting the rebuild. 0 rows on schema-only
+--    (no actor).
 UPDATE actor_attribute
    SET params = jsonb_set(
        params,
        '{restock}',
-       (CASE WHEN jsonb_typeof(params->'restock') = 'array'
-             THEN params->'restock' ELSE '[]'::jsonb END)
-           || '[{"item": "iron", "source": "buy", "max": 6}]'::jsonb
+       COALESCE(
+           (SELECT jsonb_agg(e)
+              FROM jsonb_array_elements(
+                   CASE WHEN jsonb_typeof(params->'restock') = 'array'
+                        THEN params->'restock' ELSE '[]'::jsonb END) AS e
+             WHERE NOT (e->>'item' = 'iron' AND e->>'source' = 'buy')),
+           '[]'::jsonb
+       ) || '[{"item": "iron", "source": "buy", "max": 6}]'::jsonb
    )
  WHERE actor_id = '019da6f9-1b4c-7dda-bb6b-3248cdafb2c4'  -- Ezekiel Crane
-   AND slug = 'blacksmith'
-   AND NOT (COALESCE(params->'restock', '[]'::jsonb) @> '[{"item": "iron", "source": "buy"}]'::jsonb);
+   AND slug = 'blacksmith';
 
 -- 5. Seed the distributor's iron shelf (Josiah Thorne) — a ONE-TIME bootstrap so
 --    the smith can buy bars from day one, NOT a convergent invariant. DO NOTHING,
@@ -130,22 +139,31 @@ BEGIN
         RAISE EXCEPTION 'LLM-442: iron price anchor missing after insert';
     END IF;
 
+    -- The nail reshape is asserted on any DB that HAS a nail recipe, and a
+    -- SEEDED DB (actor rows present — i.e. every real deployment, as distinct
+    -- from the schema-only replay harness) must additionally HAVE one: a real
+    -- world where iron landed but nails were never reshaped would ship the
+    -- coin sink without the thing that drains into it.
     IF EXISTS (SELECT 1 FROM item_recipe WHERE output_item = 'nail') THEN
         IF NOT EXISTS (SELECT 1 FROM item_recipe
                         WHERE output_item = 'nail' AND rate_qty = 1
                           AND boost_inputs @> '[{"item": "iron", "qty": 1, "bonus_qty": 4}]'::jsonb) THEN
             RAISE EXCEPTION 'LLM-442: nail recipe reshape (rough base + iron boost) did not apply';
         END IF;
+    ELSIF EXISTS (SELECT 1 FROM actor) THEN
+        RAISE EXCEPTION 'LLM-442: seeded DB has no nail recipe to reshape — catalog state unexpected';
     END IF;
 
     IF EXISTS (SELECT 1 FROM actor) THEN
         IF NOT EXISTS (SELECT 1 FROM actor WHERE id = '019da6f9-1b4c-7dda-bb6b-3248cdafb2c4') THEN
             RAISE EXCEPTION 'LLM-442: seeded actors but blacksmith Ezekiel 019da6f9... is missing (stale id?)';
         END IF;
+        -- Assert the exact canonical entry (max included), not mere presence —
+        -- the corrective rewrite above must have converged on it.
         IF NOT EXISTS (SELECT 1 FROM actor_attribute
                         WHERE actor_id = '019da6f9-1b4c-7dda-bb6b-3248cdafb2c4' AND slug = 'blacksmith'
-                          AND params->'restock' @> '[{"item": "iron", "source": "buy"}]'::jsonb) THEN
-            RAISE EXCEPTION 'LLM-442: Ezekiel''s blacksmith buy-iron restock entry did not land';
+                          AND params->'restock' @> '[{"item": "iron", "source": "buy", "max": 6}]'::jsonb) THEN
+            RAISE EXCEPTION 'LLM-442: Ezekiel''s blacksmith buy-iron restock entry did not land as the canonical {iron, buy, max 6}';
         END IF;
         IF NOT EXISTS (SELECT 1 FROM actor WHERE id = '019dcac2-e78a-715e-91b7-101f339b0891') THEN
             RAISE EXCEPTION 'LLM-442: seeded actors but distributor Josiah 019dcac2... is missing (stale id?)';

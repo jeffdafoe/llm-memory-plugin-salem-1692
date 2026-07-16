@@ -33,9 +33,14 @@ UPDATE actor_attribute
    AND slug = 'blacksmith'
    AND jsonb_typeof(params->'restock') = 'array';
 
--- 3. Remove iron holdings (the seed at Josiah's, and any live stock — the kind
---    is going away, so every holding must clear before the item_kind delete).
-DELETE FROM actor_inventory WHERE item_kind = 'iron';
+-- 3. Remove ONLY the seeded holding this migration owns (Josiah's bootstrap
+--    row) — the LLM-410 scoped posture. Any OTHER iron holding is live economy
+--    state this rollback must not destroy; if bars have spread, the item_kind
+--    delete below fails on its references, which is the correct outcome (you
+--    don't unwind a shipped economy).
+DELETE FROM actor_inventory
+ WHERE actor_id = '019dcac2-e78a-715e-91b7-101f339b0891'
+   AND item_kind = 'iron';
 
 -- 4. Remove the price anchor, then the good.
 DELETE FROM item_recipe WHERE output_item = 'iron';
