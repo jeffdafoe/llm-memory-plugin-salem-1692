@@ -2817,6 +2817,14 @@ func commitPayTransfer(
 	// so it must not assume uniqueness: without aggregation two lines of the
 	// same kind would each compute their post-quantity from the ORIGINAL
 	// inventory and the second apply would clobber the first (lost quantity).
+	//
+	// Item CLASS, by contrast, is deliberately NOT re-checked here (LLM-445):
+	// the eat-here/service tendered-goods gate lives at intake
+	// (resolvePayItems), and an already-minted entry settles as offered. Safe
+	// because the ledger has no durable projection (a restart wipes pending
+	// entries) and offers expire in minutes — so a pre-gate entry can't
+	// outlive a deploy. Pinned by TestGift_PreGateEatHereEntry_StillSettles;
+	// adding a settle-time class check should be a deliberate decision there.
 	totals := make(map[ItemKind]int, len(entry.PayItems))
 	for _, pi := range entry.PayItems {
 		if pi.Qty < 1 {

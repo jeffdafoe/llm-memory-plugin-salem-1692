@@ -309,6 +309,35 @@ func TestGift_DispositionBoundary(t *testing.T) {
 	}
 }
 
+// TestGift_PreGateEatHereEntry_StillSettles (LLM-445, code_review): the
+// eat-here tendered-goods gate is INTAKE-ONLY (resolvePayItems); settlement
+// deliberately does not re-check the item class. A pending entry carrying
+// eat-here goods that predates the gate (in practice near-impossible live: the
+// ledger has no durable projection, so a deploy restart wipes pending entries,
+// and the offer TTL is minutes) still settles rather than stranding — the
+// grandfathering contract, pinned so a future settle-time class check is a
+// deliberate decision, not drift.
+func TestGift_PreGateEatHereEntry_StillSettles(t *testing.T) {
+	w, stop := giftWorld(t)
+	defer stop()
+	now := time.Now().UTC()
+	mustSend(t, w, func(world *sim.World) {
+		world.Actors["alice"].Inventory = map[sim.ItemKind]int{"stew": 2}
+	})
+	// Seeded directly below the resolver — the shape a pre-gate mint would have.
+	seedLedgerEntry(t, w, sim.PayLedgerEntry{
+		ID: 3, BuyerID: "alice", SellerID: "bob", IsGift: true,
+		PayItems: []sim.ItemKindQty{{Kind: "stew", Qty: 1}},
+		State:    sim.PayLedgerStatePending, ExpiresAt: now.Add(time.Minute), HuddleID: "h1",
+	})
+	if _, err := w.Send(sim.AcceptGift("bob", 3, now)); err != nil {
+		t.Fatalf("pre-gate eat-here gift entry must still settle (grandfathered), got %v", err)
+	}
+	if bob := readActorState(t, w, "bob"); bob.inv["stew"] != 1 {
+		t.Errorf("recipient stew after grandfathered gift = %d, want 1", bob.inv["stew"])
+	}
+}
+
 // TestGiveItems_ForNotePersisted (LLM-138, code_review #3): the gift's optional
 // "for" note rides entry.Message and reaches the gave/received_gift relationship
 // facts (the accept path calls commitPayTransfer with an empty forText param, so
