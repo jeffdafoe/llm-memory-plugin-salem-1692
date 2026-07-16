@@ -517,8 +517,8 @@ func TestTerminalToolsMatchPerceptionInvariantList(t *testing.T) {
 	// Keep sorted; mirrors perception/golden_test.go's terminalToolNames.
 	wantTerminal := []string{
 		"accept_pay", "accept_work", "counter_pay", "decline_pay", "decline_work",
-		"gather", "move_to", "offer_trade", "offer_work", "pay_with_item", "sell",
-		"solicit_work", "speak", "stop", "summon", "withdraw_pay",
+		"gather", "move_to", "offer_trade", "offer_work", "pay_with_item", "repair",
+		"sell", "solicit_work", "speak", "stoke", "stop", "summon", "withdraw_pay",
 	}
 	// The comparison below sorts only `got`, so an out-of-order insertion here would
 	// fail with a confusing diff rather than an honest one (code_review).

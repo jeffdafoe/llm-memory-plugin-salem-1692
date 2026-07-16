@@ -13299,8 +13299,8 @@ func TestSeekWorkSuppressedByRedNeed(t *testing.T) {
 // this slice fails there with a pointer back to this test. LLM-350.
 var terminalToolNames = []string{
 	"accept_pay", "accept_work", "counter_pay", "decline_pay", "decline_work",
-	"gather", "move_to", "offer_trade", "offer_work", "pay_with_item", "sell",
-	"solicit_work", "speak", "stop", "summon", "withdraw_pay",
+	"gather", "move_to", "offer_trade", "offer_work", "pay_with_item", "repair",
+	"sell", "solicit_work", "speak", "stoke", "stop", "summon", "withdraw_pay",
 }
 
 // affirmativeSpeakRe matches an instruction to CALL the speak tool: "use speak",
