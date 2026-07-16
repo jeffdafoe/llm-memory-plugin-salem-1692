@@ -178,6 +178,14 @@ func TestActorWearsGarments(t *testing.T) {
 		t.Errorf("commuting actor should not wear garments")
 	}
 
+	// The stockholder exclusion is scoped to the distributor-tagged workplace: a
+	// working actor whose workplace is NOT the distributor (or is empty) still
+	// wears — the exclusion doesn't over-fire (code_review).
+	elsewhere := &Actor{State: StateWorking, WorkStructureID: "farm"} // "farm" isn't the distributor tag
+	if !actorWearsGarments(w, elsewhere) {
+		t.Errorf("worker at a non-distributor workplace should wear garments")
+	}
+
 	// The distributor is on shift at his distributor-tagged store — his coats are
 	// sale stock, not worn clothing, so he never wears them.
 	distributor := &Actor{State: StateWorking, WorkStructureID: "store"}
@@ -264,11 +272,34 @@ func TestColdRatePerMinuteX100_ThreadbareGarment(t *testing.T) {
 		t.Errorf("threadbare coat outdoors = %d, want %d", got, DefaultColdThreadbareGarmentPerMinuteX100)
 	}
 
+	// Night ordering (code_review): the garment cap is a PRE-night base — cap
+	// first, THEN the night multiplier, exactly as it scales a roof. So a
+	// threadbare coat outdoors at night is 60 * 150 / 100 = 90 (and a sound one
+	// would be 25 -> 37), still under the uncoated night rate.
+	w.Phase = PhaseNight
+	wantThreadbareNight := DefaultColdThreadbareGarmentPerMinuteX100 * DefaultColdNightMultiplierX100 / 100
+	if got := coldRatePerMinuteX100(w, a, now); got != wantThreadbareNight {
+		t.Errorf("threadbare coat outdoors night = %d, want %d (cap then night multiplier)", got, wantThreadbareNight)
+	}
+	w.Phase = PhaseDay
+
 	// Worn but above the line (200 of 600) → still sound.
 	a.GarmentWear = map[ItemKind]int{"coat": 200}
 	if got := coldRatePerMinuteX100(w, a, now); got != DefaultColdWarmGarmentPerMinuteX100 {
 		t.Errorf("worn-but-sound coat outdoors = %d, want %d", got, DefaultColdWarmGarmentPerMinuteX100)
 	}
+
+	// Misconfigured NEGATIVE threadbare rate (code_review): ignored at the g >= 0
+	// runtime guard — a garment never turns a storm into recovery — leaving the
+	// full outdoor accrual, exactly as the sibling sound-garment knob behaves
+	// (TestColdRatePerMinuteX100_WarmGarment). The house convention for every cold
+	// knob is runtime-guard, not load-clamp, so an out-of-range value is inert.
+	a.GarmentWear = map[ItemKind]int{"coat": 60} // threadbare, so the threadbare rate is the one consulted
+	w.Settings.ColdThreadbareGarmentPerMinuteX100 = -10
+	if got := coldRatePerMinuteX100(w, a, now); got != DefaultColdStormOutdoorsPerMinuteX100 {
+		t.Errorf("negative threadbare rate = %d, want %d (ignored, never recovery)", got, DefaultColdStormOutdoorsPerMinuteX100)
+	}
+	w.Settings.ColdThreadbareGarmentPerMinuteX100 = DefaultColdThreadbareGarmentPerMinuteX100
 
 	// No coat: full outdoor accrual.
 	a.Inventory = nil

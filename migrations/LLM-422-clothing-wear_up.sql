@@ -30,9 +30,11 @@
 -- Rerun-safe: ADD COLUMN IF NOT EXISTS on both columns; the budget UPDATEs are
 -- idempotent and tolerate the schema-only harness (0 rows matched is fine — the
 -- garment kinds are seeded by LLM-410, absent on a bare schema). A loud
--- validation block asserts the budgets landed ONLY when the garment rows exist,
--- so a schema-only replay passes and a real catalog that failed to update fails
--- the deploy.
+-- validation block runs ONLY when at least one garment kind exists (so a
+-- schema-only replay passes untouched); when the family is present it asserts the
+-- COMPLETE set of five is there AND every one took a positive budget — so a
+-- real-but-partial/drifted clothing catalog fails the deploy loudly rather than
+-- silently landing wear on some garments and not others.
 --
 -- item_kind is an ENGINE-OWNED reference table (read at boot, rebuilt on SIGHUP);
 -- actor_inventory is CHECKPOINT-WRITTEN. deploy.sh does stop -> migrate -> start,
@@ -58,21 +60,31 @@ UPDATE item_kind SET wear_minutes = 480 WHERE name = 'breeches';
 UPDATE item_kind SET wear_minutes = 360 WHERE name = 'shift';
 
 -- Validate loud — but only when the garment catalog is present (LLM-410 applied).
--- A schema-only harness has no item_kind rows and skips the assertion; a real DB
--- whose garment rows exist must have taken every budget.
+-- A schema-only harness has no garment rows and skips the whole block. When ANY
+-- garment kind exists the family was seeded by LLM-410, so the COMPLETE set of
+-- five must be present (a partial catalog is drift we fail on) AND each must have
+-- taken a positive budget — otherwise wear would land on some garments and not
+-- others, silently.
 DO $$
 DECLARE
-    unset int;
+    present int;
+    unset   int;
 BEGIN
-    IF EXISTS (SELECT 1 FROM item_kind WHERE name IN
-              ('coat','cloak','gown','breeches','shift')) THEN
-        SELECT count(*) INTO unset
-          FROM item_kind
-         WHERE name IN ('coat','cloak','gown','breeches','shift')
-           AND wear_minutes = 0;
-        IF unset > 0 THEN
-            RAISE EXCEPTION 'LLM-422: % garment kind(s) still have wear_minutes = 0 after budget update', unset;
-        END IF;
+    SELECT count(*) INTO present
+      FROM item_kind
+     WHERE name IN ('coat','cloak','gown','breeches','shift');
+    IF present = 0 THEN
+        RETURN; -- schema-only / pre-LLM-410 DB: nothing to validate.
+    END IF;
+    IF present <> 5 THEN
+        RAISE EXCEPTION 'LLM-422: expected all 5 garment kinds present, found % (partial/drifted clothing catalog)', present;
+    END IF;
+    SELECT count(*) INTO unset
+      FROM item_kind
+     WHERE name IN ('coat','cloak','gown','breeches','shift')
+       AND wear_minutes = 0;
+    IF unset > 0 THEN
+        RAISE EXCEPTION 'LLM-422: % garment kind(s) still have wear_minutes = 0 after budget update', unset;
     END IF;
 END $$;
 
