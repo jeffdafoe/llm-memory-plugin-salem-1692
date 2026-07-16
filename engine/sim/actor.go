@@ -662,6 +662,19 @@ type Actor struct {
 	// the stock that carries it.
 	ToolWear map[ItemKind]int
 
+	// GarmentWear is the per-kind wear state of this actor's wearable garments
+	// (LLM-422): worked MINUTES remaining on the in-use unit of each garment
+	// kind. The worked-minute sibling of ToolWear — same in-use-unit model (a
+	// missing entry = no unit taken up, all on-hand units fresh; the entry
+	// clears when the unit is spent and its inventory count drops), but drawn by
+	// applyGarmentWear on the per-minute garment-wear sweep while the bearer is
+	// in a working posture (actorWearsGarments), not per produce execution. Only
+	// kinds with catalog WearMinutes > 0 ever get entries. Checkpointed as
+	// actor_inventory.worn_minutes_left on the kind's inventory row (a separate
+	// column from ToolWear's uses_left — a kind is a tool or a garment, never
+	// both), so wear dies with the stock that carries it.
+	GarmentWear map[ItemKind]int
+
 	// Activity windows.
 	BreakUntil    *time.Time
 	SleepingUntil *time.Time
@@ -1224,6 +1237,12 @@ func CloneActor(a *Actor) *Actor {
 			cp.ToolWear[k] = v
 		}
 	}
+	if a.GarmentWear != nil {
+		cp.GarmentWear = make(map[ItemKind]int, len(a.GarmentWear))
+		for k, v := range a.GarmentWear {
+			cp.GarmentWear[k] = v
+		}
+	}
 	if a.BreakUntil != nil {
 		t := *a.BreakUntil
 		cp.BreakUntil = &t
@@ -1680,6 +1699,14 @@ type ActorSnapshot struct {
 	// map copied per-entry by snapshotActor, the same posture as Inventory.
 	// Empty/nil for actors that have never worn a tool.
 	ToolWear map[ItemKind]int
+
+	// GarmentWear mirrors the live Actor's wearable-garment wear map (LLM-422) —
+	// worked minutes remaining on the in-use unit per garment kind — so the cold
+	// self-line can judge whether a warms garment is threadbare
+	// (actorWarmGarmentTier) without a world-goroutine round trip. Value-typed
+	// map copied per-entry by snapshotActor, the same posture as ToolWear.
+	// Empty/nil for actors that have never worn a garment.
+	GarmentWear map[ItemKind]int
 
 	// RestockPolicy mirrors the live Actor's RestockPolicy at snapshot time so
 	// the "## Restocking" perception section can surface a reseller's low

@@ -2826,6 +2826,16 @@ var perceptionScenarios = []perceptionScenario{
 		build: coldOutdoorsInStormCoated,
 	},
 	{
+		name: "cold_outdoors_in_storm_threadbare_coat",
+		summary: "LLM-422: the storm-outdoors red-cold scene, but Lewis's coat has worn THREADBARE (60 of a 600 " +
+			"worked-minute budget — into its last fifth), and Josiah sells coats at the General Store. The golden pins " +
+			"the wear-stakes escalation: the garment line reads 'worn thin ... won't hold much longer' and steers to a " +
+			"fresh coat (buy from General Store), rendered AFTER the unconditional free-relief line — replacing a failing " +
+			"warms garment has real cold stakes (the sweep caps his outdoor accrual at the worse threadbare rate). " +
+			"Contrast cold_outdoors_in_storm_coated (a SOUND coat → the confirming note, no replacement nudge).",
+		build: coldOutdoorsInStormThreadbareCoat,
+	},
+	{
 		name: "cold_in_unheated_room_storm",
 		summary: "LLM-412: the same storm felt through a roof — Lewis chilled (mild) INSIDE a plain structure with no " +
 			"hearth. The golden pins the indoors branch: the roof is keeping the rain off and staying in is easing it " +

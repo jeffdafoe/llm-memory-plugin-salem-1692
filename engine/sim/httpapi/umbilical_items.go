@@ -48,8 +48,11 @@ type umbilicalItemDTO struct {
 	EatHereOnly  bool     `json:"eat_here_only"`
 	// DurabilityUses > 0 marks a durable tool: produce executions one unit
 	// lasts (LLM-330). The read side of item/set's durability_uses knob.
-	DurabilityUses int                        `json:"durability_uses,omitempty"`
-	Satisfies      []umbilicalSatisfactionDTO `json:"satisfies"`
+	DurabilityUses int `json:"durability_uses,omitempty"`
+	// WearMinutes > 0 marks a wearable garment: worked minutes one unit lasts
+	// (LLM-422). The read side of item/set's wear_minutes knob.
+	WearMinutes int                        `json:"wear_minutes,omitempty"`
+	Satisfies   []umbilicalSatisfactionDTO `json:"satisfies"`
 }
 
 // UmbilicalItemsDTO is the GET /api/village/umbilical/items response: the live
@@ -76,6 +79,7 @@ func itemRowDTO(def *sim.ItemKindDef) umbilicalItemDTO {
 		Description:    def.Description,
 		EatHereOnly:    def.EatHereOnly(),
 		DurabilityUses: def.DurabilityUses,
+		WearMinutes:    def.WearMinutes,
 		Satisfies:      make([]umbilicalSatisfactionDTO, 0, len(def.Satisfies)),
 	}
 	for _, s := range def.Satisfies {
@@ -162,6 +166,10 @@ type umbilicalItemSetRequest struct {
 	// produce executions (LLM-330) — the live tuning knob for tool lifetimes.
 	// 0 (or omitted) keeps plain consumed-input semantics.
 	DurabilityUses int `json:"durability_uses"`
+	// WearMinutes > 0 makes the kind a wearable garment lasting that many
+	// worked minutes (LLM-422) — the live tuning knob for garment lifetimes.
+	// 0 (or omitted) keeps the good durable-forever.
+	WearMinutes int `json:"wear_minutes"`
 }
 
 // handleUmbilicalItemSet upserts one item_kind definition — the create/edit leg
@@ -244,6 +252,10 @@ func (s *Server) handleUmbilicalItemSet(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "durability_uses must be 0 or greater")
 		return
 	}
+	if req.WearMinutes < 0 {
+		writeError(w, http.StatusBadRequest, "wear_minutes must be 0 or greater")
+		return
+	}
 	// capabilities is a soft token set; trim each and reject a blank token so a
 	// stray "" can't pollute the array.
 	capabilities := make([]string, 0, len(req.Capabilities))
@@ -275,6 +287,7 @@ func (s *Server) handleUmbilicalItemSet(w http.ResponseWriter, r *http.Request) 
 		ConsumeDwellNarration: narration,
 		Description:           description,
 		DurabilityUses:        req.DurabilityUses,
+		WearMinutes:           req.WearMinutes,
 	}
 
 	// 1) Durable write FIRST — item_kind is the source of truth (the catalog

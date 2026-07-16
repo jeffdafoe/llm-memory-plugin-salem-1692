@@ -1006,7 +1006,8 @@ func startTickers(ctx context.Context, w *sim.World) {
 	go sim.RunPhaseTicker(ctx, w)
 	go sim.RunNeedsTicker(ctx, w)
 	go sim.RunTirednessRecoveryTicker(ctx, w)
-	go sim.RunColdTicker(ctx, w) // LLM-412: storm-exposure cold + hearth storm wake
+	go sim.RunColdTicker(ctx, w)        // LLM-412: storm-exposure cold + hearth storm wake
+	go sim.RunGarmentWearTicker(ctx, w) // LLM-422: garment wear (working actors degrade clothing)
 	go sim.RunSleepTicker(ctx, w)
 	go sim.RunShiftTicker(ctx, w) // ZBBS-WORK-278: shift/duty producer
 

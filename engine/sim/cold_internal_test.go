@@ -91,36 +91,6 @@ func warmGarmentCatalog() map[ItemKind]*ItemKindDef {
 	}
 }
 
-func TestActorHasWarmGarment(t *testing.T) {
-	w, a, _ := coldTestWorld(WeatherStorm, PhaseDay)
-	w.ItemKinds = warmGarmentCatalog()
-
-	// No inventory → false.
-	if actorHasWarmGarment(w, a) {
-		t.Errorf("empty inventory reads as holding a warm garment")
-	}
-	// A non-warms good → false.
-	a.Inventory = map[ItemKind]int{"bread": 3}
-	if actorHasWarmGarment(w, a) {
-		t.Errorf("bread counted as a warm garment")
-	}
-	// A warms garment at qty>0 → true.
-	a.Inventory = map[ItemKind]int{"coat": 1}
-	if !actorHasWarmGarment(w, a) {
-		t.Errorf("a held coat not recognized as a warm garment")
-	}
-	// A spent line (qty 0) → false.
-	a.Inventory = map[ItemKind]int{"coat": 0}
-	if actorHasWarmGarment(w, a) {
-		t.Errorf("a zero-qty coat counted")
-	}
-	// A kind absent from the catalog → false (no def carries the capability).
-	a.Inventory = map[ItemKind]int{"phantom": 2}
-	if actorHasWarmGarment(w, a) {
-		t.Errorf("an uncatalogued kind counted as a warm garment")
-	}
-}
-
 // TestColdRatePerMinuteX100_WarmGarment pins the LLM-410 relief branch: a warm
 // garment caps outdoor storm accrual at the garment rate (min-only — never
 // raises), stacks with the night multiplier, is moot under a roof that already

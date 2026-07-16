@@ -74,6 +74,19 @@ type ItemKindDef struct {
 	// route.
 	DurabilityUses int
 
+	// WearMinutes marks this kind a wearable GARMENT when > 0: how many WORKED
+	// MINUTES one unit lasts (LLM-422). While its bearer is in a working posture
+	// (actorWearsGarments), the garment-wear sweep decrements the actor's in-use
+	// unit (Actor.GarmentWear) by the elapsed worked minutes; at 0 the unit is
+	// spent (inventory -1, next use takes up a fresh unit at full budget) and the
+	// bearer must rebuy — the recurring clothing demand this ticket exists to
+	// create. 0 (the default) keeps a good durable-forever (the whole pre-422
+	// catalog; charms, whose mechanic is LLM-423). The worked-MINUTE sibling of
+	// DurabilityUses (produce executions): a garment's life is measured in labor
+	// time, not batches. From item_kind.wear_minutes; tunable per kind via the
+	// umbilical item/set route.
+	WearMinutes int
+
 	// Satisfies is the per-need effect of consuming one unit of this item.
 	// Port of v1's item_satisfies table (PK (item_kind, attribute), one row
 	// per attribute), embedded here because the v2 single-goroutine substrate

@@ -111,7 +111,7 @@ func emptyNeedRows() *pgxmock.Rows {
 }
 
 func emptyInvRows() *pgxmock.Rows {
-	return pgxmock.NewRows([]string{"actor_id", "item_kind", "quantity", "uses_left"})
+	return pgxmock.NewRows([]string{"actor_id", "item_kind", "quantity", "uses_left", "worn_minutes_left"})
 }
 
 // --- Slice 2 continuity-tier column lists + empty-row builders -----------
@@ -337,11 +337,13 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 			AddRow(actA, "tiredness", 18))
 
 	usesLeft := 5
+	wornLeft := 240
 	mock.ExpectQuery(`FROM actor_inventory\b`).
-		WillReturnRows(pgxmock.NewRows([]string{"actor_id", "item_kind", "quantity", "uses_left"}).
-			AddRow(actA, "ale", 3, (*int)(nil)).
-			AddRow(actA, "coin_purse", 1, (*int)(nil)).
-			AddRow(actA, "skillet", 2, &usesLeft)) // durable-tool wear (LLM-330)
+		WillReturnRows(pgxmock.NewRows([]string{"actor_id", "item_kind", "quantity", "uses_left", "worn_minutes_left"}).
+			AddRow(actA, "ale", 3, (*int)(nil), (*int)(nil)).
+			AddRow(actA, "coin_purse", 1, (*int)(nil), (*int)(nil)).
+			AddRow(actA, "skillet", 2, &usesLeft, (*int)(nil)). // durable-tool wear (LLM-330)
+			AddRow(actA, "coat", 2, (*int)(nil), &wornLeft))    // garment wear (LLM-422)
 
 	expectLoadAllContinuityEmpty(mock)
 	expectLoadAllSlice3Empty(mock)
@@ -436,13 +438,19 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 	if len(a.Needs) != 2 || a.Needs["hunger"] != 4 || a.Needs["tiredness"] != 18 {
 		t.Errorf("Needs = %v", a.Needs)
 	}
-	if len(a.Inventory) != 3 || a.Inventory["ale"] != 3 || a.Inventory["skillet"] != 2 {
+	if len(a.Inventory) != 4 || a.Inventory["ale"] != 3 || a.Inventory["skillet"] != 2 || a.Inventory["coat"] != 2 {
 		t.Errorf("Inventory = %v", a.Inventory)
 	}
 	// LLM-330: a non-NULL uses_left restores the in-use tool's wear; NULL rows
 	// leave no entry.
 	if len(a.ToolWear) != 1 || a.ToolWear["skillet"] != 5 {
 		t.Errorf("ToolWear = %v, want skillet:5", a.ToolWear)
+	}
+	// LLM-422: a non-NULL worn_minutes_left restores the in-use garment's wear;
+	// NULL rows leave no entry. The coat's worn_minutes_left (240) lands, the
+	// skillet's tool wear does not bleed into GarmentWear.
+	if len(a.GarmentWear) != 1 || a.GarmentWear["coat"] != 240 {
+		t.Errorf("GarmentWear = %v, want coat:240", a.GarmentWear)
 	}
 
 	// Bare actor with all-NULL nullable fields.
@@ -536,8 +544,8 @@ func TestActorsRepo_LoadAll_OrphanInventory(t *testing.T) {
 		WillReturnRows(emptyNeedRows())
 
 	mock.ExpectQuery(`FROM actor_inventory\b`).
-		WillReturnRows(pgxmock.NewRows([]string{"actor_id", "item_kind", "quantity", "uses_left"}).
-			AddRow(actA, "ale", 3, (*int)(nil)))
+		WillReturnRows(pgxmock.NewRows([]string{"actor_id", "item_kind", "quantity", "uses_left", "worn_minutes_left"}).
+			AddRow(actA, "ale", 3, (*int)(nil), (*int)(nil)))
 
 	_, err := repo.LoadAll(context.Background())
 	if err == nil {
@@ -611,7 +619,7 @@ func TestActorsRepo_SaveSnapshot_FullActor(t *testing.T) {
 	mock.ExpectQuery(`SELECT nextval\('actor_inventory_snapshot_gen_seq`).
 		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(int64(301)))
 	mock.ExpectExec(`INSERT INTO actor_inventory `).
-		WithArgs(actA, "ale", 3, nil, int64(301)).
+		WithArgs(actA, "ale", 3, nil, nil, int64(301)).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor_inventory .*WHERE snapshot_gen < \$1`).
 		WithArgs(int64(301)).
@@ -801,7 +809,7 @@ func TestActorsRepo_SaveSnapshot_ZeroQtyInventoryDropped(t *testing.T) {
 	mock.ExpectQuery(`SELECT nextval\('actor_inventory_snapshot_gen_seq`).
 		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(int64(305)))
 	mock.ExpectExec(`INSERT INTO actor_inventory `).
-		WithArgs(actA, "ale", 3, nil, int64(305)).
+		WithArgs(actA, "ale", 3, nil, nil, int64(305)).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor_inventory .*WHERE snapshot_gen < \$1`).
 		WithArgs(int64(305)).
@@ -866,7 +874,7 @@ func TestActorsRepo_SaveSnapshot_ToolWearUsesLeft(t *testing.T) {
 	mock.ExpectQuery(`SELECT nextval\('actor_inventory_snapshot_gen_seq`).
 		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(int64(306)))
 	mock.ExpectExec(`INSERT INTO actor_inventory `).
-		WithArgs(actA, "skillet", 2, 5, int64(306)).
+		WithArgs(actA, "skillet", 2, 5, nil, int64(306)).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor_inventory .*WHERE snapshot_gen < \$1`).
 		WithArgs(int64(306)).
