@@ -135,6 +135,16 @@ type AgentDTO struct {
 	WorkStructureID  string   `json:"work_structure_id,omitempty"`
 	ScheduleStartMin *int     `json:"schedule_start_minute"`
 	ScheduleEndMin   *int     `json:"schedule_end_minute"`
+
+	// In-flight source activity (LLM-441) — the load-time / refresh value of the
+	// actor's timed repair/stoke/harvest window, so a client connecting mid-window
+	// draws the tooltip "busy" line immediately (live open/close rides the
+	// npc_source_activity_changed frame, same posture as needs/coins). Both
+	// omitempty: an idle actor omits both. Kind is the wire form (repair/stoke/
+	// harvest), gated to the rendered kinds; Label is the resolved place name,
+	// non-empty only for a repair (stoke/harvest render place-less client-side).
+	SourceActivityKind  string `json:"source_activity_kind,omitempty"`
+	SourceActivityLabel string `json:"source_activity_label,omitempty"`
 }
 
 // AgentSpriteDTO is the resolved character sprite inlined onto an AgentDTO.

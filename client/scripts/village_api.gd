@@ -159,6 +159,15 @@ func normalize_agent(dto: Dictionary) -> Dictionary:
         # every row read 0; forwarded here. Live updates arrive via the
         # npc_coins_changed WS event (apply_npc_coins_changed, LLM-71).
         "coins": int(dto.get("coins", 0)),
+        # In-flight source activity (LLM-441) — the tooltip's current-doing line for
+        # an actor already mid repair/stoke/harvest when this client connects.
+        # _render_npc seeds these as container meta; both keys are omitted from the
+        # DTO when idle, so the defaults clear them. Live open/close arrives via the
+        # npc_source_activity_changed WS event (apply_npc_source_activity_changed).
+        # Whitelist seam — must be forwarded here or _render_npc never sees them
+        # (the same trap the coins line above records).
+        "source_activity_kind": str(dto.get("source_activity_kind", "")),
+        "source_activity_label": str(dto.get("source_activity_label", "")),
     }
     # Sprite is already inlined on the v2 DTO in the exact render subset the
     # renderer expects (sheet / frame_width / frame_height / id / name /

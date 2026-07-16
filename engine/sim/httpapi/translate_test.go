@@ -42,6 +42,77 @@ func TestTranslateEvent_MoveStarted(t *testing.T) {
 	}
 }
 
+func TestTranslateEvent_SourceActivityStarted(t *testing.T) {
+	// Repair carries kind + the resolved place label for the "Mending the X" line.
+	frame, ok := TranslateEvent(&sim.SourceActivityStarted{
+		ActorID:    "josiah",
+		ObjectID:   "market",
+		Kind:       sim.SourceActivityRepair,
+		SourceName: "Market",
+	})
+	if !ok {
+		t.Fatal("SourceActivityStarted(repair) should translate")
+	}
+	if frame.Type != "npc_source_activity_changed" {
+		t.Fatalf("type = %q, want npc_source_activity_changed", frame.Type)
+	}
+	d, isType := frame.Data.(sourceActivityChangedWireDTO)
+	if !isType {
+		t.Fatalf("data type = %T, want sourceActivityChangedWireDTO", frame.Data)
+	}
+	if d.ID != "josiah" || d.Kind != "repair" || d.SourceName != "Market" {
+		t.Errorf("repair payload = %+v", d)
+	}
+
+	// Stoke and harvest translate too (place-less client-side).
+	for _, k := range []sim.SourceActivityKind{sim.SourceActivityStoke, sim.SourceActivityHarvest} {
+		f, ok := TranslateEvent(&sim.SourceActivityStarted{ActorID: "a", ObjectID: "o", Kind: k})
+		if !ok {
+			t.Fatalf("SourceActivityStarted(%s) should translate", k)
+		}
+		if dd := f.Data.(sourceActivityChangedWireDTO); dd.Kind != string(k) {
+			t.Errorf("kind = %q, want %q", dd.Kind, k)
+		}
+	}
+
+	// Refresh (eat/drink at a source) is deliberately not rendered — dropped.
+	if _, ok := TranslateEvent(&sim.SourceActivityStarted{ActorID: "a", Kind: sim.SourceActivityRefresh}); ok {
+		t.Error("SourceActivityStarted(refresh) should be dropped")
+	}
+}
+
+func TestTranslateEvent_SourceActivityCleared(t *testing.T) {
+	// Completed and Cancelled both clear the busy line — kind omitted (omitempty).
+	for _, evt := range []sim.Event{
+		&sim.SourceActivityCompleted{ActorID: "josiah", Kind: sim.SourceActivityRepair},
+		&sim.SourceActivityCancelled{ActorID: "josiah", Kind: sim.SourceActivityHarvest},
+	} {
+		frame, ok := TranslateEvent(evt)
+		if !ok {
+			t.Fatalf("%T should translate", evt)
+		}
+		if frame.Type != "npc_source_activity_changed" {
+			t.Fatalf("type = %q, want npc_source_activity_changed", frame.Type)
+		}
+		d := frame.Data.(sourceActivityChangedWireDTO)
+		if d.ID != "josiah" || d.Kind != "" || d.SourceName != "" {
+			t.Errorf("clear payload = %+v, want id only", d)
+		}
+		b, err := json.Marshal(frame.Data)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if strings.Contains(string(b), "kind") || strings.Contains(string(b), "source_name") {
+			t.Errorf("clear JSON should omit kind/source_name: %s", b)
+		}
+	}
+
+	// A refresh completion never set a busy line, so it's dropped (no spurious clear).
+	if _, ok := TranslateEvent(&sim.SourceActivityCompleted{ActorID: "a", Kind: sim.SourceActivityRefresh}); ok {
+		t.Error("SourceActivityCompleted(refresh) should be dropped")
+	}
+}
+
 func TestTranslateEvent_WeatherChanged(t *testing.T) {
 	at := time.Date(2026, 6, 25, 13, 30, 0, 0, time.UTC)
 	frame, ok := TranslateEvent(&sim.WeatherChanged{Weather: sim.WeatherStorm, At: at})
