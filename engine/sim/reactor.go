@@ -127,6 +127,26 @@ func (BasicWarrantReason) isWarrantReason()           {}
 func (r BasicWarrantReason) Kind() WarrantKind        { return r.K }
 func (BasicWarrantReason) DedupDiscriminator() uint64 { return 0 }
 
+// HuddlePartReason carries the actor's OWN huddle lifecycle stamps that name
+// the other participants (LLM-438): the join (WarrantKindHuddleJoined,
+// PeerIDs = the members already there when the actor arrived) and the
+// departure (WarrantKindHuddleLeft, PeerIDs = the members left behind). A bare
+// "You left the conversation." is noise; with the peers named it becomes
+// episodic continuity ("I just walked away from those two") — the scene detail
+// that argues against an instant re-greet (cf. LLM-176, LLM-196). The IDs
+// resolve through the acquaintance-gated warrant actor-name map at render
+// time, so a peer's real name only shows to an actor that has actually
+// interacted with them. Discriminator 0 — lifecycle stamp, not event-sourced,
+// same dedup-bypass posture as BasicWarrantReason.
+type HuddlePartReason struct {
+	K       WarrantKind
+	PeerIDs []ActorID
+}
+
+func (HuddlePartReason) isWarrantReason()           {}
+func (r HuddlePartReason) Kind() WarrantKind        { return r.K }
+func (HuddlePartReason) DedupDiscriminator() uint64 { return 0 }
+
 // PCSpeechWarrantReason captures speech by a PC (player character) that
 // warranted the listening NPC's tick. NPC-spoken warrants use the parallel
 // NPCSpeechWarrantReason. The two are split rather than unified-with-a-

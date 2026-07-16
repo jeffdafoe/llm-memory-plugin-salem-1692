@@ -3540,6 +3540,10 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 			return fmt.Sprintf("%d. The storm outside puts you in mind of the fire where you're working — it is burning low, if it burns at all.\n", n), false
 		}
 		return fmt.Sprintf("%d. The storm outside puts you in mind of the fire at the %s you're working at — it is burning low, if it burns at all.\n", n, place), false
+	case sim.HuddlePartReason:
+		// LLM-438: the actor's own join/leave, with the huddle peers named
+		// through the acquaintance-gated warrant actor-name map.
+		return renderHuddlePartWarrantLine(n, r, nameOf), false
 	default:
 		return renderBasicWarrantLine(n, w.Kind(), nameOf(w.TriggerActorID)), false
 	}
@@ -3612,6 +3616,72 @@ func renderBasicWarrantLine(n int, kind sim.WarrantKind, who string) string {
 			return fmt.Sprintf("%d. Something happened involving %s. [debug: unrendered warrant kind=%q]\n", n, who, kind)
 		}
 		return fmt.Sprintf("%d. Something happened nearby. [debug: unrendered warrant kind=%q]\n", n, kind)
+	}
+}
+
+// renderHuddlePartWarrantLine renders the actor's own huddle join/leave with
+// the peers named (LLM-438) — "You left the conversation with Mercy and a
+// stranger." — episodic continuity against the instant-re-greet failure mode,
+// where the bare "You left the conversation." carried nothing to hold the
+// departure in mind. Peer labels come pre-gated from the warrant actor-name
+// map (display name only when acquainted), so no name can leak here. An empty
+// or fully-unresolvable peer list (lone-member dissolve, peers gone from the
+// snapshot) falls back to the bare BasicWarrantReason sentence, as does a
+// future kind this reason doesn't know a peer-bearing sentence for.
+func renderHuddlePartWarrantLine(n int, r sim.HuddlePartReason, nameOf func(sim.ActorID) string) string {
+	peers := huddlePeerPhrase(r.PeerIDs, nameOf)
+	if peers == "" {
+		return renderBasicWarrantLine(n, r.K, "")
+	}
+	switch r.K {
+	case sim.WarrantKindHuddleJoined:
+		return fmt.Sprintf("%d. You joined a conversation with %s.\n", n, peers)
+	case sim.WarrantKindHuddleLeft:
+		return fmt.Sprintf("%d. You left the conversation with %s.\n", n, peers)
+	default:
+		return renderBasicWarrantLine(n, r.K, "")
+	}
+}
+
+// huddlePeerPhrase composes the peer clause for a huddle join/leave line from
+// the acquaintance-gated labels: named/role peers lead in warrant order, any
+// unacquainted peers fold into ONE trailing stranger phrase (so two of them
+// read "two strangers", never "a stranger and a stranger"), and a long list
+// caps at two labels plus "and others". A peer that no longer resolves at all
+// (gone from the snapshot — nameOf's "someone" fallback) is dropped rather
+// than guessed at; returns "" when nothing survives, which the caller turns
+// into the bare no-peers sentence.
+func huddlePeerPhrase(ids []sim.ActorID, nameOf func(sim.ActorID) string) string {
+	var labels []string
+	strangers := 0
+	for _, id := range ids {
+		switch label := nameOf(id); label {
+		case "someone":
+			// Unresolvable — deleted between event and publish. Skip.
+		case "a stranger":
+			strangers++
+		default:
+			labels = append(labels, label)
+		}
+	}
+	switch strangers {
+	case 0:
+	case 1:
+		labels = append(labels, "a stranger")
+	case 2:
+		labels = append(labels, "two strangers")
+	default:
+		labels = append(labels, "some strangers")
+	}
+	switch len(labels) {
+	case 0:
+		return ""
+	case 1:
+		return labels[0]
+	case 2:
+		return labels[0] + " and " + labels[1]
+	default:
+		return labels[0] + ", " + labels[1] + ", and others"
 	}
 }
 

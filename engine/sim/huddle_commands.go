@@ -421,7 +421,7 @@ func JoinHuddle(actorID ActorID, structureID StructureID, sceneID SceneID, now t
 				HuddleID:       huddleID,
 				SceneID:        sceneID,
 				OccurredAt:     now,
-				Reason:         BasicWarrantReason{K: WarrantKindHuddleJoined},
+				Reason:         HuddlePartReason{K: WarrantKindHuddleJoined, PeerIDs: otherMembers},
 			}, now)
 			for _, id := range otherMembers {
 				if other, ok := w.Actors[id]; ok {
@@ -744,7 +744,7 @@ func leaveCurrentHuddle(w *World, actor *Actor, now time.Time) LeaveHuddleResult
 		SourceActorID:  actor.ID,
 		HuddleID:       huddleID,
 		OccurredAt:     now,
-		Reason:         BasicWarrantReason{K: WarrantKindHuddleLeft},
+		Reason:         HuddlePartReason{K: WarrantKindHuddleLeft, PeerIDs: remaining},
 	}, now)
 	for _, id := range remaining {
 		if other, ok := w.Actors[id]; ok {

@@ -1960,6 +1960,14 @@ func buildWarrantActorNames(snap *sim.Snapshot, subject *sim.ActorSnapshot, subj
 			add(r.Seller)
 		case sim.ServeHandoverWarrantReason:
 			add(r.Buyer)
+		case sim.HuddlePartReason:
+			// LLM-438: the actor's own join/leave names the huddle peers, so
+			// each resolves through the same acquaintance gate — an
+			// unacquainted peer renders as "the <role>" / "a stranger", never
+			// its real name.
+			for _, id := range r.PeerIDs {
+				add(id)
+			}
 		}
 	}
 	// The standing offer view renders buyers on ticks that carry no offer
