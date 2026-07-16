@@ -389,29 +389,70 @@ func mendingPeerObserverSnapshot() (*sim.Snapshot, sim.ActorID) {
 	return snap, "prudence"
 }
 
-// LLM-440 build layer: a co-present peer mid a timed source activity is annotated busy
-// on its CoPresent member view, sourced from the peer's BusyAtSource-gated
-// SourceActivityKind projection with the mended business's label. A peer with no
-// activity leaves the fields zero — the observer half of the LLM-435 self-suppression.
+// LLM-440 build layer: a co-present peer mid one of the three "work" source
+// activities (repair / stoke / harvest) is annotated busy on its CoPresent member
+// view, sourced from the peer's BusyAtSource-gated SourceActivityKind projection
+// (world.go only sets that field while the window is in flight — the same signal the
+// subject's own self-line reads). Refresh (eat/drink at a source) is deliberately NOT
+// annotated — left to the Eating cue — and a peer with no activity leaves the fields
+// zero, so SourceActivityBusy and a rendered phrase stay in lockstep.
 func TestBuild_CoPresentSourceActivityAnnotated(t *testing.T) {
-	snap, observer := mendingPeerObserverSnapshot()
-	p := Build(snap, observer, nil)
+	subj := &sim.ActorSnapshot{
+		Kind:                 sim.KindNPCShared,
+		InsideStructureID:    "market",
+		ColocatedAudienceIDs: []sim.ActorID{"ezekiel", "hannah", "josiah", "silence", "grace"},
+		Acquaintances: map[string]sim.Acquaintance{
+			"Ezekiel Stone": {}, "Hannah Boggs": {}, "Josiah Thorne": {},
+			"Silence Walker": {}, "Grace Ward": {},
+		},
+	}
+	snap := &sim.Snapshot{
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			"prudence": subj,
+			// A structure-backed object shares its id, so "market" resolves to the Market.
+			"ezekiel": {DisplayName: "Ezekiel Stone", SourceActivityKind: sim.SourceActivityRepair, SourceActivityObjectID: "market"},
+			"hannah":  {DisplayName: "Hannah Boggs", SourceActivityKind: sim.SourceActivityStoke},
+			"josiah":  {DisplayName: "Josiah Thorne", SourceActivityKind: sim.SourceActivityHarvest},
+			// Refresh is a source activity too, but stays unannotated (left to Eating).
+			"silence": {DisplayName: "Silence Walker", SourceActivityKind: sim.SourceActivityRefresh},
+			// No activity at all.
+			"grace": {DisplayName: "Grace Ward"},
+		},
+		Structures: map[sim.StructureID]*sim.Structure{
+			"market": {DisplayName: "the Market"},
+		},
+	}
+	p := Build(snap, "prudence", nil)
 	byID := make(map[sim.ActorID]HuddleMember, len(p.Surroundings.CoPresent))
 	for _, m := range p.Surroundings.CoPresent {
 		byID[m.ID] = m
 	}
-	ez, ok := byID["ezekiel"]
-	if !ok {
-		t.Fatalf("Ezekiel should be co-present, got members: %v", p.Surroundings.CoPresent)
+	for _, tc := range []struct {
+		id       sim.ActorID
+		wantBusy bool
+		wantKind sim.SourceActivityKind
+	}{
+		{"ezekiel", true, sim.SourceActivityRepair},
+		{"hannah", true, sim.SourceActivityStoke},
+		{"josiah", true, sim.SourceActivityHarvest},
+		{"silence", false, ""}, // refresh: not annotated
+		{"grace", false, ""},   // idle: not annotated
+	} {
+		m, ok := byID[tc.id]
+		if !ok {
+			t.Fatalf("%s should be co-present, got members: %v", tc.id, p.Surroundings.CoPresent)
+		}
+		if m.SourceActivityBusy != tc.wantBusy || m.SourceActivityKind != tc.wantKind {
+			t.Errorf("%s: SourceActivityBusy=%v kind=%q, want busy=%v kind=%q", tc.id, m.SourceActivityBusy, m.SourceActivityKind, tc.wantBusy, tc.wantKind)
+		}
 	}
-	if !ez.SourceActivityBusy || ez.SourceActivityKind != sim.SourceActivityRepair {
-		t.Errorf("Ezekiel is mid-repair — want busy + repair kind, got busy=%v kind=%q", ez.SourceActivityBusy, ez.SourceActivityKind)
+	// Repair carries the mended business's display name; the non-repair busy kinds
+	// need no place, so their label stays empty.
+	if got := byID["ezekiel"].SourceActivityLabel; got != "the Market" {
+		t.Errorf("Ezekiel SourceActivityLabel = %q, want %q", got, "the Market")
 	}
-	if ez.SourceActivityLabel != "the Market" {
-		t.Errorf("SourceActivityLabel = %q, want %q (the mended business's display name)", ez.SourceActivityLabel, "the Market")
-	}
-	if byID["grace"].SourceActivityBusy {
-		t.Errorf("Grace has no activity — want SourceActivityBusy=false")
+	if got := byID["hannah"].SourceActivityLabel; got != "" {
+		t.Errorf("stoke needs no place — Hannah SourceActivityLabel = %q, want empty", got)
 	}
 }
 
@@ -447,11 +488,16 @@ func TestRenderSurroundings_SourceActivityBusyAnnotated(t *testing.T) {
 // TestGoldenObserverSeesMendingPeer is the LLM-440 observer guard (the source-activity
 // analogue of TestGoldenObserverSeesEatingPeer): an onlooker co-present with a keeper
 // mid-repair must see, in "## Around you", that the keeper is mending — so they read a
-// busy keeper as occupied rather than free to greet or pitch.
+// busy keeper as occupied rather than free to greet or pitch. Scoped to the "## Around
+// you" section so a match elsewhere in the prompt can't make it pass vacuously.
 func TestGoldenObserverSeesMendingPeer(t *testing.T) {
 	snap, observer := mendingPeerObserverSnapshot()
 	got := combinedPrompt(Render(Build(snap, observer, nil), DefaultRenderConfig()))
-	if !strings.Contains(got, "Ezekiel Stone") || !strings.Contains(got, "(mending at the Market just now)") {
-		t.Errorf("an observer should see a co-present repairing keeper annotated as mending in ## Around you.\nprompt:\n%s", got)
+	section := aroundYouSection(got)
+	if section == "" {
+		t.Fatalf("no '## Around you' section in prompt:\n%s", got)
+	}
+	if !strings.Contains(section, "Ezekiel Stone") || !strings.Contains(section, "(mending at the Market just now)") {
+		t.Errorf("observer should see the repairing keeper annotated as mending in ## Around you, got section:\n%s", section)
 	}
 }

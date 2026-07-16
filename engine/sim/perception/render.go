@@ -1753,8 +1753,10 @@ func busyActivityPhrase(m HuddleMember) string {
 	}
 	switch m.SourceActivityKind {
 	case sim.SourceActivityRepair:
-		if m.SourceActivityLabel != "" {
-			return fmt.Sprintf(" (mending at %s just now)", sanitizeInline(m.SourceActivityLabel))
+		// Sanitize before the emptiness check: a label that sanitizes down to nothing
+		// must fall back to the place-less phrase, not render "(mending at  just now)".
+		if label := sanitizeInline(m.SourceActivityLabel); label != "" {
+			return fmt.Sprintf(" (mending at %s just now)", label)
 		}
 		return " (mending just now)"
 	case sim.SourceActivityStoke:
