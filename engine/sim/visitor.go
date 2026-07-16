@@ -784,6 +784,10 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 		if units < 1 {
 			units = DefaultVisitorFactorPackUnits
 		}
+		ironUnits := w.Settings.VisitorFactorIronUnits
+		if ironUnits < 1 {
+			ironUnits = DefaultVisitorFactorIronUnits
+		}
 		purseMin := w.Settings.VisitorFactorPurseMin
 		if purseMin < 0 {
 			purseMin = 0
@@ -792,7 +796,7 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 		if purseMax < purseMin {
 			purseMax = purseMin
 		}
-		pack, purse = seedFactorPack(r, units, purseMin, purseMax)
+		pack, purse = seedFactorPack(r, units, ironUnits, purseMin, purseMax)
 	} else {
 		pack, purse = seedVisitorPack(r)
 	}
@@ -1244,6 +1248,12 @@ const (
 	DefaultVisitorFactorPackUnits = 2
 	DefaultVisitorFactorPurseMin  = 120
 	DefaultVisitorFactorPurseMax  = 200
+	// DefaultVisitorFactorIronUnits (LLM-442) — bars of iron per visit, a
+	// SHIPMENT rather than the clothing-scale per-kind quantity: factor visits
+	// are rare (visitor return cooldowns run 14–45 days), and each bar backs
+	// only one boosted nail batch, so the pack must bridge the gap between
+	// visits or the forge falls back to rough nails as its everyday path.
+	DefaultVisitorFactorIronUnits = 10
 )
 
 // factorWareKinds are the goods a wholesale factor spawns carrying to SELL into the
@@ -1253,16 +1263,25 @@ const (
 // itself operator-tunable via item/set; the per-visit quantity is visitor_factor_pack_units.
 var factorWareKinds = []ItemKind{"coat", "cloak", "gown", "breeches", "shift", "silver_locket", "whalebone_charm"}
 
-// seedFactorPack returns the pack (clothing/charm goods to sell) and purse (a heavier coin
-// float than an ordinary traveler) a wholesale factor spawns carrying (LLM-410).
-// unitsPerKind of each ware kind, plus a small 0..1 jitter so back-to-back factors don't
-// carry identical bales; purse a uniform pull from [purseMin, purseMax]. r is non-nil; the
-// caller clamps unitsPerKind >= 1 and purseMin <= purseMax.
-func seedFactorPack(r *rand.Rand, unitsPerKind, purseMin, purseMax int) (map[ItemKind]int, int) {
+// factorIronKind is the imported smith's input the factor carries in SHIPMENT
+// quantity (LLM-442) — seeded via ironUnits, not the per-kind unitsPerKind, so
+// the rare factor visit can bridge the forge's batch-by-batch iron burn without
+// inflating the garment bale to shipment size.
+const factorIronKind = ItemKind("iron")
+
+// seedFactorPack returns the pack (clothing/charm goods to sell, plus an iron
+// shipment — LLM-442) and purse (a heavier coin float than an ordinary traveler)
+// a wholesale factor spawns carrying (LLM-410). unitsPerKind of each ware kind
+// and ironUnits bars of iron, each plus a small jitter so back-to-back factors
+// don't carry identical bales; purse a uniform pull from [purseMin, purseMax].
+// r is non-nil; the caller clamps unitsPerKind >= 1, ironUnits >= 1, and
+// purseMin <= purseMax.
+func seedFactorPack(r *rand.Rand, unitsPerKind, ironUnits, purseMin, purseMax int) (map[ItemKind]int, int) {
 	pack := map[ItemKind]int{}
 	for _, kind := range factorWareKinds {
 		pack[kind] = unitsPerKind + r.Intn(2) // unitsPerKind..unitsPerKind+1
 	}
+	pack[factorIronKind] = ironUnits + r.Intn(3) // ironUnits..ironUnits+2
 	purse := purseMin
 	if purseMax > purseMin {
 		purse = purseMin + r.Intn(purseMax-purseMin+1)
