@@ -61,12 +61,15 @@ func buildConsolidationTestWorld(t *testing.T) (*sim.World, func()) {
 }
 
 // recordN drives N RecordInteractions for hannah→peer at staggered
-// timestamps and returns the resulting fact count on the live row.
+// timestamps. Records a dealing-relevant (transactional) fact kind so the pair
+// clears the LLM-434 dealing gate in FindConsolidationCandidates — these tests
+// exercise the count/timing/ordering gates, which are orthogonal to the dealing
+// gate (that gate has its own speech-only tests below).
 func recordN(t *testing.T, w *sim.World, peer sim.ActorID, n int, base time.Time) {
 	t.Helper()
 	for i := 0; i < n; i++ {
 		at := base.Add(time.Duration(i) * time.Second)
-		if _, err := w.Send(sim.RecordInteraction("hannah", peer, sim.InteractionHeard, "x", at)); err != nil {
+		if _, err := w.Send(sim.RecordInteraction("hannah", peer, sim.InteractionServed, "x", at)); err != nil {
 			t.Fatalf("RecordInteraction #%d: %v", i, err)
 		}
 	}
@@ -274,6 +277,86 @@ func TestFindCandidates_DeterministicOrder(t *testing.T) {
 	}
 	if !sort.SliceIsSorted(peers, func(i, j int) bool { return peers[i] < peers[j] }) {
 		t.Errorf("peers not sorted by ID for deterministic tiebreak: %v", peers)
+	}
+}
+
+// TestFindCandidates_SkipsSpeechOnlyPair is the LLM-434 dealing gate: a
+// never-consolidated pair whose facts are all speech (spoke/heard) carries no
+// dealing-relevant judgment, so it must not be selected even once it clears the
+// first-min fact count — the prompt would only ever answer "nothing notable".
+// (recordN records a dealing kind, so drive speech directly here.)
+func TestFindCandidates_SkipsSpeechOnlyPair(t *testing.T) {
+	w, stop := buildConsolidationTestWorld(t)
+	defer stop()
+	at := time.Now().UTC()
+	for i := 0; i < sim.ConsolidationFirstMinFacts; i++ {
+		ts := at.Add(time.Duration(i) * time.Second)
+		if _, err := w.Send(sim.RecordInteraction("hannah", "ezekiel", sim.InteractionHeard, "good morrow", ts)); err != nil {
+			t.Fatalf("RecordInteraction #%d: %v", i, err)
+		}
+	}
+	cs := candidates(t, w, at, 5)
+	if len(cs) != 0 {
+		t.Errorf("len(candidates) = %d, want 0 (speech-only pair, no dealing fact)", len(cs))
+	}
+}
+
+// TestFindCandidates_SelectsPairWithOneDealingFact confirms the gate opens as
+// soon as a pair carries a single transactional fact among its speech — the
+// pair now has a dealing judgment worth forming (LLM-434).
+func TestFindCandidates_SelectsPairWithOneDealingFact(t *testing.T) {
+	w, stop := buildConsolidationTestWorld(t)
+	defer stop()
+	at := time.Now().UTC()
+	// Four speech facts...
+	for i := 0; i < sim.ConsolidationFirstMinFacts-1; i++ {
+		ts := at.Add(time.Duration(i) * time.Second)
+		if _, err := w.Send(sim.RecordInteraction("hannah", "ezekiel", sim.InteractionHeard, "chatter", ts)); err != nil {
+			t.Fatalf("RecordInteraction #%d: %v", i, err)
+		}
+	}
+	// ...and one dealing fact, clearing both the count and the gate.
+	if _, err := w.Send(sim.RecordInteraction("hannah", "ezekiel", sim.InteractionPaid, "paid 3 coins", at.Add(5*time.Second))); err != nil {
+		t.Fatalf("RecordInteraction paid: %v", err)
+	}
+	cs := candidates(t, w, at, 5)
+	if len(cs) != 1 {
+		t.Fatalf("len(candidates) = %d, want 1 (pair has a dealing fact)", len(cs))
+	}
+	if cs[0].PeerID != "ezekiel" {
+		t.Errorf("candidate peer = %q, want ezekiel", cs[0].PeerID)
+	}
+}
+
+// TestFindCandidates_SpeechOnlyWithSummaryStillSelected is the gate's safety
+// valve: a pair judged dealing-relevant before (non-empty SummaryText) keeps
+// being re-judged even when its later facts are all speech, so an established
+// relationship that goes quiet on dealings can still prune naturally rather than
+// freezing a stale summary (LLM-434).
+func TestFindCandidates_SpeechOnlyWithSummaryStillSelected(t *testing.T) {
+	w, stop := buildConsolidationTestWorld(t)
+	defer stop()
+	at := time.Now().UTC()
+	// Speech-only facts on the live row...
+	for i := 0; i < sim.ConsolidationFirstMinFacts; i++ {
+		ts := at.Add(time.Duration(i) * time.Second)
+		if _, err := w.Send(sim.RecordInteraction("hannah", "ezekiel", sim.InteractionHeard, "chatter", ts)); err != nil {
+			t.Fatalf("RecordInteraction #%d: %v", i, err)
+		}
+	}
+	// ...but the pair already carries a summary, seeded past the daily floor so
+	// the floor branch selects it. Without the valve the dealing gate would
+	// wrongly skip it.
+	stale := at.Add(-25 * time.Hour)
+	if _, err := w.Send(sim.ApplyConsolidation("hannah", "ezekiel", "pays what he promises", nil, stale)); err != nil {
+		t.Fatalf("ApplyConsolidation seed: %v", err)
+	}
+	cs := candidates(t, w, at, 5)
+	if len(cs) != 1 {
+		t.Fatalf("len(candidates) = %d, want 1 (summary keeps it eligible)", len(cs))
+	}
+	if cs[0].PriorSummary != "pays what he promises" {
+		t.Errorf("PriorSummary = %q, want seeded summary", cs[0].PriorSummary)
 	}
 }
 

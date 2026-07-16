@@ -47,6 +47,16 @@ import (
 //     cadence — every active pair gets one pass per 24h regardless of
 //     fact count.
 //
+// Dealing gate (LLM-434): the three branches above are ANDed with a
+// precondition — the pair must carry at least one dealing-relevant
+// (transactional) fact, OR already have a SummaryText. The prompt asks for a
+// judgment about DEALING with the peer (LLM-426); a pure-social pair (only
+// spoke/heard facts) can only ever answer "nothing notable", which prunes the
+// pair — and because a pruned row is deleted (ClearConsolidation) and
+// re-created as a first-timer on the next interaction, that pair would
+// otherwise churn one LLM call every ConsolidationFirstMinFacts. See
+// relHasDealingFact.
+//
 // Substrate gating: only actors with Kind == KindNPCShared have
 // Relationships populated by RecordInteraction (gated there). The
 // scan filter on Kind here is belt-and-braces — even if a stateful
@@ -114,6 +124,33 @@ type ConsolidationCandidate struct {
 	LastConsolidated *time.Time
 }
 
+// relHasDealingFact reports whether the relationship carries at least one
+// dealing-relevant salient fact — a transactional kind (paid/paid_by/delivered/
+// received/served/gave/worked/hired/kept_deposit/…), i.e. anything that is NOT
+// bare speech. InteractionSpoke and InteractionHeard are the only two
+// non-dealing kinds, so "not speech" is an exhaustive test: a pair with none of
+// the transactional kinds cannot yield the dealing judgment the consolidation
+// prompt asks for (LLM-426) and would only ever answer "nothing notable".
+// FindConsolidationCandidates uses it to keep pure-social pairs out of the
+// sweep entirely (LLM-434).
+//
+// A NEW non-speech InteractionKind is treated as dealing-relevant by default —
+// the safe direction, since a new transactional kind should qualify a pair. If
+// a future kind is speech-like (a bare utterance carrying no dealing content),
+// add it to the exclusion here, mirroring the attribution guard in
+// cascade/consolidation.go's renderConsolidationFactLine.
+func relHasDealingFact(rel *Relationship) bool {
+	if rel == nil {
+		return false
+	}
+	for _, f := range rel.SalientFacts {
+		if f.Kind != InteractionSpoke && f.Kind != InteractionHeard {
+			return true
+		}
+	}
+	return false
+}
+
 // FindConsolidationCandidates returns a Command that scans the world
 // for relationships needing a consolidation pass and returns up to
 // `limit` candidates ordered ceiling-overdue first, then NULLS first,
@@ -162,6 +199,16 @@ func FindConsolidationCandidates(at time.Time, limit int) Command {
 					}
 					n := len(rel.SalientFacts)
 					if n == 0 {
+						continue
+					}
+					// Dealing gate (LLM-434): skip a pair that has never carried a
+					// dealing-relevant fact and holds no summary yet — a pure-social
+					// (spoke/heard-only) pair can only answer "nothing notable", and
+					// that prunes/re-creates the row into an LLM-call churn loop. A pair
+					// with a SummaryText stays eligible so an established relationship
+					// keeps being re-judged (and can prune naturally) if its dealings
+					// dry up.
+					if rel.SummaryText == "" && !relHasDealingFact(rel) {
 						continue
 					}
 					ceilingOverdue := n >= ConsolidationCeiling
