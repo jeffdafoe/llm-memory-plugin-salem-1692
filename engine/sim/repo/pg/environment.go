@@ -224,15 +224,24 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.FarmUpkeepFloor = parseIntSetting(values, "farm_upkeep_floor", sim.DefaultFarmUpkeepFloor)
 	s.FarmUpkeepCoinsPerShovel = parseIntSetting(values, "farm_upkeep_coins_per_shovel", sim.DefaultFarmUpkeepCoinsPerShovel)
 
-	// Cold exposure + hearth (LLM-412).
-	s.ColdStormOutdoorsPerMinuteX100 = parseIntSetting(values, "cold_storm_outdoors_per_minute_x100", sim.DefaultColdStormOutdoorsPerMinuteX100)
-	s.ColdStormIndoorsPerMinuteX100 = parseIntSetting(values, "cold_storm_indoors_per_minute_x100", sim.DefaultColdStormIndoorsPerMinuteX100)
-	s.ColdWarmGarmentPerMinuteX100 = parseIntSetting(values, "cold_warm_garment_per_minute_x100", sim.DefaultColdWarmGarmentPerMinuteX100)
-	s.ColdThreadbareGarmentPerMinuteX100 = parseIntSetting(values, "cold_threadbare_garment_per_minute_x100", sim.DefaultColdThreadbareGarmentPerMinuteX100)
-	s.ColdNightMultiplierX100 = parseIntSetting(values, "cold_night_multiplier_x100", sim.DefaultColdNightMultiplierX100)
-	s.ColdWarmRecoveryPerMinuteX100 = parseIntSetting(values, "cold_warm_recovery_per_minute_x100", sim.DefaultColdWarmRecoveryPerMinuteX100)
-	s.ColdClearRecoveryPerMinuteX100 = parseIntSetting(values, "cold_clear_recovery_per_minute_x100", sim.DefaultColdClearRecoveryPerMinuteX100)
-	s.ColdProduceSapPct = parseIntSetting(values, "cold_produce_sap_pct", sim.DefaultColdProduceSapPct)
+	// Cold exposure + hearth (LLM-412). Every cold knob is a per-minute rate, a
+	// multiplier, or a percentage — all of which must be >= 0 (a negative recovery
+	// rate would FLIP recovery into accrual, `return -setting` going positive; a
+	// negative accrual/cap/multiplier/sap is likewise nonsense). 0 is a valid
+	// off-switch for each (no accrual / a coat is full relief / no night boost /
+	// no sap), so the floor is 0, not the default. clampNonNegSetting clamps a
+	// negative to 0 and records a SettingWarning (LLM-439) so the umbilical
+	// /settings surface shows the bad config rather than silently correcting it —
+	// keeping the always-live village booting on a fat-fingered deploy. The
+	// runtime `g >= 0` guards in coldRatePerMinuteX100 stay as defense in depth.
+	s.ColdStormOutdoorsPerMinuteX100 = clampNonNegSetting(values, "cold_storm_outdoors_per_minute_x100", sim.DefaultColdStormOutdoorsPerMinuteX100, &s.SettingWarnings)
+	s.ColdStormIndoorsPerMinuteX100 = clampNonNegSetting(values, "cold_storm_indoors_per_minute_x100", sim.DefaultColdStormIndoorsPerMinuteX100, &s.SettingWarnings)
+	s.ColdWarmGarmentPerMinuteX100 = clampNonNegSetting(values, "cold_warm_garment_per_minute_x100", sim.DefaultColdWarmGarmentPerMinuteX100, &s.SettingWarnings)
+	s.ColdThreadbareGarmentPerMinuteX100 = clampNonNegSetting(values, "cold_threadbare_garment_per_minute_x100", sim.DefaultColdThreadbareGarmentPerMinuteX100, &s.SettingWarnings)
+	s.ColdNightMultiplierX100 = clampNonNegSetting(values, "cold_night_multiplier_x100", sim.DefaultColdNightMultiplierX100, &s.SettingWarnings)
+	s.ColdWarmRecoveryPerMinuteX100 = clampNonNegSetting(values, "cold_warm_recovery_per_minute_x100", sim.DefaultColdWarmRecoveryPerMinuteX100, &s.SettingWarnings)
+	s.ColdClearRecoveryPerMinuteX100 = clampNonNegSetting(values, "cold_clear_recovery_per_minute_x100", sim.DefaultColdClearRecoveryPerMinuteX100, &s.SettingWarnings)
+	s.ColdProduceSapPct = clampNonNegSetting(values, "cold_produce_sap_pct", sim.DefaultColdProduceSapPct, &s.SettingWarnings)
 	s.HearthBurnMinutesPerWood = parseIntSetting(values, "hearth_burn_minutes_per_wood", sim.DefaultHearthBurnMinutesPerWood)
 	s.HearthMaxBankMinutes = parseIntSetting(values, "hearth_max_bank_minutes", sim.DefaultHearthMaxBankMinutes)
 	s.HearthLowMinutes = parseIntSetting(values, "hearth_low_minutes", sim.DefaultHearthLowMinutes)
@@ -437,6 +446,30 @@ func parseIntSetting(values map[string]string, key string, def int) int {
 		return def
 	}
 	return n
+}
+
+// clampNonNegSetting is parseIntSetting for a value that must not be negative
+// (LLM-439). A stored negative is clamped to 0 — keeping the always-live village
+// booting on a fat-fingered config instead of failing at boot or, worse, letting
+// the bad value through (a negative cold recovery rate flips recovery into
+// accrual). The clamp is recorded as a sim.SettingWarning appended to *warnings,
+// which the umbilical /settings surface reports, and logged. A missing/malformed
+// row falls through parseIntSetting to def (in range by construction) and is not
+// flagged. Regenerated at every boot from the stored value, so the warning
+// survives restart for as long as the misconfiguration does.
+func clampNonNegSetting(values map[string]string, key string, def int, warnings *[]sim.SettingWarning) int {
+	v := parseIntSetting(values, key, def)
+	if v < 0 {
+		log.Printf("pg environment: setting %q=%d is out of range (must be >= 0) — clamping to 0", key, v)
+		*warnings = append(*warnings, sim.SettingWarning{
+			Key:     key,
+			Raw:     v,
+			Clamped: 0,
+			Reason:  "value must be 0 or greater; clamped to 0",
+		})
+		return 0
+	}
+	return v
 }
 
 // parseFloatSetting returns the kv value parsed as a float64. Missing

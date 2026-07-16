@@ -528,6 +528,78 @@ func TestParseIntSetting(t *testing.T) {
 	}
 }
 
+// TestClampNonNegSetting — a valid value passes through, a negative clamps to 0
+// and records a warning, and a missing row falls to the (in-range) default
+// without a warning (LLM-439).
+func TestClampNonNegSetting(t *testing.T) {
+	values := map[string]string{
+		"ok":  "25",
+		"neg": "-25",
+	}
+	var warnings []sim.SettingWarning
+
+	if got := clampNonNegSetting(values, "ok", 100, &warnings); got != 25 {
+		t.Errorf("ok = %d, want 25", got)
+	}
+	if got := clampNonNegSetting(values, "missing", 100, &warnings); got != 100 {
+		t.Errorf("missing = %d, want default 100", got)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("in-range + missing recorded warnings: %+v", warnings)
+	}
+
+	if got := clampNonNegSetting(values, "neg", 100, &warnings); got != 0 {
+		t.Errorf("neg = %d, want clamp to 0", got)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("negative recorded %d warnings, want 1: %+v", len(warnings), warnings)
+	}
+	if warnings[0].Key != "neg" || warnings[0].Raw != -25 || warnings[0].Clamped != 0 {
+		t.Errorf("warning = %+v, want {key:neg raw:-25 clamped:0}", warnings[0])
+	}
+}
+
+// TestBuildSettings_ClampsNegativeColdRates — end to end through buildSettings: a
+// negative cold accrual rate and a negative recovery rate both clamp to 0 (the
+// recovery one is the dangerous case — un-clamped it would flip recovery into
+// accrual), and both land in SettingWarnings; an in-range knob is untouched and
+// unflagged (LLM-439).
+func TestBuildSettings_ClampsNegativeColdRates(t *testing.T) {
+	values := map[string]string{
+		"cold_storm_outdoors_per_minute_x100": "-100",
+		"cold_warm_recovery_per_minute_x100":  "-200",
+		"cold_storm_indoors_per_minute_x100":  "25", // in range — untouched
+	}
+	s := buildSettings(values)
+
+	if s.ColdStormOutdoorsPerMinuteX100 != 0 {
+		t.Errorf("negative outdoors rate = %d, want clamp 0", s.ColdStormOutdoorsPerMinuteX100)
+	}
+	if s.ColdWarmRecoveryPerMinuteX100 != 0 {
+		t.Errorf("negative recovery rate = %d, want clamp 0", s.ColdWarmRecoveryPerMinuteX100)
+	}
+	if s.ColdStormIndoorsPerMinuteX100 != 25 {
+		t.Errorf("in-range indoors rate = %d, want 25 untouched", s.ColdStormIndoorsPerMinuteX100)
+	}
+
+	got := map[string]sim.SettingWarning{}
+	for _, wrn := range s.SettingWarnings {
+		got[wrn.Key] = wrn
+	}
+	if len(got) != 2 {
+		t.Fatalf("SettingWarnings = %+v, want exactly the 2 clamped keys", s.SettingWarnings)
+	}
+	if w, ok := got["cold_storm_outdoors_per_minute_x100"]; !ok || w.Raw != -100 || w.Clamped != 0 {
+		t.Errorf("outdoors warning = %+v (present=%v)", w, ok)
+	}
+	if w, ok := got["cold_warm_recovery_per_minute_x100"]; !ok || w.Raw != -200 || w.Clamped != 0 {
+		t.Errorf("recovery warning = %+v (present=%v)", w, ok)
+	}
+	if _, ok := got["cold_storm_indoors_per_minute_x100"]; ok {
+		t.Errorf("in-range knob was flagged")
+	}
+}
+
 // TestParseFloatSetting — happy + fallback paths.
 func TestParseFloatSetting(t *testing.T) {
 	values := map[string]string{
