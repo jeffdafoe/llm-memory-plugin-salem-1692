@@ -2262,6 +2262,23 @@ func resolvePayItems(w *World, payItems []PayItemInput) ([]ItemKindQty, error) {
 				pi.Item,
 			)
 		}
+		// A non-portable consumable (porridge, stew, a poured drink — any
+		// EatHereOnly kind) is eaten where it's served and can't leave the
+		// premises, so it can't be handed over and carried off as payment. The buy
+		// leg is already clamped at PayWithItem (the EatHereOnly consume-clamp);
+		// this applies the SAME rule to every TENDERED-goods leg — all of which
+		// resolve through here: the barter pay_items, a counter offer, a gift
+		// (GiveItems), and a labor in-kind reward. Without it an eat-here food
+		// leaks into the recipient's pack and circulates as de-facto currency
+		// (observed live: porridge). EatHereOnly is nil-safe, and a freshly-minted
+		// unknown kind is not consumable, so it passes here and rejects instead on
+		// the holdings shortfall — same posture as the service gate above. LLM-445.
+		if w.ItemKinds[kind].EatHereOnly() {
+			return nil, fmt.Errorf(
+				"%q is eaten where it's served and can't be carried off as payment — offer coins or a portable good in trade instead.",
+				pi.Item,
+			)
+		}
 		seen[kind] = struct{}{}
 		resolved = append(resolved, ItemKindQty{Kind: kind, Qty: pi.Qty})
 	}

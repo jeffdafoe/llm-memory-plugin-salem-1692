@@ -54,6 +54,11 @@ func SeedItemKinds() map[sim.ItemKind]*sim.ItemKindDef {
 			DisplayLabel: "Ale",
 			Category:     sim.ItemCategoryDrink,
 			SortOrder:    10,
+			// portable mirrors the live catalog (ale and water both carry it
+			// there). Without it a drink is EatHereOnly and the LLM-445
+			// tendered-goods gate rejects it as payment — which would silently
+			// flip every barter fixture that pays in ale/water.
+			Capabilities: []string{"portable"},
 			Satisfies: []sim.ItemSatisfaction{
 				{Attribute: "thirst", Immediate: 4},
 				{Attribute: "hunger", Immediate: 2},
@@ -64,6 +69,8 @@ func SeedItemKinds() map[sim.ItemKind]*sim.ItemKindDef {
 			DisplayLabel: "Water",
 			Category:     sim.ItemCategoryDrink,
 			SortOrder:    20,
+			// portable — see ale above.
+			Capabilities: []string{"portable"},
 			Satisfies: []sim.ItemSatisfaction{
 				{Attribute: "thirst", Immediate: 8},
 			},

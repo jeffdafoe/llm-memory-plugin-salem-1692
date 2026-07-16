@@ -911,12 +911,24 @@ func buildInventoryView(snap *sim.Snapshot, a *sim.ActorSnapshot) []InventoryIte
 		// fills with an invented container ("buckets"). Falls back to the display
 		// label for a kind with no authored singular/plural (LLM-113).
 		noun := label
-		if def := snap.ItemKinds[kind]; def != nil {
+		def := snap.ItemKinds[kind]
+		if def != nil {
 			if cn := def.CountNoun(qty); cn != "" {
 				noun = cn
 			}
 		}
-		out = append(out, InventoryItem{Label: label, CountNoun: noun, Qty: qty, Use: inventoryItemUse(snap, kind), kind: kind})
+		out = append(out, InventoryItem{
+			Label:     label,
+			CountNoun: noun,
+			Qty:       qty,
+			Use:       inventoryItemUse(snap, kind),
+			// LLM-445: the eat-here disposition + barterability travel with the
+			// item so render can annotate the carry line and key the coinless
+			// barter cue on goods the resolver would actually accept.
+			EatHere:    def.EatHereOnly(),
+			Barterable: sim.KindBarterable(def),
+			kind:       kind,
+		})
 	}
 	if len(out) == 0 {
 		return nil

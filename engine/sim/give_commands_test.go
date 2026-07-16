@@ -44,7 +44,7 @@ func readActorState(t *testing.T, w *sim.World, id sim.ActorID) giftState {
 
 func giftWorld(t *testing.T) (*sim.World, func()) {
 	return buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
-		{id: "alice", displayName: "Alice", kind: sim.KindNPCShared, huddleID: "h1", coins: 5, inventory: map[sim.ItemKind]int{"stew": 3}},
+		{id: "alice", displayName: "Alice", kind: sim.KindNPCShared, huddleID: "h1", coins: 5, inventory: map[sim.ItemKind]int{"bread": 3}},
 		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1", coins: 7},
 	})
 }
@@ -63,7 +63,7 @@ func TestGiveItems_HappyPath_AcceptMovesGoods(t *testing.T) {
 	events := capturePayWithItemEvents(t, w)
 	at := time.Now().UTC()
 
-	res, err := w.Send(sim.GiveItems("alice", "Bob", giftLine("stew", 2), "for your hunger", at))
+	res, err := w.Send(sim.GiveItems("alice", "Bob", giftLine("bread", 2), "for your hunger", at))
 	if err != nil {
 		t.Fatalf("GiveItems: %v", err)
 	}
@@ -87,8 +87,8 @@ func TestGiveItems_HappyPath_AcceptMovesGoods(t *testing.T) {
 	if entry.ItemKind != "" || entry.Qty != 0 || entry.Amount != 0 {
 		t.Errorf("gift carries a bought-item/coin leg: ItemKind=%q Qty=%d Amount=%d", entry.ItemKind, entry.Qty, entry.Amount)
 	}
-	if len(entry.PayItems) != 1 || entry.PayItems[0].Kind != "stew" || entry.PayItems[0].Qty != 2 {
-		t.Errorf("gift goods = %+v, want [{stew 2}]", entry.PayItems)
+	if len(entry.PayItems) != 1 || entry.PayItems[0].Kind != "bread" || entry.PayItems[0].Qty != 2 {
+		t.Errorf("gift goods = %+v, want [{bread 2}]", entry.PayItems)
 	}
 
 	// Recipient accepts via accept_gift (the gift-disposition accept).
@@ -102,11 +102,11 @@ func TestGiveItems_HappyPath_AcceptMovesGoods(t *testing.T) {
 	}
 	alice := readActorState(t, w, "alice")
 	bob := readActorState(t, w, "bob")
-	if alice.inv["stew"] != 1 {
-		t.Errorf("giver stew after gift = %d, want 1 (gave 2 of 3)", alice.inv["stew"])
+	if alice.inv["bread"] != 1 {
+		t.Errorf("giver bread after gift = %d, want 1 (gave 2 of 3)", alice.inv["bread"])
 	}
-	if bob.inv["stew"] != 2 {
-		t.Errorf("recipient stew after gift = %d, want 2", bob.inv["stew"])
+	if bob.inv["bread"] != 2 {
+		t.Errorf("recipient bread after gift = %d, want 2", bob.inv["bread"])
 	}
 	if alice.coins != 5 || bob.coins != 7 {
 		t.Errorf("coins moved on a gift: alice=%d bob=%d, want 5/7", alice.coins, bob.coins)
@@ -119,7 +119,7 @@ func TestGiveItems_Decline_NoMovement(t *testing.T) {
 	w, stop := giftWorld(t)
 	defer stop()
 
-	res, err := w.Send(sim.GiveItems("alice", "Bob", giftLine("stew", 2), "", time.Now().UTC()))
+	res, err := w.Send(sim.GiveItems("alice", "Bob", giftLine("bread", 2), "", time.Now().UTC()))
 	if err != nil {
 		t.Fatalf("GiveItems: %v", err)
 	}
@@ -134,8 +134,8 @@ func TestGiveItems_Decline_NoMovement(t *testing.T) {
 	}
 	alice := readActorState(t, w, "alice")
 	bob := readActorState(t, w, "bob")
-	if alice.inv["stew"] != 3 || bob.inv["stew"] != 0 {
-		t.Errorf("goods moved on a declined gift: giver=%d recipient=%d, want 3/0", alice.inv["stew"], bob.inv["stew"])
+	if alice.inv["bread"] != 3 || bob.inv["bread"] != 0 {
+		t.Errorf("goods moved on a declined gift: giver=%d recipient=%d, want 3/0", alice.inv["bread"], bob.inv["bread"])
 	}
 }
 
@@ -151,10 +151,14 @@ func TestGiveItems_Rejects(t *testing.T) {
 		// Naming yourself resolves to no huddle peer (the resolver excludes the
 		// caller) before the defensive self-guard — either way you can't gift
 		// yourself.
-		{"self", "Alice", giftLine("stew", 1), "no one named"},
-		{"unknown recipient", "Nobody", giftLine("stew", 1), "no one named"},
+		{"self", "Alice", giftLine("bread", 1), "no one named"},
+		{"unknown recipient", "Nobody", giftLine("bread", 1), "no one named"},
 		{"no items", "Bob", nil, "at least one item"},
-		{"giver lacks goods", "Bob", giftLine("stew", 99), "don't hold"},
+		{"giver lacks goods", "Bob", giftLine("bread", 99), "don't hold"},
+		// LLM-445: an eat-here-only food can't leave the premises as a gift —
+		// same resolvePayItems gate as the barter/labor legs. (The giver need
+		// not hold any: the class reject fires at resolve, before holdings.)
+		{"eat-here-only good", "Bob", giftLine("stew", 1), "eaten where it's served"},
 		// An unknown kind is discovery-minted by resolvePayItems (the same as a
 		// barter pay-with leg), so it fails the holds check rather than an
 		// unknown-kind reject — the giver still can't gift what they don't hold.
@@ -181,10 +185,10 @@ func TestGiveItems_DuplicatePendingGift(t *testing.T) {
 	w, stop := giftWorld(t)
 	defer stop()
 
-	if _, err := w.Send(sim.GiveItems("alice", "Bob", giftLine("stew", 1), "", time.Now().UTC())); err != nil {
+	if _, err := w.Send(sim.GiveItems("alice", "Bob", giftLine("bread", 1), "", time.Now().UTC())); err != nil {
 		t.Fatalf("first GiveItems: %v", err)
 	}
-	_, err := w.Send(sim.GiveItems("alice", "Bob", giftLine("stew", 1), "", time.Now().UTC()))
+	_, err := w.Send(sim.GiveItems("alice", "Bob", giftLine("bread", 1), "", time.Now().UTC()))
 	if err == nil {
 		t.Fatal("second GiveItems to same recipient: want duplicate error, got nil")
 	}
@@ -200,15 +204,15 @@ func TestGiveItems_AcceptRevalidatesGiverHoldings(t *testing.T) {
 	w, stop := giftWorld(t)
 	defer stop()
 
-	res, err := w.Send(sim.GiveItems("alice", "Bob", giftLine("stew", 2), "", time.Now().UTC()))
+	res, err := w.Send(sim.GiveItems("alice", "Bob", giftLine("bread", 2), "", time.Now().UTC()))
 	if err != nil {
 		t.Fatalf("GiveItems: %v", err)
 	}
 	id := res.(sim.PayWithItemResult).LedgerID
 
-	// Drain the giver's stew between offer and accept.
+	// Drain the giver's bread between offer and accept.
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		delete(world.Actors["alice"].Inventory, "stew")
+		delete(world.Actors["alice"].Inventory, "bread")
 		return nil, nil
 	}}); err != nil {
 		t.Fatalf("drain giver: %v", err)
@@ -221,8 +225,8 @@ func TestGiveItems_AcceptRevalidatesGiverHoldings(t *testing.T) {
 	if got := ledger[id].State; got != sim.PayLedgerStateFailedInsufficientGoods {
 		t.Errorf("gift state = %q, want failed_insufficient_goods (giver no longer holds the goods)", got)
 	}
-	if bob := readActorState(t, w, "bob"); bob.inv["stew"] != 0 {
-		t.Errorf("recipient got goods on a failed gift accept: %d", bob.inv["stew"])
+	if bob := readActorState(t, w, "bob"); bob.inv["bread"] != 0 {
+		t.Errorf("recipient got goods on a failed gift accept: %d", bob.inv["bread"])
 	}
 }
 
@@ -267,15 +271,15 @@ func TestGift_DispositionBoundary(t *testing.T) {
 	w, stop := giftWorld(t)
 	defer stop()
 	now := time.Now().UTC()
-	// id 1: a normal purchase offer (alice buys stew from bob). id 2: a gift
-	// (alice gives stew to bob). Both pending; bob is the resolving party.
+	// id 1: a normal purchase offer (alice buys bread from bob). id 2: a gift
+	// (alice gives bread to bob). Both pending; bob is the resolving party.
 	seedLedgerEntry(t, w, sim.PayLedgerEntry{
-		ID: 1, BuyerID: "alice", SellerID: "bob", ItemKind: "stew", Qty: 1, Amount: 4,
+		ID: 1, BuyerID: "alice", SellerID: "bob", ItemKind: "bread", Qty: 1, Amount: 4,
 		State: sim.PayLedgerStatePending, ExpiresAt: now.Add(time.Minute), HuddleID: "h1",
 	})
 	seedLedgerEntry(t, w, sim.PayLedgerEntry{
 		ID: 2, BuyerID: "alice", SellerID: "bob", IsGift: true,
-		PayItems: []sim.ItemKindQty{{Kind: "stew", Qty: 1}},
+		PayItems: []sim.ItemKindQty{{Kind: "bread", Qty: 1}},
 		State:    sim.PayLedgerStatePending, ExpiresAt: now.Add(time.Minute), HuddleID: "h1",
 	})
 
@@ -312,7 +316,7 @@ func TestGift_DispositionBoundary(t *testing.T) {
 func TestGiveItems_ForNotePersisted(t *testing.T) {
 	w, stop := giftWorld(t)
 	defer stop()
-	res, err := w.Send(sim.GiveItems("alice", "Bob", giftLine("stew", 1), "for your hunger", time.Now().UTC()))
+	res, err := w.Send(sim.GiveItems("alice", "Bob", giftLine("bread", 1), "for your hunger", time.Now().UTC()))
 	if err != nil {
 		t.Fatalf("GiveItems: %v", err)
 	}
@@ -350,7 +354,7 @@ func TestGiveItems_LongForNoteStoredWholeOrMarked(t *testing.T) {
 	note := "for tending my garden while I was away, " + strings.Repeat("and for the kindness of it, ", 20)
 	note = string([]rune(note)[:maxNoteTheGiveToolAdmits])
 
-	res, err := w.Send(sim.GiveItems("alice", "Bob", giftLine("stew", 1), note, time.Now().UTC()))
+	res, err := w.Send(sim.GiveItems("alice", "Bob", giftLine("bread", 1), note, time.Now().UTC()))
 	if err != nil {
 		t.Fatalf("GiveItems: %v", err)
 	}

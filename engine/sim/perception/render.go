@@ -863,14 +863,24 @@ func renderActor(b *strings.Builder, a ActorView) {
 	// An empty purse is a hard constraint on paying, not just a number (LLM-153).
 	// Without the consequence spelled out, 0-coin NPCs burned tool calls attempting
 	// buys the pay path rejects (engine/sim/pay_commands.go). But "cannot pay for
-	// anything" is only true with an EMPTY PACK too: a 0-coin actor holding goods
-	// can still offer them in trade (pay_with_item / offer_trade, ZBBS-HOME-393/407),
-	// and the satiation buy cue now steers exactly that (LLM-222) — so asserting it
-	// can't pay would contradict that cue in the same prompt. `len(a.Inventory) > 0`
-	// is the render-side mirror of the satiation gate's holdsBarterableGoods (both =
-	// holds >=1 good, off the same snapshot inventory), so the two lines agree.
+	// anything" is only true with no TRADEABLE goods either: a 0-coin actor holding
+	// barterable goods can still offer them in trade (pay_with_item / offer_trade,
+	// ZBBS-HOME-393/407), and the satiation buy cue now steers exactly that
+	// (LLM-222) — so asserting it can't pay would contradict that cue in the same
+	// prompt. The any-Barterable scan is the render-side mirror of the satiation
+	// gate's holdsBarterableGoods (both = holds >=1 good the resolver would accept
+	// as payment, stamped from the same catalog at build; LLM-445), so the two
+	// lines agree — a pack holding only eat-here food (porridge, stew) reads as no
+	// means to barter, because offering it is rejected at resolvePayItems.
+	holdsTradeableGoods := false
+	for _, it := range a.Inventory {
+		if it.Barterable {
+			holdsTradeableGoods = true
+			break
+		}
+	}
 	if a.Coins == 0 {
-		if len(a.Inventory) > 0 {
+		if holdsTradeableGoods {
 			b.WriteString("Coins in your purse: 0 — you have no coins to spend, but you may be able to offer goods you carry in trade.\n")
 		} else {
 			b.WriteString("Coins in your purse: 0 — you have no coins to spend, so you cannot pay for anything until you earn some.\n")
@@ -898,9 +908,15 @@ func renderActor(b *strings.Builder, a ActorView) {
 			}
 			// The use annotation folds into the quantity parens (LLM-166) so the
 			// comma-separated item list stays unambiguous: "cuts of meat (x7, used
-			// to produce stew)". Empty for edibles / non-ingredients.
+			// to produce stew)". Empty for edibles / non-ingredients. An eat-here
+			// food gets its disposition instead (LLM-445) — "porridge (x8, to eat
+			// here — not for trade)" — so the model spends it on its own hunger
+			// rather than planning a barter the resolver rejects. Mutually
+			// exclusive with Use (Use is inedibles-only).
 			if it.Use != "" {
 				fmt.Fprintf(b, "%s (x%d, %s)", sanitizeInline(noun), it.Qty, sanitizeInline(it.Use))
+			} else if it.EatHere {
+				fmt.Fprintf(b, "%s (x%d, to eat here — not for trade)", sanitizeInline(noun), it.Qty)
 			} else {
 				fmt.Fprintf(b, "%s (x%d)", sanitizeInline(noun), it.Qty)
 			}
@@ -1922,8 +1938,11 @@ func renderOfferableCustomers(b *strings.Builder, v *OfferableCustomersView) {
 	// ZBBS-HOME-407: the barter counterpart to the coin-sale cue above. When a
 	// customer is carrying goods the keeper would rather have than coin, point
 	// at offer_trade so a goods-for-goods swap has a legible execution path
-	// instead of dissolving into a verbal agreement nothing commits.
-	fmt.Fprintf(b, "If one of them is carrying something you would rather have than coin, you can instead propose a direct trade — call offer_trade with the goods you will give and what you want from them. They are then free to accept, decline, or counter.\n")
+	// instead of dissolving into a verbal agreement nothing commits. "goods that
+	// travel" keeps the cue off eat-here food (a bowl of porridge in a buyer's
+	// hands is a meal mid-eating, not trade stock) — asking for one is rejected
+	// at resolvePayItems (LLM-445), so don't advertise it.
+	fmt.Fprintf(b, "If one of them is carrying something you would rather have than coin — goods that travel, not a meal served to eat here — you can instead propose a direct trade — call offer_trade with the goods you will give and what you want from them. They are then free to accept, decline, or counter.\n")
 	fmt.Fprintf(b, "Your goods to sell: %s.\n", strings.Join(goods, ", "))
 	// LLM-171: a co-present customer who MAKES one of these goods is the wrong
 	// person to pitch it to — your stock of it came from a maker like them. Name

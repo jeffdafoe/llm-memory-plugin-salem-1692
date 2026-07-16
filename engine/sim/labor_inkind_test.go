@@ -1,6 +1,7 @@
 package sim_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -34,6 +35,48 @@ func readInventoryMap(t *testing.T, w *sim.World, id sim.ActorID) map[sim.ItemKi
 		t.Fatalf("readInventory %q: %v", id, err)
 	}
 	return res.(map[sim.ItemKind]int)
+}
+
+// TestSolicitWork_EatHereOnlyReward_Rejected (LLM-445) — an eat-here-only
+// consumable can't be an in-kind wage: the reward goods resolve through the
+// same shared resolver as barter pay_items, so "a bowl of stew for an hour's
+// work" is rejected at solicit — the wage leg of the tendered-goods gate. A
+// portable food (bread) still works as a wage. (The other in-kind tests use
+// "porridge" against an UNSEEDED catalog — discovery-minted, not consumable,
+// so the gate doesn't fire there; this test seeds the real eat-here shape.)
+func TestSolicitWork_EatHereOnlyReward_Rejected(t *testing.T) {
+	w, stop := buildLaborWorld(t, "h1", "sc1", []laborActor{
+		{id: "anne", displayName: "Anne", huddleID: "h1", worker: true},
+		{id: "hannah", displayName: "Hannah", huddleID: "h1", coins: 50,
+			inventory: map[sim.ItemKind]int{"stew": 3, "bread": 3}},
+	})
+	defer stop()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.ItemKinds["stew"] = &sim.ItemKindDef{
+			Name: "stew", DisplayLabel: "Stew", Category: sim.ItemCategoryFood,
+			Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 4}},
+		}
+		world.ItemKinds["bread"] = &sim.ItemKindDef{
+			Name: "bread", DisplayLabel: "Bread", Category: sim.ItemCategoryFood,
+			Capabilities: []string{"portable"},
+			Satisfies:    []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 8}},
+		}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed catalog: %v", err)
+	}
+
+	now := time.Now().UTC()
+	_, err := w.Send(sim.SolicitWork("anne", "Hannah", 0,
+		[]sim.PayItemInput{{Item: "stew", Qty: 1}}, 120, now))
+	if err == nil || !strings.Contains(err.Error(), "eaten where it's served") {
+		t.Fatalf("want eat-here wage rejection, got %v", err)
+	}
+
+	if _, err := w.Send(sim.SolicitWork("anne", "Hannah", 0,
+		[]sim.PayItemInput{{Item: "bread", Qty: 1}}, 120, now)); err != nil {
+		t.Fatalf("portable food must still work as a wage, got %v", err)
+	}
 }
 
 func TestSolicitWork_InKindReward_MintsOfferWithItems(t *testing.T) {

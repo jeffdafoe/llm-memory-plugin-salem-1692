@@ -25,24 +25,46 @@ package sim
 // (restock_tick.go) on the live-World warrant side — so the cue and the warrant can
 // never drift on what "has something to pay with" means.
 
+// KindBarterable reports whether a catalog kind could go up in a pay_with_item /
+// offer_trade bundle AT ALL — the same class resolvePayItems enforces at intake
+// (LLM-445): a "service" is not a transferable good (its delivery is bound to the
+// seller's establishment, ZBBS-HOME-424), and an EatHereOnly consumable (porridge,
+// stew, a poured drink) is eaten where it's served and can't be carried off as
+// payment. Every means-to-pay gate reads this so a cue never advertises a barter
+// the resolver rejects. A nil def (a held kind absent from the catalog — sparse
+// test fixtures, a freshly-minted discovery kind) degrades PERMISSIVE, mirroring
+// EatHereOnly / itemDispositionClass: the resolver, not the cue, is the backstop
+// for those.
+func KindBarterable(def *ItemKindDef) bool {
+	if def == nil {
+		return true
+	}
+	return !def.HasCapability("service") && !def.EatHereOnly()
+}
+
 // HoldsBarterableGoodsExcept reports whether an inventory carries anything that could
-// go up in a pay_with_item bundle, ignoring `except`. Any other held ItemKind with a
-// positive quantity counts: pay_items accepts whatever the buyer carries and the
-// seller decides accept or decline, so this gates only on whether goods EXIST to
-// offer — never on whether a given seller would take these particular goods. That
+// go up in a pay_with_item bundle, ignoring `except`. A held ItemKind with a positive
+// quantity counts when its catalog class is tradeable at all (KindBarterable — not a
+// service, not eat-here-only; LLM-445): pay_items accepts whatever the buyer carries
+// and the seller decides accept or decline, so this gates on whether OFFERABLE goods
+// exist — never on whether a given seller would take these particular goods. That
 // adjudication is the seller's own turn, which is the line perception draws at
 // knowable/hard facts. Coins are counted separately by the caller.
+//
+// `kinds` is the item catalog (World.ItemKinds live-side, Snapshot.ItemKinds on the
+// perception side) consulted for the per-kind class; a kind missing from it counts
+// (see KindBarterable's permissive degrade).
 //
 // `except` is the item being BOUGHT, and it is excluded because a good is not payment
 // for itself: a keeper down to his last few carrots cannot buy carrots by offering
 // carrots. Counting it would let the buy cue survive on a fiction — the buyer is sent
 // to a supplier it has no way to settle with, which is the wasted trip the whole gate
-// exists to prevent. Pass "" to count every held good (the LLM-222 consumer-buy
-// behavior, where the buyer is paying for a consumable it means to eat, not restocking
-// the same line of stock).
-func HoldsBarterableGoodsExcept(inventory map[ItemKind]int, except ItemKind) bool {
+// exists to prevent. Pass "" to count every held tradeable good (the LLM-222
+// consumer-buy behavior, where the buyer is paying for a consumable it means to eat,
+// not restocking the same line of stock).
+func HoldsBarterableGoodsExcept(kinds map[ItemKind]*ItemKindDef, inventory map[ItemKind]int, except ItemKind) bool {
 	for item, qty := range inventory {
-		if qty > 0 && item != except {
+		if qty > 0 && item != except && KindBarterable(kinds[item]) {
 			return true
 		}
 	}

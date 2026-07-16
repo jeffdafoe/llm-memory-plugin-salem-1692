@@ -255,24 +255,26 @@ func TestSceneQuoteCreate_HappyPath_Public(t *testing.T) {
 // portable kind keeps the proposed take-home.
 func TestSceneQuoteCreate_EatHereClamp(t *testing.T) {
 	w, stop := buildQuoteTestWorld(t, "h1", "sc1", []quoteTestActor{
-		{id: "aldous", displayName: "Aldous", kind: sim.KindNPCStateful, huddleID: "h1", inventory: map[sim.ItemKind]int{"ale": 3, "bread": 3}},
+		{id: "aldous", displayName: "Aldous", kind: sim.KindNPCStateful, huddleID: "h1", inventory: map[sim.ItemKind]int{"stew": 3, "bread": 3}},
 		{id: "bea", displayName: "Bea", kind: sim.KindNPCStateful, huddleID: "h1"},
 	})
 	defer stop()
 	at := time.Now().UTC()
 
-	// ale: consumable, no portable capability in the fixture — clamps.
-	res, err := w.Send(sim.SceneQuoteCreate("aldous", []sim.QuoteLineInput{{ItemName: "ale", Qty: 1}}, 2, false, "", nil, at))
+	// stew: consumable, no portable capability in the fixture (the canonical
+	// eat-here kind; ale is portable since LLM-445 aligned the seed with the
+	// live catalog) — clamps.
+	res, err := w.Send(sim.SceneQuoteCreate("aldous", []sim.QuoteLineInput{{ItemName: "stew", Qty: 1}}, 2, false, "", nil, at))
 	if err != nil {
-		t.Fatalf("SceneQuoteCreate ale: %v", err)
+		t.Fatalf("SceneQuoteCreate stew: %v", err)
 	}
 	result := res.(sim.SceneQuoteCreateResult)
 	if !result.EatHereClamped {
-		t.Error("ale result EatHereClamped = false, want true")
+		t.Error("stew result EatHereClamped = false, want true")
 	}
 	view := readLiveQuotes(t, w)
 	if q := view.Quotes[result.QuoteID]; !q.ConsumeNow {
-		t.Error("ale quote ConsumeNow = false, want true (eat-here clamp)")
+		t.Error("stew quote ConsumeNow = false, want true (eat-here clamp)")
 	}
 
 	// bread: portable in the fixture — the proposed take-home survives.

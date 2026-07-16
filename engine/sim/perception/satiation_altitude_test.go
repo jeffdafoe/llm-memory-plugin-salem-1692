@@ -15,7 +15,10 @@ import (
 
 func altitudeCatalog() map[sim.ItemKind]*sim.ItemKindDef {
 	return map[sim.ItemKind]*sim.ItemKindDef{
-		"bread": {Name: "bread", DisplayLabel: "bread", Category: sim.ItemCategoryFood, Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 6}}},
+		// bread portable mirrors live (LLM-445): without it a 0-coin subject whose
+		// only good is bread would fail the means-to-pay gate (eat-here food no
+		// longer counts as barterable) and the vendor directory would suppress.
+		"bread": {Name: "bread", DisplayLabel: "bread", Category: sim.ItemCategoryFood, Capabilities: []string{"portable"}, Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 6}}},
 		"stew":  {Name: "stew", DisplayLabel: "stew", Category: sim.ItemCategoryFood, Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 12}}},
 	}
 }
