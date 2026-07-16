@@ -877,7 +877,7 @@ func computeHoursAwake(nowMin, startMin, endMin *int) *int {
 // at a source. SourceLabel resolves the same way dwell-pin and move labels do
 // (resolveDwellPinLabel against snap.Structures / snap.VillageObjects). LLM-69.
 func buildInFlightSourceActivity(snap *sim.Snapshot, a *sim.ActorSnapshot) *InFlightSourceActivityView {
-	if a.SourceActivityKind == "" {
+	if !actorMidSourceActivity(a) {
 		return nil
 	}
 	return &InFlightSourceActivityView{
@@ -1523,7 +1523,13 @@ func awaitEdgeLive(edges map[sim.ActorID]time.Time, key sim.ActorID, now time.Ti
 // to a busy actor and bait that reject on every reactor tick inside the window;
 // the mid-activity triage coda (renderTriage) is what holds the actor to done()
 // instead. The source-activity analogue of the walkIncompatibleTools drop for an
-// in-flight move. LLM-435.
+// in-flight move.
+//
+// This is the single definition of "mid a source activity" — buildInFlightSource-
+// Activity (the coda/self-line view) gates on it too, so the suppression and the
+// "you are …" self-state can never disagree about the state. Fail-closed by
+// design: ANY non-empty kind counts, including an unknown/future one, because
+// starting any timed source activity while one runs rejects. Nil-safe. LLM-435.
 func actorMidSourceActivity(a *sim.ActorSnapshot) bool {
 	return a != nil && a.SourceActivityKind != ""
 }

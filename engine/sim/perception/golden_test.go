@@ -5600,10 +5600,13 @@ func TestGoldensNoSourceActivityStartCueWhileMidSourceActivity(t *testing.T) {
 		sc := sc
 		t.Run(sc.name, func(t *testing.T) {
 			snap, actorID, warrants := sc.build()
-			p := Build(snap, actorID, warrants)
-			if p.Actor.InFlightSourceActivity == nil {
+			// Key off the SAME predicate the builders gate on (the source snapshot's
+			// SourceActivityKind), not the derived InFlightSourceActivity view, so the
+			// test can't miss exactly the state the suppression targets.
+			if !actorMidSourceActivity(snap.Actors[actorID]) {
 				return // subject isn't mid a source activity — invariant N/A here
 			}
+			p := Build(snap, actorID, warrants)
 			if p.Hearth != nil {
 				t.Errorf("scenario %q: subject is mid a source activity, but the hearth (stoke) cue is advertised — a fresh stoke bounces \"already busy\"", sc.name)
 			}
