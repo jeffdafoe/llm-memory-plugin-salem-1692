@@ -731,6 +731,44 @@ func TestLoadWorld_ActorHuddleReconciliation_MissingActor_HardFails(t *testing.T
 	}
 }
 
+// TestLoadWorld_ActorHuddleReconciliation_VisitorMember_PrunedNotFatal —
+// LLM-452: a dangling VISITOR membership (vstr- id, no actor row because
+// visitors aren't persisted) must be pruned + warned, not fatal. The
+// village must boot. A persistent (non-vstr) ghost still fatals — that
+// path is guarded by MissingActor_HardFails above ("act-ghost").
+func TestLoadWorld_ActorHuddleReconciliation_VisitorMember_PrunedNotFatal(t *testing.T) {
+	startedAt := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+	const visitorMember = "vstr-898e0f7e"
+	huddle := &sim.Huddle{
+		ID: "h-a",
+		Members: map[sim.ActorID]struct{}{
+			"act-real":    {}, // persistent member — present in actors
+			visitorMember: {}, // visitor — no actor row, must be pruned
+		},
+		StartedAt: startedAt,
+	}
+	actorReal := &sim.Actor{ID: "act-real", DisplayName: "R", State: "idle"}
+
+	repo := fakeRepoOpts{
+		actors:  fakeActors{out: map[sim.ActorID]*sim.Actor{"act-real": actorReal}},
+		huddles: fakeHuddles{out: map[sim.HuddleID]*sim.Huddle{"h-a": huddle}},
+	}.build()
+
+	w, err := LoadWorld(context.Background(), repo, true)
+	if err != nil {
+		t.Fatalf("LoadWorld: dangling visitor member should not be fatal: %v", err)
+	}
+	if w.Actors["act-real"].CurrentHuddleID != "h-a" {
+		t.Errorf("act-real CurrentHuddleID = %q, want h-a", w.Actors["act-real"].CurrentHuddleID)
+	}
+	if _, stillMember := w.Huddles["h-a"].Members[visitorMember]; stillMember {
+		t.Errorf("visitor member %s not pruned from Huddle.Members", visitorMember)
+	}
+	if _, ok := w.Huddles["h-a"].Members["act-real"]; !ok {
+		t.Errorf("persistent member act-real wrongly dropped from Huddle.Members")
+	}
+}
+
 // TestLoadWorld_ActorHuddleReconciliation_DoubleMembership_HardFails — an
 // actor in two huddles' Members sets violates the single-active-huddle
 // invariant.

@@ -79,6 +79,36 @@ func TestVisitorIDFormat(t *testing.T) {
 	}
 }
 
+// TestIsVisitorActorID — LLM-452: the load/checkpoint-boundary discriminator
+// must accept every minted visitor id and reject persistent (uuid) and PC
+// (login-derived) ids, since it decides whether a dangling huddle_member row
+// is a benign visitor membership (prune) or real corruption (fatal).
+func TestIsVisitorActorID(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		if id := ActorID(newVisitorActorID()); !IsVisitorActorID(id) {
+			t.Fatalf("IsVisitorActorID(%q) = false, want true", id)
+		}
+	}
+	nonVisitor := []ActorID{
+		"550e8400-e29b-41d4-a716-446655440000", // persistent NPC uuid
+		"jdafoe",                               // PC login-derived
+		"act-ghost",                            // test-style non-vstr
+		"",                                     // empty
+		"rvis-898e0f7e",                        // recurring-visitor identity, not a per-visit actor id
+		"vstr-not-a-visitor",                   // prefixed but malformed — must be corruption, not benign
+		"vstr-898e0f7",                         // 7 hex — too short
+		"vstr-898e0f7ea",                       // 9 hex — too long
+		"vstr-898E0F7E",                        // uppercase hex — CHECK is lowercase only
+		"vstr-",                                // prefix only
+		" vstr-898e0f7e",                       // leading space — anchored match rejects
+	}
+	for _, id := range nonVisitor {
+		if IsVisitorActorID(id) {
+			t.Errorf("IsVisitorActorID(%q) = true, want false", id)
+		}
+	}
+}
+
 // visitor_dayplan_internal_test.go — LLM-373 unit coverage for the day-plan
 // helpers that are unexported (an internal test, package sim). Behavioral spawn /
 // circuit coverage lives in the external visitor_test.go.

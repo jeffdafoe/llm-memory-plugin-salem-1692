@@ -482,6 +482,23 @@ func reconcileActorHuddleMembership(actors map[sim.ActorID]*sim.Actor, huddles m
 		for actorID := range h.Members {
 			a, ok := actors[actorID]
 			if !ok {
+				// LLM-452: a dangling VISITOR membership is expected and
+				// benign — visitors aren't persisted to the `actor` table,
+				// so if one was mid-huddle at checkpoint its member row
+				// reloads with no actor behind it. Prune it from the live
+				// Members set and warn loudly rather than bricking the whole
+				// village; the next checkpoint's stale-gen sweep clears the
+				// orphaned row from the DB. IsVisitorActorID matches the
+				// full ^vstr-[0-9a-f]{8}$ mint shape, so a merely vstr-
+				// prefixed but MALFORMED id is not swallowed here — it falls
+				// through to the fatal path below alongside a dangling
+				// PERSISTENT (uuid) actor, both of which are real corruption.
+				if sim.IsVisitorActorID(actorID) {
+					log.Printf("pg LoadWorld: actor-huddle reconciliation: pruning dangling visitor member id=%s from huddle id=%s (visitors aren't persisted — expected, self-healing)",
+						actorID, hid)
+					delete(h.Members, actorID)
+					continue
+				}
 				return fmt.Errorf("pg LoadWorld: actor-huddle reconciliation: huddle id=%s lists missing actor id=%s (FK CASCADE should make this unreachable — schema drift or out-of-band write)",
 					hid, actorID)
 			}

@@ -329,6 +329,19 @@ func (r *HuddlesRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, huddles map[s
 				continue
 			}
 			seenHuddleByActor[actorID] = h.ID
+			// LLM-452: transient visitors (vstr- ids) are members in the
+			// live model but are NOT persisted to the uuid `actor` table
+			// (partitioned persistence). A member row that can't be
+			// reloaded shouldn't be written — persisting one leaves a
+			// dangling huddle_member that fatals LoadWorld reconciliation
+			// on the next boot (no FK CASCADE can exist to clean it, since
+			// actor_id is text vstr- vs actor.id uuid). Skip only the DB
+			// write — the dup check above still runs, so a visitor listed in
+			// two huddles surfaces as the same world-side membership bug;
+			// and the live membership stays intact in memory.
+			if sim.IsVisitorActorID(actorID) {
+				continue
+			}
 			if _, err := tx.Exec(ctx, upsertSQLM,
 				string(h.ID),    // $1 huddle_id
 				string(actorID), // $2 actor_id

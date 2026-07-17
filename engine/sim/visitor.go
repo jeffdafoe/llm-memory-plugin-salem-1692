@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -1546,17 +1547,45 @@ func seedVisitorNeeds() map[NeedKey]int {
 	return out
 }
 
-// newVisitorActorID mints a fresh ActorID for a spawned visitor. Prefix
-// "vstr-" so visitor rows are visually distinguishable from persistent
-// NPC IDs (UUID-style) and PC IDs (login-username derived) in admin
-// reads. Uses crypto/rand via randomHex for collision resistance.
+// VisitorActorIDPrefix marks a transient visitor's per-visit actor id.
+// Prefix "vstr-" so visitor rows are visually distinguishable from
+// persistent NPC IDs (UUID-style) and PC IDs (login-username derived) in
+// admin reads, AND — because visitors are intentionally not persisted to
+// the uuid `actor` table (partitioned persistence) — so the id alone
+// discriminates a non-persistable member wherever the actor row is absent.
+const VisitorActorIDPrefix = "vstr-"
+
+// visitorActorIDPattern is the EXACT minted-visitor id shape, identical to
+// the visitor table's actor_id CHECK (^vstr-[0-9a-f]{8}$, migrations/LLM-369).
+// Matching the full format — not just the prefix — is deliberate: this
+// discriminator decides whether a dangling huddle_member row is pruned as a
+// benign visitor membership or fataled as corruption, so a merely
+// prefix-shaped but malformed id (e.g. an out-of-band `vstr-not-a-visitor`
+// row) must fall through to the fatal path, not be silently swallowed.
+var visitorActorIDPattern = regexp.MustCompile(`^` + VisitorActorIDPrefix + `[0-9a-f]{8}$`)
+
+// IsVisitorActorID reports whether id is a well-formed transient-visitor id
+// and so is NOT persisted to the uuid `actor` table. It is the
+// load/checkpoint-boundary discriminator for "non-persistable member id": at
+// LoadWorld time the visitor's in-memory actor is gone, so the id itself is
+// the only signal that a dangling huddle_member row is a benign visitor
+// membership rather than real corruption (LLM-452). Requires the full
+// ^vstr-[0-9a-f]{8}$ shape — every id newVisitorActorID mints satisfies it,
+// and anything else (including a malformed vstr- prefixed id) is NOT treated
+// as a visitor.
+func IsVisitorActorID(id ActorID) bool {
+	return visitorActorIDPattern.MatchString(string(id))
+}
+
+// newVisitorActorID mints a fresh ActorID for a spawned visitor. Uses
+// crypto/rand via randomHex for collision resistance.
 //
 // randomHex takes a BYTE count and hex-encodes (2 chars/byte), so 4 bytes =
 // 8 hex chars — matching the visitor table's actor_id CHECK
 // (^vstr-[0-9a-f]{8}$, migrations/LLM-369). randomHex(8) would mint 16 hex
 // chars and violate it, so every checkpoint upsert failed (LLM-379).
 func newVisitorActorID() string {
-	return "vstr-" + randomHex(4)
+	return VisitorActorIDPrefix + randomHex(4)
 }
 
 // inputsRandOrDefault returns r when non-nil, otherwise a fresh
