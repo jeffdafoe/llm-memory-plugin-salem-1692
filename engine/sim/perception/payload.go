@@ -148,6 +148,13 @@ type Payload struct {
 	// still ticks and sees the invitation. See buildEveningLeisure.
 	EveningLeisure *EveningLeisureView
 
+	// BakeChoice is the evening bake affordance for a resident settled at home
+	// (LLM-454): non-nil when it could start or join the household's evening bread.
+	// The single signal that gates the bake tool and its cue (renderBakeChoice), so
+	// they can't drift. Fills the evening-at-home gap EveningLeisure leaves once the
+	// actor is home. See buildBakeChoice.
+	BakeChoice *BakeChoiceView
+
 	// Warrants is every consumed warrant, ordered by SourceEventID
 	// ascending — PR 3a's monotonic EventID is the authoritative causal
 	// order. Zero-lineage warrants (SourceEventID == 0, legacy/non-event-

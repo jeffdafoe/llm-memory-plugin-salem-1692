@@ -384,6 +384,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// buildDutySteer just suppressed. Placed before degeneracy thinning so a
 	// flagged actor's movement invitation is stripped in lockstep with the steers.
 	p.EveningLeisure = buildEveningLeisure(snap, actorSnap, p.Anchors)
+	p.BakeChoice = buildBakeChoice(snap, actorSnap)
 	// LLM-345: inside a leisure venue, on the evening, the walk-away work-errand cues
 	// yield to the room. Each of these tells the agent to LEAVE and go buy or gather
 	// something — shovels from the smith, restock from a supplier, nails for a mend,
@@ -562,6 +563,7 @@ func thinDegenerateSteer(p *Payload) {
 	// invitation — the same movement-steer class this thinning removes for a
 	// flagged actor, so it goes too.
 	p.EveningLeisure = nil
+	p.BakeChoice = nil
 	if p.DutySteer == nil {
 		return
 	}

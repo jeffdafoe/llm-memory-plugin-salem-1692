@@ -912,6 +912,13 @@ type World struct {
 	Orders         map[OrderID]*Order
 	VillageObjects map[VillageObjectID]*VillageObject
 
+	// HomeBakes holds the single shared evening bake in progress at each home
+	// structure (LLM-454), keyed by home StructureID. TRANSIENT — deliberately NOT
+	// checkpointed: a restart drops it (and the participants' SourceActivity), which
+	// forfeits nothing because bake flour is consumed only at completion, so the
+	// household just re-forms the bake and still finishes by bedtime.
+	HomeBakes map[StructureID]*HomeBake
+
 	// Quotes is the world-level flat map of all SceneQuotes (active and
 	// terminal). Keyed by QuoteID — the LLM-visible uint64 the buyer
 	// references in pay_with_item(quote_id=N, ...) at fast-path time.
@@ -1429,6 +1436,7 @@ func NewWorld(repo Repository) *World {
 		Structures:           make(map[StructureID]*Structure),
 		Huddles:              make(map[HuddleID]*Huddle),
 		Scenes:               make(map[SceneID]*Scene),
+		HomeBakes:            make(map[StructureID]*HomeBake),
 		Orders:               make(map[OrderID]*Order),
 		VillageObjects:       make(map[VillageObjectID]*VillageObject),
 		Quotes:               make(map[QuoteID]*SceneQuote),
@@ -2187,6 +2195,7 @@ func (w *World) republish() {
 		SeekWorkCoinCeiling:           effectiveSeekWorkCoinCeiling(w.Settings),
 		LodgingDefaultWeeklyRate:      w.Settings.LodgingDefaultWeeklyRate,
 		LodgingBedtimeMinute:          lodgerBedtimeMinute(w),
+		HomeBakesActive:               homeBakesActiveSet(w),
 		LodgingCheckOutMinute:         w.Settings.LodgingCheckOutHour * 60,
 		RestockReorderPct:             w.Settings.RestockReorderPct,
 		StallWearRepairThreshold:      w.Settings.StallWearRepairThreshold,

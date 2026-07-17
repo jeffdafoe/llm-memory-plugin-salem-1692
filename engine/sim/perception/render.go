@@ -227,6 +227,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderAnchors(&ephemeral, p.Anchors, p.DutySteer != nil && p.DutySteer.AtPost, p.Surroundings.InsideStructureID)
 	renderDutySteer(&ephemeral, p.DutySteer)
 	renderEveningLeisure(&ephemeral, p.EveningLeisure)
+	renderBakeChoice(&ephemeral, p.BakeChoice)
 	renderRelationships(&ephemeral, p.Relationships)
 	// LLM-387: gossip the actor carries about people NOT in the scene — the
 	// word-of-mouth layer's read surface. Sits beside "what you remember of those

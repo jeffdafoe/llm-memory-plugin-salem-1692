@@ -157,6 +157,13 @@ type Snapshot struct {
 	// perception.lodgingRenewalWindow (LLM-96).
 	LodgingCheckOutMinute int
 
+	// HomeBakesActive is the set of home structure ids with a shared evening bake in
+	// progress (LLM-454), projected from World.HomeBakes at publish. Perception's
+	// buildBakeChoice reads it so a co-resident at a home where the bread is already
+	// going can JOIN the batch (no flour of its own) rather than start a second. nil
+	// when no bake is running.
+	HomeBakesActive map[StructureID]bool
+
 	// RestockReorderPct mirrors WorldSettings.RestockReorderPct — the reorder
 	// threshold (whole percent of cap) for buy-side restock. Carried so the
 	// "## Restocking" perception section can gate on the same boundary the

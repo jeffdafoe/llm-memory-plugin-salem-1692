@@ -13444,7 +13444,7 @@ func TestSeekWorkSuppressedByRedNeed(t *testing.T) {
 // list against the real registry, so adding a terminal tool without updating
 // this slice fails there with a pointer back to this test. LLM-350.
 var terminalToolNames = []string{
-	"accept_pay", "accept_work", "counter_pay", "decline_pay", "decline_work",
+	"accept_pay", "accept_work", "bake", "counter_pay", "decline_pay", "decline_work",
 	"gather", "move_to", "offer_trade", "offer_work", "pay_with_item", "repair",
 	"sell", "solicit_work", "speak", "stoke", "stop", "summon", "withdraw_pay",
 }

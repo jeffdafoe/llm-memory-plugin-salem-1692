@@ -292,6 +292,13 @@ const repairToolName = "repair"
 // firewood; sim.StartStoke stays the authoritative gate.
 const stokeToolName = "stoke"
 
+// bakeToolName — the evening bake-bread tool (LLM-454). Advertised ONLY when the
+// evening bake cue is present (payload.BakeChoice non-nil) — a resident settled at
+// home in the post-work evening with the flour to start (or a household bake already
+// going here to join). The same signal renderBakeChoice reads, so tool and cue can't
+// drift (discussion-109). sim.StartOrJoinBake stays the authoritative gate.
+const bakeToolName = "bake"
+
 // actorIsMoving reports whether the subject has an in-flight move at snapshot
 // time, read from the ZBBS-HOME-336 read-path projection (MoveDestKind is
 // empty when the actor is not moving). False when the actor can't be resolved
@@ -442,6 +449,7 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 	offerCraft := payload.ForgeChoice != nil && len(payload.ForgeChoice.Items) > 0
 	offerRepair := payload.StallRepair != nil
 	offerStoke := payload.Hearth != nil
+	offerBake := payload.BakeChoice != nil
 	hasLaborOffer := len(perception.PendingLaborOffers(payload)) > 0
 	canSolicitWork := payload.CanSolicitWork
 	canOfferWork := len(payload.HireableWorkers) > 0
@@ -555,6 +563,12 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 		// can't drift. Like repair, NOT gated on carrying enough firewood: the cue
 		// steers buy-then-stoke when short, and sim.StartStoke errors helpfully.
 		if spec.Name == stokeToolName && !offerStoke {
+			continue
+		}
+		// bake consumer (LLM-454): advertise only in the evening-at-home bake
+		// situation (payload.BakeChoice non-nil), the same signal the bake cue renders
+		// from, so tool and cue can't drift. sim.StartOrJoinBake stays authoritative.
+		if spec.Name == bakeToolName && !offerBake {
 			continue
 		}
 		if _, gated := payOfferResponseTools[spec.Name]; gated {
