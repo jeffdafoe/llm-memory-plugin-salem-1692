@@ -236,13 +236,6 @@ const stayOpenToolName = "stay_open"
 // and handed the tool.
 const takeBreakToolName = "take_break"
 
-// disperseToolName — the graceful-exit tool (LLM-453). Advertised ONLY when the
-// actor is in a wound-down huddle (looping / run-long / lingering) with a peer and
-// no live commerce or higher-priority directive — payload.OffersDisperse(), the
-// same predicate the wind-down coda's disperse line renders from, so the tool and
-// its cue can't drift (discussion-109).
-const disperseToolName = "disperse"
-
 // speakToolName — the conversation tool. Advertised ONLY when the actor has an
 // awake, addressable audience (payload.Surroundings.HasAudience() — its huddle
 // peers, or co-present actors within earshot). The substrate already rejects a
@@ -439,7 +432,6 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 	moving := actorIsMoving(payload.ActorID, snap)
 	offerStayOpen := payload.DutySteer != nil && payload.DutySteer.OfferStayOpen
 	offerTakeBreak := payload.RecoveryOptions.OffersTakeBreak()
-	offerDisperse := payload.OffersDisperse()
 	hasAudience := payload.Surroundings.HasAudience()
 	// hasHuddlePeer gates the pay verbs (LLM-329): both require the actor to be in
 	// a huddle at the substrate, and HuddleMembers is populated only then. The
@@ -520,14 +512,6 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 		// (discussion-109). Keeps take_break out of the prompt for an actor away from
 		// any post/bed with no shift to step away from (the LLM-100 phantom case).
 		if spec.Name == takeBreakToolName && !offerTakeBreak {
-			continue
-		}
-		// disperse consumer (LLM-453): advertise only in a wound-down huddle the
-		// actor can gracefully take its leave of — payload.OffersDisperse(), the same
-		// signal the wind-down coda's disperse line renders from, so tool and cue
-		// can't drift (discussion-109). Keeps disperse out of the prompt everywhere a
-		// conversation is still live or a duty/need is steering the actor elsewhere.
-		if spec.Name == disperseToolName && !offerDisperse {
 			continue
 		}
 		// speak consumer (LLM-106): advertise only when there's an awake audience to

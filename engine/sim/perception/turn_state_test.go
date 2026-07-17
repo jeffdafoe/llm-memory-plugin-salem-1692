@@ -132,7 +132,7 @@ func TestRenderTriage_CodaSwap(t *testing.T) {
 	thresholds := sim.NeedThresholds{}
 
 	var awaiting strings.Builder
-	renderTriage(&awaiting, needs, thresholds, true, false, false, false /*conversationLingering*/, false /*offerDisperse*/, nil, false, false, nil, nil)
+	renderTriage(&awaiting, needs, thresholds, true, false, false, false /*conversationLingering*/, nil, false, false, nil, nil)
 	got := awaiting.String()
 	if strings.Contains(got, "Choose one action") {
 		t.Errorf("awaiting coda must not command an action:\n%s", got)
@@ -145,7 +145,7 @@ func TestRenderTriage_CodaSwap(t *testing.T) {
 	// command ("Choose one action") — but now pairs it with the yield-after-speak
 	// turn discipline.
 	var normal strings.Builder
-	renderTriage(&normal, needs, thresholds, false, false, false, false /*conversationLingering*/, false /*offerDisperse*/, nil, false, false, nil, nil)
+	renderTriage(&normal, needs, thresholds, false, false, false, false /*conversationLingering*/, nil, false, false, nil, nil)
 	if !strings.Contains(normal.String(), "Choose one action") {
 		t.Errorf("non-awaiting coda should keep the act-now imperative:\n%s", normal.String())
 	}
@@ -162,7 +162,7 @@ func TestRenderTriage_MidWalkCoda(t *testing.T) {
 	move := &InFlightMoveView{DestinationLabel: "General Store", Kind: sim.MoveDestinationStructureEnter}
 
 	var b strings.Builder
-	renderTriage(&b, needs, thresholds, false, false, false, false /*conversationLingering*/, false /*offerDisperse*/, nil, false, false, move, nil)
+	renderTriage(&b, needs, thresholds, false, false, false, false /*conversationLingering*/, nil, false, false, move, nil)
 	got := b.String()
 	if !strings.Contains(got, "You are already walking to enter the General Store.") {
 		t.Errorf("mid-walk coda should name the committed walk:\n%s", got)
@@ -176,14 +176,14 @@ func TestRenderTriage_MidWalkCoda(t *testing.T) {
 
 	// Mid-walk wins over awaiting-reply.
 	var both strings.Builder
-	renderTriage(&both, needs, thresholds, true, false, false, false /*conversationLingering*/, false /*offerDisperse*/, nil, false, false, move, nil)
+	renderTriage(&both, needs, thresholds, true, false, false, false /*conversationLingering*/, nil, false, false, move, nil)
 	if !strings.Contains(both.String(), "keep walking") {
 		t.Errorf("mid-walk should outrank awaiting-reply:\n%s", both.String())
 	}
 
 	// Pay-offers line still leads.
 	var offers strings.Builder
-	renderTriage(&offers, needs, thresholds, false, false, false, false /*conversationLingering*/, false /*offerDisperse*/, nil, false, true, move, nil)
+	renderTriage(&offers, needs, thresholds, false, false, false, false /*conversationLingering*/, nil, false, true, move, nil)
 	if !strings.HasPrefix(offers.String(), "A buyer's offer awaits your answer") {
 		t.Errorf("offer-first line must still lead the mid-walk coda:\n%s", offers.String())
 	}
@@ -198,7 +198,7 @@ func TestRenderTriage_PayOffersFirst(t *testing.T) {
 
 	for _, awaiting := range []bool{false, true} {
 		var b strings.Builder
-		renderTriage(&b, needs, thresholds, awaiting, false, false, false /*conversationLingering*/, false /*offerDisperse*/, nil, false, true, nil, nil)
+		renderTriage(&b, needs, thresholds, awaiting, false, false, false /*conversationLingering*/, nil, false, true, nil, nil)
 		got := b.String()
 		if !strings.Contains(got, "settle it first with accept_pay") {
 			t.Errorf("awaiting=%v: coda should lead with the offer decision:\n%s", awaiting, got)
@@ -210,7 +210,7 @@ func TestRenderTriage_PayOffersFirst(t *testing.T) {
 
 	// And absent offers, the line must not render.
 	var b strings.Builder
-	renderTriage(&b, needs, thresholds, false, false, false, false /*conversationLingering*/, false /*offerDisperse*/, nil, false, false, nil, nil)
+	renderTriage(&b, needs, thresholds, false, false, false, false /*conversationLingering*/, nil, false, false, nil, nil)
 	if strings.Contains(b.String(), "accept_pay") {
 		t.Errorf("no-offers coda must not mention accept_pay:\n%s", b.String())
 	}
@@ -224,7 +224,7 @@ func TestRenderTriage_SeekWorkCoda(t *testing.T) {
 	thresholds := sim.NeedThresholds{}
 
 	var b strings.Builder
-	renderTriage(&b, needs, thresholds, true /*awaitingReply*/, false /*conversationLooping*/, false, false /*conversationLingering*/, false /*offerDisperse*/, nil, true /*seekWork*/, false, nil, nil)
+	renderTriage(&b, needs, thresholds, true /*awaitingReply*/, false /*conversationLooping*/, false, false /*conversationLingering*/, nil, true /*seekWork*/, false, nil, nil)
 	got := b.String()
 	if !strings.Contains(got, "call move_to now") {
 		t.Errorf("seek-work coda should command move_to:\n%s", got)
@@ -236,7 +236,7 @@ func TestRenderTriage_SeekWorkCoda(t *testing.T) {
 	// An in-flight walk still wins — the actor is already on its way.
 	move := &InFlightMoveView{DestinationLabel: "Inn", Kind: sim.MoveDestinationStructureEnter}
 	var walking strings.Builder
-	renderTriage(&walking, needs, thresholds, false, false, false, false /*conversationLingering*/, false /*offerDisperse*/, nil, true, false, move, nil)
+	renderTriage(&walking, needs, thresholds, false, false, false, false /*conversationLingering*/, nil, true, false, move, nil)
 	if !strings.Contains(walking.String(), "keep walking") {
 		t.Errorf("in-flight walk should outrank the seek-work coda:\n%s", walking.String())
 	}
@@ -269,7 +269,7 @@ func TestRenderTriage_ConversationLoopingCoda(t *testing.T) {
 	thresholds := sim.NeedThresholds{}
 
 	var b strings.Builder
-	renderTriage(&b, needs, thresholds, true /*awaitingReply*/, true /*conversationLooping*/, false, false /*conversationLingering*/, false /*offerDisperse*/, nil, false, false, nil, nil)
+	renderTriage(&b, needs, thresholds, true /*awaitingReply*/, true /*conversationLooping*/, false, false /*conversationLingering*/, nil, false, false, nil, nil)
 	got := b.String()
 	if !strings.Contains(got, "keep saying the same thing") {
 		t.Errorf("looping coda should name the loop:\n%s", got)
@@ -283,7 +283,7 @@ func TestRenderTriage_ConversationLoopingCoda(t *testing.T) {
 
 	// Seek-work outranks looping — a broke worker should still be told to leave.
 	var seek strings.Builder
-	renderTriage(&seek, needs, thresholds, false, true /*looping*/, false, false /*conversationLingering*/, false /*offerDisperse*/, nil, true /*seekWork*/, false, nil, nil)
+	renderTriage(&seek, needs, thresholds, false, true /*looping*/, false, false /*conversationLingering*/, nil, true /*seekWork*/, false, nil, nil)
 	if !strings.Contains(seek.String(), "call move_to now") {
 		t.Errorf("seek-work should outrank the looping coda:\n%s", seek.String())
 	}
@@ -291,7 +291,7 @@ func TestRenderTriage_ConversationLoopingCoda(t *testing.T) {
 	// An in-flight walk still wins — the actor is already on its way.
 	move := &InFlightMoveView{DestinationLabel: "Inn", Kind: sim.MoveDestinationStructureEnter}
 	var walking strings.Builder
-	renderTriage(&walking, needs, thresholds, false, true /*looping*/, false, false /*conversationLingering*/, false /*offerDisperse*/, nil, false, false, move, nil)
+	renderTriage(&walking, needs, thresholds, false, true /*looping*/, false, false /*conversationLingering*/, nil, false, false, move, nil)
 	if !strings.Contains(walking.String(), "keep walking") {
 		t.Errorf("in-flight walk should outrank the looping coda:\n%s", walking.String())
 	}
@@ -307,7 +307,7 @@ func TestRenderTriage_ConversationRunLongCoda(t *testing.T) {
 	thresholds := sim.NeedThresholds{}
 
 	var b strings.Builder
-	renderTriage(&b, needs, thresholds, true /*awaitingReply*/, false, true /*conversationRunLong*/, false /*conversationLingering*/, false /*offerDisperse*/, nil, false, false, nil, nil)
+	renderTriage(&b, needs, thresholds, true /*awaitingReply*/, false, true /*conversationRunLong*/, false /*conversationLingering*/, nil, false, false, nil, nil)
 	got := b.String()
 	if !strings.Contains(got, "Bring it to a close") {
 		t.Errorf("run-long coda should steer to wind down:\n%s", got)
@@ -321,7 +321,7 @@ func TestRenderTriage_ConversationRunLongCoda(t *testing.T) {
 
 	// Looping wins over run-long (case order — the more specific diagnosis).
 	var both strings.Builder
-	renderTriage(&both, needs, thresholds, false, true /*looping*/, true /*runLong*/, false /*conversationLingering*/, false /*offerDisperse*/, nil, false, false, nil, nil)
+	renderTriage(&both, needs, thresholds, false, true /*looping*/, true /*runLong*/, false /*conversationLingering*/, nil, false, false, nil, nil)
 	if !strings.Contains(both.String(), "keep saying the same thing") {
 		t.Errorf("looping should outrank run-long:\n%s", both.String())
 	}
