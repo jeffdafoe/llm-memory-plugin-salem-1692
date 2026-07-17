@@ -109,7 +109,7 @@ func TestRenderActor_IncludesSourceActivityLine(t *testing.T) {
 func TestRenderTriage_MidActivityCodaHoldsTheActor(t *testing.T) {
 	v := &InFlightSourceActivityView{Kind: sim.SourceActivityHarvest, SourceLabel: "Berry Bush"}
 	var b strings.Builder
-	renderTriage(&b, map[sim.NeedKey]int{"hunger": 24}, nil, false, false, false, false /*conversationLingering*/, nil, false, false, nil, v)
+	renderTriage(&b, map[sim.NeedKey]int{"hunger": 24}, nil, false, false, false, false /*conversationLingering*/, false /*offerDisperse*/, nil, false, false, nil, v)
 	out := b.String()
 	if !strings.Contains(out, "gathering at Berry Bush") || !strings.Contains(out, "abandons it") {
 		t.Errorf("triage coda = %q, want a mid-activity hold steer", out)

@@ -8645,6 +8645,72 @@ func TestConversationLoopingCodaOnlyWhenLooping(t *testing.T) {
 	}
 }
 
+// TestGoldensDisperseCueOnlyWhenOffered is the LLM-453 cross-scenario invariant:
+// the "call disperse" take-your-leave cue appears in EXACTLY the scenarios whose
+// built payload offers the disperse tool (Payload.OffersDisperse), and never
+// elsewhere. The expectation is recomputed from the BUILT payload — not the
+// rendered text — so it independently asserts the cue and the tool gate cannot
+// drift (discussion-109 tool-cue lockstep), across the whole matrix. This is what
+// keeps disperse out of a wind-down coda that carries live commerce (lingering Inn
+// sale) or a hunger redirect (the foodless-home looper), and in the plain
+// wound-down home huddle (the Walker sisters going in circles).
+func TestGoldensDisperseCueOnlyWhenOffered(t *testing.T) {
+	const marker = "call disperse"
+	var sawOffered bool
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		snap, actorID, warrants := sc.build()
+		want := Build(snap, actorID, warrants).OffersDisperse()
+		if want {
+			sawOffered = true
+		}
+		if has := strings.Contains(renderScenario(sc), marker); has != want {
+			t.Errorf("scenario %q: disperse cue present=%v, want %v (OffersDisperse=%v)", sc.name, has, want, want)
+		}
+	}
+	if !sawOffered {
+		t.Error("matrix must exercise the disperse branch (OffersDisperse=true) at least once")
+	}
+}
+
+// TestGoldensDisperseCueHasNoCompetingDirective locks the LLM-453 lockstep from the
+// other side: whenever the disperse cue renders, NONE of the higher-priority codas
+// or pending-decision lines that outrank the wind-down coda in renderTriage (the
+// pre-switch pay-offer line, the in-flight walk / mid source-activity / seek-work
+// codas, the awaiting-reply coda, or the owed-reply nag) may render with it. If one
+// did, the model would be handed disperse while being steered elsewhere — the hole
+// the code review flagged (an offered disperse alongside "answer the pending reply").
+// OffersDisperse excludes every one of these, so a "call disperse" render carries
+// none. Non-vacuous via huddle_conversation_looping, which offers disperse AND holds
+// a live await edge whose nag must be suppressed.
+func TestGoldensDisperseCueHasNoCompetingDirective(t *testing.T) {
+	competing := []string{
+		"A buyer's offer awaits your answer",      // pending pay offer (pre-switch line)
+		"wait and call done()",                    // awaiting-reply coda
+		"is waiting for your reply",               // owed-reply nag
+		"keep walking",                            // in-flight move coda
+		"leaving now abandons it",                 // mid source-activity coda
+		"pick one of the businesses listed above", // seek-work coda
+	}
+	var checked int
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		got := renderScenario(sc)
+		if !strings.Contains(got, "call disperse") {
+			continue
+		}
+		checked++
+		for _, m := range competing {
+			if strings.Contains(got, m) {
+				t.Errorf("scenario %q offers disperse but also renders competing directive %q — tool/cue lockstep violated (LLM-453)", sc.name, m)
+			}
+		}
+	}
+	if checked == 0 {
+		t.Error("matrix must exercise at least one disperse-offered scenario for this guard to be meaningful")
+	}
+}
+
 // TestIngredientUseAnnotationOnlyForInedibleRecipeInputs is the LLM-166
 // cross-scenario invariant: the "used to produce X" annotation appears in EXACTLY
 // the scenarios whose rendered actor carries an INEDIBLE item that some recipe
@@ -13445,8 +13511,8 @@ func TestSeekWorkSuppressedByRedNeed(t *testing.T) {
 // this slice fails there with a pointer back to this test. LLM-350.
 var terminalToolNames = []string{
 	"accept_pay", "accept_work", "counter_pay", "decline_pay", "decline_work",
-	"gather", "move_to", "offer_trade", "offer_work", "pay_with_item", "repair",
-	"sell", "solicit_work", "speak", "stoke", "stop", "summon", "withdraw_pay",
+	"disperse", "gather", "move_to", "offer_trade", "offer_work", "pay_with_item",
+	"repair", "sell", "solicit_work", "speak", "stoke", "stop", "summon", "withdraw_pay",
 }
 
 // affirmativeSpeakRe matches an instruction to CALL the speak tool: "use speak",
@@ -13781,8 +13847,8 @@ func TestGoldensLingeringNeverClaimsFruitlessness(t *testing.T) {
 	if strings.Contains(got, fruitless) {
 		t.Errorf("the lingering steer must never claim the conversation was fruitless — the live scene it fires on had just closed a sale.\nprompt:\n%s", got)
 	}
-	if !strings.Contains(got, "Let the conversation come to its natural end") {
-		t.Errorf("a lingering conversation should be steered to a graceful close.\nprompt:\n%s", got)
+	if !strings.Contains(got, "call disperse") {
+		t.Errorf("a lingering conversation should be steered to a graceful close — take your leave via disperse (LLM-453).\nprompt:\n%s", got)
 	}
 }
 
@@ -13925,8 +13991,8 @@ func TestGoldenDwellPinnedEaterNoLeaveCoda(t *testing.T) {
 		coda      string
 		leaveLine string
 	}{
-		{"runlong", "Bring it to a close"},
-		{"lingering", "Let the conversation come to its natural end"},
+		{"runlong", "call disperse"},
+		{"lingering", "call disperse"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.coda, func(t *testing.T) {
