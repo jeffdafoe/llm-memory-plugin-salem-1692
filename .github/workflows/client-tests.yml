@@ -1,0 +1,46 @@
+name: "Client tests"
+
+# Headless GDScript regression tests for the Godot client (client/tests/*.gd).
+# Each test is a SceneTree script run with --script; it exits non-zero on failure,
+# which fails the step. The --import step must run first: the tests load real assets
+# (the lucide font for the source-activity marker), and a --script run does not
+# populate the import cache the way the editor does.
+
+on:
+    push:
+        branches: ["main"]
+    pull_request:
+        branches: ["main"]
+
+jobs:
+    godot-tests:
+        name: GDScript client tests
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v7
+
+            - name: Install runtime dependencies
+              # Headless Godot loads a font (the activity marker), so make the
+              # fontconfig dependency explicit rather than lean on the runner image.
+              run: sudo apt-get update && sudo apt-get install -y libfontconfig1
+
+            - name: Install Godot 4.6.2 (headless)
+              # Pin the release checksum — a downloaded binary is executed below.
+              run: |
+                  set -euo pipefail
+                  ASSET="Godot_v4.6.2-stable_linux.x86_64"
+                  EXPECTED_SHA512="b6e4d5a716085e9649905be2afe77f723f97853544fb33392ce3d32594c730a95d9eb4d1042ed51508904c9e1d996bd36b7c7a2bf4f93f5b1885e98d81b792e7"
+                  curl -fsSL -o godot.zip "https://github.com/godotengine/godot/releases/download/4.6.2-stable/${ASSET}.zip"
+                  echo "${EXPECTED_SHA512}  godot.zip" | sha512sum -c -
+                  unzip -q godot.zip
+                  test -f "${ASSET}"
+                  sudo mv "${ASSET}" /usr/local/bin/godot
+                  sudo chmod +x /usr/local/bin/godot
+                  godot --version
+
+            - name: Import assets
+              run: godot --headless --path client --import
+
+            - name: Run marker transition tests
+              run: godot --headless --path client --script res://tests/marker_transitions_test.gd
