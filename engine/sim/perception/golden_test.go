@@ -5215,9 +5215,12 @@ func TestGoldensBoosterLineOnlyForBoostedRecipes(t *testing.T) {
 	for _, sc := range perceptionScenarios {
 		sc := sc
 		got := renderScenario(sc)
-		// The exact boosted-scenario set: the LLM-248 dairy sage fixture and the
-		// LLM-442 smith with the iron booster low and buyable.
-		want := sc.name == "dairy_keeper_out_of_booster_at_post" || sc.name == "smith_out_of_iron_vendor_stocked"
+		// The exact boosted-scenario set: the LLM-248 dairy sage fixture, the
+		// LLM-442 smith with the iron booster low and buyable, and the LLM-444
+		// cook with the salt booster low and buyable.
+		want := sc.name == "dairy_keeper_out_of_booster_at_post" ||
+			sc.name == "smith_out_of_iron_vendor_stocked" ||
+			sc.name == "cook_out_of_salt_vendor_stocked"
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: booster line present=%v, want %v", sc.name, has, want)
 		}

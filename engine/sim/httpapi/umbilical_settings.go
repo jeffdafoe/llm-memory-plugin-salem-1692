@@ -132,6 +132,7 @@ type UmbilicalSettingsDTO struct {
 	VisitorReturnMaxDays       int `json:"visitor_return_max_days"`
 	VisitorFactorPackUnits     int `json:"visitor_factor_pack_units"`
 	VisitorFactorIronUnits     int `json:"visitor_factor_iron_units"`
+	VisitorFactorSaltUnits     int `json:"visitor_factor_salt_units"`
 	VisitorFactorPurseMin      int `json:"visitor_factor_purse_min"`
 	VisitorFactorPurseMax      int `json:"visitor_factor_purse_max"`
 
@@ -203,6 +204,10 @@ func (s *Server) handleUmbilicalSettings(w http.ResponseWriter, r *http.Request)
 		if factorIronUnits < 1 {
 			factorIronUnits = sim.DefaultVisitorFactorIronUnits
 		}
+		factorSaltUnits := world.Settings.VisitorFactorSaltUnits
+		if factorSaltUnits < 1 {
+			factorSaltUnits = sim.DefaultVisitorFactorSaltUnits
+		}
 		factorPurseMin := world.Settings.VisitorFactorPurseMin
 		if factorPurseMin < 0 {
 			factorPurseMin = 0
@@ -250,6 +255,7 @@ func (s *Server) handleUmbilicalSettings(w http.ResponseWriter, r *http.Request)
 			VisitorReturnMaxDays:                  returnMax,
 			VisitorFactorPackUnits:                factorUnits,
 			VisitorFactorIronUnits:                factorIronUnits,
+			VisitorFactorSaltUnits:                factorSaltUnits,
 			VisitorFactorPurseMin:                 factorPurseMin,
 			VisitorFactorPurseMax:                 factorPurseMax,
 			SettingWarnings:                       settingWarnings,

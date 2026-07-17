@@ -67,6 +67,8 @@ func NewEnvironmentRepo() *EnvironmentRepo {
 			VisitorFactorPurseMax:  sim.DefaultVisitorFactorPurseMax,
 			// Iron shipment per factor visit (LLM-442) — same mirror.
 			VisitorFactorIronUnits: sim.DefaultVisitorFactorIronUnits,
+			// Salt shipment per factor visit (LLM-444) — same mirror.
+			VisitorFactorSaltUnits: sim.DefaultVisitorFactorSaltUnits,
 		},
 		phase: sim.PhaseDay,
 	}

@@ -514,6 +514,18 @@ type WorldSettings struct {
 	// key visitor_factor_iron_units.
 	VisitorFactorIronUnits int
 
+	// VisitorFactorSaltUnits (LLM-444): sacks of salt per factor visit, seeded
+	// separately from the uniform per-kind pack quantity for the same reason as
+	// iron — salt is a cooking INPUT consumed batch-by-batch across several
+	// kitchens (1 sack boosts one dish batch), not a durable garment. At the
+	// clothing-scale 2-per-visit the rare factor (14–45 day visitor return
+	// cooldowns) could never keep the kitchens supplied, so the salt cue would
+	// sit silent most of the time and the coin drain barely fire. Unlike iron,
+	// undershooting is harmless (nothing is gated — cooking just goes unboosted).
+	// Falls back to DefaultVisitorFactorSaltUnits when zero/unset; settings key
+	// visitor_factor_salt_units.
+	VisitorFactorSaltUnits int
+
 	// Businessowner cascade tunables (engine/sim/businessowner.go +
 	// engine/sim/cascade/businessowner.go). Both fall back to
 	// *Default constants when zero, so tests that bypass the
