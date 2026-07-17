@@ -2580,15 +2580,20 @@ func _activity_glyph(kind: String) -> String:
     return ""
 
 ## Apply, swap, or clear the source-activity marker on an NPC/PC container: a lucide
-## glyph label above the head while a rendered kind is in flight, removed otherwise.
-## Idempotent — updates the glyph on a kind change, frees it on clear. Mirrors
-## _apply_dormant_visual and reuses _zzz_marker_position (the shared above-head slot).
+## glyph label above the head while a rendered kind is in flight, hidden otherwise.
+## Idempotent — updates the glyph on a kind change, hides on clear. The marker is a
+## persistent, visibility-toggled node (NOT queue_free): a same-frame clear -> set on
+## a rapid transition (e.g. a harvest ending as a repair starts) would otherwise reuse
+## the still-present, queued-for-deletion node and then lose it when the deferred free
+## fires — or collide on the node name when re-created. Toggling sidesteps that race.
+## Reuses _zzz_marker_position (the above-head slot it shares with the sleep Zzz; the
+## two states are mutually exclusive). _zzz_marker_position is null-safe on the sprite.
 func _apply_activity_marker(container: Node2D, kind: String) -> void:
     var glyph := _activity_glyph(kind)
     var marker: Label = container.get_node_or_null(ACTIVITY_MARKER_NAME)
     if glyph == "":
         if marker != null:
-            marker.queue_free()
+            marker.visible = false
         return
     if marker == null:
         marker = Label.new()
@@ -2599,6 +2604,7 @@ func _apply_activity_marker(container: Node2D, kind: String) -> void:
         marker.add_theme_color_override("font_color", ACTIVITY_MARKER_COLOR)
         container.add_child(marker)
     marker.text = glyph
+    marker.visible = true
     marker.position = _zzz_marker_position(_npc_sprite(container))
 
 ## route is the admin/npc action ("set-home-structure" / "set-work-structure").
