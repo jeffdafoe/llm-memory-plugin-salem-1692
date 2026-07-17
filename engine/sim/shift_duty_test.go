@@ -1,6 +1,7 @@
 package sim
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -86,6 +87,88 @@ func TestShiftDutyTarget_OnShiftNotAtWork(t *testing.T) {
 	target, toWork, ok := shiftDutyTarget(w, a, 600, time.Now()) // 10:00, on shift
 	if !ok || target != "shop" || !toWork {
 		t.Errorf("got (%q,%v,%v), want (shop,true,true)", target, toWork, ok)
+	}
+}
+
+// TestShiftDutyTarget_StaggerOnlyAppliesAtHome pins LLM-451: the arrival stagger
+// (ZBBS-HOME-309) desyncs the dawn home->work departure, so it may gate ONLY an
+// NPC currently at home. An NPC already out in the world — an early-shift
+// errand-runner, or one that wandered off-post, whether standing outdoors or
+// inside some OTHER structure — must get its to-work duty immediately, not stand
+// stranded off-post until the offset elapses. Covered across a scheduled day
+// shift, a wrap-midnight shift, and an unscheduled dawn/dusk-fallback shift so the
+// gate composes with the existing wrap-aware / fallback window logic.
+func TestShiftDutyTarget_StaggerOnlyAppliesAtHome(t *testing.T) {
+	// Fixed timestamp: nowMinute is passed explicitly, and these actors carry no
+	// rest windows, so `now` is never consulted for the outcome — pin it anyway so
+	// the test can't go non-deterministic if that ever changes.
+	fixedNow := time.Unix(1_700_000_000, 0)
+
+	const window = 30
+	// nonzeroOffsetID finds a deterministic id whose stagger offset for this shift
+	// start is non-zero, so "inside the window" is a real gate rather than a vacuous
+	// pass (the hash can land on 0 for a given id+start).
+	nonzeroOffsetID := func(start int) ActorID {
+		for i := 0; i < 10000; i++ {
+			id := ActorID(fmt.Sprintf("errand-runner-%d", i))
+			if shiftLatenessOffset(id, start, window) > 0 {
+				return id
+			}
+		}
+		t.Fatalf("no non-zero stagger offset found for start=%d window=%d", start, window)
+		return ""
+	}
+
+	cases := []struct {
+		name        string
+		start, end  int
+		unscheduled bool // drive the shift window off the dawn/dusk fallback instead
+	}{
+		{"day_shift", 420, 960, false},             // 07:00–16:00
+		{"wrap_midnight_shift", 1380, 120, false},  // 23:00–02:00
+		{"unscheduled_dawn_dusk", 420, 1140, true}, // fallback window 07:00–19:00
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			id := nonzeroOffsetID(c.start)
+			offset := shiftLatenessOffset(id, c.start, window)
+			nowMinute := (c.start + offset - 1 + 1440) % 1440 // inside the window, wrap-safe
+
+			build := func(inside StructureID) (*World, *Actor) {
+				a := shiftNPC(id, KindNPCStateful, "shop", "home", inside)
+				if !c.unscheduled {
+					a.ScheduleStartMin = intptr(c.start)
+					a.ScheduleEndMin = intptr(c.end)
+				}
+				w := sleepTestWorld(a)
+				w.Settings.ShiftLatenessWindowMinutes = window
+				if c.unscheduled {
+					w.Settings.DawnTime = "07:00" // 420
+					w.Settings.DuskTime = "19:00" // 1140
+				}
+				return w, a
+			}
+
+			// At home, inside the stagger window → still gated (the case the stagger
+			// exists for). Assert the full suppressed contract, not just ok.
+			w, atHome := build("home")
+			if target, toWork, ok := shiftDutyTarget(w, atHome, nowMinute, fixedNow); ok || target != "" || toWork {
+				t.Errorf("at-home: got (%q,%v,%v), want suppressed (\"\",false,false)", target, toWork, ok)
+			}
+
+			// Off-post inside a DIFFERENT structure (the direct farm-loiter-shaped
+			// case) → NOT staggered.
+			w, insideOther := build("tavern")
+			if target, toWork, ok := shiftDutyTarget(w, insideOther, nowMinute, fixedNow); !ok || target != "shop" || !toWork {
+				t.Errorf("inside-other-structure: got (%q,%v,%v), want (shop,true,true)", target, toWork, ok)
+			}
+
+			// Off-post outdoors → NOT staggered.
+			w, outdoors := build("")
+			if target, toWork, ok := shiftDutyTarget(w, outdoors, nowMinute, fixedNow); !ok || target != "shop" || !toWork {
+				t.Errorf("outdoors: got (%q,%v,%v), want (shop,true,true)", target, toWork, ok)
+			}
+		})
 	}
 }
 

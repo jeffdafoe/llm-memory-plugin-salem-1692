@@ -340,6 +340,17 @@ func shiftDutyTarget(w *World, a *Actor, nowMinute int, now time.Time) (target S
 	}
 
 	atWork := a.WorkStructureID != "" && a.InsideStructureID == a.WorkStructureID
+	// atHome gates the arrival stagger in the to-work arm below (LLM-451). The
+	// stagger exists only to desync the dawn home->work departure, so it must apply
+	// solely to an NPC currently at home — never to one already out in the world
+	// (mid-errand, or wandered off-post), whose return-to-work nudge must not be
+	// gagged or it strands off-post for up to a full stagger window. The check is
+	// per-tick "at home now", not "was home at shift start": an NPC that wanders back
+	// home mid-window simply becomes re-eligible to be staggered, which is harmless
+	// (it is home). Homeless / lodger NPCs (no HomeStructureID) are never "at home"
+	// here and so are never staggered, which is correct — they aren't part of the
+	// dawn clump.
+	atHome := a.HomeStructureID != "" && a.InsideStructureID == a.HomeStructureID
 
 	switch {
 	case onShift && a.WorkStructureID != "" && !atWork:
@@ -356,12 +367,18 @@ func shiftDutyTarget(w *World, a *Actor, nowMinute int, now time.Time) (target S
 		// once-a-minute level-triggered retry. The delta is wrap-aware (the
 		// (x+1440)%1440 form) for night shifts that cross midnight. Applied here
 		// in the shared target so it covers both agents and decoratives. Only the
-		// to-work arm is staggered; going-home (below) is never delayed.
-		offset := shiftLatenessOffset(a.ID, start, w.Settings.ShiftLatenessWindowMinutes)
-		if offset > 0 {
-			minutesSinceShiftStart := (nowMinute - start + 1440) % 1440
-			if minutesSinceShiftStart < offset {
-				return "", false, false
+		// to-work arm is staggered; going-home (below) is never delayed. And only
+		// while atHome (LLM-451): the stagger desyncs the dawn home->work clump, so
+		// an NPC already out in the world (an early-shift errand-runner, or one that
+		// wandered off-post) skips it and is nudged back to post at the next tick
+		// instead of stranding wherever it went idle for up to a full window.
+		if atHome {
+			offset := shiftLatenessOffset(a.ID, start, w.Settings.ShiftLatenessWindowMinutes)
+			if offset > 0 {
+				minutesSinceShiftStart := (nowMinute - start + 1440) % 1440
+				if minutesSinceShiftStart < offset {
+					return "", false, false
+				}
 			}
 		}
 		return a.WorkStructureID, true, true
