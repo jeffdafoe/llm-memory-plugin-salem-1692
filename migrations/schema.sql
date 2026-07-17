@@ -303,7 +303,6 @@ CREATE TABLE public.actor_need (
     key character varying(32) NOT NULL,
     value smallint DEFAULT 0 NOT NULL,
     snapshot_gen bigint DEFAULT 0 NOT NULL,
-    CONSTRAINT actor_need_key_check CHECK (((key)::text = ANY ((ARRAY['hunger'::character varying, 'thirst'::character varying, 'tiredness'::character varying])::text[]))),
     CONSTRAINT actor_need_value_check CHECK (((value >= 0) AND (value <= 24)))
 );
 
