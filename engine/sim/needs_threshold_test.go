@@ -149,10 +149,12 @@ func TestNeedThreshold_TirednessOnShiftStamps(t *testing.T) {
 // TestNeedThreshold_PCNotWarranted: a PC accrues needs but does not warrant —
 // PCs are player-driven and don't reactor-tick.
 func TestNeedThreshold_PCNotWarranted(t *testing.T) {
+	seen := time.Now().UTC() // present — LLM-450 freezes needs only for an OFFLINE PC
 	pc := &Actor{
 		ID:            "p",
 		Kind:          KindPC,
 		LoginUsername: "player1",
+		LastPCSeenAt:  &seen,
 		Needs:         map[NeedKey]int{"hunger": 17, "thirst": 5, "tiredness": 5},
 	}
 	w := needsTickWorld(1, pc)
@@ -165,6 +167,28 @@ func TestNeedThreshold_PCNotWarranted(t *testing.T) {
 	}
 	if pc.WarrantedSince != nil || hasNeedThresholdWarrant(pc) {
 		t.Errorf("PC should not be warranted; kinds = %v", warrantKinds(pc))
+	}
+}
+
+// TestNeedThreshold_OfflinePCFrozen: an offline (presence-stale) PC accrues NO
+// needs — its character is in suspended animation while the player is away
+// (LLM-450), so it doesn't return starving and exhausted.
+func TestNeedThreshold_OfflinePCFrozen(t *testing.T) {
+	pc := &Actor{
+		ID:            "p",
+		Kind:          KindPC,
+		LoginUsername: "player1",
+		// LastPCSeenAt nil => presence-stale => offline.
+		Needs: map[NeedKey]int{"hunger": 17, "thirst": 5, "tiredness": 5},
+	}
+	w := needsTickWorld(1, pc)
+
+	if _, err := IncrementNeedsTick(1).Fn(w); err != nil {
+		t.Fatalf("IncrementNeedsTick: %v", err)
+	}
+	if pc.Needs["hunger"] != 17 || pc.Needs["thirst"] != 5 || pc.Needs["tiredness"] != 5 {
+		t.Errorf("offline PC needs must be frozen; got hunger=%d thirst=%d tiredness=%d, want 17/5/5",
+			pc.Needs["hunger"], pc.Needs["thirst"], pc.Needs["tiredness"])
 	}
 }
 

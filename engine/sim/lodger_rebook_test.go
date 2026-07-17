@@ -34,10 +34,15 @@ func rebookTestWorld(weeklyRate, checkOut int, actors ...*Actor) *World {
 
 func rebookLodger(id ActorID, coins int, roomID RoomID, expiresAt time.Time) *Actor {
 	exp := expiresAt
+	// Present by default: LLM-450's free-hold only diverts an OFFLINE (presence-
+	// stale) lodger off the paid path, so the paid-rebook tests seed a live
+	// client. The offline case sets LastPCSeenAt stale explicitly.
+	seen := rebookNow
 	return &Actor{
-		ID:    id,
-		Kind:  KindPC, // only PCs auto-rebook (LLM-37)
-		Coins: coins,
+		ID:           id,
+		Kind:         KindPC, // only PCs auto-rebook (LLM-37)
+		Coins:        coins,
+		LastPCSeenAt: &seen,
 		RoomAccess: map[RoomAccessKey]*RoomAccess{
 			{RoomID: roomID, Source: AccessSourceLedger}: {
 				RoomID: roomID, Source: AccessSourceLedger, Active: true, ExpiresAt: &exp, LedgerID: 1,
@@ -104,6 +109,37 @@ func TestRebook_LapsesWhenBroke(t *testing.T) {
 	}
 	if len(res.Renewals) != 0 || len(w.ActionLog) != 0 {
 		t.Errorf("broke lodger must not renew: renewals=%d actionlog=%d", len(res.Renewals), len(w.ActionLog))
+	}
+}
+
+func TestRebook_OfflineLodgerHeldFreeNotBilled(t *testing.T) {
+	// LLM-450: an offline (presence-stale) lodger's room is FROZEN, not billed —
+	// the grant is extended for free (no coin debit, no keeper credit, no audit)
+	// so it never lapses while the player is away.
+	lodger := rebookLodger("jefferey", 10, 2, rebookNow.Add(3*time.Hour)) // in the 6h window
+	stale := rebookNow.Add(-time.Hour)                                    // > 40s stale threshold => offline
+	lodger.LastPCSeenAt = &stale
+	keeper := rebookKeeper("hannah")
+	w := rebookTestWorld(28, 11, lodger, keeper) // nightly = 4
+
+	res := runRebook(t, w)
+
+	if lodger.Coins != 10 {
+		t.Errorf("offline lodger coins = %d, want 10 (frozen — not billed)", lodger.Coins)
+	}
+	if keeper.Coins != 0 {
+		t.Errorf("keeper coins = %d, want 0 (no charge for a held room)", keeper.Coins)
+	}
+	wantExpiry := ComputeLodgerUntil(rebookNow.Add(3*time.Hour), 1, 11, time.UTC)
+	got := *lodger.RoomAccess[RoomAccessKey{RoomID: 2, Source: AccessSourceLedger}].ExpiresAt
+	if !got.Equal(wantExpiry) {
+		t.Errorf("held ExpiresAt = %v, want extended to %v (grant frozen, not lapsed)", got, wantExpiry)
+	}
+	if res.Holds != 1 {
+		t.Errorf("Holds = %d, want 1 (one free hold)", res.Holds)
+	}
+	if len(res.Renewals) != 0 || len(w.ActionLog) != 0 {
+		t.Errorf("a held (unbilled) room must not renew or audit: renewals=%d actionlog=%d", len(res.Renewals), len(w.ActionLog))
 	}
 }
 

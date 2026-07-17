@@ -359,6 +359,11 @@ func TestWakeExpiredPCSleepers(t *testing.T) {
 
 	t.Run("fully rested PC wakes (auto)", func(t *testing.T) {
 		a := lodgerPC("p", now.Add(72*time.Hour))
+		// Present online player: a live socket keeps presence fresh at the wake
+		// instant (now+1h below). The rested-wake is suppressed only for OFFLINE
+		// PCs (LLM-450), so this one wakes normally.
+		seen := now.Add(time.Hour)
+		a.LastPCSeenAt = &seen
 		w := pcSleepWorld(a)
 		executePCSleep(w, a, 1, now)
 		a.Needs["tiredness"] = 0 // recovery has brought them to rested
@@ -377,6 +382,20 @@ func TestWakeExpiredPCSleepers(t *testing.T) {
 		}
 		if len(rec.events) != 1 || rec.events[0].(*PCSleepEnded).Reason != "auto" {
 			t.Errorf("want one PCSleepEnded(auto), got %v", rec.events)
+		}
+	})
+
+	t.Run("offline rested PC stays asleep (LLM-450)", func(t *testing.T) {
+		a := lodgerPC("p", now.Add(72*time.Hour)) // LastPCSeenAt nil => offline
+		w := pcSleepWorld(a)
+		executePCSleep(w, a, 1, now)
+		a.Needs["tiredness"] = 0 // fully rested, but the player is away
+		// Within the cap, grant active, in its room — only the rested condition
+		// could wake it, and that is suppressed while offline so it doesn't
+		// wake→re-bed every tick.
+		WakeExpiredPCSleepers(now.Add(time.Hour)).Fn(w)
+		if a.SleepingUntil == nil {
+			t.Error("an OFFLINE rested PC should stay asleep until it reconnects")
 		}
 	})
 
@@ -534,4 +553,202 @@ func TestAutoBedIdleLodgerPCs(t *testing.T) {
 			t.Errorf("auto-bed should stamp the granted bedroom; InsideRoomID = %d, want 1", a.InsideRoomID)
 		}
 	})
+}
+
+// TestAutoBedOfflineLodgerPCs — LLM-450. The presence-keyed sibling of the idle
+// arm: an absent player's character retires to bed promptly, no idle-timer, no
+// tiredness floor, so it recovers instead of standing awake accruing needs.
+func TestAutoBedOfflineLodgerPCs(t *testing.T) {
+	now := time.Date(2026, 5, 25, 3, 0, 0, 0, time.UTC)
+	future := now.Add(72 * time.Hour)
+
+	t.Run("offline lodger with a grant is bedded into its room", func(t *testing.T) {
+		a := lodgerPC("p", future) // LastPCSeenAt nil => offline
+		w := pcSleepWorld(a)
+		rec := &pcEventRecorder{}
+		w.Subscribe(SubscriberFunc(rec.handle))
+
+		res, _ := AutoBedOfflineLodgerPCs(now).Fn(w)
+		if res.(int) != 1 || a.SleepingUntil == nil {
+			t.Fatalf("offline lodger should be bedded; bedded=%v sleeping=%v", res, a.SleepingUntil)
+		}
+		if a.InsideRoomID != 1 {
+			t.Errorf("offline auto-bed should stamp the granted bedroom; InsideRoomID = %d, want 1", a.InsideRoomID)
+		}
+		if len(rec.events) != 1 || rec.events[0].(*PCSleepStarted).ActorID != "p" {
+			t.Errorf("want one PCSleepStarted for p, got %v", rec.events)
+		}
+	})
+
+	t.Run("no tiredness floor — a barely-tired offline lodger is still bedded", func(t *testing.T) {
+		a := lodgerPC("p", future)
+		a.Needs["tiredness"] = 1 // well below the idle-bed floor
+		w := pcSleepWorld(a)
+		AutoBedOfflineLodgerPCs(now).Fn(w)
+		if a.SleepingUntil == nil {
+			t.Error("offline bed has no tiredness floor — an absent player is bedded regardless")
+		}
+	})
+
+	t.Run("present player is NOT bedded here (the idle arm governs)", func(t *testing.T) {
+		a := lodgerPC("p", future)
+		a.LastPCSeenAt = &now // fresh => present
+		w := pcSleepWorld(a)
+		AutoBedOfflineLodgerPCs(now).Fn(w)
+		if a.SleepingUntil != nil {
+			t.Error("a present PC must not be offline-bedded")
+		}
+	})
+
+	t.Run("offline PC with no grant is left alone", func(t *testing.T) {
+		a := lodgerPC("p", future)
+		a.RoomAccess = nil // no bedroom to retire to
+		w := pcSleepWorld(a)
+		res, _ := AutoBedOfflineLodgerPCs(now).Fn(w)
+		if res.(int) != 0 || a.SleepingUntil != nil {
+			t.Error("an offline PC without a room grant can't be bedded")
+		}
+	})
+
+	t.Run("offline PC away from its inn is left alone (Option A: bedded only where it lodges)", func(t *testing.T) {
+		a := lodgerPC("p", future)
+		a.InsideStructureID = "" // logged off out in the square — holds a grant, but isn't at the inn
+		w := pcSleepWorld(a)
+		res, _ := AutoBedOfflineLodgerPCs(now).Fn(w)
+		// Deliberate limitation (LLM-450): offline-bed reuses pcCanSleepHere, which
+		// requires the PC to be inside its rented structure. Away from the inn it is
+		// NOT bedded — its needs are still frozen (IncrementNeedsTick), so tiredness
+		// is PRESERVED at its logoff value, not recovered.
+		if res.(int) != 0 || a.SleepingUntil != nil {
+			t.Error("an offline PC not inside its rented structure is not bedded")
+		}
+	})
+
+	t.Run("already-sleeping offline PC is a no-op (idempotent with the idle arm)", func(t *testing.T) {
+		a := lodgerPC("p", future)
+		w := pcSleepWorld(a)
+		executePCSleep(w, a, 1, now)
+		res, _ := AutoBedOfflineLodgerPCs(now).Fn(w)
+		if res.(int) != 0 {
+			t.Errorf("bedded = %v, want 0 (already asleep)", res)
+		}
+	})
+}
+
+// TestStampConnectedPCsSeen_ReconnectWake — LLM-450. The heartbeat wakes a PC
+// that was offline-bedded when its client reconnects (stale->fresh transition),
+// but leaves a still-present online idle-sleeper alone.
+func TestStampConnectedPCsSeen_ReconnectWake(t *testing.T) {
+	nowReal := time.Now().UTC()
+
+	t.Run("reconnect after an offline bed-down wakes the PC", func(t *testing.T) {
+		a := lodgerPC("p", nowReal.Add(72*time.Hour))
+		w := pcSleepWorld(a)
+		executePCSleep(w, a, 1, nowReal) // offline-bedded, asleep in bedroom 1
+		a.LastPCSeenAt = nil             // presence-stale: the client had dropped
+		rec := &pcEventRecorder{}
+		w.Subscribe(SubscriberFunc(rec.handle))
+
+		StampConnectedPCsSeen(map[string]struct{}{"p": {}}).Fn(w)
+
+		if a.SleepingUntil != nil {
+			t.Error("reconnect should wake an offline-bedded PC")
+		}
+		if a.InsideRoomID != 0 {
+			t.Errorf("reconnect wake must clear the room scope; InsideRoomID = %d, want 0", a.InsideRoomID)
+		}
+		if a.LastPCSeenAt == nil {
+			t.Error("reconnect should refresh presence")
+		}
+		if len(rec.events) != 1 || rec.events[0].(*PCSleepEnded).Reason != "reconnect" {
+			t.Errorf("want one PCSleepEnded(reconnect), got %v", rec.events)
+		}
+	})
+
+	t.Run("a present idle-sleeper's heartbeat does NOT wake it", func(t *testing.T) {
+		a := lodgerPC("p", nowReal.Add(72*time.Hour))
+		w := pcSleepWorld(a)
+		executePCSleep(w, a, 1, nowReal)
+		// Seen 2s ago — unambiguously fresh (well under the 40s stale line) and
+		// robust to scheduler jitter, so the stale/fresh classification is
+		// deterministic without injecting a clock into the execution-time-stamping
+		// StampConnectedPCsSeen (its now() is deliberately internal — see R1).
+		fresh := time.Now().Add(-2 * time.Second).UTC()
+		a.LastPCSeenAt = &fresh // still present (an online idle-bedded player)
+		StampConnectedPCsSeen(map[string]struct{}{"p": {}}).Fn(w)
+		if a.SleepingUntil == nil {
+			t.Error("an online idle-sleeper must stay asleep across heartbeats")
+		}
+	})
+
+	t.Run("stale but AWAKE PC just refreshes presence — no wake event", func(t *testing.T) {
+		a := lodgerPC("p", nowReal.Add(72*time.Hour))
+		a.LastPCSeenAt = nil // stale, but NOT sleeping (SleepingUntil nil)
+		w := pcSleepWorld(a)
+		rec := &pcEventRecorder{}
+		w.Subscribe(SubscriberFunc(rec.handle))
+
+		StampConnectedPCsSeen(map[string]struct{}{"p": {}}).Fn(w)
+
+		if a.LastPCSeenAt == nil {
+			t.Error("presence should be refreshed for a connected PC")
+		}
+		if len(rec.events) != 0 {
+			t.Errorf("an awake PC must not emit a sleep-ended event on reconnect; got %v", rec.events)
+		}
+	})
+}
+
+// TestOfflinePCLifecycle_RecoversThenResumesOnReconnect — LLM-450 end-to-end:
+// an offline lodger is bedded, its hunger/thirst stay frozen while tiredness
+// recovers, it sleeps on when rested, then a reconnect wakes it and needs resume
+// accruing.
+func TestOfflinePCLifecycle_RecoversThenResumesOnReconnect(t *testing.T) {
+	t0 := time.Date(2026, 5, 25, 2, 0, 0, 0, time.UTC)
+	a := lodgerPC("p", t0.Add(72*time.Hour)) // offline (LastPCSeenAt nil)
+	a.Needs["tiredness"] = 24
+	a.Needs["hunger"] = 10
+	w := pcSleepWorld(a)
+	w.Settings.TirednessRecoveryPerMinuteX100 = 4 // 0.04/min (production value)
+	w.Settings.NeedsTickAmount = 1
+
+	// 1. Offline auto-bed retires the absent player into its rented room.
+	AutoBedOfflineLodgerPCs(t0).Fn(w)
+	if a.SleepingUntil == nil {
+		t.Fatal("offline lodger should be bedded")
+	}
+
+	// 2. Needs stay FROZEN while offline — hunger does not climb...
+	if _, err := IncrementNeedsTick(1).Fn(w); err != nil {
+		t.Fatalf("IncrementNeedsTick: %v", err)
+	}
+	if a.Needs["hunger"] != 10 {
+		t.Errorf("offline hunger = %d, want 10 (frozen while away)", a.Needs["hunger"])
+	}
+	// ...but tiredness RECOVERS because the PC is bedded (600min * 0.04 = 24 units).
+	RecoverTiredness(t0.Add(600 * time.Minute)).Fn(w)
+	if a.Needs["tiredness"] != 0 {
+		t.Errorf("offline bedded tiredness = %d, want 0 (recovered while asleep)", a.Needs["tiredness"])
+	}
+
+	// 3. Rested AND offline => stays asleep, no wake/re-bed churn.
+	WakeExpiredPCSleepers(t0.Add(601 * time.Minute)).Fn(w)
+	if a.SleepingUntil == nil {
+		t.Error("a rested offline PC should stay asleep until it reconnects")
+	}
+
+	// 4. Reconnect: the heartbeat wakes the player, rested and back in control.
+	StampConnectedPCsSeen(map[string]struct{}{"p": {}}).Fn(w)
+	if a.SleepingUntil != nil {
+		t.Error("reconnect should wake the PC")
+	}
+
+	// 5. Present again => need accrual resumes (no longer frozen).
+	before := a.Needs["hunger"]
+	if _, err := IncrementNeedsTick(1).Fn(w); err != nil {
+		t.Fatalf("IncrementNeedsTick: %v", err)
+	}
+	if a.Needs["hunger"] <= before {
+		t.Errorf("present hunger = %d, want > %d (accrual resumed after reconnect)", a.Needs["hunger"], before)
+	}
 }

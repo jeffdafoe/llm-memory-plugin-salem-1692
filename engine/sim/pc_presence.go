@@ -230,6 +230,7 @@ func StampConnectedPCsSeen(connectedLogins map[string]struct{}) Command {
 				return 0, nil
 			}
 			now := time.Now().UTC()
+			staleAfter := PCPresenceStaleAfter(w)
 			stamped := 0
 			for _, a := range w.Actors {
 				if a.Kind != KindPC || a.LoginUsername == "" {
@@ -237,6 +238,20 @@ func StampConnectedPCsSeen(connectedLogins map[string]struct{}) Command {
 				}
 				if _, ok := connectedLogins[a.LoginUsername]; !ok {
 					continue
+				}
+				// LLM-450: a player reconnecting after an offline bed-down. If this
+				// PC was presence-stale (genuinely gone — not a live idle-sleeper,
+				// whose 15s heartbeat keeps it fresh below the 40s stale line) AND is
+				// asleep, wake it so it lands in control rather than staring at the
+				// sleep overlay. Detect the stale->fresh transition BEFORE
+				// overwriting LastPCSeenAt below. Reason "reconnect" (not "auto") so
+				// the morning-descent subscriber leaves it where it woke, like the
+				// other player-driven wakes.
+				if a.SleepingUntil != nil && PCPresenceStale(a.LastPCSeenAt, now, staleAfter) {
+					fromRoom := a.InsideRoomID
+					wakePCActor(a)
+					a.InsideRoomID = 0 // LLM-14: an awake PC is never bedroom-scoped
+					w.emit(&PCSleepEnded{ActorID: a.ID, Reason: "reconnect", FromRoomID: fromRoom, At: now})
 				}
 				a.LastPCSeenAt = &now
 				stamped++
