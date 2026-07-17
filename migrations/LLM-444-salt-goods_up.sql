@@ -88,24 +88,49 @@ ON CONFLICT (output_item) DO UPDATE SET
     retail_price    = EXCLUDED.retail_price,
     updated_at      = now();
 
--- 3. Salt boost on the three cooked dishes. Corrective SET (not upsert): the
---    dish recipes predate this migration on any seeded DB; on the schema-only
---    replay harness there is no row and each of these is a clean 0-row no-op
---    (the validation below asserts the boost only where the row exists). ONLY
---    boost_inputs is written — inputs, rate_qty, rate_per_hours, output_qty are
---    left exactly as they are, so unsalted yields never change.
+-- 3. Salt boost on the three cooked dishes. CORRECTIVE strip-then-append (not a
+--    blanket SET): any pre-existing salt boost is filtered out and the canonical
+--    salt entry appended, so a rerun converges on exactly one salt booster while
+--    any OTHER booster a future migration may add to a dish is PRESERVED (a plain
+--    SET would silently clobber it). The jsonb_typeof CASE tolerates a malformed
+--    non-array boost_inputs. These recipes predate this migration on any seeded
+--    DB; on the schema-only replay harness there is no row and each is a clean
+--    0-row no-op (validation below asserts the boost only where the row exists).
+--    ONLY boost_inputs is written — inputs, rate_qty, rate_per_hours, output_qty
+--    are left exactly as they are, so unsalted yields never change.
 UPDATE item_recipe
-   SET boost_inputs = '[{"item": "salt", "qty": 1, "bonus_qty": 2}]'::jsonb,
+   SET boost_inputs = COALESCE(
+       (SELECT jsonb_agg(e)
+          FROM jsonb_array_elements(
+               CASE WHEN jsonb_typeof(boost_inputs) = 'array'
+                    THEN boost_inputs ELSE '[]'::jsonb END) AS e
+         WHERE e->>'item' <> 'salt'),
+       '[]'::jsonb
+   ) || '[{"item": "salt", "qty": 1, "bonus_qty": 2}]'::jsonb,
        updated_at   = now()
  WHERE output_item = 'stew';
 
 UPDATE item_recipe
-   SET boost_inputs = '[{"item": "salt", "qty": 1, "bonus_qty": 3}]'::jsonb,
+   SET boost_inputs = COALESCE(
+       (SELECT jsonb_agg(e)
+          FROM jsonb_array_elements(
+               CASE WHEN jsonb_typeof(boost_inputs) = 'array'
+                    THEN boost_inputs ELSE '[]'::jsonb END) AS e
+         WHERE e->>'item' <> 'salt'),
+       '[]'::jsonb
+   ) || '[{"item": "salt", "qty": 1, "bonus_qty": 3}]'::jsonb,
        updated_at   = now()
  WHERE output_item = 'porridge';
 
 UPDATE item_recipe
-   SET boost_inputs = '[{"item": "salt", "qty": 1, "bonus_qty": 2}]'::jsonb,
+   SET boost_inputs = COALESCE(
+       (SELECT jsonb_agg(e)
+          FROM jsonb_array_elements(
+               CASE WHEN jsonb_typeof(boost_inputs) = 'array'
+                    THEN boost_inputs ELSE '[]'::jsonb END) AS e
+         WHERE e->>'item' <> 'salt'),
+       '[]'::jsonb
+   ) || '[{"item": "salt", "qty": 1, "bonus_qty": 2}]'::jsonb,
        updated_at   = now()
  WHERE output_item = 'fried_meat';
 

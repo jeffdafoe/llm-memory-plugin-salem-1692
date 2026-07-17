@@ -11,10 +11,18 @@
 
 BEGIN;
 
--- 1. The three dishes back to their pre-444 shape: no boosters (inputs, rates,
---    and yields were never touched by the up migration, so nothing else to undo).
-UPDATE item_recipe SET boost_inputs = '[]'::jsonb, updated_at = now()
- WHERE output_item IN ('stew', 'porridge', 'fried_meat');
+-- 1. Strip ONLY salt from the three dishes' boosters (filter the array rather
+--    than clearing it), so any OTHER booster added after LLM-444 survives the
+--    rollback. Inputs, rates, and yields were never touched by the up migration,
+--    so nothing else to undo. jsonb_typeof guards a malformed non-array value.
+UPDATE item_recipe
+   SET boost_inputs = COALESCE(
+       (SELECT jsonb_agg(e) FROM jsonb_array_elements(boost_inputs) AS e
+         WHERE e->>'item' <> 'salt'),
+       '[]'::jsonb),
+       updated_at = now()
+ WHERE output_item IN ('stew', 'porridge', 'fried_meat')
+   AND jsonb_typeof(boost_inputs) = 'array';
 
 -- 2. Remove the cooks' buy-salt entries (filter the restock array rather than
 --    resetting it, so their produce/buy entries for everything else survive).
@@ -34,13 +42,19 @@ UPDATE actor_attribute
    AND slug IN ('tavernkeeper', 'innkeeper')
    AND jsonb_typeof(params->'restock') = 'array';
 
--- 3. Remove ONLY the seeded holding this migration owns (Josiah's bootstrap row)
---    — the LLM-410/LLM-442 scoped posture. Any OTHER salt holding is live economy
---    state this rollback must not destroy; if sacks have spread, the item_kind
---    delete below fails on its references, which is the correct outcome.
+-- 3. Remove ONLY the PRISTINE seed row — Josiah's holding still exactly the 8
+--    sacks this migration seeded. A holding that has changed (sold down to a
+--    cook, or restocked UP by the factor) is live economy state this rollback
+--    must not touch: the quantity guard leaves it in place, and the item_kind
+--    delete below then fails on that surviving reference, rolling the whole
+--    transaction back (the correct "you don't unwind a traded economy" outcome).
+--    This is what makes "remove only the seed" literally true — the up seed is
+--    ON CONFLICT DO NOTHING, so quantity is the only signal distinguishing the
+--    pristine bootstrap from accumulated stock.
 DELETE FROM actor_inventory
  WHERE actor_id = '019dcac2-e78a-715e-91b7-101f339b0891'
-   AND item_kind = 'salt';
+   AND item_kind = 'salt'
+   AND quantity = 8;
 
 -- 4. Remove the price anchor, then the good.
 DELETE FROM item_recipe WHERE output_item = 'salt';
