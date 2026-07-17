@@ -2342,6 +2342,42 @@ func inEveningWindow(snap *sim.Snapshot, a *sim.ActorSnapshot) bool {
 	return nowMin >= shiftEnd && nowMin < bedtime
 }
 
+// inDaytimeHomeWindow reports whether the actor is in its at-home daytime — the window
+// the bake occupation (LLM-454) fills: the home-idle stretch of the DAY before dusk,
+// where the household otherwise loops "let's make bread" without doing it (the LLM-453
+// mid-afternoon loop). Daytime by the dawn/dusk clock, and NOT on an explicit scheduled
+// shift. An UNSCHEDULED worker has no binding shift — its day-active window is not a post
+// obligation, so it qualifies, which is exactly the looping homebodies; a SCHEDULED actor
+// within its shift belongs at its post and is turned away. A non-worker unscheduled actor
+// has no daytime occupation here (home is its resting state, mirroring inEveningWindow).
+// Sibling of inEveningWindow (dusk→bedtime); this one is dawn→dusk.
+func inDaytimeHomeWindow(snap *sim.Snapshot, a *sim.ActorSnapshot) bool {
+	if snap == nil || a == nil || snap.LocalMinuteOfDay == nil {
+		return false
+	}
+	if !snap.DawnDuskMinuteOK || snap.DawnMinute >= snap.DuskMinute {
+		return false
+	}
+	nowMin := *snap.LocalMinuteOfDay
+	if nowMin < snap.DawnMinute || nowMin >= snap.DuskMinute {
+		return false // before dawn or past dusk — not the daytime window
+	}
+	// A scheduled actor within its shift belongs at its post; an unscheduled actor (no
+	// schedule) is never "on shift" here, so it falls through to the worker check. Same
+	// half-open [start,end) with wrap as sim.isActorOnShift, so tool and cue agree.
+	if a.ScheduleStartMin != nil && a.ScheduleEndMin != nil {
+		s, e := *a.ScheduleStartMin, *a.ScheduleEndMin
+		onShift := false
+		if s <= e {
+			onShift = nowMin >= s && nowMin < e
+		} else {
+			onShift = nowMin >= s || nowMin < e
+		}
+		return !onShift
+	}
+	return subjectIsWorker(a)
+}
+
 // subjectIsHomed reports whether the actor has a home structure that resolves in
 // the snapshot — the same notion buildAnchors uses to set AnchorsView.HomeID.
 func subjectIsHomed(snap *sim.Snapshot, a *sim.ActorSnapshot) bool {

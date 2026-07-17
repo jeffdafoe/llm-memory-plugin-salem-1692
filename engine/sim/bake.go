@@ -6,22 +6,23 @@ import (
 	"time"
 )
 
-// bake.go — LLM-454. The evening bake-bread occupation: a shared, per-home activity
-// that fills the empty evening (the gap LLM-447's night bed-down left, and that
-// LLM-453's disperse verb failed to close — the models never took an exit; they
-// wanted the task). A resident at home in the evening starts the household's bread;
-// others home lend a hand at the SAME batch. Everyone is occupied (BusyAtSource
-// shelves the LLM tick, so no looping) until their bed cue; then the batch lands to
-// the initiator, who shares it around before turning in.
+// bake.go — LLM-454. The daytime bake-bread occupation: a shared, per-home activity
+// that fills the home-idle stretch of the DAY before dusk — the mid-afternoon window
+// where the household otherwise turboyaps "let's make bread" without doing it (the
+// LLM-453 daytime loop, which disperse failed to close: the models never took an exit,
+// they wanted the task). A resident at home during the day starts the household's
+// bread; others home lend a hand at the SAME batch. Everyone is occupied (BusyAtSource
+// shelves the LLM tick, so no looping) until dusk; then the batch lands to the
+// initiator, who shares it around. (Dusk → bedtime stays LLM-447/leisure territory.)
 //
 // Built on the SourceActivity dwell substrate (produce is workplace-locked): a
 // SourceActivityBake window per participant, plus one HomeBake session per home
 // holding the shared batch. Both are transient — a restart drops them, which costs
 // nothing because flour is consumed only at completion (the household just re-forms
-// the bake and still finishes by bedtime; persistent inventory stays consistent).
+// the bake and still finishes by dusk; persistent inventory stays consistent).
 
-// Bake tuning — deliberately low. This is an evening TIME SINK, not an economy: the
-// output that matters is "the evening is spent, not looped," and the loaves are a
+// Bake tuning — deliberately low. This is a daytime TIME SINK, not an economy: the
+// output that matters is "the afternoon is spent, not looped," and the loaves are a
 // byproduct the household eats. All tunable constants.
 const (
 	BakeFlourItem = ItemKind("flour")
@@ -31,7 +32,7 @@ const (
 	BakeFlourCost = 2
 	// BakeBatchQty is the loaves minted to the initiator when the bake lands.
 	BakeBatchQty = 3
-	// MinBakeWindow is the least evening that must remain before bedtime for a bake
+	// MinBakeWindow is the least of the day that must remain before dusk for a bake
 	// to be worth starting.
 	MinBakeWindow = 30 * time.Minute
 )
@@ -46,34 +47,33 @@ type HomeBake struct {
 	BatchQty    int
 	FlourCost   int
 	StartedAt   time.Time
-	DoneAt      time.Time // the initiator's bed cue — when the batch lands
+	DoneAt      time.Time // the next dusk — when the batch lands
 }
 
-// bedtimeInstant returns the next lodger-bedtime instant (LodgingBedtimeHour in the
-// world timezone) strictly after now — the bed cue an evening bake runs until — and
-// ok=false when the clock is unconfigured. Modeled on nextDaybreak. Unlike a
-// fail-open fallback (which would let the sim accept a bake perception never
-// advertised), the caller REJECTS on !ok, so the sim and the perception gate agree on
-// the same bedtime rather than diverging.
-func bedtimeInstant(w *World, now time.Time) (time.Time, bool) {
-	start, _, ok := lodgerNightWindow(w) // [bedtime, dawn) minutes
+// duskInstant returns the next dusk instant (DuskTime in the world timezone) strictly
+// after now — the cue an at-home daytime bake runs until — and ok=false when the clock
+// is unconfigured. Modeled on nextDaybreak. Unlike a fail-open fallback (which would let
+// the sim accept a bake perception never advertised), the caller REJECTS on !ok, so the
+// sim and the perception gate agree on the same dusk rather than diverging.
+func duskInstant(w *World, now time.Time) (time.Time, bool) {
+	_, dusk, ok := worldDawnDuskMinutes(w) // [dawn, dusk) minutes
 	loc := w.Settings.Location
 	if !ok || loc == nil {
 		return time.Time{}, false
 	}
 	local := now.In(loc)
-	bed := time.Date(local.Year(), local.Month(), local.Day(), start/60, start%60, 0, 0, loc)
-	if !bed.After(now) {
-		bed = bed.AddDate(0, 0, 1)
+	d := time.Date(local.Year(), local.Month(), local.Day(), dusk/60, dusk%60, 0, 0, loc)
+	if !d.After(now) {
+		d = d.AddDate(0, 0, 1)
 	}
-	return bed, true
+	return d, true
 }
 
 // StartOrJoinBake is the commit for the bake tool. If a HomeBake is already going at
 // the actor's home it JOINS it (no flour, no new batch — the shared household bake);
 // otherwise it STARTS one (the initiator provides the flour). Either way the actor
 // breaks off any conversation and is occupied at a SourceActivityBake window until
-// its bed cue. MUST run on the world goroutine.
+// dusk. MUST run on the world goroutine.
 func StartOrJoinBake(actorID ActorID, say string, hasNewNews bool, now time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
@@ -101,21 +101,40 @@ func StartOrJoinBake(actorID ActorID, say string, hasNewNews bool, now time.Time
 				return nil, ModelFacingError{Msg: "you are asleep."}
 			}
 			nowMinute := localMinuteOfDay(w, now)
-			if actorOnShift(w, actor, nowMinute) {
-				return nil, ModelFacingError{Msg: "you're on shift — the baking is for the evening, off the clock."}
+			// isActorOnShift is false for an unscheduled worker (no schedule), so its
+			// day-active window is NOT treated as a binding shift — it can bake at home
+			// during the day, which is exactly the looping homebodies this fills. Only a
+			// SCHEDULED actor within its shift is turned away to its post. (actorOnShift,
+			// which reads the unscheduled worker's day-active pseudo-shift as "on", would
+			// wrongly reject them.)
+			if isActorOnShift(actor, nowMinute) {
+				return nil, ModelFacingError{Msg: "you're on your shift — the baking waits until the day's work is done."}
 			}
-			if _, dusk, ok := worldDawnDuskMinutes(w); ok && nowMinute < dusk {
-				return nil, ModelFacingError{Msg: "it isn't evening yet — the bread can wait until the day's work is behind you."}
+			// Mirror the perception gate (inDaytimeHomeWindow): an UNSCHEDULED actor must
+			// be a worker — an unscheduled non-worker's home is its resting state, never
+			// offered the bake, so the commit path rejects a forged/stale call the same
+			// way (tool-cue lockstep). A SCHEDULED actor passed the on-shift check above
+			// and needs no worker gate (both windows offer to a scheduled actor regardless
+			// of the attribute).
+			if actor.ScheduleStartMin == nil && actor.ScheduleEndMin == nil && !actorIsWorker(actor) {
+				return nil, ModelFacingError{Msg: "the baking is a household worker's task."}
+			}
+			dawn, dusk, ok := worldDawnDuskMinutes(w)
+			if !ok {
+				return nil, ModelFacingError{Msg: "you can't tell the time of day."}
+			}
+			if nowMinute < dawn || nowMinute >= dusk {
+				return nil, ModelFacingError{Msg: "it's past the time for it — the baking is a daytime task, finished before dusk."}
 			}
 			if countRedNeeds(w.Settings, actor) > 0 {
-				return nil, ModelFacingError{Msg: "see to what's pressing first — the baking can wait for a quiet evening."}
+				return nil, ModelFacingError{Msg: "see to what's pressing first — the baking can wait for a quiet hour."}
 			}
-			doneAt, ok := bedtimeInstant(w, now)
+			doneAt, ok := duskInstant(w, now)
 			if !ok {
-				return nil, ModelFacingError{Msg: "you can't tell how much of the evening is left."}
+				return nil, ModelFacingError{Msg: "you can't tell how much of the day is left."}
 			}
 			if !doneAt.After(now.Add(MinBakeWindow)) {
-				return nil, ModelFacingError{Msg: "there's not enough of the evening left to bake before bed."}
+				return nil, ModelFacingError{Msg: "there's not enough of the day left to bake before dusk."}
 			}
 
 			// A stale session — its initiator lost the bake by some non-completion path,
