@@ -240,6 +240,12 @@ func MoveActor(actorID ActorID, dest MoveDestination, leaveHuddleFirst bool, now
 					Kind:     cancelled.Kind,
 					At:       time.Now().UTC(),
 				})
+				// LLM-454: if the walker-off was the household bake's INITIATOR, the
+				// shared bake ends (it carried the flour and the yield). Joiners still
+				// baking finish their windows to no batch.
+				if cancelled.Kind == SourceActivityBake {
+					concludeAbandonedBake(w, actor.ID, StructureID(cancelled.ObjectID))
+				}
 			}
 
 			// Step 6 — supersede any in-flight intent. The old attempt

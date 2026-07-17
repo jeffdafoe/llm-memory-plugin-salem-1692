@@ -981,11 +981,13 @@ func hasPCSpeechWarrant(list []WarrantMeta) bool {
 }
 
 // hasNPCSpeechWarrant reports whether any meta is an NPC-to-NPC directed-speech
-// warrant (WarrantKindNPCSpoke). The laboring carve-out (LLM-230) uses it to let
-// a mid-job worker reply to a peer on a cadence — deliberately NOT reused by the
-// break / source-activity gates, which stay closed to NPC chatter (only the
-// PC-speech kind cuts a rester/eater short; the village's own conversations must
-// not yank one out). Mirrors hasPCSpeechWarrant.
+// warrant (WarrantKindNPCSpoke). Two carve-outs use it to let an otherwise-shelved
+// actor reply to a peer on a cadence: the laboring worker (LLM-230, npcReplyDue)
+// and the evening baker (LLM-454, bakeReplyDue) — both are occupations sociable
+// enough to warrant one word back. It stays deliberately OUT of the break gate and
+// the OTHER source-activity kinds (eat/drink/harvest/repair/stoke), which remain
+// closed to NPC chatter (only the PC-speech kind cuts a rester/eater short; the
+// village's own conversations must not yank one out). Mirrors hasPCSpeechWarrant.
 func hasNPCSpeechWarrant(list []WarrantMeta) bool {
 	for _, m := range list {
 		if m.Reason != nil && m.Reason.Kind() == WarrantKindNPCSpoke {

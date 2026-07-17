@@ -236,13 +236,6 @@ const stayOpenToolName = "stay_open"
 // and handed the tool.
 const takeBreakToolName = "take_break"
 
-// disperseToolName — the graceful-exit tool (LLM-453). Advertised ONLY when the
-// actor is in a wound-down huddle (looping / run-long / lingering) with a peer and
-// no live commerce or higher-priority directive — payload.OffersDisperse(), the
-// same predicate the wind-down coda's disperse line renders from, so the tool and
-// its cue can't drift (discussion-109).
-const disperseToolName = "disperse"
-
 // speakToolName — the conversation tool. Advertised ONLY when the actor has an
 // awake, addressable audience (payload.Surroundings.HasAudience() — its huddle
 // peers, or co-present actors within earshot). The substrate already rejects a
@@ -298,6 +291,13 @@ const repairToolName = "repair"
 // work-vs-leaving principle. Like repair, not gated on carrying enough
 // firewood; sim.StartStoke stays the authoritative gate.
 const stokeToolName = "stoke"
+
+// bakeToolName — the evening bake-bread tool (LLM-454). Advertised ONLY when the
+// evening bake cue is present (payload.BakeChoice non-nil) — a resident settled at
+// home in the post-work evening with the flour to start (or a household bake already
+// going here to join). The same signal renderBakeChoice reads, so tool and cue can't
+// drift (discussion-109). sim.StartOrJoinBake stays the authoritative gate.
+const bakeToolName = "bake"
 
 // actorIsMoving reports whether the subject has an in-flight move at snapshot
 // time, read from the ZBBS-HOME-336 read-path projection (MoveDestKind is
@@ -439,7 +439,6 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 	moving := actorIsMoving(payload.ActorID, snap)
 	offerStayOpen := payload.DutySteer != nil && payload.DutySteer.OfferStayOpen
 	offerTakeBreak := payload.RecoveryOptions.OffersTakeBreak()
-	offerDisperse := payload.OffersDisperse()
 	hasAudience := payload.Surroundings.HasAudience()
 	// hasHuddlePeer gates the pay verbs (LLM-329): both require the actor to be in
 	// a huddle at the substrate, and HuddleMembers is populated only then. The
@@ -450,6 +449,7 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 	offerCraft := payload.ForgeChoice != nil && len(payload.ForgeChoice.Items) > 0
 	offerRepair := payload.StallRepair != nil
 	offerStoke := payload.Hearth != nil
+	offerBake := payload.BakeChoice != nil
 	hasLaborOffer := len(perception.PendingLaborOffers(payload)) > 0
 	canSolicitWork := payload.CanSolicitWork
 	canOfferWork := len(payload.HireableWorkers) > 0
@@ -463,6 +463,17 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 	// the tool and its cue can't drift.
 	laboringMayMove := laboring && (laboringMayBreakOffToEat(payload.Actor) ||
 		payload.Laboring.OffPost || payload.Laboring.EmployerAway)
+	// LLM-454: a baker mid the evening bake is BusyAtSource-shelved and ticked only
+	// to answer a housemate (bakeReplyDue) or a high-value interrupt — so keep her
+	// speak-only the same way a laboring worker is, or the one reply could turn into
+	// wandering off / commerce that abandons the bread. Signalled by her own in-flight
+	// bake window (no new payload field), the SAME window the standing "stay with the
+	// bread" self-line reads, so tool and cue can't drift. move_to stays only for a
+	// red hunger/thirst need (walk to food) — mirroring laboringMayBreakOffToEat and
+	// the reactor interrupt that ticks her for it, so tool and tick agree.
+	baking := payload.Actor.InFlightSourceActivity != nil &&
+		payload.Actor.InFlightSourceActivity.Kind == sim.SourceActivityBake
+	bakingMayMove := baking && laboringMayBreakOffToEat(payload.Actor)
 
 	// Single pass over the Available set so each gated group is evaluated
 	// against its OWN condition. We deliberately avoid a "pending offer →
@@ -522,14 +533,6 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 		if spec.Name == takeBreakToolName && !offerTakeBreak {
 			continue
 		}
-		// disperse consumer (LLM-453): advertise only in a wound-down huddle the
-		// actor can gracefully take its leave of — payload.OffersDisperse(), the same
-		// signal the wind-down coda's disperse line renders from, so tool and cue
-		// can't drift (discussion-109). Keeps disperse out of the prompt everywhere a
-		// conversation is still live or a duty/need is steering the actor elsewhere.
-		if spec.Name == disperseToolName && !offerDisperse {
-			continue
-		}
 		// speak consumer (LLM-106): advertise only when there's an awake audience to
 		// address. The dispatch gate already rejects a no-listener speak, so a lone
 		// actor offered speak just wastes a turn greeting no one (the Josiah empty-
@@ -571,6 +574,12 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 		// can't drift. Like repair, NOT gated on carrying enough firewood: the cue
 		// steers buy-then-stoke when short, and sim.StartStoke errors helpfully.
 		if spec.Name == stokeToolName && !offerStoke {
+			continue
+		}
+		// bake consumer (LLM-454): advertise only in the evening-at-home bake
+		// situation (payload.BakeChoice non-nil), the same signal the bake cue renders
+		// from, so tool and cue can't drift. sim.StartOrJoinBake stays authoritative.
+		if spec.Name == bakeToolName && !offerBake {
 			continue
 		}
 		if _, gated := payOfferResponseTools[spec.Name]; gated {
@@ -633,6 +642,19 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 				continue
 			}
 			if spec.Name == moveToToolName && !laboringMayMove {
+				continue
+			}
+		}
+		// LLM-454 baking speak-only surface — see `baking` above. Mirrors the
+		// laboring strip: the commerce tools (laborAbandonTools) that would walk her
+		// off the bread go unconditionally, and move_to unless a red hunger/thirst
+		// need justifies breaking off to eat. speak / consume / done stay, so the one
+		// housemate reply the reactor ticks her for lands without abandoning the bake.
+		if baking {
+			if _, gated := laborAbandonTools[spec.Name]; gated {
+				continue
+			}
+			if spec.Name == moveToToolName && !bakingMayMove {
 				continue
 			}
 		}

@@ -384,6 +384,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// buildDutySteer just suppressed. Placed before degeneracy thinning so a
 	// flagged actor's movement invitation is stripped in lockstep with the steers.
 	p.EveningLeisure = buildEveningLeisure(snap, actorSnap, p.Anchors)
+	p.BakeChoice = buildBakeChoice(snap, actorSnap)
 	// LLM-345: inside a leisure venue, on the evening, the walk-away work-errand cues
 	// yield to the room. Each of these tells the agent to LEAVE and go buy or gather
 	// something — shovels from the smith, restock from a supplier, nails for a mend,
@@ -562,6 +563,7 @@ func thinDegenerateSteer(p *Payload) {
 	// invitation — the same movement-steer class this thinning removes for a
 	// flagged actor, so it goes too.
 	p.EveningLeisure = nil
+	p.BakeChoice = nil
 	if p.DutySteer == nil {
 		return
 	}
@@ -1328,13 +1330,14 @@ func resolveCoPresentMember(snap *sim.Snapshot, subjectID sim.ActorID, subj *sim
 		// suppression. The snapshot's SourceActivityKind is already BusyAtSource-gated at
 		// projection (world.go) — its presence here means the window is genuinely in
 		// flight, the SAME signal the subject's own in-flight self-line reads, so observer
-		// and subject can't drift on who is busy. Gate to the three "work" kinds that
-		// busyActivityPhrase renders: refresh (eat/drink at a source) is deliberately left
-		// to the Eating annotation, and confining the flag to the handled kinds keeps
+		// and subject can't drift on who is busy. Gate to the "work" kinds that
+		// busyActivityPhrase renders — repair/stoke/gather plus bake (LLM-454, the evening
+		// home occupation): refresh (eat/drink at a source) is deliberately left to the
+		// Eating annotation, and confining the flag to the handled kinds keeps
 		// SourceActivityBusy and a rendered phrase in lockstep — a busy flag never renders
 		// silent (nor would a future unhandled kind).
 		switch peer.SourceActivityKind {
-		case sim.SourceActivityRepair, sim.SourceActivityStoke, sim.SourceActivityHarvest:
+		case sim.SourceActivityRepair, sim.SourceActivityStoke, sim.SourceActivityHarvest, sim.SourceActivityBake:
 			m.SourceActivityBusy = true
 			m.SourceActivityKind = peer.SourceActivityKind
 			m.SourceActivityLabel = resolveDwellPinLabel(snap, peer.SourceActivityObjectID)

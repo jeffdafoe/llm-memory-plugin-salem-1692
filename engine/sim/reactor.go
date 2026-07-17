@@ -42,46 +42,44 @@ import (
 type WarrantKind string
 
 const (
-	WarrantKindUnknown                   WarrantKind = ""
-	WarrantKindPCSpoke                   WarrantKind = "pc_spoke"
-	WarrantKindNPCSpoke                  WarrantKind = "npc_spoke"
-	WarrantKindHuddleJoined              WarrantKind = "huddle_joined"      // the joiner
-	WarrantKindHuddlePeerJoined          WarrantKind = "huddle_peer_joined" // prior members
-	WarrantKindHuddleLeft                WarrantKind = "huddle_left"        // the leaver
-	WarrantKindHuddlePeerLeft            WarrantKind = "huddle_peer_left"   // remaining members
-	WarrantKindHuddleConcluded           WarrantKind = "huddle_concluded"   // evicted members
-	WarrantKindArrived                   WarrantKind = "arrived"
-	WarrantKindNeedThreshold             WarrantKind = "need_threshold"
-	WarrantKindShiftDuty                 WarrantKind = "shift_duty"
-	WarrantKindRestock                   WarrantKind = "restock"
-	WarrantKindIdleBackstop              WarrantKind = "idle_backstop"
-	WarrantKindPaid                      WarrantKind = "paid"
-	WarrantKindSceneQuoteTargeted        WarrantKind = "scene_quote_targeted"
-	WarrantKindPayOffer                  WarrantKind = "pay_offer"
-	WarrantKindPayResolved               WarrantKind = "pay_resolved"
-	WarrantKindDwellTickApplied          WarrantKind = "dwell_tick_applied"
-	WarrantKindDwellEnded                WarrantKind = "dwell_ended"
-	WarrantKindSourceActivityDone        WarrantKind = "source_activity_done"          // a timed eat/drink/harvest finished — completion beat (LLM-69)
-	WarrantKindAdmin                     WarrantKind = "admin"                         // operator forced a bare tick
-	WarrantKindImpulse                   WarrantKind = "impulse"                       // operator-injected in-world felt impulse (umbilical directive nudge)
-	WarrantKindSeekWork                  WarrantKind = "seek_work"                     // engine-authored felt impulse: a broke worker should go earn (LLM-141)
-	WarrantKindStranded                  WarrantKind = "stranded"                      // anomalous-position backstop: standing in the open at no anchor (ZBBS-HOME-450)
-	WarrantKindServeHandover             WarrantKind = "serve_handover"                // a buyer instantly took the seller's posted quote — wake the seller to hand over with a word (ZBBS-WORK-423)
-	WarrantKindProductionChoice          WarrantKind = "production_choice"             // producer idle at its post with nothing in the works — wake it to decide whether to make more (LLM-116, all producers since LLM-319)
-	WarrantKindProductionDone            WarrantKind = "production_done"               // a production cycle landed its batch — completion beat + the wake to decide about the next one (LLM-319)
-	WarrantKindStallRepair               WarrantKind = "stall_repair"                  // an owned business crossed the wear repair threshold — wake the owner to mend it (LLM-118, LLM-247)
-	WarrantKindStallRepairHired          WarrantKind = "stall_repair_hired"            // a hired worker just started on-post at their employer's already-worn business — wake them to mend it, piercing the laboring shelve-gate (LLM-271)
-	WarrantKindLaborOffer                WarrantKind = "labor_offer"                   // a worker solicited the employer for service-for-pay — wake the employer to accept_work / decline_work (LLM-187)
-	WarrantKindFarmUpkeep                WarrantKind = "farm_upkeep"                   // a farm owner owes upkeep shovels (coins above the floor) — wake them to buy from the smith (LLM-215)
-	WarrantKindReturnToPost              WarrantKind = "return_to_post"                // engine-authored felt impulse: a laboring worker has wandered off the post — wake them to head back (LLM-268)
-	WarrantKindTendNeed                  WarrantKind = "tend_need"                     // engine-authored felt impulse: a workless idle worker has grown hungry/thirsty and can resolve it now — go eat/drink instead of hunting odd jobs (LLM-276)
-	WarrantKindAtEase                    WarrantKind = "at_ease"                       // engine-authored felt impulse: a comfortable (coin-rich) workless idle worker has nothing pressing — take its ease, a plain idle villager (LLM-352, the LLM-194 "later lever")
-	WarrantKindVisitorRounds             WarrantKind = "visitor_rounds"                // engine-paced beat for a stationary traveler on his rounds — wake him to choose his next stop (move_to) off the rendered situation; the engine no longer picks his destination (LLM-379)
-	WarrantKindHearthLow                 WarrantKind = "hearth_low"                    // a storm is running and the owner's hearth fire is out/low — wake them to stoke it (LLM-412)
-	WarrantKindHearthStokeHired          WarrantKind = "hearth_stoke_hired"            // a hired worker started on-post during a storm at an employer whose hearth wants stoking — wake them, piercing the laboring shelve-gate (LLM-412)
-	WarrantKindUnfinishedIntent          WarrantKind = "unfinished_intent"             // the actor's own batch queued a commit call AFTER a terminal one — the harness dropped it, so re-tick promptly to let the actor finish what it meant to do (LLM-414)
-	WarrantKindHuddleLeftForBusiness     WarrantKind = "huddle_left_for_business"      // the disperser: voluntarily took its leave of a wound-down conversation to turn back to its own affairs (LLM-453)
-	WarrantKindHuddlePeerLeftForBusiness WarrantKind = "huddle_peer_left_for_business" // remaining members after a disperse — a leave-taking that legitimizes their own (LLM-453)
+	WarrantKindUnknown            WarrantKind = ""
+	WarrantKindPCSpoke            WarrantKind = "pc_spoke"
+	WarrantKindNPCSpoke           WarrantKind = "npc_spoke"
+	WarrantKindHuddleJoined       WarrantKind = "huddle_joined"      // the joiner
+	WarrantKindHuddlePeerJoined   WarrantKind = "huddle_peer_joined" // prior members
+	WarrantKindHuddleLeft         WarrantKind = "huddle_left"        // the leaver
+	WarrantKindHuddlePeerLeft     WarrantKind = "huddle_peer_left"   // remaining members
+	WarrantKindHuddleConcluded    WarrantKind = "huddle_concluded"   // evicted members
+	WarrantKindArrived            WarrantKind = "arrived"
+	WarrantKindNeedThreshold      WarrantKind = "need_threshold"
+	WarrantKindShiftDuty          WarrantKind = "shift_duty"
+	WarrantKindRestock            WarrantKind = "restock"
+	WarrantKindIdleBackstop       WarrantKind = "idle_backstop"
+	WarrantKindPaid               WarrantKind = "paid"
+	WarrantKindSceneQuoteTargeted WarrantKind = "scene_quote_targeted"
+	WarrantKindPayOffer           WarrantKind = "pay_offer"
+	WarrantKindPayResolved        WarrantKind = "pay_resolved"
+	WarrantKindDwellTickApplied   WarrantKind = "dwell_tick_applied"
+	WarrantKindDwellEnded         WarrantKind = "dwell_ended"
+	WarrantKindSourceActivityDone WarrantKind = "source_activity_done" // a timed eat/drink/harvest finished — completion beat (LLM-69)
+	WarrantKindAdmin              WarrantKind = "admin"                // operator forced a bare tick
+	WarrantKindImpulse            WarrantKind = "impulse"              // operator-injected in-world felt impulse (umbilical directive nudge)
+	WarrantKindSeekWork           WarrantKind = "seek_work"            // engine-authored felt impulse: a broke worker should go earn (LLM-141)
+	WarrantKindStranded           WarrantKind = "stranded"             // anomalous-position backstop: standing in the open at no anchor (ZBBS-HOME-450)
+	WarrantKindServeHandover      WarrantKind = "serve_handover"       // a buyer instantly took the seller's posted quote — wake the seller to hand over with a word (ZBBS-WORK-423)
+	WarrantKindProductionChoice   WarrantKind = "production_choice"    // producer idle at its post with nothing in the works — wake it to decide whether to make more (LLM-116, all producers since LLM-319)
+	WarrantKindProductionDone     WarrantKind = "production_done"      // a production cycle landed its batch — completion beat + the wake to decide about the next one (LLM-319)
+	WarrantKindStallRepair        WarrantKind = "stall_repair"         // an owned business crossed the wear repair threshold — wake the owner to mend it (LLM-118, LLM-247)
+	WarrantKindStallRepairHired   WarrantKind = "stall_repair_hired"   // a hired worker just started on-post at their employer's already-worn business — wake them to mend it, piercing the laboring shelve-gate (LLM-271)
+	WarrantKindLaborOffer         WarrantKind = "labor_offer"          // a worker solicited the employer for service-for-pay — wake the employer to accept_work / decline_work (LLM-187)
+	WarrantKindFarmUpkeep         WarrantKind = "farm_upkeep"          // a farm owner owes upkeep shovels (coins above the floor) — wake them to buy from the smith (LLM-215)
+	WarrantKindReturnToPost       WarrantKind = "return_to_post"       // engine-authored felt impulse: a laboring worker has wandered off the post — wake them to head back (LLM-268)
+	WarrantKindTendNeed           WarrantKind = "tend_need"            // engine-authored felt impulse: a workless idle worker has grown hungry/thirsty and can resolve it now — go eat/drink instead of hunting odd jobs (LLM-276)
+	WarrantKindAtEase             WarrantKind = "at_ease"              // engine-authored felt impulse: a comfortable (coin-rich) workless idle worker has nothing pressing — take its ease, a plain idle villager (LLM-352, the LLM-194 "later lever")
+	WarrantKindVisitorRounds      WarrantKind = "visitor_rounds"       // engine-paced beat for a stationary traveler on his rounds — wake him to choose his next stop (move_to) off the rendered situation; the engine no longer picks his destination (LLM-379)
+	WarrantKindHearthLow          WarrantKind = "hearth_low"           // a storm is running and the owner's hearth fire is out/low — wake them to stoke it (LLM-412)
+	WarrantKindHearthStokeHired   WarrantKind = "hearth_stoke_hired"   // a hired worker started on-post during a storm at an employer whose hearth wants stoking — wake them, piercing the laboring shelve-gate (LLM-412)
+	WarrantKindUnfinishedIntent   WarrantKind = "unfinished_intent"    // the actor's own batch queued a commit call AFTER a terminal one — the harness dropped it, so re-tick promptly to let the actor finish what it meant to do (LLM-414)
 )
 
 // WarrantReason is the marker interface for kind-specific warrant payloads.
@@ -1200,10 +1198,18 @@ func actorCanReactNow(w *World, a *Actor, now time.Time) (eligible bool, stale b
 	// (the live LLM-69 move-after-pick) and a move in that gap discarded a pick
 	// that had actually finished. Low-value warrants (NPC chatter, arrivals, idle)
 	// still shelve — nothing to respond to mid-activity, so don't burn a tick.
+	// EXCEPT a baker (LLM-454): the evening bake is a SHARED, sociable occupation,
+	// so NPC speech directed at her ticks her too — rate-limited to one reply per
+	// LaborReplyCadence (bakeReplyDue, the source-activity sibling of the laboring
+	// npcReplyDue below) — so an entering or co-baking housemate gets one word back
+	// instead of a silent wall. The utterance still lands in her transcript while she
+	// stays shelved; the speak-only tool surface that keeps the reply from walking
+	// her off the bread is applied separately at advertise time (handlers.gateTools).
 	if a.SourceActivity != nil &&
 		!hasBreakInterruptingNeedWarrant(a.Warrants) &&
 		!hasOperatorNudgeWarrant(a.Warrants) &&
-		!hasPCSpeechWarrant(a.Warrants) {
+		!hasPCSpeechWarrant(a.Warrants) &&
+		!bakeReplyDue(a, now, w.Settings) {
 		return false, false
 	}
 	// A live labor job (StateLaboring + a LaboringUntil window, LLM-190) shelves
@@ -1409,6 +1415,24 @@ func laborReplyCadenceElapsed(a *Actor, now time.Time, cadence time.Duration) bo
 		return true
 	}
 	return now.Sub(last) >= cadence
+}
+
+// bakeReplyDue reports whether a baker should be ticked to answer a housemate: she
+// is mid a bake window (LLM-454), an NPC has spoken to her, and her reply cadence
+// has elapsed. The source-activity sibling of the laboring npcReplyDue carve-out
+// (LLM-230) — a baker is BusyAtSource-shelved like a laborer, but the evening bake
+// is a SHARED, sociable occupation, so a co-baking or entering housemate should get
+// one word back rather than a silent wall. Reuses laborReplyCadenceElapsed (keyed on
+// lastReactorTickAt — no new state) and the same LaborReplyCadence setting, so a
+// baker who just answered a red need or a PC does not also burn a tick on chatter
+// within the window. Scoped to SourceActivityBake, so eat/drink/harvest/repair/stoke
+// stay closed to NPC chatter exactly as before. The speak-only tool surface that keeps
+// the reply from walking her off the bake is applied separately (handlers.gateTools).
+func bakeReplyDue(a *Actor, now time.Time, s WorldSettings) bool {
+	return a.SourceActivity != nil &&
+		a.SourceActivity.Kind == SourceActivityBake &&
+		hasNPCSpeechWarrant(a.Warrants) &&
+		laborReplyCadenceElapsed(a, now, s.laborReplyCadence())
 }
 
 // recordReactorTick appends now to the actor's RecentReactorTicks ring,

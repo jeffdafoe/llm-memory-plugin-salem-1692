@@ -48,6 +48,12 @@ const (
 	// StokeDurationSeconds, and completion extends the hearth's HearthLitUntil
 	// so the structure is warm. The repair pattern with firewood for nails.
 	SourceActivityStoke SourceActivityKind = "stoke"
+	// SourceActivityBake is a resident baking the household's bread at home in the
+	// evening (LLM-454): a shared, per-home occupation that runs until the baker's
+	// bed cue and, for the session initiator, mints a batch of loaves at completion.
+	// Flour is consumed at completion (not start) so a restart mid-bake forfeits
+	// nothing. See bake.go.
+	SourceActivityBake SourceActivityKind = "bake"
 )
 
 // Durations are tunable engine constants (Jeff approved eat ~3s / harvest ~5s
@@ -613,6 +619,23 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 			Continues:  false,
 			At:         now,
 		})
+	case SourceActivityBake:
+		// LLM-454: the evening bake lands. For the session INITIATOR the shared
+		// household batch mints — flour consumed HERE, not at start, so a restart
+		// mid-bake forfeits nothing; a joiner just finishes the evening's work with
+		// no batch of its own (minted == 0). Bound to the home the window began at
+		// (act.ObjectID == the home structure id, shared under the WORK-342 id bridge).
+		minted := completeHomeBake(w, actorID, actor, StructureID(act.ObjectID))
+		w.emit(&SourceActivityCompleted{
+			ActorID:    actorID,
+			ObjectID:   act.ObjectID,
+			Kind:       act.Kind,
+			Item:       BakeBreadItem,
+			Qty:        minted,
+			SourceName: sourceActivityObjectName(w, w.VillageObjects[act.ObjectID]),
+			Continues:  false,
+			At:         now,
+		})
 	case SourceActivityRepair:
 		// LLM-118 (owner), LLM-271 (hired worker): the mending lands — wear cleared,
 		// the stall trades again. Wear=0 re-arms the owner's edge-triggered warrant
@@ -800,6 +823,19 @@ func SourceActivityCompletionNarration(kind SourceActivityKind, item ItemKind, q
 			return fmt.Sprintf("You feed the fire at %s; it catches and burns strong, and the room warms.", sourceName)
 		}
 		return "You feed the fire; it catches and burns strong, and the room warms."
+	case SourceActivityBake:
+		// LLM-454: the initiator's landing beat, naming the loaves so the model knows
+		// what it has to share; a joiner lands qty 0 and gets no beat. The "more than
+		// you'll eat yourself" line is a quiet nudge to share, not an imperative
+		// (scenes, not stats — the household's presence renders separately).
+		if qty <= 0 {
+			return ""
+		}
+		unit := "loaves"
+		if qty == 1 {
+			unit = "loaf"
+		}
+		return fmt.Sprintf("You draw the bread from the oven — %d %s, warm and fragrant. There is more here than you'll eat yourself tonight.", qty, unit)
 	}
 	return ""
 }
