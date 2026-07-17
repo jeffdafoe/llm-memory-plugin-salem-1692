@@ -2503,7 +2503,11 @@ func _dormant_token(state: String) -> String:
 ## activity marker): a same-frame clear -> set (wake then immediately sleep, or
 ## repeated dormancy frames in one tick) would otherwise reuse the still-present,
 ## queued-for-deletion node and then lose it when the deferred free fires — or
-## collide on the node name when re-created. Toggling sidesteps that race. Idempotent.
+## collide on the node name when re-created. Toggling sidesteps that race. Sleep and
+## source-activity share the above-head slot and are mutually exclusive: going dormant
+## hides the activity marker, and waking re-derives it from the stored kind — so the
+## two feeds (dormancy vs npc_source_activity_changed) can arrive out of step without
+## stranding a marker wrongly visible or wrongly hidden. Idempotent.
 func _apply_dormant_visual(container: Node2D, token: String) -> void:
     container.set_meta("dormant", token)
     var dormant := token != ""
@@ -2514,7 +2518,13 @@ func _apply_dormant_visual(container: Node2D, token: String) -> void:
     if not dormant:
         if marker != null:
             marker.visible = false
+        # Waking may reveal a source-activity that was masked while the NPC slept;
+        # re-derive it from the stored kind so an activity feed that doesn't re-fire
+        # can't strand the marker hidden. Reaches the activity show/hide branch only
+        # (dormant meta is now "", so no call back here).
+        _apply_activity_marker(container, str(container.get_meta("source_activity_kind", "")))
         return
+    _hide_marker(container, ACTIVITY_MARKER_NAME)
     if marker == null:
         marker = Label.new()
         marker.name = ZZZ_MARKER_NAME
@@ -2547,6 +2557,15 @@ func _npc_sprite(container: Node2D) -> AnimatedSprite2D:
         if child is AnimatedSprite2D:
             return child
     return null
+
+## Hide a named above-head status marker on a container if it exists. The sleep Zzz
+## and the source-activity marker share one above-head slot and are mutually
+## exclusive; whichever one is being shown calls this on the other so a feed that
+## updates one state without clearing the other can't leave both glyphs stacked.
+func _hide_marker(container: Node2D, marker_name: String) -> void:
+    var m: Label = container.get_node_or_null(marker_name)
+    if m != null:
+        m.visible = false
 
 # Source-activity marker (LLM-448) — a persistent lucide glyph above the head for an
 # actor mid a timed repair/stoke/harvest: the player-facing counterpart to the
@@ -2592,15 +2611,24 @@ func _activity_glyph(kind: String) -> String:
 ## a rapid transition (e.g. a harvest ending as a repair starts) would otherwise reuse
 ## the still-present, queued-for-deletion node and then lose it when the deferred free
 ## fires — or collide on the node name when re-created. Toggling sidesteps that race.
-## Reuses _zzz_marker_position (the above-head slot it shares with the sleep Zzz; the
-## two states are mutually exclusive). _zzz_marker_position is null-safe on the sprite.
+## Reuses _zzz_marker_position (the above-head slot it shares with the sleep Zzz); the
+## two states are mutually exclusive, so showing a glyph hides the Zzz marker and
+## clearing it restores the Zzz when the NPC is still dormant. _zzz_marker_position is
+## null-safe on the sprite.
 func _apply_activity_marker(container: Node2D, kind: String) -> void:
     var glyph := _activity_glyph(kind)
     var marker: Label = container.get_node_or_null(ACTIVITY_MARKER_NAME)
     if glyph == "":
         if marker != null:
             marker.visible = false
+        # An activity that was masking the sleep Zzz just ended; if the NPC is still
+        # flagged dormant, restore the Zzz (dormancy owns the sprite dim, already
+        # applied, and its feed may not re-fire). Reaches the dormant show branch only
+        # (token is non-empty), so no call back here.
+        if str(container.get_meta("dormant", "")) != "":
+            _apply_dormant_visual(container, str(container.get_meta("dormant", "")))
         return
+    _hide_marker(container, ZZZ_MARKER_NAME)
     if marker == null:
         marker = Label.new()
         marker.name = ACTIVITY_MARKER_NAME
