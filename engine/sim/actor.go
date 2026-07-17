@@ -739,6 +739,21 @@ type Actor struct {
 	// needs-recovery process whose interruption is a real regression (WORK-410).
 	OpenUntil *time.Time
 
+	// DispersedUntil is the instant until which this actor — having voluntarily
+	// taken its leave of a wound-down conversation (Disperse, LLM-453) — will not
+	// be drawn back into a huddle at DispersedFromStructureID. colocatedConversationalActors
+	// skips it as a re-pull candidate and EnsureColocatedHuddle refuses to re-form
+	// or re-join one for it there, so the household can sit in companionable silence
+	// instead of the next speak yanking it straight back into the loop it just left.
+	// The scope is one structure so the actor can still converse anywhere else.
+	//
+	// TRANSIENT — deliberately NOT checkpointed (like OpenUntil): ephemeral social
+	// state, minutes-scale, restart-loss wholly benign (a restored actor is simply
+	// free to converse again, the safe direction). DispersedUntil is cloned in
+	// CloneActor (pointer field); DispersedFromStructureID rides the value copy.
+	DispersedUntil           *time.Time
+	DispersedFromStructureID StructureID
+
 	// LastTirednessRecoveryAt is the cursor the tiredness-recovery sweep
 	// advances as it credits recovery while BreakUntil/SleepingUntil are
 	// open. It doubles as the fractional carry: the sweep advances it by
@@ -1263,6 +1278,10 @@ func CloneActor(a *Actor) *Actor {
 	if a.OpenUntil != nil {
 		t := *a.OpenUntil
 		cp.OpenUntil = &t
+	}
+	if a.DispersedUntil != nil {
+		t := *a.DispersedUntil
+		cp.DispersedUntil = &t
 	}
 	if a.LastTirednessRecoveryAt != nil {
 		t := *a.LastTirednessRecoveryAt

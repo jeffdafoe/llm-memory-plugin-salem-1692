@@ -689,7 +689,7 @@ func ClearConversationalHuddlesOnBoot(w *World) {
 // Unexported by design — see buildWalkGrid for the rationale; lifecycle
 // helpers stay package-internal so external callers can only reach the
 // transition through Commands.
-func leaveCurrentHuddle(w *World, actor *Actor, now time.Time) LeaveHuddleResult {
+func leaveCurrentHuddleFor(w *World, actor *Actor, now time.Time, leaverKind, peerKind WarrantKind) LeaveHuddleResult {
 	huddleID := actor.CurrentHuddleID
 	huddle, ok := w.Huddles[huddleID]
 	if !ok {
@@ -744,7 +744,7 @@ func leaveCurrentHuddle(w *World, actor *Actor, now time.Time) LeaveHuddleResult
 		SourceActorID:  actor.ID,
 		HuddleID:       huddleID,
 		OccurredAt:     now,
-		Reason:         HuddlePartReason{K: WarrantKindHuddleLeft, PeerIDs: remaining},
+		Reason:         HuddlePartReason{K: leaverKind, PeerIDs: remaining},
 	}, now)
 	for _, id := range remaining {
 		if other, ok := w.Actors[id]; ok {
@@ -755,7 +755,7 @@ func leaveCurrentHuddle(w *World, actor *Actor, now time.Time) LeaveHuddleResult
 				SourceActorID:  actor.ID,
 				HuddleID:       huddleID,
 				OccurredAt:     now,
-				Reason:         BasicWarrantReason{K: WarrantKindHuddlePeerLeft},
+				Reason:         BasicWarrantReason{K: peerKind},
 			}, now)
 			// ZBBS-WORK-370: a member that was awaiting a reply from the
 			// leaver is no longer owed one — the leaver is gone.
@@ -839,6 +839,16 @@ func leaveCurrentHuddle(w *World, actor *Actor, now time.Time) LeaveHuddleResult
 		Concluded:        concluded,
 		RemainingMembers: remaining,
 	}
+}
+
+// leaveCurrentHuddle removes actor from its current huddle with the ordinary
+// "left the conversation" classification (WarrantKindHuddleLeft / …PeerLeft). It
+// is the default entry point every caller but Disperse uses; leaveCurrentHuddleFor
+// is the reason-parameterized variant, and Disperse (LLM-453) passes the
+// "for business" kinds so the departure reads as a graceful leave-taking rather
+// than a bare "stepped away".
+func leaveCurrentHuddle(w *World, actor *Actor, now time.Time) LeaveHuddleResult {
+	return leaveCurrentHuddleFor(w, actor, now, WarrantKindHuddleLeft, WarrantKindHuddlePeerLeft)
 }
 
 // attachHuddleToScene adds a huddle to a scene's Huddles set, enforcing

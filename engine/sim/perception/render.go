@@ -376,8 +376,9 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// from that anti-repeat line down to the weaker default coda.
 	triageRunLong := conversationRunLong && !midItemDwell
 	triageLingering := conversationLingering && !midItemDwell
+	offerDisperse := p.OffersDisperse()
 	renderTurnState(&ephemeral, p.TurnState, seekWorkDirective || conversationLooping || conversationRunLong || conversationLingering)
-	renderTriage(&ephemeral, p.Actor.Needs, p.Actor.NeedThresholds, p.TurnState.AwaitingReply(), conversationLooping, triageRunLong, triageLingering, p.NeedRedirect, seekWorkDirective, len(payOffers) > 0, p.Actor.InFlightMove, p.Actor.InFlightSourceActivity)
+	renderTriage(&ephemeral, p.Actor.Needs, p.Actor.NeedThresholds, p.TurnState.AwaitingReply(), conversationLooping, triageRunLong, triageLingering, offerDisperse, p.NeedRedirect, seekWorkDirective, len(payOffers) > 0, p.Actor.InFlightMove, p.Actor.InFlightSourceActivity)
 
 	out.Text = durable.String()
 	out.EphemeralText = ephemeral.String()
@@ -671,7 +672,7 @@ func renderNeedRedirect(v NeedRedirectView) string {
 // wandering exposed: obligations to others and pressing needs over idle drift.
 // Rendered unconditionally — Render is only called on the NPC reactor-tick path
 // (handlers.Harness.RunTick), never for a PC.
-func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.NeedThresholds, awaitingReply bool, conversationLooping bool, conversationRunLong bool, conversationLingering bool, needRedirect *NeedRedirectView, seekWork bool, hasPayOffers bool, inFlightMove *InFlightMoveView, inFlightSourceActivity *InFlightSourceActivityView) {
+func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.NeedThresholds, awaitingReply bool, conversationLooping bool, conversationRunLong bool, conversationLingering bool, offerDisperse bool, needRedirect *NeedRedirectView, seekWork bool, hasPayOffers bool, inFlightMove *InFlightMoveView, inFlightSourceActivity *InFlightSourceActivityView) {
 	// A buyer's offer awaiting this actor's answer outranks everything below —
 	// including the actor's own felt needs, which the coda's "pressing needs"
 	// phrasing otherwise licenses to win. Without this, a starving seller read
@@ -741,6 +742,11 @@ func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.
 		// pattern). Falls back to the generic line when no target resolves.
 		if needRedirect != nil {
 			b.WriteString(renderNeedRedirect(*needRedirect))
+		} else if offerDisperse {
+			// LLM-453: the settled conversation has a real exit now — take your leave
+			// (disperse) rather than done(), which only ends the tick and lets the
+			// next speak re-open the loop. The parting word rides the tool's say.
+			b.WriteString("You and the others here keep saying the same thing — the matter is already settled between you. Don't say it again. If you are ready to be about your own affairs, take your leave: call disperse, and your parting words go with you.\n")
 		} else {
 			b.WriteString("You and the others here keep saying the same thing — the matter is already settled between you. Don't say it again: do what you've agreed — move, tend your work or a need — or call done() and let the moment rest. Speak again only if you truly have something new.\n")
 		}
@@ -760,7 +766,13 @@ func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.
 		// is the more specific read of why a reply is pending. The needRedirect
 		// swap is deliberately NOT applied here — it exists to break a
 		// confabulated plan-loop, and this case is by definition not a loop.
-		b.WriteString("This conversation has gone on a good while and nothing new is coming of it. Bring it to a close — say a brief farewell or simply turn to your own affairs, then call done(). Do not start a new topic.\n")
+		if offerDisperse {
+			// LLM-453: a graceful terminal exit exists now — take your leave instead
+			// of the bare done(), which leaves the huddle intact to re-form.
+			b.WriteString("This conversation has gone on a good while and nothing new is coming of it. When you are ready, take your leave — call disperse, and your parting words go with you. Do not start a new topic.\n")
+		} else {
+			b.WriteString("This conversation has gone on a good while and nothing new is coming of it. Bring it to a close — say a brief farewell or simply turn to your own affairs, then call done(). Do not start a new topic.\n")
+		}
 	// LLM-416: also arrives gated off while mid item-dwell, same as
 	// conversationRunLong above — the pinned eater falls through rather than being
 	// told to let the talk end.
@@ -778,7 +790,12 @@ func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.
 		// silent conclude one persistence gate later exists for the case where it
 		// doesn't, and getting a graceful in-world farewell here instead is the
 		// entire point of the arm.
-		b.WriteString("You have been talking here a long while now, and the day is getting on. Let the conversation come to its natural end — say your farewells, or simply turn back to your own affairs, then call done(). Do not open a new topic.\n")
+		if offerDisperse {
+			// LLM-453: let the graceful exit be the way to end it — take your leave.
+			b.WriteString("You have been talking here a long while now, and the day is getting on. When you are ready, take your leave — call disperse, and your parting words go with you. There is no need to open a new topic.\n")
+		} else {
+			b.WriteString("You have been talking here a long while now, and the day is getting on. Let the conversation come to its natural end — say your farewells, or simply turn back to your own affairs, then call done(). Do not open a new topic.\n")
+		}
 	case awaitingReply:
 		// Turn-state coda (ZBBS-WORK-370): the actor has spoken and is awaiting a
 		// reply. The default "choose one thing and do it" imperative is exactly
@@ -2633,6 +2650,48 @@ func PendingPayOffers(p Payload) []sim.PayOfferWarrantReason {
 	return p.PayOffersForMe
 }
 
+// OffersDisperse reports whether the disperse verb (LLM-453) is available this
+// tick: the actor is in a wound-down huddle (looping / run-long / lingering) with a
+// peer to take its leave of, no live commerce a departure would abandon, and no
+// higher-priority directive whose coda would preempt the wind-down coda the
+// disperse cue rides on. The SINGLE predicate both gateTools and the wind-down coda
+// read, so the disperse tool and its cue cannot drift (tool-cue lockstep,
+// discussion-109). Ordered to mirror renderTriage's switch: any case that outranks
+// the wind-down codas (in-flight walk, seek-work, need redirect, pinned mid-meal)
+// gates the tool off too, so it never appears without its cue.
+func (p Payload) OffersDisperse() bool {
+	windDown := p.TurnState.ConversationLooping || p.TurnState.ConversationRunLong || p.TurnState.ConversationLingering
+	if !windDown || len(p.Surroundings.HuddleMembers) == 0 {
+		return false
+	}
+	if p.Actor.InFlightSourceActivity != nil { // mid eat/drink/harvest — the mid-activity coda (LLM-69) is the FIRST switch case and wins
+		return false
+	}
+	if p.Actor.InFlightMove != nil { // already walking — the in-flight coda wins
+		return false
+	}
+	if len(p.SeekWorkPlaces) > 0 { // a workless worker's go-earn coda wins
+		return false
+	}
+	if p.NeedRedirect != nil { // a hunger/thirst redirect inside the loop wins
+		return false
+	}
+	for _, c := range p.Actor.ActiveDwellCredits { // pinned mid-meal — run-long/lingering codas gate off (LLM-416)
+		if c.Source == sim.DwellSourceItem {
+			return false
+		}
+	}
+	// Don't let the actor walk away from anything awaiting ITS decision: a buyer's
+	// pay offer or its own staked offer to settle, a hire it's been asked to accept,
+	// or a gift to answer. A posted-quote / mid-labor state is left in place safely —
+	// disperse never moves the actor, so it keeps its post and its job.
+	if len(PendingPayOffers(p)) > 0 || len(p.PendingOffersFromMe) > 0 ||
+		len(PendingLaborOffers(p)) > 0 || len(PendingGiftsForMe(p)) > 0 {
+		return false
+	}
+	return true
+}
+
 // PendingLaborOffers returns the labor offers currently pending against this
 // actor as EMPLOYER — the payload's standing ledger view (Build's
 // buildLaborOffersForMe scan over snap.LaborLedger, LLM-26). The single source
@@ -3666,6 +3725,13 @@ func renderBasicWarrantLine(n int, kind sim.WarrantKind, who string) string {
 		return fmt.Sprintf("%d. %s stepped away from your conversation.\n", n, who)
 	case sim.WarrantKindHuddleConcluded:
 		return fmt.Sprintf("%d. Your conversation has broken up.\n", n)
+	case sim.WarrantKindHuddleLeftForBusiness:
+		// LLM-453: the disperser's own line when its peer list didn't survive to name.
+		return fmt.Sprintf("%d. You took your leave and turned back to your own affairs.\n", n)
+	case sim.WarrantKindHuddlePeerLeftForBusiness:
+		// LLM-453: a peer's graceful leave-taking — warmer than the bare "stepped
+		// away", and the cue that legitimizes the reader taking its own leave next.
+		return fmt.Sprintf("%d. %s took their leave, turning back to their own affairs.\n", n, who)
 	default:
 		// A kind with no felt template lands here — an unhandled warrant kind, or
 		// a narration warrant (dwell/consumed) whose text came back empty and fell
@@ -3700,6 +3766,8 @@ func renderHuddlePartWarrantLine(n int, r sim.HuddlePartReason, nameOf func(sim.
 		return fmt.Sprintf("%d. You joined a conversation with %s.\n", n, peers)
 	case sim.WarrantKindHuddleLeft:
 		return fmt.Sprintf("%d. You left the conversation with %s.\n", n, peers)
+	case sim.WarrantKindHuddleLeftForBusiness:
+		return fmt.Sprintf("%d. You took your leave of %s and turned back to your own affairs.\n", n, peers)
 	default:
 		return renderBasicWarrantLine(n, r.K, "")
 	}

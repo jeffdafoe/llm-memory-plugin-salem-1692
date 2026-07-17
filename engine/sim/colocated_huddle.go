@@ -85,6 +85,14 @@ func EnsureColocatedHuddle(actorID ActorID, now time.Time) Command {
 			if structureID == "" {
 				return nil, nil
 			}
+			// LLM-453: an actor that just took its leave of a wound-down conversation
+			// here must not immediately re-form or re-join one at the same structure —
+			// its own speak (or a housemate's, via the pull below) would otherwise draw
+			// it right back into the loop it left. The cooldown is structure-scoped, so
+			// it can still converse anywhere else it walks to.
+			if dispersedFrom(actor, structureID, now) {
+				return nil, nil
+			}
 			others := colocatedConversationalActors(w, actor, structureID, now)
 			// ZBBS-HOME-363: the speaker must also join an ALREADY-ACTIVE
 			// structure huddle even when there are no UNHUDDLED co-located
@@ -324,6 +332,13 @@ func colocatedConversationalActors(w *World, self *Actor, structureID StructureI
 		}
 		if a.CurrentHuddleID != "" {
 			continue // already conversing — never leave-first them out (code_review)
+		}
+		if self.Kind != KindPC && dispersedFrom(a, structureID, now) {
+			// Just took its leave of this structure's conversation — don't let
+			// ANOTHER NPC's speak re-pull it into the loop it left (LLM-453). A PC
+			// speaker is exempt: a player may always re-engage a dispersed NPC, so
+			// the cooldown never blocks player-facing conversation or commerce.
+			continue
 		}
 		if !colocatedConversational(a, now, staleAfter) {
 			continue
