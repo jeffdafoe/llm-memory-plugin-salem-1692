@@ -274,6 +274,16 @@ func IncrementNeedsTick(cappedHours int) Command {
 				if a.LLMAgent == "" && a.LoginUsername == "" {
 					continue // decorative
 				}
+				// LLM-450: an absent player's needs are frozen. A presence-stale PC
+				// (no live client) is in suspended animation — its character is
+				// asleep in the room it rents (AutoBedOfflineLodgerPCs) or simply
+				// parked — so accruing hunger/thirst/tiredness while the player is
+				// away would strand them starving and exhausted on return. Hold the
+				// whole need set until they reconnect. PC-only: an NPC has no
+				// presence signal, so this never touches one.
+				if a.Kind == KindPC && PCPresenceStale(a.LastPCSeenAt, now, PCPresenceStaleAfter(w)) {
+					continue
+				}
 				if a.Needs == nil {
 					a.Needs = make(map[NeedKey]int)
 				}

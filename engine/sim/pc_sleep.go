@@ -240,6 +240,9 @@ func TouchPCInput(w *World, actorID ActorID, now time.Time) {
 //   - tiredness <= 0: fully rested — the EXPECTED wake. RecoverTiredness
 //     decrements the PC's tiredness every minute while SleepingUntil is set,
 //     so a max-tiredness PC wakes in ~4h wall-clock at the default rate.
+//     SUPPRESSED while the PC is presence-stale (offline, LLM-450): an absent
+//     player sleeps on until it reconnects rather than waking to an empty seat
+//     and re-bedding every tick.
 //   - SleepingUntil <= now: the safety cap — a backstop against a wedged
 //     recovery sweep, not the normal path.
 //   - checkout: the PC's ledger grant for a private room here has lapsed
@@ -269,7 +272,15 @@ func WakeExpiredPCSleepers(now time.Time) Command {
 					continue
 				}
 				room, canSleepHere := pcCanSleepHere(w, a, now)
-				rested := a.Needs["tiredness"] <= 0
+				// LLM-450: an OFFLINE rested PC is NOT woken by recovery. There is no
+				// shift to wake for and the player isn't here to resume, so it sleeps
+				// on (suspended animation) until it reconnects — the reconnect wake
+				// (StampConnectedPCsSeen) surfaces it then. Waking a still-absent
+				// rested PC would just re-bed it next tick (AutoBedOfflineLodgerPCs),
+				// spamming PCSleepStarted/Ended every minute. The other wake reasons
+				// (checkout / movedOut / the 12h cap) still fire.
+				rested := a.Needs["tiredness"] <= 0 &&
+					!PCPresenceStale(a.LastPCSeenAt, now, PCPresenceStaleAfter(w))
 				capped := !a.SleepingUntil.After(now)
 				checkedOut := !canSleepHere
 				// Defensive: a sleeping PC's InsideRoomID is its granted bedroom.
@@ -335,10 +346,53 @@ func AutoBedIdleLodgerPCs(now time.Time) Command {
 	}
 }
 
+// AutoBedOfflineLodgerPCs beds any lodger PC whose player has gone offline into
+// the room it rents (LLM-450). Unlike AutoBedIdleLodgerPCs this keys on PRESENCE
+// (PCPresenceStale), not the idle-input timer: once the player has actually left,
+// the character retires to bed promptly regardless of how recently it acted, and
+// with NO tiredness floor — so an absent player always returns fully rested. This
+// closes the bug where a lodger who booked a room but logged off was never bedded
+// (LastPCInputAt is transient and nil after a restart, so the idle arm skipped it)
+// and climbed to max tiredness while its room quietly auto-renewed.
+//
+// pcCanSleepHere still gates on an active private-room grant in the PC's CURRENT
+// structure — a grantless PC, or one that logged off away from its inn, has
+// nowhere to bed and is left alone (its needs are still frozen by IncrementNeedsTick,
+// so it doesn't starve; it just doesn't recover tiredness). executePCSleep beds
+// into that granted room and stamps InsideRoomID. Keyed on presence, a live client
+// (present) is never bedded here — the idle arm governs an online-but-AFK player.
+// Idempotent with the idle arm (executePCSleep no-ops an already-sleeping PC), so
+// running both in the same tick never double-beds. Run after the wake pass.
+func AutoBedOfflineLodgerPCs(now time.Time) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			staleAfter := PCPresenceStaleAfter(w)
+			bedded := 0
+			for _, a := range w.Actors {
+				if a.Kind != KindPC || a.SleepingUntil != nil {
+					continue
+				}
+				if !PCPresenceStale(a.LastPCSeenAt, now, staleAfter) {
+					continue // player is present — the idle arm governs
+				}
+				room, ok := pcCanSleepHere(w, a, now)
+				if !ok {
+					continue // no active grant for a private bedroom here
+				}
+				if executePCSleep(w, a, room, now) {
+					bedded++
+				}
+			}
+			return bedded, nil
+		},
+	}
+}
+
 // runPCSleepTick runs the PC sleep sweep for one tick: wake first (surface PCs
-// who are rested or capped), then bed (catch idle lodgers now eligible).
-// Wake-before-bed mirrors the NPC arm and avoids a wake/bed thrash on a PC at
-// the boundary. Called from runSleepTickIteration alongside the NPC arms.
+// who are rested or capped), then bed — both the idle arm (online AFK players)
+// and the offline arm (absent players, LLM-450). Wake-before-bed mirrors the NPC
+// arm and avoids a wake/bed thrash on a PC at the boundary. Called from
+// runSleepTickIteration alongside the NPC arms.
 func runPCSleepTick(ctx context.Context, w *World, now time.Time) {
 	if _, err := w.SendContext(ctx, WakeExpiredPCSleepers(now)); err != nil {
 		if ctx.Err() == nil {
@@ -349,6 +403,11 @@ func runPCSleepTick(ctx context.Context, w *World, now time.Time) {
 	if _, err := w.SendContext(ctx, AutoBedIdleLodgerPCs(now)); err != nil {
 		if ctx.Err() == nil {
 			log.Printf("sim/pc_sleep: PC auto-bed sweep failed: %v", err)
+		}
+	}
+	if _, err := w.SendContext(ctx, AutoBedOfflineLodgerPCs(now)); err != nil {
+		if ctx.Err() == nil {
+			log.Printf("sim/pc_sleep: PC offline auto-bed sweep failed: %v", err)
 		}
 	}
 }

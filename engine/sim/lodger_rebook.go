@@ -66,6 +66,9 @@ type RebookLodgerRecord struct {
 // RebookLodgersResult carries the renewals performed this sweep.
 type RebookLodgersResult struct {
 	Renewals []RebookLodgerRecord
+	// Holds counts free grant-extensions for offline players this sweep (LLM-450):
+	// the room is frozen and held, not billed, while the player is away.
+	Holds int
 }
 
 // RebookLodgersDue returns a Command that renews every lodger whose soonest
@@ -121,10 +124,34 @@ func RebookLodgersDue(now time.Time) Command {
 					continue
 				}
 
+				// Validate the physical room before either path — a grant for a
+				// deleted/malformed room is not renewable OR holdable (code_review).
 				room := findRoom(w, grant.RoomID)
 				if room == nil {
 					continue
 				}
+
+				if PCPresenceStale(lodger.LastPCSeenAt, now, PCPresenceStaleAfter(w)) {
+					// LLM-450: an offline player's room is FROZEN, not billed.
+					// Extend the grant for free — no coin debit, no keeper credit,
+					// no audit row — so it never lapses while the player is away.
+					// This is the suspended-animation hold: it keeps the grant
+					// active so AutoBedOfflineLodgerPCs can bed them and the
+					// checkout/eviction sweeps never fire mid-absence, without
+					// draining an absent purse. Paid auto-rebook resumes the moment
+					// they reconnect (presence goes fresh). Extending pushes
+					// ExpiresAt past the lead-time window, so this fires ~once per
+					// night rather than every sweep. Logged so a held room can't
+					// become silent capacity leakage (code_review); low-volume by
+					// construction (~once per night per absent lodger).
+					newExpires := ComputeLodgerUntil(*grant.ExpiresAt, 1, checkOut, loc)
+					grant.ExpiresAt = &newExpires
+					result.Holds++
+					log.Printf("sim/lodger_rebook: holding room %d for offline player %q free until %v (not billed)",
+						grant.RoomID, lodgerID, newExpires)
+					continue
+				}
+
 				keeperID, keeper := keeperForStructure(w, room.StructureID)
 				if keeper == nil {
 					log.Printf("sim/lodger_rebook: no keeper at structure %q for lodger %q — skipping renewal (grant will lapse)",
