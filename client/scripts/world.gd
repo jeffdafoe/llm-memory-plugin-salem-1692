@@ -609,6 +609,9 @@ func apply_npc_source_activity_changed(data: Dictionary) -> void:
         return
     container.set_meta("source_activity_kind", str(data.get("kind", "")))
     container.set_meta("source_activity_label", str(data.get("source_name", "")))
+    # LLM-448: the persistent above-head glyph (the at-a-glance sibling of the
+    # hover tooltip line). Cleared when kind is empty.
+    _apply_activity_marker(container, str(data.get("kind", "")))
 
 ## Remove an NPC from the world by id. Called by the npc_deleted WS handler
 ## on all connected clients, not just the one that initiated the delete.
@@ -818,6 +821,10 @@ func _render_npc(npc: Dictionary) -> void:
     var dormant_token := _dormant_token(str(npc.get("state", "")))
     if dormant_token != "":
         _apply_dormant_visual(container, dormant_token)
+    # Initial source-activity marker for an actor already mid repair/stoke/harvest
+    # at render time (LLM-448 — snapshot load carries source_activity_kind seeded
+    # above); live transitions after this ride apply_npc_source_activity_changed.
+    _apply_activity_marker(container, str(container.get_meta("source_activity_kind", "")))
     npc_list_changed.emit()
 
 ## Facing direction from a movement vector. |dx| vs |dy| picks the dominant
@@ -2534,6 +2541,71 @@ func _npc_sprite(container: Node2D) -> AnimatedSprite2D:
         if child is AnimatedSprite2D:
             return child
     return null
+
+# Source-activity marker (LLM-448) — a persistent lucide glyph above the head for an
+# actor mid a timed repair/stoke/harvest: the player-facing counterpart to the
+# LLM-440 perception annotation and the at-a-glance sibling of the sleep Zzz. Rides
+# the LLM-441 npc_source_activity_changed feed. Unlike sleep there is NO sprite dim
+# (the actor is active); sleep and source-activity are mutually exclusive, so the
+# marker shares the Zzz above-head slot. Kind -> lucide codepoint (lucide 1.24.0,
+# verified present in assets/fonts/lucide.ttf): repair = hammer, stoke = flame,
+# harvest = wheat. The tooltip line (LLM-441) still names the specific place on hover.
+const ACTIVITY_MARKER_NAME := "ActivityMarker"
+const ACTIVITY_ICON_REPAIR: int = 0xE0EC   # hammer
+const ACTIVITY_ICON_STOKE: int = 0xE0D2    # flame
+const ACTIVITY_ICON_HARVEST: int = 0xE39E  # wheat
+const ACTIVITY_MARKER_COLOR := Color(0.87, 0.91, 1.0)
+
+# Lucide icon font, loaded once and cached. The marker Label overrides its font to
+# this so the private-use-area glyphs render instead of the body font's tofu — the
+# same font editor_panel.gd / top_bar.gd use for their icons.
+var _icon_font: Font = null
+
+func _get_icon_font() -> Font:
+    if _icon_font == null:
+        _icon_font = load("res://assets/fonts/lucide.ttf")
+    return _icon_font
+
+## The lucide glyph for a source-activity kind, or "" when the kind carries no marker
+## (refresh / idle / unknown). Materialized via String.chr at use to dodge source-file
+## encoding wobble around private-use-area characters (matches editor_panel.gd).
+func _activity_glyph(kind: String) -> String:
+    match kind:
+        "repair":
+            return String.chr(ACTIVITY_ICON_REPAIR)
+        "stoke":
+            return String.chr(ACTIVITY_ICON_STOKE)
+        "harvest":
+            return String.chr(ACTIVITY_ICON_HARVEST)
+    return ""
+
+## Apply, swap, or clear the source-activity marker on an NPC/PC container: a lucide
+## glyph label above the head while a rendered kind is in flight, hidden otherwise.
+## Idempotent — updates the glyph on a kind change, hides on clear. The marker is a
+## persistent, visibility-toggled node (NOT queue_free): a same-frame clear -> set on
+## a rapid transition (e.g. a harvest ending as a repair starts) would otherwise reuse
+## the still-present, queued-for-deletion node and then lose it when the deferred free
+## fires — or collide on the node name when re-created. Toggling sidesteps that race.
+## Reuses _zzz_marker_position (the above-head slot it shares with the sleep Zzz; the
+## two states are mutually exclusive). _zzz_marker_position is null-safe on the sprite.
+func _apply_activity_marker(container: Node2D, kind: String) -> void:
+    var glyph := _activity_glyph(kind)
+    var marker: Label = container.get_node_or_null(ACTIVITY_MARKER_NAME)
+    if glyph == "":
+        if marker != null:
+            marker.visible = false
+        return
+    if marker == null:
+        marker = Label.new()
+        marker.name = ACTIVITY_MARKER_NAME
+        marker.z_index = 1
+        marker.add_theme_font_override("font", _get_icon_font())
+        marker.add_theme_font_size_override("font_size", 16)
+        marker.add_theme_color_override("font_color", ACTIVITY_MARKER_COLOR)
+        container.add_child(marker)
+    marker.text = glyph
+    marker.visible = true
+    marker.position = _zzz_marker_position(_npc_sprite(container))
 
 ## route is the admin/npc action ("set-home-structure" / "set-work-structure").
 ## The route body keys the value as structure_id (null clears the anchor).
