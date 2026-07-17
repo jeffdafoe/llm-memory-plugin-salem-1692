@@ -17,9 +17,9 @@ func init() {
 	perceptionScenarios = append(perceptionScenarios,
 		perceptionScenario{
 			name: "traveler_making_rounds_at_shop",
-			summary: "LLM-373: a peddler on its daytime circuit stands inside the Blacksmith with the smith " +
-				"co-present. The prompt carries '## On your rounds' — the social framing that turns the visit into " +
-				"a greeting + trade beat rather than a mute stop.",
+			summary: "LLM-455: a nail-buyer stands inside the Blacksmith — his errand counterparty — with the smith " +
+				"co-present. '## Your rounds' cues the trade-here moment: buy the good he came for, naming pay_with_item " +
+				"with the exact item kind. His commerce is confined to this one keeper.",
 			build: travelerMakingRoundsScenario,
 		},
 		perceptionScenario{
@@ -31,13 +31,70 @@ func init() {
 		},
 		perceptionScenario{
 			name: "traveler_between_legs_navigates",
-			summary: "LLM-379: a peddler between legs of his rounds — out in the open, not in any shop. '## Your " +
-				"rounds' renders his situation for HIM to navigate: what he's already called at, the shops still " +
-				"open and their bearings, and the failing light — never a single 'go here next' target. The engine " +
-				"no longer picks his stops; he chooses with move_to.",
+			summary: "LLM-455: a nail-buyer between legs of his rounds — out in the open, not in any shop. '## Your " +
+				"rounds' points him at his errand counterparty (the Smithy) with a bearing, casts the other open shop " +
+				"(the Weaver's) as a talk-only social call, and shows the failing light — never a single 'go here " +
+				"next' target. He navigates with move_to; his commerce is confined to the Smithy.",
 			build: travelerBetweenLegsScenario,
 		},
+		perceptionScenario{
+			name: "traveler_errand_settled_winds_down",
+			summary: "LLM-455: a nail-buyer whose purchase has settled — his errand is done. '## Your rounds' turns " +
+				"to the wind-down (his business is done, the tavern's the place now for supper and a bed) instead of " +
+				"pressing his rounds — the legible 'business concluded' state that kills the loop.",
+			build: travelerErrandSettledScenario,
+		},
 	)
+}
+
+func travelerErrandSettledScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		buyerID = sim.ActorID("vstr-0000abcd")
+		smithID = sim.ActorID("ezekiel")
+		smithy  = sim.StructureID("smithy")
+	)
+	now := 990 // 16:30 — the afternoon wearing on, but his trade is behind him
+	buyer := &sim.ActorSnapshot{
+		Kind:        sim.KindNPCShared,
+		DisplayName: "Elias Drum the nail-buyer",
+		State:       sim.StateIdle,
+		Pos:         sim.TilePos{X: 80, Y: 120},
+		Coins:       78,
+		Inventory:   map[sim.ItemKind]int{"nail": 6},
+		Needs:       map[sim.NeedKey]int{},
+		VisitorState: &sim.VisitorState{
+			Archetype:         "nail-buyer",
+			Origin:            "Boston",
+			Disposition:       "weary",
+			Phase:             sim.VisitorPhaseMakingRounds,
+			VisitedBusinesses: []sim.StructureID{smithy},
+			Trade:             &sim.TradeErrand{Direction: sim.TradeDirectionBuy, Good: "nail", Counterparty: smithy, Settled: true},
+		},
+	}
+	smith := &sim.ActorSnapshot{
+		Kind:               sim.KindNPCStateful,
+		DisplayName:        "Ezekiel Crane",
+		Role:               "blacksmith",
+		State:              sim.StateIdle,
+		Pos:                sim.TilePos{X: 80, Y: 112},
+		WorkStructureID:    smithy,
+		InsideStructureID:  smithy,
+		Needs:              map[sim.NeedKey]int{},
+		BusinessownerState: &sim.BusinessownerState{Flavor: "smith"},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		DawnMinute:       360,
+		DuskMinute:       1080,
+		DawnDuskMinuteOK: true,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{buyerID: buyer, smithID: smith},
+		Structures:       map[sim.StructureID]*sim.Structure{smithy: plainStructure(smithy, "Smithy")},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			sim.VillageObjectID(smithy): {ID: sim.VillageObjectID(smithy), Pos: sim.WorldPos{X: 640, Y: 0}},
+		},
+	}
+	return snap, buyerID, nil
 }
 
 func travelerBetweenLegsScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
@@ -52,18 +109,20 @@ func travelerBetweenLegsScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMet
 	now := 960 // 16:00 — the afternoon wearing on (dusk 18:00)
 	peddler := &sim.ActorSnapshot{
 		Kind:        sim.KindNPCShared,
-		DisplayName: "Elias Drum the peddler",
+		DisplayName: "Elias Drum the nail-buyer",
 		State:       sim.StateIdle,
 		Pos:         sim.TilePos{X: 80, Y: 120}, // out in the open, no shop, no huddle (padded tile)
-		Coins:       40,
-		Inventory:   map[sim.ItemKind]int{"cheese": 4, "iron": 2},
+		Coins:       90,
 		Needs:       map[sim.NeedKey]int{},
 		VisitorState: &sim.VisitorState{
-			Archetype:         "peddler",
+			Archetype:         "nail-buyer",
 			Origin:            "Boston",
 			Disposition:       "weary",
 			Phase:             sim.VisitorPhaseMakingRounds,
 			VisitedBusinesses: []sim.StructureID{cooper},
+			// His errand: buy nails from the Smithy (his must-hit counterparty). The weaver is a
+			// talk-only social call.
+			Trade: &sim.TradeErrand{Direction: sim.TradeDirectionBuy, Good: "nail", Counterparty: smithy},
 		},
 	}
 	// Two shops still open, at distinct bearings from the peddler; the smith is nearer
@@ -123,19 +182,20 @@ func travelerMakingRoundsScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMe
 	now := 540 // 09:00 — daytime
 	peddler := &sim.ActorSnapshot{
 		Kind:              sim.KindNPCShared,
-		DisplayName:       "Elias Drum the peddler",
+		DisplayName:       "Elias Drum the nail-buyer",
 		State:             sim.StateIdle,
 		Pos:               sim.TilePos{X: 10, Y: 10},
 		InsideStructureID: blacksmith,
 		CurrentHuddleID:   "h1",
-		Coins:             40,
-		Inventory:         map[sim.ItemKind]int{"cheese": 4, "iron": 2},
+		Coins:             90,
 		Needs:             map[sim.NeedKey]int{},
 		VisitorState: &sim.VisitorState{
-			Archetype:   "peddler",
+			Archetype:   "nail-buyer",
 			Origin:      "Boston",
 			Disposition: "weary",
 			Phase:       sim.VisitorPhaseMakingRounds,
+			// The Blacksmith IS his errand counterparty — he stands with the smith, the trade-here moment.
+			Trade: &sim.TradeErrand{Direction: sim.TradeDirectionBuy, Good: "nail", Counterparty: blacksmith},
 		},
 	}
 	smith := &sim.ActorSnapshot{

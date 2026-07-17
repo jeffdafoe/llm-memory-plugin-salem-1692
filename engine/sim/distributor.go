@@ -113,56 +113,97 @@ func DistributorSteerLabel(objects map[VillageObjectID]*VillageObject, actors ma
 	return "the village storekeeper"
 }
 
-// ActorIsFactor reports whether an actor is a wholesale factor (LLM-410) — a transient
-// visitor carrying the DistributorOnly flag, who trades ONLY with the village distributor.
-// Nil-safe.
-func ActorIsFactor(a *Actor) bool {
-	return a != nil && a.VisitorState != nil && a.VisitorState.DistributorOnly
+// ActorTradeErrand returns a merchant visitor's bound trade errand, or nil (LLM-455) —
+// the generalization of the LLM-410 ActorIsFactor predicate. Non-nil only for a transient
+// visitor carrying a Trade (a buy or sell bound to a real good + real counterparty); nil
+// for a resident keeper, a PC, or a passer-through visitor. Nil-safe.
+func ActorTradeErrand(a *Actor) *TradeErrand {
+	if a == nil || a.VisitorState == nil {
+		return nil
+	}
+	return a.VisitorState.Trade
 }
 
-// FactorTradeSteer enforces the wholesale factor's distributor-only TRADE rule (LLM-410) —
-// the engine backstop beneath the perception steer, the mirror of the wholesale gate above.
-// A factor's trade goods move only between him and the village distributor, in EITHER
-// direction: he sells his imported cloth/charms into the village and buys the village's
-// surplus, both through the distributor alone. So a transaction is rejected when exactly one
-// side is a factor and that factor's counterparty is not the distributor — symmetric, covering
-// the factor as seller (a non-distributor buying his cloth) AND as buyer (the factor buying a
-// trade good from anyone else).
+// ActorHasTradeErrand reports whether the actor is a merchant visitor carrying a bound
+// errand (LLM-455). The garment-wear exemption keys on it — a merchant's garments are
+// stock to sell, not worn, so they don't wear on him (a passer-through with no errand
+// wears his coat normally). Nil-safe.
+func ActorHasTradeErrand(a *Actor) bool {
+	return ActorTradeErrand(a) != nil
+}
+
+// TradeErrandSteer enforces a merchant visitor's errand-confinement rule (LLM-455) — the
+// engine backstop beneath the perception layer and the talk-only tool gate, the
+// generalization of the LLM-410 FactorTradeSteer (the wholesale factor is now the "sell"
+// errand whose Counterparty is the distributor). A merchant visitor's trade goods move
+// only between him and his errand Counterparty (the open keeper who sells the good he
+// buys, or the distributor who absorbs the imports he sells). So a transaction is rejected
+// when exactly one side is a merchant visitor and that visitor's counterparty is not the
+// keeper of his errand structure — covering the visitor as buyer AND as seller, and (for a
+// factor) both legs of the two-way distributor deal, since the gate keys on the counterparty
+// STRUCTURE, not the direction.
 //
 // His SELF-provisioning is exempt so he still rides the ordinary lodging/eating lifecycle: a
-// service (a room — nights_stay carries the "service" capability) or a consumable (a meal) that
-// the factor BUYS is his own bed or supper, not wholesale trade, so it is allowed from any
-// keeper. def is the good being bought (nil-safe: an unknown kind is treated as a trade good and
-// gated). The sell side is unconditional — the factor holds only his trade wares, never a
-// service/consumable to sell.
+// service (a room — nights_stay carries the "service" capability) or a consumable (a meal, a
+// journeycake) that the visitor BUYS is his own bed / supper / road-food, not his errand
+// trade, so it is allowed from any keeper. def is the good being bought (nil-safe: an unknown
+// kind is treated as errand trade and gated). The visitor-as-seller side is unconditional — a
+// merchant holds only his trade wares to sell, never a service/consumable.
 //
-// Returns "" when the trade is allowed: no factor involved, the factor's counterparty IS the
-// distributor, or the factor is buying self-provisioning. The steer is an in-world line and never
-// names the mechanic role (LLM-292) — the distributor is named by DistributorSteerLabel.
-func FactorTradeSteer(objects map[VillageObjectID]*VillageObject, actors map[ActorID]*Actor, buyer, seller *Actor, def *ItemKindDef) string {
-	buyerFactor := ActorIsFactor(buyer)
-	sellerFactor := ActorIsFactor(seller)
-	if buyerFactor == sellerFactor {
-		// Neither is a factor (the common path), or — vacuously — both are: only one
-		// visitor spawns as a factor at a time, so two factors trading never arises. Allow.
-		return ""
+// Returns "" when the trade is allowed: no merchant visitor involved, the counterparty IS his
+// errand keeper, or the visitor is buying self-provisioning. The steer is an in-world line and
+// never names a mechanic role (LLM-292).
+func TradeErrandSteer(objects map[VillageObjectID]*VillageObject, actors map[ActorID]*Actor, buyer, seller *Actor, def *ItemKindDef) string {
+	buyerErrand := ActorTradeErrand(buyer)
+	sellerErrand := ActorTradeErrand(seller)
+	if buyerErrand == nil && sellerErrand == nil {
+		return "" // neither is a merchant visitor — the common path
 	}
-	counterparty := seller
-	if sellerFactor {
-		counterparty = buyer
+	if buyerErrand != nil && sellerErrand != nil {
+		// Two merchant visitors trading with each other (both carry errands): neither is the
+		// other's counterparty keeper, so this trade belongs to neither errand. Reject — each
+		// deals only with his own bound keeper, never with another traveler (code_review).
+		return "you deal only with the keeper you came to trade with, not with another traveler passing through."
 	}
-	if counterparty != nil && ActorIsDistributor(objects, counterparty.WorkStructureID) {
-		return "" // the factor's counterparty is the distributor — the one trade he may do
+	// Exactly one side carries an errand — check its counterparty against the other party.
+	errand := sellerErrand
+	counterparty := buyer
+	if buyerErrand != nil {
+		errand = buyerErrand
+		counterparty = seller
 	}
-	who := DistributorSteerLabel(objects, actors)
-	if sellerFactor {
-		// A non-distributor is trying to buy the factor's goods.
-		return "that trader deals only with " + who + " — his cloth and wares go to " + who + ", who supplies the village; buy them from " + who + " instead."
+	if errand.Counterparty != "" && counterparty != nil && counterparty.WorkStructureID == errand.Counterparty {
+		return "" // the merchant's counterparty is his errand keeper — the one trade he may do
 	}
-	// The factor is BUYING from a non-distributor. Let him provision himself — a bed or a
-	// meal — anywhere; only his wholesale trade goods are distributor-only.
+	who := errandKeeperLabel(objects, actors, errand.Counterparty)
+	if sellerErrand != nil {
+		// A villager is trying to buy the visitor's trade goods from him directly.
+		return "that trader deals only with " + who + " — the goods he carries go to " + who + ", who supplies the village; buy them from " + who + " instead."
+	}
+	// The visitor is BUYING from a villager who is not his errand keeper. Let him
+	// provision himself — a bed, a meal, road-food — anywhere; only his errand trade is confined.
 	if def != nil && (def.HasCapability("service") || def.Consumable()) {
 		return ""
 	}
-	return "you deal only with " + who + " here — buy the goods you carry home from " + who + ", not from anyone else in the village."
+	return "you deal only with " + who + " for your trade — take your custom there, not to anyone else in the village."
+}
+
+// errandKeeperLabel names the keeper of a merchant visitor's errand structure — the owner
+// of the Counterparty structure, falling back to the structure's own display name, then a
+// generic in-world phrase (LLM-455). Best-effort, for the reject steer only: the gate holds
+// even if the label degrades. Never names a mechanic role (LLM-292).
+func errandKeeperLabel(objects map[VillageObjectID]*VillageObject, actors map[ActorID]*Actor, counterparty StructureID) string {
+	if counterparty != "" {
+		if obj := objects[VillageObjectID(counterparty)]; obj != nil {
+			if obj.OwnerActorID != "" {
+				if owner := actors[obj.OwnerActorID]; owner != nil && owner.DisplayName != "" {
+					return owner.DisplayName
+				}
+			}
+			if obj.DisplayName != "" {
+				return obj.DisplayName
+			}
+		}
+	}
+	return "the one they came to trade with"
 }

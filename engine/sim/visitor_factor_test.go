@@ -3,15 +3,15 @@ package sim_test
 import (
 	"math/rand"
 	"testing"
-	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
 
-// visitor_factor_test.go — LLM-410 wholesale factor spawn (end-to-end). Forces the archetype
-// to the factor and drives one cascade tick, then asserts the factor-specific spawn wiring: the
-// DistributorOnly flag, the Boston origin, the clothing/charm pack + heavy purse, and the
-// distributor-targeted arrival walk (not the tavern).
+// visitor_factor_test.go — the wholesale factor spawn (end-to-end), now the SELL instance of a
+// merchant errand (LLM-455, generalizing LLM-410). Forces the coin-valve to sell (sell weight
+// 1000) and disables passers-through (chance 0), drives one cascade tick, then asserts the
+// factor-specific spawn wiring: a sell TradeErrand to the distributor, the Boston origin, the
+// clothing/charm pack + heavy purse, and the distributor-targeted arrival walk (not the tavern).
 
 // seedDistributor adds a distributor-tagged structure to the visitor world so a factor has a
 // target to walk to. Placed interior on the all-dirt terrain so the edge-tile picker connects.
@@ -37,25 +37,26 @@ func (vw *visitorWorld) seedDistributor(t *testing.T) sim.StructureID {
 }
 
 func TestTickVisitorCascade_FactorSpawn(t *testing.T) {
-	restore := sim.ForceFactorArchetypeForTest()
-	defer restore()
-
 	vw := newVisitorWorld()
 	vw.seedTavern(t) // the ordinary anchor — the factor should NOT target this
 	distID := vw.seedDistributor(t)
 	w, cancel := vw.load(t)
 	defer cancel()
 
+	// Force the coin-valve to a SELLER and disable passers-through so the spawn is
+	// deterministically a factor (LLM-455). A distributor is placed so bindSellErrand succeeds.
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		world.Settings.VisitorSpawnChancePermille = 1000
 		world.Settings.VisitorMaxConcurrent = 2
+		world.Settings.VisitorSellWeightPermille = 1000
+		world.Settings.VisitorPasserThroughChancePermille = 0
 		return nil, nil
 	}}); err != nil {
 		t.Fatalf("seed settings: %v", err)
 	}
 
 	r := rand.New(rand.NewSource(7))
-	res, err := w.Send(sim.TickVisitorCascade(sim.VisitorTickInputs{Now: time.Now(), Rand: r}))
+	res, err := w.Send(sim.TickVisitorCascade(sim.VisitorTickInputs{Now: visitorSpawnDaytime, Rand: r}))
 	if err != nil {
 		t.Fatalf("TickVisitorCascade: %v", err)
 	}
@@ -74,8 +75,14 @@ func TestTickVisitorCascade_FactorSpawn(t *testing.T) {
 	if got == nil {
 		t.Fatal("no visitor in snapshot after factor spawn")
 	}
-	if !got.VisitorState.DistributorOnly {
-		t.Error("factor spawned without the DistributorOnly flag")
+	if got.VisitorState.Trade == nil {
+		t.Fatal("factor spawned without a Trade errand")
+	}
+	if got.VisitorState.Trade.Direction != sim.TradeDirectionSell {
+		t.Errorf("errand direction = %q, want sell", got.VisitorState.Trade.Direction)
+	}
+	if got.VisitorState.Trade.Counterparty != distID {
+		t.Errorf("errand counterparty = %q, want distributor %q", got.VisitorState.Trade.Counterparty, distID)
 	}
 	if got.VisitorState.Archetype != "factor" {
 		t.Errorf("archetype = %q, want factor", got.VisitorState.Archetype)

@@ -95,10 +95,11 @@ const advisoryLockSQLV = `SELECT pg_advisory_xact_lock(hashtext('visitor_snapsho
 type visitorPlanJSON struct {
 	// Rounds — VisitorState.VisitedBusinesses (the keeper-businesses he has called at).
 	VisitedBusinesses []string `json:"visited_businesses,omitempty"`
-	// DistributorOnly — the wholesale-factor flag (LLM-410). Set at spawn and immutable
-	// for the visit; rides the plan jsonb (no dedicated column) so a mid-visit redeploy
-	// resumes the traveler as a factor rather than a plain peddler.
-	DistributorOnly bool `json:"distributor_only,omitempty"`
+	// Trade — the merchant visitor's bound errand (LLM-455), generalizing the LLM-410
+	// DistributorOnly flag. nil for a passer-through. Rides the plan jsonb (no dedicated
+	// column) so a mid-visit redeploy resumes the traveler on the same errand rather than as
+	// a plain peddler.
+	Trade *tradeErrandJSON `json:"trade,omitempty"`
 	// Pack + purse — Actor.Inventory / Actor.Coins. The barter wares and coins the
 	// traveler pays for its room and trades on its circuit with.
 	Inventory map[string]int `json:"inventory,omitempty"`
@@ -111,6 +112,16 @@ type visitorPlanJSON struct {
 	// writes in — so a crash before the checkpoint loses the grant AND the sale
 	// together (the traveler simply wasn't booked yet), never one without the other.
 	RoomAccess []visitorGrantJSON `json:"room_access,omitempty"`
+}
+
+// tradeErrandJSON is the on-disk shape of a merchant visitor's TradeErrand (LLM-455) inside
+// the plan jsonb. Strings, not the typed enums, so the document stays decode-tolerant of a
+// Go-side rename.
+type tradeErrandJSON struct {
+	Direction    string `json:"direction"`
+	Good         string `json:"good"`
+	Counterparty string `json:"counterparty"`
+	Settled      bool   `json:"settled,omitempty"`
 }
 
 // visitorGrantJSON is the on-disk element shape for a persisted RoomAccess grant.
@@ -135,8 +146,15 @@ func encodeVisitorPlan(a *sim.Actor) (string, error) {
 	}
 	vs := a.VisitorState
 	plan := visitorPlanJSON{
-		Coins:           a.Coins,
-		DistributorOnly: vs.DistributorOnly,
+		Coins: a.Coins,
+	}
+	if vs.Trade != nil {
+		plan.Trade = &tradeErrandJSON{
+			Direction:    string(vs.Trade.Direction),
+			Good:         string(vs.Trade.Good),
+			Counterparty: string(vs.Trade.Counterparty),
+			Settled:      vs.Trade.Settled,
+		}
 	}
 	for _, sid := range vs.VisitedBusinesses {
 		plan.VisitedBusinesses = append(plan.VisitedBusinesses, string(sid))
@@ -183,7 +201,22 @@ func applyVisitorPlan(raw []byte, lv *sim.LoadedVisitor) error {
 	for _, s := range plan.VisitedBusinesses {
 		lv.VisitorState.VisitedBusinesses = append(lv.VisitorState.VisitedBusinesses, sim.StructureID(s))
 	}
-	lv.VisitorState.DistributorOnly = plan.DistributorOnly
+	if plan.Trade != nil {
+		// Validate the persisted errand against the Go-owned allowlist before rebuilding it
+		// (code_review): a corrupt/stale plan (only possible from an out-of-band edit — a
+		// consistent checkpoint writes a valid errand) with an unknown direction or a missing
+		// good/counterparty is DROPPED, so the traveler rehydrates as a passer-through rather
+		// than a merchant with an errand the rest of the engine reads inconsistently.
+		dir := sim.TradeDirection(plan.Trade.Direction)
+		if dir.Valid() && plan.Trade.Good != "" && plan.Trade.Counterparty != "" {
+			lv.VisitorState.Trade = &sim.TradeErrand{
+				Direction:    dir,
+				Good:         sim.ItemKind(plan.Trade.Good),
+				Counterparty: sim.StructureID(plan.Trade.Counterparty),
+				Settled:      plan.Trade.Settled,
+			}
+		}
+	}
 	lv.Coins = plan.Coins
 	if len(plan.Inventory) > 0 {
 		lv.Inventory = make(map[sim.ItemKind]int, len(plan.Inventory))

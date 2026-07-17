@@ -192,10 +192,11 @@ func TestActorWearsGarments(t *testing.T) {
 	if actorWearsGarments(w, distributor) {
 		t.Errorf("distributor's sale stock must not wear (working at a distributor-tagged store)")
 	}
-	// The visiting factor likewise holds trade stock, not worn clothing.
-	factor := &Actor{State: StateWorking, VisitorState: &VisitorState{DistributorOnly: true}}
+	// A merchant visitor (here a factor) likewise holds trade stock, not worn clothing.
+	factor := &Actor{State: StateWorking, VisitorState: &VisitorState{
+		Trade: &TradeErrand{Direction: TradeDirectionSell, Counterparty: "store"}}}
 	if actorWearsGarments(w, factor) {
-		t.Errorf("factor's trade stock must not wear")
+		t.Errorf("merchant visitor's trade stock must not wear")
 	}
 
 	if actorWearsGarments(w, nil) {

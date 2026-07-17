@@ -298,10 +298,9 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// Traveler day-plan cues (LLM-373): rounds framing by day, the seek-a-bed
 	// booking cue of an evening. At most one fires per turn (day vs evening phase).
 	renderTravelerRounds(&ephemeral, p.TravelerRounds)
-	// Wholesale factor cues (LLM-410): the factor's distributor-only trade steer (replaces the
-	// rounds cue for a factor), and the distributor's "a factor's come to trade" cue.
-	renderFactorTrade(&ephemeral, p.FactorTrade)
-	renderFactorVisit(&ephemeral, p.FactorVisit)
+	// Merchant errand keeper-facing cue (LLM-455): the counterparty keeper's "a trader's come
+	// to deal" surface (buy or sell). The trader's own errand steer is folded into the rounds cue.
+	renderErrandVisit(&ephemeral, p.ErrandVisit)
 	renderTravelerSeekBed(&ephemeral, p.TravelerSeekBed)
 	renderSummonsForYou(&ephemeral, p.SummonsForYou)
 	renderSummonRefusal(&ephemeral, p.SummonRefusal)

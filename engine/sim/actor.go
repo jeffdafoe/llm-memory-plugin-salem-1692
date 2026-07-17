@@ -445,6 +445,66 @@ type NarrativeState struct {
 // "transient visitor" predicate across the engine; see
 // shared/notes/codebase/salem-engine-v2/visitor for the full surface.
 //
+// TradeDirection is which way a merchant visitor's errand moves coin between him
+// and the village (LLM-455). A BUY visitor pays the village for a real good and
+// carries it off the map — coin flows IN (an injection). A SELL visitor brings a
+// good the village can't make (the wholesale factor's cloth / iron / salt) and the
+// village pays him for it — the coin he is paid leaves the map when he departs (a
+// drain). Which one a given traveler is is chosen at spawn by the coin-valve
+// (chooseVisitorTradeDirection), biased by the resident money supply against an
+// operator band.
+type TradeDirection string
+
+const (
+	// TradeDirectionBuy — the visitor buys a real village good from its keeper and
+	// carries it off; his coin stays behind. The village's monetary injection.
+	TradeDirectionBuy TradeDirection = "buy"
+	// TradeDirectionSell — the visitor sells the village an import it can't make,
+	// through the distributor; the coin he is paid leaves the map with him. The drain,
+	// and the first (and today only) instance is the wholesale factor (LLM-410).
+	TradeDirectionSell TradeDirection = "sell"
+)
+
+// Valid reports whether d is a known trade direction — the Go-owned allowlist the
+// persistence boundary checks, mirroring VisitorPhase.Valid.
+func (d TradeDirection) Valid() bool {
+	return d == TradeDirectionBuy || d == TradeDirectionSell
+}
+
+// TradeErrand is a merchant visitor's grounded reason for coming (LLM-455) — the
+// generalization of the LLM-410 wholesale factor from a hardcoded one-off into
+// first-class state. A traveler carrying a non-nil Trade came to do ONE real trade
+// with ONE real keeper; a nil Trade is a passer-through (messenger / musician /
+// preacher / scholar / surgeon) who carries only voice-flavor and no commerce.
+//
+// Binding the errand to a REAL catalog good and a REAL open keeper AT SPAWN is what
+// fixes the ungrounded-persona loop (the "wool-buyer" with no wool to buy, walking
+// forever toward a place that does not exist): the persona can only ever name a trade
+// the economy can actually service, because the good + counterparty are chosen from
+// live world state before the archetype label is derived from them.
+//
+// The errand also anchors the daytime rounds — the Counterparty is the one must-hit
+// stop, and commerce is confined to it (TradeErrandSteer + the talk-only tool gate),
+// so the traveler trades where his errand is and only passes news elsewhere.
+type TradeErrand struct {
+	// Direction — buy (visitor pays the village) or sell (village pays the visitor).
+	// Drives the coin-valve framing and which side initiates the trade.
+	Direction TradeDirection
+	// Good is the REAL catalog item the errand is about — the good he buys (a village
+	// export) or the headline of the bale he sells (an import). Chosen from live state
+	// at spawn; the archetype label is derived from it ("cheese" -> "cheese-buyer").
+	Good ItemKind
+	// Counterparty is the REAL keeper-business the trade happens at — the open keeper
+	// who sells the Good (buy) or the village distributor who absorbs imports (sell).
+	// The one must-hit stop; commerce is gated to it.
+	Counterparty StructureID
+	// Settled flips true once the errand trade completes (the pay settles) or is proven
+	// impossible for the day (the counterparty shut / the day's trade window closed) —
+	// the legible "business concluded" state that winds the traveler down to the tavern
+	// instead of looping his rounds forever.
+	Settled bool
+}
+
 // Archetype / Origin / Disposition come from per-spawn random pools in
 // engine/sim/visitor.go and feed the perception "Visitors here" block plus
 // the per-call identity preface the shared salem-visitor VA reads.
@@ -479,17 +539,17 @@ type VisitorState struct {
 	// linkage instead of re-promoting the same traveler as a duplicate persona.
 	RecurringID string
 
-	// DistributorOnly marks a wholesale factor (LLM-410): a traveler who trades ONLY
-	// with the village distributor, both ways — he sells imported cloth/charms into
-	// the village and buys the distributor's accumulated surplus to carry off. Set at
-	// spawn from the "factor" archetype (a denormalized behavioral flag, NOT re-derived
-	// by string-matching the archetype everywhere it is read), so the two gate seams
-	// key on the bool: the perception layer steers him to the distributor and suppresses
-	// the ordinary rounds trade-nudge at every other shop, and PayWithItem rejects a
-	// factor↔non-distributor transaction in either direction. false for an ordinary
-	// traveler. Immutable for the visit; persisted in the visitor.plan jsonb so a
-	// mid-visit redeploy resumes him as a factor rather than a plain peddler.
-	DistributorOnly bool
+	// Trade is a merchant visitor's grounded errand (LLM-455) — non-nil for a merchant
+	// (a bound buy or sell with a real good + real counterparty), nil for a passer-through
+	// (pure voice-flavor, no commerce). Generalizes the LLM-410 DistributorOnly factor
+	// flag: the wholesale factor is now the "sell" instance whose Counterparty is the
+	// village distributor. Set once at spawn (bindVisitorErrand), immutable but for the
+	// Settled flip; persisted in the visitor.plan jsonb so a mid-visit redeploy resumes
+	// the traveler on the same errand rather than as a plain peddler. Drives the errand
+	// rounds cue, the commerce-confinement steer (TradeErrandSteer) + talk-only tool gate,
+	// and the coin-valve. A trade is confined to the Counterparty keeper; self-provisioning
+	// (a meal, a bed) stays reachable anywhere.
+	Trade *TradeErrand
 
 	// Day-plan rounds (LLM-373, model-driven since LLM-379). During the daytime
 	// portion of his stay the traveler makes his rounds of the village, trading and
@@ -576,8 +636,8 @@ type LoadedVisitor struct {
 
 // cloneVisitorState deep-copies a VisitorState pointer. The scalar fields
 // (string / time.Time / VisitorPhase) copy by value with the struct copy; the
-// VisitedBusinesses slice (LLM-373) is deep-copied so a snapshot never aliases the
-// world's mutable rounds state.
+// VisitedBusinesses slice (LLM-373) and the Trade errand pointer (LLM-455) are
+// deep-copied so a snapshot never aliases the world's mutable rounds/errand state.
 func cloneVisitorState(src *VisitorState) *VisitorState {
 	if src == nil {
 		return nil
@@ -585,6 +645,10 @@ func cloneVisitorState(src *VisitorState) *VisitorState {
 	cp := *src
 	if src.VisitedBusinesses != nil {
 		cp.VisitedBusinesses = append([]StructureID(nil), src.VisitedBusinesses...)
+	}
+	if src.Trade != nil {
+		trade := *src.Trade
+		cp.Trade = &trade
 	}
 	return &cp
 }

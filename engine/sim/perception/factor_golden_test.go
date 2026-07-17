@@ -7,33 +7,34 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
 
-// factor_golden_test.go — golden scenarios + cross-scenario invariants for the LLM-410
-// wholesale factor cues: the factor's own distributor-only "## Your dealings here" surface
-// (the two-way trade at the distributor; the steer to it from afar, suppressing every other
-// shop) and the distributor keeper's "## A factor's come to trade" cue. Registered into
-// perceptionScenarios so TestPerceptionGoldens covers them alongside the rest.
+// factor_golden_test.go — golden scenarios + cross-scenario invariants for the wholesale factor,
+// now the SELL instance of a merchant errand (LLM-455, generalizing LLM-410). His trade steer is
+// folded into the errand-anchored "## Your rounds" surface (at the distributor: the two-way deal
+// naming pay_with_item; between legs: the steer to the distributor with the other shops cast as
+// talk-only social calls). The distributor keeper's heads-up is the generalized "## A trader's
+// come to deal" cue. Registered into perceptionScenarios so TestPerceptionGoldens covers them.
 
 func init() {
 	perceptionScenarios = append(perceptionScenarios,
 		perceptionScenario{
 			name: "factor_at_distributor",
-			summary: "LLM-410: a Boston factor stands in the General Store with the distributor co-present. " +
-				"'## Your dealings here' cues the two-way deal — sell his cloth, buy the surplus — and names " +
-				"pay_with_item for the buy leg. He is steered to no other shop.",
+			summary: "LLM-455: a Boston factor stands in the General Store with the distributor co-present. " +
+				"'## Your rounds' cues the two-way deal — sell his bale, buy the surplus — and names pay_with_item " +
+				"for the buy leg.",
 			build: factorAtDistributorScenario,
 		},
 		perceptionScenario{
 			name: "factor_seeks_distributor",
-			summary: "LLM-410: a factor between legs, out in the open, with a weaver's shop also open. '## Your " +
-				"dealings here' points him ONLY at the distributor's store with a bearing; the ordinary rounds cue " +
-				"(which would list the weaver) is suppressed — a factor trades with no one but the distributor.",
+			summary: "LLM-455: a factor between legs, out in the open, with a weaver's shop also open. '## Your " +
+				"rounds' points him at the distributor's store (his errand counterparty) with a bearing, and casts " +
+				"the weaver as a talk-only social call (no trading there).",
 			build: factorSeeksDistributorScenario,
 		},
 		perceptionScenario{
 			name: "distributor_views_factor",
-			summary: "LLM-410: the distributor's own view with a factor co-present. '## A factor's come to trade' " +
+			summary: "LLM-455: the distributor's own view with a factor co-present. '## A trader's come to deal' " +
 				"tells the keeper who he is and that he deals both ways, and names pay_with_item for the leg the " +
-				"keeper drives (buying the factor's cloth).",
+				"keeper drives (buying the factor's bale).",
 			build: distributorViewsFactorScenario,
 		},
 	)
@@ -52,11 +53,13 @@ func factorActor(pos sim.TilePos, inside sim.StructureID, huddle sim.HuddleID) *
 		Inventory:         map[sim.ItemKind]int{"coat": 3, "cloak": 3, "silver_locket": 2},
 		Needs:             map[sim.NeedKey]int{},
 		VisitorState: &sim.VisitorState{
-			Archetype:       sim.FactorArchetype,
-			Origin:          sim.FactorOrigin,
-			Disposition:     "mercenary",
-			Phase:           sim.VisitorPhaseMakingRounds,
-			DistributorOnly: true,
+			Archetype:   sim.FactorArchetype,
+			Origin:      sim.FactorOrigin,
+			Disposition: "mercenary",
+			Phase:       sim.VisitorPhaseMakingRounds,
+			// The factor is the SELL instance of a merchant errand (LLM-455): his counterparty
+			// is the distributor's General Store.
+			Trade: &sim.TradeErrand{Direction: sim.TradeDirectionSell, Good: "iron", Counterparty: "general_store"},
 		},
 	}
 }
@@ -169,34 +172,11 @@ func distributorViewsFactorScenario() (*sim.Snapshot, sim.ActorID, []sim.Warrant
 	return snap, josiahID, nil // subject is the DISTRIBUTOR, not the factor
 }
 
-// TestGoldensFactorBusinessCueOnlyForFactor — "## Your dealings here" may render only for a
-// DistributorOnly factor subject, and a factor on his rounds must NEVER carry the ordinary
-// "## Your rounds" cue (the two are mutually exclusive — the factor's steer replaces it, so no
-// cue nudges him to trade at a non-distributor shop).
-func TestGoldensFactorBusinessCueOnlyForFactor(t *testing.T) {
-	const marker = "## Your dealings here"
-	for _, sc := range perceptionScenarios {
-		sc := sc
-		t.Run(sc.name, func(t *testing.T) {
-			out := renderScenario(sc)
-			snap, actorID, _ := sc.build()
-			a := snap.Actors[actorID]
-			isFactor := a != nil && a.VisitorState != nil && a.VisitorState.DistributorOnly
-			if strings.Contains(out, marker) && !isFactor {
-				t.Errorf("scenario %q: %q rendered for a non-factor subject", sc.name, marker)
-			}
-			if isFactor && strings.Contains(out, "## Your rounds") {
-				t.Errorf("scenario %q: a factor carried the ordinary '## Your rounds' cue — it must be suppressed (LLM-410)", sc.name)
-			}
-		})
-	}
-}
-
-// TestGoldensFactorVisitCueOnlyForDistributor — "## A factor's come to trade" may render only
-// for a distributor subject (a co-present factor present), and whenever it renders it must name
-// pay_with_item so the keeper knows the tool for the leg he drives.
-func TestGoldensFactorVisitCueOnlyForDistributor(t *testing.T) {
-	const marker = "## A factor's come to trade"
+// TestGoldensErrandVisitCueOnlyForKeeper — "## A trader's come to deal" (LLM-455) may render
+// only for a resident KEEPER subject (a businessowner at his own post, never a visitor); it is
+// the counterparty keeper's heads-up that the merchant he's bound to is co-present.
+func TestGoldensErrandVisitCueOnlyForKeeper(t *testing.T) {
+	const marker = "## A trader's come to deal"
 	for _, sc := range perceptionScenarios {
 		sc := sc
 		t.Run(sc.name, func(t *testing.T) {
@@ -206,11 +186,36 @@ func TestGoldensFactorVisitCueOnlyForDistributor(t *testing.T) {
 			}
 			snap, actorID, _ := sc.build()
 			a := snap.Actors[actorID]
-			if a == nil || !sim.ActorIsDistributor(snap.VillageObjects, a.WorkStructureID) {
-				t.Errorf("scenario %q: %q rendered for a non-distributor subject", sc.name, marker)
+			if a == nil || a.VisitorState != nil || a.BusinessownerState == nil || a.WorkStructureID == "" {
+				t.Errorf("scenario %q: %q rendered for a non-keeper subject", sc.name, marker)
 			}
-			if !strings.Contains(out, "pay_with_item") {
-				t.Errorf("scenario %q: %q rendered without naming pay_with_item (LLM-410)", sc.name, marker)
+		})
+	}
+}
+
+// TestGoldensMerchantRoundsConfinesCommerce — a merchant on his rounds carries "## Your rounds"
+// (the factor cue is folded into it, LLM-455), and whenever that cue lists other open shops it
+// spells out that they are talk-only ("no trading there") — the legible half of the errand
+// commerce-confinement.
+func TestGoldensMerchantRoundsConfinesCommerce(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			out := renderScenario(sc)
+			snap, actorID, _ := sc.build()
+			a := snap.Actors[actorID]
+			isMerchant := a != nil && a.VisitorState != nil && a.VisitorState.Trade != nil
+			if !isMerchant {
+				return
+			}
+			onRounds := a.VisitorState.Phase == sim.VisitorPhaseArriving ||
+				a.VisitorState.Phase == sim.VisitorPhaseMakingRounds ||
+				a.VisitorState.Phase == sim.VisitorPhasePresent
+			if onRounds && !strings.Contains(out, "## Your rounds") {
+				t.Errorf("scenario %q: a merchant on his rounds lacks '## Your rounds'", sc.name)
+			}
+			if strings.Contains(out, "to look in on and pass the news") && !strings.Contains(out, "no trading there") {
+				t.Errorf("scenario %q: rounds listed other shops without the talk-only confinement", sc.name)
 			}
 		})
 	}

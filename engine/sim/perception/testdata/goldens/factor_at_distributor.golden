@@ -14,7 +14,7 @@ You are carrying: cloak (x3), coat (x3), silver_locket (x2).
 You are inside The General Store, with the storekeeper.
 It is morning in the village.
 
-## Your dealings here
-You're here to deal with Josiah Thorne, who keeps The General Store — the one person in this village you trade with. Show them the cloth and charms in your pack and let them buy what they want for the village; a warm coat or cloak is worth most with the cold weather in. In return, buy the goods they have a surplus of to carry back to the city: call pay_with_item with seller "Josiah Thorne", the item you want, qty, consume_now false, coins in amount, and your words in say. The other shops here are no concern of yours.
+## Your rounds
+You're with Josiah Thorne at The General Store — the one keeper you came to deal with. Lay out the cloth, iron, and salt you carry from the city and let them buy what the village needs; a warm coat or a bar of iron is worth most just now. Buy their surplus in turn to carry off: call pay_with_item with seller "Josiah Thorne", the item, the quantity, consume_now false, coins in amount, and your words in say.
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

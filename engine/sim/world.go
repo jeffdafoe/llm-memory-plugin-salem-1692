@@ -526,6 +526,40 @@ type WorldSettings struct {
 	// visitor_factor_salt_units.
 	VisitorFactorSaltUnits int
 
+	// Coin-valve band (LLM-455). A merchant visitor's trade direction — buy (pays the
+	// village, injects coin) vs sell (the factor; the village pays him, drains coin) — is
+	// biased by the resident money supply (residentCoinOnMap) against this operator band:
+	// resident coin at/above VisitorCoinBandHigh forces a SELLER (drain the excess),
+	// at/below VisitorCoinBandLow forces a BUYER (inject), in-band leaves it to the weighted
+	// random below. Both default 0 = "band unconfigured" — no active money-supply
+	// management, so direction is always the weighted random (which keeps sellers a minority,
+	// so import cadence stays ~today's). Set a high-water mark to turn the drain on. Settings
+	// keys visitor_coin_band_low / visitor_coin_band_high.
+	VisitorCoinBandLow  int
+	VisitorCoinBandHigh int
+
+	// VisitorSellWeightPermille (LLM-455): the per-thousand probability that an in-band (or
+	// band-unconfigured) merchant visitor is a SELLER (the factor) rather than a buyer.
+	// Deliberately low — a seller drops a full import shipment (cloth/iron/salt), and
+	// pack-magnitude scaling is deferred, so common sellers would balloon imports; keeping it
+	// a minority pins the factor cadence near today's while buyers become the common merchant.
+	// The DEFAULT (150) is applied by the settings loaders (repo/pg + repo/mem) when the row is
+	// ABSENT; the use site (effectiveVisitorSellWeight) only clamps to [0,1000], so an explicit
+	// 0 means "no sellers" and a direct-constructed world with the field left zero gets 0 (not
+	// the default). Settings key visitor_sell_weight_permille.
+	VisitorSellWeightPermille int
+
+	// VisitorPasserThroughChancePermille (LLM-455): the per-thousand probability that a
+	// spawning visitor is a passer-through (messenger / musician / preacher / scholar /
+	// surgeon — pure voice-flavor, no errand) rather than a merchant. The rest attempt a
+	// bound merchant errand and fall back to a passer-through if the economy can't service one
+	// (no good + open keeper). Keeps the flavor archetypes a live minority instead of only
+	// appearing on bind failure. Like the sell weight, the DEFAULT (250) is applied by the
+	// settings loaders when the row is ABSENT; the use site only clamps to [0,1000], so an
+	// explicit 0 means "never a passer-through (always attempt a merchant)". Settings key
+	// visitor_passer_through_chance_permille.
+	VisitorPasserThroughChancePermille int
+
 	// Businessowner cascade tunables (engine/sim/businessowner.go +
 	// engine/sim/cascade/businessowner.go). Both fall back to
 	// *Default constants when zero, so tests that bypass the

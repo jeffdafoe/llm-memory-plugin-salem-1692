@@ -135,6 +135,13 @@ type UmbilicalSettingsDTO struct {
 	VisitorFactorSaltUnits     int `json:"visitor_factor_salt_units"`
 	VisitorFactorPurseMin      int `json:"visitor_factor_purse_min"`
 	VisitorFactorPurseMax      int `json:"visitor_factor_purse_max"`
+	// Grounded merchant errand coin-valve (LLM-455): the resident-coin band that biases a
+	// merchant visitor's direction (drain vs inject), the in-band seller weight, and the
+	// passer-through-vs-merchant class chance. All live-tunable.
+	VisitorCoinBandLow                 int `json:"visitor_coin_band_low"`
+	VisitorCoinBandHigh                int `json:"visitor_coin_band_high"`
+	VisitorSellWeightPermille          int `json:"visitor_sell_weight_permille"`
+	VisitorPasserThroughChancePermille int `json:"visitor_passer_through_chance_permille"`
 
 	// SettingWarnings lists settings that were out of range at load and clamped to
 	// a safe bound (LLM-439) — today the cold rate knobs, which must be >= 0. Each
@@ -258,6 +265,10 @@ func (s *Server) handleUmbilicalSettings(w http.ResponseWriter, r *http.Request)
 			VisitorFactorSaltUnits:                factorSaltUnits,
 			VisitorFactorPurseMin:                 factorPurseMin,
 			VisitorFactorPurseMax:                 factorPurseMax,
+			VisitorCoinBandLow:                    world.Settings.VisitorCoinBandLow,
+			VisitorCoinBandHigh:                   world.Settings.VisitorCoinBandHigh,
+			VisitorSellWeightPermille:             world.Settings.VisitorSellWeightPermille,
+			VisitorPasserThroughChancePermille:    world.Settings.VisitorPasserThroughChancePermille,
 			SettingWarnings:                       settingWarnings,
 		}
 		for k, v := range world.Settings.NeedThresholds {

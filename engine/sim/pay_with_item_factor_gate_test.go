@@ -13,13 +13,13 @@ import (
 // rejects a non-distributor buying his cloth (factor = seller) AND the factor buying a
 // trade good from anyone but the distributor (factor = buyer), while EXEMPTING his own
 // self-provisioning (a service or a consumable — a room or a meal) so he still rides the
-// ordinary lodging/eating lifecycle. The gate keys on the DistributorOnly flag, not the
-// item; the item only matters for the buy-side self-provisioning exemption.
+// ordinary lodging/eating lifecycle. The gate (TradeErrandSteer, LLM-455) keys on the errand's
+// counterparty STRUCTURE, not the item; the item only matters for the buy-side self-provisioning exemption.
 //
 // Helpers (buildPayWithItemWorld, pwiActor, mustSend) live in
 // pay_with_item_commands_test.go — same sim_test package.
 
-// tagFactorWorld seeds a factor (Elias, a DistributorOnly visitor holding a coat to sell)
+// tagFactorWorld seeds a factor (Elias, a sell-errand visitor holding a coat to sell)
 // plus the distributor (Josiah, keeper of the distributor-tagged General Store, holding a
 // wheat surplus) and a plain innkeeper (Hannah, non-distributor, holding wheat + bread),
 // all co-present in one huddle. A "coat" clothing kind is added to the catalog so it
@@ -45,10 +45,12 @@ func tagFactorWorld(t *testing.T) (*sim.World, func(), time.Time) {
 		world.VillageObjects["general_store"] = &sim.VillageObject{
 			ID: "general_store", OwnerActorID: "josiah", Tags: []string{sim.TagDistributor},
 		}
-		// Elias is a wholesale factor — a transient visitor carrying the distributor-only flag.
+		// Elias is a wholesale factor — the SELL instance of a merchant errand whose counterparty
+		// is the distributor's General Store (LLM-455).
 		world.Actors["elias"].VisitorState = &sim.VisitorState{
 			Archetype: sim.FactorArchetype, Origin: sim.FactorOrigin,
-			Phase: sim.VisitorPhaseMakingRounds, DistributorOnly: true,
+			Phase: sim.VisitorPhaseMakingRounds,
+			Trade: &sim.TradeErrand{Direction: sim.TradeDirectionSell, Good: "coat", Counterparty: "general_store"},
 		}
 	})
 	return w, stop, time.Now().UTC()

@@ -6,6 +6,7 @@ import (
 	"log"
 	"math/rand"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -148,28 +149,44 @@ var visitorNamePool = []string{
 	"Silas Withrow", "Asa Larkin", "Daniel Holcomb",
 }
 
-// FactorArchetype is the wholesale-factor traveler archetype (LLM-410): a Boston
-// merchant who deals ONLY with the village distributor — he sells imported cloth and
-// charms into the village and buys the distributor's accumulated surplus to carry off.
-// He rides the ordinary visitor lifecycle (rounds / tavern / lodging); the factor
-// behavior is additive, driven by the DistributorOnly flag set on his VisitorState at
-// spawn. Kept as a const so pool membership, the sprite mapping, the landing weight, and
-// the spawn special-cases (Boston origin, factor pack, DistributorOnly) all key off one
-// symbol rather than a bare string scattered across the file.
+// FactorArchetype is the wholesale-factor persona label (LLM-410, generalized LLM-455):
+// the SELL instance of a merchant errand. A factor deals with the village distributor — he
+// sells imported cloth / iron / salt into the village and buys its surplus to carry off. It
+// is no longer a random pool archetype: a factor now ARISES from a sell trade direction
+// (visitorMerchantLabel returns this for a sell errand), so the const survives only as the
+// sell-errand label + returner-detection key.
 const FactorArchetype = "factor"
 
 // FactorOrigin is where a wholesale factor hails from — the city he trades out of
-// (LLM-410). Forced at spawn instead of a random next-village pull so the persona preface
-// and the distributor's cue read "a factor out of Boston." Boston per the ticket.
+// (LLM-410). Forced on a sell errand instead of a random next-village pull so the persona
+// preface and the keeper's cue read "a factor out of Boston." Boston per the ticket.
 const FactorOrigin = "Boston"
 
-// visitorArchetypePool — closed-set archetypes a small village would
-// actually receive. Adding an archetype here requires a matching
-// visitorArchetypeSprite entry below — init() enforces.
-var visitorArchetypePool = []string{
-	"peddler", "traveling scholar", "messenger", "itinerant musician",
-	"journeyman tinsmith", "circuit preacher", "wool-buyer",
-	"pewterer", "wandering surgeon", "almanac-seller", FactorArchetype,
+// Direction/class weights (LLM-455). Applied by the settings loaders (repo/pg + repo/mem)
+// when the setting row is absent; the use site only clamps to [0,1000], so an explicit 0
+// genuinely means "off" (no sellers / never a passer-through) — real operator control and a
+// deterministic force for tests.
+const (
+	// DefaultVisitorSellWeightPermille — the in-band / band-unconfigured chance a merchant
+	// visitor is a SELLER (the factor) rather than a buyer. Low on purpose: a seller drops a
+	// full import shipment and pack-magnitude scaling is deferred, so keeping sellers a
+	// minority pins the factor cadence near today's while buyers become the common merchant.
+	DefaultVisitorSellWeightPermille = 150
+
+	// DefaultVisitorPasserThroughChancePermille — the chance a spawning visitor is a
+	// passer-through (voice-flavor, no errand) rather than a merchant. Keeps the flavor
+	// archetypes a live minority instead of only appearing when a merchant can't be serviced.
+	DefaultVisitorPasserThroughChancePermille = 250
+)
+
+// passerThroughArchetypePool — the voice-flavor travelers who carry NO trade errand
+// (LLM-455): they pass through, socialize, lodge, and leave, but do no commerce. Merchant
+// personas are no longer pool entries — a merchant's label is DERIVED from its bound errand
+// (visitorMerchantLabel), which keeps the persona from ever naming a trade the village can't
+// service. Adding one here requires a passerThroughSprite entry below (init enforces).
+var passerThroughArchetypePool = []string{
+	"messenger", "itinerant musician", "circuit preacher",
+	"traveling scholar", "wandering surgeon",
 }
 
 // visitorOriginPool — fictional/historical next-village strings. Drives
@@ -189,99 +206,96 @@ var visitorDispositionPool = []string{
 	"talkative", "wary", "earnest", "wry", "withdrawn",
 }
 
-// VisitorArchetypeSprite maps each archetype to an npc_sprite.name. The
-// spawn / rehydrate paths resolve this name to the uuid-keyed SpriteID via
-// the loaded catalog (visitorSpriteID) and stamp it on the Actor, so the
-// client renders the traveler instead of drawing nothing (LLM-379). The
-// init() below enforces every archetype in visitorArchetypePool has an entry
-// here; an archetype-without-sprite makes the package fail to load, so the
-// mismatch can't reach a running deploy.
-//
-// Sprite reuse across archetypes is intentional given the current
-// shortage of period-appropriate sheets — variant suffixes (v00, v01)
-// give visually-distinct options within a family but we run out before
-// covering ten archetypes 1:1. Expand once the sprite library grows.
-var VisitorArchetypeSprite = map[string]string{
-	"peddler":             "Merchant B (v00)",
-	"traveling scholar":   "Old Man A (v01)",
-	"messenger":           "Man A (v00)",
-	"itinerant musician":  "Man B (v00)",
-	"journeyman tinsmith": "Merchant C (v00)",
-	"circuit preacher":    "Old Man B (v00)",
-	"wool-buyer":          "Merchant A (v01)",
-	"pewterer":            "Merchant C (v01)",
-	"wandering surgeon":   "Old Man A (v02)",
-	"almanac-seller":      "Old Man B (v01)",
-	// A well-to-do Boston factor reads as a merchant; reuses the Merchant A family at
-	// its v00 variant (distinct from the wool-buyer's Merchant A v01). LLM-410.
-	FactorArchetype: "Merchant A (v00)",
+// passerThroughSprite maps each passer-through archetype to an npc_sprite.name; merchants
+// resolve their sprite by CLASS instead (visitorSpriteName), since a merchant's label is a
+// derived string, not a fixed pool entry. Spawn / rehydrate resolve the name to the
+// uuid-keyed SpriteID via the loaded catalog and stamp it on the Actor, so the client
+// renders the traveler instead of drawing nothing (LLM-379). The init() below enforces
+// every passerThroughArchetypePool entry has an entry here.
+var passerThroughSprite = map[string]string{
+	"messenger":          "Man A (v00)",
+	"itinerant musician": "Man B (v00)",
+	"circuit preacher":   "Old Man B (v00)",
+	"traveling scholar":  "Old Man A (v01)",
+	"wandering surgeon":  "Old Man A (v02)",
+}
+
+// VisitorArchetypeSprite is the passer-through archetype→sprite map, exported so tests
+// build a fake sprite catalog from it (the live catalog is uuid-keyed with the display name
+// on Sprite.Name). Merchant sprites are NOT keyed here — see visitorSpriteName /
+// VisitorSpriteCatalogNames.
+var VisitorArchetypeSprite = passerThroughSprite
+
+// FactorSpriteName is the sprite a wholesale factor (a sell errand) renders with — a
+// well-to-do merchant (LLM-410/455).
+const FactorSpriteName = "Merchant A (v00)"
+
+// merchantBuyerSpriteNames is the sprite pool a buy-merchant renders with (LLM-455), picked
+// DETERMINISTICALLY by the errand good (stableStringIndex) so a mid-visit rehydrate
+// reproduces the same sprite without persisting it. The Merchant family reads as a traveling
+// trader.
+var merchantBuyerSpriteNames = []string{
+	"Merchant B (v00)", "Merchant C (v00)", "Merchant A (v01)", "Merchant C (v01)",
 }
 
 func init() {
-	for _, archetype := range visitorArchetypePool {
-		if _, ok := VisitorArchetypeSprite[archetype]; !ok {
-			panic("sim/visitor: archetype " + archetype + " has no sprite mapping in VisitorArchetypeSprite")
+	for _, archetype := range passerThroughArchetypePool {
+		if _, ok := passerThroughSprite[archetype]; !ok {
+			panic("sim/visitor: passer-through archetype " + archetype + " has no sprite mapping in passerThroughSprite")
 		}
 	}
 }
 
-// Landing weight (LLM-410) — a per-archetype spawn gate rolled AFTER the uniform
-// archetype pick. A failed roll skips the spawn that tick (no re-pick), so a
-// rarity-tuned archetype arrives less often than its uniform pool share alone. Only
-// the factor is tuned; ordinary archetypes weigh 1000 (always land), so the roll is a
-// no-op for them and ordinary travelers are unaffected.
-const (
-	// DefaultLandingWeightPermille is the weight for any archetype with no explicit
-	// visitorArchetypeLandingWeight entry — 1000 per-mille = always lands.
-	DefaultLandingWeightPermille = 1000
-
-	// FactorLandingWeightPermille is the wholesale factor's landing weight. Rarity
-	// COMPOUNDS with the uniform pool odds (1/N pick × weight/1000), so this is not the
-	// factor's visit frequency — set it against the pool size. 300 makes the factor a
-	// notable arrival rather than the everyday traveler.
-	FactorLandingWeightPermille = 300
-)
-
-// visitorArchetypeLandingWeight maps an archetype to its per-mille landing weight
-// (LLM-410). Absent → DefaultLandingWeightPermille (always lands). Only rarity-tuned
-// archetypes appear here.
-var visitorArchetypeLandingWeight = map[string]int{
-	FactorArchetype: FactorLandingWeightPermille,
+// VisitorSpriteCatalogNames returns every sprite name a visitor may render with — the
+// passer-through sprites plus the merchant (factor + buyer) sprites (LLM-455). Tests build a
+// fake sprite catalog from it so a spawned merchant resolves a real SpriteID.
+func VisitorSpriteCatalogNames() []string {
+	names := make([]string, 0, len(passerThroughSprite)+len(merchantBuyerSpriteNames)+1)
+	for _, n := range passerThroughSprite {
+		names = append(names, n)
+	}
+	names = append(names, FactorSpriteName)
+	names = append(names, merchantBuyerSpriteNames...)
+	return names
 }
 
-// landingWeightPermille returns an archetype's landing weight clamped to [0, 1000].
-// A missing entry lands always (DefaultLandingWeightPermille).
-func landingWeightPermille(archetype string) int {
-	w, ok := visitorArchetypeLandingWeight[archetype]
-	if !ok {
-		return DefaultLandingWeightPermille
+// visitorSpriteName returns the npc_sprite.name a visitor renders with, derived from its
+// state (LLM-455): a passer-through by its archetype (passerThroughSprite); a factor (sell
+// errand) by FactorSpriteName; a buyer by a deterministic pick from merchantBuyerSpriteNames
+// keyed on the errand good so spawn and rehydrate agree without persisting the sprite. ""
+// for an unresolvable state (a legacy archetype with no mapping) — the caller ships
+// spriteless.
+func visitorSpriteName(vs *VisitorState) string {
+	if vs == nil {
+		return ""
 	}
-	if w < 0 {
-		return 0
+	if vs.Trade != nil {
+		if vs.Trade.Direction == TradeDirectionSell {
+			return FactorSpriteName
+		}
+		if len(merchantBuyerSpriteNames) == 0 {
+			return ""
+		}
+		return merchantBuyerSpriteNames[stableStringIndex(string(vs.Trade.Good), len(merchantBuyerSpriteNames))]
 	}
-	if w > 1000 {
-		return 1000
-	}
-	return w
+	return passerThroughSprite[vs.Archetype]
 }
 
-// visitorSpriteID resolves an archetype's configured sprite NAME
-// (VisitorArchetypeSprite) to the uuid-keyed SpriteID the client renders by.
-// World.Sprites is keyed by the sprite id with the display name carried on
-// Sprite.Name, so the lookup is a name scan of the loaded catalog. Spawn /
-// rehydrate stamp the result on the Actor; without it a visitor ships with an
-// empty sprite_id and the client draws nothing (LLM-379).
+// visitorSpriteID resolves a visitor's sprite NAME (visitorSpriteName) to the uuid-keyed
+// SpriteID the client renders by. World.Sprites is keyed by id with the display name on
+// Sprite.Name, so the lookup is a name scan of the loaded catalog. Spawn / rehydrate stamp
+// the result on the Actor; without it a visitor ships with an empty sprite_id and the client
+// draws nothing (LLM-379).
 //
-// ok=false when the archetype has no mapping (init() prevents that for pooled
-// archetypes) or the named sheet isn't in the loaded catalog. The caller logs
-// and ships spriteless rather than failing the spawn — an invisible traveler
-// is a lesser fault than a dropped one.
-func visitorSpriteID(w *World, archetype string) (SpriteID, bool) {
+// ok=false when the state resolves to no name (a legacy/unmapped archetype) or the named
+// sheet isn't in the loaded catalog. The caller logs and ships spriteless rather than
+// failing the spawn — an invisible traveler is a lesser fault than a dropped one.
+func visitorSpriteID(w *World, vs *VisitorState) (SpriteID, bool) {
 	if w == nil {
 		return "", false
 	}
-	name, ok := VisitorArchetypeSprite[archetype]
-	if !ok {
+	name := visitorSpriteName(vs)
+	if name == "" {
 		return "", false
 	}
 	for id, sp := range w.Sprites {
@@ -290,6 +304,18 @@ func visitorSpriteID(w *World, archetype string) (SpriteID, bool) {
 		}
 	}
 	return "", false
+}
+
+// stableStringIndex maps s to a stable index in [0, n) via an FNV-1a-style byte hash —
+// deterministic across processes so a rehydrate reproduces a buyer's sprite without
+// persisting it. n must be > 0.
+func stableStringIndex(s string, n int) int {
+	var h uint32 = 2166136261
+	for i := 0; i < len(s); i++ {
+		h ^= uint32(s[i])
+		h *= 16777619
+	}
+	return int(h % uint32(n))
 }
 
 // VisitorCascadeTelemetry captures what each tick did. Used by the
@@ -310,10 +336,9 @@ type VisitorCascadeTelemetry struct {
 	Spawned          int // new visitors created (0 or 1 per tick)
 	RoundsPaced      int // stationary travelers woken this tick to reconsider their rounds (LLM-379 pacing)
 	CircuitToLodging int // visitors that turned to the lodging phase this tick (dusk)
-	SpawnSkipChance  int // 1 if spawn skipped — chance=0 OR unlucky roll; check SpawnSkipReason
-	SpawnSkipCap     int // 1 if spawn skipped because MaxConcurrent reached
-	SpawnSkipLanding int // 1 if spawn skipped because a rarity-tuned archetype didn't land (LLM-410)
-	SpawnSkipReason  string
+	SpawnSkipChance int // 1 if spawn skipped — chance=0 OR unlucky roll; check SpawnSkipReason
+	SpawnSkipCap    int // 1 if spawn skipped because MaxConcurrent reached
+	SpawnSkipReason string
 }
 
 // VisitorTickInputs carries the per-tick inputs the dispatcher reads.
@@ -664,17 +689,17 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 		return
 	}
 
-	// Persona FIRST (moved ahead of the spatial picks for LLM-410): the archetype decides
-	// the landing-weight roll below AND — for a wholesale factor — the arrival target (the
-	// distributor, not the tavern) and the pack, so it must be known before we pick a
-	// destination. A due returner (LLM-372) comes back as the SAME person — prefer one over
-	// a fresh stranger, reusing its established persona verbatim (and skipping the surname
-	// scrub, since the name is already in play and unique enough). Only READ the returner
-	// here; the durable mutation (beginReturnerVisit — bump visit count, clear
+	// Persona FIRST (moved ahead of the spatial picks): the class (merchant vs passer-through)
+	// and, for a merchant, the bound errand decide the archetype label, origin, pack, and
+	// arrival target (the errand counterparty, not the tavern), so they must be known before
+	// we pick a destination. A due returner (LLM-372) comes back as the SAME person — prefer
+	// one over a fresh stranger, reusing its established persona verbatim (and skipping the
+	// surname scrub, since the name is already in play and unique enough). Only READ the
+	// returner here; the durable mutation (beginReturnerVisit — bump visit count, clear
 	// next_return_at) is deferred until AFTER the actor is committed below, so a spawn that
-	// bails out (landing roll, edge-tile miss, ID-mint exhaustion) leaves the returner still
-	// due to try again rather than consumed-but-not-arrived. Otherwise roll a new persona and
-	// scrub its surname against seated villagers.
+	// bails out (edge-tile miss, ID-mint exhaustion) leaves the returner still due to try again
+	// rather than consumed-but-not-arrived. Otherwise roll a new persona and scrub its surname
+	// against seated villagers.
 	var returnerID string
 	var dueReturner *RecurringVisitor
 	var profile visitorProfile
@@ -696,31 +721,32 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 				profile.Name, surnameScrubMaxTries)
 		}
 	}
-	isFactor := profile.Archetype == FactorArchetype
-	if isFactor {
-		// A wholesale factor hails from the city he trades out of (LLM-410), not a random
-		// next-village origin — forced here on both the fresh pick and a returner (whose
-		// row already carries Boston from its first spawn) so the persona preface and the
-		// distributor's cue read "a factor out of Boston."
-		profile.Origin = FactorOrigin
+
+	// Class + errand (LLM-455). A fresh traveler is a MERCHANT bound to a real errand unless
+	// the passer-through roll fires or the economy can't service one (no open keeper for a
+	// buyer, no distributor for a seller) — then he is a passer-through carrying only voice-
+	// flavor. The errand grounds the persona: the archetype label is DERIVED from the bound
+	// good (cheese -> "cheese-buyer") so it can never name an untradeable trade — the root fix
+	// for the ungrounded "wool-buyer" loop. A returner keeps its stored persona verbatim and
+	// comes back as a passer-through (merchant-returner errand re-binding is a later refinement).
+	var trade *TradeErrand
+	if dueReturner == nil {
+		if r.Intn(1000) >= effectiveVisitorPasserThroughChance(w) {
+			if bound, ok := bindVisitorErrand(w, r, chooseVisitorTradeDirection(w, r)); ok {
+				trade = bound
+				profile.Archetype = visitorMerchantLabel(w, trade)
+				if trade.Direction == TradeDirectionSell {
+					profile.Origin = FactorOrigin // a factor hails from the city he trades out of
+				}
+			}
+		}
 	}
 
-	// Landing-weight roll (LLM-410): AFTER the uniform archetype pick, roll the archetype's
-	// landing weight; a failed roll skips the spawn this tick (no re-pick), so a
-	// rarity-tuned archetype (the factor) arrives less often than its uniform pool share.
-	// Ordinary archetypes weigh 1000 (always land), so the roll is a no-op for them. Placed
-	// before the spatial picks so a non-landing factor costs no walk-grid build; the returner
-	// (if any) is only READ so far, so bailing leaves it still due to retry.
-	if lw := landingWeightPermille(profile.Archetype); lw < DefaultLandingWeightPermille && r.Intn(1000) >= lw {
-		t.SpawnSkipLanding = 1
-		t.SpawnSkipReason = fmt.Sprintf("%s didn't land (weight %d)", profile.Archetype, lw)
-		return
-	}
-
-	// Arrival target. A factor deals only with the distributor, so he makes straight for
-	// the distributor's structure (LLM-410) rather than the neutral tavern anchor; falls
-	// back to the ordinary tavern/gathering-place picker when no distributor is placed.
-	destID, destAnchor, ok := pickArrivalDestination(w, isFactor)
+	// Arrival target. A merchant makes straight for his errand counterparty — the one must-hit
+	// stop (LLM-455) — rather than the neutral tavern anchor; a passer-through (and a merchant
+	// whose counterparty is somehow unplaced) falls back to the ordinary tavern/gathering-place
+	// picker.
+	destID, destAnchor, ok := pickArrivalDestination(w, trade)
 	if !ok {
 		log.Printf("sim/visitor: dispatchSpawn: no destination structure placed; skipping")
 		return
@@ -771,16 +797,17 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 		log.Printf("sim/visitor: dispatchSpawn: actor-ID minting exhausted 10 retries; skipping")
 		return
 	}
-	// Means to pay (LLM-373): the traveler spawns carrying a pack of trade goods and a
-	// purse. This is both its lodging payment — a room is bought by barter (pay_with_item),
-	// per LLM-353, or by coin — and its trade stock for the circuit. A wholesale factor
-	// (LLM-410) carries a heavier bale of imported cloth/charms to SELL plus a larger purse
-	// to BUY the village's surplus — injecting coin, the money-supply growth this ticket is
-	// about. Both operator-tunable (visitor_factor_pack_units / visitor_factor_purse_*),
-	// clamped here against misconfig; an ordinary traveler carries a small mixed pack.
+	// Means to pay (LLM-373 / LLM-455): the traveler spawns carrying a pack + purse sized to
+	// his errand. A wholesale factor (a SELL errand) carries a heavy bale of imported
+	// cloth/iron/salt to sell plus a large purse to buy the village's surplus — operator-tunable
+	// (visitor_factor_pack_units / visitor_factor_purse_*), clamped here against misconfig. A
+	// buyer carries a fuller purse and no wares: injecting coin is the point, and he pays for his
+	// good and his room in coin. A passer-through carries the ordinary small mixed pack (its
+	// lodging barter + trade-talk flavor).
 	var pack map[ItemKind]int
 	var purse int
-	if isFactor {
+	switch {
+	case trade != nil && trade.Direction == TradeDirectionSell:
 		units := w.Settings.VisitorFactorPackUnits
 		if units < 1 {
 			units = DefaultVisitorFactorPackUnits
@@ -802,16 +829,36 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 			purseMax = purseMin
 		}
 		pack, purse = seedFactorPack(r, units, ironUnits, saltUnits, purseMin, purseMax)
-	} else {
+	case trade != nil && trade.Direction == TradeDirectionBuy:
+		pack, purse = seedBuyerPack(r)
+	default:
 		pack, purse = seedVisitorPack(r)
 	}
-	// Give the traveler a visible form: resolve its archetype's sprite to the
-	// uuid-keyed SpriteID the client draws by (LLM-379). "" on miss ships the
-	// visitor spriteless — logged, but the spawn still proceeds.
-	spriteID, ok := visitorSpriteID(w, profile.Archetype)
+
+	vs := &VisitorState{
+		Archetype:   profile.Archetype,
+		Origin:      profile.Origin,
+		Disposition: profile.Disposition,
+		ExpiresAt:   expiresAt,
+		// Arriving: on the road, walking in to his first stop. Pacing flips it to
+		// making_rounds on arrival (LLM-373).
+		Phase: VisitorPhaseArriving,
+		// A returner's PERSONA is stable across visits, but its road-rumor is fresh each
+		// trip: (re)selected here every spawn, NOT stored on the recurring_visitor row (LLM-372).
+		Payload:     selectVisitorRumor(w, r, inputs.Now),
+		RecurringID: returnerID, // "" for a fresh stranger; set for a returning traveler
+		// The bound trade errand (LLM-455): non-nil for a merchant, nil for a passer-through.
+		// Drives the rounds cue, the commerce-confinement steer/gate, and the coin-valve.
+		Trade: trade,
+	}
+
+	// Give the traveler a visible form: resolve his sprite (by archetype for a passer, by
+	// class for a merchant) to the uuid-keyed SpriteID the client draws by (LLM-379/455). ""
+	// on miss ships him spriteless — logged, but the spawn still proceeds.
+	spriteID, ok := visitorSpriteID(w, vs)
 	if !ok {
-		log.Printf("sim/visitor: dispatchSpawn: no sprite for archetype %q (name=%q); shipping spriteless",
-			profile.Archetype, VisitorArchetypeSprite[profile.Archetype])
+		log.Printf("sim/visitor: dispatchSpawn: no sprite for visitor (archetype=%q, merchant=%v); shipping spriteless",
+			profile.Archetype, trade != nil)
 	}
 	visitor := &Actor{
 		ID:                id,
@@ -825,26 +872,8 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 		Needs:             seedVisitorNeeds(),
 		Inventory:         pack,
 		Coins:             purse,
-		VisitorState: &VisitorState{
-			Archetype:   profile.Archetype,
-			Origin:      profile.Origin,
-			Disposition: profile.Disposition,
-			ExpiresAt:   expiresAt,
-			// Arriving: on the road, walking in to the first stop on its circuit. The
-			// circuit dispatcher flips it to making_rounds on arrival (LLM-373).
-			Phase: VisitorPhaseArriving,
-			// A returner's PERSONA is stable across visits, but its road-rumor is
-			// deliberately fresh each trip: a peddler coming back through carries the
-			// latest news, not last season's. So Payload is (re)selected here every
-			// spawn and is NOT stored on the recurring_visitor row (LLM-372).
-			Payload:     selectVisitorRumor(w, r, inputs.Now),
-			RecurringID: returnerID, // "" for a fresh stranger; set for a returning traveler
-			// LLM-410: a factor trades only with the distributor. The bool drives the
-			// perception steer and the PayWithItem gate — set once at spawn, not
-			// re-derived by string-matching the archetype at each read site.
-			DistributorOnly: isFactor,
-		},
-		State: StateIdle,
+		VisitorState:      vs,
+		State:             StateIdle,
 	}
 	w.Actors[id] = visitor
 	w.outdoorActors[id] = struct{}{}
@@ -950,13 +979,13 @@ func (w *World) rehydrateVisitorsOnLoad(ctx context.Context) error {
 		if roomAccess == nil {
 			roomAccess = map[RoomAccessKey]*RoomAccess{}
 		}
-		// Sprite is derived from the archetype (persisted on VisitorState), not stored
-		// separately — resolve it the same way spawn does so a restart doesn't strand
-		// the traveler invisible (LLM-379).
-		spriteID, ok := visitorSpriteID(w, lv.VisitorState.Archetype)
+		// Sprite is derived from the visitor state (archetype for a passer, class for a
+		// merchant — both persisted), not stored separately, so a restart resolves it the
+		// same way spawn does and doesn't strand the traveler invisible (LLM-379/455).
+		spriteID, ok := visitorSpriteID(w, lv.VisitorState)
 		if !ok {
-			log.Printf("sim: rehydrate visitor %q: no sprite for archetype %q (name=%q); restoring spriteless",
-				id, lv.VisitorState.Archetype, VisitorArchetypeSprite[lv.VisitorState.Archetype])
+			log.Printf("sim: rehydrate visitor %q: no sprite for archetype %q (merchant=%v); restoring spriteless",
+				id, lv.VisitorState.Archetype, lv.VisitorState.Trade != nil)
 		}
 		actor := &Actor{
 			ID:                id,
@@ -1027,6 +1056,16 @@ func dispatchVisitorPacing(w *World, inputs VisitorTickInputs, t *VisitorCascade
 		vs := actor.VisitorState
 		if vs.Phase == VisitorPhaseDeparting {
 			continue // despawn owns it
+		}
+		// Settle a buy-merchant's errand the moment he holds his errand good (LLM-455). An
+		// INVENTORY check, not an event: a buyer spawns empty-packed (seedBuyerPack) and his
+		// commerce is confined to his counterparty (the talk-only gate), so holding the good
+		// means the purchase landed — an exact match on the errand good, and it can't misfire
+		// on a meal or a room (a consumable is eaten, a service is never held). Turns the rounds
+		// cue to the wind-down. A seller (factor) has an open-ended two-way deal and winds down
+		// on the dusk phase flip instead.
+		if tr := vs.Trade; tr != nil && tr.Direction == TradeDirectionBuy && !tr.Settled && actor.Inventory[tr.Good] > 0 {
+			tr.Settled = true
 		}
 		// Dusk: turn from the daytime rounds to the evening. Only the phase flips — the
 		// seek-a-bed / evening-leisure cues (not an engine walk) draw him to the inn.
@@ -1245,6 +1284,159 @@ func seedVisitorPack(r *rand.Rand) (map[ItemKind]int, int) {
 	return pack, purse
 }
 
+// seedBuyerPack returns the pack + purse a buy-merchant carries (LLM-455): a fuller purse
+// than an ordinary traveler and NO starting wares. Injecting coin is the point of a buyer —
+// he pays for the village good he came for and for his room in coin — so he arrives with coin
+// to spend, not a barter bale. r is non-nil.
+func seedBuyerPack(r *rand.Rand) (map[ItemKind]int, int) {
+	return map[ItemKind]int{}, 70 + r.Intn(41) // 70..110
+}
+
+// chooseVisitorTradeDirection picks a merchant visitor's trade direction via the coin-valve
+// (LLM-455): resident coin at/above the operator high-water mark forces a SELLER (drain the
+// excess), at/below the low-water mark forces a BUYER (inject), and in-band — or when the
+// band is unconfigured (high <= 0) — it is the weighted random, where VisitorSellWeightPermille
+// is the (low) chance of a seller so imports stay near today's cadence. Runs on the world
+// goroutine (reads live coin).
+func chooseVisitorTradeDirection(w *World, r *rand.Rand) TradeDirection {
+	high := w.Settings.VisitorCoinBandHigh
+	low := w.Settings.VisitorCoinBandLow
+	if high > 0 {
+		resident := residentCoinOnMap(w)
+		if resident >= high {
+			return TradeDirectionSell
+		}
+		if low > 0 && resident <= low {
+			return TradeDirectionBuy
+		}
+	}
+	if r.Intn(1000) < effectiveVisitorSellWeight(w) {
+		return TradeDirectionSell
+	}
+	return TradeDirectionBuy
+}
+
+// effectiveVisitorSellWeight clamps the in-band seller weight to [0,1000] (LLM-455). The
+// DEFAULT (150) is applied by the settings loaders (repo/pg + repo/mem) when the row is absent,
+// NOT re-defaulted here — so an explicit 0 genuinely means "no sellers" and a test can force a
+// deterministic direction.
+func effectiveVisitorSellWeight(w *World) int {
+	weight := w.Settings.VisitorSellWeightPermille
+	if weight < 0 {
+		weight = 0
+	}
+	if weight > 1000 {
+		weight = 1000
+	}
+	return weight
+}
+
+// effectiveVisitorPasserThroughChance clamps the passer-through chance to [0,1000] (LLM-455).
+// Like the sell weight, the DEFAULT (250) is applied by the settings loaders, not here, so an
+// explicit 0 genuinely means "never a passer-through (always attempt a merchant)".
+func effectiveVisitorPasserThroughChance(w *World) int {
+	chance := w.Settings.VisitorPasserThroughChancePermille
+	if chance < 0 {
+		chance = 0
+	}
+	if chance > 1000 {
+		chance = 1000
+	}
+	return chance
+}
+
+// bindVisitorErrand binds a merchant visitor's grounded errand from live world state
+// (LLM-455) in the given direction, or ok=false when the economy can't service one — the
+// caller then falls back to a passer-through. Runs on the world goroutine.
+func bindVisitorErrand(w *World, r *rand.Rand, direction TradeDirection) (*TradeErrand, bool) {
+	if direction == TradeDirectionSell {
+		return bindSellErrand(w, r)
+	}
+	return bindBuyErrand(w, r)
+}
+
+// bindSellErrand binds the factor's sell errand (LLM-455): Counterparty = the village
+// distributor (the import absorber), Good = iron as the headline of the bale (the
+// load-bearing import — the forge's nail boost) though the pack carries the full
+// cloth/iron/salt shipment. ok=false when no distributor structure is placed — no one to
+// absorb imports, so no sell errand is possible.
+func bindSellErrand(w *World, r *rand.Rand) (*TradeErrand, bool) {
+	distID, _, ok := pickDistributorDestination(w)
+	if !ok {
+		return nil, false
+	}
+	return &TradeErrand{Direction: TradeDirectionSell, Good: factorIronKind, Counterparty: distID}, true
+}
+
+// bindBuyErrand binds a buyer's errand from live state (LLM-455): scan businessowners at an
+// open post (keeperPresentAt) and bind Good + Counterparty to one of the exportable goods
+// they sell. Skips wholesale-tier sellers (they sell only to the distributor — a walk-in
+// buyer can't trade there) and non-exportable goods (a service / eat-here-only good can't be
+// carried off the map). Candidates are sorted for deterministic test reproducibility (map
+// iteration order is otherwise unstable), then one is picked with r. ok=false when no
+// (open keeper, exportable good) pair exists — the economy can't service a buyer right now.
+func bindBuyErrand(w *World, r *rand.Rand) (*TradeErrand, bool) {
+	type candidate struct {
+		structure StructureID
+		good      ItemKind
+	}
+	var cands []candidate
+	for _, a := range w.Actors {
+		if a == nil || a.BusinessownerState == nil || a.VisitorState != nil {
+			continue
+		}
+		sid := a.WorkStructureID
+		if sid == "" || a.RestockPolicy == nil {
+			continue
+		}
+		if !keeperPresentAt(w, sid) {
+			continue // shop shut / keeper away — nothing to buy right now
+		}
+		if SellerAtWholesaler(w.VillageObjects, sid) {
+			continue // wholesale-tier: sells only to the distributor, not a walk-in buyer
+		}
+		for _, e := range a.RestockPolicy.ProduceEntries() {
+			good := e.Item
+			if good == "" || !KindBarterable(w.ItemKinds[good]) {
+				continue // a service / eat-here-only good can't be carried off the map
+			}
+			if a.Inventory[good] <= 0 {
+				continue // the keeper produces it but has none on hand right now — not a real trade (code_review)
+			}
+			cands = append(cands, candidate{structure: sid, good: good})
+		}
+	}
+	if len(cands) == 0 {
+		return nil, false
+	}
+	sort.Slice(cands, func(i, j int) bool {
+		if cands[i].structure != cands[j].structure {
+			return cands[i].structure < cands[j].structure
+		}
+		return cands[i].good < cands[j].good
+	})
+	pick := cands[r.Intn(len(cands))]
+	return &TradeErrand{Direction: TradeDirectionBuy, Good: pick.good, Counterparty: pick.structure}, true
+}
+
+// visitorMerchantLabel derives a merchant's archetype label from its errand (LLM-455): a
+// buyer is "<good>-buyer" (cheese -> "cheese-buyer"), grounded in the real good so the persona
+// can never name an untradeable trade; a seller keeps the established "factor" persona (he
+// deals with the distributor, already grounded). Uses the good's singular display noun.
+func visitorMerchantLabel(w *World, trade *TradeErrand) string {
+	if trade == nil {
+		return ""
+	}
+	if trade.Direction == TradeDirectionSell {
+		return FactorArchetype
+	}
+	noun := string(trade.Good)
+	if def := w.ItemKinds[trade.Good]; def != nil {
+		noun = def.Singular()
+	}
+	return noun + "-buyer"
+}
+
 // Factor pack + purse defaults (LLM-410), used when the WorldSettings knobs are unset.
 // A factor carries a bale of cloth/charms to sell and a heavier purse than an ordinary
 // traveler (30..50) so he can buy the village's surplus and inject coin. Operator-tunable
@@ -1317,13 +1509,15 @@ type visitorProfile struct {
 	Disposition string
 }
 
-// generateVisitorProfile pulls one entry from each pool using the supplied
-// random source. r is non-nil — callers thread the per-driver seeded rand
-// in production and a deterministic seed in tests.
+// generateVisitorProfile pulls one entry from each pool using the supplied random source.
+// r is non-nil — callers thread the per-driver seeded rand in production and a deterministic
+// seed in tests. The Archetype is a passer-through default (LLM-455): spawn OVERRIDES it with
+// a derived label when the traveler binds a merchant errand, so a fresh profile carries a
+// flavor archetype and only a passer-through keeps it.
 func generateVisitorProfile(r *rand.Rand) visitorProfile {
 	return visitorProfile{
 		Name:        visitorNamePool[r.Intn(len(visitorNamePool))],
-		Archetype:   visitorArchetypePool[r.Intn(len(visitorArchetypePool))],
+		Archetype:   passerThroughArchetypePool[r.Intn(len(passerThroughArchetypePool))],
 		Origin:      visitorOriginPool[r.Intn(len(visitorOriginPool))],
 		Disposition: visitorDispositionPool[r.Intn(len(visitorDispositionPool))],
 	}
@@ -1428,16 +1622,19 @@ func pickVisitorDestination(w *World) (StructureID, GridPoint, bool) {
 }
 
 // pickArrivalDestination picks the structure a freshly-spawned traveler walks in toward
-// (LLM-410). An ordinary traveler heads for the neutral village anchor (the tavern /
-// gathering place, pickVisitorDestination). A wholesale factor makes straight for the
-// distributor he deals with (pickDistributorDestination), falling back to the ordinary
-// anchor when no distributor structure is placed — so a factor still arrives somewhere
-// sensible in a village without a configured distributor. MUST be called inside a
-// Command.Fn (reads world maps directly).
-func pickArrivalDestination(w *World, factor bool) (StructureID, GridPoint, bool) {
-	if factor {
-		if id, anchor, ok := pickDistributorDestination(w); ok {
-			return id, anchor, true
+// (LLM-455, generalizing the LLM-410 factor target). A MERCHANT makes straight for his
+// errand counterparty — the one must-hit stop (the open keeper he buys from, or the
+// distributor he sells to) — so he arrives with his business in front of him. A
+// passer-through, or a merchant whose counterparty has somehow become unbacked, falls back
+// to the neutral village anchor (the tavern / gathering place, pickVisitorDestination) so he
+// still arrives somewhere sensible. MUST be called inside a Command.Fn (reads world maps
+// directly).
+func pickArrivalDestination(w *World, trade *TradeErrand) (StructureID, GridPoint, bool) {
+	if trade != nil && trade.Counterparty != "" {
+		if structureIDValid(w, VillageObjectID(trade.Counterparty)) {
+			if vobj := w.VillageObjects[VillageObjectID(trade.Counterparty)]; vobj != nil {
+				return trade.Counterparty, vobj.Pos.Tile(), true
+			}
 		}
 	}
 	return pickVisitorDestination(w)

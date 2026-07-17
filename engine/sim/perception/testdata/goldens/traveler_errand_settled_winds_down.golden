@@ -7,16 +7,16 @@ You are Elias Drum, a nail-buyer making your way through Salem. You hail from Bo
 
 
 ## You
-Coins in your purse: 90.
+Coins in your purse: 78.
+You are carrying: nail (x6).
 
 ## Around you
 You are outdoors, with no one else here to hear you speak.
 The afternoon wears on.
 
 ## Your rounds
-You came to buy nail at Smithy, just to the north — that is your business here, so make for it. The other shops you may look in on to show your face and pass what news you carry, but your trading is done with Smithy alone.
-So far you've called at Cooper's.
-Others keeping shop this hour, to look in on and pass the news (no trading there): Weaver's, a short way to the east.
+You have what you came for — the nail is bought and stowed in your pack. Your business in this village is done; the tavern's the place now, for your supper and a bed before the road.
+So far you've called at Smithy.
 The afternoon is wearing on and the light is starting to lengthen.
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.
