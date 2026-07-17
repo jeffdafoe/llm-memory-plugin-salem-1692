@@ -1198,10 +1198,18 @@ func actorCanReactNow(w *World, a *Actor, now time.Time) (eligible bool, stale b
 	// (the live LLM-69 move-after-pick) and a move in that gap discarded a pick
 	// that had actually finished. Low-value warrants (NPC chatter, arrivals, idle)
 	// still shelve — nothing to respond to mid-activity, so don't burn a tick.
+	// EXCEPT a baker (LLM-454): the evening bake is a SHARED, sociable occupation,
+	// so NPC speech directed at her ticks her too — rate-limited to one reply per
+	// LaborReplyCadence (bakeReplyDue, the source-activity sibling of the laboring
+	// npcReplyDue below) — so an entering or co-baking housemate gets one word back
+	// instead of a silent wall. The utterance still lands in her transcript while she
+	// stays shelved; the speak-only tool surface that keeps the reply from walking
+	// her off the bread is applied separately at advertise time (handlers.gateTools).
 	if a.SourceActivity != nil &&
 		!hasBreakInterruptingNeedWarrant(a.Warrants) &&
 		!hasOperatorNudgeWarrant(a.Warrants) &&
-		!hasPCSpeechWarrant(a.Warrants) {
+		!hasPCSpeechWarrant(a.Warrants) &&
+		!bakeReplyDue(a, now, w.Settings) {
 		return false, false
 	}
 	// A live labor job (StateLaboring + a LaboringUntil window, LLM-190) shelves
@@ -1407,6 +1415,24 @@ func laborReplyCadenceElapsed(a *Actor, now time.Time, cadence time.Duration) bo
 		return true
 	}
 	return now.Sub(last) >= cadence
+}
+
+// bakeReplyDue reports whether a baker should be ticked to answer a housemate: she
+// is mid a bake window (LLM-454), an NPC has spoken to her, and her reply cadence
+// has elapsed. The source-activity sibling of the laboring npcReplyDue carve-out
+// (LLM-230) — a baker is BusyAtSource-shelved like a laborer, but the evening bake
+// is a SHARED, sociable occupation, so a co-baking or entering housemate should get
+// one word back rather than a silent wall. Reuses laborReplyCadenceElapsed (keyed on
+// lastReactorTickAt — no new state) and the same LaborReplyCadence setting, so a
+// baker who just answered a red need or a PC does not also burn a tick on chatter
+// within the window. Scoped to SourceActivityBake, so eat/drink/harvest/repair/stoke
+// stay closed to NPC chatter exactly as before. The speak-only tool surface that keeps
+// the reply from walking her off the bake is applied separately (handlers.gateTools).
+func bakeReplyDue(a *Actor, now time.Time, s WorldSettings) bool {
+	return a.SourceActivity != nil &&
+		a.SourceActivity.Kind == SourceActivityBake &&
+		hasNPCSpeechWarrant(a.Warrants) &&
+		laborReplyCadenceElapsed(a, now, s.laborReplyCadence())
 }
 
 // recordReactorTick appends now to the actor's RecentReactorTicks ring,

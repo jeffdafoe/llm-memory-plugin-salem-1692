@@ -463,6 +463,17 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 	// the tool and its cue can't drift.
 	laboringMayMove := laboring && (laboringMayBreakOffToEat(payload.Actor) ||
 		payload.Laboring.OffPost || payload.Laboring.EmployerAway)
+	// LLM-454: a baker mid the evening bake is BusyAtSource-shelved and ticked only
+	// to answer a housemate (bakeReplyDue) or a high-value interrupt — so keep her
+	// speak-only the same way a laboring worker is, or the one reply could turn into
+	// wandering off / commerce that abandons the bread. Signalled by her own in-flight
+	// bake window (no new payload field), the SAME window the standing "stay with the
+	// bread" self-line reads, so tool and cue can't drift. move_to stays only for a
+	// red hunger/thirst need (walk to food) — mirroring laboringMayBreakOffToEat and
+	// the reactor interrupt that ticks her for it, so tool and tick agree.
+	baking := payload.Actor.InFlightSourceActivity != nil &&
+		payload.Actor.InFlightSourceActivity.Kind == sim.SourceActivityBake
+	bakingMayMove := baking && laboringMayBreakOffToEat(payload.Actor)
 
 	// Single pass over the Available set so each gated group is evaluated
 	// against its OWN condition. We deliberately avoid a "pending offer →
@@ -631,6 +642,19 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 				continue
 			}
 			if spec.Name == moveToToolName && !laboringMayMove {
+				continue
+			}
+		}
+		// LLM-454 baking speak-only surface — see `baking` above. Mirrors the
+		// laboring strip: the commerce tools (laborAbandonTools) that would walk her
+		// off the bread go unconditionally, and move_to unless a red hunger/thirst
+		// need justifies breaking off to eat. speak / consume / done stay, so the one
+		// housemate reply the reactor ticks her for lands without abandoning the bake.
+		if baking {
+			if _, gated := laborAbandonTools[spec.Name]; gated {
+				continue
+			}
+			if spec.Name == moveToToolName && !bakingMayMove {
 				continue
 			}
 		}

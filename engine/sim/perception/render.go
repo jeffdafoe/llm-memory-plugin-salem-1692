@@ -1112,6 +1112,8 @@ func sourceActivityVerb(v InFlightSourceActivityView) string {
 		return "mending"
 	case sim.SourceActivityStoke:
 		return "tending the fire"
+	case sim.SourceActivityBake:
+		return "baking bread"
 	}
 	switch v.Attribute {
 	case "hunger":
@@ -1151,6 +1153,14 @@ func renderInFlightSourceActivity(v InFlightSourceActivityView) string {
 		tail = "if you walk off now the mending is unfinished and the stall stays worn"
 	case sim.SourceActivityStoke:
 		tail = "if you walk off now the wood is wasted and the fire stays low"
+	case sim.SourceActivityBake:
+		// LLM-454: the evening bake is a SHARED, sociable occupation, so its standing
+		// line invites the one housemate reply the reactor deliberately ticks a baker
+		// for (bakeReplyDue) — unlike the solitary repair/harvest/stoke tails that only
+		// say "stay put." A committed move still abandons the bread, so hold her at the
+		// hearth. Returned whole (not via the "stay where you are" template) so the
+		// speech-permissive framing replaces it.
+		return "at the hearth with the household's bread — a word to those about you is fine, but stay with it; if you walk off now the bread won't be finished"
 	}
 	return fmt.Sprintf("%s — stay where you are; %s", sourceActivityPhrase(v), tail)
 }
@@ -1769,13 +1779,15 @@ func eatingPhrase(m HuddleMember) string {
 // busyActivityPhrase annotates a co-present member mid a timed source activity as
 // busy in "## Around you" (LLM-440) — the observer-facing counterpart to the
 // subject's own in-flight self-line (renderInFlightSourceActivity), so an onlooker
-// reads a keeper deep in a repair/stoke/gather as occupied rather than free to greet
-// or pitch. Third-person, keyed on kind. Repair names the business it is bound to
-// with the same "at <label>" framing and label source (resolveDwellPinLabel) the
+// reads a keeper deep in a repair/stoke/gather/bake as occupied rather than free to
+// greet or pitch. Third-person, keyed on kind. Repair names the business it is bound
+// to with the same "at <label>" framing and label source (resolveDwellPinLabel) the
 // self-line uses, so the two can't drift; an unresolved label falls back to a
-// place-less phrase. Stoke and gather need no place — the fire and the forager are
-// already at the observed spot. Empty for a member not mid a source activity. Like
-// eatingPhrase, purely a legibility beat: it gates neither trade nor speech.
+// place-less phrase. Stoke, gather, and bake need no place — the fire, the forager,
+// and the home hearth are already at the observed spot. Empty for a member not mid a
+// source activity. Like eatingPhrase, purely a legibility beat: it gates neither
+// trade nor speech — and for bake it reads as "join her at the bread," not
+// "interrupt her" (LLM-454).
 func busyActivityPhrase(m HuddleMember) string {
 	if !m.SourceActivityBusy {
 		return ""
@@ -1792,6 +1804,8 @@ func busyActivityPhrase(m HuddleMember) string {
 		return " (tending the fire just now)"
 	case sim.SourceActivityHarvest:
 		return " (gathering just now)"
+	case sim.SourceActivityBake:
+		return " (at the hearth, baking just now)"
 	}
 	return ""
 }

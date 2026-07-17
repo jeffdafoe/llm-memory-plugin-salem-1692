@@ -469,6 +469,9 @@ func TestRenderSurroundings_SourceActivityBusyAnnotated(t *testing.T) {
 		{"repair with no resolved place", HuddleMember{ID: "ez", DisplayName: "Ezekiel Stone", Acquainted: true, SourceActivityBusy: true, SourceActivityKind: sim.SourceActivityRepair}, "(mending just now)"},
 		{"stoke", HuddleMember{ID: "hannah", DisplayName: "Hannah Boggs", Acquainted: true, SourceActivityBusy: true, SourceActivityKind: sim.SourceActivityStoke}, "(tending the fire just now)"},
 		{"harvest", HuddleMember{ID: "josiah", DisplayName: "Josiah Thorne", Acquainted: true, SourceActivityBusy: true, SourceActivityKind: sim.SourceActivityHarvest}, "(gathering just now)"},
+		// LLM-454: a co-baking / entering housemate reads a baker as "join her at the
+		// bread," not "interrupt her." Place-less like stoke/harvest.
+		{"bake", HuddleMember{ID: "silence", DisplayName: "Silence Walker", Acquainted: true, SourceActivityBusy: true, SourceActivityKind: sim.SourceActivityBake}, "(at the hearth, baking just now)"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -499,5 +502,64 @@ func TestGoldenObserverSeesMendingPeer(t *testing.T) {
 	}
 	if !strings.Contains(section, "Ezekiel Stone") || !strings.Contains(section, "(mending at the Market just now)") {
 		t.Errorf("observer should see the repairing keeper annotated as mending in ## Around you, got section:\n%s", section)
+	}
+}
+
+// bakingPeerObserverSnapshot builds an observer (Patience) co-present at home with a
+// housemate (Silence) mid the evening bake. The LLM-454 sibling of
+// mendingPeerObserverSnapshot. Deterministic — no wall-clock reads.
+func bakingPeerObserverSnapshot() (*sim.Snapshot, sim.ActorID) {
+	subj := &sim.ActorSnapshot{
+		Kind:                 sim.KindNPCStateful,
+		InsideStructureID:    "walkerhome",
+		ColocatedAudienceIDs: []sim.ActorID{"silence"},
+		Acquaintances:        map[string]sim.Acquaintance{"Silence Walker": {}},
+	}
+	snap := &sim.Snapshot{
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			"patience": subj,
+			// Silence is mid the household bake at home; the home structure id is the
+			// source-activity object (shared under the WORK-342 id bridge).
+			"silence": {
+				DisplayName:            "Silence Walker",
+				SourceActivityKind:     sim.SourceActivityBake,
+				SourceActivityObjectID: "walkerhome",
+			},
+		},
+		Structures: map[sim.StructureID]*sim.Structure{
+			"walkerhome": {DisplayName: "the Walker Residence"},
+		},
+	}
+	return snap, "patience"
+}
+
+// LLM-454 build layer: a co-present housemate mid the evening bake is annotated busy
+// on its CoPresent member view — the same BusyAtSource-gated SourceActivityKind
+// projection the repair/stoke/harvest kinds use, now extended to bake.
+func TestBuild_CoPresentBakingPeerAnnotated(t *testing.T) {
+	snap, observer := bakingPeerObserverSnapshot()
+	p := Build(snap, observer, nil)
+	if len(p.Surroundings.CoPresent) != 1 || p.Surroundings.CoPresent[0].ID != "silence" {
+		t.Fatalf("CoPresent = %v, want [silence]", p.Surroundings.CoPresent)
+	}
+	m := p.Surroundings.CoPresent[0]
+	if !m.SourceActivityBusy || m.SourceActivityKind != sim.SourceActivityBake {
+		t.Errorf("baking peer: SourceActivityBusy=%v kind=%q, want true / bake", m.SourceActivityBusy, m.SourceActivityKind)
+	}
+}
+
+// TestGoldenObserverSeesBakingPeer is the LLM-454 observer guard (the bake analogue of
+// TestGoldenObserverSeesMendingPeer): a housemate entering the kitchen must read, in
+// "## Around you", that the baker is at the hearth — so a newcomer reads it as "join
+// her at the bread," not "interrupt her." Scoped to the "## Around you" section.
+func TestGoldenObserverSeesBakingPeer(t *testing.T) {
+	snap, observer := bakingPeerObserverSnapshot()
+	got := combinedPrompt(Render(Build(snap, observer, nil), DefaultRenderConfig()))
+	section := aroundYouSection(got)
+	if section == "" {
+		t.Fatalf("no '## Around you' section in prompt:\n%s", got)
+	}
+	if !strings.Contains(section, "Silence Walker") || !strings.Contains(section, "(at the hearth, baking just now)") {
+		t.Errorf("observer should see the baking housemate annotated in ## Around you, got section:\n%s", section)
 	}
 }

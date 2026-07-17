@@ -119,3 +119,43 @@ func TestRenderTriage_MidActivityCodaHoldsTheActor(t *testing.T) {
 		t.Errorf("triage coda fell through to the generic act-now line:\n%s", out)
 	}
 }
+
+// TestRenderInFlightSourceActivity_BakeIsSpeechPermissive — LLM-454. The standing
+// self-line for a baker invites the one housemate reply the reactor ticks her for
+// (bakeReplyDue): unlike the solitary repair/harvest tails ("stay where you are"), it
+// says a word to those about her is fine but to stay with the bread. A committed move
+// still abandons it.
+func TestRenderInFlightSourceActivity_BakeIsSpeechPermissive(t *testing.T) {
+	got := renderInFlightSourceActivity(InFlightSourceActivityView{Kind: sim.SourceActivityBake, SourceLabel: "Walker Residence"})
+	for _, want := range []string{"a word to those about you is fine", "stay with it", "the bread won't be finished"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("bake self-line = %q, want it to contain %q", got, want)
+		}
+	}
+	// It replaces the solitary "stay where you are" template with the permissive framing.
+	if strings.Contains(got, "stay where you are") {
+		t.Errorf("bake self-line should not use the solitary 'stay where you are' template: %q", got)
+	}
+}
+
+// TestSourceActivityVerb_Bake — LLM-454. The mid-activity triage coda reads the verb
+// through sourceActivityPhrase; a bake must render "baking bread", not the "busy"
+// fallback. Guards the coda from calling a baker "busy".
+func TestSourceActivityVerb_Bake(t *testing.T) {
+	if got := sourceActivityVerb(InFlightSourceActivityView{Kind: sim.SourceActivityBake}); got != "baking bread" {
+		t.Errorf("sourceActivityVerb(bake) = %q, want %q", got, "baking bread")
+	}
+}
+
+func TestRenderTriage_BakeMidActivityCoda(t *testing.T) {
+	v := &InFlightSourceActivityView{Kind: sim.SourceActivityBake, SourceLabel: "Walker Residence"}
+	var b strings.Builder
+	renderTriage(&b, map[sim.NeedKey]int{}, nil, false, false, false, false, nil, false, false, nil, v)
+	out := b.String()
+	if !strings.Contains(out, "baking bread") {
+		t.Errorf("bake triage coda = %q, want it to name 'baking bread' (not the 'busy' fallback)", out)
+	}
+	if strings.Contains(out, "Choose one action") {
+		t.Errorf("bake triage coda fell through to the generic act-now line:\n%s", out)
+	}
+}
