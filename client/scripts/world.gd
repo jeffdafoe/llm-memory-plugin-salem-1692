@@ -2498,8 +2498,12 @@ func _dormant_token(state: String) -> String:
 
 ## Apply or clear the sleep/rest visual on an NPC container: a dimmed sprite plus
 ## a "Zzz" marker while dormant (token non-empty), both cleared on wake. The dim
-## is applied to the AnimatedSprite2D so the marker label is unaffected; the
-## marker is a sibling node added/removed by name. Idempotent.
+## is applied to the AnimatedSprite2D so the marker label is unaffected. The marker
+## is a persistent, visibility-toggled node (NOT queue_free — matching the LLM-448
+## activity marker): a same-frame clear -> set (wake then immediately sleep, or
+## repeated dormancy frames in one tick) would otherwise reuse the still-present,
+## queued-for-deletion node and then lose it when the deferred free fires — or
+## collide on the node name when re-created. Toggling sidesteps that race. Idempotent.
 func _apply_dormant_visual(container: Node2D, token: String) -> void:
     container.set_meta("dormant", token)
     var dormant := token != ""
@@ -2507,18 +2511,20 @@ func _apply_dormant_visual(container: Node2D, token: String) -> void:
     if spr != null:
         spr.modulate = DORMANT_DIM if dormant else Color.WHITE
     var marker: Label = container.get_node_or_null(ZZZ_MARKER_NAME)
-    if dormant:
-        if marker == null:
-            marker = Label.new()
-            marker.name = ZZZ_MARKER_NAME
-            marker.text = "Zzz"
-            marker.z_index = 1
-            marker.add_theme_font_size_override("font_size", 14)
-            marker.add_theme_color_override("font_color", Color(0.85, 0.9, 1.0))
-            marker.position = _zzz_marker_position(spr)
-            container.add_child(marker)
-    elif marker != null:
-        marker.queue_free()
+    if not dormant:
+        if marker != null:
+            marker.visible = false
+        return
+    if marker == null:
+        marker = Label.new()
+        marker.name = ZZZ_MARKER_NAME
+        marker.text = "Zzz"
+        marker.z_index = 1
+        marker.add_theme_font_size_override("font_size", 14)
+        marker.add_theme_color_override("font_color", Color(0.85, 0.9, 1.0))
+        container.add_child(marker)
+    marker.visible = true
+    marker.position = _zzz_marker_position(spr)
 
 ## Center the Zzz marker just above an NPC sprite's head. Reads the frame width
 ## off the sprite so it centers regardless of per-character frame size; falls back
