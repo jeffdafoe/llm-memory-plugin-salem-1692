@@ -332,6 +332,8 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.VisitorFactorPurseMax = parseIntSetting(values, "visitor_factor_purse_max", sim.DefaultVisitorFactorPurseMax)
 	// LLM-442: iron shipment size per factor visit.
 	s.VisitorFactorIronUnits = parseIntSetting(values, "visitor_factor_iron_units", sim.DefaultVisitorFactorIronUnits)
+	// LLM-444: salt shipment size per factor visit.
+	s.VisitorFactorSaltUnits = parseIntSetting(values, "visitor_factor_salt_units", sim.DefaultVisitorFactorSaltUnits)
 
 	// Businessowner cooldowns.
 	s.BusinessownerGreetCooldownMinutes = parseIntSetting(values, "businessowner_greet_cooldown_minutes",

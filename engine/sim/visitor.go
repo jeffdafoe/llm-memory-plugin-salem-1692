@@ -789,6 +789,10 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 		if ironUnits < 1 {
 			ironUnits = DefaultVisitorFactorIronUnits
 		}
+		saltUnits := w.Settings.VisitorFactorSaltUnits
+		if saltUnits < 1 {
+			saltUnits = DefaultVisitorFactorSaltUnits
+		}
 		purseMin := w.Settings.VisitorFactorPurseMin
 		if purseMin < 0 {
 			purseMin = 0
@@ -797,7 +801,7 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 		if purseMax < purseMin {
 			purseMax = purseMin
 		}
-		pack, purse = seedFactorPack(r, units, ironUnits, purseMin, purseMax)
+		pack, purse = seedFactorPack(r, units, ironUnits, saltUnits, purseMin, purseMax)
 	} else {
 		pack, purse = seedVisitorPack(r)
 	}
@@ -1255,6 +1259,13 @@ const (
 	// only one boosted nail batch, so the pack must bridge the gap between
 	// visits or the forge falls back to rough nails as its everyday path.
 	DefaultVisitorFactorIronUnits = 10
+	// DefaultVisitorFactorSaltUnits (LLM-444) — sacks of salt per visit, a
+	// SHIPMENT for the same reason as iron: salt is consumed batch-by-batch
+	// across the tavern and inn kitchens (1 sack per boosted dish), so the rare
+	// factor must land enough to bridge the gap between visits or the salt cue
+	// sits silent and the coin drain barely fires. Sized a little above iron
+	// because salt feeds several kitchens rather than one forge; tunable.
+	DefaultVisitorFactorSaltUnits = 12
 )
 
 // factorWareKinds are the goods a wholesale factor spawns carrying to SELL into the
@@ -1270,19 +1281,26 @@ var factorWareKinds = []ItemKind{"coat", "cloak", "gown", "breeches", "shift", "
 // inflating the garment bale to shipment size.
 const factorIronKind = ItemKind("iron")
 
-// seedFactorPack returns the pack (clothing/charm goods to sell, plus an iron
-// shipment — LLM-442) and purse (a heavier coin float than an ordinary traveler)
-// a wholesale factor spawns carrying (LLM-410). unitsPerKind of each ware kind
-// and ironUnits bars of iron, each plus a small jitter so back-to-back factors
-// don't carry identical bales; purse a uniform pull from [purseMin, purseMax].
-// r is non-nil; the caller clamps unitsPerKind >= 1, ironUnits >= 1, and
-// purseMin <= purseMax.
-func seedFactorPack(r *rand.Rand, unitsPerKind, ironUnits, purseMin, purseMax int) (map[ItemKind]int, int) {
+// factorSaltKind is the imported cooking input the factor carries in SHIPMENT
+// quantity (LLM-444) — seeded via saltUnits, not the per-kind unitsPerKind, for
+// the same reason as iron: salt is consumed batch-by-batch across the kitchens,
+// so the rare visit must bring a sack, not a per-kind pinch.
+const factorSaltKind = ItemKind("salt")
+
+// seedFactorPack returns the pack (clothing/charm goods to sell, plus iron and
+// salt shipments — LLM-442/LLM-444) and purse (a heavier coin float than an
+// ordinary traveler) a wholesale factor spawns carrying (LLM-410). unitsPerKind
+// of each ware kind, ironUnits bars of iron, and saltUnits sacks of salt, each
+// plus a small jitter so back-to-back factors don't carry identical bales; purse
+// a uniform pull from [purseMin, purseMax]. r is non-nil; the caller clamps
+// unitsPerKind >= 1, ironUnits >= 1, saltUnits >= 1, and purseMin <= purseMax.
+func seedFactorPack(r *rand.Rand, unitsPerKind, ironUnits, saltUnits, purseMin, purseMax int) (map[ItemKind]int, int) {
 	pack := map[ItemKind]int{}
 	for _, kind := range factorWareKinds {
 		pack[kind] = unitsPerKind + r.Intn(2) // unitsPerKind..unitsPerKind+1
 	}
 	pack[factorIronKind] = ironUnits + r.Intn(3) // ironUnits..ironUnits+2
+	pack[factorSaltKind] = saltUnits + r.Intn(3) // saltUnits..saltUnits+2
 	purse := purseMin
 	if purseMax > purseMin {
 		purse = purseMin + r.Intn(purseMax-purseMin+1)
