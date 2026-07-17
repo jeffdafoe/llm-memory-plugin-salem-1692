@@ -306,6 +306,64 @@ func TestHuddlesRepo_SaveSnapshot_HappyPath(t *testing.T) {
 	}
 }
 
+// TestHuddlesRepo_SaveSnapshot_SkipsVisitorMember — LLM-452: a huddle
+// with a mixed membership (one persistent NPC + one transient visitor)
+// writes a huddle_member row ONLY for the persistent member. The visitor
+// (vstr- id) is skipped so no dangling row is left to fatal LoadWorld on
+// the next boot. Programming a single member UPSERT and relying on
+// pgxmock's strict expectation matching proves the visitor was not
+// written — an errant visitor upsert would surface as an unmatched Exec.
+//
+// This also exercises the self-healing path for an ALREADY-persisted
+// visitor row: the visitor receives no current-gen stamp (no upsert), so
+// the trailing `DELETE FROM huddle_member WHERE snapshot_gen < $gen`
+// reclaims any pre-existing visitor row on the next checkpoint. (The
+// row-level delete itself is a real-pg behavior covered by the deferred
+// testcontainers slice — see this file's header — so the unit assertion is
+// limited to "the stale-gen sweep runs with the fresh gen".)
+func TestHuddlesRepo_SaveSnapshot_SkipsVisitorMember(t *testing.T) {
+	mock, repo := newMockPoolH(t)
+	tx := fakeTx{mock: mock}
+
+	const visitorMember = "vstr-898e0f7e"
+	started := time.Date(2026, 7, 17, 15, 0, 0, 0, time.UTC)
+
+	expectHuddleSaveSnapshotPrelude(mock, 5)
+
+	mock.ExpectExec(`INSERT INTO scene_huddle`).
+		WithArgs(hudA, "structure-tavern", started, (*time.Time)(nil), int64(5)).
+		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
+	mock.ExpectExec(`DELETE FROM scene_huddle WHERE snapshot_gen < \$1`).
+		WithArgs(int64(5)).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+
+	mock.ExpectQuery(`SELECT nextval\('huddle_member_snapshot_gen_seq`).
+		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(int64(50)))
+	// Only the persistent member is written — no INSERT for visitorMember.
+	mock.ExpectExec(`INSERT INTO huddle_member`).
+		WithArgs(hudA, actorAlice, int64(50)).
+		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
+	mock.ExpectExec(`DELETE FROM huddle_member WHERE snapshot_gen < \$1`).
+		WithArgs(int64(50)).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+
+	huddles := map[sim.HuddleID]*sim.Huddle{
+		sim.HuddleID(hudA): {
+			ID:          sim.HuddleID(hudA),
+			Members:     map[sim.ActorID]struct{}{actorAlice: {}, visitorMember: {}},
+			StructureID: sim.StructureID("structure-tavern"),
+			StartedAt:   started,
+		},
+	}
+
+	if err := repo.SaveSnapshot(context.Background(), tx, huddles); err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+}
+
 // TestHuddlesRepo_SaveSnapshot_EmptyMap — both gens still bump, both
 // DELETEs sweep their tables.
 func TestHuddlesRepo_SaveSnapshot_EmptyMap(t *testing.T) {
