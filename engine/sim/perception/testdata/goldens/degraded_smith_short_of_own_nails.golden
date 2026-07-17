@@ -1,0 +1,17 @@
+# Your turn
+
+## Since your last turn
+(nothing specific — this is a routine check-in)
+
+
+## You
+Coins in your purse: 8.
+You are making a batch of nail — about 3 minutes of work left, though the disrepair of your business drags the work out longer than that; it only moves along while you're at your post.
+
+## Around you
+You are outdoors, with no one else here to hear you speak.
+It is morning in the village.
+
+## Your business
+Your Blacksmith is badly worn — the disrepair drags at every task, and you can't restock the shelves until you mend it. You can still sell what's on hand, and work goes on, though slowly. Mending takes 5 nails and you have 0 — but nails are your own work: forge what you're short, then mend it here.
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

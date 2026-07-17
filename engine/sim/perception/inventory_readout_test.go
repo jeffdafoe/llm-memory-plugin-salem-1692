@@ -28,7 +28,7 @@ func TestBuildInventoryView_ResolvesSortsAndFiltersByLabel(t *testing.T) {
 		"flour":  {Name: "flour", DisplayLabel: "flour"},
 	}
 	snap := invSnap(map[sim.ItemKind]int{"cheese": 24, "bread": 65, "flour": 0}, kinds)
-	av := buildActorView(snap, snap.Actors["josiah"])
+	av := buildActorView(snap, "josiah", snap.Actors["josiah"])
 	if len(av.Inventory) != 2 {
 		t.Fatalf("want 2 items (flour qty 0 dropped), got %+v", av.Inventory)
 	}
@@ -43,12 +43,12 @@ func TestBuildInventoryView_ResolvesSortsAndFiltersByLabel(t *testing.T) {
 
 func TestBuildInventoryView_EmptyIsNil(t *testing.T) {
 	snap := invSnap(map[sim.ItemKind]int{}, nil)
-	if av := buildActorView(snap, snap.Actors["josiah"]); av.Inventory != nil {
+	if av := buildActorView(snap, "josiah", snap.Actors["josiah"]); av.Inventory != nil {
 		t.Errorf("empty inventory should yield nil view, got %+v", av.Inventory)
 	}
 	// All-zero quantities also collapse to nil.
 	snap2 := invSnap(map[sim.ItemKind]int{"bread": 0}, nil)
-	if av := buildActorView(snap2, snap2.Actors["josiah"]); av.Inventory != nil {
+	if av := buildActorView(snap2, "josiah", snap2.Actors["josiah"]); av.Inventory != nil {
 		t.Errorf("all-zero inventory should yield nil view, got %+v", av.Inventory)
 	}
 }
@@ -63,7 +63,7 @@ func TestBuildInventoryView_DuplicateLabelDeterministicTieBreak(t *testing.T) {
 	}
 	for i := 0; i < 25; i++ {
 		snap := invSnap(map[sim.ItemKind]int{"apple_b": 1, "apple_a": 1}, kinds)
-		av := buildActorView(snap, snap.Actors["josiah"])
+		av := buildActorView(snap, "josiah", snap.Actors["josiah"])
 		if len(av.Inventory) != 2 || av.Inventory[0].kind != "apple_a" || av.Inventory[1].kind != "apple_b" {
 			t.Fatalf("nondeterministic/tie-break order: %+v", av.Inventory)
 		}
@@ -73,7 +73,7 @@ func TestBuildInventoryView_DuplicateLabelDeterministicTieBreak(t *testing.T) {
 func TestBuildInventoryView_FallsBackToRawKind(t *testing.T) {
 	// No ItemKinds catalog → label falls back to the raw kind string.
 	snap := invSnap(map[sim.ItemKind]int{"iron_ingot": 3}, nil)
-	av := buildActorView(snap, snap.Actors["josiah"])
+	av := buildActorView(snap, "josiah", snap.Actors["josiah"])
 	if len(av.Inventory) != 1 || av.Inventory[0].Label != "iron_ingot" {
 		t.Errorf("want raw-kind fallback label 'iron_ingot', got %+v", av.Inventory)
 	}
@@ -117,7 +117,7 @@ func TestRenderActor_CarryingLine_CountNoun(t *testing.T) {
 	}
 	for _, tc := range cases {
 		snap := invSnap(map[sim.ItemKind]int{"water": tc.qty}, kinds)
-		av := buildActorView(snap, snap.Actors["josiah"])
+		av := buildActorView(snap, "josiah", snap.Actors["josiah"])
 		var b strings.Builder
 		renderActor(&b, av)
 		if out := b.String(); !strings.Contains(out, tc.want) {
@@ -152,7 +152,7 @@ func TestBuildInventoryView_IngredientUseAnnotation(t *testing.T) {
 		"meat": {"stew"},
 		"milk": {"stew"}, // edible -> still suppressed by the Consumable() gate
 	}
-	av := buildActorView(snap, snap.Actors["josiah"])
+	av := buildActorView(snap, "josiah", snap.Actors["josiah"])
 	got := map[sim.ItemKind]string{}
 	for _, it := range av.Inventory {
 		got[it.kind] = it.Use

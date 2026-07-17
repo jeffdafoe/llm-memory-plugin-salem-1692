@@ -134,17 +134,27 @@ type WorldSettings struct {
 	// LLM-247). An owned business accrues Wear in proportion to the coin it turns
 	// over (StallWearPerCoin × sale amount, accrued at commitPayTransfer to the
 	// seller's owned business). Crossing StallWearRepairThreshold stamps a repair
-	// warrant; crossing StallWearDegradeThreshold closes it for trade until mended. A
+	// warrant; crossing StallWearDegradeThreshold closes it for refill until mended. A
 	// repair consumes StallNailsPerRepair nails and runs a SourceActivity
-	// window of StallRepairDurationSeconds, then resets Wear to 0. All five are
+	// window of StallRepairDurationSeconds, then resets Wear to 0. All six are
 	// live-tunable (umbilical) — the defaults are guesstimates calibrated
 	// against the smith's nail output. StallWearPerCoin==0 disables wear
 	// entirely (the per-feature off-switch posture).
+	//
+	// StallDegradedProducePct (LLM-446) is the production-rate multiplier while
+	// the owner's business is degraded: production LIMPS instead of stopping, so
+	// the sole producer of the repair input (the smith and his nails) can always
+	// claw back enough to self-mend — a degraded business must never be a
+	// terminal state. 0 restores the legacy full block (and with it the
+	// self-repair deadlock — an operator's rope); 100 removes the penalty;
+	// restock BUYING stays blocked at any value (the LLM-304 posture: don't
+	// spend coin refilling shelves you should mend first).
 	StallWearPerCoin           int
 	StallWearRepairThreshold   int
 	StallWearDegradeThreshold  int
 	StallNailsPerRepair        int
 	StallRepairDurationSeconds int
+	StallDegradedProducePct    int
 
 	// Cold exposure (LLM-412; cold.go). Per-minute ×100 rates the exposure
 	// sweep applies by situation — storm accrual outdoors / under an unheated
@@ -2170,6 +2180,7 @@ func (w *World) republish() {
 		StallWearRepairThreshold:      w.Settings.StallWearRepairThreshold,
 		StallWearDegradeThreshold:     w.Settings.StallWearDegradeThreshold,
 		StallNailsPerRepair:           w.Settings.StallNailsPerRepair,
+		StallDegradedProducePct:       w.Settings.StallDegradedProducePct,
 		HearthLowMinutes:              w.Settings.HearthLowMinutes,
 		StokeWoodPerStoke:             w.Settings.StokeWoodPerStoke,
 		GarmentThreadbareFractionX100: w.Settings.GarmentThreadbareFractionX100,

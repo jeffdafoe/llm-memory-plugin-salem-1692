@@ -219,6 +219,7 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.StallWearDegradeThreshold = parseIntSetting(values, "stall_wear_degrade_threshold", sim.DefaultStallWearDegradeThreshold)
 	s.StallNailsPerRepair = parseIntSetting(values, "stall_nails_per_repair", sim.DefaultStallNailsPerRepair)
 	s.StallRepairDurationSeconds = parseIntSetting(values, "stall_repair_duration_seconds", sim.DefaultStallRepairDurationSeconds)
+	s.StallDegradedProducePct = parseIntSetting(values, "stall_degraded_produce_pct", sim.DefaultStallDegradedProducePct)
 
 	// Farm upkeep wealth tax (LLM-215).
 	s.FarmUpkeepFloor = parseIntSetting(values, "farm_upkeep_floor", sim.DefaultFarmUpkeepFloor)
@@ -643,6 +644,7 @@ func (r *EnvironmentRepo) SaveMutableSettings(ctx context.Context, tx sim.Tx, ms
 		{"stall_wear_degrade_threshold", strconv.Itoa(ms.StallWearDegradeThreshold)},
 		{"stall_nails_per_repair", strconv.Itoa(ms.StallNailsPerRepair)},
 		{"stall_repair_duration_seconds", strconv.Itoa(ms.StallRepairDurationSeconds)},
+		{"stall_degraded_produce_pct", strconv.Itoa(ms.StallDegradedProducePct)},
 		// Farm upkeep wealth-tax knobs (LLM-215) — live-tuned via the umbilical, persisted here.
 		{"farm_upkeep_floor", strconv.Itoa(ms.FarmUpkeepFloor)},
 		{"farm_upkeep_coins_per_shovel", strconv.Itoa(ms.FarmUpkeepCoinsPerShovel)},

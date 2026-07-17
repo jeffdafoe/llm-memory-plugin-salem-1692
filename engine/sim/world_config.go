@@ -65,8 +65,9 @@ func validZoomFloor(v float64) bool {
 
 // ErrInvalidStallWearSetting is returned by SetStallWearSettings when no knob is
 // provided, a value is out of range (a negative perCoin/threshold, a non-positive
-// nails/duration), or the resulting thresholds contradict (degrade below an
-// enabled repair) — all → 400 at the umbilical route.
+// nails/duration, a degraded-produce pct outside 0..100), or the resulting
+// thresholds contradict (degrade below an enabled repair) — all → 400 at the
+// umbilical route.
 var ErrInvalidStallWearSetting = errors.New("invalid stall wear setting")
 
 // StallWearSettingsResult echoes the post-change stall wear knobs.
@@ -76,6 +77,7 @@ type StallWearSettingsResult struct {
 	StallWearDegradeThreshold  int
 	StallNailsPerRepair        int
 	StallRepairDurationSeconds int
+	StallDegradedProducePct    int
 }
 
 // SetStallWearSettings returns a Command that live-tunes the LLM-118 stall wear
@@ -83,11 +85,13 @@ type StallWearSettingsResult struct {
 // operator can nudge one or several; at least one must be present. Range rules:
 // perCoin and the two thresholds must be >= 0 (StallWearPerCoin==0 disables wear,
 // a 0 threshold disables that transition); nails-per-repair and duration must be
-// > 0; and an enabled degrade threshold must be >= an enabled repair threshold
+// > 0; degradedProducePct must sit in 0..100 (0 = the legacy full production
+// block, 100 = no slowdown — above 100 would BOOST a degraded business, LLM-446);
+// and an enabled degrade threshold must be >= an enabled repair threshold
 // (checked against the resulting live values) so a stall can't degrade before it
 // can be repaired. Durability rides the periodic checkpoint (MutableWorldSettings
 // → SaveMutableSettings), so a live change survives restart.
-func SetStallWearSettings(perCoin, repairThreshold, degradeThreshold, nailsPerRepair, durationSeconds *int) Command {
+func SetStallWearSettings(perCoin, repairThreshold, degradeThreshold, nailsPerRepair, durationSeconds, degradedProducePct *int) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
 			// Per-knob validation. perCoin and the two thresholds may be 0 (0
@@ -111,6 +115,12 @@ func SetStallWearSettings(perCoin, repairThreshold, degradeThreshold, nailsPerRe
 					if *p <= 0 || *p > math.MaxInt32 {
 						return nil, ErrInvalidStallWearSetting
 					}
+				}
+			}
+			if degradedProducePct != nil {
+				hasOne = true
+				if *degradedProducePct < 0 || *degradedProducePct > 100 {
+					return nil, ErrInvalidStallWearSetting
 				}
 			}
 			if !hasOne {
@@ -149,12 +159,16 @@ func SetStallWearSettings(perCoin, repairThreshold, degradeThreshold, nailsPerRe
 			if durationSeconds != nil {
 				w.Settings.StallRepairDurationSeconds = *durationSeconds
 			}
+			if degradedProducePct != nil {
+				w.Settings.StallDegradedProducePct = *degradedProducePct
+			}
 			return StallWearSettingsResult{
 				StallWearPerCoin:           w.Settings.StallWearPerCoin,
 				StallWearRepairThreshold:   w.Settings.StallWearRepairThreshold,
 				StallWearDegradeThreshold:  w.Settings.StallWearDegradeThreshold,
 				StallNailsPerRepair:        w.Settings.StallNailsPerRepair,
 				StallRepairDurationSeconds: w.Settings.StallRepairDurationSeconds,
+				StallDegradedProducePct:    w.Settings.StallDegradedProducePct,
 			}, nil
 		},
 	}

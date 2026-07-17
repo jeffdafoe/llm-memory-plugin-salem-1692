@@ -928,8 +928,20 @@ func renderActor(b *strings.Builder, a ActorView) {
 	// so it can always say what it is making (a PC can ask), and a tick firing
 	// mid-batch knows to stay at the post rather than re-decide from scratch.
 	if a.InFlightProduction != nil {
-		fmt.Fprintf(b, "You are making a batch of %s — about %s of work left; it only moves along while you're at your post.\n",
-			sanitizeInline(a.InFlightProduction.ItemLabel), a.InFlightProduction.WorkLeft)
+		switch {
+		case a.InFlightProduction.Halted:
+			// LLM-446: at pct 0 the batch is fully paused by the degrade gate —
+			// say so rather than re-promising the frozen WorkLeft every tick (the
+			// live "three more minutes" loop).
+			fmt.Fprintf(b, "You are making a batch of %s, but the work stands still — your business is too worn to carry it forward until you mend it.\n",
+				sanitizeInline(a.InFlightProduction.ItemLabel))
+		case a.InFlightProduction.Slowed:
+			fmt.Fprintf(b, "You are making a batch of %s — about %s of work left, though the disrepair of your business drags the work out longer than that; it only moves along while you're at your post.\n",
+				sanitizeInline(a.InFlightProduction.ItemLabel), a.InFlightProduction.WorkLeft)
+		default:
+			fmt.Fprintf(b, "You are making a batch of %s — about %s of work left; it only moves along while you're at your post.\n",
+				sanitizeInline(a.InFlightProduction.ItemLabel), a.InFlightProduction.WorkLeft)
+		}
 	}
 	// In-progress activity reads as felt self-state. A meal/rest/walk already
 	// under way is surfaced so a tick firing mid-activity doesn't re-pick a

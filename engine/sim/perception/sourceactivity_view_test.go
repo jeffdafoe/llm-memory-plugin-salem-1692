@@ -34,7 +34,7 @@ func sourceActivitySnap(kind sim.SourceActivityKind, objID sim.VillageObjectID, 
 
 func TestBuildActorView_NotEngaged_NilInFlightSourceActivity(t *testing.T) {
 	snap := sourceActivitySnap("", "", "", nil)
-	av := buildActorView(snap, snap.Actors["john"])
+	av := buildActorView(snap, "john", snap.Actors["john"])
 	if av.InFlightSourceActivity != nil {
 		t.Errorf("InFlightSourceActivity = %+v, want nil when not engaged", av.InFlightSourceActivity)
 	}
@@ -45,7 +45,7 @@ func TestBuildActorView_Harvest_ResolvesLabelAndRenders(t *testing.T) {
 		"bush": {ID: "bush", DisplayName: "Berry Bush"},
 	}
 	snap := sourceActivitySnap(sim.SourceActivityHarvest, "bush", "", objects)
-	v := buildActorView(snap, snap.Actors["john"]).InFlightSourceActivity
+	v := buildActorView(snap, "john", snap.Actors["john"]).InFlightSourceActivity
 	if v == nil {
 		t.Fatal("InFlightSourceActivity = nil, want a view")
 	}
@@ -71,7 +71,7 @@ func TestBuildActorView_Refresh_VerbFromAttribute(t *testing.T) {
 	}
 	for _, tc := range cases {
 		snap := sourceActivitySnap(sim.SourceActivityRefresh, "well", tc.attr, objects)
-		v := buildActorView(snap, snap.Actors["john"]).InFlightSourceActivity
+		v := buildActorView(snap, "john", snap.Actors["john"]).InFlightSourceActivity
 		if v == nil {
 			t.Fatalf("attr %q: nil view", tc.attr)
 		}
@@ -84,7 +84,7 @@ func TestBuildActorView_Refresh_VerbFromAttribute(t *testing.T) {
 func TestBuildActorView_UnresolvedLabel_DropsAtClause(t *testing.T) {
 	// Source object not present in the snapshot maps → empty label → no "at X".
 	snap := sourceActivitySnap(sim.SourceActivityHarvest, "missing", "", nil)
-	v := buildActorView(snap, snap.Actors["john"]).InFlightSourceActivity
+	v := buildActorView(snap, "john", snap.Actors["john"]).InFlightSourceActivity
 	if v == nil {
 		t.Fatal("nil view")
 	}
@@ -98,7 +98,7 @@ func TestRenderActor_IncludesSourceActivityLine(t *testing.T) {
 		"bush": {ID: "bush", DisplayName: "Berry Bush"},
 	}
 	snap := sourceActivitySnap(sim.SourceActivityHarvest, "bush", "", objects)
-	av := buildActorView(snap, snap.Actors["john"])
+	av := buildActorView(snap, "john", snap.Actors["john"])
 	var b strings.Builder
 	renderActor(&b, av)
 	if !strings.Contains(b.String(), "You are gathering at Berry Bush") {

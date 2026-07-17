@@ -169,10 +169,13 @@ type Snapshot struct {
 	// line, and the degraded-sales steer on the SAME boundaries the engine
 	// enforces — pure over the snapshot rather than racing on w.Settings. The
 	// engine-only knobs (StallWearPerCoin, StallRepairDurationSeconds) are not
-	// carried; perception never reads them.
+	// carried; perception never reads them. StallDegradedProducePct (LLM-446)
+	// is carried so the degraded cues describe the state the engine actually
+	// applies — slowed production at a positive pct, the legacy full block at 0.
 	StallWearRepairThreshold  int
 	StallWearDegradeThreshold int
 	StallNailsPerRepair       int
+	StallDegradedProducePct   int
 
 	// Hearth knobs (LLM-412) mirror the WorldSettings values so the hearth
 	// cue, the stoke-tool gate, and the cold relief steer classify a fire

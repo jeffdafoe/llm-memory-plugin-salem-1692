@@ -275,15 +275,17 @@ func TestStartProductionCycleRejectsWhenNothingCraftable(t *testing.T) {
 	}
 }
 
-// TestStartProductionCycleRejectsAtDegradedBusiness — LLM-304: degrade shuts
-// refill, production included. A batch can't start until the owner mends the
-// business (rejecting at start keeps the inputs out of a stalled pot).
+// TestStartProductionCycleRejectsAtDegradedBusiness — the LLM-304 legacy full
+// block, kept reachable at StallDegradedProducePct == 0 (LLM-446): a batch
+// can't start until the owner mends the business (rejecting at start keeps the
+// inputs out of a pot the produce tick would never advance).
 func TestStartProductionCycleRejectsAtDegradedBusiness(t *testing.T) {
 	w, cancel := buildCookWorld(t, stewWaterRecipes(), stewWaterRestock(), map[sim.ItemKind]int{"sage": 3})
 	defer cancel()
 
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		world.Settings.StallWearDegradeThreshold = 600
+		world.Settings.StallDegradedProducePct = 0 // explicit: the legacy full-block mode
 		if world.VillageObjects == nil {
 			world.VillageObjects = map[sim.VillageObjectID]*sim.VillageObject{}
 		}
@@ -301,6 +303,34 @@ func TestStartProductionCycleRejectsAtDegradedBusiness(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(err.Error()), "mend") {
 		t.Errorf("rejection should steer to mending; got %q", err.Error())
+	}
+}
+
+// TestStartProductionCycleAcceptsAtDegradedBusinessPositivePct — LLM-446: at a
+// positive StallDegradedProducePct a degraded business still takes new batches
+// (they run slowed via the produce-tick sap). Blocking starts here while the
+// tick advanced work would strand the sole nail producer with no way to forge
+// the nails his own repair consumes.
+func TestStartProductionCycleAcceptsAtDegradedBusinessPositivePct(t *testing.T) {
+	w, cancel := buildCookWorld(t, stewWaterRecipes(), stewWaterRestock(), map[sim.ItemKind]int{"sage": 3})
+	defer cancel()
+
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Settings.StallWearDegradeThreshold = 600
+		world.Settings.StallDegradedProducePct = 50
+		if world.VillageObjects == nil {
+			world.VillageObjects = map[sim.VillageObjectID]*sim.VillageObject{}
+		}
+		world.VillageObjects["tavern"] = &sim.VillageObject{
+			ID: "tavern", OwnerActorID: "cook", Tags: []string{sim.TagBusiness}, Wear: 650,
+		}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	if _, err := w.Send(sim.StartProductionCycle("cook", "water")); err != nil {
+		t.Fatalf("start at a degraded business with pct 50 rejected: %v", err)
 	}
 }
 

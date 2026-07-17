@@ -22,6 +22,7 @@ type umbilicalStallWearRequest struct {
 	StallWearDegradeThreshold  *int `json:"stall_wear_degrade_threshold"`
 	StallNailsPerRepair        *int `json:"stall_nails_per_repair"`
 	StallRepairDurationSeconds *int `json:"stall_repair_duration_seconds"`
+	StallDegradedProducePct    *int `json:"stall_degraded_produce_pct"`
 }
 
 // umbilicalStallWearResponse echoes the full post-change knob set.
@@ -31,6 +32,7 @@ type umbilicalStallWearResponse struct {
 	StallWearDegradeThreshold  int `json:"stall_wear_degrade_threshold"`
 	StallNailsPerRepair        int `json:"stall_nails_per_repair"`
 	StallRepairDurationSeconds int `json:"stall_repair_duration_seconds"`
+	StallDegradedProducePct    int `json:"stall_degraded_produce_pct"`
 }
 
 // handleUmbilicalStallWearSet applies a live stall-wear knob change. Operator-gated
@@ -49,7 +51,7 @@ func (s *Server) handleUmbilicalStallWearSet(w http.ResponseWriter, r *http.Requ
 
 	res, err := s.world.SendContext(r.Context(), sim.SetStallWearSettings(
 		req.StallWearPerCoin, req.StallWearRepairThreshold, req.StallWearDegradeThreshold,
-		req.StallNailsPerRepair, req.StallRepairDurationSeconds,
+		req.StallNailsPerRepair, req.StallRepairDurationSeconds, req.StallDegradedProducePct,
 	))
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -73,5 +75,6 @@ func (s *Server) handleUmbilicalStallWearSet(w http.ResponseWriter, r *http.Requ
 		StallWearDegradeThreshold:  out.StallWearDegradeThreshold,
 		StallNailsPerRepair:        out.StallNailsPerRepair,
 		StallRepairDurationSeconds: out.StallRepairDurationSeconds,
+		StallDegradedProducePct:    out.StallDegradedProducePct,
 	})
 }

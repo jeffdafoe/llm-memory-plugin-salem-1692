@@ -6,10 +6,12 @@
 
 ## You
 Coins in your purse: 8.
+You are making a batch of nail, but the work stands still — your business is too worn to carry it forward until you mend it.
 
 ## Around you
 You are outdoors, with no one else here to hear you speak.
 It is morning in the village.
 
-The Blacksmith here is badly worn — its keeper can sell what's on hand and still works, though the disrepair makes everything slow, and the shelves can't be restocked until it's mended.
+## Your business
+Your Blacksmith is too worn to keep stock — you can still sell what's on hand, but you can't restock the shelves or make more until you mend it. Mending takes 5 nails and you have 0 — you'll need to buy more before you can mend it.
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

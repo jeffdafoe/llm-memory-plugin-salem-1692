@@ -287,8 +287,9 @@ func TestProduceTickPausesWhileSleeping(t *testing.T) {
 	}
 }
 
-// TestProduceTickPausesWhileDegraded — LLM-304: a degraded business is shut
-// for production; the batch pauses until the owner mends it.
+// TestProduceTickPausesWhileDegraded — the LLM-304 legacy full block, kept
+// reachable at StallDegradedProducePct == 0 (LLM-446): the batch pauses until
+// the owner mends the business.
 func TestProduceTickPausesWhileDegraded(t *testing.T) {
 	now := time.Now().UTC()
 	w, cancel := buildCycleTestWorld(t, []sim.RestockEntry{
@@ -299,6 +300,7 @@ func TestProduceTickPausesWhileDegraded(t *testing.T) {
 	startCycle(t, w, "hannah", "bread", now.Add(-2*time.Hour))
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		world.Settings.StallWearDegradeThreshold = 600
+		world.Settings.StallDegradedProducePct = 0 // explicit: the legacy full-block mode
 		if world.VillageObjects == nil {
 			world.VillageObjects = map[sim.VillageObjectID]*sim.VillageObject{}
 		}
@@ -319,6 +321,42 @@ func TestProduceTickPausesWhileDegraded(t *testing.T) {
 	}
 	if got := inventoryOf(t, w, "hannah", "bread"); got != 0 {
 		t.Errorf("bread = %d while degraded, want 0", got)
+	}
+}
+
+// TestProduceTickDegradedSlowsToPct — LLM-446: at a positive
+// StallDegradedProducePct a degraded business still advances its batch, at the
+// sapped rate (the way out of the sole-nail-producer self-repair deadlock: the
+// smith limps, he doesn't stop). An hour at the post under pct 50 credits half
+// an hour of work.
+func TestProduceTickDegradedSlowsToPct(t *testing.T) {
+	now := time.Now().UTC()
+	w, cancel := buildCycleTestWorld(t, []sim.RestockEntry{
+		{Item: "bread", Source: sim.RestockSourceProduce, Max: 10},
+	}, map[sim.ItemKind]int{})
+	defer cancel()
+
+	startCycle(t, w, "hannah", "bread", now.Add(-time.Hour))
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Settings.StallWearDegradeThreshold = 600
+		world.Settings.StallDegradedProducePct = 50
+		if world.VillageObjects == nil {
+			world.VillageObjects = map[sim.VillageObjectID]*sim.VillageObject{}
+		}
+		world.VillageObjects["inn"] = &sim.VillageObject{
+			ID: "inn", OwnerActorID: "hannah", Tags: []string{sim.TagBusiness}, Wear: 650,
+		}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	if _, err := w.Send(sim.ApplyProduceTick(now)); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	act := productionActivityOf(t, w, "hannah")
+	if act == nil || act.RemainingSeconds != 1800 {
+		t.Errorf("degraded tick at pct 50 credited wrong work (activity=%+v); want 3600s elapsed -> 1800s credited -> 1800s remaining", act)
 	}
 }
 

@@ -13,5 +13,5 @@ You are outdoors, with no one else here to hear you speak.
 It is morning in the village.
 
 ## Your business
-Your Blacksmith is too worn to keep stock — you can still sell what's on hand, but you can't restock the shelves or make more until you mend it. You carry enough nails (5) to mend it — use the repair tool now to fix it, hammer in hand, on site (it takes a short while).
+Your Blacksmith is badly worn — the disrepair drags at every task, and you can't restock the shelves until you mend it. You can still sell what's on hand, and work goes on, though slowly. You carry enough nails (5) to mend it — use the repair tool now to fix it, hammer in hand, on site (it takes a short while).
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

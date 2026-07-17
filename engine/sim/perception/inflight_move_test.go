@@ -49,7 +49,7 @@ func requireInFlightMove(t *testing.T, av ActorView) *InFlightMoveView {
 
 func TestBuildActorView_NotMoving_NilInFlightMove(t *testing.T) {
 	snap := moveSnap("", "", "", sim.TilePos{}, nil, nil)
-	av := buildActorView(snap, snap.Actors["john"])
+	av := buildActorView(snap, "john", snap.Actors["john"])
 	if av.InFlightMove != nil {
 		t.Errorf("InFlightMove = %+v, want nil when not moving", av.InFlightMove)
 	}
@@ -60,7 +60,7 @@ func TestBuildActorView_StructureEnter_ResolvesLabel(t *testing.T) {
 		"tavern": {ID: "tavern", DisplayName: "Tavern"},
 	}
 	snap := moveSnap(sim.MoveDestinationStructureEnter, "tavern", "", sim.TilePos{}, structs, nil)
-	av := buildActorView(snap, snap.Actors["john"])
+	av := buildActorView(snap, "john", snap.Actors["john"])
 	m := requireInFlightMove(t, av)
 	if m.Kind != sim.MoveDestinationStructureEnter {
 		t.Errorf("Kind = %q, want structure_enter", m.Kind)
@@ -84,7 +84,7 @@ func TestBuildActorView_StructureLabelWinsOverSharedObjectID(t *testing.T) {
 		"tavern": {ID: "tavern", DisplayName: "wrong object label"},
 	}
 	snap := moveSnap(sim.MoveDestinationStructureEnter, "tavern", "", sim.TilePos{}, structs, objects)
-	av := buildActorView(snap, snap.Actors["john"])
+	av := buildActorView(snap, "john", snap.Actors["john"])
 	m := requireInFlightMove(t, av)
 	if m.DestinationLabel != "Tavern" {
 		t.Errorf("DestinationLabel = %q, want 'Tavern' (structure wins over shared-id object)", m.DestinationLabel)
@@ -96,7 +96,7 @@ func TestBuildActorView_UnknownKind_NilInFlightMove(t *testing.T) {
 	// kind added to the engine but not wired into perception) returns nil
 	// rather than a vague view that would mask the gap.
 	snap := moveSnap(sim.MoveDestinationKind("teleport_pad"), "", "", sim.TilePos{}, nil, nil)
-	av := buildActorView(snap, snap.Actors["john"])
+	av := buildActorView(snap, "john", snap.Actors["john"])
 	if av.InFlightMove != nil {
 		t.Errorf("InFlightMove = %+v, want nil for unknown kind", av.InFlightMove)
 	}
@@ -107,7 +107,7 @@ func TestBuildActorView_StructureVisit_NoEnterPhrasing(t *testing.T) {
 		"well": {ID: "well", DisplayName: "the village well"},
 	}
 	snap := moveSnap(sim.MoveDestinationStructureVisit, "well", "", sim.TilePos{}, structs, nil)
-	av := buildActorView(snap, snap.Actors["john"])
+	av := buildActorView(snap, "john", snap.Actors["john"])
 	m := requireInFlightMove(t, av)
 	if got := renderInFlightMove(*m); got != "walking to the village well" {
 		t.Errorf("render = %q, want 'walking to the village well'", got)
@@ -119,7 +119,7 @@ func TestBuildActorView_ObjectVisit_FallsBackToVillageObjectLabel(t *testing.T) 
 		"oak": {ID: "oak", AssetID: "tree-oak", DisplayName: "the old oak"},
 	}
 	snap := moveSnap(sim.MoveDestinationObjectVisit, "", "oak", sim.TilePos{}, nil, objects)
-	av := buildActorView(snap, snap.Actors["john"])
+	av := buildActorView(snap, "john", snap.Actors["john"])
 	m := requireInFlightMove(t, av)
 	if m.DestinationLabel != "the old oak" {
 		t.Errorf("DestinationLabel = %q, want 'the old oak'", m.DestinationLabel)
@@ -128,7 +128,7 @@ func TestBuildActorView_ObjectVisit_FallsBackToVillageObjectLabel(t *testing.T) 
 
 func TestBuildActorView_PositionMove_RendersTileCoordinate(t *testing.T) {
 	snap := moveSnap(sim.MoveDestinationPosition, "", "", sim.TilePos{X: 41, Y: 44}, nil, nil)
-	av := buildActorView(snap, snap.Actors["john"])
+	av := buildActorView(snap, "john", snap.Actors["john"])
 	m := requireInFlightMove(t, av)
 	if m.DestinationLabel != "(41, 44)" {
 		t.Errorf("DestinationLabel = %q, want '(41, 44)'", m.DestinationLabel)
@@ -141,7 +141,7 @@ func TestBuildActorView_PositionMove_RendersTileCoordinate(t *testing.T) {
 func TestRenderInFlightMove_UnresolvedLabel_GenericPhrasing(t *testing.T) {
 	// Destination structure not present in the snapshot maps → empty label.
 	snap := moveSnap(sim.MoveDestinationStructureEnter, "missing", "", sim.TilePos{}, nil, nil)
-	av := buildActorView(snap, snap.Actors["john"])
+	av := buildActorView(snap, "john", snap.Actors["john"])
 	m := requireInFlightMove(t, av)
 	if got := renderInFlightMove(*m); got != "walking to your destination" {
 		t.Errorf("render = %q, want 'walking to your destination'", got)
@@ -153,7 +153,7 @@ func TestRenderActor_IncludesInFlightMoveLine(t *testing.T) {
 		"tavern": {ID: "tavern", DisplayName: "Tavern"},
 	}
 	snap := moveSnap(sim.MoveDestinationStructureEnter, "tavern", "", sim.TilePos{}, structs, nil)
-	av := buildActorView(snap, snap.Actors["john"])
+	av := buildActorView(snap, "john", snap.Actors["john"])
 
 	var b strings.Builder
 	renderActor(&b, av)

@@ -2011,15 +2011,39 @@ var perceptionScenarios = []perceptionScenario{
 	},
 	{
 		name: "owner_at_degraded_stall",
-		summary: "A business owner stands at his own DEGRADED premises (wear past the degrade threshold — shut for " +
-			"restock/production, still sells on-hand stock; LLM-304), carrying enough nails. The golden pins the " +
-			"'## Your business' steer ('too worn to keep stock … use the repair tool now to fix it') — degrade blocks " +
-			"refill, not selling.",
+		summary: "A business owner stands at his own DEGRADED premises (wear past the degrade threshold) carrying enough " +
+			"nails, at the live default StallDegradedProducePct (LLM-446: work continues slowed; restock buying stays " +
+			"shut; still sells on-hand stock). The golden pins the slowed-not-shut '## Your business' framing ('work goes " +
+			"on, though slowly') plus the 'use the repair tool now to fix it' steer.",
 		build: ownerAtDegradedStall,
 	},
 	{
+		name: "owner_at_degraded_stall_produce_blocked",
+		summary: "LLM-446 legacy arm: the same degraded stall with StallDegradedProducePct dialed to 0 (the LLM-304 " +
+			"full block, still an operator mode). The golden pins the blocked wording ('too worn to keep stock … can't " +
+			"restock the shelves or make more until you mend it') so the two tiers can't blur.",
+		build: ownerAtDegradedStallProduceBlocked,
+	},
+	{
+		name: "degraded_smith_short_of_own_nails",
+		summary: "LLM-446 live-bug fixture (the 2026-07-16 Ezekiel↔Josiah 'three more minutes' loop): the sole nail " +
+			"producer at his own DEGRADED Blacksmith, 0 of the 5 repair nails, a nail batch mid-flight. Pins the three " +
+			"ways out rendering together — the slowed in-flight batch line (an honest clock, not the frozen 'about 3 " +
+			"minutes' re-promise), the 'nails are your own work: forge what you're short' mend steer (not a buy errand " +
+			"to a supplier who doesn't exist), and the slowed-not-shut '## Your business' framing.",
+		build: degradedSmithShortOfOwnNails,
+	},
+	{
+		name: "degraded_smith_short_of_own_nails_produce_blocked",
+		summary: "LLM-446 code_review regression arm: the sole nail producer's fixture under the legacy pct-0 full " +
+			"block. StartProductionCycle rejects here, so the golden pins the ABSENCE of the forge-your-own steer (which " +
+			"would goad a refused production) — the plain shortfall fallback renders instead — and the halted in-flight " +
+			"batch line ('the work stands still') in place of the frozen-clock re-promise.",
+		build: degradedSmithShortOfOwnNailsProduceBlocked,
+	},
+	{
 		name: "owner_at_degraded_store_conserving",
-		summary: "LLM-304/301: Josiah Thorne stands at his own DEGRADED General Store (shut for restock, still sells on-hand stock) with 0 of the 5 " +
+		summary: "LLM-304/301 (slowed framing since LLM-446): Josiah Thorne stands at his own DEGRADED General Store (restock buying shut, work slowed, still sells on-hand stock) with 0 of the 5 " +
 			"nails a mend takes, 1 coin (below the 10-coin MerchantCoinFloor) and 17 unsold flour — conserve active — and " +
 			"NO nail supplier survives the LLM-216 drops. The golden pins the vendor-less fallback's sell-first soften " +
 			"('your purse can't take on nails just now') and the ABSENCE of the old destination-less 'buy more from the " +
@@ -2045,12 +2069,12 @@ var perceptionScenarios = []perceptionScenario{
 	},
 	{
 		name: "passerby_at_degraded_stall",
-		summary: "LLM-310: a non-owner (John) stands at someone else's DEGRADED business (wear past the degrade " +
-			"threshold). The golden pins the faithful closed-for-restock condition line ('too worn to keep stock — its " +
-			"keeper can only sell what's on hand, and can't restock or make more until it's mended') — the third-person " +
-			"mirror of the owner cue (LLM-304), NOT the old worn-only texture and NOT a false 'can sell nothing' (degrade " +
-			"blocks refill, not selling). No '## Your business' owner cue, no buy imperative. Foil of passerby_at_worn_stall " +
-			"(worn but not degraded → the plain 'looks worn and run-down' texture).",
+		summary: "LLM-310/446: a non-owner (John) stands at someone else's DEGRADED business at the live default " +
+			"StallDegradedProducePct. The golden pins the slowed-not-shut third-person condition line ('its keeper can " +
+			"sell what's on hand and still works, though the disrepair makes everything slow') — the faithful mirror of " +
+			"the owner cue, NOT the old worn-only texture and NOT a false 'can sell nothing'. No '## Your business' owner " +
+			"cue, no buy imperative. Foil of passerby_at_worn_stall (worn but not degraded → the plain 'looks worn and " +
+			"run-down' texture).",
 		build: passerbyAtDegradedStall,
 	},
 	{
@@ -5119,6 +5143,38 @@ func TestForgeChoiceDropsBatchLargerThanCap(t *testing.T) {
 	}
 }
 
+// TestGoldensDegradedWordingMatchesProducePct is the LLM-446 cross-scenario
+// invariant: wherever the SUBJECT owns a degraded business, the "## Your
+// business" cue's framing must match the production mode the engine actually
+// runs — the full-block wording ("or make more until you mend it") renders IFF
+// StallDegradedProducePct is 0, and the slowed wording ("work goes on, though
+// slowly") IFF it is positive. Runs over the whole matrix so a future cue edit
+// can't tell a producing keeper his shop is shut (the frozen-clock lie behind
+// the live "three more minutes, Josiah" loop) or a blocked one that work
+// continues.
+func TestGoldensDegradedWordingMatchesProducePct(t *testing.T) {
+	const blockedMarker = "or make more until you mend it"
+	const slowedMarker = "work goes on, though slowly"
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, _ := sc.build()
+			stall := sim.OwnedWearableStall(snap.VillageObjects, actorID)
+			if !sim.StallDegraded(stall, snap.StallWearDegradeThreshold) {
+				return // subject doesn't own a degraded business — invariant N/A here
+			}
+			out := renderScenario(sc)
+			wantBlocked := snap.StallDegradedProducePct <= 0
+			if got := strings.Contains(out, blockedMarker); got != wantBlocked {
+				t.Errorf("scenario %q: full-block wording present=%v, want %v (StallDegradedProducePct=%d)", sc.name, got, wantBlocked, snap.StallDegradedProducePct)
+			}
+			if got := strings.Contains(out, slowedMarker); got == wantBlocked {
+				t.Errorf("scenario %q: slowed wording present=%v, want %v (StallDegradedProducePct=%d)", sc.name, got, !wantBlocked, snap.StallDegradedProducePct)
+			}
+		})
+	}
+}
+
 // TestInFlightProductionLineTracksBatch is the LLM-319 cross-scenario invariant:
 // the standing "You are making a batch of X" self-state line renders EXACTLY when
 // the subject has a production cycle in flight (ProductionItem non-empty) —
@@ -5540,14 +5596,17 @@ func TestCoinQuoteTakeNamesConcreteTerms(t *testing.T) {
 func TestStallRepairCueOnlyAtOwnWornStall(t *testing.T) {
 	const marker = "## Your business"
 	ownWornBusiness := map[string]bool{
-		"owner_at_worn_stall":                    true,
-		"owner_at_worn_stall_with_nail_supplier": true, // LLM-274: owner short of nails WITH a resolvable supplier
-		"owner_at_degraded_stall":                true,
-		"owner_at_degraded_store_conserving":     true, // LLM-301: vendor-less fallback, conserve arm
-		"owner_conserving_with_nail_supplier":    true, // LLM-301: conserve wins over a surviving vendor
-		"owner_at_worn_tavern":                   true,
-		"owner_inside_worn_business":             true, // LLM-266: owner INSIDE their worn business (not at the outdoor pin)
-		"owner_holding_repair_nails_in_company":  true, // LLM-292: owner at own worn store's pin (the earmark fixture)
+		"owner_at_worn_stall":                               true,
+		"owner_at_worn_stall_with_nail_supplier":            true, // LLM-274: owner short of nails WITH a resolvable supplier
+		"owner_at_degraded_stall":                           true,
+		"owner_at_degraded_stall_produce_blocked":           true, // LLM-446: the legacy pct-0 full-block arm
+		"degraded_smith_short_of_own_nails":                 true, // LLM-446: the sole-nail-producer live-bug fixture
+		"degraded_smith_short_of_own_nails_produce_blocked": true, // LLM-446: same fixture at pct 0 — the forge-your-own steer must NOT render
+		"owner_at_degraded_store_conserving":                true, // LLM-301: vendor-less fallback, conserve arm
+		"owner_conserving_with_nail_supplier":               true, // LLM-301: conserve wins over a surviving vendor
+		"owner_at_worn_tavern":                              true,
+		"owner_inside_worn_business":                        true, // LLM-266: owner INSIDE their worn business (not at the outdoor pin)
+		"owner_holding_repair_nails_in_company":             true, // LLM-292: owner at own worn store's pin (the earmark fixture)
 	}
 	for _, sc := range perceptionScenarios {
 		sc := sc
@@ -5750,7 +5809,7 @@ func TestOwnerShortNailsWithSupplierNamesDestination(t *testing.T) {
 //     "the Smithy" for it and burned its turn retrying the refused move).
 //     owner_at_worn_stall & co are the anchors.
 func TestOwnerShortNailsRepairCueNeverGoadsUnactionableBuy(t *testing.T) {
-	var fallbackExercised, conserveExercised, conserveVendorExercised bool
+	var fallbackExercised, conserveExercised, conserveVendorExercised, makesNailsExercised bool
 	for _, sc := range perceptionScenarios {
 		sc := sc
 		t.Run(sc.name, func(t *testing.T) {
@@ -5764,6 +5823,21 @@ func TestOwnerShortNailsRepairCueNeverGoadsUnactionableBuy(t *testing.T) {
 				return // not the owner short-of-nails cue — invariant N/A
 			}
 			section := promptSection(renderScenario(sc), "## Your business")
+			if v.MakesNails {
+				// LLM-446: a nail-producing owner (the sole smith) must be steered to
+				// forge their own — never a buy errand of any shape: no vendor walk-to,
+				// no person-shaped "the smith", no coin soften. Wins over every buy
+				// branch including conserve (making costs no coin).
+				makesNailsExercised = true
+				if !strings.Contains(section, "nails are your own work") {
+					t.Errorf("scenario %q: nail-producing owner is missing the forge-your-own mend steer (LLM-446)", sc.name)
+				}
+				if strings.Contains(section, "Use move_to to reach a supplier") || strings.Contains(section, "(destination:") ||
+					strings.Contains(section, "from the smith") || strings.Contains(section, "buy") {
+					t.Errorf("scenario %q: nail-producing owner is handed a buy-shaped errand for the nails only they produce (LLM-446)\n%s", sc.name, section)
+				}
+				return
+			}
 			if v.Conserve {
 				conserveExercised = true
 				if len(v.NailVendors) > 0 {
@@ -5797,6 +5871,9 @@ func TestOwnerShortNailsRepairCueNeverGoadsUnactionableBuy(t *testing.T) {
 	}
 	if !conserveVendorExercised {
 		t.Error("matrix must exercise conserve winning over a surviving nail supplier (LLM-301)")
+	}
+	if !makesNailsExercised {
+		t.Error("matrix must exercise a nail-producing owner short of their own nails (LLM-446)")
 	}
 }
 
@@ -6698,7 +6775,11 @@ func stallWearSnapshot(actorID, ownerID sim.ActorID, displayName, role string, w
 		StallWearRepairThreshold:  400,
 		StallWearDegradeThreshold: 600,
 		StallNailsPerRepair:       5,
-		Actors:                    map[sim.ActorID]*sim.ActorSnapshot{actorID: actor},
+		// The live default (LLM-446): degraded businesses produce slowed, not
+		// blocked — the degraded scenarios pin the wording production actually
+		// runs. The legacy pct-0 block has its own explicit scenario.
+		StallDegradedProducePct: sim.DefaultStallDegradedProducePct,
+		Actors:                  map[sim.ActorID]*sim.ActorSnapshot{actorID: actor},
 		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
 			"market_stall": {
 				ID:            "market_stall",
@@ -6722,9 +6803,53 @@ func ownerAtWornStall() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 }
 
 // ownerAtDegradedStall: the owner at his own degraded stall with nails in hand —
-// the "too worn to keep stock … use the repair tool now to fix it" steer. wear 650 (>= degrade 600).
+// the slowed-not-shut framing plus "use the repair tool now to fix it" steer at
+// the live default pct (LLM-446). wear 650 (>= degrade 600).
 func ownerAtDegradedStall() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	return stallWearSnapshot("ezekiel", "ezekiel", "Ezekiel Crane", "blacksmith", 650, 5)
+}
+
+// ownerAtDegradedStallProduceBlocked: the same degraded stall under the legacy
+// pct-0 operator setting (LLM-446 keeps it dialable) — pins the full-block
+// "too worn to keep stock … can't restock the shelves or make more" wording so
+// the legacy mode stays reachable and worded truthfully.
+func ownerAtDegradedStallProduceBlocked() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, actorID, warrants := stallWearSnapshot("ezekiel", "ezekiel", "Ezekiel Crane", "blacksmith", 650, 5)
+	snap.StallDegradedProducePct = 0
+	return snap, actorID, warrants
+}
+
+// degradedSmithShortOfOwnNails is the LLM-446 live-bug fixture — the 2026-07-16
+// Ezekiel↔Josiah "three more minutes" loop. The village's SOLE nail producer
+// stands at his own DEGRADED Blacksmith holding 0 of the 5 nails his own repair
+// consumes, a nail batch mid-flight. Before the fix the engine froze the batch
+// (perception re-promised the frozen "about 3 minutes of work left" every tick
+// for two hours) while the repair cue steered him to BUY nails no one else
+// sells — a structural deadlock. The golden pins the three ways out rendering
+// together: the slowed-batch line (the clock is honest), the "nails are your
+// own work: forge what you're short" mend steer (not a buy errand), and the
+// slowed-not-shut "## Your business" framing.
+func degradedSmithShortOfOwnNails() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, actorID, warrants := stallWearSnapshot("ezekiel", "ezekiel", "Ezekiel Crane", "blacksmith", 650, 0)
+	smith := snap.Actors[actorID]
+	smith.RestockPolicy = &sim.RestockPolicy{Restock: []sim.RestockEntry{
+		{Item: "nail", Source: sim.RestockSourceProduce, Max: 20},
+	}}
+	smith.ProductionItem = "nail"
+	smith.ProductionRemainingSeconds = 204 // the live frozen clock, now honest: it advances slowed
+	return snap, actorID, warrants
+}
+
+// degradedSmithShortOfOwnNailsProduceBlocked is the code_review regression arm:
+// the same sole-nail-producer fixture under the legacy pct-0 full block, where
+// StartProductionCycle REJECTS — so the forge-your-own steer must NOT render
+// (it would goad a production the engine refuses; the plain shortfall fallback
+// renders instead) and the in-flight batch line must state the halt rather than
+// re-promising the frozen clock.
+func degradedSmithShortOfOwnNailsProduceBlocked() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, actorID, warrants := degradedSmithShortOfOwnNails()
+	snap.StallDegradedProducePct = 0
+	return snap, actorID, warrants
 }
 
 // ownerAtDegradedStoreConserving is the LLM-301 fixture — the live 2026-07-06 Josiah
@@ -6765,6 +6890,7 @@ func ownerAtDegradedStoreConserving() (*sim.Snapshot, sim.ActorID, []sim.Warrant
 		StallWearRepairThreshold:  400,
 		StallWearDegradeThreshold: 600,
 		StallNailsPerRepair:       5,
+		StallDegradedProducePct:   sim.DefaultStallDegradedProducePct, // live default (LLM-446)
 		Actors:                    map[sim.ActorID]*sim.ActorSnapshot{"josiah": josiah},
 		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
 			"general_store": {

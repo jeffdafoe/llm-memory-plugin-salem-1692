@@ -65,8 +65,8 @@ func shouldChooseProduction(a *Actor, w *World) bool {
 	if a.ProductionActivity != nil {
 		return false // a batch is in the works — nothing to decide until it lands
 	}
-	if ownerStallDegraded(w, a.ID) {
-		return false // degraded = shut for refill (LLM-304) — the repair warrant owns this wake
+	if degradedProduceBlocked(w, a.ID) {
+		return false // degraded + pct 0 = shut for production (legacy LLM-304) — the repair warrant owns this wake; at any positive pct the keeper still chooses batches, just slowed (LLM-446)
 	}
 	produce := a.RestockPolicy.ProduceEntries()
 	if makeableProduceCount(w, produce) < 1 {

@@ -291,28 +291,43 @@ func TestSetStallWearSettings_Validation(t *testing.T) {
 		return &World{Settings: WorldSettings{StallWearRepairThreshold: 400, StallWearDegradeThreshold: 600}}
 	}
 	bad := []struct {
-		name                                      string
-		perCoin, repair, degrade, nails, duration *int
+		name                                                   string
+		perCoin, repair, degrade, nails, duration, degradedPct *int
 	}{
-		{"none provided", nil, nil, nil, nil, nil},
-		{"negative perCoin", ip(-1), nil, nil, nil, nil},
-		{"zero nails", nil, nil, nil, ip(0), nil},
-		{"zero duration", nil, nil, nil, nil, ip(0)},
-		{"degrade below repair", nil, ip(500), ip(400), nil, nil},
-		{"degrade on, repair disabled", nil, ip(0), ip(400), nil, nil},
-		{"partial degrade below current repair", nil, nil, ip(300), nil, nil},
+		{"none provided", nil, nil, nil, nil, nil, nil},
+		{"negative perCoin", ip(-1), nil, nil, nil, nil, nil},
+		{"zero nails", nil, nil, nil, ip(0), nil, nil},
+		{"zero duration", nil, nil, nil, nil, ip(0), nil},
+		{"degrade below repair", nil, ip(500), ip(400), nil, nil, nil},
+		{"degrade on, repair disabled", nil, ip(0), ip(400), nil, nil, nil},
+		{"partial degrade below current repair", nil, nil, ip(300), nil, nil, nil},
+		// LLM-446: the degraded-produce pct is a 0..100 rate share — negative is
+		// nonsense and >100 would BOOST a degraded business.
+		{"negative degraded pct", nil, nil, nil, nil, nil, ip(-1)},
+		{"degraded pct above 100", nil, nil, nil, nil, nil, ip(101)},
 	}
 	for _, c := range bad {
-		if _, err := SetStallWearSettings(c.perCoin, c.repair, c.degrade, c.nails, c.duration).Fn(world()); err == nil {
+		if _, err := SetStallWearSettings(c.perCoin, c.repair, c.degrade, c.nails, c.duration, c.degradedPct).Fn(world()); err == nil {
 			t.Errorf("%s: expected rejection, got nil", c.name)
 		}
 	}
 	w := world()
-	if _, err := SetStallWearSettings(ip(2), ip(300), ip(900), ip(7), ip(120)).Fn(w); err != nil {
+	if _, err := SetStallWearSettings(ip(2), ip(300), ip(900), ip(7), ip(120), ip(25)).Fn(w); err != nil {
 		t.Fatalf("valid change rejected: %v", err)
 	}
-	if w.Settings.StallWearPerCoin != 2 || w.Settings.StallWearDegradeThreshold != 900 {
+	if w.Settings.StallWearPerCoin != 2 || w.Settings.StallWearDegradeThreshold != 900 || w.Settings.StallDegradedProducePct != 25 {
 		t.Errorf("settings not applied: %+v", w.Settings)
+	}
+	// The 0..100 bounds are both valid: 0 restores the legacy full block, 100
+	// removes the penalty (LLM-446).
+	for _, v := range []int{0, 100} {
+		w := world()
+		if _, err := SetStallWearSettings(nil, nil, nil, nil, nil, ip(v)).Fn(w); err != nil {
+			t.Fatalf("degraded pct %d rejected: %v", v, err)
+		}
+		if w.Settings.StallDegradedProducePct != v {
+			t.Errorf("degraded pct %d not applied: got %d", v, w.Settings.StallDegradedProducePct)
+		}
 	}
 }
 
@@ -396,5 +411,106 @@ func TestDefaultStallWearThresholds_LLM247(t *testing.T) {
 	biz.Wear = DefaultStallWearDegradeThreshold // 90
 	if !StallDegraded(biz, DefaultStallWearDegradeThreshold) {
 		t.Error("wear at the default degrade threshold should be degraded")
+	}
+}
+
+// TestDegradedProduceBlocked — LLM-446: the full production block survives ONLY
+// at StallDegradedProducePct == 0; any positive pct means a degraded business
+// keeps producing (slowed by produceRateScalePct), and a healthy business is
+// never blocked at any pct.
+func TestDegradedProduceBlocked(t *testing.T) {
+	world := func(wear, pct int) *World {
+		return &World{
+			Settings: WorldSettings{StallWearDegradeThreshold: 90, StallDegradedProducePct: pct},
+			VillageObjects: map[VillageObjectID]*VillageObject{
+				"forge": {ID: "forge", OwnerActorID: "ezekiel", Tags: []string{TagBusiness}, Wear: wear},
+			},
+		}
+	}
+	if !degradedProduceBlocked(world(150, 0), "ezekiel") {
+		t.Error("degraded at pct 0 must be fully blocked (the legacy LLM-304 mode)")
+	}
+	if degradedProduceBlocked(world(150, 50), "ezekiel") {
+		t.Error("degraded at pct 50 must NOT be blocked — it produces slowed (LLM-446)")
+	}
+	if degradedProduceBlocked(world(10, 0), "ezekiel") {
+		t.Error("a healthy business is never production-blocked, even at pct 0")
+	}
+	if degradedProduceBlocked(world(150, 0), "someone-else") {
+		t.Error("an actor who owns no business is never production-blocked")
+	}
+	if degradedProduceBlocked(nil, "ezekiel") {
+		t.Error("nil world must read as not blocked")
+	}
+}
+
+// TestProduceRateScalePct_DegradedSap — LLM-446: the degraded sap multiplies
+// the keeper's production-rate scale exactly like the cold sap: applied in
+// (0,100), inert at 0 (the block path owns that) and at >=100 (no penalty; an
+// out-of-range stored value can never boost a degraded business).
+func TestProduceRateScalePct_DegradedSap(t *testing.T) {
+	world := func(wear, pct int) *World {
+		return &World{
+			Settings: WorldSettings{StallWearDegradeThreshold: 90, StallDegradedProducePct: pct},
+			VillageObjects: map[VillageObjectID]*VillageObject{
+				"forge": {ID: "forge", OwnerActorID: "ezekiel", Tags: []string{TagBusiness}, Wear: wear},
+			},
+		}
+	}
+	keeper := &Actor{ID: "ezekiel", WorkStructureID: "forge"}
+	cases := []struct {
+		name string
+		wear int
+		pct  int
+		want int
+	}{
+		{"degraded at 50 halves the rate", 150, 50, 50},
+		{"degraded at 25 quarters the rate", 150, 25, 25},
+		{"healthy business unsapped", 10, 50, 100},
+		{"pct 0 leaves the scale alone (block path owns it)", 150, 0, 100},
+		{"pct 100 is no penalty", 150, 100, 100},
+		{"pct above 100 can never boost", 150, 250, 100},
+	}
+	for _, c := range cases {
+		if got := produceRateScalePct(world(c.wear, c.pct), keeper.ID, keeper); got != c.want {
+			t.Errorf("%s: scale = %d, want %d", c.name, got, c.want)
+		}
+	}
+}
+
+// TestProduceRateScalePct_ExtremeBoostClamps — code_review (LLM-446): an
+// extreme LaborProduceBoostPct (the knob is not range-capped) must never
+// overflow the scale computation into a negative or wrapped rate. The scale is
+// computed in int64 and clamped to int32 range, so credit math in the caller
+// stays far inside int64.
+func TestProduceRateScalePct_ExtremeBoostClamps(t *testing.T) {
+	w := &World{
+		Settings: WorldSettings{
+			LaborProduceBoostPct:      math.MaxInt32,
+			StallWearDegradeThreshold: 90,
+			StallDegradedProducePct:   50,
+		},
+		Actors: map[ActorID]*Actor{
+			"helper1": {ID: "helper1", InsideStructureID: "forge"},
+			"helper2": {ID: "helper2", InsideStructureID: "forge"},
+		},
+		VillageObjects: map[VillageObjectID]*VillageObject{
+			"forge": {ID: "forge", OwnerActorID: "ezekiel", Tags: []string{TagBusiness}, Wear: 150},
+		},
+		LaborLedger: map[LaborID]*LaborOffer{
+			1: {ID: 1, State: LaborStateWorking, WorkerID: "helper1", EmployerID: "ezekiel"},
+			2: {ID: 2, State: LaborStateWorking, WorkerID: "helper2", EmployerID: "ezekiel"},
+		},
+	}
+	keeper := &Actor{ID: "ezekiel", WorkStructureID: "forge"}
+	got := produceRateScalePct(w, keeper.ID, keeper)
+	if got < 0 {
+		t.Fatalf("scale overflowed negative: %d", got)
+	}
+	if got > math.MaxInt32 {
+		t.Fatalf("scale exceeds the int32 clamp: %d", got)
+	}
+	if got == 0 {
+		t.Fatalf("scale collapsed to 0 under an extreme boost; want a large positive clamp")
 	}
 }

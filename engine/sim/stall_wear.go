@@ -28,6 +28,15 @@ const (
 	DefaultStallWearDegradeThreshold  = 90
 	DefaultStallNailsPerRepair        = 5
 	DefaultStallRepairDurationSeconds = 90
+
+	// DefaultStallDegradedProducePct (LLM-446): a degraded business produces at
+	// half pace rather than stopping. Zero would re-open the self-repair
+	// deadlock this knob exists to close: repairs consume nails, the smith is
+	// the sole nail producer, so a full production block on HIS degraded forge
+	// is a state nothing in the village can ever exit. 50 keeps degrade a real
+	// penalty (and the LLM-224 helper boost a real recovery lever) while
+	// guaranteeing the way out.
+	DefaultStallDegradedProducePct = 50
 )
 
 // TagMarketStall marks a market-stall instance in the tag vocabulary (applied by
@@ -167,18 +176,32 @@ func AtBusiness(actorPos TilePos, insideStructureID StructureID, businessID Vill
 }
 
 // ownerStallDegraded reports whether the actor owns a market stall worn past the
-// degrade threshold — shut for restock/production until mended (LLM-118, LLM-304).
-// The refill-blocking gate: it suppresses the produce tick (produce_tick.go) and
-// the restock warrant (restock_tick.go) and freezes further wear accrual
-// (accrueStallWear). Selling from remaining stock is NOT gated — a degraded shop
-// draws down what's on hand and reopens its refill on repair. (LLM-304 replaced the
-// original LLM-118 sale-block, which trapped a broke keeper who could no longer earn
-// the coin to buy the nails.) nil-safe: an actor who owns no stall is never degraded.
+// degrade threshold (LLM-118, LLM-304). Degrade gates the refill: it blocks the
+// restock-buy warrant (restock_tick.go), slows production to
+// StallDegradedProducePct of base rate (produceRateScalePct — LLM-446; a
+// zero pct restores the legacy full block, see degradedProduceBlocked), and
+// freezes further wear accrual (accrueStallWear). Selling from remaining stock is
+// NOT gated — a degraded shop draws down what's on hand and reopens its refill on
+// repair. (LLM-304 replaced the original LLM-118 sale-block, which trapped a broke
+// keeper who could no longer earn the coin to buy the nails.) nil-safe: an actor
+// who owns no stall is never degraded.
 func ownerStallDegraded(w *World, actorID ActorID) bool {
 	if w == nil {
 		return false
 	}
 	return StallDegraded(OwnedWearableStall(w.VillageObjects, actorID), w.Settings.StallWearDegradeThreshold)
+}
+
+// degradedProduceBlocked reports whether degrade FULLY blocks the actor's
+// production — true only when their business is degraded AND the operator has
+// dialed StallDegradedProducePct to 0 (the legacy LLM-304 block). At any
+// positive pct a degraded business still produces, just slowed (LLM-446): a
+// full block on the sole producer of the repair input (the smith's nails) is a
+// deadlock nothing in the village can exit — the guiding-principles case
+// verbatim. The batch-progress tick, the production-choice wake, and the
+// produce command all key off this ONE predicate so the three can't drift.
+func degradedProduceBlocked(w *World, actorID ActorID) bool {
+	return w != nil && w.Settings.StallDegradedProducePct <= 0 && ownerStallDegraded(w, actorID)
 }
 
 // StallRepairWarrantReason is stamped on a stall owner when their stall's wear

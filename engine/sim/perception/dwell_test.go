@@ -42,7 +42,7 @@ func dwellSnap(credits map[sim.DwellCreditKey]*sim.DwellCredit, structures map[s
 
 func TestBuildActorView_EmptyDwellCredits(t *testing.T) {
 	snap := dwellSnap(nil, nil, nil, "")
-	av := buildActorView(snap, snap.Actors["hannah"])
+	av := buildActorView(snap, "hannah", snap.Actors["hannah"])
 	if av.ActiveDwellCredits != nil {
 		t.Errorf("ActiveDwellCredits = %v, want nil for empty credits", av.ActiveDwellCredits)
 	}
@@ -76,7 +76,7 @@ func TestBuildActorView_StaleCreditGatedByColocation(t *testing.T) {
 	// residence, no pin owns her tile → resolver returned !ok → "").
 	t.Run("walked away, at no pin", func(t *testing.T) {
 		snap := dwellSnap(shadeOakCredit(), nil, objects, "")
-		av := buildActorView(snap, snap.Actors["hannah"])
+		av := buildActorView(snap, "hannah", snap.Actors["hannah"])
 		if av.ActiveDwellCredits != nil {
 			t.Errorf("ActiveDwellCredits = %v, want nil (credit gated: actor at no pin)", av.ActiveDwellCredits)
 		}
@@ -85,7 +85,7 @@ func TestBuildActorView_StaleCreditGatedByColocation(t *testing.T) {
 	// Walked to a DIFFERENT pin — the stale shade-oak credit must still drop.
 	t.Run("walked away, now at a different pin", func(t *testing.T) {
 		snap := dwellSnap(shadeOakCredit(), nil, objects, "well")
-		av := buildActorView(snap, snap.Actors["hannah"])
+		av := buildActorView(snap, "hannah", snap.Actors["hannah"])
 		if av.ActiveDwellCredits != nil {
 			t.Errorf("ActiveDwellCredits = %v, want nil (credit gated: actor at a different pin)", av.ActiveDwellCredits)
 		}
@@ -95,7 +95,7 @@ func TestBuildActorView_StaleCreditGatedByColocation(t *testing.T) {
 	// live dwell, which would regress the meal/rest-parking cue WORK-409/411).
 	t.Run("still at the pin", func(t *testing.T) {
 		snap := dwellSnap(shadeOakCredit(), nil, objects, "shade_oak")
-		av := buildActorView(snap, snap.Actors["hannah"])
+		av := buildActorView(snap, "hannah", snap.Actors["hannah"])
 		if len(av.ActiveDwellCredits) != 1 {
 			t.Fatalf("ActiveDwellCredits = %d, want 1 (credit live: actor still at pin)", len(av.ActiveDwellCredits))
 		}
@@ -121,7 +121,7 @@ func TestBuildActorView_ItemCreditWithStructureLabel(t *testing.T) {
 	}
 	snap := dwellSnap(credits, structs, nil, "tavern")
 
-	av := buildActorView(snap, snap.Actors["hannah"])
+	av := buildActorView(snap, "hannah", snap.Actors["hannah"])
 	if len(av.ActiveDwellCredits) != 1 {
 		t.Fatalf("ActiveDwellCredits = %d, want 1", len(av.ActiveDwellCredits))
 	}
@@ -156,7 +156,7 @@ func TestBuildActorView_ObjectCreditFallsBackToVillageObjectLabel(t *testing.T) 
 	}
 	snap := dwellSnap(credits, nil, objects, "shade_oak")
 
-	av := buildActorView(snap, snap.Actors["hannah"])
+	av := buildActorView(snap, "hannah", snap.Actors["hannah"])
 	if len(av.ActiveDwellCredits) != 1 {
 		t.Fatalf("ActiveDwellCredits = %d, want 1", len(av.ActiveDwellCredits))
 	}
@@ -194,7 +194,7 @@ func TestBuildActorView_MultipleCreditsSortedDeterministically(t *testing.T) {
 		},
 	}
 	snap := dwellSnap(credits, nil, nil, "tavern")
-	av := buildActorView(snap, snap.Actors["hannah"])
+	av := buildActorView(snap, "hannah", snap.Actors["hannah"])
 
 	if len(av.ActiveDwellCredits) != 3 {
 		t.Fatalf("ActiveDwellCredits = %d, want 3", len(av.ActiveDwellCredits))
@@ -229,7 +229,7 @@ func TestBuildActorView_AliasIsolatedFromWorld(t *testing.T) {
 		},
 	}
 	snap := dwellSnap(credits, nil, nil, "tavern")
-	av := buildActorView(snap, snap.Actors["hannah"])
+	av := buildActorView(snap, "hannah", snap.Actors["hannah"])
 	*av.ActiveDwellCredits[0].RemainingTicks = 99
 	if rt != 4 {
 		t.Errorf("snapshot RemainingTicks corrupted: %d", rt)
