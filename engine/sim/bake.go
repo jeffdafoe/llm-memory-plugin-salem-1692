@@ -50,21 +50,23 @@ type HomeBake struct {
 }
 
 // bedtimeInstant returns the next lodger-bedtime instant (LodgingBedtimeHour in the
-// world timezone) strictly after now — the bed cue an evening bake runs until.
-// Modeled on nextDaybreak; fails open to now+4h so a bad clock can't mint a
-// never-ending bake.
-func bedtimeInstant(w *World, now time.Time) time.Time {
+// world timezone) strictly after now — the bed cue an evening bake runs until — and
+// ok=false when the clock is unconfigured. Modeled on nextDaybreak. Unlike a
+// fail-open fallback (which would let the sim accept a bake perception never
+// advertised), the caller REJECTS on !ok, so the sim and the perception gate agree on
+// the same bedtime rather than diverging.
+func bedtimeInstant(w *World, now time.Time) (time.Time, bool) {
 	start, _, ok := lodgerNightWindow(w) // [bedtime, dawn) minutes
 	loc := w.Settings.Location
 	if !ok || loc == nil {
-		return now.Add(4 * time.Hour)
+		return time.Time{}, false
 	}
 	local := now.In(loc)
 	bed := time.Date(local.Year(), local.Month(), local.Day(), start/60, start%60, 0, 0, loc)
 	if !bed.After(now) {
 		bed = bed.AddDate(0, 0, 1)
 	}
-	return bed
+	return bed, true
 }
 
 // StartOrJoinBake is the commit for the bake tool. If a HomeBake is already going at
@@ -92,12 +94,38 @@ func StartOrJoinBake(actorID ActorID, say string, hasNewNews bool, now time.Time
 			if home == "" || actor.InsideStructureID != home {
 				return nil, ModelFacingError{Msg: "you can only bake in your own home."}
 			}
-			doneAt := bedtimeInstant(w, now)
+			// Re-validate the advertised gate at the substrate — a stale or forged tool
+			// call must not bake at the wrong time. The perception BakeChoice gate is an
+			// optimization; StartOrJoinBake is the authority (mirrors StartStoke's posture).
+			if actor.State == StateSleeping {
+				return nil, ModelFacingError{Msg: "you are asleep."}
+			}
+			nowMinute := localMinuteOfDay(w, now)
+			if actorOnShift(w, actor, nowMinute) {
+				return nil, ModelFacingError{Msg: "you're on shift — the baking is for the evening, off the clock."}
+			}
+			if _, dusk, ok := worldDawnDuskMinutes(w); ok && nowMinute < dusk {
+				return nil, ModelFacingError{Msg: "it isn't evening yet — the bread can wait until the day's work is behind you."}
+			}
+			if countRedNeeds(w.Settings, actor) > 0 {
+				return nil, ModelFacingError{Msg: "see to what's pressing first — the baking can wait for a quiet evening."}
+			}
+			doneAt, ok := bedtimeInstant(w, now)
+			if !ok {
+				return nil, ModelFacingError{Msg: "you can't tell how much of the evening is left."}
+			}
 			if !doneAt.After(now.Add(MinBakeWindow)) {
 				return nil, ModelFacingError{Msg: "there's not enough of the evening left to bake before bed."}
 			}
 
+			// A stale session — its initiator lost the bake by some non-completion path,
+			// or its window has already passed — self-heals here so it can never orphan
+			// and block new bakes: drop it and fall through to START.
 			session := w.HomeBakes[home]
+			if session != nil && !homeBakeLive(w, session, now) {
+				delete(w.HomeBakes, home)
+				session = nil
+			}
 			if session == nil {
 				// START — the initiator provides the flour (checked now, consumed at
 				// completion).
@@ -164,19 +192,42 @@ func completeHomeBake(w *World, actorID ActorID, actor *Actor, home StructureID)
 	if session == nil || session.InitiatorID != actorID {
 		return 0 // a joiner, or the session already concluded — a hand lent, no batch
 	}
+	// The session concludes on the initiator's landing regardless of outcome, so a
+	// spent-flour or moved-out completion can't leave it to orphan.
 	delete(w.HomeBakes, home)
+	// Only a batch that finished where it started, with the flour still on hand, lands.
+	// The baker is shelved (BusyAtSource) the whole window, so in the normal path
+	// neither changes; these guards cover an out-of-band relocation or a flour spend
+	// (an operator command) between start and completion. The read/consume/mint is
+	// serialized on the world goroutine, so it is atomic.
+	if actor.InsideStructureID != home {
+		return 0
+	}
+	if actor.Inventory == nil {
+		actor.Inventory = map[ItemKind]int{}
+	}
 	if actor.Inventory[BakeFlourItem] < session.FlourCost {
-		return 0 // flour gone (shouldn't happen while shelved) — nothing to show for it
+		return 0 // flour gone — nothing to show for it, and the session is already cleared
 	}
 	actor.Inventory[BakeFlourItem] -= session.FlourCost
 	if actor.Inventory[BakeFlourItem] == 0 {
 		delete(actor.Inventory, BakeFlourItem)
 	}
-	if actor.Inventory == nil {
-		actor.Inventory = map[ItemKind]int{}
-	}
 	actor.Inventory[BakeBreadItem] += session.BatchQty
 	return session.BatchQty
+}
+
+// homeBakeLive reports whether the session's initiator is still actively baking it —
+// present, holding a bake SourceActivity, and the window not yet past. A session that
+// fails this has orphaned (the initiator's bake was cleared by sleep, an operator
+// interrupt, removal, or reload) and StartOrJoinBake drops it rather than let a
+// co-resident join a bake that will never land. Read on the world goroutine.
+func homeBakeLive(w *World, session *HomeBake, now time.Time) bool {
+	if session == nil || !session.DoneAt.After(now) {
+		return false
+	}
+	a := w.Actors[session.InitiatorID]
+	return a != nil && a.SourceActivity != nil && a.SourceActivity.Kind == SourceActivityBake
 }
 
 // concludeAbandonedBake ends the household bake if the actor walking away WAS its

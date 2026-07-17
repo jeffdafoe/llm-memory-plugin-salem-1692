@@ -52,8 +52,11 @@ func buildBakeTestWorld(t *testing.T) (*sim.World, context.CancelFunc, time.Time
 	mustSend(t, w, func(world *sim.World) {
 		world.Settings.Location = time.UTC
 		world.Settings.LodgingBedtimeHour = 22
+		world.Settings.DawnTime = "07:00"
+		world.Settings.DuskTime = "19:00"
+		world.Settings.NeedThresholds = sim.DefaultNeedThresholds()
 	})
-	now := time.Date(2026, 7, 17, 20, 0, 0, 0, time.UTC) // evening, two hours before bed
+	now := time.Date(2026, 7, 17, 20, 0, 0, 0, time.UTC) // evening (past 19:00 dusk), two hours before bed
 	return w, cancel, now
 }
 
@@ -152,5 +155,93 @@ func TestBake_CompletionMintsBatchToInitiatorAndConsumesFlour(t *testing.T) {
 	}
 	if hb := homeBakeSession(t, w); hb != nil {
 		t.Errorf("session still present after completion: %+v", hb)
+	}
+}
+
+// TestBake_RejectsWhenGateWouldNotOffer covers the LLM-454 review High: the commit
+// path RE-VALIDATES the advertised gate, so a stale/forged call can't bake while
+// asleep, on shift, in the daytime, or with a pressing need.
+func TestBake_RejectsWhenGateWouldNotOffer(t *testing.T) {
+	t.Run("asleep", func(t *testing.T) {
+		w, cancel, now := buildBakeTestWorld(t)
+		defer cancel()
+		setActor(t, w, "alice", func(a *sim.Actor) { a.State = sim.StateSleeping })
+		if _, err := w.Send(sim.StartOrJoinBake("alice", "", false, now)); err == nil {
+			t.Error("a sleeping actor started baking")
+		}
+	})
+	t.Run("on shift", func(t *testing.T) {
+		w, cancel, now := buildBakeTestWorld(t)
+		defer cancel()
+		setActor(t, w, "alice", func(a *sim.Actor) {
+			s, e := 8*60, 23*60 // on shift through the evening
+			a.ScheduleStartMin, a.ScheduleEndMin = &s, &e
+			a.WorkStructureID = "home"
+		})
+		if _, err := w.Send(sim.StartOrJoinBake("alice", "", false, now)); err == nil {
+			t.Error("an on-shift actor started baking")
+		}
+	})
+	t.Run("daytime", func(t *testing.T) {
+		w, cancel, _ := buildBakeTestWorld(t)
+		defer cancel()
+		afternoon := time.Date(2026, 7, 17, 16, 0, 0, 0, time.UTC) // before the 19:00 dusk
+		if _, err := w.Send(sim.StartOrJoinBake("alice", "", false, afternoon)); err == nil {
+			t.Error("baking started in the afternoon")
+		}
+	})
+	t.Run("red need", func(t *testing.T) {
+		w, cancel, now := buildBakeTestWorld(t)
+		defer cancel()
+		setActor(t, w, "alice", func(a *sim.Actor) { a.Needs["hunger"] = sim.NeedMax })
+		if _, err := w.Send(sim.StartOrJoinBake("alice", "", false, now)); err == nil {
+			t.Error("baking started with a pressing red need")
+		}
+	})
+}
+
+// TestBake_CompletionWithVanishedFlourMintsNothing covers the review Medium: a
+// completion whose flour was spent out-of-band mints no bread and still concludes the
+// session (never orphans).
+func TestBake_CompletionWithVanishedFlourMintsNothing(t *testing.T) {
+	w, cancel, now := buildBakeTestWorld(t)
+	defer cancel()
+	res, err := w.Send(sim.StartOrJoinBake("alice", "", false, now))
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	until := res.(sim.SourceActivityStartResult).Until
+	// Flour spent out-of-band (an operator command) between start and completion.
+	setActor(t, w, "alice", func(a *sim.Actor) { delete(a.Inventory, "flour") })
+	mustSend(t, w, func(world *sim.World) { sim.CompleteDueSourceActivities(world, until.Add(time.Second)) })
+	if got := inventoryOf(t, w, "alice", "bread"); got != 0 {
+		t.Errorf("bread = %d, want 0 (no flour, no batch)", got)
+	}
+	if hb := homeBakeSession(t, w); hb != nil {
+		t.Errorf("session still present after a flourless completion: %+v", hb)
+	}
+}
+
+// TestBake_StaleSessionSelfHeals covers the review High: an orphaned session (its
+// initiator's bake cleared by a non-completion path) must not block new bakes — the
+// next attempt drops it and starts fresh.
+func TestBake_StaleSessionSelfHeals(t *testing.T) {
+	w, cancel, now := buildBakeTestWorld(t)
+	defer cancel()
+	if _, err := w.Send(sim.StartOrJoinBake("alice", "", false, now)); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	// Orphan the session: clear alice's bake activity as sleep / an operator interrupt
+	// would, leaving the HomeBake behind with no live initiator.
+	setActor(t, w, "alice", func(a *sim.Actor) { a.SourceActivity = nil })
+	// A fresh attempt must self-heal (drop the orphan) and start, not be blocked.
+	if _, err := w.Send(sim.StartOrJoinBake("alice", "", false, now.Add(time.Minute))); err != nil {
+		t.Fatalf("re-bake after orphan: %v", err)
+	}
+	if k := bakeActivityKind(t, w, "alice"); k != sim.SourceActivityBake {
+		t.Errorf("alice activity = %q, want bake (self-healed)", k)
+	}
+	if hb := homeBakeSession(t, w); hb == nil || hb.InitiatorID != "alice" {
+		t.Fatalf("session = %+v, want a fresh alice session", hb)
 	}
 }
