@@ -619,6 +619,9 @@ func AutoBedAtHomeNPCs(now time.Time) Command {
 				// conversation at bedtime, so the model can voice a deliberate
 				// goodnight and turn in itself rather than being silently
 				// engine-bedded. Idle lodgers (and all homed NPCs) bed now.
+				// The hold means more since LLM-447 gave the model a real verb
+				// to spend it on (turn_in) — before, it could only wind down and
+				// wait to be bedded.
 				if lodgerAwaitingDeliberateRetire(w, a, now) {
 					continue
 				}
@@ -633,8 +636,24 @@ func AutoBedAtHomeNPCs(now time.Time) Command {
 
 // lodgerAwaitingDeliberateRetire reports whether AutoBedAtHomeNPCs should hold
 // off bedding actor a this sweep, to let the model voice a deliberate goodnight
-// and turn in itself (LLM-36). The caller has already confirmed npcSleepHere, so
-// a is beddable right now; this only DEFERS that for a lodger that is:
+// and turn in itself. The caller has already confirmed npcSleepHere, so a is
+// beddable right now; this only DEFERS that.
+//
+// This is an engine scheduling policy and owns itself. It arrived with the LLM-36
+// lodger retire CUE, but that cue was deleted in LLM-461 once turn_in superseded
+// it — the hold is not coupled to it and outlived it.
+//
+// The window it buys is what the `turn_in` verb (LLM-447) is spent in: the hold
+// opens at the civil bedtime hour, inside turn_in's wider [dusk, dawn) window, so
+// a held lodger is USUALLY also being offered the verb. Deliberately not stated
+// as a guarantee — turn_in applies gates this hold does not (off-shift on every
+// arm, including the lodger arm that npcSleepHere leaves shift-blind per LLM-14;
+// and no in-flight SourceActivity), so a night-shift or mid-activity lodger can
+// be held here and still not see the tool. The hold gives the model an
+// OPPORTUNITY to end its own evening; it does not promise one. Before that verb
+// existed it could only wind the conversation down and wait to be bedded anyway.
+//
+// It defers for a lodger that is:
 //
 //   - in the lodger flow, not the home flow — a homed NPC inside its home is
 //     governed by the home branch of npcSleepHere and is never held; the
@@ -642,9 +661,9 @@ func AutoBedAtHomeNPCs(now time.Time) Command {
 //   - mid-conversation with a companion — an active huddle holding at least one
 //     OTHER member is an audience to bid goodnight to. A lodger that is idle (or
 //     in a degenerate sole-member huddle) has no goodnight to voice, so it beds
-//     now. This MATCHES the buildRetireCue audience gate (a co-present huddle
-//     peer), so the "## Turn in for the night" cue is shown exactly when the
-//     backstop holds — cue and gate never disagree.
+//     now. The companion requirement is this hold's own — turn_in is offered to a
+//     lodger alone as well, and needs no grace period to be taken, so nothing
+//     downstream depends on the two agreeing.
 //   - within lodgerRetireGraceMinutes of the night window's open — past that
 //     margin (or once it leaves the huddle) the normal backstop beds it, so a
 //     chatty or distracted lodger never never-sleeps.

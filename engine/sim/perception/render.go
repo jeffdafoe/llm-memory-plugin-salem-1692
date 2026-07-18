@@ -292,9 +292,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderRestocking(&ephemeral, p.Restocking)
 	renderForage(&ephemeral, p.Forage)
 	renderLodging(&ephemeral, p.Lodging)
-	renderRetire(&ephemeral, p.Retire)
-	// LLM-447: the evening's exit. Build nils p.Retire when this one is live, so
-	// at most one bedtime cue renders per turn.
+	// LLM-447: the evening's exit — the single bedtime cue.
 	renderTurnInChoice(&ephemeral, p.TurnInChoice)
 	renderKeeperLodging(&ephemeral, p.KeeperLodging)
 	renderKeeperHeldLodgers(&ephemeral, p.KeeperHeldLodgers)

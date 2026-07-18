@@ -200,34 +200,48 @@ func TestBuildTurnInChoice_LodgerArm(t *testing.T) {
 	})
 }
 
-// TestBuildTurnInChoice_SupersedesRetireCue pins the reconciliation between the
-// two bedtime surfaces.
+// TestBuildTurnInChoice_IsTheOnlyBedtimeCue pins what replaced the LLM-36 retire
+// cue, in the exact situation that cue was built for.
 //
-// LLM-36's Retire cue was written when there was no sleep verb — its own doc
-// comment says "the steer is situational, NOT a tool call" — so it asks the
-// lodger to wind down and end its turn, leaving the engine backstop to bed it.
-// turn_in supersedes that with a real, tool-backed exit over a wider window.
-// Where both fire, the prompt must carry ONE bedtime instruction, not two with
-// different mechanics; Build nils Retire when TurnInChoice is live.
-func TestBuildTurnInChoice_SupersedesRetireCue(t *testing.T) {
-	// 22:30 — inside BOTH windows ([dusk 19:00, dawn) and [bedtime 22:00, dawn)).
+// That cue ("## Turn in for the night") predated the sleep verb — its own doc
+// comment read "the steer is situational, NOT a tool call" — so it asked a lodger
+// to wind down and end its turn and left the engine backstop to bed it. turn_in
+// does the same thing with a real tool over a wider window, so the old cue was
+// deleted rather than kept as a second, differently-mechanised way to say the
+// same thing.
+//
+// The lodger-at-its-inn-at-bedtime case must therefore still produce exactly one
+// bedtime instruction — a tool-backed one. Both halves are asserted, because each
+// fails differently: without the positive assertion a regression could nil the
+// replacement and still pass (the old marker is absent either way), leaving that
+// lodger with NO way to end its evening — worse than before either cue existed;
+// without the negative one, a reintroduced section would go unnoticed.
+//
+// Tool-side lockstep (that `turn_in` is actually advertised in this state) can't
+// be asserted here — handlers imports perception, not the reverse — and is
+// covered by sim_test's TestTurnInCueMatchesSubstrateAcrossTheMatrix.
+func TestBuildTurnInChoice_IsTheOnlyBedtimeCue(t *testing.T) {
+	// 22:30 — the old cue's own window ([bedtime 22:00, dawn)), well inside
+	// turn_in's wider [dusk 19:00, dawn).
 	subj := turnInLodger("inn")
 	snap := retireSnap(subj, 22*60+30, retireStructs())
 
-	if v := buildRetireCue(snap, subj, retireMembers()); v == nil {
-		t.Fatal("fixture no longer fires the LLM-36 retire cue — this test can't prove the supersede")
-	}
-	if v := buildTurnInChoice(snap, subj, retireMembers()); v == nil {
-		t.Fatal("fixture no longer fires the turn_in cue — this test can't prove the supersede")
-	}
-
 	p := Build(snap, "ezekiel", nil)
 	if p.TurnInChoice == nil {
-		t.Fatal("Build dropped the turn_in affordance for a lodger at its inn at 22:30")
+		t.Fatal("Build dropped the turn_in affordance for a lodger at its inn at 22:30 — the exact " +
+			"situation the deleted LLM-36 cue covered, now left with no bedtime cue at all")
 	}
-	if p.Retire != nil {
-		t.Error("both bedtime cues survived Build — the prompt would carry two differently-mechanised " +
-			"'turn in' instructions, one of which has no tool behind it")
+	out := combinedPrompt(Render(p, DefaultRenderConfig()))
+
+	// The replacement must actually REACH the page — a non-nil view that render
+	// drops would satisfy the negative assertion below while leaving the lodger
+	// with nothing.
+	if n := strings.Count(out, turnInCueMarker); n != 1 {
+		t.Errorf("rendered prompt carries the turn_in cue %d times, want exactly 1:\n%s", n, out)
+	}
+	if strings.Contains(out, "## Turn in for the night") {
+		t.Error("the deleted LLM-36 retire section rendered — something reintroduced it, and the prompt " +
+			"now carries two differently-mechanised bedtime instructions")
 	}
 }
 
