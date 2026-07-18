@@ -65,8 +65,13 @@ var laborResponseTools = map[string]struct{}{
 // renderLaborSelfState line, instead of silence or job abandonment. move_to is
 // handled separately (it stays when a red hunger/thirst need needs walking to
 // food — see gateTools). solicit_work / accept_work / the pay-offer group are
-// already gated by their own conditions (a busy worker is not a free solicitor
-// and holds no offer), so they need no entry here.
+// already gated by their own conditions (PendingPayOffers for the pay group, and
+// a busy worker is not a free solicitor), so they need no entry here.
+//
+// The pay-offer group's exclusion is load-bearing as of LLM-460, which lets a
+// buyer's offer wake a laboring worker: answering is exactly what that wake is
+// for, so accept_pay / decline_pay / counter_pay must survive this strip. They
+// settle in place and walk her nowhere, unlike the tools listed below.
 //
 // offer_work IS listed (LLM-346). Its own gate would not stop a laboring worker
 // from hiring a co-present peer — HireableWorkers only asks about the TARGET — and
