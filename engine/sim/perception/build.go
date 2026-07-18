@@ -385,6 +385,26 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// flagged actor's movement invitation is stripped in lockstep with the steers.
 	p.EveningLeisure = buildEveningLeisure(snap, actorSnap, p.Anchors)
 	p.BakeChoice = buildBakeChoice(snap, actorSnap)
+	// LLM-459: the bake affordance yields to an active seek-work directive. LLM-454
+	// built bake for the villagers who are home BECAUSE they have no reason to seek
+	// work — the homebodies who otherwise narrate "let's make bread" for an hour
+	// without doing it. A worker the seek-work directory has engaged is by
+	// construction not that population: it is workless, under the coin ceiling, and
+	// free to leave. Rendering both puts two action invitations in one prompt, and
+	// the seek-work one wins on placement regardless — it is the closing triage coda
+	// and the prompt's only imperative ("call move_to now", render.go), while the
+	// bake line sits mid-scene. Live 2026-07-18: Silence Walker, 8 coins and 4 flour,
+	// read both and did laps (home -> Tavern -> Blueberry Bush -> home) while her
+	// three housemates over the ceiling baked normally.
+	//
+	// Subtractive, like the leisure-venue and summons blocks below: drop the losing
+	// cue rather than adding a counter-instruction the weak model argues with. Nilling
+	// the view drops the bake TOOL in lockstep (handlers.gateTools reads the same
+	// BakeChoice signal), so the actor is never left holding a tool the prompt tells
+	// it to walk away from.
+	if len(p.SeekWorkPlaces) > 0 {
+		p.BakeChoice = nil
+	}
 	// LLM-345: inside a leisure venue, on the evening, the walk-away work-errand cues
 	// yield to the room. Each of these tells the agent to LEAVE and go buy or gather
 	// something — shovels from the smith, restock from a supplier, nails for a mend,

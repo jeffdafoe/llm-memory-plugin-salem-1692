@@ -2373,6 +2373,17 @@ var perceptionScenarios = []perceptionScenario{
 		build: workerWithCoinNoEmployerSeeksWork,
 	},
 	{
+		name: "seeking_worker_at_home_gets_no_bake_cue",
+		summary: "LLM-459: the workless, below-ceiling Silence Walker settled at home during the day with flour, with the " +
+			"household's bake already going — every bake precondition met AND the seek-work directory engaged. Pre-fix both " +
+			"rendered, and the imperative coda ('call move_to now') beat the mid-scene bake invitation: live 2026-07-18 she " +
+			"did laps (home → Tavern → Blueberry Bush → home) while her three over-the-ceiling housemates baked. The golden " +
+			"pins the seek-work half rendering ALONE — LLM-454 built bake for villagers who stay home BECAUSE they have no " +
+			"reason to seek work, so an engaged job-seeker is out of that population. A regression that dropped the " +
+			"suppression re-adds the bake line here and flips TestNoPromptOffersBakeAndSeekWorkTogether.",
+		build: seekingWorkerAtHomeGetsNoBakeCue,
+	},
+	{
 		name: "comfortable_worker_no_seek_work",
 		summary: "The LLM-194 case: the same workless Silence Walker as worker_with_coin_no_employer_seeks_work, but holding " +
 			"coin AT/ABOVE the seek-work ceiling (40 >= the default 25). A coin-rich worker is 'comfortable' — it doesn't need " +
@@ -13053,6 +13064,61 @@ func workerWithCoinNoEmployerSeeksWork() (*sim.Snapshot, sim.ActorID, []sim.Warr
 	return snap, silenceID, nil
 }
 
+// seekingWorkerAtHomeGetsNoBakeCue is the LLM-459 live case: the same workless,
+// below-ceiling Silence Walker as workerWithCoinNoEmployerSeeksWork, but settled at
+// home during the day carrying flour, with the household's bake already going at the
+// hearth — every buildBakeChoice precondition met. Pre-fix she got BOTH the bake
+// invitation ("Call bake to join in") and the seek-work directory + "call move_to now"
+// coda, and the imperative coda won: live 2026-07-18 she walked home -> Tavern ->
+// Blueberry Bush -> home while her three over-the-ceiling housemates baked. The golden
+// pins that the seek-work half renders ALONE — bake is for the homebodies who have no
+// reason to seek work, so an engaged job-seeker is not offered it.
+func seekingWorkerAtHomeGetsNoBakeCue() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		silenceID = sim.ActorID("silence")
+		residence = sim.StructureID("walker_residence")
+		inn       = sim.StructureID("inn")
+		store     = sim.StructureID("general_store")
+	)
+	now := 540 // 09:00 — daytime, well clear of the 30m-before-dusk bake cutoff
+	silence := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Silence Walker",
+		State:             sim.StateIdle,
+		InsideStructureID: residence,
+		HomeStructureID:   residence,
+		Coins:             8, // below the default seek-work ceiling (25) → still seeking
+		AttributeSlugs:    []string{sim.AttrWorker},
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{sim.BakeFlourItem: 4},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		// Dawn/dusk so the unscheduled worker's day-active window resolves and the
+		// bake gate's before-dusk arm is genuinely satisfied — without these the
+		// scenario would prove nothing (buildBakeChoice would return nil on the
+		// zero-valued DuskMinute regardless of the fix).
+		DawnMinute:       420,  // 07:00
+		DuskMinute:       1140, // 19:00
+		DawnDuskMinuteOK: true,
+		// The household bake is already going here, so this is the JOIN arm — the
+		// cheapest, most-tempting form of the cue, and the one live Silence saw.
+		HomeBakesActive: map[sim.StructureID]bool{residence: true},
+		NeedThresholds:  sim.NeedThresholds{},
+		Actors:          map[sim.ActorID]*sim.ActorSnapshot{silenceID: silence},
+		Structures: map[sim.StructureID]*sim.Structure{
+			residence: plainStructure(residence, "Walker Residence"),
+			inn:       plainStructure(inn, "Inn"),
+			store:     plainStructure(store, "General Store"),
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			sim.VillageObjectID(inn):   {ID: sim.VillageObjectID(inn), Tags: []string{"business", "lodging"}},
+			sim.VillageObjectID(store): {ID: sim.VillageObjectID(store), Tags: []string{"business", "shop"}},
+		},
+	}
+	return snap, silenceID, nil
+}
+
 // comfortableWorkerNoSeekWork is the LLM-194 case: the SAME workless worker as
 // workerWithCoinNoEmployerSeeksWork, but holding coin AT/ABOVE the seek-work ceiling
 // (40 >= the default 25). The snapshot is built directly, so SeekWorkCoinCeiling is 0
@@ -13402,6 +13468,11 @@ func TestSeekWorkDirectiveOnlyForWorklessWorker(t *testing.T) {
 		"worker_with_coin_no_employer_seeks_work":     true,
 		"worker_seeks_work_after_employer_declines":   true,
 		"worker_seeks_work_skips_no_hiring_business":  true,
+		// LLM-459: a workless below-ceiling worker settled at home with the household
+		// bake going. It belongs here — the seek-work half is exactly what SHOULD
+		// survive; the point of the scenario is that the bake invitation does not
+		// render beside it (TestNoPromptOffersBakeAndSeekWorkTogether).
+		"seeking_worker_at_home_gets_no_bake_cue": true,
 	}
 	for _, sc := range perceptionScenarios {
 		want := seekWorkScenarios[sc.name]
