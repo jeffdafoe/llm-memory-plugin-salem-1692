@@ -243,6 +243,58 @@ func TestRenderTradeValue_SellFirstNudge(t *testing.T) {
 	}
 }
 
+// TestMerchantConserve_ProductionInputIsNotOverstock: LLM-462 — the keeper's own raw
+// material never tips the overstock verdict. The live Hannah Boggs: 2 coins, a bare
+// porridge shelf, 19 water (5 to a batch) and 1 flour. Water alone cleared the
+// dead-stock floor, so she read as stock-rich, the section flipped to the hold-off
+// steer and the warrant mirror suppressed the flour buy that would have restarted her
+// line. Scoped to actual wares she is empty-shelved, which is the LLM-294 exception she
+// always qualified for.
+//
+// The control pins causality: hold the 19-water pile fixed and make water a plain ware
+// (no longer a porridge input) — she conserves again, and water is named as the ware to
+// sell down. So the verdict turns on input-ness, not on the pile.
+func TestMerchantConserve_ProductionInputIsNotOverstock(t *testing.T) {
+	porridgeFromFlourAndWater := map[sim.ItemKind]*sim.ItemRecipe{
+		"porridge": {OutputItem: "porridge", OutputQty: 4, RateQty: 4, RatePerHours: 1,
+			Inputs: []sim.RecipeInput{{Item: "flour", Qty: 2}, {Item: "water", Qty: 5}}},
+	}
+	subj := &sim.ActorSnapshot{
+		Coins:     2,
+		Inventory: map[sim.ItemKind]int{"water": 19, "flour": 1, "porridge": 0},
+		RestockPolicy: wcPolicy(
+			sim.RestockEntry{Item: "porridge", Source: sim.RestockSourceProduce, Max: 30},
+			sim.RestockEntry{Item: "water", Source: sim.RestockSourceBuy, Max: 10},
+			sim.RestockEntry{Item: "flour", Source: sim.RestockSourceBuy, Max: 6},
+		),
+	}
+	snap := &sim.Snapshot{
+		Actors:            map[sim.ActorID]*sim.ActorSnapshot{"hannah": subj},
+		ItemKinds:         wcCatalog(),
+		Recipes:           porridgeFromFlourAndWater,
+		MerchantCoinFloor: 10,
+		RestockReorderPct: 25,
+		PublishedAt:       time.Now().UTC(),
+	}
+	if got := merchantConserve(snap, "hannah", subj); got.Active {
+		t.Errorf("Active = true on a bare-shelved keeper whose only pile is raw material (named %q) — the empty-shelf exception must apply", got.OverstockedWare)
+	}
+
+	// Control: same 19 water, but it now feeds no recipe of hers, so it IS merchandise
+	// sitting unsold — conserve returns and names it.
+	snap.Recipes = map[sim.ItemKind]*sim.ItemRecipe{
+		"porridge": {OutputItem: "porridge", OutputQty: 4, RateQty: 4, RatePerHours: 1,
+			Inputs: []sim.RecipeInput{{Item: "flour", Qty: 2}}},
+	}
+	got := merchantConserve(snap, "hannah", subj)
+	if !got.Active {
+		t.Fatal("Active = false once water is a plain ware, want true (19 on hand clears the dead-stock floor)")
+	}
+	if got.OverstockedWare != "water" {
+		t.Errorf("OverstockedWare = %q, want \"water\" (the only ware over its threshold)", got.OverstockedWare)
+	}
+}
+
 // TestBuildRestocking_ConserveWiredThrough: end-to-end over buildRestocking — a
 // coin-poor + overstocked keeper low on a buy input gets Conserve set on the view, and
 // the render carries the conserve steer instead of the co-present buy imperative.

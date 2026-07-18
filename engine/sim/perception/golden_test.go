@@ -2007,6 +2007,18 @@ var perceptionScenarios = []perceptionScenario{
 		build: keeperConservingOwesNailRepair,
 	},
 	{
+		name: "innkeeper_input_pile_not_overstock",
+		summary: "LLM-462 anchor (the live 2026-07-18 Hannah Boggs deadlock): an innkeeper with 2 coins — below the " +
+			"10-coin floor — a BARE porridge shelf, 19 water (5 to a batch of porridge) and the 1 flour her line has run " +
+			"out of. The water pile used to clear the dead-stock floor on its own, reading her raw material as unsold " +
+			"merchandise: '## Restocking' flipped to the hold-off steer and the sim mirror suppressed every buy warrant, " +
+			"so she was never woken to fetch flour and her busiest line went dead. Scoped to actual wares she is plainly " +
+			"empty-shelved, so the golden pins the ORDINARY buy cue with the miller's walk-to destination and the ABSENCE " +
+			"of the 'Hold off buying more for now' lead. Foil of keeper_conserving_owes_nail_repair (overstocked on a " +
+			"pure resale good → still conserving).",
+		build: innkeeperInputPileNotOverstock,
+	},
+	{
 		name: "owner_standoff_declined_nails",
 		summary: "LLM-297 standoff arm: Elizabeth Ellis, off her worn farm and sharing the smith's huddle with Ezekiel, " +
 			"has already had two nail offers to him declined in this huddle. She is not a keeper (no restock policy, so " +
@@ -7256,6 +7268,105 @@ func keeperConservingOwesNailRepair() (*sim.Snapshot, sim.ActorID, []sim.Warrant
 		},
 	}
 	return snap, josiahID, nil
+}
+
+// innkeeperInputPileNotOverstock is the LLM-462 fixture, drawn from the live 2026-07-18
+// Hannah Boggs deadlock: an innkeeper with 2 coins (below the 10-coin MerchantCoinFloor)
+// whose porridge shelf is BARE, holding 19 water — a porridge ingredient, 5 to a batch —
+// and 1 flour, the input her line has actually run out of.
+//
+// Before LLM-462 the water pile alone cleared the dead-stock floor, so she read as
+// coin-poor-AND-stock-rich, "## Restocking" flipped to the hold-off steer, and the sim
+// mirror suppressed every buy warrant she had. She was never woken to fetch flour again
+// and her busiest line (20 porridge sales to 12 villagers that week) simply stopped.
+//
+// Raw material is not merchandise, so she is NOT conserving here: the golden pins the
+// ORDINARY buy cue with the miller's walk-to destination, and the ABSENCE of the
+// "Hold off buying more for now" lead. Foil of keeper_conserving_owes_nail_repair, whose
+// overstocked cloth is a pure resale good (that keeper has no produce entry at all, so
+// nothing of his is an input) and who therefore still conserves.
+func innkeeperInputPileNotOverstock() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		hannahID = sim.ActorID("hannah")
+		josephID = sim.ActorID("joseph")
+		inn      = sim.StructureID("inn")
+		mill     = sim.StructureID("mill")
+	)
+	start, end := 360, 1080 // 06:00-18:00
+	now := 720              // 12:00 — on shift, at her own post
+	published := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	hannah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Hannah Boggs",
+		Role:              "innkeeper",
+		State:             sim.StateIdle,
+		Pos:               sim.TilePos{X: 300, Y: 300},
+		InsideStructureID: inn,
+		WorkStructureID:   inn,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             2,
+		Needs:             map[sim.NeedKey]int{},
+		// The live inventory: wares bare, raw material piled, the binding input at 1.
+		Inventory: map[sim.ItemKind]int{"water": 19, "flour": 1, "porridge": 0},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "porridge", Source: sim.RestockSourceProduce, Max: 30},
+			{Item: "water", Source: sim.RestockSourceBuy, Max: 10},
+			{Item: "flour", Source: sim.RestockSourceBuy, Max: 6},
+		}},
+		Acquaintances: map[string]sim.Acquaintance{"Joseph Scott": {}},
+	}
+	joseph := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Joseph Scott",
+		Role:              "miller",
+		State:             sim.StateIdle,
+		Pos:               sim.TilePos{X: 900, Y: 900},
+		InsideStructureID: mill,
+		WorkStructureID:   mill,
+		Coins:             30,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"flour": 20},
+		// Produces flour, so he passes the LLM-252 supplier-of-record gate as her walk-to
+		// destination. The Mill is deliberately NOT wholesaler-tagged here — a wholesale
+		// tag would drop him from her vendor scan and make the fixture vacuous.
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "flour", Source: sim.RestockSourceProduce, Max: 24},
+		}},
+		Acquaintances: map[string]sim.Acquaintance{"Hannah Boggs": {}},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:               published,
+		LocalMinuteOfDay:          &now,
+		NeedThresholds:            sim.NeedThresholds{},
+		Assets:                    emptyAssetSet,
+		MerchantCoinFloor:         10,
+		RestockReorderPct:         25,
+		StallWearRepairThreshold:  400,
+		StallWearDegradeThreshold: 600,
+		StallNailsPerRepair:       5,
+		Actors:                    map[sim.ActorID]*sim.ActorSnapshot{hannahID: hannah, josephID: joseph},
+		Structures: map[sim.StructureID]*sim.Structure{
+			inn:  plainStructure(inn, "The Inn"),
+			mill: plainStructure(mill, "The Mill"),
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{},
+		// Porridge is what makes water and flour raw material rather than wares — the
+		// whole point of the fixture, so the recipe has to be real here.
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"porridge": {OutputItem: "porridge", OutputQty: 4, RateQty: 4, RatePerHours: 1,
+				Inputs:         []sim.RecipeInput{{Item: "flour", Qty: 2}, {Item: "water", Qty: 5}},
+				WholesalePrice: 1, RetailPrice: 2},
+			"flour": {OutputItem: "flour", OutputQty: 1, RateQty: 4, RatePerHours: 1,
+				WholesalePrice: 2, RetailPrice: 3},
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"water":    {Name: "water", DisplayLabel: "water"},
+			"flour":    {Name: "flour", DisplayLabel: "flour"},
+			"porridge": {Name: "porridge", DisplayLabel: "porridge"},
+		},
+	}
+	return snap, hannahID, nil
 }
 
 // ownerStandoffDeclinedNails is the LLM-297 standoff arm: the ownerOffPostAtSmithShortNails

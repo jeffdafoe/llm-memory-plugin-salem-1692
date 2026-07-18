@@ -95,7 +95,8 @@ func sellerRecentSellUnits(w *World, sellerID ActorID, item ItemKind, now time.T
 // actorConserving reports whether the actor is in LLM-294 conserve mode: the working-
 // capital floor is enabled (w.Settings.MerchantCoinFloor > 0), the purse is below it,
 // AND at least one of the actor's own sellable wares (a produce or buy ware it holds) is
-// overstocked. The coin gate short-circuits before the price-book walk, so a healthy
+// overstocked. A ware here excludes the actor's own production inputs (LLM-462) — see
+// the floors comment below. The coin gate short-circuits before the price-book walk, so a healthy
 // keeper (the common case) pays nothing. Mirrors perception.merchantConserve.Active — it
 // shares MerchantOverstockThreshold + the sell-through read with the section, so the
 // restock warrant producer and the "## Restocking" cue can never disagree on who is
@@ -108,12 +109,30 @@ func actorConserving(w *World, a *Actor, now time.Time) bool {
 	if floor <= 0 || a.Coins >= floor {
 		return false // feature off, or purse healthy
 	}
+	// LLM-462: a required input to one of the actor's OWN produce recipes is raw
+	// material, not merchandise waiting to sell, so it never counts toward the
+	// overstock verdict. Hannah Boggs held 19 water — five of which every batch of
+	// porridge drinks — and the dead-stock floor read that pile as a full storeroom,
+	// which suppressed EVERY buy warrant she had, the stalled porridge line's flour
+	// included. She was never woken again. Scoping the test to actual wares puts her
+	// back under the empty-shelf exception (her porridge/journeycake/fried_meat
+	// shelves are bare), which is what she always was. A finished ware that feeds no
+	// recipe of the actor's still counts, so the LLM-298 case (John Ellis conserving
+	// on 20 unsold ale, his carrots buy correctly suppressed) is unchanged.
+	//
+	// ReorderFloors keys exactly the REQUIRED inputs — elective BoostInputs never
+	// stall a line, so they stay merchandise — and is the same catalog the reorder
+	// threshold reads, so "raw material" means the same thing here and there.
+	floors := ReorderFloors(w.Recipes, a.RestockPolicy)
 	seen := map[ItemKind]bool{}
 	overstocked := func(item ItemKind) bool {
 		if seen[item] {
 			return false
 		}
 		seen[item] = true
+		if floors[item] > 0 {
+			return false // raw material for its own production, not unsold stock
+		}
 		onHand := a.Inventory[item]
 		if onHand <= 0 {
 			return false
