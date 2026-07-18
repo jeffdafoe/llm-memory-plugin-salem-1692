@@ -50,6 +50,7 @@ func TestBuildBakeChoiceSuppressedBySeekWork(t *testing.T) {
 // drifting back into contradiction through some future gate change that reaches neither
 // call site directly.
 func TestNoPromptOffersBakeAndSeekWorkTogether(t *testing.T) {
+	var sawBake, sawSeekWork int
 	for _, sc := range perceptionScenarios {
 		sc := sc
 		t.Run(sc.name, func(t *testing.T) {
@@ -58,6 +59,12 @@ func TestNoPromptOffersBakeAndSeekWorkTogether(t *testing.T) {
 			// "to join in" — without pinning the surrounding prose.
 			hasBake := strings.Contains(out, "Call bake to")
 			hasSeekWork := strings.Contains(out, "No one here can hire you")
+			if hasBake {
+				sawBake++
+			}
+			if hasSeekWork {
+				sawSeekWork++
+			}
 			if hasBake && hasSeekWork {
 				t.Errorf("scenario %q renders BOTH the bake invitation and the seek-work go-coda. "+
 					"They serve disjoint populations and the imperative coda wins on placement, so the "+
@@ -65,5 +72,21 @@ func TestNoPromptOffersBakeAndSeekWorkTogether(t *testing.T) {
 					"BakeChoice when SeekWorkPlaces is populated (build.go).", sc.name)
 			}
 		})
+	}
+	// Vacuity floor (code_review, and the LLM-457 lesson): this invariant is pure
+	// string matching over the assembled prompt, so a wording change on EITHER cue
+	// would make its half stop matching and the test would pass having asserted
+	// nothing. comfortable_homebody_bakes renders the bake line and the seek-work
+	// scenarios render the coda, so both floors are met today — if one drops to
+	// zero, the phrasing drifted or the matrix lost a scenario.
+	if sawBake == 0 {
+		t.Error("invariant matched no bake invitation in the whole matrix — renderBakeChoice phrasing " +
+			"probably drifted, or comfortable_homebody_bakes was removed. The exclusion check above is " +
+			"now vacuous on its bake side; update the signature or restore a bake-rendering scenario.")
+	}
+	if sawSeekWork == 0 {
+		t.Error("invariant matched no seek-work coda in the whole matrix — the render.go go-line phrasing " +
+			"probably drifted, or the matrix lost its seek-work scenarios. The exclusion check above is " +
+			"now vacuous on its seek-work side.")
 	}
 }

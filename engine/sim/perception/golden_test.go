@@ -2384,6 +2384,18 @@ var perceptionScenarios = []perceptionScenario{
 		build: seekingWorkerAtHomeGetsNoBakeCue,
 	},
 	{
+		name: "comfortable_homebody_bakes",
+		summary: "LLM-459 (positive half), and the matrix's first bake scenario — LLM-454 shipped the daytime bake with no " +
+			"golden at all. The same at-home-with-flour fixture as seeking_worker_at_home_gets_no_bake_cue, differing ONLY in " +
+			"the purse: 40 coins is at/above the seek-work ceiling, so this worker is comfortable, draws no businesses " +
+			"directory, and IS the homebody population bake serves — the golden pins the join-in invitation rendering with no " +
+			"seek-work coda beside it. Flipping only coins across the ceiling toggles which cue appears, proving the split is " +
+			"the ceiling itself and not some other fixture difference. Also the vacuity floor for " +
+			"TestNoPromptOffersBakeAndSeekWorkTogether: without a scenario that renders the bake line, that invariant would " +
+			"pass having checked nothing.",
+		build: comfortableHomebodyBakes,
+	},
+	{
 		name: "comfortable_worker_no_seek_work",
 		summary: "The LLM-194 case: the same workless Silence Walker as worker_with_coin_no_employer_seeks_work, but holding " +
 			"coin AT/ABOVE the seek-work ceiling (40 >= the default 25). A coin-rich worker is 'comfortable' — it doesn't need " +
@@ -13117,6 +13129,21 @@ func seekingWorkerAtHomeGetsNoBakeCue() (*sim.Snapshot, sim.ActorID, []sim.Warra
 		},
 	}
 	return snap, silenceID, nil
+}
+
+// comfortableHomebodyBakes is the positive half of the LLM-459 pair and the matrix's
+// first bake scenario at all — LLM-454 shipped without one, which left the bake cue
+// with no render-path coverage and would have made the LLM-459 corpus invariant
+// vacuous on its bake side. Identical to seekingWorkerAtHomeGetsNoBakeCue except the
+// purse: 40 coins is at/above the default seek-work ceiling (25), so this worker is
+// "comfortable", draws no seek-work directory, and is exactly the homebody population
+// LLM-454 wrote bake for. Live counterpart: Patience/Lewis/Anne Walker (36/28/37
+// coins), who baked normally on 2026-07-18 while their 8-coin housemate did laps.
+func comfortableHomebodyBakes() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, actorID, warrants := seekingWorkerAtHomeGetsNoBakeCue()
+	snap.Actors[actorID].DisplayName = "Anne Walker"
+	snap.Actors[actorID].Coins = 40 // at/above the default ceiling → comfortable, no seek-work
+	return snap, actorID, warrants
 }
 
 // comfortableWorkerNoSeekWork is the LLM-194 case: the SAME workless worker as
