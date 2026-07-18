@@ -636,14 +636,22 @@ func AutoBedAtHomeNPCs(now time.Time) Command {
 
 // lodgerAwaitingDeliberateRetire reports whether AutoBedAtHomeNPCs should hold
 // off bedding actor a this sweep, to let the model voice a deliberate goodnight
-// and turn in itself (LLM-36). The caller has already confirmed npcSleepHere, so
-// a is beddable right now; this only DEFERS that.
+// and turn in itself. The caller has already confirmed npcSleepHere, so a is
+// beddable right now; this only DEFERS that.
 //
-// The window it buys is now spent on the `turn_in` verb (LLM-447): the lodger is
-// inside turn_in's own window whenever this hold applies (it opens at dusk, this
-// at the later bedtime hour), so the cue is on its page and the tool is in its
-// hand. Before that verb existed the hold could only let the model wind the
-// conversation down and wait to be bedded anyway.
+// This is an engine scheduling policy and owns itself. It arrived with the LLM-36
+// lodger retire CUE, but that cue was deleted in LLM-461 once turn_in superseded
+// it — the hold is not coupled to it and outlived it.
+//
+// The window it buys is what the `turn_in` verb (LLM-447) is spent in: the hold
+// opens at the civil bedtime hour, inside turn_in's wider [dusk, dawn) window, so
+// a held lodger is USUALLY also being offered the verb. Deliberately not stated
+// as a guarantee — turn_in applies gates this hold does not (off-shift on every
+// arm, including the lodger arm that npcSleepHere leaves shift-blind per LLM-14;
+// and no in-flight SourceActivity), so a night-shift or mid-activity lodger can
+// be held here and still not see the tool. The hold gives the model an
+// OPPORTUNITY to end its own evening; it does not promise one. Before that verb
+// existed it could only wind the conversation down and wait to be bedded anyway.
 //
 // It defers for a lodger that is:
 //

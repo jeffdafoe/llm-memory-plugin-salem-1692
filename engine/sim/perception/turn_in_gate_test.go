@@ -211,9 +211,15 @@ func TestBuildTurnInChoice_LodgerArm(t *testing.T) {
 // same thing.
 //
 // The lodger-at-its-inn-at-bedtime case must therefore still produce exactly one
-// bedtime instruction — a tool-backed one. A regression that drops TurnInChoice
-// here would leave that lodger with no way to end its evening at all, which is
-// worse than the state before either cue existed.
+// bedtime instruction — a tool-backed one. Both halves are asserted, because each
+// fails differently: without the positive assertion a regression could nil the
+// replacement and still pass (the old marker is absent either way), leaving that
+// lodger with NO way to end its evening — worse than before either cue existed;
+// without the negative one, a reintroduced section would go unnoticed.
+//
+// Tool-side lockstep (that `turn_in` is actually advertised in this state) can't
+// be asserted here — handlers imports perception, not the reverse — and is
+// covered by sim_test's TestTurnInCueMatchesSubstrateAcrossTheMatrix.
 func TestBuildTurnInChoice_IsTheOnlyBedtimeCue(t *testing.T) {
 	// 22:30 — the old cue's own window ([bedtime 22:00, dawn)), well inside
 	// turn_in's wider [dusk 19:00, dawn).
@@ -225,7 +231,15 @@ func TestBuildTurnInChoice_IsTheOnlyBedtimeCue(t *testing.T) {
 		t.Fatal("Build dropped the turn_in affordance for a lodger at its inn at 22:30 — the exact " +
 			"situation the deleted LLM-36 cue covered, now left with no bedtime cue at all")
 	}
-	if out := Render(p, DefaultRenderConfig()); strings.Contains(combinedPrompt(out), "## Turn in for the night") {
+	out := combinedPrompt(Render(p, DefaultRenderConfig()))
+
+	// The replacement must actually REACH the page — a non-nil view that render
+	// drops would satisfy the negative assertion below while leaving the lodger
+	// with nothing.
+	if n := strings.Count(out, turnInCueMarker); n != 1 {
+		t.Errorf("rendered prompt carries the turn_in cue %d times, want exactly 1:\n%s", n, out)
+	}
+	if strings.Contains(out, "## Turn in for the night") {
 		t.Error("the deleted LLM-36 retire section rendered — something reintroduced it, and the prompt " +
 			"now carries two differently-mechanised bedtime instructions")
 	}
