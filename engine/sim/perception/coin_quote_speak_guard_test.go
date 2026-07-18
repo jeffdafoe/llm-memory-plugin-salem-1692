@@ -3,17 +3,60 @@ package perception
 import (
 	"strings"
 	"testing"
+
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
 
-// TestGoldensCoinQuoteTakeCarriesAntiSpeakGuard enforces LLM-457: every rendered
-// coin-quote take-line — the "call pay_with_item … it settles at once" cue a
-// posted scene_quote puts a buyer on (renderQuoteWarrantLine, render.go) — must
-// also carry the anti-speak-first guard. Without it a buyer voices acceptance
-// through the terminal speak tool, ends the turn without paying, and livelocks
-// re-announcing the same deal (Nathaniel Cole ↔ John Ellis, porridge quote open
-// ~13m, 2026-07-17). The co-present buy cue (restock.go) and the pay_with_item
-// tool description already carry the guard; this invariant keeps the coin-quote
-// cue from drifting back out of parity with them.
+// TestRenderQuoteWarrantLineEachBranchCarriesGuard exercises renderQuoteWarrantLine
+// directly so EVERY take-line branch — bundle (len(Lines) > 1), single-item
+// (len == 1), and the defensive zero-line arm — is proven to carry the
+// anti-speak-first guard, independent of which branches the golden scenario
+// matrix happens to render (LLM-457). The corpus invariant below only proves the
+// guard survives the assembled prompt for the branches the matrix exercises;
+// this proves each branch of the renderer itself.
+func TestRenderQuoteWarrantLineEachBranchCarriesGuard(t *testing.T) {
+	cases := []struct {
+		name  string
+		lines []sim.QuoteLine
+	}{
+		{"defensive_zero_lines", nil},
+		{"single_item", []sim.QuoteLine{{ItemKind: "stew", Qty: 1}}},
+		{"bundle_multi_line", []sim.QuoteLine{{ItemKind: "stew", Qty: 1}, {ItemKind: "bread", Qty: 2}}},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			r := sim.SceneQuoteTargetedWarrantReason{
+				QuoteID: sim.QuoteID(1),
+				Lines:   tc.lines,
+				Amount:  4,
+			}
+			got := renderQuoteWarrantLine(1, "John Ellis", r, false, "")
+			// Sanity: a "" redundancy + non-empty amount must land on a take-line, not
+			// a decline branch — otherwise the guard assertion below is vacuous.
+			if !strings.Contains(got, "call pay_with_item") {
+				t.Fatalf("branch %q rendered no take-line (no pay_with_item cue): %q", tc.name, got)
+			}
+			if !strings.Contains(got, "speaking ends your turn") {
+				t.Errorf("branch %q omits the anti-speak-first guard (LLM-457):\n    %s", tc.name, got)
+			}
+		})
+	}
+}
+
+// TestGoldensCoinQuoteTakeCarriesAntiSpeakGuard enforces LLM-457 at the assembled-
+// prompt level: every rendered coin-quote take-line — the "call pay_with_item …
+// it settles at once" cue a posted scene_quote puts a buyer on — must carry the
+// critical guard clause ("speaking ends your turn"). Without it a buyer voices
+// acceptance through the terminal speak tool, ends the turn without paying, and
+// livelocks re-announcing the same deal (Nathaniel Cole ↔ John Ellis, porridge
+// quote open ~13m, 2026-07-17).
+//
+// This checks only the load-bearing guard clause, NOT full wording parity with
+// restock.go / the pay_with_item tool description — sharing the entire phrasing
+// would make the test brittle. Branch completeness (bundle/single/defensive) is
+// covered by the direct-renderer test above; this one guards the real Build →
+// Render path for whatever quote scenarios the matrix exercises.
 func TestGoldensCoinQuoteTakeCarriesAntiSpeakGuard(t *testing.T) {
 	var checked int
 	for _, sc := range perceptionScenarios {
