@@ -48,11 +48,10 @@ const (
 	// StokeDurationSeconds, and completion extends the hearth's HearthLitUntil
 	// so the structure is warm. The repair pattern with firewood for nails.
 	SourceActivityStoke SourceActivityKind = "stoke"
-	// SourceActivityBake is a resident baking the household's bread at home in the
-	// evening (LLM-454): a shared, per-home occupation that runs until the baker's
-	// bed cue and, for the session initiator, mints a batch of loaves at completion.
-	// Flour is consumed at completion (not start) so a restart mid-bake forfeits
-	// nothing. See bake.go.
+	// SourceActivityBake is a resident baking the household's bread at home during the
+	// day (LLM-454): a shared, per-home occupation that runs until dusk and, for the
+	// session initiator, mints a batch of loaves at completion. Flour is consumed at
+	// completion (not start) so a restart mid-bake forfeits nothing. See bake.go.
 	SourceActivityBake SourceActivityKind = "bake"
 )
 

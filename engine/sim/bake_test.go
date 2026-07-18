@@ -9,15 +9,15 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/repo/mem"
 )
 
-// bake_test.go — LLM-454. Integration tests for the evening bake occupation against a
+// bake_test.go — LLM-454. Integration tests for the daytime bake occupation against a
 // real (mem-repo) world: start creates the shared per-home session and occupies the
 // baker WITHOUT consuming flour up front (restart-safety); a co-resident joins the
 // same batch flourless; completion mints the batch to the initiator and consumes its
 // flour there.
 
 // buildBakeTestWorld seeds a home with two residents — alice (holds 2 flour) and bob
-// (holds none) — both inside it, plus a deterministic 22:00 bedtime clock. Returns an
-// evening "now" (20:00) two hours before bedtime.
+// (holds none) — both inside it, plus a deterministic 07:00 dawn / 19:00 dusk clock.
+// Both are UNSCHEDULED workers. Returns a daytime "now" (16:00), three hours before dusk.
 func buildBakeTestWorld(t *testing.T) (*sim.World, context.CancelFunc, time.Time) {
 	t.Helper()
 	repo, handles := mem.NewRepository()
@@ -38,10 +38,12 @@ func buildBakeTestWorld(t *testing.T) (*sim.World, context.CancelFunc, time.Time
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
 		"alice": {ID: "alice", DisplayName: "Silence Walker", LLMAgent: "silence",
 			Kind: sim.KindNPCStateful, HomeStructureID: "home", InsideStructureID: "home",
-			Inventory: map[sim.ItemKind]int{"flour": 2}},
+			Attributes: map[string][]byte{sim.AttrWorker: nil}, // unscheduled worker (the Walker-women shape)
+			Inventory:  map[sim.ItemKind]int{"flour": 2}},
 		"bob": {ID: "bob", DisplayName: "Patience Walker", LLMAgent: "patience",
 			Kind: sim.KindNPCStateful, HomeStructureID: "home", InsideStructureID: "home",
-			Inventory: map[sim.ItemKind]int{}},
+			Attributes: map[string][]byte{sim.AttrWorker: nil},
+			Inventory:  map[sim.ItemKind]int{}},
 	})
 	w, err := sim.LoadWorld(context.Background(), repo)
 	if err != nil {
@@ -56,7 +58,7 @@ func buildBakeTestWorld(t *testing.T) (*sim.World, context.CancelFunc, time.Time
 		world.Settings.DuskTime = "19:00"
 		world.Settings.NeedThresholds = sim.DefaultNeedThresholds()
 	})
-	now := time.Date(2026, 7, 17, 20, 0, 0, 0, time.UTC) // evening (past 19:00 dusk), two hours before bed
+	now := time.Date(2026, 7, 17, 16, 0, 0, 0, time.UTC) // daytime (before the 19:00 dusk), three hours before dusk
 	return w, cancel, now
 }
 
@@ -160,7 +162,7 @@ func TestBake_CompletionMintsBatchToInitiatorAndConsumesFlour(t *testing.T) {
 
 // TestBake_RejectsWhenGateWouldNotOffer covers the LLM-454 review High: the commit
 // path RE-VALIDATES the advertised gate, so a stale/forged call can't bake while
-// asleep, on shift, in the daytime, or with a pressing need.
+// asleep, on a scheduled shift, after dusk, or with a pressing need.
 func TestBake_RejectsWhenGateWouldNotOffer(t *testing.T) {
 	t.Run("asleep", func(t *testing.T) {
 		w, cancel, now := buildBakeTestWorld(t)
@@ -174,20 +176,31 @@ func TestBake_RejectsWhenGateWouldNotOffer(t *testing.T) {
 		w, cancel, now := buildBakeTestWorld(t)
 		defer cancel()
 		setActor(t, w, "alice", func(a *sim.Actor) {
-			s, e := 8*60, 23*60 // on shift through the evening
+			s, e := 8*60, 23*60 // scheduled shift covering the 16:00 now
 			a.ScheduleStartMin, a.ScheduleEndMin = &s, &e
 			a.WorkStructureID = "home"
 		})
 		if _, err := w.Send(sim.StartOrJoinBake("alice", "", false, now)); err == nil {
-			t.Error("an on-shift actor started baking")
+			t.Error("a scheduled on-shift actor started baking")
 		}
 	})
-	t.Run("daytime", func(t *testing.T) {
+	t.Run("after dusk", func(t *testing.T) {
 		w, cancel, _ := buildBakeTestWorld(t)
 		defer cancel()
-		afternoon := time.Date(2026, 7, 17, 16, 0, 0, 0, time.UTC) // before the 19:00 dusk
-		if _, err := w.Send(sim.StartOrJoinBake("alice", "", false, afternoon)); err == nil {
-			t.Error("baking started in the afternoon")
+		evening := time.Date(2026, 7, 17, 20, 0, 0, 0, time.UTC) // past the 19:00 dusk
+		if _, err := w.Send(sim.StartOrJoinBake("alice", "", false, evening)); err == nil {
+			t.Error("baking started after dusk (it's a daytime task)")
+		}
+	})
+	t.Run("unscheduled non-worker", func(t *testing.T) {
+		w, cancel, now := buildBakeTestWorld(t)
+		defer cancel()
+		// Strip the worker attribute: an unscheduled non-worker's home is its resting
+		// state — perception never offers the bake, so the commit path must reject it too
+		// (tool-cue lockstep, matching inDaytimeHomeWindow's subjectIsWorker requirement).
+		setActor(t, w, "alice", func(a *sim.Actor) { a.Attributes = nil })
+		if _, err := w.Send(sim.StartOrJoinBake("alice", "", false, now)); err == nil {
+			t.Error("an unscheduled non-worker started baking")
 		}
 	})
 	t.Run("red need", func(t *testing.T) {
