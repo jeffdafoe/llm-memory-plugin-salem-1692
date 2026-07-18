@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/llm"
@@ -614,6 +615,40 @@ func TestGateTools_Summon_Advertised(t *testing.T) {
 	for i, p := range payloads {
 		if got := specNameSet(gateTools(r, p, nil))[summonToolName]; got != 1 {
 			t.Errorf("payload %d: summon should be advertised after LLM-323; count %d", i, got)
+		}
+	}
+}
+
+// TestGateTools_LaboringWorkerKeepsPayResponseTools is the tool half of LLM-460
+// (code_review): the reactor now wakes a laboring worker for a buyer's pay offer, and
+// that wake is only worth anything if the worker can actually SETTLE — "wake and answer",
+// not merely "wake". laborAbandonTools strips the commerce tools that would walk a worker
+// off her job, and the pay-response group is deliberately excluded from it because those
+// settle in place. That exclusion was incidental before LLM-460 (its old rationale
+// assumed a busy worker "holds no offer"); it is load-bearing now, so pin it.
+//
+// Also asserts the strip itself still bites on the same payload — otherwise a regression
+// that emptied laborAbandonTools would leave this passing while silently letting a
+// mid-job worker start new trades.
+func TestGateTools_LaboringWorkerKeepsPayResponseTools(t *testing.T) {
+	r := gatingTestRegistry(t)
+	p := payOfferPayload(1)
+	p.Laboring = &perception.LaboringView{Employer: "boss", Until: time.Now().UTC().Add(2 * time.Hour)}
+	names := specNameSet(gateTools(r, p, nil))
+
+	for _, want := range []string{"accept_pay", "decline_pay", "counter_pay"} {
+		if names[want] == 0 {
+			t.Errorf("laboring worker with a pending offer: %q not advertised — the LLM-460 reactor "+
+				"wake exists so this worker can answer the buyer, and stripping the response tools "+
+				"makes the wake a wasted tick (the offer then expires exactly as before)", want)
+		}
+	}
+	// The strip must still apply to the tools that WOULD walk her off the job.
+	for _, gone := range []string{"pay_with_item", "offer_trade", "sell"} {
+		if names[gone] > 0 {
+			t.Errorf("laboring worker: %q advertised, want stripped — laborAbandonTools keeps a "+
+				"worker mid-job from starting new commerce; only ANSWERING an offer staked against "+
+				"her is allowed (LLM-230/LLM-460)", gone)
 		}
 	}
 }

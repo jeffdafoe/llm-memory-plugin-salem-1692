@@ -1280,10 +1280,11 @@ func actorCanReactNow(w *World, a *Actor, now time.Time) (eligible bool, stale b
 			// died before its target ever drew a tick — the buyer re-posting into
 			// a seller who could not be reached (Moses James → Nathaniel Cole,
 			// eight offers over 30 minutes, seven expired unseen, 2026-07-18).
-			// Answering CLEARS the warrant, so this wakes the worker once per
-			// offer rather than on a cadence; the standing "you are working a job"
-			// busy line keeps that answer from walking off the work, exactly as it
-			// does for the hired-repair and hearth wakes above.
+			// The evaluator consumes the cycle at EMIT, so one offer buys at most
+			// one wake even if the model then answers badly or not at all; the
+			// standing "you are working a job" busy line keeps that answer from
+			// walking off the work, exactly as it does for the hired-repair and
+			// hearth wakes above.
 			hasPayOfferWarrant(a.Warrants)
 		npcReplyDue := hasNPCSpeechWarrant(a.Warrants) &&
 			laborReplyCadenceElapsed(a, now, w.Settings.laborReplyCadence())

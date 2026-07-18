@@ -1045,9 +1045,23 @@ func hasHiredHearthWarrant(list []WarrantMeta) bool {
 //
 // No backoff needed, unlike the hired-repair/return-to-post backstops this sits beside.
 // Those re-stamp the SAME warrant on a cadence, so lifting the shelve on mere presence
-// could storm; a pay offer is minted once per buyer intent, deduped by LedgerID, expires
-// in 3 minutes, and is CLEARED by the answer it provokes. Waking the worker ends the
-// exchange rather than extending it — the live 8-offer sequence is what NOT waking costs.
+// could storm. A pay offer cannot: the evaluator consumes the whole warrant cycle at EMIT
+// time (clearWarrant — see the pipeline contract at the top of this file), so one stamped
+// warrant buys at most ONE wake no matter what the model then does. A worker who wakes and
+// fails to answer — wrong tool, an error, silence — is not re-woken by the same warrant; it
+// is already gone. Re-waking requires the buyer to stake a genuinely NEW offer, which is
+// its own deliberate act and carries a fresh LedgerID.
+//
+// So the storm ceiling is the buyer's offer rate, not this predicate. Waking the worker
+// LOWERS that rate — an answered offer ends the exchange, where the live unanswered one
+// had Moses re-posting eight times in 30 minutes.
+//
+// Not gated on the offer being live (unexpired): the wake is a cheap superset. A warrant
+// whose offer expired in the meantime costs one wasted tick and nothing more, because the
+// prompt and the tool gate both read the LIVE PayOffersForMe view off the snapshot ledger
+// rather than this warrant (see PayOfferWarrantReason's own doc) — so a stale wake renders
+// an accurate no-offer prompt rather than a phantom one. Gating on ExpiresAt here would
+// duplicate the ledger's expiry rule in a second place, where it could drift.
 func hasPayOfferWarrant(list []WarrantMeta) bool {
 	for _, m := range list {
 		if m.Reason != nil && m.Reason.Kind() == WarrantKindPayOffer {
