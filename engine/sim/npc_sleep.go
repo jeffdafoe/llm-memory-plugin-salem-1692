@@ -191,8 +191,48 @@ func localMinuteOfDay(w *World, at time.Time) int {
 // Caller still enforces "not already sleeping" and "not on break". MUST be
 // called from inside a Command.Fn (actorIsLodgerAt reads w.Structures).
 func npcSleepHere(w *World, a *Actor, now time.Time) bool {
+	switch npcSleepArmFor(w, a, now) {
+	case npcSleepArmAnytime:
+		return true
+	case npcSleepArmNightWindow:
+		return npcInNightWindowFrom(w, lodgerBedtimeMinute(w), now)
+	}
+	return false
+}
+
+// npcSleepArm classifies HOW an agent NPC may bed down in the structure it is
+// currently inside — the residency + off-shift half of the sleep gate, factored
+// out of npcSleepHere so the deterministic auto-bed (npcSleepHere) and the
+// voluntary turn_in verb (npcMayTurnIn, LLM-447) share ONE definition of "this
+// actor may sleep here" and can only differ in WHEN. Before the split the two
+// would have been parallel copies of the residency/lodger/off-shift arms, which
+// is exactly the drift the ticket calls out: a fix to one arm silently missing
+// the other.
+type npcSleepArm int
+
+const (
+	// npcSleepArmNone — not a resting relationship with the current structure.
+	npcSleepArmNone npcSleepArm = iota
+	// npcSleepArmAnytime — an unscheduled NON-worker at home (or a malformed
+	// partial schedule). Home is its default resting state (HOME-204), so the
+	// auto-bed takes it on any off-shift arrival with no night window at all.
+	npcSleepArmAnytime
+	// npcSleepArmNightWindow — a scheduled homed agent, an unscheduled worker at
+	// home (LLM-137/LLM-352), or a lodger at the inn it rents. Off-shift AND
+	// inside a night window; the caller supplies the window's open.
+	npcSleepArmNightWindow
+)
+
+// npcSleepArmFor returns the resting relationship agent NPC a holds with the
+// structure it is currently inside, at now — or npcSleepArmNone when it holds
+// none. Off-shift is enforced HERE for every window-gated arm, so a caller can
+// never widen the window and accidentally bed a night-shift home==work keeper
+// (a tavernkeeper 16:00–03:00) mid-shift.
+//
+// MUST be called from inside a Command.Fn (actorIsLodgerAt reads w.Structures).
+func npcSleepArmFor(w *World, a *Actor, now time.Time) npcSleepArm {
 	if a.InsideStructureID == "" {
-		return false
+		return npcSleepArmNone
 	}
 	nowMinute := localMinuteOfDay(w, now)
 	if a.HomeStructureID != "" && a.InsideStructureID == a.HomeStructureID {
@@ -211,13 +251,9 @@ func npcSleepHere(w *World, a *Actor, now time.Time) bool {
 		unscheduledWorker := a.ScheduleStartMin == nil && a.ScheduleEndMin == nil && actorIsWorker(a)
 		if scheduled || unscheduledWorker {
 			if actorOnShift(w, a, nowMinute) {
-				return false
+				return npcSleepArmNone
 			}
-			start, end, ok := lodgerNightWindow(w)
-			if !ok {
-				return false
-			}
-			return minuteInShiftWindow(start, end, nowMinute)
+			return npcSleepArmNightWindow
 		}
 		// An unscheduled NON-worker — or a malformed partial schedule (exactly one bound
 		// set) — keeps the classic always-off rule: home is its default resting state
@@ -225,16 +261,63 @@ func npcSleepHere(w *World, a *Actor, now time.Time) bool {
 		// non-worker is deliberately NOT given the civil-night evening — that is the
 		// HOME-204 tension noted on LLM-352: whether jobless residents keep evening
 		// hours is forward policy for an actor type that does not exist yet.
-		return !actorOnShift(w, a, nowMinute)
+		if actorOnShift(w, a, nowMinute) {
+			return npcSleepArmNone
+		}
+		return npcSleepArmAnytime
 	}
 	if actorIsLodgerAt(w, a, a.InsideStructureID, now) {
-		start, end, ok := lodgerNightWindow(w)
-		if !ok {
-			return false
-		}
-		return minuteInShiftWindow(start, end, nowMinute)
+		return npcSleepArmNightWindow
 	}
-	return false
+	return npcSleepArmNone
+}
+
+// npcInNightWindowFrom reports whether now falls in the night window that OPENS at
+// windowStart (minute-of-day) and closes at dawn. minuteInShiftWindow handles the
+// wrap past midnight. false when DawnTime doesn't parse — no usable boundary, so
+// no window rather than an unbounded one.
+func npcInNightWindowFrom(w *World, windowStart int, now time.Time) bool {
+	dawnH, dawnM, err := ParseHM(w.Settings.DawnTime)
+	if err != nil {
+		return false
+	}
+	return minuteInShiftWindow(windowStart, dawnH*60+dawnM, localMinuteOfDay(w, now))
+}
+
+// npcMayTurnIn reports whether agent NPC a may VOLUNTARILY bed down right now —
+// the gate for the turn_in tool and, in lockstep, its perception cue (LLM-447).
+//
+// It is npcSleepHere with the night window's OPEN widened from the civil bedtime
+// hour to DUSK: the same residency and off-shift arms (npcSleepArmFor), a
+// strictly earlier window. That widening is the whole feature — LLM-148/LLM-352
+// deliberately opened a gap between dusk and the auto-bed hour so NPCs would have
+// an evening, but the evening had no exit, so a household that had finished its
+// day could only keep talking (the Walker "Long Goodnight": 26 goodnights in two
+// minutes, nobody in bed). turn_in makes ending the day an action the model can
+// take, from the moment the evening begins.
+//
+// Deliberately NOT tiredness-gated (approved by Jeff): bedtime here is clock-and-
+// social, not a meter read — the Walkers were at tiredness 12, below even the
+// awareness floor, so the meter carried no signal to gate on.
+//
+// Unlike the auto-bed, the anytime arm is ALSO window-gated: an unscheduled
+// non-worker's "home is my resting state" licenses the ENGINE to bed it whenever
+// it is home, but it must not license the model to announce a goodnight at noon.
+// Every voluntary turn-in is an evening turn-in.
+//
+// MUST be called from inside a Command.Fn.
+func npcMayTurnIn(w *World, a *Actor, now time.Time) bool {
+	if !isAgentNPC(a) || a.SleepingUntil != nil {
+		return false
+	}
+	if npcSleepArmFor(w, a, now) == npcSleepArmNone {
+		return false
+	}
+	_, dusk, ok := worldDawnDuskMinutes(w)
+	if !ok {
+		return false
+	}
+	return npcInNightWindowFrom(w, dusk, now)
 }
 
 // npcSleepRoomAt resolves the private room an auto-sleeping NPC beds into when it

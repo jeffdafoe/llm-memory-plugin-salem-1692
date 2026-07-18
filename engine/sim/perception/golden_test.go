@@ -1356,6 +1356,21 @@ var perceptionScenarios = []perceptionScenario{
 		build: unscheduledWorkerEveningTavernOpen,
 	},
 	{
+		name: "walker_women_evening_at_home_may_turn_in",
+		summary: "LLM-447: the Walker \"Long Goodnight\", reconstructed from the live 2026-07-16 trace. Three unscheduled " +
+			"day-worker women (Silence, Patience, Anne — shared-VA, tiredness 12, BELOW the awareness floor of 13, so no " +
+			"tiredness line appears anywhere on the page) are huddled together inside their own home at 21:20, an hour and " +
+			"a half past dusk and forty minutes before the auto-bed hour. Live, this state offered exactly one affordance — " +
+			"talk — because sleep was fully deterministic and no sleep verb existed: they cycled six huddles of wind-down " +
+			"topics over ~80 minutes, said \"let's be off then\" three times without moving, traded 26 goodnights in two " +
+			"minutes, and not one of them went to bed. Every topic the models generated was ending-shaped and none mapped " +
+			"to a tool. The golden pins the fix: '## The evening draws in' is PRESENT and names turn_in, with the goodnight " +
+			"routed through its say (never a separate speak — both verbs are terminal, so a cue asking for both could not " +
+			"be obeyed). Note the cue fires on the CLOCK, not the meter: a regression that gates turn_in on tiredness drops " +
+			"it here, where the women are at 12, and restores the loop exactly.",
+		build: walkerWomenEveningAtHomeMayTurnIn,
+	},
+	{
 		name: "farm_owner_settled_in_tavern_evening",
 		summary: "LLM-345: Elizabeth Ellis (farm day 06:00–18:00, owes 3 upkeep shovels) has TAKEN the evening invitation " +
 			"and stands inside the Tavern at 19:40, in the [shift-end, 22:00) window. The golden pins both levers of the fix. " +
@@ -12168,6 +12183,87 @@ func unscheduledWorkerEveningTavernOpen() (*sim.Snapshot, sim.ActorID, []sim.War
 	return snap, lewisID, nil
 }
 
+// walkerWomenEveningAtHomeMayTurnIn reconstructs the live LLM-447 state: the three
+// Walker women huddled in the Walker Residence on the evening of 2026-07-16, at
+// 21:20 — past dusk (19:00), before the auto-bed hour (22:00).
+//
+// The fixture's load-bearing details, each of which killed an alternative fix:
+//
+//   - tiredness 12 on all three, below the awareness floor of 13. Their prompts
+//     carried no tiredness line at all, so the red-tiredness march (≥16) was
+//     nowhere near firing and a meter-gated bedtime verb would never have
+//     appeared. Bedtime here is clock-and-social.
+//   - unscheduled workers, so isActorOnShift reads false and they qualify —
+//     the LLM-352 shape the evening was widened for in the first place.
+//   - all three inside their shared home in one huddle, which is the trap:
+//     home is the terminal destination of everyone's day, so this conversation
+//     could not end by anyone leaving. Someone had to be able to end it by
+//     going to bed.
+func walkerWomenEveningAtHomeMayTurnIn() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		silenceID  = sim.ActorID("silence")
+		patienceID = sim.ActorID("patience")
+		anneID     = sim.ActorID("anne")
+		home       = sim.StructureID("walker_residence")
+		tavern     = sim.StructureID("tavern")
+		huddleID   = sim.HuddleID("hud-longgoodnight")
+	)
+	now := 1280 // 21:20 — 2h20m past dusk, 40m before the 22:00 auto-bed hour
+	// Housemates know each other by name — without this they render as "a stranger
+	// (your housemate)", which is fixture noise in a scene about a family evening.
+	knows := func(names ...string) map[string]sim.Acquaintance {
+		m := make(map[string]sim.Acquaintance, len(names))
+		for _, n := range names {
+			m[n] = sim.Acquaintance{}
+		}
+		return m
+	}
+	walker := func(name string, x int, acquainted map[string]sim.Acquaintance) *sim.ActorSnapshot {
+		return &sim.ActorSnapshot{
+			Acquaintances:     acquainted,
+			Kind:              sim.KindNPCShared, // the Walkers run on the shared salem-vendor VA
+			DisplayName:       name,
+			State:             sim.StateIdle,
+			Pos:               sim.TilePos{X: x, Y: 10},
+			InsideStructureID: home,
+			HomeStructureID:   home,
+			CurrentHuddleID:   huddleID,
+			Coins:             8,
+			// 12 — below the awareness floor (13), so nothing on the page mentions
+			// being tired. The cue must fire anyway.
+			Needs:          map[sim.NeedKey]int{"tiredness": 12},
+			AttributeSlugs: []string{sim.AttrWorker},
+		}
+	}
+	silence := walker("Silence Walker", 10, knows("Patience Walker", "Anne Walker"))
+	patience := walker("Patience Walker", 11, knows("Silence Walker", "Anne Walker"))
+	anne := walker("Anne Walker", 12, knows("Silence Walker", "Patience Walker"))
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay:     &now,
+		LodgingBedtimeMinute: 1320, // 22:00 — where the deterministic auto-bed would finally take them
+		DawnMinute:           420,  // 07:00
+		DuskMinute:           1140, // 19:00 — the turn_in window's open
+		DawnDuskMinuteOK:     true,
+		NeedThresholds:       sim.NeedThresholds{},
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			silenceID: silence, patienceID: patience, anneID: anne,
+		},
+		Structures: map[sim.StructureID]*sim.Structure{
+			home:   plainStructure(home, "Walker Residence"),
+			tavern: plainStructure(tavern, "the Tavern"),
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			sim.VillageObjectID(tavern): {Tags: []string{sim.VisitorTagTavern}, Pos: sim.WorldPos{X: 0, Y: 0}},
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddleID: {ID: huddleID, StructureID: home, Members: map[sim.ActorID]struct{}{
+				silenceID: {}, patienceID: {}, anneID: {},
+			}},
+		},
+	}
+	return snap, silenceID, nil
+}
+
 // farmOwnerSettledInTavernEvening is the LLM-345 case, reconstructed from the live
 // trace: Elizabeth Ellis, a farm owner who owes 3 upkeep shovels, finishes her farm
 // day at 18:00 and takes the tavern invitation. At 19:40 she is standing INSIDE the
@@ -13446,7 +13542,8 @@ func TestSeekWorkSuppressedByRedNeed(t *testing.T) {
 var terminalToolNames = []string{
 	"accept_pay", "accept_work", "bake", "counter_pay", "decline_pay", "decline_work",
 	"gather", "move_to", "offer_trade", "offer_work", "pay_with_item", "repair",
-	"sell", "solicit_work", "speak", "stoke", "stop", "summon", "withdraw_pay",
+	"sell", "solicit_work", "speak", "stoke", "stop", "summon", "turn_in",
+	"withdraw_pay",
 }
 
 // affirmativeSpeakRe matches an instruction to CALL the speak tool: "use speak",
@@ -13971,5 +14068,114 @@ func TestGoldenObserverSeesEatingPeer(t *testing.T) {
 	})
 	if !strings.Contains(got, "Lewis Walker") || !strings.Contains(got, "(eating porridge just now)") {
 		t.Errorf("an observer should see a co-present eater annotated as eating in ## Around you.\nprompt:\n%s", got)
+	}
+}
+
+// turnInCueMarker is the "## The evening draws in" section heading — the single
+// rendered marker for the LLM-447 voluntary bed-down affordance. The invariants
+// below scan the whole scenario matrix for it.
+const turnInCueMarker = "## The evening draws in"
+
+// TestGoldensTurnInCueIffEligible is the LLM-447 cross-scenario invariant: the
+// bed-down cue renders IFF the subject could actually turn in — settled inside
+// the place it sleeps (its own home, or an inn it holds a room grant on),
+// off-shift, awake, and past dusk.
+//
+// Guarding BOTH directions is the point, because the two failure modes are
+// opposite and both bad. A missing cue where the actor is eligible re-opens the
+// Long Goodnight — a household with nothing to do but talk. A cue where the actor
+// is NOT eligible hands the model a tool the substrate will refuse (sim.TurnIn
+// re-checks the same gate), which spends a turn on a rejected call and teaches
+// the model the verb doesn't work.
+//
+// It re-derives eligibility from the snapshot rather than calling
+// buildTurnInChoice, so a bug that widened the builder can't launder itself
+// through the invariant that is supposed to catch it.
+func TestGoldensTurnInCueIffEligible(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, _ := sc.build()
+			a := snap.Actors[actorID]
+			if a == nil || snap.LocalMinuteOfDay == nil || !snap.DawnDuskMinuteOK {
+				return // no clock to reason about — invariant N/A
+			}
+			if a.Kind != sim.KindNPCStateful && a.Kind != sim.KindNPCShared {
+				return // PCs/decoratives have no turn_in surface at all
+			}
+			eligible := turnInEligibleFromSnapshot(snap, a)
+			got := strings.Contains(renderScenario(sc), turnInCueMarker)
+			if eligible && !got {
+				t.Errorf("scenario %q: subject is settled where it sleeps, off-shift, past dusk — but no %q cue. "+
+					"With no way to end the evening the household can only keep talking (LLM-447)", sc.name, turnInCueMarker)
+			}
+			if !eligible && got {
+				t.Errorf("scenario %q: %q cue rendered but the subject can't turn in here — sim.TurnIn would refuse "+
+					"the call, wasting the turn (LLM-447 tool-cue lockstep)", sc.name, turnInCueMarker)
+			}
+		})
+	}
+}
+
+// turnInEligibleFromSnapshot re-derives the LLM-447 bed-down eligibility straight
+// from the snapshot — deliberately NOT by calling buildTurnInChoice, so the
+// invariant above is an independent check rather than a tautology.
+func turnInEligibleFromSnapshot(snap *sim.Snapshot, a *sim.ActorSnapshot) bool {
+	if a.State == sim.StateSleeping || a.InsideStructureID == "" {
+		return false
+	}
+	if a.SourceActivityKind != "" {
+		return false // mid-bake / mid-harvest — finish it first
+	}
+	if !minuteInWindow(snap.DuskMinute, snap.DawnMinute, *snap.LocalMinuteOfDay) {
+		return false // not yet evening
+	}
+	if a.ScheduleStartMin != nil && a.ScheduleEndMin != nil {
+		s, e := *a.ScheduleStartMin, *a.ScheduleEndMin
+		now := *snap.LocalMinuteOfDay
+		onShift := now >= s && now < e
+		if s > e {
+			onShift = now >= s || now < e
+		}
+		if onShift {
+			return false // on shift — belongs at its post, not its bed
+		}
+	}
+	if a.HomeStructureID != "" && a.InsideStructureID == a.HomeStructureID {
+		_, resolves := resolveStructureLabel(snap, a.HomeStructureID)
+		return resolves
+	}
+	// Lodger arm: inside the inn it holds an active grant on.
+	for _, ra := range a.RoomAccess {
+		if !sim.IsActiveLedgerGrant(ra, snap.PublishedAt) {
+			continue
+		}
+		if s := structureForRoom(snap, ra.RoomID); s != nil && a.InsideStructureID == s.ID {
+			return true
+		}
+	}
+	return false
+}
+
+// TestGoldensTurnInCueNeverPairsWithRetireCue guards the LLM-447/LLM-36
+// reconciliation across the matrix: at most ONE bedtime instruction per prompt.
+//
+// LLM-36's "## Turn in for the night" predates the sleep verb — its own comment
+// says "the steer is situational, NOT a tool call" — so it asks the lodger to
+// wind down and end its turn for the engine backstop to bed. turn_in does the
+// same thing with a real tool over a wider window. Rendering both would put two
+// differently-mechanised "go to bed" instructions on one page, and the model
+// would have to guess which one is real.
+func TestGoldensTurnInCueNeverPairsWithRetireCue(t *testing.T) {
+	const retireCueMarker = "## Turn in for the night"
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			out := renderScenario(sc)
+			if strings.Contains(out, turnInCueMarker) && strings.Contains(out, retireCueMarker) {
+				t.Errorf("scenario %q: both bedtime cues rendered (%q and %q) — one of them has no tool behind it (LLM-447)",
+					sc.name, turnInCueMarker, retireCueMarker)
+			}
+		})
 	}
 }

@@ -227,6 +227,7 @@ func isSocialCadenceWarrantKind(k WarrantKind) bool {
 		WarrantKindHuddlePeerJoined,
 		WarrantKindHuddleLeft,
 		WarrantKindHuddlePeerLeft,
+		WarrantKindHuddlePeerRetired,
 		WarrantKindHuddleConcluded,
 		WarrantKindIdleBackstop:
 		return true

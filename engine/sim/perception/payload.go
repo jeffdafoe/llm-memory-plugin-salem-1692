@@ -158,6 +158,15 @@ type Payload struct {
 	// actor is home. See buildBakeChoice.
 	BakeChoice *BakeChoiceView
 
+	// TurnInChoice is the voluntary bed-down affordance (LLM-447): non-nil when
+	// the actor is settled where it sleeps — its own home, or the inn it rents —
+	// off-shift, and the village clock has reached the evening. The single signal
+	// that gates the turn_in tool and its cue (renderTurnInChoice), so they can't
+	// drift. It is what gives the evening a third act: before it, an at-home
+	// household could only keep talking until the engine bedded it. See
+	// buildTurnInChoice.
+	TurnInChoice *TurnInChoiceView
+
 	// Warrants is every consumed warrant, ordered by SourceEventID
 	// ascending — PR 3a's monotonic EventID is the authoritative causal
 	// order. Zero-lineage warrants (SourceEventID == 0, legacy/non-event-

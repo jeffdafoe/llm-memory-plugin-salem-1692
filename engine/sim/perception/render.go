@@ -293,6 +293,9 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderForage(&ephemeral, p.Forage)
 	renderLodging(&ephemeral, p.Lodging)
 	renderRetire(&ephemeral, p.Retire)
+	// LLM-447: the evening's exit. Build nils p.Retire when this one is live, so
+	// at most one bedtime cue renders per turn.
+	renderTurnInChoice(&ephemeral, p.TurnInChoice)
 	renderKeeperLodging(&ephemeral, p.KeeperLodging)
 	renderKeeperHeldLodgers(&ephemeral, p.KeeperHeldLodgers)
 	renderLodgingOffer(&ephemeral, p.LodgingOffer)
@@ -3678,6 +3681,11 @@ func renderBasicWarrantLine(n int, kind sim.WarrantKind, who string) string {
 		return fmt.Sprintf("%d. %s joined your conversation.\n", n, who)
 	case sim.WarrantKindHuddlePeerLeft:
 		return fmt.Sprintf("%d. %s stepped away from your conversation.\n", n, who)
+	case sim.WarrantKindHuddlePeerRetired:
+		// LLM-447: a peer who went to BED, not one who merely stepped away. The
+		// finality is the point — it tells the household the evening is over and
+		// they may follow, where "stepped away" reads as "will be back".
+		return fmt.Sprintf("%d. %s has turned in for the night.\n", n, who)
 	case sim.WarrantKindHuddleConcluded:
 		return fmt.Sprintf("%d. Your conversation has broken up.\n", n)
 	default:

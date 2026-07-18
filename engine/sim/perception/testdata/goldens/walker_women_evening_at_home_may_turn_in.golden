@@ -1,0 +1,22 @@
+# Your turn
+
+## Since your last turn
+(nothing specific — this is a routine check-in)
+
+
+## You
+Coins in your purse: 8.
+
+## Who you are
+You are Silence Walker.
+
+## Around you
+You are inside the Walker Residence, your home, with Anne Walker (your housemate), Patience Walker (your housemate).
+Night lies over the village.
+
+You're home.
+
+## The evening draws in
+The hour has grown late and the day's work is behind you. When you have had your fill of the company, you can call turn_in to say your goodnight and take yourself off to your own bed — put the parting word in its say, and it will be the last thing you speak before you sleep.
+
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.
