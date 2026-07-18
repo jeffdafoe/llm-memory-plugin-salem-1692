@@ -61,6 +61,84 @@ func TestBuildBakeChoice(t *testing.T) {
 	}
 }
 
+// TestBuildBakeChoiceRedNeedBlocksStartNotJoin is the LLM-465 case: a pressing (red)
+// need bars STARTING a bake but not lending a hand at one already going. Starting is a
+// whole afternoon's commitment and a starving villager should see to that first; joining
+// costs no flour, mints no batch, and leaves the need fully actionable — gateTools'
+// bakingMayMove keeps move_to for a red hunger/thirst, and the reactor's
+// hasBreakInterruptingNeedWarrant ticks him through the shelve for it. Live 2026-07-18:
+// Lewis Walker was red on hunger while Anne and Patience baked, so the pre-fix gate gave
+// him no bake affordance at all, left him unshelved in his own kitchen, and he burned 24
+// turns in 70 minutes asking how the loaves were coming — arming bakeReplyDue for BOTH
+// bakers with every question.
+func TestBuildBakeChoiceRedNeedBlocksStartNotJoin(t *testing.T) {
+	const daytime = 16 * 60 // 16:00 — inside [dawn 07:00, dusk 19:00), 3h before dusk
+
+	// Red on hunger at the default threshold (18 — the live line Lewis was over).
+	hungry := func(flour int) *sim.ActorSnapshot {
+		a := homeBaker("cottage", flour)
+		a.Needs = map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold}
+		return a
+	}
+
+	// Positive control: the SAME actor with no pressing need does get the start cue,
+	// so the negative assertion below can't pass because bake broke outright.
+	if v := buildBakeChoice(eveningSnap(daytime), homeBaker("cottage", 2)); v == nil || v.Joining {
+		t.Fatal("unpressed resident with flour: got no START cue — the control for the red-need " +
+			"assertions below is broken, so they prove nothing")
+	}
+
+	// Nothing going to join: starting is an afternoon's commitment, so the need wins.
+	if v := buildBakeChoice(eveningSnap(daytime), hungry(2)); v != nil {
+		t.Errorf("red-need resident with flour and no bake going: got %+v, want nil — starting a "+
+			"to-dusk bake does not outrank a pressing need", v)
+	}
+
+	// A household bake already going here: the join stays open to him.
+	snap := eveningSnap(daytime)
+	snap.HomeBakesActive = map[sim.StructureID]bool{"cottage": true}
+	if v := buildBakeChoice(snap, hungry(0)); v == nil || !v.Joining {
+		t.Errorf("red-need resident with a bake going: got %+v, want JOIN (non-nil, Joining=true) — "+
+			"lending a hand costs nothing and he keeps move_to for the need, so refusing him the "+
+			"join protects him from nothing and leaves him loose and fully tickable (LLM-465)", v)
+	}
+	// Holding flour changes nothing while a batch is going — he joins it rather than
+	// starting a second one, so the red-need branch is never reached.
+	if v := buildBakeChoice(snap, hungry(4)); v == nil || !v.Joining {
+		t.Errorf("red-need resident holding flour with a bake going: got %+v, want JOIN", v)
+	}
+
+	// THIRST behaves identically to hunger — the guarantee is stated over every need the
+	// shelve leaves actionable, so asserting only hunger would let an asymmetric
+	// need-gating regression through (code_review).
+	thirsty := homeBaker("cottage", 0)
+	thirsty.Needs = map[sim.NeedKey]int{"thirst": sim.DefaultThirstRedThreshold}
+	if v := buildBakeChoice(snap, thirsty); v == nil || !v.Joining {
+		t.Errorf("red-THIRST resident with a bake going: got %+v, want JOIN — move_to survives for "+
+			"thirst exactly as it does for hunger, so the join is equally safe", v)
+	}
+	thirstyNoBake := homeBaker("cottage", 2)
+	thirstyNoBake.Needs = map[sim.NeedKey]int{"thirst": sim.DefaultThirstRedThreshold}
+	if v := buildBakeChoice(eveningSnap(daytime), thirstyNoBake); v != nil {
+		t.Errorf("red-THIRST resident with flour and no bake going: got %+v, want nil — starting "+
+			"is still barred by any pressing need", v)
+	}
+
+	// TIREDNESS is the one red need that does NOT open the join, because it is
+	// excluded from both carve-outs that make joining safe: bakingMayMove keeps
+	// move_to for hunger/thirst/cold but not tiredness, and the reactor does not tick
+	// a shelved actor for a red-tiredness warrant. An exhausted joiner would sit at
+	// the hearth until dusk with no way out — a worse trap than the loose-in-the-
+	// kitchen bug this ticket fixes, so the guard must not widen past the carve-outs.
+	exhausted := homeBaker("cottage", 0)
+	exhausted.Needs = map[sim.NeedKey]int{"tiredness": sim.DefaultTirednessRedThreshold}
+	if v := buildBakeChoice(snap, exhausted); v != nil {
+		t.Errorf("red-TIRED resident with a bake going: got %+v, want nil — nothing ticks an "+
+			"exhausted baker and move_to is stripped for tiredness, so this join is a trap "+
+			"until dusk, not a free hand at the bread (LLM-465)", v)
+	}
+}
+
 func TestRenderBakeChoice(t *testing.T) {
 	var b strings.Builder
 	renderBakeChoice(&b, &BakeChoiceView{Joining: false})

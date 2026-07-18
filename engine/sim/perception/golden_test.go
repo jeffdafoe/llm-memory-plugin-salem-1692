@@ -2449,6 +2449,18 @@ var perceptionScenarios = []perceptionScenario{
 		build: homebodyMidBake,
 	},
 	{
+		name: "hungry_homebody_joins_bake",
+		summary: "LLM-465: the comfortable_homebody_bakes homebody, red on hunger, at a home where a batch is already " +
+			"going. Pins that a pressing need no longer swallows the JOIN — the red-need guard is start-only now, because " +
+			"lending a hand costs no flour, mints no batch, and leaves the need actionable (bakingMayMove keeps move_to " +
+			"for a red hunger/thirst; the reactor ticks him through the shelve for it). Pre-fix the guard sat above the " +
+			"join resolution and refused him the bake outright, leaving him unshelved in his own kitchen: live 2026-07-18 " +
+			"Lewis Walker burned 24 turns in 70 minutes asking after the loaves, arming bakeReplyDue for both bakers with " +
+			"every question. The golden carries the join invitation and the hunger imperative together — both true, and he " +
+			"is free to act on either. A regression that hoists the guard back drops the bake line here.",
+		build: hungryHomebodyJoinsBake,
+	},
+	{
 		name: "comfortable_worker_no_seek_work",
 		summary: "The LLM-194 case: the same workless Silence Walker as worker_with_coin_no_employer_seeks_work, but holding " +
 			"coin AT/ABOVE the seek-work ceiling (40 >= the default 25). A coin-rich worker is 'comfortable' — it doesn't need " +
@@ -13489,6 +13501,30 @@ func homebodyMidBake() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	// Structures share ids with village_objects, so the home resolves the source
 	// label the same way a dwell pin does → "baking bread at Walker Residence".
 	subject.SourceActivityObjectID = sim.VillageObjectID("walker_residence")
+	return snap, actorID, warrants
+}
+
+// hungryHomebodyJoinsBake is the LLM-465 case: the comfortable_homebody_bakes homebody,
+// red on hunger, at a home where a batch is already going. The pre-fix gate ran the
+// red-need check above the join resolution, so it refused him the bake outright — no
+// cue, no tool, no shelve — and left him loose and fully tickable in his own kitchen.
+// Live 2026-07-18 that was Lewis Walker: 24 turns in 70 minutes asking Anne and Patience
+// how the loaves were coming, each question arming bakeReplyDue for BOTH bakers, making
+// him the pump on the whole turboyapping loop. The guard is right for STARTING (an
+// afternoon's commitment does not outrank a pressing need) and wrong for JOINING, which
+// costs no flour, mints no batch, and leaves the need actionable: bakingMayMove keeps
+// move_to for a red hunger/thirst and the reactor ticks him through the shelve for it.
+// The golden pins the join invitation rendering ALONGSIDE the hunger imperative — both
+// are true at once, and he is free to act on either.
+func hungryHomebodyJoinsBake() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, actorID, warrants := comfortableHomebodyBakes()
+	subject := snap.Actors[actorID]
+	subject.DisplayName = "Lewis Walker"
+	// Red on hunger at the default threshold (18) — the live line Lewis was over.
+	subject.Needs = map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold}
+	// He carries no flour: the join arm is the whole point, and flour would prove
+	// nothing about it (a resident with flour joins an existing batch either way).
+	subject.Inventory = map[sim.ItemKind]int{}
 	return snap, actorID, warrants
 }
 

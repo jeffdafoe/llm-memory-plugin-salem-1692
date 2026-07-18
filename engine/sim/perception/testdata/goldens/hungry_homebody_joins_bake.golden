@@ -1,0 +1,23 @@
+# Your turn
+
+## Since your last turn
+(nothing specific — this is a routine check-in)
+
+
+## You
+Address now: hunger. You feel hungry.
+Coins in your purse: 40.
+
+## Who you are
+You are Lewis Walker.
+
+## Around you
+You are inside the Walker Residence, your home, with no one else here to hear you speak.
+There's no food to be had here — you'll need to forage or buy a meal elsewhere.
+It is morning in the village.
+
+You're home.
+
+The bread is already going in the kitchen — you could lend a hand and see it through the afternoon. It is a good few hours' work, and the loaves will be ready by dusk. Call bake to join in.
+
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

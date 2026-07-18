@@ -203,7 +203,9 @@ func TestBake_RejectsWhenGateWouldNotOffer(t *testing.T) {
 			t.Error("an unscheduled non-worker started baking")
 		}
 	})
-	t.Run("red need", func(t *testing.T) {
+	// START-only since LLM-465: a red need bars committing the afternoon to a fresh
+	// batch, but not joining one already going (TestBake_RedNeedJoinsExistingBatch).
+	t.Run("red need, nothing to join", func(t *testing.T) {
 		w, cancel, now := buildBakeTestWorld(t)
 		defer cancel()
 		setActor(t, w, "alice", func(a *sim.Actor) { a.Needs["hunger"] = sim.NeedMax })
@@ -211,6 +213,35 @@ func TestBake_RejectsWhenGateWouldNotOffer(t *testing.T) {
 			t.Error("baking started with a pressing red need")
 		}
 	})
+}
+
+// TestBake_RedNeedJoinsExistingBatch is the sim-side mirror of the LLM-465 perception
+// fix (TestBuildBakeChoiceRedNeedBlocksStartNotJoin): the substrate must accept exactly
+// what buildBakeChoice advertises, or the tool-cue lockstep breaks and a cued housemate
+// gets a rejection. A red need bars STARTING (covered above) but not lending a hand at
+// a batch already going — joining costs no flour, mints nothing, and leaves the need
+// actionable, since bakingMayMove keeps move_to for a red hunger/thirst and the reactor
+// ticks him through the shelve for it. Live: Lewis Walker, red on hunger, shut out of
+// his own household's bake and left loose in the kitchen for 70 minutes.
+func TestBake_RedNeedJoinsExistingBatch(t *testing.T) {
+	w, cancel, now := buildBakeTestWorld(t)
+	defer cancel()
+
+	if _, err := w.Send(sim.StartOrJoinBake("alice", "", false, now)); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	setActor(t, w, "bob", func(a *sim.Actor) { a.Needs["hunger"] = sim.NeedMax })
+	if _, err := w.Send(sim.StartOrJoinBake("bob", "", false, now.Add(time.Minute))); err != nil {
+		t.Fatalf("join with a red need: %v — joining is not the afternoon-long commitment "+
+			"the red-need gate guards against, and perception now offers it to him", err)
+	}
+	if k := bakeActivityKind(t, w, "bob"); k != sim.SourceActivityBake {
+		t.Errorf("bob activity = %q, want bake (a hungry housemate still lends a hand)", k)
+	}
+	// One session, still alice's — the hungry joiner minted no second batch.
+	if hb := homeBakeSession(t, w); hb == nil || hb.InitiatorID != "alice" {
+		t.Fatalf("session = %+v, want the single alice batch after the red-need join", hb)
+	}
 }
 
 // TestBake_CompletionWithVanishedFlourMintsNothing covers the review Medium: a
@@ -256,5 +287,53 @@ func TestBake_StaleSessionSelfHeals(t *testing.T) {
 	}
 	if hb := homeBakeSession(t, w); hb == nil || hb.InitiatorID != "alice" {
 		t.Fatalf("session = %+v, want a fresh alice session", hb)
+	}
+}
+
+// TestBake_RedTirednessBarsJoin is the LLM-465 boundary: joining opens up under the red
+// needs the bake shelve leaves actionable (hunger/thirst/cold — move_to survives and the
+// reactor ticks for them), but NOT under tiredness, which is deliberately excluded from
+// both carve-outs. Admitting it would shelve an exhausted villager at the hearth until
+// dusk with nothing to wake him and no move_to — a worse trap than the loose-in-the-
+// kitchen bug the ticket fixes. The substrate must refuse exactly what perception does.
+func TestBake_RedTirednessBarsJoin(t *testing.T) {
+	w, cancel, now := buildBakeTestWorld(t)
+	defer cancel()
+
+	if _, err := w.Send(sim.StartOrJoinBake("alice", "", false, now)); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	setActor(t, w, "bob", func(a *sim.Actor) { a.Needs["tiredness"] = sim.NeedMax })
+	if _, err := w.Send(sim.StartOrJoinBake("bob", "", false, now.Add(time.Minute))); err == nil {
+		t.Error("an exhausted actor joined a bake — nothing would tick him through the shelve " +
+			"and move_to is stripped for tiredness, so he'd be stuck at the hearth until dusk")
+	}
+}
+
+// TestBake_RedNeedWithStaleSessionIsTreatedAsStart pins the ordering the LLM-465 fix
+// depends on (code_review). The START-only red-need guard sits AFTER the stale-session
+// self-heal, so the branch an actor lands in must be decided by whether a LIVE bake
+// exists — not by whether a HomeBake row happens to be present. An orphaned session
+// resolves to nil, which makes a red-need actor a starter and rejects him; if the guard
+// or the self-heal ever moved relative to each other, he would instead be waved through
+// as a "joiner" of a batch that isn't being baked, committing him to a hearth with no
+// initiator and no bread at the end of it.
+func TestBake_RedNeedWithStaleSessionIsTreatedAsStart(t *testing.T) {
+	w, cancel, now := buildBakeTestWorld(t)
+	defer cancel()
+
+	if _, err := w.Send(sim.StartOrJoinBake("alice", "", false, now)); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	// Orphan the session (sleep / operator interrupt), leaving the row with no live baker.
+	setActor(t, w, "alice", func(a *sim.Actor) { a.SourceActivity = nil })
+	setActor(t, w, "bob", func(a *sim.Actor) { a.Needs["hunger"] = sim.NeedMax })
+
+	if _, err := w.Send(sim.StartOrJoinBake("bob", "", false, now.Add(time.Minute))); err == nil {
+		t.Error("a red-need actor joined a STALE session — the self-heal drops it to nil, so he is " +
+			"starting a fresh batch, and starting is exactly what a pressing need still bars")
+	}
+	if k := bakeActivityKind(t, w, "bob"); k == sim.SourceActivityBake {
+		t.Error("bob was committed to a bake he was rejected from")
 	}
 }
