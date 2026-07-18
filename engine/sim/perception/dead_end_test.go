@@ -147,6 +147,11 @@ func TestShutBusinessCueOnlyWhenUntended(t *testing.T) {
 		// walked off to the General Store — genuinely untended, so the shut cue
 		// correctly fires alongside the accompany cue.
 		"laboring_worker_employer_away": true,
+		// LLM-463: turned away at the Tavern door with John abed. The live cue and
+		// the remembered dead-end line must BOTH be present — the pairing is the
+		// point of the scenario, since the live cue alone is what the village had
+		// while the trail stayed silent.
+		"turned_away_outdoors_at_shut_tavern": true,
 	}
 	var sawUntended, sawTended bool
 	for _, sc := range perceptionScenarios {

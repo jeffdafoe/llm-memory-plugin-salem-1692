@@ -219,6 +219,28 @@ func ArrivalDestinationName(w *World, e *ActorArrived) string {
 	return name
 }
 
+// ArrivalDestinationStructure resolves the STRUCTURE an arrival was aimed at:
+// the destination structure (StructureEnter/StructureVisit/knock — names the shop
+// even when the actor stopped at a loiter slot OUTSIDE it), falling back to the
+// structure the actor physically ended inside for a bare Position arrival. Empty
+// for an ObjectVisit (a well, a tree — not a structure) and for an outdoor
+// Position arrival.
+//
+// Same precedence as ArrivalDestinationName, which resolves the same arrival to a
+// display name — they must agree on WHICH place an arrival was to, or the walked
+// action-log row's name and its structure key would describe different places.
+//
+// Unlike the conversational scope AppendActionLogEntry stamps, this does not
+// depend on where the actor came to rest: a shut business blanks that scope
+// (loiterScopeConversable), and a loiter pin inside vs. outside a footprint
+// changes whether an arrival reads as indoors at all. LLM-463.
+func ArrivalDestinationStructure(e *ActorArrived) StructureID {
+	if e.DestStructureID != "" {
+		return e.DestStructureID
+	}
+	return e.FinalStructureID
+}
+
 // ActorInsideChanged fires when an actor's InsideStructureID actually
 // changes (setActorInsideStructure no-ops an unchanged value, so every emit
 // is a real flip). It is the authoritative inside-state push the client uses

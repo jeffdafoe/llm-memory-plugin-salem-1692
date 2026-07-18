@@ -3743,9 +3743,16 @@ func buildSelfActions(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 		// open, which would have cleared the memory). A raw ObservedClosed read, NOT
 		// businessRememberedShut: this is a PAST-trip outcome, so the in-flight-
 		// destination guard must not suppress it even while the actor re-walks there.
+		//
+		// Keyed off DestStructureID (where the trip was AIMED) rather than the entry's
+		// StructureID (the conversational scope the actor came to rest in). LLM-463: the
+		// scope is deliberately blank for an actor loitering outside a SHUT structure
+		// (loiterScopeConversable), so keying off it silently lost the dead-end mark for
+		// exactly the trips this exists to name — every arrival at the shut Tavern from
+		// the moment its loiter pin moved outside its footprint.
 		foundShut := false
-		if e.ActionType == sim.ActionTypeWalked && e.StructureID != "" {
-			key := sim.ObservedStateKey{StructureID: e.StructureID, Condition: sim.ObservedClosed}
+		if e.ActionType == sim.ActionTypeWalked && e.DestStructureID != "" {
+			key := sim.ObservedStateKey{StructureID: e.DestStructureID, Condition: sim.ObservedClosed}
 			if observedAt, ok := actorSnap.Observed.At(key); ok &&
 				!e.OccurredAt.Before(observedAt) &&
 				actorSnap.Observed.Active(key, snap.PublishedAt) {

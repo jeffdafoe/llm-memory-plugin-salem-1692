@@ -183,11 +183,20 @@ func TestBuildSelfActions_FoundShutFromObservedClosed(t *testing.T) {
 	// must not retroactively rewrite the earlier open trip.
 	observedAt := published.Add(-3 * time.Minute)
 	openWalk := published.Add(-10 * time.Minute)
+	// StructureID (the conversational scope the actor came to REST in) is left
+	// blank on every walked entry on purpose: that is what the engine really
+	// stamps for a walk to a shut business — loiterScopeConversable blanks the
+	// outdoor loiter scope of a keeperless structure — and keying FoundShut off
+	// it is the LLM-463 bug. Only DestStructureID (where the trip was AIMED) may
+	// drive the flag.
 	log := []sim.ActionLogEntry{
-		{Seq: 1, ActorID: "ezekiel", OccurredAt: openWalk, ActionType: sim.ActionTypeWalked, Text: "General Store", StructureID: "store"},
-		{Seq: 2, ActorID: "ezekiel", OccurredAt: published.Add(-6 * time.Minute), ActionType: sim.ActionTypeWalked, Text: "Inn", StructureID: "inn"},
-		{Seq: 3, ActorID: "ezekiel", OccurredAt: observedAt, ActionType: sim.ActionTypeWalked, Text: "General Store", StructureID: "store"},
-		{Seq: 4, ActorID: "ezekiel", OccurredAt: published.Add(-1 * time.Minute), ActionType: sim.ActionTypeDeparted, Text: "General Store", StructureID: "store"},
+		{Seq: 1, ActorID: "ezekiel", OccurredAt: openWalk, ActionType: sim.ActionTypeWalked, Text: "General Store", DestStructureID: "store"},
+		{Seq: 2, ActorID: "ezekiel", OccurredAt: published.Add(-6 * time.Minute), ActionType: sim.ActionTypeWalked, Text: "Inn", DestStructureID: "inn"},
+		{Seq: 3, ActorID: "ezekiel", OccurredAt: observedAt, ActionType: sim.ActionTypeWalked, Text: "General Store", DestStructureID: "store"},
+		// Deliberately carries a DestStructureID the real engine would never stamp on
+		// a Departed row (the field is walked-only). That is the point: it proves the
+		// ActionType gate is what rejects this entry, not an incidentally empty field.
+		{Seq: 4, ActorID: "ezekiel", OccurredAt: published.Add(-1 * time.Minute), ActionType: sim.ActionTypeDeparted, Text: "General Store", DestStructureID: "store", StructureID: "store"},
 	}
 	snap, subject := selfActionsFixture(published, log, "")
 	subject.Observed = sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{

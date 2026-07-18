@@ -263,6 +263,29 @@ type ActionLogEntry struct {
 	StructureID StructureID
 	RoomID      RoomID
 
+	// DestStructureID is the structure an ActionTypeWalked entry walked TO —
+	// the destination the mover aimed at, not the scope it ended up standing in
+	// (ArrivalDestinationStructure). Empty for every other ActionType and for an
+	// arrival with no structure destination (an ObjectVisit at a well, a bare
+	// outdoor Position).
+	//
+	// It exists because StructureID above CANNOT answer "which business did this
+	// trip go to" for the case that matters most: conversationalScopeStructure
+	// blanks the outdoor loiter scope of a SHUT structure (loiterScopeConversable,
+	// LLM-359), so a walk to a keeperless shop stamps StructureID "" — exactly the
+	// trip the shut-business trail needs to name. Keying off the destination also
+	// makes the trail independent of loiter-pin geometry: LLM-463 broke when a
+	// per-instance loiter_offset moved the Tavern's pin out of its footprint, so
+	// arrivals stopped reading as "inside" and the scope stamp started coming back
+	// empty, with no code change and no test to catch it.
+	//
+	// Deliberately NOT falling back to StructureID when this is empty: that field
+	// means "what scope was the actor in", not "where was this trip going", and
+	// consulting it is the bug. No rollout gap follows from that — the action log is
+	// in-memory and rebuilt from scratch each boot (see Seq above), so no row
+	// predating this field ever reaches a reader.
+	DestStructureID StructureID
+
 	// CounterpartyName is the other party in a two-sided action: the
 	// seller for ActionTypePaid, the buyer for ActionTypeDelivered, the
 	// employer for ActionTypeLabored. Empty when the counterparty has no
