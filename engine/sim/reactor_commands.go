@@ -1027,6 +1027,50 @@ func hasHiredHearthWarrant(list []WarrantMeta) bool {
 	return false
 }
 
+// hasPayOfferWarrant reports whether any meta is a pending pay-with-item offer staked
+// against this actor (WarrantKindPayOffer). The laboring shelve-gate uses it to wake a
+// hired worker so it can answer a buyer before the offer's 3-minute TTL runs out — the
+// commerce sibling of hasHiredRepairWarrant / hasHiredHearthWarrant.
+//
+// PayOfferWarrantReason exists precisely to wake the responder (see its doc comment, and
+// the LaborOfferWarrantReason twin: "an offer made into a lull expires unseen at the
+// 3-minute TTL"). A laboring worker was a permanent lull — the warrant was stamped and
+// then shelved, so the offer died before its target ever drew a tick. Live 2026-07-18:
+// Moses James posted eight milk-for-meat offers over 30 minutes to Nathaniel Cole, who
+// was working a 4-hour job FOR Moses in the same spot; seven expired unseen, and the one
+// that happened to land inside an unrelated speech-wake he settled in two seconds.
+//
+// Deliberately NOT reused by the break / source-activity gates, matching the scoping of
+// the predicates around it: a rester or a mid-bite eater stays closed to commerce.
+//
+// No backoff needed, unlike the hired-repair/return-to-post backstops this sits beside.
+// Those re-stamp the SAME warrant on a cadence, so lifting the shelve on mere presence
+// could storm. A pay offer cannot: the evaluator consumes the whole warrant cycle at EMIT
+// time (clearWarrant — see the pipeline contract at the top of this file), so one stamped
+// warrant buys at most ONE wake no matter what the model then does. A worker who wakes and
+// fails to answer — wrong tool, an error, silence — is not re-woken by the same warrant; it
+// is already gone. Re-waking requires the buyer to stake a genuinely NEW offer, which is
+// its own deliberate act and carries a fresh LedgerID.
+//
+// So the storm ceiling is the buyer's offer rate, not this predicate. Waking the worker
+// LOWERS that rate — an answered offer ends the exchange, where the live unanswered one
+// had Moses re-posting eight times in 30 minutes.
+//
+// Not gated on the offer being live (unexpired): the wake is a cheap superset. A warrant
+// whose offer expired in the meantime costs one wasted tick and nothing more, because the
+// prompt and the tool gate both read the LIVE PayOffersForMe view off the snapshot ledger
+// rather than this warrant (see PayOfferWarrantReason's own doc) — so a stale wake renders
+// an accurate no-offer prompt rather than a phantom one. Gating on ExpiresAt here would
+// duplicate the ledger's expiry rule in a second place, where it could drift.
+func hasPayOfferWarrant(list []WarrantMeta) bool {
+	for _, m := range list {
+		if m.Reason != nil && m.Reason.Kind() == WarrantKindPayOffer {
+			return true
+		}
+	}
+	return false
+}
+
 // hasReturnToPostWarrant reports whether any meta is a return-to-post impulse
 // (WarrantKindReturnToPost). The laboring tick-shelve (actorCanReactNow, LLM-268)
 // uses it to wake an off-post worker so she walks back — deliberately its own

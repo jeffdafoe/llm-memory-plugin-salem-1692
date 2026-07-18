@@ -1279,7 +1279,19 @@ func actorCanReactNow(w *World, a *Actor, now time.Time) (eligible bool, stale b
 			// tool but never wake (the marooning). The backstop that stamps this
 			// warrant is self-paced (exponential backoff), so lifting the shelve
 			// on the warrant's presence doesn't uncork a per-tick storm.
-			hasReturnToPostWarrant(a.Warrants)
+			hasReturnToPostWarrant(a.Warrants) ||
+			// LLM-460: a buyer's pay offer wakes the worker to answer it. Pay
+			// offers expire in 3 minutes, so without this the warrant that exists
+			// to wake the responder was stamped and then shelved, and the offer
+			// died before its target ever drew a tick — the buyer re-posting into
+			// a seller who could not be reached (Moses James → Nathaniel Cole,
+			// eight offers over 30 minutes, seven expired unseen, 2026-07-18).
+			// The evaluator consumes the cycle at EMIT, so one offer buys at most
+			// one wake even if the model then answers badly or not at all; the
+			// standing "you are working a job" busy line keeps that answer from
+			// walking off the work, exactly as it does for the hired-repair and
+			// hearth wakes above.
+			hasPayOfferWarrant(a.Warrants)
 		npcReplyDue := hasNPCSpeechWarrant(a.Warrants) &&
 			laborReplyCadenceElapsed(a, now, w.Settings.laborReplyCadence())
 		if !interrupt && !npcReplyDue {
