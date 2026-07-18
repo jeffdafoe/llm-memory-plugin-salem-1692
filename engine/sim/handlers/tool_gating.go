@@ -210,6 +210,7 @@ var walkIncompatibleTools = map[string]struct{}{
 	"stoke":         {}, // LLM-412: StartStoke rejects on MoveIntent != nil (tend the fire on site)
 	"solicit_work":  {}, // LLM-26: SolicitWork rejects on MoveIntent != nil (offer when stationary)
 	"offer_work":    {}, // LLM-346: OfferWork rejects on MoveIntent != nil (hire when stationary)
+	"turn_in":       {}, // LLM-447: TurnIn rejects on MoveIntent != nil (arrive before going to bed)
 }
 
 // stopToolName — the voluntary-halt tool (ZBBS-HOME-338). The inverse of the
@@ -313,6 +314,13 @@ const stokeToolName = "stoke"
 // going here to join). The same signal renderBakeChoice reads, so tool and cue can't
 // drift (discussion-109). sim.StartOrJoinBake stays the authoritative gate.
 const bakeToolName = "bake"
+
+// turnInToolName — the voluntary bed-down tool (LLM-447). Advertised ONLY when the
+// evening bed-down cue is present (payload.TurnInChoice non-nil) — an off-shift
+// actor settled where it sleeps (its own home, or the inn it rents) with the
+// village clock past dusk. The same signal renderTurnInChoice reads, so tool and
+// cue can't drift (discussion-109). sim.TurnIn stays the authoritative gate.
+const turnInToolName = "turn_in"
 
 // actorIsMoving reports whether the subject has an in-flight move at snapshot
 // time, read from the ZBBS-HOME-336 read-path projection (MoveDestKind is
@@ -465,6 +473,7 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 	offerRepair := payload.StallRepair != nil
 	offerStoke := payload.Hearth != nil
 	offerBake := payload.BakeChoice != nil
+	offerTurnIn := payload.TurnInChoice != nil
 	hasLaborOffer := len(perception.PendingLaborOffers(payload)) > 0
 	canSolicitWork := payload.CanSolicitWork
 	canOfferWork := len(payload.HireableWorkers) > 0
@@ -608,6 +617,13 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 		// situation (payload.BakeChoice non-nil), the same signal the bake cue renders
 		// from, so tool and cue can't drift. sim.StartOrJoinBake stays authoritative.
 		if spec.Name == bakeToolName && !offerBake {
+			continue
+		}
+		// turn_in consumer (LLM-447): advertise only in the evening bed-down
+		// situation (payload.TurnInChoice non-nil), the same signal the cue renders
+		// from, so tool and cue can't drift. sim.TurnIn stays authoritative — it
+		// re-checks the residency/off-shift/window gate on the world goroutine.
+		if spec.Name == turnInToolName && !offerTurnIn {
 			continue
 		}
 		if _, gated := payOfferResponseTools[spec.Name]; gated {

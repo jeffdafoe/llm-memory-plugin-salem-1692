@@ -690,6 +690,18 @@ func ClearConversationalHuddlesOnBoot(w *World) {
 // helpers stay package-internal so external callers can only reach the
 // transition through Commands.
 func leaveCurrentHuddle(w *World, actor *Actor, now time.Time) LeaveHuddleResult {
+	return leaveCurrentHuddleAs(w, actor, now, WarrantKindHuddlePeerLeft)
+}
+
+// leaveCurrentHuddleAs is leaveCurrentHuddle with the REMAINING members' warrant
+// kind chosen by the caller, so a departure can say why it happened (LLM-447).
+// peerKind is WarrantKindHuddlePeerLeft for an ordinary exit and
+// WarrantKindHuddlePeerRetired when the leaver has gone to bed — which renders as
+// "Silence has turned in for the night" instead of "stepped away", the line that
+// legitimizes the rest of the household turning in too rather than waiting for
+// her to come back. The LEAVER's own warrant is unchanged (WarrantKindHuddleLeft
+// with the LLM-438 peer names): it beds immediately and never reads it.
+func leaveCurrentHuddleAs(w *World, actor *Actor, now time.Time, peerKind WarrantKind) LeaveHuddleResult {
 	huddleID := actor.CurrentHuddleID
 	huddle, ok := w.Huddles[huddleID]
 	if !ok {
@@ -755,7 +767,7 @@ func leaveCurrentHuddle(w *World, actor *Actor, now time.Time) LeaveHuddleResult
 				SourceActorID:  actor.ID,
 				HuddleID:       huddleID,
 				OccurredAt:     now,
-				Reason:         BasicWarrantReason{K: WarrantKindHuddlePeerLeft},
+				Reason:         BasicWarrantReason{K: peerKind},
 			}, now)
 			// ZBBS-WORK-370: a member that was awaiting a reply from the
 			// leaver is no longer owed one — the leaver is gone.

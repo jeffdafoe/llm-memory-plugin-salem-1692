@@ -234,7 +234,7 @@ func TestRegisterTools_CacheStableOrder(t *testing.T) {
 	// convention, recall is registered separately; neither is part of the
 	// cross-actor common/situational cache seam.
 	situationalTail := []string{
-		"gather", "produce", "repair", "stoke", "bake", "take_break", "stay_open", "deliver_order", "stop",
+		"gather", "produce", "repair", "stoke", "bake", "turn_in", "take_break", "stay_open", "deliver_order", "stop",
 		"solicit_work", "offer_work", "accept_work", "decline_work",
 		"accept_pay", "decline_pay", "counter_pay", "withdraw_pay",
 		"accept_gift", "decline_gift", "summon",
@@ -286,7 +286,7 @@ func TestRegisterTools_AdvertisedToolNamesExact(t *testing.T) {
 
 	want := []string{
 		"speak", "move_to", "consume", "pay_with_item", "pay", "sell", "offer_trade", "give",
-		"gather", "produce", "repair", "stoke", "bake", "take_break", "stay_open", "deliver_order", "stop",
+		"gather", "produce", "repair", "stoke", "bake", "turn_in", "take_break", "stay_open", "deliver_order", "stop",
 		"solicit_work", "offer_work", "accept_work", "decline_work",
 		"accept_pay", "decline_pay", "counter_pay", "withdraw_pay",
 		"accept_gift", "decline_gift", "summon", "done", "recall", "memorize",
@@ -518,7 +518,8 @@ func TestTerminalToolsMatchPerceptionInvariantList(t *testing.T) {
 	wantTerminal := []string{
 		"accept_pay", "accept_work", "bake", "counter_pay", "decline_pay", "decline_work",
 		"gather", "move_to", "offer_trade", "offer_work", "pay_with_item", "repair",
-		"sell", "solicit_work", "speak", "stoke", "stop", "summon", "withdraw_pay",
+		"sell", "solicit_work", "speak", "stoke", "stop", "summon", "turn_in",
+		"withdraw_pay",
 	}
 	// The comparison below sorts only `got`, so an out-of-order insertion here would
 	// fail with a confusing diff rather than an honest one (code_review).

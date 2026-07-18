@@ -458,6 +458,23 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// to bid goodnight to, so it retires deliberately. Gated on the same audience
 	// as the engine backstop hold (npc_sleep.go huddleWithCompanion).
 	p.Retire = buildRetireCue(snap, actorSnap, p.Surroundings.HuddleMembers)
+	// LLM-447: the voluntary bed-down affordance — the evening's exit. Built here,
+	// after Surroundings, because the line is shaped by whether there is company to
+	// bid goodnight to. Covers home AND lodging; the LLM-36 Retire cue above is the
+	// lodger-only, later, engine-backstopped tier of the same moment (see
+	// renderRetire, which yields to this one when both are live).
+	p.TurnInChoice = buildTurnInChoice(snap, actorSnap, p.Surroundings.HuddleMembers)
+	// The two bedtime cues must never both render. LLM-36's Retire cue was written
+	// when there was NO sleep verb ("the steer is situational, NOT a tool call") —
+	// it asks the lodger to wind down and end its turn so the engine backstop can
+	// bed it. turn_in supersedes that with a real, tool-backed exit over a strictly
+	// wider window, so where both are live the tool-backed one wins; showing both
+	// would put two differently-mechanised "turn in" instructions in one prompt.
+	// Retire still stands alone in the cases turn_in refuses (a lodger on shift, or
+	// mid-activity), where the engine backstop remains the only path to bed.
+	if p.TurnInChoice != nil {
+		p.Retire = nil
+	}
 	p.KeeperLodging = buildKeeperLodgingView(snap, actorSnap, p.Surroundings.HuddleMembers)
 	// The held-lodger signal is informational, like "## Your inn" — ungated by
 	// location so a keeper affirms a settled guest wherever they meet (LLM-38).

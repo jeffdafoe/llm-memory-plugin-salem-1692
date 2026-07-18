@@ -940,6 +940,7 @@ func registerTools(r *handlers.Registry, searcher llm.MemorySearcher, writer llm
 		{"repair", handlers.RegisterRepair},              // LLM-118: only an owner at their worn business
 		{"stoke", handlers.RegisterStoke},                // LLM-412: only the hearth-responsible actor inside, fire out/low
 		{"bake", handlers.RegisterBake},                  // LLM-454: only a resident at home in the evening
+		{"turn_in", handlers.RegisterTurnIn},             // LLM-447: only off-shift where it sleeps, past dusk
 		{"take_break", handlers.RegisterTakeBreak},       // ZBBS-HOME-284 #4: only tired at post/home
 		{"stay_open", handlers.RegisterStayOpen},         // ZBBS-WORK-387: only on the off-shift wind-down cue
 		{"deliver_order", handlers.RegisterDeliverOrder}, // ZBBS-HOME-398: only a keeper with a Ready order

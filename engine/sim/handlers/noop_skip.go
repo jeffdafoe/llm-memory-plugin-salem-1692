@@ -184,6 +184,13 @@ func isLowInfoWarrantKind(k sim.WarrantKind) bool {
 		sim.WarrantKindHuddleLeft,
 		sim.WarrantKindHuddlePeerLeft:
 		return true
+	// WarrantKindHuddlePeerRetired is deliberately NOT listed, despite being the
+	// sleep variant of the low-info HuddlePeerLeft (LLM-447). A peer going to BED
+	// is a genuine stimulus: it is the beat that tells the rest of the household
+	// the evening is over and they may follow. Suppressing it as low-info would
+	// leave the housemates talking to an empty room until the auto-bed hour —
+	// the Long Goodnight this ticket exists to end. Costs at most one tick per
+	// remaining housemate per evening.
 	default:
 		return false
 	}
