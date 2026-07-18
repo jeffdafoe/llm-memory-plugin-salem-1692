@@ -10,14 +10,14 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/repo/mem"
 )
 
-// visitorSpawnDaytime is a fixed instant inside the village's [07:00, 19:00)
-// daytime spawn window (the LLM-373 gate in dispatchVisitorSpawn, evaluated in
-// the world timezone America/New_York). Spawn-path tests must pin Now here:
-// time.Now() puts the suite outside the window every evening/night and fails the
-// spawn assertions with a time-of-day-dependent red (LLM-430). 16:00 UTC is
-// 12:00 in New York for this July date (EDT, UTC-4); even under UTC-5 it would
-// be 11:00 — mid-window under either offset, so the constant is DST-safe.
-var visitorSpawnDaytime = time.Date(2026, 7, 15, 16, 0, 0, 0, time.UTC)
+// visitorSpawnDaytime is a fixed instant inside the village's AFTERNOON spawn window
+// [15:00 (tavern-open), dusk − 90min] (the LLM-455 gate in dispatchVisitorSpawn, evaluated in
+// the world timezone America/New_York; default dusk 19:00 → window [15:00, 17:30)). Spawn-path
+// tests must pin Now here: time.Now() puts the suite outside the window most of the day and
+// fails the spawn assertions with a time-of-day-dependent red (LLM-430). 20:00 UTC is 16:00 in
+// New York for this July date (EDT, UTC-4) = 960 min, comfortably mid-window; even under UTC-5
+// it would be 15:00 = 900, still the earliest edge, so the constant stays DST-safe.
+var visitorSpawnDaytime = time.Date(2026, 7, 15, 20, 0, 0, 0, time.UTC)
 
 // makeAllDirtTerrain returns a Terrain blob of MapW*MapH dirt tiles —
 // every tile is a road, so pickVisitorEdgeTile finds candidates at depth 0

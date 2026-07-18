@@ -121,6 +121,17 @@ const (
 	// radius has no consumer yet; 2 tiles ≈ same-tile, adjacent, one-step-away.
 	VisitorPerceptionRadius = 2
 
+	// VisitorSpawnEarliestMinute is the earliest minute-of-day a visitor may spawn (LLM-455):
+	// 900 = 3 PM, the tavern's open hour, so a merchant's afternoon errand flows into the
+	// tavern's evening. Clamped up to dawn if dawn is later. A const, not a knob — it tracks
+	// the tavern-open convention; if that schedule changes, adjust here.
+	VisitorSpawnEarliestMinute = 900
+
+	// VisitorSpawnDuskMarginMinutes is how long before dusk the spawn window closes (LLM-455),
+	// so a freshly-arrived merchant has time to reach his counterparty and trade before the
+	// day-shops shut at dusk rather than arriving to a shut village.
+	VisitorSpawnDuskMarginMinutes = 90
+
 	// VisitorRumorLookback bounds how far back selectVisitorRumor reaches into
 	// the action log for a grounded rumor to hand a spawning traveler (LLM-371).
 	// The log itself is retention-bounded (DefaultActionLogRetention, 48h); this
@@ -649,16 +660,21 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 		t.SpawnSkipReason = "disabled (chance=0)"
 		return
 	}
-	// Daytime spawns only (LLM-373): a traveler arrives on the road in daylight so
-	// it has business hours left to make its rounds before nightfall. A visitor that
-	// spawned after dusk would find every shop shut and skip straight to seeking a
-	// bed — off-key for the "peddler making the rounds" arc. Gate on the world's
-	// dawn/dusk window; a world with no usable dawn/dusk clock spawns anytime
-	// (fail-open, matching how the perception evening gates degrade on a bad clock).
+	// Afternoon spawn window (LLM-455, narrowing the LLM-373 daytime gate): a merchant
+	// arrives in the afternoon — late enough that his evening at the tavern overlaps the dusk
+	// company, early enough to finish his trade before the day-shops shut at dusk. The window
+	// is [max(dawn, VisitorSpawnEarliestMinute=3 PM/tavern-open), dusk − margin]. A world with
+	// no usable dawn/dusk clock spawns anytime (fail-open, matching how the perception evening
+	// gates degrade on a bad clock).
 	if dawn, dusk, ok := worldDawnDuskMinutes(w); ok {
+		earliest := VisitorSpawnEarliestMinute
+		if earliest < dawn {
+			earliest = dawn
+		}
+		latest := dusk - VisitorSpawnDuskMarginMinutes
 		nowMin := localMinuteOfDay(w, inputs.Now)
-		if nowMin < dawn || nowMin >= dusk {
-			t.SpawnSkipReason = "outside daytime spawn window"
+		if nowMin < earliest || nowMin >= latest {
+			t.SpawnSkipReason = "outside afternoon spawn window"
 			return
 		}
 	}
