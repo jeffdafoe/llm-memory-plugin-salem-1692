@@ -2437,6 +2437,18 @@ var perceptionScenarios = []perceptionScenario{
 		build: comfortableHomebodyBakes,
 	},
 	{
+		name: "homebody_mid_bake",
+		summary: "LLM-464: the comfortable_homebody_bakes homebody one step later — at the hearth with her bake window " +
+			"live. Pins the mid-activity triage coda, whose completion horizon reads 'by dusk' for a bake instead of the " +
+			"'shortly' the LLM-69 coda hardcoded for every source-activity kind. Shortly is honest for refresh (3s), " +
+			"harvest (5s), stoke (30s) and repair (15m); a bake runs to dusk, so the engine was telling a midday baker her " +
+			"five-hour batch was nearly done, and she passed it to the household verbatim ('just a few more minutes by the " +
+			"hearth' — Anne Walker, live 2026-07-18), which kept the Walker house asking after bread that was hours out. " +
+			"Also pins that the bake CUE drops once she's baking (she's doing it already). A regression that re-shares the " +
+			"constant flips TestBakeCodaNamesDuskNotShortly.",
+		build: homebodyMidBake,
+	},
+	{
 		name: "comfortable_worker_no_seek_work",
 		summary: "The LLM-194 case: the same workless Silence Walker as worker_with_coin_no_employer_seeks_work, but holding " +
 			"coin AT/ABOVE the seek-work ceiling (40 >= the default 25). A coin-rich worker is 'comfortable' — it doesn't need " +
@@ -13456,6 +13468,27 @@ func comfortableHomebodyBakes() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) 
 	snap, actorID, warrants := seekingWorkerAtHomeGetsNoBakeCue()
 	snap.Actors[actorID].DisplayName = "Anne Walker"
 	snap.Actors[actorID].Coins = 40 // at/above the default ceiling → comfortable, no seek-work
+	return snap, actorID, warrants
+}
+
+// homebodyMidBake is the LLM-464 case: the SAME comfortable homebody as
+// comfortableHomebodyBakes, but already at the hearth with her bake window live, so
+// the golden pins the mid-activity triage coda instead of the invitation (the bake
+// cue correctly drops — actorMidSourceActivity — since she's doing it already).
+// The coda's completion horizon is the whole point. A bake runs until dusk, but the
+// LLM-69 coda promised every source activity would finish "shortly" — true for the
+// seconds-long kinds it was written for, a five-hour lie for a bake. Live 2026-07-18
+// the engine told Anne Walker at midday her batch would finish shortly and she
+// relayed it to the household as "the loaves are nearly ready — just a few more
+// minutes by the hearth", which kept the whole Walker house asking after bread that
+// was hours out. The coda now names the same horizon the bake cue does: by dusk.
+func homebodyMidBake() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, actorID, warrants := comfortableHomebodyBakes()
+	subject := snap.Actors[actorID]
+	subject.SourceActivityKind = sim.SourceActivityBake
+	// Structures share ids with village_objects, so the home resolves the source
+	// label the same way a dwell pin does → "baking bread at Walker Residence".
+	subject.SourceActivityObjectID = sim.VillageObjectID("walker_residence")
 	return snap, actorID, warrants
 }
 

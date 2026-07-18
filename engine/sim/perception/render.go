@@ -690,10 +690,11 @@ func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.
 		// abandons the pick. Make finishing the legible default; responding stays
 		// available when what the tick surfaced gives real cause.
 		fmt.Fprintf(b,
-			"You are %s and it will finish on its own shortly. Weigh what's above — "+
+			"You are %s and it will finish on its own %s. Weigh what's above — "+
 				"answer anyone who needs you, but do not walk away without real cause: "+
 				"leaving now abandons it. Otherwise call done() and let it finish.\n",
-			sourceActivityPhrase(*inFlightSourceActivity))
+			sourceActivityPhrase(*inFlightSourceActivity),
+			sourceActivityCompletionHorizon(inFlightSourceActivity.Kind))
 	case inFlightMove != nil:
 		// Mid-walk coda (ZBBS-HOME-439) — the walking analogue of WORK-370's
 		// awaiting-reply swap. A tick that fires while the actor has a
@@ -1135,6 +1136,24 @@ func sourceActivityPhrase(v InFlightSourceActivityView) string {
 		return verb + " at " + sanitizeInline(v.SourceLabel)
 	}
 	return verb
+}
+
+// sourceActivityCompletionHorizon is how soon the mid-activity coda promises the
+// activity will land on its own. Every kind but bake runs seconds to a few minutes
+// (refresh 3s, harvest 5s, stoke 30s, repair 15m), so "shortly" tells them the
+// truth. A bake runs until DUSK — hours — and the shared coda's hardcoded "shortly"
+// was a lie the model faithfully passed on to the household: live 2026-07-18, the
+// engine told Anne Walker at midday that her five-hour batch would finish shortly
+// and she announced "the loaves are nearly ready — just a few more minutes by the
+// hearth" (LLM-464). Bake names the same horizon its own cue does ("fresh loaves by
+// dusk"), so the two surfaces agree. Same failure class as LLM-446's frozen
+// WorkLeft, one layer up: a constant that stopped being true when a slower kind
+// joined the substrate.
+func sourceActivityCompletionHorizon(kind sim.SourceActivityKind) string {
+	if kind == sim.SourceActivityBake {
+		return "by dusk"
+	}
+	return "shortly"
 }
 
 // renderInFlightSourceActivity produces the standing self-perception line for an
