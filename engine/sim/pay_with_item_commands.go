@@ -508,16 +508,19 @@ func PayWithItem(
 				)
 			}
 
-			// Wholesale factor (LLM-410): a factor's TRADE goods move only between him and
-			// the village distributor, both ways — the symmetric mirror of the wholesale gate
-			// above, keyed on the factor flag rather than the seller's workplace. It covers a
-			// non-distributor buying the factor's cloth (factor = seller) and the factor
-			// buying a trade good from anyone but the distributor (factor = buyer). His
-			// SELF-provisioning is exempt: a service (a room, nights_stay) or a consumable (a
-			// meal) is a bed or supper for himself, not wholesale trade, so he still rides the
-			// ordinary lodging/eating lifecycle. The perception layer keeps a factor pointed at
-			// the distributor and suppresses the trade-nudge elsewhere; this is the backstop.
-			if steer := FactorTradeSteer(w.VillageObjects, w.Actors, buyer, seller, w.ItemKinds[kind]); steer != "" {
+			// Merchant visitor errand confinement (LLM-455, generalizing the LLM-410 factor
+			// gate): a merchant visitor's TRADE goods move only between him and his errand
+			// Counterparty — the keeper who sells the good he buys, or the distributor who
+			// absorbs the imports the factor sells. Keyed on the errand's counterparty
+			// STRUCTURE, so it covers a villager buying a visitor's wares (visitor = seller),
+			// a visitor buying a trade good from anyone but his keeper (visitor = buyer), and
+			// both legs of the factor's two-way distributor deal. His SELF-provisioning is
+			// exempt: a service (a room, nights_stay) or a consumable (a meal, journeycake) is
+			// a bed / supper / road-food for himself, not errand trade, so he still rides the
+			// ordinary lodging/eating lifecycle. The perception rounds cue keeps him pointed at
+			// his counterparty and the talk-only tool gate strips commerce elsewhere; this is
+			// the substrate backstop.
+			if steer := TradeErrandSteer(w.VillageObjects, w.Actors, buyer, seller, w.ItemKinds[kind]); steer != "" {
 				return nil, errors.New(steer)
 			}
 

@@ -226,7 +226,7 @@ func actorWearsGarments(w *World, a *Actor) bool {
 	if a == nil {
 		return false
 	}
-	if ActorIsFactor(a) || ActorIsDistributor(w.VillageObjects, a.WorkStructureID) {
+	if ActorHasTradeErrand(a) || ActorIsDistributor(w.VillageObjects, a.WorkStructureID) {
 		return false
 	}
 	return a.State == StateWorking ||

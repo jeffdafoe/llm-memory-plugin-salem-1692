@@ -25,29 +25,58 @@ import (
 // traveler (buildVisitorEveningLeisure below, dispatched from buildEveningLeisure) —
 // the social-hours pull that draws it to the tavern with the rest of the village.
 
-// TravelerRoundsView is the situational "## Your rounds" surface (LLM-379). The engine
-// no longer chooses the traveler's stops — it renders his situation here and he
-// navigates himself with move_to. Content-gated: a nil view (off his daytime rounds)
-// writes nothing.
+// TravelerRoundsView is the errand-anchored "## Your rounds" surface (LLM-455, generalizing
+// LLM-379). For a MERCHANT it frames the one real trade he came to do at his errand
+// counterparty (the must-hit stop) and casts every other open shop as a talk-only social
+// call — show his face, pass his news — so commerce stays confined to his errand (enforced
+// structurally by the talk-only tool gate + TradeErrandSteer; this is the legible framing).
+// For a PASSER-THROUGH it frames the same social circuit with no trade at all. The engine
+// renders the situation; the model navigates with move_to. Content-gated: a nil view (off
+// his daytime rounds) writes nothing.
 type TravelerRoundsView struct {
-	// AtKeeperShop names the keeper-business he stands in co-present with its keeper,
-	// "" when he is between legs / out in the open. Drives the trade-here line and is
-	// excluded from OpenShops.
-	AtKeeperShop string
-	// Visited is the display names of the keeper-businesses he has already called at
-	// this stay — rendered back so a stateless shared VA "remembers" and does not
-	// repeat a shop.
+	// Errand is the merchant's one bound trade (LLM-455); nil for a passer-through, who
+	// carries no commerce and makes a pure social circuit.
+	Errand *RoundsErrand
+	// Visited is the display names of the keeper-businesses he has already called at this
+	// stay — rendered back so a stateless shared VA "remembers" and does not repeat a shop.
 	Visited []string
-	// OpenShops is the keeper-businesses still tending (snapshotKeeperPresent, the twin
-	// of the arrival-recording gate so the list can't outrun what a visit records),
-	// unvisited, not the inn, not the one he stands in — each with a bearing so he can
-	// choose a next stop. Nearest first. NEVER a single "go here" imperative: the list,
-	// and he picks with move_to.
+	// OpenShops is the keeper-businesses still tending (snapshotKeeperPresent, the twin of
+	// the arrival-recording gate so the list can't outrun what a visit records), unvisited,
+	// not the inn, not his errand counterparty (rendered as the must-hit stop), not the one
+	// he stands in — each a talk-only social call with a bearing. Nearest first. NEVER a
+	// single "go here" imperative: the list, and he picks with move_to.
 	OpenShops []RoundsShop
-	// MinutesToDusk drives the escalating nightfall pressure; only meaningful when
-	// HasClock. HasClock is false on an unusable dawn/dusk clock (suppress the line).
+	// MinutesToDusk drives the escalating nightfall pressure; only meaningful when HasClock.
+	// HasClock is false on an unusable dawn/dusk clock (suppress the line).
 	MinutesToDusk int
 	HasClock      bool
+}
+
+// RoundsErrand is the merchant's bound trade as the rounds cue needs it (LLM-455) — his one
+// piece of real business, the anchor of his day.
+type RoundsErrand struct {
+	// Buy — true when he buys GoodKind from the counterparty (injecting coin); false for a
+	// seller (the factor), who lays out his imported bale and the keeper buys it.
+	Buy bool
+	// GoodKind is the EXACT catalog kind for the pay_with_item item argument ("cheese");
+	// GoodLabel is its display noun for the prose ("fresh cheese" -> here just the singular).
+	GoodKind  string
+	GoodLabel string
+	// KeeperName is the counterparty keeper's display name — the pay_with_item seller arg
+	// when co-present; "" when the keeper is not in the huddle.
+	KeeperName string
+	// ShopLabel is the counterparty structure's display name for the prose.
+	ShopLabel string
+	// AtShop is true when he stands co-present with the counterparty keeper — the trade-now
+	// moment (the only place his commerce tools are cued).
+	AtShop bool
+	// Direction / Steps / HasBearing point him at the counterparty when he is not there yet.
+	Direction  string
+	Steps      int
+	HasBearing bool
+	// Settled — the errand trade is done (or proven impossible for the day); the cue turns to
+	// winding him down to the tavern instead of pressing his rounds.
+	Settled bool
 }
 
 // RoundsShop is one still-open shop on the traveler's rounds: its name and a bearing
@@ -60,7 +89,8 @@ type RoundsShop struct {
 
 // buildTravelerRounds returns the rounds surface when the subject is a traveler on his
 // daytime rounds (arriving / making_rounds / a legacy 'present' row); nil in the evening
-// (the seek-a-bed cue owns it) or off-visitor. Pure over the snapshot.
+// (the seek-a-bed cue owns it) or off-visitor. For a merchant it anchors on his bound errand
+// (LLM-455); for a passer-through it frames a pure social circuit. Pure over the snapshot.
 func buildTravelerRounds(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, members []HuddleMember) *TravelerRoundsView {
 	if snap == nil || actorSnap == nil || actorSnap.VisitorState == nil {
 		return nil
@@ -72,25 +102,53 @@ func buildTravelerRounds(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, membe
 		return nil
 	}
 	vs := actorSnap.VisitorState
-	if vs.DistributorOnly {
-		// A wholesale factor (LLM-410) doesn't make the ordinary rounds — he deals only with
-		// the distributor. The distributor-only "## Your dealings here" cue (buildFactorTrade)
-		// replaces this surface, so it never nudges him to trade at another shop.
-		return nil
+	view := &TravelerRoundsView{}
+
+	// Merchant errand (LLM-455): the one trade + its counterparty. Excludes the counterparty
+	// from the talk-only OpenShops list (it is rendered as the must-hit stop instead).
+	var counterparty sim.StructureID
+	if vs.Trade != nil {
+		counterparty = vs.Trade.Counterparty
+		e := &RoundsErrand{
+			Buy:      vs.Trade.Direction == sim.TradeDirectionBuy,
+			GoodKind: string(vs.Trade.Good),
+			Settled:  vs.Trade.Settled,
+		}
+		e.GoodLabel = e.GoodKind
+		if def := snap.ItemKinds[vs.Trade.Good]; def != nil {
+			e.GoodLabel = def.Singular()
+		}
+		if st := snap.Structures[counterparty]; st != nil && st.DisplayName != "" {
+			e.ShopLabel = st.DisplayName
+		} else {
+			e.ShopLabel = string(counterparty)
+		}
+		for _, m := range members {
+			ks := snap.Actors[m.ID]
+			if ks != nil && ks.BusinessownerState != nil && ks.WorkStructureID == counterparty {
+				e.AtShop = true
+				e.KeeperName = m.DisplayName
+				break
+			}
+		}
+		if !e.AtShop {
+			if vobj := snap.VillageObjects[sim.VillageObjectID(counterparty)]; vobj != nil {
+				tile := vobj.Pos.Tile()
+				e.Direction = cardinalDirection(float64(actorSnap.Pos.X), float64(actorSnap.Pos.Y), float64(tile.X), float64(tile.Y))
+				e.Steps = actorSnap.Pos.Chebyshev(tile)
+				e.HasBearing = e.Direction != ""
+			}
+		}
+		view.Errand = e
 	}
 
-	// Where he stands: if co-present with the keeper of the shop he is in, name it (the
-	// trade-here line) and exclude it from the still-open list.
+	// The shop he stands in (a talk-only call excluded from OpenShops below).
 	var atShopID sim.StructureID
-	atShop := ""
 	if sid := actorSnap.InsideStructureID; sid != "" {
 		for _, m := range members {
 			ks := snap.Actors[m.ID]
 			if ks != nil && ks.BusinessownerState != nil && ks.WorkStructureID == sid {
 				atShopID = sid
-				if st := snap.Structures[sid]; st != nil {
-					atShop = st.DisplayName
-				}
 				break
 			}
 		}
@@ -98,20 +156,18 @@ func buildTravelerRounds(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, membe
 
 	// Rounds so far.
 	visitedSet := make(map[sim.StructureID]bool, len(vs.VisitedBusinesses))
-	var visited []string
 	for _, sid := range vs.VisitedBusinesses {
 		visitedSet[sid] = true
 		if st := snap.Structures[sid]; st != nil {
-			visited = append(visited, st.DisplayName)
+			view.Visited = append(view.Visited, st.DisplayName)
 		}
 	}
 
-	// Shops still open: keeper tending now (the twin of the recording gate), unvisited,
-	// not the inn, not where he stands. The engine lists them; the model chooses.
-	var open []RoundsShop
+	// Open shops as talk-only social calls: keeper tending now (the twin of the recording
+	// gate), unvisited, not the inn, not his errand counterparty, not where he stands.
 	for id, vobj := range snap.VillageObjects {
 		stID := sim.StructureID(id)
-		if vobj == nil || stID == atShopID || visitedSet[stID] {
+		if vobj == nil || stID == atShopID || stID == counterparty || visitedSet[stID] {
 			continue
 		}
 		st, ok := snap.Structures[stID]
@@ -122,20 +178,19 @@ func buildTravelerRounds(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, membe
 			continue
 		}
 		tile := vobj.Pos.Tile()
-		open = append(open, RoundsShop{
+		view.OpenShops = append(view.OpenShops, RoundsShop{
 			Name:      st.DisplayName,
 			Direction: cardinalDirection(float64(actorSnap.Pos.X), float64(actorSnap.Pos.Y), float64(tile.X), float64(tile.Y)),
 			Steps:     actorSnap.Pos.Chebyshev(tile),
 		})
 	}
-	sort.Slice(open, func(i, j int) bool {
-		if open[i].Steps != open[j].Steps {
-			return open[i].Steps < open[j].Steps
+	sort.Slice(view.OpenShops, func(i, j int) bool {
+		if view.OpenShops[i].Steps != view.OpenShops[j].Steps {
+			return view.OpenShops[i].Steps < view.OpenShops[j].Steps
 		}
-		return open[i].Name < open[j].Name
+		return view.OpenShops[i].Name < view.OpenShops[j].Name
 	})
 
-	view := &TravelerRoundsView{AtKeeperShop: atShop, Visited: visited, OpenShops: open}
 	if snap.LocalMinuteOfDay != nil && snap.DawnDuskMinuteOK {
 		view.HasClock = true
 		view.MinutesToDusk = snap.DuskMinute - *snap.LocalMinuteOfDay
@@ -143,39 +198,74 @@ func buildTravelerRounds(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, membe
 	return view
 }
 
-// renderTravelerRounds writes the "## Your rounds" surface — a scene (what he's called
-// at, what's still open and where, the failing light), not a stat pile. Content-gated.
-// It never names a single "go here next" target: it lays out the situation and the
-// model chooses its next move with move_to (LLM-379).
+// renderTravelerRounds writes the "## Your rounds" surface — a scene (his one piece of
+// business, the shops he may look in on, the failing light), not a stat pile. Content-gated.
+// Commerce is confined to the errand counterparty (the talk-only tool gate enforces it); the
+// prose makes that legible without ever naming a single "go here next" move (LLM-379/455).
 func renderTravelerRounds(b *strings.Builder, v *TravelerRoundsView) {
 	if v == nil {
 		return
 	}
 	b.WriteString("## Your rounds\n")
-	if v.AtKeeperShop != "" {
-		fmt.Fprintf(b, "You're inside %s just now — greet whoever keeps it, share word from the road, and show what's in your pack if talk turns to trade.\n", sanitizeInline(v.AtKeeperShop))
-	}
-	if len(v.Visited) == 0 {
-		b.WriteString("You've not called anywhere yet this visit.\n")
+	if v.Errand != nil {
+		renderRoundsErrand(b, v.Errand)
 	} else {
+		b.WriteString("You're only passing through this town. Look in on whom you please to show your face and share what news you carry from the road — you've no trade to press here.\n")
+	}
+	if len(v.Visited) > 0 {
 		fmt.Fprintf(b, "So far you've called at %s.\n", joinNames(v.Visited))
 	}
+	// The other open shops are talk-only social calls (news, a friendly word) — never a
+	// place to trade. The errand-settled / passer-through cases still list them; the
+	// at-counterparty case does too, so he knows where to go once his business is done.
 	if len(v.OpenShops) > 0 {
-		b.WriteString("Still trading at this hour: ")
+		b.WriteString("Others keeping shop this hour, to look in on and pass the news (no trading there): ")
 		for i, s := range v.OpenShops {
 			if i > 0 {
 				b.WriteString("; ")
 			}
 			fmt.Fprintf(b, "%s, %s", sanitizeInline(s.Name), roundsDistPhrase(s.Steps, s.Direction))
 		}
-		b.WriteString(". Make for whichever you please.\n")
-	} else {
-		b.WriteString("Nothing else is open just now.\n")
+		b.WriteString(".\n")
 	}
 	if v.HasClock {
 		b.WriteString(roundsNightfallLine(v.MinutesToDusk))
 	}
 	b.WriteString("\n")
+}
+
+// renderRoundsErrand writes the merchant's one-trade anchor: the wind-down when his business
+// is settled, the trade-here instruction when he stands with his counterparty (the only place
+// his commerce tools are cued), or the make-for-it steer with a bearing when he is not there
+// yet (LLM-455).
+func renderRoundsErrand(b *strings.Builder, e *RoundsErrand) {
+	keeper := sanitizeInline(e.KeeperName)
+	shop := sanitizeInline(e.ShopLabel)
+	good := sanitizeInline(e.GoodLabel)
+	switch {
+	case e.Settled && e.Buy:
+		fmt.Fprintf(b, "You have what you came for — the %s is bought and stowed in your pack. Your business in this village is done; the tavern's the place now, for your supper and a bed before the road.\n", good)
+	case e.Settled:
+		b.WriteString("Your goods are sold and your business in this village is done; the tavern's the place now, for your supper and a bed before the road.\n")
+	case e.AtShop && e.Buy:
+		fmt.Fprintf(b, "You're with %s at %s — the one keeper you came to deal with. Buy the %s you're after: call pay_with_item with seller \"%s\", item \"%s\", the quantity you want, consume_now false, coins in amount, and your words in say.\n",
+			keeper, shop, good, keeper, sanitizeInline(e.GoodKind))
+	case e.AtShop:
+		fmt.Fprintf(b, "You're with %s at %s — the one keeper you came to deal with. Lay out the cloth, iron, and salt you carry from the city and let them buy what the village needs; a warm coat or a bar of iron is worth most just now. Buy their surplus in turn to carry off: call pay_with_item with seller \"%s\", the item, the quantity, consume_now false, coins in amount, and your words in say.\n",
+			keeper, shop, keeper)
+	case e.Buy:
+		fmt.Fprintf(b, "You came to buy %s at %s, %s — that is your business here, so make for it. %s\n",
+			good, shop, roundsDistPhrase(e.Steps, e.Direction), otherShopsAside(shop))
+	default:
+		fmt.Fprintf(b, "You came to deal with the keeper of %s, %s — that is your business here, so make for it. %s\n",
+			shop, roundsDistPhrase(e.Steps, e.Direction), otherShopsAside(shop))
+	}
+}
+
+// otherShopsAside is the one-line reminder that the other shops are for news, not trade —
+// the legible half of the talk-only confinement (LLM-455).
+func otherShopsAside(shop string) string {
+	return "The other shops you may look in on to show your face and pass what news you carry, but your trading is done with " + shop + " alone."
 }
 
 // roundsDistPhrase renders a shop's bearing as a diegetic phrase — "just to the west",
@@ -328,163 +418,119 @@ func structureSnapIsLodging(snap *sim.Snapshot, sid sim.StructureID) bool {
 	return vobj != nil && vobj.HasTag("lodging")
 }
 
-// FactorTradeView is the wholesale factor's "## Your dealings here" cue (LLM-410) — the
-// distributor-only replacement for the ordinary "## Your rounds" surface. It points him at
-// the one keeper he deals with and, when he stands with that keeper, cues the two-way trade
-// (sell his cloth, buy the surplus); it never nudges him toward any other shop, so he isn't
-// steered into a trade the PayWithItem gate would reject. nil for a non-factor or off his
-// daytime rounds.
-type FactorTradeView struct {
-	// StorekeeperName is the distributor keeper's display name — used verbatim as the
-	// pay_with_item seller arg when the factor buys the surplus, and named in the prose. ""
-	// when the keeper is not co-present (then only the bearing renders).
-	StorekeeperName string
-	// ShopLabel is the distributor structure's display name for the prose.
-	ShopLabel string
-	// AtDistributor is true when the factor stands co-present with the distributor's keeper —
-	// the moment to lay out his wares and buy the surplus.
-	AtDistributor bool
-	// Direction / Steps give the bearing to the distributor's shop when he is not there yet;
-	// HasBearing is false when he is on top of it (keeper away) so the line drops the bearing.
-	Direction  string
-	Steps      int
-	HasBearing bool
-}
-
-// buildFactorTrade returns the factor's distributor-only trade cue when the subject is a
-// wholesale factor on his daytime rounds (LLM-410). nil for a non-factor, off his rounds, or
-// when no distributor structure is placed (then he has no business to cue — his lifecycle
-// carries him to the tavern and out at daybreak, a clean no-op). Pure over the snapshot.
-func buildFactorTrade(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, members []HuddleMember) *FactorTradeView {
-	if snap == nil || actorSnap == nil || actorSnap.VisitorState == nil || !actorSnap.VisitorState.DistributorOnly {
-		return nil
-	}
-	switch actorSnap.VisitorState.Phase {
-	case sim.VisitorPhaseArriving, sim.VisitorPhaseMakingRounds, sim.VisitorPhasePresent:
-		// on his daytime rounds — the evening seek-a-bed / leisure cues take over after dusk
-	default:
-		return nil
-	}
-	distID := snapDistributorStructure(snap)
-	if distID == "" {
-		return nil // no distributor placed — no factor business to cue
-	}
-	shop := string(distID)
-	if st := snap.Structures[distID]; st != nil && st.DisplayName != "" {
-		shop = st.DisplayName
-	}
-	view := &FactorTradeView{ShopLabel: shop}
-	// Co-present with the distributor's keeper? (the businessowner working at the distributor
-	// structure, resolved off the huddle — the same shape buildTravelerRounds uses for AtKeeperShop.)
-	for _, m := range members {
-		ks := snap.Actors[m.ID]
-		if ks == nil || ks.BusinessownerState == nil || ks.WorkStructureID != distID {
-			continue
-		}
-		view.AtDistributor = true
-		view.StorekeeperName = m.DisplayName
-		break
-	}
-	if !view.AtDistributor {
-		if vobj := snap.VillageObjects[sim.VillageObjectID(distID)]; vobj != nil {
-			tile := vobj.Pos.Tile()
-			view.Direction = cardinalDirection(float64(actorSnap.Pos.X), float64(actorSnap.Pos.Y), float64(tile.X), float64(tile.Y))
-			view.Steps = actorSnap.Pos.Chebyshev(tile)
-			view.HasBearing = view.Direction != ""
-		}
-	}
-	return view
-}
-
-// renderFactorTrade writes the "## Your dealings here" surface — the factor's one-keeper trade
-// steer. Co-present with the distributor it spells out the two-way deal and names pay_with_item
-// for the buy leg; otherwise it points him at the distributor's shop with a bearing and tells
-// him the other shops are no concern of his. Content-gated (LLM-410).
-func renderFactorTrade(b *strings.Builder, v *FactorTradeView) {
-	if v == nil {
-		return
-	}
-	shop := sanitizeInline(v.ShopLabel)
-	b.WriteString("## Your dealings here\n")
-	if v.AtDistributor && v.StorekeeperName != "" {
-		keeper := sanitizeInline(v.StorekeeperName)
-		fmt.Fprintf(b, "You're here to deal with %s, who keeps %s — the one person in this village you trade with. Show them the cloth and charms in your pack and let them buy what they want for the village; a warm coat or cloak is worth most with the cold weather in. In return, buy the goods they have a surplus of to carry back to the city: call pay_with_item with seller \"%s\", the item you want, qty, consume_now false, coins in amount, and your words in say. The other shops here are no concern of yours.\n\n", keeper, shop, keeper)
-		return
-	}
-	if v.HasBearing {
-		fmt.Fprintf(b, "You deal only with the keeper of %s, %s. Make your way there — the other shops in this village are no concern of yours.\n\n", shop, roundsDistPhrase(v.Steps, v.Direction))
-		return
-	}
-	fmt.Fprintf(b, "You deal only with the keeper of %s. Seek them out — the other shops in this village are no concern of yours.\n\n", shop)
-}
-
-// snapDistributorStructure returns the smallest-ID distributor-tagged structure over the
-// snapshot (the perception twin of sim.pickDistributorDestination), or "" when none is placed.
-// Lexicographic tie-break for determinism; one distributor by data convention.
-func snapDistributorStructure(snap *sim.Snapshot) sim.StructureID {
-	var pick sim.VillageObjectID
-	for id, vobj := range snap.VillageObjects {
-		if !sim.IsDistributorStructure(vobj) {
-			continue
-		}
-		if _, ok := snap.Structures[sim.StructureID(id)]; !ok {
-			continue
-		}
-		if pick == "" || id < pick {
-			pick = id
-		}
-	}
-	return sim.StructureID(pick)
-}
-
-// FactorVisitView is the distributor's "## A factor's come to trade" cue (LLM-410): when a
-// wholesale factor is co-present with the distributor keeper, tell the keeper who he is and
-// that he deals both ways, so the keeper buys the factor's cloth and sells him the surplus.
-// nil unless the subject is the distributor with a factor co-present.
-type FactorVisitView struct {
-	// FactorName is the factor's display name — used verbatim as the pay_with_item seller arg
-	// when the keeper buys the factor's cloth, and named in the prose.
-	FactorName string
-	// Origin colors the prose ("a factor out of Boston"); "" drops the clause.
+// ErrandVisitView is the keeper-facing "## A trader's come to deal" cue (LLM-455, generalizing
+// the LLM-410 factor-visit cue): when a merchant visitor whose errand counterparty is THIS
+// keeper's shop is co-present, tell the keeper who he is and what the deal is. For a SELLER (a
+// factor) the keeper is the one who must act — buy the imported bale with pay_with_item; for a
+// BUYER the keeper simply sells as usual (his ordinary seller cues carry the tools), so this is
+// a light "a buyer's come for your <good>" heads-up. nil unless the subject is the merchant's
+// counterparty keeper with him co-present.
+type ErrandVisitView struct {
+	// TraderName is the visitor's display name — the pay_with_item seller arg when the keeper
+	// buys a seller's bale, and named in the prose.
+	TraderName string
+	// Origin colors the prose ("out of Boston"); "" drops the clause.
 	Origin string
+	// Sell is true when the visitor is a seller (a factor bringing imports to sell the keeper);
+	// false when he is a buyer coming to buy GoodLabel.
+	Sell bool
+	// GoodLabel is the display noun of the good a BUYER wants (unused for a seller).
+	GoodLabel string
 }
 
-// buildFactorVisit returns the distributor-facing cue when the subject is the village
-// distributor and a wholesale factor is co-present in his huddle (LLM-410). nil for anyone
-// else, or when no factor is present. Pure over the snapshot.
-func buildFactorVisit(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, members []HuddleMember) *FactorVisitView {
+// buildErrandVisit returns the keeper-facing cue when the subject is a resident keeper and a
+// merchant visitor whose errand Counterparty is the subject's OWN work structure is co-present
+// (LLM-455). nil for anyone else, or when no such visitor is present. Pure over the snapshot.
+func buildErrandVisit(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, members []HuddleMember) *ErrandVisitView {
 	if snap == nil || actorSnap == nil {
 		return nil
 	}
-	if actorSnap.VisitorState != nil {
-		return nil // the distributor is a resident keeper, never a visitor
-	}
-	if !sim.ActorIsDistributor(snap.VillageObjects, actorSnap.WorkStructureID) {
-		return nil
+	if actorSnap.VisitorState != nil || actorSnap.BusinessownerState == nil || actorSnap.WorkStructureID == "" {
+		return nil // the counterparty is a resident keeper at his own post, never a visitor
 	}
 	for _, m := range members {
-		fs := snap.Actors[m.ID]
-		if fs == nil || fs.VisitorState == nil || !fs.VisitorState.DistributorOnly {
+		vs := snap.Actors[m.ID]
+		if vs == nil || vs.VisitorState == nil || vs.VisitorState.Trade == nil {
 			continue
 		}
-		return &FactorVisitView{FactorName: m.DisplayName, Origin: fs.VisitorState.Origin}
+		t := vs.VisitorState.Trade
+		if t.Counterparty != actorSnap.WorkStructureID {
+			continue // his errand is with someone else
+		}
+		view := &ErrandVisitView{
+			TraderName: m.DisplayName,
+			Origin:     vs.VisitorState.Origin,
+			Sell:       t.Direction == sim.TradeDirectionSell,
+		}
+		if !view.Sell {
+			view.GoodLabel = string(t.Good)
+			if def := snap.ItemKinds[t.Good]; def != nil {
+				view.GoodLabel = def.Singular()
+			}
+		}
+		return view
 	}
 	return nil
 }
 
-// renderFactorVisit writes the "## A factor's come to trade" cue for the distributor: names
-// the factor, frames the two-way deal, and names pay_with_item for the leg the keeper drives
-// (buying the factor's cloth). Content-gated (LLM-410).
-func renderFactorVisit(b *strings.Builder, v *FactorVisitView) {
+// renderErrandVisit writes the "## A trader's come to deal" cue for the counterparty keeper
+// (LLM-455). For a seller it frames the imported bale and names pay_with_item for the leg the
+// keeper drives (buying it); for a buyer it is a light heads-up that his ordinary sale is what's
+// wanted. Content-gated.
+func renderErrandVisit(b *strings.Builder, v *ErrandVisitView) {
 	if v == nil {
 		return
 	}
-	name := sanitizeInline(v.FactorName)
-	b.WriteString("## A factor's come to trade\n")
+	name := sanitizeInline(v.TraderName)
+	origin := ""
 	if v.Origin != "" {
-		fmt.Fprintf(b, "%s, a factor out of %s, is here to deal with you — and only you. ", name, sanitizeInline(v.Origin))
-	} else {
-		fmt.Fprintf(b, "%s, a traveling factor, is here to deal with you — and only you. ", name)
+		origin = " out of " + sanitizeInline(v.Origin)
 	}
-	fmt.Fprintf(b, "He carries cloth and charms from the city to sell, and he'll buy the surplus stacking up in your store to carry off. Buy what the village needs from his pack with pay_with_item (seller \"%s\", the item, qty, consume_now false, coins in amount, your words in say), and let him buy your surplus in turn.\n\n", name)
+	b.WriteString("## A trader's come to deal\n")
+	if v.Sell {
+		fmt.Fprintf(b, "%s, a factor%s, is here to deal with you. He carries cloth, iron, and salt from the city to sell, and he'll buy the surplus stacking up in your store to carry off. Buy what the village needs from his pack with pay_with_item (seller \"%s\", the item, the quantity, consume_now false, coins in amount, your words in say), and let him buy your surplus in turn.\n\n", name, origin, name)
+		return
+	}
+	good := sanitizeInline(v.GoodLabel)
+	fmt.Fprintf(b, "%s, a trader%s, has come to buy your %s to carry off and sell elsewhere. Sell him what you can spare as you would any customer, and name your price if he asks.\n\n", name, origin, good)
+}
+
+// structureSnapIsTavernOrInn reports whether a structure is a tavern or an inn (a "tavern" or
+// "lodging" tagged VillageObject) over the snapshot — the visitor's self-provisioning venues (a
+// meal, a bed, journeycake), where his commerce tools stay reachable (LLM-455).
+func structureSnapIsTavernOrInn(snap *sim.Snapshot, sid sim.StructureID) bool {
+	if snap == nil {
+		return false
+	}
+	vobj := snap.VillageObjects[sim.VillageObjectID(sid)]
+	return vobj != nil && (vobj.HasTag(sim.VisitorTagTavern) || vobj.HasTag("lodging"))
+}
+
+// visitorCommerceStripped reports whether a visitor's commerce tools should be withheld this
+// tick (LLM-455) — the talk-only-rounds gate. A visitor's trade is confined to sanctioned
+// places: his errand counterparty (his one real trade) and any tavern/inn (self-provisioning —
+// a meal, a bed, journeycake). Anywhere else is talk-only, so the pay / offer / quote tools are
+// stripped unless he is co-present with a sanctioned keeper. False for a non-visitor (the gate is
+// visitor-only). Pure over the snapshot.
+func visitorCommerceStripped(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, members []HuddleMember) bool {
+	if snap == nil || actorSnap == nil || actorSnap.VisitorState == nil {
+		return false
+	}
+	var counterparty sim.StructureID
+	if actorSnap.VisitorState.Trade != nil {
+		counterparty = actorSnap.VisitorState.Trade.Counterparty
+	}
+	for _, m := range members {
+		ks := snap.Actors[m.ID]
+		if ks == nil || ks.BusinessownerState == nil || ks.WorkStructureID == "" {
+			continue
+		}
+		if counterparty != "" && ks.WorkStructureID == counterparty {
+			return false // at his errand keeper — his one real trade is allowed
+		}
+		if structureSnapIsTavernOrInn(snap, ks.WorkStructureID) {
+			return false // at a tavern/inn keeper — self-provisioning allowed
+		}
+	}
+	return true
 }

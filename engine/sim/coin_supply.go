@@ -53,3 +53,20 @@ func ComputeCoinSupply(s *Snapshot) CoinSupply {
 	}
 	return cs
 }
+
+// residentCoinOnMap sums the coin held by resident actors (non-visitor,
+// non-decorative) straight off the live World (LLM-455) — the same Resident total
+// ComputeCoinSupply derives from a Snapshot, but read on the world goroutine where
+// the visitor spawn valve runs, so it needs no published snapshot. The coin-valve
+// (chooseVisitorTradeDirection) reads it to bias a merchant visitor buy vs sell
+// against the operator band. Called only from inside a Command.Fn.
+func residentCoinOnMap(w *World) int {
+	total := 0
+	for _, a := range w.Actors {
+		if a == nil || a.Kind == KindDecorative || a.VisitorState != nil {
+			continue
+		}
+		total += a.Coins
+	}
+	return total
+}

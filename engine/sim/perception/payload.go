@@ -83,13 +83,16 @@ type Payload struct {
 	TravelerRounds  *TravelerRoundsView
 	TravelerSeekBed *TravelerSeekBedView
 
-	// FactorTrade / FactorVisit are the wholesale-factor cues (LLM-410). FactorTrade is the
-	// factor's own distributor-only "## Your dealings here" surface (it replaces TravelerRounds
-	// for a factor — the two are mutually exclusive). FactorVisit is the distributor keeper's
-	// "## A factor's come to trade" cue when a factor is co-present. Both nil otherwise; see
-	// traveler_dayplan.go.
-	FactorTrade *FactorTradeView
-	FactorVisit *FactorVisitView
+	// ErrandVisit is the counterparty keeper's "## A trader's come to deal" cue (LLM-455) when
+	// a merchant visitor whose errand is with THIS keeper's shop is co-present — buy or sell.
+	// nil otherwise; see traveler_dayplan.go. (Generalizes the LLM-410 factor-visit cue; the
+	// factor's own trade steer is now folded into the errand-aware TravelerRounds surface.)
+	ErrandVisit *ErrandVisitView
+
+	// VisitorCommerceStripped is true when the subject is a visitor whose commerce tools should
+	// be withheld this tick (LLM-455) — the talk-only-rounds gate: a visitor not co-present with
+	// his errand counterparty or a tavern/inn keeper trades nowhere. Read by handlers/tool_gating.go.
+	VisitorCommerceStripped bool
 
 	// Actor is the subject actor's own current decision-relevant state.
 	Actor ActorView

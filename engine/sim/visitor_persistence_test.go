@@ -17,11 +17,11 @@ import (
 func newVisitorFixture(id sim.ActorID, expiresAt time.Time, inside sim.StructureID) *sim.LoadedVisitor {
 	return &sim.LoadedVisitor{
 		ID:                id,
-		DisplayName:       "Elias Drum the peddler",
+		DisplayName:       "Elias Drum the messenger",
 		Pos:               sim.TilePos{X: sim.PadX + 4, Y: sim.PadY + 6},
 		InsideStructureID: inside,
 		VisitorState: &sim.VisitorState{
-			Archetype:   "peddler",
+			Archetype:   "messenger",
 			Origin:      "Boston",
 			Disposition: "weary",
 			ExpiresAt:   expiresAt,
@@ -65,8 +65,8 @@ func TestFinalizeLoad_ResumesInWindowVisitor(t *testing.T) {
 	if a.VisitorState == nil {
 		t.Fatal("rehydrated actor has nil VisitorState")
 	}
-	if a.VisitorState.Archetype != "peddler" || a.VisitorState.Origin != "Boston" || a.VisitorState.Phase != sim.VisitorPhasePresent {
-		t.Errorf("rehydrated VisitorState = %+v; want peddler / Boston / present", a.VisitorState)
+	if a.VisitorState.Archetype != "messenger" || a.VisitorState.Origin != "Boston" || a.VisitorState.Phase != sim.VisitorPhasePresent {
+		t.Errorf("rehydrated VisitorState = %+v; want messenger / Boston / present", a.VisitorState)
 	}
 	if a.VisitorState.Payload != "Ezekiel Crane turned out a plow for the Hale farm" {
 		t.Errorf("rehydrated Payload = %q; want the carried rumor restored", a.VisitorState.Payload)
@@ -85,8 +85,8 @@ func TestFinalizeLoad_ResumesInWindowVisitor(t *testing.T) {
 func TestFinalizeLoad_RestoresSprite(t *testing.T) {
 	repo, handles := mem.NewRepository()
 	now := time.Now().UTC()
-	wantName := sim.VisitorArchetypeSprite["peddler"] // the fixture's archetype
-	const spriteID sim.SpriteID = "sprite-peddler-uuid"
+	wantName := sim.VisitorArchetypeSprite["messenger"] // the fixture's archetype
+	const spriteID sim.SpriteID = "sprite-messenger-uuid"
 	handles.Sprites.Seed(map[sim.SpriteID]*sim.Sprite{
 		spriteID: {ID: spriteID, Name: wantName},
 	})
@@ -103,7 +103,7 @@ func TestFinalizeLoad_RestoresSprite(t *testing.T) {
 		t.Fatal("in-window visitor not rehydrated")
 	}
 	if a.SpriteID != spriteID {
-		t.Errorf("rehydrated SpriteID = %q, want %q (peddler → %q)", a.SpriteID, spriteID, wantName)
+		t.Errorf("rehydrated SpriteID = %q, want %q (messenger → %q)", a.SpriteID, spriteID, wantName)
 	}
 	if a.Facing == "" {
 		t.Error("rehydrated traveler has empty Facing")
@@ -236,10 +236,10 @@ func TestFinalizeLoad_RestoresDayPlan(t *testing.T) {
 	roomExpiry := now.Add(8 * time.Hour)
 	lv := &sim.LoadedVisitor{
 		ID:          "vstr-0000a11e",
-		DisplayName: "Elias Drum the peddler",
+		DisplayName: "Elias Drum the messenger",
 		Pos:         sim.TilePos{X: sim.PadX + 2, Y: sim.PadY + 2},
 		VisitorState: &sim.VisitorState{
-			Archetype:         "peddler",
+			Archetype:         "messenger",
 			Origin:            "Boston",
 			Disposition:       "weary",
 			ExpiresAt:         expires,

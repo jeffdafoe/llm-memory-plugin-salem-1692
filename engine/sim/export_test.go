@@ -164,28 +164,13 @@ var (
 	SeedVisitorNeedsForTest = seedVisitorNeeds
 )
 
-// VisitorArchetypePoolForTest returns a copy of the closed-set archetype
-// pool. Used by the init-exhaustiveness regression test to assert every
-// archetype has a sprite mapping.
+// VisitorArchetypePoolForTest returns a copy of the passer-through archetype pool (LLM-455).
+// Used by the init-exhaustiveness regression test to assert every passer-through archetype has
+// a sprite mapping. Merchant labels are derived, not pooled, so they aren't covered here.
 func VisitorArchetypePoolForTest() []string {
-	out := make([]string, len(visitorArchetypePool))
-	copy(out, visitorArchetypePool)
+	out := make([]string, len(passerThroughArchetypePool))
+	copy(out, passerThroughArchetypePool)
 	return out
-}
-
-// ForceFactorArchetypeForTest overrides the archetype pool + landing weights so every spawn
-// deterministically yields a landed wholesale factor (LLM-410). Returns a restore func the
-// caller must defer. Test-only; mutates package state, so not safe under parallel tests (the
-// visitor spawn tests are not parallel).
-func ForceFactorArchetypeForTest() func() {
-	oldPool := visitorArchetypePool
-	oldWeight := visitorArchetypeLandingWeight
-	visitorArchetypePool = []string{FactorArchetype}
-	visitorArchetypeLandingWeight = map[string]int{FactorArchetype: DefaultLandingWeightPermille}
-	return func() {
-		visitorArchetypePool = oldPool
-		visitorArchetypeLandingWeight = oldWeight
-	}
 }
 
 // PickVisitorDestinationResult bundles pickVisitorDestination's

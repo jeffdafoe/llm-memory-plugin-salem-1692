@@ -27,7 +27,8 @@ func TestVisitorPlanRoundTrip(t *testing.T) {
 		},
 		VisitorState: &sim.VisitorState{
 			VisitedBusinesses: []sim.StructureID{"str-a", "str-b"},
-			DistributorOnly:   true, // LLM-410 wholesale factor flag rides the plan jsonb
+			// LLM-455 merchant errand rides the plan jsonb.
+			Trade: &sim.TradeErrand{Direction: sim.TradeDirectionBuy, Good: "cheese", Counterparty: "str-a", Settled: true},
 		},
 	}
 
@@ -47,8 +48,12 @@ func TestVisitorPlanRoundTrip(t *testing.T) {
 	if lv.Coins != 42 {
 		t.Errorf("Coins = %d; want 42", lv.Coins)
 	}
-	if !lv.VisitorState.DistributorOnly {
-		t.Error("DistributorOnly did not round-trip through the plan jsonb")
+	if lv.VisitorState.Trade == nil {
+		t.Fatal("Trade errand did not round-trip through the plan jsonb")
+	}
+	if lv.VisitorState.Trade.Direction != sim.TradeDirectionBuy || lv.VisitorState.Trade.Good != "cheese" ||
+		lv.VisitorState.Trade.Counterparty != "str-a" || !lv.VisitorState.Trade.Settled {
+		t.Errorf("Trade round-trip = %+v; want buy cheese @ str-a settled", lv.VisitorState.Trade)
 	}
 	if lv.Inventory["cheese"] != 3 || lv.Inventory["ale"] != 2 {
 		t.Errorf("Inventory = %v; want cheese:3 ale:2", lv.Inventory)

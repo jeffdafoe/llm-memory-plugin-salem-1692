@@ -5,21 +5,73 @@ import (
 	"testing"
 )
 
-// visitor_factor_internal_test.go — LLM-410 wholesale factor spawn internals: the landing
-// weight, the factor pack seed, and the distributor-targeted arrival picker. Package-internal
-// (these helpers are unexported); the end-to-end spawn wiring is in visitor_factor_test.go.
+// visitor_factor_internal_test.go — wholesale factor spawn internals: the coin-valve direction
+// (LLM-455), the factor pack seed, the sell-errand binding, and the arrival picker. Package-
+// internal (these helpers are unexported); the end-to-end spawn wiring is in visitor_factor_test.go.
 
-// TestLandingWeightPermille — the factor is rarity-tuned (300); every other archetype lands
-// always (1000); an unknown archetype defaults to always-land.
-func TestLandingWeightPermille(t *testing.T) {
-	if got := landingWeightPermille(FactorArchetype); got != FactorLandingWeightPermille {
-		t.Errorf("factor landing weight = %d, want %d", got, FactorLandingWeightPermille)
+// TestChooseVisitorTradeDirection — the coin-valve (LLM-455): a configured band forces a seller
+// when resident coin is hot and a buyer when it is starved; unbanded / in-band leaves it to the
+// weighted random, where sell weight 1000 always sells and 0 never does.
+func TestChooseVisitorTradeDirection(t *testing.T) {
+	resident := func(coins int) *World {
+		return &World{Actors: map[ActorID]*Actor{"r": {ID: "r", Kind: KindNPCShared, Coins: coins}}}
 	}
-	if got := landingWeightPermille("peddler"); got != DefaultLandingWeightPermille {
-		t.Errorf("peddler landing weight = %d, want %d (always lands)", got, DefaultLandingWeightPermille)
+	r := rand.New(rand.NewSource(1))
+
+	// Band [500,900]: hot -> sell, starved -> buy.
+	hot := resident(1000)
+	hot.Settings = WorldSettings{VisitorCoinBandLow: 500, VisitorCoinBandHigh: 900}
+	if got := chooseVisitorTradeDirection(hot, r); got != TradeDirectionSell {
+		t.Errorf("resident coin above high-water: direction = %q, want sell", got)
 	}
-	if got := landingWeightPermille("no-such-archetype"); got != DefaultLandingWeightPermille {
-		t.Errorf("unknown archetype landing weight = %d, want %d", got, DefaultLandingWeightPermille)
+	starved := resident(100)
+	starved.Settings = WorldSettings{VisitorCoinBandLow: 500, VisitorCoinBandHigh: 900}
+	if got := chooseVisitorTradeDirection(starved, r); got != TradeDirectionBuy {
+		t.Errorf("resident coin below low-water: direction = %q, want buy", got)
+	}
+
+	// Unbanded: weighted random. Sell weight 1000 -> always sell; 0 -> always buy.
+	allSell := resident(600)
+	allSell.Settings = WorldSettings{VisitorSellWeightPermille: 1000}
+	if got := chooseVisitorTradeDirection(allSell, r); got != TradeDirectionSell {
+		t.Errorf("sell weight 1000: direction = %q, want sell", got)
+	}
+	allBuy := resident(600)
+	allBuy.Settings = WorldSettings{VisitorSellWeightPermille: 0}
+	if got := chooseVisitorTradeDirection(allBuy, r); got != TradeDirectionBuy {
+		t.Errorf("sell weight 0: direction = %q, want buy", got)
+	}
+}
+
+// TestInAfternoonSpawnWindow — the LLM-455 spawn window is [max(dawn, earliest=900), dusk−90),
+// inclusive lower / exclusive upper. Pins the boundary semantics (code_review) so a future
+// change can't quietly let a merchant arrive too close to dusk or before the tavern opens.
+func TestInAfternoonSpawnWindow(t *testing.T) {
+	const dawn, dusk = 420, 1140 // 07:00, 19:00 → window [900, 1050)
+	cases := []struct {
+		name   string
+		nowMin int
+		want   bool
+	}{
+		{"before earliest", 899, false},
+		{"exactly earliest (inclusive)", 900, true},
+		{"mid window", 960, true},
+		{"just before latest", 1049, true},
+		{"exactly latest (exclusive)", 1050, false},
+		{"after latest", 1051, false},
+	}
+	for _, c := range cases {
+		if got := inAfternoonSpawnWindow(dawn, dusk, c.nowMin); got != c.want {
+			t.Errorf("%s: inAfternoonSpawnWindow(%d,%d,%d) = %v, want %v", c.name, dawn, dusk, c.nowMin, got, c.want)
+		}
+	}
+	// earliest clamps UP to a late dawn.
+	if inAfternoonSpawnWindow(1000, 1140, 950) {
+		t.Error("window opened before a late dawn (earliest must clamp up to dawn)")
+	}
+	// An empty window (dusk − margin <= earliest) rejects everything.
+	if inAfternoonSpawnWindow(420, 960, 900) { // dusk 16:00 → latest 870 < earliest 900
+		t.Error("empty window (dusk−margin <= earliest) must reject all clocked spawns")
 	}
 }
 
@@ -65,18 +117,26 @@ func TestSeedFactorPack(t *testing.T) {
 	}
 }
 
-// TestCloneVisitorState_DistributorOnly guards that the clone/snapshot copy path carries the
-// factor flag (LLM-410). cloneVisitorState backs ActorSnapshot publication (world.go), the
-// mem-repo boundary, and the ActorDeparted event; a field-by-field copy that dropped
-// DistributorOnly would let a live factor lose its gate between snapshots even though the
+// TestCloneVisitorState_Trade guards that the clone/snapshot copy path DEEP-copies the Trade
+// errand (LLM-455). cloneVisitorState backs ActorSnapshot publication (world.go), the mem-repo
+// boundary, and the ActorDeparted event; a copy that dropped or aliased Trade would let a live
+// merchant lose its gate — or have a snapshot mutate the world's errand — even though the
 // plan-jsonb persistence round-trips.
-func TestCloneVisitorState_DistributorOnly(t *testing.T) {
-	cp := cloneVisitorState(&VisitorState{Archetype: FactorArchetype, Origin: FactorOrigin, DistributorOnly: true})
-	if cp == nil || !cp.DistributorOnly {
-		t.Fatalf("cloneVisitorState dropped DistributorOnly: %+v", cp)
+func TestCloneVisitorState_Trade(t *testing.T) {
+	src := &VisitorState{Archetype: FactorArchetype, Origin: FactorOrigin,
+		Trade: &TradeErrand{Direction: TradeDirectionSell, Good: factorIronKind, Counterparty: "store_a"}}
+	cp := cloneVisitorState(src)
+	if cp == nil || cp.Trade == nil {
+		t.Fatalf("cloneVisitorState dropped Trade: %+v", cp)
 	}
-	if cloneVisitorState(&VisitorState{}).DistributorOnly {
-		t.Error("cloneVisitorState invented DistributorOnly on an ordinary traveler")
+	if cp.Trade == src.Trade {
+		t.Error("cloneVisitorState aliased the Trade pointer instead of deep-copying")
+	}
+	if cp.Trade.Direction != TradeDirectionSell || cp.Trade.Counterparty != "store_a" {
+		t.Errorf("cloneVisitorState garbled Trade: %+v", cp.Trade)
+	}
+	if cloneVisitorState(&VisitorState{}).Trade != nil {
+		t.Error("cloneVisitorState invented a Trade on a passer-through")
 	}
 }
 
@@ -99,19 +159,28 @@ func TestPickDistributorArrival(t *testing.T) {
 	if id, _, ok := pickDistributorDestination(w); !ok || id != "store_a" {
 		t.Fatalf("pickDistributorDestination = (%q, %v), want (store_a, true) — smallest-ID distributor", id, ok)
 	}
-	if fid, _, fok := pickArrivalDestination(w, true); !fok || fid != "store_a" {
-		t.Errorf("factor arrival = (%q, %v), want (store_a, true)", fid, fok)
+	// bindSellErrand resolves the distributor as the sell counterparty (LLM-455).
+	if errand, ok := bindSellErrand(w, rand.New(rand.NewSource(1))); !ok || errand.Counterparty != "store_a" {
+		t.Errorf("bindSellErrand = (%+v, %v), want counterparty store_a", errand, ok)
 	}
-	if oid, _, ook := pickArrivalDestination(w, false); !ook || oid != "tavern" {
-		t.Errorf("ordinary arrival = (%q, %v), want (tavern, true)", oid, ook)
+	// A merchant walks straight to his errand counterparty; a passer-through (nil) heads for the tavern.
+	sellErrand := &TradeErrand{Direction: TradeDirectionSell, Counterparty: "store_a"}
+	if fid, _, fok := pickArrivalDestination(w, sellErrand); !fok || fid != "store_a" {
+		t.Errorf("merchant arrival = (%q, %v), want (store_a, true)", fid, fok)
 	}
-	// A distributor-tagged object NOT backed by a structure is not a valid target.
+	if oid, _, ook := pickArrivalDestination(w, nil); !ook || oid != "tavern" {
+		t.Errorf("passer-through arrival = (%q, %v), want (tavern, true)", oid, ook)
+	}
+	// A counterparty NOT backed by a structure falls back to the tavern anchor.
 	delete(w.Structures, "store_a")
 	delete(w.Structures, "store_b")
 	if _, _, ok := pickDistributorDestination(w); ok {
 		t.Error("pickDistributorDestination should reject a distributor object with no backing structure")
 	}
-	if fid, _, fok := pickArrivalDestination(w, true); !fok || fid != "tavern" {
-		t.Errorf("factor arrival with no valid distributor = (%q, %v), want tavern fallback", fid, fok)
+	if _, ok := bindSellErrand(w, rand.New(rand.NewSource(1))); ok {
+		t.Error("bindSellErrand should fail when no distributor is backed by a structure")
+	}
+	if fid, _, fok := pickArrivalDestination(w, sellErrand); !fok || fid != "tavern" {
+		t.Errorf("merchant arrival with unbacked counterparty = (%q, %v), want tavern fallback", fid, fok)
 	}
 }

@@ -334,6 +334,11 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.VisitorFactorIronUnits = parseIntSetting(values, "visitor_factor_iron_units", sim.DefaultVisitorFactorIronUnits)
 	// LLM-444: salt shipment size per factor visit.
 	s.VisitorFactorSaltUnits = parseIntSetting(values, "visitor_factor_salt_units", sim.DefaultVisitorFactorSaltUnits)
+	// LLM-455: grounded merchant errand — coin-valve band + direction/class weights.
+	s.VisitorCoinBandLow = parseIntSetting(values, "visitor_coin_band_low", 0)
+	s.VisitorCoinBandHigh = parseIntSetting(values, "visitor_coin_band_high", 0)
+	s.VisitorSellWeightPermille = parseIntSetting(values, "visitor_sell_weight_permille", sim.DefaultVisitorSellWeightPermille)
+	s.VisitorPasserThroughChancePermille = parseIntSetting(values, "visitor_passer_through_chance_permille", sim.DefaultVisitorPasserThroughChancePermille)
 
 	// Businessowner cooldowns.
 	s.BusinessownerGreetCooldownMinutes = parseIntSetting(values, "businessowner_greet_cooldown_minutes",

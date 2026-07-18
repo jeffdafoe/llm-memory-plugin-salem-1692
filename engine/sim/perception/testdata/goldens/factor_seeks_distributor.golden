@@ -14,7 +14,9 @@ You are carrying: cloak (x3), coat (x3), silver_locket (x2).
 You are outdoors, with no one else here to hear you speak.
 It is morning in the village.
 
-## Your dealings here
-You deal only with the keeper of The General Store, a short way to the west. Make your way there — the other shops in this village are no concern of yours.
+## Your rounds
+You came to deal with the keeper of The General Store, a short way to the west — that is your business here, so make for it. The other shops you may look in on to show your face and pass what news you carry, but your trading is done with The General Store alone.
+Others keeping shop this hour, to look in on and pass the news (no trading there): Weaver's, a short way to the east.
+There's plenty of daylight left for your trade.
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

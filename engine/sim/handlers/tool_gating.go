@@ -81,6 +81,21 @@ var laborAbandonTools = map[string]struct{}{
 	"offer_work":    {}, // LLM-346: a worker mid-job does not take on hired help of her own
 }
 
+// visitorTalkOnlyTools are the commerce tools stripped from a merchant visitor on his rounds
+// when he is NOT at a sanctioned commerce place (LLM-455) — his errand counterparty (his one
+// real trade) or a tavern/inn (self-provisioning). Everywhere else his rounds are talk-only, so
+// buying/selling isn't even reachable and the coin-valve drain/inject stays confined to his
+// errand. Gated off perception.VisitorCommerceStripped, computed from the SAME co-presence the
+// rounds cue frames as talk-only, so tool and cue can't drift (the discussion-109 invariant).
+// The TradeErrandSteer substrate gate is the backstop for any call that leaks through. speak /
+// move_to / consume stay, so he can greet, walk on, and eat.
+var visitorTalkOnlyTools = map[string]struct{}{
+	"pay":           {},
+	"pay_with_item": {},
+	"offer_trade":   {},
+	"sell":          {},
+}
+
 // payVerbTools are the buyer-initiated payment tools advertised ONLY when the
 // actor has a co-present huddle peer to transact with (Surroundings.HuddleMembers
 // non-empty). Both hard-require CurrentHuddleID != "" at the substrate — sim.Pay
@@ -454,6 +469,9 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 	canSolicitWork := payload.CanSolicitWork
 	canOfferWork := len(payload.HireableWorkers) > 0
 	hasGift := len(perception.PendingGiftsForMe(payload)) > 0
+	// LLM-455 talk-only rounds: strip a merchant visitor's commerce tools when he is on his
+	// rounds but not at a sanctioned commerce place (his errand counterparty or a tavern/inn).
+	visitorCommerceStripped := payload.VisitorCommerceStripped
 	laboring := payload.Laboring != nil
 	// LLM-230 strips a laboring worker's move_to to keep her committed, EXCEPT when
 	// she has a red hunger/thirst need (reach food), OR (LLM-268) she has wandered
@@ -545,6 +563,16 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 		// actor has a co-present huddle peer — see payVerbTools for the rationale.
 		if _, gated := payVerbTools[spec.Name]; gated && !hasHuddlePeer {
 			continue
+		}
+		// talk-only rounds consumer (LLM-455): strip a merchant visitor's commerce tools
+		// (pay / pay_with_item / offer_trade / sell) while he is on his rounds away from a
+		// sanctioned commerce place — his errand counterparty or a tavern/inn. Off the SAME
+		// co-presence the rounds cue frames as talk-only, so tool and cue can't drift; the
+		// TradeErrandSteer substrate gate backstops any leak.
+		if visitorCommerceStripped {
+			if _, gated := visitorTalkOnlyTools[spec.Name]; gated {
+				continue
+			}
 		}
 		// degeneracy Stage-1 gate (LLM-94): drop move_to from a flagged actor's
 		// set, in lockstep with the steering cues perception build thinned for
