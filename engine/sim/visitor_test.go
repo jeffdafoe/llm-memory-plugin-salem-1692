@@ -203,8 +203,13 @@ func TestTickVisitorCascade_SpawnDisabled(t *testing.T) {
 	defer cancel()
 
 	r := rand.New(rand.NewSource(1))
+	// Pinned like every other spawn-path test. Today this case short-circuits at the
+	// chance==0 check in dispatchVisitorSpawn BEFORE the afternoon-window gate, so a
+	// wall clock would not actually flake it — but that is an ordering accident, and
+	// reordering those two checks would silently turn this into the time-of-day red
+	// LLM-430 fixed elsewhere. Pin it so the spawn-path suite is wall-clock-free.
 	res, err := w.Send(sim.TickVisitorCascade(sim.VisitorTickInputs{
-		Now: time.Now(), Rand: r,
+		Now: visitorSpawnDaytime, Rand: r,
 	}))
 	if err != nil {
 		t.Fatalf("TickVisitorCascade: %v", err)
