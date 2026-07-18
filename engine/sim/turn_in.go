@@ -93,10 +93,20 @@ func TurnIn(actorID ActorID, say string, hasNewNews bool, now time.Time) Command
 				leaveCurrentHuddleAs(w, actor, now, WarrantKindHuddlePeerRetired)
 			}
 			if !executeNPCSleep(w, actor, now) {
-				// Only reachable if something bedded the actor between the check above
-				// and here; both run inside this Fn on the world goroutine, so it can't
-				// happen today. Reported rather than silently swallowed.
-				return nil, ModelFacingError{Msg: "you are already abed."}
+				// Unreachable today: executeNPCSleep returns false only for an already-
+				// sleeping actor, which the guard at the top of this Fn already rejected,
+				// and nothing can interleave between them (one world goroutine).
+				//
+				// It is loud rather than model-facing on purpose. By this point the actor
+				// has spoken its goodnight and left the huddle, so a silent failure here
+				// would leave it standing in a room it just said goodbye to — awake, out
+				// of the conversation, with no way back in. If a future change adds
+				// validation inside executeNPCSleep, that half-transition must surface as
+				// an engine bug, not as a polite refusal the model shrugs off.
+				return nil, fmt.Errorf(
+					"TurnIn: actor %q said goodnight and left its huddle but executeNPCSleep refused to bed it "+
+						"(already sleeping? the pre-check should have caught that) — actor is now awake and huddle-less",
+					actorID)
 			}
 			return TurnInResult{BeddedAt: actor.InsideStructureID, Until: *actor.SleepingUntil}, nil
 		},

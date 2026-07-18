@@ -69,21 +69,8 @@ func buildTurnInChoice(snap *sim.Snapshot, a *sim.ActorSnapshot, members []Huddl
 	if !minuteInWindow(snap.DuskMinute, snap.DawnMinute, *snap.LocalMinuteOfDay) {
 		return nil // still daytime — the evening hasn't come
 	}
-	// Off-shift. A SCHEDULED actor inside its shift belongs at its post — this is
-	// load-bearing for a night-shift home==work keeper (a tavernkeeper 16:00–03:00),
-	// who is inside its own home at 22:00 and must not be offered its bed mid-shift.
-	// An unscheduled actor is never "on shift" here, matching sim.isActorOnShift.
-	if a.ScheduleStartMin != nil && a.ScheduleEndMin != nil {
-		s, e := *a.ScheduleStartMin, *a.ScheduleEndMin
-		onShift := false
-		if s <= e {
-			onShift = *snap.LocalMinuteOfDay >= s && *snap.LocalMinuteOfDay < e
-		} else {
-			onShift = *snap.LocalMinuteOfDay >= s || *snap.LocalMinuteOfDay < e
-		}
-		if onShift {
-			return nil
-		}
+	if subjectOnShift(snap, a) {
+		return nil
 	}
 	hasCompany := len(members) > 0
 	// Home arm first — a homed NPC inside its home beds there, whatever else it holds.
@@ -114,6 +101,43 @@ func buildTurnInChoice(snap *sim.Snapshot, a *sim.ActorSnapshot, members []Huddl
 		return nil // its room is elsewhere
 	}
 	return &TurnInChoiceView{PlaceName: innLabel(s), Lodging: true, HasCompany: hasCompany}
+}
+
+// subjectOnShift is the snapshot-side mirror of sim.actorOnShift — the shift
+// notion the turn_in substrate gate uses — so the cue and the tool agree on who
+// is at work. Both arms matter:
+//
+//   - A SCHEDULED actor uses its own half-open [start, end) window, wrap-aware
+//     (sim.isActorOnShift). This is load-bearing for a night-shift home==work
+//     keeper (a tavernkeeper 16:00–03:00) standing inside her own home at 22:00,
+//     and for a lodger whose shift straddles the evening.
+//   - An UNSCHEDULED WORKER falls back to the world's dawn/dusk day window
+//     (sim.effectiveShiftWindow), so it is day-active rather than always-off.
+//
+// The second arm is currently redundant for turn_in — the day window [dawn, dusk)
+// is the exact complement of the turn_in window [dusk, dawn), so an unscheduled
+// worker inside one is never inside the other. It is written out anyway rather
+// than leaned on: that complement is a property of today's two settings, not an
+// invariant anyone declared, and a cue that silently depends on it would break
+// quietly if the windows were ever decoupled.
+func subjectOnShift(snap *sim.Snapshot, a *sim.ActorSnapshot) bool {
+	if snap.LocalMinuteOfDay == nil {
+		return false
+	}
+	now := *snap.LocalMinuteOfDay
+	inWindow := func(start, end int) bool {
+		if start <= end {
+			return now >= start && now < end
+		}
+		return now >= start || now < end
+	}
+	if a.ScheduleStartMin != nil && a.ScheduleEndMin != nil {
+		return inWindow(*a.ScheduleStartMin, *a.ScheduleEndMin)
+	}
+	if subjectIsWorker(a) && snap.DawnDuskMinuteOK {
+		return inWindow(snap.DawnMinute, snap.DuskMinute)
+	}
+	return false
 }
 
 // renderTurnInChoice writes the evening bed-down affordance as a scene (LLM-447).

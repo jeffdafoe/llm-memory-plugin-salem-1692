@@ -63,7 +63,12 @@ func newTurnInRegistry(t *testing.T) *Registry {
 // whole point: if turn_in didn't exist, nothing would bed this actor yet.
 func seedEveningHousehold(t *testing.T, w *sim.World) {
 	t.Helper()
-	nowMin := time.Now().UTC().Hour()*60 + time.Now().UTC().Minute()
+	// ONE clock read, not two: sampling Hour() and Minute() from separate
+	// time.Now() calls can straddle a minute rollover and place the fixture an
+	// hour off. The margins below (an hour behind, two and eight ahead) then
+	// absorb any rollover between this read and the handler's own time.Now().
+	seedNow := time.Now().UTC()
+	nowMin := seedNow.Hour()*60 + seedNow.Minute()
 	hhmm := func(minuteOfDay int) string {
 		m := ((minuteOfDay % 1440) + 1440) % 1440
 		return time.Date(2026, 1, 1, m/60, m%60, 0, 0, time.UTC).Format("15:04")

@@ -865,6 +865,17 @@ func buildRetireCue(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, members []
 	if windDownSuppressed(actorSnap, snap) {
 		return nil // mid-meal at the inn-as-tavern — don't send a diner to bed
 	}
+	// LLM-447: never instruct a bed-down the actor cannot perform. This cue asks
+	// the lodger to wind down and end its turn so the engine backstop can bed it —
+	// but the backstop (npcSleepHere) will not bed an actor that is mid-activity,
+	// and the voluntary turn_in verb additionally refuses one that is on shift. In
+	// either state the instruction is unactionable by BOTH paths, which is exactly
+	// the dangling-cue failure the tool-cue lockstep rule exists to prevent. It was
+	// harmless-looking before turn_in existed only because nothing here was ever
+	// actionable; it is a real mismatch now that something is.
+	if actorMidSourceActivity(actorSnap) || subjectOnShift(snap, actorSnap) {
+		return nil
+	}
 	return &RetireView{InnName: innLabel(s)}
 }
 

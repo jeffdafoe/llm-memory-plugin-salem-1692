@@ -300,10 +300,21 @@ func npcInNightWindowFrom(w *World, windowStart int, now time.Time) bool {
 // social, not a meter read — the Walkers were at tiredness 12, below even the
 // awareness floor, so the meter carried no signal to gate on.
 //
-// Unlike the auto-bed, the anytime arm is ALSO window-gated: an unscheduled
-// non-worker's "home is my resting state" licenses the ENGINE to bed it whenever
-// it is home, but it must not license the model to announce a goodnight at noon.
-// Every voluntary turn-in is an evening turn-in.
+// Two conditions are tightened relative to the auto-bed, because what the ENGINE
+// may do to an actor and what the actor may CHOOSE are not the same:
+//
+//   - The anytime arm is window-gated here. An unscheduled non-worker's "home is
+//     my resting state" licenses the engine to bed it whenever it is home, but it
+//     must not license the model to announce a goodnight at noon. Every voluntary
+//     turn-in is an evening turn-in.
+//   - Off-shift is required on EVERY arm, including the lodger arm — which the
+//     auto-bed deliberately does not require (LLM-14: a scheduled lodger beds at
+//     the civil night hour, not at its forge-close, so its shift is not consulted).
+//     That is safe for the auto-bed because its window opens at 22:00, but this
+//     window opens at dusk, which a night shift straddles: without this check a
+//     blacksmith boarding at the inn on a 16:00–03:00 shift could put himself to
+//     bed at 20:00, mid-shift, and shut his own trade for the night. Same reason
+//     the home arm has always required it.
 //
 // MUST be called from inside a Command.Fn.
 func npcMayTurnIn(w *World, a *Actor, now time.Time) bool {
@@ -311,6 +322,9 @@ func npcMayTurnIn(w *World, a *Actor, now time.Time) bool {
 		return false
 	}
 	if npcSleepArmFor(w, a, now) == npcSleepArmNone {
+		return false
+	}
+	if actorOnShift(w, a, localMinuteOfDay(w, now)) {
 		return false
 	}
 	_, dusk, ok := worldDawnDuskMinutes(w)

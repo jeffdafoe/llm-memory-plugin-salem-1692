@@ -61,7 +61,7 @@ func TestNpcMayTurnIn_HomeWindowBoundaries(t *testing.T) {
 		{7, 0, false, false, "dawn — both windows close"},
 	}
 	for _, c := range cases {
-		when := at(c.hour, c.min)
+		when := turnInAt(c.hour, c.min)
 		if got := npcMayTurnIn(w, a, when); got != c.turnIn {
 			t.Errorf("%02d:%02d (%s): npcMayTurnIn = %v, want %v", c.hour, c.min, c.why, got, c.turnIn)
 		}
@@ -237,7 +237,7 @@ func TestTurnInAndAutoBedShareTheirArms(t *testing.T) {
 		for _, c := range sharedWindow {
 			a := f.make()
 			w := turnInWorld(a)
-			when := at(c.hour, c.min)
+			when := turnInAt(c.hour, c.min)
 			turnIn, autoBed := npcMayTurnIn(w, a, when), npcSleepHere(w, a, when)
 			if turnIn != autoBed {
 				t.Errorf("%s at %02d:%02d: npcMayTurnIn = %v but npcSleepHere = %v — inside the shared window "+
@@ -245,5 +245,38 @@ func TestTurnInAndAutoBedShareTheirArms(t *testing.T) {
 					f.name, c.hour, c.min, turnIn, autoBed)
 			}
 		}
+	}
+}
+
+// TestNpcMayTurnIn_NightShiftLodgerMidShift is the regression for the bug the
+// LLM-447 code review surfaced indirectly.
+//
+// The auto-bed's LODGER arm deliberately does NOT consult the shift (LLM-14: a
+// scheduled lodger beds at the civil night hour, not at its forge-close — reading
+// its work shift was the force-sleep bug that ticket fixed). That is safe for the
+// auto-bed because its window opens at 22:00. It is NOT safe for turn_in, whose
+// window opens at dusk — which a night shift straddles.
+//
+// Concretely: a blacksmith boarding at the inn on a 16:00–03:00 shift, standing in
+// the inn at 20:00. Sharing the arms alone would let him put himself to bed
+// mid-shift and shut his own trade for the night. npcMayTurnIn requires off-shift
+// on every arm for exactly this reason; npcSleepHere's arm semantics are untouched.
+func TestNpcMayTurnIn_NightShiftLodgerMidShift(t *testing.T) {
+	future := turnInAt(22, 0).Add(72 * time.Hour)
+	lodger := lodgerNPC("smith", future)
+	start, end := 16*60, 3*60 // 16:00–03:00, straddling dusk
+	lodger.ScheduleStartMin, lodger.ScheduleEndMin = &start, &end
+	w := turnInWorld(lodger)
+
+	if npcMayTurnIn(w, lodger, turnInAt(20, 0)) {
+		t.Error("20:00 mid-shift at its inn: npcMayTurnIn = true, want false — a lodger on a night shift " +
+			"must not be able to bed himself and shut his trade for the evening")
+	}
+	if npcMayTurnIn(w, lodger, turnInAt(23, 30)) {
+		t.Error("23:30 mid-shift at its inn: npcMayTurnIn = true, want false")
+	}
+	// 04:00 — shift ended at 03:00, still before dawn: now he may.
+	if !npcMayTurnIn(w, lodger, turnInAt(4, 0)) {
+		t.Error("04:00 off-shift at its inn: npcMayTurnIn = false, want true")
 	}
 }

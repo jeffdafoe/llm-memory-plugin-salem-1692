@@ -77,6 +77,13 @@ var (
 	PickVisitorSlot           = pickVisitorSlot
 	PickObjectVisitorSlot     = pickObjectVisitorSlot
 	TileOccupiedByOtherActor  = tileOccupiedByOtherActor
+
+	// ExportedNpcMayTurnIn is the LLM-447 voluntary bed-down gate — the predicate
+	// sim.TurnIn enforces. Exposed so turn_in_parity_test.go can hold it against
+	// perception's snapshot-side mirror of the same rule (buildTurnInChoice); that
+	// cross-package seam is the one place the two gates can still drift, since the
+	// npcSleepArmFor refactor only unified the two WORLD-side gates.
+	ExportedNpcMayTurnIn = npcMayTurnIn
 )
 
 // ActorCanReactNow / ActorCanReactNowAt expose the eligibility gate for
