@@ -1139,9 +1139,11 @@ func sourceActivityPhrase(v InFlightSourceActivityView) string {
 }
 
 // sourceActivityCompletionHorizon is how soon the mid-activity coda promises the
-// activity will land on its own. Every kind but bake runs seconds to a few minutes
-// (refresh 3s, harvest 5s, stoke 30s, repair 15m), so "shortly" tells them the
-// truth. A bake runs until DUSK — hours — and the shared coda's hardcoded "shortly"
+// activity will land on its own. Every kind but bake finishes inside a single turn or
+// close to it (refresh 3s, harvest 5s, stoke 30s), so "shortly" tells them the truth.
+// Repair at 15m is the loosest fit — deliberately kept as "shortly", since a quarter
+// hour is still "soon" to a villager and the coda's job is to stop the actor walking
+// off, not to time the work. A bake runs until DUSK — hours — and the hardcoded "shortly"
 // was a lie the model faithfully passed on to the household: live 2026-07-18, the
 // engine told Anne Walker at midday that her five-hour batch would finish shortly
 // and she announced "the loaves are nearly ready — just a few more minutes by the
@@ -1149,9 +1151,17 @@ func sourceActivityPhrase(v InFlightSourceActivityView) string {
 // dusk"), so the two surfaces agree. Same failure class as LLM-446's frozen
 // WorkLeft, one layer up: a constant that stopped being true when a slower kind
 // joined the substrate.
+// Written as an exhaustive switch over the kinds rather than a bake special-case with a
+// default: Go won't enforce exhaustiveness, but listing every kind puts the question in
+// front of whoever adds the next one, which is the step that got skipped last time. An
+// unlisted kind still falls through to "shortly" — the conservative answer for anything
+// short, and wrong only for another to-dusk activity.
 func sourceActivityCompletionHorizon(kind sim.SourceActivityKind) string {
-	if kind == sim.SourceActivityBake {
+	switch kind {
+	case sim.SourceActivityBake:
 		return "by dusk"
+	case sim.SourceActivityRefresh, sim.SourceActivityHarvest, sim.SourceActivityStoke, sim.SourceActivityRepair:
+		return "shortly"
 	}
 	return "shortly"
 }

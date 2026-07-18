@@ -20,10 +20,14 @@ import (
 // being true when a slower kind joined the substrate.
 
 // TestSourceActivityCompletionHorizon pins the horizon per kind at the helper directly,
-// so the split is proven even if the matrix later loses a scenario that renders it. The
-// non-bake kinds are asserted explicitly rather than via a default: a future long-running
-// kind added to the substrate should have to make a deliberate choice here, which is the
-// step LLM-454 skipped.
+// so the split is proven even if the matrix later loses a scenario that renders it.
+//
+// This table covers the kinds that exist today; it canNOT catch a future kind silently
+// inheriting "shortly" (code_review), and neither can the switch in the helper — Go has
+// no exhaustiveness check. The switch lists every kind explicitly so the question is at
+// least visible at the point of change, and this table pins the answers; a new to-dusk
+// activity still needs its author to think, and the live cost of not doing so is the
+// LLM-464 bug itself.
 func TestSourceActivityCompletionHorizon(t *testing.T) {
 	for _, tc := range []struct {
 		kind sim.SourceActivityKind
@@ -48,18 +52,29 @@ func TestSourceActivityCompletionHorizon(t *testing.T) {
 // e.g. someone collapsing the horizon back to a constant, or a new bake-adjacent kind
 // inheriting the wrong one.
 func TestBakeCodaNamesDuskNotShortly(t *testing.T) {
-	var sawBakeCoda int
+	// Counted in the parent goroutine off a pre-rendered corpus rather than incremented
+	// inside the subtests: as a t.Run closure the counter would race the moment someone
+	// adds t.Parallel() to the scenario runner, and a vacuity guard that breaks silently
+	// under a test-mode change is worse than no guard (code_review).
+	rendered := make(map[string]string, len(perceptionScenarios))
+	sawBakeCoda := 0
+	for _, sc := range perceptionScenarios {
+		out := renderScenario(sc)
+		rendered[sc.name] = out
+		if strings.Contains(out, "You are baking bread") {
+			sawBakeCoda++
+		}
+	}
 	for _, sc := range perceptionScenarios {
 		sc := sc
 		t.Run(sc.name, func(t *testing.T) {
-			out := renderScenario(sc)
+			out := rendered[sc.name]
 			// sourceActivityPhrase renders the bake coda as "You are baking bread at
 			// <home>"; the standing self-line uses different words ("at the hearth with
 			// the household's bread"), so this matches the coda alone.
 			if !strings.Contains(out, "You are baking bread") {
 				return
 			}
-			sawBakeCoda++
 			if strings.Contains(out, "finish on its own shortly") {
 				t.Errorf("scenario %q tells a baker the bread will finish 'shortly'. A bake runs until "+
 					"dusk — the NPC relays this to the household as 'nearly ready, just a few more "+
