@@ -289,3 +289,23 @@ func TestBake_StaleSessionSelfHeals(t *testing.T) {
 		t.Fatalf("session = %+v, want a fresh alice session", hb)
 	}
 }
+
+// TestBake_RedTirednessBarsJoin is the LLM-465 boundary: joining opens up under the red
+// needs the bake shelve leaves actionable (hunger/thirst/cold — move_to survives and the
+// reactor ticks for them), but NOT under tiredness, which is deliberately excluded from
+// both carve-outs. Admitting it would shelve an exhausted villager at the hearth until
+// dusk with nothing to wake him and no move_to — a worse trap than the loose-in-the-
+// kitchen bug the ticket fixes. The substrate must refuse exactly what perception does.
+func TestBake_RedTirednessBarsJoin(t *testing.T) {
+	w, cancel, now := buildBakeTestWorld(t)
+	defer cancel()
+
+	if _, err := w.Send(sim.StartOrJoinBake("alice", "", false, now)); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	setActor(t, w, "bob", func(a *sim.Actor) { a.Needs["tiredness"] = sim.NeedMax })
+	if _, err := w.Send(sim.StartOrJoinBake("bob", "", false, now.Add(time.Minute))); err == nil {
+		t.Error("an exhausted actor joined a bake — nothing would tick him through the shelve " +
+			"and move_to is stripped for tiredness, so he'd be stuck at the hearth until dusk")
+	}
+}

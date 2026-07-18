@@ -68,22 +68,23 @@ func buildBakeChoice(snap *sim.Snapshot, a *sim.ActorSnapshot) *BakeChoiceView {
 		return nil
 	}
 	joining := snap.HomeBakesActive[home]
-	if !joining {
-		// STARTING is a whole afternoon's commitment, so a pressing (red) need
+	if joining {
+		// JOINING under a pressing need is fine for every need the bake shelve leaves
+		// actionable, but NOT for tiredness — see bakeTrappingRedNeed.
+		if bakeTrappingRedNeed(a, snap) {
+			return nil
+		}
+	} else {
+		// STARTING is a whole afternoon's commitment, so ANY pressing (red) need
 		// outranks it — see to what's pressing first.
 		//
-		// JOINING is not (LLM-464/465). It costs no flour and mints no batch; it is
-		// a hand at bread the household is already baking, and the shelve it puts
-		// the actor under already carves out exactly the red-need case: gateTools'
-		// bakingMayMove keeps move_to for a red hunger/thirst, and the reactor's
-		// hasBreakInterruptingNeedWarrant ticks him through the source-activity
-		// shelve for it. So a red-hungry joiner is never trapped at the hearth — he
-		// can still walk out to eat, and the reactor will wake him to do it.
-		// Refusing him the join protected him from nothing; it only left him loose
-		// and fully tickable in a kitchen he had no affordance in. Live 2026-07-18:
-		// Lewis Walker, red on hunger while Anne and Patience baked, burned 24 turns
-		// in 70 minutes asking how the loaves were coming — and each question armed
-		// bakeReplyDue for BOTH bakers, making him the pump on the loop.
+		// JOINING is not (LLM-465). It costs no flour and mints no batch; it is a
+		// hand at bread the household is already baking, and refusing it protected
+		// the actor from nothing — it only left him loose and fully tickable in a
+		// kitchen he had no affordance in. Live 2026-07-18: Lewis Walker, red on
+		// hunger while Anne and Patience baked, burned 24 turns in 70 minutes asking
+		// how the loaves were coming, and each question armed bakeReplyDue for BOTH
+		// bakers, making him the pump on the loop.
 		if hasRedNeed(a, snap) {
 			return nil
 		}
@@ -92,6 +93,29 @@ func buildBakeChoice(snap *sim.Snapshot, a *sim.ActorSnapshot) *BakeChoiceView {
 		}
 	}
 	return &BakeChoiceView{Joining: joining}
+}
+
+// bakeTrappingRedNeed reports whether the subject holds a red need that joining a bake
+// would leave it unable to act on — the narrow case where the join is a trap rather than
+// a free hand at the bread (LLM-465).
+//
+// A red hunger, thirst or cold is safe: gateTools' bakingMayMove (via
+// laboringMayBreakOffToEat) keeps move_to in the advertised set for those, and the
+// reactor's hasBreakInterruptingNeedWarrant ticks the actor through the source-activity
+// shelve for them, so it can walk out to food, drink or warmth and something will wake
+// it to do so.
+//
+// TIREDNESS is deliberately excluded from BOTH of those carve-outs — a break cures
+// tiredness, so it never justifies abandoning work in progress — which is exactly what
+// makes it the one need a joiner cannot serve: nothing ticks an exhausted baker, and
+// move_to is stripped for it. Admitting that join would shelve a red-tired villager at
+// the hearth until dusk with no way out, which is a worse bug than the one this fixes.
+// So tiredness still bars the join, matching the carve-outs rather than widening past
+// them.
+func bakeTrappingRedNeed(a *sim.ActorSnapshot, snap *sim.Snapshot) bool {
+	// Literal key, in lockstep with handlers.laboringMayBreakOffToEat's own "tiredness"
+	// check — if a need is ever added that the shelve can't serve, update both.
+	return a.Needs["tiredness"] >= snap.NeedThresholds.Get("tiredness")
 }
 
 // renderBakeChoice writes the evening bake affordance as a scene (LLM-454): the same

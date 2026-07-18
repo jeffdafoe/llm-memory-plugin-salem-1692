@@ -142,18 +142,27 @@ func StartOrJoinBake(actorID ActorID, say string, hasNewNews bool, now time.Time
 				delete(w.HomeBakes, home)
 				session = nil
 			}
+			// A red need the shelve can't serve bars the bake either way — see
+			// bakeTrappingRedNeed (perception) for why tiredness alone is a trap: it
+			// is excluded from both the move_to carve-out and the reactor interrupt,
+			// so an exhausted joiner would sit at the hearth until dusk with no way
+			// out. Mirrors buildBakeChoice's join arm (LLM-465).
+			if actor.Needs["tiredness"] >= w.Settings.NeedThresholds.Get("tiredness") {
+				return nil, ModelFacingError{Msg: "you are too worn to stand at the hearth — rest first."}
+			}
 			if session == nil {
 				// START — the initiator provides the flour (checked now, consumed at
 				// completion).
 				//
-				// The red-need gate is START-ONLY, in lockstep with buildBakeChoice
-				// (LLM-465). Starting commits the actor to the whole afternoon, so a
-				// pressing need outranks it; JOINING costs nothing and leaves the
-				// need fully actionable (bakingMayMove keeps move_to for a red
-				// hunger/thirst, and hasBreakInterruptingNeedWarrant ticks him for
-				// it), so it stays open to a hungry housemate. Checked HERE rather
-				// than above the session resolution so the substrate rejects exactly
-				// what perception declines to advertise.
+				// The remaining red needs (hunger/thirst/cold) are START-ONLY, in
+				// lockstep with buildBakeChoice (LLM-465). Starting commits the actor
+				// to the whole afternoon, so a pressing need outranks it; JOINING
+				// costs nothing and leaves those needs fully actionable
+				// (bakingMayMove keeps move_to for them, and
+				// hasBreakInterruptingNeedWarrant ticks him for them), so it stays
+				// open to a hungry housemate. Checked HERE rather than above the
+				// session resolution so the substrate rejects exactly what perception
+				// declines to advertise.
 				if countRedNeeds(w.Settings, actor) > 0 {
 					return nil, ModelFacingError{Msg: "see to what's pressing first — the baking can wait for a quiet hour."}
 				}

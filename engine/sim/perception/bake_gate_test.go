@@ -107,6 +107,20 @@ func TestBuildBakeChoiceRedNeedBlocksStartNotJoin(t *testing.T) {
 	if v := buildBakeChoice(snap, hungry(4)); v == nil || !v.Joining {
 		t.Errorf("red-need resident holding flour with a bake going: got %+v, want JOIN", v)
 	}
+
+	// TIREDNESS is the one red need that does NOT open the join, because it is
+	// excluded from both carve-outs that make joining safe: bakingMayMove keeps
+	// move_to for hunger/thirst/cold but not tiredness, and the reactor does not tick
+	// a shelved actor for a red-tiredness warrant. An exhausted joiner would sit at
+	// the hearth until dusk with no way out — a worse trap than the loose-in-the-
+	// kitchen bug this ticket fixes, so the guard must not widen past the carve-outs.
+	exhausted := homeBaker("cottage", 0)
+	exhausted.Needs = map[sim.NeedKey]int{"tiredness": sim.DefaultTirednessRedThreshold}
+	if v := buildBakeChoice(snap, exhausted); v != nil {
+		t.Errorf("red-TIRED resident with a bake going: got %+v, want nil — nothing ticks an "+
+			"exhausted baker and move_to is stripped for tiredness, so this join is a trap "+
+			"until dusk, not a free hand at the bread (LLM-465)", v)
+	}
 }
 
 func TestRenderBakeChoice(t *testing.T) {
