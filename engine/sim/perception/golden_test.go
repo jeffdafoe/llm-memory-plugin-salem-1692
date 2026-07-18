@@ -14255,24 +14255,31 @@ func turnInEligibleFromSnapshot(snap *sim.Snapshot, a *sim.ActorSnapshot) bool {
 	return false
 }
 
-// TestGoldensTurnInCueNeverPairsWithRetireCue guards the LLM-447/LLM-36
-// reconciliation across the matrix: at most ONE bedtime instruction per prompt.
+// TestGoldensSingleBedtimeCue guards the invariant that survived the LLM-36
+// deletion: a prompt carries at most ONE way to be told to go to bed, and it is
+// the tool-backed one.
 //
-// LLM-36's "## Turn in for the night" predates the sleep verb — its own comment
-// says "the steer is situational, NOT a tool call" — so it asks the lodger to
-// wind down and end its turn for the engine backstop to bed. turn_in does the
-// same thing with a real tool over a wider window. Rendering both would put two
-// differently-mechanised "go to bed" instructions on one page, and the model
-// would have to guess which one is real.
-func TestGoldensTurnInCueNeverPairsWithRetireCue(t *testing.T) {
-	const retireCueMarker = "## Turn in for the night"
+// LLM-36's "## Turn in for the night" predated the sleep verb — its own comment
+// read "the steer is situational, NOT a tool call" — so it asked a lodger to wind
+// down and end its turn for the engine backstop to bed. turn_in does the same
+// thing with a real tool over a wider window, so the old section was deleted. Two
+// differently-mechanised "go to bed" instructions on one page would leave the
+// model guessing which is real, and the one without a tool is the one it cannot
+// obey.
+//
+// Scanning for the retired marker (rather than asserting on the deleted symbol,
+// which no longer compiles) is deliberate: it catches a REintroduction by any
+// route — a revert, a new cue that reuses the heading, a copy-paste from the
+// git history — not just a resurrection of the original function.
+func TestGoldensSingleBedtimeCue(t *testing.T) {
+	const retiredMarker = "## Turn in for the night"
 	for _, sc := range perceptionScenarios {
 		sc := sc
 		t.Run(sc.name, func(t *testing.T) {
-			out := renderScenario(sc)
-			if strings.Contains(out, turnInCueMarker) && strings.Contains(out, retireCueMarker) {
-				t.Errorf("scenario %q: both bedtime cues rendered (%q and %q) — one of them has no tool behind it (LLM-447)",
-					sc.name, turnInCueMarker, retireCueMarker)
+			if out := renderScenario(sc); strings.Contains(out, retiredMarker) {
+				t.Errorf("scenario %q renders %q — the LLM-36 retire section was deleted in favour of the "+
+					"tool-backed %q cue; something reintroduced a second bedtime instruction with no tool behind it",
+					sc.name, retiredMarker, turnInCueMarker)
 			}
 		})
 	}

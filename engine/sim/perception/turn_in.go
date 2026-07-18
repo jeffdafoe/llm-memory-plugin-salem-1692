@@ -82,7 +82,7 @@ func buildTurnInChoice(snap *sim.Snapshot, a *sim.ActorSnapshot, members []Huddl
 		return &TurnInChoiceView{PlaceName: label, HasCompany: hasCompany}
 	}
 	// Lodger arm — inside the inn it holds an active grant on (mirrors
-	// buildRetireCue's selection: the soonest-expiring active grant).
+	// buildLodgingView's selection: the soonest-expiring active grant).
 	now := snap.PublishedAt
 	var best *sim.RoomAccess
 	for _, ra := range a.RoomAccess {
