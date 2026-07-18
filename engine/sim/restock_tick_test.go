@@ -486,6 +486,50 @@ func TestEvaluateRestock_ProductionInputPileIsNotOverstock(t *testing.T) {
 	}
 }
 
+// TestEvaluateRestock_ExcludedInputStillReordersItself: LLM-462 scope guard. Excluding a
+// production input from the OVERSTOCK verdict must not leak into that input's own reorder
+// math — it is excluded from the question "is this keeper sitting on unsold goods", not
+// from "is this keeper low on it". Water is the excluded item here AND the one that has
+// run out, and it must still stamp its own buy warrant. If the exclusion ever widened into
+// the reorder path, a keeper would go permanently blind to the very good the fix exists to
+// keep flowing — a worse deadlock than the one LLM-462 fixed.
+func TestEvaluateRestock_ExcludedInputStillReordersItself(t *testing.T) {
+	keeper := &Actor{
+		ID:        "hannah",
+		Kind:      KindNPCStateful,
+		LLMAgent:  "hannah-agent",
+		Coins:     2,
+		Inventory: map[ItemKind]int{"water": 0, "porridge": 0}, // the excluded input is the one that ran out
+		RestockPolicy: &RestockPolicy{Restock: []RestockEntry{
+			{Item: "porridge", Source: RestockSourceProduce, Max: 30},
+			{Item: "water", Source: RestockSourceBuy, Max: 10},
+		}},
+	}
+	w := restockWorld(keeper)
+	w.Settings.MerchantCoinFloor = 10
+	w.Recipes = map[ItemKind]*ItemRecipe{
+		"porridge": {OutputItem: "porridge", OutputQty: 4, RateQty: 4, RatePerHours: 1,
+			Inputs: []RecipeInput{{Item: "water", Qty: 5}}},
+	}
+	addSupplier(w, "well", "water")
+
+	if res, _ := EvaluateRestock(time.Now().UTC()).Fn(w); res.(int) != 1 {
+		t.Fatalf("stamped = %d for an exhausted production input, want 1", res.(int))
+	}
+	var found bool
+	for _, m := range keeper.Warrants {
+		if r, ok := m.Reason.(RestockWarrantReason); ok {
+			found = true
+			if r.Item != "water" || r.Source != RestockSourceBuy {
+				t.Errorf("warrant = {%q, %q}, want {water, buy}", r.Item, r.Source)
+			}
+		}
+	}
+	if !found {
+		t.Error("the overstock exclusion leaked into the reorder path — the input no longer wakes its own buy")
+	}
+}
+
 // TestEvaluateRestock_ConservingKeeperForageStillWarrants: LLM-298 — conserve is a COIN
 // gate (don't spend coin buying). Harvesting one's own bushes costs no coin, so a
 // conserving keeper's low FORAGE entry still wakes it to restock — only the buy wakeup is

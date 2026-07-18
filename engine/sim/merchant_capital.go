@@ -123,6 +123,27 @@ func actorConserving(w *World, a *Actor, now time.Time) bool {
 	// ReorderFloors keys exactly the REQUIRED inputs — elective BoostInputs never
 	// stall a line, so they stay merchandise — and is the same catalog the reorder
 	// threshold reads, so "raw material" means the same thing here and there.
+	//
+	// INVARIANT — required-input-always-wins. The test is ITEM-level, not quantity-
+	// level: an item that is a required input is never merchandise, however much of it
+	// is on hand, and even if the actor also produces and sells it (a dual-role good
+	// like John Ellis's water, which he both sells and cooks stew with). The obvious
+	// alternative — reserve the production floor and weigh the EXCESS as ware — was
+	// measured against the live case and does not work: Hannah's floor is 10 (2 batches
+	// x 5 water) against 19 on hand, so the excess is 9, and her water sell-through of 4
+	// a week puts the bar at max(8, 2x4) = 8. 9 >= 8, so she would still read as
+	// overstocked and still never be woken. A reserve big enough to clear that bar would
+	// have to be tuned per item, which is a knob with no principled setting.
+	//
+	// The cost of the simpler rule is bounded and one-directional: a keeper sitting on a
+	// genuinely large pile of a dual-role good is not steered to sell it down. It never
+	// suppresses a wake, and the actual sell nudge for such a good still comes from the
+	// ordinary wares-fetch cue. Under-conserving is the safe side — over-conserving is
+	// what silences a keeper completely.
+	//
+	// Exclusion is scoped to the OVERSTOCK VERDICT only. A required input keeps its own
+	// reorder threshold and its own buy warrant (that is the whole point — Hannah's flour
+	// warrant is what this restores), so nothing here makes an item unbuyable.
 	floors := ReorderFloors(w.Recipes, a.RestockPolicy)
 	seen := map[ItemKind]bool{}
 	overstocked := func(item ItemKind) bool {
