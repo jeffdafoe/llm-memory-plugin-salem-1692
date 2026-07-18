@@ -43,6 +43,38 @@ func TestChooseVisitorTradeDirection(t *testing.T) {
 	}
 }
 
+// TestInAfternoonSpawnWindow — the LLM-455 spawn window is [max(dawn, earliest=900), dusk−90),
+// inclusive lower / exclusive upper. Pins the boundary semantics (code_review) so a future
+// change can't quietly let a merchant arrive too close to dusk or before the tavern opens.
+func TestInAfternoonSpawnWindow(t *testing.T) {
+	const dawn, dusk = 420, 1140 // 07:00, 19:00 → window [900, 1050)
+	cases := []struct {
+		name   string
+		nowMin int
+		want   bool
+	}{
+		{"before earliest", 899, false},
+		{"exactly earliest (inclusive)", 900, true},
+		{"mid window", 960, true},
+		{"just before latest", 1049, true},
+		{"exactly latest (exclusive)", 1050, false},
+		{"after latest", 1051, false},
+	}
+	for _, c := range cases {
+		if got := inAfternoonSpawnWindow(dawn, dusk, c.nowMin); got != c.want {
+			t.Errorf("%s: inAfternoonSpawnWindow(%d,%d,%d) = %v, want %v", c.name, dawn, dusk, c.nowMin, got, c.want)
+		}
+	}
+	// earliest clamps UP to a late dawn.
+	if inAfternoonSpawnWindow(1000, 1140, 950) {
+		t.Error("window opened before a late dawn (earliest must clamp up to dawn)")
+	}
+	// An empty window (dusk − margin <= earliest) rejects everything.
+	if inAfternoonSpawnWindow(420, 960, 900) { // dusk 16:00 → latest 870 < earliest 900
+		t.Error("empty window (dusk−margin <= earliest) must reject all clocked spawns")
+	}
+}
+
 // TestSeedFactorPack — a factor carries every factorWareKind (unitsPerKind..+1 of each),
 // an iron shipment (ironUnits..+2 — LLM-442), a salt shipment (saltUnits..+2 — LLM-444),
 // and a purse inside the configured [min,max]; a min==max range gives a fixed purse.

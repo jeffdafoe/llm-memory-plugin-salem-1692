@@ -667,13 +667,7 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 	// no usable dawn/dusk clock spawns anytime (fail-open, matching how the perception evening
 	// gates degrade on a bad clock).
 	if dawn, dusk, ok := worldDawnDuskMinutes(w); ok {
-		earliest := VisitorSpawnEarliestMinute
-		if earliest < dawn {
-			earliest = dawn
-		}
-		latest := dusk - VisitorSpawnDuskMarginMinutes
-		nowMin := localMinuteOfDay(w, inputs.Now)
-		if nowMin < earliest || nowMin >= latest {
+		if !inAfternoonSpawnWindow(dawn, dusk, localMinuteOfDay(w, inputs.Now)) {
 			t.SpawnSkipReason = "outside afternoon spawn window"
 			return
 		}
@@ -1259,6 +1253,20 @@ func visitorDaytime(w *World, now time.Time) bool {
 	}
 	nowMin := localMinuteOfDay(w, now)
 	return nowMin >= dawn && nowMin < dusk
+}
+
+// inAfternoonSpawnWindow reports whether nowMin (minute-of-day) falls in the merchant
+// spawn window [max(dawn, VisitorSpawnEarliestMinute), dusk − VisitorSpawnDuskMarginMinutes)
+// (LLM-455) — inclusive lower bound, exclusive upper. earliest clamps up to dawn so the
+// window never opens before daylight; if the margin makes the upper bound fall at or below
+// the lower bound the window is empty and every clocked spawn is rejected (the safe result).
+func inAfternoonSpawnWindow(dawn, dusk, nowMin int) bool {
+	earliest := VisitorSpawnEarliestMinute
+	if earliest < dawn {
+		earliest = dawn
+	}
+	latest := dusk - VisitorSpawnDuskMarginMinutes
+	return nowMin >= earliest && nowMin < latest
 }
 
 // nextDaybreak returns the next daybreak instant (the village dawn minute in the
