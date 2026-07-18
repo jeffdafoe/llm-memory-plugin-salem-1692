@@ -1317,6 +1317,20 @@ var perceptionScenarios = []perceptionScenario{
 		build: walkerHomeAfterShutStoreTrip,
 	},
 	{
+		name: "turned_away_outdoors_at_shut_tavern",
+		summary: "LLM-463: the turned-away case — the villager is standing OUTDOORS at the shut Tavern's loiter " +
+			"pin, having just walked there and found it keeperless (the live Moses James turn, 2026-07-18 17:04). " +
+			"walker_home_after_shut_store_trip covers remembering a dead end from indoors somewhere else; this covers " +
+			"reading it while still at the shut door, which is the situation the loop actually repeats from. It uses the " +
+			"live Tavern geometry (anchor 106,131 / loiter_offset -3,+1) so the actor rests one row below the footprint " +
+			"— genuinely outdoors — and the walked action-log row therefore carries a BLANK conversational-scope " +
+			"StructureID, since loiterScopeConversable refuses the outdoor scope of a keeperless structure. The golden " +
+			"pins that '## What you've recently done' still names the dead end from DestStructureID alone. Keying " +
+			"FoundShut back off the scope stamp reverts the line to 'You arrived at the Tavern' in the diff — the live " +
+			"regression that had NPCs re-walking to the shut Tavern for a day.",
+		build: turnedAwayOutdoorsAtShutTavern,
+	},
+	{
 		name: "shared_npc_soul_who_you_are",
 		summary: "A shared-VA keeper (Hannah, salem-vendor) at her own post during working hours, carrying a " +
 			"synthesized about_me soul (LLM-199). The golden pins that '## Who you are' renders the soul prose — the " +
@@ -12105,13 +12119,105 @@ func walkerHomeAfterShutStoreTrip() (*sim.Snapshot, sim.ActorID, []sim.WarrantMe
 			store: plainStructure(store, "General Store"),
 		},
 		// The churn trail: home → (shut) store → home, oldest first in the log.
+		// DestStructureID is where each trip was AIMED; StructureID is the
+		// conversational scope it came to rest in. The store trip carries a BLANK
+		// scope on purpose — that is what the engine really stamps for a walk to a
+		// shut business, since loiterScopeConversable refuses the outdoor scope of a
+		// keeperless structure (LLM-463). The home trips carry both: the walker ends
+		// up inside its own home, which is scoped unconditionally.
 		ActionLog: []sim.ActionLogEntry{
-			{Seq: 1, ActorID: silenceID, OccurredAt: published.Add(-6 * time.Minute), ActionType: sim.ActionTypeWalked, Text: "Walker Residence", StructureID: home},
-			{Seq: 2, ActorID: silenceID, OccurredAt: published.Add(-4 * time.Minute), ActionType: sim.ActionTypeWalked, Text: "General Store", StructureID: store},
-			{Seq: 3, ActorID: silenceID, OccurredAt: published.Add(-2 * time.Minute), ActionType: sim.ActionTypeWalked, Text: "Walker Residence", StructureID: home},
+			{Seq: 1, ActorID: silenceID, OccurredAt: published.Add(-6 * time.Minute), ActionType: sim.ActionTypeWalked, Text: "Walker Residence", DestStructureID: home, StructureID: home},
+			{Seq: 2, ActorID: silenceID, OccurredAt: published.Add(-4 * time.Minute), ActionType: sim.ActionTypeWalked, Text: "General Store", DestStructureID: store},
+			{Seq: 3, ActorID: silenceID, OccurredAt: published.Add(-2 * time.Minute), ActionType: sim.ActionTypeWalked, Text: "Walker Residence", DestStructureID: home, StructureID: home},
 		},
 	}
 	return snap, silenceID, nil
+}
+
+// turnedAwayOutdoorsAtShutTavern is the LLM-463 scenario: the villager is standing
+// at the shut Tavern's door, not remembering it from elsewhere. Moses James walked
+// over at midday, found John Ellis abed and the taproom keeperless, and his next
+// turn rendered from that spot — "You are outdoors by the Tavern" with the live
+// "The Tavern is shut" cue, and a trail that said only "You arrived at the Tavern."
+// Nothing in front of him said the trip had been a dead end, so he walked it again.
+//
+// The geometry is the live Tavern's (anchor tile 106,131; loiter_offset -3,+1 →
+// pin 103,132; footprint 3/4/6/0 → y ends at 131). That puts the visitor slot one
+// row BELOW the building, so the actor is genuinely outdoors — and the walked
+// action-log row below carries NO conversational-scope StructureID, exactly as the
+// engine stamps it, because loiterScopeConversable refuses the outdoor scope of a
+// keeperless structure (LLM-359). The dead-end line must survive on
+// DestStructureID alone.
+func turnedAwayOutdoorsAtShutTavern() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		mosesID = sim.ActorID("moses")
+		johnID  = sim.ActorID("john")
+		tavern  = sim.StructureID("tavern")
+		farm    = sim.StructureID("james_farm")
+	)
+	published := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	midday := 720
+	arrived := published.Add(-1 * time.Minute)
+	moses := &sim.ActorSnapshot{
+		Kind:            sim.KindNPCStateful,
+		DisplayName:     "Moses James",
+		Role:            "farmer",
+		State:           sim.StateIdle,
+		Pos:             sim.TilePos{X: 103, Y: 133}, // a visitor slot on the pin's ring
+		WorkStructureID: farm,
+		Coins:           28,
+		Needs:           map[sim.NeedKey]int{},
+		Observed: sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
+			{StructureID: tavern, Condition: sim.ObservedClosed}: arrived,
+		}),
+	}
+	// The sole keeper, abed on the premises — an asleep keeper is not tending, so
+	// the business reads shut (LLM-126).
+	john := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "John Ellis",
+		Role:              "tavernkeeper",
+		State:             sim.StateSleeping,
+		Pos:               sim.TilePos{X: 103, Y: 130},
+		WorkStructureID:   tavern,
+		HomeStructureID:   tavern,
+		InsideStructureID: tavern,
+		Needs:             map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &midday,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{mosesID: moses, johnID: john},
+		Structures: map[sim.StructureID]*sim.Structure{
+			tavern: plainStructure(tavern, "Tavern"),
+			farm:   plainStructure(farm, "James Farm"),
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			sim.VillageObjectID(tavern): {
+				ID: sim.VillageObjectID(tavern), AssetID: "tavern-asset", DisplayName: "Tavern",
+				OwnerActorID: johnID, EntryPolicy: sim.EntryPolicyOpen,
+				Pos:           sim.WorldPos{X: float64(106-sim.PadX) * sim.TileSize, Y: float64(131-sim.PadY) * sim.TileSize},
+				LoiterOffsetX: intp(-3), LoiterOffsetY: intp(1),
+				Tags: []string{sim.TagBusiness, sim.VisitorTagTavern, "lodging"},
+			},
+		},
+		Assets: map[sim.AssetID]*sim.Asset{
+			"tavern-asset": {
+				ID: "tavern-asset", Category: "structure",
+				DoorOffsetX: intp(-2), DoorOffsetY: intp(-1),
+				FootprintLeft: 3, FootprintRight: 4, FootprintTop: 6, FootprintBottom: 0,
+			},
+		},
+		// The trip that just happened. StructureID is blank — the shut Tavern gives
+		// the arriver no conversational scope — so DestStructureID is the ONLY thing
+		// tying this row to the business it was aimed at.
+		ActionLog: []sim.ActionLogEntry{
+			{Seq: 1, ActorID: mosesID, OccurredAt: published.Add(-3 * time.Minute), ActionType: sim.ActionTypeDeparted, Text: "James Farm", StructureID: farm},
+			{Seq: 2, ActorID: mosesID, OccurredAt: arrived, ActionType: sim.ActionTypeWalked, Text: "Tavern", DestStructureID: tavern},
+		},
+	}
+	return snap, mosesID, nil
 }
 
 // homedWorkerEveningTavernOpen is the LLM-149 (Lever 2) positive case: a homed

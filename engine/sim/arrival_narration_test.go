@@ -44,6 +44,31 @@ func TestArrivalDestinationName(t *testing.T) {
 	}
 }
 
+// TestArrivalDestinationStructure covers the id-returning sibling of
+// ArrivalDestinationName (LLM-463) — what the walked action-log row keys its
+// shut-business outcome off. The two MUST share a precedence: if they ever
+// disagreed, a walked row's display name and its structure key would describe
+// different places, and the trail would attribute "found it shut" to the wrong
+// business. The cases mirror the name table above one-for-one.
+func TestArrivalDestinationStructure(t *testing.T) {
+	cases := []struct {
+		name string
+		e    *sim.ActorArrived
+		want sim.StructureID
+	}{
+		{"destination wins over final", &sim.ActorArrived{DestStructureID: "tavern", FinalStructureID: "inn"}, "tavern"},
+		{"visit — destination only, arriver outdoors", &sim.ActorArrived{DestStructureID: "tavern"}, "tavern"},
+		{"bare position arrival ending indoors falls back to final", &sim.ActorArrived{FinalStructureID: "tavern"}, "tavern"},
+		{"object visit is not a structure", &sim.ActorArrived{DestObjectID: "well"}, ""},
+		{"open ground", &sim.ActorArrived{}, ""},
+	}
+	for _, c := range cases {
+		if got := sim.ArrivalDestinationStructure(c.e); got != c.want {
+			t.Errorf("%s: ArrivalDestinationStructure = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
 // buildArrivalNarrationWorld seeds a running world with a "cottage" structure, a
 // conversational NPC "walker" parked outside, and — when withPC is true — a PC
 // already standing inside the cottage (the co-present observer). Mirrors

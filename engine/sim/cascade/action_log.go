@@ -733,6 +733,10 @@ func handleActorArrivedActionLog(w *sim.World, evt sim.Event) {
 		ActionType: sim.ActionTypeWalked,
 		Text:       text,
 		HuddleID:   sim.HuddleID(""),
+		// The destination this trip was aimed at, which the central scope stamp
+		// below cannot recover for a walk to a SHUT business (LLM-463): perception's
+		// self-trail keys its "found it shut" outcome off this field.
+		DestStructureID: sim.ArrivalDestinationStructure(arrived),
 	}
 	if _, err := sim.AppendActionLogEntry(entry).Fn(w); err != nil {
 		log.Printf("cascade/action_log: append walked (actor %q event %d): %v",
