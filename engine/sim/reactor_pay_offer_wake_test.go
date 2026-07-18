@@ -44,7 +44,7 @@ func TestActorCanReactNow_LaboringInterruptedByPayOffer(t *testing.T) {
 			a.State = sim.StateLaboring
 			until := now.Add(2 * time.Hour) // a long job — the live case was 4 hours
 			a.LaboringUntil = &until
-			a.Warrants = []sim.WarrantMeta{payOfferWarrantAt(now, 3 * time.Minute)}
+			a.Warrants = []sim.WarrantMeta{payOfferWarrantAt(now, 3*time.Minute)}
 			eligible, stale := sim.ActorCanReactNowAt(world, a, now)
 			if !eligible || stale {
 				t.Errorf("laboring + pending pay offer: eligible=%v stale=%v; want true,false — "+
@@ -145,7 +145,7 @@ func TestActorCanReactNow_SourceActivityOutranksPayOffer(t *testing.T) {
 			until := now.Add(2 * time.Hour)
 			a.LaboringUntil = &until
 			a.SourceActivity = &sim.SourceActivity{StartedAt: now, Until: now.Add(10 * time.Second)}
-			a.Warrants = []sim.WarrantMeta{payOfferWarrantAt(now, 3 * time.Minute)}
+			a.Warrants = []sim.WarrantMeta{payOfferWarrantAt(now, 3*time.Minute)}
 			eligible, stale := sim.ActorCanReactNowAt(world, a, now)
 			if eligible || stale {
 				t.Errorf("mid source-activity + laboring + pay offer: eligible=%v stale=%v; want "+
@@ -175,7 +175,7 @@ func TestActorCanReactNow_SleepAndBreakUnaffectedByPayOffer(t *testing.T) {
 
 			sleeper := world.Actors["alice"]
 			sleeper.State = sim.StateSleeping
-			sleeper.Warrants = []sim.WarrantMeta{payOfferWarrantAt(now, 3 * time.Minute)}
+			sleeper.Warrants = []sim.WarrantMeta{payOfferWarrantAt(now, 3*time.Minute)}
 			if eligible, _ := sim.ActorCanReactNowAt(world, sleeper, now); eligible {
 				t.Error("sleeping + pending pay offer: eligible=true, want false — sleep is never " +
 					"interrupted, and a pay offer must not become a way to wake a sleeper (LLM-460)")
@@ -185,7 +185,7 @@ func TestActorCanReactNow_SleepAndBreakUnaffectedByPayOffer(t *testing.T) {
 			rester.State = sim.StateResting
 			breakUntil := now.Add(30 * time.Minute)
 			rester.BreakUntil = &breakUntil
-			rester.Warrants = []sim.WarrantMeta{payOfferWarrantAt(now, 3 * time.Minute)}
+			rester.Warrants = []sim.WarrantMeta{payOfferWarrantAt(now, 3*time.Minute)}
 			if eligible, _ := sim.ActorCanReactNowAt(world, rester, now); eligible {
 				t.Error("on break + pending pay offer: eligible=true, want false — a break yields " +
 					"only to a red need or an operator nudge, not to commerce (LLM-460)")
