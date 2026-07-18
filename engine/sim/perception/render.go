@@ -3878,18 +3878,26 @@ func renderQuoteWarrantLine(n int, seller string, r sim.SceneQuoteTargetedWarran
 	// concrete kind, not "this", so a weak model sends the real machine value.
 	// Bundles stay coin-only here: offer_trade takes one item kind, and a bundle
 	// has no single want_item to name.
+	//
+	// LLM-457: every take-line carries the anti-speak-first guard, mirroring the
+	// co-present buy cue (restock.go) and the pay_with_item tool description. A
+	// posted coin quote is taken with pay_with_item, but a buyer who instead voices
+	// acceptance through the terminal speak tool ends the turn without paying and
+	// livelocks re-announcing the same deal (Nathaniel Cole ↔ John Ellis, porridge
+	// quote open ~13m, 2026-07-17). Folding the utterance into pay's say is the one
+	// move that both speaks and settles.
 	var take string
 	switch {
 	case len(r.Lines) > 1:
-		take = fmt.Sprintf(" To take the whole bundle, call pay_with_item with quote_id %d and amount %d — it settles at once.", r.QuoteID, r.Amount)
+		take = fmt.Sprintf(" To take the whole bundle, call pay_with_item with quote_id %d and amount %d — it settles at once. Say your piece in the same breath — pass it in the call's say; don't speak first, because speaking ends your turn and the quote goes unpaid.", r.QuoteID, r.Amount)
 	case len(r.Lines) == 1:
-		take = fmt.Sprintf(" To take this coin quote, call pay_with_item with quote_id %d, item %q, qty %d, and amount %d — it settles at once. Don't put goods on a quote_id; if you lack coins but have goods to offer, propose a separate trade instead — call offer_trade with the goods you'll give and want_item %q; they can accept or counter.", r.QuoteID, string(r.Lines[0].ItemKind), r.Lines[0].Qty, r.Amount, string(r.Lines[0].ItemKind))
+		take = fmt.Sprintf(" To take this coin quote, call pay_with_item with quote_id %d, item %q, qty %d, and amount %d — it settles at once. Say your piece in the same breath — pass it in the call's say; don't speak first, because speaking ends your turn and the quote goes unpaid. Don't put goods on a quote_id; if you lack coins but have goods to offer, propose a separate trade instead — call offer_trade with the goods you'll give and want_item %q; they can accept or counter.", r.QuoteID, string(r.Lines[0].ItemKind), r.Lines[0].Qty, r.Amount, string(r.Lines[0].ItemKind))
 	default:
 		// Defensive (code_review): a quote with zero lines shouldn't reach here —
 		// sell/scene_quote require ≥1 item — but the single-item arm indexes
 		// r.Lines[0], so guard the empty case instead of risking a panic on
 		// malformed/legacy warrant data. Bare coin take, no item to name.
-		take = fmt.Sprintf(" To take it, call pay_with_item with quote_id %d and the stated amount — it settles at once.", r.QuoteID)
+		take = fmt.Sprintf(" To take it, call pay_with_item with quote_id %d and the stated amount — it settles at once. Say your piece in the same breath — pass it in the call's say; don't speak first, because speaking ends your turn and the quote goes unpaid.", r.QuoteID)
 	}
 	// LLM-171: the buyer makes or is at cap on every quoted good — withhold the
 	// take entirely and steer them to decline, so a mis-pitched quote can't drive
