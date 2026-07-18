@@ -62,13 +62,34 @@ func buildBakeChoice(snap *sim.Snapshot, a *sim.ActorSnapshot) *BakeChoiceView {
 	if *snap.LocalMinuteOfDay >= snap.DuskMinute-bakeMinWindowMinutes {
 		return nil
 	}
-	// A pressing (red) need or an in-flight activity outranks an idle day's bake.
-	if hasRedNeed(a, snap) || actorMidSourceActivity(a) {
+	// An in-flight activity outranks the bake either way — the actor is already
+	// occupied at a source and has nothing to gain from a second commitment.
+	if actorMidSourceActivity(a) {
 		return nil
 	}
 	joining := snap.HomeBakesActive[home]
-	if !joining && a.Inventory[sim.BakeFlourItem] < sim.BakeFlourCost {
-		return nil // nothing going to join, and no flour to start
+	if !joining {
+		// STARTING is a whole afternoon's commitment, so a pressing (red) need
+		// outranks it — see to what's pressing first.
+		//
+		// JOINING is not (LLM-464/465). It costs no flour and mints no batch; it is
+		// a hand at bread the household is already baking, and the shelve it puts
+		// the actor under already carves out exactly the red-need case: gateTools'
+		// bakingMayMove keeps move_to for a red hunger/thirst, and the reactor's
+		// hasBreakInterruptingNeedWarrant ticks him through the source-activity
+		// shelve for it. So a red-hungry joiner is never trapped at the hearth — he
+		// can still walk out to eat, and the reactor will wake him to do it.
+		// Refusing him the join protected him from nothing; it only left him loose
+		// and fully tickable in a kitchen he had no affordance in. Live 2026-07-18:
+		// Lewis Walker, red on hunger while Anne and Patience baked, burned 24 turns
+		// in 70 minutes asking how the loaves were coming — and each question armed
+		// bakeReplyDue for BOTH bakers, making him the pump on the loop.
+		if hasRedNeed(a, snap) {
+			return nil
+		}
+		if a.Inventory[sim.BakeFlourItem] < sim.BakeFlourCost {
+			return nil // nothing going to join, and no flour to start
+		}
 	}
 	return &BakeChoiceView{Joining: joining}
 }

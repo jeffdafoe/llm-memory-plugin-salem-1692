@@ -126,9 +126,6 @@ func StartOrJoinBake(actorID ActorID, say string, hasNewNews bool, now time.Time
 			if nowMinute < dawn || nowMinute >= dusk {
 				return nil, ModelFacingError{Msg: "it's past the time for it — the baking is a daytime task, finished before dusk."}
 			}
-			if countRedNeeds(w.Settings, actor) > 0 {
-				return nil, ModelFacingError{Msg: "see to what's pressing first — the baking can wait for a quiet hour."}
-			}
 			doneAt, ok := duskInstant(w, now)
 			if !ok {
 				return nil, ModelFacingError{Msg: "you can't tell how much of the day is left."}
@@ -148,6 +145,18 @@ func StartOrJoinBake(actorID ActorID, say string, hasNewNews bool, now time.Time
 			if session == nil {
 				// START — the initiator provides the flour (checked now, consumed at
 				// completion).
+				//
+				// The red-need gate is START-ONLY, in lockstep with buildBakeChoice
+				// (LLM-465). Starting commits the actor to the whole afternoon, so a
+				// pressing need outranks it; JOINING costs nothing and leaves the
+				// need fully actionable (bakingMayMove keeps move_to for a red
+				// hunger/thirst, and hasBreakInterruptingNeedWarrant ticks him for
+				// it), so it stays open to a hungry housemate. Checked HERE rather
+				// than above the session resolution so the substrate rejects exactly
+				// what perception declines to advertise.
+				if countRedNeeds(w.Settings, actor) > 0 {
+					return nil, ModelFacingError{Msg: "see to what's pressing first — the baking can wait for a quiet hour."}
+				}
 				if actor.Inventory[BakeFlourItem] < BakeFlourCost {
 					return nil, ModelFacingError{Msg: fmt.Sprintf(
 						"baking a batch takes %d bags of flour and you have %d — buy more from the store first.",

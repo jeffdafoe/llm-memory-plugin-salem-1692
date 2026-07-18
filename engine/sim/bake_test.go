@@ -203,7 +203,9 @@ func TestBake_RejectsWhenGateWouldNotOffer(t *testing.T) {
 			t.Error("an unscheduled non-worker started baking")
 		}
 	})
-	t.Run("red need", func(t *testing.T) {
+	// START-only since LLM-465: a red need bars committing the afternoon to a fresh
+	// batch, but not joining one already going (TestBake_RedNeedJoinsExistingBatch).
+	t.Run("red need, nothing to join", func(t *testing.T) {
 		w, cancel, now := buildBakeTestWorld(t)
 		defer cancel()
 		setActor(t, w, "alice", func(a *sim.Actor) { a.Needs["hunger"] = sim.NeedMax })
@@ -211,6 +213,35 @@ func TestBake_RejectsWhenGateWouldNotOffer(t *testing.T) {
 			t.Error("baking started with a pressing red need")
 		}
 	})
+}
+
+// TestBake_RedNeedJoinsExistingBatch is the sim-side mirror of the LLM-465 perception
+// fix (TestBuildBakeChoiceRedNeedBlocksStartNotJoin): the substrate must accept exactly
+// what buildBakeChoice advertises, or the tool-cue lockstep breaks and a cued housemate
+// gets a rejection. A red need bars STARTING (covered above) but not lending a hand at
+// a batch already going — joining costs no flour, mints nothing, and leaves the need
+// actionable, since bakingMayMove keeps move_to for a red hunger/thirst and the reactor
+// ticks him through the shelve for it. Live: Lewis Walker, red on hunger, shut out of
+// his own household's bake and left loose in the kitchen for 70 minutes.
+func TestBake_RedNeedJoinsExistingBatch(t *testing.T) {
+	w, cancel, now := buildBakeTestWorld(t)
+	defer cancel()
+
+	if _, err := w.Send(sim.StartOrJoinBake("alice", "", false, now)); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	setActor(t, w, "bob", func(a *sim.Actor) { a.Needs["hunger"] = sim.NeedMax })
+	if _, err := w.Send(sim.StartOrJoinBake("bob", "", false, now.Add(time.Minute))); err != nil {
+		t.Fatalf("join with a red need: %v — joining is not the afternoon-long commitment "+
+			"the red-need gate guards against, and perception now offers it to him", err)
+	}
+	if k := bakeActivityKind(t, w, "bob"); k != sim.SourceActivityBake {
+		t.Errorf("bob activity = %q, want bake (a hungry housemate still lends a hand)", k)
+	}
+	// One session, still alice's — the hungry joiner minted no second batch.
+	if hb := homeBakeSession(t, w); hb == nil || hb.InitiatorID != "alice" {
+		t.Fatalf("session = %+v, want the single alice batch after the red-need join", hb)
+	}
 }
 
 // TestBake_CompletionWithVanishedFlourMintsNothing covers the review Medium: a
