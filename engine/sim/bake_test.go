@@ -309,3 +309,31 @@ func TestBake_RedTirednessBarsJoin(t *testing.T) {
 			"and move_to is stripped for tiredness, so he'd be stuck at the hearth until dusk")
 	}
 }
+
+// TestBake_RedNeedWithStaleSessionIsTreatedAsStart pins the ordering the LLM-465 fix
+// depends on (code_review). The START-only red-need guard sits AFTER the stale-session
+// self-heal, so the branch an actor lands in must be decided by whether a LIVE bake
+// exists — not by whether a HomeBake row happens to be present. An orphaned session
+// resolves to nil, which makes a red-need actor a starter and rejects him; if the guard
+// or the self-heal ever moved relative to each other, he would instead be waved through
+// as a "joiner" of a batch that isn't being baked, committing him to a hearth with no
+// initiator and no bread at the end of it.
+func TestBake_RedNeedWithStaleSessionIsTreatedAsStart(t *testing.T) {
+	w, cancel, now := buildBakeTestWorld(t)
+	defer cancel()
+
+	if _, err := w.Send(sim.StartOrJoinBake("alice", "", false, now)); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	// Orphan the session (sleep / operator interrupt), leaving the row with no live baker.
+	setActor(t, w, "alice", func(a *sim.Actor) { a.SourceActivity = nil })
+	setActor(t, w, "bob", func(a *sim.Actor) { a.Needs["hunger"] = sim.NeedMax })
+
+	if _, err := w.Send(sim.StartOrJoinBake("bob", "", false, now.Add(time.Minute))); err == nil {
+		t.Error("a red-need actor joined a STALE session — the self-heal drops it to nil, so he is " +
+			"starting a fresh batch, and starting is exactly what a pressing need still bars")
+	}
+	if k := bakeActivityKind(t, w, "bob"); k == sim.SourceActivityBake {
+		t.Error("bob was committed to a bake he was rejected from")
+	}
+}

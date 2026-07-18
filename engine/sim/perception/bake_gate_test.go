@@ -108,6 +108,22 @@ func TestBuildBakeChoiceRedNeedBlocksStartNotJoin(t *testing.T) {
 		t.Errorf("red-need resident holding flour with a bake going: got %+v, want JOIN", v)
 	}
 
+	// THIRST behaves identically to hunger — the guarantee is stated over every need the
+	// shelve leaves actionable, so asserting only hunger would let an asymmetric
+	// need-gating regression through (code_review).
+	thirsty := homeBaker("cottage", 0)
+	thirsty.Needs = map[sim.NeedKey]int{"thirst": sim.DefaultThirstRedThreshold}
+	if v := buildBakeChoice(snap, thirsty); v == nil || !v.Joining {
+		t.Errorf("red-THIRST resident with a bake going: got %+v, want JOIN — move_to survives for "+
+			"thirst exactly as it does for hunger, so the join is equally safe", v)
+	}
+	thirstyNoBake := homeBaker("cottage", 2)
+	thirstyNoBake.Needs = map[sim.NeedKey]int{"thirst": sim.DefaultThirstRedThreshold}
+	if v := buildBakeChoice(eveningSnap(daytime), thirstyNoBake); v != nil {
+		t.Errorf("red-THIRST resident with flour and no bake going: got %+v, want nil — starting "+
+			"is still barred by any pressing need", v)
+	}
+
 	// TIREDNESS is the one red need that does NOT open the join, because it is
 	// excluded from both carve-outs that make joining safe: bakingMayMove keeps
 	// move_to for hunger/thirst/cold but not tiredness, and the reactor does not tick
