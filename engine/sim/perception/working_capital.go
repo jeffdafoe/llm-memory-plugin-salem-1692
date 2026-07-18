@@ -15,6 +15,14 @@ import (
 // needs to buy inputs to have anything to sell (the empty-shelf exception), so the
 // ordinary buy cue stands.
 //
+// "Sellable stock" is scoped to actual WARES (LLM-462): an item that is a required
+// input to one of the keeper's own produce recipes is raw material and never counts
+// toward the overstock verdict, however much of it is on hand. Otherwise a keeper
+// whose shelves are bare reads as stock-rich off its own supply pile and loses the
+// empty-shelf exception it plainly qualifies for — which is what silenced the live
+// Hannah Boggs (19 water, a porridge ingredient; bare porridge shelf; no buy warrant
+// ever stamped, so her stalled flour was never fetched).
+//
 // Perception facts, not clamps (the LLM-223 philosophy): the gate only changes what
 // the keeper is TOLD; its own deliberation still chooses. Nothing here touches the
 // engine's buy/sell mechanics.
@@ -37,7 +45,9 @@ type merchantConserveState struct {
 // merchantConserve computes the conserve state for actorSnap. Active requires: the
 // floor is enabled (snap.MerchantCoinFloor > 0 — 0 is the operator off-switch), the
 // purse is below it, and at least one of the keeper's own sellable wares is
-// overstocked. Pure over the snapshot. Shared by buildRestocking (Tier 1) and
+// overstocked. "Sellable ware" excludes the keeper's own production inputs (LLM-462)
+// — a pile of raw material is not a shelf of goods that failed to sell. Pure over
+// the snapshot. Shared by buildRestocking (Tier 1) and
 // buildTradeValue (Tier 2) so the buy-cue softening and the sell nudge can never
 // disagree on who is conserving.
 //
@@ -59,6 +69,9 @@ func merchantConserve(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 	bestWare := ""
 	bestExcess := 0
 	var bestKind sim.ItemKind
+	// Produce-input floors — the raw-material discriminator (LLM-462), read from the
+	// same catalog the reorder threshold and the sim-side mirror use.
+	floors := sim.ReorderFloors(snap.Recipes, actorSnap.RestockPolicy)
 	seen := make(map[sim.ItemKind]bool)
 	better := func(excess int, label string, kind sim.ItemKind) bool {
 		if bestWare == "" {
@@ -77,6 +90,15 @@ func merchantConserve(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 			return
 		}
 		seen[item] = true
+		// LLM-462: raw material for the keeper's own produce recipes is not merchandise
+		// waiting to sell — skip it, exactly as the sim-side actorConserving does (same
+		// ReorderFloors catalog), so the section and the warrant keep agreeing on who is
+		// conserving. This also keeps the Tier-2 sell nudge from naming a production
+		// input as the ware to sell down: telling the innkeeper to sell off the water her
+		// porridge is made of is the opposite of the advice she needs.
+		if floors[item] > 0 {
+			return
+		}
 		onHand := actorSnap.Inventory[item]
 		if onHand <= 0 {
 			return

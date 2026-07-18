@@ -426,6 +426,110 @@ func TestEvaluateRestock_CoinPoorEmptyShelfStillWarrants(t *testing.T) {
 	}
 }
 
+// TestEvaluateRestock_ProductionInputPileIsNotOverstock: LLM-462 — a pile of the
+// keeper's own RAW MATERIAL must not read as unsold merchandise and tip it into
+// conserve mode. The live Hannah Boggs: 2 coins, a bare porridge shelf, and 19 water —
+// five of which every batch of porridge drinks. Water alone cleared the dead-stock
+// floor, so she counted as stock-rich, every buy warrant was skipped, and the one
+// measure of flour her whole kitchen ran on was never fetched. Her porridge line (20
+// sales to 12 villagers that week) simply stopped, and nothing ever woke her again.
+//
+// Scoped to actual wares she is plainly empty-shelved, so the LLM-294 empty-shelf
+// exception applies and the flour warrant stamps. The control pins the causality: make
+// the same water pile a NON-input and she is conserving again, buy warrant suppressed.
+func TestEvaluateRestock_ProductionInputPileIsNotOverstock(t *testing.T) {
+	keeper := &Actor{
+		ID:        "hannah",
+		Kind:      KindNPCStateful,
+		LLMAgent:  "hannah-agent",
+		Coins:     2,                                                        // below the floor
+		Inventory: map[ItemKind]int{"water": 19, "flour": 1, "porridge": 0}, // wares bare, raw material piled
+		RestockPolicy: &RestockPolicy{Restock: []RestockEntry{
+			{Item: "porridge", Source: RestockSourceProduce, Max: 30},
+			{Item: "water", Source: RestockSourceBuy, Max: 10},
+			{Item: "flour", Source: RestockSourceBuy, Max: 6},
+		}},
+	}
+	w := restockWorld(keeper)
+	w.Settings.MerchantCoinFloor = 10
+	w.Recipes = map[ItemKind]*ItemRecipe{
+		"porridge": {OutputItem: "porridge", OutputQty: 4, RateQty: 4, RatePerHours: 1,
+			Inputs: []RecipeInput{{Item: "flour", Qty: 2}, {Item: "water", Qty: 5}}},
+	}
+	addSupplier(w, "miller", "flour") // an open buy path — the warrant is otherwise gated on one
+
+	if res, _ := EvaluateRestock(time.Now().UTC()).Fn(w); res.(int) != 1 {
+		t.Fatalf("stamped = %d for a keeper piled with raw material but bare of wares, want 1", res.(int))
+	}
+	var found bool
+	for _, m := range keeper.Warrants {
+		if r, ok := m.Reason.(RestockWarrantReason); ok {
+			found = true
+			if r.Item != "flour" || r.Source != RestockSourceBuy {
+				t.Errorf("warrant = {%q, %q}, want {flour, buy}", r.Item, r.Source)
+			}
+		}
+	}
+	if !found {
+		t.Error("no RestockWarrantReason — the starved production input never woke the keeper")
+	}
+
+	// Control: the identical 19-water pile, but water now feeds no recipe of hers, so it
+	// IS merchandise sitting unsold → conserving → the flour buy stays suppressed. This
+	// is the LLM-298 posture, and what still holds for John Ellis's 20 unsold ale.
+	keeper.Warrants = nil
+	keeper.WarrantedSince = nil
+	w.Recipes["porridge"] = &ItemRecipe{OutputItem: "porridge", OutputQty: 4, RateQty: 4, RatePerHours: 1,
+		Inputs: []RecipeInput{{Item: "flour", Qty: 2}}}
+	if res, _ := EvaluateRestock(time.Now().UTC()).Fn(w); res.(int) != 0 {
+		t.Errorf("stamped = %d once water is a plain ware, want 0 (conserve gate restored)", res.(int))
+	}
+}
+
+// TestEvaluateRestock_ExcludedInputStillReordersItself: LLM-462 scope guard. Excluding a
+// production input from the OVERSTOCK verdict must not leak into that input's own reorder
+// math — it is excluded from the question "is this keeper sitting on unsold goods", not
+// from "is this keeper low on it". Water is the excluded item here AND the one that has
+// run out, and it must still stamp its own buy warrant. If the exclusion ever widened into
+// the reorder path, a keeper would go permanently blind to the very good the fix exists to
+// keep flowing — a worse deadlock than the one LLM-462 fixed.
+func TestEvaluateRestock_ExcludedInputStillReordersItself(t *testing.T) {
+	keeper := &Actor{
+		ID:        "hannah",
+		Kind:      KindNPCStateful,
+		LLMAgent:  "hannah-agent",
+		Coins:     2,
+		Inventory: map[ItemKind]int{"water": 0, "porridge": 0}, // the excluded input is the one that ran out
+		RestockPolicy: &RestockPolicy{Restock: []RestockEntry{
+			{Item: "porridge", Source: RestockSourceProduce, Max: 30},
+			{Item: "water", Source: RestockSourceBuy, Max: 10},
+		}},
+	}
+	w := restockWorld(keeper)
+	w.Settings.MerchantCoinFloor = 10
+	w.Recipes = map[ItemKind]*ItemRecipe{
+		"porridge": {OutputItem: "porridge", OutputQty: 4, RateQty: 4, RatePerHours: 1,
+			Inputs: []RecipeInput{{Item: "water", Qty: 5}}},
+	}
+	addSupplier(w, "well", "water")
+
+	if res, _ := EvaluateRestock(time.Now().UTC()).Fn(w); res.(int) != 1 {
+		t.Fatalf("stamped = %d for an exhausted production input, want 1", res.(int))
+	}
+	var found bool
+	for _, m := range keeper.Warrants {
+		if r, ok := m.Reason.(RestockWarrantReason); ok {
+			found = true
+			if r.Item != "water" || r.Source != RestockSourceBuy {
+				t.Errorf("warrant = {%q, %q}, want {water, buy}", r.Item, r.Source)
+			}
+		}
+	}
+	if !found {
+		t.Error("the overstock exclusion leaked into the reorder path — the input no longer wakes its own buy")
+	}
+}
+
 // TestEvaluateRestock_ConservingKeeperForageStillWarrants: LLM-298 — conserve is a COIN
 // gate (don't spend coin buying). Harvesting one's own bushes costs no coin, so a
 // conserving keeper's low FORAGE entry still wakes it to restock — only the buy wakeup is
