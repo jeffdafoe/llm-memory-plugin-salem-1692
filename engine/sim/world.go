@@ -1896,6 +1896,15 @@ func (w *World) FinalizeLoad(ctx context.Context) error {
 	// orders survive the load with absolute ExpiresAt intact; the
 	// aging sweep picks them up on its first pass.
 	restartExpirePendingOrders(w, time.Now())
+
+	// PC idle-input restart seed (LLM-473). LastPCInputAt is transient, and the
+	// idle auto-bed reads a nil stamp as "never idle" — so without this, every PC
+	// loaded from a checkpoint is permanently ineligible for the 15-minute
+	// bed-down until it acts. Uses w.LoadedAt rather than a fresh time.Now() so
+	// the whole restart pass shares one boot instant and the seeded idle clock is
+	// deterministic under test. See restartSeedPCInputStamps.
+	restartSeedPCInputStamps(w, w.LoadedAt)
+
 	// No separate order sequence-counter floor: Orders adopt their LedgerID
 	// (ZBBS-HOME-394), so the payLedgerSeq floor above — seeded from the DB
 	// max — already covers every order id.

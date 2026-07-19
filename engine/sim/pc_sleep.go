@@ -65,6 +65,40 @@ const (
 	DefaultPCIdleSleepMinTiredness = DefaultTirednessRedThreshold
 )
 
+// restartSeedPCInputStamps gives every PC a LastPCInputAt of boot time (LLM-473).
+//
+// LastPCInputAt is transient — no actor column loads back onto it — so it is nil
+// for every PC after a restart, and AutoBedIdleLodgerPCs reads nil as "never
+// acted, so never idle" and skips them forever. That is the opposite polarity to
+// the other two PC stamps: PCPresenceStale and PCActivityStale both treat nil as
+// AWAY, which is why the offline auto-bed and the eco-mode candle keep working
+// across a restart while the idle arm silently stops. The asymmetry stranded any
+// player whose client stays connected: the offline arm skips them (their WS
+// heartbeat keeps LastPCSeenAt fresh) and the idle arm skips them (nil input),
+// so nothing bedded them and tiredness climbed to the cap until they logged off.
+//
+// Seeding at boot rather than making the gate treat nil as idle is deliberate:
+// nil then means "no input since boot" and the 15-minute idle clock runs FROM
+// boot, so a player reconnecting into a restart gets the full grace period to
+// act before their character turns in. Treating nil as immediately-idle would
+// bed a tired PC on the first sweep after every deploy, yanking control away
+// from a player who was mid-session moments earlier.
+//
+// Runs in FinalizeLoad alongside the other restart housekeeping passes. PC-only:
+// no other actor kind consults this stamp.
+func restartSeedPCInputStamps(w *World, now time.Time) int {
+	seeded := 0
+	for _, a := range w.Actors {
+		if a == nil || a.Kind != KindPC || a.LastPCInputAt != nil {
+			continue
+		}
+		stamp := now
+		a.LastPCInputAt = &stamp
+		seeded++
+	}
+	return seeded
+}
+
 // ErrPCCannotSleepHere is returned by SleepPC when the PC holds no active
 // private-room grant in its current structure — the explicit /pc/sleep route
 // maps it to a rejection. The idle-auto-bed sweep applies the same gate
