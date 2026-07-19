@@ -28,14 +28,21 @@ import (
 //     backstop to rediscover the talk was over (232 of 391 measured empty
 //     wakes in a 24h window, ~485k input tokens/day).
 //
-//     Nothing that actually HAPPENS is suppressed by narrowing this, because
+//     Narrowing this is safe for the normal event-driven paths, because
 //     every conversational event is already a high-information warrant kind
 //     that fails check 4 on its own: pc_spoke, npc_spoke, huddle_joined,
 //     huddle_peer_joined, arrived. The bare-presence test was belt-and-
 //     braces over those, and its only unique coverage was the silent case
-//     this ticket exists to stop paying for. OwedReplyTo is kept as the one
-//     standing signal with no warrant of its own — it survives a tick that
-//     failed or was skipped, so an unanswered question can't strand.
+//     this ticket exists to stop paying for.
+//
+//     It is NOT an absolute guarantee, and the two backstops are deliberate
+//     (code_review). A warrant can be absent when this runs — already
+//     consumed by a tick that errored, or never enqueued — and in that state
+//     bare presence used to be the thing that saved the actor. What replaces
+//     it: the liveness window itself covers anything that happened in the
+//     last five minutes regardless of warrants, and OwedReplyTo covers the
+//     one signal with no warrant behind it at all, so an unanswered question
+//     can't strand however its speech warrant was lost.
 //
 //     Deliberately NOT live-making: the actor's own outgoing await-edge
 //     (TurnState.AwaitingReplyFrom). When this actor is the one waiting, a
