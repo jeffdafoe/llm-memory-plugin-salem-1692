@@ -274,6 +274,76 @@ func TestSweepPCIdleAudience_RaisesOncePerIdleStretch(t *testing.T) {
 	}
 }
 
+// LLM-470: the sweep lowers a prompt whose PC is no longer idle. The reachable
+// case is an operator RAISING eco_audience_idle_seconds over a pending prompt —
+// the PC becomes un-idle with no activity event, so clear-on-activity alone left
+// a candle stranded on that client until it was clicked.
+func TestSweepPCIdleAudience_LowersPromptWhenNoLongerIdle(t *testing.T) {
+	w, cancel := buildIdleWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	fresh := now.Add(-5 * time.Second)
+	activity := now.Add(-10 * time.Minute)
+	stampPC(t, w, "player", &fresh, &activity)
+
+	short := 60
+	if _, err := w.Send(sim.SetEcoMode(nil, nil, nil, &short)); err != nil {
+		t.Fatalf("SetEcoMode short: %v", err)
+	}
+	if _, err := w.Send(sim.SweepPCIdleAudience(now)); err != nil {
+		t.Fatalf("sweep (idle): %v", err)
+	}
+	if !promptPending(t, w, "player") {
+		t.Fatal("precondition: a 10-minute-idle PC must be prompted under a 60s horizon")
+	}
+
+	// Raise the horizon back over the PC's idleness. No activity event occurs.
+	long := 3600
+	if _, err := w.Send(sim.SetEcoMode(nil, nil, nil, &long)); err != nil {
+		t.Fatalf("SetEcoMode long: %v", err)
+	}
+	if _, err := w.Send(sim.SweepPCIdleAudience(now)); err != nil {
+		t.Fatalf("sweep (no longer idle): %v", err)
+	}
+
+	if promptPending(t, w, "player") {
+		t.Error("the sweep must lower a prompt whose PC is no longer idle")
+	}
+	if !audienceAt(t, w, now) {
+		t.Error("precondition check: the PC should read as an audience again")
+	}
+}
+
+// A disconnected PC keeps its pending flag: there is no client to tell, and its
+// reconnect stamps activity and clears it. Lowering it here would emit a frame
+// into the void and lose the flag's meaning for the next connect.
+func TestSweepPCIdleAudience_KeepsPromptPendingWhileDisconnected(t *testing.T) {
+	w, cancel := buildIdleWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	fresh := now.Add(-5 * time.Second)
+	ancient := now.Add(-6 * time.Hour)
+	stampPC(t, w, "player", &fresh, &ancient)
+	if _, err := w.Send(sim.SweepPCIdleAudience(now)); err != nil {
+		t.Fatalf("sweep (raise): %v", err)
+	}
+	if !promptPending(t, w, "player") {
+		t.Fatal("precondition: the sweep should have raised the prompt")
+	}
+
+	// The client drops. Activity is still ancient, so the PC is still idle.
+	stale := now.Add(-5 * time.Minute)
+	stampPC(t, w, "player", &stale, &ancient)
+	if _, err := w.Send(sim.SweepPCIdleAudience(now)); err != nil {
+		t.Fatalf("sweep (disconnected): %v", err)
+	}
+	if !promptPending(t, w, "player") {
+		t.Error("a disconnected PC must keep its pending prompt")
+	}
+}
+
 // Nobody to ask: a PC whose client has dropped gets no prompt. Its reconnect
 // stamps activity anyway, so a prompt raised here would only ever be seen by a
 // player who no longer needs to answer it.

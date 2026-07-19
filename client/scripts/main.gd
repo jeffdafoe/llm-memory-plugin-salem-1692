@@ -16,6 +16,7 @@ const InventoryPanelScript = preload("res://scripts/inventory_panel.gd")
 const VillageTickerScript = preload("res://scripts/village_ticker.gd")
 const SleepFadeScript = preload("res://scripts/sleep_fade.gd")
 const CandlePromptScript = preload("res://scripts/candle_prompt.gd")
+const ActivityReporterScript = preload("res://scripts/activity_reporter.gd")
 const StormFXScript = preload("res://scripts/storm_fx.gd")
 
 @onready var world: Node2D = $World
@@ -44,6 +45,11 @@ var sleep_fade: CanvasLayer = null
 ## /pc/attend and restores the village to full cadence. See
 ## client/scripts/candle_prompt.gd.
 var candle_prompt: CanvasLayer = null
+## Player-activity heartbeat (LLM-470). Watches for real local input — including
+## map panning and panel use, none of which reaches the server — and reports it
+## via /pc/attend so watching the village counts as being present. See
+## client/scripts/activity_reporter.gd.
+var activity_reporter: Node = null
 ## /pc/attend POST helper — instantiated lazily on the first candle click, the
 ## same posture as _pc_wake_http below.
 var _pc_attend_http: HTTPRequest = null
@@ -569,6 +575,13 @@ func _build_ui() -> void:
     candle_prompt.set_script(CandlePromptScript)
     add_child(candle_prompt)
     candle_prompt.trimmed.connect(_on_candle_trimmed)
+
+    # Activity heartbeat (LLM-470). A plain Node, not a CanvasLayer — it renders
+    # nothing and only listens. Added as a sibling so its ungated _input sees
+    # every event, including while the candle prompt holds the modal blocker.
+    activity_reporter = Node.new()
+    activity_reporter.set_script(ActivityReporterScript)
+    add_child(activity_reporter)
 
     # Storm FX overlay (LLM-117). Same layer=0 posture as sleep_fade — paints
     # over the world but under the UI. Injected into world so set_weather (WS
@@ -1467,6 +1480,11 @@ func _on_pc_idle_prompt(actor_id: String) -> void:
         return
     if candle_prompt != null and candle_prompt.has_method("show_prompt"):
         candle_prompt.show_prompt()
+    # Drop the heartbeat throttle while the candle is up (LLM-470), so a scroll
+    # or a mouse-wiggle answers it in a round-trip. A click needs none of this —
+    # it hits the overlay directly.
+    if activity_reporter != null and activity_reporter.has_method("set_prompt_showing"):
+        activity_reporter.set_prompt_showing(true)
     # Register as a modal blocker, not just a MOUSE_FILTER_STOP rect: _input
     # (click-to-walk) and camera pan both run BEFORE GUI input, so without the
     # blocker the click that answers the candle would also order a walk.
@@ -1481,6 +1499,8 @@ func _on_pc_idle_prompt_cleared(actor_id: String) -> void:
         return
     if candle_prompt != null and candle_prompt.has_method("hide_prompt"):
         candle_prompt.hide_prompt()
+    if activity_reporter != null and activity_reporter.has_method("set_prompt_showing"):
+        activity_reporter.set_prompt_showing(false)
     _set_modal_blocker("candle_prompt", false)
 
 
@@ -1527,6 +1547,8 @@ func _on_attend_clear_fallback() -> void:
         return
     push_warning("/pc/attend acked but no pc_idle_prompt_cleared arrived — lowering the candle locally")
     candle_prompt.hide_prompt()
+    if activity_reporter != null and activity_reporter.has_method("set_prompt_showing"):
+        activity_reporter.set_prompt_showing(false)
     _set_modal_blocker("candle_prompt", false)
 
 

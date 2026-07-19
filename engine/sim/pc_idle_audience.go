@@ -176,6 +176,13 @@ func StampPCConnected(connectedLogins map[string]struct{}, now time.Time) Comman
 // the engine pays for full cadence while waiting for an answer. The returned
 // count is the number of prompts raised THIS pass (a transition count, unlike
 // SweepStalePCPresence's). MUST run on the world goroutine.
+//
+// The sweep also LOWERS a prompt whose PC is no longer idle (LLM-470). Clearing
+// on activity alone left the flag reachable-but-unclearable in one case: raising
+// eco_audience_idle_seconds over a pending prompt makes the PC un-idle without
+// any activity event, stranding a candle on that client until it was clicked.
+// Reconciling both directions here makes the flag self-healing — it tracks the
+// predicate rather than the history of edges applied to it.
 func SweepPCIdleAudience(now time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
@@ -183,7 +190,20 @@ func SweepPCIdleAudience(now time.Time) Command {
 			staleAfter := PCPresenceStaleAfter(w)
 			raised := 0
 			for _, a := range w.Actors {
-				if a == nil || a.Kind != KindPC || a.IdlePromptPending {
+				if a == nil || a.Kind != KindPC {
+					continue
+				}
+				if a.IdlePromptPending {
+					// Lower a prompt the PC has outlived: it got activity by a
+					// path that didn't clear the flag, or the horizon moved out
+					// from under it. Disconnected PCs are left pending — there is
+					// no client to tell, and the reconnect stamps activity.
+					stillIdle := PCActivityStale(a.LastPCActivityAt, now, idleAfter)
+					connected := !PCPresenceStale(a.LastPCSeenAt, now, staleAfter)
+					if connected && !stillIdle {
+						a.IdlePromptPending = false
+						w.emit(&PCIdlePromptCleared{ActorID: a.ID, At: now})
+					}
 					continue
 				}
 				if PCPresenceStale(a.LastPCSeenAt, now, staleAfter) {
