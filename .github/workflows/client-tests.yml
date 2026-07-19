@@ -44,3 +44,6 @@ jobs:
 
             - name: Run marker transition tests
               run: godot --headless --path client --script res://tests/marker_transitions_test.gd
+
+            - name: Run activity heartbeat tests
+              run: godot --headless --path client --script res://tests/activity_reporter_test.gd
