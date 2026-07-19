@@ -28,7 +28,7 @@ func NewRecipesRepo(pool Pool) *RecipesRepo {
 // nullable smallints.
 const loadAllRecipesSQL = `
 SELECT output_item, output_qty, rate_qty, rate_per_hours, inputs,
-       boost_inputs, wholesale_price, retail_price
+       boost_inputs, boost_state, wholesale_price, retail_price
   FROM item_recipe`
 
 // LoadAll returns every recipe keyed by output item. Port of v1's
@@ -49,11 +49,12 @@ func (r *RecipesRepo) LoadAll(ctx context.Context) (map[sim.ItemKind]*sim.ItemRe
 			outputItem        string
 			inputsJSON        []byte
 			boostInputsJSON   []byte
+			boostStateJSON    []byte
 			wholesale, retail sql.NullInt32
 		)
 		rec := &sim.ItemRecipe{}
 		if err := rows.Scan(&outputItem, &rec.OutputQty, &rec.RateQty,
-			&rec.RatePerHours, &inputsJSON, &boostInputsJSON, &wholesale, &retail); err != nil {
+			&rec.RatePerHours, &inputsJSON, &boostInputsJSON, &boostStateJSON, &wholesale, &retail); err != nil {
 			return nil, fmt.Errorf("pg recipes LoadAll: scan: %w", err)
 		}
 		rec.OutputItem = sim.ItemKind(outputItem)
@@ -69,10 +70,16 @@ func (r *RecipesRepo) LoadAll(ctx context.Context) (map[sim.ItemKind]*sim.ItemRe
 		if err := json.Unmarshal(boostInputsJSON, &rec.BoostInputs); err != nil {
 			return nil, fmt.Errorf("pg recipes LoadAll: parse boost_inputs for %q: %w", outputItem, err)
 		}
+		if err := json.Unmarshal(boostStateJSON, &rec.BoostState); err != nil {
+			return nil, fmt.Errorf("pg recipes LoadAll: parse boost_state for %q: %w", outputItem, err)
+		}
 		if err := validateRecipeInputs(rec.OutputItem, rec.Inputs); err != nil {
 			return nil, fmt.Errorf("pg recipes LoadAll: %w", err)
 		}
 		if err := validateRecipeBoostInputs(rec.OutputItem, rec.Inputs, rec.BoostInputs); err != nil {
+			return nil, fmt.Errorf("pg recipes LoadAll: %w", err)
+		}
+		if err := validateRecipeBoostState(rec.OutputItem, rec.BoostState); err != nil {
 			return nil, fmt.Errorf("pg recipes LoadAll: %w", err)
 		}
 		// Loud duplicate detection (consistent with the other loaded-map
@@ -95,14 +102,15 @@ func (r *RecipesRepo) LoadAll(ctx context.Context) (map[sim.ItemKind]*sim.ItemRe
 // as text + cast ::jsonb (same posture as the actor_attribute params write).
 const upsertRecipeSQL = `
 INSERT INTO item_recipe (
-    output_item, output_qty, rate_qty, rate_per_hours, inputs, boost_inputs, wholesale_price, retail_price
-) VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8)
+    output_item, output_qty, rate_qty, rate_per_hours, inputs, boost_inputs, boost_state, wholesale_price, retail_price
+) VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8, $9)
 ON CONFLICT (output_item) DO UPDATE SET
     output_qty      = EXCLUDED.output_qty,
     rate_qty        = EXCLUDED.rate_qty,
     rate_per_hours  = EXCLUDED.rate_per_hours,
     inputs          = EXCLUDED.inputs,
     boost_inputs    = EXCLUDED.boost_inputs,
+    boost_state     = EXCLUDED.boost_state,
     wholesale_price = EXCLUDED.wholesale_price,
     retail_price    = EXCLUDED.retail_price`
 
@@ -123,6 +131,9 @@ func (r *RecipesRepo) UpsertRecipe(ctx context.Context, rec sim.ItemRecipe) erro
 	if err := validateRecipeBoostInputs(rec.OutputItem, rec.Inputs, rec.BoostInputs); err != nil {
 		return fmt.Errorf("pg recipes UpsertRecipe: %w", err)
 	}
+	if err := validateRecipeBoostState(rec.OutputItem, rec.BoostState); err != nil {
+		return fmt.Errorf("pg recipes UpsertRecipe: %w", err)
+	}
 	inputs := rec.Inputs
 	if inputs == nil {
 		inputs = []sim.RecipeInput{}
@@ -139,6 +150,14 @@ func (r *RecipesRepo) UpsertRecipe(ctx context.Context, rec sim.ItemRecipe) erro
 	if err != nil {
 		return fmt.Errorf("pg recipes UpsertRecipe: marshal boost_inputs: %w", err)
 	}
+	boostState := rec.BoostState
+	if boostState == nil {
+		boostState = []sim.BoostState{}
+	}
+	boostStateJSON, err := json.Marshal(boostState)
+	if err != nil {
+		return fmt.Errorf("pg recipes UpsertRecipe: marshal boost_state: %w", err)
+	}
 	if _, err := r.pool.Exec(ctx, upsertRecipeSQL,
 		string(rec.OutputItem),
 		rec.OutputQty,
@@ -146,6 +165,7 @@ func (r *RecipesRepo) UpsertRecipe(ctx context.Context, rec sim.ItemRecipe) erro
 		rec.RatePerHours,
 		string(inputsJSON),
 		string(boostInputsJSON),
+		string(boostStateJSON),
 		rec.WholesalePrice,
 		rec.RetailPrice,
 	); err != nil {
@@ -193,6 +213,29 @@ func validateRecipeBoostInputs(output sim.ItemKind, inputs []sim.RecipeInput, bo
 		if required[bi.Item] {
 			return fmt.Errorf("recipe %q boost_input[%d] %q is already a required input", output, i, bi.Item)
 		}
+	}
+	return nil
+}
+
+// validateRecipeBoostState is the boost_state mirror of validateRecipeBoostInputs
+// (LLM-474): a recognised state name, a positive bonus_qty, and no duplicate
+// state (two `hearth_lit` rows would pay one fire twice). Same
+// belt-and-suspenders posture against hand-edited JSONB — the DB enforces only
+// the array shape, so an unknown state reaching the catalog would otherwise sit
+// there validating and never firing.
+func validateRecipeBoostState(output sim.ItemKind, states []sim.BoostState) error {
+	seen := make(map[sim.RecipeBoostState]bool, len(states))
+	for i, bs := range states {
+		if !sim.ValidRecipeBoostState(bs.State) {
+			return fmt.Errorf("recipe %q boost_state[%d] unknown state %q", output, i, bs.State)
+		}
+		if bs.BonusQty <= 0 {
+			return fmt.Errorf("recipe %q boost_state[%d] bonus_qty must be positive (got %d)", output, i, bs.BonusQty)
+		}
+		if seen[bs.State] {
+			return fmt.Errorf("recipe %q boost_state[%d] %q listed more than once", output, i, bs.State)
+		}
+		seen[bs.State] = true
 	}
 	return nil
 }

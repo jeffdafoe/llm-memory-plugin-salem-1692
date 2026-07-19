@@ -312,6 +312,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderStallCondition(&ephemeral, p.StallCondition)
 	renderStallRepairBuy(&ephemeral, p.StallRepairBuy)
 	renderHearth(&ephemeral, p.Hearth)
+	renderHearthCooking(&ephemeral, p.HearthCooking)
 	renderFarmUpkeep(&ephemeral, p.FarmUpkeep)
 	renderRestocking(&ephemeral, p.Restocking)
 	renderForage(&ephemeral, p.Forage)
