@@ -47,6 +47,12 @@ const INSTRUCTION_FONT_SIZE: int = 20
 var _rect: ColorRect = null
 var _tween: Tween = null
 var _shown: bool = false
+## True once this raising of the prompt has been answered, until it is lowered.
+## Two reasons: with mouse-from-touch emulation a single tap arrives as BOTH an
+## InputEventScreenTouch and a synthesized InputEventMouseButton, and dismissal
+## is server-driven, so without this an impatient player clicking through the
+## round trip would fire a POST per click.
+var _answered: bool = false
 
 
 func _ready() -> void:
@@ -107,6 +113,7 @@ func _build_label(text: String, font_size: int, color: Color) -> Label:
 ## Idempotent — re-firing while it is already up resets the in-flight tween.
 func show_prompt() -> void:
     _shown = true
+    _answered = false
     _rect.visible = true
     _kill_tween()
     _tween = create_tween()
@@ -121,6 +128,7 @@ func hide_prompt() -> void:
     if not _shown:
         return
     _shown = false
+    _answered = false
     _kill_tween()
     _tween = create_tween()
     _tween.tween_property(_rect, "modulate:a", 0.0, FADE_OUT_DURATION)
@@ -132,13 +140,31 @@ func is_showing() -> bool:
 
 
 func _on_rect_gui_input(event: InputEvent) -> void:
-    if not _shown:
+    if not _shown or _answered:
         return
-    # Button-up rather than down, matching the client's click-to-walk release
-    # semantics — and so a click begun before the candle rose can't answer it.
-    if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and not event.pressed:
-        _rect.accept_event()
-        trimmed.emit()
+    if not _is_release(event):
+        return
+    _answered = true
+    _rect.accept_event()
+    trimmed.emit()
+
+
+## True for the release half of a click or a tap. Release rather than press,
+## matching the client's click-to-walk semantics — and so a click already begun
+## when the candle rose can't answer it.
+##
+## Both event types are handled deliberately. A native touch produces
+## InputEventScreenTouch; mouse-from-touch emulation (on by default) ALSO
+## synthesizes an InputEventMouseButton. Handling only the mouse half would make
+## the prompt undismissable on any client where that default is off, which is a
+## dead end for a player — the overlay is modal. _answered absorbs the duplicate
+## when both arrive.
+func _is_release(event: InputEvent) -> bool:
+    if event is InputEventMouseButton:
+        return event.button_index == MOUSE_BUTTON_LEFT and not event.pressed
+    if event is InputEventScreenTouch:
+        return not event.pressed
+    return false
 
 
 func _kill_tween() -> void:

@@ -107,18 +107,17 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		// very ejection this ticket removes. Synchronous like the old /pc/me stamp,
 		// on the still-live request context; a no-op login or a caller with no PC
 		// stamps nothing.
+		// LLM-466: one command stamps both halves, so registration is a single
+		// transition — a scan can't observe a socket-fresh, activity-nil PC in
+		// between. Opening a client is itself an input, so the connect starts a
+		// fresh eco-mode audience horizon (and dismisses any candle prompt this
+		// PC was left holding). The ACTIVITY half is deliberately absent from the
+		// heartbeat's path: a stamp that renewed itself every 15s for as long as
+		// a tab existed is the bug this ticket fixes.
 		if login != "" {
 			logins := map[string]struct{}{login: {}}
-			if _, err := s.world.SendContext(r.Context(), sim.StampConnectedPCsSeen(logins)); err != nil {
-				log.Printf("httpapi: initial presence stamp for %q failed: %v", login, err)
-			}
-			// LLM-466: opening a client is itself an input, so the connect also
-			// starts a fresh eco-mode audience horizon (and dismisses any candle
-			// prompt this PC was left holding). Separate from the presence stamp
-			// above and deliberately NOT on the heartbeat's path — a stamp that
-			// renewed itself every 15s for as long as a tab existed is the bug.
-			if _, err := s.world.SendContext(r.Context(), sim.StampConnectedPCsActive(logins, time.Now().UTC())); err != nil {
-				log.Printf("httpapi: initial activity stamp for %q failed: %v", login, err)
+			if _, err := s.world.SendContext(r.Context(), sim.StampPCConnected(logins, time.Now().UTC())); err != nil {
+				log.Printf("httpapi: initial presence/activity stamp for %q failed: %v", login, err)
 			}
 		}
 	case <-s.hub.done:

@@ -357,6 +357,40 @@ func TestStampConnectedPCsActive_ConnectStartsHorizon(t *testing.T) {
 	}
 }
 
+// The WS connect path stamps both halves in ONE command, so no scan can observe
+// a socket-fresh but activity-nil PC mid-registration. Both stamps land and the
+// PC is an audience straight away.
+func TestStampPCConnected_StampsBothHalves(t *testing.T) {
+	w, cancel := buildIdleWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	stampPC(t, w, "player", nil, nil) // never attached this session
+	if audienceAt(t, w, now) {
+		t.Fatal("precondition: an unattached PC is not an audience")
+	}
+
+	if _, err := w.Send(sim.StampPCConnected(map[string]struct{}{"jeff": {}}, now)); err != nil {
+		t.Fatalf("StampPCConnected: %v", err)
+	}
+
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Actors["player"]
+		if a.LastPCSeenAt == nil {
+			t.Error("presence stamp missing after connect")
+		}
+		if a.LastPCActivityAt == nil {
+			t.Error("activity stamp missing after connect")
+		}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("verify stamps: %v", err)
+	}
+	if !audienceAt(t, w, now) {
+		t.Error("a freshly connected client must count as an audience")
+	}
+}
+
 // The heartbeat's own stamp path must never refresh activity — that is exactly
 // the bug. StampConnectedPCsSeen touches presence only.
 func TestStampConnectedPCsSeen_DoesNotRefreshActivity(t *testing.T) {

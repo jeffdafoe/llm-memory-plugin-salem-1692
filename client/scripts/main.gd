@@ -91,6 +91,13 @@ const DREAM_SNIPPETS: Array = [
 ]
 const DREAM_SNIPPET_INTERVAL_SEC: float = 180.0
 
+## Grace period before the client lowers an answered candle prompt on its own
+## (LLM-466). Dismissal is server-driven, so a dropped pc_idle_prompt_cleared
+## would otherwise leave the modal overlay up indefinitely. Long enough that the
+## engine's broadcast normally beats it by an order of magnitude; short enough
+## that a player is never stuck staring at a prompt they already answered.
+const ATTEND_CLEAR_FALLBACK_SEC: float = 5.0
+
 # Login screen (added as a CanvasLayer so it renders on top of everything)
 var login_screen: Control = null
 var login_layer: CanvasLayer = null
@@ -1502,6 +1509,25 @@ func _on_pc_attend_completed(_result: int, code: int, _headers: PackedStringArra
         return
     if code < 200 or code >= 300:
         push_warning("/pc/attend non-2xx: code=%s" % code)
+        return
+    # Bounded fallback for a dropped clear frame. The overlay is MODAL, so a
+    # pc_idle_prompt_cleared lost to a socket blip would lock world input until
+    # the client reconnected. A 2xx means the engine has already recorded the
+    # answer — the server state is right and the village is back at full
+    # cadence — so lowering the candle ourselves after a grace period states the
+    # truth rather than guessing at it. Normal path still wins: the broadcast
+    # arrives in well under a second and hide_prompt is idempotent.
+    get_tree().create_timer(ATTEND_CLEAR_FALLBACK_SEC).timeout.connect(_on_attend_clear_fallback)
+
+
+func _on_attend_clear_fallback() -> void:
+    if candle_prompt == null or not candle_prompt.has_method("is_showing"):
+        return
+    if not candle_prompt.is_showing():
+        return
+    push_warning("/pc/attend acked but no pc_idle_prompt_cleared arrived — lowering the candle locally")
+    candle_prompt.hide_prompt()
+    _set_modal_blocker("candle_prompt", false)
 
 
 ## Push one randomly-picked dream snippet to the village ticker.

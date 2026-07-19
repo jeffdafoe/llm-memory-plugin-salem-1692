@@ -131,7 +131,7 @@ func StampConnectedPCsActive(connectedLogins map[string]struct{}, now time.Time)
 			}
 			stamped := 0
 			for _, a := range w.Actors {
-				if a.Kind != KindPC || a.LoginUsername == "" {
+				if a == nil || a.Kind != KindPC || a.LoginUsername == "" {
 					continue
 				}
 				if _, ok := connectedLogins[a.LoginUsername]; !ok {
@@ -143,6 +143,23 @@ func StampConnectedPCsActive(connectedLogins map[string]struct{}, now time.Time)
 				stamped++
 			}
 			return stamped, nil
+		},
+	}
+}
+
+// StampPCConnected is the WS connect path's single command: presence AND
+// activity in one trip to the world goroutine. Two separate commands would let
+// a presence sweep or reactor scan land between them and observe a client that
+// is socket-fresh but activity-nil — a harmless transient (it reads as "not an
+// audience", which is the safe direction) but an avoidable one, since
+// registration is logically one transition.
+func StampPCConnected(connectedLogins map[string]struct{}, now time.Time) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			if _, err := StampConnectedPCsSeen(connectedLogins).Fn(w); err != nil {
+				return nil, err
+			}
+			return StampConnectedPCsActive(connectedLogins, now).Fn(w)
 		},
 	}
 }
@@ -166,7 +183,7 @@ func SweepPCIdleAudience(now time.Time) Command {
 			staleAfter := PCPresenceStaleAfter(w)
 			raised := 0
 			for _, a := range w.Actors {
-				if a.Kind != KindPC || a.IdlePromptPending {
+				if a == nil || a.Kind != KindPC || a.IdlePromptPending {
 					continue
 				}
 				if PCPresenceStale(a.LastPCSeenAt, now, staleAfter) {
