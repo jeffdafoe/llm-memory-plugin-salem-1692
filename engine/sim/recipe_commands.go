@@ -66,6 +66,27 @@ func ResolveRecipe(w *World, r ItemRecipe) (ItemRecipe, error) {
 		canonicalBoosts = append(canonicalBoosts, BoostInput{Item: k, Qty: bi.Qty, BonusQty: bi.BonusQty})
 	}
 	r.BoostInputs = canonicalBoosts
+	// State boosters (LLM-474): no catalog lookup (they name a world condition,
+	// not an item), but the same numeric validation and the same
+	// reject-what-the-DB-rejects posture as the boosters above. The duplicate
+	// guard matters more here than for boost inputs — two `hearth_lit` rows
+	// would silently pay the bonus twice for one fire.
+	seenStates := make(map[RecipeBoostState]bool, len(r.BoostState))
+	canonicalStates := make([]BoostState, 0, len(r.BoostState))
+	for _, bs := range r.BoostState {
+		if !ValidRecipeBoostState(bs.State) {
+			return ItemRecipe{}, fmt.Errorf("unknown boost state %q", bs.State)
+		}
+		if seenStates[bs.State] {
+			return ItemRecipe{}, fmt.Errorf("boost state %q listed more than once", bs.State)
+		}
+		if bs.BonusQty <= 0 {
+			return ItemRecipe{}, fmt.Errorf("boost state %q bonus_qty must be positive (got %d)", bs.State, bs.BonusQty)
+		}
+		seenStates[bs.State] = true
+		canonicalStates = append(canonicalStates, BoostState{State: bs.State, BonusQty: bs.BonusQty})
+	}
+	r.BoostState = canonicalStates
 	return r, nil
 }
 

@@ -1,0 +1,22 @@
+# Your turn
+
+## Since your last turn
+(nothing specific — this is a routine check-in)
+
+
+## You
+Coins in your purse: 25.
+
+## Around you
+You are inside the Inn, your workplace, with no one else here to hear you speak.
+It is midday.
+
+You're at your workplace.
+
+It is your working hours and you are at your post — stay and look after your work; you close at 6 in the evening.
+
+## Your hearth
+The hearth at your Inn sits cold — no fire has been kept in it. Feeding it takes 1 firewood and you have 0 — you'll need to buy or gather more before you can stoke it.
+## The fire and your cooking
+There is no fire under your pot at your Inn, and a cold hearth makes a mean batch — what porridge you put up will go nowhere near as far.
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

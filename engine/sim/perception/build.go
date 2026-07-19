@@ -344,6 +344,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	p.StallCondition = buildStallCondition(snap, actorID, actorSnap)
 	p.StallRepairBuy = buildStallRepairBuy(snap, actorID, actorSnap)
 	p.Hearth = buildHearth(snap, actorID, actorSnap)
+	p.HearthCooking = buildHearthCooking(snap, actorSnap)
 	p.FarmUpkeep = buildFarmUpkeep(snap, actorID, actorSnap)
 	// customerEngaged (LLM-90): the seller-side "someone's at my stall right now"
 	// signal — a buyer's pending offer awaiting my decision (PayOffersForMe), a

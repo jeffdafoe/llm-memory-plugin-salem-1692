@@ -2996,6 +2996,38 @@ var perceptionScenarios = []perceptionScenario{
 			"the fire is the job, not leaving it — no task field anywhere).",
 		build: hiredWorkerAtEmployerLowHearth,
 	},
+	{
+		name: "cook_at_burning_hearth",
+		summary: "LLM-474: Hannah at her post with porridge on the books (a hearth_lit-boosted recipe) and the Inn fire " +
+			"well in — four hours of burn against a 60-min low line. The golden pins the '## The fire and your cooking' " +
+			"line at its warm tier AND the ABSENCE of '## Your hearth': a fire burning well needs no stoke, so HearthView " +
+			"is nil and the stoke tool stays unadvertised. This pair is why the cooking stake is a separate view — folding " +
+			"it into HearthView would have baited the LLM-435 'already busy / not worth stoking' reject.",
+		build: cookAtBurningHearth,
+	},
+	{
+		name: "cook_at_ebbing_hearth",
+		summary: "LLM-474: the same cook with the fire down to embers and firewood in hand. The golden pins BOTH sections " +
+			"and the division of labour between them — '## Your hearth' carries the remedy (the wood, the stoke tool) and " +
+			"'## The fire and your cooking' carries only the stake (the next porridge is the poorer for it). Neither " +
+			"repeats the other, and the cooking line never issues an imperative.",
+		build: cookAtEbbingHearth,
+	},
+	{
+		name: "cook_at_dead_hearth_no_wood",
+		summary: "LLM-474: fire out, no firewood carried. The golden pins the coldest tier of the cooking line (a cold " +
+			"hearth makes a mean batch) while the where-and-how of getting wood stays in the hearth section — the LLM-64 " +
+			"split. Note what does NOT appear: nothing tells her she cannot cook, because she can.",
+		build: cookAtDeadHearthNoWood,
+	},
+	{
+		name: "cook_at_hearthless_kitchen",
+		summary: "LLM-474: the same cook and the same boosted porridge recipe in a kitchen carrying NO hearth object. The " +
+			"golden pins total silence on the fire. This is the fixture standing guard over the promise that every " +
+			"non-hearth kitchen in the village — every residence, the farms, the Mill, the Blacksmith — is untouched by " +
+			"this ticket and keeps exactly today's yield.",
+		build: cookAtHearthlessKitchen,
+	},
 }
 
 // producerDerivedInputDemand is the LLM-260 derived-demand fixture: Hannah-shaped
@@ -5298,6 +5330,52 @@ func TestInFlightProductionLineTracksBatch(t *testing.T) {
 // nowhere else in the matrix. A booster line leaking into a scenario with no
 // boosted recipe would mean the gate regressed to reading required inputs;
 // required-input scenarios keep their runway phrasing and never the bonus one.
+// TestGoldensHearthCookingLineOnlyForHearthCooks is the LLM-474 cross-scenario
+// invariant: the fire-and-cooking section renders in EXACTLY the scenarios whose
+// subject stands in a hearth-bearing kitchen making a hearth-boosted dish, and
+// nowhere else in the matrix. The leak this guards against is the cue escaping
+// to the many keepers who cook nothing (or cook somewhere with no fireplace) —
+// which would put a fire they have no stake in, and cannot act on, into their
+// scene. The hearthless fixture is deliberately in the matrix as the near-miss.
+func TestGoldensHearthCookingLineOnlyForHearthCooks(t *testing.T) {
+	const marker = "## The fire and your cooking"
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		got := renderScenario(sc)
+		want := sc.name == "cook_at_burning_hearth" ||
+			sc.name == "cook_at_ebbing_hearth" ||
+			sc.name == "cook_at_dead_hearth_no_wood"
+		if has := strings.Contains(got, marker); has != want {
+			t.Errorf("scenario %q: hearth-cooking line present=%v, want %v", sc.name, has, want)
+		}
+	}
+}
+
+// TestGoldensHearthCookingNeverForbidsCooking is the rendered half of the
+// never-gates rule (its sim-side twin is TestBoostStateNeverGatesProduction).
+// The cooking cue states a stake and must never tip into telling a keeper she
+// CANNOT cook — food is the survival good, and a scene that says otherwise
+// teaches the model the exact false rule this ticket exists to unteach (the
+// Hannah confabulation, live 2026-07-18).
+func TestGoldensHearthCookingNeverForbidsCooking(t *testing.T) {
+	forbidding := []string{
+		"cannot cook", "can't cook", "no cooking", "unable to cook",
+		"cannot make", "can't make", "until the fire", "before you can cook",
+	}
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		got := renderScenario(sc)
+		if !strings.Contains(got, "## The fire and your cooking") {
+			continue
+		}
+		for _, phrase := range forbidding {
+			if strings.Contains(strings.ToLower(got), phrase) {
+				t.Errorf("scenario %q: cooking cue reads as a prohibition (%q) — a cold hearth never blocks cooking", sc.name, phrase)
+			}
+		}
+	}
+}
+
 func TestGoldensBoosterLineOnlyForBoostedRecipes(t *testing.T) {
 	const marker = "extra to the yield"
 	for _, sc := range perceptionScenarios {

@@ -46,6 +46,14 @@ type umbilicalRecipeBoostInput struct {
 	BonusQty int    `json:"bonus_qty"`
 }
 
+// umbilicalRecipeBoostState is one optional state-keyed booster on the wire
+// (LLM-474): when State holds at landing, the batch mints BonusQty extra. No
+// item, because nothing is consumed.
+type umbilicalRecipeBoostState struct {
+	State    string `json:"state"`
+	BonusQty int    `json:"bonus_qty"`
+}
+
 // umbilicalRecipeSetRequest is the POST /api/village/umbilical/recipe/set body:
 // upsert one recipe. cap-free; an existing output_item is updated in place.
 type umbilicalRecipeSetRequest struct {
@@ -55,6 +63,7 @@ type umbilicalRecipeSetRequest struct {
 	RatePerHours   int                         `json:"rate_per_hours"`
 	Inputs         []umbilicalRecipeInput      `json:"inputs"`
 	BoostInputs    []umbilicalRecipeBoostInput `json:"boost_inputs"`
+	BoostState     []umbilicalRecipeBoostState `json:"boost_state"`
 	WholesalePrice int                         `json:"wholesale_price"`
 	RetailPrice    int                         `json:"retail_price"`
 }
@@ -68,6 +77,7 @@ type umbilicalRecipeResponse struct {
 	RatePerHours   int                         `json:"rate_per_hours"`
 	Inputs         []umbilicalRecipeInput      `json:"inputs"`
 	BoostInputs    []umbilicalRecipeBoostInput `json:"boost_inputs"`
+	BoostState     []umbilicalRecipeBoostState `json:"boost_state"`
 	WholesalePrice int                         `json:"wholesale_price"`
 	RetailPrice    int                         `json:"retail_price"`
 }
@@ -124,13 +134,29 @@ func (s *Server) handleUmbilicalRecipeSet(w http.ResponseWriter, r *http.Request
 		}
 		boostInputs = append(boostInputs, sim.BoostInput{Item: sim.ItemKind(bi.Item), Qty: bi.Qty, BonusQty: bi.BonusQty})
 	}
+	boostState := make([]sim.BoostState, 0, len(req.BoostState))
+	for _, bs := range req.BoostState {
+		// The state name is checked here rather than deferred to ResolveRecipe so
+		// a typo comes back 400 (client-correctable input) instead of 422
+		// (unresolvable against the catalog) — the state vocabulary is fixed in
+		// code, not looked up in the world.
+		if !sim.ValidRecipeBoostState(sim.RecipeBoostState(bs.State)) {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown boost state %q", bs.State))
+			return
+		}
+		if bs.BonusQty < 1 {
+			writeError(w, http.StatusBadRequest, "boost state bonus_qty must be >= 1")
+			return
+		}
+		boostState = append(boostState, sim.BoostState{State: sim.RecipeBoostState(bs.State), BonusQty: bs.BonusQty})
+	}
 	if s.recipeWriter == nil {
 		writeError(w, http.StatusServiceUnavailable, "recipe editing is not wired on this deploy")
 		return
 	}
 
 	auditUmbilical(user.Username, "recipe.set",
-		fmt.Sprintf("output=%s output_qty=%d rate=%d/%dh inputs=%d boosts=%d", req.OutputItem, req.OutputQty, req.RateQty, req.RatePerHours, len(inputs), len(boostInputs)))
+		fmt.Sprintf("output=%s output_qty=%d rate=%d/%dh inputs=%d boosts=%d states=%d", req.OutputItem, req.OutputQty, req.RateQty, req.RatePerHours, len(inputs), len(boostInputs), len(boostState)))
 
 	requested := sim.ItemRecipe{
 		OutputItem:     sim.ItemKind(req.OutputItem),
@@ -139,6 +165,7 @@ func (s *Server) handleUmbilicalRecipeSet(w http.ResponseWriter, r *http.Request
 		RatePerHours:   req.RatePerHours,
 		Inputs:         inputs,
 		BoostInputs:    boostInputs,
+		BoostState:     boostState,
 		WholesalePrice: req.WholesalePrice,
 		RetailPrice:    req.RetailPrice,
 	}
@@ -197,6 +224,7 @@ func recipeResponse(r sim.ItemRecipe) umbilicalRecipeResponse {
 		RatePerHours:   r.RatePerHours,
 		Inputs:         make([]umbilicalRecipeInput, 0, len(r.Inputs)),
 		BoostInputs:    make([]umbilicalRecipeBoostInput, 0, len(r.BoostInputs)),
+		BoostState:     make([]umbilicalRecipeBoostState, 0, len(r.BoostState)),
 		WholesalePrice: r.WholesalePrice,
 		RetailPrice:    r.RetailPrice,
 	}
@@ -205,6 +233,9 @@ func recipeResponse(r sim.ItemRecipe) umbilicalRecipeResponse {
 	}
 	for _, bi := range r.BoostInputs {
 		out.BoostInputs = append(out.BoostInputs, umbilicalRecipeBoostInput{Item: string(bi.Item), Qty: bi.Qty, BonusQty: bi.BonusQty})
+	}
+	for _, bs := range r.BoostState {
+		out.BoostState = append(out.BoostState, umbilicalRecipeBoostState{State: string(bs.State), BonusQty: bs.BonusQty})
 	}
 	return out
 }

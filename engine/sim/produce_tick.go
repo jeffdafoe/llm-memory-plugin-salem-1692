@@ -452,6 +452,12 @@ type produceChange struct {
 // it and adds BonusQty, clamped to remaining cap headroom; a fully clamped
 // bonus skips consumption, a partially clamped one still consumes in full (the
 // clamp trims yield, not cost — the herb went into the batch either way).
+//
+// State boosters (LLM-474) are weighed at the same instant against a world
+// condition rather than the producer's inventory, and consume nothing. Both
+// kinds are strictly additive: neither can skip an execution or reduce base
+// yield, so a recipe always produces its full BatchQty with every booster
+// unmet.
 func landProductionCycle(w *World, actorID ActorID, actor *Actor, act *ProductionActivity, now time.Time) produceChange {
 	if actor.Inventory == nil {
 		actor.Inventory = make(map[ItemKind]int)
@@ -484,6 +490,26 @@ func landProductionCycle(w *World, actorID ActorID, actor *Actor, act *Productio
 			}
 			total += bonus
 		}
+		// State boosters (LLM-474): the same elective posture as the item
+		// boosters above, keyed on a world condition instead of inventory and
+		// consuming nothing — the firewood behind a lit hearth was already
+		// spent by an earlier stoke. An unmet state adds nothing and takes
+		// nothing; base yield stands. This must never gate an execution.
+		for _, bs := range recipe.BoostState {
+			if bs.BonusQty <= 0 || !recipeBoostStateMet(w, actor, bs.State, now) {
+				continue
+			}
+			bonus := bs.BonusQty
+			if cap > 0 {
+				if room := cap - (actor.Inventory[act.Item] + total); bonus > room {
+					bonus = room
+				}
+			}
+			if bonus <= 0 {
+				continue
+			}
+			total += bonus
+		}
 	}
 	actor.Inventory[act.Item] += total
 	actor.ProductionActivity = nil
@@ -500,6 +526,25 @@ func landProductionCycle(w *World, actorID ActorID, actor *Actor, act *Productio
 		Added:  total,
 		NewQty: actor.Inventory[act.Item],
 	}
+}
+
+// recipeBoostStateMet evaluates one BoostState condition against the world at
+// LANDING time. Landing-time evaluation matches the BoostInputs precedent (a
+// booster is weighed when the batch mints, not when it started), so a fire that
+// died mid-batch forfeits the bonus and one stoked late still earns it. Keep in
+// lockstep with sim.ValidRecipeBoostState — a state that validates but has no
+// arm here is a booster that never pays.
+func recipeBoostStateMet(w *World, actor *Actor, state RecipeBoostState, now time.Time) bool {
+	switch state {
+	case BoostStateHearthLit:
+		// The WORK structure's hearth, not wherever the actor happens to be
+		// standing when the batch lands — the pot cooked where the business is.
+		// Nil-safe the whole way down: a structure with no hearth object
+		// resolves nil and reads as unlit, which is what holds every
+		// non-hearth kitchen at exactly today's yield.
+		return HearthLit(StructureHearth(w.VillageObjects, actor.WorkStructureID), now)
+	}
+	return false
 }
 
 // ProduceTickerInterval is how often RunProduceTicker wakes. The 1-min cadence

@@ -14,6 +14,7 @@ type ItemRecipe struct {
 	RatePerHours   int // rate_qty units per rate_per_hours hours
 	Inputs         []RecipeInput
 	BoostInputs    []BoostInput // optional per-execution yield boosters (LLM-248)
+	BoostState     []BoostState // optional per-execution yield boosters keyed on world state (LLM-474)
 	WholesalePrice int          // producer → merchant
 	RetailPrice    int          // merchant → customer
 }
@@ -38,6 +39,44 @@ type BoostInput struct {
 	Item     ItemKind `json:"item"`
 	Qty      int      `json:"qty"`
 	BonusQty int      `json:"bonus_qty"`
+}
+
+// RecipeBoostState enumerates the world conditions a BoostState may key on.
+// Closed set, checked at every write path: an unrecognised value is rejected
+// rather than stored to sit silently never firing.
+type RecipeBoostState string
+
+const (
+	// BoostStateHearthLit is met when the producer's WORK structure has a
+	// burning hearth (the LLM-412 HearthLitUntil clock) at the instant a batch
+	// lands. A structure carrying no hearth object never meets it.
+	BoostStateHearthLit RecipeBoostState = "hearth_lit"
+)
+
+// ValidRecipeBoostState reports whether s is a state the produce tick knows how
+// to evaluate. Keep in lockstep with recipeBoostStateMet (produce_tick.go) —
+// a state accepted here that the evaluator doesn't answer would be a booster
+// that validates and then never pays.
+func ValidRecipeBoostState(s RecipeBoostState) bool {
+	return s == BoostStateHearthLit
+}
+
+// BoostState is one OPTIONAL condition-keyed booster for a recipe execution
+// (LLM-474) — the world-state mirror of BoostInput. Where a BoostInput is
+// earned by HOLDING an item and consumes it, a BoostState is earned by a fact
+// about the world at landing and consumes NOTHING: its cost was already paid
+// upstream (firewood burned into the hearth by an earlier stoke). That
+// asymmetry is the point — it rewards keeping a condition true instead of
+// opening a second sink for the same good.
+//
+// An unmet state is silent in exactly the way an unheld booster is: no
+// execution skip, no anchor penalty, base yield stands. A BoostState must
+// never become a gate — see the never-gates invariant in produce_tick_test.go.
+// JSON tags match the item_recipe.boost_state JSONB wire shape
+// ([{"state","bonus_qty"}, ...]).
+type BoostState struct {
+	State    RecipeBoostState `json:"state"`
+	BonusQty int              `json:"bonus_qty"`
 }
 
 // RestockSource enumerates the supply modes a restock entry can use.

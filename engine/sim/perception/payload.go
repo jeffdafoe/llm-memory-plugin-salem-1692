@@ -645,6 +645,11 @@ type Payload struct {
 	// `stoke` tool. LLM-412.
 	Hearth *HearthView
 
+	// HearthCooking is the cook's stake in that same fire (LLM-474) — what a live
+	// hearth is worth to the batch. Independent of Hearth: it renders while a fire
+	// burns well (when Hearth is nil) and gates no tool.
+	HearthCooking *HearthCookingView
+
 	// FarmUpkeep surfaces, to a farm owner, that the season wore out their upkeep
 	// shovels and they owe fresh ones from the blacksmith (shovel count + buy
 	// steer). nil when not a farm owner or nothing is owed. Not co-location-gated —
