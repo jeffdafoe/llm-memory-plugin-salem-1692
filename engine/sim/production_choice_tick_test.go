@@ -100,7 +100,7 @@ func TestEvaluateProductionChoiceSkipsMidCycle(t *testing.T) {
 	w, cancel := buildProducerWorld(t, twoProduceEntries(), map[sim.ItemKind]int{})
 	defer cancel()
 
-	if _, err := w.Send(sim.StartProductionCycle("smith", "nail")); err != nil {
+	if _, err := w.Send(sim.StartProductionCycle("smith", "nail", "", false)); err != nil {
 		t.Fatalf("StartProductionCycle: %v", err)
 	}
 	if stamped := evaluateChoice(t, w, now); stamped != 0 {
@@ -169,7 +169,7 @@ func TestLandingHoldsOffTheScan(t *testing.T) {
 	w, cancel := buildProducerWorld(t, twoProduceEntries(), map[sim.ItemKind]int{})
 	defer cancel()
 
-	if _, err := w.Send(sim.StartProductionCycle("smith", "nail")); err != nil {
+	if _, err := w.Send(sim.StartProductionCycle("smith", "nail", "", false)); err != nil {
 		t.Fatalf("StartProductionCycle: %v", err)
 	}
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {

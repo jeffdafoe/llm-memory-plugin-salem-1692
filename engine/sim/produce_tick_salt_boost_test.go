@@ -67,7 +67,7 @@ func buildSaltCookWorld(t *testing.T, stewCap int, inv map[sim.ItemKind]int) (*s
 func landStewCycle(t *testing.T, w *sim.World) {
 	t.Helper()
 	now := time.Now().UTC()
-	if _, err := w.Send(sim.StartProductionCycle("john", "stew")); err != nil {
+	if _, err := w.Send(sim.StartProductionCycle("john", "stew", "", false)); err != nil {
 		t.Fatalf("StartProductionCycle: %v", err)
 	}
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {

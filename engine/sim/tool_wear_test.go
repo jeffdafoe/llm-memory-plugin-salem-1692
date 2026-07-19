@@ -60,7 +60,7 @@ func TestProduceWearsToolInsteadOfConsuming(t *testing.T) {
 		map[sim.ItemKind]int{"sage": 4, "skillet": 2})
 	defer cancel()
 
-	res, err := w.Send(sim.StartProductionCycle("cook", "stew"))
+	res, err := w.Send(sim.StartProductionCycle("cook", "stew", "", false))
 	if err != nil {
 		t.Fatalf("StartProductionCycle: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestProduceSpendsToolAtLastUse(t *testing.T) {
 		t.Fatalf("seed wear: %v", err)
 	}
 
-	res, err := w.Send(sim.StartProductionCycle("cook", "stew"))
+	res, err := w.Send(sim.StartProductionCycle("cook", "stew", "", false))
 	if err != nil {
 		t.Fatalf("StartProductionCycle: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestProduceSpendsToolAtLastUse(t *testing.T) {
 
 	// The next execution takes up the spare at full durability.
 	clearProductionWindow(t, w, "cook")
-	if _, err := w.Send(sim.StartProductionCycle("cook", "stew")); err != nil {
+	if _, err := w.Send(sim.StartProductionCycle("cook", "stew", "", false)); err != nil {
 		t.Fatalf("second start: %v", err)
 	}
 	if got := toolWearOf(t, w, "cook", "skillet"); got != 2 {
@@ -137,7 +137,7 @@ func TestProduceSpendsLastToolNamesIt(t *testing.T) {
 		t.Fatalf("seed wear: %v", err)
 	}
 
-	res, err := w.Send(sim.StartProductionCycle("cook", "stew"))
+	res, err := w.Send(sim.StartProductionCycle("cook", "stew", "", false))
 	if err != nil {
 		t.Fatalf("StartProductionCycle: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestProduceSpendsLastToolNamesIt(t *testing.T) {
 
 	// Skillet-less, the next batch bounces on the inputs gate.
 	clearProductionWindow(t, w, "cook")
-	_, err = w.Send(sim.StartProductionCycle("cook", "stew"))
+	_, err = w.Send(sim.StartProductionCycle("cook", "stew", "", false))
 	if err == nil {
 		t.Fatalf("accepted a skillet-less stew; want rejection")
 	}
@@ -171,7 +171,7 @@ func TestProduceDurabilityOneConsumesEveryUse(t *testing.T) {
 	w, cancel := buildCookWorld(t, recipes, restock, map[sim.ItemKind]int{"mallet": 2})
 	defer cancel()
 
-	res, err := w.Send(sim.StartProductionCycle("cook", "pie"))
+	res, err := w.Send(sim.StartProductionCycle("cook", "pie", "", false))
 	if err != nil {
 		t.Fatalf("StartProductionCycle: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestProduceClampsRetunedWear(t *testing.T) {
 		t.Fatalf("seed wear: %v", err)
 	}
 
-	if _, err := w.Send(sim.StartProductionCycle("cook", "stew")); err != nil {
+	if _, err := w.Send(sim.StartProductionCycle("cook", "stew", "", false)); err != nil {
 		t.Fatalf("StartProductionCycle: %v", err)
 	}
 	if got := toolWearOf(t, w, "cook", "skillet"); got != 2 {
@@ -247,7 +247,7 @@ func TestProduceMultiToolInputWearsQtyUses(t *testing.T) {
 	w, cancel := buildCookWorld(t, recipes, restock, map[sim.ItemKind]int{"skillet": 2})
 	defer cancel()
 
-	if _, err := w.Send(sim.StartProductionCycle("cook", "pie")); err != nil {
+	if _, err := w.Send(sim.StartProductionCycle("cook", "pie", "", false)); err != nil {
 		t.Fatalf("first start: %v", err)
 	}
 	if got := toolWearOf(t, w, "cook", "skillet"); got != 1 {
@@ -258,7 +258,7 @@ func TestProduceMultiToolInputWearsQtyUses(t *testing.T) {
 	}
 
 	clearProductionWindow(t, w, "cook")
-	res, err := w.Send(sim.StartProductionCycle("cook", "pie"))
+	res, err := w.Send(sim.StartProductionCycle("cook", "pie", "", false))
 	if err != nil {
 		t.Fatalf("second start: %v", err)
 	}

@@ -79,6 +79,30 @@ type RenderedPrompt struct {
 	// state can pile up once per historical tick.
 	EphemeralText string
 
+	// ContinuationEphemeralText is EphemeralText with the "## Who you are" soul
+	// prose removed — what the harness sends on rounds AFTER the first of a tick
+	// (LLM-468). Identical to EphemeralText for any actor without that section
+	// (stateful NPCs, PCs).
+	//
+	// A tick is an agentic multi-call loop: the model acts, then is re-prompted
+	// "anything else?". The ephemeral body is attached to the current turn only
+	// and never persisted into history, so every round must carry it again —
+	// including the shared-VA identity block, which is static per actor (measured:
+	// 25 distinct texts across 10 actors in 24h) and averages 4.4KB. On one
+	// sampled tick it was 6,983 of the prompt's 8,321 bytes, against 117 bytes of
+	// actual perception.
+	//
+	// The soul prose frames DELIBERATION — who this person is, how they speak. By
+	// round two the model has already deliberated in character and acted; its own
+	// assistant message and tool result are in the transcript. What it needs is
+	// "here is what you just did, is there more" plus the affordances to act on,
+	// and those are all retained. Only the accreted AboutMe body is dropped.
+	//
+	// The "You are <name>." line is deliberately KEPT: it is what lets the model
+	// tell whether overheard second-person speech is addressed to it (LLM-432),
+	// and it costs a few dozen bytes.
+	ContinuationEphemeralText string
+
 	// RenderedWarrantCount is how many warrants made it into the prompt.
 	RenderedWarrantCount int
 
@@ -221,7 +245,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// actor, so they don't re-hire or pay again for work already covered.
 	renderWorkersForMe(&ephemeral, p.WorkersForMe, nameOf, p.RenderedAt)
 	renderPendingLaborOfferOut(&ephemeral, p.PendingLaborOfferOut, nameOf)
-	renderNarrativeState(&ephemeral, p.NarrativeState)
+	aboutMeStart, aboutMeEnd := renderNarrativeState(&ephemeral, p.NarrativeState)
 	renderVendorOperating(&ephemeral, p.AtOwnBusinessOperating, p.VendorTradeSlow)
 	renderSurroundings(&ephemeral, p.Surroundings)
 	renderAnchors(&ephemeral, p.Anchors, p.DutySteer != nil && p.DutySteer.AtPost, p.Surroundings.InsideStructureID)
@@ -382,7 +406,20 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 
 	out.Text = durable.String()
 	out.EphemeralText = ephemeral.String()
+	out.ContinuationEphemeralText = withoutRange(out.EphemeralText, aboutMeStart, aboutMeEnd)
 	return out
+}
+
+// withoutRange returns s with the half-open byte range [start, end) removed, or
+// s unchanged when the range is empty or out of bounds. The bounds check is not
+// defensive habit: a future edit that writes to the ephemeral builder between
+// renderNarrativeState and the slice would silently corrupt the prompt, and
+// returning the full text is the safe failure (it costs tokens, never meaning).
+func withoutRange(s string, start, end int) string {
+	if start <= 0 || end <= start || end > len(s) {
+		return s
+	}
+	return s[:start] + s[end:]
 }
 
 // renderTravelerPreface opens a transient traveler's own user_message with its
@@ -1873,9 +1910,15 @@ func laborTiePhrase(t laborTie) string {
 // SeedText is never populated for shared VAs, and EvolvingSummary was the
 // frozen, unconsolidated diary prose that primed the repeat-pitch loop
 // (ZBBS-WORK-374); the identity-framed soul prompt is what avoids that loop.
-func renderNarrativeState(b *strings.Builder, n *NarrativeStateView) {
+// It returns the byte range of the AboutMe BODY it wrote into b (both 0 when it
+// wrote none). Render uses that range to build the continuation variant of the
+// ephemeral text, which keeps the "You are <name>." line and drops the soul
+// prose — see RenderedPrompt.ContinuationEphemeralText (LLM-468). Returning
+// offsets rather than rendering twice keeps the round-0 prompt byte-identical,
+// so no golden churns on a change that must not alter what the model first sees.
+func renderNarrativeState(b *strings.Builder, n *NarrativeStateView) (aboutMeStart, aboutMeEnd int) {
 	if n == nil {
-		return
+		return 0, 0
 	}
 	// Gate on the SANITIZED values: a name or soul made only of content
 	// sanitization strips (control characters, whitespace) must not emit a
@@ -1884,7 +1927,7 @@ func renderNarrativeState(b *strings.Builder, n *NarrativeStateView) {
 	name := sanitizeInline(n.Name)
 	aboutMe := sanitizeInline(n.AboutMe)
 	if name == "" && aboutMe == "" {
-		return
+		return 0, 0
 	}
 	b.WriteString("## Who you are\n")
 	if name != "" {
@@ -1892,11 +1935,16 @@ func renderNarrativeState(b *strings.Builder, n *NarrativeStateView) {
 		b.WriteString(name)
 		b.WriteString(".\n")
 	}
-	if aboutMe != "" {
-		b.WriteString(aboutMe)
+	if aboutMe == "" {
 		b.WriteString("\n")
+		return 0, 0
 	}
+	aboutMeStart = b.Len()
+	b.WriteString(aboutMe)
 	b.WriteString("\n")
+	aboutMeEnd = b.Len()
+	b.WriteString("\n")
+	return aboutMeStart, aboutMeEnd
 }
 
 // renderVendorOperating writes the businessowner trade-conduct block — the

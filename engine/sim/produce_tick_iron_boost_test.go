@@ -70,7 +70,7 @@ func buildIronSmithWorld(t *testing.T, nailCap int, inv map[sim.ItemKind]int) (*
 func landNailCycle(t *testing.T, w *sim.World) {
 	t.Helper()
 	now := time.Now().UTC()
-	if _, err := w.Send(sim.StartProductionCycle("ezekiel", "nail")); err != nil {
+	if _, err := w.Send(sim.StartProductionCycle("ezekiel", "nail", "", false)); err != nil {
 		t.Fatalf("StartProductionCycle: %v", err)
 	}
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {

@@ -644,6 +644,12 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 	// when a commit moves the actor's own needs/coins/goods, so a stale eat/drink
 	// affordance can't prime a re-fire on a later round.
 	ephemeralText := rendered.EphemeralText
+	// continuationEphemeralText is what rounds AFTER the first send instead
+	// (LLM-468): the same body minus the static "## Who you are" soul prose, which
+	// the ephemeral protocol would otherwise re-ship in full on every round of
+	// every tick. Kept in lockstep with ephemeralText through the LLM-88 refresh
+	// below so a self-state change moves both.
+	continuationEphemeralText := rendered.ContinuationEphemeralText
 	// lastSelf is the self-state the current ephemeral body reflects. The LLM-88
 	// refresh re-renders only when a commit actually moved needs/coins/goods vs
 	// this — not on a no-op commit. Seeded with the tick-open snapshot (actor
@@ -677,13 +683,22 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 			return result
 		}
 
+		// Round 0 gets the full ephemeral body; every continuation gets the
+		// compact one (LLM-468). The identity prose it drops is deliberation
+		// framing the model has already used to produce the action sitting in
+		// this transcript.
+		roundEphemeral := ephemeralText
+		if round > 0 {
+			roundEphemeral = continuationEphemeralText
+		}
+
 		resp, err := h.client.Complete(ctx, llm.Request{
 			Model:            model,
 			SceneID:          sceneID,
 			ConversationID:   conversationID,
 			Messages:         transcript,
 			Tools:            tools,
-			EphemeralContext: ephemeralText,
+			EphemeralContext: roundEphemeral,
 			SimActorID:       simActorID,
 			SimActorName:     simActorName,
 		})
@@ -1097,6 +1112,7 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 						h.renderConfig,
 					)
 					ephemeralText = refreshed.EphemeralText
+					continuationEphemeralText = refreshed.ContinuationEphemeralText
 					lastSelf = outcome.postSelfState
 				}
 			} else {
@@ -1356,6 +1372,17 @@ func (h *Harness) dispatch(ctx context.Context, w *sim.World, job tickJob, vc *V
 		// and a mid-cycle re-produce bounces as a ModelFacingError before
 		// reaching here. Non-terminal stands so the actor can speak its social
 		// beat in the same tick.)
+		//
+		// LLM-468: except when it already spoke that beat. `produce` is registered
+		// non-terminal so a producer can still act again, but a produce that
+		// carried a `say` HAS uttered — and an utterance ends a tick, the same
+		// invariant that makes `speak` terminal-on-success. Without this the model
+		// could say its piece on the acting call and a second thing through
+		// `speak`, which is exactly the double-utterance the terminal-verb rule
+		// exists to prevent.
+		if producedWithSpeech(wrapped.Result) {
+			ended = true
+		}
 		out := dispatchOutcome{success: true, ended: ended}
 		if ended {
 			out.terminalStatus = sim.TickStatusSuccess
@@ -2148,6 +2175,16 @@ func consumeItemKey(vc *ValidatedCall) (string, bool) {
 func consumeNoop(result any) bool {
 	cr, ok := result.(sim.ConsumeResult)
 	return ok && !cr.EasedNeed
+}
+
+// producedWithSpeech reports whether a commit result is a production start that
+// carried a spoken `say` to the room (LLM-468). It is the conditional half of
+// produce's terminality: silent produce keeps the tick open so the actor can act
+// again, a spoken one ends it like any other utterance. Same result-inspection
+// shape as consumeNoop above.
+func producedWithSpeech(result any) bool {
+	pr, ok := result.(sim.ProductionStartResult)
+	return ok && pr.Spoke
 }
 
 // payOfferKey returns the normalized same-tick dedup key for a pay_with_item
