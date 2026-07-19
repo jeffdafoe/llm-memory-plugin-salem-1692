@@ -632,6 +632,9 @@ func TestSweepPCIdleAudience_LowersPromptWhenPCBedsDown(t *testing.T) {
 
 	bedPC(t, w, "player", now.Add(4*time.Hour))
 
+	cleared := &clearedRecorder{}
+	w.Subscribe(sim.SubscriberFunc(cleared.handle))
+
 	// Re-stamp presence against the later sweep instant: the client is still
 	// attached (its 15s heartbeat outpaces the stale horizon), and the lower arm
 	// deliberately leaves a DISCONNECTED PC's prompt pending, so letting the
@@ -647,4 +650,27 @@ func TestSweepPCIdleAudience_LowersPromptWhenPCBedsDown(t *testing.T) {
 	if promptPending(t, w, "player") {
 		t.Error("bedding a prompted PC must lower the candle, not strand it under the sleep overlay")
 	}
+	// The client removes an already-visible overlay off the EVENT, not off the
+	// flag — a cleared bool with no emit leaves the candle painted on screen.
+	if !cleared.sawFor("player") {
+		t.Error("lowering the prompt must emit PCIdlePromptCleared — the client dismisses the overlay on that event")
+	}
+}
+
+// clearedRecorder captures PCIdlePromptCleared emissions.
+type clearedRecorder struct{ ids []sim.ActorID }
+
+func (r *clearedRecorder) handle(_ *sim.World, e sim.Event) {
+	if ev, ok := e.(*sim.PCIdlePromptCleared); ok {
+		r.ids = append(r.ids, ev.ActorID)
+	}
+}
+
+func (r *clearedRecorder) sawFor(id sim.ActorID) bool {
+	for _, got := range r.ids {
+		if got == id {
+			return true
+		}
+	}
+	return false
 }

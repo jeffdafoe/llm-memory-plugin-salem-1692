@@ -797,15 +797,16 @@ func TestRestartSeedPCInputStamps(t *testing.T) {
 	})
 }
 
-// TestAutoBedIdle_SurvivesRestartForConnectedPC is the LLM-473 regression, and
-// the case both ZBBS-WORK-324 and LLM-450 walked past.
+// TestAutoBedIdle_SeededStampGivesPostBootGracePeriod covers the seed's TIMING
+// contract only: the idle clock runs from boot, so a PC is ineligible inside the
+// grace window and bedded past it.
 //
-// Live shape: a player lodged at the tavern with the browser tab open. The WS
-// heartbeat keeps LastPCSeenAt fresh, so AutoBedOfflineLodgerPCs correctly skips
-// them; before this fix LastPCInputAt was nil after the restart, so the idle arm
-// skipped them too and NOTHING bedded them for the rest of the session while
-// tiredness climbed to the cap. Every deploy re-armed it.
-func TestAutoBedIdle_SurvivesRestartForConnectedPC(t *testing.T) {
+// It deliberately does NOT claim to reproduce the live connected-player failure
+// — this world's PC has a nil LastPCSeenAt, which the presence predicate reads
+// as "away", so the shape here is an offline PC. The faithful reproduction, with
+// a heartbeat-fresh presence stamp and both sweeps running, is
+// TestAutoBedIdle_ConnectedLodgerBedsDownAfterRestart in pc_sleep_restart_test.go.
+func TestAutoBedIdle_SeededStampGivesPostBootGracePeriod(t *testing.T) {
 	boot := time.Date(2026, 7, 19, 14, 40, 0, 0, time.UTC)
 	a := lodgerPC("jefferey", boot.Add(72*time.Hour)) // nil input cursor: fresh out of a restart
 	a.Needs["tiredness"] = 24                         // at the cap, as observed live
