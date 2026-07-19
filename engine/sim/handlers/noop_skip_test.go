@@ -118,31 +118,100 @@ func TestShouldSkipNoop_HuddlePeerLeftAlone_NoPeerNoNeeds_Skips(t *testing.T) {
 	}
 }
 
-func TestShouldSkipNoop_HuddlePeerLeft_PeerRemains_DoesNotSkip(t *testing.T) {
+func TestShouldSkipNoop_HuddlePeerLeft_LivePeerRemains_DoesNotSkip(t *testing.T) {
 	// Safety property: a peer leaving a 3+-party huddle still leaves someone
-	// present, so the actor should still tick and react to the changed group.
-	// The no-co-present-peer gate (check 2) keeps the gate open here even
-	// though HuddlePeerLeft is now classed low-info (ZBBS-WORK-367).
+	// present, so while the conversation is still LIVE the actor should tick and
+	// react to the changed group. Check 2 keeps the gate open here even though
+	// HuddlePeerLeft is classed low-info (ZBBS-WORK-367).
 	pl := quietPayload()
 	pl.Surroundings.HuddleMembers = []perception.HuddleMember{
 		{ID: "carol", DisplayName: "Carol", Acquainted: true},
 	}
+	pl.Surroundings.HuddleLive = true
 	w := sim.WarrantMeta{
 		TriggerActorID: "bob",
 		Reason:         sim.BasicWarrantReason{K: sim.WarrantKindHuddlePeerLeft},
 	}
 	if shouldSkipNoop(pl, defaultThresholds(), []sim.WarrantMeta{w}) {
-		t.Fatalf("expected skip=false when a peer remains after another peer left")
+		t.Fatalf("expected skip=false when a peer remains in a live huddle after another peer left")
 	}
 }
 
-func TestShouldSkipNoop_PeerPresent_DoesNotSkip(t *testing.T) {
+func TestShouldSkipNoop_HuddlePeerLeft_DormantPeerRemains_Skips(t *testing.T) {
+	// LLM-467: same shape as the test above, but the conversation went quiet a
+	// while ago and only its huddle survives. The remaining peer is standing
+	// there, not talking — there is nothing to react to, so this must not buy an
+	// LLM call.
+	pl := quietPayload()
+	pl.Surroundings.HuddleMembers = []perception.HuddleMember{
+		{ID: "carol", DisplayName: "Carol", Acquainted: true},
+	}
+	pl.Surroundings.HuddleLive = false
+	w := sim.WarrantMeta{
+		TriggerActorID: "bob",
+		Reason:         sim.BasicWarrantReason{K: sim.WarrantKindHuddlePeerLeft},
+	}
+	if !shouldSkipNoop(pl, defaultThresholds(), []sim.WarrantMeta{w}) {
+		t.Fatalf("expected skip=true when the remaining peer sits in a dormant huddle")
+	}
+}
+
+func TestShouldSkipNoop_LivePeerPresent_DoesNotSkip(t *testing.T) {
 	pl := quietPayload()
 	pl.Surroundings.HuddleMembers = []perception.HuddleMember{
 		{ID: "bob", DisplayName: "Bob", Acquainted: true},
 	}
+	pl.Surroundings.HuddleLive = true
 	if shouldSkipNoop(pl, defaultThresholds(), []sim.WarrantMeta{idleBackstopWarrant()}) {
-		t.Fatalf("expected skip=false when a co-huddle peer is present")
+		t.Fatalf("expected skip=false when a co-huddle peer is present in a live conversation")
+	}
+}
+
+func TestShouldSkipNoop_SilentPeerPresent_Skips(t *testing.T) {
+	// LLM-467, the headline case: two NPCs stand in a huddle whose conversation
+	// is over, with no pending needs, offers or duties. Presence alone is not
+	// conversational demand — this is the 232-empty-wakes-a-day the ticket bills
+	// for today.
+	pl := quietPayload()
+	pl.Surroundings.HuddleMembers = []perception.HuddleMember{
+		{ID: "bob", DisplayName: "Bob", Acquainted: true},
+	}
+	pl.Surroundings.HuddleLive = false
+	if !shouldSkipNoop(pl, defaultThresholds(), []sim.WarrantMeta{idleBackstopWarrant()}) {
+		t.Fatalf("expected skip=true when the only signal is a silent peer standing there")
+	}
+}
+
+func TestShouldSkipNoop_OwedReplyInDormantHuddle_DoesNotSkip(t *testing.T) {
+	// LLM-467 safety property: the huddle has gone quiet, but this actor is the
+	// reason it went quiet — a peer asked it something and is still waiting. The
+	// await edge outlives the speech warrant that opened it (that warrant may
+	// have been consumed by a tick that errored or was skipped), so it is the
+	// standing signal that keeps an unanswered question from stranding.
+	pl := quietPayload()
+	pl.Surroundings.HuddleMembers = []perception.HuddleMember{
+		{ID: "bob", DisplayName: "Bob", Acquainted: true},
+	}
+	pl.Surroundings.HuddleLive = false
+	pl.TurnState.OwedReplyTo = []string{"Bob"}
+	if shouldSkipNoop(pl, defaultThresholds(), []sim.WarrantMeta{idleBackstopWarrant()}) {
+		t.Fatalf("expected skip=false when a peer is owed a reply by this actor")
+	}
+}
+
+func TestShouldSkipNoop_AwaitingTheirReply_Skips(t *testing.T) {
+	// LLM-467 deliberate boundary: when THIS actor is the one waiting, a tick
+	// renders the "wait for their reply" framing and returns done() — full price
+	// to be told to hold still. Their answer arrives as a speech warrant, which
+	// is high-info and opens the gate at check 4 on its own.
+	pl := quietPayload()
+	pl.Surroundings.HuddleMembers = []perception.HuddleMember{
+		{ID: "bob", DisplayName: "Bob", Acquainted: true},
+	}
+	pl.Surroundings.HuddleLive = false
+	pl.TurnState.AwaitingReplyFrom = []string{"Bob"}
+	if !shouldSkipNoop(pl, defaultThresholds(), []sim.WarrantMeta{idleBackstopWarrant()}) {
+		t.Fatalf("expected skip=true when this actor is the one awaiting a reply")
 	}
 }
 

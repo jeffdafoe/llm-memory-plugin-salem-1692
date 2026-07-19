@@ -13,11 +13,42 @@ import (
 //     rate-gate / min-tick-gap level (an admin override or emergency
 //     reason must fire regardless).
 //
-//  2. No co-present peer in the actor's huddle. A peer in
-//     SurroundingsView.HuddleMembers is the cheapest "someone is here to
-//     talk to" signal. Cascade origins (PC speak, NPC arrival, peer-
-//     joined) naturally pass via this check — the speaker / arriver is
-//     in the huddle by the time perception runs.
+//  2. No LIVE conversation the actor is party to. Two ways to be live:
+//     a peer stands in the actor's huddle AND that huddle has seen activity
+//     within the snapshot's HuddleLiveWindow (Surroundings.HuddleLive, via
+//     sim.HuddleIsLive), or some present peer is owed a reply BY this actor
+//     (TurnState.OwedReplyTo — it is literally this actor's turn to speak).
+//
+//     Until LLM-467 this was a bare `len(HuddleMembers) > 0`: any peer at
+//     all, including a silent one, held the gate open. Presence is not
+//     conversational demand. A huddle deliberately outlives its
+//     conversation by up to HuddleSilenceTimeout (2h) so a returning patron
+//     resumes rather than restarts, and for most of that span nobody is
+//     saying anything — so every member paid a full ~5k-token call per idle
+//     backstop to rediscover the talk was over (232 of 391 measured empty
+//     wakes in a 24h window, ~485k input tokens/day).
+//
+//     Narrowing this is safe for the normal event-driven paths, because
+//     every conversational event is already a high-information warrant kind
+//     that fails check 4 on its own: pc_spoke, npc_spoke, huddle_joined,
+//     huddle_peer_joined, arrived. The bare-presence test was belt-and-
+//     braces over those, and its only unique coverage was the silent case
+//     this ticket exists to stop paying for.
+//
+//     It is NOT an absolute guarantee, and the two backstops are deliberate
+//     (code_review). A warrant can be absent when this runs — already
+//     consumed by a tick that errored, or never enqueued — and in that state
+//     bare presence used to be the thing that saved the actor. What replaces
+//     it: the liveness window itself covers anything that happened in the
+//     last five minutes regardless of warrants, and OwedReplyTo covers the
+//     one signal with no warrant behind it at all, so an unanswered question
+//     can't strand however its speech warrant was lost.
+//
+//     Deliberately NOT live-making: the actor's own outgoing await-edge
+//     (TurnState.AwaitingReplyFrom). When this actor is the one waiting, a
+//     tick renders the "wait for their reply" framing and returns done() —
+//     paying full price to be told to hold still. Their answer arrives as a
+//     speech warrant and wakes the actor then.
 //
 //  3. No actor need at or past its red-tier threshold. Mirrors v1's
 //     `needLabelTier(value, threshold) >= 1` check at agent_tick.go:
@@ -97,7 +128,10 @@ func shouldSkipNoop(payload perception.Payload, thresholds sim.NeedThresholds, w
 			return false
 		}
 	}
-	if len(payload.Surroundings.HuddleMembers) > 0 {
+	if len(payload.Surroundings.HuddleMembers) > 0 && payload.Surroundings.HuddleLive {
+		return false
+	}
+	if len(payload.TurnState.OwedReplyTo) > 0 {
 		return false
 	}
 	for key, value := range payload.Actor.Needs {

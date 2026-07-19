@@ -365,6 +365,11 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.HuddleSilenceTimeout = parseDurationSetting(values, "huddle_silence_timeout_minutes", sim.HuddleSilenceTimeoutDefault)
 	s.HuddleSilenceSweepCadence = parseDurationSetting(values, "huddle_silence_sweep_cadence_seconds", sim.HuddleSilenceSweepCadenceDefault)
 
+	// Huddle liveness window for the noop-skip preflight (LLM-467). Distinct from
+	// the silence timeout above: that decides when a conversation is OVER, this
+	// decides whether anyone is still talking in it.
+	s.HuddleLiveWindow = parseDurationSetting(values, "huddle_live_window_seconds", sim.HuddleLiveWindowDefault)
+
 	// Huddle loop conclusion (LLM-159). huddle_loop_timeout_seconds is the master
 	// enable: 0/unset leaves the loop sweep OFF. huddle_loop_max_turns is the
 	// LLM-333 endurance arm's no-progress turn budget.

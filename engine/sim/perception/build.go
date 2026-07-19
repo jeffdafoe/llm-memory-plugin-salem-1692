@@ -1250,6 +1250,10 @@ func buildSurroundings(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnap
 			// omits it reads 0, which turns away-routing OFF (all co-present PCs stay
 			// addressable — the legacy behavior), matching the SeekWorkCoinCeiling
 			// test-snapshot convention.
+			// LLM-467: is this a live conversation or just a room people haven't
+			// left yet? Stamped off the same published huddle the members come
+			// from, so the two can't disagree about which huddle was read.
+			s.HuddleLive = sim.HuddleIsLive(h, snap.PublishedAt, snap.HuddleLiveWindow)
 			staleAfter := snap.PCPresenceStaleAfter
 			for memberID := range h.Members {
 				if memberID == actorID {
