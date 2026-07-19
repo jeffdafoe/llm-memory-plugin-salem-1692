@@ -752,3 +752,81 @@ func TestOfflinePCLifecycle_RecoversThenResumesOnReconnect(t *testing.T) {
 		t.Errorf("present hunger = %d, want > %d (accrual resumed after reconnect)", a.Needs["hunger"], before)
 	}
 }
+
+// ---- LLM-473: the idle auto-bed survives a restart ------------------------
+
+func TestRestartSeedPCInputStamps(t *testing.T) {
+	now := time.Date(2026, 7, 19, 14, 40, 0, 0, time.UTC)
+
+	t.Run("seeds a PC whose input cursor is nil", func(t *testing.T) {
+		a := lodgerPC("p", now.Add(72*time.Hour)) // LastPCInputAt nil, as after every restart
+		w := pcSleepWorld(a)
+
+		if seeded := restartSeedPCInputStamps(w, now); seeded != 1 {
+			t.Fatalf("seeded = %d, want 1", seeded)
+		}
+		if a.LastPCInputAt == nil || !a.LastPCInputAt.Equal(now) {
+			t.Errorf("LastPCInputAt = %v, want boot time %v", a.LastPCInputAt, now)
+		}
+	})
+
+	t.Run("leaves an already-stamped cursor alone", func(t *testing.T) {
+		a := lodgerPC("p", now.Add(72*time.Hour))
+		earlier := now.Add(-time.Hour)
+		a.LastPCInputAt = &earlier
+		w := pcSleepWorld(a)
+
+		if seeded := restartSeedPCInputStamps(w, now); seeded != 0 {
+			t.Errorf("seeded = %d, want 0 — a live stamp must not be pushed forward", seeded)
+		}
+		if !a.LastPCInputAt.Equal(earlier) {
+			t.Errorf("LastPCInputAt = %v, want %v untouched", a.LastPCInputAt, earlier)
+		}
+	})
+
+	t.Run("ignores NPCs", func(t *testing.T) {
+		n := npc("n", KindNPCStateful)
+		w := sleepTestWorld(n)
+
+		if seeded := restartSeedPCInputStamps(w, now); seeded != 0 {
+			t.Errorf("seeded = %d, want 0 — no other actor kind consults this stamp", seeded)
+		}
+		if n.LastPCInputAt != nil {
+			t.Error("an NPC must not be given a PC input stamp")
+		}
+	})
+}
+
+// TestAutoBedIdle_SurvivesRestartForConnectedPC is the LLM-473 regression, and
+// the case both ZBBS-WORK-324 and LLM-450 walked past.
+//
+// Live shape: a player lodged at the tavern with the browser tab open. The WS
+// heartbeat keeps LastPCSeenAt fresh, so AutoBedOfflineLodgerPCs correctly skips
+// them; before this fix LastPCInputAt was nil after the restart, so the idle arm
+// skipped them too and NOTHING bedded them for the rest of the session while
+// tiredness climbed to the cap. Every deploy re-armed it.
+func TestAutoBedIdle_SurvivesRestartForConnectedPC(t *testing.T) {
+	boot := time.Date(2026, 7, 19, 14, 40, 0, 0, time.UTC)
+	a := lodgerPC("jefferey", boot.Add(72*time.Hour)) // nil input cursor: fresh out of a restart
+	a.Needs["tiredness"] = 24                         // at the cap, as observed live
+	w := pcSleepWorld(a)
+
+	// The restart housekeeping FinalizeLoad runs at boot.
+	restartSeedPCInputStamps(w, boot)
+
+	// Within the grace period the player still has the floor — a reconnecting
+	// player must not have control yanked away on the first sweep after a deploy.
+	AutoBedIdleLodgerPCs(boot.Add((DefaultPCIdleSleepMinutes - 1) * time.Minute)).Fn(w)
+	if a.SleepingUntil != nil {
+		t.Fatal("a PC inside the post-boot grace period must not be bedded yet")
+	}
+
+	// Past it, the character turns in on its own — the whole point of the ticket.
+	AutoBedIdleLodgerPCs(boot.Add((DefaultPCIdleSleepMinutes + 1) * time.Minute)).Fn(w)
+	if a.SleepingUntil == nil {
+		t.Fatal("an idle tired lodger must bed down after a restart, not stay awake to the tiredness cap")
+	}
+	if a.InsideRoomID != 1 {
+		t.Errorf("InsideRoomID = %d, want the granted bedroom 1", a.InsideRoomID)
+	}
+}

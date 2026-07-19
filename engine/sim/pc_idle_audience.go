@@ -200,7 +200,10 @@ func SweepPCIdleAudience(now time.Time) Command {
 					// no client to tell, and the reconnect stamps activity.
 					stillIdle := PCActivityStale(a.LastPCActivityAt, now, idleAfter)
 					connected := !PCPresenceStale(a.LastPCSeenAt, now, staleAfter)
-					if connected && !stillIdle {
+					// A PC bedded since the prompt went up drops it too (LLM-473):
+					// the sleep overlay has taken the screen, so the candle would sit
+					// under it unanswerable.
+					if connected && (!stillIdle || a.SleepingUntil != nil) {
 						a.IdlePromptPending = false
 						w.emit(&PCIdlePromptCleared{ActorID: a.ID, At: now})
 					}
@@ -208,6 +211,14 @@ func SweepPCIdleAudience(now time.Time) Command {
 				}
 				if PCPresenceStale(a.LastPCSeenAt, now, staleAfter) {
 					continue // no client attached — nobody to ask
+				}
+				// LLM-473: never stack the candle on a sleeping PC. The sleep overlay
+				// already owns the screen and carries its own Wake button, and two
+				// modal overlays at once is a worse question than either alone. Only
+				// the PROMPT is withheld — audience still drops on the same stamps, so
+				// eco mode engages for a bedded idle PC exactly as before.
+				if a.SleepingUntil != nil {
+					continue
 				}
 				if !PCActivityStale(a.LastPCActivityAt, now, idleAfter) {
 					continue // a human touched this recently

@@ -567,3 +567,84 @@ func TestStampConnectedPCsSeen_DoesNotRefreshActivity(t *testing.T) {
 		t.Error("the presence heartbeat must not manufacture an audience — that is the LLM-466 bug")
 	}
 }
+
+// ---- LLM-473: the candle never stacks on the sleep overlay ----------------
+
+// bedPC puts a PC to sleep directly, the way the auto-bed sweeps leave it: a
+// SleepingUntil in the future. Bypasses the grant machinery — these cases are
+// about the prompt, not about where a PC is allowed to bed down.
+func bedPC(t *testing.T, w *sim.World, id sim.ActorID, until time.Time) {
+	t.Helper()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors[id].SleepingUntil = &until
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("bedPC: %v", err)
+	}
+}
+
+// A bedded PC is not asked whether anyone is there: the sleep overlay already
+// owns the screen and carries its own Wake button, so raising the candle would
+// stack two modals and ask a question the player answers by waking anyway.
+func TestSweepPCIdleAudience_SkipsSleepingPC(t *testing.T) {
+	w, cancel := buildIdleWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	// Connected but long idle — the exact shape that WOULD raise a candle.
+	fresh := now.Add(-5 * time.Second)
+	ancient := now.Add(-6 * time.Hour)
+	stampPC(t, w, "player", &fresh, &ancient)
+	bedPC(t, w, "player", now.Add(4*time.Hour))
+
+	if _, err := w.Send(sim.SweepPCIdleAudience(now)); err != nil {
+		t.Fatalf("SweepPCIdleAudience: %v", err)
+	}
+
+	if promptPending(t, w, "player") {
+		t.Error("a sleeping PC must not be prompted — the sleep overlay owns the screen")
+	}
+	// Only the PROMPT is withheld. Audience still drops on the same stamps, so
+	// eco mode paces the village down for a bedded idle PC exactly as before.
+	if audienceAt(t, w, now) {
+		t.Error("suppressing the candle must not resurrect the audience — eco still engages")
+	}
+}
+
+// A PC bedded while its candle was already up drops the prompt: otherwise the
+// candle sits underneath the sleep overlay where it cannot be clicked, which is
+// the same unclearable-flag shape LLM-470 fixed for the horizon-raise case.
+func TestSweepPCIdleAudience_LowersPromptWhenPCBedsDown(t *testing.T) {
+	w, cancel := buildIdleWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	fresh := now.Add(-5 * time.Second)
+	ancient := now.Add(-6 * time.Hour)
+	stampPC(t, w, "player", &fresh, &ancient)
+
+	if _, err := w.Send(sim.SweepPCIdleAudience(now)); err != nil {
+		t.Fatalf("SweepPCIdleAudience (raise): %v", err)
+	}
+	if !promptPending(t, w, "player") {
+		t.Fatal("precondition: an idle connected PC should have been prompted")
+	}
+
+	bedPC(t, w, "player", now.Add(4*time.Hour))
+
+	// Re-stamp presence against the later sweep instant: the client is still
+	// attached (its 15s heartbeat outpaces the stale horizon), and the lower arm
+	// deliberately leaves a DISCONNECTED PC's prompt pending, so letting the
+	// stamp age past the horizon here would test the wrong branch entirely.
+	later := now.Add(time.Minute)
+	stillConnected := later.Add(-5 * time.Second)
+	stampPC(t, w, "player", &stillConnected, &ancient)
+
+	if _, err := w.Send(sim.SweepPCIdleAudience(later)); err != nil {
+		t.Fatalf("SweepPCIdleAudience (lower): %v", err)
+	}
+
+	if promptPending(t, w, "player") {
+		t.Error("bedding a prompted PC must lower the candle, not strand it under the sleep overlay")
+	}
+}
