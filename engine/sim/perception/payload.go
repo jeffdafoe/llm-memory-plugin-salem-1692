@@ -1485,6 +1485,22 @@ type SurroundingsView struct {
 	// non-huddled buyer at the substrate).
 	HuddleMembers []HuddleMember
 
+	// HuddleLive reports whether the subject's huddle has seen activity — a
+	// spoken line, a join, a completed transaction — within the snapshot's
+	// HuddleLiveWindow (LLM-467, via sim.HuddleIsLive). False when the actor is
+	// not huddled.
+	//
+	// It answers "is anyone still talking" where HuddleMembers answers "is anyone
+	// standing here". The two came apart because a huddle outlives its
+	// conversation by up to HuddleSilenceTimeout (2h) — deliberately, so a
+	// returning patron resumes rather than restarts — and for most of that span
+	// the room is silent. Read by the noop-skip preflight
+	// (handlers.shouldSkipNoop), which previously treated bare presence as
+	// conversational demand and billed every member a full LLM call per idle
+	// backstop to rediscover the talk was over. Render does NOT consult this: a
+	// tick that runs describes the room as it is, dormant or not.
+	HuddleLive bool
+
 	// HuddleAway are co-present huddle members who have stepped away — a PC whose
 	// client has gone quiet (WS dropped, presence stamp stale; LLM-342). They keep
 	// their huddle membership but are deliberately NOT in HuddleMembers, so they

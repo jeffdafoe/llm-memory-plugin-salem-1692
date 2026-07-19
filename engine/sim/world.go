@@ -675,6 +675,18 @@ type WorldSettings struct {
 	HuddleSilenceTimeout      time.Duration
 	HuddleSilenceSweepCadence time.Duration
 
+	// HuddleLiveWindow is how recently a huddle must have seen activity — a
+	// spoken line, a join, a completed transaction — to still count as a LIVE
+	// conversation for the noop-skip preflight (LLM-467). It is deliberately far
+	// shorter than HuddleSilenceTimeout above: the sweep's 2h answers "when is
+	// this conversation over", which wants to be generous so a returning patron
+	// resumes rather than restarts, while this answers "is anyone still talking",
+	// which wants to be tight. Between the two, every member of a finished-but-
+	// unswept huddle was paying a full LLM call per idle backstop to rediscover
+	// it had nothing to say. Falls back to HuddleLiveWindowDefault when zero/unset
+	// (read via HuddleIsLive); tunable via huddle_live_window_seconds.
+	HuddleLiveWindow time.Duration
+
 	// Huddle loop-conclusion tunables (LLM-159). The silence sweep concludes a
 	// DORMANT huddle; this concludes the inverse — a huddle that is hyper-active
 	// but going nowhere: members repeating near-identical lines ("let's go to the
@@ -2236,6 +2248,7 @@ func (w *World) republish() {
 		DawnDuskMinuteOK:              dawnOK && duskOK,
 		NeedThresholds:                w.Settings.NeedThresholds.Clone(),
 		PCPresenceStaleAfter:          PCPresenceStaleAfter(w),
+		HuddleLiveWindow:              EffectiveHuddleLiveWindow(w.Settings),
 		SeekWorkCoinCeiling:           effectiveSeekWorkCoinCeiling(w.Settings),
 		LodgingDefaultWeeklyRate:      w.Settings.LodgingDefaultWeeklyRate,
 		LodgingBedtimeMinute:          lodgerBedtimeMinute(w),

@@ -50,6 +50,17 @@ type UmbilicalSettingsDTO struct {
 	HuddleConversationWindDownSeconds     int `json:"huddle_conversation_wind_down_seconds"`
 	HuddleConversationHardConcludeSeconds int `json:"huddle_conversation_hard_conclude_seconds"`
 
+	// HuddleLiveWindowSeconds (LLM-467) is how recently a huddle must have seen a
+	// spoken line, a join, or a completed transaction to still count as a live
+	// conversation for the noop-skip preflight — the difference between "someone
+	// is here to talk to" and "someone is standing here". Distinct from the
+	// wind-down knobs above, which decide when a conversation should END; this
+	// only decides whether an idle backstop landing in the room buys an LLM call.
+	// Boot-loaded via huddle_live_window_seconds (restart to change), reported as
+	// the EFFECTIVE value like the other seeded knobs. Raising it costs empty
+	// wakes; lowering it makes a quiet room go cheap sooner.
+	HuddleLiveWindowSeconds int `json:"huddle_live_window_seconds"`
+
 	// SeekWorkCoinCeiling (LLM-194) is the coin balance at/above which a workless
 	// worker stops seeking/soliciting work (settings/seek-work-ceiling writes it). Like
 	// the huddle_loop_* knobs it PERSISTS (the checkpoint writes it back to the setting
@@ -246,6 +257,7 @@ func (s *Server) handleUmbilicalSettings(w http.ResponseWriter, r *http.Request)
 			HuddleLoopMaxTurns:                    maxTurns,
 			HuddleConversationWindDownSeconds:     int(windDown / time.Second),
 			HuddleConversationHardConcludeSeconds: int(hardConclude / time.Second),
+			HuddleLiveWindowSeconds:               int(sim.EffectiveHuddleLiveWindow(world.Settings) / time.Second),
 			SeekWorkCoinCeiling:                   world.Settings.SeekWorkCoinCeiling,
 			SeekWorkNeedYieldMargin:               world.Settings.SeekWorkNeedYieldMargin,
 			FarmUpkeepFloor:                       world.Settings.FarmUpkeepFloor,

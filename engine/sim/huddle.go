@@ -143,6 +143,62 @@ type Utterance struct {
 // NPC needs. The consolidation cascade carries anything durable.
 const MaxRecentUtterancesPerHuddle = 8
 
+// HuddleLiveWindowDefault is the fallback for WorldSettings.HuddleLiveWindow —
+// how recently a huddle must have seen activity to still read as a live
+// conversation (LLM-467). 5 minutes is chosen against the two cadences that
+// bracket it: the idle backstop fires every 30 minutes
+// (defaultIdleBackstopThreshold), so any window shorter than that reliably
+// classifies a backstop landing in a quiet room as dormant; and it sits well
+// above DefaultNPCAwaitReplyWindow (60s), so a conversation whose participants
+// are still trading turns at NPC speed never reads as dormant mid-exchange.
+const HuddleLiveWindowDefault = 5 * time.Minute
+
+// HuddleIsLive reports whether h has seen conversational activity — a spoken
+// line, a member joining, a completed transaction — within `window` of `now`.
+//
+// This is a LIVENESS question, not a lifecycle one: a huddle stays open for
+// HuddleSilenceTimeout (2h) after its last word so a returning patron resumes
+// the same conversation, but for most of that span nobody is actually talking.
+// The noop-skip preflight uses this to tell "someone is here to talk to" apart
+// from "someone is standing here" (LLM-467) — the distinction that stopped a
+// finished conversation from billing every member a full LLM call per backstop
+// for the rest of the two hours.
+//
+// Baselines match RunHuddleSilenceSweep's, so the two agree on what a
+// never-stamped huddle means: an unset LastActivityAt falls back to StartedAt,
+// which covers a creation site that forgets to stamp. A huddle with NEITHER
+// stamp (a hand-built test snapshot) reads live — the safe direction, since a
+// false "live" only costs the pre-LLM-467 tick, while a false "dormant" would
+// silently strand a real conversation. window <= 0 reads live for the same
+// reason; a loaded world always resolves a positive window.
+// EffectiveHuddleLiveWindow returns the configured huddle liveness window,
+// falling back to HuddleLiveWindowDefault when unset/zero. Same lazy-default
+// posture as effectiveHuddleSilenceTimeout; exported because the snapshot
+// publish mirrors the resolved value for off-world readers (perception).
+func EffectiveHuddleLiveWindow(s WorldSettings) time.Duration {
+	if s.HuddleLiveWindow > 0 {
+		return s.HuddleLiveWindow
+	}
+	return HuddleLiveWindowDefault
+}
+
+func HuddleIsLive(h *Huddle, now time.Time, window time.Duration) bool {
+	if h == nil {
+		return false
+	}
+	if window <= 0 {
+		return true
+	}
+	last := h.LastActivityAt
+	if last.IsZero() {
+		last = h.StartedAt
+	}
+	if last.IsZero() {
+		return true
+	}
+	return now.Sub(last) <= window
+}
+
 // CloneHuddle returns a deep copy suitable for publication via Snapshot or
 // for serialization-equivalent boundaries (mem repo Seed / LoadAll /
 // SaveSnapshot). World goroutine mutations to the live Huddle (Members

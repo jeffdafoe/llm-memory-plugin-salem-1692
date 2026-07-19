@@ -124,6 +124,16 @@ type Snapshot struct {
 	// behavior), matching the SeekWorkCoinCeiling test-snapshot convention.
 	PCPresenceStaleAfter time.Duration
 
+	// HuddleLiveWindow mirrors the EFFECTIVE WorldSettings.HuddleLiveWindow
+	// (LLM-467), resolved at publish via EffectiveHuddleLiveWindow so it is never
+	// 0 on a published snapshot. Perception — pure over the snapshot — reads it
+	// here to classify the subject's huddle as a live conversation or a dormant
+	// room. Same mirror pattern as PCPresenceStaleAfter above. A directly-
+	// constructed test snapshot that omits it reads 0, which HuddleIsLive treats
+	// as "always live" — the pre-LLM-467 behavior, matching the
+	// SeekWorkCoinCeiling / PCPresenceStaleAfter test-snapshot convention.
+	HuddleLiveWindow time.Duration
+
 	// SeekWorkCoinCeiling mirrors the EFFECTIVE WorldSettings.SeekWorkCoinCeiling
 	// (LLM-194), copied at publish via effectiveSeekWorkCoinCeiling so it is the
 	// resolved shelf value (never 0 on a published snapshot). The perception seek-work
