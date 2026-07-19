@@ -135,6 +135,7 @@ func (s *Server) handleUmbilicalRecipeSet(w http.ResponseWriter, r *http.Request
 		boostInputs = append(boostInputs, sim.BoostInput{Item: sim.ItemKind(bi.Item), Qty: bi.Qty, BonusQty: bi.BonusQty})
 	}
 	boostState := make([]sim.BoostState, 0, len(req.BoostState))
+	seenStates := make(map[sim.RecipeBoostState]bool, len(req.BoostState))
 	for _, bs := range req.BoostState {
 		// The state name is checked here rather than deferred to ResolveRecipe so
 		// a typo comes back 400 (client-correctable input) instead of 422
@@ -148,6 +149,15 @@ func (s *Server) handleUmbilicalRecipeSet(w http.ResponseWriter, r *http.Request
 			writeError(w, http.StatusBadRequest, "boost state bonus_qty must be >= 1")
 			return
 		}
+		// ResolveRecipe rejects duplicates too, so this is not the only guard —
+		// but it keeps the three validation layers saying the same thing, and
+		// returns the malformed-input 400 for what is malformed input rather
+		// than the 422 a resolve failure would produce.
+		if seenStates[sim.RecipeBoostState(bs.State)] {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("boost state %q listed more than once", bs.State))
+			return
+		}
+		seenStates[sim.RecipeBoostState(bs.State)] = true
 		boostState = append(boostState, sim.BoostState{State: sim.RecipeBoostState(bs.State), BonusQty: bs.BonusQty})
 	}
 	if s.recipeWriter == nil {

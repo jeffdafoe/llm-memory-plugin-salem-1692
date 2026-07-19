@@ -537,8 +537,15 @@ func landProductionCycle(w *World, actorID ActorID, actor *Actor, act *Productio
 func recipeBoostStateMet(w *World, actor *Actor, state RecipeBoostState, now time.Time) bool {
 	switch state {
 	case BoostStateHearthLit:
-		// The WORK structure's hearth, not wherever the actor happens to be
-		// standing when the batch lands — the pot cooked where the business is.
+		// The WORK structure's hearth — the pot cooked where the business is.
+		//
+		// In practice this is the same structure the actor is standing in:
+		// produceTickGate is applied before elapsed time is credited, so an
+		// actor off-post accrues nothing and never reaches landing at all
+		// (stepping out DEFERS the batch, it does not land it elsewhere).
+		// WorkStructureID is used anyway because it names the intent directly
+		// and does not quietly depend on that gate ordering staying put.
+		//
 		// Nil-safe the whole way down: a structure with no hearth object
 		// resolves nil and reads as unlit, which is what holds every
 		// non-hearth kitchen at exactly today's yield.

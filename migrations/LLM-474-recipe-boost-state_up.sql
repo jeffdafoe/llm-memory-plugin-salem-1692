@@ -52,12 +52,18 @@ UPDATE item_recipe SET boost_state = '[{"state": "hearth_lit", "bonus_qty": 1}]'
  WHERE output_item = 'fried_meat';
 
 -- Loud validate: every fire-cooked recipe that IS present must have taken its
--- boost. Deliberately relative to what exists rather than a hard count of 4 —
--- the integration-test template database is built from schema + migrations with
--- no seed catalog, so an absolute assertion fails there on a legitimately empty
--- table. This still catches the failure that matters: a row sitting in
--- item_recipe that the UPDATE above silently missed (a renamed output_item),
--- which would ship a feature that never fires.
+-- boost. Deliberately relative to what exists rather than a hard count of 4,
+-- because the integration-test template database is built from schema +
+-- migrations with no seed catalog and an absolute assertion fails there on a
+-- legitimately empty table.
+--
+-- Know what this does and does not catch. It CATCHES a present row that the
+-- UPDATE failed to modify (a botched WHERE, a jsonb write silently rejected).
+-- It does NOT catch a MISSING row — a renamed or absent output_item shrinks
+-- `present` and `authored` together and passes clean. Guarding that would need
+-- an absolute count, which the empty template cannot satisfy. If a fire-cooked
+-- dish is ever renamed, this migration goes quiet rather than loud; the backstop
+-- is the perception cue disappearing for its cook, not this block.
 DO $$
 DECLARE
     present  int;
