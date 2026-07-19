@@ -803,6 +803,16 @@ type WorldSettings struct {
 	// DefaultEcoEconomyGap when the eco_economy_gap_seconds key is absent.
 	EcoEconomyGap time.Duration
 
+	// PCAudienceIdleAfter is how long a connected client may go without any
+	// player input before it stops counting as an audience and the candle prompt
+	// asks whether anyone is there (LLM-466, pc_idle_audience.go). Seeded
+	// DefaultPCAudienceIdleAfter (1h) when the eco_audience_idle_seconds key is
+	// absent; 0 reads as the default rather than "never idle", so a missing or
+	// zeroed row can't silently restore the always-an-audience bug. Live-tunable
+	// + persisted (settings/eco-mode) chiefly so a live verification doesn't have
+	// to sit idle for an hour.
+	PCAudienceIdleAfter time.Duration
+
 	// SettingWarnings records settings that were out of range at load and clamped
 	// to a safe bound (LLM-439). Populated by the pg settings loader — today the
 	// cold rate knobs, each of which must be >= 0 (a negative recovery rate would

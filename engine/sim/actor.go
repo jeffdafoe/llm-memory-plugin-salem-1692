@@ -867,6 +867,31 @@ type Actor struct {
 	// ephemeral cadence state out of durable storage.
 	LastPCSeenAt *time.Time
 
+	// LastPCActivityAt is the wall-clock instant a HUMAN last did something with
+	// this PC (LLM-466) — every deliberate action (TouchPCInput), the WS connect
+	// (opening a client is an input), and the /pc/attend idle ack. Deliberately
+	// NOT the presence heartbeat: LastPCSeenAt answers "is the socket alive",
+	// which an abandoned browser tab holds true forever, and eco mode's audience
+	// predicate needs "is a human there" instead (pc_idle_audience.go). Distinct
+	// from LastPCInputAt, which means "last in-world action" and drives the
+	// idle-auto-bed timer — the candle ack proves a watcher without being an act
+	// of the character, so it must not defer a lodger's bed-down.
+	//
+	// TRANSIENT — not persisted, like the two stamps above. A restored PC starts
+	// nil (= idle), and its client's reconnect stamps it immediately.
+	LastPCActivityAt *time.Time
+
+	// IdlePromptPending is true while this PC's candle prompt is up: the idle
+	// sweep has asked whether anyone is still watching and no answer has arrived
+	// (LLM-466). Edge-trigger state for the sweep — it exists so a PC that stays
+	// idle is prompted once rather than every 15s pass — and it is NOT the eco
+	// gate: AudienceActive reads the stamps directly, so the throttle applies
+	// whether or not a prompt happens to be pending.
+	//
+	// TRANSIENT — not persisted. A restart clears it, and the sweep re-raises the
+	// prompt on its next pass if the client is still connected and still idle.
+	IdlePromptPending bool
+
 	// Tick scheduling.
 	LastTickedAt *time.Time
 
@@ -1339,6 +1364,10 @@ func CloneActor(a *Actor) *Actor {
 	if a.LastPCSeenAt != nil {
 		t := *a.LastPCSeenAt
 		cp.LastPCSeenAt = &t
+	}
+	if a.LastPCActivityAt != nil {
+		t := *a.LastPCActivityAt
+		cp.LastPCActivityAt = &t
 	}
 	if a.LastTickedAt != nil {
 		t := *a.LastTickedAt

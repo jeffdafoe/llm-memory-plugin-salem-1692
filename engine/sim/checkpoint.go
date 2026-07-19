@@ -125,6 +125,12 @@ type MutableWorldSettings struct {
 	EcoEnabled           bool
 	EcoSocialGapSeconds  int
 	EcoEconomyGapSeconds int
+
+	// EcoAudienceIdleSeconds is the LLM-466 idle horizon: how long a connected
+	// client may go with no player input before it stops counting as an audience.
+	// Persisted alongside the gaps so a live tune (typically shortening it for a
+	// verification run) survives restart.
+	EcoAudienceIdleSeconds int
 }
 
 // DiscoveredKind is the minimal persist-tuple for an engine-minted item kind
@@ -185,6 +191,7 @@ func (w *World) BuildCheckpointSnapshot() *CheckpointSnapshot {
 			EcoEnabled:                        w.Settings.EcoEnabled,
 			EcoSocialGapSeconds:               int(w.Settings.EcoSocialGap / time.Second),
 			EcoEconomyGapSeconds:              int(w.Settings.EcoEconomyGap / time.Second),
+			EcoAudienceIdleSeconds:            int(PCAudienceIdleAfter(w) / time.Second),
 		},
 	}
 	// ZBBS-WORK-412: carry the engine-minted (unknown-category) item kinds so

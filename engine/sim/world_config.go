@@ -454,11 +454,12 @@ var ErrInvalidEcoModeSetting = errors.New("invalid eco mode setting")
 // throttles are engaged at this instant (enabled AND no fresh player presence)
 // so the operator sees cause and effect in one response.
 type EcoModeSettingsResult struct {
-	Enabled           bool
-	SocialGapSeconds  int
-	EconomyGapSeconds int
-	AudienceActive    bool
-	Engaged           bool
+	Enabled            bool
+	SocialGapSeconds   int
+	EconomyGapSeconds  int
+	AudienceIdleSeconds int
+	AudienceActive      bool
+	Engaged             bool
 }
 
 // SetEcoMode returns a Command that live-tunes eco mode (LLM-313): the master
@@ -477,10 +478,18 @@ type EcoModeSettingsResult struct {
 // (LLM-397): how long a conversation may run is a fact about the conversation,
 // not about who is watching, so it now belongs to the loop sweep's lingering arm
 // (settings/huddle-loop, huddle_conversation_wind_down_seconds).
-func SetEcoMode(enabled *bool, socialGapSeconds, economyGapSeconds *int) Command {
+func SetEcoMode(enabled *bool, socialGapSeconds, economyGapSeconds, audienceIdleSeconds *int) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
-			if enabled == nil && socialGapSeconds == nil && economyGapSeconds == nil {
+			if enabled == nil && socialGapSeconds == nil && economyGapSeconds == nil && audienceIdleSeconds == nil {
+				return nil, ErrInvalidEcoModeSetting
+			}
+			// The idle horizon is unbounded above (a very long horizon is just
+			// "rarely ask") but must be > 0: 0 would read as the default via
+			// PCAudienceIdleAfter rather than as "never idle", so accepting it
+			// would silently ignore the operator instead of doing what they
+			// asked. A negative is nonsense outright.
+			if audienceIdleSeconds != nil && *audienceIdleSeconds <= 0 {
 				return nil, ErrInvalidEcoModeSetting
 			}
 			// Gaps must fit under the eco ceiling (code_review R1+R2): the
@@ -512,14 +521,18 @@ func SetEcoMode(enabled *bool, socialGapSeconds, economyGapSeconds *int) Command
 			if economyGapSeconds != nil {
 				w.Settings.EcoEconomyGap = time.Duration(*economyGapSeconds) * time.Second
 			}
+			if audienceIdleSeconds != nil {
+				w.Settings.PCAudienceIdleAfter = time.Duration(*audienceIdleSeconds) * time.Second
+			}
 			now := time.Now().UTC()
 			audience := AudienceActive(w, now)
 			return EcoModeSettingsResult{
-				Enabled:           w.Settings.EcoEnabled,
-				SocialGapSeconds:  int(w.Settings.EcoSocialGap / time.Second),
-				EconomyGapSeconds: int(w.Settings.EcoEconomyGap / time.Second),
-				AudienceActive:    audience,
-				Engaged:           w.Settings.EcoEnabled && !audience,
+				Enabled:             w.Settings.EcoEnabled,
+				SocialGapSeconds:    int(w.Settings.EcoSocialGap / time.Second),
+				EconomyGapSeconds:   int(w.Settings.EcoEconomyGap / time.Second),
+				AudienceIdleSeconds: int(PCAudienceIdleAfter(w) / time.Second),
+				AudienceActive:      audience,
+				Engaged:             w.Settings.EcoEnabled && !audience,
 			}, nil
 		},
 	}

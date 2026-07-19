@@ -406,6 +406,13 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.EcoSocialGap = parseDurationSetting(values, "eco_social_gap_seconds", sim.DefaultEcoSocialGap)
 	s.EcoEconomyGap = parseDurationSetting(values, "eco_economy_gap_seconds", sim.DefaultEcoEconomyGap)
 
+	// LLM-466: how long a connected client may sit with no player input before it
+	// stops counting as an audience and the candle prompt asks. Unlike the gaps a
+	// zero here does NOT mean "off" — PCAudienceIdleAfter resolves it back to the
+	// default, because "never idle" is exactly the always-an-audience bug this
+	// key exists to close.
+	s.PCAudienceIdleAfter = parseDurationSetting(values, "eco_audience_idle_seconds", sim.DefaultPCAudienceIdleAfter)
+
 	// Cross-huddle conversation continuity (LLM-170). ON by default — the ring
 	// carry-over is pure perception legibility; the loop-state carry is inert
 	// unless the loop sweep above is enabled.
@@ -682,6 +689,7 @@ func (r *EnvironmentRepo) SaveMutableSettings(ctx context.Context, tx sim.Tx, ms
 		{"eco_enabled", strconv.FormatBool(ms.EcoEnabled)},
 		{"eco_social_gap_seconds", strconv.Itoa(ms.EcoSocialGapSeconds)},
 		{"eco_economy_gap_seconds", strconv.Itoa(ms.EcoEconomyGapSeconds)},
+		{"eco_audience_idle_seconds", strconv.Itoa(ms.EcoAudienceIdleSeconds)},
 	}
 	for _, row := range rows {
 		if _, err := tx.Exec(ctx, upsertSettingSQL, row.key, row.val); err != nil {

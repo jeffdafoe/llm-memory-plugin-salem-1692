@@ -417,6 +417,20 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			Reason:  e.Reason,
 			At:      e.At.UTC().Format(time.RFC3339),
 		}}, true
+	case *sim.PCIdlePromptShown:
+		// LLM-466: this PC's client has gone an hour without input, so it no
+		// longer counts as an audience. The client raises the candle overlay; a
+		// click POSTs /pc/attend. Broadcast unscoped like the sleep frames — the
+		// client matches actor_id against its own PC.
+		return WireFrame{Type: "pc_idle_prompt", Data: pcIdlePromptWireDTO{
+			ActorID: string(e.ActorID),
+			At:      e.At.UTC().Format(time.RFC3339),
+		}}, true
+	case *sim.PCIdlePromptCleared:
+		return WireFrame{Type: "pc_idle_prompt_cleared", Data: pcIdlePromptWireDTO{
+			ActorID: string(e.ActorID),
+			At:      e.At.UTC().Format(time.RFC3339),
+		}}, true
 	case *sim.PCRelocatedToCommon:
 		if e.Text == "" {
 			// No narration line (empty pool) — drop rather than send a room_event
@@ -1055,6 +1069,16 @@ type pcSleepStartedWireDTO struct {
 type pcSleepEndedWireDTO struct {
 	ActorID string `json:"actor_id"`
 	Reason  string `json:"reason"`
+	At      string `json:"at"`
+}
+
+// pcIdlePromptWireDTO is the payload of both LLM-466 candle-prompt frames
+// (pc_idle_prompt / pc_idle_prompt_cleared) — one shape, since raise and clear
+// carry the same two facts. No reason field: the client renders the overlay the
+// same way regardless of which path cleared it (the /pc/attend click, or an
+// in-world action by a player who came back and just walked off).
+type pcIdlePromptWireDTO struct {
+	ActorID string `json:"actor_id"`
 	At      string `json:"at"`
 }
 

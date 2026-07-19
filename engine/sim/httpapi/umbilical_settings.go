@@ -109,6 +109,14 @@ type UmbilicalSettingsDTO struct {
 	EcoAudienceActive    bool `json:"eco_audience_active"`
 	EcoEngaged           bool `json:"eco_engaged"`
 
+	// EcoAudienceIdleSeconds is the LLM-466 idle horizon backing
+	// eco_audience_active: a connected client counts as an audience until it has
+	// gone this long with no player input, at which point the candle prompt asks
+	// and one click restores it. Reported as the EFFECTIVE value (a zeroed
+	// setting resolves to the 1h default), so this is what the predicate is
+	// actually using.
+	EcoAudienceIdleSeconds int `json:"eco_audience_idle_seconds"`
+
 	// Visitor cascade (LLM-437) — the knobs driving the transient-visitor tier
 	// (engine/sim/visitor.go + cascade/visitor.go + the LLM-410 factor). Unlike
 	// every field above these are NOT checkpoint-persisted: they load once via
@@ -254,6 +262,7 @@ func (s *Server) handleUmbilicalSettings(w http.ResponseWriter, r *http.Request)
 			EcoSocialGapSeconds:                   int(world.Settings.EcoSocialGap / time.Second),
 			EcoEconomyGapSeconds:                  int(world.Settings.EcoEconomyGap / time.Second),
 			EcoAudienceActive:                     audience,
+			EcoAudienceIdleSeconds:                int(sim.PCAudienceIdleAfter(world) / time.Second),
 			EcoEngaged:                            world.Settings.EcoEnabled && !audience,
 			VisitorSpawnChancePermille:            world.Settings.VisitorSpawnChancePermille,
 			VisitorMaxConcurrent:                  visitorMax,

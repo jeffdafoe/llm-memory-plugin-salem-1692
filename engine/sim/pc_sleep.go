@@ -208,9 +208,10 @@ func WakePC(actorID ActorID, now time.Time) Command {
 }
 
 // TouchPCInput records a PC's deliberate action: stamps LastPCInputAt = now
-// (feeding the idle-auto-bed timer) and LastPCSeenAt = now (presence — a
+// (feeding the idle-auto-bed timer), LastPCSeenAt = now (presence — a
 // deliberate action proves the player is here, so it refreshes the LLM-342 WS
-// heartbeat as defence in depth against a momentary socket blip). If the PC was
+// heartbeat as defence in depth against a momentary socket blip), and
+// LastPCActivityAt = now (the LLM-466 eco-mode audience horizon). If the PC was
 // sleeping it also wakes them and emits PCSleepEnded reason "input" — so acting
 // while asleep both wakes the PC and lets the action proceed. v2 port of v1
 // touchPCInput, called from the PC write-command wrappers (move / speak / pay)
@@ -225,6 +226,13 @@ func TouchPCInput(w *World, actorID ActorID, now time.Time) {
 	stamp := now
 	pc.LastPCInputAt = &stamp
 	pc.LastPCSeenAt = &stamp
+	// LLM-466: a deliberate action is the strongest possible answer to "is a
+	// human there", so it also refreshes the eco-mode audience horizon and
+	// dismisses a pending candle prompt — a returning player who just walks
+	// somewhere has proven presence as well as one who clicks the candle.
+	if TouchPCActivity(w, actorID, now) {
+		w.emit(&PCIdlePromptCleared{ActorID: actorID, At: now})
+	}
 	if pc.SleepingUntil != nil {
 		fromRoom := pc.InsideRoomID
 		wakePCActor(pc)

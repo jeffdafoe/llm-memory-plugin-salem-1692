@@ -364,6 +364,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/village/pc/create", s.requireAuth(s.handlePCCreate))
 	mux.HandleFunc("POST /api/village/pc/sleep", s.requireAuth(s.handlePCSleep))
 	mux.HandleFunc("POST /api/village/pc/wake", s.requireAuth(s.handlePCWake))
+	mux.HandleFunc("POST /api/village/pc/attend", s.requireAuth(s.handlePCAttend)) // LLM-466: candle-prompt ack
 	mux.HandleFunc("POST /api/village/pc/gather", s.requireAuth(s.handlePCGather)) // ZBBS-WORK-328
 	// Admin world-config read (ZBBS-WORK-363) — the config panel's populate
 	// fetch. Admin-only despite being a GET: requireAuth + an in-command

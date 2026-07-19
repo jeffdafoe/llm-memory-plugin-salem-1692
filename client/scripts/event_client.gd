@@ -24,6 +24,16 @@ signal npc_arrived(npc_id: String, x: float, y: float, facing: String)
 signal pc_sleep_started(actor_id: String, wake_at_iso: String)
 signal pc_sleep_ended(actor_id: String, reason: String)
 
+## Candle prompt (LLM-466). The engine raises pc_idle_prompt when a connected
+## client has gone the idle horizon (default 1h) with no player input — it has
+## stopped counting as an audience, so the village is pacing down — and
+## pc_idle_prompt_cleared when the prompt is answered, by this client's
+## /pc/attend click or by any in-world action from a player who came back and
+## simply did something. Unscoped like the sleep pair; main.gd filters on its
+## own PC before raising the overlay.
+signal pc_idle_prompt(actor_id: String)
+signal pc_idle_prompt_cleared(actor_id: String)
+
 ## LLM-56: realtime per-bite need push. Emitted with the changed PC's actor_id
 ## and full need snapshot so main.gd can filter to its own PC and feed the top
 ## bar immediately, instead of waiting on the ~10s /pc/me poll.
@@ -320,6 +330,10 @@ func _handle_message(data: String) -> void:
                 str(event_data.get("actor_id", "")),
                 str(event_data.get("reason", ""))
             )
+        "pc_idle_prompt":
+            pc_idle_prompt.emit(str(event_data.get("actor_id", "")))
+        "pc_idle_prompt_cleared":
+            pc_idle_prompt_cleared.emit(str(event_data.get("actor_id", "")))
         "pc_needs_changed":
             pc_needs_changed.emit(
                 str(event_data.get("actor_id", "")),

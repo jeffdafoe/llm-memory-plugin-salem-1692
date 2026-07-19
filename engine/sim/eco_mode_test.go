@@ -67,13 +67,16 @@ func seedLastTick(t *testing.T, w *sim.World, id sim.ActorID, at time.Time) {
 	}
 }
 
-// stampPlayerPresent gives the PC a fresh presence stamp so AudienceActive
-// reads true at `now`.
+// stampPlayerPresent gives the PC a fresh presence stamp AND a fresh activity
+// stamp so AudienceActive reads true at `now` — a watching player is a live
+// socket with a human behind it, and LLM-466 made both halves load-bearing.
+// Tests that want the socket-alive-but-nobody-home case stamp presence only.
 func stampPlayerPresent(t *testing.T, w *sim.World, id sim.ActorID, at time.Time) {
 	t.Helper()
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		stamp := at
 		world.Actors[id].LastPCSeenAt = &stamp
+		world.Actors[id].LastPCActivityAt = &stamp
 		return nil, nil
 	}}); err != nil {
 		t.Fatalf("stampPlayerPresent: %v", err)
@@ -306,7 +309,7 @@ func TestSetEcoMode_UpdatesAndEchoes(t *testing.T) {
 
 	enabled := false
 	social := 45
-	res, err := w.Send(sim.SetEcoMode(&enabled, &social, nil))
+	res, err := w.Send(sim.SetEcoMode(&enabled, &social, nil, nil))
 	if err != nil {
 		t.Fatalf("SetEcoMode: %v", err)
 	}
@@ -345,22 +348,29 @@ func TestSetEcoMode_Rejects(t *testing.T) {
 	defer cancel()
 
 	neg := -1
+	zero := 0
 	atHorizon := 90 // == default MaxWarrantAge: a parked cycle could age out
 	pastHorizon := 3600
 	cases := []struct {
-		name    string
-		enabled *bool
-		social  *int
-		economy *int
+		name        string
+		enabled     *bool
+		social      *int
+		economy     *int
+		idleSeconds *int
 	}{
-		{"all absent", nil, nil, nil},
-		{"negative social", nil, &neg, nil},
-		{"negative economy", nil, nil, &neg},
-		{"social at stale horizon", nil, &atHorizon, nil},
-		{"economy past stale horizon", nil, nil, &pastHorizon},
+		{"all absent", nil, nil, nil, nil},
+		{"negative social", nil, &neg, nil, nil},
+		{"negative economy", nil, nil, &neg, nil},
+		{"social at stale horizon", nil, &atHorizon, nil, nil},
+		{"economy past stale horizon", nil, nil, &pastHorizon, nil},
+		// LLM-466: unlike the gaps, 0 is NOT an off-switch for the idle horizon —
+		// PCAudienceIdleAfter resolves it to the default, so accepting it would
+		// silently ignore the operator instead of meaning "never idle".
+		{"zero idle horizon", nil, nil, nil, &zero},
+		{"negative idle horizon", nil, nil, nil, &neg},
 	}
 	for _, tc := range cases {
-		if _, err := w.Send(sim.SetEcoMode(tc.enabled, tc.social, tc.economy)); err == nil {
+		if _, err := w.Send(sim.SetEcoMode(tc.enabled, tc.social, tc.economy, tc.idleSeconds)); err == nil {
 			t.Errorf("%s: want ErrInvalidEcoModeSetting, got nil", tc.name)
 		}
 	}
@@ -381,11 +391,11 @@ func TestSetEcoMode_ZeroValidUnderTightHorizon(t *testing.T) {
 		t.Fatalf("tighten MaxWarrantAge: %v", err)
 	}
 	zero := 0
-	if _, err := w.Send(sim.SetEcoMode(nil, &zero, &zero)); err != nil {
+	if _, err := w.Send(sim.SetEcoMode(nil, &zero, &zero, nil)); err != nil {
 		t.Errorf("zero gaps under a tight horizon must stay valid: %v", err)
 	}
 	one := 1
-	if _, err := w.Send(sim.SetEcoMode(nil, &one, nil)); err == nil {
+	if _, err := w.Send(sim.SetEcoMode(nil, &one, nil, nil)); err == nil {
 		t.Error("a positive gap that cannot fit under the ceiling must be rejected")
 	}
 }

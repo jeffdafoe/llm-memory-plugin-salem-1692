@@ -15,6 +15,7 @@ const NoticePanelScript = preload("res://scripts/notice_panel.gd")
 const InventoryPanelScript = preload("res://scripts/inventory_panel.gd")
 const VillageTickerScript = preload("res://scripts/village_ticker.gd")
 const SleepFadeScript = preload("res://scripts/sleep_fade.gd")
+const CandlePromptScript = preload("res://scripts/candle_prompt.gd")
 const StormFXScript = preload("res://scripts/storm_fx.gd")
 
 @onready var world: Node2D = $World
@@ -38,6 +39,14 @@ var village_ticker: PanelContainer = null
 ## ColorRect that tweens to twilight while the local PC sleeps and
 ## back to transparent on wake. See client/scripts/sleep_fade.gd.
 var sleep_fade: CanvasLayer = null
+## Candle prompt overlay (LLM-466). CanvasLayer raised when the engine reports
+## this client has gone the idle horizon with no player input; one click POSTs
+## /pc/attend and restores the village to full cadence. See
+## client/scripts/candle_prompt.gd.
+var candle_prompt: CanvasLayer = null
+## /pc/attend POST helper — instantiated lazily on the first candle click, the
+## same posture as _pc_wake_http below.
+var _pc_attend_http: HTTPRequest = null
 ## Storm FX overlay (LLM-117). CanvasLayer with rain + darkening tint +
 ## lightning, raised while the world weather is "storm". See
 ## client/scripts/storm_fx.gd; driven via world.set_weather.
@@ -81,6 +90,13 @@ const DREAM_SNIPPETS: Array = [
     "You dream of a shoreline you have never seen.",
 ]
 const DREAM_SNIPPET_INTERVAL_SEC: float = 180.0
+
+## Grace period before the client lowers an answered candle prompt on its own
+## (LLM-466). Dismissal is server-driven, so a dropped pc_idle_prompt_cleared
+## would otherwise leave the modal overlay up indefinitely. Long enough that the
+## engine's broadcast normally beats it by an order of magnitude; short enough
+## that a player is never stuck staring at a prompt they already answered.
+const ATTEND_CLEAR_FALLBACK_SEC: float = 5.0
 
 # Login screen (added as a CanvasLayer so it renders on top of everything)
 var login_screen: Control = null
@@ -245,6 +261,8 @@ func _on_authenticated() -> void:
         event_client.pc_sleep_started.connect(_on_pc_sleep_started)
         event_client.pc_sleep_ended.connect(_on_pc_sleep_ended)
         event_client.pc_needs_changed.connect(_on_event_pc_needs_changed)
+        event_client.pc_idle_prompt.connect(_on_pc_idle_prompt)
+        event_client.pc_idle_prompt_cleared.connect(_on_pc_idle_prompt_cleared)
     event_client.world = world
     world.event_client = event_client
     event_client.connect_to_server()
@@ -543,6 +561,14 @@ func _build_ui() -> void:
     sleep_fade = CanvasLayer.new()
     sleep_fade.set_script(SleepFadeScript)
     add_child(sleep_fade)
+
+    # Candle prompt (LLM-466). Unlike sleep_fade this one sits ABOVE the UI
+    # layers and swallows clicks: while it is up it is the only thing the
+    # player can interact with, so answering it can't also walk the PC.
+    candle_prompt = CanvasLayer.new()
+    candle_prompt.set_script(CandlePromptScript)
+    add_child(candle_prompt)
+    candle_prompt.trimmed.connect(_on_candle_trimmed)
 
     # Storm FX overlay (LLM-117). Same layer=0 posture as sleep_fade — paints
     # over the world but under the UI. Injected into world so set_weather (WS
@@ -1430,6 +1456,78 @@ func _on_pc_wake_completed(_result: int, code: int, _headers: PackedStringArray,
     # wake button just looks like it didn't work, which is true.
     if code < 200 or code >= 300:
         push_warning("/pc/wake non-2xx: code=%s" % code)
+
+
+## Engine raised the candle prompt (LLM-466): this client has gone the idle
+## horizon without a single player input, so it no longer counts as an audience
+## and the village has begun pacing itself down. Filtered to the local PC — the
+## frame is broadcast unscoped, like the sleep pair.
+func _on_pc_idle_prompt(actor_id: String) -> void:
+    if _pc_actor_id == "" or actor_id != _pc_actor_id:
+        return
+    if candle_prompt != null and candle_prompt.has_method("show_prompt"):
+        candle_prompt.show_prompt()
+    # Register as a modal blocker, not just a MOUSE_FILTER_STOP rect: _input
+    # (click-to-walk) and camera pan both run BEFORE GUI input, so without the
+    # blocker the click that answers the candle would also order a walk.
+    _set_modal_blocker("candle_prompt", true)
+
+
+## The prompt was answered — by this client's click, or by an in-world action
+## from a player who came back and simply did something. Either way the engine
+## is the one that says so.
+func _on_pc_idle_prompt_cleared(actor_id: String) -> void:
+    if _pc_actor_id == "" or actor_id != _pc_actor_id:
+        return
+    if candle_prompt != null and candle_prompt.has_method("hide_prompt"):
+        candle_prompt.hide_prompt()
+    _set_modal_blocker("candle_prompt", false)
+
+
+## Player clicked the candle → POST /api/village/pc/attend. The engine stamps
+## the activity cursor and broadcasts pc_idle_prompt_cleared, which routes back
+## through _on_pc_idle_prompt_cleared to lower the overlay. Deliberately no
+## optimistic hide: the overlay coming down is the client's proof the engine
+## registered a human, and hiding it on a request that never landed would leave
+## a player looking at a village that is still quietly paced down.
+func _on_candle_trimmed() -> void:
+    if _pc_attend_http == null:
+        _pc_attend_http = HTTPRequest.new()
+        add_child(_pc_attend_http)
+        _pc_attend_http.request_completed.connect(_on_pc_attend_completed)
+    if not Auth.is_authenticated():
+        return
+    var url: String = Auth.api_base + "/api/village/pc/attend"
+    var headers: PackedStringArray = Auth.auth_headers()
+    var err := _pc_attend_http.request(url, headers, HTTPClient.METHOD_POST, "")
+    if err != OK:
+        push_warning("/pc/attend request failed: %s" % err)
+
+
+func _on_pc_attend_completed(_result: int, code: int, _headers: PackedStringArray, _body: PackedByteArray) -> void:
+    if not Auth.check_response(code):
+        return
+    if code < 200 or code >= 300:
+        push_warning("/pc/attend non-2xx: code=%s" % code)
+        return
+    # Bounded fallback for a dropped clear frame. The overlay is MODAL, so a
+    # pc_idle_prompt_cleared lost to a socket blip would lock world input until
+    # the client reconnected. A 2xx means the engine has already recorded the
+    # answer — the server state is right and the village is back at full
+    # cadence — so lowering the candle ourselves after a grace period states the
+    # truth rather than guessing at it. Normal path still wins: the broadcast
+    # arrives in well under a second and hide_prompt is idempotent.
+    get_tree().create_timer(ATTEND_CLEAR_FALLBACK_SEC).timeout.connect(_on_attend_clear_fallback)
+
+
+func _on_attend_clear_fallback() -> void:
+    if candle_prompt == null or not candle_prompt.has_method("is_showing"):
+        return
+    if not candle_prompt.is_showing():
+        return
+    push_warning("/pc/attend acked but no pc_idle_prompt_cleared arrived — lowering the candle locally")
+    candle_prompt.hide_prompt()
+    _set_modal_blocker("candle_prompt", false)
 
 
 ## Push one randomly-picked dream snippet to the village ticker.
