@@ -92,7 +92,7 @@ func breadCount(t *testing.T, w *sim.World) int {
 // finish it, the boosted rates can).
 func startBoostCycle(t *testing.T, w *sim.World, now time.Time) {
 	t.Helper()
-	if _, err := w.Send(sim.StartProductionCycle("hannah", "bread")); err != nil {
+	if _, err := w.Send(sim.StartProductionCycle("hannah", "bread", "", false)); err != nil {
 		t.Fatalf("StartProductionCycle: %v", err)
 	}
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
@@ -194,7 +194,7 @@ func TestProduceTickLaborBoost(t *testing.T) {
 		seedLaborOffer(t, w, workingOffer(2, "anne", "hannah"))
 		// A shorter window than the one-helper case still lands at 2x:
 		// 31 min elapsed → credit 3720 ≥ 3600.
-		if _, err := w.Send(sim.StartProductionCycle("hannah", "bread")); err != nil {
+		if _, err := w.Send(sim.StartProductionCycle("hannah", "bread", "", false)); err != nil {
 			t.Fatalf("StartProductionCycle: %v", err)
 		}
 		if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {

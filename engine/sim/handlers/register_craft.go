@@ -10,10 +10,16 @@ package handlers
 // DecodeCraftArgs; both live in craft.go.
 //
 // terminalOnSuccess is FALSE: starting a batch is a within-tick decision, not
-// a tick-ender — the producer can speak its social beat or act in the same
-// tick (matching gather/consume/speak's non-terminal policy). A second produce
-// in the same tick is rejected by the harness genericCallKey guard, and a
-// mid-cycle produce bounces in the substrate (StartProductionCycle).
+// a tick-ender — the producer can act again in the same tick (a measured 83
+// non-speech follow-on actions a day: sell, pay, consume, move). A second
+// produce in the same tick is rejected by the harness genericCallKey guard, and
+// a mid-cycle produce bounces in the substrate (StartProductionCycle).
+//
+// LLM-468 makes that CONDITIONAL at dispatch: a produce whose optional `say`
+// reached the room ends the tick anyway (producedWithSpeech), because an
+// utterance is terminal wherever it happens. The registry flag stays false —
+// silence keeps the tick open — and the flip lives in the dispatch branch where
+// the result can be inspected.
 //
 // Advertising is gated at the prompt layer by gateTools (offered exactly when
 // the "## Your trade" cue renders: at the workplace, nothing in the works) —

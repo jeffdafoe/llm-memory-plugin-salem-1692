@@ -64,7 +64,7 @@ func buildBoosterTestWorld(t *testing.T, milkCap int, inv map[sim.ItemKind]int) 
 func landMilkCycle(t *testing.T, w *sim.World) {
 	t.Helper()
 	now := time.Now().UTC()
-	if _, err := w.Send(sim.StartProductionCycle("elizabeth", "milk")); err != nil {
+	if _, err := w.Send(sim.StartProductionCycle("elizabeth", "milk", "", false)); err != nil {
 		t.Fatalf("StartProductionCycle: %v", err)
 	}
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {

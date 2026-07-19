@@ -66,7 +66,7 @@ func buildCycleTestWorld(t *testing.T, restock []sim.RestockEntry, inv map[sim.I
 // window (StartProductionCycle stamps the anchor with the wall clock).
 func startCycle(t *testing.T, w *sim.World, actorID sim.ActorID, item string, anchor time.Time) {
 	t.Helper()
-	if _, err := w.Send(sim.StartProductionCycle(actorID, item)); err != nil {
+	if _, err := w.Send(sim.StartProductionCycle(actorID, item, "", false)); err != nil {
 		t.Fatalf("StartProductionCycle(%s): %v", item, err)
 	}
 	rewindProductionAnchor(t, w, actorID, anchor)

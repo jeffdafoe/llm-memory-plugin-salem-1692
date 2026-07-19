@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
@@ -23,11 +24,24 @@ import (
 // sim.StartProductionCycle Command does the world-state validation on the
 // world goroutine, returning a model-facing error the NPC can learn from.
 
-// CraftArgs is the decoded shape of the produce tool's arguments. item is
-// required (the good to make a batch of).
+// CraftArgs is the decoded shape of the produce tool's arguments.
+//
+//   - item: REQUIRED, the good to make a batch of.
+//   - say:  OPTIONAL, maxLength MaxCraftSayChars. A word to whoever is present
+//     as the actor sets the batch going (LLM-468). Its purpose is cost, not
+//     flavour: without it a producer who wanted to voice its beat had to spend a
+//     whole extra LLM round on `speak` (120 measured produce→speak
+//     continuations a day, each re-shipping the full ephemeral body). Folding
+//     the utterance into the acting call is the same "terminal verbs speak for
+//     themselves" move `bake` and the offer/answer verbs already make.
 type CraftArgs struct {
 	Item string `json:"item"`
+	Say  string `json:"say"`
 }
+
+// MaxCraftSayChars caps the optional announcement on the model-facing schema.
+// Matches MaxBakeSayChars — same kind of utterance, same bound.
+const MaxCraftSayChars = 200
 
 // craftSchema is the JSON Schema bytes shipped to the provider. item is required.
 var craftSchema = json.RawMessage(`{
@@ -36,6 +50,11 @@ var craftSchema = json.RawMessage(`{
         "item": {
             "type": "string",
             "description": "The good to make one batch of, e.g. \"porridge\" or \"nails\". One call starts one batch; it takes time and lands in your stores when done."
+        },
+        "say": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "Optional. A word to whoever is here as you set the batch going (e.g. \"I'll get another pot of porridge on\"). Spoken as you start; omit to work quietly. Saying something ENDS your turn."
         }
     },
     "required": ["item"],
@@ -74,6 +93,10 @@ func DecodeCraftArgs(raw json.RawMessage) (any, error) {
 	if args.Item == "" {
 		return nil, modelSafef("produce: item is required (name the good to make)")
 	}
+	if n := utf8.RuneCountInString(args.Say); n > MaxCraftSayChars {
+		return nil, modelSafef(
+			"produce: say exceeds %d-character cap (got %d characters)", MaxCraftSayChars, n)
+	}
 	return args, nil
 }
 
@@ -85,5 +108,12 @@ func HandleCraft(in HandlerInput) (sim.Command, error) {
 	if !ok {
 		return sim.Command{}, fmt.Errorf("produce: handler received unexpected args type %T", in.Args)
 	}
-	return sim.StartProductionCycle(in.ActorID, args.Item), nil
+	say := strings.TrimSpace(args.Say)
+	if say != "" {
+		if i := indexInvalidControlChar(say); i >= 0 {
+			return sim.Command{}, modelSafef(
+				"produce: say contains a disallowed control character at byte offset %d", i)
+		}
+	}
+	return sim.StartProductionCycle(in.ActorID, args.Item, say, in.HasNewNews), nil
 }

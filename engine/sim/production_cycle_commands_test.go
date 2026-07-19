@@ -81,7 +81,7 @@ func TestStartProductionCycleOpensOneBatch(t *testing.T) {
 	w, cancel := buildCookWorld(t, stewWaterRecipes(), stewWaterRestock(), map[sim.ItemKind]int{"sage": 3})
 	defer cancel()
 
-	res, err := w.Send(sim.StartProductionCycle("cook", "stew"))
+	res, err := w.Send(sim.StartProductionCycle("cook", "stew", "", false))
 	if err != nil {
 		t.Fatalf("StartProductionCycle: %v", err)
 	}
@@ -125,10 +125,10 @@ func TestStartProductionCycleRejectsSecondWhileInFlight(t *testing.T) {
 	w, cancel := buildCookWorld(t, stewWaterRecipes(), stewWaterRestock(), map[sim.ItemKind]int{"sage": 3})
 	defer cancel()
 
-	if _, err := w.Send(sim.StartProductionCycle("cook", "water")); err != nil {
+	if _, err := w.Send(sim.StartProductionCycle("cook", "water", "", false)); err != nil {
 		t.Fatalf("first start: %v", err)
 	}
-	_, err := w.Send(sim.StartProductionCycle("cook", "stew"))
+	_, err := w.Send(sim.StartProductionCycle("cook", "stew", "", false))
 	if err == nil {
 		t.Fatalf("accepted a second cycle mid-flight; want rejection")
 	}
@@ -149,7 +149,7 @@ func TestStartProductionCycleRejectsAwayFromWorkplace(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("move: %v", err)
 	}
-	if _, err := w.Send(sim.StartProductionCycle("cook", "water")); err == nil {
+	if _, err := w.Send(sim.StartProductionCycle("cook", "water", "", false)); err == nil {
 		t.Fatalf("accepted a start away from the workplace; want rejection")
 	}
 }
@@ -161,10 +161,10 @@ func TestStartProductionCycleRejectsUnknownAndForeignItems(t *testing.T) {
 	w, cancel := buildCookWorld(t, stewWaterRecipes(), stewWaterRestock(), map[sim.ItemKind]int{"sage": 3})
 	defer cancel()
 
-	if _, err := w.Send(sim.StartProductionCycle("cook", "dragon scale")); err == nil {
+	if _, err := w.Send(sim.StartProductionCycle("cook", "dragon scale", "", false)); err == nil {
 		t.Fatalf("accepted an unknown item; want rejection")
 	}
-	if _, err := w.Send(sim.StartProductionCycle("cook", "porridge")); err == nil {
+	if _, err := w.Send(sim.StartProductionCycle("cook", "porridge", "", false)); err == nil {
 		t.Fatalf("accepted a good the cook doesn't make; want rejection")
 	}
 }
@@ -176,7 +176,7 @@ func TestStartProductionCycleRejectsRecipelessEntry(t *testing.T) {
 	w, cancel := buildCookWorld(t, stewWaterRecipes(), restock, map[sim.ItemKind]int{"sage": 3})
 	defer cancel()
 
-	if _, err := w.Send(sim.StartProductionCycle("cook", "horseshoe")); err == nil {
+	if _, err := w.Send(sim.StartProductionCycle("cook", "horseshoe", "", false)); err == nil {
 		t.Fatalf("accepted a recipe-less good; want rejection")
 	}
 }
@@ -188,7 +188,7 @@ func TestStartProductionCycleRejectsInputStarvedWithSteer(t *testing.T) {
 	w, cancel := buildCookWorld(t, stewWaterRecipes(), stewWaterRestock(), map[sim.ItemKind]int{})
 	defer cancel()
 
-	_, err := w.Send(sim.StartProductionCycle("cook", "stew"))
+	_, err := w.Send(sim.StartProductionCycle("cook", "stew", "", false))
 	if err == nil {
 		t.Fatalf("accepted a sage-less stew; want rejection")
 	}
@@ -200,7 +200,7 @@ func TestStartProductionCycleRejectsInputStarvedWithSteer(t *testing.T) {
 		t.Errorf("rejection should steer to the craftable alternative (call produce with water); got %q", msg)
 	}
 	// The steered-to good starts fine.
-	if _, err := w.Send(sim.StartProductionCycle("cook", "water")); err != nil {
+	if _, err := w.Send(sim.StartProductionCycle("cook", "water", "", false)); err != nil {
 		t.Fatalf("rejected water (no inputs, makeable): %v", err)
 	}
 }
@@ -211,7 +211,7 @@ func TestStartProductionCycleRejectsAtCapWithSteer(t *testing.T) {
 	w, cancel := buildCookWorld(t, stewWaterRecipes(), stewWaterRestock(), map[sim.ItemKind]int{"water": 30, "sage": 3})
 	defer cancel()
 
-	_, err := w.Send(sim.StartProductionCycle("cook", "water"))
+	_, err := w.Send(sim.StartProductionCycle("cook", "water", "", false))
 	if err == nil {
 		t.Fatalf("accepted an at-cap water batch; want rejection")
 	}
@@ -232,7 +232,7 @@ func TestStartProductionCycleRejectsWithoutWholeBatchHeadroom(t *testing.T) {
 	w, cancel := buildCookWorld(t, stewWaterRecipes(), stewWaterRestock(), map[sim.ItemKind]int{"water": 25})
 	defer cancel()
 
-	_, err := w.Send(sim.StartProductionCycle("cook", "water"))
+	_, err := w.Send(sim.StartProductionCycle("cook", "water", "", false))
 	if err == nil {
 		t.Fatalf("accepted a batch that would overshoot the cap (25+12 > 30); want rejection")
 	}
@@ -260,7 +260,7 @@ func TestStartProductionCycleRejectsWhenNothingCraftable(t *testing.T) {
 	w, cancel := buildCookWorld(t, recipes, restock, map[sim.ItemKind]int{})
 	defer cancel()
 
-	_, err := w.Send(sim.StartProductionCycle("cook", "stew"))
+	_, err := w.Send(sim.StartProductionCycle("cook", "stew", "", false))
 	if err == nil {
 		t.Fatalf("accepted an uncraftable start with nothing else craftable; want rejection")
 	}
@@ -297,7 +297,7 @@ func TestStartProductionCycleRejectsAtDegradedBusiness(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	_, err := w.Send(sim.StartProductionCycle("cook", "water"))
+	_, err := w.Send(sim.StartProductionCycle("cook", "water", "", false))
 	if err == nil {
 		t.Fatalf("accepted a start at a degraded business; want rejection")
 	}
@@ -329,7 +329,7 @@ func TestStartProductionCycleAcceptsAtDegradedBusinessPositivePct(t *testing.T) 
 		t.Fatalf("setup: %v", err)
 	}
 
-	if _, err := w.Send(sim.StartProductionCycle("cook", "water")); err != nil {
+	if _, err := w.Send(sim.StartProductionCycle("cook", "water", "", false)); err != nil {
 		t.Fatalf("start at a degraded business with pct 50 rejected: %v", err)
 	}
 }

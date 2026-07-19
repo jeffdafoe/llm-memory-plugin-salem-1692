@@ -2,6 +2,7 @@ package sim
 
 import (
 	"fmt"
+	"log"
 	"strings"
 	"time"
 )
@@ -32,6 +33,13 @@ type ProductionStartResult struct {
 	DurationSeconds int64
 	InputsUsed      string
 	ToolWear        string
+
+	// Spoke reports that the optional `say` rode this call and reached the room
+	// (LLM-468). The harness reads it to end the tick: an utterance is terminal
+	// wherever it happens, which is the same invariant that makes the `speak`
+	// tool terminal-on-success — otherwise a producer could say its piece here
+	// and then say a second thing through `speak` in the same tick.
+	Spoke bool
 }
 
 // StartProductionCycle validates and begins one production cycle of itemName
@@ -43,7 +51,13 @@ type ProductionStartResult struct {
 // Bad calls return a ModelFacingError the acting NPC can learn from within its
 // tick budget. PCs are rejected (ErrActorNotFound); production is an NPC
 // concept.
-func StartProductionCycle(id ActorID, itemName string) Command {
+// A non-empty `say` is spoken to the room as the batch goes on (LLM-468),
+// best-effort and only when the actor is actually in a conversation — the same
+// shape as bake's parting word, minus the huddle break-off, since producing
+// keeps the actor at its post and in the company it was already keeping. A
+// refused utterance is logged and does NOT fail the start: the batch is the
+// point, the word is the garnish.
+func StartProductionCycle(id ActorID, itemName, say string, hasNewNews bool) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
 			a, err := editableNPC(w, id)
@@ -159,6 +173,18 @@ func StartProductionCycle(id ActorID, itemName string) Command {
 				DurationSeconds: duration,
 				At:              now,
 			})
+			// Speak AFTER the batch is committed, so a refused utterance can never
+			// leave the inputs spent with no cycle opened. No huddle, no audience —
+			// an announcement to an empty room is dropped rather than logged as a
+			// failure.
+			spoke := false
+			if say != "" && a.CurrentHuddleID != "" {
+				if _, serr := SpeakTo(id, say, "", nil, hasNewNews, now).Fn(w); serr != nil {
+					log.Printf("sim: produce %q announced but the say was refused: %v", id, serr)
+				} else {
+					spoke = true
+				}
+			}
 			return ProductionStartResult{
 				ID:              id,
 				Item:            kind,
@@ -167,6 +193,7 @@ func StartProductionCycle(id ActorID, itemName string) Command {
 				DurationSeconds: duration,
 				InputsUsed:      joinWithAnd(used),
 				ToolWear:        strings.Join(wornTools, " "),
+				Spoke:           spoke,
 			}, nil
 		},
 	}
