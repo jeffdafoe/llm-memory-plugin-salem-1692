@@ -1025,7 +1025,8 @@ func startTickers(ctx context.Context, w *sim.World) {
 	go sim.RunHuddleSilenceSweep(ctx, w) // ZBBS-HOME-417: conclude dormant huddles
 	go sim.RunHuddleLoopSweep(ctx, w)    // LLM-159/397: steer + conclude livelocked and over-long conversations (OFF unless huddle_loop_timeout_seconds > 0)
 	go sim.RunRoomSweep(ctx, w)
-	go sim.RunPCPresenceSweep(ctx, w) // ZBBS-WORK-326: reclaim ghost (closed-tab) PCs
+	go sim.RunPCPresenceSweep(ctx, w)     // ZBBS-WORK-326: reclaim ghost (closed-tab) PCs
+	go sim.RunPCIdleAudienceSweep(ctx, w) // LLM-466: ask an idle client whether anyone is still watching
 	go sim.RunSceneQuoteSweep(ctx, w)
 	// ZBBS-HOME-443/446: carve laundry + notice boards out of the bulk
 	// rotation — those domains are mutated exclusively by the washerwoman /

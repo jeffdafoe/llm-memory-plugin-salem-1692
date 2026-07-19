@@ -11,13 +11,16 @@ import "time"
 // tableau nobody is watching (NPC-to-NPC chatter re-prompts, greet/farewell
 // beats, engine-injected liveness pokes, visitor spawns).
 //
-// Presence predicate: any KindPC actor with a fresh LastPCSeenAt — the exact
-// signal the ghost-ejection sweep already trusts (pc_presence.go,
-// PCPresenceStale, 40s staleness over the WS presence heartbeat, LLM-342).
-// Watching and playing are the same thing (admins use the same Godot client; the
-// umbilical's JSON reads deliberately do NOT count as audience). Wake is instant
-// and free: a connecting client stamps presence on register (LLM-342) and the
-// next reactor scan runs at full cadence.
+// Presence predicate: any KindPC actor whose client is connected (fresh
+// LastPCSeenAt — the ghost-ejection signal, pc_presence.go) AND whose player has
+// given some input within the idle horizon (fresh LastPCActivityAt,
+// pc_idle_audience.go, LLM-466). The socket alone is not evidence of a person:
+// on the heartbeat alone an abandoned tab held audience true indefinitely and
+// eco mode never engaged. Watching and playing are still the same thing — the
+// idle horizon is answered by a click, not by playing — and the umbilical's JSON
+// reads deliberately do NOT count as audience. Wake is instant and free: a
+// connecting client stamps both presence and activity on register and the next
+// reactor scan runs at full cadence.
 //
 // Mechanism: DELAY, not drop. Warrants mint exactly as today — dedup,
 // perception build, and staleness handling unchanged. When no audience is
@@ -74,20 +77,34 @@ const (
 // within seconds, the live 2026-07-14 inn conversation was cut ten times in a
 // hundred minutes and never stopped — it just did so mid-sentence each time.
 
-// AudienceActive reports whether any player character has a fresh presence
-// stamp — the world-level "someone is watching" predicate. Reuses the
-// ghost-ejection staleness gate so "present" means exactly what the huddle
-// sweep already means by it. MUST run on the world goroutine (reads actors).
+// AudienceActive reports whether any player character has BOTH a live client
+// and a human behind it — the world-level "someone is watching" predicate.
+//
+// Two stamps, because the two halves answer different questions (LLM-466). A
+// fresh LastPCSeenAt means a socket is alive, which is what ghost-ejection
+// wants but is not evidence of a person: the server re-stamps it every 15s for
+// as long as a browser tab exists, so on this predicate alone a tab left open
+// overnight held audience true forever and eco mode never engaged once. A fresh
+// LastPCActivityAt means a human did something within the idle horizon —
+// including simply opening the client, or answering the candle prompt, so
+// watching without playing still counts. Idle past the horizon and the sweep
+// asks (pc_idle_audience.go); one click buys another hour.
+//
+// MUST run on the world goroutine (reads actors).
 func AudienceActive(w *World, now time.Time) bool {
 	if w == nil {
 		return false
 	}
 	staleAfter := PCPresenceStaleAfter(w)
+	idleAfter := PCAudienceIdleAfter(w)
 	for _, a := range w.Actors {
 		if a == nil || a.Kind != KindPC {
 			continue
 		}
-		if !PCPresenceStale(a.LastPCSeenAt, now, staleAfter) {
+		if PCPresenceStale(a.LastPCSeenAt, now, staleAfter) {
+			continue
+		}
+		if !PCActivityStale(a.LastPCActivityAt, now, idleAfter) {
 			return true
 		}
 	}

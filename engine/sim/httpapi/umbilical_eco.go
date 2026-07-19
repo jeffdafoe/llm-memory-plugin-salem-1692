@@ -25,17 +25,23 @@ type umbilicalEcoModeRequest struct {
 	Enabled           *bool `json:"enabled"`
 	SocialGapSeconds  *int  `json:"social_gap_seconds"`
 	EconomyGapSeconds *int  `json:"economy_gap_seconds"`
+
+	// AudienceIdleSeconds is the LLM-466 idle horizon (> 0). Mainly a testing
+	// lever: shortening it to a minute or two makes the candle prompt and the
+	// audience drop verifiable live without an hour of sitting still.
+	AudienceIdleSeconds *int `json:"audience_idle_seconds"`
 }
 
 // umbilicalEcoModeResponse echoes the post-change knobs plus the live
 // engagement state (enabled AND no fresh player presence), so cause and effect
 // land in one response.
 type umbilicalEcoModeResponse struct {
-	Enabled           bool `json:"enabled"`
-	SocialGapSeconds  int  `json:"social_gap_seconds"`
-	EconomyGapSeconds int  `json:"economy_gap_seconds"`
-	AudienceActive    bool `json:"audience_active"`
-	Engaged           bool `json:"engaged"`
+	Enabled             bool `json:"enabled"`
+	SocialGapSeconds    int  `json:"social_gap_seconds"`
+	EconomyGapSeconds   int  `json:"economy_gap_seconds"`
+	AudienceIdleSeconds int  `json:"audience_idle_seconds"`
+	AudienceActive      bool `json:"audience_active"`
+	Engaged             bool `json:"engaged"`
 }
 
 // handleUmbilicalEcoMode applies a live eco mode change. Operator-gated +
@@ -54,13 +60,13 @@ func (s *Server) handleUmbilicalEcoMode(w http.ResponseWriter, r *http.Request) 
 	}
 	auditUmbilical(user.Username, "settings.eco-mode", ecoModeAuditDetail(req))
 
-	res, err := s.world.SendContext(r.Context(), sim.SetEcoMode(req.Enabled, req.SocialGapSeconds, req.EconomyGapSeconds))
+	res, err := s.world.SendContext(r.Context(), sim.SetEcoMode(req.Enabled, req.SocialGapSeconds, req.EconomyGapSeconds, req.AudienceIdleSeconds))
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return
 		}
 		if errors.Is(err, sim.ErrInvalidEcoModeSetting) {
-			writeError(w, http.StatusBadRequest, "provide at least one of enabled / social_gap_seconds / economy_gap_seconds (gaps >= 0 and below the warrant stale horizon, default 90s; 0 disables that throttle). To bound how long a conversation runs, see settings/huddle-loop huddle_conversation_wind_down_seconds")
+			writeError(w, http.StatusBadRequest, "provide at least one of enabled / social_gap_seconds / economy_gap_seconds / audience_idle_seconds (gaps >= 0 and below the warrant stale horizon, default 90s; 0 disables that throttle. audience_idle_seconds > 0 — how long a connected client may go with no player input before it stops counting as an audience). To bound how long a conversation runs, see settings/huddle-loop huddle_conversation_wind_down_seconds")
 			return
 		}
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
@@ -72,11 +78,12 @@ func (s *Server) handleUmbilicalEcoMode(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, umbilicalEcoModeResponse{
-		Enabled:           out.Enabled,
-		SocialGapSeconds:  out.SocialGapSeconds,
-		EconomyGapSeconds: out.EconomyGapSeconds,
-		AudienceActive:    out.AudienceActive,
-		Engaged:           out.Engaged,
+		Enabled:             out.Enabled,
+		SocialGapSeconds:    out.SocialGapSeconds,
+		EconomyGapSeconds:   out.EconomyGapSeconds,
+		AudienceIdleSeconds: out.AudienceIdleSeconds,
+		AudienceActive:      out.AudienceActive,
+		Engaged:             out.Engaged,
 	})
 }
 
@@ -95,5 +102,9 @@ func ecoModeAuditDetail(req umbilicalEcoModeRequest) string {
 	if req.EconomyGapSeconds != nil {
 		economy = fmt.Sprintf("%d", *req.EconomyGapSeconds)
 	}
-	return fmt.Sprintf("enabled=%s social_gap_seconds=%s economy_gap_seconds=%s", enabled, social, economy)
+	idle := "<absent>"
+	if req.AudienceIdleSeconds != nil {
+		idle = fmt.Sprintf("%d", *req.AudienceIdleSeconds)
+	}
+	return fmt.Sprintf("enabled=%s social_gap_seconds=%s economy_gap_seconds=%s audience_idle_seconds=%s", enabled, social, economy, idle)
 }

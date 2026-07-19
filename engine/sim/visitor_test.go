@@ -331,10 +331,12 @@ func TestTickVisitorCascade_EcoPausesSpawn(t *testing.T) {
 		t.Errorf("spawned = %d while unwatched, want 0", tm.Spawned)
 	}
 
-	// A PC with a fresh stamp lifts the pause on the very next tick.
+	// A watching PC lifts the pause on the very next tick. Both stamps: LLM-466
+	// made audience mean a live socket AND a human behind it, so presence alone
+	// no longer constitutes a watcher.
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		stamp := now
-		world.Actors["pc"] = &sim.Actor{ID: "pc", Kind: sim.KindPC, LastPCSeenAt: &stamp}
+		world.Actors["pc"] = &sim.Actor{ID: "pc", Kind: sim.KindPC, LastPCSeenAt: &stamp, LastPCActivityAt: &stamp}
 		return nil, nil
 	}}); err != nil {
 		t.Fatalf("seed PC: %v", err)
@@ -344,7 +346,7 @@ func TestTickVisitorCascade_EcoPausesSpawn(t *testing.T) {
 		t.Fatalf("TickVisitorCascade (watched): %v", err)
 	}
 	if tm := res.(sim.VisitorCascadeTelemetry); tm.Spawned != 1 {
-		t.Errorf("spawned = %d with a fresh presence stamp, want 1", tm.Spawned)
+		t.Errorf("spawned = %d with a watching player, want 1", tm.Spawned)
 	}
 }
 

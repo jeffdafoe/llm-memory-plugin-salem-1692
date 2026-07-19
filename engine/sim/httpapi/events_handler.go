@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/gorilla/websocket"
 
@@ -107,8 +108,17 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		// on the still-live request context; a no-op login or a caller with no PC
 		// stamps nothing.
 		if login != "" {
-			if _, err := s.world.SendContext(r.Context(), sim.StampConnectedPCsSeen(map[string]struct{}{login: {}})); err != nil {
+			logins := map[string]struct{}{login: {}}
+			if _, err := s.world.SendContext(r.Context(), sim.StampConnectedPCsSeen(logins)); err != nil {
 				log.Printf("httpapi: initial presence stamp for %q failed: %v", login, err)
+			}
+			// LLM-466: opening a client is itself an input, so the connect also
+			// starts a fresh eco-mode audience horizon (and dismisses any candle
+			// prompt this PC was left holding). Separate from the presence stamp
+			// above and deliberately NOT on the heartbeat's path — a stamp that
+			// renewed itself every 15s for as long as a tab existed is the bug.
+			if _, err := s.world.SendContext(r.Context(), sim.StampConnectedPCsActive(logins, time.Now().UTC())); err != nil {
+				log.Printf("httpapi: initial activity stamp for %q failed: %v", login, err)
 			}
 		}
 	case <-s.hub.done:
