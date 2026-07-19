@@ -95,3 +95,72 @@ func TestHarness_ContinuationRoundDropsSoulProse(t *testing.T) {
 			len(reqs[1].EphemeralContext), len(reqs[0].EphemeralContext))
 	}
 }
+
+// The two mechanisms compose: the LLM-88 self-state refresh re-renders mid-tick
+// when a commit moves the actor's own coins/needs/inventory, and it must refresh
+// BOTH bodies. If it updated only the full one, a refreshed continuation round
+// would fall back to a stale body — or worse, re-acquire the soul prose the
+// round-index selection had just dropped (code_review).
+func TestHarness_SelfStateRefreshKeepsContinuationLean(t *testing.T) {
+	r := NewRegistry()
+	// A non-terminal commit that eats one bread on the world goroutine — the
+	// own-state change the LLM-88 refresh keys on.
+	eatFn := func(in HandlerInput) (sim.Command, error) {
+		return sim.Command{Fn: func(world *sim.World) (any, error) {
+			a := world.Actors[in.ActorID]
+			if a.Inventory["bread"] > 0 {
+				a.Inventory["bread"]--
+			}
+			return sim.ConsumeResult{Kind: "bread", Requested: 1, Consumed: 1}, nil
+		}}, nil
+	}
+	if err := r.RegisterCommit("eat", json.RawMessage(`{"type":"object"}`), passthroughDecode, eatFn, false); err != nil {
+		t.Fatalf("register eat: %v", err)
+	}
+	if err := r.RegisterTerminal("done"); err != nil {
+		t.Fatalf("register done: %v", err)
+	}
+
+	client := llm.NewFakeClient(
+		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c1", 0, "eat", `{}`)}}},
+		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c2", 0, "done", `{}`)}}},
+	)
+
+	f := newIntegrationFixture(t, r, client)
+	defer f.stop()
+
+	seedAliceSoul(t, f.world)
+	seedAliceInventory(t, f.world, map[sim.ItemKind]int{"bread": 3})
+	now := time.Now()
+	seedDueWarrant(t, f.world, now)
+	if _, err := f.world.Send(sim.EvaluateReactors(now)); err != nil {
+		t.Fatalf("EvaluateReactors: %v", err)
+	}
+	if rec := f.waitForTerminalTelemetry(t); rec.Kind == "failed" || rec.Kind == "stale" {
+		t.Fatalf("tick did not complete cleanly: kind=%q", rec.Kind)
+	}
+
+	reqs := client.Requests()
+	if len(reqs) != 2 {
+		t.Fatalf("requests: got %d, want 2 (eat round, done round)", len(reqs))
+	}
+	// The refresh happened: round 2 carries the decremented stock, not the
+	// tick-open figure.
+	if !strings.Contains(reqs[1].EphemeralContext, "bread (x2)") {
+		t.Errorf("round 2 must carry the refreshed stock 'bread (x2)', got:\n%s", reqs[1].EphemeralContext)
+	}
+	if strings.Contains(reqs[1].EphemeralContext, "bread (x3)") {
+		t.Errorf("round 2 must not carry the stale 'bread (x3)', got:\n%s", reqs[1].EphemeralContext)
+	}
+	// ...and it stayed lean: a refreshed continuation must not re-acquire the soul.
+	if strings.Contains(reqs[1].EphemeralContext, continuationSoulProse) {
+		t.Errorf("a REFRESHED continuation round must still omit the soul prose, got:\n%s", reqs[1].EphemeralContext)
+	}
+	if !strings.Contains(reqs[1].EphemeralContext, "You are Alice Smith.") {
+		t.Errorf("a refreshed continuation round must still keep the self-name line, got:\n%s", reqs[1].EphemeralContext)
+	}
+	// Round 1 is unaffected by either mechanism.
+	if !strings.Contains(reqs[0].EphemeralContext, continuationSoulProse) {
+		t.Errorf("round 1 must still carry the soul prose, got:\n%s", reqs[0].EphemeralContext)
+	}
+}

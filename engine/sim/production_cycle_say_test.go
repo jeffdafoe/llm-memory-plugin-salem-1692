@@ -113,6 +113,47 @@ func TestStartProductionCycle_SayToEmptyRoomIsDropped(t *testing.T) {
 	}
 }
 
+func TestStartProductionCycle_RefusedSayLeavesTheCycleOpen(t *testing.T) {
+	// The refusal path that survives having a huddle: the actor IS in a
+	// conversation, but is its only member, so SpeakTo rejects the utterance
+	// ("there is no one here to hear you"). Distinct from the no-huddle case
+	// above, and the one that proves the error is swallowed rather than unwinding
+	// the batch (code_review). The cycle must stand and Spoke must be false, so
+	// the tick stays open.
+	w, cancel := buildCookWorld(t, stewWaterRecipes(), stewWaterRestock(), map[sim.ItemKind]int{"sage": 3})
+	defer cancel()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Structures["tavern"] = &sim.Structure{ID: "tavern", DisplayName: "The Tavern"}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed structure: %v", err)
+	}
+	if _, err := w.Send(sim.JoinHuddle("cook", "tavern", "", time.Unix(0, 0).UTC())); err != nil {
+		t.Fatalf("JoinHuddle: %v", err)
+	}
+
+	res, err := w.Send(sim.StartProductionCycle("cook", "stew", "I'll get a pot of stew on", false))
+	if err != nil {
+		t.Fatalf("a refused say must not fail the start: %v", err)
+	}
+	r := res.(sim.ProductionStartResult)
+	if r.Spoke {
+		t.Errorf("a refused utterance must report Spoke=false so the tick stays open")
+	}
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		if world.Actors["cook"].ProductionActivity == nil {
+			t.Errorf("the production cycle must remain open after a refused say")
+		}
+		if world.Actors["cook"].Inventory["sage"] != 1 {
+			t.Errorf("sage = %d, want 1 — the inputs stay spent, the batch is real",
+				world.Actors["cook"].Inventory["sage"])
+		}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("inspect world: %v", err)
+	}
+}
+
 func TestStartProductionCycle_SayDoesNotRescueARejectedStart(t *testing.T) {
 	// The say must not be spoken when the batch never opens — otherwise the room
 	// hears "I'll get a pot of stew on" from someone who did not.
