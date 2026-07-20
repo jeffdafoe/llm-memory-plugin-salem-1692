@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -175,6 +176,22 @@ func TestUmbilicalStructuresTagsFromVillageObject(t *testing.T) {
 	}
 	if got := tags["ghost"]; got == nil || len(got) != 0 {
 		t.Errorf("unplaced structure tags = %v, want [] (non-nil, empty)", got)
+	}
+
+	// The always-an-array contract is a WIRE contract (the DTO has no omitempty),
+	// so pin it on the marshaled body rather than trusting the non-nil slice —
+	// a nil tags slice would serialize as null and break operator tooling.
+	for _, s := range got.Structures {
+		if s.ID != "ghost" {
+			continue
+		}
+		b, err := json.Marshal(s)
+		if err != nil {
+			t.Fatalf("marshal ghost row: %v", err)
+		}
+		if !strings.Contains(string(b), `"tags":[]`) {
+			t.Errorf("unplaced structure serialized as %s, want \"tags\":[]", b)
+		}
 	}
 }
 
