@@ -548,9 +548,7 @@ func TestGoldensRestockCueNeverPairsAggregateCostWithSales(t *testing.T) {
 			strings.Contains(section, "It sells briskly") {
 			demandExercised = true
 		}
-		if strings.Contains(section, "Each one earns you coin") ||
-			strings.Contains(section, "it earns you nothing on its own") ||
-			strings.Contains(section, "a losing trade unless you buy cheaper or charge more") {
+		if hasRestockMarginVerdict(section) {
 			marginExercised = true
 		}
 	}
@@ -559,6 +557,106 @@ func TestGoldensRestockCueNeverPairsAggregateCostWithSales(t *testing.T) {
 	}
 	if !marginExercised {
 		t.Error("matrix must exercise a scenario whose '## Restocking' cue renders a margin verdict (LLM-427)")
+	}
+}
+
+// restockMarginVerdictLabels are the trailing verdict labels of the five LLM-492 margin
+// clauses. Every clause shares one shape — "You are buying at about X and selling at
+// about Y — <label>." — so the label alone identifies a verdict, which lets
+// TestGoldensRestockMarginVerdictAlwaysStatesItsRates assert the rate half separately
+// rather than assume it. A detector keyed on the WHOLE clause could not: it would go
+// silent the moment someone emitted a bare label, which is the regression that test
+// exists to catch.
+//
+// One list, package-level, because there were two hand-maintained copies of it — an
+// inline one in TestGoldensRestockCueNeverPairsAggregateCostWithSales and a closure in
+// TestRestockBuyAnchorRendersWhenRateKnown — and a rewording satisfied one while
+// breaking the other. Every invariant that needs to know whether a line carries a
+// margin verdict reads this.
+var restockMarginVerdictLabels = []string{
+	"— highly profitable on coin.",
+	"— nicely profitable on coin.",
+	"— slightly profitable on coin.",
+	"— breakeven on coin.",
+	"— losing on coin; you need to buy lower or sell for more.",
+}
+
+// hasRestockMarginVerdict reports whether s carries any of the margin-tier clauses.
+// Takes a whole section or a single line.
+func hasRestockMarginVerdict(s string) bool {
+	for _, label := range restockMarginVerdictLabels {
+		if strings.Contains(s, label) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestGoldensRestockMarginVerdictAlwaysStatesItsRates pins LLM-492: a margin verdict
+// never appears without the two rates it judges, and the retired wording that
+// generalised past those rates never comes back.
+//
+// The sibling of TestGoldensMakingsVerdictAlwaysHasACostFigure on the wares cue, and it
+// exists for the same reason. Both rates come from the coin price book, which excludes
+// pure-barter settlements by design (ZBBS-HOME-393 — booking a zero Amount would enter a
+// free reading and poison every derived rate). Village-wide barter runs about a third of
+// settlements, concentrated in the raw and intermediate goods this section governs, so a
+// verdict floated free of its numbers would assert the whole economics of a line the
+// book only partly observed. Welding the rates to the label bounds the claim to what was
+// actually seen.
+//
+// Live case: a distributor was told wheat "earns you nothing on its own" and declined to
+// restock it on eight consecutive ticks, quoting the cue's own reasoning back at it —
+// while that wheat was the input leg of a working trade, swapped roughly 1:1 to the mill
+// for flour he resold at double. 61% of his wheat volume was barter and therefore
+// invisible to the verdict. The fix is NOT a barter-derived number: nothing available
+// here can price the goods leg, and inventing one would repeat the LLM-475 defect in a
+// new place (uncertainty stays silent).
+func TestGoldensRestockMarginVerdictAlwaysStatesItsRates(t *testing.T) {
+	// The exact retired clauses. Either reappearing means the verdict has gone back to
+	// claiming more than the coin legs establish.
+	retired := []string{
+		"it earns you nothing on its own",
+		"Each one earns you coin",
+	}
+	var exercised bool
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		section := restockingSection(renderScenario(sc))
+		if section == "" {
+			continue // no "## Restocking" cue in this scenario — invariant N/A
+		}
+		for _, phrase := range retired {
+			if strings.Contains(section, phrase) {
+				t.Errorf("scenario %q: '## Restocking' carries the retired margin wording %q, which asserts more than the coin legs establish (LLM-492):\n%s",
+					sc.name, phrase, section)
+			}
+		}
+		for _, line := range strings.Split(section, "\n") {
+			// Detect on the RATE half, not the label, so both of the assertions below
+			// are real: keying detection on the label would make the scope check
+			// tautological (every label contains "on coin") and would go silent on a
+			// line that stated rates and then drew an unscoped conclusion.
+			if !strings.Contains(line, "You are buying at about ") {
+				continue
+			}
+			exercised = true
+			if !strings.Contains(line, " and selling at about ") {
+				t.Errorf("scenario %q: item line %q states a buy rate without the sell rate it is judged against (LLM-492)", sc.name, line)
+			}
+			// The scope has to reach the MODEL (code_review): a bare "breakeven" reads
+			// as a claim about the good, which is the inference this ticket exists to
+			// stop. Both rates come from the coin price book and nothing else.
+			if !strings.Contains(line, "on coin") {
+				t.Errorf("scenario %q: item line %q renders a margin verdict without scoping it to the coin trade (LLM-492)", sc.name, line)
+			}
+			if !hasRestockMarginVerdict(line) {
+				t.Errorf("scenario %q: item line %q states both rates but carries no recognised verdict label (LLM-492)", sc.name, line)
+			}
+		}
+	}
+	if !exercised {
+		t.Error("matrix must exercise a scenario whose '## Restocking' cue renders a margin verdict, or this invariant is vacuous (LLM-492)")
 	}
 }
 
@@ -5705,11 +5803,8 @@ func TestRestockBuyAnchorRendersWhenRateKnown(t *testing.T) {
 	const marker = "above that and you're overpaying"
 	// The margin verdict's three buy-rate phrasings (one per tier). Any of them
 	// carries the corrective rate on a line whose margin is judgeable.
-	hasMarginVerdict := func(line string) bool {
-		return strings.Contains(line, "you buy at about ") ||
-			strings.Contains(line, "You pay about ") ||
-			strings.Contains(line, "you've been paying about ")
-	}
+	// Shared with the other margin invariants — see restockMarginVerdictLabels.
+	hasMarginVerdict := hasRestockMarginVerdict
 	for _, sc := range perceptionScenarios {
 		sc := sc
 		t.Run(sc.name, func(t *testing.T) {

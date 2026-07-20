@@ -1,6 +1,7 @@
 package perception
 
 import (
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -749,13 +750,17 @@ func TestRenderRestocking_Shape(t *testing.T) {
 	if !strings.Contains(out, "No supplier nearby is currently holding stock.") {
 		t.Errorf("missing no-supplier line:\n%s", out)
 	}
-	// ZBBS-HOME-386: the section names the action (move_to + pay_with_item) as a
-	// two-step sequence and carries neither "ask" nor "price" — negated ask/price
-	// wording still primes the speak-loop on a weak model (code_review). (Test
-	// inputs control the labels, so a whole-render substring check is safe here.)
-	if !strings.Contains(out, "move_to") || !strings.Contains(out, "pay_with_item") {
-		t.Errorf("section should name the move_to + pay_with_item action:\n%s", out)
-	}
+	// ZBBS-HOME-386's surviving half: the section carries neither "ask" nor "price" —
+	// negated ask/price wording still primes the speak-loop on a weak model
+	// (code_review). (Test inputs control the labels, so a whole-render substring check
+	// is safe here.)
+	//
+	// The other half — that the walk-to line spells out the two-step move_to +
+	// pay_with_item sequence — is retired by LLM-492. The destination token on each
+	// vendor bullet is what the model actually echoes into move_to, and the buy verb is
+	// in the tool schema it already holds; restating the mechanics only lengthened a
+	// line that has accreted clauses across six revisions. The co-present branch keeps
+	// its own imperative, which is a different situation and a different assertion.
 	lower := strings.ToLower(out)
 	if strings.Contains(lower, "ask") || strings.Contains(lower, "price") {
 		t.Errorf("cue should not contain 'ask'/'price' (primes the speak-loop):\n%s", out)
@@ -999,8 +1004,25 @@ func TestRenderRestocking_WalkToInstruction(t *testing.T) {
 		{ItemLabel: "milk", CurrentQty: 4, Cap: 19,
 			Vendors: []RestockVendor{{StructureLabel: "Ellis Farm", StructureID: "ellis"}}},
 	}})
-	if out := walk.String(); !strings.Contains(out, "No seller is here now — use move_to to reach a supplier below, then pay_with_item once you arrive.") {
-		t.Errorf("walk-to item should name the no-seller situation + the two-step buy:\n%s", out)
+	// LLM-492: the line names the SITUATION only. The two-step buy instruction it used
+	// to carry ("use move_to to reach a supplier below, then pay_with_item once you
+	// arrive") is gone, because pay_with_item is not callable on this tick — the seller
+	// is elsewhere. The only actionable move here is move_to, and the destination token
+	// on the bullet below is what the model echoes into it. Once the buyer arrives,
+	// coPresentSellerForItem resolves the seller by structure scope (LLM-286) and the
+	// co-present branch delivers the full pay_with_item imperative at the moment it
+	// becomes actionable.
+	//
+	// Absence alone is NOT sufficient coverage (code_review): a regression to a line
+	// carrying no route at all would satisfy it. So assert the destination survives.
+	if out := walk.String(); !strings.Contains(out, "No seller is here now.") {
+		t.Errorf("walk-to item should name the no-seller situation:\n%s", out)
+	}
+	if out := walk.String(); strings.Contains(out, "use move_to") {
+		t.Errorf("walk-to item must not restate the two-step buy instruction (LLM-492):\n%s", out)
+	}
+	if out := walk.String(); !strings.Contains(out, "(destination: ellis)") {
+		t.Errorf("walk-to item must still carry a destination — dropping the instruction must not leave the line unactionable:\n%s", out)
 	}
 
 	var here strings.Builder
@@ -1184,7 +1206,7 @@ func TestRenderRestocking_DemandAndMarginClauses(t *testing.T) {
 	if !strings.Contains(out, "It sells steadily — about 18 this past week.") {
 		t.Errorf("missing steady demand judgment:\n%s", out)
 	}
-	if !strings.Contains(out, "Each one earns you coin: you buy at about 2 coins and resell at about 3 coins.") {
+	if !strings.Contains(out, "You are buying at about 2 coins and selling at about 3 coins — slightly profitable on coin.") {
 		t.Errorf("missing earning margin judgment:\n%s", out)
 	}
 	if strings.Contains(out, "at a cost of") {
@@ -1199,11 +1221,20 @@ func TestRenderRestocking_DemandAndMarginClauses(t *testing.T) {
 		t.Errorf("21 sold should grade brisk:\n%s", out)
 	}
 
-	// Break-even and losing margin verdicts.
-	if out := render(RestockItemView{ItemLabel: "milk", CurrentQty: 4, Cap: 20, RecentSalesUnits: 21, BuyAnchorUnit: 1, ResaleUnit: 1}); !strings.Contains(out, "You pay about 1 coin for it and resell at about 1 coin, so it earns you nothing on its own.") {
+	// The remaining margin verdicts. All five tiers share one shape — both rates, then
+	// the verdict as a trailing label (LLM-492) — so the model parses the same grammar
+	// whichever way the coin is flowing, and the judgment never floats free of the
+	// numbers it is judging.
+	if out := render(RestockItemView{ItemLabel: "milk", CurrentQty: 4, Cap: 20, RecentSalesUnits: 21, BuyAnchorUnit: 1, ResaleUnit: 3}); !strings.Contains(out, "You are buying at about 1 coin and selling at about 3 coins — highly profitable on coin.") {
+		t.Errorf("missing highly-profitable margin judgment:\n%s", out)
+	}
+	if out := render(RestockItemView{ItemLabel: "milk", CurrentQty: 4, Cap: 20, RecentSalesUnits: 21, BuyAnchorUnit: 1, ResaleUnit: 2}); !strings.Contains(out, "You are buying at about 1 coin and selling at about 2 coins — nicely profitable on coin.") {
+		t.Errorf("missing nicely-profitable margin judgment:\n%s", out)
+	}
+	if out := render(RestockItemView{ItemLabel: "milk", CurrentQty: 4, Cap: 20, RecentSalesUnits: 21, BuyAnchorUnit: 1, ResaleUnit: 1}); !strings.Contains(out, "You are buying at about 1 coin and selling at about 1 coin — breakeven on coin.") {
 		t.Errorf("missing break-even margin judgment:\n%s", out)
 	}
-	if out := render(RestockItemView{ItemLabel: "meat", CurrentQty: 0, Cap: 6, RecentSalesUnits: 8, BuyAnchorUnit: 4, ResaleUnit: 3}); !strings.Contains(out, "You've been paying about 4 coins and reselling at about 3 coins — a losing trade unless you buy cheaper or charge more.") {
+	if out := render(RestockItemView{ItemLabel: "meat", CurrentQty: 0, Cap: 6, RecentSalesUnits: 8, BuyAnchorUnit: 4, ResaleUnit: 3}); !strings.Contains(out, "You are buying at about 4 coins and selling at about 3 coins — losing on coin; you need to buy lower or sell for more.") {
 		t.Errorf("missing losing margin judgment:\n%s", out)
 	}
 
@@ -1252,9 +1283,23 @@ func TestRestockMarginTierOf(t *testing.T) {
 	}{
 		{0, 3, marginUnknown}, {2, 0, marginUnknown}, {0, 0, marginUnknown},
 		{-1, 3, marginUnknown}, {2, -1, marginUnknown},
-		{2, 3, marginEarns}, {1, 2, marginEarns},
+		// Profit bands grade by RATIO (LLM-492), so the same +1 coin lands in
+		// different tiers depending on the buy rate: 1→2 doubles, 4→5 is a quarter.
+		// Exact cutoffs are INCLUSIVE — 3x grades highly, 2x grades nicely.
+		{1, 3, marginHighlyProfitable}, {2, 6, marginHighlyProfitable}, // exactly 3x
+		{1, 4, marginHighlyProfitable}, {3, 12, marginHighlyProfitable}, // beyond 3x
+		{1, 2, marginNicelyProfitable}, {2, 4, marginNicelyProfitable}, // exactly 2x
+		{2, 5, marginNicelyProfitable}, {4, 11, marginNicelyProfitable}, // between 2x and 3x
+		{4, 5, marginSlightlyProfitable}, {2, 3, marginSlightlyProfitable},
+		{3, 5, marginSlightlyProfitable}, // just under 2x
 		{1, 1, marginBreakEven}, {4, 4, marginBreakEven},
 		{4, 3, marginLosing}, {2, 1, marginLosing},
+		// Overflow: a cross-multiply of the buy rate (buy*3) would wrap here and
+		// invert the verdict; dividing the resale rate cannot (code_review).
+		{math.MaxInt, math.MaxInt, marginBreakEven},
+		{math.MaxInt, 1, marginLosing},
+		{1, math.MaxInt, marginHighlyProfitable},
+		{math.MaxInt / 2, math.MaxInt, marginNicelyProfitable},
 	}
 	for _, c := range cases {
 		if got := restockMarginTierOf(c.buy, c.resale); got != c.want {
