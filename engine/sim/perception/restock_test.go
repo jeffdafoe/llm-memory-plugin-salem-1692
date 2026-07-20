@@ -749,13 +749,17 @@ func TestRenderRestocking_Shape(t *testing.T) {
 	if !strings.Contains(out, "No supplier nearby is currently holding stock.") {
 		t.Errorf("missing no-supplier line:\n%s", out)
 	}
-	// ZBBS-HOME-386: the section names the action (move_to + pay_with_item) as a
-	// two-step sequence and carries neither "ask" nor "price" — negated ask/price
-	// wording still primes the speak-loop on a weak model (code_review). (Test
-	// inputs control the labels, so a whole-render substring check is safe here.)
-	if !strings.Contains(out, "move_to") || !strings.Contains(out, "pay_with_item") {
-		t.Errorf("section should name the move_to + pay_with_item action:\n%s", out)
-	}
+	// ZBBS-HOME-386's surviving half: the section carries neither "ask" nor "price" —
+	// negated ask/price wording still primes the speak-loop on a weak model
+	// (code_review). (Test inputs control the labels, so a whole-render substring check
+	// is safe here.)
+	//
+	// The other half — that the walk-to line spells out the two-step move_to +
+	// pay_with_item sequence — is retired by LLM-492. The destination token on each
+	// vendor bullet is what the model actually echoes into move_to, and the buy verb is
+	// in the tool schema it already holds; restating the mechanics only lengthened a
+	// line that has accreted clauses across six revisions. The co-present branch keeps
+	// its own imperative, which is a different situation and a different assertion.
 	lower := strings.ToLower(out)
 	if strings.Contains(lower, "ask") || strings.Contains(lower, "price") {
 		t.Errorf("cue should not contain 'ask'/'price' (primes the speak-loop):\n%s", out)
@@ -999,8 +1003,15 @@ func TestRenderRestocking_WalkToInstruction(t *testing.T) {
 		{ItemLabel: "milk", CurrentQty: 4, Cap: 19,
 			Vendors: []RestockVendor{{StructureLabel: "Ellis Farm", StructureID: "ellis"}}},
 	}})
-	if out := walk.String(); !strings.Contains(out, "No seller is here now — use move_to to reach a supplier below, then pay_with_item once you arrive.") {
-		t.Errorf("walk-to item should name the no-seller situation + the two-step buy:\n%s", out)
+	// LLM-492: the line names the SITUATION only. The two-step buy instruction it used
+	// to carry ("use move_to to reach a supplier below, then pay_with_item once you
+	// arrive") is gone — the vendor bullets below carry the destination token, which is
+	// what the model echoes into move_to.
+	if out := walk.String(); !strings.Contains(out, "No seller is here now.") {
+		t.Errorf("walk-to item should name the no-seller situation:\n%s", out)
+	}
+	if out := walk.String(); strings.Contains(out, "use move_to") {
+		t.Errorf("walk-to item must not restate the two-step buy instruction (LLM-492):\n%s", out)
 	}
 
 	var here strings.Builder
@@ -1184,7 +1195,7 @@ func TestRenderRestocking_DemandAndMarginClauses(t *testing.T) {
 	if !strings.Contains(out, "It sells steadily — about 18 this past week.") {
 		t.Errorf("missing steady demand judgment:\n%s", out)
 	}
-	if !strings.Contains(out, "In coin, each one earns you: you buy at about 2 coins and resell at about 3 coins.") {
+	if !strings.Contains(out, "You are buying at about 2 coins and selling at about 3 coins — slightly profitable.") {
 		t.Errorf("missing earning margin judgment:\n%s", out)
 	}
 	if strings.Contains(out, "at a cost of") {
@@ -1199,13 +1210,20 @@ func TestRenderRestocking_DemandAndMarginClauses(t *testing.T) {
 		t.Errorf("21 sold should grade brisk:\n%s", out)
 	}
 
-	// Break-even and losing margin verdicts. Every tier scopes its claim to the coin
-	// trade (LLM-492) — the rates come from the coin price book, which excludes pure
-	// barter, so none of the three may assert the whole economics of the line.
-	if out := render(RestockItemView{ItemLabel: "milk", CurrentQty: 4, Cap: 20, RecentSalesUnits: 21, BuyAnchorUnit: 1, ResaleUnit: 1}); !strings.Contains(out, "In coin alone it comes out even — about 1 coin to buy, about 1 coin to sell.") {
+	// The remaining margin verdicts. All five tiers share one shape — both rates, then
+	// the verdict as a trailing label (LLM-492) — so the model parses the same grammar
+	// whichever way the coin is flowing, and the judgment never floats free of the
+	// numbers it is judging.
+	if out := render(RestockItemView{ItemLabel: "milk", CurrentQty: 4, Cap: 20, RecentSalesUnits: 21, BuyAnchorUnit: 1, ResaleUnit: 3}); !strings.Contains(out, "You are buying at about 1 coin and selling at about 3 coins — highly profitable.") {
+		t.Errorf("missing highly-profitable margin judgment:\n%s", out)
+	}
+	if out := render(RestockItemView{ItemLabel: "milk", CurrentQty: 4, Cap: 20, RecentSalesUnits: 21, BuyAnchorUnit: 1, ResaleUnit: 2}); !strings.Contains(out, "You are buying at about 1 coin and selling at about 2 coins — nicely profitable.") {
+		t.Errorf("missing nicely-profitable margin judgment:\n%s", out)
+	}
+	if out := render(RestockItemView{ItemLabel: "milk", CurrentQty: 4, Cap: 20, RecentSalesUnits: 21, BuyAnchorUnit: 1, ResaleUnit: 1}); !strings.Contains(out, "You are buying at about 1 coin and selling at about 1 coin — breakeven.") {
 		t.Errorf("missing break-even margin judgment:\n%s", out)
 	}
-	if out := render(RestockItemView{ItemLabel: "meat", CurrentQty: 0, Cap: 6, RecentSalesUnits: 8, BuyAnchorUnit: 4, ResaleUnit: 3}); !strings.Contains(out, "In coin alone you've been paying about 4 coins and reselling at about 3 coins — a losing trade unless you buy cheaper or charge more.") {
+	if out := render(RestockItemView{ItemLabel: "meat", CurrentQty: 0, Cap: 6, RecentSalesUnits: 8, BuyAnchorUnit: 4, ResaleUnit: 3}); !strings.Contains(out, "You are buying at about 4 coins and selling at about 3 coins — you need to buy lower or sell for more.") {
 		t.Errorf("missing losing margin judgment:\n%s", out)
 	}
 
@@ -1254,7 +1272,13 @@ func TestRestockMarginTierOf(t *testing.T) {
 	}{
 		{0, 3, marginUnknown}, {2, 0, marginUnknown}, {0, 0, marginUnknown},
 		{-1, 3, marginUnknown}, {2, -1, marginUnknown},
-		{2, 3, marginEarns}, {1, 2, marginEarns},
+		// Profit bands grade by RATIO (LLM-492), so the same +1 coin lands in
+		// different tiers depending on the buy rate: 1→2 doubles, 4→5 is a quarter.
+		{1, 3, marginHighlyProfitable}, {2, 6, marginHighlyProfitable},
+		{1, 4, marginHighlyProfitable}, // above the top band stays highly
+		{1, 2, marginNicelyProfitable}, {2, 4, marginNicelyProfitable},
+		{2, 5, marginNicelyProfitable}, // between the 2x and 3x cutoffs
+		{4, 5, marginSlightlyProfitable}, {2, 3, marginSlightlyProfitable},
 		{1, 1, marginBreakEven}, {4, 4, marginBreakEven},
 		{4, 3, marginLosing}, {2, 1, marginLosing},
 	}

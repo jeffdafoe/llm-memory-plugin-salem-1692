@@ -28,7 +28,7 @@ Start a batch with produce, or see to other things.
 
 ## Restocking
 Your shop stock of these bought-in goods is running low. You choose how much to buy.
-- You have 0 sage on hand and room for 3 more at the most. No seller is here now — use move_to to reach a supplier below, then pay_with_item once you arrive.
+- You have 0 sage on hand and room for 3 more at the most. No seller is here now.
   - buy from Ward Garden (destination: ward_garden)
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

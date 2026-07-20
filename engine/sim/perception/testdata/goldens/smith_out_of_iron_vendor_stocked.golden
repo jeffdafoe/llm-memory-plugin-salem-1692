@@ -25,7 +25,7 @@ Start a batch with produce, or see to other things.
 
 ## Restocking
 Your shop stock of these bought-in goods is running low. You choose how much to buy.
-- You have 0 bar iron on hand and room for 6 more at the most. It is generally worth about 2 coins each — pay much above that and you're overpaying. No seller is here now — use move_to to reach a supplier below, then pay_with_item once you arrive.
+- You have 0 bar iron on hand and room for 6 more at the most. It is generally worth about 2 coins each — pay much above that and you're overpaying. No seller is here now.
   - buy from The General Store (destination: general_store)
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

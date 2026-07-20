@@ -18,7 +18,7 @@ It is your working hours and you are at your post — stay and look after your w
 
 ## Restocking
 Your shop stock of these bought-in goods is running low. You choose how much to buy.
-- You have 2 milk on hand and room for 10 more at the most. Of late it has been going for about 2 coins each — pay much above that and you're overpaying. No seller is here now — use move_to to reach a supplier below, then pay_with_item once you arrive.
+- You have 2 milk on hand and room for 10 more at the most. Of late it has been going for about 2 coins each — pay much above that and you're overpaying. No seller is here now.
   - buy from Ellis Farm (destination: ellis_farm)
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

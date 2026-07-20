@@ -982,9 +982,25 @@ type restockMarginTier int
 
 const (
 	marginUnknown restockMarginTier = iota
-	marginEarns
+	marginHighlyProfitable
+	marginNicelyProfitable
+	marginSlightlyProfitable
 	marginBreakEven
 	marginLosing
+)
+
+// Profit-band cutoffs, as a multiple of the buy rate. Graded by RATIO, not by the
+// coin difference: +1 coin on a 4-coin good is a thin 25% and +1 on a 1-coin good is
+// a doubling, and a merchant deciding where to put his purse cares about the second
+// far more than the first. Cross-multiplied against the displayed integers (see
+// restockMarginTierOf) so no division or float enters the comparison.
+//
+// The bands are coarse on purpose. With integer coin rates a 1-coin good can only
+// resell at 1 (breakeven), 2 (nicely) or 3+ (highly) — there is no finer judgment to
+// be had, and pretending otherwise would grade noise.
+const (
+	marginHighlyProfitableMultiple = 3
+	marginNicelyProfitableMultiple = 2
 )
 
 // restockMarginTierOf judges the two DISPLAYED per-unit rates against each other.
@@ -999,10 +1015,18 @@ func restockMarginTierOf(buyAnchorUnit, resaleUnit int) restockMarginTier {
 	if buyAnchorUnit <= 0 || resaleUnit <= 0 {
 		return marginUnknown
 	}
+	// int64 for the cross-multiply: both rates are independently accumulated ledger
+	// aggregates, and a wrapped product would REVERSE a verdict rather than merely
+	// garble it (the LLM-475 code_review posture).
+	buy, resale := int64(buyAnchorUnit), int64(resaleUnit)
 	switch {
-	case resaleUnit > buyAnchorUnit:
-		return marginEarns
-	case resaleUnit < buyAnchorUnit:
+	case resale >= buy*marginHighlyProfitableMultiple:
+		return marginHighlyProfitable
+	case resale >= buy*marginNicelyProfitableMultiple:
+		return marginNicelyProfitable
+	case resale > buy:
+		return marginSlightlyProfitable
+	case resale < buy:
 		return marginLosing
 	default:
 		return marginBreakEven
@@ -1158,15 +1182,30 @@ func renderRestocking(b *strings.Builder, v *RestockingView) {
 		// the barter leg is worth — nothing here can, and inventing a coin value for
 		// it would be the LLM-475 defect wearing a different hat (uncertainty stays
 		// silent) — it only stops the engine claiming more than it observed.
+		// One uniform shape across every tier: the two rates, then the verdict as a
+		// short trailing label. Each clause previously had its own sentence structure,
+		// so the model had to parse a different grammar per tier to find the same two
+		// numbers; identical framing means only the label varies. The rates are stated
+		// in coin and the verdict rides directly on them, so no clause generalises past
+		// what the coin price book actually observed — the old break-even wording
+		// ("so it earns you nothing on its own") asserted the whole economics of the
+		// line from its coin legs alone, and talked a keeper out of the input leg of a
+		// working trade whose other half settled in barter the book never sees.
 		switch restockMarginTierOf(it.BuyAnchorUnit, it.ResaleUnit) {
-		case marginEarns:
-			fmt.Fprintf(b, " In coin, each one earns you: you buy at about %s and resell at about %s.",
+		case marginHighlyProfitable:
+			fmt.Fprintf(b, " You are buying at about %s and selling at about %s — highly profitable.",
+				coinsPhrase(it.BuyAnchorUnit), coinsPhrase(it.ResaleUnit))
+		case marginNicelyProfitable:
+			fmt.Fprintf(b, " You are buying at about %s and selling at about %s — nicely profitable.",
+				coinsPhrase(it.BuyAnchorUnit), coinsPhrase(it.ResaleUnit))
+		case marginSlightlyProfitable:
+			fmt.Fprintf(b, " You are buying at about %s and selling at about %s — slightly profitable.",
 				coinsPhrase(it.BuyAnchorUnit), coinsPhrase(it.ResaleUnit))
 		case marginBreakEven:
-			fmt.Fprintf(b, " In coin alone it comes out even — about %s to buy, about %s to sell.",
+			fmt.Fprintf(b, " You are buying at about %s and selling at about %s — breakeven.",
 				coinsPhrase(it.BuyAnchorUnit), coinsPhrase(it.ResaleUnit))
 		case marginLosing:
-			fmt.Fprintf(b, " In coin alone you've been paying about %s and reselling at about %s — a losing trade unless you buy cheaper or charge more.",
+			fmt.Fprintf(b, " You are buying at about %s and selling at about %s — you need to buy lower or sell for more.",
 				coinsPhrase(it.BuyAnchorUnit), coinsPhrase(it.ResaleUnit))
 		default:
 			// Only one rate (or neither) on record — no margin to judge, so the known
@@ -1252,11 +1291,17 @@ func renderRestocking(b *strings.Builder, v *RestockingView) {
 			b.WriteString(" No supplier nearby is currently holding stock.\n")
 			continue
 		}
-		// No co-present seller — name the actual situation and the two-step buy
-		// (move_to then pay_with_item). This instruction used to live in the section
-		// header; LLM-10 moved it here so the header no longer hedges "if a seller is
-		// here / otherwise" and each item line reflects whether a seller is present.
-		b.WriteString(" No seller is here now — use move_to to reach a supplier below, then pay_with_item once you arrive.\n")
+		// No co-present seller — name the situation and let the walk-to bullets below
+		// carry it. The line used to spell out the two-step buy ("use move_to to reach a
+		// supplier below, then pay_with_item once you arrive"); LLM-492 drops that
+		// instruction as redundant. Each bullet already carries a `(destination: <id>)`
+		// token, which is what the model actually echoes into move_to, and the buy verb
+		// is in the tool schema it is holding. Restating the mechanics bought nothing and
+		// cost line length on a section that has accreted clauses for six revisions.
+		// (The header retains no instruction either — LLM-10's reason for moving it here
+		// was to stop the header hedging "if a seller is here / otherwise", and the
+		// per-item situation line still does that job.)
+		b.WriteString(" No seller is here now.\n")
 		renderWalkToVendors(b, it.Vendors)
 	}
 	b.WriteString("\n")
