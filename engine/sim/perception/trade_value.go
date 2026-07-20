@@ -75,6 +75,19 @@ type RepairReserveView struct {
 	Held         int    // nails the actor currently carries (>= 1 when the view exists)
 }
 
+// makingsMargin is the engine-derived judgment on a produced good's realized sale
+// price against its own makings cost (LLM-475). The engine computes the tier and
+// render selects the phrase — the felt-needs shape, so the comparison arithmetic
+// never reaches a weak model. Deliberately has no above-cost tier: a keeper needs
+// telling when its work earns nothing, not praising when it pays.
+type makingsMargin int
+
+const (
+	makingsMarginNone   makingsMargin = iota // no realized sale, no cost basis, or selling above cost
+	makingsMarginAtCost                      // realized rate exactly meets the makings cost
+	makingsMarginBelowCost
+)
+
 // TradeValueItem is one of the actor's own wares — produced or resold — with its
 // coin worth. Low/High are the wholesale–retail spread (Low ≤ High); a good priced
 // with a single number has Low == High. RecentUnit is the actor's recent realized
@@ -114,6 +127,23 @@ type TradeValueItem struct {
 	// or below cost, never as boilerplate on a profitable or not-yet-sold line.
 	AtOrBelowCost     bool
 	StrictlyBelowCost bool
+
+	// MakingsMargin is the produce-side sibling of AtOrBelowCost (LLM-475): the
+	// actor's realized SALE rate for a good it MAKES, judged against what the
+	// makings actually cost it. The resold-goods path had this register from the
+	// start ("you pay about 1 and resell at about 1, so it earns you nothing on its
+	// own") and produced goods never got it — live, the miller swapped five sacks of
+	// flour for five sheaves of wheat, a full day's grinding for nothing, and called
+	// it fair. Decided on the RAW rates by cross-multiplication for the same
+	// sub-coin reason AtOrBelowCost is (see above): realized coins/units against
+	// CostBatch/CostQty, no float, no rounding. makingsMarginNone unless the good has
+	// BOTH a realized sale AND a positive makings cost on record — so a
+	// not-yet-sold line and a profitable one both carry no phrase (there is no
+	// praise tier; only a loss is worth a keeper's attention). Break-even against a
+	// CostFloor sum is likewise unjudged: an unpriceable input leaves the true cost
+	// UNKNOWN above the sum, not known to be higher, and a verdict meant to be acted
+	// on must not rest on a number the actor's own books don't support.
+	MakingsMargin makingsMargin
 
 	// WholesaleTo, when non-empty, marks this as a wholesale producer's OWN
 	// produce (sim.IsOwnProduce) and names the village distributor it sells to —
@@ -240,6 +270,16 @@ func buildTradeValue(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 				costQty = 1
 			}
 			for _, in := range recipe.Inputs {
+				// LLM-475: a durable tool is a presence requirement that WEARS, never
+				// an input consumed by the batch (tool_wear.go) — so it is not a cost
+				// of these makings at all. Charging the whole skillet against every
+				// serving told Hannah Boggs her fried meat cost ~10 coins to make when
+				// the meat alone was ~5, and every honest sale read as a loss against
+				// her never-sell-below-cost coda. No amortization: the tool's own
+				// replacement is a restock the reorder floor already drives.
+				if sim.DurableToolUses(snap.ItemKinds, in.Item) > 0 {
+					continue
+				}
 				unitCost := 0
 				// History prices by CEILING division, unlike paidUnit's
 				// nearest-rounding: paidUnit reports what was paid, this feeds a
@@ -266,6 +306,39 @@ func buildTradeValue(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 				costQty, costFloor = 0, false
 			}
 		}
+		// LLM-475: judge the good's realized SALE rate against its own makings cost.
+		// Sits here, BEFORE the wholesale branch below, so it depends on nothing that
+		// branch does: it reads only the raw rates and the cost basis, both final at
+		// this point. (Ordering it after would have worked today only because the
+		// branch happens to clear the rounded display fields and not the raw ones —
+		// a coupling a later wholesale refactor could silently break, taking the
+		// verdict with it while every render test still passed.)
+		//
+		// Cross-multiplied like AtOrBelowCost above and for the same sub-coin reason:
+		// realized coins/units against costBatch/costQty, no float, no rounding. Widened
+		// to int64 for the multiply — the same defensive posture as ToolRunwayUses, since
+		// realized ledger totals accumulate independently of the recipe-side values and a
+		// wrapped product would REVERSE the verdict rather than merely garble it.
+		// Requires a realized sale AND a positive cost, so a not-yet-sold good is never
+		// judged. Anchored on the actor's OWN cost, never the catalog band.
+		makingsTier := makingsMarginNone
+		if recentUnits > 0 && costBatch > 0 && costQty > 0 {
+			saleTimesCostQty := int64(recentCoins) * int64(costQty)
+			costTimesSaleUnits := int64(costBatch) * int64(recentUnits)
+			switch {
+			case saleTimesCostQty < costTimesSaleUnits:
+				// True cost is at least costBatch, so a rate below it is a loss whether
+				// or not the sum was a floor.
+				makingsTier = makingsMarginBelowCost
+			case saleTimesCostQty == costTimesSaleUnits && !costFloor:
+				makingsTier = makingsMarginAtCost
+			}
+			// Break-even against a FLOOR cost deliberately gets NO verdict. An
+			// unpriceable input means the cost is UNKNOWN above the sum, not known to
+			// be higher — the input could genuinely be free. Calling that a loss would
+			// be the same species of defect this ticket fixes (telling a keeper a
+			// number its own books don't support), so uncertainty stays silent.
+		}
 		// LLM-291: a wholesale producer's own produce sells only to the village
 		// distributor, never retail — so this good gets the wholesale-channel line,
 		// not a retail spread + "set a fair price" framing that nudges the producer
@@ -273,17 +346,20 @@ func buildTradeValue(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 		// wholesale gate then refuses). Keyed on the SAME sim.IsOwnProduce the
 		// Consume guard and eat-cue filter on, so cue and block agree; item-scoped,
 		// so a wholesaler's RESOLD retail goods (isResale) are untouched. The retail
-		// spread / recent-sale / cost clauses don't apply to the wholesale line, so
-		// clear them — render draws it from WholesaleTo + BulkUnit/ShopUnit. Cost-of-
-		// goods for a wholesale-priced input good (the mill's flour) is out of scope
-		// here; the carrot case that motivated this has none.
+		// spread and recent-sale clauses don't apply to the wholesale line, so clear
+		// them — render draws it from WholesaleTo + BulkUnit/ShopUnit.
+		//
+		// LLM-475: the makings cost is the exception and CARRIES THROUGH. Clearing it
+		// here left wholesale producers the one class of maker never shown its own
+		// margin: Joseph Scott's live flour line named what the shop paid him and
+		// never what the grinding cost him, so the 2026-07-19 flour reprice could not
+		// reach him and he went on selling at a coin a sack for a week.
 		wholesaleTo := ""
 		bulkUnit, bulkObserved := 0, false
 		shopUnit, shopObserved := 0, false
 		if sim.IsOwnProduce(snap.VillageObjects, actorSnap.WorkStructureID, actorSnap.RestockPolicy, item) {
 			wholesaleTo = distLabel
 			recentUnit, paidUnit = 0, 0
-			costBatch, costQty, costFloor = 0, 0, false
 			// LLM-295: both figures observed-first, catalog band as seed fallback.
 			// Bulk = what the producer has actually been getting for the good (its own
 			// realized sales — i.e. what the shop has paid it). Shop = what the shops
@@ -313,6 +389,7 @@ func buildTradeValue(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 			CostFloor:         costFloor,
 			AtOrBelowCost:     atOrBelowCost,
 			StrictlyBelowCost: strictlyBelowCost,
+			MakingsMargin:     makingsTier,
 			WholesaleTo:       wholesaleTo,
 			BulkUnit:          bulkUnit,
 			BulkObserved:      bulkObserved,
@@ -418,25 +495,39 @@ func renderTradeValue(b *strings.Builder, v *TradeValueView) {
 			if it.BulkObserved {
 				bulk = fmt.Sprintf("the shop has lately paid you about %s each", coinsPhrase(it.BulkUnit))
 			}
+			// LLM-475: the makings cost belongs on this line too — it is the only
+			// figure here anchored on the producer's OWN books rather than on what
+			// the shop chooses to pay, and without it a reprice of the catalog band
+			// is invisible to him. Leads the clause list when there is no folk-pay
+			// figure to lead it. The margin judgment rides the bulk clause, since the
+			// bulk rate is what the cost is being judged against.
+			leads := []string{}
 			if it.ShopUnit > it.BulkUnit {
 				// Shop markup worth naming: folk-pay leads, the bulk rate follows with "but".
 				folk := fmt.Sprintf("Folk pay about %s each in the shops", coinsPhrase(it.ShopUnit))
 				if it.ShopObserved {
 					folk = fmt.Sprintf("Folk have lately paid about %s each in the shops", coinsPhrase(it.ShopUnit))
 				}
-				fmt.Fprintf(b,
-					"- %s: your own produce — it sells in bulk to %s, whose shop stocks it for the village, not to folk directly. %s, but %s. Send other buyers to %s.\n",
-					label, to, folk, bulk, to,
-				)
-			} else {
-				// No meaningful markup to show — just the bulk rate, capitalized for the
-				// sentence start (both phrasings begin with the ASCII word "the").
-				bulkLead := strings.ToUpper(bulk[:1]) + bulk[1:]
-				fmt.Fprintf(b,
-					"- %s: your own produce — it sells in bulk to %s, whose shop stocks it for the village, not to folk directly. %s. Send other buyers to %s.\n",
-					label, to, bulkLead, to,
-				)
+				leads = append(leads, folk)
 			}
+			if cost := makingsCostPhrase(it); cost != "" {
+				leads = append(leads, fmt.Sprintf("it costs you %s to produce", cost))
+			}
+			sentence := bulk
+			if len(leads) > 0 {
+				sentence = strings.Join(leads, ", ") + ", but " + bulk
+			}
+			// Capitalized for the sentence start. Every phrasing built above begins
+			// with an ASCII word ("Folk", "it", "the"), so a single-byte upper is the
+			// right operation; the length guard keeps that from being a panic the day
+			// a future clause can be empty.
+			if sentence != "" {
+				sentence = strings.ToUpper(sentence[:1]) + sentence[1:]
+			}
+			fmt.Fprintf(b,
+				"- %s: your own produce — it sells in bulk to %s, whose shop stocks it for the village, not to folk directly. %s%s. Send other buyers to %s.\n",
+				label, to, sentence, makingsMarginPhrase(it.MakingsMargin), to,
+			)
 			continue
 		}
 		worth := fmt.Sprintf("%s each", coinsPhrase(it.High))
@@ -487,16 +578,15 @@ func renderTradeValue(b *strings.Builder, v *TradeValueView) {
 		// (LLM-227): the NPC decides what to do with its cost; a command here
 		// over-anchors weak models into rigid haggling and fights a deliberately
 		// set loss-leader price.
-		if it.CostBatch > 0 && it.CostQty > 0 {
-			costPhrase := costEachPhrase(it.CostBatch, it.CostQty)
-			if it.CostFloor {
-				// The sum is missing an unpriceable input, so the true cost exceeds
-				// it — state the known part as a whole-coin floor (ceiling division;
-				// erring high is the safe direction for a cost estimate).
-				ceilUnit := (it.CostBatch + it.CostQty - 1) / it.CostQty
-				costPhrase = fmt.Sprintf("at least %s each", coinsPhrase(ceilUnit))
-			}
-			clauses += fmt.Sprintf("; the makings run you %s", costPhrase)
+		//
+		// LLM-475: the fact alone was not enough. The miller read flour at ~1 coin
+		// beside wheat at ~1 coin and offered five sacks for five sheaves — a day's
+		// grinding for nothing — because nothing in the line said the two figures
+		// met. The margin judgment states the consequence and stops there: no
+		// directive, no number to haggle from, and no praise tier when the good
+		// pays, so the phrase's presence is itself the signal.
+		if cost := makingsCostPhrase(it); cost != "" {
+			clauses += fmt.Sprintf("; the makings run you %s%s", cost, makingsMarginPhrase(it.MakingsMargin))
 		}
 		fmt.Fprintf(b, "- %s: %s%s.\n", sanitizeInline(it.ItemLabel), worth, clauses)
 	}
@@ -558,6 +648,40 @@ func distributorLabel(snap *sim.Snapshot) string {
 		}
 	}
 	return "the village storekeeper"
+}
+
+// makingsCostPhrase renders a produced good's cost of goods as per-unit prose
+// ("about 2 coins each", "at least 3 coins each"), or "" when the item carries no
+// cost basis. Shared by the retail line and the wholesale-channel line (LLM-475) so
+// the two can't drift on how a cost is spoken or on the floor qualifier.
+func makingsCostPhrase(it TradeValueItem) string {
+	if it.CostBatch <= 0 || it.CostQty <= 0 {
+		return ""
+	}
+	if it.CostFloor {
+		// The sum is missing an unpriceable input, so the true cost exceeds it —
+		// state the known part as a whole-coin floor (ceiling division; erring high
+		// is the safe direction for a cost estimate).
+		ceilUnit := (it.CostBatch + it.CostQty - 1) / it.CostQty
+		return fmt.Sprintf("at least %s each", coinsPhrase(ceilUnit))
+	}
+	return costEachPhrase(it.CostBatch, it.CostQty)
+}
+
+// makingsMarginPhrase selects the prose for the engine-derived margin tier
+// (LLM-475), or "" for makingsMarginNone. Parenthetical and terse on purpose: it
+// rides the end of a cost clause as a verdict on the two figures just stated, and
+// a longer form would read as the pricing directive LLM-227 keeps out of this cue.
+// There is no above-cost phrase — a keeper is told when its work earns nothing,
+// never congratulated when it pays.
+func makingsMarginPhrase(m makingsMargin) string {
+	switch m {
+	case makingsMarginBelowCost:
+		return " (a loss)"
+	case makingsMarginAtCost:
+		return " (it earns you nothing)"
+	}
+	return ""
 }
 
 // coinsPhrase renders a coin count with singular/plural unit ("1 coin", "5 coins").

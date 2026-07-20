@@ -1,0 +1,27 @@
+# Your turn
+
+## Since your last turn
+(nothing specific — this is a routine check-in)
+
+
+## You
+Coins in your purse: 10.
+You are carrying: servings of fried meat (x12), cuts of meat (x6), skillets (x2).
+
+## Around you
+You are inside the Inn, your workplace, with the blacksmith.
+It is morning in the village.
+
+You're at your workplace.
+
+It is your working hours and you are at your post — stay and look after your work; you close at 8 in the evening.
+
+## What your wares fetch
+What your wares fetch in coin — use it to set a fair price or weigh a trade:
+- Fried Meat: 4 to 7 coins each; of late you have sold for about 3 coins each; the makings run you about 5 coins each (a loss).
+
+## Your trade
+You have a fair stock of servings of fried meat, and folk keep asking for more. A batch — 1 more — takes about 15 minutes, and you have the makings.
+Start a batch with produce, or see to other things.
+
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.
