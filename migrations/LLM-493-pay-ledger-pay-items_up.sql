@@ -105,9 +105,10 @@ ALTER TABLE pay_ledger
 --    Postgres does not define which (code_review). If two `paid` rows ever carry
 --    the same ledger_id we would silently backfill whichever the planner reached
 --    first. DISTINCT ON makes the choice explicit and stable — highest audit-log
---    id wins, i.e. the most recently written row for that ledger — and the guard
---    below FAILS the migration outright if any ledger has conflicting legs, so
---    "deterministic" can never quietly become "wrong".
+--    id wins, i.e. the most recently written row for that ledger. Ledgers whose
+--    rows actually DISAGREE are not resolved that way at all: they are skipped, and
+--    the guard below fails the migration if any of them could affect a coin price.
+--    See the ambiguous-ledger block for the production case that drove this.
 --
 -- The candidate set is materialised ONCE into a temp table rather than repeated as
 -- a subquery in both the guard and the UPDATE. Two hand-maintained copies of the
@@ -133,40 +134,78 @@ SELECT ledger_id, pay_items, audit_id
          ELSE false
        END;
 
--- Guard 1: no ledger may have CONFLICTING goods legs across audit rows. If one
--- does, the DISTINCT ON below would silently pick a winner and the backfill would
--- be a guess. Fail instead, loudly, with the count.
+-- AMBIGUOUS LEDGERS. A ledger id carrying DIFFERENT goods legs across audit rows
+-- cannot be backfilled honestly — we would be picking a winner and storing legs
+-- that may belong to a different settlement entirely.
 --
--- Runs BEFORE the UPDATE — a later RAISE would roll the update back just the same,
--- but failing first is clearer and does less work.
+-- This is not hypothetical. The first production run of this migration found two:
 --
--- SCOPE, deliberately: this only sees rows that survived into the temp table, i.e.
--- valid ledger ids carrying non-empty arrays. That is exactly the set eligible for
--- backfill, so a malformed or empty duplicate is IGNORED rather than reported as a
--- conflict — correct, because such a row could never have been chosen anyway.
+--   329 | 06-25 22:40 | Ezekiel Crane <- John Ellis     | stew        | coins=0 | 2xnail
+--   329 | 06-25 23:32 | Ezekiel Crane <- John Ellis     | ale         | coins=0 | 1xhorseshoe
+--   338 | 06-27 21:24 | Hannah Boggs  <- Silence Walker | (bundle)    | coins=0 | 1xporridge
+--   338 | 06-27 22:48 | Ezekiel Crane <- John Ellis     | nights_stay | coins=0 | 4xnail
+--
+-- Genuine ledger-id COLLISIONS between unrelated settlements (338's two rows have
+-- different buyers AND sellers, 84 minutes apart), from before LLM-245 floored the
+-- id allocator at boot from GREATEST(MaxLedgerID, MaxPaidActionLogLedgerID) — until
+-- then a consume_now settlement minted an id but wrote no pay_ledger row, so a
+-- restart could re-mint one already in use.
+CREATE TEMP TABLE llm493_ambiguous_ledgers ON COMMIT DROP AS
+SELECT ledger_id
+  FROM llm493_settlement_legs
+ GROUP BY ledger_id
+HAVING count(DISTINCT pay_items) > 1;
+
+-- Guard: fail ONLY when an ambiguous ledger could actually affect a coin price.
+--
+-- The first run aborted a production deploy — and left the engine down, because the
+-- play stops it before migrations and restarts it after — over the four rows above.
+-- Every one of them is `coins = 0`: pure barter, which `offered_amount > 0` already
+-- excludes from the price book and has since ZBBS-HOME-393. Their pay_items value
+-- can never change a rate, so their ambiguity is harmless and blocking on it was
+-- wrong.
+--
+-- The question that matters is not "can I disambiguate these legs?" but "could this
+-- settlement ever teach a coin price?" — so the guard joins to pay_ledger and
+-- considers only rows with a coin leg. An ambiguous PURE-BARTER ledger passes; an
+-- ambiguous ledger that could seed still stops the migration, because there the
+-- stored legs decide whether a rate is trusted and a guess is not good enough.
 DO $$
 DECLARE
-    conflicting int;
+    blocking int;
+    ids      text;
 BEGIN
-    SELECT count(*) INTO conflicting
-      FROM (
-            SELECT ledger_id
-              FROM llm493_settlement_legs
-             GROUP BY ledger_id
-            HAVING count(DISTINCT pay_items) > 1
-           ) d;
-    IF conflicting > 0 THEN
-        RAISE EXCEPTION 'LLM-493: % ledger id(s) have conflicting pay_items across audit rows — backfill would be a guess', conflicting;
+    SELECT count(*), string_agg(a.ledger_id::text, ', ' ORDER BY a.ledger_id)
+      INTO blocking, ids
+      FROM llm493_ambiguous_ledgers a
+      JOIN pay_ledger pl ON pl.id = a.ledger_id
+     WHERE pl.offered_amount > 0;
+    IF blocking > 0 THEN
+        RAISE EXCEPTION 'LLM-493: ledger id(s) % have conflicting pay_items across audit rows AND a coin leg — backfilling them would guess at a value that decides whether they seed a price', ids;
     END IF;
 END $$;
 
+-- Backfill. Ambiguous ledgers are SKIPPED entirely rather than resolved by
+-- DISTINCT ON, so no guessed leg set is ever stored — the same discipline the rest
+-- of this work follows (uncertainty stays silent). They keep pay_items NULL, which
+-- reads as pure coin; harmless for the ones we know about, since they are barter
+-- and excluded on offered_amount anyway.
+--
+-- DISTINCT ON still guards the remaining rows: a ledger with two audit rows
+-- carrying the SAME legs is not ambiguous (count DISTINCT = 1) but is still two
+-- source rows, and UPDATE ... FROM would otherwise pick between them arbitrarily.
+--
 -- Only rows that actually carry goods are written. A pure-coin settlement is left
 -- NULL rather than set to '[]' — see the header on what NULL means.
 UPDATE pay_ledger pl
    SET pay_items = legs.pay_items
   FROM (
         SELECT DISTINCT ON (ledger_id) ledger_id, pay_items
-          FROM llm493_settlement_legs
+          FROM llm493_settlement_legs l
+         WHERE NOT EXISTS (
+                SELECT 1 FROM llm493_ambiguous_ledgers a
+                 WHERE a.ledger_id = l.ledger_id
+               )
          ORDER BY ledger_id, audit_id DESC
        ) legs
  WHERE legs.ledger_id = pl.id

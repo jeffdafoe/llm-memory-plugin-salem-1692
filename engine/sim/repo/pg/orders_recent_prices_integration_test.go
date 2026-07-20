@@ -465,3 +465,136 @@ func TestOrdersRepo_Integration_PayItemsBackfill(t *testing.T) {
 		t.Errorf("a pure-coin row failed to seed: %v", seeded)
 	}
 }
+
+// TestOrdersRepo_Integration_AmbiguousLedgerHandling covers the two halves of the
+// ambiguity rule, which a production deploy failure forced us to get right.
+//
+// A ledger id carrying DIFFERENT goods legs across audit rows cannot be backfilled
+// honestly. The first live run of this migration found two such ledgers and aborted
+// — taking Salem down with it, since the deploy play stops the engine before
+// migrations and restarts it after. But all four rows involved were coins=0, pure
+// barter, which offered_amount > 0 already excludes from the price book. Their legs
+// could never change a rate, so blocking on them was wrong.
+//
+// The rule is therefore scoped to consequence: an ambiguous ledger with NO coin leg
+// is skipped quietly (nothing it stores could matter), while an ambiguous ledger
+// WITH a coin leg still aborts, because there the stored value decides whether that
+// settlement seeds a price and a guess is not good enough.
+func TestOrdersRepo_Integration_AmbiguousLedgerHandling(t *testing.T) {
+	migration := func(t *testing.T) string {
+		t.Helper()
+		dir, err := findMigrationsDir()
+		if err != nil {
+			t.Fatalf("findMigrationsDir: %v", err)
+		}
+		b, err := os.ReadFile(filepath.Join(dir, "LLM-493-pay-ledger-pay-items_up.sql"))
+		if err != nil {
+			t.Fatalf("read migration: %v", err)
+		}
+		return string(b)
+	}
+	seed := func(t *testing.T, f *integrationFixture, id int64, amount int, legs ...string) {
+		t.Helper()
+		ctx := context.Background()
+		if _, err := f.Pool.Exec(ctx,
+			`INSERT INTO pay_ledger
+			     (id, buyer_id, seller_id, item_kind, qty, offered_amount,
+			      consumer_actor_ids, consume_now, state, fulfillment_status,
+			      ready_by, created_at, resolved_at, pay_items)
+			 VALUES ($1, 'buyer', 'seller', 'nail', 1, $2,
+			         $3, false, 'accepted', 'delivered',
+			         now()::date, now(), now(), NULL)`,
+			id, amount, []string{"buyer"},
+		); err != nil {
+			t.Fatalf("seed pay_ledger %d: %v", id, err)
+		}
+		for _, leg := range legs {
+			if _, err := f.Pool.Exec(ctx,
+				`INSERT INTO agent_action_log
+				     (actor_id, occurred_at, source, action_type, payload, result, speaker_name)
+				 VALUES (NULL, now(), 'agent', 'paid',
+				         jsonb_build_object('ledger_id', $1::bigint, 'pay_items', $2::jsonb),
+				         'ok', 'Buyer')`,
+				id, leg,
+			); err != nil {
+				t.Fatalf("seed audit for %d: %v", id, err)
+			}
+		}
+	}
+
+	t.Run("ambiguous pure-barter ledger is skipped, migration succeeds", func(t *testing.T) {
+		f := newFixture(t)
+		ctx := context.Background()
+		if _, err := f.Pool.Exec(ctx,
+			`INSERT INTO item_kind (name, display_label, category) VALUES ('nail','Nail','tool')`,
+		); err != nil {
+			t.Fatalf("seed item_kind: %v", err)
+		}
+		// The live shape: ledger 329, two unrelated barter settlements sharing an id.
+		seed(t, f, 329, 0,
+			`[{"item":"nail","qty":2}]`,
+			`[{"item":"horseshoe","qty":1}]`)
+
+		if _, err := f.Pool.Exec(ctx, migration(t)); err != nil {
+			t.Fatalf("migration must NOT abort on an ambiguous ledger with no coin leg — "+
+				"its pay_items can never affect a rate: %v", err)
+		}
+		var legs *string
+		if err := f.Pool.QueryRow(ctx,
+			`SELECT pay_items::text FROM pay_ledger WHERE id = 329`).Scan(&legs); err != nil {
+			t.Fatalf("read back: %v", err)
+		}
+		if legs != nil {
+			t.Errorf("ambiguous ledger backfilled to %s — a guessed leg set must never be stored", *legs)
+		}
+	})
+
+	t.Run("ambiguous ledger WITH a coin leg still aborts", func(t *testing.T) {
+		f := newFixture(t)
+		ctx := context.Background()
+		if _, err := f.Pool.Exec(ctx,
+			`INSERT INTO item_kind (name, display_label, category) VALUES ('nail','Nail','tool')`,
+		); err != nil {
+			t.Fatalf("seed item_kind: %v", err)
+		}
+		seed(t, f, 400, 5,
+			`[{"item":"nail","qty":2}]`,
+			`[{"item":"horseshoe","qty":1}]`)
+
+		_, err := f.Pool.Exec(ctx, migration(t))
+		if err == nil {
+			t.Fatal("migration must abort: this ledger is ambiguous AND has a coin leg, so the " +
+				"stored value decides whether it seeds a price")
+		}
+		if !strings.Contains(err.Error(), "400") {
+			t.Errorf("error should name the offending ledger id so it is actionable, got: %v", err)
+		}
+	})
+
+	t.Run("duplicate audit rows with IDENTICAL legs are not ambiguous", func(t *testing.T) {
+		f := newFixture(t)
+		ctx := context.Background()
+		if _, err := f.Pool.Exec(ctx,
+			`INSERT INTO item_kind (name, display_label, category) VALUES ('nail','Nail','tool')`,
+		); err != nil {
+			t.Fatalf("seed item_kind: %v", err)
+		}
+		// Two source rows, same legs: DISTINCT ON must resolve them rather than the
+		// ledger being treated as a conflict.
+		seed(t, f, 401, 5,
+			`[{"item":"nail","qty":2}]`,
+			`[{"item":"nail","qty":2}]`)
+
+		if _, err := f.Pool.Exec(ctx, migration(t)); err != nil {
+			t.Fatalf("identical duplicate legs are not a conflict: %v", err)
+		}
+		var legs *string
+		if err := f.Pool.QueryRow(ctx,
+			`SELECT pay_items::text FROM pay_ledger WHERE id = 401`).Scan(&legs); err != nil {
+			t.Fatalf("read back: %v", err)
+		}
+		if legs == nil || !strings.Contains(*legs, "nail") {
+			t.Errorf("unambiguous duplicate should backfill, got %v", legs)
+		}
+	})
+}
