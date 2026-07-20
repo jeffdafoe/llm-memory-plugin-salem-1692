@@ -44,8 +44,8 @@ var _current := ""
 
 
 func _initialize() -> void:
-    _run_all()
     _check_test_list()
+    _run_all()
     _check_all_tests_ran()
     print("\n[activity_reporter_test] %d checks, %d failure(s)" % [_checks, _failures])
     if _failures == 0:
@@ -95,7 +95,8 @@ func _check_all_tests_ran() -> void:
 ## _check_all_tests_ran would never miss it — the same silent coverage loss this file
 ## exists to prevent, one level up. Enumerating the script's own _test_ methods closes
 ## it: adding a case without listing it fails here. A duplicate entry is caught too, as
-## it runs twice but leaves only one completion mark.
+## it runs twice but leaves only one completion mark. Runs BEFORE _run_all so a bad name
+## is a normal harness failure rather than something call() hits first.
 func _check_test_list() -> void:
     var listed := {}
     for t in TESTS:
