@@ -1184,7 +1184,7 @@ func TestRenderRestocking_DemandAndMarginClauses(t *testing.T) {
 	if !strings.Contains(out, "It sells steadily — about 18 this past week.") {
 		t.Errorf("missing steady demand judgment:\n%s", out)
 	}
-	if !strings.Contains(out, "Each one earns you coin: you buy at about 2 coins and resell at about 3 coins.") {
+	if !strings.Contains(out, "In coin, each one earns you: you buy at about 2 coins and resell at about 3 coins.") {
 		t.Errorf("missing earning margin judgment:\n%s", out)
 	}
 	if strings.Contains(out, "at a cost of") {
@@ -1199,11 +1199,13 @@ func TestRenderRestocking_DemandAndMarginClauses(t *testing.T) {
 		t.Errorf("21 sold should grade brisk:\n%s", out)
 	}
 
-	// Break-even and losing margin verdicts.
-	if out := render(RestockItemView{ItemLabel: "milk", CurrentQty: 4, Cap: 20, RecentSalesUnits: 21, BuyAnchorUnit: 1, ResaleUnit: 1}); !strings.Contains(out, "You pay about 1 coin for it and resell at about 1 coin, so it earns you nothing on its own.") {
+	// Break-even and losing margin verdicts. Every tier scopes its claim to the coin
+	// trade (LLM-492) — the rates come from the coin price book, which excludes pure
+	// barter, so none of the three may assert the whole economics of the line.
+	if out := render(RestockItemView{ItemLabel: "milk", CurrentQty: 4, Cap: 20, RecentSalesUnits: 21, BuyAnchorUnit: 1, ResaleUnit: 1}); !strings.Contains(out, "In coin alone it comes out even — about 1 coin to buy, about 1 coin to sell.") {
 		t.Errorf("missing break-even margin judgment:\n%s", out)
 	}
-	if out := render(RestockItemView{ItemLabel: "meat", CurrentQty: 0, Cap: 6, RecentSalesUnits: 8, BuyAnchorUnit: 4, ResaleUnit: 3}); !strings.Contains(out, "You've been paying about 4 coins and reselling at about 3 coins — a losing trade unless you buy cheaper or charge more.") {
+	if out := render(RestockItemView{ItemLabel: "meat", CurrentQty: 0, Cap: 6, RecentSalesUnits: 8, BuyAnchorUnit: 4, ResaleUnit: 3}); !strings.Contains(out, "In coin alone you've been paying about 4 coins and reselling at about 3 coins — a losing trade unless you buy cheaper or charge more.") {
 		t.Errorf("missing losing margin judgment:\n%s", out)
 	}
 

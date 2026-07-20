@@ -1142,15 +1142,31 @@ func renderRestocking(b *strings.Builder, v *RestockingView) {
 		// decision stays the keeper's, and a co-present "Buy it now" below reconciles
 		// by countering lower rather than by contradiction. No "ask"/"price" token
 		// (the HOME-386 speaking-loop guard).
+		// LLM-492: every clause is scoped to the COIN trade ("in coin", "in coin
+		// alone"). Both rates come from the price book, which by design records only
+		// coin legs — a pure-barter settlement is skipped outright, because booking
+		// its zero Amount would enter a free reading and poison every rate derived
+		// from it (ZBBS-HOME-393). That exclusion is right, but it means the verdict
+		// is computed from a SAMPLE of the trade, and village-wide barter runs about
+		// a third of settlements — concentrated in exactly the raw/intermediate goods
+		// this section governs. The old unscoped wording ("it earns you nothing on
+		// its own") asserted the whole economics of the line from the coin legs alone
+		// and was live-observed talking a keeper out of the input leg of a working
+		// trade: Josiah's wheat was 61% barter by volume, swapped ~1:1 to the mill
+		// for flour he resold at double, and he declined it eight ticks running while
+		// quoting the cue's own reasoning back at it. Scoping does not tell him what
+		// the barter leg is worth — nothing here can, and inventing a coin value for
+		// it would be the LLM-475 defect wearing a different hat (uncertainty stays
+		// silent) — it only stops the engine claiming more than it observed.
 		switch restockMarginTierOf(it.BuyAnchorUnit, it.ResaleUnit) {
 		case marginEarns:
-			fmt.Fprintf(b, " Each one earns you coin: you buy at about %s and resell at about %s.",
+			fmt.Fprintf(b, " In coin, each one earns you: you buy at about %s and resell at about %s.",
 				coinsPhrase(it.BuyAnchorUnit), coinsPhrase(it.ResaleUnit))
 		case marginBreakEven:
-			fmt.Fprintf(b, " You pay about %s for it and resell at about %s, so it earns you nothing on its own.",
+			fmt.Fprintf(b, " In coin alone it comes out even — about %s to buy, about %s to sell.",
 				coinsPhrase(it.BuyAnchorUnit), coinsPhrase(it.ResaleUnit))
 		case marginLosing:
-			fmt.Fprintf(b, " You've been paying about %s and reselling at about %s — a losing trade unless you buy cheaper or charge more.",
+			fmt.Fprintf(b, " In coin alone you've been paying about %s and reselling at about %s — a losing trade unless you buy cheaper or charge more.",
 				coinsPhrase(it.BuyAnchorUnit), coinsPhrase(it.ResaleUnit))
 		default:
 			// Only one rate (or neither) on record — no margin to judge, so the known
