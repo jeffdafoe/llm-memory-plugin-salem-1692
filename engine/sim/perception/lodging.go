@@ -797,4 +797,3 @@ func heldLodgerTenure(expiresAt, now time.Time) string {
 		return fmt.Sprintf("paid for about %d more nights", nights)
 	}
 }
-

@@ -347,9 +347,9 @@ type VisitorCascadeTelemetry struct {
 	Spawned          int // new visitors created (0 or 1 per tick)
 	RoundsPaced      int // stationary travelers woken this tick to reconsider their rounds (LLM-379 pacing)
 	CircuitToLodging int // visitors that turned to the lodging phase this tick (dusk)
-	SpawnSkipChance int // 1 if spawn skipped — chance=0 OR unlucky roll; check SpawnSkipReason
-	SpawnSkipCap    int // 1 if spawn skipped because MaxConcurrent reached
-	SpawnSkipReason string
+	SpawnSkipChance  int // 1 if spawn skipped — chance=0 OR unlucky roll; check SpawnSkipReason
+	SpawnSkipCap     int // 1 if spawn skipped because MaxConcurrent reached
+	SpawnSkipReason  string
 }
 
 // VisitorTickInputs carries the per-tick inputs the dispatcher reads.

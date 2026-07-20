@@ -454,9 +454,9 @@ var ErrInvalidEcoModeSetting = errors.New("invalid eco mode setting")
 // throttles are engaged at this instant (enabled AND no fresh player presence)
 // so the operator sees cause and effect in one response.
 type EcoModeSettingsResult struct {
-	Enabled            bool
-	SocialGapSeconds   int
-	EconomyGapSeconds  int
+	Enabled             bool
+	SocialGapSeconds    int
+	EconomyGapSeconds   int
 	AudienceIdleSeconds int
 	AudienceActive      bool
 	Engaged             bool
