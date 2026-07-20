@@ -54,7 +54,9 @@ type UmbilicalStructureRoomsDTO struct {
 	PrivateOccupied int `json:"private_occupied"`
 }
 
-// UmbilicalStructureRowDTO is one structure on the roster.
+// UmbilicalStructureRowDTO is one structure on the roster. Tags is the live
+// VillageObject tag set (see the render note in umbilicalStructuresFromSnapshot),
+// which is what every engine tag gate reads — not Structure.Tags.
 type UmbilicalStructureRowDTO struct {
 	ID          string                        `json:"id"`
 	DisplayName string                        `json:"display_name"`
@@ -174,10 +176,24 @@ func umbilicalStructuresFromSnapshot(snap *sim.Snapshot, scope string) Umbilical
 			}
 		}
 
+		// Tags come from the structure's VILLAGE OBJECT, not Structure.Tags
+		// (LLM-478). A structure and its placement share an id, and every tag gate
+		// in the engine — wholesaler, distributor, farm, market_stall, hearth,
+		// stall-wear — keys on VillageObject.Tags through that bridge.
+		// Structure.Tags is seed-time descriptive text no engine path reads, so
+		// rendering it made the operator surface disagree with live behavior: the
+		// Mill reported "business,mill" while its object carried the "wholesaler"
+		// tag actually gating its sales. A structure with no placed object (or one
+		// with no tags) renders [], never null.
+		tags := []string{}
+		if obj := snap.VillageObjects[sim.VillageObjectID(id)]; obj != nil {
+			tags = append(tags, obj.Tags...)
+		}
+
 		out.Structures = append(out.Structures, UmbilicalStructureRowDTO{
 			ID:          string(id),
 			DisplayName: st.DisplayName,
-			Tags:        append([]string{}, st.Tags...),
+			Tags:        tags,
 			Keepers:     ks,
 			Rooms:       rooms,
 		})
