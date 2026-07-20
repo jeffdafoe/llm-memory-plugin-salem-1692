@@ -1,6 +1,10 @@
 package httpapi
 
 import (
+	"encoding/json"
+	"net/http"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -139,5 +143,105 @@ func TestUmbilicalStructuresFromSnapshot(t *testing.T) {
 	}
 	if len(nc.Structures) != 1 || nc.Structures[0].Keepers[0].OnShift {
 		t.Errorf("on_shift should be false with no clock, got %+v", nc.Structures)
+	}
+}
+
+// TestUmbilicalStructuresTagsFromVillageObject pins LLM-478: the roster renders
+// the structure's VILLAGE OBJECT tags, not Structure.Tags. The two sets are
+// seeded to DISAGREE — that disagreement is the live defect (the Mill's object
+// carried "wholesaler" while its structure row said "mill", so the operator
+// surface reported a tag set no gate reads).
+func TestUmbilicalStructuresTagsFromVillageObject(t *testing.T) {
+	snap := &sim.Snapshot{
+		PublishedAt: time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC),
+		Structures: map[sim.StructureID]*sim.Structure{
+			// Object tags win over the structure's own (stale) set.
+			"mill": {ID: "mill", DisplayName: "The Mill", Tags: []string{"business", "mill"}},
+			// No village object placed → [] rather than the structure's tags.
+			"ghost": {ID: "ghost", DisplayName: "Unplaced", Tags: []string{"business", "shop"}},
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"mill": {ID: "mill", Tags: []string{"business", "wholesaler"}},
+		},
+	}
+
+	got := umbilicalStructuresFromSnapshot(snap, structuresScopeAll)
+	tags := map[string][]string{}
+	for _, s := range got.Structures {
+		tags[s.ID] = s.Tags
+	}
+
+	if want := []string{"business", "wholesaler"}; !slices.Equal(tags["mill"], want) {
+		t.Errorf("mill tags = %v, want %v (VillageObject.Tags, not Structure.Tags)", tags["mill"], want)
+	}
+	if got := tags["ghost"]; got == nil || len(got) != 0 {
+		t.Errorf("unplaced structure tags = %v, want [] (non-nil, empty)", got)
+	}
+
+	// The always-an-array contract is a WIRE contract (the DTO has no omitempty),
+	// so pin it on the marshaled body rather than trusting the non-nil slice —
+	// a nil tags slice would serialize as null and break operator tooling.
+	for _, s := range got.Structures {
+		if s.ID != "ghost" {
+			continue
+		}
+		b, err := json.Marshal(s)
+		if err != nil {
+			t.Fatalf("marshal ghost row: %v", err)
+		}
+		if !strings.Contains(string(b), `"tags":[]`) {
+			t.Errorf("unplaced structure serialized as %s, want \"tags\":[]", b)
+		}
+	}
+}
+
+// TestUmbilicalStructures_AddTagRoundTrip is the end-to-end half of LLM-478: a
+// tag an operator adds via POST /umbilical/object/add-tag must be visible on the
+// next GET /umbilical/structures. This is the loop that was broken in the field —
+// tagging the Mill "wholesaler" changed engine behavior but never showed up on
+// the roster — so it is asserted through the real handlers and world goroutine
+// rather than the pure snapshot mapper.
+func TestUmbilicalStructures_AddTagRoundTrip(t *testing.T) {
+	srv, h := controlServer(t, operatorPerms)
+
+	// The seeded world has no structure; add one with its placement (structure and
+	// village object share an id — the bridge the roster resolves tags through).
+	if _, err := srv.world.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Structures["mill"] = &sim.Structure{
+			ID: "mill", DisplayName: "The Mill", Tags: []string{"business", "mill"},
+		}
+		world.VillageObjects["mill"] = &sim.VillageObject{
+			ID: "mill", AssetID: "asset-x", DisplayName: "The Mill", Tags: []string{"business"},
+		}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed mill: %v", err)
+	}
+
+	if rec := postReq(t, h, "/api/village/umbilical/object/add-tag", "tok",
+		`{"object_id":"mill","tag":"wholesaler"}`); rec.Code != http.StatusOK {
+		t.Fatalf("add-tag = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+
+	rec := req(t, h, "/api/village/umbilical/structures?scope=all", "tok")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("structures = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	var out UmbilicalStructuresDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode structures: %v", err)
+	}
+
+	var mill *UmbilicalStructureRowDTO
+	for i := range out.Structures {
+		if out.Structures[i].ID == "mill" {
+			mill = &out.Structures[i]
+		}
+	}
+	if mill == nil {
+		t.Fatalf("mill missing from roster: %+v", out.Structures)
+	}
+	if want := []string{"business", "wholesaler"}; !slices.Equal(mill.Tags, want) {
+		t.Errorf("mill tags after add-tag = %v, want %v", mill.Tags, want)
 	}
 }
