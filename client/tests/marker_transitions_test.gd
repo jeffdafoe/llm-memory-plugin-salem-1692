@@ -44,6 +44,7 @@ func _run_all() -> void:
     _test_reverse_restore_zzz_after_activity_clear()
     _test_activity_toggle_no_sleep()
     _test_position_self_heal_marker_before_sprite()
+    _test_activity_marker_sizing_and_placement()
 
 # --- fixtures / feed simulation -------------------------------------------------
 
@@ -223,4 +224,32 @@ func _test_position_self_heal_marker_before_sprite() -> void:
     _check("position_self_heal — repositioned off the sprite", m.position == _world._zzz_marker_position(spr))
     _check("position_self_heal — position actually changed from fallback", m.position != fallback_pos)
     _expect_only(c, "zzz", "position_self_heal")
+    c.free()
+
+## The activity glyph carries its OWN size and placement: the label renders at
+## ACTIVITY_MARKER_FONT_SIZE and is positioned by _activity_marker_position, which
+## derives both the horizontal centering and the head clearance from that size. The Zzz's
+## _zzz_marker_position is tuned for its 3-character text, so reusing it would drift the
+## glyph right and down into the head as the size changes — assert the derivation
+## directly so a future resize can't silently reintroduce that.
+func _test_activity_marker_sizing_and_placement() -> void:
+    var c := _make_container()
+    var spr: AnimatedSprite2D = _world._npc_sprite(c)
+    spr.position = Vector2(40, 40)
+    _set_activity(c, "repair")
+    var m: Label = c.get_node_or_null(ACT)
+    _check("activity_placement — marker created", m != null)
+    if m == null:
+        c.free()
+        return
+    var size_px: float = float(_world.ACTIVITY_MARKER_FONT_SIZE)
+    _check("activity_placement — renders at ACTIVITY_MARKER_FONT_SIZE", m.get_theme_font_size("font_size") == int(size_px))
+    _check("activity_placement — uses the activity positioner", m.position == _world._activity_marker_position(spr))
+    _check("activity_placement — not the Zzz text-tuned slot", m.position != _world._zzz_marker_position(spr))
+    # No sprite_frames on the fixture, so the positioner's half-width falls back to 16.
+    _check("activity_placement — centered for the glyph width", is_equal_approx(m.position.x, spr.position.x + 16.0 - size_px * 0.5))
+    # A Label grows down from its origin, so clearing the head means sitting fully above.
+    _check("activity_placement — clears the head", m.position.y < spr.position.y)
+    _check("activity_placement — fallback centering also derives from the size", is_equal_approx(_world._activity_marker_position(null).x, -size_px * 0.5))
+    _expect_only(c, "activity", "activity_placement")
     c.free()

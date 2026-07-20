@@ -2580,6 +2580,12 @@ const ACTIVITY_ICON_REPAIR: int = 0xE0EC   # hammer
 const ACTIVITY_ICON_STOKE: int = 0xE0D2    # flame
 const ACTIVITY_ICON_HARVEST: int = 0xE39E  # wheat
 const ACTIVITY_MARKER_COLOR := Color(0.87, 0.91, 1.0)
+# Glyph size in world pixels. The marker lives in world space (a Label child of the
+# actor container), so it scales with camera zoom like the sprite does. Kept modest
+# against a small character (a 32px frame at 2x): much larger swamps the sprite.
+# Placement is DERIVED from this (see _activity_marker_position) — changing this one
+# number keeps the glyph centered and clear of the head.
+const ACTIVITY_MARKER_FONT_SIZE: int = 18
 
 # Lucide icon font, loaded once and cached. The marker Label overrides its font to
 # this so the private-use-area glyphs render instead of the body font's tofu — the
@@ -2590,6 +2596,27 @@ func _get_icon_font() -> Font:
     if _icon_font == null:
         _icon_font = load("res://assets/fonts/lucide.ttf")
     return _icon_font
+
+## Center the activity glyph above an NPC sprite's head. Distinct from
+## _zzz_marker_position, whose offsets are tuned for the 3-character "Zzz" text: this
+## derives BOTH the horizontal centering and the head clearance from
+## ACTIVITY_MARKER_FONT_SIZE, so resizing the glyph doesn't drift it right and down into
+## the head. A Label's origin is its top-left, so the vertical offset lifts by a full
+## line height to leave the glyph's baseline just above the sprite. Line height is
+## approximated off the font size (exact metrics need a laid-out Label); close enough
+## for a marker, and it re-derives if the size constant changes.
+func _activity_marker_position(spr: AnimatedSprite2D) -> Vector2:
+    var glyph_px := float(ACTIVITY_MARKER_FONT_SIZE)
+    var line_h := glyph_px * 1.25
+    if spr == null:
+        return Vector2(-glyph_px * 0.5, -72.0)
+    var half_w := 16.0
+    if spr.sprite_frames != null and spr.sprite_frames.has_animation(spr.animation):
+        if spr.sprite_frames.get_frame_count(spr.animation) > 0:
+            var tex := spr.sprite_frames.get_frame_texture(spr.animation, 0)
+            if tex != null:
+                half_w = tex.get_width() * spr.scale.x * 0.5
+    return spr.position + Vector2(half_w - glyph_px * 0.5, -line_h - 2.0)
 
 ## The lucide glyph for a source-activity kind, or "" when the kind carries no marker
 ## (refresh / idle / unknown). Materialized via String.chr at use to dodge source-file
@@ -2611,10 +2638,11 @@ func _activity_glyph(kind: String) -> String:
 ## a rapid transition (e.g. a harvest ending as a repair starts) would otherwise reuse
 ## the still-present, queued-for-deletion node and then lose it when the deferred free
 ## fires — or collide on the node name when re-created. Toggling sidesteps that race.
-## Reuses _zzz_marker_position (the above-head slot it shares with the sleep Zzz); the
-## two states are mutually exclusive, so showing a glyph hides the Zzz marker and
-## clearing it restores the Zzz when the NPC is still dormant. _zzz_marker_position is
-## null-safe on the sprite.
+## Sits in the above-head slot it shares with the sleep Zzz; the two states are mutually
+## exclusive, so showing a glyph hides the Zzz marker and clearing it restores the Zzz
+## when the NPC is still dormant. Placement comes from _activity_marker_position (derived
+## from ACTIVITY_MARKER_FONT_SIZE, null-safe on the sprite) rather than the Zzz's own
+## text-tuned offsets, which would drift as the glyph size changes.
 func _apply_activity_marker(container: Node2D, kind: String) -> void:
     var glyph := _activity_glyph(kind)
     var marker: Label = container.get_node_or_null(ACTIVITY_MARKER_NAME)
@@ -2634,12 +2662,12 @@ func _apply_activity_marker(container: Node2D, kind: String) -> void:
         marker.name = ACTIVITY_MARKER_NAME
         marker.z_index = 1
         marker.add_theme_font_override("font", _get_icon_font())
-        marker.add_theme_font_size_override("font_size", 16)
+        marker.add_theme_font_size_override("font_size", ACTIVITY_MARKER_FONT_SIZE)
         marker.add_theme_color_override("font_color", ACTIVITY_MARKER_COLOR)
         container.add_child(marker)
     marker.text = glyph
     marker.visible = true
-    marker.position = _zzz_marker_position(_npc_sprite(container))
+    marker.position = _activity_marker_position(_npc_sprite(container))
 
 ## route is the admin/npc action ("set-home-structure" / "set-work-structure").
 ## The route body keys the value as structure_id (null clears the anchor).
