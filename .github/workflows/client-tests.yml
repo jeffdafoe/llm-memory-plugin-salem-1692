@@ -19,6 +19,12 @@ on:
     pull_request:
         branches: ["main"]
 
+# Least privilege: this workflow only reads the tree and runs tests. The repo
+# default is already read-only, but that is a repository setting that can change
+# without touching this file — pinning it here keeps the grant with the job.
+permissions:
+    contents: read
+
 jobs:
     godot-tests:
         name: GDScript client tests
