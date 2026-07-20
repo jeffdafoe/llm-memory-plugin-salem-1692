@@ -72,5 +72,6 @@ jobs:
                           echo "::error::${name} hit a GDScript runtime error — a test was skipped, not passed"
                           failed=1
                       fi
+                      rm -f "${log}"
                   done
                   exit "${failed}"

@@ -46,6 +46,7 @@ func _initialize() -> void:
     _world = load("res://scripts/world.gd").new()
     _run_all()
     _world.free()
+    _check_test_list()
     _check_all_tests_ran()
     print("\n[marker_transitions_test] %d checks, %d failure(s)" % [_checks, _failures])
     if _failures == 0:
@@ -68,6 +69,22 @@ func _done() -> void:
 func _check_all_tests_ran() -> void:
     for t in TESTS:
         _check("harness — %s ran to completion" % t, _completed.has(t))
+
+## TESTS is the dispatch list, so an unregistered test is simply never called and
+## _check_all_tests_ran would never miss it — the same silent coverage loss this file
+## exists to prevent, one level up. Enumerating the script's own _test_ methods closes
+## it: adding a case without listing it fails here. A duplicate entry is caught too, as
+## it runs twice but leaves only one completion mark.
+func _check_test_list() -> void:
+    var listed := {}
+    for t in TESTS:
+        _check("harness — %s listed only once" % t, not listed.has(t))
+        _check("harness — %s exists" % t, has_method(t))
+        listed[t] = true
+    for m in get_method_list():
+        var name: String = m["name"]
+        if name.begins_with("_test_"):
+            _check("harness — %s is registered in TESTS" % name, listed.has(name))
 
 # --- fixtures / feed simulation -------------------------------------------------
 
