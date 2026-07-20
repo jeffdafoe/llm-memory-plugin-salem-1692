@@ -148,6 +148,19 @@ func buildStallRepair(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 // (the smith sells the nails) in one place, and tells the owner whether they can
 // mend now or must buy nails first (the two-step buy->repair, mirroring
 // gather->consume).
+// HasWalkToSupplier reports whether this cue will render a walk-to nail supplier —
+// an off-scene "(destination: <id>)" for an owner standing at the very post the
+// duty stabilizer pins him to (LLM-491). Mirrors renderStallRepair's branch order:
+// a hired hand gets the softened no-errand framing, nails in hand mend on site, an
+// own-forge owner is pointed at his own bench, and conserve holds off buying —
+// only the surviving vendor branch sends him out.
+func (v *StallRepairView) HasWalkToSupplier() bool {
+	if v == nil || v.Hired || v.HasEnoughNails || v.MakesNails || v.Conserve {
+		return false
+	}
+	return len(v.NailVendors) > 0
+}
+
 func renderStallRepair(b *strings.Builder, v *StallRepairView) {
 	if v == nil {
 		return

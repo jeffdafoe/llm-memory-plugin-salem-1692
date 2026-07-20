@@ -103,6 +103,18 @@ func buildFarmUpkeep(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 // writes nothing. Symmetrical awareness — states the worn-tools problem AND the way
 // out (buy shovels from the blacksmith) in one place, and names the shortfall so the
 // owner knows how many to buy.
+// HasWalkToSupplier reports whether this cue will render a walk-to shovel supplier
+// (LLM-491) — the off-scene destination that contradicts the at-post stabilizer.
+// Mirrors renderFarmUpkeep: a co-present seller returns before the vendor list is
+// reached (the buy happens right here), and the no-supplier fallback names the
+// blacksmith in prose with no destination to walk to.
+func (v *FarmUpkeepView) HasWalkToSupplier() bool {
+	if v == nil || v.CoPresentSeller != "" {
+		return false
+	}
+	return len(v.ShovelVendors) > 0
+}
+
 func renderFarmUpkeep(b *strings.Builder, v *FarmUpkeepView) {
 	if v == nil {
 		return

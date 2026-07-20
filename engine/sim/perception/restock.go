@@ -71,6 +71,33 @@ func (v *RestockingView) AllBlocked() bool {
 	return true
 }
 
+// HasWalkToSupplier reports whether this section will render at least one
+// "(destination: <id>)" bullet — an off-scene supplier the reseller is meant to
+// walk to (LLM-491). It is the signal that reconciles the at-post duty stabilizer
+// with this cue: a keeper told to stay at his post while this section names a
+// place to go is handed two contradictory instructions and left to pick.
+//
+// The branch order below MIRRORS renderRestocking's, and must keep mirroring it —
+// that correspondence is the whole guarantee. Conserve short-circuits everything
+// (its lead replaces the buy directory and every item renders as a hold-off);
+// all-blocked renders reasons with deliberately NO destination ids; and per item, a
+// standing offer, a blocked item, or a co-present seller each render something
+// other than the walk-to list.
+func (v *RestockingView) HasWalkToSupplier() bool {
+	if v == nil || len(v.Items) == 0 || v.Conserve || v.AllBlocked() {
+		return false
+	}
+	for _, it := range v.Items {
+		if it.PendingOfferToCoPresentSeller || it.blocked() || it.CoPresentSeller != "" {
+			continue
+		}
+		if len(it.Vendors) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // RestockItemView is one low `buy` item the reseller could replenish: its label,
 // current on-hand quantity, the cap it restocks toward, and the suppliers
 // selling it. buildRestocking only emits an item that has at least one actionable

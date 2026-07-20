@@ -1700,6 +1700,29 @@ func renderDutySteer(b *strings.Builder, v *DutySteerView) {
 			}
 			return
 		}
+		if v.SupplyErrand {
+			// LLM-491: the buy-side twin of the forage reframe above. Some other
+			// section of this same prompt is naming a place to go buy at — a
+			// restock supplier, nails for a worn business, the season's shovels, wood
+			// for a cold hearth — and the default "stay and look after your work"
+			// line contradicts it outright. Live: Josiah Thorne was pinned to the
+			// General Store and handed James Farm's destination id in the same turn.
+			//
+			// This line PERMITS rather than instructs, which is where it departs from
+			// the forage variant. The forage cue's own "walk out to your bushes" is
+			// the only movement voice in that case; here the supply section below
+			// already carries both the imperative and the destination id, and a
+			// second movement instruction in the steer would be two voices ordering
+			// the same walk. So the stabilizer's job is only to stop arguing against
+			// it — and to say the post is somewhere he comes back to, so a trip out
+			// doesn't read as abandoning it for the day.
+			if closeAt != "" {
+				fmt.Fprintf(b, "It is your working hours and you are at your post (you close at %s), but what you need is not to be had here — going to fetch it and coming back is part of minding your trade.\n\n", closeAt)
+			} else {
+				b.WriteString("It is your working hours and you are at your post, but what you need is not to be had here — going to fetch it and coming back is part of minding your trade.\n\n")
+			}
+			return
+		}
 		if closeAt != "" {
 			fmt.Fprintf(b, "It is your working hours and you are at your post — stay and look after your work; you close at %s.\n\n", closeAt)
 		} else {
