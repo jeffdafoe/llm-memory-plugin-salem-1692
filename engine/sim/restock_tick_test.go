@@ -946,6 +946,82 @@ func TestEvaluateRestock_SelfSourcedInputNoDerivedDemand(t *testing.T) {
 	}
 }
 
+// TestActorHasBuyPath_WholesaleTier (LLM-477): the warrant side of the wholesale
+// tier. The warrant and the cue must stay in lockstep (warrant ⊂ cue) — if the
+// perception filter shows the mill a farm as a wheat source but this gate still
+// refuses, the mill is cued to buy wheat there and never woken to go, and if it
+// refused the other way the warrant would wake it toward a PayWithItem rejection.
+// So the same allowance that opens the cue must open the buy path.
+func TestActorHasBuyPath_WholesaleTier(t *testing.T) {
+	now := time.Now().UTC()
+
+	// setup returns a world where `farm` is a wholesaler-tagged first-hand supplier
+	// of both wheat (a production input for a miller) and carrots (never an input),
+	// plus the named buyer.
+	setup := func(buyer *Actor, buyerWork StructureID, buyerWholesaler bool) *World {
+		w := restockWorld(buyer)
+		v := addSupplier(w, "moses", "wheat")
+		v.Inventory["carrots"] = 10
+		v.RestockPolicy = &RestockPolicy{Restock: []RestockEntry{
+			{Item: "wheat", Source: RestockSourceProduce, Max: 20},
+			{Item: "carrots", Source: RestockSourceProduce, Max: 20},
+		}}
+		w.Recipes = map[ItemKind]*ItemRecipe{
+			"flour": {OutputItem: "flour", OutputQty: 5, RateQty: 4, RatePerHours: 1,
+				Inputs: []RecipeInput{{Item: "wheat", Qty: 5}}},
+		}
+		if w.VillageObjects == nil {
+			w.VillageObjects = map[VillageObjectID]*VillageObject{}
+		}
+		w.VillageObjects[VillageObjectID(v.WorkStructureID)] = &VillageObject{
+			ID: VillageObjectID(v.WorkStructureID), OwnerActorID: "moses",
+			Tags: []string{TagFarm, TagWholesaler},
+		}
+		buyer.WorkStructureID = buyerWork
+		if buyerWholesaler {
+			w.Structures[buyerWork] = &Structure{}
+			w.VillageObjects[VillageObjectID(buyerWork)] = &VillageObject{
+				ID: VillageObjectID(buyerWork), OwnerActorID: buyer.ID, Tags: []string{TagWholesaler},
+			}
+		}
+		return w
+	}
+
+	miller := func() *Actor {
+		a := reseller("joseph", KindNPCStateful, "wheat", 20, 0)
+		a.RestockPolicy = &RestockPolicy{Restock: []RestockEntry{
+			{Item: "flour", Source: RestockSourceProduce, Max: 20},
+		}}
+		return a
+	}
+
+	t.Run("transformer has a buy path to the wholesale source for its input", func(t *testing.T) {
+		buyer := miller()
+		w := setup(buyer, "the_mill", true)
+		if !actorHasBuyPath(w, buyer, "wheat", now) {
+			t.Error("the mill must have a warrant-side buy path to the farm for wheat — otherwise it is cued to buy there but never woken to go (LLM-477)")
+		}
+	})
+
+	t.Run("transformer has no buy path for a non-input", func(t *testing.T) {
+		buyer := miller()
+		w := setup(buyer, "the_mill", true)
+		if actorHasBuyPath(w, buyer, "carrots", now) {
+			t.Error("the grant is scoped to production inputs — carrots feed no recipe of the mill's")
+		}
+	})
+
+	t.Run("ordinary buyer still has no wholesale buy path", func(t *testing.T) {
+		// Same recipe and produce policy, but the buyer's own workplace is not
+		// wholesaler-tagged, so it stays routed through the distributor.
+		buyer := miller()
+		w := setup(buyer, "the_inn", false)
+		if actorHasBuyPath(w, buyer, "wheat", now) {
+			t.Error("a non-wholesaler buyer must not reach a wholesale source, however much it transforms")
+		}
+	})
+}
+
 // TestActorHasBuyPath_Gates: the warrant-side mirror of the buildRestocking
 // vendor drops — LLM-252 first-hand-supplier gate, LLM-216 remembered-shut drop,
 // the LLM-406 means-to-pay drop, and the co-present bypass.

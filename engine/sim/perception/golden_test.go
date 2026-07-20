@@ -932,7 +932,7 @@ func TestGoldensNonDistributorRestockNeverTargetsFarm(t *testing.T) {
 
 // TestGoldensWholesaleSourceOnlyForAllowedItems is the LLM-477 cross-scenario
 // invariant, and the item-precise half of the wholesale tier's perception guarantee:
-// across the whole matrix, whenever the restock directory advertises a
+// across the whole matrix, whenever the RESTOCK DIRECTORY advertises a
 // wholesaler-tagged structure as a supplier of an item, the subject must actually be
 // entitled to buy THAT item there — it is the distributor, or the item is one of its
 // own production inputs. Re-derived from the snapshot rather than trusting the filter
@@ -942,6 +942,13 @@ func TestGoldensNonDistributorRestockNeverTargetsFarm(t *testing.T) {
 // This is what keeps the tier honest now that TestGoldensNonDistributorRestockNeverTargetsFarm
 // exempts transformers: that text-level scan can only ask "is a farm named at all",
 // while this one asks the question that matters — "named for WHAT".
+//
+// SCOPE (code_review): this walks the restock-directory surface only — it iterates the
+// subject's buy demand and checks findItemVendors. It does NOT cover the satiation /
+// consumption path or the co-present peer path, which ride the same allowance but are
+// reached through different builders. Those two are held by the focused
+// TestWholesaleGate_Transformer subtests instead; if this invariant is ever widened to
+// claim all four enforcement points, it has to grow assertions over those builders too.
 func TestGoldensWholesaleSourceOnlyForAllowedItems(t *testing.T) {
 	for _, sc := range perceptionScenarios {
 		sc := sc

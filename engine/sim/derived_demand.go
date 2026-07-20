@@ -195,6 +195,16 @@ func ReorderFloors(recipes map[ItemKind]*ItemRecipe, p *RestockPolicy) map[ItemK
 // Elective BoostInputs are excluded for the same reason ReorderFloors excludes them:
 // production never stalls on a booster, so a booster is not a required input.
 //
+// THE POLICY IS AUTHORITATIVE FOR SELF-SOURCING, exactly as it is for EffectiveBuyEntries:
+// an input is treated as self-sourced iff the policy carries a produce/forage row for it,
+// never by inspecting what the actor actually makes. So a policy edited live into an
+// inconsistent state moves the grant with it — drop a producer's own produce row and its
+// input becomes procurable (and, at a wholesaler, wholesale-procurable); add one for
+// something it cannot make and the input silently disappears from its demand. That is
+// inherited behaviour, not new here (the restock warrant and both buy-side cues already
+// read the policy the same way), and the policy stays the single place an operator edits
+// (code_review).
+//
 // Nil-safe on both arguments; returns nil when the actor produces nothing with
 // inputs (a nil map indexes to false, which callers read as "not a production input").
 func ProductionInputKinds(recipes map[ItemKind]*ItemRecipe, p *RestockPolicy) map[ItemKind]bool {
