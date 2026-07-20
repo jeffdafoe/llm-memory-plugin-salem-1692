@@ -2840,6 +2840,32 @@ var perceptionScenarios = []perceptionScenario{
 		build: wholesalerProducerObservedRates,
 	},
 	{
+		name: "innkeeper_fried_meat_below_makings_cost",
+		summary: "LLM-475 retail leg (the live Hannah Boggs turn, 2026-07-19): her fried_meat recipe takes 1 meat AND a " +
+			"skillet — a DURABLE TOOL that wears rather than being consumed — and she has been selling servings at about 3 " +
+			"coins against a 5-coin cut of meat. Both defects fired on one line: the cost anchor charged the whole 5-coin " +
+			"skillet against every single serving ('the makings run you about 10 coins each' against a true cost of 5), and " +
+			"nothing compared the cost to what she actually realized. She sat at 0 coins trading briskly, every honest sale " +
+			"reading as a loss against her never-sell-below-cost coda while the real loss went unnamed. The golden pins the " +
+			"tool contributing NOTHING to the sum (meat alone: 'the makings run you about 5 coins each') and the realized " +
+			"3-against-5 earning the loss verdict. Cross-scenario guard: TestGoldensMakingsVerdictAlwaysHasACostFigure.",
+		build: innkeeperFriedMeatBelowMakingsCost,
+	},
+	{
+		name: "miller_flour_wholesale_earns_nothing",
+		summary: "LLM-475 wholesale leg (the live Joseph Scott turn, re-observed verbatim 2026-07-20): the LLM-292 " +
+			"wholesale-channel branch replaced the whole clause set, cost anchor included, leaving wholesale producers the " +
+			"one class of maker never shown their own margin. His flour line named what the shop paid him (1 coin) and what " +
+			"folk paid on the shelf (2) and never what the grinding cost — so he offered five sacks of flour for five sheaves " +
+			"of wheat, his recipe's exact input and a full day's grinding for nothing, and called it fair. It also made the " +
+			"2026-07-19 flour reprice (wholesale 3) unreachable: a week of sales at 1.00 flat after it landed. The golden " +
+			"pins the restored cost sentence and the break-even verdict in Jeff's target shape ('…, it costs you about 1 " +
+			"coin each to produce, but the shop has lately paid you about 1 coin each (it earns you nothing). Send other " +
+			"buyers to Josiah Thorne.'). Contrast: wholesaler_producer_observed_rates, where a RAW producer (no recipe " +
+			"inputs) keeps the unchanged no-cost shape.",
+		build: millerFlourWholesaleEarnsNothing,
+	},
+	{
 		name: "miller_wheat_restock_flat_band_anchor",
 		summary: "LLM-292 flat-band anchor (the live Joseph Scott case): the miller produces flour from bought-in wheat — a " +
 			"DERIVED buy entry (LLM-260) below its two-batch floor (LLM-279) — and wheat's catalog band is FLAT 1/1. Live he " +
@@ -5558,6 +5584,8 @@ func TestWaresWorthCueOnlyInCompanyWithOwnTrade(t *testing.T) {
 			sc.name == "owner_holding_repair_nails_in_company" || // LLM-292: keeper in company with priced ware + the repair-reserve earmark
 			sc.name == "coin_poor_overstocked_keeper_conserves" || // LLM-294: producer in company (priced own wares) + the conserve sell-first nudge
 			sc.name == "distributor_underwater_resale" || // LLM-332: reseller in company with priced resale wares, one underwater
+			sc.name == "innkeeper_fried_meat_below_makings_cost" || // LLM-475: producer in company, priced own ware sold under its makings cost
+			sc.name == "miller_flour_wholesale_earns_nothing" || // LLM-475: wholesale producer in company — cost sentence restored to the channel line
 			sc.name == "keeper_paid_with_long_note" // LLM-400: built ON keeper_reselling_in_company's fixture, so it inherits the cue correctly
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: wares-worth cue present=%v, want %v", sc.name, has, want)
@@ -5579,9 +5607,39 @@ func TestWholesaleChannelLineOnlyForWholesalerProduce(t *testing.T) {
 		sc := sc
 		got := renderScenario(sc)
 		want := sc.name == "wholesaler_producer_bartering_with_customer" ||
-			sc.name == "wholesaler_producer_observed_rates"
+			sc.name == "wholesaler_producer_observed_rates" ||
+			sc.name == "miller_flour_wholesale_earns_nothing" // LLM-475: the same line, now carrying the maker's own cost
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: wholesale-channel wares line present=%v, want %v", sc.name, has, want)
+		}
+	}
+}
+
+// TestGoldensMakingsVerdictAlwaysHasACostFigure is the LLM-475 cross-scenario
+// invariant: the margin verdict is a judgment ON a stated cost, so it may never
+// appear on a wares line that does not also state what the makings cost. A verdict
+// without its figure would be an unexplained accusation — the model would be told
+// it is losing coin with no number to negotiate off, which is precisely the
+// data-free position the miller was in when he traded five sacks for five sheaves.
+// Guards both phrasings of the cost sentence (the retail "the makings run you …"
+// and the wholesale-channel "it costs you … to produce").
+func TestGoldensMakingsVerdictAlwaysHasACostFigure(t *testing.T) {
+	verdicts := []string{"(a loss)", "(it earns you nothing)"}
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		for _, line := range strings.Split(renderScenario(sc), "\n") {
+			carries := false
+			for _, v := range verdicts {
+				if strings.Contains(line, v) {
+					carries = true
+				}
+			}
+			if !carries {
+				continue
+			}
+			if !strings.Contains(line, "the makings run you") && !strings.Contains(line, "it costs you") {
+				t.Errorf("scenario %q: margin verdict with no cost figure on the line:\n%s", sc.name, line)
+			}
 		}
 	}
 }
@@ -9842,6 +9900,197 @@ func innkeeperPricingWithMakingsCost() (*sim.Snapshot, sim.ActorID, []sim.Warran
 		},
 	}
 	return snap, hannahID, nil
+}
+
+// innkeeperFriedMeatBelowMakingsCost is the LLM-475 retail leg — the live Hannah
+// Boggs turn (virtual_agent_calls 104810, 2026-07-19). Her fried_meat recipe takes
+// 1 meat (bought at ~5) AND a skillet, a durable TOOL. Both defects fired on one
+// line: the cost anchor charged the whole 5-coin skillet against every single
+// serving, rendering "the makings run you about 10 coins each" against a true cost
+// of 5 — and nothing compared that figure to the ~3 coins she had actually been
+// getting. She sat at 0 coins, trading briskly, every honest sale reading as a loss
+// against her never-sell-below-cost coda while the real loss went unnamed. The
+// golden pins the corrected line: the tool costs nothing, the meat alone is the
+// makings, and the realized 3-against-5 earns the loss verdict.
+func innkeeperFriedMeatBelowMakingsCost() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		hannahID = sim.ActorID("hannah")
+		guestID  = sim.ActorID("ezekiel")
+		inn      = sim.StructureID("inn")
+		huddle   = sim.HuddleID("h1")
+	)
+	start, end := 360, 1200
+	now := 480
+	published := time.Date(2026, 7, 19, 8, 0, 0, 0, time.UTC)
+	hannah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Hannah Boggs",
+		Role:              "innkeeper",
+		State:             sim.StateIdle,
+		WorkStructureID:   inn,
+		InsideStructureID: inn,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		CurrentHuddleID:   huddle,
+		Coins:             10,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"fried_meat": 12, "meat": 6, "skillet": 2},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "fried_meat", Source: sim.RestockSourceProduce, Max: 20},
+		}},
+	}
+	guest := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Ezekiel Crane",
+		Role:              "blacksmith",
+		State:             sim.StateIdle,
+		InsideStructureID: inn,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		CurrentHuddleID:   huddle,
+		Coins:             15,
+		Needs:             map[sim.NeedKey]int{},
+	}
+	// Her realized fried_meat sales: 8 servings for 25 coins — about 3 each, under
+	// the 5-coin meat that goes into them.
+	sales := sim.NewRingBuffer[sim.PriceObservation](8)
+	sales.Push(sim.PriceObservation{BuyerID: guestID, Amount: 25, Qty: 8, Consumers: 1, At: published.Add(-30 * time.Hour)})
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{hannahID: hannah, guestID: guest},
+		Structures: map[sim.StructureID]*sim.Structure{
+			inn: plainStructure(inn, "Inn"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{hannahID: {}, guestID: {}}},
+		},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"fried_meat": {OutputItem: "fried_meat", OutputQty: 1, RateQty: 4, RatePerHours: 1, WholesalePrice: 4, RetailPrice: 7,
+				Inputs: []sim.RecipeInput{{Item: "meat", Qty: 1}, {Item: "skillet", Qty: 1}}},
+			"meat":    {OutputItem: "meat", OutputQty: 1, RateQty: 4, RatePerHours: 1, WholesalePrice: 5, RetailPrice: 8},
+			"skillet": {OutputItem: "skillet", OutputQty: 1, RateQty: 1, RatePerHours: 3, WholesalePrice: 5, RetailPrice: 10},
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"fried_meat": {Name: "fried_meat", Capabilities: []string{"portable"}, DisplayLabel: "Fried Meat",
+				DisplayLabelSingular: "serving of fried meat", DisplayLabelPlural: "servings of fried meat",
+				Category: sim.ItemCategoryFood},
+			"meat": {Name: "meat", Capabilities: []string{"portable"}, DisplayLabel: "Meat",
+				DisplayLabelSingular: "cut of meat", DisplayLabelPlural: "cuts of meat",
+				Category: sim.ItemCategoryFood},
+			// The skillet is the point of the scenario: a durable tool, so it is a
+			// presence requirement that wears, never a cost of the makings.
+			"skillet": {Name: "skillet", Capabilities: []string{"portable"}, DisplayLabel: "Skillet",
+				DisplayLabelSingular: "skillet", DisplayLabelPlural: "skillets",
+				DurabilityUses: 20},
+		},
+		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+			{SellerID: hannahID, Item: "fried_meat"}: sales,
+		},
+	}
+	return snap, hannahID, nil
+}
+
+// millerFlourWholesaleEarnsNothing is the LLM-475 wholesale leg — the live Joseph
+// Scott turn (virtual_agent_calls 104618, re-observed verbatim 2026-07-20). The
+// LLM-292 wholesale-channel branch replaced the whole clause set, cost anchor
+// included, so a wholesale producer was the one class of maker never shown its own
+// margin: his flour line named what the shop paid him (1 coin) and what folk paid
+// on the shelf (2), and never what the grinding cost. He offered five sacks of
+// flour for five sheaves of wheat — his recipe's exact input, a full day's grinding
+// for nothing — and called it fair; and because the line carries no cost figure,
+// the 2026-07-19 flour reprice to wholesale 3 could not reach him at all (a week of
+// sales at 1.00 flat after it landed). The golden pins the restored cost sentence
+// and the break-even verdict in Jeff's target shape.
+func millerFlourWholesaleEarnsNothing() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		josephID = sim.ActorID("joseph")
+		walkerID = sim.ActorID("silence")
+		josiahID = sim.ActorID("josiah")
+		commons  = sim.StructureID("commons")
+		mill     = sim.StructureID("mill")
+		store    = sim.StructureID("general_store")
+		huddle   = sim.HuddleID("h1")
+	)
+	published := time.Date(2026, 7, 20, 13, 0, 0, 0, time.UTC)
+	joseph := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Joseph Scott",
+		Role:              "miller",
+		State:             sim.StateIdle,
+		InsideStructureID: commons,
+		CurrentHuddleID:   huddle,
+		WorkStructureID:   mill,
+		Coins:             16,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"flour": 18, "wheat": 6},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "flour", Source: sim.RestockSourceProduce, Max: 30},
+		}},
+		Acquaintances: map[string]sim.Acquaintance{"Silence Walker": {}},
+	}
+	walker := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Silence Walker",
+		Role:              "villager",
+		State:             sim.StateIdle,
+		InsideStructureID: commons,
+		CurrentHuddleID:   huddle,
+		Coins:             22,
+		Needs:             map[sim.NeedKey]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"Joseph Scott": {}},
+	}
+	josiah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Josiah Thorne",
+		Role:              "shopkeeper",
+		State:             sim.StateIdle,
+		InsideStructureID: store,
+		WorkStructureID:   store,
+	}
+	// Bulk rate observed: his own flour sales to the shop, 24 sacks for 24 coins.
+	millSales := sim.NewRingBuffer[sim.PriceObservation](8)
+	millSales.Push(sim.PriceObservation{BuyerID: josiahID, Amount: 24, Qty: 24, Consumers: 1, At: published.Add(-18 * time.Hour)})
+	// Shelf rate observed: Josiah's flour resales to folk at 2 each.
+	shopSales := sim.NewRingBuffer[sim.PriceObservation](8)
+	shopSales.Push(sim.PriceObservation{BuyerID: walkerID, Amount: 12, Qty: 6, Consumers: 1, At: published.Add(-8 * time.Hour)})
+	snap := &sim.Snapshot{
+		PublishedAt:    published,
+		NeedThresholds: sim.NeedThresholds{},
+		Actors:         map[sim.ActorID]*sim.ActorSnapshot{josephID: joseph, walkerID: walker, josiahID: josiah},
+		Structures: map[sim.StructureID]*sim.Structure{
+			commons: plainStructure(commons, "Village Commons"),
+			mill:    plainStructure(mill, "Mill"),
+			store:   plainStructure(store, "General Store"),
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			sim.VillageObjectID(mill):  {ID: sim.VillageObjectID(mill), OwnerActorID: josephID, Tags: []string{sim.TagWholesaler}},
+			sim.VillageObjectID(store): {ID: sim.VillageObjectID(store), OwnerActorID: josiahID, Tags: []string{sim.TagDistributor}},
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{josephID: {}, walkerID: {}}},
+		},
+		// The live 5-wheat-to-5-flour treadmill, at the post-reprice band (w3/r4).
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"flour": {OutputItem: "flour", OutputQty: 5, RateQty: 5, RatePerHours: 2, WholesalePrice: 3, RetailPrice: 4,
+				Inputs: []sim.RecipeInput{{Item: "wheat", Qty: 5}}},
+			"wheat": {OutputItem: "wheat", OutputQty: 1, RateQty: 1, RatePerHours: 1, WholesalePrice: 1, RetailPrice: 2},
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"flour": {Name: "flour", Capabilities: []string{"portable"}, DisplayLabel: "Flour",
+				DisplayLabelSingular: "sack of flour", DisplayLabelPlural: "sacks of flour",
+				Category: sim.ItemCategoryFood},
+			"wheat": {Name: "wheat", Capabilities: []string{"portable"}, DisplayLabel: "Wheat",
+				DisplayLabelSingular: "sheaf of wheat", DisplayLabelPlural: "sheaves of wheat",
+				Category: sim.ItemCategoryFood},
+		},
+		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+			{SellerID: josephID, Item: "flour"}: millSales,
+			{SellerID: josiahID, Item: "flour"}: shopSales,
+		},
+	}
+	return snap, josephID, nil
 }
 
 // producerInputBelowBatchFloorReorders is the LLM-279 fixture: Hannah Boggs makes

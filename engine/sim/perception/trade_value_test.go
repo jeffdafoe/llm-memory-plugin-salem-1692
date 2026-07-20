@@ -615,6 +615,264 @@ func TestBuildTradeValue_NoInputsNoCostClause(t *testing.T) {
 	}
 }
 
+// tvMakingsSnap builds a one-produced-good fixture for the LLM-475 makings tests:
+// `out` is made from `inputs`, the actor's realized sales of it are (saleCoins over
+// saleUnits) inside the window, and toolInputs are added to the recipe as durable
+// tool kinds. Inputs price off the catalog (no purchase history) unless a recipe is
+// supplied for them here.
+func tvMakingsSnap(saleUnits, saleCoins int, inputs []sim.RecipeInput, toolKinds ...sim.ItemKind) (*sim.Snapshot, *sim.ActorSnapshot) {
+	subj := &sim.ActorSnapshot{RestockPolicy: tvProducePolicy("fried_meat")}
+	published := time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)
+	recipes := map[sim.ItemKind]*sim.ItemRecipe{
+		"fried_meat": {OutputItem: "fried_meat", OutputQty: 1, WholesalePrice: 4, RetailPrice: 7, Inputs: inputs},
+		"meat":       {OutputItem: "meat", OutputQty: 1, WholesalePrice: 5, RetailPrice: 8},
+		"skillet":    {OutputItem: "skillet", OutputQty: 1, WholesalePrice: 5, RetailPrice: 10},
+	}
+	kinds := map[sim.ItemKind]*sim.ItemKindDef{
+		"fried_meat": {Name: "fried_meat", DisplayLabel: "fried_meat"},
+		"meat":       {Name: "meat", DisplayLabel: "meat"},
+		"skillet":    {Name: "skillet", DisplayLabel: "skillet"},
+	}
+	for _, k := range toolKinds {
+		kinds[k].DurabilityUses = 20
+	}
+	snap := &sim.Snapshot{
+		PublishedAt: published,
+		Actors:      map[sim.ActorID]*sim.ActorSnapshot{"hannah": subj},
+		Recipes:     recipes,
+		ItemKinds:   kinds,
+	}
+	if saleUnits > 0 {
+		sales := sim.NewRingBuffer[sim.PriceObservation](4)
+		sales.Push(sim.PriceObservation{BuyerID: "buyer", Amount: saleCoins, Qty: saleUnits, Consumers: 1, At: published.Add(-24 * time.Hour)})
+		snap.PriceBook = map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+			{SellerID: "hannah", Item: "fried_meat"}: sales,
+		}
+	}
+	return snap, subj
+}
+
+// TestBuildTradeValue_ToolInputNotAMakingsCost is the live Hannah Boggs defect
+// (LLM-475): fried_meat's recipe requires a skillet, a durable TOOL that wears
+// rather than being consumed, and the cost anchor charged the whole 5-coin skillet
+// against every single serving. Her line read "the makings run you about 10 coins
+// each" against a true meat cost of 5, so every honest sale tripped her
+// never-sell-below-cost coda and she sat at 0 coins while trading briskly. The tool
+// must contribute NOTHING to the sum — not an amortized share, nothing.
+func TestBuildTradeValue_ToolInputNotAMakingsCost(t *testing.T) {
+	inputs := []sim.RecipeInput{{Item: "meat", Qty: 1}, {Item: "skillet", Qty: 1}}
+	snap, subj := tvMakingsSnap(0, 0, inputs, "skillet")
+	v := buildTradeValue(snap, "hannah", subj, true)
+	if v == nil || len(v.Items) != 1 {
+		t.Fatalf("want 1 item, got %+v", v)
+	}
+	if got := v.Items[0]; got.CostBatch != 5 || got.CostQty != 1 || got.CostFloor {
+		t.Fatalf("tool must not be costed: want CostBatch=5 CostQty=1 floor=false, got %+v", got)
+	}
+	var b strings.Builder
+	renderTradeValue(&b, v)
+	if !strings.Contains(b.String(), "the makings run you about 5 coins each") {
+		t.Errorf("want meat-only makings cost:\n%s", b.String())
+	}
+}
+
+// TestBuildTradeValue_AllInputsToolsNoCostClause: a recipe whose ONLY inputs are
+// tools has no cost of goods at all, so the clause is omitted entirely rather than
+// rendering a zero — and with no cost there is nothing to judge a sale against.
+func TestBuildTradeValue_AllInputsToolsNoCostClause(t *testing.T) {
+	snap, subj := tvMakingsSnap(4, 4, []sim.RecipeInput{{Item: "skillet", Qty: 1}}, "skillet")
+	v := buildTradeValue(snap, "hannah", subj, true)
+	if v == nil || len(v.Items) != 1 {
+		t.Fatalf("want 1 item, got %+v", v)
+	}
+	if got := v.Items[0]; got.CostBatch != 0 || got.CostQty != 0 || got.MakingsMargin != makingsMarginNone {
+		t.Fatalf("tool-only recipe should carry no cost and no verdict, got %+v", got)
+	}
+	var b strings.Builder
+	renderTradeValue(&b, v)
+	for _, unwanted := range []string{"makings", "a loss", "earns you nothing"} {
+		if strings.Contains(b.String(), unwanted) {
+			t.Errorf("tool-only recipe leaked %q:\n%s", unwanted, b.String())
+		}
+	}
+}
+
+// TestBuildTradeValue_MakingsMarginTiers walks the LLM-475 verdict boundary on the
+// RAW rates. Cost is a flat 5 coins per serving (meat only). The at-cost row is the
+// live miller's closed treadmill — realized exactly meets cost — and the just-above
+// row pins that a profitable line gets NO phrase at all (there is no praise tier,
+// so the verdict's presence is itself the signal). The sub-coin row is the reason
+// the comparison is cross-multiplied rather than run on the rounded display units:
+// 19 coins over 4 servings is 4.75 each, which rounds to "5 coins" for display and
+// would read as break-even to a whole-coin test.
+func TestBuildTradeValue_MakingsMarginTiers(t *testing.T) {
+	tests := []struct {
+		name             string
+		saleUnits        int
+		saleCoins        int
+		wantTier         makingsMargin
+		wantPhrase       string
+		unwantedInRender string
+	}{
+		{"below cost", 4, 12, makingsMarginBelowCost, " (a loss)", "earns you nothing"},
+		{"sub-coin below cost", 4, 19, makingsMarginBelowCost, " (a loss)", "earns you nothing"},
+		{"exactly at cost", 4, 20, makingsMarginAtCost, " (it earns you nothing)", "a loss"},
+		{"just above cost", 4, 21, makingsMarginNone, "", "("},
+		{"well above cost", 4, 40, makingsMarginNone, "", "("},
+		{"no realized sale", 0, 0, makingsMarginNone, "", "("},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			snap, subj := tvMakingsSnap(tc.saleUnits, tc.saleCoins, []sim.RecipeInput{{Item: "meat", Qty: 1}})
+			v := buildTradeValue(snap, "hannah", subj, true)
+			if v == nil || len(v.Items) != 1 {
+				t.Fatalf("want 1 item, got %+v", v)
+			}
+			if got := v.Items[0].MakingsMargin; got != tc.wantTier {
+				t.Fatalf("tier: want %d, got %d (item %+v)", tc.wantTier, got, v.Items[0])
+			}
+			var b strings.Builder
+			renderTradeValue(&b, v)
+			out := b.String()
+			if tc.wantPhrase != "" && !strings.Contains(out, "the makings run you about 5 coins each"+tc.wantPhrase) {
+				t.Errorf("want verdict %q on the makings clause:\n%s", tc.wantPhrase, out)
+			}
+			if tc.unwantedInRender != "" && strings.Contains(out, tc.unwantedInRender) {
+				t.Errorf("unexpected %q in render:\n%s", tc.unwantedInRender, out)
+			}
+		})
+	}
+}
+
+// TestBuildTradeValue_MakingsMarginFloorBreaksEvenIsLoss: when an unpriceable input
+// left the sum a FLOOR, the true cost is strictly above what was summed — so a sale
+// that exactly meets the floor is really underwater. The verdict says the stronger,
+// still-true thing rather than the reassuring one.
+func TestBuildTradeValue_MakingsMarginFloorBreaksEvenIsLoss(t *testing.T) {
+	// water has no recipe and no purchase history → unpriceable → floor.
+	inputs := []sim.RecipeInput{{Item: "meat", Qty: 1}, {Item: "water", Qty: 2}}
+	snap, subj := tvMakingsSnap(4, 20, inputs)
+	v := buildTradeValue(snap, "hannah", subj, true)
+	if v == nil || len(v.Items) != 1 {
+		t.Fatalf("want 1 item, got %+v", v)
+	}
+	if got := v.Items[0]; !got.CostFloor || got.MakingsMargin != makingsMarginBelowCost {
+		t.Fatalf("break-even against a floor cost must read as a loss, got %+v", got)
+	}
+	var b strings.Builder
+	renderTradeValue(&b, v)
+	if !strings.Contains(b.String(), "the makings run you at least 5 coins each (a loss)") {
+		t.Errorf("want floor-qualified cost with loss verdict:\n%s", b.String())
+	}
+}
+
+// TestBuildTradeValue_WholesaleLineCarriesMakingsCost is the live Joseph Scott
+// defect (LLM-475 #3): the LLM-292 wholesale-channel branch replaced the whole
+// clause set, cost anchor included, so wholesale producers were the one class of
+// maker never shown their own margin. His flour line named what the shop paid him
+// (1 coin) and what folk paid in the shops (2), and never what the grinding cost —
+// so he traded five sacks of flour for five sheaves of wheat and called it fair,
+// and the 2026-07-19 flour reprice could not reach him at all. The cost sentence
+// and the verdict must now ride the wholesale line too.
+func TestBuildTradeValue_WholesaleLineCarriesMakingsCost(t *testing.T) {
+	const (
+		josephID = sim.ActorID("joseph")
+		josiahID = sim.ActorID("josiah")
+		mill     = sim.StructureID("mill")
+		store    = sim.StructureID("general_store")
+	)
+	published := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	joseph := &sim.ActorSnapshot{
+		DisplayName:     "Joseph Scott",
+		WorkStructureID: mill,
+		RestockPolicy:   tvProducePolicy("flour"),
+	}
+	josiah := &sim.ActorSnapshot{DisplayName: "Josiah Thorne", WorkStructureID: store}
+	// His own realized flour sales: 24 sacks to the shop for 24 coins — 1 flat.
+	millSales := sim.NewRingBuffer[sim.PriceObservation](8)
+	millSales.Push(sim.PriceObservation{BuyerID: josiahID, Amount: 24, Qty: 24, Consumers: 1, At: published.Add(-12 * time.Hour)})
+	// The shop's resales to folk at 2 each, so the line still leads with folk-pay.
+	shopSales := sim.NewRingBuffer[sim.PriceObservation](8)
+	shopSales.Push(sim.PriceObservation{BuyerID: "walker", Amount: 4, Qty: 2, Consumers: 1, At: published.Add(-6 * time.Hour)})
+	// Wheat priced off the catalog at 1: 5 wheat -> 5 flour is a closed treadmill,
+	// cost 1/unit against a realized 1/unit.
+	snap := &sim.Snapshot{
+		PublishedAt: published,
+		Actors:      map[sim.ActorID]*sim.ActorSnapshot{josephID: joseph, josiahID: josiah},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"flour": {OutputItem: "flour", OutputQty: 5, WholesalePrice: 3, RetailPrice: 4,
+				Inputs: []sim.RecipeInput{{Item: "wheat", Qty: 5}}},
+			"wheat": {OutputItem: "wheat", OutputQty: 1, WholesalePrice: 1, RetailPrice: 2},
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			sim.VillageObjectID(mill):  {ID: sim.VillageObjectID(mill), OwnerActorID: josephID, Tags: []string{sim.TagWholesaler}},
+			sim.VillageObjectID(store): {ID: sim.VillageObjectID(store), OwnerActorID: josiahID, Tags: []string{sim.TagDistributor}},
+		},
+		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+			{SellerID: josephID, Item: "flour"}: millSales,
+			{SellerID: josiahID, Item: "flour"}: shopSales,
+		},
+	}
+	v := buildTradeValue(snap, josephID, joseph, true)
+	if v == nil || len(v.Items) != 1 {
+		t.Fatalf("want 1 item, got %+v", v)
+	}
+	got := v.Items[0]
+	if got.WholesaleTo != "Josiah Thorne" {
+		t.Fatalf("want the wholesale-channel line, got %+v", got)
+	}
+	if got.CostBatch != 5 || got.CostQty != 5 {
+		t.Fatalf("wholesale line must keep its cost basis, got CostBatch=%d CostQty=%d", got.CostBatch, got.CostQty)
+	}
+	if got.MakingsMargin != makingsMarginAtCost {
+		t.Fatalf("1-coin flour against 1-coin makings is break-even, got tier %d", got.MakingsMargin)
+	}
+	var b strings.Builder
+	renderTradeValue(&b, v)
+	want := "Folk have lately paid about 2 coins each in the shops, it costs you about 1 coin each to produce, " +
+		"but the shop has lately paid you about 1 coin each (it earns you nothing). Send other buyers to Josiah Thorne."
+	if !strings.Contains(b.String(), want) {
+		t.Errorf("want the LLM-475 target shape:\nwant substring: %s\ngot:\n%s", want, b.String())
+	}
+}
+
+// TestBuildTradeValue_WholesaleRawProducerUnchanged: a raw producer's own produce
+// (no recipe inputs — Moses's carrots) has no makings cost, so its wholesale line
+// keeps exactly the LLM-292/295 shape with no cost sentence and no verdict. Pins
+// that LLM-475 is additive for the farms, which is why no existing golden moved.
+func TestBuildTradeValue_WholesaleRawProducerUnchanged(t *testing.T) {
+	const (
+		mosesID  = sim.ActorID("moses")
+		josiahID = sim.ActorID("josiah")
+		farm     = sim.StructureID("james_farm")
+		store    = sim.StructureID("general_store")
+	)
+	moses := &sim.ActorSnapshot{DisplayName: "Moses James", WorkStructureID: farm, RestockPolicy: tvProducePolicy("carrots")}
+	josiah := &sim.ActorSnapshot{DisplayName: "Josiah Thorne", WorkStructureID: store}
+	snap := &sim.Snapshot{
+		PublishedAt: time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC),
+		Actors:      map[sim.ActorID]*sim.ActorSnapshot{mosesID: moses, josiahID: josiah},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"carrots": {OutputItem: "carrots", OutputQty: 1, WholesalePrice: 1, RetailPrice: 3},
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			sim.VillageObjectID(farm):  {ID: sim.VillageObjectID(farm), OwnerActorID: mosesID, Tags: []string{sim.TagFarm, sim.TagWholesaler}},
+			sim.VillageObjectID(store): {ID: sim.VillageObjectID(store), OwnerActorID: josiahID, Tags: []string{sim.TagDistributor}},
+		},
+	}
+	v := buildTradeValue(snap, mosesID, moses, true)
+	if v == nil || len(v.Items) != 1 || v.Items[0].CostBatch != 0 || v.Items[0].MakingsMargin != makingsMarginNone {
+		t.Fatalf("raw producer should carry no cost and no verdict, got %+v", v)
+	}
+	var b strings.Builder
+	renderTradeValue(&b, v)
+	for _, unwanted := range []string{"it costs you", "a loss", "earns you nothing"} {
+		if strings.Contains(b.String(), unwanted) {
+			t.Errorf("raw producer line leaked %q:\n%s", unwanted, b.String())
+		}
+	}
+}
+
 // TestCostEachPhrase locks the prose buckets: exact whole coins say "about",
 // a sub-half fraction over a whole says "a little over", half-and-up rounds the
 // phrase upward to "nearly N+1" (never understating cost), and a cost under half

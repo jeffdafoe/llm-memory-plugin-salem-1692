@@ -1,0 +1,23 @@
+# Your turn
+
+## Since your last turn
+(nothing specific — this is a routine check-in)
+
+
+## You
+Coins in your purse: 16.
+You are carrying: sacks of flour (x18), sheaves of wheat (x6).
+
+## Who you are
+You are Joseph Scott.
+
+## Around you
+You are inside the Village Commons, with Silence Walker.
+
+You keep your trade at the Mill (destination: mill) — you can head back there whenever you wish.
+
+## What your wares fetch
+What your wares fetch in coin — use it to set a fair price or weigh a trade:
+- Flour: your own produce — it sells in bulk to Josiah Thorne, whose shop stocks it for the village, not to folk directly. Folk have lately paid about 2 coins each in the shops, it costs you about 1 coin each to produce, but the shop has lately paid you about 1 coin each (it earns you nothing). Send other buyers to Josiah Thorne.
+
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.
