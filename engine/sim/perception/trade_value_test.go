@@ -744,25 +744,84 @@ func TestBuildTradeValue_MakingsMarginTiers(t *testing.T) {
 	}
 }
 
-// TestBuildTradeValue_MakingsMarginFloorBreaksEvenIsLoss: when an unpriceable input
-// left the sum a FLOOR, the true cost is strictly above what was summed — so a sale
-// that exactly meets the floor is really underwater. The verdict says the stronger,
-// still-true thing rather than the reassuring one.
-func TestBuildTradeValue_MakingsMarginFloorBreaksEvenIsLoss(t *testing.T) {
-	// water has no recipe and no purchase history → unpriceable → floor.
-	inputs := []sim.RecipeInput{{Item: "meat", Qty: 1}, {Item: "water", Qty: 2}}
-	snap, subj := tvMakingsSnap(4, 20, inputs)
+// TestBuildTradeValue_MakingsMarginFloorUncertainty walks the CostFloor boundary,
+// where the cue knows only part of what a batch costs (an input priceable by
+// neither purchase history nor catalog is dropped from the sum and flags it a
+// floor). The asymmetry is the point, and code_review round 1 is what forced it:
+// BELOW the floor is provably a loss, because the true cost is at least the sum we
+// did compute — but BREAKING EVEN against a floor proves nothing. "Unpriceable"
+// means the input's cost is unknown, not that it is positive; it may genuinely be
+// free. Calling that a loss would be this ticket's own defect in a new place —
+// telling a keeper a number its books don't support — so uncertainty stays silent
+// rather than guessing in the alarming direction.
+func TestBuildTradeValue_MakingsMarginFloorUncertainty(t *testing.T) {
+	// water has no recipe and no purchase history → unpriceable → floor. Known part
+	// of the batch is the 5-coin cut of meat.
+	floorInputs := []sim.RecipeInput{{Item: "meat", Qty: 1}, {Item: "water", Qty: 2}}
+	tests := []struct {
+		name       string
+		saleUnits  int
+		saleCoins  int
+		wantTier   makingsMargin
+		wantRender string
+	}{
+		{"break-even against a floor is unjudged", 4, 20, makingsMarginNone, "the makings run you at least 5 coins each."},
+		{"below a floor is still provably a loss", 4, 12, makingsMarginBelowCost, "the makings run you at least 5 coins each (a loss)."},
+		{"above a floor is unjudged as ever", 4, 40, makingsMarginNone, "the makings run you at least 5 coins each."},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			snap, subj := tvMakingsSnap(tc.saleUnits, tc.saleCoins, floorInputs)
+			v := buildTradeValue(snap, "hannah", subj, true)
+			if v == nil || len(v.Items) != 1 {
+				t.Fatalf("want 1 item, got %+v", v)
+			}
+			if got := v.Items[0]; !got.CostFloor || got.MakingsMargin != tc.wantTier {
+				t.Fatalf("want floor=true tier=%d, got %+v", tc.wantTier, got)
+			}
+			var b strings.Builder
+			renderTradeValue(&b, v)
+			if !strings.Contains(b.String(), tc.wantRender) {
+				t.Errorf("want %q:\n%s", tc.wantRender, b.String())
+			}
+		})
+	}
+}
+
+// TestBuildTradeValue_MakingsAllInputsUnpriceableNoCost: when NO input can be
+// priced the sum collapses to nothing, so the clause is dropped entirely and the
+// floor flag is cleared with it — there is no partial cost to qualify and nothing
+// to judge a sale against. Pins that the floor path can't leak a bare "at least 0"
+// or a verdict with no figure behind it.
+func TestBuildTradeValue_MakingsAllInputsUnpriceableNoCost(t *testing.T) {
+	snap, subj := tvMakingsSnap(4, 12, []sim.RecipeInput{{Item: "water", Qty: 2}})
 	v := buildTradeValue(snap, "hannah", subj, true)
 	if v == nil || len(v.Items) != 1 {
 		t.Fatalf("want 1 item, got %+v", v)
 	}
-	if got := v.Items[0]; !got.CostFloor || got.MakingsMargin != makingsMarginBelowCost {
-		t.Fatalf("break-even against a floor cost must read as a loss, got %+v", got)
+	if got := v.Items[0]; got.CostBatch != 0 || got.CostFloor || got.MakingsMargin != makingsMarginNone {
+		t.Fatalf("all-unpriceable recipe should carry no cost, no floor, no verdict, got %+v", got)
 	}
 	var b strings.Builder
 	renderTradeValue(&b, v)
-	if !strings.Contains(b.String(), "the makings run you at least 5 coins each (a loss)") {
-		t.Errorf("want floor-qualified cost with loss verdict:\n%s", b.String())
+	for _, unwanted := range []string{"makings", "at least", "a loss", "earns you nothing"} {
+		if strings.Contains(b.String(), unwanted) {
+			t.Errorf("all-unpriceable recipe leaked %q:\n%s", unwanted, b.String())
+		}
+	}
+}
+
+// TestBuildTradeValue_MakingsMarginZeroQtyInputNoCost: an input listed at quantity
+// zero contributes nothing to the batch even when it IS priceable, so a recipe
+// whose only real entry is a zero-qty input carries no cost basis and no verdict.
+func TestBuildTradeValue_MakingsMarginZeroQtyInputNoCost(t *testing.T) {
+	snap, subj := tvMakingsSnap(4, 12, []sim.RecipeInput{{Item: "meat", Qty: 0}})
+	v := buildTradeValue(snap, "hannah", subj, true)
+	if v == nil || len(v.Items) != 1 {
+		t.Fatalf("want 1 item, got %+v", v)
+	}
+	if got := v.Items[0]; got.CostBatch != 0 || got.MakingsMargin != makingsMarginNone {
+		t.Fatalf("zero-qty input should contribute no cost and no verdict, got %+v", got)
 	}
 }
 

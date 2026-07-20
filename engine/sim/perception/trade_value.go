@@ -139,7 +139,10 @@ type TradeValueItem struct {
 	// CostBatch/CostQty, no float, no rounding. makingsMarginNone unless the good has
 	// BOTH a realized sale AND a positive makings cost on record — so a
 	// not-yet-sold line and a profitable one both carry no phrase (there is no
-	// praise tier; only a loss is worth a keeper's attention).
+	// praise tier; only a loss is worth a keeper's attention). Break-even against a
+	// CostFloor sum is likewise unjudged: an unpriceable input leaves the true cost
+	// UNKNOWN above the sum, not known to be higher, and a verdict meant to be acted
+	// on must not rest on a number the actor's own books don't support.
 	MakingsMargin makingsMargin
 
 	// WholesaleTo, when non-empty, marks this as a wholesale producer's OWN
@@ -303,6 +306,39 @@ func buildTradeValue(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 				costQty, costFloor = 0, false
 			}
 		}
+		// LLM-475: judge the good's realized SALE rate against its own makings cost.
+		// Sits here, BEFORE the wholesale branch below, so it depends on nothing that
+		// branch does: it reads only the raw rates and the cost basis, both final at
+		// this point. (Ordering it after would have worked today only because the
+		// branch happens to clear the rounded display fields and not the raw ones —
+		// a coupling a later wholesale refactor could silently break, taking the
+		// verdict with it while every render test still passed.)
+		//
+		// Cross-multiplied like AtOrBelowCost above and for the same sub-coin reason:
+		// realized coins/units against costBatch/costQty, no float, no rounding. Widened
+		// to int64 for the multiply — the same defensive posture as ToolRunwayUses, since
+		// realized ledger totals accumulate independently of the recipe-side values and a
+		// wrapped product would REVERSE the verdict rather than merely garble it.
+		// Requires a realized sale AND a positive cost, so a not-yet-sold good is never
+		// judged. Anchored on the actor's OWN cost, never the catalog band.
+		makingsTier := makingsMarginNone
+		if recentUnits > 0 && costBatch > 0 && costQty > 0 {
+			saleTimesCostQty := int64(recentCoins) * int64(costQty)
+			costTimesSaleUnits := int64(costBatch) * int64(recentUnits)
+			switch {
+			case saleTimesCostQty < costTimesSaleUnits:
+				// True cost is at least costBatch, so a rate below it is a loss whether
+				// or not the sum was a floor.
+				makingsTier = makingsMarginBelowCost
+			case saleTimesCostQty == costTimesSaleUnits && !costFloor:
+				makingsTier = makingsMarginAtCost
+			}
+			// Break-even against a FLOOR cost deliberately gets NO verdict. An
+			// unpriceable input means the cost is UNKNOWN above the sum, not known to
+			// be higher — the input could genuinely be free. Calling that a loss would
+			// be the same species of defect this ticket fixes (telling a keeper a
+			// number its own books don't support), so uncertainty stays silent.
+		}
 		// LLM-291: a wholesale producer's own produce sells only to the village
 		// distributor, never retail — so this good gets the wholesale-channel line,
 		// not a retail spread + "set a fair price" framing that nudges the producer
@@ -338,34 +374,6 @@ func buildTradeValue(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 				shopUnit, shopObserved = (coins+units/2)/units, true
 			} else {
 				shopUnit = hi
-			}
-		}
-		// LLM-475: judge the good's realized SALE rate against its own makings cost.
-		// Runs after the wholesale branch on purpose, so both the retail line and the
-		// wholesale-channel line get the same judgment off one computation —
-		// recentUnits/recentCoins are the raw rates behind BOTH the retail
-		// "of late you have sold for about N" clause and the wholesale BulkUnit
-		// figure, and the wholesale branch zeroes only the rounded display fields.
-		//
-		// Cross-multiplied like AtOrBelowCost above and for the same sub-coin reason:
-		// realized coins/units vs costBatch/costQty, no float, no rounding. Requires a
-		// realized sale AND a positive cost, so a not-yet-sold good is never judged.
-		// The comparison anchors on the actor's OWN cost, never the catalog band.
-		makingsTier := makingsMarginNone
-		if recentUnits > 0 && costBatch > 0 && costQty > 0 {
-			saleTimesCostQty := recentCoins * costQty
-			costTimesSaleUnits := costBatch * recentUnits
-			switch {
-			case saleTimesCostQty < costTimesSaleUnits:
-				makingsTier = makingsMarginBelowCost
-			case saleTimesCostQty == costTimesSaleUnits:
-				// A floor cost is missing an unpriceable input, so the TRUE cost is
-				// strictly higher than the sum we matched — breaking even against a
-				// floor is really a loss. Say the stronger, still-true thing.
-				makingsTier = makingsMarginAtCost
-				if costFloor {
-					makingsTier = makingsMarginBelowCost
-				}
 			}
 		}
 		seen[item] = true
@@ -509,9 +517,13 @@ func renderTradeValue(b *strings.Builder, v *TradeValueView) {
 			if len(leads) > 0 {
 				sentence = strings.Join(leads, ", ") + ", but " + bulk
 			}
-			// Capitalized for the sentence start — every phrasing above begins with an
-			// ASCII word ("Folk", "it", "the").
-			sentence = strings.ToUpper(sentence[:1]) + sentence[1:]
+			// Capitalized for the sentence start. Every phrasing built above begins
+			// with an ASCII word ("Folk", "it", "the"), so a single-byte upper is the
+			// right operation; the length guard keeps that from being a panic the day
+			// a future clause can be empty.
+			if sentence != "" {
+				sentence = strings.ToUpper(sentence[:1]) + sentence[1:]
+			}
 			fmt.Fprintf(b,
 				"- %s: your own produce — it sells in bulk to %s, whose shop stocks it for the village, not to folk directly. %s%s. Send other buyers to %s.\n",
 				label, to, sentence, makingsMarginPhrase(it.MakingsMargin), to,
