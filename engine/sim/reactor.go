@@ -42,20 +42,20 @@ import (
 type WarrantKind string
 
 const (
-	WarrantKindUnknown            WarrantKind = ""
-	WarrantKindPCSpoke            WarrantKind = "pc_spoke"
-	WarrantKindNPCSpoke           WarrantKind = "npc_spoke"
-	WarrantKindHuddleJoined       WarrantKind = "huddle_joined"      // the joiner
-	WarrantKindHuddlePeerJoined   WarrantKind = "huddle_peer_joined" // prior members
-	WarrantKindHuddleLeft         WarrantKind = "huddle_left"        // the leaver
-	WarrantKindHuddlePeerLeft     WarrantKind = "huddle_peer_left"   // remaining members
+	WarrantKindUnknown          WarrantKind = ""
+	WarrantKindPCSpoke          WarrantKind = "pc_spoke"
+	WarrantKindNPCSpoke         WarrantKind = "npc_spoke"
+	WarrantKindHuddleJoined     WarrantKind = "huddle_joined"      // the joiner
+	WarrantKindHuddlePeerJoined WarrantKind = "huddle_peer_joined" // prior members
+	WarrantKindHuddleLeft       WarrantKind = "huddle_left"        // the leaver
+	WarrantKindHuddlePeerLeft   WarrantKind = "huddle_peer_left"   // remaining members
 	// WarrantKindHuddlePeerRetired is the sleep-classified variant of
 	// HuddlePeerLeft: the peer didn't just step away, it went to bed (LLM-447).
 	// The distinction is load-bearing, not cosmetic — "Silence has turned in for
 	// the night" is what legitimizes the rest of the household following her,
 	// where a generic "stepped away" invites waiting for her to come back.
-	WarrantKindHuddlePeerRetired WarrantKind = "huddle_peer_retired"
-	WarrantKindHuddleConcluded    WarrantKind = "huddle_concluded"   // evicted members
+	WarrantKindHuddlePeerRetired  WarrantKind = "huddle_peer_retired"
+	WarrantKindHuddleConcluded    WarrantKind = "huddle_concluded" // evicted members
 	WarrantKindArrived            WarrantKind = "arrived"
 	WarrantKindNeedThreshold      WarrantKind = "need_threshold"
 	WarrantKindShiftDuty          WarrantKind = "shift_duty"

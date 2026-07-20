@@ -31,19 +31,19 @@ func TestResolveItemKind_AllForms(t *testing.T) {
 		want ItemKind
 		ok   bool
 	}{
-		{"raspberries", "raspberries", true},  // key
-		{"Raspberries", "raspberries", true},  // display label (case-insensitive)
-		{"raspberry", "raspberries", true},    // singular phrase
-		{"a raspberry", "raspberries", true},  // singular + leading article
-		{"RASPBERRY", "raspberries", true},    // singular, upper
-		{"ale", "ale", true},                  // key
-		{"Ale", "ale", true},                  // display label
-		{"tankard of ale", "ale", true},       // singular measure phrase
-		{"a tankard of ale", "ale", true},     // singular phrase + article
-		{"tankards of ale", "ale", true},      // plural measure phrase
-		{"  ale  ", "ale", true},              // surrounding whitespace
-		{"moonbeam", "", false},               // genuine miss
-		{"", "", false},                       // empty
+		{"raspberries", "raspberries", true}, // key
+		{"Raspberries", "raspberries", true}, // display label (case-insensitive)
+		{"raspberry", "raspberries", true},   // singular phrase
+		{"a raspberry", "raspberries", true}, // singular + leading article
+		{"RASPBERRY", "raspberries", true},   // singular, upper
+		{"ale", "ale", true},                 // key
+		{"Ale", "ale", true},                 // display label
+		{"tankard of ale", "ale", true},      // singular measure phrase
+		{"a tankard of ale", "ale", true},    // singular phrase + article
+		{"tankards of ale", "ale", true},     // plural measure phrase
+		{"  ale  ", "ale", true},             // surrounding whitespace
+		{"moonbeam", "", false},              // genuine miss
+		{"", "", false},                      // empty
 	}
 	for _, tc := range cases {
 		got, ok := resolveItemKind(w, tc.in)

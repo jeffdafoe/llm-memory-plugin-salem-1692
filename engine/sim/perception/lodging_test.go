@@ -1070,7 +1070,6 @@ func retireStructs() map[sim.StructureID]*sim.Structure {
 // requires (members excludes the subject).
 func retireMembers() []HuddleMember { return []HuddleMember{{ID: "companion"}} }
 
-
 // --- keeper renewal-due flip (LLM-46) ---
 
 // heldLodgerKeeperRated mirrors heldLodgerKeeperView but with a live nightly

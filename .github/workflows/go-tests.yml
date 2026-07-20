@@ -1,0 +1,84 @@
+name: "Go engine tests"
+
+# Test gate for the Go engine (engine/ is the module root; ./... there is the
+# whole v2 tree under sim/). Until LLM-484 this repo ran no Go tests in CI at
+# all — the only "go" check on a PR was CodeQL's `Analyze (go)`, which is static
+# analysis, not the suite. A PR that broke the engine merged green.
+#
+# The suite has two tiers and this workflow gates on BOTH:
+#   - unit: pgxmock-backed, no external deps, a few seconds
+#   - integration: sim/repo/pg/*_integration_test.go, which stand up a real
+#     PostgreSQL 17 in-process via fergusstrange/embedded-postgres and apply the
+#     production schema baseline + migrations (see sim/repo/pg/integration_test.go)
+#
+# The integration tier needs no service container — embedded-postgres runs its
+# own server — and it self-skips under `go test -short` via requireIntegration.
+# We deliberately do NOT pass -short: the pg layer is where the substrate
+# semantics pgxmock cannot check (advisory locks, CHECK constraints, FK CASCADE,
+# ON CONFLICT inference) actually get exercised, so skipping it would leave the
+# most under-tested layer exactly as unverified as it was before this workflow.
+
+on:
+    push:
+        branches: ["main"]
+    pull_request:
+        branches: ["main"]
+
+defaults:
+    run:
+        working-directory: engine
+
+jobs:
+    go-tests:
+        name: Go engine tests
+        runs-on: ubuntu-latest
+        timeout-minutes: 20
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v7
+
+            - name: Set up Go
+              uses: actions/setup-go@v6
+              with:
+                  # Track the toolchain declared in go.mod rather than pinning a
+                  # second copy of the version here that can drift from it.
+                  go-version-file: engine/go.mod
+                  cache-dependency-path: engine/go.sum
+
+            - name: Cache embedded-postgres binaries
+              # The integration tier downloads a ~100MB PostgreSQL archive on
+              # first use and caches it at ~/.embedded-postgres-go (see
+              # cache_locator.go). Without this the download repeats every run.
+              # Keyed on go.sum because the bundled default Postgres patch
+              # version moves with the embedded-postgres module version.
+              uses: actions/cache@v6
+              with:
+                  path: ~/.embedded-postgres-go
+                  key: embedded-postgres-${{ runner.os }}-${{ hashFiles('engine/go.sum') }}
+                  restore-keys: |
+                      embedded-postgres-${{ runner.os }}-
+
+            - name: Check formatting
+              # `gofmt -l` lists offenders but still exits 0, so the exit status
+              # alone would never fail the step.
+              run: |
+                  unformatted="$(gofmt -l .)"
+                  if [ -n "${unformatted}" ]; then
+                      echo "::error::gofmt reports unformatted files; run 'gofmt -w' on them"
+                      echo "${unformatted}"
+                      exit 1
+                  fi
+
+            - name: Build
+              run: go build ./...
+
+            - name: Vet
+              run: go vet ./...
+
+            - name: Test
+              # -count=1 disables Go's test result cache. The cache keys on file
+              # and env inputs, which cannot see the embedded-postgres server the
+              # integration tier boots — a cached "ok" for sim/repo/pg would mean
+              # Postgres never actually started, so the tier would silently stop
+              # gating while still reporting green.
+              run: go test -count=1 ./...
