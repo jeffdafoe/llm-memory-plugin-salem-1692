@@ -35,10 +35,28 @@
 --
 -- Shape. jsonb array of {"item": <kind>, "qty": <n>}, matching the shape already
 -- written into agent_action_log's payload.pay_items, so the backfill is a direct
--- copy and the Go side reuses the existing decode. NULL means "no goods leg
--- recorded" and reads as pure coin — which is correct for every historical row
--- that genuinely was pure coin, and is the safe default for the pre-LLM-105 rows
--- that predate goods legs being recorded at all.
+-- copy and the Go side reuses the existing decode.
+--
+-- WHAT NULL MEANS, PRECISELY. NULL is "no goods leg recorded on this row" — which
+-- is NOT the same claim as "this settlement was pure coin" (code_review). They
+-- coincide for every row our code writes, because payItemsJSON writes the legs
+-- whenever they exist. They diverge for history: a row whose audit entry is
+-- missing, predates goods legs being persisted at all (pre-LLM-105), or carries a
+-- malformed payload backfills to NULL and will therefore seed a coin rate.
+--
+-- That is a deliberate, conservative choice, not an oversight. The alternative —
+-- treating "unknown" as "possibly barter" and excluding it — would silently drop a
+-- large slice of genuine coin history and leave the book far thinner than the
+-- defect warrants (mixed settlements are ~1.5% of the corpus). If we ever need the
+-- stronger guarantee that no potentially-mixed settlement can seed, NULL cannot
+-- provide it; that needs an explicit known/unknown status column. Pinned by
+-- TestOrdersRepo_Integration_NullPayItemsSeedsAsPureCoin.
+--
+-- The CHECK constraint makes "NULL or a jsonb array" a permanent structural
+-- invariant rather than a one-time assertion. That matters beyond tidiness: the
+-- seed predicate calls jsonb_array_length on this column, which RAISES on a
+-- non-array, so without the constraint a single bad hand-written row would break
+-- boot seeding rather than merely being ignored.
 --
 -- ENGINE-OWNED TABLE. pay_ledger is written by the running engine. Apply with the
 -- engine STOPPED (stop -> migrate -> start, the standard deploy order). The
@@ -54,28 +72,84 @@ BEGIN;
 ALTER TABLE pay_ledger
     ADD COLUMN IF NOT EXISTS pay_items jsonb;
 
--- Backfill from the settlement audit beat. agent_action_log has no ledger_id
--- COLUMN — it lives inside the jsonb payload, alongside pay_items (this is the
--- same payload /umbilical/settlements reads). The regex guard on ledger_id keeps
--- the ::bigint cast from erroring on any row whose payload carries a
--- non-numeric or absent id; those simply do not match and stay NULL.
+-- Backfill from the settlement audit beat.
+--
+-- agent_action_log has no ledger_id COLUMN — it lives inside the jsonb payload,
+-- alongside pay_items (the same payload /umbilical/settlements reads). Promoting
+-- it to a real typed column is LLM-494; until then every reader hand-rolls this
+-- extraction, and it needs two guards the obvious form does not have:
+--
+--   1. The regex alone does NOT make the ::bigint cast safe (code_review). A
+--      100-digit value matches ^[0-9]+$ and then overflows, aborting the whole
+--      migration. The length bound fixes that: bigint's maximum is 19 digits, so
+--      anything at 18 or fewer is always in range. A genuine id will never come
+--      close (they come from a sequence), so bounding at 18 costs nothing real and
+--      avoids the fiddly lexicographic comparison the 19-digit boundary needs.
+--
+--   2. UPDATE ... FROM with a join that matches MULTIPLE source rows picks one
+--      ARBITRARILY — Postgres does not define which (code_review). If two `paid`
+--      rows ever carry the same ledger_id we would silently backfill whichever the
+--      planner reached first. DISTINCT ON makes the choice explicit and stable:
+--      highest audit-log id wins, i.e. the most recently written row for that
+--      ledger. The DO block below additionally FAILS the migration if any ledger
+--      has conflicting pay_items across rows, so "arbitrary but deterministic"
+--      never quietly becomes "arbitrary and wrong".
 --
 -- Only rows that actually carry goods are written. A pure-coin settlement is left
--- NULL rather than set to '[]', so NULL keeps one unambiguous meaning ("no goods
--- leg on this row") instead of splitting into "none recorded" vs "recorded empty".
+-- NULL rather than set to '[]' — see the header on what NULL means.
+WITH legs AS (
+    SELECT DISTINCT ON (ledger_id) ledger_id, pay_items
+      FROM (
+            SELECT (al.payload ->> 'ledger_id')::bigint AS ledger_id,
+                   al.payload -> 'pay_items'            AS pay_items,
+                   al.id                                AS audit_id
+              FROM agent_action_log al
+             WHERE al.action_type = 'paid'
+               AND al.payload ->> 'ledger_id' ~ '^[0-9]+$'
+               AND length(al.payload ->> 'ledger_id') <= 18
+               AND jsonb_typeof(al.payload -> 'pay_items') = 'array'
+               AND jsonb_array_length(al.payload -> 'pay_items') > 0
+           ) c
+     ORDER BY ledger_id, audit_id DESC
+)
 UPDATE pay_ledger pl
-   SET pay_items = al.payload -> 'pay_items'
-  FROM agent_action_log al
- WHERE al.action_type = 'paid'
-   AND al.payload ->> 'ledger_id' ~ '^[0-9]+$'
-   AND (al.payload ->> 'ledger_id')::bigint = pl.id
-   AND jsonb_typeof(al.payload -> 'pay_items') = 'array'
-   AND jsonb_array_length(al.payload -> 'pay_items') > 0
+   SET pay_items = legs.pay_items
+  FROM legs
+ WHERE legs.ledger_id = pl.id
    AND pl.pay_items IS NULL;
 
--- Guard: every backfilled value must be a non-empty jsonb ARRAY. A scalar or
--- object here would mean the audit payload shape drifted from what the Go decode
--- expects, and would silently break the seed predicate rather than fail loudly.
+-- Guard 1: no ledger may have CONFLICTING goods legs across audit rows. If it
+-- does, DISTINCT ON above silently picked one and the backfill is a guess. Fail
+-- instead, loudly, with the count.
+DO $$
+DECLARE
+    conflicting int;
+BEGIN
+    SELECT count(*) INTO conflicting
+      FROM (
+            SELECT (al.payload ->> 'ledger_id')::bigint AS ledger_id
+              FROM agent_action_log al
+             WHERE al.action_type = 'paid'
+               AND al.payload ->> 'ledger_id' ~ '^[0-9]+$'
+               AND length(al.payload ->> 'ledger_id') <= 18
+               AND jsonb_typeof(al.payload -> 'pay_items') = 'array'
+               AND jsonb_array_length(al.payload -> 'pay_items') > 0
+             GROUP BY 1
+            HAVING count(DISTINCT al.payload -> 'pay_items') > 1
+           ) d;
+    IF conflicting > 0 THEN
+        RAISE EXCEPTION 'LLM-493: % ledger id(s) have conflicting pay_items across audit rows — backfill would be a guess', conflicting;
+    END IF;
+END $$;
+
+-- Guard 2: every backfilled value must be a non-empty jsonb ARRAY.
+--
+-- The predicate uses CASE, not `jsonb_typeof(...) <> 'array' OR jsonb_array_length(...)`.
+-- Postgres does NOT guarantee short-circuit evaluation of boolean operators, so
+-- the OR form can evaluate jsonb_array_length on an object or scalar and raise
+-- "cannot get array length of a non-array" — aborting with a confusing internal
+-- error instead of this block's actionable one (code_review). CASE has defined
+-- evaluation order and cannot.
 DO $$
 DECLARE
     malformed int;
@@ -83,10 +157,25 @@ BEGIN
     SELECT count(*) INTO malformed
       FROM pay_ledger
      WHERE pay_items IS NOT NULL
-       AND (jsonb_typeof(pay_items) <> 'array' OR jsonb_array_length(pay_items) = 0);
+       AND CASE jsonb_typeof(pay_items)
+             WHEN 'array' THEN jsonb_array_length(pay_items) = 0
+             ELSE true
+           END;
     IF malformed > 0 THEN
         RAISE EXCEPTION 'LLM-493: % pay_ledger row(s) have a malformed pay_items value', malformed;
     END IF;
 END $$;
+
+-- Make "NULL or a jsonb array" permanent rather than a one-time assertion. The
+-- seed predicate calls jsonb_array_length on this column and that RAISES on a
+-- non-array, so without this a single bad hand-written row would break boot
+-- seeding for the whole village rather than merely being skipped. NOT VALID is
+-- deliberately not used — the guards above have just proven every existing row
+-- conforms, so the validating scan is cheap and worth doing now.
+ALTER TABLE pay_ledger
+    DROP CONSTRAINT IF EXISTS pay_ledger_pay_items_is_array;
+ALTER TABLE pay_ledger
+    ADD CONSTRAINT pay_ledger_pay_items_is_array
+    CHECK (pay_items IS NULL OR jsonb_typeof(pay_items) = 'array');
 
 COMMIT;

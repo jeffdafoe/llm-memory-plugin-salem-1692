@@ -650,15 +650,25 @@ func (r *OrdersRepo) WriteOrderlessSettlement(ctx context.Context, e *sim.PayLed
 //     amount 0 and carries no single coin price to remember — seeding it would
 //     poison the book with a "free" reading that renders as "~0 coins" in restock
 //     cues.
-//   - pay_items IS NULL drops MIXED coin+goods (LLM-493). Such a row has
-//     offered_amount > 0 and used to be KEPT, recorded at its coin leg against the
-//     full quantity: live, 5 nails bought for 2 coins PLUS 2 skillets and 2 wheat
-//     seeded nails at 0.4 coins each. Worse than the pure-barter gap — pure barter
-//     leaves the key silent, mixed leaves it wrong, and the wrong rate propagates
-//     into every buy anchor and margin verdict derived from it.
+//   - COALESCE(jsonb_array_length(pay_items), 0) = 0 drops MIXED coin+goods
+//     (LLM-493). Such a row has offered_amount > 0 and used to be KEPT, recorded at
+//     its coin leg against the full quantity: live, 5 nails bought for 2 coins PLUS
+//     2 skillets and 2 wheat seeded nails at 0.4 coins each. Worse than the
+//     pure-barter gap — pure barter leaves the key silent, mixed leaves it wrong,
+//     and the wrong rate propagates into every buy anchor and margin verdict
+//     derived from it.
 //
-// NULL (not an empty array) is the pure-coin sentinel — see payItemsJSON, which
-// writes NULL rather than '[]' so the column has one unambiguous meaning.
+// Why that expression and not the simpler `pay_items IS NULL`: the subscriber's
+// rule is `len(resolved.PayItems) > 0`, under which an EMPTY slice is pure coin and
+// gets recorded. `IS NULL` would exclude a stored '[]', so the two paths would
+// disagree on exactly the value the NULL-vs-'[]' sentinel choice hinges on
+// (code_review). COALESCE(...)=0 maps NULL and '[]' alike to "no goods", which is
+// len()==0 verbatim. payItemsJSON never writes '[]' — this is defence against a
+// value arriving from anywhere else, not an expected shape.
+//
+// jsonb_array_length RAISES on a non-array, so this predicate is only total
+// because the pay_ledger_pay_items_is_array CHECK constraint (LLM-493 migration)
+// makes a non-array unstorable. Do not drop that constraint without changing this.
 //
 // Both ingestion paths (boot seed here, live subscriber there) must agree, or
 // every engine restart re-imports up to PriceBookSeedWindow days of settlements
@@ -670,7 +680,7 @@ func (r *OrdersRepo) WriteOrderlessSettlement(ctx context.Context, e *sim.PayLed
 //
 //	(seller_id, item_kind, created_at DESC)
 //	WHERE state = 'accepted' AND item_kind IS NOT NULL AND offered_amount > 0
-//	      AND pay_items IS NULL
+//	      AND COALESCE(jsonb_array_length(pay_items), 0) = 0
 //
 // would cover this query's PARTITION BY / ORDER BY exactly. The partial
 // predicate must carry the query's constant filters (all but the
@@ -693,7 +703,7 @@ SELECT seller_id, item_kind, buyer_id, offered_amount, qty,
            AND created_at >= $1
            AND item_kind IS NOT NULL
            AND offered_amount > 0
-           AND pay_items IS NULL
+           AND COALESCE(jsonb_array_length(pay_items), 0) = 0
        ) t
  WHERE rn <= $2
  ORDER BY seller_id, item_kind, created_at ASC`

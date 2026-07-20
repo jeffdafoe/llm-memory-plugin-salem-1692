@@ -2,6 +2,7 @@ package pg
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -60,8 +61,11 @@ func TestOrdersRepo_Integration_LoadRecentPrices_SkipsZeroCoinBarter(t *testing.
 	// window and the guard is the only thing that can drop one.
 	now := time.Now().UTC()
 	// payItems is the jsonb goods-leg column, nil for a pure-coin settlement
-	// (LLM-493). NULL rather than '[]' is the pure-coin sentinel — payItemsJSON
-	// writes it that way and the seed predicate keys on IS NULL.
+	// (LLM-493). payItemsJSON writes NULL rather than '[]' for an empty leg set,
+	// but the seed predicate does NOT key on IS NULL — it uses
+	// COALESCE(jsonb_array_length(...), 0) = 0 so NULL and '[]' are treated alike,
+	// matching the subscriber's len(PayItems) > 0 exactly. See
+	// TestOrdersRepo_Integration_BothIngestionPathsAgreeOnPayItems.
 	insert := func(id int64, seller, item, buyer string, amount int, payItems any) {
 		t.Helper()
 		// state='accepted' requires a non-null resolved_at (pay_ledger_check:
@@ -175,6 +179,14 @@ func TestOrdersRepo_Integration_BothIngestionPathsAgreeOnPayItems(t *testing.T) 
 			payItems: []byte(`[{"item":"wheat","qty":2}]`)},
 		{name: "mixed coin+goods", id: 3, seller: "seller-mixed", amount: 2,
 			payItems: []byte(`[{"item":"skillet","qty":2},{"item":"wheat","qty":2}]`)},
+		// The case the NULL-vs-'[]' sentinel choice hinges on (code_review).
+		// payItemsJSON never writes '[]', but if a value arrived from anywhere else
+		// the two paths must still agree: the subscriber's len(PayItems) > 0 reads an
+		// empty slice as pure coin and RECORDS it, so a seed predicate of
+		// `pay_items IS NULL` would have excluded this row and diverged. The
+		// COALESCE(jsonb_array_length(...), 0) = 0 form is len()==0 verbatim.
+		{name: "empty goods array is pure coin", id: 4, seller: "seller-empty", amount: 5,
+			payItems: []byte(`[]`)},
 	}
 	for _, c := range cases {
 		if _, err := f.Pool.Exec(ctx,
@@ -204,7 +216,11 @@ func TestOrdersRepo_Integration_BothIngestionPathsAgreeOnPayItems(t *testing.T) 
 	for _, c := range cases {
 		// The subscriber's guard, verbatim in Go:
 		//   if resolved.Amount <= 0 || len(resolved.PayItems) > 0 { return }
-		hasGoods := c.payItems != nil
+		//
+		// Mirrored on LENGTH, not nil-ness — an empty array carries no goods and is
+		// pure coin on both sides. Testing `payItems != nil` here would have passed
+		// while leaving the NULL/'[]' mismatch entirely unexercised (code_review).
+		hasGoods := jsonArrayLen(t, c.payItems) > 0
 		subscriberWouldRecord := c.amount > 0 && !hasGoods
 		seedRecorded := seeded[c.seller]
 
@@ -219,5 +235,114 @@ func TestOrdersRepo_Integration_BothIngestionPathsAgreeOnPayItems(t *testing.T) 
 	// proving nothing about the coin path.
 	if !seeded["seller-coin"] {
 		t.Error("the pure-coin settlement was not seeded — invariant is vacuous")
+	}
+}
+
+// jsonArrayLen returns the element count of a jsonb test fixture, mirroring what
+// len(PayItems) is on the Go side. nil (SQL NULL) and an empty array both yield 0
+// — the two spellings of "no goods" that the seed predicate must treat alike.
+func jsonArrayLen(t *testing.T, raw any) int {
+	t.Helper()
+	if raw == nil {
+		return 0
+	}
+	b, ok := raw.([]byte)
+	if !ok {
+		t.Fatalf("jsonArrayLen: fixture is %T, want []byte or nil", raw)
+	}
+	var items []map[string]any
+	if err := json.Unmarshal(b, &items); err != nil {
+		t.Fatalf("jsonArrayLen: %q: %v", b, err)
+	}
+	return len(items)
+}
+
+// TestOrdersRepo_Integration_NullPayItemsSeedsAsPureCoin pins the documented
+// meaning of a NULL pay_items, which code_review correctly noted is NOT identical
+// to "this settlement was pure coin".
+//
+// NULL means "no goods leg recorded on this row". For everything our code writes
+// the two coincide, because payItemsJSON persists the legs whenever they exist.
+// They diverge for HISTORY: a row whose audit entry is missing, predates goods
+// legs being persisted at all (pre-LLM-105), or carries a malformed payload
+// backfills to NULL and therefore still seeds a coin rate.
+//
+// That is a deliberate conservative policy, not an oversight. Treating "unknown"
+// as "possibly barter" would silently drop a large slice of genuine coin history
+// to guard against a defect affecting ~1.5% of settlements. This test exists so
+// the policy is a decision on the record rather than an emergent accident — if a
+// stronger guarantee is ever needed, NULL cannot supply it and an explicit
+// known/unknown status column is required.
+func TestOrdersRepo_Integration_NullPayItemsSeedsAsPureCoin(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	if _, err := f.Pool.Exec(ctx,
+		`INSERT INTO item_kind (name, display_label, category) VALUES ('nail', 'Nail', 'tool')`,
+	); err != nil {
+		t.Fatalf("seed item_kind: %v", err)
+	}
+
+	// A settlement that WAS mixed but whose goods legs were never recorded — the
+	// pre-LLM-105 / missing-audit shape. It is indistinguishable from pure coin here.
+	now := time.Now().UTC()
+	if _, err := f.Pool.Exec(ctx,
+		`INSERT INTO pay_ledger
+		     (id, buyer_id, seller_id, item_kind, qty, offered_amount,
+		      consumer_actor_ids, consume_now, state, fulfillment_status,
+		      ready_by, created_at, resolved_at, pay_items)
+		 VALUES (1, 'buyer', 'seller-unknown', 'nail', 5, 2,
+		         $1, false, 'accepted', 'delivered',
+		         $2::date, $2, $2, NULL)`,
+		[]string{"buyer"}, now,
+	); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	repo := NewOrdersRepo(f.Pool)
+	got, err := repo.LoadRecentPrices(ctx, now.Add(-24*time.Hour), 10)
+	if err != nil {
+		t.Fatalf("LoadRecentPrices: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d observations, want 1 — a NULL pay_items row seeds as pure coin "+
+			"by documented policy; if this changed, the policy changed and the migration "+
+			"header plus this test must be updated together", len(got))
+	}
+	if got[0].Observation.Amount != 2 {
+		t.Errorf("observation amount = %d, want 2", got[0].Observation.Amount)
+	}
+}
+
+// TestOrdersRepo_Integration_PayItemsMustBeArray pins the CHECK constraint the
+// migration adds. It is not cosmetic: loadRecentPricesSQL calls jsonb_array_length
+// on this column, and that RAISES on a non-array — so without the constraint one
+// bad hand-written row would break boot seeding for the entire village rather than
+// being quietly skipped.
+func TestOrdersRepo_Integration_PayItemsMustBeArray(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	if _, err := f.Pool.Exec(ctx,
+		`INSERT INTO item_kind (name, display_label, category) VALUES ('nail', 'Nail', 'tool')`,
+	); err != nil {
+		t.Fatalf("seed item_kind: %v", err)
+	}
+
+	now := time.Now().UTC()
+	for _, bad := range []string{`{"item":"wheat"}`, `"wheat"`, `7`} {
+		_, err := f.Pool.Exec(ctx,
+			`INSERT INTO pay_ledger
+			     (id, buyer_id, seller_id, item_kind, qty, offered_amount,
+			      consumer_actor_ids, consume_now, state, fulfillment_status,
+			      ready_by, created_at, resolved_at, pay_items)
+			 VALUES (nextval(pg_get_serial_sequence('pay_ledger','id')), 'buyer', 'seller', 'nail', 1, 5,
+			         $1, false, 'accepted', 'delivered',
+			         $2::date, $2, $2, $3)`,
+			[]string{"buyer"}, now, []byte(bad),
+		)
+		if err == nil {
+			t.Errorf("pay_items = %s was accepted; the CHECK constraint must reject any non-array", bad)
+		}
 	}
 }
