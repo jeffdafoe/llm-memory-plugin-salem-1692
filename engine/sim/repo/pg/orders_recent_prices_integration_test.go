@@ -3,6 +3,9 @@ package pg
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -344,5 +347,121 @@ func TestOrdersRepo_Integration_PayItemsMustBeArray(t *testing.T) {
 		if err == nil {
 			t.Errorf("pay_items = %s was accepted; the CHECK constraint must reject any non-array", bad)
 		}
+	}
+}
+
+// TestOrdersRepo_Integration_PayItemsBackfill exercises the LLM-493 migration's
+// backfill against seeded history.
+//
+// The fixture applies migrations to an EMPTY database, so the backfill is a no-op
+// during setup and would otherwise ship untested. This seeds the history first,
+// then re-executes the real migration file — not a copy of its SQL, which would
+// only prove that a copy works. Every statement in it is rerun-safe by design
+// (ADD COLUMN IF NOT EXISTS, `pl.pay_items IS NULL`, DROP/ADD CONSTRAINT), which
+// is exactly what makes replaying it a legitimate test.
+func TestOrdersRepo_Integration_PayItemsBackfill(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	if _, err := f.Pool.Exec(ctx,
+		`INSERT INTO item_kind (name, display_label, category) VALUES ('nail', 'Nail', 'tool')`,
+	); err != nil {
+		t.Fatalf("seed item_kind: %v", err)
+	}
+
+	now := time.Now().UTC()
+	ledger := func(id int64, seller string, amount int) {
+		t.Helper()
+		if _, err := f.Pool.Exec(ctx,
+			`INSERT INTO pay_ledger
+			     (id, buyer_id, seller_id, item_kind, qty, offered_amount,
+			      consumer_actor_ids, consume_now, state, fulfillment_status,
+			      ready_by, created_at, resolved_at, pay_items)
+			 VALUES ($1, 'buyer', $2, 'nail', 5, $3,
+			         $4, false, 'accepted', 'delivered',
+			         $5::date, $5, $5, NULL)`,
+			id, seller, amount, []string{"buyer"}, now,
+		); err != nil {
+			t.Fatalf("seed pay_ledger %d: %v", id, err)
+		}
+	}
+	audit := func(payload string) {
+		t.Helper()
+		if _, err := f.Pool.Exec(ctx,
+			`INSERT INTO agent_action_log
+			     (actor_id, occurred_at, source, action_type, payload, result, speaker_name)
+			 VALUES (NULL, $1, 'agent', 'paid', $2::jsonb, 'ok', 'Buyer')`,
+			now, payload,
+		); err != nil {
+			t.Fatalf("seed agent_action_log: %v", err)
+		}
+	}
+
+	// 1: the live case — 5 nails for 2 coins PLUS skillets and wheat.
+	ledger(1, "seller-mixed", 2)
+	audit(`{"ledger_id":1,"pay_items":[{"item":"skillet","qty":2},{"item":"wheat","qty":2}]}`)
+	// 2: a genuine coin sale, audit row carries no goods. Must stay NULL.
+	ledger(2, "seller-coin", 5)
+	audit(`{"ledger_id":2,"pay_items":[]}`)
+	// 3: no audit row at all — the pre-LLM-105 / missing-entry shape. Stays NULL
+	// and therefore still seeds, which is the documented conservative policy.
+	ledger(3, "seller-nohistory", 5)
+	// 4: the overflow probe. A digits-only ledger_id far beyond bigint would abort
+	// the migration if the cast were reachable for it. The CASE guard is what keeps
+	// this from happening, and a WHERE predicate would NOT have (code_review).
+	audit(`{"ledger_id":"999999999999999999999999999999999","pay_items":[{"item":"wheat","qty":1}]}`)
+	// 5: a non-numeric id, the other malformed shape the regex arm rejects.
+	audit(`{"ledger_id":"not-a-number","pay_items":[{"item":"wheat","qty":1}]}`)
+
+	// Re-run the real migration.
+	dir, err := findMigrationsDir()
+	if err != nil {
+		t.Fatalf("findMigrationsDir: %v", err)
+	}
+	sqlBytes, err := os.ReadFile(filepath.Join(dir, "LLM-493-pay-ledger-pay-items_up.sql"))
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	if _, err := f.Pool.Exec(ctx, string(sqlBytes)); err != nil {
+		t.Fatalf("re-run LLM-493 migration: %v", err)
+	}
+
+	var got [4]*string
+	for id := 1; id <= 3; id++ {
+		if err := f.Pool.QueryRow(ctx,
+			`SELECT pay_items::text FROM pay_ledger WHERE id = $1`, id,
+		).Scan(&got[id]); err != nil {
+			t.Fatalf("read back id=%d: %v", id, err)
+		}
+	}
+
+	if got[1] == nil {
+		t.Error("id=1 (mixed settlement) was not backfilled — the goods legs are in the audit log and must reach the column")
+	} else if !strings.Contains(*got[1], "skillet") || !strings.Contains(*got[1], "wheat") {
+		t.Errorf("id=1 backfilled to %s, want both goods legs", *got[1])
+	}
+	if got[2] != nil {
+		t.Errorf("id=2 (empty audit pay_items) backfilled to %s, want NULL — an empty leg set is not goods", *got[2])
+	}
+	if got[3] != nil {
+		t.Errorf("id=3 (no audit row) backfilled to %s, want NULL", *got[3])
+	}
+
+	// And the seed then classifies them per the contract: the mixed row is out,
+	// the two NULL rows are in.
+	repo := NewOrdersRepo(f.Pool)
+	prices, err := repo.LoadRecentPrices(ctx, now.Add(-24*time.Hour), 10)
+	if err != nil {
+		t.Fatalf("LoadRecentPrices: %v", err)
+	}
+	seeded := map[string]bool{}
+	for _, r := range prices {
+		seeded[string(r.Key.SellerID)] = true
+	}
+	if seeded["seller-mixed"] {
+		t.Error("the backfilled mixed settlement still seeded a coin rate")
+	}
+	if !seeded["seller-coin"] || !seeded["seller-nohistory"] {
+		t.Errorf("a pure-coin row failed to seed: %v", seeded)
 	}
 }

@@ -65,7 +65,12 @@
 -- keep the standard order anyway.
 --
 -- Rerun-safe: ADD COLUMN IF NOT EXISTS, and the backfill's `pl.pay_items IS NULL`
--- predicate makes a second run a no-op.
+-- predicate makes a second run a no-op. The CHECK constraint uses
+-- DROP CONSTRAINT IF EXISTS + ADD, which is replacement semantics: a rerun
+-- recreates the constraint from this definition, discarding any hand-modified
+-- version carrying the same name (code_review). That is the intended behaviour —
+-- this migration owns that constraint — but it is a deliberate choice, not an
+-- accident, and a hand-tuned variant would be silently reverted by a rerun.
 
 BEGIN;
 
@@ -77,70 +82,95 @@ ALTER TABLE pay_ledger
 -- agent_action_log has no ledger_id COLUMN — it lives inside the jsonb payload,
 -- alongside pay_items (the same payload /umbilical/settlements reads). Promoting
 -- it to a real typed column is LLM-494; until then every reader hand-rolls this
--- extraction, and it needs two guards the obvious form does not have:
+-- extraction, and it needs care in two places the obvious form gets wrong.
 --
---   1. The regex alone does NOT make the ::bigint cast safe (code_review). A
---      100-digit value matches ^[0-9]+$ and then overflows, aborting the whole
---      migration. The length bound fixes that: bigint's maximum is 19 digits, so
---      anything at 18 or fewer is always in range. A genuine id will never come
---      close (they come from a sequence), so bounding at 18 costs nothing real and
---      avoids the fiddly lexicographic comparison the 19-digit boundary needs.
+-- 1. A WHERE PREDICATE DOES NOT PROTECT A CAST. Postgres does not guarantee that
+--    WHERE conditions are evaluated before expressions in the select list — the
+--    planner may evaluate the cast while producing rows for DISTINCT ON, or
+--    reorder evaluation for any other reason (code_review). So filtering on
+--    `~ '^[0-9]+$' AND length(...) <= 18` in a WHERE and casting in the SELECT is
+--    NOT safe: a 19+ digit digits-only value can still raise bigint overflow and
+--    abort the migration.
 --
---   2. UPDATE ... FROM with a join that matches MULTIPLE source rows picks one
---      ARBITRARILY — Postgres does not define which (code_review). If two `paid`
---      rows ever carry the same ledger_id we would silently backfill whichever the
---      planner reached first. DISTINCT ON makes the choice explicit and stable:
---      highest audit-log id wins, i.e. the most recently written row for that
---      ledger. The DO block below additionally FAILS the migration if any ledger
---      has conflicting pay_items across rows, so "arbitrary but deterministic"
---      never quietly becomes "arbitrary and wrong".
+--    The guards therefore live INSIDE a CASE, which does have contractual
+--    evaluation order, so the cast is only ever reached for a value already known
+--    to be in range. Bigint's maximum is 19 digits, so 18 or fewer is always safe;
+--    a real id comes from a sequence and will never approach it, which is why the
+--    fiddly lexicographic comparison for the 19-digit boundary is not worth it.
 --
--- Only rows that actually carry goods are written. A pure-coin settlement is left
--- NULL rather than set to '[]' — see the header on what NULL means.
-WITH legs AS (
-    SELECT DISTINCT ON (ledger_id) ledger_id, pay_items
-      FROM (
-            SELECT (al.payload ->> 'ledger_id')::bigint AS ledger_id,
-                   al.payload -> 'pay_items'            AS pay_items,
-                   al.id                                AS audit_id
-              FROM agent_action_log al
-             WHERE al.action_type = 'paid'
-               AND al.payload ->> 'ledger_id' ~ '^[0-9]+$'
-               AND length(al.payload ->> 'ledger_id') <= 18
-               AND jsonb_typeof(al.payload -> 'pay_items') = 'array'
-               AND jsonb_array_length(al.payload -> 'pay_items') > 0
-           ) c
-     ORDER BY ledger_id, audit_id DESC
+--    Same trap as the boolean-OR one in guard 2 below: both are cases of assuming
+--    an evaluation order Postgres explicitly declines to promise.
+--
+-- 2. UPDATE ... FROM matching MULTIPLE source rows picks one ARBITRARILY, and
+--    Postgres does not define which (code_review). If two `paid` rows ever carry
+--    the same ledger_id we would silently backfill whichever the planner reached
+--    first. DISTINCT ON makes the choice explicit and stable — highest audit-log
+--    id wins, i.e. the most recently written row for that ledger — and the guard
+--    below FAILS the migration outright if any ledger has conflicting legs, so
+--    "deterministic" can never quietly become "wrong".
+--
+-- The candidate set is materialised ONCE into a temp table rather than repeated as
+-- a subquery in both the guard and the UPDATE. Two hand-maintained copies of the
+-- same four predicates would be free to drift, and if they did the guard would
+-- silently stop covering the statement it exists to protect.
+CREATE TEMP TABLE llm493_settlement_legs ON COMMIT DROP AS
+WITH candidates AS (
+    SELECT CASE
+               WHEN al.payload ->> 'ledger_id' ~ '^[0-9]+$'
+                AND length(al.payload ->> 'ledger_id') <= 18
+               THEN (al.payload ->> 'ledger_id')::bigint
+           END                       AS ledger_id,
+           al.payload -> 'pay_items' AS pay_items,
+           al.id                     AS audit_id
+      FROM agent_action_log al
+     WHERE al.action_type = 'paid'
 )
-UPDATE pay_ledger pl
-   SET pay_items = legs.pay_items
-  FROM legs
- WHERE legs.ledger_id = pl.id
-   AND pl.pay_items IS NULL;
+SELECT ledger_id, pay_items, audit_id
+  FROM candidates
+ WHERE ledger_id IS NOT NULL
+   AND CASE jsonb_typeof(pay_items)
+         WHEN 'array' THEN jsonb_array_length(pay_items) > 0
+         ELSE false
+       END;
 
--- Guard 1: no ledger may have CONFLICTING goods legs across audit rows. If it
--- does, DISTINCT ON above silently picked one and the backfill is a guess. Fail
--- instead, loudly, with the count.
+-- Guard 1: no ledger may have CONFLICTING goods legs across audit rows. If one
+-- does, the DISTINCT ON below would silently pick a winner and the backfill would
+-- be a guess. Fail instead, loudly, with the count.
+--
+-- Runs BEFORE the UPDATE — a later RAISE would roll the update back just the same,
+-- but failing first is clearer and does less work.
+--
+-- SCOPE, deliberately: this only sees rows that survived into the temp table, i.e.
+-- valid ledger ids carrying non-empty arrays. That is exactly the set eligible for
+-- backfill, so a malformed or empty duplicate is IGNORED rather than reported as a
+-- conflict — correct, because such a row could never have been chosen anyway.
 DO $$
 DECLARE
     conflicting int;
 BEGIN
     SELECT count(*) INTO conflicting
       FROM (
-            SELECT (al.payload ->> 'ledger_id')::bigint AS ledger_id
-              FROM agent_action_log al
-             WHERE al.action_type = 'paid'
-               AND al.payload ->> 'ledger_id' ~ '^[0-9]+$'
-               AND length(al.payload ->> 'ledger_id') <= 18
-               AND jsonb_typeof(al.payload -> 'pay_items') = 'array'
-               AND jsonb_array_length(al.payload -> 'pay_items') > 0
-             GROUP BY 1
-            HAVING count(DISTINCT al.payload -> 'pay_items') > 1
+            SELECT ledger_id
+              FROM llm493_settlement_legs
+             GROUP BY ledger_id
+            HAVING count(DISTINCT pay_items) > 1
            ) d;
     IF conflicting > 0 THEN
         RAISE EXCEPTION 'LLM-493: % ledger id(s) have conflicting pay_items across audit rows — backfill would be a guess', conflicting;
     END IF;
 END $$;
+
+-- Only rows that actually carry goods are written. A pure-coin settlement is left
+-- NULL rather than set to '[]' — see the header on what NULL means.
+UPDATE pay_ledger pl
+   SET pay_items = legs.pay_items
+  FROM (
+        SELECT DISTINCT ON (ledger_id) ledger_id, pay_items
+          FROM llm493_settlement_legs
+         ORDER BY ledger_id, audit_id DESC
+       ) legs
+ WHERE legs.ledger_id = pl.id
+   AND pl.pay_items IS NULL;
 
 -- Guard 2: every backfilled value must be a non-empty jsonb ARRAY.
 --

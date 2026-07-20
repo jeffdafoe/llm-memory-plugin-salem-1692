@@ -661,10 +661,14 @@ func intPtr(i int) *int { return &i }
 
 // TestPayItemsJSON pins the pay_ledger.pay_items encoding (LLM-493).
 //
-// The NULL-vs-'[]' distinction is the load-bearing part: the seed predicate is
-// `pay_items IS NULL`, so an empty leg set MUST encode to SQL NULL. Encoding it
-// as '[]' would make every pure-coin settlement invisible to the seed and empty
-// the price book on the next boot.
+// The encoder writes SQL NULL for an empty leg set, so the column has one
+// unambiguous spelling of "no goods" for everything the engine produces.
+//
+// The seed predicate does NOT depend on that — it is
+// COALESCE(jsonb_array_length(pay_items), 0) = 0, which treats NULL and '[]'
+// alike, mirroring the subscriber's len(PayItems) > 0 exactly. Keeping the
+// encoder canonical and the reader permissive is deliberate: the two ingestion
+// paths must agree on every value, including ones this encoder never writes.
 //
 // Field names must match agent_action_log's payload.pay_items, because the
 // migration backfills historical rows by copying that jsonb straight across.

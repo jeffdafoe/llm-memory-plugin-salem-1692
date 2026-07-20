@@ -688,6 +688,15 @@ func (r *OrdersRepo) WriteOrderlessSettlement(ctx context.Context, e *sim.PayLed
 // query and needlessly retain rows the WHERE drops. Not yet
 // added; LoadWorld runs once at boot so seq-scan cost is paid once
 // per restart. Add the index if seed time becomes noticeable.
+//
+// Two caveats if it ever is added (code_review). The barter predicate is an
+// EXPRESSION, not a column test, so this is an expression index —
+// jsonb_array_length is immutable so it is legal in a partial predicate, but the
+// planner still has to evaluate it per row to decide membership, which limits how
+// much a large table actually benefits. Treat the shape above as a starting point
+// and confirm with EXPLAIN rather than assuming it helps; the
+// (seller_id, item_kind, created_at DESC) ordering is the part that is clearly
+// right.
 const loadRecentPricesSQL = `
 SELECT seller_id, item_kind, buyer_id, offered_amount, qty,
        cardinality(consumer_actor_ids), created_at
