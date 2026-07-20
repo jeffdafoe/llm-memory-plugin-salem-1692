@@ -1,6 +1,7 @@
 package perception
 
 import (
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -1005,13 +1006,23 @@ func TestRenderRestocking_WalkToInstruction(t *testing.T) {
 	}})
 	// LLM-492: the line names the SITUATION only. The two-step buy instruction it used
 	// to carry ("use move_to to reach a supplier below, then pay_with_item once you
-	// arrive") is gone — the vendor bullets below carry the destination token, which is
-	// what the model echoes into move_to.
+	// arrive") is gone, because pay_with_item is not callable on this tick — the seller
+	// is elsewhere. The only actionable move here is move_to, and the destination token
+	// on the bullet below is what the model echoes into it. Once the buyer arrives,
+	// coPresentSellerForItem resolves the seller by structure scope (LLM-286) and the
+	// co-present branch delivers the full pay_with_item imperative at the moment it
+	// becomes actionable.
+	//
+	// Absence alone is NOT sufficient coverage (code_review): a regression to a line
+	// carrying no route at all would satisfy it. So assert the destination survives.
 	if out := walk.String(); !strings.Contains(out, "No seller is here now.") {
 		t.Errorf("walk-to item should name the no-seller situation:\n%s", out)
 	}
 	if out := walk.String(); strings.Contains(out, "use move_to") {
 		t.Errorf("walk-to item must not restate the two-step buy instruction (LLM-492):\n%s", out)
+	}
+	if out := walk.String(); !strings.Contains(out, "(destination: ellis)") {
+		t.Errorf("walk-to item must still carry a destination — dropping the instruction must not leave the line unactionable:\n%s", out)
 	}
 
 	var here strings.Builder
@@ -1195,7 +1206,7 @@ func TestRenderRestocking_DemandAndMarginClauses(t *testing.T) {
 	if !strings.Contains(out, "It sells steadily — about 18 this past week.") {
 		t.Errorf("missing steady demand judgment:\n%s", out)
 	}
-	if !strings.Contains(out, "You are buying at about 2 coins and selling at about 3 coins — slightly profitable.") {
+	if !strings.Contains(out, "You are buying at about 2 coins and selling at about 3 coins — slightly profitable on coin.") {
 		t.Errorf("missing earning margin judgment:\n%s", out)
 	}
 	if strings.Contains(out, "at a cost of") {
@@ -1214,16 +1225,16 @@ func TestRenderRestocking_DemandAndMarginClauses(t *testing.T) {
 	// the verdict as a trailing label (LLM-492) — so the model parses the same grammar
 	// whichever way the coin is flowing, and the judgment never floats free of the
 	// numbers it is judging.
-	if out := render(RestockItemView{ItemLabel: "milk", CurrentQty: 4, Cap: 20, RecentSalesUnits: 21, BuyAnchorUnit: 1, ResaleUnit: 3}); !strings.Contains(out, "You are buying at about 1 coin and selling at about 3 coins — highly profitable.") {
+	if out := render(RestockItemView{ItemLabel: "milk", CurrentQty: 4, Cap: 20, RecentSalesUnits: 21, BuyAnchorUnit: 1, ResaleUnit: 3}); !strings.Contains(out, "You are buying at about 1 coin and selling at about 3 coins — highly profitable on coin.") {
 		t.Errorf("missing highly-profitable margin judgment:\n%s", out)
 	}
-	if out := render(RestockItemView{ItemLabel: "milk", CurrentQty: 4, Cap: 20, RecentSalesUnits: 21, BuyAnchorUnit: 1, ResaleUnit: 2}); !strings.Contains(out, "You are buying at about 1 coin and selling at about 2 coins — nicely profitable.") {
+	if out := render(RestockItemView{ItemLabel: "milk", CurrentQty: 4, Cap: 20, RecentSalesUnits: 21, BuyAnchorUnit: 1, ResaleUnit: 2}); !strings.Contains(out, "You are buying at about 1 coin and selling at about 2 coins — nicely profitable on coin.") {
 		t.Errorf("missing nicely-profitable margin judgment:\n%s", out)
 	}
-	if out := render(RestockItemView{ItemLabel: "milk", CurrentQty: 4, Cap: 20, RecentSalesUnits: 21, BuyAnchorUnit: 1, ResaleUnit: 1}); !strings.Contains(out, "You are buying at about 1 coin and selling at about 1 coin — breakeven.") {
+	if out := render(RestockItemView{ItemLabel: "milk", CurrentQty: 4, Cap: 20, RecentSalesUnits: 21, BuyAnchorUnit: 1, ResaleUnit: 1}); !strings.Contains(out, "You are buying at about 1 coin and selling at about 1 coin — breakeven on coin.") {
 		t.Errorf("missing break-even margin judgment:\n%s", out)
 	}
-	if out := render(RestockItemView{ItemLabel: "meat", CurrentQty: 0, Cap: 6, RecentSalesUnits: 8, BuyAnchorUnit: 4, ResaleUnit: 3}); !strings.Contains(out, "You are buying at about 4 coins and selling at about 3 coins — you need to buy lower or sell for more.") {
+	if out := render(RestockItemView{ItemLabel: "meat", CurrentQty: 0, Cap: 6, RecentSalesUnits: 8, BuyAnchorUnit: 4, ResaleUnit: 3}); !strings.Contains(out, "You are buying at about 4 coins and selling at about 3 coins — losing on coin; you need to buy lower or sell for more.") {
 		t.Errorf("missing losing margin judgment:\n%s", out)
 	}
 
@@ -1274,13 +1285,21 @@ func TestRestockMarginTierOf(t *testing.T) {
 		{-1, 3, marginUnknown}, {2, -1, marginUnknown},
 		// Profit bands grade by RATIO (LLM-492), so the same +1 coin lands in
 		// different tiers depending on the buy rate: 1→2 doubles, 4→5 is a quarter.
-		{1, 3, marginHighlyProfitable}, {2, 6, marginHighlyProfitable},
-		{1, 4, marginHighlyProfitable}, // above the top band stays highly
-		{1, 2, marginNicelyProfitable}, {2, 4, marginNicelyProfitable},
-		{2, 5, marginNicelyProfitable}, // between the 2x and 3x cutoffs
+		// Exact cutoffs are INCLUSIVE — 3x grades highly, 2x grades nicely.
+		{1, 3, marginHighlyProfitable}, {2, 6, marginHighlyProfitable}, // exactly 3x
+		{1, 4, marginHighlyProfitable}, {3, 12, marginHighlyProfitable}, // beyond 3x
+		{1, 2, marginNicelyProfitable}, {2, 4, marginNicelyProfitable}, // exactly 2x
+		{2, 5, marginNicelyProfitable}, {4, 11, marginNicelyProfitable}, // between 2x and 3x
 		{4, 5, marginSlightlyProfitable}, {2, 3, marginSlightlyProfitable},
+		{3, 5, marginSlightlyProfitable}, // just under 2x
 		{1, 1, marginBreakEven}, {4, 4, marginBreakEven},
 		{4, 3, marginLosing}, {2, 1, marginLosing},
+		// Overflow: a cross-multiply of the buy rate (buy*3) would wrap here and
+		// invert the verdict; dividing the resale rate cannot (code_review).
+		{math.MaxInt, math.MaxInt, marginBreakEven},
+		{math.MaxInt, 1, marginLosing},
+		{1, math.MaxInt, marginHighlyProfitable},
+		{math.MaxInt / 2, math.MaxInt, marginNicelyProfitable},
 	}
 	for _, c := range cases {
 		if got := restockMarginTierOf(c.buy, c.resale); got != c.want {

@@ -1015,18 +1015,26 @@ func restockMarginTierOf(buyAnchorUnit, resaleUnit int) restockMarginTier {
 	if buyAnchorUnit <= 0 || resaleUnit <= 0 {
 		return marginUnknown
 	}
-	// int64 for the cross-multiply: both rates are independently accumulated ledger
-	// aggregates, and a wrapped product would REVERSE a verdict rather than merely
-	// garble it (the LLM-475 code_review posture).
-	buy, resale := int64(buyAnchorUnit), int64(resaleUnit)
+	// Compared by DIVIDING the resale rate, never by multiplying the buy rate. Both
+	// rates are independently accumulated ledger aggregates, so a cross-multiply
+	// (buy*3) can overflow on a large buy rate and REVERSE a verdict rather than
+	// merely garble it — widening to int64 does not fix that, it only moves the
+	// ceiling (code_review). Division cannot overflow for positive operands, and both
+	// are guaranteed positive by the guard above.
+	//
+	// Truncation is harmless here because the comparison is `buy <= resale/N`: integer
+	// division rounds the threshold DOWN, which can only make the band harder to
+	// enter, never easier, so a good is never promoted into a band it has not earned.
+	// Exact multiples land on the boundary and are included (resale 6 / buy 2 → 6/3=2,
+	// 2<=2 → highly), which is the intended inclusive semantics.
 	switch {
-	case resale >= buy*marginHighlyProfitableMultiple:
+	case buyAnchorUnit <= resaleUnit/marginHighlyProfitableMultiple:
 		return marginHighlyProfitable
-	case resale >= buy*marginNicelyProfitableMultiple:
+	case buyAnchorUnit <= resaleUnit/marginNicelyProfitableMultiple:
 		return marginNicelyProfitable
-	case resale > buy:
+	case resaleUnit > buyAnchorUnit:
 		return marginSlightlyProfitable
-	case resale < buy:
+	case resaleUnit < buyAnchorUnit:
 		return marginLosing
 	default:
 		return marginBreakEven
@@ -1185,27 +1193,32 @@ func renderRestocking(b *strings.Builder, v *RestockingView) {
 		// One uniform shape across every tier: the two rates, then the verdict as a
 		// short trailing label. Each clause previously had its own sentence structure,
 		// so the model had to parse a different grammar per tier to find the same two
-		// numbers; identical framing means only the label varies. The rates are stated
-		// in coin and the verdict rides directly on them, so no clause generalises past
-		// what the coin price book actually observed — the old break-even wording
-		// ("so it earns you nothing on its own") asserted the whole economics of the
-		// line from its coin legs alone, and talked a keeper out of the input leg of a
-		// working trade whose other half settled in barter the book never sees.
+		// numbers; identical framing means only the label varies.
+		//
+		// Every label carries "on coin" because the scope has to reach the MODEL, not
+		// just a reader of this file (code_review). Both rates come from the coin price
+		// book, which records only what was paid in coin; a bare "breakeven" reads as a
+		// claim about the good itself, which is the inference that talked a keeper out
+		// of the input leg of a working trade whose other half settled in barter the
+		// book never sees. The scope will not by itself teach the model to reason about
+		// that barter — nothing here can, and inventing a coin value for it would
+		// repeat the LLM-475 defect (uncertainty stays silent). It only stops the
+		// engine asserting more than it observed.
 		switch restockMarginTierOf(it.BuyAnchorUnit, it.ResaleUnit) {
 		case marginHighlyProfitable:
-			fmt.Fprintf(b, " You are buying at about %s and selling at about %s — highly profitable.",
+			fmt.Fprintf(b, " You are buying at about %s and selling at about %s — highly profitable on coin.",
 				coinsPhrase(it.BuyAnchorUnit), coinsPhrase(it.ResaleUnit))
 		case marginNicelyProfitable:
-			fmt.Fprintf(b, " You are buying at about %s and selling at about %s — nicely profitable.",
+			fmt.Fprintf(b, " You are buying at about %s and selling at about %s — nicely profitable on coin.",
 				coinsPhrase(it.BuyAnchorUnit), coinsPhrase(it.ResaleUnit))
 		case marginSlightlyProfitable:
-			fmt.Fprintf(b, " You are buying at about %s and selling at about %s — slightly profitable.",
+			fmt.Fprintf(b, " You are buying at about %s and selling at about %s — slightly profitable on coin.",
 				coinsPhrase(it.BuyAnchorUnit), coinsPhrase(it.ResaleUnit))
 		case marginBreakEven:
-			fmt.Fprintf(b, " You are buying at about %s and selling at about %s — breakeven.",
+			fmt.Fprintf(b, " You are buying at about %s and selling at about %s — breakeven on coin.",
 				coinsPhrase(it.BuyAnchorUnit), coinsPhrase(it.ResaleUnit))
 		case marginLosing:
-			fmt.Fprintf(b, " You are buying at about %s and selling at about %s — you need to buy lower or sell for more.",
+			fmt.Fprintf(b, " You are buying at about %s and selling at about %s — losing on coin; you need to buy lower or sell for more.",
 				coinsPhrase(it.BuyAnchorUnit), coinsPhrase(it.ResaleUnit))
 		default:
 			// Only one rate (or neither) on record — no margin to judge, so the known

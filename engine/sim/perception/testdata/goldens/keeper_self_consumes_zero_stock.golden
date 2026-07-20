@@ -17,7 +17,7 @@ It is your working hours and you are at your post — stay and look after your w
 
 ## Restocking
 Your shop stock of these bought-in goods is running low. You choose how much to buy.
-- You have 0 cheese on hand and room for 6 more at the most. It sells slowly — about 5 this past week. You are buying at about 1 coin and selling at about 2 coins — nicely profitable. You've bought about 25 of these this past week, sold only 5, and used or traded the rest. No seller is here now.
+- You have 0 cheese on hand and room for 6 more at the most. It sells slowly — about 5 this past week. You are buying at about 1 coin and selling at about 2 coins — nicely profitable on coin. You've bought about 25 of these this past week, sold only 5, and used or traded the rest. No seller is here now.
   - buy from Ellis Farm (destination: ellis_farm), ~25 coins
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

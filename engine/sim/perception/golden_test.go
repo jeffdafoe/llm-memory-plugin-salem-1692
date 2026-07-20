@@ -574,11 +574,11 @@ func TestGoldensRestockCueNeverPairsAggregateCostWithSales(t *testing.T) {
 // breaking the other. Every invariant that needs to know whether a line carries a
 // margin verdict reads this.
 var restockMarginVerdictLabels = []string{
-	"— highly profitable.",
-	"— nicely profitable.",
-	"— slightly profitable.",
-	"— breakeven.",
-	"— you need to buy lower or sell for more.",
+	"— highly profitable on coin.",
+	"— nicely profitable on coin.",
+	"— slightly profitable on coin.",
+	"— breakeven on coin.",
+	"— losing on coin; you need to buy lower or sell for more.",
 }
 
 // hasRestockMarginVerdict reports whether s carries any of the margin-tier clauses.
@@ -633,12 +633,25 @@ func TestGoldensRestockMarginVerdictAlwaysStatesItsRates(t *testing.T) {
 			}
 		}
 		for _, line := range strings.Split(section, "\n") {
-			if !hasRestockMarginVerdict(line) {
+			// Detect on the RATE half, not the label, so both of the assertions below
+			// are real: keying detection on the label would make the scope check
+			// tautological (every label contains "on coin") and would go silent on a
+			// line that stated rates and then drew an unscoped conclusion.
+			if !strings.Contains(line, "You are buying at about ") {
 				continue
 			}
 			exercised = true
-			if !strings.Contains(line, "You are buying at about ") || !strings.Contains(line, " and selling at about ") {
-				t.Errorf("scenario %q: item line %q carries a margin verdict without stating the two rates it judges (LLM-492)", sc.name, line)
+			if !strings.Contains(line, " and selling at about ") {
+				t.Errorf("scenario %q: item line %q states a buy rate without the sell rate it is judged against (LLM-492)", sc.name, line)
+			}
+			// The scope has to reach the MODEL (code_review): a bare "breakeven" reads
+			// as a claim about the good, which is the inference this ticket exists to
+			// stop. Both rates come from the coin price book and nothing else.
+			if !strings.Contains(line, "on coin") {
+				t.Errorf("scenario %q: item line %q renders a margin verdict without scoping it to the coin trade (LLM-492)", sc.name, line)
+			}
+			if !hasRestockMarginVerdict(line) {
+				t.Errorf("scenario %q: item line %q states both rates but carries no recognised verdict label (LLM-492)", sc.name, line)
 			}
 		}
 	}
