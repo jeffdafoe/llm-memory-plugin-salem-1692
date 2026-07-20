@@ -38,6 +38,17 @@ jobs:
               # fontconfig dependency explicit rather than lean on the runner image.
               run: sudo apt-get update && sudo apt-get install -y libfontconfig1
 
+            - name: Cache Godot download
+              # Without this the ~50MB release zip is re-fetched from
+              # github.com/godotengine on every run, which makes an external
+              # download a hard dependency for merging once this job is a
+              # required check. The key carries the version, so a Godot bump
+              # is a new key and a fresh download rather than a stale hit.
+              uses: actions/cache@v6
+              with:
+                  path: ~/.cache/godot-download
+                  key: godot-${{ runner.os }}-4.6.3-stable
+
             - name: Install Godot 4.6.3 (headless)
               # Pin the release checksum — a downloaded binary is executed below.
               # Must match infrastructure/group_vars/all.yml godot_version: the
@@ -47,9 +58,16 @@ jobs:
                   set -euo pipefail
                   ASSET="Godot_v4.6.3-stable_linux.x86_64"
                   EXPECTED_SHA512="a035258da32b77f966a5376f9fa29c30a6adde826a85ba918e1605bd1fc9823eba7d85f1dd5e748956bd2ba72827c0025ffa11bb82aec91128c407a2e723c99c"
-                  curl -fsSL -o godot.zip "https://github.com/godotengine/godot/releases/download/4.6.3-stable/${ASSET}.zip"
-                  echo "${EXPECTED_SHA512}  godot.zip" | sha512sum -c -
-                  unzip -q godot.zip
+                  CACHE_DIR="${HOME}/.cache/godot-download"
+                  mkdir -p "${CACHE_DIR}"
+                  if [ ! -f "${CACHE_DIR}/godot.zip" ]; then
+                      curl -fsSL -o "${CACHE_DIR}/godot.zip" "https://github.com/godotengine/godot/releases/download/4.6.3-stable/${ASSET}.zip"
+                  fi
+                  # Verify on EVERY run, cache hit or miss. Caching the zip must
+                  # not cache away the checksum gate — a truncated or tampered
+                  # cache entry has to fail here exactly like a bad download.
+                  echo "${EXPECTED_SHA512}  ${CACHE_DIR}/godot.zip" | sha512sum -c -
+                  unzip -q -o "${CACHE_DIR}/godot.zip"
                   test -f "${ASSET}"
                   sudo mv "${ASSET}" /usr/local/bin/godot
                   sudo chmod +x /usr/local/bin/godot
