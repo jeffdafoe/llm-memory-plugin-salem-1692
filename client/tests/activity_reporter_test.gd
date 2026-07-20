@@ -24,13 +24,28 @@ extends SceneTree
 
 const MINUTE_MS := 60 * 1000
 
+## Every test, by name. _run_all dispatches through this and _check_all_tests_ran
+## asserts each one reached its end — see _done().
+const TESTS := [
+    "_test_untouched_client_never_reports",
+    "_test_first_input_reports_immediately",
+    "_test_throttle_holds_then_releases",
+    "_test_failed_report_restores_pending_input",
+    "_test_successful_report_does_not_restore",
+    "_test_input_during_flight_survives_completion",
+    "_test_human_input_classification",
+]
+
 var _reporter: Node = null
 var _failures := 0
 var _checks := 0
+var _completed := {}
+var _current := ""
 
 
 func _initialize() -> void:
     _run_all()
+    _check_all_tests_ran()
     print("\n[activity_reporter_test] %d checks, %d failure(s)" % [_checks, _failures])
     if _failures == 0:
         print("[activity_reporter_test] ALL PASS")
@@ -53,16 +68,26 @@ func _check(label: String, got, want) -> void:
 
 
 func _run_all() -> void:
-    _test_untouched_client_never_reports()
-    _test_first_input_reports_immediately()
-    _test_throttle_holds_then_releases()
-    _test_failed_report_restores_pending_input()
-    _test_successful_report_does_not_restore()
-    _test_input_during_flight_survives_completion()
-    _test_human_input_classification()
+    for t in TESTS:
+        _current = t
+        call(t)
     if _reporter != null:
         _reporter.free()
         _reporter = null
+
+
+## LLM-480. A GDScript runtime error aborts ONLY the function it happens in — the
+## caller resumes at the very next statement and the process still exits 0 — so an
+## aborted test is invisible both to _run_all and to the failure tally, and the suite
+## prints ALL PASS having silently skipped it. Every test therefore calls _done() as
+## its last statement (and before any early return); a name missing here ran partially.
+func _done() -> void:
+    _completed[_current] = true
+
+
+func _check_all_tests_ran() -> void:
+    for t in TESTS:
+        _check("harness — %s ran to completion" % t, _completed.has(t), true)
 
 
 ## Invariant 1. The whole cost fix rests on this: no input, no report, ever —
@@ -72,6 +97,7 @@ func _test_untouched_client_never_reports() -> void:
     _check("untouched at t=0", r._due(0), false)
     _check("untouched after 5min", r._due(5 * MINUTE_MS), false)
     _check("untouched after 2h", r._due(120 * MINUTE_MS), false)
+    _done()
 
 
 ## A freshly loaded tab counts from its first input, not one interval later.
@@ -79,6 +105,7 @@ func _test_first_input_reports_immediately() -> void:
     var r := _fresh()
     r._mark_input()
     _check("first input is due at once", r._due(0), true)
+    _done()
 
 
 func _test_throttle_holds_then_releases() -> void:
@@ -91,6 +118,7 @@ func _test_throttle_holds_then_releases() -> void:
     _check("1 min after report", r._due(2 * MINUTE_MS), false)
     _check("4 min after report", r._due(5 * MINUTE_MS), false)
     _check("5 min after report", r._due(6 * MINUTE_MS), true)
+    _done()
 
 
 ## Invariant 2. A transient failure must cost one 15s check, not the horizon.
@@ -103,6 +131,7 @@ func _test_failed_report_restores_pending_input() -> void:
     r._finish_report(false)
     _check("pending input restored", r._input_since_report, true)
     _check("due immediately after failure", r._due(MINUTE_MS), true)
+    _done()
 
 
 func _test_successful_report_does_not_restore() -> void:
@@ -112,6 +141,7 @@ func _test_successful_report_does_not_restore() -> void:
     r._finish_report(true)
     _check("no phantom input after success", r._input_since_report, false)
     _check("throttle intact after success", r._due(2 * MINUTE_MS), false)
+    _done()
 
 
 ## Input arriving while the request is in flight belongs to the NEXT beat — it
@@ -124,6 +154,7 @@ func _test_input_during_flight_survives_completion() -> void:
     r._mark_input() # player keeps moving while the POST is in flight
     r._finish_report(true)
     _check("in-flight input survives success", r._input_since_report, true)
+    _done()
 
 
 ## Mouse motion must count (a hidden tab produces none — that is the whole
@@ -140,3 +171,4 @@ func _test_human_input_classification() -> void:
     _check("button is a press input", r._is_press_input(InputEventMouseButton.new()), true)
     _check("touch is a press input", r._is_press_input(InputEventScreenTouch.new()), true)
     _check("motion is not a press input", r._is_press_input(InputEventMouseMotion.new()), false)
+    _done()

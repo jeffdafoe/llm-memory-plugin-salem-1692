@@ -22,29 +22,52 @@ extends SceneTree
 const ZZZ := "ZzzMarker"
 const ACT := "ActivityMarker"
 
+## Every test, by name. _run_all dispatches through this and _check_all_tests_ran
+## asserts each one reached its end — see _done().
+const TESTS := [
+    "_test_dormant_toggle",
+    "_test_same_frame_wake_sleep_no_duplicate",
+    "_test_repeated_dormant_no_duplicate",
+    "_test_mutual_exclusion_both_orders",
+    "_test_forward_restore_activity_after_sleep",
+    "_test_reverse_restore_zzz_after_activity_clear",
+    "_test_activity_toggle_no_sleep",
+    "_test_position_self_heal_marker_before_sprite",
+    "_test_activity_marker_sizing_and_placement",
+]
+
 var _world: Node2D = null
 var _failures := 0
 var _checks := 0
+var _completed := {}
+var _current := ""
 
 func _initialize() -> void:
     _world = load("res://scripts/world.gd").new()
     _run_all()
     _world.free()
+    _check_all_tests_ran()
     print("\n[marker_transitions_test] %d checks, %d failure(s)" % [_checks, _failures])
     if _failures == 0:
         print("[marker_transitions_test] ALL PASS")
     quit(1 if _failures > 0 else 0)
 
 func _run_all() -> void:
-    _test_dormant_toggle()
-    _test_same_frame_wake_sleep_no_duplicate()
-    _test_repeated_dormant_no_duplicate()
-    _test_mutual_exclusion_both_orders()
-    _test_forward_restore_activity_after_sleep()
-    _test_reverse_restore_zzz_after_activity_clear()
-    _test_activity_toggle_no_sleep()
-    _test_position_self_heal_marker_before_sprite()
-    _test_activity_marker_sizing_and_placement()
+    for t in TESTS:
+        _current = t
+        call(t)
+
+## LLM-480. A GDScript runtime error aborts ONLY the function it happens in — the
+## caller resumes at the very next statement and the process still exits 0 — so an
+## aborted test is invisible both to _run_all and to the failure tally, and the suite
+## prints ALL PASS having silently skipped it. Every test therefore calls _done() as
+## its last statement (and before any early return); a name missing here ran partially.
+func _done() -> void:
+    _completed[_current] = true
+
+func _check_all_tests_ran() -> void:
+    for t in TESTS:
+        _check("harness — %s ran to completion" % t, _completed.has(t))
 
 # --- fixtures / feed simulation -------------------------------------------------
 
@@ -121,6 +144,7 @@ func _test_dormant_toggle() -> void:
     _expect_only(c, "", "dormant_toggle: after wake")
     _expect_dim(c, false, "dormant_toggle: after wake")
     c.free()
+    _done()
 
 ## LLM-449 core: a same-frame clear -> set (wake then immediately sleep, repeated) must
 ## reuse the one persistent node — never queue_free-and-recreate, which could reuse the
@@ -134,6 +158,7 @@ func _test_same_frame_wake_sleep_no_duplicate() -> void:
     _set_dormant(c, "sleeping")
     _expect_only(c, "zzz", "same_frame_wake_sleep")
     c.free()
+    _done()
 
 func _test_repeated_dormant_no_duplicate() -> void:
     var c := _make_container()
@@ -142,6 +167,7 @@ func _test_repeated_dormant_no_duplicate() -> void:
     _set_dormant(c, "resting")
     _expect_only(c, "zzz", "repeated_dormant")
     c.free()
+    _done()
 
 func _test_mutual_exclusion_both_orders() -> void:
     # sleep then activity: activity wins the slot; the sprite stays dimmed because the
@@ -160,6 +186,7 @@ func _test_mutual_exclusion_both_orders() -> void:
     _expect_only(c2, "zzz", "mutual_excl: activity then sleep")
     _expect_dim(c2, true, "mutual_excl: activity then sleep")
     c2.free()
+    _done()
 
 ## Reviewer's primary bug: activity active -> sleep masks it -> waking must restore the
 ## activity marker from the stored kind (not leave both hidden) and undim the sprite.
@@ -175,6 +202,7 @@ func _test_forward_restore_activity_after_sleep() -> void:
     _expect_only(c, "activity", "forward_restore: wake restores activity")
     _expect_dim(c, false, "forward_restore: wake restores activity")
     c.free()
+    _done()
 
 ## Symmetric case: dormant -> activity (out of step) masks Zzz -> clearing the activity
 ## must restore the Zzz while still dormant. The sprite stays dimmed throughout — the
@@ -191,6 +219,7 @@ func _test_reverse_restore_zzz_after_activity_clear() -> void:
     _expect_only(c, "zzz", "reverse_restore: activity clear restores zzz")
     _expect_dim(c, true, "reverse_restore: activity clear restores zzz")
     c.free()
+    _done()
 
 func _test_activity_toggle_no_sleep() -> void:
     var c := _make_container()
@@ -201,6 +230,7 @@ func _test_activity_toggle_no_sleep() -> void:
     _expect_only(c, "", "activity_toggle: clear leaves nothing when not dormant")
     _expect_dim(c, false, "activity_toggle: clear")
     c.free()
+    _done()
 
 ## A marker first created before the sprite frames resolve uses the fallback position;
 ## a later dormant apply repositions it off the now-present sprite. Assert the exact
@@ -213,6 +243,7 @@ func _test_position_self_heal_marker_before_sprite() -> void:
     _check("position_self_heal — marker created without a sprite", m != null)
     if m == null:
         c.free()
+        _done()
         return
     var fallback_pos: Vector2 = m.position
     _check("position_self_heal — fallback position with no sprite", fallback_pos == _world._zzz_marker_position(null))
@@ -225,6 +256,7 @@ func _test_position_self_heal_marker_before_sprite() -> void:
     _check("position_self_heal — position actually changed from fallback", m.position != fallback_pos)
     _expect_only(c, "zzz", "position_self_heal")
     c.free()
+    _done()
 
 ## The activity glyph carries its OWN size and placement: the label renders at
 ## ACTIVITY_MARKER_FONT_SIZE and is positioned by _activity_marker_position, which derives
@@ -237,13 +269,14 @@ func _test_position_self_heal_marker_before_sprite() -> void:
 ## overlap fails here. Covers the real rendered-width path, not just the fallback.
 func _test_activity_marker_sizing_and_placement() -> void:
     var size_px: float = float(_world.ACTIVITY_MARKER_FONT_SIZE)
-    # Guard the font lookup through _check rather than letting a null deref abort the
-    # function: this harness tallies failures only via _check, so a runtime error would
-    # silently drop every assertion below while the suite still printed ALL PASS (that
-    # is exactly how a desynced .godot import cache masked this test once — see LLM-480).
+    # Guard the font lookup through _check rather than letting a null deref abort here:
+    # a desynced .godot import cache makes _get_icon_font() return null, and this names
+    # that cause directly instead of leaving the reader with the harness's generic
+    # "did not run to completion" (LLM-479 hit exactly this).
     var font: Font = _world._get_icon_font()
     _check("activity_placement — icon font loaded", font != null)
     if font == null:
+        _done()
         return
     var line_h: float = font.get_height(_world.ACTIVITY_MARKER_FONT_SIZE)
 
@@ -268,6 +301,7 @@ func _test_activity_marker_sizing_and_placement() -> void:
     _check("activity_placement — marker created", m != null)
     if m == null:
         c.free()
+        _done()
         return
     _check("activity_placement — font size override is ACTIVITY_MARKER_FONT_SIZE", m.has_theme_font_size_override("font_size") and m.get_theme_font_size("font_size") == int(size_px))
     _check("activity_placement — uses the activity positioner", m.position == _world._activity_marker_position(spr))
@@ -293,3 +327,4 @@ func _test_activity_marker_sizing_and_placement() -> void:
 
     # No sprite at all — the null fallback still derives its centring from the size.
     _check("activity_placement — null-sprite fallback derives from the size", is_equal_approx(_world._activity_marker_position(null).x, -size_px * 0.5))
+    _done()

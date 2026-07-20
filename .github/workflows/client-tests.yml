@@ -1,10 +1,17 @@
 name: "Client tests"
 
-# Headless GDScript regression tests for the Godot client (client/tests/*.gd).
+# Headless GDScript regression tests for the Godot client (client/tests/*_test.gd).
 # Each test is a SceneTree script run with --script; it exits non-zero on failure,
 # which fails the step. The --import step must run first: the tests load real assets
 # (the lucide font for the source-activity marker), and a --script run does not
 # populate the import cache the way the editor does.
+#
+# A non-zero exit is NOT sufficient on its own. A GDScript runtime error aborts only
+# the function it happens in — the caller resumes at the next statement and the process
+# still exits 0 — so a suite can report ALL PASS having skipped a whole test (LLM-480).
+# The suites themselves catch aborts in a test function via a per-test completion mark;
+# the SCRIPT ERROR check below is the backstop for the rest (an abort inside a shared
+# helper, or in _initialize itself, which no in-harness mark can see).
 
 on:
     push:
@@ -42,8 +49,28 @@ jobs:
             - name: Import assets
               run: godot --headless --path client --import
 
-            - name: Run marker transition tests
-              run: godot --headless --path client --script res://tests/marker_transitions_test.gd
-
-            - name: Run activity heartbeat tests
-              run: godot --headless --path client --script res://tests/activity_reporter_test.gd
+            - name: Run client tests
+              # Every client/tests/*_test.gd is picked up, so a new suite needs no
+              # workflow change. Output goes to a file rather than a pipe into grep:
+              # a pipe would report grep's status as the step's, masking Godot's.
+              run: |
+                  set -uo pipefail
+                  failed=0
+                  for path in client/tests/*_test.gd; do
+                      name="$(basename "$path")"
+                      log="$(mktemp)"
+                      echo "::group::${name}"
+                      godot --headless --path client --script "res://tests/${name}" >"${log}" 2>&1
+                      status=$?
+                      cat "${log}"
+                      echo "::endgroup::"
+                      if [ "${status}" -ne 0 ]; then
+                          echo "::error::${name} exited ${status}"
+                          failed=1
+                      fi
+                      if grep -q "SCRIPT ERROR" "${log}"; then
+                          echo "::error::${name} hit a GDScript runtime error — a test was skipped, not passed"
+                          failed=1
+                      fi
+                  done
+                  exit "${failed}"
