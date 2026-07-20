@@ -900,6 +900,14 @@ func TestGoldensNonDistributorRestockNeverTargetsFarm(t *testing.T) {
 			if a == nil || sim.ActorIsDistributor(snap.VillageObjects, a.WorkStructureID) {
 				return // subject is the distributor (or missing) — invariant N/A here
 			}
+			// LLM-477: a TRANSFORMER legitimately targets a wholesale source for its own
+			// production inputs, so a farm destination is no longer categorically wrong
+			// for it. This text-level scan can't tell WHICH item a destination serves, so
+			// the transformer case is held instead by the item-precise structural
+			// invariant TestGoldensWholesaleSourceOnlyForAllowedItems below.
+			if sim.BuyerWholesaleAllowance(snap.VillageObjects, snap.Recipes, a.WorkStructureID, a.RestockPolicy).Any() {
+				return
+			}
 			_, section, found := strings.Cut(renderScenario(sc), "## Restocking\n")
 			if !found {
 				return // no restock section in this situation — invariant N/A here
@@ -916,6 +924,43 @@ func TestGoldensNonDistributorRestockNeverTargetsFarm(t *testing.T) {
 				token := "(destination: " + string(id) + ")"
 				if strings.Contains(section, token) {
 					t.Errorf("scenario %q: the restock section advertises farm %q as a move target for a non-distributor — farm goods must route through the distributor (LLM-223)", sc.name, token)
+				}
+			}
+		})
+	}
+}
+
+// TestGoldensWholesaleSourceOnlyForAllowedItems is the LLM-477 cross-scenario
+// invariant, and the item-precise half of the wholesale tier's perception guarantee:
+// across the whole matrix, whenever the restock directory advertises a
+// wholesaler-tagged structure as a supplier of an item, the subject must actually be
+// entitled to buy THAT item there — it is the distributor, or the item is one of its
+// own production inputs. Re-derived from the snapshot rather than trusting the filter
+// that produced the vendor list, so a future change to eachVendorOffer can't quietly
+// widen the grant.
+//
+// This is what keeps the tier honest now that TestGoldensNonDistributorRestockNeverTargetsFarm
+// exempts transformers: that text-level scan can only ask "is a farm named at all",
+// while this one asks the question that matters — "named for WHAT".
+func TestGoldensWholesaleSourceOnlyForAllowedItems(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, _ := sc.build()
+			subj := snap.Actors[actorID]
+			if subj == nil || subj.RestockPolicy == nil {
+				return // no restock manifest — invariant N/A here
+			}
+			allowance := sim.BuyerWholesaleAllowance(snap.VillageObjects, snap.Recipes, subj.WorkStructureID, subj.RestockPolicy)
+			for _, e := range sim.EffectiveBuyEntries(snap.Recipes, subj.RestockPolicy) {
+				vendors, _ := findItemVendors(snap, actorID, subj, e.Item)
+				for _, vd := range vendors {
+					if !sim.SellerAtWholesaler(snap.VillageObjects, vd.StructureID) {
+						continue // an ordinary vendor — the tier says nothing about it
+					}
+					if !allowance.Allows(e.Item) {
+						t.Errorf("scenario %q: the restock directory advertises wholesale source %q for %q, but the subject holds no wholesale allowance for that item — wholesale-origin goods must route through the distributor unless the item feeds the subject's own production (LLM-477)", sc.name, vd.StructureID, e.Item)
+					}
 				}
 			}
 		})
@@ -2798,6 +2843,19 @@ var perceptionScenarios = []perceptionScenario{
 		build: millerWheatRestockFlatBandAnchor,
 	},
 	{
+		name: "miller_buys_wheat_direct_from_wholesale_farm",
+		summary: "LLM-477 transformer wholesale tier: the miller (Joseph Scott, at the wholesaler-tagged mill) is below his " +
+			"wheat floor, and the village holds BOTH the wheat-growing James Farm (wholesaler-tagged) and the General Store " +
+			"(the distributor, also holding wheat). The golden pins that the '## Restocking' wheat line now offers the FARM " +
+			"as a walk-to supplier alongside the store: wheat is an input to his own flour recipe, so the tier grants him the " +
+			"direct channel a plain reseller never gets. Before this he could only buy wheat retail from the same shop that " +
+			"takes his flour wholesale — one counterparty on both sides of the mill's business, and no wheat at all whenever " +
+			"that shop was shut. Cross-scenario guard: TestGoldensWholesaleSourceOnlyForAllowedItems (which pins that the farm " +
+			"is offered for wheat and nothing else). Contrast: reseller_restock_routed_to_distributor_not_farm, where a " +
+			"non-transformer is still routed through the distributor.",
+		build: millerBuysWheatDirectFromWholesaleFarm,
+	},
+	{
 		name: "owner_holding_repair_nails_in_company",
 		summary: "LLM-292 repair-reserve earmark (the live Josiah nail resale): Josiah stands at his worn General Store " +
 			"(wear past the repair threshold) holding 3 of the 5 nails a mend takes, in a huddle with John Ellis — the " +
@@ -4311,6 +4369,43 @@ func millerWheatRestockFlatBandAnchor() (*sim.Snapshot, sim.ActorID, []sim.Warra
 		RestockReorderPct: 25,
 	}
 	return snap, josephID, nil
+}
+
+// millerBuysWheatDirectFromWholesaleFarm is the LLM-477 fixture: the same miller as
+// millerWheatRestockFlatBandAnchor (wholesaler-tagged mill, flour ← wheat, wheat shelf
+// below its floor), but the village now also holds the wheat-GROWING James Farm, itself
+// wholesaler-tagged. Before LLM-477 the farm was invisible to him and his only wheat
+// channel was the distributor's shop — the same shop that buys his flour wholesale, so
+// he crossed the spread twice with one counterparty on both sides of his business (and
+// stalled outright whenever that shop was shut). Pins that the restock cue now offers
+// BOTH walk-to sources, which is the supply independence the ticket is for. Clock-free
+// render path.
+func millerBuysWheatDirectFromWholesaleFarm() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, josephID, warrants := millerWheatRestockFlatBandAnchor()
+	const (
+		mosesID = sim.ActorID("moses")
+		farm    = sim.StructureID("james_farm")
+	)
+	snap.Actors[mosesID] = &sim.ActorSnapshot{
+		Kind:            sim.KindNPCShared,
+		DisplayName:     "Moses James",
+		Role:            "farmer",
+		State:           sim.StateIdle,
+		Pos:             sim.TilePos{X: 150, Y: 150},
+		WorkStructureID: farm,
+		Inventory:       map[sim.ItemKind]int{"wheat": 40},
+		// He GROWS the wheat, so he passes the LLM-252 first-hand supplier gate and
+		// the LLM-477 tier is the only thing that decides whether Joseph sees him.
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "wheat", Source: sim.RestockSourceProduce, Max: 30},
+		}},
+	}
+	snap.Structures[farm] = plainStructure(farm, "James Farm")
+	// A live farm carries both tags; only wholesaler gates selling.
+	snap.VillageObjects[sim.VillageObjectID(farm)] = &sim.VillageObject{
+		ID: sim.VillageObjectID(farm), OwnerActorID: mosesID, Tags: []string{sim.TagFarm, sim.TagWholesaler},
+	}
+	return snap, josephID, warrants
 }
 
 // ownerHoldingRepairNailsInCompany is the LLM-292 earmark fixture: Josiah on the

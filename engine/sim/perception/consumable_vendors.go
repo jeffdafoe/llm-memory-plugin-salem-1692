@@ -47,19 +47,22 @@ func eachVendorOffer(snap *sim.Snapshot, buyerID sim.ActorID, fn func(vendorOffe
 	}
 	// Wholesale tier (LLM-223, generalized to the wholesaler tag in LLM-252):
 	// wholesaler-tagged sellers (farms, mill) sell only to the village
-	// distributor. For every other buyer, drop wholesale vendors from this scan so
-	// perception never points a non-distributor at a wholesale source — the restock
+	// distributor. For every other buyer, drop wholesale offers from this scan so
+	// perception never points a gated buyer at a wholesale source — the restock
 	// buy directory AND the satiation/consumption cues both ride this shared scan,
 	// so a hungry or restocking buyer is routed to the distributor (or nowhere)
 	// rather than lured to a source the PayWithItem backstop then rejects. The
-	// distributor himself still perceives the wholesale sources as suppliers.
+	// distributor himself still perceives the wholesale sources as suppliers, and a
+	// transformer perceives them for its own production inputs only (LLM-477).
 	// Resolved once for the scan; an empty buyerID (an unbuyer-scoped scan, e.g. a
-	// min-price venue sweep) reads as non-distributor, which is harmless — such a
-	// caller filters the offers it wants and never follows a wholesale source.
-	buyerIsDistributor := false
+	// min-price venue sweep) yields the zero allowance, which denies everything —
+	// harmless, as such a caller filters the offers it wants and never follows a
+	// wholesale source.
+	var allowance sim.WholesaleAllowance
 	if buyer := snap.Actors[buyerID]; buyer != nil {
-		buyerIsDistributor = sim.ActorIsDistributor(snap.VillageObjects, buyer.WorkStructureID)
+		allowance = sim.BuyerWholesaleAllowance(snap.VillageObjects, snap.Recipes, buyer.WorkStructureID, buyer.RestockPolicy)
 	}
+	anyWholesale := allowance.Any()
 	for vendorID, vendor := range snap.Actors {
 		if vendor == nil || vendorID == buyerID || vendor.Kind == sim.KindPC {
 			continue
@@ -71,11 +74,18 @@ func eachVendorOffer(snap *sim.Snapshot, buyerID sim.ActorID, fn func(vendorOffe
 		if st == nil {
 			continue
 		}
-		if !buyerIsDistributor && sim.SellerAtWholesaler(snap.VillageObjects, vendor.WorkStructureID) {
+		// The wholesale test is now per-ITEM (a transformer's grant covers only its
+		// production inputs), so the vendor-level skip is just the fast path for the
+		// common buyer who may take nothing at all from a wholesale source.
+		vendorIsWholesale := sim.SellerAtWholesaler(snap.VillageObjects, vendor.WorkStructureID)
+		if vendorIsWholesale && !anyWholesale {
 			continue
 		}
 		for kind, qty := range vendor.Inventory {
 			if qty <= 0 {
+				continue
+			}
+			if vendorIsWholesale && !allowance.Allows(kind) {
 				continue
 			}
 			fn(vendorOffer{

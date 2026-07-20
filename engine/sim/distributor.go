@@ -4,11 +4,15 @@ package sim
 // to the wholesaler tag in LLM-252). Wholesaler-tagged sellers (the farms and
 // the mill) sell only to the village distributor (Josiah as the "village Sysco");
 // everyone else buys wholesale-origin goods from the distributor, not straight
-// from the source. Two enforcement points ride the helpers here: the perception
-// filter in perception/consumable_vendors.go (drops wholesale vendors from every
-// non-distributor buyer's "who sells X" cues) and the engine backstop below the
-// perception layer in pay_with_item_commands.go (rejects a non-distributor's buy
-// from a wholesale seller). The wholesaler tag is deliberately independent of
+// from the source — with one exception (LLM-477): a TRANSFORMER, itself stationed
+// at a wholesaler-tagged structure, buys the inputs its own recipes require straight
+// from a wholesale source, so the mill is not forced to buy its wheat retail from the
+// same shop it sells its flour to wholesale. Four enforcement points ride the helpers
+// here, all keyed off BuyerWholesaleAllowance so they cannot drift: the perception
+// filter in perception/consumable_vendors.go (drops wholesale offers from a buyer's
+// "who sells X" cues), the co-present peer cue in perception/satiation.go, the restock
+// warrant's buy-path test in restock_tick.go, and the engine backstop below the
+// perception layer in pay_with_item_commands.go. The wholesaler tag is deliberately independent of
 // TagFarm — which now scopes only the farm-upkeep tax — so the gate and the tax
 // stay orthogonal: a farm carries both, the mill carries only wholesaler.
 
@@ -64,6 +68,69 @@ func SellerAtWholesaler(objects map[VillageObjectID]*VillageObject, workStructur
 		return false
 	}
 	return IsWholesalerStructure(objects[VillageObjectID(workStructureID)])
+}
+
+// WholesaleAllowance is a buyer's standing permission to buy from wholesaler-tagged
+// sellers — Rule 1's buyer-side test, resolved once so a vendor scan doesn't re-derive
+// it per candidate. Two tiers grant it:
+//
+//   - the DISTRIBUTOR buys any wholesale good (All) — he is the channel;
+//   - a TRANSFORMER — a buyer who himself works at a wholesaler-tagged structure —
+//     buys the goods that feed his OWN production (Inputs), and nothing else (LLM-477).
+//
+// The transformer tier exists because the mill sat on the wrong side of its own gate:
+// wheat could reach it only through the distributor's shop at retail while its flour
+// went back out to that same shop at wholesale, so it crossed the spread twice with one
+// counterparty on both sides of its business and could not earn its keep. Scoping the
+// grant to production inputs is what keeps the farms-eat-each-other loop shut — a raw
+// producer requires no inputs it doesn't self-source, so it derives an EMPTY set and the
+// tier never reaches it. Blast radius therefore scales with recipes, not with actors.
+//
+// The zero value denies everything, so an unresolvable buyer fails closed.
+type WholesaleAllowance struct {
+	All    bool              // the distributor: every wholesale good
+	Inputs map[ItemKind]bool // a transformer: its own production inputs only
+}
+
+// Allows reports whether kind may be bought from a wholesaler-tagged seller.
+func (a WholesaleAllowance) Allows(kind ItemKind) bool {
+	return a.All || a.Inputs[kind]
+}
+
+// Any reports whether the buyer may buy ANYTHING at wholesale — the cheap pre-test a
+// vendor scan uses to skip a wholesale seller outright before walking its inventory.
+// Every ordinary buyer answers false, so the common path stays one bool.
+func (a WholesaleAllowance) Any() bool {
+	return a.All || len(a.Inputs) > 0
+}
+
+// BuyerWholesaleAllowance resolves a buyer's allowance from its work anchor + restock
+// policy. Takes the object map and recipe catalog like its siblings here, so it serves
+// both the live World (w.VillageObjects, w.Recipes) and a perception Snapshot
+// (snap.VillageObjects, snap.Recipes). All four Rule 1 enforcement points — the shared
+// vendor scan, the co-present peer cue, the restock warrant's buy-path test, and the
+// PayWithItem backstop — key off THIS one definition, so cue and block cannot drift.
+//
+// Inputs comes from ProductionInputKinds (the required, non-self-sourced inputs of the
+// buyer's own produce recipes), NOT from EffectiveBuyEntries: an explicit `buy` row for
+// an unrelated good is larder or trade stock, not a production input, and must not widen
+// the grant. See ProductionInputKinds for the live case that forced the distinction.
+func BuyerWholesaleAllowance(objects map[VillageObjectID]*VillageObject, recipes map[ItemKind]*ItemRecipe, workStructureID StructureID, policy *RestockPolicy) WholesaleAllowance {
+	if ActorIsDistributor(objects, workStructureID) {
+		return WholesaleAllowance{All: true}
+	}
+	if !SellerAtWholesaler(objects, workStructureID) {
+		return WholesaleAllowance{}
+	}
+	return WholesaleAllowance{Inputs: ProductionInputKinds(recipes, policy)}
+}
+
+// BuyerMayBuyWholesale is the scalar form, for the two single-item call sites (the
+// restock warrant's buy-path test and the PayWithItem backstop) where the item is fixed
+// and there is no scan to hoist an allowance out of. Delegates so the two forms can't
+// diverge.
+func BuyerMayBuyWholesale(objects map[VillageObjectID]*VillageObject, recipes map[ItemKind]*ItemRecipe, workStructureID StructureID, policy *RestockPolicy, kind ItemKind) bool {
+	return BuyerWholesaleAllowance(objects, recipes, workStructureID, policy).Allows(kind)
 }
 
 // IsOwnProduce reports whether kind is a good this actor makes as wholesale stock —
