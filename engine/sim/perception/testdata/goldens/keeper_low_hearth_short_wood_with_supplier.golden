@@ -13,7 +13,7 @@ It is midday.
 
 You're at your workplace.
 
-It is your working hours and you are at your post — stay and look after your work; you close at 6 in the evening.
+It is your working hours and you are at your post (you close at 6 in the evening), but what you need is not to be had here — going to fetch it and coming back is part of minding your trade.
 
 ## Your hearth
 The fire at your Tavern has burned down to embers. Feeding it takes 1 firewood and you have 0 — buy more, then come back and stoke the fire. Use move_to to reach a supplier, then pay_with_item once you arrive:

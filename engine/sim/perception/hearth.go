@@ -280,6 +280,19 @@ func structureOccupantsCold(snap *sim.Snapshot, subjectID sim.ActorID, structure
 // a quiet embers line under a calm sky, the wind pressing in under a storm,
 // cold occupants as the red beat — and states the way to act (stoke now, or
 // buy/gather wood first) without ever becoming a bare imperative.
+// HasWalkToSupplier reports whether this cue will render a walk-to firewood
+// supplier (LLM-491). The at-post case is the innkeeper or tavern keeper whose own
+// hearth has gone cold: the stabilizer says stay at your post, and this section
+// hands him a destination to go buy wood at. Mirrors writeHearthWoodSteer's
+// progression — a hired hand never gets the buy steer, wood in hand stokes now,
+// and conserve holds off buying.
+func (v *HearthView) HasWalkToSupplier() bool {
+	if v == nil || v.Hired || v.HasEnoughWood || v.Conserve {
+		return false
+	}
+	return len(v.WoodVendors) > 0
+}
+
 func renderHearth(b *strings.Builder, v *HearthView) {
 	if v == nil {
 		return

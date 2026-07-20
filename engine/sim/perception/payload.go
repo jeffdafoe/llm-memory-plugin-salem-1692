@@ -1913,6 +1913,25 @@ type DutySteerView struct {
 	// back mid-trip.
 	ForageErrand bool
 
+	// SupplyErrand is the BUY-side twin of ForageErrand (LLM-491): set when some
+	// other section of this same payload hands the at-post subject an off-scene
+	// place to go buy at — a "## Restocking" walk-to supplier, the nails to mend a
+	// worn business, the shovels the season owes, the firewood for a cold hearth.
+	// Every one of those renders a "(destination: <id>)" the model is meant to walk
+	// to, while the default stabilizer in the same prompt says stay and look after
+	// your work. Live 2026-07-20: Josiah Thorne, at the General Store, was told to
+	// stay put and simultaneously handed James Farm's destination id for the wheat
+	// he was low on. Render flips the stabilizer to a step-out-and-return line so
+	// the two agree, exactly as ForageErrand already does for the harvest cue.
+	//
+	// Derived from the assembled payload AFTER the leisure/summons/degeneracy
+	// subtractions have run (Build), not from the pre-thinning views: those blocks
+	// nil the very sections this reconciles with, and a stabilizer reframed for an
+	// errand cue that no longer renders is the "told to move" residue the thinning
+	// exists to remove. Only meaningful when AtPost; ForageErrand wins when both
+	// are set (its line is the more specific one — her OWN bushes).
+	SupplyErrand bool
+
 	// Lodging marks the off-shift target as the actor's RENTED room at an inn
 	// (a lodger) rather than its own home — render says "head to your rented room
 	// at X". Only meaningful when !ToWork && TargetID != "". ZBBS-WORK-387.

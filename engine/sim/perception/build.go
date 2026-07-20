@@ -473,6 +473,17 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	if degeneracyFlagged(actorSnap) {
 		thinDegenerateSteer(&p)
 	}
+	// LLM-491: reconcile the at-post stabilizer with whichever supply cue is
+	// sending the subject out. Derived HERE, at the end of the mutation chain,
+	// rather than inside buildDutySteer: the leisure-venue and summons blocks above
+	// and the degeneracy thinning all nil the very sections this reads, and every
+	// one of them runs AFTER buildDutySteer. Reading the pre-thinning views would
+	// reframe the stabilizer for an errand whose cue no longer renders — a step-out
+	// line with nowhere to step out to, which is the "told to move" residue those
+	// subtractions exist to remove.
+	if p.DutySteer != nil && p.DutySteer.AtPost {
+		p.DutySteer.SupplyErrand = hasAtPostSupplyErrand(&p)
+	}
 	p.Lodging = buildLodgingView(snap, actorID, actorSnap, p.Surroundings.HuddleMembers)
 	// LLM-447: the voluntary bed-down affordance — the evening's exit. Built here,
 	// after Surroundings, because the line is shaped by whether there is company to
@@ -577,6 +588,10 @@ func degeneracyFlagged(a *sim.ActorSnapshot) bool {
 //     p.Forage — otherwise the actor would read a step-out line with no forage
 //     cue behind it, the exact "told to move" residue the thinning exists to
 //     remove (the live Prudence-at-her-apothecary forage-loop shape).
+//
+// The buy-side SupplyErrand modifier needs no such lockstep clearing: Build derives
+// it from the surviving views AFTER this runs, so a stabilizer here can never be
+// left reframed for a cue this function just removed.
 func thinDegenerateSteer(p *Payload) {
 	p.Restocking = nil
 	p.Forage = nil
@@ -593,6 +608,27 @@ func thinDegenerateSteer(p *Payload) {
 		return
 	}
 	p.DutySteer.ForageErrand = false
+}
+
+// hasAtPostSupplyErrand reports whether any section of the assembled payload hands
+// the subject an off-scene supplier to walk to (LLM-491). These four are the cues
+// that can render a "(destination: <id>)" for a BUY while the subject stands at its
+// own post — the state in which the duty stabilizer otherwise says "stay and look
+// after your work" in the same prompt.
+//
+// Each view answers for itself, mirroring its own renderer's branch order, so this
+// can never claim an errand a section didn't actually print. Deliberately NOT in
+// the set: StallRepairBuy (its whole premise is an owner already AWAY from her
+// post, so it cannot co-occur with AtPost) and the cold-garment coat vendors (they
+// render only in the storm-and-outdoors branch, and an actor outdoors is not inside
+// its workplace). Adding a fifth walk-to cue that CAN fire at post means adding it
+// here — the golden invariant TestAtPostSteerNeverContradictsSupplyErrand fails
+// loudly if it isn't.
+func hasAtPostSupplyErrand(p *Payload) bool {
+	return p.Restocking.HasWalkToSupplier() ||
+		p.StallRepair.HasWalkToSupplier() ||
+		p.FarmUpkeep.HasWalkToSupplier() ||
+		p.Hearth.HasWalkToSupplier()
 }
 
 // orderWarrants returns a copy of the batch ordered by SourceEventID
@@ -2236,6 +2272,10 @@ func buildDutySteer(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapsho
 		// stabilizer agrees with the "## Your bushes to harvest" cue instead of
 		// contradicting it. She's woken by the (now forage-aware) restock warrant,
 		// so this still renders only on a tick that already runs.
+		//
+		// The buy-side twin, SupplyErrand (LLM-491), is deliberately NOT set here:
+		// it reads sections the leisure/summons/degeneracy subtractions can still
+		// nil after this returns, so Build derives it at the end of that chain.
 		endMin := end
 		return &DutySteerView{AtPost: true, ShiftEndMin: &endMin, ForageErrand: hasForageErrand}
 	case !onShift:
