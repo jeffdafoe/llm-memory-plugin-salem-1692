@@ -2602,12 +2602,15 @@ func _get_icon_font() -> Font:
 ## derives BOTH the horizontal centering and the head clearance from
 ## ACTIVITY_MARKER_FONT_SIZE, so resizing the glyph doesn't drift it right and down into
 ## the head. A Label's origin is its top-left, so the vertical offset lifts by a full
-## line height to leave the glyph's baseline just above the sprite. Line height is
-## approximated off the font size (exact metrics need a laid-out Label); close enough
-## for a marker, and it re-derives if the size constant changes.
+## line height. That height comes from the font's REAL metrics (Font.get_height, as
+## speech_bubble.gd does) rather than a ratio guess, so a font swap or size change can't
+## quietly leave the glyph overlapping the head. Assumes the NPC sprite is top-left
+## anchored — `anim_sprite.centered = false` in _render_npc — which is what makes
+## `spr.position + half_w` the sprite's horizontal centre; _zzz_marker_position relies on
+## the same. Null-safe on the sprite.
 func _activity_marker_position(spr: AnimatedSprite2D) -> Vector2:
     var glyph_px := float(ACTIVITY_MARKER_FONT_SIZE)
-    var line_h := glyph_px * 1.25
+    var line_h := _get_icon_font().get_height(ACTIVITY_MARKER_FONT_SIZE)
     if spr == null:
         return Vector2(-glyph_px * 0.5, -72.0)
     var half_w := 16.0

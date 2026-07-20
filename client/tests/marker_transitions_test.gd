@@ -227,29 +227,61 @@ func _test_position_self_heal_marker_before_sprite() -> void:
     c.free()
 
 ## The activity glyph carries its OWN size and placement: the label renders at
-## ACTIVITY_MARKER_FONT_SIZE and is positioned by _activity_marker_position, which
-## derives both the horizontal centering and the head clearance from that size. The Zzz's
-## _zzz_marker_position is tuned for its 3-character text, so reusing it would drift the
-## glyph right and down into the head as the size changes — assert the derivation
-## directly so a future resize can't silently reintroduce that.
+## ACTIVITY_MARKER_FONT_SIZE and is positioned by _activity_marker_position, which derives
+## both the horizontal centering and the head clearance from that size (using the font's
+## real line height). The Zzz's _zzz_marker_position is tuned for its 3-character text, so
+## reusing it would drift the glyph right and down into the head as the size changes.
+##
+## Asserts the CONTRACT — glyph centred on the sprite, label sitting FULLY above it —
+## rather than "some negative offset", so a future resize or font swap that reintroduces
+## overlap fails here. Covers the real rendered-width path, not just the fallback.
 func _test_activity_marker_sizing_and_placement() -> void:
-    var c := _make_container()
-    var spr: AnimatedSprite2D = _world._npc_sprite(c)
+    var size_px: float = float(_world.ACTIVITY_MARKER_FONT_SIZE)
+    var line_h: float = _world._get_icon_font().get_height(_world.ACTIVITY_MARKER_FONT_SIZE)
+
+    # Real sprite frames (24px frame at 2x) — exercises the rendered-width branch.
+    var c := Node2D.new()
+    var spr := AnimatedSprite2D.new()
+    spr.name = "Sprite"
+    spr.centered = false
+    spr.scale = Vector2(2, 2)
+    var tex := PlaceholderTexture2D.new()
+    tex.size = Vector2(24, 24)
+    var frames := SpriteFrames.new()
+    frames.add_animation("south_idle")
+    frames.add_frame("south_idle", tex)
+    spr.sprite_frames = frames
+    spr.animation = "south_idle"
     spr.position = Vector2(40, 40)
+    c.add_child(spr)
+
     _set_activity(c, "repair")
     var m: Label = c.get_node_or_null(ACT)
     _check("activity_placement — marker created", m != null)
     if m == null:
         c.free()
         return
-    var size_px: float = float(_world.ACTIVITY_MARKER_FONT_SIZE)
-    _check("activity_placement — renders at ACTIVITY_MARKER_FONT_SIZE", m.get_theme_font_size("font_size") == int(size_px))
+    _check("activity_placement — font size override is ACTIVITY_MARKER_FONT_SIZE", m.has_theme_font_size_override("font_size") and m.get_theme_font_size("font_size") == int(size_px))
     _check("activity_placement — uses the activity positioner", m.position == _world._activity_marker_position(spr))
-    _check("activity_placement — not the Zzz text-tuned slot", m.position != _world._zzz_marker_position(spr))
-    # No sprite_frames on the fixture, so the positioner's half-width falls back to 16.
-    _check("activity_placement — centered for the glyph width", is_equal_approx(m.position.x, spr.position.x + 16.0 - size_px * 0.5))
-    # A Label grows down from its origin, so clearing the head means sitting fully above.
-    _check("activity_placement — clears the head", m.position.y < spr.position.y)
-    _check("activity_placement — fallback centering also derives from the size", is_equal_approx(_world._activity_marker_position(null).x, -size_px * 0.5))
+    # Contract 1: centred on the sprite's RENDERED width (frame width x scale).
+    var sprite_centre_x: float = spr.position.x + 24.0 * spr.scale.x * 0.5
+    _check("activity_placement — glyph centred on the rendered sprite", is_equal_approx(m.position.x + size_px * 0.5, sprite_centre_x))
+    # Contract 2: the label's BOTTOM (origin + real line height) clears the sprite's top.
+    _check("activity_placement — label bottom clears the sprite top", m.position.y + line_h <= spr.position.y)
     _expect_only(c, "activity", "activity_placement")
     c.free()
+
+    # No sprite_frames — the fallback half-width branch still centres and clears.
+    var c2 := _make_container()
+    var spr2: AnimatedSprite2D = _world._npc_sprite(c2)
+    spr2.position = Vector2(10, 10)
+    _set_activity(c2, "harvest")
+    var m2: Label = c2.get_node_or_null(ACT)
+    _check("activity_placement — fallback marker created", m2 != null)
+    if m2 != null:
+        _check("activity_placement — centred on the fallback half-width", is_equal_approx(m2.position.x + size_px * 0.5, spr2.position.x + 16.0))
+        _check("activity_placement — fallback label bottom clears the sprite top", m2.position.y + line_h <= spr2.position.y)
+    c2.free()
+
+    # No sprite at all — the null fallback still derives its centring from the size.
+    _check("activity_placement — null-sprite fallback derives from the size", is_equal_approx(_world._activity_marker_position(null).x, -size_px * 0.5))
