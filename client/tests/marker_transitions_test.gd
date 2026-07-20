@@ -237,7 +237,15 @@ func _test_position_self_heal_marker_before_sprite() -> void:
 ## overlap fails here. Covers the real rendered-width path, not just the fallback.
 func _test_activity_marker_sizing_and_placement() -> void:
     var size_px: float = float(_world.ACTIVITY_MARKER_FONT_SIZE)
-    var line_h: float = _world._get_icon_font().get_height(_world.ACTIVITY_MARKER_FONT_SIZE)
+    # Guard the font lookup through _check rather than letting a null deref abort the
+    # function: this harness tallies failures only via _check, so a runtime error would
+    # silently drop every assertion below while the suite still printed ALL PASS (that
+    # is exactly how a desynced .godot import cache masked this test once — see LLM-480).
+    var font: Font = _world._get_icon_font()
+    _check("activity_placement — icon font loaded", font != null)
+    if font == null:
+        return
+    var line_h: float = font.get_height(_world.ACTIVITY_MARKER_FONT_SIZE)
 
     # Real sprite frames (24px frame at 2x) — exercises the rendered-width branch.
     var c := Node2D.new()
