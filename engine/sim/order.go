@@ -146,6 +146,21 @@ type Order struct {
 	// than directly. Persisted so a deposit obligation survives restart.
 	Deposit int
 
+	// PayItems are the goods the buyer paid WITH, carried over from the accepted
+	// PayLedger entry (LLM-493). Empty for an ordinary coin purchase.
+	//
+	// The Order does not USE this — it exists so the value reaches pay_ledger's
+	// pay_items column, which is what lets the boot-time price seed apply the same
+	// barter guard as the live subscriber. Without it the two ingestion paths
+	// disagree and a restart re-imports mixed coin+goods settlements the live path
+	// declined (LLM-285's invariant). The orderless-settlement writer takes a
+	// *PayLedgerEntry directly and needs no equivalent.
+	//
+	// Amount above is the COIN total only; a mixed settlement's real price is
+	// Amount plus these goods, which is exactly why such a settlement cannot teach
+	// a coin rate.
+	PayItems []ItemKindQty
+
 	// LedgerID back-references the originating PayLedger entry. Used by
 	// InteractionDelivered fact text + admin replay; not part of any
 	// validation path.

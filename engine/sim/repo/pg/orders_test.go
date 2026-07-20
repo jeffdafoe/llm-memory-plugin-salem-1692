@@ -243,11 +243,15 @@ func TestOrdersRepo_SaveSnapshot_UpsertsEachOrder(t *testing.T) {
 		WithArgs(pgxmock.AnyArg()).
 		WillReturnResult(pgconn.NewCommandTag("UPDATE 0"))
 
+	// Trailing []byte(nil) is pay_items (LLM-493): both these orders are pure-coin
+	// purchases, and a pure-coin settlement writes SQL NULL rather than '[]' so the
+	// column carries one unambiguous meaning. The goods-bearing case has its own
+	// test — TestOrdersRepo_SaveSnapshot_PersistsPayItems.
 	mock.ExpectExec(`INSERT INTO pay_ledger`).
 		WithArgs(
 			int64(1), "alice", "bob", "stew", 2, 6,
 			[]string{"alice"}, "ready",
-			readyBy, expires, now, (*time.Time)(nil), 4,
+			readyBy, expires, now, (*time.Time)(nil), 4, []byte(nil),
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 
@@ -255,7 +259,7 @@ func TestOrdersRepo_SaveSnapshot_UpsertsEachOrder(t *testing.T) {
 		WithArgs(
 			int64(2), "dave", "bob", "ale", 1, 3,
 			[]string{}, "delivered",
-			now, expires, now, &delivered, 0,
+			now, expires, now, &delivered, 0, []byte(nil),
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 
@@ -654,3 +658,66 @@ func TestOrdersRepo_LoadRecentPrices_QueryError(t *testing.T) {
 
 // intPtr returns &i; helper for cardinality column mock values.
 func intPtr(i int) *int { return &i }
+
+// TestPayItemsJSON pins the pay_ledger.pay_items encoding (LLM-493).
+//
+// The NULL-vs-'[]' distinction is the load-bearing part: the seed predicate is
+// `pay_items IS NULL`, so an empty leg set MUST encode to SQL NULL. Encoding it
+// as '[]' would make every pure-coin settlement invisible to the seed and empty
+// the price book on the next boot.
+//
+// Field names must match agent_action_log's payload.pay_items, because the
+// migration backfills historical rows by copying that jsonb straight across.
+func TestPayItemsJSON(t *testing.T) {
+	t.Run("nil encodes to SQL NULL", func(t *testing.T) {
+		got, err := payItemsJSON(nil)
+		if err != nil {
+			t.Fatalf("payItemsJSON(nil): %v", err)
+		}
+		if got != nil {
+			t.Errorf("payItemsJSON(nil) = %q, want nil (SQL NULL) — a pure-coin "+
+				"settlement must be NULL or the seed predicate drops it", got)
+		}
+	})
+
+	t.Run("empty slice encodes to SQL NULL", func(t *testing.T) {
+		got, err := payItemsJSON([]sim.ItemKindQty{})
+		if err != nil {
+			t.Fatalf("payItemsJSON(empty): %v", err)
+		}
+		if got != nil {
+			t.Errorf("payItemsJSON(empty) = %q, want nil — empty and nil must not "+
+				"diverge, or NULL stops meaning one thing", got)
+		}
+	})
+
+	t.Run("goods encode with the audit payload's field names", func(t *testing.T) {
+		got, err := payItemsJSON([]sim.ItemKindQty{
+			{Kind: "skillet", Qty: 2},
+			{Kind: "wheat", Qty: 2},
+		})
+		if err != nil {
+			t.Fatalf("payItemsJSON: %v", err)
+		}
+		const want = `[{"item":"skillet","qty":2},{"item":"wheat","qty":2}]`
+		if string(got) != want {
+			t.Errorf("payItemsJSON = %s\nwant %s\n(field names must match "+
+				"agent_action_log payload.pay_items — the migration backfills by copying it)",
+				got, want)
+		}
+	})
+
+	t.Run("order is preserved", func(t *testing.T) {
+		got, err := payItemsJSON([]sim.ItemKindQty{
+			{Kind: "wheat", Qty: 2},
+			{Kind: "skillet", Qty: 2},
+		})
+		if err != nil {
+			t.Fatalf("payItemsJSON: %v", err)
+		}
+		const want = `[{"item":"wheat","qty":2},{"item":"skillet","qty":2}]`
+		if string(got) != want {
+			t.Errorf("payItemsJSON = %s, want %s (legs are recorded as tendered)", got, want)
+		}
+	})
+}

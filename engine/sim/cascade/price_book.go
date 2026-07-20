@@ -70,12 +70,25 @@ func handlePayWithItemResolvedPriceBook(w *sim.World, evt sim.Event) {
 	if resolved.TerminalState != sim.PayTerminalStateAccepted {
 		return
 	}
-	// Pure barter (no coins, goods-only) records no price observation —
-	// there is no single coin price to remember for the (seller, item)
-	// pair, and an Amount of 0 would poison the price book with a free
-	// reading. Mixed coin+goods accepts still record the coin leg.
-	// ZBBS-HOME-393.
-	if resolved.Amount <= 0 {
+	// A settlement teaches a coin price only when coins were the WHOLE payment.
+	//
+	// Pure barter (goods only, Amount 0) was already excluded — there is no single
+	// coin price to remember, and a 0 reading would poison the key (ZBBS-HOME-393).
+	// LLM-493 extends that to MIXED coin+goods accepts, which used to pass this
+	// guard on Amount > 0 and then be recorded at their coin leg against the full
+	// quantity. Live: 5 nails bought for 2 coins PLUS 2 skillets and 2 wheat booked
+	// as nails at 0.4 coins each. That is worse than the pure-barter gap — pure
+	// barter leaves the key silent, mixed leaves it wrong, and the wrong rate
+	// propagates into every buy anchor and margin verdict derived from it.
+	//
+	// The goods leg is dropped, NOT valued. Pricing it would be circular (goods
+	// valued in goods, no anchor) and would manufacture certainty the data does not
+	// contain — the LLM-475 rule: uncertainty stays silent.
+	//
+	// The boot seed applies the identical predicate over pay_ledger.pay_items
+	// (loadRecentPricesSQL). Both ingestion paths must agree or a restart re-imports
+	// what the live path declined (LLM-285).
+	if resolved.Amount <= 0 || len(resolved.PayItems) > 0 {
 		return
 	}
 	// A bundle quote-take carries its goods in Lines and leaves ItemKind
