@@ -137,6 +137,106 @@ func TestWholesaleGate_CoPresentPeerCue(t *testing.T) {
 	})
 }
 
+// TestWholesaleGate_Transformer (LLM-477): a buyer stationed at a wholesaler-tagged
+// structure perceives a wholesale source for the inputs its OWN recipes require, and
+// for nothing else. This is the perception half of the tier that lets the mill buy its
+// wheat from the farm instead of retail from the shop it sells its flour to.
+//
+// The snapshot deliberately gives the buyer an explicit `buy` row for a good that feeds
+// none of its recipes (water), because that is precisely where the two candidate
+// predicates disagree: EffectiveBuyEntries would grant it, ProductionInputKinds does
+// not. Water staying hidden is the regression pin for that decision — an operator's
+// larder row must never become a wholesale exemption (the live Ellis Farm `buy: sage`
+// shape).
+func TestWholesaleGate_Transformer(t *testing.T) {
+	transformerSnap := func() (*sim.Snapshot, *sim.ActorSnapshot) {
+		snap, buyer := wholesaleGateSnap("joseph", "mill", false)
+		// The buyer's own workplace is wholesale-tagged — condition 1 of the tier.
+		snap.VillageObjects["mill"] = &sim.VillageObject{
+			ID: "mill", OwnerActorID: "joseph", Tags: []string{sim.TagWholesaler},
+		}
+		// It transforms milk into cheese, and separately keeps a larder buy row for
+		// water that feeds no recipe of its own.
+		buyer.RestockPolicy = &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "cheese", Source: sim.RestockSourceProduce, Max: 15},
+			{Item: "water", Source: sim.RestockSourceBuy, Max: 10},
+		}}
+		snap.Recipes = map[sim.ItemKind]*sim.ItemRecipe{
+			"cheese": {OutputItem: "cheese", OutputQty: 1, Inputs: []sim.RecipeInput{{Item: "milk", Qty: 3}}},
+		}
+		// Ellis produces BOTH goods, so the LLM-252 supplier gate keeps her for each
+		// and the wholesale tier is the only thing that can differentiate them.
+		snap.Actors["ellis"].Inventory["water"] = 20
+		snap.Actors["ellis"].RestockPolicy = &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "milk", Source: sim.RestockSourceProduce, Max: 40},
+			{Item: "water", Source: sim.RestockSourceProduce, Max: 20},
+		}}
+		snap.ItemKinds["water"] = &sim.ItemKindDef{
+			Name: "water", DisplayLabel: "water", Category: sim.ItemCategoryDrink,
+			Satisfies: []sim.ItemSatisfaction{{Attribute: "thirst", Immediate: 4}},
+		}
+		return snap, buyer
+	}
+
+	t.Run("production_input_visible_at_the_wholesale_source", func(t *testing.T) {
+		snap, buyer := transformerSnap()
+		vds, _ := findItemVendors(snap, "joseph", buyer, "milk")
+		if len(vds) != 1 || vds[0].StructureID != "ellis_farm" {
+			t.Errorf("a transformer must see the wholesale source for its own recipe input, got %+v", vds)
+		}
+	})
+
+	t.Run("non_input_still_hidden_despite_explicit_buy_row", func(t *testing.T) {
+		snap, buyer := transformerSnap()
+		if vds, _ := findItemVendors(snap, "joseph", buyer, "water"); len(vds) != 0 {
+			t.Errorf("an explicit buy row for a non-input must NOT open the wholesale source, got %+v", vds)
+		}
+	})
+
+	t.Run("raw_producer_at_a_wholesaler_sees_nothing", func(t *testing.T) {
+		// A wholesaler that transforms nothing derives an empty allowance — the
+		// farms-eat-each-other pin at the perception layer.
+		snap, buyer := transformerSnap()
+		buyer.RestockPolicy = producePolicy("carrots", 30)
+		snap.Recipes = map[sim.ItemKind]*sim.ItemRecipe{
+			"carrots": {OutputItem: "carrots", OutputQty: 1},
+		}
+		if vds, _ := findItemVendors(snap, "joseph", buyer, "milk"); len(vds) != 0 {
+			t.Errorf("one wholesale producer must not see another as a source, got %+v", vds)
+		}
+	})
+
+	t.Run("co_present_peer_arm_follows_the_same_grant", func(t *testing.T) {
+		// The peer cue and the vendor scan must agree, or the mill gets cued to buy
+		// from a huddled farmer the dispatch gate would then refuse (the LLM-289 bug
+		// shape). Milk eases thirst here, so the peer offer is otherwise eligible.
+		snap, buyer := transformerSnap()
+		hid, h := huddleWith("joseph", "ellis")
+		snap.Huddles = map[sim.HuddleID]*sim.Huddle{hid: h}
+		buyer.CurrentHuddleID = hid
+		buyer.Needs = map[sim.NeedKey]int{"thirst": sim.DefaultThirstRedThreshold}
+		buyer.Acquaintances = map[string]sim.Acquaintance{"Ellis Ward": {}}
+		buyer.Inventory = map[sim.ItemKind]int{}
+
+		offers := gatherCoPresentPeerOffers(snap, "joseph", buyer, "thirst")
+		var sawMilk, sawWater bool
+		for _, o := range offers {
+			switch o.itemKind {
+			case "milk":
+				sawMilk = true
+			case "water":
+				sawWater = true
+			}
+		}
+		if !sawMilk {
+			t.Error("the huddled wholesale peer's milk (a production input) should be offered to a transformer")
+		}
+		if sawWater {
+			t.Error("the huddled wholesale peer's water (not an input) must stay gated")
+		}
+	})
+}
+
 func TestWholesaleGate_SatiationCue(t *testing.T) {
 	// The satiation/consumption finder rides the SAME eachVendorOffer scan, so the
 	// wholesale source is dropped there too — a thirsty non-distributor is never

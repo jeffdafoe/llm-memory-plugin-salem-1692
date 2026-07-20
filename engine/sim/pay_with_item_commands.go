@@ -491,16 +491,17 @@ func PayWithItem(
 
 			// Wholesale tier (LLM-223, generalized to the wholesaler tag in
 			// LLM-252): wholesaler-tagged sellers (farms, mill) sell only to the
-			// village distributor. A non-distributor buying from a seller whose
-			// workplace is wholesale-tagged is rejected at dispatch and steered to
-			// the distributor — the hard backstop beneath the perception filter
-			// (eachVendorOffer drops wholesale vendors from every non-distributor's
-			// buy/consume cues, so no cue lures a buyer into this rejection). The
-			// distributor's keeper buys wholesale freely; everyone else restocks
-			// from him. Keys on the SELLER's work anchor, so a hired hand or a
-			// seller trading away from the wholesale structure is gated too.
+			// village distributor — plus, since LLM-477, to a TRANSFORMER buying an
+			// input its own recipes require (the mill's wheat), so a maker isn't
+			// forced to buy retail from the same shop it sells to wholesale. Any
+			// other buyer is rejected at dispatch and steered to the distributor —
+			// the hard backstop beneath the perception filter (eachVendorOffer drops
+			// wholesale offers a buyer has no allowance for, so no cue lures a buyer
+			// into this rejection). Keys on the SELLER's work anchor, so a hired hand
+			// or a seller trading away from the wholesale structure is gated too, and
+			// on the BUYER's anchor + policy for the allowance.
 			if SellerAtWholesaler(w.VillageObjects, seller.WorkStructureID) &&
-				!ActorIsDistributor(w.VillageObjects, buyer.WorkStructureID) {
+				!BuyerMayBuyWholesale(w.VillageObjects, w.Recipes, buyer.WorkStructureID, buyer.RestockPolicy, kind) {
 				distributor := DistributorSteerLabel(w.VillageObjects, w.Actors)
 				return nil, fmt.Errorf(
 					"wholesale goods are sold only to %s, whose shop supplies the village — buy your %s from %s, not straight from the source.",

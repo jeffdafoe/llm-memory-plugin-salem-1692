@@ -231,7 +231,10 @@ func firstActionableLowEntry(a *Actor, w *World, pct int, now time.Time, conserv
 // stock. Runs on the world goroutine over live state; perception runs the same
 // tests over the snapshot.
 func actorHasBuyPath(w *World, a *Actor, item ItemKind, now time.Time) bool {
-	buyerIsDistributor := ActorIsDistributor(w.VillageObjects, a.WorkStructureID)
+	// The item is fixed for this call, so the wholesale allowance resolves to a single
+	// bool: the distributor may take anything from a wholesale source, a transformer
+	// may take this item iff its own recipes require it (LLM-477), everyone else no.
+	mayBuyWholesale := BuyerMayBuyWholesale(w.VillageObjects, w.Recipes, a.WorkStructureID, a.RestockPolicy, item)
 	pinned := actorBatchPinnedAtPost(a)
 	for vendorID, vendor := range w.Actors {
 		if vendor == nil || vendorID == a.ID || vendor.Kind == KindPC {
@@ -243,7 +246,7 @@ func actorHasBuyPath(w *World, a *Actor, item ItemKind, now time.Time) bool {
 		if vendor.Inventory[item] <= 0 {
 			continue
 		}
-		if !buyerIsDistributor && SellerAtWholesaler(w.VillageObjects, vendor.WorkStructureID) {
+		if !mayBuyWholesale && SellerAtWholesaler(w.VillageObjects, vendor.WorkStructureID) {
 			continue
 		}
 		if !vendor.RestockPolicy.ProducesOrForages(item) && !ActorIsDistributor(w.VillageObjects, vendor.WorkStructureID) {

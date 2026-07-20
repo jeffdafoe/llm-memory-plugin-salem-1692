@@ -49,6 +49,26 @@ func tagWholesaleWorld(t *testing.T) (*sim.World, func(), time.Time) {
 	return w, stop, time.Now().UTC()
 }
 
+// makeMillTransformer turns Hannah into the LLM-477 transformer case: her workplace
+// becomes a wholesaler-tagged mill and she produces ale from bread, so bread is a
+// required input of her own recipes. Everything else about tagWholesaleWorld stands —
+// Moses still sells from the wholesale-tagged James Farm.
+func makeMillTransformer(t *testing.T, w *sim.World) {
+	t.Helper()
+	mustSend(t, w, func(world *sim.World) {
+		world.Recipes = map[sim.ItemKind]*sim.ItemRecipe{
+			"ale": {OutputItem: "ale", OutputQty: 2, Inputs: []sim.RecipeInput{{Item: "bread", Qty: 1}}},
+		}
+		world.Actors["hannah"].WorkStructureID = "mill"
+		world.Actors["hannah"].RestockPolicy = &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "ale", Source: sim.RestockSourceProduce, Max: 20},
+		}}
+		world.VillageObjects["mill"] = &sim.VillageObject{
+			ID: "mill", OwnerActorID: "hannah", Tags: []string{sim.TagWholesaler},
+		}
+	})
+}
+
 func TestPayWithItem_WholesaleGate(t *testing.T) {
 	t.Run("non_distributor_buying_from_wholesaler_rejected", func(t *testing.T) {
 		w, stop, at := tagWholesaleWorld(t)
@@ -77,6 +97,59 @@ func TestPayWithItem_WholesaleGate(t *testing.T) {
 		}
 		if res.(sim.PayWithItemResult).State != sim.PayLedgerStatePending {
 			t.Errorf("state = %q, want pending (mints normally)", res.(sim.PayWithItemResult).State)
+		}
+	})
+
+	// LLM-477: the transformer tier. A buyer stationed at a wholesaler-tagged
+	// structure buys the inputs its OWN recipes require straight from a wholesale
+	// source — the mill's wheat — but nothing else. The mem test repo seeds only
+	// ale/bread/water, so the live wheat→flour shape is modelled here as
+	// bread→ale: Joseph produces ale at the (wholesaler-tagged) mill and bread is
+	// its recipe input, standing in for the miller buying wheat from the farm.
+	t.Run("transformer_buying_its_recipe_input_from_wholesaler_allowed", func(t *testing.T) {
+		w, stop, at := tagWholesaleWorld(t)
+		defer stop()
+		makeMillTransformer(t, w)
+		res, err := w.Send(sim.PayWithItem("hannah", "Moses James", "bread", 1, 4, false, nil, nil, 0, 0, "", at))
+		if err != nil {
+			t.Fatalf("a transformer buying its own production input wholesale should pass the gate: %v", err)
+		}
+		if res.(sim.PayWithItemResult).State != sim.PayLedgerStatePending {
+			t.Errorf("state = %q, want pending (mints normally)", res.(sim.PayWithItemResult).State)
+		}
+	})
+
+	t.Run("transformer_buying_a_non_input_from_wholesaler_rejected", func(t *testing.T) {
+		w, stop, at := tagWholesaleWorld(t)
+		defer stop()
+		makeMillTransformer(t, w)
+		// Water feeds none of the transformer's recipes, so the grant does not reach
+		// it: the tier stays scoped to production inputs, not a blanket exemption for
+		// anyone who happens to be wholesaler-tagged.
+		_, err := w.Send(sim.PayWithItem("hannah", "Moses James", "water", 1, 4, false, nil, nil, 0, 0, "", at))
+		if err == nil || !strings.Contains(err.Error(), "wholesale goods are sold only to") {
+			t.Fatalf("a transformer buying a NON-input wholesale err = %v, want wholesale-gate steer", err)
+		}
+	})
+
+	t.Run("non_wholesaler_transformer_still_gated", func(t *testing.T) {
+		w, stop, at := tagWholesaleWorld(t)
+		defer stop()
+		// Same recipe + produce policy, but the buyer's workplace is NOT
+		// wholesaler-tagged — condition 1 fails, so an ordinary keeper who transforms
+		// goods stays routed through the distributor. This is what keeps the tier from
+		// widening to every producer in the village.
+		mustSend(t, w, func(world *sim.World) {
+			world.Recipes = map[sim.ItemKind]*sim.ItemRecipe{
+				"ale": {OutputItem: "ale", OutputQty: 2, Inputs: []sim.RecipeInput{{Item: "bread", Qty: 1}}},
+			}
+			world.Actors["hannah"].RestockPolicy = &sim.RestockPolicy{Restock: []sim.RestockEntry{
+				{Item: "ale", Source: sim.RestockSourceProduce, Max: 20},
+			}}
+		})
+		_, err := w.Send(sim.PayWithItem("hannah", "Moses James", "bread", 1, 4, false, nil, nil, 0, 0, "", at))
+		if err == nil || !strings.Contains(err.Error(), "wholesale goods are sold only to") {
+			t.Fatalf("a non-wholesaler transformer err = %v, want wholesale-gate steer", err)
 		}
 	})
 

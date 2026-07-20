@@ -178,6 +178,61 @@ func ReorderFloors(recipes map[ItemKind]*ItemRecipe, p *RestockPolicy) map[ItemK
 	return floors
 }
 
+// ProductionInputKinds returns the set of items the policy's own produce recipes
+// REQUIRE and that the actor does not self-source — the goods it must procure from
+// someone else to keep producing. This is exactly the DERIVED half of
+// EffectiveBuyEntries, deliberately without the explicit `buy` rows.
+//
+// The distinction matters only to the LLM-477 wholesale grant, which is the one
+// caller: an operator-authored buy entry for an unrelated good is trade stock or
+// larder, not a production input, and must not widen a transformer's permission to
+// buy straight from a wholesale source. Live case that forced the split — Ellis Farm
+// (wholesaler-tagged) produces cheese/milk/meat and carries an explicit `buy: sage`
+// row; sage feeds none of its recipes, so granting wholesale access to it would let
+// one farm buy direct from another the moment a wholesaler happened to sell sage,
+// which is the farms-eat-each-other loop the tier exists to prevent.
+//
+// Elective BoostInputs are excluded for the same reason ReorderFloors excludes them:
+// production never stalls on a booster, so a booster is not a required input.
+//
+// THE POLICY IS AUTHORITATIVE FOR SELF-SOURCING, exactly as it is for EffectiveBuyEntries:
+// an input is treated as self-sourced iff the policy carries a produce/forage row for it,
+// never by inspecting what the actor actually makes. So a policy edited live into an
+// inconsistent state moves the grant with it — drop a producer's own produce row and its
+// input becomes procurable (and, at a wholesaler, wholesale-procurable); add one for
+// something it cannot make and the input silently disappears from its demand. That is
+// inherited behaviour, not new here (the restock warrant and both buy-side cues already
+// read the policy the same way), and the policy stays the single place an operator edits
+// (code_review).
+//
+// Nil-safe on both arguments; returns nil when the actor produces nothing with
+// inputs (a nil map indexes to false, which callers read as "not a production input").
+func ProductionInputKinds(recipes map[ItemKind]*ItemRecipe, p *RestockPolicy) map[ItemKind]bool {
+	if p == nil {
+		return nil
+	}
+	var kinds map[ItemKind]bool
+	for _, pe := range p.ProduceEntries() {
+		recipe := recipes[pe.Item]
+		if recipe == nil {
+			continue
+		}
+		for _, in := range recipe.Inputs {
+			if in.Item == "" || in.Qty <= 0 {
+				continue
+			}
+			if p.ProducesOrForages(in.Item) {
+				continue // self-sourced: never procured, so never granted
+			}
+			if kinds == nil {
+				kinds = make(map[ItemKind]bool)
+			}
+			kinds[in.Item] = true
+		}
+	}
+	return kinds
+}
+
 // ManagesEffective reports whether kind is one of the actor's trade goods under
 // the EFFECTIVE policy — an explicit restock entry of any source (Manages), or
 // a derived buy input of something it produces. The derived-aware sibling of
